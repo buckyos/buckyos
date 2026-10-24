@@ -31,6 +31,7 @@ Origin / CSRF：浏览器写 Cookie 的接口只有 CP 的 `/sso_callback`、`/s
 - **user_id 稳定且不可复用**：删除只把 `state` 置为 `deleted`，记录保留，`user.create` 以 `KVAction::Create` 写入，同名再建失败。
 - **External 入驻**：同一 DID 之后被接受为本 Zone 账号时，DID 登录改为映射到该账号；旧 External 会话保持原 claims 直至过期，不升级。`user.invite.accept` 必须携带该 DID 经联合登录取得的 Control Panel 用户会话，并提交匹配的 OwnerDocument；匿名或密码会话不能接受邀请。
 - 展示资料（昵称、头像）不决定授权主体。
+- **App 代登录的账号**（§5.6）也是 Account：`sub` 是 CP 为 `(app_instance_id, external_account_id)` 创建的 Limited 账号；`auth_method=app_access_token`，target 是签发 code 的 App 实例。
 
 ### 2.2 当前身份响应
 
@@ -55,7 +56,7 @@ CP 的 `/sso_refresh` 与 `auth.current_identity` 返回 `identity`（Rust：`bu
 
 | claim | 类型 | 说明 |
 | --- | --- | --- |
-| `auth_method` | `password` \| `exclusive_invite` \| `did_federation` \| `assertion` | family 建立方式；delegate、refresh 继承 |
+| `auth_method` | `password` \| `exclusive_invite` \| `did_federation` \| `assertion` \| `app_access_token` | family 建立方式；delegate、refresh 继承。`app_access_token`：App 为其外部客户代登录（§5.6，2026-10-24） |
 | `restricted` | bool，缺省 false | 受限会话；缺省即普通会话 |
 | `scopes` | string[]，仅 `restricted=true` 时出现 | 批准的上限，见 3.2 |
 | `external` | bool | 已有，见 2.1 |
@@ -187,7 +188,34 @@ kRPC 失败响应增加可选字段（buckyos-base kRPC）：
 
 - `auth.invite.request_resend {invite_id}`（公开，同一邀请 10 分钟内只受理一次）：仅当邀请 active、账号未设密码、资格已过期或被标记时受理；写 `resend.requested_at`，向签发方发 System Notify（`notify.send`，`to_user=issuer.user_id`，正文含账号与资源标题，不含 secret）。返回 `{status:"submitted"|"rate_limited"|"not_applicable"}`，不返回链接。
 - 签发方在 CP“专属邀请”管理处调用 `user.exclusive_invite.rotate {invite_id}`：生成新版本资格（旧版本 `superseded`），新链接只在本次响应中出现一次；签发方经原渠道发出。系统不发送 SMTP / SMS。
-- App 签发方（CRM）随 SSO-10 后排，记录结构保留 `issuer.kind="app"`。
+- App 签发方的记录见 §5.6。
+
+### 5.6 App 签发的登录码与 `verify-hub.login_by_app_access_token`（EXT-09，2026-10-24）
+
+App 为自己的外部客户代登录（[应用扩展实施 TODO](../../../notepads/self-host-group-extension-todo.md) D-5 / D-7）。复用专属邀请的记录结构与判定表，差别只在签发方、有效期和一次性。
+
+- **开关**：`services/control_panel/app_login/<app_instance_id>` → `{enabled, updated_by, updated_at}`，缺省关；owner 以 CP 用户会话调 `apps.app_login.set`。关闭时 CP 对每个绑定账号调 `revoke_families {subject, source_app_instance_id}`。
+- **绑定表**：`services/control_panel/app_identities/<app_instance_id>/<digest>` → `{user_id, created_at, last_issued_at, issue_count}`，`digest = base64url(sha256(app_instance_id "\n" external_account_id))`；外部账号原文不落盘。
+- **签发** `user.app_login.issue {external_account_id, user_id?, show_name?, resource?, return_path?}`：调用者必须是 `principal_kind=app`、target 为自身实例的服务会话。无绑定则新建 Limited 账号 `<app label>-<16 hex>`（不入系统组、`password_state=unset`、无 canonical zone）并写绑定；显式 `user_id` 必须等于已绑定账号。写一条 `ExclusiveInvite`：`issuer={"kind":"app","app_instance_id"}`、`channel.kind="app"`、`credential` 版本 1、有效期 **10 分钟**、`resource` 为 Session 时随后以 App 身份调 `group.invite_session_guest`。返回 `{user_id, code: "<invite_id>.<secret>", expires_at, invite, new_account}`，code 只出现这一次。每实例每分钟最多 60 次签发。
+- **兑换** `auth.app_login.exchange {code, nonce, return_path?}`（CP 公开方法，按来源 IP 限流 30/分钟）→ CP 代调 `verify-hub.login_by_app_access_token {code, nonce, target: App 实例}`（CP-only），判定顺序：
+
+| 条件 | 结果 |
+| --- | --- |
+| code 格式错误、记录不存在或 `state=revoked` | `source_revoked` / `revoked` |
+| 账号非 Active / 非 Limited | `account_state` |
+| `password_state=set` | `credential_state` + `password_required` |
+| 摘要不等于当前版本 | `credential_state` + `link_replaced` |
+| `credential.state=consumed` | `credential_state` + `consumed` |
+| `now > expires_at` | `credential_state` + `expired` |
+| 记录不是 App 签发，或 `target` ≠ 签发实例 | `entry_unavailable` + `target_mismatch` |
+| 开关关闭，或 App 停用 / 卸载（`check_app_runtime_session`） | `source_revoked` + `app_login_disabled` / `app_runtime_*` |
+| 同一 code 已兑换且 nonce 相同 | 返回原 token pair（verify-hub 内存保存至 code 到期） |
+| 同一 code 已兑换且 nonce 不同 | `credential_state` + `nonce_mismatch` |
+| 其它 | 签发 `auth_method=app_access_token`、`restricted=true`、`scopes=[msg_group, account_self]`、target=该 App 实例的 token pair；family 来源 `{"kind":"app_login", app_instance_id, invite_id, version}` |
+
+  兑换成功后 CP 把记录的 `credential.state` 置为 `consumed`（`SetByJsonPath`，只改该字段与 `updated_at`），并像专属邀请一样走 pending nonce → `/sso_callback`，cookie 落在 **App 子域**（host-only），再回到 `return_path`。
+- **续期**：refresh 复核账号与类型（收窄）、记录 `state=active`、开关与 App 运行态；App target 的 `app_availability` 策略不参与（App 本身为该账号作保）。任一项失败 → `source_revoked`，family 删除。
+- **范围**：这是 Account 的受限会话，CP 对它开放与 CP 受限会话相同的 `account_self` 方法（§3.3 的闸口把“App 签入、target 为 App 实例”的会话视同自助会话，因为它运行在 App 子域、经网关 `/kapi/control-panel` 到达）；msg-center 按 `msg_group` 放行 `group.*`，账号没有个人投递记录。App 后端继续用自己的服务身份调系统服务，不转发客户会话（§3.4）。
 
 ## 6. 会话与撤销矩阵（D-5、Q-03、Q-04）
 
@@ -200,6 +228,8 @@ kRPC 失败响应增加可选字段（buckyos-base kRPC）：
 | 首设密码 | 当前终端保留；其它免密终端 ≤15 分钟 | 其它免密 family 拒绝 | 同左 | 同左 |
 | 专属邀请撤销 | ≤15 分钟 | 该来源 family 拒绝 `source_revoked` | 拒绝 | 同左 |
 | 专属邀请自然到期 | 不影响 | 不影响 | 不影响 | — |
+| App 代登录关闭 / App 停用、卸载（§5.6） | ≤15 分钟 | 该 App 签入的 family 拒绝 `source_revoked` | 拒绝 | 同左 |
+| App 登录码到期 / 已兑换 | 不影响已签会话 | 不影响 | 新兑换拒绝 | — |
 | logout / 单设备撤销 | ≤15 分钟 | 拒绝 | 未消费 callback 失效 | 同左 |
 | DID 联合会话满 30 天 | ≤15 分钟 | 拒绝，须重新联合 | 拒绝 | 同左 |
 | canonical logout / 改密 | 不传播（已知风险） | 不受影响 | 不受影响 | — |
@@ -221,7 +251,7 @@ CREATE TABLE IF NOT EXISTS families (
   target TEXT NOT NULL,             -- AuthTarget canonical key
   session_id TEXT NOT NULL,
   claims TEXT NOT NULL,             -- JSON: external / restricted / scopes / auth_method
-  source TEXT,                      -- JSON SessionSource，可空
+  source TEXT,                      -- JSON SessionSource，可空：exclusive_invite / did_federation / app_login（§5.6）
   parent_key TEXT,                  -- 受限 delegate 的父 family
   absolute_exp INTEGER,             -- 联合会话 created_at+30d；本地会话为空
   created_at INTEGER NOT NULL,
@@ -360,7 +390,9 @@ CREATE TABLE IF NOT EXISTS share_entries (
 | 记录 | owner | 键 | 唯一性 / CAS | 期限与删除 |
 | --- | --- | --- | --- | --- |
 | 账号 | CP（system-config） | `users/<id>/{settings,doc,profile}` | Create 防重名；身份字段只经 CP | 删除=state deleted，保留 |
-| 专属邀请 | CP | `services/control_panel/exclusive_invites/<invite_id>` | exec_tx 主键版本 | 撤销后保留记录 |
+| 专属邀请 / App 登录码 | CP | `services/control_panel/exclusive_invites/<invite_id>` | exec_tx 主键版本 | 撤销后保留记录；App 登录码 10 分钟后只剩审计价值 |
+| App 代登录开关 | CP | `services/control_panel/app_login/<app_instance_id>` | exec_tx 主键版本 | 卸载不自动删除；读为缺省关 |
+| App 外部账号绑定 | CP | `services/control_panel/app_identities/<app_instance_id>/<digest>` | Create 防重；更新 CAS | 保留；账号删除后 `issue` 拒绝 |
 | Zone SSO 设置 | CP | `system/sso/settings` | 覆盖写 | — |
 | federation consent | CP（canonical 侧） | `users/<id>/federation_consents` | 覆盖写 | 用户撤回即删 |
 | session family | verify-hub | `data/var/verify-hub/sessions.db` | 行级 CAS | refresh 到期 / 绝对期限 / 撤销即删 |
@@ -380,3 +412,6 @@ CREATE TABLE IF NOT EXISTS share_entries (
 - 账号停用、来源撤销、logout 后旧 access 最长残留 15 分钟（D-5）。
 - verify-hub 单实例，迁移或恢复后全部重新登录（D-6）。
 - 登录 nonce 防重放缓存在内存，重启后丢失。
+- App 登录码的“已兑换”标记在 verify-hub 内存与 CP 记录各一份：verify-hub 重启后，同 nonce 的幂等重试会得到 `consumed`（需重新领 code），不会重复签发。
+- `allowed_clients` 不能区分系统 SPA：Message Hub、Desktop、AI Workspace 的 `appid` 都是 `control-panel`（扩展 TODO D-4）。
+- External（DID 登录）仍不能 delegate 进 App；外部客户进 App 只能经 App 代登录（§5.6）。

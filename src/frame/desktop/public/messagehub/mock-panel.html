@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Sample group panel</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { margin: 0; padding: 16px; background: #f6f7f9; color: #1f2937; }
+  @media (prefers-color-scheme: dark) { body { background: #111827; color: #e5e7eb; } }
+  h1 { font-size: 15px; margin: 0 0 12px; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; font-size: 13px; }
+  dt { color: #6b7280; }
+  dd { margin: 0; word-break: break-all; }
+</style>
+</head>
+<body>
+<h1>Sample ticket panel</h1>
+<p style="font-size:13px">This page is served by the Message Hub dev server as a stand-in for an App panel. It only reads its own query string.</p>
+<dl id="context"></dl>
+<script>
+  const params = new URLSearchParams(location.search)
+  const list = document.getElementById('context')
+  for (const key of ['group_did', 'session_id', 'session', 'locale']) {
+    const dt = document.createElement('dt'); dt.textContent = key
+    const dd = document.createElement('dd'); dd.textContent = params.get(key) ?? '(absent)'; dd.dataset.key = key
+    list.append(dt, dd)
+  }
+</script>
+</body>
+</html>

@@ -27,8 +27,12 @@ import { loadGuestApi, type GuestApi } from './api'
 import { GuestHub, type GuestSnapshot } from './hub'
 import { guestEntryPath, guestPagePath, isGroupDid, type GuestSession } from './model'
 import { useGuestText, type GuestText } from './text'
+import { isMessageHubMock } from '../store'
+import { GroupExtensionPanels } from '../extensions/GroupExtensionPanels'
+import { GroupDisplaySection } from '../extensions/GroupDisplaySection'
+import { mockPanelOrigins } from '../extensions/model'
 
-const LOADING: GuestSnapshot = { step: { kind: 'loading' }, identity: null, groupName: '', reader: InMemoryConversationMessageReader.empty(), historyLoaded: false, members: [], offline: false }
+const LOADING: GuestSnapshot = { step: { kind: 'loading' }, identity: null, groupName: '', hostDid: '', reader: InMemoryConversationMessageReader.empty(), historyLoaded: false, members: [], offline: false }
 const noSubscribe = () => () => {}
 const loadingSnapshot = () => LOADING
 
@@ -217,9 +221,16 @@ function GuestHeader({ groupName, session, identity, api, groupDid, offline, mem
 
 /** The open Session: its timeline from the host group store and a text-only composer (no uploads in v1). */
 function GuestConversation({ hub, snapshot, session }: { hub: GuestHub; snapshot: GuestSnapshot; session: GuestSession }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const text = useGuestText()
   const isDesktop = useMediaQuery('(min-width: 769px)')
+  // The Session's panels and display, as any member sees them (EXT-02/04); the guest page passes no viewer identity either.
+  const extensions = (session.panels.length > 0 || !!session.display.announcement || session.display.links.length > 0 || session.display.files.length > 0 || session.display.featuredMembers.length > 0) && snapshot.hostDid
+    ? <div className="space-y-3" data-testid="guest-extensions">
+      <GroupDisplaySection display={session.display} nameOf={hub.nameOf} testId="session-display" />
+      <GroupExtensionPanels panels={session.panels} context={{ groupDid: hub.groupDid, sessionId: session.sessionId, session: session.address, locale }} hostDid={snapshot.hostDid} allowOrigins={isMessageHubMock() ? mockPanelOrigins() : undefined} defaultOpen />
+    </div>
+    : null
   const historyRef = useRef<ConversationHistoryPaneHandle>(null)
   const { reader, members } = snapshot
   const selfDid = hub.selfDid
@@ -260,7 +271,9 @@ function GuestConversation({ hub, snapshot, session }: { hub: GuestHub; snapshot
   }, [hub, canSend, answerState, selfDid])
   return <WindowDialogProvider surface={isDesktop ? 'desktop' : 'mobile'} permissions={{ fullscreen: false }}>
     <MessageMediaHost>
+      <div className="flex min-h-0 flex-1">
       <div className="relative flex min-h-0 flex-1 flex-col" style={{ background: 'var(--cp-message-canvas)' }} data-testid="guest-conversation">
+        {extensions && !isDesktop ? <div className="shrink-0 border-b border-[color:var(--cp-border)] bg-[color:var(--cp-surface)] px-3 py-2 text-sm">{extensions}</div> : null}
         <div className="relative flex min-h-0 flex-1 flex-col">
           <ConversationMediaScopeContext.Provider value={mediaScope}>
             <ConversationMessageActionsContext.Provider value={actions}>
@@ -277,6 +290,8 @@ function GuestConversation({ hub, snapshot, session }: { hub: GuestHub; snapshot
           mentionCandidates={mentionCandidates}
           allowFiles={false}
         /> : <div className="flex shrink-0 items-center justify-center gap-2 border-t border-[color:var(--cp-border)] bg-[color:var(--cp-surface)] px-4 py-3 text-[13px] text-[color:var(--cp-muted)]" data-testid="composer-readonly"><Lock size={14} className="shrink-0" aria-hidden /><span>{text('archived')}</span></div>}
+      </div>
+      {extensions && isDesktop ? <aside className="shell-scrollbar w-[320px] shrink-0 overflow-y-auto border-l border-[color:var(--cp-border)] bg-[color:var(--cp-surface)] p-4 text-sm" data-testid="guest-side-panel">{extensions}</aside> : null}
       </div>
     </MessageMediaHost>
   </WindowDialogProvider>

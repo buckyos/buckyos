@@ -370,7 +370,7 @@ App access token 是旧 Session Only 设计保留的扩展任务，不是专属�
 
 ### SSO-10 / Session Only 扩展：App access token 接入
 
-按 S-1 移出本批：本节保留为后续任务，不计入本批完成门槛。
+按 S-1 移出本批：本节保留为后续任务，不计入本批完成门槛。**2026-10-24 移入 [self-host-group-extension-todo](self-host-group-extension-todo.md) EXT-09 并已实施**（D-7 推荐方案：CP 签发一次性 code、verify-hub `login_by_app_access_token` CP-only、CP 公开 `auth.app_login.exchange`）；下列条目的验收由该 TODO §7 承接。
 
 - [ ] 按旧设计提供 `login_by_app_access_token`：登记身份域、公钥或受信服务端校验方式、获准 AppInstance/owner、允许 target 和范围；先选定验证契约，不能让 token 自报任意校验 URL。（10-22 未完成：S-1 后排）
 - [ ] 校验真实性、用途、接收方、期限、稳定外部账号和绑定状态；App service token 不能换客户会话，App 不能指定任意普通用户/管理员 DID。凭据定位字段只能作查找线索。（10-22 未完成：S-1 后排）

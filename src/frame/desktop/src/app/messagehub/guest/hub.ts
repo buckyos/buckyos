@@ -49,6 +49,8 @@ export interface GuestSnapshot {
   step: GuestStep
   identity: CurrentIdentity | null
   groupName: string
+  /** The group's host Zone (empty until read); panels are trusted against it. */
+  hostDid: string
   reader: ConversationMessageReader
   /** The Session timeline has been read once. */
   historyLoaded: boolean
@@ -105,7 +107,7 @@ export class GuestHub {
     this.groupDid = groupDid
     this.sessionId = sessionId
     this.youLabel = youLabel
-    this.snapshot = { step: { kind: 'loading' }, identity: null, groupName: '', reader: InMemoryConversationMessageReader.empty(), historyLoaded: false, members: [], offline: false }
+    this.snapshot = { step: { kind: 'loading' }, identity: null, groupName: '', hostDid: '', reader: InMemoryConversationMessageReader.empty(), historyLoaded: false, members: [], offline: false }
   }
 
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
@@ -137,6 +139,7 @@ export class GuestHub {
       setObjectViewer(identityKey(identity))
       this.publish({ identity })
       void this.api.groupName(this.groupDid).then(groupName => { if (!this.stopped) this.publish({ groupName }) }, () => undefined)
+      void this.api.groupHost(this.groupDid).then(hostDid => { if (!this.stopped) this.publish({ hostDid }) }, () => undefined)
       if (this.sessionId) await this.openSession()
       else await this.openLobby()
     } catch {

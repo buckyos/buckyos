@@ -79,7 +79,7 @@ export function parseGroupInvitation(message: MessageObject): GroupInvitation | 
   return parseGroupNotice(message)?.invitation ?? null
 }
 
-const knownGroupErrors = new Set(['agent-group-disabled', 'capability-denied', 'member-already-participating', 'member-must-be-single-entity', 'member-limit', 'owner-must-transfer-first', 'owner-required', 'controller-required', 'role-not-allowed', 'invite-expired', 'invite-already-expired', 'invitation-mismatch', 'transfer-mismatch', 'owner-transfer-pending', 'agent-owner-required', 'invite-required', 'join-not-allowed', 'member-not-pending', 'use-transfer-owner', 'cannot-moderate-owner', 'revision-conflict', 'invalid-invite-link', 'guests-not-allowed', 'guest-limit', 'not-a-session-guest', 'session-archived', 'post-not-allowed', 'not-found', 'blocked', 'rate-limited', 'invalid-group-name', 'session-limit'])
+const knownGroupErrors = new Set(['agent-group-disabled', 'capability-denied', 'member-already-participating', 'member-must-be-single-entity', 'member-limit', 'owner-must-transfer-first', 'owner-required', 'controller-required', 'role-not-allowed', 'invite-expired', 'invite-already-expired', 'invitation-mismatch', 'transfer-mismatch', 'owner-transfer-pending', 'agent-owner-required', 'invite-required', 'join-not-allowed', 'member-not-pending', 'use-transfer-owner', 'cannot-moderate-owner', 'revision-conflict', 'invalid-invite-link', 'guests-not-allowed', 'guest-limit', 'not-a-session-guest', 'session-archived', 'post-not-allowed', 'not-found', 'blocked', 'rate-limited', 'invalid-group-name', 'session-limit', 'hook-denied', 'hook-unavailable'])
 
 /** The Agent has not been allowed to join group chats (its Users and Agents setting). */
 export function isAgentGroupDisabled(error: unknown): boolean {

@@ -24,7 +24,14 @@ import { mockObjectAccess } from './objects'
 
 export const MOCK_GUEST_HOST_STORAGE_KEY = 'buckyos.mock.messagehub.guest.v1'
 export const MOCK_SUPPORT_GROUP = 'did:buckyos:group:acme-support'
+const MOCK_SUPPORT_HOST = 'did:web:acme.example'
 const STAFF = 'did:bns:bob'
+/** Panels of the ticket Sessions: the dev server's sample page (trusted through `MOCK_PANEL_ORIGINS`) and a foreign one the page must refuse. */
+const PANELS = [
+  { id: 'orders', title: 'Order status', entryUrl: `${typeof window !== 'undefined' ? window.location.origin : 'http://localhost'}/messagehub/mock-panel.html` },
+  { id: 'foreign', title: 'Foreign widget', entryUrl: 'https://widgets.example.net/acme' },
+]
+const DISPLAY = { announcement: 'Support hours: 9:00–17:00 (Mon–Fri).', links: [{ title: 'Return policy', url: 'https://acme.example/returns' }], files: [], featuredMembers: [STAFF] }
 
 type Participation = 'invited' | 'included' | 'removed'
 
@@ -145,6 +152,10 @@ const api: GuestApi = {
     requireGroup(groupDid)
     return 'Acme Support'
   },
+  async groupHost(groupDid) {
+    requireGroup(groupDid)
+    return MOCK_SUPPORT_HOST
+  },
   async entry(groupDid) {
     requireGroup(groupDid)
     return loadHost().entry ? { guest: false, password: true, self_register: true, did_login: true } : null
@@ -157,7 +168,7 @@ const api: GuestApi = {
     const mine = Object.entries(host.participants).filter(([, people]) => people[did] === 'included')
     if (Object.values(host.participants).some(people => people[did] === 'removed') && mine.length === 0) throw denied('group.list_sessions')
     if (mine.length === 0) throw new RPCError('not-found')
-    return mine.map(([sessionId]) => ({ sessionId, address: groupSessionKey(groupDid, sessionId), title: host.titles[sessionId] ?? '', lifecycle: host.lifecycle[sessionId] ?? 'active' }))
+    return mine.map(([sessionId]) => ({ sessionId, address: groupSessionKey(groupDid, sessionId), title: host.titles[sessionId] ?? '', lifecycle: host.lifecycle[sessionId] ?? 'active', panels: sessionId.startsWith('g-') ? [] : PANELS, display: DISPLAY }))
   },
   async invited(groupDid, sessionId) {
     requireGroup(groupDid)

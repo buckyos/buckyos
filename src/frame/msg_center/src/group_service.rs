@@ -73,6 +73,15 @@ impl MessageCenter {
             .ok_or_else(|| denied("authentication-required"))?;
         let did = match caller.user_did {
             Some(d) => d,
+            // An App's own service session acts as its owner in groups (the token subject),
+            // with the App as the client that `allowed_clients` judges (EXT-09: the App
+            // pre-invites the customers it signs in).
+            None if caller.principal_kind == TokenPrincipalKind::App => self
+                .token_verifier
+                .get()
+                .resolve_user_did(&caller.user_id)
+                .await
+                .map_err(|error| denied(format!("cannot resolve app owner identity: {error}")))?,
             None => {
                 let config = self.cyfs_dispatch.read().unwrap().clone();
                 config
@@ -359,7 +368,9 @@ impl MessageCenter {
             "group.get_config" => {
                 let g = self.groups.load(&group).await?.ok_or_else(missing)?;
                 g.require_cap(&actor, "session.read", None)?;
-                return Ok(g.configuration);
+                let mut configuration = g.configuration;
+                redact_hook_secrets(&mut configuration);
+                return Ok(configuration);
             }
             "group.list_sessions" => return self.group_sessions(&actor, &group).await,
             "group.list_session_members" => {
@@ -410,6 +421,15 @@ impl MessageCenter {
                                         .is_some_and(|s| g.sessions[s].lifecycle != "active")) =>
                         {
                             Err(denied("session-archived"))
+                        }
+                        Ok(())
+                            if action == "session.post"
+                                && g.rules(s.as_deref())?
+                                    .hooks
+                                    .iter()
+                                    .any(|h| h.point == "post" && h.may_grant) =>
+                        {
+                            return Ok(json!({"allowed":"hook_dependent","reason":null}));
                         }
                         Ok(())
                             if action == "session.post"
@@ -771,10 +791,11 @@ impl MessageCenter {
         if let Some(profile) = p.get("profile") {
             config["profile"] = profile.clone();
         }
+        let hook_secrets = Self::fill_configuration_hook_secrets(&mut config);
         let mut c: GroupConfiguration =
             serde_json::from_value(config).map_err(|e| invalid(e.to_string()))?;
         c.revision = revision();
-        c.validate()?;
+        c.validate(&host)?;
         // Persist the fully populated form: a later partial patch of a map
         // such as `roles` must not wipe the defaults of the other keys.
         let config = encoded(&c)?;
@@ -852,7 +873,9 @@ impl MessageCenter {
         for i in optional::<Vec<Value>>(&p, "invitations")?.unwrap_or_default() {
             self.invite_group_member(&mut tx, a, &i).await?;
         }
-        let result = json!({"group_did":did,"revision":c.revision});
+        tx.state.validate_config_refs(&c)?;
+        let mut result = json!({"group_did":did,"revision":c.revision});
+        Self::attach_hook_secrets(&mut result, hook_secrets);
         let sql=self.groups.db.render_sql("INSERT INTO group_create_operations(actor,operation_key,request_json,result_json) VALUES(?,?,?,?)");
         sqlx::query(&sql)
             .bind(a.did.to_string())
@@ -869,6 +892,43 @@ impl MessageCenter {
         );
         self.register_local_recipients([did]);
         Ok(result)
+    }
+
+    /// Generate the missing hook secrets of a whole configuration; the result
+    /// goes back to the writer once (`scope` is `default_session` or
+    /// `template:<id>`).
+    fn fill_configuration_hook_secrets(config: &mut Value) -> Vec<Value> {
+        let mut out = vec![];
+        if let Some(rules) = config.get_mut("default_session") {
+            for (i, secret) in fill_hook_secrets(rules) {
+                out.push(json!({"scope":"default_session","index":i,"secret":secret}));
+            }
+        }
+        if let Some(templates) = config
+            .get_mut("session_templates")
+            .and_then(Value::as_object_mut)
+        {
+            for (id, t) in templates.iter_mut() {
+                if let Some(rules) = t.get_mut("rules") {
+                    for (i, secret) in fill_hook_secrets(rules) {
+                        out.push(json!({"scope":format!("template:{id}"),"index":i,"secret":secret}));
+                    }
+                }
+            }
+        }
+        out
+    }
+    /// `hook_secrets` appears in a write result only when this write generated some.
+    fn attach_hook_secrets(result: &mut Value, hook_secrets: Vec<Value>) {
+        if !hook_secrets.is_empty() {
+            result["hook_secrets"] = json!(hook_secrets);
+        }
+    }
+    fn session_hook_secrets(sid: &str, overrides: &mut Value) -> Vec<Value> {
+        fill_hook_secrets(overrides)
+            .into_iter()
+            .map(|(i, secret)| json!({"scope":format!("session:{sid}"),"index":i,"secret":secret}))
+            .collect()
     }
 
     async fn run_group_hooks(
@@ -906,31 +966,25 @@ impl MessageCenter {
             {
                 continue;
             }
-            let configured = self
-                .cyfs_dispatch
-                .read()
-                .unwrap()
-                .group_hook_authorization
-                .clone();
-            let token = match get_buckyos_api_runtime() {
-                Ok(r) => Some(r.session_token.read().await.clone()).filter(|s| !s.is_empty()),
-                Err(_) => None,
-            }
-            .map(|s| format!("Bearer {s}"))
-            .or(configured);
-            let client = reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .map_err(db_error)?;
-            let mut call=client.post(&h.service).json(&json!({"operation":point,"actor":a.did,"group_did":g.group_did,"session_id":s,"msg":msg}));
-            if let Some(t) = token {
-                call = call.header("authorization", t);
-            } else {
+            if h.secret.is_empty() {
                 if h.on_unavailable == "deny" {
                     return Err(kRPC::RPCErrors::ReasonError("hook-unavailable".into()));
                 }
                 continue;
             }
+            let client = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .map_err(db_error)?;
+            let body = json!({"operation":point,"actor":a.did,"group_did":g.group_did,"group_host":g.host,"session_id":s,"msg":msg}).to_string();
+            let timestamp = Self::now_ms() / 1000;
+            let signature = buckyos_api::group_hook_signature(&h.secret, timestamp, body.as_bytes());
+            let call = client
+                .post(&h.service)
+                .header("content-type", "application/json")
+                .header(buckyos_api::GROUP_HOOK_TIMESTAMP_HEADER, timestamp.to_string())
+                .header(buckyos_api::GROUP_HOOK_SIGNATURE_HEADER, signature)
+                .body(body);
             let result = tokio::time::timeout(
                 std::time::Duration::from_millis(h.timeout_ms as u64),
                 async {
@@ -1208,15 +1262,17 @@ impl MessageCenter {
             .transpose()?
             .unwrap_or_default();
         let membership = optional(p, "membership")?.unwrap_or(t.membership);
-        let overrides = p.get("rule_overrides").cloned().unwrap_or(json!({}));
+        let mut overrides = p.get("rule_overrides").cloned().unwrap_or(json!({}));
         if !overrides.is_object() {
             return Err(invalid("rule-overrides-must-be-object"));
         }
+        let hook_secrets = Self::session_hook_secrets(&sid, &mut overrides);
         let mut rules = encoded(t.rules)?;
         merge(&mut rules, &overrides);
         let rules: SessionRules =
             serde_json::from_value(rules).map_err(|e| invalid(e.to_string()))?;
-        validate_rules(&membership, &rules, false)?;
+        validate_rules(&membership, &rules, false, &c.extensions.panels)?;
+        tx.state.validate_display_members(&rules.display)?;
         let rev = revision();
         let address = session_key(&tx.state.group_did, Some(&sid))?;
         let mut shared = json!({"schema_version":1,"session":{"authority_did":tx.state.group_did,"session_key":address},"revision":revision(),"updated_at_ms":Self::now_ms(),"extensions":{}});
@@ -1267,9 +1323,10 @@ impl MessageCenter {
             .insert(sid.clone(), tx.state.sessions[&sid].shared_state.clone());
         self.group_event(tx, a, Some(&sid), "session.created", None, json!([]))
             .await?;
-        Ok(
-            json!({"group_did":tx.state.group_did,"session_id":sid,"session":address,"revision":rev}),
-        )
+        let mut result =
+            json!({"group_did":tx.state.group_did,"session_id":sid,"session":address,"revision":rev});
+        Self::attach_hook_secrets(&mut result, hook_secrets);
+        Ok(result)
     }
     fn include_session_member(g: &mut GroupState, a: &GroupActor, s: &str, d: &DID) -> Result<()> {
         let m = g
@@ -1696,6 +1753,23 @@ impl MessageCenter {
         )
         .await
     }
+    /// A configuration edit that changes no rule semantics (hook secret
+    /// rotation): new revision, history entry and an empty change event.
+    async fn bump_config_revision(
+        &self,
+        tx: &mut GroupTransaction<'_>,
+        a: &GroupActor,
+    ) -> Result<String> {
+        let rev = revision();
+        tx.state.configuration["revision"] = json!(rev);
+        tx.state.doc_updated_at_ms = tx.state.doc_updated_at_ms.max(Self::now_ms());
+        tx.state
+            .config_history
+            .insert(rev.clone(), tx.state.configuration.clone());
+        self.group_event(tx, a, None, "entity.config_changed", None, json!([]))
+            .await?;
+        Ok(rev)
+    }
     async fn mutate_group(
         &self,
         tx: &mut GroupTransaction<'_>,
@@ -1719,12 +1793,15 @@ impl MessageCenter {
                 }
                 let before = tx.state.configuration.clone();
                 merge(&mut tx.state.configuration, &patch);
+                let hook_secrets =
+                    Self::fill_configuration_hook_secrets(&mut tx.state.configuration);
                 if before == tx.state.configuration {
                     return Ok(json!({"revision":old.revision}));
                 }
                 let mut c = tx.state.config()?;
                 c.revision = revision();
-                c.validate()?;
+                c.validate(&tx.state.host)?;
+                tx.state.validate_config_refs(&c)?;
                 for r in tx
                     .state
                     .sessions
@@ -1732,7 +1809,8 @@ impl MessageCenter {
                     .filter(|r| r.lifecycle != "deleted")
                 {
                     let rules = tx.state.rules(Some(&r.session_id))?;
-                    validate_rules(&r.membership, &rules, false)?;
+                    validate_rules(&r.membership, &rules, false, &c.extensions.panels)?;
+                    tx.state.validate_display_members(&rules.display)?;
                 }
                 if tx
                     .state
@@ -1756,10 +1834,65 @@ impl MessageCenter {
                 tx.state
                     .config_history
                     .insert(c.revision.clone(), tx.state.configuration.clone());
-                let changes: Vec<_> = tx.state.configuration.as_object().unwrap().iter().filter(|(k, v)| before.get(*k) != Some(*v)).map(|(k, v)| json!({"field":k,"before":before.get(k).map(|v|json!({"present":true,"value":v})).unwrap_or(json!({"present":false})),"after":{"present":true,"value":v}})).collect();
-                self.group_event(tx, a, None, "entity.config_changed", None, json!(changes))
+                let mut changes = json!(tx.state.configuration.as_object().unwrap().iter().filter(|(k, v)| before.get(*k) != Some(*v)).map(|(k, v)| json!({"field":k,"before":before.get(k).map(|v|json!({"present":true,"value":v})).unwrap_or(json!({"present":false})),"after":{"present":true,"value":v}})).collect::<Vec<_>>());
+                redact_hook_secrets(&mut changes);
+                self.group_event(tx, a, None, "entity.config_changed", None, changes)
                     .await?;
-                Ok(json!({"revision":c.revision}))
+                let mut result = json!({"revision":c.revision});
+                Self::attach_hook_secrets(&mut result, hook_secrets);
+                Ok(result)
+            }
+            "group.rotate_hook_secret" => {
+                let index: usize = field(p, "index")?;
+                let secret = buckyos_api::random_secret(buckyos_api::GROUP_HOOK_SECRET_BYTES);
+                let hook_at = |rules: &mut Value| -> Result<()> {
+                    let h = rules
+                        .get_mut("hooks")
+                        .and_then(Value::as_array_mut)
+                        .and_then(|hooks| hooks.get_mut(index))
+                        .filter(|h| h.is_object())
+                        .ok_or_else(|| invalid("unknown-hook"))?;
+                    h[HOOK_SECRET_FIELD] = json!(secret);
+                    Ok(())
+                };
+                let revision_out = match s.as_deref() {
+                    None => {
+                        tx.state.require_cap(a, "group.update_config", None)?;
+                        hook_at(&mut tx.state.configuration["default_session"])?;
+                        self.bump_config_revision(tx, a).await?
+                    }
+                    Some(sid) => {
+                        let r = tx
+                            .state
+                            .sessions
+                            .get(sid)
+                            .filter(|r| r.lifecycle != "deleted")
+                            .ok_or_else(missing)?;
+                        if r.rule_overrides.get("hooks").is_some() {
+                            tx.state.require_cap(a, "session.manage", Some(sid))?;
+                            let r = tx.state.sessions.get_mut(sid).unwrap();
+                            hook_at(&mut r.rule_overrides)?;
+                            r.revision = revision();
+                            let rev = r.revision.clone();
+                            self.group_event(tx, a, Some(sid), "session.rules_changed", None, json!([]))
+                                .await?;
+                            rev
+                        } else {
+                            let template = r.template.clone().ok_or_else(|| invalid("unknown-hook"))?;
+                            tx.state.require_cap(a, "group.update_config", None)?;
+                            let rules = tx
+                                .state
+                                .configuration
+                                .get_mut("session_templates")
+                                .and_then(|t| t.get_mut(&template))
+                                .and_then(|t| t.get_mut("rules"))
+                                .ok_or_else(|| invalid("unknown-hook"))?;
+                            hook_at(rules)?;
+                            self.bump_config_revision(tx, a).await?
+                        }
+                    }
+                };
+                Ok(json!({"revision":revision_out,"secret":secret}))
             }
             "group.archive" | "group.delete" => {
                 if tx.state.owner != a.did {
@@ -2180,22 +2313,28 @@ impl MessageCenter {
                         Some(serde_json::from_value(t.clone()).map_err(db_error)?)
                     };
                 }
+                let mut hook_secrets = vec![];
                 if let Some(patch) = p.get("rule_overrides") {
                     if !patch.is_object() {
                         return Err(invalid("invalid-rule-overrides"));
                     }
                     merge(&mut r.rule_overrides, patch);
+                    hook_secrets = Self::session_hook_secrets(sid, &mut r.rule_overrides);
                 }
                 r.revision = revision();
                 let rev = r.revision.clone();
                 let rules = tx.state.rules(Some(sid))?;
-                validate_rules(&tx.state.sessions[sid].membership, &rules, false)?;
+                let c = tx.state.config()?;
+                validate_rules(&tx.state.sessions[sid].membership, &rules, false, &c.extensions.panels)?;
+                tx.state.validate_display_members(&rules.display)?;
                 for d in optional::<Vec<DID>>(p, "add_members")?.unwrap_or_default() {
                     Self::include_session_member(&mut tx.state, a, sid, &d)?;
                 }
                 self.group_event(tx, a, Some(sid), "session.rules_changed", None, json!([]))
                     .await?;
-                Ok(json!({"revision":rev}))
+                let mut result = json!({"revision":rev});
+                Self::attach_hook_secrets(&mut result, hook_secrets);
+                Ok(result)
             }
             "group.archive_session" | "group.delete_session" => {
                 let sid = s
@@ -2717,6 +2856,11 @@ impl MessageCenter {
                 continue;
             }
             let rule = g.rules(sid)?;
+            let c = g.config()?;
+            let panels = GroupState::session_panels(&c, sid, &rule);
+            let display = rule.display.over(&c.display);
+            let mut rule = encoded(&rule)?;
+            redact_hook_secrets(&mut rule);
             let audience = g.audience(sid);
             let has_guests = g.participants.get(sid.unwrap_or("")).is_some_and(|p| {
                 p.values().any(|r| {
@@ -2728,7 +2872,7 @@ impl MessageCenter {
                 .get(sid.unwrap_or(""))
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            let mut item = json!({"session_id":sid,"session":session_key(group,sid)?,"state_ref":{"authority_did":group,"session_key":session_key(group,sid)?},"shared_state":shared,"has_guests":has_guests,"owner_can_read":true,"rules":rule,"lifecycle":sid.map(|s|g.sessions[s].lifecycle.as_str()).unwrap_or(&g.lifecycle),"revision":sid.map(|s|g.sessions[s].revision.clone()).unwrap_or(g.config()?.revision)});
+            let mut item = json!({"session_id":sid,"session":session_key(group,sid)?,"state_ref":{"authority_did":group,"session_key":session_key(group,sid)?},"shared_state":shared,"has_guests":has_guests,"owner_can_read":true,"rules":rule,"panels":panels,"display":display,"lifecycle":sid.map(|s|g.sessions[s].lifecycle.as_str()).unwrap_or(&g.lifecycle),"revision":sid.map(|s|g.sessions[s].revision.clone()).unwrap_or(g.config()?.revision)});
             if g.role(&a.did).is_some() {
                 item["participant_count"] = json!(audience.len());
             }

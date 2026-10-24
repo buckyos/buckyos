@@ -1851,6 +1851,7 @@ fn internal_principal(owner: &str) -> RpcAuthPrincipal {
         owner_did: String::new(),
         is_user_session: false,
         is_control_panel_session: true,
+        principal_kind: buckyos_api::TokenPrincipalKind::System,
         agent_permission_mode: None,
         session: crate::PrincipalSession::default(),
     }

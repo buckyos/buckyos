@@ -27,6 +27,7 @@ import { editsOf, effectiveContent, messageObjId, threadMessagesOf } from '../co
 import { isValidMsgSessionId, messageVoice, notifySessionCategory, randomMsgNonce, type MessageObject, type MsgObject, type RefItem } from '../protocol/msgobj'
 import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, memberStateSchema, pinnedMessageSchema, presentationSchema, selectDefaultSession, sessionKey, sessionTitle, sharedStateSchema, sortSessions, viewerSessionKey } from '../sessionModel'
 import { ensureDefaultSession } from '../store/defaultSession'
+import { sessionExtensions } from '../extensions/model'
 import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupCapabilities, type GroupInfo, type GroupInvitation, type GroupInvitationView, type GroupSessionInfo, type GroupSessionParticipants, type MessageHubContext, type PinnedMessage, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
 import type { ConnectionChoice, ManageAction, MessageHubStore, OutgoingPayload, OutgoingUpload, OwnerStatus, SyncStatus } from '../store/types'
 import { canStage, pendingBubble, pendingBubbleId } from '../store/outgoing'
@@ -53,6 +54,8 @@ interface GroupSummaryEntry {
   name: string
   description: string
   ownerDid: string
+  /** The group Doc's `host`: the Zone whose Apps may serve its panels (D-2). */
+  hostDid: string
   lifecycle: GroupInfo['lifecycle']
   /** false: joined on a remote host, which this zone only syncs. */
   hosted: boolean
@@ -138,7 +141,7 @@ function isUuid(value: string): boolean {
 
 function groupEntry(doc: GroupDoc, hosted: boolean): GroupSummaryEntry {
   const text = (value: unknown) => typeof value === 'string' ? value.trim() : ''
-  return { name: text(doc.profile?.name), description: text(doc.profile?.description), ownerDid: doc.owner, lifecycle: doc.lifecycle ?? 'active', hosted }
+  return { name: text(doc.profile?.name), description: text(doc.profile?.description), ownerDid: doc.owner, hostDid: typeof doc.host === 'string' ? doc.host : '', lifecycle: doc.lifecycle ?? 'active', hosted }
 }
 
 function docOf(value: GroupDocEnvelope | GroupDoc | null | undefined): GroupDoc | null {
@@ -149,6 +152,11 @@ function docOf(value: GroupDocEnvelope | GroupDoc | null | undefined): GroupDoc 
 /** A rejection the host gives for a group operation, as a reason code the UI translates. */
 function groupFailure(error: unknown): Error {
   return new Error(groupErrorReason(error))
+}
+
+/** The host's post Hook refused the message or could not be reached (`run_group_hooks`). */
+function isHookRejection(reason: string | undefined): reason is string {
+  return reason === 'hook-denied' || reason === 'hook-unavailable'
 }
 
 function readOnlyGroupReason(reason: string | undefined): string {
@@ -824,7 +832,8 @@ export class MessageHubApiStore implements MessageHubStore {
     data.postAccess.set(sessionId, 'pending')
     try {
       const result = await checkGroupAccess(groupDid, 'session.post', groupSessionId(groupDid, sessionId))
-      data.postAccess.set(sessionId, { allowed: result.allowed, reason: result.reason ?? undefined })
+      // `hook_dependent`: the Session's post Hook decides per message, so the composer stays open.
+      data.postAccess.set(sessionId, { allowed: result.allowed === true || result.allowed === 'hook_dependent', reason: result.reason ?? undefined })
     } catch (error) {
       data.postAccess.set(sessionId, { allowed: false, reason: groupErrorReason(error) })
     }
@@ -1169,8 +1178,15 @@ export class MessageHubApiStore implements MessageHubStore {
       throw new Error(`result_unknown: ${error instanceof Error ? error.message : String(error)}`)
     }
     if (!result.ok) {
-      data.histories.set(key, removeMessage(data.histories.get(key) ?? emptyHistory, optimisticId))
       this.pendingSendKeys.delete(pendingKey)
+      if (isHookRejection(result.reason)) {
+        // A business Hook refused the message (EXT-06): the bubble stays, marked
+        // with the refusal, instead of the text bouncing back into the composer.
+        data.histories.set(key, upsertMessages(data.histories.get(key) ?? emptyHistory, [{ ...optimistic, ui_delivery_status: 'failed', ui_delivery_reason: result.reason }]))
+        this.notify()
+        return
+      }
+      data.histories.set(key, removeMessage(data.histories.get(key) ?? emptyHistory, optimisticId))
       this.notify()
       throw new Error(`rejected: ${result.reason ?? 'unknown'}`)
     }
@@ -1255,7 +1271,7 @@ export class MessageHubApiStore implements MessageHubStore {
     for (const joined of result.joined ?? []) {
       if (joined.stopped) continue
       const doc = docOf(joined.doc_cache)
-      groups[joined.group_did] = doc ? groupEntry(doc, false) : { name: '', description: '', ownerDid: '', lifecycle: 'active', hosted: false }
+      groups[joined.group_did] = doc ? groupEntry(doc, false) : { name: '', description: '', ownerDid: '', hostDid: '', lifecycle: 'active', hosted: false }
     }
     for (const item of result.items ?? []) if (item.doc?.id) groups[item.doc.id] = groupEntry(item.doc, true)
     return groups
@@ -1305,11 +1321,11 @@ export class MessageHubApiStore implements MessageHubStore {
     }
     this.invalidatePostAccess(data, groupDid)
     if (summary && !summary.hosted) {
-      data.groupInfo.set(groupDid, { status: 'ready', value: { did: groupDid, name: summary.name, description: summary.description, ownerDid: summary.ownerDid, hosted: false, lifecycle: summary.lifecycle, revision: '', members: null, sessions: [], can: noGroupCapabilities, messageRules: {} } })
+      data.groupInfo.set(groupDid, { status: 'ready', value: { did: groupDid, name: summary.name, description: summary.description, ownerDid: summary.ownerDid, hostDid: summary.hostDid, hosted: false, lifecycle: summary.lifecycle, revision: '', members: null, sessions: [], can: noGroupCapabilities, messageRules: {} } })
       this.bump(data)
       return
     }
-    const allowed = (action: string) => checkGroupAccess(groupDid, action).then(result => result.allowed, () => false)
+    const allowed = (action: string) => checkGroupAccess(groupDid, action).then(result => result.allowed === true, () => false)
     const capabilityActions: Array<[keyof GroupCapabilities, string]> = [['invite', 'group.invite_member'], ['remove', 'group.remove_member'], ['createSession', 'session.create'], ['approve', 'group.approve_member'], ['updateRole', 'group.update_role'], ['moderate', 'group.moderate'], ['updateConfig', 'group.update_config'], ['manageSession', 'session.manage'], ['inviteGuest', 'session.invite_guest'], ['updateSharedState', 'session.update_shared_state'], ['redactAny', 'message.redact_any'], ['mentionAll', 'session.mention_all']]
     try {
       const [envelope, config, membership, sessions, ...granted] = await Promise.all([
@@ -1332,6 +1348,7 @@ export class MessageHubApiStore implements MessageHubStore {
           key: session.session, sessionId: session.session_id, title: typeof shared.title === 'string' ? shared.title : '', description: typeof shared.description === 'string' ? shared.description : '', announcement: typeof shared.announcement === 'string' ? shared.announcement : '',
           sharedRevision: typeof shared.revision === 'string' ? shared.revision : '', lifecycle: session.lifecycle, revision: session.revision, hasGuests: session.has_guests === true, allowGuests: session.rules?.allow_guests === true,
           receipts: receipts === 'count' || receipts === 'readers' ? receipts : 'hidden',
+          ...sessionExtensions(session),
         }
       })
       for (const session of sessionInfos) if (session.sessionId !== null && session.title) data.groupSessionTitles[session.key] = session.title
@@ -1340,7 +1357,7 @@ export class MessageHubApiStore implements MessageHubStore {
       data.groupInfo.set(groupDid, {
         status: 'ready',
         value: {
-          did: groupDid, name: entry.name, description: entry.description, ownerDid: entry.ownerDid, hosted: true, lifecycle: entry.lifecycle, revision: config?.revision ?? envelope.doc.revision,
+          did: groupDid, name: entry.name, description: entry.description, ownerDid: entry.ownerDid, hostDid: entry.hostDid, hosted: true, lifecycle: entry.lifecycle, revision: config?.revision ?? envelope.doc.revision,
           myRole: mine?.role ?? (data.groups[groupDid] && entry.ownerDid === this.selfDid ? 'owner' : undefined),
           members: members ? members.map(member => ({ did: member.member_did, role: member.role, state: member.state, expiresAt: member.expires_at_ms ?? undefined, invitedBy: member.invited_by ?? undefined })) : null,
           sessions: sessionInfos,
@@ -1383,7 +1400,7 @@ export class MessageHubApiStore implements MessageHubStore {
       throw groupFailure(error)
     }
     const data = this.owner(context.ownerDid)
-    data.groups[result.group_did] = { name: values.name, description: '', ownerDid: this.selfDid, lifecycle: 'active', hosted: true }
+    data.groups[result.group_did] = { name: values.name, description: '', ownerDid: this.selfDid, hostDid: '', lifecycle: 'active', hosted: true }
     this.bump(data)
     await Promise.all([this.reloadGroups(context).catch(() => undefined), this.refreshSummaries(context)])
     return result.group_did

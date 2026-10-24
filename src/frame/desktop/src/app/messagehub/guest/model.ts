@@ -6,6 +6,7 @@
 import type { AuthMethod, EntryMethods } from 'buckyos'
 import type { GroupSessionItem } from '../datamodel/sessionApi'
 import { groupSessionKey } from '../groupModel'
+import { sessionExtensions, type GroupDisplayInfo, type GroupPanelRef } from '../extensions/model'
 import type { MessageObject, MsgObject } from '../protocol/msgobj'
 
 export const GUEST_PAGE_PATH = '/messagehub/guest'
@@ -33,15 +34,24 @@ export interface GuestSession {
   address: string
   title: string
   lifecycle: string
+  /** Embedded application panels in effect for the Session (EXT-02); the guest page shows them too. */
+  panels: GroupPanelRef[]
+  display: GroupDisplayInfo
 }
 
 export function guestSessions(groupDid: string, items: readonly GroupSessionItem[]): GuestSession[] {
-  return items.flatMap(item => item.session_id === null ? [] : [{
-    sessionId: item.session_id,
-    address: groupSessionKey(groupDid, item.session_id),
-    title: typeof item.shared_state?.title === 'string' ? item.shared_state.title : '',
-    lifecycle: item.lifecycle,
-  }])
+  return items.flatMap(item => {
+    if (item.session_id === null) return []
+    const { panels, display } = sessionExtensions(item)
+    return [{
+      sessionId: item.session_id,
+      address: groupSessionKey(groupDid, item.session_id),
+      title: typeof item.shared_state?.title === 'string' ? item.shared_state.title : '',
+      lifecycle: item.lifecycle,
+      panels,
+      display,
+    }]
+  })
 }
 
 /**

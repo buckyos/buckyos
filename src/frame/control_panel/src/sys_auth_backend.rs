@@ -1091,6 +1091,7 @@ impl ControlPanelServer {
                 | "auth.invite.describe"
                 | "auth.invite.login"
                 | "auth.invite.request_resend"
+                | "auth.app_login.exchange"
                 | "auth.did.begin"
                 | "user.invite.get"
                 | "zone.presentation.get"
@@ -1411,7 +1412,19 @@ impl ControlPanelServer {
         let claims = validate_verify_hub_token_claims(&parsed, TokenUse::Session)?;
         let is_external = buckyos_api::token_is_external(&parsed);
         let is_control_panel_session = is_control_panel_user_session(&parsed)?;
-        restricted_method_access(method, &ceiling, is_external, is_control_panel_session).map_err(
+        // An App-signed customer session (EXT-09) lives on the App's origin and targets that App;
+        // it reaches the same own-account methods a Control Panel restricted session does.
+        let is_app_login_session = token_auth_method(&parsed)
+            == Some(buckyos_api::AuthMethod::AppAccessToken)
+            && matches!(claims.target, AuthTarget::App { .. })
+            && claims.principal_kind == TokenPrincipalKind::User;
+        restricted_method_access(
+            method,
+            &ceiling,
+            is_external,
+            is_control_panel_session || is_app_login_session,
+        )
+        .map_err(
             |denial| {
                 denial
                     .at(CONTROL_PANEL_SERVICE_UNIQUE_ID, method)
@@ -1443,6 +1456,7 @@ impl ControlPanelServer {
                 user_type: UserType::Limited,
                 is_user_session,
                 is_control_panel_session,
+                principal_kind: claims.principal_kind,
                 agent_permission_mode: None,
                 session,
             }));
@@ -1472,6 +1486,7 @@ impl ControlPanelServer {
                 owner_did: device.owner.to_string(),
                 is_user_session: false,
                 is_control_panel_session: false,
+                principal_kind: claims.principal_kind,
                 agent_permission_mode: None,
                 session,
             }));
@@ -1526,6 +1541,7 @@ impl ControlPanelServer {
             owner_did,
             is_user_session,
             is_control_panel_session,
+            principal_kind: claims.principal_kind,
             agent_permission_mode,
             session,
         }))
@@ -1564,17 +1580,18 @@ async fn verify_session_any_ceiling(
 
 /// D-4 default deny for restricted sessions (SSO-04): a Limited session reaches
 /// its own-account methods, an External one its identity and invitation acceptance, and
-/// either only as a Control Panel (Zone root) session.
+/// either only as a Control Panel (Zone root) session or an App-signed customer session
+/// (`self_service_session`).
 fn restricted_method_access(
     method: &str,
     ceiling: &SessionCeiling,
     is_external: bool,
-    is_control_panel_session: bool,
+    self_service_session: bool,
 ) -> Result<(), AccessDenial> {
     if !ceiling.restricted && !is_external {
         return Ok(());
     }
-    if !is_control_panel_session {
+    if !self_service_session {
         return Err(AccessDenial::new(DenyReason::SessionKindNotAllowed));
     }
     if ANY_SESSION_METHODS.contains(&method) {
@@ -1691,6 +1708,7 @@ mod tests {
             owner_did: String::new(),
             is_user_session: true,
             is_control_panel_session: true,
+            principal_kind: buckyos_api::TokenPrincipalKind::User,
             agent_permission_mode: None,
             session: PrincipalSession {
                 ceiling: SessionCeiling::for_user_type(UserType::Limited),

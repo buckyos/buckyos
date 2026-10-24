@@ -486,6 +486,11 @@ pub struct SessionRules {
     pub slow_mode_ms: Option<u32>,                 // 同一发送者两次发言的最小间隔
     pub hooks: Vec<HookBinding>,                   // L3（§7.3）
     pub panels: Vec<String>,                       // 引用 extensions.panels 中的 id（§7.2）
+    pub display: DisplayConfig,                    // Session 级展示，字段覆盖群级 display（2026-10-24）
+}
+
+pub struct ExtensionConfig {
+    pub panels: Vec<PanelDecl>,                    // L2 面板声明（§7.2）；其余键保留给应用
 }
 
 pub struct EditRule {
@@ -493,13 +498,15 @@ pub struct EditRule {
     pub recall_window_ms: Option<u64>,             // 本人撤回窗口；None 为不限
 }
 
-pub struct GroupDisplayConfig {
-    pub announcement: Option<String>,
-    pub pinned_links: Vec<PinnedLink>,
-    pub pinned_files: Vec<ObjectRef>,              // 引用 FileObject，不内联内容
-    pub featured_members: Vec<FeaturedMember>,     // 仅用于展示
+pub struct DisplayConfig {                         // 群级 display 与 SessionRules.display 同构（2026-10-24 定版）
+    pub announcement: Option<String>,              // ≤ 4096 字符
+    pub links: Vec<DisplayLink>,                   // { title, url }，url 必须 https；≤ 32 条
+    pub files: Vec<DisplayFile>,                   // { title, obj_id }，引用对象、不内联内容；按 context_path 读取；≤ 32 条
+    pub featured_members: Vec<DID>,                // 仅用于展示，必须是活跃群成员；≤ 32 个
 }
 ```
+
+`GroupLimits` 另有 `max_panels`（默认 8）。`group.list_sessions` 的每个条目返回合成后的 `display`（Session 字段非空则覆盖群字段）与生效 `panels`。
 
 说明：
 
@@ -616,11 +623,11 @@ Hook 只能在第 5–6 步的原生拒绝之上给出动态许可，并且只�
 ```rust
 pub enum AllowedClients {
     Any,                  // 默认值
-    Only(Vec<AppId>),     // 例如只允许某个业务应用；Message Hub 也是一个 AppId
+    Only(Vec<String>),    // token 的 appid；系统界面统一是 "control-panel"
 }
 ```
 
-- 客户端身份取自认证上下文中的应用身份，不取自页面地址或请求参数。
+- 客户端身份取自认证上下文中的应用身份（token 的 `appid`），不取自页面地址或请求参数。**Message Hub、Desktop、AI Workspace 等系统 SPA 都运行在 `System{control-panel}` 会话下，`appid` 统一为 `control-panel`**（2026-10-24 D-4）：`only` 写 `control-panel` 即“允许全部系统界面”，v1 无法单独表达“只允许 Message Hub”，列为已知限制。
 - 跨 Zone 访问时，远端客户端身份的携带和验证方式还没有确定（§14）。在确定之前，`Only` 只对本 Zone 内的访问有效；远端成员的请求按配置选择拒绝或放行，不能假装已经完成验证。
 - 限制访问路径后，如果自定义应用失效，用户能否改从 Message Hub 进入，取决于配置是否把 Message Hub 列为备用客户端（扩展架构 §7.2）。
 
@@ -885,11 +892,13 @@ pub struct PanelDecl {
 }
 ```
 
-- 面板在 `extensions.panels` 中声明，Session 通过 `SessionRules.panels` 引用。
-- Message Hub 加载面板时传入 `group_did` 和 `session_id`。这些上下文只用于定位，不是授权。面板读写群数据时，要以当前用户（或经授权的应用）身份调用 Group Service，并按 §4.1 判定。
-- **可信来源以群为准**：`entry_url` 的 origin 必须属于 Group DID Document 声明的 host，即群主的 OOD。判断基准不是读者自己的 Message Hub 所在的 Zone。
-- 来源不符的面板默认不加载。用户显式接受后才可以加载，接受时要说明面板由谁提供、会拿到哪些群上下文。
-- 面板加载失败只影响面板本身，不影响聊天。
+已实施（2026-10-24，实施 TODO EXT-01～03）：
+
+- 面板在 `extensions.panels` 中声明（`id` 为群内唯一的 DNS 标签，`title` ≤ 64 字符），`scope` 为 `"group"` 或 `{ "sessions": [sid] }`；Session 通过 `SessionRules.panels` 额外引用。每群最多 `limits.max_panels`（默认 8）。`group.list_sessions` 返回每个 Session 的生效面板（`scope` 覆盖 ∪ 规则引用），`group.get_doc` 不含面板。
+- Message Hub 以 `<iframe sandbox="allow-scripts allow-same-origin allow-forms" referrerpolicy="origin">` 加载 `entry_url?group_did=&session_id=&session=&locale=`，切换 Session 时换 `src`。这些上下文只用于定位，不是授权；**不传 token、viewer DID 或 cookie**（§14#5）。面板运行在 App 子域，用自己 App 的会话调 `/kapi/msg-center`，按 §4.1 判定。
+- **可信来源以群为准**：`entry_url` 必须是 https，host 为 `<app>.<host_zone>` 或 `<app>-<host_zone>`，`host_zone` 取自 Group DID Document 的 `host`（群主 Zone）。判断基准不是读者自己的 Message Hub 所在的 Zone。msg-center 在写入配置时拒绝不符的声明（`invalid-panel-decl:untrusted-origin`），Message Hub 加载前再核一次 Doc（第二道）。
+- 来源不符的面板 v1 直接拒绝；“用户显式接受跨来源”不在本批。
+- 面板加载失败（onerror、10 秒超时）显示不可用并可重试；面板区有独立 Error Boundary，不影响聊天。访客页同样显示访客所在 Session 的面板。
 
 ### 7.3 L3：Hook
 
@@ -909,8 +918,11 @@ pub struct HookBinding {
     pub on_unavailable: FailurePolicy,  // Deny | NativeOnly
     pub timeout_ms: u32,
     pub result_ttl_ms: u32,             // 仅 read：允许结果对同一读者、同一 Session 的缓存时长，0 为不缓存
+    pub secret: String,                 // 出站签名密钥：写入时由 host 生成，只回显一次，不可读回（2026-10-24 D-3）
 }
 ```
+
+**出站凭据（2026-10-24 D-3）：** Group Service 不再携带自己的服务 token 调用 Application Service。每个绑定有一个 host 生成的 32 字节 `secret`（只在写入响应的 `hook_secrets` 中出现一次；`group.rotate_hook_secret` 轮换），请求带 `X-BuckyOS-Hook-Timestamp` 与 `X-BuckyOS-Hook-Signature = hex(HMAC-SHA256(secret, "<timestamp>." + body))`，body 另带 `group_host`；Application Service 验签并拒绝 5 分钟以上的时钟偏差，不依赖 BuckyOS runtime。
 
 **结果与故障策略：**
 
@@ -926,7 +938,7 @@ pub struct HookBinding {
 - Hook 以 Group Service 的身份调用 Application Service，只传判定所需的最小上下文：操作、actor、group_did、session_id，`post` 时再加上 MsgObject。
 - Hook 位于频率限制之后（§4.1），被限流的请求不会调用 Hook。
 
-**可见性：** 绑定 Hook 意味着群的关键操作依赖应用服务，并且 `post` Hook 能看到消息内容。这是应用开发者和群主的显式选择（扩展架构 §6.4）。Message Hub 应当在群信息中展示该群绑定了哪些 Hook。
+**可见性：** 绑定 Hook 意味着群的关键操作依赖应用服务，并且 `post` Hook 能看到消息内容。这是应用开发者和群主的显式选择（扩展架构 §6.4）。Message Hub 在群信息中展示该群绑定了哪些 Hook（点与 service host，`post` 另注明可读消息内容）；`group.check_access(session.post)` 对配置了 `may_grant` 的 Session 返回 `"hook_dependent"`，Message Hub 据此不禁用输入框。
 
 ### 7.4 L4A：自定义 UI
 
@@ -1149,7 +1161,6 @@ beta 2.2 不需要兼容，直接删除即可。删除后，dispatch 每次写�
 |---|---|---|
 | 3 | 跨 Zone 访问时，如何携带并验证客户端（应用）身份 | 与 verify-hub 和 §4.2 的跨 Zone DID Document 认证一起设计 |
 | 4 | Session 列表、变更流和受控对象读取的 CYFS 路径形态 | 见 §11.1 草案 |
-| 5 | 面板上下文是否包含 viewer 身份和短期凭据 | 不包含，面板自行以用户身份认证 |
 | 6 | host 向成员 Zone 发送「变更提示」的对象格式与路径 | 小型 event NamedObject，只含 `group_did`，不含 Session 与消息内容，host 合并后发送 |
 | 8 | Guest 能看到的 Session 参与者范围 | 显式参与者，加上在该 Session 发过言的参与者；不展开 `Roles` 带来的全部群成员（§3.3） |
 | 9 | context_path 的语法，以及创作者、转发者等非 host 源如何校验 | 由 CYFS 协议定义；host 作为源时按 §5.3 判定（§5.7） |
@@ -1158,6 +1169,7 @@ beta 2.2 不需要兼容，直接删除即可。删除后，dispatch 每次写�
 
 已确认：
 
+- 面板上下文不包含 viewer 身份和短期凭据，面板自行以用户（App 子域会话）身份认证（原 #5，2026-10-24 随 L2 实施确认，§7.2）。
 - 默认 Session 使用裸 `group_did`（session_id 为 NULL）；成员侧本地 Session 键与 `SessionStateRef.session_key` 都用 Group Session 的规范 MailboxAddress 字符串 `<group_did>` / `<group_did>/<sid>`（原 #1、#2，已按建议实现，§2.2.4、§5.5）。
 - 建群权限：Zone RBAC 把 `obj://msg-center/group` 的 `create` 同时授予 `users` 和 `admin`，群内操作由成员资格、角色与能力控制（2026-10-01，§4.2）。
 - 取消成员 proof：成为群成员或 Session Guest 只看群一方和成员一方的同意（2026-10-01，§2.4）。

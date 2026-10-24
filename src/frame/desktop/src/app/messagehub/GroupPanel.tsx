@@ -11,6 +11,9 @@ import { hubButtonClass, hubInputClass, hubPrimaryButtonClass } from './SessionD
 import { useMessageHubStore } from './store'
 import type { Entity, GroupInfo, GroupMember, MessageHubContext } from './types'
 import { MemberAvatar } from './HubAvatar'
+import { GroupExtensionPanels } from './extensions/GroupExtensionPanels'
+import { GroupDisplaySection, GroupHooksSection } from './extensions/GroupDisplaySection'
+import { groupHooks, mockPanelOrigins } from './extensions/model'
 
 const MUTE_MS = 3600_000
 
@@ -77,7 +80,7 @@ function MemberMenu({ group, member, context, name, disabled, onRun }: { group: 
 
 /** Membership and management of a self-host group, shown in the group's entity details. */
 export function GroupPanel({ entity, context }: { entity: Entity; context: MessageHubContext }) {
-  const { t } = useI18n(), store = useMessageHubStore(), dialog = useWindowDialog(), dialogs = useNetworkDialogs()
+  const { t, locale } = useI18n(), store = useMessageHubStore(), dialog = useWindowDialog(), dialogs = useNetworkDialogs()
   const [pending, setPending] = useState(false), [error, setError] = useState('')
   const [editing, setEditing] = useState(false)
   const [inviteToken, setInviteToken] = useState<string | null>(null), [copied, setCopied] = useState(false)
@@ -127,7 +130,16 @@ export function GroupPanel({ entity, context }: { entity: Entity; context: Messa
   const revokeLink = () => run(async () => { if (inviteToken) await store.revokeGroupInviteLink(context, group.did, inviteToken); setInviteToken(null) })
   const copyLink = async () => { if (!inviteLink) return; try { await navigator.clipboard.writeText(inviteLink); setCopied(true) } catch { setCopied(false) } }
   const manageable = group.myRole && group.lifecycle !== 'deleted' && group.hosted
+  // The default session carries the group-level display and panels (EXT-01/04); hooks are listed for the whole group (EXT-06).
+  const defaultSession = group.sessions.find(session => session.sessionId === null)
+  const hooks = groupHooks(group.sessions)
+  const extensions = group.lifecycle !== 'deleted' && defaultSession && (defaultSession.panels.length > 0 || hooks.length > 0 || !!defaultSession.display.announcement || defaultSession.display.links.length > 0 || defaultSession.display.files.length > 0 || defaultSession.display.featuredMembers.length > 0)
   return <section className="mb-4 rounded-xl p-3" style={{ background: 'color-mix(in srgb, var(--cp-text) 4%, transparent)' }} data-testid="group-panel" aria-label={t('messagehub.group.membersTitle')}>
+    {extensions && <div className="mb-3 space-y-3" data-testid="group-extensions">
+      <GroupDisplaySection display={defaultSession.display} nameOf={nameOf} />
+      <GroupHooksSection hooks={hooks} />
+      <GroupExtensionPanels panels={defaultSession.panels} context={{ groupDid: group.did, sessionId: null, session: group.did, locale }} hostDid={group.hostDid} allowOrigins={store.isMock ? mockPanelOrigins() : undefined} />
+    </div>}
     {manageable && (editing ? <ProfileEditor key={group.revision} group={group} context={context} onDone={() => setEditing(false)} /> : <div className="mb-3 flex items-start gap-2" data-testid="group-profile">
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-semibold">{group.name || entity.name}</p>

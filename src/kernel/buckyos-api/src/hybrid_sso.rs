@@ -20,6 +20,9 @@ pub enum AuthMethod {
     ExclusiveInvite,
     DidFederation,
     Assertion,
+    /// An App signed its external customer in with a one-time code it obtained
+    /// from Control Panel (self-host-group-extension TODO EXT-09).
+    AppAccessToken,
 }
 
 impl AuthMethod {
@@ -29,6 +32,7 @@ impl AuthMethod {
             Self::ExclusiveInvite => "exclusive_invite",
             Self::DidFederation => "did_federation",
             Self::Assertion => "assertion",
+            Self::AppAccessToken => "app_access_token",
         }
     }
 
@@ -38,6 +42,7 @@ impl AuthMethod {
             "exclusive_invite" => Some(Self::ExclusiveInvite),
             "did_federation" => Some(Self::DidFederation),
             "assertion" => Some(Self::Assertion),
+            "app_access_token" => Some(Self::AppAccessToken),
             _ => None,
         }
     }
@@ -666,6 +671,8 @@ pub enum InviteCredentialState {
     Active,
     Superseded,
     ConsumedByPassword,
+    /// A one-time App login code that has been exchanged.
+    Consumed,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -725,6 +732,7 @@ pub enum InviteLoginRefusal {
     PasswordRequired,
     LinkReplaced,
     Expired,
+    Consumed,
 }
 
 impl InviteLoginRefusal {
@@ -735,6 +743,7 @@ impl InviteLoginRefusal {
             Self::PasswordRequired => (DenyReason::CredentialState, "password_required"),
             Self::LinkReplaced => (DenyReason::CredentialState, "link_replaced"),
             Self::Expired => (DenyReason::CredentialState, "expired"),
+            Self::Consumed => (DenyReason::CredentialState, "consumed"),
         };
         AccessDenial::new(reason).with_detail(detail)
     }
@@ -749,6 +758,9 @@ impl ExclusiveInvite {
         }
         if self.credential.state == InviteCredentialState::ConsumedByPassword {
             return Err(InviteLoginRefusal::PasswordRequired);
+        }
+        if self.credential.state == InviteCredentialState::Consumed {
+            return Err(InviteLoginRefusal::Consumed);
         }
         if self.credential.state != InviteCredentialState::Active
             || !constant_time_eq(self.credential.digest.as_bytes(), digest.as_bytes())
@@ -768,6 +780,78 @@ impl ExclusiveInvite {
 pub enum SessionSource {
     ExclusiveInvite { invite_id: String, version: u32 },
     DidFederation { canonical_host: String },
+    /// Issued by `login_by_app_access_token`: the App instance the code was
+    /// minted for (also the session's target) and the invite record behind it.
+    AppLogin {
+        app_instance_id: String,
+        invite_id: String,
+        version: u32,
+    },
+}
+
+// ─── App 代登录 (self-host-group-extension TODO EXT-09, D-7) ──────────────
+
+pub const APP_LOGIN_PREFIX: &str = "services/control_panel/app_login";
+pub const APP_IDENTITIES_PREFIX: &str = "services/control_panel/app_identities";
+/// A login code is exchanged within ten minutes, once.
+pub const APP_LOGIN_CODE_TTL_SECS: u64 = 10 * 60;
+pub const APP_LOGIN_CHANNEL_KIND: &str = "app";
+/// Issuances one App instance may make per minute.
+pub const APP_LOGIN_ISSUE_PER_MINUTE: usize = 60;
+
+/// `services/control_panel/app_login/<app_instance_id>`: the owner's switch.
+pub fn app_login_settings_key(app_instance_id: &str) -> String {
+    format!("{APP_LOGIN_PREFIX}/{app_instance_id}")
+}
+
+/// `services/control_panel/app_identities/<app_instance_id>/<digest>`: which Limited
+/// account stands for one external account of the App (`digest` is
+/// `app_identity_digest`).
+pub fn app_identity_key(app_instance_id: &str, digest: &str) -> String {
+    format!("{APP_IDENTITIES_PREFIX}/{app_instance_id}/{digest}")
+}
+
+/// base64url(sha256(app_instance_id "\n" external_account_id)); the external id
+/// itself is never stored.
+pub fn app_identity_digest(app_instance_id: &str, external_account_id: &str) -> String {
+    invite_secret_digest(&format!("{app_instance_id}\n{external_account_id}"))
+}
+
+/// What the App's page presents to sign in: the invite record id and its secret.
+pub fn app_login_code(invite_id: &str, secret: &str) -> String {
+    format!("{invite_id}.{secret}")
+}
+
+pub fn split_app_login_code(code: &str) -> Option<(&str, &str)> {
+    let (invite_id, secret) = code.trim().split_once('.')?;
+    (!invite_id.is_empty() && !secret.is_empty()).then_some((invite_id, secret))
+}
+
+/// The owner's switch for one App instance; a missing record means off.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+pub struct AppLoginSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub updated_by: String,
+    #[serde(default)]
+    pub updated_at: u64,
+}
+
+/// One external account of an App mapped to a Limited account here.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AppIdentityBinding {
+    pub user_id: String,
+    pub created_at: u64,
+    pub last_issued_at: u64,
+    #[serde(default)]
+    pub issue_count: u64,
+}
+
+/// Scopes of a session an App signed in (contract §3.4: the App backend keeps its own
+/// service identity; the customer session reaches its groups and own account only).
+pub fn app_login_scopes() -> [SessionScope; 2] {
+    [SessionScope::MsgGroup, SessionScope::AccountSelf]
 }
 
 pub fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {

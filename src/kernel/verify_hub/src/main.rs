@@ -868,7 +868,42 @@ struct HubState {
     zone: Arc<dyn ZoneDirectory>,
     federation: Arc<dyn FederationPeer>,
     federation_codes: FederationCodes,
+    app_login_codes: AppLoginCodes,
     last_family_gc: AtomicU64,
+}
+
+/// App login codes already exchanged (EXT-09): one exchange per code; a retry with the
+/// same nonce gets the pair already issued, another nonce is refused. In memory, kept for
+/// the code's lifetime; Control Panel also marks the record consumed.
+#[derive(Default)]
+struct AppLoginCodes {
+    consumed: std::sync::Mutex<HashMap<String, ConsumedAppLoginCode>>,
+}
+
+#[derive(Clone)]
+struct ConsumedAppLoginCode {
+    nonce: String,
+    user_id: String,
+    token_pair: TokenPair,
+    at: u64,
+}
+
+impl AppLoginCodes {
+    fn lookup(&self, invite_id: &str, now: u64) -> Option<ConsumedAppLoginCode> {
+        let mut consumed = self
+            .consumed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        consumed.retain(|_, entry| entry.at + APP_LOGIN_CODE_TTL_SECS > now);
+        consumed.get(invite_id).cloned()
+    }
+
+    fn record(&self, invite_id: &str, entry: ConsumedAppLoginCode) {
+        self.consumed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(invite_id.to_string(), entry);
+    }
 }
 
 #[derive(Clone)]
@@ -901,6 +936,7 @@ impl VerifyHubServer {
                 zone,
                 federation,
                 federation_codes: FederationCodes::default(),
+                app_login_codes: AppLoginCodes::default(),
                 last_family_gc: AtomicU64::new(0),
             }),
         }
@@ -1125,8 +1161,12 @@ impl VerifyHubServer {
             SessionPrincipalKind::User => {
                 let user_settings = self.active_account(&session.subject).await?;
                 claims = claims.narrowed(&SessionCeiling::for_user_type(user_settings.user_type));
-                self.resolve_user_auth_target(&session.subject, &session.target)
-                    .await?;
+                // An App-signed-in session targets the App that vouched for the account;
+                // its availability is the App login source check below, not the policy.
+                if !matches!(family.source, Some(SessionSource::AppLogin { .. })) {
+                    self.resolve_user_auth_target(&session.subject, &session.target)
+                        .await?;
+                }
             }
             principal_kind => {
                 validate_service_principal(&session.subject, principal_kind).await?;
@@ -1135,20 +1175,41 @@ impl VerifyHubServer {
                 }
             }
         }
-        if let Some(SessionSource::ExclusiveInvite { invite_id, .. }) = &family.source {
-            let active = self
-                .state
-                .zone
-                .exclusive_invite(invite_id)
-                .await?
-                .is_some_and(|invite| invite.state == InviteState::Active);
-            if !active {
-                return Err(AccessDenial::new(DenyReason::SourceRevoked)
-                    .with_detail("invite_revoked")
-                    .into_rpc_error());
+        match &family.source {
+            Some(SessionSource::ExclusiveInvite { invite_id, .. }) => {
+                self.require_active_invite(invite_id).await?;
             }
+            Some(SessionSource::AppLogin {
+                app_instance_id,
+                invite_id,
+                ..
+            }) => {
+                self.require_active_invite(invite_id).await?;
+                let instance = app_instance_id.parse::<AppInstanceId>().map_err(|error| {
+                    RPCErrors::ReasonError(format!("family app instance: {error}"))
+                })?;
+                if let Err(denial) = self.state.zone.app_login_available(&instance).await? {
+                    return Err(denial.into_rpc_error());
+                }
+            }
+            _ => {}
         }
         Ok(claims)
+    }
+
+    async fn require_active_invite(&self, invite_id: &str) -> Result<()> {
+        let active = self
+            .state
+            .zone
+            .exclusive_invite(invite_id)
+            .await?
+            .is_some_and(|invite| invite.state == InviteState::Active);
+        if !active {
+            return Err(AccessDenial::new(DenyReason::SourceRevoked)
+                .with_detail("invite_revoked")
+                .into_rpc_error());
+        }
+        Ok(())
     }
 
     async fn refuse_presented_refresh(
@@ -1241,10 +1302,16 @@ fn revoke_request_matches(request: &RevokeFamiliesRequest, family: &FamilyRecord
     });
     let source_matches = match (request.source_invite_id.as_deref(), &family.source) {
         (None, _) => true,
-        (Some(id), Some(SessionSource::ExclusiveInvite { invite_id, .. })) => invite_id == id,
+        (Some(id), Some(SessionSource::ExclusiveInvite { invite_id, .. }))
+        | (Some(id), Some(SessionSource::AppLogin { invite_id, .. })) => invite_id == id,
         (Some(_), _) => false,
     };
-    method_matches && source_matches
+    let app_matches = match (request.source_app_instance_id.as_deref(), &family.source) {
+        (None, _) => true,
+        (Some(id), Some(SessionSource::AppLogin { app_instance_id, .. })) => app_instance_id == id,
+        (Some(_), _) => false,
+    };
+    method_matches && source_matches && app_matches
 }
 
 fn valid_record_id(value: &str) -> bool {
@@ -1826,6 +1893,115 @@ impl VerifyHubApiHandler for VerifyHubServer {
         })
     }
 
+    /// EXT-09 / D-7: an App page presents the one-time code its backend got from Control
+    /// Panel. Same decision table as an exclusive invite, then: the record must have been
+    /// issued by an App, `target` must be that App instance, and the owner's App login
+    /// switch must be on. The code is consumed by its first exchange.
+    async fn handle_login_by_app_access_token(
+        &self,
+        caller_token: Option<&str>,
+        request: AppAccessTokenLoginRequest,
+    ) -> Result<AppAccessTokenLoginResult> {
+        const METHOD: &str = "login_by_app_access_token";
+        self.gc().await;
+        authorize_control_panel_caller(caller_token, METHOD).await?;
+        if request.nonce.trim().is_empty() || request.nonce.len() > 128 {
+            return Err(RPCErrors::ParseRequestError(format!(
+                "{METHOD} needs a nonce of at most 128 characters"
+            )));
+        }
+        let denied = |denial: AccessDenial| Ok(AppAccessTokenLoginResult::Denied { denial });
+        let Some((invite_id, secret)) =
+            split_app_login_code(&request.code).filter(|(id, _)| valid_record_id(id))
+        else {
+            return denied(InviteLoginRefusal::Revoked.denial());
+        };
+        let now = buckyos_get_unix_timestamp();
+        if let Some(consumed) = self.state.app_login_codes.lookup(invite_id, now) {
+            if constant_time_eq(consumed.nonce.as_bytes(), request.nonce.as_bytes()) {
+                return Ok(AppAccessTokenLoginResult::Issued {
+                    user_id: consumed.user_id,
+                    token_pair: consumed.token_pair,
+                });
+            }
+            return denied(
+                AccessDenial::new(DenyReason::CredentialState).with_detail("nonce_mismatch"),
+            );
+        }
+        let invite = self.state.zone.exclusive_invite(invite_id).await?;
+        let account = match invite
+            .as_ref()
+            .filter(|invite| invite.state == InviteState::Active)
+        {
+            Some(invite) => self.state.zone.user_settings(&invite.user_id).await?,
+            None => None,
+        };
+        let (invite, account) = match exclusive_invite_decision(
+            invite.as_ref(),
+            account.as_ref(),
+            &invite_secret_digest(secret),
+            now,
+        ) {
+            Ok(granted) => granted,
+            Err(denial) => {
+                info!("app login code {} refused: {:?}", invite_id, denial.detail);
+                return denied(denial);
+            }
+        };
+        let InviteIssuer::App { app_instance_id } = &invite.issuer else {
+            return denied(
+                AccessDenial::new(DenyReason::EntryUnavailable).with_detail("target_mismatch"),
+            );
+        };
+        let instance = app_instance_id.parse::<AppInstanceId>().map_err(|error| {
+            RPCErrors::ReasonError(format!("invite {} app instance: {error}", invite.invite_id))
+        })?;
+        if request.target != AuthTarget::app(instance.clone()) {
+            return denied(
+                AccessDenial::new(DenyReason::EntryUnavailable).with_detail("target_mismatch"),
+            );
+        }
+        if let Err(denial) = self.state.zone.app_login_available(&instance).await? {
+            info!("app login for {} refused: {:?}", app_instance_id, denial.detail);
+            return denied(denial);
+        }
+        let session = SessionSubject {
+            subject: account.user_id.clone(),
+            principal_kind: SessionPrincipalKind::User,
+            target: request.target,
+            session_id: rand::thread_rng().gen(),
+            claims: FamilyClaims::restricted(AuthMethod::AppAccessToken, app_login_scopes()),
+        };
+        let token_pair = self
+            .issue_family(
+                session,
+                Some(SessionSource::AppLogin {
+                    app_instance_id: app_instance_id.clone(),
+                    invite_id: invite.invite_id.clone(),
+                    version: invite.credential.version,
+                }),
+                None,
+            )
+            .await?;
+        self.state.app_login_codes.record(
+            invite_id,
+            ConsumedAppLoginCode {
+                nonce: request.nonce,
+                user_id: account.user_id.clone(),
+                token_pair: token_pair.clone(),
+                at: now,
+            },
+        );
+        info!(
+            "app {} signed in {} through code {}",
+            app_instance_id, account.user_id, invite.invite_id
+        );
+        Ok(AppAccessTokenLoginResult::Issued {
+            user_id: account.user_id.clone(),
+            token_pair,
+        })
+    }
+
     async fn handle_revoke_families(
         &self,
         caller_token: Option<&str>,
@@ -2282,6 +2458,7 @@ mod test {
         invites: HashMap<String, ExclusiveInvite>,
         sso: SsoSettings,
         apps: HashSet<(String, String)>,
+        app_logins: HashSet<String>,
     }
 
     struct MemoryDirectory(std::sync::Mutex<DirectoryData>);
@@ -2348,6 +2525,14 @@ mod test {
                 .apps
                 .insert((user_id.to_string(), app_instance_id.to_string()));
         }
+
+        fn set_app_login(&self, app_instance_id: &str, enabled: bool) {
+            if enabled {
+                self.data().app_logins.insert(app_instance_id.to_string());
+            } else {
+                self.data().app_logins.remove(app_instance_id);
+            }
+        }
     }
 
     #[async_trait]
@@ -2392,6 +2577,17 @@ mod test {
                 owner_user_id: app_instance_id.owner_user_id().to_string(),
                 availability_match: None,
                 reason: if allowed { "test_allow" } else { "test_deny" }.to_string(),
+            })
+        }
+
+        async fn app_login_available(
+            &self,
+            app_instance_id: &AppInstanceId,
+        ) -> Result<std::result::Result<(), AccessDenial>> {
+            Ok(if self.data().app_logins.contains(&app_instance_id.to_string()) {
+                Ok(())
+            } else {
+                Err(AccessDenial::new(DenyReason::SourceRevoked).with_detail("app_login_disabled"))
             })
         }
     }
@@ -3857,6 +4053,166 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
             .is_none());
     }
 
+    fn app_code_record(invite_id: &str, user_id: &str, secret: &str, app: &str, now: u64) -> ExclusiveInvite {
+        let mut record = invite_record(invite_id, user_id, secret, now);
+        record.issuer = InviteIssuer::App {
+            app_instance_id: app.to_string(),
+        };
+        record.channel = InviteChannel {
+            kind: APP_LOGIN_CHANNEL_KIND.to_string(),
+            target_hint: String::new(),
+        };
+        record.return_path = "/".to_string();
+        record.credential.expires_at = now + APP_LOGIN_CODE_TTL_SECS;
+        record
+    }
+
+    async fn app_login(
+        hub: &VerifyHubServer,
+        caller: &str,
+        code: &str,
+        nonce: &str,
+        target: AuthTarget,
+    ) -> Result<AppAccessTokenLoginResult> {
+        hub.handle_login_by_app_access_token(
+            Some(caller),
+            AppAccessTokenLoginRequest {
+                code: code.to_string(),
+                nonce: nonce.to_string(),
+                target,
+            },
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn app_access_token_login_binds_the_issuing_app_and_consumes_the_code_once() {
+        setup_test_environment().await;
+        let (hub, zone) = test_hub();
+        let caller = cp_caller().await;
+        let now = buckyos_get_unix_timestamp();
+        let crm = "crm@bob";
+        let customer = unique_user("crm-");
+        zone.add_user(&customer, UserType::Limited, None);
+        zone.set_app_login(crm, true);
+        zone.put_invite(app_code_record("ei-app", &customer, "c0de", crm, now));
+        let code = app_login_code("ei-app", "c0de");
+
+        // Wrong target: another App, or the Zone root.
+        for target in [app_target("notes@bob"), system_target("control-panel")] {
+            assert_eq!(
+                invite_denial(app_login(&hub, &caller, &code, "n1", target).await),
+                (DenyReason::EntryUnavailable, Some("target_mismatch".into()))
+            );
+        }
+        // A user-issued invite never opens an App target.
+        zone.put_invite(invite_record("ei-user", &customer, "s3cret", now));
+        assert_eq!(
+            invite_denial(app_login(&hub, &caller, &app_login_code("ei-user", "s3cret"), "n1", app_target(crm)).await),
+            (DenyReason::EntryUnavailable, Some("target_mismatch".into()))
+        );
+        assert_eq!(
+            invite_denial(app_login(&hub, &caller, "no-dot", "n1", app_target(crm)).await),
+            (DenyReason::SourceRevoked, Some("revoked".into()))
+        );
+        assert_eq!(
+            invite_denial(app_login(&hub, &caller, &app_login_code("ei-app", "wrong"), "n1", app_target(crm)).await),
+            (DenyReason::CredentialState, Some("link_replaced".into()))
+        );
+
+        let result = app_login(&hub, &caller, &code, "n1", app_target(crm)).await;
+        let Ok(AppAccessTokenLoginResult::Issued { user_id, token_pair }) = result else {
+            panic!("expected an issued pair, got {result:?}");
+        };
+        assert_eq!(user_id, customer);
+        let session = decoded(&token_pair.session_token);
+        assert_eq!(token_auth_method(&session), Some(AuthMethod::AppAccessToken));
+        assert_eq!(
+            ceiling_of(&token_pair.session_token),
+            SessionCeiling::restricted(app_login_scopes())
+        );
+        let claims = validate_verify_hub_token_claims(&session, TokenUse::Session).unwrap();
+        assert_eq!(claims.target, app_target(crm));
+        let family = hub
+            .families()
+            .get(&session_key_of(&token_pair.refresh_token))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            family.source,
+            Some(SessionSource::AppLogin {
+                app_instance_id: crm.into(),
+                invite_id: "ei-app".into(),
+                version: 1
+            })
+        );
+        // Same nonce: the same pair again. Another nonce: refused.
+        let again = issued_pair(app_login(&hub, &caller, &code, "n1", app_target(crm)).await);
+        assert_eq!(again.session_token, token_pair.session_token);
+        assert_eq!(
+            invite_denial(app_login(&hub, &caller, &code, "n2", app_target(crm)).await),
+            (DenyReason::CredentialState, Some("nonce_mismatch".into()))
+        );
+        // Refresh works although no availability policy opens the App to this account.
+        let pair = hub.handle_refresh_token(&token_pair.refresh_token).await.unwrap();
+        // The owner switches App login off: refresh is refused and the family ends.
+        zone.set_app_login(crm, false);
+        let error = hub.handle_refresh_token(&pair.refresh_token).await.unwrap_err();
+        assert_eq!(
+            denial_reason(&error),
+            Some((DenyReason::SourceRevoked, Some("app_login_disabled".into())))
+        );
+        assert!(hub
+            .families()
+            .get(&session_key_of(&pair.refresh_token))
+            .unwrap()
+            .is_none());
+        // A fresh code while the switch is off is refused too.
+        zone.put_invite(app_code_record("ei-app2", &customer, "c0de2", crm, now));
+        assert_eq!(
+            invite_denial(app_login(&hub, &caller, &app_login_code("ei-app2", "c0de2"), "n1", app_target(crm)).await),
+            (DenyReason::SourceRevoked, Some("app_login_disabled".into()))
+        );
+        zone.set_app_login(crm, true);
+        let second = issued_pair(app_login(&hub, &caller, &app_login_code("ei-app2", "c0de2"), "n1", app_target(crm)).await);
+        // A consumed record (as Control Panel marks it) is refused with its own detail.
+        zone.update_invite("ei-app2", |invite| {
+            invite.credential.state = InviteCredentialState::Consumed
+        });
+        assert_eq!(
+            invite_denial(app_login(&hub, &caller, &app_login_code("ei-app2", "c0de2"), "n9", app_target(crm)).await),
+            (DenyReason::CredentialState, Some("nonce_mismatch".into()))
+        );
+        // Revoking by App instance ends every family it signed in.
+        assert_eq!(
+            hub.handle_revoke_families(
+                Some(&caller),
+                RevokeFamiliesRequest {
+                    subject: customer.clone(),
+                    source_app_instance_id: Some(crm.into()),
+                    ..Default::default()
+                }
+            )
+            .await
+            .unwrap(),
+            RevokeFamiliesResult { revoked: 1 }
+        );
+        assert!(hub.handle_refresh_token(&second.refresh_token).await.is_err());
+        // Only Control Panel may call it.
+        assert!(matches!(
+            hub.handle_login_by_app_access_token(
+                None,
+                AppAccessTokenLoginRequest {
+                    code: code.clone(),
+                    nonce: "n1".into(),
+                    target: app_target(crm)
+                }
+            )
+            .await,
+            Err(RPCErrors::NoPermission(_))
+        ));
+    }
+
     #[tokio::test]
     async fn revoke_families_spares_the_current_session() {
         setup_test_environment().await;
@@ -3891,6 +4247,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
             subject: acme.clone(),
             auth_method: Some(AuthMethod::ExclusiveInvite),
             source_invite_id: None,
+            source_app_instance_id: None,
             except_session_token: Some(current.session_token.clone()),
         };
         for denied_caller in [None, Some(current.session_token.as_str())] {

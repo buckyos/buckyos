@@ -5,9 +5,10 @@
 use ::kRPC::RPCErrors;
 use async_trait::async_trait;
 use buckyos_api::{
-    exclusive_invite_key, owner_canonical_zone, user_did_from_doc_value, AppAvailabilityDecision,
-    AppAvailabilityResolver, AppInstanceId, ExclusiveInvite, SsoSettings, SystemConfigError,
-    UserSettings, SSO_SETTINGS_KEY,
+    app_login_settings_key, check_app_runtime_session, exclusive_invite_key,
+    owner_canonical_zone, user_did_from_doc_value, AccessDenial, AppAvailabilityDecision,
+    AppAvailabilityResolver, AppInstanceId, AppLoginSettings, DenyReason, ExclusiveInvite,
+    SsoSettings, SystemConfigError, UserSettings, SSO_SETTINGS_KEY,
 };
 use log::warn;
 use name_lib::{OwnerDocument, DID};
@@ -36,6 +37,12 @@ pub trait ZoneDirectory: Send + Sync {
         user_id: &str,
         app_instance_id: &AppInstanceId,
     ) -> Result<AppAvailabilityDecision>;
+    /// Whether the App instance may sign external customers in right now: its owner's
+    /// switch is on and the App is installed and running. The denial names what closed it.
+    async fn app_login_available(
+        &self,
+        app_instance_id: &AppInstanceId,
+    ) -> Result<std::result::Result<(), AccessDenial>>;
 }
 
 /// The live Zone: system-config read with verify-hub's own service session.
@@ -123,5 +130,29 @@ impl ZoneDirectory for SystemConfigDirectory {
         AppAvailabilityResolver::new(Arc::new(client))
             .check_user(user_id, app_instance_id)
             .await
+    }
+
+    async fn app_login_available(
+        &self,
+        app_instance_id: &AppInstanceId,
+    ) -> Result<std::result::Result<(), AccessDenial>> {
+        let settings: AppLoginSettings =
+            read_json(&app_login_settings_key(&app_instance_id.to_string()))
+                .await?
+                .unwrap_or_default();
+        if !settings.enabled {
+            return Ok(Err(
+                AccessDenial::new(DenyReason::SourceRevoked).with_detail("app_login_disabled")
+            ));
+        }
+        let client = crate::get_system_config_client().await?;
+        match check_app_runtime_session(&client, app_instance_id).await {
+            Ok(_) => Ok(Ok(())),
+            Err(error) => match AccessDenial::from_rpc_error(&error) {
+                Some(denial) => Ok(Err(AccessDenial::new(DenyReason::SourceRevoked)
+                    .with_detail(denial.detail.unwrap_or_else(|| "app_unavailable".into())))),
+                None => Err(error),
+            },
+        }
     }
 }

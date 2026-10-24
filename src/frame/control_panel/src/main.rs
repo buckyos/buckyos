@@ -2,6 +2,7 @@ mod agent_daemon;
 mod agent_mgr;
 mod agent_runtimes;
 mod app_install_deployer;
+mod app_login;
 mod app_install_driver;
 mod app_install_engine;
 mod app_install_planner;
@@ -118,6 +119,7 @@ struct RpcAuthPrincipal {
     owner_did: String,
     is_user_session: bool,
     is_control_panel_session: bool,
+    principal_kind: buckyos_api::TokenPrincipalKind,
     agent_permission_mode: Option<buckyos_api::AgentPermissionMode>,
     session: PrincipalSession,
 }
@@ -212,6 +214,7 @@ mod agent_permission_tests {
             owner_did: "did:web:alice.example.com".to_string(),
             is_user_session: false,
             is_control_panel_session: false,
+            principal_kind: buckyos_api::TokenPrincipalKind::App,
             agent_permission_mode: mode,
             session: PrincipalSession::default(),
         }
@@ -480,6 +483,7 @@ struct ControlPanelServer {
     pending_did_logins: Arc<Mutex<HashMap<String, federation::PendingDidLogin>>>,
     external_profiles: Arc<std::sync::Mutex<HashMap<String, buckyos_api::FederationProfile>>>,
     registration_limiter: Arc<std::sync::Mutex<sso_entry::RegistrationLimiter>>,
+    app_login_limiter: Arc<std::sync::Mutex<app_login::AppLoginLimiter>>,
     docker_overview_cache: Arc<Mutex<Option<DockerOverviewCacheEntry>>>,
     docker_overview_refresh_lock: Arc<Mutex<()>>,
     app_installer: app_installer::AppInstaller,
@@ -520,6 +524,9 @@ impl ControlPanelServer {
             external_profiles: Arc::new(std::sync::Mutex::new(HashMap::new())),
             registration_limiter: Arc::new(std::sync::Mutex::new(
                 sso_entry::RegistrationLimiter::default(),
+            )),
+            app_login_limiter: Arc::new(std::sync::Mutex::new(
+                app_login::AppLoginLimiter::default(),
             )),
             docker_overview_cache: Arc::new(Mutex::new(None)),
             docker_overview_refresh_lock: Arc::new(Mutex::new(())),
@@ -1241,6 +1248,9 @@ impl ControlPanelServer {
             "auth.invite.describe" => Box::pin(self.handle_auth_invite_describe(req)),
             "auth.invite.login" => Box::pin(self.handle_auth_invite_login(req)),
             "auth.invite.request_resend" => Box::pin(self.handle_auth_invite_request_resend(req)),
+            "auth.app_login.exchange" => {
+                Box::pin(self.handle_auth_app_login_exchange(req, ip_from))
+            }
             "auth.invite.set_password" => {
                 Box::pin(self.handle_auth_invite_set_password(req, principal))
             }
@@ -1289,6 +1299,9 @@ impl ControlPanelServer {
             "user.exclusive_invite.retry_resource" => {
                 Box::pin(self.handle_exclusive_invite_retry_resource(req, principal))
             }
+            "user.app_login.issue" => Box::pin(self.handle_app_login_issue(req, principal)),
+            "apps.app_login.get" => Box::pin(self.handle_app_login_get(req, principal)),
+            "apps.app_login.set" => Box::pin(self.handle_app_login_set(req, principal)),
 
             "user.change_password" => Box::pin(self.handle_user_change_password(req, principal)),
             "user.change_state" => Box::pin(self.handle_user_change_state(req, principal)),

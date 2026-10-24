@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>工单面板</title>
+<style>
+  :root { color-scheme: light dark; font: 14px/1.5 system-ui, sans-serif; }
+  body { margin: 0; padding: 12px; }
+  h1 { font-size: 15px; margin: 0 0 8px; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; margin: 0 0 12px; opacity: .75; }
+  dd { margin: 0; word-break: break-all; }
+  li { padding: 6px 0; border-top: 1px solid rgba(127,127,127,.25); }
+  .muted { opacity: .7; }
+  .warn { padding: 8px 10px; border-radius: 8px; background: rgba(255,170,0,.15); }
+</style>
+</head>
+<body>
+<h1 id="title">工单</h1>
+<dl id="ctx"></dl>
+<div id="out" class="muted">加载中…</div>
+<script type="module">
+// The panel receives only its context in the URL (D-1); it talks to msg-center with the
+// session of the App origin it is served from. The gateway routes /kapi/<service> by
+// path, so a relative URL works from any App subdomain.
+const q = new URLSearchParams(location.search)
+const ctx = { group_did: q.get('group_did') ?? '', session_id: q.get('session_id') ?? '', session: q.get('session') ?? '', locale: q.get('locale') ?? '' }
+const dl = document.getElementById('ctx')
+for (const [k, v] of Object.entries(ctx)) {
+  const dt = document.createElement('dt'); dt.textContent = k
+  const dd = document.createElement('dd'); dd.textContent = v || '—'; dd.dataset.key = k
+  dl.append(dt, dd)
+}
+if (q.get('view') === 'sla') document.getElementById('title').textContent = 'SLA'
+
+async function rpc(method, params) {
+  const res = await fetch('/kapi/msg-center', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ method, params, sys: [Date.now()] }) })
+  if (res.status === 302 || res.redirected) throw new Error('no-session')
+  const json = await res.json()
+  if (json.error) throw new Error(json.error.message ?? String(json.error))
+  return json.result
+}
+
+const out = document.getElementById('out')
+try {
+  const page = await rpc('group.list_messages', { group_did: ctx.group_did, session_id: ctx.session_id || null, limit: 20, with_object: true })
+  const list = document.createElement('ul'); list.style.cssText = 'list-style:none;padding:0;margin:0'
+  for (const item of (page.items ?? []).reverse()) {
+    const li = document.createElement('li')
+    const text = item.msg?.content?.content ?? `(对象 ${item.obj_id ?? ''})`
+    li.textContent = `#${item.session_seq ?? item.seq ?? ''} ${item.from ?? item.msg?.from ?? ''}: ${text}`
+    list.append(li)
+  }
+  out.replaceWith(list)
+  if (!list.children.length) list.innerHTML = '<li class="muted">这个 Session 还没有消息。</li>'
+} catch (error) {
+  out.className = 'warn'
+  out.innerHTML = ''
+  const a = document.createElement('a'); a.href = location.href; a.target = '_blank'; a.rel = 'noopener'
+  a.textContent = '在新窗口打开并登录'
+  out.append(`面板需要本应用的登录会话（${error.message}）。`, document.createElement('br'), a)
+}
+</script>
+</body>
+</html>

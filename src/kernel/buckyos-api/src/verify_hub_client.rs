@@ -366,6 +366,20 @@ pub enum ExclusiveInviteLoginResult {
     },
 }
 
+/// `login_by_app_access_token`: Control Panel only, on behalf of an App page that
+/// presents the one-time `code` its backend obtained from `user.app_login.issue`.
+/// `target` is the App instance the code was minted for; a retry with the same
+/// `nonce` returns the pair already issued, another nonce is refused.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppAccessTokenLoginRequest {
+    pub code: String,
+    pub nonce: String,
+    pub target: AuthTarget,
+}
+
+pub type AppAccessTokenLoginResult = ExclusiveInviteLoginResult;
+
 /// `revoke_families`: end the subject's families matching every given filter,
 /// except the one `except_session_token` belongs to. Control Panel only.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -376,6 +390,9 @@ pub struct RevokeFamiliesRequest {
     pub auth_method: Option<AuthMethod>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_invite_id: Option<String>,
+    /// Families an App signed in (`SessionSource::AppLogin`) for this instance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_app_instance_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub except_session_token: Option<String>,
 }
@@ -642,6 +659,22 @@ impl VerifyHubClient {
         }
     }
 
+    pub async fn login_by_app_access_token(
+        &self,
+        request: AppAccessTokenLoginRequest,
+    ) -> Result<AppAccessTokenLoginResult> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_login_by_app_access_token(None, request)
+                    .await
+            }
+            Self::KRPC(client) => {
+                Self::call_typed(client, "login_by_app_access_token", request).await
+            }
+        }
+    }
+
     pub async fn revoke_families(
         &self,
         request: RevokeFamiliesRequest,
@@ -759,6 +792,16 @@ pub trait VerifyHubApiHandler: Send + Sync {
     ) -> Result<ExclusiveInviteLoginResult> {
         Err(RPCErrors::UnknownMethod(
             "login_by_exclusive_invite".to_string(),
+        ))
+    }
+
+    async fn handle_login_by_app_access_token(
+        &self,
+        _caller_token: Option<&str>,
+        _request: AppAccessTokenLoginRequest,
+    ) -> Result<AppAccessTokenLoginResult> {
+        Err(RPCErrors::UnknownMethod(
+            "login_by_app_access_token".to_string(),
         ))
     }
 
@@ -922,6 +965,14 @@ impl<T: VerifyHubApiHandler> RPCHandler for VerifyHubRpcHandler<T> {
                     .handle_login_by_exclusive_invite(
                         req.token.as_deref(),
                         parse_request("login_by_exclusive_invite", req.params)?,
+                    )
+                    .await?,
+            )?,
+            "login_by_app_access_token" => success_value(
+                self.0
+                    .handle_login_by_app_access_token(
+                        req.token.as_deref(),
+                        parse_request("login_by_app_access_token", req.params)?,
                     )
                     .await?,
             )?,

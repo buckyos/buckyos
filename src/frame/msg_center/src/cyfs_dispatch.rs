@@ -41,7 +41,6 @@ pub(crate) struct CyfsDispatchSettings {
     pub outgoing: HashMap<String, NativeDispatchRoute>,
     pub max_object_bytes: usize,
     pub joined_groups: Vec<crate::group_sync::JoinedGroupRoute>,
-    pub group_hook_authorization: Option<String>,
     /// Zone host → gateway origin, for Zones not reachable as `https://<zone>`.
     pub zone_origins: HashMap<String, String>,
 }
@@ -55,7 +54,6 @@ impl Default for CyfsDispatchSettings {
             outgoing: HashMap::new(),
             max_object_bytes: default_max_bytes(),
             joined_groups: Vec::new(),
-            group_hook_authorization: None,
             zone_origins: HashMap::new(),
         }
     }
@@ -128,13 +126,6 @@ impl CyfsDispatchSettings {
                 }
             }
             config.accepted_paths = paths;
-        }
-        if config
-            .group_hook_authorization
-            .as_ref()
-            .is_some_and(|v| !v.starts_with("Bearer ") || http::HeaderValue::from_str(v).is_err())
-        {
-            anyhow::bail!("invalid group hook authorization");
         }
         let mut joined_keys = std::collections::HashSet::new();
         for route in &config.joined_groups {

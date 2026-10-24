@@ -4,7 +4,7 @@
 
 ## 入口与认证
 
-`main.rs` 在 `/kapi/msg-center` 将 `group.*` 请求交给 `group_service.rs`，群 CYFS 路径由 `group_http.rs` 处理。业务主体只取自经过验证的 token，禁止参数 `actor_did`、`host_owner`。群创建还检查 Zone RBAC 的 `obj://msg-center/group` / `create`；默认策略对 `users` 和 `admin` 都授予该权限（2026-10-01），群内操作不再经过 RBAC，由成员资格、角色与能力控制。
+`main.rs` 在 `/kapi/msg-center` 将 `group.*` 请求交给 `group_service.rs`，群 CYFS 路径由 `group_http.rs` 处理。业务主体只取自经过验证的 token，禁止参数 `actor_did`、`host_owner`。App 自己的服务会话（`principal_kind=app`，`sub` 为 owner）在 `group.*` 中以其 owner 的 DID 行事，`appid` 作为 `allowed_clients` 判定的客户端（2026-10-24，App 代登录预置邀请用）。群创建还检查 Zone RBAC 的 `obj://msg-center/group` / `create`；默认策略对 `users` 和 `admin` 都授予该权限（2026-10-01），群内操作不再经过 RBAC，由成员资格、角色与能力控制。
 
 RPC 使用现有 kRPC 请求封装和 token。所有方法的参数是对象；除 create/list_by_member 外必须含 `group_did`。默认 Session 的 `session_id` 省略或为 null；具名 Session 使用未编码的原始字符串。对外的 `session` 和 `state_ref.session_key` 始终是规范 MailboxAddress。
 
@@ -15,8 +15,9 @@ RPC 使用现有 kRPC 请求封装和 token。所有方法的参数是对象；�
 | 方法 | 主要参数/结果 |
 |---|---|
 | group.create | profile?、configuration?、sessions?、invitations?、idempotency_key；group_id?、group_did?；Owner 记录直接以 token 认证的调用者写入；返回群 Doc 和默认 Session |
-| group.get_doc / get_config | 返回公开 Doc / 原始完整配置 |
-| group.apply_config | expected_revision、patch、idempotency_key；返回新 revision，未知配置字段保留 |
+| group.get_doc / get_config | 返回公开 Doc（不含面板）/ 完整配置（Hook `secret` 已去除） |
+| group.apply_config | expected_revision、patch、idempotency_key；返回新 revision，未知配置字段保留。`extensions.panels`（面板声明，整体替换）、`display`、`rules.display` 在此校验：面板 `entry_url` 必须是群 host Zone 的 App 子域（`invalid-panel-decl:*`），`rules.panels` 只能引用已声明 id（`unknown-panel:<id>`），`display.featured_members` 须是活跃成员（`invalid-display-member`）。不带 `secret` 的 Hook 绑定由服务生成 32 字节随机 secret，只在本次响应的 `hook_secrets: [{scope, index, secret}]` 中出现一次 |
+| group.rotate_hook_secret | session_id?、index；默认 Session / 模板 Hook 需 group.update_config，Session 覆盖项 Hook 需 session.manage；返回 `{revision, secret}` |
 | group.archive / delete | 仅 Owner；delete 留不可复用墓碑 |
 | group.transfer_owner | member_did；仅 DID controller，目标需 Active；发起两步转让，返回 transfer_id、member_did、expires_at_ms，目标成员收到 owner_transfer 通知；不自动接受 |
 | group.accept_owner_transfer | transfer_id；由目标成员调用，接受后返回 owner；无对应待接受转让或已过期返回 transfer-mismatch |
@@ -33,10 +34,10 @@ RPC 使用现有 kRPC 请求封装和 token。所有方法的参数是对象；�
 | group.update_member_role | member_did、role（admin / member）；不再要求本人同意 |
 | group.moderate | member_did、blocked?、muted_until_ms?；null 清除禁言期限 |
 | group.list_members | 按配置的成员列表可见性授权，Guest 不可调用 |
-| group.create_session | session_id?、template?、membership?、rule_overrides?、members?、title?/description?/announcement? |
-| group.update_session | session_id、expected_revision、template?、membership?、rule_overrides?、add_members? |
+| group.create_session | session_id?、template?、membership?、rule_overrides?、members?、title?/description?/announcement?；`rule_overrides.hooks` 缺 secret 时生成并随 `hook_secrets` 返回一次 |
+| group.update_session | session_id、expected_revision、template?、membership?、rule_overrides?、add_members?；同上 |
 | group.archive_session / delete_session | session_id、expected_revision；默认 Session 不可删除 |
-| group.list_sessions | 返回读者可访问的 Session、共享状态、state_ref、has_guests、规则和 revision |
+| group.list_sessions | 返回读者可访问的 Session、共享状态、state_ref、has_guests、规则（Hook secret 已去除）、`panels`（生效面板 `{id,title,entry_url}`：`scope` 覆盖 ∪ 规则引用）、`display`（Session 覆盖群）和 revision |
 | group.list_session_members | session_id?；读者须能读取该 Session。能看群成员列表的成员（或有 group.read_all）得到全部有效参与者，complete=true；Guest 或成员列表对其隐藏的成员只得到显式参与者（Included 记录）、在该 Session 发过言者与本人，complete=false（v2 §3.3）。条目为 member_did、kind（group_member / guest）、role、entity_kind、state；有 session.invite_guest 的读者另见 state=invited 的待接受 Guest。结果带 Session 记录 revision（默认 Session 为配置 revision），供 remove_session_member 的 expected_revision |
 | group.invite_session_guest | session_id、member_did |
 | group.accept_session_invitation | session_id、attestation?；Guest 接受 Session 邀请 |
@@ -44,7 +45,7 @@ RPC 使用现有 kRPC 请求封装和 token。所有方法的参数是对象；�
 | group.remove_session_member | session_id、member_did |
 | group.leave_session | session_id；仅退出本人参与关系 |
 | group.list_by_member | 返回操作者参与的 Hosted Group 和本地 Joined Group |
-| group.check_access | action、session_id?；返回 allowed 和 reason |
+| group.check_access | action、session_id?；返回 allowed（`true` / `false`，`session.post` 在配置了 `may_grant` 的 post Hook 时为 `"hook_dependent"`）和 reason |
 | group.list_events | after_seq?、limit?；需 group.read_all，管理查询包含审计 |
 | group.update_read_marker | session_id?、last_read_seq；仅推进本人水位 |
 
@@ -110,7 +111,7 @@ Settings 的主机/凭据要与已建立的成员关系一致；凭据更新后�
 
 `post_send` 根据该发送者的 Joined Group binding 建立命名 Session 投递快照，Message Hub 携带该用户凭据和 original-user 投递。host 本地成员直接投影（发送者本人不投影到自己的 INBOX，只有 SENT 记录），外部原生成员通过 pull 获取；tunnel 成员复用既有 DELIVERY_QUEUE。
 
-Hook 使用 JSON HTTP POST，body 仅有 operation、actor、group_did、session_id，post 另带 msg。runtime 服务 token 或显式 `cyfs_dispatch.group_hook_authorization` 用于服务身份认证。Hook 拒绝是终局；Deny 不可用可重试且不保存消息结果，NativeOnly 只保留原生权限。read 允许缓存按群/Session revision、读者、客户端和 Hook 绑定隔离。
+Hook 使用 JSON HTTP POST，body 仅有 operation、actor、group_did、group_host、session_id，post 另带 msg。出站不携带任何 BuckyOS 服务 token：请求带 `X-BuckyOS-Hook-Timestamp`（Unix 秒）与 `X-BuckyOS-Hook-Signature`（hex `HMAC-SHA256(binding.secret, "<timestamp>." + body)`），App 用绑定的 secret 验签（`buckyos_api::verify_group_hook_signature`，允许 5 分钟偏差）；secret 为空的绑定按不可用处理。`cyfs_dispatch.group_hook_authorization` 已删除。Hook 拒绝是终局；Deny 不可用可重试且不保存消息结果，NativeOnly 只保留原生权限。read 允许缓存按群/Session revision、读者、客户端和 Hook 绑定隔离。
 
 ## 部署边界与验证
 

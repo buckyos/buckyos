@@ -1039,6 +1039,7 @@ mod tests {
             owner_did: String::new(),
             is_user_session: true,
             is_control_panel_session: true,
+            principal_kind: buckyos_api::TokenPrincipalKind::User,
             agent_permission_mode: None,
             session: PrincipalSession {
                 ceiling,

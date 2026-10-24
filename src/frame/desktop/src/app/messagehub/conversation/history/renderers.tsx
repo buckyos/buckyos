@@ -27,6 +27,7 @@ import {
 } from 'lucide-react'
 import {
   getMessageDeliveryStatus,
+  getMessageMetaString,
   getMessageSenderName,
   getMessageStableId,
   messageNotify,
@@ -572,6 +573,7 @@ function MessageFooter({ message, isSelf, deliveryStatus, selfDid, frameless = f
         </span>
         {isSelf ? <MessageStatusIcon status={deliveryStatus} /> : null}
       </div>
+      {isSelf && deliveryStatus === 'failed' && getMessageMetaString(message, 'ui_delivery_reason') ? <p role="alert" className="mt-0.5 text-right text-[11px]" data-testid="post-rejected" data-reason={getMessageMetaString(message, 'ui_delivery_reason')} style={{ color: metaColor }}>{t('messagehub.message.rejected')} · {groupErrorText(t, `rejected: ${getMessageMetaString(message, 'ui_delivery_reason')}`)}</p> : null}
       {receipt ? <p className="mt-0.5 text-right text-[11px]" data-testid="read-receipt" style={{ color: metaColor }} title={receipt.readers?.map(did => displayName?.(did) ?? did).join(', ')}>{t('messagehub.message.readBy', undefined, { count: receipt.count })}{receipt.readers?.length ? ` · ${receipt.readers.map(did => displayName?.(did) ?? did).join(', ')}` : ''}</p> : null}
       {isSelf && record?.delivery && (failedTargets.length > 0 || record.delivery.overall === 'partial_failed') ? (
         <div className="mt-1 text-[11px]" data-testid="delivery-failure" style={{ color: metaColor }}>

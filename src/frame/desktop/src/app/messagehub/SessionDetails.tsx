@@ -17,9 +17,13 @@ import { MemberAvatar } from './HubAvatar'
 import { useCurrentIdentity } from '../../sso/identity'
 import { ExclusiveInviteForm } from './ExclusiveInviteDialog'
 import { useGuestText } from './guest/text'
+import { GroupExtensionPanels } from './extensions/GroupExtensionPanels'
+import { GroupDisplaySection, GroupHooksSection } from './extensions/GroupDisplaySection'
+import { mockPanelOrigins } from './extensions/model'
 
 export function SessionDetails({ session, entity, context, access, showActions, onShowActions, onClose, onManage, onWrite }: { session: Session; entity: Entity; context: MessageHubContext; access: SessionAccess; showActions: boolean; onShowActions: (value: boolean) => Promise<void>; onClose: () => void; onManage: () => void; onWrite: (enabled: boolean) => void }) {
-  const { t } = useI18n(), store = useMessageHubStore(), dialog = useWindowDialog()
+  const { t, locale } = useI18n(), store = useMessageHubStore(), dialog = useWindowDialog()
+  const nameOf = (did: string) => did === context.ownerDid ? t('messagehub.you') : store.findEntity(context, did)?.name ?? friendlyDidName(did, false)
   const enableWrite = async () => {
     const trigger = document.activeElement
     const result = await dialog.open<boolean>({ title: t('messagehub.enableWrite'), dismissible: false, size: 'sm', renderBody: controls => <DialogFocus onCancel={() => controls.close(false)}><p className="text-sm">{t('messagehub.writeWarning')}</p><div className="mt-4 flex justify-end gap-2"><button data-autofocus type="button" className={hubButtonClass} onClick={() => controls.close(false)}>{t('messagehub.cancel')}</button><button type="button" className={hubPrimaryButtonClass} onClick={() => controls.close(true)}>{t('messagehub.enableWrite')}</button></div></DialogFocus> })
@@ -63,6 +67,9 @@ export function SessionDetails({ session, entity, context, access, showActions, 
       </div>
       {groupSession?.announcement && <div className="rounded-xl bg-[color:color-mix(in_srgb,var(--cp-accent)_8%,transparent)] px-3 py-2 text-[13px]" data-testid="session-announcement"><p className="text-xs text-[color:var(--cp-muted)]">{t('messagehub.announcement')}</p><p className="whitespace-pre-wrap break-words">{groupSession.announcement}</p></div>}
       {notices.length > 0 && <div className="space-y-1 rounded-xl bg-[color:color-mix(in_srgb,var(--cp-warning)_10%,transparent)] px-3 py-2 text-[13px]">{notices.map(notice => <p key={notice}>{notice}</p>)}</div>}
+      {groupSession && <GroupDisplaySection display={groupSession.display} nameOf={nameOf} testId="session-display" />}
+      {groupSession && <GroupHooksSection hooks={groupSession.hooks} />}
+      {group && groupSession && <GroupExtensionPanels panels={groupSession.panels} context={{ groupDid: group.did, sessionId: groupSession.sessionId, session: groupSession.key, locale }} hostDid={group.hostDid} allowOrigins={store.isMock ? mockPanelOrigins() : undefined} />}
       <DetailSection title={t('messagehub.members')}>
         {group?.hosted ? <GroupSessionParticipantList session={session} context={context} group={group} fallback={localMembers} /> : localMembers}
       </DetailSection>

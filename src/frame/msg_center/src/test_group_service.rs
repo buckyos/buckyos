@@ -1069,18 +1069,38 @@ async fn post_hooks_cache_terminal_decisions_retry_unavailability_and_cannot_byp
     use std::sync::atomic::{AtomicUsize, Ordering};
     let decision = Arc::new(std::sync::Mutex::new("deny".to_string()));
     let count = Arc::new(AtomicUsize::new(0));
+    let secret = Arc::new(std::sync::Mutex::new(String::new()));
     let hook_decision = decision.clone();
     let hook_count = count.clone();
+    let hook_secret = secret.clone();
     let (url, server) = http_fixture(move |req| {
         let decision = hook_decision.lock().unwrap().clone();
+        let secret = hook_secret.lock().unwrap().clone();
         hook_count.fetch_add(1, Ordering::SeqCst);
         async move {
-            assert_eq!(req.headers()["authorization"], "Bearer group-service");
-            let body: Value =
-                serde_json::from_slice(&req.into_body().collect().await.unwrap().to_bytes())
+            assert!(req.headers().get("authorization").is_none());
+            let timestamp = req.headers()[buckyos_api::GROUP_HOOK_TIMESTAMP_HEADER]
+                .to_str()
+                .unwrap()
+                .to_string();
+            let signature = req.headers()[buckyos_api::GROUP_HOOK_SIGNATURE_HEADER]
+                .to_str()
+                .unwrap()
+                .to_string();
+            let raw = req.into_body().collect().await.unwrap().to_bytes();
+            let now = MessageCenter::now_ms() / 1000;
+            if !buckyos_api::verify_group_hook_signature(&secret, &timestamp, &raw, &signature, now) {
+                return Response::builder()
+                    .status(StatusCode::UNAUTHORIZED)
+                    .body(http_body("{}"))
                     .unwrap();
+            }
+            assert!(!buckyos_api::verify_group_hook_signature("other", &timestamp, &raw, &signature, now));
+            assert!(!buckyos_api::verify_group_hook_signature(&secret, &timestamp, &raw, &signature, now + 301));
+            let body: Value = serde_json::from_slice(&raw).unwrap();
             assert_eq!(body["operation"], "post");
             assert_eq!(body["group_did"], json!(group()));
+            assert_eq!(body["group_host"], json!(DID::new("web", "test.example")));
             assert!(body["msg"].is_object());
             Response::builder()
                 .status(if decision == "unavailable" {
@@ -1095,9 +1115,23 @@ async fn post_hooks_cache_terminal_decisions_retry_unavailability_and_cannot_byp
     })
     .await;
     let (c, _tmp, _) = center().await;
-    c.cyfs_dispatch.write().unwrap().group_hook_authorization = Some("Bearer group-service".into());
-    create(&c, json!({"default_session":{"hooks":[{"point":"post","service":url,"may_grant":true,"on_unavailable":"deny","timeout_ms":1000}]}})).await;
+    let created = create(&c, json!({"default_session":{"hooks":[{"point":"post","service":url,"may_grant":true,"on_unavailable":"deny","timeout_ms":1000}]}})).await;
+    assert_eq!(created["hook_secrets"][0]["scope"], "default_session");
+    assert_eq!(created["hook_secrets"][0]["index"], 0);
+    *secret.lock().unwrap() = created["hook_secrets"][0]["secret"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let config = call(&c, &owner(), "group.get_config", json!({}))
+        .await
+        .unwrap();
+    assert!(config["default_session"]["hooks"][0].get("secret").is_none());
+    assert_eq!(config["default_session"]["hooks"][0]["service"], json!(url));
     join(&c, &member()).await;
+    let access = call(&c, &member(), "group.check_access", json!({"action":"session.post"}))
+        .await
+        .unwrap();
+    assert_eq!(access["allowed"], "hook_dependent");
     let before = c.groups.load(&group()).await.unwrap().unwrap().group_seq;
     let denied = message(&member(), None, "denied", 1);
     let one = c
@@ -1137,6 +1171,37 @@ async fn post_hooks_cache_terminal_decisions_retry_unavailability_and_cannot_byp
             .ok
     );
     assert_eq!(count.load(Ordering::SeqCst), 3);
+    let rotated = call(&c, &owner(), "group.rotate_hook_secret", json!({"index":0}))
+        .await
+        .unwrap();
+    let new_secret = rotated["secret"].as_str().unwrap().to_string();
+    assert_ne!(new_secret, *secret.lock().unwrap());
+    assert_ne!(rotated["revision"], created["revision"]);
+    assert!(call(&c, &owner(), "group.rotate_hook_secret", json!({"index":1}))
+        .await
+        .is_err());
+    assert!(call(&c, &member(), "group.rotate_hook_secret", json!({"index":0}))
+        .await
+        .is_err());
+    let stale = message(&member(), None, "stale secret", 20);
+    assert!(c
+        .accept_group_message(&actor(member()), stale, None)
+        .await
+        .is_err());
+    *secret.lock().unwrap() = new_secret.clone();
+    assert!(
+        c.accept_group_message(&actor(member()), message(&member(), None, "rotated", 21), None)
+            .await
+            .unwrap()
+            .ok
+    );
+    let events = call(&c, &owner(), "group.list_events", json!({}))
+        .await
+        .unwrap();
+    assert!(!events.to_string().contains(&new_secret));
+    let sessions = c.group_sessions(&actor(owner()), &group()).await.unwrap();
+    assert!(!sessions.to_string().contains(&new_secret));
+    assert!(sessions["items"][0]["rules"]["hooks"][0].get("secret").is_none());
     let mut tx = c.groups.begin(&group()).await.unwrap();
     tx.state.configuration["default_session"]["post"] = json!("nobody");
     tx.state.configuration["default_session"]["hooks"][0]["on_unavailable"] = json!("native_only");
@@ -2708,4 +2773,112 @@ mod attachment_holds {
         assert!(holds(&mgr, &shared, &dm_id).await);
         assert_eq!(report.issues, vec![(incoming_id.to_string(), inbound.to_string(), "content_missing".to_string())]);
     }
+}
+
+#[tokio::test]
+async fn panel_declarations_display_and_hook_secrets_follow_the_extension_contract() {
+    let (c, _tmp, _) = center().await;
+    let created = call(&c, &owner(), "group.create", json!({"idempotency_key":"create",
+        "sessions":[{"session_id":"tickets","template":"support"},{"session_id":"plain","rule_overrides":{"display":{"links":[{"title":"Runbook","url":"https://wiki.test.example/r"}]}}}],
+        "configuration":{
+        "required_features":["panels"],
+        "extensions":{"panels":[
+            {"id":"crm","title":"CRM","entry_url":"https://crm.test.example/panel?x=1"},
+            {"id":"tickets-view","title":"Tickets","entry_url":"https://crm-test.example/tickets","scope":{"sessions":["tickets"]}}
+        ]},
+        "display":{"announcement":"Welcome","links":[{"title":"Docs","url":"https://docs.test.example/"}],"featured_members":[owner()]},
+        "session_templates":{"support":{"membership":{"roles":["owner","admin"]},"rules":{"panels":["crm"],"display":{"announcement":"Support hours 9-5"}}}}
+    }}))
+    .await
+    .unwrap();
+    assert!(created.get("hook_secrets").is_none());
+    let sessions = c.group_sessions(&actor(owner()), &group()).await.unwrap();
+    let items = sessions["items"].as_array().unwrap();
+    let by_id = |id: Option<&str>| {
+        items
+            .iter()
+            .find(|i| i["session_id"].as_str() == id)
+            .unwrap()
+            .clone()
+    };
+    let default = by_id(None);
+    assert_eq!(default["panels"], json!([{"id":"crm","title":"CRM","entry_url":"https://crm.test.example/panel?x=1"}]));
+    assert_eq!(default["display"]["announcement"], "Welcome");
+    assert_eq!(default["display"]["links"][0]["title"], "Docs");
+    assert_eq!(default["display"]["featured_members"], json!([owner()]));
+    let tickets = by_id(Some("tickets"));
+    assert_eq!(tickets["panels"].as_array().unwrap().len(), 2);
+    assert_eq!(tickets["panels"][1]["id"], "tickets-view");
+    assert_eq!(tickets["display"]["announcement"], "Support hours 9-5");
+    assert_eq!(tickets["display"]["links"][0]["title"], "Docs");
+    let plain = by_id(Some("plain"));
+    assert_eq!(plain["panels"].as_array().unwrap().len(), 1);
+    assert_eq!(plain["display"]["links"][0]["title"], "Runbook");
+    assert_eq!(plain["display"]["announcement"], "Welcome");
+    let doc = call(&c, &owner(), "group.get_doc", json!({})).await.unwrap();
+    assert!(doc.get("panels").is_none() && doc.get("extensions").is_none());
+
+    let mut revision = created["revision"].as_str().unwrap().to_string();
+    let mut rejected = |key: &str, patch: Value, reason: &str| {
+        let c = c.clone();
+        let revision = revision.clone();
+        let key = key.to_string();
+        let reason = reason.to_string();
+        async move {
+            let err = call(&c, &owner(), "group.apply_config", json!({"expected_revision":revision,"idempotency_key":key,"patch":patch}))
+                .await
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default();
+            assert!(err.contains(&reason), "{key}: {err}");
+        }
+    };
+    let panel = |id: &str, url: &str| json!({"id":id,"title":"P","entry_url":url});
+    rejected("foreign", json!({"extensions":{"panels":[panel("evil","https://evil.example/p")]}}), "untrusted-origin").await;
+    rejected("suffix-only", json!({"extensions":{"panels":[panel("x","https://test.example/p")]}}), "untrusted-origin").await;
+    rejected("lookalike", json!({"extensions":{"panels":[panel("x","https://crm.test.example.attacker.net/p")]}}), "untrusted-origin").await;
+    rejected("http", json!({"extensions":{"panels":[panel("x","http://crm.test.example/p")]}}), "untrusted-origin").await;
+    rejected("bad-id", json!({"extensions":{"panels":[panel("Bad_ID","https://crm.test.example/p")]}}), "invalid-panel-decl:id").await;
+    rejected("dup", json!({"extensions":{"panels":[panel("a","https://crm.test.example/p"),panel("a","https://crm.test.example/q")]}}), "invalid-panel-decl:id").await;
+    rejected("unknown-session", json!({"extensions":{"panels":[panel("crm","https://crm.test.example/p"),{"id":"a","title":"A","entry_url":"https://crm.test.example/p","scope":{"sessions":["nope"]}}]}}), "unknown-session").await;
+    rejected("unknown-ref", json!({"default_session":{"panels":["ghost"]}}), "unknown-panel:ghost").await;
+    rejected("display-http", json!({"display":{"links":[{"title":"x","url":"http://docs.test.example/"}]}}), "invalid-display-link").await;
+    rejected("display-member", json!({"display":{"featured_members":[guest()]}}), "invalid-display-member").await;
+    rejected("hook-bad-service", json!({"default_session":{"hooks":[{"point":"post","service":"ftp://x","on_unavailable":"deny","timeout_ms":1000}]}}), "invalid-hook-service").await;
+    let many: Vec<Value> = (0..9).map(|i| panel(&format!("p{i}"), "https://crm.test.example/p")).collect();
+    rejected("too-many", json!({"extensions":{"panels":many}}), "too-many").await;
+
+    let applied = call(&c, &owner(), "group.apply_config", json!({"expected_revision":revision,"idempotency_key":"hooks","patch":{"extensions":{"panels":[panel("crm","https://crm.test.example/p")]},"session_templates":{"support":{"rules":{"hooks":[{"point":"join","service":"https://crm.test.example/hook","on_unavailable":"native_only","timeout_ms":1000}]}}}}}))
+        .await
+        .unwrap();
+    assert_eq!(applied["hook_secrets"][0]["scope"], "template:support");
+    let secret = applied["hook_secrets"][0]["secret"].as_str().unwrap().to_string();
+    assert_eq!(secret.len(), 43);
+    revision = applied["revision"].as_str().unwrap().to_string();
+    let config = call(&c, &owner(), "group.get_config", json!({})).await.unwrap();
+    assert!(config["session_templates"]["support"]["rules"]["hooks"][0].get("secret").is_none());
+    assert_eq!(config["extensions"]["panels"].as_array().unwrap().len(), 1);
+    let events = call(&c, &owner(), "group.list_events", json!({})).await.unwrap();
+    assert!(events.to_string().contains("entity.config_changed") && !events.to_string().contains(&secret));
+    let stored = c.groups.load(&group()).await.unwrap().unwrap();
+    assert_eq!(stored.configuration["session_templates"]["support"]["rules"]["hooks"][0]["secret"], json!(secret));
+    // Tickets uses the template's hook; rotating through the Session reaches the template.
+    let rotated = call(&c, &owner(), "group.rotate_hook_secret", json!({"session_id":"tickets","index":0}))
+        .await
+        .unwrap();
+    assert_ne!(rotated["secret"], json!(secret));
+    assert_ne!(rotated["revision"], json!(revision));
+    // A Session override gets its own secret, shown once in the update result.
+    let session = c.groups.load(&group()).await.unwrap().unwrap().sessions["plain"].revision.clone();
+    let updated = call(&c, &owner(), "group.update_session", json!({"session_id":"plain","expected_revision":session,"rule_overrides":{"hooks":[{"point":"read","service":"https://crm.test.example/read","on_unavailable":"native_only","timeout_ms":1000}]}}))
+        .await
+        .unwrap();
+    assert_eq!(updated["hook_secrets"][0]["scope"], "session:plain");
+    let rotated = call(&c, &owner(), "group.rotate_hook_secret", json!({"session_id":"plain","index":0}))
+        .await
+        .unwrap();
+    assert_eq!(rotated["revision"].as_str().unwrap().len(), 36);
+    assert_ne!(rotated["secret"], updated["hook_secrets"][0]["secret"]);
+    let sessions = c.group_sessions(&actor(owner()), &group()).await.unwrap();
+    assert!(!sessions.to_string().contains(rotated["secret"].as_str().unwrap()));
 }

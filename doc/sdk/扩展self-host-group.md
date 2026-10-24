@@ -1,8 +1,8 @@
 # 扩展 Self-host Group：应用开发指南
 
-本文面向希望在 BuckyOS 群聊上增加业务能力的应用开发者。实现核对日期为 **2026-10-01**，基于当前仓库 `573f7924`；“已实现”表示当前源码存在相应执行路径，不代表已经完成真实部署或跨 Zone 联调。
+本文面向希望在 BuckyOS 群聊上增加业务能力的应用开发者。实现核对日期为 **2026-10-24**，基于当前工作区（[应用扩展实施 TODO](../../notepads/self-host-group-extension-todo.md) 阶段 A～D 的改动）；“已实现”表示当前源码存在相应执行路径，不代表已经完成真实部署或跨 Zone 联调。
 
-**现在可以开发配置生成器、HTTP Hook 和使用默认群服务的自定义应用；架构稿中的嵌入式应用侧面板、通用 Process Chain、自动跨 Zone 接入和群服务多副本仍需补齐。** 最容易落地的组合是 L1，或 L1 + L3 + L4A。
+**现在可以开发配置生成器、嵌入式应用侧面板、HTTP Hook、使用默认群服务的自定义应用，以及为外部客户代登录；通用 Process Chain、自动跨 Zone 接入和群服务多副本仍需补齐。** 可落地的组合是 L1 + L2 + L3（Message Hub 内增强）和 L1 + L4A + L3（自己的 UI 服务外部客户）。
 
 本文将 [应用扩展架构设计](<../message_hub/BuckyOS Self-host Group的应用扩展架构设计.md>) 的构想对应到现有代码。协议背景见 [Self-host Group v2](../message_hub/Self-Host-Groupv2.md)，完整 RPC 参数见 [群服务后台接口](../../src/frame/msg_center/doc/group-v2-backend.md)。架构稿中的长期兼容性属于设计目标；当前仓库仍处于 beta 2.2 开发阶段，不能据此假定 API、配置或 UI 源码已经有长期兼容承诺。
 
@@ -10,10 +10,10 @@
 
 | 方式 | 当前状态 | 开发者现在能做什么 | 尚缺的能力 |
 | --- | --- | --- | --- |
-| L1 配置型扩展 | 核心已实现，展示配置部分待实现 | 原子创建群、初始 Session 和邀请；配置成员策略、能力、Session 模板和消息规则；初始化程序随后退出 | `display` 的业务链接、文件、指定成员等通用渲染；完整配置编辑 UI |
-| L2 嵌入式应用侧面板 | **待实现** | 可以先提供独立业务页面，为后续嵌入做准备 | 面板声明解析、HTML 加载、Group/Session 上下文传递、生命周期、来源校验和跨来源接受机制 |
-| L3 Hook / Process Chain | HTTP Hook 已实现，通用处理链待实现 | 在 `join`、`post`、`read` 上调用应用 HTTP 服务，拒绝操作或按配置提供动态发言许可 | 通用 Process Chain 接入、其他 Hook 点、返回消息修改或持久化权限变更指令、默认 UI 的 Hook 信息展示 |
-| L4A 自定义 UI | 服务调用与源码复用可做 | 自己实现业务界面，调用 `group.*`、`msg.*`；按需复制 Message Hub 组件和数据层 | 独立发布的稳定聊天组件 SDK；跨 Zone 应用身份的标准证明 |
+| L1 配置型扩展 | 已实现（含 `display`） | 原子创建群、初始 Session 和邀请；配置成员策略、能力、Session 模板、消息规则、面板声明和展示配置；初始化程序随后退出 | 完整配置编辑 UI |
+| L2 嵌入式应用侧面板 | 已实现（§4） | 在 `extensions.panels` 声明 https 入口，Message Hub 在群 / Session 详情旁以 iframe 加载，访客页同样显示 | `postMessage` 通道；跨来源面板的用户接受 UX（v1 直接拒绝） |
+| L3 Hook / Process Chain | HTTP Hook 已实现（HMAC 签名出站），通用处理链待实现 | 在 `join`、`post`、`read` 上调用应用 HTTP 服务，拒绝操作或按配置提供动态发言许可；Message Hub 展示绑定并按 `hook_dependent` 放开输入框 | 通用 Process Chain 接入、其他 Hook 点、返回消息修改或持久化权限变更指令 |
+| L4A 自定义 UI | 已实现（§6，含外部客户代登录） | 自己实现业务界面，调用 `group.*`、`msg.*`；以 App 身份为外部客户签发一次性登录码；按需复制 Message Hub 组件和数据层 | 独立发布的稳定聊天组件 SDK；跨 Zone 应用身份的标准证明；External（DID 登录）进 App |
 | L4B 独立协议实现 | HTTP 协议基础已实现，完整互操作待验证 | 按 v2 协议实现服务或客户端，在显式路由与可验证凭据下对接 | 自动 endpoint 发现、自动建立 Joined Group 绑定、凭据续期，以及不同独立实现之间的联调 |
 
 配置生成器、业务页面和 Hook 服务可以分别部署。只配置群规则的程序无需常驻；绑定 Hook 后，对应操作会依赖业务服务的可用性。
@@ -112,12 +112,15 @@ const groupDid = created.group_did
 | `default_session` | 默认会话的发言、回应、历史、编辑/撤回窗口、回执、慢速模式和 Hook |
 | `session_templates` | 具名会话模板，包含 `membership` 和 `rules`；实际会话通过模板与覆盖项生效 |
 | `limits` | 成员、Session、Guest、消息大小和频率上限；只能在平台允许范围内收紧，不能任意提高 |
-| `access` | 本地经过验证的应用身份白名单；远端未验证客户端身份的处理方式 |
-| `display` / `extensions` / `rules.panels` | 有存储位置；任意业务展示及面板加载**待实现**，保存成功不代表默认 UI 会使用它们 |
+| `access` | 本地经过验证的应用身份白名单（值是 token 的 `appid`，系统界面统一为 `control-panel`，见 §6.2）；远端未验证客户端身份的处理方式 |
+| `display` | 群级展示：`announcement`、`links[{title,url}]`（https）、`files[{title,obj_id}]`、`featured_members[did]`（须是活跃成员）；`SessionRules.display` 同构，Session 字段覆盖群字段；只展示、不授权 |
+| `extensions.panels` | 面板声明 `[{id,title,entry_url,scope}]`，见 §4；每群最多 `limits.max_panels`（默认 8） |
+| `rules.panels` | 引用已声明的面板 `id`，把 `scope` 未覆盖的面板额外挂到该 Session |
+| `rules.hooks[].secret` | 由服务生成，只在写入响应的 `hook_secrets` 中出现一次，`get_config` 不回显；见 §5.3 |
 
 Session 成员策略采用以下 JSON：`"inherit"`、`{"roles":["owner","admin"]}` 或 `"explicit"`。发言和回应规则采用 `"all_participants"`、`{"only":["owner","admin"]}` 或 `"nobody"`。历史范围是 `"all"` 或 `"from_join"`。
 
-当前配置 `schema_version` 只接受 `1`。`required_features` 仅识别 `sessions`、`session_guests`、`message_relations`、`read_markers`、`hooks`、`allowed_clients`；未知必需能力会报 `unsupported-required-feature:<name>`。未知顶层字段以及 `extensions` 数据会保留，但不会自动成为运行逻辑。完整字段和默认值以 [group_types.rs](../../src/frame/msg_center/src/group_types.rs) 为准。
+当前配置 `schema_version` 只接受 `1`。`required_features` 仅识别 `sessions`、`session_guests`、`message_relations`、`read_markers`、`hooks`、`allowed_clients`、`panels`；未知必需能力会报 `unsupported-required-feature:<name>`。未知顶层字段以及 `extensions` 下除 `panels` 以外的数据会保留，但不会自动成为运行逻辑。完整字段和默认值以 [group_types.rs](../../src/frame/msg_center/src/group_types.rs) 为准。
 
 `group.get_config` 对有相应读取能力的群成员开放，业务配置中应只保存适合该读取范围的数据。凭据和业务数据库由应用服务管理。
 
@@ -167,23 +170,45 @@ await call('group.update_shared_state', {
 
 客服场景可配置 `membership.guest_entry` 引用一个 `allow_guests: true` 且成员策略为 `explicit` 或限定角色的模板，通过 `group.submit_guest_request(request_id)` 原子创建会话。已有具名 Session 可使用 `group.invite_session_guest` / `group.accept_session_invitation`。默认 Session、`inherit` 会话不能允许 Guest；Guest 只获得指定 Session 的参与权，不成为全群成员。
 
-## 4. L2：嵌入式应用侧面板（待实现）
+## 4. L2：嵌入式应用侧面板
 
-当前后端能保存 `extensions` 和 `SessionRules.panels: string[]`，但 Message Hub 没有按这些声明加载业务 HTML 的代码。`MessageHubAppPanel.tsx` 是桌面承载 Message Hub 本身的入口，不是群应用扩展面板。
+面板在 `extensions.panels` 中声明，Message Hub 在群详情 / Session 详情旁（手机为二级页）按 Tab 加载；访客页 `/messagehub/guest` 也显示访客所在 Session 的面板。
 
-v2 设计提议在 `extensions.panels` 中声明 `id`、`title`、`entry_url`、`scope`，由 Session 规则引用面板 ID。这仍是设计约定，没有完成执行和校验，不能把它当成可用的面板 SDK。
+```ts
+await call('group.apply_config', {
+  group_did: groupDid,
+  expected_revision: current.revision,
+  idempotency_key: crypto.randomUUID(),
+  patch: {
+    extensions: {
+      panels: [
+        { id: 'tickets', title: '工单', entry_url: 'https://crm.guild.example/panel', scope: 'group' },
+        { id: 'sla', title: 'SLA', entry_url: 'https://crm.guild.example/sla', scope: { sessions: ['vip'] } },
+      ],
+    },
+    session_templates: { support: { rules: { panels: ['tickets'] } } },
+  },
+})
+```
 
-要让架构中的 L1 + L2 真正成立，还需要实现：
+**声明规则（`apply_config` / `group.create` 校验，不符即拒绝 `invalid-panel-decl:*`）：**
 
-1. 解析群面板声明，在实体/会话侧栏加载页面，并处理加载失败、切换和卸载。
-2. 明确 Group DID、原始 Session ID 和规范 Session 地址的上下文协议，以及初始化和会话切换通知。
-3. 以 Group host 的可信来源为基准校验入口；跨来源默认阻止，并提供明确的用户接受、撤销及来源变更处理。
-4. 定义面板如何以当前用户或授权应用访问服务，区分页面加载许可与消息权限。
-5. 验证面板超时、服务错误和页面崩溃只影响面板，基础聊天仍可用。
+- `id` 是 DNS 标签（小写字母、数字、`-`），群内唯一；`title` 1～64 字符。
+- `entry_url` 必须是 https，不能带用户名密码或 fragment，**host 必须是群主 Zone 的 App 子域**：`<app>.<host_zone>` 或 `<app>-<host_zone>`，`host_zone` 取自群 Doc 的 `host`（D-2）。外部来源直接拒绝；v1 没有“用户接受外部来源”的 UX。
+- `scope` 是 `"group"`（每个 Session 都显示，含默认 Session）或 `{ "sessions": [sid] }`（只在这些具名 Session 显示，Session 必须存在）。`SessionRules.panels` 可以额外把某个面板挂到一个 Session 上，引用不存在的 `id` 报 `unknown-panel:<id>`。
+- 每群最多 `limits.max_panels`（默认 8）个声明；`extensions.panels` 在 patch 中整体替换。
+- `required_features` 可声明 `panels`。
 
-同一 OOD/Zone 上部署的两个子域不自动满足浏览器同源条件，同源仍由协议、主机和端口决定。上述信任映射也需要在面板实现中明确。
+**宿主行为（Message Hub）：**
 
-现在可以把业务页面作为 L4A 的独立应用，直接调用群服务；不能通过配置 URL 获得自动嵌入或凭据传递。
+- `group.list_sessions` 的每个条目带 `panels: [{id,title,entry_url}]`，是该 Session 的生效面板（`scope` 覆盖 ∪ 规则引用）。`group.get_doc` 不含面板。
+- 加载前 Message Hub 再核一次 `entry_url` host 与群 Doc `host`（第二道，自托管 Zone 的 host 用 `owner_canonical_zone` 解析，不走 `binded_zone_list`）；不符显示“来源不受信”，不加载。
+- 以 `<iframe sandbox="allow-scripts allow-same-origin allow-forms" referrerpolicy="origin">` 加载 `entry_url?group_did=<群 DID>&session_id=<原始 sid 或空>&session=<规范 MailboxAddress>&locale=<zh-CN 等>`（追加到已有 query）。切换 Session 时换 `src`。**不传任何 token、viewer DID 或 cookie**（v2 §14#5）。
+- 加载前先对 `entry_url` 做一次 `no-cors` 可达性探测（Chromium 对跨源 iframe 的网络错误页也会触发 `load`，所以不能只靠 `onload`）：探测失败、10 秒内未完成或 `onerror` 都显示“面板不可用”并提供重试。**只能识别网络层失败**：网关对不存在的 App 子域回空 403、对停掉的容器回 5xx，这些页面会原样显示在 iframe 里（跨源 iframe 无法读到状态码）；要让宿主判出 HTTP 层故障需要面板侧就绪握手（`postMessage`，不在本批）；面板区有独立 Error Boundary，面板崩溃不影响会话列表和消息视图。
+
+**面板如何访问服务：** 面板页面运行在 App 子域，用自己 App 的会话（host-only cookie）直接调用 `/kapi/msg-center`——网关按路径转发服务，不看 host，msg-center 看到的是 `principal_kind=user`、`appid=<该 App>`。因此 L2 面板与 L4A 自定义 UI 共用同一身份路径，面板不需要新的凭据；`group_did` / `session_id` 只是定位上下文，权限仍按群与 Session ACL 判定。iframe 内无该 App 会话时网关 `check_oauth` 会 302 到登录页（桌面免密 `prepare_app_launch` 只作用于顶层导航），面板应在页内检测未登录并给出“在新窗口打开”的入口。iframe 内 host-only cookie 的送达取决于浏览器第三方 cookie 策略：同站（`*.<zone>`）在主流浏览器可用，跨站部署不保证——这两点属于真实浏览器验证项，尚未在真实 Zone 复核。
+
+mock 模式下 `public/messagehub/mock-panel.html` 是一个本地样例面板，Playwright 用例覆盖显示、切换、失败态与来源拒绝；最小样例应用见 [group_ext_sample](../../test/test_msg_center/group_ext_sample/)。
 
 ## 5. L3：接入 HTTP Hook
 
@@ -224,29 +249,54 @@ await call('group.apply_config', {
     },
   },
 })
+// → { revision, hook_secrets: [{ scope: 'default_session', index: 0, secret: '<base64url 32 字节>' }] }
 ```
 
 `service` 必须是可从 msg-center 访问的 HTTP/HTTPS URL，不能带 URL 用户名/密码；调用不跟随重定向。`timeout_ms` 范围为 1–30000。`may_grant: true` 只允许用于 `post`。Hook 数组会整体替换，更新时合并需要保留的绑定。
 
+**secret。** 每个绑定有一个 `secret`：写入时不带 `secret` 的绑定由服务生成 32 字节随机值，并只在这次写入的响应 `hook_secrets` 里出现一次（`scope` 为 `default_session`、`template:<id>` 或 `session:<sid>`，后者来自 `create_session` / `update_session` 的 `rule_overrides.hooks`）。`get_config`、`list_sessions`、变更事件都不回显 secret；重新提交不带 `secret` 的 Hook 数组会生成新值。轮换用 `group.rotate_hook_secret {session_id?, index}`：默认 Session 或模板 Hook 需要 `group.update_config`，Session 覆盖项的 Hook 需要该 Session 的 `session.manage`；返回 `{revision, secret}`。
+
 ### 5.3 HTTP 请求、认证和返回值
 
-Group Service 发出 `POST`，JSON body 例如：
+Group Service 发出 `POST`，`content-type: application/json`，body 例如：
 
 ```json
 {
   "operation": "join",
   "actor": "did:web:alice.example",
   "group_did": "did:web:guild.example",
+  "group_host": "did:web:guild-host.example",
   "session_id": null,
   "msg": null
 }
 ```
 
-具名会话的 `session_id` 为原始字符串。`post` 请求的 `msg` 是完整 MsgObject，包含消息内容；当前请求没有另外传入客户端 ID、配置 revision 或完整成员表。
+具名会话的 `session_id` 为原始字符串。`group_host` 是群所在 Zone 的 DID，供同一个 Hook 服务区分来源 Zone。`post` 请求的 `msg` 是完整 MsgObject，包含消息内容；当前请求没有另外传入客户端 ID、配置 revision 或完整成员表。
 
-请求的 `Authorization` 优先使用 msg-center 的 BuckyOS runtime 服务 token；无可用 runtime token 时使用服务 Settings 的 `cyfs_dispatch.group_hook_authorization`。两者都没有时不会发出 HTTP 请求，而是按不可用策略处理。这个显式配置是服务级凭据，不是每个绑定的独立凭据，也不会在正常 runtime token 存在时覆盖它。
+**认证改为按绑定签名（D-3），请求不再携带 msg-center 的服务 token。** 两个头：
 
-Hook 服务需要验证调用的是获准的 Group Service，再使用 body 中的 `actor` 查询业务资格；它接收到的服务身份不是成员本人的登录凭据。来源身份验证可使用应用现有的 token 验证设施，不能仅凭 body 的 `actor` 放行。业务资格映射及数据库由应用自己提供。
+- `X-BuckyOS-Hook-Timestamp`：Unix 秒；
+- `X-BuckyOS-Hook-Signature`：小写 hex 的 `HMAC-SHA256(secret, "<timestamp>." + body原始字节)`。
+
+Hook 服务用该绑定的 `secret` 验签，并拒绝与本地时钟偏差超过 5 分钟的时间戳；不依赖 BuckyOS runtime，也没有任何 BuckyOS 服务身份可以从请求里拿到。验签失败应返回 401（msg-center 按“不可用”处理，`deny` 策略下操作被拒），不能仅凭 body 的 `actor` 放行。Deno 样例：
+
+```ts
+const encoder = new TextEncoder()
+const key = await crypto.subtle.importKey('raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify'])
+
+async function verifyHook(req: Request): Promise<{ ok: boolean; body: string }> {
+  const body = await req.text()
+  const ts = req.headers.get('x-buckyos-hook-timestamp') ?? ''
+  const sig = req.headers.get('x-buckyos-hook-signature') ?? ''
+  if (!/^\d+$/.test(ts) || Math.abs(Date.now() / 1000 - Number(ts)) > 300) return { ok: false, body }
+  const bytes = Uint8Array.from(sig.match(/../g)?.map((h) => parseInt(h, 16)) ?? [])
+  const ok = sig.length === 64 &&
+    (await crypto.subtle.verify('HMAC', key, bytes, encoder.encode(`${ts}.${body}`)))
+  return { ok, body }
+}
+```
+
+参考实现见 [buckyos-api `group_hook.rs`](../../src/kernel/buckyos-api/src/group_hook.rs)（`verify_group_hook_signature`）与样例 [group_ext_sample/hook_server.ts](../../test/test_msg_center/group_ext_sample/hook_server.ts)。业务资格映射及数据库由应用自己提供。
 
 正常允许或业务拒绝均返回成功 HTTP 状态和 JSON：
 
@@ -280,7 +330,7 @@ Hook 服务需要验证调用的是获准的 Group Service，再使用 body 中�
 
 只绑定 `join` 时，已有成员的消息操作不会执行这个 Hook。但当前同群写操作在数据库事务中串行，写路径上的 Hook 等待可能拖慢同群其他写操作。因此，应设置短超时，让 Hook 只做快速资格查询；不要把它用作长任务、通知或积分结算的提交回调。Hook 判定发生在消息提交前，不是业务数据库与群消息之间的分布式事务。
 
-**默认 UI 的限制：** `group.check_access(action: "session.post")` 当前只检查原生发言许可，不执行 `post` Hook。仅靠 `may_grant` 获得发言权的人，可能仍被 Message Hub 禁用输入；反过来，通过预检查也可能在提交时被 Hook 拒绝。业务动态发言场景应由自定义 UI 正确处理实际提交结果；统一的动态许可预检查和 UI 呈现**待实现**。Message Hub 展示 Hook 绑定、内容可见性及依赖说明也**待实现**。
+**默认 UI：** `group.check_access(action: "session.post")` 对配置了 `may_grant` 的 `post` Hook 的 Session 返回 `allowed: "hook_dependent"`（其余仍是 `true` / `false`），Message Hub 据此不禁用输入框，提交被 `hook-denied` 拒绝时在气泡上提示；预检查不执行 `post` Hook，提交结果以服务为准。群信息页展示“本群绑定了 N 个业务 Hook（join / post / read）”与各 Hook 的 service host，`post` Hook 另加“业务服务可读取消息内容”说明。
 
 ## 6. L4A：在自己的应用里使用群聊
 
@@ -336,7 +386,7 @@ async function postAnnouncement(senderDid: string, text: string) {
 }
 ```
 
-白名单值要与 token 验证后得到的 `appid` 完全匹配，不是任意页面名称或 URL 参数。操作仍受成员资格和群能力限制；网页隐藏 Message Hub 入口不能代替授权。写入白名单前，应确认当前调用应用及后续管理入口也在允许集合中。
+白名单值要与 token 验证后得到的 `appid` 完全匹配，不是任意页面名称或 URL 参数。**系统界面（Message Hub、Desktop、AI Workspace 等根域页面）都在 `System{control-panel}` 会话下，`appid` 统一是 `control-panel`**（D-4）：`only: ["your-app"]` 会把根域 Message Hub 拒之门外，`only: ["your-app", "control-panel"]` 则同时放行全部系统界面——v1 无法单独表达“只允许 Message Hub”，这是已知限制。操作仍受成员资格和群能力限制；网页隐藏 Message Hub 入口不能代替授权。写入白名单前，应确认当前调用应用及后续管理入口也在允许集合中。
 
 现有群 HTTP 入口将调用者视为远端且没有已验证客户端 ID，因此 `only` 默认拒绝该路径。开启 `allow_unverified_remote` 会放过远端的**客户端身份限制**，仍检查用户和成员权限，但不再保证远端只能通过指定应用访问。跨 Zone 的客户端身份标准证明**待实现**。
 
@@ -351,6 +401,41 @@ async function postAnnouncement(senderDid: string, text: string) {
 | [GroupPanel.tsx](../../src/frame/desktop/src/app/messagehub/GroupPanel.tsx) / [SessionDetails.tsx](../../src/frame/desktop/src/app/messagehub/SessionDetails.tsx) | 群成员管理、共享状态和 Session 参与者 UI |
 
 这是源码级集成。组件依赖现有 store、登录身份上下文、i18n、样式、桌面对话框和对象访问层，并非单独拷贝一个 TSX 文件就能运行。可先复用服务调用与协议类型，再按应用需要迁入界面。不要把 `mock/` 中的演示数据和能力当成后台承诺；正式环境需要使用真实 API store。
+
+### 6.4 让外部客户进来：两条路径
+
+外部客户（没有本 Zone 普通账号的人）有两条进入业务群 Session 的路径，都以 **Limited 账号** 为主体（混合 SSO 契约 §2、§5）：
+
+1. **Message Hub 访客页**（无自定义 UI 时的默认入口）：管理员在 CP 以 `user.exclusive_invite.create` 为客户建号并签发专属邀请链接，客户打开 `/sso/invite/<id>#s=<secret>` 后进入 `/messagehub/guest?group=&session=`，只看到自己所在的 Session，也能看到该 Session 的面板与 `display`。或者开放群的 `membership.guest_entry.auth_methods`，由客户自助注册 / 密码 / DID 登录后提交咨询。
+2. **App 代登录 + 自定义 UI**（EXT-09，D-5 / D-7）：App 自己验证客户（手机号、CRM 账号……），用 **App 的服务身份**向 CP 领取一次性登录码，客户在 **App 子域**页面兑换成指向该 App 实例的受限会话，再以本人 Limited 身份调 `group.*`。流程：
+
+```ts
+// App 后端（Deno / Node），client 是持 App 服务 token 的 control-panel kRPC 客户端
+import { issueAppLoginCode } from 'buckyos'
+const issued = await issueAppLoginCode(client, {
+  external_account_id: 'crm:42',            // 只存摘要
+  show_name: 'Alice',                        // 新建账号的显示名
+  resource: { kind: 'group_session', group_did: groupDid, session_id: 'ticket-42' },
+  return_path: '/tickets/42',                // App 子域上的路径
+})
+// issued = { user_id: 'crm-<16hex>', code: '<invite_id>.<secret>', expires_at, new_account, invite }
+// 把 code 放进给客户的链接 fragment：https://crm.<zone>/login#code=<code>
+
+// App 页面（浏览器）
+import { completeAppAccessTokenLogin } from 'buckyos'
+await completeAppAccessTokenLogin({ code, nonce: sessionStorage.nonce ??= crypto.randomUUID(), return_path: '/tickets/42' })
+// ready → 跳到 callback_url（App 子域 /sso_callback），cookie 落在 App 子域，再回到 return_path
+```
+
+规则：
+
+- **开关**：App 实例的 owner 在 CP 用 `apps.app_login.set {app_instance_id, enabled}` 打开代登录；默认关。关闭时该 App 签入的全部会话立即不能 refresh（`source_revoked` / `app_login_disabled`）。
+- **签发** `user.app_login.issue`：调用者必须是 `principal_kind=app` 的服务会话，且 target 是自己的实例；按 `(app_instance_id, sha256(external_account_id))` 查绑定表 `services/control_panel/app_identities/<instance>/<digest>`，无则创建 Limited 账号 `<app>-<16hex>`（不入系统组、`password_state=unset`）；显式 `user_id` 必须等于已绑定账号，不能指向任意账号。code 有效 10 分钟、单次消费；每实例每分钟最多 60 次。`resource` 为 Session 时 CP 用 App 的服务会话调 `group.invite_session_guest`——msg-center 让 App 的服务会话以其 owner 的 DID 行事、`appid` 为客户端，因此 App owner 须在该群有 `session.invite_guest`，`allowed_clients` 也要放行该 App。
+- **兑换** `auth.app_login.exchange {code, nonce, return_path?}`（公开、按来源 IP 限流）：CP 代调 verify-hub `login_by_app_access_token`，签发 `auth_method=app_access_token`、`restricted=true`、`scopes=[msg_group, account_self]`、target=该 App 实例的 token pair；同 nonce 重试返回同一结果，换 nonce 拒绝 `nonce_mismatch`；之后 code 记录标为 `consumed`。回包是 `{status:"ready", callback_url, user_id}` 或 `{status:"denied", denial}`。
+- **msg-center 侧**无新分支：该账号以 Limited 进 `group.*`，只读写被邀请的 Session；新账号没有个人投递记录。
+- **不能做的**：App service token 本身不能换成客户会话；External（DID 登录）仍不能 delegate 进 App；Message Hub 不提供自己的兑换中心。
+
+验收矩阵见 TODO §7；样例应用见 [group_ext_sample](../../test/test_msg_center/group_ext_sample/)。
 
 ## 7. 跨 Zone 与 L4B：当前对接范围
 
@@ -416,16 +501,23 @@ L4B 服务应实现 v2 §11.1 的协议语义，包括权限过滤、序号、�
 | 建群或写操作超时重试 | 原请求和幂等键得到相同结果；参数变化不能复用同键 |
 | Member、Admin、Guest 分别访问 | Session 和正文不越权；Admin 不自动拥有全群读取权，Guest 仅限自己的会话 |
 | 修改模板/配置/共享状态 | 使用各自 revision；冲突重新读取，模板变更实际影响所引用会话 |
-| Hook 正常拒绝、HTTP 403、超时、缺少服务凭据 | 区分业务拒绝与不可用，按 `deny` / `native_only` 策略执行 |
-| 原生发言受限且 `may_grant: true` | 实际提交可动态放行；默认 Message Hub 的输入状态限制另行处理 |
-| 客户端白名单与远端 HTTP | 使用真实 token 的 appid 判定；确认远端默认被拒，例外没有扩大成员权限 |
+| Hook 正常拒绝、HTTP 403、超时、验签失败 | 区分业务拒绝与不可用，按 `deny` / `native_only` 策略执行；出站请求不含 msg-center 服务 token |
+| 原生发言受限且 `may_grant: true` | `check_access` 返回 `hook_dependent`，输入框不禁用；实际提交以服务为准 |
+| 面板服务停掉 | 面板显示不可用，消息视图与发送正常；访客页同样 |
+| 外部来源面板被写进配置 | `apply_config` 拒绝；手工改库后 Message Hub 第二道拒绝加载 |
+| 客户端白名单与远端 HTTP | 使用真实 token 的 appid 判定（系统界面为 `control-panel`）；确认远端默认被拒，例外没有扩大成员权限 |
+| 外部客户经 App 代登录 | 只能进签发 code 的 App 实例；换设备重新领取 code 映射同一账号；App 关闭代登录后 refresh 被拒 |
 | 跨 Zone 建立绑定并收发 | host 验证用户凭据、路由正确、轮询投影和投递结果可追踪 |
 
-现有回归入口包括 [test_group_service.rs](../../src/frame/msg_center/src/test_group_service.rs)（事务、权限、Guest、Hook、HTTP、重启等）和 [messagehub-group.test.ts](../../src/frame/desktop/tests/datamodel/messagehub-group.test.ts)（群通知、关系、提及和参与者展示等）。后台测试可在 `buckyos/src` 执行：
+现有回归入口包括 [test_group_service.rs](../../src/frame/msg_center/src/test_group_service.rs)（事务、权限、Guest、Hook 签名与 secret、面板声明、`display`、HTTP、重启等）、[messagehub-group.test.ts](../../src/frame/desktop/tests/datamodel/messagehub-group.test.ts)（群通知、关系、提及和参与者展示等）、verify-hub / control-panel 的 App 代登录单测，以及 Message Hub 的 Playwright 面板用例。后台测试可在 `buckyos/src` 执行：
 
 ```bash
 cargo test -p msg_center test_group_service -- --test-threads=1
+cargo test -p verify_hub app_access_token -- --test-threads=1
+cargo test -p control_panel app_login:: -- --test-threads=1
 ```
+
+真实 Zone 的端到端脚本见 [test/test_msg_center/group_ext_sample](../../test/test_msg_center/group_ext_sample/)。
 
 测试代码的存在不代表目标部署已验证。真实跨 Zone、PostgreSQL、最大容量、多副本以及 L2 面板故障隔离需要各自在对应实现/环境中验证。
 

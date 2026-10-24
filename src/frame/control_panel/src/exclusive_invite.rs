@@ -39,13 +39,13 @@ pub(crate) fn random_token(bytes: usize) -> String {
     URL_SAFE_NO_PAD.encode(buffer)
 }
 
-fn new_invite_id() -> String {
+pub(crate) fn new_invite_id() -> String {
     let mut buffer = [0u8; 8];
     OsRng.fill_bytes(&mut buffer);
     format!("{INVITE_ID_PREFIX}{}", hex::encode(buffer))
 }
 
-fn is_invite_id(invite_id: &str) -> bool {
+pub(crate) fn is_invite_id(invite_id: &str) -> bool {
     invite_id
         .strip_prefix(INVITE_ID_PREFIX)
         .is_some_and(|rest| {
@@ -67,7 +67,7 @@ fn require_invite_id(invite_id: &str) -> Result<(), RPCErrors> {
 }
 
 /// A Zone-relative page path: one leading `/`, no scheme or authority.
-fn validate_return_path(path: &str) -> Result<(), RPCErrors> {
+pub(crate) fn validate_return_path(path: &str) -> Result<(), RPCErrors> {
     let valid = path.starts_with('/')
         && !path.starts_with("//")
         && path.len() <= MAX_RETURN_PATH_LEN
@@ -110,12 +110,20 @@ fn resource_title(resource: Option<&InviteResource>) -> Option<String> {
 
 /// A fresh password-free credential and the secret only the link carries.
 fn issue_credential(version: u32, now: u64) -> (InviteCredential, String) {
+    issue_credential_with_ttl(version, now, EXCLUSIVE_INVITE_TTL_SECS)
+}
+
+pub(crate) fn issue_credential_with_ttl(
+    version: u32,
+    now: u64,
+    ttl_secs: u64,
+) -> (InviteCredential, String) {
     let secret = random_token(32);
     let credential = InviteCredential {
         version,
         digest: invite_secret_digest(&secret),
         issued_at: now,
-        expires_at: now + EXCLUSIVE_INVITE_TTL_SECS,
+        expires_at: now + ttl_secs,
         state: InviteCredentialState::Active,
     };
     (credential, secret)
@@ -126,7 +134,7 @@ fn invite_link(origin: &str, invite_id: &str, secret: &str) -> String {
 }
 
 /// The record as administrators see it: never the secret, nor its digest.
-fn invite_view(invite: &ExclusiveInvite) -> Value {
+pub(crate) fn invite_view(invite: &ExclusiveInvite) -> Value {
     let mut value = json!(invite);
     if let Some(credential) = value.get_mut("credential").and_then(Value::as_object_mut) {
         credential.remove("digest");
@@ -338,6 +346,7 @@ pub(crate) async fn revoke_invite_families(user_id: &str, except_session_token: 
         subject: user_id.to_string(),
         auth_method: Some(AuthMethod::ExclusiveInvite),
         source_invite_id: None,
+        source_app_instance_id: None,
         except_session_token,
     };
     revoke_families(request).await;
@@ -345,7 +354,7 @@ pub(crate) async fn revoke_invite_families(user_id: &str, except_session_token: 
 
 /// Revocation is what ends the other password-free sessions, so a failed call
 /// is retried a few times before it is left logged.
-async fn revoke_families(request: RevokeFamiliesRequest) -> Option<u32> {
+pub(crate) async fn revoke_families(request: RevokeFamiliesRequest) -> Option<u32> {
     const ATTEMPTS: u32 = 3;
     let subject = request.subject.clone();
     let mut attempt = 0;
@@ -656,7 +665,7 @@ fn caller_token(req: &RPCRequest) -> Result<String, RPCErrors> {
 }
 
 impl ControlPanelServer {
-    async fn invite_resource_step(
+    pub(crate) async fn invite_resource_step(
         &self,
         kv: &dyn AgentKv,
         caller_token: &str,
@@ -801,6 +810,7 @@ impl ControlPanelServer {
             subject: invite.user_id.clone(),
             auth_method: None,
             source_invite_id: Some(invite.invite_id.clone()),
+            source_app_instance_id: None,
             except_session_token: None,
         })
         .await;
@@ -1236,6 +1246,7 @@ pub(crate) mod tests {
             owner_did: String::new(),
             is_user_session: true,
             is_control_panel_session: true,
+            principal_kind: buckyos_api::TokenPrincipalKind::User,
             agent_permission_mode: None,
             session: PrincipalSession {
                 ceiling,

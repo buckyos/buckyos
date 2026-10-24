@@ -6,6 +6,7 @@ use log::{info, warn};
 mod aiworkspace_client;
 mod control_panel;
 mod device_identity;
+mod group_hook;
 mod homestation_client;
 mod hybrid_sso;
 mod msg_center_client;
@@ -86,6 +87,7 @@ pub use cyfs_gateway_api::{
     SN_DEVICE_TOKEN_DEFAULT_TTL_SECS,
 };
 pub use device_identity::*;
+pub use group_hook::*;
 pub use homestation_client::*;
 pub use hybrid_sso::*;
 pub use msg_center_client::*;

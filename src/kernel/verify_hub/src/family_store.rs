@@ -70,6 +70,11 @@ impl FamilyClaims {
         Self::with_ceiling(auth_method, true, &SessionCeiling::external())
     }
 
+    /// An account session held below the account's own ceiling (App sign-in).
+    pub fn restricted(auth_method: AuthMethod, scopes: impl IntoIterator<Item = SessionScope>) -> Self {
+        Self::with_ceiling(auth_method, false, &SessionCeiling::restricted(scopes))
+    }
+
     fn with_ceiling(auth_method: AuthMethod, external: bool, ceiling: &SessionCeiling) -> Self {
         Self {
             auth_method: Some(auth_method),

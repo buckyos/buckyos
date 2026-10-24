@@ -3622,6 +3622,7 @@ impl ControlPanelServer {
             owner_did: String::new(),
             is_user_session: false,
             is_control_panel_session: true,
+            principal_kind: buckyos_api::TokenPrincipalKind::User,
             agent_permission_mode: None,
             session: crate::PrincipalSession::default(),
         };
@@ -4435,6 +4436,7 @@ mod submit_action_tests {
             owner_did: "did:bns:devtest".to_string(),
             is_user_session: false,
             is_control_panel_session: false,
+            principal_kind: buckyos_api::TokenPrincipalKind::User,
             agent_permission_mode: None,
             session: crate::PrincipalSession::default(),
         }

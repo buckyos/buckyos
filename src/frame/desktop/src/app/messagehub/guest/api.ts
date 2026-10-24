@@ -27,6 +27,8 @@ export interface GuestMessagePage {
 export interface GuestApi {
   identity(): Promise<CurrentIdentity>
   groupName(groupDid: string): Promise<string>
+  /** The group Doc's `host`: the Zone whose Apps may serve the Session's panels (D-2). */
+  groupHost(groupDid: string): Promise<string>
   /** The methods the group's public entry offers after the Zone switches (`auth.entry.describe`); null when it has none open. */
   entry(groupDid: string): Promise<EntryMethods | null>
   sessions(groupDid: string): Promise<GuestSession[]>
@@ -52,6 +54,9 @@ export const msgCenterGuestApi: GuestApi = {
   identity: loadCurrentIdentity,
   async groupName(groupDid) {
     return text((await getGroupDoc(groupDid)).doc.profile?.name)
+  },
+  async groupHost(groupDid) {
+    return text((await getGroupDoc(groupDid)).doc.host)
   },
   async entry(groupDid) {
     // The Control Panel applies the Zone's switches to the entry's own methods.

@@ -366,10 +366,39 @@ export interface GroupSharedState {
   announcement?: string
 }
 
+/** A business Hook bound to a Session (`HookBinding`; the host never returns its secret). */
+export interface GroupHookBinding {
+  point: string
+  service: string
+  may_grant?: boolean
+  on_unavailable?: string
+  timeout_ms?: number
+  result_ttl_ms?: number
+}
+
+/** Display configuration of a group or Session (`DisplayConfig`, EXT-04). */
+export interface GroupDisplay {
+  announcement?: string | null
+  links?: Array<{ title?: string; url?: string }> | null
+  files?: Array<{ title?: string; obj_id?: string }> | null
+  featured_members?: string[] | null
+}
+
+/** An embedded application panel (`PanelDecl`, v2 §7.2); `list_sessions` items carry the effective ones. */
+export interface GroupPanelDecl {
+  id: string
+  title?: string
+  entry_url: string
+  scope?: 'group' | { sessions: string[] }
+}
+
 export interface GroupSessionRules {
   receipts?: string
   edit?: { edit_window_ms?: number | null; recall_window_ms?: number | null }
   allow_guests?: boolean
+  hooks?: GroupHookBinding[] | null
+  panels?: string[] | null
+  display?: GroupDisplay | null
 }
 
 export interface GroupSessionItem {
@@ -377,6 +406,10 @@ export interface GroupSessionItem {
   session: string
   shared_state?: Partial<GroupSharedState> | null
   rules?: GroupSessionRules | null
+  /** The panels in effect for this Session (scope covers it or its rules name them). */
+  panels?: GroupPanelDecl[] | null
+  /** The Session's display over the group's. */
+  display?: GroupDisplay | null
   lifecycle: string
   revision: string
   has_guests: boolean
@@ -388,6 +421,8 @@ export interface GroupConfig {
   revision: string
   profile?: { name?: unknown; description?: unknown } | null
   default_session?: GroupSessionRules | null
+  display?: GroupDisplay | null
+  extensions?: { panels?: GroupPanelDecl[] | null } | null
 }
 
 export interface GroupInviteLink {
@@ -432,7 +467,8 @@ export interface GroupSessionMemberRecord {
 }
 /** `complete` is false for a guest, or a member the member list is hidden from: only explicit participants and those who posted are listed. */
 export const listGroupSessionMembers = (groupDid: DID, sessionId?: string) => call<{ items?: GroupSessionMemberRecord[]; complete?: boolean; revision?: string } | null>('group.list_session_members', { group_did: groupDid, ...session(sessionId) }).then(result => ({ items: result?.items ?? [], complete: result?.complete === true, revision: result?.revision ?? '' }))
-export const checkGroupAccess = (groupDid: DID, action: string, sessionId?: string) => call<{ allowed: boolean; reason?: string | null }>('group.check_access', { group_did: groupDid, action, ...session(sessionId) })
+/** `allowed: 'hook_dependent'`: a `post` Hook with `may_grant` decides each message; the composer stays enabled. */
+export const checkGroupAccess = (groupDid: DID, action: string, sessionId?: string) => call<{ allowed: boolean | 'hook_dependent'; reason?: string | null }>('group.check_access', { group_did: groupDid, action, ...session(sessionId) })
 export const createGroup = (input: { idempotency_key: string; profile: { name: string }; invitations: Array<{ member_did: DID }> }) => call<{ group_did: DID; revision: string }>('group.create', input as unknown as Record<string, unknown>)
 /** `patch` is deep-merged into the configuration (`{ profile: { name, description } }` edits the profile). */
 export const applyGroupConfig = (groupDid: DID, expectedRevision: string, patch: Record<string, unknown>, idempotencyKey: string) => call<{ revision: string }>('group.apply_config', { group_did: groupDid, expected_revision: expectedRevision, patch, ...key(idempotencyKey) })

@@ -21,6 +21,11 @@ import { didDisplayName } from '../../../presentation/model'
 import type { ConnectionChoice, MessageHubStore, OutgoingPayload, OutgoingUpload, OwnerStatus, SyncStatus } from '../store/types'
 import { registerNetworkMockHost, type NetworkMockGroup } from '../../../components/network/mock/hosts'
 import { canStage, pendingBubble } from '../store/outgoing'
+import { emptyDisplay, type GroupDisplayInfo, type GroupHookInfo, type GroupPanelRef } from '../extensions/model'
+
+/** The group's Zone in mock data; its panels come from this dev server (`mockPanelOrigins`). */
+export const MOCK_GROUP_HOST = 'did:web:zone.example'
+const MOCK_PANEL_URL = `${typeof window !== 'undefined' ? window.location.origin : 'http://localhost'}/messagehub/mock-panel.html`
 
 interface MockGroupSession {
   sessionId: string
@@ -34,13 +39,24 @@ interface MockGroupSession {
   allowGuests: boolean
   /** Explicit participants beyond inherited members: group members added by hand and guests. */
   participants: Record<string, 'member' | 'guest' | 'invited_guest' | 'removed'>
+  /** `SessionRules.panels`: declared panel ids this session shows besides those whose scope covers it. */
+  panels?: string[]
+  /** `SessionRules.display`, over the group's. */
+  display?: Partial<GroupDisplayInfo>
+  /** `SessionRules.hooks` of the named session. */
+  hooks?: GroupHookInfo[]
 }
+
+/** `extensions.panels[]` of the mock group; `sessions` is the `{ sessions }` scope, absent means `group`. */
+interface MockPanelDecl extends GroupPanelRef { sessions?: string[] }
 
 interface MockGroup {
   did: string
   name: string
   description: string
   ownerDid: string
+  /** The group Doc's `host`. */
+  hostDid: string
   lifecycle: GroupInfo['lifecycle']
   createdAt: number
   revision: string
@@ -48,6 +64,10 @@ interface MockGroup {
   sessions: Record<string, MockGroupSession>
   inviteLinks: Record<string, { requireApproval: boolean; revoked: boolean }>
   pendingTransfer?: { memberDid: string; transferId: string; expiresAt: number }
+  panels?: MockPanelDecl[]
+  display?: GroupDisplayInfo
+  /** `default_session.hooks`. */
+  hooks?: GroupHookInfo[]
 }
 
 type Snapshot = {
@@ -99,19 +119,23 @@ function seedSnapshot(now: number): Snapshot {
   const bob = getMockEntityDid('person-bob'), carol = getMockEntityDid('person-carol'), dave = getMockEntityDid('person-dave')
   const erin = 'did:buckyos:person:erin'
   const groups: Record<string, MockGroup> = {
-    [MOCK_PRODUCT_TEAM]: { did: MOCK_PRODUCT_TEAM, name: 'Product Team', description: 'Everything about the product.', ownerDid: alice, lifecycle: 'active', createdAt: now - 90 * 86400000, revision: 'rev-team-1', members: {
+    [MOCK_PRODUCT_TEAM]: { did: MOCK_PRODUCT_TEAM, name: 'Product Team', description: 'Everything about the product.', ownerDid: alice, hostDid: MOCK_GROUP_HOST, lifecycle: 'active', createdAt: now - 90 * 86400000, revision: 'rev-team-1', members: {
       [alice]: { role: 'owner', state: 'active' }, [MOCK_SELF_DID]: { role: 'admin', state: 'active' }, [bob]: { role: 'member', state: 'active' },
       [dave]: { role: 'member', state: 'active' }, [MOCK_AGENT_OWNER]: { role: 'member', state: 'active' },
       [getMockEntityDid('agent-writer')]: { role: 'member', state: 'invited', inviteId: 'invite-writer', expiresAt: now + INVITE_TTL_MS },
       [erin]: { role: 'member', state: 'pending_admin_approval', invitedBy: bob },
     }, sessions: {
-      'design-review': { sessionId: 'design-review', title: 'Design review', description: '', announcement: 'Review every Thursday.', lifecycle: 'active', revision: 'rev-design-1', receipts: 'readers', allowGuests: true, participants: { 'did:buckyos:person:frank': 'guest' } },
-    }, inviteLinks: {}, pendingTransfer: { memberDid: MOCK_SELF_DID, transferId: 'transfer-team', expiresAt: now + INVITE_TTL_MS } },
-    [MOCK_HIKING_GROUP]: { did: MOCK_HIKING_GROUP, name: 'Weekend Hiking', description: '', ownerDid: bob, lifecycle: 'active', createdAt: now - 86400000, revision: 'rev-hiking-1', members: {
+      'design-review': { sessionId: 'design-review', title: 'Design review', description: '', announcement: 'Review every Thursday.', lifecycle: 'active', revision: 'rev-design-1', receipts: 'readers', allowGuests: true, participants: { 'did:buckyos:person:frank': 'guest' },
+        display: { links: [{ title: 'Design system', url: 'https://design.zone.example/' }] }, hooks: [{ point: 'post', service: 'https://crm.zone.example/hooks/post', mayGrant: true }] },
+    }, inviteLinks: {}, pendingTransfer: { memberDid: MOCK_SELF_DID, transferId: 'transfer-team', expiresAt: now + INVITE_TTL_MS },
+      panels: [{ id: 'crm', title: 'CRM', entryUrl: MOCK_PANEL_URL }, { id: 'evil', title: 'Untrusted', entryUrl: 'https://evil.example/panel', sessions: ['design-review'] }],
+      display: { announcement: 'Welcome to the product team.', links: [{ title: 'Roadmap', url: 'https://roadmap.zone.example/' }], files: [{ title: 'Product brief', objId: 'cyfile:mock-doc-brief' }], featuredMembers: [alice] },
+      hooks: [{ point: 'join', service: 'https://crm.zone.example/hooks/join', mayGrant: false }] },
+    [MOCK_HIKING_GROUP]: { did: MOCK_HIKING_GROUP, name: 'Weekend Hiking', description: '', ownerDid: bob, hostDid: MOCK_GROUP_HOST, lifecycle: 'active', createdAt: now - 86400000, revision: 'rev-hiking-1', members: {
       [bob]: { role: 'owner', state: 'active' }, [alice]: { role: 'member', state: 'active' },
       [MOCK_SELF_DID]: { role: 'member', state: 'invited', inviteId: 'invite-hiking', expiresAt: now + INVITE_TTL_MS },
     }, sessions: {}, inviteLinks: {} },
-    [MOCK_BOOK_CLUB]: { did: MOCK_BOOK_CLUB, name: 'Book Club', description: 'One book a month.', ownerDid: carol, lifecycle: 'active', createdAt: now - 10 * 86400000, revision: 'rev-book-1', members: {
+    [MOCK_BOOK_CLUB]: { did: MOCK_BOOK_CLUB, name: 'Book Club', description: 'One book a month.', ownerDid: carol, hostDid: MOCK_GROUP_HOST, lifecycle: 'active', createdAt: now - 10 * 86400000, revision: 'rev-book-1', members: {
       [carol]: { role: 'owner', state: 'active' }, [dave]: { role: 'member', state: 'active' },
       [MOCK_AGENT_OWNER]: { role: 'member', state: 'invited', inviteId: 'invite-book-agent', expiresAt: now + INVITE_TTL_MS, invitedBy: carol },
     }, sessions: {
@@ -597,7 +621,24 @@ export class MessageHubMockStore implements MessageHubStore {
       message.mentions = payload.mentions
     }
     if (payload.attachments.length > 0) return this.sendWithUploads(context, id, message, payload, confirmation)
+    if (session && this.hookDenies(session, payload)) return this.rejectByHook(context, session, payload)
     return this.sendMessage(context, id, message, confirmation, canStage(payload) ? payload.localId : undefined)
+  }
+  /** The mock business Hook: a `post` Hook of the session refuses any message starting with `#deny`. */
+  private hookDenies(session: Session, payload: OutgoingPayload): boolean {
+    const group = this.snapshot.groups[session.entityId]
+    const sid = group ? groupSessionId(group.did, session.id) : undefined
+    const hooks = !group ? [] : sid === undefined ? group.hooks ?? [] : group.sessions[sid]?.hooks ?? []
+    return hooks.some(hook => hook.point === 'post') && /^#deny\b/i.test(payload.content.trim())
+  }
+  /** `hook-denied` (EXT-06): the host answers `ok: false`; the bubble stays, marked with the refusal. */
+  private async rejectByHook(context: MessageHubContext, session: Session, payload: OutgoingPayload) {
+    this.requireOwn(context)
+    if (this.delayMs) await new Promise(resolve => setTimeout(resolve, this.delayMs))
+    const localId = canStage(payload) ? payload.localId : crypto.randomUUID()
+    const bubble = this.pendingBubble(context, session, { ...payload, localId }, false)
+    delete bubble.ui_upload
+    this.setPending(sessionKey(context.ownerDid, session.id), rows => [...rows.filter(row => row.ui_local_id !== localId), { ...bubble, ui_delivery_status: 'failed', ui_delivery_reason: 'hook-denied' }])
   }
   private submittedAt(payload: OutgoingPayload) { return this.clockOverride ?? payload.submittedAt ?? this.now() }
   private async sendWithUploads(context: MessageHubContext, id: string, message: MessageObject, payload: OutgoingPayload, confirmation: string | undefined) {
@@ -789,9 +830,22 @@ export class MessageHubMockStore implements MessageHubStore {
     return category && !preferences.title ? translate(`messagehub.notify.category.${category}`, session.title) : sessionTitle(session, preferences)
   }
 
+  /** The host's `list_sessions` extension fields: panels whose scope covers the session or its rules name, display over the group's, hooks. */
+  private sessionExtensions(group: MockGroup, session: MockGroupSession | null) {
+    const sid = session?.sessionId ?? null
+    const panels: GroupPanelRef[] = (group.panels ?? []).filter(panel => !panel.sessions || (sid !== null && panel.sessions.includes(sid)) || (sid !== null && session?.panels?.includes(panel.id))).map(({ id, title, entryUrl }) => ({ id, title, entryUrl }))
+    const base = group.display ?? emptyDisplay, over = session?.display ?? {}
+    const display: GroupDisplayInfo = {
+      ...(over.announcement ?? base.announcement ? { announcement: over.announcement ?? base.announcement } : {}),
+      links: over.links?.length ? over.links : base.links,
+      files: over.files?.length ? over.files : base.files,
+      featuredMembers: over.featuredMembers?.length ? over.featuredMembers : base.featuredMembers,
+    }
+    return { panels, display, hooks: session ? session.hooks ?? [] : group.hooks ?? [] }
+  }
   private groupSessions(group: MockGroup): GroupSessionInfo[] {
-    const named = Object.values(group.sessions).filter(session => session.lifecycle !== 'deleted').map(session => ({ key: groupSessionKey(group.did, session.sessionId), sessionId: session.sessionId, title: session.title, description: session.description, announcement: session.announcement, sharedRevision: session.revision, lifecycle: session.lifecycle, revision: session.revision, hasGuests: Object.values(session.participants).includes('guest'), allowGuests: session.allowGuests === true, receipts: session.receipts }))
-    return [{ key: group.did, sessionId: null, title: '', description: '', announcement: '', sharedRevision: group.revision, lifecycle: group.lifecycle, revision: group.revision, hasGuests: false, allowGuests: false, receipts: group.did === MOCK_PRODUCT_TEAM ? 'readers' : 'hidden' }, ...named]
+    const named = Object.values(group.sessions).filter(session => session.lifecycle !== 'deleted').map(session => ({ key: groupSessionKey(group.did, session.sessionId), sessionId: session.sessionId, title: session.title, description: session.description, announcement: session.announcement, sharedRevision: session.revision, lifecycle: session.lifecycle, revision: session.revision, hasGuests: Object.values(session.participants).includes('guest'), allowGuests: session.allowGuests === true, receipts: session.receipts, ...this.sessionExtensions(group, session) }))
+    return [{ key: group.did, sessionId: null, title: '', description: '', announcement: '', sharedRevision: group.revision, lifecycle: group.lifecycle, revision: group.revision, hasGuests: false, allowGuests: false, receipts: group.did === MOCK_PRODUCT_TEAM ? 'readers' : 'hidden', ...this.sessionExtensions(group, null) }, ...named]
   }
   private groupInfo(group: MockGroup, viewerDid: string): GroupInfo {
     const me = group.members[viewerDid]
@@ -800,7 +854,7 @@ export class MessageHubMockStore implements MessageHubStore {
     const active = manager && group.lifecycle === 'active'
     const members = group.lifecycle === 'deleted' || !myRole ? null : Object.entries(group.members).map(([did, member]) => ({ did, role: member.role, state: member.state, expiresAt: member.expiresAt, invitedBy: member.invitedBy }))
     return {
-      did: group.did, name: group.name, description: group.description, ownerDid: group.ownerDid, hosted: true, lifecycle: group.lifecycle, revision: group.revision, myRole, members, sessions: this.groupSessions(group),
+      did: group.did, name: group.name, description: group.description, ownerDid: group.ownerDid, hostDid: group.hostDid, hosted: true, lifecycle: group.lifecycle, revision: group.revision, myRole, members, sessions: this.groupSessions(group),
       can: { ...noGroupCapabilities, invite: active, remove: active, createSession: active, approve: active, updateRole: myRole === 'owner' && group.lifecycle === 'active', moderate: active, updateConfig: active, manageSession: active, inviteGuest: active, updateSharedState: active, redactAny: active, mentionAll: active, transferOwner: myRole === 'owner' && group.lifecycle === 'active' },
       messageRules: { editWindowMs: EDIT_WINDOW_MS, recallWindowMs: RECALL_WINDOW_MS },
       pendingTransfer: group.pendingTransfer,
@@ -888,7 +942,7 @@ export class MessageHubMockStore implements MessageHubStore {
         if (entity.type === 'agent' && mockAgentGroupAllowed(did) === false) throw Error('agent-group-disabled')
       }
       const now = this.now(), did = `did:buckyos:group:${crypto.randomUUID().slice(0, 8)}`
-      const group: MockGroup = { did, name: values.name, description: '', ownerDid: context.ownerDid, lifecycle: 'active', createdAt: now, revision: crypto.randomUUID(), members: { [context.ownerDid]: { role: 'owner', state: 'active' } }, sessions: {}, inviteLinks: {} }
+      const group: MockGroup = { did, name: values.name, description: '', ownerDid: context.ownerDid, hostDid: MOCK_GROUP_HOST, lifecycle: 'active', createdAt: now, revision: crypto.randomUUID(), members: { [context.ownerDid]: { role: 'owner', state: 'active' } }, sessions: {}, inviteLinks: {} }
       for (const member of members) group.members[member] = { role: 'member', state: 'invited', inviteId: crypto.randomUUID(), expiresAt: now + INVITE_TTL_MS, invitedBy: context.ownerDid }
       next.groups[did] = group
       this.mainSession(next, group, now)
