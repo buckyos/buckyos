@@ -52,6 +52,8 @@ mod kevent_client;
 mod kevent_ringbuffer;
 pub mod network_observation;
 pub mod node_control;
+mod computer;
+pub use computer::*;
 mod node_executor;
 mod node_executor_proto;
 mod opendan_client;

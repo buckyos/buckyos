@@ -364,7 +364,7 @@ impl Store {
             let result = match result {
                 Some(r) => r.result,
                 None => {
-                    let unknown = unknown_result(&dir, state.state);
+                    let unknown = unknown_result(&dir, state.state, &request);
                     publish_noreplace_json(
                         &dir.join("result.json"),
                         &OpResultRecord {
@@ -468,8 +468,17 @@ impl Store {
         Ok(())
     }
 
+    pub fn has_unknown_computer_actions(&self) -> bool {
+        let keys: Vec<_> = self.index.lock().unwrap().entries.iter()
+            .filter(|(_, entry)| entry.state == ExecutorOpState::Unknown)
+            .map(|(key, _)| key.clone()).collect();
+        keys.into_iter().any(|key| self.status(&key).is_ok_and(|status|
+            status.kind == ExecutorOpKind::ComputerAct))
+    }
+
     pub fn reservation_for(spec: &ExecutorOpSpec, budget: &OpBudget) -> u64 {
         let body = match spec {
+            ExecutorOpSpec::Computer { request } => budget.max_file_bytes.min(buckyos_api::COMPUTER_MAX_IMAGE_BYTES as u64) + serde_json::to_vec(request).map_or(0, |v| v.len() as u64),
             ExecutorOpSpec::Exec { cmd, .. } => cmd.len() as u64 + 2 * budget.max_output_bytes,
             ExecutorOpSpec::Read { .. } => budget.max_file_bytes,
             ExecutorOpSpec::Write { content_length, .. } => *content_length,
@@ -720,6 +729,15 @@ impl Store {
                 continue;
             };
             result.content = None;
+            if let Some(computer) = result.computer.as_mut() {
+                if computer.feedback.state == buckyos_api::ComputerFeedbackState::Included {
+                    computer.feedback.state = buckyos_api::ComputerFeedbackState::Failed;
+                    computer.observation = None;
+                    computer.error.get_or_insert(buckyos_api::ComputerError {
+                        code: "result_expired".into(), message: "observation artifact was garbage collected; execution facts remain available".into(),
+                    });
+                }
+            }
             let tomb = TombstoneRecord {
                 schema_version: STORE_SCHEMA_VERSION,
                 key_hash: key.clone(),
@@ -756,7 +774,7 @@ impl Store {
     }
 }
 
-fn unknown_result(dir: &Path, previous: ExecutorOpState) -> ExecutorOpResult {
+fn unknown_result(dir: &Path, previous: ExecutorOpState, request: &OpRequestRecord) -> ExecutorOpResult {
     let summary = |name: &str| {
         let len = file_len(&dir.join(name));
         Some(ExecutorOutputSummary {
@@ -786,6 +804,13 @@ fn unknown_result(dir: &Path, previous: ExecutorOpState) -> ExecutorOpResult {
         stderr: summary("stderr"),
         content: None,
         file: None,
+        computer: match &request.spec {
+            ExecutorOpSpec::Computer { request: computer } => Some(buckyos_api::ComputerResult::failed(
+                &request.identity.op_id, computer.binding_id(), buckyos_api::ComputerExecutionState::Unknown,
+                "execution_unknown", "daemon restarted without a persisted completion; query this operation and never replay it",
+            )),
+            _ => None,
+        },
         finished_at_ms: now_ms(),
     }
 }
@@ -870,6 +895,63 @@ mod tests {
     }
 
     #[test]
+    fn restarted_computer_action_keeps_unknown_fact_and_fences_resource() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ledger");
+        let key = {
+            let store = Store::open(&root, "did:dev:a").unwrap();
+            let mut rec = record(&store, "click", "click", "unused");
+            rec.spec = ExecutorOpSpec::Computer {
+                request: serde_json::from_value(serde_json::json!({
+                    "command": "click", "binding_id": "dev:display:1", "feedback": "none",
+                    "target": {"kind": "point", "observation_id": "obs", "x": 1, "y": 1, "space": "screenshot"}
+                })).unwrap(),
+            };
+            rec.digest = buckyos_api::executor_request_digest("node-dev", "run1", "click", "click", &rec.spec);
+            store.admit(&rec, &ExecutorLimits::default(), None).unwrap();
+            store.update_state(&rec.key_hash, |s| s.state = ExecutorOpState::Running).unwrap();
+            rec.key_hash
+        };
+        let store = Store::open(&root, "did:dev:a").unwrap();
+        let result = store.status(&key).unwrap().result.unwrap();
+        let computer = result.computer.unwrap();
+        assert_eq!(computer.operation_id, "click");
+        assert_eq!(computer.binding_id, "dev:display:1");
+        assert_eq!(computer.execution.state, buckyos_api::ComputerExecutionState::Unknown);
+        assert_eq!(computer.operation_state, buckyos_api::ComputerOperationState::Unknown);
+        assert!(store.has_unknown_computer_actions());
+        store.gc(now_ms() + 10_000, 1).unwrap();
+        assert!(store.has_unknown_computer_actions());
+    }
+
+    #[test]
+    fn screenshot_gc_preserves_execution_but_marks_feedback_expired() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("ledger"), "did:dev:a").unwrap();
+        let mut rec = record(&store, "observe", "observe", "unused");
+        rec.spec = ExecutorOpSpec::Computer { request: buckyos_api::ComputerRequest::Observe {
+            binding_id: "dev:display:1".into(), mode: buckyos_api::ComputerObservationMode::Visual,
+        }};
+        rec.digest = buckyos_api::executor_request_digest("node-dev", "run1", "observe", "observe", &rec.spec);
+        store.admit(&rec, &ExecutorLimits::default(), None).unwrap();
+        let mut computer = buckyos_api::ComputerResult::new("observe", "dev:display:1", buckyos_api::ComputerExecutionState::Completed);
+        computer.feedback.state = buckyos_api::ComputerFeedbackState::Included;
+        store.publish_result(&rec.key_hash, ExecutorOpResult {
+            state: ExecutorOpState::Succeeded, exit_code: None, signal: None, error: None,
+            stdout: None, stderr: None, content: None, file: None, computer: Some(computer), finished_at_ms: 1,
+        }).unwrap();
+        store.gc(10_000, 1).unwrap();
+        let status = store.status(&rec.key_hash).unwrap();
+        assert!(status.expired);
+        assert_eq!(status.state, ExecutorOpState::Succeeded);
+        let computer = status.result.unwrap().computer.unwrap();
+        assert_eq!(computer.execution.state, buckyos_api::ComputerExecutionState::Completed);
+        assert_eq!(computer.operation_state, buckyos_api::ComputerOperationState::Completed);
+        assert_eq!(computer.feedback.state, buckyos_api::ComputerFeedbackState::Failed);
+        assert_eq!(computer.error.unwrap().code, "result_expired");
+    }
+
+    #[test]
     fn gc_keeps_tombstones_and_capacity_is_enforced() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("ledger"), "did:dev:a").unwrap();
@@ -888,6 +970,7 @@ mod tests {
                     stderr: None,
                     content: None,
                     file: None,
+                    computer: None,
                     finished_at_ms: 1,
                 },
             )

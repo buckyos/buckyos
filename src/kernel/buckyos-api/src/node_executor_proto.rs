@@ -235,6 +235,17 @@ pub struct ExecutorEditRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ExecutorComputerRequest {
+    pub request_id: String,
+    pub store_id: String,
+    pub op_id: String,
+    pub run_id: String,
+    pub call_id: String,
+    pub request: crate::ComputerRequest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExecutorOpRef {
     pub request_id: String,
     pub store_id: String,
@@ -273,6 +284,7 @@ pub enum ExecutorClientMessage {
     Write(ExecutorWriteRequest),
     UploadEnd(ExecutorUploadEnd),
     Edit(ExecutorEditRequest),
+    Computer(ExecutorComputerRequest),
     Cancel(ExecutorOpRef),
     Query(ExecutorQueryRequest),
     Ping(ExecutorPing),
@@ -288,6 +300,7 @@ impl ExecutorClientMessage {
             ExecutorClientMessage::Write(m) => Some(&m.request_id),
             ExecutorClientMessage::UploadEnd(m) => Some(&m.request_id),
             ExecutorClientMessage::Edit(m) => Some(&m.request_id),
+            ExecutorClientMessage::Computer(m) => Some(&m.request_id),
             ExecutorClientMessage::Cancel(m) => Some(&m.request_id),
             ExecutorClientMessage::Query(m) => Some(&m.request_id),
             ExecutorClientMessage::Ping(m) => Some(&m.request_id),
@@ -360,6 +373,9 @@ pub enum ExecutorOpKind {
     Read,
     Write,
     Edit,
+    ComputerInspect,
+    ComputerObserve,
+    ComputerAct,
 }
 
 impl ExecutorOpKind {
@@ -369,6 +385,9 @@ impl ExecutorOpKind {
             ExecutorOpKind::Read => ExecutorOp::Read,
             ExecutorOpKind::Write => ExecutorOp::Write,
             ExecutorOpKind::Edit => ExecutorOp::Edit,
+            ExecutorOpKind::ComputerInspect => ExecutorOp::ComputerInspect,
+            ExecutorOpKind::ComputerObserve => ExecutorOp::ComputerObserve,
+            ExecutorOpKind::ComputerAct => ExecutorOp::ComputerAct,
         }
     }
 }
@@ -439,6 +458,8 @@ pub struct ExecutorOpResult {
     pub content: Option<ExecutorOutputSummary>,
     #[serde(default)]
     pub file: Option<ExecutorFileResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub computer: Option<crate::ComputerResult>,
     pub finished_at_ms: u64,
 }
 
@@ -555,6 +576,7 @@ pub enum ExecutorServerMessage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExecutorOpSpec {
+    Computer { request: crate::ComputerRequest },
     Exec {
         cmd: String,
         cwd: String,
@@ -583,6 +605,11 @@ pub enum ExecutorOpSpec {
 impl ExecutorOpSpec {
     pub fn kind(&self) -> ExecutorOpKind {
         match self {
+            ExecutorOpSpec::Computer { request } => match request.required_op() {
+                ExecutorOp::ComputerInspect => ExecutorOpKind::ComputerInspect,
+                ExecutorOp::ComputerObserve => ExecutorOpKind::ComputerObserve,
+                _ => ExecutorOpKind::ComputerAct,
+            },
             ExecutorOpSpec::Exec { .. } => ExecutorOpKind::Exec,
             ExecutorOpSpec::Read { .. } => ExecutorOpKind::Read,
             ExecutorOpSpec::Write { .. } => ExecutorOpKind::Write,

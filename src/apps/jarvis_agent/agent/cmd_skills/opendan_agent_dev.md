@@ -7,6 +7,11 @@ requires: an OpenDAN session (agent-session on PATH) and the buckyos command; re
 The `executor` tool group provides `executor_list` and `executor_call` without moving the Agent Session.
 Discover a permitted online executor and use its exact executor_id, generation, profile_id and store_id.
 Linux supports exec/read/write/edit/query/cancel; UI, input and capture remain unsupported.
+macOS 14+ adds a native ComputerUse driver through the authenticated Command Stream and SDK
+`ExecutorCommandStream.computer`; it does not add an Agent tool or change Session Runtime binding.
+Desktop grants, local pause/resume and recovery are documented in `doc/arch/agent_daemon.md`.
+The planned `buckyos computer` CLI and image-to-model bridge are not yet available; PNG bytes alone
+do not prove the model received an image. Do not publish a `computer_use` recipe requiring those commands.
 The CLI alternative is `buckyos executor --help`; inspect the installed command schema before use.
 Management URL credentials authenticate the target daemon only, while tool calls use the Agent's App session.
 After connection loss, rediscover the active generation and query the original operation using its

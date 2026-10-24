@@ -3,6 +3,8 @@
 //! the same crate is meant for the standalone/embedded Agent Daemon.
 
 mod auth;
+mod computer;
+pub use computer::{ComputerCancellation, ComputerContext, ComputerDriver, ComputerOutput};
 mod fsutil;
 mod ops;
 mod spawn;
@@ -112,6 +114,7 @@ pub(crate) struct ExecutorInner {
     pub launcher: WorkerLauncher,
     pub identity: spawn::HostIdentity,
     pub admission: ExecutorAdmission,
+    computer: computer::SharedComputerDriver,
     expired_handled: AtomicBool,
     reconcile_lock: tokio::sync::Mutex<()>,
 }
@@ -156,9 +159,23 @@ impl NodeExecutor {
     }
 
     pub fn open_with_options(host: ExecutorHost, options: ExecutorOptions) -> Result<Self, StoreOpenError> {
+        Self::open_internal(host, options, None)
+    }
+
+    pub fn open_with_computer(host: ExecutorHost, options: ExecutorOptions, driver: Arc<dyn ComputerDriver>) -> Result<Self, StoreOpenError> {
+        Self::open_internal(host, options, Some(driver))
+    }
+
+    fn open_internal(host: ExecutorHost, options: ExecutorOptions, computer: computer::SharedComputerDriver) -> Result<Self, StoreOpenError> {
         let identity = spawn::HostIdentity::capture(options.identity_mode)?;
-        let host_caps = host_capabilities(&identity, &host, options.admission);
+        let mut host_caps = host_capabilities(&identity, &host, options.admission);
+        if computer.is_some() && options.identity_mode == ExecutorIdentityMode::CurrentUser {
+            host_caps.extend([ExecutorOp::ComputerInspect, ExecutorOp::ComputerObserve, ExecutorOp::ComputerAct]);
+        }
         let store = Arc::new(Store::open(&host.store_dir, &host.node_did)?);
+        if store.has_unknown_computer_actions() {
+            if let Some(driver) = &computer { driver.set_paused(true); }
+        }
         let server_epoch = format!("ep-{}", uuid::Uuid::new_v4().simple());
         let ops = Arc::new(OpsManager::new(
             store.clone(),
@@ -166,6 +183,8 @@ impl NodeExecutor {
             host.shell.clone(),
             server_epoch.clone(),
             identity.clone(),
+            computer.clone(),
+            host.node_id.clone(),
         ));
         let inner = Arc::new(ExecutorInner {
             node_id: host.node_id,
@@ -183,6 +202,7 @@ impl NodeExecutor {
             launcher: host.worker,
             identity,
             admission: options.admission,
+            computer,
             expired_handled: AtomicBool::new(true),
             reconcile_lock: tokio::sync::Mutex::new(()),
         });
@@ -238,6 +258,8 @@ impl NodeExecutor {
             Some(config) => self.inner.auth.apply(config, now_ms(), self.inner.admission),
         };
         if result == ApplyResult::Replaced {
+            self.inner.ops.fence_admission();
+            self.invalidate_computer();
             self.inner.reconcile().await;
         }
         result
@@ -259,7 +281,24 @@ impl NodeExecutor {
         self.inner.ops.is_accepting() && self.inner.auth.current().is_some()
     }
 
+    pub fn invalidate_computer(&self) {
+        if let Some(driver) = &self.inner.computer { driver.invalidate(); }
+    }
+
+    pub fn set_computer_generation(&self, generation: u64) {
+        if let Some(driver) = &self.inner.computer { driver.set_generation(generation); }
+    }
+
+    pub fn computer_paused(&self) -> bool {
+        self.inner.computer.as_ref().is_some_and(|driver| driver.is_paused())
+    }
+
+    pub fn set_computer_paused(&self, paused: bool) {
+        if let Some(driver) = &self.inner.computer { driver.set_paused(paused); }
+    }
+
     pub fn pause(&self) {
+        self.invalidate_computer();
         self.inner.ops.pause();
     }
 
@@ -415,6 +454,7 @@ impl ExecutorInner {
                     && profile.run_as == op.profile.run_as
                     && profile.workdir_roots == op.profile.workdir_roots
                     && profile.env == op.profile.env
+                    && (!op.requires_capture || granted.contains(&ExecutorOp::ComputerObserve))
                     && granted.contains(&op.kind.op())
                     && host_caps.contains(&op.kind.op()))
             })

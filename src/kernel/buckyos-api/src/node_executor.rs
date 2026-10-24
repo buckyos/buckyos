@@ -38,18 +38,24 @@ pub enum ExecutorOp {
     Read,
     Write,
     Edit,
+    ComputerInspect,
+    ComputerObserve,
+    ComputerAct,
     Query,
     Cancel,
 }
 
 impl ExecutorOp {
-    pub const ALL: [ExecutorOp; 8] = [
+    pub const ALL: [ExecutorOp; 11] = [
         ExecutorOp::OpenStream,
         ExecutorOp::Describe,
         ExecutorOp::Exec,
         ExecutorOp::Read,
         ExecutorOp::Write,
         ExecutorOp::Edit,
+        ExecutorOp::ComputerInspect,
+        ExecutorOp::ComputerObserve,
+        ExecutorOp::ComputerAct,
         ExecutorOp::Query,
         ExecutorOp::Cancel,
     ];
@@ -62,6 +68,9 @@ impl ExecutorOp {
             ExecutorOp::Read => "read",
             ExecutorOp::Write => "write",
             ExecutorOp::Edit => "edit",
+            ExecutorOp::ComputerInspect => "computer_inspect",
+            ExecutorOp::ComputerObserve => "computer_observe",
+            ExecutorOp::ComputerAct => "computer_act",
             ExecutorOp::Query => "query",
             ExecutorOp::Cancel => "cancel",
         }
@@ -74,7 +83,7 @@ impl ExecutorOp {
     pub fn is_mutating(&self) -> bool {
         matches!(
             self,
-            ExecutorOp::Exec | ExecutorOp::Write | ExecutorOp::Edit
+            ExecutorOp::Exec | ExecutorOp::Write | ExecutorOp::Edit | ExecutorOp::ComputerAct
         )
     }
 

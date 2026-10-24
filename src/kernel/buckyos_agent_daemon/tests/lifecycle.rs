@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -176,7 +176,9 @@ async fn welcome(
                 capabilities,
             } => {
                 assert_eq!(actual, generation);
+                #[cfg(target_os = "linux")]
                 assert_eq!(capabilities["ui"]["state"], "unsupported");
+                assert_eq!(capabilities["platform"], std::env::consts::OS);
                 assert_eq!(capabilities["command"]["ready"], true);
                 return (instance_id, store_id, resume_token);
             }
@@ -603,4 +605,109 @@ async fn real_daemon_deadline_interrupts_reconnect_backoff_and_welcome() {
         assert!(String::from_utf8_lossy(&output.stderr).contains("expired"));
         drop(stalled);
     }
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn macos_local_pause_resume_is_reported_without_desktop_input() {
+    let temp = tempfile::tempdir().unwrap();
+    let work = temp.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let data = temp.path().join("state");
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let child = start(&data, &listener).await;
+    let mut management = accept(
+        &listener,
+        &format!("{AGENT_DAEMON_MANAGE_PATH}?executor_id=test-executor"),
+        SECRET,
+    )
+    .await;
+    welcome(&mut management, &work, 1, None).await;
+    for (command, paused) in [("pause", true), ("resume", false)] {
+        let output = Command::new(env!("CARGO_BIN_EXE_buckyos_agent_daemon"))
+            .args([
+                "--data-dir",
+                data.to_str().unwrap(),
+                command,
+                "--executor",
+                "test-executor",
+            ])
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        tokio::time::timeout(Duration::from_secs(6), async {
+            loop {
+                let reported = match receive(&mut management).await {
+                    AgentDaemonClientMessage::Ready { capabilities, .. } => {
+                        assert_eq!(capabilities["command"]["ready"], true);
+                        if capabilities["ui"]["state"] == "paused" {
+                            assert_eq!(capabilities["input"]["ready"], false);
+                        }
+                        (capabilities["ui"]["state"] == "paused") == paused
+                    }
+                    AgentDaemonClientMessage::Heartbeat { .. } => false,
+                    other => panic!("unexpected management message {other:?}"),
+                };
+                send(
+                    &mut management,
+                    AgentDaemonServerMessage::Snapshot {
+                        generation: 1,
+                        server_time_ms: node_executor::now_ms(),
+                        expires_at_ms: None,
+                        config: config(&work, 1),
+                    },
+                )
+                .await;
+                if reported {
+                    break;
+                }
+            }
+            loop {
+                let output = Command::new(env!("CARGO_BIN_EXE_buckyos_agent_daemon"))
+                    .args([
+                        "--data-dir",
+                        data.to_str().unwrap(),
+                        "status",
+                        "--executor",
+                        "test-executor",
+                        "--json",
+                    ])
+                    .output()
+                    .await
+                    .unwrap();
+                assert!(output.status.success());
+                let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+                let instance = &status["instances"][0];
+                assert_eq!(instance["state"], "online");
+                if (instance["capabilities"]["ui"]["state"] == "paused") == paused {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("local control must be reported within one heartbeat");
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_buckyos_agent_daemon"))
+        .args([
+            "--data-dir",
+            data.to_str().unwrap(),
+            "stop",
+            "--executor",
+            "test-executor",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(child.wait_with_output().await.unwrap().status.success());
 }

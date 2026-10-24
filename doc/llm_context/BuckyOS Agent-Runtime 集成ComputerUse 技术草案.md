@@ -15,6 +15,8 @@
 >
 > 下文所有 `buckyos computer` 命令均待实现，不能当作当前可执行命令。复选框仅在对应实现、检查和证据齐备后勾选。本次文档整理不代表功能已实现或已实机验收。
 
+> macOS daemon 实施进展：本仓库已实现共享 Computer 协议、复用 Executor 账本的执行入口和 macOS 14+ 原生桌面驱动，实际支持范围及限制见 [Agent Daemon](../arch/agent_daemon.md#macos-computeruse)。本草案仍是完整交付目标；下文的上层 CLI、图片桥接和 T1–T6 整体验收不能据 daemon 子集实现勾选完成。
+
 ## 0. 已确定的决策
 
 1. **能用 CLI 就沿用 CLI，Agent 不增加新的 tool。** ComputerUse 是 daemon 的执行能力，通过已有 shell 入口使用；不增加 Runtime kind，不为 GUI 扩展 `AgentRuntime` trait。

@@ -107,6 +107,10 @@ impl AuthState {
 
     /// The snapshot, only while it is enabled and inside its lease.
     pub fn current(&self) -> Option<ExecutorConfig> {
+        self.current_with_deadline().map(|(config, _)| config)
+    }
+
+    pub fn current_with_deadline(&self) -> Option<(ExecutorConfig, u64)> {
         let guard = self.snapshot.read().unwrap();
         guard
             .as_ref()
@@ -114,7 +118,7 @@ impl AuthState {
                 && crate::now_ms() < s.config.auth_valid_until_ms
                 && Instant::now() < s.valid_until
                 && suspend_clock_ms() < s.valid_until_suspend_ms)
-            .map(|s| s.config.clone())
+            .map(|s| (s.config.clone(), s.valid_until_suspend_ms))
     }
 
     pub fn has_snapshot(&self) -> bool {
@@ -122,15 +126,21 @@ impl AuthState {
     }
 }
 
-fn suspend_clock_ms() -> u64 {
+pub(crate) fn suspend_clock_ms() -> u64 {
     #[cfg(target_os = "linux")]
+    let clock = libc::CLOCK_BOOTTIME;
+    #[cfg(target_os = "macos")]
+    let clock = libc::CLOCK_MONOTONIC_RAW;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     unsafe {
         let mut value: libc::timespec = std::mem::zeroed();
-        if libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut value) == 0 {
+        if libc::clock_gettime(clock, &mut value) == 0 {
             return (value.tv_sec as u64).saturating_mul(1000)
                 .saturating_add(value.tv_nsec as u64 / 1_000_000);
         }
+        return u64::MAX;
     }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     crate::now_ms()
 }
 

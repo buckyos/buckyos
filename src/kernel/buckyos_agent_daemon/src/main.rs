@@ -11,7 +11,7 @@ use tokio::sync::watch;
 #[derive(Parser)]
 #[command(
     version,
-    about = "BuckyOS Agent Daemon: foreground command/file executor for Linux",
+    about = "BuckyOS Agent Daemon: foreground executor for Linux and macOS",
     arg_required_else_help = true
 )]
 struct Args {
@@ -48,6 +48,14 @@ enum Command {
         json: bool,
     },
     Stop {
+        #[arg(long)]
+        executor: Option<String>,
+    },
+    Pause {
+        #[arg(long)]
+        executor: Option<String>,
+    },
+    Resume {
         #[arg(long)]
         executor: Option<String>,
     },
@@ -146,20 +154,37 @@ async fn main_async(args: Args) -> Result<(), String> {
         }
         Command::Doctor { executor, json } | Command::Status { executor, json } => {
             let instances = local::statuses(&data_dir, executor.as_deref())?;
+            let capabilities = local::capabilities(&node_executor::default_shell());
             if json {
                 println!("{}", serde_json::to_string_pretty(&serde_json::json!({
                     "version": env!("CARGO_PKG_VERSION"), "identity": { "uid": local::current_uid(), "mode": "current_user" },
-                    "capabilities": local::capabilities(&node_executor::default_shell()), "instances": instances
+                    "capabilities": capabilities, "instances": instances
                 })).map_err(|_| "cannot encode status")?);
             } else {
                 println!(
-                    "BuckyOS Agent Daemon {} — Linux command/file backend",
-                    env!("CARGO_PKG_VERSION")
+                    "BuckyOS Agent Daemon {} — {} backend",
+                    env!("CARGO_PKG_VERSION"),
+                    std::env::consts::OS
                 );
                 println!(
-                    "Identity: current_user (uid {}); UI: unsupported",
-                    local::current_uid()
+                    "Identity: current_user (uid {}); UI: {}",
+                    local::current_uid(),
+                    capabilities["ui"]["state"]
+                        .as_str()
+                        .unwrap_or("unavailable")
                 );
+                for name in ["command", "file", "capture", "input", "accessibility"] {
+                    let capability = &capabilities[name];
+                    println!(
+                        "{name}: supported={}, ready={}{}",
+                        capability["supported"].as_bool().unwrap_or(false),
+                        capability["ready"].as_bool().unwrap_or(false),
+                        capability["reason"]
+                            .as_str()
+                            .map(|reason| format!(" ({reason})"))
+                            .unwrap_or_default()
+                    );
+                }
                 if instances.is_empty() {
                     println!("No local executor instance. Start with run --url-stdin.");
                 }
@@ -173,5 +198,11 @@ async fn main_async(args: Args) -> Result<(), String> {
             Ok(())
         }
         Command::Stop { executor } => local::stop(&data_dir, executor.as_deref()).await,
+        Command::Pause { executor } => {
+            local::set_computer_paused(&data_dir, executor.as_deref(), true)
+        }
+        Command::Resume { executor } => {
+            local::set_computer_paused(&data_dir, executor.as_deref(), false)
+        }
     }
 }

@@ -43,6 +43,12 @@ fn secret() -> String {
 fn digest(value: &str) -> String {
     hex::encode(Sha256::digest(value.as_bytes()))
 }
+fn start_command(access_url: &str) -> String {
+    format!(
+        "printf '%s\\n' '{}' | ./buckyos_agent_daemon run --url-stdin",
+        access_url.replace('\'', "'\\''")
+    )
+}
 fn failure(message: impl ToString) -> RPCErrors {
     RPCErrors::ReasonError(message.to_string())
 }
@@ -550,7 +556,7 @@ impl ControlPanelServer {
             .append_pair("executor_id", &record.device.executor_id);
         url.set_fragment(Some(credential));
         Ok(
-            json!({"device": record.device, "access_url": url.as_str(), "start_command": format!("./start-buckyos-agent-daemon.sh '{}'", url.as_str())}),
+            json!({"device": record.device, "access_url": url.as_str(), "start_command": start_command(url.as_str())}),
         )
     }
 
@@ -1094,6 +1100,27 @@ mod tests {
             cancel,
             config: configuration(),
             stream_slots: Arc::new(Semaphore::new(4)),
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn start_command_passes_the_literal_url_through_stdin() {
+        for url in [
+            "wss://zone.example/kapi/agent-daemon/manage?executor_id=test#credential",
+            "wss://zone.example/#quote'$(printf injected)`printf injected`%s\\n\n",
+        ] {
+            let command = start_command(url);
+            let producer = command
+                .strip_suffix(" | ./buckyos_agent_daemon run --url-stdin")
+                .unwrap();
+            let output = std::process::Command::new("/bin/sh")
+                .args(["-c", producer])
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            assert_eq!(output.stdout, format!("{url}\n").as_bytes());
+            assert!(output.stderr.is_empty());
         }
     }
 

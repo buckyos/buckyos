@@ -24,11 +24,13 @@ buckyos auth whoami                                 # identity + zone actually u
 - BuckyOS itself (host): repo `buckyos/` with siblings `buckyos-websdk`, `buckyos-devkit`, `cyfs-gateway`; Cargo and `uv run` scripts run in `buckyos/src`; read `AGENTS.md` there first. Runtime root `$BUCKYOS_ROOT` (default `/opt/buckyos`).
 
 #### System build vs App build
-- Independent Linux Agent Daemon: from `buckyos/src`, `uv run buckyos-build.py --agent-daemon` builds only
+- Independent Linux/macOS Agent Daemon: from `buckyos/src`, `uv run buckyos-build.py --agent-daemon` builds only
   the self-contained executable into `rootfs/bin/buckyos-agent-daemon/`, without SDK/Web preparation.
-  `python3 src/publish/agent_daemon/package.py --target <target>` from the repo root produces the portable
-  package, manifest and checksum; targets are x86_64-unknown-linux-musl and aarch64-unknown-linux-gnu.
-  Source in `src/publish` is a separate Git submodule. Stop the daemon before replacing a package, retain
+  `uv run src/tools/package_agent_daemon.py --target <target> --output /tmp/agent-daemon-dist` from the repo
+  root produces the portable package, manifest and checksum; targets include x86_64-unknown-linux-musl,
+  aarch64-unknown-linux-gnu, x86_64-apple-darwin and aarch64-apple-darwin. macOS requires Xcode Command
+  Line Tools to build and macOS 14+ to run; the archive is not Developer ID signed or notarized.
+  Stop the daemon before replacing a package, retain
   its per-executor ledger, then rerun the valid URL. Default launch installs no service. Do not claim an
   architecture is validated until its package has run there; see `doc/arch/agent_daemon.md`.
 - An App builds with its own toolchain (vite/npm, cargo, `docker build`, python); `pikg` packages existing output and runs no build.

@@ -25,9 +25,11 @@ class BuckyosBuildEntrypointTests(unittest.TestCase):
             patch.object(module, "_prepare_sdk_tool_distribution") as sdk,
             patch.object(module.subprocess, "run", return_value=module.subprocess.CompletedProcess([], 0)) as run,
         ):
-            self.assertEqual(module.main(["--agent-daemon", "--target=x86_64-unknown-linux-musl"]), 0)
-            sdk.assert_not_called()
-            self.assertEqual(run.call_args.args[0], ["/runtime/buckyos-build", "--target=x86_64-unknown-linux-musl", "--select", "buckyos_agent_daemon"])
+            for target in ("x86_64-unknown-linux-musl", "aarch64-apple-darwin", "x86_64-apple-darwin"):
+                with self.subTest(target=target):
+                    self.assertEqual(module.main(["--agent-daemon", f"--target={target}"]), 0)
+                    sdk.assert_not_called()
+                    self.assertEqual(run.call_args.args[0], ["/runtime/buckyos-build", f"--target={target}", "--select", "buckyos_agent_daemon"])
             run.reset_mock()
             self.assertEqual(module.main(["--agent-daemon", "-s", "scheduler"]), 2)
             run.assert_not_called()

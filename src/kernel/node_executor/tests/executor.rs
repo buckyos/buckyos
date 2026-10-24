@@ -914,7 +914,7 @@ async fn current_user_exec_preserves_identity_groups_and_clean_environment() {
     assert_eq!(lines.next().unwrap(), unsafe { libc::getgid() }.to_string());
     let expected_groups = std::process::Command::new("id").arg("-G").output().unwrap();
     assert_eq!(lines.next().unwrap(), String::from_utf8(expected_groups.stdout).unwrap().trim());
-    assert_eq!(lines.next().unwrap(), env.work.to_str().unwrap());
+    assert_eq!(Path::new(lines.next().unwrap()).canonicalize().unwrap(), env.work.canonicalize().unwrap());
     assert!(lines.next().unwrap().starts_with('/'));
     assert!(!output.contains("BUCKYOS_"));
     accepted(&c.exec("outside", "outside-call", "true", Path::new("/etc")).await);

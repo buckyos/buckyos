@@ -427,12 +427,17 @@ fn authorize(
             format!("this host cannot perform {}", op.as_str()),
         ));
     }
-    let config = inner
+    let (config, lease_deadline_ms) = inner
         .auth
-        .current()
+        .current_with_deadline()
         .ok_or_else(|| e(ExecutorErrorCode::Unavailable, "authorization snapshot is not valid"))?;
     let grant = current_grant(inner, session.id)
         .ok_or_else(|| e(ExecutorErrorCode::Forbidden, "stream is closing"))?;
+    if config.profiles.get(&grant.profile_id) != Some(&grant.profile)
+        || config.principal_bindings.get(&grant.actor.agent_did) != Some(&grant.binding)
+    {
+        return Err(e(ExecutorErrorCode::Forbidden, "authorization snapshot changed; reconnect"));
+    }
     if !crate::CONTROL_OPS.contains(&op) && !inner.identity.mode.honors_run_as(&grant.profile) {
         return Err(e(ExecutorErrorCode::Capability, crate::RUN_AS_MISMATCH));
     }
@@ -455,6 +460,8 @@ fn authorize(
         limits: config.limits.clone(),
         auth_generation: config.generation,
         admission_generation,
+        auth_deadline_ms: auth::suspend_clock_ms().saturating_add(
+            config.auth_valid_until_ms.min(session.token_expires_at_ms).saturating_sub(now_ms())).min(lease_deadline_ms),
     };
     Ok((grant, ctx))
 }
@@ -535,6 +542,13 @@ async fn submit(
             return Err(err);
         }
     };
+    if matches!(&spec, ExecutorOpSpec::Computer { request }
+        if request.feedback().0 == buckyos_api::ComputerFeedback::After)
+        && !grant.caps.contains(&ExecutorOp::ComputerObserve)
+    {
+        release(&upload);
+        return Err(e(ExecutorErrorCode::Forbidden, "computer feedback requires computer_observe"));
+    }
     let ident = match identity(&grant, session, ids.0, ids.1, ids.2) {
         Ok(v) => v,
         Err(err) => {
@@ -570,6 +584,13 @@ async fn handle_request(
                 Ok(ok) => out.send(ExecutorServerMessage::DescribeOk(ok)).await,
                 Err(err) => out.error(Some(request_id), err).await,
             }
+        }
+        ExecutorClientMessage::Computer(req) => {
+            let required = req.request.required_op();
+            let spec = ExecutorOpSpec::Computer { request: req.request };
+            let reply = submit(inner, session, required, &req.store_id,
+                (&req.run_id, &req.call_id, &req.op_id), spec, None, watched).await;
+            send_op_reply(out, req.request_id, reply, true).await;
         }
         ExecutorClientMessage::Exec(req) => {
             let spec = ExecutorOpSpec::from_exec(&req);

@@ -21,14 +21,23 @@ pub struct Status {
 }
 
 pub fn default_data_dir() -> Result<PathBuf, String> {
+    #[cfg(not(target_os = "macos"))]
     if let Some(path) = std::env::var_os("XDG_DATA_HOME") {
         if Path::new(&path).is_absolute() {
             return Ok(PathBuf::from(path).join("buckyos-agent-daemon"));
         }
     }
     std::env::var_os("HOME")
-        .map(|home| PathBuf::from(home).join(".local/share/buckyos-agent-daemon"))
-        .ok_or_else(|| "HOME or --data-dir is required".into())
+        .map(PathBuf::from)
+        .filter(|home| home.is_absolute())
+        .map(|home| {
+            home.join(if cfg!(target_os = "macos") {
+                "Library/Application Support/buckyos-agent-daemon"
+            } else {
+                ".local/share/buckyos-agent-daemon"
+            })
+        })
+        .ok_or_else(|| "an absolute HOME or --data-dir is required".into())
 }
 
 pub fn private_dir(path: &Path) -> Result<(), String> {
@@ -61,13 +70,52 @@ pub fn current_uid() -> u32 {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn process_start(pid: u32) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    if pid == 0 || fs::metadata(format!("/proc/{pid}")).ok()?.uid() != current_uid() {
+        return None;
+    }
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    stat.rsplit_once(')')?
-        .1
-        .split_whitespace()
-        .nth(19)
-        .map(str::to_owned)
+    let fields: Vec<_> = stat.rsplit_once(')')?.1.split_whitespace().collect();
+    if matches!(fields.first(), Some(&"Z") | Some(&"X")) {
+        return None;
+    }
+    fields.get(19).map(|value| (*value).to_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn process_start(pid: u32) -> Option<String> {
+    if pid == 0 || pid > i32::MAX as u32 {
+        return None;
+    }
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+    let read = unsafe {
+        libc::proc_pidinfo(
+            pid as i32,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size,
+        )
+    };
+    if read != size {
+        return None;
+    }
+    let info = unsafe { info.assume_init() };
+    if info.pbi_uid != current_uid() || info.pbi_pid != pid || info.pbi_status == libc::SZOMB {
+        return None;
+    }
+    Some(format!(
+        "{}:{}",
+        info.pbi_start_tvsec, info.pbi_start_tvusec
+    ))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn process_start(_: u32) -> Option<String> {
+    None
 }
 
 pub fn capabilities(shell: &Path) -> Value {
@@ -80,18 +128,29 @@ pub fn capabilities(shell: &Path) -> Value {
     };
     #[cfg(not(unix))]
     let executable = false;
-    json!({
+    let supported = cfg!(any(target_os = "linux", target_os = "macos"));
+    let result = json!({
         "platform": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
         "identity_mode": "current_user",
         "os_session": format!("uid:{}", current_uid()),
-        "command": {"supported": cfg!(target_os = "linux"), "ready": cfg!(target_os = "linux") && shell.is_file() && executable},
-        "file": {"supported": cfg!(target_os = "linux"), "ready": cfg!(target_os = "linux")},
+        "command": {"supported": supported, "ready": supported && shell.is_file() && executable},
+        "file": {"supported": supported, "ready": supported},
         "ui": {"supported": false, "ready": false, "state": "unsupported"},
         "accessibility": {"supported": false, "ready": false, "state": "unsupported"},
         "capture": {"supported": false, "ready": false, "state": "unsupported"},
         "input": {"supported": false, "ready": false, "state": "unsupported"}
-    })
+    });
+    #[cfg(target_os = "macos")]
+    {
+        let mut result = result;
+        if let Some(computer) = crate::computer::capabilities().as_object() {
+            result.as_object_mut().unwrap().extend(computer.clone());
+        }
+        result
+    }
+    #[cfg(not(target_os = "macos"))]
+    result
 }
 
 impl Status {
@@ -195,7 +254,39 @@ pub async fn stop(_: &Path, _: Option<&str>) -> Result<(), String> {
     Err("local stop is not implemented on this platform".into())
 }
 
-#[cfg(all(test, target_os = "linux"))]
+pub fn set_computer_paused(
+    base: &Path,
+    executor_id: Option<&str>,
+    paused: bool,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let active: Vec<_> = statuses(base, executor_id)?
+            .into_iter()
+            .filter(Status::running)
+            .collect();
+        let state = match active.as_slice() {
+            [state] => state,
+            [] => return Err("no local daemon is running".into()),
+            _ => return Err("multiple daemons are running; select --executor".into()),
+        };
+        if !state.running() {
+            return Err("daemon exited before the control request".into());
+        }
+        let signal = if paused { libc::SIGUSR1 } else { libc::SIGUSR2 };
+        if unsafe { libc::kill(state.pid as libc::pid_t, signal) } != 0 {
+            return Err("cannot change desktop input state".into());
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (base, executor_id, paused);
+        Err("desktop pause/resume is only supported on macOS".into())
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::*;
 
@@ -217,6 +308,39 @@ mod tests {
         );
         state.process_start = "different-process".into();
         assert!(!state.running());
+        assert_eq!(state.capabilities["command"]["supported"], true);
+        assert_eq!(state.capabilities["file"]["ready"], true);
+        #[cfg(target_os = "linux")]
         assert_eq!(state.capabilities["ui"]["state"], "unsupported");
+    }
+
+    #[test]
+    fn process_identity_rejects_missing_and_reaped_processes() {
+        assert!(process_start(0).is_none());
+        assert!(process_start(u32::MAX).is_none());
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let identity = process_start(child.id()).unwrap();
+        assert_eq!(
+            process_start(child.id()).as_deref(),
+            Some(identity.as_str())
+        );
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(process_start(child.id()).is_none());
+    }
+
+    #[test]
+    fn command_readiness_requires_an_executable_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let shell = temp.path().join("shell");
+        fs::write(&shell, b"#!/bin/sh\n").unwrap();
+        fs::set_permissions(&shell, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(capabilities(&shell)["command"]["ready"], false);
+        fs::set_permissions(&shell, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(capabilities(&shell)["command"]["ready"], true);
     }
 }

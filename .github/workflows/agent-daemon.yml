@@ -1,4 +1,4 @@
-name: Standalone Linux Agent Daemon
+name: Standalone Agent Daemon
 
 on:
   workflow_dispatch:
@@ -7,14 +7,17 @@ on:
       - 'src/kernel/buckyos_agent_daemon/**'
       - 'src/kernel/node_executor/**'
       - 'src/kernel/buckyos-api/src/agent_daemon*'
-      - 'src/publish/agent_daemon/**'
+      - 'src/kernel/buckyos-api/src/computer*'
+      - 'src/kernel/buckyos-api/src/node_executor*'
+      - 'src/tools/package_agent_daemon.py'
+      - 'src/tools/tests/test_package_agent_daemon.py'
       - '.github/workflows/agent-daemon.yml'
 
 permissions:
   contents: read
 
 jobs:
-  linux:
+  standalone:
     strategy:
       fail-fast: false
       matrix:
@@ -23,6 +26,10 @@ jobs:
             target: x86_64-unknown-linux-musl
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
@@ -31,6 +38,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
       - name: Install musl C and C++ toolchain
         if: matrix.target == 'x86_64-unknown-linux-musl'
         env:
@@ -44,13 +54,22 @@ jobs:
       - name: Regression tests
         working-directory: src
         run: cargo test -p node_executor -p buckyos_agent_daemon -- --test-threads=1
+      - name: Package tests
+        run: python3 -m unittest discover -s src/tools/tests -p 'test_package_agent_daemon.py'
       - name: Package standalone binary
-        run: python3 src/publish/agent_daemon/package.py --target '${{ matrix.target }}' --output dist/agent-daemon
-      - name: Validate launcher checksum and foreground execution
+        run: python3 src/tools/package_agent_daemon.py --target '${{ matrix.target }}' --output dist/agent-daemon
+      - name: Validate archive checksum and foreground execution
         run: |
-          archive=$(find dist/agent-daemon -name '*.tar.gz')
-          checksum=$(cut -d ' ' -f 1 "$archive.sha256")
-          sh src/publish/agent_daemon/start-buckyos-agent-daemon.sh --artifact "$archive" --sha256 "$checksum" doctor --json
+          python3 - <<'PY'
+          import hashlib, pathlib, subprocess, tarfile
+          archive, = pathlib.Path('dist/agent-daemon').glob('*.tar.gz')
+          expected = archive.with_name(archive.name + '.sha256').read_text().split()[0]
+          assert hashlib.sha256(archive.read_bytes()).hexdigest() == expected
+          with tarfile.open(archive) as payload:
+              payload.extractall('dist/agent-daemon/unpacked', filter='data')
+          binary, = pathlib.Path('dist/agent-daemon/unpacked').glob('*/buckyos_agent_daemon')
+          subprocess.run([str(binary), 'doctor', '--json'], check=True)
+          PY
       - uses: actions/upload-artifact@v6
         with:
           name: agent-daemon-${{ matrix.target }}

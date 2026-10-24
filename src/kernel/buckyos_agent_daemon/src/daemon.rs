@@ -83,6 +83,29 @@ pub struct DaemonOptions {
     pub shell: PathBuf,
 }
 
+#[cfg(target_os = "macos")]
+struct ComputerSignals(tokio::task::JoinHandle<()>);
+
+#[cfg(target_os = "macos")]
+impl Drop for ComputerSignals {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+fn capabilities(shell: &std::path::Path, executor: &NodeExecutor) -> serde_json::Value {
+    let mut value = crate::local::capabilities(shell);
+    if executor.computer_paused() {
+        value["ui"]["ready"] = false.into();
+        value["ui"]["state"] = "paused".into();
+        value["input"]["ready"] = false.into();
+        value["input"]["reason"] = "paused".into();
+        value["capture"]["ready"] = false.into();
+        value["capture"]["reason"] = "paused".into();
+    }
+    value
+}
+
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -264,9 +287,9 @@ async fn retry_wait(retry: u32, stop: &mut watch::Receiver<bool>, deadline: &Dea
 }
 
 pub async fn run(options: DaemonOptions, mut stop: watch::Receiver<bool>) -> Result<(), String> {
-    if !cfg!(target_os = "linux") {
+    if !cfg!(any(target_os = "linux", target_os = "macos")) {
         return Err(
-            "this build provides the Linux backend; other platforms are not implemented".into(),
+            "this build supports Linux and macOS hosts".into(),
         );
     }
     if !options.shell.is_absolute() || !options.shell.is_file() {
@@ -282,8 +305,7 @@ pub async fn run(options: DaemonOptions, mut stop: watch::Receiver<bool>) -> Res
         config: RwLock::new(None),
         gate: gate.clone(),
     });
-    let executor = NodeExecutor::open_with_options(
-        ExecutorHost {
+    let host = ExecutorHost {
             node_id: options.access.executor_id.clone(),
             node_did: options.access.executor_id.clone(),
             store_dir: dir.join("ledger"),
@@ -294,13 +316,38 @@ pub async fn run(options: DaemonOptions, mut stop: watch::Receiver<bool>) -> Res
             },
             verifier: auth.clone(),
             rbac: auth.clone(),
-        },
-        ExecutorOptions {
+        };
+    let executor_options = ExecutorOptions {
             identity_mode: ExecutorIdentityMode::CurrentUser,
             admission: ExecutorAdmission::Wss,
-        },
-    )
-    .map_err(|_| "cannot open executor ledger (another instance may be running)")?;
+        };
+    #[cfg(target_os = "macos")]
+    let opened = NodeExecutor::open_with_computer(host, executor_options, crate::computer::driver());
+    #[cfg(not(target_os = "macos"))]
+    let opened = NodeExecutor::open_with_options(host, executor_options);
+    let executor = opened.map_err(|_| "cannot open executor ledger (another instance may be running)")?;
+    #[cfg(target_os = "macos")]
+    let computer_signals = {
+        let mut pause = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1())
+            .map_err(|_| "cannot install desktop pause signal")?;
+        let mut resume = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined2())
+            .map_err(|_| "cannot install desktop resume signal")?;
+        let executor = executor.clone();
+        ComputerSignals(tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = pause.recv() => {
+                        executor.set_computer_paused(true);
+                        eprintln!("desktop input paused locally; resume requires a new observation");
+                    }
+                    _ = resume.recv() => {
+                        executor.set_computer_paused(false);
+                        eprintln!("desktop resume requested locally; inspect readiness and take a new observation before acting");
+                    }
+                }
+            }
+        }))
+    };
     executor.pause();
     let mut status = Status::new(&options.access.executor_id, &options.shell);
     status.store_id = Some(executor.store_id());
@@ -354,6 +401,7 @@ pub async fn run(options: DaemonOptions, mut stop: watch::Receiver<bool>) -> Res
         )
         .await;
         gate.store(0, Ordering::Release);
+        executor.invalidate_computer();
         executor
             .close_streams(
                 ExecutorCloseReason::Shutdown,
@@ -383,6 +431,9 @@ pub async fn run(options: DaemonOptions, mut stop: watch::Receiver<bool>) -> Res
         }
     }
     gate.store(0, Ordering::Release);
+    executor.invalidate_computer();
+    #[cfg(target_os = "macos")]
+    drop(computer_signals);
     executor
         .shutdown(
             if deadline.expired() {
@@ -471,6 +522,7 @@ async fn connection_loop(
     let config = local_config(config, observed_server_ms, expires_at_ms)
         .map_err(|e| format!("terminal:{e}"))?;
     *auth.config.write().unwrap() = Some(config.clone());
+    executor.set_computer_generation(generation);
     executor.apply_config(Some(config)).await;
     auth.gate
         .store(deadline.gate_until(lease_timeout_ms), Ordering::Release);
@@ -479,6 +531,7 @@ async fn connection_loop(
         return Err("terminal:executor configuration is not ready".into());
     }
     *resume = Some(resume_token);
+    status.capabilities = capabilities(&options.shell, executor);
     send(
         socket,
         AgentDaemonClientMessage::Ready {
@@ -534,6 +587,9 @@ async fn connection_loop(
                     if incoming != generation { return Err("terminal:unexpected connection generation".into()); }
                     deadline.observe(server_time_ms, expires_at_ms, boot_ms()).map_err(|e| format!("terminal:{e}"))?;
                     let config = local_config(config, server_time_ms, expires_at_ms).map_err(|e| format!("terminal:{e}"))?;
+                    if auth.config.read().unwrap().as_ref().is_some_and(|previous| previous.revision != config.revision) {
+                        executor.invalidate_computer();
+                    }
                     *auth.config.write().unwrap() = Some(config.clone());
                     executor.apply_config(Some(config)).await;
                     current_server_ms = server_time_ms; server_observed_at = boot_ms();
@@ -563,7 +619,18 @@ async fn connection_loop(
                 }
                 _ => return Err("terminal:unexpected management message".into()),
             },
-            _ = heartbeats.tick() => send(socket, AgentDaemonClientMessage::Heartbeat { generation }).await?,
+            _ = heartbeats.tick() => {
+                let current = capabilities(&options.shell, executor);
+                if current != status.capabilities {
+                    status.capabilities = current;
+                    send(socket, AgentDaemonClientMessage::Ready {
+                        generation, store_id: executor.store_id(), capabilities: status.capabilities.clone(),
+                    }).await?;
+                    status.write(dir)?;
+                } else {
+                    send(socket, AgentDaemonClientMessage::Heartbeat { generation }).await?;
+                }
+            },
             Some(_) = streams.join_next(), if !streams.is_empty() => {},
         }
     }

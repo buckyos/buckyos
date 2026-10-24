@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use buckyos_api::{
+    ComputerExecutionState, ComputerFeedbackState, ComputerResult, COMPUTER_MAX_IMAGE_BYTES,
     executor_content_hash, executor_request_digest, ExecutorChannel, ExecutorChunk, ExecutorError,
     ExecutorErrorCode, ExecutorFileResult, ExecutorLimits, ExecutorOpKind, ExecutorOpResult,
     ExecutorOpSpec, ExecutorOpState, ExecutorOpStatus, ExecutorOutputSummary, ExecutorProfile,
@@ -95,6 +96,7 @@ pub struct OpContext {
     pub limits: ExecutorLimits,
     pub auth_generation: u64,
     pub admission_generation: u64,
+    pub auth_deadline_ms: u64,
 }
 
 pub struct ActiveOp {
@@ -102,6 +104,8 @@ pub struct ActiveOp {
     pub identity: OpIdentity,
     pub kind: ExecutorOpKind,
     pub profile: ExecutorProfile,
+    pub requires_capture: bool,
+    auth_deadline_ms: u64,
     cancel: watch::Sender<Option<CancelReason>>,
     progress: watch::Sender<u64>,
     spawned: Mutex<bool>,
@@ -125,6 +129,8 @@ pub struct OpsManager {
     gate: tokio::sync::Mutex<()>,
     path_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     events: broadcast::Sender<OpEvent>,
+    computer: crate::computer::SharedComputerDriver,
+    executor_id: String,
 }
 
 fn err(code: ExecutorErrorCode, msg: impl Into<String>) -> ExecutorError {
@@ -146,6 +152,7 @@ fn validate_spec(spec: &ExecutorOpSpec, limits: &ExecutorLimits) -> Result<(), E
         Ok(())
     };
     match spec {
+        ExecutorOpSpec::Computer { request } => request.validate().map_err(|msg| err(ExecutorErrorCode::InvalidArgument, msg))?,
         ExecutorOpSpec::Exec {
             cmd,
             cwd,
@@ -207,7 +214,7 @@ pub struct SubmitOutcome {
 }
 
 impl OpsManager {
-    pub fn new(store: Arc<Store>, launcher: WorkerLauncher, shell: PathBuf, server_epoch: String, identity: crate::spawn::HostIdentity) -> Self {
+    pub fn new(store: Arc<Store>, launcher: WorkerLauncher, shell: PathBuf, server_epoch: String, identity: crate::spawn::HostIdentity, computer: crate::computer::SharedComputerDriver, executor_id: String) -> Self {
         let (events, _) = broadcast::channel(1024);
         Self {
             store,
@@ -221,6 +228,8 @@ impl OpsManager {
             gate: tokio::sync::Mutex::new(()),
             path_locks: Mutex::new(HashMap::new()),
             events,
+            computer,
+            executor_id,
         }
     }
 
@@ -235,6 +244,11 @@ impl OpsManager {
 
     pub fn admission_generation(&self) -> u64 {
         self.admission_generation.load(Ordering::SeqCst)
+    }
+
+    pub fn fence_admission(&self) {
+        let _active = self.active.lock().unwrap();
+        self.admission_generation.fetch_add(1, Ordering::SeqCst);
     }
 
     pub fn resume(&self) {
@@ -282,12 +296,13 @@ impl OpsManager {
                 self.store.release(*bytes);
             }
             return Ok(SubmitOutcome {
-                status: self.store.status(&k)?,
+                status: self.status(&k)?,
                 duplicate: true,
             });
         }
         let budget = OpBudget {
             execution_timeout_ms: match &spec {
+                ExecutorOpSpec::Computer { request } => request.execution_timeout_ms().min(ctx.limits.max_execution_ms),
                 ExecutorOpSpec::Exec {
                     execution_timeout_ms,
                     ..
@@ -320,6 +335,8 @@ impl OpsManager {
             identity,
             kind: record.spec.kind(),
             profile: ctx.profile.clone(),
+            requires_capture: matches!(&record.spec, ExecutorOpSpec::Computer { request } if request.feedback().0 == buckyos_api::ComputerFeedback::After),
+            auth_deadline_ms: ctx.auth_deadline_ms,
             cancel,
             progress,
             spawned: Mutex::new(false),
@@ -351,7 +368,7 @@ impl OpsManager {
             Ok(Dedupe::Existing(k)) => {
                 self.active.lock().unwrap().remove(&key);
                 return Ok(SubmitOutcome {
-                    status: self.store.status(&k)?,
+                    status: self.status(&k)?,
                     duplicate: true,
                 });
             }
@@ -360,7 +377,7 @@ impl OpsManager {
                 return Err(e);
             }
         }
-        let status = self.store.status(&key)?;
+        let status = self.status(&key)?;
         let me = self.clone();
         tokio::spawn(async move {
             me.run(op, record).await;
@@ -374,7 +391,7 @@ impl OpsManager {
     /// Record the request, then let the running work observe it. The final
     /// state is whatever the confirmed exit says.
     pub async fn cancel(&self, key: &str, reason: CancelReason) -> Result<ExecutorOpStatus, ExecutorError> {
-        let status = self.store.status(key)?;
+        let status = self.status(key)?;
         if status.state.is_terminal() {
             return Ok(status);
         }
@@ -397,7 +414,7 @@ impl OpsManager {
             });
             op.bump();
         }
-        self.store.status(key)
+        self.status(key)
     }
 
     /// Cancel every active operation the predicate selects.
@@ -423,6 +440,39 @@ impl OpsManager {
         keys.len()
     }
 
+    fn status(&self, key: &str) -> Result<ExecutorOpStatus, ExecutorError> {
+        let status = self.store.status(key);
+        let orphan = status.as_ref().is_ok_and(|status| {
+            !status.state.is_terminal()
+                && matches!(status.kind, ExecutorOpKind::ComputerInspect | ExecutorOpKind::ComputerObserve | ExecutorOpKind::ComputerAct)
+                && !self.active.lock().unwrap().contains_key(key)
+        });
+        if orphan || status.is_err() {
+            if let Ok(record) = self.store.read_request(key) {
+                if let ExecutorOpSpec::Computer { request } = &record.spec {
+                    if let Some(driver) = &self.computer {
+                        driver.set_paused(true);
+                        driver.invalidate();
+                    }
+                    if let Some(op) = self.active.lock().unwrap().get(key) {
+                        op.cancel.send_replace(Some(CancelReason::Storage));
+                    }
+                    let state = self.store.read_state(key).ok();
+                    return Ok(ExecutorOpStatus {
+                        op_id: record.identity.op_id.clone(), kind: record.spec.kind(), state: ExecutorOpState::Unknown,
+                        accepted_at_ms: record.accepted_at_ms, started_at_ms: state.as_ref().and_then(|s| s.started_at_ms),
+                        cancel_requested: state.as_ref().is_some_and(|s| s.cancel_requested), pid: None, expired: false,
+                        result: Some(Self::computer_result(ComputerResult::failed(
+                            &record.identity.op_id, request.binding_id(), ComputerExecutionState::Unknown,
+                            "execution_unknown", "no durable completion and no live operation; resource paused; never replay this operation",
+                        ), None)),
+                    });
+                }
+            }
+        }
+        status
+    }
+
     pub async fn query(
         &self,
         key: &str,
@@ -431,7 +481,7 @@ impl OpsManager {
         max_bytes: Option<u64>,
         wait_ms: Option<u64>,
     ) -> Result<(ExecutorOpStatus, Option<ExecutorChunk>), ExecutorError> {
-        let mut status = self.store.status(key)?;
+        let mut status = self.status(key)?;
         let wait = wait_ms.unwrap_or(0).min(EXECUTOR_MAX_QUERY_WAIT_MS);
         if wait > 0 && !status.state.is_terminal() {
             let progress = self
@@ -454,12 +504,12 @@ impl OpsManager {
                         changed = rx.changed() => if changed.is_err() { break; },
                         _ = tokio::time::sleep_until(deadline) => break,
                     }
-                    status = self.store.status(key)?;
+                    status = self.status(key)?;
                     if status.state.is_terminal() {
                         break;
                     }
                 }
-                status = self.store.status(key)?;
+                status = self.status(key)?;
             }
         }
         let Some(channel) = channel else {
@@ -517,6 +567,12 @@ impl OpsManager {
                 None
             }
         };
+        if result.is_none() && matches!(op.kind, ExecutorOpKind::ComputerInspect | ExecutorOpKind::ComputerObserve | ExecutorOpKind::ComputerAct) {
+            if let Some(driver) = &self.computer {
+                driver.set_paused(true);
+                driver.invalidate();
+            }
+        }
         self.active.lock().unwrap().remove(&op.key);
         op.bump();
         if let Some(result) = result {
@@ -538,6 +594,7 @@ impl OpsManager {
             stderr: None,
             content: None,
             file: None,
+            computer: None,
             finished_at_ms: now_ms(),
         }
     }
@@ -548,11 +605,10 @@ impl OpsManager {
         op.cancel.borrow().is_some()
     }
 
-    async fn mark_running(&self, op: &ActiveOp, pid: Option<u32>) {
-        *op.spawned.lock().unwrap() = true;
+    async fn mark_running(&self, op: &ActiveOp, pid: Option<u32>) -> bool {
         let store = self.store.clone();
         let key = op.key.clone();
-        let _ = tokio::task::spawn_blocking(move || {
+        let persisted = tokio::task::spawn_blocking(move || {
             store.update_state(&key, |s| {
                 s.state = ExecutorOpState::Running;
                 s.pid = pid;
@@ -560,6 +616,8 @@ impl OpsManager {
             })
         })
         .await;
+        if !matches!(persisted, Ok(Ok(_))) { return false; }
+        *op.spawned.lock().unwrap() = true;
         op.bump();
         if let Some(pid) = pid {
             let _ = self.events.send(OpEvent::Started {
@@ -568,14 +626,144 @@ impl OpsManager {
                 pid,
             });
         }
+        true
     }
 
     async fn run(self: Arc<Self>, op: Arc<ActiveOp>, record: OpRequestRecord) {
         let result = match &record.spec {
             ExecutorOpSpec::Exec { .. } => self.run_exec(&op, &record).await,
+            ExecutorOpSpec::Computer { .. } => self.run_computer(&op, &record).await,
             _ => self.run_file(&op, &record).await,
         };
         self.finish(&op, result).await;
+    }
+
+    async fn run_computer(&self, op: &Arc<ActiveOp>, record: &OpRequestRecord) -> ExecutorOpResult {
+        let ExecutorOpSpec::Computer { request } = &record.spec else { unreachable!() };
+        let unavailable = |code: &str, message: &str| ComputerResult::failed(
+            &op.identity.op_id, request.binding_id(), ComputerExecutionState::NotStarted, code, message,
+        );
+        let Some(driver) = self.computer.as_ref().cloned() else {
+            return Self::computer_result(unavailable("unsupported", "no computer driver is installed"), None);
+        };
+        let gate = self.gate.lock().await;
+        if self.cancelled_before_start(op).await || !self.is_accepting() {
+            return Self::computer_result(unavailable("cancelled", "cancelled before dispatch"), None);
+        }
+        if !self.mark_running(op, None).await {
+            driver.set_paused(true);
+            return Self::computer_result(unavailable("storage_failed", "could not persist dispatch intent"), None);
+        }
+        let remaining_auth = op.auth_deadline_ms.saturating_sub(crate::auth::suspend_clock_ms());
+        let timeout = record.budget.execution_timeout_ms.min(remaining_auth);
+        let cancellation = crate::ComputerCancellation {
+            receiver: op.cancel.subscribe(),
+            deadline: std::time::Instant::now() + Duration::from_millis(timeout),
+            suspend_deadline_ms: crate::auth::suspend_clock_ms().saturating_add(timeout).min(op.auth_deadline_ms),
+        };
+        let context = crate::ComputerContext {
+            actor: op.identity.actor.clone(),
+            executor_id: self.executor_id.clone(),
+            profile_id: op.identity.profile_id.clone(),
+            store_id: record.store_id.clone(),
+            server_epoch: self.server_epoch.clone(),
+            auth_generation: record.auth_generation,
+            auth_valid_until_ms: now_ms().saturating_add(remaining_auth),
+            op_id: op.identity.op_id.clone(),
+            execution_timeout_ms: timeout,
+            max_image_bytes: (record.budget.max_file_bytes as usize).min(COMPUTER_MAX_IMAGE_BYTES),
+            cancellation,
+        };
+        let request = request.clone();
+        let driver_task = driver.clone();
+        let mut task = tokio::spawn(async move { driver_task.execute(context, request).await });
+        drop(gate);
+        let output = tokio::time::timeout(Duration::from_millis(timeout.saturating_add(1_000)), &mut task).await;
+        let mut output = match output {
+            Ok(Ok(output)) => output,
+            _ => {
+                driver.set_paused(true);
+                driver.invalidate();
+                task.abort();
+                let request = match &record.spec { ExecutorOpSpec::Computer { request } => request, _ => unreachable!() };
+                return Self::computer_result(ComputerResult::failed(
+                    &op.identity.op_id, request.binding_id(), ComputerExecutionState::Unknown,
+                    "execution_unknown", "computer driver did not confirm termination; resource paused; query the original operation",
+                ), None);
+            }
+        };
+        output.result.operation_id = op.identity.op_id.clone();
+        if output.result.execution.state == ComputerExecutionState::Unknown {
+            driver.set_paused(true);
+            driver.invalidate();
+        }
+        let mut content = None;
+        if let Some(png) = output.png {
+            let maximum = record.budget.max_file_bytes.min(COMPUTER_MAX_IMAGE_BYTES as u64);
+            let valid = png.len() as u64 <= maximum && png.starts_with(b"\x89PNG\r\n\x1a\n") && png.len() >= 24;
+            let image_matches = output.result.observation.as_ref().is_some_and(|obs| {
+                valid && obs.screenshot.width == u32::from_be_bytes(png[16..20].try_into().unwrap())
+                    && obs.screenshot.height == u32::from_be_bytes(png[20..24].try_into().unwrap())
+            });
+            let path = self.store.op_dir(&op.key).join(ExecutorChannel::Content.as_str());
+            let saved = if image_matches {
+                let write = async {
+                    let mut file = tokio::fs::File::create(&path).await?;
+                    file.write_all(&png).await?;
+                    file.sync_all().await
+                };
+                write.await.is_ok()
+            } else { false };
+            if saved {
+                if let Some(obs) = output.result.observation.as_mut() {
+                    obs.screenshot.artifact_ref = format!("executor-content:{}:{}", record.store_id, op.identity.op_id);
+                }
+                content = Some(ExecutorOutputSummary {
+                    total_bytes: png.len() as u64, retained_bytes: png.len() as u64,
+                    truncated: false, hash: Some(executor_content_hash(&png)),
+                });
+            } else {
+                let _ = tokio::fs::remove_file(&path).await;
+                output.result.feedback.state = ComputerFeedbackState::Failed;
+                output.result.observation = None;
+                output.result.error = Some(buckyos_api::ComputerError {
+                    code: "feedback_failed".into(), message: "screenshot is invalid, exceeds the image budget, or could not be persisted".into(),
+                });
+            }
+        } else if output.result.feedback.state == ComputerFeedbackState::Included {
+            output.result.feedback.state = ComputerFeedbackState::Failed;
+            output.result.observation = None;
+            output.result.error = Some(buckyos_api::ComputerError {
+                code: "feedback_failed".into(), message: "driver returned no screenshot".into(),
+            });
+        }
+        Self::computer_result(output.result, content)
+    }
+
+    fn computer_result(mut result: ComputerResult, content: Option<ExecutorOutputSummary>) -> ExecutorOpResult {
+        let state = match result.execution.state {
+            ComputerExecutionState::Unknown => ExecutorOpState::Unknown,
+            _ if result.error.as_ref().is_some_and(|e| e.code == "cancelled") => ExecutorOpState::Cancelled,
+            _ if result.error.as_ref().is_some_and(|e| e.code == "timeout" || e.code.ends_with("_timeout")) => ExecutorOpState::TimedOut,
+            ComputerExecutionState::Completed if result.error.is_none()
+                && !matches!(result.feedback.state, ComputerFeedbackState::Pending | ComputerFeedbackState::Failed) => ExecutorOpState::Succeeded,
+            _ => ExecutorOpState::Failed,
+        };
+        result.operation_state = match state {
+            ExecutorOpState::Succeeded => buckyos_api::ComputerOperationState::Completed,
+            ExecutorOpState::Cancelled => buckyos_api::ComputerOperationState::Cancelled,
+            ExecutorOpState::Unknown => buckyos_api::ComputerOperationState::Unknown,
+            _ => buckyos_api::ComputerOperationState::Failed,
+        };
+        let error = result.error.as_ref().map(|error| {
+            let mut value = err(ExecutorErrorCode::Unavailable, format!("{}: {}", error.code, error.message));
+            value.effect_unknown = result.execution.state == ComputerExecutionState::Unknown;
+            value
+        });
+        ExecutorOpResult {
+            state, exit_code: None, signal: None, error, stdout: None, stderr: None,
+            content, file: None, computer: Some(result), finished_at_ms: now_ms(),
+        }
     }
 
     fn base_env(&self, profile: &ExecutorProfile, overrides: &BTreeMap<String, String>) -> BTreeMap<String, String> {
@@ -785,6 +973,7 @@ impl OpsManager {
             stderr,
             content: None,
             file: None,
+            computer: None,
             finished_at_ms: now_ms(),
         }
     }
@@ -885,7 +1074,7 @@ impl OpsManager {
                 },
                 Vec::new(),
             ),
-            ExecutorOpSpec::Exec { .. } => unreachable!(),
+            ExecutorOpSpec::Exec { .. } | ExecutorOpSpec::Computer { .. } => unreachable!(),
         };
 
         let gate = self.gate.lock().await;
@@ -945,6 +1134,7 @@ impl OpsManager {
                     stderr: None,
                     content,
                     file,
+                    computer: None,
                     finished_at_ms: now_ms(),
                 }
             }

@@ -62,15 +62,21 @@ impl AccessUrl {
 
 pub fn boot_ms() -> u64 {
     #[cfg(target_os = "linux")]
+    let clock = libc::CLOCK_BOOTTIME;
+    #[cfg(target_os = "macos")]
+    let clock = libc::CLOCK_MONOTONIC_RAW;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         let mut ts = libc::timespec {
             tv_sec: 0,
             tv_nsec: 0,
         };
-        if unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut ts) } == 0 {
+        if unsafe { libc::clock_gettime(clock, &mut ts) } == 0 {
             return (ts.tv_sec as u64).saturating_mul(1000) + ts.tv_nsec as u64 / 1_000_000;
         }
+        return u64::MAX;
     }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     node_executor::now_ms()
 }
 
@@ -166,5 +172,21 @@ mod tests {
         assert!(deadline.observe(1_000, None, start).is_err());
         deadline.boot = Some(boot_ms().saturating_sub(1));
         assert!(deadline.expired());
+    }
+
+    #[test]
+    fn expired_request_cannot_gain_a_lease_on_observation() {
+        let mut deadline = Deadline::default();
+        assert!(deadline.observe(2_000, Some(1_000), boot_ms()).is_err());
+        assert!(deadline.expired());
+        assert!(deadline.gate_until(30_000) <= boot_ms());
+    }
+
+    #[test]
+    fn boot_clock_is_available_and_advances() {
+        let before = boot_ms();
+        assert_ne!(before, u64::MAX);
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(boot_ms() >= before + 1);
     }
 }
