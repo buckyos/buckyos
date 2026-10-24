@@ -39,9 +39,10 @@ pub async fn refresh(state: Arc<AppState>, ws_id: String, run_id: String) {
     };
     let source = run["params"]["source"].clone();
     let principal = run["principal"].as_str().unwrap_or("").to_string();
+    let consumer = run["params"]["entity_id"].as_str().unwrap_or("").to_string();
     let (st, w, r) = (state.clone(), ws_id.clone(), run_id.clone());
     let _ = tokio::task::spawn_blocking(move || st.with_ws(&w, |ws| ws.source_run_set(&r, "running", None))).await;
-    let outcome = fetch(&state, &ws_id, &source, &principal).await;
+    let outcome = fetch(&state, &ws_id, &consumer, &source, &principal).await;
     let (st, w, r) = (state.clone(), ws_id.clone(), run_id.clone());
     let _ = tokio::task::spawn_blocking(move || {
         st.with_ws(&w, |ws| match outcome {
@@ -93,15 +94,18 @@ pub fn tick(state: &Arc<AppState>) {
 /// Where a Source's content comes from: another Workspace of this service (read directly as the `public`
 /// subject), or an HTTP URL fetched without credentials. Returns the content, the bytes it cost, and the
 /// content root a fixed Source resolved to.
-async fn fetch(state: &Arc<AppState>, ws_id: &str, source: &Value, principal: &str) -> WsResult<(Fetched, u64, Option<String>)> {
+async fn fetch(state: &Arc<AppState>, ws_id: &str, consumer: &str, source: &Value, principal: &str) -> WsResult<(Fetched, u64, Option<String>)> {
+    let own = own_publication(state, source);
+    let source = own.as_ref().unwrap_or(source);
     let kind = source["kind"].as_str().unwrap_or("");
     let fixed_root = source["version"]["content_root"].as_str().map(str::to_string);
     if kind == "workspace" {
         let src_ws = source["workspace_id"].as_str().unwrap_or("").to_string();
         let entity = source["entity_id"].as_str().unwrap_or("").to_string();
-        let local = source.get("zone").is_none() && state.svc.workspace(&src_ws).is_ok();
+        let this_zone = source["zone"].as_str().is_none_or(|z| own_zone(state).as_deref() == Some(z));
+        let local = this_zone && state.svc.workspace(&src_ws).is_ok();
         if local {
-            let referrer = json!({ "workspace_id": ws_id, "entity_id": source.get("name").cloned().unwrap_or(Value::Null), "principal": principal });
+            let referrer = json!({ "workspace_id": ws_id, "entity_id": consumer, "principal": principal });
             let (st, ws, ent, root, fixed) = (state.clone(), src_ws.clone(), entity.clone(), fixed_root.clone(), source["mode"] == json!("fixed"));
             let envelope = tokio::task::spawn_blocking(move || {
                 st.with_ws(&ws, |w| {
@@ -109,7 +113,9 @@ async fn fetch(state: &Arc<AppState>, ws_id: &str, source: &Value, principal: &s
                         Some(r) => w.public_fixed_content(r)?,
                         None => w.public_content(&ent, fixed, true)?,
                     };
-                    let _ = w.register_referrer(&ent, &referrer);
+                    if let Some((_, entity_id)) = w.publication(&ent)? {
+                        let _ = w.register_referrer(&entity_id, &referrer);
+                    }
                     Ok(v)
                 })
             })
@@ -121,7 +127,7 @@ async fn fetch(state: &Arc<AppState>, ws_id: &str, source: &Value, principal: &s
         }
         // another Zone: its publication over HTTP (D24), the entity id as the name (any name resolves by id)
         let zone = source["zone"].as_str().ok_or_else(|| WsError::new(Code::DependencyUnavailable, "the source workspace is not on this service and names no zone"))?;
-        let mut url = source["url"].as_str().map(str::to_string).unwrap_or_else(|| format!("https://aiws-{src_ws}.{zone}/-/{entity}"));
+        let mut url = source["url"].as_str().map(str::to_string).unwrap_or_else(|| format!("https://aiws-{}.{zone}/-/{entity}", host_label(&src_ws)));
         url.push_str(if url.contains('?') { "&format=json" } else { "?format=json" });
         if let Some(r) = &fixed_root {
             url.push_str(&format!("&fixed={r}"));
@@ -137,13 +143,44 @@ async fn fetch(state: &Arc<AppState>, ws_id: &str, source: &Value, principal: &s
         // register as a referrer, best effort
         let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build().map_err(|e| WsError::io(e.to_string()))?;
         let base = url.split('?').next().unwrap_or("").to_string();
-        let _ = client.post(format!("{base}/referrers")).json(&json!({ "zone": state.limits.public_base, "workspace_id": ws_id, "principal": principal })).send().await;
+        let _ = client.post(format!("{base}/referrers")).json(&json!({ "zone": own_zone(state), "workspace_id": ws_id, "entity_id": consumer, "principal": principal })).send().await;
         return Ok((from_envelope(&envelope)?, body.len() as u64, root));
     }
     let url = source["url"].as_str().ok_or_else(|| WsError::invalid_op("source.url required"))?;
     let (body, ctype) = http_get(url).await?;
     let bytes = body.len() as u64;
     Ok((parse_body(&body, &ctype, source)?, bytes, None))
+}
+
+/// A `kind: url` Source whose URL is a publication of this service — `aiws-<id>.<zonehost>/<workspace>/<name>` or
+/// `<zonehost>/kapi/aiworkspace/pub/<ws>/<name>` — is that publication read directly (D26: same Zone, no HTTP).
+fn own_publication(state: &Arc<AppState>, source: &Value) -> Option<Value> {
+    if source["kind"] != json!("url") {
+        return None;
+    }
+    let url = reqwest::Url::parse(source["url"].as_str()?).ok()?;
+    let zone = own_zone(state)?;
+    let host = url.host_str()?;
+    let segs: Vec<String> = url.path_segments()?.filter(|s| !s.is_empty()).map(|s| percent_encoding::percent_decode_str(s).decode_utf8_lossy().into_owned()).collect();
+    let (src_ws, name) = match host.strip_suffix(&format!(".{zone}")).and_then(|h| h.strip_prefix("aiws-")) {
+        Some(label) if segs.len() == 2 => (format!("ws_{}", label.trim_start_matches("ws_")), segs[1].clone()),
+        None if host == zone && segs.len() == 5 && segs[..3] == ["kapi", "aiworkspace", "pub"] => (segs[3].clone(), segs[4].clone()),
+        _ => return None,
+    };
+    state.svc.workspace(&src_ws).ok()?;
+    let mut own = json!({ "kind": "workspace", "workspace_id": src_ws, "entity_id": name, "mode": source.get("mode").cloned().unwrap_or(json!("live")) });
+    for key in ["version", "name"] {
+        if let Some(v) = source.get(key) {
+            own[key] = v.clone();
+        }
+    }
+    Some(own)
+}
+
+/// This service's Zone host, from the public base `https://aiws-{workspace_id}.<zonehost>`.
+fn own_zone(state: &Arc<AppState>) -> Option<String> {
+    let probe = reqwest::Url::parse(&state.limits.public_base.as_ref()?.replace("{workspace_id}", "x")).ok()?;
+    probe.host_str()?.strip_prefix("aiws-x.").map(str::to_string)
 }
 
 /// One GET without credentials, bounded in time and size.
@@ -278,9 +315,14 @@ fn parse_csv(text: &str) -> Vec<Vec<(String, Value)>> {
 
 // ---- the publication HTTP surface (T4-4, T4-9)
 
-/// `https://aiws-<workspace_id>.<zonehost>` when the deployment knows its host (`{workspace_id}` is substituted).
+/// `https://aiws-<id>.<zonehost>` when the deployment knows its host. The host label is the workspace id without
+/// its `ws_` prefix: a DNS label carries no `_`, and the gateway folds only `aiws-[a-z0-9]+` onto the service.
 pub fn public_base(state: &Arc<AppState>, ws_id: &str) -> Option<String> {
-    state.limits.public_base.as_ref().map(|b| b.replace("{workspace_id}", ws_id))
+    state.limits.public_base.as_ref().map(|b| b.replace("{workspace_id}", host_label(ws_id)))
+}
+
+fn host_label(ws_id: &str) -> &str {
+    ws_id.strip_prefix("ws_").unwrap_or(ws_id)
 }
 
 fn html_escape(s: &str) -> String {
@@ -435,7 +477,7 @@ fn desktop_url(state: &Arc<AppState>, ws_id: &str, surface: Option<&str>) -> Opt
     let base = public_base(state, ws_id)?;
     let (scheme, rest) = base.split_once("://")?;
     let host = rest.split('/').next()?;
-    let zone = host.strip_prefix(&format!("aiws-{}.", ws_id.trim_start_matches("ws_")))?;
+    let zone = host.strip_prefix(&format!("aiws-{}.", host_label(ws_id)))?;
     let mut u = format!("{scheme}://{zone}/workspace/{ws_id}");
     if let Some(s) = surface {
         u.push_str(&format!("?surface={s}"));

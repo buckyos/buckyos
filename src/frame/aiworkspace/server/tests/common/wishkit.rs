@@ -116,13 +116,17 @@ impl Srv {
 
     /// `tokens`: `{ token: { principal, class? } }`; `rpc` calls as `tok-alice`.
     pub async fn start_with(dir: tempfile::TempDir, model: Arc<ScriptedModel>, tokens: Value) -> Srv {
+        Self::start_with_limits(dir, model, tokens, Limits::default()).await
+    }
+
+    pub async fn start_with_limits(dir: tempfile::TempDir, model: Arc<ScriptedModel>, tokens: Value, limits: Limits) -> Srv {
         let svc = Service::open(&dir.path().join("data")).unwrap();
         let tokens: StaticTokens = serde_json::from_value(json!({ "tokens": tokens })).unwrap();
         let mut cfg = WishConfig::default();
         cfg.llm_override = Some(Arc::new(ScriptedFactory(model.clone())));
         cfg.deno = find_deno();
         cfg.program_timeout_secs = 60;
-        let state = AppState::new(svc, Arc::new(tokens), Limits::default(), None, cfg);
+        let state = AppState::new(svc, Arc::new(tokens), limits, None, cfg);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         *state.wish.host_base.lock().unwrap() = Some(format!("http://{addr}/kapi/aiworkspace"));

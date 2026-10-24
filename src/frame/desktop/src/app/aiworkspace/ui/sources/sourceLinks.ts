@@ -45,7 +45,7 @@ export function parseLink(text: string, selfHost: string): ParsedLink {
 /** Create the sourced entity under `parentId` and refresh it; resolves with the entity id and the run's end state. */
 export async function insertLinkedSource(store: WorkspaceStore, parentId: string, text: string, title: string): Promise<{ entityId: string; run: RunView }> {
   const info = store.session.info()
-  const selfHost = info.public_base ? new URL(info.public_base.replace('{workspace_id}', 'x')).host.replace(/^aiws-x\./, '') : window.location.host
+  const selfHost = info.public_base ? new URL(info.public_base).host.replace(/^aiws-[a-z0-9]+\./, '') : window.location.host
   const link = parseLink(text, selfHost)
   let typeId = 'buckyos.table-source'
   let name = title.trim()

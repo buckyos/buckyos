@@ -20,6 +20,46 @@ async fn csv_server() -> String {
     format!("http://{addr}")
 }
 
+/// A publication link of this service pasted as a plain URL (`kind: url`) is read directly, never fetched over
+/// HTTP (the Zone host here does not resolve); the link's host label is the workspace id without `ws_`.
+#[test]
+fn own_publication_link_reads_directly() {
+    run_test(|| async move {
+    let limits = aiworkspace_server::Limits { public_base: Some("https://aiws-{workspace_id}.zone.invalid".into()), ..Default::default() };
+    let mut srv = Srv::start_with_limits(tempfile::tempdir().unwrap(), model(), json!({ "tok-alice": { "principal": "alice" } }), limits).await;
+    let a = srv.rpc("ws.create", json!({ "title": "销售" })).await["workspace_id"].as_str().unwrap().to_string();
+    srv.ws = a.clone();
+    srv.commit(json!([{ "op": "entity.create", "entity_id": "orders", "type_id": "buckyos.table-source", "parent_id": "data", "order_key": "a", "name": "订单",
+        "payload": { "fields": [{ "field_id": "month", "name": "月份", "type": "text" }] } }])).await;
+    srv.commit(json!([{ "op": "table.insert_records", "source_id": "orders", "records": [{ "record_id": "r1", "values": { "month": "2026-07" } }, { "record_id": "r2", "values": { "month": "2026-08" } }] }])).await;
+    let published = srv.rpc("ws.publish", json!({ "entity_id": "orders", "name": "销售表" })).await;
+    let label = a.strip_prefix("ws_").unwrap();
+    let url = published["url"].as_str().unwrap().to_string();
+    assert!(url.starts_with(&format!("https://aiws-{label}.zone.invalid/")), "{url}");
+    assert_eq!(srv.rpc("ws.get_info", json!({})).await["public_base"], json!(format!("https://aiws-{label}.zone.invalid")));
+    srv.ws = String::new();
+    let b = srv.rpc("ws.create", json!({ "title": "消费方" })).await["workspace_id"].as_str().unwrap().to_string();
+    srv.ws = b.clone();
+    let by_path = format!("https://zone.invalid/kapi/aiworkspace/pub/{a}/orders");
+    srv.commit(json!([
+        { "op": "entity.create", "entity_id": "by_host", "type_id": "buckyos.table-source", "parent_id": "data", "order_key": "a", "name": "host", "payload": { "source": { "kind": "url", "url": url, "mode": "live" } } },
+        { "op": "entity.create", "entity_id": "by_path", "type_id": "buckyos.table-source", "parent_id": "data", "order_key": "b", "name": "path", "payload": { "source": { "kind": "url", "url": by_path, "mode": "live" } } },
+        { "op": "entity.create", "entity_id": "own_zone", "type_id": "buckyos.table-source", "parent_id": "data", "order_key": "c", "name": "zone", "payload": { "source": { "kind": "workspace", "workspace_id": a, "entity_id": "orders", "zone": "zone.invalid", "mode": "live" } } },
+    ])).await;
+    for (key, entity) in [("h", "by_host"), ("p", "by_path"), ("z", "own_zone")] {
+        let run = srv.rpc("proc.start", json!({ "program": "source.refresh@1", "idempotency_key": key, "params": { "entity_id": entity } })).await;
+        let done = srv.wait(run["run_id"].as_str().unwrap()).await;
+        assert_eq!(done["state"], "succeeded", "{entity}: {done}");
+        assert_eq!(srv.rpc("doc.query", json!({ "source_id": entity, "limit": 10 })).await["rows"].as_array().unwrap().len(), 2, "{entity}");
+    }
+    srv.ws = a.clone();
+    let referrers = srv.rpc("ws.list_referrers", json!({ "entity_id": "orders" })).await;
+    for entity in ["by_host", "by_path", "own_zone"] {
+        assert!(referrers["referrers"].as_array().unwrap().iter().any(|r| r["referrer"]["workspace_id"] == json!(b) && r["referrer"]["entity_id"] == json!(entity)), "{entity}: {referrers}");
+    }
+    });
+}
+
 #[test]
 fn publish_insert_refresh_and_unpublish() {
     run_test(|| async move {

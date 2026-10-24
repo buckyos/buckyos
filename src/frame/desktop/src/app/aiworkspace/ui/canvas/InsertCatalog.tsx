@@ -4,6 +4,8 @@
  * "Existing data" only creates a view: the new Block shares the data, its view configuration is its own. */
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import FocusTrap from '@mui/material/Unstable_TrapFocus'
+import { ArrowDownToLine, Check, Database, FileUp, FlaskConical, FolderUp, Frame, Grid2X2, Image, Info, Layers3, LetterText, MousePointer2, Plus, Puzzle, Search, Shapes, Sparkles, Spline, StickyNote, Table, Type, X, type LucideIcon } from 'lucide-react'
 import type { BlockDefPayload, EntityEnvelope, Json } from '../../api/types'
 import type { ReadOk } from '../../api/session'
 import { useLoad, useOutlineVersion, useStore, useUserState } from '../../state/hooks'
@@ -18,6 +20,13 @@ import { allEntries, dataFor, entryId, entrySize, type CatalogEntry, type Insert
 
 export type CatalogTab = 'all' | CatalogGroup | 'existing'
 const TABS: CatalogTab[] = ['all', 'text', 'data', 'layout', 'ai', 'sample', 'extension', 'existing']
+const TAB_ICONS: Record<CatalogTab, LucideIcon> = { all: Grid2X2, text: Type, data: Database, layout: Shapes, ai: Sparkles, sample: FlaskConical, extension: Puzzle, existing: Layers3 }
+const ENTRY_ICONS: Record<string, LucideIcon> = { richtext: Type, 'shape-text': LetterText, note: StickyNote, shape: Shapes, connector: Spline, frame: Frame, table: Table, asset: Image, wish: Sparkles }
+
+function EntryIcon({ entry }: { entry: CatalogEntry }) {
+  const Icon = ENTRY_ICONS[entryId(entry)] ?? TAB_ICONS[entry.group]
+  return <span className="aiws-catalog-entry-icon" data-group={entry.group}><Icon size={20} aria-hidden="true" /></span>
+}
 
 export function InsertCatalog({ initialTab = 'all', initialKey, canPlace, onClose, onInsert, onImport, onImportAssets }: {
   initialTab?: CatalogTab
@@ -43,8 +52,10 @@ export function InsertCatalog({ initialTab = 'all', initialKey, canPlace, onClos
   const q = query.trim().toLowerCase()
   const shown = tab === 'existing' ? [] : entries.filter((entry) => (tab === 'all' || entry.group === tab)
     && (!q || entry.title.toLowerCase().includes(q) || entry.catalog.description.toLowerCase().includes(q) || entry.definition.type.toLowerCase().includes(q)))
-  const chosen = entries.find((entry) => entry.key === chosenKey) ?? (tab !== 'existing' ? shown[0] : undefined)
+  const chosen = shown.find((entry) => entry.key === chosenKey) ?? shown[0]
   const dialogRef = useRef<HTMLDivElement>(null)
+  const filesRef = useRef<HTMLInputElement>(null)
+  const folderRef = useRef<HTMLInputElement>(null)
   const importController = useRef<AbortController | null>(null)
   const [importing, setImporting] = useState(false)
   useEffect(() => () => importController.current?.abort(), [])
@@ -57,48 +68,69 @@ export function InsertCatalog({ initialTab = 'all', initialKey, canPlace, onClos
     finally { importController.current = null; setImporting(false) }
   }
   return (
-    <div className="aiws-modal-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
-      <div ref={dialogRef} className="aiws-dialog aiws-catalog" role="dialog" aria-modal="true" aria-label={t('aiworkspace.canvas.catalog.title')} data-testid="aiws-catalog"
-        onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); onClose() } }}>
-        <div className="aiws-dialog-head">
-          <b>{t('aiworkspace.canvas.catalog.title')}</b>
-          <input className="aiws-catalog-search" type="search" aria-label={t('aiworkspace.canvas.catalog.search')} placeholder={t('aiworkspace.canvas.catalog.searchPlaceholder')} autoFocus value={query} data-testid="aiws-catalog-search"
-            onChange={(event) => { setQuery(event.target.value); if (tab === 'existing') setTab('all') }} />
-          {onImport && <button type="button" className="aiws-link" data-testid="aiws-catalog-import-drawio" onClick={onImport}>{t('aiworkspace.canvas.catalog.importDrawio')}</button>}
-          {onImportAssets && <>
-            <label className="aiws-link">{t('aiworkspace.data.tree.importFiles')}<input type="file" hidden multiple disabled={importing} data-testid="aiws-catalog-import-files" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ''; void importAssets(files, false) }} /></label>
-            {'webkitdirectory' in document.createElement('input') && <label className="aiws-link">{t('aiworkspace.data.tree.importFolder')}<input type="file" hidden multiple disabled={importing} {...{ webkitdirectory: '' }} data-testid="aiws-catalog-import-folder" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ''; void importAssets(files, true) }} /></label>}
-            {importing && <button type="button" onClick={() => importController.current?.abort()}>{t('aiworkspace.common.cancel')}</button>}
-          </>}
-          <button type="button" className="aiws-link" onClick={onClose}>{t('aiworkspace.common.close')}</button>
+    <div className="aiws-modal-backdrop aiws-catalog-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+      <FocusTrap open>
+        <div ref={dialogRef} tabIndex={-1} className="aiws-dialog aiws-catalog" role="dialog" aria-modal="true" aria-label={t('aiworkspace.canvas.catalog.title')} data-testid="aiws-catalog"
+          onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); onClose() } }}>
+          <div className="aiws-catalog-head">
+            <div>
+              <h2>{t('aiworkspace.canvas.catalog.title')}</h2>
+              <p>{t('aiworkspace.canvas.catalog.subtitle')}</p>
+            </div>
+            <button type="button" className="aiws-catalog-close" aria-label={t('aiworkspace.common.close')} title={t('aiworkspace.common.close')} onClick={onClose}><X size={20} aria-hidden="true" /></button>
+          </div>
+          <div className="aiws-catalog-toolbar">
+            <div className="aiws-catalog-search-wrap">
+              <Search size={17} aria-hidden="true" />
+              <input className="aiws-catalog-search" type="search" aria-label={t('aiworkspace.canvas.catalog.search')} placeholder={t('aiworkspace.canvas.catalog.searchPlaceholder')} autoFocus value={query} data-testid="aiws-catalog-search"
+                onChange={(event) => { setQuery(event.target.value); if (tab === 'existing') setTab('all') }} />
+            </div>
+            {(onImport || onImportAssets) && <div className="aiws-catalog-imports" aria-busy={importing}>
+              {onImport && <button type="button" data-testid="aiws-catalog-import-drawio" disabled={importing} onClick={onImport}><ArrowDownToLine size={16} aria-hidden="true" />{t('aiworkspace.canvas.catalog.importDrawio')}</button>}
+              {onImportAssets && <>
+                <button type="button" disabled={importing} onClick={() => filesRef.current?.click()}><FileUp size={16} aria-hidden="true" />{t('aiworkspace.data.tree.importFiles')}</button>
+                <input ref={filesRef} type="file" hidden multiple disabled={importing} data-testid="aiws-catalog-import-files" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ''; if (files.length) void importAssets(files, false) }} />
+                {'webkitdirectory' in document.createElement('input') && <>
+                  <button type="button" disabled={importing} onClick={() => folderRef.current?.click()}><FolderUp size={16} aria-hidden="true" />{t('aiworkspace.data.tree.importFolder')}</button>
+                  <input ref={folderRef} type="file" hidden multiple disabled={importing} {...{ webkitdirectory: '' }} data-testid="aiws-catalog-import-folder" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ''; if (files.length) void importAssets(files, true) }} />
+                </>}
+                {importing && <button type="button" onClick={() => importController.current?.abort()}>{t('aiworkspace.common.cancel')}</button>}
+              </>}
+            </div>}
+          </div>
+          <div className="aiws-catalog-body">
+            <nav className="aiws-catalog-tabs" aria-label={t('aiworkspace.canvas.catalog.categories')}>
+              <span className="aiws-catalog-section-label">{t('aiworkspace.canvas.catalog.categories')}</span>
+              {TABS.map((item) => {
+                const Icon = TAB_ICONS[item]
+                return <button key={item} type="button" aria-pressed={tab === item} data-testid={`aiws-catalog-tab-${item}`} onClick={() => { setTab(item); setChosenKey(null) }}><Icon size={17} aria-hidden="true" /><span>{tabLabel(item)}</span></button>
+              })}
+            </nav>
+            {tab === 'existing' ? <ExistingData onInsert={onInsert} canPlace={canPlace} /> : (
+              <>
+                <div className="aiws-catalog-browser">
+                  <div className="aiws-catalog-section-label">{tabLabel(tab)}<span className="aiws-catalog-count">{shown.length}</span></div>
+                  <ul className="aiws-catalog-list" aria-label={t('aiworkspace.canvas.catalog.objects')} data-testid="aiws-catalog-list">
+                    {shown.length === 0 && <li className="aiws-catalog-empty"><Search size={24} aria-hidden="true" /><span>{t(tab === 'extension' && !q ? 'aiworkspace.canvas.catalog.noExtensions' : 'aiworkspace.canvas.catalog.noMatch')}</span></li>}
+                    {shown.map((entry) => (
+                      <li key={entry.key}>
+                        <button type="button" data-testid={`aiws-catalog-entry-${entry.key.replace(':', '-')}`} aria-pressed={chosen?.key === entry.key} className={chosen?.key === entry.key ? 'is-active' : undefined}
+                          onClick={() => setChosenKey(entry.key)} onDoubleClick={() => { if (entry.catalog.needs === 'none') onInsert({ entry }, 'center') }}>
+                          <EntryIcon entry={entry} />
+                          <span className="aiws-catalog-entry-copy"><span className="aiws-catalog-entry-name">{entry.title}</span><span className="aiws-catalog-entry-description">{entry.catalog.description}</span></span>
+                          {chosen?.key === entry.key && <Check className="aiws-catalog-entry-check" size={15} aria-hidden="true" />}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                {chosen ? <EntryDetail key={chosen.key} entry={chosen} canPlace={canPlace} onInsert={onInsert} /> : <div className="aiws-catalog-detail aiws-catalog-empty"><MousePointer2 size={28} aria-hidden="true" /><span>{t('aiworkspace.canvas.catalog.chooseEntry')}</span></div>}
+              </>
+            )}
+          </div>
+          {onImportAssets && <div className="aiws-catalog-footnote"><Info size={15} aria-hidden="true" /><p>{t('aiworkspace.data.tree.folderLimit')}</p></div>}
         </div>
-        <div className="aiws-catalog-body">
-          {onImportAssets && <p className="aiws-muted">{t('aiworkspace.data.tree.folderLimit')}</p>}
-          <nav className="aiws-catalog-tabs" role="tablist" aria-label={t('aiworkspace.canvas.catalog.categories')}>
-            {TABS.map((item) => (
-              <button key={item} type="button" role="tab" aria-selected={tab === item} data-testid={`aiws-catalog-tab-${item}`} onClick={() => { setTab(item); setChosenKey(null) }}>{tabLabel(item)}</button>
-            ))}
-          </nav>
-          {tab === 'existing' ? <ExistingData onInsert={onInsert} canPlace={canPlace} /> : (
-            <>
-              <ul className="aiws-catalog-list" role="listbox" aria-label={t('aiworkspace.canvas.catalog.objects')} data-testid="aiws-catalog-list">
-                {shown.length === 0 && <li className="aiws-muted">{t(tab === 'extension' ? 'aiworkspace.canvas.catalog.noExtensions' : 'aiworkspace.canvas.catalog.noMatch')}</li>}
-                {shown.map((entry) => (
-                  <li key={entry.key} role="option" aria-selected={chosen?.key === entry.key}>
-                    <button type="button" data-testid={`aiws-catalog-entry-${entry.key.replace(':', '-')}`} className={chosen?.key === entry.key ? 'is-active' : undefined}
-                      onClick={() => setChosenKey(entry.key)} onDoubleClick={() => { if (entry.catalog.needs === 'none') onInsert({ entry }, 'center') }}>
-                      <span>{entry.title}</span>
-                      {entry.group === 'sample' && <span className="aiws-chip">{t('aiworkspace.canvas.catalog.sample')}</span>}
-                      {entry.group === 'extension' && <span className="aiws-chip">{t('aiworkspace.canvas.catalog.extension')}</span>}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-              {chosen ? <EntryDetail key={chosen.key} entry={chosen} canPlace={canPlace} onInsert={onInsert} /> : <div className="aiws-catalog-detail aiws-muted">{t('aiworkspace.canvas.catalog.chooseEntry')}</div>}
-            </>
-          )}
-        </div>
-      </div>
+      </FocusTrap>
     </div>
   )
 }
@@ -131,49 +163,51 @@ function EntryDetail({ entry, canPlace, onInsert }: { entry: CatalogEntry; canPl
   const missing = needsData && sourceId === '' ? t('aiworkspace.canvas.catalog.missingData') : needsFile && !file ? t('aiworkspace.canvas.catalog.missingFile') : null
   return (
     <div className="aiws-catalog-detail" data-testid="aiws-catalog-detail" data-entry={entry.key}>
-      <div className="aiws-catalog-title">{entry.title}{entry.group === 'sample' && <span className="aiws-chip">{t('aiworkspace.canvas.catalog.sample')}</span>}</div>
-      <p>{entry.defEntity ? (def?.description ?? entry.catalog.description) : entry.catalog.description}</p>
-      <dl className="aiws-catalog-meta">
-        <dt>{t('aiworkspace.canvas.catalog.type')}</dt><dd><code>{entry.definition.type}</code> v{entry.defEntity ? (def?.version ?? '…') : entry.definition.version}</dd>
-        {entry.defEntity && <><dt>{t('aiworkspace.canvas.catalog.definition')}</dt><dd>{t('aiworkspace.canvas.catalog.nameWithType', { name: entry.defEntity.title ?? entry.defEntity.name ?? '', type: entry.defEntity.def_kind === 'html' ? 'HTML' : t('aiworkspace.canvas.catalog.declarative') })}</dd></>}
-        {accepts.length > 0 && <><dt>{t('aiworkspace.canvas.catalog.accepts')}</dt><dd>{list(accepts.map((type) => type.replace('buckyos.', '')))}</dd></>}
-        <dt>{t('aiworkspace.canvas.catalog.defaultSize')}</dt><dd>{(def?.default_size ?? entrySize(entry)).w} × {(def?.default_size ?? entrySize(entry)).h}</dd>
-      </dl>
-      {entryId(entry) === 'shape' && <ShapePicker value={kind} onPick={setKind} />}
-      {entryId(entry) === 'shape-svg' && (
-        <>
-          <label className="aiws-field">{t('aiworkspace.canvas.catalog.svgCode')}<textarea rows={5} value={svgText} placeholder="<svg …>…</svg>" data-testid="aiws-catalog-svg-text" onChange={(e) => setSvgText(e.target.value)} /></label>
-          <label className="aiws-field">{t('aiworkspace.canvas.catalog.svgFile')}<input type="file" accept=".svg,image/svg+xml" data-testid="aiws-catalog-svg-file" onChange={(e) => { const f = e.target.files?.[0]; if (f) void f.text().then(setSvgText) }} /></label>
-          {svgText.trim() && !svg && <div className="aiws-warning">{t('aiworkspace.canvas.catalog.svgInvalid')}</div>}
-          {svg && svg.svg.body.length > 48 * 1024 && <div className="aiws-warning">{t('aiworkspace.canvas.catalog.svgTooLarge')}</div>}
-        </>
-      )}
-      {(entry.options ?? []).map((option) => (
-        <label key={option.key} className="aiws-field">{option.label}
-          <select aria-label={option.label} data-testid={`aiws-catalog-option-${option.key}`} value={choices[option.key] ?? String(entry.config?.[option.key] ?? '')} onChange={(event) => setChoices({ ...choices, [option.key]: event.target.value })}>
-            {option.choices.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
-          </select>
-        </label>
-      ))}
-      {entry.catalog.needs === 'none' && !entry.defEntity && (
-        <label className="aiws-field">{t('aiworkspace.canvas.catalog.titleOptional')}<input aria-label={t('aiworkspace.canvas.catalog.objectTitle')} value={title} data-testid="aiws-catalog-title" onChange={(event) => setTitle(event.target.value)} /></label>
-      )}
-      {(needsData || optionalData) && (
-        <label className="aiws-field">{t(needsData ? 'aiworkspace.canvas.catalog.dataToShow' : 'aiworkspace.canvas.catalog.bindData')}
-          <select aria-label={t('aiworkspace.canvas.catalog.data')} data-testid="aiws-catalog-data" value={sourceId} onChange={(event) => setSourceId(event.target.value)}>
-            <option value="">{t(data.length === 0 ? 'aiworkspace.canvas.catalog.noData' : 'aiworkspace.canvas.catalog.chooseData')}</option>
-            {data.map((e) => <option key={e.entity_id} value={e.entity_id}>{t('aiworkspace.canvas.catalog.nameWithType', { name: e.title ?? e.name ?? e.entity_id, type: e.type_id.replace('buckyos.', '') })}</option>)}
-          </select>
-          <span className="aiws-muted">{t('aiworkspace.canvas.catalog.sharesData')}</span>
-        </label>
-      )}
-      {needsFile && (
-        <label className="aiws-field">{t('aiworkspace.canvas.catalog.file')}<input type="file" aria-label={t('aiworkspace.canvas.catalog.chooseFile')} data-testid="aiws-catalog-file" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /></label>
-      )}
-      {missing && <div className="aiws-muted" data-testid="aiws-catalog-missing">{missing}</div>}
-      <div className="aiws-dialog-actions">
-        <button type="button" className="is-primary" data-testid="aiws-catalog-insert" disabled={!ready} onClick={() => onInsert(request(), 'center')}>{t('aiworkspace.canvas.catalog.insertCenter')}</button>
-        {canPlace && <button type="button" data-testid="aiws-catalog-place" disabled={!ready} onClick={() => onInsert(request(), 'place')}>{t('aiworkspace.canvas.catalog.place')}</button>}
+      <div className="aiws-catalog-detail-content">
+        <div className="aiws-catalog-detail-heading"><EntryIcon entry={entry} /><div><span className="aiws-catalog-section-label">{CATALOG_GROUP_LABEL[entry.group]}</span><h3 className="aiws-catalog-title">{entry.title}</h3></div></div>
+        <p>{entry.defEntity ? (def?.description ?? entry.catalog.description) : entry.catalog.description}</p>
+        <dl className="aiws-catalog-meta">
+          <dt>{t('aiworkspace.canvas.catalog.type')}</dt><dd><code>{entry.definition.type}</code> v{entry.defEntity ? (def?.version ?? '…') : entry.definition.version}</dd>
+          {entry.defEntity && <><dt>{t('aiworkspace.canvas.catalog.definition')}</dt><dd>{t('aiworkspace.canvas.catalog.nameWithType', { name: entry.defEntity.title ?? entry.defEntity.name ?? '', type: entry.defEntity.def_kind === 'html' ? 'HTML' : t('aiworkspace.canvas.catalog.declarative') })}</dd></>}
+          {accepts.length > 0 && <><dt>{t('aiworkspace.canvas.catalog.accepts')}</dt><dd>{list(accepts.map((type) => type.replace('buckyos.', '')))}</dd></>}
+          <dt>{t('aiworkspace.canvas.catalog.defaultSize')}</dt><dd>{(def?.default_size ?? entrySize(entry)).w} × {(def?.default_size ?? entrySize(entry)).h}</dd>
+        </dl>
+        {entryId(entry) === 'shape' && <ShapePicker value={kind} onPick={setKind} />}
+        {entryId(entry) === 'shape-svg' && (
+          <>
+            <label className="aiws-field">{t('aiworkspace.canvas.catalog.svgCode')}<textarea rows={5} value={svgText} placeholder="<svg …>…</svg>" data-testid="aiws-catalog-svg-text" onChange={(e) => setSvgText(e.target.value)} /></label>
+            <label className="aiws-field">{t('aiworkspace.canvas.catalog.svgFile')}<input type="file" accept=".svg,image/svg+xml" data-testid="aiws-catalog-svg-file" onChange={(e) => { const f = e.target.files?.[0]; if (f) void f.text().then(setSvgText) }} /></label>
+            {svgText.trim() && !svg && <div className="aiws-warning">{t('aiworkspace.canvas.catalog.svgInvalid')}</div>}
+            {svg && svg.svg.body.length > 48 * 1024 && <div className="aiws-warning">{t('aiworkspace.canvas.catalog.svgTooLarge')}</div>}
+          </>
+        )}
+        {(entry.options ?? []).map((option) => (
+          <label key={option.key} className="aiws-field">{option.label}
+            <select aria-label={option.label} data-testid={`aiws-catalog-option-${option.key}`} value={choices[option.key] ?? String(entry.config?.[option.key] ?? '')} onChange={(event) => setChoices({ ...choices, [option.key]: event.target.value })}>
+              {option.choices.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+            </select>
+          </label>
+        ))}
+        {entry.catalog.needs === 'none' && !entry.defEntity && (
+          <label className="aiws-field">{t('aiworkspace.canvas.catalog.titleOptional')}<input aria-label={t('aiworkspace.canvas.catalog.objectTitle')} value={title} data-testid="aiws-catalog-title" onChange={(event) => setTitle(event.target.value)} /></label>
+        )}
+        {(needsData || optionalData) && (
+          <label className="aiws-field">{t(needsData ? 'aiworkspace.canvas.catalog.dataToShow' : 'aiworkspace.canvas.catalog.bindData')}
+            <select aria-label={t('aiworkspace.canvas.catalog.data')} data-testid="aiws-catalog-data" value={sourceId} onChange={(event) => setSourceId(event.target.value)}>
+              <option value="">{t(data.length === 0 ? 'aiworkspace.canvas.catalog.noData' : 'aiworkspace.canvas.catalog.chooseData')}</option>
+              {data.map((e) => <option key={e.entity_id} value={e.entity_id}>{t('aiworkspace.canvas.catalog.nameWithType', { name: e.title ?? e.name ?? e.entity_id, type: e.type_id.replace('buckyos.', '') })}</option>)}
+            </select>
+            <span className="aiws-muted">{t('aiworkspace.canvas.catalog.sharesData')}</span>
+          </label>
+        )}
+        {needsFile && (
+          <label className="aiws-field">{t('aiworkspace.canvas.catalog.file')}<input type="file" aria-label={t('aiworkspace.canvas.catalog.chooseFile')} data-testid="aiws-catalog-file" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /></label>
+        )}
+        {missing && <div className="aiws-muted" data-testid="aiws-catalog-missing">{missing}</div>}
+      </div>
+      <div className="aiws-dialog-actions aiws-catalog-actions">
+        <button type="button" className="is-primary" data-testid="aiws-catalog-insert" disabled={!ready} onClick={() => onInsert(request(), 'center')}><Plus size={16} aria-hidden="true" />{t('aiworkspace.canvas.catalog.insertCenter')}</button>
+        {canPlace && <button type="button" data-testid="aiws-catalog-place" disabled={!ready} onClick={() => onInsert(request(), 'place')}><MousePointer2 size={16} aria-hidden="true" />{t('aiworkspace.canvas.catalog.place')}</button>}
         {entry.defEntity && (
           <button type="button" className="aiws-link" data-testid="aiws-catalog-pin" onClick={() => store.userState.set('ui:pinned-defs', pinned.includes(defId) ? pinned.filter((id) => id !== defId) : [...pinned, defId].slice(-6))}>
             {t(pinned.includes(defId) ? 'aiworkspace.canvas.catalog.unpin' : 'aiworkspace.canvas.catalog.pin')}
@@ -196,26 +230,28 @@ function ExistingData({ canPlace, onInsert }: { canPlace: boolean; onInsert: (re
   const request = (): InsertRequest | null => definition?.catalog ? ({ entry: { key: `block:${definition.type}`, definition, catalog: definition.catalog, title: definition.title, group: definition.catalog.group }, sourceId: chosen }) : null
   return (
     <div className="aiws-catalog-detail aiws-catalog-existing" data-testid="aiws-catalog-existing">
-      <div className="aiws-catalog-title">{t('aiworkspace.canvas.catalog.addExisting')}</div>
-      <p>{t('aiworkspace.canvas.catalog.addExistingNote')}</p>
-      <label className="aiws-field">{t('aiworkspace.canvas.catalog.data')}
-        <select aria-label={t('aiworkspace.canvas.catalog.data')} data-testid="aiws-picker-data" value={chosen} onChange={(event) => { setChosen(event.target.value); setRenderer('') }}>
-          <option value="">{t('aiworkspace.canvas.catalog.chooseData')}</option>
-          {data.map((e) => <option key={e.entity_id} value={e.entity_id}>{t('aiworkspace.canvas.catalog.nameWithType', { name: e.title ?? e.name ?? e.entity_id, type: e.type_id.replace('buckyos.', '') })}</option>)}
-        </select>
-      </label>
-      {renderers.length > 1 && (
-        <label className="aiws-field">{t('aiworkspace.canvas.catalog.renderer')}
-          <select aria-label={t('aiworkspace.canvas.catalog.renderer')} data-testid="aiws-picker-renderer" value={renderer} onChange={(event) => setRenderer(event.target.value)}>
-            <option value="">{t('aiworkspace.canvas.catalog.defaultRenderer')}</option>
-            {renderers.map((d) => <option key={d.type} value={d.type}>{d.title}</option>)}
+      <div className="aiws-catalog-detail-content">
+        <div className="aiws-catalog-detail-heading"><span className="aiws-catalog-entry-icon"><Layers3 size={24} aria-hidden="true" /></span><h3 className="aiws-catalog-title">{t('aiworkspace.canvas.catalog.addExisting')}</h3></div>
+        <p>{t('aiworkspace.canvas.catalog.addExistingNote')}</p>
+        <label className="aiws-field">{t('aiworkspace.canvas.catalog.data')}
+          <select aria-label={t('aiworkspace.canvas.catalog.data')} data-testid="aiws-picker-data" value={chosen} onChange={(event) => { setChosen(event.target.value); setRenderer('') }}>
+            <option value="">{t('aiworkspace.canvas.catalog.chooseData')}</option>
+            {data.map((e) => <option key={e.entity_id} value={e.entity_id}>{t('aiworkspace.canvas.catalog.nameWithType', { name: e.title ?? e.name ?? e.entity_id, type: e.type_id.replace('buckyos.', '') })}</option>)}
           </select>
         </label>
-      )}
-      {entity && !definition && <div className="aiws-warning">{t('aiworkspace.canvas.catalog.noRenderer')}</div>}
-      <div className="aiws-dialog-actions">
-        <button type="button" className="is-primary" data-testid="aiws-picker-confirm" disabled={!request()} onClick={() => { const r = request(); if (r) onInsert(r, 'center') }}>{t('aiworkspace.canvas.catalog.add')}</button>
-        {canPlace && <button type="button" data-testid="aiws-catalog-place" disabled={!request()} onClick={() => { const r = request(); if (r) onInsert(r, 'place') }}>{t('aiworkspace.canvas.catalog.place')}</button>}
+        {renderers.length > 1 && (
+          <label className="aiws-field">{t('aiworkspace.canvas.catalog.renderer')}
+            <select aria-label={t('aiworkspace.canvas.catalog.renderer')} data-testid="aiws-picker-renderer" value={renderer} onChange={(event) => setRenderer(event.target.value)}>
+              <option value="">{t('aiworkspace.canvas.catalog.defaultRenderer')}</option>
+              {renderers.map((d) => <option key={d.type} value={d.type}>{d.title}</option>)}
+            </select>
+          </label>
+        )}
+        {entity && !definition && <div className="aiws-warning">{t('aiworkspace.canvas.catalog.noRenderer')}</div>}
+      </div>
+      <div className="aiws-dialog-actions aiws-catalog-actions">
+        <button type="button" className="is-primary" data-testid="aiws-picker-confirm" disabled={!request()} onClick={() => { const r = request(); if (r) onInsert(r, 'center') }}><Plus size={16} aria-hidden="true" />{t('aiworkspace.canvas.catalog.add')}</button>
+        {canPlace && <button type="button" data-testid="aiws-catalog-place" disabled={!request()} onClick={() => { const r = request(); if (r) onInsert(r, 'place') }}><MousePointer2 size={16} aria-hidden="true" />{t('aiworkspace.canvas.catalog.place')}</button>}
       </div>
     </div>
   )

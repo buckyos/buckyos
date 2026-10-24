@@ -8,6 +8,7 @@
  */
 import { createHash } from 'node:crypto'
 import { expect, request as playwrightRequest, test, type APIRequestContext, type Browser, type BrowserContext, type FrameLocator, type Page } from '@playwright/test'
+import { openFromAllApps } from '../e2e/fixtures/desktop'
 
 const zone = process.env.BUCKYOS_TEST_ZONE_HOST || 'test.buckyos.io'
 const origin = `https://${zone}`
@@ -93,6 +94,94 @@ async function fileList(editor: FrameLocator | Page) {
   await expect(list).toBeVisible()
   return list
 }
+
+test('HTML entry points revalidate and reject stale epoch validators before loading current assets', async () => {
+  const source = `cyfs://${dir}/notes.md`
+  const scripts = new Set<string>()
+  let currentHtml = ''
+  for (const path of ['/', '/index.html', `/?src=${encodeURIComponent(source)}`]) {
+    const fresh = await api.get(`${editorOrigin}${path}`)
+    expect(fresh.status(), path).toBe(200)
+    const html = await fresh.text()
+    if (!currentHtml) currentHtml = html
+    expect(html, path).toBe(currentHtml)
+    expect.soft(fresh.headers()['cache-control'], `${path} cache policy`).toBe('no-cache')
+    const oldEtag = `"${Buffer.byteLength(html).toString(16)}-0-0"`
+    const staleValidators: Record<string, string>[] = [
+      { 'If-None-Match': oldEtag },
+      { 'If-Modified-Since': 'Thu, 01 Jan 1970 00:00:00 GMT' },
+      { 'If-None-Match': oldEtag, 'If-Modified-Since': 'Thu, 01 Jan 1970 00:00:00 GMT' },
+    ]
+    for (const headers of staleValidators) {
+      const response = await api.get(`${editorOrigin}${path}`, { headers })
+      expect(response.status(), `${path} with ${JSON.stringify(headers)}`).toBe(200)
+      expect(await response.text(), path).toBe(currentHtml)
+      expect.soft(response.headers()['cache-control'], `${path} conditional cache policy`).toBe('no-cache')
+    }
+    for (const match of html.matchAll(/<script\b[^>]*\bsrc="([^"]+)"/g)) scripts.add(new URL(match[1], editorOrigin).href)
+  }
+  expect(scripts.size).toBeGreaterThan(0)
+  for (const script of scripts) {
+    const response = await api.get(script)
+    expect(response.status(), script).toBe(200)
+    expect(response.headers()['content-type'], script).toMatch(/javascript/)
+  }
+})
+
+test('the Text Editor icon and Files double-click both load with the browser cache enabled', async ({ browser }) => {
+  const { context, page } = await desktop(browser)
+  context.setDefaultTimeout(15_000)
+  const failedAssets: string[] = []
+  const loadedScripts: string[] = []
+  context.on('response', response => {
+    if (!response.url().startsWith(`${editorOrigin}/assets/`)) return
+    if (response.status() >= 400) failedAssets.push(`${response.status()} ${response.url()}`)
+    if (response.request().resourceType() === 'script') loadedScripts.push(response.url())
+  })
+  context.on('requestfailed', request => {
+    if (request.url().startsWith(`${editorOrigin}/assets/`)) failedAssets.push(`${request.url()} ${request.failure()?.errorText}`)
+  })
+  try {
+    for (let i = 0; i < 2; i++) {
+      const icon = page.getByTestId(`desktop-app-${editorApp}`)
+      if (await icon.isVisible()) await icon.click()
+      else await openFromAllApps(page, editorApp)
+      const editor = page.frameLocator('[data-testid="web-app-frame"]')
+      await expect(editor.locator('.welcome h1')).toHaveText(/^(Text Editor|文本编辑器)$/, { timeout: 30_000 })
+      const frame = page.frames().find(frame => frame.url().startsWith(`${editorOrigin}/`))!
+      expect(new URL(frame.url()).pathname).toBe('/')
+      expect(new URL(frame.url()).search).toBe('')
+      await editorWindow(page, 'Text Editor').getByRole('button', { name: /^(Close|关闭)$/ }).first().click()
+      await expect(page.getByTestId('web-app-frame')).toHaveCount(0)
+    }
+
+    const tab = await context.newPage()
+    await tab.goto(`${editorOrigin}/`)
+    await expect(tab.locator('.welcome h1')).toHaveText(/^(Text Editor|文本编辑器)$/, { timeout: 30_000 })
+    await tab.close()
+
+    const filesIcon = page.getByTestId('desktop-app-files')
+    if (await filesIcon.isVisible()) await filesIcon.click()
+    else await openFromAllApps(page, 'files')
+    const files = page.getByTestId('window-files')
+    await files.getByTestId('filebrowser').focus()
+    await page.keyboard.press('Control+l')
+    const path = files.getByRole('textbox', { name: 'path', exact: true })
+    await path.fill(dir)
+    await path.press('Enter')
+    await expect(files.locator('[data-pane="left"]')).toHaveAttribute('data-location', `dfs://${dir}`)
+    await expect(files.locator('[data-pane="left"]')).toHaveAttribute('data-list-status', 'ready')
+    await files.getByRole('cell', { name: 'notes.md', exact: true }).dblclick()
+    await expect(page.frameLocator('[data-testid="web-app-frame"]').locator('.cm-content')).toContainText('DV notes', { timeout: 30_000 })
+    const frame = page.frames().find(frame => frame.url().startsWith(`${editorOrigin}/`))!
+    expect(new URL(frame.url()).pathname).toBe('/')
+    expect(new URL(frame.url()).searchParams.has('src')).toBe(true)
+    expect(loadedScripts.length).toBeGreaterThan(0)
+    expect(failedAssets).toEqual([])
+  } finally {
+    await context.close()
+  }
+})
 
 test('an idle editor window stays quiet, and closing answers in time without a force-close prompt', async ({ browser }) => {
   const { context, page } = await desktop(browser)

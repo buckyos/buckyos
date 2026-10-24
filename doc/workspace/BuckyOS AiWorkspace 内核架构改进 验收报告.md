@@ -83,6 +83,7 @@ pnpm check && pnpm exec eslint <改动文件>
 | M3 本地执行协议 | `m3_dv.ts local <ws>`：`proc.start{execution.mode: local}` → claim → files / tool / program → report → apply | 全程通过，候选被规划并应用 |
 | AICC 浏览器适配 | `m3_dv.ts chat`：`helper.llm_chat` 与 `chat.completions.create` 的返回形状 | 与适配器假设一致（assistant 消息原样保留） |
 | M4 发布与公开读取 | 部署当前二进制后在新建工作区 `ws_nzzalmz6rmfcukeku35snc6ooi` 上 `m3_dv.ts publish <ws>`，再无会话 `curl /kapi/aiworkspace/pub/<ws>/orders`（JSON、`Accept: text/html`、`?fixed=1`、不存在的名字） | 通过：`ws.get_info.public_base = https://aiws-<id>.test.buckyos.io`、`traffic 0`；`ws.publish` 返回 `path /m3-dv/orders`、`url`、引用对象 `{workspace_id, entity_id, mode: live}`；`ws.list_publications` 列出该项；公开 JSON 含 5 个字段与全部记录；HTML 预渲染有 `<title>订单</title>` 与表格；`?fixed=1` 带 `content_root`；未发布的名字 404 |
+| 同 Zone 引用发布链接（10-23 用户报告“刷新失败：fetch failed”） | 用户在另一工作区把发布链接粘贴为数据源；修复后部署服务二进制，以 `source_dv.ts` 刷新该表并 `curl -k` 两种主机名 | 修复前：链接主机为 `aiws-ws_<id>`，网关 403，Source 存成 `kind: url` 后服务 HTTPS 抓自己、因 DV 自签 CA 失败。修复后：`public_base` 为 `aiws-<id>`（无 `ws_`），`aiws-<id>.test.buckyos.io/workspace/sales` 经网关返回发布 JSON；原 `kind: url` 表刷新 `succeeded` 并取到 12 条记录，未走 HTTP；发布方引用者登记带消费方实体 ID |
 
 ## 5. §11.2 场景对照
 
@@ -109,7 +110,7 @@ pnpm check && pnpm exec eslint <改动文件>
 
 - **T3-9**：服务内执行路径（进程内 xllm、Deno runner、`wish-host` 路由）仍在；按设计行内条件，待托管执行在真实 Zone 跑通后再下线。
 - **托管执行 DV**：Agent 经 websdk `buckyos aiws run-claim …` 领取并完成 run，未在真实 Zone 验证（aios 容器尚未装本轮 websdk dist）。
-- **T4-8**：`aiws-<id>.<zonehost>` 子域要重新部署 scheduler 与 `boot_gateway.yaml`，未做；Desktop SPA 仍在 Zone 主机服务；改名别名只对发布名生效。跨 Zone 的 Source 刷新与引用登记代码已写、未实测。
+- **T4-8**：`aiws-<id>.<zonehost>` 子域路由已在本机 Zone 网关上生效（10-23 以 curl 验证发布 JSON）；Desktop SPA 仍在 Zone 主机服务；改名别名只对发布名生效。跨 Zone 的 Source 刷新与引用登记代码已写、未实测。
 - **T5-5**：`aiworkspace_template_dev` 手册的示例按协议手写，未在 DV 中由 Agent 实跑。
 - **§5 的两条“部分”**：跨字段不变量、Source 刷新恰好超额。
 - 全套 e2e 中 7 个本轮之前已失败/偶发的用例未处理（§4.2）。
