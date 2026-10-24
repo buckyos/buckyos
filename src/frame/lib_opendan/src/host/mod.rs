@@ -4,6 +4,7 @@
 //! goes through that session's own `drive`, under its own lease.
 
 pub mod goals;
+pub mod maintenance;
 
 use std::collections::HashMap;
 use std::path::PathBuf;

@@ -547,7 +547,7 @@ fn s13_failures_never_look_like_empty_memory() {
         .query_topic(&c, &TopicQuery::new(b.obs.query_scope(), Budget::default()))
         .is_ok());
     let si_quick = quick.consolidator(&si.lease, "si").unwrap();
-    let bt = si_quick.begin(&BatchOptions { limit: 5 }).unwrap();
+    let bt = si_quick.begin(&BatchOptions { limit: 5, max_context: 0 }).unwrap();
     assert!(matches!(
         si_quick.commit(&bt, plan("x", "x", Vec::new(), Vec::new())),
         Err(MemoryError::LockTimeout(_))
@@ -1605,6 +1605,7 @@ fn review_no_identifier_leaks() {
                     replaces: Vec::new(),
                     expected_revision: None,
                     meta: ItemMeta {
+                        last_evidence_at: Some("2026-10-09T01:00:00Z".into()),
                         scope: Some(scope(&[U1], &[])),
                         basis: Some(Basis::UserStatement),
                         ..ItemMeta::default()

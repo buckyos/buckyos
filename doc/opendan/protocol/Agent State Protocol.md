@@ -18,8 +18,6 @@
     sessions/.unreachable/<sid>             巡检标记（目录不可达）
     perception/<sid>.jsonl                  感知
     perception/<sid>.jsonl.lock             感知文件短锁（追加与清理互斥）
-    perception/.cursor.json                 整理游标
-    perception/.consolidations.jsonl        整理审计
     artifacts/<aid>/artifact.json           产物 head
     artifacts/<aid>/versions/v-<sid>.json   各 work session 的贡献
     goals/<goal_id>/                        Goal（§9）：goal.json revisions/ changes.jsonl state.json
@@ -27,7 +25,7 @@
   memory/  notebook/  attention_signals/    认知（agent_tool 实现与其内部锁）
   state/workspaces/                         Known Workspace 登记（项目目录可在 AgentRoot 外）
   state/runtimes/<runtime_id>.json          Runtime 登记（§10）
-  .locks/self_improve.lease  .locks/artifact/<aid>.lease  .locks/workspaces.lock  .locks/runtimes.lock
+  .locks/memory_consolidation.lease  .locks/artifact/<aid>.lease  .locks/workspaces.lock  .locks/runtimes.lock
 ```
 
 访问经 `AgentStateClient`：文件版直接读写上述文件（要求能看到 AgentRoot）；kRPC 版与 DFS 版必须对外表现一致（同一组 fixtures）。
@@ -88,12 +86,12 @@
 - 可见性：`scope.subjects` 由宿主按写入 Session 的绑定补齐（模型只能在授权主体集合内收窄）；读者的每个授权主体集合必须包含记录的全部主体才可见。
 - 自动记录：每次 run 结束写 `run_digest`，payload `{run_id, turn, turn_status}`：`turn` 是该 run 结束时所属的 Turn，`turn_status`（`completed | failed | budget_exhausted | stopped`）只在这次 run 结束同时关闭了 Turn 时有值，否则为 null（例如 `WAIT_USER_MSG` 未交付答复、fork 子 process 返回；drive 补发缺失记录时也为 null）。它按 run 结束生成，不代表 Turn 完成；普通切换与 fork / independent 挂起不写。finished 追加 `task_outcome`；discard 追加 `task_discarded`（保留来源）；`perception` 类型输入并入 `observation`。`state.perception_seq` 在提交中预留，追加在提交之后，缺失的由下次 drive 补发。这三种 Runtime 记录只进入整理批次，不出现在其它 Session 的变化里。
 - **待处理集合**：由 Memory 提交日志中的逐条处置计算（未处置 = 新增；`deferred` 且到期 = 待处置；已终局但正文未清 = 待重试清理），不按字节游标跳过暂缓材料。见 Memory 组件 `pending_work` / `begin`。
-- **积压（backlog，旧路径）**：runner 的 self_improve 路径仍按文件大小与 `.cursor.json.offsets[sid]` 求区间，跳过以 `.` 开头的文件、`*.jsonl.lock` 和 kind 为 `self_improve` 的 session（防自我回声）；该游标只是扫描加速，S 阶段改为上面的处置状态。
-- **self_improve（旧路径）**：session 的 `extensions.opendan.perception_window` 记录要整理的窗口（幂等键 `si:<窗口摘要>`）；drive 全程持 `self_improve` 锁（拿不到返回 Busy）；session 以 succeeded 结束后先写 `.consolidations.jsonl` 审计，再把游标推进到窗口末尾（不回退，at-least-once）；失败或 stopped 不推进。
+- **写入口**：Session 的 `ctl perceive` 控制输入由驱动者经 `Memory::record_perception` 写入：驱动者分配 `seq`、按 Session 绑定主体（UI 取对话 peer，Work 取 Agent 的 owner，Goal Session 取 Goal 的 owner，有 Workspace 绑定时附 `workspace:<id>`，grants 另含 Agent 自身）、绑定来源事件（`--source` 给出的本 Session 输入 key，否则这条控制输入本身、`actor_kind = agent`）与时区锚点，控制输入的 key 是幂等键。Goal 的 `extensions.opendan.records_perception = false`（整理 Goal）时该输入被拒绝（`input_rejected`），Runtime 记录也不写。
+- **防回声**：Goal 带 `memory_consolidation` 能力的 Goal Session（各 epoch）的记录不成为材料；没有字节游标。
 
 ## 5. 认知（边界）
 
-Memory Graph（`memory/`，schema 3.0）由 `agent_tool::agent_memory` 实现：`.meta/occasions.jsonl` 是追加写的提交真相源，一次整理提交是一条 occasion（图操作 + 逐条处置 + 幂等键 + `produced_by` + 真实 `actor_session_id` + 整理 lease 的 epoch）；读路径不取写锁。两层的统一门面是 `libopendan::memory::Memory`（感知写入、`query_topic` / `query` / 按引用读取、`changes_since`、整理与清理）；topic 与观察进度（`ObservationState`）归 Session 保存，Memory 不登记订阅。认知只在 `self_improve`（整理）lease 下经 `Consolidator::commit` 改变；普通 Session 只能写感知和读取。
+Memory Graph（`memory/`，schema 4.0：认知另带 `stability = stable | contextual | volatile`、`last_evidence_at`（独立证据时间，新建整理认知必填，修订不续期）、`review_at`（结构化复核日期）；`created_at` 是 `first_occasion` 时间的读取投影；召回淡出按稳定度 365 / 30 / 1 天一分、上限 20 分，`explicit` 不淡出；旧主版本根目录拒绝打开，不迁移）由 `agent_tool::agent_memory` 实现：`.meta/occasions.jsonl` 是追加写的提交真相源，一次整理提交是一条 occasion（图操作 + 逐条处置 + 幂等键 + `produced_by` + 真实 `actor_session_id` + 整理 lease 的 epoch）；读路径不取写锁。两层的统一门面是 `libopendan::memory::Memory`（感知写入、`query_topic` / `query` / 按引用读取、`changes_since`、`pending_work` / `due_reviews`、整理与清理）；topic 与观察进度（`ObservationState`）归 Session 保存，Memory 不登记订阅。认知只在 `memory_consolidation` lease 下经 `Consolidator::commit` 改变：该 lease 由 Goal 带 `memory_consolidation` 能力的 Goal Session 的 drive 全程持有，其宿主工具 `memory_consolidation_begin / commit` 是唯一写路径（§9.7）；普通 Session 只能写感知和读取，`agent-memory` CLI 在 Session shell 内拒绝写。
 
 `recall_hints`（runner 的旧门面）没有 tag 时返回空列表（未触发），存储不可读时返回错误；`notebook_append` 与 `notebook/`、`attention_signals/` 是待退役的旧调用方，S 阶段移除。非 Rust 实现通过 `agent_tool agent-memory …` CLI 访问 Graph。
 
@@ -168,7 +166,7 @@ task = "{{args.request}}"          # 子 context 的 task 模板，只能引用 
 
 `[model] / [capabilities] / [budget] / prompt.mode` 叠加为该 behavior 的 run 的有效 `.llm_context`（只产生 `model / loop_model / max_tool_iterations / max_tokens / tools` 这几个键），结果进 run.json `config`，xllm 接手时不需要理解 behavior。`prompt.llm_context` 里的 `prompt / groups / runs_dir` 在宿主装配下无效，冻结时拒绝。
 
-Session 模板的覆盖在 `agent.toml`：`[session.<class>]` 的 `turns = "one" | "unbounded" | <n>`、`wait_user_msg`（`allowed | finish_failed | finish_completed | end_turn`）、`input = "none" | "queue"`、`observe`、`load_hints`、`default_behavior`、`max_process_depth`、`max_sub_sessions`、`max_session_depth`；内建 class 为 `work / ui / self_improve / self_check / goal`，其它 class 必须在这里声明。`goal` 类另有 `min_interval_secs` 与 `[session.goal.budget.activation|period]`（§9.4）。
+Session 模板的覆盖在 `agent.toml`：`[session.<class>]` 的 `turns = "one" | "unbounded" | <n>`、`wait_user_msg`（`allowed | finish_failed | finish_completed | end_turn`）、`input = "none" | "queue"`、`observe`、`load_hints`、`default_behavior`、`max_process_depth`、`max_sub_sessions`、`max_session_depth`；内建 class 为 `work / ui / self_check / goal`，其它 class 必须在这里声明。`goal` 类另有 `min_interval_secs`、`[session.goal.budget.activation|period]`（§9.4）与 `[session.goal.maintenance] enabled / decision / behavior`（§9.7）。
 
 定位（不是协议）：`connect(agent_did, who)` 依次取进程内注册的实现、`$OPENDAN_AGENT_ROOT` 或 `~/.opendan/agents.toml`（`"<did>" = "<agent_root>"`）指向的 AgentRoot、`$OPENDAN_AGENT_STATE_URL` 的 kRPC 服务（服务端随 OpenDAN 改造提供）。
 
@@ -201,11 +199,13 @@ Goal 是 Agent State 中的持久对象，是唯一的真相；它的 Goal Sessi
 | `state.json` | `opendan.goal_state/1` | 当前 epoch 的 Goal Session 的驱动者（持其 session lease） | 真相在该 Session 的 `state.goal.state`（与 Session 同一次提交），这里是提交后发布的投影：`rev` 不大于已发布的、或 `epoch` 更旧的写入被忽略 / 拒绝 |
 | `activations.jsonl` | `opendan.goal_activation/1` | 同上 | 按 `(epoch, seq)` 幂等追加（只追加大于末行的记录） |
 | `epochs/<n>/state.json` | `opendan.goal_state/1` | 宿主 | epoch n 结束时的 Goal State（不覆盖发布） |
-| `schedule.json` | `opendan.goal_schedule/1` | 宿主 | 计划进度：`backend`、`every_secs`、`last_slot`、`pending`（已准入待投递的 fire）、`last_posted_key`、`start_posted_epoch`、`skipped[]`（最近 16 次：`paused / min_interval / period_budget / not_active`）、`last_error` |
+| `schedule.json` | `opendan.goal_schedule/1` | 宿主 | 计划进度：`backend`、`every_secs`、`last_slot`、`pending`（已准入待投递的 fire）、`last_posted_key`、`start_posted_epoch`、`skipped[]`（最近 16 次：`paused / min_interval / period_budget / not_active`，内置整理 Goal 另有 gate 原因）、`last_error`、`gate`（§9.7，只有内置整理 Goal 有） |
 
 `goal.json` 的主要字段：`goal_id`（`g-<yyyymmddThhmmss>-<8 hex>`；带幂等键创建时为 `g-k<24 hex>` = H(agent, 创建者, key)）、`title`、`objective`、`scope{objects, paths, workspace}`、`lifecycle = achieve | maintain`、`achieved_when` / `healthy_state`、`distance_evaluation`、`constraints`、`initial_skills`、`owner`、`created_by{principal, via}`、`beneficiaries`、`budget`、`schedule{every_secs, min_interval_secs, start_on_create}`、`behavior`、`status = active | paused | achieved | archived`（及 `status_changed_at_ms / status_reason / status_by`）、`session{epoch, sid}`、`epochs[]{epoch, sid, started_at_ms, start: created | reopened | restarted, reason, keep: all | facts, ended_at_ms, end: archived | achieved | restarted, end_reason}`。
 
-`state.json`：`epoch`、`goal_revision_seen`、`last_activation`、`distance{text, observed_at_ms, evidence_refs, unknowns}`、`pending[]`、`questions[]`（只记录，不投递）、`active_works[]{sid, objective, epoch, created_in_activation, goal_revision}`、`absorbed[]`（已吸收 Work，最多 512，跨 epoch 去重的依据）、`recent_works[]`、`current_skills[]`、`usage{period_start_ms, tokens, activations, works, work_tokens}`、`last_error`。
+`state.json`：`epoch`、`goal_revision_seen`、`last_activation`、`distance{text, observed_at_ms, evidence_refs, unknowns}`、`pending[]`、`questions[]`（每条可带 `candidate_id`）、`active_works[]{sid, objective, epoch, created_in_activation, goal_revision}`、`absorbed[]`（已吸收 Work，最多 512，跨 epoch 去重的依据）、`recent_works[]`、`current_skills[]`、`usage{period_start_ms, tokens, activations, works, work_tokens}`、`last_error`、`maintenance`（§9.7，restart 的 `facts` 也保留）。
+
+`goal.json.extensions.opendan`（Schema `goal_opendan_extension`）是宿主的受信标记 `{builtin?, policy_version, capabilities[], records_perception}`：只有 owner 侧（`GoalCaller.session` 为空）的 `create` / `revise` 可以写，kRPC 的 `goals.create / revise` 带这个键一律 `forbidden`；Goal Session 按 `goal_id` 读取它得到能力，不复制进 SessionConfig。
 
 ### 9.2 Goal Session 与 epoch
 
@@ -238,6 +238,15 @@ Goal Session 派生的 Work 的 `origin.goal = {goal_id, revision, epoch, activa
 ### 9.6 kRPC
 
 `goals.list`、`goals.get {goal_id}`、`goals.revision {goal_id, revision}`、`goals.changes {goal_id, limit?}`、`goals.state {goal_id}`、`goals.epoch_state {goal_id, epoch}`、`goals.activations {goal_id, query?: {epoch?, limit?}}`、`goals.schedule {goal_id}`；写：`goals.create {request, session?}`、`goals.revise {goal_id, request: {expected_revision, …}, session?}`、`goals.set_status {goal_id, request: {status, reason?, evidence?}, session?}`、`goals.reopen {goal_id, request: {reason, fresh_state?}, session?}`、`goals.restart {goal_id, request: {reason, carry_state?}, session?}`。驱动者 / 宿主写一律拒绝（§8）。宿主进程额外提供 `goals.activate` / `goals.post`（见 [opendan README](../../../src/frame/opendan/README.md)）。
+
+### 9.7 内置整理 Goal（memory_maintenance）
+
+设计与验收见 [Jarvis 默认 Goal Session TODO](../../../notepads/jarvis-default-goal-session-todo.md)。要点：
+
+- **播种**：`[session.goal.maintenance] enabled = true` 时宿主每进程一次在 `GoalHost::tick` 里以 `GoalCaller::owner(<Agent DID>)` 调 `GoalStore::create`，`key = builtin:memory_maintenance`（同 key 返回同一 Goal，重启不重建），`extensions.opendan = {builtin: "memory_maintenance", policy_version, capabilities: ["memory_consolidation"], records_perception: false}`，`schedule.every_secs = 1800`，预算 32000 tokens / 4 runs 每次、24 h 内 200000 tokens / 48 次、`max_works = 0`，`behavior` 取 `maintenance.behavior`（Jarvis：`memory_maintenance`）。`policy_version` 更高时只用 owner 路径 revise 标记，不改 owner 改过的预算 / 计划 / 状态。`enabled = false` 时不播种、不检查（已有 Goal 原样保留，gate 记 `disabled`）；pause / archive 走现有生命周期，重启不复活。
+- **gate**（宿主 `host/maintenance.rs`，在 reconcile 中对 `created / reopened / restarted` 与每个定时 fire 生效；不是 `AdmissionCheck`）：先按 Memory 版本向量（`memory_snapshot`，不打开 Graph）与上次摘要比对；非 start、非基线槽（`slot % 4 == 0`，UTC 对齐的整 2 小时）、摘要未变、无积压、暂缓未到期、复核未到期、无未完成 receipt 则 `no_change`；否则做完整确定性检查 `pending_work` + `due_reviews`：无材料 `no_work`；只有清理重试 / 未完成 receipt 则 `mechanical`（只 drive Session 做恢复与清理，不投运行机会）；有新 / 到期材料或到期复核才投运行机会。检查出错记 `unknown` 并退避 5m → 15m → 30m。`paused` / `period_budget` 也在这里记。水位在 `schedule.json.gate`：`status`、`last_checked_slot / last_baseline_slot / last_checked_at_ms / last_full_check_at_ms`、`last_skip_reason`、`last_inputs_digest`、`pending{new, due, waiting, retry_cleanup, next_deadline, oldest_at_ms}`、`due_reviews`、`next_review_at`、`unfinished_receipts`、`last_run_at_ms / last_run_slot`、`backoff_until_ms / backoff_level`、`last_error`。
+- **整理**（runner `consolidation.rs`）：drive 开始先持 `memory_consolidation` lease（Busy 即返回，不开 Activation），先做机械维护（未完成 receipt 推进、读了未提交的批次丢弃、`sweep_expired`、清理重试），再处理输入。宿主工具只对带能力的 Goal Session 暴露：`memory_consolidation_begin {limit?}` 读一批材料并把完整 `Batch` 写成 receipt（`GoalState.maintenance.receipts[]`，`operation_id = mc-<hash>`，一次 Activation 最多 3 批，有未完成 receipt 时拒绝）；`memory_consolidation_commit {operation_id, summary, operations[], dispositions[], tags?}` 先把计划持久化进 receipt，再以 `operation_id` 为幂等键提交 Memory envelope，再发布候选（P1），再清理（失败记 `cleanup_pending` 由下次机械维护重试）；阶段 `prepared → memory_committed → published → completed`，每步可重入，`StaleLease` 记 `failed` 与 `last_error`（不自动修锁）。`abandon: true` 关闭批次不处置。Activation 的 `report` 带 `acted / created_work` 而有未提交批次时被拒。Activation 的 token 上限取 `min(activation 上限, 周期剩余)`。Goal 头多一块 `<memory_maintenance …>`（材料计数、到期复核、簿记）。
+- `GoalState.maintenance`：`receipts[]`（完成的保留 32 条）、`candidates[]`（§5.1 契约，P1 填）、`last_successful_consolidation_at_ms`、`consolidations / operations / dispositions / abandoned_batches`、`last_error`。
 
 
 ## 10. Runtimes `state/runtimes/<runtime_id>.json`

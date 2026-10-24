@@ -21,33 +21,48 @@ pub const DEFAULT_MAX_BYTES: usize = 65536;
 pub const DEFAULT_BODY_TRUNCATE_BYTES: usize = 4096;
 const MAX_EXPANSION: usize = 32;
 
-/// Time fade of recall ranking (M-20). Explicit cognitions never fade.
+/// Time fade of recall ranking (M-20, TODO §3.2): one point per
+/// `days_per_point` of the item's stability since its last independent
+/// evidence (else its creation). Explicit cognitions never fade.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FadeConfig {
-    /// One point of penalty per this many days without a revision.
-    pub days_per_point: f64,
+    pub stable_days_per_point: f64,
+    pub contextual_days_per_point: f64,
+    pub volatile_days_per_point: f64,
     pub max_penalty: f64,
 }
 
 impl Default for FadeConfig {
     fn default() -> Self {
         Self {
-            days_per_point: 30.0,
+            stable_days_per_point: 365.0,
+            contextual_days_per_point: 30.0,
+            volatile_days_per_point: 1.0,
             max_penalty: 20.0,
         }
     }
 }
 
 impl FadeConfig {
-    pub fn penalty(&self, item: &MemoryItem, now: DateTime<Utc>) -> f64 {
+    pub fn days_per_point(&self, stability: Stability) -> f64 {
+        match stability {
+            Stability::Stable => self.stable_days_per_point,
+            Stability::Contextual => self.contextual_days_per_point,
+            Stability::Volatile => self.volatile_days_per_point,
+        }
+    }
+
+    /// `anchor`: the item's last evidence time, else its creation time
+    /// (`GraphView::item_evidence_anchor`); unknown counts as fully faded.
+    pub fn penalty(&self, item: &MemoryItem, anchor: Option<&str>, now: DateTime<Utc>) -> f64 {
         if item.explicit {
             return 0.0;
         }
-        let Ok(dt) = DateTime::parse_from_rfc3339(&item.noticed_at) else {
+        let Some(Ok(dt)) = anchor.map(DateTime::parse_from_rfc3339) else {
             return self.max_penalty;
         };
         let days = (now - dt.with_timezone(&Utc)).num_seconds().max(0) as f64 / 86_400.0;
-        (days / self.days_per_point.max(f64::EPSILON)).min(self.max_penalty)
+        (days / self.days_per_point(item.stability).max(f64::EPSILON)).min(self.max_penalty)
     }
 }
 
@@ -125,8 +140,12 @@ pub struct RecallItem {
     pub matched: Vec<String>,
     pub source_occasion: String,
     pub noticed_at: String,
+    pub created_at: Option<String>,
+    pub stability: Stability,
+    pub last_evidence_at: Option<String>,
     pub evidence: Vec<String>,
     pub valid_until: Option<String>,
+    pub review_at: Option<String>,
     pub review_when: Vec<String>,
     pub content: String,
     pub size: usize,
@@ -489,7 +508,7 @@ impl GraphView {
             }
             parts.weight = item.weight * 10.0;
             parts.confidence = item.confidence * 6.0;
-            parts.fade = q.fade.penalty(item, now);
+            parts.fade = q.fade.penalty(item, self.item_evidence_anchor(item).as_deref(), now);
             ranked.push((parts, RecallItemDraft { item, matched }));
         }
         ranked.sort_by(|a, b| {
@@ -543,8 +562,12 @@ impl GraphView {
                 matched: draft.matched,
                 source_occasion: item.source_occasion.clone(),
                 noticed_at: item.noticed_at.clone(),
+                created_at: self.item_created_at(item),
+                stability: item.stability,
+                last_evidence_at: item.last_evidence_at.clone(),
                 evidence: item.evidence.clone(),
                 valid_until: item.valid_until.clone(),
+                review_at: item.review_at.clone(),
                 review_when: item.review_when.clone(),
                 content,
                 size,

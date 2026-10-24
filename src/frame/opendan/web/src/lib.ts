@@ -1,5 +1,5 @@
 import useSWR, { type SWRResponse } from 'swr'
-import type { AgentProfile, RegistryEntry, UiBinding } from './model'
+import type { AgentProfile, GoalDefinition, GoalSchedule, OpendanGoalExtension, RegistryEntry, UiBinding } from './model'
 
 export const REFRESH_MS = 4000
 
@@ -90,4 +90,33 @@ export const messageHubHref = (profile: AgentProfile, entry?: RegistryEntry, bin
     if (session) params.set('sessionId', session)
   }
   return `${profile.desktop_url}/messagehub?${params}`
+}
+
+export const goalHref = (goalId: string) => `#/goal/${encodeURIComponent(goalId)}`
+
+/** The host's trusted marks of a Goal (`extensions.opendan`); `null` for an ordinary Goal. */
+export const goalExtension = (goal: GoalDefinition): OpendanGoalExtension | null => {
+  const ext = goal.extensions?.opendan
+  return ext && typeof ext === 'object' ? (ext as OpendanGoalExtension) : null
+}
+
+/**
+ * When the schedule offers the next run: the start of the slot after the
+ * last one counted, in UTC slots of `every_secs` (a slot already behind us
+ * moves on to the next boundary). `null`: no interval (manual and event
+ * driven only).
+ */
+export const nextOpportunityMs = (schedule: GoalSchedule, nowMs = Date.now()): number | null => {
+  const every = schedule.every_secs
+  if (!every) return null
+  const fromLast = schedule.last_slot != null ? (schedule.last_slot + 1) * every * 1000 : 0
+  const fromNow = (Math.floor(nowMs / 1000 / every) + 1) * every * 1000
+  return Math.max(fromLast, fromNow)
+}
+
+export const fmtDuration = (secs: number): string => {
+  if (secs % 86400 === 0) return `${secs / 86400}d`
+  if (secs % 3600 === 0) return `${secs / 3600}h`
+  if (secs % 60 === 0) return `${secs / 60}m`
+  return `${secs}s`
 }

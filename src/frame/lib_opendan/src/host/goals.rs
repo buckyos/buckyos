@@ -9,7 +9,7 @@
 //! keeps is `state/goals/<id>/schedule.json`.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -26,6 +26,7 @@ use crate::protocol::*;
 use crate::session::SessionDir;
 use crate::state::GoalStore;
 
+use super::maintenance::{self, GateDecision, GateReason};
 use super::Supervisor;
 
 /// Milliseconds now (injectable for tests).
@@ -330,6 +331,8 @@ pub struct GoalHost {
     answered: Mutex<std::collections::BTreeSet<String>>,
     /// When the questions of a Goal were looked at last.
     answers_checked: Mutex<std::collections::HashMap<String, std::time::Instant>>,
+    /// The built-in consolidation Goal was seeded by this process.
+    seeded: AtomicBool,
 }
 
 fn push(list: &mut Vec<GoalEventRecord>, r: GoalEventRecord) {
@@ -354,7 +357,81 @@ impl GoalHost {
             busy: tokio::sync::Mutex::new(()),
             answered: Mutex::new(std::collections::BTreeSet::new()),
             answers_checked: Mutex::new(std::collections::HashMap::new()),
+            seeded: AtomicBool::new(false),
         }
+    }
+
+    /// Seed the agent's default consolidation Goal once per process when
+    /// `[session.goal.maintenance] enabled` (idempotent across restarts by
+    /// its key; a failure is retried at the next tick).
+    async fn seed_builtin(&self, sup: &Supervisor) {
+        if self.seeded.load(Ordering::SeqCst) {
+            return;
+        }
+        let agent = sup.host.agent.as_ref();
+        let d = defaults(agent.agent_root(), &self.options.class);
+        if !d.maintenance.enabled {
+            return;
+        }
+        match maintenance::seed(agent.goals(), agent.agent_did(), &d.maintenance).await {
+            Ok(g) => {
+                log::info!("goals: memory maintenance goal {} (policy {})", g.goal_id, g.opendan().map(|e| e.policy_version).unwrap_or(0));
+                self.seeded.store(true, Ordering::SeqCst);
+            }
+            Err(e) => self.error(BUILTIN_MEMORY_MAINTENANCE, format!("seeding: {e}")),
+        }
+    }
+
+    /// The gate of the built-in Goal: decides whether `reason` becomes a run
+    /// opportunity, records its water marks in `schedule.json.gate`.
+    async fn maintenance_gate(
+        &self,
+        sup: &Supervisor,
+        goal: &GoalDefinition,
+        reason: GateReason,
+        now: u64,
+    ) -> Result<GateDecision> {
+        let agent = sup.host.agent.as_ref();
+        let goals = agent.goals();
+        let Some(root) = agent.agent_root() else {
+            return Ok(GateDecision::Skip("no_agent_root".into()));
+        };
+        let state = goals.state(&goal.goal_id).await?;
+        let d = defaults(Some(root), &self.options.class);
+        let budget = effective_budget(goal, &d);
+        let mut schedule = schedule_of(goals, &goal.goal_id).await?;
+        let gate = schedule.gate.take().unwrap_or_default();
+        let (decision, gate) = maintenance::decide(
+            maintenance::memory_of(root),
+            goal,
+            state.as_ref(),
+            &budget,
+            gate,
+            reason,
+            now,
+        )
+        .await;
+        // The schedule may have moved while the checks ran: re-read, set the gate.
+        let mut schedule = schedule_of(goals, &goal.goal_id).await.unwrap_or(schedule);
+        schedule.gate = Some(gate);
+        schedule.updated_at_ms = now;
+        goals.write_schedule(&schedule).await?;
+        if let GateDecision::Skip(reason) = &decision {
+            if reason == "mechanical" {
+                // Recovery, sweep and cleanup need the drive, not a model.
+                self.drive(sup, &goal.session.sid, "memory maintenance (mechanical)").await;
+            }
+            let mut s = self.status.lock().expect("goal status");
+            push(
+                &mut s.skipped,
+                GoalEventRecord {
+                    at_ms: now,
+                    goal_id: goal.goal_id.clone(),
+                    what: format!("gate: {reason}"),
+                },
+            );
+        }
+        Ok(decision)
     }
 
     /// A notification may have changed (a task event): every Goal's
@@ -394,6 +471,7 @@ impl GoalHost {
     /// One look at every Goal.
     pub(super) async fn tick(&self, sup: &Supervisor) -> Result<()> {
         let _busy = self.busy.lock().await;
+        self.seed_builtin(sup).await;
         let goals = sup.host.agent.goals().list().await?;
         {
             let mut s = self.status.lock().expect("goal status");
@@ -486,6 +564,22 @@ impl GoalHost {
     async fn reconcile(&self, sup: &Supervisor, goal: &GoalDefinition) -> Result<()> {
         let agent = sup.host.agent.as_ref();
         let goals = agent.goals();
+        let builtin = goal.is_builtin(BUILTIN_MEMORY_MAINTENANCE);
+        if builtin && !defaults(agent.agent_root(), &self.options.class).maintenance.enabled {
+            // Switched off: no session, no checks; the Goal and the
+            // cognitions stay as they are.
+            let mut schedule = schedule_of(goals, &goal.goal_id).await?;
+            if schedule.gate.as_ref().is_none_or(|g| g.status != "disabled") {
+                let mut gate = schedule.gate.take().unwrap_or_default();
+                gate.status = "disabled".into();
+                gate.last_skip_reason = Some("disabled".into());
+                gate.last_checked_at_ms = self.now();
+                schedule.gate = Some(gate);
+                schedule.updated_at_ms = self.now();
+                goals.write_schedule(&schedule).await?;
+            }
+            return Ok(());
+        }
         // Epochs before the current one end first (their sessions end by
         // their gate; the state they leave is what the next one starts
         // from).
@@ -595,15 +689,29 @@ impl GoalHost {
                 EpochStart::Reopened => ActivationReasonKind::Reopened,
                 EpochStart::Restarted => ActivationReasonKind::Restarted,
             };
-            if kind != ActivationReasonKind::Created || goal.schedule.start_on_create {
-                let note = match goal.current_epoch().and_then(|e| e.reason.clone()) {
-                    Some(r) => format!("epoch {epoch} started ({}): {r}", crate::goal::event_name(kind)),
-                    None => format!("goal {} was created", goal.goal_id),
-                };
+            let start_note = match goal.current_epoch().and_then(|e| e.reason.clone()) {
+                Some(r) => format!("epoch {epoch} started ({}): {r}", crate::goal::event_name(kind)),
+                None => format!("goal {} was created", goal.goal_id),
+            };
+            let post = if builtin {
+                // The built-in Goal starts with a check, never a model call
+                // on an empty Memory.
+                match self.maintenance_gate(sup, goal, GateReason::Start, now).await? {
+                    GateDecision::Run(gate_note) => Some(format!("{start_note}; {gate_note}")),
+                    GateDecision::Skip(_) => None,
+                }
+            } else if kind != ActivationReasonKind::Created || goal.schedule.start_on_create {
+                Some(start_note)
+            } else {
+                None
+            };
+            if let Some(note) = post {
                 post_activation(agent, goal, &sup.host.who, kind, &start_key(&goal.goal_id, epoch), &note)
                     .await?;
                 self.drive(sup, &sid, "goal epoch started").await;
             }
+            // The gate may have written its water marks meanwhile.
+            schedule = schedule_of(goals, &goal.goal_id).await?;
             schedule.start_posted_epoch = epoch;
             schedule.updated_at_ms = now;
             goals.write_schedule(&schedule).await?;
@@ -613,6 +721,7 @@ impl GoalHost {
         let Some(fire) = backend.due(goals, goal, now).await? else {
             return Ok(());
         };
+        let mut gate_note = None;
         if !fire.retry {
             let state = goals.state(&goal.goal_id).await?;
             let d = defaults(agent.agent_root(), &self.options.class);
@@ -641,10 +750,21 @@ impl GoalHost {
                     return Ok(());
                 }
             }
+            if builtin {
+                match self.maintenance_gate(sup, goal, GateReason::Scheduled(fire.slot), now).await? {
+                    GateDecision::Run(n) => gate_note = Some(n),
+                    GateDecision::Skip(reason) => {
+                        backend
+                            .settle(goals, &goal.goal_id, &fire, &FireOutcome::Skipped(reason), now)
+                            .await?;
+                        return Ok(());
+                    }
+                }
+            }
             backend.pending(goals, &goal.goal_id, &fire).await?;
             crate::fault::point("goal:after_fire_pending");
         }
-        let note = if fire.missed > 1 {
+        let mut note = if fire.missed > 1 {
             format!(
                 "scheduled run (every {}s); {} slots passed since the last one",
                 goal.schedule.every_secs.unwrap_or(0),
@@ -653,6 +773,9 @@ impl GoalHost {
         } else {
             format!("scheduled run (every {}s)", goal.schedule.every_secs.unwrap_or(0))
         };
+        if let Some(n) = gate_note {
+            note = format!("{note}; {n}");
+        }
         post_activation(agent, goal, &sup.host.who, ActivationReasonKind::Scheduled, &fire.key, &note)
             .await?;
         crate::fault::point("goal:after_fire_post");

@@ -231,6 +231,27 @@
         }
       ]
     },
+    "CandidateKind": {
+      "enum": [
+        "goal",
+        "schedule"
+      ],
+      "type": "string"
+    },
+    "CandidateStatus": {
+      "enum": [
+        "proposed",
+        "needs_confirmation",
+        "approved",
+        "materializing",
+        "created",
+        "linked",
+        "rejected",
+        "expired",
+        "blocked"
+      ],
+      "type": "string"
+    },
     "ChildCall": {
       "description": "The sub context a `Caller` frame waits for.",
       "properties": {
@@ -271,6 +292,100 @@
         "behavior",
         "mode",
         "trigger"
+      ],
+      "type": "object"
+    },
+    "ConsolidationReceipt": {
+      "description": "One batch of one Activation of the consolidation Goal (§4.1).",
+      "properties": {
+        "activation": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "batch": {
+          "description": "The complete `Batch` (replayed into the commit as it was read)."
+        },
+        "batch_id": {
+          "type": "string"
+        },
+        "cleanup_pending": {
+          "default": false,
+          "type": "boolean"
+        },
+        "created_at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "dispositions": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "epoch": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "graph_seq": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "last_error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "memory_occasion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operation_id": {
+          "description": "Stable operation id = Memory idempotency key.",
+          "type": "string"
+        },
+        "operations": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "plan": {
+          "description": "The complete `ConsolidationCommit` once submitted."
+        },
+        "refs": {
+          "default": [],
+          "description": "Materials that may be disposed by this batch.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "stage": {
+          "$ref": "#/definitions/ReceiptStage"
+        },
+        "updated_at_ms": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "activation",
+        "batch",
+        "batch_id",
+        "created_at_ms",
+        "epoch",
+        "graph_seq",
+        "operation_id",
+        "stage"
       ],
       "type": "object"
     },
@@ -537,6 +652,13 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "candidate_id": {
+          "description": "The maintenance candidate this question confirms (§5.1).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "epoch": {
           "format": "uint64",
           "minimum": 0.0,
@@ -725,6 +847,17 @@
           ]
         },
         "last_error": true,
+        "maintenance": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MaintenanceState"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The consolidation Goal's typed maintenance state (receipts, candidates, consolidation summary); committed with the session."
+        },
         "pending": {
           "items": {
             "type": "string"
@@ -981,6 +1114,238 @@
       "required": [
         "run_id"
       ],
+      "type": "object"
+    },
+    "MaintenanceCandidate": {
+      "description": "A Goal / schedule the consolidation discovered (§5.1). P0 freezes the contract; discovery and confirmation are P1.",
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "approved_at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "approved_by": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "approved_revision": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "authorization_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "candidate_id": {
+          "type": "string"
+        },
+        "created_at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "estimated_budget": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "expected_effects": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "expires_at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "intent_basis": {
+          "description": "`explicit | inferred`.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/CandidateKind"
+        },
+        "last_error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "linked_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "missing_fields": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "notify_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operation_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "proposed": true,
+        "question_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "retry_at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "review_at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "scope": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "semantic_key": {
+          "type": "string"
+        },
+        "source_refs": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/definitions/CandidateStatus"
+        },
+        "title": {
+          "type": "string"
+        },
+        "updated_at_ms": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "action",
+        "candidate_id",
+        "created_at_ms",
+        "intent_basis",
+        "kind",
+        "revision",
+        "semantic_key",
+        "status",
+        "title"
+      ],
+      "type": "object"
+    },
+    "MaintenanceState": {
+      "description": "`GoalState.maintenance` of the consolidation Goal.",
+      "properties": {
+        "abandoned_batches": {
+          "default": 0,
+          "description": "Batches read but never committed (recovery dropped them; the material stays for the next batch).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "candidates": {
+          "items": {
+            "$ref": "#/definitions/MaintenanceCandidate"
+          },
+          "type": "array"
+        },
+        "consolidations": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "dispositions": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "last_error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_successful_consolidation_at_ms": {
+          "description": "Last commit that really changed or disposed something.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "operations": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "receipts": {
+          "items": {
+            "$ref": "#/definitions/ConsolidationReceipt"
+          },
+          "type": "array"
+        }
+      },
       "type": "object"
     },
     "OpenActivation": {
@@ -1386,6 +1751,46 @@
         "run_id"
       ],
       "type": "object"
+    },
+    "ReceiptStage": {
+      "description": "Stage of a consolidation receipt (§4.1): each step is re-entrant, a crash resumes from the stage it reached.",
+      "oneOf": [
+        {
+          "description": "The batch was read (and, with `plan`, the plan persisted).",
+          "enum": [
+            "prepared"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The Memory envelope is committed under `operation_id`.",
+          "enum": [
+            "memory_committed"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Candidates are published to the Goal State.",
+          "enum": [
+            "published"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Cleanup of the disposed bodies ran (retried on its own when it failed: `cleanup_pending`).",
+          "enum": [
+            "completed"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The commit was refused for good (a stale lease); needs attention.",
+          "enum": [
+            "failed"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "RecentKeys": {
       "description": "Bounded dedup cache of producer `key`s (§4.5). It only filters duplicate deliveries; it never replaces the receipts persisted in snapshots or the per-source consumption positions.",

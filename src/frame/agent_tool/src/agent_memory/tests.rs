@@ -67,6 +67,11 @@ impl T {
     }
 }
 
+/// Evidence time of the fixtures' cognitions (schema 4.0 requires it).
+fn ev_at() -> Option<String> {
+    Some("2026-10-09T00:00:00Z".to_string())
+}
+
 fn si() -> CommitActor {
     CommitActor {
         session_id: "si-1".into(),
@@ -116,6 +121,7 @@ fn pref(
             basis: Some(Basis::UserStatement),
             explicit: true,
             tags: vec!["背景效果".into()],
+            last_evidence_at: ev_at(),
             ..ItemMeta::default()
         },
     })
@@ -481,7 +487,8 @@ fn relation_triples_revise_in_scope_and_stay_apart_across_scopes() {
                 meta: ItemMeta {
                     scope: Some(scope),
                     basis: Some(Basis::UserStatement),
-                    ..ItemMeta::default()
+                    last_evidence_at: ev_at(),
+            ..ItemMeta::default()
                 },
             })],
             vec![],
@@ -728,7 +735,9 @@ fn explicit_cognitions_do_not_fade_and_validity_is_enforced() {
     assert_eq!(after.score, before);
     let mut fq = q();
     fq.fade = FadeConfig {
-        days_per_point: 1.0,
+        stable_days_per_point: 1.0,
+        contextual_days_per_point: 1.0,
+        volatile_days_per_point: 1.0,
         max_penalty: 3.0,
     };
     assert_eq!(m.recall(&fq).unwrap().items()[0].score_parts.fade, 0.0);
@@ -753,7 +762,8 @@ fn explicit_cognitions_do_not_fade_and_validity_is_enforced() {
                     basis: Some(Basis::UserStatement),
                     explicit: true,
                     valid_until: Some((t.now() + ChronoDuration::hours(1)).to_rfc3339()),
-                    ..ItemMeta::default()
+                    last_evidence_at: ev_at(),
+            ..ItemMeta::default()
                 },
             })],
             vec![],
@@ -907,7 +917,8 @@ fn relation_hops_expand_from_query_objects() {
             meta: ItemMeta {
                 scope: Some(Scope::new(&["agent:a1"], &[])),
                 basis: Some(Basis::ToolObservation),
-                ..ItemMeta::default()
+                last_evidence_at: ev_at(),
+            ..ItemMeta::default()
             },
         })
     };
@@ -936,7 +947,8 @@ fn relation_hops_expand_from_query_objects() {
                     meta: ItemMeta {
                         scope: Some(Scope::new(&["agent:a1"], &[])),
                         basis: Some(Basis::ToolObservation),
-                        ..ItemMeta::default()
+                        last_evidence_at: ev_at(),
+            ..ItemMeta::default()
                     },
                 }),
             ],
@@ -1210,7 +1222,7 @@ fn schema_rules() {
     t.mem().set("/user/style", "concise", "r").unwrap();
     let meta_path = t.root.join(".meta/meta.json");
     let mut meta: Value = serde_json::from_slice(&fs::read(&meta_path).unwrap()).unwrap();
-    meta["schema_version"] = json!("3.9");
+    meta["schema_version"] = json!("4.9");
     fs::write(&meta_path, serde_json::to_vec(&meta).unwrap()).unwrap();
     let ro = AgentMemory::open(t.cfg()).unwrap();
     assert!(ro.read_only_reason().is_some());
@@ -1249,6 +1261,7 @@ fn legacy_load_output_has_the_new_fields() {
         expected_revision: None,
         meta: ItemMeta {
             tags: vec!["dental".into()],
+            last_evidence_at: ev_at(),
             ..ItemMeta::default()
         },
     })
@@ -1348,4 +1361,165 @@ fn replay_tolerates_the_compaction_window() {
         AgentMemory::open_read(t.cfg()).unwrap().view(),
         Err(AgentMemoryError::Corrupted(_))
     ));
+}
+
+fn stable_item(
+    id: &str,
+    stability: Option<Stability>,
+    last_evidence_at: Option<String>,
+    explicit: bool,
+    expected: Option<u64>,
+    tags: &[&str],
+) -> GraphOperation {
+    GraphOperation::PutItem(PutItemOp {
+        item_id: Some(id.into()),
+        kind: ItemKind::ObservationInference,
+        entities: Vec::new(),
+        claim: json!({ "type": "observation_inference", "statement": format!("{id} 背景偏好") }),
+        weight: 0.7,
+        confidence: 0.8,
+        evidence: vec!["obs_1".into()],
+        write_reason: "fixture".into(),
+        replaces: Vec::new(),
+        expected_revision: expected,
+        meta: ItemMeta {
+            semantic_kind: Some("preference".into()),
+            scope: Some(scope_u1_alpha()),
+            basis: Some(Basis::UserStatement),
+            explicit,
+            stability,
+            last_evidence_at,
+            tags: tags.iter().map(|s| s.to_string()).collect(),
+            ..ItemMeta::default()
+        },
+    })
+}
+
+#[test]
+fn schema_4_time_semantics_follow_stability_and_evidence() {
+    let t = T::new();
+    let m = t.mem();
+    let ev = Some(t.now().to_rfc3339());
+    m.commit_consolidation(
+        &si(),
+        plan(
+            "s4",
+            vec![
+                obs("obs_1", "u1 要求游戏页静态", "A/e31"),
+                stable_item("item_s", Some(Stability::Stable), ev.clone(), false, None, &[]),
+                stable_item("item_c", None, ev.clone(), false, None, &[]),
+                stable_item("item_v", Some(Stability::Volatile), ev.clone(), false, None, &[]),
+                stable_item("item_e", Some(Stability::Volatile), ev.clone(), true, None, &[]),
+            ],
+            vec![],
+        ),
+    )
+    .unwrap();
+    // A new consolidated cognition without its evidence time is refused.
+    let err = m
+        .commit_consolidation(
+            &si(),
+            plan("s4-missing", vec![stable_item("item_x", None, None, false, None, &[])], vec![]),
+        )
+        .unwrap_err();
+    assert!(matches!(err, AgentMemoryError::Invalid(ref msg) if msg.contains("last_evidence_at")), "{err}");
+    let view = m.view().unwrap();
+    let c = view.item("item_c").unwrap();
+    assert_eq!(c.stability, Stability::Contextual, "stability defaults to contextual");
+    let created = view.item_created_at(c).unwrap();
+    assert_eq!(created, t.now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+    // 10 days later: stable ~0.03, contextual ~0.33, volatile 10, explicit 0.
+    t.advance_days(10);
+    let q = topic_query(&t, &["user:u1"], &["project:snake-alpha/game_page"], "背景偏好");
+    let r = m.recall(&q).unwrap();
+    let fade = |id: &str| r.items().iter().find(|i| i.item_id == id).unwrap().score_parts.fade;
+    assert!(fade("item_s") < 0.05, "{}", fade("item_s"));
+    assert!((fade("item_c") - 10.0 / 30.0).abs() < 0.01, "{}", fade("item_c"));
+    assert!((fade("item_v") - 10.0).abs() < 0.01, "{}", fade("item_v"));
+    assert_eq!(fade("item_e"), 0.0);
+    let v = r.items().iter().find(|i| i.item_id == "item_v").unwrap();
+    assert_eq!(v.stability, Stability::Volatile);
+    assert_eq!(v.created_at.as_deref(), Some(created.as_str()));
+    assert_eq!(v.last_evidence_at, ev);
+    // A revision that only changes tags keeps created_at and last_evidence_at.
+    m.commit_consolidation(
+        &si(),
+        plan(
+            "s4-tags",
+            vec![stable_item("item_v", None, None, false, Some(1), &["背景效果"])],
+            vec![],
+        ),
+    )
+    .unwrap();
+    let view = m.view().unwrap();
+    let v = view.item("item_v").unwrap();
+    assert_eq!(v.revision, 2);
+    assert_eq!(v.stability, Stability::Volatile, "a revision without stability keeps it");
+    assert_eq!(v.last_evidence_at, ev, "retagging is not new evidence");
+    assert_eq!(view.item_created_at(v).unwrap(), created);
+    assert_ne!(v.noticed_at, created, "the revision time moved on");
+    // New independent evidence renews it and the fade restarts.
+    let renewed = Some(t.now().to_rfc3339());
+    m.commit_consolidation(
+        &si(),
+        plan(
+            "s4-evidence",
+            vec![stable_item("item_v", None, renewed.clone(), false, Some(2), &["背景效果"])],
+            vec![],
+        ),
+    )
+    .unwrap();
+    let r = m.recall(&q).unwrap();
+    let v = r.items().iter().find(|i| i.item_id == "item_v").unwrap();
+    assert_eq!(v.last_evidence_at, renewed);
+    assert_eq!(v.score_parts.fade, 0.0);
+    assert_eq!(v.created_at.as_deref(), Some(created.as_str()));
+}
+
+#[test]
+fn review_at_is_a_deterministic_due_query() {
+    let t = T::new();
+    let m = t.mem();
+    let ev = Some(t.now().to_rfc3339());
+    let soon = (t.now() + ChronoDuration::hours(2)).to_rfc3339();
+    let later = (t.now() + ChronoDuration::days(3)).to_rfc3339();
+    let with_review = |id: &str, at: &str| {
+        let GraphOperation::PutItem(mut op) = stable_item(id, None, ev.clone(), false, None, &["背景效果"]) else {
+            unreachable!()
+        };
+        op.meta.review_at = Some(at.to_string());
+        GraphOperation::PutItem(op)
+    };
+    assert!(matches!(
+        m.commit_consolidation(&si(), plan("bad", vec![obs("obs_1", "x", "A/e1"), with_review("item_bad", "tomorrow")], vec![])),
+        Err(AgentMemoryError::Invalid(_))
+    ));
+    m.commit_consolidation(
+        &si(),
+        plan(
+            "rv",
+            vec![
+                obs("obs_1", "u1 要求游戏页静态", "A/e31"),
+                with_review("item_soon", &soon),
+                with_review("item_later", &later),
+            ],
+            vec![],
+        ),
+    )
+    .unwrap();
+    let view = m.view().unwrap();
+    assert!(view.due_reviews(t.now()).is_empty());
+    assert_eq!(view.next_review_at(t.now()).as_deref(), Some(soon.as_str()));
+    t.now.fetch_add(3 * 3600, Ordering::SeqCst);
+    let due: Vec<&str> = view.due_reviews(t.now()).iter().map(|i| i.item_id.as_str()).collect();
+    assert_eq!(due, vec!["item_soon"]);
+    assert_eq!(view.next_review_at(t.now()).as_deref(), Some(later.as_str()));
+    // Reaching review_at only asks for a check: the item is still recalled.
+    let q = topic_query(&t, &["user:u1"], &["project:snake-alpha/game_page"], "背景偏好");
+    let r = m.recall(&q).unwrap();
+    let soon_item = r.items().iter().find(|i| i.item_id == "item_soon").unwrap();
+    assert_eq!(soon_item.review_at.as_deref(), Some(soon.as_str()));
+    assert!(soon_item.expand_recommended || soon_item.review_at.is_some());
+    let text = AgentMemory::format_load_items(&m.load(&["背景效果".into()], LoadOptions::default()).unwrap());
+    assert!(text.contains("STABILITY contextual") && text.contains("LAST_EVIDENCE 2026-10-09") && text.contains("REVIEW_AT "), "{text}");
 }

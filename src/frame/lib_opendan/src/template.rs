@@ -62,12 +62,36 @@ pub const UI_OBJECTIVE: &str = "The long-lived conversation of this agent with o
 /// Objective of a group UI session.
 pub const GROUP_OBJECTIVE: &str = "The long-lived presence of this agent in one group, serving its owner only. Answer what a conversation can answer; hand work that must happen outside the conversation to intent analysis and relay what it created; when a work session or goal reports back, relay the result. The conversation never ends by itself.";
 
+/// `agent.toml [session.goal.maintenance]`: the agent's default Memory
+/// consolidation Goal (Jarvis default Goal TODO §2, §6, §7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaintenanceDefaults {
+    /// Seed and run the built-in `memory_maintenance` Goal (off: no seeding,
+    /// no background check; an existing Goal keeps its state).
+    pub enabled: bool,
+    /// `off | auto`: the optional decision pre-check (§7; `auto` is T06).
+    pub decision: String,
+    /// Behavior of its Goal Session (`None`: the class default).
+    pub behavior: Option<String>,
+}
+
+impl Default for MaintenanceDefaults {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            decision: "off".to_string(),
+            behavior: Some("memory_maintenance".to_string()),
+        }
+    }
+}
+
 /// `agent.toml [session.goal]` defaults of every Goal (`budget`,
-/// `min_interval_secs`), over the built-in ones.
+/// `min_interval_secs`, `maintenance`), over the built-in ones.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalDefaults {
     pub budget: GoalBudget,
     pub min_interval_secs: u64,
+    pub maintenance: MaintenanceDefaults,
 }
 
 impl Default for GoalDefaults {
@@ -86,13 +110,13 @@ impl Default for GoalDefaults {
                 },
             },
             min_interval_secs: 60,
+            maintenance: MaintenanceDefaults::default(),
         }
     }
 }
 
 impl SessionTemplate {
-    /// The built-in templates: `work`, `ui`, `self_improve`, `self_check`,
-    /// `goal`.
+    /// The built-in templates: `work`, `ui`, `self_check`, `goal`.
     pub fn builtin(class: &str) -> Option<Self> {
         let policy = SessionPolicy::default();
         let base = |kind, turns, wait, input, observe, hints| SessionTemplate {
@@ -145,14 +169,6 @@ impl SessionTemplate {
                 });
                 t
             }
-            "self_improve" => base(
-                SessionKind::SelfImprove,
-                Turns::One,
-                WaitPolicy::FinishFailed,
-                InputChannel::None,
-                ObserveScope::Off,
-                false,
-            ),
             "self_check" => {
                 let mut t = base(
                     SessionKind::SelfCheck,
@@ -236,7 +252,7 @@ impl SessionTemplate {
             }
             (None, None) => {
                 return Err(OpenDanError::InvalidArgument(format!(
-                    "unknown session class `{class}` (built-in: work, ui, self_improve, self_check, goal; others need agent.toml [session.{class}])"
+                    "unknown session class `{class}` (built-in: work, ui, self_check, goal; others need agent.toml [session.{class}])"
                 )))
             }
         };
@@ -325,6 +341,31 @@ impl SessionTemplate {
                     .as_integer()
                     .and_then(|n| u64::try_from(n).ok())
                     .ok_or_else(|| bad("min_interval_secs"))?;
+            }
+            if let Some(m) = over.get("maintenance") {
+                let m = m.as_table().ok_or_else(|| bad("maintenance"))?;
+                for key in m.keys() {
+                    if !matches!(key.as_str(), "enabled" | "decision" | "behavior") {
+                        return Err(OpenDanError::InvalidArgument(format!(
+                            "agent.toml [session.{class}.maintenance]: unknown key `{key}`"
+                        )));
+                    }
+                }
+                if let Some(v) = m.get("enabled") {
+                    g.maintenance.enabled = v.as_bool().ok_or_else(|| bad("maintenance.enabled"))?;
+                }
+                if let Some(v) = m.get("decision") {
+                    let d = v.as_str().ok_or_else(|| bad("maintenance.decision"))?;
+                    if !matches!(d, "off" | "auto") {
+                        return Err(bad("maintenance.decision (off | auto)"));
+                    }
+                    g.maintenance.decision = d.to_string();
+                }
+                if let Some(v) = m.get("behavior") {
+                    g.maintenance.behavior =
+                        Some(v.as_str().ok_or_else(|| bad("maintenance.behavior"))?.to_string())
+                            .filter(|b| !b.trim().is_empty());
+                }
             }
         }
         Ok(t)

@@ -3,16 +3,19 @@ import type {
   AgentProfile,
   ArtifactHead,
   ArtifactVersion,
-  BacklogItem,
   BehaviorMeta,
   Decision,
+  GoalActivation,
+  GoalChange,
+  GoalDefinition,
+  GoalSchedule,
+  GoalState,
+  GoalStatus,
   Hint,
   IdentityText,
   KnownRuntime,
   KnownWorkspace,
   LoaderStatus,
-  PerceptionCursor,
-  PerceptionRecord,
   ProfilePatch,
   RegistryEntry,
   SessionDetail,
@@ -20,11 +23,6 @@ import type {
   UsageByModel,
   WorkspaceLocation,
 } from './types'
-
-export interface PerceptionView {
-  cursor: PerceptionCursor
-  backlog: BacklogItem[]
-}
 
 export interface BehaviorCatalog {
   revision: string
@@ -62,14 +60,27 @@ export interface OpenDanDataModel {
   decideSession(sid: string, decision: Decision, note?: string): Promise<{ index: number }>
   postMessage(sid: string, text: string): Promise<{ index: number; key: string }>
 
-  perception(): Promise<PerceptionView>
-  perceptionRecords(item: BacklogItem): Promise<PerceptionRecord[]>
   artifacts(): Promise<ArtifactHead[]>
   artifactVersions(aid: string): Promise<ArtifactVersion[]>
   behaviors(): Promise<BehaviorCatalog>
   behavior(name: string): Promise<unknown>
   identity(): Promise<IdentityText>
   recallHints(tags: string[], maxHints?: number): Promise<Hint[]>
+
+  goals(): Promise<GoalDefinition[]>
+  /** `null`: no such Goal (or revision). */
+  goal(goalId: string): Promise<GoalDefinition | null>
+  goalRevision(goalId: string, revision: number): Promise<GoalDefinition | null>
+  /** The newest `limit` changes, oldest first (0: all). */
+  goalChanges(goalId: string, limit?: number): Promise<GoalChange[]>
+  goalState(goalId: string): Promise<GoalState | null>
+  goalSchedule(goalId: string): Promise<GoalSchedule | null>
+  /** The newest `limit` Activations (of one epoch), oldest first. */
+  goalActivations(goalId: string, epoch?: number, limit?: number): Promise<GoalActivation[]>
+  activateGoal(goalId: string, reason?: string): Promise<{ index: number; key: string }>
+  setGoalStatus(goalId: string, status: GoalStatus, reason?: string): Promise<GoalDefinition>
+  reopenGoal(goalId: string, reason: string, freshState?: boolean): Promise<GoalDefinition>
+  restartGoal(goalId: string, reason: string, carryState?: boolean): Promise<GoalDefinition>
 }
 
 export class OpenDanError extends Error {

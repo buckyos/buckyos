@@ -44,9 +44,7 @@ use super::live::{
     try_fill, InputBatch,
 };
 use super::goal::Gate;
-use super::outcome::{
-    finish_run, handle_context_outcome, perception_window_records, FinishKind, Next,
-};
+use super::outcome::{finish_run, handle_context_outcome, FinishKind, Next};
 use super::receipts::internal_task_key;
 use super::reconcile::{reconcile_runs, Reconciled};
 use super::shared::{commit_and_report, report, ClosedTurn, LiveCtx, Opened, Shared, WaitingRun};
@@ -190,6 +188,8 @@ async fn drive_locked(
         agent_root: deps.agent.agent_root().map(|p| p.to_path_buf()),
         dir: sd.clone(),
         kind_lease: Mutex::new(None),
+        goal_caps: Mutex::new(None),
+        memory: Mutex::new(None),
         workspace_lease: Mutex::new(None),
         workspace_failure: Mutex::new(None),
         tasks: Mutex::new(None),
@@ -1352,13 +1352,16 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         .config
         .behaviors()
         .map_err(OpenDanError::InvalidArgument)?;
-    // Kind leases: one consolidation at a time for the whole agent.
-    let kind = sh.session.lock().await.config.session.kind;
-    let _kind_lease = if kind == SessionKind::SelfImprove {
+    // The consolidation lease: one consolidation at a time for the whole
+    // agent, held by the drive of the Goal Session whose Goal has the
+    // `memory_consolidation` capability (released with the drive, so it is
+    // never held while the session waits).
+    let caps = super::consolidation::load_caps(sh).await?;
+    let _kind_lease = if caps.consolidation {
         match sh
             .agent()
             .locks()
-            .acquire("self_improve", sh.deps.holder())?
+            .acquire(crate::memory::CONSOLIDATION_LEASE, sh.deps.holder())?
         {
             Acquire::Acquired(l) => Some(Arc::new(l)),
             Acquire::Busy(info) => {
@@ -1464,6 +1467,13 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
     // publish yet is published first.
     Box::pin(super::goal::load(sh)).await?;
     Box::pin(super::goal::flush(sh)).await;
+    // The consolidation Goal's mechanical work: unfinished receipts, the
+    // sweep and the cleanup, before any input and without a model.
+    if caps.consolidation {
+        if let Err(e) = Box::pin(super::consolidation::maintain(sh)).await {
+            log::warn!("memory maintenance of {}: {e}", sh.dir.sid());
+        }
+    }
     // Replies committed and not handed over yet (a crash after the commit,
     // a sink that was not reachable).
     super::outbound::flush_outbox(sh).await;
@@ -1761,13 +1771,6 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                 runtime_status: serde_json::to_value(sh.deps.runtime.info().await?)
                     .unwrap_or_default(),
                 now_ms,
-                perceptions: if !state.bootstrap_done
-                    && cfg.session.kind == SessionKind::SelfImprove
-                {
-                    perception_window_records(sh, &cfg).await?
-                } else {
-                    Vec::new()
-                },
                 todos: None,
                 current_todo: super::todos::current(sh),
                 background: Vec::new(),

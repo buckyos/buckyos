@@ -42,12 +42,10 @@ POST /sdk/appservice/selftest/xllm
 
 ```bash
 pnpm install
-pnpm update -r buckyos
-pnpm check
 pnpm build
 ```
 
-SDK 依赖跟随 `buckyos-websdk#main`。`pnpm build` 包含 Deno 后台和浏览器 TypeScript 类型检查，再生成可打包的 `dist/`。
+SDK 依赖跟随 `buckyos-websdk#main`。每次 `pnpm build` 先更新工作区根目录和 `web/` 的 SDK 依赖，再执行 Deno 后台和浏览器 TypeScript 类型检查，生成可打包的 `dist/`。`pnpm build:web` 和 `web/` 内的 `pnpm build` 也会先更新 SDK，无需手动执行 `pnpm update`。
 
 在已由 node-daemon 启动的应用页面，分别点击各组的页面/后台检测按钮。也可向应用地址发送 `POST /sdk/appservice/selftest` 运行全部后台用例；HTTP 200 且 `ok: true` 才算通过。全量检测包含上述 xllm 真实模型请求。
 

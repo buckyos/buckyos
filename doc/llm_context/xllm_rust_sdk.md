@@ -120,7 +120,9 @@ libOpenDAN 把 session 的 `runs/` 直接作为 xllm 的 run 目录。为此增�
 
 ## 10. 共享 AgentRuntime
 
-`agent_tool::runtime` 提供 `RuntimeConfig`、`RuntimeRegistry::from_config(&cfg)`、`AgentRuntime` 与 `Sandbox: ToolManager`。`prepare` / `prepare_hosted` 调用 `runtime.open(ctx, tools_cfg, deps)`，返回 `(EffectiveTools, XllmToolManager)`；后者实现 Sandbox，接受未展开工具配置并复用既有工具解析；`deps` 中的宿主工具和 `buckyos_tasks` 解析器贯穿装配与恢复。`RuntimeOpenCtx` 只接收控制侧 workdir、run_id、LoopModel、工具来源、registrar 和宿主环境，不依赖 Session 类型。Runtime 的 `descriptor()` 在打开后才表示实际目标；`info()` 更新执行处时间与时区。
+完整架构、执行与恢复边界见 [AgentRuntime 设计](<AgentRuntime 设计.md>)。
+
+`agent_tool::runtime` 提供 `RuntimeConfig`、`RuntimeRegistry`、`AgentRuntime` 与 `Sandbox: ToolManager`。`prepare` / `prepare_hosted` 经 `open_runtime` 调用 `runtime.open(ctx, tools_cfg, deps)`，返回 `(EffectiveTools, XllmToolManager)`；后者实现 Sandbox，接受未展开工具配置并复用既有工具解析。`RuntimeOpenCtx` 包含控制侧 workdir、run_id、LoopModel、工具来源、宿主 env/PATH 前缀和 Run 绑定槽，不依赖 Session 类型。`from_config` 构造 native/tmux/SSH；`from_config_with` 还支持 remote_node，需要 `XllmDeps.node_executor`，xllm CLI 已注入按需连接 BuckyOS 的 connector。Runtime 的 `descriptor()` 在打开后才表示实际目标；native/tmux/SSH 的 `info()` 刷新执行处时间与时区，Node 当前使用控制侧 UTC 时间。
 
 `.llm_context` 顶层 runtime 默认 native：
 
@@ -151,11 +153,20 @@ runtime:
     identity_file: ~/.ssh/review_key
 ```
 
-同 kind 逐字段覆盖，env 按键覆盖；切换 kind 重置整段。native/tmux 的 workdir、tmux.socket、identity_file 按声明配置文件目录解析；SSH workdir 必须显式绝对路径。id 是身份，不是 profile 查找键。未知字段和无关连接块报 Config；规划中的 container、container_host、remote_node、http_proxy_runtime 报 Capability。runtime 不接受 fs_view、path_layers、limits 或 policy。文件工具的 workspace 策略在目标侧解析真实路径，防止符号链接逃逸；shell 的文件访问仍由系统权限控制。
+```yaml
+runtime:
+  kind: remote_node
+  workdir: /srv/agent-work
+  remote_node:
+    node_did: did:dev:example-node
+    profile_id: dev
+```
 
-shell、read/write/edit、模板执行共用执行体。MCP 仍在所配置服务执行，进程内宿主工具仍在 Runner 执行；都由 Sandbox 派发，具名宿主工具缺失时拒绝接管。SSH 使用系统 ssh/sftp、非交互认证和 known_hosts，要求远端 Linux/bash/SFTP（不再要求 setsid 与 /proc）；探测与身份核验在首次模型请求前完成。脚本和文件内容经数据通道传送，目标侧临时文件替换写入，不回退本地执行。远端命令由包装脚本在后台启动并把 `pid`、`stdout`、`stderr`、`exit` 写进远端执行目录，由后续 SSH 会话轮询；超时或取消用记录的 pid `kill`，恢复只读执行目录，不核验进程，不重放副作用。
+同 kind 逐字段覆盖，env 按键覆盖；切换 kind 重置整段。native/tmux 的 workdir、tmux.socket、identity_file 按声明配置文件目录解析；SSH/Node workdir 必须显式为目标绝对路径。id 是身份，不是 profile 查找键。未知字段和无关连接块报 Config；规划中的 container、container_host、http_proxy_runtime 报 Capability。runtime 不接受 fs_view、path_layers、limits 或 policy。文件工具的 workspace 策略在目标侧解析真实路径，防止符号链接逃逸；shell 的文件访问仍由系统权限控制。
 
-run.json 的 workdir、配置文件、日志和快照属于控制侧；config.runtime.workdir 是执行侧路径。恢复沿用保存配置，不重读 .llm_context；SSH alias 重定向或 tmux session 被替换都会拒绝。native/tmux 保留实际 cwd 的 flock；SSH 不取远端路径的本地锁，跨 Runner 并发由宿主协调。Session 未部署远端 helper 时明确报 Capability；SSH 可独立用于 xllm。
+shell、read/write/edit 共用执行体；模板执行需宿主显式注入 `SandboxPromptExec`，当前生产模板默认未启用，Node 尚不支持模板 EXEC。MCP 仍在所配置服务执行，进程内宿主工具仍在 Runner 执行；都由 Sandbox 派发，具名宿主工具缺失时拒绝接管。SSH 使用系统 ssh/sftp、非交互认证和 known_hosts，要求远端 Linux/bash/SFTP；探测与身份核验在首次模型请求前完成。SSH 命令由包装脚本在后台启动，输出与退出码写入远端执行目录；Node 则在控制侧持久保存操作 locator，结果由目标 Executor 查询返回。恢复均不核验或停止旧进程，不重放副作用。
+
+run.json 的 workdir、配置文件、日志和快照属于控制侧；config.runtime.workdir 是执行侧路径。恢复沿用保存配置，不重读 .llm_context；实际 descriptor 变化会拒绝接管。native/tmux 保留实际 cwd 的 flock；SSH/Node 不取远端路径的本地锁，跨 Runner 并发由宿主协调。完整 Session 目前支持 native/tmux，远端 helper 尚未部署；SSH/Node 可独立用于 xllm。
 
 新任务可用 `--runtime <kind>` 覆盖 kind；连接字段仍需来自配置。resume 与查询不接受该参数；status 显示实际 runtime、target、cwd 和 env_check。核心测试：`cargo test -p agent_tool --lib`、`cargo test -p llm_context`；真实传输测试：仓库根目录 `bash test/runtime_ssh/run.sh`（需 ssh、sftp、sshd），覆盖文件、取消、认证失败、断线、强杀与目标变更。
 

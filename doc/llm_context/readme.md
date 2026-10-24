@@ -83,7 +83,7 @@ UI Stop 后补充输入（H3）已于 2026-10-10 暂缓，移出当前实现与�
     构造 input，推进到所需的结果/等待边界。
     读取结果或订阅状态变化；指定 `origin.parent_session` 创建子 Session 时，当前实现会尝试为 parent 添加对子 Session 的半订阅。
 
-Sub AgentSession 按访问规则通过 AgentStateClient/工具读取 Parent AgentSession，按自己的配置和 Runner 依赖绑定 Runtime；父子关系不自动继承 Runtime、工具或 parent 的完整上下文。
+Sub AgentSession 按访问规则通过 AgentStateClient/工具读取 Parent AgentSession，按自己的配置和 Runner 依赖绑定 Runtime。`create_sub_session` 会复制父 Session 的 llm_context 与 runtime 配置，但为子 Session 确定自己的绑定身份；这不等于复制父 Session 的完整推理上下文。Runtime 继承与绑定细节见 [AgentRuntime 设计](<AgentRuntime 设计.md>)。
 
 ## Agent Loop的几种典型伪代码和history 消息结构
 
@@ -228,11 +228,13 @@ deferred 工具只有一种：libopendan 的 `call_behavior`（子 context 调�
 
 ## AgentRuntime
 
-共享实现位于 agent_tool::runtime。RuntimeConfig / RuntimeRegistry 构造 native、tmux、remote_ssh，AgentRuntime.open 解析工具并返回实现 Sandbox/ToolManager 的派发器。内置 shell、文件读写编辑、注入 PromptExec 的模板执行使用同一执行体；MCP 服务与宿主进程内工具保留各自位置。
+完整设计见 [AgentRuntime 设计](<AgentRuntime 设计.md>)：分层、配置、执行体、工具与模板接入、长任务、恢复和 Session 绑定。
 
-RuntimeInfo 提供实际执行侧的 id、kind、os、arch、hostname、shell、cwd、tools、current_time、timezone，供提示词引用；Session 的稳定信息放 system，新鲜时间、半订阅与 active sessions 仍由 Session 输入批次管理。配置/日志/快照/INCLUDE 属于控制侧素材，runtime.workdir 属于执行侧。
+共享实现位于 agent_tool::runtime。RuntimeConfig / RuntimeRegistry 支持 native、tmux、remote_ssh，以及需要宿主 Node Executor connector 的 remote_node；AgentRuntime.open 解析工具并返回实现 Sandbox/ToolManager 的派发器。内置 shell、文件读写编辑使用同一执行体；MCP 服务与宿主进程内工具保留各自位置。PromptExec 有显式注入适配器，生产模板默认未启用，remote_node 尚不支持模板 EXEC。
 
-shell 命令的输出与退出码写入执行目录 `runs/<run_id>/exec/<call_id>/`；恢复时不核验、不停止任何进程，也不重放，没有结果的调用由 `AgentRuntime::describe_interrupted` 按 runtime 生成“被打断”的说明交给 LLM。shell 默认 auto 模式，超过 `wait_ms` 的命令转为进程内 task，模型用 `wait_task` / `get_task_state` / `cancel_task` 跟进。native/tmux 不提供 OS 隔离；SSH 目标需 Linux/bash/SFTP，远端 Session helper 未部署时报 Capability。policy、grant、approval 与其它执行体留到后续阶段。接口、配置示例与恢复规则见 [xllm Rust SDK §10](xllm_rust_sdk.md#10-共享-agentruntime)。
+RuntimeInfo 提供执行环境信息供提示词引用；native/tmux/SSH 刷新执行侧时间和时区，remote_node 当前使用控制侧 UTC 时间。Session 的稳定信息放 system，新鲜时间、半订阅与 active sessions 仍由 Session 输入批次管理。配置/日志/快照/INCLUDE 属于控制侧素材，runtime.workdir 属于执行侧。
+
+恢复读取各执行体的命令目录或 Node 操作 locator，不核验、不停止旧进程，也不重放；没有持久结果的调用由 `AgentRuntime::describe_interrupted` 生成说明交给 LLM。shell 默认 auto 模式，超过 `wait_ms` 的命令移交 task manager，模型用 `wait_task` / `get_task_state` / `cancel_task` 跟进。完整 Session 目前支持 native/tmux，远端 helper 未部署；独立 xllm 可使用 SSH/Node。policy、grant、approval 与其它执行体留到后续阶段。SDK 入口见 [xllm Rust SDK §10](xllm_rust_sdk.md#10-共享-agentruntime)。
 
 ## AgentState (RootFS)
 

@@ -48,6 +48,69 @@ pub const GOAL_ABSORBED_KEEP: usize = 512;
 pub const GOAL_RECENT_WORKS_KEEP: usize = 16;
 pub const GOAL_QUESTIONS_KEEP: usize = 16;
 pub const GOAL_SKIPPED_KEEP: usize = 16;
+/// Completed consolidation receipts kept in `GoalState.maintenance`.
+pub const MAINTENANCE_RECEIPTS_KEEP: usize = 32;
+/// Batches (receipts) one Activation may open.
+pub const MAINTENANCE_BATCHES_PER_ACTIVATION: usize = 3;
+
+/// `GoalDefinition.extensions` key of the host's trusted marks.
+pub const OPENDAN_EXTENSION: &str = "opendan";
+/// `extensions.opendan.builtin` of the agent's default consolidation Goal.
+pub const BUILTIN_MEMORY_MAINTENANCE: &str = "memory_maintenance";
+/// `GoalCreate.key` the host seeds it with (unique per Agent directory).
+pub const BUILTIN_MEMORY_MAINTENANCE_KEY: &str = "builtin:memory_maintenance";
+/// Capability that opens the `memory_consolidation_begin/commit` host tools
+/// and binds the drive to the consolidation lease.
+pub const CAP_MEMORY_CONSOLIDATION: &str = "memory_consolidation";
+/// Policy version of the seeded definition (a higher one revises the marks
+/// of an existing Goal; never the owner's budget, schedule or status).
+pub const MEMORY_MAINTENANCE_POLICY_VERSION: u64 = 1;
+
+/// `extensions.opendan` of a Goal: trusted configuration written by the
+/// host's seeding path only (a UI, Goal or Work caller may not set it).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OpendanGoalExtension {
+    /// Stable identity of a built-in Goal (`memory_maintenance`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builtin: Option<String>,
+    #[serde(default)]
+    pub policy_version: u64,
+    /// Host capabilities of its Goal Session (`memory_consolidation`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+    /// Whether its Goal Session may record perceptions (the consolidation
+    /// Goal must not feed itself).
+    #[serde(default = "default_true")]
+    pub records_perception: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl OpendanGoalExtension {
+    pub fn memory_maintenance() -> Self {
+        Self {
+            builtin: Some(BUILTIN_MEMORY_MAINTENANCE.to_string()),
+            policy_version: MEMORY_MAINTENANCE_POLICY_VERSION,
+            capabilities: vec![CAP_MEMORY_CONSOLIDATION.to_string()],
+            records_perception: false,
+        }
+    }
+
+    pub fn has_capability(&self, cap: &str) -> bool {
+        self.capabilities.iter().any(|c| c == cap)
+    }
+
+    pub fn is_builtin(&self, name: &str) -> bool {
+        self.builtin.as_deref() == Some(name)
+    }
+
+    pub fn to_value(&self) -> Value {
+        serde_json::to_value(self).unwrap_or(Value::Null)
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -353,6 +416,21 @@ pub struct GoalDefinition {
 }
 
 impl GoalDefinition {
+    /// The host's marks (`None`: an ordinary Goal).
+    pub fn opendan(&self) -> Option<OpendanGoalExtension> {
+        self.extensions
+            .get(OPENDAN_EXTENSION)
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+    }
+
+    pub fn is_builtin(&self, name: &str) -> bool {
+        self.opendan().is_some_and(|e| e.is_builtin(name))
+    }
+
+    pub fn has_capability(&self, cap: &str) -> bool {
+        self.opendan().is_some_and(|e| e.has_capability(cap))
+    }
+
     pub fn epoch(&self, n: u64) -> Option<&GoalEpoch> {
         self.epochs.iter().find(|e| e.epoch == n)
     }
@@ -543,6 +621,9 @@ pub struct GoalQuestion {
     pub status: Option<GoalQuestionStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer: Option<String>,
+    /// The maintenance candidate this question confirms (§5.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -642,6 +723,10 @@ pub struct GoalState {
     pub usage: GoalUsage,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<Value>,
+    /// The consolidation Goal's typed maintenance state (receipts,
+    /// candidates, consolidation summary); committed with the session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maintenance: Option<MaintenanceState>,
     #[serde(default)]
     pub updated_at_ms: u64,
 }
@@ -667,6 +752,7 @@ impl GoalState {
                 ..Default::default()
             },
             last_error: None,
+            maintenance: None,
             updated_at_ms: now_ms,
         }
     }
@@ -682,6 +768,7 @@ impl GoalState {
                 s.recent_works = self.recent_works.clone();
                 s.usage = self.usage.clone();
                 s.goal_revision_seen = self.goal_revision_seen;
+                s.maintenance = self.maintenance.clone();
                 s
             }
         };
@@ -694,6 +781,192 @@ impl GoalState {
     pub fn is_absorbed(&self, sid: &str) -> bool {
         self.absorbed.iter().any(|s| s == sid)
     }
+
+    pub fn maintenance_mut(&mut self) -> &mut MaintenanceState {
+        self.maintenance.get_or_insert_with(MaintenanceState::default)
+    }
+}
+
+/// Stage of a consolidation receipt (§4.1): each step is re-entrant, a
+/// crash resumes from the stage it reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceiptStage {
+    /// The batch was read (and, with `plan`, the plan persisted).
+    Prepared,
+    /// The Memory envelope is committed under `operation_id`.
+    MemoryCommitted,
+    /// Candidates are published to the Goal State.
+    Published,
+    /// Cleanup of the disposed bodies ran (retried on its own when it
+    /// failed: `cleanup_pending`).
+    Completed,
+    /// The commit was refused for good (a stale lease); needs attention.
+    Failed,
+}
+
+/// One batch of one Activation of the consolidation Goal (§4.1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ConsolidationReceipt {
+    /// Stable operation id = Memory idempotency key.
+    pub operation_id: String,
+    pub epoch: u64,
+    pub activation: u64,
+    pub batch_id: String,
+    pub graph_seq: u64,
+    /// Materials that may be disposed by this batch.
+    #[serde(default)]
+    pub refs: Vec<String>,
+    /// The complete `Batch` (replayed into the commit as it was read).
+    pub batch: Value,
+    /// The complete `ConsolidationCommit` once submitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<Value>,
+    pub stage: ReceiptStage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_occasion: Option<String>,
+    #[serde(default)]
+    pub operations: u64,
+    #[serde(default)]
+    pub dispositions: u64,
+    #[serde(default)]
+    pub cleanup_pending: bool,
+    pub created_at_ms: u64,
+    #[serde(default)]
+    pub updated_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+impl ConsolidationReceipt {
+    pub fn is_open(&self) -> bool {
+        !matches!(self.stage, ReceiptStage::Completed | ReceiptStage::Failed)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateKind {
+    Goal,
+    Schedule,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateStatus {
+    Proposed,
+    NeedsConfirmation,
+    Approved,
+    Materializing,
+    Created,
+    Linked,
+    Rejected,
+    Expired,
+    Blocked,
+}
+
+/// A Goal / schedule the consolidation discovered (§5.1). P0 freezes the
+/// contract; discovery and confirmation are P1.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MaintenanceCandidate {
+    pub candidate_id: String,
+    pub revision: u64,
+    pub kind: CandidateKind,
+    pub semantic_key: String,
+    pub title: String,
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scope: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_refs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_refs: Vec<String>,
+    /// `explicit | inferred`.
+    pub intent_basis: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_fields: Vec<String>,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub proposed: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_budget: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expected_effects: Vec<String>,
+    pub status: CandidateStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linked_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_at_ms: Option<u64>,
+    pub created_at_ms: u64,
+    #[serde(default)]
+    pub updated_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
+}
+
+/// `GoalState.maintenance` of the consolidation Goal.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MaintenanceState {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub receipts: Vec<ConsolidationReceipt>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<MaintenanceCandidate>,
+    /// Last commit that really changed or disposed something.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_successful_consolidation_at_ms: Option<u64>,
+    #[serde(default)]
+    pub consolidations: u64,
+    #[serde(default)]
+    pub operations: u64,
+    #[serde(default)]
+    pub dispositions: u64,
+    /// Batches read but never committed (recovery dropped them; the
+    /// material stays for the next batch).
+    #[serde(default)]
+    pub abandoned_batches: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+impl MaintenanceState {
+    pub fn open_receipts(&self) -> impl Iterator<Item = &ConsolidationReceipt> {
+        self.receipts.iter().filter(|r| r.is_open())
+    }
+
+    pub fn receipt_mut(&mut self, operation_id: &str) -> Option<&mut ConsolidationReceipt> {
+        self.receipts.iter_mut().find(|r| r.operation_id == operation_id)
+    }
+
+    /// Drop the oldest completed receipts beyond the keep bound.
+    pub fn trim(&mut self) {
+        let completed = self.receipts.iter().filter(|r| !r.is_open()).count();
+        let mut extra = completed.saturating_sub(MAINTENANCE_RECEIPTS_KEEP);
+        self.receipts.retain(|r| {
+            if extra > 0 && !r.is_open() {
+                extra -= 1;
+                false
+            } else {
+                true
+            }
+        });
+    }
 }
 
 /// A scheduled fire written before it is posted (re-posted with the same
@@ -705,11 +978,80 @@ pub struct PendingFire {
     pub missed: u64,
 }
 
+/// Summary of Memory's pending work as the gate saw it last.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct MaintenancePending {
+    #[serde(default)]
+    pub new: usize,
+    #[serde(default)]
+    pub due: usize,
+    #[serde(default)]
+    pub waiting: usize,
+    #[serde(default)]
+    pub retry_cleanup: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_deadline: Option<String>,
+    /// Oldest material not disposed yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest_at_ms: Option<u64>,
+}
+
+impl MaintenancePending {
+    pub fn backlog(&self) -> bool {
+        self.new > 0 || self.due > 0
+    }
+}
+
+/// Deterministic check water marks of the consolidation Goal (§6), kept by
+/// the host in `schedule.json`: "checked", as opposed to "consolidated"
+/// (`GoalState.maintenance`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct MaintenanceGate {
+    /// `no_work | no_change | active | mechanical | paused | disabled |
+    /// unknown | backoff | period_budget`.
+    #[serde(default)]
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_checked_slot: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_baseline_slot: Option<u64>,
+    #[serde(default)]
+    pub last_checked_at_ms: u64,
+    /// Last time the full deterministic check (`pending_work`) ran.
+    #[serde(default)]
+    pub last_full_check_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_skip_reason: Option<String>,
+    /// Memory snapshot token the full check saw.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_inputs_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<MaintenancePending>,
+    #[serde(default)]
+    pub due_reviews: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_review_at: Option<String>,
+    #[serde(default)]
+    pub unfinished_receipts: usize,
+    /// Last run opportunity the gate let through.
+    #[serde(default)]
+    pub last_run_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_run_slot: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backoff_until_ms: Option<u64>,
+    #[serde(default)]
+    pub backoff_level: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SkippedFire {
     pub slot: u64,
     pub at_ms: u64,
-    /// `paused | period_budget | min_interval | not_active`.
+    /// `paused | period_budget | min_interval | not_active`, or a gate
+    /// reason of the consolidation Goal (`no_work | no_change | …`).
     pub reason: String,
 }
 
@@ -740,6 +1082,9 @@ pub struct GoalSchedule {
     pub skipped: Vec<SkippedFire>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    /// The consolidation Goal's check water marks (§6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<MaintenanceGate>,
     #[serde(default)]
     pub updated_at_ms: u64,
 }
@@ -758,6 +1103,7 @@ impl GoalSchedule {
             start_posted_epoch: 0,
             skipped: Vec::new(),
             last_error: None,
+            gate: None,
             updated_at_ms: 0,
         }
     }

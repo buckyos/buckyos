@@ -267,7 +267,6 @@
           "enum": [
             "ui",
             "work",
-            "self_improve",
             "self_check"
           ],
           "type": "string"

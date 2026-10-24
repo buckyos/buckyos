@@ -13,7 +13,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::fsutil;
 use crate::lock::Lease;
-use crate::protocol::{ClearedMarker, PerceptionRecord, RegistryEntry, SessionKind};
+use crate::protocol::{
+    ClearedMarker, GoalDefinition, PerceptionRecord, RegistryEntry, SessionKind,
+    CAP_MEMORY_CONSOLIDATION,
+};
 use crate::state::perception::clear_records;
 
 use super::perception::parse_cite;
@@ -35,6 +38,8 @@ pub struct PendingWork {
     /// Disposed, body not cleaned yet (cleanup to retry).
     pub retry_cleanup: usize,
     pub next_deadline: Option<String>,
+    /// Oldest new or due material (the age of the backlog).
+    pub oldest_at_ms: Option<u64>,
 }
 
 impl PendingWork {
@@ -43,6 +48,18 @@ impl PendingWork {
         self.new > 0 || self.due > 0
     }
 }
+
+/// A cognition whose `review_at` has passed (§3.2): to be checked, not
+/// changed by itself.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewDue {
+    pub reference: String,
+    pub review_at: String,
+    pub statement: String,
+}
+
+pub const DEFAULT_BATCH_LIMIT: usize = 20;
+pub const DEFAULT_CONTEXT_LIMIT: usize = 20;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -100,8 +117,12 @@ impl Batch {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BatchOptions {
-    /// Soft limit; one expression (same source event) is never split.
+    /// Soft limit; one expression (same source event) is never split
+    /// (0 = [`DEFAULT_BATCH_LIMIT`]).
     pub limit: usize,
+    /// Related deferred materials attached as context, at most
+    /// (0 = [`DEFAULT_CONTEXT_LIMIT`]).
+    pub max_context: usize,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,11 +155,42 @@ struct Classified {
 }
 
 impl Memory {
+    /// The session of a Goal with the `memory_consolidation` capability: its
+    /// own records never become material (anti echo, across epochs).
     fn excluded_session(&self, sid: &str) -> bool {
-        fsutil::read_json_opt::<RegistryEntry>(&self.layout().registry_entry(sid))
+        let Some(entry) = fsutil::read_json_opt::<RegistryEntry>(&self.layout().registry_entry(sid))
             .ok()
             .flatten()
-            .is_some_and(|e| e.kind == SessionKind::SelfImprove)
+        else {
+            return false;
+        };
+        if entry.kind != SessionKind::Goal {
+            return false;
+        }
+        let Some(goal_id) = entry.goal_id else {
+            return false;
+        };
+        fsutil::read_json_opt::<GoalDefinition>(&self.layout().goals_dir().join(goal_id).join("goal.json"))
+            .ok()
+            .flatten()
+            .is_some_and(|g| g.has_capability(CAP_MEMORY_CONSOLIDATION))
+    }
+
+    /// Cognitions due for a review and the next review ahead (§3.2; a
+    /// deterministic query the gate uses, separate from `pending_work`).
+    pub fn due_reviews(&self) -> MemoryResult<(Vec<ReviewDue>, Option<String>)> {
+        let view = self.graph_view()?;
+        let now = self.now();
+        let due = view
+            .due_reviews(now)
+            .into_iter()
+            .map(|i| ReviewDue {
+                reference: i.reference(),
+                review_at: i.review_at.clone().unwrap_or_default(),
+                statement: i.statement(),
+            })
+            .collect();
+        Ok((due, view.next_review_at(now)))
     }
 
     fn classify(&self, view: &GraphView, skip_sid: Option<&str>) -> MemoryResult<Classified> {
@@ -194,12 +246,19 @@ impl Memory {
     pub fn pending_work(&self) -> MemoryResult<PendingWork> {
         let view = self.graph_view()?;
         let c = self.classify(&view, None)?;
+        let oldest_at_ms = c
+            .new
+            .iter()
+            .map(|r| r.at_ms)
+            .chain(c.due.iter().map(|(r, _)| r.at_ms))
+            .min();
         Ok(PendingWork {
             new: c.new.len(),
             due: c.due.len(),
             waiting: c.waiting.len(),
             retry_cleanup: c.retry.values().map(BTreeMap::len).sum(),
             next_deadline: c.next_deadline,
+            oldest_at_ms,
         })
     }
 
@@ -298,7 +357,8 @@ impl<'a> Consolidator<'a> {
         candidates.sort_by(|a, b| {
             (a.0.at_ms, &a.0.session_id, a.0.seq).cmp(&(b.0.at_ms, &b.0.session_id, b.0.seq))
         });
-        let limit = if opts.limit == 0 { 20 } else { opts.limit };
+        let limit = if opts.limit == 0 { DEFAULT_BATCH_LIMIT } else { opts.limit };
+        let max_context = if opts.max_context == 0 { DEFAULT_CONTEXT_LIMIT } else { opts.max_context };
         let mut groups: Vec<(
             String,
             Vec<(PerceptionRecord, MaterialState, Option<Disposition>)>,
@@ -331,6 +391,7 @@ impl<'a> Consolidator<'a> {
                 })
             })
             .map(|(r, d)| self.material(&view, r, MaterialState::Deferred { due: false }, Some(d)))
+            .take(max_context)
             .collect();
         let ids: Vec<String> = materials
             .iter()
@@ -426,7 +487,7 @@ impl<'a> Consolidator<'a> {
     /// Fallback sweep (§5.9): deferrals past their deadline plus `grace`
     /// that no run disposed are discarded with the reason kept; the cleared
     /// marker keeps their source.
-    pub fn sweep_expired(&self, grace: Duration) -> MemoryResult<Option<CommitResult>> {
+    pub fn sweep_expired(&self, grace: Duration) -> MemoryResult<Option<(CommitResult, usize)>> {
         self.lease.check()?;
         let view = self.graph()?;
         let c = self.memory.classify(&view, Some(&self.session_id))?;
@@ -446,6 +507,7 @@ impl<'a> Consolidator<'a> {
             return Ok(None);
         }
         let refs: Vec<String> = expired.iter().map(|(r, _)| r.reference()).collect();
+        let count = refs.len();
         let plan = ConsolidationCommit {
             idempotency_key: format!(
                 "sweep:{}",
@@ -478,6 +540,6 @@ impl<'a> Consolidator<'a> {
                 .collect(),
             tags: Vec::new(),
         };
-        self.commit_plan(plan).map(Some)
+        self.commit_plan(plan).map(|r| Some((r, count)))
     }
 }

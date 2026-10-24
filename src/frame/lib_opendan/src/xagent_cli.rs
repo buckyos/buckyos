@@ -38,7 +38,7 @@ use serde_json::{json, Value};
 const USAGE: &str = "\
 xagent — drive an Agent Session for one Turn (or keep driving it)
 
-  xagent new    --agent <did> --objective <text> [--class work|ui|self_improve|self_check] [--parent <dir>]
+  xagent new    --agent <did> --objective <text> [--class work|ui|self_check] [--parent <dir>]
                 [--behavior <name>] [--cmd-skill <name>]... [--llm-context <json|@file>] [--runtime <id>] [--workspace <id>]
                 [--subscribe <spec>]... [--msg <text>] [--key <idem>]
                 [--until turn|finished|idle|outcomes:<n>] [--no-run]
@@ -893,7 +893,14 @@ async fn cmd_ctl(mut a: Args) -> R<i32> {
                 kind: a.get("kind").unwrap_or_else(|| "observation".into()),
                 summary: a.next("<text>")?,
                 tags: a.all("tag"),
-                objects: Vec::new(),
+                objects: a.all("object"),
+                subjects: a.all("subject"),
+                cites: a.all("cite"),
+                source: a.get("source"),
+                occurred_at: a.get("occurred-at"),
+                suggested_kind: a.get("suggest"),
+                memory_intent: if a.has("explicit") { Some("explicit".into()) } else { a.get("intent") },
+                mentions: a.all("mention"),
             },
         ),
         other => return Err(bad(format!("unknown control `{other}`"))),

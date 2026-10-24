@@ -1,70 +1,15 @@
 import { useState } from 'react'
 import { useQuery } from '../lib'
-import { dataModel, type BacklogItem, type Hint } from '../model'
+import { dataModel, type Hint } from '../model'
 import { Badge, Empty, ErrorBox, Fields, Mono, Panel, Pre, Sid, Time } from '../ui'
 
-function BacklogRecords({ item }: { item: BacklogItem }) {
-  const { data, error } = useQuery(['perception.read', item.session_id, item.from_offset, item.to_offset], () => dataModel.perceptionRecords(item), false)
-  if (error) return <ErrorBox error={error} />
-  if (!data) return <Empty>Loading…</Empty>
-  return data.length ? (
-    <table className="tbl">
-      <tbody>
-        {data.map((r) => (
-          <tr key={r.seq} title={JSON.stringify(r)}>
-            <td className="w-px text-xs text-mute">{r.seq}</td>
-            <td className="w-px"><Badge value={r.kind} /></td>
-            <td className="text-xs">{r.summary} {(r.tags ?? []).map((t) => <Mono key={t} className="text-mute"> #{t}</Mono>)}</td>
-            <td className="w-px"><Time ms={r.at_ms} /></td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  ) : (
-    <Empty>No records.</Empty>
-  )
-}
-
+// The perception backlog is consolidated by the built-in memory maintenance
+// Goal (see the Goals section of the home page); `perception.last_seq` is the
+// only perception read left and it is per session.
 function Perception() {
-  const { data, error } = useQuery(['perception'], () => dataModel.perception())
-  const [open, setOpen] = useState('')
-  const offsets = Object.entries(data?.cursor.offsets ?? {})
   return (
-    <Panel title={`Perception backlog (${data?.backlog.length ?? 0})`} testId="agent-perception">
-      <ErrorBox error={error} />
-      {data?.backlog.length ? (
-        <table className="tbl">
-          <thead>
-            <tr>
-              <th>session</th>
-              <th>offsets</th>
-              <th>bytes</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {data.backlog.map((b) => (
-              <tr key={b.session_id}>
-                <td><Sid sid={b.session_id} /></td>
-                <td><Mono>{b.from_offset} → {b.to_offset}</Mono></td>
-                <td>{b.to_offset - b.from_offset}</td>
-                <td className="w-full">
-                  <button className="btn" onClick={() => setOpen(open === b.session_id ? '' : b.session_id)}>
-                    {open === b.session_id ? 'Hide' : 'Records'}
-                  </button>
-                  {open === b.session_id && <div className="mt-1"><BacklogRecords item={b} /></div>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      ) : (
-        <Empty>Nothing unread.</Empty>
-      )}
-      <div className="mt-2 text-xs text-mute">
-        cursor updated <Time ms={data?.cursor.updated_at_ms} /> · {offsets.length} session{offsets.length === 1 ? '' : 's'}
-        {offsets.map(([sid, off]) => <Mono key={sid} className="ml-2">{sid}@{off}</Mono>)}
-      </div>
+    <Panel title="Perception" testId="agent-perception">
+      <Empty>Perceptions are consolidated by the memory maintenance goal; see Goals on the home page.</Empty>
     </Panel>
   )
 }

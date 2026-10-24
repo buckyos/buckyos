@@ -192,7 +192,9 @@ pub enum ControlCommand {
         #[serde(default)]
         clear: bool,
     },
-    /// A perception record of this session (the former `perception` input).
+    /// A perception of this session (Memory §4.2): the model gives content
+    /// and hints, the driver binds identity, subjects, source event, time
+    /// and policy through `Memory::record_perception`.
     Perceive {
         #[serde(default = "default_perceive_kind")]
         kind: String,
@@ -202,6 +204,27 @@ pub enum ControlCommand {
         tags: Vec<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         objects: Vec<String>,
+        /// Narrows the session's default subjects (must stay within its
+        /// grants).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        subjects: Vec<String>,
+        /// Cognitions (`item_…@rev`) the observation derives from or
+        /// corrects.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        cites: Vec<String>,
+        /// Input key of the message of this session the observation comes
+        /// from (`None`: the observation itself is the event).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        occurred_at: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        suggested_kind: Option<String>,
+        /// `explicit` when the user asked to remember.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        memory_intent: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        mentions: Vec<String>,
     },
     /// Goal Sessions: change the Goal's current skills (applied by the
     /// driver to the Goal State it owns).

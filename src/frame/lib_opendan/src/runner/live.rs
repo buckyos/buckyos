@@ -159,6 +159,16 @@ async fn xllm_deps_for(
     *sh.behavior_functions.lock().expect("behavior functions") = functions;
     x.host_tools
         .insert(TOOL_REPORT.into(), Arc::new(super::reports::ReportTool));
+    if super::consolidation::caps(sh).consolidation {
+        x.host_tools.insert(
+            super::consolidation::TOOL_BEGIN.into(),
+            Arc::new(super::consolidation::BeginTool),
+        );
+        x.host_tools.insert(
+            super::consolidation::TOOL_COMMIT.into(),
+            Arc::new(super::consolidation::CommitTool),
+        );
+    }
     if sh.session.lock().await.config.session.policy.completion == CompletionPolicy::ExplicitReport
     {
         if let agent_tool::xllm::HostProtocolFlavor::Session { intro } = &mut x.host_protocol {
@@ -552,6 +562,16 @@ async fn own_run_context(
             .any(|t| t.get("name").and_then(Value::as_str) == Some(TOOL_REPORT))
         {
             sources.push(json!({"name":TOOL_REPORT}));
+        }
+        if super::consolidation::caps(sh).consolidation {
+            for name in [super::consolidation::TOOL_BEGIN, super::consolidation::TOOL_COMMIT] {
+                if !sources
+                    .iter()
+                    .any(|t| t.get("name").and_then(Value::as_str) == Some(name))
+                {
+                    sources.push(json!({"name": name}));
+                }
+            }
         }
     }
     // `[reply]`: the context's final reply is JSON of this contract.

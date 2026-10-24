@@ -25,6 +25,7 @@ import {
   type UiBinding,
 } from '../model'
 import { ErrorBox } from '../ui'
+import { GoalList } from './Goals'
 import { RuntimeList, WorkspaceList } from './Workspaces'
 
 const AVATAR_SIZE = 192
@@ -395,7 +396,6 @@ const toTree = (entries: RegistryEntry[]): Tree => {
 const KIND_LABEL: Partial<Record<RegistryEntry['kind'], TextKey>> = {
   work: 'kindWork',
   self_check: 'kindSelfCheck',
-  self_improve: 'kindSelfImprove',
   goal: 'kindGoal',
 }
 
@@ -533,6 +533,7 @@ export default function HomePage() {
           <div className="grid grid-cols-[minmax(0,1fr)] gap-3">
             <AgentCard profile={profile.data} />
             <Overview entries={sessions.data} />
+            <GoalList />
             <WorkspaceList entries={sessions.data} />
             <RuntimeList />
           </div>

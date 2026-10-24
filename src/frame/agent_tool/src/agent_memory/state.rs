@@ -225,6 +225,12 @@ fn validate_meta(meta: &ItemMeta, ctx: ApplyCtx) -> Result<()> {
     if let Some(t) = &meta.valid_until {
         validate_iso8601(t)?;
     }
+    if let Some(t) = &meta.last_evidence_at {
+        validate_iso8601(t)?;
+    }
+    if let Some(t) = &meta.review_at {
+        validate_iso8601(t)?;
+    }
     if let Some(k) = &meta.semantic_kind {
         if k.trim().is_empty() || k.chars().any(char::is_control) {
             return Err(invalid("semantic_kind is empty"));
@@ -318,6 +324,42 @@ impl GraphView {
     }
 
     /// Time of the last consolidation commit.
+    /// When the logical item was first formed: the time of its first
+    /// occasion (read projection, never stored on the item).
+    pub fn item_created_at(&self, item: &MemoryItem) -> Option<String> {
+        self.occasion(&item.first_occasion)
+            .map(|o| o.noticed_at.clone())
+    }
+
+    /// The time the fade of an item counts from: its last independent
+    /// evidence, else its creation time. Never `noticed_at`, never now.
+    pub fn item_evidence_anchor(&self, item: &MemoryItem) -> Option<String> {
+        item.last_evidence_at
+            .clone()
+            .or_else(|| self.item_created_at(item))
+    }
+
+    /// Current cognitions whose `review_at` has passed (a deterministic
+    /// query for the maintenance gate; `pending_work` does not cover it).
+    pub fn due_reviews(&self, now: chrono::DateTime<chrono::Utc>) -> Vec<&MemoryItem> {
+        let mut out: Vec<&MemoryItem> = self
+            .items
+            .values()
+            .filter(|i| i.review_due(now))
+            .collect();
+        out.sort_by(|a, b| a.review_at.cmp(&b.review_at).then_with(|| a.item_id.cmp(&b.item_id)));
+        out
+    }
+
+    /// The earliest `review_at` still ahead (when the next check is due).
+    pub fn next_review_at(&self, now: chrono::DateTime<chrono::Utc>) -> Option<String> {
+        self.items
+            .values()
+            .filter(|i| i.status.recallable() && !i.review_due(now))
+            .filter_map(|i| i.review_at.clone())
+            .min()
+    }
+
     pub fn last_consolidation_at(&self) -> Option<&str> {
         self.occasions
             .iter()
@@ -747,6 +789,19 @@ fn write_item(
             (1, occasion.occasion_id.clone())
         }
     };
+    if ctx.consolidation && existing.is_none() && meta.last_evidence_at.is_none() {
+        return Err(invalid(format!(
+            "a new consolidated cognition ({item_id}) needs last_evidence_at: when its evidence was observed"
+        )));
+    }
+    let stability = meta
+        .stability
+        .or_else(|| existing.as_ref().map(|c| c.stability))
+        .unwrap_or_default();
+    let last_evidence_at = meta
+        .last_evidence_at
+        .clone()
+        .or_else(|| existing.as_ref().and_then(|c| c.last_evidence_at.clone()));
     supersede(occasion, state, &replaces, &item_id, ctx, report)?;
     let item = MemoryItem {
         item_id: item_id.clone(),
@@ -764,7 +819,10 @@ fn write_item(
         source_occasion: occasion.occasion_id.clone(),
         first_occasion,
         noticed_at: occasion.noticed_at.clone(),
+        stability,
+        last_evidence_at,
         valid_until: meta.valid_until.clone(),
+        review_at: meta.review_at.clone(),
         review_when: meta.review_when.clone(),
         produced_by: occasion.produced_by.clone(),
         write_reason,
@@ -1196,7 +1254,10 @@ fn apply_reinforce_object(
         source_occasion: occasion.occasion_id.clone(),
         first_occasion: occasion.occasion_id.clone(),
         noticed_at: occasion.noticed_at.clone(),
+        stability: Stability::Contextual,
+        last_evidence_at: None,
         valid_until: None,
+        review_at: None,
         review_when: Vec::new(),
         produced_by: occasion.produced_by.clone(),
         write_reason: op.reason.clone(),

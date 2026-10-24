@@ -13,6 +13,7 @@
 //! them; a Goal Session reads, archives itself or marks itself achieved;
 //! a Work Session reads.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -90,6 +91,10 @@ pub struct GoalCreate {
     /// Default: the caller's principal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
+    /// Marks of later phases. The `opendan` key is the host's (seeding):
+    /// only the owner side without a session may set it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extensions: BTreeMap<String, Value>,
 }
 
 /// A content revision: fields left out stay as they are.
@@ -125,6 +130,9 @@ pub struct GoalRevise {
     pub schedule: Option<GoalScheduleSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub behavior: Option<String>,
+    /// Replaces the extensions (the `opendan` key: owner side only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<BTreeMap<String, Value>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -245,6 +253,24 @@ impl CallerKind {
 
 fn forbidden(what: &str, kind: &CallerKind) -> OpenDanError {
     OpenDanError::Forbidden(format!("{} may not {what}", kind.via()))
+}
+
+/// The `opendan` extension is the host's: readable by this build and set by
+/// the owner side only.
+fn check_extensions(ext: &BTreeMap<String, Value>, ck: &CallerKind) -> Result<()> {
+    let Some(v) = ext.get(OPENDAN_EXTENSION) else {
+        return Ok(());
+    };
+    if *ck != CallerKind::Owner {
+        return Err(forbidden(
+            &format!("set the `{OPENDAN_EXTENSION}` extension of a goal (the host seeds it)"),
+            ck,
+        ));
+    }
+    serde_json::from_value::<OpendanGoalExtension>(v.clone()).map_err(|e| {
+        OpenDanError::InvalidArgument(format!("extensions.{OPENDAN_EXTENSION}: {e}"))
+    })?;
+    Ok(())
 }
 
 fn check_goal_id(goal_id: &str) -> Result<()> {
@@ -490,6 +516,7 @@ impl GoalStore for FsGoals {
         if req.budget.period.window_secs == Some(0) {
             return Err(OpenDanError::InvalidArgument("budget.period.window_secs must be > 0".into()));
         }
+        check_extensions(&req.extensions, &ck)?;
         let goal_id =
             crate::ids::new_goal_id(&self.agent_did, &caller.principal, req.key.as_deref());
         let _lock = self.lock(&goal_id)?;
@@ -552,7 +579,7 @@ impl GoalStore for FsGoals {
             idempotency_key: req.key.clone(),
             created_at_ms: now,
             updated_at_ms: now,
-            extensions: Default::default(),
+            extensions: req.extensions.clone(),
         };
         self.write_revision(&goal)?;
         let mut change = Self::change("created", caller, &ck, None);
@@ -611,6 +638,18 @@ impl GoalStore for FsGoals {
         if req.behavior.is_some() {
             goal.behavior = req.behavior.clone();
         }
+        if let Some(ext) = &req.extensions {
+            if ext.get(OPENDAN_EXTENSION) != before.extensions.get(OPENDAN_EXTENSION) {
+                check_extensions(ext, &ck)?;
+                if ck != CallerKind::Owner {
+                    return Err(forbidden(
+                        &format!("change the `{OPENDAN_EXTENSION}` extension of a goal"),
+                        &ck,
+                    ));
+                }
+            }
+            goal.extensions = ext.clone();
+        }
         if goal.objective.trim().is_empty() {
             return Err(OpenDanError::InvalidArgument("a goal needs an objective".into()));
         }
@@ -638,6 +677,7 @@ impl GoalStore for FsGoals {
             ("budget", before.budget != goal.budget),
             ("schedule", before.schedule != goal.schedule),
             ("behavior", before.behavior != goal.behavior),
+            ("extensions", before.extensions != goal.extensions),
         ]
         .into_iter()
         .filter(|(_, c)| *c)

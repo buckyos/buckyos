@@ -70,7 +70,6 @@ pub fn json_schemas() -> Vec<(&'static str, serde_json::Value)> {
         ("usage_record", s::<misc::UsageRecord>()),
         ("registry_entry", s::<agent_state::RegistryEntry>()),
         ("perception_record", s::<agent_state::PerceptionRecord>()),
-        ("perception_cursor", s::<agent_state::PerceptionCursor>()),
         ("artifact_head", s::<agent_state::ArtifactHead>()),
         ("artifact_version", s::<agent_state::ArtifactVersion>()),
         ("session_input", s::<input::PostedInput>()),
@@ -92,5 +91,6 @@ pub fn json_schemas() -> Vec<(&'static str, serde_json::Value)> {
         ("goal_activation", s::<goal::GoalActivation>()),
         ("goal_schedule", s::<goal::GoalSchedule>()),
         ("goal_result", s::<goal::GoalResult>()),
+        ("goal_opendan_extension", s::<goal::OpendanGoalExtension>()),
     ]
 }

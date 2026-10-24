@@ -1,4 +1,5 @@
-//! Agent Memory Graph, schema 3.0 (Memory requirements, appendix A).
+//! Agent Memory Graph, schema 4.0 (Memory requirements, appendix A; TODO
+//! §3: stability, last evidence time, structured review date).
 //!
 //! `.meta/occasions.jsonl` is the append-only commit log and replay truth.
 //! Canonical JSON files, graph snapshots, path indexes and SQLite are derived
@@ -43,7 +44,7 @@ pub use text::{
 
 use state::ApplyCtx;
 
-pub const SCHEMA_VERSION: &str = "3.0";
+pub const SCHEMA_VERSION: &str = "4.0";
 /// Multilingual: CJK bigram + word tokens (TD-13, TD-24).
 pub const PRIMARY_LANGUAGE: &str = "mul";
 pub const FTS_TOKENIZER: &str = "unicode61 remove_diacritics 2 + cjk-bigram";
@@ -1221,6 +1222,10 @@ impl AgentMemory {
                 state: i.status.to_string(),
                 source_occasion: i.source_occasion.clone(),
                 noticed_at: i.noticed_at.clone(),
+                created_at: i.created_at.clone(),
+                stability: i.stability.to_string(),
+                last_evidence_at: i.last_evidence_at.clone(),
+                review_at: i.review_at.clone(),
                 evidence: i.evidence.clone(),
                 matched: i.matched.clone(),
                 size: i.size,
@@ -1250,6 +1255,19 @@ impl AgentMemory {
             out.push_str(&format!("STATE {}\n", item.state));
             out.push_str(&format!("SOURCE_OCCASION {}\n", item.source_occasion));
             out.push_str(&format!("NOTICED_AT {}\n", item.noticed_at));
+            out.push_str(&format!(
+                "CREATED_AT {}\n",
+                item.created_at.as_deref().unwrap_or("-")
+            ));
+            out.push_str(&format!("STABILITY {}\n", item.stability));
+            out.push_str(&format!(
+                "LAST_EVIDENCE {}\n",
+                item.last_evidence_at.as_deref().unwrap_or("-")
+            ));
+            out.push_str(&format!(
+                "REVIEW_AT {}\n",
+                item.review_at.as_deref().unwrap_or("-")
+            ));
             out.push_str(&format!("EVIDENCE {}\n", item.evidence.join(",")));
             out.push_str(&format!("MATCHED {}\n", item.matched.join(",")));
             out.push_str(&format!("SIZE {}\n", item.size));
@@ -1498,6 +1516,10 @@ pub struct LoadItem {
     pub state: String,
     pub source_occasion: String,
     pub noticed_at: String,
+    pub created_at: Option<String>,
+    pub stability: String,
+    pub last_evidence_at: Option<String>,
+    pub review_at: Option<String>,
     pub evidence: Vec<String>,
     pub matched: Vec<String>,
     pub size: usize,

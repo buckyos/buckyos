@@ -729,12 +729,6 @@ async fn agent_state_over_krpc_matches_the_files() {
         remote.behaviors().revision().await.unwrap(),
         local.behaviors().revision().await.unwrap()
     );
-    let cursor = remote.perception().cursor().await.unwrap();
-    assert_eq!(cursor, local.perception().cursor().await.unwrap());
-    assert_eq!(
-        remote.perception().backlog(&cursor).await.unwrap(),
-        local.perception().backlog(&cursor).await.unwrap()
-    );
     assert_eq!(
         remote.perception().last_seq(done.sid()).await.unwrap(),
         local.perception().last_seq(done.sid()).await.unwrap()
@@ -793,7 +787,7 @@ async fn agent_state_over_krpc_matches_the_files() {
     let err = rpc(port, "sessions.lookup", json!({})).await.unwrap_err();
     assert!(matches!(err, OpenDanError::InvalidArgument(_)), "{err:?}");
     // A driver's writes need the AgentRoot.
-    assert!(remote.locks().is_held("self_improve").is_err());
+    assert!(remote.locks().is_held(libopendan::memory::CONSOLIDATION_LEASE).is_err());
 
     // Observation and the Loader's own state.
     let view = rpc(port, "session.read", json!({ "sid": ui.sid() })).await.unwrap();

@@ -426,39 +426,6 @@ pub async fn post_input(agent: &dyn AgentStateClient, sid: &str, input: &PostedI
     agent.sessions().post_input(sid, input).await
 }
 
-/// Open a self-improve session over the current perception backlog
-/// (appendix A.5 without the scheduling: start conditions such as "agent is
-/// idle" belong to the host). Idempotent for the same backlog window
-/// (`si:<window digest>`). `None` when there is nothing to consolidate.
-pub async fn create_self_improve_session(
-    parent_dir: &Path,
-    agent: &dyn AgentStateClient,
-    who: &str,
-    channels: &dyn InputChannelFactory,
-    prompt: PromptSection,
-) -> Result<Option<SessionDir>> {
-    let cursor = agent.perception().cursor().await?;
-    let backlog = agent.perception().backlog(&cursor).await?;
-    if backlog.is_empty() {
-        return Ok(None);
-    }
-    let mut spec = SessionSpec::work(
-        "Consolidate the perceptions below into memory / notebook with the agent_tool CLIs, then report what was kept.",
-    );
-    spec.kind = SessionKind::SelfImprove;
-    spec.class = "self_improve".into();
-    spec.via = "opendan".into();
-    spec.idempotency_key = Some(format!("si:{}", backlog.window_digest()));
-    spec.prompt = prompt;
-    spec.extensions.insert(
-        "opendan".into(),
-        serde_json::json!({ "perception_window": backlog }),
-    );
-    create_session(parent_dir, spec, agent, who, channels)
-        .await
-        .map(Some)
-}
-
 /// Where a sub session works.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

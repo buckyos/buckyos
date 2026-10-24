@@ -30,8 +30,13 @@ pub struct Shared {
     pub interrupt: Mutex<Option<LLMContextInterruptHandle>>,
     pub agent_root: Option<PathBuf>,
     pub dir: SessionDir,
-    /// `self_improve` lease of a self-improve session.
+    /// The Agent-level consolidation lease of a Goal Session whose Goal has
+    /// the `memory_consolidation` capability (held for the whole drive).
     pub kind_lease: Mutex<Option<Arc<Lease>>>,
+    /// What the session's Goal allows it (read once per drive).
+    pub goal_caps: Mutex<Option<super::consolidation::GoalCaps>>,
+    /// The agent's Memory component (opened on first use).
+    pub memory: Mutex<Option<Arc<crate::memory::Memory>>>,
     pub workspace_lease: Mutex<Option<Arc<Lease>>>,
     pub workspace_failure: Mutex<Option<String>>,
     /// Task resolver of the run opened last in this drive: answers for the

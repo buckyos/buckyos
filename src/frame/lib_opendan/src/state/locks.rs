@@ -1,4 +1,4 @@
-//! Agent-level locks: `self_improve`, `artifact:<aid>` (§5.1).
+//! Agent-level locks: `memory_consolidation`, `artifact:<aid>` (§5.1).
 
 use crate::error::Result;
 use crate::lock::{Acquire, FileLock, Lease};

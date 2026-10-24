@@ -8,7 +8,7 @@
 |---|---|
 | `main.rs` | 参数、zone 形态与 `--dev` 形态的环境装配（等待绑定的 AgentSpec，读 settings）、退出信号 |
 | `loader.rs` | 启动顺序：AgentRoot 身份 → AgentRoot 同步（模板固定时跳过）→ 角色补充 → `agent.toml` → Agent State（文件实现，进程内登记）→ HTTP → Supervisor → 模块 → 写 `info`；退出时结束托管并等待 |
-| `config.rs` | `agent.toml` 里 Loader 的部分：`[loader]`、`[[loader.ui]]`、`[loader.self_check]`、`[loader.self_improve]`、`[loader.goals]`、`[llm_context]`；配置错误在启动时报出并退出（含 `[session.goal]` 的预算格式） |
+| `config.rs` | `agent.toml` 里 Loader 的部分：`[loader]`、`[[loader.ui]]`、`[loader.self_check]`、`[loader.goals]`、`[llm_context]`；配置错误在启动时报出并退出（含 `[session.goal]` 的预算格式与 `[session.goal.maintenance]`） |
 | `rootfs.rs` | AgentRoot 目录布局、身份（`.meta/identity.json`，不一致时归档）、从 Agent 包同步素材（保留本地修改）、角色补充文件 |
 | `records.rs` | AgentRoot 之外的 Agent 记录：system-config 的 `settings` / `profile` / `info`；`--dev` 用内存或本地目录 |
 | `ui.rs` | UI Session + Message Tunnel：inbox 发现、绑定、入站桥（只放行 Owner，群聊规则与群上下文）、出站 sink |
@@ -38,7 +38,7 @@ OpenDAN kRPC 对只读 Agent 的 App token 同样检查该授权：保留已有 
 - **只放行 Owner**：消息的发送者是 `record.ingress.extra.principal_did`（msg-center 解析出的本人，例如 Telegram 账号背后的 Owner），没有时是 `record.from`。不是 Owner 的记录只标记已读：不建 Session、不调用 LLM、不回复。`/stop` 等命令也只有 Owner 能发。
 - **群聊**：`allow_group = false` 时群消息只标记已读。`allow_group = true` 时只有 Owner 发出、且 `mentions.dids` 含 Agent DID 的群消息触发；触发时先把同一 mailbox 最近 20 条已读消息（不含 Agent 自己的）作为上下文（`delivery.context = true`，保留各自的发言者）按时间顺序投进 Session 队列，再投触发消息。上下文消息不单独组成输入批次、不构成请求，渲染时带 `context="true"`；Session 已经看过的按 ObjId 去重。Agent 包需要 `[[loader.ui]] on = "msg.group"` 规则。
 
-Goals（`[loader.goals] enabled`，缺省开启，没有 Goal 时没有开销）：Supervisor 带 `libopendan::host::goals::GoalHost`。每次巡检按 Goal 列表补建当前 epoch 的 Goal Session（`<agent_root>/sessions/`，`[llm_context]` 为基础配置，class `goal`）、投递 epoch 开始事件（`created` 需 `schedule.start_on_create`）、按本地计划（`every_secs`，`LocalScheduleBackend`）在准入（Goal active、距上次 Activation 不少于 `min_interval_secs`、周期上限未到）后投递定时运行机会，并处理 epoch 迁移（reopen / restart：旧 Session 由其状态闸门结束、Goal State 存档、新 Session 建立）与结束（archive / achieved）。Goal 本身与 Goal Session 的语义见 [Agent State Protocol](../../../doc/opendan/protocol/Agent%20State%20Protocol.md) §9。一次 Activation 是 Goal Session 的一个 Turn，因此也是一个 TaskMgr task；TaskMgr 取消它（`CancelBridge` 投递 `stop{scope: turn}`）只结束这次 Activation。
+Goals（`[loader.goals] enabled`，缺省开启，没有 Goal 时没有开销）：Supervisor 带 `libopendan::host::goals::GoalHost`。每次巡检按 Goal 列表补建当前 epoch 的 Goal Session（`<agent_root>/sessions/`，`[llm_context]` 为基础配置，class `goal`）、投递 epoch 开始事件（`created` 需 `schedule.start_on_create`）、按本地计划（`every_secs`，`LocalScheduleBackend`）在准入（Goal active、距上次 Activation 不少于 `min_interval_secs`、周期上限未到）后投递定时运行机会，并处理 epoch 迁移（reopen / restart：旧 Session 由其状态闸门结束、Goal State 存档、新 Session 建立）与结束（archive / achieved）。Goal 本身与 Goal Session 的语义见 [Agent State Protocol](../../../doc/opendan/protocol/Agent%20State%20Protocol.md) §9。`[session.goal.maintenance] enabled = true` 时 GoalHost 另播种内置整理 Goal `memory_maintenance`，并对它的 start 事件与定时 fire 加 30 分钟 / 2 小时的确定性 gate（Agent State Protocol §9.7；`loader.status.modules` 里的 `memory_maintenance`）。一次 Activation 是 Goal Session 的一个 Turn，因此也是一个 TaskMgr task；TaskMgr 取消它（`CancelBridge` 投递 `stop{scope: turn}`）只结束这次 Activation。
 
 托管循环在 `libopendan::host::Supervisor`：登记表里 `driver = 本进程身份` 且未结束（或有待处理 decide）的 Session 各有一个协程循环 `drive(Idle)`；启动后的第一次扫描就是恢复；空闲超过 `idle_unload_secs` 且没有待推进工作的 Session 被卸载，有新输入时再装载。
 
@@ -127,9 +127,6 @@ WebUI 通过同源 `/api/opendan` 访问托管本页面的 Agent，由 zone 网�
 | `sessions.post_input` | `{sid, input: PostedInput}`（`from` 由服务端改写为调用方） | `index: number` |
 | `sessions.verify` | – | `string[]`（标记为 unreachable 的 sid） |
 | `activity.active` | `{me?: sid, limit?}` | `ActiveSession[]` |
-| `perception.cursor` | – | `PerceptionCursor` |
-| `perception.backlog` | `{cursor}` | `Backlog` |
-| `perception.read` | `{item: BacklogItem}` | `PerceptionRecord[]` |
 | `perception.last_seq` | `{sid}` | `number` |
 | `cognition.recall_hints` | `{query: {tags, max_hints}}` | `Hint[]` |
 | `cognition.notebook_append` | `{note: NotebookNote}` | `null` |
@@ -241,7 +238,7 @@ Agent State 门面的 `skills.*`：Agent 的 cmd_skills（`cmd_skills/<name>.md`
   "authentication": { "state": "ready | retry_pending | unavailable | reauthorization_required",
                       "last_error": null, "error_code": null, "denial": null,
                       "since": null, "next_retry_time": null } | null,
-  "modules": [ { "name": "ui | task_mgr | goals | self_check | self_improve | agent_state_service | webui",
+  "modules": [ { "name": "ui | task_mgr | goals | self_check | memory_maintenance | notify | agent_state_service | webui",
                  "enabled": true, "running": true, "note": "…" } ],
   "hosted":  [ { "session_id", "class", "loaded", "loaded_at_ms", "drives", "last_result": DriveResult,
                  "last_result_at_ms", "idle_unload_secs", "reason" } ],

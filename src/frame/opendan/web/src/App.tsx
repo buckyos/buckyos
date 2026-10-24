@@ -7,6 +7,7 @@ import { REFRESH_MS, useQuery } from './lib'
 import { dataModel } from './model'
 import { Mono } from './ui'
 import AgentStatePage from './pages/AgentState'
+import GoalDetailPage from './pages/GoalDetail'
 import HomePage from './pages/Home'
 import LoaderPage from './pages/Loader'
 import SessionDetailPage from './pages/SessionDetail'
@@ -42,8 +43,11 @@ export default function App() {
   const hash = useSyncExternalStore(subscribeHash, readHash)
   const loginLost = useSyncExternalStore(dataModel.login.subscribe, dataModel.login.lost)
   const [page = '', arg] = hash.replace(/^#\/?/, '').split('/')
+  // Detail pages (`#/session/<sid>`, `#/goal/<goal_id>`) share the tabbed
+  // layout; a goal has no tab of its own and its back link goes home.
+  const detail = (page === 'session' || page === 'goal') && Boolean(arg)
   const tab = page === 'session' ? 'sessions' : page
-  const home = !TABS.some((x) => x.id === tab)
+  const home = !detail && !TABS.some((x) => x.id === tab)
   const { mutate } = useSWRConfig()
   const status = useQuery(home || loginLost ? null : ['loader.status'], () => dataModel.loaderStatus())
   if (loginLost) return <LoginLost />
@@ -101,6 +105,8 @@ export default function App() {
       </header>
       {page === 'session' && arg ? (
         <SessionDetailPage key={arg} sid={decodeURIComponent(arg)} />
+      ) : page === 'goal' && arg ? (
+        <GoalDetailPage key={arg} goalId={decodeURIComponent(arg)} />
       ) : tab === 'agent' ? (
         <AgentStatePage />
       ) : tab === 'loader' ? (

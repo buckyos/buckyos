@@ -1426,8 +1426,8 @@ Memory 一侧的边界场景见 [组件模拟 TODO §3.11](../../notepads/agent-
 
 | 层 | 存什么 | 谁写 | 现有实现 |
 |---|---|---|---|
-| 感知层 | 未整理材料（§4） | 任何授权 Session（M-32）：Runtime 自动写运行摘要，模型经 `agent-session ctl perceive` 写观察 | lib_opendan `state/perception.rs`，按 Session 分文件 `<agent_root>/state/perception/<sid>.jsonl`；A.5 字段、幂等键、文件级短锁与清理已实现；库级写入口 `Memory::record_perception`（`ctl perceive` 仍走旧字段，S 阶段接线） |
-| 认知层（Memory Graph） | 整理后的认知：对象、别名、证据观察、认知条目、关系，以及 occasion 提交日志 | 只有 Memory 整理 Goal（M-32）：组件门面只给持整理 lease 的 `Consolidator` 提交；`agent-memory` CLI 的逐条写命令仍未按调用者限制（TD-02 的 S 部分） | agent_tool `agent_memory/` 与 `agent-memory` CLI，根目录 `<agent_root>/memory`，schema 3.0 |
+| 感知层 | 未整理材料（§4） | 任何授权 Session（M-32）：Runtime 自动写运行摘要，模型经 `agent-session ctl perceive` 写观察 | lib_opendan `state/perception.rs`，按 Session 分文件 `<agent_root>/state/perception/<sid>.jsonl`；A.5 字段、幂等键、文件级短锁与清理已实现；库级写入口 `Memory::record_perception`（`ctl perceive` 经它写入，2026-10-23） |
+| 认知层（Memory Graph） | 整理后的认知：对象、别名、证据观察、认知条目、关系，以及 occasion 提交日志 | 只有 Memory 整理 Goal（M-32）：组件门面只给持整理 lease 的 `Consolidator` 提交；`agent-memory` CLI 的写命令在 Session shell 内拒绝（TD-02，2026-10-23） | agent_tool `agent_memory/` 与 `agent-memory` CLI，根目录 `<agent_root>/memory`，schema 4.0（`stability` / `last_evidence_at` / `review_at`，`created_at` 为 `first_occasion` 投影；旧主版本拒绝打开，不迁移） |
 | 召回 | 从两层取线索，按预算装配进上下文（§6） | — | 组件：`Memory::query_topic` / `query` / `read_*` / `changes_since`（两层、可见性、范围、纠正兜底、分池预算）；runner 仍经 `FsCognition::recall_hints` 只传 tag，以 `<hints>` 注入（S 阶段改接） |
 | 运行元数据 | 锁、整理游标与处置状态；topic、观察进度与已读认知归 Session（A.9） | 组件自身；观察状态由 Session 保存 | 处置写在提交日志里，待处理集合由处置计算；`ObservationState` 由 Session 持久化（组件阶段为模拟 Session 的目录）；runner 的字节游标与 attention signal 管线仍在，S 阶段退役（TD-03、TD-20） |
 
@@ -1718,9 +1718,9 @@ interface PerceptionRecord {
 
 为满足 §4.2 新增的字段（已实现，TD-16）：`idempotency_key`、`content_digest`（清理后仍保留，用来识别同键不同内容）、`scope`（`subjects` 即主体引用，加对象与例外）、`suggested_kind`（含 `correction`）、`memory_intent`、`cites`（召回回声与纠正引用的认知，E-15、§4.3）、`anchors`（时区、语言区域、位置、意图锚点）、`occurred_at`、`source_ref`（事件引用、`task_ref`/`goal_ref`、`actor_kind`）、`mentions`（原始提及与组件附上的可见候选）、`backfilled`（补写标记）、`cleared`（清理后的处置标记）。
 
-写入入口：Runtime 在运行结束时自动写 `run_digest`、`task_outcome`，任务放弃时写 `task_discarded`；模型经 `agent-session ctl perceive <text> [--kind] [--tag]` 写观察，“你记一下”也走这里（M-01）。追加要求持有 Session lease。组件库入口 `Memory::record_perception(caller, session_lease, input)` 由宿主绑定身份、授权主体、来源事件和记录策略：“不记忆”策略直接跳过、不写入；来源事件经宿主核验，Runtime 附加的 Memory 块不能作为来源；`cites` 必须指向可见的认知；回执返回 `<sid>:<seq>`、同范围已有认知引用（读不到 Graph 时省略）和提及候选。仍待 S 阶段：`ctl perceive` 的参数接线，`catch_up` 合成的运行摘要设置 `backfilled`（TD-16）。
+写入入口：Runtime 在运行结束时自动写 `run_digest`、`task_outcome`，任务放弃时写 `task_discarded`；模型经 `agent-session ctl perceive <text> [--kind] [--tag]` 写观察，“你记一下”也走这里（M-01）。追加要求持有 Session lease。组件库入口 `Memory::record_perception(caller, session_lease, input)` 由宿主绑定身份、授权主体、来源事件和记录策略：“不记忆”策略直接跳过、不写入；来源事件经宿主核验，Runtime 附加的 Memory 块不能作为来源；`cites` 必须指向可见的认知；回执返回 `<sid>:<seq>`、同范围已有认知引用（读不到 Graph 时省略）和提及候选。`ctl perceive` 已接线（2026-10-23）：`--subject / --object / --cite / --source / --occurred-at / --suggest / --intent | --explicit / --mention`，驱动者分配 seq、绑定主体（UI 取对话 peer，Work 取 owner，Goal 取 Goal owner，Workspace 绑定附 `workspace:<id>`）、来源与时区锚点，控制输入 key 为幂等键；仍待：`catch_up` 合成的运行摘要设置 `backfilled`（TD-16）。
 
-整理读取：组件按逐条处置状态计算待处理集合（未处置、到期暂缓、已终局待清理），排除整理自身的 Session，同一来源事件的一轮表达整体进入同一批次；runner 的 self_improve 旧路径仍用字节偏移游标，S 阶段改接（§5.6 第 5 步、TD-03）。
+整理读取：组件按逐条处置状态计算待处理集合（未处置、到期暂缓、已终局待清理），排除整理自身的 Session，同一来源事件的一轮表达整体进入同一批次；排除按“Goal 带 `memory_consolidation` 能力的 Goal Session”判定（跨 epoch），字节偏移游标已删除（2026-10-23）。
 
 写入幂等（新增，TD-16）：`idempotency_key` 由写入方给出，Runtime 默认取 `<event_ref>/<序号>`，同一来源事件的多条观察用不同序号；在同一 `<sid>` 内唯一。相同键、相同内容视为重放，返回原 `<sid>:<seq>`；相同键、不同内容返回冲突。正文清理后仍保留键和处置记录，重放不会让已清理材料复活。没有键的 Runtime 记录沿用现有的 `seq` 幂等。
 
@@ -1903,7 +1903,8 @@ Session 侧的库函数（组件提供实现，状态由 Session 保存）：
 - 现状：`cli` 中 agent-memory 的分派不检查调用者，任何能用 shell 的 Session 都能执行图操作、`set`、`remove`、`set-status`。
 - 改为：写入只经 `commit`，并要求整理 Goal 持有的整理 lease（复用 `lo` 现有的 self_improve lease，改名为整理用途）；普通 Session 的工具 PATH 只暴露读命令和 `agent-session ctl perceive`；逐条图操作仅限管理模式。
 - 验收：普通 Session 调用写命令被拒绝，并给出明确错误。
-- 进度（2026-10-10，组件阶段）：组件完成：认知只经 `Consolidator`（必须持 `self_improve` 整理 lease，lease 失效即拒绝），普通 Session 的门面没有图写入；提交带 lease epoch，旧 epoch 被拒。S 待办：`agent-memory` CLI 按调用者分派、普通 Session PATH 只读、逐条图操作仅管理模式；lease 改名为整理用途。
+- 进度（2026-10-10，组件阶段）：组件完成：认知只经 `Consolidator`（必须持整理 lease，lease 失效即拒绝），普通 Session 的门面没有图写入；提交带 lease epoch，旧 epoch 被拒。
+- 进度（2026-10-23，Jarvis 默认 Goal P0）：lease 改名 `memory_consolidation`，由带该能力的 Goal Session 的 drive 全程持有；`agent-memory` CLI 的写动词在 Session shell（StableEnv）内一律拒绝（`ReadOnly`，提示走 `agent-session ctl perceive`），只读动词照常，管理写入只在非 Session 环境可用；整理写入只经宿主工具 `memory_consolidation_begin / commit`（见 `notepads/jarvis-default-goal-session-todo.md` §4.1）。
 
 **TD-03 整理提交原子化，逐条处置**（M-15、M-17、§5.6、§5.9、B-07）
 - 现状：`lo/state/cognition.rs` 的 `commit_consolidation` 只追加审计记录并推进字节游标，不核对任何 Memory 写入；认知写入是逐条 CLI 调用，各自加锁；整理 Session 一成功就推进游标（`lo/runner/outcome.rs`）。`am` 的 `commit` 支持多操作单条 occasion，但只有测试在用。
@@ -1993,7 +1994,8 @@ Session 侧的库函数（组件提供实现，状态由 Session 保存）：
 **TD-19 Memory 整理 Goal 接线**（M-13、§5.9）
 - 现状：`lo/api.rs` 的 `create_self_improve_session` 只有测试调用；OpenDAN loader 对 self_improve 返回“not available in this version”；jarvis 的 `agent.toml` 里 `[loader.self_improve] enabled = false`；现有整理测试中模型只回答“kept 2 facts”、一条 Memory 都没写，游标照样推进。
 - 改为：实现维护型 Memory 整理 Goal：运行前用不调用 LLM 的查询判断有无新增、到期或待重试的材料；按 §5.6 整理并经 `commit` 提交；暂缓材料有观察窗口与到期处置；整理测试断言实际的认知变化。
-- 进度（2026-10-10，组件阶段）：组件完成：不调用模型的 `pending_work`（新增/到期/等待/待重试清理，排除整理自身）、暂缓窗口与不可延长、到期选材、兜底清扫、清理单独重试（S22、S30）。S 待办：维护型整理 Goal 与 Loader 接线；真实整理测试断言认知变化。
+- 进度（2026-10-10，组件阶段）：组件完成：不调用模型的 `pending_work`（新增/到期/等待/待重试清理，排除整理自身）、暂缓窗口与不可延长、到期选材、兜底清扫、清理单独重试（S22、S30）。
+- 进度（2026-10-23，Jarvis 默认 Goal P0）：维护型整理 Goal `memory_maintenance` 由 GoalHost 播种并经 30m / 2h 确定性 gate 调度（`pending_work` + `due_reviews` 是闸门；`memory_snapshot` 版本向量是快速路径）；`create_self_improve_session`、字节游标、`[loader.self_improve]` 与两份 self_improve behavior 已删除；`tests/memory_maintenance.rs` 断言实际认知变化、正文清理、receipt 完成与崩溃恢复。
 
 **TD-20 只保留一条感知管线**（A.1）
 - 现状：`agent_tool/src/agent_attention_signal.rs`（SQLite，Stage1 扫描与 `ListPendingAttentionSignals` 等 CLI）与 `lo` 的感知流并行；`self_improve_signals.toml`、`self_improve_set_memory.toml` 走前者。

@@ -483,25 +483,46 @@ async fn apply_control(
             summary,
             tags,
             objects,
+            subjects,
+            cites,
+            source,
+            occurred_at,
+            suggested_kind,
+            memory_intent,
+            mentions,
         } => {
-            let sid = sh.dir.sid().to_string();
-            let seq = s.state.perception_seq + 1;
-            let rec = PerceptionRecord {
-                seq,
-                at_ms: m.at_ms.max(1),
-                session_id: sid.clone(),
-                kind: kind.clone(),
-                source: "session".into(),
-                tags: tags.clone(),
-                objects: objects.clone(),
-                summary: summary.clone(),
-                payload: serde_json::to_value(cmd).unwrap_or(Value::Null),
-                refs: json!({ "input": m.input_ref().id() }),
-                ..Default::default()
+            // Recorded through the Memory facade (idempotent by the input
+            // key) before the input is consumed; a refused observation is a
+            // rejected input, never a silent drop.
+            let args = super::consolidation::PerceiveArgs {
+                kind,
+                summary,
+                tags,
+                objects,
+                subjects,
+                cites,
+                source: source.as_deref(),
+                occurred_at: occurred_at.as_deref(),
+                suggested_kind: suggested_kind.as_deref(),
+                memory_intent: memory_intent.as_deref(),
+                mentions,
             };
-            // Appended (idempotent by seq) before the input is consumed.
-            sh.agent().perception().append(&sh.lease, &sid, vec![rec]).await?;
-            s.state.perception_seq = seq;
+            let input_id = m.input_ref().id();
+            match super::consolidation::perceive(sh, s, &m.key, &input_id, args).await {
+                Ok(receipt) => bodies.push(WorklogBody::ControlApplied {
+                    input: m.input_ref(),
+                    command: "perceive".into(),
+                    detail: serde_json::to_value(&receipt).unwrap_or(Value::Null),
+                }),
+                Err(OpenDanError::InvalidArgument(reason)) => {
+                    bodies.push(WorklogBody::InputRejected {
+                        input: m.input_ref(),
+                        reason: RejectReason::InvalidPayload.as_str().into(),
+                        detail: reason,
+                    });
+                }
+                Err(e) => return Err(e),
+            }
         }
         ControlCommand::Decide { decision, by, note } => {
             if !finished || in_run {

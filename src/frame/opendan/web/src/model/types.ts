@@ -1,4 +1,4 @@
-export type SessionKind = 'ui' | 'work' | 'self_improve' | 'self_check' | 'goal'
+export type SessionKind = 'ui' | 'work' | 'self_check' | 'goal'
 export type RunState = 'created' | 'ready' | 'running' | 'waiting' | 'finished'
 export type Outcome = 'succeeded' | 'failed' | 'stopped'
 export type Acceptance = 'n/a' | 'pending' | 'accepted' | 'discarded'
@@ -240,30 +240,6 @@ export interface ActiveSession {
   driver: string
 }
 
-export interface PerceptionCursor {
-  offsets: Record<string, number>
-  updated_at_ms: number
-}
-
-export interface BacklogItem {
-  session_id: string
-  from_offset: number
-  to_offset: number
-}
-
-export interface PerceptionRecord {
-  seq: number
-  at_ms: number
-  session_id: string
-  kind: string
-  source: string
-  tags?: string[]
-  objects?: string[]
-  summary?: string
-  payload?: unknown
-  refs?: unknown
-}
-
 export interface WorkspaceRef {
   workspace_id: string
   access?: 'read_write' | 'read_only'
@@ -441,4 +417,342 @@ export interface UiBinding {
   to: string
   to_session?: string | null
   kind: string
+}
+
+// Goals (`state/goals/<goal_id>/`), mirroring lib_opendan/src/protocol/goal.rs.
+export type GoalLifecycle = 'achieve' | 'maintain'
+export type GoalStatus = 'active' | 'paused' | 'achieved' | 'archived'
+export type EpochStart = 'created' | 'reopened' | 'restarted'
+export type EpochEnd = 'archived' | 'achieved' | 'restarted'
+export type ActivationReasonKind = 'created' | 'scheduled' | 'child' | 'feedback' | 'manual' | 'reopened' | 'restarted' | 'event' | 'answer'
+export type ActivationOutcome = 'completed' | 'failed' | 'budget_exhausted' | 'stopped' | 'needs_input'
+export type ActivationDecision = 'no_action' | 'acted' | 'created_work' | 'needs_info' | 'unknown'
+export type GoalQuestionStatus = 'open' | 'answered' | 'dismissed' | 'expired' | 'canceled'
+export type ReceiptStage = 'prepared' | 'memory_committed' | 'published' | 'completed' | 'failed'
+export type CandidateKind = 'goal' | 'schedule'
+export type CandidateStatus = 'proposed' | 'needs_confirmation' | 'approved' | 'materializing' | 'created' | 'linked' | 'rejected' | 'expired' | 'blocked'
+
+/** `extensions.opendan`: the host's trusted marks of a Goal. */
+export interface OpendanGoalExtension {
+  builtin?: string
+  policy_version: number
+  capabilities?: string[]
+  records_perception?: boolean
+}
+
+export interface GoalScope {
+  objects?: string[]
+  paths?: string[]
+  workspace?: string
+}
+
+export interface GoalSkill {
+  name: string
+  ref?: string
+  version?: string
+  note?: string
+}
+
+export interface ActivationBudget {
+  max_total_tokens?: number
+  max_runs?: number
+}
+
+export interface PeriodBudget {
+  window_secs?: number
+  max_total_tokens?: number
+  max_activations?: number
+  max_works?: number
+}
+
+export interface GoalBudget {
+  activation?: ActivationBudget
+  period?: PeriodBudget
+}
+
+export interface GoalScheduleSpec {
+  every_secs?: number
+  min_interval_secs?: number
+  start_on_create?: boolean
+}
+
+export interface GoalEpoch {
+  epoch: number
+  sid: string
+  started_at_ms: number
+  start: EpochStart
+  reason?: string
+  keep?: 'all' | 'facts'
+  ended_at_ms?: number
+  end?: EpochEnd
+  end_reason?: string
+}
+
+export interface GoalDefinition {
+  schema: string
+  goal_id: string
+  revision: number
+  change_seq?: number
+  title: string
+  objective: string
+  scope?: GoalScope
+  lifecycle?: GoalLifecycle
+  achieved_when?: string
+  healthy_state?: string
+  distance_evaluation?: string
+  constraints?: string[]
+  initial_skills?: GoalSkill[]
+  owner: string
+  created_by: { principal: string; via: string }
+  beneficiaries?: string[]
+  budget?: GoalBudget
+  schedule?: GoalScheduleSpec
+  behavior?: string
+  status: GoalStatus
+  status_changed_at_ms?: number
+  status_reason?: string
+  status_by?: string
+  session: { epoch: number; sid: string }
+  epochs?: GoalEpoch[]
+  idempotency_key?: string
+  created_at_ms: number
+  updated_at_ms?: number
+  extensions?: Record<string, unknown>
+}
+
+export interface GoalChange {
+  seq: number
+  at_ms: number
+  kind: string
+  who: string
+  via: string
+  reason?: string
+  revision?: number
+  epoch?: number
+  detail?: unknown
+}
+
+export interface ActivationReason {
+  kind: ActivationReasonKind
+  key: string
+  ref?: string
+  missed?: number
+  note?: string
+}
+
+export interface ActivationCost {
+  runs?: number
+  total_tokens?: number
+}
+
+export interface GoalActivation {
+  schema: string
+  goal_id: string
+  epoch: number
+  seq: number
+  session_id: string
+  goal_revision: number
+  started_at_ms: number
+  ended_at_ms: number
+  reasons?: ActivationReason[]
+  outcome: ActivationOutcome
+  decision: ActivationDecision
+  summary?: string
+  report_ref?: string
+  works_created?: string[]
+  works_absorbed?: string[]
+  cost?: ActivationCost
+  end_reason?: string
+  result?: unknown
+}
+
+export interface LastActivation {
+  epoch: number
+  seq: number
+  at_ms: number
+  reasons?: ActivationReason[]
+  outcome: ActivationOutcome
+  decision: ActivationDecision
+  summary?: string
+}
+
+export interface GoalDistance {
+  text: string
+  observed_at_ms?: number
+  evidence_refs?: string[]
+  unknowns?: string[]
+}
+
+export interface GoalQuestion {
+  text: string
+  at_ms: number
+  epoch: number
+  activation: number
+  notify_id?: string
+  status?: GoalQuestionStatus
+  answer?: string
+  candidate_id?: string
+}
+
+export interface GoalWork {
+  sid: string
+  objective?: string
+  epoch: number
+  created_in_activation: number
+  goal_revision: number
+}
+
+export interface RecentWork {
+  sid: string
+  outcome?: Outcome
+  one_line_status?: string
+  report_ref?: string
+  absorbed_in: [number, number]
+}
+
+export interface GoalUsage {
+  period_start_ms: number
+  tokens?: number
+  activations?: number
+  works?: number
+  work_tokens?: number
+}
+
+export interface ConsolidationReceipt {
+  operation_id: string
+  epoch: number
+  activation: number
+  batch_id: string
+  graph_seq: number
+  refs?: string[]
+  batch: unknown
+  plan?: unknown
+  stage: ReceiptStage
+  memory_occasion?: string
+  operations?: number
+  dispositions?: number
+  cleanup_pending?: boolean
+  created_at_ms: number
+  updated_at_ms?: number
+  last_error?: string
+}
+
+export interface MaintenanceCandidate {
+  candidate_id: string
+  revision: number
+  kind: CandidateKind
+  semantic_key: string
+  title: string
+  action: string
+  scope?: string[]
+  source_refs?: string[]
+  evidence_refs?: string[]
+  intent_basis: string
+  authorization_ref?: string
+  missing_fields?: string[]
+  proposed?: unknown
+  estimated_budget?: string
+  expected_effects?: string[]
+  status: CandidateStatus
+  question_id?: string
+  notify_id?: string
+  approved_revision?: number
+  approved_by?: string
+  approved_at_ms?: number
+  linked_id?: string
+  operation_key?: string
+  last_error?: string
+  retry_at_ms?: number
+  created_at_ms: number
+  updated_at_ms?: number
+  review_at_ms?: number
+  expires_at_ms?: number
+}
+
+export interface MaintenanceState {
+  receipts?: ConsolidationReceipt[]
+  candidates?: MaintenanceCandidate[]
+  last_successful_consolidation_at_ms?: number
+  consolidations?: number
+  operations?: number
+  dispositions?: number
+  abandoned_batches?: number
+  last_error?: string
+}
+
+export interface GoalState {
+  schema: string
+  goal_id: string
+  rev: number
+  epoch: number
+  goal_revision_seen?: number
+  last_activation?: LastActivation
+  distance?: GoalDistance
+  pending?: string[]
+  questions?: GoalQuestion[]
+  active_works?: GoalWork[]
+  absorbed?: string[]
+  recent_works?: RecentWork[]
+  current_skills?: GoalSkill[]
+  usage: GoalUsage
+  last_error?: unknown
+  maintenance?: MaintenanceState
+  updated_at_ms?: number
+}
+
+export interface PendingFire {
+  slot: number
+  key: string
+  missed: number
+}
+
+export interface MaintenancePending {
+  new?: number
+  due?: number
+  waiting?: number
+  retry_cleanup?: number
+  next_deadline?: string
+  oldest_at_ms?: number
+}
+
+/** `no_work | no_change | active | mechanical | paused | disabled | unknown | backoff | period_budget`. */
+export interface MaintenanceGate {
+  status: string
+  last_checked_slot?: number
+  last_baseline_slot?: number
+  last_checked_at_ms?: number
+  last_full_check_at_ms?: number
+  last_skip_reason?: string
+  last_inputs_digest?: string
+  pending?: MaintenancePending
+  due_reviews?: number
+  next_review_at?: string
+  unfinished_receipts?: number
+  last_run_at_ms?: number
+  last_run_slot?: number
+  backoff_until_ms?: number
+  backoff_level?: number
+  last_error?: string
+}
+
+export interface SkippedFire {
+  slot: number
+  at_ms: number
+  reason: string
+}
+
+export interface GoalSchedule {
+  schema: string
+  goal_id: string
+  backend: string
+  every_secs?: number
+  last_slot?: number
+  pending?: PendingFire
+  last_posted_key?: string
+  last_fire_at_ms?: number
+  start_posted_epoch?: number
+  skipped?: SkippedFire[]
+  last_error?: string
+  gate?: MaintenanceGate
+  updated_at_ms?: number
 }

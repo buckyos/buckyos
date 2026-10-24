@@ -340,6 +340,7 @@ fn xml_list(out: &mut String, tag: &str, item: &str, items: &[String]) {
     out.push_str(&format!("</{tag}>\n"));
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_builtin(
     goal: &GoalDefinition,
     st: &GoalState,
@@ -348,6 +349,7 @@ fn render_builtin(
     works: &[WorkView],
     budget: &GoalBudget,
     usage: &GoalUsage,
+    extra: &str,
 ) -> String {
     let mut s = format!(
         "<goal_activation goal=\"{}\" epoch=\"{}\" activation=\"{}\" revision=\"{}\" status=\"{}\">\n",
@@ -552,6 +554,7 @@ fn render_builtin(
         b.push_str(&format!(" period_max_works=\"{n}\""));
     }
     s.push_str(&format!("<budget{b}/>\n"));
+    s.push_str(extra);
     s.push_str("<result_format>End this activation with report(is_end=true, result={decision: no_action | acted | created_work | needs_info, distance?: text, pending?: [..], questions?: [..], skills?: {add?: [..], remove?: [..]}}). Not acting is a valid result; not observed is not \"no change\".</result_format>\n");
     s.push_str("</goal_activation>");
     s
@@ -603,16 +606,31 @@ pub(super) async fn opening(
         Vec::new()
     };
     let works = works_of(sh, goal, &st).await?;
+    let mut activation_budget = budget.activation.clone();
+    let caps = super::consolidation::caps(sh);
+    if caps.consolidation {
+        // Every model entry of the consolidation Goal (scheduled, created,
+        // manual, answer) stays inside what the period has left.
+        if let (Some(max), Some(period)) = (activation_budget.max_total_tokens, budget.period.max_total_tokens) {
+            let used = usage.tokens + usage.work_tokens;
+            activation_budget.max_total_tokens = Some(max.min(period.saturating_sub(used)).max(1));
+        }
+    }
+    let extra = if caps.consolidation {
+        super::consolidation::header_block(sh).await
+    } else {
+        String::new()
+    };
     let open = OpenActivation {
         seq,
         goal_revision: goal.revision,
         reasons: reasons.clone(),
         started_at_ms: crate::now_ms(),
         usage_offset: usage_len(&sh.dir),
-        budget: budget.activation.clone(),
+        budget: activation_budget,
         absorbed: Vec::new(),
     };
-    let builtin = render_builtin(goal, &st, &open, &changed, &works, &budget, &usage);
+    let builtin = render_builtin(goal, &st, &open, &changed, &works, &budget, &usage, &extra);
     let text = match template {
         Some(tpl) => {
             let view = GoalView {
@@ -900,6 +918,7 @@ pub(super) async fn close_activation(sh: &Shared, s: &mut Session, end: TurnEnd<
                         notify_id: None,
                         status: None,
                         answer: None,
+                        candidate_id: None,
                     },
                 })
                 .collect();
@@ -924,6 +943,7 @@ pub(super) async fn close_activation(sh: &Shared, s: &mut Session, end: TurnEnd<
                 notify_id: None,
                 status: None,
                 answer: None,
+                candidate_id: None,
             });
         }
     }

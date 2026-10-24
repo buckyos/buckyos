@@ -2,10 +2,14 @@ import { OpenDanError, type OpenDanDataModel } from './datamodel'
 import type {
   AgentProfile,
   ArtifactVersion,
+  GoalActivation,
+  GoalChange,
+  GoalDefinition,
+  GoalSchedule,
+  GoalState,
   HostedStatus,
   KnownRuntime,
   KnownWorkspace,
-  PerceptionRecord,
   RegistryEntry,
   SessionDetail,
   SessionState,
@@ -24,6 +28,12 @@ const WORK_RUNNING = 'work-b41d09e2'
 const WORK_PENDING = 'work-5c8e17aa'
 const WORK_FAILED = 'work-e02b66f4'
 const CHECK = 'sc-daily'
+const GOAL_BUILTIN = 'goal-memory-maintenance'
+const GOAL_TIDY = 'goal-downloads-tidy'
+const GOAL_ARCHIVED = 'goal-photo-backlog'
+const SLOT_SECS = 1800
+const slotNow = Math.floor(now / 1000 / SLOT_SECS)
+const iso = (seconds: number) => new Date(now + seconds * 1000).toISOString()
 
 const entry = (
   sid: string,
@@ -297,19 +307,301 @@ const buildFixtures = () => {
     ],
   }
 
-  const perception: PerceptionRecord[] = [
-    { seq: 7, at_ms: ago(900), session_id: WORK_PENDING, kind: 'session_finished', source: 'session', tags: ['photos', 'rename'], summary: 'Renamed 212 photos, 3 skipped' },
-    { seq: 8, at_ms: ago(880), session_id: WORK_PENDING, kind: 'decision_pending', source: 'session', summary: 'Waiting for accept / discard of v2' },
-    { seq: 3, at_ms: ago(5400), session_id: WORK_FAILED, kind: 'session_finished', source: 'session', tags: ['llm'], summary: 'LLM request failed' },
-  ]
+  return { entries, hostedList, worklogs, details, artifactVersions }
+}
 
-  return { entries, hostedList, worklogs, details, artifactVersions, perception }
+interface GoalFixture {
+  def: GoalDefinition
+  state: GoalState
+  schedule: GoalSchedule
+  activations: GoalActivation[]
+  changes: GoalChange[]
+}
+
+const goalDef = (goal_id: string, title: string, objective: string, extra: Partial<GoalDefinition>): GoalDefinition => ({
+  schema: 'opendan.goal/1',
+  goal_id,
+  revision: 1,
+  change_seq: 1,
+  title,
+  objective,
+  lifecycle: 'maintain',
+  owner: OWNER,
+  created_by: { principal: OWNER, via: 'owner' },
+  status: 'active',
+  status_changed_at_ms: ago(86400 * 3),
+  status_by: OWNER,
+  session: { epoch: 1, sid: `${goal_id}-e1` },
+  epochs: [{ epoch: 1, sid: `${goal_id}-e1`, started_at_ms: ago(86400 * 3), start: 'created', keep: 'all' }],
+  created_at_ms: ago(86400 * 3),
+  updated_at_ms: ago(86400 * 3),
+  ...extra,
+})
+
+const activation = (goal_id: string, epoch: number, seq: number, started: number, extra: Partial<GoalActivation>): GoalActivation => ({
+  schema: 'opendan.goal_activation/1',
+  goal_id,
+  epoch,
+  seq,
+  session_id: `${goal_id}-e${epoch}`,
+  goal_revision: 1,
+  started_at_ms: started,
+  ended_at_ms: started + 42_000,
+  reasons: [{ kind: 'scheduled', key: `sched:${goal_id}:${epoch}:${seq}` }],
+  outcome: 'completed',
+  decision: 'no_action',
+  summary: '',
+  cost: { runs: 1, total_tokens: 2400 },
+  ...extra,
+})
+
+const change = (seq: number, at_ms: number, kind: string, who: string, via: string, extra: Partial<GoalChange> = {}): GoalChange => ({
+  seq, at_ms, kind, who, via, ...extra,
+})
+
+const buildGoalFixtures = (): GoalFixture[] => {
+  const builtin: GoalFixture = {
+    def: goalDef(GOAL_BUILTIN, 'Memory maintenance', 'Consolidate what the agent perceived into cognition, review what is due and route what was discovered.', {
+      healthy_state: 'Perceptions that reached their processing condition are disposed reliably; cognition is traceable and reviewed on time; discovered items have a destination.',
+      constraints: ['Never record perceptions of its own', 'Small batches: about 20 materials, at most 3 per activation'],
+      created_by: { principal: AGENT, via: 'opendan' },
+      budget: { activation: { max_total_tokens: 32000, max_runs: 4 }, period: { window_secs: 86400, max_total_tokens: 200000, max_activations: 48 } },
+      schedule: { every_secs: SLOT_SECS },
+      behavior: 'memory_maintenance',
+      status_by: AGENT,
+      idempotency_key: 'builtin:memory_maintenance',
+      updated_at_ms: ago(5400),
+      extensions: { opendan: { builtin: 'memory_maintenance', policy_version: 1, capabilities: ['memory_consolidation'], records_perception: false } },
+    }),
+    state: {
+      schema: 'opendan.goal_state/1',
+      goal_id: GOAL_BUILTIN,
+      rev: 23,
+      epoch: 1,
+      goal_revision_seen: 1,
+      last_activation: {
+        epoch: 1, seq: 7, at_ms: ago(5400),
+        reasons: [{ kind: 'scheduled', key: `sched:${GOAL_BUILTIN}:1:7` }],
+        outcome: 'completed', decision: 'acted',
+        summary: 'Consolidated 2 batches (14 materials); 1 candidate needs confirmation.',
+      },
+      distance: { text: '3 materials wait for their processing condition; nothing is due for review.', observed_at_ms: ago(5400), unknowns: [] },
+      questions: [{
+        text: 'You mentioned a weekly release report three times. Should I keep a schedule for it (Fridays 16:00)?',
+        at_ms: ago(5400), epoch: 1, activation: 7, notify_id: 'ntf-7c2e', status: 'open', candidate_id: 'cand-weekly-report',
+      }],
+      usage: { period_start_ms: ago(30000), tokens: 41200, activations: 5, works: 0, work_tokens: 0 },
+      maintenance: {
+        receipts: [
+          { operation_id: 'op-01HX1', epoch: 1, activation: 7, batch_id: 'batch-0a3f', graph_seq: 1180, refs: ['mat-1', 'mat-2'], batch: { materials: 8 }, stage: 'completed', operations: 9, dispositions: 8, cleanup_pending: false, created_at_ms: ago(5500), updated_at_ms: ago(5450) },
+          { operation_id: 'op-01HX2', epoch: 1, activation: 7, batch_id: 'batch-0a40', graph_seq: 1189, refs: ['mat-3'], batch: { materials: 6 }, stage: 'completed', operations: 4, dispositions: 6, cleanup_pending: false, created_at_ms: ago(5440), updated_at_ms: ago(5400) },
+        ],
+        candidates: [{
+          candidate_id: 'cand-weekly-report', revision: 1, kind: 'schedule', semantic_key: 'schedule:weekly-release-report',
+          title: 'Weekly release report, Fridays 16:00', action: 'create_schedule', scope: [OWNER], intent_basis: 'inferred',
+          status: 'needs_confirmation', question_id: 'q-1', notify_id: 'ntf-7c2e', created_at_ms: ago(5400), updated_at_ms: ago(5400),
+        }],
+        last_successful_consolidation_at_ms: ago(5400),
+        consolidations: 9,
+        operations: 61,
+        dispositions: 118,
+        abandoned_batches: 1,
+      },
+      updated_at_ms: ago(5400),
+    },
+    schedule: {
+      schema: 'opendan.goal_schedule/1',
+      goal_id: GOAL_BUILTIN,
+      backend: 'local',
+      every_secs: SLOT_SECS,
+      last_slot: slotNow,
+      last_fire_at_ms: ago(5400),
+      start_posted_epoch: 1,
+      skipped: [
+        { slot: slotNow - 1, at_ms: ago(1800), reason: 'no_change' },
+        { slot: slotNow, at_ms: ago(60), reason: 'no_change' },
+      ],
+      gate: {
+        status: 'no_change',
+        last_checked_slot: slotNow,
+        last_baseline_slot: slotNow - 3,
+        last_checked_at_ms: ago(60),
+        last_full_check_at_ms: ago(7200),
+        last_skip_reason: 'no_change',
+        last_inputs_digest: 'sha256:1f9c2b7e',
+        pending: { new: 0, due: 0, waiting: 3, retry_cleanup: 0, next_deadline: iso(4 * 3600), oldest_at_ms: ago(86400) },
+        due_reviews: 0,
+        next_review_at: iso(2 * 86400),
+        unfinished_receipts: 0,
+        last_run_at_ms: ago(5400),
+        last_run_slot: slotNow - 3,
+        backoff_level: 0,
+      },
+      updated_at_ms: ago(60),
+    },
+    activations: [5, 6, 7].map((seq) =>
+      activation(GOAL_BUILTIN, 1, seq, ago(5400 + (7 - seq) * 7200), seq === 7
+        ? { decision: 'acted', summary: 'Consolidated 2 batches (14 materials); 1 candidate needs confirmation.', cost: { runs: 2, total_tokens: 18700 } }
+        : { summary: 'Checked: nothing reached its processing condition.' }),
+    ),
+    changes: [change(1, ago(86400 * 3), 'created', AGENT, 'opendan', { revision: 1, epoch: 1, reason: 'seeded builtin:memory_maintenance' })],
+  }
+
+  const tidy: GoalFixture = {
+    def: goalDef(GOAL_TIDY, 'Keep Downloads tidy', 'Keep ~/Downloads free of stale installers and archives; move what is worth keeping into the Downloads workspace.', {
+      revision: 2,
+      change_seq: 4,
+      healthy_state: 'No file older than 30 days sits in ~/Downloads unsorted.',
+      constraints: ['Never delete without asking', 'Keep PDFs'],
+      scope: { paths: ['/home/devtest/Downloads'], workspace: 'ws-downloads' },
+      budget: { activation: { max_total_tokens: 60000, max_runs: 3 }, period: { window_secs: 86400, max_total_tokens: 300000 } },
+      schedule: { every_secs: 6 * 3600 },
+      created_by: { principal: OWNER, via: `ui_session:${UI}` },
+      session: { epoch: 2, sid: `${GOAL_TIDY}-e2` },
+      epochs: [
+        { epoch: 1, sid: `${GOAL_TIDY}-e1`, started_at_ms: ago(86400 * 3), start: 'created', keep: 'all', ended_at_ms: ago(86400), end: 'restarted', end_reason: 'scope narrowed to the Downloads workspace' },
+        { epoch: 2, sid: `${GOAL_TIDY}-e2`, started_at_ms: ago(86400), start: 'restarted', keep: 'facts', reason: 'scope narrowed to the Downloads workspace' },
+      ],
+      updated_at_ms: ago(86400),
+    }),
+    state: {
+      schema: 'opendan.goal_state/1',
+      goal_id: GOAL_TIDY,
+      rev: 9,
+      epoch: 2,
+      goal_revision_seen: 2,
+      last_activation: {
+        epoch: 2, seq: 1, at_ms: ago(43200),
+        reasons: [{ kind: 'restarted', key: `restart:${GOAL_TIDY}:2` }],
+        outcome: 'needs_input', decision: 'needs_info',
+        summary: 'Three installers older than 30 days: delete or archive?',
+      },
+      distance: { text: '3 stale installers remain in ~/Downloads.', observed_at_ms: ago(43200), unknowns: ['whether the .dmg files are still needed'] },
+      pending: ['Decide what happens to installers older than 30 days'],
+      questions: [{
+        text: 'Should installers older than 30 days be deleted, or moved to an archive folder?',
+        at_ms: ago(43200), epoch: 2, activation: 1, notify_id: 'ntf-4a1b', status: 'open',
+      }],
+      recent_works: [{ sid: 'work-tidy-01', outcome: 'succeeded', one_line_status: 'Moved 12 archives into the workspace', absorbed_in: [1, 2] }],
+      usage: { period_start_ms: ago(50000), tokens: 12800, activations: 1, works: 0, work_tokens: 0 },
+      updated_at_ms: ago(43200),
+    },
+    schedule: {
+      schema: 'opendan.goal_schedule/1',
+      goal_id: GOAL_TIDY,
+      backend: 'local',
+      every_secs: 6 * 3600,
+      last_slot: Math.floor(now / 1000 / (6 * 3600)),
+      last_fire_at_ms: ago(43200),
+      start_posted_epoch: 2,
+      skipped: [{ slot: Math.floor(now / 1000 / (6 * 3600)), at_ms: ago(600), reason: 'min_interval' }],
+      updated_at_ms: ago(600),
+    },
+    activations: [
+      activation(GOAL_TIDY, 1, 1, ago(86400 * 3 - 60), {
+        reasons: [{ kind: 'created', key: `create:${GOAL_TIDY}` }],
+        decision: 'created_work', summary: 'Started a Work to sort the archives.', works_created: ['work-tidy-01'], cost: { runs: 1, total_tokens: 5100 },
+      }),
+      activation(GOAL_TIDY, 1, 2, ago(86400 * 2), {
+        reasons: [{ kind: 'child', key: 'child:work-tidy-01', ref: 'work-tidy-01', note: 'Work finished: succeeded' }],
+        decision: 'acted', summary: 'Absorbed the Work result; 12 archives moved.', works_absorbed: ['work-tidy-01'], cost: { runs: 1, total_tokens: 3900 },
+      }),
+      activation(GOAL_TIDY, 2, 1, ago(43200), {
+        reasons: [{ kind: 'restarted', key: `restart:${GOAL_TIDY}:2` }],
+        outcome: 'needs_input', decision: 'needs_info', summary: 'Three installers older than 30 days: delete or archive?', cost: { runs: 1, total_tokens: 3800 },
+      }),
+    ],
+    changes: [
+      change(1, ago(86400 * 3), 'created', OWNER, `ui_session:${UI}`, { revision: 1, epoch: 1 }),
+      change(2, ago(86400 * 2), 'revised', OWNER, 'owner', { revision: 2, reason: 'keep PDFs' }),
+      change(3, ago(86400), 'epoch_ended', OWNER, 'owner', { epoch: 1, reason: 'scope narrowed to the Downloads workspace' }),
+      change(4, ago(86400), 'restarted', OWNER, 'owner', { epoch: 2, reason: 'scope narrowed to the Downloads workspace' }),
+    ],
+  }
+
+  const archived: GoalFixture = {
+    def: goalDef(GOAL_ARCHIVED, 'Clear the photo rename backlog', 'Rename every photo under Pictures/camera by capture date.', {
+      lifecycle: 'achieve',
+      achieved_when: 'No photo under Pictures/camera keeps its camera file name.',
+      change_seq: 2,
+      status: 'archived',
+      status_changed_at_ms: ago(86400 * 2),
+      status_reason: 'Superseded by the Photos workspace',
+      epochs: [{ epoch: 1, sid: `${GOAL_ARCHIVED}-e1`, started_at_ms: ago(86400 * 6), start: 'created', keep: 'all', ended_at_ms: ago(86400 * 2), end: 'archived', end_reason: 'Superseded by the Photos workspace' }],
+      created_at_ms: ago(86400 * 6),
+      updated_at_ms: ago(86400 * 2),
+    }),
+    state: {
+      schema: 'opendan.goal_state/1',
+      goal_id: GOAL_ARCHIVED,
+      rev: 4,
+      epoch: 1,
+      goal_revision_seen: 1,
+      last_activation: { epoch: 1, seq: 1, at_ms: ago(86400 * 6), reasons: [{ kind: 'created', key: `create:${GOAL_ARCHIVED}` }], outcome: 'completed', decision: 'created_work', summary: 'Started the rename Work.' },
+      distance: { text: '212 photos renamed, 3 skipped.', observed_at_ms: ago(86400 * 2) },
+      recent_works: [{ sid: WORK_PENDING, outcome: 'succeeded', one_line_status: 'Renamed 212 photos, 3 skipped', absorbed_in: [1, 1] }],
+      usage: { period_start_ms: ago(86400 * 2), tokens: 2600, activations: 1, works: 1, work_tokens: 9800 },
+      last_error: { kind: 'llm', message: 'provider returned 529 (overloaded) after 3 attempts', at_ms: ago(86400 * 4) },
+      updated_at_ms: ago(86400 * 2),
+    },
+    schedule: { schema: 'opendan.goal_schedule/1', goal_id: GOAL_ARCHIVED, backend: 'local', start_posted_epoch: 1, updated_at_ms: ago(86400 * 6) },
+    activations: [
+      activation(GOAL_ARCHIVED, 1, 1, ago(86400 * 6), { reasons: [{ kind: 'created', key: `create:${GOAL_ARCHIVED}` }], decision: 'created_work', summary: 'Started the rename Work.', works_created: [WORK_PENDING], cost: { runs: 1, total_tokens: 2600 } }),
+    ],
+    changes: [
+      change(1, ago(86400 * 6), 'created', OWNER, 'owner', { revision: 1, epoch: 1 }),
+      change(2, ago(86400 * 2), 'status', OWNER, 'owner', { reason: 'Superseded by the Photos workspace', detail: { status: 'archived' } }),
+    ],
+  }
+
+  return [builtin, tidy, archived]
 }
 
 const delay = () => new Promise((resolve) => window.setTimeout(resolve, 60))
 
 export const createMockDataModel = (): OpenDanDataModel => {
   const fx = buildFixtures()
+  const goals = buildGoalFixtures()
+  const goalEntries: RegistryEntry[] = goals.flatMap((g) =>
+    (g.def.epochs ?? []).map((ep) =>
+      entry(ep.sid, 'goal', 'goal', g.def.title, {
+        run_state: ep.end ? 'finished' : 'waiting',
+        outcome: ep.end ? 'succeeded' : undefined,
+        waiting_for: ep.end ? undefined : 'event',
+        one_line_status: ep.end ? `Epoch ${ep.epoch} ended: ${ep.end}` : `Epoch ${ep.epoch}: waiting for the next activation`,
+        updated_at_ms: g.def.updated_at_ms,
+      }, { created_by: { principal: g.def.created_by.principal, via: g.def.created_by.via }, input_queue: `opendan/${ep.sid}/input` }),
+    ),
+  )
+  const findGoal = (goalId: string): GoalFixture => {
+    const found = goals.find((g) => g.def.goal_id === goalId)
+    if (!found) throw new OpenDanError('not_found', `goal ${goalId} is not registered`)
+    return found
+  }
+  const goalChange = (g: GoalFixture, kind: string, extra: Partial<GoalChange>) => {
+    g.def.change_seq = (g.def.change_seq ?? 0) + 1
+    g.changes.push(change(g.def.change_seq, Date.now(), kind, OWNER, 'owner', extra))
+    g.def.updated_at_ms = Date.now()
+  }
+  const openEpoch = (g: GoalFixture, start: 'reopened' | 'restarted', reason: string, keep: 'all' | 'facts') => {
+    const previous = g.def.epochs?.find((ep) => ep.epoch === g.def.session.epoch)
+    if (previous && !previous.end) Object.assign(previous, { ended_at_ms: Date.now(), end: 'restarted', end_reason: reason })
+    const epoch = g.def.session.epoch + 1
+    const sid = `${g.def.goal_id}-e${epoch}`
+    g.def.session = { epoch, sid }
+    ;(g.def.epochs ??= []).push({ epoch, sid, started_at_ms: Date.now(), start, keep, reason })
+    g.def.status = 'active'
+    g.def.status_changed_at_ms = Date.now()
+    g.def.status_reason = reason
+    g.state.epoch = epoch
+    g.state.rev += 1
+    g.state.updated_at_ms = Date.now()
+    if (keep === 'facts') Object.assign(g.state, { distance: undefined, pending: undefined, questions: undefined, last_activation: undefined })
+    if (g.schedule.gate) g.schedule.gate.status = 'unknown'
+    goalEntries.push(entry(sid, 'goal', 'goal', g.def.title, { run_state: 'waiting', waiting_for: 'event', one_line_status: `Epoch ${epoch}: waiting for the next activation` }, { input_queue: `opendan/${sid}/input` }))
+    goalChange(g, start, { epoch, reason })
+    return structuredClone(g.def)
+  }
   const workspaces: KnownWorkspace[] = [
     {
       version: 1, runtime_host: 'mock-host',
@@ -381,7 +673,7 @@ export const createMockDataModel = (): OpenDanDataModel => {
   let worklogSeq = 1000
 
   const find = (sid: string): RegistryEntry => {
-    const found = fx.entries.find((e) => e.session_id === sid)
+    const found = fx.entries.find((e) => e.session_id === sid) ?? goalEntries.find((e) => e.session_id === sid)
     if (!found) throw new OpenDanError('not_found', `session ${sid} is not registered`)
     return found
   }
@@ -423,7 +715,7 @@ export const createMockDataModel = (): OpenDanDataModel => {
           { name: 'webui', enabled: true, running: true },
           { name: 'ui', enabled: true, running: true, note: '1 inbox' },
           { name: 'self_check', enabled: true, running: false, note: 'next run in 6h' },
-          { name: 'self_improve', enabled: false, running: false },
+          { name: 'memory_maintenance', enabled: true, running: true, note: 'built-in goal seeded by the goals module; decision pre-check off' },
         ],
         hosted: structuredClone(fx.hostedList),
         ui: {
@@ -581,22 +873,6 @@ export const createMockDataModel = (): OpenDanDataModel => {
       return { index: inputIndex, key: `msg:mock-${inputIndex}` }
     },
 
-    perception: async () => {
-      await delay()
-      return {
-        cursor: { offsets: { [UI]: 2048, [WORK_PENDING]: 512 }, updated_at_ms: ago(1200) },
-        backlog: [
-          { session_id: WORK_PENDING, from_offset: 512, to_offset: 1388 },
-          { session_id: WORK_FAILED, from_offset: 0, to_offset: 241 },
-        ],
-      }
-    },
-
-    perceptionRecords: async (item) => {
-      await delay()
-      return fx.perception.filter((r) => r.session_id === item.session_id)
-    },
-
     artifacts: async () => {
       await delay()
       return [
@@ -650,6 +926,108 @@ export const createMockDataModel = (): OpenDanDataModel => {
         .filter((h) => tags.length === 0 || h.tags.some((t) => tags.includes(t)))
         .slice(0, maxHints)
         .map((h) => ({ id: h.id, time: h.time, sentence: h.sentence, kind: h.kind }))
+    },
+
+    goals: async () => {
+      await delay()
+      return structuredClone(goals.map((g) => g.def))
+    },
+
+    goal: async (goalId) => {
+      await delay()
+      const g = goals.find((x) => x.def.goal_id === goalId)
+      return g ? structuredClone(g.def) : null
+    },
+
+    goalRevision: async (goalId, revision) => {
+      await delay()
+      const g = goals.find((x) => x.def.goal_id === goalId)
+      if (!g || revision > g.def.revision || revision < 1) return null
+      return structuredClone({ ...g.def, revision, constraints: revision === g.def.revision ? g.def.constraints : (g.def.constraints ?? []).slice(0, -1) })
+    },
+
+    goalChanges: async (goalId, limit = 0) => {
+      await delay()
+      const g = findGoal(goalId)
+      return structuredClone(limit ? g.changes.slice(-limit) : g.changes)
+    },
+
+    goalState: async (goalId) => {
+      await delay()
+      const g = goals.find((x) => x.def.goal_id === goalId)
+      return g ? structuredClone(g.state) : null
+    },
+
+    goalSchedule: async (goalId) => {
+      await delay()
+      const g = goals.find((x) => x.def.goal_id === goalId)
+      return g ? structuredClone(g.schedule) : null
+    },
+
+    goalActivations: async (goalId, epoch, limit = 0) => {
+      await delay()
+      const g = findGoal(goalId)
+      const all = g.activations.filter((a) => epoch == null || a.epoch === epoch)
+      return structuredClone(limit ? all.slice(-limit) : all)
+    },
+
+    activateGoal: async (goalId, reason) => {
+      await delay()
+      const g = findGoal(goalId)
+      if (g.def.status === 'archived' || g.def.status === 'achieved') throw new OpenDanError('invalid_argument', `goal ${goalId} is ${g.def.status}`)
+      const epoch = g.def.session.epoch
+      const seq = Math.max(0, ...g.activations.filter((a) => a.epoch === epoch).map((a) => a.seq)) + 1
+      const note = reason || `activated by ${OWNER}`
+      const started = Date.now()
+      const reasons: GoalActivation['reasons'] = [{ kind: 'manual', key: `manual:${goalId}:${epoch}:${seq}`, note }]
+      g.activations.push(activation(goalId, epoch, seq, started, {
+        reasons, decision: 'no_action', summary: `Manual activation: looked, nothing to do (${note}).`, cost: { runs: 1, total_tokens: 1900 },
+      }))
+      g.state.last_activation = { epoch, seq, at_ms: started, reasons, outcome: 'completed', decision: 'no_action', summary: `Manual activation: looked, nothing to do (${note}).` }
+      g.state.usage.tokens = (g.state.usage.tokens ?? 0) + 1900
+      g.state.usage.activations = (g.state.usage.activations ?? 0) + 1
+      g.state.rev += 1
+      g.state.updated_at_ms = started
+      if (g.schedule.gate) Object.assign(g.schedule.gate, { last_run_at_ms: started, last_checked_at_ms: started })
+      inputIndex += 1
+      return { index: inputIndex, key: `goal:${goalId}:activate:${seq}` }
+    },
+
+    setGoalStatus: async (goalId, status, reason) => {
+      await delay()
+      const g = findGoal(goalId)
+      if (status === 'achieved') throw new OpenDanError('forbidden', 'achieved is reported by the Goal Session itself')
+      if (!(g.def.status === 'active' || g.def.status === 'paused')) throw new OpenDanError('invalid_argument', `goal ${goalId} is ${g.def.status}`)
+      g.def.status = status
+      g.def.status_changed_at_ms = Date.now()
+      g.def.status_reason = reason
+      g.def.status_by = OWNER
+      if (g.schedule.gate) {
+        g.schedule.gate.status = status === 'paused' ? 'paused' : status === 'active' ? 'no_change' : 'disabled'
+        if (status === 'paused') g.schedule.gate.last_skip_reason = 'paused'
+      }
+      if (status === 'paused') (g.schedule.skipped ??= []).push({ slot: slotNow, at_ms: Date.now(), reason: 'paused' })
+      if (status === 'archived') {
+        const current = g.def.epochs?.find((ep) => ep.epoch === g.def.session.epoch)
+        if (current) Object.assign(current, { ended_at_ms: Date.now(), end: 'archived', end_reason: reason })
+        goalChange(g, 'epoch_ended', { epoch: g.def.session.epoch, reason })
+      }
+      goalChange(g, 'status', { reason, detail: { status } })
+      return structuredClone(g.def)
+    },
+
+    reopenGoal: async (goalId, reason, freshState = false) => {
+      await delay()
+      const g = findGoal(goalId)
+      if (!(g.def.status === 'archived' || g.def.status === 'achieved')) throw new OpenDanError('invalid_argument', `goal ${goalId} is ${g.def.status}: only an archived or achieved goal reopens`)
+      return openEpoch(g, 'reopened', reason, freshState ? 'facts' : 'all')
+    },
+
+    restartGoal: async (goalId, reason, carryState = false) => {
+      await delay()
+      const g = findGoal(goalId)
+      if (!(g.def.status === 'active' || g.def.status === 'paused')) throw new OpenDanError('invalid_argument', `goal ${goalId} is ${g.def.status}: only a live goal restarts`)
+      return openEpoch(g, 'restarted', reason, carryState ? 'all' : 'facts')
     },
   }
 }

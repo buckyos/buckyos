@@ -252,15 +252,6 @@ fn session_source() -> String {
     "session".to_string()
 }
 
-/// `state/perception/.cursor.json` — consolidation offsets per session file.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct PerceptionCursor {
-    #[serde(default)]
-    pub offsets: std::collections::BTreeMap<String, u64>,
-    #[serde(default)]
-    pub updated_at_ms: u64,
-}
-
 /// `state/artifacts/<aid>/artifact.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ArtifactHead {

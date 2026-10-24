@@ -41,6 +41,8 @@ pub fn classify_effect(tool: &str) -> &'static str {
         // tracked by its own run.
         TOOL_CALL_BEHAVIOR => "read_only",
         TOOL_REPORT => "idempotent",
+        super::consolidation::TOOL_BEGIN => "read_only",
+        super::consolidation::TOOL_COMMIT => "idempotent",
         "write_file" | "edit_file" => "side_effect",
         t if t == TOOL_SHELL => "unknown",
         _ => "unknown",
@@ -134,6 +136,16 @@ impl ToolManager for SessionToolManager {
         *self.current_tool.lock().expect("current tool") = Some(call.name.clone());
         if call.name == TOOL_REPORT && self.inner.has_tool(TOOL_REPORT) {
             return super::reports::call(&self.shared, &self.run, &call)
+                .await
+                .map_err(|e| ToolDispatchError::not_started(e.to_string()));
+        }
+        // The consolidation tools exist only for the Goal Session whose Goal
+        // has the capability; anywhere else they are unknown tools.
+        if super::consolidation::is_tool(&call.name)
+            && super::consolidation::caps(&self.shared).consolidation
+            && self.inner.has_tool(&call.name)
+        {
+            return super::consolidation::call(&self.shared, &self.run, &call)
                 .await
                 .map_err(|e| ToolDispatchError::not_started(e.to_string()));
         }

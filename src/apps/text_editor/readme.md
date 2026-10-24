@@ -1184,7 +1184,7 @@ Text Editor 推动的全部系统改动。每项都是通用能力，任何第�
 
 P0 的应用、共享 SDK、系统投影和 Desktop 接入已落地。实现入口为 `src/main.tsx`、`src/model/workspace.ts`、`src/fs/`、`src/editor/` 与 `src/ui/`。状态机区分磁盘内容、编辑内容、服务端缓冲及本地预写；恢复、丢弃和覆盖均先存档，存档失败保留原状态。大文件按 4 MiB 降级、16 MiB 拒绝；旧编码只读，显式转换后保存为 UTF-8。
 
-本次变更跨三个同级仓库：`buckyos`、`buckyos-websdk`（`nfsp` / `content` / `app-frame`、设置路径、PIKG 字段）和 `buckyos-devkit`（使用构建入口指定的 CLI）。需要配套使用。前端 pnpm hook 优先链接 `BUCKYOS_SDK_TOOL_SOURCE` 或同级 SDK 源码，发布依赖仍为 Git `main`。先构建 SDK，再构建消费方；SDK 构建会清理 `dist`，不要与消费方检查并行。
+本次变更跨三个同级仓库：`buckyos`、`buckyos-websdk`（`nfsp` / `content` / `app-frame`、设置路径、PIKG 字段）和 `buckyos-devkit`（使用构建入口指定的 CLI）。需要配套使用。每次 `pnpm build` 先刷新 SDK 依赖；前端 pnpm hook 优先链接 `BUCKYOS_SDK_TOOL_SOURCE` 或同级 SDK 源码，无本地源码时更新到 Git `main` 的最新提交。先构建 SDK，再构建消费方；SDK 构建会清理 `dist`，不要与消费方检查并行。
 
 ```bash
 # buckyos-websdk/

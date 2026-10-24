@@ -12,10 +12,10 @@
 |---|---|---|---|
 | `session:<sid>` | `<sid>/.opendan_agent_session/lease.json` | 一次 drive 全程 | 推进权；持有者身份必须等于 `session.driver.principal` |
 | `run:<run_id>` | `<sid>/.opendan_agent_session/runs/<run_id>/.lock` | 执行该 run 期间 | run 目录的执行互斥；libopendan 与接手的 xllm 共用 |
-| `self_improve` | `<agent_root>/.locks/self_improve.lease` | 一个 self_improve session 的 drive 全程 | 全局只有一个认知整理 |
+| `memory_consolidation` | `<agent_root>/.locks/memory_consolidation.lease` | 带 `memory_consolidation` 能力的 Goal Session（内置整理 Goal）的 drive 全程 | 全局只有一个认知整理；Memory 提交带它的 epoch 作 fencing token |
 | `artifact:<aid>` | `<agent_root>/.locks/artifact/<aid>.lease` | 短临界区 | 串行化产物 head 与版本有效性变更 |
 
-锁顺序固定：session → run → artifact；self_improve 在 session 之后获取。
+锁顺序固定：session → run → artifact；memory_consolidation 在 session 之后获取。
 
 ## 3. 锁文件内容
 
@@ -67,7 +67,7 @@ xllm 接手未结束的 run 时执行同样的检查（`XllmRun::resume`：先�
 | session 锁（驱动者） | `.opendan_agent_session/` 除执行中的 run 目录外的全部；`.runtime/`；产物；绑定的 workspace；登记表中本 session 条目（status、location）；`state/perception/<sid>.jsonl`；输入源确认 |
 | run 锁 | `runs/<run_id>/`（libopendan 执行时同时持有 session 与 run 锁；接手的 xllm 只持 run 锁，只写 run 目录） |
 | 无需锁 | 向 session 的 kmsg 队列投递 |
-| self_improve 锁 | `state/perception/.cursor.json`、`state/perception/.consolidations.jsonl`（`memory/` 与 `notebook/` 由 agent_tool 自身的锁串行） |
+| memory_consolidation 锁 | Memory Graph 的整理提交（`memory/.meta/occasions.jsonl` 的 consolidation occasion）与已处置感知正文的清理（`memory/` 自身的写锁仍串行单次写） |
 | artifact 锁（改自己的版本时还须持 session 锁） | `state/artifacts/<aid>/artifact.json` 与版本有效性变更 |
 
 共享 AgentRuntime 在恢复前核验保存目标；remote_ssh 在目标 Linux 上核验执行标记、boot_id 与进程身份，无法证明已停止则 RecoveryBlocked。没有持久结果的调用保持结果未知，不重放副作用。SSH 暂用于独立 xllm；Session 的远端 helper 未部署时明确报 Capability。

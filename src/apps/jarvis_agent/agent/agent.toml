@@ -38,9 +38,6 @@ idle_unload_secs = 900
 [loader.self_check]
 enabled = false
 
-[loader.self_improve]
-enabled = false
-
 # Goals of the agent: the Loader creates one Goal Session per goal and epoch
 # and offers scheduled run opportunities (local schedule).
 [loader.goals]
@@ -82,3 +79,14 @@ max_runs = 6
 [session.goal.budget.period]
 window_secs = 86400
 max_works = 24
+
+# The agent's default Memory maintenance Goal (lifecycle maintain, built in,
+# key `builtin:memory_maintenance`): consolidates perceptions into
+# cognitions every 30 minutes when there is material (a 2 hour baseline
+# check otherwise). Its own budget is set when it is seeded; `decision`
+# is the optional model pre-check (off until the AICC decision provider is
+# wired).
+[session.goal.maintenance]
+enabled = true
+decision = "off"
+behavior = "memory_maintenance"

@@ -223,15 +223,6 @@ pub async fn serve_call(
             Ok(sid) => agent.perception().last_seq(&sid).await.and_then(out),
             Err(e) => Err(e),
         },
-        "perception.cursor" => agent.perception().cursor().await.and_then(out),
-        "perception.backlog" => match arg::<PerceptionCursor>(params, "cursor") {
-            Ok(c) => agent.perception().backlog(&c).await.and_then(out),
-            Err(e) => Err(e),
-        },
-        "perception.read" => match arg::<BacklogItem>(params, "item") {
-            Ok(i) => agent.perception().read(&i).await.and_then(out),
-            Err(e) => Err(e),
-        },
         "cognition.recall_hints" => match arg::<RecallQuery>(params, "query") {
             Ok(q) => agent.cognition().recall_hints(&q).await.and_then(out),
             Err(e) => Err(e),
@@ -374,6 +365,9 @@ pub async fn serve_call(
             (Err(e), _) | (_, Err(e)) => Err(e),
         },
         "goals.create" => match (arg::<GoalCreate>(params, "request"), goal_caller(who, params)) {
+            (Ok(req), _) if req.extensions.contains_key(OPENDAN_EXTENSION) => Err(OpenDanError::Forbidden(
+                format!("extensions.{OPENDAN_EXTENSION} is set by the host's seeding, not over kRPC"),
+            )),
             (Ok(req), Ok(c)) => agent.goals().create(&req, &c).await.and_then(out),
             (Err(e), _) | (_, Err(e)) => Err(e),
         },
@@ -382,6 +376,11 @@ pub async fn serve_call(
             arg::<GoalRevise>(params, "request"),
             goal_caller(who, params),
         ) {
+            (_, Ok(req), _) if req.extensions.as_ref().is_some_and(|e| e.contains_key(OPENDAN_EXTENSION)) => {
+                Err(OpenDanError::Forbidden(format!(
+                    "extensions.{OPENDAN_EXTENSION} is changed by the host's seeding, not over kRPC"
+                )))
+            }
             (Ok(id), Ok(req), Ok(c)) => agent.goals().revise(&id, &req, &c).await.and_then(out),
             (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Err(e),
         },
@@ -634,18 +633,6 @@ impl Perception for KrpcAgentStateClient {
     async fn last_seq(&self, sid: &str) -> Result<u64> {
         self.call("perception.last_seq", json!({ "sid": sid })).await
     }
-    async fn cursor(&self) -> Result<PerceptionCursor> {
-        self.call("perception.cursor", json!({})).await
-    }
-    async fn backlog(&self, cursor: &PerceptionCursor) -> Result<Backlog> {
-        self.call("perception.backlog", json!({ "cursor": cursor })).await
-    }
-    async fn read(&self, item: &BacklogItem) -> Result<Vec<PerceptionRecord>> {
-        self.call("perception.read", json!({ "item": item })).await
-    }
-    async fn commit_cursor(&self, _lease: &Lease, _cursor: &PerceptionCursor) -> Result<()> {
-        Err(driver_only("perception.commit_cursor"))
-    }
 }
 
 #[async_trait]
@@ -655,14 +642,6 @@ impl Cognition for KrpcAgentStateClient {
     }
     async fn notebook_append(&self, note: &NotebookNote, _who: &str) -> Result<()> {
         self.call("cognition.notebook_append", json!({ "note": note })).await
-    }
-    async fn commit_consolidation(
-        &self,
-        _lease: &Lease,
-        _batch: &ConsolidationBatch,
-        _upto: &PerceptionCursor,
-    ) -> Result<()> {
-        Err(driver_only("commit_consolidation"))
     }
 }
 

@@ -5,7 +5,8 @@
   "main": "index.js",
   "scripts": {
     "dev": "vite",
-    "build": "vite build"
+    "build": "pnpm --dir .. run update:sdk && pnpm run build:bundle",
+    "build:bundle": "vite build"
   },
   "keywords": [],
   "author": "",

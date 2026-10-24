@@ -70,8 +70,6 @@ pub struct LoaderSection {
     #[serde(default)]
     pub self_check: ModuleSwitch,
     #[serde(default)]
-    pub self_improve: ModuleSwitch,
-    #[serde(default)]
     pub goals: GoalsSwitch,
 }
 
@@ -92,7 +90,6 @@ impl Default for LoaderSection {
             ui: Vec::new(),
             placeholder_delay_ms: None,
             self_check: ModuleSwitch::default(),
-            self_improve: ModuleSwitch::default(),
             goals: GoalsSwitch::default(),
         }
     }
@@ -209,7 +206,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cfg = AgentConfig::load(dir.path()).unwrap();
         assert!(cfg.loader.ui.is_empty() && cfg.loader.agent_state_service);
-        assert!(!cfg.loader.self_check.enabled && !cfg.loader.self_improve.enabled);
+        assert!(!cfg.loader.self_check.enabled);
         assert!(cfg.loader.goals.enabled);
     }
 
@@ -239,7 +236,19 @@ max_total_tokens = 1000
         assert_eq!(d.min_interval_secs, 120);
         assert_eq!(d.budget.activation.max_total_tokens, Some(1000));
         assert_eq!(d.budget.activation.max_runs, Some(8), "built-in default kept");
+        assert!(!d.maintenance.enabled, "the default consolidation goal is opt-in per template");
         assert!(load("[session.goal.budget]\nnope = 1\n").is_err());
+        std::fs::write(
+            dir.path().join("agent.toml"),
+            "[session.goal.maintenance]\nenabled = true\ndecision = \"off\"\nbehavior = \"memory_maintenance\"\n",
+        )
+        .unwrap();
+        let d = libopendan::goal::defaults(Some(dir.path()), "goal");
+        assert!(d.maintenance.enabled);
+        assert_eq!(d.maintenance.decision, "off");
+        assert_eq!(d.maintenance.behavior.as_deref(), Some("memory_maintenance"));
+        assert!(load("[session.goal.maintenance]\ndecision = \"maybe\"\n").is_err());
+        assert!(load("[session.goal.maintenance]\nnope = 1\n").is_err());
     }
 
     #[test]

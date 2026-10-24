@@ -4,14 +4,13 @@
 //! <agent_root>/
 //!   state/sessions/<sid>.json            registry
 //!   state/perception/<sid>.jsonl         perception
-//!   state/perception/.cursor.json        consolidation cursor
 //!   state/artifacts/<aid>/artifact.json  artifact head
 //!   state/artifacts/<aid>/versions/v-<sid>.json
 //!   state/goals/<goal_id>/               goal, state, activations, schedule
 //!   state/workspaces/<wid>.json          workspace registrations
 //!   state/runtimes/<runtime_id>.json     runtime registrations
 //!   memory/ notebook/ attention_signals/ cognition (agent_tool)
-//!   .locks/self_improve.lease  .locks/artifact/<aid>.lease
+//!   .locks/memory_consolidation.lease  .locks/artifact/<aid>.lease
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -65,10 +64,6 @@ impl AgentLayout {
         self.perception_dir().join(format!("{sid}.jsonl"))
     }
 
-    pub fn perception_cursor(&self) -> PathBuf {
-        self.perception_dir().join(".cursor.json")
-    }
-
     pub fn artifacts_dir(&self) -> PathBuf {
         self.root.join("state").join("artifacts")
     }
@@ -120,8 +115,10 @@ impl AgentLayout {
             super::workspaces::validate_workspace_id(wid)?;
             return Ok(self.locks_dir().join("workspace").join(format!("{wid}.lease")));
         }
-        if resource == "self_improve" {
-            return Ok(self.locks_dir().join("self_improve.lease"));
+        if resource == crate::memory::CONSOLIDATION_LEASE {
+            return Ok(self
+                .locks_dir()
+                .join(format!("{}.lease", crate::memory::CONSOLIDATION_LEASE)));
         }
         if let Some(aid) = resource.strip_prefix("artifact:") {
             crate::ids::validate_session_id(aid)

@@ -375,17 +375,23 @@ impl Loader {
             config.loader.goals.enabled,
             config.loader.goals.enabled.then_some("schedule backend: local"),
         );
-        for (name, switch) in [
-            ("self_check", &config.loader.self_check),
-            ("self_improve", &config.loader.self_improve),
-        ] {
-            module(
-                name,
-                switch.enabled,
-                false,
-                switch.enabled.then_some("not available in this version"),
-            );
-        }
+        module(
+            "self_check",
+            config.loader.self_check.enabled,
+            false,
+            config.loader.self_check.enabled.then_some("not available in this version"),
+        );
+        let maintenance = libopendan::goal::defaults(Some(&env.agent_root), libopendan::goal::GOAL_CLASS).maintenance;
+        module(
+            "memory_maintenance",
+            maintenance.enabled,
+            maintenance.enabled && config.loader.goals.enabled,
+            Some(if maintenance.enabled {
+                "built-in goal seeded by the goals module; decision pre-check off"
+            } else {
+                "[session.goal.maintenance] enabled = false"
+            }),
+        );
 
         if config.loader.agent_state_service || config.loader.webui {
             let runner = Runner::new(env.port);

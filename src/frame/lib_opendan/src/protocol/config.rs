@@ -23,7 +23,6 @@ pub const SESSION_CONFIG_SCHEMA: &str = "opendan.session_config/7";
 pub enum SessionKind {
     Ui,
     Work,
-    SelfImprove,
     SelfCheck,
     /// The context of a Goal (`state/goals/<goal_id>`): one per `(goal,
     /// epoch)`, created by the host, never a sub session.
@@ -35,7 +34,6 @@ impl SessionKind {
         match self {
             SessionKind::Ui => "ui",
             SessionKind::Work => "work",
-            SessionKind::SelfImprove => "self_improve",
             SessionKind::SelfCheck => "self_check",
             SessionKind::Goal => "goal",
         }
@@ -46,7 +44,6 @@ impl SessionKind {
         match self {
             SessionKind::Ui => "ui",
             SessionKind::Work => "work",
-            SessionKind::SelfImprove => "si",
             SessionKind::SelfCheck => "sc",
             SessionKind::Goal => "goal",
         }

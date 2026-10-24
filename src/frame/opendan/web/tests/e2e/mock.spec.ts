@@ -101,10 +101,7 @@ test('post sends a message after confirmation', async ({ page }) => {
 
 test('agent state page shows perception, artifacts, behaviors, identity and hints', async ({ page }) => {
   const errors = await open(page, 'agent')
-  const perception = page.getByTestId('agent-perception')
-  await expect(perception).toContainText('512 → 1388')
-  await perception.getByRole('button', { name: 'Records' }).first().click()
-  await expect(perception).toContainText('Renamed 212 photos')
+  await expect(page.getByTestId('agent-perception')).toContainText('memory maintenance goal')
 
   const artifacts = page.getByTestId('agent-artifacts')
   await artifacts.getByRole('button', { name: 'Versions' }).first().click()

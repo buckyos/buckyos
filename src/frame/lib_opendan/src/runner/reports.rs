@@ -215,6 +215,7 @@ pub(super) async fn submit(
         match &args.result {
             Some(v) => {
                 GoalResult::parse(v).map_err(invalid)?;
+                super::consolidation::check_final_report(sh, v).await?;
             }
             None => {
                 return Err(invalid(

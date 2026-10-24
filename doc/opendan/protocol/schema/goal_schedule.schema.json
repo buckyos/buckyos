@@ -1,6 +1,167 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
+    "MaintenanceGate": {
+      "description": "Deterministic check water marks of the consolidation Goal (§6), kept by the host in `schedule.json`: \"checked\", as opposed to \"consolidated\" (`GoalState.maintenance`).",
+      "properties": {
+        "backoff_level": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "backoff_until_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "due_reviews": {
+          "default": 0,
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "last_baseline_slot": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "last_checked_at_ms": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "last_checked_slot": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "last_error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_full_check_at_ms": {
+          "default": 0,
+          "description": "Last time the full deterministic check (`pending_work`) ran.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "last_inputs_digest": {
+          "description": "Memory snapshot token the full check saw.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_run_at_ms": {
+          "default": 0,
+          "description": "Last run opportunity the gate let through.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "last_run_slot": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "last_skip_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "next_review_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pending": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MaintenancePending"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "default": "",
+          "description": "`no_work | no_change | active | mechanical | paused | disabled | unknown | backoff | period_budget`.",
+          "type": "string"
+        },
+        "unfinished_receipts": {
+          "default": 0,
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "MaintenancePending": {
+      "description": "Summary of Memory's pending work as the gate saw it last.",
+      "properties": {
+        "due": {
+          "default": 0,
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "new": {
+          "default": 0,
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "next_deadline": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "oldest_at_ms": {
+          "description": "Oldest material not disposed yet.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "retry_cleanup": {
+          "default": 0,
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "waiting": {
+          "default": 0,
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "PendingFire": {
       "description": "A scheduled fire written before it is posted (re-posted with the same key after a crash).",
       "properties": {
@@ -33,7 +194,7 @@
           "type": "integer"
         },
         "reason": {
-          "description": "`paused | period_budget | min_interval | not_active`.",
+          "description": "`paused | period_budget | min_interval | not_active`, or a gate reason of the consolidation Goal (`no_work | no_change | …`).",
           "type": "string"
         },
         "slot": {
@@ -64,6 +225,17 @@
         "integer",
         "null"
       ]
+    },
+    "gate": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/MaintenanceGate"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The consolidation Goal's check water marks (§6)."
     },
     "goal_id": {
       "type": "string"

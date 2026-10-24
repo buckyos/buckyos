@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 /// `.locks/*.lease`). Rewritten in place by the holder; never replaced.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct LockInfo {
-    /// `session:<sid> | run:<run_id> | self_improve | artifact:<aid>`.
+    /// `session:<sid> | run:<run_id> | memory_consolidation | artifact:<aid>`.
     pub resource: String,
     /// +1 on every successful acquisition.
     pub epoch: u64,

@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
-use agent_tool::agent_memory::{FaultPoint, GraphView, ObservationKind};
+use agent_tool::agent_memory::{FaultPoint, GraphView, ObservationKind, Stability};
 use chrono::{DateTime, FixedOffset, Utc};
 use libopendan::lock::{Acquire, Lease};
 use libopendan::memory::preview::{render_changes, render_topic, Names};
@@ -608,7 +608,7 @@ pub struct SimSi {
 impl SimSi {
     pub fn begin(&self, host: &mut Host, limit: usize) -> MemoryResult<Batch> {
         let c = host.memory.consolidator(&self.lease, &self.sid)?;
-        let b = c.begin(&BatchOptions { limit })?;
+        let b = c.begin(&BatchOptions { limit, max_context: 0 })?;
         host.trace.call(
             &format!("SI.begin_consolidation(limit={limit})"),
             &format!(
@@ -765,6 +765,9 @@ pub struct ItemSpec<'a> {
     pub weight: f64,
     pub confidence: f64,
     pub valid_until: Option<String>,
+    pub stability: Option<Stability>,
+    pub last_evidence_at: Option<String>,
+    pub review_at: Option<String>,
 }
 
 impl<'a> ItemSpec<'a> {
@@ -792,6 +795,9 @@ impl<'a> ItemSpec<'a> {
             weight: 0.6,
             confidence: 0.7,
             valid_until: None,
+            stability: None,
+            last_evidence_at: None,
+            review_at: None,
         }
     }
 
@@ -833,7 +839,14 @@ impl<'a> ItemSpec<'a> {
                 scope: Some(self.scope.clone()),
                 basis: Some(self.basis),
                 explicit: self.explicit,
+                stability: self.stability,
+                last_evidence_at: Some(
+                    self.last_evidence_at
+                        .clone()
+                        .unwrap_or_else(|| "2026-10-09T01:00:00Z".to_string()),
+                ),
                 valid_until: self.valid_until.clone(),
+                review_at: self.review_at.clone(),
                 review_when: self.review_when.iter().map(|s| s.to_string()).collect(),
                 tags: self.tags.iter().map(|s| s.to_string()).collect(),
             },

@@ -31,7 +31,6 @@ fn random_part() -> String {
 ///
 /// - `ui`: `ui-H("ui", agent_did, route_key)`
 /// - `work`: random, or `work-H("work", agent_did, creator, key)`
-/// - `self_improve`: random, or `si-H("self_improve", agent_did, creator, key)`
 /// - `self_check`: `sc-H("self_check", agent_did)`
 /// - `goal`: from the Goal only, [`goal_session_id`]
 pub fn derive_session_id(
@@ -55,7 +54,7 @@ pub fn derive_session_id(
                 "a goal session id derives from its goal and epoch (ids::goal_session_id); goal sessions are created by the host for a goal".into(),
             ))
         }
-        SessionKind::Work | SessionKind::SelfImprove => match idempotency_key {
+        SessionKind::Work => match idempotency_key {
             Some(key) => format!(
                 "{prefix}-{}",
                 h(&[kind.as_str(), agent_did, creator_principal, key])
@@ -191,10 +190,6 @@ mod tests {
         assert_ne!(a1, other_creator);
         assert_ne!(a1, other_owner);
         assert_eq!(a1.len(), "work-".len() + 64);
-        let si = derive_session_id(SessionKind::SelfImprove, "did:bns:a", "app:x@o", k, None)
-            .unwrap();
-        assert!(si.starts_with("si-"));
-        assert_ne!(si[3..], a1[5..]);
     }
 
     #[test]

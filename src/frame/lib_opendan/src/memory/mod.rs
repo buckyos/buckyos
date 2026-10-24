@@ -44,6 +44,7 @@ pub use agent_tool::agent_memory::{
 pub use changes::{Change, ChangeKind, ChangeSet};
 pub use consolidation::{
     Batch, BatchOptions, CleanupReport, Consolidator, Material, MaterialState, PendingWork,
+    ReviewDue, DEFAULT_BATCH_LIMIT, DEFAULT_CONTEXT_LIMIT,
 };
 pub use hint::{Budget, Hint, HintLayer, HintState};
 pub use observation::{
@@ -59,9 +60,10 @@ pub use recall::{MemoryQuery, QueryResult, RecallStatus, TopicQuery, TopicResult
 pub use snapshot::MemorySnapshot;
 pub use source::{SourceEventInfo, SourceEvents};
 
-/// The Agent-level lease a consolidation commit must hold (the existing
-/// self-improve lease, reused for the Memory consolidation Goal).
-pub const CONSOLIDATION_LEASE: &str = "self_improve";
+/// The Agent-level lease a consolidation commit must hold: the drive of the
+/// Goal Session whose Goal has the `memory_consolidation` capability takes
+/// it for the whole drive.
+pub const CONSOLIDATION_LEASE: &str = "memory_consolidation";
 /// Upper bound of a deferral window (§5.9; an evaluation start value).
 pub const DEFAULT_DEFERRAL_WINDOW: Duration = Duration::from_secs(72 * 3600);
 

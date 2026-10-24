@@ -178,6 +178,22 @@ string_enum!(
 );
 
 string_enum!(
+    /// Expected speed of change of a cognition (TODO §3.2): how fast its
+    /// recall fades without new evidence. Not confidence, not importance.
+    Stability {
+        Stable => "stable",
+        Contextual => "contextual",
+        Volatile => "volatile",
+    }
+);
+
+impl Default for Stability {
+    fn default() -> Self {
+        Stability::Contextual
+    }
+}
+
+string_enum!(
     DispositionOutcome {
         Absorbed => "absorbed",
         Duplicate => "duplicate",
@@ -611,9 +627,20 @@ pub struct MemoryItem {
     pub source_occasion: String,
     /// Occasion that created the logical item.
     pub first_occasion: String,
+    /// When this revision was written; never renews the evidence.
     pub noticed_at: String,
+    #[serde(default)]
+    pub stability: Stability,
+    /// When independent evidence last supported the current conclusion
+    /// (set by the consolidation; a missing value means the creation time).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_evidence_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub valid_until: Option<String>,
+    /// Structured date the cognition must be checked by (the host reads it;
+    /// `review_when` is free text for the model).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_at: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub review_when: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -653,6 +680,16 @@ impl MemoryItem {
         }
     }
 
+    /// `review_at` has passed (the cognition needs a check, not a change).
+    pub fn review_due(&self, now: chrono::DateTime<chrono::Utc>) -> bool {
+        self.status.recallable()
+            && self.review_at.as_deref().is_some_and(|t| {
+                chrono::DateTime::parse_from_rfc3339(t)
+                    .map(|t| t.with_timezone(&chrono::Utc) <= now)
+                    .unwrap_or(false)
+            })
+    }
+
     pub fn subjects(&self) -> &[String] {
         self.scope
             .as_ref()
@@ -679,8 +716,17 @@ pub struct ItemMeta {
     pub basis: Option<Basis>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub explicit: bool,
+    /// Default `contextual`; a revision without it keeps the item's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stability: Option<Stability>,
+    /// Required for a new consolidated cognition; a revision without it keeps
+    /// the item's (a revision is not new evidence).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_evidence_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub valid_until: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_at: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub review_when: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

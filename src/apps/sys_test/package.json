@@ -6,8 +6,9 @@
     "buckyos": "git+https://github.com/buckyos/buckyos-websdk#main"
   },
   "scripts": {
+    "update:sdk": "pnpm --recursive --include-workspace-root update --no-save buckyos",
     "check": "deno check main.ts && pnpm --filter ./web exec tsc --noEmit",
     "build:web": "pnpm --filter ./web run build",
-    "build": "pnpm run check && pnpm run build:web && node prepare.mjs"
+    "build": "pnpm run update:sdk && pnpm run check && pnpm --filter ./web run build:bundle && node prepare.mjs"
   }
 }

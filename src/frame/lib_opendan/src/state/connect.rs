@@ -178,18 +178,6 @@ impl Perception for ForwardingStateClient {
     async fn last_seq(&self, sid: &str) -> Result<u64> {
         self.inner.perception().last_seq(sid).await
     }
-    async fn cursor(&self) -> Result<PerceptionCursor> {
-        self.inner.perception().cursor().await
-    }
-    async fn backlog(&self, cursor: &PerceptionCursor) -> Result<Backlog> {
-        self.inner.perception().backlog(cursor).await
-    }
-    async fn read(&self, item: &BacklogItem) -> Result<Vec<PerceptionRecord>> {
-        self.inner.perception().read(item).await
-    }
-    async fn commit_cursor(&self, lease: &Lease, cursor: &PerceptionCursor) -> Result<()> {
-        self.inner.perception().commit_cursor(lease, cursor).await
-    }
 }
 
 #[async_trait]
@@ -199,17 +187,6 @@ impl Cognition for ForwardingStateClient {
     }
     async fn notebook_append(&self, note: &NotebookNote, who: &str) -> Result<()> {
         self.inner.cognition().notebook_append(note, who).await
-    }
-    async fn commit_consolidation(
-        &self,
-        lease: &Lease,
-        batch: &ConsolidationBatch,
-        upto: &PerceptionCursor,
-    ) -> Result<()> {
-        self.inner
-            .cognition()
-            .commit_consolidation(lease, batch, upto)
-            .await
     }
 }
 

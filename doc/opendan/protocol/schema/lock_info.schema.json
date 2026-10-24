@@ -61,7 +61,7 @@
       ]
     },
     "resource": {
-      "description": "`session:<sid> | run:<run_id> | self_improve | artifact:<aid>`.",
+      "description": "`session:<sid> | run:<run_id> | memory_consolidation | artifact:<aid>`.",
       "type": "string"
     }
   },

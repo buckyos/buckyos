@@ -35,7 +35,7 @@ pub use behaviors::{
     check_cmd_skill_names, freeze_behavior, freeze_config, parse_behavior, BehaviorCatalog,
     FsBehaviorCatalog, MemBehaviorCatalog, CMD_SKILLS_DIR, ROLE_SUPPLEMENT_FILE,
 };
-pub use cognition::{ConsolidationBatch, Hint, NotebookNote, RecallQuery};
+pub use cognition::{Hint, NotebookNote, RecallQuery};
 pub use connect::{
     connect, register_in_process, unregister_in_process, ConnectOptions, ForwardingStateClient,
     StateLocator, WithBehaviors, WithNotify, ENV_AGENT_ROOT, ENV_AGENT_STATE_URL,
@@ -46,7 +46,7 @@ pub use goals::{
     GoalStatusChange, GoalStore,
 };
 pub use krpc::{KrpcAgentStateClient, KrpcTransport, StateTransport};
-pub use perception::{run_digest, Backlog, BacklogItem, PERCEPTION_LOCK_TIMEOUT};
+pub use perception::{run_digest, PERCEPTION_LOCK_TIMEOUT};
 
 /// Session registry (session mgr, §6.2). The only entry point to discover
 /// every session of an agent, wherever its directory lives.
@@ -101,12 +101,6 @@ pub trait Perception: Send + Sync {
     /// stored one are skipped).
     async fn append(&self, lease: &Lease, sid: &str, records: Vec<PerceptionRecord>) -> Result<u64>;
     async fn last_seq(&self, sid: &str) -> Result<u64>;
-    async fn cursor(&self) -> Result<PerceptionCursor>;
-    /// Derived from file sizes only.
-    async fn backlog(&self, cursor: &PerceptionCursor) -> Result<Backlog>;
-    async fn read(&self, item: &BacklogItem) -> Result<Vec<PerceptionRecord>>;
-    /// Only the `self_improve` lease holder advances the cursor.
-    async fn commit_cursor(&self, lease: &Lease, cursor: &PerceptionCursor) -> Result<()>;
 }
 
 /// Cognition facade (§6.4) over `agent_tool` memory / notebook.
@@ -116,14 +110,6 @@ pub trait Cognition: Send + Sync {
     async fn recall_hints(&self, q: &RecallQuery) -> Result<Vec<Hint>>;
     /// Explicit declaration from an ordinary session ("remember this").
     async fn notebook_append(&self, note: &NotebookNote, who: &str) -> Result<()>;
-    /// `self_improve` lease holder only: commit a consolidation batch, then
-    /// advance the perception cursor (at-least-once consolidation).
-    async fn commit_consolidation(
-        &self,
-        lease: &Lease,
-        batch: &ConsolidationBatch,
-        upto: &PerceptionCursor,
-    ) -> Result<()>;
 }
 
 /// Artifact list (§6.5): registration and pointers only.

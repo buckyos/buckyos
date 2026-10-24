@@ -41,7 +41,7 @@ pub mod todos;
 pub mod xagent_cli;
 
 pub use api::{
-    create_self_improve_session, create_session, post_input, read_session, InputChannel,
+    create_session, post_input, read_session, InputChannel,
     SessionSpec, SessionView,
 };
 pub use error::{OpenDanError, RecoveryBlocked, Result};

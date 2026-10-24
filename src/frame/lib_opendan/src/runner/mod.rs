@@ -7,6 +7,7 @@ pub mod assembler;
 pub mod background;
 mod ask;
 mod children;
+mod consolidation;
 mod drive;
 pub mod input_view;
 mod flush;
@@ -55,6 +56,7 @@ pub use turn_task::{
     has_pending_turn_tasks, TurnTaskEnd, TurnTaskOpen, TurnTaskSink, TurnTaskStatus,
 };
 pub use history::{LlmSummarizer, Summarizer};
+pub use consolidation::{GoalCaps, TOOL_BEGIN as TOOL_MEMORY_CONSOLIDATION_BEGIN, TOOL_COMMIT as TOOL_MEMORY_CONSOLIDATION_COMMIT};
 pub use tools::classify_effect;
 pub(crate) use inputs::side_effects_from_worklog as side_effects_of;
 

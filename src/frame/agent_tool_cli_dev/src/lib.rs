@@ -2310,6 +2310,18 @@ async fn dispatch_agent_memory(
 
     let root = resolve_agent_memory_root(env, root_override);
 
+    // Cognitions change only through the memory_maintenance Goal's
+    // consolidation (its host tools, under the consolidation lease). The CLI
+    // writes are administrative: refused inside a Session shell.
+    if agent_memory_verb_writes(&verb) && !env.allow_dev_overrides() {
+        return agent_memory_error_output(
+            AgentMemoryError::ReadOnly(
+                "agent-memory writes are administrative and refused inside a session: cognitions change only through the memory_maintenance goal's consolidation (perceive with `agent-session ctl perceive`)".to_string(),
+            ),
+            quiet,
+        );
+    }
+
     // `set` form B reads content from stdin BEFORE spawn_blocking so we can
     // surface the same async stdin path as the rest of the CLI.
     let resolved_verb = match verb {
@@ -2394,6 +2406,18 @@ async fn read_stdin_content(stdin_override: Option<String>) -> Result<String, Ag
 /// Synchronous worker: opens the memory root and dispatches a single verb.
 /// The returned `String` is the verb's stdout body per §5 (or empty for
 /// verbs with no stdout output).
+/// Verbs that change the Graph or its root.
+fn agent_memory_verb_writes(verb: &AgentMemoryVerb) -> bool {
+    !matches!(
+        verb,
+        AgentMemoryVerb::Get { .. }
+            | AgentMemoryVerb::List { .. }
+            | AgentMemoryVerb::ListObjects { .. }
+            | AgentMemoryVerb::Load { .. }
+            | AgentMemoryVerb::Verify { repair: false }
+    )
+}
+
 fn run_agent_memory_blocking(
     root: &Path,
     verb: AgentMemoryVerb,
@@ -5694,7 +5718,7 @@ methods = ["x_call"]
         let root = temp.path().join("agent");
         let output = execute(
             vec![OsString::from(MAIN_BINARY_NAME), OsString::from("--help")],
-            test_env(root.clone(), root),
+            dev_test_env(root.clone(), root),
             None,
         )
         .await
@@ -5727,18 +5751,47 @@ methods = ["x_call"]
                 OsString::from("--reason"),
                 OsString::from("user conversation;c=1"),
             ],
-            test_env(root.clone(), cwd.clone()),
+            dev_test_env(root.clone(), cwd.clone()),
             None,
         )
         .await
         .expect("run agent-memory set");
         assert_eq!(set_output.exit_code, EXIT_SUCCESS);
 
-        let item_dir = root.join("memory").join("item");
+        let item_dir = cwd.join(".opendan-cli").join("memory").join("item");
         assert!(
             fs::metadata(&item_dir).await.is_ok(),
             "free hints are materialized as canonical item JSON files"
         );
+        // Inside a session shell the same write is refused: cognitions change
+        // only through the consolidation of the memory_maintenance goal.
+        let refused = execute(
+            vec![
+                OsString::from("/tmp/agent-memory"),
+                OsString::from("set"),
+                OsString::from("/user/preference/other"),
+                OsString::from("verbose"),
+                OsString::from("--reason"),
+                OsString::from("user conversation;c=2"),
+            ],
+            test_env(root.clone(), cwd.clone()),
+            None,
+        )
+        .await
+        .expect("run agent-memory set in a session");
+        assert_ne!(refused.exit_code, EXIT_SUCCESS);
+        assert!(refused.stderr.contains("administrative"), "{}", refused.stderr);
+        let readable = execute(
+            vec![
+                OsString::from("/tmp/agent-memory"),
+                OsString::from("list"),
+            ],
+            test_env(root.clone(), cwd.clone()),
+            None,
+        )
+        .await
+        .expect("run agent-memory list in a session");
+        assert_eq!(readable.exit_code, EXIT_SUCCESS);
 
         // get echoes content directly (no envelope, per §4.5)
         let get_output = execute(
@@ -5747,7 +5800,7 @@ methods = ["x_call"]
                 OsString::from("get"),
                 OsString::from("/user/preference/style"),
             ],
-            test_env(root.clone(), cwd.clone()),
+            dev_test_env(root.clone(), cwd.clone()),
             None,
         )
         .await
@@ -5764,7 +5817,7 @@ methods = ["x_call"]
                 OsString::from("--reason"),
                 OsString::from("user removed"),
             ],
-            test_env(root.clone(), cwd.clone()),
+            dev_test_env(root.clone(), cwd.clone()),
             None,
         )
         .await
@@ -5778,7 +5831,7 @@ methods = ["x_call"]
                 OsString::from("get"),
                 OsString::from("/user/preference/style"),
             ],
-            test_env(root.clone(), cwd),
+            dev_test_env(root.clone(), cwd),
             None,
         )
         .await
@@ -5804,7 +5857,7 @@ methods = ["x_call"]
                 OsString::from("--reason"),
                 OsString::from("user conversation;c=1"),
             ],
-            test_env(root.clone(), cwd),
+            dev_test_env(root.clone(), cwd),
             Some(body.to_string()),
         )
         .await
@@ -5817,7 +5870,7 @@ methods = ["x_call"]
                 OsString::from("get"),
                 OsString::from("/user/note"),
             ],
-            test_env(root.clone(), root.join("workspace")),
+            dev_test_env(root.clone(), root.join("workspace")),
             None,
         )
         .await
@@ -5844,7 +5897,7 @@ methods = ["x_call"]
                 OsString::from("--reason"),
                 OsString::from("user conversation;c=1"),
             ],
-            test_env(root.clone(), cwd.clone()),
+            dev_test_env(root.clone(), cwd.clone()),
             None,
         )
         .await
@@ -5856,7 +5909,7 @@ methods = ["x_call"]
                 OsString::from("load"),
                 OsString::from("dental"),
             ],
-            test_env(root.clone(), cwd),
+            dev_test_env(root.clone(), cwd),
             None,
         )
         .await
@@ -5888,7 +5941,7 @@ methods = ["x_call"]
                     OsString::from("--reason"),
                     OsString::from("r"),
                 ],
-                test_env(root.clone(), cwd.clone()),
+                dev_test_env(root.clone(), cwd.clone()),
                 None,
             )
             .await
@@ -5901,7 +5954,7 @@ methods = ["x_call"]
                 OsString::from("list"),
                 OsString::from("/user/"),
             ],
-            test_env(root.clone(), cwd),
+            dev_test_env(root.clone(), cwd),
             None,
         )
         .await

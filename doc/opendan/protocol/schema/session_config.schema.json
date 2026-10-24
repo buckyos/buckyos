@@ -642,8 +642,15 @@
           "type": "object"
         },
         {
-          "description": "A perception record of this session (the former `perception` input).",
+          "description": "A perception of this session (Memory §4.2): the model gives content and hints, the driver binds identity, subjects, source event, time and policy through `Memory::record_perception`.",
           "properties": {
+            "cites": {
+              "description": "Cognitions (`item_…@rev`) the observation derives from or corrects.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             "command": {
               "enum": [
                 "perceive"
@@ -654,11 +661,50 @@
               "default": "observation",
               "type": "string"
             },
+            "memory_intent": {
+              "description": "`explicit` when the user asked to remember.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "mentions": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             "objects": {
               "items": {
                 "type": "string"
               },
               "type": "array"
+            },
+            "occurred_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source": {
+              "description": "Input key of the message of this session the observation comes from (`None`: the observation itself is the event).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "subjects": {
+              "description": "Narrows the session's default subjects (must stay within its grants).",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "suggested_kind": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "summary": {
               "default": "",
@@ -1541,7 +1587,6 @@
           "enum": [
             "ui",
             "work",
-            "self_improve",
             "self_check"
           ],
           "type": "string"

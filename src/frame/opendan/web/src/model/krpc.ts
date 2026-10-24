@@ -1,6 +1,6 @@
 import { buckyos, getActiveSessionToken, RuntimeType } from 'buckyos'
 import { OpenDanError, type LoginState, type OpenDanDataModel } from './datamodel'
-import type { AgentProfile, LoaderStatus, PerceptionCursor } from './types'
+import type { AgentProfile, LoaderStatus } from './types'
 
 const SERVICE_URL = '/api/opendan'
 
@@ -140,12 +140,6 @@ export const createKrpcDataModel = (): OpenDanDataModel => {
     stopSession: (sid, reason) => call('session.stop', { sid, ...(reason ? { reason } : {}) }),
     decideSession: (sid, decision, note) => call('session.decide', { sid, decision, ...(note ? { note } : {}) }),
     postMessage: (sid, text) => call('session.post', { sid, text }),
-    perception: async () => {
-      const cursor = await call<PerceptionCursor>('perception.cursor')
-      const backlog = await call<{ items: [] }>('perception.backlog', { cursor })
-      return { cursor, backlog: backlog.items }
-    },
-    perceptionRecords: (item) => call('perception.read', { item }),
     artifacts: () => call('artifacts.list'),
     artifactVersions: (aid) => call('artifacts.versions', { aid }),
     behaviors: async () => {
@@ -158,5 +152,20 @@ export const createKrpcDataModel = (): OpenDanDataModel => {
     behavior: (name) => call('behaviors.get', { name }),
     identity: () => call('behaviors.identity'),
     recallHints: (tags, maxHints = 8) => call('cognition.recall_hints', { query: { tags, max_hints: maxHints } }),
+    goals: () => call('goals.list'),
+    goal: (goalId) => call('goals.get', { goal_id: goalId }),
+    goalRevision: (goalId, revision) => call('goals.revision', { goal_id: goalId, revision }),
+    goalChanges: (goalId, limit = 0) => call('goals.changes', { goal_id: goalId, limit }),
+    goalState: (goalId) => call('goals.state', { goal_id: goalId }),
+    goalSchedule: (goalId) => call('goals.schedule', { goal_id: goalId }),
+    goalActivations: (goalId, epoch, limit = 0) =>
+      call('goals.activations', { goal_id: goalId, query: { ...(epoch != null ? { epoch } : {}), limit } }),
+    activateGoal: (goalId, reason) => call('goals.activate', { goal_id: goalId, ...(reason ? { reason } : {}) }),
+    setGoalStatus: (goalId, status, reason) =>
+      call('goals.set_status', { goal_id: goalId, request: { status, ...(reason ? { reason } : {}) } }),
+    reopenGoal: (goalId, reason, freshState = false) =>
+      call('goals.reopen', { goal_id: goalId, request: { reason, fresh_state: freshState } }),
+    restartGoal: (goalId, reason, carryState = false) =>
+      call('goals.restart', { goal_id: goalId, request: { reason, carry_state: carryState } }),
   }
 }

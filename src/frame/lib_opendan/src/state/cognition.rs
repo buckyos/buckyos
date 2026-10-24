@@ -1,7 +1,7 @@
-//! Cognition facade (§6.4) used by the runner. The Memory component lives in
-//! [`crate::memory`]; this trait keeps the runner's existing calls until the
-//! Session integration stage (S) moves them to it. The Notebook path is the
-//! legacy caller list of TD-09 and is removed in that stage.
+//! Cognition facade (§6.4) used by the runner's `recall` and `note`
+//! commands. Cognitions are written only by the consolidation of the
+//! memory_maintenance Goal ([`crate::memory::Consolidator`]); the Notebook
+//! path is the legacy caller list of TD-09 (retired separately).
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -10,12 +10,9 @@ use agent_tool::agent_memory::{AgentMemory, AgentMemoryConfig, RecallOutcome, Re
 use agent_tool::agent_notebook::{AgentNotebook, AgentNotebookConfig, AppendNoteInput, WriteReason};
 
 use crate::error::{OpenDanError, Result};
-use crate::lock::Lease;
-use crate::protocol::*;
 
 use super::fs_client::AgentLayout;
-use super::perception::FsPerception;
-use super::{Cognition, Perception};
+use super::Cognition;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RecallQuery {
@@ -43,18 +40,6 @@ pub struct NotebookNote {
     pub tags: Vec<String>,
     #[serde(default)]
     pub session_id: Option<String>,
-}
-
-/// Result of one consolidation pass, recorded for audit.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct ConsolidationBatch {
-    pub session_id: String,
-    #[serde(default)]
-    pub summary: String,
-    #[serde(default)]
-    pub memory_ops: u64,
-    #[serde(default)]
-    pub notebook_ops: u64,
 }
 
 pub(super) struct FsCognition {
@@ -130,37 +115,5 @@ impl Cognition for FsCognition {
         })
         .await
         .map_err(|e| OpenDanError::Other(e.to_string()))?
-    }
-
-    async fn commit_consolidation(
-        &self,
-        lease: &Lease,
-        batch: &ConsolidationBatch,
-        upto: &PerceptionCursor,
-    ) -> Result<()> {
-        if lease.resource() != "self_improve" {
-            return Err(OpenDanError::InvalidArgument(
-                "consolidation requires the self_improve lease".into(),
-            ));
-        }
-        // The consolidation itself was written to memory / notebook by the
-        // self-improve session (agent_tool CLIs, each with its own lock). The
-        // audit record goes first; the cursor advances last, so a crash in
-        // between re-consolidates (at-least-once).
-        let audit = self.layout.perception_dir().join(".consolidations.jsonl");
-        lease.fenced(|| {
-            crate::fsutil::append_batch(
-                &audit,
-                &crate::fsutil::to_json_lines(&[serde_json::json!({
-                    "at_ms": crate::now_ms(),
-                    "batch": batch,
-                    "upto": upto,
-                })])?,
-            )
-            .map(|_| ())
-        })?;
-        FsPerception::new(self.layout.clone())
-            .commit_cursor(lease, upto)
-            .await
     }
 }

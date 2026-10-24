@@ -131,7 +131,7 @@ fn bench(root: &std::path::Path) {
     let mut commits = 0;
     let mut batch_sizes = Vec::new();
     loop {
-        let b = c.begin(&BatchOptions { limit: 50 }).unwrap();
+        let b = c.begin(&BatchOptions { limit: 50, max_context: 0 }).unwrap();
         if b.materials.is_empty() {
             break;
         }
