@@ -15,7 +15,7 @@ export interface UploadedAttachment {
 const sessions = new WeakMap<File, { sessionId: string; file?: File; object: { objectId: string; name: string; size: number } }>()
 
 export async function uploadAttachments(attachments: readonly ComposerAttachmentInput[], onProgress?: (progress: OutgoingUpload) => void, signal?: AbortSignal): Promise<UploadedAttachment[]> {
-  const endpoint = buckyos.getZoneServiceURL('control-panel').replace(/\/kapi\/control-panel\/?$/, '')
+  const endpoint = new URL(buckyos.getZoneServiceURL('control-panel'), window.location.origin).origin
   const sessionToken = (await currentSessionToken()) ?? undefined
   const oversize = attachments.flatMap(oversizedAttachmentNames)
   if (oversize.length) throw new Error(`attachment_too_large: ${oversize.join(', ')}`)

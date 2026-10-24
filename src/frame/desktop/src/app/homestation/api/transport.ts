@@ -132,7 +132,8 @@ class DevOverrideTransport implements Transport {
   }
 
   upload(body: File | readonly File[], meta: UploadMeta, options?: UploadOptions) {
-    return importAttachment(this, this.origin, this.token, body, meta, options)
+    const endpoint = new URL(this.base, window.location.origin).origin
+    return importAttachment(this, endpoint, this.token, body, meta, options)
   }
 
   objectUrl(objId: ObjId) { return this.contentUrl(objId).replace('/content', '') }
@@ -169,8 +170,8 @@ class ZoneTransport implements Transport {
   }
 
   async upload(body: File | readonly File[], meta: UploadMeta, options?: UploadOptions) {
-    const base = buckyos.getZoneServiceURL(SERVICE_NAME).replace(/\/kapi\/[^/]+\/?$/, '')
-    return importAttachment(this, base, await this.token(), body, meta, options)
+    const endpoint = new URL(buckyos.getZoneServiceURL(SERVICE_NAME), window.location.origin).origin
+    return importAttachment(this, endpoint, await this.token(), body, meta, options)
   }
 
   objectUrl(objId: ObjId) { return this.contentUrl(objId).replace('/content', '') }

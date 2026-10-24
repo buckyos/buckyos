@@ -23,7 +23,7 @@ export async function releasePikgInspection(handle: string): Promise<void> {
 /** Real package validation. Installation is a separate, explicitly approved operation. */
 export async function inspectPikgFile(file: File, signal: AbortSignal, onProgress: (state: 'preparing' | 'importing', percent: number) => void): Promise<PikgInspection> {
   signal.throwIfAborted()
-  const endpoint = buckyos.getZoneServiceURL('control-panel').replace(/\/kapi\/control-panel\/?$/, '')
+  const endpoint = new URL(buckyos.getZoneServiceURL('control-panel'), window.location.origin).origin
   const sessionToken = (await buckyos.getAccountInfo())?.session_token ?? undefined
   onProgress('preparing', 0)
   const imported = await ndm.importFiles([file], { mode: 'single_file', endpoint, sessionToken, signal })

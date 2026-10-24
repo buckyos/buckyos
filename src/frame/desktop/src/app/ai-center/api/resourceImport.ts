@@ -2,7 +2,7 @@ import { buckyos, ndm } from 'buckyos'
 
 /** A resource field is a single typed file; directory semantics belong to batch fields. */
 export async function importPlaygroundResource(file: File, signal: AbortSignal, onProgress?: (percent: number) => void): Promise<string> {
-  const endpoint = buckyos.getZoneServiceURL('control-panel').replace(/\/kapi\/control-panel\/?$/, '')
+  const endpoint = new URL(buckyos.getZoneServiceURL('control-panel'), window.location.origin).origin
   const sessionToken = (await buckyos.getAccountInfo())?.session_token ?? undefined
   const snapshot = await ndm.importFiles([file], { mode: 'single_file', endpoint, sessionToken, signal })
   try {
