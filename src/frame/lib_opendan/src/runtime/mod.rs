@@ -6,10 +6,86 @@ pub use bin_overlay::{BinPlan, ToolPlan};
 use crate::error::{OpenDanError, Result};
 use crate::protocol::*;
 use crate::session::SessionDir;
-use agent_tool::runtime::RuntimeOpenCtx;
-use agent_tool::xllm::{LoopModel, ToolsConfig};
+use agent_tool::runtime::node::{NodeExecutorConnector, RemoteNodeTarget, REMOTE_NODE_KIND};
+use agent_tool::runtime::{ControlSide, RuntimeConfig, RuntimeOpenCtx};
+use agent_tool::xllm::{LoopModel, ToolsConfig, XllmDeps};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
+
+static NODE_CONNECTOR: RwLock<Option<Arc<dyn NodeExecutorConnector>>> = RwLock::new(None);
+
+/// Install the connector this process reaches Node Executors with (tests,
+/// hosts with their own transport). Default: the BuckyOS runtime's gateway.
+pub fn set_node_connector(connector: Arc<dyn NodeExecutorConnector>) {
+    *NODE_CONNECTOR.write().expect("node connector") = Some(connector);
+}
+
+pub fn node_connector() -> Arc<dyn NodeExecutorConnector> {
+    NODE_CONNECTOR
+        .read()
+        .expect("node connector")
+        .clone()
+        .unwrap_or_else(|| Arc::new(agent_tool::runtime::node::BuckyosNodeConnector))
+}
+
+/// The `remote_node` configuration a node runtime's registration carries.
+pub fn node_config_of(runtime_id: &str, exec: &serde_json::Value) -> Result<RuntimeConfig> {
+    let config: RuntimeConfig = serde_json::from_value(exec.clone())
+        .map_err(|e| OpenDanError::Bind(format!("runtime `{runtime_id}`: invalid exec: {e}")))?;
+    if config.kind() != REMOTE_NODE_KIND {
+        return Err(OpenDanError::Bind(format!(
+            "runtime `{runtime_id}` executes through {} and cannot host a Session yet",
+            config.kind()
+        )));
+    }
+    let node = config.remote_node.as_ref();
+    if node.and_then(|n| n.node_did.as_deref()).is_none_or(str::is_empty)
+        || node.and_then(|n| n.profile_id.as_deref()).is_none_or(str::is_empty)
+    {
+        return Err(OpenDanError::Bind(format!(
+            "runtime `{runtime_id}`: remote_node needs node_did and profile_id"
+        )));
+    }
+    Ok(config)
+}
+
+/// Open a node runtime as a target directory (workspace placement, the
+/// default session directory): login + describe through the connector.
+pub async fn open_node_target(record: &RuntimeRecord, ops_dir: &Path) -> Result<RemoteNodeTarget> {
+    let exec = record
+        .exec
+        .as_ref()
+        .ok_or_else(|| OpenDanError::Bind(format!("runtime `{}` is not enabled", record.runtime_id)))?;
+    let config = node_config_of(&record.runtime_id, exec)?;
+    open_node_target_of(&record.runtime_id, &config, ops_dir).await
+}
+
+async fn open_node_target_of(runtime_id: &str, config: &RuntimeConfig, ops_dir: &Path) -> Result<RemoteNodeTarget> {
+    let node = config.remote_node.clone().unwrap_or_default();
+    RemoteNodeTarget::open(
+        node_connector(),
+        node.node_did.as_deref().unwrap_or_default(),
+        node.profile_id.as_deref().unwrap_or_default(),
+        runtime_id,
+        ops_dir.to_path_buf(),
+    )
+    .await
+    .map_err(|e| OpenDanError::Bind(format!("runtime `{runtime_id}`: {e}")))
+}
+
+/// Join path parts below `base` with the separator of the target OS (a
+/// drive path is a Windows path whatever this side runs on).
+pub fn target_join(base: &str, parts: &[&str]) -> String {
+    let windows = buckyos_api::is_absolute_node_path(base) && !base.starts_with('/');
+    let sep = if windows { '\\' } else { '/' };
+    let mut out = base.trim_end_matches(['/', '\\']).to_string();
+    for part in parts {
+        out.push(sep);
+        out.push_str(part);
+    }
+    out
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionEnvCtx {
@@ -49,6 +125,9 @@ pub struct SessionEnv {
     pub workdir: PathBuf,
     pub path_layers: Vec<PathBuf>,
     pub env: Vec<(String, String)>,
+    /// A node runtime's session helpers run here, on the control side.
+    #[serde(skip)]
+    pub control: Option<ControlSide>,
 }
 
 fn verify_workspace_access(directory: &Path, access: WorkspaceAccess) -> Result<()> {
@@ -89,17 +168,19 @@ pub async fn resolve_workspace(
         return Ok(None);
     };
     let record = agent.workspaces().check(&workspace.workspace_id).await?;
+    let native = is_native_runtime(&record.location.runtime_id);
     if record.lifecycle != WorkspaceLifecycle::Active
         || record.availability != WorkspaceAvailability::Available
-        || !is_native_runtime(&record.location.runtime_id)
         || record.runtime_host != native_host_id()
     {
         return Err(OpenDanError::WorkspaceBindingInvalid(format!(
-            "workspace {} is not available for a local session: {:?} {:?}",
+            "workspace {} is not available for a session: {:?} {:?}",
             record.workspace_id, record.lifecycle, record.availability
         )));
     }
-    verify_workspace_access(&record.location.directory, workspace.access)?;
+    if native {
+        verify_workspace_access(&record.location.directory, workspace.access)?;
+    }
     Ok(Some(WorkspaceBinding {
         workspace_id: record.workspace_id,
         revision: record.revision,
@@ -138,7 +219,6 @@ pub async fn verify_workspace(
                 || record.location_revision != binding.location_revision
                 || record.lifecycle != WorkspaceLifecycle::Active
                 || record.availability != WorkspaceAvailability::Available
-                || !is_native_runtime(&record.location.runtime_id)
             {
                 return Err(invalid(format!(
                     "workspace {} no longer matches location revision {} ({:?}, {:?})",
@@ -148,13 +228,15 @@ pub async fn verify_workspace(
                     record.availability
                 )));
             }
-            verify_workspace_access(&binding.location.directory, binding.access)?;
-            let actual = std::fs::canonicalize(&binding.location.directory)
-                .map_err(|e| invalid(e.to_string()))?;
-            if actual != binding.location.directory {
-                return Err(invalid(
-                    "the workspace directory changed its canonical location".into(),
-                ));
+            if is_native_runtime(&record.location.runtime_id) {
+                verify_workspace_access(&binding.location.directory, binding.access)?;
+                let actual = std::fs::canonicalize(&binding.location.directory)
+                    .map_err(|e| invalid(e.to_string()))?;
+                if actual != binding.location.directory {
+                    return Err(invalid(
+                        "the workspace directory changed its canonical location".into(),
+                    ));
+                }
             }
             Ok(())
         }
@@ -205,6 +287,10 @@ pub(crate) async fn workspace_waiting_children(
     Ok(children)
 }
 
+/// The control-side working directory of a session: its bound workspace
+/// in the agent's own environment, else the session directory. A session
+/// on a node runtime works there (see [`target_workdir`]); its control
+/// side (helpers, report staging) is the session directory.
 pub fn resolve_workdir(
     sd: &SessionDir,
     cfg: &SessionConfig,
@@ -216,14 +302,20 @@ pub fn resolve_workdir(
             if reference.workspace_id == binding.workspace_id
                 && reference.access == binding.access =>
         {
-            if !is_native_runtime(&binding.location.runtime_id)
-                || binding.runtime_host != native_host_id()
-            {
+            if !is_native_runtime(&binding.location.runtime_id) {
+                if !cfg.runtime.is_node() {
+                    return Err(OpenDanError::WorkspaceBindingInvalid(
+                        "the workspace is on another runtime than the session".into(),
+                    ));
+                }
+                sd.path().to_path_buf()
+            } else if binding.runtime_host != native_host_id() {
                 return Err(OpenDanError::WorkspaceBindingInvalid(
-                    "remote workspace runtimes are not supported".into(),
+                    "the workspace belongs to another host".into(),
                 ));
+            } else {
+                binding.location.directory.clone()
             }
-            binding.location.directory.clone()
         }
         _ => {
             return Err(OpenDanError::WorkspaceBindingInvalid(
@@ -235,6 +327,33 @@ pub fn resolve_workdir(
         .map_err(|e| OpenDanError::WorkspaceBindingInvalid(format!("{}: {e}", p.display())))
 }
 
+/// The working directory of a node-runtime session on its node, as far as
+/// it is already known: the binding's, else the bound workspace's. `None`:
+/// the session has no directory on the node yet (created at the first
+/// binding under the node's roots).
+pub fn target_workdir(sd: &SessionDir, cfg: &SessionConfig) -> Result<Option<String>> {
+    if let Some(b) = sd.binding_opt()? {
+        return Ok(Some(b.workdir));
+    }
+    match (&cfg.workspace, &cfg.workspace_binding) {
+        (Some(r), Some(b)) if r.workspace_id == b.workspace_id => {
+            if canonical_runtime(&b.location.runtime_id) != cfg.runtime.runtime_id() {
+                return Err(OpenDanError::WorkspaceBindingInvalid(format!(
+                    "workspace {} is on runtime `{}`, the session on `{}`",
+                    b.workspace_id,
+                    b.location.runtime_id,
+                    cfg.runtime.runtime_id()
+                )));
+            }
+            Ok(Some(b.location.directory.to_string_lossy().to_string()))
+        }
+        (None, None) => Ok(None),
+        _ => Err(OpenDanError::WorkspaceBindingInvalid(
+            "the workspace binding is inconsistent".into(),
+        )),
+    }
+}
+
 pub fn validate_workspace_workdir(cfg: &SessionConfig) -> Result<()> {
     if let (Some(binding), Some(workdir)) = (
         &cfg.workspace_binding,
@@ -244,10 +363,14 @@ pub fn validate_workspace_workdir(cfg: &SessionConfig) -> Result<()> {
             .and_then(|r| r.get("workdir"))
             .and_then(|v| v.as_str()),
     ) {
-        let path = Path::new(workdir);
-        if !path.is_absolute()
-            || path.canonicalize().ok().as_ref() != Some(&binding.location.directory)
-        {
+        let conflicts = if is_native_runtime(&binding.location.runtime_id) {
+            let path = Path::new(workdir);
+            !path.is_absolute()
+                || path.canonicalize().ok().as_ref() != Some(&binding.location.directory)
+        } else {
+            workdir != binding.location.directory.to_string_lossy()
+        };
+        if conflicts {
             return Err(OpenDanError::WorkspaceBindingInvalid(
                 "explicit runtime workdir conflicts with the selected workspace".into(),
             ));
@@ -284,6 +407,21 @@ fn settle_for_session(
     agent_root: Option<&Path>,
     config: &mut agent_tool::runtime::RuntimeConfig,
 ) -> Result<()> {
+    if cfg.runtime.is_node() {
+        // The node directory was settled when the runtime was built; a
+        // template may only add environment.
+        if config.kind() != REMOTE_NODE_KIND {
+            return Err(OpenDanError::Bind(format!(
+                "Config: the session is frozen to node runtime `{}`; a behavior cannot declare runtime kind `{}`",
+                cfg.runtime.runtime_id(),
+                config.kind()
+            )));
+        }
+        if config.workdir.is_none() {
+            return Err(OpenDanError::Bind("the node session has no working directory yet".into()));
+        }
+        return Ok(());
+    }
     let expected = resolve_workdir(sd, cfg, agent_root)?;
     if let Some(workdir) = &config.workdir {
         let path = Path::new(workdir);
@@ -327,16 +465,50 @@ fn settle_for_session(
     Ok(())
 }
 
-/// The runtime of a session, built from its configuration: what a host
-/// puts into that session's `RunnerDeps.runtime`. Nothing is opened or
-/// created here — that happens at the binding, under the session lease.
-pub fn runtime_for_session(
+/// The runtime of a session, built from what it was frozen to: what a host
+/// puts into that session's `RunnerDeps.runtime`. A session on a node
+/// runtime gets its `remote_node` configuration from the frozen selection
+/// (never from the registry again) and its directory on the node — the
+/// bound workspace, or a session directory created under the node's roots
+/// on the first drive. Nothing else is opened here; that happens at the
+/// binding, under the session lease.
+pub async fn runtime_for_session(
     sd: &SessionDir,
     cfg: &SessionConfig,
-    agent_root: Option<&Path>,
+    agent: &dyn crate::state::AgentStateClient,
     runtime_id: Option<&str>,
-) -> Result<std::sync::Arc<dyn AgentRuntime>> {
+    deps: &XllmDeps,
+) -> Result<Arc<dyn AgentRuntime>> {
+    if let Some(frozen) = cfg.runtime.frozen.as_ref().filter(|f| f.kind.is_node()) {
+        let exec = frozen.exec.as_ref().ok_or_else(|| {
+            OpenDanError::Bind(format!("runtime `{}` was frozen without an executor", frozen.runtime_id))
+        })?;
+        let mut config = node_config_of(&frozen.runtime_id, exec)?;
+        config.id = Some(frozen.runtime_id.clone());
+        if let Some(declared) = declared_runtime(sd, cfg)? {
+            if declared.kind.is_some() && declared.kind() != REMOTE_NODE_KIND {
+                return Err(OpenDanError::Bind(format!(
+                    "Config: the session is frozen to node runtime `{}`; a behavior cannot declare runtime kind `{}`",
+                    frozen.runtime_id,
+                    declared.kind()
+                )));
+            }
+            config.env.extend(declared.env);
+        }
+        config.workdir = Some(node_workdir(sd, cfg, agent, &frozen.runtime_id, &config).await?);
+        let mut deps = deps.clone();
+        if deps.node_executor.is_none() {
+            deps.node_executor = Some(node_connector());
+        }
+        return agent_tool::runtime::RuntimeRegistry::from_config_with(&config, &deps)
+            .map_err(|e| OpenDanError::Bind(e.to_string()));
+    }
     let mut config = declared_runtime(sd, cfg)?.unwrap_or_default();
+    if config.kind() == REMOTE_NODE_KIND {
+        return Err(OpenDanError::Bind(
+            "Config: a behavior declares remote_node, but the session was not frozen to a node runtime; choose the runtime at creation (`--runtime`)".into(),
+        ));
+    }
     // An explicit id is a binding identity requirement, not a way to choose
     // the executor: a session's tmux runtime only accepts its own id.
     if let Some(id) = runtime_id {
@@ -345,21 +517,33 @@ pub fn runtime_for_session(
     if config.id.is_none() && config.kind() != "tmux" {
         config.id = cfg.runtime.requirement.runtime_id.clone();
     }
-    refuse_remote_node(&config)?;
-    settle_for_session(sd, cfg, agent_root, &mut config)?;
+    settle_for_session(sd, cfg, agent.agent_root(), &mut config)?;
     agent_tool::runtime::RuntimeRegistry::from_config(&config)
         .map_err(|e| OpenDanError::Bind(e.to_string()))
 }
 
-/// Remote execution of a whole Session (helper deployment, workspace split,
-/// narrow credentials) is a later stage; refuse before any inference.
-fn refuse_remote_node(config: &agent_tool::runtime::RuntimeConfig) -> Result<()> {
-    if config.kind() == agent_tool::runtime::node::REMOTE_NODE_KIND {
-        return Err(OpenDanError::Bind(
-            "Capability: an Agent Session cannot run on remote_node yet; use remote_node with xllm".into(),
-        ));
+/// Where a node-runtime session works on its node: what is bound or the
+/// workspace, else `<first root>/.opendan/<agent>/sessions/<sid>`, created
+/// now (the executor's `mkdir`, idempotent).
+async fn node_workdir(
+    sd: &SessionDir,
+    cfg: &SessionConfig,
+    agent: &dyn crate::state::AgentStateClient,
+    runtime_id: &str,
+    config: &RuntimeConfig,
+) -> Result<String> {
+    if let Some(known) = target_workdir(sd, cfg)? {
+        return Ok(known);
     }
-    Ok(())
+    let target = open_node_target_of(runtime_id, config, &sd.state_dir().join("runtime_ops")).await?;
+    let root = target.workdir_roots().first().cloned().ok_or_else(|| {
+        OpenDanError::Bind(format!("runtime `{runtime_id}`: the node grants no working directory root"))
+    })?;
+    let dir = target_join(&root, &[".opendan", agent.agent_id(), "sessions", sd.sid()]);
+    target
+        .mkdir(&dir)
+        .await
+        .map_err(|e| OpenDanError::Bind(format!("runtime `{runtime_id}`: create {dir}: {e}")))
 }
 
 /// The runtime a drive uses: the provided one, checked against what the
@@ -374,9 +558,20 @@ pub fn session_runtime(
     let original = provided.config();
     let mut config = original.clone();
     if let Some(r) = declared_runtime(sd, cfg)? {
-        config.merge_over(&r);
+        if cfg.runtime.is_node() {
+            // The node target is the session's; a behavior adds environment.
+            if r.kind.is_some() && r.kind() != REMOTE_NODE_KIND {
+                return Err(OpenDanError::Bind(format!(
+                    "Config: the session is frozen to node runtime `{}`; a behavior cannot declare runtime kind `{}`",
+                    cfg.runtime.runtime_id(),
+                    r.kind()
+                )));
+            }
+            config.env.extend(r.env.clone());
+        } else {
+            config.merge_over(&r);
+        }
     }
-    refuse_remote_node(&config)?;
     settle_for_session(sd, cfg, agent_root, &mut config)?;
     let differs = original.kind() != config.kind()
         || original.id.as_ref().is_some_and(|id| config.id.as_ref() != Some(id))
@@ -405,6 +600,12 @@ pub fn session_runtime(
     }
     if config == original {
         return Ok(provided.clone());
+    }
+    if config.kind() == REMOTE_NODE_KIND {
+        return Err(OpenDanError::RuntimeMismatch {
+            bound: "the session's frozen node runtime".into(),
+            provided: format!("{} with another environment", original.kind()),
+        });
     }
     agent_tool::runtime::RuntimeRegistry::from_config(&config)
         .map_err(|e| OpenDanError::Bind(e.to_string()))
@@ -457,8 +658,16 @@ pub async fn bind_or_verify(
     if rt.config().kind() == "remote_ssh" {
         return Err(OpenDanError::Bind("Capability: remote Session helpers are not deployed; use SSH runtime with xllm independently".into()));
     }
+    let node = cfg.runtime.is_node();
     let fallback = resolve_workdir(sd, cfg, agent_root)?;
-    let mut open = RuntimeOpenCtx::new(&fallback, sd.sid(), LoopModel::FunctionCall);
+    let open_workdir = if node {
+        PathBuf::from(rt.config().workdir.ok_or_else(|| {
+            OpenDanError::Bind("the node session has no working directory yet".into())
+        })?)
+    } else {
+        fallback.clone()
+    };
+    let mut open = RuntimeOpenCtx::new(&open_workdir, sd.sid(), LoopModel::FunctionCall);
     let _ = rt
         .open(
             &open,
@@ -485,7 +694,12 @@ pub async fn bind_or_verify(
         bound_at_ms: crate::now_ms(),
         bound_by: runner_id.into(),
     };
-    if Path::new(&binding.workdir).canonicalize().ok().as_ref() != Some(&fallback) {
+    let workdir_matches = if node {
+        binding.workdir == open_workdir.to_string_lossy()
+    } else {
+        Path::new(&binding.workdir).canonicalize().ok().as_ref() == Some(&fallback)
+    };
+    if !workdir_matches {
         return Err(OpenDanError::WorkspaceBindingInvalid(
             "actual runtime workdir differs from the frozen binding".into(),
         ));
@@ -523,12 +737,11 @@ pub async fn bind_or_verify(
     }
     bin_overlay::prepare(&sd.runtime_bin_dir(), plan)?;
     bin_overlay::verify(&sd.runtime_bin_dir(), plan)?;
-    open.path_prefix.push(sd.runtime_bin_dir());
-    if let Some(root) = agent_root {
-        open.path_prefix.extend(skill_tool_dirs(root, &frozen_cmd_skills(cfg)));
-        if root.join("tools").is_dir() {
-            open.path_prefix.push(root.join("tools"));
-        }
+    let layers = control_layers(sd, cfg, agent_root);
+    if node {
+        open.control = Some(control_side(sd, plan, &layers, Vec::new()));
+    } else {
+        open.path_prefix = layers;
     }
     let (_, sandbox) = rt
         .open(
@@ -541,11 +754,17 @@ pub async fn bind_or_verify(
         )
         .await
         .map_err(|e| OpenDanError::Bind(e.to_string()))?;
+    let windows_target = node && desc.capabilities.os == "windows";
     for name in &cfg.runtime.requirement.tools {
+        let probe = if windows_target {
+            format!("where {}", agent_tool::runtime::shell_quote(name))
+        } else {
+            format!("command -v {}", agent_tool::runtime::shell_quote(name))
+        };
         let result = agent_tool::runtime::Sandbox::exec(
             &sandbox,
             agent_tool::llm_bash::BashRunRequest {
-                command: format!("command -v {}", agent_tool::runtime::shell_quote(name)),
+                command: probe,
                 cwd: binding.workdir.clone().into(),
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
@@ -597,13 +816,77 @@ pub async fn open_session_env(binding: &Binding, ctx: &SessionEnvCtx) -> Result<
             layers.push(root.join("tools"));
         }
     }
+    let env = session_env_vars(ctx, &binding.runtime_id).await?;
+    let control = (binding.kind == REMOTE_NODE_KIND).then(|| {
+        let names = control_command_names(&ctx.session_dir.join(RUNTIME_DIR).join("bin"), &layers);
+        ControlSide {
+            runner: Arc::new(
+                agent_tool::llm_bash::LocalProcessBashRunner::new()
+                    .with_path_layers(layers.clone())
+                    .with_env(env.clone()),
+            ),
+            workdir: ctx.session_dir.clone(),
+            commands: names,
+        }
+    });
     Ok(SessionEnv {
         runtime_id: binding.runtime_id.clone(),
         kind: binding.kind.clone(),
         workdir: binding.workdir.clone().into(),
         path_layers: layers,
-        env: session_env_vars(ctx, &binding.runtime_id).await?,
+        env,
+        control,
     })
+}
+
+/// PATH layers of the control side: the session bin, the frozen
+/// cmd_skills' commands, the agent's tools.
+fn control_layers(sd: &SessionDir, cfg: &SessionConfig, agent_root: Option<&Path>) -> Vec<PathBuf> {
+    let mut layers = vec![sd.runtime_bin_dir()];
+    if let Some(root) = agent_root {
+        layers.extend(skill_tool_dirs(root, &frozen_cmd_skills(cfg)));
+        if root.join("tools").is_dir() {
+            layers.push(root.join("tools"));
+        }
+    }
+    layers
+}
+
+/// The commands a node-runtime session runs on the control side: every
+/// entry of the session bin and of the other PATH layers.
+fn control_command_names(bin_dir: &Path, layers: &[PathBuf]) -> Vec<String> {
+    let mut names = Vec::new();
+    for dir in std::iter::once(&bin_dir.to_path_buf()).chain(layers.iter()) {
+        let Ok(rd) = std::fs::read_dir(dir) else { continue };
+        for entry in rd.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.starts_with('.') && entry.path().is_file() && !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
+
+/// The control side of the binding probe (no session environment yet).
+fn control_side(sd: &SessionDir, plan: &BinPlan, layers: &[PathBuf], env: Vec<(String, String)>) -> ControlSide {
+    let mut names: Vec<String> = bin_overlay::expected_entries(plan, std::env::var("PATH").ok().as_deref())
+        .into_keys()
+        .collect();
+    for name in control_command_names(&sd.runtime_bin_dir(), layers) {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    ControlSide {
+        runner: Arc::new(
+            agent_tool::llm_bash::LocalProcessBashRunner::new()
+                .with_path_layers(layers.to_vec())
+                .with_env(env),
+        ),
+        workdir: sd.path().to_path_buf(),
+        commands: names,
+    }
 }
 
 pub fn bin_plan_for(
@@ -674,13 +957,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sessions_refuse_remote_node_before_binding() {
-        let config = agent_tool::runtime::RuntimeConfig {
-            kind: Some("remote_node".into()),
-            ..Default::default()
-        };
-        let err = refuse_remote_node(&config).unwrap_err().to_string();
-        assert!(err.contains("Capability"), "{err}");
-        assert!(refuse_remote_node(&agent_tool::runtime::RuntimeConfig::default()).is_ok());
+    fn node_exec_must_be_a_complete_remote_node_config() {
+        let ok = node_exec("did:dev:abc", "did:web:jarvis.example.com");
+        let config = node_config_of("host", &ok).unwrap();
+        assert_eq!(config.kind(), REMOTE_NODE_KIND);
+        assert!(node_config_of("host", &serde_json::json!({ "kind": "native" })).is_err());
+        assert!(node_config_of("host", &serde_json::json!({ "kind": "remote_node" })).is_err());
+    }
+
+    #[test]
+    fn target_paths_follow_the_target_os() {
+        assert_eq!(target_join("/home/o", &[".opendan", "a"]), "/home/o/.opendan/a");
+        assert_eq!(target_join(r"C:\Users\o\", &[".opendan", "a"]), r"C:\Users\o\.opendan\a");
     }
 }

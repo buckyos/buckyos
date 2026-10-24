@@ -487,6 +487,15 @@
       ],
       "type": "string"
     },
+    "ComputerAccess": {
+      "description": "ComputerUse capability of an Agent on a runtime: `none` grants no Computer operation, `observe` grants inspect/observe, `control` adds act.",
+      "enum": [
+        "none",
+        "observe",
+        "control"
+      ],
+      "type": "string"
+    },
     "ContextMode": {
       "description": "How a behavior is entered when a hand-over (`next_behavior`) or a `call_behavior` tool call names it. Decided by the target behavior, never by the session as a whole; there is no default mode.",
       "oneOf": [
@@ -868,6 +877,45 @@
           "default": {}
         }
       },
+      "type": "object"
+    },
+    "FrozenRuntime": {
+      "description": "The runtime a session was frozen to at creation: the registration it resolved to and how that runtime is reached, so a restart or a changed default never moves the session to another target.",
+      "properties": {
+        "computer": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ComputerAccess"
+            }
+          ],
+          "default": "none"
+        },
+        "exec": {
+          "default": null,
+          "description": "The registration's `exec` (`agent_tool` RuntimeConfig) at selection."
+        },
+        "kind": {
+          "$ref": "#/definitions/RuntimeKind"
+        },
+        "revision": {
+          "description": "`RuntimeRecord.revision` the selection was read from.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "runtime_id": {
+          "type": "string"
+        },
+        "selected_by": {
+          "$ref": "#/definitions/RuntimeSelection"
+        }
+      },
+      "required": [
+        "kind",
+        "revision",
+        "runtime_id",
+        "selected_by"
+      ],
       "type": "object"
     },
     "GoalBinding": {
@@ -1513,6 +1561,31 @@
         }
       ]
     },
+    "RuntimeKind": {
+      "oneOf": [
+        {
+          "enum": [
+            "container",
+            "remote_ssh"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The owner's desktop host (`host`): a node's embedded executor.",
+          "enum": [
+            "host_native"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Another node's embedded executor.",
+          "enum": [
+            "remote_node"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "RuntimeRequirement": {
       "properties": {
         "app_tools": {
@@ -1546,6 +1619,17 @@
           },
           "type": "object"
         },
+        "frozen": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FrozenRuntime"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Set by `create_session`; `None` only in sessions created by tests without an Agent State, which run in the agent's own environment."
+        },
         "requirement": {
           "allOf": [
             {
@@ -1562,6 +1646,39 @@
         }
       },
       "type": "object"
+    },
+    "RuntimeSelection": {
+      "description": "How a session's runtime was chosen (integration TODO §3.3).",
+      "oneOf": [
+        {
+          "description": "Named by the creator (`--runtime`, a Todo's runtime).",
+          "enum": [
+            "explicit"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The runtime of the selected workspace.",
+          "enum": [
+            "workspace"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The parent session's frozen runtime.",
+          "enum": [
+            "inherited"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The agent's default runtime.",
+          "enum": [
+            "default"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "Scope": {
       "description": "Initial activity declaration: what this session plans to modify (§6.7).",

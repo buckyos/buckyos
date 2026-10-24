@@ -1,9 +1,9 @@
 /* ── Confirmation summary before `agent.create` ── */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useI18n } from '../../i18n/provider'
 import type { CurrentAccount } from '../../api/account'
-import type { AgentTemplate, UserTunnelBinding } from '../../api/user_mgr'
+import { fetchAgentRuntimeDirectory, type AgentRuntimeOffer, type AgentTemplate, type UserTunnelBinding } from '../../api/user_mgr'
 import { draftDisplayName, type AgentSetupDraft } from './model'
 import { AgentAvatar, Section, StatusPill, SummaryRows } from './ui'
 
@@ -26,6 +26,22 @@ export function ConfirmPage({
 }) {
   const { t } = useI18n()
   const [roleOpen, setRoleOpen] = useState(false)
+  // Where the new Agent will run by default: the owner's desktop when a
+  // node offers `host`, else the container only (the server decides).
+  const [host, setHost] = useState<AgentRuntimeOffer | null | undefined>(undefined)
+  useEffect(() => {
+    let cancelled = false
+    void fetchAgentRuntimeDirectory().then(({ data }) => {
+      if (cancelled) return
+      setHost(data?.runtimes.find((offer) => offer.runtime_id === 'host' && !offer.closed) ?? null)
+    })
+    return () => { cancelled = true }
+  }, [])
+  const hostRow = host === undefined
+    ? '…'
+    : host
+      ? t('agentSetup.confirm.hostDesktop', undefined, { name: host.name || host.node_id || 'host', computer: t(`agentSetup.confirm.computer.${host.computer_max}`) })
+      : t('agentSetup.confirm.hostContainer')
   const yes = t('agentSetup.yes')
   const no = t('agentSetup.no')
   const role = draft.roleSupplement.trim()
@@ -91,6 +107,7 @@ export function ConfirmPage({
             [t('agentSetup.template.label'), template ? `${template.show_name || template.name} · ${t(template.source === 'installed' ? 'agentSetup.template.sourceInstalled' : 'agentSetup.template.sourceBundled')}` : '-'],
             [t('agentSetup.confirm.version'), template?.version ?? '-'],
             [t('agentSetup.template.autoUpdate'), draft.templateAutoUpdate ? yes : no],
+            [t('agentSetup.confirm.host'), hostRow],
           ]}
         />
       </Section>

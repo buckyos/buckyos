@@ -18,6 +18,7 @@ fn create(path: &Path, operation: &str) -> WorkspaceCreate {
         operation_id: operation.into(),
         name: "Project".into(),
         description: "Long term project".into(),
+        url: None,
         location: WorkspaceLocation {
             runtime_id: CONTAINER_RUNTIME.into(),
             directory: path.into(),
@@ -166,6 +167,7 @@ async fn import_preserves_content_and_recovers_after_registration_failure() {
         location: create(&path, "").location,
         name: Some("Imported".into()),
         description: String::new(),
+        url: None,
         usage: WorkspaceUsage::Collaborative,
         expected_revision: None,
         source_session: None,
@@ -489,6 +491,7 @@ async fn independent_clients_enforce_compare_and_swap_and_overlap_boundaries() {
                 expected_revision: record.revision,
                 lifecycle: None,
                 private_notes: Some("agent private notes".into()),
+                url: None,
             },
             "user",
         )
@@ -571,6 +574,7 @@ async fn checking_resolves_removed_duplicate_without_changing_identity_or_notes(
                 expected_revision: record.revision,
                 lifecycle: None,
                 private_notes: Some("preserve notes".into()),
+                url: None,
             },
             "user",
         )

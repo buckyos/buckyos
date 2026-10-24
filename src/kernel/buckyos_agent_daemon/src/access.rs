@@ -61,27 +61,7 @@ impl AccessUrl {
 }
 
 pub fn boot_ms() -> u64 {
-    #[cfg(target_os = "linux")]
-    let clock = libc::CLOCK_BOOTTIME;
-    #[cfg(target_os = "macos")]
-    let clock = libc::CLOCK_MONOTONIC_RAW;
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    {
-        let mut ts = libc::timespec {
-            tv_sec: 0,
-            tv_nsec: 0,
-        };
-        if unsafe { libc::clock_gettime(clock, &mut ts) } == 0 {
-            return (ts.tv_sec as u64).saturating_mul(1000) + ts.tv_nsec as u64 / 1_000_000;
-        }
-        return u64::MAX;
-    }
-    #[cfg(windows)]
-    {
-        crate::local::windows::boot_ms()
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-    node_executor::now_ms()
+    computer_driver::boot_ms()
 }
 
 pub struct Deadline {

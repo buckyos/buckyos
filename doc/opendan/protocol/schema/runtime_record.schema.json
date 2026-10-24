@@ -1,6 +1,15 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
+    "ComputerAccess": {
+      "description": "ComputerUse capability of an Agent on a runtime: `none` grants no Computer operation, `observe` grants inspect/observe, `control` adds act.",
+      "enum": [
+        "none",
+        "observe",
+        "control"
+      ],
+      "type": "string"
+    },
     "RuntimeAvailability": {
       "enum": [
         "available",
@@ -10,12 +19,29 @@
       "type": "string"
     },
     "RuntimeKind": {
-      "enum": [
-        "container",
-        "host_native",
-        "remote_ssh"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "container",
+            "remote_ssh"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The owner's desktop host (`host`): a node's embedded executor.",
+          "enum": [
+            "host_native"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Another node's embedded executor.",
+          "enum": [
+            "remote_node"
+          ],
+          "type": "string"
+        }
+      ]
     }
   },
   "properties": {
@@ -39,6 +65,20 @@
         "integer",
         "null"
       ]
+    },
+    "computer": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ComputerAccess"
+        }
+      ],
+      "default": "none",
+      "description": "ComputerUse the owner granted the agent on this runtime."
+    },
+    "default": {
+      "default": false,
+      "description": "The runtime new sessions without a workspace run in (the owner's `default_runtime_id`); exactly one record carries it.",
+      "type": "boolean"
     },
     "description": {
       "default": "",

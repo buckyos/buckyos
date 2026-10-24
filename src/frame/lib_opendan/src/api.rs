@@ -143,6 +143,123 @@ fn same_session_identity(c: &SessionConfig, agent_did: &str, spec: &SessionSpec,
         && c.session.driver.principal == driver
         && c.session.idempotency_key == spec.idempotency_key
         && c.workspace == spec.workspace
+        && c.runtime.runtime_id() == spec.runtime.runtime_id()
+}
+
+/// The one place a session's runtime is chosen (integration TODO §3.3):
+/// the workspace decides when there is one, an explicit choice must agree
+/// with it, a sub session inherits its parent's frozen runtime, and a new
+/// session without any of these takes the agent's default. The choice is
+/// frozen into `runtime.frozen` before anything else happens; a registered
+/// runtime that is not usable now is refused, never replaced.
+pub async fn freeze_runtime(agent: &dyn AgentStateClient, spec: &mut SessionSpec) -> Result<()> {
+    let workspace_runtime = match &spec.workspace {
+        Some(w) => {
+            let record = agent
+                .workspaces()
+                .lookup(&w.workspace_id)
+                .await?
+                .ok_or_else(|| OpenDanError::NotFound(format!("workspace {}", w.workspace_id)))?;
+            Some(canonical_runtime(&record.location.runtime_id).to_string())
+        }
+        None => None,
+    };
+    let explicit = spec
+        .runtime
+        .requirement
+        .runtime_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+        .map(|id| canonical_runtime(id).to_string());
+    let inherited = spec
+        .runtime
+        .frozen
+        .as_ref()
+        .filter(|f| f.selected_by == RuntimeSelection::Inherited)
+        .map(|f| f.runtime_id.clone());
+    let (runtime_id, selected_by) = match (explicit, workspace_runtime, inherited) {
+        (Some(e), Some(w), _) if e != w => {
+            return Err(OpenDanError::InvalidArgument(format!(
+                "runtime `{e}` conflicts with the selected workspace, which is on runtime `{w}`; choose that runtime, another workspace, or no workspace"
+            )))
+        }
+        (Some(e), _, _) => (e, RuntimeSelection::Explicit),
+        (None, Some(w), _) => (w, RuntimeSelection::Workspace),
+        (None, None, Some(i)) => (i, RuntimeSelection::Inherited),
+        (None, None, None) => {
+            let default = agent
+                .runtimes()
+                .list()
+                .await?
+                .into_iter()
+                .find(|r| r.default)
+                .map(|r| r.runtime_id)
+                .unwrap_or_else(|| CONTAINER_RUNTIME.to_string());
+            (default, RuntimeSelection::Default)
+        }
+    };
+    let record = agent.runtimes().lookup(&runtime_id).await?;
+    let frozen = match record {
+        Some(record) => {
+            if record.availability != RuntimeAvailability::Available {
+                return Err(OpenDanError::Bind(format!(
+                    "runtime `{runtime_id}` is not available: {}",
+                    record
+                        .last_error
+                        .clone()
+                        .unwrap_or_else(|| format!("{:?}", record.availability))
+                )));
+            }
+            FrozenRuntime {
+                runtime_id: record.runtime_id.clone(),
+                kind: record.kind,
+                exec: record.exec.clone(),
+                revision: record.revision,
+                selected_by,
+                computer: record.computer,
+            }
+        }
+        // A host that registered no runtimes (tests, bare `xagent`): only
+        // the agent's own environment exists.
+        None if runtime_id == CONTAINER_RUNTIME => FrozenRuntime {
+            runtime_id: CONTAINER_RUNTIME.into(),
+            kind: RuntimeKind::Container,
+            exec: Some(serde_json::json!({ "kind": "native" })),
+            revision: 0,
+            selected_by,
+            computer: Default::default(),
+        },
+        None => {
+            return Err(OpenDanError::Bind(format!(
+                "runtime `{runtime_id}` is not registered (see `runtime list`)"
+            )))
+        }
+    };
+    // A template's declared runtime kind must not contradict the choice.
+    if let Some(kind) = spec
+        .prompt
+        .llm_context
+        .get("runtime")
+        .and_then(|r| r.get("kind"))
+        .and_then(Value::as_str)
+    {
+        let node_kind = kind == agent_tool::runtime::node::REMOTE_NODE_KIND;
+        if node_kind != frozen.kind.is_node() {
+            return Err(OpenDanError::InvalidArgument(format!(
+                "the template declares runtime kind `{kind}`, which cannot run on runtime `{}`",
+                frozen.runtime_id
+            )));
+        }
+    }
+    // The container needs no identity requirement (a tmux runtime derives
+    // its own); every other runtime is required by id at the binding.
+    spec.runtime.requirement.runtime_id = if frozen.kind == RuntimeKind::Container {
+        None
+    } else {
+        Some(frozen.runtime_id.clone())
+    };
+    spec.runtime.frozen = Some(frozen);
+    Ok(())
 }
 
 /// Create a session directory under `parent_dir` (any location, §4.1),
@@ -172,6 +289,7 @@ pub async fn create_session(
         });
     }
     let agent_did = agent.agent_did().to_string();
+    freeze_runtime(agent, &mut spec).await?;
     let sid = match &spec.session_id {
         Some(s) => {
             ids::validate_session_id(s)?;
@@ -717,26 +835,6 @@ pub async fn create_sub_session(
     if let Some(existing) = agent.sessions().lookup(&sid).await? {
         return SessionDir::open(&existing.location);
     }
-    // An explicit runtime is one of the agent's registered runtimes, usable
-    // now; the agent's own environment needs no requirement of its own.
-    let runtime_requirement = match sub.runtime_id.as_deref() {
-        None => None,
-        Some(id) => {
-            let record = agent.runtimes().lookup(id).await?.ok_or_else(|| {
-                OpenDanError::Bind(format!("runtime `{id}` is not registered (see `runtime list`)"))
-            })?;
-            if record.availability != RuntimeAvailability::Available {
-                return Err(OpenDanError::Bind(format!(
-                    "runtime `{id}` is not available: {}",
-                    record
-                        .last_error
-                        .clone()
-                        .unwrap_or_else(|| format!("{:?}", record.availability))
-                )));
-            }
-            (!is_native_runtime(&record.runtime_id)).then(|| record.runtime_id.clone())
-        }
-    };
     let policy = &pcfg.session.policy;
     // A Goal's Work counts for the Goal, whichever epoch created it.
     let goal_origin = match &pcfg.session.goal {
@@ -801,9 +899,21 @@ pub async fn create_sub_session(
     spec.timezone = pcfg.session.timezone.clone();
     spec.prompt.llm_context = pcfg.prompt.llm_context.clone();
     spec.runtime = pcfg.runtime.clone();
-    // The binding identity is the sub session's own: only an explicit
-    // requirement is carried, the runtime configuration is inherited.
-    spec.runtime.requirement.runtime_id = runtime_requirement;
+    // The runtime: an explicit choice (checked against the workspace in
+    // `freeze_runtime`), else the parent's frozen runtime is inherited —
+    // never the agent's current default.
+    spec.runtime.requirement.runtime_id = sub
+        .runtime_id
+        .as_deref()
+        .filter(|id| *id != "inherit")
+        .map(str::to_string);
+    spec.runtime.frozen = match &pcfg.runtime.frozen {
+        Some(f) if spec.runtime.requirement.runtime_id.is_none() => Some(FrozenRuntime {
+            selected_by: RuntimeSelection::Inherited,
+            ..f.clone()
+        }),
+        _ => None,
+    };
     spec.policy.max_session_depth = policy.max_session_depth;
     if let Some(b) = sub.behavior.clone() {
         spec.prompt.behavior = Some(b);
@@ -834,31 +944,32 @@ pub async fn create_sub_session(
     spec.freeze = spec.prompt.behavior.is_some()
         || pcfg.prompt.frozen.is_some()
         || !spec.prompt.cmd_skills.is_empty();
+    // The workspace: inherited, none, or another registered workspace the
+    // agent may use (its own exclusive lease and access checks apply at
+    // creation); the parent's binding never changes.
     spec.workspace = match &sub.workspace {
         SubWorkspace::Inherit => pcfg.workspace.clone(),
         SubWorkspace::None => None,
-        SubWorkspace::Id(id) => {
-            if pcfg
+        SubWorkspace::Id(id) => Some(WorkspaceRef {
+            workspace_id: id.clone(),
+            access: pcfg
                 .workspace
                 .as_ref()
-                .is_some_and(|w| w.workspace_id != *id)
-                || (pcfg.workspace.is_none() && pcfg.session.kind != SessionKind::Ui)
-            {
-                return Err(OpenDanError::InvalidArgument(
-                    "a child session cannot acquire a different workspace through inheritance"
-                        .into(),
-                ));
-            }
-            Some(WorkspaceRef {
-                workspace_id: id.clone(),
-                access: pcfg
-                    .workspace
-                    .as_ref()
-                    .map(|w| w.access)
-                    .unwrap_or_default(),
-            })
-        }
+                .filter(|w| w.workspace_id == *id)
+                .map(|w| w.access)
+                .unwrap_or_default(),
+        }),
     };
+    if let (Some(w), Some(id)) = (&pcfg.workspace, spec.runtime.requirement.runtime_id.as_deref()) {
+        if matches!(sub.workspace, SubWorkspace::Inherit) {
+            let record = agent.workspaces().lookup(&w.workspace_id).await?;
+            if record.is_some_and(|r| canonical_runtime(&r.location.runtime_id) != canonical_runtime(id)) {
+                return Err(OpenDanError::InvalidArgument(format!(
+                    "runtime `{id}` differs from the inherited workspace's runtime; pass --workspace none or the workspace to use"
+                )));
+            }
+        }
+    }
     if let Some(runtime) = spec
         .prompt
         .llm_context

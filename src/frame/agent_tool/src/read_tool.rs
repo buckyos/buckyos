@@ -23,7 +23,7 @@ use serde_json::{json, Value as Json};
 
 use crate::file_tools::{FileToolConfig, ReadFileTool};
 use crate::path_utils::expand_home;
-use crate::runtime::files::FileBackend;
+use crate::runtime::files::{FileBackend, PathType};
 use crate::tool::{CallingConventions, TypedToolHandle};
 use crate::{AgentTool, AgentToolError, AgentToolResult, SessionRuntimeContext, ToolSpec};
 
@@ -98,6 +98,15 @@ impl FileBackend for ObjectBackend {
     async fn write(&self, path: &Path, _bytes: &[u8]) -> Result<(), AgentToolError> {
         Err(AgentToolError::InvalidArgs(format!(
             "{} is an object and cannot be written",
+            path.display()
+        )))
+    }
+    async fn path_type(&self, _path: &Path) -> Result<PathType, AgentToolError> {
+        Ok(PathType::File)
+    }
+    async fn mkdir(&self, path: &Path) -> Result<(), AgentToolError> {
+        Err(AgentToolError::InvalidArgs(format!(
+            "{} is an object store path, not a directory",
             path.display()
         )))
     }

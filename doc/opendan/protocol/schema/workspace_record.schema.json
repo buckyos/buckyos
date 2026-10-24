@@ -161,6 +161,12 @@
       "minimum": 0.0,
       "type": "integer"
     },
+    "url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "usage": {
       "$ref": "#/definitions/WorkspaceUsage"
     },

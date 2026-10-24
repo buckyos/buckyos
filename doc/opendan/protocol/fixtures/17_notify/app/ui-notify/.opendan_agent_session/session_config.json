@@ -6,7 +6,7 @@
     "agent_did": "did:bns:jarvis.alice",
     "kind": "ui",
     "class": "ui",
-    "created_at_ms": 1792411645817,
+    "created_at_ms": 1792819163088,
     "created_by": {
       "principal": "app:app2@alice",
       "via": "app"
@@ -48,7 +48,17 @@
     }
   },
   "runtime": {
-    "requirement": {}
+    "requirement": {},
+    "frozen": {
+      "runtime_id": "container",
+      "kind": "container",
+      "exec": {
+        "kind": "native"
+      },
+      "revision": 0,
+      "selected_by": "default",
+      "computer": "none"
+    }
   },
   "subscriptions": [
     {

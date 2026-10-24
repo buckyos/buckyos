@@ -725,6 +725,37 @@ pub struct RuntimeRequirement {
     pub app_tools: Vec<String>,
 }
 
+/// How a session's runtime was chosen (integration TODO §3.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeSelection {
+    /// Named by the creator (`--runtime`, a Todo's runtime).
+    Explicit,
+    /// The runtime of the selected workspace.
+    Workspace,
+    /// The parent session's frozen runtime.
+    Inherited,
+    /// The agent's default runtime.
+    Default,
+}
+
+/// The runtime a session was frozen to at creation: the registration it
+/// resolved to and how that runtime is reached, so a restart or a changed
+/// default never moves the session to another target.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FrozenRuntime {
+    pub runtime_id: String,
+    pub kind: super::RuntimeKind,
+    /// The registration's `exec` (`agent_tool` RuntimeConfig) at selection.
+    #[serde(default)]
+    pub exec: Option<serde_json::Value>,
+    /// `RuntimeRecord.revision` the selection was read from.
+    pub revision: u64,
+    pub selected_by: RuntimeSelection,
+    #[serde(default)]
+    pub computer: buckyos_api::ComputerAccess,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RuntimeSection {
     #[serde(default)]
@@ -733,6 +764,26 @@ pub struct RuntimeSection {
     pub tool_plan: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
+    /// Set by `create_session`; `None` only in sessions created by tests
+    /// without an Agent State, which run in the agent's own environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frozen: Option<FrozenRuntime>,
+}
+
+impl RuntimeSection {
+    /// The runtime the session is frozen to (`container` when none).
+    pub fn runtime_id(&self) -> &str {
+        self.frozen
+            .as_ref()
+            .map(|f| f.runtime_id.as_str())
+            .or(self.requirement.runtime_id.as_deref())
+            .unwrap_or(super::CONTAINER_RUNTIME)
+    }
+
+    /// Whether the session executes through a Node Executor.
+    pub fn is_node(&self) -> bool {
+        self.frozen.as_ref().is_some_and(|f| f.kind.is_node())
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

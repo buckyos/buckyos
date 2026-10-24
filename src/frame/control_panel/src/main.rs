@@ -1,5 +1,6 @@
 mod agent_daemon;
 mod agent_mgr;
+mod agent_runtimes;
 mod app_install_deployer;
 mod app_install_driver;
 mod app_install_engine;
@@ -156,6 +157,7 @@ impl RpcAuthPrincipal {
                     | "agent.list"
                     | "agent.get"
                     | "agent.profile.get"
+                    | "agent.runtime_directory"
                     | "system.overview"
                     | "system.buckyos_info.get"
                     | "system.dev_mode.get"
@@ -1319,6 +1321,7 @@ impl ControlPanelServer {
             "agent.update" => Box::pin(self.handle_agent_update(req, principal)),
             "agent.delete" => Box::pin(self.handle_agent_delete(req, principal)),
             "agent.profile.get" => Box::pin(self.handle_agent_profile_get(req, principal)),
+            "agent.runtime_directory" => Box::pin(self.handle_agent_runtime_directory(req, principal)),
             "agent.profile.set" => Box::pin(self.handle_agent_profile_set(req, principal)),
             "agent.set_msg_tunnel" => Box::pin(self.handle_agent_set_msg_tunnel(req, principal)),
             "agent.remove_msg_tunnel" => {

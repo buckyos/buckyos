@@ -489,6 +489,7 @@ impl Store {
                         .map(|e| (e.old_string.len() + e.new_string.len()) as u64)
                         .sum::<u64>()
             }
+            ExecutorOpSpec::Mkdir { path } | ExecutorOpSpec::Stat { path } => path.len() as u64,
         };
         body + RECORD_OVERHEAD_BYTES
     }

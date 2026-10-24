@@ -45,6 +45,10 @@ pub async fn settings(records: &dyn AgentRecords) -> Result<AgentSettings, Strin
     Ok(typed(records, SETTINGS).await?.unwrap_or_default())
 }
 
+pub async fn set_settings(records: &dyn AgentRecords, settings: &AgentSettings) -> Result<(), String> {
+    put_typed(records, SETTINGS, settings).await
+}
+
 pub async fn profile(records: &dyn AgentRecords) -> Result<AgentProfile, String> {
     Ok(typed(records, PROFILE).await?.unwrap_or_default())
 }

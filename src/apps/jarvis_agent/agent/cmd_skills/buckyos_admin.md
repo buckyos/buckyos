@@ -123,9 +123,15 @@ buckyos system info                                 # BuckyOS version, build_ver
   field of `nodes/<node>/settings` (`enabled`, `allowed_devices` = exact device DIDs from `devices/<id>/info`,
   `profiles.<id>` = `run_as{uid,gid}` (non-root; omitted for Windows nodes), `workdir_roots` (absolute node paths,
   e.g. `C:\Users\<u>\ws` on Windows), `env`, `principals` = exact Agent DIDs, `ops`, and
-  `limits`); writing it needs an owner sudo token. The scheduler turns it into `nodes/<node>/config.executor` (never
-  edit): check `generation` grew, the Agent is in `principal_bindings` with `enabled`/`app_installed` true (a runtime
-  shared by two AgentSpecs is not mapped), and `auth_valid_until_ms` keeps moving (30 s lease). On the node:
+  `limits`, and `owner_agents` = the node's policy for the zone owner's Agents: `enabled`, default `workdir_roots`,
+  `env`, `ops` (empty = all), `computer` max `none|observe|control`, optional `run_as`; a Desktop node seeds it open on
+  first start, absent = never initialized, `enabled:false` = closed by the administrator); writing it needs an owner
+  sudo token. Which Agent uses a node is the Agent's own setting: `agent.runtime_directory [agent_id]` lists the nodes
+  offered to the owner (`host` = the desktop), `agent.update {agent_id, runtimes: {"host": {enabled, computer}},
+  default_runtime_id}` enables one (targets come from the directory, never from the caller). The scheduler multiplies
+  both into `nodes/<node>/config.executor` (never edit): a profile `agent-<12 hex>` per enabled Agent, check
+  `generation` grew, the Agent is in `principal_bindings` with `enabled`/`app_installed` true (a runtime shared by two
+  AgentSpecs is not mapped), and `auth_valid_until_ms` keeps moving (30 s lease). On the node:
   `etc/node_executor_acl.json` lists the allowed devices, node_daemon logs `node executor opened, store_id=…`, the
   executor listens on `127.0.0.1:3184`, Agents enter through the gateway SOCKS entry `:3185`. Its ledger is
   `local/node_daemon/executor/`; a reinstall (`start.py --all`/`--reinstall`) clears `local/`, gives a new store_id, and

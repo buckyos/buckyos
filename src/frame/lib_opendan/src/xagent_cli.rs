@@ -53,7 +53,8 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   xagent list   --agent <did> [--active]
   xagent behaviors --agent <did> [--frozen <sid>]
   xagent xllm   <sid> [--run <id>]
-  xagent workspace list|get|create|import|discover|check|archive|restore|unregister|runtime-impact|set-runtime ...
+  xagent workspace list|get|create|import|discover|check|archive|restore|unregister|set-url|runtime-impact|set-runtime ...
+        (create/import: --runtime <id> --directory <abs path on that runtime> [--url <https://project>])
   xagent runtime list [--available] | get <id> | check <id>
                  | register <id> --kind container|host_native|remote_ssh --name <n> [--description <t>] [--exec <json>] [--root <dir>]...
                  | update <id> --expected-revision <n> [--name <n>] [--description <t>] [--root <dir>]...
@@ -85,7 +86,8 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   skill list [--kind cmd|goal] [--json] | skill install <x.pikg | dir> [--replace] | skill remove <name> [--kind cmd|goal]
   wait <sid> [--wait-ms <ms>] | post <sid> --msg <t>
   todo add <title> (--content <t> | --content - | --content-file <path>) [--accept <criterion>]... [--scope <t>] [--evidence <t>]... [--skill <cmd_skill>]...
-           [--after <todo_id>]... [--batch <b>]                                  (a serial Todo: next_behavior = do runs it)
+           [--after <todo_id>]... [--batch <b>] [--runtime <id>] [--workspace inherit|none|<id>]
+           (a serial Todo: next_behavior = do runs it; on another runtime or workspace it runs in its own work session, still in order)
   todo explore <title> --content <t> [same options] [--behavior <b>] [--class <c>]  (add + dispatch as a sub session)
   todo dispatch <todo_id> [--behavior <b>] [--class <c>] | todo list [--json] | todo show <todo_id> [--report]
   todo review <todo_id> (--accept | --reject | --need-evidence) --reason <t> [--followup <todo_id>]...
@@ -1385,6 +1387,8 @@ fn new_todo(a: &mut Args, mode: crate::todos::TodoMode) -> R<crate::todos::NewTo
             .filter(|x| !x.is_empty())
             .collect(),
         batch: a.get("batch"),
+        runtime_id: a.get("runtime"),
+        workspace: a.get("workspace"),
     })
 }
 
@@ -1641,6 +1645,7 @@ async fn cmd_workspace(mut a: Args) -> R<i32> {
                         operation_id: required("key")?,
                         name: required("name")?,
                         description: a.get("description").unwrap_or_default(),
+                        url: a.get("url"),
                         location: location()?,
                         usage: usage()?,
                         source_session: env_sid(),
@@ -1658,6 +1663,7 @@ async fn cmd_workspace(mut a: Args) -> R<i32> {
                         location: location()?,
                         name: a.get("name"),
                         description: a.get("description").unwrap_or_default(),
+                        url: a.get("url"),
                         usage: usage()?,
                         expected_revision: a.num("expected-revision")?,
                         source_session: env_sid(),
@@ -1679,6 +1685,26 @@ async fn cmd_workspace(mut a: Args) -> R<i32> {
                 )
                 .await?,
         ),
+        "set-url" => {
+            let id = a.next("workspace id")?;
+            let revision = a.num("expected-revision")?.ok_or_else(|| {
+                bad("missing --expected-revision (read workspace get first)")
+            })?;
+            print(
+                &manager
+                    .update(
+                        &id,
+                        &WorkspaceUpdate {
+                            expected_revision: revision,
+                            lifecycle: None,
+                            private_notes: None,
+                            url: Some(a.get("url").unwrap_or_default()),
+                        },
+                        &c.who,
+                    )
+                    .await?,
+            );
+        }
         "get" | "check" | "archive" | "restore" | "unregister" => {
             let id = a.next("workspace id")?;
             match command.as_str() {
@@ -1709,6 +1735,7 @@ async fn cmd_workspace(mut a: Args) -> R<i32> {
                                             WorkspaceLifecycle::Active
                                         }),
                                         private_notes: None,
+                                        url: None,
                                     },
                                     &c.who,
                                 )
@@ -1763,8 +1790,9 @@ async fn cmd_runtime(mut a: Args) -> R<i32> {
             let kind = match a.get("kind").as_deref() {
                 Some("container") => RuntimeKind::Container,
                 Some("host_native") => RuntimeKind::HostNative,
+                Some("remote_node") => RuntimeKind::RemoteNode,
                 Some("remote_ssh") => RuntimeKind::RemoteSsh,
-                _ => return Err(bad("--kind takes container | host_native | remote_ssh")),
+                _ => return Err(bad("--kind takes container | host_native | remote_node | remote_ssh")),
             };
             let exec = a.get("exec").map(|e| json_arg::<Value>(&e)).transpose()?;
             print(
@@ -1778,6 +1806,8 @@ async fn cmd_runtime(mut a: Args) -> R<i32> {
                             exec,
                             roots: a.all("root").into_iter().map(PathBuf::from).collect(),
                             capabilities: json!({}),
+                            default: false,
+                            computer: Default::default(),
                         },
                         &c.who,
                     )

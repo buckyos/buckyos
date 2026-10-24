@@ -2196,6 +2196,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     crate::node_executor_host::spawn_node_executor(
         device_name.clone(),
         node_identity.device_did.to_string(),
+        is_desktop,
     );
 
     node_daemon_main_loop(node_id, &device_name, is_ood, is_desktop)

@@ -233,6 +233,28 @@ pub struct ExecutorEditRequest {
     pub expected_hash: Option<String>,
 }
 
+/// `mkdir` and `stat`: the minimal directory operations a control side
+/// needs to place a workspace on the node (integration TODO §3.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutorPathRequest {
+    pub request_id: String,
+    pub store_id: String,
+    pub op_id: String,
+    pub run_id: String,
+    pub call_id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutorPathType {
+    File,
+    Directory,
+    Missing,
+    Other,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutorComputerRequest {
@@ -284,6 +306,8 @@ pub enum ExecutorClientMessage {
     Write(ExecutorWriteRequest),
     UploadEnd(ExecutorUploadEnd),
     Edit(ExecutorEditRequest),
+    Mkdir(ExecutorPathRequest),
+    Stat(ExecutorPathRequest),
     Computer(ExecutorComputerRequest),
     Cancel(ExecutorOpRef),
     Query(ExecutorQueryRequest),
@@ -300,6 +324,7 @@ impl ExecutorClientMessage {
             ExecutorClientMessage::Write(m) => Some(&m.request_id),
             ExecutorClientMessage::UploadEnd(m) => Some(&m.request_id),
             ExecutorClientMessage::Edit(m) => Some(&m.request_id),
+            ExecutorClientMessage::Mkdir(m) | ExecutorClientMessage::Stat(m) => Some(&m.request_id),
             ExecutorClientMessage::Computer(m) => Some(&m.request_id),
             ExecutorClientMessage::Cancel(m) => Some(&m.request_id),
             ExecutorClientMessage::Query(m) => Some(&m.request_id),
@@ -342,6 +367,10 @@ pub struct ExecutorRuntimeTarget {
     pub gid: Option<u32>,
     #[serde(default)]
     pub workdir: Option<String>,
+    /// The profile's workdir roots: where a control side may place
+    /// session and workspace directories.
+    #[serde(default)]
+    pub workdir_roots: Vec<String>,
     pub store_id: String,
     pub protocol_version: u32,
 }
@@ -356,6 +385,15 @@ pub struct ExecutorRuntimeInfo {
     pub time_ms: u64,
     #[serde(default)]
     pub path: Option<String>,
+    /// `current_user` (form A-desktop, form B/C) or `switch_user` (form
+    /// A-system): how the host executes.
+    #[serde(default)]
+    pub identity_mode: Option<String>,
+    /// The desktop Driver's capabilities (`ui`, `capture`, `input`,
+    /// `accessibility`, each `{supported, ready, reason?}`) when one is
+    /// injected; absent on hosts without ComputerUse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -373,6 +411,8 @@ pub enum ExecutorOpKind {
     Read,
     Write,
     Edit,
+    Mkdir,
+    Stat,
     ComputerInspect,
     ComputerObserve,
     ComputerAct,
@@ -385,6 +425,8 @@ impl ExecutorOpKind {
             ExecutorOpKind::Read => ExecutorOp::Read,
             ExecutorOpKind::Write => ExecutorOp::Write,
             ExecutorOpKind::Edit => ExecutorOp::Edit,
+            ExecutorOpKind::Mkdir => ExecutorOp::Mkdir,
+            ExecutorOpKind::Stat => ExecutorOp::Stat,
             ExecutorOpKind::ComputerInspect => ExecutorOp::ComputerInspect,
             ExecutorOpKind::ComputerObserve => ExecutorOp::ComputerObserve,
             ExecutorOpKind::ComputerAct => ExecutorOp::ComputerAct,
@@ -438,6 +480,9 @@ pub struct ExecutorFileResult {
     pub line: Option<u64>,
     #[serde(default)]
     pub replacements: u64,
+    /// `stat` / `mkdir`: what the path is after the operation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_type: Option<ExecutorPathType>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -600,6 +645,12 @@ pub enum ExecutorOpSpec {
         edits: Vec<ExecutorEdit>,
         expected_hash: Option<String>,
     },
+    Mkdir {
+        path: String,
+    },
+    Stat {
+        path: String,
+    },
 }
 
 impl ExecutorOpSpec {
@@ -614,7 +665,17 @@ impl ExecutorOpSpec {
             ExecutorOpSpec::Read { .. } => ExecutorOpKind::Read,
             ExecutorOpSpec::Write { .. } => ExecutorOpKind::Write,
             ExecutorOpSpec::Edit { .. } => ExecutorOpKind::Edit,
+            ExecutorOpSpec::Mkdir { .. } => ExecutorOpKind::Mkdir,
+            ExecutorOpSpec::Stat { .. } => ExecutorOpKind::Stat,
         }
+    }
+
+    pub fn from_mkdir(req: &ExecutorPathRequest) -> Self {
+        ExecutorOpSpec::Mkdir { path: req.path.clone() }
+    }
+
+    pub fn from_stat(req: &ExecutorPathRequest) -> Self {
+        ExecutorOpSpec::Stat { path: req.path.clone() }
     }
 
     pub fn from_exec(req: &ExecutorExecRequest) -> Self {

@@ -60,6 +60,12 @@ pub trait ComputerDriver: Send + Sync {
     fn set_generation(&self, _generation: u64) {
         self.invalidate();
     }
+
+    /// `{ui, capture, input, accessibility}` readiness as the Driver sees
+    /// the desktop now (reported by `describe`).
+    fn capabilities(&self) -> serde_json::Value {
+        serde_json::json!({})
+    }
 }
 
 pub(crate) type SharedComputerDriver = Option<Arc<dyn ComputerDriver>>;

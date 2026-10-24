@@ -1,6 +1,6 @@
 {
   "index": 2,
-  "created_at": 1792411644,
+  "created_at": 1792819161,
   "payload": [
     123,
     34,
@@ -160,9 +160,9 @@
   ],
   "headers": {
     "key": "cymsg:7eed2111c6ffe46ee99c5e6825dcad5778eb1bbf4b9c0903ade7896aac61d8c1",
-    "type": "msg",
-    "schema": "opendan.session_input/3",
     "at_ms": "1790899200009",
-    "from": "app:app2@alice"
+    "from": "app:app2@alice",
+    "type": "msg",
+    "schema": "opendan.session_input/3"
   }
 }

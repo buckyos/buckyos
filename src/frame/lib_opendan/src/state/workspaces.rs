@@ -1,7 +1,18 @@
+//! Workspaces of an agent (`state/workspaces/<id>.json`): the control side
+//! of a workspace — registration, identity, URL, revisions, the exclusive
+//! lease and the relocation rules — lives here, in the Agent State, for
+//! every runtime alike (integration TODO §3.4). The runtime only holds the
+//! directory: whether it exists and what its canonical form is, the
+//! identity metadata inside it, and creating it. In the agent's own
+//! environment those are local file operations; on a node runtime they are
+//! the executor's `describe`, `stat`, `read`, `write` and `mkdir`.
+
 use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use agent_tool::runtime::files::PathType;
+use agent_tool::runtime::node::RemoteNodeTarget;
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 
@@ -43,10 +54,33 @@ fn validate_metadata(metadata: &WorkspaceMetadata) -> Result<()> {
     {
         return Err(invalid("invalid_metadata", "invalid name or description"));
     }
+    if let Some(url) = &metadata.url {
+        validate_workspace_url(url).map_err(|e| invalid("invalid_url", e))?;
+    }
     Ok(())
 }
 
-fn read_metadata(directory: &Path) -> Result<Option<WorkspaceMetadata>> {
+/// A URL given with a request: trimmed, validated, empty means none.
+fn request_url(url: &Option<String>) -> Result<Option<String>> {
+    match url.as_deref().map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(url) => validate_workspace_url(url)
+            .map(Some)
+            .map_err(|e| invalid("invalid_url", e)),
+    }
+}
+
+fn parse_metadata(bytes: &[u8]) -> Result<WorkspaceMetadata> {
+    if bytes.len() > 65536 {
+        return Err(invalid("invalid_metadata", "identity metadata is too large"));
+    }
+    let metadata: WorkspaceMetadata =
+        serde_json::from_slice(bytes).map_err(|e| invalid("invalid_metadata", e))?;
+    validate_metadata(&metadata)?;
+    Ok(metadata)
+}
+
+fn read_local_metadata(directory: &Path) -> Result<Option<WorkspaceMetadata>> {
     let path = directory.join(WORKSPACE_METADATA_FILE);
     let meta = match std::fs::symlink_metadata(&path) {
         Ok(meta) => meta,
@@ -83,19 +117,10 @@ fn read_metadata(directory: &Path) -> Result<Option<WorkspaceMetadata>> {
     file.take(65537)
         .read_to_end(&mut bytes)
         .map_err(|e| OpenDanError::io(&path, e))?;
-    if bytes.len() > 65536 {
-        return Err(invalid(
-            "invalid_metadata",
-            "identity metadata is too large",
-        ));
-    }
-    let metadata: WorkspaceMetadata =
-        serde_json::from_slice(&bytes).map_err(|e| invalid("invalid_metadata", e))?;
-    validate_metadata(&metadata)?;
-    Ok(Some(metadata))
+    parse_metadata(&bytes).map(Some)
 }
 
-fn resolve_directory(path: &Path) -> Result<PathBuf> {
+fn resolve_local_directory(path: &Path) -> Result<PathBuf> {
     if !path.is_absolute() {
         return Err(invalid("invalid_directory", "directory must be absolute"));
     }
@@ -108,6 +133,157 @@ fn resolve_directory(path: &Path) -> Result<PathBuf> {
     }
     std::fs::read_dir(&resolved).map_err(|e| OpenDanError::io(&resolved, e))?;
     Ok(resolved)
+}
+
+fn is_drive_path(path: &str) -> bool {
+    let b = path.as_bytes();
+    b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/')
+}
+
+fn path_text(path: &Path) -> String {
+    path.to_string_lossy().to_string()
+}
+
+/// Whether `child` is `parent` or below it, with the path rules of the
+/// directory's own OS (a drive path compares case-insensitively on `\`).
+fn dir_contains(parent: &Path, child: &Path) -> bool {
+    let (p, c) = (path_text(parent), path_text(child));
+    if is_drive_path(&p) || is_drive_path(&c) {
+        let norm = |s: &str| s.replace('/', "\\").trim_end_matches('\\').to_ascii_lowercase();
+        let (p, c) = (norm(&p), norm(&c));
+        return c == p || c.starts_with(&format!("{p}\\"));
+    }
+    child.starts_with(parent)
+}
+
+/// The metadata file inside a workspace directory, joined with the
+/// directory's own separator.
+fn metadata_path(directory: &Path) -> String {
+    crate::runtime::target_join(&path_text(directory), &[WORKSPACE_METADATA_FILE])
+}
+
+/// Where a workspace directory is: the agent's own environment, or a node
+/// reached through its executor.
+enum Target {
+    Local,
+    Node(RemoteNodeTarget),
+}
+
+fn target_error(what: &str, e: agent_tool::AgentToolError) -> OpenDanError {
+    match e {
+        agent_tool::AgentToolError::InvalidArgs(m) => invalid(what, m),
+        other => OpenDanError::Other(format!("workspace {what}: {other}")),
+    }
+}
+
+impl Target {
+    async fn canonical_dir(&self, path: &Path) -> Result<PathBuf> {
+        match self {
+            Target::Local => resolve_local_directory(path),
+            Target::Node(t) => {
+                let text = path_text(path);
+                if !buckyos_api::is_absolute_node_path(&text) {
+                    return Err(invalid("invalid_directory", "directory must be absolute on the node"));
+                }
+                t.canonical_dir(&text)
+                    .await
+                    .map(PathBuf::from)
+                    .map_err(|e| target_error("invalid_directory", e))
+            }
+        }
+    }
+
+    /// `Missing` only when nothing is at the path; a dangling symlink or a
+    /// file counts as present (a relocation needs the old place gone).
+    async fn path_type(&self, path: &Path) -> Result<PathType> {
+        match self {
+            Target::Local => match std::fs::symlink_metadata(path) {
+                Ok(m) if m.is_dir() => Ok(PathType::Directory),
+                Ok(m) if m.is_file() => Ok(PathType::File),
+                Ok(_) => Ok(PathType::Other),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(PathType::Missing),
+                Err(e) => Err(OpenDanError::io(path, e)),
+            },
+            Target::Node(t) => t
+                .path_type(&path_text(path))
+                .await
+                .map(|(kind, _)| kind)
+                .map_err(|e| target_error("old_location_unverified", e)),
+        }
+    }
+
+    async fn read_metadata(&self, directory: &Path) -> Result<Option<WorkspaceMetadata>> {
+        match self {
+            Target::Local => read_local_metadata(directory),
+            Target::Node(t) => {
+                let path = metadata_path(directory);
+                let (kind, _) = t
+                    .path_type(&path)
+                    .await
+                    .map_err(|e| target_error("invalid_metadata", e))?;
+                match kind {
+                    PathType::Missing => Ok(None),
+                    PathType::File => {
+                        let bytes = t.read(&path).await.map_err(|e| target_error("invalid_metadata", e))?;
+                        parse_metadata(&bytes).map(Some)
+                    }
+                    _ => Err(invalid("invalid_metadata", "identity metadata is not a regular file")),
+                }
+            }
+        }
+    }
+
+    /// Write the identity metadata unless the file exists (`false`).
+    async fn write_metadata_new(&self, directory: &Path, metadata: &WorkspaceMetadata) -> Result<bool> {
+        match self {
+            Target::Local => fsutil::publish_noreplace_json(&directory.join(WORKSPACE_METADATA_FILE), metadata),
+            Target::Node(t) => {
+                let bytes = serde_json::to_vec_pretty(metadata).map_err(|e| OpenDanError::Other(e.to_string()))?;
+                t.write_new(&metadata_path(directory), &bytes)
+                    .await
+                    .map_err(|e| target_error("metadata_write_failed", e))
+            }
+        }
+    }
+
+    async fn write_metadata(&self, directory: &Path, metadata: &WorkspaceMetadata) -> Result<()> {
+        match self {
+            Target::Local => fsutil::atomic_replace_json(&directory.join(WORKSPACE_METADATA_FILE), metadata),
+            Target::Node(t) => {
+                let bytes = serde_json::to_vec_pretty(metadata).map_err(|e| OpenDanError::Other(e.to_string()))?;
+                t.write(&metadata_path(directory), &bytes)
+                    .await
+                    .map_err(|e| target_error("metadata_write_failed", e))
+            }
+        }
+    }
+
+    async fn mkdir(&self, path: &Path) -> Result<PathBuf> {
+        match self {
+            Target::Local => {
+                std::fs::create_dir(path).map_err(|e| OpenDanError::io(path, e))?;
+                Ok(path.to_path_buf())
+            }
+            Target::Node(t) => t
+                .mkdir(&path_text(path))
+                .await
+                .map(PathBuf::from)
+                .map_err(|e| target_error("invalid_directory", e)),
+        }
+    }
+
+    /// Whether the directory has content besides identity metadata. A node
+    /// has no listing operation: its directories count as empty when they
+    /// carry no identity metadata (the only thing `create` would clobber).
+    async fn is_empty_dir(&self, directory: &Path) -> Result<bool> {
+        match self {
+            Target::Local => Ok(std::fs::read_dir(directory)
+                .map_err(|e| OpenDanError::io(directory, e))?
+                .next()
+                .is_none()),
+            Target::Node(_) => Ok(true),
+        }
+    }
 }
 
 impl FsWorkspaces {
@@ -140,45 +316,74 @@ impl FsWorkspaces {
         self.lock()
     }
 
-    /// Only the agent's own environment can hold workspaces of this runner;
-    /// its registration (when there is one) and the owner's switch decide
-    /// whether it is usable now.
+    fn runtime_record(&self, runtime_id: &str) -> Result<Option<RuntimeRecord>> {
+        fsutil::read_json_opt::<RuntimeRecord>(&self.layout.runtime_entry(canonical_runtime(runtime_id)))
+    }
+
+    /// Whether the runtime a location names is configured and usable now:
+    /// the agent's own environment (its registration and the owner's
+    /// switch), or an enabled node runtime.
     fn runtime_available(&self, runtime_id: &str) -> Result<bool> {
-        if !is_native_runtime(runtime_id) {
-            return Ok(false);
+        let registered = self.runtime_record(runtime_id)?;
+        if is_native_runtime(runtime_id) {
+            if registered.is_some_and(|r| r.availability != RuntimeAvailability::Available) {
+                return Ok(false);
+            }
+            return Ok(!self
+                .layout
+                .workspaces_dir()
+                .join(".local-unavailable.json")
+                .exists());
         }
-        let registered = fsutil::read_json_opt::<RuntimeRecord>(
-            &self.layout.runtime_entry(CONTAINER_RUNTIME),
-        )?;
-        if registered.is_some_and(|r| r.availability != RuntimeAvailability::Available) {
-            return Ok(false);
-        }
-        Ok(!self
-            .layout
-            .workspaces_dir()
-            .join(".local-unavailable.json")
-            .exists())
+        Ok(registered.is_some_and(|r| {
+            r.kind.is_node() && r.exec.is_some() && r.availability == RuntimeAvailability::Available
+        }))
     }
 
     fn unavailable(&self, runtime_id: &str) -> OpenDanError {
-        if is_native_runtime(runtime_id) {
-            invalid("runtime_unavailable", runtime_id)
-        } else {
-            invalid(
+        match self.runtime_record(runtime_id).ok().flatten() {
+            None if !is_native_runtime(runtime_id) => invalid(
                 "runtime_unavailable",
-                format!("{runtime_id}: this runner only places workspaces in the `{CONTAINER_RUNTIME}` runtime (see `runtime list`)"),
-            )
+                format!("{runtime_id}: not a runtime of this agent (see `runtime list`)"),
+            ),
+            Some(r) if r.availability != RuntimeAvailability::Available => invalid(
+                "runtime_unavailable",
+                format!(
+                    "{runtime_id}: {}",
+                    r.last_error.unwrap_or_else(|| format!("{:?}", r.availability))
+                ),
+            ),
+            _ => invalid("runtime_unavailable", runtime_id),
         }
     }
 
-    fn location(&self, location: &WorkspaceLocation) -> Result<WorkspaceLocation> {
-        if !self.runtime_available(&location.runtime_id)? {
-            return Err(self.unavailable(&location.runtime_id));
+    async fn target(&self, runtime_id: &str) -> Result<Target> {
+        if !self.runtime_available(runtime_id)? {
+            return Err(self.unavailable(runtime_id));
         }
-        Ok(WorkspaceLocation {
-            runtime_id: location.runtime_id.clone(),
-            directory: resolve_directory(&location.directory)?,
-        })
+        if is_native_runtime(runtime_id) {
+            return Ok(Target::Local);
+        }
+        let record = self
+            .runtime_record(runtime_id)?
+            .ok_or_else(|| self.unavailable(runtime_id))?;
+        let ops_dir = self.layout.workspaces_dir().join(".remote_ops");
+        match crate::runtime::open_node_target(&record, &ops_dir).await {
+            Ok(target) => Ok(Target::Node(target)),
+            Err(e) => Err(invalid("runtime_unavailable", format!("{runtime_id}: {e}"))),
+        }
+    }
+
+    async fn location(&self, location: &WorkspaceLocation) -> Result<(Target, WorkspaceLocation)> {
+        let target = self.target(&location.runtime_id).await?;
+        let directory = target.canonical_dir(&location.directory).await?;
+        Ok((
+            target,
+            WorkspaceLocation {
+                runtime_id: location.runtime_id.clone(),
+                directory,
+            },
+        ))
     }
 
     fn read(&self, id: &str) -> Result<Option<WorkspaceRecord>> {
@@ -257,8 +462,8 @@ impl FsWorkspaces {
             if existing.workspace_id != id
                 && canonical_runtime(&existing.location.runtime_id)
                     == canonical_runtime(&location.runtime_id)
-                && (existing.location.directory.starts_with(&location.directory)
-                    || location.directory.starts_with(&existing.location.directory))
+                && (dir_contains(&location.directory, &existing.location.directory)
+                    || dir_contains(&existing.location.directory, &location.directory))
             {
                 return Err(invalid(
                     "overlapping_directory",
@@ -348,7 +553,15 @@ impl FsWorkspaces {
         Err(invalid(code, message))
     }
 
-    fn register_metadata(
+    /// Whether the old directory of a record is gone (a relocation may then
+    /// take the identity along).
+    async fn old_location_gone(&self, record: &WorkspaceRecord) -> Result<bool> {
+        let target = self.target(&record.location.runtime_id).await?;
+        Ok(target.path_type(&record.location.directory).await? == PathType::Missing)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn register_metadata(
         &self,
         metadata: &WorkspaceMetadata,
         location: WorkspaceLocation,
@@ -365,9 +578,14 @@ impl FsWorkspaces {
                 self.check_revision(&record, expected)?;
             }
             if record.runtime_host != crate::runtime::native_host_id() {
-                return self.conflict(&mut record, &location, "old_runtime_unavailable", "the original local runtime belongs to another host and cannot be verified here");
+                return self.conflict(&mut record, &location, "old_runtime_unavailable", "the original registration belongs to another host and cannot be verified here");
             }
             if record.location == location {
+                if record.url != metadata.url {
+                    record.url = metadata.url.clone();
+                    Self::touch(&mut record);
+                    self.write(&record)?;
+                }
                 return Ok(record);
             }
             let expected = expected_revision.ok_or_else(|| {
@@ -385,14 +603,14 @@ impl FsWorkspaces {
             if let Err(e) = self.idle(&record.workspace_id) {
                 return self.conflict(&mut record, &location, "active_sessions", e.to_string());
             }
-            match std::fs::symlink_metadata(&record.location.directory) {
-                Ok(_) => return self.conflict(
+            match self.old_location_gone(&record).await {
+                Ok(true) => {}
+                Ok(false) => return self.conflict(
                     &mut record,
                     &location,
                     "duplicate_identity",
                     "the original directory still exists; copies require a new workspace identity",
                 ),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => {
                     return self.conflict(
                         &mut record,
@@ -406,6 +624,7 @@ impl FsWorkspaces {
             record.location_revision += 1;
             record.name = metadata.name.clone();
             record.description = metadata.description.clone();
+            record.url = metadata.url.clone();
             record.availability = WorkspaceAvailability::Available;
             record.conflict = None;
             record.last_error = None;
@@ -421,6 +640,7 @@ impl FsWorkspaces {
             workspace_id: metadata.workspace_id.clone(),
             name: metadata.name.clone(),
             description: metadata.description.clone(),
+            url: metadata.url.clone(),
             location,
             usage,
             lifecycle: WorkspaceLifecycle::Active,
@@ -443,17 +663,17 @@ impl FsWorkspaces {
         Ok(record)
     }
 
-    fn initialize_metadata(
+    async fn initialize_metadata(
         &self,
+        target: &Target,
         directory: &Path,
         metadata: &WorkspaceMetadata,
     ) -> Result<WorkspaceMetadata> {
         validate_metadata(metadata)?;
-        let path = directory.join(WORKSPACE_METADATA_FILE);
-        if fsutil::publish_noreplace_json(&path, metadata)? {
+        if target.write_metadata_new(directory, metadata).await? {
             return Ok(metadata.clone());
         }
-        read_metadata(directory)?.ok_or_else(|| {
+        target.read_metadata(directory).await?.ok_or_else(|| {
             invalid(
                 "metadata_changed",
                 "metadata disappeared during initialization",
@@ -461,18 +681,21 @@ impl FsWorkspaces {
         })
     }
 
-    fn conflict_resolved(&self, record: &WorkspaceRecord) -> bool {
+    async fn conflict_resolved(&self, record: &WorkspaceRecord) -> bool {
         let Some(conflict) = &record.conflict else {
             return false;
         };
-        if !is_native_runtime(&conflict.candidate.runtime_id)
-            || conflict.candidate == record.location
-        {
+        if conflict.candidate == record.location {
             return false;
         }
-        match std::fs::symlink_metadata(&conflict.candidate.directory) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
-            Ok(_) => read_metadata(&conflict.candidate.directory)
+        let Ok(target) = self.target(&conflict.candidate.runtime_id).await else {
+            return false;
+        };
+        match target.path_type(&conflict.candidate.directory).await {
+            Ok(PathType::Missing) => true,
+            Ok(_) => target
+                .read_metadata(&conflict.candidate.directory)
+                .await
                 .ok()
                 .flatten()
                 .is_some_and(|metadata| metadata.workspace_id != record.workspace_id),
@@ -480,37 +703,42 @@ impl FsWorkspaces {
         }
     }
 
-    fn observe(&self, record: &mut WorkspaceRecord) -> Result<()> {
+    async fn observe(&self, record: &mut WorkspaceRecord) -> Result<()> {
         let observed = if record.runtime_host != crate::runtime::native_host_id()
             || !self.runtime_available(&record.location.runtime_id)?
         {
             Err(invalid("runtime_unavailable", &record.location.runtime_id))
         } else {
-            self.location(&record.location).and_then(|actual| {
-                if actual != record.location {
-                    return Err(invalid(
-                        "location_changed",
-                        "directory resolves to a different location",
-                    ));
+            match self.location(&record.location).await {
+                Ok((target, actual)) => {
+                    if actual != record.location {
+                        Err(invalid(
+                            "location_changed",
+                            "directory resolves to a different location",
+                        ))
+                    } else {
+                        match target.read_metadata(&actual.directory).await {
+                            Ok(Some(metadata)) if metadata.workspace_id != record.workspace_id => Err(invalid(
+                                "identity_changed",
+                                "directory identity differs from registration",
+                            )),
+                            Ok(Some(metadata)) => Ok(metadata),
+                            Ok(None) => Err(invalid("missing_metadata", "identity metadata is missing")),
+                            Err(e) => Err(e),
+                        }
+                    }
                 }
-                let metadata = read_metadata(&actual.directory)?
-                    .ok_or_else(|| invalid("missing_metadata", "identity metadata is missing"))?;
-                if metadata.workspace_id != record.workspace_id {
-                    return Err(invalid(
-                        "identity_changed",
-                        "directory identity differs from registration",
-                    ));
-                }
-                Ok(metadata)
-            })
+                Err(e) => Err(e),
+            }
         };
         match observed {
             Ok(metadata) => {
-                if self.conflict_resolved(record) {
+                if self.conflict_resolved(record).await {
                     record.conflict = None;
                 }
                 record.name = metadata.name;
                 record.description = metadata.description;
+                record.url = metadata.url;
                 record.availability = if record.conflict.is_some() {
                     WorkspaceAvailability::Conflict
                 } else {
@@ -537,6 +765,9 @@ impl FsWorkspaces {
                     {
                         WorkspaceAvailability::RuntimeUnavailable
                     }
+                    OpenDanError::InvalidArgument(m) if m.starts_with("workspace invalid_directory") => {
+                        WorkspaceAvailability::Missing
+                    }
                     _ => WorkspaceAvailability::InvalidMetadata,
                 };
                 record.last_error = Some(e.to_string());
@@ -553,10 +784,10 @@ impl WorkspaceManager for FsWorkspaces {
     async fn create(&self, request: &WorkspaceCreate, who: &str) -> Result<WorkspaceRecord> {
         let _lock = self.lock()?;
         let id = self.operation_id(&request.operation_id, who)?;
-        if !self.runtime_available(&request.location.runtime_id)? {
-            return Err(self.unavailable(&request.location.runtime_id));
-        }
-        if !request.location.directory.is_absolute() {
+        let url = request_url(&request.url)?;
+        let target = self.target(&request.location.runtime_id).await?;
+        let requested = path_text(&request.location.directory);
+        if !buckyos_api::is_absolute_node_path(&requested) {
             return Err(invalid("invalid_directory", "directory must be absolute"));
         }
         let draft = WorkspaceMetadata {
@@ -564,6 +795,7 @@ impl WorkspaceManager for FsWorkspaces {
             workspace_id: id.clone(),
             name: request.name.clone(),
             description: request.description.clone(),
+            url: url.clone(),
             created_at_ms: crate::now_ms(),
             operation_id: Some(request.operation_id.clone()),
         };
@@ -575,9 +807,11 @@ impl WorkspaceManager for FsWorkspaces {
                     "the existing operation belongs to another local runtime host",
                 ));
             }
-            let directory = std::fs::canonicalize(&request.location.directory)
+            let directory = target
+                .canonical_dir(&request.location.directory)
+                .await
                 .unwrap_or_else(|_| request.location.directory.clone());
-            if existing.location.runtime_id != request.location.runtime_id
+            if canonical_runtime(&existing.location.runtime_id) != canonical_runtime(&request.location.runtime_id)
                 || existing.location.directory != directory
             {
                 return Err(invalid(
@@ -585,10 +819,9 @@ impl WorkspaceManager for FsWorkspaces {
                     "this operation already created a workspace at another location",
                 ));
             }
-        }
-        if let Some(existing) = self.read(&id)? {
             if existing.name != request.name
                 || existing.description != request.description
+                || existing.url != url
                 || existing.usage != request.usage
                 || existing.source_session != request.source_session
                 || existing.policy_ref != request.policy_ref
@@ -598,8 +831,7 @@ impl WorkspaceManager for FsWorkspaces {
                     "operation parameters differ from the existing workspace",
                 ));
             }
-            let location = self.location(&request.location)?;
-            let metadata = read_metadata(&location.directory)?.ok_or_else(|| {
+            let metadata = target.read_metadata(&directory).await?.ok_or_else(|| {
                 invalid(
                     "missing_metadata",
                     "an existing registration cannot be reinitialized",
@@ -621,32 +853,38 @@ impl WorkspaceManager for FsWorkspaces {
             }
             return Ok(existing);
         }
-        if !request.location.directory.exists() {
+        if target.path_type(&request.location.directory).await? == PathType::Missing {
             let parent = request
                 .location
                 .directory
                 .parent()
+                .filter(|p| !path_text(p).is_empty())
                 .ok_or_else(|| invalid("invalid_directory", "missing parent directory"))?;
-            let parent = resolve_directory(parent)?;
-            let target = parent.join(
-                request
-                    .location
-                    .directory
-                    .file_name()
-                    .ok_or_else(|| invalid("invalid_directory", "missing directory name"))?,
-            );
+            let parent = target.canonical_dir(parent).await?;
+            let name = request
+                .location
+                .directory
+                .file_name()
+                .ok_or_else(|| invalid("invalid_directory", "missing directory name"))?
+                .to_string_lossy()
+                .to_string();
+            let candidate = PathBuf::from(crate::runtime::target_join(&path_text(&parent), &[&name]));
             self.no_overlap(
                 &id,
                 &WorkspaceLocation {
                     runtime_id: request.location.runtime_id.clone(),
-                    directory: target.clone(),
+                    directory: candidate.clone(),
                 },
             )?;
-            std::fs::create_dir(&target).map_err(|e| OpenDanError::io(&target, e))?;
+            target.mkdir(&candidate).await?;
         }
-        let location = self.location(&request.location)?;
+        let directory = target.canonical_dir(&request.location.directory).await?;
+        let location = WorkspaceLocation {
+            runtime_id: request.location.runtime_id.clone(),
+            directory,
+        };
         self.no_overlap(&id, &location)?;
-        let metadata = match read_metadata(&location.directory)? {
+        let metadata = match target.read_metadata(&location.directory).await? {
             Some(metadata) => {
                 if metadata.workspace_id != id
                     || metadata.operation_id.as_deref() != Some(&request.operation_id)
@@ -659,17 +897,13 @@ impl WorkspaceManager for FsWorkspaces {
                 metadata
             }
             None => {
-                if std::fs::read_dir(&location.directory)
-                    .map_err(|e| OpenDanError::io(&location.directory, e))?
-                    .next()
-                    .is_some()
-                {
+                if !target.is_empty_dir(&location.directory).await? {
                     return Err(invalid(
                         "directory_not_empty",
                         "create requires an empty directory; use import for existing content",
                     ));
                 }
-                self.initialize_metadata(&location.directory, &draft)?
+                self.initialize_metadata(&target, &location.directory, &draft).await?
             }
         };
         if metadata.name != request.name || metadata.description != request.description {
@@ -694,13 +928,15 @@ impl WorkspaceManager for FsWorkspaces {
             request.source_session.clone(),
             request.policy_ref.clone(),
         )
+        .await
     }
 
     async fn import(&self, request: &WorkspaceImport, who: &str) -> Result<WorkspaceRecord> {
         let _lock = self.lock()?;
         let id = self.operation_id(&request.operation_id, who)?;
-        let location = self.location(&request.location)?;
-        let metadata = match read_metadata(&location.directory)? {
+        let url = request_url(&request.url)?;
+        let (target, location) = self.location(&request.location).await?;
+        let metadata = match target.read_metadata(&location.directory).await? {
             Some(metadata) => metadata,
             None => {
                 if self.read(&id)?.is_some() {
@@ -719,16 +955,19 @@ impl WorkspaceManager for FsWorkspaces {
                         .to_string()
                 });
                 self.initialize_metadata(
+                    &target,
                     &location.directory,
                     &WorkspaceMetadata {
                         version: WORKSPACE_METADATA_VERSION,
                         workspace_id: id,
                         name,
                         description: request.description.clone(),
+                        url,
                         created_at_ms: crate::now_ms(),
                         operation_id: Some(request.operation_id.clone()),
                     },
-                )?
+                )
+                .await?
             }
         };
         self.register_metadata(
@@ -741,12 +980,13 @@ impl WorkspaceManager for FsWorkspaces {
             request.source_session.clone(),
             request.policy_ref.clone(),
         )
+        .await
     }
 
     async fn discover(&self, request: &WorkspaceDiscover, who: &str) -> Result<WorkspaceRecord> {
         let _lock = self.lock()?;
-        let location = self.location(&request.location)?;
-        let metadata = read_metadata(&location.directory)?.ok_or_else(|| {
+        let (target, location) = self.location(&request.location).await?;
+        let metadata = target.read_metadata(&location.directory).await?.ok_or_else(|| {
             invalid(
                 "missing_metadata",
                 "ordinary directory; explicit import is required",
@@ -772,6 +1012,7 @@ impl WorkspaceManager for FsWorkspaces {
             None,
             None,
         )
+        .await
     }
 
     async fn lookup(&self, workspace_id: &str) -> Result<Option<WorkspaceRecord>> {
@@ -793,6 +1034,7 @@ impl WorkspaceManager for FsWorkspaces {
                         r.name.to_lowercase().contains(&v)
                             || r.description.to_lowercase().contains(&v)
                             || r.workspace_id.contains(&v)
+                            || r.url.as_deref().is_some_and(|u| u.to_lowercase().contains(&v))
                     })
             })
             .collect())
@@ -801,7 +1043,7 @@ impl WorkspaceManager for FsWorkspaces {
     async fn check(&self, workspace_id: &str) -> Result<WorkspaceRecord> {
         let _lock = self.lock_for_check().await?;
         let mut record = self.require(workspace_id)?;
-        self.observe(&mut record)?;
+        self.observe(&mut record).await?;
         Ok(record)
     }
 
@@ -822,6 +1064,27 @@ impl WorkspaceManager for FsWorkspaces {
         }
         if let Some(notes) = &request.private_notes {
             record.private_notes = notes.clone();
+        }
+        if let Some(url) = &request.url {
+            let url = request_url(&Some(url.clone()))?;
+            if url != record.url {
+                // The URL belongs to the directory's identity: every agent
+                // that discovers the directory sees the same project.
+                let (target, actual) = self.location(&record.location).await?;
+                if actual != record.location {
+                    return Err(invalid("location_changed", "directory resolves to a different location"));
+                }
+                let mut metadata = target
+                    .read_metadata(&actual.directory)
+                    .await?
+                    .ok_or_else(|| invalid("missing_metadata", "identity metadata is missing"))?;
+                if metadata.workspace_id != record.workspace_id {
+                    return Err(invalid("identity_changed", "directory identity differs from registration"));
+                }
+                metadata.url = url.clone();
+                target.write_metadata(&actual.directory, &metadata).await?;
+                record.url = url;
+            }
         }
         Self::touch(&mut record);
         self.write(&record)?;
@@ -879,12 +1142,27 @@ impl WorkspaceManager for FsWorkspaces {
         let mut records = self.all()?;
         for record in &mut records {
             if is_native_runtime(&record.location.runtime_id) {
-                self.observe(record)?;
+                self.observe(record).await?;
             }
         }
         Ok(records
             .into_iter()
             .filter(|r| is_native_runtime(&r.location.runtime_id))
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn directory_containment_follows_the_directory_os() {
+        assert!(dir_contains(Path::new("/a/b"), Path::new("/a/b/c")));
+        assert!(!dir_contains(Path::new("/a/b"), Path::new("/a/bc")));
+        assert!(dir_contains(Path::new(r"C:\Users\o"), Path::new(r"c:\users\o\ws")));
+        assert!(!dir_contains(Path::new(r"C:\Users\o"), Path::new(r"C:\Users\other")));
+        assert_eq!(metadata_path(Path::new(r"C:\Users\o\ws")), r"C:\Users\o\ws\.opendan-workspace.json");
+        assert_eq!(metadata_path(Path::new("/home/o/ws")), "/home/o/ws/.opendan-workspace.json");
     }
 }

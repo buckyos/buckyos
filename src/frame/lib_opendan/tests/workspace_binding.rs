@@ -283,7 +283,7 @@ async fn child_inheritance_and_config_updates_cannot_expand_the_binding() {
     let mut spec = work_spec("readonly parent");
     spec.workspace = Some(WorkspaceRef {
         access: WorkspaceAccess::ReadOnly,
-        ..reference
+        ..reference.clone()
     });
     let parent = env.create_work(spec).await;
     let child = create_sub_session(
@@ -315,7 +315,17 @@ async fn child_inheritance_and_config_updates_cannot_expand_the_binding() {
     )
     .await
     .unwrap_err();
-    assert!(err.to_string().contains("different workspace"));
+    // A Work parent may choose another registered workspace for its child
+    // (integration TODO §T3); one that does not exist is refused.
+    assert!(
+        matches!(err, libopendan::OpenDanError::NotFound(_) | libopendan::OpenDanError::InvalidArgument(_)),
+        "{err}"
+    );
+    assert_eq!(
+        parent.config().unwrap().workspace,
+        Some(WorkspaceRef { access: WorkspaceAccess::ReadOnly, ..reference }),
+        "the parent's binding is unchanged"
+    );
     let llm = ScriptedLlm::new(|_, _| text("must not execute without read-only isolation"));
     assert!(matches!(
         drive(&child, &env.deps(llm.clone()), StopWhen::Finished).await,

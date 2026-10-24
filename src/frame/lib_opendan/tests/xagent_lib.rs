@@ -1137,7 +1137,7 @@ async fn a_waited_child_hands_the_workspace_back_to_its_parent() {
     });
     let mut host = spawn_host(&env, llm.clone(), &parent);
     host.options.max_wait = Duration::from_millis(100);
-    let parent_deps = host.runner_deps(&parent, StopSignal::default()).unwrap();
+    let parent_deps = host.runner_deps(&parent, StopSignal::default()).await.unwrap();
     let waiting = drive(&parent, &parent_deps, StopWhen::TurnClosed).await;
     assert!(
         matches!(waiting, DriveResult::TurnOpen { .. }),
@@ -1155,7 +1155,7 @@ async fn a_waited_child_hands_the_workspace_back_to_its_parent() {
         parent.config().unwrap().workspace,
         child.config().unwrap().workspace
     );
-    let child_deps = host.runner_deps(&child, StopSignal::default()).unwrap();
+    let child_deps = host.runner_deps(&child, StopSignal::default()).await.unwrap();
     let lease = parent
         .acquire(parent_deps.holder())
         .unwrap()
@@ -1458,6 +1458,8 @@ async fn work_sessions_take_the_cmd_skills_chosen_at_creation() {
         skills,
         after: Vec::new(),
         batch: None,
+            runtime_id: None,
+        workspace: None,
     };
     let t1 = store.update(|l| l.add(todo("with", vec!["image".into()]), 1)).unwrap();
     let t2 = store.update(|l| l.add(todo("without", Vec::new()), 1)).unwrap();

@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use buckyos_api::{
     executor_content_hash, ExecutorEdit, ExecutorError, ExecutorErrorCode, ExecutorFileResult,
-    ExecutorWriteMode,
+    ExecutorPathType, ExecutorWriteMode,
 };
 use serde::{Deserialize, Serialize};
 
@@ -51,6 +51,14 @@ pub enum WorkerJob {
         edits: Vec<ExecutorEdit>,
         expected_hash: Option<String>,
         max_bytes: u64,
+    },
+    Mkdir {
+        path: String,
+        roots: Vec<String>,
+    },
+    Stat {
+        path: String,
+        roots: Vec<String>,
     },
 }
 
@@ -275,6 +283,7 @@ fn execute(job: WorkerJob, input: &mut impl Read) -> Result<(WorkerReply, Vec<u8
                         bytes_written: upload.len() as u64,
                         line: None,
                         replacements: 0,
+                        path_type: Some(ExecutorPathType::File),
                     }),
                     ..Default::default()
                 },
@@ -326,11 +335,80 @@ fn execute(job: WorkerJob, input: &mut impl Read) -> Result<(WorkerReply, Vec<u8
                         bytes_written: if changed { updated.len() as u64 } else { 0 },
                         line: Some(line),
                         replacements,
+                        path_type: Some(ExecutorPathType::File),
                     }),
                     file_size: original.len() as u64,
                     ..Default::default()
                 },
                 original,
+            ))
+        }
+        WorkerJob::Stat { path, roots } => {
+            if !crate::is_host_absolute(&path) {
+                return Err(err(ExecutorErrorCode::InvalidArgument, format!("{path} is not absolute")));
+            }
+            let roots = canonical_roots(&roots);
+            let (real, path_type) = match std::fs::metadata(&path) {
+                Ok(meta) => {
+                    let real = std::fs::canonicalize(&path).map_err(|e| io_err(&path, e))?;
+                    let kind = if meta.is_dir() {
+                        ExecutorPathType::Directory
+                    } else if meta.is_file() {
+                        ExecutorPathType::File
+                    } else {
+                        ExecutorPathType::Other
+                    };
+                    (real, kind)
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    (missing_parent_target(&path, &roots)?, ExecutorPathType::Missing)
+                }
+                Err(e) => return Err(io_err(&path, e)),
+            };
+            ensure_under(&real, &roots, &path)?;
+            Ok((
+                WorkerReply {
+                    path: Some(sys::display(&real)),
+                    file: Some(ExecutorFileResult {
+                        path: sys::display(&real),
+                        path_type: Some(path_type),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                Vec::new(),
+            ))
+        }
+        WorkerJob::Mkdir { path, roots } => {
+            let roots = canonical_roots(&roots);
+            let real = match std::fs::metadata(&path) {
+                Ok(meta) => {
+                    let real = std::fs::canonicalize(&path).map_err(|e| io_err(&path, e))?;
+                    ensure_under(&real, &roots, &path)?;
+                    if !meta.is_dir() {
+                        return Err(err(ExecutorErrorCode::Conflict, format!("{path} exists and is not a directory")));
+                    }
+                    real
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    let real = missing_parent_target(&path, &roots)?;
+                    std::fs::create_dir_all(&real).map_err(|e| io_err(&path, e))?;
+                    std::fs::canonicalize(&real).map_err(|e| io_err(&path, e))?
+                }
+                Err(e) => return Err(io_err(&path, e)),
+            };
+            Ok((
+                WorkerReply {
+                    path: Some(sys::display(&real)),
+                    file: Some(ExecutorFileResult {
+                        path: sys::display(&real),
+                        path_type: Some(ExecutorPathType::Directory),
+                        created: true,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                Vec::new(),
             ))
         }
     }

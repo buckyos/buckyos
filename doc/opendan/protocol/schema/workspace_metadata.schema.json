@@ -20,6 +20,13 @@
         "null"
       ]
     },
+    "url": {
+      "description": "The project this directory is a working copy of (see [`validate_workspace_url`]).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "version": {
       "format": "uint32",
       "minimum": 0.0,

@@ -204,6 +204,7 @@ fn validate_spec(spec: &ExecutorOpSpec, limits: &ExecutorLimits) -> Result<(), E
                 return Err(err(ExecutorErrorCode::InvalidArgument, "edits is empty"));
             }
         }
+        ExecutorOpSpec::Mkdir { path } | ExecutorOpSpec::Stat { path } => abs(path)?,
     }
     Ok(())
 }
@@ -996,10 +997,11 @@ impl OpsManager {
         let roots = op.profile.workdir_roots.clone();
         let max_file = record.budget.max_file_bytes;
         let dir = self.store.op_dir(&op.key);
-        let mutating = !matches!(record.spec, ExecutorOpSpec::Read { .. });
+        let mutating = !matches!(record.spec, ExecutorOpSpec::Read { .. } | ExecutorOpSpec::Stat { .. });
+        let has_content = matches!(record.spec, ExecutorOpSpec::Read { .. } | ExecutorOpSpec::Edit { .. });
 
         let mut _path_guard = None;
-        if let ExecutorOpSpec::Write { path, .. } | ExecutorOpSpec::Edit { path, .. } = &record.spec {
+        if let ExecutorOpSpec::Write { path, .. } | ExecutorOpSpec::Edit { path, .. } | ExecutorOpSpec::Mkdir { path } = &record.spec {
             let target = match self
                 .worker_job(
                     op,
@@ -1015,6 +1017,13 @@ impl OpsManager {
             {
                 FileJobOutcome::Reply(reply, _) => match (reply.error, reply.path) {
                     (None, Some(p)) => p,
+                    // A directory below missing parents has no target yet;
+                    // mkdir creates them under the roots check itself.
+                    (Some(e), _) if matches!(record.spec, ExecutorOpSpec::Mkdir { .. })
+                        && e.code == ExecutorErrorCode::InvalidArgument =>
+                    {
+                        path.clone()
+                    }
                     (Some(e), _) => return Self::failed(e, ExecutorOpState::Failed),
                     _ => return Self::failed(internal("worker returned no path"), ExecutorOpState::Failed),
                 },
@@ -1074,6 +1083,20 @@ impl OpsManager {
                 },
                 Vec::new(),
             ),
+            ExecutorOpSpec::Mkdir { path } => (
+                WorkerJob::Mkdir {
+                    path: path.clone(),
+                    roots,
+                },
+                Vec::new(),
+            ),
+            ExecutorOpSpec::Stat { path } => (
+                WorkerJob::Stat {
+                    path: path.clone(),
+                    roots,
+                },
+                Vec::new(),
+            ),
             ExecutorOpSpec::Exec { .. } | ExecutorOpSpec::Computer { .. } => unreachable!(),
         };
 
@@ -1087,7 +1110,7 @@ impl OpsManager {
         }
         drop(gate);
         self.mark_running(op, None).await;
-        let reply_payload = if matches!(record.spec, ExecutorOpSpec::Write { .. }) { 0 } else { max_file };
+        let reply_payload = if has_content { max_file } else { 0 };
         match self.worker_job(op, run_as.as_ref(), &job, &payload, reply_payload).await {
             FileJobOutcome::SpawnFailed(e) => Self::failed(e, ExecutorOpState::Failed),
             FileJobOutcome::Unknown(e) => {
@@ -1103,7 +1126,7 @@ impl OpsManager {
                     return Self::failed(e, ExecutorOpState::Failed);
                 }
                 let mut content = None;
-                if !matches!(record.spec, ExecutorOpSpec::Write { .. }) {
+                if has_content {
                     let path = dir.join(ExecutorChannel::Content.as_str());
                     let write = async {
                         let mut f = tokio::fs::File::create(&path).await?;

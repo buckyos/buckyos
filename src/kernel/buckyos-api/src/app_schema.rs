@@ -503,6 +503,35 @@ pub struct AgentMsgTunnelSettings {
     pub bot_account_id: Option<String>,
 }
 
+/// The product runtime id of the owner's desktop host.
+pub const HOST_RUNTIME_ID: &str = "host";
+/// The runtime id of the Agent's own environment (its container).
+pub const CONTAINER_RUNTIME_ID: &str = "container";
+
+/// Where an execution runtime of an Agent actually runs; resolved when the
+/// runtime is enabled and kept, so a restart or another device coming
+/// online never moves it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AgentRuntimeTarget {
+    /// The Node Executor embedded in a node's node-daemon (form A).
+    Node { node_id: String, node_did: String },
+    /// A standalone Agent Daemon registered in the control panel (form B).
+    Executor { executor_id: String },
+}
+
+/// The owner's choice for one execution runtime of an Agent. The node's
+/// policy (`ExecutorSettings.owner_agents`) says what the node allows; the
+/// scheduler multiplies both into the Agent's profile on that node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentRuntimeSettings {
+    pub enabled: bool,
+    #[serde(default)]
+    pub computer: crate::ComputerAccess,
+    pub target: AgentRuntimeTarget,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSettings {
     #[serde(default = "default_true")]
@@ -521,6 +550,15 @@ pub struct AgentSettings {
     pub desktop_entry: Option<String>,
     #[serde(default)]
     pub msg_tunnels: Vec<AgentMsgTunnelSettings>,
+    /// Execution runtimes beyond the Agent's own container, by runtime id
+    /// (`host` is the owner's desktop). Missing: the Agent only runs in
+    /// its container.
+    #[serde(default)]
+    pub runtimes: BTreeMap<String, AgentRuntimeSettings>,
+    /// The runtime new UI sessions without a workspace run in; `None` or
+    /// `container`: the Agent's own environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_runtime_id: Option<String>,
 }
 
 impl Default for AgentSettings {
@@ -534,7 +572,91 @@ impl Default for AgentSettings {
             template_auto_update: true,
             desktop_entry: None,
             msg_tunnels: Vec::new(),
+            runtimes: BTreeMap::new(),
+            default_runtime_id: None,
         }
+    }
+}
+
+pub fn is_valid_runtime_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+}
+
+impl AgentSettings {
+    /// The runtime ids the owner enabled (the container is always usable).
+    pub fn enabled_runtime_ids(&self) -> Vec<String> {
+        let mut ids = vec![CONTAINER_RUNTIME_ID.to_string()];
+        ids.extend(
+            self.runtimes
+                .iter()
+                .filter(|(_, r)| r.enabled)
+                .map(|(id, _)| id.clone()),
+        );
+        ids
+    }
+
+    pub fn runtime_enabled(&self, runtime_id: &str) -> bool {
+        runtime_id == CONTAINER_RUNTIME_ID
+            || self.runtimes.get(runtime_id).is_some_and(|r| r.enabled)
+    }
+
+    /// The default runtime for new sessions: the configured one when it is
+    /// enabled, else the container.
+    pub fn effective_default_runtime(&self) -> &str {
+        match self.default_runtime_id.as_deref() {
+            Some(id) if self.runtime_enabled(id) => id,
+            _ => CONTAINER_RUNTIME_ID,
+        }
+    }
+
+    /// The enabled runtime of this Agent on `node_id`, if any.
+    pub fn node_runtime(&self, node_id: &str) -> Option<(&str, &AgentRuntimeSettings)> {
+        self.runtimes.iter().find_map(|(id, r)| match &r.target {
+            AgentRuntimeTarget::Node { node_id: n, .. } if n == node_id && r.enabled => {
+                Some((id.as_str(), r))
+            }
+            _ => None,
+        })
+    }
+
+    pub fn validate_runtimes(&self) -> Result<(), String> {
+        for (id, r) in &self.runtimes {
+            if !is_valid_runtime_id(id) || id == CONTAINER_RUNTIME_ID {
+                return Err(format!("invalid runtime id `{id}`"));
+            }
+            match &r.target {
+                AgentRuntimeTarget::Node { node_id, node_did } => {
+                    if node_id.trim().is_empty() || !node_did.starts_with("did:") {
+                        return Err(format!("runtime `{id}`: target node is incomplete"));
+                    }
+                }
+                AgentRuntimeTarget::Executor { executor_id } => {
+                    if executor_id.trim().is_empty() {
+                        return Err(format!("runtime `{id}`: target executor is incomplete"));
+                    }
+                }
+            }
+        }
+        let mut nodes = BTreeSet::new();
+        for r in self.runtimes.values() {
+            if let AgentRuntimeTarget::Node { node_id, .. } = &r.target {
+                if !nodes.insert(node_id) {
+                    return Err(format!("node `{node_id}` is the target of two runtimes"));
+                }
+            }
+        }
+        if let Some(default) = &self.default_runtime_id {
+            if !self.runtime_enabled(default) {
+                return Err(format!(
+                    "default runtime `{default}` is not an enabled runtime"
+                ));
+            }
+        }
+        Ok(())
     }
 }
 

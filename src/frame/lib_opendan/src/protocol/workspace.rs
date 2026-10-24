@@ -4,8 +4,35 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub const WORKSPACE_METADATA_FILE: &str = ".opendan-workspace.json";
-pub const WORKSPACE_METADATA_VERSION: u32 = 1;
-pub const WORKSPACE_RECORD_VERSION: u32 = 1;
+pub const WORKSPACE_METADATA_VERSION: u32 = 2;
+pub const WORKSPACE_RECORD_VERSION: u32 = 2;
+/// Longest project URL kept with a workspace.
+pub const WORKSPACE_URL_MAX: usize = 2048;
+
+/// A project URL a workspace is associated with (integration TODO §3.4):
+/// an `http(s)` link without credentials, or `None`. The URL names the
+/// project, not the directory: nothing is cloned or fetched for it.
+pub fn validate_workspace_url(url: &str) -> Result<String, String> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Err("url is empty".into());
+    }
+    if url.len() > WORKSPACE_URL_MAX || url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("url is too long or contains whitespace".into());
+    }
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .ok_or_else(|| "url must start with http:// or https://".to_string())?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() {
+        return Err("url has no host".into());
+    }
+    if authority.contains('@') {
+        return Err("url must not carry a user name or password".into());
+    }
+    Ok(url.to_string())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkspaceLocation {
@@ -47,6 +74,10 @@ pub struct WorkspaceMetadata {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    /// The project this directory is a working copy of (see
+    /// [`validate_workspace_url`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
     pub created_at_ms: u64,
     #[serde(default)]
     pub operation_id: Option<String>,
@@ -67,6 +98,8 @@ pub struct WorkspaceRecord {
     pub workspace_id: String,
     pub name: String,
     pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
     pub location: WorkspaceLocation,
     pub usage: WorkspaceUsage,
     pub lifecycle: WorkspaceLifecycle,
@@ -97,6 +130,8 @@ pub struct WorkspaceCreate {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
+    pub url: Option<String>,
     pub location: WorkspaceLocation,
     #[serde(default)]
     pub usage: WorkspaceUsage,
@@ -114,6 +149,10 @@ pub struct WorkspaceImport {
     pub name: Option<String>,
     #[serde(default)]
     pub description: String,
+    /// Written into a directory that has no identity metadata yet; a
+    /// directory that already has one keeps its own URL.
+    #[serde(default)]
+    pub url: Option<String>,
     #[serde(default)]
     pub usage: WorkspaceUsage,
     #[serde(default)]
@@ -152,4 +191,8 @@ pub struct WorkspaceUpdate {
     pub lifecycle: Option<WorkspaceLifecycle>,
     #[serde(default)]
     pub private_notes: Option<String>,
+    /// `Some("")` clears the URL; it is written into the directory's
+    /// identity metadata too, so every agent that discovers it sees it.
+    #[serde(default)]
+    pub url: Option<String>,
 }

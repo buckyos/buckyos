@@ -7,8 +7,7 @@ use serde_json::{json, Value};
 use crate::access::valid_executor_id;
 
 #[cfg(windows)]
-#[path = "local_windows.rs"]
-pub mod windows;
+pub use computer_driver::windows;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Status {
@@ -58,27 +57,7 @@ pub fn default_data_dir() -> Result<PathBuf, String> {
 }
 
 pub fn private_dir(path: &Path) -> Result<(), String> {
-    #[cfg(windows)]
-    return windows::private_dir(path);
-    #[cfg(not(windows))]
-    {
-        fs::create_dir_all(path).map_err(|_| "cannot create daemon data directory")?;
-        let metadata =
-            fs::symlink_metadata(path).map_err(|_| "cannot inspect daemon data directory")?;
-        if !metadata.is_dir() || metadata.file_type().is_symlink() {
-            return Err("daemon data directory must be a real directory".into());
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::{MetadataExt, PermissionsExt};
-            if metadata.uid() != unsafe { libc::geteuid() } {
-                return Err("daemon data directory belongs to another OS user".into());
-            }
-            fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-                .map_err(|_| "cannot secure daemon data directory")?;
-        }
-        Ok(())
-    }
+    computer_driver::private_dir(path)
 }
 
 pub fn current_uid() -> u32 {

@@ -206,6 +206,12 @@ export function AgentDetailPage({ agent, onRemoved }: { agent: AgentEntity; onRe
             [t('usersAgents.agent.role'), agent.settings?.role_supplement?.trim() || t('agentSetup.confirm.roleEmpty')],
             [t('usersAgents.agent.app'), agent.runtime?.app_instance_id ?? t('usersAgents.agent.appPending')],
             ...(agent.runtime ? [[t('usersAgents.agent.appState'), agent.runtime.state ?? t('usersAgents.agentStatus.unknown')] as [string, string]] : []),
+            [t('usersAgents.agent.defaultRuntime'), agent.settings?.default_runtime_id && agent.settings.default_runtime_id !== 'container'
+              ? agent.settings.default_runtime_id : t('usersAgents.agent.runtimeContainer')],
+            ...Object.entries(agent.settings?.runtimes ?? {}).map(([id, runtime]) => [
+              t('usersAgents.agent.runtimeEntry', undefined, { id }),
+              `${runtime.enabled ? t('agentSetup.yes') : t('agentSetup.no')} · ${t(`agentSetup.confirm.computer.${runtime.computer}`)} · ${runtime.target.kind === 'node' ? runtime.target.node_id : runtime.target.executor_id}`,
+            ] as [string, string]),
           ]}
         />
       </Card>

@@ -91,6 +91,28 @@ fn invalid(message: impl Into<String>) -> OpenDanError {
     OpenDanError::InvalidArgument(message.into())
 }
 
+/// Where an artifact of a node-runtime session is: `<runtime>:<workdir>/<path>`
+/// on the node (the path is checked like a local one, nothing is read).
+fn remote_artifact_reference(sh: &Shared, cfg: &SessionConfig, name: &str) -> Result<String> {
+    let path = Path::new(name);
+    if name.is_empty()
+        || path
+            .components()
+            .any(|c| !matches!(c, Component::Normal(_)))
+    {
+        return Err(invalid(
+            "artifact paths must be relative files without '.' or '..'",
+        ));
+    }
+    let workdir = crate::runtime::target_workdir(&sh.dir, cfg)?
+        .ok_or_else(|| invalid("the session has no working directory on its runtime yet"))?;
+    Ok(format!(
+        "{}:{}",
+        cfg.runtime.runtime_id(),
+        crate::runtime::target_join(&workdir, &[name])
+    ))
+}
+
 fn artifact_bytes(workdir: &Path, name: &str) -> Result<Vec<u8>> {
     let path = Path::new(name);
     if name.is_empty()
@@ -131,6 +153,11 @@ pub(super) async fn validate(sh: &Shared, run: &RunHandle, args: &ReportArgs) ->
             continue;
         }
         let cfg = sh.session.lock().await.config.clone();
+        if cfg.runtime.is_node() {
+            // The file is on the node; it is reported by reference.
+            remote_artifact_reference(sh, &cfg, path)?;
+            continue;
+        }
         let workdir = crate::runtime::resolve_workdir(&sh.dir, &cfg, sh.agent_root.as_deref())?;
         artifact_bytes(&workdir, path)?;
     }
@@ -262,6 +289,17 @@ pub(super) async fn store_artifacts(
             });
             continue;
         }
+        if cfg.runtime.is_node() {
+            // A file on the node stays there: the report carries where it
+            // is (`<runtime>:<path on the node>`), not a copy.
+            artifacts.push(ReportArtifact {
+                path: path.clone(),
+                reference: remote_artifact_reference(sh, &cfg, path)?,
+                digest: String::new(),
+                obj_id: None,
+            });
+            continue;
+        }
         let bytes = artifact_bytes(Path::new(&workdir), path)?;
         let digest = hex::encode(Sha256::digest(&bytes));
         let reference = format!("{STATE_DIR}/reports/{id}/{index}-{digest}");
@@ -316,6 +354,10 @@ impl llm_context::OutputValidator for ReplyValidator {
                     return Err(format!("artifact `{path}` is listed twice"));
                 }
                 if artifact_obj_id(path).is_none() {
+                    if cfg.runtime.is_node() {
+                        remote_artifact_reference(&self.sh, &cfg, path).map_err(|e| e.to_string())?;
+                        continue;
+                    }
                     artifact_bytes(Path::new(&workdir), path).map_err(|e| {
                         format!("{e}; an artifact is a file you made (path relative to your working directory, created first) or an object id")
                     })?;

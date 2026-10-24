@@ -17,19 +17,20 @@ use buckyos_api::{
     ExecutorDataFrame, ExecutorDescribeOk, ExecutorDescribeRequest, ExecutorEdit,
     ExecutorEditRequest, ExecutorError, ExecutorErrorCode, ExecutorExecRequest, ExecutorFrame,
     ExecutorLimits, ExecutorLogin, ExecutorLoginOk, ExecutorOpRef, ExecutorOpState,
-    ExecutorOpStatus, ExecutorQueryRequest, ExecutorReadRequest, ExecutorServerMessage,
-    ExecutorUploadEnd, ExecutorWriteMode, ExecutorWriteRequest, EXECUTOR_MAX_DATA_BYTES,
-    EXECUTOR_MAX_QUERY_BYTES, NODE_EXECUTOR_PROTOCOL_VERSION,
+    ExecutorOpStatus, ExecutorPathRequest, ExecutorPathType, ExecutorQueryRequest,
+    ExecutorReadRequest, ExecutorServerMessage, ExecutorUploadEnd, ExecutorWriteMode,
+    ExecutorWriteRequest, EXECUTOR_MAX_DATA_BYTES, EXECUTOR_MAX_QUERY_BYTES,
+    NODE_EXECUTOR_PROTOCOL_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::oneshot;
 
-use super::files::{check_allowed, FileBackend, WholeEditResult, WholeWriteMode, WholeWriteResult};
+use super::files::{check_allowed, FileBackend, PathType, WholeEditResult, WholeWriteMode, WholeWriteResult};
 use super::{
-    AgentRuntime, Capabilities, RuntimeConfig, RuntimeDescriptor, RuntimeInfo, RuntimeOpenCtx,
-    CURRENT_TOOL_CALL,
+    AgentRuntime, Capabilities, ControlSide, RuntimeConfig, RuntimeDescriptor, RuntimeInfo,
+    RuntimeOpenCtx, CURRENT_TOOL_CALL,
 };
 use crate::exec_tracking::{unresolved_reason, InflightAction};
 use crate::llm_bash::{
@@ -457,6 +458,29 @@ impl NodeClient {
                 )
                 .await?
             }
+            RemoteOp::Mkdir { path } | RemoteOp::Stat { path } => {
+                let mkdir = matches!(op, RemoteOp::Mkdir { .. });
+                self.request(
+                    |rid, store, run| {
+                        let req = ExecutorPathRequest {
+                            request_id: rid.into(),
+                            store_id: store.into(),
+                            op_id: op_id.clone(),
+                            run_id: run.into(),
+                            call_id: call_id.clone(),
+                            path: path.to_string(),
+                        };
+                        if mkdir {
+                            ExecutorClientMessage::Mkdir(req)
+                        } else {
+                            ExecutorClientMessage::Stat(req)
+                        }
+                    },
+                    None,
+                    Duration::ZERO,
+                )
+                .await?
+            }
         };
         Self::accepted(reply)
     }
@@ -572,6 +596,12 @@ pub(crate) enum RemoteOp<'a> {
         old: &'a str,
         new: &'a str,
     },
+    Mkdir {
+        path: &'a str,
+    },
+    Stat {
+        path: &'a str,
+    },
 }
 
 impl RemoteOp<'_> {
@@ -581,6 +611,8 @@ impl RemoteOp<'_> {
             RemoteOp::Read { .. } => "read",
             RemoteOp::Write { .. } => "write",
             RemoteOp::Edit { .. } => "edit",
+            RemoteOp::Mkdir { .. } => "mkdir",
+            RemoteOp::Stat { .. } => "stat",
         }
     }
 
@@ -596,6 +628,8 @@ impl RemoteOp<'_> {
             RemoteOp::Edit { path, old, new } => {
                 json!({"kind": "edit", "path": path, "old": old, "new": new})
             }
+            RemoteOp::Mkdir { path } => json!({"kind": "mkdir", "path": path}),
+            RemoteOp::Stat { path } => json!({"kind": "stat", "path": path}),
         };
         executor_content_hash(value.to_string().as_bytes())
     }
@@ -796,6 +830,28 @@ pub(crate) struct NodeBashRunner {
     client: Arc<NodeClient>,
     env: BTreeMap<String, String>,
     max_execution_ms: u64,
+    /// Session helpers (`agent-session`, …) stay where the session's state
+    /// is: a command that starts with one of them runs there, in the
+    /// control-side working directory, with the control side's credentials.
+    control: Option<ControlSide>,
+}
+
+/// The program a shell command line starts with (`VAR=x prog …` skipped).
+pub fn leading_program(command: &str) -> Option<&str> {
+    command
+        .trim_start()
+        .split_whitespace()
+        .find(|word| !word.contains('=') || word.starts_with('='))
+        .map(|word| word.trim_matches(|c| c == '\'' || c == '"'))
+}
+
+impl ControlSide {
+    pub fn takes(&self, command: &str) -> bool {
+        leading_program(command).is_some_and(|program| {
+            let name = program.rsplit(['/', '\\']).next().unwrap_or(program);
+            self.commands.iter().any(|c| c == name)
+        })
+    }
 }
 
 #[async_trait]
@@ -808,11 +864,21 @@ impl BashRunner for NodeBashRunner {
         }
     }
 
-    async fn start(&self, _ctx: &SessionRuntimeContext, req: BashRunRequest) -> Result<Box<dyn CommandHandle>, AgentToolError> {
+    async fn start(&self, ctx: &SessionRuntimeContext, req: BashRunRequest) -> Result<Box<dyn CommandHandle>, AgentToolError> {
+        if let Some(control) = self.control.as_ref().filter(|c| c.takes(&req.command)) {
+            let mut req = req;
+            req.cwd = control.workdir.clone();
+            return control.runner.start(ctx, req).await;
+        }
         self.launch(req, self.max_execution_ms).await
     }
 
-    async fn run(&self, _ctx: &SessionRuntimeContext, req: BashRunRequest) -> Result<BashRunOutput, AgentToolError> {
+    async fn run(&self, ctx: &SessionRuntimeContext, req: BashRunRequest) -> Result<BashRunOutput, AgentToolError> {
+        if let Some(control) = self.control.as_ref().filter(|c| c.takes(&req.command)) {
+            let mut req = req;
+            req.cwd = control.workdir.clone();
+            return control.runner.run(ctx, req).await;
+        }
         let timeout = req.timeout_ms.max(1).min(self.max_execution_ms);
         let mut handle = self.launch(req, timeout).await?;
         match handle.wait(Duration::from_millis(timeout) + REQUEST_SLACK).await? {
@@ -1017,17 +1083,7 @@ impl RemoteNodeFiles {
                 message: format!("remote {what} did not finish in time"),
                 effect_unknown: true,
             })?;
-        match status.state {
-            ExecutorOpState::Succeeded => Ok(status),
-            _ => {
-                let err = status
-                    .result
-                    .as_ref()
-                    .and_then(|r| r.error.clone())
-                    .unwrap_or_else(|| ExecutorError::new(ExecutorErrorCode::Internal, format!("remote {what} {:?}", status.state)));
-                Err(tool_error(err))
-            }
-        }
+        settled(status, what)
     }
 }
 
@@ -1096,6 +1152,148 @@ impl FileBackend for RemoteNodeFiles {
         }
         .await;
         Some(outcome)
+    }
+
+    async fn path_type(&self, path: &Path) -> Result<PathType, AgentToolError> {
+        let path = path.to_string_lossy().to_string();
+        let status = self.run("stat", RemoteOp::Stat { path: &path }).await?;
+        Ok(path_type_of(&status))
+    }
+
+    async fn mkdir(&self, path: &Path) -> Result<(), AgentToolError> {
+        let path = path.to_string_lossy().to_string();
+        self.run("mkdir", RemoteOp::Mkdir { path: &path }).await.map(|_| ())
+    }
+}
+
+fn path_type_of(status: &ExecutorOpStatus) -> PathType {
+    match status.result.as_ref().and_then(|r| r.file.as_ref()).and_then(|f| f.path_type) {
+        Some(ExecutorPathType::File) => PathType::File,
+        Some(ExecutorPathType::Directory) => PathType::Directory,
+        Some(ExecutorPathType::Missing) | None => PathType::Missing,
+        Some(ExecutorPathType::Other) => PathType::Other,
+    }
+}
+
+fn settled(status: ExecutorOpStatus, what: &str) -> Result<ExecutorOpStatus, AgentToolError> {
+    match status.state {
+        ExecutorOpState::Succeeded => Ok(status),
+        _ => {
+            let err = status
+                .result
+                .as_ref()
+                .and_then(|r| r.error.clone())
+                .unwrap_or_else(|| ExecutorError::new(ExecutorErrorCode::Internal, format!("remote {what} {:?}", status.state)));
+            Err(tool_error(err))
+        }
+    }
+}
+
+/// A node's executor as a target directory for a control side that is not
+/// a tool call: workspace placement (existence, identity metadata, mkdir)
+/// and the default directory of a session (integration TODO §3.4). Every
+/// operation is one remote operation with its own locator under `ops_dir`.
+pub struct RemoteNodeTarget {
+    client: Arc<NodeClient>,
+    described: ExecutorDescribeOk,
+    max_file_bytes: usize,
+}
+
+impl RemoteNodeTarget {
+    pub async fn open(
+        connector: Arc<dyn NodeExecutorConnector>,
+        node_did: &str,
+        profile_id: &str,
+        runtime_id: &str,
+        ops_dir: PathBuf,
+    ) -> Result<Self, AgentToolError> {
+        let run_id = format!("target-{}", uuid_like());
+        let slot: RunBindingSlot = Arc::new(Mutex::new(Some(RunBinding {
+            run_id: run_id.clone(),
+            run_dir: Some(ops_dir),
+        })));
+        let client = Arc::new(NodeClient::new(connector, node_did, profile_id, runtime_id, slot, &run_id, None));
+        let login = client.login_info().await.map_err(tool_error)?;
+        let described = client.describe(None).await.map_err(tool_error)?;
+        Ok(Self {
+            client,
+            described,
+            max_file_bytes: login.limits.max_file_bytes as usize,
+        })
+    }
+
+    pub fn described(&self) -> &ExecutorDescribeOk {
+        &self.described
+    }
+
+    pub fn os(&self) -> &str {
+        &self.described.info.os
+    }
+
+    pub fn workdir_roots(&self) -> &[String] {
+        &self.described.target.workdir_roots
+    }
+
+    async fn op(&self, what: &str, op: RemoteOp<'_>) -> Result<ExecutorOpStatus, AgentToolError> {
+        let call_id = format!("target-{}", uuid_like());
+        let (loc, _) = self.client.start_op(&call_id, op).await?;
+        let status = self
+            .client
+            .wait_terminal(&loc.op_id, Instant::now() + FILE_OP_TIMEOUT)
+            .await
+            .map_err(tool_error)?
+            .ok_or_else(|| AgentToolError::Transport {
+                message: format!("remote {what} did not finish in time"),
+                effect_unknown: true,
+            })?;
+        settled(status, what)
+    }
+
+    /// The canonical form of an existing directory under the profile roots.
+    pub async fn canonical_dir(&self, path: &str) -> Result<String, AgentToolError> {
+        let ok = self.client.describe(Some(path.to_string())).await.map_err(tool_error)?;
+        ok.target
+            .workdir
+            .ok_or_else(|| AgentToolError::ExecFailed(format!("{path}: the node did not resolve the directory")))
+    }
+
+    pub async fn path_type(&self, path: &str) -> Result<(PathType, Option<String>), AgentToolError> {
+        let status = self.op("stat", RemoteOp::Stat { path }).await?;
+        let real = status.result.as_ref().and_then(|r| r.file.as_ref()).map(|f| f.path.clone());
+        Ok((path_type_of(&status), real))
+    }
+
+    pub async fn read(&self, path: &str) -> Result<Vec<u8>, AgentToolError> {
+        let status = self.op("read", RemoteOp::Read { path }).await?;
+        self.client
+            .read_channel(&status.op_id, ExecutorChannel::Content, self.max_file_bytes)
+            .await
+            .map_err(tool_error)
+    }
+
+    /// Create `path` with `content`; `Ok(false)` when it already exists.
+    pub async fn write_new(&self, path: &str, content: &[u8]) -> Result<bool, AgentToolError> {
+        match self.op("write", RemoteOp::Write { path, mode: ExecutorWriteMode::CreateNew, content }).await {
+            Ok(_) => Ok(true),
+            Err(AgentToolError::InvalidArgs(m)) if m.contains("already exists") => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Replace (or create) `path` with `content`.
+    pub async fn write(&self, path: &str, content: &[u8]) -> Result<(), AgentToolError> {
+        self.op("write", RemoteOp::Write { path, mode: ExecutorWriteMode::Replace, content })
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn mkdir(&self, path: &str) -> Result<String, AgentToolError> {
+        let status = self.op("mkdir", RemoteOp::Mkdir { path }).await?;
+        Ok(status
+            .result
+            .and_then(|r| r.file)
+            .map(|f| f.path)
+            .unwrap_or_else(|| path.to_string()))
     }
 }
 
@@ -1330,8 +1528,10 @@ impl RemoteNodeRuntime {
                     "uid": t.uid,
                     "gid": t.gid,
                     "workdir": workdir,
+                    "workdir_roots": t.workdir_roots,
                     "store_id": t.store_id,
                     "protocol_version": t.protocol_version,
+                    "identity_mode": described.info.identity_mode,
                 });
                 let info = RuntimeInfo {
                     id: id.clone(),
@@ -1408,9 +1608,9 @@ impl AgentRuntime for RemoteNodeRuntime {
     }
 
     async fn open(&self, ctx: &RuntimeOpenCtx, tools: &ToolsConfig, deps: &XllmDeps) -> Result<(EffectiveTools, XllmToolManager), XllmError> {
-        if !ctx.path_prefix.is_empty() {
+        if !ctx.path_prefix.is_empty() && ctx.control.is_none() {
             return Err(XllmError::Capability(
-                "remote Session helper deployment is not available on remote_node".into(),
+                "remote Session helper deployment is not available on remote_node; the host runs session helpers on the control side".into(),
             ));
         }
         let s = self.initialize().await?;
@@ -1430,6 +1630,7 @@ impl AgentRuntime for RemoteNodeRuntime {
             client: client.clone(),
             env,
             max_execution_ms: s.limits.max_execution_ms,
+            control: ctx.control.clone(),
         });
         let files = Arc::new(RemoteNodeFiles {
             client,

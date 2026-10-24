@@ -32,6 +32,18 @@ pub trait FileBackend: Send + Sync + std::fmt::Debug {
     ) -> Option<Result<WholeEditResult, AgentToolError>> {
         None
     }
+    /// What `path` is on the target.
+    async fn path_type(&self, path: &Path) -> Result<PathType, AgentToolError>;
+    /// Create `path` and its missing parents; an existing directory is fine.
+    async fn mkdir(&self, path: &Path) -> Result<(), AgentToolError>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathType {
+    File,
+    Directory,
+    Missing,
+    Other,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,5 +161,19 @@ impl FileBackend for LocalFileBackend {
         tokio::fs::write(path, bytes)
             .await
             .map_err(|e| AgentToolError::ExecFailed(format!("write file failed: {e}")))
+    }
+    async fn path_type(&self, path: &Path) -> Result<PathType, AgentToolError> {
+        match tokio::fs::metadata(path).await {
+            Ok(m) if m.is_dir() => Ok(PathType::Directory),
+            Ok(m) if m.is_file() => Ok(PathType::File),
+            Ok(_) => Ok(PathType::Other),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(PathType::Missing),
+            Err(e) => Err(AgentToolError::ExecFailed(e.to_string())),
+        }
+    }
+    async fn mkdir(&self, path: &Path) -> Result<(), AgentToolError> {
+        tokio::fs::create_dir_all(path)
+            .await
+            .map_err(|e| AgentToolError::ExecFailed(format!("mkdir failed: {e}")))
     }
 }

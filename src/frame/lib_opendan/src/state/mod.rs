@@ -155,7 +155,7 @@ pub trait WorkspaceManager: Send + Sync {
     async fn check(&self, workspace_id: &str) -> Result<WorkspaceRecord>;
     async fn update(&self, workspace_id: &str, request: &WorkspaceUpdate, who: &str) -> Result<WorkspaceRecord>;
     async fn archive(&self, workspace_id: &str, expected_revision: u64, who: &str) -> Result<WorkspaceRecord> {
-        self.update(workspace_id, &WorkspaceUpdate { expected_revision, lifecycle: Some(WorkspaceLifecycle::Archived), private_notes: None }, who).await
+        self.update(workspace_id, &WorkspaceUpdate { expected_revision, lifecycle: Some(WorkspaceLifecycle::Archived), private_notes: None, url: None }, who).await
     }
     async fn unregister(&self, workspace_id: &str, expected_revision: u64, who: &str) -> Result<()>;
     async fn runtime_impact(&self, runtime_id: &str) -> Result<Vec<WorkspaceRecord>>;

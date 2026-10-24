@@ -60,14 +60,16 @@ pub struct HostDeps {
 impl HostDeps {
     /// Runner dependencies of one session (its own runtime, its own stop
     /// signal).
-    pub fn runner_deps(&self, sd: &SessionDir, stop: StopSignal) -> Result<RunnerDeps> {
+    pub async fn runner_deps(&self, sd: &SessionDir, stop: StopSignal) -> Result<RunnerDeps> {
         let cfg = sd.config()?;
         let runtime = crate::runtime::runtime_for_session(
             sd,
             &cfg,
-            self.agent.agent_root(),
+            self.agent.as_ref(),
             self.runtime_id.as_deref(),
-        )?;
+            &self.xllm,
+        )
+        .await?;
         let mut deps = RunnerDeps::new(
             &self.who,
             self.agent.clone(),
@@ -90,7 +92,7 @@ impl HostDeps {
     }
 
     async fn drive(&self, sd: &SessionDir, until: StopWhen, stop: StopSignal) -> DriveResult {
-        match self.runner_deps(sd, stop) {
+        match self.runner_deps(sd, stop).await {
             Ok(deps) => drive(sd, &deps, until).await,
             Err(e) => DriveResult::BindFailed { error: e.to_json() },
         }

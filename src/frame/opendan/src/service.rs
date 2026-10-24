@@ -341,6 +341,16 @@ impl StateService {
             "usage.models" => self.home.usage_models(self.agent.as_ref()).await,
             "ui.bindings" => self.home.ui_bindings(self.agent.as_ref()).await,
             "home.workspaces" => self.home.workspaces(self.agent.as_ref()).await,
+            "runtimes.settings" => self.home.runtime_settings().await,
+            "runtimes.settings_set" => {
+                let settings = self.home.set_runtime_settings(params).await?;
+                // The projection follows the settings at once (the watcher
+                // would catch up later).
+                if let Some(root) = crate::home::agent_root_of(self.agent.as_ref()) {
+                    crate::loader::project_runtimes(self.agent.as_ref(), &root, &settings, who).await;
+                }
+                self.home.runtime_settings().await
+            }
             "goals.activate" => {
                 let id: String = param(params, "goal_id")?;
                 let reason = param::<Option<String>>(params, "reason")?
@@ -452,6 +462,7 @@ fn is_read(method: &str) -> bool {
             | "usage.models"
             | "ui.bindings"
             | "home.workspaces"
+            | "runtimes.settings"
             | "loader.status"
     )
 }
@@ -464,6 +475,7 @@ fn is_operation(method: &str) -> bool {
             | "session.decide"
             | "session.post"
             | "agent.profile_set"
+            | "runtimes.settings_set"
             | "goals.activate"
             | "goals.post"
     )

@@ -102,7 +102,7 @@ native 目标包含本机身份与 uid；`AGENT_TOOL_HOST_ID` 可提供稳定宿
 | `native` | Runner 所在 OS/容器，当前用户 | xllm、libopendan Session；默认执行体 | 不创建容器、不提供额外 OS 隔离；Unix 与 Windows 使用各自本机 shell 实现 |
 | `tmux` | 本机指定 tmux session；文件仍在本机文件系统 | xllm、libopendan Session | 需要 tmux；每条命令使用独立执行 window，转为 task 后可与后续命令并行；运行结束不销毁继承的 session |
 | `remote_ssh` | 目标机器上的 shell 和文件系统 | 独立 xllm，或具备所需依赖的 SDK 宿主 | 系统 OpenSSH、远端 Linux/bash/SFTP；完整 Session helper 尚未部署 |
-| `remote_node` | Node Executor Command Stream 对应的节点、profile 与 OS 身份 | xllm CLI、注入 connector 的 SDK 宿主 | 需要实际节点授权与连接器；完整 Session 远端运行、模板 `__EXEC__` 尚未支持 |
+| `remote_node` | Node Executor Command Stream 对应的节点、profile 与 OS 身份 | xllm CLI、注入 connector 的 SDK 宿主、libopendan Session（冻结到 `host` / 其它节点 runtime 的 Session） | 需要实际节点授权与连接器；模板 `__EXEC__` 尚未支持；Session helper 在控制侧执行（见 §6.2） |
 
 native 的 Windows 实现使用 PowerShell；不能将公共 Runtime 契约限定为“所有目标都运行 Linux Bash”。`BashRunner` 是现有代码中的抽象名称，命令语法仍取决于实际执行体。
 
@@ -228,7 +228,9 @@ native/tmux 保留本机工作目录锁；远端工作目录不取控制侧本�
 
 ### 6.2 环境与 RuntimeInfo
 
-一般的执行环境合并顺序是 `runtime.env → 宿主 RuntimeOpenCtx.env → 单次命令 env`，后者覆盖前者。宿主 PATH 前缀接在显式 PATH 或目标探测得到的 PATH 前。SSH 和 Node 不接受本地 Session 的非空 `path_prefix`，会明确报告远端 helper 尚未部署。
+一般的执行环境合并顺序是 `runtime.env → 宿主 RuntimeOpenCtx.env → 单次命令 env`，后者覆盖前者。宿主 PATH 前缀接在显式 PATH 或目标探测得到的 PATH 前。SSH 不接受本地 Session 的非空 `path_prefix`，会明确报告远端 helper 尚未部署。Node 接受 `RuntimeOpenCtx.control`（`ControlSide {runner, workdir, commands}`，`XllmDeps.runtime_control`）：命令行首个程序名命中 `commands`（Session bin 的 `agent-session`、`llm_understand_media`、cmd_skill 自带命令、AgentRoot `tools/`）时由控制侧的本地 runner 在 Session 目录执行，带控制侧环境与凭据；其它命令照常发往节点。helper 不复制到目标、凭据不出控制侧；没有 `control` 时非空 `path_prefix` 仍报 Capability。
+
+`RemoteNodeTarget`（`runtime/node.rs`）把节点当作目标目录给非工具调用的控制侧使用：login+describe、`canonical_dir`（describe workdir）、`stat`/`mkdir`/`read`/`write_new`/`write`，每个操作一个 locator（`<ops_dir>/runtime_operations/`）；libopendan 的 Workspace 放置与 Session 默认目录创建走它。
 
 Node 还过滤控制侧身份变量，包括 `BUCKYOS_ / OPENDAN_ / XLLM_` 前缀以及 `SESSION_TOKEN / APP_TOKEN`，不把控制侧凭据环境直接传给目标命令。
 
@@ -245,6 +247,10 @@ xllm 用 RuntimeInfo 构造 `{{runtime.*}}`。hosted prepare 会移除初始环�
 Node 后端要求持久 Run 与真实 tool call ID，当前 PromptExec 请求没有该调用身份，因此 `remote_node` 不支持模板 `__EXEC__`。`__INCLUDE__` 始终读取控制侧素材，不随 runtime.workdir 迁移。
 
 实现：[prompt_engine.rs](../../src/frame/llm_context/src/prompt_engine.rs)、[SandboxPromptExec / RuntimeValueLoader](../../src/frame/agent_tool/src/runtime/mod.rs)、[Session assembler](../../src/frame/lib_opendan/src/runner/assembler.rs)。
+
+### 6.4 libopendan Session 的 runtime 选择与冻结
+
+Session 创建时在 `api::freeze_runtime` 一处解析 runtime（集成 TODO §3.3）：有 Workspace 则取 Workspace 的 runtime，显式 `--runtime` 必须一致；子 Session 无显式目标时继承父 Session 冻结的 runtime；都没有时取 Agent 登记中 `default` 的 runtime（owner 的 `default_runtime_id`，Desktop owner 默认 `host`）。结果写入 `session_config.runtime.frozen = {runtime_id, kind, exec, revision, selected_by, computer}`，之后 `runtime_for_session` 只按冻结的 `exec` 构造 `remote_node`（不再读登记），工作目录 = 已绑定目录 / Workspace 目录 / 首次驱动时在节点 roots[0] 下创建的 `.opendan/<agent>/sessions/<sid>`。登记不可用或模板声明的 kind 与之矛盾在创建时拒绝，不静默回退 container；同一 Session 不换 runtime。
 
 ## 7. 长命令、task 与取消
 

@@ -30,6 +30,7 @@ base64 = { workspace = true }
 ed25519-dalek = { workspace = true }
 cyfs-gateway-api = { workspace = true }
 sha2 = { workspace = true }
+schemars = { workspace = true }
 uuid = { workspace = true }
 memmap2 = "0.9.5"
 libc = "0.2.177"

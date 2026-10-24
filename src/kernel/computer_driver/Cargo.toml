@@ -1,0 +1,14 @@
+[package]
+name = "computer_driver"
+version.workspace = true
+edition = "2021"
+authors = ["BuckyOS DAO"]
+
+[dependencies]
+node_executor = { path = "../node_executor" }
+buckyos-api = { path = "../buckyos-api" }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+libc = "0.2"

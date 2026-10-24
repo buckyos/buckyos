@@ -602,6 +602,7 @@ async fn gen(out: &Path) -> R<()> {
                     },
                     name: Some("Overlap fixture".into()),
                     description: String::new(),
+                    url: None,
                     usage: WorkspaceUsage::Collaborative,
                     expected_revision: None,
                     source_session: None,

@@ -72,7 +72,7 @@ const DRIVE_POLL: Duration = Duration::from_secs(2);
 const DRIVE_SWEEP: Duration = Duration::from_secs(30);
 const MAX_DRIVE_STEPS: usize = 64;
 
-fn reason(code: &str, message: impl Display) -> RPCErrors {
+pub(crate) fn reason(code: &str, message: impl Display) -> RPCErrors {
     RPCErrors::ReasonError(format!("{code}: {message}"))
 }
 
@@ -151,7 +151,7 @@ async fn get_json<T: DeserializeOwned>(
     }
 }
 
-async fn get_value<T: DeserializeOwned>(kv: &dyn AgentKv, key: &str) -> Option<T> {
+pub(crate) async fn get_value<T: DeserializeOwned>(kv: &dyn AgentKv, key: &str) -> Option<T> {
     match kv.get(key).await {
         Ok(Some((raw, _))) => serde_json::from_str(&raw).ok(),
         _ => None,
@@ -2032,7 +2032,7 @@ pub(crate) async fn register_agent_runtime_authorities() {
 // ---------------------------------------------------------------------------
 
 fn settings_view(settings: &AgentSettings) -> Value {
-    json!({
+    let mut view = json!({
         "enabled": settings.enabled,
         "auto_start": settings.auto_start,
         "allow_other_users": settings.allow_other_users,
@@ -2044,7 +2044,11 @@ fn settings_view(settings: &AgentSettings) -> Value {
             "platform": tunnel.platform,
             "bot_account_id": tunnel.bot_account_id,
         })).collect::<Vec<_>>(),
-    })
+    });
+    view.as_object_mut()
+        .unwrap()
+        .extend(crate::agent_runtimes::settings_view(settings));
+    view
 }
 
 fn runtime_view(spec: &AppServiceSpec) -> Value {
@@ -2788,11 +2792,15 @@ impl ControlPanelServer {
             template.built_from(),
             buckyos_get_unix_timestamp(),
         );
+        // The Desktop owner's new Agent runs on the owner's desktop by default
+        // (integration TODO §3.1); the node policy decides whether that exists.
+        let mut settings = request.settings();
+        crate::agent_runtimes::apply_create_defaults(&kv, &owner, &mut settings).await;
         let actions = reservation_actions(
             &owner,
             &record,
             &private_key,
-            &request.settings(),
+            &settings,
             &request.profile,
         )?;
         if let Err(error) = kv.exec_tx(actions, None).await {
@@ -2942,23 +2950,67 @@ impl ControlPanelServer {
     ) -> Result<RPCResponse, RPCErrors> {
         let principal = Self::require_rpc_principal(principal)?;
         let agent_id = Self::param_agent_id(&req)?;
-        let allow_group = Self::param_bool(&req, "allow_group").ok_or_else(|| {
-            RPCErrors::ParseRequestError("allow_group must be a boolean".to_string())
-        })?;
+        let allow_group = match req.params.get("allow_group") {
+            None | Some(Value::Null) => None,
+            Some(_) => Some(Self::param_bool(&req, "allow_group").ok_or_else(|| {
+                RPCErrors::ParseRequestError("allow_group must be a boolean".to_string())
+            })?),
+        };
+        let runtimes = req.params.get("runtimes");
+        let default_runtime_id = req.params.get("default_runtime_id");
+        if allow_group.is_none() && runtimes.is_none() && default_runtime_id.is_none() {
+            return Err(RPCErrors::ParseRequestError(
+                "agent.update changes allow_group, runtimes or default_runtime_id".to_string(),
+            ));
+        }
         let kv = ZoneKv::connect().await?;
         let (owner, record, _) = Self::locate_agent(&kv, principal, &agent_id, false).await?;
         let key = agent_settings_key(&owner, &agent_id);
         let mut settings = get_value::<AgentSettings>(&kv, &key)
             .await
             .unwrap_or_default();
-        settings.allow_group = allow_group;
+        if let Some(allow_group) = allow_group {
+            settings.allow_group = allow_group;
+        }
+        crate::agent_runtimes::apply_update(&kv, &owner, &mut settings, runtimes, default_runtime_id).await?;
         kv.exec_tx(
             HashMap::from([(key, KVAction::Update(to_json(&settings)?))]),
             None,
         )
         .await?;
+        if runtimes.is_some() {
+            if let Err(error) = refresh_rbac_by_scheduler("agent runtime settings changed").await {
+                warn!("scheduler refresh after runtime change of {agent_id} failed: {error}");
+            }
+        }
         Ok(RPCResponse::new(
             RPCResult::Success(self.agent_entry(&kv, &owner, &record).await?),
+            req.seq,
+        ))
+    }
+
+    // ── agent.runtime_directory ──────────────────────────────────────────
+
+    /// The nodes the caller's Agents may run on, and one Agent's choice.
+    pub(crate) async fn handle_agent_runtime_directory(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_rpc_principal(principal)?;
+        let kv = ZoneKv::connect().await?;
+        let (owner, settings) = match req.params.get("agent_id").filter(|v| !v.is_null()) {
+            Some(_) => {
+                let agent_id = Self::param_agent_id(&req)?;
+                let (owner, _, _) = Self::locate_agent(&kv, principal, &agent_id, false).await?;
+                let settings = get_value::<AgentSettings>(&kv, &agent_settings_key(&owner, &agent_id)).await;
+                (owner, settings)
+            }
+            None => (principal.owner_user_id.clone(), None),
+        };
+        let offers = crate::agent_runtimes::runtime_directory(&kv, &owner).await?;
+        Ok(RPCResponse::new(
+            RPCResult::Success(crate::agent_runtimes::directory_view(&offers, settings.as_ref())),
             req.seq,
         ))
     }

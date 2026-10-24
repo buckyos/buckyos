@@ -18,7 +18,7 @@ fn state(path: &Path) -> FsAgentStateClient {
 }
 
 fn builtin(path: &Path) -> Vec<RuntimeRegister> {
-    builtin_runtimes(vec![path.join("workspaces")], "")
+    builtin_runtimes(vec![path.join("workspaces")], "", &Default::default(), "did:test:agent")
 }
 
 /// V01 / V02: the host creates the built-in runtimes once; what the owner
@@ -36,7 +36,8 @@ async fn builtin_runtimes_are_created_once_and_kept() {
     assert_eq!(container.registered_by, "host");
     let host = &r[1];
     assert_eq!(host.availability, RuntimeAvailability::RuntimeUnavailable);
-    assert!(host.exec.is_none() && host.last_error.as_deref().unwrap().contains("no executor"));
+    assert!(host.exec.is_none() && host.last_error.as_deref().unwrap().contains("not enabled"));
+    assert!(r[0].default && !host.default);
 
     // The owner renames the container; a restart keeps it and adds nothing.
     let renamed = state
@@ -81,6 +82,8 @@ async fn builtin_runtimes_are_created_once_and_kept() {
         exec: Some(json!({ "kind": "remote_ssh", "host": "studio" })),
         roots: vec![],
         capabilities: json!({}),
+        default: false,
+        computer: Default::default(),
     };
     let studio = state.runtimes().register(&added, "owner").await.unwrap();
     assert_eq!(studio, state.runtimes().register(&added, "owner").await.unwrap(), "idempotent");
@@ -129,6 +132,8 @@ async fn runtimes_over_krpc() {
                 exec: None,
                 roots: vec![],
                 capabilities: json!({}),
+                default: false,
+                computer: Default::default(),
             },
             "forged",
         )
@@ -153,6 +158,7 @@ async fn workspaces_follow_the_runtime_registry() {
         operation_id: op.into(),
         name: "P".into(),
         description: String::new(),
+        url: None,
         location: WorkspaceLocation {
             runtime_id: runtime.into(),
             directory: temp.path().join(dir),

@@ -203,6 +203,8 @@ async fn control_stream_advertises_host_capabilities_without_starting_a_worker()
             ExecutorOp::Read,
             ExecutorOp::Write,
             ExecutorOp::Edit,
+            ExecutorOp::Mkdir,
+            ExecutorOp::Stat,
         ]);
     }
     assert_eq!(fixture.executor.host_capabilities(), expected);

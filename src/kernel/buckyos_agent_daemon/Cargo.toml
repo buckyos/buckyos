@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 node_executor = { path = "../node_executor" }
+computer_driver = { path = "../computer_driver" }
 buckyos-api = { path = "../buckyos-api" }
 async-trait = { workspace = true }
 tokio = { workspace = true }

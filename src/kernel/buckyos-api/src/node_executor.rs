@@ -38,6 +38,10 @@ pub enum ExecutorOp {
     Read,
     Write,
     Edit,
+    /// Create a directory (and missing parents inside the roots).
+    Mkdir,
+    /// Whether a path is a file, a directory or missing.
+    Stat,
     ComputerInspect,
     ComputerObserve,
     ComputerAct,
@@ -46,13 +50,15 @@ pub enum ExecutorOp {
 }
 
 impl ExecutorOp {
-    pub const ALL: [ExecutorOp; 11] = [
+    pub const ALL: [ExecutorOp; 13] = [
         ExecutorOp::OpenStream,
         ExecutorOp::Describe,
         ExecutorOp::Exec,
         ExecutorOp::Read,
         ExecutorOp::Write,
         ExecutorOp::Edit,
+        ExecutorOp::Mkdir,
+        ExecutorOp::Stat,
         ExecutorOp::ComputerInspect,
         ExecutorOp::ComputerObserve,
         ExecutorOp::ComputerAct,
@@ -68,6 +74,8 @@ impl ExecutorOp {
             ExecutorOp::Read => "read",
             ExecutorOp::Write => "write",
             ExecutorOp::Edit => "edit",
+            ExecutorOp::Mkdir => "mkdir",
+            ExecutorOp::Stat => "stat",
             ExecutorOp::ComputerInspect => "computer_inspect",
             ExecutorOp::ComputerObserve => "computer_observe",
             ExecutorOp::ComputerAct => "computer_act",
@@ -83,13 +91,59 @@ impl ExecutorOp {
     pub fn is_mutating(&self) -> bool {
         matches!(
             self,
-            ExecutorOp::Exec | ExecutorOp::Write | ExecutorOp::Edit | ExecutorOp::ComputerAct
+            ExecutorOp::Exec
+                | ExecutorOp::Write
+                | ExecutorOp::Edit
+                | ExecutorOp::Mkdir
+                | ExecutorOp::ComputerAct
+        )
+    }
+
+    pub fn is_computer(&self) -> bool {
+        matches!(
+            self,
+            ExecutorOp::ComputerInspect | ExecutorOp::ComputerObserve | ExecutorOp::ComputerAct
         )
     }
 
     pub fn allowed_by(&self, mode: AgentPermissionMode) -> bool {
         mode == AgentPermissionMode::ReadWrite || !self.is_mutating()
     }
+}
+
+/// ComputerUse capability of an Agent on a runtime: `none` grants no
+/// Computer operation, `observe` grants inspect/observe, `control` adds act.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerAccess {
+    #[default]
+    None,
+    Observe,
+    Control,
+}
+
+impl ComputerAccess {
+    pub fn allows(self, op: ExecutorOp) -> bool {
+        match op {
+            ExecutorOp::ComputerInspect | ExecutorOp::ComputerObserve => self >= ComputerAccess::Observe,
+            ExecutorOp::ComputerAct => self == ComputerAccess::Control,
+            _ => true,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ComputerAccess::None => "none",
+            ComputerAccess::Observe => "observe",
+            ComputerAccess::Control => "control",
+        }
+    }
+}
+
+/// Profile id the scheduler derives for an owner's Agent on a node whose
+/// `owner_agents` policy is open: `agent-<12 hex of sha256(agent_did)>`.
+pub fn owner_agent_profile_id(agent_did: &str) -> String {
+    format!("agent-{}", &hex_lower(&Sha256::digest(agent_did.as_bytes()))[..12])
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -217,6 +271,73 @@ impl ExecutorLimits {
     }
 }
 
+/// Node policy for the Agents of the node's owner (integration TODO §0 R4):
+/// whether they get a profile on this node without the administrator
+/// writing one per Agent, and what that profile grants at most. The
+/// scheduler multiplies it with each Agent's own runtime settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OwnerAgentsPolicy {
+    pub enabled: bool,
+    pub workdir_roots: Vec<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    /// Operations granted at most; empty means every operation.
+    #[serde(default)]
+    pub ops: Vec<ExecutorOp>,
+    /// ComputerUse granted at most (an Agent's own setting can only lower it).
+    #[serde(default)]
+    pub computer: ComputerAccess,
+    /// Form A-system nodes switch to this OS identity; desktop nodes omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_as: Option<ExecutorRunAs>,
+}
+
+impl OwnerAgentsPolicy {
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let probe = ExecutorProfile {
+            run_as: self.run_as.clone(),
+            workdir_roots: self.workdir_roots.clone(),
+            env: self.env.clone(),
+            principals: vec!["did:owner-agents".into()],
+            ops: self.effective_ops(),
+        };
+        probe.validate("owner-agents")
+    }
+
+    /// The ops the policy grants, control ops always included.
+    pub fn effective_ops(&self) -> Vec<ExecutorOp> {
+        let mut ops: BTreeSet<ExecutorOp> = if self.ops.is_empty() {
+            ExecutorOp::ALL.into_iter().collect()
+        } else {
+            self.ops.iter().copied().collect()
+        };
+        ops.extend([ExecutorOp::OpenStream, ExecutorOp::Describe, ExecutorOp::Query, ExecutorOp::Cancel]);
+        ops.retain(|op| self.computer.allows(*op));
+        ops.into_iter().collect()
+    }
+
+    /// The profile of one owner Agent: the policy narrowed by the Agent's
+    /// ComputerUse setting.
+    pub fn profile_for(&self, agent_did: &str, computer: ComputerAccess) -> ExecutorProfile {
+        let computer = computer.min(self.computer);
+        ExecutorProfile {
+            run_as: self.run_as.clone(),
+            workdir_roots: self.workdir_roots.clone(),
+            env: self.env.clone(),
+            principals: vec![agent_did.to_string()],
+            ops: self
+                .effective_ops()
+                .into_iter()
+                .filter(|op| computer.allows(*op))
+                .collect(),
+        }
+    }
+}
+
 /// Administrator input at `nodes/<node>/settings` → `executor`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -227,19 +348,34 @@ pub struct ExecutorSettings {
     pub allowed_devices: Vec<String>,
     #[serde(default)]
     pub profiles: BTreeMap<String, ExecutorProfile>,
+    /// Absent: the node was never initialized for the owner's Agents;
+    /// `enabled = false`: the administrator closed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_agents: Option<OwnerAgentsPolicy>,
     #[serde(default)]
     pub limits: ExecutorLimits,
 }
 
 impl ExecutorSettings {
+    pub fn owner_agents_open(&self) -> bool {
+        self.owner_agents.as_ref().is_some_and(|p| p.enabled)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if !self.enabled {
             return Ok(());
         }
-        if self.profiles.is_empty() {
+        if self.profiles.is_empty() && !self.owner_agents_open() {
             return Err("executor enabled without profiles".to_string());
         }
-        validate_allowed_devices(&self.allowed_devices)?;
+        if let Some(policy) = &self.owner_agents {
+            policy.validate()?;
+        }
+        // With the owner's Agents the node itself is always an allowed
+        // source; the administrator may add more.
+        if !(self.allowed_devices.is_empty() && self.owner_agents_open()) {
+            validate_allowed_devices(&self.allowed_devices)?;
+        }
         for (profile_id, profile) in &self.profiles {
             profile.validate(profile_id)?;
         }
@@ -441,6 +577,7 @@ mod tests {
             enabled: true,
             allowed_devices: vec!["did:dev:a".into()],
             profiles: BTreeMap::from([("dev".into(), profile())]),
+            owner_agents: None,
             limits: ExecutorLimits::default(),
         };
         settings.validate().unwrap();
@@ -478,6 +615,46 @@ mod tests {
         settings.profiles.get_mut("dev").unwrap().env.clear();
         settings.allowed_devices.clear();
         assert!(settings.validate().is_err());
+    }
+
+    #[test]
+    fn owner_agents_policy_opens_the_node_without_profiles_and_narrows_computer() {
+        let mut settings = ExecutorSettings {
+            enabled: true,
+            allowed_devices: vec!["did:dev:a".into()],
+            profiles: BTreeMap::new(),
+            owner_agents: Some(OwnerAgentsPolicy {
+                enabled: true,
+                workdir_roots: vec![r"C:\Users\owner".into()],
+                env: BTreeMap::new(),
+                ops: Vec::new(),
+                computer: ComputerAccess::Observe,
+                run_as: None,
+            }),
+            limits: ExecutorLimits::default(),
+        };
+        settings.validate().unwrap();
+        let profile = settings
+            .owner_agents
+            .as_ref()
+            .unwrap()
+            .profile_for("did:web:jarvis.test.buckyos.io", ComputerAccess::Control);
+        assert!(profile.ops.contains(&ExecutorOp::ComputerObserve));
+        assert!(!profile.ops.contains(&ExecutorOp::ComputerAct));
+        assert!(profile.ops.contains(&ExecutorOp::Mkdir) && profile.ops.contains(&ExecutorOp::Stat));
+        profile.validate(&owner_agent_profile_id("did:web:jarvis.test.buckyos.io")).unwrap();
+        let none = settings
+            .owner_agents
+            .as_ref()
+            .unwrap()
+            .profile_for("did:web:a", ComputerAccess::None);
+        assert!(!none.ops.iter().any(|op| op.is_computer()));
+
+        settings.owner_agents.as_mut().unwrap().enabled = false;
+        assert!(settings.validate().is_err(), "closed policy and no profiles");
+        settings.owner_agents.as_mut().unwrap().workdir_roots.clear();
+        settings.owner_agents.as_mut().unwrap().enabled = true;
+        assert!(settings.validate().is_err(), "roots are required");
     }
 
     #[test]

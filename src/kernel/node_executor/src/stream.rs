@@ -637,6 +637,36 @@ async fn handle_request(
             .await;
             send_op_reply(out, req.request_id, reply, true).await;
         }
+        ExecutorClientMessage::Mkdir(req) => {
+            let spec = ExecutorOpSpec::from_mkdir(&req);
+            let reply = submit(
+                inner,
+                session,
+                ExecutorOp::Mkdir,
+                &req.store_id,
+                (&req.run_id, &req.call_id, &req.op_id),
+                spec,
+                None,
+                watched,
+            )
+            .await;
+            send_op_reply(out, req.request_id, reply, true).await;
+        }
+        ExecutorClientMessage::Stat(req) => {
+            let spec = ExecutorOpSpec::from_stat(&req);
+            let reply = submit(
+                inner,
+                session,
+                ExecutorOp::Stat,
+                &req.store_id,
+                (&req.run_id, &req.call_id, &req.op_id),
+                spec,
+                None,
+                watched,
+            )
+            .await;
+            send_op_reply(out, req.request_id, reply, true).await;
+        }
         ExecutorClientMessage::Cancel(req) => {
             let reply = match authorize(inner, session, ExecutorOp::Cancel, Some(&req.store_id)) {
                 Ok((grant, _)) => {
@@ -727,6 +757,7 @@ async fn describe(
             uid: grant.profile.run_as.as_ref().map(|r| r.uid).or_else(|| host_uid(inner)),
             gid: grant.profile.run_as.as_ref().map(|r| r.gid).or_else(|| host_gid(inner)),
             workdir,
+            workdir_roots: grant.profile.workdir_roots.clone(),
             store_id: inner.store.store_id().to_string(),
             protocol_version: NODE_EXECUTOR_PROTOCOL_VERSION,
         },
@@ -737,6 +768,14 @@ async fn describe(
             shell: inner.shell.to_string_lossy().to_string(),
             time_ms: now_ms(),
             path: grant.profile.env.get("PATH").cloned(),
+            identity_mode: Some(
+                match inner.identity.mode {
+                    crate::ExecutorIdentityMode::CurrentUser => "current_user",
+                    crate::ExecutorIdentityMode::SwitchUser => "switch_user",
+                }
+                .to_string(),
+            ),
+            desktop: inner.computer.as_ref().map(|driver| driver.capabilities()),
         },
     })
 }

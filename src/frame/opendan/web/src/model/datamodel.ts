@@ -18,9 +18,13 @@ import type {
   LoaderStatus,
   ProfilePatch,
   RegistryEntry,
+  RuntimeSettingPatch,
+  RuntimeSettings,
   SessionDetail,
   UiBinding,
   UsageByModel,
+  WorkspaceCreateRequest,
+  WorkspaceImportRequest,
   WorkspaceLocation,
 } from './types'
 
@@ -51,6 +55,13 @@ export interface OpenDanDataModel {
   runtimes(): Promise<KnownRuntime[]>
   checkWorkspace(workspaceId: string): Promise<KnownWorkspace>
   relocateWorkspace(workspace: KnownWorkspace, location: WorkspaceLocation): Promise<KnownWorkspace>
+  createWorkspace(request: WorkspaceCreateRequest): Promise<KnownWorkspace>
+  importWorkspace(request: WorkspaceImportRequest): Promise<KnownWorkspace>
+  /** `''` clears the project URL. */
+  setWorkspaceUrl(workspace: KnownWorkspace, url: string): Promise<KnownWorkspace>
+  checkRuntime(runtimeId: string): Promise<KnownRuntime>
+  runtimeSettings(): Promise<RuntimeSettings>
+  setRuntimeSetting(patch: RuntimeSettingPatch): Promise<RuntimeSettings>
 
   sessions(): Promise<RegistryEntry[]>
   activeSessions(): Promise<ActiveSession[]>

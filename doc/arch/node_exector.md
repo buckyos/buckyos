@@ -112,9 +112,18 @@
 
 | 形态 | 宿主 | 适用设备 | 可用来源 | 宿主权限 |
 | --- | --- | --- | --- | --- |
-| A. node_daemon 内置模块 | node_daemon 进程（S1 内核组件） | OOD / Node | 首期②；P2③；①另行排期 | 系统级（可切换 OS 用户） |
-| B. Agent Daemon 独立服务 | 独立常驻进程，内含 cyfs-gateway-lib + node_executor | 桌面电脑、能装后台服务的终端 | ②（③ 看是否有后台保障） | 安装时授予 |
+| A. node_daemon 内置模块 | node_daemon 进程（S1 内核组件） | 装有 BuckyOS 节点的设备：OOD / Node 服务器，以及 Desktop 版电脑 | 首期②；P2③；①另行排期 | 两种运行模式，见下 |
+| B. Agent Daemon 独立服务 | 独立常驻进程，内含 cyfs-gateway-lib + node_executor | 没有安装 BuckyOS 节点、但能装后台服务的电脑/终端 | ②（③ 看是否有后台保障） | 安装时授予 |
 | C. Agent Daemon 嵌入 App | 单进程 App 内以 Library 形式嵌入 | Android/iOS/盒子等不便装服务的设备 | ② | 不超过 App 自身权限 |
+
+形态 A 按 node_daemon 的运行身份分两种模式（2026-10-23 裁决，见 [集成 TODO §0](../../notepads/agent-runtime-session-workspace-integration-todo.md)）：
+
+| 模式 | node_daemon 运行方式 | identity_mode | profile `run_as` | 桌面能力 | 适用 |
+| --- | --- | --- | --- | --- | --- |
+| A-system | 系统服务（root / LocalSystem），开机即起 | SwitchUser | 必填，worker 降权到专用账号（§7.5） | 无（Linux 服务器没有 GUI） | OOD、Node 服务器、Linux |
+| A-desktop | 随用户登录启动，运行在该用户的交互会话中 | CurrentUser | 必须省略，以登录用户身份执行 | 注入与 agent-daemon 共用的桌面 Driver（macOS 14+、Windows），ComputerInspect/Observe/Act 随 Driver readiness 开放 | Desktop 版：Windows 现状即如此；macOS 安装包改为 LaunchAgent 后同样生效，改之前 root LaunchDaemon 按 A-system 处理 |
+
+模式由 node_daemon 启动时按“进程是否 root / 是否位于交互会话”判定并写入 describe 结果，不按安装包类型猜。A-desktop 的权限边界与 §16 对 Windows 的说明一致：Agent 拥有该桌面用户的全部权限，roots 只约束 cwd 与内置文件工具。Desktop 版 owner 的电脑因此用 A-desktop 作为 Agent 的 `host` 目标，不要求再安装独立 agent-daemon；形态 B 保留给不装节点的设备。同一台电脑上 A-desktop 与形态 B 并存时，桌面输入协调锁按用户会话共用，互斥而不是各自一份。
 
 ```text
 形态 C（单进程）
@@ -136,7 +145,7 @@
 { "executor": { "proto": 1, "sources": ["stream"], "ops": ["read", "write", "edit", "exec"], "host": "app" } }
 ```
 
-`host` 取值 `system` / `service` / `app`，表示形态 A/B/C，用于向 Agent 如实呈现能力上限。声明只表示"实现了什么"，不等于"被授权了什么"；授权见 §5.4。
+`host` 取值 `system` / `service` / `app`，表示形态 A/B/C，用于向 Agent 如实呈现能力上限；形态 A 的 A-system / A-desktop 由 describe 返回的 identity_mode 与 Driver readiness 区分，不另加 `host` 取值。声明只表示"实现了什么"，不等于"被授权了什么"；授权见 §5.4。
 
 ### 4.4 典型需求：把设备配置交给 Jarvis
 
@@ -203,8 +212,13 @@ Scheduler 是正常体系的最高配置来源；Owner 是正常体系之外的�
         "workdir_roots": ["/home/owner/workspaces"],
         "env": { "PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8" },
         "principals": ["<agent-did>"],
-        "ops": ["open_stream", "describe", "exec", "read", "write", "edit", "query", "cancel"]
+        "ops": ["open_stream", "describe", "exec", "read", "write", "edit", "mkdir", "stat", "query", "cancel"]
       }
+    },
+    "owner_agents": {
+      "enabled": true,
+      "workdir_roots": ["C:\\Users\\owner"],
+      "env": {}, "ops": [], "computer": "control"
     },
     "limits": {
       "max_streams": 4, "max_concurrency": 2,
@@ -219,15 +233,17 @@ Scheduler 是正常体系的最高配置来源；Owner 是正常体系之外的�
 
 `auth_valid_until_ms` 示例中的 0 为占位，实际必须是 scheduler 发布的未来截止时间；输入依赖与续期规则见 §5.6。`principal_bindings` 是 scheduler 核对权威文档及一对一绑定后生成的必需映射，generation/revision/有效期也由 scheduler 生成，管理员不能经 settings 自报。`allowed_devices` 只由 gateway process-chain 消费，Executor 不据此校验流。profile.ops 使用裸动作名，RBAC 动作加 executor. 前缀；控制操作同样必须列入授权。
 
+`owner_agents`（2026-10-23，集成 TODO §0 R4）是节点对**本 Zone owner 的 Agent** 的开放策略：`enabled`、默认 `workdir_roots` / `env` / `ops`（空 = 全部）、最高 `computer`（`none | observe | control`）、可选 `run_as`（A-system 节点）。只有管理员和系统种子（Desktop 版 node_daemon 以桌面模式首次启动时写入 `enabled=true`、roots=[登录用户 home]、`computer=control`）写它，control-panel 不写 node settings。scheduler 用它乘以每个 Agent 自己的 `AgentSettings.runtimes[<id>]`（目标为本节点且 `enabled`）派生 profile `agent-<sha256(agent_did) 前 12 位>`：principals=[该 Agent]、ops = 策略 ops ∩ `min(策略 computer, Agent computer)` 允许的 Computer 操作，principal_bindings / RBAC / 租约沿用既有机制；管理员定义的同名 profile 优先。节点没有该节是“尚未初始化”，`enabled=false` 是“管理员已禁用”——整体收回，同一 generation 内生效。开放时节点自身的 device DID 自动进入 `allowed_devices`。
+
 规则：
-- 缺省关闭。开启要求至少一个完整 profile；首期 `principals` 逐个匹配权威 Agent DID，不接受通配或 User/普通 App 直登。
+- 缺省关闭。开启要求至少一个完整 profile 或开放的 `owner_agents`；首期 `principals` 逐个匹配权威 Agent DID，不接受通配或 User/普通 App 直登。
 - `run_as`、roots、env 是管理员授权上限，请求不能自选 UID、shell、结果目录或扩大 roots。
 - 形态 A 的 worker UID 非 0 且不同于 daemon；非 root daemon 返回 Capability，不以同 UID 执行。形态 C 的 `run_as` 无意义，由宿主 App 权限决定。
-- Windows 上 node_daemon 在用户桌面会话中运行（不是系统服务，否则无法使用桌面软件），不能切换用户：profile 必须省略 `run_as`，操作以 node_daemon 所属的桌面用户身份执行。Unix 上省略 `run_as`、Windows 上设置 `run_as` 的 profile 都只授予控制能力，执行类请求返回 Capability。
+- A-desktop 模式（§4.2；Windows 现状，macOS 随安装包切换）下 node_daemon 在用户桌面会话中运行（不是系统服务，否则无法使用桌面软件），不能切换用户：profile 必须省略 `run_as`，操作以 node_daemon 所属的桌面用户身份执行。A-system 下省略 `run_as`、A-desktop 下设置 `run_as` 的 profile 都只授予控制能力，执行类请求返回 Capability。
 - roots 约束 cwd 和内置文件工具，**不约束 shell 内任意程序的 I/O**；OS 账号权限才是实际边界。不把 roots 描述成 sandbox。
 - 未知字段、空白名单、非法 uid/gid 均拒绝启用；未实现 worker 的平台仅开放控制能力，执行请求返回 Capability；旧 NodeConfig 无该段时行为不变。
 
-RBAC 派生：对资源 `obj://node/<node_name>/executor/<profile_id>`，生成通过 §7.2 映射的原 token owner 与绑定 `app:<AppId>` 两侧的精确规则；动作是 `executor.open_stream/describe/exec/read/write/edit/cancel/query`。沿用既有 RBAC 的 `(sub, target.authorization_key())` 检查；不把原 token 的 sub 改成 AgentDID，也不伪造 JWT。AgentDID 与完整 AppInstance 的校验由 Executor 的 profile/binding 准入补足，不能只依赖不含 owner 的 app 授权键。操作权限取 profile.ops、AgentSpec.permission_mode 与 RBAC 的交集；ReadOnly 拒绝 exec/write/edit。query/cancel 还要求 §7.3 的操作归属一致。删除授权、改 binding、收紧 permission_mode 或停用都触发撤权。设置管理权限与 Agent 调用权限分别定义；不给 App 侧读 Agent 私钥的权限。
+RBAC 派生：对资源 `obj://node/<node_name>/executor/<profile_id>`，生成通过 §7.2 映射的原 token owner 与绑定 `app:<AppId>` 两侧的精确规则；动作是 `executor.open_stream/describe/exec/read/write/edit/mkdir/stat/computer_inspect/computer_observe/computer_act/cancel/query`。沿用既有 RBAC 的 `(sub, target.authorization_key())` 检查；不把原 token 的 sub 改成 AgentDID，也不伪造 JWT。AgentDID 与完整 AppInstance 的校验由 Executor 的 profile/binding 准入补足，不能只依赖不含 owner 的 app 授权键。操作权限取 profile.ops、AgentSpec.permission_mode 与 RBAC 的交集；ReadOnly 拒绝 exec/write/edit。query/cancel 还要求 §7.3 的操作归属一致。删除授权、改 binding、收紧 permission_mode 或停用都触发撤权。设置管理权限与 Agent 调用权限分别定义；不给 App 侧读 Agent 私钥的权限。
 
 ### 5.5 授权与宿主权限取交集
 
@@ -727,7 +743,9 @@ P0-A（配置与权限）与 P0-B（Command Stream 最小闭环，Linux 形态 A
 
 | 位置 | 内容 |
 | --- | --- |
-| `buckyos-api/src/node_executor.rs` | `NodeSettings{executor}`、`ExecutorSettings`、`ExecutorConfig`（revision/generation/auth_valid_until_ms/principal_bindings/profiles/limits）、`ExecutorOp`、`granted_ops`（profile.ops ∩ permission_mode）、端口与租期常量；`NodeConfig.executor: Option<ExecutorConfig>` |
+| `buckyos-api/src/node_executor.rs` | `NodeSettings{executor}`、`ExecutorSettings`（含 `owner_agents: OwnerAgentsPolicy`）、`ExecutorConfig`（revision/generation/auth_valid_until_ms/principal_bindings/profiles/limits）、`ExecutorOp`（含 `Mkdir`/`Stat`）、`ComputerAccess`、`owner_agent_profile_id`、`granted_ops`（profile.ops ∩ permission_mode）、端口与租期常量；`NodeConfig.executor: Option<ExecutorConfig>` |
+| `kernel/computer_driver` | 桌面 Driver 共享 crate（原 agent-daemon `computer/desktop.rs`、`native.m`、`native_windows.cpp`、Windows 私有目录/会话助手、`boot_ms`）；agent-daemon 与 node_daemon 都依赖它 |
+| `kernel/scheduler/src/executor_auth.rs` | 另从 `owner_agents` × `AgentSettings.runtimes` 派生 per-Agent profile（§5.4） |
 | `buckyos-api/src/node_executor_proto.rs` | 帧编解码、全部控制消息 DTO、错误枚举、`ExecutorOpSpec` 与请求摘要 |
 | `buckyos-api/src/agent_permissions.rs` | `check_agent_runtime_session`（verify-hub 用） |
 | `kernel/node_executor`（新 crate，不依赖 libopendan） | `store`（账本）、`auth`（快照租期、§7.2 映射、RBAC 收窄）、`ops`（准入/去重/槽位/串行控制门/执行/终态发布）、`spawn` + `worker`（降权子进程）、`stream`（每 Stream 协议处理）、`lib`（`NodeExecutor`：apply_config、撤权/过期收敛、listener）；`src/bin/node_executor_worker.rs` 仅供测试 |
@@ -751,7 +769,7 @@ P0-A（配置与权限）与 P0-B（Command Stream 最小闭环，Linux 形态 A
 ### 17.3 Command Stream wire（固化）
 
 - 帧：`kind:u8 | len:u32be | payload`；kind 1 为 JSON 控制帧（≤1 MiB），kind 2 为数据帧 `channel:u8 | offset:u64be | op_id_len:u16be | op_id | bytes`（数据 ≤16 KiB）。**差异**：设计写"单帧 ≤16 KiB"，控制帧放宽到 1 MiB，以容纳 exec 脚本与 edit 文本。
-- 客户端消息 `login / describe / exec / read / write / upload_end / edit / cancel / query / ping`，服务端消息 `login_ok / describe_ok / accepted / status / query_ok / started / finished / error / closing / pong`，均为 `type` 标签、拒绝未知字段。错误码：Unauthenticated、Forbidden、InvalidArgument、Capability、Conflict、Busy、CapacityExceeded、Disabled、Unavailable、AuthExpired、ResultExpired、StoreMismatch、NotFound、ProtocolError、Internal，并带 `effect_unknown`。
+- 客户端消息 `login / describe / exec / read / write / upload_end / edit / mkdir / stat / computer / cancel / query / ping`（`mkdir`/`stat` 是控制侧放置 Workspace 与 Session 目录所需的最小目录操作：`stat` 返回 `file.path_type ∈ {file, directory, missing, other}` 与规范路径，`mkdir` 幂等创建 roots 内的目录及缺失父目录；两者同样进 RBAC、账本去重与 `ExecutorOpSpec` 摘要），服务端消息 `login_ok / describe_ok / accepted / status / query_ok / started / finished / error / closing / pong`，均为 `type` 标签、拒绝未知字段。错误码：Unauthenticated、Forbidden、InvalidArgument、Capability、Conflict、Busy、CapacityExceeded、Disabled、Unavailable、AuthExpired、ResultExpired、StoreMismatch、NotFound、ProtocolError、Internal，并带 `effect_unknown`。
 - login 绑定 runtime_id 与 run_id；操作必须带与 login 相同的 run_id 和当前 store_id（否则 InvalidArgument / StoreMismatch）。摘要覆盖 runtime/run/call/op 与 `ExecutorOpSpec`（可选字段只补协议默认值，不补随配置变化的值）。
 - write：`write` 头 → upload 数据帧（offset 连续）→ `upload_end`，回复挂在 write 的 request_id 上；30 s 上传期限，断线/超时丢弃临时内容。
 - query 的数据以 base64 内联返回（每次 ≤256 KiB，`wait_ms` ≤30 s）；exec 的 started/输出/finished 只推送给提交它的 Stream，尽力而为，队列满即丢，权威结果以 query 为准。
@@ -762,7 +780,9 @@ P0-A（配置与权限）与 P0-B（Command Stream 最小闭环，Linux 形态 A
 - exec：先以目标身份跑一次 worker 解析 cwd（须在 roots 内），再在串行控制门内检查取消、直接 spawn `bash --noprofile --norc -c <wrapper>`（独立进程组；pre_exec 内显式 setgroups([gid])/setgid/setuid 并核对，以目标身份 chdir，继承的 fd 置 CLOEXEC（Linux 用 `close_range`，macOS 或 close_range 不可用时按 RLIMIT_NOFILE 逐个 fcntl）；Linux 另设 no_new_privs、清 ambient caps），脚本经 stdin 读入后 stdin 改为 /dev/null，不进 argv。**差异**：shell 进程本身就是降权 worker，没有再套一层持有 shell 的 worker。stdout/stderr 各保留前 N 字节、超出继续 drain；leader 退出后最多再等 500 ms 读管道；超时/取消对进程组 SIGTERM，2 s 后 SIGKILL，以 wait 确认后才发布 timed_out/cancelled；正常结束不清理后台进程。
 - 文件操作：node_daemon 以 `--executor-worker` 重入自身、以 profile 身份执行；路径在打开后的 fd（Linux `/proc/self/fd`，macOS `F_GETPATH`）上校验是否在 roots 内；写入为同目录临时文件 + fsync + renameat + 目录 fsync；`write` 可创建 roots 内缺失的父目录；同一 canonical 路径的写串行；expected_hash 不符为 Conflict。read/edit 的内容快照写入 `content`，query 读取的是快照而非现场文件。文件操作一旦开始不可中断，取消请求之后按自然结果发布。
 - 容量：准入前按操作预留空间（exec 为 2×输出上限，文件为 max_file_bytes），计入 max_records（含墓碑）与 max_store_bytes，超出 CapacityExceeded；GC 每 60 s 先写墓碑再删目录，墓碑不按 TTL 删除。
-- 非 root 的 daemon 只声明 open_stream/describe/query/cancel，exec/read/write/edit 返回 Capability。
+- 非 root 的 daemon 只声明 open_stream/describe/query/cancel，exec/read/write/edit/mkdir/stat 返回 Capability。
+- `describe` 的 `target` 另带 `workdir_roots`（profile 的 roots：控制侧据此放 Session 默认目录 `<root0>/.opendan/<agent>/sessions/<sid>`），`info` 另带 `identity_mode`（`current_user | switch_user`）与注入 Driver 时的 `desktop`（`ui/capture/input/accessibility` readiness）：A-system 与 A-desktop 由此区分，不猜安装形态。
+- node_daemon 桌面模式（A-desktop）：`--desktop_daemon` 构建、平台有 Driver（macOS/Windows）且进程非 root 时，以 `CurrentUser` 打开并注入 `computer_driver` crate 的共享 Driver（与 agent-daemon 同一实现、同一用户会话输入协调锁）；Linux 与 root 场景保持 A-system。
 
 ### 17.5 gateway 与 Agent 侧
 

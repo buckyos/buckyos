@@ -227,21 +227,10 @@ impl Loader {
             None => Arc::new(fs),
         };
         register_in_process(agent.clone());
-        // The runtimes every agent has, before anything can choose one.
-        match agent
-            .runtimes()
-            .ensure_builtin(&builtin_runtimes(container_roots(&env.agent_root), container_note()), &env.who)
-            .await
-        {
-            Ok(r) => log::info!(
-                "loader: runtimes {}",
-                r.iter()
-                    .map(|r| format!("{}={:?}", r.runtime_id, r.availability))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            Err(e) => log::warn!("loader: built-in runtimes not registered: {e}"),
-        }
+        // The runtimes the system configures for this agent (its container,
+        // the owner's host, further enabled nodes), before anything can
+        // choose one; followed while running (`watch_runtime_settings`).
+        project_runtimes(agent.as_ref(), &env.agent_root, &env.settings, &env.who).await;
 
         let info = Arc::new(LoaderInfo {
             agent_did: env.agent_did.clone(),
@@ -484,6 +473,14 @@ impl Loader {
                 ),
             ));
         }
+        tasks.push(tokio::spawn(watch_runtime_settings(
+            env.records.clone(),
+            agent.clone(),
+            env.agent_root.clone(),
+            env.settings.clone(),
+            env.who.clone(),
+            env.options.poll_interval.saturating_mul(6).max(Duration::from_secs(15)),
+        )));
         if let Some(shell_tasks) = env.xllm.shell_tasks.clone() {
             // The `shell` tasks a previous process left open are taken
             // back (or failed) before anything asks for them.
@@ -555,6 +552,64 @@ impl Loader {
         }
         self.supervisor.shutdown().await;
         unregister_in_process(self.agent.agent_did());
+    }
+}
+
+/// Register / refresh the agent's runtimes from its settings.
+pub async fn project_runtimes(
+    agent: &dyn AgentStateClient,
+    agent_root: &std::path::Path,
+    settings: &AgentSettings,
+    who: &str,
+) {
+    let builtin = builtin_runtimes(
+        container_roots(agent_root),
+        container_note(),
+        settings,
+        agent.agent_did(),
+    );
+    match agent.runtimes().ensure_builtin(&builtin, who).await {
+        Ok(r) => log::info!(
+            "loader: runtimes {}",
+            r.iter()
+                .map(|r| format!(
+                    "{}={:?}{}",
+                    r.runtime_id,
+                    r.availability,
+                    if r.default { " (default)" } else { "" }
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Err(e) => log::warn!("loader: runtimes not registered: {e}"),
+    }
+}
+
+/// The owner changes an agent's runtimes (enable the host, pick a default,
+/// adjust ComputerUse) while the agent runs: the projection follows the
+/// settings. Existing sessions keep what they froze.
+async fn watch_runtime_settings(
+    records: Arc<dyn AgentRecords>,
+    agent: Arc<dyn AgentStateClient>,
+    agent_root: PathBuf,
+    mut last: AgentSettings,
+    who: String,
+    every: Duration,
+) {
+    loop {
+        tokio::time::sleep(every).await;
+        let current = match records::settings(records.as_ref()).await {
+            Ok(s) => s,
+            Err(e) => {
+                log::debug!("loader: agent settings not readable ({e}); runtimes stay as projected");
+                continue;
+            }
+        };
+        if current.runtimes != last.runtimes || current.default_runtime_id != last.default_runtime_id {
+            log::info!("loader: runtime settings changed; re-projecting runtimes");
+            project_runtimes(agent.as_ref(), &agent_root, &current, &who).await;
+            last = current;
+        }
     }
 }
 

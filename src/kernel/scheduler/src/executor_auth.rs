@@ -9,10 +9,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use buckyos_api::{
-    agent_settings_key, executor_revision, user_app_spec_key, AgentSettings, AgentSpec,
-    AppInstanceId, AppServiceSpec, ExecutorConfig, ExecutorLimits, ExecutorPrincipalBinding,
-    ExecutorProfile, ExecutorSettings, NodeSettings, NODE_EXECUTOR_LEASE_MS,
-    NODE_EXECUTOR_RENEW_BEFORE_MS,
+    agent_settings_key, executor_revision, owner_agent_profile_id, user_app_spec_key,
+    AgentSettings, AgentSpec, AppInstanceId, AppServiceSpec, ExecutorConfig, ExecutorLimits,
+    ExecutorPrincipalBinding, ExecutorProfile, ExecutorSettings, NodeSettings,
+    NODE_EXECUTOR_LEASE_MS, NODE_EXECUTOR_RENEW_BEFORE_MS, ZONE_OWNER_USER_ID_KEY,
 };
 use buckyos_kit::KVAction;
 use log::*;
@@ -86,14 +86,84 @@ fn device_dids(input: &HashMap<String, String>) -> BTreeSet<String> {
         .collect()
 }
 
+fn agent_settings(input: &HashMap<String, String>, spec: &AgentSpec) -> Option<AgentSettings> {
+    let owner = spec.binding.target_app_instance_id.owner_user_id();
+    let raw = input.get(&agent_settings_key(owner, &spec.agent_id))?;
+    match serde_json::from_str::<AgentSettings>(raw) {
+        Ok(settings) => Some(settings),
+        Err(err) => {
+            warn!("executor: settings of {} are invalid: {err}", spec.agent_id);
+            None
+        }
+    }
+}
+
 fn agent_enabled(input: &HashMap<String, String>, spec: &AgentSpec) -> bool {
     let owner = spec.binding.target_app_instance_id.owner_user_id();
     match input.get(&agent_settings_key(owner, &spec.agent_id)) {
         None => true,
-        Some(raw) => serde_json::from_str::<AgentSettings>(raw)
-            .map(|s| s.enabled)
-            .unwrap_or(false),
+        Some(_) => agent_settings(input, spec).map(|s| s.enabled).unwrap_or(false),
     }
+}
+
+fn zone_owner(input: &HashMap<String, String>) -> Option<String> {
+    let raw = input.get(ZONE_OWNER_USER_ID_KEY)?;
+    serde_json::from_str::<String>(raw)
+        .ok()
+        .or_else(|| Some(raw.trim().trim_matches('"').to_string()))
+        .filter(|s| !s.is_empty())
+}
+
+fn node_did(input: &HashMap<String, String>, node_id: &str) -> Option<String> {
+    let raw = input.get(&buckyos_api::node_config_key(node_id))?;
+    let value: Value = serde_json::from_str(raw).ok()?;
+    value.get("node_did").and_then(Value::as_str).map(str::to_string)
+}
+
+/// Profiles of the node owner's Agents (integration TODO §0 R4): the node's
+/// `owner_agents` policy multiplied by each Agent's own runtime settings
+/// that name this node. Administrator profiles with the same id win.
+fn owner_agent_profiles(
+    node_id: &str,
+    settings: &ExecutorSettings,
+    input: &HashMap<String, String>,
+    specs: &[AgentSpec],
+) -> BTreeMap<String, ExecutorProfile> {
+    let mut out = BTreeMap::new();
+    let Some(policy) = settings.owner_agents.as_ref().filter(|p| p.enabled) else {
+        return out;
+    };
+    let Some(owner) = zone_owner(input) else {
+        warn!("executor: nodes/{node_id}: owner_agents is open but the zone has no owner user id");
+        return out;
+    };
+    for spec in specs {
+        if spec.binding.target_app_instance_id.owner_user_id() != owner {
+            continue;
+        }
+        let Some(agent_settings) = agent_settings(input, spec) else {
+            continue;
+        };
+        if agent_settings.validate_runtimes().is_err() {
+            warn!("executor: runtime settings of {} are inconsistent; not mapped", spec.agent_id);
+            continue;
+        }
+        let Some((_, runtime)) = agent_settings.node_runtime(node_id) else {
+            continue;
+        };
+        let agent_did = spec.agent_did.to_string();
+        let profile_id = owner_agent_profile_id(&agent_did);
+        if settings.profiles.contains_key(&profile_id) {
+            continue;
+        }
+        let profile = policy.profile_for(&agent_did, runtime.computer);
+        if let Err(err) = profile.validate(&profile_id) {
+            warn!("executor: derived profile {profile_id} rejected: {err}");
+            continue;
+        }
+        out.insert(profile_id, profile);
+    }
+    out
 }
 
 fn app_installed(input: &HashMap<String, String>, instance: &AppInstanceId) -> bool {
@@ -120,8 +190,15 @@ fn derive(
         return None;
     }
     let known = device_dids(input);
-    let allowed_devices: Vec<String> = settings
-        .allowed_devices
+    let mut profiles = settings.profiles.clone();
+    profiles.extend(owner_agent_profiles(node_id, settings, input, specs));
+    let mut wanted_devices = settings.allowed_devices.clone();
+    if settings.owner_agents_open() {
+        // The owner's Agents run on this node itself (or reach it through
+        // its own gateway): the node is always an allowed source.
+        wanted_devices.extend(node_did(input, node_id));
+    }
+    let allowed_devices: Vec<String> = wanted_devices
         .iter()
         .filter(|d| {
             let ok = known.contains(*d);
@@ -138,14 +215,16 @@ fn derive(
         warn!("executor: nodes/{node_id}: no known allowed device");
         return None;
     }
+    if profiles.is_empty() {
+        return None;
+    }
     let mut per_instance: HashMap<&AppInstanceId, usize> = HashMap::new();
     for spec in specs {
         *per_instance
             .entry(&spec.binding.target_app_instance_id)
             .or_default() += 1;
     }
-    let principals: BTreeSet<&String> = settings
-        .profiles
+    let principals: BTreeSet<&String> = profiles
         .values()
         .flat_map(|p| p.principals.iter())
         .collect();
@@ -179,7 +258,7 @@ fn derive(
     Some(Derived {
         allowed_devices,
         principal_bindings,
-        profiles: settings.profiles.clone(),
+        profiles,
         limits: settings.limits.clone(),
     })
 }
@@ -407,6 +486,7 @@ mod tests {
                         ops: ExecutorOp::ALL.to_vec(),
                     },
                 )]),
+                owner_agents: None,
                 limits: ExecutorLimits::default(),
             }),
         };
@@ -480,6 +560,79 @@ mod tests {
         assert!(!disabled.enabled);
         assert_eq!(disabled.generation, 4);
         assert!(update_executor_snapshots(&input, NOW + 19_000).0.is_empty());
+    }
+
+    /// Integration TODO §0 R4: the node's `owner_agents` policy × the
+    /// Agent's own runtime setting derives a per-Agent profile; closing
+    /// either side removes it; another Agent's capability is untouched.
+    #[test]
+    fn owner_agents_policy_derives_per_agent_profiles() {
+        use buckyos_api::{AgentRuntimeSettings, AgentRuntimeTarget, ComputerAccess, OwnerAgentsPolicy};
+        let jarvis = agent_spec("devtest", "jarvis", "jarvis");
+        let helper = agent_spec("devtest", "helper", "helper");
+        let (mut input, device_did) = base_input(&jarvis);
+        put_spec(&mut input, &helper);
+        put_app(&mut input, &jarvis.binding.target_app_instance_id);
+        put_app(&mut input, &helper.binding.target_app_instance_id);
+        input.insert(ZONE_OWNER_USER_ID_KEY.to_string(), json!("devtest").to_string());
+        let mut settings: NodeSettings = serde_json::from_str(&input["nodes/ood1/settings"]).unwrap();
+        let executor = settings.executor.as_mut().unwrap();
+        executor.profiles.clear();
+        executor.allowed_devices.clear();
+        executor.owner_agents = Some(OwnerAgentsPolicy {
+            enabled: true,
+            workdir_roots: vec!["/home/devtest".into()],
+            env: BTreeMap::new(),
+            ops: Vec::new(),
+            computer: ComputerAccess::Control,
+            run_as: None,
+        });
+        input.insert("nodes/ood1/settings".into(), serde_json::to_string(&settings).unwrap());
+        let runtime = |computer: ComputerAccess| AgentSettings {
+            runtimes: BTreeMap::from([(
+                "host".to_string(),
+                AgentRuntimeSettings {
+                    enabled: true,
+                    computer,
+                    target: AgentRuntimeTarget::Node { node_id: "ood1".into(), node_did: device_did.clone() },
+                },
+            )]),
+            default_runtime_id: Some("host".into()),
+            ..AgentSettings::default()
+        };
+        input.insert(agent_settings_key("devtest", &jarvis.agent_id), serde_json::to_string(&runtime(ComputerAccess::Observe)).unwrap());
+        input.insert(agent_settings_key("devtest", &helper.agent_id), serde_json::to_string(&runtime(ComputerAccess::Control)).unwrap());
+
+        let (actions, changed) = update_executor_snapshots(&input, NOW);
+        assert!(changed);
+        let config = apply(&mut input, &actions).unwrap();
+        assert_eq!(config.allowed_devices, vec![device_did.clone()], "the node itself is allowed");
+        let jarvis_profile = owner_agent_profile_id(&jarvis.agent_did.to_string());
+        let helper_profile = owner_agent_profile_id(&helper.agent_did.to_string());
+        assert_eq!(config.profiles.len(), 2);
+        assert!(config.profiles[&jarvis_profile].run_as.is_none());
+        let j = config.granted_ops(&jarvis_profile, &jarvis.agent_did.to_string());
+        let h = config.granted_ops(&helper_profile, &helper.agent_did.to_string());
+        assert!(j.contains(&ExecutorOp::Exec) && j.contains(&ExecutorOp::ComputerObserve) && !j.contains(&ExecutorOp::ComputerAct));
+        assert!(h.contains(&ExecutorOp::ComputerAct));
+        assert!(config.granted_ops(&helper_profile, &jarvis.agent_did.to_string()).is_empty());
+
+        // The owner switches jarvis' host off: only jarvis loses its profile.
+        let mut off = runtime(ComputerAccess::Observe);
+        off.runtimes.get_mut("host").unwrap().enabled = false;
+        off.default_runtime_id = None;
+        input.insert(agent_settings_key("devtest", &jarvis.agent_id), serde_json::to_string(&off).unwrap());
+        let actions = update_executor_snapshots(&input, NOW + 1_000).0;
+        let config = apply(&mut input, &actions).unwrap();
+        assert_eq!(config.generation, 2);
+        assert!(!config.profiles.contains_key(&jarvis_profile) && config.profiles.contains_key(&helper_profile));
+
+        // The administrator closes the policy: the node has no profile left.
+        settings.executor.as_mut().unwrap().owner_agents.as_mut().unwrap().enabled = false;
+        input.insert("nodes/ood1/settings".into(), serde_json::to_string(&settings).unwrap());
+        let actions = update_executor_snapshots(&input, NOW + 2_000).0;
+        let config = apply(&mut input, &actions).unwrap();
+        assert!(!config.enabled);
     }
 
     #[test]

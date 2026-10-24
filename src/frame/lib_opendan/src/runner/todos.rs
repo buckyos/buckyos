@@ -12,8 +12,8 @@ use crate::error::Result;
 use crate::protocol::*;
 use crate::session::Session;
 use crate::todos::{
-    one_line, save_submission, store_of, todo_error, CallRef, ChildObservation, SerialPick,
-    TodoList, TodoStatus, TodoStore,
+    needs_own_session, one_line, save_submission, store_of, todo_error, CallRef,
+    ChildObservation, ExploreOptions, SerialPick, TodoList, TodoStatus, TodoStore,
 };
 
 use super::outcome::{refuse_handover, CallSite, FinishKind, Next};
@@ -245,7 +245,42 @@ pub(super) async fn settle(
         return Ok(());
     }
     match list.serial_pick() {
-        SerialPick::Ready(_) => {}
+        SerialPick::Ready(id) => {
+            // A serial Todo on another runtime or workspace executes in a
+            // work session of its own; this session waits for it, in order.
+            let cfg = sh.session.lock().await.config.clone();
+            if list.get(&id).is_some_and(|t| needs_own_session(t, &cfg)) {
+                let opts = ExploreOptions::from_env();
+                match crate::todos::dispatch_serial(
+                    sh.agent(),
+                    &sh.deps.who,
+                    sh.deps.inputs.as_ref(),
+                    &sh.dir,
+                    &id,
+                    &opts,
+                )
+                .await
+                {
+                    Ok(d) => {
+                        let mut children = waiting_children(sh).await;
+                        if !children.contains(&d.child_sid) {
+                            children.push(d.child_sid);
+                        }
+                        wait_for(next, children);
+                    }
+                    Err(e) => refuse_handover(
+                        next,
+                        site,
+                        with_view(
+                            format!(
+                                "Decision refused: Todo {id} could not start in its own work session: {e}. Fix the Todo's runtime / workspace (`agent-session todo cancel` and add it again) or choose another Todo."
+                            ),
+                            &list,
+                        ),
+                    ),
+                }
+            }
+        }
         SerialPick::Unreviewed(ids) => refuse_handover(next, site, review_first(&ids, &list)),
         pick => {
             let children = waiting_children(sh).await;
@@ -277,7 +312,8 @@ pub(super) async fn bind_serial(
     }
     let caller = caller_of(run_id, decision_step(snapshot));
     let now = crate::now_ms();
-    let (todo_id, attempt, task) = store(sh)
+    let cfg = sh.session.lock().await.config.clone();
+    let bound = store(sh)
         .update(|l| {
             let existing = l.todos.iter().find_map(|t| {
                 t.attempts
@@ -288,6 +324,11 @@ pub(super) async fn bind_serial(
             let (id, n) = match existing {
                 Some(found) => found,
                 None => match l.serial_pick() {
+                    // Another runtime / workspace: not a sub context of this
+                    // session (`settle` dispatches it as its own session).
+                    SerialPick::Ready(id) if l.get(&id).is_some_and(|t| needs_own_session(t, &cfg)) => {
+                        return Ok(None)
+                    }
                     SerialPick::Ready(id) => {
                         let n = l.begin_serial(&id, caller.clone(), now)?;
                         (id, n)
@@ -300,9 +341,12 @@ pub(super) async fn bind_serial(
                 },
             };
             let task = l.get(&id).map(|t| t.task_text(l, n)).unwrap_or_default();
-            Ok((id, n, task))
+            Ok(Some((id, n, task)))
         })
         .map_err(todo_error)?;
+    let Some((todo_id, attempt, task)) = bound else {
+        return Ok(());
+    };
     crate::fault::point("todo:after_serial_bind");
     if let Some(call) = next.call.as_mut() {
         call.task = Some(task);

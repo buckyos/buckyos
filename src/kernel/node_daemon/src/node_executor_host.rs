@@ -9,15 +9,15 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use buckyos_api::{
-    get_buckyos_api_runtime, load_current_rbac_config, node_config_key,
-    validate_verify_hub_token_claims, AuthTarget, ExecutorConfig, TokenUse,
-    NODE_EXECUTOR_SERVICE_PORT,
+    get_buckyos_api_runtime, load_current_rbac_config, node_config_key, node_settings_key,
+    validate_verify_hub_token_claims, AuthTarget, ComputerAccess, ExecutorConfig, ExecutorSettings,
+    NodeSettings, OwnerAgentsPolicy, TokenUse, NODE_EXECUTOR_SERVICE_PORT,
 };
 use cyfs_gateway_api::CONTROL_SERVER;
 use log::*;
 use node_executor::{
-    default_shell, ExecutorHost, NodeExecutor, RbacChecker, TokenVerifier, VerifiedSession,
-    WorkerLauncher,
+    default_shell, ExecutorHost, ExecutorIdentityMode, ExecutorOptions, NodeExecutor, RbacChecker,
+    TokenVerifier, VerifiedSession, WorkerLauncher,
 };
 use serde_json::{json, Value};
 
@@ -136,9 +136,28 @@ async fn load_executor_config(node_host_name: &str) -> Result<Option<ExecutorCon
     }
 }
 
-fn open_executor(node_host_name: &str, node_did: &str) -> Result<NodeExecutor, String> {
+/// Form A-desktop (doc/arch/node_exector.md §4.2): node_daemon runs as the
+/// logged-in user in that user's interactive session, so it executes as
+/// that user and can drive the desktop. Decided from the process, not the
+/// installer: the Desktop build, a platform with a desktop Driver, and not
+/// root (a root LaunchDaemon on macOS stays form A-system).
+fn desktop_mode(desktop_build: bool) -> bool {
+    if !desktop_build || !computer_driver::SUPPORTED {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        unsafe { libc::geteuid() != 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn open_executor(node_host_name: &str, node_did: &str, desktop: bool) -> Result<NodeExecutor, String> {
     let program = std::env::current_exe().map_err(|e| e.to_string())?;
-    NodeExecutor::open(ExecutorHost {
+    let host = ExecutorHost {
         node_id: node_host_name.to_string(),
         node_did: node_did.to_string(),
         store_dir: buckyos_kit::get_buckyos_service_local_data_dir("node_daemon").join("executor"),
@@ -149,27 +168,113 @@ fn open_executor(node_host_name: &str, node_did: &str) -> Result<NodeExecutor, S
         shell: default_shell(),
         verifier: Arc::new(RuntimeVerifier),
         rbac: Arc::new(RuntimeRbac),
-    })
-    .map_err(|e| e.to_string())
+    };
+    let options = ExecutorOptions {
+        identity_mode: if desktop || cfg!(windows) {
+            ExecutorIdentityMode::CurrentUser
+        } else {
+            ExecutorIdentityMode::SwitchUser
+        },
+        ..ExecutorOptions::default()
+    };
+    #[cfg(any(target_os = "macos", windows))]
+    if desktop {
+        return NodeExecutor::open_with_computer(host, options, computer_driver::driver())
+            .map_err(|e| e.to_string());
+    }
+    NodeExecutor::open_with_options(host, options).map_err(|e| e.to_string())
+}
+
+/// The home of the user node_daemon runs as: the first root the owner's
+/// Agents get on a desktop node.
+fn interactive_home() -> Option<String> {
+    let home = if cfg!(windows) {
+        std::env::var_os("USERPROFILE")
+    } else {
+        std::env::var_os("HOME")
+    }?;
+    let home = home.to_string_lossy().to_string();
+    buckyos_api::is_absolute_node_path(&home).then_some(home)
+}
+
+/// Desktop activation seed (integration TODO §3.1): a desktop node opens
+/// itself to the owner's Agents once, as the system — the administrator
+/// may close or narrow it afterwards (`owner_agents.enabled = false` is
+/// respected, the node is never re-opened).
+async fn seed_owner_agents(node_host_name: &str) -> Result<bool, String> {
+    let runtime = get_buckyos_api_runtime().map_err(|e| e.to_string())?;
+    let client = runtime
+        .get_system_config_client()
+        .await
+        .map_err(|e| e.to_string())?;
+    let key = node_settings_key(node_host_name);
+    let (mut settings, exists): (NodeSettings, bool) = match client.get(&key).await {
+        Ok(value) => (
+            serde_json::from_str(&value.value).map_err(|e| format!("invalid {key}: {e}"))?,
+            true,
+        ),
+        Err(buckyos_api::SystemConfigError::KeyNotFound(_)) => (NodeSettings::default(), false),
+        Err(e) => return Err(e.to_string()),
+    };
+    let executor = settings.executor.get_or_insert_with(ExecutorSettings::default);
+    if executor.owner_agents.is_some() {
+        return Ok(false);
+    }
+    let Some(home) = interactive_home() else {
+        return Err("no absolute home directory for the interactive user".into());
+    };
+    executor.owner_agents = Some(OwnerAgentsPolicy {
+        enabled: true,
+        workdir_roots: vec![home],
+        env: Default::default(),
+        ops: Vec::new(),
+        computer: ComputerAccess::Control,
+        run_as: None,
+    });
+    executor.enabled = true;
+    executor
+        .validate()
+        .map_err(|e| format!("seeded executor settings rejected: {e}"))?;
+    let body = serde_json::to_string(&settings).map_err(|e| e.to_string())?;
+    if exists {
+        client.set(&key, &body).await.map_err(|e| e.to_string())?;
+    } else {
+        client.create(&key, &body).await.map_err(|e| e.to_string())?;
+    }
+    Ok(true)
 }
 
 /// Opens the executor on the first snapshot, delivers snapshots every 5 s,
 /// and keeps the gateway ACL equal to what the executor currently accepts.
-pub fn spawn_node_executor(node_host_name: String, node_did: String) {
+/// `desktop_build`: the Desktop node_daemon (`--desktop_daemon`).
+pub fn spawn_node_executor(node_host_name: String, node_did: String, desktop_build: bool) {
+    let desktop = desktop_mode(desktop_build);
     tokio::spawn(async move {
         let mut executor: Option<NodeExecutor> = None;
         let mut last_fetch: Option<Instant> = None;
         let mut written: Option<(String, Vec<String>)> = None;
         let mut acl_written_once = false;
+        let mut seeded = !desktop;
         let mut tick = tokio::time::interval(TICK);
         loop {
             tick.tick().await;
+            if !seeded {
+                match seed_owner_agents(&node_host_name).await {
+                    Ok(wrote) => {
+                        if wrote {
+                            info!("node executor: desktop node opened to the owner's Agents (owner_agents seeded)");
+                        }
+                        seeded = true;
+                    }
+                    Err(err) => warn!("node executor: owner_agents seed not written yet: {err}"),
+                }
+            }
             if last_fetch.map(|t| t.elapsed() >= CONFIG_REFRESH).unwrap_or(true) {
                 last_fetch = Some(Instant::now());
                 match load_executor_config(&node_host_name).await {
                     Ok(config) => {
                         if executor.is_none() && config.as_ref().map(|c| c.enabled).unwrap_or(false) {
-                            match open_executor(&node_host_name, &node_did) {
+                            match open_executor(&node_host_name, &node_did, desktop) {
                                 Ok(exec) => {
                                     let listener = exec.clone();
                                     let addr = SocketAddr::from(([127, 0, 0, 1], NODE_EXECUTOR_SERVICE_PORT));
@@ -179,7 +284,8 @@ pub fn spawn_node_executor(node_host_name: String, node_did: String) {
                                         }
                                     });
                                     info!(
-                                        "node executor opened, store_id={} caps={:?}",
+                                        "node executor opened ({}), store_id={} caps={:?}",
+                                        if desktop { "desktop mode, current user" } else { "system mode" },
                                         exec.store_id(),
                                         exec.host_capabilities()
                                     );

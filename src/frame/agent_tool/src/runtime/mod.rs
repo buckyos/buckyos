@@ -344,6 +344,25 @@ impl RuntimeInfo {
     }
 }
 
+/// Commands of the control side (the session's host) that a remote runtime
+/// does not execute on its target: they run through `runner` in `workdir`,
+/// where the session's state and credentials are.
+#[derive(Clone)]
+pub struct ControlSide {
+    pub runner: Arc<dyn BashRunner>,
+    pub workdir: PathBuf,
+    pub commands: Vec<String>,
+}
+
+impl std::fmt::Debug for ControlSide {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ControlSide")
+            .field("workdir", &self.workdir)
+            .field("commands", &self.commands)
+            .finish()
+    }
+}
+
 #[derive(Clone)]
 pub struct RuntimeOpenCtx {
     pub workdir: PathBuf,
@@ -356,6 +375,8 @@ pub struct RuntimeOpenCtx {
     /// directory are known (`XllmToolManager::bind_run`). Execution
     /// directories of `shell` commands derive from it.
     pub run: RunBindingSlot,
+    /// Session helpers a remote runtime hands back to the control side.
+    pub control: Option<ControlSide>,
 }
 
 impl RuntimeOpenCtx {
@@ -368,6 +389,7 @@ impl RuntimeOpenCtx {
             env: BTreeMap::new(),
             path_prefix: Vec::new(),
             run: new_run_binding_slot(),
+            control: None,
         }
     }
 }

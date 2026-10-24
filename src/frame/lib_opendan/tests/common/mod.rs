@@ -104,6 +104,7 @@ impl Env {
                     },
                     name: Some("test workspace".into()),
                     description: String::new(),
+                    url: None,
                     usage: Default::default(),
                     expected_revision: None,
                     source_session: None,

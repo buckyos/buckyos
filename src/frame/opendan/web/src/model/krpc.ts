@@ -134,6 +134,15 @@ export const createKrpcDataModel = (): OpenDanDataModel => {
     relocateWorkspace: (workspace, location) => call('workspaces.discover', {
       request: { location, expected_revision: workspace.revision, expected_workspace_id: workspace.workspace_id },
     }),
+    createWorkspace: (request) => call('workspaces.create', { request }),
+    importWorkspace: (request) => call('workspaces.import', { request }),
+    setWorkspaceUrl: (workspace, url) => call('workspaces.update', {
+      workspace_id: workspace.workspace_id,
+      request: { expected_revision: workspace.revision, url },
+    }),
+    checkRuntime: (runtimeId) => call('runtimes.check', { runtime_id: runtimeId }),
+    runtimeSettings: () => call('runtimes.settings'),
+    setRuntimeSetting: (patch) => call('runtimes.settings_set', { ...patch }),
     sessions: () => call('sessions.query'),
     activeSessions: () => call('activity.active', { limit: 50 }),
     session: (sid, worklog = 40) => call('session.read', { sid, worklog }),

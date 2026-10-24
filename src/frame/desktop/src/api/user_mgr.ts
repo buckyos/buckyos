@@ -245,6 +245,42 @@ export interface AgentSettings {
   template_auto_update: boolean
   desktop_entry?: string | null
   msg_tunnels: AgentMsgTunnelSummary[]
+  /** Execution runtimes beyond the Agent's container, by runtime id (`host` = the owner's desktop). */
+  runtimes?: Record<string, AgentRuntimeSetting>
+  /** The runtime new sessions start in (`container` when none is chosen). */
+  default_runtime_id?: string
+}
+
+export type ComputerAccess = 'none' | 'observe' | 'control'
+
+export interface AgentRuntimeSetting {
+  enabled: boolean
+  computer: ComputerAccess
+  target: { kind: 'node'; node_id: string; node_did: string } | { kind: 'executor'; executor_id: string }
+}
+
+/** One machine the owner's Agents may run on (`agent.runtime_directory`). */
+export interface AgentRuntimeOffer {
+  runtime_id: string
+  kind: 'node' | 'executor'
+  node_id?: string
+  node_did?: string
+  device_type?: string
+  name?: string
+  computer_max: ComputerAccess
+  workdir_roots?: string[]
+  /** The policy exists but the administrator closed it. */
+  closed: boolean
+  /** The node no longer offers it (the Agent's setting still names it). */
+  withdrawn?: boolean
+  enabled: boolean
+  computer: ComputerAccess
+}
+
+export interface AgentRuntimeDirectory {
+  runtimes: AgentRuntimeOffer[]
+  default_runtime_id: string | null
+  container: string
 }
 
 export interface AgentTemplateBinding {
@@ -772,12 +808,24 @@ export const fetchAgentDetail = async (
 
 export const updateAgent = async (input: {
   agentId: string
-  allowGroup: boolean
-}): Promise<{ data: AgentEntry | null; error: unknown }> =>
-  callControlPanel<AgentEntry>('agent.update', {
-    agent_id: input.agentId,
-    allow_group: input.allowGroup,
-  })
+  allowGroup?: boolean
+  /** `{ "<id>": { enabled?, computer? } | null }`; targets come from the directory, never from here. */
+  runtimes?: Record<string, { enabled?: boolean; computer?: ComputerAccess } | null>
+  /** `null` or `'container'`: the Agent's own environment. */
+  defaultRuntimeId?: string | null
+}): Promise<{ data: AgentEntry | null; error: unknown }> => {
+  const params: Record<string, unknown> = { agent_id: input.agentId }
+  if (input.allowGroup !== undefined) params.allow_group = input.allowGroup
+  if (input.runtimes !== undefined) params.runtimes = input.runtimes
+  if (input.defaultRuntimeId !== undefined) params.default_runtime_id = input.defaultRuntimeId
+  return callControlPanel<AgentEntry>('agent.update', params)
+}
+
+/** The machines the caller's Agents may run on; with `agentId`, that Agent's choice too. */
+export const fetchAgentRuntimeDirectory = async (
+  agentId?: string,
+): Promise<{ data: AgentRuntimeDirectory | null; error: unknown }> =>
+  callControlPanel<AgentRuntimeDirectory>('agent.runtime_directory', agentId ? { agent_id: agentId } : {})
 
 export const fetchAgentProfile = async (
   agentId: string,

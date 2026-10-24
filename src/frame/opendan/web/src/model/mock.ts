@@ -10,6 +10,7 @@ import type {
   HostedStatus,
   KnownRuntime,
   KnownWorkspace,
+  RuntimeSettings,
   RegistryEntry,
   SessionDetail,
   SessionState,
@@ -605,7 +606,7 @@ export const createMockDataModel = (): OpenDanDataModel => {
   const workspaces: KnownWorkspace[] = [
     {
       version: 1, runtime_host: 'mock-host',
-      workspace_id: 'ws-downloads', name: 'Downloads', description: 'Weekly reports from shared downloads.',
+      workspace_id: 'ws-downloads', name: 'Downloads', description: 'Weekly reports from shared downloads.', url: null,
       location: { runtime_id: 'local', directory: '/home/devtest/Downloads' },
       usage: 'collaborative', lifecycle: 'active', availability: 'available',
       revision: 2, location_revision: 1, updated_at_ms: ago(4), checked_at_ms: ago(30),
@@ -613,7 +614,7 @@ export const createMockDataModel = (): OpenDanDataModel => {
     },
     {
       version: 1, runtime_host: 'mock-host',
-      workspace_id: 'ws-photos', name: 'Photos', description: 'Organize photographs and keep rename reports.',
+      workspace_id: 'ws-photos', name: 'Photos', description: 'Organize photographs and keep rename reports.', url: 'https://github.com/example/photos',
       location: { runtime_id: 'local', directory: `${ROOT}/workspace/photos` },
       usage: 'private', lifecycle: 'active', availability: 'available',
       revision: 1, location_revision: 1, updated_at_ms: ago(900), checked_at_ms: ago(900),
@@ -621,7 +622,7 @@ export const createMockDataModel = (): OpenDanDataModel => {
     },
     {
       version: 1, runtime_host: 'studio-host',
-      workspace_id: 'ws-design-archive', name: 'Design archive', description: 'Long-term project on a disconnected workstation.',
+      workspace_id: 'ws-design-archive', name: 'Design archive', description: 'Long-term project on a disconnected workstation.', url: null,
       location: { runtime_id: 'studio-workstation', directory: '/projects/design/archive' },
       usage: 'collaborative', lifecycle: 'archived', availability: 'runtime_unavailable',
       revision: 4, location_revision: 2, updated_at_ms: ago(7200), checked_at_ms: ago(120),
@@ -629,7 +630,7 @@ export const createMockDataModel = (): OpenDanDataModel => {
     },
     {
       version: 1, runtime_host: 'mock-host',
-      workspace_id: 'ws-project-notes', name: 'Project notes', description: 'Archived notes whose directory was moved.',
+      workspace_id: 'ws-project-notes', name: 'Project notes', description: 'Archived notes whose directory was moved.', url: null,
       location: { runtime_id: 'local', directory: '/home/devtest/Projects/notes-old' },
       usage: 'collaborative', lifecycle: 'archived', availability: 'missing',
       revision: 2, location_revision: 1, updated_at_ms: ago(8000), checked_at_ms: ago(120),
@@ -641,18 +642,25 @@ export const createMockDataModel = (): OpenDanDataModel => {
       version: 1, runtime_id: 'container', kind: 'container', name: 'Agent container',
       description: "The environment the agent itself runs in; commands run directly. It is the agent's container: paths here are not the owner's host paths.",
       runtime_host: 'mock-host', exec: { kind: 'native' }, roots: [`${ROOT}/workspaces`, '/home/devtest'],
-      capabilities: { network: true, os: 'linux' }, availability: 'available', builtin: true,
+      capabilities: { network: true, os: 'linux' }, availability: 'available', builtin: true, default: false, computer: 'none',
       revision: 1, registered_by: 'app:jarvis@devtest', registered_at_ms: ago(86400), updated_at_ms: ago(86400),
       checked_at_ms: ago(60), last_error: null,
     },
     {
-      version: 1, runtime_id: 'host', kind: 'host_native', name: 'Host machine',
-      description: "The machine the agent's container runs on, where the owner's own files and tools are. Not usable yet: it needs a host executor.",
-      runtime_host: 'mock-host', exec: null, roots: [], capabilities: {}, availability: 'runtime_unavailable', builtin: true,
-      revision: 1, registered_by: 'app:jarvis@devtest', registered_at_ms: ago(86400), updated_at_ms: ago(86400),
-      checked_at_ms: ago(60), last_error: 'no executor for the `host` runtime yet',
+      version: 2, runtime_id: 'host', kind: 'host_native', name: 'Host machine',
+      description: "Node `desktop` (did:dev:mock): the owner's machine, where the owner's own files and tools are; commands and files go through its node executor.",
+      runtime_host: 'mock-host', exec: { kind: 'remote_node', remote_node: { node_did: 'did:dev:mock', profile_id: 'agent-0123456789ab' } },
+      roots: ['/Users/devtest'], capabilities: { enabled: true, node_id: 'desktop', os: 'macos', computer: 'observe' },
+      availability: 'available', builtin: true, default: true, computer: 'observe',
+      revision: 3, registered_by: 'app:jarvis@devtest', registered_at_ms: ago(86400), updated_at_ms: ago(600),
+      checked_at_ms: ago(60), last_error: null,
     },
   ]
+  const runtimeSettings: RuntimeSettings = {
+    runtimes: { host: { enabled: true, computer: 'observe', target: { kind: 'node', node_id: 'desktop', node_did: 'did:dev:mock' } } },
+    default_runtime_id: 'host',
+  }
+  const availableRuntimeIds = () => runtimes.filter((r) => r.availability === 'available').map((r) => r.runtime_id).concat('local')
   const findWorkspace = (workspaceId: string) => {
     const workspace = workspaces.find((record) => record.workspace_id === workspaceId)
     if (!workspace) throw new OpenDanError('not_found', `workspace ${workspaceId} is not registered`)
@@ -776,6 +784,84 @@ export const createMockDataModel = (): OpenDanDataModel => {
       return structuredClone(runtimes)
     },
 
+    createWorkspace: async (request) => {
+      await delay()
+      if (!availableRuntimeIds().includes(request.location.runtime_id)) throw new OpenDanError('invalid_argument', 'Runtime is unavailable.')
+      if (!request.name.trim()) throw new OpenDanError('invalid_argument', 'A name is required.')
+      const workspace: KnownWorkspace = {
+        version: 2, runtime_host: 'mock-host', workspace_id: `ws-${crypto.randomUUID()}`,
+        name: request.name, description: request.description, url: request.url || null,
+        location: { ...request.location }, usage: 'collaborative', lifecycle: 'active', availability: 'available',
+        revision: 1, location_revision: 1, updated_at_ms: Date.now(), checked_at_ms: Date.now(),
+        source_session: null, conflict: null, last_error: null,
+      }
+      workspaces.push(workspace)
+      return structuredClone(workspace)
+    },
+
+    importWorkspace: async (request) => {
+      await delay()
+      if (!availableRuntimeIds().includes(request.location.runtime_id)) throw new OpenDanError('invalid_argument', 'Runtime is unavailable.')
+      const workspace: KnownWorkspace = {
+        version: 2, runtime_host: 'mock-host', workspace_id: `ws-${crypto.randomUUID()}`,
+        name: request.name || request.location.directory.split('/').filter(Boolean).pop() || 'workspace',
+        description: request.description, url: request.url || null,
+        location: { ...request.location }, usage: 'collaborative', lifecycle: 'active', availability: 'available',
+        revision: 1, location_revision: 1, updated_at_ms: Date.now(), checked_at_ms: Date.now(),
+        source_session: null, conflict: null, last_error: null,
+      }
+      workspaces.push(workspace)
+      return structuredClone(workspace)
+    },
+
+    setWorkspaceUrl: async (expected, url) => {
+      await delay()
+      const workspace = findWorkspace(expected.workspace_id)
+      if (workspace.revision !== expected.revision) throw new OpenDanError('conflict', 'Workspace registration changed; reload before retrying.')
+      if (url && !/^https?:\/\/[^\s@]+$/.test(url)) throw new OpenDanError('invalid_argument', 'The project URL must be an http(s) link without credentials.')
+      workspace.url = url || null
+      workspace.revision += 1
+      workspace.updated_at_ms = Date.now()
+      return structuredClone(workspace)
+    },
+
+    checkRuntime: async (runtimeId) => {
+      await delay()
+      const runtime = runtimes.find((r) => r.runtime_id === runtimeId)
+      if (!runtime) throw new OpenDanError('not_found', `runtime ${runtimeId} is not registered`)
+      runtime.checked_at_ms = Date.now()
+      return structuredClone(runtime)
+    },
+
+    runtimeSettings: async () => {
+      await delay()
+      return structuredClone(runtimeSettings)
+    },
+
+    setRuntimeSetting: async (patch) => {
+      await delay()
+      const entry = runtimeSettings.runtimes[patch.runtime_id]
+      if (patch.runtime_id !== 'container' && !entry) throw new OpenDanError('invalid_argument', `runtime ${patch.runtime_id} is not one of this agent's runtimes`)
+      if (entry) {
+        if (patch.enabled !== undefined) entry.enabled = patch.enabled
+        if (patch.computer) entry.computer = patch.computer
+      }
+      if (patch.default === true) runtimeSettings.default_runtime_id = patch.runtime_id
+      if (patch.default === false && runtimeSettings.default_runtime_id === patch.runtime_id) runtimeSettings.default_runtime_id = 'container'
+      if (runtimeSettings.default_runtime_id !== 'container' && !runtimeSettings.runtimes[runtimeSettings.default_runtime_id]?.enabled) runtimeSettings.default_runtime_id = 'container'
+      for (const r of runtimes) {
+        const chosen = runtimeSettings.runtimes[r.runtime_id]
+        r.default = runtimeSettings.default_runtime_id === r.runtime_id
+        if (chosen) {
+          r.computer = chosen.computer
+          r.availability = chosen.enabled ? 'available' : 'runtime_unavailable'
+          r.last_error = chosen.enabled ? null : 'the `host` runtime is not enabled for this agent'
+          r.exec = chosen.enabled ? r.exec ?? { kind: 'remote_node' } : null
+        }
+      }
+      return structuredClone(runtimeSettings)
+    },
+
     checkWorkspace: async (workspaceId) => {
       await delay()
       const workspace = findWorkspace(workspaceId)
@@ -789,7 +875,7 @@ export const createMockDataModel = (): OpenDanDataModel => {
       const workspace = findWorkspace(expected.workspace_id)
       if (workspace.revision !== expected.revision) throw new OpenDanError('conflict', 'Workspace registration changed; reload before retrying.')
       if (!location.directory.startsWith('/')) throw new OpenDanError('invalid_argument', 'Workspace directory must be absolute.')
-      if (location.runtime_id !== 'local') throw new OpenDanError('invalid_argument', 'Runtime is unavailable.')
+      if (!availableRuntimeIds().includes(location.runtime_id)) throw new OpenDanError('invalid_argument', 'Runtime is unavailable.')
       if (workspace.location.runtime_id !== 'local') throw new OpenDanError('conflict', 'Cannot verify relocation while the original runtime is unavailable.')
       if (workspaces.some((record) => record.workspace_id !== workspace.workspace_id && record.location.directory === location.directory)) {
         throw new OpenDanError('conflict', 'Directory identity does not match the selected workspace.')

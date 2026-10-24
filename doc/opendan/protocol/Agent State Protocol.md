@@ -254,19 +254,21 @@ Goal Session 派生的 Work 的 `origin.goal = {goal_id, revision, epoch, activa
 Agent 的 Session 与 Workspace 能用哪些 Runtime。登记只说明“有这个 Runtime、本宿主现在能不能用、Workspace 建议放在哪”；在其中执行是 `agent_tool::runtime` 的事。schema：`schema/runtime_record.schema.json`。
 
 ```json
-{ "version": 1, "runtime_id": "container", "kind": "container | host_native | remote_ssh",
+{ "version": 2, "runtime_id": "container", "kind": "container | host_native | remote_node | remote_ssh",
   "name": "Agent container", "description": "…", "runtime_host": "<native_host_id()>",
-  "exec": { "kind": "native" },            // agent_tool RuntimeConfig；null = 还没有执行器
+  "exec": { "kind": "native" },            // agent_tool RuntimeConfig；null = 未启用 / 还没有执行器
   "roots": ["<agent_root>/workspaces", "/home/<owner>"],
   "capabilities": { "network": true, "os": "linux" },
   "availability": "available | runtime_unavailable | permission_denied",
-  "builtin": true, "revision": 1, "registered_by": "…", "registered_at_ms": 0, "updated_at_ms": 0,
+  "builtin": true, "default": false, "computer": "none | observe | control",
+  "revision": 1, "registered_by": "…", "registered_at_ms": 0, "updated_at_ms": 0,
   "checked_at_ms": 0, "last_error": null }
 ```
 
-- **内建**：宿主（Loader）启动时幂等补建 `container`（Agent 进程自己所在的环境，`exec = {kind: native}`，可用）与 `host`（容器所在的宿主机，`exec = null`，在宿主机执行器落地前 `runtime_unavailable`）。补建不覆盖 owner 改过的 `name / description / roots`；内建记录不能取消登记。
-- **可用性**：`check` 按记录判断——`exec` 为空、`kind` 不是 `container`、或 `container` 登记在别的宿主上 → `runtime_unavailable`（`last_error` 说明原因）。
+- **内建 = 系统配置的投影**（2026-10-23）：宿主（Loader）启动时及 owner 改动 AgentSettings 后幂等补建 `container`（Agent 进程自己所在的环境，`exec = {kind: native}`）和 `AgentSettings.runtimes` 里的每个 runtime：`host`（owner 的桌面节点，`kind = host_native`）与其它节点（`kind = remote_node`），启用时 `exec = {kind: remote_node, remote_node: {node_did, profile_id: agent-<hash>}}`（profile 由 scheduler 从节点 `owner_agents` 策略派生），关闭时 `exec = null`、`capabilities.enabled = false`。`default` 标记 owner 的 `default_runtime_id`；`computer` 是 owner 给该 runtime 的 ComputerUse。settings 里没有 `host` 时仍补一个 `exec = null` 的占位说明原因。补建不覆盖 owner 改过的容器 `name / description / roots`；节点 runtime 的 roots 来自节点 `describe`（profile roots）。内建记录不能取消登记。
+- **可用性**：`observe` 按配置判断——`exec` 为空 → `runtime_unavailable`（未启用 / 无执行器）、`container` 登记在别的宿主上 → `runtime_unavailable`；节点 runtime 配置齐全即 `available`。`check` 对节点 runtime 另做真实探测（login + describe），失败写 `last_error`，成功时把节点 roots、os、identity_mode、desktop readiness 写进记录。
 - **写**：`register`（owner 添加，同参数重试幂等，已存在的 id 拒绝）、`update`（CAS `expected_revision`，只改 `name / description / roots`）、`check`、`unregister`（CAS，内建拒绝）；`.locks/runtimes.lock` 互斥。`ensure_builtin` 只给宿主，kRPC 拒绝。
 - **id**：小写字母、数字、`-`、`_`；`local` 保留为 `container` 的旧名，`lookup("local")` 返回 `container`。
-- **使用者**：Workspace 位置的 `runtime_id` 只接受本 runner 能直接用的 Runtime（`container`，旧记录的 `local`），`container` 登记为不可用时 Workspace 也不可用（[Agent Workspace Protocol](<Agent Workspace Protocol.md>)）；`create-worksession --runtime <id>` 要求已登记且 `available`，否则拒绝（退出码 6）。
+- **使用者**：Workspace 位置的 `runtime_id` 是 `container`（旧记录的 `local`）或一个 `available` 的节点 runtime，目标侧目录操作经该 runtime 的执行器完成（[Agent Workspace Protocol](<Agent Workspace Protocol.md>)）；Session 创建时在 `api::freeze_runtime` 统一选择并冻结（Workspace > 显式 > 继承 > `default`），`create-worksession --runtime <id>` / Todo 的 `--runtime` 要求已登记且 `available`，否则拒绝。
+- kRPC（宿主 opendan 另有）：`runtimes.settings`（owner 的选择：`runtimes`、`default_runtime_id`）、`runtimes.settings_set {runtime_id, enabled?, computer?, default?}`（只改已有条目的启停 / ComputerUse / 默认，不新增目标；新增目标是 control-panel `agent.update` / `agent.runtime_directory` 的事）。
 - kRPC：`runtimes.list`、`runtimes.lookup {runtime_id}`；写：`runtimes.register {request}`、`runtimes.update {runtime_id, request}`、`runtimes.check {runtime_id}`、`runtimes.unregister {runtime_id, expected_revision}`（署名为服务端看到的调用方）。

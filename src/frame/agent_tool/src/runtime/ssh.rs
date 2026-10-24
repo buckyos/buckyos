@@ -1,4 +1,4 @@
-use super::files::{check_allowed, FileBackend};
+use super::files::{check_allowed, FileBackend, PathType};
 use super::{shell_quote, ExecDirFacts, RuntimeInfo, SshConfig};
 use crate::llm_bash::{
     sanitize_call_id, BashRunOutput, BashRunRequest, BashRunner, BashTarget, CommandHandle,
@@ -624,6 +624,31 @@ impl FileBackend for SshTransport {
                 p = shell_quote(&path.display().to_string()),
                 t = shell_quote(&remote.display().to_string())
             ),
+            true,
+        )
+        .await?;
+        Ok(())
+    }
+    async fn path_type(&self, path: &Path) -> ToolResult<PathType> {
+        let b = self
+            .script(
+                &format!(
+                    "p={}\nif [ -d \"$p\" ]; then printf dir; elif [ -f \"$p\" ]; then printf file; elif [ -e \"$p\" ]; then printf other; else printf missing; fi\n",
+                    shell_quote(&path.display().to_string())
+                ),
+                false,
+            )
+            .await?;
+        Ok(match b.as_slice() {
+            b"dir" => PathType::Directory,
+            b"file" => PathType::File,
+            b"missing" => PathType::Missing,
+            _ => PathType::Other,
+        })
+    }
+    async fn mkdir(&self, path: &Path) -> ToolResult<()> {
+        self.script(
+            &format!("mkdir -p -- {}\n", shell_quote(&path.display().to_string())),
             true,
         )
         .await?;

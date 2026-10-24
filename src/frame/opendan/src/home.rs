@@ -193,6 +193,60 @@ impl Home {
         Ok(json!(out))
     }
 
+    /// The owner's runtime choice for this agent (`AgentSettings.runtimes`,
+    /// `default_runtime_id`), as the WebUI edits it.
+    pub async fn runtime_settings(&self) -> Result<Value, OpenDanError> {
+        let settings = records::settings(self.records.as_ref()).await.map_err(store_err)?;
+        Ok(json!({
+            "runtimes": settings.runtimes,
+            "default_runtime_id": settings.effective_default_runtime(),
+        }))
+    }
+
+    /// Change one runtime the owner already has on this agent (enable /
+    /// disable, ComputerUse, default). Adding a runtime target is the
+    /// control panel's (`agent.update` / `agent.runtime_directory`): this
+    /// side never invents a target. Returns the new settings.
+    pub async fn set_runtime_settings(&self, params: &Value) -> Result<buckyos_api::AgentSettings, OpenDanError> {
+        let invalid = |m: String| OpenDanError::InvalidArgument(m);
+        let mut settings = records::settings(self.records.as_ref()).await.map_err(store_err)?;
+        let runtime_id = text_param(params, "runtime_id")?
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| invalid("param `runtime_id` is required".into()))?;
+        if runtime_id != buckyos_api::CONTAINER_RUNTIME_ID {
+            let entry = settings.runtimes.get_mut(&runtime_id).ok_or_else(|| {
+                invalid(format!(
+                    "runtime `{runtime_id}` is not one of this agent's runtimes; the control panel adds runtimes (agent.update)"
+                ))
+            })?;
+            if let Some(enabled) = params.get("enabled").and_then(Value::as_bool) {
+                entry.enabled = enabled;
+            }
+            if let Some(computer) = params.get("computer").filter(|v| !v.is_null()) {
+                entry.computer = serde_json::from_value(computer.clone())
+                    .map_err(|_| invalid("param `computer` takes none | observe | control".into()))?;
+            }
+        }
+        if let Some(default) = params.get("default").and_then(Value::as_bool) {
+            if default {
+                settings.default_runtime_id = Some(runtime_id.clone());
+            } else if settings.default_runtime_id.as_deref() == Some(&runtime_id) {
+                settings.default_runtime_id = None;
+            }
+        }
+        if settings.default_runtime_id.as_deref().is_some_and(|d| !settings.runtime_enabled(d)) {
+            settings.default_runtime_id = None;
+        }
+        if settings.default_runtime_id.as_deref() == Some(buckyos_api::CONTAINER_RUNTIME_ID) {
+            settings.default_runtime_id = None;
+        }
+        settings.validate_runtimes().map_err(invalid)?;
+        records::set_settings(self.records.as_ref(), &settings)
+            .await
+            .map_err(store_err)?;
+        Ok(settings)
+    }
+
     pub async fn workspaces(&self, agent: &dyn AgentStateClient) -> Result<Value, OpenDanError> {
         let records = agent.workspaces().query(&WorkspaceQuery::default()).await?;
         Ok(json!(records.into_iter().map(|record| json!({
@@ -201,6 +255,7 @@ impl Home {
             "workspace_id": record.workspace_id,
             "name": record.name,
             "description": record.description,
+            "url": record.url,
             "location": record.location,
             "usage": record.usage,
             "lifecycle": record.lifecycle,
@@ -214,6 +269,11 @@ impl Home {
             "last_error": record.last_error,
         })).collect::<Vec<_>>()))
     }
+}
+
+/// Where the home page reads its agent root from (for re-projection).
+pub fn agent_root_of(agent: &dyn AgentStateClient) -> Option<std::path::PathBuf> {
+    agent.agent_root().map(|p| p.to_path_buf())
 }
 
 fn apply_profile(profile: &mut AgentProfile, params: &Value) -> Result<(), OpenDanError> {

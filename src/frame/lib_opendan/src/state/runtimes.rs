@@ -3,6 +3,8 @@
 //! use them now, and where workspaces are best placed in them. Writes hold
 //! the `runtimes` lock; updates are compare-and-set on `revision`.
 
+use std::path::PathBuf;
+
 use async_trait::async_trait;
 
 use crate::error::{OpenDanError, Result};
@@ -101,11 +103,17 @@ impl FsRuntimes {
         Ok(out)
     }
 
-    /// Whether this host can use the runtime now. Only the agent's own
-    /// environment is executed directly; any other kind needs an executor
-    /// this runner does not have yet.
+    /// Whether this host can use the runtime now, from its configuration:
+    /// the agent's own environment is executed directly; a node runtime
+    /// needs its `remote_node` exec (enabled in the agent's settings and
+    /// derived by the scheduler) — whether the node answers is learned by
+    /// [`RuntimeRegistry::check`], which probes it.
     fn observe(&self, record: &mut RuntimeRecord) {
         let (availability, error) = match (record.kind, &record.exec) {
+            (_, None) if record.capabilities.get("enabled") == Some(&serde_json::Value::Bool(false)) => (
+                RuntimeAvailability::RuntimeUnavailable,
+                Some(format!("the `{}` runtime is not enabled for this agent", record.runtime_id)),
+            ),
             (_, None) => (
                 RuntimeAvailability::RuntimeUnavailable,
                 Some(format!("no executor for the `{}` runtime yet", record.runtime_id)),
@@ -115,6 +123,16 @@ impl FsRuntimes {
                 Some("registered by another host".to_string()),
             ),
             (RuntimeKind::Container, Some(_)) => (RuntimeAvailability::Available, None),
+            (kind, Some(exec)) if kind.is_node() => {
+                if exec.get("kind").and_then(|k| k.as_str()) == Some(agent_tool::runtime::node::REMOTE_NODE_KIND) {
+                    (RuntimeAvailability::Available, None)
+                } else {
+                    (
+                        RuntimeAvailability::RuntimeUnavailable,
+                        Some(format!("a {kind:?} runtime executes through remote_node, not `{exec}`")),
+                    )
+                }
+            }
             (kind, Some(_)) => (
                 RuntimeAvailability::RuntimeUnavailable,
                 Some(format!("this runner cannot use {kind:?} runtimes yet")),
@@ -122,6 +140,37 @@ impl FsRuntimes {
         };
         record.availability = availability;
         record.last_error = error;
+        record.checked_at_ms = Some(crate::now_ms());
+    }
+
+    /// Ask a node runtime's executor whether it accepts this agent now:
+    /// login + describe through the host's connector. The node's profile
+    /// roots become the record's roots.
+    async fn probe(&self, record: &mut RuntimeRecord) {
+        if !record.kind.is_node() || record.exec.is_none() {
+            return;
+        }
+        let ops_dir = self.layout.runtimes_dir().join(".probe");
+        match crate::runtime::open_node_target(record, &ops_dir).await {
+            Ok(target) => {
+                record.roots = target.workdir_roots().iter().map(PathBuf::from).collect();
+                let mut caps = record.capabilities.as_object().cloned().unwrap_or_default();
+                caps.insert("os".into(), serde_json::Value::String(target.os().to_string()));
+                if let Some(mode) = &target.described().info.identity_mode {
+                    caps.insert("identity_mode".into(), serde_json::Value::String(mode.clone()));
+                }
+                if let Some(desktop) = &target.described().info.desktop {
+                    caps.insert("desktop".into(), desktop.clone());
+                }
+                record.capabilities = serde_json::Value::Object(caps);
+                record.availability = RuntimeAvailability::Available;
+                record.last_error = None;
+            }
+            Err(e) => {
+                record.availability = RuntimeAvailability::RuntimeUnavailable;
+                record.last_error = Some(e.to_string());
+            }
+        }
         record.checked_at_ms = Some(crate::now_ms());
     }
 
@@ -139,6 +188,8 @@ impl FsRuntimes {
             capabilities: req.capabilities.clone(),
             availability: RuntimeAvailability::RuntimeUnavailable,
             builtin,
+            default: req.default,
+            computer: req.computer,
             revision: 1,
             registered_by: who.to_string(),
             registered_at_ms: now,
@@ -157,6 +208,8 @@ fn same_registration(r: &RuntimeRecord, req: &RuntimeRegister) -> bool {
         && r.description == req.description
         && r.exec == req.exec
         && r.roots == req.roots
+        && r.default == req.default
+        && r.computer == req.computer
 }
 
 #[async_trait]
@@ -219,9 +272,12 @@ impl RuntimeRegistry for FsRuntimes {
     async fn check(&self, runtime_id: &str) -> Result<RuntimeRecord> {
         let _lock = self.lock().await?;
         let mut record = self.require(canonical_runtime(runtime_id))?;
-        let before = (record.availability, record.last_error.clone());
+        let before = (record.availability, record.last_error.clone(), record.roots.clone(), record.capabilities.clone());
         self.observe(&mut record);
-        if before != (record.availability, record.last_error.clone()) {
+        if record.availability == RuntimeAvailability::Available {
+            self.probe(&mut record).await;
+        }
+        if before != (record.availability, record.last_error.clone(), record.roots.clone(), record.capabilities.clone()) {
             record.revision += 1;
             record.updated_at_ms = crate::now_ms();
         }
@@ -252,21 +308,41 @@ impl RuntimeRegistry for FsRuntimes {
         for req in builtin {
             validate_id(&req.runtime_id)?;
             let record = match self.read(&req.runtime_id)? {
-                // What the owner changed (name, description, roots) stays;
-                // how the host reaches it is the host's.
+                // What the owner changed of the container (name, description,
+                // roots) stays; how the host reaches a runtime, whether it is
+                // the default and what it may do are the system's.
                 Some(mut r) => {
                     let before = r.clone();
                     r.kind = req.kind;
                     r.exec = req.exec.clone();
                     r.builtin = true;
+                    r.default = req.default;
+                    r.computer = req.computer;
+                    if r.kind != RuntimeKind::Container {
+                        r.name = req.name.clone();
+                        r.description = req.description.clone();
+                        // Roots learned from the node stay unless the exec changed.
+                        if before.exec != req.exec {
+                            r.roots = req.roots.clone();
+                            r.capabilities = req.capabilities.clone();
+                        } else if let (Some(mut caps), Some(new)) =
+                            (r.capabilities.as_object().cloned(), req.capabilities.as_object())
+                        {
+                            caps.extend(new.iter().map(|(k, v)| (k.clone(), v.clone())));
+                            r.capabilities = serde_json::Value::Object(caps);
+                        }
+                    }
                     if r.runtime_host != crate::runtime::native_host_id() && r.kind == RuntimeKind::Container {
                         r.runtime_host = crate::runtime::native_host_id();
                     }
                     self.observe(&mut r);
-                    if (r.kind, &r.exec, r.builtin, &r.runtime_host, r.availability, &r.last_error)
-                        != (before.kind, &before.exec, before.builtin, &before.runtime_host, before.availability, &before.last_error)
-                    {
-                        r.revision += 1;
+                    let changed = {
+                        let mut probe = r.clone();
+                        probe.checked_at_ms = before.checked_at_ms;
+                        probe != before
+                    };
+                    if changed {
+                        r.revision = before.revision + 1;
                         r.updated_at_ms = crate::now_ms();
                     }
                     r

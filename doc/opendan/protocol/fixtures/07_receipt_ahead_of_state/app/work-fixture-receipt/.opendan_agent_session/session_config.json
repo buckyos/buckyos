@@ -6,7 +6,7 @@
     "agent_did": "did:bns:jarvis.alice",
     "kind": "work",
     "class": "work",
-    "created_at_ms": 1792411644283,
+    "created_at_ms": 1792819161381,
     "created_by": {
       "principal": "app:app2@alice",
       "via": "app"
@@ -44,7 +44,17 @@
     }
   },
   "runtime": {
-    "requirement": {}
+    "requirement": {},
+    "frozen": {
+      "runtime_id": "container",
+      "kind": "container",
+      "exec": {
+        "kind": "native"
+      },
+      "revision": 0,
+      "selected_by": "default",
+      "computer": "none"
+    }
   },
   "channels": {
     "inputs": [

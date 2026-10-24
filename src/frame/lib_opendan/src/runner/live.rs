@@ -101,6 +101,7 @@ async fn xllm_deps_for(
     x.runtime = Some(sh.deps.runtime.clone());
     x.runtime_env = env.env.iter().cloned().collect();
     x.runtime_path_prefix = env.path_layers.clone();
+    x.runtime_control = env.control.clone();
     x.skip_workdir_lock = true;
     if x.host_protocol == agent_tool::xllm::HostProtocolFlavor::OneShot {
         // A session is not a one-shot task: whether the agent may wait for

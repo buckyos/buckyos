@@ -258,10 +258,12 @@ export interface WorkspaceBinding extends WorkspaceRef {
 }
 
 /** A runtime the agent's sessions and workspaces may use (`state/runtimes/`). */
+export type ComputerAccess = 'none' | 'observe' | 'control'
+
 export interface KnownRuntime {
   version: number
   runtime_id: string
-  kind: 'container' | 'host_native' | 'remote_ssh'
+  kind: 'container' | 'host_native' | 'remote_node' | 'remote_ssh'
   name: string
   description: string
   runtime_host: string
@@ -270,6 +272,9 @@ export interface KnownRuntime {
   capabilities: unknown
   availability: 'available' | 'runtime_unavailable' | 'permission_denied'
   builtin: boolean
+  /** The runtime new sessions without a workspace start in. */
+  default: boolean
+  computer: ComputerAccess
   revision: number
   registered_by: string
   registered_at_ms: number
@@ -284,6 +289,8 @@ export interface KnownWorkspace {
   workspace_id: string
   name: string
   description: string
+  /** The project this directory is a working copy of (http/https), or null. */
+  url: string | null
   location: WorkspaceLocation
   usage: 'private' | 'collaborative'
   lifecycle: 'active' | 'archived'
@@ -295,6 +302,35 @@ export interface KnownWorkspace {
   source_session: string | null
   conflict: { code: string; message: string; candidate: WorkspaceLocation; at_ms: number } | null
   last_error: string | null
+}
+
+export interface WorkspaceCreateRequest {
+  operation_id: string
+  name: string
+  description: string
+  url: string | null
+  location: WorkspaceLocation
+}
+
+export interface WorkspaceImportRequest {
+  operation_id: string
+  name: string | null
+  description: string
+  url: string | null
+  location: WorkspaceLocation
+}
+
+/** `AgentSettings.runtimes` as the owner chose them for this agent. */
+export interface RuntimeSettings {
+  runtimes: Record<string, { enabled: boolean; computer: ComputerAccess; target: unknown }>
+  default_runtime_id: string
+}
+
+export interface RuntimeSettingPatch {
+  runtime_id: string
+  enabled?: boolean
+  computer?: ComputerAccess
+  default?: boolean
 }
 
 export interface ArtifactHead {

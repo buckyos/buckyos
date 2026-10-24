@@ -100,7 +100,7 @@
           "description": "Serial: the caller's hand-over the attempt was admitted for."
         },
         "child_sid": {
-          "description": "Explore: the sub session.",
+          "description": "Explore, or a serial Todo on another runtime / workspace: the sub session.",
           "type": [
             "string",
             "null"
@@ -157,6 +157,13 @@
             "null"
           ]
         },
+        "runtime_id": {
+          "description": "Where the attempt executes, as resolved at its start (the Todo keeps the intent; a retry resolves again).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "started_at_ms": {
           "format": "uint64",
           "minimum": 0.0,
@@ -172,6 +179,12 @@
         },
         "summary": {
           "description": "One line about the result.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workspace_id": {
           "type": [
             "string",
             "null"
@@ -283,6 +296,13 @@
           },
           "type": "array"
         },
+        "runtime_id": {
+          "description": "Where the Todo must execute: a runtime id (`None`: the session's own), and `inherit | none | <workspace id>` (`None`: a serial Todo inherits the session's workspace, an exploration takes none). A workspace decides the runtime; both named and in conflict is refused.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "scope": {
           "type": [
             "string",
@@ -315,6 +335,12 @@
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
+        },
+        "workspace": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
