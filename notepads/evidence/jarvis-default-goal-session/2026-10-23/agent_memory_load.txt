@@ -1,0 +1,22 @@
+ITEM item_pref_brief_release_reports
+REVISION 1
+KIND attribute
+ENTITIES 
+WEIGHT 0.800
+CONFIDENCE 0.850
+BASIS inference
+SCOPE s=did:bns:devtest;o=;x=
+STATE active
+SOURCE_OCCASION occ_0000000000000001
+NOTICED_AT 2026-10-24T02:10:07Z
+CREATED_AT 2026-10-24T02:10:07Z
+STABILITY stable
+LAST_EVIDENCE 2026-10-24T02:03:20Z
+REVIEW_AT -
+EVIDENCE obs_brief_release_reports_20261024
+MATCHED tag:发布报告,fts:item,fts:observation
+SIZE 84
+TRUNCATED 0
+---
+用户希望今后的发布报告尽量简短，只列要点，不作长篇解释。
+END

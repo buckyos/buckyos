@@ -180,15 +180,7 @@ impl AgentTool for CommitTool {
         ToolSpec {
             name: TOOL_COMMIT.into(),
             description: "Commit the consolidation of the batch `operation_id` as one Memory envelope: `operations` (graph operations: add_observation, upsert_object, upsert_relation, put_item, set_status, reinforce_object_weight) and `dispositions` (one per material you read: absorbed | duplicate | discarded | deferred with a deadline). A new cognition needs scope, basis, last_evidence_at and evidence; every disposed material must be in this batch. The commit is idempotent by operation_id; cleanup of the disposed bodies follows. `abandon: true` closes the batch without disposing anything (the material comes back next time).".into(),
-            args_schema: json!({"type":"object","additionalProperties":false,"properties":{
-                "operation_id":{"type":"string"},
-                "summary":{"type":"string","description":"what this consolidation did, one or two sentences (1..500 chars)"},
-                "operations":{"type":"array","items":{"type":"object"}},
-                "dispositions":{"type":"array","items":{"type":"object"}},
-                "tags":{"type":"array","items":{"type":"string"}},
-                "abandon":{"type":"boolean"},
-                "reason":{"type":"string","description":"why the batch is abandoned"}
-            },"required":["operation_id"]}),
+            args_schema: commit_args_schema(),
             output_schema: json!({"type":"object"}),
             usage: Some("memory_consolidation_commit({operation_id, summary, operations: [...], dispositions: [...]})".into()),
         }
@@ -199,6 +191,66 @@ impl AgentTool for CommitTool {
     async fn call(&self, _: &SessionRuntimeContext, _: Value) -> std::result::Result<AgentToolResult, AgentToolError> {
         host_only()
     }
+}
+
+/// The exact shape of a plan: field names and closed enums, so the first
+/// attempt is right (every refused attempt costs a whole round).
+fn commit_args_schema() -> Value {
+    serde_json::from_str(r#"{"type":"object","additionalProperties":false,"properties":{
+        "operation_id":{"type":"string","description":"the `operation_id` the begin call returned"},
+        "summary":{"type":"string","description":"what this consolidation did, one or two sentences (1..500 chars)"},
+        "operations":{"type":"array","description":"graph operations, applied in order; observations before the cognitions that cite them","items":{"type":"object","additionalProperties":true,"properties":{
+            "op":{"type":"string","enum":["add_observation","upsert_object","upsert_relation","put_item","set_status","reinforce_object_weight","set_free","remove_free"]},
+            "observation_id":{"type":"string","description":"add_observation: `obs_<name>` (ASCII letters, digits, `_ - .`)"},
+            "kind":{"type":"string","description":"add_observation: mention | explicit_statement | behavior_signal | tool_evidence | curator_note. put_item: attribute | observation_inference | free | event_effect. upsert_object: user | person | agent | project | repo | file | service | concept | organization | place | custom"},
+            "content":{"type":"string","description":"add_observation: what was observed, close to the source"},
+            "source_ref":{"type":"object","description":"add_observation: the material's source, as an object","properties":{"type":{"type":"string","enum":["session_event","tool_result","file","url","manual","system"]},"event_ref":{"type":"string","description":"the material's source.event_ref, or its `ref` when there is none"},"session_id":{"type":"string"}},"required":["type","event_ref"]},
+            "scope":{"type":"object","description":"subjects: the agent DID, the user principal or `workspace:<id>` from the material; objects: optional object paths","properties":{"subjects":{"type":"array","items":{"type":"string"}},"objects":{"type":"array","items":{"type":"string"}}},"required":["subjects"]},
+            "confidence":{"type":"number","minimum":0,"maximum":1},
+            "weight":{"type":"number","minimum":0,"maximum":1,"description":"recall importance"},
+            "item_id":{"type":"string","description":"put_item / upsert_relation: `item_<name>`; a known cognition's id with `expected_revision` revises it"},
+            "expected_revision":{"type":"integer","description":"required when revising a known cognition"},
+            "claim":{"type":"object","description":"put_item: {type: <the same value as kind>, statement: <sentence>, ...}; attribute: + subject, attribute, value; event_effect: + effect. `semantic_kind` (preference, experience, …) is a separate field, not claim.type"},
+            "entities":{"type":"array","items":{"type":"string"},"description":"object ids (`obj_…`) the cognition is about"},
+            "evidence":{"type":"array","items":{"type":"string"},"description":"observation ids (`obs_…`) added in this commit or already known; at least one for a cognition"},
+            "write_reason":{"type":"string"},
+            "basis":{"type":"string","enum":["user_statement","tool_observation","third_party_claim","inference"]},
+            "explicit":{"type":"boolean","description":"true only when the user asked to remember"},
+            "stability":{"type":"string","enum":["stable","contextual","volatile"]},
+            "last_evidence_at":{"type":"string","description":"RFC 3339: when the evidence was observed (the material's at / occurred_at), never now"},
+            "valid_until":{"type":"string","description":"RFC 3339"},
+            "review_at":{"type":"string","description":"RFC 3339"},
+            "review_when":{"type":"array","items":{"type":"string"}},
+            "semantic_kind":{"type":"string","description":"preference | experience | correction | fact | …"},
+            "tags":{"type":"array","items":{"type":"string"},"description":"2..32 bytes each, letters digits spaces -"},
+            "subject":{"type":"string","description":"upsert_relation: `obj_…`"},
+            "predicate":{"type":"string","description":"upsert_relation: lowercase snake_case"},
+            "object":{"type":"string","description":"upsert_relation: `obj_…`"},
+            "object_id":{"type":"string","description":"upsert_object / reinforce_object_weight: `obj_…`"},
+            "canonical_name":{"type":"string"},
+            "aliases":{"type":"array","items":{"type":"object","properties":{"alias":{"type":"string"},"alias_type":{"type":"string","enum":["name","nickname","username","email","did","path","url","repo","custom"]},"confidence":{"type":"number"}},"required":["alias","alias_type","confidence"]}},
+            "target_kind":{"type":"string","enum":["item","object","observation","alias"]},
+            "target_id":{"type":"string"},
+            "status":{"type":"string","description":"set_status: active | superseded | disputed | stale | deleted"},
+            "reason":{"type":"string"},
+            "replaced_by":{"type":"string"},
+            "replaces":{"type":"array","items":{"type":"string"}},
+            "delta":{"type":"number"},
+            "key":{"type":"string","description":"set_free / remove_free"}
+        },"required":["op"]}},
+        "dispositions":{"type":"array","description":"one per material you read","items":{"type":"object","additionalProperties":false,"properties":{
+            "perception_ref":{"type":"string","description":"the material's `ref` (`<sid>:<seq>`)"},
+            "outcome":{"type":"string","enum":["absorbed","duplicate","discarded","deferred"]},
+            "cognition_refs":{"type":"array","items":{"type":"string"},"description":"absorbed / duplicate: the cognition ids (`item_…`) it went into"},
+            "reason":{"type":"string"},
+            "deadline":{"type":"string","description":"deferred: RFC 3339, inside the deferral window"},
+            "reevaluate_when":{"type":"array","items":{"type":"string"}},
+            "clarify":{"type":"string","description":"deferred: a low-priority question a UI may ask"}
+        },"required":["perception_ref","outcome"]}},
+        "tags":{"type":"array","items":{"type":"string"}},
+        "abandon":{"type":"boolean","description":"close the batch without disposing anything"},
+        "reason":{"type":"string","description":"why the batch is abandoned"}
+    },"required":["operation_id"]}"#).expect("commit tool schema is valid JSON")
 }
 
 // ---------------------------------------------------------------------------
@@ -506,9 +558,11 @@ async fn begin(sh: &Arc<Shared>, args: BeginArgs) -> Result<Value> {
         "pending": pending_view(&pending),
         "rules": {
             "deferral_window_hours": window_hours,
-            "dispose": "every material in `materials` (and any `context` you read) gets one disposition; context you did not judge is left alone",
+            "dispose": "every material in `materials` (and any `context` you read) gets one disposition {perception_ref: <ref>, outcome: absorbed|duplicate|discarded|deferred, cognition_refs?, reason?, deadline?}; context you did not judge is left alone",
             "subjects": "a cognition's scope.subjects are the Agent, its owner (the user) or a workspace; anything else is a world observation: contextual or volatile with valid_until/review_at, or hung on one of those three",
-            "new_cognition": "scope, basis, evidence (observation ids of this commit or known), last_evidence_at (when the evidence was observed, not now), stability (stable|contextual|volatile)",
+            "new_cognition": "put_item {op, item_id: item_<name>, kind: observation_inference|attribute|free|event_effect, claim: {type: <kind>, statement}, weight, confidence, evidence: [obs_…], write_reason, scope, basis: user_statement|tool_observation|third_party_claim|inference, stability: stable|contextual|volatile, last_evidence_at: <the material's at>, explicit?, valid_until?, review_at?, semantic_kind?, tags?}",
+            "new_observation": "add_observation {op, observation_id: obs_<name>, kind: explicit_statement|behavior_signal|tool_evidence|mention|curator_note, content, source_ref: {type: session_event, event_ref: <material source.event_ref or ref>, session_id}, scope, confidence}",
+            "revision": "a known cognition is revised with its item_id and expected_revision; a correction supersedes it (set_status superseded) or replaces it (`replaces`)",
         },
     }))
 }

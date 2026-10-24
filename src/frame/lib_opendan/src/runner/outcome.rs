@@ -1173,7 +1173,11 @@ async fn commit_run_end(
         }
     }
     let digest_seq = s.state.perception_seq + 1;
-    s.state.perception_seq = digest_seq + u64::from(next.finished);
+    // The consolidation Goal's session leaves no material: no seq is
+    // reserved for it either (nothing for `catch_up` to backfill).
+    if super::consolidation::caps(sh).records_perception {
+        s.state.perception_seq = digest_seq + u64::from(next.finished);
+    }
     s.commit_state(&sh.lease)?; // commit point
     crate::fault::point("finish_run:after_commit");
     Ok(RunEnded {

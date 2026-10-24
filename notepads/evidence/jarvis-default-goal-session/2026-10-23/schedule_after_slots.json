@@ -1,0 +1,41 @@
+{
+  "schema": "opendan.goal_schedule/1",
+  "goal_id": "g-k3a2b568b895bac7d2b8a3911",
+  "backend": "local",
+  "every_secs": 1800,
+  "last_slot": 996006,
+  "last_fire_at_ms": 0,
+  "start_posted_epoch": 1,
+  "skipped": [
+    {
+      "slot": 996005,
+      "at_ms": 1792809001166,
+      "reason": "paused"
+    },
+    {
+      "slot": 996006,
+      "at_ms": 1792810801897,
+      "reason": "no_work"
+    }
+  ],
+  "gate": {
+    "status": "no_work",
+    "last_checked_slot": 996006,
+    "last_baseline_slot": 996004,
+    "last_checked_at_ms": 1792810801897,
+    "last_full_check_at_ms": 1792810801897,
+    "last_skip_reason": "no_work",
+    "last_inputs_digest": "g1/p2",
+    "pending": {
+      "new": 0,
+      "due": 0,
+      "waiting": 0,
+      "retry_cleanup": 0
+    },
+    "due_reviews": 0,
+    "unfinished_receipts": 0,
+    "last_run_at_ms": 0,
+    "backoff_level": 0
+  },
+  "updated_at_ms": 1792810801897
+}

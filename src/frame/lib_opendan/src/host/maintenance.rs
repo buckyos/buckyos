@@ -31,7 +31,10 @@ pub const MAINTENANCE_BASELINE_SLOTS: u64 = 4;
 /// Backoff of the gate after an `unknown` check: 5m → 15m → 30m.
 const BACKOFF_MS: [u64; 3] = [5 * 60_000, 15 * 60_000, 30 * 60_000];
 
-/// The seeded definition (§2; budget per §2 "首版限额").
+/// The seeded definition (§2). Budget: every round of an Activation re-sends
+/// its whole context (the header and a batch are about 9k tokens), so an
+/// Activation of begin → commit → report needs well over 32k tokens; the
+/// first DV run (2026-10-23) exhausted 32k in four rounds.
 pub fn memory_maintenance_create(behavior: Option<String>, owner: &str) -> GoalCreate {
     GoalCreate {
         key: Some(BUILTIN_MEMORY_MAINTENANCE_KEY.to_string()),
@@ -51,12 +54,12 @@ pub fn memory_maintenance_create(behavior: Option<String>, owner: &str) -> GoalC
         beneficiaries: Vec::new(),
         budget: GoalBudget {
             activation: ActivationBudget {
-                max_total_tokens: Some(32_000),
+                max_total_tokens: Some(120_000),
                 max_runs: Some(4),
             },
             period: PeriodBudget {
                 window_secs: Some(86_400),
-                max_total_tokens: Some(200_000),
+                max_total_tokens: Some(1_200_000),
                 max_activations: Some(48),
                 max_works: Some(0),
             },

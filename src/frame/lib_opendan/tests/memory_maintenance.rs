@@ -293,7 +293,7 @@ async fn the_builtin_goal_is_seeded_once_and_costs_no_model_without_material() {
     assert_eq!(g.owner, AGENT);
     assert_eq!(g.created_by.via, "owner");
     assert_eq!(g.schedule.every_secs, Some(1800));
-    assert_eq!(g.budget.activation.max_total_tokens, Some(32_000));
+    assert_eq!(g.budget.activation.max_total_tokens, Some(120_000));
     let ext = g.opendan().unwrap();
     assert!(ext.has_capability(CAP_MEMORY_CONSOLIDATION) && !ext.records_perception);
     assert_eq!(ext.policy_version, MEMORY_MAINTENANCE_POLICY_VERSION);

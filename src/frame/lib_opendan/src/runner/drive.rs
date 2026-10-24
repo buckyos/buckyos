@@ -629,6 +629,9 @@ async fn catch_up(sh: &Arc<Shared>) -> Result<()> {
     if reported < status.rev {
         report(sh, status).await;
     }
+    if !super::consolidation::caps(sh).records_perception {
+        return Ok(());
+    }
     let last = sh.agent().perception().last_seq(&sid).await?;
     if last < perception_seq {
         let mut recs = Vec::new();

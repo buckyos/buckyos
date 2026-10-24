@@ -738,6 +738,19 @@ impl GoalHost {
                     backend
                         .settle(goals, &goal.goal_id, &fire, &FireOutcome::Skipped(reason.clone()), now)
                         .await?;
+                    if builtin {
+                        // The gate did not run; its status still says why
+                        // (`paused`, `min_interval`, `period_budget`).
+                        let mut schedule = schedule_of(goals, &goal.goal_id).await?;
+                        let mut gate = schedule.gate.take().unwrap_or_default();
+                        gate.status = reason.clone();
+                        gate.last_skip_reason = Some(reason.clone());
+                        gate.last_checked_slot = Some(fire.slot);
+                        gate.last_checked_at_ms = now;
+                        schedule.gate = Some(gate);
+                        schedule.updated_at_ms = now;
+                        goals.write_schedule(&schedule).await?;
+                    }
                     let mut s = self.status.lock().expect("goal status");
                     push(
                         &mut s.skipped,
