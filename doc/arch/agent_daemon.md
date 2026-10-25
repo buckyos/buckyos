@@ -39,6 +39,19 @@ Windows 从 ZIP 解压后的 PowerShell 终端使用 `.exe`：
 
 Windows 在仓库根执行 `uv run src/tools/package_agent_daemon.py --target x86_64-pc-windows-msvc --output dist/agent-daemon`；ARM64 使用 `aarch64-pc-windows-msvc`，需要匹配的 Rust target、MSVC C/C++ Build Tools 和 Windows SDK。脚本从 Cargo metadata 的 target_directory 定位 `.exe`，输出 ZIP、摘要和清单；已有二进制可传 `--binary <path>` 跳过构建。Windows 打包测试不替代 ARM64 编译或实机验收。本次未引入第三方依赖，不安装 Windows 服务、计划任务或启动项。
 
+## 发布与下载
+
+多平台 release 包由 GitHub Actions 工作流 `.github/workflows/agent-daemon.yml` 构建：x86_64 musl（静态）、aarch64 GNU、macOS Apple silicon/Intel、Windows x64/ARM64 六个 target，每个 target 在对应 runner 上跑 `cargo test`、打包测试，再用 `src/tools/package_agent_daemon.py` 出包，并由 `.github/scripts/agent_daemon_verify.py` 核对 `.sha256`、清单与二进制摘要、`doctor --json` 的版本，以及 Windows `dumpbin /dependents` 不含 VC runtime/OpenSSL DLL、macOS `otool -L` 只链接系统库。Pull request 与普通 dispatch 只上传 workflow artifact。
+
+发布有两种触发方式：推送 tag `agent-daemon-v<src/VERSION>`（tag 与 `src/VERSION` 不一致则失败），或手动 dispatch 勾选 `publish`（用当前 commit 建 tag）。发布脚本 `.github/scripts/agent_daemon_release.py` 产生两份 GitHub Release，两者都不标记为仓库的 Latest release，不影响 BuckyOS 主安装包：
+
+| Release | 内容 | 用途 |
+| --- | --- | --- |
+| `agent-daemon-v<version>` | 带版本号的归档、`.sha256`、`start-buckyos-agent-daemon.sh`、`SHA256SUMS`、`latest.json` | 不可变；已有资产时拒绝重发，须 bump `src/VERSION` |
+| `agent-daemon-latest`（prerelease，tag 随发布移动） | 同一批文件去掉版本号：`buckyos-agent-daemon-<target>.tar.gz`/`.zip` 及 `.sha256`、`latest.json`、启动脚本、`SHA256SUMS` | 文档与脚本引用的稳定链接 |
+
+稳定链接形如 `https://github.com/buckyos/buckyos/releases/download/agent-daemon-latest/buckyos-agent-daemon-x86_64-unknown-linux-musl.tar.gz`；`latest.json` 记录当前版本、commit 和每个 target 的带版本 URL 与 SHA-256。Linux 启动脚本 `src/rootfs/bin/buckyos-agent-daemon/start-buckyos-agent-daemon.sh` 默认读取 `agent-daemon-latest/latest.json` 解析版本，再从 `agent-daemon-v<version>` 下载并核对归档；`BUCKYOS_AGENT_VERSION` 固定版本，`BUCKYOS_AGENT_RELEASE_URL` 指向同时存放 `latest.json` 与归档的私有 HTTPS 目录。同目录的 `service.sh` 是显式 Linux user service 安装/升级/回滚脚本，随 Linux 归档一起打包。归档统一为单个顶层目录 `buckyos-agent-daemon-<version>-<target>/`，内含二进制、`README.md`、`manifest.json`（Linux 另含 `service.sh`）。产物只有 HTTPS 与 SHA-256 完整性校验，没有代码签名或公证。
+
 Windows 独立打包入口默认为 Cargo 构建追加 `-C target-feature=+crt-static`，原生桥接相应使用 `/MT`，将 MSVC CRT 静态链接进产物；不会要求目标机另装 VC++ v14 Redistributable。脚本优先保留已有 `CARGO_ENCODED_RUSTFLAGS` 的参数边界，否则按 Cargo 的空白分隔语义保留 `RUSTFLAGS`，只为本次构建追加静态 CRT 参数；带空格的 Windows 参数应使用 encoded 变量。[Cargo 环境变量规则](https://doc.rust-lang.org/cargo/reference/environment-variables.html)
 
 普通 `cargo build/test` 的默认 Windows 构建仍使用动态 CRT，包括开发调试产物，运行时需要对应架构的 Microsoft Visual C++ v14 Redistributable；`MSVCP140.dll`、`VCRUNTIME140.dll` 和 `VCRUNTIME140_1.dll` 不能视为 Windows 自带组件。`--binary` 不构建或核验依赖，调用者须检查预构建文件并提供其运行要求；清单将 `requirements.windows_crt` 标为 `prebuilt_unverified`，保守列出 VC++ v14 runtime 要求。只有脚本完成静态构建才标记 `static` 并省去该运行要求。

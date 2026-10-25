@@ -24,6 +24,24 @@ Windows 输入监视线程出现心跳断档后会持续禁用桌面能力，休
 
 Windows 数据默认保存在 `%LOCALAPPDATA%\buckyos-agent-daemon`；macOS 使用 `~/Library/Application Support/buckyos-agent-daemon`；Linux 使用 `$XDG_DATA_HOME/buckyos-agent-daemon` 或 `~/.local/share/buckyos-agent-daemon`。可用全局 `--data-dir` 覆盖；更新保留其中 `ledger/` 以查询原操作，不重放 unknown/partial 动作。
 
+## 下载
+
+GitHub Actions 为 Linux x86_64（静态 musl）/ARM64、macOS Apple silicon/Intel、Windows x64/ARM64 构建 release 包。稳定链接（始终指向最新版本）：
+
+- 列表与校验：<https://github.com/buckyos/buckyos/releases/tag/agent-daemon-latest>（`latest.json` 列出当前版本与每个 target 的 SHA-256）
+- 归档：`https://github.com/buckyos/buckyos/releases/download/agent-daemon-latest/buckyos-agent-daemon-<target>.tar.gz`（Windows 为 `.zip`），`<target>` 取 `x86_64-unknown-linux-musl`、`aarch64-unknown-linux-gnu`、`aarch64-apple-darwin`、`x86_64-apple-darwin`、`x86_64-pc-windows-msvc`、`aarch64-pc-windows-msvc`
+- 固定版本：`https://github.com/buckyos/buckyos/releases/download/agent-daemon-v<version>/buckyos-agent-daemon-<version>-<target>.tar.gz`
+
+Linux 可用启动脚本自动下载、校验并前台运行；脚本不把 URL 写入文件，`--url-stdin` 让接入 URL 不进入命令行：
+
+```sh
+curl -fsSLO https://github.com/buckyos/buckyos/releases/download/agent-daemon-latest/start-buckyos-agent-daemon.sh
+sh start-buckyos-agent-daemon.sh run --url-stdin
+sh start-buckyos-agent-daemon.sh --download-only   # 只下载到 ~/.cache/buckyos-agent-daemon
+```
+
+`BUCKYOS_AGENT_VERSION` 固定版本，`BUCKYOS_AGENT_RELEASE_URL` 指向私有 HTTPS 镜像目录。归档内 `service.sh` 可把 daemon 安装为显式的 systemd user service（`service.sh install --binary FILE --sha256 HASH --url-file FILE`，另有 `upgrade`/`stop`/`uninstall`），不启用 lingering，不自动重启。macOS 与 Windows 解压归档后直接运行。所有产物仅有 SHA-256 校验，没有代码签名或公证。
+
 在仓库根执行 `uv run src/tools/package_agent_daemon.py --target x86_64-pc-windows-msvc --output dist/agent-daemon` 打包 Windows ZIP；ARM64 target 为 `aarch64-pc-windows-msvc`，需对应 MSVC/Windows SDK 与 Rust target。macOS 使用 `--target aarch64-apple-darwin`（Intel 为 `x86_64-apple-darwin`），输出 tar.gz。核对归档 `.sha256` 与 `manifest.json` 内二进制摘要后解压运行。构建与完整协议见 [Agent Daemon](https://github.com/buckyos/buckyos/blob/main/doc/arch/agent_daemon.md)。SDK 的 `ExecutorCommandStream.computer` 可使用桌面协议；草案中的 `buckyos computer` CLI 和 `--present` 模型图片桥接尚未交付。
 
 Windows 独立打包入口默认静态链接 MSVC CRT，清单中的 `requirements.windows_crt` 为 `static`。普通 Cargo 开发构建默认使用动态 CRT，需目标架构的 Microsoft Visual C++ v14 Redistributable；VC runtime DLL 并非 Windows 自带。使用 `--binary` 打包已有 `.exe` 时不会核验其运行库依赖，清单标为 `prebuilt_unverified` 并列出 VC++ v14 runtime 要求，由调用者核对并提供预构建产物所需运行环境。

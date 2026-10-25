@@ -67,6 +67,55 @@ class AgentDaemonPackageTests(unittest.TestCase):
                     self.assertEqual(manifest["sha256"], hashlib.sha256(binary.read_bytes()).hexdigest())
                     self.assertTrue(all(not member.issym() and not Path(member.name).is_absolute() and ".." not in Path(member.name).parts for member in members))
 
+    def test_linux_archive_carries_service_script_launcher_and_elf_facts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "daemon"
+            binary.write_bytes(b"test executable payload")
+            for target, facts in (
+                ("x86_64-unknown-linux-musl", {"dependencies": [], "minimum_glibc": None}),
+                ("aarch64-unknown-linux-gnu", {"dependencies": ["libc.so.6", "libgcc_s.so.1"], "minimum_glibc": "2.39"}),
+            ):
+                with self.subTest(target=target), patch.object(module, "inspect_elf", return_value=facts) as inspect:
+                    archive = module.package(binary, target, root / "dist" / target)
+                    inspect.assert_called_once_with(binary, target)
+                    self.assertEqual(archive.name, module.archive_name(target))
+                    checksum = archive.with_name(archive.name + ".sha256").read_text().split()[0]
+                    self.assertEqual(checksum, hashlib.sha256(archive.read_bytes()).hexdigest())
+                    launcher = archive.with_name("start-buckyos-agent-daemon.sh")
+                    self.assertTrue(launcher.is_file())
+                    self.assertTrue(launcher.stat().st_mode & 0o100)
+                    with tarfile.open(archive) as tar:
+                        members = {member.name.split("/", 1)[1]: member for member in tar.getmembers() if "/" in member.name}
+                        self.assertEqual(set(members), {"buckyos_agent_daemon", "service.sh", "README.md", "manifest.json"})
+                        self.assertEqual(members["buckyos_agent_daemon"].mode, 0o755)
+                        self.assertEqual(members["service.sh"].mode, 0o755)
+                        self.assertEqual(members["manifest.json"].mode, 0o644)
+                        self.assertTrue(all(member.uid == 0 and member.gid == 0 for member in members.values()))
+                        manifest = json.load(tar.extractfile(members["manifest.json"]))
+                        self.assertEqual(manifest["platform"], "linux")
+                        self.assertEqual(manifest["requirements"]["linux_ui"], "unsupported")
+                        self.assertEqual(manifest["requirements"]["dependencies"], facts["dependencies"])
+                        self.assertEqual(manifest["requirements"]["minimum_glibc"], facts["minimum_glibc"])
+                        self.assertFalse(manifest["requirements"]["interactive_user_session"])
+                        self.assertEqual(sorted(manifest["files"]), sorted(members))
+
+    def test_linux_musl_binary_with_shared_libraries_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "daemon"
+            binary.write_bytes(b"test executable payload")
+            outputs = [
+                "Machine: Advanced Micro Devices X86-64",
+                "0x0000000000000001 (NEEDED) Shared library: [libc.so.6]",
+                "",
+            ]
+            with patch.object(module.shutil, "which", return_value="/usr/bin/readelf"), \
+                    patch.object(module.subprocess, "check_output", side_effect=outputs):
+                with self.assertRaises(ValueError):
+                    module.package(binary, "x86_64-unknown-linux-musl", root / "dist")
+            self.assertFalse(list((root / "dist").glob("*.tar.gz")) if (root / "dist").exists() else [])
+
     def test_missing_binary_does_not_create_an_archive(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

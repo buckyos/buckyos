@@ -473,9 +473,9 @@ cargo check -p node_daemon
 | `src/frame/desktop/src/app/settings/pages/AgentDevices.tsx` | Cluster Manager → Nodes/Devices 添加 Linux 设备、选择 Agent/profile/目录/权限/期限、复制启动命令、在线状态、重置/撤销/删除 |
 | `src/frame/agent_tool/src/runtime/executor.rs` | 可选 executor 工具组的 executor_list/executor_call，保持 Agent Session 本地运行，持久 locator 与固定 generation/store 校验 |
 | 同级 `buckyos-websdk/src/executor_client.ts` 与 `cli/modules/executor.ts` | 管理/online watch/Command Stream 客户端和人用 CLI，真实 App token 登录，旧 generation 不重放动作 |
-| `src/publish/agent_daemon/`（独立 Git 子模块） | Linux 双架构便携包、架构/链接校验、manifest/checksum、HTTPS 下载或预下载启动、显式 user service 安装/升级回滚/停止/卸载 |
+| `src/rootfs/bin/buckyos-agent-daemon/`（2026-10-24 自 `src/publish/agent_daemon/` 子模块迁入；打包器统一为 `src/tools/package_agent_daemon.py`） | Linux 双架构便携包、架构/链接校验、manifest/checksum、HTTPS 下载或预下载启动、显式 user service 安装/升级回滚/停止/卸载 |
 | `src/Cargo.toml`、`bucky_project.yaml`、`buckyos-build.py`、`rootfs/bin/buckyos-agent-daemon/` | workspace/module/rootfs 接入；`uv run buckyos-build.py --agent-daemon` 单独构建，不准备 SDK/Web，不安装 Docker 或完整 Node |
-| `.github/workflows/agent-daemon.yml` | x86_64 musl / aarch64 GNU 构建、测试与打包任务 |
+| `.github/workflows/agent-daemon.yml`、`.github/scripts/agent_daemon_{verify,release}.py` | 六 target 构建/测试/打包/核验，tag `agent-daemon-v*` 或 dispatch 发布 GitHub Release `agent-daemon-v<version>` 与滚动 `agent-daemon-latest` |
 
 详细协议、持久数据边界、使用和服务安装见 [Agent Daemon 实现文档](../doc/arch/agent_daemon.md)。新服务没有调度 Node 身份，不新增 scheduler ServiceSpec。复用现有 workspace/传递依赖，未增加 GUI 库或外部运行框架。
 
