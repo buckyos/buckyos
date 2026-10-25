@@ -16,7 +16,7 @@ use buckyos_api::{
     read_executor_frame, ExecutorChannel, ExecutorClientInfo, ExecutorClientMessage,
     ExecutorDataFrame, ExecutorDescribeOk, ExecutorDescribeRequest, ExecutorEdit,
     ExecutorEditRequest, ExecutorError, ExecutorErrorCode, ExecutorExecRequest, ExecutorFrame,
-    ExecutorLimits, ExecutorLogin, ExecutorLoginOk, ExecutorOpRef, ExecutorOpState,
+    ExecutorFileResult, ExecutorLimits, ExecutorLogin, ExecutorLoginOk, ExecutorOpRef, ExecutorOpState,
     ExecutorOpStatus, ExecutorPathRequest, ExecutorPathType, ExecutorQueryRequest,
     ExecutorReadRequest, ExecutorServerMessage, ExecutorUploadEnd, ExecutorWriteMode,
     ExecutorWriteRequest, EXECUTOR_MAX_DATA_BYTES, EXECUTOR_MAX_QUERY_BYTES,
@@ -24,6 +24,7 @@ use buckyos_api::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::oneshot;
 
@@ -395,7 +396,11 @@ impl NodeClient {
                 )
                 .await?
             }
-            RemoteOp::Read { path } => {
+            RemoteOp::Read { path } | RemoteOp::ReadRange { path, .. } => {
+                let (offset, length) = match op {
+                    RemoteOp::ReadRange { offset, length, .. } => (*offset, Some(*length)),
+                    _ => (0, None),
+                };
                 self.request(
                     |rid, store, run| {
                         ExecutorClientMessage::Read(ExecutorReadRequest {
@@ -405,8 +410,8 @@ impl NodeClient {
                             run_id: run.into(),
                             call_id: call_id.clone(),
                             path: path.to_string(),
-                            offset: 0,
-                            length: None,
+                            offset,
+                            length,
                         })
                     },
                     None,
@@ -586,6 +591,11 @@ pub(crate) enum RemoteOp<'a> {
     Read {
         path: &'a str,
     },
+    ReadRange {
+        path: &'a str,
+        offset: u64,
+        length: u64,
+    },
     Write {
         path: &'a str,
         mode: ExecutorWriteMode,
@@ -608,7 +618,7 @@ impl RemoteOp<'_> {
     fn kind(&self) -> &'static str {
         match self {
             RemoteOp::Exec { .. } => "exec",
-            RemoteOp::Read { .. } => "read",
+            RemoteOp::Read { .. } | RemoteOp::ReadRange { .. } => "read",
             RemoteOp::Write { .. } => "write",
             RemoteOp::Edit { .. } => "edit",
             RemoteOp::Mkdir { .. } => "mkdir",
@@ -622,6 +632,7 @@ impl RemoteOp<'_> {
                 json!({"kind": "exec", "cmd": cmd, "cwd": cwd, "env": env, "timeout_ms": timeout_ms})
             }
             RemoteOp::Read { path } => json!({"kind": "read", "path": path}),
+            RemoteOp::ReadRange { path, offset, length } => json!({"kind": "read", "path": path, "offset": offset, "length": length}),
             RemoteOp::Write { path, mode, content } => json!({
                 "kind": "write", "path": path, "mode": mode, "content_hash": executor_content_hash(content)
             }),
@@ -1212,11 +1223,12 @@ impl RemoteNodeTarget {
             run_id: run_id.clone(),
             run_dir: Some(ops_dir),
         })));
-        let client = Arc::new(NodeClient::new(connector, node_did, profile_id, runtime_id, slot, &run_id, None));
+        let mut client = NodeClient::new(connector, node_did, profile_id, runtime_id, slot, &run_id, None);
         let login = client.login_info().await.map_err(tool_error)?;
+        client.expected_store = Some(login.store_id.clone());
         let described = client.describe(None).await.map_err(tool_error)?;
         Ok(Self {
-            client,
+            client: Arc::new(client),
             described,
             max_file_bytes: login.limits.max_file_bytes as usize,
         })
@@ -1269,6 +1281,65 @@ impl RemoteNodeTarget {
             .read_channel(&status.op_id, ExecutorChannel::Content, self.max_file_bytes)
             .await
             .map_err(tool_error)
+    }
+
+    pub async fn download_file(
+        &self,
+        root: &str,
+        path: &str,
+        destination: &Path,
+    ) -> Result<ExecutorFileResult, AgentToolError> {
+        let invalid = |message: String| AgentToolError::InvalidArgs(message);
+        if self.canonical_dir(root).await? != root {
+            return Err(invalid("artifact working directory changed its canonical location".into()));
+        }
+        let (kind, canonical) = self.path_type(path).await?;
+        let canonical = canonical.filter(|_| kind == PathType::File).ok_or_else(|| {
+            invalid(format!("artifact is not a regular file: {path}"))
+        })?;
+        remote_resolve(Path::new(root), &canonical, &[PathBuf::from(root)])?;
+        let limit = self.max_file_bytes.min(1024 * 1024) as u64;
+        if limit == 0 {
+            return Err(invalid("node executor does not allow file reads".into()));
+        }
+        let mut output = tokio::fs::File::create(destination).await
+            .map_err(|e| AgentToolError::ExecFailed(format!("artifact staging file: {e}")))?;
+        let mut offset = 0;
+        let mut total_size = None;
+        let mut digest = Sha256::new();
+        loop {
+            let status = self.op("read", RemoteOp::ReadRange { path: &canonical, offset, length: limit }).await?;
+            let result = status.result.as_ref().ok_or_else(|| invalid("remote read has no result".into()))?;
+            let file = result.file.as_ref().ok_or_else(|| invalid("remote read has no file metadata".into()))?;
+            remote_resolve(Path::new(root), &file.path, &[PathBuf::from(root)])?;
+            if file.path != canonical || total_size.is_some_and(|size| size != file.size) || offset > file.size {
+                return Err(invalid(format!("artifact changed during download: {path}")));
+            }
+            total_size = Some(file.size);
+            let expected = (file.size - offset).min(limit);
+            let content = result.content.as_ref().ok_or_else(|| invalid("remote read has no content metadata".into()))?;
+            if content.truncated || content.total_bytes != expected || content.retained_bytes != expected {
+                return Err(invalid(format!("incomplete remote artifact range: {path} at {offset}")));
+            }
+            let bytes = self.client.read_channel(&status.op_id, ExecutorChannel::Content, limit as usize)
+                .await.map_err(tool_error)?;
+            if bytes.len() as u64 != expected || content.hash.as_deref() != Some(executor_content_hash(&bytes).as_str()) {
+                return Err(invalid(format!("remote artifact range failed integrity validation: {path} at {offset}")));
+            }
+            output.write_all(&bytes).await
+                .map_err(|e| AgentToolError::ExecFailed(format!("artifact staging file: {e}")))?;
+            digest.update(&bytes);
+            offset += expected;
+            if offset == file.size {
+                output.sync_all().await
+                    .map_err(|e| AgentToolError::ExecFailed(format!("artifact staging file: {e}")))?;
+                let hash = format!("sha256:{:x}", digest.finalize());
+                if !file.hash.is_empty() && file.hash != hash {
+                    return Err(invalid(format!("remote artifact failed integrity validation: {path}")));
+                }
+                return Ok(ExecutorFileResult { path: canonical, size: offset, hash, ..Default::default() });
+            }
+        }
     }
 
     /// Create `path` with `content`; `Ok(false)` when it already exists.

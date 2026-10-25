@@ -22,7 +22,7 @@ pub enum ReportSource {
 /// One artifact of a report: a file of the work directory (`path`, copied
 /// to `reference`) or a named object (`path` is its id). `obj_id` is what
 /// leaves the session: the submitted id, or the file put into the host's
-/// object store (`None`: the host has none, or storing failed).
+/// object store (`None`: the host has no object store).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ReportArtifact {
     pub path: String,

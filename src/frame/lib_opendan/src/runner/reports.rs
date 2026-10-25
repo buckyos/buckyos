@@ -4,6 +4,7 @@ use std::sync::Arc;
 use agent_tool::{
     AgentTool, AgentToolError, AgentToolResult, CallingConventions, SessionRuntimeContext, ToolSpec,
 };
+use agent_tool::runtime::node::RemoteNodeTarget;
 use async_trait::async_trait;
 use buckyos_api::AiToolCall;
 use llm_context::observation::Observation;
@@ -91,11 +92,11 @@ fn invalid(message: impl Into<String>) -> OpenDanError {
     OpenDanError::InvalidArgument(message.into())
 }
 
-/// Where an artifact of a node-runtime session is: `<runtime>:<workdir>/<path>`
-/// on the node (the path is checked like a local one, nothing is read).
-fn remote_artifact_reference(sh: &Shared, cfg: &SessionConfig, name: &str) -> Result<String> {
+fn validate_artifact_path(name: &str) -> Result<()> {
     let path = Path::new(name);
     if name.is_empty()
+        || name.contains(':')
+        || name.contains('\\')
         || path
             .components()
             .any(|c| !matches!(c, Component::Normal(_)))
@@ -104,26 +105,46 @@ fn remote_artifact_reference(sh: &Shared, cfg: &SessionConfig, name: &str) -> Re
             "artifact paths must be relative files without '.' or '..'",
         ));
     }
+    Ok(())
+}
+
+fn remote_artifact_path(sh: &Shared, cfg: &SessionConfig, name: &str) -> Result<String> {
+    validate_artifact_path(name)?;
     let workdir = crate::runtime::target_workdir(&sh.dir, cfg)?
         .ok_or_else(|| invalid("the session has no working directory on its runtime yet"))?;
-    Ok(format!(
-        "{}:{}",
-        cfg.runtime.runtime_id(),
-        crate::runtime::target_join(&workdir, &[name])
-    ))
+    Ok(crate::runtime::target_join(&workdir, &[name]))
+}
+
+async fn remote_artifact_target(sh: &Shared, cfg: &SessionConfig) -> Result<RemoteNodeTarget> {
+    let frozen = cfg.runtime.frozen.as_ref().ok_or_else(|| invalid("missing frozen runtime"))?;
+    let config = crate::runtime::node_config_of(
+        &frozen.runtime_id,
+        frozen.exec.as_ref().ok_or_else(|| invalid("missing frozen node executor"))?,
+    )?;
+    let node = config.remote_node.ok_or_else(|| invalid("missing node executor configuration"))?;
+    let target = RemoteNodeTarget::open(
+        sh.deps.xllm.node_executor.clone().unwrap_or_else(crate::runtime::node_connector),
+        node.node_did.as_deref().unwrap_or_default(),
+        node.profile_id.as_deref().unwrap_or_default(),
+        &frozen.runtime_id,
+        sh.dir.state_dir().join("runtime_ops"),
+    ).await.map_err(|e| invalid(format!("artifact runtime: {e}")))?;
+    let binding = sh.dir.binding_opt()?.ok_or_else(|| invalid("artifact runtime is not bound"))?;
+    let observed = serde_json::to_value(&target.described().target).map_err(|e| invalid(e.to_string()))?;
+    for key in ["node_did", "profile_id", "uid", "gid", "store_id", "protocol_version", "workdir_roots"] {
+        if binding.target.get(key) != observed.get(key) {
+            return Err(invalid(format!("artifact runtime binding changed: {key}")));
+        }
+    }
+    if binding.target.get("identity_mode") != Some(&json!(target.described().info.identity_mode)) {
+        return Err(invalid("artifact runtime binding changed: identity_mode"));
+    }
+    Ok(target)
 }
 
 fn artifact_bytes(workdir: &Path, name: &str) -> Result<Vec<u8>> {
+    validate_artifact_path(name)?;
     let path = Path::new(name);
-    if name.is_empty()
-        || path
-            .components()
-            .any(|c| !matches!(c, Component::Normal(_)))
-    {
-        return Err(invalid(
-            "artifact paths must be relative files without '.' or '..'",
-        ));
-    }
     let root = workdir
         .canonicalize()
         .map_err(|e| invalid(format!("artifact work directory: {e}")))?;
@@ -154,8 +175,7 @@ pub(super) async fn validate(sh: &Shared, run: &RunHandle, args: &ReportArgs) ->
         }
         let cfg = sh.session.lock().await.config.clone();
         if cfg.runtime.is_node() {
-            // The file is on the node; it is reported by reference.
-            remote_artifact_reference(sh, &cfg, path)?;
+            remote_artifact_path(sh, &cfg, path)?;
             continue;
         }
         let workdir = crate::runtime::resolve_workdir(&sh.dir, &cfg, sh.agent_root.as_deref())?;
@@ -289,35 +309,45 @@ pub(super) async fn store_artifacts(
             });
             continue;
         }
-        if cfg.runtime.is_node() {
-            // A file on the node stays there: the report carries where it
-            // is (`<runtime>:<path on the node>`), not a copy.
-            artifacts.push(ReportArtifact {
-                path: path.clone(),
-                reference: remote_artifact_reference(sh, &cfg, path)?,
-                digest: String::new(),
-                obj_id: None,
-            });
-            continue;
-        }
-        let bytes = artifact_bytes(Path::new(&workdir), path)?;
-        let digest = hex::encode(Sha256::digest(&bytes));
+        let (digest, staging) = if cfg.runtime.is_node() {
+            let remote_path = remote_artifact_path(sh, &cfg, path)?;
+            let target = remote_artifact_target(sh, &cfg).await?;
+            let parent = sh.dir.state_dir().join("reports").join(id);
+            std::fs::create_dir_all(&parent).map_err(|e| OpenDanError::io(&parent, e))?;
+            let staging = parent.join(format!(".{index}.download"));
+            let root = crate::runtime::target_workdir(&sh.dir, &cfg)?
+                .ok_or_else(|| invalid("missing artifact working directory"))?;
+            let downloaded = target.download_file(&root, &remote_path, &staging).await;
+            match downloaded {
+                Ok(file) => (file.hash.trim_start_matches("sha256:").to_string(), Some(staging)),
+                Err(e) => {
+                    let _ = std::fs::remove_file(staging);
+                    return Err(invalid(format!("artifact {path}: {e}")));
+                }
+            }
+        } else {
+            let bytes = artifact_bytes(Path::new(&workdir), path)?;
+            let digest = hex::encode(Sha256::digest(&bytes));
+            let reference = format!("{STATE_DIR}/reports/{id}/{index}-{digest}");
+            crate::fsutil::atomic_replace(&sh.dir.path().join(&reference), &bytes)?;
+            (digest, None)
+        };
         let reference = format!("{STATE_DIR}/reports/{id}/{index}-{digest}");
         let stable = sh.dir.path().join(&reference);
-        crate::fsutil::atomic_replace(&stable, &bytes)?;
+        if let Some(staging) = staging {
+            std::fs::rename(&staging, &stable).map_err(|e| OpenDanError::io(&stable, e))?;
+            crate::fsutil::fsync_dir(stable.parent().unwrap())?;
+        }
         let mut artifact = ReportArtifact {
             path: path.clone(),
             reference,
             digest,
             obj_id: None,
         };
-        // The stable copy is put in: it does not change after acceptance.
-        // Storing is the host's business; the report stands without it.
         if let Some(store) = &sh.deps.objects {
-            match store.put_file(&stable, artifact.name()).await {
-                Ok(obj_id) => artifact.obj_id = Some(obj_id.to_string()),
-                Err(e) => log::warn!("session {}: artifact {path} not stored: {e}", sh.dir.sid()),
-            }
+            artifact.obj_id = Some(store.put_file(&stable, artifact.name()).await
+                .map_err(|e| invalid(format!("artifact {path} could not be attached: {e}")))?
+                .to_string());
         }
         artifacts.push(artifact);
     }
@@ -355,7 +385,7 @@ impl llm_context::OutputValidator for ReplyValidator {
                 }
                 if artifact_obj_id(path).is_none() {
                     if cfg.runtime.is_node() {
-                        remote_artifact_reference(&self.sh, &cfg, path).map_err(|e| e.to_string())?;
+                        remote_artifact_path(&self.sh, &cfg, path).map_err(|e| e.to_string())?;
                         continue;
                     }
                     artifact_bytes(Path::new(&workdir), path).map_err(|e| {

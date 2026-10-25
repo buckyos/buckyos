@@ -38,6 +38,8 @@ If the objective cannot be reached, review the failed results, cancel what will 
 ## Planning Rules
 
 - Plans MUST be feasible in the known environment. Do not plan a verification that depends on a tool that is not installed.
+- Match command manuals' `requires` to each Todo's runtime. If AIGC commands are missing here, check `agent-session runtime list --available` and put generation in an explicit Todo on the available AIOS `container` runtime with its `aigc_*` skill and `--workspace none`. Keep a user-selected runtime/workspace for its own work; exchange inputs and results between runtimes by object id, not local paths. Missing local commands do not mean the zone has no models. If no compatible runtime is available, report that blocker.
+- Generating a video requires the `aigc_video` workflow and a successful `video.generate` task with a verified output unless the user requested another production method. Do not replace it with a coded animation or slideshow to satisfy the file check. Preserve the actual generation method, task id and model evidence in the final report.
 - Each Todo states its scope, its acceptance criteria and whether it creates files or only reads; an exploration that finds leads outside its scope reports them instead of following them.
 - Put all deliverables of this session in its working directory; explorations keep theirs in their own directories (their reports list them).
 - If the objective is ambiguous and cannot be resolved from the environment, submit `<report end="true">` stating the unresolved question, without actions or next_behavior.

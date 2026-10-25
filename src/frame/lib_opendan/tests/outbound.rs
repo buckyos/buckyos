@@ -204,7 +204,13 @@ impl libopendan::runner::ObjectStore for Objects {
     }
 
     async fn name_of(&self, obj_id: &ndn_lib::ObjId) -> Option<String> {
-        (*obj_id == Self::id_of("from a work session")).then(|| "game.zip".to_string())
+        (*obj_id == Self::id_of("from a work session"))
+            .then(|| "game.zip".to_string())
+            .or_else(|| {
+                self.put.lock().unwrap().iter()
+                    .find(|(_, name)| *obj_id == Self::id_of(name))
+                    .map(|(_, name)| name.clone())
+            })
     }
 }
 
@@ -225,6 +231,49 @@ fn data_refs(msg: &ndn_lib::MsgObject) -> Vec<(String, Option<String>)> {
             other => panic!("not a data object: {other:?}"),
         })
         .collect()
+}
+
+#[tokio::test]
+async fn a_failed_artifact_upload_is_correctable_before_delivery() {
+    #[derive(Default)]
+    struct UnavailableOnce(Mutex<usize>);
+    #[async_trait]
+    impl libopendan::runner::ObjectStore for UnavailableOnce {
+        async fn put_file(&self, path: &std::path::Path, name: &str) -> Result<ndn_lib::ObjId, String> {
+            assert_eq!(std::fs::read(path).unwrap(), b"video content");
+            let mut attempts = self.0.lock().unwrap();
+            *attempts += 1;
+            if *attempts == 1 {
+                return Err("object store temporarily unavailable".into());
+            }
+            Ok(Objects::id_of(name))
+        }
+    }
+    let env = Env::new();
+    let sd = env.create_work(report_ui_spec()).await;
+    std::fs::write(sd.path().join("video.mp4"), b"video content").unwrap();
+    let llm = ScriptedLlm::new(|req, n| match n {
+        0 => final_report("first", "video attached", json!(["video.mp4"])),
+        1 => {
+            assert!(has_tool_result(req, "first").unwrap().contains("could not be attached"));
+            final_report("retry", "video attached", json!(["video.mp4"]))
+        }
+        _ => panic!("unexpected inference {n}"),
+    });
+    let sink = Arc::new(Sink::default());
+    let objects = Arc::new(UnavailableOnce::default());
+    let mut deps = env.deps(llm);
+    deps.objects = Some(objects.clone());
+    deps.outbound = Some(sink.clone());
+    libopendan::post_input(env.agent().as_ref(), sd.sid(), &from_bob("video?")).await.unwrap();
+    let result = drive(&sd, &deps, StopWhen::TurnClosed).await;
+    assert!(matches!(result, DriveResult::TurnClosed { status: TurnStatus::Completed, .. }), "{result:?}");
+    assert_eq!(*objects.0.lock().unwrap(), 2);
+    let sent = sink.sent.lock().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].msg.content.content, "video attached");
+    assert_eq!(data_refs(&sent[0].msg), vec![(Objects::id_of("video.mp4").to_string(), Some("video.mp4".into()))]);
+    assert_eq!(sd.state().unwrap().final_report.unwrap().source, ReportSource::Tool { call_id: "retry".into() });
 }
 
 #[tokio::test]
@@ -340,4 +389,48 @@ fn final_report(call_id: &str, report: &str, artifacts: serde_json::Value) -> bu
         "report",
         json!({ "report": report, "artifacts": artifacts, "is_end": true }),
     )
+}
+
+#[tokio::test]
+async fn a_work_report_object_is_forwarded_without_accessing_the_workers_files() {
+    let env = Env::new();
+    let mut spec = SessionTemplate::load("work", None).unwrap().spec("produce a video");
+    spec.prompt.llm_context = report_ui_spec().prompt.llm_context;
+    let work = env.create_work(spec).await;
+    let source = work.path().join("cat_halloween.mp4");
+    let bytes = b"\0\0\0\x18ftypmp42\0\xff\x80binary video artifact";
+    std::fs::write(&source, bytes).unwrap();
+    let objects = Arc::new(Objects::default());
+    let mut deps = env.deps(ScriptedLlm::new(|_, n| {
+        assert_eq!(n, 0);
+        final_report("video", "video ready", json!(["cat_halloween.mp4"]))
+    }));
+    deps.objects = Some(objects.clone());
+    let result = drive(&work, &deps, StopWhen::TurnClosed).await;
+    assert!(matches!(result, DriveResult::TurnClosed { status: TurnStatus::Completed, .. }), "{result:?}");
+    let report = work.state().unwrap().final_report.unwrap();
+    let artifact = &report.artifacts[0];
+    let object_id = artifact.obj_id.clone().unwrap();
+    assert_eq!(std::fs::read(work.path().join(&artifact.reference)).unwrap(), bytes);
+    assert!(report.delivery_text().contains(&object_id));
+    std::fs::remove_file(source).unwrap();
+
+    let ui = env.create_work(report_ui_spec()).await;
+    assert!(!ui.path().join("cat_halloween.mp4").exists());
+    let forwarded = object_id.clone();
+    let mut deps = env.deps(ScriptedLlm::new(move |_, n| {
+        assert_eq!(n, 0);
+        final_report("relay", "here is your video", json!([forwarded]))
+    }));
+    let sink = Arc::new(Sink::default());
+    deps.objects = Some(objects.clone());
+    deps.outbound = Some(sink.clone());
+    libopendan::post_input(env.agent().as_ref(), ui.sid(), &from_bob("show the video")).await.unwrap();
+    let result = drive(&ui, &deps, StopWhen::TurnClosed).await;
+    assert!(matches!(result, DriveResult::TurnClosed { status: TurnStatus::Completed, .. }), "{result:?}");
+    let sent = sink.sent.lock().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].msg.content.content, "here is your video");
+    assert_eq!(data_refs(&sent[0].msg), vec![(object_id, Some("cat_halloween.mp4".into()))]);
+    assert_eq!(objects.put.lock().unwrap().len(), 1);
 }

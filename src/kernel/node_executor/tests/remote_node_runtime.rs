@@ -300,3 +300,48 @@ async fn remote_node_tools_run_on_the_node_and_recover_by_query() {
         .unwrap();
     assert!(format!("{obs:?}").contains("StoreMismatch") || format!("{obs:?}").contains("ledger changed"), "{obs:?}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remote_artifacts_download_in_ranges_without_truncation_or_workspace_escape() {
+    if unsafe { geteuid() } != 0 {
+        eprintln!("skipping: needs root");
+        return;
+    }
+    let dir = tempfile::Builder::new().prefix("nx-artifacts").tempdir_in("/tmp").unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let root = dir.path();
+    let work = root.join("work");
+    let session = work.join("session");
+    std::fs::create_dir_all(&session).unwrap();
+    let source = session.join("video.mp4");
+    let payload: Vec<u8> = (0..3 * 1024 * 1024 + 123).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&source, &payload).unwrap();
+    std::fs::write(session.join("empty"), []).unwrap();
+    std::fs::write(work.join("outside.mp4"), b"outside this session").unwrap();
+    std::os::unix::fs::symlink(work.join("outside.mp4"), session.join("escape.mp4")).unwrap();
+    let connector = Arc::new(InProcess { exec: Mutex::new(executor(root, "ledger", &work).await) });
+    let target = agent_tool::runtime::node::RemoteNodeTarget::open(
+        connector, NODE_DID, "dev", "host", root.join("ops"),
+    ).await.unwrap();
+    let output = root.join("download.mp4");
+    let file = target.download_file(
+        session.to_str().unwrap(), source.to_str().unwrap(), &output,
+    ).await.unwrap();
+    assert_eq!(file.size, payload.len() as u64);
+    assert_eq!(file.hash, executor_content_hash(&payload));
+    assert_eq!(std::fs::read(output).unwrap(), payload);
+    let empty = root.join("empty");
+    let file = target.download_file(
+        session.to_str().unwrap(), session.join("empty").to_str().unwrap(), &empty,
+    ).await.unwrap();
+    assert_eq!(file.size, 0);
+    assert_eq!(file.hash, executor_content_hash(&[]));
+    assert_eq!(std::fs::metadata(empty).unwrap().len(), 0);
+    for name in ["escape.mp4", "missing.mp4", "."] {
+        let output = root.join("rejected");
+        assert!(target.download_file(
+            session.to_str().unwrap(), session.join(name).to_str().unwrap(), &output,
+        ).await.is_err(), "{name}");
+        assert!(!output.exists(), "{name}");
+    }
+}

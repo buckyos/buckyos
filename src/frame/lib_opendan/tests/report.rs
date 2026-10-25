@@ -266,6 +266,8 @@ async fn rejected_reports_are_correctable_and_do_not_skip_sibling_tools() {
         json!({ "report": "invalid bool", "is_end": "true" }),
         json!({ "report": "missing artifact", "artifacts": ["missing.txt"], "is_end": true }),
         json!({ "report": "escaping artifact", "artifacts": ["../outside.txt"], "is_end": true }),
+        json!({ "report": "remote path is not an object", "artifacts": ["host:/work/out.mp4"], "is_end": true }),
+        json!({ "report": "remote windows escape", "artifacts": ["..\\outside.txt"], "is_end": true }),
     ] {
         let env = Env::new();
         let sd = env
