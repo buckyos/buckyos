@@ -1,0 +1,40 @@
+{
+  "platform": "windows",
+  "vm_id": 113,
+  "started_at": "2026-10-24T19:44:07.351Z",
+  "results": [
+    "clean desktop target reports the platform desktop backend as current user",
+    "created device is invisible before launch",
+    "verified production WSS entry, authenticated App login and online discovery",
+    "exec cwd, environment and OS identity",
+    "write, edit, read and result query",
+    "file roots enforced",
+    "long command cancellation",
+    "computer inspect returns binding and live capabilities",
+    "computer observe delivers a real PNG through the ledger content channel",
+    "point click on the desktop with screenshot feedback returns a fresh observation",
+    "focus target without a verifiable focused element is refused, not guessed",
+    "focus-targeted Unicode typing into Notepad with screenshot feedback",
+    "an action against a superseded observation is not dispatched",
+    "local pause blocks desktop input and resume restores it",
+    "second independent instance refused",
+    "normal stop immediately removes online target",
+    "restart retains ledger and screenshots; old generation and old observations reject dispatch",
+    "revocation closes online route",
+    "absolute URL expiry removes live executor",
+    "stop and revocation preserve business files"
+  ],
+  "notes": [
+    "doctor: ui.state=ready capture.ready=true input.ready=true",
+    "binding: user:display:1",
+    "inspect: capture.ready=true () input.ready=true ()",
+    "observe: 1280x800 PNG, 745742 bytes",
+    "focus target on the bare desktop -> failed: focus_unverifiable: focus unverifiable",
+    "stale observation click -> failed: {\"code\":\"unavailable\",\"message\":\"stale_observation: stale observation\",\"effect_unknown\":false}",
+    "paused action -> failed: {\"code\":\"unavailable\",\"message\":\"paused: paused\",\"effect_unknown\":false}",
+    "expiring executor online 11503 ms after issue",
+    "slots: s1, s2, s3, s4"
+  ],
+  "target": "PVE VM 113 buckyos-win10-test: Windows 10 Pro 19045 zh-CN x86_64, interactive console session 1, no VC++ runtime, no sshd; daemon debug build with static CRT compiled on the VM (MSVC 14.44, conda-forge OpenSSL 4 dynamic)",
+  "control_plane": "production Zone entry wss://test.buckyos.io (cyfs-gateway 443, dev test CA installed in the VM root store) -> control-panel built 2026-10-24"
+}

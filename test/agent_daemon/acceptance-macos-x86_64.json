@@ -1,0 +1,38 @@
+{
+  "platform": "macos",
+  "vm_id": 114,
+  "started_at": "2026-10-24T19:53:40.624Z",
+  "results": [
+    "clean desktop target reports the platform desktop backend as current user",
+    "created device is invisible before launch",
+    "verified production WSS entry, authenticated App login and online discovery",
+    "exec cwd, environment and OS identity",
+    "write, edit, read and result query",
+    "file roots enforced",
+    "long command cancellation",
+    "computer inspect returns binding and live capabilities",
+    "computer observe delivers a real PNG through the ledger content channel",
+    "point click on the desktop with screenshot feedback returns a fresh observation",
+    "focus-targeted wait with feedback on the focused desktop",
+    "an action against a superseded observation is not dispatched",
+    "local pause blocks desktop input and resume restores it",
+    "second independent instance refused",
+    "normal stop immediately removes online target",
+    "restart retains ledger and screenshots; old generation and old observations reject dispatch",
+    "revocation closes online route",
+    "absolute URL expiry removes live executor",
+    "stop and revocation preserve business files"
+  ],
+  "notes": [
+    "doctor: ui.state=interactive_session_unavailable capture.ready=false input.ready=false",
+    "binding: user:display:1535231424",
+    "inspect: capture.ready=true () input.ready=true ()",
+    "observe: 1280x800 PNG, 142415 bytes",
+    "stale observation click -> failed: {\"code\":\"unavailable\",\"message\":\"stale_observation: stale observation\",\"effect_unknown\":false}",
+    "paused action -> failed: {\"code\":\"unavailable\",\"message\":\"paused: paused\",\"effect_unknown\":false}",
+    "expiring executor online 774 ms after issue",
+    "slots: s1, s2, s3, s4"
+  ],
+  "target": "PVE VM 114 buckyos-macos26-test: macOS 26.7.1 (25G241) x86_64 under QEMU (Skylake-Client), console user logged in at loginwindow, Terminal granted Screen Recording + Accessibility; daemon debug build compiled on the VM with Xcode CLT 26.6 after the native.m session fix",
+  "control_plane": "production Zone entry wss://test.buckyos.io (cyfs-gateway 443, dev CA via SSL_CERT_FILE) -> control-panel built 2026-10-24"
+}

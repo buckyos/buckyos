@@ -61,3 +61,56 @@ checks on VM 112 (Ubuntu 24.04.5, aarch64 GNU, glibc 2.39) using QEMU TCG on the
 x86_64 PVE host; physical ARM hardware and ARM user-service installation were not
 tested. Both VMs are stopped with their disks retained. These are real packaged-binary tests;
 macOS, Windows and GUI backends are outside this delivery.
+
+# Desktop (macOS / Windows) acceptance
+
+`desktop_e2e.ts` repeats the access/command/file lifecycle above against the
+real Zone entry (`wss://<zone host>`, the production cyfs-gateway 443 port and
+the installed control-panel; no fixture, no TLS proxy) and adds the Computer
+protocol: `inspect`, `observe` (the PNG is read back through the ledger
+`content` channel and its IHDR size is compared with the observation),
+point click with `feedback: after`, a focus-targeted `wait_for` (on a bare
+desktop Windows answers `focus_unverifiable`, which the test records instead of
+guessing), Unicode `type` into Notepad (Windows), a click against a superseded
+observation (`stale_observation`), local `pause`/`resume`, and the
+restart/revocation/expiry checks. Because the daemon must run inside the
+logged-in desktop session, launches go through a slot launcher:
+
+- macOS: `mac_launcher.sh`, started once from a Terminal window
+  (`open ~/s.command`, which exports `SSL_CERT_FILE` for the Zone's dev CA and
+  execs the launcher). The daemon inherits Terminal's GUI audit session and TCC
+  attribution, so Screen Recording and Accessibility are granted to Terminal in
+  System Settings before the run. Everything else goes over SSH.
+- Windows: `win_remote.py` drives the VM through the PVE guest agent
+  (`qm guest exec`, SYSTEM in session 0) and runs daemon launches and daemon
+  CLI calls as Task Scheduler tasks registered with `/RU <user> /IT` and no
+  stored password (a password-backed task fails to start with "element not
+  found"). The VM needs the Zone CA in the machine Root store and a hosts entry
+  for the Zone host.
+
+```sh
+deno check --no-config --unstable-sloppy-imports test/agent_daemon/desktop_e2e.ts
+python3 -I test/agent_daemon/win_remote.py <vmid> setup <user> <password>
+NODE_EXTRA_CA_CERTS=/opt/buckyos/etc/ca.cert node --experimental-strip-types \
+  test/agent_daemon/desktop_e2e.ts /path/to/private-config.json
+```
+
+The private configuration (mode 0600) carries `control_url`
+(`https://<zone host>/kapi/control-panel`), `owner_token`, `agent_token`,
+`agent_did`, `platform` (`macos` | `windows`), `vm_id`, `report_dir`,
+`remote_binary`, `home`, plus `vm_ip`/`ssh_key`/`known_hosts` for macOS. Owner
+and Agent session tokens expire within about 30 minutes, so refresh them right
+before a run. The report directory receives `report.json`, `doctor.json`,
+`describe.json`, `inspect.json` and the `observe.png` / `click.png` /
+`typed.png` feedback screenshots.
+
+`acceptance-windows-x86_64.json` records the 20 checks that passed on PVE VM 113
+(Windows 10 Pro 19045, console session 1) on 2026-10-24 with a static-CRT debug
+build compiled on the VM. The expiry check issues a 45 s URL because a Task
+Scheduler launch reaches the Zone roughly 10 s after issue.
+`acceptance-macos-x86_64.json` records the 19 checks that passed on PVE VM 114
+(macOS 26.7.1 x86_64 under QEMU, console user logged in, Terminal granted
+Screen Recording and Accessibility) with a debug build compiled on the VM
+after the audit-session fix; the focus-targeted wait succeeds on the macOS
+desktop. Neither run is a physical-machine, signed-binary or release-package
+result.

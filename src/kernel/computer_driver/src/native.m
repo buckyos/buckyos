@@ -52,8 +52,8 @@ void bucky_desktop_probe(BuckyDesktop *out) {
         auditinfo_addr_t audit = {0};
         BOOL auditReady = getaudit_addr(&audit, sizeof(audit)) == 0
             && audit.ai_asid != AU_DEFAUDITSID && audit.ai_auid == geteuid()
-            && (audit.ai_flags & (AU_SESSION_FLAG_HAS_GRAPHIC_ACCESS | AU_SESSION_FLAG_HAS_CONSOLE_ACCESS | AU_SESSION_FLAG_HAS_AUTHENTICATED))
-                == (AU_SESSION_FLAG_HAS_GRAPHIC_ACCESS | AU_SESSION_FLAG_HAS_CONSOLE_ACCESS | AU_SESSION_FLAG_HAS_AUTHENTICATED);
+            && (audit.ai_flags & (AU_SESSION_FLAG_HAS_GRAPHIC_ACCESS | AU_SESSION_FLAG_HAS_CONSOLE_ACCESS))
+                == (AU_SESSION_FLAG_HAS_GRAPHIC_ACCESS | AU_SESSION_FLAG_HAS_CONSOLE_ACCESS);
         out->session = audit.ai_asid;
         NSRunningApplication *front = NSWorkspace.sharedWorkspace.frontmostApplication;
         out->locked = [session[@"CGSSessionScreenIsLocked"] boolValue]

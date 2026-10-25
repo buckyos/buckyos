@@ -102,7 +102,7 @@ data/route WSS 只承载现有 Command Stream 二进制字节，不新增 HTTP s
 
 binding 必须显式为 `<当前已授权profile_id>:display:<display_id>`，显示器 ID 从目标 daemon 的 doctor/在线能力获取，示例中的 `1` 不能直接照抄。本期只允许当次明确绑定的主显示器；主屏身份、布局或用户会话变化后拒绝旧目标，不暗中切换显示器。绑定从已认证 App session、profile、executor、store 和当前用户桌面装配；action JSON 不能自报授权主体或批准。尚未增加独立的控制面 binding CRUD 或异步批准队列。
 
-macOS 的 `interactive_session_id` 使用 `getaudit_addr` 返回的 audit session ID（`ai_asid`），不使用标识硬件集合的 console-set ID。Driver 同时要求 audit user 与当前用户一致，且会话具有图形、console 和已认证标志，再核对 CoreGraphics 的当前用户、登录与前台 console 状态；注销后重新登录的会话不能沿用旧观察。
+macOS 的 `interactive_session_id` 使用 `getaudit_addr` 返回的 audit session ID（`ai_asid`），不使用标识硬件集合的 console-set ID。Driver 同时要求 audit user 与当前用户一致，且会话具有图形和 console 标志（loginwindow 建立的 GUI 会话只带 `has_graphic_access,has_tty,has_console_access`，`has_authenticated` 只出现在 SSH/sudo 等 PAM 会话上，不能作为桌面会话条件），再核对 CoreGraphics 的当前用户、登录与前台 console 状态；注销后重新登录的会话不能沿用旧观察。
 
 权限分别为 `computer_inspect`、`computer_observe`、`computer_act`。动作要求后置截图时还需要 observe 权限；只读 Agent 的 permission_mode 不允许 act。shell 仍具有当前 OS 用户权限，桌面允许列表不构成任意 shell 的强隔离边界。截图通过原 operation 的 Content channel 分块查询，沿用 actor/App/profile/runtime/store 的访问校验；artifact_ref 不是任意文件路径或公共下载 URL。
 
@@ -177,6 +177,8 @@ xcrun --sdk macosx clang -fobjc-arc -fblocks -O2 -Wall -Werror -mmacosx-version-
   -framework CoreGraphics -framework ImageIO -framework ScreenCaptureKit -framework Carbon
 /tmp/buckyos-capture-smoke
 ```
+
+2026-10-24 桌面验收（`test/agent_daemon/desktop_e2e.ts`，真实 Zone 的 443 入口 + 已安装的 control-panel，不用 fixture）：Windows 10 Pro 19045（PVE VM 113，控制台会话 1，静态 CRT debug 构建在 VM 上编译）20 项全部通过，含 WSS 接入、命令/文件、取消、inspect、observe 真实 PNG 回读、带反馈的点击、Notepad 内 Focus 目标 Unicode 输入、过期观察拒派、本地 pause/resume、第二实例拒绝、重启保留账本与截图、撤销、到期下线；空桌面上的 Focus 目标按设计返回 `focus_unverifiable`。macOS 26.7.1 x86_64（PVE VM 114，QEMU 模拟 Intel，console 用户登录，Terminal 获 Screen Recording + Accessibility，修复后在 VM 上用 CLT 26.6 编译的 debug 构建）19 项全部通过，Focus 目标在桌面上可核验。记录见 `test/agent_daemon/acceptance-windows-x86_64.json` 与 `acceptance-macos-x86_64.json`；两者都不是物理机、签名产物或发行包的结论。同一 macOS VM 上 `cargo test -p computer_driver -p buckyos_agent_daemon -p node_executor -- --test-threads=1` 50 项通过（daemon 7+4、computer_driver 7、node_executor 7+9+12+3+1）。Windows VM 上以交互用户（session 1）运行：daemon 4+4、computer_driver 14 加默认 ignored 的 `windows_desktop_capture_smoke` 1 项、node_executor 6+9+3+3 通过；其中 `tests/windows.rs` 的 `cancel_and_timeout_end_the_whole_process_tree` 在整包串行运行时失败一次（取消前只等 1.5 s，PowerShell 子进程还没输出 `start`），单独重跑两次均通过，属计时敏感而非 daemon 缺陷。以 SYSTEM/session 0 运行 lifecycle 测试会因 daemon 无法进入交互会话而超时，不能作为 Windows 回归入口。Windows 构建基于 64ceea4c4（`computer_driver` 拆分后 `windows.rs` 引用 `super::Status` 的编译错误修复）；同一轮修复了 macOS 会话探测要求 `has_authenticated` 标志而 GUI 登录会话从不携带它的问题。
 
 ### 未完成的上层链路
 
