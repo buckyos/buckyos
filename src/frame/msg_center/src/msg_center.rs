@@ -962,7 +962,7 @@ impl MessageCenter {
             }
             Err(error) => return Err(error),
         };
-        let named_store = runtime.get_named_store().await?;
+        let named_store = runtime.get_local_named_store().await?;
         named_store
             .put_object(&msg_id, &msg_json)
             .await
@@ -989,7 +989,7 @@ impl MessageCenter {
         }
         let msg_id = msg_id.clone();
         let runtime = get_buckyos_api_runtime()?;
-        let named_store = runtime.get_named_store().await?;
+        let named_store = runtime.get_local_named_store().await?;
         let msg_json = named_store.get_object(&msg_id).await.map_err(|error| {
             RPCErrors::ReasonError(format!(
                 "load message {} from named_store failed: {}",
@@ -2722,7 +2722,7 @@ impl MessageCenter {
         }
 
         let runtime = get_buckyos_api_runtime()?;
-        let named_store = runtime.get_named_store().await?;
+        let named_store = runtime.get_local_named_store().await?;
         match named_store.get_object(&msg_id).await {
             Ok(msg_json) => {
                 let msg = serde_json::from_str::<MsgObject>(&msg_json).map_err(|error| {

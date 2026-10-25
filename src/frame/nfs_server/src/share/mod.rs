@@ -88,7 +88,7 @@ impl ShareMgr {
                     NamedStoreSource::None => Err(unavailable("this server has no named store".into())),
                     NamedStoreSource::Runtime => buckyos_api::get_buckyos_api_runtime()
                         .map_err(|e| unavailable(e.to_string()))?
-                        .get_named_store()
+                        .get_local_named_store()
                         .await
                         .map_err(|e| unavailable(e.to_string())),
                     NamedStoreSource::Dir(dir) => open_local_store(dir).await.map_err(unavailable),

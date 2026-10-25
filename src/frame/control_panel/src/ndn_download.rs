@@ -86,7 +86,7 @@ fn download_worker_sender() -> &'static tokio::sync::mpsc::UnboundedSender<Downl
 async fn run_download_job(job: DownloadJob) -> Result<CyfsPullResult, String> {
     let runtime = get_buckyos_api_runtime().map_err(|err| format!("get runtime failed: {err}"))?;
     let named_store = runtime
-        .get_named_store()
+        .get_local_named_store()
         .await
         .map_err(|err| format!("get named store failed: {err}"))?;
     let session_token = runtime.get_session_token().await;

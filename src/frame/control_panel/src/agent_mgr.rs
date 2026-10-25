@@ -946,6 +946,8 @@ pub(crate) struct AgentCreateRequest {
     pub name: String,
     pub profile: AgentProfile,
     pub permission_mode: AgentPermissionMode,
+    pub runtimes: Option<Value>,
+    pub default_runtime_id: Option<Value>,
     pub role_supplement: String,
     pub allow_group: bool,
     pub allow_other_users: bool,
@@ -1002,6 +1004,8 @@ impl AgentCreateRequest {
                     )
                 })?,
             },
+            runtimes: params.get("runtimes").cloned(),
+            default_runtime_id: params.get("default_runtime_id").cloned(),
             role_supplement: params
                 .get("role_supplement")
                 .and_then(Value::as_str)
@@ -1020,7 +1024,7 @@ impl AgentCreateRequest {
     }
 
     pub(crate) fn fingerprint(&self) -> String {
-        let material = json!({
+        let mut material = json!({
             "name": self.name,
             "profile": self.profile,
             "permission_mode": self.permission_mode,
@@ -1034,9 +1038,33 @@ impl AgentCreateRequest {
             "homestation": self.homestation,
             "auto_share_results": self.auto_share_results,
         });
+        if let Some(runtimes) = &self.runtimes {
+            material["runtimes"] = runtimes.clone();
+        }
+        if let Some(default_runtime_id) = &self.default_runtime_id {
+            material["default_runtime_id"] = default_runtime_id.clone();
+        }
         build_named_object_by_json("agentreq", &material)
             .0
             .to_string()
+    }
+
+    async fn settings_with_runtimes(
+        &self,
+        kv: &dyn AgentKv,
+        owner: &str,
+    ) -> Result<AgentSettings, RPCErrors> {
+        let mut settings = self.settings();
+        crate::agent_runtimes::apply_create_defaults(kv, owner, &mut settings).await;
+        crate::agent_runtimes::apply_update(
+            kv,
+            owner,
+            &mut settings,
+            self.runtimes.as_ref(),
+            self.default_runtime_id.as_ref(),
+        )
+        .await?;
+        Ok(settings)
     }
 
     fn settings(&self) -> AgentSettings {
@@ -2803,10 +2831,7 @@ impl ControlPanelServer {
             template.built_from(),
             buckyos_get_unix_timestamp(),
         );
-        // The Desktop owner's new Agent runs on the owner's desktop by default
-        // (integration TODO §3.1); the node policy decides whether that exists.
-        let mut settings = request.settings();
-        crate::agent_runtimes::apply_create_defaults(&kv, &owner, &mut settings).await;
+        let settings = request.settings_with_runtimes(&kv, &owner).await?;
         let actions = reservation_actions(
             &owner,
             &record,
@@ -3878,6 +3903,161 @@ mod tests {
             params["permission_mode"] = invalid;
             assert!(AgentCreateRequest::parse(&params).is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn create_runtime_selection_respects_owner_and_node_policy() {
+        use buckyos_api::{
+            AgentRuntimeTarget, ComputerAccess, ExecutorSettings, NodeSettings, OwnerAgentsPolicy,
+            ZONE_OWNER_USER_ID_KEY,
+        };
+        use name_lib::{DeviceDocument, DeviceInfo};
+
+        let kv = MemoryKv::default();
+        kv.put(ZONE_OWNER_USER_ID_KEY, &OWNER);
+        let device = DeviceInfo::from_device_doc(&DeviceDocument::new(
+            "ood1",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
+        ));
+        kv.put("devices/ood1/info", &device);
+        let mut node = NodeSettings {
+            executor: Some(ExecutorSettings {
+                enabled: true,
+                owner_agents: Some(OwnerAgentsPolicy {
+                    enabled: true,
+                    workdir_roots: vec!["/home/devtest/workspace".into()],
+                    env: BTreeMap::new(),
+                    ops: Vec::new(),
+                    computer: ComputerAccess::Observe,
+                    run_as: Some(buckyos_api::ExecutorRunAs {
+                        uid: 1000,
+                        gid: 1000,
+                    }),
+                }),
+                ..Default::default()
+            }),
+        };
+        let mut params = json!({
+            "idempotency_key": "runtime-choice",
+            "name": "runtime-agent",
+            "template_id": "bundled:jarvis.buckyos.bns.did",
+        });
+        let default_request = AgentCreateRequest::parse(&params).unwrap();
+        let settings = default_request
+            .settings_with_runtimes(&kv, OWNER)
+            .await
+            .unwrap();
+        assert!(!settings.runtime_enabled("host"));
+
+        kv.put("nodes/ood1/settings", &node);
+        let settings = default_request
+            .settings_with_runtimes(&kv, OWNER)
+            .await
+            .unwrap();
+        assert!(settings.runtime_enabled("host"));
+        assert_eq!(settings.effective_default_runtime(), "host");
+        assert_eq!(settings.runtimes["host"].computer, ComputerAccess::Observe);
+        assert_eq!(
+            settings.runtimes["host"].target,
+            AgentRuntimeTarget::Node {
+                node_id: "ood1".into(),
+                node_did: device.device_doc.id.to_string(),
+            }
+        );
+        let settings = default_request
+            .settings_with_runtimes(&kv, "other-user")
+            .await
+            .unwrap();
+        assert!(!settings.runtime_enabled("host"));
+
+        params["default_runtime_id"] = Value::Null;
+        let container_default = AgentCreateRequest::parse(&params).unwrap();
+        assert_ne!(
+            default_request.fingerprint(),
+            container_default.fingerprint()
+        );
+        assert_eq!(
+            container_default
+                .settings_with_runtimes(&kv, OWNER)
+                .await
+                .unwrap()
+                .effective_default_runtime(),
+            "container",
+        );
+        params["runtimes"] = json!({"host": null});
+        params["default_runtime_id"] = json!("container");
+        let disabled = AgentCreateRequest::parse(&params).unwrap();
+        assert_ne!(container_default.fingerprint(), disabled.fingerprint());
+        let settings = disabled.settings_with_runtimes(&kv, OWNER).await.unwrap();
+        assert!(!settings.runtime_enabled("host"));
+        assert_eq!(settings.effective_default_runtime(), "container");
+        kv.put("nodes/ood1/settings", &NodeSettings::default());
+        assert!(!disabled
+            .settings_with_runtimes(&kv, OWNER)
+            .await
+            .unwrap()
+            .runtime_enabled("host"));
+        kv.put("nodes/ood1/settings", &node);
+
+        params["runtimes"] = json!({"host": {"enabled": true, "computer": "none"}});
+        params["default_runtime_id"] = json!("host");
+        let enabled = AgentCreateRequest::parse(&params).unwrap();
+        assert_ne!(disabled.fingerprint(), enabled.fingerprint());
+        let settings = enabled.settings_with_runtimes(&kv, OWNER).await.unwrap();
+        assert!(settings.runtime_enabled("host"));
+        assert_eq!(settings.runtimes["host"].computer, ComputerAccess::None);
+        assert!(enabled
+            .settings_with_runtimes(&kv, "other-user")
+            .await
+            .is_err());
+
+        params["runtimes"]["host"]["computer"] = json!("control");
+        assert!(AgentCreateRequest::parse(&params)
+            .unwrap()
+            .settings_with_runtimes(&kv, OWNER)
+            .await
+            .is_err());
+        for invalid in [
+            json!(false),
+            json!({"enabled": "false"}),
+            json!({"computer": "invalid"}),
+        ] {
+            params["runtimes"]["host"] = invalid;
+            assert!(AgentCreateRequest::parse(&params)
+                .unwrap()
+                .settings_with_runtimes(&kv, OWNER)
+                .await
+                .is_err());
+        }
+
+        node.executor.as_mut().unwrap().enabled = false;
+        kv.put("nodes/ood1/settings", &node);
+        let directory = crate::agent_runtimes::runtime_directory(&kv, OWNER)
+            .await
+            .unwrap();
+        assert!(directory[0].closed);
+        assert!(!default_request
+            .settings_with_runtimes(&kv, OWNER)
+            .await
+            .unwrap()
+            .runtime_enabled("host"));
+        assert!(enabled.settings_with_runtimes(&kv, OWNER).await.is_err());
+
+        node.executor.as_mut().unwrap().enabled = true;
+        node.executor
+            .as_mut()
+            .unwrap()
+            .owner_agents
+            .as_mut()
+            .unwrap()
+            .enabled = false;
+        kv.put("nodes/ood1/settings", &node);
+        assert!(!default_request
+            .settings_with_runtimes(&kv, OWNER)
+            .await
+            .unwrap()
+            .runtime_enabled("host"));
+        assert!(enabled.settings_with_runtimes(&kv, OWNER).await.is_err());
     }
 
     #[tokio::test]

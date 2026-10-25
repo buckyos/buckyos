@@ -4,8 +4,10 @@ import { useEffect, useRef, useState } from 'react'
 import {
   checkAgentName,
   fetchAgentTemplates,
+  fetchAgentRuntimeDirectory,
   fetchUserDetail,
   type AgentNameCheck,
+  type AgentRuntimeDirectory,
   type AgentTemplate,
   type UserDetail,
 } from '../../api/user_mgr'
@@ -152,6 +154,35 @@ export function useOwnProfile(userId: string) {
     setState({ status: 'loading' })
     setVersion((value) => value + 1)
   }), [])
+
+  return {
+    state,
+    reload: () => {
+      setState({ status: 'loading' })
+      setVersion((value) => value + 1)
+    },
+  }
+}
+
+export type RuntimeDirectoryState =
+  | { status: 'loading' }
+  | { status: 'ready'; directory: AgentRuntimeDirectory }
+  | { status: 'error'; error: ClassifiedAgentError }
+
+export function useAgentRuntimeDirectory() {
+  const [state, setState] = useState<RuntimeDirectoryState>({ status: 'loading' })
+  const [version, setVersion] = useState(0)
+
+  useEffect(() => {
+    let cancelled = false
+    void fetchAgentRuntimeDirectory().then(({ data, error }) => {
+      if (cancelled) return
+      setState(data
+        ? { status: 'ready', directory: data }
+        : { status: 'error', error: classifyAgentError(error) })
+    })
+    return () => { cancelled = true }
+  }, [version])
 
   return {
     state,

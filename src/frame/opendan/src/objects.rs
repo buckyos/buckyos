@@ -30,7 +30,6 @@ impl ObjectStore for NamedStoreObjects {
             .get_named_store()
             .await
             .map_err(|e| format!("named store: {e}"))?;
-        // Large files are linked where they are, not copied.
         let mode = if meta.len() < LOCAL_LINK_MIN_FILE_SIZE {
             StoreMode::StoreInNamedMgr
         } else {

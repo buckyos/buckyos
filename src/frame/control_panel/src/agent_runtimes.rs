@@ -65,7 +65,10 @@ pub(crate) async fn runtime_directory(kv: &dyn AgentKv, owner: &str) -> Result<V
         let Some(settings) = get_value::<NodeSettings>(kv, &node_settings_key(&node_id)).await else {
             continue;
         };
-        let Some(policy) = settings.executor.as_ref().and_then(|e| e.owner_agents.clone()) else {
+        let Some(executor) = settings.executor.as_ref() else {
+            continue;
+        };
+        let Some(policy) = executor.owner_agents.as_ref() else {
             continue;
         };
         let Some(info) = get_value::<DeviceInfo>(kv, &format!("devices/{node_id}/info")).await else {
@@ -79,7 +82,7 @@ pub(crate) async fn runtime_directory(kv: &dyn AgentKv, owner: &str) -> Result<V
             name: info.device_doc.name.clone(),
             computer: policy.computer,
             workdir_roots: policy.workdir_roots.clone(),
-            closed: !policy.enabled,
+            closed: !executor.enabled || !policy.enabled,
         });
     }
     offers.sort_by(|a, b| {
@@ -155,7 +158,14 @@ pub(crate) async fn apply_update(
                 changed |= settings.runtimes.remove(id).is_some();
                 continue;
             }
-            let enabled = change.get("enabled").and_then(Value::as_bool);
+            let change = change.as_object().ok_or_else(|| {
+                RPCErrors::ParseRequestError(format!("runtime `{id}` must be an object or null"))
+            })?;
+            let enabled = match change.get("enabled") {
+                None => None,
+                Some(Value::Bool(enabled)) => Some(*enabled),
+                Some(_) => return Err(RPCErrors::ParseRequestError(format!("runtime `{id}` enabled must be a boolean"))),
+            };
             let computer = parse_computer(change.get("computer"))?;
             let offer = offers.iter().find(|o| &o.runtime_id == id);
             let entry = match settings.runtimes.get(id).cloned() {

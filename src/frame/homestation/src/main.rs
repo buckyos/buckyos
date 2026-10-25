@@ -127,7 +127,7 @@ async fn service_main() {
     let owner = zone_doc.owner.to_string();
     let device_did = runtime.device_config.as_ref().map(|d| d.id.to_string()).unwrap_or_default();
     let signer = Signer::new(runtime.device_private_key.clone().expect("device key loaded"), format!("{device_did}#main_key"));
-    let ndm = match runtime.get_named_store().await {
+    let ndm = match runtime.get_local_named_store().await {
         Ok(n) => n,
         Err(e) => {
             log::error!("named store unavailable: {e}");

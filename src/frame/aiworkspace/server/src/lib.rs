@@ -927,7 +927,7 @@ async fn import_asset_object(state: &Arc<AppState>, params: &Value, caller: &Cal
     let (store, gateway) = state.named_import.get_or_try_init(|| async {
         let runtime = buckyos_api::get_buckyos_api_runtime().map_err(|e| WsError::io(e.to_string()))?;
         let gateway = runtime.get_zone_service_url("nfs-server", false).await.map_err(|e| WsError::io(e.to_string()))?;
-        let store = runtime.get_named_store().await.map_err(|e| WsError::io(e.to_string()))?;
+        let store = runtime.get_local_named_store().await.map_err(|e| WsError::io(e.to_string()))?;
         Ok::<_, WsError>((store, gateway))
     }).await?;
     let mut url = reqwest::Url::parse(gateway).map_err(|e| WsError::io(e.to_string()))?;

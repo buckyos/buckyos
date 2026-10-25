@@ -500,7 +500,7 @@ impl TgMessageConverter {
                 error
             )
         })?;
-        let named_store = runtime.get_named_store().await.map_err(|error| {
+        let named_store = runtime.get_local_named_store().await.map_err(|error| {
             anyhow::anyhow!(
                 "get named_store for telegram attachment egress failed: {}",
                 error
@@ -557,7 +557,7 @@ impl TgMessageConverter {
             return None;
         }
         let runtime = get_buckyos_api_runtime().ok()?;
-        let named_store = runtime.get_named_store().await.ok()?;
+        let named_store = runtime.get_local_named_store().await.ok()?;
         let obj_str = named_store.get_object(obj_id).await.ok()?;
         let file_obj: FileObject = load_named_obj(&obj_str).ok()?;
         let name = file_obj.content_obj.name;
@@ -648,7 +648,7 @@ impl TgMessageConverter {
                 return Ok(None);
             }
         };
-        let named_store = match runtime.get_named_store().await {
+        let named_store = match runtime.get_local_named_store().await {
             Ok(store) => store,
             Err(error) => {
                 warn!(

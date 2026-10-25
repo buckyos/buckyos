@@ -370,6 +370,8 @@ export interface AgentCreateRequest {
   template_auto_update: boolean
   desktop_entry?: AgentDesktopEntry
   msg_tunnel?: AgentMsgTunnelInput
+  runtimes?: Record<string, { enabled?: boolean; computer?: ComputerAccess } | null>
+  default_runtime_id?: string | null
 }
 
 export interface AgentCreateResponse {

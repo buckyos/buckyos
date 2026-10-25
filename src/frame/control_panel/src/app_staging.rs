@@ -304,7 +304,7 @@ impl PikgStagingStore {
         purpose: PikgStagingPurpose,
     ) -> Result<PikgStagingMetadata, RPCErrors> {
         let runtime = get_buckyos_api_runtime()?;
-        let named_store = runtime.get_named_store().await?;
+        let named_store = runtime.get_local_named_store().await?;
         let owner = format!("control-panel:pikg-import:{}", uuid::Uuid::new_v4());
         named_store
             .pin(

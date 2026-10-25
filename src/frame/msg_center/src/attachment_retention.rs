@@ -85,7 +85,7 @@ pub struct RuntimeAttachmentStore;
 
 impl RuntimeAttachmentStore {
     async fn store() -> Result<NamedDataMgr> {
-        get_buckyos_api_runtime()?.get_named_store().await
+        get_buckyos_api_runtime()?.get_local_named_store().await
     }
 }
 

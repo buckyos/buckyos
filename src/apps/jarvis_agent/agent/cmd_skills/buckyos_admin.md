@@ -128,7 +128,13 @@ buckyos system info                                 # BuckyOS version, build_ver
   first start, absent = never initialized, `enabled:false` = closed by the administrator); writing it needs an owner
   sudo token. Which Agent uses a node is the Agent's own setting: `agent.runtime_directory [agent_id]` lists the nodes
   offered to the owner (`host` = the desktop), `agent.update {agent_id, runtimes: {"host": {enabled, computer}},
-  default_runtime_id}` enables one (targets come from the directory, never from the caller). The scheduler multiplies
+  default_runtime_id}` enables one (targets come from the directory, never from the caller). Desktop's Add Agent
+  permissions step offers the same host choice, on by default for the Zone Owner when both the executor and its
+  owner policy are open. `agent.create` accepts these same runtime fields; to opt out, use
+  `runtimes: {"host": null}, default_runtime_id: "container"`. Create retries keep the saved choice.
+  Linux `dev` / `devtest_ood1` config generation seeds a bounded host workspace at
+  `data/home/devtest/host-runtime`, with a non-root execution identity and no desktop control; explicit node settings
+  take precedence. The scheduler multiplies
   both into `nodes/<node>/config.executor` (never edit): a profile `agent-<12 hex>` per enabled Agent, check
   `generation` grew, the Agent is in `principal_bindings` with `enabled`/`app_installed` true (a runtime shared by two
   AgentSpecs is not mapped), and `auth_valid_until_ms` keeps moving (30 s lease). On the node:

@@ -434,7 +434,7 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
     let system_config_url = api_runtime.get_system_config_url();
     let service_token = api_runtime.get_session_token().await;
     let named_store = api_runtime
-        .get_named_store()
+        .get_local_named_store()
         .await
         .context("open AICC named resource store")?;
     let client_version = api_runtime

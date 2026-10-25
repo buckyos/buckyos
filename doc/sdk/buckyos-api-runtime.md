@@ -23,6 +23,19 @@ sys_cfg_client.set("key","value")
 
 需要访问 buckyos 的服务，都应当在进程启动时按 `init -> login -> set` 顺序初始化 api-runtime。
 
+## NamedStore 访问
+
+应用、Agent 和工具通过 `runtime.get_named_store().await?` 获取统一存储接口，使用 `get_object()`、`open_reader()` 等操作，不自行读取 NamedStore 配置或判断是否处于容器内。后端由 runtime 类型决定：
+
+| Runtime 类型 | 存储后端 |
+| --- | --- |
+| `Kernel`、`KernelService` | 本机 `NamedDataMgr`，读取 `$BUCKYOS_ROOT/storage/named_store.json` |
+| `AppService`、`AppClient`、`FrameService` | `NdmClient`，通过 NFS 服务的 `/ndm/proxy/v1` 访问 |
+
+远程访问的服务地址解析、当前 session token 和续期由 SDK/runtime 处理，服务端继续验证调用身份与对象权限。应用私有 storage 无需放置宿主机的 `named_store.json`，也不需要挂载宿主机 NamedStore。选择后端不依赖配置文件是否存在；初始化或鉴权失败会返回错误，不自动切换到另一个后端。
+
+负责本机存储管理的内核服务可以调用 `runtime.get_local_named_store().await?`，取得具体的 `NamedDataMgr`，用于布局、保留关系、网关装配及本地包处理。该入口只允许 `Kernel`、`KernelService` 使用；普通附件读取和产物存储使用统一入口。
+
 ## init 到 login 之间的语义
 
 `init()` 到 `login()` 之间，runtime 可以持有:

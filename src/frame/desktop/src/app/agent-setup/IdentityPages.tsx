@@ -6,7 +6,8 @@ import { CheckCircle2, ChevronDown, ChevronRight, Home, ShieldCheck, Users } fro
 import { useI18n } from '../../i18n/provider'
 import type { CurrentAccount } from '../../api/account'
 import { AvatarPicker } from './AvatarPicker'
-import type { NameCheckState } from './hooks'
+import type { NameCheckState, RuntimeDirectoryState } from './hooks'
+import type { AgentRuntimeOffer } from '../../api/user_mgr'
 import { draftDisplayName, type AgentSetupDraft, type ClassifiedAgentError } from './model'
 import { OptionCard, Section, StatusPill } from './ui'
 import { ObjectAvatar } from '../../presentation/ObjectIcon'
@@ -217,11 +218,17 @@ export function PermissionsPage({
   update,
   account,
   owner,
+  host,
+  runtimeDirectory,
+  onReloadRuntimes,
 }: {
   draft: AgentSetupDraft
   update: (patch: Partial<AgentSetupDraft>) => void
   account: CurrentAccount
   owner: ObjectPresentation
+  host: AgentRuntimeOffer | null
+  runtimeDirectory: RuntimeDirectoryState
+  onReloadRuntimes: () => void
 }) {
   const { t } = useI18n()
   return (
@@ -261,6 +268,34 @@ export function PermissionsPage({
           <div className="flex items-start gap-2 text-[12px] leading-5 text-[color:var(--cp-muted)]">
             <ShieldCheck size={16} className="mt-0.5 shrink-0 text-[color:var(--cp-accent)]" />
             <p>{t('agentSetup.permission.agentRoot')}</p>
+          </div>
+          <div className="border-t pt-3" style={{ borderColor: 'var(--cp-border)' }} data-testid="agent-setup-host-runtime">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-sm font-medium text-[color:var(--cp-text)]">{t('agentSetup.host.enable')}</div>
+                <p className="mt-1 text-[12px] leading-5 text-[color:var(--cp-muted)]">{t('agentSetup.host.hint')}</p>
+              </div>
+              <Switch
+                checked={Boolean(host && !host.closed && draft.hostRuntimeEnabled)}
+                disabled={runtimeDirectory.status !== 'ready' || !host || host.closed}
+                onChange={(event) => update({ hostRuntimeEnabled: event.target.checked })}
+                slotProps={{ input: { 'aria-label': t('agentSetup.host.enable') } }}
+              />
+            </div>
+            {runtimeDirectory.status === 'loading' ? (
+              <p className="mt-2 text-[12px] text-[color:var(--cp-muted)]">{t('agentSetup.host.loading')}</p>
+            ) : runtimeDirectory.status === 'error' ? (
+              <Alert severity="error" className="mt-2" action={<Button size="small" onClick={onReloadRuntimes}>{t('agentSetup.host.retry')}</Button>}>
+                {t('agentSetup.host.failed')}
+              </Alert>
+            ) : !host || host.closed ? (
+              <p className="mt-2 text-[12px] text-[color:var(--cp-muted)]">{t(host?.closed ? 'agentSetup.host.closed' : 'agentSetup.host.unavailable')}</p>
+            ) : (
+              <div className="mt-2 space-y-1 text-[12px] leading-5 text-[color:var(--cp-muted)]">
+                <p>{t('agentSetup.host.node', undefined, { name: host.name || host.node_id || 'host', computer: t(`agentSetup.confirm.computer.${host.computer_max}`) })}</p>
+                {host.workdir_roots?.length ? <p className="break-all">{t('agentSetup.host.roots', undefined, { roots: host.workdir_roots.join(', ') })}</p> : null}
+              </div>
+            )}
           </div>
         </div>
       </Section>

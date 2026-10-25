@@ -95,7 +95,7 @@ impl PreInstallReconciler {
             .await
             .map_err(|error| format!("TaskManager unavailable: {error}"))?;
         runtime
-            .get_named_store()
+            .get_local_named_store()
             .await
             .map_err(|error| format!("NamedStore unavailable: {error}"))?;
         let scheduler = runtime

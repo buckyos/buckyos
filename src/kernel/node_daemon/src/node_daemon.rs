@@ -340,7 +340,7 @@ async fn index_static_dir_pkg_meta_from_current_named_store(
             resolved_pkg_id, err
         ))
     })?;
-    let store_mgr = runtime.get_named_store().await.map_err(|err| {
+    let store_mgr = runtime.get_local_named_store().await.map_err(|err| {
         NodeDaemonErrors::ReasonError(format!(
             "get named store for static dir pkg {} failed: {}",
             resolved_pkg_id, err

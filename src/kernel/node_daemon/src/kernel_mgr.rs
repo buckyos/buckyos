@@ -71,7 +71,7 @@ impl KernelServiceRunItem {
                 ),
             )
         })?;
-        let store_mgr = runtime.get_named_store().await.map_err(|error| {
+        let store_mgr = runtime.get_local_named_store().await.map_err(|error| {
             ControlRuntItemErrors::ExecuteError(
                 "index_pkg_meta".to_string(),
                 format!(

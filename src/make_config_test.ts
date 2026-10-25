@@ -79,7 +79,7 @@ Deno.test("generated runtime startup config and CA keys stay in security", async
 });
 
 Deno.test("dev bootstrap secrets are merged into a private template", async () => {
-  const root = await Deno.makeTempDir();
+  const root = await Deno.makeTempDir({ dir: Deno.build.os === "linux" ? "/tmp" : undefined });
   try {
     const target = `${root}/target`;
     const publicTemplatePath = `${target}/etc/scheduler/boot.template.toml`;
@@ -97,11 +97,74 @@ Deno.test("dev bootstrap secrets are merged into a private template", async () =
         throw new Error(`private bootstrap is missing ${required}`);
       }
     }
+    const nodeSettingsEntry = privateTemplate.match(/"nodes\/ood1\/settings"\s*=\s*"""\n([\s\S]*?)\n"""/);
+    if (Deno.build.os === "linux") {
+      if (!nodeSettingsEntry) throw new Error("dev bootstrap did not offer the host runtime");
+      const settings = JSON.parse(nodeSettingsEntry[1]);
+      const policy = settings.executor.owner_agents;
+      const workspace = `${target}/data/home/devtest/host-runtime`;
+      const expectedUid = Deno.uid() === 0 ? 65534 : Deno.uid();
+      const expectedGid = Deno.uid() === 0 ? 65534 : Deno.gid();
+      if (expectedUid === null || expectedGid === null ||
+        !settings.executor.enabled || !policy.enabled || policy.computer !== "none" ||
+        JSON.stringify(policy.workdir_roots) !== JSON.stringify([workspace]) ||
+        policy.run_as.uid !== expectedUid || policy.run_as.gid !== expectedGid) {
+        throw new Error("dev host policy must grant only its workspace with a non-root execution identity");
+      }
+      const directory = await Deno.lstat(workspace);
+      if (!directory.isDirectory || directory.uid !== expectedUid || directory.gid !== expectedGid ||
+        directory.mode === null || (directory.mode & 0o007) !== 0) {
+        throw new Error("dev host workspace has incorrect ownership or permissions");
+      }
+      await Deno.chmod(root, 0o755);
+      const probe = await new Deno.Command("/bin/sh", {
+        args: ["-c", 'printf %s host-runtime-write > "$1/probe"', "host-runtime-probe", workspace],
+        uid: expectedUid,
+        gid: expectedGid,
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+      if (!probe.success) {
+        throw new Error(`dev host identity cannot write its workspace: ${new TextDecoder().decode(probe.stderr)}`);
+      }
+      const probePath = `${workspace}/probe`;
+      if (await Deno.readTextFile(probePath) !== "host-runtime-write" ||
+        (await Deno.stat(probePath)).uid !== expectedUid) {
+        throw new Error("dev host workspace write did not use the configured identity");
+      }
+    } else if (nodeSettingsEntry) {
+      throw new Error("Linux system executor defaults leaked into another platform");
+    }
     if (Deno.build.os !== "windows") {
       const file = await Deno.stat(privateTemplatePath);
       if (file.mode === null || (file.mode & 0o777) !== 0o600) {
         throw new Error("private bootstrap template must be private");
       }
+    }
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("dev bootstrap preserves an explicitly disabled node executor", async () => {
+  const root = await Deno.makeTempDir();
+  try {
+    const target = `${root}/target`;
+    const settings = { executor: { enabled: false, owner_agents: { enabled: false, workdir_roots: [] } } };
+    const entry = `"nodes/ood1/settings" = """\n${JSON.stringify(settings)}\n"""\n`;
+    await Deno.mkdir(`${target}/etc/scheduler`, { recursive: true });
+    await Deno.writeTextFile(`${target}/etc/scheduler/boot.template.toml`, entry);
+    await makeConfigByGroupName("dev", target, `${root}/ca`, `${root}/env`);
+    const template = await Deno.readTextFile(`${target}/security/scheduler/boot.template.toml`);
+    const matches = [...template.matchAll(/"nodes\/ood1\/settings"\s*=\s*"""\n([\s\S]*?)\n"""/g)];
+    if (matches.length !== 1 || JSON.stringify(JSON.parse(matches[0][1])) !== JSON.stringify(settings)) {
+      throw new Error("dev bootstrap overwrote an explicit node executor policy");
+    }
+    try {
+      await Deno.stat(`${target}/data/home/devtest/host-runtime`);
+      throw new Error("disabled node executor created a host runtime workspace");
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
     }
   } finally {
     await Deno.remove(root, { recursive: true });

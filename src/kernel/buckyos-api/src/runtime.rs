@@ -25,6 +25,7 @@ use name_lib::*;
 use named_store::NamedDataMgr;
 
 use crate::aicc_client::*;
+use crate::NFS_SERVER_SERVICE_NAME;
 use crate::app_mgr::*;
 use crate::control_panel::*;
 use crate::kevent_client::{
@@ -352,11 +353,46 @@ impl BuckyOSRuntime {
         *main_service_port = port;
     }
 
-    pub async fn get_named_store(&self) -> Result<NamedDataMgr> {
+    pub async fn get_named_store(&self) -> Result<crate::RuntimeNamedStore<'_>> {
+        match self.runtime_type {
+            BuckyOSRuntimeType::Kernel | BuckyOSRuntimeType::KernelService => {
+                Ok(crate::RuntimeNamedStore::local(
+                    self.get_local_named_store().await?,
+                ))
+            }
+            _ => Ok(crate::RuntimeNamedStore::remote(self)),
+        }
+    }
+
+    pub(crate) fn named_store_base_url(&self) -> String {
+        match self.runtime_type {
+            BuckyOSRuntimeType::AppClient => {
+                let url = self.get_appclient_service_url(NFS_SERVER_SERVICE_NAME, self.force_https);
+                url.trim_end_matches(&format!("/kapi/{NFS_SERVER_SERVICE_NAME}"))
+                    .to_string()
+            }
+            _ => format!(
+                "http://{}:{}",
+                self.resolve_local_service_host(),
+                self.node_gateway_port
+            ),
+        }
+    }
+
+    pub async fn get_local_named_store(&self) -> Result<NamedDataMgr> {
+        if !matches!(
+            self.runtime_type,
+            BuckyOSRuntimeType::Kernel | BuckyOSRuntimeType::KernelService
+        ) {
+            return Err(RPCErrors::NoPermission(
+                "this runtime must access named storage through get_named_store".into(),
+            ));
+        }
         let store_mgr: &NamedDataMgr = self
             .named_store_mgr
             .get_or_try_init(|| async {
-                let config_path = get_buckyos_root_dir()
+                let config_path = self
+                    .buckyos_root_dir
                     .join("storage")
                     .join("named_store.json");
                 let http_backend_links = HashMap::new();
@@ -4110,3 +4146,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "named_store_tests.rs"]
+mod named_store_tests;

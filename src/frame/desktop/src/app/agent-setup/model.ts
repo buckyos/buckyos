@@ -5,6 +5,7 @@ import type {
   AgentCreateStep,
   AgentEntry,
   AgentPermissionMode,
+  AgentRuntimeOffer,
   AgentStatus,
   AgentTemplate,
   UserDetail,
@@ -226,6 +227,7 @@ export interface AgentSetupDraft {
   bioEdited: boolean
   roleSupplement: string
   permissionMode: AgentPermissionMode
+  hostRuntimeEnabled: boolean
   allowGroup: boolean
   homestation: boolean
   autoShareResults: boolean
@@ -254,6 +256,7 @@ export function newAgentSetupDraft(source: AgentSetupSource, idempotencyKey: str
     bioEdited: false,
     roleSupplement: '',
     permissionMode: 'read_write',
+    hostRuntimeEnabled: true,
     allowGroup: false,
     homestation: true,
     autoShareResults: true,
@@ -289,6 +292,7 @@ export function parseAgentSetupDraft(raw: unknown, source: AgentSetupSource): Ag
     bioEdited: boolField(value.bioEdited, base.bioEdited),
     roleSupplement: stringField(value.roleSupplement, base.roleSupplement),
     permissionMode: value.permissionMode === 'read_only' ? 'read_only' : 'read_write',
+    hostRuntimeEnabled: boolField(value.hostRuntimeEnabled, base.hostRuntimeEnabled),
     allowGroup: boolField(value.allowGroup, base.allowGroup),
     homestation: boolField(value.homestation, base.homestation),
     autoShareResults: boolField(value.autoShareResults, base.autoShareResults),
@@ -327,9 +331,10 @@ export function applyTemplateToDraft(draft: AgentSetupDraft, template: AgentTemp
   }
 }
 
-export function buildAgentCreateRequest(draft: AgentSetupDraft, botToken: string): AgentCreateRequest {
+export function buildAgentCreateRequest(draft: AgentSetupDraft, botToken: string, host: AgentRuntimeOffer | null = null): AgentCreateRequest {
   const displayName = draft.displayName.trim()
   const bio = draft.bio.trim()
+  const enableHost = draft.hostRuntimeEnabled && host !== null && !host.closed
   return {
     idempotency_key: draft.idempotencyKey,
     name: draft.name.trim(),
@@ -340,6 +345,8 @@ export function buildAgentCreateRequest(draft: AgentSetupDraft, botToken: string
     },
     role_supplement: draft.roleSupplement.trim(),
     permission_mode: draft.permissionMode,
+    runtimes: { host: enableHost ? { enabled: true, computer: host.computer_max } : null },
+    default_runtime_id: enableHost ? 'host' : 'container',
     allow_group: draft.allowGroup,
     allow_other_users: false,
     homestation: draft.homestation,

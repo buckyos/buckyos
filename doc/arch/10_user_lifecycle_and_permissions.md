@@ -286,6 +286,10 @@ App 访问 system-config / kRPC 资源时，服务端 `BuckyOSRuntime::enforce()
 
 Add Agent 向导默认授予当前登录用户的读写权限，也可选择只读。API 字段为 `agent.create.permission_mode`，取值 `read_write`（默认）/ `read_only`，保存到 `AgentSpec.permission_mode`，在 `agent.list` / `agent.get` 中返回。授权 Owner 来自登录身份，Agent 的模板更新和创建重试保留此选择；该字段不属于 Agent 可自行调整的 settings。
 
+同一权限步骤提供 Host runtime 开关，展示节点授权的目录与桌面操作能力。`agent.runtime_directory` 只向 Zone Owner 提供节点；节点的 `executor.enabled` 与 `owner_agents.enabled` 均开启时，向导默认启用 `host`。未初始化或管理员关闭的节点不能由创建向导开启。
+
+`agent.create` 接收与 `agent.update` 相同的 `runtimes` 和 `default_runtime_id` 字段，并在创建预留事务中保存到 `AgentSettings`。启用示例为 `runtimes: {"host": {"enabled": true, "computer": "none"}}, default_runtime_id: "host"`；关闭为 `runtimes: {"host": null}, default_runtime_id: "container"`。未传字段时沿用节点策略默认值，显式选择覆盖默认值；目标节点由服务端目录解析，桌面能力不得超过节点策略。这些字段参与创建幂等校验，重试沿用已保存的选择。
+
 Agent runtime App 的 API 权限按该模式继承 Owner 的权限，仍经过用户与 App 双主体校验，不能超出 Owner 的授权。只读模式限制用户数据与配置写入（包括 Agent settings/profile），保留自身 info、service-instance 状态上报及自身 mailbox 的收发写入；AgentRoot 内的 Session、任务与记忆继续运行。Docker 中 Owner home 按模式挂载，而自己的 AgentRoot 始终读写，供 Session、记忆、工作区和技能持久化；准确路径见 [`path_usage.md`](../path_usage.md)。宿主调试遵循宿主进程文件权限，不提供 Docker 的只读挂载隔离。
 
 只读授权不开放可用于重新登录的原始凭据：`users/<user>/settings`（含密码哈希）、`users/<user>/agents/<agent>/key` 与 `security/*` 的 system-config 读取被拒绝。需要读取这些原始记录的 API 也可能返回权限错误。

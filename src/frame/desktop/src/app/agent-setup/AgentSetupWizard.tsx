@@ -19,6 +19,7 @@ import {
   readStoredDraft,
   removeStoredDraft,
   useAgentNameCheck,
+  useAgentRuntimeDirectory,
   useAgentTemplates,
   useOwnProfile,
   writeStoredDraft,
@@ -201,6 +202,10 @@ function WizardBody({
   const [submitError, setSubmitError] = useState<ClassifiedAgentError | null>(null)
   const [nameConflict, setNameConflict] = useState(false)
   const templates = useAgentTemplates()
+  const runtimeDirectory = useAgentRuntimeDirectory()
+  const host = runtimeDirectory.state.status === 'ready'
+    ? runtimeDirectory.state.directory.runtimes.find((offer) => offer.runtime_id === 'host') ?? null
+    : null
   const ownProfile = useOwnProfile(account.user_id)
   // From the desktop guide an untouched `jarvis` follows the suggestion the name check returns.
   const nameCheck = useAgentNameCheck(draft.name, statusAgentId === null, (result) => {
@@ -249,10 +254,10 @@ function WizardBody({
   }
 
   const submit = async () => {
-    if (submitting) return
+    if (submitting || runtimeDirectory.state.status !== 'ready') return
     setSubmitting(true)
     setSubmitError(null)
-    const request = buildAgentCreateRequest({ ...effectiveDraft, channel }, botToken)
+    const request = buildAgentCreateRequest({ ...effectiveDraft, channel }, botToken, host)
     const { data, error } = await createAgent(request)
     setSubmitting(false)
     if (data) {
@@ -373,6 +378,9 @@ function WizardBody({
           draft={draft}
           update={update}
           account={account}
+          host={host}
+          runtimeDirectory={runtimeDirectory.state}
+          onReloadRuntimes={runtimeDirectory.reload}
           owner={presentUser({
             userId: account.user_id,
             profile: ownProfile.state.status === 'ready' ? { display_name: account.user_name, ...ownProfile.state.detail.profile } : { display_name: account.user_name },
@@ -380,7 +388,7 @@ function WizardBody({
           })}
         />
       )
-      footer = <>{back}{next(true, 'runtime')}</>
+      footer = <>{back}{next(runtimeDirectory.state.status === 'ready', 'runtime')}</>
       break
     case 'runtime':
       body = (
@@ -451,6 +459,7 @@ function WizardBody({
             template={selectedTemplate}
             telegram={telegramIdentity}
             avatarFallback={templateIcon}
+            host={host}
           />
         </>
       )
@@ -458,7 +467,7 @@ function WizardBody({
         <>
           {back}
           <Button
-            disabled={submitting || !selectedTemplate || !nameReady}
+            disabled={submitting || !selectedTemplate || !nameReady || runtimeDirectory.state.status !== 'ready'}
             startIcon={submitting ? <CircularProgress size={14} color="inherit" /> : <UserRoundPlus size={15} />}
             onClick={() => void submit()}
             data-testid="agent-setup-create"
@@ -480,6 +489,15 @@ function WizardBody({
             </p>
           </Section>
         </div>
+      ) : null}
+      {draft.page === 'confirm' && runtimeDirectory.state.status !== 'ready' ? (
+        <Alert
+          severity={runtimeDirectory.state.status === 'error' ? 'error' : 'info'}
+          className="mb-4"
+          action={runtimeDirectory.state.status === 'error' ? <Button size="small" onClick={runtimeDirectory.reload}>{t('agentSetup.host.retry')}</Button> : undefined}
+        >
+          {runtimeDirectory.state.status === 'error' ? t('agentSetup.host.failed') : t('agentSetup.host.loading')}
+        </Alert>
       ) : null}
       {body}
     </WizardFrame>

@@ -159,16 +159,19 @@ Agent identity 与承载它的 runtime App 是两个独立对象：
 
 Agent 按所选模式使用 Owner 的权限；只读模式限制用户数据写入，Agent 自己的 `agent_root` 始终可读写，以保存 Session、记忆、工作区、技能和运行状态。该字段是创建授权，不放在可由 Agent 修改的 `settings` 或 `agent.toml` 中；`agent.update` 不提供权限模式切换。
 
+权限页同时提供 Host runtime 开关。Zone Owner 在节点 `executor.enabled` 与 `owner_agents.enabled` 均开启时默认启用 `host`，可手动关闭。`agent.create` 的 `runtimes` / `default_runtime_id` 与 `agent.update` 使用相同格式：`runtimes: {"host": {"enabled": true, "computer": "none"}}, default_runtime_id: "host"` 表示启用；`runtimes: {"host": null}, default_runtime_id: "container"` 表示关闭。省略字段时按节点策略初始化，显式选择覆盖默认值，并参与幂等指纹；设置与创建预留记录原子保存，重试不重新开启。runtime 目标来自服务端目录，`computer` 不能超过节点授权，创建请求不修改节点策略。
+
 Control Panel 在校验 App session token 后读取绑定 Agent 的权限模式；只读 Agent 仅允许明确列出的读取 RPC，用户/Agent 配置、App 生命周期、容器操作等写请求返回 `NoPermission`。`/api/desktop` 的状态/会话写操作与壁纸上传使用同一限制。用户本人登录 Agent 页面取得的 User session token 继续按用户权限处理。
 
 | 方法 | 说明 |
 |---|---|
 | `agent.check_name` | 名称检查（与 `user.create` 共用）：DNS 标签、保留名、用户名、任何用户名下的 AgentId（含进行中）、已分配的 App/实例主机名；不可用时给出建议名 |
 | `agent.list_templates` | 系统内置模板（`system/install_settings.agent_templates`）与调用者用 CLI 安装的模板（`users/{owner}/agent_templates/*`）；`template_id` 为 `bundled:<app_id>` / `installed:<app_id>` |
-| `agent.create` | 以 `idempotency_key` 幂等；`permission_mode` 默认 `read_write`，可选 `read_only`；写入保留记录后立即返回状态，后台构造并安装 App、绑定 AgentSpec、校验并绑定 Telegram Bot（可选）、等待 OpenDAN 写入 `info` |
+| `agent.create` | 以 `idempotency_key` 幂等；`permission_mode` 默认 `read_write`，可选 `read_only`；`runtimes` / `default_runtime_id` 保存用户的 runtime 选择；写入保留记录后立即返回状态，后台构造并安装 App、绑定 AgentSpec、校验并绑定 Telegram Bot（可选）、等待 OpenDAN 写入 `info` |
 | `agent.create.status` / `agent.create.retry` / `agent.create.cancel` | 查询创建状态；从失败步骤继续（`skip_tunnel` 放弃通道完成创建）；写入 spec 前取消 |
 | `agent.list` / `agent.get` | 本人名下（Admin 为全部）的 Agent，包括进行中与失败的创建；settings 中不含 Bot Token |
-| `agent.update` | 本期只允许修改 `allow_group` |
+| `agent.update` | 修改 `allow_group`、`homestation`、`auto_share_results`、`runtimes`、`default_runtime_id` |
+| `agent.runtime_directory` | 列出向调用者开放的节点及授权目录/能力；传 `agent_id` 时同时返回该 Agent 的选择；`closed` 表示节点 executor 或 owner 策略被关闭 |
 | `agent.profile.get` / `agent.profile.set` | `{display_name, avatar, bio}`，显示名称回退为 Agent 用户名 |
 | `agent.delete` | 先删身份记录，再刷新 RBAC、通知 msg-center、卸载构造 App，最后释放名字 |
 | `agent.set_msg_tunnel` / `agent.remove_msg_tunnel` | 读写 `settings.msg_tunnels`（本期最多一个 Telegram Bot） |

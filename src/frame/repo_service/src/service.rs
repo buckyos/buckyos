@@ -82,7 +82,7 @@ impl RepoService {
 
     async fn get_named_store_mgr(&self) -> std::result::Result<NamedDataMgr, RPCErrors> {
         if let Ok(runtime) = get_buckyos_api_runtime() {
-            return runtime.get_named_store().await.map_err(|err| {
+            return runtime.get_local_named_store().await.map_err(|err| {
                 RPCErrors::ReasonError(format!("open system named store failed: {err}"))
             });
         }

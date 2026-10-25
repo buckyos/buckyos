@@ -1401,7 +1401,7 @@ impl AppInstaller {
         plan: PublishScanPlan,
     ) -> Result<PreparedPublishPlan, RPCErrors> {
         let runtime = get_buckyos_api_runtime()?;
-        let named_store = runtime.get_named_store().await.map_err(|error| {
+        let named_store = runtime.get_local_named_store().await.map_err(|error| {
             RPCErrors::ReasonError(format!("Open named store for publish failed: {error}"))
         })?;
         let temp_root = std::env::temp_dir().join(format!("buckyos-publish-{}", Uuid::new_v4()));
@@ -1480,7 +1480,7 @@ impl AppInstaller {
         prepared: &PreparedPublishPlan,
     ) -> Result<(ObjId, AppDoc, Vec<Value>), RPCErrors> {
         let runtime = get_buckyos_api_runtime()?;
-        let named_store = runtime.get_named_store().await.map_err(|error| {
+        let named_store = runtime.get_local_named_store().await.map_err(|error| {
             RPCErrors::ReasonError(format!("Open named store for publish failed: {error}"))
         })?;
         info!(

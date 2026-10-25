@@ -54,6 +54,7 @@ import type {
   AgentNameCheck,
   AgentPermissionMode,
   AgentProfile,
+  AgentRuntimeOffer,
   AgentSettings,
   AgentStatus,
   AgentTemplate,
@@ -119,6 +120,8 @@ interface MockState {
   user_names: string[]
   host_names: string[]
   templates: AgentTemplate[]
+  runtime_offers: AgentRuntimeOffer[]
+  runtime_directory_error?: string
   agents: MockAgent[]
   step_ms: number
   zone_presentation?: MockZonePresentation
@@ -212,6 +215,11 @@ function defaultState(): MockState {
     user_names: ['alice', 'bob', 'carol', 'dave'],
     host_names: ['messagehub', 'files', 'control-panel'],
     templates: [jarvisTemplate],
+    runtime_offers: [{
+      runtime_id: 'host', kind: 'node', node_id: 'desktop', node_did: 'did:dev:desktop',
+      device_type: 'desktop', name: 'Alice’s computer', computer_max: 'control',
+      workdir_roots: ['/home/alice'], closed: false, enabled: false, computer: 'none',
+    }],
     agents: [
       {
         agent_id: 'assistant.alice',
@@ -722,6 +730,20 @@ function createAgent(state: MockState, params: Record<string, unknown>) {
     step_started_at: now,
     installed: false,
   }
+  const host = state.account.user_id === state.zone_owner
+    ? state.runtime_offers.find((offer) => offer.runtime_id === 'host' && !offer.closed)
+    : undefined
+  const choice = request.runtimes?.host
+  const enableHost = host && choice !== null && choice?.enabled !== false
+  if (choice?.enabled && !host) throw new MockRpcError('runtime_not_offered: host is not open to this owner')
+  agent.settings.runtimes = enableHost ? {
+    host: {
+      enabled: true,
+      computer: choice?.computer ?? host.computer_max,
+      target: { kind: 'node', node_id: host.node_id!, node_did: host.node_did! },
+    },
+  } : {}
+  agent.settings.default_runtime_id = request.default_runtime_id ?? (enableHost ? 'host' : 'container')
   state.agents.push(agent)
   return { agent_id: agent.agent_id, agent_did: agent.agent_did, status: { ...agent.install } }
 }
@@ -1316,6 +1338,20 @@ function handle(state: MockState, method: string, params: Record<string, unknown
       return checkName(state, stringParam(params, 'name'))
     case 'agent.list_templates':
       return { templates: state.templates.map((template) => ({ ...template })) }
+    case 'agent.runtime_directory': {
+      if (state.runtime_directory_error) throw new MockRpcError(state.runtime_directory_error)
+      const agent = typeof params.agent_id === 'string' ? findAgent(state, params.agent_id) : null
+      const owner = agent?.owner_user_id ?? state.account.user_id
+      return {
+        runtimes: owner === state.zone_owner ? state.runtime_offers.map((offer) => ({
+          ...offer,
+          enabled: agent?.settings.runtimes?.[offer.runtime_id]?.enabled ?? false,
+          computer: agent?.settings.runtimes?.[offer.runtime_id]?.computer ?? 'none',
+        })) : [],
+        default_runtime_id: agent?.settings.default_runtime_id ?? null,
+        container: 'container',
+      }
+    }
     case 'agent.create':
       return createAgent(state, params)
     case 'agent.create.status':

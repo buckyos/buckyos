@@ -116,7 +116,7 @@ impl ProductionInstallDriver {
                 format!("get runtime for pikg materialization failed: {error}"),
             )
         })?;
-        let named_store = runtime.get_named_store().await.map_err(|error| {
+        let named_store = runtime.get_local_named_store().await.map_err(|error| {
             InstallError::new(
                 InstallStage::Prepare,
                 InstallErrorCode::Internal,
@@ -1451,7 +1451,7 @@ impl ContentLocator for NamedStoreContentLocator {
         let Ok(runtime) = get_buckyos_api_runtime() else {
             return ContentLocation::Missing;
         };
-        let Ok(named_store) = runtime.get_named_store().await else {
+        let Ok(named_store) = runtime.get_local_named_store().await else {
             return ContentLocation::Missing;
         };
         if obj_id.is_chunk() {
@@ -1482,7 +1482,7 @@ async fn read_named_object_value(obj_id: &ObjId) -> Result<Option<Value>, Instal
             format!("get runtime failed: {err}"),
         )
     })?;
-    let named_store = runtime.get_named_store().await.map_err(|err| {
+    let named_store = runtime.get_local_named_store().await.map_err(|err| {
         InstallError::new(
             InstallStage::Resolve,
             InstallErrorCode::Internal,

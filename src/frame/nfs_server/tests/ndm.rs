@@ -25,7 +25,7 @@ static RBAC: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
 async fn init_rbac() {
     RBAC.get_or_init(|| async {
         let groups = format!(
-            "g, owner, admin\ng, alice, users\ng, bob, users\ng, app:testapp, app\ng, aicc, frame\ng, {AGENT}, agent\ng, app:helper, agent_read_write\ng, app:helper, agent_runtime\ng, app:helper, agent\ng, system:control-panel, system\n"
+            "g, owner, admin\ng, alice, users\ng, bob, users\ng, app:testapp, app\ng, app:otherapp, app\ng, aicc, frame\ng, {AGENT}, agent\ng, app:helper, agent_read_write\ng, app:helper, agent_runtime\ng, app:helper, agent\ng, system:control-panel, system\n"
         );
         let policy = overlap_rbac_policy(DEFAULT_RBAC_POLICY, &groups);
         rbac::create_enforcer(DEFAULT_RBAC_MODEL.trim(), policy.trim()).await.unwrap();
@@ -359,6 +359,55 @@ async fn qcid_reuse_preserves_single_chunk_identity_and_checks_sampled_bytes() {
 }
 
 #[tokio::test]
+async fn stale_local_links_require_bytes_or_reuse_a_committed_copy() {
+    for committed in [false, true] {
+        let srv = start(3600).await;
+        let owner = user("owner");
+        let data = b"attachment survives a stale local link only with real bytes";
+        let chunk = chunk_of(data);
+        let source = srv._tmp.path().join("source.png");
+        tokio::fs::write(&source, data).await.unwrap();
+        let (qcid, metadata) = ndn_lib::calculate_qcid_from_file_with_metadata(&source).await.unwrap();
+        let info = named_store::ChunkLocalInfo::new(source.to_string_lossy().into_owned(), qcid.to_string(), &metadata, None);
+        let store = srv.state.share.store(&srv.state.config).await.unwrap();
+        if committed {
+            store.put_chunk(&chunk, data).await.unwrap();
+        }
+        store.add_chunk_by_link_to_local_file(&chunk, data.len() as u64, &info).await.unwrap();
+        let (id, body) = file_of("attachment.png", data);
+        let manifest = json!({"objects":[{"obj_id":id.to_string(),"obj_data":body}],"roots":[id.to_string()],
+            "qcid_links":[{"qcid":qcid.to_string(),"content_id":chunk.to_string(),"size":data.len()}]});
+        let endpoint = "/ndm/v1/import/finalize";
+        assert_eq!(srv.rpc(&owner, endpoint, manifest.clone()).await.0, StatusCode::OK);
+        tokio::fs::remove_file(&source).await.unwrap();
+
+        assert_eq!(store.is_object_stored(&id, None).await.unwrap(), committed);
+        for hash in [qcid.to_string(), chunk.to_string()] {
+            let lookup: Value = srv.req(Method::GET, &format!("/ndm/v1/objects/lookup?scope=app&quick_hash={hash}"), &owner)
+                .send().await.unwrap().json().await.unwrap();
+            assert_eq!(lookup["state"], if committed { "completed" } else { "not_exist" }, "{lookup}");
+        }
+        if !committed {
+            let (status, rejected) = srv.rpc(&owner, endpoint, manifest.clone()).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{rejected}");
+            assert_ne!(rejected["ready"], true);
+            let upload = srv.create(&owner, data, "attachment.png").await;
+            assert_eq!(upload.status(), StatusCode::CREATED);
+            assert_eq!(header(&upload, "upload-offset"), "0");
+            assert_eq!(srv.patch(&owner, &header(&upload, "location"), 0, data).await.status(), StatusCode::NO_CONTENT);
+        }
+        let (status, ready) = srv.rpc(&owner, endpoint, manifest).await;
+        assert_eq!(status, StatusCode::OK, "{ready}");
+        assert_eq!(ready["ready"], true);
+        assert_eq!(ready["warnings"], json!([]));
+        let response = srv.req(Method::POST, "/ndm/proxy/v1/read/object/open", &owner)
+            .json(&json!({"obj_id":id.to_string()})).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.bytes().await.unwrap().as_ref(), data);
+    }
+}
+
+#[tokio::test]
 async fn termination_and_expiry_clean_up_only_their_own_staging() {
     let srv = start(1).await;
     let alice = user("alice");
@@ -507,4 +556,80 @@ async fn commit_named_objects_materializes_chunklists_and_directories_with_acl()
     let (status, _) = srv.rpc(&bob, "/nfs/v1/commit_object", json!({"session":bob_hello["result"]["session"],"seq":1,"at":{"path":"/home/bob"},"args":{"name":"stolen","obj_id":dir_id.to_string()}})).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert!(!home.join("bob/stolen").exists());
+}
+
+#[tokio::test]
+async fn runtime_named_store_round_trip_preserves_app_and_user_authorization() {
+    use tokio::io::AsyncReadExt;
+
+    static GATEWAY_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct GatewayEnv(Option<std::ffi::OsString>);
+
+    impl Drop for GatewayEnv {
+        fn drop(&mut self) {
+            match &self.0 {
+                Some(value) => std::env::set_var("BUCKYOS_HOST_GATEWAY", value),
+                None => std::env::remove_var("BUCKYOS_HOST_GATEWAY"),
+            }
+        }
+    }
+
+    async fn runtime(
+        srv: &Server,
+        root: &std::path::Path,
+        app: &str,
+        user: &str,
+    ) -> BuckyOSRuntime {
+        let mut runtime =
+            BuckyOSRuntime::new(app, Some(user.into()), BuckyOSRuntimeType::AppClient);
+        runtime.buckyos_root_dir = root.to_path_buf();
+        runtime.node_gateway_port = reqwest::Url::parse(&srv.base).unwrap().port().unwrap();
+        *runtime.session_token.write().await =
+            token(user, TokenPrincipalKind::User, &format!("app:{app}@{user}"));
+        runtime
+    }
+
+    let _env_lock = GATEWAY_ENV_LOCK.lock().unwrap();
+    let _env = GatewayEnv(std::env::var_os("BUCKYOS_HOST_GATEWAY"));
+    std::env::set_var("BUCKYOS_HOST_GATEWAY", "127.0.0.1");
+    let srv = start(3600).await;
+    let client_root = tempfile::tempdir().unwrap();
+    let local_config = client_root.path().join("storage/named_store.json");
+    assert!(!local_config.exists());
+    let alice = runtime(&srv, client_root.path(), "testapp", "alice").await;
+    assert!(alice.get_local_named_store().await.is_err());
+    let store = alice.get_named_store().await.unwrap();
+    let bytes = b"\x89PNG\r\n\x1a\nimage attachment bytes through the runtime SDK\x00\xff";
+    let chunk = chunk_of(bytes);
+    let (id, body) = file_of("attachment.png", bytes);
+    store.put_chunk(&chunk, bytes).await.unwrap();
+    store.put_object(&id, &body).await.unwrap();
+    assert_eq!(store.get_object(&id).await.unwrap(), body);
+    let (mut reader, size) = store.open_reader(&id, None).await.unwrap();
+    let mut received = Vec::new();
+    reader.read_to_end(&mut received).await.unwrap();
+    assert_eq!(size, bytes.len() as u64);
+    assert_eq!(received, bytes);
+
+    for (app, user) in [("otherapp", "alice"), ("testapp", "bob")] {
+        let other = runtime(&srv, client_root.path(), app, user).await;
+        let other_store = other.get_named_store().await.unwrap();
+        assert!(matches!(
+            other_store.get_object(&id).await,
+            Err(ndn_lib::NdnError::PermissionDenied(_))
+        ));
+        assert!(matches!(
+            other_store.open_reader(&id, None).await,
+            Err(ndn_lib::NdnError::PermissionDenied(_))
+        ));
+    }
+
+    assert_eq!(store.get_object(&id).await.unwrap(), body);
+    let (mut reader, size) = store.open_reader(&id, None).await.unwrap();
+    received.clear();
+    reader.read_to_end(&mut received).await.unwrap();
+    assert_eq!(size, bytes.len() as u64);
+    assert_eq!(received, bytes);
+    assert!(!local_config.exists());
 }

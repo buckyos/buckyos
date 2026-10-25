@@ -275,7 +275,7 @@ async fn fetch_authorized_object_path(root: &ObjId, want_content: bool, inner_pa
         Ok(runtime) => runtime,
         Err(_) => return text_response(StatusCode::SERVICE_UNAVAILABLE, "named store unavailable"),
     };
-    let named_store = match runtime.get_named_store().await {
+    let named_store = match runtime.get_local_named_store().await {
         Ok(store) => store,
         Err(_) => return text_response(StatusCode::SERVICE_UNAVAILABLE, "named store unavailable"),
     };

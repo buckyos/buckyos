@@ -632,7 +632,7 @@ impl MessageCenter {
         let Ok(runtime) = buckyos_api::get_buckyos_api_runtime() else {
             return Ok(());
         };
-        let store = runtime.get_named_store().await?;
+        let store = runtime.get_local_named_store().await?;
         for row in sqlx::query("SELECT obj_id FROM group_object_purges LIMIT 100")
             .fetch_all(self.msg_box_db.pool())
             .await
