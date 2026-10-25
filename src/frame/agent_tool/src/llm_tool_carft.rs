@@ -10,7 +10,7 @@
 // 当 behavior cfg 在某条 shell 上打开了意图旁路：
 // 1. `opendan::agent_bash::build_exec_script` 注入 `command_not_found_handle`
 //    并由 runtime 按路径规则直接写入 agent_tool 绝对路径。
-// 2. tmux pane 里跑 `missing-cmd args...` 触发 hook,bash 改调
+// 2. shell 里跑 `missing-cmd args...` 触发 hook,bash 改调
 //    `agent_tool __command_not_found__ missing-cmd args...`。
 // 3. agent_tool_cli_dev 的 `ParsedCommand::CommandNotFound` 分支把
 //    `(command, argv)` 打包成 [`CommandNotFoundRequest`],转手交给

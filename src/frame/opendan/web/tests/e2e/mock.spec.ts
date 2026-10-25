@@ -37,7 +37,7 @@ test('session detail shows state, worklog and outbox', async ({ page }) => {
   await expect(page.getByTestId('session-turn')).toContainText('task-55')
   await expect(page.getByTestId('session-process-stack')).toContainText('create_sub_context → work_do')
   await expect(page.getByTestId('session-pending-events')).toContainText('scanned 9/14 files')
-  await expect(page.getByTestId('session-runtime')).toContainText('rt-tmux-07')
+  await expect(page.getByTestId('session-runtime')).toContainText('rt-node-07')
   await expect(page.getByTestId('session-behaviors')).toContainText('sha256:9a41c0de')
   await expect(page.getByTestId('session-report')).toContainText('Weekly downloads')
   await page.getByTestId('worklog-row').last().click()

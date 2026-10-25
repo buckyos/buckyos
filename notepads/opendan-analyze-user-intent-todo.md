@@ -10,6 +10,7 @@
 - 2026-10-11 v0.2 按与用户的讨论重写：改用 `fork` 以复用提示词前缀缓存；反问改成 CLI `ask-user` + PendingTool `userinput:`；新增问答消息流（占位锚点 + `thread` 问答 + `agent_ask`）与 MessageHub 输入态；用户决定见 §8.1。
 - 2026-10-11 v0.2.1：behavior 可以声明 `[tool]` 把自己暴露成一个具名函数（§3.13）。UI 看到的是 `try_analyze_user_intent(request)`，不再暴露通用的 `call_behavior`。
 - 2026-10-11 实施：I1–I7 完成，§11 是实施记录（落点、与本文不同的决定、验证、DV 状态、遗留）。
+- 2026-10-25：§2 源码基线的 runtime kind 一行注明 tmux runtime 已全平台移除。
 
 依据：
 
@@ -97,7 +98,7 @@
 | `src/frame/lib_opendan/src/template.rs:107-114` | `ui`：`Turns::Unbounded`、`WaitPolicy::Allowed`、`InputChannel::Queue` | `ask-user` 的允许条件由此推出（§3.7 第 1 条） |
 | `src/frame/lib_opendan/src/api.rs:471-501`、`bin/xagent.rs:1077-1150` | `create-worksession` 已有 `--class / --behavior / --workspace / --runtime / --context / --report` | `--runtime` 要查登记；`work_simple` 不存在 |
 | `src/frame/lib_opendan/src/bin/xagent.rs:1160-1260` `workspace` | 完整 CLI；位置 `runtime_id` 只认 `local`（`protocol/workspace.rs:9`，`runtime/mod.rs:63-90`） | 接 Runtime 登记 |
-| `src/frame/agent_tool/src/runtime/mod.rs:80-100` | kind 只有 `native / tmux / remote_ssh`；容器 / 宿主机 kind 报 “planned but not implemented” | 没有登记，没有执行器 |
+| `src/frame/agent_tool/src/runtime/mod.rs:80-100` | kind 只有 `native / tmux / remote_ssh`（tmux 已于 2026-10-25 移除）；容器 / 宿主机 kind 报 “planned but not implemented” | 没有登记，没有执行器 |
 | `src/frame/lib_opendan/src/state/{mod,krpc,workspaces}.rs` | `workspaces()` / `goals()` 文件版 + kRPC 版样板 | 没有 `runtimes()` |
 | `src/frame/opendan/src/home.rs`、`web/` | 首页展示 Workspace | 不展示 Runtime |
 | `src/frame/lib_opendan/src/bin/xagent.rs:1403-1470`、`:1300` | `goal create …`；`goal_caller` 只按 principal / session 区分 | 够用；核对 UI Session 可用 `goal list` |

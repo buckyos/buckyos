@@ -20,7 +20,7 @@ xagent 的目的是**在一个新产品里验证四层架构、发现设计问�
 2. **Agent Session 构造 llm_context 复用 xllm 的宿主装配 API**（`XllmTask::prepare_hosted` / `hosted_request` / `hosted_waist_deps` / `rebuild_toolset` / `create_run_llm` / `RunStore`），但 **system 段、历史段、输入批次、工具调度包装、checkpoint 钩子、run 生命周期都由 Session 决定**；差异清单见 §3。
 3. **Agent 感知到的输入只有两种：消息（MsgObject）与 `AgentEvent`**（§4）。Session 不关心它们怎么来的，只要求信封（key、来源与 index、from、at_ms、subscription_id）；把系统事件（msg-center、kevent、timer、task_mgr、子 session）翻译成这两种输入的是上层 **bridge**（xagent serve、以后的 OpenDAN Supervisor、应用）。事件进入受控输入还是更新半订阅状态，由 **Session 按自己的订阅配置决定**，不由 producer 决定；半订阅状态按 `(subscription_id, source)` 合并并持久化，在受控输入使用前渲染为快照，空闲时不丢。stop / decide / subscribe / activity / perceive 不是 Agent 输入，是**Session 控制协议**，只是搭同一条队列。
 4. **Session 模板**（§4.7）决定一个 session 的形态：Turn 上限、`WAIT_USER_MSG` 的含义、要不要输入队列、半订阅快照包含哪些材料、hints、默认 behavior。work 模板 = 一个 Turn、不等用户、默认不建队列；ui 模板 = 无限 Turn、有队列。模板是 `SessionSpec` 的预设，创建时解析进 session_config，不是新协议对象。
-5. **Runtime 接管全部 agent-tool**（§5）：共享 AgentRuntime/Sandbox 已在 agent_tool 实现 native/tmux/remote_ssh、文件后端、环境与执行跟踪。Session 保留 lease、门槛、inflight、receipt、bin/helper 和绑定。xagent 的 tmux runtime 由 Session 按配置取得或创建，`runtime.id = session_id`；同一 Session 后续的 LLM context 复用绑定的 runtime（§5.2.1，已实施）。ActionGuard、grant 与审批为后续 policy 设计，不属于已完成首版。
+5. **Runtime 接管全部 agent-tool**（§5）：共享 AgentRuntime/Sandbox 已在 agent_tool 实现 native/remote_ssh/remote_node、文件后端、环境与执行跟踪。Session 保留 lease、门槛、inflight、receipt、bin/helper 和绑定。xagent 的 runtime 由 Session 按冻结或声明的配置为每个 Session 构造，workdir 固定为 Session 的 workspace；同一 Session 后续的 LLM context 复用绑定的 runtime（§5.2.1，已实施）。ActionGuard、grant 与审批为后续 policy 设计，不属于已完成首版。
 6. **behavior 配置来自 Agent State，在 Session 构造时冻结进 `session_config.prompt`**（§6）；进入模式（`switch_context` / `create_sub_context` / `fork`）由**目标 behavior** 的冻结配置决定，没有缺省回退。
 7. **Agent State 不配置**（§7）：`AgentStateClient::connect(agent_did, who)` 按"进程内 → 本机 AgentRoot → kRPC"解析；Runner 只依赖 trait。
 8. **验收项**是 E1（xllm 接手）、E4（换 Agent State 实现）、E5（工具形态）、E13（无队列 work session）、E14（半订阅注入时机）、E19（SWITCH_CONTEXT）、E20（工具触发的子调用）、E21（Sub Session）及 E24–E28 的输入 / 等待 / CLI 验证。E17 是已有 Runtime 基线；E18 随 policy 后移，不阻塞本轮 CLI。库级测试通过与 xagent CLI 验收分别记录（§10）。
@@ -42,7 +42,7 @@ xagent 的目的是**在一个新产品里验证四层架构、发现设计问�
 
 ### 1.2 范围
 
-- 做：work / self_improve / self_check session；native 与 tmux runtime；文件版与进程内 Agent State；behavior 冻结与 `BehaviorAssembler`；CLI 形态 session 工具；单 Turn / 积压消费 / 常驻三种运行形态；Sub Session（创建工具、ChildDriver、汇报与等待，§4.10–§4.16）。
+- 做：work / self_improve / self_check session；native runtime；文件版与进程内 Agent State；behavior 冻结与 `BehaviorAssembler`；CLI 形态 session 工具；单 Turn / 积压消费 / 常驻三种运行形态；Sub Session（创建工具、ChildDriver、汇报与等待，§4.10–§4.16）。
 - 不做（沿用计划的后移项）：正式 UI session 与 msg-center / TaskMgr 服务接入、出站消息发送、kRPC 服务端、DID Object 宿主、opendan 改造、TS 版；Sub-Agent Instance（另一个 Agent DID，RFC §16–§17）；ActionGuard / grant / 审批（§5.4、E18）。ui 模板仅用于库与 CLI 的等待语义测试。
 - 沿用现有目录协议（含已实现的 `post.lock`）；新增持久字段落在 `session_config.json`（`prompt`、`session.policy`、`origin` 等）与 `state.json`。当前版本见 §1.5，后续不兼容变更再升版，不沿用旧草案的版本号。
 
@@ -86,7 +86,7 @@ xagent : AgentSession ──InputBus──► 输入批次 ──commit──►
  │  ├─ TurnLoop（= runner::drive，加 StopWhen::TurnClosed）       │
  │  ├─ InputBus（KmsgInput | DirMsgQueue | None）◄─ post / ctl / bridge │
  │  ├─ ContextFactory（BehaviorAssembler + history + xllm hosted）│
- │  ├─ AgentRuntime（native | tmux | host* | container*）         │
+ │  ├─ AgentRuntime（native | remote_node | host* | container*）  │
  │  └─ AgentStateClient（InProcess | Fs | Krpc*）                 │
  │     Runtime = Sandbox：工具统一派发；guard / grant 后移 │
  └───────────┬──────────────┬────────────────────┬──────────────┘
@@ -132,7 +132,7 @@ xagent 不改变这张表的分工，只在“配置来源”和“system 段”
 | G4 | Behavior 完成使用显式 `report_end`；report-only 不再合成 done | 两套 parser、快照恢复、宿主及子返回统一报告身份 | 已实施 H4；END / done 拒绝，最终报告和动作 / 非空调度互斥 |
 | G5 | Runtime 已提供 exec 请求超时、执行记录与取消停止核验 | Session 的整体 behavior deadline 仍属于后续 xagent 预算接线 | 保留 Session stop/lease 中断；整体预算经宿主接入，policy 不作为首版前置 |
 | G6 | 已修：run 保存实际目标与 Session env_check | xllm 接管核验 PATH、环境、manifest 与 helper 内容 | 凭据重新读取环境引用；依赖缺失/变化则阻塞恢复 |
-| G7 | 已修：prepare/prepare_hosted 调用共享 runtime.open | 内置文件工具使用目标侧后端，与 exec 共用 cwd | native/tmux/SSH 已验证；远端 Session helper 缺失时报 Capability |
+| G7 | 已修：prepare/prepare_hosted 调用共享 runtime.open | 内置文件工具使用目标侧后端，与 exec 共用 cwd | native/SSH 已验证；远端 Session helper 缺失时报 Capability |
 | G8 | 已修：hosted run 的 `Done` 指向另一个 behavior 时，xllm 在 run.json（v5）记 `handover {next_behavior, at_ms}` 并停在交接点（`paused`），`xllm --resume` 拒绝继续它 | 交接点可以交接：xllm 跑到交接点，目标不会丢，Turn 也不会被误关闭 | Session reconcile 按 §3.3 把转移恰好提交一次（E19）；见 §3.7 |
 
 ### 3.2 Context 调度：Agent Session 与 LLMContext 的根本区别
@@ -532,7 +532,7 @@ agent-session create-worksession --objective <text>
     [--context recent:<n>|none]                     把父 run 最近 n 条对话摘录附进首批输入（默认 none；不继承 steps）
     [--class work|…] [--behavior <name>]            模板与入口 behavior（默认 work 模板）
     [--workspace inherit|none|<id>]                 默认 inherit；none 使用子 SessionDir；id 为已登记 Workspace
-    [--runtime inherit|<id>]                        默认 inherit：继承父的 runtime 配置；tmux 按子 session_id 创建并绑定（§5.2.1）
+    [--runtime inherit|<id>]                        默认 inherit：继承父的 runtime 配置，子首次推进时自己绑定（§5.2.1）
     [--report final|progress|none]                  父怎么收到汇报（§4.14），默认 final
     [--interactive]                                 子 session 建输入队列，父之后可以继续 post（默认不建，§4.7）
     [--wait]                                        同步等待（§4.15）：返回 Pending，父 run 挂起到子 session 结束
@@ -568,7 +568,7 @@ impl ChildDriver {
 - 父每次提交之后、以及登记表变化时 `tick`。子 session 各持自己的 lease，与父并行；宿主进程退出也会停止其中的子驱动协程，但不删除已提交状态；重启后 ChildDriver 从登记表与快照重新接管。
 - 子的状态变化后，ChildDriver 唤醒父的调度器；父没有 drive 在执行时再 drive(parent)，已有驱动者则让其轮询发现，不能并发驱动同一父。工具 create-worksession 在父执行中也可能登记子，因此 ChildDriver 需独立轮询登记表，不只等父提交。
 - `xagent run <parent>`：父 Turn 关闭后，默认继续推进本进程拉起的子 session，直到它们空闲或结束再退出；`--detach-children` 立即返回，留给 `xagent serve`。`xagent serve` 同样接管所服务 session 的子 session。
-- 子 session 首次推进时自己绑定 runtime（`binding.json`）。`--runtime inherit` 继承执行类型、连接与环境配置；tmux 的 `id`、`tmux.session` 和绑定要求按子 session_id 重新派生，cwd 由子的 workspace 解析，不复制父的绑定或 runtime 实例。同一 Session 内的子 context 则复用本 Session 的 runtime（§5.2.1）。共用 Workspace 时按本地写锁串行执行；父只等待已登记的同 Workspace 子任务时提交等待状态并释放锁，宿主优先推进最内层任务，子完成后重新核验父绑定并接续。未核实的在途调用或后台任务阻止交接。绑定和恢复规则见 [Agent Workspace Protocol](<protocol/Agent Workspace Protocol.md>)。
+- 子 session 首次推进时自己绑定 runtime（`binding.json`）。`--runtime inherit` 继承父冻结的 runtime 及执行类型、连接与环境配置；cwd 由子的 workspace 解析，不复制父的绑定或 runtime 实例。同一 Session 内的子 context 则复用本 Session 的 runtime（§5.2.1）。共用 Workspace 时按本地写锁串行执行；父只等待已登记的同 Workspace 子任务时提交等待状态并释放锁，宿主优先推进最内层任务，子完成后重新核验父绑定并接续。未核实的在途调用或后台任务阻止交接。绑定和恢复规则见 [Agent Workspace Protocol](<protocol/Agent Workspace Protocol.md>)。
 
 ### 4.13 父子之间的沟通渠道
 
@@ -645,7 +645,7 @@ PLAN 在每个顶层输入批次（列表修订变化时）得到紧凑视图 `<
 
 ### 5.1 定位
 
-Runtime 是所有 agent-tool 调用的统一入口，负责工具解析、派发、执行环境信息和执行跟踪。exec、read/write/edit、模板 EXEC 使用同一执行体；MCP 在所配置服务执行，进程内宿主工具在 Runner 执行，由统一入口管理注册与派发。native/tmux 不提供 OS 级隔离，workspace 只约束内置文件工具路径与 exec.cwd。
+Runtime 是所有 agent-tool 调用的统一入口，负责工具解析、派发、执行环境信息和执行跟踪。exec、read/write/edit、模板 EXEC 使用同一执行体；MCP 在所配置服务执行，进程内宿主工具在 Runner 执行，由统一入口管理注册与派发。native 不提供 OS 级隔离，workspace 只约束内置文件工具路径与 exec.cwd。
 
 | 层 | 职责 |
 |---|---|
@@ -683,37 +683,37 @@ pub trait Sandbox: ToolManager {
 
 RuntimeInfo 的 id/kind/os/arch/hostname/shell/cwd/tools 来自执行体，tools 摘要有上限。current_time/timezone 在执行处更新；Session 将新鲜量放输入批次，稳定值可用于 system。模板 PromptExec 适配同一 Sandbox，未注入执行器不会本地执行；INCLUDE 仍读控制侧素材。
 
-#### 5.2.1 Session 的 tmux runtime 工厂规则
+#### 5.2.1 Session 的 runtime 工厂规则
 
-**Session 负责按配置取得 runtime：未绑定时，不存在就构造，存在就复用；tmux runtime 的 `id` 必须等于 `SessionDir::sid()`。后续创建、切换、fork 和恢复 LLM context 时，都使用这个 Session 已绑定的 runtime。** 工厂属于 Session 的装配职责，复用 `RuntimeRegistry::from_config`；不新增执行后端或另一套 Registry。
+**Session 负责按自己的配置构造 runtime，后续创建、切换、fork 和恢复 LLM context 时，都使用这个 Session 已绑定的 runtime。** 工厂属于 Session 的装配职责，复用 `RuntimeRegistry::from_config`；不新增执行后端或另一套 Registry。
 
-当前已有低层 create-or-attach、`runtime::bind_or_verify` 和 context 注入：[`runner/live.rs::xllm_deps_for`](../../src/frame/lib_opendan/src/runner/live.rs) 将 `sh.deps.runtime.clone()` 放进 `XllmDeps.runtime`，[`agent_tool::runtime::open_runtime`](../../src/frame/agent_tool/src/runtime/mod.rs) 优先使用注入实例并校验有效配置。工厂入口已实施：`runtime::runtime_for_session(sd, cfg, agent_root, runtime_id)` 按 Session 配置与 sid 派生 runtime（宿主 `HostDeps::runner_deps` 为每个 Session 调用它），`runtime::session_runtime` 在 drive 开头对传入的 runtime 做同样的派生与一致性核验；名称冲突由目标上的 tmux 选项 `@opendan_session` 判定。
+工厂入口已实施：`runtime::runtime_for_session(sd, cfg, agent, runtime_id, deps)` 按 Session 冻结的 runtime 与声明的配置构造 runtime（宿主 `HostDeps::runner_deps` 为每个 Session 调用它），`runtime::session_runtime` 在 drive 开头对传入的 runtime 做同样的补齐与一致性核验。context 注入沿用现有路径：[`runner/live.rs::xllm_deps_for`](../../src/frame/lib_opendan/src/runner/live.rs) 将 `sh.deps.runtime.clone()` 放进 `XllmDeps.runtime`，[`agent_tool::runtime::open_runtime`](../../src/frame/agent_tool/src/runtime/mod.rs) 优先使用注入实例并校验有效配置。
 
-1. **配置与身份**：从创建时解析并保存的 `session_config.prompt.llm_context.runtime` 取得类型、socket、env 等，默认类型仍为 native。选择 tmux 时，工厂在 Session 身份确定后补齐 `RuntimeConfig.id = sid`、`tmux.session = tmux_session_name(sid)`，cwd 按 Session 的 workspace 解析；首次打开使用 `create_or_attach`。显式 id、tmux 名称或 `runtime.requirement.runtime_id` 必须与派生结果一致，冲突在创建目标和推理前报配置错误。behavior 的 runtime 配置也不能把 context 指向另一个执行体。
-2. **区分三种身份**：`runtime.id` / descriptor 的 `runtime_id` / binding 的 `runtime_id` 都是原始 sid；实际 tmux 名使用现有 [`tmux_session_name`](../../src/frame/agent_tool/src/runtime/tmux.rs)（`od_` 前缀及字符规整），因为 Session ID 可含 tmux 名称不允许的字符；tmux 自身分配的内部 session id 是目标指纹的一部分，不要求等于 sid。同一 socket 内不同 sid 不能因名称规整冲突而共用目标，冲突须拒绝。
-3. **首次绑定**：工厂构造的 `Arc<dyn AgentRuntime>` 放入该 Session 的 `RunnerDeps.runtime`。真正打开 / 创建 tmux、探测工具与发布 `binding.json` 在取得 Session lease 后通过 `bind_or_verify` 完成，早于 run 恢复和推理；`new --no-run` 只落盘配置，不创建 tmux。目标已存在时 attach，缺失时创建；成功后保存实际 target 与 cwd，保持既有 binding `/3` 的校验规则。
-4. **同 Session 复用**：在宿主内持有该 Session 的 runtime 实例，所有 Turn、behavior、子 context、fork 和 resume 都经 `XllmDeps.runtime` 注入同一个 `Arc`。各 run 仍按自己的工具配置调用 `runtime.open` 装配 ToolManager；不能每创建 context 就生成新的 tmux 或新的 runtime ID。打开后的 `runtime.config()` 是 context 的有效 runtime 配置来源，包含固定 id、目标、cwd 与 `tmux.mode = attach`；初次创建用的 `create_or_attach` 意图不能覆盖它，否则现有注入校验会报 RuntimeMismatch。该有效配置与 descriptor 随 run 保存，供独立 xllm 接手。
-5. **跨进程恢复**：重启后可以重建 Rust runtime 对象，但必须按保存的配置与 binding attach 原目标，核验完整 target 和 cwd。已有绑定时目标丢失或实际身份改变，按绑定 / 恢复错误停止，不能创建同名目标后继续恢复旧执行；“不存在就构造”适用于首次绑定，不能绕过旧执行的身份校验。run / Turn 结束或宿主退出不自动销毁 Session 的 tmux。
-6. **多个 Session**：`serve` 和 ChildDriver 为每个 Session 分别装配 runtime 依赖，不把父或进程全局的 tmux 实例塞给所有 Session。Sub Session 的 `inherit` 继承配置意图，按子 sid 派生自己的 runtime；同一 Session 的子 context / fork 没有新的 Session ID，继续复用原绑定。native 仍沿用其现有身份与绑定规则。
+1. **配置与身份**：冻结到节点 runtime 的 Session 从 `runtime.frozen` 取得 `remote_node` 配置，`id` 为该 runtime_id，behavior 的声明只能追加 env，声明别的 kind 是配置错误。其它 Session 从创建时解析并保存的 `session_config.prompt.llm_context.runtime` 取得类型、env 等，默认类型为 native；`id` 取显式 `--runtime <id>`，否则取 `runtime.requirement.runtime_id`。Session 未冻结到节点 runtime 而 behavior 声明 `remote_node` 时报配置错误；behavior 的 runtime 配置也不能把 context 指向另一个执行体。
+2. **工作目录**：workdir 固定为 Session 的 workspace，未绑定 workspace 时为 SessionDir；显式 workdir 与之冲突报错。节点 runtime 的 workdir 取已绑定目录或 workspace 目录，都没有时首次推进在节点授予的第一个根目录下创建 `.opendan/<agent>/sessions/<sid>`。
+3. **首次绑定**：工厂构造的 `Arc<dyn AgentRuntime>` 放入该 Session 的 `RunnerDeps.runtime`。打开目标、探测工具与发布 `binding.json` 在取得 Session lease 后通过 `bind_or_verify` 完成，早于 run 恢复和推理；`new --no-run` 只落盘配置，不绑定。成功后保存实际 target 与 cwd。`remote_ssh` 在绑定时以 Capability 拒绝（远端 Session helper 未部署）。
+4. **同 Session 复用**：在宿主内持有该 Session 的 runtime 实例，所有 Turn、behavior、子 context、fork 和 resume 都经 `XllmDeps.runtime` 注入同一个 `Arc`。各 run 仍按自己的工具配置调用 `runtime.open` 装配 ToolManager；不能每创建 context 就生成新的 runtime 或新的 runtime ID。打开后的 `runtime.config()`（固定 id 与 cwd）是 context 的有效 runtime 配置来源，该有效配置与 descriptor 随 run 保存，供独立 xllm 接手。
+5. **跨进程恢复**：重启后重建 Rust runtime 对象，由 `bind_or_verify` 在 lease 下核验已有 binding 的 runtime_id、kind、target、workdir 与 workspace；不一致按 RuntimeMismatch / 绑定错误停止，不改用另一个目标继续恢复旧执行。
+6. **多个 Session**：`serve` 和 ChildDriver 为每个 Session 分别装配 runtime 依赖，不把父或进程全局的 runtime 实例塞给所有 Session。Sub Session 的 `inherit` 继承父冻结的 runtime 与配置，首次推进时自己绑定；同一 Session 的子 context / fork 没有新的 Session ID，继续复用原绑定。
 
-验收见 E3，实施缺口归入 C10；以上是 xagent 的 Session 工厂约束，不改变独立 xllm 显式选择 tmux `create / attach / create_or_attach` 的能力。
+验收见 E3。
 
 ### 5.3 Runtime 类型与首版能力
 
 | kind | exec 与文件位置 | 当前状态 |
 |---|---|---|
 | native | Runner 同机 bash 与本机文件系统 | TrackedBashRunner 握手、标记核验、取消及恢复 |
-| tmux | 同机指定 tmux session；每次 shell 执行使用独立 window；本机文件系统 | create/attach/create_or_attach；取消 / 超时终止对应 window；不向用户 pane 注入命令，不随 run 结束销毁 session |
 | remote_ssh | SSH 目标 cwd、SFTP 文件后端 | 系统 OpenSSH 非交互连接；Linux/bash/SFTP；目标侧握手、停止核验、断线与强杀恢复；独立 xllm 可用 |
-| container/container_host/remote_node/http_proxy_runtime | 后续评估 | 选择时 Capability 错误，不冻结协议或完整配置 |
+| remote_node | Node Executor 所在节点的 workdir 与文件 | 经 Command Stream 执行 shell 与文件工具，每次调用对应一个远端操作，发送前把 locator 写入 run；长任务、取消与断线恢复复用 Node Executor 的操作记录、查询与取消（[Node Executor](../arch/node_exector.md) §7.4、§7.6）；Session 冻结到节点 runtime 时可绑定，Session helper 在控制侧执行 |
+| container/container_host/http_proxy_runtime | 后续评估 | 选择时 Capability 错误，不冻结协议或完整配置 |
 
 SSH 的命令和文件内容通过数据通道传送，写入用目标侧临时文件替换。握手持久化 execution_id、host、boot_id、PID/start ticks 后才放行；目标不可达或无法证明停止时 RecoveryBlocked，没有持久结果记为未知、不重放。SSH alias 重定向拒绝旧 run 恢复。
 
-配置素材、run.json、快照与日志在控制侧；runtime.workdir 属于执行侧。native/tmux 使用本地实际 cwd 锁；SSH 不取远端路径的本地 flock，跨 Runner 并发由宿主协调。libopendan 尚未部署远端 Session helper，明确报 Capability；不把控制侧 .runtime/bin 注入远端 PATH。
+配置素材、run.json、快照与日志在控制侧；runtime.workdir 属于执行侧。native 使用本地实际 cwd 锁；SSH 不取远端路径的本地 flock，跨 Runner 并发由宿主协调。libopendan 尚未部署远端 Session helper，明确报 Capability；不把控制侧 .runtime/bin 注入远端 PATH。
 
 ### 5.4 后续设计：临时授权（RuntimeGrant）
 
-本节尚未实现，也不冻结 RuntimeGrant、ActionGuard 或审批接口。后续 policy 需分别定义工具授权、执行体强制能力、有效策略 revision 与审批；不能仅靠普通 SSH/tmux 声称隔离。
+本节尚未实现，也不冻结 RuntimeGrant、ActionGuard 或审批接口。后续 policy 需分别定义工具授权、执行体强制能力、有效策略 revision 与审批；不能仅靠普通 SSH 声称隔离。
 
 ```rust
 /// 由用户 / OpenDAN 签发，存放在 Agent State（state/runtime_grants/<id>.json），session 引用。
@@ -730,7 +730,7 @@ pub struct RuntimeGrant {
 - session 的 **primary runtime** 仍按首次推进绑定、不可换（`binding.json`）。grant 是**叠加**：生效期间 `SandboxEnv` 的工具列表多出一组带前缀的工具（`host.exec`、`host.read_file` …），LLM 显式选择在哪个沙箱做事，审计可区分。
 - 到期：下一个观察边界起工具列表里消失；到期后的调用 `dispatch` 直接 Deny。grant 变化作为 `AgentEvent{source: System, event: grant_changed}` 按 Observe 保存，下一次受控输入前通过半订阅快照告知 LLM；权限检查立即生效，不等待消息注入。
 - grant 的签发与撤销走 Agent State 门面 `runtime_grants()`（新），不走 session 控制协议；`xagent ctl grant --runtime host:… --ttl 30m --paths …` 只是写 Agent State。
-- 当前 xllm 按保存的 runtime 构造与核验目标，native/tmux/SSH 可恢复；Session 的 helper 与 app_tools 依赖须可用。未来 grant 的接管核验待 policy 阶段设计。
+- 当前 xllm 按保存的 runtime 构造与核验目标，native/SSH 可恢复；Session 的 helper 与 app_tools 依赖须可用。未来 grant 的接管核验待 policy 阶段设计。
 
 ### 5.5 工具的三层来源（修订）
 
@@ -1015,7 +1015,7 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
 
 `<spec>` 的 session 拉取订阅当前只能 Observe，CLI 对 `active:session:…` 明确报配置错误，直到为主动拉取补齐持久候选协议；父子 Input 由 C15 单独实现。`--no-bridge` 关闭 kevent / timer 等外部投递桥，不关闭输入轮询、StopMonitor、普通 task resolver 或恢复所需的内置查询。schema 导出、旧 `agent-session` 工具子命令及环境变量随旧 CLI 一并迁移。
 
-`--runtime <id>` 表达绑定身份要求，不替代 runtime 类型与连接配置；tmux 按 §5.2.1 自动派生 id，通常无需传此参数，显式传入则必须等于目标 sid。已有 binding 不因 CLI 参数或 behavior 切换而改变。
+`--runtime <id>` 表达绑定身份要求，不替代 runtime 类型与连接配置；显式传入时写入 runtime 的 id，绑定时须与 binding 一致（§5.2.1）。已有 binding 不因 CLI 参数或 behavior 切换而改变。
 
 退出码（对齐 xllm 的分类）：
 
@@ -1076,7 +1076,7 @@ serve
   → 建立 bridge / ChildDriver 宿主 → 按 §9.6 调度 drive(Idle)
 ```
 
-每个驱动命令按所驱动的 Session 构造 `RunnerDeps`，设置 assembler、任务 resolver 与 `session_cli = current_exe()`，runtime 通过 §5.2.1 的 Session 工厂装配；`serve` / ChildDriver 不能直接复用另一个 Session 的 tmux 依赖。由现有 bin overlay 包装成 `agent-session`。不要另建 Runtime 或工具派发协议；目标 behavior 的工具与模型按每个 run 的有效配置装配，context 的 runtime 则复用 Session 绑定。
+每个驱动命令按所驱动的 Session 构造 `RunnerDeps`，设置 assembler、任务 resolver 与 `session_cli = current_exe()`，runtime 通过 §5.2.1 的 Session 工厂装配；`serve` / ChildDriver 不能直接复用另一个 Session 的 runtime 依赖。由现有 bin overlay 包装成 `agent-session`。不要另建 Runtime 或工具派发协议；目标 behavior 的工具与模型按每个 run 的有效配置装配，context 的 runtime 则复用 Session 绑定。
 
 无队列 bootstrap 的持久输入（新增 C4）：创建前用同一消息 helper 构造 `PostedInput::msg`，写入目标字段 `prompt.initial_inputs: Vec<PostedInput>`，只接受合法 msg，最多 64 条；随 SessionConfig 一起发布，发布后不修改。自 `session_config/5` 起实施，当前为 `/7`。Runner 将它适配为内部只读 source `_bootstrap`，index 从 1 开始，复用 SourceProgress / route_inputs / receipt；无需 kmsg，`channels.inputs` 仍为空，confirm 为空操作。Single 首批未选中的记录在后续 on_input 消费，不能因 bootstrap_done 就丢弃。初始消息与普通消息同样渲染为 user 输入，不挪进 system 的 prompt.context。
 
@@ -1085,7 +1085,7 @@ serve
 ### 9.3 Agent Turn Loop（阶段边界）
 
 ```text
-0. 取得 lease，核对 driver / 登记 / kind lease；打开 Session 工厂提供的 Runtime 并核验绑定；tmux 首次绑定时 create-or-attach，已有绑定时 attach（§5.2.1）。
+0. 取得 lease，核对 driver / 登记 / kind lease；打开 Session 工厂提供的 Runtime 并核验绑定：首次推进发布 binding，已有绑定时核验一致（§5.2.1）。
 1. reconcile：截断未提交 worklog、恢复 run、补 receipt、清门槛、重做已落盘 Outcome。
    若本次恢复关闭了 Turn 且 until = TurnClosed，按 C6 返回；否则继续，之后才读新输入。
 2. 从快照取得 pending task ids，按顺序 route_inputs；finished 时处理允许的控制后返回。
@@ -1254,7 +1254,7 @@ C4 默认无队列 work 用 `run`；如果由父的 ChildDriver 调度，无输�
 |---|---|---|
 | E1 | 验收：xllm ↔ Session | mock 在 `--until outcomes:1` 停下；`xagent xllm` 打印命令，xllm 接手到终态，再 xagent 恢复。配置 / system 不重装配，worklog / Turn 恰好提交一次，Round 累加。xllm 不需要解析 Session 模板 / receipt |
 | E2 | 回归：冻结 | 创建后修改 behavior 文件，推进同一 behavior 的新 run，再建新 Session；旧冻结不变，新 Session 使用新配置。补冻结按首次使用版本记录 |
-| E3 | 回归 + 扩展：Runtime 绑定与 Session 工厂 | native / tmux 分别推进；tmux 首次缺失则创建、已存在则复用，id = sid；同 Session 多 Turn / behavior / 子 context / fork 复用同一目标；重启 attach；不同 Session（含 inherit 的子）各有目标；规整名称冲突拒绝；已有绑定后换目标 / 目标丢失在推理前失败，身份不匹配退出码 6；new --no-run 不创建 tmux |
+| E3 | 回归 + 扩展：Runtime 绑定与 Session 工厂 | 首次推进绑定，workdir 为 Session 的 workspace（无 workspace 时为 SessionDir），显式 workdir 冲突拒绝；同 Session 多 Turn / behavior / 子 context / fork 复用同一 runtime；不同 Session（含 inherit 的子）各自绑定；已有绑定后换 runtime id 或目标在推理前失败，身份不匹配退出码 6；new --no-run 不绑定 |
 | E4 | 验收：Agent State | 文件、进程内、kRPC 转发桩运行同一 fixtures，结果一致；Runner 不按具体实现分支 |
 | E5 | 验收：工具形态 | 仅层 ② 工具时 xllm 可接手；注入层 ③ echo 时 app_tools 非空、xllm 明确拒绝 |
 | E6 | 回归：Turn / 等用户 | ui 测试模板 WAIT_USER_MSG 无 report → 退出 3、open_turn 保留；post 后在同一 Turn 回复并 completed，计数只增一次 |
@@ -1268,7 +1268,7 @@ C4 默认无队列 work 用 `run`；如果由父的 ChildDriver 调度，无输�
 | E14 | 验收：半订阅 | run 中 / 空闲 / Turn 间到达 semi 更新，分别配合 on_init / on_input / on_context_switch；快照在前且与受控输入同 receipt。覆盖 v7 提交期间到 v8、无 seq 按 key 清理、terminal 超预算保留、崩溃补交；检查点不独立注入，active 正常开启 / 并入 Turn |
 | E15 | 回归：控制分离 | 运行与空闲中 ctl stop / subscribe / activity，不作为 LLM 输入、不新开 Turn；stop 允许关闭现有 Turn 并写停止记录。post --json 拒绝 control，ctl 不接受 msg / event |
 | E16 | 回归：session 拉取 | semi 关注无父子关系的 Session；对方结束，变化保存到 pending_events，在下一受控输入前展示。不把已有拉取桥验收为主动 Input；父子推送另看 E21 |
-| E17 | 已有 Runtime 基线 | native / tmux / SSH 的 exec 与文件工具共享目标 cwd；SSH 不改 Runner 本地同名文件。远端 Session helper 未部署时明确拒绝，不因独立 xllm 的 SSH 可用而承诺 Session 可用 |
+| E17 | 已有 Runtime 基线 | native / SSH 的 exec 与文件工具共享目标 cwd；SSH 不改 Runner 本地同名文件。远端 Session helper 未部署时明确拒绝，不因独立 xllm 的 SSH 可用而承诺 Session 可用 |
 | E18 | 后移：policy | guard 拒绝、审批 PendingTool / approve、grant 到期撤销；随 ActionGuard / RuntimeGrant 实施，本轮不提供这些 CLI 子命令 |
 | E19 | 验收：SWITCH_CONTEXT | do / check 使用不同模型与工具，往返后只有各自两个 run，配置、历史、编号、预算不串；xllm 到 handover 停为 paused，再次 resume 拒绝，xagent 提交转移一次；转移前后崩溃同样成立；未声明进入模式失败，无同 run 换 system 回退 |
 | E20 | 验收：工具子 context | function_call / behavior 父分别调用 create_sub_context（none/recent_dialogue/steps）与 fork；与 read 同批，进入 / 返回前后崩溃。父以 subctx:<call_id> 挂起，fork 前缀截止触发批次前；子结果恰好回填一次，父剩余调用继续、已执行不重放。继承记录不重复 flush，子 transcript 不进重建历史，子 WAIT_USER_MSG / Error 交回 needs_user_input / failed，不关闭父 Turn；嵌套超限及 fork 自带配置被拒，xllm 缺 Session resolver 时拒接 |
@@ -1300,7 +1300,7 @@ C4 默认无队列 work 用 `run`；如果由父的 ChildDriver 调度，无输�
 | C7 | 已实施 | `BehaviorCatalog`（文件 / 内存）、`freeze_config` / `freeze_behavior`、`BehaviorAssembler`、`SessionAssembler::ensure_frozen` | hooks、parser / output 只携带不解释 |
 | C8 | 已接入 CLI | `HostDeps::runner_deps` | ActionGuard / grant / 审批后移 |
 | C9 | 已实施（v1 范围） | `state::connect` / `StateLocator`、`register_in_process`、`WithBehaviors`、`ForwardingStateClient` | kRPC 客户端 / 服务端已实施（`state::krpc`，服务端在 OpenDAN）；DID 文档 / zone 服务发现未接线；进程内实现只把 behavior 目录放进宿主内存，其余门面仍是文件 |
-| C10 | 已实施 | `runtime::{runtime_for_session, session_runtime}`、`@opendan_session` 归属标记 | — |
+| C10 | 已实施 | `runtime::{runtime_for_session, session_runtime}` | — |
 | C11 | 已实施 | `src/bin/xagent.rs`；`examples/session.rs` 已删除，README / 协议索引已改 | `artifact register` 不提供（版本由驱动者在结束时登记） |
 | C12 | 已实施 | `HostProtocolFlavor::Session`（G3）；宿主装配的 run 无论谁执行都用无时间戳渲染器（G2，按 `record.host` 判断，不另存 `renderer_opts`）；behavior 预算写入 request | — |
 | C13 | 已反写 | `protocol/` 四份 Spec、README、schema、fixtures（config `/5`）、`lib_opendan/README.md`、`xllm_rust_sdk.md` | — |
@@ -1340,7 +1340,7 @@ C4 默认无队列 work 用 `run`；如果由父的 ChildDriver 调度，无输�
 |---|---|---|
 | E1 | 通过 | `xagent_cli::xllm_takes_over_the_live_run_and_xagent_commits_its_end`：provider 失败后 run 保留，`xagent xllm` 给出命令，`XllmRun::resume` 从 run 目录跑到终态（system 未重装配），`xagent run` 只提交一次结束。xllm 以库 API 执行，没有起独立的 xllm 进程 |
 | E2 / E11 / E12 | 通过 | `xagent_lib::{behaviors_are_frozen_with_the_session, a_behavior_without_entry_mode_cannot_be_frozen, missing_frozen_behaviors_block_the_drive}` |
-| E3 | 通过（tmux 可用时） | `xagent_cli::tmux_runtime_belongs_to_the_session`：`new --no-run` 不建目标、首次推进创建、id = sid、跨进程复用、不同 Session 各有目标、换 id 与目标丢失在推理前以 6 退出。未单测：规整名称冲突、同 Session 的 fork / 子 context 复用（走同一个 `Arc`，由基线用例间接覆盖） |
+| E3 | 部分 | `l1::missing_tool_or_runtime_mismatch_fails_before_inference`：缺工具与已绑定后换 runtime id 在推理前失败；`workspace_binding::{an_unbound_session_keeps_its_own_directory, conflicting_workdir_is_rejected_at_creation}`：workdir 取 SessionDir / workspace，冲突拒绝。未单测：CLI 层退出码 6 与跨进程复用、不同 Session 各自绑定、同 Session 的 fork / 子 context 复用（走同一个 `Arc`，由基线用例间接覆盖） |
 | E4 | 通过 | `xagent_lib::agent_state_implementations_behave_alike`（文件 / 进程内目录 / 转发桩） |
 | E5 | 部分 | 层 ② 经 `shell` 的 `agent-session create-worksession` 已验证；层 ③ echo + xllm 拒绝沿用基线 `app_tools` 用例，未在 CLI 层重复 |
 | E6 / E9 / E15 | 通过 | `xagent_cli::ui_session_waits_for_input_and_control_is_separate`、`xagent_lib::turn_closed_reports_the_open_turn_and_then_its_result`；serve 中 post 见 `serve_handles_posted_input_until_the_session_is_stopped` |

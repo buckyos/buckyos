@@ -272,7 +272,7 @@ const buildFixtures = () => {
       }),
       report: '# Weekly downloads\n\n- 14 files, 3 archives\n- (in progress)\n',
       config: config(WORK_RUNNING, 'work_plan', ['work_plan', 'work_do', 'work_report']),
-      binding: { schema: 'opendan.binding/4', target: { kind: 'tmux', session: 'od-b41d' }, runtime_id: 'rt-tmux-07', kind: 'tmux', workdir: '/home/devtest/Downloads', bound_at_ms: ago(370), bound_by: WHO },
+      binding: { schema: 'opendan.binding/4', target: { node_did: 'did:web:pc.test.buckyos.io', profile_id: 'agent-3f9c1a07b2e4', workdir: '/home/devtest/Downloads' }, runtime_id: 'rt-node-07', kind: 'remote_node', workdir: '/home/devtest/Downloads', bound_at_ms: ago(370), bound_by: WHO },
       statistics: { input_tokens: 9120, output_tokens: 801, total_tokens: 9921, rounds: 4, rounds_failed: 0, rounds_interrupted: 1, turns: 1 },
       runs: ['run-0001', 'run-0002'],
       lease_holder: { resource: `session:${WORK_RUNNING}`, epoch: 5, holder: { runner_id: 'rn-51c2', principal: WHO, host: 'ood1', pid: 4411 }, acquired_at_ms: ago(120), released_at_ms: null },

@@ -1525,8 +1525,6 @@ pub struct ToolShellTaskData {
     pub summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_reason: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tmux_target: Option<String>,
     #[serde(default, flatten, skip_serializing_if = "BTreeMap::is_empty")]
     pub extra: BTreeMap<String, Value>,
 }

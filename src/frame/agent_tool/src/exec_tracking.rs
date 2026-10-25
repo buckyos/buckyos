@@ -47,7 +47,7 @@ pub struct HostRunInfo {
     pub assembled_by: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
-    /// `native | tmux | remote_ssh`.
+    /// `native | remote_ssh | remote_node`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

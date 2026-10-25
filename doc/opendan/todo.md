@@ -140,7 +140,7 @@ objref: cyfs://$objid
 
 ### 工具支持(Agent Tool体系)
 
-tmux session + 意图引擎
+意图引擎
 
 > TODO: 支持agent tool索引器，可以了解当前的环境（构造工具的环境+可安装的工具+已有的工具）
 

@@ -80,7 +80,7 @@ Agent 自己容器中的运行环境也是一个 Runtime。旧版私有 Workspac
 
 Session 分布式运行后，应通过 Workspace 所关联的 Runtime 定位和使用目录，不能假定 Session 当前进程看到的本地路径就是 Workspace 路径。具体的远程访问、命令执行和节点安排，由 Runtime 体系负责，本文不另行规定传输或调度协议。
 
-这里的 Runtime 引用应能解析到稳定的访问环境及其文件系统命名空间，不能直接等同于一次 Session 的进程号或 tmux 会话。当前 tmux Runtime 的 ID 与 Session ID 绑定；长期 Workspace 的位置引用与这种执行实例标识需要显式映射，不能让 Workspace 的寿命依赖某次 Session 是否仍然存在。
+这里的 Runtime 引用应能解析到稳定的访问环境及其文件系统命名空间，不能直接等同于一次 Session 的进程号或执行实例；长期 Workspace 的位置引用不能让 Workspace 的寿命依赖某次 Session 是否仍然存在。
 
 ### 2.4 Agent RootFS、管理状态与远程交付目标
 
@@ -583,7 +583,7 @@ SMB/共享盘需要由适配层处理挂载归属、断线重连和只读降级�
 | 旧外部目录工具抽象（已移除）：`ManagedExternalWorkspaceBackend` | 通过 backend 取得 AgentRoot，在 `workspaces/<name>` 建本地软链，以 `workspaces/bindings.json` 记录 `{name, source, mount}` | backend 仅见测试接入；不是远程挂载、同步或稳定 ID 导入，没有自动迁移发现 |
 | [开发 CLI](../../src/frame/agent_tool_cli_dev/src/lib.rs)：`CliWorkspaceBackend` | 实际注册 create/bind，写 `<state_root>/index.json`、`workspaces/session_workspace_bindings.json` 和旧 Session 状态 | 使用旧 `session.json` 模型，不等于更新新 `SessionConfig.workspace`；直接文件覆写不提供跨记录事务、CAS 或 Workspace 锁 |
 | [布局与锁](../../src/frame/lib_opendan/src/state/fs_client.rs)：`AgentLayout::lock_path`；[活动视图](../../src/frame/lib_opendan/src/state/activity.rs) | Agent 级锁处理 self_improve/artifact；另有 Session/run 锁；activity 提示同 Workspace、同产物和路径重叠 | 当前无 Workspace 写锁；本地 flock 和活动提示均不提供跨 Runtime 单写者保证 |
-| [Runtime](../../src/frame/agent_tool/src/runtime/mod.rs)、[文件访问](../../src/frame/agent_tool/src/runtime/files.rs)、[xllm](../../src/frame/agent_tool/src/xllm.rs) | native/tmux/remote_ssh 基础及文件路径策略；SSH 可供独立 xllm 使用 | 不等于 Session 已支持所有远程环境；内建文件权限检查不隔离任意 shell 命令；Host/Container 等设计不能因名称出现就视为已实现 |
+| [Runtime](../../src/frame/agent_tool/src/runtime/mod.rs)、[文件访问](../../src/frame/agent_tool/src/runtime/files.rs)、[xllm](../../src/frame/agent_tool/src/xllm.rs) | native/remote_ssh 基础及文件路径策略；SSH 可供独立 xllm 使用 | 不等于 Session 已支持所有远程环境；内建文件权限检查不隔离任意 shell 命令；Host/Container 等设计不能因名称出现就视为已实现 |
 | [文件工具审计](../../src/frame/agent_tool/src/file_tools.rs)：`FileWriteAuditRecord` / `FileWriteAuditBackend`；[Worklog](../../src/frame/lib_opendan/src/protocol/worklog.rs) | 文件工具可产生 diff，Worklog 有工具调用和结果归因基础 | 当前 xllm 文件工具使用 `NoopFileWriteAudit`；写后审计失败仅告警，尚无所有写入的持久审计与补偿闭环 |
 | [产物登记](../../src/frame/lib_opendan/src/state/artifacts.rs)；[丢弃处理](../../src/frame/lib_opendan/src/runner/inputs.rs) | 管理版本状态和 head，保留 Workspace 关联扩展点 | discard 明确返回 Workspace 回滚不支持；不能据产物状态声称目录或远端副作用已撤销 |
 
@@ -634,7 +634,7 @@ SMB/共享盘需要由适配层处理挂载归属、断线重连和只读降级�
 | 复制、Fork 与重复 ID | 迁移保留 ID，独立副本需要新身份；冲突检测、操作交互及与 Git clone/worktree 的规则待细化 |
 | 多 Agent 共用 Workspace | 允许外部协作；共享管理权、协调服务、租约/fencing 与锁粒度需要另行定稿 |
 | 执行期间迁移或 Runtime 被移除 | 已确定运行期绑定不可变，原绑定失效或无法访问直接使 Work Session 失败；仅失败错误协议、旧调用核实与收尾细节待定 |
-| Runtime 的长期位置引用 | 不与 Session tmux ID 混用；Runtime 注册表、命名空间和实例映射待定 |
+| Runtime 的长期位置引用 | 不与 Session ID 或执行实例标识混用；Runtime 注册表、命名空间和实例映射待定 |
 | 权限与安全校验 | 已明确登记不授权；目标 Runtime 的隔离、路径校验、凭据获取和子 Session 授权接口待实现 |
 | 元信息更新冲突 | 共享描述与 Agent 私有备注分开；条件更新、合并及历史保留规则待定 |
 | Session 文件的保留与交付 | 已区分执行材料和长期产物；自动清理、归档和交付机制不在本轮定稿范围内 |

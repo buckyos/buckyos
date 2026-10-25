@@ -17,7 +17,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use tokio::fs;
 use tokio::io::{self, AsyncReadExt};
-use tokio::process::Command;
 
 use agent_did_object_lib::{
     AgentDIDObjectRuntime, ObjectRouteConfig, ReadInput as ObjectReadInput, ReadLineRange,
@@ -551,21 +550,17 @@ async fn execute(
             recursive,
         } => {
             let task_mgr = build_task_manager_client(&env).await?;
-            let before = task_mgr.get_task(&task_id).await.map_err(|err| {
-                AgentToolError::ExecFailed(format!("get task `{task_id}` failed: {err}"))
-            })?;
             task_mgr
                 .cancel_task(&task_id, recursive)
                 .await
                 .map_err(|err| {
                     AgentToolError::ExecFailed(format!("cancel task `{task_id}` failed: {err}"))
                 })?;
-            let interrupt_error = interrupt_task_if_supported(&before).await;
             let after = task_mgr.get_task(&task_id).await.map_err(|err| {
                 AgentToolError::ExecFailed(format!("reload task `{task_id}` failed: {err}"))
             })?;
             Ok(render_cli_output(
-                &build_cancel_task_result(&tool_name, after, recursive, interrupt_error),
+                &build_cancel_task_result(&tool_name, after, recursive),
                 EXIT_SUCCESS,
             ))
         }
@@ -4907,21 +4902,14 @@ fn build_cancel_task_result(
     tool_name: &str,
     task: Task,
     recursive: bool,
-    interrupt_error: Option<String>,
 ) -> AgentToolResult {
     let mut detail = normalized_task_detail(&task);
     if let Some(map) = detail.as_object_mut() {
         map.insert("task".to_string(), json!(task.clone()));
         map.insert("recursive".to_string(), Json::Bool(recursive));
-        if let Some(err) = interrupt_error.as_ref() {
-            map.insert("interrupt_error".to_string(), Json::String(err.clone()));
-        }
     }
 
-    let summary = match interrupt_error {
-        Some(err) => format!("canceled task {} (interrupt failed: {err})", task.task_id),
-        None => format!("canceled task {}", task.task_id),
-    };
+    let summary = format!("canceled task {}", task.task_id);
 
     AgentToolResult::from_details(detail)
         .with_status(AgentToolStatus::Success)
@@ -5068,33 +5056,6 @@ fn task_pending_reason(task: &Task) -> Option<AgentToolPendingReason> {
             }
             TaskPhase::Terminal => None,
         })
-}
-
-async fn interrupt_task_if_supported(task: &Task) -> Option<String> {
-    let tmux_target = tool_shell_task_data(task)?.tmux_target?;
-    let tmux_target = tmux_target.trim();
-    if tmux_target.is_empty() {
-        return None;
-    }
-
-    let output = match Command::new("tmux")
-        .args(["send-keys", "-t", tmux_target, "C-c"])
-        .output()
-        .await
-    {
-        Ok(output) => output,
-        Err(err) => return Some(format!("tmux interrupt `{tmux_target}` failed: {err}")),
-    };
-    if output.status.success() {
-        return None;
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    Some(if stderr.is_empty() {
-        format!("tmux interrupt `{tmux_target}` failed")
-    } else {
-        format!("tmux interrupt `{tmux_target}` failed: {stderr}")
-    })
 }
 
 fn tool_shell_task_data(task: &Task) -> Option<ToolShellTaskData> {

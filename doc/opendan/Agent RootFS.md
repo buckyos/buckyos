@@ -530,7 +530,7 @@ process-chain DSL 时就尾大不掉。要么不要，要么一次性全要。
 
 - **数据 / 运行时分离**：AgentRootFS 在宿主机普通文件系统；AgentRuntime 在 Linux 容器内。
 - **跨平台契约只落在 AgentRootFS**：目录结构、配置、session 数据平台无关；执行视图（PATH 里的 bin、
-  tmux pane、临时挂载）允许纯 Linux 形态。
+  临时挂载）允许纯 Linux 形态。
 - **`agent_root` 来源**：`opendan` 启动 BuckyOS AppService runtime 后，用 runtime 解析出的
   `app_id` / `owner_id` 调 `get_buckyos_app_data_dir(app_id, owner_id)` 取得当前 app 数据目录。
 - **Docker 中的 `agent_root`**：容器内为 `/home/<owner>/.local/share/<agent_id>`,host 侧对应

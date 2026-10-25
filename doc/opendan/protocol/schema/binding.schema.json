@@ -70,7 +70,7 @@
       "type": "string"
     },
     "kind": {
-      "description": "`native | tmux`.",
+      "description": "`native | remote_node`.",
       "type": "string"
     },
     "runtime_id": {

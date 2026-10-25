@@ -15,7 +15,7 @@
 > **实现落地**（2026-09-29，Rust 参考实现）
 >
 > - 代码：`src/frame/lib_opendan`（package `libopendan`）；LX 改动在 `llm_context`（`CheckpointHook` / `inject` / 快照 `host` 与 `snapshot_version`）与 `agent_tool`（`exec_tracking`、RunRecord 宿主字段、`prepare_hosted`、resume 检查）。反写的 Spec、JSON Schema 与 fixtures 在 [`protocol/`](protocol/README.md)。
-> - 已完成：L1、L2（native + tmux）、L3（work session；普通 / fork / independent 切换）、L4（感知、self_improve 锁与整理游标、认知门面）、L5（产物登记、decide、discard 报告）、L6；LX 的 X1 ~ X6 与 X8（宿主 run 的 step 渲染不带时间戳）；真实 kmsg 服务的 DV 用例 `tests/dv_kmsg.rs`（`--ignored`，在 DV Test OOD 上以 root 运行）。
+> - 已完成：L1、L2（native）、L3（work session；普通 / fork / independent 切换）、L4（感知、self_improve 锁与整理游标、认知门面）、L5（产物登记、decide、discard 报告）、L6；LX 的 X1 ~ X6 与 X8（宿主 run 的 step 渲染不带时间戳）；真实 kmsg 服务的 DV 用例 `tests/dv_kmsg.rs`（`--ignored`，在 DV Test OOD 上以 root 运行）。
 > - 与本文的差异：X4 / X5 合为一个异步 `CheckpointHook`（外层快照、可注入；function call 模式在每次推理前调用，behavior 模式只在外层 Step 边界调用）；`AgentRuntime` 以 `bash_runner(env, registrar)` + `reconcile_execution` 表达执行准备与核对；执行跟踪按环境标记 `OPENDAN_EXECUTION_ID` 扫描 `/proc`（非 Linux 一律 Unknown → RecoveryBlocked）；`recent_keys` 放在 state.json 顶层；state 增加 `stop_requested` / `internal_continuation` / `process_result`，live_run / process_stack 增加 `flushed_input_seq`（behavior run 按身份记录已写入部分）；worklog 增加 `created` / `change_dropped` / `control_applied`。
 > - X7（2026-09-30）：waist 能力完成——真正产出 `ContextLimitReached`（阈值 / 已知窗口 / Provider 结构化拒绝）与 `PendingTool`（`allow_deferred`），快照版本 2，传统与 behavior（action、step 内层原生工具）都能挂起后恢复，behavior 用 `RewrittenSteps` 重写；见《LLM Context 设计》§9.5。宿主接入：libopendan 实现上下文上限中途重写（先 flush、压缩 summary.json、新 history epoch，见 Session Directory Protocol §7），PendingTool 仍不接入（`allow_deferred=false`，遇到时 RecoveryBlocked）；xllm 压缩续跑与接手挂起快照；OpenDAN 只做类型适配。
 > - Round / Step / Turn 术语统一（2026-10-01，breaking change，定义见 [LLM Context readme](../llm_context/readme.md)）：Round = 一次宿主推理（`LlmClient::infer`）；Step = behavior 的 `StepRecord`，身份 `(run_id, step_index)`；Turn = Session 的一次逻辑 Input → result。state.json 的 `round` 改为 `turn_seq` / `open_turn` / `turns_completed`：没有进行中的 Turn 时提交的输入批次（`(run_id, input_seq)`）开启 Turn，交接、观察注入、可恢复挂起、history epoch 重写与重启都延续它，只有 session 在 `finish_run` 中写 `turn_ended` 关闭它（§8.3）。`live_run.rounds` → `turns`，receipt 的 `round` / `opens_round` → `turn` / `opens_turn`，`epoch_round` → `epoch_turn`，`flushed_step` 拆为 `flushed_message_count`（function call）与 `flushed_step_index`（behavior）；worklog 改为 `turn_started` / `input_batch` / `assistant_message` / `step`（带 `step_index`）/ `turn_ended`，function call 的 response 不再写成 `step`；`end_condition.type = max_turns`；`StopWhen::MaxOutcomes`；`round_digest` → `run_digest`；`static.json` 的 `rounds` 为推理尝试数（另有 `rounds_failed` / `rounds_interrupted`、`turns`，去掉 `llm_requests`）；`begin_round` / `commit_round` → `commit_input_batch` / `handle_context_outcome`；`TurnHook` → `InferenceHook`；工具额度 `max_rounds` → `max_tool_iterations`。schema 升为 `session_state/2`、`session_config/2`、`session_summary/2`，快照版本 3，旧版本一律拒绝。下文示例与伪代码已同步；opendan 本身只做编译适配，待下一阶段重构。
@@ -75,7 +75,7 @@
 
 - **Agent Session**：自包含、与位置无关的目录协议，是本期要先定稿的**关键协议**。任何进程按协议在任意位置建出 session 目录，就能以某个 Agent 的身份工作。
 - **Agent State**：Agent 跨 session 的状态，落在 AgentRoot 上，包括 session 登记表（session mgr）、活动视图、感知、认知和产物列表。统一经 `AgentStateClient` 访问；首版直接读写文件，用文件锁协调。
-- **Agent Runtime**：为 `shell` 提供执行环境（native 或 tmux）。session 首次推进时绑定 runtime，之后不再改变。
+- **Agent Runtime**：为 `shell` 提供执行环境（native，或经 Node Executor 执行的 remote_node）。session 首次推进时绑定 runtime，之后不再改变。
 - **Session Runner**：把以上三者与 LM Context 组合起来，把 session 推进到结束条件。**Runner 是实现，不是协议**：Rust 版在 libopendan，TS 版将来是 buckyos-websdk 的 ts-runner。
 
 session 的 `runs/` 直接采用 xllm 的 run 目录：native runtime 下，跑到一半的 llm_context 原则上可以交给 xllm 接手。
@@ -112,7 +112,7 @@ session 的 `runs/` 直接采用 xllm 的 run 目录：native runtime 下，跑�
 
 1. **基于文件系统的 Agent State**（跨 session 状态）：session mgr、感知管理、认知管理、产物列表。
 2. **Agent Session**：用协议级文档确定目录结构，实现创建和读取；本计划补上了推进与恢复。session 目录可以放在 AgentRoot 之外。
-3. **Agent Runtime**：核心是为 `shell` 提供环境，可以是 OS native，也可以是(容器里)的 tmux session。session 一旦确定了 runtime，就不再修改。
+3. **Agent Runtime**：核心是为 `shell` 提供环境，可以是 OS native（含容器内），也可以是经 Node Executor 执行的其他节点。session 一旦确定了 runtime，就不再修改。
 
 OpenDAN 的后续职责（本期不实施，见附录 A）：
 
@@ -125,7 +125,7 @@ OpenDAN 的后续职责（本期不实施，见附录 A）：
 | 本期交付 | 本期不做 |
 |---|---|
 | **Agent Session 目录结构定稿**（§4、§5；§15.1 的目录项确认） | 修改 opendan（附录 A 只描述对接方式） |
-| `src/frame/libopendan` crate（work session 优先）：<br>- Session 目录<br>- 文件锁（§5）<br>- `AgentStateClient` 文件实现：登记表、活动视图、感知、认知门面、产物列表<br>- Runtime（native 优先，tmux 移植）<br>- Rust Runner<br>- kmsg 输入 | UI session 与 msg-center 输入（依赖 msg-center 等服务的确认，后移）；`agent_tool` CLI 改依赖（随 opendan 切换一起改） |
+| `src/frame/libopendan` crate（work session 优先）：<br>- Session 目录<br>- 文件锁（§5）<br>- `AgentStateClient` 文件实现：登记表、活动视图、感知、认知门面、产物列表<br>- Runtime（native）<br>- Rust Runner<br>- kmsg 输入 | UI session 与 msg-center 输入（依赖 msg-center 等服务的确认，后移）；`agent_tool` CLI 改依赖（随 opendan 切换一起改） |
 | **llm_context / xllm 改进**（§8.7）：run 目录公开 API、宿主装配的 run、快照版本化、checkpoint 与观察钩子、effect 与在途记录；使 xllm 能接手 session 的 run | `AgentStateClient` 的 kRPC 实现、DID Object 宿主组件（随 OpenDAN 改造） |
 | 实现完成后**反写**协议级 Spec、JSON Schema 与 fixtures（L6）；libopendan 的开发 CLI（cargo example） | buckyos-websdk 的 ts-runner（依据反写的 Spec，后续）；msg-tunnel UI session 的发现与托管、self-improve 定时、agent.delegate 托管（属于 OpenDAN） |
 | | **workspace 的版本化、合并与回滚**（Agent 内部 / 外部 workspace，另行设计）；Memory Graph 内部算法；提示词 |
@@ -200,7 +200,7 @@ OpenDAN 的后续职责（本期不实施，见附录 A）：
  │ libOpenDAN（Rust）| ts-runner（TS，后续）│        │ libOpenDAN ＋ 协程托管                     │
  │  SessionRunner ─ LM Context（xllm run） │        │ AgentStateClient 的 kRPC 服务端（后续）     │
  │  AgentStateClient（文件 | kRPC）        │        │ DID Object 宿主组件（后续）◄───────────────┼── cyfs-gateway
- │  Runtime（native | tmux）              │        └────────────────────┬─────────────────────┘
+ │  Runtime（native | remote_node）       │        └────────────────────┬─────────────────────┘
  └──┬──────────┬───────────┬─────────────┘                             │
     │ 文件      │ 文件 + 锁  │ kmsg / kevent                              │ 文件 / kmsg / msg-center
     ▼          ▼           ▼                                            ▼
@@ -258,7 +258,7 @@ src/frame/libopendan/
     session/            # SessionDir：config / state / worklog / summary.json / runs（xllm RunStore）/ static / binding / lease
     channel/            # InputChannel：KmsgInput、内存实现；Waker：KEvent（MsgCenterInput / MsgCenterOutbound 后移）
     state/              # AgentStateClient trait；fs/：registry、activity、perception、cognition（门面）、artifacts
-    runtime/            # AgentRuntime trait、native、tmux、bin overlay、paths
+    runtime/            # AgentRuntime trait、native、bin overlay、paths
     runner/             # drive、assembler、next_llm_context、tools、deps（实现，非协议）
   src/bin/xagent.rs     # CLI（见 xAgent.md）：new / run / serve / post / ctl / status / list / behaviors / xllm / schema
   tests/
@@ -329,7 +329,7 @@ src/frame/libopendan/
 5. `session_id`（sid）**全局唯一**，不同 Agent、App、owner 的不同 session 不得复用同一个 sid。创建者按 §4.2 生成；显式传入 sid 的调用方也承担此约束。登记时的 `publish_noreplace` 是本登记表内的冲突检查，不充当全局 ID 分配服务。
 6. **附件引用**：worklog、report 与产物中的附件，可以用 session 目录内的相对路径，也可以用 NamedStore 对象 id（NamedStore 支持 LocalLink，本地文件不必复制）。两种都合法，用哪种由提示词决定；不允许绝对路径（`binding.json` 与 `runs/` 除外）。
 
-旧文档要求“session 目录不放 `bin/`”，`.runtime/bin` 与这条约束不冲突。旧约束的出发点是 session 数据要能跨平台迁移；在新协议中，需要迁移的是 `.opendan_agent_session/` 与产物，`.runtime/` 明确随 runtime 绑定。runtime 自身的临时文件（例如 tmux 的 exec 脚本和输出日志）仍然放在 runtime 的实例卷里。
+旧文档要求“session 目录不放 `bin/`”，`.runtime/bin` 与这条约束不冲突。旧约束的出发点是 session 数据要能跨平台迁移；在新协议中，需要迁移的是 `.opendan_agent_session/` 与产物，`.runtime/` 明确随 runtime 绑定。runtime 自身的临时文件仍然放在 runtime 的实例卷里。
 
 ### 4.2 session_config.json（启动配置）
 
@@ -836,7 +836,7 @@ def fenced(lease, write_fn):                            # 受 lease 保护的写
 - **同一进程不重复加锁**：flock 属于“打开的文件描述”，同一进程两次打开同一锁文件并加锁会互相阻塞。libopendan 在进程内维护已持有锁的表。
 - **锁保护的边界**（S-22）：文件锁保证协作 runner 的状态写入互斥；`lease.held()` 是新动作的准入检查，不是对已经启动的进程或远端请求的 fencing。runner 被 `kill -9` 时，锁会释放，但工具子进程可能仍在运行，Drop / finally 均不能保证执行。
 - **接管前先核对旧工具**：获得 session / run 锁后、启动新推理或应用会产生副作用的 control 之前，按 RunRecord 的执行标识查询旧执行；仍存活的本地进程组先终止并等待退出。只有确认旧执行已停止才继续。执行标识至少关联 runtime / host、主机启动标识及进程创建身份，不能只凭可能复用的 PID / PGID 杀进程。无法定位、无权终止或无法证明已经停止时返回 `RecoveryBlocked`，保留现场，不自动继续。
-- **启动窗口也要覆盖**：工具执行标识必须在用户命令获准运行之前持久化。native / tmux 的启动握手应保证：记录失败或 runner 在放行前退出，用户命令不执行；放行之后崩溃，接管方能按持久标识核对。后台子进程仍属于该执行，不能因 shell 返回就解除跟踪。具体执行原语复用并改造 `agent_tool::llm_bash` 与 runtime，不增加锁服务。
+- **启动窗口也要覆盖**：工具执行标识必须在用户命令获准运行之前持久化。native 的启动握手应保证：记录失败或 runner 在放行前退出，用户命令不执行；放行之后崩溃，接管方能按持久标识核对。后台子进程仍属于该执行，不能因 shell 返回就解除跟踪。具体执行原语复用并改造 `agent_tool::llm_bash` 与 runtime，不增加锁服务。
 - **远端动作与失锁**：有可查询句柄的远端动作按句柄核对；无法确认是否仍在执行时阻塞自动接管，等待显式核对，不能把“结果未知”当作“已经停止”。正常取消或 DFS 失锁时，runner 停止派发、尝试终止工具并返回 `Lost`；即使清理未完成，新持有者仍必须执行上述检查。DFS 文件锁不替代远端服务自身的 fencing / 幂等机制。
 - **卡死的持有者**：进程还活着但不再推进时，锁不会自动释放。由运维按锁文件中的 host / pid 终止该进程（开发 CLI 的 `holder <sid>` 显示持有者）；协议不提供强制抢锁。
 - **对 DFS 的唯一要求**：提供“可长期持有、持有者（客户端会话）失效即释放、失去时通知持有者”的排他文件锁。
@@ -1102,22 +1102,22 @@ pub trait AgentStateClient: Send + Sync {
 
 ## 7. Agent Runtime（libOpenDAN::runtime）
 
-> 2026-10-02 实施更新：Runtime 已下移到 agent_tool::runtime，共享 native/tmux/remote_ssh 配置、工具入口、目标侧文件后端与 RuntimeInfo。Session 层保留 bin/helper、binding 与协议纪律；本节早期 API 由 [xllm Rust SDK §10](../llm_context/xllm_rust_sdk.md#10-共享-agentruntime) 和 [xAgent §5](xAgent.md#5-runtimeagent-的-sandbox) 的当前接口替代。binding/session_config/session_state 与 run 升至 3；summary、机械渲染及 worklog 形状保持原协议。远端 Session helper 未部署时 Capability 错误；policy/grant/approval 仍为后续阶段。
+> 2026-10-02 实施更新：Runtime 已下移到 agent_tool::runtime，共享 native/remote_ssh 配置、工具入口、目标侧文件后端与 RuntimeInfo。Session 层保留 bin/helper、binding 与协议纪律；本节早期 API 由 [xllm Rust SDK §10](../llm_context/xllm_rust_sdk.md#10-共享-agentruntime) 和 [xAgent §5](xAgent.md#5-runtimeagent-的-sandbox) 的当前接口替代。binding/session_config/session_state 与 run 升至 3；summary、机械渲染及 worklog 形状保持原协议。远端 Session helper 未部署时 Capability 错误；policy/grant/approval 仍为后续阶段。
 
 ### 7.1 逻辑 runtime 与绑定
 
-**Runtime** 是为 `shell` 提供执行环境的**逻辑身份**：在哪台主机上执行、看到什么文件系统视图、PATH 上有哪些工具、用 native 还是 tmux 执行。它不是一个进程；tmux server 或容器重启后，仍是同一个 runtime。
+**Runtime** 是为 `shell` 提供执行环境的**逻辑身份**：在哪台主机上执行、看到什么文件系统视图、PATH 上有哪些工具、用什么方式执行。它不是一个进程；容器重启后，仍是同一个 runtime。
 
 ```jsonc
 // RuntimeDescriptor（由提供方声明）
 {
-  "runtime_id": "rt-jarvis-default", "kind": "tmux | native", "host": "did:dev:…", "provider": "opendan | app:<app_id>",
+  "runtime_id": "rt-jarvis-default", "kind": "native | remote_node", "host": "did:dev:…", "provider": "opendan | app:<app_id>",
   "fs_view": { "agent_root": "/…/agents/jarvis", "workspace_root": "…/workspace", "extra": ["/…/app2"] },
   "path_layers": ["<sid>/.runtime/bin", "<agent_root>/tools", "<instance>/tools/bin", "/opt/buckyos/tools/store"],
   "capabilities": { "tools": { "git": "2.43", "node": "22" }, "network": true, "os": "linux" }
 }
 // .opendan_agent_session/binding.json（首次推进时写入，只写一次）
-{ "runtime_id": "rt-jarvis-default", "kind": "tmux", "workdir": "/…/workspace/ws-…", "bound_at_ms": 0, "bound_by": "rn-…" }
+{ "runtime_id": "rt-jarvis-default", "kind": "native", "workdir": "/…/workspace/ws-…", "bound_at_ms": 0, "bound_by": "rn-…" }
 ```
 
 ```python
@@ -1139,7 +1139,7 @@ def bind_or_verify(sd, lease, rt: AgentRuntime, tools) -> Binding:
     return b
 ```
 
-- **xllm 接手要求 native runtime**（§4.4）。tmux runtime 的 run 只能由 libopendan runner 恢复。
+- **xllm 接手要求 native runtime**（§4.4）。
 - `NativeRuntime` 的 runtime_id 通常包含主机标识，所以 session 实际被钉在一台主机上；主机失效后 session 无法恢复。是否允许显式重新绑定见 §15.1。
 
 驱动者身份（`session.driver`）与 runtime（`binding.json`）共同决定“谁、在哪里”推进这个 session，两者都不可变。绑定失败发生在任何推理之前：提交带 `last_error` 的 state.json 并回报，然后返回（Q3）。
@@ -1155,14 +1155,14 @@ pub trait AgentRuntime: Send + Sync {
     /// 幂等修复 <sid>/.runtime/bin：Agent tools 同步 + tool_plan 墓碑；失败可重试
     async fn prepare_session_bin(&self, sd: &SessionDir) -> Result<()>;
     async fn verify_session_env(&self, sd: &SessionDir, binding: &Binding) -> Result<()>;
-    /// 核验完整性后打开执行视图：tmux session、cwd、PATH（.runtime/bin 在最前）、env
+    /// 核验完整性后打开执行视图：cwd、PATH（.runtime/bin 在最前）、env
     async fn open_session_env(&self, binding: &Binding, s: &SessionCtx) -> Result<SessionEnv>;
     /// 2026-10-02：取代执行标识 / 启动握手 / reconcile_execution（长命令 TODO §3.2）——
     /// 为上一个执行器的在途动作生成“被打断、结果未知”的文本：shell 读 (run, call_id) 的执行目录
     async fn describe_interrupted(&self, run: &RunBinding, action: &InflightAction) -> String;
     async fn shell(&self, env: &SessionEnv, req: BashRunRequest) -> Result<BashRunOutput, AgentToolError>;
     async fn interrupt(&self, env: &SessionEnv) -> Result<()>;
-    async fn status(&self) -> RuntimeStatus;   // 给提示词引擎：活跃 tmux 会话、后台进程、磁盘、工具清单
+    async fn status(&self) -> RuntimeStatus;   // 给提示词引擎：后台进程、磁盘、工具清单
     async fn close_session_env(&self, env: SessionEnv) -> Result<()>;
 }
 ```
@@ -1170,7 +1170,6 @@ pub trait AgentRuntime: Send + Sync {
 | 实现 | 来源 | 执行方式 | 典型用途 |
 |---|---|---|---|
 | `NativeRuntime`（本期重点） | 包装并补齐 `agent_tool::llm_bash::LocalProcessBashRunner` 的执行跟踪 | 每条命令一个 `/bin/bash -c`，独立进程组；用户命令启动前持久化执行标识 | 外部应用、测试；xllm 共用启动与恢复规则 |
-| `TmuxRuntime` | 从 `opendan::agent_bash::TmuxBashRunner` 移植 | 每个 session 一个 `od_<sid>` tmux session，可以 attach 审计 | 将来 OpenDAN 的默认 paios runtime（容器内） |
 
 `prompt_env` 新增 `runtime.status` 变量，数据来自 `AgentRuntime::status()`。
 
@@ -1648,7 +1647,7 @@ V1 / V6：协议是**目录结构 + 提交顺序 + 锁语义 + 输入消息格�
 | T0 | Session 目录结构（§4）、锁（§5）、Agent State 文件布局（§6）、输入消息格式（§4.5）、xllm run 目录（§8.7） | 是：本计划定稿，L6 反写字段级 Spec、JSON Schema 与 fixtures | 参考实现 | 按 Spec 实现，跑同一组 fixtures |
 | T1 | `AgentStateClient`、`SessionDir`、kmsg 输入 | 否（SDK 抽象） | ✔ | ts-runner 的一部分（websdk 已有 `msg_queue_client.ts`；kevent 的 publish 需要补） |
 | T2 | Runner：drive、assembler、next_llm_context | 否 | ✔ | ts-runner（依赖 TS 版 LM Context） |
-| T3 | Runtime | 否 | native / tmux | native |
+| T3 | Runtime | 否 | native / remote_node | native |
 | T4 | kRPC 服务端、DID Object 宿主 | — | 随 OpenDAN 改造 | — |
 
 - **反写的 Spec**（L6）：`doc/opendan/protocol/` 下的 `Session Directory Protocol.md`、`Agent State Protocol.md`、`Lease Protocol.md`、`Session Input Protocol.md`，以及由 `protocol/` 的类型导出的 JSON Schema。
@@ -1693,7 +1692,7 @@ V1 / V6：协议是**目录结构 + 提交顺序 + 锁语义 + 输入消息格�
 | `ai_runtime.rs` | `runner::deps` | `SessionToolManager`（结果提交后清除在途标记）；`SessionSnapshotHook` → 带 input_receipts 的 `runs/` checkpoint；`AgentPolicy`；`AiccLlmClient` 按 `who` 的身份调用 |
 | `behavior_cfg.rs`、`behavior_hooks.rs`、`hook_point.rs`、`prompt_env.rs`、`i18n.rs`、`llm_context_helper.rs` | `runner::assembler` | 成为 `BehaviorAssembler`；与 `session_config.prompt`（.llm_context 语义）对齐 |
 | `agent_config.rs`（AgentLayout / session class / driver 配置） | `config` | `[[channel]]` / `[dispatch]` 不移植 |
-| `agent_bash.rs`、`tool_plan.rs`、`paths.rs` | `runtime::{tmux, bin_overlay, paths}` | Session Exec Bin → `<sid>/.runtime/bin`；cwd 取 `binding.workdir`；准备可重试，执行标识与停止核对和 X6 对齐 |
+| `agent_bash.rs`、`tool_plan.rs`、`paths.rs` | `runtime::{bin_overlay, paths}` | Session Exec Bin → `<sid>/.runtime/bin`；cwd 取 `binding.workdir`；准备可重试，执行标识与停止核对和 X6 对齐 |
 | `local_workspace.rs` | 只移植 workspace 的引用与解析 | workspace 版本化另行设计（Q13） |
 | `buildin_tool.rs`、`worksession_tools.rs`、`attachment_*.rs`、`task_util.rs` | `runner::tools` | 改为调用 AgentState 与输入通道 API |
 | `msg_center_pump.rs` 的记录翻译部分（后移） | `channel::MsgCenterInput` / `MsgCenterOutbound` | 供获准的应用直接驱动 UI session（Q14）；随 UI session 实施 |
@@ -1752,8 +1751,8 @@ V1 / V6：协议是**目录结构 + 提交顺序 + 锁语义 + 输入消息格�
 
 ### L2 Runtime
 
-- **交付**：`AgentRuntime` trait、**`NativeRuntime`（本期重点）**、`TmuxRuntime`（移植，后续用于 OpenDAN）、可幂等修复的 `.runtime/bin`、`bind_or_verify` / 环境完整性校验、§7.3 的 env；与 X6 共用执行标识、启动握手、后台进程跟踪、停止并等待确认。
-- **验证**：shell 在 native 与 tmux 下结果一致；runtime 不匹配、缺少工具、看不到 workspace、缺少 app_tools 时均在推理前拒绝。binding 已发布但工具 / 墓碑准备失败或被 kill 时，重试会修复环境；连续失败不推理，binding 不变。启动放行前 kill 不执行用户命令；放行后 kill 仍能定位旧进程组；shell 退出但后台子进程存活时继续跟踪；无法确认执行身份或停止状态时阻塞接管，不按裸 PID 杀进程。
+- **交付**：`AgentRuntime` trait、**`NativeRuntime`（本期重点）**、可幂等修复的 `.runtime/bin`、`bind_or_verify` / 环境完整性校验、§7.3 的 env；与 X6 共用执行标识、启动握手、后台进程跟踪、停止并等待确认。
+- **验证**：runtime 不匹配、缺少工具、看不到 workspace、缺少 app_tools 时均在推理前拒绝。binding 已发布但工具 / 墓碑准备失败或被 kill 时，重试会修复环境；连续失败不推理，binding 不变。启动放行前 kill 不执行用户命令；放行后 kill 仍能定位旧进程组；shell 退出但后台子进程存活时继续跟踪；无法确认执行身份或停止状态时阻塞接管，不按裸 PID 杀进程。
 
 ### L3 Runner（work session）
 
@@ -1919,7 +1918,7 @@ async def opendan_main(args):
     cfg = AgentConfig.load(root, overrides=spec)
     me = rt.app_principal()                                                              # 托管 session 的驱动者身份：OpenDAN 进程的 appid，即该 Agent 的 runtime app（Q16、A9）
     agent = libopendan.FsAgentStateClient.open(root, me)                                 # 锁是文件锁（§5）
-    runtimes = RuntimeManager.from_config(cfg.runtimes)      # 默认：paios 容器内的 TmuxRuntime（Linux，内置 git）
+    runtimes = RuntimeManager.from_config(cfg.runtimes)      # 默认：paios 容器内的 NativeRuntime（Linux，内置 git）
     await runtimes.start_all()
     http = HttpServer(port=BUCKYOS_SERVICE_PORT or OPENDAN_SERVICE_PORT)                  # 与现有 Dispatch Runner 共用（4060）
     http.mount(f"/opendan/agents/{spec.agent_id}", libopendan.host.StateObjectServer(agent, auth=VerifyHubAuth(rt)))  # cyfs-gateway 路由（Q6）；需先让 DIDObjectRequestContext 带鉴权信息

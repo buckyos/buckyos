@@ -65,7 +65,7 @@ sequenceDiagram
 
 | 代码入口 | 已有事实 | 本次需要做什么 |
 |---|---|---|
-| [`agent_tool/src/runtime/mod.rs`](../src/frame/agent_tool/src/runtime/mod.rs) | `AgentRuntime` 有 descriptor/config/info/open/describe_interrupted；`open` 返回 `(EffectiveTools, XllmToolManager)`；配置严格拒绝未知字段，registry 只构造 native/tmux/remote_ssh | 增加纯配置和最小公开装配入口；Node 实现留在 libopendan |
+| [`agent_tool/src/runtime/mod.rs`](../src/frame/agent_tool/src/runtime/mod.rs) | `AgentRuntime` 有 descriptor/config/info/open/describe_interrupted；`open` 返回 `(EffectiveTools, XllmToolManager)`；配置严格拒绝未知字段，registry 只构造 native/tmux/remote_ssh（tmux 已于 2026-10-25 移除） | 增加纯配置和最小公开装配入口；Node 实现留在 libopendan |
 | [`agent_tool/src/llm_bash.rs`](../src/frame/agent_tool/src/llm_bash.rs)、[`tasks.rs`](../src/frame/agent_tool/src/tasks.rs) | `BashRunner::start` 与 `CommandHandle` 支持 wait/progress/kill/detach；auto shell 使用进程内 task manager | 实现远端 CommandHandle，补 Node task 的恢复查询，不能只写同步 run |
 | [`lib_opendan/src/runtime/mod.rs`](../src/frame/lib_opendan/src/runtime/mod.rs) | 负责 Session 绑定/bin；部分分支仍本地 canonicalize，并通过基础 registry 重建 runtime | 加宿主 factory 路由；逐项处理远端路径和 Session 能力检查 |
 | [`buckyos-api/src/control_panel.rs`](../src/kernel/buckyos-api/src/control_panel.rs) | `NodeConfig` 尚无本能力配置 | 增加可选字段，缺省关闭 |
@@ -438,7 +438,7 @@ descriptor 的稳定 target 至少包含 Node DID、profile ID、实际 UID/GID�
 - `NodeBashRunner::start` 提交 shell，返回 `NodeCommandHandle`。handle 的 wait/progress/get/kill/detach/locator 分别映射查询、输出、取消、停止等待和稳定操作定位；`detach` 不发送 cancel。
 - `Sandbox::exec` 和 PromptExec 共用 Node runner。模板 `allow_exec`/timeout 规则保留；control-side INCLUDE/提示词素材继续本地读取。
 - 文件工具采用 **完整工具调用远端执行**：客户端 read/write/edit 代理保留工具名称与 schema，将一次 call_id 对应的一次工具调用送入同一 submit/去重路径；目标 worker 调用已有文件工具。这样路径检查、读取、edit 匹配与写入发生在同一目标。
-- 现有 `FileBackend::resolve/exists/read/write` 没有完整 tool call 上下文，单纯给它套 RPC 容易把一次 edit 拆成不可追踪的多次读写。首版不新增一套公开远端 POSIX RPC；为 toolset 构造开放限定内置文件工具的替换入口（复用 `Arc<dyn AgentTool>`），Node 只替换这三项，保留内置 bash group 的来源分类，不伪装成 host_tools。目标 worker 使用原 TypedToolHandle/FileToolConfig 配合受限的原子文件 backend；默认 native/tmux/SSH 的 FileBackend 路径不变。
+- 现有 `FileBackend::resolve/exists/read/write` 没有完整 tool call 上下文，单纯给它套 RPC 容易把一次 edit 拆成不可追踪的多次读写。首版不新增一套公开远端 POSIX RPC；为 toolset 构造开放限定内置文件工具的替换入口（复用 `Arc<dyn AgentTool>`），Node 只替换这三项，保留内置 bash group 的来源分类，不伪装成 host_tools。目标 worker 使用原 TypedToolHandle/FileToolConfig 配合受限的原子文件 backend；默认 native/SSH 的 FileBackend 路径不变。
 - 目标文件工具执行的有效策略为工具 filesystem_policy 与节点 profile 上限交集；shell 与文件工具观察同一 cwd/账号的文件。写入原子替换和 expected hash 支持在目标实现；不声称现有 LocalFileBackend 已提供所有这些保证。
 - MCP/宿主工具不进入 Node wire。工具结果与描述标明实际执行位置；Node 的协议版本不等于所有宿主工具都可在该节点使用。
 

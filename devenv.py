@@ -94,14 +94,6 @@ LINUX_DENO_CHOICES = {
     "zypper": [["deno"]],
 }
 
-LINUX_TMUX_CHOICES = {
-    "apt-get": [["tmux"]],
-    "dnf": [["tmux"]],
-    "yum": [["tmux"]],
-    "pacman": [["tmux"]],
-    "zypper": [["tmux"]],
-}
-
 LINUX_CROSS_PACKAGE_CHOICES = {
     "apt-get": [["musl-tools"], ["gcc-aarch64-linux-gnu"]],
     "dnf": [["musl-gcc"], ["gcc-aarch64-linux-gnu"]],
@@ -137,7 +129,7 @@ LINUX_BINDGEN_PACKAGE_CHOICES = {
     ],
 }
 
-BREW_FORMULAE = ["git", "wget", "pkgconf", "openssl@3", "python@3.12", "node", "pnpm", "rustup", "uv", "deno", "tmux"]
+BREW_FORMULAE = ["git", "wget", "pkgconf", "openssl@3", "python@3.12", "node", "pnpm", "rustup", "uv", "deno"]
 BREW_CASKS = ["docker"]
 
 WINGET_PACKAGE_CHOICES = {
@@ -595,17 +587,6 @@ class Bootstrapper:
         if rustup_path and not shutil.which(Path(rustup_path).name):
             self.notes.append(f"rustup was installed at {rustup_path}; reopen the terminal if it is not yet in PATH")
 
-    def ensure_tmux(self) -> None:
-        if shutil.which("tmux"):
-            return
-
-        if self.system == "Windows":
-            self.warnings.append("Host debugging with tmux requires Linux/WSL; Jarvis runs in a Linux container on Windows using WSL containers or Docker.")
-            return
-
-        if self.system == "Linux":
-            self.install_first_resolved_set("tmux", LINUX_TMUX_CHOICES[self.package_manager])
-
     def installed_node_version(self) -> str | None:
         node_path = shutil.which("node")
         if not node_path:
@@ -759,7 +740,6 @@ class Bootstrapper:
         self.ensure_linux_rustup()
         self.ensure_uv()
         self.ensure_deno()
-        self.ensure_tmux()
 
         if not self.args.skip_docker:
             self.install_first_resolved_set("Docker", LINUX_DOCKER_CHOICES[self.package_manager], optional=True)
@@ -812,7 +792,6 @@ class Bootstrapper:
         self.ensure_rust_toolchain()
         self.ensure_uv()
         self.ensure_deno()
-        self.ensure_tmux()
 
         if not self.args.skip_cross_tools:
             self.ensure_macos_musl_cross()
@@ -849,8 +828,6 @@ class Bootstrapper:
             package_id = package_ids[0]
             if not self.package_installed(package_id, kind="winget"):
                 self.install_winget_package(package_id)
-
-        self.ensure_tmux()
 
         if not self.args.skip_docker:
             runtime = os.environ.get("BUCKYOS_CONTAINER_RUNTIME", "wslc")
@@ -1110,8 +1087,6 @@ class Bootstrapper:
         print("- Python 3")
         print("- uv")
         print("- Deno")
-        if self.system != "Windows":
-            print("- tmux")
         if not self.args.skip_docker:
             print("- WSL containers / Docker" if self.system == "Windows" else "- Docker / Docker Desktop")
         if self.system == "Linux" and not self.args.skip_cross_tools:

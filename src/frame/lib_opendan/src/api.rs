@@ -251,8 +251,9 @@ pub async fn freeze_runtime(agent: &dyn AgentStateClient, spec: &mut SessionSpec
             )));
         }
     }
-    // The container needs no identity requirement (a tmux runtime derives
-    // its own); every other runtime is required by id at the binding.
+    // The container needs no identity requirement (its native runtime
+    // derives its own id); every other runtime is required by id at the
+    // binding.
     spec.runtime.requirement.runtime_id = if frozen.kind == RuntimeKind::Container {
         None
     } else {
@@ -581,7 +582,7 @@ pub struct SubSessionSpec {
     #[serde(default)]
     pub workspace: SubWorkspace,
     /// Explicit runtime id requirement (`None`: inherit the parent's
-    /// runtime configuration; a tmux runtime is derived per session).
+    /// runtime configuration).
     #[serde(default)]
     pub runtime_id: Option<String>,
     #[serde(default)]

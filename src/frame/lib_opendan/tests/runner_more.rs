@@ -1050,52 +1050,6 @@ async fn sub_context_wait_and_failure_return_to_the_caller() {
 }
 
 #[tokio::test]
-async fn tmux_runtime_runs_exec_in_the_session_pane() {
-    if !libopendan::runtime::TmuxRuntime::available() {
-        eprintln!("tmux not available; skipped");
-        return;
-    }
-    let env = Env::new();
-    let sd = env.create_work(work_spec("tmux exec")).await;
-    let llm = ScriptedLlm::new(|req, _| match has_tool_result(req, "c1") {
-        Some(r) => {
-            assert!(r.contains("from-tmux") && r.contains("work-"), "{r}");
-            text("tmux ok")
-        }
-        None => tool_call(
-            "c1",
-            "shell",
-            json!({ "command": "echo from-tmux; echo $OPENDAN_SESSION_ID; echo x > t.txt" }),
-        ),
-    });
-    let mut deps = env.deps(llm.clone());
-    let rt = std::sync::Arc::new(libopendan::runtime::TmuxRuntime::from_config(
-        agent_tool::runtime::RuntimeConfig {
-            kind: Some("tmux".into()),
-            tmux: Some(agent_tool::runtime::TmuxConfig {
-                session: Some(libopendan::runtime::tmux::tmux_session_name(sd.sid())),
-                ..Default::default()
-            }),
-            ..Default::default()
-        },
-    ));
-    deps.runtime = rt;
-    let r = drive(&sd, &deps, StopWhen::Finished).await;
-    assert!(r.is_finished(), "{r:?}");
-    assert!(sd.path().join("t.txt").exists());
-    assert_eq!(sd.binding_opt().unwrap().unwrap().kind, "tmux");
-    let name = libopendan::runtime::tmux::tmux_session_name(sd.sid());
-    let has = std::process::Command::new("tmux")
-        .args(["has-session", "-t", &name])
-        .status()
-        .unwrap();
-    assert!(has.success(), "tmux session kept for audit");
-    let _ = std::process::Command::new("tmux")
-        .args(["kill-session", "-t", &name])
-        .status();
-}
-
-#[tokio::test]
 async fn semi_change_alone_does_not_make_an_input_batch() {
     let env = Env::new();
     let mut spec = work_spec("wait for messages");

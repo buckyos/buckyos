@@ -4,6 +4,8 @@
 
 状态：**已实施（2026-10-02，见 §11）**；xAgent.md 的修改（§8）仍待 review 后进行。依据 2026-10-02 对长命令处理方式（同步硬等、同步执行中崩溃、串行等待、并行等待）的讨论与源码核对，并已结合 [lib_opendan 输入协议与 Turn Loop TODO](./lib-opendan-input-and-turn-loop-todo.md) 的 review 意见。2026-10-02 按 review 意见补充 §3.2：遵循标准父子进程语义，exec 跨平台、少做非标处理，恢复时只按 runtime 给出“被打断”的结果、交给 LLM 判断；§9 第 4 项据此定稿。同日按 review 简化 §4 / §5：长命令的执行模式由配置决定（wait / auto），auto 到期转为 task；llm_context 只做“返回结果 / 挂起等 task”两种机械判断；不区分 job 与 run；§9 第 1、2、3、5 项随之定稿；随后按 review 明确 stop 的两种结束方式、可取消性由工具与 task 的实现声明、`wait_ms` 默认 30s 上限 30 分钟（§9 第 7、8 项）；补充 §1 术语，明确 30 分钟内必须返回 LLM、更长的等待只在 Session 层挂起，xllm 不挂起；§9 第 7、8 项全部定稿（stop 经 task-mgr 父子关系传导、审批作废，硬等上限默认 60 分钟可设为不限）；用哪个 task-mgr 由工具实现决定，`shell` 只用进程内 task-mgr，buckyos task-mgr 是可选依赖。实施前重新确认基线。
 
+2026-10-25 补记：按用户裁决（正式 Agent Runtime 的 Node Executor 进程 / 任务管理落地后，tmux 执行隔离已无意义），tmux runtime 已在全平台删除，包括其取消（detach / `kill-window`）与“被打断”恢复分支，以及 `agent_tool_cli_dev` 取消 task 时的 tmux 中断；`kind: tmux` 现为配置错误。native、remote_ssh 的取消与恢复语义不变，`remote_node` 走 Node Executor；长任务、取消与断连恢复复用 Node Executor 的操作记录、查询和取消，不宣称等价于 tmux 的进程存活保证。下文 tmux 相关内容（含 §3.2 的 review 意见与 §11.4 的 macOS tmux 验证）仅为历史记录。
+
 ## 1. 范围与原则
 
 - 范围：`llm_context` crate，以及 `agent_tool` 中属于 llm_context 层的 exec、exec_tracking、xllm。libopendan 的宿主接入写在 [lib_opendan TODO](./lib-opendan-input-and-turn-loop-todo.md)，本文只在需要时指向它。

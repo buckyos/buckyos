@@ -1,6 +1,5 @@
 pub mod bin_overlay;
-pub use agent_tool::runtime::tmux;
-pub use agent_tool::runtime::{native_host_id, AgentRuntime, NativeRuntime, TmuxRuntime};
+pub use agent_tool::runtime::{native_host_id, AgentRuntime, NativeRuntime};
 pub use bin_overlay::{BinPlan, ToolPlan};
 
 use crate::error::{OpenDanError, Result};
@@ -397,10 +396,7 @@ fn declared_runtime(
 }
 
 /// Session rules laid over a runtime configuration (xAgent §5.2.1): the
-/// working directory is the session's workspace, and a tmux runtime belongs
-/// to the session — its id is the session id, its tmux session name is
-/// derived from it, it is created on the first binding and attached to
-/// afterwards. A declared id / name that differs is a configuration error.
+/// working directory is the session's workspace.
 fn settle_for_session(
     sd: &SessionDir,
     cfg: &SessionConfig,
@@ -432,36 +428,6 @@ fn settle_for_session(
         }
     }
     config.workdir = Some(expected.display().to_string());
-    if config.kind() != "tmux" {
-        return Ok(());
-    }
-    let sid = sd.sid();
-    let conflict = |what: &str, got: &str, want: &str| {
-        OpenDanError::Bind(format!(
-            "Config: the session's tmux runtime {what} is `{want}` (derived from the session id), not `{got}`"
-        ))
-    };
-    match &config.id {
-        Some(id) if id != sid => return Err(conflict("id", id, sid)),
-        _ => config.id = Some(sid.to_string()),
-    }
-    if let Some(req) = cfg.runtime.requirement.runtime_id.as_deref().filter(|r| *r != sid) {
-        return Err(conflict("id (runtime.requirement.runtime_id)", req, sid));
-    }
-    let name = tmux::tmux_session_name(sid);
-    let t = config.tmux.get_or_insert_with(Default::default);
-    match &t.session {
-        Some(n) if n != &name => return Err(conflict("session name", n, &name)),
-        _ => t.session = Some(name),
-    }
-    // Not bound yet: create it or reuse an existing one. Bound: only the
-    // target the binding names may be attached to, a lost target is never
-    // re-created under the old identity.
-    t.mode = Some(if sd.binding_opt()?.is_some() {
-        agent_tool::runtime::TmuxMode::Attach
-    } else {
-        agent_tool::runtime::TmuxMode::CreateOrAttach
-    });
     Ok(())
 }
 
@@ -510,11 +476,11 @@ pub async fn runtime_for_session(
         ));
     }
     // An explicit id is a binding identity requirement, not a way to choose
-    // the executor: a session's tmux runtime only accepts its own id.
+    // the executor.
     if let Some(id) = runtime_id {
         config.id = Some(id.to_string());
     }
-    if config.id.is_none() && config.kind() != "tmux" {
+    if config.id.is_none() {
         config.id = cfg.runtime.requirement.runtime_id.clone();
     }
     settle_for_session(sd, cfg, agent.agent_root(), &mut config)?;
@@ -583,15 +549,7 @@ pub fn session_runtime(
             .remote_ssh
             .as_ref()
             .is_some_and(|ssh| config.remote_ssh.as_ref() != Some(ssh))
-        || original.env.iter().any(|(k, v)| config.env.get(k) != Some(v))
-        || original.tmux.as_ref().is_some_and(|tmux| {
-            config.tmux.as_ref().is_none_or(|new| {
-                tmux.session
-                    .as_ref()
-                    .is_some_and(|v| new.session.as_ref() != Some(v))
-                    || tmux.socket.as_ref().is_some_and(|v| new.socket.as_ref() != Some(v))
-            })
-        });
+        || original.env.iter().any(|(k, v)| config.env.get(k) != Some(v));
     if differs {
         return Err(OpenDanError::RuntimeMismatch {
             bound: "prompt.llm_context.runtime of the session".into(),
@@ -609,40 +567,6 @@ pub fn session_runtime(
     }
     agent_tool::runtime::RuntimeRegistry::from_config(&config)
         .map_err(|e| OpenDanError::Bind(e.to_string()))
-}
-
-/// A tmux session belongs to one Agent Session: the owner is recorded on
-/// the target (`@opendan_session`). Two session ids whose tmux names
-/// collide never share a target.
-fn claim_tmux_target(config: &agent_tool::runtime::RuntimeConfig, sid: &str) -> Result<()> {
-    let Some(t) = &config.tmux else {
-        return Ok(());
-    };
-    let Some(name) = &t.session else {
-        return Ok(());
-    };
-    let tmux = |args: &[&str]| -> std::io::Result<std::process::Output> {
-        let mut c = std::process::Command::new("tmux");
-        if let Some(socket) = &t.socket {
-            c.arg("-L").arg(socket);
-        }
-        c.args(args).output()
-    };
-    let target = format!("{name}:");
-    let shown = tmux(&["show-options", "-t", &target, "-qv", "@opendan_session"])
-        .map_err(|e| OpenDanError::Bind(format!("tmux: {e}")))?;
-    let owner = String::from_utf8_lossy(&shown.stdout).trim().to_string();
-    if owner.is_empty() {
-        tmux(&["set-option", "-t", &target, "@opendan_session", sid])
-            .map_err(|e| OpenDanError::Bind(format!("tmux: {e}")))?;
-        return Ok(());
-    }
-    if owner != sid {
-        return Err(OpenDanError::Bind(format!(
-            "tmux session `{name}` belongs to Agent Session `{owner}`; the name of `{sid}` collides with it"
-        )));
-    }
-    Ok(())
 }
 
 pub async fn bind_or_verify(
@@ -680,9 +604,6 @@ pub async fn bind_or_verify(
         .await
         .map_err(|e| OpenDanError::Bind(e.to_string()))?;
     let desc = rt.descriptor();
-    if desc.kind == "tmux" {
-        claim_tmux_target(&rt.config(), sd.sid())?;
-    }
     let existing = sd.binding_opt()?;
     let binding = Binding {
         schema: "opendan.binding/4".into(),

@@ -22,7 +22,7 @@ llm_context（waist）
   │  ToolManager::call_tool(call, ToolCallCtx) -> Observation
   │  ToolPolicy：工具迭代额度、allow_deferred、finish_grace_ms
   ▼
-agent_tool::runtime   AgentRuntime(native | tmux | remote_ssh).open(...) -> XllmToolManager（Sandbox）
+agent_tool::runtime   AgentRuntime(native | remote_ssh | remote_node).open(...) -> XllmToolManager（Sandbox）
   ├─ 内置 bash 组：shell / read_file / write_file / edit_file（+ wait_task / get_task_state / cancel_task）
   ├─ MCP 工具：在所配置的 MCP 服务执行
   └─ 宿主工具：XllmDeps.host_tools，在宿主进程执行
@@ -40,15 +40,15 @@ agent_tool::runtime   AgentRuntime(native | tmux | remote_ssh).open(...) -> Xllm
 
 ### 1.1 Runtime
 
-- `RuntimeConfig`（`.llm_context` 的 `runtime` 键）：`kind`（缺省 `native`，另有 `tmux`、`remote_ssh`）、`id`、`workdir`、`env`、`tmux`、`remote_ssh`。`RuntimeRegistry::from_config` 构造；宿主注入的 runtime 必须与有效配置一致。
+- `RuntimeConfig`（`.llm_context` 的 `runtime` 键）：`kind`（缺省 `native`，另有 `remote_ssh`、`remote_node`）、`id`、`workdir`、`env`、`remote_ssh`、`remote_node`。`RuntimeRegistry::from_config` 构造（`remote_node` 经 `from_config_with`，需要 `XllmDeps.node_executor`）；宿主注入的 runtime 必须与有效配置一致。
 - `AgentRuntime`：
   - `descriptor()`：runtime id、kind、实际 target、workdir、能力
   - `info()` → `RuntimeInfo`：id、kind、os、arch、hostname、shell、cwd、tools、current_time、timezone，供提示词模板 `{{runtime.*}}` 引用
   - `open(ctx, tools, deps)` → `(EffectiveTools, XllmToolManager)`：按工具配置装配本 run 的工具
   - `describe_interrupted(run, action)`：崩溃后为没有结果的调用生成“被打断”的说明
-- 执行体：native 用本地进程（独立进程组）；tmux 每条命令一个 window；remote_ssh 用系统 ssh / sftp。内置文件工具经 `runtime::files::FileBackend`（本地或 SFTP）读写，命令经 `BashRunner` 执行，所以同一份实现可以跑在三种 runtime 上。
+- 执行体：native 用本地进程（独立进程组）；remote_ssh 用系统 ssh / sftp；remote_node 经目标节点的 Node Executor 执行。内置文件工具经 `runtime::files::FileBackend`（本地、SFTP 或 Node 操作）读写，命令经 `BashRunner` 执行，所以同一份实现可以跑在三种 runtime 上。
 - `Sandbox`：`ToolManager` 加 `workdir()`、`env_check()`、`exec(BashRunRequest)`；`SandboxPromptExec` 用它执行模板里的命令。
-- native / tmux 不提供 OS 隔离。`filesystem_policy: workspace`（缺省）只限制内置文件工具的路径和 `shell` 的 `cwd`，不隔离 shell 命令自身的文件访问。
+- native 不提供 OS 隔离。`filesystem_policy: workspace`（缺省）只限制内置文件工具的路径和 `shell` 的 `cwd`，不隔离 shell 命令自身的文件访问。
 
 ### 1.2 工具来源
 
@@ -247,7 +247,7 @@ pub trait ToolHost: Send + Sync {
   - `effect_unknown: false`：工作已经停止，或明确知道它仍在运行，`message` 说明是哪种
   - `effect_unknown: true`：中途放弃，效果未知
 - 只有 `ToolCallCtx` 已有取消原因时返回 `Cancelled` 才合法；被取消不要包装成业务 `error`。
-- 可取消只是工具的声明，不假设可靠取消：例如 `shell` 在 tmux 下被打断时只停止等待，命令继续运行，返回的 `message` 写明这一点。
+- 可取消只是工具的声明，不假设可靠取消：例如 `shell` 的执行 handle 不可取消时，被打断只停止等待，命令继续运行，返回的 `message` 写明这一点。
 - 基础设施故障（如远端连接断开）用 `AgentToolError::Transport { message, effect_unknown }`，它映射为派发失败，不是业务错误。
 
 ### 4.3 长工作交给 task
@@ -537,8 +537,7 @@ Agent RootFS 布局以 [Agent RootFS](<../../opendan/Agent RootFS.md>) 为准。
 3. 让命令出现在 PATH 上：在 Agent Bin（`<agent_root>/tools`）放指向 `agent_tool` 的别名。
 4. 需要模型从命令手册里知道它时，在 `.llm_context` 的 `tools.bash_tools` 加一条（`name` / `description` / `command` / `usage`）。
 5. stdout 只输出一行 AgentToolResult JSON，确保 `shell` 能转发（5.3）。
-6. 更新 `src/frame/agent_tool/create_tmux_debug_session.sh` 的调试软链接列表。
-7. 直接运行 `agent_tool <tool>` 验证 stdout JSON 与 exit code。
+6. 直接运行 `agent_tool <tool>` 验证 stdout JSON 与 exit code。
 
 ### 7.3 MCP 工具
 
@@ -586,14 +585,6 @@ write_file ./demo.txt --mode write --content "hello"
 
 没有 `OPENDAN_AGENT_ROOT` 时，CLI dev 用当前目录作为开发态 state root；生产 AgentTool 不应依赖这个回退。
 
-### 8.4 tmux 调试 session
-
-```bash
-src/frame/agent_tool/create_tmux_debug_session.sh <agent_tool_binary> [session_name] [agent_root]
-```
-
-脚本会创建临时工具软链接目录，给 `agent_tool`、`read_file`、`write_file`、`edit_file` 等命令建软链接，只注入第 6.1 节的最小契约（并 seed `agent.toml [identity]` 让身份可推导），前置 PATH 后 attach 到 tmux session。
-
 ---
 
 ## 9. 反模式速查
@@ -626,7 +617,7 @@ src/frame/agent_tool/create_tmux_debug_session.sh <agent_tool_binary> [session_n
 - [Agent Session SDK 实现计划](<../../opendan/Agent Session SDK 实现计划.md>) §7：libopendan 的 runtime 绑定与环境契约
 - `src/frame/agent_tool/src/lib.rs`：`AgentToolResult`、`AgentTool`、`AgentToolManager`、`AgentToolError`
 - `src/frame/agent_tool/src/tool.rs`：`TypedTool`、`CallingConventions`、`ToolHost`
-- `src/frame/agent_tool/src/runtime/`：`RuntimeConfig`、`AgentRuntime`、`Sandbox`、native / tmux / SSH 与文件后端、`CURRENT_TOOL_CTX`
+- `src/frame/agent_tool/src/runtime/`：`RuntimeConfig`、`AgentRuntime`、`Sandbox`、native / SSH / Node 与文件后端、`CURRENT_TOOL_CTX`
 - `src/frame/agent_tool/src/llm_bash.rs`：`shell`、`BashRunner`、执行目录
 - `src/frame/agent_tool/src/tasks.rs`：`InProcessTaskManager`、`CompositeTaskResolver`、task 工具
 - `src/frame/agent_tool/src/xllm.rs`：`ToolsConfig`、`XllmToolManager`、工具装配

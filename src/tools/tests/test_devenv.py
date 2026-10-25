@@ -22,7 +22,6 @@ class WindowsContainerBootstrapTests(unittest.TestCase):
                 with (
                     patch.dict(module.os.environ, environment, clear=True),
                     patch.object(bootstrapper, "update_package_index"),
-                    patch.object(bootstrapper, "ensure_tmux"),
                     patch.object(bootstrapper, "ensure_windows_libclang"),
                     patch.object(bootstrapper, "ensure_rust_toolchain"),
                     patch.object(bootstrapper, "resolve_package_set", side_effect=lambda choices, kind: choices[0]),

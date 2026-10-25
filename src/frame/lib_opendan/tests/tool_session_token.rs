@@ -2,11 +2,10 @@
 
 mod common;
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 
 use agent_tool::llm_bash::{BashRunRequest, BashTarget};
-use agent_tool::runtime::{RuntimeConfig, RuntimeOpenCtx, RuntimeRegistry, Sandbox, TmuxConfig};
+use agent_tool::runtime::{RuntimeConfig, RuntimeOpenCtx, RuntimeRegistry, Sandbox};
 use agent_tool::xllm::{LoopModel, ToolsConfig, XllmDeps};
 use agent_tool::{SessionRuntimeContext, BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV as TOKEN_ENV};
 use buckyos_api::{
@@ -33,18 +32,6 @@ fn request(cwd: &Path, command: &str) -> BashRunRequest {
         env: vec![(TOKEN_ENV.into(), "stale-call-token".into())],
         target: BashTarget::Local,
         call_id: None,
-    }
-}
-
-struct TmuxSocket(PathBuf);
-
-impl Drop for TmuxSocket {
-    fn drop(&mut self) {
-        let _ = Command::new("tmux")
-            .arg("-S")
-            .arg(&self.0)
-            .arg("kill-server")
-            .output();
     }
 }
 
@@ -110,23 +97,8 @@ async fn session_tools_use_current_runtime_token_without_owner_keys() {
         session_id: ctx.session_id.clone(),
         read_token_limit: agent_tool::DEFAULT_READ_TOKEN_LIMIT,
     };
-    let mut configs = vec![RuntimeConfig::default()];
-    let socket = TmuxSocket(tmp.path().join("tmux.sock"));
-    if Command::new("tmux").arg("-V").output().is_ok() {
-        configs.push(RuntimeConfig {
-            kind: Some("tmux".into()),
-            tmux: Some(TmuxConfig {
-                session: Some("token-test".into()),
-                socket: Some(socket.0.display().to_string()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        });
-    } else {
-        eprintln!("tmux unavailable; checking native token injection only");
-    }
     let mut sandboxes = Vec::new();
-    for config in configs {
+    for config in [RuntimeConfig::default()] {
         let rt = RuntimeRegistry::from_config(&config).unwrap();
         let mut open = RuntimeOpenCtx::new(tmp.path(), "token-test", LoopModel::FunctionCall);
         open.env = env.iter().cloned().collect();

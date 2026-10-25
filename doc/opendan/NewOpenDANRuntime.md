@@ -32,7 +32,7 @@
 |------|--------------------|--------------------|
 | 形态 | 宿主机普通文件系统目录 | Linux Docker 容器 |
 | 位置 | `/opt/buckyos/data/home/$userid/.local/share/$agentid/`（Instance Volume，宿主机视角） | 容器 mount Instance Volume + 临时卷 |
-| OS 跨度 | Windows / macOS / Linux 宿主机均可承载，目录结构平台无关 | **始终 Linux**（bash + tmux + POSIX symlink 是刚性依赖） |
+| OS 跨度 | Windows / macOS / Linux 宿主机均可承载，目录结构平台无关 | **始终 Linux**（bash + POSIX symlink 是刚性依赖） |
 | 生命周期 | 长期持久化，跨容器重建保留 | 可随时销毁重建，无状态 |
 
 **推论**（后面章节默认成立，不再重复）：
@@ -1069,7 +1069,7 @@ forward_msg { target_worksession_id: String }
   - `handle_outcome` 覆盖 Done / WaitInput / PendingTool（warn）/ Budget / Error / ContextLimit；Done 路径会调 `post_outbound_text` 走 `msg_center.post_send` 把回复发回 peer
   - `switch_behavior`（Normal-only；Fork / Independent warn 后按 Normal 处理）
   - 新增 API：`subscribe_event` / `unsubscribe_event` / `subscription_patterns` / `set_workspace` / `workspace_id` / `update_peer`（私有）/ `post_outbound_text`（私有）
-- §9.5 `opendan::agent_bash`：`build_session_tools(workspace, session_dir)` 注册 `shell` + read/write/edit/glob/grep；`SessionBinLayout` 持有 4 层 bin 路径（System / Runtime / Agent / Session），目前 overlay 仅落 Session 层（upstream `BinOverlayConfig` 是单 `bin_dir`，4 层合成见上面"工程顺序 #4"）。**2026-05-14 新增 `TmuxBashRunner`**：`shell` 不再用一次性 `/bin/bash -c`，每个 AgentSession 独占一个 detached tmux session（`od_<sanitized_session_id>`），每条 LLM 命令通过 wrapper 脚本 + run-id marker 在该 pane 里执行；用 `tee` 同时写 stdout/stderr 到 log 文件 + pane scrollback，操作员可 `tmux attach -t od_<sid>` 实时审计 AI 工作记录（pane 里能看到人类可读的 `# shell[<run_id>] <command>` banner，不是不透明的 wrapper 路径）；超时走 `send-keys C-c`；session 数 ≥16 时按 24h idle GC。`exit N` 安全：用户命令包在 `( ... )` 子 shell 里，不会杀掉 wrapper 自身
+- §9.5 `opendan::agent_bash`：`build_session_tools(workspace, session_dir)` 注册 `shell` + read/write/edit/glob/grep；`SessionBinLayout` 持有 4 层 bin 路径（System / Runtime / Agent / Session），目前 overlay 仅落 Session 层（upstream `BinOverlayConfig` 是单 `bin_dir`，4 层合成见上面"工程顺序 #4"）。
 - §9.6 `opendan::agent` + `opendan::msg_center_pump` + `opendan::session_event_pump`（**msg-center / kevent / outbound 全部接入**）：
   - `AIAgent::open(root, runtime)` 加载 `AgentConfig`、`AIAgent::run()` 驱动 dispatch loop（`tokio::select` { inbox, shutdown }）
   - **`Inbound { Msg { record_id, from, from_did, tunnel_did, session_id, text }, Event { event_id, target_session_id, data } }`** —— `from_did` / `tunnel_did` 用于 outbound 回送，`target_session_id` 由 session_event_pump 填充
@@ -1107,12 +1107,11 @@ forward_msg { target_worksession_id: String }
     - `render_initial(session_dir)`：mkdir session_bin → force `apply_snapshot`（hard-link agent_tools 顶层 + 一层子目录的可执行文件到 session_bin，跨 fs / 非 Unix 退 `fs::copy`） → 写 tombstone stub 文件（shebang，stderr 双行 JSON + 人类可读，`exit 127`） → 把 `ResolvedToolPlan` 序列化到 `<session_dir>/tool_plan.resolved.toml` 供操作员审计。
     - `maybe_resync()`：`snapshot_agent_tools` 算 max_mtime_ns；不大于上次同步 + 入口非空就直接跳过；否则 `apply_snapshot` re-link（不在 snapshot 的旧 link 自动 rm）+ 重新落 tombstone。
     - tombstone 永远 last-writer-wins：`apply_snapshot` 主动跳过和 tombstone 同名的 agent_tools 文件，再交给 `write_tombstones` 写脚本。
-  - `TmuxBashRunner::with_bin_renderer(renderer)` builder：`run()` 起手调 `renderer.maybe_resync()`，失败仅 warn（不阻 shell）。
   - `BehaviorCfg` 新增可选字段 `tool_plan: String`（默认空 = 无 tombstone）。
   - `AIAgent::build_session_bin_renderer(agent_id, session_id, behavior_name)`：load 行为 cfg 取 `tool_plan` 名 → load `<agent_root>/tool_plans/<name>.toml` → 扫宇宙 → resolve → 包成 `Arc<SessionBinRenderer>`；行为 cfg / 计划文件缺失全部 warn + 空计划兜底（仍做 Agent tools 同步）。
   - 集成测覆盖：`overlay_env_stacks_multiple_layers_in_priority_order`（agent_tool 75/75 全绿）、`session_bin_layout_overlay_has_four_layers`、`plan_deny_mode_picks_only_universe_intersect`、`plan_allow_mode_tombstones_everything_else`、`write_tombstone_creates_executable_script`、`render_initial_links_agent_tools_and_writes_resolved_plan`、`paths::buckyos_root_layout_honors_env_override`（opendan 69/69 全绿）。
 - **已知尾巴**：
-  - behavior 切换时（normal / independent / fork）目前不触发 tool plan 重算——`SessionBinRenderer` 是 session 创建时一次性绑定的；可在 `agent_session::switch_behavior` 里加一个回调让 `AIAgent` 重新算 `Arc<SessionBinRenderer>` 并 hot-swap 进 `TmuxBashRunner`。等真的有 behavior 间 tool plan 差异的用例再回看。
+  - behavior 切换时（normal / independent / fork）目前不触发 tool plan 重算——`SessionBinRenderer` 是 session 创建时一次性绑定的；可在 `agent_session::switch_behavior` 里加一个回调让 `AIAgent` 重新算 `Arc<SessionBinRenderer>` 并 hot-swap 进 shell runner。等真的有 behavior 间 tool plan 差异的用例再回看。
   - System Bin 在 `ensure_dirs` 不 mkdir（生产容器里 `/opt/buckyos/tools/store/` 由镜像预置）；开发机 BUCKYOS_ROOT 指到任意目录时也照样 mkdir 不到，PATH 里挂个不存在的目录无害（shell 跳过）。
 
 **仍未完成：**
@@ -1144,7 +1143,7 @@ forward_msg { target_worksession_id: String }
          reason = "use trash-cli instead"
          # mode = "allow" 时改用 [[allow]]，未列的工具一律墓碑
          ```
-       - 解析产物：session 启动时把"实际生效的合成策略"落到 `<session_dir>/tool_plan.resolved.toml`，跟 tmux pane scrollback 一起给操作员事后审计用。
+       - 解析产物：session 启动时把"实际生效的合成策略"落到 `<session_dir>/tool_plan.resolved.toml`，给操作员事后审计用。
     2. **Agent tools 拷贝时机**：**每次 `shell` 起手做一次 mtime 同步检查**（跟 §1.5.6 现有约定一致：`shell` 调用 head 做 mtime walk，有改动才 re-render Session Exec Bin）。
        - 动机：用户/operator 手工往 `<agent_root>/tools/` 拷新工具后，**不重启 session 也能在下一次 `shell` 立即可用**。
        - 成本理由：两次 `shell` 之间至少隔一次 LLM 推理（秒级以上），多一次 mtime walk（毫秒级）成本可忽略；不需要 inotify watch / 后台同步线程。
@@ -1160,7 +1159,7 @@ forward_msg { target_worksession_id: String }
        exit 127
        ```
        - exit 127 是 shell "command not found" 标准码，做错误判断的脚本不用改。
-       - JSON 给 LLM 解析（它能从 `reason` 学到换什么工具），第二行给 tmux 审计的人。
+       - JSON 给 LLM 解析（它能从 `reason` 学到换什么工具），第二行给审计的人。
     4. **跨平台开发机**：`buckyos_root()` helper 集中所有路径，单一 `BUCKYOS_ROOT` 环境变量 + per-OS dev fallback。
        ```rust
        pub fn buckyos_root() -> PathBuf {
@@ -1180,7 +1179,7 @@ forward_msg { target_worksession_id: String }
     5. **Runtime Bin**：**空目录占位**——`<buckyos_root>/tools/bin/` 在 session 启动时 mkdir 一份，照样进 PATH。
        - 第一版没人往里写东西也无害；ExtTool Volume / Crafter 接入时只需往这层塞 symlink，无需改 overlay PATH 拼接逻辑。
        - 把"一处麻烦"留给未来的自己 = 反模式，避免。
-  - **当前实现状态**：[agent_bash.rs](src/frame/opendan/src/agent_bash.rs) 的 `SessionBinLayout` 还是单层 `<session_dir>/bin`，`BinOverlayConfig` 还是 upstream 单 `bin_dir`，三件事都没动。tmux runner 已落地不影响 overlay 工程项。
+  - **当前实现状态**：[agent_bash.rs](src/frame/opendan/src/agent_bash.rs) 的 `SessionBinLayout` 还是单层 `<session_dir>/bin`，`BinOverlayConfig` 还是 upstream 单 `bin_dir`，三件事都没动。
 - §9.4 残项（switch_mode 三模式 + fork 原语 2026-05-14 第 3 轮已落地；剩余尾巴 2026-05-14 第 5 轮三项全部落地）：
   - ~~`try_create_worksession` 子上下文 prompt 渲染补全~~ — 已落地（worksession list / 可用 workspace 列表 / parent recent history 三段都注入 sub-system；`forward_msg` 自动从 session 取 origin user 消息）
   - ~~**waist 真接 `forbid_next_behavior` flag**~~ — 已落地（[request.rs](src/frame/llm_context/src/request.rs) 加 `forbid_next_behavior: bool`，[behavior_loop run_behavior](src/frame/llm_context/src/context_loop.rs:624) 解析后 scrub `next_behavior`；`TryCreateWorksessionTool` 现在 `forbid_next_behavior: true`）

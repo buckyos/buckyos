@@ -37,7 +37,7 @@ AgentTool 基于 tool_calls 机制提供 Agent 的工具能力。每个 tool 支
   ▼
 llm_context（waist）：ToolManager::call_tool(call, ToolCallCtx) -> Observation
   ▼
-agent_tool::runtime：AgentRuntime（native | tmux | remote_ssh）= 执行环境（sandbox）
+agent_tool::runtime：AgentRuntime（native | remote_ssh | remote_node）= 执行环境（sandbox）
   ├─ 内置 bash 组：shell / read_file / write_file / edit_file（+ task 工具）
   ├─ MCP 工具
   └─ 宿主工具
@@ -45,7 +45,7 @@ agent_tool::runtime：AgentRuntime（native | tmux | remote_ssh）= 执行环境
   PATH 上的 agent_tool CLI（单二进制 + 命令别名）
 ```
 
-- Runtime 决定工具在哪里执行。内置工具、模板里的命令都经同一个执行体，同一份实现可以跑在本机进程、tmux 或远端 SSH 上。
+- Runtime 决定工具在哪里执行。内置工具、模板里的命令都经同一个执行体，同一份实现可以跑在本机进程、远端 SSH 或远端节点上。
 - AgentTool 同时有两种形态：在派发器里被直接调用，或作为 CLI 命令在 `shell` 里被调用。两种形态共用同一份实现和同一个结果协议。
 
 细节见 [开发指南](<OpenDAN AgentTool 开发指南.md>) 第 1、2 节。
@@ -176,7 +176,7 @@ LLM 调用 wait_task / get_task_state
 
 ### 2. Runtime 是执行环境
 
-工具在哪里执行由 run 的 runtime 决定（native / tmux / remote_ssh），工具实现不假设自己跑在本机。Runtime 同时是 sandbox：之后的安全检查、授权都在这一层统一进行。
+工具在哪里执行由 run 的 runtime 决定（native / remote_ssh / remote_node），工具实现不假设自己跑在本机。Runtime 同时是 sandbox：之后的安全检查、授权都在这一层统一进行。
 
 ### 3. 不给 LLM 增加调用前的决策
 

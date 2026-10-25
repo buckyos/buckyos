@@ -230,11 +230,11 @@ deferred 工具只有一种：libopendan 的 `call_behavior`（子 context 调�
 
 完整设计见 [AgentRuntime 设计](<AgentRuntime 设计.md>)：分层、配置、执行体、工具与模板接入、长任务、恢复和 Session 绑定。
 
-共享实现位于 agent_tool::runtime。RuntimeConfig / RuntimeRegistry 支持 native、tmux、remote_ssh，以及需要宿主 Node Executor connector 的 remote_node；AgentRuntime.open 解析工具并返回实现 Sandbox/ToolManager 的派发器。内置 shell、文件读写编辑使用同一执行体；MCP 服务与宿主进程内工具保留各自位置。PromptExec 有显式注入适配器，生产模板默认未启用，remote_node 尚不支持模板 EXEC。
+共享实现位于 agent_tool::runtime。RuntimeConfig / RuntimeRegistry 支持 native、remote_ssh，以及需要宿主 Node Executor connector 的 remote_node；AgentRuntime.open 解析工具并返回实现 Sandbox/ToolManager 的派发器。内置 shell、文件读写编辑使用同一执行体；MCP 服务与宿主进程内工具保留各自位置。PromptExec 有显式注入适配器，生产模板默认未启用，remote_node 尚不支持模板 EXEC。
 
-RuntimeInfo 提供执行环境信息供提示词引用；native/tmux/SSH 刷新执行侧时间和时区，remote_node 当前使用控制侧 UTC 时间。Session 的稳定信息放 system，新鲜时间、半订阅与 active sessions 仍由 Session 输入批次管理。配置/日志/快照/INCLUDE 属于控制侧素材，runtime.workdir 属于执行侧。
+RuntimeInfo 提供执行环境信息供提示词引用；native/SSH 刷新执行侧时间和时区，remote_node 当前使用控制侧 UTC 时间。Session 的稳定信息放 system，新鲜时间、半订阅与 active sessions 仍由 Session 输入批次管理。配置/日志/快照/INCLUDE 属于控制侧素材，runtime.workdir 属于执行侧。
 
-恢复读取各执行体的命令目录或 Node 操作 locator，不核验、不停止旧进程，也不重放；没有持久结果的调用由 `AgentRuntime::describe_interrupted` 生成说明交给 LLM。shell 默认 auto 模式，超过 `wait_ms` 的命令移交 task manager，模型用 `wait_task` / `get_task_state` / `cancel_task` 跟进。完整 Session 目前支持 native/tmux，远端 helper 未部署；独立 xllm 可使用 SSH/Node。policy、grant、approval 与其它执行体留到后续阶段。SDK 入口见 [xllm Rust SDK §10](xllm_rust_sdk.md#10-共享-agentruntime)。
+恢复读取各执行体的命令目录或 Node 操作 locator，不核验、不停止旧进程，也不重放；没有持久结果的调用由 `AgentRuntime::describe_interrupted` 生成说明交给 LLM。shell 默认 auto 模式，超过 `wait_ms` 的命令移交 task manager，模型用 `wait_task` / `get_task_state` / `cancel_task` 跟进。完整 Session 目前支持 native 与创建时冻结到节点 runtime 的 remote_node；SSH 远端 Session helper 未部署，独立 xllm 可使用 SSH/Node。policy、grant、approval 与其它执行体留到后续阶段。SDK 入口见 [xllm Rust SDK §10](xllm_rust_sdk.md#10-共享-agentruntime)。
 
 ## AgentState (RootFS)
 

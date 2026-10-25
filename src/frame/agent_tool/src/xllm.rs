@@ -4484,13 +4484,6 @@ fn truncate_chars(s: &str, max: usize) -> String {
 /// `shell` 工具说明里的 runtime 事实。
 fn shell_runtime_note(descriptor: &RuntimeDescriptor) -> ShellRuntimeNote {
     let target = match descriptor.kind.as_str() {
-        "tmux" => descriptor
-            .target
-            .get("tmux")
-            .and_then(|t| t.get("session"))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
         "remote_node" => descriptor.host.clone().unwrap_or_default(),
         "remote_ssh" => descriptor
             .target

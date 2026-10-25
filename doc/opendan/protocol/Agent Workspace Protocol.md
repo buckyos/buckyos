@@ -4,7 +4,7 @@
 
 本协议落实 [OpenDAN Agent Workspace 设计](<../OpenDAN Agent Workspace 设计.md>) 的首轮本地实现。Workspace 是独立于 Session 的长期目录；稳定身份不由目录路径决定。Agent State 保存 Known Workspaces，Session 保存创建时解析的位置快照。
 
-位置的 `runtime_id` 引用 Agent State 的 Runtime 登记（[Agent State Protocol](<Agent State Protocol.md>) §10）。**分层**（2026-10-23，集成 TODO §3.4）：登记、身份、URL、revision、独占租约和重定位规则全部在 Agent State 的控制侧文件；runtime 侧只是目标目录。`container`（旧记录的 `local`，视为同一 Runtime）上这些目录操作是本地文件操作；`host` 等 `available` 的节点 runtime 上收敛为执行器的 `describe(workdir)`（存在性与规范化）、`stat`、`read`/`write`（`.opendan-workspace.json`）和 `mkdir`，不为远端引入 list/rename/remove。`directory` 的绝对性按目标 OS 判定（`buckyos_api::is_absolute_node_path`，Windows 路径不交给 Linux Runner canonicalize），目录重叠按目标 OS 的路径规则比较。远端 `create` 没有列目录操作，只以“没有身份元信息”判定可创建；远端 discover/import 首期只接受显式目录。runtime 未启用或不可用时其上的 Workspace 不可用，创建 / 导入明确失败并说明原因。登记及 Session 快照用 `runtime_host` 固定控制侧宿主身份。它不是 tmux Session ID。尚未接入跨主机锁或文件同步。
+位置的 `runtime_id` 引用 Agent State 的 Runtime 登记（[Agent State Protocol](<Agent State Protocol.md>) §10）。**分层**（2026-10-23，集成 TODO §3.4）：登记、身份、URL、revision、独占租约和重定位规则全部在 Agent State 的控制侧文件；runtime 侧只是目标目录。`container`（旧记录的 `local`，视为同一 Runtime）上这些目录操作是本地文件操作；`host` 等 `available` 的节点 runtime 上收敛为执行器的 `describe(workdir)`（存在性与规范化）、`stat`、`read`/`write`（`.opendan-workspace.json`）和 `mkdir`，不为远端引入 list/rename/remove。`directory` 的绝对性按目标 OS 判定（`buckyos_api::is_absolute_node_path`，Windows 路径不交给 Linux Runner canonicalize），目录重叠按目标 OS 的路径规则比较。远端 `create` 没有列目录操作，只以“没有身份元信息”判定可创建；远端 discover/import 首期只接受显式目录。runtime 未启用或不可用时其上的 Workspace 不可用，创建 / 导入明确失败并说明原因。登记及 Session 快照用 `runtime_host` 固定控制侧宿主身份。尚未接入跨主机锁或文件同步。
 
 Workspace 的产品语义是 **runtime + directory + url**：`url` 是可选的项目关联（http/https 链接，不含用户名密码，≤2048），用于跨 Agent 交接和识别同一项目；它不是目录、凭据、授权或唯一键，填了也不克隆。
 

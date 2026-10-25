@@ -83,7 +83,7 @@ v2 是 beta2.2 节奏下的**breaking change**：旧的 `<action tool="...">` �
 | `cwd` | attr | 工作目录，必须在 workspace 之下 |
 | `timeout_ms` | attr | 超时（毫秒），被 `max_timeout_ms` 钳制 |
 | `env` | 不支持 attr | 需要环境变量请在 body 里写 `FOO=bar cmd ...` |
-| `target` | attr | 执行目标，默认 `local`，预留未来 tmux / 容器 |
+| `target` | attr | 执行目标，默认 `local`，预留未来容器 |
 
 实现：复用 [`ExecBashTool`](../../src/frame/agent_tool/src/llm_bash.rs)，仅 XML 适配层变更。
 

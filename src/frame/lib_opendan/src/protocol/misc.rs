@@ -34,7 +34,7 @@ pub struct Binding {
     pub schema: String,
     pub target: serde_json::Value,
     pub runtime_id: String,
-    /// `native | tmux`.
+    /// `native | remote_node`.
     pub kind: String,
     /// Absolute workdir for exec (the only place absolute paths are allowed
     /// besides `runs/`).

@@ -68,7 +68,7 @@ Input:
 Model:
   --provider buckyos|openai    --model <name>    --file-model <name>
   buckyos model names: llm.chat (logical) or model[:variant]@provider (exact)
-  --runtime native|tmux|remote_ssh|remote_node
+  --runtime native|remote_ssh|remote_node
                                       execution mechanism (connection fields from config)
   --loop-model function_call|behavior
   --tools | --no-tools         override every file-level tool switch

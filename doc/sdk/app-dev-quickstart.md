@@ -53,7 +53,7 @@ npx buckyos pikg info ./dapp_dist/app1-0.1.0.pikg
 
 系统环境有两条路径：使用 nightly 系统安装包，并完成激活和测试配置；或从源码构建、直接生成预设的 DV 配置。**快速迭代阶段推荐源码 DV**。npm 的 `buckyos` 是 SDK/CLI，不是 BuckyOS 系统安装包。
 
-以下为 macOS/Linux shell 示例；使用专门的开发机或 VM，不与正式运行的 BuckyOS 共用运行目录。先按仓库 [README](../../README.md#getting-started) 和 [devenv.py](../../devenv.py) 准备 Rust、Python 3.12、uv、Node/pnpm、Deno ≥ 2.2、tmux、Docker 等构建依赖。两个仓库放在同一父目录：
+以下为 macOS/Linux shell 示例；使用专门的开发机或 VM，不与正式运行的 BuckyOS 共用运行目录。先按仓库 [README](../../README.md#getting-started) 和 [devenv.py](../../devenv.py) 准备 Rust、Python 3.12、uv、Node/pnpm、Deno ≥ 2.2、Docker 等构建依赖。两个仓库放在同一父目录：
 
 ```bash
 git clone --branch main https://github.com/buckyos/cyfs-gateway.git

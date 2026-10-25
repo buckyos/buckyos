@@ -77,7 +77,7 @@ Behavior Loop 在下一个 Step 的 prompt 中消费的不是孤立的工具 std
 - 普通 bash 命令使用 `output`
 - 文本型 Agent Tool 如果主结果就是终端文本，可以使用 `output`，也可以使用字符串 `detail`
 - `output` 是纯文本，不要求 JSON，也不应要求 consumer 反序列化
-- `shell` 默认把 tmux / stdout / stderr 视角下用户会看到的输出收敛到 `output`
+- `shell` 默认把 stdout / stderr 视角下用户会看到的输出收敛到 `output`
 
 `detail` 表示：
 
@@ -546,7 +546,7 @@ read_file demo.txt range=1-20
 
 ## `shell` 约定
 
-`shell` 本身也是一个标准工具（`agent_tool::llm_bash::ShellTool`）。它在本 run 的 runtime（native / tmux / remote_ssh）里执行 bash 命令，并把执行结果转换成 `AgentToolResult`。
+`shell` 本身也是一个标准工具（`agent_tool::llm_bash::ShellTool`）。它在本 run 的 runtime（native / remote_ssh / remote_node）里执行 bash 命令，并把执行结果转换成 `AgentToolResult`。
 
 命令结束时的结果：
 
@@ -698,7 +698,7 @@ xllm 和 libopendan 共用的派发器 `agent_tool::xllm::XllmToolManager` 把�
 ### 打断与崩溃
 
 - 执行器只管理正在执行的工具调用。命令留下的进程（`&`、nohup、setsid、守护进程）在打断、超时、run 结束、恢复时都不被停止，也不被追杀。
-- 调用前宿主登记 in-flight 记录（run.json `inflight[]`），只有包含结果的 checkpoint 才清除。恢复时，没有持久化结果的调用被物化为“被打断、结果未知”的结果，不自动重放，也不核验或停止任何进程。文本由 `AgentRuntime::describe_interrupted` 按 runtime 生成：`shell` 读执行目录（native / tmux 为 `runs/<run_id>/exec/<call_id>/{command,stdout,stderr,exit}`，remote_ssh 在远端），已有 `exit` 时给出退出码和输出尾部，没有时说明命令可能仍在运行以及去哪里查看；其它工具给出通用的“结果未知”说明。
+- 调用前宿主登记 in-flight 记录（run.json `inflight[]`），只有包含结果的 checkpoint 才清除。恢复时，没有持久化结果的调用被物化为“被打断、结果未知”的结果，不自动重放，也不核验或停止任何进程。文本由 `AgentRuntime::describe_interrupted` 按 runtime 生成：`shell` 读执行目录（native 为 `runs/<run_id>/exec/<call_id>/{command,stdout,stderr,exit}`，remote_ssh 在远端），已有 `exit` 时给出退出码和输出尾部，没有时说明命令可能仍在运行以及去哪里查看；其它工具给出通用的“结果未知”说明。
 
 ## Agent 侧消费规则
 

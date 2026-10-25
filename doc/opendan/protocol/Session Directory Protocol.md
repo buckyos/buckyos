@@ -393,7 +393,7 @@ XML 的 `<report end="true">` 与工具 `is_end=true` 使用相同的宿主校�
 ## 9. binding.json 与 .runtime/bin
 
 ```jsonc
-{ "schema": "opendan.binding/4", "runtime_id": "rt-…", "kind": "native | tmux | remote_node", "target": {"host":"host:…", "uid":"1000"}, "workdir": "/abs", "workspace": null, "bound_at_ms": 0, "bound_by": "rn-…" }
+{ "schema": "opendan.binding/4", "runtime_id": "rt-…", "kind": "native | remote_node", "target": {"host":"host:…", "uid":"1000"}, "workdir": "/abs", "workspace": null, "bound_at_ms": 0, "bound_by": "rn-…" }
 ```
 
 - `runtime.frozen`（2026-10-23）：创建时由 `api::freeze_runtime` 一次解析并冻结的 runtime（Workspace 决定 > 显式 > 继承父 Session > Agent 默认），恢复与重试只用它，不再读 Agent 默认值；`kind` 为 `host_native | remote_node` 的 Session 经 Node Executor 执行，binding 的 `workdir` 是节点上的目录（`C:\…` 等按目标 OS 书写，控制侧不 canonicalize），`target` 含 node_did / profile_id / store_id / workdir_roots / identity_mode。幂等重建比较 `runtime.runtime_id()`：同 idempotency key 换 runtime 是冲突。
@@ -402,7 +402,7 @@ XML 的 `<report end="true">` 与工具 `is_end=true` 使用相同的宿主校�
 - workdir：有 Workspace 时只采用创建时固化的 `workspace_binding.location.directory`；显式 Runtime workdir 必须与它一致。无 Workspace 时采用 SessionDir。`binding.workspace` 保存同一快照；运行及恢复时核验稳定身份和位置修订，失效终态失败、不重绑。见 [Agent Workspace Protocol](<Agent Workspace Protocol.md>)。
 - binding.json 核验打开后的 runtime_id、kind、target、workdir，不只比较声明的 kind；每次推进都要幂等修复并核验环境：`.runtime/bin` 按期望集合（tool_plan 墓碑 + `agent-session` 包装脚本）重写，`.manifest.json`（条目 → sha256）最后写入；核验失败（缺文件、内容不符、不可执行）不得推理，下次推进修复。
 - 墓碑：`#!/bin/sh` 输出 `{"blocked_by":"tool_plan",...}` 与人读说明到 stderr，`exit 127`。
-- **tmux runtime 属于 Session**：`runtime_id`（配置、run 的 runtime descriptor、binding 三处）等于 session_id；tmux session 名由 session_id 导出（`od_` + 非 `[A-Za-z0-9_]` 字符替换为 `_`）。配置、`runtime.requirement.runtime_id` 或显式参数给出别的 id / 名称是配置错误，在创建目标和推理之前拒绝。首次绑定时目标不存在则创建、已存在则复用；已有 binding 时只 attach 绑定记录的目标，目标丢失或身份改变按绑定错误停止，不以同名新目标继续旧执行。目标上的 tmux 选项 `@opendan_session` 记录所属 session_id：两个 session_id 的名称规整后相同，后者被拒绝。同一 Session 的全部 Turn、behavior、子 context、fork 与恢复使用这一个目标；子 Session 继承的是配置，按自己的 session_id 得到自己的目标。创建 Session 不创建目标；run / Turn 结束与宿主退出不销毁它。
+- **runtime 属于 Session**：同一 Session 的全部 Turn、behavior、子 context、fork 与恢复使用同一个 runtime 与绑定；子 Session 继承父冻结的 runtime 与配置，首次推进时自己绑定。创建 Session 不绑定。
 
 共享 Runtime 来自 agent_tool::runtime，执行实现不再保留在 Session 层；Session 仅装配 bin/helper 与通用环境。prompt.llm_context.runtime 是构造配置，runtime.requirement 是绑定要求；推理、工具及旧执行恢复前先核验 binding。control workdir（run.json.workdir）与执行 cwd（config.runtime.workdir）分开保存。Session helper 未部署到远端时 remote_ssh 报 Capability，不把本地 bin 路径放进远端 PATH。节点 runtime（`remote_node`）的 Session 不把 bin 放进节点 PATH：`agent-session`、`llm_understand_media`、cmd_skill 命令等 helper 由控制侧按命令名分流到本地执行（`ControlSide`），凭据与 Agent State 操作留在控制侧；报告中列出的节点文件通过冻结的 Node Executor 分段读取到控制侧稳定副本，再上传对象库取得 obj_id；核验绑定的节点、profile、store 和执行身份，按节点的路径规则拒绝越出会话工作目录的符号链接，每段核对规范路径、整文件长度、分段长度和内容摘要。分段遵守 executor 的 max_file_bytes，不能截断大文件后作为成功产物提交。现有读取协议不提供跨分段文件快照，产物提交期间不得继续改写源文件。
 

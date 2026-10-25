@@ -110,7 +110,7 @@ CLI 伪工具不走 `AgentTool` trait 注册，只在 `agent_tool` 二进制内�
 
 ### Bash 支持
 
-`CallingConventions::ALL` —— bash / action / llm_tool_call 都支持。最常见入口是 LLM 直接调度，runtime 把它转成 tmux + bash 执行。
+`CallingConventions::ALL` —— bash / action / llm_tool_call 都支持。最常见入口是 LLM 直接调度，runtime 把它转成 bash 执行。
 
 ### CLI 命令解释 + 常用例子
 

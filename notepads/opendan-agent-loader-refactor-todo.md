@@ -26,7 +26,7 @@
 |---|---|---|
 | 推理循环、工具调用、快照、resume | `llm_context` + xllm | 不碰 |
 | Session 目录协议、lease、Turn、Context 调度、输入路由、崩溃恢复 | `libopendan::runner` | 只调用 `drive` / `host::serve` 一类入口 |
-| 工具执行环境（native / tmux / ssh） | `agent_tool::runtime` | 按配置选默认 runtime，交给 Session 工厂（xAgent §5.2.1） |
+| 工具执行环境（native / remote_ssh / remote_node） | `agent_tool::runtime` | 按配置选默认 runtime，交给 Session 工厂（xAgent §5.2.1） |
 | Agent State 文件布局与锁 | `libopendan::state`（`FsAgentStateClient`） | 持有实例，注册为进程内实现，并对外提供 kRPC |
 | behavior 冻结、Session 模板 | `libopendan::{state::behaviors, template}` | 不碰；素材来自 Agent 包 |
 | **进程启动、身份、AgentRoot 同步** | **OpenDAN** | §3.1 |
@@ -107,7 +107,7 @@ Loader 里不应该出现：提示词文本、behavior 名字的特判、对 LLM
 - 每个 Session 一个协程，循环 `drive(StopWhen::Idle)`；结果处理按 xAgent §9.6 的表（Busy 退避、阻塞类错误报告后退出该 Session、Idle 后检查待推进工作再决定等待或卸载）。
 - 唤醒：队列通知 + 有界轮询。通知只是加速，轮询兜底。
 - 子 Session：复用 `host::ChildDriver`，或把它的逻辑并进 Supervisor（同一个“按登记表找 `driver = me` 的未结束 Session”的循环）。实施时二选一，不要两套并存。
-- 每个 Session 用 `HostDeps::runner_deps` 装配自己的 runtime 依赖，不共享 tmux 实例（xAgent §5.2.1 第 6 条）。
+- 每个 Session 用 `HostDeps::runner_deps` 装配自己的 runtime 依赖（xAgent §5.2.1 第 6 条）。
 - Supervisor 对外暴露只读的托管状态（哪些 Session 在托管、上次 drive 结果、下一次唤醒原因），供 WebUI 展示。这份状态只在内存里，不是协议。
 
 优先直接使用 `libopendan::host::{serve, run_session, ChildDriver}`。它们是为 xagent CLI 写的；Loader 需要而它们没有的能力（动态增删托管目标、托管状态查询、按 Session 的 idle unload）在 `libopendan::host` 里扩展，xagent 与 OpenDAN 共用，不在 OpenDAN 里另写一份循环。
@@ -179,7 +179,7 @@ Loader 里不应该出现：提示词文本、behavior 名字的特判、对 LLM
 
 出站时以第 2 项为准；`state.reply` 给出的 `to` / `to_session` 若与第 2 项不一致，说明消息被投进了错的 Session，记错误并不发送。
 
-sid 由 `route_key` 派生（散列或规整，加一个代次），不直接用地址串：地址里有 `:`、`/`、`%`，而 sid 要进 kevent 路径和 tmux 名。
+sid 由 `route_key` 派生（散列或规整，加一个代次），不直接用地址串：地址里有 `:`、`/`、`%`，而 sid 要进 kevent 路径。
 
 同一个人从 MessageHub 和 Telegram 来是两个 inbox（DID 与 `to_session` 都不同），对应两个 UI Session。跨渠道认出是同一个人是 ContactMgr 的事，Loader 不合并会话，也不把联系人合并结果改写进 `from` / `to`。
 
@@ -279,7 +279,7 @@ Loader 自己不带任何写死的权限假设。它需要什么权限，取决�
 | 启动哪些 UI 入口、哪类消息进哪个模板 | `agent.toml [[loader.ui]]` | OpenDAN |
 | self-check / self-improve 开关与条件 | `agent.toml [loader.self_check]`、`[loader.self_improve]` | OpenDAN |
 | 需要的权限（msg-center、文件范围、联网、Agent State 访问规则） | `dapp_meta/app.json` 的 `permissions`（§4.4） | OpenDAN / 调度器 |
-| 默认 runtime（native / tmux）与环境 | `agent.toml [runtime]` → `prompt.llm_context.runtime` | Session 工厂 |
+| 默认 runtime 与环境 | `agent.toml [runtime]` → `prompt.llm_context.runtime` | Session 工厂 |
 | 工具与 CLI | 包内 `bin/`、`bash_tools` 声明、skill 目录 | Runtime / bin overlay |
 | 状态行、失败提示等文案 | `i18n/*.toml` | assembler |
 | memory / hints / workspace 能力 | 包内的 CLI 工具 + behavior 提示词（§5.4） | Runtime（经 `exec`） |
@@ -367,7 +367,7 @@ memory、workspace 以及以后的新能力，默认做成 **Agent 包里的 CLI
 9. **宿主的 SIGINT 不等于 stop Session**：常驻宿主退出只结束托管，Session 保留已提交状态；只有显式 stop 才结束 Session。
 10. **drive 的 future 很大**：在测试线程或小栈协程里会栈溢出，需要 `Box::pin`。
 11. **进程内 task 随宿主退出丢失**：重启后按 Unknown 回填，不重放。需要跨重启的长任务用可持久查询的外部 task。
-12. **tmux runtime 的 id 必须等于 sid**：显式给了别的 id 会 BindFailed；不同 Session 不共用 tmux 目标。
+12. ~~**tmux runtime 的 id 必须等于 sid**：显式给了别的 id 会 BindFailed；不同 Session 不共用 tmux 目标。~~ tmux runtime 已于 2026-10-25 全平台移除，本条作废。
 
 **消息与事件**
 

@@ -4,6 +4,8 @@
 
 状态：首版已实施。native、tmux、remote_ssh 已共享配置、构造、工具入口、环境信息与恢复检查；xAgent §5、SDK、PRD、模板文档及协议 schema/fixtures 已回写。policy/grant/approval 和其它执行体仍为后续规划。
 
+2026-10-25：按用户裁决，tmux runtime 已在全平台移除（`TmuxConfig` / `TmuxRuntime`、Session 绑定 tmux 的逻辑及相关测试均已删除，`kind: tmux` 为配置错误），当前 kind 为 `native` / `remote_ssh` / `remote_node`；长任务、取消与断连恢复复用 Node Executor 的操作记录、查询和取消。下文涉及 tmux 的已完成项仅作历史记录，不代表当前实现或后续方向。
+
 ## 1. 目标与边界
 
 把 Agent Runtime 从 libopendan 的 Session 层下移到 llm_context 层（`llm_context` crate + `agent_tool` / xllm 这一层），首版完成三个需求：
@@ -44,7 +46,7 @@ Runtime 长期包含**执行体与 policy** 两部分：执行体回答“在哪
 | kind | 执行位置与机制 | 实际用途 | 本期范围 |
 |---|---|---|---|
 | `native` | Runner 当前所在 OS / 容器内直接启动进程，使用当前用户权限；文件工具访问同一文件系统 | 本地开发、默认执行；Runner 在容器里时命令也在该容器里 | 实现，默认值 |
-| `tmux` | Runner 所在环境的指定 tmux session 内执行命令；文件工具使用与 native 相同的文件系统 | 保留可观察的终端会话，人工 attach 调试，创建或继承既有 session | 迁移已有实现并补齐指定 session 配置 |
+| `tmux` | Runner 所在环境的指定 tmux session 内执行命令；文件工具使用与 native 相同的文件系统 | 保留可观察的终端会话，人工 attach 调试，创建或继承既有 session | 首版已实施；2026-10-25 全平台移除 |
 | `remote_ssh` | 经 SSH 到指定机器 / SSH alias 执行命令与文件操作 | 使用开发机、服务器或另一台设备上的环境 | 细化并实现；首版远端目标为 Linux + bash |
 | `container` | 从 Runner 所在机器通过容器引擎进入本机一个指定的已有容器，例如 `docker exec` | 使用已有容器的工具链、依赖与文件系统；不负责创建新容器 | 规划，暂不实现 |
 | `container_host` | Runner / llm_context 在容器内，命令与文件操作在容器外的宿主机执行 | OpenDAN 在容器内运行时使用宿主环境；尤其包括 Windows 桌面上的宿主命令 | 规划；后续定义宿主连接机制与路径语义 |
@@ -69,7 +71,7 @@ BuckyOS Node 的命令执行接口不能直接假定具有完整文件工具能�
     env: { LANG: en_US.UTF-8 }
   ```
 
-  指定 tmux session：
+  指定 tmux session（2026-10-25 已移除，仅作历史记录）：
 
   ```yaml
   runtime:
@@ -177,7 +179,7 @@ policy 参考 Docker 的环境与资源配置，也参考 NVIDIA OpenShell 对�
 | 工具与授权 | 工具可见性、Do 前检查、ActionGuard / DenyList、临时 grant 与审批如何组合 |
 | 策略生效与审计 | 哪些项在启动时固定、哪些可动态更新；如何记录有效 revision、强制机制、拒绝原因与撤权结果 |
 
-不同执行体的强制能力不同：native / tmux 上的工具路径检查不能等同于容器隔离；SSH / HTTP 的策略必须由目标侧执行或提供可验证的能力，不能仅凭配置宣称已限制远端。后续设计有效 policy 与能力不足时报错的规则，再决定配置字段与 guard 接口。
+不同执行体的强制能力不同：native 上的工具路径检查不能等同于容器隔离；SSH / HTTP 的策略必须由目标侧执行或提供可验证的能力，不能仅凭配置宣称已限制远端。后续设计有效 policy 与能力不足时报错的规则，再决定配置字段与 guard 接口。
 
 `ToolSpec.effect` 统一与 libopendan `classify_effect` 迁移可在该阶段推进；本期继续使用现有分类记录 inflight。grant 与人工审批仍在 xAgent 阶段衔接，见 xAgent.md §5.4。
 
@@ -187,7 +189,7 @@ policy 参考 Docker 的环境与资源配置，也参考 NVIDIA OpenShell 对�
 
 | OpenShell 的处理方式与依据 | 对 AgentRuntime 的启发 |
 |---|---|
-| Compute driver 负责部署、通信通道与外围网络边界；可信 supervisor 在 workload 边界外作出 policy 决策；隔离 backend 提供共同的执行接口。[Architecture](https://docs.nvidia.com/openshell/about/architecture)、[Isolation Backends](https://docs.nvidia.com/openshell/extensibility/isolation-backends) | 执行体、policy 决策、强制机制分别建模；native / tmux / SSH / Node 的接入差异不应变成各自一套授权语义。 |
+| Compute driver 负责部署、通信通道与外围网络边界；可信 supervisor 在 workload 边界外作出 policy 决策；隔离 backend 提供共同的执行接口。[Architecture](https://docs.nvidia.com/openshell/about/architecture)、[Isolation Backends](https://docs.nvidia.com/openshell/extensibility/isolation-backends) | 执行体、policy 决策、强制机制分别建模；native / SSH / Node 的接入差异不应变成各自一套授权语义。 |
 | Linux workload 使用 Landlock 限制文件访问、降权与 seccomp 等进程机制，并由受控通道与代理处理出站连接。[Architecture](https://docs.nvidia.com/openshell/about/architecture) | ActionGuard 管工具调用授权；执行体约束覆盖命令及其子进程的实际 I/O。允许 `exec` 之后，文件和网络限制仍须生效；仅检查 `write_file` 参数覆盖不了 shell 中的写入。 |
 | 网络规则组合目标、端口、调用程序与可选请求检查；REST 可限制 method / path，MCP 可限制 method / tool，但当前 MCP 规则不匹配工具参数。请求规则有独立的 audit / enforce 模式。[Network Rules](https://docs.nvidia.com/openshell/dev/how-it-works/policies/network-rules) | 网络 policy 可细化到“允许这个程序调用这个 API”；业务资源、工具参数与 BuckyOS 权限仍需上层授权。观察到违规与真正阻断必须区分，不能把 audit 当成隔离。 |
 | Agent 环境中的凭据值使用占位符，由代理在允许的 HTTP 请求中解析；网络放行与凭据绑定是两次独立授权。[Providers](https://docs.nvidia.com/openshell/how-it-works/providers/overview) | 凭据应成为独立维度；能访问某服务不意味着可向其发送任意 token。后续评估目标绑定的凭据代理 / 服务授权，避免默认把宿主 token 放进任意 bash 的环境。 |
@@ -198,7 +200,7 @@ policy 参考 Docker 的环境与资源配置，也参考 NVIDIA OpenShell 对�
 ### 7.3 后续落地顺序与边界
 
 1. **先区分两种 policy 职责。** 工具授权处理调用、参数、业务资源、BuckyOS RBAC 与审批；执行体约束处理文件、进程、网络与凭据。二者协作，进程内 ActionGuard 不能独自保证任意 shell 程序的 I/O 范围。
-2. **定义要求、能力与生效结果。** 后续 policy 应明确所需强制能力；backend 无法提供时拒绝对应的受约束执行，不能静默降级。现有 tmux pane 与普通 SSH 连接不能仅靠配置获得完整隔离；SSH 的命令与 SFTP 文件通道也需纳入同一授权边界，不能只约束远端 bash。
+2. **定义要求、能力与生效结果。** 后续 policy 应明确所需强制能力；backend 无法提供时拒绝对应的受约束执行，不能静默降级。普通 SSH 连接不能仅靠配置获得完整隔离；SSH 的命令与 SFTP 文件通道也需纳入同一授权边界，不能只约束远端 bash。
 3. **明确组合与更新语义。** 记录声明策略、provider / grant 等贡献与目标实际采用的有效策略。最大授权边界与 Session / grant 的组合需单独定义，不能套用 runtime 连接字段的覆盖规则；OpenShell 的 global policy 是替换语义，本项目不直接照搬为权限上限。[Sandbox Policies](https://docs.nvidia.com/openshell/dev/how-it-works/policies/overview) 然后设计 revision / 生效确认 / 撤权 / 审计，区分启动固定项和动态项。
 4. **再评估实现复用。** OpenShell 可作为后续受约束执行 backend 的候选，也可仅借鉴 policy 与边界契约。其当前 workload 隔离依赖 Linux 机制；Windows 平台支持经 WSL 2，不能据此推断它已支持本项目的 Windows `container_host` 宿主命令隔离。[Support Matrix](https://docs.nvidia.com/openshell/about/support-matrix) 是否接入、接哪一层，待该阶段验证；本期仍按 native / tmux / remote_ssh 推进。
 
@@ -248,4 +250,4 @@ Session 接管额外保存并核验 runtime、PATH、环境和 bin manifest/help
 - `cargo check --workspace` 与 `uv run buckyos-build.py --skip-web` 通过。整仓 `cargo test --workspace -- --test-threads=1` 在链接阶段因现有磁盘空间不足（ENOSPC）未完成；已清理本轮生成的增量缓存/链接产物，相关模块测试重新通过。
 - schema 和 fixtures 由 Rust 参考实现重新生成；fixture 路径替换同步重算 worklog 字节边界，测试专用主机身份占位符不改变生产恢复核验。
 
-首版限制：SSH 目标需 Linux/bash/SFTP；libopendan 未部署远端 Session helper，选择 SSH 时明确能力错误，独立 xllm 可用。native/tmux 的 workspace 路径检查不构成 OS 隔离。SSH 不提供跨 Runner 的远端工作目录锁。policy、grant、approval 与其它类型按 §7/§8 后续评估；不提前冻结 daemon/HTTP 协议。2026-10-02 起恢复不做进程核验（长命令 TODO §3.2），native / tmux / SSH 都不再依赖 /proc 与 setsid；tmux 因此可在 macOS 上使用。
+首版限制：SSH 目标需 Linux/bash/SFTP；libopendan 未部署远端 Session helper，选择 SSH 时明确能力错误，独立 xllm 可用。native/tmux 的 workspace 路径检查不构成 OS 隔离。SSH 不提供跨 Runner 的远端工作目录锁。policy、grant、approval 与其它类型按 §7/§8 后续评估；不提前冻结 daemon/HTTP 协议。2026-10-02 起恢复不做进程核验（长命令 TODO §3.2），native / tmux / SSH 都不再依赖 /proc 与 setsid。tmux 已于 2026-10-25 全平台移除。

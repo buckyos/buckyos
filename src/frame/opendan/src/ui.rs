@@ -416,8 +416,7 @@ pub struct UiModule {
 }
 
 /// Session id of generation `generation` of the inbox `route_key`. The
-/// address itself has `:`, `/` and `%`; a session id goes into kevent paths
-/// and tmux names.
+/// address itself has `:`, `/` and `%`; a session id goes into kevent paths.
 pub fn ui_session_id(agent_did: &str, route_key: &str, generation: usize) -> String {
     format!(
         "ui-{}",

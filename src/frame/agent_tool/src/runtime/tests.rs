@@ -93,10 +93,14 @@ async fn open(
 
 #[test]
 fn config_merge_resolves_source_paths_and_resets_kind() {
-    let a=crate::xllm::parse_llm_context_file(Path::new("/one/.llm_context"),"runtime:\n  kind: tmux\n  workdir: work\n  env: {ONE: a}\n  tmux: {session: test, socket: sock}\n").unwrap();
+    let a = crate::xllm::parse_llm_context_file(
+        Path::new("/one/.llm_context"),
+        "runtime:\n  kind: remote_ssh\n  workdir: /srv/work\n  env: {ONE: a}\n  remote_ssh: {host: build, identity_file: key}\n",
+    )
+    .unwrap();
     let b = crate::xllm::parse_llm_context_file(
         Path::new("/two/.llm_context"),
-        "runtime:\n  env: {TWO: b}\n  tmux: {mode: attach}\n",
+        "runtime:\n  env: {TWO: b}\n  remote_ssh: {user: dev}\n",
     )
     .unwrap();
     let merged = crate::xllm::merge_config_layers(&[
@@ -110,22 +114,34 @@ fn config_merge_resolves_source_paths_and_resets_kind() {
         },
     ])
     .unwrap();
-    assert_eq!(merged.runtime.workdir.as_deref().map(Path::new), Some(Path::new("/one/work")));
+    assert_eq!(merged.runtime.workdir.as_deref(), Some("/srv/work"));
+    let ssh = merged.runtime.remote_ssh.as_ref().unwrap();
     assert_eq!(
-        merged.runtime.tmux.as_ref().unwrap().socket.as_deref().map(Path::new),
-        Some(Path::new("/one/sock"))
+        ssh.identity_file.as_deref().map(Path::new),
+        Some(Path::new("/one/key"))
     );
+    assert_eq!((ssh.host.as_deref(), ssh.user.as_deref()), (Some("build"), Some("dev")));
     assert_eq!(merged.runtime.env.len(), 2);
+    let local = crate::xllm::parse_llm_context_file(
+        Path::new("/one/.llm_context"),
+        "runtime: {kind: native, workdir: work}",
+    )
+    .unwrap();
+    assert_eq!(
+        local.runtime.unwrap().workdir.as_deref().map(Path::new),
+        Some(Path::new("/one/work"))
+    );
     let mut r = merged.runtime;
     r.merge_over(&RuntimeConfig {
         kind: Some("native".into()),
         ..Default::default()
     });
-    assert!(r.tmux.is_none() && r.env.is_empty() && r.workdir.is_none());
+    assert!(r.remote_ssh.is_none() && r.env.is_empty() && r.workdir.is_none());
     for raw in [
         "runtime: {kind: bad}",
+        "runtime: {kind: tmux}",
         "runtime: {kind: native, limits: {}}",
-        "runtime: {kind: native, tmux: {session: x}}",
+        "runtime: {kind: native, remote_ssh: {host: x}}",
     ] {
         assert!(matches!(
             crate::xllm::parse_llm_context_file(Path::new(".llm_context"), raw),
@@ -320,345 +336,6 @@ async fn native_default_explicit_env_files_and_prompt_share_executor() {
         ));
         assert!(!outside.path().join("new").exists());
     }
-}
-
-#[tokio::test]
-async fn tmux_modes_dedicated_pane_and_serial_execution() {
-    if !Runtime::available() {
-        return;
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let socket = dir.path().join("socket").display().to_string();
-    let cfg = RuntimeConfig {
-        kind: Some("tmux".into()),
-        tmux: Some(TmuxConfig {
-            session: Some("runtime-test".into()),
-            socket: Some(socket.clone()),
-            mode: Some(TmuxMode::Attach),
-        }),
-        ..Default::default()
-    };
-    let r = RuntimeRegistry::from_config(&cfg).unwrap();
-    let ctx = RuntimeOpenCtx::new(dir.path(), "test", LoopModel::FunctionCall);
-    assert!(r
-        .open(&ctx, &ToolsConfig::default(), &XllmDeps::default())
-        .await
-        .is_err());
-    let mut cfg = cfg;
-    cfg.tmux.as_mut().unwrap().mode = Some(TmuxMode::Create);
-    let (rt, m, slot) = open(
-        cfg.clone(),
-        dir.path(),
-        crate::xllm::FilesystemPolicy::Workspace,
-    )
-    .await;
-    let original = CommandOutput::pane(&socket, "runtime-test:0.0");
-    let o = m
-        .exec(
-            request(m.workdir(), "echo tmux; printf same > file"),
-            &context(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(o.stdout, "tmux\n");
-    assert_eq!(o.engine, "tmux");
-    let obs = m
-        .call_tool_t(call("read_file", json!({"path":"file"})))
-        .await
-        .unwrap();
-    assert!(format!("{obs:?}").contains("same"));
-    assert_eq!(original, CommandOutput::pane(&socket, "runtime-test:0.0"));
-    let bad = RuntimeRegistry::from_config(&cfg).unwrap();
-    assert!(bad
-        .open(&ctx, &ToolsConfig::default(), &XllmDeps::default())
-        .await
-        .is_err());
-    cfg.tmux.as_mut().unwrap().mode = Some(TmuxMode::CreateOrAttach);
-    let (second, _, _) = open(cfg, dir.path(), crate::xllm::FilesystemPolicy::Workspace).await;
-    assert_eq!(rt.descriptor(), second.descriptor());
-    // A command the executor stops waiting for keeps running in tmux; a
-    // timeout kills its window.
-    let mut long = request(m.workdir(), "sleep 30; echo late");
-    long.timeout_ms = 500;
-    long.call_id = Some("long".into());
-    let out = m.exec(long, &context()).await.unwrap();
-    assert!(out.timed_out);
-    let binding = slot.lock().unwrap().clone().unwrap();
-    let text = rt
-        .describe_interrupted(&binding, &inflight("long", "sleep 30; echo late"))
-        .await;
-    assert!(text.contains("tmux session `runtime-test`"), "{text}");
-    let _ = std::process::Command::new("tmux")
-        .args(["-S", &socket, "kill-server"])
-        .status();
-}
-
-#[tokio::test]
-async fn tmux_run_cancellation_keeps_the_command_running() {
-    if !Runtime::available() {
-        return;
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let socket = dir.path().join("socket").display().to_string();
-    struct Cleanup(String);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            let _ = std::process::Command::new("tmux")
-                .args(["-S", &self.0, "kill-server"])
-                .output();
-        }
-    }
-    let _cleanup = Cleanup(socket.clone());
-    let (_, manager, slot) = open(
-        RuntimeConfig {
-            kind: Some("tmux".into()),
-            tmux: Some(TmuxConfig {
-                session: Some("run-cancellation".into()),
-                socket: Some(socket),
-                mode: Some(TmuxMode::Create),
-            }),
-            ..Default::default()
-        },
-        dir.path(),
-        crate::xllm::FilesystemPolicy::Workspace,
-    )
-    .await;
-    let binding = slot.lock().unwrap().clone().unwrap();
-    for cause in ["interrupt", "finish", "deadline"] {
-        let handle = llm_context::LLMContextInterruptHandle::standalone();
-        let call_ctx = ToolCallCtx {
-            abort: handle.token(),
-            deadline_ms: (cause == "deadline").then(|| crate::now_ms() + 500),
-            allow_deferred: false,
-        };
-        let mut call = call(
-            TOOL_SHELL,
-            json!({"command": format!("echo started > {cause}.started; sleep 2; echo finished")}),
-        );
-        call.call_id = cause.into();
-        let manager = manager.clone();
-        let running = tokio::spawn(async move { manager.call_tool(call, call_ctx).await });
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while !dir.path().join(format!("{cause}.started")).exists() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("tmux command started");
-        match cause {
-            "interrupt" => {
-                handle.interrupt("test");
-            }
-            "finish" => {
-                handle.finish("test");
-            }
-            _ => {}
-        }
-        let observation = tokio::time::timeout(Duration::from_secs(1), running)
-            .await
-            .expect("run cancellation is prompt")
-            .unwrap()
-            .unwrap();
-        let llm_context::observation::Observation::Cancelled {
-            reason,
-            effect_unknown,
-            ..
-        } = observation
-        else {
-            panic!("expected cancelled, got {observation:?}");
-        };
-        assert!(!effect_unknown);
-        assert!(reason.contains("still running"), "{reason}");
-        assert!(
-            reason.contains("tmux session `run-cancellation`"),
-            "{reason}"
-        );
-        let exec = crate::llm_bash::exec_dir_for(binding.run_dir.as_deref(), Some(cause)).unwrap();
-        assert!(reason.contains(&exec.display().to_string()), "{reason}");
-        assert!(!exec.join("exit").exists());
-        tokio::time::timeout(Duration::from_secs(4), async {
-            while crate::llm_bash::read_exit_file(&exec).is_none() {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("detached command completes");
-        assert_eq!(crate::llm_bash::read_exit_file(&exec), Some(0));
-        assert!(std::fs::read_to_string(exec.join("stdout"))
-            .unwrap()
-            .contains("finished"));
-    }
-}
-
-struct CommandOutput;
-impl CommandOutput {
-    fn tmux(socket: &str, args: &[&str]) -> String {
-        let output = std::process::Command::new("tmux")
-            .args(["-S", socket])
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "{output:?}");
-        String::from_utf8(output.stdout).unwrap()
-    }
-
-    fn pane(socket: &str, pane: &str) -> Vec<u8> {
-        std::process::Command::new("tmux")
-            .args(["-S", socket, "capture-pane", "-p", "-t", pane])
-            .output()
-            .unwrap()
-            .stdout
-    }
-}
-
-#[tokio::test]
-async fn tmux_duplicate_window_names_cancel_only_the_requested_run() {
-    if !Runtime::available() {
-        return;
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let socket = dir.path().join("socket").display().to_string();
-    let target = Arc::new(
-        tmux::TmuxTarget::open(
-            &TmuxConfig {
-                session: Some("duplicates".into()),
-                socket: Some(socket.clone()),
-                mode: Some(TmuxMode::Create),
-            },
-            dir.path(),
-        )
-        .await
-        .unwrap(),
-    );
-    let mut handles = Vec::new();
-    for run_id in ["first", "second"] {
-        let slot = new_run_binding_slot();
-        *slot.lock().unwrap() = Some(RunBinding {
-            run_id: run_id.into(),
-            run_dir: Some(dir.path().join(run_id)),
-        });
-        let runner = tmux::TmuxBashRunner::new(target.clone(), BTreeMap::new(), slot);
-        let mut req = request(dir.path().to_str().unwrap(), "sleep 30");
-        req.call_id = Some("duplicate".into());
-        handles.push(runner.start(&context(), req).await.unwrap());
-    }
-    let windows = || {
-        CommandOutput::tmux(
-            &socket,
-            &[
-                "list-windows",
-                "-t",
-                "=duplicates",
-                "-F",
-                "#{window_id} #{window_name}",
-            ],
-        )
-        .lines()
-        .filter(|line| line.ends_with(" llm-duplicate"))
-        .map(str::to_string)
-        .collect::<Vec<_>>()
-    };
-    let original = windows();
-    assert_eq!(original.len(), 2);
-    assert!(handles[0]
-        .locator()
-        .contains(original[0].split_once(' ').unwrap().0));
-    assert!(handles[1]
-        .locator()
-        .contains(original[1].split_once(' ').unwrap().0));
-    assert!(handles[0].kill().await.unwrap().timed_out);
-    assert_eq!(windows(), vec![original[1].clone()]);
-    assert!(handles[1]
-        .wait(Duration::from_millis(50))
-        .await
-        .unwrap()
-        .is_none());
-    assert!(handles[1].kill().await.unwrap().timed_out);
-    assert!(windows().is_empty());
-    CommandOutput::tmux(&socket, &["kill-server"]);
-}
-
-#[tokio::test]
-async fn tmux_info_and_shell_use_the_session_environment() {
-    if !Runtime::available() {
-        return;
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let socket = dir.path().join("socket").display().to_string();
-    let tmux_cfg = TmuxConfig {
-        session: Some("environment".into()),
-        socket: Some(socket.clone()),
-        mode: Some(TmuxMode::Create),
-    };
-    tmux::TmuxTarget::open(&tmux_cfg, dir.path()).await.unwrap();
-    let path = format!(
-        "{}:{}",
-        dir.path().join("session-bin").display(),
-        std::env::var("PATH").unwrap()
-    );
-    let bash_env = dir.path().join("bash-env");
-    std::fs::write(
-        &bash_env,
-        format!("export PATH={}\nunset BASH_ENV\n", shell_quote(&path)),
-    )
-    .unwrap();
-    CommandOutput::tmux(
-        &socket,
-        &[
-            "set-environment",
-            "-t",
-            "=environment",
-            "BASH_ENV",
-            bash_env.to_str().unwrap(),
-        ],
-    );
-    CommandOutput::tmux(
-        &socket,
-        &["set-environment", "-t", "=environment", "TZ", "HST10"],
-    );
-    let config = RuntimeConfig {
-        kind: Some("tmux".into()),
-        tmux: Some(TmuxConfig {
-            mode: Some(TmuxMode::Attach),
-            ..tmux_cfg
-        }),
-        ..Default::default()
-    };
-    let (rt, manager, _) = open(
-        config.clone(),
-        dir.path(),
-        crate::xllm::FilesystemPolicy::Workspace,
-    )
-    .await;
-    assert_eq!(manager.runtime_info().unwrap().timezone, "HST-1000");
-    let out = manager
-        .exec(
-            request(manager.workdir(), "date +%Z%z; printf '%s' \"$PATH\""),
-            &context(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(out.stdout, format!("HST-1000\n{path}"));
-    CommandOutput::tmux(
-        &socket,
-        &["set-environment", "-t", "=environment", "TZ", "JST-9"],
-    );
-    assert_eq!(rt.info().await.unwrap().timezone, "JST+0900");
-    let mut override_config = config;
-    override_config.env.insert("TZ".into(), "UTC0".into());
-    let (rt, manager, _) = open(
-        override_config,
-        dir.path(),
-        crate::xllm::FilesystemPolicy::Workspace,
-    )
-    .await;
-    assert_eq!(rt.info().await.unwrap().timezone, "UTC+0000");
-    let out = manager
-        .exec(request(manager.workdir(), "date +%Z%z"), &context())
-        .await
-        .unwrap();
-    assert_eq!(out.stdout, "UTC+0000\n");
-    CommandOutput::tmux(&socket, &["kill-server"]);
 }
 
 fn ssh_config() -> RuntimeConfig {

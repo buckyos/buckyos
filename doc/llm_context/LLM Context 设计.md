@@ -823,7 +823,7 @@ pub struct LLMContextState {
 
 - **自包含**：给定 snapshot S 在节点 A 上产生，节点 B 只要提供等价 `LLMContextDeps`，就必须能成功 `resume(S, fill, deps)`。
 - **跨节点可序列化**：建议 < 32KB；超出时调用方走外部存储 + 在 snapshot 里只放引用 ID。
-- **不持有 effect-side 真实世界状态**：snapshot 只持有逻辑层产物（call_id / observation / accumulated / step / usage），**绝不**持有 tmux 句柄、fd、network connection、容器 PID。
+- **不持有 effect-side 真实世界状态**：snapshot 只持有逻辑层产物（call_id / observation / accumulated / step / usage），**绝不**持有进程句柄、fd、network connection、容器 PID。
 - **input 已展开**：跨节点 resume 不依赖任何模板环境。模板展开发生在 L4。
 
 > **工程提醒**：如果你想往 snapshot 里塞"句柄""指针""长生命态引用"，停下来——那些东西属于 `LLMContextDeps`（resume 时重新提供），不属于 snapshot。

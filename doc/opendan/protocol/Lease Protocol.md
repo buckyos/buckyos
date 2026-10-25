@@ -49,12 +49,12 @@ fenced(lease, write): held() 为真才执行受保护的写入与副作用
 
 ## 5. 锁保护的边界：在途动作
 
-文件锁只保证协作 runner 之间状态写入互斥。runner 被 `kill -9` 时锁立即释放，但它启动的工具进程可能仍在运行。接管方**不核验、不停止**这些进程（标准父子进程语义，长命令 TODO §3.2）：命令留下的进程（`&`、nohup、setsid、守护进程）本来就不归 run 管；正在执行的命令在 native 下通常随执行器一起结束，但不保证；tmux / remote_ssh 下按设计继续运行。接管方只把没有持久结果的在途动作物化为“被打断、结果未知”，由模型判断下一步：
+文件锁只保证协作 runner 之间状态写入互斥。runner 被 `kill -9` 时锁立即释放，但它启动的工具进程可能仍在运行。接管方**不核验、不停止**这些进程（标准父子进程语义，长命令 TODO §3.2）：命令留下的进程（`&`、nohup、setsid、守护进程）本来就不归 run 管；正在执行的命令在 native 下通常随执行器一起结束，但不保证；remote_ssh / remote_node 下按设计继续运行。接管方只把没有持久结果的在途动作物化为“被打断、结果未知”，由模型判断下一步：
 
-1. **执行目录**：`shell` 命令把 `command`、`stdout`、`stderr`、`exit`（结束时写）写进由 `(run, call_id)` 推导的执行目录（native / tmux：`runs/<run_id>/exec/<call_id>`；remote_ssh：远端 `/tmp/llm-runtime-<uid>/<run_id>/<call_id>`），不经管道，执行器退出不会让命令收到 SIGPIPE。
-2. **物化文本按 runtime 生成**（`AgentRuntime::describe_interrupted`）：native 给出命令与开始时间，说明命令可能已部分执行、通常随执行器结束但不保证、它启动的后台进程不受影响；tmux / remote_ssh 读执行目录，已有 `exit` 时给出退出码与输出尾部，没有时说明“可能仍在运行”以及输出文件、`exit` 文件与 tmux 目标 / 远端目录的位置；远端连不上时如实说明。这些结果都是“被打断”，不是 Success。
+1. **执行目录**：`shell` 命令把 `command`、`stdout`、`stderr`、`exit`（结束时写）写进由 `(run, call_id)` 推导的执行目录（native：`runs/<run_id>/exec/<call_id>`；remote_ssh：远端 `/tmp/llm-runtime-<uid>/<run_id>/<call_id>`），不经管道，执行器退出不会让命令收到 SIGPIPE。
+2. **物化文本按 runtime 生成**（`AgentRuntime::describe_interrupted`）：native 给出命令与开始时间，说明命令可能已部分执行、通常随执行器结束但不保证、它启动的后台进程不受影响；remote_ssh 读执行目录，已有 `exit` 时给出退出码与输出尾部，没有时说明“可能仍在运行”以及输出文件、`exit` 文件与远端目录的位置；remote_node 按 run 中保存的 locator 向 Node Executor 查询该操作，不重放、不杀旧 PID；远端连不上时如实说明。这些结果都是“被打断”，不是 Success。
 3. **不重放**：模型可以自己查看（`ps`、日志、`exit` 文件）再决定重试、等待还是继续。run 锁照旧防止两个执行器同时跑同一个 run。
-4. **取消**：打断只处理正在执行的命令——native 结束其进程组；tmux 停止等待，命令继续；remote_ssh 用记录的 pid `kill`。取消动作本身失败时结果为 `effect_unknown`。
+4. **取消**：打断只处理正在执行的命令——native 结束其进程组；remote_ssh 用记录的 pid `kill`；remote_node 经 Node Executor 取消该操作。取消动作本身失败时结果为 `effect_unknown`。
 5. **auto 模式的 task**：超过 `wait_ms` 的 `shell` 命令转为进程内 task（`local:shell:<call_id>`），不再属于 run；run 被打断、结束或接手都不停止它。接手方按 task_id 查执行目录，读到 `exit` 就给结果，否则返回 Unknown，不阻塞恢复。
 6. **在途动作**：`inflight[]` 在工具开始前 fsync；只有包含其结果（或显式 `Unresolved`）的快照发布后才清除（快照 fsync 与 run.json 发布是同一次原子写入里清除）。异常、取消、runner 退出都不提前清除。恢复时，已有持久结果的调用不得再标为未知；没有结果的调用以“结果未知”物化到快照（function call：补 assistant 调用 + tool 结果；behavior：补齐或新增一个 step）并先持久化，再推理。**不重放工具。**
 

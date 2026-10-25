@@ -12,7 +12,7 @@
 //!   active session view, perception, cognition facade, artifact list).
 //! - [`channel`]: kmsg inputs + kevent wake-ups.
 //! - [`bridge`]: msg-center / task state → Session Input Bus records.
-//! - [`runtime`]: execution environments for `exec` (native, tmux).
+//! - [`runtime`]: execution environments for `exec` (native, Node Executor).
 //! - [`runner`]: drives a session to its end condition.
 //! - [`goal`]: Goals and their Goal Sessions (derivation, run
 //!   opportunities, budgets); the Goal object is in [`state::GoalStore`].

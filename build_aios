@@ -18,7 +18,7 @@ SUPPORTED_ARCHES=("amd64" "aarch64")
 # tool package of the ExtTool volume (publish/exttool/install_pandoc.sh).
 RUNTIME_PACKAGES=(
   "bash" "ca-certificates" "curl" "git" "jq" "rsync"
-  "tmux" "tree" "unzip" "xz-utils"
+  "tree" "unzip" "xz-utils"
   "python3"
   "ffmpeg" "imagemagick" "poppler-utils" "tesseract-ocr"
 )

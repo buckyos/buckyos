@@ -45,7 +45,7 @@ cd buckyos
 
 To develop the SDK/CLI locally, also clone `buckyos-websdk` alongside these repositories with `git clone --branch main https://github.com/buckyos/buckyos-websdk.git`. This checkout is optional; without it, the build uses the published npm package `buckyos@latest`.
 
-The build needs a stable Rust toolchain and platform C/C++ build tools, Python 3.12+, `uv`, Node.js with npm and pnpm, and Deno. Container applications need Docker, or [WSL containers on Windows](doc/windows_wslc.md) without Docker Desktop; tmux is used by development tools. The current CI uses Node.js 24, pnpm 10.13.1, and Deno 2.9.2.
+The build needs a stable Rust toolchain and platform C/C++ build tools, Python 3.12+, `uv`, Node.js with npm and pnpm, and Deno. Container applications need Docker, or [WSL containers on Windows](doc/windows_wslc.md) without Docker Desktop. The current CI uses Node.js 24, pnpm 10.13.1, and Deno 2.9.2.
 
 To bootstrap the platform dependencies, inspect and run [`devenv.py`](devenv.py):
 

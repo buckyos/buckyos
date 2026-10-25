@@ -65,7 +65,7 @@ Agent Tool 的实现不能反向依赖 Agent 相关基础设施。
 - 需要路径、URL、token、session id、workspace id 等上下文时，应作为 arguments 或显式 runtime env 输入进入工具
 - 工具返回 `AgentToolResult`，但不应该知道这个结果之后会被哪个 Agent 或哪种 prompt 压缩策略消费
 - 即使工具处理的是 session、todo、worklog 这类 Agent 领域对象，实现上也应把它们当作普通文件、数据库记录或网络资源来操作
-- 内置组里的工具在本 run 的 runtime 中执行：文件工具经 `runtime::files::FileBackend` 读写，命令经 runtime 的 `BashRunner`，因此同一份实现可以跑在 native、tmux 或 remote_ssh 上
+- 内置组里的工具在本 run 的 runtime 中执行：文件工具经 `runtime::files::FileBackend` 读写，命令经 runtime 的 `BashRunner`，因此同一份实现可以跑在 native、remote_ssh 或 remote_node 上
 - 调用期间的取消与时限来自 `ToolCallCtx`，工具不自己维护取消监听或 deadline；会在调用返回后继续运行的工作交给 task 管理器并返回 `task_id`，不要直接返回 `pending`
 
 ## 2. Function Call Schema
@@ -622,7 +622,7 @@ detail 常见字段：
 
 用途：
 
-- 在本 run 的 runtime（native / tmux / remote_ssh）中以 bash 语法执行命令
+- 在本 run 的 runtime（native / remote_ssh / remote_node）中以 bash 语法执行命令
 - 执行方式由配置决定，不由模型选择
 
 配置（`.llm_context` 的 `tools.shell`，详见 [xllm Rust SDK §3](<../xllm_rust_sdk.md>)）：
@@ -657,11 +657,10 @@ detail 常见字段：
 
 打断、平滑结束、run deadline（`ToolCallCtx`）：
 
-- native、remote_ssh：结束命令（native 整个进程组 SIGKILL，remote_ssh 按记录的 pid kill），返回 `AgentToolError::Cancelled`，说明可能已有部分副作用
-- tmux：只停止等待，命令继续在自己的 window 里运行，返回的说明包含 session / window 和执行目录
+- native、remote_ssh、remote_node：结束命令（native 整个进程组 SIGKILL，remote_ssh 按记录的 pid kill，remote_node 请求目标 Executor 取消并等待确认），返回 `AgentToolError::Cancelled`，说明可能已有部分副作用；remote_node 未确认停止时返回 `Transport`（`effect_unknown`）
 - 命令留下的后台进程（`&`、nohup、setsid、守护进程）在任何情况下都不被追杀
 
-执行目录：每条命令写 `command` / `stdout` / `stderr` / `exit` 到执行目录（native / tmux：`runs/<run_id>/exec/<call_id>/`；remote_ssh：`/tmp/llm-runtime-<uid>/<run_id>/<call_id>/`）。执行器崩溃后，恢复时据此生成“被打断”的结果，task 也可从这里读回结果。
+执行目录：每条命令写 `command` / `stdout` / `stderr` / `exit` 到执行目录（native：`runs/<run_id>/exec/<call_id>/`；remote_ssh：`/tmp/llm-runtime-<uid>/<run_id>/<call_id>/`）。执行器崩溃后，恢复时据此生成“被打断”的结果，task 也可从这里读回结果。
 
 ## 6. task 工具
 

@@ -56,17 +56,18 @@ Desktop `host` 与默认 Agent 容器仍是系统重点交付的两个主要工�
 
 ### 1.1 Windows host 的平台差异与降级边界
 
-Linux 容器依赖多入口可执行文件、符号链接、shell wrapper 和 tmux 等机制。Windows host 保证核心任务可完成，命令包装和终端体验允许采用平台原生实现。以下是待落实的设计边界，不代表 Windows 已完成适配。
+Linux 容器依赖多入口可执行文件、符号链接和 shell wrapper 等机制。Windows host 保证核心任务可完成，命令包装和终端体验允许采用平台原生实现。以下是待落实的设计边界，不代表 Windows 已完成适配。
+
+2026-10-25 用户裁决：有了正式 Agent Runtime（Node Executor 的进程/任务管理）后，tmux 执行隔离没有意义，tmux runtime 已在全平台移除（代码已删，`kind: tmux` 为配置错误），不为 Windows 仿制替代。
 
 | 能力 | Linux 容器机制 | Windows host 目标与可接受的降级 |
 | --- | --- | --- |
 | 一个程序提供多个工具入口 | `opendan` 按调用名称分派，`agent_tool` / `xagent` 链接到同一程序；媒体工具也按 launcher 名称选择子命令 | 复用同一业务实现，提供 `.exe` launcher、适用的脚本入口或显式子命令。快捷别名可以减少，但必须有可用的规范调用方式及对应手册；不把符号链接权限作为前置条件。 |
 | Session helper 与环境 | `#!/bin/sh`、`exec`、`$@`、Unix PATH / 可执行权限 | 使用适合实际 Windows shell 的入口、参数转发与路径处理，仍传递正确的 Agent / Session 上下文；不能仅将 shell 脚本换名为 `.cmd`。 |
-| shell 语法与脚本 | bash / POSIX 工具、管道和重定向 | 按实际 PowerShell 版本提供命令示例和组合语义，不保证 bash 脚本原样可执行；不把 WSL、Git Bash 或 tmux 作为默认必装依赖。需要 Linux 的任务由规划选择合适环境，明确绑定与文件交接，不在执行中临时替换 standard。 |
-| 与 Session 绑定的 tmux | 选用 tmux runtime 时，以 Session ID 派生 tmux session，每次 shell 调用创建自己的窗口，可附着观察 | Windows host 沿用 Node Executor 的进程/任务方式；首期允许没有 tmux 的 attach、窗口管理和终端交互体验。Agent Session 的身份、状态、日志、结果归属不随之丢失。 |
-| 长任务与中断恢复 | tmux 提供执行进程与调用者解耦，配合输出文件和执行记录恢复 | 复用 Executor 的操作记录、查询和取消能力；逐项验证断连、Runner 退出、Executor 重启的行为。无法恢复的运行明确报告，不宣称等价于 tmux 存活保证，也不盲目重放未知结果的调用。 |
+| shell 语法与脚本 | bash / POSIX 工具、管道和重定向 | 按实际 PowerShell 版本提供命令示例和组合语义，不保证 bash 脚本原样可执行；不把 WSL 或 Git Bash 作为默认必装依赖。需要 Linux 的任务由规划选择合适环境，明确绑定与文件交接，不在执行中临时替换 standard。 |
+| 长任务与中断恢复 | 不再依赖 tmux，与右列同一要求 | 全平台复用 Executor 的操作记录、查询和取消能力；逐项验证断连、Runner 退出、Executor 重启的行为。无法恢复的运行明确报告，不宣称等价于 tmux 的进程存活保证，也不盲目重放未知结果的调用。 |
 
-Agent Session、tmux session 和持久 shell 不是同一个概念。Windows 缺少 tmux 不等于没有 Agent Session；也不能默认任一平台在不同 shell 调用之间保留上次 `cd`、环境变量或交互程序状态。
+Agent Session 和持久 shell 不是同一个概念；不能默认任一平台在不同 shell 调用之间保留上次 `cd`、环境变量或交互程序状态。
 
 ### 1.2 cmd_skills 同时描述自己的能力与目标操作条件
 
@@ -90,7 +91,7 @@ Agent Session、tmux session 和持久 shell 不是同一个概念。Windows 缺
 | [runtime/node.rs](../src/frame/agent_tool/src/runtime/node.rs) 的 `leading_program` / `ControlSide::takes` | 只按开头的程序名分流整条 shell。`agent-session …` 与 `cd … && agent-session …` 可能执行在不同端，脚本、管道、子进程内调用无法靠此规则完整覆盖。 |
 | [build_aios](../build_aios)、[bucky_project.yaml](../src/bucky_project.yaml) | `aicc-tool` / `gen_image` 等 TS 工具及 launcher 主要由 AIOS 镜像安装；宿主分发了部分 Rust CLI、SDK/Deno，不等于 Desktop host 已具备完整工具集和 PATH。 |
 | [OpenDAN 入口](../src/frame/opendan/src/main.rs)、[bin_overlay](../src/frame/lib_opendan/src/runtime/bin_overlay.rs)、[AICC launcher](../publish/aios/aicc-tool) | 多入口分派已识别平台可执行后缀，但 Session helper 仍生成 `#!/bin/sh` 脚本，AICC launcher 也依赖 shell。存在 `.exe` 名称处理不等于 Windows 原生命令入口已适配。 |
-| [tmux runtime](../src/frame/agent_tool/src/runtime/tmux.rs)、[Session runtime](../src/frame/lib_opendan/src/runtime/mod.rs)、[spawn](../src/kernel/node_executor/src/spawn.rs) | tmux 实现调用 `tmux` 和 `bash`；Session 只有选用该 runtime 时才绑定 tmux。host 的 `remote_node` 路径不要求 tmux，Windows Executor 已有 PowerShell 与 Job Object 进程管理。 |
+| [agent_tool runtime](../src/frame/agent_tool/src/runtime/mod.rs)、[Session runtime](../src/frame/lib_opendan/src/runtime/mod.rs)、[spawn](../src/kernel/node_executor/src/spawn.rs) | 2026-10-25 已删除 tmux runtime 及 Session 绑定 tmux 的逻辑，runtime kind 只剩 `native`、`remote_ssh`、`remote_node`。host 的 `remote_node` 路径经 Node Executor，Windows Executor 已有 PowerShell 与 Job Object 进程管理。 |
 | [Executor 环境规则](../src/kernel/buckyos-api/src/node_executor.rs)、[spawn](../src/kernel/node_executor/src/spawn.rs)、[ops](../src/kernel/node_executor/src/ops.rs) | 节点调用过滤 `BUCKYOS_*` / `OPENDAN_*` / `XLLM_*` 等环境变量；Unix shell 清理环境且不加载 profile，默认 PATH 不包含 OpenDAN 安装目录。仅复制程序不能保证命令发现和 Agent 鉴权。 |
 | [llm_understand_media](../src/frame/agent_tool/src/llm_understand_media.rs) | 本地文件输入使用执行进程所在端的文件系统。回控制侧运行时，不会自动读取 host 刚生成的文件。 |
 | [runtime 登记检查](../src/frame/lib_opendan/src/state/runtimes.rs) | 节点检查主要是连接、登录、describe 和根目录/能力读取；`available` 不表示内置工具齐全。 |
@@ -179,14 +180,14 @@ Agent Session、tmux session 和持久 shell 不是同一个概念。Windows 缺
 ### T6：同步手册与实现文档
 
 - [ ] 更新 `opendan_agent_dev`、`ui_core`、`buckyos_admin`、`xllm`、`aigc_image`、`aigc_audio`、`aigc_video`；核对其他引用 SDK、工具源码路径或默认容器前提的 cmd_skills。
-- [ ] 使两种 standard 环境中的示例可执行，并补充显式 target 操作、双向复制和交付示例；各步骤使用实际执行端的 OS/shell、路径与入口，写明 tmux 等平台差异。
+- [ ] 使两种 standard 环境中的示例可执行，并补充显式 target 操作、双向复制和交付示例；各步骤使用实际执行端的 OS/shell、路径与入口，写明平台差异。
 - [ ] 同步 Agent 开发指南、Session/runtime 文档和 Desktop/容器分发说明。若调整共享协议或能力字段，同步 `buckyos-api`、服务实现、SDK 与 UI 消费方。
 
 ### T7：落实 Windows 适配与降级
 
 - [ ] 对照 §1.1，为 Windows 选择最小可用的 launcher / 子命令方案，复用现有程序入口；明确支持的 PowerShell 版本，不默认所有 Windows shell 都支持 `&&`。验证命令发现、参数引用、中文/空格路径及退出码，不以文件存在代替可执行验证。
-- [ ] 复用现有 PowerShell / Job Object / Executor 任务机制，不为工具基线新增一套 Windows tmux 仿制实现；交互终端增强能力另行评估。
-- [ ] 将 Agent Session 上下文绑定与 tmux 绑定分开核验；没有 tmux 时，Session 命令、日志、任务查询/取消和产物归属仍正常工作，恢复边界明确报告。
+- [ ] 复用现有 PowerShell / Job Object / Executor 任务机制，不做 tmux 替代实现；交互终端增强能力另行评估。
+- [ ] 核验 Windows 上 Session 命令、日志、经 Executor 的任务查询/取消和产物归属正常工作，恢复边界明确报告。
 - [ ] 区分 Windows 作为 standard 与作为 target 的验收；Linux standard 操作 Windows target 时，保留 standard 的 Linux 工具步骤，对 target 使用 Windows 命令，通过复制交换文件。Windows standard 无法完成的 Linux 专属任务明确报告并由规划选择合适环境，不静默换端。
 
 ### T8：将 cmd_skills 接入 standard / target 两端条件
@@ -214,7 +215,7 @@ Agent Session、tmux session 和持久 shell 不是同一个概念。Windows 缺
 - [ ] **独立故障**：控制面仍工作且 target 在线时，standard 离线不阻断独立 target 诊断；target 离线时 standard 仍可继续独立加工，交付状态如实保留待处理/失败。
 - [ ] **长任务与恢复**：分别验证两端的查询、取消、超时、Runner 退出和 Executor 重启；恢复回原操作所在端，Agent 修改默认 standard 后旧任务不换机器重跑。旧 Session 记录按已讨论的格式策略处理。
 - [ ] **主要环境交付**：干净 Desktop host 与默认容器分别作为 standard 验证清单、SDK/CLI 挂载、`agent-session`、`buckyos`、`agent_tool xllm` 和媒体调用；检查 Agent 身份及续期。缺工具、版本不匹配与 provider/权限问题准确区分。
-- [ ] **Windows 边界**：Windows standard 无 WSL/Git Bash/tmux/额外符号链接权限仍可使用规范入口；无 tmux 不丢 Agent Session 状态。另测 Linux standard + Windows target 的显式命令、双向文件复制与交付，记录实际 OS/架构覆盖。
+- [ ] **Windows 边界**：Windows standard 无 WSL/Git Bash/额外符号链接权限仍可使用规范入口，Agent Session 状态不丢失。另测 Linux standard + Windows target 的显式命令、双向文件复制与交付，记录实际 OS/架构覆盖。
 - [ ] **双端 skills**：target 没有媒体工具时仍可选 standard 加工并交付的 skill；只依赖 target 编译器的 skill 按 target 实际能力匹配。不支持、未知、服务临时失败分别报告。
 - [ ] **继承与冻结**：父/子 Session 共享 standard、改变 target 或其 Workspace 时，按规则重新解析 skill；Agent 级 standard 配置变更后的新旧 Session 按 D1 的决策处理。旧 Session 保留冻结正文，目录升级不改变其既有执行位置。
 - [ ] **回归**：系统/镜像升级后重跑基线、单端与双端最小闭环；实施代码后按影响范围运行相关 Rust、打包、SDK/UI 测试及真实环境验收，记录未实测项。
@@ -224,3 +225,5 @@ Agent Session、tmux session 和持久 shell 不是同一个概念。Windows 缺
 本次仅重写 TODO：以“自己的稳定电脑 + 可选目标电脑”为设计方向，把方案讨论放到最高优先级，列出单 runtime 假设的扩展范围、双向文件复制以及双端 cmd_skills 的影响。保留工具基线和 Windows 差异要求，但实施安排须先经过 §3 的方案讨论。
 
 未修改 runtime、分发、协议或 cmd_skills 实现；本文只核对链接、格式与内部设计表述，没有执行运行时测试。上述讨论决策、代码实施和验收均未完成。
+
+2026-10-25 回写：按用户裁决移除 tmux 口径。§1.1 删去“与 Session 绑定的 tmux”行，长任务与中断恢复改为全平台复用 Node Executor；§2 源码表改为 tmux runtime 已删除；T6、T7 与 §5 Windows 边界不再以 tmux 为参照。代码侧的删除已在同日完成。

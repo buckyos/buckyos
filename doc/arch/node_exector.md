@@ -70,7 +70,7 @@
 | `src/kernel/node_daemon/src/app_loader.rs` | 部分 Worker 仍把宿主 `$BUCKYOS_ROOT/storage/` 以 rw 挂入容器；Agent 已有独立 storage 映射 | **Executor 的私有状态不能依赖全局 storage/ 的访问隔离** |
 | `src/kernel/node_daemon/src/run_item.rs` | `RunItemControl{deploy, start, stop, get_state}` 与 `ensure_run_item_state` | Thunk 的"一个实例"语义可复用其状态观测方式，但 thunk 不是长驻服务 |
 | `src/kernel/node_daemon/src/kevent_server.rs` | daemon 已托管 `/kapi/kevent` HTTP | 可复用 listener，不复用其信任假设 |
-| `src/frame/agent_tool/src/runtime/mod.rs` | `AgentRuntime` 有 descriptor/open/describe_interrupted；registry 只构造 native/tmux/remote_ssh | `remote_node` 作为新 kind，Node 实现由宿主注入 |
+| `src/frame/agent_tool/src/runtime/mod.rs` | `AgentRuntime` 有 descriptor/open/describe_interrupted；registry 只构造 native/remote_ssh | `remote_node` 作为新 kind，Node 实现由宿主注入 |
 | `src/frame/agent_tool/src/llm_bash.rs`、`tasks.rs` | `BashRunner::start` → `CommandHandle{wait, progress, kill, detach}`，auto shell 走进程内 task manager | Command Stream 客户端要实现远端 CommandHandle |
 | `src/kernel/node_daemon/src/boot.rs`、`doc/arch/02_boot_and_activation.md` | 设备在 `node_identity` 里保存激活时的 owner key；Zone 不可达时从 DNS TXT 取 `ZoneBootConfig`（含 `owner`/`owner_key`/`extra_info`）并用该 key 验签 | 恢复声明的发现与验证机制**已存在**，本文只定义声明内容 |
 | `cyfs-gateway/doc/rtcp/rtcp.md`、`rtcp rely.md` | Tunnel 上多路 Stream，每流独立 AEAD key；透明中转保持端到端点对点语义；tunnel key epoch 24 h 后需重建 | Command Stream 直接跑在 RTCP Stream 上；中转不需要在应用层复制流 |
