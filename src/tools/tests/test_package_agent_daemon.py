@@ -1,6 +1,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tarfile
 import tempfile
@@ -84,7 +85,8 @@ class AgentDaemonPackageTests(unittest.TestCase):
                     self.assertEqual(checksum, hashlib.sha256(archive.read_bytes()).hexdigest())
                     launcher = archive.with_name("start-buckyos-agent-daemon.sh")
                     self.assertTrue(launcher.is_file())
-                    self.assertTrue(launcher.stat().st_mode & 0o100)
+                    if os.name != "nt":  # Windows has no executable bit
+                        self.assertTrue(launcher.stat().st_mode & 0o100)
                     with tarfile.open(archive) as tar:
                         members = {member.name.split("/", 1)[1]: member for member in tar.getmembers() if "/" in member.name}
                         self.assertEqual(set(members), {"buckyos_agent_daemon", "service.sh", "README.md", "manifest.json"})
