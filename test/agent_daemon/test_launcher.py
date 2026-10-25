@@ -3,17 +3,20 @@ import io
 import json
 import os
 from pathlib import Path
+import platform
 import subprocess
 import tarfile
 import tempfile
 import unittest
 
 LAUNCHER = Path(__file__).resolve().parents[2] / "src/rootfs/bin/buckyos-agent-daemon/start-buckyos-agent-daemon.sh"
+# The launcher picks the target from uname -m; the test archive must be named for this host.
+TARGET = {"x86_64": "x86_64-unknown-linux-musl", "aarch64": "aarch64-unknown-linux-gnu"}[platform.machine()]
 
 
 def release_archive(path: Path, version: str = "9.9.9") -> str:
     """Write a release-shaped archive: one directory holding the daemon, manifest and service script."""
-    root = f"buckyos-agent-daemon-{version}-x86_64-unknown-linux-musl"
+    root = f"buckyos-agent-daemon-{version}-{TARGET}"
     with tarfile.open(path, "w:gz") as archive:
         directory = tarfile.TarInfo(root)
         directory.type = tarfile.DIRTYPE
@@ -21,7 +24,7 @@ def release_archive(path: Path, version: str = "9.9.9") -> str:
         archive.addfile(directory)
         for name, value in {
             "buckyos_agent_daemon": b'#!/bin/sh\nprintf "%s\\n" "$$" "$1"\n',
-            "manifest.json": json.dumps({"version": version, "target": "x86_64-unknown-linux-musl"}, indent=2).encode(),
+            "manifest.json": json.dumps({"version": version, "target": TARGET}, indent=2).encode(),
             "service.sh": b'#!/bin/sh\nexit 0\n',
             "README.md": b"# test\n",
         }.items():
@@ -51,7 +54,7 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         binary = Path(result.stdout.strip())
         self.assertTrue(binary.is_file())
-        self.assertEqual(binary.parent.name, f"9.9.9-x86_64-unknown-linux-musl-{self.digest}")
+        self.assertEqual(binary.parent.name, f"9.9.9-{TARGET}-{self.digest}")
         self.assertTrue((binary.parent / "service.sh").is_file())
         result = self.run_launcher("wss://zone.invalid/manage#top-secret")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -72,7 +75,7 @@ class LauncherTests(unittest.TestCase):
 
     def test_archive_without_daemon_is_rejected(self):
         with tarfile.open(self.archive, "w:gz") as archive:
-            item = tarfile.TarInfo("buckyos-agent-daemon-9.9.9-x86_64-unknown-linux-musl/manifest.json")
+            item = tarfile.TarInfo(f"buckyos-agent-daemon-9.9.9-{TARGET}/manifest.json")
             item.size = 2
             archive.addfile(item, io.BytesIO(b"{}"))
         result = self.run_launcher("--download-only", digest=hashlib.sha256(self.archive.read_bytes()).hexdigest())
