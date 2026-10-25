@@ -8,7 +8,7 @@
 //! modules), so a path swapped after resolution cannot redirect the I/O
 //! outside the roots.
 
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, BufRead, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
 use buckyos_api::{
@@ -16,6 +16,7 @@ use buckyos_api::{
     ExecutorPathType, ExecutorWriteMode,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 pub const WORKER_ARG: &str = "--executor-worker";
 
@@ -42,6 +43,8 @@ pub enum WorkerJob {
         roots: Vec<String>,
         mode: ExecutorWriteMode,
         expected_hash: Option<String>,
+        #[serde(default)]
+        expected_size: Option<u64>,
         content_length: u64,
         max_bytes: u64,
     },
@@ -57,6 +60,18 @@ pub enum WorkerJob {
         roots: Vec<String>,
     },
     Stat {
+        path: String,
+        roots: Vec<String>,
+        #[serde(default)]
+        hash: bool,
+    },
+    Rename {
+        from: String,
+        to: String,
+        replace: bool,
+        roots: Vec<String>,
+    },
+    Remove {
         path: String,
         roots: Vec<String>,
     },
@@ -227,6 +242,7 @@ fn execute(job: WorkerJob, input: &mut impl Read) -> Result<(WorkerReply, Vec<u8
             roots,
             mode,
             expected_hash,
+            expected_size,
             content_length,
             max_bytes,
         } => {
@@ -241,7 +257,22 @@ fn execute(job: WorkerJob, input: &mut impl Read) -> Result<(WorkerReply, Vec<u8
             }
             create_parents(&path, &roots)?;
             let target = Target::open(&path, &roots)?;
+            if mode == ExecutorWriteMode::Append {
+                let file = append(&target, &upload, expected_size, expected_hash.as_deref())?;
+                return Ok((
+                    WorkerReply {
+                        file: Some(file),
+                        ..Default::default()
+                    },
+                    Vec::new(),
+                ));
+            }
             let existing = target.read_existing(max_bytes)?;
+            if let Some(expected) = expected_size {
+                if existing.as_ref().map(|(old, _)| old.len() as u64) != Some(expected) {
+                    return Err(err(ExecutorErrorCode::Conflict, format!("{path} changed (expected_size mismatch)")));
+                }
+            }
             if let Some(expected) = &expected_hash {
                 match &existing {
                     Some((old, _)) if &executor_content_hash(old) == expected => {}
@@ -251,11 +282,6 @@ fn execute(job: WorkerJob, input: &mut impl Read) -> Result<(WorkerReply, Vec<u8
             let new_content = match (mode, &existing) {
                 (ExecutorWriteMode::CreateNew, Some(_)) => {
                     return Err(err(ExecutorErrorCode::Conflict, format!("{path} already exists")))
-                }
-                (ExecutorWriteMode::Append, Some((old, _))) => {
-                    let mut v = old.clone();
-                    v.extend_from_slice(&upload);
-                    v
                 }
                 _ => upload.clone(),
             };
@@ -343,12 +369,12 @@ fn execute(job: WorkerJob, input: &mut impl Read) -> Result<(WorkerReply, Vec<u8
                 original,
             ))
         }
-        WorkerJob::Stat { path, roots } => {
+        WorkerJob::Stat { path, roots, hash } => {
             if !crate::is_host_absolute(&path) {
                 return Err(err(ExecutorErrorCode::InvalidArgument, format!("{path} is not absolute")));
             }
             let roots = canonical_roots(&roots);
-            let (real, path_type) = match std::fs::metadata(&path) {
+            let (real, path_type, size) = match std::fs::metadata(&path) {
                 Ok(meta) => {
                     let real = std::fs::canonicalize(&path).map_err(|e| io_err(&path, e))?;
                     let kind = if meta.is_dir() {
@@ -358,20 +384,103 @@ fn execute(job: WorkerJob, input: &mut impl Read) -> Result<(WorkerReply, Vec<u8
                     } else {
                         ExecutorPathType::Other
                     };
-                    (real, kind)
+                    (real, kind, if meta.is_file() { meta.len() } else { 0 })
                 }
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                    (missing_parent_target(&path, &roots)?, ExecutorPathType::Missing)
+                    (missing_parent_target(&path, &roots)?, ExecutorPathType::Missing, 0)
                 }
                 Err(e) => return Err(io_err(&path, e)),
             };
             ensure_under(&real, &roots, &path)?;
+            let (size, hash) = if hash && path_type == ExecutorPathType::File {
+                let mut file = std::fs::File::open(&real).map_err(|e| io_err(&path, e))?;
+                let opened = sys::opened_path(&file).map_err(|e| io_err(&path, e))?;
+                ensure_under(&opened, &roots, &path)?;
+                let size = file.metadata().map_err(|e| io_err(&path, e))?.len();
+                let mut hasher = Sha256::new();
+                hash_prefix(&mut file, size, &mut hasher).map_err(|e| io_err(&path, e))?;
+                (size, format!("sha256:{:x}", hasher.finalize()))
+            } else {
+                (size, String::new())
+            };
             Ok((
                 WorkerReply {
                     path: Some(sys::display(&real)),
                     file: Some(ExecutorFileResult {
                         path: sys::display(&real),
+                        size,
+                        hash,
                         path_type: Some(path_type),
+                        ..Default::default()
+                    }),
+                    file_size: size,
+                    ..Default::default()
+                },
+                Vec::new(),
+            ))
+        }
+        WorkerJob::Rename { from, to, replace, roots } => {
+            let roots = canonical_roots(&roots);
+            let source = Target::entry(&from, &roots)?;
+            let size = match source.kind()? {
+                (ExecutorPathType::File, size) => size,
+                (ExecutorPathType::Missing, _) => {
+                    return Err(err(ExecutorErrorCode::NotFound, format!("{from}: file not found")))
+                }
+                _ => return Err(err(ExecutorErrorCode::InvalidArgument, format!("{from} is not a regular file"))),
+            };
+            let dest = Target::entry(&to, &roots)?;
+            if dest.real_path() == source.real_path() {
+                return Err(err(ExecutorErrorCode::InvalidArgument, "rename source and destination are the same"));
+            }
+            let replaced = match dest.kind()?.0 {
+                ExecutorPathType::Missing => false,
+                ExecutorPathType::File if replace => true,
+                ExecutorPathType::File => {
+                    return Err(err(ExecutorErrorCode::Conflict, format!("{to} already exists")))
+                }
+                _ => return Err(err(ExecutorErrorCode::Conflict, format!("{to} exists and is not a regular file"))),
+            };
+            source.rename_to(&dest, replace)?;
+            Ok((
+                WorkerReply {
+                    path: Some(sys::display(&dest.real_path())),
+                    file: Some(ExecutorFileResult {
+                        path: sys::display(&dest.real_path()),
+                        size,
+                        created: !replaced,
+                        changed: true,
+                        path_type: Some(ExecutorPathType::File),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                Vec::new(),
+            ))
+        }
+        WorkerJob::Remove { path, roots } => {
+            let roots = canonical_roots(&roots);
+            let parent_exists = Path::new(&path).parent().is_some_and(|p| p.exists());
+            let (real, changed) = if !parent_exists {
+                (missing_parent_target(&path, &roots)?, false)
+            } else {
+                let target = Target::entry(&path, &roots)?;
+                match target.kind()?.0 {
+                    ExecutorPathType::Missing => (target.real_path(), false),
+                    ExecutorPathType::File => {
+                        target.remove()?;
+                        (target.real_path(), true)
+                    }
+                    _ => return Err(err(ExecutorErrorCode::InvalidArgument, format!("{path} is not a regular file"))),
+                }
+            };
+            Ok((
+                WorkerReply {
+                    path: Some(sys::display(&real)),
+                    file: Some(ExecutorFileResult {
+                        path: sys::display(&real),
+                        changed,
+                        path_type: Some(ExecutorPathType::Missing),
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -412,6 +521,112 @@ fn execute(job: WorkerJob, input: &mut impl Read) -> Result<(WorkerReply, Vec<u8
             ))
         }
     }
+}
+
+/// `write` in `append` mode: the existing file is extended in place, never
+/// loaded, so a transfer can grow it beyond max_file_bytes chunk by chunk.
+/// `expected_hash` costs a pass over the existing content; `expected_size`
+/// does not. A missing file matches neither.
+fn append(
+    target: &Target,
+    data: &[u8],
+    expected_size: Option<u64>,
+    expected_hash: Option<&str>,
+) -> Result<ExecutorFileResult, ExecutorError> {
+    let shown = sys::display(&target.real_path());
+    let (mut file, created) = match target.open_append()? {
+        Some(file) => (file, false),
+        None if expected_size.is_some() || expected_hash.is_some() => {
+            return Err(err(ExecutorErrorCode::Conflict, format!("{shown} is missing")))
+        }
+        None => (target.create_append()?, true),
+    };
+    let meta = file.metadata().map_err(|e| io_err(&shown, e))?;
+    if !meta.is_file() {
+        return Err(err(ExecutorErrorCode::InvalidArgument, format!("{shown} is not a regular file")));
+    }
+    let size = meta.len();
+    if expected_size.is_some_and(|expected| expected != size) {
+        return Err(err(
+            ExecutorErrorCode::Conflict,
+            format!("{shown} is {size} bytes, not {} (expected_size mismatch)", expected_size.unwrap_or(0)),
+        ));
+    }
+    let mut hasher = None;
+    let mut previous_hash = None;
+    if let Some(expected) = expected_hash {
+        let mut h = Sha256::new();
+        hash_prefix(&mut file, size, &mut h).map_err(|e| io_err(&shown, e))?;
+        let previous = format!("sha256:{:x}", h.clone().finalize());
+        if previous != expected {
+            return Err(err(ExecutorErrorCode::Conflict, format!("{shown} changed (expected_hash mismatch)")));
+        }
+        previous_hash = Some(previous);
+        hasher = Some(h);
+    }
+    file.write_all(data)
+        .and_then(|_| file.sync_all())
+        .map_err(|e| io_err(&shown, e))?;
+    if created {
+        target.sync_dir();
+    }
+    let hash = hasher
+        .map(|mut h| {
+            h.update(data);
+            format!("sha256:{:x}", h.finalize())
+        })
+        .unwrap_or_default();
+    Ok(ExecutorFileResult {
+        path: shown,
+        size: size + data.len() as u64,
+        hash,
+        previous_hash,
+        created,
+        changed: created || !data.is_empty(),
+        bytes_written: data.len() as u64,
+        line: None,
+        replacements: 0,
+        path_type: Some(ExecutorPathType::File),
+    })
+}
+
+fn hash_prefix(file: &mut std::fs::File, len: u64, hasher: &mut Sha256) -> io::Result<()> {
+    file.seek(io::SeekFrom::Start(0))?;
+    let mut rest = len;
+    let mut buf = vec![0u8; 64 * 1024];
+    while rest > 0 {
+        let n = file.read(&mut buf[..(rest as usize).min(64 * 1024)])?;
+        if n == 0 {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "file shrank while hashing"));
+        }
+        hasher.update(&buf[..n]);
+        rest -= n as u64;
+    }
+    Ok(())
+}
+
+/// The real location of `path`: with `follow` an existing entry resolves to
+/// what it points at (a write goes through a symlink), without it only the
+/// parent is resolved and the entry itself is named.
+fn resolve_entry(path: &str, follow: bool) -> Result<PathBuf, ExecutorError> {
+    if !crate::is_host_absolute(path) {
+        return Err(err(ExecutorErrorCode::InvalidArgument, format!("{path} is not absolute")));
+    }
+    if follow {
+        match std::fs::canonicalize(path) {
+            Ok(p) => return Ok(p),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(io_err(path, e)),
+        }
+    }
+    let p = Path::new(path);
+    let parent = p
+        .parent()
+        .ok_or_else(|| err(ExecutorErrorCode::InvalidArgument, format!("{path} has no parent")))?;
+    let name = p
+        .file_name()
+        .ok_or_else(|| err(ExecutorErrorCode::InvalidArgument, format!("{path} has no file name")))?;
+    Ok(std::fs::canonicalize(parent).map_err(|e| io_err(path, e))?.join(name))
 }
 
 /// Apply edits in order with edit_file semantics: each `old_string` must occur

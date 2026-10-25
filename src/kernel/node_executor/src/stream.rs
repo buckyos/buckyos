@@ -667,6 +667,36 @@ async fn handle_request(
             .await;
             send_op_reply(out, req.request_id, reply, true).await;
         }
+        ExecutorClientMessage::Rename(req) => {
+            let spec = ExecutorOpSpec::from_rename(&req);
+            let reply = submit(
+                inner,
+                session,
+                ExecutorOp::Rename,
+                &req.store_id,
+                (&req.run_id, &req.call_id, &req.op_id),
+                spec,
+                None,
+                watched,
+            )
+            .await;
+            send_op_reply(out, req.request_id, reply, true).await;
+        }
+        ExecutorClientMessage::Remove(req) => {
+            let spec = ExecutorOpSpec::from_remove(&req);
+            let reply = submit(
+                inner,
+                session,
+                ExecutorOp::Remove,
+                &req.store_id,
+                (&req.run_id, &req.call_id, &req.op_id),
+                spec,
+                None,
+                watched,
+            )
+            .await;
+            send_op_reply(out, req.request_id, reply, true).await;
+        }
         ExecutorClientMessage::Cancel(req) => {
             let reply = match authorize(inner, session, ExecutorOp::Cancel, Some(&req.store_id)) {
                 Ok((grant, _)) => {

@@ -199,6 +199,10 @@ pub struct ExecutorWriteRequest {
     pub mode: ExecutorWriteMode,
     #[serde(default)]
     pub expected_hash: Option<String>,
+    /// The target's current size must be this (a missing file has none):
+    /// orders the chunks of an `append` transfer without rehashing.
+    #[serde(default)]
+    pub expected_size: Option<u64>,
     pub content_length: u64,
     pub content_hash: String,
 }
@@ -233,8 +237,8 @@ pub struct ExecutorEditRequest {
     pub expected_hash: Option<String>,
 }
 
-/// `mkdir` and `stat`: the minimal directory operations a control side
-/// needs to place a workspace on the node (integration TODO §3.4).
+/// `mkdir` and `remove`: create a directory a control side places a
+/// workspace or session in (integration TODO §3.4); delete a regular file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutorPathRequest {
@@ -244,6 +248,36 @@ pub struct ExecutorPathRequest {
     pub run_id: String,
     pub call_id: String,
     pub path: String,
+}
+
+/// `stat`: what a path is, its size, and with `hash` the whole file's hash.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutorStatRequest {
+    pub request_id: String,
+    pub store_id: String,
+    pub op_id: String,
+    pub run_id: String,
+    pub call_id: String,
+    pub path: String,
+    #[serde(default)]
+    pub hash: bool,
+}
+
+/// `rename`: move a regular file; an existing `to` is replaced only with
+/// `replace`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutorRenameRequest {
+    pub request_id: String,
+    pub store_id: String,
+    pub op_id: String,
+    pub run_id: String,
+    pub call_id: String,
+    pub from: String,
+    pub to: String,
+    #[serde(default)]
+    pub replace: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -307,7 +341,9 @@ pub enum ExecutorClientMessage {
     UploadEnd(ExecutorUploadEnd),
     Edit(ExecutorEditRequest),
     Mkdir(ExecutorPathRequest),
-    Stat(ExecutorPathRequest),
+    Stat(ExecutorStatRequest),
+    Rename(ExecutorRenameRequest),
+    Remove(ExecutorPathRequest),
     Computer(ExecutorComputerRequest),
     Cancel(ExecutorOpRef),
     Query(ExecutorQueryRequest),
@@ -324,7 +360,9 @@ impl ExecutorClientMessage {
             ExecutorClientMessage::Write(m) => Some(&m.request_id),
             ExecutorClientMessage::UploadEnd(m) => Some(&m.request_id),
             ExecutorClientMessage::Edit(m) => Some(&m.request_id),
-            ExecutorClientMessage::Mkdir(m) | ExecutorClientMessage::Stat(m) => Some(&m.request_id),
+            ExecutorClientMessage::Mkdir(m) | ExecutorClientMessage::Remove(m) => Some(&m.request_id),
+            ExecutorClientMessage::Stat(m) => Some(&m.request_id),
+            ExecutorClientMessage::Rename(m) => Some(&m.request_id),
             ExecutorClientMessage::Computer(m) => Some(&m.request_id),
             ExecutorClientMessage::Cancel(m) => Some(&m.request_id),
             ExecutorClientMessage::Query(m) => Some(&m.request_id),
@@ -413,6 +451,8 @@ pub enum ExecutorOpKind {
     Edit,
     Mkdir,
     Stat,
+    Rename,
+    Remove,
     ComputerInspect,
     ComputerObserve,
     ComputerAct,
@@ -427,6 +467,8 @@ impl ExecutorOpKind {
             ExecutorOpKind::Edit => ExecutorOp::Edit,
             ExecutorOpKind::Mkdir => ExecutorOp::Mkdir,
             ExecutorOpKind::Stat => ExecutorOp::Stat,
+            ExecutorOpKind::Rename => ExecutorOp::Rename,
+            ExecutorOpKind::Remove => ExecutorOp::Remove,
             ExecutorOpKind::ComputerInspect => ExecutorOp::ComputerInspect,
             ExecutorOpKind::ComputerObserve => ExecutorOp::ComputerObserve,
             ExecutorOpKind::ComputerAct => ExecutorOp::ComputerAct,
@@ -480,7 +522,8 @@ pub struct ExecutorFileResult {
     pub line: Option<u64>,
     #[serde(default)]
     pub replacements: u64,
-    /// `stat` / `mkdir`: what the path is after the operation.
+    /// `stat` / `mkdir` / `rename` / `remove`: what the path (`to` of a
+    /// rename) is after the operation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path_type: Option<ExecutorPathType>,
 }
@@ -637,6 +680,8 @@ pub enum ExecutorOpSpec {
         path: String,
         mode: ExecutorWriteMode,
         expected_hash: Option<String>,
+        #[serde(default)]
+        expected_size: Option<u64>,
         content_length: u64,
         content_hash: String,
     },
@@ -649,6 +694,16 @@ pub enum ExecutorOpSpec {
         path: String,
     },
     Stat {
+        path: String,
+        #[serde(default)]
+        hash: bool,
+    },
+    Rename {
+        from: String,
+        to: String,
+        replace: bool,
+    },
+    Remove {
         path: String,
     },
 }
@@ -667,6 +722,8 @@ impl ExecutorOpSpec {
             ExecutorOpSpec::Edit { .. } => ExecutorOpKind::Edit,
             ExecutorOpSpec::Mkdir { .. } => ExecutorOpKind::Mkdir,
             ExecutorOpSpec::Stat { .. } => ExecutorOpKind::Stat,
+            ExecutorOpSpec::Rename { .. } => ExecutorOpKind::Rename,
+            ExecutorOpSpec::Remove { .. } => ExecutorOpKind::Remove,
         }
     }
 
@@ -674,8 +731,20 @@ impl ExecutorOpSpec {
         ExecutorOpSpec::Mkdir { path: req.path.clone() }
     }
 
-    pub fn from_stat(req: &ExecutorPathRequest) -> Self {
-        ExecutorOpSpec::Stat { path: req.path.clone() }
+    pub fn from_stat(req: &ExecutorStatRequest) -> Self {
+        ExecutorOpSpec::Stat { path: req.path.clone(), hash: req.hash }
+    }
+
+    pub fn from_rename(req: &ExecutorRenameRequest) -> Self {
+        ExecutorOpSpec::Rename {
+            from: req.from.clone(),
+            to: req.to.clone(),
+            replace: req.replace,
+        }
+    }
+
+    pub fn from_remove(req: &ExecutorPathRequest) -> Self {
+        ExecutorOpSpec::Remove { path: req.path.clone() }
     }
 
     pub fn from_exec(req: &ExecutorExecRequest) -> Self {
@@ -700,6 +769,7 @@ impl ExecutorOpSpec {
             path: req.path.clone(),
             mode: req.mode,
             expected_hash: req.expected_hash.clone(),
+            expected_size: req.expected_size,
             content_length: req.content_length,
             content_hash: req.content_hash.clone(),
         }

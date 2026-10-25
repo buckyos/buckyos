@@ -595,3 +595,94 @@ async fn ssh_saved_target_rejects_alias_redirect_with_same_id() {
         .unwrap();
     assert_eq!(out.stdout, "pinned");
 }
+
+#[tokio::test]
+async fn native_runtime_files_stream_guard_and_commit() {
+    use files::{LocalFileBackend, PathType, RuntimeFiles, WholeWriteMode, WriteChunk};
+    use buckyos_api::{executor_content_hash, ExecutorErrorCode};
+    let dir = tempfile::tempdir().unwrap();
+    let files = LocalFileBackend;
+    let p = |name: &str| dir.path().join(name).to_string_lossy().to_string();
+    let chunk = |mode, expected_size, expected_hash, data| WriteChunk { mode, expected_size, expected_hash, data };
+
+    let first = files.write_chunk(&p("sub/a.part"), chunk(WholeWriteMode::CreateNew, None, None, b"hello ")).await.unwrap();
+    assert!(first.created);
+    assert_eq!(first.hash.as_deref(), Some(executor_content_hash(b"hello ").as_str()));
+    let second = files.write_chunk(&p("sub/a.part"), chunk(WholeWriteMode::Append, Some(6), None, b"world")).await.unwrap();
+    assert_eq!((second.size, second.hash.is_none(), second.created), (11, true, false));
+    let stale = files.write_chunk(&p("sub/a.part"), chunk(WholeWriteMode::Append, Some(6), None, b"world")).await;
+    assert_eq!(stale.unwrap_err().code, ExecutorErrorCode::Conflict);
+    let prefix = executor_content_hash(b"hello world");
+    let hashed = files
+        .write_chunk(&p("sub/a.part"), chunk(WholeWriteMode::Append, None, Some(&prefix), b"!"))
+        .await
+        .unwrap();
+    assert_eq!(hashed.hash.as_deref(), Some(executor_content_hash(b"hello world!").as_str()));
+    let missing = files.write_chunk(&p("none"), chunk(WholeWriteMode::Append, Some(0), None, b"x")).await;
+    assert_eq!(missing.unwrap_err().code, ExecutorErrorCode::Conflict);
+    assert!(!dir.path().join("none").exists());
+
+    let stat = files.stat(&p("sub/a.part"), true).await.unwrap();
+    assert_eq!((stat.path_type, stat.size), (PathType::File, 12));
+    assert_eq!(stat.hash.as_deref(), Some(executor_content_hash(b"hello world!").as_str()));
+    assert_eq!(files.stat(&p("sub"), true).await.unwrap().path_type, PathType::Directory);
+    assert_eq!(files.stat(&p("nothing"), false).await.unwrap().path_type, PathType::Missing);
+    let range = files.read_range(&p("sub/a.part"), 6, 100).await.unwrap();
+    assert_eq!((range.data.as_slice(), range.file_size), (&b"world!"[..], 12));
+    let too_big = files.read_range(&p("sub/a.part"), 0, files.limits().max_chunk_bytes + 1).await;
+    assert_eq!(too_big.unwrap_err().code, ExecutorErrorCode::InvalidArgument);
+
+    files.rename(&p("sub/a.part"), &p("sub/a"), false).await.unwrap();
+    assert_eq!(std::fs::read(dir.path().join("sub/a")).unwrap(), b"hello world!");
+    files.write_chunk(&p("b"), chunk(WholeWriteMode::Replace, None, None, b"b")).await.unwrap();
+    assert_eq!(files.rename(&p("b"), &p("sub/a"), false).await.unwrap_err().code, ExecutorErrorCode::Conflict);
+    files.rename(&p("b"), &p("sub/a"), true).await.unwrap();
+    assert_eq!(std::fs::read(dir.path().join("sub/a")).unwrap(), b"b");
+    assert_eq!(files.rename(&p("b"), &p("c"), false).await.unwrap_err().code, ExecutorErrorCode::NotFound);
+    assert_eq!(files.rename(&p("sub"), &p("d"), false).await.unwrap_err().code, ExecutorErrorCode::InvalidArgument);
+    assert!(files.remove(&p("sub/a")).await.unwrap());
+    assert!(!files.remove(&p("sub/a")).await.unwrap());
+    assert_eq!(files.remove(&p("sub")).await.unwrap_err().code, ExecutorErrorCode::InvalidArgument);
+    assert_eq!(files.stat("relative", false).await.unwrap_err().code, ExecutorErrorCode::InvalidArgument);
+}
+
+#[tokio::test]
+async fn runtime_info_carries_platform_shell_kind_and_declared_baseline() {
+    let probe = |os: &str, shell: &str| RuntimeInfo {
+        os: os.into(),
+        shell: shell.into(),
+        ..Default::default()
+    };
+    let mac = probe("darwin", "/bin/zsh").with_declared(None);
+    assert_eq!((mac.platform.as_str(), mac.shell_kind.as_str(), mac.baseline.as_str()), ("macos", "zsh", ""));
+    let win = probe("windows", r"C:\Program Files\PowerShell\7\pwsh.exe").with_declared(Some(RuntimeBaseline::Extended));
+    assert_eq!((win.platform.as_str(), win.shell_kind.as_str(), win.baseline.as_str()), ("windows", "pwsh", "extended"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut config: RuntimeConfig = serde_json::from_value(json!({"baseline": "standard"})).unwrap();
+    config.workdir = Some(dir.path().display().to_string());
+    assert!(serde_json::from_value::<RuntimeConfig>(json!({"baseline": "full"})).is_err());
+    let mut merged = RuntimeConfig::default();
+    merged.merge_over(&config);
+    assert_eq!(merged.baseline, Some(RuntimeBaseline::Standard));
+    let rt = RuntimeRegistry::from_config(&config).unwrap();
+    let info = rt.info().await.unwrap();
+    assert_eq!(info.baseline, "standard");
+    assert_eq!(info.platform, std::env::consts::OS);
+    assert_eq!(info.template_values()["baseline"], "standard");
+    let hosted = crate::xllm::XllmTask::prepare_hosted(
+        dir.path(),
+        &json!({"runtime": rt.config(), "tools": {"enabled": true}}),
+        &dir.path().join("session_config.json").display().to_string(),
+        "SHELL_KIND={{runtime.shell_kind}}",
+        &crate::xllm::XllmDeps::default().with_runtime(rt.clone()),
+    )
+    .await
+    .unwrap();
+    assert!(hosted.prompt.system_prompt.contains(&format!("SHELL_KIND={}", info.shell_kind)));
+    let contexts = |info: &RuntimeInfo| {
+        crate::xllm::build_contexts_system_text(&crate::xllm::TemplateEnv::for_new_run(info), &BTreeMap::new()).unwrap()
+    };
+    assert!(contexts(&info).contains("Environment baseline: standard"));
+    assert!(!contexts(&RuntimeInfo { os: "linux".into(), ..Default::default() }).contains("Environment baseline"));
+}

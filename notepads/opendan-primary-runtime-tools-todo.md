@@ -1,229 +1,297 @@
-# OpenDAN Standard / Target Runtime 设计与工具保障 TODO
+# OpenDAN Session Runtime（Agent 自己的电脑）与 Workspace 解耦 TODO
 
-日期：2026-10-24
+日期：2026-10-25（v2，按用户设计决策重写；v1 为 2026-10-24 的 standard / target 讨论稿）
 
-状态：**优先完成方案讨论，尚未进入代码实施。** 本次将原来的内置工具保障任务提升为 Session 执行模型设计：从“一个 Session 一个 runtime”扩展为“Agent 的稳定 standard runtime + Session 可选的 target runtime”。下文区分设计方向、待讨论决策、源码基线和方案确定后的实施候选项。
+状态：**设计方向（§0）与待定项（§6）均已拍板，类型草案与时序见 §6.2–6.3；实施顺序见 §7，T0 已于 2026-10-25 实施（未提交，记录在 [llm_context AgentRuntime TODO §11](llm-context-agent-runtime-todo.md#11-session-runtime-先行项2026-10-25-实施)）。** 本文承接 [Agent Runtime 集成 Session / Workspace](agent-runtime-session-workspace-integration-todo.md)（2026-10-23 已实施并提交）之后的下一步：把“一个 Session 一个 runtime、Workspace 决定 runtime”扩展为“Session 带着自己的 session-runtime 去 Workspace 上班”。
 
-## 0. 当前优先级与讨论产出
+## 0. 设计决策（2026-10-25 用户拍板）
 
-先完成 §3 的方案讨论，记录决策和接口/数据结构草案，再按依赖顺序拆分实施任务。原有单 runtime 假设贯穿 Session 创建、Workspace、工具调度、文件路径、任务恢复和 cmd_skills，不能只增加一个 target 字段或几个 launcher 就视为完成。
+| # | 决策 | 直接推论 |
+| --- | --- | --- |
+| S1 | **agent-runtime 是 llm_context 层的概念，保持抽象分层。** | `agent_tool` 的 runtime 只提供执行、文件、环境信息等通用能力，不认识 Session、Workspace、cmd_skills。session-runtime / workspace 的角色解析、角色间复制的编排与持久记录放在 libopendan。llm_context 层需要的改动按惯例先行、单独列出（§7 T0）。 |
+| S2 | **Agent Session 看到的概念只有两个：session-runtime + workspace（workspace 自带 runtime 定义）。** 一个 Session 有 0 或 1 个 workspace。session-runtime 是本 Session 选用的标准 agent runtime，原则上是 Agent 私有的（Agent 自己的笔记本电脑），Agent 可以在上面做长期环境准备；OpenDAN 安装时准备好一个初始 session-runtime。 | 默认 shell、文件读写、产物生成都在 session-runtime。Workspace 的 runtime 只表示“Workspace 文件在哪台机器”，不再决定 Session 的 runtime。两者可以相同；不同时通过**runtime 之间复制文件**交接。v1 的“target runtime”概念取消，由 workspace 的 runtime 承担。 |
+| S3 | **session-runtime 有两种模式：标准环境与已扩展环境，对应两条基线。** 影响默认 cmd_skills 是否生效。 | v1 的四级基线取消。基线是 runtime 登记上的属性，cmd_skills 用机器可读的基线要求匹配，不做双端平台匹配。 |
+| S4 | **BuckyOS Desktop 下允许 session-runtime 指向 zone owner 的 host-native-runtime**，相当于有 win32 / osx 两个标准环境的 session-runtime；此时允许系统没有 docker。 | Windows / macOS host 要达到标准环境基线（工具、入口、Agent 上下文），不是 v1 的“降级 target”。host 作为标准环境的适配属于本 TODO 范围。 |
+| S5 | 没有 docker 会让系统功能受限，**不属于本次 agent runtime 改造范围。** | 本文不处理无 docker 时其他服务的缺失。 |
+| S6 | **BuckyOS 是分布式系统，Agent 可有多个 session-runtime**（例如默认 Linux 容器 + 装好 ext tool 的 win32 node + osx node），用于全平台开发测试。**Work Session 的 PLAN/DO 可让某个 Todo 使用特定 session-runtime。** | Todo 的 `runtime_id` 语义改为“子 Work Session 的 session-runtime”，与 workspace 选择相互独立；两者不同时的文件交接靠复制，不再按“Workspace 决定 runtime、冲突拒绝”处理。 |
 
-- [ ] 梳理单 runtime 假设的使用点，形成影响清单，明确哪些保留、哪些替换。
-- [ ] 明确 standard / target 的配置、绑定、默认执行位置、目录与文件引用语义。
-- [ ] 完成跨 runtime 文件复制的最小协议与失败/恢复设计。
-- [ ] 明确双端 cmd_skills 解析、子任务继承，以及旧 Session/运行记录格式的处理。
-- [ ] 用 §5 的关键场景走通方案，形成有结论的决策记录、协议/类型草案、实施顺序与验收范围；未决事项显式列出。
+### 0.1 对上一轮裁决与规则的处理
 
-本 TODO 先承载讨论记录，不提前冻结 wire 字段、命令语法或传输实现。§4 的实施候选项以方案讨论结果为准。
+| 来源 | 原规则 | 处理 |
+| --- | --- | --- |
+| 集成 TODO §3.3 / `AgentRuntime 设计.md` §6.4 / [`api::freeze_runtime`](../src/frame/lib_opendan/src/api.rs) | 有 Workspace 则取 Workspace 的 runtime，显式 `--runtime` 必须一致 | **推翻**。session-runtime 由显式参数 / 父 Session 继承 / Agent 默认决定；Workspace 只贡献自己的 runtime 与目录。`RuntimeSelection::Workspace` 退役。 |
+| 集成 TODO §3.5 / [`todos::needs_own_session`](../src/frame/lib_opendan/src/todos.rs) | Workspace 决定 Todo runtime，二者冲突拒绝 | **推翻冲突规则，保留载体规则**：runtime 或 workspace 任一与父不同仍派独立 Work Session；两者独立指定。 |
+| 集成 TODO §3.3 | 无 Workspace 的 host Session 工作目录在节点 `roots[0]/.opendan/<agent>/sessions/<sid>` | **保留并推广**：这就是 session-runtime 上的 Session 工作目录，有无 Workspace 都存在。 |
+| R1 / R2（Desktop node-daemon 桌面模式、CurrentUser、Driver 共享） | — | 保留。 |
+| R3（Workspace 管理留控制侧，远端只加 mkdir/stat，不加 rename/remove/list） | — | 保留前半；后半按 Q2 修订为加 `Rename` / `Remove`，仍不加 list。 |
+| R4（owner_agents 策略 + AgentSettings 选择 + scheduler 派生 profile） | — | 保留。多 session-runtime 直接复用 `AgentSettings.runtimes`。 |
+| 仓库规则（DV 全新安装、不写迁移） | — | 已定前提：Session 配置 / Binding / Workspace 记录格式升版后旧记录读失败即可，不讨论兼容。 |
+| v1 §1.1 Windows 降级边界 | host 是降级 target | 改为 **标准环境适配要求**（§2.2），内容并入 T2。 |
+| v1 §1.2 / T8 双端 cmd_skills 匹配 | skill 按 standard / target 两端平台匹配 | **取消**。cmd_skills 只按 session-runtime 的基线与平台匹配（§5）。 |
 
-## 1. 目标与范围
-
-拟人模型：**Agent 总有一台自己的、稳定的笔记本电脑；target 是这次任务临时要操作的“别人的电脑”。** “自己/别人”描述工作角色，不等同于设备的物理所有权。
-
-| 角色 | 归属与职责 |
-| --- | --- |
-| standard runtime | 由 Agent 配置并长期使用，提供核心 Agent Tool、BuckyOS 服务访问和稳定工作空间；各 Session 有自己的工作目录，产物保留与清理规则需明确。它是默认命令和文件操作所在环境。 |
-| target runtime | 随 Session/任务绑定的可选操作对象，可以是用户文件、项目或待修复系统所在机器；工具和权限按实际情况提供，操作时显式指定。临时指任务关系，不代表其绑定和未完成操作可以不持久化。 |
-| OpenDAN 控制面 | 保存 Session 状态、消息、执行记录并驱动工作。可以与 standard 共址，但职责独立；不能将控制面本地文件路径自动当成 standard 或 target 的文件路径。 |
-
-首轮方案围绕一个 standard 和可选的一个 target 展开。两者可以指向同一个实际 runtime，没有 target 时 Agent 也能独立工作。standard 工作目录、target 目录和控制面的 Session 状态目录分别表达；选择 target 的 Workspace 不应悄悄改变默认执行侧。
+## 1. 概念与分层
 
 ```mermaid
 flowchart LR
-    S[Agent Session 控制面] --> A[standard：自己的稳定工作环境]
-    S --> B[target：可选的任务操作对象]
-    A <-->|显式复制文件 / 交付产物| B
+    C[OpenDAN 控制面<br/>Session 状态/消息/运行记录] --> R[session-runtime<br/>Agent 自己的电脑]
+    C --> W[workspace<br/>runtime + directory + url]
+    R <-->|显式复制文件| W
 ```
 
-默认 shell、文件读写和产物生成发生在 standard；操作 target 要明确选端。同一条 shell 的脚本、管道和子进程始终留在同一端，不按命令首词、工具是否存在或执行失败自动换端。确需跨端时使用独立操作及显式文件复制。
+| 层 | 概念 | 归属 | 现状落点 |
+| --- | --- | --- | --- |
+| llm_context（agent_tool） | agent-runtime：exec / 文件 / 环境信息 / 长任务 locator | 通用，不认识 Session | [`runtime/*.rs`](../src/frame/agent_tool/src/runtime/)、[`AgentRuntime 设计.md`](../doc/llm_context/AgentRuntime%20设计.md) |
+| libopendan | session-runtime：Session 冻结的标准 runtime、Session 工作目录、helper 入口、基线 | Session | [`RuntimeSection.frozen`](../src/frame/lib_opendan/src/protocol/config.rs)、[`runtime/mod.rs`](../src/frame/lib_opendan/src/runtime/mod.rs) |
+| libopendan | workspace：`{runtime_id, directory, url}` + 登记/租约（控制侧） | Agent State | [`state/workspaces.rs`](../src/frame/lib_opendan/src/state/workspaces.rs) |
+| libopendan | runtime 间复制：角色解析、持久记录、恢复 | Session | 待建 |
+| 控制面 | Session 状态、快照、日志、`runs/` | Agent Loader | 不变 |
 
-Desktop `host` 与默认 Agent 容器仍是系统重点交付的两个主要工作环境，都应具备作为 standard 使用的工具能力。host 不天然等于 target，容器也不天然等于 standard；角色由配置与本次绑定决定。Desktop 复用 node-daemon 内嵌 Executor，不要求另装独立 agent-daemon。
+规则：
 
-用户后续添加的 runtime 通常用于诊断和修系统，可以缺少 Agent Tool；不自动补装整套工具，不因基线缺失拒绝普通命令和文件操作。需要加工时，将材料复制到 standard，完成后再显式交付回 target。
+- 默认执行侧永远是 session-runtime。工具调用省略位置即 session-runtime；操作 workspace 所在 runtime 要显式指定。同一条 shell 的脚本、管道、子进程留在同一端，不按首词、工具是否存在或失败自动换端。
+- Session 工作目录在 session-runtime 上（`roots[0]/.opendan/<agent>/sessions/<sid>` 或容器内对应目录），产物默认留在这里。Workspace 目录在 workspace 的 runtime 上。两者同 runtime 时工具可直接访问两个目录，但角色与目录仍分别记录。
+- 控制面可以与默认容器 session-runtime 共址，职责独立；控制面本地路径不自动当成任何 runtime 的路径。
+- Agent 修改默认 session-runtime 不影响已创建 Session；恢复按冻结结果回原 runtime，不换机器重跑。
 
-四级能力基线用于描述环境配套程度，具体匹配仍依赖 OS、shell、工具和授权：
+## 2. 两条基线
 
-| 级别 | 含义 |
-| --- | --- |
-| 1. 受限环境 | 只有有限命令、文件操作或诊断接口。 |
-| 2. 普通环境 | 使用执行账号已有的 OS 环境，不承诺 Agent Tool 和完整构建链；已有的生产能力仍可就地使用。 |
-| 3. 标准环境 | 核心 Agent Tool、正确的 Agent/Session 调用上下文，以及 BuckyOS/AICC 服务访问能力齐全。standard 角色至少以此为交付目标。 |
-| 4. 生产环境 | 三级的超集，具备常见构建工具链及 ext-tools 等重型工具；此处“生产”指产出与构建，不指线上业务部署环境。 |
-
-等级不自动扩大权限；target 可以是一至四级。外部 provider、模型额度和网络按实际情况报告，不把临时服务故障等同于工具未安装。不把所有 Node、SSH 或独立 Agent Daemon 都升级为标准环境，也不要求任意第三方 skill 的依赖全部预装。
-
-相关任务：[Agent Runtime 集成 Session / Workspace](agent-runtime-session-workspace-integration-todo.md)、[Node Agent Runtime](node-agent-runtime-todo.md)。
-
-### 1.1 Windows host 的平台差异与降级边界
-
-Linux 容器依赖多入口可执行文件、符号链接和 shell wrapper 等机制。Windows host 保证核心任务可完成，命令包装和终端体验允许采用平台原生实现。以下是待落实的设计边界，不代表 Windows 已完成适配。
-
-2026-10-25 用户裁决：有了正式 Agent Runtime（Node Executor 的进程/任务管理）后，tmux 执行隔离没有意义，tmux runtime 已在全平台移除（代码已删，`kind: tmux` 为配置错误），不为 Windows 仿制替代。
-
-| 能力 | Linux 容器机制 | Windows host 目标与可接受的降级 |
+| 基线 | 含义 | 由谁提供 |
 | --- | --- | --- |
-| 一个程序提供多个工具入口 | `opendan` 按调用名称分派，`agent_tool` / `xagent` 链接到同一程序；媒体工具也按 launcher 名称选择子命令 | 复用同一业务实现，提供 `.exe` launcher、适用的脚本入口或显式子命令。快捷别名可以减少，但必须有可用的规范调用方式及对应手册；不把符号链接权限作为前置条件。 |
-| Session helper 与环境 | `#!/bin/sh`、`exec`、`$@`、Unix PATH / 可执行权限 | 使用适合实际 Windows shell 的入口、参数转发与路径处理，仍传递正确的 Agent / Session 上下文；不能仅将 shell 脚本换名为 `.cmd`。 |
-| shell 语法与脚本 | bash / POSIX 工具、管道和重定向 | 按实际 PowerShell 版本提供命令示例和组合语义，不保证 bash 脚本原样可执行；不把 WSL 或 Git Bash 作为默认必装依赖。需要 Linux 的任务由规划选择合适环境，明确绑定与文件交接，不在执行中临时替换 standard。 |
-| 长任务与中断恢复 | 不再依赖 tmux，与右列同一要求 | 全平台复用 Executor 的操作记录、查询和取消能力；逐项验证断连、Runner 退出、Executor 重启的行为。无法恢复的运行明确报告，不宣称等价于 tmux 的进程存活保证，也不盲目重放未知结果的调用。 |
+| 标准环境 | 核心 Agent Tool（`agent-session`、`llm_understand_media`、`agent_tool xllm`、`xagent`、`buckyos`、`aicc-tool` 及媒体命令）、正确的 Agent/Session 调用上下文、BuckyOS/AICC 服务访问 | OpenDAN 安装时的默认容器；Desktop 的 win32 / osx host（S4） |
+| 已扩展环境 | 标准环境 + 常见构建工具链 / ext-tools 等重型工具 | 用户或 Agent 在特定 node 上准备（S6），登记时声明 |
 
-Agent Session 和持久 shell 不是同一个概念；不能默认任一平台在不同 shell 调用之间保留上次 `cd`、环境变量或交互程序状态。
+- 基线是 runtime 登记（[`RuntimeRecord`](../src/frame/lib_opendan/src/state/runtimes.rs)）上的属性：`baseline = standard | extended`，由登记者声明，再由检查核验“标准工具集完整”并单独记录结果。`available` 只表示可连接，不等于基线达标。
+- 默认 cmd_skills 按基线生效：只需标准环境的 skill 在两种基线都可用；声明需要扩展环境的 skill 只在已扩展环境的 session-runtime 生效。外部 provider、模型额度、网络按实际报告，临时服务故障不改变基线判定。
+- 不把所有 Node、SSH 或独立 Agent Daemon 都升级为标准环境；只作为 workspace 所在 runtime 的机器可以缺少 Agent Tool，Agent 把材料复制到 session-runtime 加工后再交付回去。
 
-### 1.2 cmd_skills 同时描述自己的能力与目标操作条件
+### 2.1 默认容器作为标准环境
 
-技能包仍由 Agent 安装和管理。发现与选择以 standard 为基础；涉及 target 的步骤再匹配 target 的 OS、shell、工具和文件权限。每个步骤应能看出执行侧、输入来自哪里、结果留在哪里，最后将适配后的手册绑定到 Session 的两端环境。
+现状：`aicc-tool` / `gen_image` 等 TS 工具与 launcher 由 [build_aios](../build_aios) 装进镜像，宿主经 I07 挂载 SDK `dist/`。需要一份可供打包与校验共用的工具清单（T1），镜像启动后核验，避免“容器可启动但工具缺失”仍算标准环境。
 
-- 匹配实际 OS、shell、工具/版本、终端能力和访问方式，不只看 runtime 名称或等级；通过可靠代理提供的能力也可参与匹配，但执行侧和文件语义需明确。
-- 媒体 skill 可以依赖 standard 的生成工具、target 的文件读写和两端复制能力。target 没有 `gen_image` 不应使该工作流程不可用；直接在 target 执行其已有编译器的 skill 则应检查 target 工具链。
-- 同一逻辑 skill 共享任务步骤，按各步骤实际执行端提供 Linux / Windows 命令示例和路径。不能因为 target 是 Windows，就把 standard 中可运行的 Linux 工具步骤全部替换掉。
-- `default_cmd_skills`、PLAN/Todo 指定及父 Session 继承的 skill 都在两端绑定确定后解析。子任务继承逻辑选择，任一端变化后重新匹配，不照搬父 Session 的平台正文、PATH 或可用性结论。
-- 保留完整安装目录供查阅；已安装、适用、未验证和外部服务暂时不可用分别表达。无效步骤不进入可执行手册，也不因此禁用 target 的普通诊断或自动安装依赖。暂时的 provider/权限故障不能永久改变平台适用性。
+### 2.2 Windows / macOS host 作为标准环境
 
-## 2. 当前实现与缺口
+Linux 容器依赖多入口可执行文件、符号链接、shell wrapper 与 tmux；host 要达到同一基线，允许平台原生实现：
 
-以下依据 2026-10-24 当前工作区源码核对。
+| 能力 | Linux 容器机制 | host 要求 |
+| --- | --- | --- |
+| 一个程序多个入口 | `opendan` 按调用名分派，`agent_tool` / `xagent` 链接到同一程序 | 同一业务实现，提供 `.exe` launcher、脚本入口或显式子命令；别名可少，规范调用方式与手册必须有；不以符号链接权限为前置条件 |
+| Session helper 与环境 | `#!/bin/sh` + `exec "$@"`（[bin_overlay.rs](../src/frame/lib_opendan/src/runtime/bin_overlay.rs)） | 适合实际 shell 的入口、参数转发与路径处理，仍传递正确的 Agent / Session 上下文；不能只把 `.sh` 换名 `.cmd` |
+| shell 语法 | bash / POSIX | 按实际 PowerShell 版本（[spawn.rs](../src/kernel/node_executor/src/spawn.rs) 已用 `pwsh`/`powershell -EncodedCommand`）给命令示例；不要求 WSL / Git Bash / tmux；需要 Linux 的任务由 PLAN 选 Linux session-runtime，不临时换端 |
+| 长任务与中断恢复 | tmux 解耦 + 输出文件 + 执行记录 | 复用 Node Executor 的操作记录、查询、取消（Job Object）；逐项验证断连、Runner 退出、Executor 重启；无法恢复的运行明确报告 |
 
-| 入口 | 当前行为与缺口 |
-| --- | --- |
-| [Session 配置](../src/frame/lib_opendan/src/protocol/config.rs)、[Binding](../src/frame/lib_opendan/src/protocol/misc.rs)、[创建与继承](../src/frame/lib_opendan/src/api.rs) | 当前按一个 Session 的单一 runtime 选择/冻结和实际执行绑定组织，Workspace 参与决定该 runtime。这是需要扩展的旧假设，不能直接解释为已有 standard / target 双绑定。 |
-| [runtime/node.rs](../src/frame/agent_tool/src/runtime/node.rs) | `host` 经 `remote_node` 执行，shell 与文件工具已有节点后端；没有自动向目标节点部署 OpenDAN 工具集。 |
-| [Session runtime](../src/frame/lib_opendan/src/runtime/mod.rs)、[bin_overlay](../src/frame/lib_opendan/src/runtime/bin_overlay.rs) | Session bin、冻结 skill 的 bin、AgentRoot tools 中的命令可回控制侧执行。默认 helper 是 `llm_understand_media`，另有 `agent-session` 对 `xagent` 的包装；控制侧系统 PATH 中的命令不会全部进入此名单。 |
-| [runtime/node.rs](../src/frame/agent_tool/src/runtime/node.rs) 的 `leading_program` / `ControlSide::takes` | 只按开头的程序名分流整条 shell。`agent-session …` 与 `cd … && agent-session …` 可能执行在不同端，脚本、管道、子进程内调用无法靠此规则完整覆盖。 |
-| [build_aios](../build_aios)、[bucky_project.yaml](../src/bucky_project.yaml) | `aicc-tool` / `gen_image` 等 TS 工具及 launcher 主要由 AIOS 镜像安装；宿主分发了部分 Rust CLI、SDK/Deno，不等于 Desktop host 已具备完整工具集和 PATH。 |
-| [OpenDAN 入口](../src/frame/opendan/src/main.rs)、[bin_overlay](../src/frame/lib_opendan/src/runtime/bin_overlay.rs)、[AICC launcher](../publish/aios/aicc-tool) | 多入口分派已识别平台可执行后缀，但 Session helper 仍生成 `#!/bin/sh` 脚本，AICC launcher 也依赖 shell。存在 `.exe` 名称处理不等于 Windows 原生命令入口已适配。 |
-| [agent_tool runtime](../src/frame/agent_tool/src/runtime/mod.rs)、[Session runtime](../src/frame/lib_opendan/src/runtime/mod.rs)、[spawn](../src/kernel/node_executor/src/spawn.rs) | 2026-10-25 已删除 tmux runtime 及 Session 绑定 tmux 的逻辑，runtime kind 只剩 `native`、`remote_ssh`、`remote_node`。host 的 `remote_node` 路径经 Node Executor，Windows Executor 已有 PowerShell 与 Job Object 进程管理。 |
-| [Executor 环境规则](../src/kernel/buckyos-api/src/node_executor.rs)、[spawn](../src/kernel/node_executor/src/spawn.rs)、[ops](../src/kernel/node_executor/src/ops.rs) | 节点调用过滤 `BUCKYOS_*` / `OPENDAN_*` / `XLLM_*` 等环境变量；Unix shell 清理环境且不加载 profile，默认 PATH 不包含 OpenDAN 安装目录。仅复制程序不能保证命令发现和 Agent 鉴权。 |
-| [llm_understand_media](../src/frame/agent_tool/src/llm_understand_media.rs) | 本地文件输入使用执行进程所在端的文件系统。回控制侧运行时，不会自动读取 host 刚生成的文件。 |
-| [runtime 登记检查](../src/frame/lib_opendan/src/state/runtimes.rs) | 节点检查主要是连接、登录、describe 和根目录/能力读取；`available` 不表示内置工具齐全。 |
-| [skill 元数据](../src/frame/lib_opendan/src/protocol/behavior.rs)、[skills 列表](../src/frame/lib_opendan/src/skills.rs)、[CLI](../src/frame/lib_opendan/src/xagent_cli.rs) | `requires` 是说明字符串，列表按 AgentRoot 和 skill kind 枚举，不按目标 runtime 判断适用性；安装了手册不代表目标端具备其中的命令。 |
-| [Session 创建](../src/frame/lib_opendan/src/api.rs)、[手册冻结](../src/frame/lib_opendan/src/state/behaviors.rs)、[Commands 装配](../src/frame/lib_opendan/src/runner/assembler.rs) | 创建 Session 已先冻结 runtime 再冻结手册，可复用此顺序接入。当前手册冻结只检查名称、数量与存在性，去除 front matter 后保存 `name + text`；没有平台版本选择及能力校验，装配时直接使用该正文。工具路径仍指向 AgentRoot 当前内容，手册冻结不等于工具包也被冻结。 |
+Agent Session、tmux session、持久 shell 是三个概念；没有 tmux 不等于没有 Agent Session，也不默认任何平台在两次 shell 调用间保留 `cd` 与环境变量。macOS 的 LaunchAgent 安装包改动按 R1 不在本次范围，代码侧支持。
 
-现有节点读写能力可作为复制实现的基础，但不等于已有通用跨 runtime 复制协议；二进制传输、大小限制、覆盖、部分结果与恢复语义均需单独设计和核验。
+## 3. 多 session-runtime 与 Todo
 
-## 3. P0：先完成方案讨论
+- Agent 的可用 session-runtime 来自现有 `AgentSettings.runtimes` + `default_runtime_id`，每项带基线与平台信息；WebUI / CLI 已有启停与默认设置入口。
+- Session 创建：显式 `--runtime` > 父 Session 冻结的 runtime > Agent 默认。Workspace 参数独立：`inherit / none / <id>`。两者组合均合法。
+- PLAN/DO：Todo 可指定 `runtime_id`（选 session-runtime）与 `workspace`；任一与父不同即派独立 Work Session（沿用 `needs_own_session` / `dispatch_serial`，删掉冲突拒绝）。子 Session 的工作目录在自己的 session-runtime 上；需要 workspace 文件时显式复制或在同 runtime 下直接访问。
+- PLAN 紧凑视图显示每个 Todo 的 session-runtime、基线、workspace；报告保留实际执行位置。
+- 已运行的 attempt 不改 runtime；换机器建新 attempt / Todo。
 
-以下各项需要形成明确决策，再进入相应实现；当前不把讨论问题当成已经确定的接口。
+## 4. runtime 间文件复制（首期必需）
 
-| 议题 | 必须讨论并记录的决策 |
-| --- | --- |
-| D1. Agent 配置与 Session 双绑定 | standard 的选择/准备由谁负责，Session 如何固定 standard 与可选 target 的实际身份、配置和目录；无 target、两角色同 runtime 如何表示；Agent 修改 standard 后旧 Session 如何处理。恢复不能直接跟随新默认值换机器。 |
-| D2. Workspace 与三类目录 | standard 工作目录、target Workspace/操作目录、控制面 Session 状态目录分别如何定位、持久化和清理；无 target 时 Workspace 如何归属 standard；现有“Workspace 决定 Session runtime”规则如何调整；CLI 创建/继承参数如何表达。 |
-| D3. 工具调用与提示词 | 工具调用如何显式选择 standard / target，省略时落 standard；shell、文件工具、媒体、ComputerUse、模板执行和 Session helper 如何保持一致；同条 shell 不跨端；环境信息和错误如何明确指出执行位置。 |
-| D4. 身份与可用性 | 两端各使用什么授权和调用上下文，状态操作如何访问控制面；工具可用、执行授权、网络连通分别如何判断。控制面仍可工作且 target 在线时，standard 故障不能阻断不依赖它的修复操作。 |
-| D5. 文件引用与复制 | 文件如何携带 runtime 归属，两端 cwd/相对路径怎样解析；source/destination、覆盖、完整性、部分结果、取消及恢复采用什么协议，见 §3.1。 |
-| D6. 执行记录与恢复 | 单次 operation、长任务及传输如何记录实际 runtime/操作标识；查询、取消、超时、断连重连和进程重启回到原执行端；当前 RunBinding、operation locator、日志与产物引用有哪些单 runtime 假设。 |
-| D7. cmd_skills 与子任务 | skill 的 standard / target / 复制条件如何表示，平台内容怎样组合并冻结；默认项、Todo、Work Session 和子 Session 怎样继承两端选择；一端变化时怎样重新解析，服务临时失败怎样处理。 |
-| D8. 共享协议与交付 | 盘点 libopendan、agent_tool/xllm、buckyos-api、Executor、SDK、CLI、UI、schema、安装/分发及手册的联动；确定持久格式升版和旧记录处理，按项目开发阶段原则不默认增加兼容层；拆出最小纵向闭环和后续批次。 |
+至少支持 Session 两端 **workspace runtime → session-runtime** 与 **session-runtime → workspace runtime** 的文件复制。接口以源、目的的实际 `runtime_id` + 路径表达；角色别名（`session` / `workspace`）在当前 Session 绑定中解析。跨端无需共享磁盘或同路径挂载。
 
-- [ ] 逐项记录 D1–D8 的结论、依据、影响入口和未决问题，避免只写愿景。
-- [ ] 给出 Agent/Session 配置、调用/文件引用、运行记录与复制操作的最小类型/接口草案，沿用现有组件；不在此阶段引入通用多 runtime 调度、自动同步或共享文件系统。
-- [ ] 将“单端日常工作、双端加工交付、target 修复、standard 故障、Windows target、恢复未知结果”走成具体时序，核对默认位置和结果归属。
-- [ ] 方案讨论完成后，确认 §4 的任务边界、依赖顺序、各平台验收和未决风险，再开始相应代码实施。
+现有基础（[node_executor_proto.rs](../src/kernel/buckyos-api/src/node_executor_proto.rs)、[node_executor.rs](../src/kernel/buckyos-api/src/node_executor.rs)）：`Read` 支持 `offset/length`；`Write` 有 `Replace / Append / CreateNew` 与 `content_hash` / `expected_hash`；`Mkdir / Stat` 已有。限制：`max_file_bytes` 默认 1 MiB，数据帧 16 KiB，控制帧 ≤ 1 MiB；没有 list。容器 native 后端直接是本地 fs。
 
-### 3.1 跨 runtime 文件复制：首期必需基础能力
+T0 后（2026-10-25）：Executor 有 `Rename / Remove`；`Write` 多 `expected_size`，`Append` 原地追加、整文件不受 `max_file_bytes` 限制；`Stat` 返回 `size`，可选整文件 `hash`。控制侧原语是 agent_tool 的 `RuntimeFiles`（native = `LocalFileBackend`，remote_node = `RemoteNodeTarget`），语义见 [AgentRuntime 设计 §6.1](../doc/llm_context/AgentRuntime%20设计.md)。经 Executor 中转的数据会留在节点账本（读内容、上传块），受 `max_store_bytes`（默认 2 GiB）与 7 天保留期约束，T4 需定单次传输上限或提交后释放。
 
-至少支持 Session 两端的 **target → standard** 和 **standard → target** 文件复制。接口以源、目的实际 runtime 和路径表达，角色名在当前 Session 绑定中解析；将来复用到其他 runtime 对不应依赖容器固定路径。跨端无需预先共享磁盘或手工配置同路径挂载。
+- [ ] **分层**：agent_tool 提供每个 runtime 的流式读 / 分块写原语（S1，T0 已完成 `RuntimeFiles`）；libopendan 负责角色解析、两端 cwd、持久记录与恢复。
+- [ ] **操作边界**：首期保证单个二进制文件；目录递归、符号链接、元数据（权限 / 时间戳）明确首期范围，暂不支持的类型明确返回，不扩成同步系统。
+- [ ] **两端定位与权限**：源与目的分别记录 runtime、路径、实际解析目录，各自遵守该端 roots；同 runtime 不代表同目录或同授权。明确 Windows/Unix 路径、中文 / 空格、同名、大小写冲突。
+- [ ] **传输路径**：控制侧中转（控制面同时持有两端连接）为首期方案；首块 `create_new` 写临时文件，后续块按 `Append` 累加、以 `expected_size` 做顺序保护（每块 O(1)；`expected_hash` 每块要重读已有内容，传输总量 O(n²)，不用于逐块保护）；块大小取两端 `limits().max_chunk_bytes` 的较小值；大小上限、内存占用、进度需明确，不把整文件塞进一次工具响应或 base64 上下文。
+- [ ] **目标提交**：缺省不覆盖、显式 `--replace`；完整性以末尾整文件 hash 核验（两端 `stat(hash=true)`）；临时文件 + `Rename` 原子提交（Q2）。源文件传输中变化即失败并清理（`read_range` 返回读取时的文件大小，变化即中止）。
+- [ ] **持久记录与恢复**：复制有副作用，记传输标识、源 / 目的、状态、完成证据到 Session 运行记录（沿用 `runtime_operations/` locator 形态）；断连重试先核验目标状态，不盲目覆盖重传；取消清理部分文件。
+- [ ] **结果与交付**：加工成功与交付成功分别表达；复制失败保留 session-runtime 产物并指出失败步骤；报告 / 附件标明文件实际所在端，不用控制侧临时路径冒充。
+- [ ] **工具组合**：文件工具、媒体工具、cmd_skills、CLI 如何引用复制，形成“拿回材料 → 在 session-runtime 加工 → 交付回 workspace”的流程；命令语法随接口草案定。
 
-- [ ] **操作边界**：优先保证二进制文件复制；明确目录递归、符号链接、覆盖、目标目录创建、权限/时间戳等元数据的首期范围。暂不支持的类型明确返回，不扩大成通用同步系统。
-- [ ] **两端定位和权限**：源与目的均记录 runtime、路径和实际解析目录，读写分别遵守该端权限/roots；角色相同或物理机器相同不能据此假定路径/授权相同。明确 Windows/Unix 路径、中文/空格、同名文件和大小写冲突行为。
-- [ ] **传输路径**：评估复用现有读写、对象资源或流式通道，由控制侧中转还是两端直传。首期只要求能可靠双向复制；大文件的大小限制、内存占用、分块/进度需明确，不能假定整文件可塞进一个工具响应或文本/base64 上下文。
-- [ ] **目标提交**：明确缺省覆盖策略及显式替换方式，定义源文件传输中变化时的处理和完整性核验；采用目标端支持的临时文件/提交机制，不能把未完成文件报告成成功交付。
-- [ ] **持久记录与恢复**：复制是有副作用的操作，记录传输标识、源/目的、状态和完成证据；讨论幂等、断连重试、取消、部分文件清理、进度与恢复。无法确定是否已经提交时先查询/核验，不能盲目覆盖重传。
-- [ ] **结果与交付**：加工成功和交付成功分别表达。复制失败时保留 standard 中已完成的产物并指出失败步骤；报告和附件明确文件实际所在端，不返回控制侧临时路径冒充目标文件。
-- [ ] **与工具组合**：确定文件工具、媒体工具、skill 和 CLI 如何引用/调用复制，形成“拿回材料 → 在 standard 加工 → 交付到 target”的可执行流程；命令语法待讨论确定。
+## 5. cmd_skills 与基线
 
-## 4. 方案确定后的实施候选项
+- skill 元数据在现有 `requires`（说明字符串，保留给人读）之外增加机器可读的 `baseline: standard | extended` 与可选平台要求；不解析自然语言。
+- Session 创建冻结 cmd_skills 时按 session-runtime 的基线与平台过滤：不适用的 skill 报告具体缺失条件，不静默注入。workspace 的 runtime 不参与匹配。
+- `default_cmd_skills`、PLAN/Todo 指定、父 Session 继承的 skill 都在 session-runtime 确定后解析；子 Session 换 runtime 则重新解析，不照搬父 Session 的正文。
+- skill 自带工具（`tools/<skill>/bin`）在 session-runtime 按安装规则准备；控制侧文件存在不证明执行端可用。
+- 升级后旧 Session 不自动换手册；服务临时失败与基线不适用分开报告。
 
-建议先打通双端绑定/显式调用与文件复制的最小闭环，再接工具分发、Windows 适配和双端 skills。以下编号是工作包标识，具体并行关系与实施顺序由 §3 的决策确定。
+## 6. 待定问题裁决（2026-10-25 用户拍板）
 
-### T0：扩展 Session 的单 runtime 假设
+| # | 问题 | 结论 |
+| --- | --- | --- |
+| Q1 | session-runtime 不与控制面共址时，Session helper 如何到达控制面 | **走 kRPC。** 区分 **AgentService**（opendan 进程：Agent 主页、kRPC 服务、Runner 宿主）与 **Session 进程**（在 session-runtime 上代表某个 Session 运行的 shell / helper / hosted xllm）。AgentService 抽象并实现 Agent 全局状态的 kRPC 接口；Session 进程只经 kRPC 访问控制面。首词分流 `ControlSide` 退役。设计见 §6.1。 |
+| Q2 | 复制的原子提交是否需要新增 rename / remove op | **加。** `Rename` / `Remove` 两个最小 op 同时进 wire、worker、RBAC action、账本去重；R3 的“不加 rename/remove/list”相应修订（list 仍不加）。 |
+| Q3 | Desktop 默认 session-runtime 是否仍为 host | **保留默认 host。** 无 docker 时它是唯一标准环境；有容器时仍默认 host，用户可改。**host-native session-runtime 只对 zone owner 的 Agent 开放**（由 `owner_agents` 策略保证，其他用户的 Agent 不能选它）。 |
+| Q4 | 同 runtime 时默认 cwd | **固定为 Session 工作目录。** Workspace 路径经环境变量 / 提示词给出；选了 Workspace 不悄悄换默认位置。 |
+| Q5 | 基线由声明还是检测决定 | **由声明决定**（它影响提示词和 cmd_skills 是否生效）。核验结果只作提示，不改声明。 |
+| Q6 | 已扩展环境的 ext-tools 如何被 skill 引用 | **cmd_skills 声明自己在哪个基线下有效**（`baseline: standard | extended`）；具体工具名留在说明文字，Agent 运行时自行检查。 |
 
-- [ ] 按 D1–D4 改造 Agent 配置、Session 创建/冻结、Workspace、子 Session/Todo 继承、实际执行绑定及每端 cwd，落实默认 standard、target 显式的行为。
-- [ ] 改造工具装配、runtime 环境信息、操作定位、任务查询/取消和恢复；一次调用固定实际执行端，保留单端与两角色同 runtime 的简单路径。
-- [ ] 更新持久协议/schema、共享类型、SDK/CLI/UI 和运行记录；按讨论结论处理旧记录，不让旧的单 runtime 字段被静默解释为错误执行位置。
-- [ ] 在扩展工具集前验证无 target、双端操作、standard 故障时的 target 诊断，以及恢复不会换端重跑。
+- [x] 逐项记录 Q1–Q6 结论（上表）与影响入口（§6.1–6.2）。
+- [x] 最小类型 / 接口草案（§6.2）。
+- [x] 关键场景时序（§6.3）。
 
-### T1：明确两个主要环境共用的工具基线
+### 6.1 Q1 设计：AgentService 与 Session 进程
 
-- [ ] 盘点当前内置命令及其依赖，形成同一份可供打包与校验使用的清单，避免 Desktop、镜像和手册各自维护不同列表。
-- [ ] 至少覆盖 `agent-session`、`llm_understand_media`、`agent_tool xllm`、内置流程使用的 `xagent` 命令、`buckyos`、`aicc-tool` 及其媒体命令；从实际源码/分发入口生成具体列表，不只检查几个示例命令。
-- [ ] 清单区分 runtime 原生文件/命令能力、Agent 状态操作、BuckyOS 服务调用、媒体输入输出；记录依赖、版本和平台入口，并明确哪些属于 standard 基线、哪些只要求 target 按实际能力提供。
-- [ ] 对内置 cmd_skills 逐项核对依赖：属于标准工作能力的纳入基线；场景专用的第三方依赖明确声明。
+**现状核对（2026-10-25）**
 
-### T2：打通安装、升级和命令发现
+| 组件 | 现状 | 对远端 session-runtime 的问题 |
+| --- | --- | --- |
+| [`state/connect.rs`](../src/frame/lib_opendan/src/state/connect.rs) `StateLocator::{InProcess, AgentRoot, Krpc}` | 三种定位已存在；`Krpc` 走 [`state/krpc.rs`](../src/frame/lib_opendan/src/state/krpc.rs) 的 `KrpcAgentStateClient`，服务端是 opendan [`service.rs`](../src/frame/opendan/src/service.rs) 的 `serve_call`（sessions / workspaces / runtimes / behaviors / goals / notify / skills / artifacts / perception / cognition 全部门面） | 接口基本齐；缺少 Session 范围的 token 与几个 helper 专用方法 |
+| [`runtime/mod.rs::session_env_vars`](../src/frame/lib_opendan/src/runtime/mod.rs) | 只下发 `OPENDAN_AGENT_ROOT` / `OPENDAN_SESSION_DIR` / `BUCKYOS_APPCLIENT_SESSION_TOKEN`（控制侧值），不下发 `OPENDAN_AGENT_STATE_URL` | 远端拿到的是控制侧路径 |
+| [`node_executor.rs::is_forbidden_env_name`](../src/kernel/buckyos-api/src/node_executor.rs) | Executor 丢弃 `BUCKYOS_*` / `OPENDAN_*` / `XLLM_*` 与 token 变量 | 远端 shell 收不到 Agent / Session 身份与端点 |
+| [`task_bridge.rs`](../src/frame/agent_tool/src/task_bridge.rs) `XLLM_TASK_ENDPOINT` | Runner 进程内 Unix socket；`ask-user`、`create-worksession` 等待、`task` CLI 依赖它 | 跨机器不可达 |
+| [`xagent_cli.rs`](../src/frame/lib_opendan/src/xagent_cli.rs) | `SessionTemplate::load`、`--parent` 解析、notify source 补全、`goal serve` 仍要 `agent_root()` | 这些路径在远端不可用 |
+| [`runtime/node.rs::ControlSide`](../src/frame/agent_tool/src/runtime/node.rs) | 按首词把 helper 拉回控制侧本地执行 | 违反 S1 分层；控制面在 OOD 容器时对 win32 / osx node 不成立 |
 
-- [ ] Desktop 安装/升级交付 host 作为 standard 所需的工具与入口，按支持的 OS/架构提供产物；复用现有 Rust CLI、SDK 分发和 TS 工具源码。仅作为 target 的外部机器不承担此工具安装要求。
-- [ ] 默认容器使用同一工具清单核验镜像和宿主挂载，避免容器可启动但 SDK/工具缺失仍被视为完整工作环境。
-- [ ] 由 runtime 准备稳定的命令搜索路径，不依赖用户 shell rc、手工软链接或开发机已有安装；子进程继承正确的工具入口。
-- [ ] 核验工具版本与配套 SDK/服务接口，升级后重新检查；给出缺失文件、依赖或版本不匹配的可定位原因。
+**设计**
 
-### T3：提供稳定的调用位置与 Agent 上下文
+1. **AgentService 是 Agent 全局状态的唯一服务方。** 全局状态 = AgentRoot 下的 sessions / todos / workspaces / runtimes / behaviors+cmd_skills / goals / memory+cognition / artifacts / notify。`AgentStateClient` 的 kRPC 实现是 Session 进程的唯一入口；`FsAgentStateClient`（文件 + flock）只在 AgentService 进程内使用。`xagent` 中依赖 `agent_root()` 的路径改为 kRPC（模板读取走 `behaviors.get`，父 Session 走 `sessions.lookup`，notify source 由服务端补全）；`goal serve` 等本就属于 AgentService 的命令标记为“仅控制侧”。
+2. **Session 进程的身份与端点通过 Session 上下文文件下发，不靠环境变量。** Executor 的环境过滤保留。首次驱动时 libopendan 在 session-runtime 的 Session 工作目录写入 `.opendan/session.json`（0600）：`agent_did, session_id, trace_id, runtime_id, state_url, token_file`；helper 从 cwd 向上查找该文件（Q4 保证 cwd 在 Session 工作目录内），也接受 `--session-context <path>`。容器 / 本机 session-runtime 同样使用这条路径，去掉对 `OPENDAN_AGENT_ROOT` 的依赖。
+3. **Session 范围 token。** AgentService 为每个 Session 签发只对该 Agent 服务有效、带 `session_id` 声明的 App token（verify-hub 已有 `check_agent_runtime_session` 校验 Agent 绑定 runtime），写入 `token_file`；到期前 helper 调 `session.token_refresh` 续期。服务端 `Access` 校验 token 的 Agent 与 Session，拒绝跨 Session 操作。
+4. **task bridge 的网络等价物。** 新增 kRPC `session.task {op: state|wait|cancel|…, call_id}` 由 AgentService 转发给进程内 Runner 的 task resolver；`ask-user` / `create-worksession` / `task` CLI 在上下文文件存在时优先走 kRPC，Unix socket 保留给 AgentService 同机的开发路径。
+5. **端点。** 容器 session-runtime 用现有 `BUCKYOS_TOOL_ENDPOINT` 同类地址（`host.docker.internal:3180`）；其他 node 用 Agent 服务的 zone 内地址（经 cyfs-gateway），由 AgentService 在写上下文文件时按 runtime 的可达方式选择并写入 `state_url`。
+6. **ControlSide 退役。** helper 二进制是标准环境基线的一部分（T1/T2 装到 session-runtime）；`NodeBashRunner` 不再认识命令名。过渡期不保留双路径。
 
-- [ ] 在所选 standard 提供完整工具入口；访问 target 使用明确的执行目标，不要求 target 拥有同名工具。直接调用、切换目录、脚本、管道和子进程沿用本次选定执行端，组合语法按该端 shell 编写。
-- [ ] Session / Agent 状态操作继续落到当前 Agent 的控制侧；通过现有身份和连接机制传递正确的 Agent、Session、trace 及授权上下文，处理续期和控制侧不可达。
-- [ ] BuckyOS 服务工具使用当前 Agent 的授权，不意外变成 Desktop owner 或另一个 Agent；不通过取消现有环境过滤、复制整份控制侧环境来实现。
-- [ ] 按新方案替换/收敛首命令分流；代理入口明确其用途，不把同一 shell 中其它命令一并搬到控制侧。stdout、stderr、退出码和 stdin 保持可组合。
+### 6.2 最小类型 / 接口草案
 
-### T4：实现跨 runtime 复制与文件归属
+沿用现有结构，只列变化；字段名可在实施时微调。
 
-- [ ] 按 §3.1 实现双向复制和相应持久记录、查询/取消、完整性与失败处理，补齐实际需要的 Executor/文件接口；不把当前 read/write 简单拼接就宣称恢复语义已完成。
-- [ ] 文件引用携带实际 runtime 归属，相对路径按显式选端的 cwd 解析；省略执行侧使用 standard，不能在控制侧读取同名绝对路径。
-- [ ] target 的素材复制到 standard 后供 `llm_understand_media` 或加工工具使用；生成/构建产物默认保留在 standard，写回 target 通过明确复制完成。
-- [ ] 报告、附件和中间产物分别记录位置与交付状态；验证无共享文件系统时仍可完成闭环，复制失败不会丢失已完成的 standard 产物。
+```text
+// SessionConfig（protocol/config.rs）
+runtime.frozen: FrozenRuntime {
+  runtime_id, kind, exec, revision,
+  selected_by: explicit | inherited | default,       // 去掉 workspace
+  computer,
+  baseline: standard | extended,                      // 新：来自 RuntimeRecord 声明
+  platform: { os, arch, shell },                      // 新：提示词与 skill 匹配用
+}
+workspace: Option<WorkspaceBinding>                   // 不变；location.runtime_id 即 workspace 的 runtime
 
-### T5：检查与提示遵循产品边界
+// Binding（opendan.binding/5，protocol/misc.rs）
+{ runtime_id, kind, workdir /* Session 工作目录 */, workspace: Option<{ workspace_id, runtime_id, directory }>, … }
 
-- [ ] 在主要环境准备/启用及升级后检查工具基线，区分“Executor 可连接”“标准工具集完整”“具体外部服务可用”。缺工具时明确提示主要环境未准备完整及修复方向。
-- [ ] Agent 获得 standard 与可选 target 各自的实际 runtime、OS/shell、工具、终端能力和目录，并明确默认执行侧；界面及错误保留执行端，不把两端能力混成一个列表。
-- [ ] 后续添加的 target 保留诊断/修复用途，不强制工具补齐；一端故障只阻断依赖该端的操作。在控制面可工作时，standard 不可达仍可执行独立的 target 诊断，不静默换端。
+// RuntimeRecord v3（protocol/runtime.rs）
++ baseline: standard | extended                       // 登记者声明（Q5）
++ platform: { os, arch, shell }
++ baseline_check: Option<{ checked_at_ms, missing: [cmd], ok: bool }>   // 核验结果，只提示
 
-### T6：同步手册与实现文档
+// SkillMeta（protocol/behavior.rs）
++ baseline: standard | extended = standard            // Q6
++ platforms: [os] = []                                 // 空 = 全部
 
-- [ ] 更新 `opendan_agent_dev`、`ui_core`、`buckyos_admin`、`xllm`、`aigc_image`、`aigc_audio`、`aigc_video`；核对其他引用 SDK、工具源码路径或默认容器前提的 cmd_skills。
-- [ ] 使两种 standard 环境中的示例可执行，并补充显式 target 操作、双向复制和交付示例；各步骤使用实际执行端的 OS/shell、路径与入口，写明平台差异。
-- [ ] 同步 Agent 开发指南、Session/runtime 文档和 Desktop/容器分发说明。若调整共享协议或能力字段，同步 `buckyos-api`、服务实现、SDK 与 UI 消费方。
+// SubSessionSpec / NewTodo / TodoAttempt
+runtime_id, workspace 不变；删除“workspace 决定 runtime、冲突拒绝”
 
-### T7：落实 Windows 适配与降级
+// Session 上下文文件 <session workdir>/.opendan/session.json（0600）
+{ agent_did, session_id, trace_id, runtime_id, state_url, token_file, expires_at_ms }
 
-- [ ] 对照 §1.1，为 Windows 选择最小可用的 launcher / 子命令方案，复用现有程序入口；明确支持的 PowerShell 版本，不默认所有 Windows shell 都支持 `&&`。验证命令发现、参数引用、中文/空格路径及退出码，不以文件存在代替可执行验证。
-- [ ] 复用现有 PowerShell / Job Object / Executor 任务机制，不做 tmux 替代实现；交互终端增强能力另行评估。
-- [ ] 核验 Windows 上 Session 命令、日志、经 Executor 的任务查询/取消和产物归属正常工作，恢复边界明确报告。
-- [ ] 区分 Windows 作为 standard 与作为 target 的验收；Linux standard 操作 Windows target 时，保留 standard 的 Linux 工具步骤，对 target 使用 Windows 命令，通过复制交换文件。Windows standard 无法完成的 Linux 专属任务明确报告并由规划选择合适环境，不静默换端。
+// AgentService kRPC 新增
+session.token_refresh { session_id } -> { token, expires_at_ms }
+session.task { session_id, call_id, op, params } -> task result
+transfers.begin / transfers.status / transfers.cancel（见下）
 
-### T8：将 cmd_skills 接入 standard / target 两端条件
+// Executor op 新增（Q2，T0 已实施）
+Rename { from, to, replace: bool }      Remove { path }   // 仅文件；remove 已不存在时成功、changed=false
+Write  + expected_size: Option<u64>     // append 原地追加，按序保护
+Stat   + hash: bool → file.size / file.hash
 
-- [ ] 按 D7 在现有元数据表达 standard 条件、可选 target 条件及文件复制需求，保留人可读说明；机器校验不解析自然语言 `requires`，复用既有能力和工具清单。
-- [ ] 发现接口接受 Session 的两端上下文，返回适用、缺失、未知及具体所属端；没有 target 时仍可发现 standard 独立技能。保留全部安装目录，CLI、RPC/SDK 和 UI 一致。
-- [ ] 按每个步骤的执行端选择平台内容/入口，组合公共步骤与显式复制步骤；不能仅以 target 的平台或等级决定整份手册，也不能因 target 缺少 Agent Tool 屏蔽 standard 的对应能力。
-- [ ] 在两端绑定和相关 Workspace 确定后统一解析默认、显式和 driver 延迟冻结的 skill；明确不适用时报告具体端及缺失条件，不静默注入无效步骤。
-- [ ] 冻结正文、来源/适配版本及必要的分端要求，关联 Session 实际绑定；升级后旧 Session 不自动换手册，执行/恢复时检查相关依赖变化，服务临时失败与平台不适用分开报告。
-- [ ] Todo、Work Session、子 Session 继承逻辑 skill 选择和按规则继承的两端绑定；任一端变化后重新解析，不复制父 Session 的 PATH 或平台正文作为子端事实。
-- [ ] skill 自带工具在 standard 按安装规则准备；声明在 target 执行的步骤只核验目标已有入口，不因选用 skill 自动安装或补齐工具。检查 `tools/<skill>/bin` 的平台、入口和文件语义，控制侧文件存在不能作为任一执行端可用的证明。
-- [ ] 更新 `analyze_intent`、`goal`、`plan` 和 `agent.toml`，使计划明确每步执行端与传输依赖；同步协议/schema、冻结结构、技能打包/安装校验、SDK 和测试。
+// agent_tool runtime/files.rs（T0 已实施）
+trait RuntimeFiles { limits, stat(path, hash), read_range(path, offset, length),
+  write_chunk(path, {mode, expected_size, expected_hash, data}), rename(from, to, replace), remove(path) }
+RuntimeConfig.baseline: Option<standard | extended>   →   RuntimeInfo { platform, shell_kind, baseline }
 
-## 5. 用于方案评审及后续实现的验收场景
+// 复制操作记录 runs/<run>/transfers/<transfer_id>.json
+{ transfer_id, from: { runtime_id, path, resolved }, to: { runtime_id, path, resolved, temp_path },
+  size, hash, mode: create_new | replace, state: pending | transferring | verifying | committed | failed | cancelled,
+  bytes_done, error, started_at_ms, finished_at_ms }
 
-这些场景先用于检查方案是否完整；只有实现并实测后才能勾选通过，不能用讨论结论代替测试结果。
+// CLI
+agent-session copy --from <role|runtime_id>:<path> --to <role|runtime_id>:<path> [--replace] [--wait]
+  role ∈ { session, workspace }，在当前 Session 绑定中解析
+```
 
-- [ ] **只有自己的电脑**：没有 target 的 Session 在 standard 正常调用工具、读写文件并保留产物；多个 Session 的工作目录相互独立。
-- [ ] **两端指向同一 runtime**：区分角色目录，正确处理同文件复制/冲突，不重复准备环境或因省略角色而误写另一目录。
-- [ ] **临时操作别人的电脑**：standard 配置不变，显式访问工具不齐的 target 诊断/修复；选择 target Workspace 后，未指定执行侧的命令仍在 standard。target 不自动安装工具。
-- [ ] **拿回加工再交付**：从 target 复制二进制素材到 standard → 理解/加工/构建 → 复制结果回 target → target 验证 → 报告准确交付位置，全程没有共享挂载。
-- [ ] **复制边界**：按首期协议覆盖大文件、中文/空格路径、Windows/Unix 路径、同名文件、覆盖冲突、源内容变化、读写权限不足及不支持的文件类型；完成结果经过完整性核验。
-- [ ] **复制中断**：传输中断连、取消、重启及提交结果未知时，能定位原操作并按协议处理；部分文件不冒充成功，加工成功但交付失败时 standard 产物仍在，不自动覆盖重传。
-- [ ] **每步位置确定**：直接命令、切换目录、脚本、管道和子进程都留在显式选端；两端同名但内容不同的文件不会混读，stdout/stderr、退出码和报告标明实际归属。
-- [ ] **独立故障**：控制面仍工作且 target 在线时，standard 离线不阻断独立 target 诊断；target 离线时 standard 仍可继续独立加工，交付状态如实保留待处理/失败。
-- [ ] **长任务与恢复**：分别验证两端的查询、取消、超时、Runner 退出和 Executor 重启；恢复回原操作所在端，Agent 修改默认 standard 后旧任务不换机器重跑。旧 Session 记录按已讨论的格式策略处理。
-- [ ] **主要环境交付**：干净 Desktop host 与默认容器分别作为 standard 验证清单、SDK/CLI 挂载、`agent-session`、`buckyos`、`agent_tool xllm` 和媒体调用；检查 Agent 身份及续期。缺工具、版本不匹配与 provider/权限问题准确区分。
-- [ ] **Windows 边界**：Windows standard 无 WSL/Git Bash/额外符号链接权限仍可使用规范入口，Agent Session 状态不丢失。另测 Linux standard + Windows target 的显式命令、双向文件复制与交付，记录实际 OS/架构覆盖。
-- [ ] **双端 skills**：target 没有媒体工具时仍可选 standard 加工并交付的 skill；只依赖 target 编译器的 skill 按 target 实际能力匹配。不支持、未知、服务临时失败分别报告。
-- [ ] **继承与冻结**：父/子 Session 共享 standard、改变 target 或其 Workspace 时，按规则重新解析 skill；Agent 级 standard 配置变更后的新旧 Session 按 D1 的决策处理。旧 Session 保留冻结正文，目录升级不改变其既有执行位置。
-- [ ] **回归**：系统/镜像升级后重跑基线、单端与双端最小闭环；实施代码后按影响范围运行相关 Rust、打包、SDK/UI 测试及真实环境验收，记录未实测项。
+### 6.3 关键时序
 
-## 6. 本次记录
+- **创建 Session**：解析 session-runtime（显式 > 继承 > 默认，校验 Agent 已启用、Q3 的 owner 限制）→ 冻结 `runtime.frozen`（含 baseline / platform）→ 独立解析 workspace（`inherit / none / <id>`）→ 按 baseline / platform 过滤并冻结 cmd_skills → 首次驱动：在 session-runtime 建 Session 工作目录、写上下文文件与 token → Binding 记两端。
+- **默认命令**：cwd = Session 工作目录；提示词给出 `workspace.runtime_id` 与 `workspace.directory`；同 runtime 时 Agent 直接 `cd`，不同 runtime 时只能通过复制或显式选端的文件工具访问。
+- **helper 调用**：`agent-session …` 在 session-runtime 本地启动 → 向上找到 `.opendan/session.json` → 用 token 连 `state_url` → kRPC；`ask-user` 经 `session.task` 回到 Runner；token 过期先 `session.token_refresh`。
+- **拿回加工再交付**：`copy --from workspace:a.bin --to session:in/a.bin` → libopendan 写 transfer 记录 → 控制侧从 workspace runtime 分块 `Read` → 向 session-runtime `CreateNew` 临时文件 + `Append`（`expected_hash` 顺序保护）→ 末尾整文件 hash 核验 → `Rename` 提交 → 记录 committed → 加工 → 反向复制 `--to workspace:out/b.bin` → 报告写两端实际路径与交付状态。
+- **复制中断**：重连后读 transfer 记录；目标 `Stat` 临时文件 / 目标文件与 hash 决定续传、重传或已提交；取消时 `Remove` 临时文件。
+- **Todo 换 runtime**：PLAN 指定 `runtime_id` / `workspace` → `needs_own_session` 任一不同即派独立 Work Session → 子 Session 走上面的创建时序；父 Session 的 session-runtime 不变。
+- **恢复**：按冻结结果回原 session-runtime；Agent 改默认 runtime 不影响旧 Session；上下文文件丢失则重写，token 重签。
 
-本次仅重写 TODO：以“自己的稳定电脑 + 可选目标电脑”为设计方向，把方案讨论放到最高优先级，列出单 runtime 假设的扩展范围、双向文件复制以及双端 cmd_skills 的影响。保留工具基线和 Windows 差异要求，但实施安排须先经过 §3 的方案讨论。
+## 7. 实施任务
 
-未修改 runtime、分发、协议或 cmd_skills 实现；本文只核对链接、格式与内部设计表述，没有执行运行时测试。上述讨论决策、代码实施和验收均未完成。
+顺序建议：T0 → T1 → T3 → T4 → T2 → T5 → T6 → T7。T2 的 Windows / macOS 部分可与 T3/T4 并行。
 
-2026-10-25 回写：按用户裁决移除 tmux 口径。§1.1 删去“与 Session 绑定的 tmux”行，长任务与中断恢复改为全平台复用 Node Executor；§2 源码表改为 tmux runtime 已删除；T6、T7 与 §5 Windows 边界不再以 tmux 为参照。代码侧的删除已在同日完成。
+### T0：llm_context 层先行项（agent_tool，单独 TODO 推进）
+
+2026-10-25 已实施（未提交），落点、与本节原写法的差异、验证见 [llm_context AgentRuntime TODO §11](llm-context-agent-runtime-todo.md#11-session-runtime-先行项2026-10-25-实施)。
+
+- [x] 流式读 / 分块写原语：`RuntimeFiles { limits, stat(hash), read_range, write_chunk(mode, expected_size, expected_hash), rename, remove }`，native（`LocalFileBackend`）与 remote_node（`RemoteNodeTarget`）都实现；chunk 上限由 `limits().max_chunk_bytes` 表达。顺序保护改用 `expected_size`（理由见 §4 传输路径）。
+- [x] 移除 `ControlSide` 首词分流（Q1）；`NodeBashRunner` 不再认识 Session helper 名称。**过渡影响**：T3 完成前，remote_node Session 中的 `agent-session` 等 helper 只有节点上已安装时才可用。
+- [x] `Rename` / `Remove` 进 `ExecutorOp`、wire、worker、RBAC action、账本去重（Q2）；最小方法放在 `RuntimeFiles`（控制侧、每操作独立 locator），工具侧 `FileBackend` 不变。
+- [x] `RuntimeInfo` 增加 `platform / shell_kind / baseline` 只读字段（baseline 来自 `RuntimeConfig.baseline` 声明），供提示词使用。
+
+### T1：工具基线清单
+
+- [ ] 从源码与分发入口生成内置命令清单（`agent-session`、`llm_understand_media`、`agent_tool xllm`、`xagent`、`buckyos`、`aicc-tool` 及媒体命令），区分 runtime 原生能力、Agent 状态操作、BuckyOS 服务调用、媒体输入输出；一份清单供打包、镜像核验、host 安装检查与手册共用。
+- [ ] 内置 cmd_skills 逐项标 `baseline`；场景专用第三方依赖明确声明为 extended。
+
+### T2：安装、升级与命令发现
+
+- [ ] 默认容器：按 T1 清单核验镜像与宿主挂载，启动后写 `baseline_check`。
+- [ ] Desktop host（win32 / osx）：安装 / 升级交付标准环境所需工具与入口；按 §2.2 选最小可用 launcher / 子命令方案，明确支持的 PowerShell 版本；验证命令发现、参数引用、中文 / 空格路径、退出码；由 runtime 准备稳定搜索路径，不依赖用户 shell rc 或手工软链接。
+- [ ] 仅作为 workspace 所在 runtime 的机器不承担安装要求。
+
+### T3：session-runtime 与 workspace 解耦
+
+- [ ] `freeze_runtime` 去掉 `RuntimeSelection::Workspace`；Session 配置中 `runtime.frozen` 与 `workspace` 独立；Binding / Run 记录两端 runtime 与目录；格式升版，旧记录读失败。
+- [ ] Session 工作目录统一在 session-runtime；默认 cwd 固定为 Session 工作目录（Q4）；提示词 / 环境信息分别给出 session-runtime 与 workspace 的 runtime、OS/shell、目录、基线。
+- [ ] `create_sub_session` / Todo：runtime 与 workspace 独立解析，删除冲突拒绝；`needs_own_session` 保持“任一不同即独立 Session”。
+- [ ] 按 §6.1 实现：AgentService 补 `session.token_refresh` / `session.task`，`xagent` 去 `agent_root()` 依赖，Session 上下文文件与 Session 范围 token 下发，helper 经 kRPC 访问控制面；BuckyOS 服务工具使用当前 Agent 授权，不复制整份控制侧环境。
+- [ ] 验证：无 workspace、同 runtime、不同 runtime、session-runtime 故障时 workspace runtime 的独立操作、恢复不换端。
+
+### T4：runtime 间复制
+
+- [ ] 按 §4 实现双向复制 CLI / 工具、持久记录、查询 / 取消、完整性与失败处理；`llm_understand_media` 等加工工具消费复制到 session-runtime 的素材；报告 / 附件记录位置与交付状态。
+
+### T5：检查与提示
+
+- [ ] runtime 登记时声明 `baseline`（Q5）；启用 / 升级后核验并写 `baseline_check`，区分“Executor 可连接”“标准工具集完整”“具体外部服务可用”；缺工具时提示修复方向。
+- [ ] 界面与错误保留执行端；一端故障只阻断依赖该端的操作。
+
+### T6：cmd_skills 接基线
+
+- [ ] 按 §5 / Q6 增加 `baseline` 与 `platforms` 元数据、冻结时按 session-runtime 声明过滤与报告、子 Session 重新解析；更新 `analyze_intent`、`goal`、`plan`、`agent.toml`，使计划写明每个 Todo 的 session-runtime 与是否需要复制。
+
+### T7：文档与手册
+
+- [ ] 更新 `AgentRuntime 设计.md` §6.4、Session Directory / Agent State / Workspace Protocol / TodoList 文档；`opendan_agent_dev`、`ui_core`、`buckyos_admin`、`xllm`、`aigc_*` 手册补 session-runtime / workspace 两端示例、复制与交付示例、Windows / macOS 入口差异。
+- [ ] 同步 `buckyos-api`、SDK、UI 消费方。
+
+## 8. 验收场景
+
+实现并实测后才能勾选。
+
+- [ ] **只有自己的电脑**：无 workspace 的 Session 在 session-runtime 调用工具、读写文件、保留产物；多个 Session 工作目录独立（现状已满足，回归）。
+- [ ] **workspace 与 session-runtime 同机**：角色目录分别记录，默认 cwd 符合 Q4；同文件复制 / 冲突行为正确。
+- [ ] **带电脑去陌生 workspace**：workspace 在工具不齐的 node 上；默认命令仍在 session-runtime；显式操作 workspace runtime 诊断；不自动安装工具。
+- [ ] **拿回加工再交付**：从 workspace runtime 复制二进制素材 → 在 session-runtime 理解 / 加工 / 构建 → 复制回 → workspace 侧验证 → 报告准确交付位置，全程无共享挂载。
+- [ ] **复制边界与中断**：大文件、中文 / 空格路径、Windows/Unix 路径、同名与覆盖、源变化、权限不足、不支持类型；断连、取消、重启、提交结果未知时按协议处理，部分文件不冒充成功。
+- [ ] **每步位置确定**：直接命令、`cd`、脚本、管道、子进程留在选定端；两端同名文件不混读；stdout/stderr、退出码、报告标明归属。
+- [ ] **独立故障**：session-runtime 离线不阻断 workspace runtime 的独立诊断；workspace runtime 离线不阻断 session-runtime 加工，交付状态如实保留。
+- [ ] **多 session-runtime Todo**：PLAN 为不同 Todo 选 Linux 容器 / win32 node / osx node，子 Session 在各自 runtime 执行，报告标注位置；已运行 attempt 不换 runtime。
+- [ ] **两条基线**：标准环境与已扩展环境各自的默认 cmd_skills 生效集合正确；临时服务故障不改变基线判定。
+- [ ] **主要环境交付**：干净默认容器、干净 Windows host、干净 macOS host 分别按 T1 清单验标准环境；Agent 身份与续期；缺工具 / 版本不匹配 / provider 问题区分。
+- [ ] **长任务与恢复**：两端各自的查询、取消、超时、Runner 退出、Executor 重启；恢复回原端；Agent 改默认 runtime 后旧 Session 不换机器。
+- [ ] **回归**：镜像 / 系统升级后重跑基线与双端闭环；按影响范围跑 Rust、打包、SDK/UI 测试及真实环境验收，记录未实测项。
+
+## 9. 本次记录
+
+2026-10-25：按用户六条决策（S1–S6）重写。取消 v1 的 target 概念与四级基线，Workspace 自带 runtime、不再决定 Session runtime；Windows / macOS host 改为标准环境适配；双端 cmd_skills 匹配改为基线匹配；补充 Executor 读写限制事实；待定项收敛为 Q1–Q6。文件名沿用 v1，未改。
+
+2026-10-25（同日）：用户拍板 Q1–Q6；§6 改为结论表，新增 §6.1 Q1 设计（AgentService / Session 进程、Session 上下文文件、Session 范围 token、`session.task`、ControlSide 退役）、§6.2 类型草案、§6.3 时序；T0/T3/T5/T6 按结论改写。核对到 kRPC 版 `AgentStateClient` 与服务端 `serve_call` 已存在，Q1 的工程量主要在身份下发、task bridge 网络化与 `xagent` 去 AgentRoot 依赖。
+
+未修改任何代码；未执行运行时测试。
+
+2026-10-25（T0 实施）：按 §7 T0 完成 llm_context 层先行项，记录见 [llm_context AgentRuntime TODO §11](llm-context-agent-runtime-todo.md#11-session-runtime-先行项2026-10-25-实施)。本文 §4 的“以 `expected_hash` 做顺序保护”改为 `expected_size`、T0 的“`FileBackend` 加最小方法”改为 `RuntimeFiles`，§6.2 草案补实施后的形状。未做真实 Zone / Windows / macOS 实测。

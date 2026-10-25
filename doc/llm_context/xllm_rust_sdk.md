@@ -153,7 +153,7 @@ runtime:
     profile_id: dev
 ```
 
-同 kind 逐字段覆盖，env 按键覆盖；切换 kind 重置整段。native 的 workdir 与 SSH 的 identity_file 按声明配置文件目录解析；SSH/Node workdir 必须显式为目标绝对路径。id 是身份，不是 profile 查找键。未知字段和无关连接块报 Config；规划中的 container、container_host、http_proxy_runtime 报 Capability。runtime 不接受 fs_view、path_layers、limits 或 policy。文件工具的 workspace 策略在目标侧解析真实路径，防止符号链接逃逸；shell 的文件访问仍由系统权限控制。
+同 kind 逐字段覆盖，env 按键覆盖；切换 kind 重置整段。native 的 workdir 与 SSH 的 identity_file 按声明配置文件目录解析；SSH/Node workdir 必须显式为目标绝对路径。id 是身份，不是 profile 查找键。未知字段和无关连接块报 Config；规划中的 container、container_host、http_proxy_runtime 报 Capability。runtime 不接受 fs_view、path_layers、limits 或 policy。可选 `baseline: standard | extended` 是登记者对环境基线的声明，只进入 `{{runtime.baseline}}` 与运行环境段，不被探测；`{{runtime.platform}}`（`linux / macos / windows`）与 `{{runtime.shell_kind}}`（shell 程序名）由探测结果归一得到。文件工具的 workspace 策略在目标侧解析真实路径，防止符号链接逃逸；shell 的文件访问仍由系统权限控制。
 
 shell、read/write/edit 共用执行体；模板执行需宿主显式注入 `SandboxPromptExec`，当前生产模板默认未启用，Node 尚不支持模板 EXEC。MCP 仍在所配置服务执行，进程内宿主工具仍在 Runner 执行；都由 Sandbox 派发，具名宿主工具缺失时拒绝接管。SSH 使用系统 ssh/sftp、非交互认证和 known_hosts，要求远端 Linux/bash/SFTP；探测与身份核验在首次模型请求前完成。SSH 命令由包装脚本在后台启动，输出与退出码写入远端执行目录；Node 则在控制侧持久保存操作 locator，结果由目标 Executor 查询返回。恢复均不核验或停止旧进程，不重放副作用。
 

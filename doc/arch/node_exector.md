@@ -212,7 +212,7 @@ Scheduler 是正常体系的最高配置来源；Owner 是正常体系之外的�
         "workdir_roots": ["/home/owner/workspaces"],
         "env": { "PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8" },
         "principals": ["<agent-did>"],
-        "ops": ["open_stream", "describe", "exec", "read", "write", "edit", "mkdir", "stat", "query", "cancel"]
+        "ops": ["open_stream", "describe", "exec", "read", "write", "edit", "mkdir", "stat", "rename", "remove", "query", "cancel"]
       }
     },
     "owner_agents": {
@@ -243,7 +243,7 @@ Scheduler 是正常体系的最高配置来源；Owner 是正常体系之外的�
 - roots 约束 cwd 和内置文件工具，**不约束 shell 内任意程序的 I/O**；OS 账号权限才是实际边界。不把 roots 描述成 sandbox。
 - 未知字段、空白名单、非法 uid/gid 均拒绝启用；未实现 worker 的平台仅开放控制能力，执行请求返回 Capability；旧 NodeConfig 无该段时行为不变。
 
-RBAC 派生：对资源 `obj://node/<node_name>/executor/<profile_id>`，生成通过 §7.2 映射的原 token owner 与绑定 `app:<AppId>` 两侧的精确规则；动作是 `executor.open_stream/describe/exec/read/write/edit/mkdir/stat/computer_inspect/computer_observe/computer_act/cancel/query`。沿用既有 RBAC 的 `(sub, target.authorization_key())` 检查；不把原 token 的 sub 改成 AgentDID，也不伪造 JWT。AgentDID 与完整 AppInstance 的校验由 Executor 的 profile/binding 准入补足，不能只依赖不含 owner 的 app 授权键。操作权限取 profile.ops、AgentSpec.permission_mode 与 RBAC 的交集；ReadOnly 拒绝 exec/write/edit。query/cancel 还要求 §7.3 的操作归属一致。删除授权、改 binding、收紧 permission_mode 或停用都触发撤权。设置管理权限与 Agent 调用权限分别定义；不给 App 侧读 Agent 私钥的权限。
+RBAC 派生：对资源 `obj://node/<node_name>/executor/<profile_id>`，生成通过 §7.2 映射的原 token owner 与绑定 `app:<AppId>` 两侧的精确规则；动作是 `executor.open_stream/describe/exec/read/write/edit/mkdir/stat/rename/remove/computer_inspect/computer_observe/computer_act/cancel/query`。沿用既有 RBAC 的 `(sub, target.authorization_key())` 检查；不把原 token 的 sub 改成 AgentDID，也不伪造 JWT。AgentDID 与完整 AppInstance 的校验由 Executor 的 profile/binding 准入补足，不能只依赖不含 owner 的 app 授权键。操作权限取 profile.ops、AgentSpec.permission_mode 与 RBAC 的交集；ReadOnly 拒绝 exec/write/edit/mkdir/rename/remove/computer_act。query/cancel 还要求 §7.3 的操作归属一致。删除授权、改 binding、收紧 permission_mode 或停用都触发撤权。设置管理权限与 Agent 调用权限分别定义；不给 App 侧读 Agent 私钥的权限。
 
 ### 5.5 授权与宿主权限取交集
 
@@ -392,7 +392,7 @@ Stream 上是长度前缀的 JSON 控制帧 + 二进制数据帧（单帧 ≤ 16
 | --- | --- | --- | --- |
 | `exec` | `{cmd, cwd, env_overrides, execution_timeout_ms}` | `accepted` → `started{pid}` → stdout/stderr → `exited{code}` | cmd 作为数据经有界管道交给 shell，不进 argv；无交互 stdin（v1） |
 | `read` | `{path, range}` | `accepted` → 数据帧流 + `done{hash}` | 节点侧解析 roots/symlink；持久保存本次读取结果 |
-| `write` | `{path, expected_hash?, content_length, content_hash}` + 数据帧 + `upload_end` | `accepted` → `done{hash}` | 完整上传后才接受；目标目录临时文件 + 原子替换；hash 不符 Conflict |
+| `write` | `{path, mode, expected_hash?, expected_size?, content_length, content_hash}` + 数据帧 + `upload_end` | `accepted` → `done{hash}` | 完整上传后才接受；`replace`/`create_new` 为目标目录临时文件 + 原子替换；`append` 原地追加、不读入已有内容（分块传输用）；hash/size 不符 Conflict |
 | `edit` | `{path, edits[], expected_hash?}` | `accepted` → `done{hash, diff_summary}` | 读、匹配、写在同一目标完成 |
 | `cancel` | 操作定位字段 | 当前状态 + `cancel_requested` / 已有终态 / NotFound | 当前仍获授权的原主体可跨 Stream 取消；确认停止后才报告 cancelled |
 | `query` | 操作定位字段 + `{channel?, offset?, max_bytes?}` | 当前状态、持久工具结果或指定输出片段 | 返回 next_offset、retained_from、truncated、eof；不重新执行原工具 |
@@ -743,7 +743,7 @@ P0-A（配置与权限）与 P0-B（Command Stream 最小闭环，Linux 形态 A
 
 | 位置 | 内容 |
 | --- | --- |
-| `buckyos-api/src/node_executor.rs` | `NodeSettings{executor}`、`ExecutorSettings`（含 `owner_agents: OwnerAgentsPolicy`）、`ExecutorConfig`（revision/generation/auth_valid_until_ms/principal_bindings/profiles/limits）、`ExecutorOp`（含 `Mkdir`/`Stat`）、`ComputerAccess`、`owner_agent_profile_id`、`granted_ops`（profile.ops ∩ permission_mode）、端口与租期常量；`NodeConfig.executor: Option<ExecutorConfig>` |
+| `buckyos-api/src/node_executor.rs` | `NodeSettings{executor}`、`ExecutorSettings`（含 `owner_agents: OwnerAgentsPolicy`）、`ExecutorConfig`（revision/generation/auth_valid_until_ms/principal_bindings/profiles/limits）、`ExecutorOp`（含 `Mkdir`/`Stat`/`Rename`/`Remove`）、`ComputerAccess`、`owner_agent_profile_id`、`granted_ops`（profile.ops ∩ permission_mode）、端口与租期常量；`NodeConfig.executor: Option<ExecutorConfig>` |
 | `kernel/computer_driver` | 桌面 Driver 共享 crate（原 agent-daemon `computer/desktop.rs`、`native.m`、`native_windows.cpp`、Windows 私有目录/会话助手、`boot_ms`）；agent-daemon 与 node_daemon 都依赖它 |
 | `kernel/scheduler/src/executor_auth.rs` | 另从 `owner_agents` × `AgentSettings.runtimes` 派生 per-Agent profile（§5.4） |
 | `buckyos-api/src/node_executor_proto.rs` | 帧编解码、全部控制消息 DTO、错误枚举、`ExecutorOpSpec` 与请求摘要 |
@@ -769,7 +769,7 @@ P0-A（配置与权限）与 P0-B（Command Stream 最小闭环，Linux 形态 A
 ### 17.3 Command Stream wire（固化）
 
 - 帧：`kind:u8 | len:u32be | payload`；kind 1 为 JSON 控制帧（≤1 MiB），kind 2 为数据帧 `channel:u8 | offset:u64be | op_id_len:u16be | op_id | bytes`（数据 ≤16 KiB）。**差异**：设计写"单帧 ≤16 KiB"，控制帧放宽到 1 MiB，以容纳 exec 脚本与 edit 文本。
-- 客户端消息 `login / describe / exec / read / write / upload_end / edit / mkdir / stat / computer / cancel / query / ping`（`mkdir`/`stat` 是控制侧放置 Workspace 与 Session 目录所需的最小目录操作：`stat` 返回 `file.path_type ∈ {file, directory, missing, other}` 与规范路径，`mkdir` 幂等创建 roots 内的目录及缺失父目录；两者同样进 RBAC、账本去重与 `ExecutorOpSpec` 摘要），服务端消息 `login_ok / describe_ok / accepted / status / query_ok / started / finished / error / closing / pong`，均为 `type` 标签、拒绝未知字段。错误码：Unauthenticated、Forbidden、InvalidArgument、Capability、Conflict、Busy、CapacityExceeded、Disabled、Unavailable、AuthExpired、ResultExpired、StoreMismatch、NotFound、ProtocolError、Internal，并带 `effect_unknown`。
+- 客户端消息 `login / describe / exec / read / write / upload_end / edit / mkdir / stat / rename / remove / computer / cancel / query / ping`（`mkdir`/`stat` 是控制侧放置 Workspace 与 Session 目录所需的最小目录操作：`stat` 返回 `file.path_type ∈ {file, directory, missing, other}`、规范路径与文件 `size`，请求带 `hash: true` 时另对文件做一次整文件摘要，`mkdir` 幂等创建 roots 内的目录及缺失父目录；`rename {from, to, replace}` / `remove {path}` 是 runtime 间复制的原子提交与清理（[Session Runtime TODO](../../notepads/opendan-primary-runtime-tools-todo.md) Q2）：只作用于普通文件，符号链接与目录为 InvalidArgument，`replace=false` 时已有 `to` 为 Conflict（hard link + unlink，不支持 hard link 的文件系统退为检查后 rename；Windows 为不带 `MOVEFILE_REPLACE_EXISTING` 的 `MoveFileExW`），`to` 的父目录须已存在，`remove` 对已不存在的文件成功并报 `changed=false`；`write` 的 `expected_size` 要求目标当前大小等于该值，用于按序追加分块；这些操作同样进 RBAC、账本去重与 `ExecutorOpSpec` 摘要），服务端消息 `login_ok / describe_ok / accepted / status / query_ok / started / finished / error / closing / pong`，均为 `type` 标签、拒绝未知字段。错误码：Unauthenticated、Forbidden、InvalidArgument、Capability、Conflict、Busy、CapacityExceeded、Disabled、Unavailable、AuthExpired、ResultExpired、StoreMismatch、NotFound、ProtocolError、Internal，并带 `effect_unknown`。
 - login 绑定 runtime_id 与 run_id；操作必须带与 login 相同的 run_id 和当前 store_id（否则 InvalidArgument / StoreMismatch）。摘要覆盖 runtime/run/call/op 与 `ExecutorOpSpec`（可选字段只补协议默认值，不补随配置变化的值）。
 - write：`write` 头 → upload 数据帧（offset 连续）→ `upload_end`，回复挂在 write 的 request_id 上；30 s 上传期限，断线/超时丢弃临时内容。
 - query 的数据以 base64 内联返回（每次 ≤256 KiB，`wait_ms` ≤30 s）；exec 的 started/输出/finished 只推送给提交它的 Stream，尽力而为，队列满即丢，权威结果以 query 为准。
@@ -778,9 +778,9 @@ P0-A（配置与权限）与 P0-B（Command Stream 最小闭环，Linux 形态 A
 
 - 账本 `$BUCKYOS_ROOT/local/node_daemon/executor/`：`meta.json`、`owner.lock`（flock 单写者）、`operations/<key-hash>/{request.json,state.json,result.json,stdout,stderr,content,upload}`、`tombstones/<key-hash>.json`、`tmp/`。key-hash = sha256(`["op", store_id, agent_did, app_instance_id, profile, runtime_id, op_id]`)，另以 run/call 元组做第二唯一键。记录在 tmp 下写全并 fsync 后整目录 rename 发布，之后才回复 accepted；result.json 写一次。重启时 starting/running 而无结果的记 unknown（effect_unknown），meta 缺失但有记录、node_did 不符、记录损坏均拒绝打开（节点日志报错，执行器保持关闭）。
 - exec：先以目标身份跑一次 worker 解析 cwd（须在 roots 内），再在串行控制门内检查取消、直接 spawn `bash --noprofile --norc -c <wrapper>`（独立进程组；pre_exec 内显式 setgroups([gid])/setgid/setuid 并核对，以目标身份 chdir，继承的 fd 置 CLOEXEC（Linux 用 `close_range`，macOS 或 close_range 不可用时按 RLIMIT_NOFILE 逐个 fcntl）；Linux 另设 no_new_privs、清 ambient caps），脚本经 stdin 读入后 stdin 改为 /dev/null，不进 argv。**差异**：shell 进程本身就是降权 worker，没有再套一层持有 shell 的 worker。stdout/stderr 各保留前 N 字节、超出继续 drain；leader 退出后最多再等 500 ms 读管道；超时/取消对进程组 SIGTERM，2 s 后 SIGKILL，以 wait 确认后才发布 timed_out/cancelled；正常结束不清理后台进程。
-- 文件操作：node_daemon 以 `--executor-worker` 重入自身、以 profile 身份执行；路径在打开后的 fd（Linux `/proc/self/fd`，macOS `F_GETPATH`）上校验是否在 roots 内；写入为同目录临时文件 + fsync + renameat + 目录 fsync；`write` 可创建 roots 内缺失的父目录；同一 canonical 路径的写串行；expected_hash 不符为 Conflict。read/edit 的内容快照写入 `content`，query 读取的是快照而非现场文件。文件操作一旦开始不可中断，取消请求之后按自然结果发布。
+- 文件操作：node_daemon 以 `--executor-worker` 重入自身、以 profile 身份执行；路径在打开后的 fd（Linux `/proc/self/fd`，macOS `F_GETPATH`）上校验是否在 roots 内；写入为同目录临时文件 + fsync + renameat + 目录 fsync（`append` 例外：`O_APPEND` 原地追加后 fsync，不受 max_file_bytes 对整文件的限制，只限单次上传；给出 expected_hash 时流式计算已有内容摘要）；rename/remove 在已校验的父目录句柄上 `renameat`/`linkat`/`unlinkat`；`write` 可创建 roots 内缺失的父目录；同一 canonical 路径的写串行（rename 同时锁定两端）；expected_hash / expected_size 不符为 Conflict。read/edit 的内容快照写入 `content`，query 读取的是快照而非现场文件。文件操作一旦开始不可中断，取消请求之后按自然结果发布。
 - 容量：准入前按操作预留空间（exec 为 2×输出上限，文件为 max_file_bytes），计入 max_records（含墓碑）与 max_store_bytes，超出 CapacityExceeded；GC 每 60 s 先写墓碑再删目录，墓碑不按 TTL 删除。
-- 非 root 的 daemon 只声明 open_stream/describe/query/cancel，exec/read/write/edit/mkdir/stat 返回 Capability。
+- 非 root 的 daemon 只声明 open_stream/describe/query/cancel，exec/read/write/edit/mkdir/stat/rename/remove 返回 Capability。
 - `describe` 的 `target` 另带 `workdir_roots`（profile 的 roots：控制侧据此放 Session 默认目录 `<root0>/.opendan/<agent>/sessions/<sid>`），`info` 另带 `identity_mode`（`current_user | switch_user`）与注入 Driver 时的 `desktop`（`ui/capture/input/accessibility` readiness）：A-system 与 A-desktop 由此区分，不猜安装形态。
 - node_daemon 桌面模式（A-desktop）：`--desktop_daemon` 构建、平台有 Driver（macOS/Windows）且进程非 root 时，以 `CurrentUser` 打开并注入 `computer_driver` crate 的共享 Driver（与 agent-daemon 同一实现、同一用户会话输入协调锁）；Linux 与 root 场景保持 A-system。
 

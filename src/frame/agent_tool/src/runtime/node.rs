@@ -18,8 +18,9 @@ use buckyos_api::{
     ExecutorEditRequest, ExecutorError, ExecutorErrorCode, ExecutorExecRequest, ExecutorFrame,
     ExecutorFileResult, ExecutorLimits, ExecutorLogin, ExecutorLoginOk, ExecutorOpRef, ExecutorOpState,
     ExecutorOpStatus, ExecutorPathRequest, ExecutorPathType, ExecutorQueryRequest,
-    ExecutorReadRequest, ExecutorServerMessage, ExecutorUploadEnd, ExecutorWriteMode,
-    ExecutorWriteRequest, EXECUTOR_MAX_DATA_BYTES, EXECUTOR_MAX_QUERY_BYTES,
+    ExecutorReadRequest, ExecutorRenameRequest, ExecutorServerMessage, ExecutorStatRequest,
+    ExecutorUploadEnd, ExecutorWriteMode, ExecutorWriteRequest, EXECUTOR_MAX_DATA_BYTES,
+    EXECUTOR_MAX_QUERY_BYTES,
     NODE_EXECUTOR_PROTOCOL_VERSION,
 };
 use serde::{Deserialize, Serialize};
@@ -28,9 +29,12 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::oneshot;
 
-use super::files::{check_allowed, FileBackend, PathType, WholeEditResult, WholeWriteMode, WholeWriteResult};
+use super::files::{
+    check_allowed, ChunkWritten, FileBackend, FileLimits, FileStat, PathType, RangeRead, RuntimeFiles,
+    WholeEditResult, WholeWriteMode, WholeWriteResult, WriteChunk,
+};
 use super::{
-    AgentRuntime, Capabilities, ControlSide, RuntimeConfig, RuntimeDescriptor, RuntimeInfo,
+    AgentRuntime, Capabilities, RuntimeConfig, RuntimeDescriptor, RuntimeInfo,
     RuntimeOpenCtx, CURRENT_TOOL_CALL,
 };
 use crate::exec_tracking::{unresolved_reason, InflightAction};
@@ -419,7 +423,7 @@ impl NodeClient {
                 )
                 .await?
             }
-            RemoteOp::Write { path, mode, content } => {
+            RemoteOp::Write { path, mode, expected_size, expected_hash, content } => {
                 self.request(
                     |rid, store, run| {
                         ExecutorClientMessage::Write(ExecutorWriteRequest {
@@ -430,7 +434,8 @@ impl NodeClient {
                             call_id: call_id.clone(),
                             path: path.to_string(),
                             mode: *mode,
-                            expected_hash: None,
+                            expected_hash: expected_hash.map(str::to_string),
+                            expected_size: *expected_size,
                             content_length: content.len() as u64,
                             content_hash: executor_content_hash(content),
                         })
@@ -463,7 +468,7 @@ impl NodeClient {
                 )
                 .await?
             }
-            RemoteOp::Mkdir { path } | RemoteOp::Stat { path } => {
+            RemoteOp::Mkdir { path } | RemoteOp::Remove { path } => {
                 let mkdir = matches!(op, RemoteOp::Mkdir { .. });
                 self.request(
                     |rid, store, run| {
@@ -478,8 +483,45 @@ impl NodeClient {
                         if mkdir {
                             ExecutorClientMessage::Mkdir(req)
                         } else {
-                            ExecutorClientMessage::Stat(req)
+                            ExecutorClientMessage::Remove(req)
                         }
+                    },
+                    None,
+                    Duration::ZERO,
+                )
+                .await?
+            }
+            RemoteOp::Stat { path, hash } => {
+                self.request(
+                    |rid, store, run| {
+                        ExecutorClientMessage::Stat(ExecutorStatRequest {
+                            request_id: rid.into(),
+                            store_id: store.into(),
+                            op_id: op_id.clone(),
+                            run_id: run.into(),
+                            call_id: call_id.clone(),
+                            path: path.to_string(),
+                            hash: *hash,
+                        })
+                    },
+                    None,
+                    Duration::ZERO,
+                )
+                .await?
+            }
+            RemoteOp::Rename { from, to, replace } => {
+                self.request(
+                    |rid, store, run| {
+                        ExecutorClientMessage::Rename(ExecutorRenameRequest {
+                            request_id: rid.into(),
+                            store_id: store.into(),
+                            op_id: op_id.clone(),
+                            run_id: run.into(),
+                            call_id: call_id.clone(),
+                            from: from.to_string(),
+                            to: to.to_string(),
+                            replace: *replace,
+                        })
                     },
                     None,
                     Duration::ZERO,
@@ -599,6 +641,8 @@ pub(crate) enum RemoteOp<'a> {
     Write {
         path: &'a str,
         mode: ExecutorWriteMode,
+        expected_size: Option<u64>,
+        expected_hash: Option<&'a str>,
         content: &'a [u8],
     },
     Edit {
@@ -610,6 +654,15 @@ pub(crate) enum RemoteOp<'a> {
         path: &'a str,
     },
     Stat {
+        path: &'a str,
+        hash: bool,
+    },
+    Rename {
+        from: &'a str,
+        to: &'a str,
+        replace: bool,
+    },
+    Remove {
         path: &'a str,
     },
 }
@@ -623,6 +676,8 @@ impl RemoteOp<'_> {
             RemoteOp::Edit { .. } => "edit",
             RemoteOp::Mkdir { .. } => "mkdir",
             RemoteOp::Stat { .. } => "stat",
+            RemoteOp::Rename { .. } => "rename",
+            RemoteOp::Remove { .. } => "remove",
         }
     }
 
@@ -633,14 +688,19 @@ impl RemoteOp<'_> {
             }
             RemoteOp::Read { path } => json!({"kind": "read", "path": path}),
             RemoteOp::ReadRange { path, offset, length } => json!({"kind": "read", "path": path, "offset": offset, "length": length}),
-            RemoteOp::Write { path, mode, content } => json!({
-                "kind": "write", "path": path, "mode": mode, "content_hash": executor_content_hash(content)
+            RemoteOp::Write { path, mode, expected_size, expected_hash, content } => json!({
+                "kind": "write", "path": path, "mode": mode, "expected_size": expected_size,
+                "expected_hash": expected_hash, "content_hash": executor_content_hash(content)
             }),
             RemoteOp::Edit { path, old, new } => {
                 json!({"kind": "edit", "path": path, "old": old, "new": new})
             }
             RemoteOp::Mkdir { path } => json!({"kind": "mkdir", "path": path}),
-            RemoteOp::Stat { path } => json!({"kind": "stat", "path": path}),
+            RemoteOp::Stat { path, hash } => json!({"kind": "stat", "path": path, "hash": hash}),
+            RemoteOp::Rename { from, to, replace } => {
+                json!({"kind": "rename", "from": from, "to": to, "replace": replace})
+            }
+            RemoteOp::Remove { path } => json!({"kind": "remove", "path": path}),
         };
         executor_content_hash(value.to_string().as_bytes())
     }
@@ -704,7 +764,7 @@ fn write_synced(path: &Path, data: &[u8]) -> std::io::Result<()> {
     std::fs::File::open(dir)?.sync_all()
 }
 
-fn uuid_like() -> String {
+pub(crate) fn uuid_like() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -841,28 +901,6 @@ pub(crate) struct NodeBashRunner {
     client: Arc<NodeClient>,
     env: BTreeMap<String, String>,
     max_execution_ms: u64,
-    /// Session helpers (`agent-session`, …) stay where the session's state
-    /// is: a command that starts with one of them runs there, in the
-    /// control-side working directory, with the control side's credentials.
-    control: Option<ControlSide>,
-}
-
-/// The program a shell command line starts with (`VAR=x prog …` skipped).
-pub fn leading_program(command: &str) -> Option<&str> {
-    command
-        .trim_start()
-        .split_whitespace()
-        .find(|word| !word.contains('=') || word.starts_with('='))
-        .map(|word| word.trim_matches(|c| c == '\'' || c == '"'))
-}
-
-impl ControlSide {
-    pub fn takes(&self, command: &str) -> bool {
-        leading_program(command).is_some_and(|program| {
-            let name = program.rsplit(['/', '\\']).next().unwrap_or(program);
-            self.commands.iter().any(|c| c == name)
-        })
-    }
 }
 
 #[async_trait]
@@ -875,21 +913,11 @@ impl BashRunner for NodeBashRunner {
         }
     }
 
-    async fn start(&self, ctx: &SessionRuntimeContext, req: BashRunRequest) -> Result<Box<dyn CommandHandle>, AgentToolError> {
-        if let Some(control) = self.control.as_ref().filter(|c| c.takes(&req.command)) {
-            let mut req = req;
-            req.cwd = control.workdir.clone();
-            return control.runner.start(ctx, req).await;
-        }
+    async fn start(&self, _ctx: &SessionRuntimeContext, req: BashRunRequest) -> Result<Box<dyn CommandHandle>, AgentToolError> {
         self.launch(req, self.max_execution_ms).await
     }
 
-    async fn run(&self, ctx: &SessionRuntimeContext, req: BashRunRequest) -> Result<BashRunOutput, AgentToolError> {
-        if let Some(control) = self.control.as_ref().filter(|c| c.takes(&req.command)) {
-            let mut req = req;
-            req.cwd = control.workdir.clone();
-            return control.runner.run(ctx, req).await;
-        }
+    async fn run(&self, _ctx: &SessionRuntimeContext, req: BashRunRequest) -> Result<BashRunOutput, AgentToolError> {
         let timeout = req.timeout_ms.max(1).min(self.max_execution_ms);
         let mut handle = self.launch(req, timeout).await?;
         match handle.wait(Duration::from_millis(timeout) + REQUEST_SLACK).await? {
@@ -1132,7 +1160,7 @@ impl FileBackend for RemoteNodeFiles {
             WholeWriteMode::CreateNew => ExecutorWriteMode::CreateNew,
         };
         Some(
-            self.run("write", RemoteOp::Write { path: &path, mode, content })
+            self.run("write", RemoteOp::Write { path: &path, mode, expected_size: None, expected_hash: None, content })
                 .await
                 .map(|status| {
                     let file = status.result.and_then(|r| r.file).unwrap_or_default();
@@ -1167,7 +1195,7 @@ impl FileBackend for RemoteNodeFiles {
 
     async fn path_type(&self, path: &Path) -> Result<PathType, AgentToolError> {
         let path = path.to_string_lossy().to_string();
-        let status = self.run("stat", RemoteOp::Stat { path: &path }).await?;
+        let status = self.run("stat", RemoteOp::Stat { path: &path, hash: false }).await?;
         Ok(path_type_of(&status))
     }
 
@@ -1187,15 +1215,20 @@ fn path_type_of(status: &ExecutorOpStatus) -> PathType {
 }
 
 fn settled(status: ExecutorOpStatus, what: &str) -> Result<ExecutorOpStatus, AgentToolError> {
+    settled_status(status, what).map_err(tool_error)
+}
+
+fn settled_status(status: ExecutorOpStatus, what: &str) -> Result<ExecutorOpStatus, ExecutorError> {
     match status.state {
         ExecutorOpState::Succeeded => Ok(status),
-        _ => {
-            let err = status
+        state => {
+            let mut err = status
                 .result
                 .as_ref()
                 .and_then(|r| r.error.clone())
-                .unwrap_or_else(|| ExecutorError::new(ExecutorErrorCode::Internal, format!("remote {what} {:?}", status.state)));
-            Err(tool_error(err))
+                .unwrap_or_else(|| ExecutorError::new(ExecutorErrorCode::Internal, format!("remote {what} {state:?}")));
+            err.effect_unknown |= state == ExecutorOpState::Unknown;
+            Err(err)
         }
     }
 }
@@ -1247,18 +1280,26 @@ impl RemoteNodeTarget {
     }
 
     async fn op(&self, what: &str, op: RemoteOp<'_>) -> Result<ExecutorOpStatus, AgentToolError> {
+        self.op_status(what, op).await.map_err(tool_error)
+    }
+
+    /// One remote operation under its own locator, waited for to its end.
+    async fn op_status(&self, what: &str, op: RemoteOp<'_>) -> Result<ExecutorOpStatus, ExecutorError> {
         let call_id = format!("target-{}", uuid_like());
-        let (loc, _) = self.client.start_op(&call_id, op).await?;
+        let loc = self.client.locator(&call_id, &op).await.map_err(|e| match e {
+            AgentToolError::Transport { message, effect_unknown } => {
+                let e = ExecutorError::new(ExecutorErrorCode::Unavailable, message);
+                if effect_unknown { e.unknown_effect() } else { e }
+            }
+            other => ExecutorError::new(ExecutorErrorCode::Internal, other.to_string()),
+        })?;
+        self.client.submit(&loc, &op).await?;
         let status = self
             .client
             .wait_terminal(&loc.op_id, Instant::now() + FILE_OP_TIMEOUT)
-            .await
-            .map_err(tool_error)?
-            .ok_or_else(|| AgentToolError::Transport {
-                message: format!("remote {what} did not finish in time"),
-                effect_unknown: true,
-            })?;
-        settled(status, what)
+            .await?
+            .ok_or_else(|| unavailable(format!("remote {what} did not finish in time")))?;
+        settled_status(status, what)
     }
 
     /// The canonical form of an existing directory under the profile roots.
@@ -1270,7 +1311,7 @@ impl RemoteNodeTarget {
     }
 
     pub async fn path_type(&self, path: &str) -> Result<(PathType, Option<String>), AgentToolError> {
-        let status = self.op("stat", RemoteOp::Stat { path }).await?;
+        let status = self.op("stat", RemoteOp::Stat { path, hash: false }).await?;
         let real = status.result.as_ref().and_then(|r| r.file.as_ref()).map(|f| f.path.clone());
         Ok((path_type_of(&status), real))
     }
@@ -1293,7 +1334,7 @@ impl RemoteNodeTarget {
         if self.canonical_dir(root).await? != root {
             return Err(invalid("artifact working directory changed its canonical location".into()));
         }
-        let (kind, canonical) = self.path_type(path).await?;
+        let (kind, canonical) = RemoteNodeTarget::path_type(self, path).await?;
         let canonical = canonical.filter(|_| kind == PathType::File).ok_or_else(|| {
             invalid(format!("artifact is not a regular file: {path}"))
         })?;
@@ -1344,16 +1385,17 @@ impl RemoteNodeTarget {
 
     /// Create `path` with `content`; `Ok(false)` when it already exists.
     pub async fn write_new(&self, path: &str, content: &[u8]) -> Result<bool, AgentToolError> {
-        match self.op("write", RemoteOp::Write { path, mode: ExecutorWriteMode::CreateNew, content }).await {
+        let op = RemoteOp::Write { path, mode: ExecutorWriteMode::CreateNew, expected_size: None, expected_hash: None, content };
+        match self.op_status("write", op).await {
             Ok(_) => Ok(true),
-            Err(AgentToolError::InvalidArgs(m)) if m.contains("already exists") => Ok(false),
-            Err(e) => Err(e),
+            Err(e) if e.code == ExecutorErrorCode::Conflict => Ok(false),
+            Err(e) => Err(tool_error(e)),
         }
     }
 
     /// Replace (or create) `path` with `content`.
     pub async fn write(&self, path: &str, content: &[u8]) -> Result<(), AgentToolError> {
-        self.op("write", RemoteOp::Write { path, mode: ExecutorWriteMode::Replace, content })
+        self.op("write", RemoteOp::Write { path, mode: ExecutorWriteMode::Replace, expected_size: None, expected_hash: None, content })
             .await
             .map(|_| ())
     }
@@ -1365,6 +1407,102 @@ impl RemoteNodeTarget {
             .and_then(|r| r.file)
             .map(|f| f.path)
             .unwrap_or_else(|| path.to_string()))
+    }
+}
+
+fn file_of(status: &ExecutorOpStatus) -> Result<&ExecutorFileResult, ExecutorError> {
+    status
+        .result
+        .as_ref()
+        .and_then(|r| r.file.as_ref())
+        .ok_or_else(|| ExecutorError::new(ExecutorErrorCode::Internal, "remote operation has no file result"))
+}
+
+#[async_trait]
+impl RuntimeFiles for RemoteNodeTarget {
+    fn limits(&self) -> FileLimits {
+        FileLimits {
+            max_chunk_bytes: self.max_file_bytes as u64,
+        }
+    }
+
+    async fn stat(&self, path: &str, hash: bool) -> Result<FileStat, ExecutorError> {
+        let status = self.op_status("stat", RemoteOp::Stat { path, hash }).await?;
+        let file = file_of(&status)?;
+        Ok(FileStat {
+            path: file.path.clone(),
+            path_type: path_type_of(&status),
+            size: file.size,
+            hash: (!file.hash.is_empty()).then(|| file.hash.clone()),
+        })
+    }
+
+    async fn read_range(&self, path: &str, offset: u64, length: u64) -> Result<RangeRead, ExecutorError> {
+        if length > self.max_file_bytes as u64 {
+            return Err(ExecutorError::new(
+                ExecutorErrorCode::InvalidArgument,
+                format!("{path}: {length} bytes exceed the chunk limit {}", self.max_file_bytes),
+            ));
+        }
+        let status = self.op_status("read", RemoteOp::ReadRange { path, offset, length }).await?;
+        let file = file_of(&status)?.clone();
+        let content = status.result.as_ref().and_then(|r| r.content.clone()).unwrap_or_default();
+        let data = self
+            .client
+            .read_channel(&status.op_id, ExecutorChannel::Content, length as usize)
+            .await?;
+        if data.len() as u64 != content.retained_bytes
+            || content.truncated
+            || content.hash.as_deref().is_some_and(|h| h != executor_content_hash(&data))
+        {
+            return Err(ExecutorError::new(
+                ExecutorErrorCode::Internal,
+                format!("{path}: range at {offset} failed integrity validation"),
+            ));
+        }
+        Ok(RangeRead {
+            path: file.path,
+            data,
+            file_size: file.size,
+        })
+    }
+
+    async fn write_chunk(&self, path: &str, chunk: WriteChunk<'_>) -> Result<ChunkWritten, ExecutorError> {
+        if chunk.data.len() > self.max_file_bytes {
+            return Err(ExecutorError::new(
+                ExecutorErrorCode::InvalidArgument,
+                format!("{path}: chunk exceeds the chunk limit {}", self.max_file_bytes),
+            ));
+        }
+        let mode = match chunk.mode {
+            WholeWriteMode::Replace => ExecutorWriteMode::Replace,
+            WholeWriteMode::Append => ExecutorWriteMode::Append,
+            WholeWriteMode::CreateNew => ExecutorWriteMode::CreateNew,
+        };
+        let op = RemoteOp::Write {
+            path,
+            mode,
+            expected_size: chunk.expected_size,
+            expected_hash: chunk.expected_hash,
+            content: chunk.data,
+        };
+        let status = self.op_status("write", op).await?;
+        let file = file_of(&status)?;
+        Ok(ChunkWritten {
+            path: file.path.clone(),
+            size: file.size,
+            created: file.created,
+            hash: (!file.hash.is_empty()).then(|| file.hash.clone()),
+        })
+    }
+
+    async fn rename(&self, from: &str, to: &str, replace: bool) -> Result<(), ExecutorError> {
+        self.op_status("rename", RemoteOp::Rename { from, to, replace }).await.map(|_| ())
+    }
+
+    async fn remove(&self, path: &str) -> Result<bool, ExecutorError> {
+        let status = self.op_status("remove", RemoteOp::Remove { path }).await?;
+        Ok(file_of(&status)?.changed)
     }
 }
 
@@ -1618,7 +1756,9 @@ impl RemoteNodeRuntime {
                         .unwrap_or_default(),
                     timezone: "UTC".into(),
                     target: target.clone(),
-                };
+                    ..Default::default()
+                }
+                .with_declared(self.config.baseline);
                 let mut config = self.config.clone();
                 config.kind = Some(REMOTE_NODE_KIND.into());
                 config.id = Some(id.clone());
@@ -1679,9 +1819,9 @@ impl AgentRuntime for RemoteNodeRuntime {
     }
 
     async fn open(&self, ctx: &RuntimeOpenCtx, tools: &ToolsConfig, deps: &XllmDeps) -> Result<(EffectiveTools, XllmToolManager), XllmError> {
-        if !ctx.path_prefix.is_empty() && ctx.control.is_none() {
+        if !ctx.path_prefix.is_empty() {
             return Err(XllmError::Capability(
-                "remote Session helper deployment is not available on remote_node; the host runs session helpers on the control side".into(),
+                "PATH layers of this machine do not exist on a remote_node runtime; commands come from the node's own PATH".into(),
             ));
         }
         let s = self.initialize().await?;
@@ -1701,7 +1841,6 @@ impl AgentRuntime for RemoteNodeRuntime {
             client: client.clone(),
             env,
             max_execution_ms: s.limits.max_execution_ms,
-            control: ctx.control.clone(),
         });
         let files = Arc::new(RemoteNodeFiles {
             client,

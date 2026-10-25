@@ -371,6 +371,7 @@ async fn real_daemon_exec_file_reconnect_expiry_and_credential_redaction() {
             path: path.clone(),
             mode: ExecutorWriteMode::Replace,
             expected_hash: None,
+            expected_size: None,
             content_length: 5,
             content_hash: executor_content_hash(b"hello"),
         }),

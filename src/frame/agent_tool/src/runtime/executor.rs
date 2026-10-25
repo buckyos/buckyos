@@ -359,6 +359,8 @@ impl TypedTool for ExecutorCallTool {
             ExecutorAction::Write { path, content } => RemoteOp::Write {
                 path,
                 mode: ExecutorWriteMode::Replace,
+                expected_size: None,
+                expected_hash: None,
                 content: content.as_bytes(),
             },
             ExecutorAction::Edit {

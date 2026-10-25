@@ -135,7 +135,15 @@ fn host_capabilities(identity: &spawn::HostIdentity, host: &ExecutorHost, admiss
     let mut caps: BTreeSet<ExecutorOp> = CONTROL_OPS.into_iter().collect();
     if identity.can_run() {
         if admission == ExecutorAdmission::Node || spawn::executable_available(&host.worker.program) {
-            caps.extend([ExecutorOp::Read, ExecutorOp::Write, ExecutorOp::Edit, ExecutorOp::Mkdir, ExecutorOp::Stat]);
+            caps.extend([
+                ExecutorOp::Read,
+                ExecutorOp::Write,
+                ExecutorOp::Edit,
+                ExecutorOp::Mkdir,
+                ExecutorOp::Stat,
+                ExecutorOp::Rename,
+                ExecutorOp::Remove,
+            ]);
             if admission == ExecutorAdmission::Node || spawn::executable_available(&host.shell) {
                 caps.insert(ExecutorOp::Exec);
             }

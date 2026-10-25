@@ -2823,7 +2823,7 @@ fn build_cmd_manual_system_text(tools: &EffectiveTools) -> Option<String> {
     Some(s.trim_end().to_string())
 }
 
-fn build_contexts_system_text(
+pub(crate) fn build_contexts_system_text(
     env: &TemplateEnv,
     referenced: &BTreeMap<String, String>,
 ) -> Option<String> {
@@ -2838,12 +2838,16 @@ fn build_contexts_system_text(
         ("arch", "Architecture"),
         ("hostname", "Hostname"),
         ("shell", "Shell"),
+        ("baseline", "Environment baseline"),
         ("tools", "Available tools"),
     ] {
         if referenced.contains_key(&format!("runtime.{key}")) {
             continue;
         }
         if let Some(v) = env.runtime.get(key) {
+            if key == "baseline" && v.is_empty() {
+                continue;
+            }
             lines.push(format!("{label}: {v}"));
         }
     }
@@ -3803,8 +3807,6 @@ pub struct XllmDeps {
     pub shell_task_context: ShellTaskContext,
     pub runtime_env: BTreeMap<String, String>,
     pub runtime_path_prefix: Vec<PathBuf>,
-    /// Session helpers a remote runtime runs on the control side.
-    pub runtime_control: Option<crate::runtime::ControlSide>,
     /// 为 true 时不获取工作目录互斥锁（宿主自行协调，例如 libOpenDAN 的
     /// 多个 session 共享 workspace，由活动视图避让）。
     pub skip_workdir_lock: bool,
@@ -3871,7 +3873,6 @@ impl Default for XllmDeps {
             shell_task_context: ShellTaskContext::default(),
             runtime_env: BTreeMap::new(),
             runtime_path_prefix: Vec::new(),
-            runtime_control: None,
             skip_workdir_lock: false,
             host_protocol: HostProtocolFlavor::OneShot,
             host_prompt_sections: HostPromptSections::default(),
@@ -4805,7 +4806,6 @@ pub async fn build_toolset(
     ctx.sources = sources;
     ctx.env = deps.runtime_env.clone();
     ctx.path_prefix = deps.runtime_path_prefix.clone();
-    ctx.control = deps.runtime_control.clone();
     let cfg_runtime = deps
         .runtime
         .as_ref()
@@ -6985,7 +6985,6 @@ impl XllmTask {
         open.sources = tool_sources;
         open.env = deps.runtime_env.clone();
         open.path_prefix = deps.runtime_path_prefix.clone();
-        open.control = deps.runtime_control.clone();
         let (runtime, tools, manager) =
             crate::runtime::open_runtime(&runtime_config, &open, &tools_cfg, deps).await?;
         let runtime_config = runtime.config();
@@ -7324,7 +7323,6 @@ impl XllmTask {
         open.sources = tool_sources;
         open.env = deps.runtime_env.clone();
         open.path_prefix = deps.runtime_path_prefix.clone();
-        open.control = deps.runtime_control.clone();
         let (runtime, tools, manager) =
             crate::runtime::open_runtime(&runtime_config, &open, &tools_cfg, deps).await?;
         let runtime_config = runtime.config();
@@ -7557,7 +7555,6 @@ pub async fn rebuild_toolset(
     open.sources = record.config.tools.sources.clone();
     open.env = deps.runtime_env.clone();
     open.path_prefix = deps.runtime_path_prefix.clone();
-    open.control = deps.runtime_control.clone();
     restore_host_environment(record, &mut open)?;
     let restored_deps = restore_host_report_tool(record, deps);
     let (runtime, _eff, mut manager) =

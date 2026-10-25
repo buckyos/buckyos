@@ -204,7 +204,14 @@ fn validate_spec(spec: &ExecutorOpSpec, limits: &ExecutorLimits) -> Result<(), E
                 return Err(err(ExecutorErrorCode::InvalidArgument, "edits is empty"));
             }
         }
-        ExecutorOpSpec::Mkdir { path } | ExecutorOpSpec::Stat { path } => abs(path)?,
+        ExecutorOpSpec::Mkdir { path } | ExecutorOpSpec::Stat { path, .. } | ExecutorOpSpec::Remove { path } => abs(path)?,
+        ExecutorOpSpec::Rename { from, to, .. } => {
+            abs(from)?;
+            abs(to)?;
+            if from == to {
+                return Err(err(ExecutorErrorCode::InvalidArgument, "rename source and destination are the same"));
+            }
+        }
     }
     Ok(())
 }
@@ -1000,8 +1007,16 @@ impl OpsManager {
         let mutating = !matches!(record.spec, ExecutorOpSpec::Read { .. } | ExecutorOpSpec::Stat { .. });
         let has_content = matches!(record.spec, ExecutorOpSpec::Read { .. } | ExecutorOpSpec::Edit { .. });
 
-        let mut _path_guard = None;
-        if let ExecutorOpSpec::Write { path, .. } | ExecutorOpSpec::Edit { path, .. } | ExecutorOpSpec::Mkdir { path } = &record.spec {
+        let locked: Vec<&String> = match &record.spec {
+            ExecutorOpSpec::Write { path, .. }
+            | ExecutorOpSpec::Edit { path, .. }
+            | ExecutorOpSpec::Mkdir { path }
+            | ExecutorOpSpec::Remove { path } => vec![path],
+            ExecutorOpSpec::Rename { from, to, .. } => vec![from, to],
+            _ => Vec::new(),
+        };
+        let mut targets = Vec::new();
+        for path in locked {
             let target = match self
                 .worker_job(
                     op,
@@ -1032,7 +1047,13 @@ impl OpsManager {
                     return Self::failed(e, state)
                 }
             };
-            _path_guard = Some(self.path_lock(&target).lock_owned().await);
+            targets.push(target);
+        }
+        targets.sort();
+        targets.dedup();
+        let mut _path_guards = Vec::new();
+        for target in &targets {
+            _path_guards.push(self.path_lock(target).lock_owned().await);
         }
 
         let (job, payload) = match &record.spec {
@@ -1050,6 +1071,7 @@ impl OpsManager {
                 path,
                 mode,
                 expected_hash,
+                expected_size,
                 content_length,
                 ..
             } => {
@@ -1063,6 +1085,7 @@ impl OpsManager {
                         roots,
                         mode: *mode,
                         expected_hash: expected_hash.clone(),
+                        expected_size: *expected_size,
                         content_length: *content_length,
                         max_bytes: max_file,
                     },
@@ -1090,8 +1113,25 @@ impl OpsManager {
                 },
                 Vec::new(),
             ),
-            ExecutorOpSpec::Stat { path } => (
+            ExecutorOpSpec::Stat { path, hash } => (
                 WorkerJob::Stat {
+                    path: path.clone(),
+                    roots,
+                    hash: *hash,
+                },
+                Vec::new(),
+            ),
+            ExecutorOpSpec::Rename { from, to, replace } => (
+                WorkerJob::Rename {
+                    from: from.clone(),
+                    to: to.clone(),
+                    replace: *replace,
+                    roots,
+                },
+                Vec::new(),
+            ),
+            ExecutorOpSpec::Remove { path } => (
+                WorkerJob::Remove {
                     path: path.clone(),
                     roots,
                 },

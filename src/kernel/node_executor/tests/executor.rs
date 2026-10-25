@@ -344,6 +344,20 @@ impl Client {
     }
 
     async fn write_file(&mut self, op_id: &str, call_id: &str, path: &Path, content: &[u8], expected: Option<String>) -> ExecutorServerMessage {
+        self.write_mode(op_id, call_id, path, content, ExecutorWriteMode::Replace, None, expected).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn write_mode(
+        &mut self,
+        op_id: &str,
+        call_id: &str,
+        path: &Path,
+        content: &[u8],
+        mode: ExecutorWriteMode,
+        expected_size: Option<u64>,
+        expected: Option<String>,
+    ) -> ExecutorServerMessage {
         let rid = self.rid();
         let store_id = self.store_id.clone();
         self.send(&ExecutorClientMessage::Write(ExecutorWriteRequest {
@@ -353,8 +367,9 @@ impl Client {
             run_id: "run1".into(),
             call_id: call_id.into(),
             path: path.to_string_lossy().to_string(),
-            mode: ExecutorWriteMode::Replace,
+            mode,
             expected_hash: expected,
+            expected_size,
             content_length: content.len() as u64,
             content_hash: executor_content_hash(content),
         }))
@@ -704,6 +719,127 @@ async fn file_tools_run_as_worker_with_atomic_replace_and_hash_checks() {
     assert_eq!(guarded_read.result.unwrap().error.unwrap().code, ExecutorErrorCode::Forbidden);
 }
 
+impl Client {
+    async fn file_op(&mut self, op_id: &str, build: impl FnOnce(String, String) -> ExecutorClientMessage) -> ExecutorOpStatus {
+        let rid = self.rid();
+        let msg = build(rid.clone(), self.store_id.clone());
+        accepted(&self.simple(msg, rid).await);
+        self.wait_done(op_id).await.0
+    }
+
+    async fn stat(&mut self, op_id: &str, path: &Path, hash: bool) -> ExecutorOpStatus {
+        let path = path.to_string_lossy().to_string();
+        self.file_op(op_id, |request_id, store_id| {
+            ExecutorClientMessage::Stat(ExecutorStatRequest {
+                request_id, store_id, op_id: op_id.into(), run_id: "run1".into(), call_id: format!("c{op_id}"), path, hash,
+            })
+        })
+        .await
+    }
+
+    async fn rename(&mut self, op_id: &str, from: &Path, to: &Path, replace: bool) -> ExecutorOpStatus {
+        let (from, to) = (from.to_string_lossy().to_string(), to.to_string_lossy().to_string());
+        self.file_op(op_id, |request_id, store_id| {
+            ExecutorClientMessage::Rename(ExecutorRenameRequest {
+                request_id, store_id, op_id: op_id.into(), run_id: "run1".into(), call_id: format!("c{op_id}"), from, to, replace,
+            })
+        })
+        .await
+    }
+
+    async fn remove(&mut self, op_id: &str, path: &Path) -> ExecutorOpStatus {
+        let path = path.to_string_lossy().to_string();
+        self.file_op(op_id, |request_id, store_id| {
+            ExecutorClientMessage::Remove(ExecutorPathRequest {
+                request_id, store_id, op_id: op_id.into(), run_id: "run1".into(), call_id: format!("c{op_id}"), path,
+            })
+        })
+        .await
+    }
+}
+
+fn failed_code(status: &ExecutorOpStatus) -> Option<ExecutorErrorCode> {
+    status.result.as_ref().and_then(|r| r.error.as_ref()).map(|e| e.code)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn transfer_primitives_append_past_max_file_bytes_then_commit_by_rename() {
+    let Some(env) = setup().await else { return };
+    let mut c = Client::connect(&env).await;
+    c.login().await;
+    let part = env.work.join("in/.a.bin.part");
+    let target = env.work.join("in/a.bin");
+    let chunk: Vec<u8> = (0..700 * 1024u32).map(|i| (i % 251) as u8).collect();
+
+    accepted(&c.write_mode("t1", "ct1", &part, &chunk, ExecutorWriteMode::CreateNew, None, None).await);
+    assert_eq!(c.wait_done("t1").await.0.state, ExecutorOpState::Succeeded);
+    accepted(&c.write_mode("t2", "ct2", &part, &chunk, ExecutorWriteMode::Append, Some(chunk.len() as u64), None).await);
+    let (second, _) = c.wait_done("t2").await;
+    assert_eq!(second.state, ExecutorOpState::Succeeded, "{second:?}");
+    let file = second.result.unwrap().file.unwrap();
+    assert_eq!(file.size, 2 * chunk.len() as u64, "append grows past max_file_bytes");
+    assert!(file.hash.is_empty() && !file.created);
+
+    accepted(&c.write_mode("t3", "ct3", &part, &chunk, ExecutorWriteMode::Append, Some(chunk.len() as u64), None).await);
+    let (stale, _) = c.wait_done("t3").await;
+    assert_eq!(failed_code(&stale), Some(ExecutorErrorCode::Conflict), "a repeated chunk is refused");
+    let missing = env.work.join("in/never.part");
+    accepted(&c.write_mode("t4", "ct4", &missing, b"x", ExecutorWriteMode::Append, Some(0), None).await);
+    assert_eq!(failed_code(&c.wait_done("t4").await.0), Some(ExecutorErrorCode::Conflict));
+    assert!(!missing.exists());
+
+    let mut whole = chunk.clone();
+    whole.extend_from_slice(&chunk);
+    let tail = b"tail".to_vec();
+    accepted(&c.write_mode("t5", "ct5", &part, &tail, ExecutorWriteMode::Append, None, Some(executor_content_hash(&whole))).await);
+    let (hashed, _) = c.wait_done("t5").await;
+    whole.extend_from_slice(&tail);
+    let file = hashed.result.unwrap().file.unwrap();
+    assert_eq!(file.hash, executor_content_hash(&whole));
+    assert_eq!(file.previous_hash.as_deref(), Some(executor_content_hash(&whole[..2 * chunk.len()]).as_str()));
+
+    let stat = c.stat("s1", &part, true).await.result.unwrap().file.unwrap();
+    assert_eq!((stat.size, stat.hash.clone(), stat.path_type), (whole.len() as u64, executor_content_hash(&whole), Some(ExecutorPathType::File)));
+    let quick = c.stat("s2", &part, false).await.result.unwrap().file.unwrap();
+    assert_eq!((quick.size, quick.hash.as_str()), (whole.len() as u64, ""));
+
+    let commit = c.rename("m1", &part, &target, false).await;
+    assert_eq!(commit.state, ExecutorOpState::Succeeded, "{commit:?}");
+    assert!(commit.result.unwrap().file.unwrap().created);
+    assert_eq!(std::fs::read(&target).unwrap(), whole);
+    assert!(!part.exists());
+    use std::os::unix::fs::MetadataExt;
+    assert_eq!(std::fs::metadata(&target).unwrap().uid(), NOBODY);
+
+    let other = env.work.join("in/other.bin");
+    accepted(&c.write_file("w1", "cw1", &other, b"other", None).await);
+    c.wait_done("w1").await;
+    assert_eq!(failed_code(&c.rename("m2", &other, &target, false).await), Some(ExecutorErrorCode::Conflict));
+    assert_eq!(std::fs::read(&target).unwrap(), whole, "no replace without replace");
+    assert_eq!(c.rename("m3", &other, &target, true).await.state, ExecutorOpState::Succeeded);
+    assert_eq!(std::fs::read(&target).unwrap(), b"other");
+    assert_eq!(failed_code(&c.rename("m4", &other, &target, true).await), Some(ExecutorErrorCode::NotFound));
+    assert_eq!(failed_code(&c.rename("m5", &target, &env.root.join("out.bin"), false).await), Some(ExecutorErrorCode::Forbidden));
+    std::os::unix::fs::symlink(&target, env.work.join("in/link")).unwrap();
+    assert_eq!(failed_code(&c.rename("m6", &env.work.join("in/link"), &env.work.join("in/l2"), false).await), Some(ExecutorErrorCode::InvalidArgument));
+    assert_eq!(failed_code(&c.rename("m7", &env.work.join("in"), &env.work.join("in2"), false).await), Some(ExecutorErrorCode::InvalidArgument));
+
+    let removed = c.remove("d1", &target).await;
+    assert_eq!(removed.state, ExecutorOpState::Succeeded);
+    assert!(removed.result.unwrap().file.unwrap().changed);
+    assert!(!target.exists());
+    let again = c.remove("d2", &target).await;
+    assert_eq!(again.state, ExecutorOpState::Succeeded);
+    assert!(!again.result.unwrap().file.unwrap().changed);
+    assert_eq!(c.remove("d3", &env.work.join("no/such/dir/x")).await.state, ExecutorOpState::Succeeded);
+    assert_eq!(failed_code(&c.remove("d4", &env.work.join("in")).await), Some(ExecutorErrorCode::InvalidArgument));
+    let outside = env.root.join("keep.txt");
+    std::fs::write(&outside, b"keep").unwrap();
+    assert_eq!(failed_code(&c.remove("d5", &outside).await), Some(ExecutorErrorCode::Forbidden));
+    assert!(outside.exists());
+    assert_eq!(c.remove("d6", &env.work.join("in/link")).await.state, ExecutorOpState::Failed, "symlinks are not regular files");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn read_only_agents_cannot_mutate_and_slots_are_bounded() {
     let Some(env) = setup().await else { return };
@@ -714,7 +850,8 @@ async fn read_only_agents_cannot_mutate_and_slots_are_bounded() {
     match c.login_with(app_token(60_000), "run1").await {
         ExecutorServerMessage::LoginOk(ok) => {
             assert!(!ok.caps.contains(&ExecutorOp::Exec));
-            assert!(ok.caps.contains(&ExecutorOp::Read));
+            assert!(ok.caps.contains(&ExecutorOp::Read) && ok.caps.contains(&ExecutorOp::Stat));
+            assert!(!ok.caps.contains(&ExecutorOp::Rename) && !ok.caps.contains(&ExecutorOp::Remove));
         }
         other => panic!("{other:?}"),
     }
@@ -726,6 +863,12 @@ async fn read_only_agents_cannot_mutate_and_slots_are_bounded() {
         error_code(&c.write_file("w", "cw", &env.work.join("f"), b"x", None).await),
         Some(ExecutorErrorCode::Forbidden)
     );
+    let rid = c.rid();
+    let remove = ExecutorClientMessage::Remove(ExecutorPathRequest {
+        request_id: rid.clone(), store_id: c.store_id.clone(), op_id: "d".into(), run_id: "run1".into(),
+        call_id: "cd".into(), path: env.work.join("f").to_string_lossy().to_string(),
+    });
+    assert_eq!(error_code(&c.simple(remove, rid).await), Some(ExecutorErrorCode::Forbidden));
 
     env.exec
         .apply_config(Some(config(&env.work, 3, AgentPermissionMode::ReadWrite, 30_000)))
@@ -844,6 +987,7 @@ async fn interrupted_upload_never_touches_the_target() {
         path: target.to_string_lossy().to_string(),
         mode: ExecutorWriteMode::Replace,
         expected_hash: None,
+        expected_size: None,
         content_length: content.len() as u64,
         content_hash: executor_content_hash(&content),
     }))
@@ -1023,7 +1167,7 @@ async fn current_user_aborted_streams_release_admission_slots() {
         c.send(&ExecutorClientMessage::Write(ExecutorWriteRequest {
             request_id: "partial".into(), store_id: c.store_id.clone(), op_id: "partial".into(),
             run_id: "run1".into(), call_id: "partial".into(), path: env.work.join("never-written").to_str().unwrap().into(),
-            mode: ExecutorWriteMode::Replace, expected_hash: None, content_length: 1024,
+            mode: ExecutorWriteMode::Replace, expected_hash: None, expected_size: None, content_length: 1024,
             content_hash: executor_content_hash(&vec![0; 1024]),
         })).await;
         c.simple(ExecutorClientMessage::Ping(ExecutorPing { request_id: "barrier".into() }), "barrier".into()).await;

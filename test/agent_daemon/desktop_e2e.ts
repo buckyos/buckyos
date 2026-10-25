@@ -166,7 +166,7 @@ try {
   record('clean desktop target reports the platform desktop backend as current user')
   created = await admin.createDevice({
     name: `${config.platform} desktop E2E ${Date.now()}`,
-    profiles: { user: { workdir_roots: [home], principals: [config.agent_did], ops: ['open_stream', 'describe', 'exec', 'read', 'write', 'edit', 'mkdir', 'stat', 'computer_inspect', 'computer_observe', 'computer_act', 'query', 'cancel'] } },
+    profiles: { user: { workdir_roots: [home], principals: [config.agent_did], ops: ['open_stream', 'describe', 'exec', 'read', 'write', 'edit', 'mkdir', 'stat', 'rename', 'remove', 'computer_inspect', 'computer_observe', 'computer_act', 'query', 'cancel'] } },
   })
   const id = created.device.executor_id
   assert.equal(await online(id), undefined)

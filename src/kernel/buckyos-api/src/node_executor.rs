@@ -42,6 +42,10 @@ pub enum ExecutorOp {
     Mkdir,
     /// Whether a path is a file, a directory or missing.
     Stat,
+    /// Move a regular file inside the roots (atomic commit of a transfer).
+    Rename,
+    /// Delete a regular file inside the roots.
+    Remove,
     ComputerInspect,
     ComputerObserve,
     ComputerAct,
@@ -50,7 +54,7 @@ pub enum ExecutorOp {
 }
 
 impl ExecutorOp {
-    pub const ALL: [ExecutorOp; 13] = [
+    pub const ALL: [ExecutorOp; 15] = [
         ExecutorOp::OpenStream,
         ExecutorOp::Describe,
         ExecutorOp::Exec,
@@ -59,6 +63,8 @@ impl ExecutorOp {
         ExecutorOp::Edit,
         ExecutorOp::Mkdir,
         ExecutorOp::Stat,
+        ExecutorOp::Rename,
+        ExecutorOp::Remove,
         ExecutorOp::ComputerInspect,
         ExecutorOp::ComputerObserve,
         ExecutorOp::ComputerAct,
@@ -76,6 +82,8 @@ impl ExecutorOp {
             ExecutorOp::Edit => "edit",
             ExecutorOp::Mkdir => "mkdir",
             ExecutorOp::Stat => "stat",
+            ExecutorOp::Rename => "rename",
+            ExecutorOp::Remove => "remove",
             ExecutorOp::ComputerInspect => "computer_inspect",
             ExecutorOp::ComputerObserve => "computer_observe",
             ExecutorOp::ComputerAct => "computer_act",
@@ -95,6 +103,8 @@ impl ExecutorOp {
                 | ExecutorOp::Write
                 | ExecutorOp::Edit
                 | ExecutorOp::Mkdir
+                | ExecutorOp::Rename
+                | ExecutorOp::Remove
                 | ExecutorOp::ComputerAct
         )
     }
@@ -642,6 +652,7 @@ mod tests {
         assert!(profile.ops.contains(&ExecutorOp::ComputerObserve));
         assert!(!profile.ops.contains(&ExecutorOp::ComputerAct));
         assert!(profile.ops.contains(&ExecutorOp::Mkdir) && profile.ops.contains(&ExecutorOp::Stat));
+        assert!(profile.ops.contains(&ExecutorOp::Rename) && profile.ops.contains(&ExecutorOp::Remove));
         profile.validate(&owner_agent_profile_id("did:web:jarvis.test.buckyos.io")).unwrap();
         let none = settings
             .owner_agents
@@ -684,6 +695,8 @@ mod tests {
         let ops = config.granted_ops("dev", &agent);
         assert!(ops.contains(&ExecutorOp::Read));
         assert!(!ops.contains(&ExecutorOp::Exec));
+        assert!(!ExecutorOp::Rename.allowed_by(AgentPermissionMode::ReadOnly));
+        assert!(!ExecutorOp::Remove.allowed_by(AgentPermissionMode::ReadOnly));
 
         config.principal_bindings.get_mut(&agent).unwrap().enabled = false;
         assert!(config.granted_ops("dev", &agent).is_empty());

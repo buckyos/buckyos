@@ -704,7 +704,7 @@ RuntimeInfo 的 id/kind/os/arch/hostname/shell/cwd/tools 来自执行体，tools
 |---|---|---|
 | native | Runner 同机 bash 与本机文件系统 | TrackedBashRunner 握手、标记核验、取消及恢复 |
 | remote_ssh | SSH 目标 cwd、SFTP 文件后端 | 系统 OpenSSH 非交互连接；Linux/bash/SFTP；目标侧握手、停止核验、断线与强杀恢复；独立 xllm 可用 |
-| remote_node | Node Executor 所在节点的 workdir 与文件 | 经 Command Stream 执行 shell 与文件工具，每次调用对应一个远端操作，发送前把 locator 写入 run；长任务、取消与断线恢复复用 Node Executor 的操作记录、查询与取消（[Node Executor](../arch/node_exector.md) §7.4、§7.6）；Session 冻结到节点 runtime 时可绑定，Session helper 在控制侧执行 |
+| remote_node | Node Executor 所在节点的 workdir 与文件 | 经 Command Stream 执行 shell 与文件工具，每次调用对应一个远端操作，发送前把 locator 写入 run；长任务、取消与断线恢复复用 Node Executor 的操作记录、查询与取消（[Node Executor](../arch/node_exector.md) §7.4、§7.6）；Session 冻结到节点 runtime 时可绑定；命令只来自节点自身 PATH，Session helper 需在节点上安装（[Session Runtime TODO](../../notepads/opendan-primary-runtime-tools-todo.md) §6.1） |
 | container/container_host/http_proxy_runtime | 后续评估 | 选择时 Capability 错误，不冻结协议或完整配置 |
 
 SSH 的命令和文件内容通过数据通道传送，写入用目标侧临时文件替换。握手持久化 execution_id、host、boot_id、PID/start ticks 后才放行；目标不可达或无法证明停止时 RecoveryBlocked，没有持久结果记为未知、不重放。SSH alias 重定向拒绝旧 run 恢复。

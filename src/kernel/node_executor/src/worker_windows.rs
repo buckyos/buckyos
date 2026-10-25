@@ -6,24 +6,27 @@
 use std::ffi::{c_void, OsString};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::windows::ffi::OsStringExt;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 
-use buckyos_api::{ExecutorError, ExecutorErrorCode};
+use buckyos_api::{ExecutorError, ExecutorErrorCode, ExecutorPathType};
 
-use super::{ensure_under, err, io_err};
+use super::{ensure_under, err, io_err, resolve_entry};
 
 const FILE_SHARE_READ: u32 = 0x1;
 const FILE_SHARE_WRITE: u32 = 0x2;
 const FILE_READ_ATTRIBUTES: u32 = 0x80;
 const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
 const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
 
 #[link(name = "kernel32")]
 extern "system" {
     fn GetFinalPathNameByHandleW(file: *mut c_void, path: *mut u16, len: u32, flags: u32) -> u32;
+    fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
 }
 
 /// Windows keeps no permission bits to carry over; a replaced file gets the
@@ -72,27 +75,17 @@ pub struct Target {
 }
 
 impl Target {
+    /// An existing entry (possibly a symlink) is written through to its target.
     pub fn open(path: &str, roots: &[PathBuf]) -> Result<Target, ExecutorError> {
-        if !crate::is_host_absolute(path) {
-            return Err(err(ExecutorErrorCode::InvalidArgument, format!("{path} is not absolute")));
-        }
-        // An existing entry (possibly a symlink) is written through to its target.
-        let resolved = match std::fs::canonicalize(path) {
-            Ok(p) => p,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                let p = Path::new(path);
-                let parent = p
-                    .parent()
-                    .ok_or_else(|| err(ExecutorErrorCode::InvalidArgument, format!("{path} has no parent")))?;
-                let name = p
-                    .file_name()
-                    .ok_or_else(|| err(ExecutorErrorCode::InvalidArgument, format!("{path} has no file name")))?;
-                std::fs::canonicalize(parent)
-                    .map_err(|e| io_err(path, e))?
-                    .join(name)
-            }
-            Err(e) => return Err(io_err(path, e)),
-        };
+        Self::at(path, &resolve_entry(path, true)?, roots)
+    }
+
+    /// The entry itself, a reparse point included (rename / remove).
+    pub fn entry(path: &str, roots: &[PathBuf]) -> Result<Target, ExecutorError> {
+        Self::at(path, &resolve_entry(path, false)?, roots)
+    }
+
+    fn at(path: &str, resolved: &Path, roots: &[PathBuf]) -> Result<Target, ExecutorError> {
         let parent = resolved
             .parent()
             .ok_or_else(|| err(ExecutorErrorCode::InvalidArgument, format!("{path} has no parent")))?;
@@ -121,6 +114,64 @@ impl Target {
 
     pub fn real_path(&self) -> PathBuf {
         self.dir_path.join(&self.name)
+    }
+
+    /// What the entry is (a reparse point is `other`) and a file's size.
+    pub fn kind(&self) -> Result<(ExecutorPathType, u64), ExecutorError> {
+        match std::fs::symlink_metadata(self.real_path()) {
+            Ok(m) if m.file_type().is_symlink() => Ok((ExecutorPathType::Other, 0)),
+            Ok(m) if m.is_file() => Ok((ExecutorPathType::File, m.len())),
+            Ok(m) if m.is_dir() => Ok((ExecutorPathType::Directory, 0)),
+            Ok(_) => Ok((ExecutorPathType::Other, 0)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok((ExecutorPathType::Missing, 0)),
+            Err(e) => Err(io_err(&display(&self.real_path()), e)),
+        }
+    }
+
+    /// The existing file opened for appending (and reading), `None` when absent.
+    pub fn open_append(&self) -> Result<Option<File>, ExecutorError> {
+        match OpenOptions::new()
+            .read(true)
+            .append(true)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(self.real_path())
+        {
+            Ok(f) => Ok(Some(f)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(io_err(&display(&self.real_path()), e)),
+        }
+    }
+
+    pub fn create_append(&self) -> Result<File, ExecutorError> {
+        OpenOptions::new()
+            .read(true)
+            .append(true)
+            .create_new(true)
+            .open(self.real_path())
+            .map_err(|e| io_err(&display(&self.real_path()), e))
+    }
+
+    pub fn sync_dir(&self) {}
+
+    /// Move this entry to `to`; without `replace` an existing `to` fails the
+    /// move itself.
+    pub fn rename_to(&self, to: &Target, replace: bool) -> Result<(), ExecutorError> {
+        let wide = |p: PathBuf| p.as_os_str().encode_wide().chain(std::iter::once(0)).collect::<Vec<u16>>();
+        let (from, dest) = (wide(self.real_path()), wide(to.real_path()));
+        let flags = MOVEFILE_WRITE_THROUGH | if replace { MOVEFILE_REPLACE_EXISTING } else { 0 };
+        if unsafe { MoveFileExW(from.as_ptr(), dest.as_ptr(), flags) } == 0 {
+            let e = io::Error::last_os_error();
+            let shown = display(&to.real_path());
+            if e.kind() == io::ErrorKind::AlreadyExists {
+                return Err(err(ExecutorErrorCode::Conflict, format!("{shown} already exists")));
+            }
+            return Err(io_err(&shown, e));
+        }
+        Ok(())
+    }
+
+    pub fn remove(&self) -> Result<(), ExecutorError> {
+        std::fs::remove_file(self.real_path()).map_err(|e| io_err(&display(&self.real_path()), e))
     }
 
     /// Current content, `None` when absent. A reparse point in place of the

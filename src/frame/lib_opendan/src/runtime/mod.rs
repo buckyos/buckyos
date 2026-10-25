@@ -6,7 +6,7 @@ use crate::error::{OpenDanError, Result};
 use crate::protocol::*;
 use crate::session::SessionDir;
 use agent_tool::runtime::node::{NodeExecutorConnector, RemoteNodeTarget, REMOTE_NODE_KIND};
-use agent_tool::runtime::{ControlSide, RuntimeConfig, RuntimeOpenCtx};
+use agent_tool::runtime::{RuntimeConfig, RuntimeOpenCtx};
 use agent_tool::xllm::{LoopModel, ToolsConfig, XllmDeps};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -124,9 +124,6 @@ pub struct SessionEnv {
     pub workdir: PathBuf,
     pub path_layers: Vec<PathBuf>,
     pub env: Vec<(String, String)>,
-    /// A node runtime's session helpers run here, on the control side.
-    #[serde(skip)]
-    pub control: Option<ControlSide>,
 }
 
 fn verify_workspace_access(directory: &Path, access: WorkspaceAccess) -> Result<()> {
@@ -658,11 +655,8 @@ pub async fn bind_or_verify(
     }
     bin_overlay::prepare(&sd.runtime_bin_dir(), plan)?;
     bin_overlay::verify(&sd.runtime_bin_dir(), plan)?;
-    let layers = control_layers(sd, cfg, agent_root);
-    if node {
-        open.control = Some(control_side(sd, plan, &layers, Vec::new()));
-    } else {
-        open.path_prefix = layers;
+    if !node {
+        open.path_prefix = session_layers(sd, cfg, agent_root);
     }
     let (_, sandbox) = rt
         .open(
@@ -729,40 +723,32 @@ pub async fn bind_or_verify(
     Ok(existing.unwrap_or(binding))
 }
 
+/// The session's PATH layers live on this machine: a node runtime gets none
+/// and finds its commands on the node's own PATH (TODO §6.1).
 pub async fn open_session_env(binding: &Binding, ctx: &SessionEnvCtx) -> Result<SessionEnv> {
-    let mut layers = vec![ctx.session_dir.join(RUNTIME_DIR).join("bin")];
-    if let Some(root) = &ctx.agent_root {
-        layers.extend(skill_tool_dirs(root, &ctx.cmd_skills));
-        if root.join("tools").is_dir() {
-            layers.push(root.join("tools"));
+    let mut layers = Vec::new();
+    if binding.kind != REMOTE_NODE_KIND {
+        layers.push(ctx.session_dir.join(RUNTIME_DIR).join("bin"));
+        if let Some(root) = &ctx.agent_root {
+            layers.extend(skill_tool_dirs(root, &ctx.cmd_skills));
+            if root.join("tools").is_dir() {
+                layers.push(root.join("tools"));
+            }
         }
     }
     let env = session_env_vars(ctx, &binding.runtime_id).await?;
-    let control = (binding.kind == REMOTE_NODE_KIND).then(|| {
-        let names = control_command_names(&ctx.session_dir.join(RUNTIME_DIR).join("bin"), &layers);
-        ControlSide {
-            runner: Arc::new(
-                agent_tool::llm_bash::LocalProcessBashRunner::new()
-                    .with_path_layers(layers.clone())
-                    .with_env(env.clone()),
-            ),
-            workdir: ctx.session_dir.clone(),
-            commands: names,
-        }
-    });
     Ok(SessionEnv {
         runtime_id: binding.runtime_id.clone(),
         kind: binding.kind.clone(),
         workdir: binding.workdir.clone().into(),
         path_layers: layers,
         env,
-        control,
     })
 }
 
-/// PATH layers of the control side: the session bin, the frozen
-/// cmd_skills' commands, the agent's tools.
-fn control_layers(sd: &SessionDir, cfg: &SessionConfig, agent_root: Option<&Path>) -> Vec<PathBuf> {
+/// PATH layers of a local session: the session bin, the frozen cmd_skills'
+/// commands, the agent's tools.
+fn session_layers(sd: &SessionDir, cfg: &SessionConfig, agent_root: Option<&Path>) -> Vec<PathBuf> {
     let mut layers = vec![sd.runtime_bin_dir()];
     if let Some(root) = agent_root {
         layers.extend(skill_tool_dirs(root, &frozen_cmd_skills(cfg)));
@@ -771,43 +757,6 @@ fn control_layers(sd: &SessionDir, cfg: &SessionConfig, agent_root: Option<&Path
         }
     }
     layers
-}
-
-/// The commands a node-runtime session runs on the control side: every
-/// entry of the session bin and of the other PATH layers.
-fn control_command_names(bin_dir: &Path, layers: &[PathBuf]) -> Vec<String> {
-    let mut names = Vec::new();
-    for dir in std::iter::once(&bin_dir.to_path_buf()).chain(layers.iter()) {
-        let Ok(rd) = std::fs::read_dir(dir) else { continue };
-        for entry in rd.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if !name.starts_with('.') && entry.path().is_file() && !names.contains(&name) {
-                names.push(name);
-            }
-        }
-    }
-    names
-}
-
-/// The control side of the binding probe (no session environment yet).
-fn control_side(sd: &SessionDir, plan: &BinPlan, layers: &[PathBuf], env: Vec<(String, String)>) -> ControlSide {
-    let mut names: Vec<String> = bin_overlay::expected_entries(plan, std::env::var("PATH").ok().as_deref())
-        .into_keys()
-        .collect();
-    for name in control_command_names(&sd.runtime_bin_dir(), layers) {
-        if !names.contains(&name) {
-            names.push(name);
-        }
-    }
-    ControlSide {
-        runner: Arc::new(
-            agent_tool::llm_bash::LocalProcessBashRunner::new()
-                .with_path_layers(layers.to_vec())
-                .with_env(env),
-        ),
-        workdir: sd.path().to_path_buf(),
-        commands: names,
-    }
 }
 
 pub fn bin_plan_for(

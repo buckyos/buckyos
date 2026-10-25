@@ -345,3 +345,98 @@ async fn remote_artifacts_download_in_ranges_without_truncation_or_workspace_esc
         assert!(!output.exists(), "{name}");
     }
 }
+
+/// What a copy between runtimes does with the primitives (TODO §4): stream
+/// ranges into a temporary file guarded by its size, verify the whole hash,
+/// commit by rename.
+async fn copy_between(
+    src: &dyn agent_tool::runtime::files::RuntimeFiles,
+    from: &str,
+    dst: &dyn agent_tool::runtime::files::RuntimeFiles,
+    to: &str,
+) -> String {
+    use agent_tool::runtime::files::{WholeWriteMode, WriteChunk};
+    let chunk = src.limits().max_chunk_bytes.min(dst.limits().max_chunk_bytes);
+    let source = src.stat(from, true).await.unwrap();
+    let part = format!("{to}.part");
+    let mut offset = 0;
+    loop {
+        let range = src.read_range(from, offset, chunk).await.unwrap();
+        assert_eq!(range.file_size, source.size);
+        let mode = if offset == 0 { WholeWriteMode::CreateNew } else { WholeWriteMode::Append };
+        let written = dst
+            .write_chunk(&part, WriteChunk { mode, expected_size: (offset > 0).then_some(offset), expected_hash: None, data: &range.data })
+            .await
+            .unwrap();
+        offset += range.data.len() as u64;
+        assert_eq!(written.size, offset);
+        if offset >= source.size {
+            break;
+        }
+    }
+    let landed = dst.stat(&part, true).await.unwrap();
+    assert_eq!(landed.hash, source.hash);
+    dst.rename(&part, to, false).await.unwrap();
+    landed.hash.unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn runtime_files_copy_both_ways_between_native_and_remote_node() {
+    use agent_tool::runtime::files::{LocalFileBackend, PathType, RuntimeFiles, WholeWriteMode, WriteChunk};
+    if unsafe { geteuid() } != 0 {
+        eprintln!("skipping: needs root");
+        return;
+    }
+    let dir = tempfile::Builder::new().prefix("nx-copy").tempdir_in("/tmp").unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let root = dir.path();
+    let work = root.join("work");
+    std::fs::create_dir(&work).unwrap();
+    std::os::unix::fs::chown(&work, Some(NOBODY), Some(NOBODY)).unwrap();
+    let local = root.join("local 本地");
+    std::fs::create_dir(&local).unwrap();
+    let connector = Arc::new(InProcess { exec: Mutex::new(executor(root, "ledger", &work).await) });
+    let node = agent_tool::runtime::node::RemoteNodeTarget::open(connector, NODE_DID, "dev", "host", root.join("ops"))
+        .await
+        .unwrap();
+    let native = LocalFileBackend;
+    assert_eq!(node.limits().max_chunk_bytes, ExecutorLimits::default().max_file_bytes);
+
+    let payload: Vec<u8> = (0..2 * 1024 * 1024 + 4321).map(|i| (i % 251) as u8).collect();
+    let source = local.join("素材 a.bin");
+    std::fs::write(&source, &payload).unwrap();
+    let remote = work.join("in").join("素材 a.bin");
+    let s = |p: &Path| p.to_string_lossy().to_string();
+    let hash = copy_between(&native, &s(&source), &node, &s(&remote)).await;
+    assert_eq!(hash, executor_content_hash(&payload));
+    assert_eq!(std::fs::read(&remote).unwrap(), payload);
+    assert_eq!(node.stat(&format!("{}.part", s(&remote)), false).await.unwrap().path_type, PathType::Missing);
+
+    let back = local.join("back.bin");
+    assert_eq!(copy_between(&node, &s(&remote), &native, &s(&back)).await, hash);
+    assert_eq!(std::fs::read(&back).unwrap(), payload);
+    let empty = local.join("empty");
+    std::fs::write(&empty, []).unwrap();
+    copy_between(&native, &s(&empty), &node, &s(&work.join("empty"))).await;
+    assert_eq!(std::fs::metadata(work.join("empty")).unwrap().len(), 0);
+
+    for (files, base) in [(&native as &dyn RuntimeFiles, &local), (&node, &work)] {
+        let (a, b) = (base.join("x"), base.join("y"));
+        let write = |path: String, mode, expected_size| async move {
+            files.write_chunk(&path, WriteChunk { mode, expected_size, expected_hash: None, data: b"data" }).await
+        };
+        write(s(&a), WholeWriteMode::CreateNew, None).await.unwrap();
+        write(s(&b), WholeWriteMode::Replace, None).await.unwrap();
+        assert_eq!(write(s(&a), WholeWriteMode::CreateNew, None).await.unwrap_err().code, ExecutorErrorCode::Conflict);
+        assert_eq!(write(s(&a), WholeWriteMode::Append, Some(3)).await.unwrap_err().code, ExecutorErrorCode::Conflict);
+        assert_eq!(files.rename(&s(&a), &s(&b), false).await.unwrap_err().code, ExecutorErrorCode::Conflict);
+        files.rename(&s(&a), &s(&b), true).await.unwrap();
+        assert_eq!(files.rename(&s(&a), &s(&b), true).await.unwrap_err().code, ExecutorErrorCode::NotFound);
+        assert!(files.remove(&s(&b)).await.unwrap());
+        assert!(!files.remove(&s(&b)).await.unwrap());
+        let too_big = files.limits().max_chunk_bytes + 1;
+        assert_eq!(files.read_range(&s(&back), 0, too_big).await.unwrap_err().code, ExecutorErrorCode::InvalidArgument);
+    }
+    assert_eq!(node.remove(&s(&back)).await.unwrap_err().code, ExecutorErrorCode::Forbidden);
+    assert!(back.exists());
+}

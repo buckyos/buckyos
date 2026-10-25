@@ -251,3 +251,36 @@ Session 接管额外保存并核验 runtime、PATH、环境和 bin manifest/help
 - schema 和 fixtures 由 Rust 参考实现重新生成；fixture 路径替换同步重算 worklog 字节边界，测试专用主机身份占位符不改变生产恢复核验。
 
 首版限制：SSH 目标需 Linux/bash/SFTP；libopendan 未部署远端 Session helper，选择 SSH 时明确能力错误，独立 xllm 可用。native/tmux 的 workspace 路径检查不构成 OS 隔离。SSH 不提供跨 Runner 的远端工作目录锁。policy、grant、approval 与其它类型按 §7/§8 后续评估；不提前冻结 daemon/HTTP 协议。2026-10-02 起恢复不做进程核验（长命令 TODO §3.2），native / tmux / SSH 都不再依赖 /proc 与 setsid。tmux 已于 2026-10-25 全平台移除。
+
+## 11. Session Runtime 先行项（2026-10-25 实施）
+
+来源：[Session Runtime 与 Workspace 解耦 TODO](opendan-primary-runtime-tools-todo.md) §7 T0（S1：agent-runtime 属于 llm_context 层，libopendan 只做角色解析与编排）。四项均已实施，未提交。
+
+| 项 | 落点 | 结果 |
+| --- | --- | --- |
+| 流式读 / 分块写原语 | `agent_tool/src/runtime/files.rs` 新 trait `RuntimeFiles`：`limits / stat(hash) / read_range / write_chunk(mode, expected_size, expected_hash) / rename / remove`；实现为 `LocalFileBackend`（native）与 `node.rs::RemoteNodeTarget`（remote_node） | 控制侧按 runtime 操作文件；路径为该 runtime 的绝对路径字符串；错误沿用 `buckyos_api::ExecutorError` 的错误码，调用方按枚举判断 |
+| Executor 加 `Rename` / `Remove` | `buckyos-api` 的 `ExecutorOp` / `ExecutorOpKind` / `ExecutorOpSpec` / `ExecutorClientMessage::{Rename, Remove}`（`ExecutorRenameRequest`，`Remove` 复用 `ExecutorPathRequest`）；`node_executor` 的 stream 分派、ops 校验与路径锁（rename 锁两端）、store 预算、worker（Unix `renameat`/`linkat`/`unlinkat` 于已校验目录 fd，Windows `MoveFileExW`）、host caps | 进 RBAC action（`executor.rename` / `executor.remove`，mutating，ReadOnly 拒绝）、账本去重与摘要；只作用于普通文件 |
+| `write` 分块追加 | `ExecutorWriteRequest.expected_size`；worker 的 `append` 改为 `O_APPEND` 原地追加 | 见下方“与原设计的差异” |
+| `stat` 大小与摘要 | `ExecutorStatRequest { …, hash }`（`stat` 不再与 `mkdir` 共用请求类型）；结果带 `size`，`hash: true` 时带整文件摘要 | 复制末尾的整文件核验 |
+| 去 `ControlSide` | 删除 `runtime::ControlSide`、`RuntimeOpenCtx.control`、`XllmDeps.runtime_control`、`node::leading_program` 与 `NodeBashRunner` 的首词分流；`RemoteNodeRuntime::open` 对任何非空 `path_prefix` 报 Capability | `NodeBashRunner` 不认识命令名，所有命令都发往节点 |
+| RuntimeInfo 只读字段 | `RuntimeConfig.baseline: Option<RuntimeBaseline{standard, extended}>`（登记者声明）；`RuntimeInfo.{platform, shell_kind, baseline}`（`with_declared` 归一：`darwin`→`macos`，shell 程序名去 `.exe`）；xllm 运行环境段在 baseline 非空时加 `Environment baseline: …` | 供提示词与 T3/T6 的平台/基线匹配使用，Runtime 层不探测基线 |
+
+与原设计（primary TODO §4 / §6.2）的差异，实施时定下：
+
+- **顺序保护用 `expected_size`，不用 `expected_hash`。** 旧 `append` 读入整文件再原子替换，结果受 `max_file_bytes`（默认 1 MiB）限制；用 `expected_hash` 保护每一块还要每块重读已有内容，传输总量是 O(n²)。现在 `append` 原地追加，整文件可超过 `max_file_bytes`（只限单次上传）；`expected_size` 每块只需一次 stat；`expected_hash` 仍可用（会读一遍已有内容，并返回追加后的整文件摘要）；完整性由末尾 `stat(hash=true)` 一次核验。缺失文件不满足任何 `expected_*`，避免中间块落到空文件上。
+- **原语放在新 trait `RuntimeFiles`，`FileBackend` 不变。** `FileBackend` 是工具调用侧接口（`&Path`、remote_node 每个工具调用只对应一个远端操作的 locator）；runtime 间复制由 libopendan 在控制侧编排、跨两个 runtime 发多次操作，适合 `RemoteNodeTarget` 这种每操作自带 locator 的控制侧目标。primary TODO T0 写的“`FileBackend` 加最小方法”由此改为 `RuntimeFiles` 的 `rename` / `remove`。
+- **`remove` 对已不存在的文件成功并报 `changed=false`**（取消、重试清理临时文件时不必区分）；`rename` 的 `to` 父目录须已存在（临时文件与目标同目录）。
+- `RemoteNodeTarget::write_new` 改为按 `ExecutorErrorCode::Conflict` 判断已存在，去掉原来对错误文本的匹配。
+
+已知限制（留给 T3 / T4）：
+
+- 去掉 `ControlSide` 后，`remote_node` Session 的 `agent-session`、`llm_understand_media`、cmd_skill 命令只在节点上已安装时可用；libopendan 对节点 Session 不再给控制侧 PATH 层（`open_session_env`），binding 探测只对本机 Session 设 `path_prefix`。helper 安装与经 kRPC 访问控制面是 T1–T3。
+- 经 Executor 中转的复制会在节点账本留下读内容与上传块，受 `max_store_bytes`（默认 2 GiB）与保留期（7 天）约束；T4 需决定单次传输上限或提交后释放。
+- Windows worker 代码只在 Linux 上用 stub crate 对 `x86_64-pc-windows-msvc` 做了类型检查，未在 Windows 上运行；macOS 未编译。
+
+验证（`buckyos/src/` 下）：
+
+- `cargo test -p node_executor -- --test-threads=1`（root）：新增 `transfer_primitives_append_past_max_file_bytes_then_commit_by_rename`（1.4 MiB 分块追加、重复块与缺失文件 Conflict、`expected_hash` 追加、stat 摘要、rename 冲突/替换/NotFound/越界/符号链接/目录、remove 幂等与越界）、`runtime_files_copy_both_ways_between_native_and_remote_node`（2 MiB+ 与空文件在 native 与节点间双向复制、中文与空格路径、两个实现的冲突与上限错误码）；`read_only_agents_cannot_mutate…` 增加 rename/remove 拒绝；`platform` 的 host caps 期望含新 op。
+- `cargo test -p agent_tool --lib`：新增 `native_runtime_files_stream_guard_and_commit`、`runtime_info_carries_platform_shell_kind_and_declared_baseline`。
+- 2026-10-25 结果（root，`--test-threads=1`）：node_executor 全部 test target 通过（executor 13、remote_node_runtime 3、platform 3、computer 9）；agent_tool `--lib` 274 通过 / 5 忽略（SSH 真实传输用例）；buckyos-api 294 通过；scheduler `executor_auth` 4 通过；buckyos_agent_daemon 通过；libopendan 全部 test target 通过（1 项故障注入 child 入口默认忽略）；opendan 通过（1 忽略）；agent_tool_cli_dev 36 通过；`cargo check --workspace --all-targets` 通过。`xagent schema` 重新导出与 `doc/opendan/protocol/schema` 逐文件一致（RuntimeConfig 不在导出的 schema 里），fixtures 无需重生成。
+- 未执行：`uv run buckyos-build.py`、真实 Zone DV、Windows / macOS 实机、websdk 构建（只改了 `ExecutorOperation` 联合类型）。

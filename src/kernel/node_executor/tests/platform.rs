@@ -205,6 +205,8 @@ async fn control_stream_advertises_host_capabilities_without_starting_a_worker()
             ExecutorOp::Edit,
             ExecutorOp::Mkdir,
             ExecutorOp::Stat,
+            ExecutorOp::Rename,
+            ExecutorOp::Remove,
         ]);
     }
     assert_eq!(fixture.executor.host_capabilities(), expected);

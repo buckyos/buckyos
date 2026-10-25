@@ -83,7 +83,7 @@ pub trait Sandbox: ToolManager {
 | --- | --- |
 | `RuntimeConfig` | 用户声明的执行机制与连接配置；打开后可得到归一化配置 |
 | `RuntimeDescriptor` | `runtime_id / kind / host / target / workdir / capabilities`；用于记录实际执行目标和恢复核验 |
-| `RuntimeInfo` | `id / kind / os / arch / hostname / shell / cwd / tools / current_time / timezone / target`；供提示词与状态展示使用 |
+| `RuntimeInfo` | `id / kind / os / arch / hostname / shell / cwd / tools / current_time / timezone / target / platform / shell_kind / baseline`；供提示词与状态展示使用（后三项见 §6.2） |
 | `RuntimeOpenCtx` | 控制侧 `workdir`、`run_id`、`loop_model`、工具 `sources`、宿主 `env`、`path_prefix`、共享 `run` 绑定槽 |
 | `RunBinding` | Run 的 ID 和可选控制侧目录；命令执行目录、Node 操作 locator 由此定位 |
 
@@ -101,7 +101,7 @@ native 目标包含本机身份与 uid；`AGENT_TOOL_HOST_ID` 可提供稳定宿
 | --- | --- | --- | --- |
 | `native` | Runner 所在 OS/容器，当前用户 | xllm、libopendan Session；默认执行体 | 不创建容器、不提供额外 OS 隔离；Unix 与 Windows 使用各自本机 shell 实现 |
 | `remote_ssh` | 目标机器上的 shell 和文件系统 | 独立 xllm，或具备所需依赖的 SDK 宿主 | 系统 OpenSSH、远端 Linux/bash/SFTP；完整 Session helper 尚未部署 |
-| `remote_node` | Node Executor Command Stream 对应的节点、profile 与 OS 身份 | xllm CLI、注入 connector 的 SDK 宿主、libopendan Session（冻结到 `host` / 其它节点 runtime 的 Session） | 需要实际节点授权与连接器；模板 `__EXEC__` 尚未支持；Session helper 在控制侧执行（见 §6.2） |
+| `remote_node` | Node Executor Command Stream 对应的节点、profile 与 OS 身份 | xllm CLI、注入 connector 的 SDK 宿主、libopendan Session（冻结到 `host` / 其它节点 runtime 的 Session） | 需要实际节点授权与连接器；模板 `__EXEC__` 尚未支持；命令只来自节点自身 PATH，不按命令名回到控制侧执行（见 §6.2） |
 
 native 的 Windows 实现使用 PowerShell；不能将公共 Runtime 契约限定为“所有目标都运行 Linux Bash”。`BashRunner` 是现有代码中的抽象名称，命令语法仍取决于实际执行体。
 
@@ -129,6 +129,7 @@ native 的 Windows 实现使用 PowerShell；不能将公共 Runtime 契约限�
 | `env` | 执行环境覆盖，按键合并；不是控制侧凭据存储 |
 | `remote_ssh` | `host` 必填；可选 `user / port / identity_file`，其余遵循本机 OpenSSH 配置 |
 | `remote_node` | `node_did / profile_id` 必填；端点与 session token 来自宿主 connector |
+| `baseline` | 可选 `standard / extended`：登记者声明的环境基线，只传入 `RuntimeInfo.baseline` 供提示词使用，Runtime 层不探测、不据此改变行为 |
 
 不存在 runtime 级的 `policy / fs_view / path_layers / limits` 字段；未知字段和与最终 kind 不匹配的连接块被拒绝。宿主内部使用的 `runtime_path_prefix` 不是公开的 RuntimeConfig 字段。
 
@@ -216,15 +217,30 @@ native 保留本机工作目录锁；远端工作目录不取控制侧本地 flo
 
 实现：[llm_bash.rs](../../src/frame/agent_tool/src/llm_bash.rs)、[runtime/files.rs](../../src/frame/agent_tool/src/runtime/files.rs)、[runtime/ssh.rs](../../src/frame/agent_tool/src/runtime/ssh.rs)、[file_tools.rs](../../src/frame/agent_tool/src/file_tools.rs)。
 
+#### 跨 runtime 复制的流式原语
+
+`runtime/files.rs` 的 `RuntimeFiles` 是控制侧按 runtime 操作文件的流式原语，供宿主编排 runtime 之间的复制（编排、角色解析、持久记录与恢复在 libopendan，见 [Session Runtime TODO](../../notepads/opendan-primary-runtime-tools-todo.md) §4）。路径是该 runtime 自己的绝对路径字符串，Windows 节点按 Windows 规则。
+
+| 方法 | 语义 |
+| --- | --- |
+| `limits()` | `max_chunk_bytes`：`read_range` 长度与 `write_chunk` 数据的上限。native 为 4 MiB；Node 为该 profile 的 `max_file_bytes`（默认 1 MiB） |
+| `stat(path, hash)` | `path_type / size / 规范路径`；`hash` 为真时对文件做一次整文件 `sha256:` 摘要 |
+| `read_range(path, offset, length)` | 读一段并返回读取时的文件大小；Node 逐段核对内容摘要 |
+| `write_chunk(path, {mode, expected_size, expected_hash, data})` | `create_new` / `replace` 以该块为全部内容（原子替换）；`append` 原地追加，不读入已有内容，所以整文件可以超过 `max_file_bytes`。`expected_size` 要求当前大小等于该值（按序追加的保护，代价只有一次 stat）；`expected_hash` 要求当前内容摘要一致（需要读一遍已有内容），给出时结果带追加后的整文件摘要。缺失文件不满足任何 `expected_*`。缺失的父目录会被创建 |
+| `rename(from, to, replace)` | 只移动普通文件（符号链接、目录被拒绝）；`replace=false` 时已有 `to` 原子地失败（hard link + unlink，文件系统不支持 hard link 时退为检查后 rename） |
+| `remove(path)` | 只删除普通文件；已不存在返回 `false` |
+
+错误使用 Node Executor 的错误码（`buckyos_api::ExecutorError`），调用方按枚举判断：已存在或 `expected_*` 不满足为 `Conflict`，`NotFound`，越出节点 roots 为 `Forbidden`，超过 chunk 上限或类型不符为 `InvalidArgument`，结果未知带 `effect_unknown`。实现：native 为 `LocalFileBackend`（不加 roots 限制，控制侧本机），`remote_node` 为 `RemoteNodeTarget`（每个原语是一个带 locator 的远端操作）。经 Executor 中转的数据会留在节点账本中（读内容、上传块），受 `max_store_bytes` 与保留期约束。
+
 ### 6.2 环境与 RuntimeInfo
 
-一般的执行环境合并顺序是 `runtime.env → 宿主 RuntimeOpenCtx.env → 单次命令 env`，后者覆盖前者。宿主 PATH 前缀接在显式 PATH 或目标探测得到的 PATH 前。SSH 不接受本地 Session 的非空 `path_prefix`，会明确报告远端 helper 尚未部署。Node 接受 `RuntimeOpenCtx.control`（`ControlSide {runner, workdir, commands}`，`XllmDeps.runtime_control`）：命令行首个程序名命中 `commands`（Session bin 的 `agent-session`、`llm_understand_media`、cmd_skill 自带命令、AgentRoot `tools/`）时由控制侧的本地 runner 在 Session 目录执行，带控制侧环境与凭据；其它命令照常发往节点。helper 不复制到目标、凭据不出控制侧；没有 `control` 时非空 `path_prefix` 仍报 Capability。
+一般的执行环境合并顺序是 `runtime.env → 宿主 RuntimeOpenCtx.env → 单次命令 env`，后者覆盖前者。宿主 PATH 前缀接在显式 PATH 或目标探测得到的 PATH 前。SSH 与 Node 都不接受非空 `path_prefix`（那是 Runner 所在机器的目录），命令只来自目标自身的 PATH。同一条 shell 命令的脚本、管道和子进程始终在选定的执行体上，Runtime 不按命令名、工具是否存在或执行结果换端。Session helper 在远端 runtime 上的安装、以及它们经 kRPC 访问控制面，由宿主负责（[Session Runtime TODO](../../notepads/opendan-primary-runtime-tools-todo.md) §6.1）。
 
-`RemoteNodeTarget`（`runtime/node.rs`）把节点当作目标目录给非工具调用的控制侧使用：login+describe、`canonical_dir`（describe workdir）、`stat`/`mkdir`/`read`/`write_new`/`write`，每个操作一个 locator（`<ops_dir>/runtime_operations/`）；libopendan 的 Workspace 放置与 Session 默认目录创建走它。
+`RemoteNodeTarget`（`runtime/node.rs`）把节点当作目标目录给非工具调用的控制侧使用：login+describe、`canonical_dir`（describe workdir）、`stat`/`mkdir`/`read`/`write_new`/`write`，以及 §6.1 的 `RuntimeFiles` 原语，每个操作一个 locator（`<ops_dir>/runtime_operations/`）；libopendan 的 Workspace 放置与 Session 默认目录创建走它。
 
 Node 还过滤控制侧身份变量，包括 `BUCKYOS_ / OPENDAN_ / XLLM_` 前缀以及 `SESSION_TOKEN / APP_TOKEN`，不把控制侧凭据环境直接传给目标命令。
 
-RuntimeInfo 提供的是执行环境事实。native/SSH 的 `info()` 刷新时间和时区，SSH 同时核验远端身份；其它稳定字段来自打开时的探测。**Node 当前的时间字段是例外**：打开时读取 describe 信息，时区使用 UTC，后续 `info()` 用控制侧 UTC 时间刷新 `current_time`，尚非持续探测远端时钟。`tools` 是有界能力摘要，不是完整权限白名单。
+RuntimeInfo 提供的是执行环境事实。`platform` 把探测到的 `os` 归一为 `linux / macos / windows`（本机探测的 `darwin` 记为 `macos`）；`shell_kind` 是 shell 程序名（`bash / sh / zsh / pwsh / powershell` 等），命令示例按它的语法写；`baseline` 是 `RuntimeConfig.baseline` 的声明值，未声明为空。xllm 的运行环境段在 `baseline` 非空时多一行 `Environment baseline: …`。native/SSH 的 `info()` 刷新时间和时区，SSH 同时核验远端身份；其它稳定字段来自打开时的探测。**Node 当前的时间字段是例外**：打开时读取 describe 信息，时区使用 UTC，后续 `info()` 用控制侧 UTC 时间刷新 `current_time`，尚非持续探测远端时钟。`tools` 是有界能力摘要，不是完整权限白名单。
 
 xllm 用 RuntimeInfo 构造 `{{runtime.*}}`。hosted prepare 会移除初始环境中的 `current_time / timezone`；Session 将新鲜时间等动态信息放在输入批次，不应写成永不更新的稳定 system 内容。
 
@@ -309,7 +325,7 @@ requirement 包含 `runtime_id / tools / app_tools`，分别约束执行体身�
 
 libopendan 负责把 Agent/Session helper、命令和环境装入本机运行视图；`SessionToolManager` 在共享工具管理器外维护租约、提交门槛、inflight 和 touching 纪律。AgentRuntime 不接管 Session 状态机，也不负责结束 Turn。
 
-当前完整 Session 运行支持 native，以及创建时冻结到节点 runtime 的 `remote_node`（§6.4；agent-session 等 helper 经 `ControlSide` 在控制侧执行）。未冻结到节点 runtime 的 Session 由 behavior 声明 `remote_node` 会被拒绝；SSH 在绑定阶段被拒绝（远端 Session helper 未部署），需要 SSH 远端单次操作时，可以使用独立 xllm 或已装配的 executor 工具组。
+当前完整 Session 运行支持 native，以及创建时冻结到节点 runtime 的 `remote_node`（§6.4）。节点 Session 不再把控制侧的 Session bin、cmd_skill 命令目录放进 PATH，`agent-session` 等 helper 只有在节点上已安装时才可用；helper 的安装与经 kRPC 访问控制面属于 TODO §6.1 / T3。未冻结到节点 runtime 的 Session 由 behavior 声明 `remote_node` 会被拒绝；SSH 在绑定阶段被拒绝（远端 Session helper 未部署），需要 SSH 远端单次操作时，可以使用独立 xllm 或已装配的 executor 工具组。
 
 `create_sub_session` 会复制父 Session 的 `prompt.llm_context` 与 runtime 配置，但子 Session 拥有自己的 binding；显式 runtime 选择重新确定 `requirement.runtime_id`。这种配置继承不等于共用父 Session 的绑定身份。远端 Session 的 helper 分发、workspace/control 目录拆分和凭据约束仍需一并完成。
 
@@ -337,8 +353,8 @@ Node 服务还会按实际登录主体、profile、节点授权和 OS 权限限�
 
 | 测试入口 | 主要覆盖 |
 | --- | --- |
-| [runtime/tests.rs](../../src/frame/agent_tool/src/runtime/tests.rs) | 配置合并/路径/拒绝项、native shell/文件/显式模板注入、SSH 真实传输用例 |
-| [remote_node_runtime.rs](../../src/kernel/node_executor/tests/remote_node_runtime.rs) | Node shell/文件在目标身份执行、持久 locator、按查询恢复、store/身份约束 |
+| [runtime/tests.rs](../../src/frame/agent_tool/src/runtime/tests.rs) | 配置合并/路径/拒绝项、native shell/文件/显式模板注入、native `RuntimeFiles`、RuntimeInfo 的 platform/shell_kind/baseline、SSH 真实传输用例 |
+| [remote_node_runtime.rs](../../src/kernel/node_executor/tests/remote_node_runtime.rs) | Node shell/文件在目标身份执行、持久 locator、按查询恢复、store/身份约束；native 与 Node 之间按 `RuntimeFiles` 双向分块复制 |
 | [runtime/node.rs 内测试](../../src/frame/agent_tool/src/runtime/node.rs) | Node 与在线 Executor 目标的未知结果重试差异 |
 | [runtime_ssh/run.sh](../../test/runtime_ssh/run.sh) | 启动真实 SSH 测试环境并执行被 ignore 的 SSH 用例 |
 

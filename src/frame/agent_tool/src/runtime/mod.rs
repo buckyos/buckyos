@@ -41,6 +41,29 @@ pub struct RuntimeConfig {
     pub remote_ssh: Option<SshConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_node: Option<RemoteNodeConfig>,
+    /// The environment baseline its registrar declares; carried into
+    /// `RuntimeInfo.baseline` for prompts, never probed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<RuntimeBaseline>,
+}
+
+/// Declared environment baseline of a runtime (primary-runtime TODO §2):
+/// `standard` has the core Agent tools and BuckyOS access, `extended` adds
+/// build tool chains and heavy tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeBaseline {
+    Standard,
+    Extended,
+}
+
+impl RuntimeBaseline {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RuntimeBaseline::Standard => "standard",
+            RuntimeBaseline::Extended => "extended",
+        }
+    }
 }
 
 /// Target of a `remote_node` runtime: the Node Executor of `node_did`, logged
@@ -194,6 +217,9 @@ impl RuntimeConfig {
         if other.workdir.is_some() {
             self.workdir = other.workdir.clone();
         }
+        if other.baseline.is_some() {
+            self.baseline = other.baseline;
+        }
         self.env.extend(other.env.clone());
         if let Some(n) = &other.remote_node {
             let b = self.remote_node.get_or_insert_with(Default::default);
@@ -264,9 +290,37 @@ pub struct RuntimeInfo {
     pub current_time: String,
     pub timezone: String,
     pub target: Value,
+    /// `linux`, `macos` or `windows` (whatever `os` the probe reported).
+    #[serde(default)]
+    pub platform: String,
+    /// The shell's program name (`bash`, `sh`, `pwsh`, `powershell`, …): the
+    /// syntax commands are written in.
+    #[serde(default)]
+    pub shell_kind: String,
+    /// The declared baseline (`standard` / `extended`), empty when undeclared.
+    #[serde(default)]
+    pub baseline: String,
 }
 
 impl RuntimeInfo {
+    /// Fill the fields derived from the probe and the configuration.
+    pub fn with_declared(mut self, baseline: Option<RuntimeBaseline>) -> Self {
+        self.platform = match self.os.to_ascii_lowercase().as_str() {
+            "darwin" | "macos" => "macos".into(),
+            os => os.into(),
+        };
+        self.shell_kind = self
+            .shell
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches(".exe")
+            .trim_end_matches(".EXE")
+            .to_ascii_lowercase();
+        self.baseline = baseline.map(|b| b.as_str().to_string()).unwrap_or_default();
+        self
+    }
+
     pub fn template_values(&self) -> BTreeMap<String, String> {
         let v = serde_json::to_value(self).expect("runtime info");
         v.as_object()
@@ -284,25 +338,6 @@ impl RuntimeInfo {
     }
 }
 
-/// Commands of the control side (the session's host) that a remote runtime
-/// does not execute on its target: they run through `runner` in `workdir`,
-/// where the session's state and credentials are.
-#[derive(Clone)]
-pub struct ControlSide {
-    pub runner: Arc<dyn BashRunner>,
-    pub workdir: PathBuf,
-    pub commands: Vec<String>,
-}
-
-impl std::fmt::Debug for ControlSide {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ControlSide")
-            .field("workdir", &self.workdir)
-            .field("commands", &self.commands)
-            .finish()
-    }
-}
-
 #[derive(Clone)]
 pub struct RuntimeOpenCtx {
     pub workdir: PathBuf,
@@ -315,8 +350,6 @@ pub struct RuntimeOpenCtx {
     /// directory are known (`XllmToolManager::bind_run`). Execution
     /// directories of `shell` commands derive from it.
     pub run: RunBindingSlot,
-    /// Session helpers a remote runtime hands back to the control side.
-    pub control: Option<ControlSide>,
 }
 
 impl RuntimeOpenCtx {
@@ -329,7 +362,6 @@ impl RuntimeOpenCtx {
             env: BTreeMap::new(),
             path_prefix: Vec::new(),
             run: new_run_binding_slot(),
-            control: None,
         }
     }
 }
@@ -560,7 +592,7 @@ impl Runtime {
                         &blake3::hash(target.to_string().as_bytes()).to_hex()[..24]
                     )
                 });
-                let mut info = info;
+                let mut info = info.with_declared(config.baseline);
                 info.id = id.clone();
                 info.kind = kind.clone();
                 info.target = target.clone();

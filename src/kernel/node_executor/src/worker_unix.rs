@@ -8,9 +8,9 @@ use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 
-use buckyos_api::{ExecutorError, ExecutorErrorCode};
+use buckyos_api::{ExecutorError, ExecutorErrorCode, ExecutorPathType};
 
-use super::{ensure_under, err, io_err};
+use super::{ensure_under, err, io_err, resolve_entry};
 
 /// Permission bits carried over when a file is replaced.
 pub type Mode = u32;
@@ -55,27 +55,17 @@ pub struct Target {
 }
 
 impl Target {
+    /// An existing entry (possibly a symlink) is written through to its target.
     pub fn open(path: &str, roots: &[PathBuf]) -> Result<Target, ExecutorError> {
-        if !crate::is_host_absolute(path) {
-            return Err(err(ExecutorErrorCode::InvalidArgument, format!("{path} is not absolute")));
-        }
-        // An existing entry (possibly a symlink) is written through to its target.
-        let resolved = match std::fs::canonicalize(path) {
-            Ok(p) => p,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                let p = Path::new(path);
-                let parent = p
-                    .parent()
-                    .ok_or_else(|| err(ExecutorErrorCode::InvalidArgument, format!("{path} has no parent")))?;
-                let name = p
-                    .file_name()
-                    .ok_or_else(|| err(ExecutorErrorCode::InvalidArgument, format!("{path} has no file name")))?;
-                std::fs::canonicalize(parent)
-                    .map_err(|e| io_err(path, e))?
-                    .join(name)
-            }
-            Err(e) => return Err(io_err(path, e)),
-        };
+        Self::at(path, &resolve_entry(path, true)?, roots)
+    }
+
+    /// The entry itself, a symlink included (rename / remove).
+    pub fn entry(path: &str, roots: &[PathBuf]) -> Result<Target, ExecutorError> {
+        Self::at(path, &resolve_entry(path, false)?, roots)
+    }
+
+    fn at(path: &str, resolved: &Path, roots: &[PathBuf]) -> Result<Target, ExecutorError> {
         let parent = resolved
             .parent()
             .ok_or_else(|| err(ExecutorErrorCode::InvalidArgument, format!("{path} has no parent")))?;
@@ -110,6 +100,108 @@ impl Target {
 
     pub fn real_path(&self) -> PathBuf {
         self.dir_path.join(&self.name_str)
+    }
+
+    fn shown(&self) -> String {
+        self.real_path().to_string_lossy().to_string()
+    }
+
+    /// What the entry is (a symlink is `other`) and a file's size.
+    pub fn kind(&self) -> Result<(ExecutorPathType, u64), ExecutorError> {
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        let rc = unsafe { libc::fstatat(self.dir.as_raw_fd(), self.name.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) };
+        if rc != 0 {
+            let e = io::Error::last_os_error();
+            if e.kind() == io::ErrorKind::NotFound {
+                return Ok((ExecutorPathType::Missing, 0));
+            }
+            return Err(io_err(&self.shown(), e));
+        }
+        Ok(match st.st_mode & libc::S_IFMT {
+            libc::S_IFREG => (ExecutorPathType::File, st.st_size as u64),
+            libc::S_IFDIR => (ExecutorPathType::Directory, 0),
+            _ => (ExecutorPathType::Other, 0),
+        })
+    }
+
+    fn open_at(&self, flags: libc::c_int) -> io::Result<File> {
+        let fd = unsafe {
+            libc::openat(
+                self.dir.as_raw_fd(),
+                self.name.as_ptr(),
+                flags | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0o644 as libc::c_uint,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(unsafe { File::from_raw_fd(fd) })
+    }
+
+    /// The existing file opened for appending (and reading), `None` when absent.
+    pub fn open_append(&self) -> Result<Option<File>, ExecutorError> {
+        match self.open_at(libc::O_RDWR | libc::O_APPEND) {
+            Ok(f) => Ok(Some(f)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(io_err(&self.shown(), e)),
+        }
+    }
+
+    pub fn create_append(&self) -> Result<File, ExecutorError> {
+        self.open_at(libc::O_RDWR | libc::O_APPEND | libc::O_CREAT | libc::O_EXCL)
+            .map_err(|e| io_err(&self.shown(), e))
+    }
+
+    pub fn sync_dir(&self) {
+        unsafe {
+            libc::fsync(self.dir.as_raw_fd());
+        }
+    }
+
+    /// Move this entry to `to`. Without `replace` the move is a hard link
+    /// plus unlink, which fails on an existing `to` atomically; where the
+    /// file system has no hard links it falls back to a checked rename.
+    pub fn rename_to(&self, to: &Target, replace: bool) -> Result<(), ExecutorError> {
+        let shown = to.shown();
+        let rename = || {
+            let rc = unsafe { libc::renameat(self.dir.as_raw_fd(), self.name.as_ptr(), to.dir.as_raw_fd(), to.name.as_ptr()) };
+            if rc != 0 {
+                return Err(io_err(&shown, io::Error::last_os_error()));
+            }
+            Ok(())
+        };
+        if replace {
+            rename()?;
+        } else {
+            let rc = unsafe { libc::linkat(self.dir.as_raw_fd(), self.name.as_ptr(), to.dir.as_raw_fd(), to.name.as_ptr(), 0) };
+            if rc == 0 {
+                unsafe {
+                    libc::unlinkat(self.dir.as_raw_fd(), self.name.as_ptr(), 0);
+                }
+            } else {
+                let e = io::Error::last_os_error();
+                if e.kind() == io::ErrorKind::AlreadyExists {
+                    return Err(err(ExecutorErrorCode::Conflict, format!("{shown} already exists")));
+                }
+                if to.kind()?.0 != ExecutorPathType::Missing {
+                    return Err(err(ExecutorErrorCode::Conflict, format!("{shown} already exists")));
+                }
+                rename()?;
+            }
+        }
+        to.sync_dir();
+        self.sync_dir();
+        Ok(())
+    }
+
+    pub fn remove(&self) -> Result<(), ExecutorError> {
+        let rc = unsafe { libc::unlinkat(self.dir.as_raw_fd(), self.name.as_ptr(), 0) };
+        if rc != 0 {
+            return Err(io_err(&self.shown(), io::Error::last_os_error()));
+        }
+        self.sync_dir();
+        Ok(())
     }
 
     /// Current content and permission bits, `None` when absent.
