@@ -386,8 +386,10 @@ async fn ensure_node_gateway_dir_pkgs_installed_in_env(
             continue;
         };
 
+        let friendly_path =
+            pkg_env_path.join(PackageId::get_pkg_id_unique_name(resolved_pkg_id.as_str()));
         match pkg_env.load(resolved_pkg_id.as_str()).await {
-            Ok(media_info) => {
+            Ok(media_info) if friendly_path.is_dir() => {
                 info!(
                     "static web dir pkg {} for app {} already installed at {}",
                     resolved_pkg_id,
@@ -395,6 +397,14 @@ async fn ensure_node_gateway_dir_pkgs_installed_in_env(
                     media_info.full_path.display()
                 );
                 continue;
+            }
+            Ok(_) => {
+                info!(
+                    "static web dir pkg {} for app {} friendly path {} is missing, will repair",
+                    resolved_pkg_id,
+                    app_id,
+                    friendly_path.display()
+                );
             }
             Err(err) => {
                 info!(
@@ -454,6 +464,16 @@ async fn ensure_node_gateway_dir_pkgs_installed_in_env(
             failures.push(format!(
                 "load static web dir pkg {} for app {} after install failed: {}",
                 resolved_pkg_id, app_id, err
+            ));
+            continue;
+        }
+
+        if !friendly_path.is_dir() {
+            failures.push(format!(
+                "static web dir pkg {} for app {} friendly path {} is missing after install",
+                resolved_pkg_id,
+                app_id,
+                friendly_path.display()
             ));
         }
     }
@@ -2599,6 +2619,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             .join(pkg_name)
             .join(ObjId::new(meta_obj_id.as_str()).unwrap().to_filename());
         std::fs::create_dir_all(&strict_dir).unwrap();
+        std::fs::create_dir_all(pkg_env_path.join("portal-web")).unwrap();
 
         let gateway_info = build_static_web_gateway_info("portal-web", meta_obj_id.as_str());
         let result =
@@ -2607,6 +2628,27 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
 
         cleanup_temp_pkg_env_path(&pkg_env_path);
         result.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_ensure_node_gateway_dir_pkgs_installed_requires_friendly_path_for_exact_pkg() {
+        let pkg_env_path =
+            create_temp_pkg_env_path("ensure_node_gateway_dir_pkgs_installed_requires_friendly");
+        let (pkg_name, meta_obj_id) = index_test_pkg(&pkg_env_path, "portal-web", "1.0.0");
+        let strict_dir = pkg_env_path
+            .join("pkgs")
+            .join(pkg_name)
+            .join(ObjId::new(meta_obj_id.as_str()).unwrap().to_filename());
+        std::fs::create_dir_all(&strict_dir).unwrap();
+
+        let gateway_info = build_static_web_gateway_info("portal-web", meta_obj_id.as_str());
+        let result =
+            ensure_node_gateway_dir_pkgs_installed_in_env(pkg_env_path.as_path(), &gateway_info)
+                .await;
+
+        cleanup_temp_pkg_env_path(&pkg_env_path);
+        let err = result.expect_err("exact pkg without friendly path should not be accepted");
+        assert!(err.to_string().contains("portal-web"));
     }
 
     #[tokio::test]

@@ -783,7 +783,9 @@ fn write_synced(path: &Path, data: &[u8]) -> std::io::Result<()> {
         f.sync_all()?;
     }
     std::fs::rename(&tmp, path)?;
-    std::fs::File::open(dir)?.sync_all()
+    #[cfg(unix)]
+    std::fs::File::open(dir)?.sync_all()?;
+    Ok(())
 }
 
 pub(crate) fn uuid_like() -> String {
