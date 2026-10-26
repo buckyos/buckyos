@@ -427,6 +427,16 @@ test.describe('Agent setup wizard', () => {
     await expect(wizard.getByTestId('agent-setup-next')).toBeDisabled()
   })
 
+  test('BuckyOS Desktop Lite runs one Agent: Add Agent explains the taken run slot', async ({ page }) => {
+    await seedMock(page, { edition: 'lite' })
+    await page.goto('/?scenario=normal')
+    await page.getByTestId('desktop-app-users-agents').click()
+    await page.getByTestId('window-users-agents').getByTestId('users-agents-add-agent').click()
+    const wizard = page.getByTestId('window-agent-setup')
+    await expect(wizard.getByTestId('agent-setup-slot-occupied')).toContainText('assistant.alice')
+    await expect(wizard.getByTestId('agent-setup-name')).toHaveCount(0)
+  })
+
   test('Add Agent uses the same wizard; a taken name offers the Owner-prefixed suggestion', async ({ page }) => {
     await page.goto('/?scenario=normal')
     await page.getByTestId('desktop-app-users-agents').click()

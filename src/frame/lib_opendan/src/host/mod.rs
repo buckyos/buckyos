@@ -571,13 +571,16 @@ async fn serve_one(
                 // applied by this drive.
                 break r;
             }
-            DriveResult::BindFailed { error } if error["recoverable"] == true => {
+            DriveResult::BindFailed { error } => {
+                log::warn!("session {}: binding failed: {error}", sd.sid());
+                if error["recoverable"] != true {
+                    break r;
+                }
                 backoff = (backoff * 2).min(Duration::from_secs(60));
                 backoff
             }
             DriveResult::NotDriver { .. }
             | DriveResult::Unregistered
-            | DriveResult::BindFailed { .. }
             | DriveResult::RecoveryBlocked(_) => break r,
             DriveResult::Busy { .. } | DriveResult::RunBusy { .. } | DriveResult::LeaseLost => {
                 backoff = (backoff * 2).min(Duration::from_secs(30));

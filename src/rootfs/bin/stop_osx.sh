@@ -74,6 +74,11 @@ stop_instance_processes() {
 }
 
 remove_buckyos_containers() {
+  # BuckyOS Desktop Lite (etc/product.json) never calls docker.
+  if grep -Eq '"container"[[:space:]]*:[[:space:]]*false' "$ROOT/etc/product.json" 2>/dev/null; then
+    echo "this product edition runs no containers"
+    return
+  fi
   if ! as_user /bin/sh -c 'command -v docker' >/dev/null 2>&1; then
     echo "docker not found for $USER_NAME"
     return

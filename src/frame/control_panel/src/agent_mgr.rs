@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use buckyos_api::{
     agent_info_key, agent_install_record_key, agent_key_path, agent_profile_key,
     agent_settings_key, agent_short_name, agent_spec_key, agent_template_record_key,
-    get_buckyos_api_runtime, user_app_spec_key, AgentCreateError, AgentCreateStep, AgentId,
+    get_buckyos_api_runtime, user_app_spec_key, AgentCreateError, AgentSlot, AGENT_SLOT_KEY, AgentCreateStep, AgentId,
     AgentInstallRecord, AgentInstallState, AgentMsgTunnelSettings, AgentPermissionMode,
     AgentProfile, AgentRuntimeInfo, AgentServiceBinding, AgentSettings, AgentSpec,
     AgentTemplateConfig, AgentTemplateRecord, AgentTemplateSource, AgentTunnelState,
@@ -160,6 +160,33 @@ pub(crate) async fn get_value<T: DeserializeOwned>(kv: &dyn AgentKv, key: &str) 
 
 fn reservation_key(agent_id: &AgentId) -> String {
     format!("{AGENT_NAME_PREFIX}/{agent_id}")
+}
+
+/// Adds the run slot to an Agent's reservation: `Create` fails the whole
+/// transaction when another Agent holds it.
+fn take_agent_slot(
+    actions: &mut HashMap<String, KVAction>,
+    owner: &str,
+    agent_id: &AgentId,
+    now: u64,
+) -> Result<(), RPCErrors> {
+    let slot = AgentSlot {
+        owner_user_id: owner.to_string(),
+        agent_id: agent_id.to_string(),
+        acquired_at: now,
+    };
+    actions.insert(AGENT_SLOT_KEY.to_string(), KVAction::Create(to_json(&slot)?));
+    Ok(())
+}
+
+fn agent_slot_occupied(slot: &AgentSlot) -> RPCErrors {
+    reason(
+        "agent_slot_occupied",
+        format!(
+            "this BuckyOS edition runs one Agent and {} already exists; delete it before creating another",
+            slot.agent_id
+        ),
+    )
 }
 
 async fn load_record(
@@ -1821,10 +1848,18 @@ async fn finish_removal(
     version: u64,
 ) -> Result<bool, RPCErrors> {
     let key = agent_install_record_key(owner, &record.agent_id);
-    let actions = HashMap::from([
+    let mut actions = HashMap::from([
         (key.clone(), KVAction::Remove),
         (reservation_key(&record.agent_id), KVAction::Remove),
     ]);
+    // The runtime App is uninstalled and its instances stopped: the run
+    // slot is free for another Agent.
+    if get_value::<AgentSlot>(ops.kv(), AGENT_SLOT_KEY)
+        .await
+        .is_some_and(|slot| slot.holds(owner, record.agent_id.as_str()))
+    {
+        actions.insert(AGENT_SLOT_KEY.to_string(), KVAction::Remove);
+    }
     if let Err(error) = ops
         .kv()
         .exec_tx(actions, Some((key.clone(), version)))
@@ -2841,13 +2876,27 @@ impl ControlPanelServer {
             buckyos_get_unix_timestamp(),
         );
         let settings = request.settings_with_runtimes(&kv, &owner).await?;
-        let actions = reservation_actions(
+        let mut actions = reservation_actions(
             &owner,
             &record,
             &private_key,
             &settings,
             &request.profile,
         )?;
+        // A product that runs one Agent: the reservation takes the run slot
+        // in the same transaction, so of two concurrent creations only one
+        // can commit.
+        let bounded = crate::product::current_product()
+            .await?
+            .capabilities
+            .max_running_agents
+            .is_some();
+        if bounded {
+            if let Some(slot) = crate::product::current_agent_slot().await? {
+                return Err(agent_slot_occupied(&slot));
+            }
+            take_agent_slot(&mut actions, &owner, &agent_id, record.created_at)?;
+        }
         if let Err(error) = kv.exec_tx(actions, None).await {
             if let Some((existing, _)) = load_record(&kv, &owner, &agent_id).await? {
                 if existing.idempotency_key == request.idempotency_key
@@ -2857,6 +2906,14 @@ impl ControlPanelServer {
                         RPCResult::Success(created(&owner, &existing)),
                         req.seq,
                     ));
+                }
+            }
+            if bounded {
+                if let Some(slot) = crate::product::current_agent_slot().await? {
+                    if !slot.holds(&owner, agent_id.as_str()) {
+                        warn!("reserve Agent {agent_id} failed: run slot taken by {}", slot.agent_id);
+                        return Err(agent_slot_occupied(&slot));
+                    }
                 }
             }
             warn!("reserve Agent {agent_id} failed: {error}");
@@ -3034,6 +3091,16 @@ impl ControlPanelServer {
             settings.auto_share_results = auto_share_results;
         }
         crate::agent_runtimes::apply_update(&kv, &owner, &mut settings, runtimes, default_runtime_id).await?;
+        // Without a container runtime the Agent Service has nowhere else to
+        // run: the default stays on a node runtime.
+        if settings.effective_default_runtime() == buckyos_api::CONTAINER_RUNTIME_ID
+            && !crate::agent_runtimes::container_available(&kv).await
+        {
+            return Err(reason(
+                "container_unavailable",
+                "no node of this zone runs containers: the Agent has to run on the host",
+            ));
+        }
         kv.exec_tx(
             HashMap::from([(key, KVAction::Update(to_json(&settings)?))]),
             None,
@@ -3619,6 +3686,17 @@ mod tests {
     }
 
     async fn reserve(ops: &FakeOps, name: &str, bot_token: Option<&str>) -> AgentId {
+        try_reserve(ops, name, bot_token, false).await.unwrap()
+    }
+
+    /// `bounded`: the product runs one Agent, so the reservation takes the
+    /// run slot too.
+    async fn try_reserve(
+        ops: &FakeOps,
+        name: &str,
+        bot_token: Option<&str>,
+        bounded: bool,
+    ) -> Result<AgentId, RPCErrors> {
         let agent_id = AgentId::from_agent_did(&agent_did_for(&zone(), name)).unwrap();
         let (private_key, public_key) = generate_ed25519_key_pair();
         let spec = new_agent_spec(
@@ -3646,21 +3724,19 @@ mod tests {
             built("0.7.0"),
             buckyos_get_unix_timestamp(),
         );
-        ops.kv
-            .exec_tx(
-                reservation_actions(
-                    OWNER,
-                    &record,
-                    &private_key,
-                    &request.settings(),
-                    &request.profile,
-                )
-                .unwrap(),
-                None,
-            )
-            .await
-            .unwrap();
-        agent_id
+        let mut actions = reservation_actions(
+            OWNER,
+            &record,
+            &private_key,
+            &request.settings(),
+            &request.profile,
+        )
+        .unwrap();
+        if bounded {
+            take_agent_slot(&mut actions, OWNER, &agent_id, record.created_at).unwrap();
+        }
+        ops.kv.exec_tx(actions, None).await?;
+        Ok(agent_id)
     }
 
     fn runtime_spec(agent_id: &AgentId, base_on: &ObjId, version: &str) -> AppServiceSpec {
@@ -4615,6 +4691,45 @@ mod tests {
         assert!(!ops.kv.has(&reservation_key(&agent_id)));
         let index = AgentNameIndex::load(&ops.kv, &zone()).await.unwrap();
         assert!(index.check("xiaobai").is_ok());
+    }
+
+    /// A product that runs one Agent (Desktop Lite): of two creations only
+    /// the one whose reservation commits gets the run slot, the other leaves
+    /// nothing behind; the slot is free again once the first Agent's runtime
+    /// is uninstalled, not when it is merely marked removed.
+    #[tokio::test]
+    async fn the_one_agent_run_slot_is_taken_atomically_and_freed_after_removal() {
+        let ops = FakeOps::new();
+        let first = try_reserve(&ops, "xiaobai", None, true).await.unwrap();
+        let rejected = try_reserve(&ops, "xiaohei", None, true).await;
+        assert!(rejected.is_err(), "a second Agent reserved the slot");
+        let second = AgentId::from_agent_did(&agent_did_for(&zone(), "xiaohei")).unwrap();
+        assert!(!ops.kv.has(&agent_install_record_key(OWNER, &second)));
+        assert!(!ops.kv.has(&reservation_key(&second)));
+        let slot: AgentSlot = ops.kv.read(AGENT_SLOT_KEY);
+        assert!(slot.holds(OWNER, first.as_str()));
+
+        ops.submits
+            .lock()
+            .unwrap()
+            .push_back(Ok(RuntimeSubmit::Satisfied(built("0.7.0"))));
+        install_runtime(&ops, &first);
+        assert!(drive_agent_step(&ops, OWNER, &first).await.unwrap());
+        assert!(drive_agent_step(&ops, OWNER, &first).await.unwrap());
+        report_loaded(&ops, &first);
+        ops.drive(&first).await;
+        assert_eq!(ops.record(&first).state, AgentInstallState::Ready);
+        begin_agent_removal(&ops.kv, OWNER, &first, 2).await.unwrap();
+        assert!(ops.kv.has(AGENT_SLOT_KEY), "held until the runtime is gone");
+        ops.uninstalls
+            .lock()
+            .unwrap()
+            .push_back(Some("t-uninstall".to_string()));
+        ops.task("t-uninstall", TaskKind::Uninstall, vec![TaskState::Running, TaskState::Succeeded]);
+        ops.drive(&first).await;
+        assert!(!ops.kv.has(&agent_install_record_key(OWNER, &first)));
+        assert!(!ops.kv.has(AGENT_SLOT_KEY));
+        try_reserve(&ops, "xiaohei", None, true).await.unwrap();
     }
 
     #[tokio::test]

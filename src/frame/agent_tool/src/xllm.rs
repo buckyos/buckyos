@@ -7630,7 +7630,9 @@ fn restore_host_environment(
     }
     let bin: PathBuf =
         serde_json::from_value(check["bin_dir"].clone()).map_err(|e| blocked(e.to_string()))?;
-    if paths.first() != Some(&bin) {
+    // A node runtime has no PATH layers here (its commands are on the node's
+    // own PATH); its overlay is still checked below.
+    if !paths.is_empty() && paths.first() != Some(&bin) {
         return Err(blocked("Session bin path check differs from PATH".into()));
     }
     let manifest: Value = serde_json::from_slice(
@@ -10420,6 +10422,51 @@ there]]></write_file>
             ensure_host_report_not_pending(&record),
             Err(XllmError::NotResumable { .. })
         ));
+    }
+
+    #[test]
+    fn a_node_runtime_session_without_path_layers_recovers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join(".runtime").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let manifest = json!({"entries": {}, "tool_plan": null});
+        std::fs::write(bin.join(".manifest.json"), manifest.to_string()).unwrap();
+        let mut record = RunRecord::synthetic("node-run", tmp.path(), RunStatus::Paused);
+        let check = |path_prefix: Vec<PathBuf>| {
+            json!({
+                "runtime": record.config.runtime_descriptor,
+                "env": {},
+                "env_refs": [],
+                "path_prefix": path_prefix,
+                "bin_dir": bin,
+                "bin_manifest": manifest,
+            })
+        };
+        let host = |env_check: Value| HostRunInfo {
+            assembled_by: "libopendan".into(),
+            session_id: Some("session".into()),
+            runtime_kind: Some("remote_node".into()),
+            runtime_id: Some("host".into()),
+            env_check,
+            extra: Value::Null,
+        };
+        let open = || RuntimeOpenCtx::new(tmp.path(), "node-run", LoopModel::FunctionCall);
+
+        record.host = Some(host(check(Vec::new())));
+        let mut opened = open();
+        restore_host_environment(&record, &mut opened).unwrap();
+        assert!(opened.path_prefix.is_empty());
+
+        // With PATH layers the overlay must still come first.
+        let other = tmp.path().join("tools");
+        std::fs::create_dir_all(&other).unwrap();
+        record.host = Some(host(check(vec![other.clone(), bin.clone()])));
+        assert!(matches!(
+            restore_host_environment(&record, &mut open()),
+            Err(XllmError::RecoveryBlocked(_))
+        ));
+        record.host = Some(host(check(vec![bin.clone(), other])));
+        restore_host_environment(&record, &mut open()).unwrap();
     }
 
     #[tokio::test]

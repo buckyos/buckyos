@@ -52,8 +52,22 @@ pub fn app_run_mode(
     app_config: &AppServiceSpec,
     input_config: &HashMap<String, String>,
 ) -> AppRunMode {
+    let product = ProductProfile::from_system_config(input_config).unwrap_or_default();
     if app_config.app_doc.get_app_type() != AppType::Agent {
-        return AppRunMode::Container;
+        // A product without containers runs its preinstalled script apps
+        // with the node's own interpreter.
+        return match product.admit_app(&app_config.app_doc, AdmissionOrigin::Deployed) {
+            Ok(AppAdmission::PreinstalledScript(_)) if !product.container_enabled() => {
+                AppRunMode::Native
+            }
+            _ => AppRunMode::Container,
+        };
+    }
+    // Without containers an Agent can only ever run natively; losing its
+    // host default (or being removed) stops it, never flips it to a
+    // container the node cannot run.
+    if !product.container_enabled() {
+        return AppRunMode::Native;
     }
     match native_agent_node(input_config, &app_config.owner_user_id, &app_config.app_id()) {
         Some(node) if node == node_id => AppRunMode::Native,
@@ -73,9 +87,14 @@ fn build_app_service_config(
     result_config.run_mode = run_mode;
     let has_script_pkg = app_config.app_doc.pkg_list.script.is_some();
     if run_mode == AppRunMode::Native {
-        // The node's own OpenDAN runs the Agent package: no image needed.
-        if app_config.app_doc.pkg_list.agent.is_none() {
-            return Err(anyhow::anyhow!("a natively run Agent needs its agent package"));
+        // The node's own OpenDAN runs the Agent package and its own Deno a
+        // script package: no image needed.
+        if app_config.app_doc.get_app_type() == AppType::Agent {
+            if app_config.app_doc.pkg_list.agent.is_none() {
+                return Err(anyhow::anyhow!("a natively run Agent needs its agent package"));
+            }
+        } else if !has_script_pkg {
+            return Err(anyhow::anyhow!("a natively run script app needs its script package"));
         }
     } else if node_info.support_container {
         let docker_pkg_name = format!("{}_docker_image", node_info.arch.as_str());

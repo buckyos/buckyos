@@ -272,6 +272,10 @@ def _build_install_projects_from_config(
             raise RuntimeError(f"apps.{app_key}.clean_paths must be a list")
 
         staged_source_rootfs = (publish_root / str(app_key)).resolve()
+        # The product edition (`make_config --edition`) is part of the
+        # package: an upgrade replaces it like any module.
+        if (staged_source_rootfs / "etc" / "product.json").is_file():
+            modules = {**modules, "product_profile": "etc/product.json"}
 
         def build_item(item_key: str | None, raw_path: str) -> dict[str, Any]:
             item = _build_item_record(
@@ -1079,6 +1083,7 @@ def _prepare_common_build_root(
     skip_desktop_app_build: bool,
     rust_target: str | None = None,
     timings_dir: str | None = None,
+    edition: str = "full",
 ) -> None:
     buckyos_root = target.build_root / "buckyos"
     print(f"[prepare] platform={target.platform_key} arch={target.architecture} build_root={target.build_root}")
@@ -1117,11 +1122,26 @@ def _prepare_common_build_root(
         timings_dir=timings_dir,
     )
     _ensure_executable(buckyos_root / "bin" / "stop_osx.sh", dry_run=dry_run)
+    # The edition is part of the package: etc/product.json from src/product/.
     _run_checked(
-        ["deno", "task", "make_config", "release", "--rootfs", str(buckyos_root)],
+        ["deno", "task", "make_config", "release", "--rootfs", str(buckyos_root), "--edition", edition],
         cwd=SRC_DIR,
         dry_run=dry_run,
     )
+    if edition == "lite":
+        # BuckyOS Desktop Lite runs no container: the paios_images module keeps
+        # only its README, never an image manifest or tarballs.
+        images_dir = buckyos_root / "bin" / "paios-images"
+        for staged in sorted(images_dir.iterdir()) if images_dir.is_dir() else []:
+            if staged.name == "README.md":
+                continue
+            print("[clean]", staged)
+            if dry_run:
+                continue
+            if staged.is_dir():
+                shutil.rmtree(staged)
+            else:
+                staged.unlink()
 
     _stage_desktop_app(
         target,
@@ -1222,6 +1242,12 @@ def prepare_root(argv: list[str]) -> int:
         default=None,
         help="Collect devkit cargo timing reports under this directory",
     )
+    parser.add_argument(
+        "--edition",
+        choices=("full", "lite"),
+        default="full",
+        help="Product edition of the package (lite: BuckyOS Desktop Lite, no container runtime)",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing them")
     args = parser.parse_args(argv)
 
@@ -1236,6 +1262,7 @@ def prepare_root(argv: list[str]) -> int:
         skip_desktop_app_build=bool(args.skip_desktop_app_build),
         rust_target=args.rust_target,
         timings_dir=args.timings_dir,
+        edition=args.edition,
     )
     return 0
 
@@ -1270,8 +1297,16 @@ def build_pkg(argv: list[str]) -> int:
         help="none: package without bin/paios-images/paios_images.json (installed node_daemon uses local "
         "latest-<arch> images); local: pin and bundle this machine's paios/aios and paios/exttool latest-<arch>",
     )
+    parser.add_argument(
+        "--edition",
+        choices=("full", "lite"),
+        default="full",
+        help="Product edition of the package (lite: BuckyOS Desktop Lite, no container runtime)",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args, forwarded = parser.parse_known_args(argv)
+    if args.edition == "lite" and args.paios_images != "none":
+        parser.error("--edition lite packages no paios images")
 
     build_root_override = args.build_root or args.app_publish_dir
     target = detect_target(args.arch, build_root_override, args.format)
@@ -1286,6 +1321,7 @@ def build_pkg(argv: list[str]) -> int:
             skip_desktop_app_build=bool(args.skip_desktop_app_build),
             rust_target=args.rust_target,
             timings_dir=args.timings_dir,
+            edition=args.edition,
         )
     else:
         print("[prepare] skipped by --skip-prepare")

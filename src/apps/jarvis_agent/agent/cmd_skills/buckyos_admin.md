@@ -155,6 +155,17 @@ buckyos system info                                 # BuckyOS version, build_ver
   `apps/<instance>/run_mode: "native"`, and `agent.runtime_directory <agent_id>` says `agent_service: {mode: "native",
   node_id}`. Changing the default between host and container restarts the Agent Service the other way; a default of
   `container` with no container node is refused (`container_unavailable`).
+- BuckyOS Desktop Lite (`system.product.get` → `edition: "lite"`; installed as `$BUCKYOS_ROOT/etc/product.json`) has
+  no container runtime: docker/wslc are never probed or called, whatever is installed. It runs the system services,
+  static web apps users add, the product's preinstalled script apps (natively on the node's Deno: `run_mode: "native"`,
+  record `local/app_native/<instance>.json`, log `logs/apps/<instance>/native.log`) and one Agent. `system/agent_slot`
+  names the Agent holding the run slot; another `agent.create` fails with `agent_slot_occupied` until that Agent is
+  deleted (the slot frees once its runtime App is uninstalled). Installing a docker or script app is refused at
+  `apps.inspect` / submit (`product_container_app`, `product_service_app`, `product_mixed_packages`); a spec the
+  product does not run is stopped and `services/<spec_id>/schedule_status` says why (`no_suitable_node` too, when no
+  node can take a spec). A native app that cannot run reports it in `services/<spec_id>/instances/<node>`
+  `deployment_error`: `port_conflict` (app, service, `127.0.0.1:<port>`; free the port, it retries by itself),
+  `exited` (last log lines), `not_listening`, `interpreter_missing`; restarts back off 5 s … 5 min.
   Linux `dev` / `devtest_ood1` config generation seeds a bounded host workspace at
   `data/home/devtest/host-runtime`, with a non-root execution identity and no desktop control; explicit node settings
   take precedence. The scheduler multiplies

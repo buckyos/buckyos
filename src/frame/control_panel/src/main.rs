@@ -25,6 +25,7 @@ mod image_data_url;
 mod ndn_download;
 mod pikg;
 mod pre_install_reconciler;
+mod product;
 mod redaction;
 mod sso_entry;
 mod sso_identity;
@@ -162,6 +163,7 @@ impl RpcAuthPrincipal {
                     | "agent.runtime_directory"
                     | "system.overview"
                     | "system.buckyos_info.get"
+                    | "system.product.get"
                     | "system.dev_mode.get"
                     | "system.status"
                     | "system.metrics"
@@ -1344,6 +1346,7 @@ impl ControlPanelServer {
             "ui.dashboard" => Box::pin(self.handle_dashboard(req)),
             "system.overview" => Box::pin(self.handle_system_overview(req)),
             "system.buckyos_info.get" => Box::pin(self.handle_buckyos_info_get(req)),
+            "system.product.get" => Box::pin(self.handle_system_product_get(req)),
             "system.dev_mode.get" => Box::pin(self.handle_dev_mode_get(req)),
             "system.dev_mode.set" => Box::pin(self.handle_dev_mode_set(req, principal)),
             "system.status" => Box::pin(self.handle_system_status(req)),

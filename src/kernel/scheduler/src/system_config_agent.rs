@@ -2,7 +2,9 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use anyhow::Result;
 use buckyos_api::{
-    AgentPermissionMode, AgentSpec, AppType, MailboxAddress, MailboxKind, SelectorType,
+    spec_schedule_status_key, AdmissionOrigin, AgentPermissionMode, AgentSlot, AgentSpec,
+    AppAdmission, AppType, MailboxAddress, MailboxKind, ProductProfile, SelectorType,
+    SpecScheduleStatus,
 };
 use log::*;
 use package_lib::PackageId;
@@ -80,11 +82,109 @@ fn node_label(node_id: &str) -> String {
     format!("node:{node_id}")
 }
 
+fn schedule_status(code: &str, message: impl ToString) -> SpecScheduleStatus {
+    SpecScheduleStatus {
+        code: code.to_string(),
+        message: message.to_string(),
+    }
+}
+
+/// Whether the product runs this deployed App spec at all: the same rule
+/// control-panel applied at submission, checked again so a spec written
+/// directly into system-config, an old task or a changed product cannot
+/// start what the product does not run. A bounded product also runs only
+/// the Agent that holds the run slot, and without containers an Agent runs
+/// only natively.
+pub(crate) fn app_spec_admission(
+    product: &ProductProfile,
+    app_config: &AppServiceSpec,
+    input_config: &HashMap<String, String>,
+) -> std::result::Result<(), SpecScheduleStatus> {
+    match product.admit_app(&app_config.app_doc, AdmissionOrigin::Deployed) {
+        Err(denied) => Err(schedule_status(denied.code(), denied)),
+        Ok(AppAdmission::Agent) => {
+            let owner = app_config.owner_user_id.as_str();
+            let app_id = app_config.app_id();
+            if product.capabilities.max_running_agents.is_some() {
+                match AgentSlot::from_system_config(input_config) {
+                    Some(slot) if slot.holds(owner, app_id.as_str()) => {}
+                    Some(slot) => {
+                        return Err(schedule_status(
+                            "product_agent_slot",
+                            format!(
+                                "this BuckyOS edition runs one Agent; {} holds the run slot",
+                                slot.agent_id
+                            ),
+                        ))
+                    }
+                    None => {
+                        return Err(schedule_status(
+                            "product_agent_slot",
+                            "this BuckyOS edition runs one Agent and this one holds no run slot",
+                        ))
+                    }
+                }
+            }
+            if !product.container_enabled()
+                && buckyos_api::native_agent_node(input_config, owner, &app_id).is_none()
+            {
+                return Err(schedule_status(
+                    "agent_host_runtime_required",
+                    "without a container runtime an Agent runs only on a node's host runtime: \
+                     make `host` its default runtime and open the node to the owner's Agents",
+                ));
+            }
+            Ok(())
+        }
+        Ok(_) => Ok(()),
+    }
+}
+
+/// `services/<spec_id>/schedule_status` follows `unschedulable`: written
+/// when it changes, removed once the spec is placed or gone.
+fn schedule_status_actions(
+    scheduler_ctx: &NodeScheduler,
+    input_config: &HashMap<String, String>,
+) -> HashMap<String, KVAction> {
+    let mut actions = HashMap::new();
+    for (spec_id, spec) in &scheduler_ctx.specs {
+        if !spec.spec_type.is_app_like() {
+            continue;
+        }
+        let key = spec_schedule_status_key(spec_id);
+        match scheduler_ctx.unschedulable.get(spec_id) {
+            Some(status) => {
+                let raw = serde_json::to_string(status).unwrap_or_default();
+                if input_config.get(&key) != Some(&raw) {
+                    actions.insert(key, KVAction::Update(raw));
+                }
+            }
+            None if spec.state == ServiceSpecState::Deployed && input_config.contains_key(&key) => {
+                actions.insert(key, KVAction::Remove);
+            }
+            None => {}
+        }
+    }
+    for key in input_config.keys() {
+        let Some(spec_id) = key
+            .strip_prefix("services/")
+            .and_then(|rest| rest.strip_suffix("/schedule_status"))
+        else {
+            continue;
+        };
+        if !scheduler_ctx.specs.contains_key(spec_id) {
+            actions.insert(key.clone(), KVAction::Remove);
+        }
+    }
+    actions
+}
+
 fn create_service_spec_by_app_config(
     full_app_id: &str,
     owner_user_id: &str,
     app_config: &AppServiceSpec,
     input_config: &HashMap<String, String>,
+    product: &ProductProfile,
 ) -> ServiceSpec {
     let spec_state = ServiceSpecState::from(app_config.state.clone());
     let is_agent = app_config.app_doc.get_app_type() == AppType::Agent;
@@ -95,7 +195,11 @@ fn create_service_spec_by_app_config(
         .flatten();
 
     let mut need_container = is_agent && native_node.is_none();
-    if !is_agent {
+    if !product.container_enabled() {
+        // The product admitted this App only to run natively
+        // (`app_spec_admission`): its preinstalled script apps and its Agent.
+        need_container = false;
+    } else if !is_agent {
         need_container = true;
         if app_config
             .app_doc
@@ -113,6 +217,11 @@ fn create_service_spec_by_app_config(
     }
 
     let service_ports_config = app_config.spec_config.to_service_ports_config();
+    // A product that bounds its Agents runs each with one service instance.
+    let best_instance_count = match product.capabilities.max_running_agents {
+        Some(_) if is_agent => app_config.expected_instance_count.min(1),
+        _ => app_config.expected_instance_count,
+    };
     ServiceSpec {
         id: full_app_id.to_string(),
         app_index: app_config.app_index,
@@ -121,7 +230,7 @@ fn create_service_spec_by_app_config(
         spec_type: ServiceSpecType::App,
         state: spec_state,
         need_container,
-        best_instance_count: app_config.expected_instance_count,
+        best_instance_count,
         required_cpu_mhz: DEFAULT_REQUIRED_CPU_MHZ,
         required_memory: DEFAULT_REQUIRED_MEMORY,
         required_gpu_tflops: 0.0,
@@ -163,6 +272,7 @@ pub fn create_scheduler_by_system_config(
     let mut scheduler_ctx = NodeScheduler::new_empty(1);
     let mut device_list: HashMap<String, DeviceInfo> = HashMap::new();
     let mut reported_instances = Vec::new();
+    let product = ProductProfile::from_system_config(input_config).map_err(anyhow::Error::msg)?;
     for (key, value) in input_config.iter() {
         //add node
         if key.starts_with("devices/") && key.ends_with("/info") {
@@ -201,12 +311,27 @@ pub fn create_scheduler_by_system_config(
                     }
                     let app_instance_id = app_config.app_instance_id();
                     if app_config.app_doc.selector_type != SelectorType::Static {
-                        let service_spec = create_service_spec_by_app_config(
+                        let mut service_spec = create_service_spec_by_app_config(
                             &app_instance_id.to_string(),
                             user_id,
                             &app_config,
                             input_config,
+                            &product,
                         );
+                        if let Err(status) =
+                            app_spec_admission(&product, &app_config, input_config)
+                        {
+                            // Not run by this product: no new instance, and
+                            // the instances it has are stopped.
+                            warn!(
+                                "app spec {} is not schedulable: {} ({})",
+                                service_spec.id, status.message, status.code
+                            );
+                            service_spec.state = ServiceSpecState::Disable;
+                            scheduler_ctx
+                                .unschedulable
+                                .insert(service_spec.id.clone(), status);
+                        }
                         scheduler_ctx.add_service_spec(service_spec);
                     }
                 }
@@ -1906,6 +2031,7 @@ mod agent_rbac_tests {
             "bob",
             &super::app_lifecycle_tests::app_spec(),
             &input,
+            &ProductProfile::full(),
         );
         service.app_id = readonly.agent_id.to_string();
         scheduler.specs.insert(service.id.clone(), service);
@@ -2715,6 +2841,10 @@ pub(crate) async fn build_schedule_plan(
         reconcile_app_instance_specs(input_system_config)?;
     extend_kv_action_map(&mut tx_actions, &app_instance_spec_actions);
     need_update_gateway_node_list.extend(refreshed_app_nodes);
+    extend_kv_action_map(
+        &mut tx_actions,
+        &schedule_status_actions(&scheduler_ctx, input_system_config),
+    );
 
     if is_boot || last_schedule_snapshot.is_none() {
         need_update_rbac = true;
@@ -2884,4 +3014,273 @@ pub async fn schedule_loop(is_boot: bool, run_once: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// BuckyOS Desktop Lite (`etc/product.json` → `system/product`): what the
+/// scheduler places, how, and why it places nothing for the rest.
+#[cfg(test)]
+mod lite_tests {
+    use super::*;
+    use buckyos_api::{
+        AgentRuntimeSettings, AgentRuntimeTarget, AgentSettings, AppDoc, AppRunMode,
+        AppServiceInstanceConfig, ComputerAccess, DeploymentIdentity, ServiceSpecConfig,
+        SubPkgDesc, AGENT_SLOT_KEY, PRODUCT_PROFILE_KEY,
+    };
+    use name_lib::{DeviceDocument, DID};
+    use ndn_lib::NamedObject;
+
+    const LITE: &str = include_str!("../../../product/lite.json");
+
+    fn spec_for(app_doc: AppDoc, owner: &str, app_index: u16) -> AppServiceSpec {
+        let app_instance_id =
+            AppInstanceId::new(AppId::from_app_did(app_doc.app_did()).unwrap(), owner).unwrap();
+        let name = app_doc.name.clone();
+        AppServiceSpec {
+            app_instance_id: app_instance_id.clone(),
+            app_did: app_doc.app_did().clone(),
+            deployment: DeploymentIdentity {
+                app_instance_id,
+                task_id: format!("install-{name}"),
+                app_doc_object_id: app_doc.gen_obj_id().0,
+                spec_generation: 1,
+                pikg_digest: None,
+            },
+            app_doc,
+            app_name: name.clone(),
+            app_host_name: name,
+            app_index,
+            owner_user_id: owner.to_string(),
+            permission: Vec::new(),
+            selected_components: Vec::new(),
+            packages: Vec::new(),
+            enable: true,
+            expected_instance_count: 1,
+            state: ServiceState::New,
+            spec_config: ServiceSpecConfig::default(),
+        }
+    }
+
+    fn pkg(name: &str, byte: u8) -> SubPkgDesc {
+        SubPkgDesc::new(name).package_meta_object_id(ndn_lib::ObjId::new_by_raw("pkg".into(), vec![byte; 32]))
+    }
+
+    fn systest() -> AppServiceSpec {
+        let owner = DID::new("bns", "buckyos");
+        let doc = AppDoc::builder(AppType::AppService, "buckyos-systest", "0.5.1", "did:bns:buckyos", &owner)
+            .app_did(DID::from_str("did:bns:buckyos-systest.buckyos").unwrap())
+            .script_pkg(pkg("all.script.buckyos-systest.buckyos.bns.did#0.5.1", 7))
+            .service_port("www", 3000)
+            .build()
+            .unwrap();
+        spec_for(doc, "alice", 3)
+    }
+
+    fn docker_app() -> AppServiceSpec {
+        let mut spec = super::app_lifecycle_tests::app_spec();
+        spec.state = ServiceState::New;
+        spec
+    }
+
+    fn agent(name: &str, app_index: u16) -> AppServiceSpec {
+        let owner = DID::new("bns", "alice");
+        let doc = AppDoc::builder(AppType::Agent, name, "0.7.0", "alice", &owner)
+            .app_did(DID::from_str(&format!("did:web:{name}.test.buckyos.io")).unwrap())
+            .agent_pkg(pkg(&format!("agent.{name}.test.buckyos.io#0.7.0"), 2))
+            .build()
+            .unwrap();
+        spec_for(doc, "alice", app_index)
+    }
+
+    fn host_default(spec: &AppServiceSpec, node_did: &str) -> (String, String) {
+        let agent_id = buckyos_api::AgentId::parse(spec.app_id().as_str()).unwrap();
+        let settings = AgentSettings {
+            runtimes: std::collections::BTreeMap::from([(
+                "host".to_string(),
+                AgentRuntimeSettings {
+                    enabled: true,
+                    computer: ComputerAccess::None,
+                    target: AgentRuntimeTarget::Node { node_id: "ood1".into(), node_did: node_did.into() },
+                    baseline: None,
+                },
+            )]),
+            default_runtime_id: Some("host".to_string()),
+            ..AgentSettings::default()
+        };
+        (
+            buckyos_api::agent_settings_key("alice", &agent_id),
+            serde_json::to_string(&settings).unwrap(),
+        )
+    }
+
+    fn lite_input(specs: &[&AppServiceSpec]) -> (HashMap<String, String>, DeviceInfo) {
+        let mut doc = DeviceDocument::new("ood1", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into());
+        doc.support_container = false;
+        let mut device = DeviceInfo::from_device_doc(&doc);
+        device.arch = "amd64".into();
+        let mut input = HashMap::from([
+            ("devices/ood1/info".to_string(), serde_json::to_string(&device).unwrap()),
+            (PRODUCT_PROFILE_KEY.to_string(), LITE.to_string()),
+            (buckyos_api::ZONE_OWNER_USER_ID_KEY.to_string(), json!("alice").to_string()),
+            (
+                buckyos_api::node_settings_key("ood1"),
+                json!({"executor": {"enabled": true, "owner_agents": {"enabled": true, "workdir_roots": ["/home/alice"]}}}).to_string(),
+            ),
+            (
+                "nodes/ood1/config".to_string(),
+                json!({"node_id": "ood1", "node_did": device.id, "kernel": {}, "frame_services": {},
+                       "state": buckyos_api::NodeState::Running, "apps": {}})
+                .to_string(),
+            ),
+        ]);
+        for spec in specs {
+            input.insert(
+                buckyos_api::user_app_spec_key(&spec.owner_user_id, spec.app_id()),
+                serde_json::to_string(spec).unwrap(),
+            );
+        }
+        (input, device)
+    }
+
+    fn placements(actions: &[SchedulerAction]) -> Vec<ReplicaInstance> {
+        actions
+            .iter()
+            .filter_map(|action| match action {
+                SchedulerAction::InstanceReplica(instance) => Some(instance.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn lite_runs_its_preinstalled_script_natively_and_no_docker_app() {
+        let (systest, docker) = (systest(), docker_app());
+        let (input, _) = lite_input(&[&systest, &docker]);
+        let (mut scheduler, devices) = create_scheduler_by_system_config(&input).unwrap();
+        let systest_id = systest.app_instance_id.to_string();
+        let docker_id = docker.app_instance_id.to_string();
+        assert!(!scheduler.get_service_spec(&systest_id).unwrap().need_container);
+        assert_eq!(scheduler.get_service_spec(&docker_id).unwrap().state, ServiceSpecState::Disable);
+        assert_eq!(scheduler.unschedulable[&docker_id].code, "product_container_app");
+
+        let actions = scheduler.schedule(None).unwrap();
+        let placed = placements(&actions);
+        assert_eq!(placed.len(), 1, "{actions:?}");
+        assert_eq!(placed[0].spec_id, systest_id);
+        let node_actions = instance_app_service(&placed[0], &devices, &input).unwrap();
+        let Some(KVAction::SetByJsonPath(paths)) = node_actions.get("nodes/ood1/config") else {
+            panic!("no node config action")
+        };
+        let config: AppServiceInstanceConfig =
+            serde_json::from_value(paths[&format!("/apps/{systest_id}")].clone().unwrap()).unwrap();
+        assert_eq!(config.run_mode, AppRunMode::Native);
+
+        let statuses = schedule_status_actions(&scheduler, &input);
+        let Some(KVAction::Update(raw)) = statuses.get(&spec_schedule_status_key(&docker_id)) else {
+            panic!("no status for the docker app: {statuses:?}")
+        };
+        assert!(raw.contains("product_container_app"));
+        assert!(!statuses.contains_key(&spec_schedule_status_key(&systest_id)));
+    }
+
+    #[test]
+    fn the_full_edition_still_runs_the_script_app_in_its_worker() {
+        let systest = systest();
+        let (mut input, _) = lite_input(&[&systest]);
+        input.remove(PRODUCT_PROFILE_KEY);
+        assert_eq!(
+            crate::app::app_run_mode("ood1", &systest, &input),
+            AppRunMode::Container
+        );
+        let (scheduler, _) = create_scheduler_by_system_config(&input).unwrap();
+        assert!(scheduler.unschedulable.is_empty());
+    }
+
+    #[test]
+    fn lite_runs_only_the_agent_holding_the_run_slot_and_only_natively() {
+        let (first, second) = (agent("jarvis", 20), agent("friday", 21));
+        let (mut input, device) = lite_input(&[&first, &second]);
+        for spec in [&first, &second] {
+            let (key, value) = host_default(spec, &device.id.to_string());
+            input.insert(key, value);
+        }
+        // Nobody holds the slot: no Agent runs.
+        let (scheduler, _) = create_scheduler_by_system_config(&input).unwrap();
+        assert_eq!(scheduler.unschedulable.len(), 2);
+        assert!(scheduler.unschedulable.values().all(|status| status.code == "product_agent_slot"));
+
+        input.insert(
+            AGENT_SLOT_KEY.to_string(),
+            serde_json::to_string(&AgentSlot {
+                owner_user_id: "alice".into(),
+                agent_id: first.app_id().to_string(),
+                acquired_at: 1,
+            })
+            .unwrap(),
+        );
+        let (mut scheduler, _) = create_scheduler_by_system_config(&input).unwrap();
+        let second_id = second.app_instance_id.to_string();
+        assert_eq!(scheduler.unschedulable.keys().collect::<Vec<_>>(), vec![&second_id]);
+        let placed = placements(&scheduler.schedule(None).unwrap());
+        assert_eq!(placed.len(), 1);
+        assert_eq!(placed[0].spec_id, first.app_instance_id.to_string());
+
+        // Without a host default the slot holder has nowhere to run: it is
+        // stopped, and its instance stays native (never flipped to a
+        // container this node cannot run).
+        let agent_id = buckyos_api::AgentId::parse(first.app_id().as_str()).unwrap();
+        input.insert(
+            buckyos_api::agent_settings_key("alice", &agent_id),
+            serde_json::to_string(&AgentSettings::default()).unwrap(),
+        );
+        let (scheduler, _) = create_scheduler_by_system_config(&input).unwrap();
+        assert_eq!(
+            scheduler.unschedulable[&first.app_instance_id.to_string()].code,
+            "agent_host_runtime_required"
+        );
+        assert_eq!(crate::app::app_run_mode("ood1", &first, &input), AppRunMode::Native);
+    }
+
+    #[test]
+    fn a_spec_no_node_can_take_does_not_stop_the_others() {
+        // Full edition, but this node runs no containers.
+        let (docker, owner_agent) = (docker_app(), agent("jarvis", 20));
+        let (mut input, device) = lite_input(&[&docker, &owner_agent]);
+        input.remove(PRODUCT_PROFILE_KEY);
+        let (key, value) = host_default(&owner_agent, &device.id.to_string());
+        input.insert(key, value);
+        let (mut scheduler, _) = create_scheduler_by_system_config(&input).unwrap();
+        let actions = scheduler.schedule(None).unwrap();
+        let placed = placements(&actions);
+        assert_eq!(placed.len(), 1, "{actions:?}");
+        assert_eq!(placed[0].spec_id, owner_agent.app_instance_id.to_string());
+        let docker_id = docker.app_instance_id.to_string();
+        assert_eq!(scheduler.unschedulable[&docker_id].code, "no_suitable_node");
+        assert!(scheduler.unschedulable[&docker_id].message.contains("container runtime"));
+        // Still New: it is tried again next round.
+        assert_eq!(scheduler.get_service_spec(&docker_id).unwrap().state, ServiceSpecState::New);
+        let snapshot = scheduler.clone();
+        let (mut next, _) = create_scheduler_by_system_config(&input).unwrap();
+        next.schedule(Some(&snapshot)).unwrap();
+        assert!(next.unschedulable.contains_key(&docker_id));
+    }
+
+    #[test]
+    fn a_status_is_removed_once_its_spec_is_placed_or_gone() {
+        let systest = systest();
+        let (mut input, _) = lite_input(&[&systest]);
+        let systest_id = systest.app_instance_id.to_string();
+        input.insert(
+            spec_schedule_status_key(&systest_id),
+            json!({"code": "no_suitable_node", "message": "x"}).to_string(),
+        );
+        input.insert(
+            spec_schedule_status_key("gone.example@alice"),
+            json!({"code": "no_suitable_node", "message": "x"}).to_string(),
+        );
+        let (mut scheduler, _) = create_scheduler_by_system_config(&input).unwrap();
+        scheduler.schedule(None).unwrap();
+        let actions = schedule_status_actions(&scheduler, &input);
+        assert!(matches!(actions.get(&spec_schedule_status_key(&systest_id)), Some(KVAction::Remove)));
+        assert!(matches!(actions.get(&spec_schedule_status_key("gone.example@alice")), Some(KVAction::Remove)));
+    }
 }

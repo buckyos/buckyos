@@ -123,6 +123,8 @@ interface MockState {
   runtime_offers: AgentRuntimeOffer[]
   /** A node of the zone runs Agent containers (default true). */
   container_available?: boolean
+  /** `lite`: BuckyOS Desktop Lite, one Agent and no containers (default full). */
+  edition?: 'full' | 'lite'
   runtime_directory_error?: string
   agents: MockAgent[]
   step_ms: number
@@ -418,6 +420,10 @@ function advance(state: MockState, agent: MockAgent, now: number) {
 function advanceAll(state: MockState) {
   const now = Date.now()
   for (const agent of state.agents) advance(state, agent, now)
+}
+
+function agentSlotHolder(state: MockState): MockAgent | undefined {
+  return state.agents.find((agent) => agent.install.state !== 'removed')
 }
 
 function visibleAgents(state: MockState) {
@@ -1343,6 +1349,23 @@ function handle(state: MockState, method: string, params: Record<string, unknown
       return checkName(state, stringParam(params, 'name'))
     case 'agent.list_templates':
       return { templates: state.templates.map((template) => ({ ...template })) }
+    case 'system.product.get': {
+      const lite = state.edition === 'lite'
+      const holder = lite ? agentSlotHolder(state) : undefined
+      return {
+        edition: lite ? 'lite' : 'full',
+        capabilities: {
+          container: !lite,
+          user_service_apps: !lite,
+          static_web_apps: true,
+          max_running_agents: lite ? 1 : null,
+        },
+        preinstalled_script_apps: [],
+        agent_slot: holder
+          ? { owner_user_id: holder.owner_user_id, agent_id: holder.agent_id, acquired_at: holder.step_started_at }
+          : null,
+      }
+    }
     case 'agent.runtime_directory': {
       if (state.runtime_directory_error) throw new MockRpcError(state.runtime_directory_error)
       const agent = typeof params.agent_id === 'string' ? findAgent(state, params.agent_id) : null
@@ -1365,8 +1388,14 @@ function handle(state: MockState, method: string, params: Record<string, unknown
         container: 'container',
       }
     }
-    case 'agent.create':
+    case 'agent.create': {
+      // BuckyOS Desktop Lite runs one Agent: the run slot is taken until it is deleted.
+      const holder = state.edition === 'lite' ? agentSlotHolder(state) : undefined
+      if (holder) {
+        throw new MockRpcError(`agent_slot_occupied: this BuckyOS edition runs one Agent and ${holder.agent_id} already exists; delete it before creating another`)
+      }
       return createAgent(state, params)
+    }
     case 'agent.create.status':
       return { ...findAgent(state, stringParam(params, 'agent_id')).install }
     case 'agent.create.retry':

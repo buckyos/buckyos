@@ -19,6 +19,7 @@
  * AppService runtime from a Deno process.
  */
 import { serveDir } from "jsr:@std/http/file-server";
+import { fromFileUrl, join, toFileUrl } from "jsr:@std/path@^1";
 import { runXllmIdentitySelftest } from "./xllm_selftest.ts";
 import { handleSupportRoute, type SupportContext } from "./support_group.ts";
 
@@ -53,7 +54,35 @@ type BootstrapState =
   | { kind: "missing-env"; reason: string }
   | { kind: "failed"; reason: string };
 
-const port = Number.parseInt(Deno.env.get("PORT") ?? "3000", 10);
+/**
+ * Where to listen. In a container node-daemon publishes the AppDoc
+ * inner_port (3000); run natively by the node (BuckyOS Desktop Lite,
+ * `app_instance_config.run_mode == "native"`) the app binds the instance
+ * port the scheduler assigned to its `www` service, on loopback where the
+ * node gateway reaches it.
+ */
+function listenAddress(): { hostname: string; port: number } {
+  const raw = Deno.env.get("app_instance_config");
+  if (raw) {
+    const config = JSON.parse(raw) as {
+      run_mode?: string;
+      service_ports_config?: Record<string, number>;
+    };
+    if (config.run_mode === "native") {
+      const port = config.service_ports_config?.www;
+      if (typeof port !== "number" || port <= 0) {
+        throw new Error("native run: app_instance_config has no port for service www");
+      }
+      return { hostname: "127.0.0.1", port };
+    }
+  }
+  return {
+    hostname: "0.0.0.0",
+    port: Number.parseInt(Deno.env.get("PORT") ?? "3000", 10),
+  };
+}
+
+const { hostname: listenHostname, port } = listenAddress();
 const sdkRoutePrefix = "/sdk/appservice";
 const bootstrapRetryDelaysMs = [250, 500, 1_000, 2_000, 5_000, 10_000, 30_000];
 
@@ -77,10 +106,10 @@ async function pathExists(path: string): Promise<boolean> {
 
 async function resolveStaticRoot(): Promise<string> {
   const candidates = [
-    new URL("./web/dist", import.meta.url).pathname,
-    new URL("./web", import.meta.url).pathname,
-    new URL("./dist/web", import.meta.url).pathname,
-    new URL("./dist", import.meta.url).pathname,
+    fromFileUrl(new URL("./web/dist", import.meta.url)),
+    fromFileUrl(new URL("./web", import.meta.url)),
+    fromFileUrl(new URL("./dist/web", import.meta.url)),
+    fromFileUrl(new URL("./dist", import.meta.url)),
   ];
 
   for (const candidate of candidates) {
@@ -126,8 +155,8 @@ async function resolveWebSdkRoot(): Promise<string> {
   const explicit = getEnv("BUCKYOS_WEBSDK_ROOT");
   const candidates = [
     explicit,
-    new URL("./node_modules/buckyos", import.meta.url).pathname,
-    new URL("./dist/node_modules/buckyos", import.meta.url).pathname,
+    fromFileUrl(new URL("./node_modules/buckyos", import.meta.url)),
+    fromFileUrl(new URL("./dist/node_modules/buckyos", import.meta.url)),
   ].filter((value): value is string =>
     typeof value === "string" && value.trim().length > 0
   );
@@ -144,7 +173,7 @@ async function resolveWebSdkRoot(): Promise<string> {
 
 async function loadSdkModule(): Promise<NodeSdkModule> {
   const sdkRoot = await resolveWebSdkRoot();
-  const moduleUrl = new URL(`file://${sdkRoot}/dist/node.mjs`);
+  const moduleUrl = toFileUrl(join(sdkRoot, "dist", "node.mjs"));
   return await import(moduleUrl.href) as NodeSdkModule;
 }
 
@@ -893,7 +922,7 @@ if (bootstrapState.kind === "ready") {
   void retryBootstrapUntilReady();
 }
 
-console.log(`[sys_test] serving ${staticRoot} on http://0.0.0.0:${port}`);
+console.log(`[sys_test] serving ${staticRoot} on http://${listenHostname}:${port}`);
 // Log static root contents for debugging
 try {
   const entries: string[] = [];
@@ -951,7 +980,7 @@ let requestSeq = 0;
 
 Deno.serve({
   port,
-  hostname: "0.0.0.0",
+  hostname: listenHostname,
   onListen: ({ hostname, port }) => {
     console.log(`[sys_test] listening on http://${hostname}:${port}`);
     console.log(`[sys_test] mounted routes:`);

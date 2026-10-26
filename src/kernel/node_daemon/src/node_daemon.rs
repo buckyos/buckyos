@@ -1265,6 +1265,7 @@ async fn node_main(
     }
 
     let _run_plist_batch = begin_run_plist_batch();
+    stop_orphan_native_apps(&node_config).await;
     let mut managed_service_names = node_config
         .kernel
         .keys()
@@ -1342,6 +1343,41 @@ async fn node_main(
 
     tokio::join!(kernel_task, app_task);
     Ok(true)
+}
+
+/// Native app processes (`local/app_native`) whose instance this node no
+/// longer runs, e.g. an app uninstalled while node_daemon was down: stopped,
+/// so an old process never runs beside a new one.
+async fn stop_orphan_native_apps(node_config: &NodeConfig) {
+    let dir = get_buckyos_root_dir()
+        .join("local")
+        .join(crate::native_app::NATIVE_APP_STATE_DIR);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    let wanted: std::collections::HashSet<String> = node_config
+        .apps
+        .values()
+        .filter(|app| app.target_state == ServiceInstanceState::Started)
+        .map(|app| app.node_execution_spec.app_instance_id.runtime_key())
+        .collect();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Some(key) = name.strip_suffix(".json") else {
+            continue;
+        };
+        if key.ends_with(".failure") || wanted.contains(key) {
+            continue;
+        }
+        let process = crate::native_app::NativeProcess::new(dir.clone(), key);
+        if process.running().is_some() {
+            warn!("native app {key} is no longer scheduled on this node, stopping it");
+        }
+        if let Err(error) = process.stop().await {
+            warn!("stop orphan native app {key} failed: {error}");
+        }
+        process.clear_failure();
+    }
 }
 
 async fn get_system_config_client(
@@ -1768,7 +1804,11 @@ fn generate_node_daemon_login_token(
 async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     let node_id = matches.get_one::<String>("id");
     let enable_active = matches.get_flag("enable_active");
-    let is_desktop = matches.get_flag("desktop_daemon");
+    // BuckyOS Desktop Lite is a desktop product: its node runs as the
+    // desktop user's node whatever the launcher passes (Node Executor in the
+    // user's session, the owner's Agents opened on it).
+    let is_desktop = matches.get_flag("desktop_daemon")
+        || crate::product::installed().is_ok_and(|product| product.is_lite());
     let default_node_id = "node".to_string();
     let node_id = node_id.unwrap_or(&default_node_id);
 
@@ -1783,6 +1823,17 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         real_machine_config = machine_config.unwrap();
     }
     info!("machine_config: {:?}", &real_machine_config);
+    // The shipped product decides what this node may run; a broken profile
+    // stops here instead of running as some other edition.
+    let product = crate::product::installed().map_err(|error| {
+        error!("product profile unusable: {error}");
+        format!("product profile unusable: {error}")
+    })?;
+    info!(
+        "product edition: {} (containers {})",
+        product.edition,
+        if product.container_enabled() { "enabled" } else { "disabled" }
+    );
     crate::paios_images::spawn_preload();
 
     init_name_lib(&real_machine_config.web3_bridge)

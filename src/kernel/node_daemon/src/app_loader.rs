@@ -1,11 +1,16 @@
+use crate::native_app::{
+    exec_error, port_free, NativeProcess, NativeReadiness, ERR_ENTRY, ERR_INTERPRETER,
+    ERR_NOT_ADMITTED, ERR_PORT_CONFIG, ERR_PORT_CONFLICT, ERR_SPAWN, NATIVE_APP_STATE_DIR,
+};
 use crate::paios_images::{self, exttool_volume_name, PaiosDocker, PaiosImageKind, ResolvedImage};
 use crate::run_item::{ControlRuntItemErrors, Result};
 use crate::service_pkg::new_system_package_env;
 use crate::wslc;
 use buckyos_api::{
     check_app_runtime_session, generate_service_login_assertion, get_buckyos_api_runtime,
-    get_local_app_runtime_key, hide_child_console_async, AppDoc, AppRunMode, AppServiceInstanceConfig,
-    AppServiceSpec, AppType, DeploymentHealth,
+    get_local_app_runtime_key, hide_child_console_async, AdmissionOrigin, AgentSlot, AppAdmission,
+    AppDoc, AppRunMode, AppServiceInstanceConfig, AppServiceSpec, AppType, DeploymentError,
+    DeploymentHealth, ProductProfile, SystemConfigClient, SystemConfigError, AGENT_SLOT_KEY,
     DeploymentIdentity, LocalAppInstanceConfig, ServiceInstanceState, ServiceSpecConfig,
     SubPkgDesc, BUCKYOS_APP_DID_ENV, BUCKYOS_APP_ID_ENV, BUCKYOS_APP_INSTANCE_ID_ENV,
     BUCKYOS_APP_TOKEN_ENV, BUCKYOS_DATA_DIR_ENV, BUCKYOS_KEVENT_DAEMON_ADDR_ENV,
@@ -18,7 +23,7 @@ use package_lib::{MediaInfo, PackageEnv, PackageId, PackageMeta, PkgError};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use shlex::Shlex;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -56,12 +61,14 @@ const BUCKYOS_TOOL_MOUNT_ENTRIES: [&str; 4] = ["cli", "dist", "package.json", "d
 /// Read-only view of the agent's installed `pkg_list.agent_skills` sub package.
 const WORKER_CONTAINER_AGENT_SKILLS_ROOT: &str = "/mnt/buckyos/agent_skills";
 const NODE_GATEWAY_PORT: u16 = 3180;
+/// The name a native Agent Service's port is recorded under.
+const AGENT_SERVICE_NAME: &str = "agent";
 /// Tells OpenDAN its Agent Service runs natively on the node (there is no
 /// Agent container to offer as a session-runtime).
 const OPENDAN_SERVICE_MODE_ENV: &str = "OPENDAN_SERVICE_MODE";
-/// Directory (under `$BUCKYOS_ROOT/local`) of the process records of
-/// natively run Agent Services, one per instance runtime key.
-const NATIVE_AGENT_STATE_DIR: &str = "app_native";
+/// The node's private Deno (`$BUCKYOS_ROOT/<this>/deno[.exe]`) that runs
+/// natively run script apps.
+const NATIVE_DENO_RELATIVE_DIR: [&str; 3] = ["libexec", "buckyos-tool", "runtime"];
 const IMAGE_REPO_DIGEST_CACHE_TTL: Duration = Duration::from_secs(300);
 const IMAGE_REPO_DIGEST_CACHE_LIMIT: usize = 256;
 static IMAGE_REPO_DIGESTS: OnceLock<std::sync::Mutex<HashMap<String, (Instant, Vec<String>)>>> =
@@ -155,6 +162,9 @@ pub(crate) enum RuntimeType {
     /// zone owner's Agent on its host-native runtime, `AppRunMode::Native`):
     /// the node's own `bin/opendan/opendan`, no worker image.
     NativeAgent,
+    /// A product's preinstalled script app run by the node's own Deno
+    /// (`AppRunMode::Native`, BuckyOS Desktop Lite).
+    NativeScript,
     Vm,
 }
 
@@ -253,6 +263,8 @@ pub(crate) struct AppDeploymentObservation {
     pub health: DeploymentHealth,
     pub container_id: Option<String>,
     pub identity: Option<DockerRuntimeIdentity>,
+    /// Why the instance does not run (a native start failure or crash).
+    pub deployment_error: Option<DeploymentError>,
 }
 
 impl AppDeploymentObservation {
@@ -262,6 +274,21 @@ impl AppDeploymentObservation {
             health: DeploymentHealth::Unknown,
             container_id: None,
             identity: None,
+            deployment_error: None,
+        }
+    }
+
+    fn native(
+        state: ServiceInstanceState,
+        health: DeploymentHealth,
+        deployment_error: Option<DeploymentError>,
+    ) -> Self {
+        Self {
+            state,
+            health,
+            container_id: None,
+            identity: None,
+            deployment_error,
         }
     }
 }
@@ -348,16 +375,10 @@ pub struct AppLoader {
     /// record is kept.
     native_program_override: Option<PathBuf>,
     native_state_root_override: Option<PathBuf>,
-}
-
-/// What node_daemon remembers of a natively run Agent Service: enough to
-/// find the same process again after its own restart (pid + start time
-/// guard against pid reuse).
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, Deserialize)]
-struct NativeAgentRecord {
-    pid: i32,
-    start_time: u64,
-    service_port: u16,
+    /// Tests: the Deno that runs native script apps.
+    native_deno_override: Option<PathBuf>,
+    /// Tests: the product profile (else the installed one).
+    product_override: Option<ProductProfile>,
 }
 
 impl AppLoader {
@@ -382,6 +403,8 @@ impl AppLoader {
             safe_mode: false,
             native_program_override: None,
             native_state_root_override: None,
+            native_deno_override: None,
+            product_override: None,
         }
     }
 
@@ -398,6 +421,8 @@ impl AppLoader {
             safe_mode: false,
             native_program_override: None,
             native_state_root_override: None,
+            native_deno_override: None,
+            product_override: None,
         }
     }
 
@@ -431,6 +456,18 @@ impl AppLoader {
         self
     }
 
+    /// The Deno and process-record directory of native script apps (tests).
+    pub(crate) fn with_native_script(mut self, deno: impl Into<PathBuf>, state_root: impl Into<PathBuf>) -> Self {
+        self.native_deno_override = Some(deno.into());
+        self.native_state_root_override = Some(state_root.into());
+        self
+    }
+
+    pub(crate) fn with_product(mut self, product: ProductProfile) -> Self {
+        self.product_override = Some(product);
+        self
+    }
+
     /// Start the app with an empty instance volume (§7.5 Safe Mode).
     /// The instance volume is isolated per safe-mode session so the real
     /// instance volume is preserved for later diagnosis.
@@ -457,6 +494,13 @@ impl AppLoader {
                 self.ensure_pkg_installed(pkg_id.as_str()).await?;
                 self.prepare_worker_image().await?;
                 self.prepare_exttool_volume().await?;
+            }
+            RuntimeType::NativeScript => {
+                // The node's Deno runs the package as installed: no image.
+                let pkg_id = self
+                    .script_pkg_id()
+                    .ok_or_else(|| self.pkg_not_found("script package"))?;
+                self.ensure_pkg_installed(pkg_id.as_str()).await?;
             }
             RuntimeType::Agent | RuntimeType::NativeAgent => {
                 let pkg_id = self
@@ -493,6 +537,7 @@ impl AppLoader {
             RuntimeType::HostScript => self.start_host_script().await,
             RuntimeType::Agent => self.start_agent().await,
             RuntimeType::NativeAgent => self.start_native_agent().await,
+            RuntimeType::NativeScript => self.start_native_script().await,
             RuntimeType::Vm => Err(ControlRuntItemErrors::NotSupport(
                 "vm runtime is reserved but not implemented".to_string(),
             )),
@@ -510,7 +555,13 @@ impl AppLoader {
             RuntimeType::Docker => self.stop_docker().await,
             RuntimeType::HostScript => self.stop_host_script().await,
             RuntimeType::Agent => self.stop_agent().await,
-            RuntimeType::NativeAgent => self.stop_native_agent().await,
+            RuntimeType::NativeAgent | RuntimeType::NativeScript => {
+                // Stopped on purpose: no failure to report any more.
+                let process = self.native_process();
+                process.stop().await?;
+                process.clear_failure();
+                Ok(())
+            }
             RuntimeType::Vm => Err(ControlRuntItemErrors::NotSupport(
                 "vm runtime is reserved but not implemented".to_string(),
             )),
@@ -522,14 +573,37 @@ impl AppLoader {
     }
 
     pub(crate) async fn observe_deployment(&self) -> Result<AppDeploymentObservation> {
-        let runtime = self.resolve_runtime()?;
+        let runtime = match self.resolve_runtime() {
+            Ok(runtime) => runtime,
+            // Nothing of a runtime this node cannot run exists here: a stopped
+            // instance needs nothing, a started one fails at deploy with the
+            // same reason, which the report carries meanwhile.
+            Err(ControlRuntItemErrors::NotSupport(message)) => {
+                return Ok(AppDeploymentObservation::native(
+                    ServiceInstanceState::NotExist,
+                    DeploymentHealth::Unhealthy,
+                    Some(DeploymentError {
+                        code: "not_supported".to_string(),
+                        message,
+                        detail: None,
+                    }),
+                ))
+            }
+            Err(error) => return Err(error),
+        };
         debug!(
             "app_loader status app={} user={} runtime={:?}",
             self.app_id, self.owner_user_id, runtime
         );
 
-        if runtime == RuntimeType::NativeAgent {
-            return self.observe_native_agent().await;
+        match runtime {
+            RuntimeType::NativeAgent => {
+                return self.observe_native(self.agent_pkg_id()).await;
+            }
+            RuntimeType::NativeScript => {
+                return self.observe_native(self.script_pkg_id()).await;
+            }
+            _ => {}
         }
         let mut worker = None;
         let desc = match runtime {
@@ -572,7 +646,7 @@ impl AppLoader {
                 ));
                 desc
             }
-            RuntimeType::NativeAgent | RuntimeType::Vm => {
+            RuntimeType::NativeAgent | RuntimeType::NativeScript | RuntimeType::Vm => {
                 return Err(ControlRuntItemErrors::NotSupport(
                     "vm runtime is reserved but not implemented".to_string(),
                 ));
@@ -612,6 +686,7 @@ impl AppLoader {
                     health,
                     container_id: container.container_id,
                     identity: Some(container.identity),
+                    deployment_error: None,
                 });
             }
             Some(container)
@@ -644,6 +719,7 @@ impl AppLoader {
                 .as_ref()
                 .and_then(|value| value.container_id.clone()),
             identity: container.map(|value| value.identity),
+            deployment_error: None,
         })
     }
 
@@ -696,6 +772,25 @@ impl AppLoader {
                 vec![CommandSpec::new("kill", ["<recorded process group>"])]
             }
             (RuntimeType::NativeAgent, ControlOperation::Status) => Vec::new(),
+            (RuntimeType::NativeScript, ControlOperation::Deploy) => {
+                let pkg_id = self
+                    .script_pkg_id()
+                    .ok_or_else(|| self.pkg_not_found("script package"))?;
+                vec![CommandSpec::new("pkg-install", [pkg_id])]
+            }
+            (RuntimeType::NativeScript, ControlOperation::Start) => {
+                let manifest = self.native_script_manifest().map_err(|(_, message)| {
+                    ControlRuntItemErrors::NotSupport(message)
+                })?;
+                vec![CommandSpec::new(
+                    self.native_deno().to_string_lossy(),
+                    native_script_args(&manifest, &Path::new("<script package>").join(&manifest.entry)),
+                )]
+            }
+            (RuntimeType::NativeScript, ControlOperation::Stop) => {
+                vec![CommandSpec::new("kill", ["<recorded process group>"])]
+            }
+            (RuntimeType::NativeScript, ControlOperation::Status) => Vec::new(),
             (RuntimeType::Vm, _) => {
                 return Err(ControlRuntItemErrors::NotSupport(
                     "vm runtime is reserved but not implemented".to_string(),
@@ -866,6 +961,7 @@ impl AppLoader {
         let has_docker = self.docker_image_desc().is_some();
         let has_host_script = self.host_script_pkg_id().is_some();
         let has_agent_pkg = self.agent_pkg_id().is_some();
+        let containers = self.product()?.container_enabled();
 
         if app_type == AppType::Agent || has_agent_pkg {
             if !has_agent_pkg {
@@ -873,6 +969,12 @@ impl AppLoader {
             }
             if self.run_mode() == AppRunMode::Native {
                 return Ok(RuntimeType::NativeAgent);
+            }
+            if !containers {
+                return Err(ControlRuntItemErrors::NotSupport(format!(
+                    "agent app {} would run in a container, which this BuckyOS edition does not have; its Agent Service runs natively on its host runtime",
+                    self.app_id
+                )));
             }
             if !self.device_supports_container()? {
                 return Err(ControlRuntItemErrors::NotSupport(format!(
@@ -884,11 +986,31 @@ impl AppLoader {
         }
 
         if self.is_local_app() {
+            if !containers {
+                return Err(ControlRuntItemErrors::NotSupport(format!(
+                    "local app {} runs in a worker container, which this BuckyOS edition does not have",
+                    self.app_id
+                )));
+            }
             if has_host_script {
                 return Ok(RuntimeType::HostScript);
             }
             return Err(ControlRuntItemErrors::NotSupport(format!(
                 "local app {} has no script or native host package for current platform",
+                self.app_id
+            )));
+        }
+
+        if self.run_mode() == AppRunMode::Native {
+            if self.script_pkg_id().is_some() {
+                return Ok(RuntimeType::NativeScript);
+            }
+            return Err(self.pkg_not_found("script package"));
+        }
+
+        if !containers {
+            return Err(ControlRuntItemErrors::NotSupport(format!(
+                "app {} needs a container runtime, which this BuckyOS edition does not have",
                 self.app_id
             )));
         }
@@ -911,7 +1033,24 @@ impl AppLoader {
         Ok(RuntimeType::Vm)
     }
 
+    /// The product profile this node runs under. Tests use the full edition
+    /// unless they set one, whatever is installed on the machine.
+    fn product(&self) -> Result<ProductProfile> {
+        if let Some(product) = &self.product_override {
+            return Ok(product.clone());
+        }
+        if cfg!(test) {
+            return Ok(ProductProfile::full());
+        }
+        crate::product::installed()
+            .cloned()
+            .map_err(|error| ControlRuntItemErrors::ParserConfigError(format!("product profile: {error}")))
+    }
+
     fn device_supports_container(&self) -> Result<bool> {
+        if !self.product()?.container_enabled() {
+            return Ok(false);
+        }
         if let Some(support_container) = self.support_container_override {
             return Ok(support_container);
         }
@@ -1323,7 +1462,7 @@ impl AppLoader {
 
     async fn stop_agent(&self) -> Result<()> {
         // Switched from running natively: that process goes first.
-        self.stop_native_agent().await?;
+        self.native_process().stop().await?;
         self.remove_current_docker_container().await
     }
 
@@ -1343,11 +1482,36 @@ impl AppLoader {
         })
     }
 
-    fn native_agent_record_path(&self) -> PathBuf {
-        self.native_state_root_override
+    /// Why this instance's native process last failed to run, while that
+    /// still holds (cleared once it runs and listens).
+    pub(crate) fn native_failure(&self) -> Option<DeploymentError> {
+        match self.resolve_runtime() {
+            Ok(RuntimeType::NativeAgent | RuntimeType::NativeScript) => {
+                self.native_process().failure().map(|failure| failure.error)
+            }
+            _ => None,
+        }
+    }
+
+    /// Where this instance's native process is recorded.
+    fn native_process(&self) -> NativeProcess {
+        let dir = self
+            .native_state_root_override
             .clone()
-            .unwrap_or_else(|| get_buckyos_root_dir().join("local").join(NATIVE_AGENT_STATE_DIR))
-            .join(format!("{}.json", self.runtime_key()))
+            .unwrap_or_else(|| get_buckyos_root_dir().join("local").join(NATIVE_APP_STATE_DIR));
+        NativeProcess::new(dir, self.runtime_key())
+    }
+
+    /// The deployment a native process runs (`<app doc>#<spec generation>`):
+    /// another one restarts it.
+    fn deployment_key(&self) -> String {
+        match &self.config {
+            LoaderConfig::Service(config) => format!(
+                "{}#{}",
+                config.deployment.app_doc_object_id, config.deployment.spec_generation
+            ),
+            LoaderConfig::Local(config) => config.app_doc.app_did().to_string(),
+        }
     }
 
     fn native_agent_args(&self, agent_root: &Path, service_port: u16) -> Vec<String> {
@@ -1361,72 +1525,114 @@ impl AppLoader {
         ]
     }
 
-    /// The recorded native Agent Service process, when it still runs.
-    fn running_native_agent(&self) -> Option<NativeAgentRecord> {
-        let raw = fs::read_to_string(self.native_agent_record_path()).ok()?;
-        let record: NativeAgentRecord = serde_json::from_str(&raw).ok()?;
-        crate::service_pkg::process_identity_is_current(&crate::service_pkg::ProcessIdentity {
-            pid: record.pid,
-            start_time: record.start_time,
-        })
-        .then_some(record)
-    }
-
-    async fn observe_native_agent(&self) -> Result<AppDeploymentObservation> {
-        let installed = match self.agent_pkg_id() {
+    /// A native process is ready when its service ports answer, not when its
+    /// pid lives. A process gone without `stop` crashed: the next start
+    /// waits out the backoff, and the error stays visible meanwhile.
+    async fn observe_native(&self, pkg_id: Option<String>) -> Result<AppDeploymentObservation> {
+        let installed = match pkg_id {
             Some(pkg_id) => self.try_load_pkg(&pkg_id).await.is_some(),
             None => false,
         };
         if !installed {
             return Ok(AppDeploymentObservation::without_container(ServiceInstanceState::NotExist));
         }
-        Ok(match self.running_native_agent() {
-            Some(_) => AppDeploymentObservation {
-                state: ServiceInstanceState::Started,
-                health: DeploymentHealth::Healthy,
-                container_id: None,
-                identity: None,
-            },
-            None => AppDeploymentObservation::without_container(ServiceInstanceState::Stopped),
-        })
+        let process = self.native_process();
+        if let Some(record) = process.running() {
+            if record.deployment != self.deployment_key() {
+                // Another deployment (an update): start replaces it.
+                return Ok(AppDeploymentObservation::without_container(ServiceInstanceState::Stopped));
+            }
+            return Ok(match process.readiness(&record, buckyos_get_unix_timestamp()) {
+                NativeReadiness::Ready => {
+                    process.clear_failure();
+                    AppDeploymentObservation::native(
+                        ServiceInstanceState::Started,
+                        DeploymentHealth::Healthy,
+                        None,
+                    )
+                }
+                NativeReadiness::Starting => AppDeploymentObservation::native(
+                    ServiceInstanceState::Started,
+                    DeploymentHealth::Unknown,
+                    None,
+                ),
+                NativeReadiness::NotListening(error) => AppDeploymentObservation::native(
+                    ServiceInstanceState::Started,
+                    DeploymentHealth::Unhealthy,
+                    Some(error),
+                ),
+            });
+        }
+        if let Some(failure) = process.reap_crash().or_else(|| process.failure()) {
+            return Ok(AppDeploymentObservation::native(
+                ServiceInstanceState::Exited,
+                DeploymentHealth::Unhealthy,
+                Some(failure.error),
+            ));
+        }
+        Ok(AppDeploymentObservation::without_container(ServiceInstanceState::Stopped))
     }
 
-    /// Start the Agent Service as a detached process of this node with the
-    /// same identity contract as the worker container (device-signed
-    /// `BUCKYOS_APP_TOKEN`, app identity env), host paths and the node's
-    /// own gateway.
-    async fn start_native_agent(&self) -> Result<()> {
-        let _ = self.deploy().await?;
-        let agent_root = self
-            .package_media_info(PackageRole::AgentPkg)
-            .await?
-            .map(|m| m.full_path)
-            .filter(|p| p.exists())
-            .ok_or_else(|| self.pkg_not_found("agent package"))?;
-        let skills_root = match self.agent_skills_pkg_id() {
-            Some(pkg_id) => Some(
-                self.try_load_pkg(pkg_id.as_str())
-                    .await
-                    .map(|m| m.full_path)
-                    .filter(|p| p.exists())
-                    .ok_or_else(|| self.pkg_not_found("agent skills package"))?,
-            ),
-            None => None,
-        };
-        // Switched from the container: it goes first (only where containers run).
-        if self.device_supports_container().unwrap_or(false) {
-            if let Err(error) = self.remove_current_docker_container().await {
-                warn!("native agent {}: leftover container not removed: {error}", self.app_id);
+    /// Runs `attempt` unless the last failure still backs off; a failed
+    /// attempt is recorded for the next observation and backoff.
+    async fn start_native<F>(&self, attempt: F) -> Result<()>
+    where
+        F: std::future::Future<Output = std::result::Result<(), (&'static str, String)>>,
+    {
+        let process = self.native_process();
+        if let Some((wait, failure)) = process.backoff(buckyos_get_unix_timestamp()) {
+            return Err(exec_error(
+                "start",
+                format!(
+                    "{} starts again in {wait}s; last failure: {} ({})",
+                    self.app_id, failure.error.message, failure.error.code
+                ),
+            ));
+        }
+        match attempt.await {
+            Ok(()) => Ok(()),
+            Err((code, message)) => {
+                process.record_failure(code, message.clone());
+                Err(exec_error("start", message))
             }
         }
-        self.stop_native_agent().await?;
+    }
 
-        let service_port = self.select_agent_service_port();
+    /// Every service port of the instance must be free on loopback before
+    /// the process starts: a port another program holds fails the start
+    /// with the app, service and address, it is never taken over.
+    fn check_native_ports(&self, ports: &BTreeMap<String, u16>) -> std::result::Result<(), (&'static str, String)> {
+        for (service, port) in ports {
+            if !port_free(*port) {
+                return Err((
+                    ERR_PORT_CONFLICT,
+                    format!(
+                        "app {} service {service} cannot listen on 127.0.0.1:{port}: the port is in use by another program",
+                        self.app_id
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Identity env plus host paths for a process of this node: the same
+    /// contract as the worker container, with host values and the node's own
+    /// gateway on loopback.
+    async fn native_runtime_env(
+        &self,
+        role: PackageRole,
+        package_root: &Path,
+        app_type_label: &str,
+    ) -> std::result::Result<HashMap<String, String>, (&'static str, String)> {
         let data_dir = self.app_data_dir();
         for dir in [data_dir.clone(), self.worker_log_dir(), self.worker_storage_dir()] {
-            ensure_directory(&dir, false)?;
+            ensure_directory(&dir, false).map_err(|error| (ERR_SPAWN, error.to_string()))?;
         }
-        let mut env = self.build_runtime_env(PackageRole::AgentPkg).await?;
+        let mut env = self.build_runtime_env(role).await.map_err(|error| match error {
+            ControlRuntItemErrors::NotSupport(message) => (ERR_NOT_ADMITTED, message),
+            other => (ERR_SPAWN, other.to_string()),
+        })?;
         let gateway = "127.0.0.1";
         env.insert("BUCKYOS_ROOT".to_string(), get_buckyos_root_dir().to_string_lossy().to_string());
         env.insert("BUCKYOS_HOST_GATEWAY".to_string(), gateway.to_string());
@@ -1438,8 +1644,53 @@ impl AppLoader {
         env.insert(BUCKYOS_DATA_DIR_ENV.to_string(), data_dir.to_string_lossy().to_string());
         env.insert("BUCKYOS_LOG_DIR".to_string(), self.worker_log_dir().to_string_lossy().to_string());
         env.insert("BUCKYOS_STORAGE_DIR".to_string(), self.worker_storage_dir().to_string_lossy().to_string());
-        env.insert("BUCKYOS_PKG_DIR".to_string(), agent_root.to_string_lossy().to_string());
-        env.insert("BUCKYOS_APP_TYPE".to_string(), "agent".to_string());
+        env.insert("BUCKYOS_PKG_DIR".to_string(), package_root.to_string_lossy().to_string());
+        env.insert("BUCKYOS_APP_TYPE".to_string(), app_type_label.to_string());
+        Ok(env)
+    }
+
+    /// Start the Agent Service as a detached process of this node with the
+    /// same identity contract as the worker container (device-signed
+    /// `BUCKYOS_APP_TOKEN`, app identity env), host paths and the node's
+    /// own gateway.
+    async fn start_native_agent(&self) -> Result<()> {
+        self.start_native(self.try_start_native_agent()).await
+    }
+
+    async fn try_start_native_agent(&self) -> std::result::Result<(), (&'static str, String)> {
+        let _ = self.deploy().await.map_err(|error| (ERR_SPAWN, error.to_string()))?;
+        let agent_root = self
+            .package_media_info(PackageRole::AgentPkg)
+            .await
+            .map_err(|error| (ERR_SPAWN, error.to_string()))?
+            .map(|m| m.full_path)
+            .filter(|p| p.exists())
+            .ok_or_else(|| (ERR_ENTRY, self.pkg_not_found("agent package").to_string()))?;
+        let skills_root = match self.agent_skills_pkg_id() {
+            Some(pkg_id) => Some(
+                self.try_load_pkg(pkg_id.as_str())
+                    .await
+                    .map(|m| m.full_path)
+                    .filter(|p| p.exists())
+                    .ok_or_else(|| (ERR_ENTRY, self.pkg_not_found("agent skills package").to_string()))?,
+            ),
+            None => None,
+        };
+        // Switched from the container: it goes first (only where containers run).
+        if self.device_supports_container().unwrap_or(false) {
+            if let Err(error) = self.remove_current_docker_container().await {
+                warn!("native agent {}: leftover container not removed: {error}", self.app_id);
+            }
+        }
+        let process = self.native_process();
+        process.stop().await.map_err(|error| (ERR_SPAWN, error.to_string()))?;
+
+        let service_port = self.select_agent_service_port();
+        let ports = BTreeMap::from([(AGENT_SERVICE_NAME.to_string(), service_port)]);
+        self.check_native_ports(&ports)?;
+        let mut env = self
+            .native_runtime_env(PackageRole::AgentPkg, &agent_root, "agent")
+            .await?;
         env.insert("BUCKYOS_SERVICE_PORT".to_string(), service_port.to_string());
         if let Some(skills) = &skills_root {
             env.insert("BUCKYOS_AGENT_SKILLS_PKG_DIR".to_string(), skills.to_string_lossy().to_string());
@@ -1448,56 +1699,121 @@ impl AppLoader {
 
         let program = self.native_agent_program();
         let args = self.native_agent_args(&agent_root, service_port);
-        self.spawn_native_agent(&program, &args, &env, &data_dir, service_port)
+        // OpenDAN keeps its own log under logs/opendan; this one catches
+        // what it prints before that (and panics).
+        let log = self.worker_log_dir().join("native.log");
+        process
+            .spawn(&program, &args, &env, &self.app_data_dir(), &log, &self.deployment_key(), ports)
+            .map(|_| ())
+            .map_err(|error| (ERR_SPAWN, error.to_string()))
     }
 
-    fn spawn_native_agent(
+    /// The product manifest entry of this script app; only a preinstalled
+    /// script app runs natively.
+    fn native_script_manifest(
         &self,
-        program: &Path,
-        args: &[String],
-        env: &HashMap<String, String>,
-        cwd: &Path,
-        service_port: u16,
-    ) -> Result<()> {
-        let pid = crate::service_pkg::spawn_detached(program, args, Some(env), Some(cwd))
-            .map_err(|error| ControlRuntItemErrors::ExecuteError("start".to_string(), error.to_string()))?;
-        let identity = crate::service_pkg::read_process_identity(pid as i32).ok_or_else(|| {
-            ControlRuntItemErrors::ExecuteError(
-                "start".to_string(),
-                format!("native agent {} exited right after it started (pid {pid})", self.app_id),
-            )
-        })?;
-        let record = NativeAgentRecord {
-            pid: identity.pid,
-            start_time: identity.start_time,
-            service_port,
-        };
-        let path = self.native_agent_record_path();
-        if let Some(parent) = path.parent() {
-            ensure_directory(parent, false)?;
-        }
-        fs::write(&path, serde_json::to_vec(&record).unwrap_or_default()).map_err(|error| {
-            ControlRuntItemErrors::ExecuteError("start".to_string(), format!("{}: {error}", path.display()))
-        })?;
-        info!(
-            "native agent {} started: {} {} (pid {pid}, port {service_port})",
-            self.app_id,
-            program.display(),
-            args.join(" ")
-        );
-        Ok(())
+    ) -> std::result::Result<buckyos_api::PreinstalledScriptApp, (&'static str, String)> {
+        let product = self.product().map_err(|error| (ERR_NOT_ADMITTED, error.to_string()))?;
+        product
+            .preinstalled_script_app(&self.app_did_string())
+            .cloned()
+            .ok_or_else(|| {
+                (
+                    ERR_NOT_ADMITTED,
+                    format!(
+                        "app {} is not a preinstalled script app of this BuckyOS edition",
+                        self.app_id
+                    ),
+                )
+            })
     }
 
-    async fn stop_native_agent(&self) -> Result<()> {
-        if let Some(record) = self.running_native_agent() {
-            crate::service_pkg::stop_process_tree(record.pid)
-                .await
-                .map_err(|error| ControlRuntItemErrors::ExecuteError("stop".to_string(), error.to_string()))?;
-            info!("native agent {} stopped (pid {})", self.app_id, record.pid);
+    fn native_deno(&self) -> PathBuf {
+        self.native_deno_override.clone().unwrap_or_else(|| {
+            NATIVE_DENO_RELATIVE_DIR
+                .iter()
+                .fold(get_buckyos_root_dir(), |dir, part| dir.join(part))
+                .join(if cfg!(windows) { "deno.exe" } else { "deno" })
+        })
+    }
+
+    /// Runs a preinstalled script app with the node's own Deno, from its
+    /// installed package (cwd), on the instance ports of its run config
+    /// (`app_instance_config.service_ports_config`, which the app reads and
+    /// binds on loopback itself).
+    async fn start_native_script(&self) -> Result<()> {
+        self.start_native(self.try_start_native_script()).await
+    }
+
+    async fn try_start_native_script(&self) -> std::result::Result<(), (&'static str, String)> {
+        let manifest = self.native_script_manifest()?;
+        let pkg_id = self
+            .script_pkg_id()
+            .ok_or_else(|| (ERR_ENTRY, self.pkg_not_found("script package").to_string()))?;
+        let package_root = self
+            .ensure_pkg_installed(pkg_id.as_str())
+            .await
+            .map_err(|error| (ERR_SPAWN, error.to_string()))?
+            .full_path;
+        let deno = self.native_deno();
+        if !deno.is_file() {
+            return Err((
+                ERR_INTERPRETER,
+                format!("the node's Deno is missing at {}", deno.display()),
+            ));
         }
-        let path = self.native_agent_record_path();
-        if path.exists() {
-            let _ = fs::remove_file(&path);
+        let entry = package_root.join(&manifest.entry);
+        if !entry.is_file() {
+            return Err((
+                ERR_ENTRY,
+                format!("entry {} of app {} is missing", entry.display(), self.app_id),
+            ));
+        }
+        let configured = self.service_ports_config();
+        let mut ports = BTreeMap::new();
+        for service in &manifest.services {
+            let port = configured.get(service).copied().ok_or_else(|| {
+                (
+                    ERR_PORT_CONFIG,
+                    format!(
+                        "app {} service {service} has no instance port in its run config",
+                        self.app_id
+                    ),
+                )
+            })?;
+            ports.insert(service.clone(), port);
+        }
+        // An older process of this app (an update) holds its ports: it stops first.
+        let process = self.native_process();
+        process.stop().await.map_err(|error| (ERR_SPAWN, error.to_string()))?;
+        self.check_native_ports(&ports)?;
+
+        let mut env = self
+            .native_runtime_env(PackageRole::HostApp, &package_root, "script")
+            .await?;
+        let deno_dir = self.app_cache_dir().join("deno");
+        ensure_directory(&deno_dir, false).map_err(|error| (ERR_SPAWN, error.to_string()))?;
+        env.insert("DENO_DIR".to_string(), deno_dir.to_string_lossy().to_string());
+        env.insert("DENO_NO_UPDATE_CHECK".to_string(), "1".to_string());
+        env.insert("SCRIPT_APP_ID".to_string(), self.app_id.clone());
+        env.insert("SCRIPT_PACKAGE_ROOT".to_string(), package_root.to_string_lossy().to_string());
+        env.insert("SCRIPT_DATA_ROOT".to_string(), self.app_data_dir().to_string_lossy().to_string());
+
+        let args = native_script_args(&manifest, &entry);
+        let log = self.worker_log_dir().join("native.log");
+        process
+            .spawn(&deno, &args, &env, &package_root, &log, &self.deployment_key(), ports)
+            .map_err(|error| (ERR_SPAWN, error.to_string()))?;
+        // An app that dies at once (bad entry, missing module) fails this
+        // start instead of looking started.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        if process.running().is_none() {
+            let tail = crate::native_app::log_tail(&log);
+            let _ = process.stop().await;
+            return Err((
+                crate::native_app::ERR_EXITED,
+                format!("app {} exited right after it started: {tail}", self.app_id),
+            ));
         }
         Ok(())
     }
@@ -1749,6 +2065,7 @@ impl AppLoader {
                     )
                 })?;
                 validate_app_launch_config(config, &current_spec, &device_doc.name)?;
+                self.check_product_admission(&client, &current_spec).await?;
 
                 // App processes receive a device-signed LoginAssertion. Their runtime
                 // exchanges it for a Verify Hub session bound to the exact AppInstance;
@@ -1783,6 +2100,47 @@ impl AppLoader {
         }
 
         Ok(env_vars)
+    }
+
+    /// The product runs this App, and on a product bounded to one Agent this
+    /// Agent holds the run slot: checked again at every start, so a spec
+    /// written directly, an old task or a restarted node cannot start what
+    /// the product does not run (refused as `NotSupport`).
+    async fn check_product_admission(
+        &self,
+        client: &SystemConfigClient,
+        spec: &AppServiceSpec,
+    ) -> Result<()> {
+        let product = self.product()?;
+        let admission = product
+            .admit_app(&spec.app_doc, AdmissionOrigin::Deployed)
+            .map_err(|denied| {
+                ControlRuntItemErrors::NotSupport(format!(
+                    "app {}: {denied} ({})",
+                    self.app_id,
+                    denied.code()
+                ))
+            })?;
+        if admission == AppAdmission::Agent && product.capabilities.max_running_agents.is_some() {
+            client.invalidate_cache(AGENT_SLOT_KEY).await;
+            let slot = match client.get(AGENT_SLOT_KEY).await {
+                Ok(value) => serde_json::from_str::<AgentSlot>(&value.value).ok(),
+                Err(SystemConfigError::KeyNotFound(_)) => None,
+                Err(error) => {
+                    return Err(ControlRuntItemErrors::ExecuteError(
+                        "authorize_start".to_string(),
+                        format!("read the Agent run slot failed: {error}"),
+                    ))
+                }
+            };
+            if !slot.is_some_and(|slot| slot.holds(&self.owner_user_id, &self.app_id)) {
+                return Err(ControlRuntItemErrors::NotSupport(format!(
+                    "this BuckyOS edition runs one Agent and {} does not hold its run slot",
+                    self.app_id
+                )));
+            }
+        }
+        Ok(())
     }
 
     fn media_pkg_id(&self, role: PackageRole) -> Option<String> {
@@ -3228,15 +3586,25 @@ impl AppLoader {
     /// Start `program args` as this instance's native Agent Service process
     /// (records it like `start_native_agent` does).
     pub(crate) fn test_spawn_native_agent(&self, args: &[String], cwd: &Path) -> Result<()> {
-        self.spawn_native_agent(&self.native_agent_program(), args, &HashMap::new(), cwd, 4060)
+        self.native_process()
+            .spawn(
+                &self.native_agent_program(),
+                args,
+                &HashMap::new(),
+                cwd,
+                &cwd.join("native.log"),
+                &self.deployment_key(),
+                BTreeMap::from([(AGENT_SERVICE_NAME.to_string(), 4060)]),
+            )
+            .map(|_| ())
     }
 
     pub(crate) fn test_running_native_agent_pid(&self) -> Option<i32> {
-        self.running_native_agent().map(|r| r.pid)
+        self.native_process().running().map(|r| r.pid)
     }
 
     pub(crate) async fn test_stop_native_agent(&self) -> Result<()> {
-        self.stop_native_agent().await
+        self.native_process().stop().await
     }
 
     pub(crate) fn test_agent_volume_mounts(
@@ -3566,6 +3934,15 @@ pub(crate) fn docker_runtime_matches_deployment(
             .get(DOCKER_LABEL_SPEC_GENERATION)
             .map(String::as_str)
             == Some(expected_spec_generation.as_str())
+}
+
+/// `deno run` of a preinstalled script app: the manifest's permissions,
+/// never a prompt (there is no terminal), then the entry.
+pub(crate) fn native_script_args(manifest: &buckyos_api::PreinstalledScriptApp, entry: &Path) -> Vec<String> {
+    let mut args = vec!["run".to_string(), "--no-prompt".to_string()];
+    args.extend(manifest.permissions.iter().cloned());
+    args.push(entry.to_string_lossy().to_string());
+    args
 }
 
 pub(crate) fn command_matches_agent_process(cmd: &[String], app_id: &str) -> bool {

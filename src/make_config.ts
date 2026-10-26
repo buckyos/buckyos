@@ -45,6 +45,7 @@ import * as os from "node:os";
 import { Buffer } from "node:buffer";
 import { createHash, createPrivateKey, createPublicKey, sign } from "node:crypto";
 import { parseArgs } from "node:util";
+import { fileURLToPath } from "node:url";
 import {
   assertProvisionRuntime,
   createIdentityCertFromCa,
@@ -547,6 +548,12 @@ function writeLocalDeviceIdentityFiles(
 
   deviceConfig.owner = ownerDid;
   deviceConfig.zone_did = zoneDid;
+  // support_container is serialized only when false (serde default true).
+  if (params.support_container === false) {
+    deviceConfig.support_container = false;
+  } else {
+    delete deviceConfig.support_container;
+  }
   deviceConfig.net_id = params.netid === "lan" ? "nat" : params.netid;
   deviceConfig.rtcp_port = params.rtcp_port;
   delete deviceConfig.device_mini_document_jwt;
@@ -1149,7 +1156,7 @@ function applyDevBootTemplate(
 // ============================================================================
 
 function printUsage(log: (message?: unknown) => void = console.error): void {
-  log("usage: make_config.ts <group> [--rootfs <dir>] [--ca <dir>] [--env_root <dir>]");
+  log("usage: make_config.ts <group> [--rootfs <dir>] [--ca <dir>] [--env_root <dir>] [--edition full|lite]");
   log(
     `groups: ${[...Object.keys(OOD_GROUPS), "nightly", "release"].join(" | ")}`,
   );
@@ -1161,11 +1168,29 @@ function printUsage(log: (message?: unknown) => void = console.error): void {
   );
 }
 
+export type ProductEdition = "full" | "lite";
+
+/**
+ * The product edition the installation is shipped as: `etc/product.json`
+ * from the version-managed manifest in `src/product/` (node_daemon,
+ * scheduler, control-panel and Desktop all read it from there).
+ */
+export function writeProductProfile(targetDir: string, edition: ProductEdition): void {
+  const source = fileURLToPath(new URL(`./product/${edition}.json`, import.meta.url));
+  const profile = JSON.parse(fs.readFileSync(source, "utf8"));
+  if (profile.edition !== edition) {
+    throw new Error(`${source} is not the ${edition} edition`);
+  }
+  writeJson(path.join(ensureDir(path.join(targetDir, "etc")), "product.json"), profile);
+  console.log(`product edition: ${edition}`);
+}
+
 export async function makeConfigByGroupName(
   groupName: string,
   targetRoot: string | undefined,
   caDir: string | undefined,
   envRoot: string = ENV_ROOT_DIR,
+  edition: ProductEdition = "full",
 ): Promise<void> {
   if (groupName === "sn" || groupName === "sn_server") {
     throw new Error(
@@ -1187,6 +1212,7 @@ export async function makeConfigByGroupName(
         bnsHost: "bns.buckyos.ai",
       };
     console.log(`${groupName} mode, write basic configs to ${targetDir}`);
+    writeProductProfile(targetDir, edition);
     makeGlobalEnvConfig(
       targetDir,
       envHosts.web3BridgeHost,
@@ -1198,9 +1224,13 @@ export async function makeConfigByGroupName(
     return;
   }
 
-  const params = getParamsFromGroupName(groupName);
+  const params = {
+    ...getParamsFromGroupName(groupName),
+    ...(edition === "lite" ? { support_container: false } : {}),
+  };
   const targetDir = targetRoot ?? getBuckyosRoot();
   const resolvedCaDir = caDir ?? ensureDir(path.join(envRoot, "ca"));
+  writeProductProfile(targetDir, edition);
 
   console.log(
     `############ make config for group name: ${groupName} #########################`,
@@ -1235,7 +1265,14 @@ export async function makeConfigByGroupName(
 }
 
 async function main(): Promise<void> {
-  let values: { rootfs?: string; ca?: string; env_root?: string; sn_ip?: string; help?: boolean };
+  let values: {
+    rootfs?: string;
+    ca?: string;
+    env_root?: string;
+    sn_ip?: string;
+    edition?: string;
+    help?: boolean;
+  };
   let positionals: string[];
   try {
     const parsed = parseArgs({
@@ -1245,11 +1282,12 @@ async function main(): Promise<void> {
         ca: { type: "string" },
         env_root: { type: "string" },
         sn_ip: { type: "string" },
+        edition: { type: "string" },
         help: { type: "boolean", short: "h" },
       },
       allowPositionals: true,
     }) as {
-      values: { rootfs?: string; ca?: string; env_root?: string; sn_ip?: string; help?: boolean };
+      values: typeof values;
       positionals: string[];
     };
     values = parsed.values;
@@ -1294,8 +1332,21 @@ async function main(): Promise<void> {
     Deno.exit(1);
   }
 
+  const edition = values.edition ?? "full";
+  if (edition !== "full" && edition !== "lite") {
+    console.error(`argument error: --edition takes full | lite, got ${edition}`);
+    printUsage();
+    Deno.exit(1);
+  }
+
   try {
-    await makeConfigByGroupName(groupName, values.rootfs, values.ca, values.env_root);
+    await makeConfigByGroupName(
+      groupName,
+      values.rootfs,
+      values.ca,
+      values.env_root,
+      edition,
+    );
   } catch (e) {
     console.error(
       `config generation failed: ${e instanceof Error ? e.message : e}`,

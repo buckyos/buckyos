@@ -2,6 +2,10 @@ use serde_json::Value;
 use std::path::PathBuf;
 
 pub(crate) fn program() -> Result<Option<PathBuf>, String> {
+    // A product without containers never looks for one.
+    if !crate::product::containers_enabled() {
+        return Ok(None);
+    }
     match std::env::var("BUCKYOS_CONTAINER_RUNTIME").as_deref() {
         Ok("docker") => return Ok(None),
         Ok("wslc") => return Ok(Some(find_program().unwrap_or_else(|| "wslc.exe".into()))),

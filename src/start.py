@@ -64,11 +64,14 @@ def _print_help() -> int:
                 "  --all                 Fresh dev install before startup; preserve etc/devenv.json.",
                 "  --reinstall [GROUP]   Fresh install before startup, optionally running make_config.ts GROUP.",
                 "  --skip-update         Skip file update and only restart BuckyOS.",
+                "  --edition full|lite   With --all/--reinstall GROUP: the product edition to install",
+                "                        (lite = BuckyOS Desktop Lite, no containers; default full).",
                 "  -h, --help            Show this help message.",
                 "",
                 "Common examples:",
                 f"  uv run {script_path.relative_to(SCRIPT_DIR.parent)}",
                 f"  uv run {script_path.relative_to(SCRIPT_DIR.parent)} --all",
+                f"  uv run {script_path.relative_to(SCRIPT_DIR.parent)} --all --edition lite",
                 f"  uv run {script_path.relative_to(SCRIPT_DIR.parent)} --reinstall release",
                 f"  uv run {script_path.relative_to(SCRIPT_DIR.parent)} --skip-update",
             ]
@@ -113,7 +116,7 @@ def _run_command(command: str, args: list[str]) -> int:
     ).returncode
 
 
-def _run_make_config(config_group_name: str, target_root: Path) -> None:
+def _run_make_config(config_group_name: str, target_root: Path, edition: str | None = None) -> None:
     executable = _find_command("deno")
     if executable is None:
         raise RuntimeError("deno not found. make_config.ts requires Deno >= 2.2")
@@ -129,7 +132,8 @@ def _run_make_config(config_group_name: str, target_root: Path) -> None:
             config_group_name,
             "--rootfs",
             str(target_root),
-        ],
+        ]
+        + (["--edition", edition] if edition else []),
         cwd=build_dir,
         env=env,
         **_windows_subprocess_kwargs(),
@@ -235,7 +239,7 @@ def kill_all_processes():
         print(f"Warning: Some processes may not have been stopped: {e}")
         # Continue execution even if some processes fail to stop
 
-def update_files(install_all=False,config_group_name=None):
+def update_files(install_all=False,config_group_name=None,edition=None):
     """Update files to installation directory"""
     print("Updating files...")
 
@@ -250,7 +254,7 @@ def update_files(install_all=False,config_group_name=None):
 
         if config_group_name:
            target_root = resolve_buckyos_root()
-           _run_make_config(config_group_name, target_root)
+           _run_make_config(config_group_name, target_root, edition)
         print("Files updated successfully")
     except Exception as e:
         print(f"Failed to update files: {e}")
@@ -391,6 +395,7 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--all", action="store_true")
     mode.add_argument("--reinstall", nargs="?", const="", metavar="GROUP")
     mode.add_argument("--skip-update", action="store_true")
+    parser.add_argument("--edition", choices=("full", "lite"))
     try:
         options = parser.parse_args(args)
     except SystemExit as error:
@@ -405,6 +410,9 @@ def main(argv: list[str] | None = None) -> int:
         config_group_name = "dev"
     if options.reinstall is not None:
         config_group_name = options.reinstall or None
+    if options.edition and not config_group_name:
+        print("--edition needs --all or --reinstall GROUP: the edition is part of a fresh install")
+        return 2
 
     if need_update and not _sdk_tool_distribution_ready():
         return 2
@@ -415,7 +423,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if install_all or need_update:
             # Step 2: Update files
-            update_files(install_all,config_group_name)
+            update_files(install_all,config_group_name,options.edition)
     
     # Step 3: Start system
     start_system()

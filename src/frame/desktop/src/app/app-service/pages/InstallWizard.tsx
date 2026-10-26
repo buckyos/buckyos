@@ -14,6 +14,7 @@ import type { PickedPikgFile, SourceParseResult } from '../types'
 import type { AppInstallerDialogParams } from '../../../sysdlg'
 import { isMockRuntime } from '../../../runtime'
 import { inspectPikgFile, releasePikgInspection, type PikgInspection } from '../realPikg'
+import { fetchProductInfo, type ProductInfo } from '../../../api/user_mgr'
 
 export function InstallWizard({
   onNavigate,
@@ -44,6 +45,13 @@ export function InstallWizard({
     percent: number
   } | null>(null)
   const [opening, setOpening] = useState(false)
+  // BuckyOS Desktop Lite adds static web apps only (the backend enforces it).
+  const [product, setProduct] = useState<ProductInfo | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    void fetchProductInfo().then(({ data }) => { if (!cancelled) setProduct(data) })
+    return () => { cancelled = true }
+  }, [])
   const abort = useRef<AbortController | null>(null)
   const sourceRegistration = form.register('sourceText')
   const changeSource = (
@@ -130,6 +138,11 @@ export function InstallWizard({
         <p className="mt-2 text-sm text-[var(--cp-muted)]">
           {t('app22.source.intro')}
         </p>
+        {product?.edition === 'lite' && (
+          <p data-testid="app-service-lite-notice" role="note" className="mt-3 rounded-xl border border-[var(--cp-border)] p-3 text-sm">
+            {t('app22.source.liteOnlyStaticWeb')}
+          </p>
+        )}
       </header>
       <section
         className="space-y-4 rounded-[22px] border border-[var(--cp-border)] bg-[var(--cp-surface)] p-5"
@@ -281,6 +294,8 @@ export function InstallWizard({
         <p className="text-xs">{realInspection.inspection.plan.app.did}</p>
         <p className="text-xs">ObjId: {realInspection.sourceObjId}</p>
         <p className="text-xs">SHA-256: {realInspection.staging.pikg_digest}</p>
+        {/* Why this node cannot run it, e.g. BuckyOS Desktop Lite only adds static web apps. */}
+        {realInspection.inspection.status.target_issues?.map((issue, index) => <p key={`target-${index}`} role="alert" data-testid="app-service-target-issue" className="text-[var(--cp-danger)]">{issue}</p>)}
         {realInspection.inspection.status.warnings?.map((warning, index) => <p key={index}>{warning}</p>)}
         <details><summary>{t('app22.source.realReadiness')}</summary><pre className="overflow-auto whitespace-pre-wrap text-xs">{JSON.stringify(realInspection.inspection.status.readiness, null, 2)}</pre></details>
         <p>{t('app22.source.realInstallUnavailable')}</p>

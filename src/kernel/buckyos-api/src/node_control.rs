@@ -3377,7 +3377,11 @@ fn blackbox_stop(req: &NodeStopRequest, host: &NodeHostControlState, report: &mu
         req.blackbox_policy,
         NodeBlackboxStopPolicy::IncludeManagedContainers | NodeBlackboxStopPolicy::FullRuntime
     );
-    if want_containers {
+    if want_containers && !product_runs_containers(&host.buckyos_root) {
+        report
+            .actions
+            .push("this product edition runs no containers; docker is not touched".to_string());
+    } else if want_containers {
         let mut targets: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         if let Some(snap) = &snapshot {
             for name in snap.app_service_container_names() {
@@ -3434,6 +3438,19 @@ fn blackbox_stop(req: &NodeStopRequest, host: &NodeHostControlState, report: &mu
             let _ = kill_process_by_name(alias);
         }
         let _ = host; // suppress unused on some configs
+    }
+}
+
+/// Whether the installation's product runs containers at all
+/// (`etc/product.json`, the full edition when absent): BuckyOS Desktop Lite
+/// never calls docker, not even to clean up.
+fn product_runs_containers(buckyos_root: &Path) -> bool {
+    match std::fs::read_to_string(buckyos_root.join("etc").join("product.json")) {
+        Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
+            .ok()
+            .and_then(|profile| profile.pointer("/capabilities/container").and_then(|v| v.as_bool()))
+            .unwrap_or(false),
+        Err(_) => true,
     }
 }
 

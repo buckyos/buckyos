@@ -798,7 +798,29 @@ fn validate_sn_zone_info(
     Ok(())
 }
 
+/// A node of a product without containers is activated as one: its
+/// DeviceDocument says `support_container = false`, whatever the client
+/// sends.
+fn validate_topology_for_product(
+    topology: &GatewayTopology,
+    product: &ProductProfile,
+) -> Result<(), RPCErrors> {
+    if topology.support_container && !product.container_enabled() {
+        return Err(RPCErrors::ReasonError(format!(
+            "this BuckyOS edition ({}) runs no containers: activate with support_container = false",
+            product.edition
+        )));
+    }
+    Ok(())
+}
+
+fn installed_product() -> Result<&'static ProductProfile, RPCErrors> {
+    crate::product::installed()
+        .map_err(|error| RPCErrors::ReasonError(format!("product profile unusable: {error}")))
+}
+
 fn validate_topology(topology: &GatewayTopology) -> Result<(), RPCErrors> {
+    validate_topology_for_product(topology, installed_product()?)?;
     if !matches!(
         topology.net_id.as_str(),
         "nat" | "wan_dyn" | "portmap" | "wan"
@@ -1658,6 +1680,7 @@ impl RPCHandler for ActiveServer {
                     seq,
                 )
             }
+            "get_product_profile" => rpc_success(installed_product()?, seq),
             "start_region_probe" => {
                 let params = StartRegionProbeReq::from_json(req.params)?;
                 rpc_success(self.region_probe.start(params.force).await, seq)
@@ -2244,4 +2267,21 @@ mod tests {
         owner.wallets.get_mut("main").unwrap().address = "0x1234".to_string();
         assert!(validate_owner_document(&owner).is_err());
     }
+
+    #[test]
+    fn a_product_without_containers_activates_only_without_them() {
+        let lite = ProductProfile::parse(include_str!("../../../product/lite.json")).unwrap();
+        let mut topology = GatewayTopology {
+            net_id: "nat".to_string(),
+            rtcp_port: 2980,
+            support_container: true,
+            uses_sn_relay: true,
+            sn_url: "https://sn.buckyos.ai/kapi/sn".to_string(),
+        };
+        assert!(validate_topology_for_product(&topology, &lite).is_err());
+        assert!(validate_topology_for_product(&topology, &ProductProfile::full()).is_ok());
+        topology.support_container = false;
+        assert!(validate_topology_for_product(&topology, &lite).is_ok());
+    }
+
 }

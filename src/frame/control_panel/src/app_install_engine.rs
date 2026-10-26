@@ -775,14 +775,19 @@ impl InstallEngine {
                             ));
                         }
                         InstallReadiness::UnsupportedTarget => {
+                            let message = if plan_status.target_issues.is_empty() {
+                                format!(
+                                    "no package matches target {}/{}",
+                                    plan.target.os, plan.target.arch
+                                )
+                            } else {
+                                plan_status.target_issues.join("; ")
+                            };
                             return Err(InstallError::new(
                                 InstallStage::Inspect,
                                 InstallErrorCode::UnsupportedTarget,
                                 false,
-                                format!(
-                                    "no package matches target {}/{}",
-                                    plan.target.os, plan.target.arch
-                                ),
+                                message,
                             )
                             .with_action(InstallUserAction::ChangeTarget));
                         }

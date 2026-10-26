@@ -849,6 +849,23 @@ export const updateAgent = async (input: {
 }
 
 /** The machines the caller's Agents may run on; with `agentId`, that Agent's choice too. */
+/** The installation's product edition (`system.product.get`). */
+export interface ProductInfo {
+  edition: 'full' | 'lite'
+  capabilities: {
+    container: boolean
+    user_service_apps: boolean
+    static_web_apps: boolean
+    max_running_agents: number | null
+  }
+  preinstalled_script_apps: Array<{ app_did: string; version: string; services: string[] }>
+  /** The Agent holding the one run slot of a product that runs one Agent. */
+  agent_slot: { owner_user_id: string; agent_id: string; acquired_at: number } | null
+}
+
+export const fetchProductInfo = async (): Promise<{ data: ProductInfo | null; error: unknown }> =>
+  callControlPanel<ProductInfo>('system.product.get', {})
+
 export const fetchAgentRuntimeDirectory = async (
   agentId?: string,
 ): Promise<{ data: AgentRuntimeDirectory | null; error: unknown }> =>

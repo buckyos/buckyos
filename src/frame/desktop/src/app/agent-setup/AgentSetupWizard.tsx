@@ -22,6 +22,7 @@ import {
   useAgentRuntimeDirectory,
   useAgentTemplates,
   useOwnProfile,
+  useProductInfo,
   writeStoredDraft,
 } from './hooks'
 import { AccountPage, PermissionsPage } from './IdentityPages'
@@ -207,6 +208,7 @@ function WizardBody({
   const directory = runtimeDirectory.state.status === 'ready' ? runtimeDirectory.state.directory : null
   const host = directory?.runtimes.find((offer) => offer.runtime_id === 'host') ?? null
   const ownProfile = useOwnProfile(account.user_id)
+  const product = useProductInfo()
   // From the desktop guide an untouched `jarvis` follows the suggestion the name check returns.
   const nameCheck = useAgentNameCheck(draft.name, statusAgentId === null, (result) => {
     const suggestion = result.suggestion
@@ -322,6 +324,24 @@ function WizardBody({
           onClose={closeWindow}
           onSessionExpired={() => relogin(source, statusAgentId)}
         />
+      </WizardFrame>
+    )
+  }
+
+  // BuckyOS Desktop Lite runs one Agent: while another holds the run slot
+  // there is nothing to create (the backend refuses it as well).
+  const slot = product?.agent_slot ?? null
+  if (slot && slot.agent_id !== draft.submittedAgentId) {
+    return (
+      <WizardFrame>
+        <Alert
+          severity="info"
+          data-testid="agent-setup-slot-occupied"
+          action={<Button size="small" variant="text" onClick={() => { void openUsersAgents({ entityId: slot.agent_id }); closeWindow() }}>{t('agentSetup.slot.manage')}</Button>}
+        >
+          <p className="font-semibold">{t('agentSetup.slot.title')}</p>
+          <p>{t('agentSetup.slot.occupied', undefined, { agent: slot.agent_id })}</p>
+        </Alert>
       </WizardFrame>
     )
   }

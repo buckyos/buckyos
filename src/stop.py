@@ -25,8 +25,72 @@ def _windows_subprocess_kwargs() -> dict[str, object]:
         "creationflags": subprocess.CREATE_NO_WINDOW,
     }
 
-def kill_devtest_containers():
+def _buckyos_root():
+    if os.environ.get("BUCKYOS_ROOT"):
+        return Path(os.environ["BUCKYOS_ROOT"])
     if system == "Windows":
+        return Path(os.environ.get("APPDATA", "")) / "buckyos"
+    return Path("/opt/buckyos")
+
+
+def _product_runs_containers():
+    """etc/product.json of the installation (the full edition when absent):
+    BuckyOS Desktop Lite never calls docker, not even to clean up."""
+    try:
+        profile = json.loads((_buckyos_root() / "etc" / "product.json").read_text(encoding="utf-8"))
+        return bool(profile.get("capabilities", {}).get("container", False))
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _process_command(pid):
+    if system == "Windows":
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, errors="replace", **_windows_subprocess_kwargs(),
+        )
+        return result.stdout.split(",")[0].strip('"').lower() if result.returncode == 0 else ""
+    result = subprocess.run(["ps", "-o", "comm=", "-p", str(pid)], capture_output=True, text=True)
+    return os.path.basename(result.stdout.strip()).lower() if result.returncode == 0 else ""
+
+
+def kill_native_apps():
+    """App processes node_daemon runs natively, from its records under
+    local/app_native (a Desktop Lite script app on the node's Deno, a native
+    Agent Service): a fresh install drops the records, so they go now."""
+    import signal
+    import time
+
+    for record in sorted((_buckyos_root() / "local" / "app_native").glob("*.json")):
+        if record.name.endswith(".failure.json"):
+            continue
+        try:
+            pid = int(json.loads(record.read_text(encoding="utf-8"))["pid"])
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        command = _process_command(pid)
+        if not any(name in command for name in ("deno", "opendan")):
+            continue
+        if system == "Windows":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True,
+                           **_windows_subprocess_kwargs())
+        else:
+            try:
+                os.killpg(pid, signal.SIGTERM)
+                time.sleep(2)
+                os.killpg(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except PermissionError as error:
+                print(f"native app {record.stem} (pid {pid}) not stopped: {error}")
+                continue
+        print(f"native app {record.stem} (pid {pid}) stopped")
+
+
+def kill_devtest_containers():
+    if system == "Windows" or not _product_runs_containers() or not shutil.which("docker"):
         return
 
     result_list = subprocess.run(
@@ -77,6 +141,9 @@ def _container_program():
 
 
 def kill_buckyos_containers():
+    if not _product_runs_containers():
+        print("This product edition runs no containers")
+        return
     program, is_wslc = _container_program()
     try:
         result_list = subprocess.run(
@@ -133,7 +200,6 @@ def kill_process(name):
         result = subprocess.run(
             ["taskkill", "/F", "/T", "/IM", f"{name}{ext}"],
             capture_output=True,
-            text=True,
             **_windows_subprocess_kwargs(),
         )
     else:
@@ -156,7 +222,7 @@ def stop_macos_runtime_agent():
     node_daemon as soon as it is killed. The login item stays installed."""
     if system != "Darwin":
         return
-    root = Path(os.environ.get("BUCKYOS_ROOT") or "/opt/buckyos")
+    root = _buckyos_root()
     uid = os.getuid()
     try:
         binding = json.loads((root / "etc" / "desktop_runtime.json").read_text(encoding="utf-8"))
@@ -205,6 +271,7 @@ def kill_all():
     kill_process("xagent")
     kill_process("agent_tool")
     kill_process("workflow")
+    kill_native_apps()
     kill_buckyos_containers()
     kill_devtest_containers()
 

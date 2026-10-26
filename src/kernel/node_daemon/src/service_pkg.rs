@@ -928,6 +928,52 @@ fn is_pid_running(pid: i32) -> bool {
     read_process_identity(pid).is_some()
 }
 
+/// Stops a detached process and its children: asks first (SIGTERM to its
+/// process group; `taskkill /T` on Windows), waits up to `grace`, then
+/// kills the tree. Returns once the process is gone.
+pub(crate) async fn stop_process_tree_bounded(pid: i32, grace: Duration) -> Result<()> {
+    let Some(identity) = read_process_identity(pid) else {
+        return Ok(());
+    };
+    let gone = || !process_identity_is_current(&identity);
+    #[cfg(target_os = "windows")]
+    let (ask, kill) = (
+        vec!["/T".to_string(), "/PID".to_string(), pid.to_string()],
+        vec!["/F".to_string(), "/T".to_string(), "/PID".to_string(), pid.to_string()],
+    );
+    #[cfg(not(target_os = "windows"))]
+    let (ask, kill) = (
+        vec!["-TERM".to_string(), "--".to_string(), format!("-{pid}")],
+        vec!["-KILL".to_string(), "--".to_string(), format!("-{pid}")],
+    );
+    let program = Path::new(if cfg!(target_os = "windows") { "taskkill" } else { "kill" });
+    // A windowless Windows process refuses a polite taskkill: kill it now.
+    let asked = run_command(program, &ask, None, None)
+        .await
+        .is_ok_and(|output| output.status.success());
+    let deadline = std::time::Instant::now() + if asked { grace } else { Duration::ZERO };
+    while std::time::Instant::now() < deadline {
+        reap_detached_children();
+        if gone() {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    warn!("pid {pid} did not stop within {}s, killing its process tree", grace.as_secs());
+    let output = run_command(program, &kill, None, None).await?;
+    for _ in 0..25 {
+        reap_detached_children();
+        if gone() {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    Err(ServiceControlError::ReasonError(format!(
+        "pid {pid} is still running after kill: {}",
+        format_command_failure(&output)
+    )))
+}
+
 async fn run_command(
     program: &Path,
     args: &[String],
@@ -964,11 +1010,44 @@ pub(crate) fn spawn_detached(
     envs: Option<&HashMap<String, String>>,
     cwd: Option<&Path>,
 ) -> Result<u32> {
+    spawn_detached_with(program, args, envs, cwd, Stdio::null(), Stdio::null())
+}
+
+/// [`spawn_detached`] with stdout and stderr appended to `log`.
+pub(crate) fn spawn_detached_logged(
+    program: &Path,
+    args: &[String],
+    envs: Option<&HashMap<String, String>>,
+    cwd: Option<&Path>,
+    log: &Path,
+) -> Result<u32> {
+    let open = || {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log)
+            .map_err(|error| {
+                ServiceControlError::ReasonError(format!("open log {} failed: {error}", log.display()))
+            })
+    };
+    let stdout = open()?;
+    let stderr = open()?;
+    spawn_detached_with(program, args, envs, cwd, Stdio::from(stdout), Stdio::from(stderr))
+}
+
+fn spawn_detached_with(
+    program: &Path,
+    args: &[String],
+    envs: Option<&HashMap<String, String>>,
+    cwd: Option<&Path>,
+    stdout: Stdio,
+    stderr: Stdio,
+) -> Result<u32> {
     let mut cmd = std::process::Command::new(program);
     cmd.args(args);
     cmd.stdin(Stdio::null());
-    cmd.stdout(Stdio::null());
-    cmd.stderr(Stdio::null());
+    cmd.stdout(stdout);
+    cmd.stderr(stderr);
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
     }

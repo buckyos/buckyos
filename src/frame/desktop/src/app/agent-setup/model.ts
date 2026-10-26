@@ -80,6 +80,7 @@ export type AgentErrorKind =
   | 'idempotency_conflict'
   | 'agent_busy'
   | 'cancel_unavailable'
+  | 'agent_slot_occupied'
   | 'not_found'
   | 'session_expired'
   | 'network'
@@ -101,6 +102,7 @@ const errorPrefixes: Array<[AgentErrorKind, RegExp]> = [
   ['idempotency_conflict', /idempotency_conflict:\s*(.*)$/is],
   ['agent_busy', /agent_busy:\s*(.*)$/is],
   ['cancel_unavailable', /cancel_unavailable:\s*(.*)$/is],
+  ['agent_slot_occupied', /agent_slot_occupied:\s*(.*)$/is],
   ['not_found', /agent_not_found:\s*(.*)$/is],
 ]
 

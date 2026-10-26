@@ -209,7 +209,7 @@ pub fn expected_entries(plan: &BinPlan, path_env: Option<&str>) -> BTreeMap<Stri
                 // PATH (agent / runtime layers and the system PATH).
                 let mut on_path = universe.clone();
                 if let Some(p) = path_env {
-                    let dirs: Vec<PathBuf> = p.split(':').map(PathBuf::from).collect();
+                    let dirs: Vec<PathBuf> = std::env::split_paths(p).collect();
                     on_path.extend(scan_universe(&dirs));
                 }
                 for e in &tp.deny {

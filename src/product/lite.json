@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "edition": "lite",
+  "capabilities": {
+    "container": false,
+    "user_service_apps": false,
+    "static_web_apps": true,
+    "max_running_agents": 1
+  },
+  "preinstalled_script_apps": [
+    {
+      "app_did": "did:bns:buckyos-systest.buckyos",
+      "owner": "did:bns:buckyos",
+      "version": "0.5.1",
+      "script_package": "all.script.buckyos-systest.buckyos.bns.did",
+      "interpreter": "deno",
+      "entry": "main.ts",
+      "permissions": ["--allow-net", "--allow-read", "--allow-write", "--allow-env", "--allow-run"],
+      "services": ["www"],
+      "update_source": "product_release"
+    }
+  ]
+}

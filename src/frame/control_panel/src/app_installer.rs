@@ -2006,6 +2006,16 @@ pub(crate) enum AppSubmitOrigin {
     AgentRuntime,
 }
 
+impl AppSubmitOrigin {
+    fn admission(self) -> buckyos_api::AdmissionOrigin {
+        match self {
+            Self::Rpc => buckyos_api::AdmissionOrigin::User,
+            Self::Preinstall => buckyos_api::AdmissionOrigin::Preinstall,
+            Self::AgentRuntime => buckyos_api::AdmissionOrigin::AgentRuntime,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AppSubmitRoute {
     Install,
@@ -2403,9 +2413,20 @@ impl ControlPanelServer {
         } else {
             buckyos_api::TASK_DATA_TYPE_APP_INSTALL
         };
-        let inspection = self
+        let mut inspection = self
             .inspect_from_rpc(&req, principal, task_type, None)
             .await?;
+        // What a user may add, before they submit (Agent PIKGs register
+        // templates, which the product does not restrict).
+        if inspection.plan.app_doc.get_app_type() != AppType::Agent {
+            let app_doc = inspection.plan.app_doc.clone();
+            crate::product::apply_admission(
+                &crate::product::current_product().await?,
+                &app_doc,
+                buckyos_api::AdmissionOrigin::User,
+                &mut inspection,
+            );
+        }
         Ok(RPCResponse::new(
             RPCResult::Success(serde_json::to_value(inspection).map_err(|error| {
                 RPCErrors::ReasonError(format!("serialize inspection failed: {error}"))
@@ -3876,6 +3897,20 @@ impl ControlPanelServer {
                     "Agent templates cannot be pre-installed as Apps, and Agent runtime installs must be Agent Apps",
                 )));
             }
+        }
+        // The product edition decides what may be added, by who asks: users
+        // add static web apps to Lite, only the product its script apps and
+        // only Agent creation its Agent App.
+        if let Err(denied) = crate::product::current_product()
+            .await?
+            .admit_app(&inspection.plan.app_doc, origin.admission())
+        {
+            return Err(Self::install_error_to_rpc(buckyos_api::InstallError::new(
+                buckyos_api::InstallStage::Inspect,
+                buckyos_api::InstallErrorCode::UnsupportedTarget,
+                false,
+                format!("{denied} ({})", denied.code()),
+            )));
         }
         let installed = Self::find_spec_for_inspection(&inspection).await?;
         if submitted_plan.is_none() && installed.is_some() {

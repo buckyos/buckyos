@@ -23,11 +23,11 @@ use crate::app_staging::PikgStagingStore;
 use crate::pikg::{PikgInspection, PikgReader};
 use async_trait::async_trait;
 use buckyos_api::{
-    get_buckyos_api_runtime, install_record_key, AppId, AppInstallTaskData, AppServiceSpec,
+    get_buckyos_api_runtime, install_record_key, AdmissionOrigin, AppId, AppInstallTaskData, AppServiceSpec,
     CandidateHandle, ContentLocation, InspectedContent, InstallError, InstallErrorCode,
     InstallInspection, InstallParams, InstallPlan, InstallPlanStatus, InstallPlanUse,
     InstallRecord, InstallSource, InstallSourceIdentity, InstallStage, InstallTarget,
-    PikgStagingPurpose, PreparedDeployment, ServiceExposeSetting, ServiceSetting, ServiceState,
+    PikgStagingPurpose, PreparedDeployment, ProductProfile, ServiceExposeSetting, ServiceSetting, ServiceState,
     SystemConfigError, VerificationReport, APP_CAPABILITY_MINI_GPU_MEMORY,
     APP_CAPABILITY_MINI_GPU_TFLOPS, APP_CAPABILITY_MINI_MEMORY, OBJ_TYPE_APP_DOC,
     TASK_DATA_TYPE_APP_UPDATE,
@@ -537,7 +537,7 @@ impl ProductionInstallDriver {
         let pikg_reader = self.open_candidate_pikg(data).await?;
         let pikg_inspection: Option<&PikgInspection> =
             pikg_reader.as_ref().map(|reader| reader.inspection());
-        build_install_plan(
+        let mut inspection = build_install_plan(
             PlannerInput {
                 app_doc: &app_doc,
                 app_doc_object_id,
@@ -552,7 +552,14 @@ impl ProductionInstallDriver {
             },
             &NamedStoreContentLocator,
         )
-        .await
+        .await?;
+        crate::product::apply_admission(
+            &product_for_install(InstallStage::Acquire).await?,
+            &app_doc,
+            AdmissionOrigin::Deployed,
+            &mut inspection,
+        );
+        Ok(inspection)
     }
 
     fn offline_requested(data: &AppInstallTaskData) -> bool {
@@ -776,7 +783,7 @@ impl InstallStageDriver for ProductionInstallDriver {
                 .unwrap_or_else(|| default_install_params(&app_doc, data.request.policy))
         });
 
-        let inspection = build_install_plan(
+        let mut inspection = build_install_plan(
             PlannerInput {
                 app_doc: &app_doc,
                 app_doc_object_id,
@@ -796,6 +803,15 @@ impl InstallStageDriver for ProductionInstallDriver {
             &locator,
         )
         .await?;
+        // Whatever submitted it (a retry, a batch update, a recovered task),
+        // the product only carries out what it runs (submission checks the
+        // exact origin).
+        crate::product::apply_admission(
+            &product_for_install(InstallStage::Inspect).await?,
+            &app_doc,
+            AdmissionOrigin::Deployed,
+            &mut inspection,
+        );
         Ok(Some(inspection))
     }
 
@@ -1607,6 +1623,17 @@ impl ProductionInstallDriver {
             )
         }))
     }
+}
+
+async fn product_for_install(stage: InstallStage) -> Result<ProductProfile, InstallError> {
+    crate::product::current_product().await.map_err(|error| {
+        InstallError::new(
+            stage,
+            InstallErrorCode::Internal,
+            true,
+            format!("read product profile failed: {error}"),
+        )
+    })
 }
 
 /// 默认安装目标：zone 默认 OOD 的 devices/{node}/info（DeviceInfo.os/arch）。

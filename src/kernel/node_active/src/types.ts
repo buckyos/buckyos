@@ -137,6 +137,10 @@ export type DomainBindingState =
   | { state: "verified"; domain: string; verified_at: number };
 
 export type ActiveWizzardData = {
+  /** `full` | `lite`, from the node's installed product profile. */
+  product_edition: string;
+  /** Whether this node runs containers (false on BuckyOS Desktop Lite). */
+  support_container: boolean;
   gatewy_type: GatewayType;
   port_mapping_mode: "full" | "rtcp_only";
   rtcp_port: number;

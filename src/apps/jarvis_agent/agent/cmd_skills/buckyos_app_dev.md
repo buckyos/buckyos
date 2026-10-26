@@ -14,6 +14,7 @@ Writing or converting an App that runs in a Zone: a web page/SPA, a small HTTP s
 | `script` | aios worker container: Python (`requirements.txt`/`pyproject.toml` → uv venv) or TypeScript (`deno.json`/`main.ts` → `deno run --allow-all`) | `script` | small services without your own image; entry from `buckyos_script.json` `{"entry":"main.py"}` |
 | `docker` | your local image, one container per instance | `amd64_docker_image` / `aarch64_docker_image` | anything with its own runtime; the image arch has to match the node |
 Your agent container has no Docker: write the Dockerfile and app, and hand the owner the host commands for `docker build` and packaging.
+BuckyOS Desktop Lite (control-panel `system.product.get` → `edition: "lite"`) installs only `static-web` Apps: `script` and `docker` Apps are refused at inspect (`product_service_app`, `product_container_app`); develop those against a full-edition Zone.
 
 #### Before you start
 ```

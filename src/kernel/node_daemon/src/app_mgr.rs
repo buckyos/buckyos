@@ -121,9 +121,22 @@ impl RunItemControl for AppRunItem {
         match self.app_loader.start().await {
             Ok(()) => Ok(()),
             Err(error) => {
-                let message = error.to_string();
-                self.report_deployment_failure("start_failed", &message)
-                    .await;
+                // A native app keeps why it does not run (port_conflict,
+                // exited, ...) across retries; report that, not the retry.
+                match self.app_loader.native_failure() {
+                    Some(failure) => {
+                        self.report_state(
+                            ServiceInstanceState::Exited,
+                            DeploymentHealth::Unhealthy,
+                            Some(failure),
+                        )
+                        .await
+                    }
+                    None => {
+                        self.report_deployment_failure("start_failed", &error.to_string())
+                            .await
+                    }
+                }
                 Err(error)
             }
         }
@@ -135,8 +148,12 @@ impl RunItemControl for AppRunItem {
 
     async fn get_state(&self, params: Option<&Vec<String>>) -> Result<ServiceInstanceState> {
         let observation = self.app_loader.observe_deployment().await?;
-        self.report_state(observation.state.clone(), observation.health, None)
-            .await;
+        self.report_state(
+            observation.state.clone(),
+            observation.health,
+            observation.deployment_error.clone(),
+        )
+        .await;
         Ok(observation.state)
     }
 }

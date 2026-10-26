@@ -100,6 +100,8 @@ export interface OODGroupParams {
   netid: string;
   rtcp_port: number;
   sn_base_host: string;
+  /** false: the node runs no containers (BuckyOS Desktop Lite edition). */
+  support_container?: boolean;
   bns_host: string;
   web3_bridge: string;
   trust_did: string[];

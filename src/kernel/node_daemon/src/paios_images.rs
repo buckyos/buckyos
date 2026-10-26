@@ -945,6 +945,10 @@ impl<'a> PaiosDocker<'a> {
 /// not wait minutes for it. Shares the deploy locks; retries while the
 /// container runtime is unavailable.
 pub(crate) fn spawn_preload() {
+    if !crate::product::containers_enabled() {
+        info!("paios images: this product runs no containers, nothing to preload");
+        return;
+    }
     let root = get_buckyos_root_dir();
     let arch = PlatformTarget::current().arch;
     let worker = match resolve(PaiosImageKind::Aios, arch, root.as_path()) {

@@ -2272,3 +2272,129 @@ async fn a_native_agent_process_is_recorded_found_and_stopped() {
     assert_eq!(loader.test_running_native_agent_pid(), None);
     assert!(fs::read_dir(state.path()).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().ends_with(".json")));
 }
+
+fn lite_product() -> buckyos_api::ProductProfile {
+    buckyos_api::ProductProfile::parse(include_str!("../../../product/lite.json")).unwrap()
+}
+
+fn build_systest_doc() -> AppDoc {
+    let owner = DID::from_str("did:bns:buckyos").unwrap();
+    AppDoc::builder(AppType::AppService, "buckyos-systest", "0.5.1", "did:bns:buckyos", &owner)
+        .app_did(DID::from_str("did:bns:buckyos-systest.buckyos").unwrap())
+        .script_pkg(
+            SubPkgDesc::new("all.script.buckyos-systest.buckyos.bns.did#0.5.1")
+                .package_meta_object_id(test_package_object_id(31)),
+        )
+        .service_port("www", 3000)
+        .build()
+        .unwrap()
+}
+
+fn build_native_script_loader(app_doc: AppDoc, state_root: &Path) -> AppLoader {
+    let install_config = build_spec_config(&app_doc);
+    let app_spec = build_test_app_spec(app_doc, install_config);
+    let app_instance_id = app_spec.app_instance_id.to_string();
+    let mut config = AppServiceInstanceConfig::new("ood1", &app_spec).unwrap();
+    config.service_ports_config = HashMap::from([("www".to_string(), 10048)]);
+    config.run_mode = buckyos_api::AppRunMode::Native;
+    AppLoader::new_for_service(&app_instance_id, config)
+        .with_platform(PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64))
+        .with_product(lite_product())
+        .with_native_script("/opt/buckyos/libexec/buckyos-tool/runtime/deno", state_root)
+}
+
+/// BuckyOS Desktop Lite never runs a container: docker apps, the worker
+/// container of a script or local app and the Agent container are refused
+/// before any docker/wslc command, even where the device claims containers.
+#[test]
+fn lite_refuses_every_container_runtime() {
+    let platform = PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64);
+    let docker = build_service_loader(build_appservice_doc(), HashMap::new(), platform, true)
+        .with_product(lite_product());
+    let agent = build_agent_loader(platform).with_product(lite_product());
+    let local = AppLoader::new_for_local(
+        "desktop-tool",
+        LocalAppInstanceConfig {
+            target_state: ServiceInstanceState::Started,
+            enable: true,
+            app_doc: build_local_service_doc(),
+            user_id: "alice".to_string(),
+            install_config: ServiceSpecConfig::default(),
+        },
+    )
+    .with_platform(platform)
+    .with_container_support_override(true)
+    .with_product(lite_product());
+    // The preinstalled script app, but scheduled into a worker container.
+    let state = tempdir().unwrap();
+    let systest_in_container = {
+        let app_doc = build_systest_doc();
+        let install_config = build_spec_config(&app_doc);
+        let app_spec = build_test_app_spec(app_doc, install_config);
+        let config = AppServiceInstanceConfig::new("ood1", &app_spec).unwrap();
+        AppLoader::new_for_service(&app_spec.app_instance_id.to_string(), config)
+            .with_platform(platform)
+            .with_container_support_override(true)
+            .with_product(lite_product())
+            .with_native_script("/deno", state.path())
+    };
+    for loader in [docker, agent, local, systest_in_container] {
+        for operation in [ControlOperation::Deploy, ControlOperation::Start, ControlOperation::Status] {
+            assert!(
+                matches!(loader.preview_operation(operation), Err(ControlRuntItemErrors::NotSupport(_))),
+                "{operation:?}"
+            );
+        }
+    }
+}
+
+/// A preinstalled script app run natively: deploy only installs its
+/// package, start runs the node's Deno with the manifest's permissions on
+/// the package entry; nothing touches docker.
+#[test]
+fn a_preinstalled_script_app_runs_with_the_nodes_deno() {
+    let state = tempdir().unwrap();
+    let loader = build_native_script_loader(build_systest_doc(), state.path());
+    let deploy = loader.preview_operation(ControlOperation::Deploy).unwrap();
+    assert_eq!(deploy.runtime, RuntimeType::NativeScript);
+    assert_programs(&deploy.commands, &["pkg-install"]);
+    let start = loader.preview_operation(ControlOperation::Start).unwrap();
+    assert_eq!(start.runtime, RuntimeType::NativeScript);
+    assert_eq!(start.commands.len(), 1);
+    assert_eq!(start.commands[0].program, "/opt/buckyos/libexec/buckyos-tool/runtime/deno");
+    let args = &start.commands[0].args;
+    assert_eq!(&args[..2], ["run", "--no-prompt"]);
+    assert!(args.contains(&"--allow-net".to_string()));
+    assert!(args.last().unwrap().ends_with("main.ts"), "{args:?}");
+    assert!(start.commands.iter().all(|c| c.program != "docker"));
+}
+
+/// Running natively is only for the product's own script apps.
+#[test]
+fn a_script_app_outside_the_product_manifest_does_not_run_natively() {
+    let state = tempdir().unwrap();
+    let owner = DID::from_str("did:bns:test").unwrap();
+    let other = AppDoc::builder(AppType::AppService, "my-tool", "1.0.0", "did:bns:test", &owner)
+        .app_did(DID::from_str("did:web:my-tool.example").unwrap())
+        .script_pkg(SubPkgDesc::new("all.script.my-tool.example#1.0.0").package_meta_object_id(test_package_object_id(32)))
+        .service_port("www", 3000)
+        .build()
+        .unwrap();
+    let loader = build_native_script_loader(other, state.path());
+    assert!(matches!(
+        loader.preview_operation(ControlOperation::Start),
+        Err(ControlRuntItemErrors::NotSupport(_))
+    ));
+}
+
+/// What this edition cannot run does not exist on the node: a stopped
+/// instance needs nothing done (no error every round), the reason is reported.
+#[tokio::test]
+async fn an_unsupported_runtime_is_observed_as_not_existing_with_its_reason() {
+    let platform = PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64);
+    let docker = build_service_loader(build_appservice_doc(), HashMap::new(), platform, true)
+        .with_product(lite_product());
+    let observed = docker.observe_deployment().await.unwrap();
+    assert_eq!(observed.state, ServiceInstanceState::NotExist);
+    assert_eq!(observed.deployment_error.unwrap().code, "not_supported");
+}

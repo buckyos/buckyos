@@ -5,8 +5,10 @@ import {
   checkAgentName,
   fetchAgentTemplates,
   fetchAgentRuntimeDirectory,
+  fetchProductInfo,
   fetchUserDetail,
   type AgentNameCheck,
+  type ProductInfo,
   type AgentRuntimeDirectory,
   type AgentTemplate,
   type UserDetail,
@@ -191,4 +193,17 @@ export function useAgentRuntimeDirectory() {
       setVersion((value) => value + 1)
     },
   }
+}
+
+/** The product edition: on BuckyOS Desktop Lite one Agent holds the only run slot. */
+export function useProductInfo() {
+  const [product, setProduct] = useState<ProductInfo | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    void fetchProductInfo().then(({ data }) => {
+      if (!cancelled) setProduct(data)
+    })
+    return () => { cancelled = true }
+  }, [])
+  return product
 }

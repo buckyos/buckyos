@@ -65,7 +65,15 @@ export async function createInitialWizardData(
     public_key: Ed25519Jwk;
     private_key: string;
   };
+  // The installed product decides whether this node runs containers
+  // (BuckyOS Desktop Lite does not); node_daemon refuses anything else.
+  const product = (await activeRpc().call("get_product_profile", {})) as {
+    edition: string;
+    capabilities: { container: boolean };
+  };
   return {
+    product_edition: product.edition,
+    support_container: product.capabilities.container,
     gatewy_type: GatewayType.BuckyForward,
     port_mapping_mode: "full",
     rtcp_port: 2980,
@@ -303,7 +311,7 @@ export function deriveGatewayTopology(data: ActiveWizzardData): GatewayTopology 
   return {
     net_id: get_net_id_by_gateway_type(data.gatewy_type, data.port_mapping_mode),
     rtcp_port: data.rtcp_port,
-    support_container: true,
+    support_container: data.support_container,
     uses_sn_relay: data.gatewy_type !== GatewayType.WAN,
     sn_url: SN_API_URL,
   };

@@ -1,5 +1,6 @@
 import os
 import platform
+import shutil
 import subprocess
 
 system = platform.system()
@@ -20,8 +21,23 @@ def _windows_subprocess_kwargs() -> dict[str, object]:
         "creationflags": subprocess.CREATE_NO_WINDOW,
     }
 
+def _product_runs_containers():
+    """etc/product.json of this installation (the full edition when absent):
+    BuckyOS Desktop Lite never calls docker, not even to clean up."""
+    import json
+
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "etc", "product.json")
+    try:
+        with open(path, encoding="utf-8") as file:
+            return bool(json.load(file).get("capabilities", {}).get("container", False))
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 def kill_devtest_containers():
-    if system == "Windows":
+    if system == "Windows" or not _product_runs_containers() or not shutil.which("docker"):
         return
 
     result_list = subprocess.run(
@@ -56,7 +72,7 @@ def kill_devtest_containers():
             print(f"{container_name} container killed")
 
 def kill_buckyos_containers():
-    if system == "Windows":
+    if system == "Windows" or not _product_runs_containers() or not shutil.which("docker"):
         return
 
     result_list = subprocess.run(
@@ -115,6 +131,48 @@ def kill_process(name):
     else:
         print(f"{name} killed")
 
+def kill_native_apps():
+    """App processes node_daemon runs natively, from its records under
+    local/app_native (a Desktop Lite script app on the node's Deno, a native
+    Agent Service)."""
+    import json
+    import signal
+    import time
+
+    records = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "local", "app_native")
+    if not os.path.isdir(records):
+        return
+    for name in sorted(os.listdir(records)):
+        if not name.endswith(".json") or name.endswith(".failure.json"):
+            continue
+        try:
+            with open(os.path.join(records, name), encoding="utf-8") as file:
+                pid = int(json.load(file)["pid"])
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if system == "Windows":
+            command = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                                     capture_output=True, text=True, errors="replace",
+                                     **_windows_subprocess_kwargs()).stdout.lower()
+        else:
+            command = subprocess.run(["ps", "-o", "comm=", "-p", str(pid)], capture_output=True, text=True).stdout.lower()
+        if "deno" not in command and "opendan" not in command:
+            continue
+        if system == "Windows":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, **_windows_subprocess_kwargs())
+        else:
+            try:
+                os.killpg(pid, signal.SIGTERM)
+                time.sleep(2)
+                os.killpg(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except PermissionError as error:
+                print(f"native app {name[:-5]} (pid {pid}) not stopped: {error}")
+                continue
+        print(f"native app {name[:-5]} (pid {pid}) stopped")
+
+
 def kill_all():
     kill_process("node-daemon")
     kill_process("node_daemon")
@@ -142,6 +200,7 @@ def kill_all():
     kill_process("msg_center")
     kill_process("opendan")
     kill_process("workflow")
+    kill_native_apps()
     kill_buckyos_containers()
     kill_devtest_containers()
 

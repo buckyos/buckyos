@@ -963,6 +963,11 @@ impl ControlPanelServer {
     ) -> Result<RPCResponse, RPCErrors> {
         let id = Self::require_param_str(&req, "id")?;
         let action = Self::require_param_str(&req, "action")?;
+        if !crate::product::current_product().await?.container_enabled() {
+            return Err(RPCErrors::ReasonError(
+                "product_container_app: this BuckyOS edition has no container runtime".to_string(),
+            ));
+        }
 
         let docker_action = match action.as_str() {
             "start" => "start",

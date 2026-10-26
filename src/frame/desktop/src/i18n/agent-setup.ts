@@ -190,6 +190,10 @@ export const agentSetupEn: Record<string, string> = {
   'agentSetup.submitError.network': 'The request could not be confirmed because the connection was interrupted. Creating again resumes the same request and never creates a duplicate.',
   'agentSetup.submitError.session_expired': 'Your sign-in has expired. Sign in again; your draft is kept.',
   'agentSetup.submitError.other': 'The Agent could not be created: {{detail}}',
+  'agentSetup.submitError.agent_slot_occupied': 'This edition of BuckyOS runs one Agent and {{detail}}',
+  'agentSetup.slot.title': 'This BuckyOS runs one Agent',
+  'agentSetup.slot.occupied': 'BuckyOS Desktop Lite runs a single Agent, and {{agent}} already holds it. Delete that Agent in Users & Agents before creating another one.',
+  'agentSetup.slot.manage': 'Open Users & Agents',
 
   'agentSetup.status.loading': 'Reading the creation status…',
   'agentSetup.status.pollRetry': 'The creation status is temporarily unavailable. Retrying…',
@@ -424,6 +428,10 @@ export const agentSetupZh: Record<string, string> = {
   'agentSetup.submitError.network': '连接中断，无法确认结果。再次点击创建会继续同一次请求，不会重复创建。',
   'agentSetup.submitError.session_expired': '登录已过期。请重新登录，草稿会保留。',
   'agentSetup.submitError.other': '无法创建 Agent：{{detail}}',
+  'agentSetup.submitError.agent_slot_occupied': '此版本的 BuckyOS 只运行一个 Agent：{{detail}}',
+  'agentSetup.slot.title': '此 BuckyOS 只运行一个 Agent',
+  'agentSetup.slot.occupied': 'BuckyOS Desktop Lite 只运行一个 Agent，{{agent}} 已占用。要创建新的 Agent，请先在“用户与 Agent”中删除它。',
+  'agentSetup.slot.manage': '打开用户与 Agent',
 
   'agentSetup.status.loading': '正在读取创建状态…',
   'agentSetup.status.pollRetry': '暂时无法获取创建状态，正在重试…',

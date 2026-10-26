@@ -6,7 +6,7 @@ export interface PikgInspection {
   staging: { handle: string; pikg_digest: string; size: number; expires_at: number }
   inspection: {
     plan: { app: { show_name: string; version: string; did: string; object_id: string }; plan_fingerprint: string }
-    status: { readiness: Record<string, unknown>; warnings?: string[] }
+    status: { readiness: Record<string, unknown>; warnings?: string[]; target_issues?: string[] }
   }
 }
 
