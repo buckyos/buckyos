@@ -220,3 +220,107 @@ async fn a_work_session_needs_a_usable_registered_runtime() {
         .unwrap();
     assert!(sd.config().unwrap().runtime.requirement.runtime_id.is_none());
 }
+
+/// A node executor that refuses connections until it is `up`, then answers
+/// login and describe (what a runtime check asks).
+struct LateNode {
+    up: Arc<std::sync::atomic::AtomicBool>,
+    connects: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl agent_tool::runtime::node::NodeExecutorConnector for LateNode {
+    async fn connect(&self, _node: &str) -> std::io::Result<Box<dyn agent_tool::runtime::node::NodeIo>> {
+        use std::sync::atomic::Ordering;
+        use tokio::io::AsyncWriteExt;
+        self.connects.fetch_add(1, Ordering::SeqCst);
+        if !self.up.load(Ordering::SeqCst) {
+            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "early eof"));
+        }
+        let (client, mut server) = tokio::io::duplex(1 << 16);
+        tokio::spawn(async move {
+            let mut profile = Value::Null;
+            while let Ok(Some(buckyos_api::ExecutorFrame::Control(bytes))) =
+                buckyos_api::read_executor_frame(&mut server).await
+            {
+                let request: Value = serde_json::from_slice(&bytes).unwrap();
+                let id = &request["request_id"];
+                let response = match request["type"].as_str().unwrap() {
+                    "login" => {
+                        profile = request["profile"].clone();
+                        json!({"type":"login_ok", "request_id":id, "posture":"normal",
+                        "principal":"did:test:agent", "app_instance_id":"app2@alice", "caps":["read","stat","exec"],
+                        "limits":buckyos_api::ExecutorLimits::default(), "revision":"one", "generation":1,
+                        "auth_valid_until_ms":u64::MAX, "token_expires_at_ms":u64::MAX,
+                        "store_id":"late-ledger", "server_epoch":"one"})
+                    }
+                    "describe" => json!({"type":"describe_ok", "request_id":id,
+                        "target":{"node_did":"did:web:ood1.test.buckyos.io", "profile_id":profile, "uid":65534, "gid":65534,
+                            "workdir":request["workdir"], "workdir_roots":["/srv/host-runtime"], "store_id":"late-ledger", "protocol_version":1},
+                        "info":{"os":"linux", "arch":"x86_64", "hostname":"ood1", "shell":"bash", "time_ms":1, "identity_mode":"switch_user"}}),
+                    other => panic!("unexpected executor operation: {other}"),
+                };
+                server.write_all(&buckyos_api::encode_executor_control(&response).unwrap()).await.unwrap();
+            }
+        });
+        Ok(Box::new(client))
+    }
+
+    async fn session_token(&self) -> std::result::Result<String, String> {
+        Ok("late-session".into())
+    }
+}
+
+/// A node runtime whose executor was not up yet when the agent checked it
+/// (node_daemon opens it after the agent's container starts) is asked again
+/// by the next session that needs it, at most every RUNTIME_RECHECK_MS:
+/// sessions are not refused forever after a transient failure.
+#[tokio::test]
+async fn a_node_runtime_refused_at_start_is_used_once_its_executor_answers() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let env = Env::new();
+    let agent = env.agent();
+    let up = Arc::new(AtomicBool::new(false));
+    let connects = Arc::new(AtomicUsize::new(0));
+    libopendan::runtime::set_node_connector(Arc::new(LateNode { up: up.clone(), connects: connects.clone() }));
+    let mut settings = buckyos_api::AgentSettings::default();
+    settings.runtimes.insert(
+        "host".into(),
+        buckyos_api::AgentRuntimeSettings {
+            enabled: true,
+            computer: Default::default(),
+            target: buckyos_api::AgentRuntimeTarget::Node {
+                node_id: "ood1".into(),
+                node_did: "did:web:ood1.test.buckyos.io".into(),
+            },
+            baseline: None,
+        },
+    );
+    settings.default_runtime_id = Some("host".into());
+    let registers = builtin_runtimes(vec![env.root.join("workspaces")], "", &settings, AGENT);
+    agent.runtimes().ensure_builtin(&registers, APP).await.unwrap();
+    let checked = agent.runtimes().check("host").await.unwrap();
+    assert_eq!(checked.availability, RuntimeAvailability::RuntimeUnavailable);
+    assert!(checked.last_error.unwrap_or_default().contains("early eof"));
+    let tries = connects.load(Ordering::SeqCst);
+    // Within the recheck interval the earlier answer stands.
+    let spec = || {
+        let mut s = work_spec("on the host");
+        s.runtime.requirement.runtime_id = None;
+        s
+    };
+    let refused = libopendan::api::create_session(&env.app_dir, spec(), agent.as_ref(), APP, env.channels().as_ref())
+        .await
+        .unwrap_err();
+    assert!(refused.to_string().contains("not available"), "{refused}");
+    assert_eq!(connects.load(Ordering::SeqCst), tries, "not asked again right away");
+    // The executor comes up; after the interval the next session asks again.
+    up.store(true, Ordering::SeqCst);
+    tokio::time::sleep(std::time::Duration::from_millis(libopendan::api::RUNTIME_RECHECK_MS + 200)).await;
+    let sd = env.create_work(spec()).await;
+    let frozen = sd.config().unwrap().runtime.frozen.unwrap();
+    assert_eq!(frozen.runtime_id, "host");
+    let record = agent.runtimes().lookup("host").await.unwrap().unwrap();
+    assert_eq!(record.availability, RuntimeAvailability::Available);
+    assert!(connects.load(Ordering::SeqCst) > tries);
+}

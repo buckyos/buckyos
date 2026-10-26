@@ -346,3 +346,13 @@ agent-session copy --from <role|runtime_id>:<path> --to <role|runtime_id>:<path>
 - `skill install` 在节点 Session 里不可用（包路径在节点上）。
 - 本次对 llm_context 层（agent_tool）的改动：`RuntimeBaseline` 移到 buckyos-api 后重导出、`TodoAttempt.baseline` 与 PLAN 视图属性；记在 [llm_context AgentRuntime TODO §11.1](llm-context-agent-runtime-todo.md#111-t1t7-实施时的补充改动2026-10-25)。
 
+
+### 10.5 DV 修正：启动时一次性的 runtime 不可达（2026-10-25）
+
+现象：`start.py --all` 后和 Jarvis 说 hello 没有回复。容器日志每次都是 `ui: inbox …: bind error: runtime \`host\` is not available: … cannot reach the node executor of did:web:ood1.test.buckyos.io: early eof`，Goal 每 2 s 同样失败。
+
+原因：Jarvis 默认 session-runtime 是 `host`（devtest 是 zone owner，`nodes/ood1/settings` 开了 `owner_agents`）。容器与 Loader 19:48:41 启动，Loader 的 `check_runtimes` 当即探测 `host`，而 node_daemon 19:48:47 才打开 Node Executor（网关日志：`127.0.0.1:3184 Connection refused`，客户端看到 `early eof`）→ `state/runtimes/host.json` 记为 `runtime_unavailable`。此后没有任何地方再探测不可用的 runtime（`check_runtimes` 只在启动 / 设置变化时跑，且只查当前 Available 的），`api::freeze_runtime` 又拒绝不可用的 runtime，所以每个 UI / Goal Session 的创建都失败，直到容器重启。
+
+修正：`api::freeze_runtime` 选中的 runtime 若是节点类、有 exec、不可用且上次检查已超过 `RUNTIME_RECHECK_MS`（5 s），先 `runtimes().check()` 再决定（仍不可用就照旧拒绝，不换 runtime）。测试 `tests/runtimes.rs::a_node_runtime_refused_at_start_is_used_once_its_executor_answers`（假执行器先断连后应答：间隔内不重复探测、执行器起来后下一个 Session 冻结到 `host`、记录回到 Available）；`runtimes`、`session_runtime`、`workspace_binding`、`xagent_lib`、`plan_simple`、`ui_chat` 通过。
+
+DV：`./build_aios --local-test` + `uv run start.py --skip-update` 后 `test/test_opendan/test_agent_chat_task.ts hello` 4 s 内得到回复。这次重启执行器先于容器打开（19:57:29 / 19:58:35），竞态没有重现，DV 只验证了恢复后的主链路，重探测路径由上面的测试覆盖。
