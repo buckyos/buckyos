@@ -106,6 +106,15 @@ buckyos system info                                 # BuckyOS version, build_ver
   Desktop "Users and Agents". Don't write those keys with raw system-config: the RPCs also refresh RBAC and reload
   msg-center. A group carries no RBAC policy (`g, <u>, group:<id>` only): a Limited user in a group still has no
   mailbox, tasks or uploads; app access comes from `apps.availability` group rules (`group:<id>`).
+- User removal is soft deletion: Desktop Users and Agents calls `user.delete`, then reads back the list.
+  Admins can open Deleted users to restore the original account (`user.change_state`, `state: active`);
+  its DID, keys, password, roles, groups and data are retained. A same-name `user.create` returns `user_deleted`;
+  use the explicit restore flow, not an overwrite or raw key deletion. Root and the current account cannot be disabled.
+  For deletion or state changes, inspect `state`, `rbac_refreshed` and `warning`: a saved state with
+  `rbac_refreshed: false` needs permission refresh, and does not prove access has been revoked everywhere.
+  Read back with `user.list` (`include_deleted: true`) or `user.get`; retrying the same state retries the refresh.
+  A failed list read is not an empty list. Source and RPC contract: `src/frame/control_panel/src/user_mgr.rs`
+  and `doc/control_panel/Control_Panel_Service.md` §4.1; no dedicated user CLI verb.
 - External access (hybrid SSO, contract `doc/arch/verify-hub/混合SSO技术契约.md`): Zone switches `self_register_enabled` /
   `did_login_enabled` / `jump_base_url` in `system/sso/settings` via admin RPC `sso.settings.get|set` (Desktop Settings ›
   Sign-in & Sharing). Exclusive invites (a Limited account + password-free link, 48 h): admin RPCs
@@ -164,7 +173,7 @@ buckyos system info                                 # BuckyOS version, build_ver
   `apps.inspect` / submit (`product_container_app`, `product_service_app`, `product_mixed_packages`); a spec the
   product does not run is stopped and `services/<spec_id>/schedule_status` says why (`no_suitable_node` too, when no
   node can take a spec). A native app that cannot run reports it in `services/<spec_id>/instances/<node>`
-  `deployment_error`: `port_conflict` (app, service, `127.0.0.1:<port>`; free the port, it retries by itself),
+  `deployment_error`: `port_conflict` (app, service, port; free the port, it retries by itself),
   `exited` (last log lines), `not_listening`, `interpreter_missing`; restarts back off 5 s … 5 min.
   Linux `dev` / `devtest_ood1` config generation seeds a bounded host workspace at
   `data/home/devtest/host-runtime`, with a non-root execution identity and no desktop control; explicit node settings

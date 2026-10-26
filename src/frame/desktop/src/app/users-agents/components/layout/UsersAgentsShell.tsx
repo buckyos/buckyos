@@ -8,6 +8,7 @@ import { EmptyPlaceholder } from '../detail/EmptyPlaceholder'
 import { SelfDetailPage } from '../detail/SelfDetailPage'
 import { AgentDetailPage } from '../detail/AgentDetailPage'
 import { LocalUserDetailPage } from '../detail/LocalUserDetailPage'
+import { DeletedUsersPage } from '../detail/DeletedUsersPage'
 import { EntityGroupDetailPage } from '../detail/EntityGroupDetailPage'
 import { NewUserWizard } from '../shared/NewUserWizard'
 import { UserGroupsPage } from '../groups/UserGroupsPage'
@@ -20,7 +21,7 @@ import type { SidebarSelection } from '../../datamodel/types'
 import type { UsersAgentsLaunch } from '../../launch'
 import type { UserCreateResponse } from '../../../../api/user_mgr'
 
-function DetailRouter({ entityId, onRemoved }: { entityId: string; onRemoved?: () => void }) {
+function DetailRouter({ entityId, onRemoved, onNotice }: { entityId: string; onRemoved?: () => void; onNotice: (message: string) => void }) {
   const entity = useEntity(entityId)
   const store = useUsersAgentsStore()
   const reloaded = useRef<string | null>(null)
@@ -40,7 +41,7 @@ function DetailRouter({ entityId, onRemoved }: { entityId: string; onRemoved?: (
     case 'agent':
       return <AgentDetailPage agent={entity} onRemoved={onRemoved} />
     case 'local-user':
-      return <LocalUserDetailPage user={entity} onRemoved={onRemoved} />
+      return <LocalUserDetailPage key={entity.id} user={entity} onRemoved={onRemoved} onNotice={onNotice} />
     case 'entity-group':
       return <EntityGroupDetailPage group={entity} />
     default:
@@ -48,12 +49,13 @@ function DetailRouter({ entityId, onRemoved }: { entityId: string; onRemoved?: (
   }
 }
 
-function SelectionRouter({ selection, onRemoved }: { selection: SidebarSelection | null; onRemoved: () => void }) {
+function SelectionRouter({ selection, onRemoved, onNotice }: { selection: SidebarSelection | null; onRemoved: () => void; onNotice: (message: string) => void }) {
   if (!selection) return <EmptyPlaceholder />
   if (selection.kind === 'self') return <SelfDetailPage />
   if (selection.kind === 'user-groups') return <UserGroupsPage />
   if (selection.kind === 'exclusive-invites') return <ExclusiveInvitesPage />
-  return <DetailRouter entityId={selection.entityId} onRemoved={onRemoved} />
+  if (selection.kind === 'deleted-users') return <DeletedUsersPage onNotice={onNotice} />
+  return <DetailRouter entityId={selection.entityId} onRemoved={onRemoved} onNotice={onNotice} />
 }
 
 function initialSelection(launch?: UsersAgentsLaunch): SidebarSelection | null {
@@ -68,6 +70,7 @@ export function UsersAgentsShell({ launch }: { launch?: UsersAgentsLaunch }) {
   const [showNewUser, setShowNewUser] = useState(false)
   const [agentNoticeOpen, setAgentNoticeOpen] = useState(false)
   const [userNotice, setUserNotice] = useState<string | null>(null)
+  const [lifecycleNotice, setLifecycleNotice] = useState<string | null>(null)
   const canCreateAgents = useCanCreateAgents()
   const isMobile = useMediaQuery('(max-width: 767px)')
 
@@ -100,6 +103,10 @@ export function UsersAgentsShell({ launch }: { launch?: UsersAgentsLaunch }) {
   const handleEntityRemoved = () => {
     setSelection(null)
   }
+
+  const lifecycleAlert = lifecycleNotice ? (
+    <Alert severity="warning" className="mb-4" onClose={() => setLifecycleNotice(null)} data-testid="user-lifecycle-notice">{lifecycleNotice}</Alert>
+  ) : null
 
   const notices = (
     <>
@@ -136,6 +143,7 @@ export function UsersAgentsShell({ launch }: { launch?: UsersAgentsLaunch }) {
     if (!selection && !showNewUser) {
       return (
         <>
+          {lifecycleAlert}
           <MobileHomeScreen
             selection={selection}
             onSelect={handleSelect}
@@ -153,7 +161,8 @@ export function UsersAgentsShell({ launch }: { launch?: UsersAgentsLaunch }) {
       return (
         <div className="flex flex-col h-full w-full" style={{ background: 'var(--cp-bg)' }}>
           <div className="flex-1 overflow-y-auto desktop-scrollbar px-4 py-4">
-            <NewUserWizard onClose={() => setShowNewUser(false)} onCreated={handleUserCreated} />
+            {lifecycleAlert}
+            <NewUserWizard onClose={() => setShowNewUser(false)} onCreated={handleUserCreated} onOpenDeletedUsers={() => handleSelect({ kind: 'deleted-users' })} />
           </div>
           {notices}
         </div>
@@ -164,7 +173,8 @@ export function UsersAgentsShell({ launch }: { launch?: UsersAgentsLaunch }) {
       <div className="flex flex-col h-full w-full" style={{ background: 'var(--cp-bg)' }}>
         <main className="flex-1 overflow-y-auto desktop-scrollbar">
           <div className="px-4 pb-5 pt-3">
-            <SelectionRouter selection={selection} onRemoved={handleEntityRemoved} />
+            {lifecycleAlert}
+            <SelectionRouter selection={selection} onRemoved={handleEntityRemoved} onNotice={setLifecycleNotice} />
           </div>
         </main>
         {notices}
@@ -185,10 +195,11 @@ export function UsersAgentsShell({ launch }: { launch?: UsersAgentsLaunch }) {
 
       <main className="flex-1 overflow-y-auto desktop-scrollbar min-w-0">
         <div className="px-6 py-5 max-w-3xl">
+          {lifecycleAlert}
           {showNewUser ? (
-            <NewUserWizard onClose={() => setShowNewUser(false)} onCreated={handleUserCreated} />
+            <NewUserWizard onClose={() => setShowNewUser(false)} onCreated={handleUserCreated} onOpenDeletedUsers={() => handleSelect({ kind: 'deleted-users' })} />
           ) : (
-            <SelectionRouter selection={selection} onRemoved={handleEntityRemoved} />
+            <SelectionRouter selection={selection} onRemoved={handleEntityRemoved} onNotice={setLifecycleNotice} />
           )}
         </div>
       </main>

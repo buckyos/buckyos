@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import { Bot, Search, UserPlus } from 'lucide-react'
-import { Chip, IconButton, Tooltip } from '@mui/material'
+import { Button, Chip, IconButton, Tooltip } from '@mui/material'
 import { EntityCard } from '../cards/EntityCard'
 import { UserGroupsNavItem } from '../groups/UserGroupsNavItem'
 import { ExclusiveInvitesNavItem } from '../invites/ExclusiveInvitesNavItem'
@@ -13,6 +13,7 @@ import {
   useAgents,
   useLocalUsers,
   useEntityGroups,
+  useViewerIsAdmin,
 } from '../../hooks/use-users-agents-store'
 import type { SidebarSelection } from '../../datamodel/types'
 import { useI18n } from '../../../../i18n/provider'
@@ -34,6 +35,7 @@ export function Sidebar({ selection, onSelect, onAddUser, onAddAgent, canCreateA
   const agents = useAgents()
   const localUsers = useLocalUsers()
   const entityGroups = useEntityGroups()
+  const isAdmin = useViewerIsAdmin()
 
   const isEntityActive = (id: string) =>
     selection?.kind === 'entity' ? selection.entityId === id : selection?.kind === 'self' && id === self.id
@@ -126,6 +128,13 @@ export function Sidebar({ selection, onSelect, onAddUser, onAddAgent, canCreateA
           ))}
         </div>
 
+        {isAdmin ? <Button
+          fullWidth
+          size="small"
+          data-testid="users-agents-deleted-users"
+          aria-current={selection?.kind === 'deleted-users' ? 'page' : undefined}
+          onClick={() => onSelect({ kind: 'deleted-users' })}
+        >{t('usersAgents.deleted.title')}</Button> : null}
         <UserGroupsNavItem
           isActive={selection?.kind === 'user-groups'}
           onClick={() => onSelect({ kind: 'user-groups' })}

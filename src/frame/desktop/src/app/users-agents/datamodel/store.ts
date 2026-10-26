@@ -19,6 +19,7 @@ import {
   changeUserType,
   createUserGroup,
   deleteAgent,
+  deleteUser,
   deleteUserGroup,
   fetchUserDetail,
   removeUserMsgTunnel,
@@ -31,6 +32,7 @@ import {
   updateAgent,
   updateUserGroup,
 } from '../../../api/user_mgr'
+import type { RpcCallOptions } from '../../../api/rpc'
 import type { AssignableUserType, ContactProjectionRule } from '../../../api/user_type'
 import { isMockRuntime } from '../../../runtime'
 import { notifyAgentsChanged, notifyOwnProfileChanged } from '../../agent-setup/events'
@@ -150,9 +152,8 @@ export class UsersAgentsStore {
     )
   }
 
-  removeLocalUser(id: string) {
-    this.localUsers = this.localUsers.filter((user) => user.id !== id)
-    this.notify()
+  removeLocalUser(id: string, options: RpcCallOptions = {}) {
+    return deleteUser(id, options)
   }
 
   // ── The signed-in user's own profile (`user.profile.set`, then read back) ──

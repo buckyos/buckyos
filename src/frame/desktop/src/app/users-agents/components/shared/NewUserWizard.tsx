@@ -24,6 +24,7 @@ import { systemGroupName } from './userGroupLabels'
 interface NewUserWizardProps {
   onClose: () => void
   onCreated?: (userId: string, result: UserCreateResponse) => void
+  onOpenDeletedUsers: () => void
 }
 
 type SubmitPhase = 'idle' | 'sudo' | 'creating' | 'reloading' | 'reload-failed'
@@ -49,7 +50,8 @@ function errorText(error: unknown): string {
 function friendlyCreateError(error: unknown, t: Translate): string {
   const message = errorText(error)
   const lower = message.toLowerCase()
-  if (lower.includes('already exists') || lower.includes('duplicate')) {
+  if (lower.includes('user_deleted')) return t('usersAgents.newUser.error.deleted')
+  if (lower.includes('name_conflict') || lower.includes('already exists') || lower.includes('duplicate')) {
     return t('usersAgents.newUser.error.exists')
   }
   if (lower.includes('user_id') || lower.includes('username') || lower.includes('reserved')) {
@@ -83,10 +85,11 @@ function isUncertainCreateError(error: unknown): boolean {
   return lower.includes('network') || lower.includes('fetch') || lower.includes('connection')
 }
 
-export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
+export function NewUserWizard({ onClose, onCreated, onOpenDeletedUsers }: NewUserWizardProps) {
   const { t } = useI18n()
   const [step, setStep] = useState(0)
   const [phase, setPhase] = useState<SubmitPhase>('idle')
+  const [deletedConflict, setDeletedConflict] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [committedUserId, setCommittedUserId] = useState<string | null>(null)
   const [createResult, setCreateResult] = useState<UserCreateResponse | null>(null)
@@ -126,6 +129,7 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
     if (submissionRef.current || phase === 'reload-failed') return
     submissionRef.current = true
     setSubmitError(null)
+    setDeletedConflict(false)
 
     const userId = data.username.trim().toLowerCase()
     if (store.findEntity(userId)) {
@@ -138,6 +142,8 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
       setPhase('sudo')
       const grant = await requestSudo({
         aud: 'system-config',
+        appid: 'control-panel',
+        username: store.getSnapshot().self.id,
         title: t('usersAgents.newUser.sudo.title'),
         description: t('usersAgents.newUser.sudo.description'),
         reason: `Create local user ${userId}`,
@@ -182,6 +188,7 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
           return
         }
         setPhase('idle')
+        setDeletedConflict(errorText(error).toLowerCase().includes('user_deleted'))
         setSubmitError(friendlyCreateError(error ?? 'Invalid user.create response', t))
         return
       }
@@ -197,6 +204,7 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
       markReloadUncertain(userId, result)
     } catch (error) {
       setPhase('idle')
+      setDeletedConflict(errorText(error).toLowerCase().includes('user_deleted'))
       setSubmitError(friendlyCreateError(error, t))
     } finally {
       submissionRef.current = false
@@ -284,6 +292,7 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
 
       <div className="min-h-[260px]">
         {submitError && <Alert severity={phase === 'reload-failed' ? 'warning' : 'error'}>{submitError}</Alert>}
+        {deletedConflict ? <Button type="button" onClick={onOpenDeletedUsers}>{t('usersAgents.deleted.open')}</Button> : null}
 
         {step === 0 && (
           <div className="mt-3 space-y-3">

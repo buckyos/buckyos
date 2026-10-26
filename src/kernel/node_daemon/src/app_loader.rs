@@ -66,6 +66,17 @@ const AGENT_SERVICE_NAME: &str = "agent";
 /// Tells OpenDAN its Agent Service runs natively on the node (there is no
 /// Agent container to offer as a session-runtime).
 const OPENDAN_SERVICE_MODE_ENV: &str = "OPENDAN_SERVICE_MODE";
+/// The service whose port a script app gets as `BUCKYOS_SERVICE_PORT` (the
+/// contract Agents already use): `www`, or the app's only service.
+pub(crate) fn primary_service_port<'a>(ports: impl IntoIterator<Item = (&'a str, u16)>) -> Option<u16> {
+    let ports: Vec<(&str, u16)> = ports.into_iter().collect();
+    ports
+        .iter()
+        .find(|(name, _)| *name == "www")
+        .or_else(|| (ports.len() == 1).then(|| &ports[0]))
+        .map(|(_, port)| *port)
+}
+
 /// The node's private Deno (`$BUCKYOS_ROOT/<this>/deno[.exe]`) that runs
 /// natively run script apps.
 const NATIVE_DENO_RELATIVE_DIR: [&str; 3] = ["libexec", "buckyos-tool", "runtime"];
@@ -931,6 +942,18 @@ impl AppLoader {
         }
     }
 
+    /// The port a script app listens on inside its container (the AppDoc
+    /// inner port of its primary service), handed over as `BUCKYOS_SERVICE_PORT`.
+    fn script_inner_port(&self) -> Option<u16> {
+        let services = &self.install_config().service_config;
+        let ports = self.service_ports_config();
+        primary_service_port(
+            ports
+                .keys()
+                .filter_map(|name| services.get(name).map(|config| (name.as_str(), config.inner_port))),
+        )
+    }
+
     fn is_local_app(&self) -> bool {
         matches!(self.config, LoaderConfig::Local(_))
     }
@@ -1399,7 +1422,7 @@ impl AppLoader {
             "script",
             package_root.as_path(),
             None,
-            None,
+            self.script_inner_port(),
             self.host_script_desc(),
         )
         .await
@@ -1607,7 +1630,7 @@ impl AppLoader {
                 return Err((
                     ERR_PORT_CONFLICT,
                     format!(
-                        "app {} service {service} cannot listen on 127.0.0.1:{port}: the port is in use by another program",
+                        "app {} service {service} cannot listen on port {port}: the port is in use by another program",
                         self.app_id
                     ),
                 ));
@@ -1791,10 +1814,18 @@ impl AppLoader {
         let mut env = self
             .native_runtime_env(PackageRole::HostApp, &package_root, "script")
             .await?;
+        if let Some(port) = primary_service_port(ports.iter().map(|(name, port)| (name.as_str(), *port))) {
+            env.insert("BUCKYOS_SERVICE_PORT".to_string(), port.to_string());
+        }
         let deno_dir = self.app_cache_dir().join("deno");
         ensure_directory(&deno_dir, false).map_err(|error| (ERR_SPAWN, error.to_string()))?;
         env.insert("DENO_DIR".to_string(), deno_dir.to_string_lossy().to_string());
         env.insert("DENO_NO_UPDATE_CHECK".to_string(), "1".to_string());
+        if cfg!(windows) {
+            // Deno mirrors each module's absolute path under DENO_DIR/gen/file:
+            // past MAX_PATH there, and then most tools cannot remove the cache.
+            env.insert("DENO_EMIT_CACHE_MODE".to_string(), "disable".to_string());
+        }
         env.insert("SCRIPT_APP_ID".to_string(), self.app_id.clone());
         env.insert("SCRIPT_PACKAGE_ROOT".to_string(), package_root.to_string_lossy().to_string());
         env.insert("SCRIPT_DATA_ROOT".to_string(), self.app_data_dir().to_string_lossy().to_string());
@@ -3284,7 +3315,7 @@ impl AppLoader {
     }
 
     fn preview_host_script_start(&self) -> Result<Vec<CommandSpec>> {
-        self.preview_worker_start("script", None, self.host_script_desc())
+        self.preview_worker_start("script", self.script_inner_port(), self.host_script_desc())
     }
 
     fn preview_host_script_status(&self) -> Result<Vec<CommandSpec>> {

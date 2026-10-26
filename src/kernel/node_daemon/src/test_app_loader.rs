@@ -3,7 +3,8 @@ use crate::app_loader::{
     container_list_contains_name, docker_deployment_health, docker_desc_requires_exact_match,
     docker_image_tar_candidates_for_arch, docker_missing_text, docker_runtime_matches_deployment,
     docker_runtime_matches_target, inspect_docker_image_layout, normalize_digest,
-    parse_docker_container_inspect, validate_app_launch_config, AppLoader, CommandSpec,
+    parse_docker_container_inspect, primary_service_port, validate_app_launch_config, AppLoader,
+    CommandSpec,
     ControlOperation, DockerCommandRunner,
     DockerExecOutcome, DockerRuntimeIdentity, PlatformArch, PlatformOs, PlatformTarget,
     RuntimeType, DOCKER_LABEL_APP_DOC_OBJECT_ID, DOCKER_LABEL_IMAGE_DIGEST, DOCKER_LABEL_PKG_ID,
@@ -2367,6 +2368,36 @@ fn a_preinstalled_script_app_runs_with_the_nodes_deno() {
     assert!(args.contains(&"--allow-net".to_string()));
     assert!(args.last().unwrap().ends_with("main.ts"), "{args:?}");
     assert!(start.commands.iter().all(|c| c.program != "docker"));
+}
+
+/// A script app learns where to listen from `BUCKYOS_SERVICE_PORT`: the port
+/// of its `www` service, or of its only service.
+#[test]
+fn a_script_app_is_handed_the_port_of_its_primary_service() {
+    assert_eq!(primary_service_port([("api", 9001), ("www", 9000)]), Some(9000));
+    assert_eq!(primary_service_port([("api", 9001)]), Some(9001));
+    assert_eq!(primary_service_port([("api", 9001), ("admin", 9002)]), None);
+    assert_eq!(primary_service_port(std::iter::empty()), None);
+}
+
+/// In a container the script app is handed the AppDoc inner port it listens
+/// on there (Docker publishes the instance port onto it).
+#[test]
+fn a_script_app_in_a_container_is_handed_its_inner_port() {
+    let app_doc = build_systest_doc();
+    let install_config = build_spec_config(&app_doc);
+    let app_spec = build_test_app_spec(app_doc, install_config);
+    let mut config = AppServiceInstanceConfig::new("ood1", &app_spec).unwrap();
+    config.service_ports_config = HashMap::from([("www".to_string(), 10032)]);
+    let loader = AppLoader::new_for_service(&app_spec.app_instance_id.to_string(), config)
+        .with_platform(PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64))
+        .with_container_support_override(true)
+        .with_worker_image_repo_override("paios/aios")
+        .with_paios_images_root(local_paios_root());
+    let start = loader.preview_operation(ControlOperation::Start).unwrap();
+    assert_eq!(start.runtime, RuntimeType::HostScript);
+    let run = start.commands.iter().find(|c| c.args.contains(&"run".to_string())).unwrap();
+    assert!(run.args.contains(&"BUCKYOS_SERVICE_PORT=3000".to_string()), "{:?}", run.args);
 }
 
 /// Running natively is only for the product's own script apps.

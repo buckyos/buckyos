@@ -99,6 +99,10 @@ pub(crate) trait AgentKv: Send + Sync {
 pub(crate) struct ZoneKv(Arc<SystemConfigClient>);
 
 impl ZoneKv {
+    pub(crate) fn with_client(client: SystemConfigClient) -> Self {
+        Self(Arc::new(client))
+    }
+
     pub(crate) async fn connect() -> Result<Self, RPCErrors> {
         Ok(Self(
             get_buckyos_api_runtime()?

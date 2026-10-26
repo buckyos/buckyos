@@ -169,6 +169,7 @@ export type SidebarSelection =
   | { kind: 'self' }
   | { kind: 'user-groups' }
   | { kind: 'exclusive-invites' }
+  | { kind: 'deleted-users' }
 
 // ── Store snapshot ──
 

@@ -211,7 +211,7 @@ test('SSO callback rejects an alternate control-panel origin and consumes the no
   expect(replay.status()).toBeGreaterThanOrEqual(400)
 })
 
-test('admin creates a real local user, then that user logs in and sees self', async ({ page, request, baseURL }, testInfo) => {
+test('admin creates, deletes and restores a real local user through the UI', async ({ page, request, baseURL }, testInfo) => {
   test.skip(!adminPassword, 'Set BUCKYOS_TEST_ADMIN_PASSWORD for the real-zone UI DV.')
   if (!baseURL) throw new Error('Playwright baseURL is required')
 
@@ -307,6 +307,57 @@ test('admin creates a real local user, then that user logs in and sees self', as
     await expect(appWindow.getByRole('heading', { name: 'Settings' })).toBeVisible()
     await expect(appWindow.getByText('Change allowed', { exact: true })).toBeVisible()
     await page.screenshot({ path: testInfo.outputPath('local-user-self.png'), fullPage: true })
+
+    await page.getByRole('button', { name: 'BuckyOS' }).hover()
+    await page.getByTestId('taskbar-profile-card').getByRole('button', { name: 'Log out' }).click()
+    await loginThroughUi(page, adminUser, adminPassword)
+    const adminLogin = await apiLogin(request, baseURL, adminUser, adminPassword)
+    const adminToken = String(adminLogin.session_token)
+    const original = await rpc(request, baseURL, 'control-panel', 'user.get', { user_id: userId }, adminToken)
+    expect(original.state).toBe('active')
+    expect(original.did_document).toBeTruthy()
+    appWindow = await openUsersAgents(page)
+    await appWindow.locator(`[data-entity-id="${userId}"]`).click()
+    page.on('dialog', dialog => void dialog.accept())
+    await appWindow.getByTestId('local-user-delete').click()
+    const deleteSudo = page.getByRole('dialog', { name: 'Remove user', exact: true })
+    await expect(deleteSudo).toBeVisible()
+    await deleteSudo.getByLabel('Password', { exact: true }).fill(adminPassword)
+    await deleteSudo.getByRole('button', { name: 'Remove User', exact: true }).click()
+    await expect(appWindow.locator(`[data-entity-id="${userId}"]`)).toHaveCount(0)
+
+    const deleted = await rpc(request, baseURL, 'control-panel', 'user.get', { user_id: userId }, adminToken)
+    expect(deleted.state).toBe('deleted')
+    expect(deleted.did_document).toEqual(original.did_document)
+    await expect(apiLogin(request, baseURL, userId, localPassword)).rejects.toThrow()
+    const sudoToken = await apiSudo(request, baseURL, adminUser, adminPassword)
+    await expect(rpc(request, baseURL, 'control-panel', 'user.create', {
+      user_id: userId,
+      show_name: 'Replacement account must not be created',
+      password_hash: hashPassword(userId, `${localPassword}-replacement`),
+      user_type: 'user',
+    }, sudoToken)).rejects.toThrow(/user_deleted/)
+
+    await page.reload()
+    await expect(page.getByRole('button', { name: 'BuckyOS' })).toBeVisible()
+    appWindow = await openUsersAgents(page)
+    await expect(appWindow.locator(`[data-entity-id="${userId}"]`)).toHaveCount(0)
+    await appWindow.getByTestId('users-agents-deleted-users').click()
+    const deletedRow = appWindow.getByTestId('deleted-users-page').locator(`[data-user-id="${userId}"]`)
+    await expect(deletedRow).toBeVisible()
+    await deletedRow.getByRole('button', { name: 'Restore original account' }).click()
+    const restoreSudo = page.getByRole('dialog', { name: 'Restore original account', exact: true })
+    await expect(restoreSudo).toBeVisible()
+    await restoreSudo.getByLabel('Password', { exact: true }).fill(adminPassword)
+    await restoreSudo.getByRole('button', { name: 'Restore original account', exact: true }).click()
+    await expect(deletedRow).toHaveCount(0)
+    await expect(appWindow.locator(`[data-entity-id="${userId}"]`)).toBeVisible()
+    const restored = await rpc(request, baseURL, 'control-panel', 'user.get', { user_id: userId }, adminToken)
+    expect(restored.state).toBe('active')
+    expect(restored.did_document).toEqual(original.did_document)
+    expect(restored.user_type).toEqual(original.user_type)
+    expect(restored.groups).toEqual(original.groups)
+    expect((await apiLogin(request, baseURL, userId, localPassword)).session_token).toBeTruthy()
 
     await Promise.all(responseTasks)
     expect(consoleErrors, 'browser console errors').toEqual([])

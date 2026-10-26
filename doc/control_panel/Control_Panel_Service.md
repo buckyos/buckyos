@@ -136,9 +136,9 @@ Agent identity 与承载它的 runtime App 是两个独立对象：
 | `user.invite.create` | **Admin** | 生成邀请（可预建 Pending 用户或绑定已有 DID），返回 `invite_url`；`user_type` 为 `admin` / `user` / `limited`，`groups` 为已定义的系统用户组 id，接受邀请时写入账号 |
 | `user.invite.get` | **公开** | 凭 `invite_id` 读邀请详情（含过期、zone_did/host） |
 | `user.invite.accept` | **目标 DID 联合登录会话** | 先以 OwnerDocument 的 DID 联合登录本 Zone，再凭 `invite_id` + `owner_config` 接受邀请；会话须为 Control Panel 用户会话且 `auth_method=did_federation`，DID 须与文档及邀请的 `target_did`（若指定）一致。文档仍须声明绑定本 Zone |
-| `user.delete` | **Admin** | 软删除（置 Deleted），不可自删 |
+| `user.delete` | **Admin** | 软删除（置 Deleted），不可删除本人或 Root；保留身份、凭据和数据，名称仍被占用 |
 | `user.change_password` | 本人/Admin | 本人改密受 `allow_password_change` 限制 |
-| `user.change_state` | **Admin** | Active/Pending/Deleted 迁移 |
+| `user.change_state` | **Admin** | 账号状态迁移；Deleted → Active 恢复原账号，不能将本人或 Root 改为非 Active |
 | `user.change_type` | **Admin** | 只在 `admin` / `user` / `limited` 之间转换，不能改 Root；随后刷新 RBAC 并通知 msg-center（通讯录投影依赖类型），旧会话不自动获得新权限 |
 | `user.set_account_options` | **Admin** | `{ user_id, allow_password_change?, allow_contact_edit? }`，`null` 恢复类型默认；返回生效值 |
 | `user_group.list` | **Admin** | `{ groups: [UserGroup + members], projections: { rules, is_default, updated_by, updated_at } }` |
@@ -146,6 +146,10 @@ Agent identity 与承载它的 runtime App 是两个独立对象：
 | `user_group.delete` | **Admin** | 删除组定义，同时从成员的 `UserSettings.groups` 和投影规则中移除；刷新 RBAC 并通知 msg-center |
 | `user_group.set_members` | **Admin** | `{ group_id, add?, remove? }`；Root 不能加入；刷新 RBAC 并通知 msg-center |
 | `user_group.set_projections` / `user_group.reset_projections` | **Admin** | 保存单向“来源组 → 目标组”规则（`type:admin|user|limited` 或 `group:<id>`）到 `system/user_groups/_projections`；reset 删除该 key，恢复默认（Admin、User 互见） |
+
+删除与恢复：Desktop 的 Users & Agents 在删除 RPC 完成后重新读取列表；管理员可在“已删除用户”中恢复原账号。恢复保留原 DID、密钥、密码、角色、用户组和数据，不接受创建表单中的新密码或角色作为覆盖。`user.create` 遇到已删除的同名账号返回 `user_deleted` 并引导恢复；已删除账号的记录仍占用名称，不能只跳过名称索引检查。
+
+`user.delete` 与 `user.change_state` 返回 `{ ok: true, user_id, state, rbac_refreshed, warning? }`。`state` 表示已保存的状态；`rbac_refreshed: false` 表示状态已写入但权限刷新尚未确认完成，`warning` 给出原因，不能据此声称权限已全部撤销。客户端应显示警告并读回状态；再次提交相同目标状态可重试权限刷新。若写入或列表读取失败，显示实际错误，不能把请求失败当成空列表或删除完成。
 
 ### 4.2 设备管理 (Device)
 

@@ -55,31 +55,17 @@ type BootstrapState =
   | { kind: "failed"; reason: string };
 
 /**
- * Where to listen. In a container node-daemon publishes the AppDoc
- * inner_port (3000); run natively by the node (BuckyOS Desktop Lite,
- * `app_instance_config.run_mode == "native"`) the app binds the instance
- * port the scheduler assigned to its `www` service, on loopback where the
- * node gateway reaches it.
+ * Where to listen: every interface, on the port node-daemon's app loader
+ * hands over in `BUCKYOS_SERVICE_PORT` (the AppDoc inner port in a
+ * container, the instance port when the node runs the app natively).
  */
 function listenAddress(): { hostname: string; port: number } {
-  const raw = Deno.env.get("app_instance_config");
-  if (raw) {
-    const config = JSON.parse(raw) as {
-      run_mode?: string;
-      service_ports_config?: Record<string, number>;
-    };
-    if (config.run_mode === "native") {
-      const port = config.service_ports_config?.www;
-      if (typeof port !== "number" || port <= 0) {
-        throw new Error("native run: app_instance_config has no port for service www");
-      }
-      return { hostname: "127.0.0.1", port };
-    }
+  const raw = Deno.env.get("BUCKYOS_SERVICE_PORT") ?? Deno.env.get("PORT") ?? "3000";
+  const port = Number.parseInt(raw, 10);
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    throw new Error(`invalid service port ${raw}`);
   }
-  return {
-    hostname: "0.0.0.0",
-    port: Number.parseInt(Deno.env.get("PORT") ?? "3000", 10),
-  };
+  return { hostname: "0.0.0.0", port };
 }
 
 const { hostname: listenHostname, port } = listenAddress();

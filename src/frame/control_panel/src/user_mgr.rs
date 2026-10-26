@@ -813,6 +813,81 @@ fn user_create_result(
     result
 }
 
+async fn require_user_not_deleted(kv: &dyn AgentKv, user_id: &str) -> Result<(), RPCErrors> {
+    if let Some((raw, _)) = kv.get(&format!("users/{user_id}/settings")).await? {
+        let settings: UserSettings = serde_json::from_str(&raw)
+            .map_err(|error| RPCErrors::ReasonError(format!("Corrupted user settings: {error}")))?;
+        if matches!(settings.state, UserState::Deleted) {
+            return Err(crate::agent_mgr::reason(
+                "user_deleted",
+                format!(
+                    "User '{user_id}' was deleted; restore the existing account with user.change_state (state: active). Its identity, credentials, permissions and data are retained."
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn save_user_state(
+    kv: &dyn AgentKv,
+    principal: &RpcAuthPrincipal,
+    target: &str,
+    new_state: UserState,
+) -> Result<UserState, RPCErrors> {
+    require_admin(principal)?;
+    if !matches!(new_state, UserState::Active) {
+        if target == "root" {
+            return Err(RPCErrors::ReasonError(
+                "Cannot change root user state to non-active".to_string(),
+            ));
+        }
+        if target == principal.username {
+            return Err(RPCErrors::ReasonError(
+                "Cannot change your own state to non-active".to_string(),
+            ));
+        }
+    }
+    let path = format!("users/{target}/settings");
+    let (raw, version) = kv
+        .get(&path)
+        .await?
+        .ok_or_else(|| RPCErrors::ReasonError(format!("User '{target}' not found")))?;
+    let mut settings: UserSettings = serde_json::from_str(&raw)
+        .map_err(|error| RPCErrors::ReasonError(format!("Corrupted user settings: {error}")))?;
+    if matches!(settings.user_type, UserType::Root) && !matches!(new_state, UserState::Active) {
+        return Err(RPCErrors::ReasonError(
+            "Cannot change root user state to non-active".to_string(),
+        ));
+    }
+    settings.state = new_state;
+    kv.exec_tx(
+        HashMap::from([(path.clone(), KVAction::Update(to_json(&settings)?))]),
+        Some((path, version)),
+    )
+    .await?;
+    Ok(settings.state)
+}
+
+fn user_state_result(
+    user_id: &str,
+    state: &UserState,
+    refresh_result: Result<(), RPCErrors>,
+) -> Value {
+    let mut result = json!({
+        "ok": true,
+        "user_id": user_id,
+        "state": state,
+        "rbac_refreshed": refresh_result.is_ok(),
+    });
+    if let Err(error) = refresh_result {
+        let warning = format!("User state was saved, but RBAC refresh is pending: {error}");
+        warn!("User '{user_id}': {warning}");
+        result["warning"] = Value::String(warning);
+    }
+    result
+}
+
 // ─── User management handlers ──────────────────────────────────────────────
 
 impl ControlPanelServer {
@@ -977,8 +1052,9 @@ impl ControlPanelServer {
         }
         let groups = parse_system_groups(&req).await?;
 
-        let client = system_config_client_for_caller(&req).await?;
+        let kv = ZoneKv::with_client(system_config_client_for_caller(&req).await?);
         let runtime = get_buckyos_api_runtime()?;
+        require_user_not_deleted(&kv, &user_id).await?;
         crate::agent_mgr::ensure_name_available(&runtime.zone_id, &user_id).await?;
 
         // Build UserSettings
@@ -995,8 +1071,7 @@ impl ControlPanelServer {
             password_state: buckyos_api::PasswordState::Set,
         };
         let (tx, _) = new_account_actions(&new_settings, &show_name, &runtime.zone_id, true)?;
-        client
-            .exec_tx(tx, None)
+        kv.exec_tx(tx, None)
             .await
             .map_err(|e| RPCErrors::ReasonError(format!("Failed to create user: {}", e)))?;
 
@@ -1538,36 +1613,9 @@ impl ControlPanelServer {
 
         let target = Self::require_param_str(&req, "user_id")?;
         let target = target.trim().to_lowercase();
-
-        if target == "root" {
-            return Err(RPCErrors::ReasonError(
-                "Cannot delete root user".to_string(),
-            ));
-        }
-        if target == principal.username {
-            return Err(RPCErrors::ReasonError("Cannot delete yourself".to_string()));
-        }
-
-        let client = system_config_client_for_caller(&req).await?;
-
-        // Mark user as deleted rather than physically removing
-        let settings_path = format!("users/{}/settings", target);
-        let settings_val = client
-            .get(&settings_path)
-            .await
-            .map_err(|e| RPCErrors::ReasonError(format!("User '{}' not found: {}", target, e)))?;
-        let mut settings: UserSettings = serde_json::from_str(&settings_val.value)
-            .map_err(|e| RPCErrors::ReasonError(format!("Corrupted user settings: {}", e)))?;
-
-        settings.state = UserState::Deleted;
-        let updated_json = serde_json::to_string(&settings)
-            .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))?;
-        client
-            .set(&settings_path, &updated_json)
-            .await
-            .map_err(|e| RPCErrors::ReasonError(format!("Failed to delete user: {}", e)))?;
-
-        refresh_rbac_by_scheduler("user.delete").await?;
+        let kv = ZoneKv::with_client(system_config_client_for_caller(&req).await?);
+        let state = save_user_state(&kv, principal, &target, UserState::Deleted).await?;
+        let refresh_result = refresh_rbac_by_scheduler("user.delete").await;
 
         info!(
             "User '{}' marked as deleted by '{}'",
@@ -1575,10 +1623,7 @@ impl ControlPanelServer {
         );
 
         Ok(RPCResponse::new(
-            RPCResult::Success(json!({
-                "ok": true,
-                "user_id": target,
-            })),
+            RPCResult::Success(user_state_result(&target, &state, refresh_result)),
             req.seq,
         ))
     }
@@ -1651,34 +1696,12 @@ impl ControlPanelServer {
         require_admin(principal)?;
 
         let target = Self::require_param_str(&req, "user_id")?;
+        let target = target.trim().to_lowercase();
         let state_str = Self::require_param_str(&req, "state")?;
         let new_state = parse_user_state(&state_str)?;
-
-        if target == "root" && !matches!(new_state, UserState::Active) {
-            return Err(RPCErrors::ReasonError(
-                "Cannot change root user state to non-active".to_string(),
-            ));
-        }
-
-        let client = system_config_client_for_caller(&req).await?;
-
-        let settings_path = format!("users/{}/settings", target);
-        let settings_val = client
-            .get(&settings_path)
-            .await
-            .map_err(|e| RPCErrors::ReasonError(format!("User '{}' not found: {}", target, e)))?;
-        let mut settings: UserSettings = serde_json::from_str(&settings_val.value)
-            .map_err(|e| RPCErrors::ReasonError(format!("Corrupted user settings: {}", e)))?;
-
-        settings.state = new_state;
-        let updated_json = serde_json::to_string(&settings)
-            .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))?;
-        client
-            .set(&settings_path, &updated_json)
-            .await
-            .map_err(|e| RPCErrors::ReasonError(format!("Failed to change state: {}", e)))?;
-
-        refresh_rbac_by_scheduler("user.change_state").await?;
+        let kv = ZoneKv::with_client(system_config_client_for_caller(&req).await?);
+        let state = save_user_state(&kv, principal, &target, new_state).await?;
+        let refresh_result = refresh_rbac_by_scheduler("user.change_state").await;
 
         info!(
             "User '{}' state changed to '{}' by '{}'",
@@ -1686,11 +1709,7 @@ impl ControlPanelServer {
         );
 
         Ok(RPCResponse::new(
-            RPCResult::Success(json!({
-                "ok": true,
-                "user_id": target,
-                "state": state_str,
-            })),
+            RPCResult::Success(user_state_result(&target, &state, refresh_result)),
             req.seq,
         ))
     }
@@ -2404,5 +2423,176 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("RBAC refresh is pending"));
+    }
+
+    #[tokio::test]
+    async fn deletion_reserves_the_name_and_restoration_preserves_the_account() {
+        let kv = InviteKv::default();
+        let mut original = account(UserType::User, Some(true), PasswordState::Set);
+        original.groups = vec!["family".to_string()];
+        let (actions, _) =
+            new_account_actions(&original, "Carol", &DID::new("bns", "home"), true).unwrap();
+        kv.exec_tx(actions, None).await.unwrap();
+        kv.put("users/carol/apps/notes/spec", &json!({"owner": "carol"}));
+        let before = kv.snapshot();
+        let admin = caller("devtest", UserType::Admin, true);
+
+        let state = save_user_state(&kv, &admin, "carol", UserState::Deleted)
+            .await
+            .unwrap();
+        assert!(matches!(state, UserState::Deleted));
+        assert!(matches!(
+            kv.read::<UserSettings>("users/carol/settings").state,
+            UserState::Deleted
+        ));
+        let error = require_user_not_deleted(&kv, "carol").await.unwrap_err();
+        assert!(error.to_string().contains("user_deleted:"));
+        assert!(error.to_string().contains("user.change_state"));
+        let deleted = kv.snapshot();
+        for (key, value) in &before {
+            if key != "users/carol/settings" {
+                assert_eq!(deleted.get(key), Some(value), "{key}");
+            }
+        }
+        let (replacement, _) =
+            new_account_actions(&original, "New Carol", &DID::new("bns", "home"), true).unwrap();
+        assert!(kv.exec_tx(replacement, None).await.is_err());
+        assert_eq!(kv.snapshot(), deleted);
+
+        let state = save_user_state(&kv, &admin, "carol", UserState::Active)
+            .await
+            .unwrap();
+        assert!(matches!(state, UserState::Active));
+        let restored = kv.snapshot();
+        assert_eq!(restored.len(), before.len());
+        for (key, (value, version)) in before {
+            assert_eq!(restored[&key].0, value, "{key}");
+            assert_eq!(
+                restored[&key].1,
+                version + u64::from(key == "users/carol/settings") * 2,
+                "{key}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn state_changes_require_admin_and_protect_root_and_self() {
+        for target in ["root", "devtest", "owner"] {
+            for state in [
+                UserState::Deleted,
+                UserState::Suspended("test".to_string()),
+                UserState::Banned("test".to_string()),
+                UserState::Pending,
+            ] {
+                let kv = InviteKv::default();
+                let user_type = if target == "devtest" {
+                    UserType::Admin
+                } else {
+                    UserType::Root
+                };
+                let mut settings = account(user_type, None, PasswordState::Set);
+                settings.user_id = target.to_string();
+                kv.put(&format!("users/{target}/settings"), &settings);
+                let before = kv.snapshot();
+                assert!(save_user_state(
+                    &kv,
+                    &caller("devtest", UserType::Admin, true),
+                    target,
+                    state
+                )
+                .await
+                .is_err());
+                assert_eq!(kv.snapshot(), before);
+                assert_eq!(kv.tx_calls.load(Ordering::SeqCst), 0);
+            }
+        }
+        for user_type in [UserType::User, UserType::Limited] {
+            let kv = InviteKv::default();
+            let mut deleted = account(UserType::User, None, PasswordState::Set);
+            deleted.state = UserState::Deleted;
+            kv.put("users/carol/settings", &deleted);
+            let before = kv.snapshot();
+            assert!(save_user_state(
+                &kv,
+                &caller("bob", user_type, true),
+                "carol",
+                UserState::Active
+            )
+            .await
+            .is_err());
+            assert_eq!(kv.snapshot(), before);
+            assert_eq!(kv.tx_calls.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn state_change_does_not_overwrite_a_concurrent_account_change() {
+        let mut updated = account(UserType::Limited, Some(false), PasswordState::Set);
+        updated.password = "new password".to_string();
+        let path = "users/carol/settings";
+        let updated_json = to_json(&updated).unwrap();
+        let kv = InviteKv {
+            before_commit: Mutex::new(Some((path.to_string(), updated_json.clone()))),
+            ..Default::default()
+        };
+        kv.put(path, &account(UserType::User, None, PasswordState::Set));
+        let error = save_user_state(
+            &kv,
+            &caller("devtest", UserType::Admin, true),
+            "carol",
+            UserState::Deleted,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("revision mismatch"));
+        assert_eq!(kv.snapshot()[path], (updated_json, 2));
+    }
+
+    #[tokio::test]
+    async fn state_changes_and_deleted_name_checks_fail_closed_on_read_errors() {
+        let path = "users/carol/settings";
+        let kv = InviteKv {
+            failed_read: Some(path.to_string()),
+            ..Default::default()
+        };
+        kv.put(path, &account(UserType::User, None, PasswordState::Set));
+        let before = kv.snapshot();
+        assert!(save_user_state(
+            &kv,
+            &caller("devtest", UserType::Admin, true),
+            "carol",
+            UserState::Deleted
+        )
+        .await
+        .is_err());
+        assert!(require_user_not_deleted(&kv, "carol").await.is_err());
+        assert_eq!(kv.snapshot(), before);
+        assert_eq!(kv.tx_calls.load(Ordering::SeqCst), 0);
+        assert!(require_user_not_deleted(&InviteKv::default(), "carol")
+            .await
+            .is_ok());
+    }
+
+    #[test]
+    fn committed_state_changes_report_pending_rbac_refresh_as_success() {
+        for state in [UserState::Deleted, UserState::Active] {
+            let result = user_state_result(
+                "carol",
+                &state,
+                Err(RPCErrors::ReasonError("scheduler unavailable".to_string())),
+            );
+            assert_eq!(result["ok"], true);
+            assert_eq!(result["user_id"], "carol");
+            assert_eq!(result["state"], json!(state));
+            assert_eq!(result["rbac_refreshed"], false);
+            let warning = result["warning"].as_str().unwrap();
+            assert!(warning.contains("RBAC refresh is pending"));
+            assert!(warning.contains("scheduler unavailable"));
+            let result = user_state_result("carol", &state, Ok(()));
+            assert_eq!(result["ok"], true);
+            assert_eq!(result["state"], json!(state));
+            assert_eq!(result["rbac_refreshed"], true);
+            assert!(result.get("warning").is_none());
+        }
     }
 }

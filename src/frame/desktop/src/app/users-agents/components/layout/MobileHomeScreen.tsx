@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import { Bot, Search, UserPlus, Server, MessageSquare, Crown, User } from 'lucide-react'
-import { Chip, IconButton } from '@mui/material'
+import { Button, Chip, IconButton } from '@mui/material'
 import { EntityAvatar } from '../shared/EntityAvatar'
 import { SearchFilterBar } from '../shared/SearchFilterBar'
 import { entityFilterOptions, filterInternalEntities, getInternalEntities, type InternalEntityFilter } from '../shared/entityFilters'
@@ -11,6 +11,7 @@ import {
   useAgents,
   useLocalUsers,
   useEntityGroups,
+  useViewerIsAdmin,
 } from '../../hooks/use-users-agents-store'
 import type { SidebarSelection } from '../../datamodel/types'
 import { UserGroupsNavItem } from '../groups/UserGroupsNavItem'
@@ -292,6 +293,7 @@ export function MobileHomeScreen({
   const agents = useAgents()
   const localUsers = useLocalUsers()
   const entityGroups = useEntityGroups()
+  const isAdmin = useViewerIsAdmin()
 
   const isEntityActive = (id: string) =>
     selection?.kind === 'entity' ? selection.entityId === id : selection?.kind === 'self' && id === self.id
@@ -386,6 +388,13 @@ export function MobileHomeScreen({
           )}
         </div>
 
+        {isAdmin ? <Button
+          fullWidth
+          size="small"
+          data-testid="users-agents-deleted-users"
+          aria-current={selection?.kind === 'deleted-users' ? 'page' : undefined}
+          onClick={() => onSelect({ kind: 'deleted-users' })}
+        >{t('usersAgents.deleted.title')}</Button> : null}
         <UserGroupsNavItem
           isActive={selection?.kind === 'user-groups'}
           onClick={() => onSelect({ kind: 'user-groups' })}

@@ -248,7 +248,7 @@ impl NativeProcess {
         }
         let ports = silent
             .iter()
-            .map(|(service, port)| format!("{service} 127.0.0.1:{port}"))
+            .map(|(service, port)| format!("{service} port {port}"))
             .collect::<Vec<_>>()
             .join(", ");
         NativeReadiness::NotListening(DeploymentError {
@@ -272,13 +272,14 @@ pub(crate) fn port_accepts(port: u16) -> bool {
     TcpStream::connect_timeout(&addr, Duration::from_millis(500)).is_ok()
 }
 
-/// Whether this node can bind `127.0.0.1:port` now. A port another program
-/// holds is reported, never taken over.
+/// Whether this node can bind `0.0.0.0:port` now, where a native app
+/// service listens. A port another program holds is reported, never taken
+/// over.
 pub(crate) fn port_free(port: u16) -> bool {
     if port_accepts(port) {
         return false;
     }
-    TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port))).is_ok()
+    TcpListener::bind(SocketAddr::from(([0, 0, 0, 0], port))).is_ok()
 }
 
 fn rotate_log(log: &Path) {
