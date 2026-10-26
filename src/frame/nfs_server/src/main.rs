@@ -85,6 +85,11 @@ fn main() {
                 .help("Origin serving the srv/publish export anonymously (standalone mode)"),
         )
         .arg(
+            Arg::new("bucket-specs")
+                .long("bucket-specs")
+                .help("JSON {appid: {buckets, storage_quota_mib}} of declared buckets (standalone mode)"),
+        )
+        .arg(
             Arg::new("log-level")
                 .long("log-level")
                 .default_value("info")
@@ -142,6 +147,9 @@ fn standalone_config(matches: &clap::ArgMatches) -> ServerConfig {
         matches.get_one::<String>("share-base-url").cloned().unwrap_or_else(|| format!("http://{}", config.listen)),
     );
     config.share.public_base_url = matches.get_one::<String>("public-base-url").cloned();
+    if let Some(path) = matches.get_one::<String>("bucket-specs") {
+        config.bucket_specs = serde_json::from_slice(&std::fs::read(path).expect("bucket specs")).expect("bucket specs JSON");
+    }
     if let Some(path) = matches.get_one::<String>("copy-test-config") {
         assert!(config.debug_api && config.listen.parse::<std::net::SocketAddr>().is_ok_and(|a| a.ip().is_loopback()), "copy test config requires standalone loopback and --debug-api");
         config.copy_test = Some(serde_json::from_slice(&std::fs::read(path).expect("copy test config")).expect("copy test config JSON"));
@@ -230,6 +238,7 @@ async fn buckyos_service_main(matches: &clap::ArgMatches) {
         None => log::warn!("zone host unknown: share links are disabled"),
     }
     config.scan_interval_secs = settings.scan_interval_secs;
+    config.gc_evict = settings.named_store_gc_evict;
     // CLI --debug-api / --scan-interval-secs still win over settings (dev use).
     config.debug_api = settings.debug_api || matches.get_flag("debug-api");
     if let Some(secs) = parse_scan_interval(matches) {
@@ -267,6 +276,9 @@ async fn serve(config: ServerConfig) {
     nfs_server::share::rpc::recover_operations(&state);
     tokio::spawn(nfs_server::share::sweeper_loop(state.clone()));
     tokio::spawn(nfs_server::ndm::sweeper_loop(state.clone()));
+    if nfs_server::share::ShareMgr::store_configured(&state.config) {
+        tokio::spawn(nfs_server::bucket::tasks::maintenance_loop(state.clone()));
+    }
     let app = nfs_server::server::build_router(state);
     let listener = match tokio::net::TcpListener::bind(&listen).await {
         Ok(l) => l,

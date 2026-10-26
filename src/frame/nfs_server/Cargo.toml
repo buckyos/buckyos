@@ -29,6 +29,9 @@ buckyos-api = { path = "../../kernel/buckyos-api" }
 name-lib = { workspace = true }
 ndn-lib = { workspace = true }
 named_store = { workspace = true }
+bucket_store = { workspace = true }
+s3_gateway = { workspace = true }
+async-trait = { workspace = true }
 rbac = { workspace = true }
 kRPC = { workspace = true }
 buckyos-http-server = { workspace = true }
@@ -40,3 +43,4 @@ hmac = "0.12"
 tempfile = { workspace = true }
 reqwest = { workspace = true }
 jsonwebtoken = { workspace = true }
+chrono = { workspace = true }

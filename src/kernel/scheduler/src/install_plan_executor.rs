@@ -182,6 +182,7 @@ fn default_reserved_hostnames(settings: &ZoneGatewaySettings) -> BTreeSet<String
         "sys".to_string(),
         "homestation".to_string(),
         "share".to_string(),
+        "s3".to_string(),
     ]);
     reserved.extend(settings.shortcuts.keys().cloned());
     reserved
@@ -1102,6 +1103,7 @@ impl SchedulerHandler for SchedulerServer {
                 "sys".to_string(),
                 "homestation".to_string(),
                 "share".to_string(),
+                "s3".to_string(),
             ]);
             let collides = plan.target_app_instance_id.is_some()
                 && (reserved.contains(&plan.shortcut_hostname)

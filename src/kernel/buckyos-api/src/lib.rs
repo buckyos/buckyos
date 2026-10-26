@@ -8,6 +8,7 @@ mod control_panel;
 mod device_identity;
 mod group_hook;
 mod homestation_client;
+pub mod bucket_client;
 mod hybrid_sso;
 mod msg_center_client;
 mod msg_contact;
@@ -91,6 +92,10 @@ pub use cyfs_gateway_api::{
 pub use device_identity::*;
 pub use group_hook::*;
 pub use homestation_client::*;
+pub use bucket_client::{
+    bucket_event_id, bucket_index_rdb_instance_config, validate_app_buckets, BucketClient, BUCKET_DATA_PATH,
+    BUCKET_EVENT_PREFIX, BUCKET_INDEX_RDB_INSTANCE_ID,
+};
 pub use hybrid_sso::*;
 pub use msg_center_client::*;
 pub use msg_contact::*;

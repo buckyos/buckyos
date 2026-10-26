@@ -214,6 +214,17 @@ p, system:msg-center,obj://msg-center/*,all,allow
 p, agent_runtime,obj://msg-center/*,all,allow
 p, agent,obj://msg-center/*,all,allow
 
+# Application object buckets: obj://bucket/<scope>/<appid>/<owner>/<name>/<key>.
+# A user's own buckets, the app's own buckets, a service's own buckets; admin may
+# list/read/manage every bucket but not write or delete (D16). Agents and grants,
+# tokens and data-policy rules are decided by nfs-server after this layer.
+p, users, obj://bucket/user/{appid}/{users}/*, list|read|create|write|delete|manage, allow
+p, admin, obj://bucket/user/{appid}/{admin}/*, list|read|create|write|delete|manage, allow
+p, admin, obj://bucket/*, list|read|manage, allow
+p, app, obj://bucket/user/{app}/*, list|read|create|write|delete|manage, allow
+p, frame, obj://bucket/user/{frame}/*, all, allow
+p, frame, obj://bucket/zone/{frame}/*, all, allow
+
 p, frame, obj://ndm/uploads, write, allow
 p, frame, obj://ndm/objects, read, allow
 p, frame, obj://ndm/retain, write, allow

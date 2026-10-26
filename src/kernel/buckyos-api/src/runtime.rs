@@ -1896,6 +1896,24 @@ impl BuckyOSRuntime {
         self.enforce_verified(&token, action, resource_path).await
     }
 
+    /// RBAC for a principal authenticated without a session token (S3 access
+    /// keys of the bucket service): `userid` and its `app:<id>` / `system:<id>` key.
+    pub async fn enforce_principal(
+        &self,
+        userid: &str,
+        authorization_key: &str,
+        resource_path: &str,
+        action: &str,
+    ) -> Result<bool> {
+        let system_config_client = self.get_system_config_client().await?;
+        crate::rbac_config::sync_rbac_enforcer(
+            || crate::load_current_rbac_config(system_config_client.as_ref()),
+            true,
+        )
+        .await?;
+        Ok(rbac::enforce(userid, authorization_key, resource_path, action, None).await)
+    }
+
     /// RBAC for a method opened to restricted sessions of `scope`.
     pub async fn enforce_opened(
         &self,
@@ -2692,6 +2710,14 @@ impl BuckyOSRuntime {
             .await?;
         let client = AiccClient::new(krpc_client);
         Ok(client)
+    }
+
+    /// Returns a short-session client of the bucket service (nfs-server).
+    pub async fn get_bucket_client(&self) -> Result<crate::BucketClient> {
+        let krpc_client = self
+            .get_zone_service_krpc_client(NFS_SERVER_SERVICE_NAME)
+            .await?;
+        Ok(crate::BucketClient::new(krpc_client))
     }
 
     /// Returns a short-session client. Acquire it again from the runtime for

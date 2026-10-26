@@ -60,6 +60,18 @@ pub fn build_router(state: SharedState) -> Router {
                 .post(crate::ndm::uploads::post_override)
                 .layer(axum::extract::DefaultBodyLimit::disable()),
         )
+        .route(crate::bucket::rpc::KRPC_PATH, post(crate::bucket::rpc::krpc))
+        .route(
+            "/bucket/v1/{*path}",
+            get(crate::bucket::http::handle)
+                .head(crate::bucket::http::handle)
+                .put(crate::bucket::http::handle)
+                .delete(crate::bucket::http::handle)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(crate::bucket::s3::PATH_PREFIX, axum::routing::any(crate::bucket::s3::handle).layer(axum::extract::DefaultBodyLimit::disable()))
+        .route("/s3/", axum::routing::any(crate::bucket::s3::handle))
+        .route("/s3/{*path}", axum::routing::any(crate::bucket::s3::handle).layer(axum::extract::DefaultBodyLimit::disable()))
         .route("/ndm/v1/objects/lookup", get(crate::ndm::forward::lookup))
         .route("/ndm/v1/import/finalize", post(crate::ndm::import::finalize).layer(axum::extract::DefaultBodyLimit::disable()))
         .route("/ndm/v1/store/{method}", post(crate::ndm::forward::store_api))
@@ -74,6 +86,7 @@ pub fn build_router(state: SharedState) -> Router {
     }
     router
         .layer(axum::middleware::from_fn_with_state(state.clone(), crate::share::serving::host_guard))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), crate::bucket::s3::host_route))
         .with_state(state)
 }
 

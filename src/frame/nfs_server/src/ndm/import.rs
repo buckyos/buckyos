@@ -24,12 +24,22 @@ struct QcidLink {
     size: u64,
 }
 
+/// Bind the single import root into a bucket (design §6.1 "上传直达桶").
+#[derive(Deserialize)]
+struct AutoBind {
+    bucket_id: String,
+    #[serde(flatten)]
+    put: bucket_store::PutRequest,
+}
+
 #[derive(Deserialize)]
 struct Manifest {
     objects: Vec<Object>,
     roots: Vec<String>,
     #[serde(default)]
     qcid_links: Vec<QcidLink>,
+    #[serde(default)]
+    auto_bind: Option<AutoBind>,
 }
 
 pub async fn finalize(State(state): State<SharedState>, req: Request) -> Response {
@@ -40,6 +50,7 @@ pub async fn finalize(State(state): State<SharedState>, req: Request) -> Respons
     if !allowed(&state, &p, RES_UPLOADS, "write").await {
         return denied("import objects");
     }
+    let headers = req.headers().clone();
     let bytes = match axum::body::to_bytes(req.into_body(), 8 * 1024 * 1024).await {
         Ok(b) => b,
         Err(e) => return ndm_error(StatusCode::BAD_REQUEST, "invalid_data", e),
@@ -50,6 +61,9 @@ pub async fn finalize(State(state): State<SharedState>, req: Request) -> Respons
     };
     if manifest.roots.is_empty() || manifest.objects.len() > 10000 || manifest.roots.len() > 10000 {
         return ndm_error(StatusCode::BAD_REQUEST, "invalid_data", "a bounded, nonempty list of roots is required");
+    }
+    if manifest.auto_bind.is_some() && manifest.roots.len() != 1 {
+        return ndm_error(StatusCode::BAD_REQUEST, "invalid_data", "auto_bind binds exactly one root");
     }
     let store = match store(&state).await {
         Ok(s) => s,
@@ -140,7 +154,32 @@ pub async fn finalize(State(state): State<SharedState>, req: Request) -> Respons
             warnings.push(format!("QCID index failed: {e}"));
         }
     }
-    Json(json!({"ready": true, "roots": roots, "warnings": warnings})).into_response()
+    let mut out = json!({"ready": true, "roots": roots, "warnings": warnings});
+    if let Some(bind) = manifest.auto_bind {
+        let root = roots[0]["obj_id"].as_str().unwrap_or_default().to_string();
+        match auto_bind(&state, &headers, bind, root).await {
+            Ok(binding) => out["binding"] = binding,
+            Err(e) => {
+                let status = StatusCode::from_u16(e.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+                return ndm_error(status, e.code(), e);
+            }
+        }
+    }
+    Json(out).into_response()
+}
+
+/// Turns the 24h import hold into the bucket's long-term binding.
+async fn auto_bind(state: &SharedState, headers: &axum::http::HeaderMap, bind: AutoBind, root: String) -> bucket_store::BucketResult<serde_json::Value> {
+    let id: bucket_store::BucketId = bind.bucket_id.parse()?;
+    let session = crate::bucket::session_from_headers(state, &crate::auth::Credentials::from_headers(headers)).await?;
+    crate::bucket::spec::ensure(state, &id).await?;
+    let store = state.buckets.store(state).await?.clone();
+    let caller = crate::bucket::caller_of(state, &session, None).await;
+    let mut put = bind.put;
+    put.obj_id = root.clone();
+    let key = put.key.clone();
+    let r = store.put(&id, &caller, put).await?;
+    Ok(json!({"bucket_id": id, "key": key, "obj_id": root, "version": r.version, "etag": r.etag, "created": r.created}))
 }
 
 async fn verify_qcid(store: &named_store::NamedDataMgr, qcid: &ChunkId, content: &ObjId, size: u64) -> Result<(), String> {

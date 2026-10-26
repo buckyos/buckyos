@@ -272,6 +272,14 @@ servers:
                 # NDM 上传与代理协议（/ndm/v1/*、/ndm/proxy/v1/*）：nfs-server 承接，
                 # 原样转发；每个请求的身份与授权由 nfs-server 自己判。
                 global SERVICE_ID="nfs-server";
+              elif match $REQ.path "/s3/*" then
+                # 应用对象桶的 S3 兼容面（路径风格，endpoint https://<zone>/s3）；
+                # s3.<zone> 主机名经 APP_INFO 同样到 nfs-server。SigV4 由服务自己校验。
+                global SERVICE_ID="nfs-server";
+              elif match $REQ.path "/bucket/*" then
+                # 应用对象桶数据面（/bucket/v1/<bucket_id>/<key>）：nfs-server 承接，
+                # 鉴权在服务内（SSO cookie、Bearer 或 bkt_ 能力令牌）。
+                global SERVICE_ID="nfs-server";
               elif match $REQ.path "/nfs/v1/*" then
                 # NFSP v0（NamedFileSystem_Protocol_v0）：zone 级通用协议入口，
                 # 与 /ndn 同级，不走 /kapi/<service> 形态；路径原样转发到 nfs-server。

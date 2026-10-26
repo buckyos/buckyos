@@ -18,6 +18,9 @@ pub struct NfsServerSettings {
     pub scan_interval_secs: u64,
     /// Enables `POST /nfs/v1/debug/*` (dev/test only).
     pub debug_api: bool,
+    /// nfs-server is the Zone's named-store GC host; eviction of unretained
+    /// (class 0) objects stays off until every writer retains what it keeps.
+    pub named_store_gc_evict: bool,
 }
 
 impl Default for NfsServerSettings {
@@ -25,6 +28,7 @@ impl Default for NfsServerSettings {
         NfsServerSettings {
             scan_interval_secs: 30,
             debug_api: false,
+            named_store_gc_evict: false,
         }
     }
 }

@@ -116,6 +116,10 @@ pub struct Principal {
 }
 
 impl Principal {
+    pub fn new(user: String, app_key: String, app: String, token: Option<String>) -> Self {
+        Principal { user, app_key, app, token }
+    }
+
     /// Owner of uploads and holdings: the same user through the same app.
     pub fn key(&self) -> String {
         format!("{}|{}", self.user, self.app)

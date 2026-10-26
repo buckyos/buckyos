@@ -25,6 +25,13 @@
           "allow_guest": false
         }
       }
-    }
+    },
+    "buckets": {
+      "artifacts": {
+        "kind": "data",
+        "data_policy": "app_data"
+      }
+    },
+    "storage_quota_mib": 8192
   }
 }

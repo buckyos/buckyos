@@ -102,6 +102,10 @@ pub struct ServerConfig {
     pub named_store: NamedStoreSource,
     pub share: ShareConfig,
     pub ndm: NdmConfig,
+    /// Standalone: what each app declares (`--bucket-specs`); service mode reads app specs.
+    pub bucket_specs: std::collections::HashMap<String, crate::bucket::spec::AppBuckets>,
+    /// The GC host may evict class-0 named-store objects (off until every writer retains).
+    pub gc_evict: bool,
 }
 
 impl ServerConfig {
@@ -121,6 +125,8 @@ impl ServerConfig {
             named_store: NamedStoreSource::None,
             share: ShareConfig::default(),
             ndm: NdmConfig::default(),
+            bucket_specs: Default::default(),
+            gc_evict: false,
         }
     }
 

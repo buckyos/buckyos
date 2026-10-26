@@ -106,6 +106,7 @@ pub struct NfsSessionClaims {
     pub app_id: String,
     /// RBAC subject of the target (`app:<app_id>` or `system:<service>`).
     pub authorization_key: String,
+    pub sudo: bool,
 }
 
 pub async fn verify_nfs_session_token(
@@ -134,6 +135,7 @@ pub async fn verify_nfs_session_token(
         principal_kind: claims.principal_kind,
         app_id: claims.target.canonical_key(),
         authorization_key: claims.target.authorization_key(),
+        sudo: parsed.sudo,
     })
 }
 

@@ -4,6 +4,7 @@
 > 日期：2026-10-26  
 > 上游文档：[buckyos 数据落盘架构方向](./buckyos%20数据落盘架构方向.md) §6.3–§6.6、§9.3、§10.4  
 > 底层契约：cyfs-ndn `doc/GC/named_store_gc.md`（三档存活、pins、outbox）、`doc/NDM Protocol/*`（tus 上传、store JSON API）、`doc/CYFS Protocol/CYFS 标准对象.md`（FileObject / DirObject / ChunkList）  
+> 实施：M0–M4 已实现，差异与未完成项见 §20。  
 > 性质：本文把落盘方向文档里"待设计"的 Bucket 收敛成可实施的中间件设计。标注 **【已定】** 的是已拍板的判断（全部裁决见 §18）；标注 **【现状】** 的是当前代码事实。
 
 ## 0. 一句话
@@ -1085,6 +1086,25 @@ Bucket 把保留表达成 pin，但 pin 要有效果，依赖 named store 侧几
 | v0.4 | 2026-10-25 | §18 全部裁决定案；§14.1 代码归属 cyfs-ndn lib + nfs-server loader |
 | v0.6 | 2026-10-26 | 内容网络视角：数据策略按"我创作 / 别人创作我认真收集 / 别人创作最好能有"三档重排，新增 `collected`、`ambient`，并入 `archive`；Binding 增 `origin`；Files 投影增 `Collected/`；D19–D20 定案 |
 | v0.5 | 2026-10-26 | 按 review：zone 只表达服务级归属、默认不共享，新增 `create` 动作与创建者覆盖规则；PUT 成功 = 持久保存三条件，状态机去掉 pending；`Expires` 保持 HTTP 缓存含义，删除 TTL 用 `x-bucky-expires-at`；预签名 URL 无状态，与 `bkt_` 令牌区分；快照 manifest 权威 + tree 派生、冲突改名、快照计费、备份时间点契约；版本成本措辞收窄；`storage_class` 改名 `data_policy`；新增 §3.4 三概念 |
+
+## 20. 实施状态（2026-10-26）
+
+| 阶段 | 状态 | 落点 |
+| --- | --- | --- |
+| cyfs-ndn 前置 | `list_pins_by_owner`（store / NamedStore / NamedDataMgr 跨分片合并分页）、`NamedDataMgr::touch`、`deliver_outbox` + `maintenance_round(evict)`（GC 宿主一轮：投递级联边、刷 LRU、过期 pin、可选驱逐）已实现 | `named_store/src/{store_db,named_store,ndm,gc_types}.rs` |
+| M0 | 已实现：schema、put / get / head / delete / list（前缀、分隔符、续页）/ list_versions / copy / batch / set_metadata、三种条件写、版本与 delete marker、六档语义、pin 状态机（pin 在前索引在后、releasing 补齐）、reconcile、两级配额与告警、grant、`bkt_` 令牌、生命周期、cache LRU、快照 / 恢复 / 对账、HTTP 数据面 | cyfs-ndn `src/bucket_store` |
+| M1 | 已实现：`bucket-index` 实例登记、kRPC `bucket.*`（`/kapi/nfs-server`）、`/bucket/v1` 数据面与网关路由、RBAC 默认策略、`install_config.buckets` / `storage_quota_mib`（AppDoc → spec，deployer 与 pikg 校验 D17）、懒建桶与孤儿标记、`import/finalize` 的 `auto_bind`、GC 宿主与维护循环、kevent 事件 | buckyos `src/frame/nfs_server/src/bucket/`、`kernel/buckyos-api/src/bucket_client.rs`、`rbac_config.rs`、`rootfs/etc/boot_gateway.yaml` |
+| M2 | 已实现：Rust `BucketClient`（含 `put_file`）、websdk `BucketClient` 与 `startUpload({ bind })`、CLI `buckyos bucket ls/stat/put/get/rm/link`；首个调用方为 OpenDAN 报告产物（Jarvis 模板声明 `artifacts` 桶，产物绑定进 `user/<agent app>/<owner>/artifacts`） | websdk `src/bucket_client.ts`、`cli/modules/bucket.ts`；`frame/opendan/src/objects.rs` |
+| M4 | 已实现：生命周期每小时、对象 TTL、版本开关 `bucket.set_versioning`、`snapshot` / `list_snapshots` / `delete_snapshot` / `restore_from_snapshot` / `export` / `verify_references`、对象与配额事件 | 同上 |
+| M3 | 已实现：cyfs-ndn `s3_gateway`（SigV4 header 与预签名、aws-chunked 含 chunk 签名校验、MinIO 式 ETag、第一期操作集 + ListObjects v1 / GetBucketVersioning、multipart、ACL 只读返回 owner FULL_CONTROL），密钥与分段会话表在 `bucket_store::s3`；nfs-server `/s3/*` 与 `s3.<zone>`、kRPC `bucket.create_s3_key / list_s3_keys / revoke_s3_key`、CLI `buckyos bucket s3-key-create / s3-keys / s3-key-revoke`、每日清理 7 天未完成的上传 | cyfs-ndn `src/s3_gateway`；nfs-server `src/bucket/s3.rs` |
+
+与本文的差异和未完成项：
+
+1. 事件走 kevent（全局事件 `/bucket/<bucket_id>`，池告警 `/bucket-quota/<kind>/<appid>/<owner>`），不是 kmsg：事件是尽力投递的通知，没有消费确认语义。
+2. `ambient` 档的描述字节不计入任何资源池（只受桶级软配额约束）；`ambient` 的 v1 读取按 D20“有则用、无则 404 `origin_unavailable`”，不返回 202。
+3. `s3_access_keys` 存密钥本身（SigV4 校验需要原密钥），不是 hash。S3 面：桶名 `<appid>-<name>`（小写、非字母数字转 `-`），只列出密钥 (user, app) 的 user 桶里 `kind=data` 的；region 固定 `us-east-1`、只支持路径风格；没有存过 MD5 的绑定（原生接口写入的）给出 `<hash 前 32 位>-1` 形式的 ETag，让客户端不把它当 MD5；分段上传的段用 `s3-upload:<upload_id>` 的 7 天 Lease 保留、完成后不立即解除（级联异步收敛）；`UploadPartCopy` 与第二期操作（版本列举、生命周期配置、通知）未做；控制面板的密钥管理 UI 未做（用 kRPC / CLI）。
+4. 未做：documents / collected 的 Files 只读投影（D11）、`gt_` 与群 48h 链接并入令牌模块（D18）、配额告警的 System Notify、卸载流程对孤儿桶的处置 UI、存储空间页、AIWorkspace `FsObjectStore` 迁移、msg-center / HomeStation 保留表迁移、`bucket.prefetch`（P2）。
+5. cyfs-ndn 并行项未做：chunk 字节回收、`MsgObject` 子项遍历。GC 宿主默认不驱逐（`services/nfs-server/settings.named_store_gc_evict = false`），因为仍有写入方只 put 不 pin，打开驱逐会删掉它们的内容。
 
 ## 附录 A：与落盘方向文档待定清单的对应
 

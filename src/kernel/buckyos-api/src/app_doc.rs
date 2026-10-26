@@ -192,6 +192,12 @@ pub struct ServiceConfigTips {
     pub external_mount_points: HashMap<PathBuf, Option<MountPointInfo>>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub rdb_instances: HashMap<String, RdbInstanceConfig>,
+    /// Application object buckets (doc/arch/应用对象桶 Bucket 设计.md §4.3).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub buckets: HashMap<String, bucket_store::BucketDecl>,
+    /// App pool limit over the app_data + temp buckets; required when any is declared (D17).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_quota_mib: Option<u64>,
     #[serde(default, skip_serializing_if = "is_default")]
     pub instance_volume: InstanceVolumeConfig,
     //bash_envs: key:env_name, value: description<language_id, description>

@@ -299,6 +299,12 @@ pub struct ServiceSpecConfig {
     #[serde(default)]
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub rdb_instances: HashMap<String, RdbInstanceConfig>,
+    /// Declared object buckets; nfs-server creates them lazily from this spec.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub buckets: HashMap<String, bucket_store::BucketDecl>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_quota_mib: Option<u64>,
     #[serde(default)]
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub bash_envs: HashMap<String, String>,
@@ -331,6 +337,8 @@ impl Default for ServiceSpecConfig {
             start_param: None,
             res_pool_id: default_res_pool_id(),
             rdb_instances: HashMap::new(),
+            buckets: HashMap::new(),
+            storage_quota_mib: None,
             instance_volume: InstanceVolumeConfig::default(),
             bash_envs: HashMap::new(),
             runtime_caps: HashMap::new(),

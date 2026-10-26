@@ -45,6 +45,7 @@ kRPC ={ workspace = true }
 rbac = { workspace = true }
 ndn-lib = { workspace = true }
 named_store = { workspace = true }
+bucket_store = { workspace = true }
 ndn-toolkit = { workspace = true }
 
 [dev-dependencies]

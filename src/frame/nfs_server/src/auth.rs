@@ -127,7 +127,7 @@ pub fn require_file_actor(actor: &Actor) -> NfsResult<()> {
 }
 
 /// `(owner user id, agent id)` of a zone agent DID, from `users/<u>/agents/<id>/spec`.
-async fn agent_owner(subject: &str) -> Option<(String, String)> {
+pub(crate) async fn agent_owner(subject: &str) -> Option<(String, String)> {
     use std::collections::HashMap;
     use std::sync::Mutex;
     static CACHE: Mutex<Option<HashMap<String, (String, String)>>> = Mutex::new(None);

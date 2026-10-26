@@ -30,6 +30,7 @@ pub struct AppState {
     pub scan_state: std::sync::Mutex<crate::reconciler::ScanState>,
     pub share: crate::share::ShareMgr,
     pub ndm: crate::ndm::NdmMgr,
+    pub buckets: crate::bucket::BucketHost,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -70,6 +71,7 @@ impl AppState {
             zone_owner: std::sync::RwLock::new(None),
             share,
             ndm,
+            buckets: Default::default(),
             db,
             config,
         }))

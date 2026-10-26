@@ -13,6 +13,7 @@
 pub mod access;
 pub mod acl;
 pub mod auth;
+pub mod bucket;
 pub mod config;
 pub mod copy;
 pub mod containers;

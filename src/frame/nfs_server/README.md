@@ -196,6 +196,23 @@ loopback 监听且显式开启 `--debug-api`。测试仍执行 JWT 签名及标�
 
 就绪根及依赖元数据使用 24 小时、递归展开的临时 pin，覆盖复用内容的强依赖；该保留不能替代消息、发布、异步请求等业务引用。零字节 TUS 在创建时直接完成真实空 chunk 写入，无需 PATCH。上传取消只清理所属 session 的 staging/pin，不删除共享对象。
 
+manifest 可带 `auto_bind: { bucket_id, key, content_type?, metadata?, tags?, expires_at?, origin?, if_none_match?, if_match? }`（只能有一个根）：登记完成后在同一请求里把根绑定进应用对象桶，响应多一个 `binding: { bucket_id, key, obj_id, version, etag, created }`；绑定失败按桶的错误码返回（如 412 `precondition_failed`、507 `quota_exceeded`），24 小时临时保留照旧。
+
+## 应用对象桶
+
+模型与规则在 cyfs-ndn `bucket_store`（设计：`doc/arch/应用对象桶 Bucket 设计.md`），本服务是它的宿主（`src/bucket/`）：
+
+- 索引：`bucket-index` RDB 实例（scheduler 在 `services/nfs-server/spec` 登记，sqlite，`$BUCKYOS_ROOT/data/nfs-server/bucket-index.db`）；独立模式在 `--data-dir/bucket-index.db`。
+- 桶只来自声明：`users/<user>/apps/<appid>/spec` 或 `services/<appid>/spec` 的 `spec_config.buckets` 与 `storage_quota_mib`，访问时懒建、每分钟同步声明值，不再声明的桶标记 `orphaned_at` 保留。独立模式用 `--bucket-specs <json>`（`{appid: {buckets, storage_quota_mib}}`）。
+- kRPC `bucket.*`：`POST /kapi/nfs-server`（方法表见设计 §12.1，另有 `bucket.set_versioning`）；`params.access_token` 可带 `bkt_` 能力令牌。
+- 数据面：`GET | HEAD | PUT | DELETE /bucket/v1/<scope>/<appid>/<owner>/<name>/<key>`（网关 `/bucket/*` 转发到本服务），会话来自 Bearer 或 SSO cookie，能力令牌来自 `?token=` 或 `Bearer bkt_…`；PUT 单请求上限 32 MiB。
+- 授权：第一层 RBAC `obj://bucket/<bucket_id>/<key>`（默认策略在 `buckyos-api` `rbac_config.rs`）；Agent（DID 会话）只在 owner 的 user 桶上 list/read，读写模式再加 create/write；服务会话对自己 appid 的桶全权；之后由 lib 判 grant、令牌与档位规则。
+- 后台：本服务是 Zone named store 的 GC 宿主，每 30 秒投递级联边、刷 LRU、过期 pin；驱逐 class 0 对象由 `services/nfs-server/settings.named_store_gc_evict` 打开（默认关：还有写入方不做保留）。桶 reconcile 每 10 分钟（启动一次、每日深度对账与用量重算），生命周期每小时。对象事件发 kevent `/bucket/<bucket_id>`。
+
+- S3 兼容面：`/s3/*`（网关 `/s3/*` 转发）与 `s3.<zone>` 的所有路径（scheduler 的 APP_INFO `s3` 项），路径风格、region `us-east-1`；协议在 cyfs-ndn `s3_gateway`，本服务只回答密钥对应的 (user, app) 与它的 RBAC（`runtime.enforce_principal`，无会话 token）。密钥用 kRPC `bucket.create_s3_key {appid, scope?, expires_at?}` / `bucket.list_s3_keys` / `bucket.revoke_s3_key` 管理，只接受用户本人从系统 UI 来的会话；桶名是 `<appid>-<name>`。
+
+回归：`cargo test -p nfs_server --test bucket`；lib 单测 `cargo test -p bucket_store -p s3_gateway`（cyfs-ndn）。
+
 ## 编辑器取消写入
 
 控制面写操作 `abort_write { lease_id }` 使用当前 NFSP `session` 与递增 `seq`。有效租约只能由所属会话取消；成功返回 `{ "aborted": true }`、释放租约并删除暂存上传。不存在或已提交的租约重复取消也成功，便于客户端在 `finally` 清理。跨会话取消返回 `LEASE_CONFLICT`。NFSP 会话绑定发起 hello 的身份，因此租约也只属于该用户。

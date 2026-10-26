@@ -591,6 +591,10 @@ impl SystemConfigBuilder {
                 expose_uri: Some("/nfs/v1".to_string()),
             };
         }
+        config.spec_config.rdb_instances.insert(
+            buckyos_api::BUCKET_INDEX_RDB_INSTANCE_ID.to_string(),
+            buckyos_api::bucket_index_rdb_instance_config(),
+        );
         self.insert_json("services/nfs-server/spec", &config)?;
 
         let settings = NfsServerSettings::default();

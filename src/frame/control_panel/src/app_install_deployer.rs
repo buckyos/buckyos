@@ -248,6 +248,8 @@ pub(crate) fn build_install_config(
             })
             .collect(),
         rdb_instances: tips.rdb_instances.clone(),
+        buckets: tips.buckets.clone(),
+        storage_quota_mib: tips.storage_quota_mib,
         instance_volume: tips.instance_volume.clone(),
         runtime_caps: tips.runtime_caps.clone(),
         container_param: tips.container_param.clone(),
@@ -258,6 +260,7 @@ pub(crate) fn build_install_config(
         .map(|value| value.to_string())
         .unwrap_or_else(|_| app_doc.app_did().to_string());
     validate_app_rdb_instances(&appid, &config.rdb_instances, &mut issues);
+    issues.extend(buckyos_api::validate_app_buckets(&config.buckets, config.storage_quota_mib));
     for (name, endpoint) in &tips.service_endpoints {
         let setting = install_params.service_settings.services.get(name);
         if matches!(setting, Some(setting) if !setting.enabled) {
