@@ -234,11 +234,15 @@ T0 先验证正式身份/会话可行性；T1 与 T2 并行完成产物和安装
 
 - `cargo test -p buckyos-api --lib node_control`、`cargo test -p node_daemon` 中 desktop_runtime/run_plist 用例，BuckyOSApp `cargo test --lib node_control` 与 `cargo check`；`tools/tests`、`publish/tests` Python 用例（`test_verify_pkg_infers_rpm_format_from_extension` 在 macOS 宿主上原本就失败，与本任务无关）；BuckyOSApp `tsc` 除 4 个既有的 websdk 类型错误外通过。
 - macOS 15.8.1 arm64、ad-hoc、debug 构建、含空格的自定义 root：bundle 组装/签名/复制后校验；未绑定时 `service start` 拒绝；直接运行 bundle 内主程序时根路径发现、单实例锁、绑定其他 uid 拒绝、SIGTERM 有界退出成立；Runtime 自报 uid 501、GUI audit session、两项权限缺失（非 Runtime 身份启动，预期）；`stop_osx.sh` 只停该 root 的进程。gateway 所需端口：普通用户可绑定 `0.0.0.0:80`/`[::]:80`，不能绑定 `127.0.0.1:80`；`boot_gateway.yaml` 用 `[::]:80`，`make_config.ts` 的 443 用 `0.0.0.0`。
+- 同机真实 LaunchAgent（2026-10-25，用户在 GUI 会话中执行 `start.py`，release 构建、ad-hoc）：`gui/501`、asid 100002（GUI 会话）、plist 来自 `~/Library/LaunchAgents`、主程序与参数、env（`HOME`/`BUCKYOS_ROOT`/PATH）、`exit timeout = 30` 均符合；进程 uid 501；`service status` 报告绑定、自启、加载与 pid 正确。system-config/scheduler/verify-hub/control-panel 以用户身份运行并监听。cyfs_gateway 起初反复退出，原因是 VS Code 扩展进程占用 `*:443`（与本任务无关）；释放端口后 gateway 以用户身份监听 `*:443`、`*:80`、`*:3180`，`check.py` 为 Running，即基础服务在普通用户 LaunchAgent 下可用（T0 非 root 端口项）。`service stop` 后 job 卸载、本实例进程全部退出且未被 KeepAlive 拉起，LaunchAgents 中的 plist 保留；`service start` 重新 bootstrap，服务以新 pid 恢复，`check.py` 为 Running。
+- TCC（T0/T5，ad-hoc 开发签名）：在系统设置中给 “BuckyOS Runtime” 授予屏幕录制与辅助功能后，经 LaunchServices 启动的 app 入口自报两项均已授权；常驻的 LaunchAgent 进程在重启前两项仍报缺失（辅助功能/输入在该进程内也不是实时生效），app 入口 `kickstart -k` 重启后新进程报告 `ui ready`、capture/input ready，即授权对 launchd 启动的同一 bundle 进程生效。重启期间 system-config/verify-hub/scheduler pid 不变，日志有 SIGTERM 有界退出两行。用户第一次重新 `open` 未触发重启，原因未查明；随后同样的入口（`open -n`）触发了重启。
+- 控制器崩溃（M12b 部分）：`kill -9` 后 launchd 按 KeepAlive 拉起新实例（`last terminating signal = Killed: 9`，本次连杀 3 次，`runs = 4`），system-config/verify-hub/scheduler pid 不变。cyfs_gateway 例外：既有启动流程在每次 node_daemon 启动时以 `is_restart=true` 调用 `keep_cyfs_gateway_service`（`node_daemon.rs:1966`），会重启正在运行的 gateway；新 gateway 的 443 TLS 栈默认不设 `reuse_address`（cyfs-gateway `tls_stack.rs:702`），旧连接的 TIME_WAIT 使 `bind 0.0.0.0:443` 失败约 30 s，每次控制器重启后 gateway 中断约 35 s。两者均为既有行为，不是本任务引入，但与“controller 崩溃不影响 run item”的契约冲突，需单独修复。
+- LaunchServices 同时登记了两份 `com.buckyos.runtime`：安装的 `/opt/buckyos/...` 与构建产物 `src/rootfs/bin/node-daemon/...`（构建后被系统自动登记，标记 launch-disabled）。开发机上每次构建都会出现第二份；pkg 组件 `BundleIsRelocatable=false` 正是为避免安装被重定位到这类副本。
 
 未执行 / 未验证（剩余验收，M01–M14 均未正式跑过）：
 
-- 真实 LaunchAgent：`service register/start/stop/restart/autostart`、登录启动、注销、Login Items 禁用、崩溃后 KeepAlive 拉起、`bootout` 触发的 Executor 有界退出（本机执行时被会话权限策略拦截，需在目标机上由人执行）。
-- 正式签名身份、TCC 归属（系统设置中的授权名称、worker/shell 子进程归属）、授权撤销与升级连续性、本地网络权限提示。
+- 真实 LaunchAgent：`service autostart`、登录启动、注销、Login Items 禁用、崩溃后 KeepAlive 拉起（注册、启动、停止/再启动与 `kickstart -k` 有界退出已在本机验证，见上）。
+- 正式签名身份下的 TCC 归属与升级连续性、worker/shell 子进程归属、授权撤销后的降级与恢复、本地网络权限提示（ad-hoc 下授权对 LaunchAgent 进程生效已验证，见上）。
 - pkg 构建、安装、覆盖升级、卸载；旧 root 安装残留的处理；无 GUI 用户安装后首次打开 Runtime 的管理员授权流程。
 - Intel 与 macOS 14；GUI DV（`dev-tests.yml` 的 macOS 任务仍以 sudo 直接启动，不能证明本任务）。
 

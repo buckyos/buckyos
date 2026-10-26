@@ -95,6 +95,7 @@
 //     `LimitLoadToSessionType=Aqua`，参数 `--enable_active --desktop_daemon`，
 //     env 为 `BUCKYOS_ROOT`、绑定用户 `HOME`、服务 PATH，日志写 `logs/node_daemon/launchd.*.log`。
 //     `RunAtLoad`/`KeepAlive`/`AbandonProcessGroup` 为 true，`ExitTimeOut=30` 留给 Executor 有界退出。
+//   - register：新绑定时开启登录自启；同一用户再次 register（start.py、覆盖安装）保留原偏好。
 //   - 登录自启偏好 = LaunchAgents 目录里有没有这份 plist；关闭自启后手动启动从
 //     `local/node_daemon/com.buckyos.runtime.plist` bootstrap。node_control 从不 `launchctl disable`，
 //     看到 disabled 只可能来自用户/系统设置（Login Items），如实报告，不反复 enable。
@@ -1682,15 +1683,18 @@ fn path_owner(_path: &Path) -> Option<u32> {
     None
 }
 
-/// Bind a root to one OS user and install its login LaunchAgent (autostart
-/// on). Run as root by the installer, or by that user for a root it already
-/// owns (development). Does not start the Runtime.
+/// Bind a root to one OS user and install its login LaunchAgent. A new
+/// binding turns login autostart on; registering the same user again
+/// (start.py, a package upgrade) keeps that user's autostart preference.
+/// Run as root by the installer, or by that user for a root it already owns
+/// (development). Does not start the Runtime.
 pub fn macos_register_runtime(buckyos_root: &Path, user: &str) -> Result<Vec<String>, String> {
     let target = lookup_os_user(user).ok_or_else(|| format!("unknown OS user: {}", user))?;
     if target.uid == 0 {
         return Err("the Desktop Runtime cannot be bound to root".into());
     }
-    if let Some(existing) = read_desktop_binding(buckyos_root) {
+    let previous = read_desktop_binding(buckyos_root);
+    if let Some(existing) = previous.as_ref() {
         if existing.uid != target.uid {
             return Err(format!(
                 "{} is already bound to OS user {} (uid {}); unregister it first",
@@ -1751,12 +1755,12 @@ pub fn macos_register_runtime(buckyos_root: &Path, user: &str) -> Result<Vec<Str
         binding.uid,
         binding.home.display()
     ));
-    write_macos_launch_agent(
-        buckyos_root,
-        &binding,
-        &macos_launch_agent_plist_path(&binding.home),
-        &mut actions,
-    )?;
+    let installed = macos_launch_agent_plist_path(&binding.home);
+    if previous.is_none() || installed.is_file() {
+        write_macos_launch_agent(buckyos_root, &binding, &installed, &mut actions)?;
+    } else {
+        actions.push("login autostart stays off".into());
+    }
     Ok(actions)
 }
 
