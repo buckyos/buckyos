@@ -985,6 +985,16 @@ pub struct HostMeta {
     /// it is not tried again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub media_degraded: bool,
+    /// Background lines shown after tool results (`[input] background =
+    /// "after_tools"`): line key → digest of the text last shown. Committed
+    /// with the message that showed them, so a crash before that commit
+    /// shows them again and one after it never twice.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub observed: BTreeMap<String, String>,
+    /// The history epoch `observed` belongs to: after a rewrite the lines
+    /// are shown afresh.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub observed_epoch: u64,
 }
 
 pub const HOST_META_KEY: &str = "libopendan";

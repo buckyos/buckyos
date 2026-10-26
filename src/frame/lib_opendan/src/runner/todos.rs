@@ -27,7 +27,7 @@ pub(super) fn store(sh: &Shared) -> TodoStore {
     store_of(&sh.dir)
 }
 
-fn load(sh: &Shared) -> TodoList {
+pub(super) fn load(sh: &Shared) -> TodoList {
     store(sh).load().unwrap_or_else(|e| {
         log::warn!("session {}: todo list unreadable: {e}", sh.dir.sid());
         TodoList::default()

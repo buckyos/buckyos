@@ -305,7 +305,9 @@ runs/<run_id>/exec/<call_id>/     shell 命令的执行目录：command、stdout
 | `handover` | run 停在 behavior 交接点：`{next_behavior, at_ms}`，与让出时的快照、`status = paused` 在**同一次** run.json 写入中记录（run.json 版本 6）。非空时任何执行者都不得在该 run 上继续推理：xllm 遇到宿主 run 的 `Done{next_behavior=B}` 只记录它（不记 `completed`），`xllm --resume` 拒绝接手；由会话读取 B 的进入模式并提交转移。会话重新打开该 run 执行（status 回到 `running`）时清除 |
 | `usage.llm_requests` | 本 run 的推理尝试数：libopendan 在每个 outcome 后加上本段经 run 的 `LlmClient::infer` 发起的 Round 数（含失败 / 中断），xllm 接手后在其上继续累加；任何执行者都不重置或覆盖 |
 
-快照 `state.host["libopendan"]`（HostMeta）：`{session_id, base_input_len, process_entry, inherited_below, input_receipts[], history_epoch?, epoch_turn?, epoch_input_seq?}`，各执行者必须原样保留。后三项在第一次中途重写后出现（为 0 时省略）：`history_epoch` 是本 run 已发生的中途重写次数，`epoch_turn` 是当前 epoch 开始时所在的 Turn（新 epoch 中先于任何 receipt 的条目归属于它），`input_seq ≤ epoch_input_seq` 的 receipt 属于更早的 epoch（身份仍有效，位置不再适用）。
+快照 `state.host["libopendan"]`（HostMeta）：`{session_id, base_input_len, process_entry, inherited_below, input_receipts[], history_epoch?, epoch_turn?, epoch_input_seq?, observed?, observed_epoch?}`，各执行者必须原样保留。`history_epoch` 三项在第一次中途重写后出现（为 0 时省略）：`history_epoch` 是本 run 已发生的中途重写次数，`epoch_turn` 是当前 epoch 开始时所在的 Turn（新 epoch 中先于任何 receipt 的条目归属于它），`input_seq ≤ epoch_input_seq` 的 receipt 属于更早的 epoch（身份仍有效，位置不再适用）。`observed`（行键 → 文本摘要）与 `observed_epoch` 只出现在 `[input] background = "after_tools"` 的 run：工具结果后已展示的背景行，随展示它们的 `<<background_context>>` 消息一起发布；`observed_epoch ≠ history_epoch` 时视为空（重写后重新展示）。这条消息没有 receipt，不是输入，按普通用户消息写入 worklog。
+
+run.json `host.extra` 中由宿主冻结、恢复与重建工具时沿用的键：`call_intent: true`（该 run 的 behavior 声明 `[capabilities] call_intent`：每个原生函数的 schema 带 required 的 `intent`，执行前校验，交给工具前去掉，in-flight 记录与快照保留原始参数）、`background: "after_tools"`。
 
 **run 生命周期**：
 

@@ -293,3 +293,10 @@ primary-runtime TODO T1–T7 实施时对本层与执行器的小改动（记录
 - `agent_tool::todo_tools`：`TodoAttempt.baseline` / `AttemptTarget.baseline`（派出的 attempt 所在 runtime 声明的基线），PLAN 视图属性 `baseline="…"`；`TodoRecord.runtime_id / workspace` 的注释改为“两者独立”。
 - node_executor：exec 的环境多 `EXECUTOR_CALL_ID / EXECUTOR_RUN_ID`（执行器自己的操作身份，buckyos-api 常量 `ENV_EXECUTOR_CALL_ID / ENV_EXECUTOR_RUN_ID`）；`ExecutorOptions.path_prefix`（宿主目录排在每条命令 PATH 最前），`ExecutorOptions` 去掉 `Copy`。
 - 发现：节点 runtime 只执行带调用 ID、有持久 run 目录的命令——libopendan 绑定时的 `requirement.tools` 探测此前在节点上不能成功；改由 libopendan `run_probe` 补调用 ID 与 run 目录，本层不变。
+
+### 11.2 plan_simple 实施时的补充改动（2026-10-25）
+
+[plan_simple TODO](opendan-plan-simple-todo.md) 实施时对本层的小改动（记录见该文 §10）：
+
+- `agent_tool::todo_tools`：`TodoRecord.behavior` / `NewTodo.behavior` / `TodoAttempt.behavior` / `AttemptTarget.behavior`（子 Session 的入口 behavior，首次派发写入、重试沿用）；`TodoList::admit_serial`（串行 Todo 作为独立子 Session 派发前的准入：pending、无其它串行在执行、无未 Review 结果、`after` 已接受；由 libopendan 在列表锁内调用）；`TodoRecord::view_line`（视图中单个 `<todo …>` 元素，`render_view` 与工具结果后的背景共用）；`task_text` 的依赖行对子 Session 报告附 `read-session` 提示与 artifacts。
+- `llm_context` 本身未改：函数结果后的观察用既有 `CheckpointHook::before_inference` → `Injection`（function call 追加到 accumulated、批次未配对或挂起时不注入），`intent` 由 libopendan 的 `SessionToolManager` 加到 schema 并校验、剥离（不改 `AiToolCall` 与 xllm 工具契约）。

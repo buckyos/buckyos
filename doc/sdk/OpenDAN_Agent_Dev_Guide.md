@@ -165,6 +165,7 @@ action_whitelist = ["group:bash"]
 | 显式 `[]` | 清空对应列表，不补回默认组 |
 | `group:bash` | 唯一内置组：`shell`、`read_file`、`write_file`、`edit_file`；auto 模式另加三个 task 工具 |
 | 普通名称 | 查询宿主注册的具名工具，不是在内置组中挑选同名成员 |
+| `call_intent = true` | 只用于 function_call：宿主给每个原生函数的 schema 加 required 的 `intent`，执行前校验（缺失 / 空白 / 非字符串 → 可修正错误，调用不执行），交给工具前去掉，原始参数保留在快照与 worklog；Jarvis `plan_simple` 使用 |
 
 因此，上述配置的实际效果是无原生 tools，整个 bash 组作为 actions 提供，包含 task 工具。**这是当前实现与 CLI 优先目标之间的差距，不能据此继续把所有新能力展开成 action。**
 

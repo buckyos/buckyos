@@ -1459,8 +1459,9 @@ async fn work_sessions_take_the_cmd_skills_chosen_at_creation() {
         skills,
         after: Vec::new(),
         batch: None,
-            runtime_id: None,
+        runtime_id: None,
         workspace: None,
+        behavior: None,
     };
     let t1 = store.update(|l| l.add(todo("with", vec!["image".into()]), 1)).unwrap();
     let t2 = store.update(|l| l.add(todo("without", Vec::new()), 1)).unwrap();

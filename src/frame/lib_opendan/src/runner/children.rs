@@ -34,7 +34,7 @@ use super::shared::{commit_and_report, Shared};
 /// Task id prefix of a suspended call waiting for a sub session.
 pub const SESSION_TASK_PREFIX: &str = "session:";
 
-const ATTENTION_FINISHED: &str = "finished";
+pub(super) const ATTENTION_FINISHED: &str = "finished";
 const ATTENTION_INPUT: &str = "needs_input";
 const ATTENTION_DECISION: &str = "needs_decision";
 
@@ -56,6 +56,12 @@ fn attention_of(state: &SessionState, sid: &str) -> Option<String> {
         .and_then(|c| c.get("attention"))
         .and_then(Value::as_str)
         .map(str::to_string)
+}
+
+/// The end of sub session `sid` reached this session (delivered as an
+/// input, as a waited call's result, or shown after tool results).
+pub(super) fn end_delivered(state: &SessionState, sid: &str) -> bool {
+    attention_of(state, sid).as_deref() == Some(ATTENTION_FINISHED)
 }
 
 pub(super) fn set_attention(state: &mut SessionState, sid: &str, attention: Option<&str>) {

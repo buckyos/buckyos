@@ -2,7 +2,7 @@
 
 日期：2026-10-25
 
-状态：待实施。本文是后续 code agent 的实施与验收说明，不代表功能已经完成。
+状态：T01–T07 已于 2026-10-25 实施（未提交），落点、验证与真实模型证据见 §10；跨 runtime 交接、节点 / Windows / macOS 与 Zone DV 未验证。
 
 目标：参考 `work_simple.toml` 新增 `plan_simple.toml`，用原生 function call 实现 `Plan → Todo → 独立 Subsession → Report → Review`。父 Plan 保存整体目标、任务清单与决策；子会话执行有界任务并交回证据。
 
@@ -239,13 +239,13 @@ preferred = "llm.plan"
 
 ## 7. 实施清单
 
-- [ ] **T01 核对基线与入口**：确认当前源码、已有改动、工具装配、behavior 冻结和模板解析路径。新模式通过专用 Work class 或等价的明确配置启用单 Turn + explicit_report。
-- [ ] **T02 实现全调用 intent**：行为级启用；模型 schema、执行前校验、执行副本剥离、report 特殊分支、原始持久记录和恢复一致。不要只改提示词或 shell 一个工具。
-- [ ] **T03 补齐串行子会话派发**：复用 dispatch_serial、依赖与 Review 检查、串行互斥、环境继承、幂等及 retry；同步 CLI 帮助，清理只适用于 next_behavior=do 的提示。
-- [ ] **T04 同步结果并注入背景**：普通工具结果批次及 wait 回填后，在继续推理前同步 Todo 与相关状态、按变化注入 background_context；验证报告可读、Review 可用、工具消息配对、注入去重、提交顺序和 crash/restart，不增加父 Turn。
-- [ ] **T05 新增 behavior 与创建入口**：落地 `src/apps/jarvis_agent/agent/behaviors/plan_simple.toml`、专用模板与完整任务交接；预算足以走完真实案例，按冻结配置生效。
-- [ ] **T06 文档和手册联动**：更新 `cmd_skills/opendan_agent_dev.md`、相关 Session/Todo 协议说明；若改了通用 xllm 工具契约，同步 `cmd_skills/xllm.md`。明确旧 PLAN/DO 与新 function_call 模式的区别，不把旧 XML 等待指令带入新模式。
-- [ ] **T07 自动化与真实模型验收**：完成下一节用例，记录已运行结果和未验证项；真实模型轨迹不能由 mock 或测试驱动代替模型决策。
+- [x] **T01 核对基线与入口**：确认当前源码、已有改动、工具装配、behavior 冻结和模板解析路径。新模式通过专用 Work class 或等价的明确配置启用单 Turn + explicit_report。
+- [x] **T02 实现全调用 intent**：行为级启用；模型 schema、执行前校验、执行副本剥离、report 特殊分支、原始持久记录和恢复一致。不要只改提示词或 shell 一个工具。
+- [x] **T03 补齐串行子会话派发**：复用 dispatch_serial、依赖与 Review 检查、串行互斥、环境继承、幂等及 retry；同步 CLI 帮助，清理只适用于 next_behavior=do 的提示。
+- [x] **T04 同步结果并注入背景**：普通工具结果批次及 wait 回填后，在继续推理前同步 Todo 与相关状态、按变化注入 background_context；验证报告可读、Review 可用、工具消息配对、注入去重、提交顺序和 crash/restart，不增加父 Turn。
+- [x] **T05 新增 behavior 与创建入口**：落地 `src/apps/jarvis_agent/agent/behaviors/plan_simple.toml`、专用模板与完整任务交接；预算足以走完真实案例，按冻结配置生效。
+- [x] **T06 文档和手册联动**：更新 `cmd_skills/opendan_agent_dev.md`、相关 Session/Todo 协议说明；若改了通用 xllm 工具契约，同步 `cmd_skills/xllm.md`。明确旧 PLAN/DO 与新 function_call 模式的区别，不把旧 XML 等待指令带入新模式。
+- [x] **T07 自动化与真实模型验收**：完成下一节用例，记录已运行结果和未验证项；真实模型轨迹不能由 mock 或测试驱动代替模型决策。
 
 ## 8. 验收要求
 
@@ -295,4 +295,72 @@ cargo test -p libopendan --test xagent_lib -- --test-threads=1
 
 上述经验支持任务隔离、明确证据和持久状态，并不规定一个 Todo 对应父会话一个 Turn。本项目采用“整个 Plan 一个 Turn、每次 function call 带 intent”，是本次讨论后的明确选择；不要重新引入此前讨论过的逐 Todo 关闭父 Turn 方案。
 
-完成后在本文追加实际实现入口、测试命令与结果、真实模型证据位置，以及未验证的平台/provider。当前所有实施项均待完成。
+完成后在本文追加实际实现入口、测试命令与结果、真实模型证据位置，以及未验证的平台/provider（见 §10）。
+
+## 10. 实施记录（2026-10-25，未提交）
+
+### 10.1 落点
+
+| 项 | 落点 |
+| --- | --- |
+| behavior 与创建入口 | `src/apps/jarvis_agent/agent/behaviors/plan_simple.toml`（function_call、`[capabilities] call_intent = true`、`[input] background = "after_tools"`、`tool_whitelist = ["group:bash", "report"]`、`max_tool_iterations = 160` / `max_consecutive_errors = 6`、`llm.plan`）；`agent.toml [session.plan_simple]`（`base = "work"`、`default_behavior = "plan_simple"`、`completion = "explicit_report"`、`max_process_depth = 8`、`ask_user_timeout_secs = 10800`）。创建：`agent-session create-worksession --class plan_simple --objective "…"`（`xagent new --class plan_simple`）。`[session.work]` 未改。 |
+| intent 配置与冻结 | `protocol/behavior.rs` `BehaviorCapabilities.call_intent` → `protocol/config.rs` `BehaviorEntry.call_intent`（behavior loop 声明即拒绝）；`runner/live.rs::own_run_context` 只在 function_call 时写 run.json `host.extra.call_intent = true`，并在运行协议开头补一句契约。恢复、重建工具、fork、压缩后都从 run 记录读取。 |
+| intent 执行 | `runner/tools.rs`：`with_intent`（每个函数 schema 加 required `intent: string, minLength 1`，report 保持 `additionalProperties: false`）、`without_intent`（缺失 / 空白 / 非字符串 → `Observation::Error`，调用不执行、不登记 in-flight）、`SessionToolManager`：`list_tool_specs` 增补 schema，`call_tool` 先校验再执行；in-flight 记录、快照、worklog 保留原始参数，`report` 宿主分支、consolidation 工具与内层工具拿到去掉 intent 的副本。 |
+| Todo 派发 | `agent_tool::todo_tools`：`TodoList::admit_serial`、`TodoRecord/NewTodo/TodoAttempt/AttemptTarget.behavior`、`TodoRecord::view_line`、`task_text` 依赖行带 `read-session` 提示与 artifacts；`lib_opendan/src/todos.rs`：`dispatch_as` 对新串行 attempt 在列表锁内调 `admit_serial`，`todo_behavior`（派发指定 > Todo 记录 > 形态缺省），绑定时写回 behavior；`sync` 对独立 Work Session 的串行 attempt 改用 `observe_child`（原 `end_serial` 每次对账都 bump rev）。`xagent_cli.rs`：`todo dispatch` 按 Todo 形态走 `dispatch_serial` / `dispatch`，`todo add --behavior`，`add` / `dispatch` / `retry` 的 note 按会话是否有 Todo 执行器（behavior loop + `[entry] todo`）给出 DO 或 `todo dispatch` / `agent-session wait` 用法；用法文本更新。Jarvis `plan.toml` 的 `todo dispatch` 说明改为“重派被拒的探索，串行交给 DO”。 |
+| 等待回填 | `runner/live.rs::fill`：回填含 `session:<sid>` 的结果、发布快照、提交 attention 之后 `todos::sync`；崩溃在其间时由 drive 开头的对账补。`xagent_cli.rs::pending_on_session` 给 `--wait-ms` 设 `check_after`（见 10.2）。 |
+| 背景 | 新模块 `runner/observe.rs`（`EXTRA_BACKGROUND`、`at_boundary`）；`runner/hook.rs::before_inference` 在 boundary（发布快照）后调用；`protocol/input.rs` `HostMeta.observed / observed_epoch`；`protocol/config.rs` `InputSection.background: InputBackground {batch, after_tools}`；`runner/children.rs::end_delivered`；`runner/background.rs` 的 `child_line / digest / BackgroundLine::new` 改为模块内可见。 |
+| 文档 / 手册 | `cmd_skills/opendan_agent_dev.md`（新键、`[session.plan_simple]`、plan_simple 与 PLAN/DO 的区别）；`doc/opendan/Agent TodoList.md`（v3，§4a）；`protocol/Session Directory Protocol.md`（HostMeta 与 run.json 键）；`protocol/Agent State Protocol.md`（behavior TOML 键）；`doc/sdk/OpenDAN_Agent_Dev_Guide.md` §5.1；`doc/opendan/protocol/schema` 重导出（`behavior_config / behavior_entry / host_meta / session_config / todo_list`）；`test/plan_do_todo_dv/README.md`。`cmd_skills/xllm.md` 不改：xllm 的工具契约与 CLI 未变（intent 是 libopendan 宿主对冻结 behavior 的要求，不进 `AiToolCall`、不进 xllm schema）。llm_context 层改动记在 [llm_context AgentRuntime TODO §11.2](llm-context-agent-runtime-todo.md#112-plan_simple-实施时的补充改动2026-10-25)。 |
+
+### 10.2 实施时的决定与修正
+
+- **intent 是 run 级冻结配置**：behavior 键 `[capabilities] call_intent` 决定，写进 run.json，`SessionToolManager` 从 run 记录读，不在代码里判断 behavior 名；子 `work_simple` / `explore` 不声明，契约不受父影响（测试中子会话不带 intent 的调用照常执行）。
+- **背景只放 Todo 与未绑定 Todo 的子 Session**：每个 Todo 一行（与视图同一个 `<todo …>` 元素，XML Step 边界的视图与函数结果边界的观察是同一事实）；子 Session 运行中只报状态，不报活动摘要，避免每批结果都有噪音。Session 自己的 runtime / workspace 冻结、首条输入已给出，不进背景（`runtime.info()` 在本机会起探测进程、SSH 会走网络，不适合每个批次调用）；工作 Session 的观察范围是 `events`，不含其它活动会话；半订阅事件仍只随受控输入批次（需要回执清除）。
+- **去重与提交**：已展示行记在快照 `HostMeta.observed`（行键 → 摘要），随注入消息一起发布；hook 第二次调用（注入后）发布带消息的快照。function call 下第二次调用末条已是用户消息，不会再注入；历史重写后 `observed_epoch` 不等于 `history_epoch`，重新展示。
+- **“已收到”**：背景里已经展示了结束状态（行摘要与当前一致、快照已发布）的子 Session 记 `attention = finished`，与被 wait 回填的子 Session 相同；否则 PLAN 没有 wait 的并行探索会让结束检查永远报 “child sessions are unsettled”。
+- **串行准入**：`todo dispatch` 不再把串行 Todo 转成探索；串行准入（pending、无其它串行在执行、无未 Review 结果、`after` 已接受）与 attempt 记录在同一把列表锁内；准入拒绝不记 `refusals`（不是并发闸），退出码 3。旧 PLAN 的 `settle` 路径经同一检查（`serial_pick` 已保证）。同一 attempt 重复派发返回同一子 Session。
+- **既有缺陷修正**：`agent-session wait --wait-ms` / `create-worksession --wait --wait-ms` 的截止时间只写在 `details.until_ms`，shell 转发 Pending 时读的是 `check_after`（秒），截止时间从未生效；改为同时设 `check_after = ceil(ms/1000)`。
+- **wait-any**：不做；提示词写明 wait 只等一个，其余结果靠背景与 `todo list` 看到。
+- **普通文本**：`explicit_report` 下普通文本回复使 Session 以 `missing_end_report` 失败（既有行为），没有新增同 run 纠正；提示词写明只有 `report(is_end=true)` 结束。
+
+### 10.3 验证（`buckyos/src/` 下，root，`--test-threads=1`）
+
+- 新增 `cargo test -p libopendan --test plan_simple`（6 项，安装本仓库的 Jarvis 包为 AgentRoot，模型脚本化，其余真实：`xagent` 作 `agent-session`、ChildDriver 驱动子会话）：
+  - `the_plan_simple_class_and_its_function_contract`：类的 `explicit_report` / 默认 behavior，`[session.work]` 仍是 `plan`；模型实际收到的 `shell` / `report` 都有 required `intent`，report 仍 strict；运行协议有契约句、无 XML action / next_behavior；冻结的 behaviors 无 `do`；子 behavior 不声明 call_intent。
+  - `two_serial_todos_in_sub_sessions_in_one_turn`：缺失 / 空白 / 非字符串 intent 被拒且无副作用（同一批中合法调用照常执行），修正后同一 Turn 继续；T02（`--after T01`）在 T01 被接受前派发被拒；T01、T02 各在继承 Workspace 的 `work_simple` 子会话执行（父在 wait 时交出 Workspace，无死锁）；重复派发返回同一子会话；wait 回填后第一次推理即可 `todo show --report`（报告非空）并 Review；T02 未收敛时 `report(is_end)` 被拒；背景只在变化时出现（重复派发、被拒的结束不产生背景），wait 后显示 completed + review pending，两调用批次的背景排在两个结果之后；worklog 只有一个 `turn_started` / `turn_ended`、无 `step`；每个执行过的调用的 intent 保留在 worklog；子会话各有自己的 Turn。
+  - `parallel_explorations_a_retry_and_ends_heard_from_the_background`：两个探索并行（执行窗口重叠）；A 被 reject 后 retry（第 2 个 attempt、新子会话、runtime / workspace / behavior 不变，旧 attempt 与报告保留）；B 从未被 wait，靠背景展示结束即算收到，最终报告一次通过。
+  - `a_wait_deadline_and_a_failed_sub_session`：`wait --wait-ms 500` 在子会话仍运行时以 running 状态返回；之后子会话失败，回填时列表已是 failed、背景显示 failed + review pending；Review 为 reject 后以说明失败的报告结束。
+  - `the_observation_survives_a_crash_before_and_after_its_commit`：子进程宿主在 wait 后的注入发布前（`observe:before_inject#3`）或发布后（`observe:after_inject_commit#3`）abort；新宿主下该观察只出现一次，同一个 Turn，子会话不重建、不重跑。
+- 组件：`cargo test -p agent_tool --lib todo_tools`（新增 `serial_admission_and_a_kept_behavior`）；`cargo test -p libopendan --lib runner::`（新增 `runner::tools` intent schema / 剥离、`runner::observe` 选择）。
+- 改动的既有用例：`plan_do_todo::tool_layer_replays_and_crashes` 的 T03 原先 `todo add` 后 `todo dispatch`（依赖“串行被转成探索”），改为 `todo explore`（同一崩溃点）；`opendan/tests/loader.rs::the_jarvis_package_loads_and_answers` 增加 `plan_simple` 的解析与入口断言。
+- 全量（2026-10-25）：`cargo test -p agent_tool --lib` 275 通过 / 5 忽略；`cargo test -p libopendan` 全部 test target 通过（plan_do_todo 10、plan_simple 6、report 19、xagent_cli 11、xagent_lib 21、fixtures 19、workspace_binding 9、session_runtime 6 …）；`cargo test -p opendan` 通过（loader 25 + 1 忽略）。`xagent schema` 重导出；fixtures 用旧文件即通过（重生成只改变 run id / 时间戳，未提交）。
+- 未执行：`uv run buckyos-build.py -s jarvis_agent`、`./build_aios --local-test`、真实 Zone DV；跨 runtime（节点 / SSH）的 Todo 交接与 Windows / macOS。
+
+### 10.4 真实模型验收（2026-10-25）
+
+驱动：`PLAN_DO_CASE_ROOT=/home/lzc/project/plan_do_todo_dv_runs PLAN_DO_DV=1 python3 test/plan_do_todo_dv/main.py all --mode plan_simple --variant normal|failure`（在 `buckyos/` 下）。provider：本机 CLIProxyAPI（`http://127.0.0.1:8317/v1`，OpenAI 兼容，Codex 账号），`llm.plan` / `llm.code` / `llm.chat` 都映射到 `gpt-6-sol`；正式 `plan_simple` / `work_simple` / `explore` 提示词、真实工具 schema、`xagent` 与子会话运行链；测试驱动只准备材料（只读 fixture、注册 `$CASE/workspace`、`xagent new --class plan_simple --workspace <id>`）、启动和检查。任务文本 `task_simple.md` 只说交付物要在 workspace，不规定 Todo 的 runtime / workspace 怎么选。
+
+| 用例 | 结果 | 证据目录 |
+| --- | --- | --- |
+| normal | 40/40 通过；236 s；600 522 tokens（父 + 4 个子会话） | `/home/lzc/project/plan_do_todo_dv_runs/20261025T185759-plan_simple-normal/` |
+| failure（fixture 缺 `idempotency.py`） | 34/34 通过；385 s；1 008 476 tokens（父 + 6 个子会话） | `/home/lzc/project/plan_do_todo_dv_runs/20261025T190320-plan_simple-failure/` |
+
+可直接回答的问题（证据文件在用例目录下）：
+
+- **每次调用想做什么、实际做了什么**：`parent/intents.json`（call_id、工具、intent、命令）；normal 22 个调用全部带 intent（如“等待调查 A 子会话完成以读取库存失败路径的实际报告。”），没有因缺 intent 被拒的调用，最长的 intent 53 个字符。
+- **返回后看到了哪些状态变化**：`parent/backgrounds.json`（normal 14 个 `<<background_context>>`，只含 `<todo …>` 行与一句话结果，无子会话工具输出）。
+- **哪个子会话执行哪个 Todo、依据什么验收**：`parent/todos.json`（attempt → child_sid、behavior、workspace_id、report_ref，review 理由）、`children/<sid>/`。normal：T01/T02 探索并行（窗口重叠）→ 各自 `wait` → `todo show --report` → accept；T03（`--after T01 --after T02`）→ T04（`--after T03`，写 workspace）串行、各一个 `work_simple` 子会话；计划自己读回 workspace 的两个文件后 accept T04。
+- **workspace 分配**：探索都没有 workspace（读 fixture 绝对路径）；T03、T04 继承 workspace，`review.md` / `decisions.md` 由 T04 写入 workspace，引用每项发现的 Todo、子会话 ID、报告与复现证据。
+- **父 Turn 是否始终一个**：两例父会话都只有一个 `turn_started` / `turn_ended`，`turn_seq = 1`，无 `step`、无 DO。
+- **证据不足后的处理**（failure）：T02 第 1 次 `need_evidence` → `retry`（理由写明需核查合法模块来源）→ 第 2 次 `reject`；依赖它的 T03 同样 need_evidence → retry → reject；最终报告写明只证实了库存层缺陷，租户隔离与公开入口不能裁定、缺什么才能重跑。
+- normal 中出现一次可修正错误：最终 `report` 把 workspace 的绝对路径放进 `artifacts`（“artifact paths must be relative files”），模型随即修正；之后把提示词的完成段改为“workspace 中的文件在报告正文中写明，`artifacts` 只接受自己工作目录的相对路径或对象 id”（failure 例在改后运行，没有再出现）。
+- **403 / 拒绝**：两例的父、子会话 worklog 与 `drive.stderr.log` 中没有 403、`invalid_prompt` 或拒绝（`provider.refusals_recorded` = none）。项目里唯一记录过的拒绝样例是 2026-10-12 DO 步骤的 `invalid_prompt`（约 1/14 偶发，已随 `<thinking>`→`<intent>` 改名缓解，见该次记录），现在没有可复现的旧模式失败样例，因此没有做同条件对比；两次成功只说明这个 provider / 模型下没有遇到拒绝，不代表其它 provider 不会拒绝。
+
+测试驱动的修正：第一次启动时 `prepare` 里一个循环变量覆盖了 `mode`，用例按旧 PLAN 跑了约 1 分钟即被手动中止，该目录已删除；`background.no_child_output` 检查最初把 Todo 的一句话结果（子报告首行，设计上展示）误判为泄漏，已改为排除各 attempt 的 summary 后对同一用例重跑 `verify` 通过（没有重新调用模型）。
+
+### 10.5 未做 / 风险
+
+- 跨 runtime（`--runtime` 指向节点 / SSH session-runtime，Workspace 在另一台机器）的 Todo 交接、`agent-session copy` 搬运，只有单元与既有集成测试覆盖，没有 plan_simple 的真实模型或 DV 用例；Windows / macOS 未运行。
+- 未在真实 Zone 上跑（Loader 托管、`create-worksession --class plan_simple` 由 UI / Goal 发起），也未执行 `uv run buckyos-build.py -s jarvis_agent`、`./build_aios --local-test`；意图分析（`analyze_intent`）没有提到 plan_simple，用户目前只能显式选择该类。
+- `explicit_report` 下模型若回普通文本，Session 直接失败（既有行为），没有同 run 纠正。
+- 背景按批次结束时的状态生成：子会话在上一个批次之后才结束、计划随即 `report(is_end)` 时，结束检查先拒绝一次（“child sessions are unsettled” / 列表未收敛），这次错误结果之后的背景带出该结束，计划 Review 后再提交；不会误判通过，但多一轮推理。
+- 背景只覆盖 Todo 与未绑定 Todo 的子会话；其它活动会话与半订阅事件不在函数结果后呈现。

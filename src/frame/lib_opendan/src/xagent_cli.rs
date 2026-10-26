@@ -87,10 +87,13 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   skill list [--kind cmd|goal] [--json] | skill install <x.pikg | dir> [--replace] | skill remove <name> [--kind cmd|goal]
   wait <sid> [--wait-ms <ms>] | post <sid> --msg <t>
   todo add <title> (--content <t> | --content - | --content-file <path>) [--accept <criterion>]... [--scope <t>] [--evidence <t>]... [--skill <cmd_skill>]...
-           [--after <todo_id>]... [--batch <b>] [--runtime <id>] [--workspace inherit|none|<id>]
-           (a serial Todo: next_behavior = do runs it; on another runtime or workspace it runs in its own work session, still in order)
-  todo explore <title> --content <t> [same options] [--behavior <b>] [--class <c>]  (add + dispatch as a sub session)
-  todo dispatch <todo_id> [--behavior <b>] [--class <c>] | todo list [--json] | todo show <todo_id> [--report]
+           [--after <todo_id>]... [--batch <b>] [--runtime <id>] [--workspace inherit|none|<id>] [--behavior <b>]
+           (a serial Todo: PLAN/DO's next_behavior = do runs it, in its own work session when it names another runtime or
+            workspace; `todo dispatch` starts it as a work session of its own (default behavior work_simple), in order)
+  todo explore <title> --content <t> [same options] [--class <c>]  (add + dispatch at once as an exploration sub session)
+  todo dispatch <todo_id> [--behavior <b>] [--class <c>]  (keeps the Todo's mode: a serial Todo starts only when no other
+           serial Todo runs, every result is reviewed and its --after Todos are accepted; an exploration starts at once;
+           the behavior is kept for later attempts) | todo list [--json] | todo show <todo_id> [--report]
   todo review <todo_id> (--accept | --reject | --need-evidence) --reason <t> [--followup <todo_id>]...
   todo cancel <todo_id> --reason <t> | todo clean --reason <t> | todo retry <todo_id> --reason <t>
   ask-user <question> [--option <id>=<label>]... [--allow-text]   (ui sessions: the result is the user's next message)
@@ -1157,6 +1160,8 @@ fn pending_on_session(tool: &str, sid: &str, wait_ms: Option<u64>) -> AgentToolR
     let mut r = AgentToolResult::from_details(details)
         .with_tool(tool)
         .with_status(AgentToolStatus::Pending);
+    // The deadline the session's run waits until (whole seconds).
+    r.check_after = wait_ms.map(|ms| ms.div_ceil(1000).max(1));
     r.task_id = Some(format!("{SESSION_TASK_PREFIX}{sid}"));
     r.summary = format!("waiting for sub session {sid}");
     r
@@ -1457,7 +1462,30 @@ fn new_todo(a: &mut Args, mode: crate::todos::TodoMode) -> R<crate::todos::NewTo
         batch: a.get("batch"),
         runtime_id: a.get("runtime"),
         workspace: a.get("workspace"),
+        behavior: a.get("behavior"),
     })
+}
+
+/// The Todo executor the session's current context hands serial Todos
+/// over to (`next_behavior`): a behavior loop with an `[entry] todo`
+/// behavior. `None`: Todos are dispatched as sub sessions of their own and
+/// waited for with `agent-session wait` (function call loop).
+fn todo_executor(sd: &SessionDir) -> Option<String> {
+    let cfg = sd.config().ok()?;
+    let current = sd
+        .state()
+        .ok()
+        .and_then(|s| s.current_behavior)
+        .or_else(|| cfg.prompt.behavior.clone())?;
+    let behaviors = cfg.behaviors().ok()?;
+    let loop_model = behaviors
+        .get(&current)
+        .and_then(|e| e.llm_context.get("loop_model").cloned())
+        .or_else(|| cfg.prompt.llm_context.get("loop_model").cloned());
+    if loop_model.as_ref().and_then(Value::as_str) != Some("behavior") {
+        return None;
+    }
+    behaviors.into_iter().find(|(_, e)| e.todo).map(|(name, _)| name)
 }
 
 /// A Todo's `--skill` names are cmd_skills the agent has: the sub session
@@ -1495,22 +1523,37 @@ fn explore_options(a: &Args) -> crate::todos::ExploreOptions {
 
 /// Dispatch with an observable result: a refusal leaves the Todo pending
 /// and says why (exit 3, the caller may wait and dispatch again).
+/// A serial Todo keeps its mode: it starts in order as a work session of
+/// its own (`dispatch_serial`); an exploration starts as one at once.
 async fn todo_dispatch(c: &Ctx, sd: &SessionDir, todo_id: &str, a: &Args) -> R<i32> {
-    match crate::todos::dispatch(
-        c.agent.as_ref(),
-        &c.who,
-        c.channels.as_ref(),
-        sd,
-        todo_id,
-        &explore_options(a),
-    )
-    .await
-    {
+    use crate::todos::{store_of, TodoMode};
+    let mode = store_of(sd)
+        .load()
+        .map_err(todo_fail)?
+        .get(todo_id)
+        .map(|t| t.mode)
+        .ok_or_else(|| bad(format!("todo {todo_id}: no such todo")))?;
+    let opts = explore_options(a);
+    let dispatched = match mode {
+        TodoMode::Serial => {
+            crate::todos::dispatch_serial(c.agent.as_ref(), &c.who, c.channels.as_ref(), sd, todo_id, &opts).await
+        }
+        TodoMode::Explore => {
+            crate::todos::dispatch(c.agent.as_ref(), &c.who, c.channels.as_ref(), sd, todo_id, &opts).await
+        }
+    };
+    match dispatched {
         Ok(d) => {
+            let note = match todo_executor(sd) {
+                Some(_) => "the sub session reports back when it finishes; end your step with a progress report to wait for it".to_string(),
+                None => format!(
+                    "wait for it with `agent-session wait {}` as a shell call of its own, then read its report with `agent-session todo show {} --report` and review it",
+                    d.child_sid, d.todo_id
+                ),
+            };
             print(&json!({
                 "todo_id": d.todo_id, "attempt": d.attempt, "child_sid": d.child_sid,
-                "status": "running", "dispatched": true,
-                "note": "the sub session reports back when it finishes; end your step with a progress report to wait for it",
+                "mode": mode.as_str(), "status": "running", "dispatched": true, "note": note,
             }));
             Ok(0)
         }
@@ -1553,8 +1596,13 @@ async fn cmd_todo(mut a: Args) -> R<i32> {
             check_todo_skills(&c, &new.skills).await?;
             let id = store.update(|l| l.add(new, now)).map_err(todo_fail)?;
             let list = store.load().map_err(todo_fail)?;
-            print(&json!({ "todo_id": id, "status": "pending", "mode": "serial", "rev": list.rev,
-                "note": "next_behavior = do executes the next ready serial todo" }));
+            let note = match todo_executor(&sd) {
+                Some(executor) => format!("next_behavior = {executor} executes the next ready serial todo"),
+                None => format!(
+                    "start it with `agent-session todo dispatch {id}` once it is ready: a work session of its own; serial todos run one at a time, after the todos they run after are accepted"
+                ),
+            };
+            print(&json!({ "todo_id": id, "status": "pending", "mode": "serial", "rev": list.rev, "note": note }));
             Ok(0)
         }
         "explore" => {
@@ -1654,7 +1702,11 @@ async fn cmd_todo(mut a: Args) -> R<i32> {
             if mode == Some(TodoMode::Explore) {
                 return todo_dispatch(&c, &sd, &id, &a).await;
             }
-            print(&json!({ "todo_id": id, "status": "pending", "note": "next_behavior = do runs it again as a new attempt" }));
+            let note = match todo_executor(&sd) {
+                Some(executor) => format!("next_behavior = {executor} runs it again as a new attempt"),
+                None => format!("start the new attempt with `agent-session todo dispatch {id}`"),
+            };
+            print(&json!({ "todo_id": id, "status": "pending", "note": note }));
             Ok(0)
         }
         other => Err(bad(format!("unknown todo command `{other}` ({TODO_COMMANDS})"))),

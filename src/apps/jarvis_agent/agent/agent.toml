@@ -65,6 +65,17 @@ max_process_depth = 8
 # for the answer (0: work sessions do not ask).
 ask_user_timeout_secs = 10800
 
+# A work session that plans with a TodoList and runs every Todo in a sub
+# session of its own, in one Turn, with native function calls; its result is
+# an explicit final report. Chosen explicitly:
+# `agent-session create-worksession --class plan_simple --objective "..."`.
+[session.plan_simple]
+base = "work"
+default_behavior = "plan_simple"
+completion = "explicit_report"
+max_process_depth = 8
+ask_user_timeout_secs = 10800
+
 # Goal Sessions: every activation is one Turn; what a goal leaves out of its
 # budget and schedule comes from here.
 [session.goal]

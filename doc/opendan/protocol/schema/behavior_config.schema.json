@@ -61,6 +61,10 @@
             "null"
           ]
         },
+        "call_intent": {
+          "description": "Every native function call carries a non-empty `intent` argument: why the call is made now and what it should yield.",
+          "type": "boolean"
+        },
         "tool_whitelist": {
           "description": "Tools offered as native functions (`None`: the session's tools). An entry is a tool name or `group:<builtin group>`.",
           "items": {
@@ -313,6 +317,25 @@
         }
       ]
     },
+    "InputBackground": {
+      "description": "What the host shows a context besides its inputs.",
+      "oneOf": [
+        {
+          "description": "Only what an input batch carries (the chat format's background).",
+          "enum": [
+            "batch"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Also after every batch of tool results (behavior loop: every step with action results): the TodoList, sub session and runtime / workspace lines that changed since they were last shown, as a `<<background_context>>` message before the next inference.",
+          "enum": [
+            "after_tools"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "InputMedia": {
       "description": "Whether attachments also enter the context as image / document blocks.",
       "oneOf": [
@@ -355,6 +378,14 @@
       "additionalProperties": false,
       "description": "Input consumption policy of a context (separate from its templates).",
       "properties": {
+        "background": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/InputBackground"
+            }
+          ],
+          "default": "batch"
+        },
         "media": {
           "allOf": [
             {

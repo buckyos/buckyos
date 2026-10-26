@@ -532,7 +532,17 @@ async fn own_run_context(
         .and_then(Value::as_str)
         .unwrap_or("function_call")
         == "function_call";
-    let xdeps = xllm_deps_for(sh, env, new.depth, function_call).await?;
+    let mut xdeps = xllm_deps_for(sh, env, new.depth, function_call).await?;
+    // The run's call contract and what it is shown after its tool results,
+    // frozen with the run (a resumed or rebuilt run keeps them).
+    let call_intent = function_call && new.entry.as_ref().is_some_and(|e| e.call_intent);
+    if call_intent {
+        if let agent_tool::xllm::HostProtocolFlavor::Session { intro } = &mut xdeps.host_protocol {
+            intro.push_str(" Every function call of this context carries `intent` in its arguments: one short sentence saying why you make the call now and what you expect from it. A call without it is not executed.");
+        }
+    }
+    let background_after_tools = cfg.input_config(new.entry.as_ref()).1.background
+        == InputBackground::AfterTools;
     let explicit_report = cfg.session.policy.completion == CompletionPolicy::ExplicitReport;
     let enabled = llm_ctx.pointer("/tools/enabled").and_then(Value::as_bool);
     if function_call && explicit_report && enabled == Some(false) {
@@ -634,6 +644,12 @@ async fn own_run_context(
                 }
                 if let Some(v) = reply.as_ref().and_then(reply_extra) {
                     extra.insert(super::reports::EXTRA_REPLY.into(), v);
+                }
+                if call_intent {
+                    extra.insert(super::tools::EXTRA_CALL_INTENT.into(), json!(true));
+                }
+                if background_after_tools {
+                    extra.insert(super::observe::EXTRA_BACKGROUND.into(), json!("after_tools"));
                 }
                 if extra.is_empty() {
                     Value::Null
@@ -911,13 +927,27 @@ async fn fill(
                 .checkpoint_with_results(&ctx.snapshot(), Some(RunStatus::Running))?;
             crate::fault::point("pending_tool:after_fill");
             let marked = super::children::mark_waited(sh, &waited).await?;
-            let mut s = sh.session.lock().await;
-            if s.state.run_state == RunState::Waiting || marked {
-                if s.state.run_state == RunState::Waiting {
-                    s.state.run_state = RunState::Running;
-                    s.state.waiting_for = None;
+            {
+                let mut s = sh.session.lock().await;
+                if s.state.run_state == RunState::Waiting || marked {
+                    if s.state.run_state == RunState::Waiting {
+                        s.state.run_state = RunState::Running;
+                        s.state.waiting_for = None;
+                    }
+                    s.commit_state(&sh.lease)?;
                 }
-                s.commit_state(&sh.lease)?;
+            }
+            // A sub session's state that answered a call is in the TodoList
+            // before the run infers again (`todo show --report`, `todo
+            // review` work right away); after a crash here the drive's
+            // start synchronizes it.
+            if waited
+                .iter()
+                .any(|t| t.starts_with(super::children::SESSION_TASK_PREFIX))
+            {
+                if let Err(e) = super::todos::sync(sh).await {
+                    log::warn!("todo sync of {}: {e}", sh.dir.sid());
+                }
             }
         }
     }

@@ -378,6 +378,19 @@
       "description": "The run's inline media blocks were removed once after the provider refused the request (`input.media = inline` degraded to references); it is not tried again.",
       "type": "boolean"
     },
+    "observed": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Background lines shown after tool results (`[input] background = \"after_tools\"`): line key → digest of the text last shown. Committed with the message that showed them, so a crash before that commit shows them again and one after it never twice.",
+      "type": "object"
+    },
+    "observed_epoch": {
+      "description": "The history epoch `observed` belongs to: after a rewrite the lines are shown afresh.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
     "process_entry": {
       "description": "Behavior process entry the run belongs to.",
       "type": [

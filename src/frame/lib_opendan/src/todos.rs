@@ -123,28 +123,40 @@ pub fn needs_own_session(t: &TodoRecord, cfg: &SessionConfig) -> bool {
     other_runtime || other_workspace
 }
 
+/// The behavior a Todo's sub session starts with: the dispatch's choice,
+/// else the Todo's own (set when it was first dispatched), else the mode's
+/// default.
+fn todo_behavior(t: &TodoRecord, opts: &ExploreOptions, mode: TodoMode) -> String {
+    opts.behavior
+        .clone()
+        .or_else(|| t.behavior.clone())
+        .unwrap_or_else(|| match mode {
+            TodoMode::Explore => EXPLORE_BEHAVIOR.to_string(),
+            TodoMode::Serial => SERIAL_SESSION_BEHAVIOR.to_string(),
+        })
+}
+
 fn child_spec(list: &TodoList, t: &TodoRecord, attempt: u32, opts: &ExploreOptions, mode: TodoMode) -> SubSessionSpec {
     let mut task = t.task_text(list, attempt);
-    let (note, behavior) = match mode {
-        TodoMode::Explore => (
+    let note = match mode {
+        TodoMode::Explore => {
             "\nYou are an exploration sub session of a parent work session: do exactly this Todo, within its scope. \
 Leads outside the scope go into your report for the parent, not into more work. \
-Finish with a final report (is_end) that the parent's PLAN can review.\n",
-            EXPLORE_BEHAVIOR,
-        ),
-        TodoMode::Serial => (
-            "\nYou are a work session executing exactly this serial Todo of a parent session's plan, in the execution environment the Todo names (your own runtime and working directory). \
+Finish with a final report (is_end) that the parent's PLAN can review.\n"
+        }
+        TodoMode::Serial => {
+            "\nYou are a work session executing exactly this serial Todo of a parent session's plan, on your own session-runtime and in your own working directory. \
+When you have a workspace, the project files are there: change them there and say what you changed; other results go into your report's artifacts. \
 Do only this Todo, within its scope; leads outside it go into your report. \
-Finish with a final report (is_end) with the evidence for each acceptance criterion; the parent's PLAN reviews it before the next Todo runs.\n",
-            SERIAL_SESSION_BEHAVIOR,
-        ),
+Finish with a final report (is_end) with the evidence for each acceptance criterion; the parent's PLAN reviews it before the next Todo runs.\n"
+        }
     };
     task.push_str(note);
     SubSessionSpec {
         objective: t.task_text(list, attempt),
         msgs: vec![task],
         class: opts.class.clone(),
-        behavior: Some(opts.behavior.clone().unwrap_or_else(|| behavior.to_string())),
+        behavior: Some(todo_behavior(t, opts, mode)),
         // The Todo's cmd_skills; without any the parent Work's are inherited.
         cmd_skills: (!t.skills.is_empty()).then(|| t.skills.clone()),
         workspace: todo_workspace(t, mode),
@@ -218,8 +230,16 @@ async fn dispatch_as(
         .ok_or_else(|| OpenDanError::NotFound(format!("todo {todo_id}")))?;
     let attempt = match t.latest() {
         Some(a) if a.dispatch == Some(DispatchState::Dispatching) => a.attempt,
-        _ => t.next_attempt(),
+        _ => {
+            // A serial Todo starts only in order: checked and recorded
+            // under the same lock.
+            if mode == TodoMode::Serial {
+                list.admit_serial(todo_id).map_err(todo_error)?;
+            }
+            t.next_attempt()
+        }
     };
+    let behavior = todo_behavior(t, opts, mode);
     let sub = child_spec(&list, t, attempt, opts, mode);
     let child_sid = sub_session_id(agent, who, &parent_sid, &sub)?;
     let now = crate::now_ms();
@@ -247,7 +267,7 @@ async fn dispatch_as(
             if running >= max.max(1) {
                 return refuse(format!(
                     "the host drives at most {max} sub sessions at once (--max-children) and {running} are running: \
-end your step with a progress report to wait for one, then dispatch {todo_id} again (`agent-session todo dispatch {todo_id}`)"
+wait for one of them to finish, then dispatch {todo_id} again (`agent-session todo dispatch {todo_id}`)"
                 ));
             }
         }
@@ -273,6 +293,7 @@ end your step with a progress report to wait for one, then dispatch {todo_id} ag
             runtime_id: Some(c.runtime.runtime_id().to_string()),
             baseline: c.runtime.frozen.as_ref().map(|f| f.baseline.as_str().to_string()),
             workspace_id: c.workspace.map(|w| w.workspace_id),
+            behavior: Some(behavior.clone()),
         })
         .unwrap_or_default();
     lock.update(|l| l.bind_explore(todo_id, n, crate::now_ms(), target))
@@ -459,7 +480,8 @@ pub async fn sync(agent: &dyn AgentStateClient, sd: &SessionDir, state: &Session
                     continue;
                 };
                 match obs {
-                    Some(o) if a.mode == TodoMode::Serial => {
+                    // A serial sub context (no sub session of its own).
+                    Some(o) if a.mode == TodoMode::Serial && a.child_sid.is_none() => {
                         changed |= l.end_serial(&todo_id, attempt, "", o, now)?;
                     }
                     Some(o) => changed |= l.observe_child(&todo_id, attempt, o, now)?,

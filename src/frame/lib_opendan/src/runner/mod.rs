@@ -17,6 +17,7 @@ mod hook;
 mod inputs;
 mod live;
 mod live_tasks;
+mod observe;
 mod outbound;
 mod outcome;
 mod receipts;

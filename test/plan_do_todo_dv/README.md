@@ -1,4 +1,4 @@
-# plan_do_todo_dv — TodoList-driven PLAN / DO, real model
+# plan_do_todo_dv — TodoList-driven PLAN / DO and plan_simple, real model
 
 Real-model DV of [notepads/opendan-plan-do-todo-list-todo.md](../../notepads/opendan-plan-do-todo-list-todo.md) §4–§6: the Jarvis PLAN reviews a small Python inventory-reservation service through a TodoList — two explorations in parallel as their own sub sessions, a wait that is no decision, a review of each report, then a serial verification Todo in DO and the final `review.md` / `decisions.md`. The model is real; files, tools, Todo scheduling and reports go through the real `xagent`.
 
@@ -56,6 +56,17 @@ Watching a run from a second terminal (same environment):
 "$XAGENT" status "$CHILD_SID" --report --worklog 200 --run
 ```
 
+## plan_simple mode
+
+`--mode plan_simple` runs the same review with the Jarvis `plan_simple` behavior ([notepads/opendan-plan-simple-todo.md](../../notepads/opendan-plan-simple-todo.md) §8.2): native function calls with an `intent` on every call, one Turn, every Todo in a sub session of its own, waits as `agent-session wait` calls, the background after tool results. The task is `task_simple.md`; it names the deliverables' place (the session's workspace) but not how Todos get their runtime / workspace, so the plan's own assignment is checked.
+
+```bash
+PLAN_DO_DV=1 python3 test/plan_do_todo_dv/main.py all --mode plan_simple --variant normal
+PLAN_DO_DV=1 python3 test/plan_do_todo_dv/main.py all --mode plan_simple --variant failure
+```
+
+`run` registers `$CASE/workspace` (`xagent workspace import --runtime container`) and creates the session with `xagent new --class plan_simple --workspace <id>`. `verify` then checks (`verify_simple`): the `plan_simple` class with `explicit_report`; one `turn_started` / `turn_ended`; no behavior steps and no DO; every tool call with a non-empty intent (calls refused for a missing one are counted), intents recorded in `parent/intents.json`; waits as standalone `agent-session wait <sid>` calls, no polling; ≥ 2 explorations with overlapping windows; ≥ 2 serial Todos each in its own `work_simple` sub session, one at a time, after their prerequisites were accepted; explorations without a workspace and the deliverable writer with the inherited one; `review.md` / `decisions.md` in the workspace, tracing findings to Todo ids and sub session ids; every latest result reviewed after a report read; ≥ 2 background blocks (`parent/backgrounds.json`) without child output; markers A / B / C; provider refusals / 403s recorded (`provider.refusals_recorded`, informational).
+
 ## Exit codes
 
 `all` / `verify`: 0 every check passed, 1 a check failed (see `verification.json`), 2 configuration / provider error, 77 not enabled. `run` returns the exit code of `xagent run` (recorded in `run.json`).
@@ -90,4 +101,4 @@ The failure variant instead checks that the branch without its input was rejecte
 
 ## Runs
 
-Recorded runs, with the manual review, are listed in the TODO's implementation record (§8).
+Recorded runs, with the manual review, are listed in the TODOs' implementation records: PLAN / DO in [opendan-plan-do-todo-list-todo.md](../../notepads/opendan-plan-do-todo-list-todo.md) §8, plan_simple in [opendan-plan-simple-todo.md](../../notepads/opendan-plan-simple-todo.md) §10.4.

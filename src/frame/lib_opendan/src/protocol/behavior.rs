@@ -78,6 +78,10 @@ pub struct BehaviorCapabilities {
     /// Named tools offered as actions (behavior loop).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action_whitelist: Option<Vec<String>>,
+    /// Every native function call carries a non-empty `intent` argument:
+    /// why the call is made now and what it should yield.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub call_intent: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -613,6 +617,7 @@ impl BehaviorConfig {
             tool: self.tool.clone(),
             todo: self.entry.todo,
             reply: self.reply.clone(),
+            call_intent: self.capabilities.call_intent,
         };
         entry.validate(name)?;
         Ok(entry)

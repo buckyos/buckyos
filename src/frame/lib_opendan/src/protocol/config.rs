@@ -592,6 +592,20 @@ pub enum InputMedia {
 /// Image / document blocks one batch may carry (`input.media = inline`).
 pub const MAX_INLINE_MEDIA: usize = 8;
 
+/// What the host shows a context besides its inputs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InputBackground {
+    /// Only what an input batch carries (the chat format's background).
+    #[default]
+    Batch,
+    /// Also after every batch of tool results (behavior loop: every step
+    /// with action results): the TodoList and sub session lines that
+    /// changed since they were last shown, as a `<<background_context>>`
+    /// message before the next inference.
+    AfterTools,
+}
+
 /// Input consumption policy of a context (separate from its templates).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -600,6 +614,8 @@ pub struct InputSection {
     pub mode: InputMode,
     #[serde(default)]
     pub media: InputMedia,
+    #[serde(default)]
+    pub background: InputBackground,
 }
 
 impl InputSection {
@@ -638,6 +654,12 @@ pub struct BehaviorEntry {
     /// contract (function call loop only). A fork may declare its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply: Option<super::behavior::BehaviorReply>,
+    /// Every native function call of the context carries a non-empty
+    /// `intent` (`[capabilities] call_intent`): declared in each function's
+    /// schema, checked before the call runs, kept with the call's record and
+    /// removed from the arguments the tool receives.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub call_intent: bool,
 }
 
 impl BehaviorEntry {
@@ -674,6 +696,11 @@ impl BehaviorEntry {
         }
         if let Some(r) = &self.reply {
             r.validate(name)?;
+        }
+        if self.call_intent && self.llm_context.get("loop_model").and_then(Value::as_str) == Some("behavior") {
+            return Err(format!(
+                "behavior `{name}`: call_intent applies to native function calls; the behavior loop states its intent in <intent>"
+            ));
         }
         match self.mode {
             ContextMode::Fork => {
@@ -1103,6 +1130,7 @@ impl SessionConfig {
                 tool: None,
                 todo: false,
                 reply: None,
+                call_intent: false,
             });
         }
         Err(format!(

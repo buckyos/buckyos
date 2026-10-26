@@ -95,6 +95,13 @@
             "null"
           ]
         },
+        "behavior": {
+          "description": "The behavior its sub session started with.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "caller": {
           "anyOf": [
             {
@@ -249,6 +256,13 @@
         },
         "batch": {
           "description": "Dispatch batch (explorations sent out together).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "behavior": {
+          "description": "The behavior a sub session executing the Todo starts with (`None`: the mode's default); set when it is first dispatched, so a retry runs the same way.",
           "type": [
             "string",
             "null"

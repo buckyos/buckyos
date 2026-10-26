@@ -6,11 +6,13 @@
 //! (controls are applied, Observe events are merged into `pending_events`
 //! and saved) and refreshes the activity heartbeat.
 //!
-//! Nothing is injected here: reaching a checkpoint, finishing a tool call
-//! or receiving an Observe event never puts a message into the context.
-//! Saved semi-subscription state waits for the next controlled input
-//! (`on_init / on_input / on_context_switch`), which renders it as the
-//! snapshot message in front of its own.
+//! Inputs are never injected here: reaching a checkpoint, finishing a tool
+//! call or receiving an Observe event never puts a message or an event into
+//! the context. Saved semi-subscription state waits for the next controlled
+//! input (`on_init / on_input / on_context_switch`), which renders it as the
+//! snapshot message in front of its own. The one host observation placed
+//! here is the background after tool results of a run that asks for it
+//! (`[input] background = "after_tools"`, see `observe.rs`).
 
 use std::sync::Arc;
 
@@ -56,6 +58,9 @@ pub struct SessionCheckpointHook {
     shared: Arc<Shared>,
     run: RunHandle,
     rounds: Arc<super::rounds::RoundCounter>,
+    /// The run is shown background after its tool results.
+    background: bool,
+    behavior: bool,
 }
 
 impl SessionCheckpointHook {
@@ -64,10 +69,14 @@ impl SessionCheckpointHook {
         run: RunHandle,
         rounds: Arc<super::rounds::RoundCounter>,
     ) -> Self {
+        let background = super::observe::enabled(&run);
+        let behavior = run.record().config.loop_model == agent_tool::xllm::LoopModel::Behavior;
         Self {
             shared,
             run,
             rounds,
+            background,
+            behavior,
         }
     }
 
@@ -180,7 +189,12 @@ impl CheckpointHook for SessionCheckpointHook {
         snapshot: &LLMContextSnapshot,
     ) -> std::result::Result<Option<Injection>, String> {
         self.boundary(snapshot).await.map_err(|e| e.to_string())?;
-        Ok(None)
+        if !self.background {
+            return Ok(None);
+        }
+        super::observe::at_boundary(&self.shared, snapshot, self.behavior)
+            .await
+            .map_err(|e| e.to_string())
     }
 
     /// Hand-overs to a Todo executor and yields are the session's to judge

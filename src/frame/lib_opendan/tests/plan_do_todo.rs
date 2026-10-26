@@ -754,8 +754,7 @@ async fn tool_layer_replays_and_crashes() {
     assert!(list_of(sd.path()).get("T01").unwrap().refusals.is_empty(), "a refused replay is not a limit hit");
 
     // Killed after the dispatch record: no sub session; the host withdraws it.
-    agent_session(&env, &sd, &["todo", "add", "c", "--content", "MARK-C body"], None);
-    let (code, _) = agent_session(&env, &sd, &["todo", "dispatch", "T03"], Some("todo:after_dispatch_record"));
+    let (code, _) = agent_session(&env, &sd, &["todo", "explore", "c", "--content", "MARK-C body"], Some("todo:after_dispatch_record"));
     assert_ne!(code, 0);
     let t = list_of(sd.path()).get("T03").unwrap().clone();
     assert_eq!(t.latest().unwrap().dispatch, Some(libopendan::todos::DispatchState::Dispatching));

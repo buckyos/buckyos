@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Real-model DV of the TodoList-driven PLAN / DO (see README.md).
+"""Real-model DV of the TodoList-driven PLAN / DO and of plan_simple (see
+README.md).
 
-    python3 test/plan_do_todo_dv/main.py all [--variant normal|failure] [--case DIR]
+    python3 test/plan_do_todo_dv/main.py all [--mode plan|plan_simple] [--variant normal|failure] [--case DIR]
     python3 test/plan_do_todo_dv/main.py prepare|run|collect|verify --case DIR
 
 Without arguments (as `test/run.py -p plan_do_todo_dv` runs it) the normal
@@ -164,13 +165,13 @@ def map_models(behaviors: Path, prov: dict) -> dict:
     return mapping
 
 
-def prepare(case: Path, variant: str) -> None:
+def prepare(case: Path, variant: str, mode: str = "plan") -> None:
     if case.exists() and any(case.iterdir()):
         fail(f"{case} is not empty: every run starts from a new case directory")
     prov = provider()
     exe = build_xagent()
     case.mkdir(parents=True, exist_ok=True)
-    for d in ["agent", "sessions", "kmsg", "config", "parent", "children", "serial"]:
+    for d in ["agent", "sessions", "kmsg", "config", "parent", "children", "serial", "workspace"]:
         (case / d).mkdir(parents=True, exist_ok=True)
     # The agent: the Jarvis package under test, model aliases mapped.
     agent = case / "agent"
@@ -192,9 +193,10 @@ def prepare(case: Path, variant: str) -> None:
     hashes = {str(p.relative_to(fixture)): sha256_file(p) for p in sorted(fixture.rglob("*")) if p.is_file()}
     combined = hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
     for p in fixture.rglob("*"):
-        mode = p.stat().st_mode
-        p.chmod(mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
-    task = (HERE / "task.md").read_text(encoding="utf-8").replace("{{FIXTURE}}", str(fixture))
+        perm = p.stat().st_mode
+        p.chmod(perm & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+    task_file = "task_simple.md" if mode == "plan_simple" else "task.md"
+    task = (HERE / task_file).read_text(encoding="utf-8").replace("{{FIXTURE}}", str(fixture))
     (case / "task.txt").write_text(task, encoding="utf-8")
     llm_context = {
         "provider": {"type": "openai", "base_url": prov["base_url"], "api_key_env": "PLAN_DO_API_KEY"},
@@ -206,6 +208,7 @@ def prepare(case: Path, variant: str) -> None:
     }
     write_json(case / "llm-context.json", llm_context)
     write_json(case / "config" / "case.json", {
+        "mode": mode,
         "variant": variant,
         "agent_did": AGENT_DID,
         "who": WHO,
@@ -217,7 +220,7 @@ def prepare(case: Path, variant: str) -> None:
         "timeout_secs": RUN_TIMEOUT_SECS,
         "prepared_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     })
-    log(f"prepared {case} ({variant}); fixture sha256 {combined[:12]}, xagent {exe}")
+    log(f"prepared {case} ({mode}, {variant}); fixture sha256 {combined[:12]}, xagent {exe}")
 
 
 # ---------------------------------------------------------------------------
@@ -246,13 +249,32 @@ def xagent(case: Path) -> str:
     return read_json(case / "config" / "case.json")["xagent"]["path"]
 
 
+def mode_of(case: Path) -> str:
+    return (read_json(case / "config" / "case.json") or {}).get("mode", "plan")
+
+
 def run(case: Path) -> int:
     env = case_env(case)
     exe = xagent(case)
     task = (case / "task.txt").read_text(encoding="utf-8")
+    if mode_of(case) == "plan_simple":
+        # The deliverables' workspace (on this machine), registered like a
+        # user's project; the plan session is created by its class.
+        r = subprocess.run(
+            [exe, "workspace", "import", "--key", "plan-simple-dv", "--runtime", "container",
+             "--directory", str(case / "workspace"), "--name", "review deliverables"],
+            env=env, capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            fail(f"xagent workspace import failed ({r.returncode}): {r.stderr}{r.stdout}")
+        write_json(case / "workspace.json", json.loads(r.stdout))
+        ws = read_json(case / "workspace.json")["workspace_id"]
+        create = [exe, "new", "--class", "plan_simple", "--workspace", ws]
+    else:
+        create = [exe, "new", "--class", "work", "--behavior", "plan"]
     with open(case / "create.json", "w") as out:
         r = subprocess.run(
-            [exe, "new", "--class", "work", "--behavior", "plan", "--objective", task,
+            [*create, "--objective", task,
              "--parent", str(case / "sessions"), "--llm-context", f"@{case / 'llm-context.json'}", "--no-run"],
             env=env, stdout=out, stderr=subprocess.PIPE, text=True,
         )
@@ -340,6 +362,8 @@ def collect(case: Path) -> None:
     for name in ["review.md", "decisions.md", "report.md"]:
         if (pdir / name).exists():
             shutil.copy2(pdir / name, case / name if name != "report.md" else case / "parent" / "report.md")
+        if name != "report.md" and (case / "workspace" / name).exists():
+            shutil.copy2(case / "workspace" / name, case / name)
     write_json(case / "timeline.json", timeline(case, pdir, todos))
     log(f"evidence collected in {case}")
 
@@ -439,6 +463,8 @@ def commands_by_call(entries: list[dict]) -> dict:
 
 
 def verify(case: Path) -> int:
+    if mode_of(case) == "plan_simple":
+        return verify_simple(case)
     c = Checks()
     meta = read_json(case / "config" / "case.json")
     variant = meta["variant"]
@@ -626,6 +652,185 @@ def verify(case: Path) -> int:
     return 0 if passed else 1
 
 
+def tool_calls(entries: list[dict]) -> list[tuple[dict, dict]]:
+    """(assistant_message entry, tool call) of a function call context."""
+    return [(e, tc) for e in entries if e.get("t") == "assistant_message" for tc in e.get("tool_calls", []) or []]
+
+
+def verify_simple(case: Path) -> int:
+    """plan_simple: one Turn of native calls with intents; every Todo in a
+    sub session of its own; waits as calls; reviews before building on a
+    result; the background after tool results; the deliverables in the
+    workspace through the Todo that inherited it."""
+    c = Checks()
+    meta = read_json(case / "config" / "case.json")
+    variant = meta["variant"]
+    runinfo = read_json(case / "run.json", {})
+    sid = runinfo.get("session_id")
+    pdir = case / "parent" / "session"
+    state = read_json(pdir / ".opendan_agent_session" / "state.json", {})
+    cfg = read_json(pdir / ".opendan_agent_session" / "session_config.json", {}) or {}
+    wl = read_jsonl(pdir / ".opendan_agent_session" / "worklog.jsonl")
+    todos = (read_json(case / "parent" / "todos.json", {}) or {}).get("todos", [])
+    ws_id = (read_json(case / "workspace.json", {}) or {}).get("workspace_id")
+    c.check("run.exit", runinfo.get("exit_code") == 0 or variant == "failure", runinfo)
+    c.check("parent.finished", state.get("run_state") == "finished", state.get("one_line_status"))
+    c.check("parent.class", cfg.get("session", {}).get("class") == "plan_simple" and cfg.get("session", {}).get("policy", {}).get("completion") == "explicit_report", cfg.get("session", {}).get("class"))
+    kinds = [e.get("t") for e in wl]
+    c.check("turn.single", kinds.count("turn_started") == 1 and kinds.count("turn_ended") == 1 and state.get("turn_seq") == 1, {"started": kinds.count("turn_started"), "ended": kinds.count("turn_ended"), "turn_seq": state.get("turn_seq")})
+    c.check("protocol.no_behavior_steps", "step" not in kinds, kinds.count("step"))
+    behaviors = (cfg.get("extensions", {}).get("opendan", {}) or {}).get("behaviors", {}) or {}
+    c.check("protocol.no_do", "do" not in behaviors and behaviors.get("plan_simple", {}).get("call_intent") is True, sorted(behaviors))
+
+    # Every call states its intent; a call without one was not executed.
+    results = {e.get("call_id"): str(e.get("result", "")) for e in wl if e.get("t") == "action_result"}
+    calls = tool_calls(wl)
+    missing = []
+    refused = 0
+    for (_, tc) in calls:
+        intent = (tc.get("args") or {}).get("intent")
+        if isinstance(intent, str) and intent.strip():
+            continue
+        if "this call was not executed" in results.get(tc.get("call_id"), ""):
+            refused += 1
+        else:
+            missing.append(tc.get("call_id"))
+    c.check("intent.every_call", bool(calls) and not missing, {"calls": len(calls), "refused_without_intent": refused, "missing": missing[:5]})
+    intents = [(tc.get("args") or {}).get("intent") for (_, tc) in calls]
+    write_json(case / "parent" / "intents.json", [{"call_id": tc.get("call_id"), "tool": tc.get("tool"), "intent": (tc.get("args") or {}).get("intent"), "command": (tc.get("args") or {}).get("command")} for (_, tc) in calls])
+    c.check("intent.not_reasoning_dump", all(len(i) <= 600 for i in intents if isinstance(i, str)), max((len(i) for i in intents if isinstance(i, str)), default=0))
+
+    commands = [str((tc.get("args") or {}).get("command", "")) for (_, tc) in calls if tc.get("tool") == "shell"]
+    waits = [x for x in commands if "agent-session wait" in x]
+    standalone = re.compile(r"^\s*agent-session wait \S+(\s+--wait-ms \d+)?\s*$")
+    c.check("wait.as_calls", bool(waits) and all(standalone.match(x) for x in waits), waits[:6])
+    c.check("plan.no_polling", not [x for x in commands if re.search(r"\bsleep\b", x)], [x for x in commands if "sleep" in x][:3])
+
+    explores = [t for t in todos if t.get("mode") == "explore"]
+    serial = [t for t in todos if t.get("mode") == "serial" and t.get("attempts")]
+    c.check("todo.explorations", len(explores) >= 2, [t["todo_id"] for t in explores])
+    c.check("todo.serial_sessions", len(serial) >= (2 if variant == "normal" else 0) and all(a.get("child_sid") and not a.get("run_id") for t in serial for a in t["attempts"]), [(t["todo_id"], [a.get("child_sid", "")[:16] for a in t["attempts"]]) for t in serial])
+    all_children = [a["child_sid"] for t in todos for a in t.get("attempts", []) if a.get("child_sid")]
+    c.check("todo.distinct_children", len(set(all_children)) == len(all_children), all_children)
+    c.check("serial.behavior", all(a.get("behavior") == "work_simple" for t in serial for a in t["attempts"]), [(t["todo_id"], [a.get("behavior") for a in t["attempts"]]) for t in serial])
+
+    # Parallel explorations; serial Todos one at a time, after their
+    # prerequisites were accepted.
+    windows = {}
+    for t in todos:
+        for a in t.get("attempts", []):
+            if a.get("child_sid"):
+                w = child_window(case / "children" / a["child_sid"] / "session")
+                windows[a["child_sid"]] = w
+                c.check(f"child.{a['child_sid'][:12]}.real", w["rounds"] >= 1 and w["tool_calls"] >= 1, w)
+    ex = [windows[a["child_sid"]] for t in explores for a in t["attempts"][:1] if a.get("child_sid") in windows][:2]
+    overlap = len(ex) == 2 and all(w["first_tool_ms"] and w["end_ms"] for w in ex) and max(w["first_tool_ms"] for w in ex) < min(w["end_ms"] for w in ex)
+    c.check("parallel.overlap", overlap, ex)
+    spans = sorted((a["started_at_ms"], a.get("ended_at_ms") or 1 << 62, t["todo_id"]) for t in serial for a in t["attempts"])
+    c.check("serial.one_at_a_time", all(spans[i][0] >= spans[i - 1][1] for i in range(1, len(spans))), spans)
+    by_id = {t["todo_id"]: t for t in todos}
+    early = []
+    for t in serial:
+        for a in t["attempts"]:
+            for d in t.get("after", []):
+                acc = [r["at_ms"] for r in by_id.get(d, {}).get("reviews", []) if r["verdict"] == "accept"]
+                if not acc or a["started_at_ms"] < min(acc):
+                    early.append((t["todo_id"], d))
+    accepts = sorted(r["at_ms"] for t in explores for r in t.get("reviews", []) if r["verdict"] == "accept")
+    first_serial = min((a["started_at_ms"] for t in serial for a in t["attempts"]), default=None)
+    ordered = variant != "normal" or (len(accepts) >= 2 and first_serial is not None and first_serial >= accepts[1])
+    c.check("serial.after_accepted_prerequisites", not early and ordered, {"early": early, "accepts": accepts[:4], "first_serial": first_serial})
+
+    # Workspace assignment: explorations read without the workspace; the
+    # Todo that writes the deliverables inherited it.
+    c.check("workspace.explorations_without", all(not a.get("workspace_id") for t in explores for a in t["attempts"]), [(t["todo_id"], [a.get("workspace_id") for a in t["attempts"]]) for t in explores])
+    writers = [t["todo_id"] for t in serial if any(a.get("workspace_id") == ws_id for a in t["attempts"])]
+    review = (case / "workspace" / "review.md").read_text(encoding="utf-8") if (case / "workspace" / "review.md").exists() else ""
+    decisions = (case / "workspace" / "decisions.md").read_text(encoding="utf-8") if (case / "workspace" / "decisions.md").exists() else ""
+    if variant == "normal":
+        c.check("workspace.writer_inherited", bool(writers), writers)
+        c.check("deliverable.review_md", bool(review), len(review))
+        c.check("deliverable.decisions_md", bool(decisions), len(decisions))
+        c.check("review.defect_inventory", "inventory.py" in review, "inventory.py")
+        c.check("review.defect_idempotency", "idempotency.py" in review and re.search(r"tenant|租户", review), "idempotency.py + tenant")
+        untraced = [t["todo_id"] for t in explores + serial[:1] if t["todo_id"] not in review or (t["attempts"][-1].get("child_sid") or "") not in review]
+        c.check("review.traceable", not untraced, untraced)
+        open_todos = [t["todo_id"] for t in todos if t["status"] not in ("completed", "cancelled")]
+        c.check("todo.converged", not open_todos, open_todos)
+        c.check("parent.succeeded", state.get("outcome") == "succeeded", state.get("outcome"))
+        outs_serial = "".join(outputs_of(case / "children" / a["child_sid"] / "session") for t in serial for a in t["attempts"])
+        c.check("marker.C.in_output", re.search(MARKERS["C"] + r" \S", outs_serial) is not None, MARKERS["C"])
+    for k in ("A", "B"):
+        hit = []
+        for t in explores:
+            for a in t["attempts"]:
+                cdir = case / "children" / a["child_sid"] / "session"
+                ccfg = read_json(cdir / ".opendan_agent_session" / "session_config.json", {}) or {}
+                if MARKERS[k] in ccfg.get("session", {}).get("objective", ""):
+                    hit.append(cdir)
+        c.check(f"marker.{k}.in_child_input", bool(hit), MARKERS[k])
+        if variant == "normal" or k == "A":
+            c.check(f"marker.{k}.in_output", any(re.search(MARKERS[k] + r" \S", outputs_of(d)) for d in hit), MARKERS[k])
+
+    # Every latest result was reviewed; reports were read before they were
+    # judged; the background never carried a child's output.
+    unreviewed = [t["todo_id"] for t in todos if t.get("attempts") and t["status"] != "cancelled" and not any(r["attempt"] == t["attempts"][-1]["attempt"] for r in t.get("reviews", []))]
+    c.check("review.every_result", not unreviewed, unreviewed)
+    shows = [i for i, x in enumerate(commands) if re.search(r"todo show \S+ .*--report|read-session", x)]
+    c.check("review.reports_read", len(shows) >= len([t for t in todos if t.get("reviews")]), {"reads": len(shows)})
+    backgrounds = [e.get("content", "") for e in wl if e.get("t") == "user_message" and e.get("content", "").startswith("<<background_context>>")]
+    c.check("background.injected", len(backgrounds) >= 2, len(backgrounds))
+    leaks = []
+    # A Todo's one-line result (its report's first line) is meant to be
+    # shown; anything else of a child's output is not.
+    summaries = [a.get("summary") for t in todos for a in t.get("attempts", []) if a.get("summary")]
+    for t in todos:
+        for a in t.get("attempts", []):
+            if not a.get("child_sid"):
+                continue
+            for line in [l.strip() for l in outputs_of(case / "children" / a["child_sid"] / "session").splitlines() if len(l.strip()) >= 30]:
+                if any(line in sm for sm in summaries):
+                    continue
+                if any(line in bg for bg in backgrounds):
+                    leaks.append(line[:80])
+    c.check("background.no_child_output", not leaks, leaks[:5])
+    write_json(case / "parent" / "backgrounds.json", backgrounds)
+    if variant == "failure":
+        final = (state.get("final_report") or {}).get("report", "")
+        blocked = re.compile(r"ModuleNotFoundError|missing|not found|缺少|缺失|不存在", re.I)
+        b = [t for t in explores if MARKERS["B"] in t.get("content", "")]
+        verdicts = [r["verdict"] for t in b for r in t.get("reviews", [])]
+        handled = any(v in ("reject", "need_evidence") for v in verdicts) or any(len(t["attempts"]) > 1 for t in b) or bool(blocked.search(final + review))
+        c.check("failure.handled", handled, {"verdicts": verdicts, "final": final[:300]})
+        c.check("failure.reported_honestly", bool(blocked.search(final + review)), final[:300])
+
+    # Provider refusals (the reason for this mode): recorded, not judged
+    # from a status code alone.
+    errors = []
+    for d in [pdir] + [case / "children" / s / "session" for s in all_children]:
+        for e in read_jsonl(d / ".opendan_agent_session" / "worklog.jsonl"):
+            text = json.dumps(e, ensure_ascii=False)
+            if re.search(r"\b403\b|refus|forbidden|invalid_prompt", text, re.I) and e.get("t") in ("outcome", "turn_ended", "error"):
+                errors.append({"session": d.name[:20], "t": e.get("t"), "text": text[:300]})
+    stderr = (case / "drive.stderr.log").read_text(encoding="utf-8", errors="replace") if (case / "drive.stderr.log").exists() else ""
+    errors += [{"stderr": l[:300]} for l in stderr.splitlines() if re.search(r"\b403\b|invalid_prompt", l)]
+    c.check("provider.refusals_recorded", True, errors[:10] or "none")
+
+    total = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    for d in [pdir] + [case / "children" / s / "session" for s in all_children]:
+        st = read_json(d / ".opendan_agent_session" / "static.json", {}) or {}
+        for k in total:
+            total[k] += st.get(k, 0)
+    passed = all(i["ok"] for i in c.items)
+    write_json(case / "verification.json", {
+        "session_id": sid, "mode": "plan_simple", "variant": variant, "passed": passed,
+        "checks": c.items, "usage": total, "run": runinfo,
+        "models": meta["provider"], "fixture_sha256": meta["fixture"]["sha256"],
+    })
+    log(f"verification {'PASSED' if passed else 'FAILED'}: {sum(i['ok'] for i in c.items)}/{len(c.items)} (tokens {total['total_tokens']})")
+    return 0 if passed else 1
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -644,13 +849,14 @@ def main() -> int:
     p.add_argument("phase", choices=["all", "prepare", "run", "collect", "verify"])
     p.add_argument("--case", type=Path)
     p.add_argument("--variant", choices=["normal", "failure"], default="normal")
+    p.add_argument("--mode", choices=["plan", "plan_simple"], default="plan")
     a = p.parse_args()
-    case = (a.case or (default_case(a.variant) if a.phase in ("all", "prepare") else None))
+    case = (a.case or (default_case(f"{a.mode}-{a.variant}") if a.phase in ("all", "prepare") else None))
     if case is None:
         fail("--case <dir> is required for this phase")
     case = case.resolve()
     if a.phase in ("all", "prepare"):
-        prepare(case, a.variant)
+        prepare(case, a.variant, a.mode)
     if a.phase in ("all", "run"):
         run(case)
     if a.phase == "collect":

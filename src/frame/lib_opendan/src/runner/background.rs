@@ -29,7 +29,7 @@ pub struct BackgroundLine {
 }
 
 impl BackgroundLine {
-    fn new(key: impl Into<String>, text: impl Into<String>) -> Self {
+    pub(super) fn new(key: impl Into<String>, text: impl Into<String>) -> Self {
         Self {
             key: key.into(),
             text: text.into(),
@@ -89,7 +89,7 @@ fn outcome_name(o: Option<Outcome>) -> String {
         .unwrap_or_else(|| "no outcome".into())
 }
 
-fn child_line(e: &RegistryEntry) -> BackgroundLine {
+pub(super) fn child_line(e: &RegistryEntry) -> BackgroundLine {
     let st = &e.status;
     let sid = &e.session_id;
     let status = one_line(&st.one_line_status, 200);
@@ -258,7 +258,7 @@ pub fn lines(i: &BackgroundInput) -> Vec<BackgroundLine> {
     out
 }
 
-fn digest(text: &str) -> String {
+pub(super) fn digest(text: &str) -> String {
     hex::encode(&Sha256::digest(text.as_bytes())[..8])
 }
 

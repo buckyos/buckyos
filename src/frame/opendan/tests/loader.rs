@@ -1295,10 +1295,17 @@ async fn the_jarvis_package_loads_and_answers() {
     let loader = Loader::start(env).await.unwrap();
     assert_eq!(loader.config.language, "zh");
     assert_eq!(loader.config.llm_context["provider"]["type"], "buckyos");
-    for name in ["chat_route", "plan", "do", "work_simple", "goal"] {
+    for name in ["chat_route", "plan", "do", "work_simple", "goal", "plan_simple"] {
         let b = loader.agent.behaviors().get(name).await.unwrap().unwrap();
         assert!(b.prompt.system.is_some(), "{name}");
     }
+    // plan_simple: native function calls with an intent on every call and
+    // the background after tool results; its session class ends with an
+    // explicit report.
+    let plan_simple = loader.agent.behaviors().get("plan_simple").await.unwrap().unwrap();
+    let entry = plan_simple.to_entry("plan_simple", &loader.config.llm_context, true).unwrap();
+    assert!(entry.call_intent);
+    assert_eq!(entry.input.unwrap().background, libopendan::protocol::InputBackground::AfterTools);
     assert!(loader.agent.behaviors().get("task_route").await.unwrap().is_none());
     // Intent analysis: a fork of the UI context offered as a named function.
     let analyze = loader.agent.behaviors().get("analyze_intent").await.unwrap().unwrap();

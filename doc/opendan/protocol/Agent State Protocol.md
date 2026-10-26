@@ -134,10 +134,12 @@ semi_subscription_snapshot = "…"
 [input]                            # 消费策略（缺省用会话的）
 mode = "batch"                     # single | batch
 media = "reference"                # reference | inline
+background = "batch"               # batch | after_tools：after_tools 时每批工具结果后宿主追加变化的 TodoList / 子 Session 行（<<background_context>>）
 
 [capabilities]
 tool_whitelist = ["group:bash", "behavior:analyze_intent", "report"]   # → tools.tools；`group:<内置工具组>` → {groupname}，其余 → {name}（运行环境提供的工具）；`behavior:<name>` 是该 behavior 的 [tool] 函数
 action_whitelist = ["shell"]       # → tools.actions
+call_intent = false                # true（只用于 function_call）：每个原生调用必须带非空 `intent`，宿主加入 schema、执行前校验、交给工具前去掉
 
 [budget]
 max_tool_iterations = 16           # → max_tool_iterations
