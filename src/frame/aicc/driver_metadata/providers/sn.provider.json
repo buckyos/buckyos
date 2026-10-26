@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 0,
-  "revision_seq": 10,
+  "revision_seq": 12,
   "provider_profile_id": "sn",
   "model_driver_overrides": {
     "gpt-6-astra": "openai/gpt-6-astra",
@@ -295,6 +295,9 @@
             "/top_p"
           ]
         }
+      ],
+      "remove_api_types": [
+        "vision.ocr"
       ]
     },
     {
@@ -318,6 +321,9 @@
             "/top_p"
           ]
         }
+      ],
+      "remove_api_types": [
+        "vision.ocr"
       ]
     },
     {
@@ -347,7 +353,10 @@
         "image.txt2img": "images.generate",
         "image.img2img": "images.edit",
         "image.inpaint": "images.edit"
-      }
+      },
+      "remove_api_types": [
+        "image.inpaint"
+      ]
     },
     {
       "id": "text-embedding-3-large",
@@ -424,7 +433,10 @@
         "llm": "responses.create",
         "vision.ocr": "responses.create",
         "vision.caption": "responses.create"
-      }
+      },
+      "remove_api_types": [
+        "vision.ocr"
+      ]
     },
     {
       "id": "qwen3.8-max-0902",
@@ -444,7 +456,11 @@
       "operations": {
         "image.txt2img": "images.generate",
         "image.img2img": "images.edit"
-      }
+      },
+      "remove_api_types": [
+        "image.img2img",
+        "image.txt2img"
+      ]
     },
     {
       "id": "ui-tars-1.5-7b",
@@ -470,7 +486,12 @@
         "video.generate": "videos.create",
         "video.edit": "videos.create",
         "video.extend": "videos.create"
-      }
+      },
+      "remove_api_types": [
+        "video.edit",
+        "video.extend",
+        "video.generate"
+      ]
     }
   ],
   "patterns": [
@@ -767,19 +788,6 @@
     },
     {
       "model_driver": "qwen",
-      "variant": "reasoning-minimal",
-      "match": {
-        "origin_model_id": "qwen3.8-max-0902",
-        "variant": "reasoning-minimal"
-      },
-      "provider_options": {
-        "reasoning": {
-          "effort": "minimal"
-        }
-      }
-    },
-    {
-      "model_driver": "qwen",
       "variant": "reasoning-low",
       "match": {
         "origin_model_id": "qwen3.8-max-0902",
@@ -801,19 +809,6 @@
       "provider_options": {
         "reasoning": {
           "effort": "medium"
-        }
-      }
-    },
-    {
-      "model_driver": "qwen",
-      "variant": "reasoning-high",
-      "match": {
-        "origin_model_id": "qwen3.8-max-0902",
-        "variant": "reasoning-high"
-      },
-      "provider_options": {
-        "reasoning": {
-          "effort": "high"
         }
       }
     },

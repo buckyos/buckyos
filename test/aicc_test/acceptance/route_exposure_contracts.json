@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
-  "contract_revision": "2026-10-23.1",
-  "capability_baseline_revision": "2026-10-23.1",
+  "contract_revision": "2026-10-26.1",
+  "capability_baseline_revision": "2026-10-26.1",
   "capability_cells_sha256": "b766313df1905a293514873557d3b9d8b728f094793d3eadd6e2ddf33f695a58",
   "logical_entrypoint_baseline_revision": "2026-10-05.1",
   "profiles": [
@@ -564,6 +564,60 @@
           "api_type": "image.img2img",
           "mode": "exact_only",
           "reason": "Responses image-generation tool models are callable by exact model but are not members of the dedicated image-model family tree."
+        },
+        {
+          "model_pattern": "qwen3.7-plus",
+          "api_type": "vision.ocr",
+          "mode": "excluded",
+          "reason": "Disabled by SN channel configuration after the recorded T2 failure; requires new acceptance before enabling."
+        },
+        {
+          "model_pattern": "gpt-5.4-mini",
+          "api_type": "vision.ocr",
+          "mode": "excluded",
+          "reason": "Disabled by SN channel configuration after the recorded T2 failure; requires new acceptance before enabling."
+        },
+        {
+          "model_pattern": "gpt-5.4-nano",
+          "api_type": "vision.ocr",
+          "mode": "excluded",
+          "reason": "Disabled by SN channel configuration after the recorded T2 failure; requires new acceptance before enabling."
+        },
+        {
+          "model_pattern": "qwen-image-3-pro",
+          "api_type": "image.txt2img",
+          "mode": "excluded",
+          "reason": "Disabled by SN channel configuration after the recorded T2 failure; requires new acceptance before enabling."
+        },
+        {
+          "model_pattern": "qwen-image-3-pro",
+          "api_type": "image.img2img",
+          "mode": "excluded",
+          "reason": "Disabled by SN channel configuration after the recorded T2 failure; requires new acceptance before enabling."
+        },
+        {
+          "model_pattern": "gpt-image-2",
+          "api_type": "image.inpaint",
+          "mode": "excluded",
+          "reason": "Disabled by SN channel configuration after the recorded T2 failure; requires new acceptance before enabling."
+        },
+        {
+          "model_pattern": "wan-3.0",
+          "api_type": "video.generate",
+          "mode": "excluded",
+          "reason": "Disabled by SN channel configuration after the recorded T2 failure; requires new acceptance before enabling."
+        },
+        {
+          "model_pattern": "wan-3.0",
+          "api_type": "video.edit",
+          "mode": "excluded",
+          "reason": "Disabled by SN channel configuration after the recorded T2 failure; requires new acceptance before enabling."
+        },
+        {
+          "model_pattern": "wan-3.0",
+          "api_type": "video.extend",
+          "mode": "excluded",
+          "reason": "Disabled by SN channel configuration after the recorded T2 failure; requires new acceptance before enabling."
         }
       ]
     }

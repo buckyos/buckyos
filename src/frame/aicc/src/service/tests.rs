@@ -227,6 +227,7 @@ impl ProviderValidator for FakeValidator {
             resolved_protocol_adapter_id: request
                 .protocol_adapter_id
                 .or(Some("openai-responses".to_string())),
+            ..Default::default()
         })
     }
 }
@@ -459,6 +460,8 @@ fn sn_provider(name: &str, auth: Value) -> ProviderSettings {
 
 fn provider_public_view(provider: &ProviderSettings) -> ProviderInstanceView {
     ProviderInstanceView {
+        provider_rules_id: None,
+        instance_rules: None,
         provider_instance_name: provider.provider_instance_name.clone(),
         provider_type: provider.provider_type.clone(),
         provider_profile_id: provider.provider_profile_id.clone(),
@@ -1650,6 +1653,35 @@ async fn service_assembler_builds_with_only_builtin_model_metadata() {
         model_directory_json(&registry),
         model_directory_json(&builtin_tree(&[]))
     );
+}
+
+#[test]
+fn provider_advanced_update_roundtrips_and_can_clear_channel_rules() {
+    let mut provider = sn_provider(
+        "primary",
+        json!({"mode":"api_key", "credential_ref":"test"}),
+    );
+    let mut request = ProviderUpdateRequest::new("primary", 5);
+    request.provider_rules_id = Some("sn".into());
+    let mut rules = buckyos_api::ProviderInstanceRules::default();
+    rules
+        .model_driver_overrides
+        .insert("alias".into(), "qwen/qwen3.7-plus".into());
+    rules.server_default_routes.insert(
+        "alias".into(),
+        std::collections::BTreeSet::from(["llm.chat".into()]),
+    );
+    request.instance_rules = Some(rules.clone());
+    let restored =
+        ProviderUpdateRequest::from_json(serde_json::to_value(request).unwrap()).unwrap();
+    apply_provider_update(&mut provider, restored);
+    assert_eq!(provider.provider_rules_id.as_deref(), Some("sn"));
+    assert_eq!(provider.instance_rules, Some(rules));
+    let mut clear = ProviderUpdateRequest::new("primary", 5);
+    clear.provider_rules_id = Some(String::new());
+    apply_provider_update(&mut provider, clear);
+    assert!(provider.provider_rules_id.is_none());
+    assert!(provider.instance_rules.is_some());
 }
 
 #[tokio::test]

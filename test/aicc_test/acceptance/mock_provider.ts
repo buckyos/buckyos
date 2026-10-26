@@ -774,7 +774,7 @@ async function providerResponse(
     path,
     `http://${request.headers.host ?? "127.0.0.1:18080"}`,
   );
-  if (minimaxVideo) {
+  if (minimaxVideo && !scenario.startsWith("async_")) {
     json(response, 200, minimaxVideo);
     return;
   }
@@ -977,6 +977,8 @@ const server = createServer(async (request, response) => {
     json(response, 500, { error: { type: "mock_internal", message: String(error) } });
   }
 });
+
+export { server as t1MockProviderServer };
 
 if (import.meta.main) {
   const args = process.argv.slice(2);

@@ -822,6 +822,8 @@ mod canonical_contract_tests {
 
     fn provider_instance_view(enabled: bool) -> ProviderInstanceView {
         ProviderInstanceView {
+            provider_rules_id: None,
+            instance_rules: None,
             provider_instance_name: "openai-main".to_string(),
             provider_type: ProviderInstanceType::CloudApi,
             provider_profile_id: "openai".to_string(),
@@ -4648,6 +4650,16 @@ pub struct ProviderValidationErrorDetail {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderValidateResponse {
+    #[serde(default)]
+    pub models_recognized: Vec<String>,
+    #[serde(default)]
+    pub unmatched_models: Vec<Value>,
+    #[serde(default)]
+    pub unavailable_presets: Vec<Value>,
+    #[serde(default)]
+    pub routing_candidates: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
     pub base_url_reachable: bool,
     pub auth_valid: bool,
     #[serde(default)]
@@ -4873,6 +4885,8 @@ pub enum ProviderInstanceType {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderInstanceRules {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub server_default_routes: BTreeMap<String, BTreeSet<String>>,
     /// Legal/account residency used by Provider metadata policy matching.
     /// `unknown` deliberately remains routable unless a rule explicitly denies it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4925,6 +4939,10 @@ pub struct ProviderInstanceHealthView {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderInstanceView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_rules_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_rules: Option<ProviderInstanceRules>,
     pub provider_instance_name: String,
     pub provider_type: ProviderInstanceType,
     pub provider_profile_id: String,
@@ -4971,6 +4989,8 @@ pub struct ProviderHealthResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderUpdateRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_rules_id: Option<String>,
     pub provider_instance_name: String,
     pub settings_revision: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4998,6 +5018,7 @@ impl_request_json!(ProviderUpdateRequest);
 impl ProviderUpdateRequest {
     pub fn new(provider_instance_name: impl Into<String>, settings_revision: u64) -> Self {
         Self {
+            provider_rules_id: None,
             provider_instance_name: provider_instance_name.into(),
             settings_revision,
             enabled: None,

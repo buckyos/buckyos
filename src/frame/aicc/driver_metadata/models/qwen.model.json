@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "qwen",
-  "revision_seq": 7,
+  "revision_seq": 8,
   "required_features": [],
   "models": [
     {
@@ -299,10 +299,9 @@
         "effort": "xhigh",
         "default_effort": "xhigh",
         "supported_efforts": [
-          "minimal",
+          "none",
           "low",
           "medium",
-          "high",
           "xhigh"
         ],
         "stability": "stable",

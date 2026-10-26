@@ -58,6 +58,7 @@ export type ProtocolErrorFixture = {
 };
 
 export type ProviderProtocolContract = {
+  aicc_error_code_by_scenario?: Record<string, string>;
   id: string;
   protocol_adapter_id: string;
   error_fixture_key?: string;
@@ -162,6 +163,7 @@ export type ProviderProtocolCatalog = {
   checked_at: string;
   providers: Array<{
     provider_driver: string;
+    server_default_test?: { model_id: string; model_driver: string; protocol_adapter_id: string; contract_id: string };
     provider_profile_id: string;
     endpoint_path: string;
     operation_endpoint_paths?: Record<string, string>;
@@ -281,6 +283,10 @@ export function validateProviderProtocolCatalog(
         }
         nonEmptyString(fieldValue, `${driver}.instance_fields.${name}`);
       }
+    }
+    if (provider.server_default_test !== undefined) {
+      const test = object(provider.server_default_test, `${driver}.server_default_test`);
+      for (const field of ["model_id", "model_driver", "protocol_adapter_id", "contract_id"]) nonEmptyString(test[field], `${driver}.server_default_test.${field}`);
     }
     const testModelIds = object(
       provider.test_model_ids,
@@ -2521,6 +2527,14 @@ export function buildT15Manifest(
           expected_wire_fixture: `${contract.id}.request`,
           response_fixture: `${contract.id}.success`,
         };
+        if (apiType === "llm" && provider.server_default_test?.contract_id === contract.id) {
+          cases.push({ ...common,
+            case_id: caseId(`t1.5.${provider.provider_driver}.${contract.id}.llm.server-default-route`),
+            tags: [...common.tags!, "server_default_mode"],
+            model_selector: { kind: "exact", value: provider.server_default_test.model_id },
+            mock_scenario: "success",
+          } as AcceptanceCase);
+        }
         cases.push({
           ...common,
           case_id: caseId(
@@ -2771,7 +2785,7 @@ export function buildT15Manifest(
             response_fixture: `${
               contract.error_fixture_key ?? provider.provider_driver
             }.error.${error.scenario}`,
-            expected_aicc_error_code: "provider_error",
+            expected_aicc_error_code: contract.aicc_error_code_by_scenario?.[error.scenario] ?? "provider_error",
             expected_provider_error_code: providerErrorCode(error),
             expected_retriable: providerErrorRetriable(error),
           } as AcceptanceCase);

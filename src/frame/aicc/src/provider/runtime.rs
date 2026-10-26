@@ -523,7 +523,7 @@ impl ProviderRuntimeManager {
             account: connection.account.clone(),
             request_timeout: Duration::from_secs(120),
             auto_sync_models: false,
-            instance_rules: None,
+            instance_rules: draft.instance_rules.clone(),
         };
         instance.validate().map_err(|error| {
             ProviderDraftValidationError::from_provider_error(

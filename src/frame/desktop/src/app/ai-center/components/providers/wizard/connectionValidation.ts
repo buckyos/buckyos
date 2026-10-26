@@ -1,7 +1,11 @@
 import { z } from 'zod'
+import { parseProviderAdvancedRules } from '../../../../../api/provider_model_selection'
 import type { WizardDraft } from '../../../../../api/aicc_mgr'
 
 export const wizardDraftSchema = z.object({
+  provider_rules_id: z.string().optional(),
+  model_driver_overrides_json: z.string().optional(),
+  server_default_routes_json: z.string().optional(),
   provider_instance_name: z.string().trim().min(1).max(64).optional(),
   provider_profile_id: z.string().trim().min(1).max(64).nullable(),
   display_name: z.string().trim().max(80),
@@ -20,6 +24,9 @@ export const wizardDraftSchema = z.object({
   selectable_inventory_models: z.array(z.string()).optional(),
   selected_inventory_models: z.array(z.string()).optional(),
 }).superRefine((draft, context) => {
+  try { parseProviderAdvancedRules(draft) } catch (error) {
+    context.addIssue({ code: 'custom', path: ['model_driver_overrides_json'], message: error instanceof Error ? error.message : 'Invalid advanced provider rules' })
+  }
   if (!draft.provider_profile_id) return
   if (!draft.base_url) context.addIssue({ code: 'custom', path: ['base_url'], message: 'Base URL is required' })
   for (const [operation, url] of Object.entries(draft.operation_base_urls)) {

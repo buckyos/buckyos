@@ -199,6 +199,7 @@ pub(crate) struct LogicalModelDefinition {
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum LogicalItemSource {
+    ProviderDefault,
     BuiltinDefinition,
     DriverMetadataMount,
     AutoAdmission,
@@ -210,6 +211,7 @@ pub(crate) enum LogicalItemSource {
 
 pub(crate) fn logical_item_source_name(source: LogicalItemSource) -> &'static str {
     match source {
+        LogicalItemSource::ProviderDefault => "provider_default",
         LogicalItemSource::BuiltinDefinition => "builtin_definition",
         LogicalItemSource::DriverMetadataMount => "driver_metadata_mount",
         LogicalItemSource::AutoAdmission => "auto_admission",
@@ -465,6 +467,7 @@ impl ModelRegistry {
             .flatten()
             .flat_map(|layer| layer.routing_commands.iter().cloned())
             .collect::<Vec<_>>();
+        registry.materialize_server_defaults(catalog)?;
         registry.apply_routing_commands(&commands);
         registry.validate_llm_tree()?;
         registry.validate_fallback_graph()?;
@@ -804,9 +807,24 @@ impl ModelRegistry {
                     self.fallback_depth_limit,
                 ));
             }
+            let mut mode_accept = |path: &str, candidate: &RegistryCandidate| {
+                let explicit_default = api_type == ApiType::Llm
+                    && candidate.model.exact_model.variant().is_some()
+                    && candidate
+                        .model
+                        .attributes
+                        .get("server_default_routes")
+                        .and_then(Value::as_array)
+                        .is_some_and(|routes| {
+                            routes
+                                .iter()
+                                .any(|route| route.as_str() == Some(logical_path))
+                        });
+                !explicit_default && accept(path, candidate)
+            };
             let mut context = ExpandContext {
                 resolved_path: &current,
-                accept: &mut *accept,
+                accept: &mut mode_accept,
                 explore_all: false,
                 admissions: Vec::new(),
                 expansions: Vec::new(),
@@ -946,6 +964,76 @@ impl ModelRegistry {
         Ok(())
     }
 
+    fn materialize_server_defaults(
+        &mut self,
+        catalog: &CatalogSnapshot,
+    ) -> Result<(), ModelRegistryError> {
+        for model in self
+            .models
+            .values_mut()
+            .filter(|model| model.exact_model.variant().is_none())
+        {
+            let family = catalog.llm_model(
+                &model.identity.model_driver_id,
+                &model.identity.origin_model_id,
+            );
+            if model
+                .attributes
+                .get("server_default_routes")
+                .and_then(Value::as_array)
+                .is_some_and(|routes| !routes.is_empty())
+            {
+                if family.is_none_or(|family| {
+                    family.semantics.spec_bindings().any(|(spec, _, _)| {
+                        self.specs
+                            .get(&format!("llm.{spec}"))
+                            .is_some_and(|(_, direct_only)| *direct_only)
+                    })
+                }) {
+                    return Err(ModelRegistryError::InvalidLogicalTree("server defaults cannot bypass direct-only specifications or missing LLM metadata".into()));
+                }
+                model.attributes.insert(
+                    "server_default_experimental".into(),
+                    Value::Bool(family.is_some_and(|family| {
+                        family.semantics.stability == ModelStability::Experimental
+                    })),
+                );
+            }
+            let routes = model
+                .attributes
+                .get("server_default_routes")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str);
+            for path in routes {
+                let Some(node) = self.logical_nodes.get_mut(path) else {
+                    return Err(ModelRegistryError::InvalidLogicalTree(format!(
+                        "unknown server default task {path}"
+                    )));
+                };
+                if node
+                    .definition
+                    .as_ref()
+                    .is_none_or(|definition| definition.api_type != ApiType::Llm)
+                    || self.specs.contains_key(path)
+                    || node.family.is_some()
+                {
+                    return Err(ModelRegistryError::InvalidLogicalTree(format!(
+                        "server defaults require an LLM task: {path}"
+                    )));
+                }
+                node.items.push(EffectiveItem::new(
+                    model.exact_model.to_string(),
+                    model.exact_model.to_string(),
+                    1.0,
+                    LogicalItemSource::ProviderDefault,
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn materialize_families(&mut self, catalog: &CatalogSnapshot) {
         let mut families: BTreeMap<String, (LlmModel, Vec<String>)> = BTreeMap::new();
         for model in self
@@ -1038,7 +1126,18 @@ impl ModelRegistry {
                 if (llm && node.family.is_none() && !self.specs.contains_key(path))
                     || (!llm && path_namespace(target_path) == "llm")
                 {
-                    if !self.specs.contains_key(target) {
+                    let server_default = item.source == LogicalItemSource::ProviderDefault
+                        && self.models.get(target).is_some_and(|model| {
+                            model.exact_model.variant().is_none()
+                                && model
+                                    .attributes
+                                    .get("server_default_routes")
+                                    .and_then(Value::as_array)
+                                    .is_some_and(|routes| {
+                                        routes.iter().any(|route| route.as_str() == Some(path))
+                                    })
+                        });
+                    if !self.specs.contains_key(target) && !server_default {
                         return Err(invalid(format!(
                             "{path} must reference a declared specification, got {target}"
                         )));
@@ -1680,7 +1779,12 @@ impl ModelRegistry {
         }
         let candidate = RegistryCandidate {
             model: model.clone(),
-            experimental: self.experimental(&path),
+            experimental: self.experimental(&path)
+                || model
+                    .attributes
+                    .get("server_default_experimental")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
             paths: vec![path],
             exact_model_weight,
             provider_weight: self

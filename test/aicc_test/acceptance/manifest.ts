@@ -283,6 +283,12 @@ export function validateProviderBaseline(value: unknown): ProviderBaseline {
         throw new Error(`${driver}.${String(rule.model_pattern)}.source_status must be a string`);
       }
       requireStringArray(rule.api_types, `${driver}.api_types`);
+      if (rule.disabled_api_types !== undefined) {
+        const disabled = requireStringArray(rule.disabled_api_types, `${driver}.disabled_api_types`);
+        if (disabled.some((api) => !(rule.api_types as string[]).includes(api))) {
+          throw new Error(`${driver}.disabled_api_types must be a subset of declared capabilities`);
+        }
+      }
       requireStringArray(rule.methods, `${driver}.methods`);
       requireStringArray(rule.input_kinds, `${driver}.input_kinds`);
       requireStringArray(rule.output_kinds, `${driver}.output_kinds`);
@@ -524,11 +530,12 @@ export function analyzeProviderMatrix(args: {
         continue;
       }
       const declared = new Set(model.api_types);
-      const official = new Set(rule.api_types);
+      const disabled = new Set(rule.disabled_api_types ?? []);
+      const official = new Set(rule.api_types.filter((api) => !disabled.has(api)));
       for (const apiType of declared) {
         if (!official.has(apiType)) {
           errors.push(
-            `official_not_supported_but_aicc_advertised ${model.exact_model} ${apiType}`,
+            `${disabled.has(apiType) ? "disabled_api_advertised" : "official_not_supported_but_aicc_advertised"} ${model.exact_model} ${apiType}`,
           );
         }
       }

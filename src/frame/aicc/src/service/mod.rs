@@ -11,8 +11,8 @@ mod settings_runtime;
 mod video_materials;
 
 use events::AiccEventLog;
-use inference::{inference_error, next_inference_id, now_ms, AuthenticatedResourceAuthorizer};
 pub(crate) use identity::{RuntimeAuthorizer, SystemConfigUserDirectory, UserDirectory};
+use inference::{inference_error, next_inference_id, now_ms, AuthenticatedResourceAuthorizer};
 pub(crate) use inference::{
     DriverMetadataPort, ProviderValidator, RuntimeInferencePort, UsageQueryPort,
 };
@@ -1038,6 +1038,9 @@ fn provider_from_add(
 }
 
 fn apply_provider_update(provider: &mut ProviderSettings, request: ProviderUpdateRequest) {
+    if let Some(rules) = request.provider_rules_id {
+        provider.provider_rules_id = (!rules.trim().is_empty()).then_some(rules);
+    }
     if let Some(enabled) = request.enabled {
         provider.enabled = enabled;
     }
@@ -1412,6 +1415,8 @@ fn runtime_admin_snapshot(
                 )
             };
             ProviderInstanceView {
+                provider_rules_id: settings.provider_rules_id.clone(),
+                instance_rules: settings.instance_rules.clone(),
                 provider_instance_name: settings.provider_instance_name.clone(),
                 provider_type: settings.provider_type.clone(),
                 provider_profile_id: settings.provider_profile_id.clone(),
@@ -1804,4 +1809,13 @@ pub(crate) fn builtin_registry_for_test(
         },
     )
     .unwrap()
+}
+
+#[cfg(test)]
+pub(crate) fn issue666_test_definitions() -> Vec<crate::model::LogicalModelDefinition> {
+    builtin_logical_model_definitions()
+}
+#[cfg(test)]
+pub(crate) fn issue666_test_overlay() -> buckyos_api::AiccRouteOverlay {
+    builtin_logical_tree_overlay()
 }

@@ -458,11 +458,15 @@ export function assertRouteExposureCompleteness(
         }
         if (
           (rule.status === "active" || rule.status === "preview") &&
-          (exposure.mode === "excluded" || exposure.mode === "not_applicable")
+          (exposure.mode === "excluded" || exposure.mode === "not_applicable") &&
+          !rule.disabled_api_types?.includes(apiType)
         ) {
           throw new Error(
             `${provider.provider_driver}/${rule.model_pattern}/${apiType} is executable but declared ${exposure.mode}`,
           );
+        }
+        if (rule.disabled_api_types?.includes(apiType) && exposure.mode !== "excluded") {
+          throw new Error(`${provider.provider_driver}/${rule.model_pattern}/${apiType} is disabled but not declared excluded`);
         }
         summary[exposure.mode] += 1;
         const aggregateKey = `${provider.provider_profile_id}/${apiType}`;

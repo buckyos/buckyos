@@ -366,6 +366,19 @@ impl RuntimeInferencePort {
                 call,
                 ProviderCallTarget {
                     provider_rules_id,
+                    use_server_defaults: crate::model::ExactModelName::parse(
+                        &decision.selected.exact_model,
+                    )
+                    .is_ok_and(|model| model.variant().is_none())
+                        && provider
+                            .config
+                            .instance_rules
+                            .as_ref()
+                            .is_some_and(|rules| {
+                                rules
+                                    .server_default_routes
+                                    .contains_key(&decision.selected.provider_model_id)
+                            }),
                     base_url: provider.config.base_url.clone(),
                     operation_base_urls: provider.config.operation_base_urls.clone(),
                     credential,

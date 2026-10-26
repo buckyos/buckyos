@@ -403,6 +403,29 @@ async function provisionSecondTenant(
   };
 }
 
+export async function withExhaustedProviderQuota<T>(session: Pick<GatewaySession, "aicc" | "userId">, provider: string, execute: () => Promise<T>): Promise<T> {
+  const created = await session.aicc.call("quota.rule.create", { draft: {
+    object: { type: "user", user_id: session.userId }, resource: { type: "provider", provider_instance_name: provider },
+    kind: "periodic", period: "4h", limit_tokens: 0,
+  } }) as { rule: { rule_id: string; version: number } };
+  try { return await execute(); }
+  finally { await session.aicc.call("quota.rule.delete", { rule_id: created.rule.rule_id, expected_version: created.rule.version }); }
+}
+
+async function assertQuotaCallUsesBackup(session: GatewaySession, input: Options, logicalModel: string, primary: string, backup: string, id: string, sessionId?: string): Promise<void> {
+  const before = (await mockRequests(input.mockControlUrl)).length;
+  const initial = await session.aicc.call("helper.llm_chat", {
+    logical_model: logicalModel, session_id: sessionId,
+    session_overlay: { provider_weights: { [primary]: 2, [backup]: 1 } },
+    policy: { allowed_provider_instances: [primary, backup], runtime_failover: true },
+    messages: [{ role: "user", content: [{ type: "text", text: "Return BUCKYOS-AICC-4827" }] }],
+    disable: { web_search: true }, max_output_tokens: 32, idempotency_key: id,
+  }) as AiMethodResponse;
+  await terminal(session, initial, input.timeoutMs);
+  const calls = (await mockRequests(input.mockControlUrl)).slice(before).filter((request) => request.method === "POST" && String(request.path).endsWith("/responses"));
+  if (calls.length !== 1 || !String(calls[0].path).startsWith("/instance-b/")) throw new Error(`exhausted primary reached Provider or backup was not called: ${JSON.stringify(calls.map((call) => call.path))}`);
+}
+
 async function setScenario(baseUrl: string, scenario: string, pathPrefix?: string): Promise<void> {
   const response = await fetch(`${baseUrl}/__mock/scenario`, {
     method: "POST",
@@ -1423,30 +1446,10 @@ async function runRouteCases(
           await restartAicc(session, input);
         }
       }
-      const key = [
-        "services/aicc/quota", session.userId, session.userId, "system:control-panel",
-        "llm", "chat.completions.create", openaiA.provider_instance_name,
-      ].join("/");
-      const now = Date.now();
-      const value = (max: number) => JSON.stringify({
-        period_start_ms: now - 60_000,
-        period_end_ms: now + 3_600_000,
-        max_request_units: max,
-        max_cost: null,
-        reset_at: new Date(now + 3_600_000).toISOString(),
+      return await withExhaustedProviderQuota(session, openaiA.provider_instance_name, async () => {
+        await assertQuotaCallUsesBackup(session, input, logicalModel!, openaiA.provider_instance_name, openaiB.provider_instance_name, `${runId}:${caseId}`);
+        return `token quota blocked primary before inference and selected ${openaiB.provider_instance_name}`;
       });
-      await adminSystemConfig.call("sys_config_set", { key, value: value(0) });
-      try {
-        const response = await session.aicc.call("route.resolve", routeRequest(caseId, {
-          policy: { allowed_provider_instances: [openaiA.provider_instance_name, openaiB.provider_instance_name] },
-        })) as Record<string, unknown>;
-        if (response.provider_instance_name !== openaiB.provider_instance_name) {
-          throw new Error(`quota-exhausted Provider remained routable: ${JSON.stringify(response)}`);
-        }
-        return `quota truth excluded ${openaiA.provider_instance_name}`;
-      } finally {
-        await adminSystemConfig.call("sys_config_set", { key, value: value(1_000_000) });
-      }
     });
   }
 
@@ -2092,46 +2095,10 @@ async function runCases(
         }
       }
       if (reason === "quota_exhausted") {
-        const key = [
-          "services/aicc/quota",
-          session.userId,
-          session.userId,
-          "system:control-panel",
-          "llm",
-          "chat.completions.create",
-          openaiA.provider_instance_name,
-        ].join("/");
-        const now = Date.now();
-        await adminSystemConfig.call("sys_config_set", {
-          key,
-          value: JSON.stringify({
-            period_start_ms: now - 60_000,
-            period_end_ms: now + 3_600_000,
-            max_request_units: 0,
-            max_cost: null,
-            reset_at: new Date(now + 3_600_000).toISOString(),
-          }),
+        return await withExhaustedProviderQuota(session, openaiA.provider_instance_name, async () => {
+          await assertQuotaCallUsesBackup(session, input, logicalModel!, openaiA.provider_instance_name, openaiB.provider_instance_name, `${runId}:${caseId}`, sessionId);
+          return `token quota overrode session history before inference and selected ${modelB.exact_model}`;
         });
-        try {
-          const routed = await sessionRoute(sessionId, caseId, {
-            policy: { allowed_provider_instances: [openaiA.provider_instance_name, openaiB.provider_instance_name] },
-          });
-          if (routed.selected_exact_model !== modelB.exact_model) {
-            throw new Error(`quota exhausted history selected ${String(routed.selected_exact_model)}`);
-          }
-          return `quota exhaustion overrode history and selected ${modelB.exact_model}`;
-        } finally {
-          await adminSystemConfig.call("sys_config_set", {
-            key,
-            value: JSON.stringify({
-              period_start_ms: now - 60_000,
-              period_end_ms: now + 3_600_000,
-              max_request_units: 1_000_000,
-              max_cost: null,
-              reset_at: new Date(now + 3_600_000).toISOString(),
-            }),
-          });
-        }
       }
       const overrides: Record<string, unknown> = {
         policy: {

@@ -1,3 +1,4 @@
+import { parseProviderAdvancedRules } from '../../../api/provider_model_selection'
 import type {
   AIStatus,
   ApiNamespace,
@@ -258,6 +259,16 @@ export class MockDataStore {
   }
 
   refreshProviderModels(): void {
+    this.notify()
+  }
+
+  updateProviderRules(id: string, draft: Partial<WizardDraft>): void {
+    const provider = this.providers.get(id)
+    if (!provider) return
+    this.providers.set(id, { ...provider, config: { ...provider.config,
+      provider_rules_id: draft.provider_rules_id || undefined,
+      instance_rules: { ...provider.config.instance_rules, ...parseProviderAdvancedRules(draft) },
+    } })
     this.notify()
   }
 

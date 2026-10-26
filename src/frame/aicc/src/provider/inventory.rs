@@ -273,6 +273,25 @@ impl ProviderInstanceConfig {
                 operation_base_url,
             )?;
         }
+        if let Some(rules) = &self.instance_rules {
+            for (model, routes) in &rules.server_default_routes {
+                validate_nonempty("server default model", model)?;
+                if model.contains(['*', '?', '@', ':']) || model.chars().any(char::is_whitespace) {
+                    return Err(ProviderError::InvalidConfiguration(
+                        "server defaults require explicit physical model IDs".into(),
+                    ));
+                }
+                if routes.is_empty()
+                    || routes
+                        .iter()
+                        .any(|route| !route.starts_with("llm.") || route.contains([':', '@', '/']))
+                {
+                    return Err(ProviderError::InvalidConfiguration(
+                        "server defaults require explicit LLM task paths".into(),
+                    ));
+                }
+            }
+        }
         if let Some(provider_rules_id) = &self.provider_rules_id {
             validate_id("provider_rules_id", provider_rules_id)?;
         }
@@ -616,6 +635,8 @@ pub(crate) struct InventoryPricing {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProviderInventoryModel {
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub server_default_routes: BTreeSet<String>,
     pub inventory_source: String,
     pub provider_model_id: String,
     pub model_uid: String,
@@ -694,6 +715,10 @@ impl ProviderInventorySnapshot {
                     attributes: BTreeMap::from([
                         ("model_uid".into(), Value::String(model.model_uid.clone())),
                         (
+                            "server_default_routes".into(),
+                            serde_json::json!(model.server_default_routes),
+                        ),
+                        (
                             "pricing".into(),
                             model
                                 .pricing
@@ -763,6 +788,11 @@ impl InventoryBuilder {
             .as_deref()
             .unwrap_or(&profile.provider_profile_id);
         let rules = catalog.provider_rules(rules_id);
+        if instance.provider_rules_id.is_some() && rules.is_none() {
+            return Err(ProviderError::InvalidConfiguration(format!(
+                "unknown provider_rules_id: {rules_id}"
+            )));
+        }
         let default_rules_id = if rules.is_none() {
             catalog.protocol_default_rules_id(
                 &adapter.protocol_family_id,
@@ -1160,7 +1190,19 @@ impl InventoryBuilder {
                 "discovery"
             }
             .to_owned();
+            let server_default_routes = instance_rules
+                .server_default_routes
+                .get(&discovered.provider_model_id)
+                .cloned()
+                .unwrap_or_default();
+            if !server_default_routes.is_empty() && !api_types.contains(&ApiType::Llm) {
+                return Err(ProviderError::InvalidConfiguration(format!(
+                    "server defaults require a recognized LLM: {}",
+                    discovered.provider_model_id
+                )));
+            }
             models.push(ProviderInventoryModel {
+                server_default_routes,
                 inventory_source,
                 provider_model_id: discovered.provider_model_id,
                 model_uid,

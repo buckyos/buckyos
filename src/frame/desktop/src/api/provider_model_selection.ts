@@ -1,4 +1,6 @@
 export interface ProviderModelSelectionDraft {
+  model_driver_overrides_json?: string
+  server_default_routes_json?: string
   policy_region?: string
   discovery_behavior_id?: string
   selectable_inventory_models?: string[]
@@ -17,7 +19,8 @@ export function toProviderInstanceRules(
   const selection = draft.selected_inventory_models
   const selectable = draft.selectable_inventory_models
   const hasSelection = Array.isArray(selection)
-  if (!policyRegion && !hasSelection) return undefined
+  const advanced = parseProviderAdvancedRules(draft)
+  if (!policyRegion && !hasSelection && !Object.keys(advanced.model_driver_overrides).length && !Object.keys(advanced.server_default_routes).length) return undefined
   const selected = new Set(selection ?? [])
   const catalogOnly = draft.discovery_behavior_id === 'catalog-only'
   return {
@@ -25,7 +28,23 @@ export function toProviderInstanceRules(
     exclude_models: !catalogOnly && Array.isArray(selectable)
       ? selectable.filter((model) => !selected.has(model)).sort()
       : [],
-    model_driver_overrides: {},
+    ...advanced,
     enabled_inventory_models: catalogOnly && hasSelection ? [...selection].sort() : undefined,
   }
+}
+
+export function parseProviderAdvancedRules(draft: ProviderModelSelectionDraft): {
+  model_driver_overrides: Record<string, string>
+  server_default_routes: Record<string, string[]>
+} {
+  const mapping: unknown = JSON.parse(draft.model_driver_overrides_json?.trim() || '{}')
+  const routes: unknown = JSON.parse(draft.server_default_routes_json?.trim() || '{}')
+  const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value)
+  if (!object(mapping) || Object.values(mapping).some((value) => typeof value !== 'string' || !value.includes('/'))) {
+    throw new Error('Model aliases must map endpoint model IDs to manufacturer/model IDs')
+  }
+  if (!object(routes) || Object.values(routes).some((value) => !Array.isArray(value) || value.length === 0 || value.some((path) => typeof path !== 'string' || !/^llm\.[a-z0-9_.-]+$/.test(path)))) {
+    throw new Error('Server default routes must map model IDs to explicit LLM task lists')
+  }
+  return { model_driver_overrides: mapping as Record<string, string>, server_default_routes: routes as Record<string, string[]> }
 }

@@ -943,6 +943,8 @@ pub(super) fn builtin_logical_tree_overlay() -> AiccRouteOverlay {
                                 ("qwen_plus", "llm.qwen-plus", 1.3),
                                 ("glm_standard", "llm.glm-standard", 1.2),
                                 ("kimi_general", "llm.kimi-general", 1.2),
+                                ("kimi_flagship", "llm.kimi-flagship", 1.1),
+                                ("qwen_max", "llm.qwen-max", 1.1),
                                 ("qwen_moe_400b", "llm.qwen-moe-400b", 1.15),
                                 ("deepseek_flash", "llm.deepseek-flash", 1.1),
                                 ("glm_flash", "llm.glm-flash", 1.1),

@@ -53,9 +53,10 @@ import {
 import { selectSingleProviderInstances } from "./inventory_selection.ts";
 import { assertResponseShape, buildExactRequest, firstReusableResource } from "./payloads.ts";
 import {resumedRunStartedAt} from "./report.ts";
-import { manifestCoverage, routeExposureCoverage } from "./run_t1_gateway.ts";
+import { manifestCoverage, routeExposureCoverage, withExhaustedProviderQuota } from "./run_t1_gateway.ts";
 import {
   applyProviderTokens,
+  instanceDriver,
   configuredProviderInstanceOverrides,
   configuredProviderTokens,
   scopeOfficialInventoriesToInstanceRules,
@@ -115,6 +116,9 @@ import {
   exactModel,
   variantCells,
   variantWireDiagnostics,
+  channelDisablesCase,
+  scopeProtocolModels,
+  protocolModelIds,
 } from "./run_t15_gateway.ts";
 import {
   createT15MockHandler,
@@ -130,6 +134,7 @@ import {
 import {
   minimaxDiscoveryModelIds,
   minimaxVideoFixture,
+  t1MockProviderServer,
 } from "./mock_provider.ts";
 import {
   assertExactOnlyIsUnmounted,
@@ -3832,15 +3837,13 @@ test("SN matrix uses its inventory and original-vendor capability evidence", asy
       }, {
         exact_model: "qwen-image-3-pro@sn-default",
         provider_model_id: "qwen-image-3-pro",
-        api_types: ["image.txt2img", "image.img2img"],
+        api_types: [],
         logical_mounts: [],
       }],
     }]),
   });
   assert.deepEqual([...new Set(cells.map((cell) => cell.api_type))].sort(), [
     "embedding.text",
-    "image.img2img",
-    "image.txt2img",
     "llm",
     "vision.caption",
   ]);
@@ -6574,4 +6577,105 @@ test("variant wire comparison ignores JSON object order while preserving values 
   actual.thinking.budget_tokens = 1024;
   actual.options.steps.reverse();
   assert.ok(variantWireDiagnostics(actual.model, expected, [{body: actual}]).some((error) => error.includes("options")));
+});
+
+
+test("channel-disabled APIs retain vendor facts and reject leaked runtime capabilities", async () => {
+  const source = await baseline();
+  const rule = source.providers.find((provider) => provider.provider_driver === "sn-ai-provider")!.rules.find((rule) => rule.model_pattern === "qwen3.7-plus")!;
+  assert.ok(rule.api_types.includes("vision.ocr"));
+  assert.ok(rule.disabled_api_types?.includes("vision.ocr"));
+  const inventories = [{ provider_instance_name: "sn-disabled", provider_driver: "sn-ai-provider", models: [{ exact_model: "qwen3.7-plus@sn-disabled", provider_model_id: "qwen3.7-plus", api_types: ["llm", "vision.caption"], logical_mounts: [] }] }];
+  const cells = buildProviderMatrix({ baseline: source, ...matrixInputs(inventories) });
+  assert.equal(cells.length, 2);
+  inventories[0].models[0].api_types.push("vision.ocr");
+  assert.throws(() => buildProviderMatrix({ baseline: source, ...matrixInputs(inventories) }), /disabled_api_advertised/);
+  rule.disabled_api_types = ["video.extend"];
+  assert.throws(() => validateProviderBaseline(source), /subset/);
+});
+
+
+test("T1.5 skips only explicitly disabled channel cells and preserves working SN protocol coverage", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const source = await baseline();
+  const cases = buildT15Manifest(catalog).filter((item) => item.provider_driver === "sn-ai-provider");
+  const disabled = cases.filter((item) => channelDisablesCase(catalog, source, item));
+  assert.ok(disabled.length > 0);
+  assert.ok(disabled.some((item) => item.api_type === "video.generate"));
+  assert.ok(disabled.some((item) => item.api_type === "image.inpaint"));
+  assert.ok(disabled.some((item) => item.protocol_contract_id === "sn.qwen-images-generations.v1"));
+  assert.ok(!disabled.some((item) => item.api_type === "llm" || item.api_type === "audio.asr"));
+  assert.ok(cases.some((item) => item.api_type === "vision.ocr" && !channelDisablesCase(catalog, source, item)));
+});
+
+
+test("unified video results validate typed videos and nested document resources", () => {
+  const cell = { api_type: "video.edit", output_kinds: ["video"] } as Parameters<typeof assertResponseShape>[0];
+  const video = { resource: { kind: "url", url: "https://example.test/result.mp4" }, media_type: "video/mp4" };
+  assert.doesNotThrow(() => assertResponseShape(cell, { task_id: "video", status: "succeeded", usage: { input_tokens: 0, output_tokens: 0 }, videos: [video] }));
+  assert.doesNotThrow(() => assertResponseShape(cell, { task_id: "video", status: "succeeded", usage: { input_tokens: 0, output_tokens: 0 }, message: { role: "assistant", content: [{ type: "document", source: { mime: "video/mp4", resource: video.resource } }] } }));
+  assert.throws(() => assertResponseShape(cell, { task_id: "video", status: "succeeded", usage: { input_tokens: 0, output_tokens: 0 }, videos: [{ ...video, resource: {} }] }), /addressable/);
+});
+
+test("quota exhaustion uses the current quota API and cleans up after an assertion failure", async () => {
+  const calls: string[] = [];
+  const aicc = { async call(method: string, params: unknown) {
+    calls.push(method);
+    if (method === "quota.rule.create") { assert.equal((params as any).draft.limit_tokens, 0); return { rule: { rule_id: "temporary", version: 1 } }; }
+    assert.deepEqual(params, { rule_id: "temporary", expected_version: 1 }); return {};
+  } };
+  await assert.rejects(() => withExhaustedProviderQuota({ aicc, userId: "owner" } as any, "mock", async () => { throw new Error("probe failed"); }), /probe failed/);
+  assert.deepEqual(calls, ["quota.rule.create", "quota.rule.delete"]);
+});
+
+test("T1 native mock preserves failed and successful asynchronous task scenarios", async () => {
+  const server = t1MockProviderServer;
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address(); assert.ok(address && typeof address === "object");
+  const base = `http://127.0.0.1:${address.port}`;
+  try {
+    for (const scenario of ["async_failed", "async_success"]) {
+      await fetch(`${base}/__mock/reset`, { method: "POST" });
+      await fetch(`${base}/__mock/scenario`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ scenario }) });
+      const submitted = await (await fetch(`${base}/v2/video_generation`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).json() as any;
+      const first = await (await fetch(`${base}/v2/query/video_generation/${submitted.task_id}`)).json() as any;
+      const second = await (await fetch(`${base}/v2/query/video_generation/${submitted.task_id}`)).json() as any;
+      assert.equal(first.task.status, "processing");
+      assert.equal(second.task.status, scenario === "async_failed" ? "failed" : "succeeded");
+    }
+  } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
+});
+
+
+test("SN background error expectations retain the detailed canonical task code", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const cases = buildT15Manifest(catalog);
+  for (const [scenario, code] of [["invalid_argument", "invalid_request"], ["timeout", "timeout"]]) {
+    const item = cases.find((item) => item.case_id === `t1.5.sn-ai-provider.sn.openai-responses.background.v1.vision.ocr.error.${scenario}`)!;
+    assert.equal(item.expected_aicc_error_code, code);
+    assert.equal(item.expected_provider_error_code, scenario);
+  }
+  const defaults = cases.find((item) => item.tags.includes("server_default_mode"))!;
+  assert.equal(defaults.model_selector?.value, "qwen3.7-plus");
+  assert.equal(defaults.method, "chat.completions.create");
+});
+
+
+test("targeted T1.5 model inventory keeps only the selected official preset contract", async () => {
+  const source = await loadProviderProtocolCatalog();
+  const id = "qwen/qwen3.8-max-0902";
+  const scoped = scopeProtocolModels(source, ["openrouter"], [id]);
+  const provider = scoped.providers.find((provider) => provider.provider_driver === "openrouter")!;
+  assert.ok(protocolModelIds(source.providers.find((provider) => provider.provider_driver === "openrouter")!).includes(id));
+  assert.deepEqual(provider.official_variant_rules!.flatMap((rule) => rule.model_ids), [id]);
+  assert.ok(Object.values(provider.official_first_party_model_ids!).flat().every((model) => model === id));
+  assert.ok(source.providers.find((provider) => provider.provider_driver === "openrouter")!.official_variant_rules!.length > 1);
+  assert.throws(() => scopeProtocolModels(source, ["openrouter"], ["unknown-model"]), /unknown model/);
+});
+
+
+test("T3 provider attribution uses public provider profiles without inferring from instance names", () => {
+  assert.equal(instanceDriver({ provider_profile_id: "sn", provider_instance_name: "temporary" }), "sn-ai-provider");
+  assert.equal(instanceDriver({ provider_profile_id: "gemini" }), "google-gemini");
+  assert.equal(instanceDriver({ provider_instance_name: "sn-ai-provider-main" }), "");
 });

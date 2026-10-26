@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 11,
+  "revision_seq": 12,
   "provider_profile_id": "qwen",
   "model_driver_overrides": {
     "deepseek-v4-flash-0731": "deepseek/deepseek-v4-flash",
@@ -445,26 +445,14 @@
           "qwen3.8-max",
           "qwen3.8-flash",
           "qwen3.8-omni-flash",
-          "qwen3.7-plus"
+          "qwen3.7-plus",
+          "qwen3.8-max-0902"
         ],
         "variant": "reasoning-none"
       },
       "provider_options": {
         "reasoning": {
           "effort": "none"
-        }
-      }
-    },
-    {
-      "model_driver": "qwen",
-      "variant": "reasoning-minimal",
-      "match": {
-        "origin_model_id": "qwen3.8-max-0902",
-        "variant": "reasoning-minimal"
-      },
-      "provider_options": {
-        "reasoning": {
-          "effort": "minimal"
         }
       }
     },
@@ -501,19 +489,6 @@
       "provider_options": {
         "reasoning": {
           "effort": "medium"
-        }
-      }
-    },
-    {
-      "model_driver": "qwen",
-      "variant": "reasoning-high",
-      "match": {
-        "origin_model_id": "qwen3.8-max-0902",
-        "variant": "reasoning-high"
-      },
-      "provider_options": {
-        "reasoning": {
-          "effort": "high"
         }
       }
     },

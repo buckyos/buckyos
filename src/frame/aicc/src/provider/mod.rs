@@ -434,6 +434,7 @@ impl ProviderDraftValidationError {
 
 #[derive(Clone)]
 pub(crate) struct ProviderDraftConfig {
+    pub instance_rules: Option<buckyos_api::ProviderInstanceRules>,
     pub provider_instance_name: String,
     pub provider_profile_id: String,
     pub protocol_adapter_id: String,

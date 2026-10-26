@@ -5093,7 +5093,10 @@
             "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
             "https://developers.openai.com/api/docs/models/gpt-5.4-mini"
           ],
-          "evidence_summary": "SN publishes GPT-5.4 Mini with its documented Responses capabilities."
+          "evidence_summary": "SN publishes GPT-5.4 Mini with its documented Responses capabilities.",
+          "disabled_api_types": [
+            "vision.ocr"
+          ]
         },
         {
           "model_pattern": "gpt-5.4-nano",
@@ -5127,7 +5130,10 @@
             "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
             "https://developers.openai.com/api/docs/models/gpt-5.4-nano"
           ],
-          "evidence_summary": "SN publishes GPT-5.4 Nano with its documented Responses capabilities."
+          "evidence_summary": "SN publishes GPT-5.4 Nano with its documented Responses capabilities.",
+          "disabled_api_types": [
+            "vision.ocr"
+          ]
         },
         {
           "model_pattern": "gpt-5.3-codex",
@@ -5185,7 +5191,10 @@
             "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
             "https://developers.openai.com/api/docs/models/gpt-image-2"
           ],
-          "evidence_summary": "SN exposes GPT Image 2 through its OpenAI-compatible image generation and edit routes."
+          "evidence_summary": "SN exposes GPT Image 2 through its OpenAI-compatible image generation and edit routes.",
+          "disabled_api_types": [
+            "image.inpaint"
+          ]
         },
         {
           "model_pattern": "text-embedding-3-*",
@@ -5404,7 +5413,10 @@
           "source_urls": [
             "https://openrouter.ai/qwen/qwen3.7-plus"
           ],
-          "evidence_summary": "SN's Qwen3.7 Plus route accepts text and image input and returns text."
+          "evidence_summary": "SN's Qwen3.7 Plus route accepts text and image input and returns text.",
+          "disabled_api_types": [
+            "vision.ocr"
+          ]
         },
         {
           "model_pattern": "qwen3.8-max-0902",
@@ -5480,7 +5492,11 @@
             "https://www.alibabacloud.com/help/en/model-studio/qwen-image-3-0-pro",
             "https://openrouter.ai/qwen/qwen-image-3-pro"
           ],
-          "evidence_summary": "SN maps its Qwen Image 3 Pro alias to the original generation/editing model and OpenAI-compatible image routes."
+          "evidence_summary": "SN maps its Qwen Image 3 Pro alias to the original generation/editing model and OpenAI-compatible image routes.",
+          "disabled_api_types": [
+            "image.txt2img",
+            "image.img2img"
+          ]
         },
         {
           "model_pattern": "ui-tars-1.5-7b",
@@ -5545,7 +5561,12 @@
             "https://openrouter.ai/docs/cookbook/video-generation/text-to-video",
             "https://openrouter.ai/docs/cookbook/video-generation/image-to-video"
           ],
-          "evidence_summary": "SN maps Wan 3.0 to OpenRouter through LiteLLM OpenAI compatibility. SN exposes authenticated create, edit and extension routes with shared status/content endpoints. Native video IDs are required for extension; actual Wan support depends on the upstream proxy channel."
+          "evidence_summary": "SN maps Wan 3.0 to OpenRouter through LiteLLM OpenAI compatibility. SN exposes authenticated create, edit and extension routes with shared status/content endpoints. Native video IDs are required for extension; actual Wan support depends on the upstream proxy channel.",
+          "disabled_api_types": [
+            "video.generate",
+            "video.edit",
+            "video.extend"
+          ]
         },
         {
           "model_pattern": "voxtral-small-24b-2507",

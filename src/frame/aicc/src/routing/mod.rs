@@ -320,7 +320,11 @@ impl fmt::Display for RoutingError {
                 write!(
                     formatter,
                     "no candidate for {model}{}",
-                    format_filtered_candidates(filtered)
+                    if filtered.is_empty() {
+                        "; no executable route: check model identity, channel presets and task/specification admission".to_owned()
+                    } else {
+                        format_filtered_candidates(filtered)
+                    }
                 )
             }
             Self::FallbackNotAllowed(model) => {

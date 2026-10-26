@@ -967,7 +967,7 @@ mod tests {
                     DOUBAO_PROFILE_ID => 13,
                     DOUBAO_AGENT_PLAN_PROFILE_ID => 11,
                     DEEPSEEK_PROFILE_ID => 5,
-                    QWEN_PROFILE_ID => 11,
+                    QWEN_PROFILE_ID => 12,
                     "openai" => 4,
                     _ => 3,
                 }

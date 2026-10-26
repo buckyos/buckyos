@@ -391,6 +391,10 @@ export function assertResponseShape(
     ...(response.image ? [{ type: "image", source: response.image }] : []),
     ...(response.audio ? [{ type: "audio", source: response.audio }] : []),
     ...(response.video ? [{ type: "video", source: response.video }] : []),
+    ...(Array.isArray(response.videos) ? response.videos.map((video) => {
+      const value = video as Record<string, unknown>;
+      return { type: "video", source: { ...(value.resource as Record<string, unknown>), mime_hint: value.media_type } };
+    }) : []),
     ...(response.artifacts && typeof response.artifacts === "object"
       ? Object.values(response.artifacts as Record<string, unknown>).map((source) => ({ type: "document", source }))
       : []),
@@ -578,14 +582,16 @@ export function assertResponseShape(
     const hasMime = artifacts.some((item, index) => {
       const source = (item as Record<string, unknown>).source;
       if (!source || typeof source !== "object") return false;
-      const resource = source as Record<string, unknown>;
+      const envelope = source as Record<string, unknown>;
+      const resource = envelope.resource && typeof envelope.resource === "object" && !Array.isArray(envelope.resource)
+        ? envelope.resource as Record<string, unknown> : envelope;
       const materializedMime = materialized.find((entry) => entry.content_index === index)?.mime;
       const sidebandMime = sidebandArtifacts.find((entry) => {
         const artifactResource = entry.resource;
         return artifactResource && typeof artifactResource === "object" && !Array.isArray(artifactResource) &&
           (artifactResource as Record<string, unknown>).obj_id === resource.obj_id;
       })?.mime;
-      const mime = resource.mime_hint ?? resource.mime ?? materializedMime ?? sidebandMime;
+      const mime = resource.mime_hint ?? envelope.mime ?? resource.mime ?? materializedMime ?? sidebandMime;
       const contentType = (item as Record<string, unknown>).type;
       const addressable = typeof resource.url === "string" || typeof resource.obj_id === "string" ||
         typeof resource.data_base64 === "string";

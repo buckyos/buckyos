@@ -16,7 +16,7 @@ import type {
 } from '../app/ai-center/datamodel/routing'
 import { normalizeFinanceTotals } from '../app/ai-center/datamodel/transforms'
 import { toAiccRpcCallOptions } from './aicc_rpc_options'
-import { toProviderInstanceRules } from './provider_model_selection'
+import { parseProviderAdvancedRules, toProviderInstanceRules } from './provider_model_selection'
 import type {
   AIStatus,
   ApiNamespace,
@@ -317,6 +317,8 @@ interface RawUsageAggregate {
 }
 
 interface RawProviderInstanceView {
+  provider_rules_id?: unknown
+  instance_rules?: unknown
   provider_instance_name?: unknown
   provider_type?: unknown
   provider_profile_id?: unknown
@@ -393,6 +395,7 @@ interface AiccDataProvider {
   deleteProvider(id: string): Promise<void>
   refreshProviderModels(id: string): Promise<void>
   updateProviderKey(provider: ProviderView, apiKey: string): Promise<void>
+  updateProviderRules(provider: ProviderView, draft: Partial<WizardDraft>): Promise<void>
   setProviderEnabled(provider: ProviderView, enabled: boolean): Promise<void>
   setProviderWeight(providerInstanceName: string, weight: number): Promise<void>
   validateConnection(draft: WizardDraft): Promise<ValidationResult>
@@ -422,6 +425,7 @@ export interface AICCMgr {
   deleteProvider(id: string): Promise<void>
   refreshProviderModels(id: string): Promise<void>
   updateProviderKey(provider: ProviderView, apiKey: string): Promise<void>
+  updateProviderRules(provider: ProviderView, draft: Partial<WizardDraft>): Promise<void>
   setProviderEnabled(provider: ProviderView, enabled: boolean): Promise<void>
   setProviderRoutingWeight(providerInstanceName: string, weight: number): Promise<void>
   validateConnection(draft: WizardDraft): Promise<ValidationResult>
@@ -593,6 +597,16 @@ export class AICCModelStore implements AICCMgr {
     await this.refresh()
   }
 
+  async updateProviderRules(provider: ProviderView, draft: Partial<WizardDraft>): Promise<void> {
+    try {
+      await this.provider.updateProviderRules(provider, draft)
+    } catch (error) {
+      if (isSettingsRevisionConflict(error)) await this.refresh()
+      throw error
+    }
+    await this.refresh()
+  }
+
   async updateProviderKey(provider: ProviderView, apiKey: string): Promise<void> {
     try {
       await this.provider.updateProviderKey(provider, apiKey)
@@ -722,6 +736,10 @@ class MockAiccProvider implements AiccDataProvider {
 
   async refreshProviderModels(): Promise<void> {
     this.store.refreshProviderModels()
+  }
+
+  async updateProviderRules(provider: ProviderView, draft: Partial<WizardDraft>): Promise<void> {
+    this.store.updateProviderRules(provider.config.id, draft)
   }
 
   async updateProviderKey(provider: ProviderView): Promise<void> {
@@ -935,6 +953,16 @@ class BuckyOSAiccProvider implements AiccDataProvider {
     }
   }
 
+  async updateProviderRules(provider: ProviderView, draft: Partial<WizardDraft>): Promise<void> {
+    const result = await this.callProviderUpdate({
+      provider_instance_name: provider.config.provider_instance_name,
+      settings_revision: this.settingsRevision,
+      provider_rules_id: draft.provider_rules_id?.trim() ?? provider.config.provider_rules_id ?? '',
+      instance_rules: { ...provider.config.instance_rules, ...parseProviderAdvancedRules(draft) },
+    })
+    this.settingsRevision = asNumber(result.settings_revision, this.settingsRevision)
+  }
+
   async updateProviderKey(provider: ProviderView, apiKey: string): Promise<void> {
     const result = await this.callProviderUpdate({
       provider_instance_name: provider.config.provider_instance_name,
@@ -973,6 +1001,11 @@ class BuckyOSAiccProvider implements AiccDataProvider {
       base_url_reachable: asBoolean(result.base_url_reachable, false),
       auth_valid: asBoolean(result.auth_valid, false),
       models_discovered: toStringArray(result.models_discovered),
+      models_recognized: toStringArray(result.models_recognized),
+      unmatched_models: Array.isArray(result.unmatched_models) ? result.unmatched_models : [],
+      unavailable_presets: Array.isArray(result.unavailable_presets) ? result.unavailable_presets : [],
+      routing_candidates: Object.fromEntries(Object.entries(asRecord(result.routing_candidates)).map(([path, models]) => [path, toStringArray(models)])),
+      warnings: toStringArray(result.warnings),
       balance_available: asBoolean(result.balance_available, false),
       errors: toStringArray(result.errors),
       error_details: toValidationErrorDetails(result.error_details, result.errors),
@@ -1241,6 +1274,7 @@ function toProviderWritePayload(draft: WizardDraft): Record<string, unknown> {
   return {
     provider_instance_name: draft.provider_instance_name ?? defaultProviderInstanceName(providerType, draft.display_name),
     provider_type: 'cloud_api',
+    provider_rules_id: draft.provider_rules_id?.trim() || undefined,
     provider_profile_id: providerType,
     protocol_family_id: providerType === 'custom' ? draft.protocol_family_id : undefined,
     protocol_adapter_id: providerType === 'custom' ? undefined : draft.protocol_adapter_id,
@@ -1963,6 +1997,8 @@ function toProviderView(raw: RawProviderInstanceView, allModels: RawModelMetadat
     provider_profile_id: profile,
     protocol_adapter_id: adapter,
     provider_origin: 'system_config',
+    provider_rules_id: asOptionalString(raw.provider_rules_id),
+    instance_rules: asRecord(raw.instance_rules),
     auth_mode: normalizeAuthMode(asRecord(raw.auth).mode),
     credential_configured: asBoolean(asRecord(raw.auth).configured, false),
     base_url: asNonEmptyString(raw.base_url, ''),

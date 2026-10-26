@@ -191,7 +191,11 @@ pub(crate) struct SnDialectContract {
 pub(crate) fn sn_dialect_contract() -> SnDialectContract {
     SnDialectContract {
         base_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
-        override_points: BTreeSet::from(["credential_resolution", "video_duration", "audio_transcription"]),
+        override_points: BTreeSet::from([
+            "credential_resolution",
+            "video_duration",
+            "audio_transcription",
+        ]),
         unsupported_api_types: BTreeSet::new(),
     }
 }
@@ -834,7 +838,7 @@ mod tests {
                 .provider_rules(SN_PROVIDER_PROFILE_ID)
                 .unwrap()
                 .revision_seq,
-            10
+            12
         );
         assert!(catalog.model_driver(SN_PROVIDER_PROFILE_ID).is_none());
         for driver in ["bytedance", "glm", "kimi", "mistral", "openai", "qwen"] {
@@ -1160,15 +1164,21 @@ mod tests {
         assert_eq!(inventory.protocol_adapter_id, SN_OPENAI_ADAPTER_ID);
         assert_eq!(inventory.models.len(), 30);
         assert!(inventory.unmatched_models.is_empty());
-        assert!(
-            inventory.unavailable_presets.is_empty(),
-            "unexpected unavailable presets: {:?}",
-            inventory.unavailable_presets
+        assert_eq!(inventory.unavailable_presets.len(), 1);
+        assert_eq!(
+            inventory.unavailable_presets[0].provider_model_id,
+            "qwen3.8-max-0902"
         );
-        assert!(inventory
-            .models
-            .iter()
-            .all(|model| !model.api_types.is_empty()));
+        assert_eq!(inventory.unavailable_presets[0].effort, "none");
+        for model in &inventory.models {
+            assert_eq!(
+                model.api_types.is_empty(),
+                matches!(
+                    model.provider_model_id.as_str(),
+                    "qwen-image-3-pro" | "wan-3.0"
+                )
+            );
+        }
         for excluded in ["gpt-realtime-2.1", "sora-2", "sora-2-pro"] {
             assert!(
                 !inventory
@@ -1205,8 +1215,7 @@ mod tests {
             .iter()
             .find(|model| model.provider_model_id == "qwen-image-3-pro")
             .unwrap();
-        assert_eq!(image.operations["image.txt2img"], "images.generate");
-        assert_eq!(image.operations["image.img2img"], "images.edit");
+        assert!(image.operations.is_empty());
         let ui_tars = inventory
             .models
             .iter()
@@ -1218,7 +1227,7 @@ mod tests {
         let qwen_ocr = inventory.models.iter()
             .find(|model| model.provider_model_id == "qwen3.7-plus")
             .unwrap();
-        assert_eq!(qwen_ocr.operations["vision.ocr"], "responses.create");
+        assert!(!qwen_ocr.operations.contains_key("vision.ocr"));
         let voxtral = inventory
             .models
             .iter()
@@ -1227,10 +1236,13 @@ mod tests {
         assert!(voxtral.api_types.contains(&buckyos_api::ApiType::Llm));
         assert!(voxtral.api_types.contains(&buckyos_api::ApiType::AudioSpeechRecognition));
         assert_eq!(voxtral.operations["audio.asr"], "chat.completions.create");
-        let wan = inventory.models.iter().find(|model| model.provider_model_id == "wan-3.0").unwrap();
-        assert_eq!(wan.api_types, vec![buckyos_api::ApiType::VideoEdit, buckyos_api::ApiType::VideoExtend, buckyos_api::ApiType::VideoGenerate]);
-        assert_eq!(wan.operations["video.generate"], "videos.create");
-        assert_eq!(wan.operations["video.edit"], "videos.create");
+        let wan = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "wan-3.0")
+            .unwrap();
+        assert!(wan.api_types.is_empty());
+        assert!(wan.operations.is_empty());
         let diarize = inventory
             .models
             .iter()
@@ -1241,5 +1253,222 @@ mod tests {
             vec![buckyos_api::ApiType::AudioSpeechRecognition]
         );
         assert_eq!(diarize.operations["audio.asr"], "audio.transcriptions");
+    }
+
+    fn issue666_inventory(
+        ids: &[&str],
+        custom: bool,
+        rules: buckyos_api::ProviderInstanceRules,
+    ) -> (
+        std::sync::Arc<crate::catalog::CatalogSnapshot>,
+        crate::provider::ProviderInventorySnapshot,
+    ) {
+        let catalog = MetadataSources {
+            builtin: crate::settings::load_builtin_metadata().unwrap(),
+            ..Default::default()
+        }
+        .build_snapshot(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            &Default::default(),
+        )
+        .unwrap();
+        let providers = crate::provider::builtin::builtin_provider_registry(&catalog).unwrap();
+        let mut instance = dynamic_instance().runtime;
+        let profile = if custom {
+            let source = providers
+                .profiles()
+                .find(|profile| profile.provider_profile_id == "custom")
+                .unwrap();
+            instance.provider_profile_id = "custom".into();
+            instance.provider_rules_id = None;
+            instance.protocol_adapter_id = "openai-responses".into();
+            crate::provider::builtin::custom_profile_for_adapter(
+                source,
+                providers.codecs().adapter("openai-responses").unwrap(),
+                None,
+            )
+            .unwrap()
+        } else {
+            sn_profile()
+        };
+        instance.instance_rules = Some(rules);
+        let inventory = InventoryBuilder::build(
+            &profile,
+            &instance,
+            ProviderDiscoverySnapshot {
+                revision: Some("issue666".into()),
+                discovered_at_ms: 1,
+                health: ProviderHealthState::Healthy,
+                models: ids
+                    .iter()
+                    .map(|id| DiscoveredModel {
+                        provider_model_id: (*id).into(),
+                        api_types: None,
+                        supported_features: None,
+                        unsupported_features: BTreeSet::new(),
+                        remote_methods: None,
+                        availability: ModelAvailability::Available,
+                        deprecated: false,
+                        pricing: None,
+                        video: None,
+                    })
+                    .collect(),
+            },
+            &catalog,
+            &providers.codecs(),
+        )
+        .unwrap();
+        (catalog, inventory)
+    }
+
+    #[test]
+    fn issue666_each_sn_model_routes_chat_without_openai_inventory() {
+        for id in [
+            "glm-5",
+            "glm-5.3",
+            "kimi-k3",
+            "qwen3.6-plus",
+            "qwen3.7-plus",
+            "qwen3.8-max-0902",
+        ] {
+            let (catalog, inventory) = issue666_inventory(&[id], false, Default::default());
+            let registry = crate::service::builtin_registry_for_test(
+                &catalog,
+                &[inventory.as_model_inventory()],
+            );
+            let candidates = registry
+                .resolve_candidates("llm.chat", buckyos_api::ApiType::Llm)
+                .unwrap()
+                .candidates;
+            assert!(!candidates.is_empty(), "{id} has no chat candidate");
+            assert!(candidates
+                .iter()
+                .all(|candidate| candidate.model.identity.provider_model_id == id));
+            assert!(candidates.iter().all(|candidate| candidate
+                .model
+                .exact_model
+                .variant()
+                .is_some()));
+        }
+    }
+
+    #[test]
+    fn issue666_custom_defaults_are_explicit_and_survive_inventory_reload() {
+        let mut rules = buckyos_api::ProviderInstanceRules::default();
+        rules
+            .model_driver_overrides
+            .insert("my-model".into(), "qwen/qwen3.7-plus".into());
+        let (catalog, inventory) = issue666_inventory(&["my-model"], true, rules.clone());
+        let registry =
+            crate::service::builtin_registry_for_test(&catalog, &[inventory.as_model_inventory()]);
+        assert!(registry.exact_model("my-model@sn-main").is_some());
+        assert!(registry
+            .resolve_candidates("llm.chat", buckyos_api::ApiType::Llm)
+            .unwrap()
+            .candidates
+            .is_empty());
+        assert!(registry
+            .exact_model("my-model:reasoning-none@sn-main")
+            .is_none());
+        rules
+            .server_default_routes
+            .insert("my-model".into(), BTreeSet::from(["llm.chat".into()]));
+        let (catalog, inventory) = issue666_inventory(&["my-model"], true, rules.clone());
+        let restored: crate::provider::ProviderInventorySnapshot =
+            serde_json::from_value(serde_json::to_value(&inventory).unwrap()).unwrap();
+        assert_eq!(
+            restored.models[0].server_default_routes,
+            rules.server_default_routes["my-model"]
+        );
+        let registry =
+            crate::service::builtin_registry_for_test(&catalog, &[restored.as_model_inventory()]);
+        let candidates = registry
+            .resolve_candidates("llm.chat", buckyos_api::ApiType::Llm)
+            .unwrap()
+            .candidates;
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].model.exact_model.as_str(), "my-model@sn-main");
+        assert!(candidates[0].model.exact_model.variant().is_none());
+        assert!(registry
+            .resolve_candidates("llm.plan", buckyos_api::ApiType::Llm)
+            .unwrap()
+            .candidates
+            .is_empty());
+        for path in ["llm.missing", "llm.qwen-plus"] {
+            rules
+                .server_default_routes
+                .insert("my-model".into(), BTreeSet::from([path.into()]));
+            let (catalog, inventory) = issue666_inventory(&["my-model"], true, rules.clone());
+            assert!(crate::model::ModelRegistry::build(
+                &catalog,
+                &[inventory.as_model_inventory()],
+                crate::service::issue666_test_definitions(),
+                crate::model::RegistryLayers {
+                    factory: Some(&crate::service::issue666_test_overlay()),
+                    ..Default::default()
+                }
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn server_defaults_preserve_direct_only_and_experimental_admission() {
+        let mut rules = buckyos_api::ProviderInstanceRules::default();
+        rules
+            .model_driver_overrides
+            .insert("my-model".into(), "qwen/qwen2-5-72b-20240919".into());
+        rules
+            .server_default_routes
+            .insert("my-model".into(), BTreeSet::from(["llm.chat".into()]));
+        let (catalog, inventory) = issue666_inventory(&["my-model"], true, rules.clone());
+        assert!(crate::model::ModelRegistry::build(
+            &catalog,
+            &[inventory.as_model_inventory()],
+            crate::service::issue666_test_definitions(),
+            crate::model::RegistryLayers {
+                factory: Some(&crate::service::issue666_test_overlay()),
+                ..Default::default()
+            }
+        )
+        .is_err());
+        rules
+            .model_driver_overrides
+            .insert("my-model".into(), "qwen/qwen3.6-max-preview".into());
+        let (catalog, inventory) = issue666_inventory(&["my-model"], true, rules);
+        let registry =
+            crate::service::builtin_registry_for_test(&catalog, &[inventory.as_model_inventory()]);
+        let candidates = registry
+            .resolve_candidates("llm.chat", buckyos_api::ApiType::Llm)
+            .unwrap()
+            .candidates;
+        assert_eq!(candidates.len(), 1);
+        assert!(candidates[0].experimental);
+    }
+    #[test]
+    fn server_defaults_select_the_base_for_the_task_even_with_channel_presets() {
+        let mut rules = buckyos_api::ProviderInstanceRules::default();
+        rules
+            .server_default_routes
+            .insert("qwen3.7-plus".into(), BTreeSet::from(["llm.chat".into()]));
+        let (catalog, inventory) = issue666_inventory(&["qwen3.7-plus"], false, rules);
+        assert!(!inventory.models[0].variants.is_empty());
+        let registry =
+            crate::service::builtin_registry_for_test(&catalog, &[inventory.as_model_inventory()]);
+        let chat = registry
+            .resolve_candidates("llm.chat", buckyos_api::ApiType::Llm)
+            .unwrap()
+            .candidates;
+        assert_eq!(chat.len(), 1);
+        assert!(chat[0].model.exact_model.variant().is_none());
+        assert!(registry
+            .exact_model("qwen3.7-plus:reasoning-thinking@sn-main")
+            .is_some());
+        assert!(registry
+            .resolve_candidates("llm.qwen-plus", buckyos_api::ApiType::Llm)
+            .unwrap()
+            .candidates
+            .iter()
+            .all(|candidate| candidate.model.exact_model.variant().is_some()));
     }
 }

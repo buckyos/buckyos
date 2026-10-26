@@ -3596,6 +3596,28 @@
               }
             }
           }
+        },
+        {
+          "model_ids": [
+            "qwen/qwen3.8-max-0902"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
         }
       ],
       "test_model_ids": {
@@ -6923,7 +6945,8 @@
           "model_ids": [
             "qwen3.8-max",
             "qwen3.8-flash",
-            "qwen3.8-omni-flash"
+            "qwen3.8-omni-flash",
+            "qwen3.8-max-0902"
           ],
           "variants": {
             "reasoning-none": {
@@ -8070,11 +8093,6 @@
             "qwen3.8-max-0902"
           ],
           "variants": {
-            "reasoning-minimal": {
-              "reasoning": {
-                "effort": "minimal"
-              }
-            },
             "reasoning-low": {
               "reasoning": {
                 "effort": "low"
@@ -8083,11 +8101,6 @@
             "reasoning-medium": {
               "reasoning": {
                 "effort": "medium"
-              }
-            },
-            "reasoning-high": {
-              "reasoning": {
-                "effort": "high"
               }
             },
             "reasoning-xhigh": {
@@ -8451,6 +8464,10 @@
               "output_tokens": 3,
               "total_tokens": 7
             }
+          },
+          "aicc_error_code_by_scenario": {
+            "invalid_argument": "invalid_request",
+            "timeout": "timeout"
           }
         },
         {
@@ -9357,7 +9374,13 @@
             "image.img2img": "qwen-image-3-pro"
           }
         }
-      ]
+      ],
+      "server_default_test": {
+        "model_id": "qwen3.7-plus",
+        "model_driver": "qwen/qwen3.7-plus",
+        "protocol_adapter_id": "openai-responses",
+        "contract_id": "sn.openai-responses.v1"
+      }
     }
   ],
   "error_evidence": {

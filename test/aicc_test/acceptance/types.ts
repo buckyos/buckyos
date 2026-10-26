@@ -150,6 +150,7 @@ export type RouteExposureContract = {
 };
 
 export type CapabilityRule = {
+  disabled_api_types?: string[];
   model_pattern: string;
   status: "active" | "preview" | "deprecated" | "removed";
   source_status?: string;

@@ -111,6 +111,26 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set())
   const actionsRef = useRef<HTMLDivElement | null>(null)
 
+  const [advancedRulesId, setAdvancedRulesId] = useState(provider.config.provider_rules_id ?? '')
+  const [advancedAliases, setAdvancedAliases] = useState(JSON.stringify(provider.config.instance_rules?.model_driver_overrides ?? {}, null, 2))
+  const [advancedRoutes, setAdvancedRoutes] = useState(JSON.stringify(provider.config.instance_rules?.server_default_routes ?? {}, null, 2))
+  const [advancedResult, setAdvancedResult] = useState('')
+  const [savingAdvanced, setSavingAdvanced] = useState(false)
+  useEffect(() => {
+    setAdvancedRulesId(provider.config.provider_rules_id ?? '')
+    setAdvancedAliases(JSON.stringify(provider.config.instance_rules?.model_driver_overrides ?? {}, null, 2))
+    setAdvancedRoutes(JSON.stringify(provider.config.instance_rules?.server_default_routes ?? {}, null, 2))
+  }, [provider.config.provider_rules_id, provider.config.instance_rules])
+  const saveAdvancedRules = async () => {
+    setSavingAdvanced(true)
+    try {
+      await store.updateProviderRules(provider, { provider_rules_id: advancedRulesId,
+        model_driver_overrides_json: advancedAliases, server_default_routes_json: advancedRoutes })
+      setAdvancedResult(t('aiCenter.providers.rulesSaved', 'Rules saved. Review model and route readiness before using this provider.'))
+    } catch (error) {
+      setAdvancedResult(error instanceof Error ? error.message : 'Could not save provider rules')
+    } finally { setSavingAdvanced(false) }
+  }
   const { config, status, account, inventory } = provider
   const managedSn = isManagedSnProvider(provider)
   const models = status.discovered_models
@@ -463,6 +483,18 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
       >
         <Row label={t('aiCenter.providers.profile', 'Profile')} value={config.provider_profile_id} copyValue={config.provider_profile_id} />
         <Row label={t('aiCenter.providers.adapter', 'Protocol Adapter')} value={config.protocol_adapter_id} copyValue={config.protocol_adapter_id} />
+        {config.provider_profile_id === 'custom' && (
+          <details className="rounded border p-3">
+            <summary className="cursor-pointer text-sm">{t('aiCenter.wizard.advancedRules', 'Advanced model and routing settings')}</summary>
+            <div className="mt-3 flex flex-col gap-2 text-xs">
+              <label>{t('aiCenter.wizard.channelRules', 'Channel preset rules')}<input aria-label="Channel preset rules" className="block w-full rounded border p-2" value={advancedRulesId} onChange={(event) => setAdvancedRulesId(event.target.value)} /></label>
+              <label>{t('aiCenter.wizard.modelAliases', 'Model aliases: endpoint model → manufacturer/model')}<textarea aria-label="Model aliases" className="block w-full rounded border p-2 font-mono" rows={3} value={advancedAliases} onChange={(event) => setAdvancedAliases(event.target.value)} /></label>
+              <label>{t('aiCenter.wizard.serverDefaults', 'Use server default parameters for selected tasks')}<textarea aria-label="Server default routes" className="block w-full rounded border p-2 font-mono" rows={3} value={advancedRoutes} onChange={(event) => setAdvancedRoutes(event.target.value)} /></label>
+              <button type="button" className="rounded border p-2" disabled={savingAdvanced} onClick={() => void saveAdvancedRules()}>{t('common.save', 'Save')}</button>
+              {advancedResult && <p role="status">{advancedResult}</p>}
+            </div>
+          </details>
+        )}
         <Row label={t('aiCenter.providers.enabled', 'Enabled')} value={config.enabled ? t('common.on', 'On') : t('common.off', 'Off')} />
         <Row label={t('aiCenter.providers.routingWeight', 'Routing Weight')} value={`${formatWeight(routingWeight)} / ${routingWeightLabel}`} />
         <Row label={t('aiCenter.providers.runtimeType', 'Runtime Type')} value={config.provider_runtime_type} copyValue={config.provider_runtime_type} />

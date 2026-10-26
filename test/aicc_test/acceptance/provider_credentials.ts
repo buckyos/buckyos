@@ -96,7 +96,7 @@ function defaultInstance(
   };
 }
 
-function instanceDriver(instance: JsonObject): string {
+export function instanceDriver(instance: JsonObject): string {
   const value = instance.provider_profile_id;
   if (value === "gemini") return "google-gemini";
   if (value === "sn") return "sn-ai-provider";
