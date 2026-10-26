@@ -5,6 +5,7 @@ import type {
   AgentCreateStep,
   AgentEntry,
   AgentPermissionMode,
+  AgentRuntimeDirectory,
   AgentRuntimeOffer,
   AgentStatus,
   AgentTemplate,
@@ -227,7 +228,9 @@ export interface AgentSetupDraft {
   bioEdited: boolean
   roleSupplement: string
   permissionMode: AgentPermissionMode
-  hostRuntimeEnabled: boolean
+  /** Runs on the owner's `host` (true) or in its container (false); null:
+   * the machine's default (`runsOnHost`). */
+  hostRuntimeEnabled: boolean | null
   allowGroup: boolean
   homestation: boolean
   autoShareResults: boolean
@@ -256,7 +259,7 @@ export function newAgentSetupDraft(source: AgentSetupSource, idempotencyKey: str
     bioEdited: false,
     roleSupplement: '',
     permissionMode: 'read_write',
-    hostRuntimeEnabled: true,
+    hostRuntimeEnabled: null,
     allowGroup: false,
     homestation: true,
     autoShareResults: true,
@@ -292,7 +295,7 @@ export function parseAgentSetupDraft(raw: unknown, source: AgentSetupSource): Ag
     bioEdited: boolField(value.bioEdited, base.bioEdited),
     roleSupplement: stringField(value.roleSupplement, base.roleSupplement),
     permissionMode: value.permissionMode === 'read_only' ? 'read_only' : 'read_write',
-    hostRuntimeEnabled: boolField(value.hostRuntimeEnabled, base.hostRuntimeEnabled),
+    hostRuntimeEnabled: typeof value.hostRuntimeEnabled === 'boolean' ? value.hostRuntimeEnabled : null,
     allowGroup: boolField(value.allowGroup, base.allowGroup),
     homestation: boolField(value.homestation, base.homestation),
     autoShareResults: boolField(value.autoShareResults, base.autoShareResults),
@@ -331,10 +334,32 @@ export function applyTemplateToDraft(draft: AgentSetupDraft, template: AgentTemp
   }
 }
 
-export function buildAgentCreateRequest(draft: AgentSetupDraft, botToken: string, host: AgentRuntimeOffer | null = null): AgentCreateRequest {
+type RuntimeChoiceDirectory = Pick<AgentRuntimeDirectory, 'container_available' | 'host_by_default'> | null
+
+/** Whether the owner chooses between `host` and the container: the host is
+ * open to their Agents and some node runs containers. */
+export function canChooseRuntime(host: AgentRuntimeOffer | null, directory: RuntimeChoiceDirectory): boolean {
+  return host !== null && !host.closed && directory?.container_available !== false
+}
+
+/** Whether the new Agent runs on the owner's `host` (its Agent Service then
+ * runs natively there): the only place there is, the owner's choice, else
+ * the machine's default (Windows / macOS yes, Linux no). */
+export function runsOnHost(draft: AgentSetupDraft, host: AgentRuntimeOffer | null, directory: RuntimeChoiceDirectory): boolean {
+  if (host === null || host.closed) return false
+  if (directory?.container_available === false) return true
+  return draft.hostRuntimeEnabled ?? directory?.host_by_default ?? true
+}
+
+export function buildAgentCreateRequest(
+  draft: AgentSetupDraft,
+  botToken: string,
+  host: AgentRuntimeOffer | null = null,
+  directory: RuntimeChoiceDirectory = null,
+): AgentCreateRequest {
   const displayName = draft.displayName.trim()
   const bio = draft.bio.trim()
-  const enableHost = draft.hostRuntimeEnabled && host !== null && !host.closed
+  const enableHost = host !== null && runsOnHost(draft, host, directory)
   return {
     idempotency_key: draft.idempotencyKey,
     name: draft.name.trim(),

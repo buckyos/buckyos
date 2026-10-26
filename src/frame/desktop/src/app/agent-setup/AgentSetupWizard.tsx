@@ -36,6 +36,7 @@ import {
   newAgentSetupDraft,
   ownerChannelBinding,
   pickTemplate,
+  runsOnHost,
   templatesForLoader,
   usableImageUrl,
   type AgentSetupDraft,
@@ -203,9 +204,8 @@ function WizardBody({
   const [nameConflict, setNameConflict] = useState(false)
   const templates = useAgentTemplates()
   const runtimeDirectory = useAgentRuntimeDirectory()
-  const host = runtimeDirectory.state.status === 'ready'
-    ? runtimeDirectory.state.directory.runtimes.find((offer) => offer.runtime_id === 'host') ?? null
-    : null
+  const directory = runtimeDirectory.state.status === 'ready' ? runtimeDirectory.state.directory : null
+  const host = directory?.runtimes.find((offer) => offer.runtime_id === 'host') ?? null
   const ownProfile = useOwnProfile(account.user_id)
   // From the desktop guide an untouched `jarvis` follows the suggestion the name check returns.
   const nameCheck = useAgentNameCheck(draft.name, statusAgentId === null, (result) => {
@@ -257,7 +257,7 @@ function WizardBody({
     if (submitting || runtimeDirectory.state.status !== 'ready') return
     setSubmitting(true)
     setSubmitError(null)
-    const request = buildAgentCreateRequest({ ...effectiveDraft, channel }, botToken, host)
+    const request = buildAgentCreateRequest({ ...effectiveDraft, channel }, botToken, host, directory)
     const { data, error } = await createAgent(request)
     setSubmitting(false)
     if (data) {
@@ -460,6 +460,7 @@ function WizardBody({
             telegram={telegramIdentity}
             avatarFallback={templateIcon}
             host={host}
+            onHost={runsOnHost(effectiveDraft, host, directory)}
           />
         </>
       )

@@ -962,6 +962,7 @@ impl NodeScheduler {
                         || spec.required_cpu_mhz != last_spec.required_cpu_mhz
                         || spec.required_memory != last_spec.required_memory
                         || spec.node_affinity != last_spec.node_affinity
+                        || spec.need_container != last_spec.need_container
                         || spec.network_affinity != last_spec.network_affinity
                     {
                         return true;

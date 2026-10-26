@@ -56,7 +56,9 @@ test.describe('Agent setup wizard', () => {
     await expect(wizard.getByTestId('agent-setup-permission-read-write').getByRole('radio')).toBeChecked()
     await expect(wizard.getByTestId('agent-setup-permission-read-only').getByRole('radio')).not.toBeChecked()
     await expect(wizard.getByTestId('agent-setup-permission')).toContainText('always has read and write access to its own working directory')
-    await expect(wizard.getByTestId('agent-setup-permission').getByRole('switch', { name: 'Enable host node runtime' })).toBeChecked()
+    // A Windows host: the Agent runs there by default, natively, without its container.
+    await expect(wizard.getByTestId('agent-setup-runtime-host').getByRole('radio')).toBeChecked()
+    await expect(wizard.getByTestId('agent-setup-runtime-container').getByRole('radio')).not.toBeChecked()
     await expect(wizard.getByTestId('agent-setup-host-runtime')).toContainText('/home/alice')
     await expect(wizard.getByTestId('agent-setup-sharing')).toContainText('Not supported yet')
     await expect(wizard.getByRole('switch', { name: 'Allow other users to use this Agent' })).toBeDisabled()
@@ -139,18 +141,19 @@ test.describe('Agent setup wizard', () => {
     expect(consoleErrors).toEqual([])
   })
 
-  test('host opt-out survives reload and creates a container-only Agent', async ({ page }) => {
+  test('choosing the container survives reload and creates a container-only Agent', async ({ page }) => {
     await page.goto('/?scenario=normal')
     let wizard = await openGuideWizard(page)
     await nextPage(wizard)
-    await wizard.getByRole('switch', { name: 'Enable host node runtime' }).click()
+    await wizard.getByTestId('agent-setup-runtime-container').getByRole('radio').click()
+    await expect(wizard.getByTestId('agent-setup-host-runtime')).not.toContainText('/home/alice')
     await page.reload()
     wizard = await openGuideWizard(page)
-    await expect(wizard.getByRole('switch', { name: 'Enable host node runtime' })).not.toBeChecked()
+    await expect(wizard.getByTestId('agent-setup-runtime-container').getByRole('radio')).toBeChecked()
     await nextPage(wizard)
     await nextPage(wizard)
     await wizard.getByTestId('agent-setup-skip-channel').click()
-    await expect(wizard.getByTestId('agent-setup-confirm-runtime')).toContainText('The Agent container only')
+    await expect(wizard.getByTestId('agent-setup-confirm-runtime')).toContainText('The Agent container')
     await wizard.getByTestId('agent-setup-create').click()
     await expect(wizard.getByTestId('agent-setup-status')).toBeVisible()
     expect(await page.evaluate((key) => {
@@ -170,9 +173,7 @@ test.describe('Agent setup wizard', () => {
       await page.goto('/?scenario=normal')
       const wizard = await openGuideWizard(page)
       await nextPage(wizard)
-      const toggle = wizard.getByRole('switch', { name: 'Enable host node runtime' })
-      await expect(toggle).toBeDisabled()
-      await expect(toggle).not.toBeChecked()
+      await expect(wizard.getByTestId('agent-setup-runtime-host')).toHaveCount(0)
       await expect(wizard.getByTestId('agent-setup-host-runtime')).toContainText(scenario === 'closed' ? 'administrator has disabled' : 'No host node is available')
       await expect(wizard.getByTestId('agent-setup-next')).toBeEnabled()
     })
@@ -191,8 +192,44 @@ test.describe('Agent setup wizard', () => {
       window.localStorage.setItem(key, JSON.stringify(state))
     }, MOCK_KEY)
     await wizard.getByTestId('agent-setup-host-runtime').getByRole('button', { name: 'Retry' }).click()
-    await expect(wizard.getByRole('switch', { name: 'Enable host node runtime' })).toBeChecked()
+    await expect(wizard.getByTestId('agent-setup-runtime-host').getByRole('radio')).toBeChecked()
     await expect(wizard.getByTestId('agent-setup-next')).toBeEnabled()
+  })
+
+  test('a Linux host defaults to the container and the owner may choose the host', async ({ page }) => {
+    await seedMock(page, {
+      runtime_offers: [{
+        runtime_id: 'host', kind: 'node', node_id: 'ood1', node_did: 'did:dev:ood1', device_type: 'ood', name: 'ood1',
+        os: 'linux', computer_max: 'none', workdir_roots: ['/home/alice'], closed: false, enabled: false, computer: 'none',
+      }],
+    })
+    await page.goto('/?scenario=normal')
+    const wizard = await openGuideWizard(page)
+    await nextPage(wizard)
+    await expect(wizard.getByTestId('agent-setup-runtime-container').getByRole('radio')).toBeChecked()
+    await expect(wizard.getByTestId('agent-setup-runtime-host').getByRole('radio')).not.toBeChecked()
+    await wizard.getByTestId('agent-setup-runtime-host').getByRole('radio').click()
+    await expect(wizard.getByTestId('agent-setup-host-runtime')).toContainText('/home/alice')
+    await nextPage(wizard)
+    await nextPage(wizard)
+    await wizard.getByTestId('agent-setup-skip-channel').click()
+    await expect(wizard.getByTestId('agent-setup-confirm-runtime')).toContainText('runs natively there')
+    await wizard.getByTestId('agent-setup-create').click()
+    await expect(wizard.getByTestId('agent-setup-status')).toBeVisible()
+    expect(await page.evaluate((key) => {
+      const state = JSON.parse(window.localStorage.getItem(key) ?? '{}')
+      return state.agents.find((item: { name: string }) => item.name === 'jarvis').settings.default_runtime_id
+    }, MOCK_KEY)).toBe('host')
+  })
+
+  test('without a container node the Agent runs on the host, with no choice', async ({ page }) => {
+    await seedMock(page, { container_available: false })
+    await page.goto('/?scenario=normal')
+    const wizard = await openGuideWizard(page)
+    await nextPage(wizard)
+    await expect(wizard.getByTestId('agent-setup-runtime-host')).toHaveCount(0)
+    await expect(wizard.getByTestId('agent-setup-host-runtime')).toContainText('No node of this Zone runs containers')
+    await expect(wizard.getByTestId('agent-setup-host-runtime')).toContainText('/home/alice')
   })
 
   test('limited users get no guide and a disabled Add Agent', async ({ page }) => {

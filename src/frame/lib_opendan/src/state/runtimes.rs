@@ -110,6 +110,10 @@ impl FsRuntimes {
     /// [`RuntimeRegistry::check`], which probes it.
     fn observe(&self, record: &mut RuntimeRecord) {
         let (availability, error) = match (record.kind, &record.exec) {
+            (_, None) if record.capabilities.get("native_service") == Some(&serde_json::Value::Bool(true)) => (
+                RuntimeAvailability::RuntimeUnavailable,
+                Some("the agent's Agent Service runs natively on its host: there is no agent container; use the host runtime, or make the container the default to run the Agent Service in its container again".to_string()),
+            ),
             (_, None) if record.capabilities.get("enabled") == Some(&serde_json::Value::Bool(false)) => (
                 RuntimeAvailability::RuntimeUnavailable,
                 Some(format!("the `{}` runtime is not enabled for this agent", record.runtime_id)),
@@ -350,6 +354,10 @@ impl RuntimeRegistry for FsRuntimes {
                     r.default = req.default;
                     r.computer = req.computer;
                     r.baseline = req.baseline;
+                    if r.kind == RuntimeKind::Container {
+                        // Whether there is a container at all is the host's.
+                        r.capabilities = req.capabilities.clone();
+                    }
                     if r.kind != RuntimeKind::Container {
                         r.name = req.name.clone();
                         r.description = req.description.clone();

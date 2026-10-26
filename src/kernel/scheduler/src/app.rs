@@ -44,16 +44,40 @@ fn load_app_service_spec(
     ))
 }
 
+/// How `node_id` runs an instance of `app_config`: natively when it is the
+/// zone owner's Agent whose default runtime is this node's host-native
+/// runtime ([`native_agent_node`]), else as before.
+pub fn app_run_mode(
+    node_id: &str,
+    app_config: &AppServiceSpec,
+    input_config: &HashMap<String, String>,
+) -> AppRunMode {
+    if app_config.app_doc.get_app_type() != AppType::Agent {
+        return AppRunMode::Container;
+    }
+    match native_agent_node(input_config, &app_config.owner_user_id, &app_config.app_id()) {
+        Some(node) if node == node_id => AppRunMode::Native,
+        _ => AppRunMode::Container,
+    }
+}
+
 fn build_app_service_config(
     node_id: &str,
     app_config: &AppServiceSpec,
     node_info: &DeviceInfo,
     instance_service_ports: HashMap<String, u16>,
+    run_mode: AppRunMode,
 ) -> Result<AppServiceInstanceConfig> {
     let mut result_config = AppServiceInstanceConfig::new(node_id, app_config)
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    result_config.run_mode = run_mode;
     let has_script_pkg = app_config.app_doc.pkg_list.script.is_some();
-    if node_info.support_container {
+    if run_mode == AppRunMode::Native {
+        // The node's own OpenDAN runs the Agent package: no image needed.
+        if app_config.app_doc.pkg_list.agent.is_none() {
+            return Err(anyhow::anyhow!("a natively run Agent needs its agent package"));
+        }
+    } else if node_info.support_container {
         let docker_pkg_name = format!("{}_docker_image", node_info.arch.as_str());
         let docker_pkg_info = app_config.app_doc.pkg_list.get(&docker_pkg_name);
         if docker_pkg_info.is_none()
@@ -142,6 +166,7 @@ pub fn instance_app_service(
         &app_config,
         &node_info,
         new_instance.service_ports.clone(),
+        app_run_mode(new_instance.node_id.as_str(), &app_config, input_config),
     )?;
 
     let mut set_action = HashMap::new();

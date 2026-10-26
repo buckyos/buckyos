@@ -18,7 +18,7 @@ fn state(path: &Path) -> FsAgentStateClient {
 }
 
 fn builtin(path: &Path) -> Vec<RuntimeRegister> {
-    builtin_runtimes(vec![path.join("workspaces")], "", &Default::default(), "did:test:agent")
+    builtin_runtimes(vec![path.join("workspaces")], "", &Default::default(), "did:test:agent", false)
 }
 
 /// V01 / V02: the host creates the built-in runtimes once; what the owner
@@ -297,7 +297,7 @@ async fn a_node_runtime_refused_at_start_is_used_once_its_executor_answers() {
         },
     );
     settings.default_runtime_id = Some("host".into());
-    let registers = builtin_runtimes(vec![env.root.join("workspaces")], "", &settings, AGENT);
+    let registers = builtin_runtimes(vec![env.root.join("workspaces")], "", &settings, AGENT, false);
     agent.runtimes().ensure_builtin(&registers, APP).await.unwrap();
     let checked = agent.runtimes().check("host").await.unwrap();
     assert_eq!(checked.availability, RuntimeAvailability::RuntimeUnavailable);
@@ -323,4 +323,37 @@ async fn a_node_runtime_refused_at_start_is_used_once_its_executor_answers() {
     let record = agent.runtimes().lookup("host").await.unwrap().unwrap();
     assert_eq!(record.availability, RuntimeAvailability::Available);
     assert!(connects.load(Ordering::SeqCst) > tries);
+}
+
+/// An Agent Service run natively on its host has no container: the
+/// `container` runtime has no executor (with the reason), `host` is the
+/// default; back in its container, `container` is usable again.
+#[tokio::test]
+async fn a_natively_run_agent_service_has_no_container_runtime() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = state(temp.path());
+    let mut settings = buckyos_api::AgentSettings::default();
+    settings.runtimes.insert(
+        "host".into(),
+        buckyos_api::AgentRuntimeSettings {
+            enabled: true,
+            computer: Default::default(),
+            target: buckyos_api::AgentRuntimeTarget::Node { node_id: "ood1".into(), node_did: "did:web:ood1.test.buckyos.io".into() },
+            baseline: None,
+        },
+    );
+    settings.default_runtime_id = Some("host".into());
+    let project = |native: bool| builtin_runtimes(vec![temp.path().join("workspaces")], "", &settings, "did:test:agent", native);
+    state.runtimes().ensure_builtin(&project(false), "host").await.unwrap();
+    let container = state.runtimes().lookup("container").await.unwrap().unwrap();
+    assert_eq!(container.availability, RuntimeAvailability::Available);
+    state.runtimes().ensure_builtin(&project(true), "host").await.unwrap();
+    let container = state.runtimes().lookup("container").await.unwrap().unwrap();
+    assert_eq!(container.availability, RuntimeAvailability::RuntimeUnavailable);
+    assert!(container.exec.is_none() && !container.default);
+    assert!(container.last_error.unwrap_or_default().contains("runs natively"));
+    assert!(state.runtimes().lookup("host").await.unwrap().unwrap().default);
+    state.runtimes().ensure_builtin(&project(false), "host").await.unwrap();
+    let container = state.runtimes().lookup("container").await.unwrap().unwrap();
+    assert_eq!(container.availability, RuntimeAvailability::Available);
 }

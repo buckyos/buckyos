@@ -708,6 +708,36 @@ impl AgentSettings {
     }
 }
 
+/// The node whose host-native runtime the zone owner's Agent `app_id`
+/// (AppId == AgentId) chose as its default: its Agent Service runs natively
+/// there instead of in a paios container (native-agent-service TODO §2).
+/// `input` is the system-config view the scheduler works on. `None`: the
+/// Agent belongs to another user, its default runtime is not a node runtime,
+/// or that node is not open to the owner's Agents.
+pub fn native_agent_node(
+    input: &std::collections::HashMap<String, String>,
+    owner_user_id: &str,
+    app_id: &AppId,
+) -> Option<String> {
+    let zone_owner = input.get(ZONE_OWNER_USER_ID_KEY).map(|raw| {
+        serde_json::from_str::<String>(raw).unwrap_or_else(|_| raw.trim().trim_matches('"').to_string())
+    })?;
+    if zone_owner != owner_user_id {
+        return None;
+    }
+    let agent_id = AgentId::parse(app_id.as_str()).ok()?;
+    let settings: AgentSettings =
+        serde_json::from_str(input.get(&agent_settings_key(owner_user_id, &agent_id))?).ok()?;
+    let runtime = settings.runtimes.get(settings.effective_default_runtime())?;
+    let AgentRuntimeTarget::Node { node_id, .. } = &runtime.target else {
+        return None;
+    };
+    let node: crate::NodeSettings =
+        serde_json::from_str(input.get(&crate::node_settings_key(node_id))?).ok()?;
+    let executor = node.executor?;
+    (executor.enabled && executor.owner_agents_open()).then(|| node_id.clone())
+}
+
 fn default_true() -> bool {
     true
 }
@@ -821,6 +851,43 @@ impl NodeExecutionSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The zone owner's Agent runs natively on the node of its default
+    /// runtime when that node is open to the owner's Agents; anything else
+    /// keeps it in its container.
+    #[test]
+    fn native_agent_node_follows_the_default_runtime() {
+        let app = AppId::parse("jarvis.test.buckyos.io").unwrap();
+        let agent = AgentId::parse("jarvis.test.buckyos.io").unwrap();
+        let host = |enabled: bool| AgentRuntimeSettings {
+            enabled,
+            computer: crate::ComputerAccess::None,
+            target: AgentRuntimeTarget::Node { node_id: "ood1".into(), node_did: "did:web:ood1.test.buckyos.io".into() },
+            baseline: None,
+        };
+        let node = |open: bool| {
+            serde_json::json!({"executor": {"enabled": true, "owner_agents": {"enabled": open, "workdir_roots": ["/home/u"]}}}).to_string()
+        };
+        let input = |settings: AgentSettings, open: bool| {
+            std::collections::HashMap::from([
+                (ZONE_OWNER_USER_ID_KEY.to_string(), "\"devtest\"".to_string()),
+                (agent_settings_key("devtest", &agent), serde_json::to_string(&settings).unwrap()),
+                (crate::node_settings_key("ood1"), node(open)),
+            ])
+        };
+        let mut on_host = AgentSettings::default();
+        on_host.runtimes.insert(HOST_RUNTIME_ID.into(), host(true));
+        on_host.default_runtime_id = Some(HOST_RUNTIME_ID.into());
+        assert_eq!(native_agent_node(&input(on_host.clone(), true), "devtest", &app).as_deref(), Some("ood1"));
+        assert_eq!(native_agent_node(&input(on_host.clone(), false), "devtest", &app), None, "node closed");
+        assert_eq!(native_agent_node(&input(on_host.clone(), true), "alice", &app), None, "not the zone owner");
+        let mut enabled_only = on_host.clone();
+        enabled_only.default_runtime_id = None;
+        assert_eq!(native_agent_node(&input(enabled_only, true), "devtest", &app), None, "container is the default");
+        let mut disabled = on_host;
+        disabled.runtimes.insert(HOST_RUNTIME_ID.into(), host(false));
+        assert_eq!(native_agent_node(&input(disabled, true), "devtest", &app), None, "host switched off");
+    }
 
     fn reserved() -> BTreeSet<String> {
         ["_", "www", "sys"]

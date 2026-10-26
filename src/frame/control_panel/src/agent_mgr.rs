@@ -1064,6 +1064,15 @@ impl AgentCreateRequest {
             self.default_runtime_id.as_ref(),
         )
         .await?;
+        // An Agent that runs in its container needs somewhere to run it.
+        if settings.effective_default_runtime() == buckyos_api::CONTAINER_RUNTIME_ID
+            && !crate::agent_runtimes::container_available(kv).await
+        {
+            return Err(reason(
+                "container_unavailable",
+                "no node of this zone runs containers: the Agent has to run on the host",
+            ));
+        }
         Ok(settings)
     }
 
@@ -3061,8 +3070,13 @@ impl ControlPanelServer {
             None => (principal.owner_user_id.clone(), None),
         };
         let offers = crate::agent_runtimes::runtime_directory(&kv, &owner).await?;
+        let container_available = crate::agent_runtimes::container_available(&kv).await;
         Ok(RPCResponse::new(
-            RPCResult::Success(crate::agent_runtimes::directory_view(&offers, settings.as_ref())),
+            RPCResult::Success(crate::agent_runtimes::directory_view(
+                &offers,
+                settings.as_ref(),
+                container_available,
+            )),
             req.seq,
         ))
     }
@@ -3915,10 +3929,12 @@ mod tests {
 
         let kv = MemoryKv::default();
         kv.put(ZONE_OWNER_USER_ID_KEY, &OWNER);
-        let device = DeviceInfo::from_device_doc(&DeviceDocument::new(
+        // The owner's desktop (on Linux the container is the default, below).
+        let mut device = DeviceInfo::from_device_doc(&DeviceDocument::new(
             "ood1",
             "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
         ));
+        device.os = "windows".into();
         kv.put("devices/ood1/info", &device);
         let mut node = NodeSettings {
             executor: Some(ExecutorSettings {
@@ -4058,6 +4074,68 @@ mod tests {
             .unwrap()
             .runtime_enabled("host"));
         assert!(enabled.settings_with_runtimes(&kv, OWNER).await.is_err());
+    }
+
+    /// On a Linux node the owner's new Agent stays in its container (its
+    /// Agent Service would otherwise run as the node's service user); the
+    /// owner may still choose the host explicitly. Without any container
+    /// node the host is the only place and a container default is refused.
+    #[tokio::test]
+    async fn linux_hosts_default_to_the_container_and_the_owner_chooses() {
+        use buckyos_api::{ComputerAccess, ExecutorSettings, NodeSettings, OwnerAgentsPolicy, ZONE_OWNER_USER_ID_KEY};
+        use name_lib::{DeviceDocument, DeviceInfo};
+        let kv = MemoryKv::default();
+        kv.put(ZONE_OWNER_USER_ID_KEY, &OWNER);
+        let mut device = DeviceInfo::from_device_doc(&DeviceDocument::new(
+            "ood1",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
+        ));
+        device.os = "linux".into();
+        kv.put("devices/ood1/info", &device);
+        kv.put("nodes/ood1/settings", &NodeSettings {
+            executor: Some(ExecutorSettings {
+                enabled: true,
+                owner_agents: Some(OwnerAgentsPolicy {
+                    enabled: true,
+                    workdir_roots: vec!["/opt/buckyos/data/home/devtest/host-runtime".into()],
+                    env: BTreeMap::new(),
+                    ops: Vec::new(),
+                    computer: ComputerAccess::None,
+                    run_as: None,
+                }),
+                ..Default::default()
+            }),
+        });
+        let params = json!({"idempotency_key": "linux", "name": "linux-agent", "template_id": "bundled:jarvis.buckyos.bns.did"});
+        let default_request = AgentCreateRequest::parse(&params).unwrap();
+        let settings = default_request.settings_with_runtimes(&kv, OWNER).await.unwrap();
+        assert_eq!(settings.effective_default_runtime(), "container");
+        assert!(!settings.runtime_enabled("host"));
+        let offers = crate::agent_runtimes::runtime_directory(&kv, OWNER).await.unwrap();
+        let view = crate::agent_runtimes::directory_view(&offers, Some(&settings), true);
+        assert_eq!((view["container_available"].as_bool(), view["host_by_default"].as_bool()), (Some(true), Some(false)));
+        assert_eq!(view["runtimes"][0]["os"], "linux");
+        assert_eq!(view["agent_service"]["mode"], "container");
+
+        let mut explicit = params.clone();
+        explicit["runtimes"] = json!({"host": {"enabled": true, "computer": "none"}});
+        explicit["default_runtime_id"] = json!("host");
+        let host = AgentCreateRequest::parse(&explicit).unwrap().settings_with_runtimes(&kv, OWNER).await.unwrap();
+        assert_eq!(host.effective_default_runtime(), "host", "the owner may choose the host");
+        let view = crate::agent_runtimes::directory_view(&offers, Some(&host), true);
+        assert_eq!(view["agent_service"], json!({"mode": "native", "node_id": "ood1"}));
+
+        // No node runs containers: the host is the default, a container
+        // default is refused.
+        device.device_doc.support_container = false;
+        kv.put("devices/ood1/info", &device);
+        let settings = default_request.settings_with_runtimes(&kv, OWNER).await.unwrap();
+        assert_eq!(settings.effective_default_runtime(), "host");
+        let mut container = params.clone();
+        container["runtimes"] = json!({"host": null});
+        container["default_runtime_id"] = json!("container");
+        let refused = AgentCreateRequest::parse(&container).unwrap().settings_with_runtimes(&kv, OWNER).await.unwrap_err();
+        assert!(refused.to_string().contains("container_unavailable"), "{refused}");
     }
 
     #[tokio::test]

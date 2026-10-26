@@ -300,3 +300,10 @@ primary-runtime TODO T1–T7 实施时对本层与执行器的小改动（记录
 
 - `agent_tool::todo_tools`：`TodoRecord.behavior` / `NewTodo.behavior` / `TodoAttempt.behavior` / `AttemptTarget.behavior`（子 Session 的入口 behavior，首次派发写入、重试沿用）；`TodoList::admit_serial`（串行 Todo 作为独立子 Session 派发前的准入：pending、无其它串行在执行、无未 Review 结果、`after` 已接受；由 libopendan 在列表锁内调用）；`TodoRecord::view_line`（视图中单个 `<todo …>` 元素，`render_view` 与工具结果后的背景共用）；`task_text` 的依赖行对子 Session 报告附 `read-session` 提示与 artifacts。
 - `llm_context` 本身未改：函数结果后的观察用既有 `CheckpointHook::before_inference` → `Injection`（function call 追加到 accumulated、批次未配对或挂起时不注入），`intent` 由 libopendan 的 `SessionToolManager` 加到 schema 并校验、剥离（不改 `AiToolCall` 与 xllm 工具契约）。
+
+### 11.3 原生 Agent Service DV 时的补充改动（2026-10-25）
+
+[原生 Agent Service TODO](opendan-native-agent-service-todo.md) 的 DV 暴露的本层缺陷（记录见该文 §6）：
+
+- `agent_tool::runtime::node::RemoteNodeClient::submit`：节点执行槽满时答 `Busy`（设计 §“并发槽满”：不记录任何东西），客户端原来直接把它当失败返回。Jarvis 在 owner 节点上原生启动后，两个 UI Session 与一个 Goal Session 同时 bind（每次 bind 写几份文件），节点默认 `max_concurrency = 2` → 总有一份写拿到 `Busy` → 三个 bind 每 5 s 同步重试、永远失败。现在 `submit` 对 `ExecutorErrorCode::Busy` 用同一 locator 退避重提（100 ms 起、最多 2 s 一次、共 60 s，`BUSY_RETRY_*`），重复提交由节点按 op_id 去重。测试：`node_executor/tests/remote_node_runtime.rs::an_operation_waits_for_a_free_execution_slot`（单槽节点上一条 `sleep 2` 占槽，随后的 write_file 等到槽位成功；去掉重试即复现 `remote_node Busy: no free execution slot`）。
+- 仍待定：60 s 窗口内槽位一直被长命令占着（默认 2 槽、一个 Agent 两条长命令即占满）时照样失败；节点默认并发是否该放大、是否按 profile 分槽，属于 Node Executor 的配置决定，未改。

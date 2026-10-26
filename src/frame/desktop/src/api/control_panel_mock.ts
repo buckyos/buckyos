@@ -121,6 +121,8 @@ interface MockState {
   host_names: string[]
   templates: AgentTemplate[]
   runtime_offers: AgentRuntimeOffer[]
+  /** A node of the zone runs Agent containers (default true). */
+  container_available?: boolean
   runtime_directory_error?: string
   agents: MockAgent[]
   step_ms: number
@@ -217,7 +219,7 @@ function defaultState(): MockState {
     templates: [jarvisTemplate],
     runtime_offers: [{
       runtime_id: 'host', kind: 'node', node_id: 'desktop', node_did: 'did:dev:desktop',
-      device_type: 'desktop', name: 'Alice’s computer', computer_max: 'control',
+      device_type: 'desktop', name: 'Alice’s computer', computer_max: 'control', os: 'windows',
       workdir_roots: ['/home/alice'], closed: false, enabled: false, computer: 'none', baseline: 'standard',
     }],
     agents: [
@@ -744,6 +746,9 @@ function createAgent(state: MockState, params: Record<string, unknown>) {
     },
   } : {}
   agent.settings.default_runtime_id = request.default_runtime_id ?? (enableHost ? 'host' : 'container')
+  if (agent.settings.default_runtime_id === 'container' && state.container_available === false) {
+    throw new MockRpcError('container_unavailable: no node of this zone runs Agent containers')
+  }
   state.agents.push(agent)
   return { agent_id: agent.agent_id, agent_did: agent.agent_did, status: { ...agent.install } }
 }
@@ -1342,7 +1347,15 @@ function handle(state: MockState, method: string, params: Record<string, unknown
       if (state.runtime_directory_error) throw new MockRpcError(state.runtime_directory_error)
       const agent = typeof params.agent_id === 'string' ? findAgent(state, params.agent_id) : null
       const owner = agent?.owner_user_id ?? state.account.user_id
+      const containerAvailable = state.container_available !== false
+      const host = owner === state.zone_owner ? state.runtime_offers.find((offer) => offer.runtime_id === 'host') : undefined
+      const defaultTarget = agent?.settings.runtimes?.[agent.settings.default_runtime_id ?? '']?.target
       return {
+        container_available: containerAvailable,
+        host_by_default: Boolean(host && !host.closed && (host.os !== 'linux' || !containerAvailable)),
+        agent_service: owner === state.zone_owner && defaultTarget?.kind === 'node'
+          ? { mode: 'native', node_id: defaultTarget.node_id }
+          : { mode: 'container' },
         runtimes: owner === state.zone_owner ? state.runtime_offers.map((offer) => ({
           ...offer,
           enabled: agent?.settings.runtimes?.[offer.runtime_id]?.enabled ?? false,

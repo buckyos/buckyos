@@ -53,6 +53,11 @@ const REQUEST_SLACK: Duration = Duration::from_secs(30);
 const QUERY_WAIT_MS: u64 = 25_000;
 const FILE_OP_TIMEOUT: Duration = Duration::from_secs(180);
 const KILL_CONFIRM: Duration = Duration::from_secs(30);
+/// A node answers `Busy` while all its execution slots are taken, before it
+/// records anything; the same operation is offered again for this long.
+const BUSY_RETRY_WINDOW: Duration = Duration::from_secs(60);
+const BUSY_RETRY_FIRST: Duration = Duration::from_millis(100);
+const BUSY_RETRY_MAX: Duration = Duration::from_secs(2);
 
 pub trait NodeIo: AsyncRead + AsyncWrite + Send + Unpin {}
 impl<T: AsyncRead + AsyncWrite + Send + Unpin> NodeIo for T {}
@@ -376,7 +381,24 @@ impl NodeClient {
         }
     }
 
+    /// Submit `op`, waiting for a free execution slot: `Busy` means the node
+    /// recorded nothing, so the same locator is offered again (a duplicate
+    /// is answered with the first submission's status).
     pub(crate) async fn submit(&self, loc: &OperationLocator, op: &RemoteOp<'_>) -> Result<ExecutorOpStatus, ExecutorError> {
+        let deadline = Instant::now() + BUSY_RETRY_WINDOW;
+        let mut delay = BUSY_RETRY_FIRST;
+        loop {
+            match self.submit_once(loc, op).await {
+                Err(e) if e.code == ExecutorErrorCode::Busy && Instant::now() + delay < deadline => {
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(BUSY_RETRY_MAX);
+                }
+                other => return other,
+            }
+        }
+    }
+
+    async fn submit_once(&self, loc: &OperationLocator, op: &RemoteOp<'_>) -> Result<ExecutorOpStatus, ExecutorError> {
         let op_id = loc.op_id.clone();
         let call_id = loc.call_id.clone();
         let reply = match op {

@@ -336,7 +336,7 @@ libopendan 负责把 Agent/Session helper、命令和环境装入本机运行视
 
 `create_sub_session` 会复制父 Session 的 `prompt.llm_context` 与 runtime 配置，但子 Session 拥有自己的 binding；显式 runtime 选择重新确定 `requirement.runtime_id`。这种配置继承不等于共用父 Session 的绑定身份。远端 Session 的 helper 分发、workspace/control 目录拆分和凭据约束仍需一并完成。
 
-Agent State 的 runtime 登记名与构造 kind 也应区分：内建 `container` 登记使用 `native` executor，`host` 登记当前没有 executor；它们不表示 `RuntimeConfig.kind=container` 或 `kind=host` 已可构造。
+Agent State 的 runtime 登记名与构造 kind 也应区分：内建 `container` 登记使用 `native` executor（Agent Service 原生运行在宿主上时没有容器，`container` 登记不可用，不把宿主当 native 执行体），`host` 登记当前没有 executor；它们不表示 `RuntimeConfig.kind=container` 或 `kind=host` 已可构造。
 
 实现：[libopendan runtime](../../src/frame/lib_opendan/src/runtime/mod.rs)、[子 Session 创建](../../src/frame/lib_opendan/src/api.rs)、[runtime 登记协议](../../src/frame/lib_opendan/src/protocol/runtime.rs)、[bin_overlay](../../src/frame/lib_opendan/src/runtime/bin_overlay.rs)、[libopendan README](../../src/frame/lib_opendan/README.md)。
 

@@ -2,6 +2,8 @@
 
 日期：2026-10-25。对应任务：[buckyos-desktop-without-docker-todo.md](buckyos-desktop-without-docker-todo.md)。
 
+后续（2026-10-25，用户决定）：zone owner 的 Agent 选择 host-native-runtime 时 Agent Service 不基于 paios 镜像启动——§5 步骤 ③ 的触发条件改为 Agent 的 runtime 选择（默认 runtime 是 host），已实施并在 Linux 单 OOD DV 通过，见 [opendan-native-agent-service-todo.md](opendan-native-agent-service-todo.md) §6。
+
 源码基线：`33b3ca39e`（HEAD，与 TODO 一致，行号未漂移）。本报告只做源码级分析与推演，**没有做 Windows / macOS 平台实测**；凡标注"推断"的结论都要在 R6 纵向链路验证时复核。
 
 ## 0. 结论（回答 §1 核心问题）

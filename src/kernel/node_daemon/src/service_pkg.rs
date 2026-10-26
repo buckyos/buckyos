@@ -54,9 +54,9 @@ struct NativeServiceSpec {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct ProcessIdentity {
-    pid: i32,
-    start_time: u64,
+pub(crate) struct ProcessIdentity {
+    pub(crate) pid: i32,
+    pub(crate) start_time: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -764,7 +764,7 @@ fn is_active_process_status(status: ProcessStatus) -> bool {
     !matches!(status, ProcessStatus::Zombie | ProcessStatus::Dead)
 }
 
-fn read_process_identity(pid: i32) -> Option<ProcessIdentity> {
+pub(crate) fn read_process_identity(pid: i32) -> Option<ProcessIdentity> {
     if pid <= 0 {
         return None;
     }
@@ -783,7 +783,7 @@ fn read_process_identity(pid: i32) -> Option<ProcessIdentity> {
 }
 
 // An established identity uses only PID and start time; replaced executables may be deleted.
-fn process_identity_is_current(identity: &ProcessIdentity) -> bool {
+pub(crate) fn process_identity_is_current(identity: &ProcessIdentity) -> bool {
     read_process_identity(identity.pid).as_ref() == Some(identity)
 }
 
@@ -878,7 +878,7 @@ fn check_local_port(port: u16) -> bool {
     TcpStream::connect_timeout(&addr, Duration::from_secs(1)).is_ok()
 }
 
-async fn stop_process_tree(pid: i32) -> Result<()> {
+pub(crate) async fn stop_process_tree(pid: i32) -> Result<()> {
     if pid <= 0 {
         return Ok(());
     }
@@ -958,7 +958,7 @@ async fn run_command(
     })
 }
 
-fn spawn_detached(
+pub(crate) fn spawn_detached(
     program: &Path,
     args: &[String],
     envs: Option<&HashMap<String, String>>,

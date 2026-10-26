@@ -216,14 +216,29 @@ pub fn node_exec(node_did: &str, agent_did: &str) -> Value {
 /// TODO §3.1): its own environment, the owner's desktop `host`, and every
 /// further runtime the owner enabled in the agent's settings. `roots` are
 /// suggestions for workspaces in the container; a node runtime's roots are
-/// learned from the node (`describe`) when it is checked.
+/// learned from the node (`describe`) when it is checked. `native_service`:
+/// the Agent Service runs natively on its node (the zone owner's Agent on
+/// its host runtime) — there is no agent container, so `container` has no
+/// executor (running commands in the service's own environment would
+/// bypass the node's `owner_agents` policy).
 pub fn builtin_runtimes(
     container_roots: Vec<PathBuf>,
     container_note: &str,
     settings: &AgentSettings,
     agent_did: &str,
+    native_service: bool,
 ) -> Vec<RuntimeRegister> {
     let default = settings.effective_default_runtime();
+    if native_service {
+        let mut out = builtin_runtimes(container_roots, container_note, settings, agent_did, false);
+        if let Some(container) = out.iter_mut().find(|r| r.runtime_id == CONTAINER_RUNTIME) {
+            container.description = "The agent has no container: its Agent Service runs natively on its host. Commands run in the host runtime.".into();
+            container.exec = None;
+            container.capabilities = serde_json::json!({ "native_service": true });
+            container.default = false;
+        }
+        return out;
+    }
     let mut out = vec![RuntimeRegister {
         runtime_id: CONTAINER_RUNTIME.into(),
         kind: RuntimeKind::Container,

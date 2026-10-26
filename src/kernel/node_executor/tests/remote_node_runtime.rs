@@ -301,6 +301,57 @@ async fn remote_node_tools_run_on_the_node_and_recover_by_query() {
     assert!(format!("{obs:?}").contains("StoreMismatch") || format!("{obs:?}").contains("ledger changed"), "{obs:?}");
 }
 
+/// A node with every execution slot taken answers `Busy` without recording
+/// anything: the next operation waits for a slot instead of failing (three
+/// sessions binding at once on a two-slot node used to fail in lockstep).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_operation_waits_for_a_free_execution_slot() {
+    if unsafe { geteuid() } != 0 {
+        eprintln!("skipping: needs root");
+        return;
+    }
+    let dir = tempfile::Builder::new().prefix("nx-busy").tempdir_in("/tmp").unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let root = dir.path().to_path_buf();
+    let work = root.join("work");
+    std::fs::create_dir(&work).unwrap();
+    std::os::unix::fs::chown(&work, Some(NOBODY), Some(NOBODY)).unwrap();
+    let local = root.join("local");
+    std::fs::create_dir(&local).unwrap();
+
+    let exec = executor(&root, "ledger", &work).await;
+    exec.apply_config(Some(ExecutorConfig {
+        revision: "sha256:r2".into(),
+        generation: 2,
+        limits: ExecutorLimits { max_concurrency: 1, ..Default::default() },
+        ..snapshot(&work)
+    }))
+    .await;
+    let deps = XllmDeps::default().with_node_executor(Arc::new(InProcess { exec: Mutex::new(exec) }));
+    let config = RuntimeConfig {
+        kind: Some("remote_node".into()),
+        workdir: Some(work.to_string_lossy().to_string()),
+        remote_node: Some(RemoteNodeConfig { node_did: Some(NODE_DID.into()), profile_id: Some("dev".into()) }),
+        ..Default::default()
+    };
+    let rt = RuntimeRegistry::from_config_with(&config, &deps).unwrap();
+    let open = RuntimeOpenCtx::new(&local, "run1", LoopModel::FunctionCall);
+    let (_, mut manager) = rt.open(&open, &ToolsConfig { enabled: Some(true), ..Default::default() }, &deps).await.unwrap();
+    manager.bind_run_dir("run1", Some(local.join("runs").join("run1")));
+
+    let (slow, write) = tokio::join!(
+        manager.call_tool(call("c-sleep", "shell", json!({"command": "sleep 2; echo slept"})), ToolCallCtx::noop()),
+        async {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            manager.call_tool(call("c-write", "write_file", json!({"path": "b.txt", "content": "after"})), ToolCallCtx::noop()).await
+        },
+    );
+    assert!(format!("{:?}", slow.unwrap()).contains("slept"));
+    let write = write.unwrap();
+    assert!(!matches!(write, llm_context::observation::Observation::Error { .. }), "{write:?}");
+    assert_eq!(std::fs::read_to_string(work.join("b.txt")).unwrap(), "after");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn remote_artifacts_download_in_ranges_without_truncation_or_workspace_escape() {
     if unsafe { geteuid() } != 0 {

@@ -16,6 +16,7 @@ export function ConfirmPage({
   telegram,
   avatarFallback,
   host,
+  onHost,
 }: {
   draft: AgentSetupDraft
   bio: string
@@ -25,10 +26,11 @@ export function ConfirmPage({
   telegram: UserTunnelBinding | null
   avatarFallback?: string
   host: AgentRuntimeOffer | null
+  onHost: boolean
 }) {
   const { t } = useI18n()
   const [roleOpen, setRoleOpen] = useState(false)
-  const hostRow = draft.hostRuntimeEnabled && host && !host.closed
+  const hostRow = onHost && host
     ? t('agentSetup.confirm.hostDesktop', undefined, { name: host.name || host.node_id || 'host', computer: t(`agentSetup.confirm.computer.${host.computer_max}`) })
     : t('agentSetup.confirm.hostContainer')
   const yes = t('agentSetup.yes')

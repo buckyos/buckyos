@@ -8,7 +8,7 @@ import type { CurrentAccount } from '../../api/account'
 import { AvatarPicker } from './AvatarPicker'
 import type { NameCheckState, RuntimeDirectoryState } from './hooks'
 import type { AgentRuntimeOffer } from '../../api/user_mgr'
-import { draftDisplayName, type AgentSetupDraft, type ClassifiedAgentError } from './model'
+import { canChooseRuntime, draftDisplayName, runsOnHost, type AgentSetupDraft, type ClassifiedAgentError } from './model'
 import { OptionCard, Section, StatusPill } from './ui'
 import { ObjectAvatar } from '../../presentation/ObjectIcon'
 import type { ObjectPresentation } from '../../presentation/model'
@@ -231,6 +231,8 @@ export function PermissionsPage({
   onReloadRuntimes: () => void
 }) {
   const { t } = useI18n()
+  const directory = runtimeDirectory.status === 'ready' ? runtimeDirectory.directory : null
+  const onHost = runsOnHost(draft, host, directory)
   return (
     <div className="space-y-4">
       <Section title={t('agentSetup.owner.title')} description={t('agentSetup.owner.description')}>
@@ -270,18 +272,26 @@ export function PermissionsPage({
             <p>{t('agentSetup.permission.agentRoot')}</p>
           </div>
           <div className="border-t pt-3" style={{ borderColor: 'var(--cp-border)' }} data-testid="agent-setup-host-runtime">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-sm font-medium text-[color:var(--cp-text)]">{t('agentSetup.host.enable')}</div>
-                <p className="mt-1 text-[12px] leading-5 text-[color:var(--cp-muted)]">{t('agentSetup.host.hint')}</p>
+            <div className="text-sm font-medium text-[color:var(--cp-text)]">{t('agentSetup.host.choice')}</div>
+            <p className="mt-1 text-[12px] leading-5 text-[color:var(--cp-muted)]">{t('agentSetup.host.hint')}</p>
+            {directory && host && canChooseRuntime(host, directory) ? (
+              <div className="mt-2 space-y-3" role="radiogroup" aria-label={t('agentSetup.host.choice')}>
+                <OptionCard
+                  testId="agent-setup-runtime-host"
+                  selected={onHost}
+                  onSelect={() => update({ hostRuntimeEnabled: true })}
+                  title={t('agentSetup.host.onHost', undefined, { name: host.name || host.node_id || 'host' })}
+                  description={t('agentSetup.host.onHostHint')}
+                />
+                <OptionCard
+                  testId="agent-setup-runtime-container"
+                  selected={!onHost}
+                  onSelect={() => update({ hostRuntimeEnabled: false })}
+                  title={t('agentSetup.host.inContainer')}
+                  description={t('agentSetup.host.inContainerHint')}
+                />
               </div>
-              <Switch
-                checked={Boolean(host && !host.closed && draft.hostRuntimeEnabled)}
-                disabled={runtimeDirectory.status !== 'ready' || !host || host.closed}
-                onChange={(event) => update({ hostRuntimeEnabled: event.target.checked })}
-                slotProps={{ input: { 'aria-label': t('agentSetup.host.enable') } }}
-              />
-            </div>
+            ) : null}
             {runtimeDirectory.status === 'loading' ? (
               <p className="mt-2 text-[12px] text-[color:var(--cp-muted)]">{t('agentSetup.host.loading')}</p>
             ) : runtimeDirectory.status === 'error' ? (
@@ -290,12 +300,13 @@ export function PermissionsPage({
               </Alert>
             ) : !host || host.closed ? (
               <p className="mt-2 text-[12px] text-[color:var(--cp-muted)]">{t(host?.closed ? 'agentSetup.host.closed' : 'agentSetup.host.unavailable')}</p>
-            ) : (
+            ) : onHost ? (
               <div className="mt-2 space-y-1 text-[12px] leading-5 text-[color:var(--cp-muted)]">
+                {directory?.container_available === false ? <p>{t('agentSetup.host.noContainer')}</p> : null}
                 <p>{t('agentSetup.host.node', undefined, { name: host.name || host.node_id || 'host', computer: t(`agentSetup.confirm.computer.${host.computer_max}`) })}</p>
                 {host.workdir_roots?.length ? <p className="break-all">{t('agentSetup.host.roots', undefined, { roots: host.workdir_roots.join(', ') })}</p> : null}
               </div>
-            )}
+            ) : null}
           </div>
         </div>
       </Section>

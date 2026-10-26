@@ -438,6 +438,24 @@ impl AppServiceSpec {
     }
 }
 
+/// How a node runs an app instance. An Agent's Agent Service runs natively
+/// when its owner (the zone owner) chose the node's host-native runtime as
+/// its default ([`crate::native_agent_node`]); everything else runs as the
+/// scheduler and the node's container support decide.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AppRunMode {
+    #[default]
+    Container,
+    Native,
+}
+
+impl AppRunMode {
+    pub fn is_container(&self) -> bool {
+        *self == AppRunMode::Container
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct AppServiceInstanceConfig {
@@ -447,6 +465,8 @@ pub struct AppServiceInstanceConfig {
     //service_name -> service instance port ,use instance port can access the service
     pub service_ports_config: HashMap<String, u16>,
     pub deployment: DeploymentIdentity,
+    #[serde(default, skip_serializing_if = "AppRunMode::is_container")]
+    pub run_mode: AppRunMode,
 }
 impl AppServiceInstanceConfig {
     pub fn new(node_id: &str, app_config: &AppServiceSpec) -> Result<AppServiceInstanceConfig> {
@@ -460,6 +480,7 @@ impl AppServiceInstanceConfig {
             node_execution_spec,
             service_ports_config: HashMap::new(),
             deployment: app_config.deployment.clone(),
+            run_mode: AppRunMode::Container,
         })
     }
 

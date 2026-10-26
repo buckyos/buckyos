@@ -4,6 +4,7 @@ import {
   agentDisplayName,
   agentHomeTarget,
   buildAgentCreateRequest,
+  canChooseRuntime,
   canCancelCreation,
   classifyAgentError,
   computeAgentGuideState,
@@ -15,6 +16,7 @@ import {
   parseAgentSetupDraft,
   applyTemplateToDraft,
   pickTemplate,
+  runsOnHost,
 } from '../../src/app/agent-setup/model.ts'
 import { agentStateToStatus, toAgentEntity } from '../../src/app/users-agents/datamodel/transforms.ts'
 import { createBackendAppDefinitionMapper, launcherDefinitions, withAccountBuiltins } from '../../src/app/backend-apps.ts'
@@ -188,6 +190,26 @@ Deno.test('host creation follows the offer and preserves an explicit opt-out', (
   assertEquals(disabled.default_runtime_id, 'container', 'opt-out resets the default')
   assertEquals(buildAgentCreateRequest(draft, '', { ...host, closed: true }).runtimes, { host: null }, 'a closed node never gets enabled')
   assertEquals(buildAgentCreateRequest(draft, '').runtimes, { host: null }, 'no offered host never gets enabled')
+})
+
+Deno.test('the machine decides the default, the owner the choice', () => {
+  const draft = newAgentSetupDraft('users_agents', 'choice-key')
+  const host: AgentRuntimeOffer = {
+    runtime_id: 'host', kind: 'node', node_id: 'ood1', node_did: 'did:dev:ood1', os: 'linux',
+    computer_max: 'none', closed: false, computer: 'none', enabled: false,
+  }
+  const linux = { container_available: true, host_by_default: false }
+  assertEquals(canChooseRuntime(host, linux), true, 'host and containers: the owner chooses')
+  assertEquals(runsOnHost(draft, host, linux), false, 'a Linux host defaults to the container')
+  assertEquals(buildAgentCreateRequest(draft, '', host, linux).default_runtime_id, 'container', 'the default is sent')
+  const chosen = parseAgentSetupDraft({ ...draft, hostRuntimeEnabled: true }, 'users_agents')!
+  assertEquals(buildAgentCreateRequest(chosen, '', host, linux).default_runtime_id, 'host', 'the owner may still choose the host')
+  assertEquals(parseAgentSetupDraft({ ...draft, hostRuntimeEnabled: 'yes' }, 'users_agents')!.hostRuntimeEnabled, null, 'no choice keeps the default')
+  const noContainer = { container_available: false, host_by_default: true }
+  assertEquals(canChooseRuntime(host, noContainer), false, 'without containers there is nothing to choose')
+  const declined = parseAgentSetupDraft({ ...draft, hostRuntimeEnabled: false }, 'users_agents')!
+  assertEquals(runsOnHost(declined, host, noContainer), true, 'the host is the only place left')
+  assertEquals(canChooseRuntime({ ...host, closed: true }, linux), false, 'a closed host offers no choice')
 })
 
 Deno.test('unknown Agent states map to unknown, never to an error', () => {

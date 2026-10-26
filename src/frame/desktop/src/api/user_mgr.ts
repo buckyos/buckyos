@@ -279,6 +279,8 @@ export interface AgentRuntimeOffer {
   workdir_roots?: string[]
   /** The policy exists but the administrator closed it. */
   closed: boolean
+  /** `linux | windows | apple` as the node reports it. */
+  os?: string
   /** The node no longer offers it (the Agent's setting still names it). */
   withdrawn?: boolean
   enabled: boolean
@@ -290,6 +292,14 @@ export interface AgentRuntimeDirectory {
   runtimes: AgentRuntimeOffer[]
   default_runtime_id: string | null
   container: string
+  /** A node of this zone runs Agent containers. */
+  container_available?: boolean
+  /** A new Agent runs on `host` unless the owner chooses its container
+   * (Windows / macOS hosts; on Linux the container is the default). */
+  host_by_default?: boolean
+  /** How this Agent runs its Agent Service: natively on the node of its
+   * host default runtime, or in its container. */
+  agent_service?: { mode: 'native' | 'container'; node_id?: string }
 }
 
 export interface AgentTemplateBinding {

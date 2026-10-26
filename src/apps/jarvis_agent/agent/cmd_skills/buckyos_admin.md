@@ -138,9 +138,16 @@ buckyos system info                                 # BuckyOS version, build_ver
   sudo token. Which Agent uses a node is the Agent's own setting: `agent.runtime_directory [agent_id]` lists the nodes
   offered to the owner (`host` = the desktop), `agent.update {agent_id, runtimes: {"host": {enabled, computer}},
   default_runtime_id}` enables one (targets come from the directory, never from the caller). Desktop's Add Agent
-  permissions step offers the same host choice, on by default for the Zone Owner when both the executor and its
-  owner policy are open. `agent.create` accepts these same runtime fields; to opt out, use
+  permissions step asks where the Agent runs (host or its container) when the host is open and a node runs containers;
+  the directory's `host_by_default` is true on a Windows / macOS host, false on Linux (there the native Agent Service
+  would run as root), and with no container node (`container_available: false`) the host is the only choice.
+  `agent.create` accepts these same runtime fields; for the container, use
   `runtimes: {"host": null}, default_runtime_id: "container"`. Create retries keep the saved choice.
+- A Zone owner's Agent whose default runtime is a node's `host` runs its Agent Service natively on that node: no
+  `buckyos-app-<agent>` container, no `container` runtime (`runtime_unavailable`), the node config shows
+  `apps/<instance>/run_mode: "native"`, and `agent.runtime_directory <agent_id>` says `agent_service: {mode: "native",
+  node_id}`. Changing the default between host and container restarts the Agent Service the other way; a default of
+  `container` with no container node is refused (`container_unavailable`).
   Linux `dev` / `devtest_ood1` config generation seeds a bounded host workspace at
   `data/home/devtest/host-runtime`, with a non-root execution identity and no desktop control; explicit node settings
   take precedence. The scheduler multiplies
@@ -194,6 +201,8 @@ Keep a timeline: symptom (user words, time) → evidence (command, `trace_id`, q
   `buckyos log export --services a,b --since <RFC3339> --path $OPENDAN_SESSION_DIR/logs.zip`.
 - App and agent container logs are out of reach of `log`: `apps` holds per-instance subdirectories that query does
   not read, and `opendan` there is the host's. Your own runtime logs are files under `/opt/buckyos/logs/` in your container.
+  A natively run Agent Service has no container: its log is the host's `$BUCKYOS_ROOT/logs/opendan/opendan.<pid>.log`
+  (service `opendan`), its process record `$BUCKYOS_ROOT/local/app_native/<instance>.json` (pid, start time, port).
 - `buckyos diagnostic collect --services a,b --since <RFC3339>` (privileged; waits for the task; result has `bundle_id`,
   expiring in about an hour) → `buckyos diagnostic export <bundle_id> --path $OPENDAN_SESSION_DIR/diag.zip` (sha256
   checked). Scheduler logs run to tens of MB per hour; narrow the window.

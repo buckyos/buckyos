@@ -116,6 +116,12 @@ fn container_roots(agent_root: &std::path::Path) -> Vec<PathBuf> {
     roots
 }
 
+/// node_daemon runs this Agent Service natively on its node (the zone
+/// owner's Agent on its host runtime): there is no agent container.
+fn native_service() -> bool {
+    std::env::var("OPENDAN_SERVICE_MODE").is_ok_and(|v| v == "native")
+}
+
 fn container_note() -> &'static str {
     if std::path::Path::new("/.dockerenv").exists() {
         "It is the agent's container: paths here are not the owner's host paths."
@@ -582,6 +588,7 @@ pub async fn project_runtimes(
         container_note(),
         settings,
         agent.agent_did(),
+        native_service(),
     );
     match agent.runtimes().ensure_builtin(&builtin, who).await {
         Ok(r) => log::info!(

@@ -2209,3 +2209,66 @@ async fn deployment_observation_does_not_cache_missing_digest_metadata() {
     );
     assert_eq!(fixture.lock().unwrap().commands.len(), 5);
 }
+
+fn build_native_agent_loader(support_container: bool, state_root: &Path, program: &Path) -> AppLoader {
+    let app_doc = build_agent_doc_without_category();
+    let install_config = build_spec_config(&app_doc);
+    let app_spec = build_test_app_spec(app_doc, install_config);
+    let app_instance_id = app_spec.app_instance_id.to_string();
+    let mut config = AppServiceInstanceConfig::new("ood1", &app_spec).unwrap();
+    config.service_ports_config =
+        HashMap::from([("www".to_string(), 10080), ("main".to_string(), 14060)]);
+    config.run_mode = buckyos_api::AppRunMode::Native;
+    AppLoader::new_for_service(&app_instance_id, config)
+        .with_platform(PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64))
+        .with_container_support_override(support_container)
+        .with_paios_images_root(local_paios_root())
+        .with_native_agent(program, state_root)
+}
+
+/// A natively run Agent (the zone owner's Agent on its host-native
+/// runtime) needs no worker image and no container support: deploy only
+/// installs its packages, start runs the node's own OpenDAN.
+#[test]
+fn a_native_agent_runs_the_nodes_opendan_without_containers() {
+    let state = tempdir().unwrap();
+    for support_container in [true, false] {
+        let loader = build_native_agent_loader(support_container, state.path(), Path::new("/opt/buckyos/bin/opendan/opendan"));
+        let deploy = loader.preview_operation(ControlOperation::Deploy).unwrap();
+        assert_eq!(deploy.runtime, RuntimeType::NativeAgent);
+        assert!(deploy.commands.iter().all(|c| c.program == "pkg-install"), "{:?}", deploy.commands);
+        assert!(!deploy.commands.is_empty());
+        let start = loader.preview_operation(ControlOperation::Start).unwrap();
+        assert_eq!(start.runtime, RuntimeType::NativeAgent);
+        assert_eq!(start.commands.len(), 1);
+        assert_eq!(start.commands[0].program, "/opt/buckyos/bin/opendan/opendan");
+        let args = &start.commands[0].args;
+        assert_eq!(args[0], "--appid");
+        assert!(args.windows(2).any(|w| w[0] == "--service-port" && w[1] == "14060"), "{args:?}");
+        assert!(!start.commands.iter().any(|c| c.program == "docker"));
+    }
+}
+
+/// The native process is found again from its record (also by a new
+/// node_daemon), and stopping it ends the process and forgets it.
+#[tokio::test]
+async fn a_native_agent_process_is_recorded_found_and_stopped() {
+    let state = tempdir().unwrap();
+    let loader = build_native_agent_loader(false, state.path(), Path::new("/bin/sleep"));
+    assert_eq!(loader.test_running_native_agent_pid(), None);
+    loader.test_spawn_native_agent(&["30".to_string()], state.path()).unwrap();
+    let pid = loader.test_running_native_agent_pid().expect("the recorded process runs");
+    let again = build_native_agent_loader(false, state.path(), Path::new("/bin/sleep"));
+    assert_eq!(again.test_running_native_agent_pid(), Some(pid), "found from the record");
+    again.test_stop_native_agent().await.unwrap();
+    for _ in 0..50 {
+        crate::service_pkg::reap_detached_children();
+        if crate::service_pkg::read_process_identity(pid).is_none() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(crate::service_pkg::read_process_identity(pid).is_none(), "the process ended");
+    assert_eq!(loader.test_running_native_agent_pid(), None);
+    assert!(fs::read_dir(state.path()).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().ends_with(".json")));
+}

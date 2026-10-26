@@ -372,6 +372,7 @@ OpenDAN 必须被纳入统一 App 模型，而不是继续维持独立特例：
 2. 本地演化副本必须落在实例卷。
 3. 升级逻辑应采用文件级同步/合并，不再依赖文件系统级 COW。
 4. Agent 默认仍运行在受限容器边界内，其可见目录与宿主机能力继续由挂载策略/桥接工具决定。
+   例外：zone owner 的 Agent 把默认 runtime 设为某节点的 `host` 时，Agent Service 作为 node_daemon 管理的原生进程跑在该节点上，不使用工作镜像；这种 Agent 没有 `container` runtime，命令只经 Node Executor 以节点 `owner_agents` 的 profile 执行（`doc/app_service/rust_app_loader.md` §9.3.1）。
 5. 删除实例卷后，Agent 应回退到更接近原始发行状态，这应被视为诊断与恢复能力的一部分。
 
 ### 8.3 传统二进制 App

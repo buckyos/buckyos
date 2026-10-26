@@ -481,6 +481,7 @@ mod tests {
                 spec_generation: 1,
                 pikg_digest: None,
             },
+            run_mode: crate::AppRunMode::Container,
         };
         let raw = serde_json::to_string(&config).expect("serialize app_instance_config");
 

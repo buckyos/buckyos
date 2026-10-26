@@ -280,7 +280,7 @@ async fn zone_env(args: &Args) -> Result<LoaderEnv> {
         .or_else(|| {
             [appid.clone(), format!("buckyos_{appid}")]
                 .into_iter()
-                .map(|n| PathBuf::from("/opt/buckyos/bin").join(n))
+                .map(|n| buckyos_kit::get_buckyos_root_dir().join("bin").join(n))
                 .find(|p| p.is_dir())
         });
     let queue = runtime

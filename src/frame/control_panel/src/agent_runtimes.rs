@@ -4,7 +4,10 @@
 //! choice in `AgentSettings.runtimes`, and the defaults a Desktop owner's
 //! new Agent gets. The control panel never writes node settings: the node
 //! policy is the administrator's (and the desktop seed's); the scheduler
-//! multiplies both into the Agent's profile.
+//! multiplies both into the Agent's profile. An Agent whose default runtime
+//! is the owner's `host` runs its Agent Service natively there
+//! (native-agent-service TODO): on a Linux node that would be the node's
+//! service user, so there the container is the default where one exists.
 
 use std::collections::BTreeMap;
 
@@ -33,6 +36,8 @@ pub(crate) struct NodeRuntimeOffer {
     pub workdir_roots: Vec<String>,
     /// The policy exists but the administrator closed it.
     pub closed: bool,
+    /// `linux | windows | apple` as the device reports it.
+    pub os: String,
 }
 
 async fn zone_owner(kv: &dyn AgentKv) -> Option<String> {
@@ -83,6 +88,7 @@ pub(crate) async fn runtime_directory(kv: &dyn AgentKv, owner: &str) -> Result<V
             computer: policy.computer,
             workdir_roots: policy.workdir_roots.clone(),
             closed: !executor.enabled || !policy.enabled,
+            os: info.os.clone(),
         });
     }
     offers.sort_by(|a, b| {
@@ -95,9 +101,33 @@ pub(crate) async fn runtime_directory(kv: &dyn AgentKv, owner: &str) -> Result<V
     Ok(offers)
 }
 
-/// A new Agent of the Desktop owner: the owner's desktop (`host`) enabled
+/// Whether an Agent container can run anywhere in the zone (a node that
+/// takes app instances and supports containers).
+pub(crate) async fn container_available(kv: &dyn AgentKv) -> bool {
+    let Ok(devices) = kv.list("devices").await else {
+        return false;
+    };
+    for device in devices {
+        if let Some(info) = get_value::<DeviceInfo>(kv, &format!("devices/{device}/info")).await {
+            let doc = &info.device_doc;
+            if doc.support_container && matches!(doc.device_type.as_str(), "ood" | "server") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Whether a new Agent runs on the owner's `host` by default: on a Windows
+/// or macOS desktop yes; on a Linux node only when no container can run.
+pub(crate) fn host_by_default(host: &NodeRuntimeOffer, container_available: bool) -> bool {
+    !host.closed && (host.os != "linux" || !container_available)
+}
+
+/// A new Agent of the zone owner: the owner's machine (`host`) enabled
 /// with the node's full ComputerUse grant, and the default runtime of new
-/// sessions. Nothing when the owner's zone offers no open node.
+/// sessions where [`host_by_default`] says so. Nothing when the owner's
+/// zone offers no open node.
 pub(crate) async fn apply_create_defaults(kv: &dyn AgentKv, owner: &str, settings: &mut AgentSettings) {
     let offers = match runtime_directory(kv, owner).await {
         Ok(offers) => offers,
@@ -109,6 +139,9 @@ pub(crate) async fn apply_create_defaults(kv: &dyn AgentKv, owner: &str, setting
     let Some(host) = offers.iter().find(|o| o.runtime_id == HOST_RUNTIME_ID && !o.closed) else {
         return;
     };
+    if !host_by_default(host, container_available(kv).await) {
+        return;
+    }
     settings.runtimes.insert(
         HOST_RUNTIME_ID.to_string(),
         AgentRuntimeSettings {
@@ -241,8 +274,27 @@ pub(crate) async fn apply_update(
     Ok(changed)
 }
 
+/// How an Agent with `settings` runs its Agent Service: natively on the
+/// node of its default runtime when that is an open node runtime of the
+/// owner (the scheduler's `native_agent_node`), else in its container.
+pub(crate) fn agent_service_view(offers: &[NodeRuntimeOffer], settings: &AgentSettings) -> Value {
+    let default = settings.effective_default_runtime();
+    match settings.runtimes.get(default).map(|r| &r.target) {
+        Some(AgentRuntimeTarget::Node { node_id, .. })
+            if offers.iter().any(|o| &o.node_id == node_id && !o.closed) =>
+        {
+            json!({"mode": "native", "node_id": node_id})
+        }
+        _ => json!({"mode": "container"}),
+    }
+}
+
 /// The directory as the owner sees it for one Agent.
-pub(crate) fn directory_view(offers: &[NodeRuntimeOffer], settings: Option<&AgentSettings>) -> Value {
+pub(crate) fn directory_view(
+    offers: &[NodeRuntimeOffer],
+    settings: Option<&AgentSettings>,
+    container_available: bool,
+) -> Value {
     let mut out: Vec<Value> = offers
         .iter()
         .map(|o| {
@@ -257,6 +309,7 @@ pub(crate) fn directory_view(offers: &[NodeRuntimeOffer], settings: Option<&Agen
                 "computer_max": o.computer,
                 "workdir_roots": o.workdir_roots,
                 "closed": o.closed,
+                "os": o.os,
                 "enabled": chosen.is_some_and(|c| c.enabled),
                 "computer": chosen.map(|c| c.computer).unwrap_or_default(),
                 "baseline": chosen.and_then(|c| c.baseline).unwrap_or(RuntimeBaseline::Standard),
@@ -285,11 +338,21 @@ pub(crate) fn directory_view(offers: &[NodeRuntimeOffer], settings: Option<&Agen
             out.push(entry);
         }
     }
-    json!({
+    let host_default = offers
+        .iter()
+        .find(|o| o.runtime_id == HOST_RUNTIME_ID)
+        .is_some_and(|host| host_by_default(host, container_available));
+    let mut view = json!({
         "runtimes": out,
         "default_runtime_id": settings.map(|s| s.effective_default_runtime().to_string()),
         "container": CONTAINER_RUNTIME_ID,
-    })
+        "container_available": container_available,
+        "host_by_default": host_default,
+    });
+    if let Some(settings) = settings {
+        view["agent_service"] = agent_service_view(offers, settings);
+    }
+    view
 }
 
 pub(crate) fn settings_view(settings: &AgentSettings) -> BTreeMap<String, Value> {

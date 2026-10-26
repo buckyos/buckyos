@@ -338,6 +338,19 @@ Rust App Loader 需要支持：
    - data/cache/local 路径
 6. 将“开发者必须自行构建完整镜像”的要求，降级为可选高级用法。
 
+### 9.3.1 原生 Agent Service（`RuntimeType::NativeAgent`）
+
+zone owner 的 Agent 把默认 runtime 设为某个节点的 `host`（`AgentRuntimeTarget::Node`），且该节点的执行器开启并对 owner Agent 开放（`owner_agents`）时，这个 Agent 的 Agent Service 不在 `paios/aios` 容器里，而是 node_daemon 管理的原生进程。判断只有一处：`buckyos_api::native_agent_node`；调度器据此把实例放到那个节点（`node_affinity = node:<id>`，`need_container = false`），并在节点配置里写 `apps/<instance>/run_mode = "native"`（缺省 `container`，不写出）。默认 runtime 在 host 与 container 之间切换，`run_mode` 随之改写，AppLoader 以另一种方式重启 Agent Service。
+
+AppLoader 只看 `run_mode`，与节点是否支持容器无关：
+
+1. deploy：与容器 Agent 相同，安装 agent 包与 agent_skills 包。
+2. start：节点支持容器时先删掉该实例遗留的容器，再以 `build_runtime_env` 的同一套 env 起 `$BUCKYOS_ROOT/bin/opendan/opendan[.exe] --appid <id> --agent-bin <agent 包> --service-port <port>`（独立进程组）。路径类 env 换成宿主路径（数据 / 日志 / storage / pkg、`BUCKYOS_AGENT_SKILLS_PKG_DIR`），网关与 kevent 指向 `127.0.0.1`，`BUCKYOS_TOOL_ENDPOINT = http://127.0.0.1:3180`，另设 `OPENDAN_SERVICE_MODE = native`。
+3. pid 与进程启动时间记在 `$BUCKYOS_ROOT/local/app_native/<runtime_key>.json`；status 只在记录的进程仍是原来那个（pid 与启动时间都对得上）时算 `Started`，agent 包不在时是 `NotExist`；stop 结束进程树并删记录，容器 Agent 的 stop 也先做这一步（原生 → 容器切换）。
+4. 进程身份是 node_daemon 的身份：Desktop 上是登录用户，Linux OOD 上是 root（已知风险，所以 Linux 上新建 Agent 默认用容器）。opendan 的日志在 `$BUCKYOS_ROOT/logs/opendan/`。
+
+这种模式下 Loader 把内建的 `container` runtime 投影为不可用：Agent Service 所在的宿主环境不当作 `exec: native` 的 runtime，模型命令只经 Node Executor 以 `owner_agents` 派生的 profile 执行。
+
 ## 9.4 VM Runtime App
 
 Rust App Loader 需要为规划中的 VM Runtime 预留统一接口。
