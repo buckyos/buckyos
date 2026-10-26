@@ -28,6 +28,7 @@ import {
 } from "../aicc_test/acceptance/usage_audit.ts";
 import {
   applyProviderTokens,
+  instanceDriver,
   configuredProviderTokens,
   providerTokenDrivers,
   selectProviderTokens,
@@ -1488,7 +1489,7 @@ async function auditRunFinance(options: CliOptions, report: RunReport): Promise<
           taskIds: report.judge.task_ids,
         })
         : Promise.resolve([]),
-      aicc.call("models.list", {}),
+      aicc.call("provider.list", {}),
     ]);
     const eventById = new Map([...workflowEvents, ...judgeEvents].map((event) => [event.event_id, event]));
     const events = [...eventById.values()];
@@ -1515,11 +1516,11 @@ async function auditRunFinance(options: CliOptions, report: RunReport): Promise<
     for (const provider of providers) {
       if (!provider || typeof provider !== "object") continue;
       const value = provider as Record<string, unknown>;
-      if (typeof value.provider_instance_name === "string" &&
-        typeof value.provider_driver === "string") {
+      const driver = instanceDriver(value);
+      if (typeof value.provider_instance_name === "string" && driver) {
         inventoryMappings.push({
           provider_instance_name: value.provider_instance_name,
-          provider_driver: value.provider_driver,
+          provider_driver: driver,
         });
       }
     }
@@ -1714,47 +1715,10 @@ async function runMsgCenter(
     }
   }
 
-  let sessionCreationTail = Promise.resolve();
-  const createScenarioSession = async (scenario: Scenario): Promise<string> => {
-    const previous = sessionCreationTail;
-    let release!: () => void;
-    sessionCreationTail = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    await previous;
-    try {
-      const cleanTopic = `jarvis-dv:${report.run_id}:${scenario.id}:clean`;
-      const commandReplyTopic = `dm:${jarvisDid}`;
-      const cleanTrace = `${report.run_id}:msg-center:${scenario.id}:clean`;
-      const beforeClean = await listSession(msgCenter, userDid, commandReplyTopic);
-      await postMessage(
-        msgCenter,
-        makeMessage({ userDid, targetDid: jarvisDid, toSession: cleanTopic, prompt: "/clean", traceId: cleanTrace }),
-        cleanTrace,
-      );
-      const cleanReply = await waitForReply({
-        msgCenter,
-        userDid,
-        jarvisDid,
-        topic: commandReplyTopic,
-        afterSortKey: maxSortKey(beforeClean),
-        step: {
-          id: "clean",
-          prompt: "/clean",
-          expect: { textRequired: true },
-          maxWaitMs: 60_000,
-          review: [],
-        },
-        settleMs: 1_500,
-      });
-      const sessionId = cleanSessionId(cleanReply.items, jarvisDid);
-      createdSessionIds.add(cleanTopic);
-      createdSessionIds.add(commandReplyTopic);
-      createdSessionIds.add(sessionId);
-      return sessionId;
-    } finally {
-      release();
-    }
+  const createScenarioSession = (scenario: Scenario): string => {
+    const sessionId = `jarvis-dv:${report.run_id}:${scenario.id}`;
+    createdSessionIds.add(sessionId);
+    return sessionId;
   };
 
   const runScenario = async (scenario: Scenario): Promise<void> => {

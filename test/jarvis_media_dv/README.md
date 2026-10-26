@@ -127,7 +127,7 @@ API hash、2FA 密码和 StringSession 都是敏感信息，建议保存在权�
 - `linked`：历史生成物、连续附件、引用纠错、视频续写；
 - `matrix`：文本、图片、音频、视频之间完整的 4×4 转换矩阵。
 
-完整说明见 [`TEST_CASES.md`](./TEST_CASES.md)，素材说明见 [`assets/README.md`](./assets/README.md)。每个场景从 `/clean` 开始。
+完整说明见 [`TEST_CASES.md`](./TEST_CASES.md)，素材说明见 [`assets/README.md`](./assets/README.md)。msg-center 每个场景使用包含 run ID 和 scenario ID 的唯一命名会话，直接发送首条请求；不发送当前 OpenDAN 未注册的 `/clean`。Telegram 的准备流程仍使用 `/clean`，本轮未验证。
 
 主报告写入 `reports/jarvis_media_dv/<run_id>/summary.md`，按 transport 和场景汇总结果。场景内与 Jarvis 的详细对话默认不在主报告中展开，每行提供“查看对话”链接，指向 `conversations/<transport>-<scenario>.md`。同目录保留 `summary.json` 作为机器可读数据。单个 transport 初始化失败时会记录 `_environment` 失败并继续测试下一个 transport。
 
