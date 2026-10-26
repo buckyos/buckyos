@@ -1741,6 +1741,10 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     let node_id = node_id.unwrap_or(&default_node_id);
 
     info!("node_daemon start...");
+    #[cfg(target_os = "macos")]
+    if is_desktop && crate::node_executor_host::desktop_mode(true) {
+        crate::desktop_runtime::spawn_desktop_status_writer();
+    }
     let mut real_machine_config = BuckyOSMachineConfig::default();
     let machine_config = BuckyOSMachineConfig::load_machine_config();
     if machine_config.is_some() {
@@ -2219,7 +2223,17 @@ pub(crate) fn run(matches: ArgMatches) -> std::result::Result<(), String> {
         String::from("create tokio runtime failed!")
     })?;
 
-    runtime.block_on(async_main(matches))
+    runtime.block_on(async {
+        tokio::select! {
+            result = async_main(matches) => result,
+            signal = crate::desktop_runtime::termination_signal() => {
+                info!("node_daemon received {}, closing the node executor", signal);
+                crate::node_executor_host::shutdown_node_executor().await;
+                info!("node_daemon stopped; run items keep running");
+                std::process::exit(0);
+            }
+        }
+    })
 }
 
 #[cfg(test)]

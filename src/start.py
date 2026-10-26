@@ -21,7 +21,7 @@ build_dir = os.path.dirname(os.path.abspath(__file__))
 # after run build.py ,use this script to restart the dev buckyos system
 # 1) killall process
 # 2) update files to /opt/buckyos (--all to update all files to /opt/buckyos)
-# 3) start the system (run /opt/buckyos/bin/node_daemon/node_daemon)
+# 3) start the system (node_daemon; on macOS the BuckyOS Runtime LaunchAgent)
 
 
 def _command_names(command: str) -> list[str]:
@@ -53,7 +53,8 @@ def _print_help() -> int:
                 "BuckyOS development startup helper",
                 "",
                 "Stops existing BuckyOS processes, updates installed files by default,",
-                "and starts node_daemon from BUCKYOS_ROOT.",
+                "and starts node_daemon from BUCKYOS_ROOT (on macOS in a GUI session:",
+                "binds the root to you and starts the BuckyOS Runtime LaunchAgent).",
                 "",
                 "Usage:",
                 f"  uv run {script_path.relative_to(SCRIPT_DIR.parent)} [options]",
@@ -310,33 +311,71 @@ def _warn_missing_paios_images(buckyos_root: Path) -> None:
     print("!" * 72)
 
 
+MACOS_RUNTIME_EXECUTABLE = Path("bin", "node-daemon", "BuckyOS Runtime.app", "Contents", "MacOS", "node_daemon")
+
+
+def node_daemon_path(buckyos_root: Path) -> Path:
+    if platform.system() == "Darwin":
+        return buckyos_root / MACOS_RUNTIME_EXECUTABLE
+    suffix = ".exe" if platform.system() == "Windows" else ""
+    return buckyos_root / "bin" / "node-daemon" / f"node_daemon{suffix}"
+
+
+def _macos_gui_session() -> bool:
+    """A non-root user with an Aqua launchd domain (logged in at the console
+    or by fast user switching); sudo, SSH-only and CI root runs are not."""
+    if os.geteuid() == 0:
+        return False
+    return subprocess.run(
+        ["launchctl", "print", f"gui/{os.getuid()}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    ).returncode == 0
+
+
+def _start_macos_runtime(executable: Path, buckyos_root: Path) -> None:
+    """Bind the root to this user and start it as the user's LaunchAgent, the
+    same Runtime path a package install uses."""
+    user = os.environ.get("USER") or subprocess.run(
+        ["id", "-un"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    for command in (
+        ["service", "register", "--user", user, "--root", str(buckyos_root)],
+        ["service", "start", "--root", str(buckyos_root)],
+    ):
+        result = subprocess.run([str(executable), *command])
+        if result.returncode != 0:
+            raise RuntimeError(f"{executable.name} {' '.join(command[:2])} failed with return code {result.returncode}")
+    print(f"BuckyOS Runtime started as {user}'s LaunchAgent (com.buckyos.runtime)")
+
+
 def start_system():
     """Start BuckyOS system"""
     print("Starting BuckyOS system...")
-    buckyos_root = str(resolve_buckyos_root())
-    
-    # Start node_daemon
-    node_daemon_path = os.path.join(buckyos_root, "bin", "node-daemon", "node_daemon")
-    
-    if platform.system() == "Windows":
-        node_daemon_path += ".exe"
-    
-    if not os.path.exists(node_daemon_path):
-        print(f"Error: Cannot find node_daemon executable: {node_daemon_path}")
+    buckyos_root = resolve_buckyos_root()
+    executable = node_daemon_path(buckyos_root)
+
+    if not executable.exists():
+        print(f"Error: Cannot find node_daemon executable: {executable}")
         print(f"Please check if the installation directory is correct: {buckyos_root}")
         sys.exit(1)
-    
-    try:
-        # Start node_daemon in background with BUCKYOS_ROOT environment
-        env = os.environ.copy()
-        env['BUCKYOS_ROOT'] = buckyos_root
 
-        pid = _spawn_background([node_daemon_path, "--enable_active"], env)
-        print(f"BuckyOS system started: {node_daemon_path}")
-        print(f"node_daemon pid: {pid}")
+    try:
+        if platform.system() == "Darwin" and _macos_gui_session():
+            _start_macos_runtime(executable, buckyos_root)
+        else:
+            env = os.environ.copy()
+            env['BUCKYOS_ROOT'] = str(buckyos_root)
+            args = [str(executable), "--enable_active"]
+            if platform.system() == "Darwin":
+                print("Warning: not a macOS GUI session (root, sudo or SSH); starting node_daemon directly.")
+                print("Desktop control and the login item are unavailable for this run.")
+            pid = _spawn_background(args, env)
+            print(f"BuckyOS system started: {executable}")
+            print(f"node_daemon pid: {pid}")
         print("System is running in background...")
-        _warn_missing_paios_images(Path(buckyos_root))
-        
+        _warn_missing_paios_images(buckyos_root)
+
     except Exception as e:
         print(f"Failed to start system: {e}")
         sys.exit(1)

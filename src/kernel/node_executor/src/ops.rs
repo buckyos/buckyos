@@ -28,6 +28,13 @@ const PUSH_CHUNK: usize = 16 * 1024;
 const DEFAULT_LANG: &str = "en_US.UTF-8";
 #[cfg(all(unix, not(target_os = "macos")))]
 const DEFAULT_LANG: &str = "C.UTF-8";
+/// Tool PATH when the profile sets none; the node's `bin/agent-tools` is
+/// prepended separately. macOS covers both Homebrew prefixes, since a
+/// LaunchAgent never sees a login shell's PATH.
+#[cfg(target_os = "macos")]
+const DEFAULT_TOOL_PATH: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+#[cfg(all(unix, not(target_os = "macos")))]
+const DEFAULT_TOOL_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
 /// Host variables a Windows shell needs that a profile normally leaves out;
 /// the profile's own values win. Identity and control-side variables are
 /// never copied.
@@ -791,7 +798,7 @@ impl OpsManager {
         #[cfg(unix)]
         {
             env.entry("PATH".into())
-                .or_insert_with(|| "/usr/local/bin:/usr/bin:/bin".into());
+                .or_insert_with(|| DEFAULT_TOOL_PATH.into());
             env.entry("LANG".into()).or_insert_with(|| DEFAULT_LANG.into());
             if let Some((home, name)) = passwd_entry(profile.run_as.as_ref().map(|r| r.uid).unwrap_or(self.identity.uid)) {
                 env.entry("HOME".into()).or_insert(home);

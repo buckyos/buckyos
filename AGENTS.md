@@ -42,6 +42,8 @@ uv run check.py
 uv run stop.py
 ```
 
+macOS 上 node_daemon 是 `bin/node-daemon/BuckyOS Runtime.app` 的主程序（构建后由 `tools/macos_runtime_bundle.py assemble` 组装签名；直接跑 devkit `buckyos-build` 需补这一步），以绑定用户的 LaunchAgent `com.buckyos.runtime` 运行：`start.py` 在 GUI 会话中为当前用户注册并启动它，sudo/SSH 下退回直接启动且没有桌面能力；管理与诊断用 bundle 内 `node_daemon service status|start|stop|restart|autostart on|off`。
+
 `start.py` 默认要求 `rootfs/libexec/buckyos-tool/` 中已有构建生成的分发包。`--all` 与 `--reinstall` 走全新安装流程，清理范围由 `bucky_project.yaml` 的模块映射和 `clean_paths` 决定，不能当成普通重启；`data/home/`、`data/srv/`、`storage/` 属于保留数据。`start.py` 会调用 `stop.py`：后者按进程名停止服务、删除 `buckyos-app-*` 容器，并在非 Windows 平台停止 `devtest-*` 容器。
 
 `cyfs-gateway` 需要单独构建和安装；仅构建本仓库不会生成网关可执行文件。以下命令从 `buckyos/src/` 出发，在同级网关仓库中运行（Bash）：

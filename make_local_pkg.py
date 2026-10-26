@@ -41,6 +41,7 @@ PUBLISH_DIR = SRC_DIR / "publish"
 DESKTOP_APP_REPO_DIR = REPO_ROOT.parent / "BuckyOSApp"
 IGNORED_STAGE_NAMES = {".DS_Store", "__pycache__"}
 PROJECT_CONFIG_NAMES = ("bucky_project.yaml", "bucky_project.yml", "bucky_project.json")
+MACOS_RUNTIME_EXECUTABLE = Path("BuckyOS Runtime.app") / "Contents" / "MacOS" / "node_daemon"
 PLATFORM_PUBLISH_KEYS = (
     ("linux", "linux_pkg"),
     ("macos", "macos_pkg"),
@@ -688,9 +689,12 @@ def _infer_package_format_from_path(pkg_path: str) -> str | None:
 
 
 def _node_daemon_candidates(build_root: Path, target: TargetScript) -> list[Path]:
-    candidates = [build_root / "buckyos" / "bin" / "node-daemon" / "node_daemon"]
+    module_dir = build_root / "buckyos" / "bin" / "node-daemon"
+    if target.platform_key == "macos":
+        return [module_dir / MACOS_RUNTIME_EXECUTABLE]
+    candidates = [module_dir / "node_daemon"]
     if target.platform_key == "windows":
-        candidates.insert(0, build_root / "buckyos" / "bin" / "node-daemon" / "node_daemon.exe")
+        candidates.insert(0, module_dir / "node_daemon.exe")
     return candidates
 
 
@@ -1091,6 +1095,12 @@ def _prepare_common_build_root(
         timings_dir=_timings_subdir(timings_dir, target, "buckyos"),
     )
     _run_checked(buckyos_build_cmd, cwd=SRC_DIR, dry_run=dry_run)
+    if target.platform_key == "macos":
+        _run_checked(
+            [_python_executable(), str(SRC_DIR / "tools" / "macos_runtime_bundle.py"), "assemble"],
+            cwd=SRC_DIR,
+            dry_run=dry_run,
+        )
     _run_checked(
         ["buckyos-install", "--all", f"--target-rootfs={buckyos_root}", "--app=buckyos"],
         cwd=SRC_DIR,

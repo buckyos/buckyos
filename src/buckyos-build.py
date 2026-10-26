@@ -203,8 +203,19 @@ def main(argv: list[str] | None = None) -> int:
         _find_command("node") or "node",
         str(Path(__file__).resolve().parent / "rootfs" / "libexec" / "buckyos-tool" / "cli" / "launcher.mjs"),
     ])
-    return subprocess.run(
+    result = subprocess.run(
         [executable, *args],
+        env=env,
+    ).returncode
+    if result != 0 or standalone_daemon:
+        return result
+    return _assemble_macos_runtime(env)
+
+
+def _assemble_macos_runtime(env: dict[str, str]) -> int:
+    """Move a freshly built macOS node_daemon into the BuckyOS Runtime bundle."""
+    return subprocess.run(
+        [sys.executable, str(Path(__file__).resolve().parent / "tools" / "macos_runtime_bundle.py"), "assemble"],
         env=env,
     ).returncode
 

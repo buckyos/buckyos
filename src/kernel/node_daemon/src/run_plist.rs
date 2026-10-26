@@ -161,7 +161,13 @@ pub fn run_plist_path() -> PathBuf {
             .join(RUN_PLIST_FILE_NAME);
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        return buckyos_kit::get_buckyos_service_local_data_dir("node_daemon")
+            .join(RUN_PLIST_FILE_NAME);
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         PathBuf::from("/tmp/buckyos").join(RUN_PLIST_FILE_NAME)
     }
@@ -337,8 +343,11 @@ mod tests {
     }
 
     #[test]
-    fn run_plist_path_uses_tmp_buckyos_on_unix() {
+    fn run_plist_path_matches_node_control() {
         #[cfg(not(target_os = "windows"))]
-        assert_eq!(run_plist_path(), PathBuf::from("/tmp/buckyos/run.plist"));
+        assert_eq!(
+            run_plist_path(),
+            buckyos_api::node_control::run_plist_path(&buckyos_kit::get_buckyos_root_dir())
+        );
     }
 }

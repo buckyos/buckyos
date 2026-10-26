@@ -5,13 +5,13 @@
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use buckyos_api::{
     get_buckyos_api_runtime, load_current_rbac_config, node_config_key, node_settings_key,
-    validate_verify_hub_token_claims, AuthTarget, ComputerAccess, ExecutorConfig, ExecutorSettings,
+    validate_verify_hub_token_claims, AuthTarget, ComputerAccess, ExecutorCloseReason, ExecutorConfig, ExecutorSettings,
     NodeSettings, OwnerAgentsPolicy, TokenUse, NODE_EXECUTOR_SERVICE_PORT,
 };
 use cyfs_gateway_api::CONTROL_SERVER;
@@ -27,6 +27,27 @@ use crate::gateway_tunnel_probe::build_local_gateway_token;
 pub const EXECUTOR_ACL_FILE: &str = "node_executor_acl.json";
 const TICK: Duration = Duration::from_secs(1);
 const CONFIG_REFRESH: Duration = Duration::from_secs(5);
+const SHUTDOWN_LIMIT: Duration = Duration::from_secs(20);
+
+/// The open executor, for the controller's own exit path.
+static OPEN_EXECUTOR: OnceLock<NodeExecutor> = OnceLock::new();
+
+/// Bounded close on a controlled node_daemon exit (SIGTERM from launchd or
+/// systemd): stop admitting, cancel and wait for active commands. Run items
+/// are not touched; a crash skips this and the ledger recovers as before.
+pub async fn shutdown_node_executor() {
+    let Some(executor) = OPEN_EXECUTOR.get() else {
+        return;
+    };
+    let close = executor.shutdown(ExecutorCloseReason::Shutdown, "node_daemon stopping");
+    if tokio::time::timeout(SHUTDOWN_LIMIT, close).await.is_err() {
+        warn!(
+            "node executor: {} operation(s) still active after {:?}",
+            executor.active_operations(),
+            SHUTDOWN_LIMIT
+        );
+    }
+}
 
 struct RuntimeVerifier;
 
@@ -141,8 +162,9 @@ async fn load_executor_config(node_host_name: &str) -> Result<Option<ExecutorCon
 /// logged-in user in that user's interactive session, so it executes as
 /// that user and can drive the desktop. Decided from the process, not the
 /// installer: the Desktop build, a platform with a desktop Driver, and not
-/// root (a root LaunchDaemon on macOS stays form A-system).
-fn desktop_mode(desktop_build: bool) -> bool {
+/// root (on macOS the user LaunchAgent of `BuckyOS Runtime.app`; a root
+/// process stays form A-system).
+pub(crate) fn desktop_mode(desktop_build: bool) -> bool {
     if !desktop_build || !computer_driver::SUPPORTED {
         return false;
     }
@@ -326,6 +348,7 @@ pub fn spawn_node_executor(node_host_name: String, node_did: String, desktop_bui
                                         exec.store_id(),
                                         exec.host_capabilities()
                                     );
+                                    let _ = OPEN_EXECUTOR.set(exec.clone());
                                     executor = Some(exec);
                                 }
                                 Err(err) => error!("node executor cannot open its ledger: {err}"),

@@ -55,6 +55,23 @@ class BuckyosBuildEntrypointTests(unittest.TestCase):
             ])},
         )
 
+    def test_successful_build_assembles_the_macos_runtime_bundle(self) -> None:
+        module = _load_build_script()
+        with (
+            patch.object(module, "_find_command", return_value="/runtime/buckyos-build"),
+            patch.object(module, "_prepare_sdk_tool_distribution", return_value=0),
+            patch.object(module, "_prepare_agent_tools", return_value=0),
+            patch.object(module.subprocess, "run", return_value=module.subprocess.CompletedProcess([], 0)) as run,
+        ):
+            self.assertEqual(module.main(["-s", "node_daemon"]), 0)
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args_list[0].args[0], ["/runtime/buckyos-build", "-s", "node_daemon"])
+        self.assertEqual(run.call_args_list[1].args[0], [
+            module.sys.executable,
+            str(SCRIPT_PATH.resolve().parent / "tools" / "macos_runtime_bundle.py"),
+            "assemble",
+        ])
+
     def test_agent_tools_are_copied_with_the_host_sdk_import(self) -> None:
         module = _load_build_script()
         with tempfile.TemporaryDirectory() as temporary:

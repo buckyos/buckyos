@@ -148,7 +148,31 @@ def kill_process(name):
     else:
         print(f"{name} killed")
 
+MACOS_RUNTIME_LABEL = "com.buckyos.runtime"
+
+
+def stop_macos_runtime_agent():
+    """Unload the bound user's LaunchAgent first, or KeepAlive restarts
+    node_daemon as soon as it is killed. The login item stays installed."""
+    if system != "Darwin":
+        return
+    root = Path(os.environ.get("BUCKYOS_ROOT") or "/opt/buckyos")
+    uid = os.getuid()
+    try:
+        binding = json.loads((root / "etc" / "desktop_runtime.json").read_text(encoding="utf-8"))
+        uid = int(binding["uid"])
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    target = f"gui/{uid}/{MACOS_RUNTIME_LABEL}"
+    result = subprocess.run(["launchctl", "bootout", target], capture_output=True, text=True)
+    if result.returncode == 0:
+        print(f"{target} booted out")
+    else:
+        print(f"{target} not loaded")
+
+
 def kill_all():
+    stop_macos_runtime_agent()
     kill_process("node-daemon")
     kill_process("node_daemon")
     kill_process("scheduler")

@@ -131,6 +131,16 @@ void bucky_desktop_probe(BuckyDesktop *out) {
 @implementation BuckyCapture
 @end
 
+void bucky_desktop_request_access(uint32_t *capture, uint32_t *input) {
+    @autoreleasepool {
+        *capture = CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess();
+        NSDictionary *options = @{(__bridge NSString *)kAXTrustedCheckOptionPrompt: @YES};
+        BOOL trusted = AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options);
+        BOOL post = CGPreflightPostEventAccess() || CGRequestPostEventAccess();
+        *input = trusted && post;
+    }
+}
+
 int bucky_desktop_capture(uint32_t displayID, uint32_t width, uint32_t height,
                           uint64_t timeoutMs, unsigned char **bytes, size_t *length) {
     @autoreleasepool {

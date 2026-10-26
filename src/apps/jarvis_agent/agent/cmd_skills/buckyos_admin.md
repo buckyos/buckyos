@@ -46,6 +46,13 @@ buckyos system info                                 # BuckyOS version, build_ver
   give the owner the exact host commands instead of guessing results.
 - Host-side `uv run src/check.py` (repo) checks processes and ports. "Activation Ready" means waiting for activation,
   not running; "Running" with exit 0 can still come with an error-heavy log warning below it.
+- macOS Desktop nodes run node_daemon as `$BUCKYOS_ROOT/bin/node-daemon/BuckyOS Runtime.app`, the LaunchAgent
+  `com.buckyos.runtime` of the one OS user in `etc/desktop_runtime.json`. Host command for the owner:
+  `"$BUCKYOS_ROOT/bin/node-daemon/BuckyOS Runtime.app/Contents/MacOS/node_daemon" service status` (bound user,
+  launchd state, login autostart, Login Items disabled, the Runtime's own GUI/permission report); `service
+  start|stop|restart|autostart on|off` controls it. Not running before the user logs in is expected; launchd output
+  is in `logs/node_daemon/launchd.err.log`. Screen Recording and Accessibility are granted to "BuckyOS Runtime" (not
+  the BuckyOS App or Terminal); Screen Recording applies after a Runtime restart.
 
 #### Find the real commands
 - Lightweight Linux/macOS/Windows executors: Settings → Cluster Manager → Nodes/Devices issues an access URL;
@@ -157,13 +164,14 @@ buckyos system info                                 # BuckyOS version, build_ver
   `etc/node_executor_acl.json` lists the allowed devices, node_daemon logs `node executor opened, store_id=…`, the
   executor listens on `127.0.0.1:3184`, Agents enter through the gateway SOCKS entry `:3185`. Its ledger is
   `local/node_daemon/executor/`; a reinstall (`start.py --all`/`--reinstall`) clears `local/`, gives a new store_id, and
-  earlier runs then report StoreMismatch instead of resuming. Command/file execution requires a Linux or macOS
-  node_daemon running as root, or a Windows node_daemon in the user's desktop session; on macOS give `run_as` a
-  dedicated non-admin account (no no_new_privs there, and uid 65534 has no account). Windows cannot switch users:
-  operations run as the desktop user with all of that user's rights, the shell is PowerShell, and only trusted
-  Agents should get a Windows profile. A profile whose `run_as` does not fit the host (missing on Unix, present on
-  Windows) and non-root Unix hosts expose only control capabilities (`open_stream`, `describe`, `query`, `cancel`);
-  execution, file operations, and workdir resolution return `Capability`.
+  earlier runs then report StoreMismatch instead of resuming. Command/file execution: a root Linux/macOS node_daemon
+  (A-system) switches to the profile's `run_as`; on macOS give it a dedicated non-admin account (no no_new_privs
+  there, and uid 65534 has no account). A desktop node_daemon (Windows desktop session, macOS `BuckyOS Runtime`
+  LaunchAgent) cannot switch users: profiles omit `run_as`, operations run as the desktop user with all of that
+  user's rights, the Windows shell is PowerShell, and only trusted Agents should get such a profile. A profile whose
+  `run_as` does not fit the node (missing on a root node, present on a desktop node) and a non-root Unix node_daemon
+  outside desktop mode expose only control capabilities (`open_stream`, `describe`, `query`, `cancel`); execution,
+  file operations, and workdir resolution return `Capability`.
 - The rest goes through raw `system-config get|list|set|set-file|append`. Settings (user-adjustable, fine to edit):
   `users/<u>/apps/<app>/settings`, `users/<u>/agents/<agent>/{settings,profile}`, `services/<svc>/settings`,
   `users/<u>/desktop/<session>/<state>`. Config (derived by the scheduler, rewritten or broken by hand edits):

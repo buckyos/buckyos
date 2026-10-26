@@ -201,16 +201,25 @@ def collect_processes() -> list[ProcessInfo]:
             processes.append(ProcessInfo(pid=pid, command=raw_name, args=raw_command_line or raw_name))
         return processes
 
-    result = run_command(["ps", "-axo", "pid=,stat=,comm=,args="])
+    # One trailing free-text column per ps call: macOS executable paths may
+    # contain spaces (bin/node-daemon/BuckyOS Runtime.app/...).
+    result = run_command(["ps", "-axo", "pid=,stat=,comm="])
     if result is None or result.returncode != 0:
         return []
+    args_result = run_command(["ps", "-axo", "pid=,args="])
+    args_by_pid: dict[int, str] = {}
+    if args_result is not None and args_result.returncode == 0:
+        for raw_line in args_result.stdout.splitlines():
+            parts = raw_line.strip().split(None, 1)
+            if len(parts) == 2 and parts[0].isdigit():
+                args_by_pid[int(parts[0])] = parts[1]
 
     processes: list[ProcessInfo] = []
     for raw_line in result.stdout.splitlines():
         line = raw_line.strip()
         if not line:
             continue
-        parts = line.split(None, 3)
+        parts = line.split(None, 2)
         if len(parts) < 3 or parts[1].startswith("Z"):
             continue
         try:
@@ -218,7 +227,7 @@ def collect_processes() -> list[ProcessInfo]:
         except ValueError:
             continue
         command = parts[2]
-        args = parts[3] if len(parts) > 3 else command
+        args = args_by_pid.get(pid) or command
         processes.append(ProcessInfo(pid=pid, command=command, args=args))
     return processes
 

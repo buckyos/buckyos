@@ -353,6 +353,7 @@ jobs:
 
           pushd src
           buckyos-build ${{ matrix.build_target_arg }}
+          "$PYTHON_BIN" tools/macos_runtime_bundle.py assemble
           buckyos-install --all
           sudo HOME="$HOME" PATH="$PATH" BUCKYOS_ROOT="$BUCKYOS_ROOT" "$PYTHON_BIN" start.py --all
           wait_for_port "node gateway" 127.0.0.1 3180

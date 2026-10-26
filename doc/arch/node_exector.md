@@ -121,7 +121,7 @@
 | 模式 | node_daemon 运行方式 | identity_mode | profile `run_as` | 桌面能力 | 适用 |
 | --- | --- | --- | --- | --- | --- |
 | A-system | 系统服务（root / LocalSystem），开机即起 | SwitchUser | 必填，worker 降权到专用账号（§7.5） | 无（Linux 服务器没有 GUI） | OOD、Node 服务器、Linux |
-| A-desktop | 随用户登录启动，运行在该用户的交互会话中 | CurrentUser | 必须省略，以登录用户身份执行 | 注入与 agent-daemon 共用的桌面 Driver（macOS 14+、Windows），ComputerInspect/Observe/Act 随 Driver readiness 开放 | Desktop 版：Windows 现状即如此；macOS 安装包改为 LaunchAgent 后同样生效，改之前 root LaunchDaemon 按 A-system 处理 |
+| A-desktop | 随用户登录启动，运行在该用户的交互会话中 | CurrentUser | 必须省略，以登录用户身份执行 | 注入与 agent-daemon 共用的桌面 Driver（macOS 14+、Windows），ComputerInspect/Observe/Act 随 Driver readiness 开放 | Desktop 版：Windows 现状即如此；macOS 上 node_daemon 是 `BuckyOS Runtime.app` 的主程序，作为绑定用户的 LaunchAgent（`gui/<uid>`、Aqua）运行（§17.10）；以 root 运行的 node_daemon 仍按 A-system 处理 |
 
 模式由 node_daemon 启动时按“进程是否 root / 是否位于交互会话”判定并写入 describe 结果，不按安装包类型猜。A-desktop 的权限边界与 §16 对 Windows 的说明一致：Agent 拥有该桌面用户的全部权限，roots 只约束 cwd 与内置文件工具。Desktop 版 owner 的电脑因此用 A-desktop 作为 Agent 的 `host` 目标，不要求再安装独立 agent-daemon；形态 B 保留给不装节点的设备。同一台电脑上 A-desktop 与形态 B 并存时，桌面输入协调锁按用户会话共用，互斥而不是各自一份。
 
@@ -239,7 +239,7 @@ Scheduler 是正常体系的最高配置来源；Owner 是正常体系之外的�
 - 缺省关闭。开启要求至少一个完整 profile 或开放的 `owner_agents`；首期 `principals` 逐个匹配权威 Agent DID，不接受通配或 User/普通 App 直登。
 - `run_as`、roots、env 是管理员授权上限，请求不能自选 UID、shell、结果目录或扩大 roots。
 - 形态 A 的 worker UID 非 0 且不同于 daemon；非 root daemon 返回 Capability，不以同 UID 执行。形态 C 的 `run_as` 无意义，由宿主 App 权限决定。
-- A-desktop 模式（§4.2；Windows 现状，macOS 随安装包切换）下 node_daemon 在用户桌面会话中运行（不是系统服务，否则无法使用桌面软件），不能切换用户：profile 必须省略 `run_as`，操作以 node_daemon 所属的桌面用户身份执行。A-system 下省略 `run_as`、A-desktop 下设置 `run_as` 的 profile 都只授予控制能力，执行类请求返回 Capability。
+- A-desktop 模式（§4.2；Windows 与 macOS Desktop 安装形态）下 node_daemon 在用户桌面会话中运行（不是系统服务，否则无法使用桌面软件），不能切换用户：profile 必须省略 `run_as`，操作以 node_daemon 所属的桌面用户身份执行。A-system 下省略 `run_as`、A-desktop 下设置 `run_as` 的 profile 都只授予控制能力，执行类请求返回 Capability。
 - roots 约束 cwd 和内置文件工具，**不约束 shell 内任意程序的 I/O**；OS 账号权限才是实际边界。不把 roots 描述成 sandbox。
 - 未知字段、空白名单、非法 uid/gid 均拒绝启用；未实现 worker 的平台仅开放控制能力，执行请求返回 Capability；旧 NodeConfig 无该段时行为不变。
 
@@ -721,7 +721,7 @@ cargo check --workspace
 - 命令与文件执行支持 Linux、macOS 的 root daemon 和 Windows 桌面会话中的 daemon；非 root 的 Unix daemon 保留 `open_stream` / `describe` / `query` / `cancel` 控制能力，执行、文件操作及带 workdir 的 describe 返回 Capability。降权、进程组/Job Object 与句柄路径校验（Linux `/proc/self/fd`，macOS `F_GETPATH`，Windows `GetFinalPathNameByHandleW`）按目标平台隔离编译。
 - Windows 不切换用户：Agent 拥有 node_daemon 所属桌面用户的全部权限（含该用户能访问的所有文件、凭据和已登录的桌面软件），roots 只约束 cwd 与内置文件工具。只应把 Windows 节点的 profile 授权给完全受信任的 Agent。
 - Windows 的进程在 spawn 之后、写入脚本之前才加入 Job Object；加入失败时结束该进程并报错。PowerShell 包装脚本设置 `$ErrorActionPreference = 'Stop'`，非终止错误也会中断脚本并以 1 退出。
-- macOS 没有 no_new_privs：降权后的 shell 仍可执行 setuid 程序（如 sudo），run_as 应使用不在 admin 组、没有 sudo 权限的专用账号。macOS 上 uid/gid 65534 没有对应账号，`nobody` 是 4294967294（-2）。TCC 保护的目录（Desktop、Documents、Downloads 等）不受 Unix 权限约束，作为 roots 时可能需要给 node_daemon 授予“完全磁盘访问权限”，否则访问被拒（Forbidden）；此项未在真机验证。
+- macOS 没有 no_new_privs：降权后的 shell 仍可执行 setuid 程序（如 sudo），run_as 应使用不在 admin 组、没有 sudo 权限的专用账号。macOS 上 uid/gid 65534 没有对应账号，`nobody` 是 4294967294（-2）。TCC 保护的目录（Desktop、Documents、Downloads 等）不受 Unix 权限约束，作为 roots 时可能需要给 node_daemon（macOS Desktop 为 `BuckyOS Runtime`）授予“完全磁盘访问权限”，否则访问被拒（Forbidden）；此项未在真机验证，也不是截图/点击的前置权限。
 - 恢复端点的结果真实性在 D-10 定稿前只依赖 HTTPS。
 
 ---
@@ -844,3 +844,16 @@ DV 中发现并已修正：SOCKS hook 对 IP 目标只有 `REQ.target.type = "ip
 - 已验证（Windows）：`cargo test -p node_executor`（单测 3、platform 3、windows 3）、`cargo test -p buckyos-api node_executor`、`cargo test -p scheduler executor_auth`、`cargo check -p node_daemon` 通过；变异：把 Job 终止改为只杀 shell，cancel 用例因孙进程写出标记文件而失败。`cargo test -p agent_tool --lib` 中新增与 runtime 用例通过，agent_memory/read_tool 的 25 个用例在 Windows 上因文件被占用（拒绝访问）失败，与本次改动无关。
 - 已验证（Linux，WSL Debian root）：`cargo test -p node_executor -- --test-threads=1` 全部通过（单测 4、端到端 8、platform 3、remote_node 1）；`cargo check -p node_daemon` 通过；agent_tool lib 除缺少 `rg` 的 3 个 grep_tool 用例外全部通过。
 - 未验证：Windows DV（真实 Zone 中 Windows 节点经网关 SOCKS 入口执行）；由 Linux 控制侧驱动 Windows 节点的端到端链路。
+
+### 17.10 macOS Desktop Runtime（2026-10-25）
+
+任务书：`notepads/macos-desktop-install-runtime-todo.md`。范围是 macOS A-desktop 的安装与运行形态，Executor 协议、账本与 Driver 不变。
+
+- 产物：macOS 已安装的唯一 node_daemon 是 `bin/node-daemon/BuckyOS Runtime.app/Contents/MacOS/node_daemon`（Bundle ID 与 launchd label 均为 `com.buckyos.runtime`，`LSUIElement`，最低 macOS 14.0）。模板在 `src/kernel/node_daemon/macos/`，`src/tools/macos_runtime_bundle.py assemble` 把 Cargo 输出移入 bundle、签名（`BUCKYOS_MACOS_CODESIGN_IDENTITY`，缺省 ad-hoc）并校验；`buckyos-build.py`、`make_local_pkg.py` prepare 与 CI 在构建后调用。worker 子命令仍由 `current_exe()` 指向同一 bundle 二进制。
+- 归属与启动：`etc/desktop_runtime.json` 记录绑定的 OS 用户；安装器以 root 运行 `node_daemon service register --user <u>`，把 root 交给该用户（bundle 保持 root 所有，root 留下的 Executor 账本改名搁置而不迁移），并写 `~/Library/LaunchAgents/com.buckyos.runtime.plist`（`LimitLoadToSessionType=Aqua`、`--enable_active --desktop_daemon`、显式 `BUCKYOS_ROOT`/`HOME`/服务 PATH、日志在 `logs/node_daemon/`）。控制与状态统一在 `buckyos-api` 的 `node_control`（BuckyOSApp 为 vendored 副本）：启动 bootstrap/kickstart `gui/<uid>`，停止 bootout，登录自启 = LaunchAgents 目录里有无这份 plist，从不 `launchctl disable`。
+- 实例边界：node_daemon 启动时对 `local/node_daemon/node_daemon.lock` 加 flock，绑定 uid 与进程 euid 不符即退出；`run.plist` 改到 `local/node_daemon/run.plist`；macOS 黑盒停止只处理绑定用户、可执行文件位于该 root 下的进程。
+- 退出：SIGTERM（bootout、`kickstart -k`）先 `NodeExecutor::shutdown()`（至多 20 s，plist `ExitTimeOut=30`），再退出；run item 不随之停止，崩溃仍走账本恢复。
+- 环境：Executor 在 profile 未设 PATH 时的 macOS 默认值加入 `/opt/homebrew/bin` 与 sbin 目录；daemon 的服务 PATH 由 LaunchAgent 单独给出。
+- 权限：Runtime 的 app 入口（Finder 打开或 `open -n … --args --request_permissions`）由 Runtime 进程自己请求屏幕录制与辅助功能；常驻进程每 30 s 把 Driver readiness 写到 `local/node_daemon/desktop_status.json`，供 `node_control` check 与托盘呈现。
+- 已验证（macOS 15.8.1 arm64，ad-hoc 签名、开发构建）：bundle 组装/签名/复制后校验；含空格的自定义 root 下直接运行 bundle 内主程序，根路径发现、单实例锁、绑定其他 uid 时拒绝、SIGTERM 有界退出均符合预期；Runtime 报告 uid 501、GUI audit session 与两项权限缺失；未绑定时 `service start` 拒绝；`stop_osx.sh` 只停该 root 的进程。
+- 未验证：真实 LaunchAgent 的注册/登录启动/注销/Login Items 禁用、正式签名与 TCC 归属及升级连续性、本地网络权限、pkg 安装与覆盖升级、Intel 与 macOS 14、GUI DV。

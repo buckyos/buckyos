@@ -72,30 +72,36 @@
 // enum NodeHostControlModel
 // - ServiceManager
 //   node_daemon 已注册为 Host OS 服务。
-//   - macOS: launchd / LaunchDaemon
+//   - macOS: launchd 用户 LaunchAgent（gui/<uid> domain）
 //   - Linux: systemd
 //   - Windows: 如果未来 installer 改为 Windows Service，也归入此类
 // - ScheduledLauncher
 //   通过定时/计划任务周期性拉起 node_daemon。当前 Windows 安装形态按这个模型处理。
 // - DirectProcess
-//   开发模式或临时安装模式，直接 spawn `$BUCKYOS_ROOT/bin/node-daemon/node_daemon`。
+//   开发模式或临时安装模式，直接 spawn `node_daemon_binary_path()`。macOS 上只有显式
+//   `DirectProcessOnly`（前台调试）才走这里，未绑定用户的安装不会退回直接 spawn。
 // - ContainerizedRuntime
 //   当前设备以容器编排方式运行 BuckyOS Runtime；停止时必须纳入容器选择器。
 // - Unknown
 //   无法确认安装形态，只允许 check 和显式 blackbox stop。
 //
 // 当前安装包实现映射：
-// - macOS:
-//   - 使用 system LaunchDaemon，不是 LaunchAgent。
-//   - plist: `/Library/LaunchDaemons/buckyos.service.plist`
-//   - label: `buckyos.service`
-//   - start: `launchctl bootstrap system <plist>` 后 `launchctl kickstart -k system/buckyos.service`
-//   - stop/uninstall: `launchctl disable system/buckyos.service` + `launchctl bootout system <plist>`
-//   - node_daemon 参数：`${BUCKYOS_ROOT}/bin/node-daemon/node_daemon --enable_active`
-//   - env: `BUCKYOS_ROOT`、`HOME=/var/root`、固定 PATH、`RUST_BACKTRACE=1`
-//   - stdout/stderr: `/var/log/buckyos.service.out.log`、`/var/log/buckyos.service.err.log`
-//   - plist 设置 `RunAtLoad=true`、`KeepAlive=true`、`AbandonProcessGroup=true`
-//   - preinstall 会检查 Docker CLI 和 root/LaunchDaemon 上下文中的 `docker info`。
+// - macOS（Desktop，A-desktop）:
+//   - node_daemon 是 `${BUCKYOS_ROOT}/bin/node-daemon/BuckyOS Runtime.app` 的主可执行文件，
+//     Bundle ID / launchd label 都是 `com.buckyos.runtime`；已安装产物只有 bundle 内这一份。
+//   - 一个安装实例绑定一个 OS 用户：`${BUCKYOS_ROOT}/etc/desktop_runtime.json`
+//     记录 `{user, uid, home}`，installer、App、node_control 都只读这一份。
+//   - 用户 LaunchAgent：`<home>/Library/LaunchAgents/com.buckyos.runtime.plist`，
+//     `LimitLoadToSessionType=Aqua`，参数 `--enable_active --desktop_daemon`，
+//     env 为 `BUCKYOS_ROOT`、绑定用户 `HOME`、服务 PATH，日志写 `logs/node_daemon/launchd.*.log`。
+//     `RunAtLoad`/`KeepAlive`/`AbandonProcessGroup` 为 true，`ExitTimeOut=30` 留给 Executor 有界退出。
+//   - 登录自启偏好 = LaunchAgents 目录里有没有这份 plist；关闭自启后手动启动从
+//     `local/node_daemon/com.buckyos.runtime.plist` bootstrap。node_control 从不 `launchctl disable`，
+//     看到 disabled 只可能来自用户/系统设置（Login Items），如实报告，不反复 enable。
+//   - start: 写 plist → 未加载则 `launchctl bootstrap gui/<uid> <plist>` → `kickstart gui/<uid>/<label>`。
+//   - stop: `launchctl bootout gui/<uid>/<label>`（不改自启偏好），再按请求范围做实例内黑盒清理。
+//   - 实例内进程：uid 为绑定用户且可执行文件位于 `${BUCKYOS_ROOT}` 下；不按全机进程名 kill。
+//   - 旧版 `/Library/LaunchDaemons/buckyos.service.plist` 只作冲突检测与清理对象，不作运行入口。
 // - Linux/Debian:
 //   - 使用 systemd service。
 //   - unit: `/etc/systemd/system/buckyos.service`
@@ -304,6 +310,7 @@
 // 当前版本 check 流程：
 // 1. 解析 BUCKYOS_ROOT。
 //    - 优先使用进程环境变量 `BUCKYOS_ROOT`。
+//    - macOS 其次读当前用户 LaunchAgent plist 里的 `BUCKYOS_ROOT`（自定义根）。
 //    - macOS/Linux 默认 `/opt/buckyos`。
 //    - Windows 依次 fallback 到 `%APPDATA%\buckyos`、`%USERPROFILE%\buckyos`、`C:\buckyos`。
 // 2. 检查 `$BUCKYOS_ROOT/etc/node_identity.json` 判断 activated / activation pending。
@@ -318,7 +325,9 @@
 //    - cyfs_gateway 缺失且 80/3180 不可达时，检查 cyfs_gateway binary 并给出 build/install 建议。
 //    - 分析常见日志信号，例如 churn、permission denied、service login failed。
 // 5. 同时检查 HostControlState：
-//    - macOS: plist 存在、`launchctl print system/buckyos.service`、service 日志。
+//    - macOS: 用户绑定、`launchctl print gui/<uid>/com.buckyos.runtime`、登录自启、Login Items
+//      禁用状态、旧 LaunchDaemon 残留，以及 Runtime 写出的 `local/node_daemon/desktop_status.json`
+//      （GUI 会话与截图/输入权限，只能由 Runtime 进程自己探测）。
 //    - Linux: unit 文件存在、`systemctl is-enabled/is-active/status buckyos.service`。
 //    - Windows: 计划任务存在、Run 启动项存在、loader 脚本存在、注册表 root 存在。
 //
@@ -407,12 +416,12 @@
 // - Verify
 //
 // 当前平台 start 细化：
-// - macOS ServiceManager:
-//   - 校验 `/Library/LaunchDaemons/buckyos.service.plist`。
-//   - `launchctl enable system/buckyos.service`。
-//   - `launchctl bootstrap system <plist>`；若已 bootstrap，先 `bootout` 再 bootstrap。
-//   - `launchctl kickstart -k system/buckyos.service`。
-//   - 等待 `${BUCKYOS_ROOT}/bin/node-daemon/node_daemon --enable_active` 进程和 3182/3180。
+// - macOS ServiceManager（用户 LaunchAgent）:
+//   - 读取 `etc/desktop_runtime.json`；未绑定用户、绑定其他用户、Login Items 已禁用、
+//     旧 LaunchDaemon 残留都拒绝启动并说明原因，不退回 DirectProcess。
+//   - 重写 plist（自启开时在 LaunchAgents，关时在 `local/node_daemon/`）。
+//   - 未加载则 `launchctl bootstrap gui/<uid> <plist>`，随后 `launchctl kickstart gui/<uid>/<label>`。
+//   - 不 `enable`/`disable`，不改登录自启偏好。
 // - Linux ServiceManager:
 //   - 校验 `/etc/systemd/system/buckyos.service`。
 //   - `systemctl daemon-reload`。
@@ -501,7 +510,8 @@
 // Desktop 安装/卸载/升级默认停止逻辑：
 // 1. DetectHostControl。
 // 2. 先关闭 Host OS 自动拉起机制：
-//    - macOS: `launchctl disable system/buckyos.service` + `launchctl bootout system <plist>`。
+//    - macOS: `launchctl bootout gui/<uid>/com.buckyos.runtime`；旧版残留的
+//      `system/buckyos.service` 也一并 bootout。
 //    - Linux: `systemctl stop buckyos.service`。
 //    - Windows: 删除 `BuckyOSNodeDaemonKeepAlive` 计划任务和 `BuckyOSDaemon` Run 启动项。
 // 3. 如果 node_daemon 控制面可达，先请求 graceful stop local runtime。
@@ -537,8 +547,8 @@
 // 当前实现差异：
 // - `src/stop.py` 会杀 `workflow`，但 Windows 安装包携带的 `src/rootfs/bin/stop.ps1` 当前没有
 //   `workflow`。node_control 落地时应统一进程清单，或把平台差异显式写进 capability。
-// - macOS 安装脚本只通过 LaunchDaemon 停 node_daemon，不自动清理 run item；这符合
-//   node_daemon crash 不杀 workload 的目标，但升级/卸载 stop 不能只包装现有脚本。
+// - macOS `bootout` 只停 controller（`AbandonProcessGroup=true`），不自动清理 run item；这符合
+//   node_daemon crash 不杀 workload 的目标，升级/卸载仍需实例内黑盒清理。
 // - Linux systemd unit 已显式使用 `KillMode=process`，与 macOS `AbandonProcessGroup=true`
 //   一样只让 Host OS 管理 node_daemon 本身；升级/卸载需要完整停止 Runtime 时仍不能只包装
 //   `systemctl stop buckyos.service`，必须走黑盒进程/容器清理。
@@ -754,6 +764,12 @@ pub struct NodeHostControlState {
     pub evidence: Vec<String>,
     pub service_enabled: Option<bool>,
     pub service_active: Option<bool>,
+    /// macOS: the bound user's LaunchAgent; `None` when the root is not bound.
+    pub launch_agent: Option<MacLaunchAgentState>,
+    /// macOS: the Runtime bundle is installed but no OS user owns it yet.
+    pub pending_user_binding: bool,
+    /// macOS: a pre-LaunchAgent system job is still registered (conflict, not an entry).
+    pub legacy_service: Option<PathBuf>,
 }
 
 // -----------------------------------------------------------------------------
@@ -1094,16 +1110,20 @@ impl RunPlistSnapshot {
     }
 }
 
-pub fn run_plist_path() -> PathBuf {
+/// macOS keeps the run list inside the installation it belongs to (one bound
+/// user per root); other platforms keep the historical shared location.
+pub fn run_plist_path(buckyos_root: &Path) -> PathBuf {
     if cfg!(target_os = "windows") {
         std::env::temp_dir().join("buckyos").join("run.plist")
+    } else if cfg!(target_os = "macos") {
+        node_daemon_local_dir(buckyos_root).join("run.plist")
     } else {
         PathBuf::from("/tmp/buckyos/run.plist")
     }
 }
 
-pub fn read_run_plist() -> Option<RunPlistSnapshot> {
-    let path = run_plist_path();
+pub fn read_run_plist(buckyos_root: &Path) -> Option<RunPlistSnapshot> {
+    let path = run_plist_path(buckyos_root);
     let content = std::fs::read_to_string(&path).ok()?;
     let raw: RunPlistRaw = serde_json::from_str(&content).ok()?;
     let items = raw
@@ -1129,6 +1149,15 @@ pub fn resolve_buckyos_root() -> PathBuf {
             return PathBuf::from(trimmed);
         }
     }
+    if NodePlatform::current() == NodePlatform::MacOS {
+        if let Some(root) = current_user_home()
+            .map(|home| macos_launch_agent_plist_path(&home))
+            .and_then(|plist| std::fs::read_to_string(plist).ok())
+            .and_then(|text| plist_env_value(&text, "BUCKYOS_ROOT"))
+        {
+            return PathBuf::from(root);
+        }
+    }
     match NodePlatform::current() {
         NodePlatform::Windows => {
             if let Ok(appdata) = std::env::var("APPDATA") {
@@ -1151,8 +1180,704 @@ pub fn node_daemon_binary_path(buckyos_root: &Path) -> PathBuf {
     let dir = buckyos_root.join("bin").join("node-daemon");
     if cfg!(target_os = "windows") {
         dir.join("node_daemon.exe")
+    } else if cfg!(target_os = "macos") {
+        macos_runtime_bundle_path(buckyos_root)
+            .join("Contents")
+            .join("MacOS")
+            .join("node_daemon")
     } else {
         dir.join("node_daemon")
+    }
+}
+
+pub fn macos_runtime_bundle_path(buckyos_root: &Path) -> PathBuf {
+    buckyos_root
+        .join("bin")
+        .join("node-daemon")
+        .join(MACOS_RUNTIME_BUNDLE)
+}
+
+/// node_daemon's host-local state (`local/node_daemon`): executor ledger,
+/// run list, desktop status, the manual-start LaunchAgent plist.
+pub fn node_daemon_local_dir(buckyos_root: &Path) -> PathBuf {
+    buckyos_root.join("local").join("node_daemon")
+}
+
+// -----------------------------------------------------------------------------
+// macOS Desktop Runtime：绑定用户与用户 LaunchAgent
+// -----------------------------------------------------------------------------
+
+pub const MACOS_RUNTIME_BUNDLE: &str = "BuckyOS Runtime.app";
+pub const MACOS_RUNTIME_LABEL: &str = "com.buckyos.runtime";
+pub const MACOS_RUNTIME_ARGS: &[&str] = &["--enable_active", "--desktop_daemon"];
+/// The daemon's service PATH (both Homebrew prefixes). The Executor's tool
+/// PATH is configured by node_executor, not inherited from here.
+pub const MACOS_SERVICE_PATH: &str =
+    "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+pub const DESKTOP_RUNTIME_BINDING_FILE: &str = "desktop_runtime.json";
+pub const DESKTOP_STATUS_FILE: &str = "desktop_status.json";
+const DESKTOP_STATUS_STALE_SECS: u64 = 120;
+pub const MACOS_LEGACY_DAEMON_PLIST: &str = "/Library/LaunchDaemons/buckyos.service.plist";
+pub const MACOS_LEGACY_LABEL: &str = "buckyos.service";
+/// Runtime-writable directories the bound user must own; the Runtime bundle
+/// (`bin/node-daemon`) stays installer-owned.
+const MACOS_RUNTIME_DIRS: &[&str] = &[
+    "etc",
+    "security",
+    "data",
+    "storage",
+    "local",
+    "local/node_daemon",
+    "logs",
+    "logs/node_daemon",
+    "bin/agent-tools",
+];
+
+/// The OS user an installation belongs to (`etc/desktop_runtime.json`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesktopRuntimeBinding {
+    pub user: String,
+    pub uid: u32,
+    pub home: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MacLaunchAgentState {
+    pub binding: DesktopRuntimeBinding,
+    /// `gui/<uid>`
+    pub domain: String,
+    pub label: String,
+    /// The plist start bootstraps: the LaunchAgents copy while autostart is on.
+    pub plist_path: PathBuf,
+    /// Login autostart preference: the plist is in `~/Library/LaunchAgents`.
+    pub autostart: bool,
+    /// The bound user has a GUI (Aqua) launchd domain, i.e. is logged in.
+    /// `None` when the caller may not inspect that user's domain.
+    pub gui_session: Option<bool>,
+    pub loaded: Option<bool>,
+    pub pid: Option<u32>,
+    /// Turned off by the user or the system (Login Items); node_control never
+    /// disables the job itself.
+    pub disabled: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct OsUser {
+    pub name: String,
+    pub uid: u32,
+    pub gid: u32,
+    pub home: PathBuf,
+}
+
+pub fn desktop_binding_path(buckyos_root: &Path) -> PathBuf {
+    buckyos_root.join("etc").join(DESKTOP_RUNTIME_BINDING_FILE)
+}
+
+pub fn read_desktop_binding(buckyos_root: &Path) -> Option<DesktopRuntimeBinding> {
+    let text = std::fs::read_to_string(desktop_binding_path(buckyos_root)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+pub fn macos_launch_agent_plist_path(home: &Path) -> PathBuf {
+    home.join("Library")
+        .join("LaunchAgents")
+        .join(format!("{}.plist", MACOS_RUNTIME_LABEL))
+}
+
+fn macos_manual_plist_path(buckyos_root: &Path) -> PathBuf {
+    node_daemon_local_dir(buckyos_root).join(format!("{}.plist", MACOS_RUNTIME_LABEL))
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn xml_unescape(value: &str) -> String {
+    value
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+}
+
+/// The one LaunchAgent definition every entry (installer, App, dev scripts)
+/// writes for a bound root.
+pub fn render_macos_launch_agent(buckyos_root: &Path, binding: &DesktopRuntimeBinding) -> String {
+    let root = xml_escape(&buckyos_root.to_string_lossy());
+    let logs = buckyos_root.join("logs").join("node_daemon");
+    let mut arguments = format!(
+        "        <string>{}</string>\n",
+        xml_escape(&node_daemon_binary_path(buckyos_root).to_string_lossy())
+    );
+    for arg in MACOS_RUNTIME_ARGS {
+        arguments.push_str(&format!("        <string>{}</string>\n", arg));
+    }
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+    <key>AssociatedBundleIdentifiers</key>
+    <array>
+        <string>{label}</string>
+    </array>
+    <key>ProgramArguments</key>
+    <array>
+{arguments}    </array>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>WorkingDirectory</key>
+    <string>{root}</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>BUCKYOS_ROOT</key>
+        <string>{root}</string>
+        <key>HOME</key>
+        <string>{home}</string>
+        <key>PATH</key>
+        <string>{path}</string>
+        <key>RUST_BACKTRACE</key>
+        <string>1</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>{out}</string>
+    <key>StandardErrorPath</key>
+    <string>{err}</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>ExitTimeOut</key>
+    <integer>30</integer>
+    <key>AbandonProcessGroup</key>
+    <true/>
+</dict>
+</plist>
+"#,
+        label = MACOS_RUNTIME_LABEL,
+        arguments = arguments,
+        root = root,
+        home = xml_escape(&binding.home.to_string_lossy()),
+        path = MACOS_SERVICE_PATH,
+        out = xml_escape(&logs.join("launchd.out.log").to_string_lossy()),
+        err = xml_escape(&logs.join("launchd.err.log").to_string_lossy()),
+    )
+}
+
+/// `EnvironmentVariables.<key>` of a plist rendered by `render_macos_launch_agent`.
+fn plist_env_value(text: &str, key: &str) -> Option<String> {
+    let marker = format!("<key>{}</key>", key);
+    let rest = &text[text.find(&marker)? + marker.len()..];
+    let start = rest.find("<string>")? + "<string>".len();
+    let end = start + rest[start..].find("</string>")?;
+    Some(xml_unescape(rest[start..end].trim())).filter(|value| !value.is_empty())
+}
+
+#[cfg(unix)]
+fn passwd_entry(name: Option<&str>, uid: u32) -> Option<OsUser> {
+    use std::ffi::{CStr, CString};
+    let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut buffer = vec![0 as libc::c_char; 16 * 1024];
+    let mut found: *mut libc::passwd = std::ptr::null_mut();
+    let rc = match name {
+        Some(name) => {
+            let name = CString::new(name).ok()?;
+            unsafe {
+                libc::getpwnam_r(
+                    name.as_ptr(),
+                    &mut entry,
+                    buffer.as_mut_ptr(),
+                    buffer.len(),
+                    &mut found,
+                )
+            }
+        }
+        None => unsafe {
+            libc::getpwuid_r(
+                uid,
+                &mut entry,
+                buffer.as_mut_ptr(),
+                buffer.len(),
+                &mut found,
+            )
+        },
+    };
+    if rc != 0 || found.is_null() {
+        return None;
+    }
+    let text = |ptr: *const libc::c_char| {
+        unsafe { CStr::from_ptr(ptr) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    Some(OsUser {
+        name: text(entry.pw_name),
+        uid: entry.pw_uid,
+        gid: entry.pw_gid,
+        home: PathBuf::from(text(entry.pw_dir)),
+    })
+}
+
+#[cfg(not(unix))]
+fn passwd_entry(_name: Option<&str>, _uid: u32) -> Option<OsUser> {
+    None
+}
+
+pub fn lookup_os_user(name: &str) -> Option<OsUser> {
+    passwd_entry(Some(name), 0)
+}
+
+/// The account of this process's effective uid.
+pub fn current_os_user() -> Option<OsUser> {
+    passwd_entry(None, current_euid())
+}
+
+pub fn current_euid() -> u32 {
+    #[cfg(unix)]
+    {
+        unsafe { libc::geteuid() }
+    }
+    #[cfg(not(unix))]
+    {
+        0
+    }
+}
+
+fn current_user_home() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| passwd_entry(None, current_euid()).map(|user| user.home))
+}
+
+fn launchctl(args: &[&str]) -> (bool, String) {
+    let mut command = Command::new("launchctl");
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    match hide_child_console(&mut command).output() {
+        Ok(out) => (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+        ),
+        Err(_) => (false, String::new()),
+    }
+}
+
+fn parse_launchctl_pid(print: &str) -> Option<u32> {
+    print
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("pid = "))
+        .and_then(|value| value.trim().parse().ok())
+}
+
+fn parse_launchctl_disabled(print_disabled: &str, label: &str) -> bool {
+    let quoted = format!("\"{}\"", label);
+    print_disabled
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with(&quoted))
+        .any(|line| line.ends_with("disabled") || line.ends_with("true"))
+}
+
+fn detect_macos_launch_agent(
+    buckyos_root: &Path,
+    binding: DesktopRuntimeBinding,
+) -> MacLaunchAgentState {
+    let domain = format!("gui/{}", binding.uid);
+    let installed = macos_launch_agent_plist_path(&binding.home);
+    let autostart = installed.is_file();
+    let plist_path = if autostart {
+        installed
+    } else {
+        macos_manual_plist_path(buckyos_root)
+    };
+    let mut state = MacLaunchAgentState {
+        domain,
+        label: MACOS_RUNTIME_LABEL.to_string(),
+        plist_path,
+        autostart,
+        gui_session: None,
+        loaded: None,
+        pid: None,
+        disabled: false,
+        binding,
+    };
+    let euid = current_euid();
+    if euid != 0 && euid != state.binding.uid {
+        return state;
+    }
+    let (loaded, print) = launchctl(&["print", &format!("{}/{}", state.domain, state.label)]);
+    state.loaded = Some(loaded);
+    state.pid = parse_launchctl_pid(&print);
+    state.gui_session = Some(loaded || launchctl(&["print", &state.domain]).0);
+    let (_, disabled) = launchctl(&["print-disabled", &state.domain]);
+    state.disabled = parse_launchctl_disabled(&disabled, &state.label);
+    state
+}
+
+fn ensure_agent_controllable(agent: &MacLaunchAgentState) -> Result<(), String> {
+    let euid = current_euid();
+    if euid == 0 || euid == agent.binding.uid {
+        return Ok(());
+    }
+    Err(format!(
+        "BuckyOS Runtime here belongs to OS user {} (uid {}); it cannot be controlled from uid {}",
+        agent.binding.user, agent.binding.uid, euid
+    ))
+}
+
+#[cfg(unix)]
+fn give_to(path: &Path, uid: u32, gid: u32) -> std::io::Result<()> {
+    if current_euid() == 0 {
+        std::os::unix::fs::lchown(path, Some(uid), Some(gid))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn give_to(_path: &Path, _uid: u32, _gid: u32) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn write_owned_file(path: &Path, content: &[u8], uid: u32, gid: u32) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
+    if !parent.is_dir() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create {} failed: {}", parent.display(), e))?;
+        give_to(parent, uid, gid)
+            .map_err(|e| format!("chown {} failed: {}", parent.display(), e))?;
+    }
+    let temporary = parent.join(format!(
+        ".{}.tmp",
+        path.file_name().and_then(OsStr::to_str).unwrap_or("file")
+    ));
+    std::fs::write(&temporary, content)
+        .map_err(|e| format!("write {} failed: {}", temporary.display(), e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o644));
+    }
+    give_to(&temporary, uid, gid)
+        .map_err(|e| format!("chown {} failed: {}", temporary.display(), e))?;
+    std::fs::rename(&temporary, path)
+        .map_err(|e| format!("replace {} failed: {}", path.display(), e))
+}
+
+fn write_macos_launch_agent(
+    buckyos_root: &Path,
+    binding: &DesktopRuntimeBinding,
+    plist: &Path,
+    actions: &mut Vec<String>,
+) -> Result<(), String> {
+    let gid = passwd_entry(None, binding.uid)
+        .map(|user| user.gid)
+        .unwrap_or(20);
+    let content = render_macos_launch_agent(buckyos_root, binding);
+    if std::fs::read_to_string(plist).ok().as_deref() != Some(content.as_str()) {
+        write_owned_file(plist, content.as_bytes(), binding.uid, gid)?;
+        actions.push(format!("wrote LaunchAgent {}", plist.display()));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn chown_tree(path: &Path, uid: u32, gid: u32, skip: Option<&Path>) -> std::io::Result<()> {
+    if skip == Some(path) {
+        return Ok(());
+    }
+    std::os::unix::fs::lchown(path, Some(uid), Some(gid))?;
+    if std::fs::symlink_metadata(path)?.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            chown_tree(&entry?.path(), uid, gid, skip)?;
+        }
+    }
+    Ok(())
+}
+
+/// Installer-side (root) preparation of a root for its bound user: the user
+/// owns everything the Runtime writes, the bundle stays root-owned, and a
+/// ledger left by a root (A-system) node_daemon is set aside, not adopted.
+#[cfg(unix)]
+fn prepare_macos_root_ownership(
+    buckyos_root: &Path,
+    user: &OsUser,
+    actions: &mut Vec<String>,
+) -> Result<(), String> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    for dir in MACOS_RUNTIME_DIRS {
+        let path = buckyos_root.join(dir);
+        std::fs::create_dir_all(&path)
+            .map_err(|e| format!("create {} failed: {}", path.display(), e))?;
+    }
+    let ledger = node_daemon_local_dir(buckyos_root).join("executor");
+    if std::fs::symlink_metadata(&ledger)
+        .map(|m| m.uid() == 0)
+        .unwrap_or(false)
+    {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or_default();
+        let aside = ledger.with_file_name(format!("executor.legacy-root-{}", stamp));
+        std::fs::rename(&ledger, &aside)
+            .map_err(|e| format!("set aside {} failed: {}", ledger.display(), e))?;
+        actions.push(format!(
+            "set aside root executor ledger (not migrated): {}",
+            aside.display()
+        ));
+    }
+    let bundle_module = buckyos_root.join("bin").join("node-daemon");
+    chown_tree(buckyos_root, user.uid, user.gid, Some(&bundle_module))
+        .map_err(|e| format!("chown {} failed: {}", buckyos_root.display(), e))?;
+    if bundle_module.exists() {
+        chown_tree(&bundle_module, 0, 0, None)
+            .map_err(|e| format!("chown {} failed: {}", bundle_module.display(), e))?;
+    }
+    let security = buckyos_root.join("security");
+    std::fs::set_permissions(&security, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| format!("chmod {} failed: {}", security.display(), e))?;
+    actions.push(format!(
+        "{} owned by {} (uid {}), Runtime bundle kept root-owned",
+        buckyos_root.display(),
+        user.name,
+        user.uid
+    ));
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn prepare_macos_root_ownership(
+    _buckyos_root: &Path,
+    _user: &OsUser,
+    _actions: &mut Vec<String>,
+) -> Result<(), String> {
+    Err("Desktop Runtime binding is macOS only".into())
+}
+
+#[cfg(unix)]
+fn path_owner(path: &Path) -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::symlink_metadata(path).ok().map(|m| m.uid())
+}
+
+#[cfg(not(unix))]
+fn path_owner(_path: &Path) -> Option<u32> {
+    None
+}
+
+/// Bind a root to one OS user and install its login LaunchAgent (autostart
+/// on). Run as root by the installer, or by that user for a root it already
+/// owns (development). Does not start the Runtime.
+pub fn macos_register_runtime(buckyos_root: &Path, user: &str) -> Result<Vec<String>, String> {
+    let target = lookup_os_user(user).ok_or_else(|| format!("unknown OS user: {}", user))?;
+    if target.uid == 0 {
+        return Err("the Desktop Runtime cannot be bound to root".into());
+    }
+    if let Some(existing) = read_desktop_binding(buckyos_root) {
+        if existing.uid != target.uid {
+            return Err(format!(
+                "{} is already bound to OS user {} (uid {}); unregister it first",
+                buckyos_root.display(),
+                existing.user,
+                existing.uid
+            ));
+        }
+    }
+    let euid = current_euid();
+    if euid != 0 && euid != target.uid {
+        return Err(format!(
+            "only root or {} can bind this Runtime to {}",
+            user, user
+        ));
+    }
+    let identity = buckyos_root.join("etc").join("node_identity.json");
+    if let Some(owner) = path_owner(&identity).filter(|uid| *uid != 0 && *uid != target.uid) {
+        return Err(format!(
+            "{} belongs to uid {}; another OS user cannot take over this node",
+            identity.display(),
+            owner
+        ));
+    }
+    let mut actions = Vec::new();
+    if euid == 0 {
+        prepare_macos_root_ownership(buckyos_root, &target, &mut actions)?;
+    } else {
+        if path_owner(buckyos_root) != Some(target.uid) {
+            return Err(format!(
+                "{} is not owned by {}; bind it with sudo (installer) instead",
+                buckyos_root.display(),
+                user
+            ));
+        }
+        for dir in MACOS_RUNTIME_DIRS {
+            let path = buckyos_root.join(dir);
+            std::fs::create_dir_all(&path)
+                .map_err(|e| format!("create {} failed: {}", path.display(), e))?;
+        }
+    }
+    let binding = DesktopRuntimeBinding {
+        user: target.name.clone(),
+        uid: target.uid,
+        home: target.home.clone(),
+    };
+    let body = serde_json::to_vec_pretty(&binding).map_err(|e| e.to_string())?;
+    write_owned_file(
+        &desktop_binding_path(buckyos_root),
+        &body,
+        target.uid,
+        target.gid,
+    )?;
+    actions.push(format!(
+        "bound {} to OS user {} (uid {}, home {})",
+        buckyos_root.display(),
+        binding.user,
+        binding.uid,
+        binding.home.display()
+    ));
+    write_macos_launch_agent(
+        buckyos_root,
+        &binding,
+        &macos_launch_agent_plist_path(&binding.home),
+        &mut actions,
+    )?;
+    Ok(actions)
+}
+
+/// Remove the login item and the binding of a root (uninstall).
+pub fn macos_unregister_runtime(buckyos_root: &Path) -> Result<Vec<String>, String> {
+    let mut actions = Vec::new();
+    let Some(binding) = read_desktop_binding(buckyos_root) else {
+        actions.push(format!("{} is not bound", buckyos_root.display()));
+        return Ok(actions);
+    };
+    let agent = detect_macos_launch_agent(buckyos_root, binding.clone());
+    ensure_agent_controllable(&agent)?;
+    if agent.loaded == Some(true) {
+        run_quiet(
+            "launchctl",
+            &["bootout", &format!("{}/{}", agent.domain, agent.label)],
+            &mut actions,
+        );
+    }
+    for path in [
+        macos_launch_agent_plist_path(&binding.home),
+        macos_manual_plist_path(buckyos_root),
+        desktop_binding_path(buckyos_root),
+    ] {
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .map_err(|e| format!("remove {} failed: {}", path.display(), e))?;
+            actions.push(format!("removed {}", path.display()));
+        }
+    }
+    Ok(actions)
+}
+
+/// Login autostart only; whether the Runtime runs now is left unchanged.
+pub fn macos_set_autostart(buckyos_root: &Path, enabled: bool) -> Result<Vec<String>, String> {
+    let binding = read_desktop_binding(buckyos_root)
+        .ok_or_else(|| format!("{} is not bound to an OS user", buckyos_root.display()))?;
+    let agent = detect_macos_launch_agent(buckyos_root, binding.clone());
+    ensure_agent_controllable(&agent)?;
+    let installed = macos_launch_agent_plist_path(&binding.home);
+    let mut actions = Vec::new();
+    if enabled {
+        write_macos_launch_agent(buckyos_root, &binding, &installed, &mut actions)?;
+    } else if installed.exists() {
+        std::fs::remove_file(&installed)
+            .map_err(|e| format!("remove {} failed: {}", installed.display(), e))?;
+        actions.push(format!("removed login item {}", installed.display()));
+    }
+    if agent.disabled {
+        actions.push(
+            "note: BuckyOS Runtime is turned off in System Settings > General > Login Items".into(),
+        );
+    }
+    Ok(actions)
+}
+
+/// The Runtime's own view of its desktop session and privacy permissions
+/// (`local/node_daemon/desktop_status.json`, written by node_daemon in
+/// desktop mode) and its age in seconds.
+pub fn read_desktop_status(buckyos_root: &Path) -> Option<(serde_json::Value, u64)> {
+    let path = node_daemon_local_dir(buckyos_root).join(DESKTOP_STATUS_FILE);
+    let modified = std::fs::metadata(&path).ok()?.modified().ok()?;
+    let age = modified.elapsed().map(|d| d.as_secs()).unwrap_or_default();
+    let value = serde_json::from_str(&std::fs::read_to_string(&path).ok()?).ok()?;
+    Some((value, age))
+}
+
+/// Processes of this installation: owned by its user, executable under its root.
+struct InstanceScope {
+    uid: u32,
+    roots: Vec<String>,
+}
+
+impl InstanceScope {
+    fn contains(&self, process: &ProcessInfo) -> bool {
+        process.pid != std::process::id()
+            && process.uid == Some(self.uid)
+            && self
+                .roots
+                .iter()
+                .any(|root| process.command.starts_with(root.as_str()))
+    }
+}
+
+fn instance_scope(host: &NodeHostControlState) -> Option<InstanceScope> {
+    if host.platform != NodePlatform::MacOS {
+        return None;
+    }
+    let uid = host
+        .launch_agent
+        .as_ref()
+        .map(|agent| agent.binding.uid)
+        .unwrap_or_else(current_euid);
+    let mut roots = vec![format!("{}/", host.buckyos_root.display())];
+    if let Ok(real) = host.buckyos_root.canonicalize() {
+        let real = format!("{}/", real.display());
+        if !roots.contains(&real) {
+            roots.push(real);
+        }
+    }
+    Some(InstanceScope { uid, roots })
+}
+
+/// node_executor's worker subcommand: workers share the node_daemon binary
+/// but are not controllers.
+const EXECUTOR_WORKER_ARG: &str = "--executor-worker";
+
+fn instance_node_daemons<'a>(
+    host: &NodeHostControlState,
+    processes: &'a [ProcessInfo],
+) -> Vec<&'a ProcessInfo> {
+    match instance_scope(host) {
+        Some(scope) => processes
+            .iter()
+            .filter(|p| {
+                scope.contains(p)
+                    && p.command.ends_with("/node_daemon")
+                    && !p.args.contains(EXECUTOR_WORKER_ARG)
+            })
+            .collect(),
+        None => find_processes(processes, NODE_DAEMON_ALIASES),
     }
 }
 
@@ -1163,8 +1888,10 @@ pub fn node_daemon_binary_path(buckyos_root: &Path) -> PathBuf {
 #[derive(Debug, Clone)]
 pub struct ProcessInfo {
     pub pid: u32,
+    /// Executable path on macOS (`ps -o comm`), short name on Linux.
     pub command: String,
     pub args: String,
+    pub uid: Option<u32>,
 }
 
 fn normalize_name(value: &str) -> String {
@@ -1196,32 +1923,52 @@ pub fn collect_processes() -> Vec<ProcessInfo> {
     if cfg!(target_os = "windows") {
         return collect_processes_windows();
     }
-    let raw = match run_capture("ps", &["-axo", "pid=,comm=,args="]) {
+    // One column per call keeps paths with spaces (the Runtime bundle) intact.
+    let args_by_pid: BTreeMap<u32, String> = run_capture("ps", &["-axo", "pid=,args="])
+        .map(|raw| {
+            parse_ps_rows(&raw, 0)
+                .into_iter()
+                .map(|(pid, _, rest)| (pid, rest))
+                .collect()
+        })
+        .unwrap_or_default();
+    let raw = match run_capture("ps", &["-axo", "pid=,uid=,comm="]) {
         Some(text) => text,
         None => return Vec::new(),
     };
+    parse_ps_rows(&raw, 1)
+        .into_iter()
+        .map(|(pid, fields, command)| {
+            let args = args_by_pid
+                .get(&pid)
+                .cloned()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| command.clone());
+            ProcessInfo {
+                pid,
+                command,
+                args,
+                uid: fields.first().and_then(|v| v.parse().ok()),
+            }
+        })
+        .collect()
+}
+
+/// `pid <fields...> <rest of line>` rows of `ps -o ...=`.
+fn parse_ps_rows(raw: &str, fields: usize) -> Vec<(u32, Vec<String>, String)> {
     let mut out = Vec::new();
     for line in raw.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
+        let mut rest = line.trim_start();
+        let mut values = Vec::new();
+        for _ in 0..=fields {
+            let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+            values.push(rest[..end].to_string());
+            rest = rest[end..].trim_start();
         }
-        let mut parts = line.splitn(3, char::is_whitespace);
-        let pid_str = match parts.next() {
-            Some(value) => value,
-            None => continue,
+        let Ok(pid) = values[0].parse::<u32>() else {
+            continue;
         };
-        let pid = match pid_str.parse::<u32>() {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
-        let command = parts.next().unwrap_or("").trim().to_string();
-        let args = parts
-            .next()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| command.clone());
-        out.push(ProcessInfo { pid, command, args });
+        out.push((pid, values.split_off(1), rest.trim_end().to_string()));
     }
     out
 }
@@ -1255,7 +2002,12 @@ fn collect_processes_windows() -> Vec<ProcessInfo> {
         } else {
             fields[2].clone()
         };
-        out.push(ProcessInfo { pid, command, args });
+        out.push(ProcessInfo {
+            pid,
+            command,
+            args,
+            uid: None,
+        });
     }
     out
 }
@@ -1412,7 +2164,10 @@ pub fn get_port_listener(port: u16) -> Option<String> {
 // -----------------------------------------------------------------------------
 
 pub fn detect_host_control_state() -> NodeHostControlState {
-    let buckyos_root = resolve_buckyos_root();
+    detect_host_control_state_at(resolve_buckyos_root())
+}
+
+pub fn detect_host_control_state_at(buckyos_root: PathBuf) -> NodeHostControlState {
     let node_daemon = node_daemon_binary_path(&buckyos_root);
     let platform = NodePlatform::current();
     let mut evidence = Vec::new();
@@ -1424,35 +2179,61 @@ pub fn detect_host_control_state() -> NodeHostControlState {
     let mut run_key_name = None;
     let mut service_enabled = None;
     let mut service_active = None;
+    let mut launch_agent = None;
+    let mut pending_user_binding = false;
+    let mut legacy_service = None;
 
     match platform {
         NodePlatform::MacOS => {
-            let plist = PathBuf::from("/Library/LaunchDaemons/buckyos.service.plist");
-            if plist.is_file() {
-                evidence.push(format!("found launchd plist: {}", plist.display()));
-                service_plist_path = Some(plist.clone());
-                service_unit_name = Some("buckyos.service".to_string());
+            let legacy = PathBuf::from(MACOS_LEGACY_DAEMON_PLIST);
+            if legacy.is_file() {
+                evidence.push(format!(
+                    "legacy system LaunchDaemon still registered: {} (reinstall or uninstall removes it)",
+                    legacy.display()
+                ));
+                legacy_service = Some(legacy);
+            }
+            if let Some(binding) = read_desktop_binding(&buckyos_root) {
+                let agent = detect_macos_launch_agent(&buckyos_root, binding);
                 model = NodeHostControlModel::ServiceManager;
                 confidence = Confidence::High;
-                if let Some(out) = run_capture("launchctl", &["print", "system/buckyos.service"]) {
-                    let lower = out.to_lowercase();
-                    let active = lower.contains("state = running");
-                    service_active = Some(active);
-                    service_enabled = Some(!lower.contains("disabled = 1"));
-                    evidence.push(format!(
-                        "launchctl print: state_running={}, len={}",
-                        active,
-                        out.len()
-                    ));
-                } else {
-                    evidence.push("launchctl print failed or unavailable".to_string());
+                service_unit_name = Some(agent.label.clone());
+                service_plist_path = Some(agent.plist_path.clone());
+                service_enabled = Some(!agent.disabled);
+                service_active = agent.loaded.map(|loaded| loaded && agent.pid.is_some());
+                evidence.push(format!(
+                    "bound to OS user {} (uid {}); {}/{} autostart={} loaded={:?} pid={:?}",
+                    agent.binding.user,
+                    agent.binding.uid,
+                    agent.domain,
+                    agent.label,
+                    agent.autostart,
+                    agent.loaded,
+                    agent.pid
+                ));
+                if agent.disabled {
+                    evidence
+                        .push("turned off in System Settings > General > Login Items".to_string());
                 }
+                match agent.gui_session {
+                    Some(false) => evidence.push(format!(
+                        "{} has no GUI login session; the Runtime starts at the next login",
+                        agent.binding.user
+                    )),
+                    None => evidence.push(format!(
+                        "uid {} cannot inspect {}'s launchd domain",
+                        current_euid(),
+                        agent.binding.user
+                    )),
+                    Some(true) => {}
+                }
+                launch_agent = Some(agent);
             } else if node_daemon.is_file() {
-                model = NodeHostControlModel::DirectProcess;
+                pending_user_binding = true;
                 confidence = Confidence::Medium;
                 evidence.push(format!(
-                    "no LaunchDaemon plist; binary present at {}",
-                    node_daemon.display()
+                    "BuckyOS Runtime installed at {} but not bound to an OS user yet",
+                    macos_runtime_bundle_path(&buckyos_root).display()
                 ));
             }
         }
@@ -1521,6 +2302,9 @@ pub fn detect_host_control_state() -> NodeHostControlState {
         evidence,
         service_enabled,
         service_active,
+        launch_agent,
+        pending_user_binding,
+        legacy_service,
     }
 }
 
@@ -1532,13 +2316,9 @@ pub fn node_check(
     buckyos_root_override: Option<PathBuf>,
     options: NodeCheckOptions,
 ) -> NodeCheckReport {
-    let host_control = if let Some(root) = buckyos_root_override.clone() {
-        let mut s = detect_host_control_state();
-        s.buckyos_root = root.clone();
-        s.node_daemon_binary = node_daemon_binary_path(&root);
-        s
-    } else {
-        detect_host_control_state()
+    let host_control = match buckyos_root_override {
+        Some(root) => detect_host_control_state_at(root),
+        None => detect_host_control_state(),
     };
     let buckyos_root = host_control.buckyos_root.clone();
     let etc_dir = buckyos_root.join("etc");
@@ -1569,7 +2349,7 @@ pub fn node_check(
     }
 
     // node_daemon 进程
-    let node_daemon_procs = find_processes(&processes, NODE_DAEMON_ALIASES);
+    let node_daemon_procs = instance_node_daemons(&host_control, &processes);
     if !node_daemon_procs.is_empty() {
         let pids: Vec<String> = node_daemon_procs
             .iter()
@@ -1785,11 +2565,15 @@ pub fn node_check(
                 (CheckStatus::Warn, "Host control model unknown".to_string())
             }
         };
+        let host_status = macos_host_status(&host_control).unwrap_or(host_status);
         let mut item = CheckItem::new("Host Control", host_status.0, host_status.1);
         for ev in &host_control.evidence {
             item = item.with_detail(ev.clone());
         }
         checks.push(item);
+        if host_control.launch_agent.is_some() {
+            checks.push(desktop_session_check(&buckyos_root));
+        }
     }
 
     let availability_layer = compute_availability_layer(activated, &live_probe, &node_daemon_procs);
@@ -1810,6 +2594,103 @@ pub fn node_check(
         title,
         summary,
     }
+}
+
+fn macos_host_status(host: &NodeHostControlState) -> Option<(CheckStatus, String)> {
+    if host.platform != NodePlatform::MacOS {
+        return None;
+    }
+    if host.legacy_service.is_some() {
+        return Some((
+            CheckStatus::Fail,
+            "A pre-LaunchAgent system service competes with this Runtime; reinstall or uninstall to remove it"
+                .to_string(),
+        ));
+    }
+    if host.pending_user_binding {
+        return Some((
+            CheckStatus::Warn,
+            "BuckyOS Runtime is installed but not bound to an OS user; open BuckyOS Runtime to finish setup"
+                .to_string(),
+        ));
+    }
+    let agent = host.launch_agent.as_ref()?;
+    let autostart = if agent.autostart {
+        "login autostart on"
+    } else {
+        "login autostart off"
+    };
+    Some(if agent.disabled {
+        (
+            CheckStatus::Warn,
+            "BuckyOS Runtime is turned off in System Settings > General > Login Items".to_string(),
+        )
+    } else if agent.gui_session == Some(false) {
+        (
+            CheckStatus::Info,
+            format!(
+                "Waiting for {} to log in ({})",
+                agent.binding.user, autostart
+            ),
+        )
+    } else if agent.pid.is_some() {
+        (
+            CheckStatus::Ok,
+            format!(
+                "Running in {} as pid {:?} ({})",
+                agent.domain,
+                agent.pid.unwrap_or_default(),
+                autostart
+            ),
+        )
+    } else if agent.loaded == Some(true) {
+        (
+            CheckStatus::Warn,
+            format!("Loaded in {} but not running ({})", agent.domain, autostart),
+        )
+    } else {
+        (CheckStatus::Warn, format!("Not running ({})", autostart))
+    })
+}
+
+/// GUI session and privacy permissions as the Runtime itself observed them.
+fn desktop_session_check(buckyos_root: &Path) -> CheckItem {
+    let Some((status, age)) = read_desktop_status(buckyos_root) else {
+        return CheckItem::new(
+            "Desktop Session",
+            CheckStatus::Info,
+            "The Runtime has not reported desktop readiness yet",
+        );
+    };
+    if age > DESKTOP_STATUS_STALE_SECS {
+        return CheckItem::new(
+            "Desktop Session",
+            CheckStatus::Info,
+            format!(
+                "Last desktop report is {}s old (Runtime stopped or not in desktop mode)",
+                age
+            ),
+        );
+    }
+    let caps = &status["capabilities"];
+    let state = caps["ui"]["state"]
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
+    let level = match state.as_str() {
+        "ready" => CheckStatus::Ok,
+        "permission_required" => CheckStatus::Warn,
+        _ => CheckStatus::Info,
+    };
+    let mut item = CheckItem::new("Desktop Session", level, format!("GUI: {}", state));
+    for name in ["capture", "input"] {
+        let reason = caps[name]["reason"].as_str().unwrap_or("ready");
+        item = item.with_detail(format!("{}: {}", name, reason));
+    }
+    if let Some(uid) = status["uid"].as_u64() {
+        item = item.with_detail(format!("runtime uid: {}", uid));
+    }
+    item
 }
 
 fn compute_availability_layer(
@@ -1975,6 +2856,25 @@ pub fn print_check_report(report: &NodeCheckReport) {
         report.host_control.service_unit_name,
         report.host_control.scheduled_task_name
     );
+    if let Some(agent) = &report.host_control.launch_agent {
+        println!(
+            "- Desktop Runtime: user={} uid={} {}/{} autostart={} loaded={:?} pid={:?} disabled={}",
+            agent.binding.user,
+            agent.binding.uid,
+            agent.domain,
+            agent.label,
+            agent.autostart,
+            agent.loaded,
+            agent.pid,
+            agent.disabled
+        );
+        println!(
+            "- Runtime: {}",
+            report.host_control.node_daemon_binary.display()
+        );
+    } else if report.host_control.pending_user_binding {
+        println!("- Desktop Runtime: installed, not bound to an OS user");
+    }
     println!(
         "- Activated: {}, Activation Ready: {}",
         report.activated, report.activation_ready
@@ -2018,22 +2918,40 @@ pub fn print_check_report(report: &NodeCheckReport) {
 // -----------------------------------------------------------------------------
 
 pub fn node_start(req: NodeStartRequest) -> Result<NodeStartReport, String> {
-    let mut host = if let Some(root) = req.buckyos_root.clone() {
-        let mut s = detect_host_control_state();
-        s.buckyos_root = root.clone();
-        s.node_daemon_binary = node_daemon_binary_path(&root);
-        s
-    } else {
-        detect_host_control_state()
+    let mut host = match req.buckyos_root.clone() {
+        Some(root) => detect_host_control_state_at(root),
+        None => detect_host_control_state(),
     };
+
+    if host.platform == NodePlatform::MacOS
+        && req.host_control_policy != NodeHostControlPolicy::DirectProcessOnly
+    {
+        if host.legacy_service.is_some() {
+            return Err(format!(
+                "{} still registers the old system service; reinstall BuckyOS or remove it first",
+                MACOS_LEGACY_DAEMON_PLIST
+            ));
+        }
+        if host.launch_agent.is_none() {
+            return Err(
+                "BuckyOS Runtime is not bound to an OS user; open BuckyOS Runtime (or run `node_daemon service register`) to finish setup"
+                    .into(),
+            );
+        }
+    }
 
     let chosen_model = pick_start_model(&req.host_control_policy, host.model)?;
     host.model = chosen_model;
 
     if req.stop_conflicting && req.mode != NodeStartMode::Recovery {
-        // 软停 node_daemon 旧进程，避免端口冲突；不杀其他 run item。
-        for proc in find_processes(&collect_processes(), NODE_DAEMON_ALIASES) {
-            let _ = kill_process_by_pid(proc.pid);
+        // 软停 node_daemon 旧进程，避免端口冲突；不杀其他 run item。macOS 只停本实例里
+        // 不归 launchd 管的 controller。
+        let managed = host.launch_agent.as_ref().and_then(|agent| agent.pid);
+        let processes = collect_processes();
+        for proc in instance_node_daemons(&host, &processes) {
+            if Some(proc.pid) != managed {
+                let _ = kill_process_by_pid(proc.pid);
+            }
         }
     }
 
@@ -2042,7 +2960,7 @@ pub fn node_start(req: NodeStartRequest) -> Result<NodeStartReport, String> {
 
     match chosen_model {
         NodeHostControlModel::ServiceManager => match host.platform {
-            NodePlatform::MacOS => start_via_launchd(&host, &mut actions)?,
+            NodePlatform::MacOS => start_via_launch_agent(&host, &mut actions)?,
             NodePlatform::Linux => start_via_systemd(&host, &mut actions)?,
             _ => {
                 started_pid = Some(spawn_node_daemon_direct(&host, req.mode, &mut actions)?);
@@ -2106,8 +3024,14 @@ fn spawn_node_daemon_direct(
     }
 
     let mut cmd = Command::new(&host.node_daemon_binary);
-    if matches!(mode, NodeStartMode::Activation | NodeStartMode::Normal) {
+    if matches!(
+        mode,
+        NodeStartMode::Activation | NodeStartMode::Normal | NodeStartMode::DesktopDaemon
+    ) {
         cmd.arg("--enable_active");
+    }
+    if mode == NodeStartMode::DesktopDaemon {
+        cmd.arg("--desktop_daemon");
     }
     cmd.env("BUCKYOS_ROOT", &host.buckyos_root);
     cmd.stdin(Stdio::null())
@@ -2138,44 +3062,42 @@ fn spawn_node_daemon_direct(
     Ok(pid)
 }
 
-fn start_via_launchd(host: &NodeHostControlState, actions: &mut Vec<String>) -> Result<(), String> {
-    let plist = host
-        .service_plist_path
+fn start_via_launch_agent(
+    host: &NodeHostControlState,
+    actions: &mut Vec<String>,
+) -> Result<(), String> {
+    let agent = host
+        .launch_agent
         .as_ref()
-        .ok_or_else(|| "LaunchDaemon plist path missing".to_string())?;
-    if !plist.is_file() {
-        return Err(format!("LaunchDaemon plist missing: {}", plist.display()));
+        .ok_or_else(|| "BuckyOS Runtime is not bound to an OS user".to_string())?;
+    ensure_agent_controllable(agent)?;
+    if agent.disabled {
+        return Err(
+            "BuckyOS Runtime is turned off in System Settings > General > Login Items; turn it on there to start it"
+                .into(),
+        );
     }
-    let label = host
-        .service_unit_name
-        .clone()
-        .unwrap_or_else(|| "buckyos.service".to_string());
-    let target = format!("system/{}", label);
-
-    run_quiet("launchctl", &["enable", &target], actions);
-    // bootstrap; if already loaded, bootout-then-bootstrap.
-    let mut bs_cmd = Command::new("launchctl");
-    bs_cmd.args(["bootstrap", "system", plist.to_str().unwrap_or_default()]);
-    let bs = hide_child_console(&mut bs_cmd).output();
-    match bs {
-        Ok(out) if out.status.success() => {
-            actions.push(format!("launchctl bootstrap system {}", plist.display()));
-        }
-        _ => {
-            run_quiet(
-                "launchctl",
-                &["bootout", "system", plist.to_str().unwrap_or_default()],
-                actions,
-            );
-            run_must(
-                "launchctl",
-                &["bootstrap", "system", plist.to_str().unwrap_or_default()],
-                actions,
-            )?;
-        }
+    if agent.gui_session == Some(false) {
+        return Err(format!(
+            "{} has no GUI login session; the Runtime starts when that user logs in",
+            agent.binding.user
+        ));
     }
-    run_must("launchctl", &["kickstart", "-k", &target], actions)?;
-    Ok(())
+    write_macos_launch_agent(
+        &host.buckyos_root,
+        &agent.binding,
+        &agent.plist_path,
+        actions,
+    )?;
+    if agent.loaded != Some(true) {
+        let plist = agent.plist_path.to_string_lossy();
+        run_must("launchctl", &["bootstrap", &agent.domain, &plist], actions)?;
+    }
+    run_must(
+        "launchctl",
+        &["kickstart", &format!("{}/{}", agent.domain, agent.label)],
+        actions,
+    )
 }
 
 fn start_via_systemd(host: &NodeHostControlState, actions: &mut Vec<String>) -> Result<(), String> {
@@ -2241,14 +3163,13 @@ fn run_must(program: &str, args: &[&str], actions: &mut Vec<String>) -> Result<(
 // -----------------------------------------------------------------------------
 
 pub fn node_stop(req: NodeStopRequest) -> Result<NodeStopReport, String> {
-    let mut host = if let Some(root) = req.buckyos_root.clone() {
-        let mut s = detect_host_control_state();
-        s.buckyos_root = root.clone();
-        s.node_daemon_binary = node_daemon_binary_path(&root);
-        s
-    } else {
-        detect_host_control_state()
+    let mut host = match req.buckyos_root.clone() {
+        Some(root) => detect_host_control_state_at(root),
+        None => detect_host_control_state(),
     };
+    if let Some(agent) = &host.launch_agent {
+        ensure_agent_controllable(agent)?;
+    }
 
     if req.host_control_policy == NodeHostControlPolicy::RefuseIfUnknown
         && host.model == NodeHostControlModel::Unknown
@@ -2290,7 +3211,7 @@ pub fn node_stop(req: NodeStopRequest) -> Result<NodeStopReport, String> {
         req.mode,
         NodeStopMode::Graceful | NodeStopMode::GracefulThenForce
     ) {
-        let waited = wait_for_node_daemon_exit(req.timeout_secs);
+        let waited = wait_for_node_daemon_exit(&host, req.timeout_secs);
         report
             .actions
             .push(format!("waited {}s for node_daemon graceful exit", waited));
@@ -2308,35 +3229,32 @@ pub fn node_stop(req: NodeStopRequest) -> Result<NodeStopReport, String> {
 
     // Stage 4: 残留检查。
     let processes = collect_processes();
-    let mut remaining = Vec::new();
-    let kill_targets: Vec<&str> = PROCESS_KILL_BASELINE.iter().copied().collect();
-    if !find_processes(&processes, &kill_targets).is_empty() {
-        for proc in find_processes(&processes, &kill_targets) {
-            remaining.push(format!("pid={} {}", proc.pid, proc.command));
-        }
-    }
-    report.remaining = remaining;
+    report.remaining = runtime_processes(&host, &processes, &[])
+        .into_iter()
+        .map(|proc| format!("pid={} {}", proc.pid, proc.command))
+        .collect();
 
     Ok(report)
 }
 
 fn stop_host_service(host: &NodeHostControlState, report: &mut NodeStopReport) {
     match (host.platform, host.model) {
-        (NodePlatform::MacOS, NodeHostControlModel::ServiceManager) => {
-            let label = host
-                .service_unit_name
-                .clone()
-                .unwrap_or_else(|| "buckyos.service".to_string());
-            let target = format!("system/{}", label);
-            run_quiet(
-                "launchctl",
-                &["disable", &target],
-                &mut report.host_service_actions,
-            );
-            if let Some(plist) = &host.service_plist_path {
+        (NodePlatform::MacOS, _) => {
+            // bootout only unloads the job for this session: the login item and its
+            // autostart preference stay as they are.
+            if let Some(agent) = &host.launch_agent {
+                if agent.loaded != Some(false) {
+                    run_quiet(
+                        "launchctl",
+                        &["bootout", &format!("{}/{}", agent.domain, agent.label)],
+                        &mut report.host_service_actions,
+                    );
+                }
+            }
+            if host.legacy_service.is_some() {
                 run_quiet(
                     "launchctl",
-                    &["bootout", "system", plist.to_str().unwrap_or_default()],
+                    &["bootout", &format!("system/{}", MACOS_LEGACY_LABEL)],
                     &mut report.host_service_actions,
                 );
             }
@@ -2383,12 +3301,12 @@ fn stop_host_service(host: &NodeHostControlState, report: &mut NodeStopReport) {
     }
 }
 
-fn wait_for_node_daemon_exit(timeout_secs: u64) -> u64 {
+fn wait_for_node_daemon_exit(host: &NodeHostControlState, timeout_secs: u64) -> u64 {
     let mut waited = 0;
     let step = Duration::from_secs(1);
     while waited < timeout_secs {
         let processes = collect_processes();
-        if find_processes(&processes, NODE_DAEMON_ALIASES).is_empty() {
+        if instance_node_daemons(host, &processes).is_empty() {
             return waited;
         }
         std::thread::sleep(step);
@@ -2397,8 +3315,30 @@ fn wait_for_node_daemon_exit(timeout_secs: u64) -> u64 {
     waited
 }
 
+/// Processes a blackbox stop may act on: on macOS everything of this
+/// installation (bound user, executable under the root); elsewhere the known
+/// BuckyOS process names plus `extra` from run.plist.
+fn runtime_processes<'a>(
+    host: &NodeHostControlState,
+    processes: &'a [ProcessInfo],
+    extra: &[String],
+) -> Vec<&'a ProcessInfo> {
+    if let Some(scope) = instance_scope(host) {
+        return processes.iter().filter(|p| scope.contains(p)).collect();
+    }
+    let mut alias_set: std::collections::BTreeSet<String> = PROCESS_KILL_BASELINE
+        .iter()
+        .map(|s| normalize_name(s))
+        .collect();
+    for alias in extra {
+        alias_set.insert(normalize_name(alias));
+    }
+    let aliases: Vec<String> = alias_set.into_iter().collect();
+    find_processes(processes, &aliases)
+}
+
 fn blackbox_stop(req: &NodeStopRequest, host: &NodeHostControlState, report: &mut NodeStopReport) {
-    let snapshot = read_run_plist();
+    let snapshot = read_run_plist(&host.buckyos_root);
     if let Some(snap) = &snapshot {
         report.actions.push(format!(
             "loaded run.plist from {}: {} items",
@@ -2411,21 +3351,13 @@ fn blackbox_stop(req: &NodeStopRequest, host: &NodeHostControlState, report: &mu
             .push("run.plist unavailable; using baseline kill list".to_string());
     }
 
-    // 进程清单：保底 + run.plist 中 kernel/frame service 名（去重，归一化）。
-    let mut alias_set: std::collections::BTreeSet<String> = PROCESS_KILL_BASELINE
-        .iter()
-        .map(|s| normalize_name(s))
-        .collect();
-    if let Some(snap) = &snapshot {
-        for alias in snap.all_process_aliases() {
-            alias_set.insert(normalize_name(&alias));
-        }
-    }
-    let alias_vec: Vec<String> = alias_set.into_iter().collect();
-    let alias_refs: Vec<&str> = alias_vec.iter().map(|s| s.as_str()).collect();
-
+    // 进程清单：macOS 为本实例进程；其他平台为保底 + run.plist 中 kernel/frame service 名。
+    let extra = snapshot
+        .as_ref()
+        .map(|snap| snap.all_process_aliases())
+        .unwrap_or_default();
     let processes = collect_processes();
-    for proc in find_processes(&processes, &alias_refs) {
+    for proc in runtime_processes(host, &processes, &extra) {
         match kill_process_by_pid(proc.pid) {
             Ok(_) => report
                 .stopped_processes
@@ -2492,8 +3424,8 @@ fn blackbox_stop(req: &NodeStopRequest, host: &NodeHostControlState, report: &mu
         }
     }
 
-    // legacy: KillAll 模式下额外 fallback 用 killall/taskkill 强一遍。
-    if matches!(req.mode, NodeStopMode::KillAll) {
+    // legacy: KillAll 模式下额外 fallback 用 killall/taskkill 强一遍（macOS 不按全机进程名杀）。
+    if matches!(req.mode, NodeStopMode::KillAll) && instance_scope(host).is_none() {
         for alias in PROCESS_KILL_BASELINE {
             let _ = kill_process_by_name(alias);
         }
@@ -2551,14 +3483,171 @@ mod tests {
     use super::*;
 
     #[test]
-    fn run_plist_path_unix_prefix() {
-        let path = run_plist_path();
-        let s = path.to_string_lossy().to_string();
+    fn run_plist_path_is_per_root_on_macos() {
+        let root = Path::new("/opt/buckyos");
+        let path = run_plist_path(root);
         if cfg!(target_os = "windows") {
-            assert!(s.ends_with("run.plist"));
+            assert!(path.ends_with("run.plist"));
+        } else if cfg!(target_os = "macos") {
+            assert_eq!(
+                path,
+                PathBuf::from("/opt/buckyos/local/node_daemon/run.plist")
+            );
         } else {
-            assert_eq!(s, "/tmp/buckyos/run.plist");
+            assert_eq!(path, PathBuf::from("/tmp/buckyos/run.plist"));
         }
+    }
+
+    fn binding(home: &str) -> DesktopRuntimeBinding {
+        DesktopRuntimeBinding {
+            user: "alice".into(),
+            uid: 501,
+            home: PathBuf::from(home),
+        }
+    }
+
+    #[test]
+    fn launch_agent_plist_escapes_paths_and_round_trips_the_root() {
+        let root = Path::new("/Volumes/My Disk/Bucky & <OS>");
+        let text = render_macos_launch_agent(root, &binding("/Users/a'b"));
+        assert!(text.contains("<string>com.buckyos.runtime</string>"));
+        assert!(text.contains("<string>Aqua</string>"));
+        assert!(text.contains("<string>--enable_active</string>"));
+        assert!(text.contains("<string>--desktop_daemon</string>"));
+        assert!(text.contains("/Volumes/My Disk/Bucky &amp; &lt;OS&gt;"));
+        assert!(!text.contains("Bucky & <OS>"));
+        assert!(text.contains("<string>/Users/a&apos;b</string>"));
+        assert_eq!(
+            plist_env_value(&text, "BUCKYOS_ROOT").as_deref(),
+            Some("/Volumes/My Disk/Bucky & <OS>")
+        );
+        assert_eq!(
+            plist_env_value(&text, "HOME").as_deref(),
+            Some("/Users/a'b")
+        );
+        if cfg!(target_os = "macos") {
+            assert!(text.contains(
+                "/Volumes/My Disk/Bucky &amp; &lt;OS&gt;/bin/node-daemon/BuckyOS Runtime.app/Contents/MacOS/node_daemon"
+            ));
+        }
+        assert!(text.contains("logs/node_daemon/launchd.err.log"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rendered_launch_agent_is_a_valid_plist() {
+        let dir = std::env::temp_dir().join(format!("nc-plist-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let plist = dir.join("agent.plist");
+        std::fs::write(
+            &plist,
+            render_macos_launch_agent(Path::new("/opt/bucky os"), &binding("/Users/alice")),
+        )
+        .unwrap();
+        let status = Command::new("plutil")
+            .arg("-lint")
+            .arg(&plist)
+            .status()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(status.success());
+    }
+
+    #[test]
+    fn ps_rows_keep_spaces_in_the_last_column() {
+        let raw =
+            "  101   501 /opt/b/bin/node-daemon/BuckyOS Runtime.app/Contents/MacOS/node_daemon\n\
+                   bad line\n\
+                   7 0 /sbin/launchd\n";
+        let rows = parse_ps_rows(raw, 1);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, 101);
+        assert_eq!(rows[0].1, vec!["501".to_string()]);
+        assert_eq!(
+            rows[0].2,
+            "/opt/b/bin/node-daemon/BuckyOS Runtime.app/Contents/MacOS/node_daemon"
+        );
+        assert_eq!(parse_ps_rows("42 /bin/sh -c x\n", 0)[0].2, "/bin/sh -c x");
+    }
+
+    #[test]
+    fn launchctl_output_parsing() {
+        let print = "gui/501/com.buckyos.runtime = {\n\tactive count = 1\n\tstate = running\n\tpid = 4242\n}";
+        assert_eq!(parse_launchctl_pid(print), Some(4242));
+        assert_eq!(parse_launchctl_pid("state = not running"), None);
+        let disabled =
+            "disabled services = {\n\t\"com.buckyos.runtime\" => disabled\n\t\"x\" => enabled\n}";
+        assert!(parse_launchctl_disabled(disabled, "com.buckyos.runtime"));
+        assert!(!parse_launchctl_disabled(disabled, "x"));
+        assert!(parse_launchctl_disabled(
+            "\"com.buckyos.runtime\" => true",
+            "com.buckyos.runtime"
+        ));
+        assert!(!parse_launchctl_disabled("", "com.buckyos.runtime"));
+    }
+
+    #[test]
+    fn instance_scope_matches_only_this_users_root() {
+        let scope = InstanceScope {
+            uid: 501,
+            roots: vec!["/opt/buckyos/".into()],
+        };
+        let process = |pid, uid, command: &str| ProcessInfo {
+            pid,
+            command: command.into(),
+            args: command.into(),
+            uid: Some(uid),
+        };
+        assert!(scope.contains(&process(10, 501, "/opt/buckyos/bin/scheduler/scheduler")));
+        assert!(!scope.contains(&process(11, 502, "/opt/buckyos/bin/scheduler/scheduler")));
+        assert!(!scope.contains(&process(12, 501, "/opt/buckyos2/bin/scheduler/scheduler")));
+        assert!(!scope.contains(&process(13, 501, "/usr/local/bin/scheduler")));
+        assert!(!scope.contains(&process(
+            std::process::id(),
+            501,
+            "/opt/buckyos/bin/node-daemon/BuckyOS Runtime.app/Contents/MacOS/node_daemon"
+        )));
+    }
+
+    #[test]
+    fn desktop_binding_round_trips_and_drives_detection() {
+        let root = std::env::temp_dir().join(format!("nc-binding-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("etc")).unwrap();
+        assert!(read_desktop_binding(&root).is_none());
+        let bound = DesktopRuntimeBinding {
+            user: "someone-else".into(),
+            uid: current_euid().wrapping_add(1),
+            home: root.join("home"),
+        };
+        std::fs::write(
+            desktop_binding_path(&root),
+            serde_json::to_vec(&bound).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(read_desktop_binding(&root), Some(bound.clone()));
+        let host = detect_host_control_state_at(root.clone());
+        if cfg!(target_os = "macos") {
+            let agent = host.launch_agent.clone().expect("bound agent");
+            assert_eq!(host.model, NodeHostControlModel::ServiceManager);
+            assert_eq!(agent.domain, format!("gui/{}", bound.uid));
+            assert!(!agent.autostart);
+            assert_eq!(
+                agent.plist_path,
+                root.join("local/node_daemon/com.buckyos.runtime.plist")
+            );
+            if current_euid() != 0 {
+                assert_eq!(agent.loaded, None);
+                assert!(ensure_agent_controllable(&agent).is_err());
+                assert!(node_start(NodeStartRequest {
+                    buckyos_root: Some(root.clone()),
+                    stop_conflicting: false,
+                    ..NodeStartRequest::default()
+                })
+                .is_err());
+            }
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

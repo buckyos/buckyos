@@ -66,6 +66,9 @@ jobs:
     - name: Build BuckyOS
       working-directory: ./src
       run: buckyos-build --app=buckyos --target=${{ inputs.arch }}-apple-darwin
+    - name: Assemble BuckyOS Runtime bundle
+      working-directory: ./src
+      run: python tools/macos_runtime_bundle.py assemble
     - name: Install staged payload
       working-directory: ./src
       env:
@@ -96,7 +99,8 @@ jobs:
         STAGE_ROOT: ${{ runner.temp }}/staged
       run: |
         set -euo pipefail
-        version_output="$("$STAGE_ROOT/buckyos/bin/node-daemon/node_daemon" --version)"
+        python src/tools/macos_runtime_bundle.py verify "$STAGE_ROOT/buckyos/bin/node-daemon"
+        version_output="$("$STAGE_ROOT/buckyos/bin/node-daemon/BuckyOS Runtime.app/Contents/MacOS/node_daemon" --version)"
         version_pattern='[0-9]+(\.[0-9]+)*\+build[0-9]+'
         if [[ ! "$version_output" =~ $version_pattern ]]; then
           echo "Unable to parse BuckyOS version from: $version_output" >&2

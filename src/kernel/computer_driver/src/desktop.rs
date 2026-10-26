@@ -57,6 +57,8 @@ extern "C" {
     fn bucky_desktop_keycode(character: u16) -> i32;
     fn bucky_desktop_release(cleanup: u16) -> i32;
     fn bucky_desktop_scroll(x: f64, y: f64, dx: i32, dy: i32, pixel: u32) -> i32;
+    #[cfg(target_os = "macos")]
+    fn bucky_desktop_request_access(capture: *mut u32, input: *mut u32);
     #[cfg(windows)]
     fn bucky_desktop_free(bytes: *mut std::ffi::c_void);
     #[cfg(windows)]
@@ -197,6 +199,18 @@ fn native_capabilities(desktop: &Desktop, paused: bool) -> ComputerCapabilities 
             .collect(),
         focus_guard: focus_guard().into(),
     }
+}
+
+/// Ask macOS for Screen Recording and Accessibility access for this process,
+/// showing the system prompts. Only for an explicit user request (the
+/// Runtime's app entry), never from probes, background tasks or workers.
+/// Returns whether (capture, input) are granted now; Screen Recording takes
+/// effect after the process restarts.
+#[cfg(target_os = "macos")]
+pub fn request_access() -> (bool, bool) {
+    let (mut capture, mut input) = (0u32, 0u32);
+    unsafe { bucky_desktop_request_access(&mut capture, &mut input) };
+    (capture != 0, input != 0)
 }
 
 pub fn capabilities() -> Value {
