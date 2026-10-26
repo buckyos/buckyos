@@ -23,11 +23,11 @@ POST /sdk/appservice/selftest/xllm
 
 该组也包含在 `POST /sdk/appservice/selftest` 全量检测中。
 
-发布验收应在 OOD 上的 Docker 应用容器内运行，保留 node-daemon 注入的 `BUCKYOS_THIS_DEVICE`、`BUCKYOS_ZONE_CONFIG` 和 `BUCKYOS_HOST_GATEWAY`。不要清空设备文档或使用宿主网络绕过 #640。容器需要 bash 和待验证的 `agent_tool`。
+测试可在 OOD 的 node-daemon 启动的应用容器或 Desktop Lite 原生应用进程中运行，保留注入的 `BUCKYOS_THIS_DEVICE`、`BUCKYOS_ZONE_CONFIG` 和 `BUCKYOS_HOST_GATEWAY`。#640 的容器发布验收仍应在 Docker 应用容器内执行，不要清空设备文档或使用宿主网络绕过。运行环境需要 bash 和待验证的 `agent_tool`。
 
 后台使用 `Deno.Command` 启动 `/bin/bash`，再执行 `agent_tool xllm`，将 AppService session 通过 `BUCKYOS_APPCLIENT_SESSION_TOKEN` 传入。测试禁用模型工具，只要求一个固定短回答，会产生一次真实模型请求及少量用量。
 
-通过条件包括：xllm 正常完成，AICC 用量事件的 `trace_id` 对应此次 `run_id`，且事件中的 `caller_app_id`、`user_id`、`tenant_id` 与当前应用实例和所属用户一致。返回结果只包含身份、运行 ID、任务 ID 等证据，不包含 token。运行目录在结束后删除；AICC 用量记录保留供核对。
+通过条件包括：xllm 正常完成，AICC 用量事件的 `trace_id` 对应此次 `run_id`，`caller_app_id` 等于业务 AppId，`user_id`、`tenant_id` 等于安装账号。完整实例身份检查使用 `attribution.caller=app:<AppId>@<owner>`，同时要求 `attribution.app_id`、`user_id`、`operator_id` 与本应用和安装账号一致，`mode=direct`；启动前仍严格核对 AppService session 的实例 claims。返回结果只包含身份、运行 ID、任务 ID 等证据，不包含 token。运行目录在结束后删除；AICC 用量记录保留供核对。
 
 可选环境变量：
 
@@ -37,6 +37,8 @@ POST /sdk/appservice/selftest/xllm
 | `BUCKYOS_SYSTEST_XLLM_MODEL` | `llm.chat` | 使用该 Zone 可用的逻辑模型或精确模型 |
 
 模型请求超时为 60 秒，任务超时为 90 秒，后台在 120 秒时强制结束未退出的子进程。`deno task start` 已包含运行 bash 和写入临时目录所需权限。
+
+`pnpm test` 运行不调用模型的身份断言回归，覆盖正确业务 AppId、完整实例归属，以及错误或缺失身份字段、错误实例 token 的拒绝行为。2026-10-26 使用 `service_debug.tsx` 的环境装配逻辑建立 Desktop Lite 原生 AppService 会话，候选代码的真实 xllm 请求 `20261026-132819-0c00e9` 完成，AICC 的应用、实例、用户与租户归属检查通过；该次验证未覆盖 Docker 容器链路。
 
 ## 客服群与客户链接（Self-host Group 扩展官方例子）
 
@@ -51,6 +53,8 @@ POST /sdk/appservice/selftest/xllm
 客户点链接：未设密码时直接以自己的受限账号进入 `/messagehub/guest`，顶部出现非阻塞的“设置密码”提示（不点即跳过），点“加入”后聊天，侧栏显示“客服工单”面板。设置密码后再点同一链接会要求先输密码，密码登录后回到同一会话。面板内容来自后台 `GET /sdk/appservice/support/summary`（App 服务会话读 `group.list_messages`，只给条数、参与者数和时间，不给正文）。
 
 前置：App 实例 owner 在 App Service 的应用详情页打开“本应用为外部客户代登录”开关（`apps.app_login.set`），成员账号（缺省 alice、bob）存在。限制：只有 App 实例的安装账号能生成链接；客户是 Session Only Member，不进群成员表；面板摘要接口对持有群 DID 的任何人可读（只有计数）；`/support/panel` 由 `www` 端点的 `allow_guest: true` 放行，所以 iframe 内无 App 会话也能加载。
+
+该开关默认关闭，创建客服群不会自动打开。关闭时 `user.app_login.issue` 返回 `access_denied`，结构化 `data.reason=zone_method_disabled`、`data.detail=app_login_disabled`；页面据此提示安装账号开启开关。这是应用实例的授权前置条件，Desktop Lite 同样适用。
 
 验收脚本：后端 `test/test_sys_test/support_group_dv.ts`（见文件头）；浏览器 `src/frame/desktop/tests/dv/support-group-link.spec.ts`。
 
@@ -88,3 +92,9 @@ NDM 卡片提供单文件、多文件和目录选择，统一调用 `ndm.pickupA
 5. 页面显示临时上传 holding 就绪不代表业务持久 retention；此 demo 的只取 ID 分支不会创建长期业务引用。真实应用应在业务提交中接管 retention。
 
 这些步骤要求已部署支持 `/ndm/v1/import/finalize`、授权 `reusable` lookup 和 NFSP `commit_object` 的服务。源码构建 / mock 测试通过不代表已在真实 Zone 完成上述验收；账号角色、SDK/服务版本、浏览器及实际发送字节应随验收记录保存。
+
+### 目录选择回归（2026-10-26）
+
+在 macOS Desktop Lite、Chrome 156、`test.buckyos.io` 上，用本地 WebSDK `0.7.148` 加 picker 修复构建 systest 候选页，复用 devtest 的应用会话，经真实 ZoneGateway 验证原生目录选择及上传：2 个文件、2 个目录、63 字节最终为 `ready`；重复选择相同目录得到相同 ObjId，实际发送 0 字节。SDK 回归覆盖焦点恢复后延迟返回文件列表、原生取消、AbortSignal、空目录及多文件。修复不再以窗口恢复焦点后的固定超时推断取消。
+
+同轮确认：未开启实例代登录时，客服链接显示具体的开关提示；SDK 初始化后才渲染客服卡片，已有群的 Message Hub 链接正确。未验证 Safari/Firefox、大目录、开启代登录后的客户登录流程；未替换已安装应用。

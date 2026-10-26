@@ -908,6 +908,9 @@ impl ZoneSync {
             .map(|(_, result)| result.clone())
             .unwrap_or_default();
         if let Err(error) = self.sync_contacts(&mut applied, agents, force).await {
+            if force {
+                return Err(error);
+            }
             warn!("zone contact sync failed: {}", error);
         }
         Ok(result)
@@ -1776,6 +1779,22 @@ mod zone_contact_tests {
     }
 
     #[tokio::test]
+    async fn forced_zone_sync_requires_contact_directory() {
+        let (center, _tmp) = new_center().await;
+        let sync = ZoneSync::new(center, Arc::new(DeliveryExecutorMgr::new()));
+        let settings = json!({"telegram_tunnel": {"enabled": false}});
+        let expected = load_zone_directory().await.unwrap_err().to_string();
+
+        assert_eq!(
+            sync.apply(&settings, &[], true).await.unwrap_err().to_string(),
+            expected
+        );
+        assert!(sync.applied.lock().await.contacts.is_none());
+        assert!(sync.apply(&settings, &[], false).await.is_ok());
+        assert!(sync.applied.lock().await.contacts.is_none());
+    }
+
+    #[tokio::test]
     async fn bot_api_without_bindings_runs_and_rebuilds_only_on_change() {
         let (center, _tmp) = new_center().await;
         let executor_mgr = Arc::new(DeliveryExecutorMgr::new());
@@ -1785,7 +1804,7 @@ mod zone_contact_tests {
             "gateway": {"mode": "bot_api"},
             "bindings": []
         }});
-        let result = sync.apply(&activated, &[], true).await.unwrap();
+        let result = sync.apply(&activated, &[], false).await.unwrap();
         assert_eq!(result["ok"], true);
         assert_eq!(result["tunnel_started"], true);
         assert_eq!(result["bindings"], 0);

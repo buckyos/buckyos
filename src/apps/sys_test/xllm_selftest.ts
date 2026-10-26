@@ -133,13 +133,21 @@ export async function runXllmIdentitySelftest(
     }
     const expectedCaller = `app:${appInstanceId}`;
     for (const event of events) {
+      const attribution = event.attribution;
       if (
-        event.caller_app_id !== expectedCaller ||
+        event.caller_app_id !== identity.appId ||
         event.user_id !== identity.ownerUserId ||
-        event.tenant_id !== identity.ownerUserId
+        event.tenant_id !== identity.ownerUserId ||
+        !attribution || typeof attribution !== "object" ||
+        Array.isArray(attribution) ||
+        attribution.app_id !== identity.appId ||
+        attribution.user_id !== identity.ownerUserId ||
+        attribution.operator_id !== identity.ownerUserId ||
+        attribution.caller !== expectedCaller ||
+        attribution.mode !== "direct"
       ) {
         throw new Error(
-          `AICC recorded an unexpected caller for xllm run ${result.run_id}: ${event.caller_app_id}/${event.user_id}/${event.tenant_id}`,
+          `AICC recorded an unexpected caller for xllm run ${result.run_id}: expected ${identity.appId}/${identity.ownerUserId}/${identity.ownerUserId}, caller=${expectedCaller}, mode=direct; got ${event.caller_app_id}/${event.user_id}/${event.tenant_id}, attribution=${JSON.stringify(attribution)}`,
         );
       }
     }
@@ -149,7 +157,9 @@ export async function runXllmIdentitySelftest(
       model: result.model,
       hostGateway,
       deviceType: device.device_type,
-      callerAppId: expectedCaller,
+      callerAppId: identity.appId,
+      appInstanceId,
+      caller: expectedCaller,
       userId: identity.ownerUserId,
       usageEvents: events.length,
       taskIds: events.map((event) => event.task_id),

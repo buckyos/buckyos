@@ -86,6 +86,7 @@ export function renderSupportGroupPanel() {
   card.innerHTML = `
     <div class="group-header"><h2 class="group-title">客服群与客户链接（Self-host Group 扩展官方例子）</h2><span class="group-id">support_group</span></div>
     <p class="group-desc">① 用当前登录用户建一个客服群：邀请两位本 Zone 用户，并把本应用提供的页面声明为群的自定义面板。② 为一位外部客户生成 48 小时链接：客户点开即以自己的受限账号进入该 Session，未设密码前链接可反复使用；设了密码之后同一链接要先输密码。③ 清理会删掉这个群。生成链接只允许本应用的安装账号。</p>
+    <p class="group-desc">生成链接前，请由安装账号在 App Service → 本应用详情中开启“本应用为外部客户代登录”。该开关默认关闭，创建客服群不会自动开启。</p>
     <div class="group-actions">
       <input id="sg-name" type="text" aria-label="群名" value="客服群（sys-test）" />
       <input id="sg-member-a" type="text" aria-label="成员 1" value="alice" />
@@ -181,7 +182,13 @@ export function renderSupportGroupPanel() {
         body: JSON.stringify({ group_did: state.group_did, session_id: state.session_id, external_account_id: externalId, show_name: showName, title: `${state.name} · 客服工单` }),
       })
       const data = await response.json() as JsonRecord
-      if (!response.ok || data.ok !== true || typeof data.link !== 'string') throw new Error(String(data.error ?? `HTTP ${response.status}`))
+      if (!response.ok || data.ok !== true || typeof data.link !== 'string') {
+        const denial = isRecord(data.data) ? data.data : {}
+        if (data.code === 'access_denied' && denial.reason === 'zone_method_disabled' && denial.detail === 'app_login_disabled') {
+          throw new Error('本应用尚未开启“为外部客户代登录”。请由安装账号在 App Service → 本应用详情中开启该开关，再生成客户链接。')
+        }
+        throw new Error(String(data.error ?? `HTTP ${response.status}`))
+      }
       const expires = new Date(Number(data.expires_at) * 1000).toLocaleString()
       log({
         icon: '✓',

@@ -519,7 +519,9 @@ fn main() {
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     // On a node session-runtime the AICC clients get the agent's identity
     // from its session (the executor passes no BUCKYOS_* environment).
-    if let Some(name @ ("agent_tool" | "llm_understand_media")) = invoked_name().as_deref() {
+    if let Some(name) = invoked_name().as_deref().filter(|name| {
+        agent_tool_cli_dev::handles_invocation_name(name) || *name == "llm_understand_media"
+    }) {
         for (key, value) in libopendan::baseline::session_identity_env(name) {
             std::env::set_var(key, value);
         }

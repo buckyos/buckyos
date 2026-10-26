@@ -3,8 +3,7 @@ use std::path::Path;
 
 use async_trait::async_trait;
 use buckyos_api::{
-    get_buckyos_api_runtime, init_buckyos_api_runtime, BuckyOSRuntimeType,
-    WorkflowCreateScheduledTaskReq, WorkflowGetScheduledTaskHistoryReq,
+    get_buckyos_api_runtime, WorkflowCreateScheduledTaskReq, WorkflowGetScheduledTaskHistoryReq,
     WorkflowListScheduledTasksReq, WorkflowOwner, WorkflowRunScheduledTaskNowReq,
     WorkflowScheduledTask, WorkflowScheduledTaskFireRecord, WorkflowScheduledTaskMisfirePolicy,
     WorkflowScheduledTaskPolicy, WorkflowScheduledTaskSchedule, WorkflowScheduledTaskStatus,
@@ -476,7 +475,7 @@ async fn workflow_client() -> Result<WorkflowServiceClient, AgentToolError> {
 
     let runtime_context = process_runtime_context()?;
 
-    if runtime_context.is_dev_fallback() {
+    if runtime_context.is_dev_fallback() && runtime_context.appclient_session_token.is_none() {
         if let Some(url) = first_env(&[
             "OPENDAN_WORKFLOW_URL",
             "OPENDAN_WORKFLOW_RPC",
@@ -492,11 +491,14 @@ async fn workflow_client() -> Result<WorkflowServiceClient, AgentToolError> {
     }
 
     runtime_context.require_appclient_session_token()?;
-    let runtime = init_buckyos_api_runtime("agent_tool", None, BuckyOSRuntimeType::AppClient)
+    crate::xllm::ensure_buckyos_runtime()
         .await
         .map_err(|err| {
             AgentToolError::ExecFailed(format!("init runtime for workflow access failed: {err}"))
         })?;
+    let runtime = get_buckyos_api_runtime().map_err(|err| {
+        AgentToolError::ExecFailed(format!("get runtime for workflow access failed: {err}"))
+    })?;
     runtime
         .get_workflow_service_client()
         .await

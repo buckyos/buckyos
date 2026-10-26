@@ -171,7 +171,7 @@ Control Panel 在校验 App session token 后读取绑定 Agent 的权限模式�
 |---|---|
 | `agent.check_name` | 名称检查（与 `user.create` 共用）：DNS 标签、保留名、用户名、任何用户名下的 AgentId（含进行中）、已分配的 App/实例主机名；不可用时给出建议名 |
 | `agent.list_templates` | 系统内置模板（`system/install_settings.agent_templates`）与调用者用 CLI 安装的模板（`users/{owner}/agent_templates/*`）；`template_id` 为 `bundled:<app_id>` / `installed:<app_id>` |
-| `agent.create` | 以 `idempotency_key` 幂等；`permission_mode` 默认 `read_write`，可选 `read_only`；`runtimes` / `default_runtime_id` 保存用户的 runtime 选择；写入保留记录后立即返回状态，后台构造并安装 App、绑定 AgentSpec、校验并绑定 Telegram Bot（可选）、等待 OpenDAN 写入 `info` |
+| `agent.create` | 以 `idempotency_key` 幂等；`permission_mode` 默认 `read_write`，可选 `read_only`；`runtimes` / `default_runtime_id` 保存用户的 runtime 选择；写入保留记录后立即返回状态，后台构造并安装 App、绑定 AgentSpec、校验并绑定 Telegram Bot（可选）、等待 OpenDAN 写入 `info`，同步 msg-center 联系人后才进入 `ready` |
 | `agent.create.status` / `agent.create.retry` / `agent.create.cancel` | 查询创建状态；从失败步骤继续（`skip_tunnel` 放弃通道完成创建）；写入 spec 前取消 |
 | `agent.list` / `agent.get` | 本人名下（Admin 为全部）的 Agent，包括进行中与失败的创建；settings 中不含 Bot Token |
 | `agent.update` | 修改 `allow_group`、`homestation`、`auto_share_results`、`runtimes`、`default_runtime_id` |
@@ -179,6 +179,8 @@ Control Panel 在校验 App session token 后读取绑定 Agent 的权限模式�
 | `agent.profile.get` / `agent.profile.set` | `{display_name, avatar, bio}`，显示名称回退为 Agent 用户名 |
 | `agent.delete` | 先删身份记录，再刷新 RBAC、通知 msg-center、卸载构造 App，最后释放名字 |
 | `agent.set_msg_tunnel` / `agent.remove_msg_tunnel` | 读写 `settings.msg_tunnels`（本期最多一个 Telegram Bot） |
+
+无论是否配置 Telegram，进入 `ready` 前都完成 msg-center 的 Owner 与 Agent 联系人同步，确保创建完成后第一条消息能进入 Agent 的收件箱。已绑定 Telegram 时沿用 `tunnel` 步骤完成的同步，其余情况在 `start` 步骤同步；后者失败时创建状态为 `failed`，`last_error.code = msg_center_reload_failed` 且可重试。恢复服务后调用 `agent.create.retry` 从失败步骤继续，保留已安装实例与 Agent 身份。
 
 `apps.submit` 收到 Agent 类型的 PIKG 时不安装运行时实例，而是注册为调用者的 Agent 模板（返回 `template_registered` / `template_updated` / `satisfied`，`task_id` 为空）；模板更新会按各 Agent 的 `template_auto_update` 重建其构造 App。
 

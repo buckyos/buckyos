@@ -1485,7 +1485,11 @@ impl BuckyOSRuntime {
     }
 
     async fn login_once(&mut self) -> Result<()> {
-        if !self.zone_id.is_valid() {
+        if !self.zone_id.is_valid()
+            && !(self.runtime_type == BuckyOSRuntimeType::AppClient
+                && self.resolve_appclient_gateway_host().is_some()
+                && !self.session_token.read().await.trim().is_empty())
+        {
             return Err(RPCErrors::ReasonError(
                 "Zone id is not valid,api-runtime.login failed".to_string(),
             ));
@@ -3576,9 +3580,11 @@ mod tests {
         use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
         use tokio::net::TcpListener;
 
-        for target in [
-            AuthTarget::app("notes.example.com@alice".parse().unwrap()),
-            AuthTarget::system("control-panel".parse().unwrap()),
+        for (target, supplied_zone) in [
+            (AuthTarget::app("notes.example.com@alice".parse().unwrap()), true),
+            (AuthTarget::system("control-panel".parse().unwrap()), true),
+            (AuthTarget::app("notes.example.com@alice".parse().unwrap()), false),
+            (AuthTarget::system("control-panel".parse().unwrap()), false),
         ] {
             let (_, public_key) = generate_ed25519_key_pair();
             let zone_doc = ZoneDocument::new(
@@ -3630,16 +3636,20 @@ mod tests {
             let mut runtime = {
                 let previous_token =
                     crate::tests::set_env_var(BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV, &session_token);
-                let previous_zone = crate::tests::set_env_var(
-                    "BUCKYOS_ZONE_CONFIG",
-                    &serde_json::to_string(&zone_config).unwrap(),
-                );
+                let previous_zone = env::var("BUCKYOS_ZONE_CONFIG").ok();
+                if supplied_zone {
+                    env::set_var("BUCKYOS_ZONE_CONFIG", serde_json::to_string(&zone_config).unwrap());
+                } else {
+                    env::remove_var("BUCKYOS_ZONE_CONFIG");
+                }
                 let mut device_doc = DeviceDocument::new("ood1", "test-key".to_string());
                 device_doc.device_type = "ood".to_string();
-                let previous_device = crate::tests::set_env_var(
-                    "BUCKYOS_THIS_DEVICE",
-                    &serde_json::to_string(&device_doc).unwrap(),
-                );
+                let previous_device = env::var("BUCKYOS_THIS_DEVICE").ok();
+                if supplied_zone {
+                    env::set_var("BUCKYOS_THIS_DEVICE", serde_json::to_string(&device_doc).unwrap());
+                } else {
+                    env::remove_var("BUCKYOS_THIS_DEVICE");
+                }
                 let result = crate::init_buckyos_api_runtime(
                     target.appid_claim(),
                     None,
@@ -3654,7 +3664,8 @@ mod tests {
             runtime.node_gateway_port = gateway_port;
             assert_eq!(runtime.get_auth_target().unwrap(), target);
             assert!(runtime.get_authenticated_user_id().is_none());
-            assert!(runtime.is_ood());
+            assert_eq!(runtime.is_ood(), supplied_zone);
+            assert_eq!(runtime.zone_id.is_valid(), supplied_zone);
             assert!(runtime.system_config_client.get().is_none());
 
             let login = tokio::time::timeout(Duration::from_secs(5), runtime.login()).await;
@@ -3671,6 +3682,7 @@ mod tests {
             assert_eq!(request["params"]["key"], "boot/config");
             assert_eq!(request["sys"][1], session_token);
             assert_eq!(runtime.get_auth_target().unwrap(), target);
+            assert_eq!(runtime.zone_id, zone_doc.id);
             assert_eq!(runtime.zone_config.as_ref(), Some(&zone_config));
             assert_eq!(runtime.get_authenticated_user_id().as_deref(), Some("bob"));
             match &target {
@@ -3683,6 +3695,46 @@ mod tests {
             }
             assert!(runtime.device_private_key.is_none());
             assert!(runtime.user_private_key.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn appclient_session_login_without_zone_requires_a_gateway_and_valid_identity() {
+        let _env = RefreshTestEnv::new();
+        let target = AuthTarget::app("notes.example.com@alice".parse().unwrap());
+        let token = appclient_session_token(&target, TokenUse::Session);
+        for (runtime_type, gateway, session_token) in [
+            (BuckyOSRuntimeType::AppClient, None, token.as_str()),
+            (BuckyOSRuntimeType::AppClient, Some(" "), token.as_str()),
+            (BuckyOSRuntimeType::AppClient, Some("127.0.0.1"), ""),
+            (BuckyOSRuntimeType::AppService, Some("127.0.0.1"), token.as_str()),
+        ] {
+            match gateway {
+                Some(host) => env::set_var(BUCKYOS_HOST_GATEWAY_ENV, host),
+                None => env::remove_var(BUCKYOS_HOST_GATEWAY_ENV),
+            }
+            let mut runtime = BuckyOSRuntime::new("notes.example.com", None, runtime_type);
+            *runtime.session_token.write().await = session_token.to_string();
+            let error = runtime.login_once().await.unwrap_err();
+            assert!(error.to_string().contains("Zone id is not valid"), "{error}");
+            assert!(runtime.system_config_client.get().is_none());
+        }
+
+        env::set_var(BUCKYOS_HOST_GATEWAY_ENV, "127.0.0.1");
+        for (app_id, session_token, expected_error) in [
+            ("other.example.com", token, "Session token is not valid"),
+            (
+                "notes.example.com",
+                appclient_session_token(&target, TokenUse::Refresh),
+                "token_use mismatch",
+            ),
+        ] {
+            let mut runtime = BuckyOSRuntime::new(app_id, None, BuckyOSRuntimeType::AppClient);
+            *runtime.session_token.write().await = session_token;
+            let error = runtime.login_once().await.unwrap_err();
+            assert!(error.to_string().contains(expected_error), "{error}");
+            assert!(runtime.system_config_client.get().is_none());
+            assert!(runtime.get_authenticated_user_id().is_none());
         }
     }
 

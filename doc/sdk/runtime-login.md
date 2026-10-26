@@ -106,7 +106,7 @@ verify-hub 沿用 `access_denied` / `AccessDenial`：`credential_state` 的 deta
 
 | RuntimeType | 典型进程 | 登录材料来源 | 使用者要注意 |
 | --- | --- | --- | --- |
-| `AppClient` | BuckyOS Tool、桌面外部客户端、容器内工具、Deno/TS client | `BUCKYOS_APPCLIENT_SESSION_TOKEN`，或本地 user config + user private key | Rust runtime 可通过显式 `BUCKYOS_HOST_GATEWAY` 访问 NodeGateway，否则通过 zone host 访问服务；必须提供有效 Zone 身份 |
+| `AppClient` | BuckyOS Tool、桌面外部客户端、容器内工具、Deno/TS client | `BUCKYOS_APPCLIENT_SESSION_TOKEN`，或本地 user config + user private key | Rust runtime 使用有效 session token 和显式 `BUCKYOS_HOST_GATEWAY` 时可在登录中加载 Zone 配置；否则通过已配置的 zone host 访问服务 |
 | `AppService` | 用户安装的 app service | `BUCKYOS_APP_DID/APP_ID/APP_INSTANCE_ID/OWNER_USER_ID/DATA_DIR/APP_TOKEN` | 固定身份变量必须完整且互相一致；不要用 app-service 自己的 token 冒充页面用户 |
 | `FrameService` | frame 系统服务 | 设备配置和 `<SERVICE>_SESSION_TOKEN` | `login()` 后会加载 RBAC 和 trust keys |
 | `KernelService` | scheduler、task-manager 等 kernel service | `<APP>_SESSION_TOKEN`、`BUCKYOS_THIS_DEVICE` 等启动环境 | 使用所在 DeviceId 作为主体；通常由 node-daemon/boot 流程准备；不会自动读设备私钥 |
@@ -145,6 +145,8 @@ AppClient 面向用户交互程序。它可以有两种方式获得可用 token�
 2. 从本地 `.buckycli` / `.buckyos` 等目录读取 user config 和 user private key，生成本地登录 JWT，再通过 verify-hub 兑换。
 
 Rust AppClient 的服务路径由 `BUCKYOS_HOST_GATEWAY` 决定，与 token 来源和 `BUCKYOS_THIS_DEVICE.device_type` 无关。变量非空时，system-config 和其它 kRPC 服务通过 `http://<resolved_host_gateway>:<node_gateway_port>/kapi/<service>` 访问，默认端口为 `3180`；变量缺失、为空或只有空白时走 Zone host，并遵循 runtime 的 HTTPS 策略。容器内工具应继承 node-daemon 注入的网关地址和设备文档；宿主机工具需要本机路径时设置 `BUCKYOS_HOST_GATEWAY=127.0.0.1`。
+
+注入有效 session token 并显式指定 NodeGateway 的 Rust AppClient 不需要本地 Zone 配置或私钥：`login()` 校验 token 的 appid、用途和 target 后，通过网关读取 Zone 配置并补齐 Zone 身份。OpenDAN 的宿主 Session 工具通过 `.opendan/` 向 AgentService 取得当前 token，使用此流程；不应为 `llm_understand_media`、`agent_tool xllm`、`dcrontab`、`check_task`、`cancel_task` 等命令额外配置 `.buckycli` 或复制宿主密钥。Workflow 和 TaskManager 工具复用已初始化的 runtime；独立启动时以 Agent 的 AppClient 身份登录，Agent token 优先于开发用 RPC 地址和 token 覆盖。宿主多命令入口的工具别名与 `agent_tool <command>` 使用相同的 Session 身份获取逻辑。
 
 TS/Deno 侧常见写法是：
 

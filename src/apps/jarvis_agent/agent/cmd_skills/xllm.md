@@ -18,7 +18,8 @@ baseline: standard
 - `xllm` is not on PATH; call it as `agent_tool xllm …`.
 - In a session shell it logs in to AICC with the agent's token from the environment (refreshed per shell call,
   ~15 min life); on a node session-runtime the `agent_tool` entry asks your agent for that token over the session's
-  `.opendan/` token. Without either (a bare `docker exec`) you get exit 2 `cannot initialize BuckyOS runtime …`.
+  `.opendan/` token and loads Zone configuration through the node gateway; no local `.buckycli` or private key is needed.
+  Without either (a bare `docker exec`) you get exit 2 `cannot initialize BuckyOS runtime …`.
 - Check: `agent_tool xllm --run-logs warn "Reply with: ok"` prints `ok`, exit 0.
 - A directory per task keeps runs and files apart:
   `mkdir -p xllm/<task> && cd xllm/<task> && printf 'runs_dir: ./runs\n' > .llm_context`.

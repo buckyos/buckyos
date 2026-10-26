@@ -600,7 +600,6 @@ async function extractNdmObjects() {
 async function main() {
   renderGroups()
   renderNdmDemoPanel()
-  renderSupportGroupPanel()
   setAuthStatus({ kind: 'init' })
 
   try {
@@ -635,6 +634,7 @@ async function main() {
     return
   }
 
+  renderSupportGroupPanel()
   await refreshAuthFromSdk()
 
   ;($('btn-login') as HTMLButtonElement).addEventListener('click', async () => {

@@ -8,6 +8,7 @@
   "scripts": {
     "update:sdk": "pnpm --recursive --include-workspace-root update --no-save buckyos",
     "check": "deno check main.ts && pnpm --filter ./web exec tsc --noEmit",
+    "test": "deno test --allow-env --allow-read --allow-write --allow-run=/bin/bash xllm_selftest_test.ts",
     "build:web": "pnpm --filter ./web run build",
     "build": "pnpm run update:sdk && pnpm run check && pnpm --filter ./web run build:bundle && node prepare.mjs"
   }

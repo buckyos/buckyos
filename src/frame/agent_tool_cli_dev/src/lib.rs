@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use buckyos_api::{
-    get_buckyos_api_runtime, init_buckyos_api_runtime, load_app_identity_from_env,
-    parse_typed_task_data, BuckyOSRuntimeType, CommitResultReq, FailTaskReq, RunnerWriteEnvelope,
+    get_buckyos_api_runtime, load_app_identity_from_env,
+    parse_typed_task_data, CommitResultReq, FailTaskReq, RunnerWriteEnvelope,
     Task, TaskDataType, TaskError, TaskManagerClient, TaskOutcome, TaskPhase, ToolShellTaskData,
     TypedTaskData,
 };
@@ -4815,20 +4815,23 @@ async fn build_task_manager_client(
         });
     }
 
-    if env.allow_dev_overrides() {
+    if env.allow_dev_overrides() && env.runtime_context.appclient_session_token.is_none() {
         if let Some(client) = resolve_dev_task_manager_client() {
             return Ok(client);
         }
     }
 
     require_runtime_token_for_rpc(env)?;
-    let runtime = init_buckyos_api_runtime("opendan", None, BuckyOSRuntimeType::FrameService)
+    agent_tool::xllm::ensure_buckyos_runtime()
         .await
         .map_err(|err| {
             AgentToolError::ExecFailed(format!(
                 "init runtime for task-manager access failed: {err}"
             ))
         })?;
+    let runtime = get_buckyos_api_runtime().map_err(|err| {
+        AgentToolError::ExecFailed(format!("get runtime for task-manager access failed: {err}"))
+    })?;
     runtime.get_task_mgr_client().await.map_err(|err| {
         AgentToolError::ExecFailed(format!("init task-manager client failed: {err}"))
     })

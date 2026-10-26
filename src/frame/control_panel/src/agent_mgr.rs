@@ -1729,6 +1729,19 @@ async fn step_start(
                     && info.generation == spec.generation
             })
         {
+            if record.tunnel_state != AgentTunnelState::Bound {
+                if let Err(error) = ops.reload_msg_center().await {
+                    return fail_step(
+                        ops,
+                        owner,
+                        record,
+                        version,
+                        AgentCreateStep::Start,
+                        AgentFailure::new("msg_center_reload_failed", error, true),
+                    )
+                    .await;
+                }
+            }
             record.state = AgentInstallState::Ready;
             record.step = AgentCreateStep::Done;
             record.updated_at = ops.now();
@@ -3442,6 +3455,7 @@ mod tests {
         tasks: Mutex<HashMap<String, (TaskKind, VecDeque<TaskState>)>>,
         uninstalls: Mutex<VecDeque<Option<String>>>,
         telegram: Mutex<Option<Result<String, AgentFailure>>>,
+        msg_center_error: Mutex<Option<String>>,
         calls: Mutex<Vec<String>>,
         start_timeout: u64,
     }
@@ -3542,7 +3556,10 @@ mod tests {
 
         async fn reload_msg_center(&self) -> Result<(), RPCErrors> {
             self.call("reload_msg_center");
-            Ok(())
+            match self.msg_center_error.lock().unwrap().clone() {
+                Some(error) => Err(RPCErrors::ReasonError(error)),
+                None => Ok(()),
+            }
         }
 
         async fn start_uninstall(
@@ -4497,7 +4514,51 @@ mod tests {
         report_loaded(&ops, &agent_id);
         ops.drive(&agent_id).await;
         assert_eq!(ops.record(&agent_id).state, AgentInstallState::Ready);
-        assert_eq!(ops.calls(), vec!["refresh_rbac"]);
+        assert_eq!(ops.calls(), vec!["refresh_rbac", "reload_msg_center"]);
+    }
+
+    #[tokio::test]
+    async fn creation_waits_for_message_contacts_and_retries_sync_failure() {
+        let ops = FakeOps::new();
+        let agent_id = reserve(&ops, "xiaobai", None).await;
+        ops.submits
+            .lock()
+            .unwrap()
+            .push_back(Ok(RuntimeSubmit::Satisfied(built("0.7.0"))));
+        install_runtime(&ops, &agent_id);
+        assert!(drive_agent_step(&ops, OWNER, &agent_id).await.unwrap());
+        assert!(drive_agent_step(&ops, OWNER, &agent_id).await.unwrap());
+        report_loaded(&ops, &agent_id);
+        *ops.msg_center_error.lock().unwrap() = Some("contact sync unavailable".to_string());
+
+        ops.drive(&agent_id).await;
+        let mut record = ops.record(&agent_id);
+        assert_eq!(record.state, AgentInstallState::Failed);
+        assert_eq!(record.step, AgentCreateStep::Start);
+        let error = record.last_error.as_ref().unwrap();
+        assert_eq!(error.step, AgentCreateStep::Start);
+        assert_eq!(error.code, "msg_center_reload_failed");
+        assert!(error.message.contains("contact sync unavailable"));
+        assert!(error.retryable);
+        assert!(ops.kv.has(&agent_spec_key(OWNER, &agent_id)));
+
+        *ops.msg_center_error.lock().unwrap() = None;
+        prepare_retry(&mut record, None, false, ops.now()).unwrap();
+        ops.kv.put(&agent_install_record_key(OWNER, &agent_id), &record);
+        ops.drive(&agent_id).await;
+        let record = ops.record(&agent_id);
+        assert_eq!(record.state, AgentInstallState::Ready);
+        assert_eq!(record.step, AgentCreateStep::Done);
+        assert!(record.last_error.is_none());
+        assert_eq!(
+            ops.calls(),
+            vec![
+                "submit_runtime",
+                "refresh_rbac",
+                "reload_msg_center",
+                "reload_msg_center",
+            ]
+        );
     }
 
     #[tokio::test]

@@ -71,7 +71,7 @@ export const TEST_GROUPS: TestGroup[] = [
   {
     id: 'xllm',
     title: 'xllm 子进程身份（#640）',
-    description: '后台通过 bash 启动 xllm，继承 OOD 与容器网关环境，发起一次真实模型请求，并从 AICC 用量记录核对应用身份。需在 OOD 应用容器中运行，会消耗少量模型额度。',
+    description: '后台通过 bash 启动 xllm，继承 OOD 与网关环境，发起一次真实模型请求，并从 AICC 用量记录核对应用及实例身份。支持 OOD 上的应用容器和 Desktop Lite 原生应用，会消耗少量模型额度。',
     backendOnly: true,
     cases: [],
   },
