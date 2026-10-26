@@ -214,7 +214,7 @@ impl MessageCenter {
                 zone: None,
                 reason: Some("not-found".into()),
             },
-            Err(DirectoryError::Unavailable(_)) => Reachability {
+            Err(DirectoryError::Unavailable(_) | DirectoryError::Timeout) => Reachability {
                 state: ReachabilityState::Unreachable,
                 zone: None,
                 reason: Some("resolve-failed".into()),
@@ -432,8 +432,8 @@ impl MessageCenter {
         let profile = match profile {
             Ok(profile) => profile,
             Err(DirectoryError::NotFound(reason)) => return Ok(Err(lookup_error("not-found", reason))),
-            Err(DirectoryError::Unavailable(reason)) => {
-                return Ok(Err(lookup_error("unreachable", reason)))
+            Err(error @ (DirectoryError::Unavailable(_) | DirectoryError::Timeout)) => {
+                return Ok(Err(lookup_error("unreachable", error.to_string())))
             }
         };
         let reachability = match profile.zone.clone() {

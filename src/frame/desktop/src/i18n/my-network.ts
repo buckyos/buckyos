@@ -110,6 +110,7 @@ export const myNetworkEn: Record<string, string> = {
   'myNetwork.requests.delivery.delivered': 'Waiting for confirmation',
   'myNetwork.requests.delivery.failed': 'Not delivered',
   'myNetwork.requests.delivery.unknown': 'Waiting for confirmation',
+  'myNetwork.requests.resend': 'Send again',
   'myNetwork.requests.partial': 'Some requests could not be loaded; the list may be incomplete.',
   'myNetwork.requests.empty': 'No requests. You are all caught up.',
 
@@ -258,6 +259,7 @@ export const myNetworkZh: Record<string, string> = {
   'myNetwork.requests.delivery.delivered': '等待对方确认',
   'myNetwork.requests.delivery.failed': '未送达',
   'myNetwork.requests.delivery.unknown': '等待对方确认',
+  'myNetwork.requests.resend': '重新发送',
   'myNetwork.requests.partial': '部分请求加载失败，列表可能不完整。',
   'myNetwork.requests.empty': '没有待处理的请求。',
 

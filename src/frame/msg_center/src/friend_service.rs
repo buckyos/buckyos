@@ -539,6 +539,40 @@ impl MessageCenter {
         request
     }
 
+    /// Sending a pending request again revives its native delivery when that
+    /// gave up: the same message is queued anew.
+    async fn requeue_dead_delivery(&self, request: &FriendRequest) -> Result<()> {
+        let Some(msg_id) = request
+            .msg_id
+            .as_deref()
+            .and_then(|id| ndn_lib::ObjId::new(id).ok())
+        else {
+            return Ok(());
+        };
+        let mut requeued = false;
+        for mut record in self.msg_box_db.list_deliveries_for_msg(&msg_id).await? {
+            if !matches!(record.state, DeliveryState::Dead | DeliveryState::Failed) {
+                continue;
+            }
+            record.state = DeliveryState::Wait;
+            record.attempts = 0;
+            record.next_retry_at_ms = None;
+            record.updated_at_ms = Self::now_ms();
+            self.msg_box_db.upsert_delivery(&record).await?;
+            Self::publish_delivery_changed_event(&record, "enqueue");
+            requeued = true;
+        }
+        if requeued {
+            info!(
+                "friend request {} to {} queued for delivery again",
+                request.request_id,
+                request.peer_did.to_string()
+            );
+            self.publish_sent_delivery_changed(&msg_id).await;
+        }
+        Ok(())
+    }
+
     async fn canonical_peer(&self, owner: &DID, peer: &DID) -> Result<DID> {
         self.contact_mgr
             .resolve_canonical_did(peer.clone(), Some(owner.clone()))
@@ -595,6 +629,7 @@ impl MessageCenter {
                     .respond_friend_request(owner, &pending.request_id, FriendRequestDecision::Accept)
                     .await;
             }
+            self.requeue_dead_delivery(&pending).await?;
             return Ok(FriendRequestResult {
                 friend_state: FriendState::OutgoingPending,
                 request: Some(self.with_delivery(pending).await),

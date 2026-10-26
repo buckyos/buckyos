@@ -1,4 +1,5 @@
 use crate::msg_center::MessageCenter;
+use crate::network_directory::DirectoryError;
 use buckyos_api::{get_buckyos_api_runtime, DeliveryReportResult, DispatchResult};
 use buckyos_http_server::ServerError;
 use bytes::Bytes;
@@ -513,24 +514,30 @@ pub(crate) async fn verify_signed_message(
 
 /// Zone custody: a device of the Zone that hosts `author` signs for it
 /// (same rule as HomeStation; known risk: the Zone can sign for its users).
-async fn zone_signs_for(center: &MessageCenter, signer: &DID, author: &DID) -> bool {
+/// `Err` when a Zone cannot be resolved right now: no proof either way.
+pub(crate) async fn zone_signs_for(
+    center: &MessageCenter,
+    signer: &DID,
+    author: &DID,
+) -> std::result::Result<bool, DirectoryError> {
     let directory = center.directory.get();
-    let Ok(Some(device_zone)) = directory.zone_of(signer).await else {
-        return false;
+    let device_zone = match directory.zone_of(signer).await {
+        Ok(Some(zone)) => zone,
+        Ok(None) | Err(DirectoryError::NotFound(_)) => return Ok(false),
+        Err(error) => return Err(error),
     };
     if center.is_hosted_identity(author) {
         let local_zone =
             local_zone_host().or_else(|| center.cyfs_dispatch.read().unwrap().target_zone.clone());
         if local_zone.is_some_and(|zone| zone.eq_ignore_ascii_case(&device_zone)) {
-            return true;
+            return Ok(true);
         }
     }
-    directory
-        .zone_of(author)
-        .await
-        .ok()
-        .flatten()
-        .is_some_and(|zone| zone.eq_ignore_ascii_case(&device_zone))
+    match directory.zone_of(author).await {
+        Ok(zone) => Ok(zone.is_some_and(|zone| zone.eq_ignore_ascii_case(&device_zone))),
+        Err(DirectoryError::NotFound(_)) => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 /// `center` enables the Zone-custody rule for signers other than `from`.
@@ -545,21 +552,35 @@ pub(crate) async fn verify_signed_message_with(
         .ok_or((StatusCode::FORBIDDEN, "signer-mismatch"))?;
     let mut custody = false;
     if signer != decoded.msg.from {
-        custody = match center {
+        let zone_rule = match center {
             Some(center) => zone_signs_for(center, &signer, &decoded.msg.from).await,
-            None => false,
+            None => Ok(false),
+        };
+        custody = matches!(zone_rule, Ok(true));
+        // An unresolved Zone proves nothing: the sender retries later.
+        let mismatch = match &zone_rule {
+            Err(error) => {
+                log::warn!(
+                    "zone of signer {} for {} unavailable: {}",
+                    signer.to_string(),
+                    decoded.msg.from.to_string(),
+                    error
+                );
+                (StatusCode::SERVICE_UNAVAILABLE, "signing-key-unavailable")
+            }
+            Ok(_) => (StatusCode::FORBIDDEN, "signer-mismatch"),
         };
         if !custody {
             if decoded.msg.from.method == "dev" {
-                return Err((StatusCode::FORBIDDEN, "signer-mismatch"));
+                return Err(mismatch);
             }
             let doc = name_client::resolve_did(&decoded.msg.from, None)
                 .await
                 .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "signing-key-unavailable"))?
                 .to_json_value()
-                .map_err(|_| (StatusCode::FORBIDDEN, "signer-mismatch"))?;
+                .map_err(|_| mismatch)?;
             if !authorizes_signer(&doc, &decoded.msg.from, &signer, &decoded.kid) {
-                return Err((StatusCode::FORBIDDEN, "signer-mismatch"));
+                return Err(mismatch);
             }
         }
     }
@@ -625,11 +646,11 @@ pub(crate) async fn auto_route(
                 false,
             ))
         }
-        Err(crate::network_directory::DirectoryError::NotFound(reason)) => {
+        Err(DirectoryError::NotFound(reason)) => {
             return Err(failure("native-route-unresolved", reason, false))
         }
-        Err(crate::network_directory::DirectoryError::Unavailable(reason)) => {
-            return Err(failure("native-route-unavailable", reason, true))
+        Err(error @ (DirectoryError::Unavailable(_) | DirectoryError::Timeout)) => {
+            return Err(failure("native-route-unavailable", error.to_string(), true))
         }
     };
     let target_url = normalize_cyfs_dispatch_target(&zone, &user_inbox_path(target))

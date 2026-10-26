@@ -2262,7 +2262,7 @@ impl MessageCenter {
     /// time and never changes the SENT record itself, so the record is
     /// announced as changed for the sender's own subscribers (MessageHub
     /// refreshes its delivery state from that event).
-    async fn publish_sent_delivery_changed(&self, msg_id: &ObjId) {
+    pub(crate) async fn publish_sent_delivery_changed(&self, msg_id: &ObjId) {
         match self.msg_box_db.list_message_records(msg_id).await {
             Ok(records) => {
                 for record in records

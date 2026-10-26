@@ -140,6 +140,11 @@ test.describe('My Network', () => {
     await expect(sent.getByTestId('request-friend-outgoing')).toHaveCount(3)
     await expect(sent).toContainText('Nora')
     await expect(sent.getByTestId('request-friend-outgoing').filter({ hasText: 'Oscar' })).toContainText('Waiting for delivery')
+    const ivan = sent.getByTestId('request-friend-outgoing').filter({ hasText: 'Ivan' })
+    await expect(ivan).toContainText('Not delivered')
+    await ivan.getByRole('button', { name: 'Send again', exact: true }).click()
+    await expect(ivan).toContainText('Waiting for delivery')
+    await expect(ivan.getByRole('button', { name: 'Send again', exact: true })).toHaveCount(0)
     expect(errors).toEqual([])
   })
 

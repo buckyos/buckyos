@@ -347,7 +347,10 @@ export function createMockNetworkBackend(): NetworkBackend {
         created.tags = [...new Set([...(created.tags ?? []), person.kind === 'agent' ? 'zone_agent' : 'zone_user'])]
         return { friend_state: 'friend' }
       }
-      if (existing) return { friend_state: 'outgoing_pending', request: existing }
+      if (existing) {
+        if (existing.delivery?.state === 'failed') existing.delivery = { state: 'pending' }
+        return { friend_state: 'outgoing_pending', request: existing }
+      }
       const target = ensureContact(did)
       target.friend_state = 'outgoing_pending'
       touch(target)

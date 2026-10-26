@@ -3,14 +3,14 @@ use crate::msg_box_db::MsgBoxDbMgr;
 use crate::msg_center::MessageCenter;
 use crate::msg_tunnel::DeliveryExecutor;
 use crate::network_directory::test_support::StaticDirectory;
-use crate::network_directory::ZoneSigner;
+use crate::network_directory::{DidProfile, DirectoryError, NetworkDirectory, ZoneSigner};
 use crate::owner_session::{SessionTokenVerifier, ZoneAgentInfo};
 use crate::test_group_service::http_fixture;
 use buckyos_api::{
     bind_token_principal_kind, bind_token_target, AccessGroupLevel, AuthTarget, Contact,
-    ContactQuery, DeliveryRecordWithObject, FriendRequest, FriendRequestPage, FriendRequestResult,
-    FriendState, LookupKind, LookupResult, MailboxAddress, MailboxKind, MsgCenterHandler,
-    SystemServiceId, TokenPrincipalKind, TokenUse,
+    ContactQuery, DeliveryRecord, DeliveryRecordWithObject, DeliveryState, FriendRequest,
+    FriendRequestPage, FriendRequestResult, FriendState, LookupKind, LookupResult, MailboxAddress,
+    MailboxKind, MsgCenterHandler, SystemServiceId, TokenPrincipalKind, TokenUse,
 };
 use jsonwebtoken::{DecodingKey, EncodingKey};
 use kRPC::{RPCContext, RPCErrors, RPCSessionToken, RPCSessionTokenType};
@@ -115,33 +115,134 @@ async fn dm_records(c: &MessageCenter, owner: &DID, peer: &DID, kind: MailboxKin
         .len()
 }
 
-/// Run the native executor over everything queued, as the delivery pump does.
-async fn pump(c: &MessageCenter) -> usize {
-    let executor = MessageHubExecutor::new(hub(), c.clone());
-    let mut delivered = 0;
-    while let Some(record) = c
+/// Run the native executor over one queued record; the record as reported.
+async fn pump_once(c: &MessageCenter) -> Option<DeliveryRecord> {
+    let record = c
         .msg_box_db
         .take_next_delivery(&hub(), u64::MAX / 2, true)
         .await
-        .unwrap()
-    {
-        let msg = c.load_message(&record.envelope.msg_id).await.unwrap();
-        let id = record.delivery_id.clone();
-        let report = executor
-            .execute_delivery(DeliveryRecordWithObject {
-                record,
-                msg: Some(msg),
-            })
-            .await
-            .unwrap();
-        if report.ok {
+        .unwrap()?;
+    let msg = c.load_message(&record.envelope.msg_id).await.unwrap();
+    let id = record.delivery_id.clone();
+    let report = MessageHubExecutor::new(hub(), c.clone())
+        .execute_delivery(DeliveryRecordWithObject {
+            record,
+            msg: Some(msg),
+        })
+        .await
+        .unwrap();
+    c.handle_report_delivery(id.clone(), report, RPCContext::default())
+        .await
+        .unwrap();
+    c.msg_box_db.get_delivery(&id).await.unwrap()
+}
+
+/// Run the native executor over everything queued, as the delivery pump does.
+async fn pump(c: &MessageCenter) -> usize {
+    let mut delivered = 0;
+    while let Some(record) = pump_once(c).await {
+        if record.state == DeliveryState::Sent {
             delivered += 1;
         }
-        c.handle_report_delivery(id, report, RPCContext::default())
-            .await
-            .unwrap();
     }
     delivered
+}
+
+/// Alice on Zone A and Bob on Zone B, each Zone signing with its OOD device
+/// and reaching the other without configured routes.
+struct TwoZones {
+    a: MessageCenter,
+    b: MessageCenter,
+    alice: DID,
+    bob: DID,
+    device_a: DID,
+    directory: Arc<StaticDirectory>,
+    _keep: (
+        TempDir,
+        TempDir,
+        tokio::task::JoinHandle<()>,
+        tokio::task::JoinHandle<()>,
+    ),
+}
+
+async fn two_zones(tag: &str) -> TwoZones {
+    let alice = user("alice", "a.example");
+    let bob = user("bob", "b.example");
+    let device_a = DID::new("dev", ZONE_A_DEVICE);
+    let device_b = DID::new("dev", ZONE_B_DEVICE);
+    let (a, ta) = open(&format!("{tag}-a"), "a.example", &[alice.clone()]).await;
+    let (b, tb) = open(&format!("{tag}-b"), "b.example", &[bob.clone()]).await;
+    let directory = StaticDirectory::with(vec![
+        (alice.clone(), LookupKind::User, "Alice", "a.example"),
+        (bob.clone(), LookupKind::User, "Bob", "b.example"),
+        (device_a.clone(), LookupKind::Device, "ood-a", "a.example"),
+        (device_b.clone(), LookupKind::Device, "ood-b", "b.example"),
+    ]);
+    for (center, key, device) in [(&a, ZONE_A_KEY, &device_a), (&b, ZONE_B_KEY, &device_b)] {
+        center.directory.set(directory.clone());
+        center.zone_signer.set(ZoneSigner {
+            key: EncodingKey::from_ed_pem(key.as_bytes()).unwrap(),
+            kid: format!("{}#main_key", device.to_string()),
+        });
+    }
+    let serve = |center: MessageCenter| {
+        http_fixture(move |req| {
+            let center = center.clone();
+            async move { crate::cyfs_dispatch::serve(&center, req).await }
+        })
+    };
+    let (url_a, sa) = serve(a.clone()).await;
+    let (url_b, sb) = serve(b.clone()).await;
+    a.cyfs_dispatch
+        .write()
+        .unwrap()
+        .zone_origins
+        .insert("b.example".into(), url_b);
+    b.cyfs_dispatch
+        .write()
+        .unwrap()
+        .zone_origins
+        .insert("a.example".into(), url_a);
+    TwoZones {
+        a,
+        b,
+        alice,
+        bob,
+        device_a,
+        directory,
+        _keep: (ta, tb, sa, sb),
+    }
+}
+
+/// `inner`, except that the next `timeouts` lookups of `did` time out.
+struct SlowDirectory {
+    inner: Arc<StaticDirectory>,
+    did: DID,
+    timeouts: std::sync::Mutex<usize>,
+}
+
+impl SlowDirectory {
+    fn new(inner: Arc<StaticDirectory>, did: DID, timeouts: usize) -> Arc<Self> {
+        Arc::new(Self {
+            inner,
+            did,
+            timeouts: std::sync::Mutex::new(timeouts),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl NetworkDirectory for SlowDirectory {
+    async fn describe(&self, did: &DID) -> Result<DidProfile, DirectoryError> {
+        if did == &self.did {
+            let mut left = self.timeouts.lock().unwrap();
+            if *left > 0 {
+                *left -= 1;
+                return Err(DirectoryError::Timeout);
+            }
+        }
+        self.inner.describe(did).await
+    }
 }
 
 #[tokio::test]
@@ -799,6 +900,93 @@ async fn friend_request_and_chat_cross_two_zones() {
     .await
     .unwrap();
     assert!(!report.ok);
+}
+
+/// Zone B cannot tell yet which Zone signed Alice's request (name service
+/// timeout): that is a retryable refusal, not a signer mismatch, and the
+/// next attempt goes through (issue #684).
+#[tokio::test]
+async fn unresolved_signer_zone_is_retried_not_dead() {
+    let z = two_zones("slow-signer").await;
+    z.b.directory.set(SlowDirectory::new(
+        z.directory.clone(),
+        z.device_a.clone(),
+        1,
+    ));
+    send_request(&z.a, &z.alice, &z.bob).await;
+
+    let refused = pump_once(&z.a).await.unwrap();
+    assert_eq!(refused.state, DeliveryState::Wait);
+    let error = refused.last_error.unwrap();
+    assert!(error.retryable);
+    assert_eq!(error.message, "signing-key-unavailable");
+    assert_eq!(
+        requests(&z.a, &z.alice).await[0]
+            .delivery
+            .as_ref()
+            .map(|d| d.state),
+        Some(buckyos_api::FriendDeliveryState::Pending)
+    );
+
+    assert_eq!(pump(&z.a).await, 1);
+    assert_eq!(
+        friend_state(&z.b, &z.bob, &z.alice).await,
+        FriendState::IncomingPending
+    );
+}
+
+/// Zone custody is refused only on definite answers; a Zone lookup that timed
+/// out leaves it undecided instead of reading as a mismatch (issue #684).
+#[tokio::test]
+async fn zone_custody_is_undecided_while_a_zone_is_unresolved() {
+    use crate::cyfs_dispatch::zone_signs_for;
+    let z = two_zones("custody").await;
+    let device_b = DID::new("dev", ZONE_B_DEVICE);
+    assert_eq!(zone_signs_for(&z.b, &z.device_a, &z.alice).await, Ok(true));
+    assert_eq!(zone_signs_for(&z.b, &device_b, &z.alice).await, Ok(false));
+    z.b.directory.set(SlowDirectory::new(
+        z.directory.clone(),
+        z.device_a.clone(),
+        1,
+    ));
+    assert_eq!(
+        zone_signs_for(&z.b, &z.device_a, &z.alice).await,
+        Err(DirectoryError::Timeout)
+    );
+}
+
+/// A request whose delivery gave up is queued again when it is sent again.
+#[tokio::test]
+async fn resending_a_request_requeues_its_dead_delivery() {
+    let z = two_zones("requeue").await;
+    z.b.directory.set(SlowDirectory::new(
+        z.directory.clone(),
+        z.device_a.clone(),
+        usize::MAX,
+    ));
+    let sent = send_request(&z.a, &z.alice, &z.bob).await.request.unwrap();
+    assert_eq!(pump(&z.a).await, 0);
+    assert_eq!(
+        requests(&z.a, &z.alice).await[0]
+            .delivery
+            .as_ref()
+            .map(|d| d.state),
+        Some(buckyos_api::FriendDeliveryState::Failed)
+    );
+
+    z.b.directory.set(z.directory.clone());
+    let again = send_request(&z.a, &z.alice, &z.bob).await.request.unwrap();
+    assert_eq!(again.request_id, sent.request_id);
+    assert_eq!(
+        again.delivery.as_ref().map(|d| d.state),
+        Some(buckyos_api::FriendDeliveryState::Pending)
+    );
+    assert_eq!(pump(&z.a).await, 1);
+    assert_eq!(
+        friend_state(&z.b, &z.bob, &z.alice).await,
+        FriendState::IncomingPending
+    );
+    assert_eq!(requests(&z.b, &z.bob).await.len(), 1);
 }
 
 #[tokio::test]

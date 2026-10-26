@@ -457,7 +457,7 @@ Gateway 排空按“取出但暂不删 → 投 upstream → accepted 后删除�
 CYFS 接收同时接受 `application/cyfs-named-object+json` 与 `application/cyfs-named-object+jwt`。JWT 形式的 MsgObject（`cyfs_dispatch.rs::verify_signed_message_with`）：
 
 - 签名者（`kid` 的 DID 部分）等于 `from`：公钥用 name-client `resolve_auth_key(from, #fragment)` 解析（`did:dev` 直接取 DID 内嵌公钥）。
-- 签名者不是 `from`：先按 **Zone 托管**规则——签名者所在 Zone（`network_directory.rs`）等于 `from` 的 canonical Zone 即接受；本 Zone 也可为本地账号或收件人代签，本地映射账号不会遮蔽其 canonical Zone。托管签名公钥显式从 Device 文档取，避免未指定类型时误解析为 Zone 文档；否则要求 `from` 的 DID Document `authentication` 列出该签名者或 `kid`（`from` 为 `did:dev` 时不适用）。都不满足返回 `signer-mismatch`。已知风险：Zone 可以替它的用户签名。用户自有密钥（`security/<user>/key`）未使用。
+- 签名者不是 `from`：先按 **Zone 托管**规则——签名者所在 Zone（`network_directory.rs`）等于 `from` 的 canonical Zone 即接受；本 Zone 也可为本地账号或收件人代签，本地映射账号不会遮蔽其 canonical Zone。托管签名公钥显式从 Device 文档取，避免未指定类型时误解析为 Zone 文档；否则要求 `from` 的 DID Document `authentication` 列出该签名者或 `kid`（`from` 为 `did:dev` 时不适用）。都不满足返回 `signer-mismatch`。签名设备或作者的 Zone 暂时查不到（名字服务超时、不可用）时托管规则无法判定，不当作不满足：此时第二条规则也不成立就返回可重试的 `signing-key-unavailable`，只有两条规则都得到确定回答才返回 `signer-mismatch`（buckyos#684）。已知风险：Zone 可以替它的用户签名。用户自有密钥（`security/<user>/key`）未使用。
 - 签名无效返回 `invalid-signature`，未知密钥返回 `unknown-signing-key`，均为不可重试拒绝；解析服务不可用返回可重试的 `signing-key-unavailable`。签名无效时不降级为 JSON 形式接受。
 - 验证通过后，canonical JSON 照常写入 named store，JWT 原文写入 `msg_jwt_originals`（schema v11，按 msg_id，先到者保留）。原生 dispatch 转投该消息时发送 JWT 原文；读取 JWT 原文的 RPC 尚未提供。
 

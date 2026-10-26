@@ -23,6 +23,8 @@ pub enum DirectoryError {
     NotFound(String),
     /// No answer right now; worth retrying.
     Unavailable(String),
+    /// The name service did not answer in time; worth retrying.
+    Timeout,
 }
 
 impl std::fmt::Display for DirectoryError {
@@ -30,6 +32,7 @@ impl std::fmt::Display for DirectoryError {
         match self {
             Self::NotFound(reason) => write!(f, "not found: {reason}"),
             Self::Unavailable(reason) => write!(f, "unavailable: {reason}"),
+            Self::Timeout => f.write_str("timeout"),
         }
     }
 }
@@ -131,22 +134,18 @@ impl NameServiceDirectory {
                 Ok(Err(name_lib::NSError::NotFound(reason))) => Err(DirectoryError::NotFound(reason)),
                 // Key-class DIDs (`did:dev`) and malformed ones have no document to wait for.
                 Ok(Err(name_lib::NSError::InvalidDID(reason))) => Err(DirectoryError::NotFound(reason)),
+                Ok(Err(name_lib::NSError::DeadlineExceeded(_))) | Err(_) => Err(DirectoryError::Timeout),
                 Ok(Err(error)) => Err(DirectoryError::Unavailable(error.to_string())),
-                Err(_) => Err(DirectoryError::Unavailable("timeout".into())),
             }
         };
         // The owner document first; a name service that timed out is not
         // asked a second time.
         let doc = match resolve(Some(name_lib::DidDocType::Owner)).await {
             Ok(doc) => doc,
-            Err(DirectoryError::Unavailable(reason)) if reason == "timeout" => {
-                return Err(DirectoryError::Unavailable(reason))
-            }
+            Err(DirectoryError::Timeout) => return Err(DirectoryError::Timeout),
             Err(_) => match resolve(Some(name_lib::DidDocType::Device)).await {
                 Ok(doc) => doc,
-                Err(DirectoryError::Unavailable(reason)) if reason == "timeout" => {
-                    return Err(DirectoryError::Unavailable(reason))
-                }
+                Err(DirectoryError::Timeout) => return Err(DirectoryError::Timeout),
                 Err(_) => resolve(None).await?,
             },
         };
@@ -163,7 +162,9 @@ impl NetworkDirectory for NameServiceDirectory {
         let key = did.to_string();
         if let Some((answer, at)) = self.cache.lock().unwrap().get(&key) {
             let ttl = match answer {
-                Err(DirectoryError::Unavailable(_)) => DIRECTORY_UNAVAILABLE_TTL,
+                Err(DirectoryError::Unavailable(_) | DirectoryError::Timeout) => {
+                    DIRECTORY_UNAVAILABLE_TTL
+                }
                 _ => DIRECTORY_CACHE_TTL,
             };
             if at.elapsed() < ttl {

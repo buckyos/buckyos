@@ -43,7 +43,7 @@ function RequestCard({ avatar, title, meta, body, actions, testId, kind }: { ava
 }
 
 /** Request answers that change the address book; hidden for accounts that may not edit it. */
-const CONTACT_WRITES = new Set(['accept', 'ignore', 'reject', 'block', 'add_friend', 'allow', 'cancel'])
+const CONTACT_WRITES = new Set(['accept', 'ignore', 'reject', 'block', 'add_friend', 'allow', 'cancel', 'resend'])
 
 function Item({ item, run, busy }: { item: RequestItem; run: Run; busy: string | null }) {
   const { t, locale } = useI18n()
@@ -84,7 +84,10 @@ function Item({ item, run, busy }: { item: RequestItem; run: Run; busy: string |
           title={<><PersonName person={person} className="font-medium" /> <Pill tone={delivery === 'failed' ? 'var(--cp-danger)' : delivery === 'pending' ? 'var(--cp-warning)' : 'var(--cp-accent)'}>{t(`myNetwork.requests.delivery.${delivery ?? 'unknown'}`)}</Pill></>}
           meta={t('myNetwork.requests.sentAt', undefined, { time: when(request.created_at_ms, locale) })}
           body={request.message}
-          actions={action('cancel', t('network.action.cancel_request'), <X size={13} />, () => networkActions.cancelFriendRequest(request.request_id))}
+          actions={<>
+            {delivery === 'failed' ? action('resend', t('myNetwork.requests.resend'), <RefreshCw size={13} />, () => networkActions.sendFriendRequest(request.peer_did), 'contained') : null}
+            {action('cancel', t('network.action.cancel_request'), <X size={13} />, () => networkActions.cancelFriendRequest(request.request_id))}
+          </>}
         />
       )
     }

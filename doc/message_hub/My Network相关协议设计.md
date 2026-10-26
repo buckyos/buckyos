@@ -341,7 +341,7 @@ friend --remove_friend / 收到 remove--> none
 2. A 屏蔽了 B → `peer-blocked`；
 3. 已是好友 → 不发消息，直接返回 `friend`；
 4. B 有发给 A 的 pending 请求 → 等同接受它；
-5. A 已有发给 B 的 pending 请求 → 返回该请求，不重发；
+5. A 已有发给 B 的 pending 请求 → 返回该请求，不生成新请求；它的原生投递已放弃（DEAD / FAILED）时把同一条 DeliveryRecord 重新排队（`attempts` 清零），`delivery` 回到 `pending`。这是送达失败后的恢复入口（buckyos#684）；
 6. A 上一次发给 B 的请求在 24 小时内被明确拒绝（收到过 `reject`）→ `friend-request-cooldown`；
 7. 否则生成新的 `request_id`，联系人（不存在则以 `ManualCreate` 创建）置 `outgoing_pending`，存 pending 记录后发出 `request`。
 
