@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 4,
+  "revision_seq": 5,
   "provider_profile_id": "openai",
   "custom_provider_adapters": ["openai-responses", "openai-chat-completions"],
   "models": [
@@ -70,7 +70,7 @@
     },
     {
       "match": {
-        "origin_model_id": ["gpt-6-sol", "gpt-6-luna"]
+        "origin_model_id": ["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-sol", "gpt-6-luna"]
       },
       "operations": {
         "llm": "responses.create",
@@ -132,6 +132,7 @@
       "variant": "reasoning-none",
       "match": {
         "origin_model_id": [
+          "gpt-6.1-terra",
           "gpt-6-luna",
           "gpt-6-sol",
           "gpt-5.6-luna",
@@ -156,7 +157,9 @@
       "variant": "reasoning-low",
       "match": {
         "origin_model_id": [
+          "gpt-6.1-terra",
           "gpt-6-luna",
+          "gpt-6.1-sol",
           "gpt-6-sol",
           "gpt-5.6-luna",
           "gpt-5.4-nano",
@@ -181,7 +184,9 @@
       "variant": "reasoning-medium",
       "match": {
         "origin_model_id": [
+          "gpt-6.1-terra",
           "gpt-6-luna",
+          "gpt-6.1-sol",
           "gpt-6-sol",
           "gpt-5.6-luna",
           "gpt-5.4-nano",
@@ -208,7 +213,9 @@
       "variant": "reasoning-high",
       "match": {
         "origin_model_id": [
+          "gpt-6.1-terra",
           "gpt-6-luna",
+          "gpt-6.1-sol",
           "gpt-6-sol",
           "gpt-5.6-luna",
           "gpt-5.4-nano",
@@ -235,7 +242,9 @@
       "variant": "reasoning-xhigh",
       "match": {
         "origin_model_id": [
+          "gpt-6.1-terra",
           "gpt-6-luna",
+          "gpt-6.1-sol",
           "gpt-6-sol",
           "gpt-5.6-luna",
           "gpt-5.4-nano",
@@ -262,7 +271,9 @@
       "variant": "reasoning-max",
       "match": {
         "origin_model_id": [
+          "gpt-6.1-terra",
           "gpt-6-luna",
+          "gpt-6.1-sol",
           "gpt-6-sol",
           "gpt-5.6-luna",
           "gpt-5.6-terra",
@@ -344,6 +355,56 @@
     }
   ],
   "model_pricing": [
+    {
+      "id": "gpt-6.1-sol",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.000002,
+        "output_token": 0.00001,
+        "cache_input_token": 0.0000001,
+        "cache_write_input_token": 0.0000025,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {"up_to": 272001},
+            {
+              "input_token": 0.000004,
+              "output_token": 0.000015,
+              "cache_input_token": 0.0000002,
+              "cache_write_input_token": 0.000005
+            }
+          ]
+        },
+        "source_url": "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+        "verified_at": "2026-10-26"
+      }
+    },
+    {
+      "id": "gpt-6.1-terra",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.000001,
+        "output_token": 0.000005,
+        "cache_input_token": 0.00000005,
+        "cache_write_input_token": 0.00000125,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {"up_to": 272001},
+            {
+              "input_token": 0.000002,
+              "output_token": 0.0000075,
+              "cache_input_token": 0.0000001,
+              "cache_write_input_token": 0.0000025
+            }
+          ]
+        },
+        "source_url": "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+        "verified_at": "2026-10-26"
+      }
+    },
     {
       "id": "gpt-6-astra",
       "pricing": {

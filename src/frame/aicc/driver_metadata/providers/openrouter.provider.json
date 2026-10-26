@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 0,
-  "revision_seq": 12,
+  "revision_seq": 13,
   "provider_profile_id": "openrouter",
   "reported_cost": {"currency": "USD", "semantics": "total_request_cost"},
   "model_driver_overrides": {
@@ -83,12 +83,12 @@
     }
   ],
   "variants": [
-    {"model_driver":"openai","variant":"reasoning-none","match":{"origin_model_id":["gpt-6-luna","gpt-6-sol","gpt-5.6-luna","gpt-5.6-terra","gpt-5.6-sol","gpt-5.5","gpt-5.4-nano","gpt-5.4-mini","gpt-5.4"],"variant":"reasoning-none"},"provider_options":{"reasoning":{"effort":"none"}}},
-    {"model_driver":"openai","variant":"reasoning-low","match":{"origin_model_id":["gpt-6-luna","gpt-6-sol","gpt-6-astra","gpt-5.6-luna","gpt-5.6-terra","gpt-5.6-sol","gpt-5.5","gpt-5.4-nano","gpt-5.4-mini","gpt-5.4","gpt-5.3-codex"],"variant":"reasoning-low"},"provider_options":{"reasoning":{"effort":"low"}}},
-    {"model_driver":"openai","variant":"reasoning-medium","match":{"origin_model_id":["gpt-6-luna","gpt-6-sol","gpt-6-astra","gpt-5.6-luna","gpt-5.6-terra","gpt-5.6-sol","gpt-5.5-pro","gpt-5.5","gpt-5.4-nano","gpt-5.4-mini","gpt-5.4-pro","gpt-5.4","gpt-5.3-codex"],"variant":"reasoning-medium"},"provider_options":{"reasoning":{"effort":"medium"}}},
-    {"model_driver":"openai","variant":"reasoning-high","match":{"origin_model_id":["gpt-6-luna","gpt-6-sol","gpt-6-astra","gpt-5.6-luna","gpt-5.6-terra","gpt-5.6-sol","gpt-5.5-pro","gpt-5.5","gpt-5.4-nano","gpt-5.4-mini","gpt-5.4-pro","gpt-5.4","gpt-5.3-codex"],"variant":"reasoning-high"},"provider_options":{"reasoning":{"effort":"high"}}},
-    {"model_driver":"openai","variant":"reasoning-xhigh","match":{"origin_model_id":["gpt-6-luna","gpt-6-sol","gpt-6-astra","gpt-5.6-luna","gpt-5.6-terra","gpt-5.6-sol","gpt-5.5-pro","gpt-5.5","gpt-5.4-nano","gpt-5.4-mini","gpt-5.4-pro","gpt-5.4","gpt-5.3-codex"],"variant":"reasoning-xhigh"},"provider_options":{"reasoning":{"effort":"xhigh"}}},
-    {"model_driver":"openai","variant":"reasoning-max","match":{"origin_model_id":["gpt-6-luna","gpt-6-sol","gpt-6-astra","gpt-5.6-luna","gpt-5.6-terra","gpt-5.6-sol"],"variant":"reasoning-max"},"provider_options":{"reasoning":{"effort":"max"}}},
+    {"model_driver":"openai","variant":"reasoning-none","match":{"origin_model_id":["gpt-6.1-terra","gpt-6-luna","gpt-6-sol","gpt-5.6-luna","gpt-5.6-terra","gpt-5.6-sol","gpt-5.5","gpt-5.4-nano","gpt-5.4-mini","gpt-5.4"],"variant":"reasoning-none"},"provider_options":{"reasoning":{"effort":"none"}}},
+    {"model_driver":"openai","variant":"reasoning-low","match":{"origin_model_id":["gpt-6.1-sol","gpt-6.1-terra","gpt-6-luna","gpt-6-sol","gpt-6-astra","gpt-5.6-luna","gpt-5.6-terra","gpt-5.6-sol","gpt-5.5","gpt-5.4-nano","gpt-5.4-mini","gpt-5.4","gpt-5.3-codex"],"variant":"reasoning-low"},"provider_options":{"reasoning":{"effort":"low"}}},
+    {"model_driver":"openai","variant":"reasoning-medium","match":{"origin_model_id":["gpt-6.1-sol","gpt-6.1-terra","gpt-6-luna","gpt-6-sol","gpt-6-astra","gpt-5.6-luna","gpt-5.6-terra","gpt-5.6-sol","gpt-5.5-pro","gpt-5.5","gpt-5.4-nano","gpt-5.4-mini","gpt-5.4-pro","gpt-5.4","gpt-5.3-codex"],"variant":"reasoning-medium"},"provider_options":{"reasoning":{"effort":"medium"}}},
+    {"model_driver":"openai","variant":"reasoning-high","match":{"origin_model_id":["gpt-6.1-sol","gpt-6.1-terra","gpt-6-luna","gpt-6-sol","gpt-6-astra","gpt-5.6-luna","gpt-5.6-terra","gpt-5.6-sol","gpt-5.5-pro","gpt-5.5","gpt-5.4-nano","gpt-5.4-mini","gpt-5.4-pro","gpt-5.4","gpt-5.3-codex"],"variant":"reasoning-high"},"provider_options":{"reasoning":{"effort":"high"}}},
+    {"model_driver":"openai","variant":"reasoning-xhigh","match":{"origin_model_id":["gpt-6.1-sol","gpt-6.1-terra","gpt-6-luna","gpt-6-sol","gpt-6-astra","gpt-5.6-luna","gpt-5.6-terra","gpt-5.6-sol","gpt-5.5-pro","gpt-5.5","gpt-5.4-nano","gpt-5.4-mini","gpt-5.4-pro","gpt-5.4","gpt-5.3-codex"],"variant":"reasoning-xhigh"},"provider_options":{"reasoning":{"effort":"xhigh"}}},
+    {"model_driver":"openai","variant":"reasoning-max","match":{"origin_model_id":["gpt-6.1-sol","gpt-6.1-terra","gpt-6-luna","gpt-6-sol","gpt-6-astra","gpt-5.6-luna","gpt-5.6-terra","gpt-5.6-sol"],"variant":"reasoning-max"},"provider_options":{"reasoning":{"effort":"max"}}},
     {"model_driver":"claude","variant":"reasoning-low","match":{"origin_model_id":["claude-haiku-5-5","claude-sonnet-5-5","claude-opus-5-5","claude-fable-5-1","claude-opus-5","claude-sonnet-5","claude-fable-5","claude-opus-4-8","claude-opus-4-7","claude-sonnet-4-6","claude-opus-4-6"],"variant":"reasoning-low"},"provider_options":{"reasoning":{"effort":"low"}}},
     {"model_driver":"claude","variant":"reasoning-medium","match":{"origin_model_id":["claude-haiku-5-5","claude-sonnet-5-5","claude-opus-5-5","claude-fable-5-1","claude-opus-5","claude-sonnet-5","claude-fable-5","claude-opus-4-8","claude-opus-4-7","claude-sonnet-4-6","claude-opus-4-6"],"variant":"reasoning-medium"},"provider_options":{"reasoning":{"effort":"medium"}}},
     {"model_driver":"claude","variant":"reasoning-high","match":{"origin_model_id":["claude-haiku-5-5","claude-sonnet-5-5","claude-opus-5-5","claude-fable-5-1","claude-opus-5","claude-sonnet-5","claude-fable-5","claude-opus-4-8","claude-opus-4-7","claude-sonnet-4-6","claude-opus-4-6"],"variant":"reasoning-high"},"provider_options":{"reasoning":{"effort":"high"}}},

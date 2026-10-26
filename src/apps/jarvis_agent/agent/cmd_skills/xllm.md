@@ -58,6 +58,10 @@ The Zone's `llm.chat` lands on an OpenAI strict route: every property listed in 
   `llm.summarize`, `llm.plan`, `llm.vision`, `llm.code` (xhigh reasoning, slow); an exact
   `model[:variant]@provider` skips routing. Set it with `--model` or `model:`; `--format json` shows
   `response_model`, the model that answered.
+- Built-in `llm.plan` and `llm.code` prefer available OpenAI specs; Zone/session overrides and provider
+  availability can change the result. Check `response_model`, and use AICC's
+  `src/frame/aicc/src/service/model_defaults.rs` and
+  `src/frame/aicc/driver_metadata/models/openai.model.json` for current priorities and GPT family/effort bindings.
 - Here `llm.chat`/`llm.plan` add provider web search: a trivial call bills ~4.7k input tokens (mostly cached)
   against ~0.3k on `llm.swift`. `--json` turns web search off for that run (JSON mode excludes it).
 - `--json` (or `json: true`) constrains the model result: JSON mode at the provider, the schema when

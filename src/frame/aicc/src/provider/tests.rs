@@ -1727,11 +1727,23 @@ fn custom_channel_defaults_each_api_type_to_its_preferred_operation() {
         ),
     ] {
         assert_eq!(
-            resolve_operation(&adapter, &BTreeMap::new(), None, api_type, name).unwrap(),
+            resolve_operation(&adapter, &BTreeMap::new(), None, api_type, name, None).unwrap(),
             Some(expected.to_string()),
             "{name}"
         );
     }
+    assert_eq!(
+        resolve_operation(
+            &adapter,
+            &BTreeMap::new(),
+            None,
+            ApiType::Llm,
+            "llm",
+            Some("interactions.create"),
+        )
+        .unwrap(),
+        Some("interactions.background".to_string())
+    );
     // Discovery narrows the candidates before the priority applies, so an
     // instance that only exposes the synchronous interactions endpoint still
     // resolves `llm` onto it.
@@ -1742,7 +1754,8 @@ fn custom_channel_defaults_each_api_type_to_its_preferred_operation() {
             &BTreeMap::new(),
             Some(&discovered),
             ApiType::Llm,
-            "llm"
+            "llm",
+            None
         )
         .unwrap(),
         Some("interactions.create".to_string())
@@ -1750,7 +1763,127 @@ fn custom_channel_defaults_each_api_type_to_its_preferred_operation() {
     // An explicit override always wins.
     let overrides = BTreeMap::from([("llm".to_string(), "models.embedContent".to_string())]);
     assert_eq!(
-        resolve_operation(&adapter, &overrides, None, ApiType::Llm, "llm").unwrap(),
+        resolve_operation(&adapter, &overrides, None, ApiType::Llm, "llm", None).unwrap(),
         Some("models.embedContent".to_string())
     );
+}
+
+#[test]
+fn custom_openai_inventory_uses_model_operations_and_discovery_limits() {
+    let (adapter, _) = crate::protocol::openai_responses_adapter();
+    assert!(matches!(
+        resolve_operation(
+            &adapter,
+            &BTreeMap::new(),
+            None,
+            ApiType::ImageImageToImage,
+            "image.img2img",
+            Some("audio.speech"),
+        ),
+        Err(ProviderError::Inventory(_))
+    ));
+    let catalog = crate::settings::MetadataSources {
+        builtin: crate::settings::load_builtin_metadata().unwrap(),
+        ..crate::settings::MetadataSources::default()
+    }
+    .build_snapshot(
+        crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+        &CatalogBuildOptions::default(),
+    )
+    .unwrap();
+    let registry = builtin_provider_registry(&catalog).unwrap();
+    let mut config = instance("custom-provider");
+    config.provider_profile_id = "custom".into();
+    config.instance_rules = Some(buckyos_api::ProviderInstanceRules {
+        model_driver_overrides: BTreeMap::from([(
+            "ep-custom".into(),
+            "openai/gpt-5.6-luna".into(),
+        )]),
+        ..Default::default()
+    });
+    assert!(config.provider_rules_id.is_none());
+    let binding = registry
+        .resolve_instance(&config, ProviderAuthMode::ApiKey, None)
+        .unwrap();
+
+    for (model_id, remote_methods, expected) in [
+        (
+            "gpt-5.6-luna",
+            None,
+            vec![
+                ("llm", "responses.create"),
+                ("vision.ocr", "responses.create"),
+                ("vision.caption", "responses.create"),
+                ("image.txt2img", "responses.create"),
+                ("image.img2img", "responses.create"),
+                ("agent.computer_use", "responses.create"),
+            ],
+        ),
+        (
+            "gpt-image-2",
+            None,
+            vec![
+                ("image.txt2img", "images.generate"),
+                ("image.img2img", "images.edit"),
+                ("image.inpaint", "images.edit"),
+            ],
+        ),
+        (
+            "ep-custom",
+            None,
+            vec![
+                ("llm", "responses.create"),
+                ("vision.ocr", "responses.create"),
+                ("vision.caption", "responses.create"),
+                ("image.txt2img", "responses.create"),
+                ("image.img2img", "responses.create"),
+                ("agent.computer_use", "responses.create"),
+            ],
+        ),
+        (
+            "gpt-5.6-luna",
+            Some(vec!["images.generate", "images.edit"]),
+            vec![
+                ("image.txt2img", "images.generate"),
+                ("image.img2img", "images.edit"),
+            ],
+        ),
+        (
+            "gpt-image-2",
+            Some(vec!["responses.create"]),
+            vec![
+                ("image.txt2img", "responses.create"),
+                ("image.img2img", "responses.create"),
+            ],
+        ),
+    ] {
+        let mut discovered = discovery(model_id);
+        discovered.models[0].api_types = None;
+        discovered.models[0].supported_features = None;
+        discovered.models[0].pricing = None;
+        discovered.models[0].remote_methods =
+            remote_methods.map(|methods| methods.into_iter().map(str::to_owned).collect());
+        let inventory = InventoryBuilder::build(
+            &binding.profile,
+            &config,
+            discovered,
+            &catalog,
+            &registry.codecs(),
+        )
+        .unwrap();
+        assert_eq!(inventory.models.len(), 1, "{model_id}");
+        let model = &inventory.models[0];
+        assert_eq!(model.provider_model_id, model_id);
+        assert_eq!(
+            model.operations,
+            expected
+                .into_iter()
+                .map(|(api_type, operation)| (api_type.to_owned(), operation.to_owned()))
+                .collect::<BTreeMap<_, _>>(),
+            "{model_id} {:?}",
+            model.remote_methods
+        );
+        assert!(model.pricing.is_none(), "{model_id}");
+        assert!(model.provider_rules_revision.is_none(), "{model_id}");
+    }
 }

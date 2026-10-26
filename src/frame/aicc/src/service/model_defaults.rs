@@ -118,9 +118,10 @@
 //
 // 当前仓库模型的目标归档（下方树覆盖本批模型；已写入 metadata 并落实第 7 条校验）：
 // - gpt：nano = gpt-6-luna:none、gpt-5.6-luna、gpt-5.4-nano；
-//   mini = gpt-6-luna:low、gpt-5.6-terra、gpt-5.4-mini；standard = gpt-6-sol:medium、gpt-5.5、gpt-5.4；
-//   pro = gpt-6-sol:high、gpt-5.6/gpt-5.6-sol、gpt-5.5-pro、gpt-5.4-pro；
-//   max = gpt-6-astra:high；codex = gpt-6-sol:xhigh、gpt-5.3-codex。
+//   mini = gpt-6.1-terra:low、gpt-6-luna:low、gpt-5.6-terra、gpt-5.4-mini；
+//   standard = gpt-6.1-sol:medium、gpt-6-sol:medium、gpt-5.5、gpt-5.4；
+//   pro = gpt-6.1-sol:high、gpt-6-sol:high、gpt-5.6/gpt-5.6-sol、gpt-5.5-pro、gpt-5.4-pro；
+//   max = gpt-6-astra:high；codex = gpt-6.1-sol:xhigh、gpt-6-sol:xhigh、gpt-5.3-codex。
 // - claude：haiku = claude-haiku-4-5；sonnet = claude-sonnet-5/4.6/4.5；
 //   opus = claude-opus-5.5/5/4.8/4.7/4.6/4.5；fable = claude-fable-5-1、claude-fable-5。
 // - gemini：flash-lite = 3.5/3.1/2.5-flash-lite；flash = 3.8/3.7/3.6/3.5-flash、
@@ -204,12 +205,12 @@
 // │   │   ├── qwen_moe_35b -> llm.qwen-moe-35b (1.0)
 // │   │   └── minimax_standard -> llm.minimax-standard (0.9)
 // │   ├── plan
+// │   │   ├── gpt_max -> llm.gpt-max (3.2) [初始值]
+// │   │   ├── gpt_pro -> llm.gpt-pro (3.1)
+// │   │   ├── gpt_standard -> llm.gpt-standard (3.0)
 // │   │   ├── claude_fable -> llm.claude-fable (2.6) [初始值]
-// │   │   ├── gpt_max -> llm.gpt-max (2.6) [初始值]
 // │   │   ├── claude_opus -> llm.claude-opus (2.5)
 // │   │   ├── gemini_pro -> llm.gemini-pro (2.4)
-// │   │   ├── gpt_pro -> llm.gpt-pro (2.3)
-// │   │   ├── gpt_standard -> llm.gpt-standard (2.0)
 // │   │   ├── qwen_max -> llm.qwen-max (1.8)
 // │   │   ├── qwen_moe_2t -> llm.qwen-moe-2t (1.7)
 // │   │   ├── deepseek_pro -> llm.deepseek-pro (1.5)
@@ -221,10 +222,10 @@
 // │   │   ├── minimax_standard -> llm.minimax-standard (1.1)
 // │   │   └── qwen_moe_120b -> llm.qwen-moe-120b (1.05)
 // │   ├── code
+// │   │   ├── gpt_codex -> llm.gpt-codex (3.2) [初始值]
+// │   │   ├── gpt_standard -> llm.gpt-standard (3.0)
 // │   │   ├── claude_opus -> llm.claude-opus (2.4)
-// │   │   ├── gpt_codex -> llm.gpt-codex (2.2) [初始值]
 // │   │   ├── kimi_flagship -> llm.kimi-flagship (2.1)
-// │   │   ├── gpt_standard -> llm.gpt-standard (2.1)
 // │   │   ├── qwen_max -> llm.qwen-max (1.9)
 // │   │   ├── deepseek_pro -> llm.deepseek-pro (1.8)
 // │   │   ├── glm_standard -> llm.glm-standard (1.8)
@@ -428,7 +429,7 @@
 //
 // 此时 llm.plan 跳过其他空规格，选择 llm.gpt-pro -> llm.gpt-5-6-sol:high，版本值 560 优先。
 // 若只剩旧版满足约束，则选择版本值 550 的家族预设；两者都不在有效 inventory 时，
-// llm.gpt-pro 恢复为空，llm.plan 到 llm.gpt-pro 的引用及其权重 2.3 继续保留。
+// llm.gpt-pro 恢复为空，llm.plan 到 llm.gpt-pro 的引用及其权重 3.1 继续保留。
 // 若 plan 的所有规格都无合格候选且没有显式 fallback，则返回无候选，不回退到 llm 根。
 
 use async_trait::async_trait;
@@ -955,13 +956,13 @@ pub(super) fn builtin_logical_tree_overlay() -> AiccRouteOverlay {
                         (
                             "plan".into(),
                             logical_node(&[
+                                ("gpt_max", "llm.gpt-max", 3.2),
+                                ("gpt_pro", "llm.gpt-pro", 3.1),
+                                ("gpt_standard", "llm.gpt-standard", 3.0),
                                 ("claude_fable", "llm.claude-fable", 2.6),
-                                ("gpt_max", "llm.gpt-max", 2.6),
                                 ("claude_opus", "llm.claude-opus", 2.5),
                                 ("kimi_flagship", "llm.kimi-flagship", 2.5),
                                 ("gemini_pro", "llm.gemini-pro", 2.4),
-                                ("gpt_pro", "llm.gpt-pro", 2.3),
-                                ("gpt_standard", "llm.gpt-standard", 2.0),
                                 ("qwen_max", "llm.qwen-max", 1.8),
                                 ("qwen_moe_2t", "llm.qwen-moe-2t", 1.7),
                                 ("deepseek_pro", "llm.deepseek-pro", 1.5),
@@ -977,10 +978,10 @@ pub(super) fn builtin_logical_tree_overlay() -> AiccRouteOverlay {
                         (
                             "code".into(),
                             logical_node(&[
+                                ("gpt_codex", "llm.gpt-codex", 3.2),
+                                ("gpt_standard", "llm.gpt-standard", 3.0),
                                 ("claude_opus", "llm.claude-opus", 2.4),
-                                ("gpt_codex", "llm.gpt-codex", 2.2),
                                 ("kimi_flagship", "llm.kimi-flagship", 2.1),
-                                ("gpt_standard", "llm.gpt-standard", 2.1),
                                 ("qwen_max", "llm.qwen-max", 1.9),
                                 ("deepseek_pro", "llm.deepseek-pro", 1.8),
                                 ("glm_standard", "llm.glm-standard", 1.8),

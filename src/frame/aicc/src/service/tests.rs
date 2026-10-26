@@ -1221,6 +1221,75 @@ fn builtin_logical_definitions_make_llm_chat_routable_with_glm_only() {
 }
 
 #[test]
+fn builtin_plan_and_code_prefer_openai_and_keep_other_vendors_available() {
+    let registry = builtin_tree(&[
+        crate::model::llm_tests::inventory("openai", "gpt-6-astra", "astra", "astra", &["high"]),
+        crate::model::llm_tests::inventory(
+            "openai",
+            "gpt-6.1-sol",
+            "sol",
+            "sol",
+            &["medium", "high", "xhigh"],
+        ),
+        crate::model::llm_tests::inventory(
+            "claude",
+            "claude-fable-5-1",
+            "fable",
+            "fable",
+            &["high"],
+        ),
+        crate::model::llm_tests::inventory("claude", "claude-opus-5-5", "opus", "opus", &["high"]),
+    ]);
+    for (path, expected) in [
+        (
+            "llm.plan",
+            &[
+                "astra:reasoning-high@astra",
+                "sol:reasoning-high@sol",
+                "sol:reasoning-medium@sol",
+                "fable:reasoning-high@fable",
+                "opus:reasoning-high@opus",
+            ][..],
+        ),
+        (
+            "llm.code",
+            &[
+                "sol:reasoning-xhigh@sol",
+                "sol:reasoning-medium@sol",
+                "opus:reasoning-high@opus",
+            ][..],
+        ),
+    ] {
+        let mut unavailable = Vec::new();
+        for next in expected {
+            let candidates = registry
+                .resolve_available_candidates(
+                    path,
+                    buckyos_api::ApiType::Llm,
+                    &mut |_, candidate| {
+                        !unavailable.contains(&candidate.model.exact_model.as_str())
+                    },
+                )
+                .unwrap();
+            assert_eq!(candidates.candidates.len(), 1, "{path}: {next}");
+            assert_eq!(
+                candidates.candidates[0].model.exact_model.as_str(),
+                *next,
+                "{path}"
+            );
+            unavailable.push(*next);
+        }
+        assert!(registry
+            .resolve_available_candidates(path, buckyos_api::ApiType::Llm, &mut |_, candidate| {
+                !unavailable.contains(&candidate.model.exact_model.as_str())
+            })
+            .unwrap()
+            .candidates
+            .is_empty());
+    }
+}
+
+#[test]
 fn builtin_logical_tree_rejects_custom_provider_auto_admission() {
     let mut inventory =
         crate::model::llm_tests::inventory("openai", "gpt-5.6-sol", "custom", "primary", &["high"]);
@@ -1296,7 +1365,7 @@ fn builtin_logical_tree_is_not_an_inventory_snapshot() {
         dir_item(&directory, "llm.chat", "qwen_plus")["target"],
         "llm.qwen-plus"
     );
-    assert_eq!(dir_item(&directory, "llm.plan", "gpt_pro")["weight"], 2.3);
+    assert_eq!(dir_item(&directory, "llm.plan", "gpt_pro")["weight"], 3.1);
     for path in ["llm", "llm.plan", "llm.gpt-standard"] {
         let set = registry
             .resolve_candidates(path, buckyos_api::ApiType::Llm)

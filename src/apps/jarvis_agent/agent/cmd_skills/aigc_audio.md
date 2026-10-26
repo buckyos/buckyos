@@ -1,8 +1,8 @@
 ---
 name: aigc_audio
 description: Produce audio through the zone's AI models — read text aloud (text to speech), generate music, clean up a recording — then check that the file plays and hand it over; transcription is a side tool.
-requires: an extended session-runtime (the aios agent container is one) with the buckyos-agent commands on PATH (text_to_speech, gen_music, enhance_audio, speech_to_text) plus ffmpeg/ffprobe, and an AICC provider that serves the audio method; stored results are read through the Zone NDM proxy, which only read_write Agents may read
-baseline: extended
+requires: the standard buckyos-agent commands on PATH (text_to_speech, gen_music, enhance_audio, speech_to_text, resume_aicc_task) and an AICC provider that serves the audio method; stored results are read through the Zone NDM proxy, which only read_write Agents may read; local conversion, assembly and media inspection need the tools named in those steps
+baseline: standard
 ---
 #### When to use
 - Typical requests: "read this aloud", "make a 30-second voice-over", "a short jingle for the intro", "remove the hum from this recording".
@@ -11,21 +11,22 @@ baseline: extended
 - Pictures: aigc_image; video and putting voice under video: aigc_video.
 
 #### Before you start
-- This manual needs an extended runtime (ffmpeg/ffprobe besides the standard AICC commands): the AIOS `container` is one. If the commands are absent here, check `agent-session runtime list --available` and explicitly delegate generation to such a runtime with `aigc_audio` and no workspace, exchanging inputs and outputs by `agent-session copy` or object ids. Preserve a user-selected runtime/workspace for its own work. Report a missing compatible runtime instead of treating missing commands as absent models.
-- `command -v text_to_speech resume_aicc_task ffprobe` — `resume_aicc_task` is newer; without it, re-run with the same `--idempotency-key` to get back to an interrupted task.
+- Audio generation uses standard AICC commands, available on a node through `$BUCKYOS_ROOT/bin/agent-tools` and in the AIOS `container`. An available `standard` host can generate audio without a container or local ffmpeg. Preserve a user-selected runtime/workspace. If a required AICC command is missing, inspect `agent-session runtime list --available` and its `baseline_check`, then delegate generation to a runtime with that command using `aigc_audio`; use `--workspace none` for a separate one-off task and exchange inputs and outputs by `agent-session copy` or object ids. Missing local commands do not establish that the zone has no audio models.
+- Check the command for the requested method, for example `command -v text_to_speech resume_aicc_task`. If task recovery is unavailable, re-run with the same `--idempotency-key` to reattach to an interrupted task.
+- Local transcoding, concatenation and decoding checks require `ffmpeg`; duration/stream inspection requires `ffprobe`. Check only the tools needed by those steps. If absent here, delegate those steps to an available runtime that has them, copying files or passing object ids. A runtime's `extended` label alone does not prove it has the required tool. A missing conversion or inspection tool does not block the AICC generation step; report the specific remaining step if no runtime can perform it.
 - Which models serve a method: `ai_provider models --api-type audio.tts` (exact model, logical names, price). No health check is needed before a call.
 - Defaults in this zone today: audio.tts → `gemini-2.5-flash-preview-tts`; audio.music → `lyria-3-clip-preview` (0.04 USD per request); audio.enhance → `fal-ai/deepfilternet3`; audio.asr → `gemini-3.5-transcribe`.
 
 #### Find the real commands
 - `<command> --help`; source `/opt/buckyos/bin/opendan/buckyos-agent/commands/<command>.ts` shows exactly which request fields each option sets.
+- On a node, substitute `$BUCKYOS_ROOT/libexec/buckyos-agent` (default `/opt/buckyos/libexec/buckyos-agent`) for the container source root `/opt/buckyos/bin/opendan/buckyos-agent` in the examples below.
 
 #### Shortest path
 ```bash
 mkdir -p out
 text_to_speech 'Welcome home. Your files are ready.' out/welcome --lang en-US
-# raw PCM from the model is saved as WAV: use the path in detail.files[0].path (out/welcome.wav)
-ffprobe -v error -show_entries format=duration:stream=codec_name,sample_rate,channels -of default=nw=1 out/welcome.wav
 ```
+The command wraps raw PCM from the model as WAV without ffmpeg; use the path in `detail.files[0].path` (`out/welcome.wav`).
 For Chinese text pass `--lang zh-CN` (not tested with the current model).
 List `out/welcome.wav` in the final report's artifacts.
 
@@ -33,7 +34,7 @@ List `out/welcome.wav` in the final report's artifacts.
 - `text_to_speech <text> <out> [--lang en-US|zh-CN|…] [--gender male|female|neutral] [--style warm|clear|…] [--instructions TEXT] [--speed F] [--format mp3|wav|ogg] [--sample-rate HZ]`. Put the text in one quoted argument; for a file use `"$(cat script.txt)"`.
 - The default Gemini TTS model returns raw 16-bit PCM, 24 kHz, mono (`audio/l16`); the command wraps it in a WAV header and saves it with a `.wav` extension, whatever extension you gave — read the real path from `detail.files[0].path`. For mp3: `ffmpeg -i out/x.wav -c:a libmp3lame out/x.mp3`. `--format wav` is rejected by this model (`Audio MIME type AUDIO_WAV is not supported`), `--format ogg` is not accepted by the Gemini adapter, `--format mp3` is accepted by the adapter but untested here.
 - Voice options are best effort: a voice spec the model cannot honour falls back to its default voice without an error (Gemini: style picks a voice, language goes to the speech config, gender/instructions are dropped; `--speed` is ignored with a warning). Listen or transcribe before promising a particular voice.
-- No length limit or chunking exists in AICC; long text is one long request. For long scripts generate per paragraph (each with its own `--idempotency-key`), convert each to wav, then join: `printf "file %s\n" p1.wav p2.wav > list.txt && ffmpeg -f concat -safe 0 -i list.txt -c copy all.wav`.
+- No length limit or chunking exists in AICC; long text is one long request. For long scripts generate per paragraph (each with its own `--idempotency-key`), then, on a runtime with ffmpeg, convert to a common format if needed and join: `printf "file %s\n" p1.wav p2.wav > list.txt && ffmpeg -f concat -safe 0 -i list.txt -c copy all.wav`.
 - `gen_music <prompt> <out> [--duration S] [--instrumental] [--lyrics TEXT|FILE] [--seed N] [--format …]` makes a new clip; Lyria takes duration/instrumental/lyrics as hints added to the prompt, so check the real length. Continuing an existing track is not supported — describe the result as a new clip.
 - `enhance_audio <in> <out> --task denoise|dereverb|separate_voice|normalize [--strength 0-1] [--return-stems] [--stems-dir D]`; the routed fal model is a denoiser, other tasks are untested.
 - `speech_to_text <in> [out.txt] [--lang L] [--timestamps none|segment|word] [--diarization] [--format txt|json|vtt|srt]`; without an output path the text is in the result's `output`.
@@ -50,9 +51,10 @@ List `out/welcome.wav` in the final report's artifacts.
 - Costs: `ai_provider models --api-type audio.tts` shows list prices; `resume_aicc_task <task_id>` shows what a finished task cost (the TTS sentence above: 0.001 USD).
 
 #### Check the result
-- `ffprobe` shows a real duration and sample rate; `ffmpeg -v error -i out/x.wav -f null -` decodes without errors; `ffmpeg -i out/x.wav -af silencedetect=n=-40dB:d=0.5 -f null -` finds long silences. A rough speech length is 2.5–3 words per second.
+- In a standard runtime, check the successful AICC task, the saved file's existence and non-zero size, and the actual path/mime in the result. Use `speech_to_text` or `llm_understand_media` below for content checks. Preserve the task id and report which checks were performed; do not claim duration, decoding or playback was verified without evidence.
+- Where `ffprobe` is available, inspect duration and streams: `ffprobe -v error -show_entries format=duration:stream=codec_name,sample_rate,channels -of default=nw=1 out/x.wav`. Where `ffmpeg` is available, `ffmpeg -v error -i out/x.wav -f null -` checks decoding and `ffmpeg -i out/x.wav -af silencedetect=n=-40dB:d=0.5 -f null -` finds long silences. Delegate these checks when the task requires them and the current runtime lacks the tools. A rough speech length is 2.5–3 words per second.
 - Deliver the `.wav` (or an `-c:a libmp3lame` mp3 for a smaller file). A file from an older command that is raw PCM (`ffprobe`: "Invalid data found") converts with `ffmpeg -f s16le -ar 24000 -ac 1 -i in.pcm out.wav`.
-- One-line length check: `ffprobe -v error -show_entries format=duration -of csv=p=0 out/x.wav`.
+- One-line length check with `ffprobe`: `ffprobe -v error -show_entries format=duration -of csv=p=0 out/x.wav`.
 - Content: `speech_to_text out/x.wav` (one more paid call) or `llm_understand_media out/x.wav --goal "what is said?"`; compare with the requested text before claiming it.
 
 #### Source and extending

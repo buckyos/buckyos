@@ -1,12 +1,20 @@
 {
   "schema_version": 2,
-  "contract_revision": "2026-10-23.1",
-  "capability_baseline_revision": "2026-10-23.1",
-  "capability_cells_sha256": "f9a06a7f57eb22e12d29df7512b689d887fcff851739bfba9601d7eae57cc308",
-  "logical_entrypoint_baseline_revision": "2026-10-05.1",
+  "contract_revision": "2026-10-26.1",
+  "capability_baseline_revision": "2026-10-26.1",
+  "capability_cells_sha256": "249a293aae1ccd913ea7919666777521f4fef29244d91d557b96da3321361a83",
+  "logical_entrypoint_baseline_revision": "2026-10-26.1",
   "profiles": [
     { "provider_driver": "typesafe", "provider_profile_id": "typesafe", "covered_model_patterns": ["jev-1.13.0", "jev-latest", "jev-preview"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [] },
-    { "provider_driver": "openai", "provider_profile_id": "openai", "covered_model_patterns": ["gpt-5.6*", "sora-2*", "gpt-image-*", "dall-e-3", "dall-e-2", "text-embedding-*", "whisper-1", "*transcribe*", "tts-1*", "*-tts*", "gpt-5.2-pro*", "gpt-5.4-pro*", "gpt-5*", "gpt-*", "o*", "babbage-*", "davinci-*", "computer-use-preview*"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [
+    { "provider_driver": "openai", "provider_profile_id": "openai", "covered_model_patterns": ["gpt-6.1-sol", "gpt-6.1-terra", "gpt-5.6*", "sora-2*", "gpt-image-*", "dall-e-3", "dall-e-2", "text-embedding-*", "whisper-1", "*transcribe*", "tts-1*", "*-tts*", "gpt-5.2-pro*", "gpt-5.4-pro*", "gpt-5*", "gpt-*", "o*", "babbage-*", "davinci-*", "computer-use-preview*"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [
+      { "model_pattern": "gpt-6.1-sol", "api_type": "llm", "mode": "logical_routable", "logical_entrypoint": "llm.gpt-pro" },
+      { "model_pattern": "gpt-6.1-sol", "api_type": "image.txt2img", "mode": "exact_only", "reason": "Responses image-generation tool models are callable by exact model but are not members of the dedicated image-model family tree." },
+      { "model_pattern": "gpt-6.1-sol", "api_type": "image.img2img", "mode": "exact_only", "reason": "Responses image-generation tool models are callable by exact model but are not members of the dedicated image-model family tree." },
+      { "model_pattern": "gpt-6.1-sol", "api_type": "agent.computer_use", "mode": "logical_routable", "logical_entrypoint": "agent_runtime.computer_use" },
+      { "model_pattern": "gpt-6.1-terra", "api_type": "llm", "mode": "logical_routable", "logical_entrypoint": "llm.gpt-mini" },
+      { "model_pattern": "gpt-6.1-terra", "api_type": "image.txt2img", "mode": "exact_only", "reason": "Responses image-generation tool models are callable by exact model but are not members of the dedicated image-model family tree." },
+      { "model_pattern": "gpt-6.1-terra", "api_type": "image.img2img", "mode": "exact_only", "reason": "Responses image-generation tool models are callable by exact model but are not members of the dedicated image-model family tree." },
+      { "model_pattern": "gpt-6.1-terra", "api_type": "agent.computer_use", "mode": "logical_routable", "logical_entrypoint": "agent_runtime.computer_use" },
       { "model_pattern": "gpt-5.6*", "api_type": "llm", "mode": "logical_routable", "logical_entrypoint": "llm.gpt-pro" },
       { "model_pattern": "gpt-5.6*", "api_type": "image.txt2img", "mode": "exact_only", "reason": "Responses image-generation tool models are callable by exact model but are not members of the dedicated image-model family tree." },
       { "model_pattern": "gpt-5.6*", "api_type": "image.img2img", "mode": "exact_only", "reason": "Responses image-generation tool models are callable by exact model but are not members of the dedicated image-model family tree." },

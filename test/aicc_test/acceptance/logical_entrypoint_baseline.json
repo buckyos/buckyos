@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "baseline_revision": "2026-10-05.1",
+  "baseline_revision": "2026-10-26.1",
   "source_documents": [
     "doc/aicc/frozen_model_driver_and_logical_model_fs.md#9-\u51bb\u7ed3\u903b\u8f91\u76ee\u5f55",
     "doc/aicc/aicc_e2e_test_requirements.md#45-\u8def\u7531\u66b4\u9732\u5951\u7ea6"
@@ -32,6 +32,7 @@
   },
   "entrypoints": [
     { "path": "llm.chat", "api_type": "llm", "kind": "public_function" },
+    { "path": "llm.gpt-mini", "api_type": "llm", "kind": "public_spec" },
     { "path": "llm.gpt-pro", "api_type": "llm", "kind": "public_spec" },
     { "path": "llm.gpt-codex", "api_type": "llm", "kind": "public_spec" },
     { "path": "llm.claude-fable", "api_type": "llm", "kind": "public_spec" },

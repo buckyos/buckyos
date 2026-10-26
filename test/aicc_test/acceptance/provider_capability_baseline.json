@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
-  "baseline_revision": "2026-10-23.1",
-  "checked_at": "2026-10-23",
+  "baseline_revision": "2026-10-26.1",
+  "checked_at": "2026-10-26",
   "canonical_api_types": [
     "decision",
     "llm",
@@ -460,6 +460,144 @@
         }
       ],
       "rules": [
+        {
+          "model_pattern": "gpt-6.1-sol",
+          "status": "active",
+          "source_status": "official_catalog_runtime_membership",
+          "api_types": [
+            "llm",
+            "vision.ocr",
+            "vision.caption",
+            "image.txt2img",
+            "image.img2img",
+            "agent.computer_use"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.ocr",
+            "vision.caption",
+            "images.generate",
+            "image.img2img",
+            "agent.computer_use"
+          ],
+          "input_kinds": [
+            "text",
+            "image",
+            "document"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call",
+            "image",
+            "computer_action"
+          ],
+          "request_defaults": {
+            "image.txt2img": {
+              "n": 1,
+              "size": "1024x1024",
+              "quality": "low"
+            },
+            "image.img2img": {
+              "output": {
+                "size": "1024x1024"
+              }
+            }
+          },
+          "document_formats": [
+            "txt",
+            "md",
+            "pdf",
+            "doc",
+            "docx",
+            "xls",
+            "xlsx",
+            "csv",
+            "tsv",
+            "ppt",
+            "pptx",
+            "html",
+            "xml",
+            "json",
+            "yaml",
+            "rtf",
+            "source"
+          ],
+          "source_urls": [
+            "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+            "https://developers.openai.com/api/reference/resources/responses/methods/create"
+          ],
+          "evidence_summary": "Verified 2026-10-26: gpt-6.1-sol supports text/image input, structured text and tool calls, Responses image generation, and computer use."
+        },
+        {
+          "model_pattern": "gpt-6.1-terra",
+          "status": "active",
+          "source_status": "official_catalog_runtime_membership",
+          "api_types": [
+            "llm",
+            "vision.ocr",
+            "vision.caption",
+            "image.txt2img",
+            "image.img2img",
+            "agent.computer_use"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.ocr",
+            "vision.caption",
+            "images.generate",
+            "image.img2img",
+            "agent.computer_use"
+          ],
+          "input_kinds": [
+            "text",
+            "image",
+            "document"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call",
+            "image",
+            "computer_action"
+          ],
+          "request_defaults": {
+            "image.txt2img": {
+              "n": 1,
+              "size": "1024x1024",
+              "quality": "low"
+            },
+            "image.img2img": {
+              "output": {
+                "size": "1024x1024"
+              }
+            }
+          },
+          "document_formats": [
+            "txt",
+            "md",
+            "pdf",
+            "doc",
+            "docx",
+            "xls",
+            "xlsx",
+            "csv",
+            "tsv",
+            "ppt",
+            "pptx",
+            "html",
+            "xml",
+            "json",
+            "yaml",
+            "rtf",
+            "source"
+          ],
+          "source_urls": [
+            "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+            "https://developers.openai.com/api/reference/resources/responses/methods/create"
+          ],
+          "evidence_summary": "Verified 2026-10-26: gpt-6.1-terra supports text/image input, structured text and tool calls, Responses image generation, and computer use."
+        },
         {
           "model_pattern": "gpt-5.6*",
           "status": "active",

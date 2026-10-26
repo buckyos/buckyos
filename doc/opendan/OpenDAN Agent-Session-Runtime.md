@@ -104,7 +104,7 @@ Deno 是当前标准 TS 工具的运行依赖，但 `deno` 这个命令名不在
 | `extend_video` | 请求视频延展；实际支持受 provider 能力和输入条件限制。 |
 | `upscale_video` | 视频放大、增强。 |
 
-**音视频的 AICC 命令属于标准环境；本地音视频加工软件属于扩展工具。** 例如 `gen_video` 在标准清单中，而 `ffmpeg`、`ffprobe` 不在。完整视频制作手册需要剪辑、合成和验收，所以 `aigc_video` 声明 `baseline: extended`。
+**音视频的 AICC 命令属于标准环境；本地音视频加工软件属于扩展工具。** 例如 `gen_video` 在标准清单中，而 `ffmpeg`、`ffprobe` 不在。`aigc_audio` 和 `aigc_video` 均声明 `baseline: standard`，可在标准环境调用 Zone 模型生成音视频；剪辑、合成及本地媒体检查步骤再核验所需的 `ffmpeg`、`ffprobe` 或 ImageMagick。缺少这些加工工具不表示 Zone 没有生成模型。
 
 命令可启动表示执行端有对应接口，不保证当前 Zone 已配置所需 provider、模型、额度和资源访问权限。模型不支持某操作、额度不足或服务暂时不可达，都应报告实际结果，不据此修改环境基线。
 
@@ -200,7 +200,7 @@ requires: ffmpeg, ffprobe and ImageMagick; use the installed platform's command 
 
 ### 4.1 Jarvis cmd_skills 对照表
 
-下表逐项对应 [Jarvis 的 cmd_skills 源码目录](../../src/apps/jarvis_agent/agent/cmd_skills/)：当前共 12 个手册，8 个声明 `standard`，4 个声明 `extended`。它们均未声明 `platforms`，因此当前元数据不限制平台；具体脚本语法、路径和第三方软件仍需适配执行端。
+下表逐项对应 [Jarvis 的 cmd_skills 源码目录](../../src/apps/jarvis_agent/agent/cmd_skills/)：当前共 12 个手册，10 个声明 `standard`，2 个声明 `extended`。它们均未声明 `platforms`，因此当前元数据不限制平台；具体脚本语法、路径和第三方软件仍需适配执行端。
 
 表中的“可选”表示环境基线允许选择该手册，不表示自动注入，也不表示服务、权限和具体工具已全部就绪。“不可选”表示基线不匹配；即使标准环境碰巧装了某个扩展工具，也仍按声明的基线匹配。
 
@@ -214,14 +214,14 @@ requires: ffmpeg, ffprobe and ImageMagick; use the installed platform's command 
 | [aiworkspace_run](../../src/apps/jarvis_agent/agent/cmd_skills/aiworkspace_run.md) | `standard` | 可选 | 可选 | `buckyos aiws` 的 `run-claim`、`run-files`、`run-program`、`run-tool`、`run-heartbeat`、`run-report`；Deno 程序宿主 | owner 已将 hosted execution 配置给该 Agent，并提供有效 run/claim 上下文。示例使用 `jq`，但它不在标准清单；可改用 Deno 处理 JSON。项目程序的其它依赖单独准备。 |
 | [aiworkspace_template_dev](../../src/apps/jarvis_agent/agent/cmd_skills/aiworkspace_template_dev.md) | `standard` | 可选 | 可选 | `buckyos aiws info/read/query`；Deno + websdk 的 `getAiWorkspaceClient()` | 创建、写入、分享、发布或运行各步骤需要对应 Workspace capability；写操作主要通过 SDK/kRPC 完成，不应假定每个方法都有 CLI 子命令。 |
 | [aigc_image](../../src/apps/jarvis_agent/agent/cmd_skills/aigc_image.md) | `standard` | 可选 | 可选 | `gen_image`、`edit_image`、`inpaint_image`、`upscale_image`、`remove_bg`；`llm_understand_media` | 需要所用图像方法的 provider 与资源读取权限；`convert`、`identify`、`compare` 是手册中的可选 ImageMagick 加工/检查步骤，不属于标准要求。 |
-| [aigc_audio](../../src/apps/jarvis_agent/agent/cmd_skills/aigc_audio.md) | `extended` | 不可选 | 可选 | `text_to_speech`、`speech_to_text`、`gen_music`、`enhance_audio`；`ffmpeg`、`ffprobe` | 除标准 AICC 命令外，必须准备 `ffmpeg`、`ffprobe`；需要相应音频 provider 和资源读取权限。编码器等按输出格式检查。 |
-| [aigc_video](../../src/apps/jarvis_agent/agent/cmd_skills/aigc_video.md) | `extended` | 不可选 | 可选 | `gen_video`、`edit_video`、`extend_video`、`upscale_video`；`ffmpeg`、`ffprobe`、ImageMagick | 必须准备音视频加工及图像工具，并有相应视频 provider 和资源读取权限；字幕字体、编码器等按任务检查。 |
+| [aigc_audio](../../src/apps/jarvis_agent/agent/cmd_skills/aigc_audio.md) | `standard` | 可选 | 可选 | `text_to_speech`、`speech_to_text`、`gen_music`、`enhance_audio`；按步骤使用 `ffmpeg`、`ffprobe` | 生成需要相应音频 provider 和资源读取权限；转码、拼接、解码及媒体信息检查步骤分别核验 `ffmpeg`、`ffprobe`，编码器按输出格式检查。 |
+| [aigc_video](../../src/apps/jarvis_agent/agent/cmd_skills/aigc_video.md) | `standard` | 可选 | 可选 | `gen_video`、`edit_video`、`extend_video`、`upscale_video`；按步骤使用 `ffmpeg`、`ffprobe`、ImageMagick | 生成需要相应视频 provider 和资源读取权限；剪辑、合成、抽帧及本地媒体检查步骤再核验音视频或图像工具，字幕字体、编码器按任务检查。 |
 | [buckyos_app_dev](../../src/apps/jarvis_agent/agent/cmd_skills/buckyos_app_dev.md) | `extended` | 不可选 | 可选 | `buckyos pikg`、`buckyos app`；按项目使用 Node/Deno/Python 及构建命令 | 按 App 类型准备语言、包管理器和项目依赖；Docker App 另需 Docker 环境。安装需要 control-panel 接受的身份；aios 不自带 Docker。 |
 | [buckyos_dev_release](../../src/apps/jarvis_agent/agent/cmd_skills/buckyos_dev_release.md) | `extended` | 不可选 | 可选 | `buckyos pikg`、`buckyos app`；系统构建/发布脚本及任务所需的 `uv`、`cargo`、`pnpm`、`docker` 等 | 需要相应源码、目标平台工具链和发布/安装身份。默认 aios 只有部分运行工具，不能直接承担所有系统构建和镜像发布步骤。 |
 
 三个 `aigc_*` 手册还共同使用标准命令 `ai_provider`、`resume_aicc_task` 等进行模型发现和任务跟进；读取已存储的生成结果走 Zone NDM proxy，当前要求 `read_write` Agent。表中涉及的 Deno 可以使用 Tool 自带运行时，host 上不保证 PATH 有 `deno`，见 §2.1 和 §2.4。
 
-这个对照展示的是手册的最低声明基线：**已扩展环境可以选择全部 12 个手册，包含标准环境可选的全部 8 个**；实际执行仍逐项满足最后一列的条件。例如，aios 的媒体工具可以满足音视频加工依赖，但其 `extended` 声明不补齐 Rust、pnpm、Docker 等开发工具。
+这个对照展示的是手册的最低声明基线：**已扩展环境可以选择全部 12 个手册，包含标准环境可选的全部 10 个**；实际执行仍逐项满足最后一列的条件。例如，aios 的媒体工具可以满足音视频加工依赖，但其 `extended` 声明不补齐 Rust、pnpm、Docker 等开发工具。
 
 ### 4.2 Session 中的选择与冻结
 

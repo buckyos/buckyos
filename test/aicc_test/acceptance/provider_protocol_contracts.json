@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": "official-provider-protocols-2026-10-23.1",
-  "checked_at": "2026-10-23",
+  "revision": "official-provider-protocols-2026-10-26.1",
+  "checked_at": "2026-10-26",
   "providers": [
     {
       "provider_driver": "typesafe",
@@ -109,6 +109,8 @@
       "credential_type": "bearer",
       "official_first_party_model_ids": {
         "llm": [
+          "gpt-6.1-sol",
+          "gpt-6.1-terra",
           "gpt-5.6",
           "gpt-5.6-sol",
           "gpt-5.6-terra",
@@ -122,6 +124,8 @@
           "gpt-5.3-codex"
         ],
         "vision.ocr": [
+          "gpt-6.1-sol",
+          "gpt-6.1-terra",
           "gpt-5.6",
           "gpt-5.6-sol",
           "gpt-5.6-terra",
@@ -135,6 +139,8 @@
           "gpt-5.3-codex"
         ],
         "vision.caption": [
+          "gpt-6.1-sol",
+          "gpt-6.1-terra",
           "gpt-5.6",
           "gpt-5.6-sol",
           "gpt-5.6-terra",
@@ -152,6 +158,8 @@
           "text-embedding-3-large"
         ],
         "image.txt2img": [
+          "gpt-6.1-sol",
+          "gpt-6.1-terra",
           "gpt-5.6",
           "gpt-5.6-sol",
           "gpt-5.6-terra",
@@ -165,6 +173,8 @@
           "gpt-image-2"
         ],
         "image.img2img": [
+          "gpt-6.1-sol",
+          "gpt-6.1-terra",
           "gpt-5.6",
           "gpt-5.6-sol",
           "gpt-5.6-terra",
@@ -191,6 +201,8 @@
           "sora-2-pro"
         ],
         "agent.computer_use": [
+          "gpt-6.1-sol",
+          "gpt-6.1-terra",
           "gpt-5.6",
           "gpt-5.6-sol",
           "gpt-5.6-terra",
@@ -202,6 +214,8 @@
         ]
       },
       "official_variant_sources": [
+        "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+        "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
         "https://developers.openai.com/api/docs/models/gpt-5.6",
         "https://developers.openai.com/api/docs/models/gpt-5.5",
         "https://developers.openai.com/api/docs/models/gpt-5.5-pro",
@@ -212,6 +226,75 @@
         "https://developers.openai.com/api/docs/models/gpt-5.3-codex"
       ],
       "official_variant_rules": [
+        {
+          "model_ids": [
+            "gpt-6.1-sol"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "gpt-6.1-terra"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "effort": "none"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
         {
           "model_ids": [
             "gpt-5.6",
@@ -3157,6 +3240,8 @@
       "credential_type": "bearer",
       "official_first_party_model_ids": {
         "llm": [
+          "openai/gpt-6.1-sol",
+          "openai/gpt-6.1-terra",
           "openai/gpt-5.6",
           "openai/gpt-5.5",
           "openai/gpt-5.4",
@@ -3254,6 +3339,8 @@
           "google/gemini-3.5-transcribe"
         ],
         "vision.ocr": [
+          "openai/gpt-6.1-sol",
+          "openai/gpt-6.1-terra",
           "anthropic/claude-fable-5",
           "anthropic/claude-fable-5.1",
           "anthropic/claude-haiku-5.5",
@@ -3298,6 +3385,8 @@
           "z-ai/glm-5.3-flash"
         ],
         "vision.caption": [
+          "openai/gpt-6.1-sol",
+          "openai/gpt-6.1-terra",
           "anthropic/claude-fable-5",
           "anthropic/claude-fable-5.1",
           "anthropic/claude-haiku-5.5",
@@ -3343,9 +3432,80 @@
         ]
       },
       "official_variant_sources": [
+        "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+        "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
         "https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"
       ],
       "official_variant_rules": [
+        {
+          "model_ids": [
+            "openai/gpt-6.1-sol"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "openai/gpt-6.1-terra"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "effort": "none"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
         {
           "model_ids": [
             "openai/gpt-5.6"

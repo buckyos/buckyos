@@ -249,6 +249,8 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
     let catalog = catalog();
     let providers = builtin_provider_registry(&catalog).unwrap();
     let codecs = providers.codecs();
+    let openrouter_matcher =
+        openrouter::OpenRouterDiscovery::new(HttpTransport::new(Default::default()).unwrap());
     for (provider, id, effort, pointer, expected) in [
         (
             "qwen",
@@ -363,6 +365,55 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
             "/reasoning/effort",
             json!("max"),
         ),
+        (
+            "openai",
+            "gpt-6.1-sol",
+            "high",
+            "/reasoning/effort",
+            json!("high"),
+        ),
+        (
+            "openai",
+            "gpt-6.1-sol",
+            "max",
+            "/reasoning/effort",
+            json!("max"),
+        ),
+        (
+            "openai",
+            "gpt-6.1-terra",
+            "xhigh",
+            "/reasoning/effort",
+            json!("xhigh"),
+        ),
+        (
+            "openai",
+            "gpt-6.1-terra",
+            "none",
+            "/reasoning/effort",
+            json!("none"),
+        ),
+        (
+            "openrouter",
+            "openai/gpt-6.1-sol",
+            "high",
+            "/reasoning/effort",
+            json!("high"),
+        ),
+        (
+            "openrouter",
+            "openai/gpt-6.1-terra",
+            "xhigh",
+            "/reasoning/effort",
+            json!("xhigh"),
+        ),
+        (
+            "openrouter",
+            "openai/gpt-6.1-terra",
+            "none",
+            "/reasoning/effort",
+            json!("none"),
+        ),
     ] {
         let profile = providers
             .profiles()
@@ -383,7 +434,15 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
             .unwrap();
             discovered.models = models;
         }
-        let inv = InventoryBuilder::build(profile, &config, discovered, &catalog, &codecs).unwrap();
+        let inv = InventoryBuilder::build_with_matcher(
+            profile,
+            &config,
+            discovered,
+            &catalog,
+            &codecs,
+            (provider == "openrouter").then_some(&openrouter_matcher as &dyn ProviderDiscovery),
+        )
+        .unwrap();
         let model = inv
             .models
             .iter()
@@ -474,6 +533,10 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
             let mut request =
                 LlmChatInvokeRequest::new(&exact, vec![AiMessage::text(AiRole::User, "hello")]);
             request.max_output_tokens = max_output_tokens;
+            if provider == "openai" && id.starts_with("gpt-6.1-") {
+                request.temperature = Some(0.4);
+                request.top_p = Some(0.9);
+            }
             let call = buckyos_api::AiccCall::ChatCompletionsCreate(request);
             let credential = if provider == "claude" {
                 ResolvedCredential::named_header("secret://test", "x-api-key", "secret").unwrap()
@@ -520,6 +583,15 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
                 Some(&expected),
                 "{provider}/{id}/{effort}: {body}"
             );
+            if provider == "openai" && id.starts_with("gpt-6.1-") {
+                if effort == "none" {
+                    assert_eq!(body["temperature"], json!(0.4));
+                    assert_eq!(body["top_p"], json!(0.9));
+                } else {
+                    assert!(body.get("temperature").is_none(), "{id}/{effort}: {body}");
+                    assert!(body.get("top_p").is_none(), "{id}/{effort}: {body}");
+                }
+            }
             if provider == "claude" {
                 assert_eq!(
                     body["max_tokens"],
@@ -535,6 +607,71 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
                 assert_eq!(lowered_request.max_output_tokens, None, "{provider}/{id}");
             }
         }
+    }
+}
+
+#[test]
+fn gpt_6_1_presets_match_both_provider_channels_and_reject_unsupported_efforts() {
+    let catalog = catalog();
+    let providers = builtin_provider_registry(&catalog).unwrap();
+    let openrouter_matcher =
+        openrouter::OpenRouterDiscovery::new(HttpTransport::new(Default::default()).unwrap());
+    for (provider, prefix) in [("openai", ""), ("openrouter", "openai/")] {
+        let profile = providers
+            .profiles()
+            .find(|profile| profile.provider_profile_id == provider)
+            .unwrap();
+        let ids = [
+            format!("{prefix}gpt-6.1-sol"),
+            format!("{prefix}gpt-6.1-terra"),
+        ];
+        let inventory = InventoryBuilder::build_with_matcher(
+            profile,
+            &instance(profile, "test"),
+            discovery(&[&ids[0], &ids[1]]),
+            &catalog,
+            &providers.codecs(),
+            (provider == "openrouter").then_some(&openrouter_matcher as &dyn ProviderDiscovery),
+        )
+        .unwrap();
+        assert!(inventory.unmatched_models.is_empty(), "{provider}");
+        assert!(inventory.unavailable_presets.is_empty(), "{provider}");
+        assert_eq!(inventory.models.len(), 2, "{provider}");
+        let registry =
+            crate::service::builtin_registry_for_test(&catalog, &[inventory.as_model_inventory()]);
+        for model in &inventory.models {
+            let mut expected = vec![
+                "reasoning-high",
+                "reasoning-low",
+                "reasoning-max",
+                "reasoning-medium",
+                "reasoning-xhigh",
+            ];
+            if model.origin_model_id == "gpt-6.1-terra" {
+                expected.insert(4, "reasoning-none");
+            }
+            assert_eq!(
+                model
+                    .variants
+                    .iter()
+                    .map(|variant| variant.name.as_str())
+                    .collect::<Vec<_>>(),
+                expected,
+                "{provider}/{}",
+                model.provider_model_id
+            );
+            for variant in expected {
+                let exact = format!("{}:{variant}@test", model.provider_model_id);
+                let resolved = registry.exact_model(&exact).unwrap();
+                assert_eq!(resolved.identity.origin_model_id, model.origin_model_id);
+            }
+        }
+        assert!(registry
+            .exact_model(&format!("{}:reasoning-none@test", ids[0]))
+            .is_none());
+        assert!(registry
+            .exact_model(&format!("{}:reasoning-minimal@test", ids[1]))
+            .is_none());
     }
 }
 
@@ -1152,7 +1289,7 @@ fn provider_pricing_contains_all_rebased_model_defaults() {
         ("glm", 101),
         ("kimi", 4),
         ("minimax", 23),
-        ("openai", 28),
+        ("openai", 30),
         ("qwen", 99),
     ] {
         assert_eq!(
@@ -1219,12 +1356,56 @@ fn every_builtin_provider_price_has_provenance() {
             );
         }
     }
-    assert_eq!(pricing_count, 326);
+    assert_eq!(pricing_count, 328);
 }
 
 #[test]
 fn corrected_provider_prices_match_official_billing_dimensions() {
     let catalog = catalog();
+
+    for (model, input, output, cache, write) in [
+        ("gpt-6.1-sol", 2e-6, 1e-5, 1e-7, 2.5e-6),
+        ("gpt-6.1-terra", 1e-6, 5e-6, 5e-8, 1.25e-6),
+    ] {
+        let pricing = catalog
+            .resolve_provider_rule("openai", model, &Default::default())
+            .unwrap()
+            .unwrap()
+            .action
+            .pricing
+            .unwrap();
+        assert_eq!(pricing.input_token, Some(input), "{model}");
+        assert_eq!(pricing.output_token, Some(output), "{model}");
+        assert_eq!(pricing.cache_input_token, Some(cache), "{model}");
+        assert_eq!(pricing.cache_write_input_token, Some(write), "{model}");
+        assert_eq!(
+            pricing.source_url,
+            Some(format!(
+                "https://developers.openai.com/api/docs/models/{model}"
+            ))
+        );
+        assert_eq!(pricing.verified_at.as_deref(), Some("2026-10-26"));
+        let tiers = pricing.tiers.as_ref().unwrap();
+        assert_eq!(tiers.dimension, crate::catalog::TierDimension::InputTokens);
+        assert_eq!(tiers.mode, crate::catalog::TierMode::Volume);
+        assert_eq!(tiers.steps[0].up_to, Some(272_001));
+        assert_eq!(tiers.steps[1].up_to, None);
+        assert_eq!(tiers.steps[1].input_token, Some(input * 2.0), "{model}");
+        assert!(
+            (tiers.steps[1].output_token.unwrap() - output * 1.5).abs() < 1e-15,
+            "{model}"
+        );
+        assert_eq!(
+            tiers.steps[1].cache_input_token,
+            Some(cache * 2.0),
+            "{model}"
+        );
+        assert_eq!(
+            tiers.steps[1].cache_write_input_token,
+            Some(write * 2.0),
+            "{model}"
+        );
+    }
 
     let claude = catalog.provider_rules("claude").unwrap();
     let haiku = claude

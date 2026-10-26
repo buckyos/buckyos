@@ -244,7 +244,7 @@ mod tests {
     fn builtin_identity_and_catalog_fixtures_are_stable() {
         let profile = openai_profile();
         let known = openai_known_provider();
-        let rules = openai_provider_rules(4);
+        let rules = openai_provider_rules(5);
         let models = openai_model_driver();
 
         assert_eq!(profile.provider_profile_id, "openai");
@@ -257,7 +257,7 @@ mod tests {
             known.ui_hints["instance_fields"]["region"]["mode"],
             "unsupported"
         );
-        assert_eq!(rules.revision_seq, 4);
+        assert_eq!(rules.revision_seq, 5);
         assert_eq!(
             rules.patterns[0].operations["image.txt2img"],
             OPENAI_RESPONSES_OPERATION_ID
@@ -312,8 +312,8 @@ mod tests {
             catalog.known_provider("openai").unwrap().display_name,
             "OpenAI"
         );
-        assert_eq!(catalog.provider_rules("openai").unwrap().revision_seq, 4);
-        assert_eq!(catalog.model_driver("openai").unwrap().revision_seq, 6);
+        assert_eq!(catalog.provider_rules("openai").unwrap().revision_seq, 5);
+        assert_eq!(catalog.model_driver("openai").unwrap().revision_seq, 7);
     }
 
     #[tokio::test]
@@ -397,6 +397,8 @@ mod tests {
                     "gpt-6-luna",
                     "gpt-6-sol",
                     "gpt-6-astra",
+                    "gpt-6.1-sol",
+                    "gpt-6.1-terra",
                 ]
                 .into_iter()
                 .map(|model_id| DiscoveredModel {
@@ -418,11 +420,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(inventory.protocol_adapter_id, OPENAI_RESPONSES_ADAPTER_ID);
-        assert_eq!(inventory.models.len(), 7);
+        assert_eq!(inventory.models.len(), 9);
         let model = inventory
             .models
             .iter()
-            .find(|model| model.provider_model_id == "gpt-5.6-sol")
+            .find(|model| model.provider_model_id == "gpt-6.1-sol")
             .unwrap();
         let operations = &model.operations;
         assert_eq!(operations["llm"], OPENAI_RESPONSES_OPERATION_ID);
@@ -439,11 +441,11 @@ mod tests {
         let models = crate::model::llm_tests::gpt_registry(&[inventory.as_model_inventory()]);
         for (spec, origin, effort) in [
             ("gpt-nano", "gpt-6-luna", "none"),
-            ("gpt-mini", "gpt-6-luna", "low"),
-            ("gpt-standard", "gpt-6-sol", "medium"),
-            ("gpt-pro", "gpt-6-sol", "high"),
+            ("gpt-mini", "gpt-6.1-terra", "low"),
+            ("gpt-standard", "gpt-6.1-sol", "medium"),
+            ("gpt-pro", "gpt-6.1-sol", "high"),
             ("gpt-max", "gpt-6-astra", "high"),
-            ("gpt-codex", "gpt-6-sol", "xhigh"),
+            ("gpt-codex", "gpt-6.1-sol", "xhigh"),
         ] {
             let candidates = models
                 .resolve_candidates(&format!("llm.{spec}"), buckyos_api::ApiType::Llm)

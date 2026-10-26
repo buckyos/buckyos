@@ -619,6 +619,7 @@ fn resolve_operation(
     remote_methods: Option<&BTreeSet<String>>,
     api_type: ApiType,
     api_type_name: &str,
+    default_operation: Option<&str>,
 ) -> ProviderResult<Option<String>> {
     if let Some(operation) = overrides
         .get(api_type.typed_method())
@@ -680,6 +681,13 @@ fn resolve_operation(
             .filter(|(_, priority)| *priority == highest_priority)
             .collect::<Vec<_>>()
     };
+    if matching.len() > 1 {
+        if let Some(operation) = default_operation
+            .filter(|default| matching.iter().any(|(operation, _)| operation == default))
+        {
+            return Ok(Some(operation.to_owned()));
+        }
+    }
     match matching.as_slice() {
         [] => Ok(None),
         [(operation, _)] => Ok(Some(operation.clone())),

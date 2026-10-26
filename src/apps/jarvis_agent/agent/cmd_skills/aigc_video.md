@@ -1,8 +1,8 @@
 ---
 name: aigc_video
 description: Make videos with the zone's AI models — one video.generate request takes a prompt plus start/end keyframes or reference images, clips and audio; video edit/extend/upscale as far as the providers support it; and multi-shot films from a storyboard (images, narration, clips, ffmpeg assembly with subtitles), with task ids recorded so long jobs resume instead of being paid twice.
-requires: an extended session-runtime (the aios agent container is one) with the buckyos-agent commands on PATH (gen_video, edit_video, resume_aicc_task, …), ffmpeg/ffprobe and ImageMagick, and an AICC provider that serves video.generate; stored results are read through the Zone NDM proxy, which only read_write Agents may read
-baseline: extended
+requires: the standard buckyos-agent commands on PATH (gen_video, edit_video, resume_aicc_task, …) and an AICC provider that serves video.generate; stored results are read through the Zone NDM proxy, which only read_write Agents may read; local editing, assembly and media inspection need the tools named in those steps
+baseline: standard
 ---
 #### When to use
 - One clip: from a description, from a start and/or end frame, or following reference images, clips or audio — all `gen_video`. Rewrite a clip (`edit_video`); continue one (`extend_video`); raise resolution (`upscale_video`).
@@ -10,14 +10,16 @@ baseline: extended
 - Describing an existing video is `llm_understand_media`.
 
 #### Before you start
-- `command -v gen_video resume_aicc_task ffmpeg`.
-- This manual needs an extended runtime (ffmpeg/ffprobe and ImageMagick besides the standard AICC commands): the AIOS `container` is one. If they are missing here, use `agent-session runtime list --available` and explicitly delegate generation to such a runtime with `aigc_video` and no workspace; hand inputs and outputs over by `agent-session copy` or object ids. Keep any user-selected runtime/workspace for its own work. If no compatible runtime is available, report the missing execution capability. A missing command on `host` is not evidence that `video.generate` is unavailable in the zone.
+- `command -v gen_video resume_aicc_task`.
+- Video generation uses standard AICC commands, available on a node through `$BUCKYOS_ROOT/bin/agent-tools` and in the AIOS `container`. An available `standard` host can generate video without a container or local ffmpeg/ImageMagick. Preserve a user-selected runtime/workspace. If a required AICC command is missing, inspect `agent-session runtime list --available` and its `baseline_check`, then delegate generation to a runtime with that command using `aigc_video`; use `--workspace none` for a separate one-off task and exchange inputs and outputs by `agent-session copy` or object ids. Missing local commands do not establish that the zone has no video models.
+- Local trimming, transcoding, assembly and frame extraction require `ffmpeg`; duration/stream inspection requires `ffprobe`; `llm_understand_media` on a video currently uses both to extract frames. Image preparation with ImageMagick requires its `magick` or `convert`/`identify` commands. Check only the tools needed by those steps. If absent here, delegate those steps to an available runtime that has them, copying files or passing object ids. A runtime's `extended` label alone does not prove it has the required tool. A missing editing or inspection tool does not block the AICC generation step; report the specific remaining step if no runtime can perform it.
 - For a request to generate a video, use `gen_video` and require a successful AICC task and its playable output. Do not silently replace generation with Pillow/SVG animation, a slideshow or synthetic frames. Such a different production method needs the user's request or agreement and must be identified in the report.
 - Models, what each accepts and list prices: `ai_provider models --api-type video.generate`. OpenRouter lists MiniMax H3 (`minimax/hailuo-3`: 2K, 5–15 s, always with sound, 0.13 USD/s + 0.04 per reference image) and H3-Max (`minimax/hailuo-3-max`: 480p/768p, 5–15 s, cannot generate sound though its file carries an audio track, so `--audio` must stay `auto`; 0.05 USD/s at 480p, 0.08 at 768p) — catalog of 2026-10-22; the zone's own provider list decides what you can use. Gemini's Veo 3.1 Preview was shut down on 2026-10-22. Video is the expensive medium: say the estimated cost before a multi-shot job.
 - No health check is needed before a call; a refusal comes back in the result.
 
 #### Find the real commands
 - `<command> --help`; source `/opt/buckyos/bin/opendan/buckyos-agent/commands/<command>.ts`.
+- On a node, substitute `$BUCKYOS_ROOT/libexec/buckyos-agent` (default `/opt/buckyos/libexec/buckyos-agent`) for the container source root `/opt/buckyos/bin/opendan/buckyos-agent` in the examples below.
 
 #### Shortest path (one clip)
 ```bash
@@ -25,7 +27,6 @@ mkdir -p out
 gen_video 'A small ocean wave rolls onto a sandy beach at sunset, static camera.' out/wave.mp4 \
   --model video.generate --duration 5 --aspect 16:9 \
   --idempotency-key wave-v1 --timeout 900
-ffprobe -v error -show_entries format=duration:stream=codec_type,width,height,r_frame_rate -of compact=p=0 out/wave.mp4
 ```
 Without `--model` the logical `video.generate` route is also the default and picks a model that can do everything asked. Use an exact model from `ai_provider models --api-type video.generate` only when the user or task requires one. Deliver the result's `detail.files[].obj_id` in the report's artifacts; if you edited the file afterward, deliver the new relative path so the host uploads those bytes.
 
@@ -33,7 +34,7 @@ Without `--model` the logical `video.generate` route is also the default and pic
 - `gen_video <prompt> <out>` with conditions `--first-frame IMG`, `--last-frame IMG`, `--ref-image ID=IMG`, `--ref-video ID=VIDEO`, `--ref-audio ID=AUDIO` (the `--ref-*` ones repeat), `--with-audio ID` (the model may hear that reference video's own sound; it is stripped otherwise), `--clip ID=START-END`; output `--duration S`, `--aspect W:H`, `--short-edge PX` or `--size WxH`, `--fps N`, `--audio auto|generate|none`, `--format mp4|webm|mov`; plus `--negative TEXT`, `--seed N`.
 - In the prompt name a material as `@{ID}` (keyframes are `@{first}` / `@{last}`; `@@` is a literal `@`), e.g. `'the cat from @{cat} jumps over @{fence}'`. AICC rewrites it into the model's own wording ("image 1", "@图像1", "the first frame"); an unknown `@{…}` is refused before anything is sent.
 - Nothing is quietly dropped: a condition, combination or output value the chosen model cannot honour fails with `unsupported_operation` (exit 2; for a logical model, exit 3 `no_candidate_model` when no model can). Keyframes and reference materials cannot be mixed on most models (none of H3, H3-Max, Seedance allow it); `--audio none` is refused by models that always add sound (H3); `--clip` must cover the whole clip because AICC does not trim yet; a reference clip without the audio track it needs is `resource_invalid`.
-- The result's `detail.video` has `provider_metadata` (what the provider said), `measured_metadata` (what AICC read from the file, when it had the bytes) and `deviations` (where the video differs from what you asked). Still check the file with `ffprobe`.
+- The result's `detail.video` has `provider_metadata` (what the provider said), `measured_metadata` (what AICC read from the file, when it had the bytes) and `deviations` (where the video differs from what you asked). Use measured values when present and distinguish them from provider claims. Inspect the local file with `ffprobe` where available; generation does not require a local probe.
 - `edit_video <video> <prompt> <out>` (same output options; Sora, Gemini Omni, Seedance 2.5) and `upscale_video <in> <out> [--target-resolution 1080p|4k] [--denoise] [--sharpen 0-1] [--fps N]` (fal): not tested here.
 - `extend_video <video> <prompt> <out> [--continuation-handle H]`: AICC neither keeps nor returns provider continuation handles, so no command can give you a valid handle today; without one, whether the provider continues the video is untested. If it fails, tell the user native continuation is not available and offer the substitute: last frame → `gen_video --first-frame` → join (below). The join may show a visible cut; label it as such.
 - Material input: local path (inline base64; above ~700 KB → `RPC call error: 500`), URL, or an object id with its prefix (`named_object:cyfile:…`). Feed a keyframe you generated by its `detail.files[].obj_id` — no upload needed. AICC measures reference clips and audio (length, size, sound track) before choosing a model.
@@ -51,9 +52,9 @@ Without `--model` the logical `video.generate` route is also the default and pic
 
 #### Multi-shot film (storyboard → assets → shots → assembly)
 - Keep `storyboard.json` in the working directory and update it after every step: per shot `id`, prompt, keyframe path/obj_id, narration text and file, duration, `idempotency_key`, `task_id`, `status` (planned/running/done/failed), output path, cost (`resume_aicc_task <task_id>` shows it); plus the budget. When something fails, redo that shot alone with a new key and keep the finished ones.
-- Assets: keyframes with `gen_image`/`edit_image`; narration with `text_to_speech` (Gemini gives raw PCM: `ffmpeg -f s16le -ar 24000 -ac 1 -i n1.pcm n1.wav`). Shot length = narration length + ~0.5 s, rounded up to whole frames.
+- Assets: keyframes with `gen_image`/`edit_image`; narration with `text_to_speech` (the command wraps Gemini raw PCM as WAV without ffmpeg; use `detail.files[].path`). Shot length = narration length + ~0.5 s, rounded up to whole frames.
 - Shots: `gen_video '<motion of @{first}>' shots/s1.mp4 --first-frame 'named_object:<keyframe obj_id>' --idempotency-key film-s1-v1`; several can run as separate shell calls, each with its own key. Keep a character consistent across shots with the same `--ref-image hero=…` on every shot (models that take reference images). A still with a slow push-in is a cheap alternative shot.
-- Assembly — ffmpeg recipes tested in this container (1280x720, 24 fps). Set the shot length first, e.g. narration 3.97 s → `F=108; D=4.5` (F = ceil((narration + 0.5) × 24), D = F / 24):
+- Assembly requires a runtime with ffmpeg; delegate this step if needed while keeping generation on its selected runtime. These recipes were tested in the AIOS container (1280x720, 24 fps). Set the shot length first, e.g. narration 3.97 s → `F=108; D=4.5` (F = ceil((narration + 0.5) × 24), D = F / 24):
 ```bash
 # normalize a clip and lay narration under it (pads/trims both to D)
 ffmpeg -y -i s1.mp4 -i n1.wav -filter_complex "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24,tpad=stop_mode=clone:stop_duration=30,trim=duration=$D[v];[1:a]aresample=48000,apad,atrim=duration=$D[a]" -map "[v]" -map "[a]" -c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p -c:a aac -ar 48000 -ac 2 seg1.mp4
@@ -71,8 +72,9 @@ ffmpeg -y -sseof -0.2 -i s1.mp4 -frames:v 1 -update 1 s1-last.png
 - Plain ffmpeg in `shell` is enough for assembly. If you wrap these steps in a TS script, run it with `--allow-run` added to its `deno run` line — the installed command launcher does not grant that permission.
 
 #### Check the result
-- Each shot and the final file: `ffprobe` (duration, 1280x720, 24 fps, audio present), video and audio durations within ~0.05 s of each other, `ffmpeg -v error -i out/film.mp4 -f null -` decodes cleanly.
-- Look at it: `ffmpeg -i out/film.mp4 -vf "fps=1,scale=320:-2,tile=4x2" -frames:v 1 sheet.png`, then `llm_understand_media sheet.png --goal "do the shots match the storyboard?"`; for the voice, `speech_to_text` on the final file.
+- In a standard runtime, check the successful AICC task, the saved file's existence and non-zero size, `detail.video.measured_metadata` and `deviations` when present, and the output object ids. Report which checks were performed; missing local inspection tools do not mean video models are unavailable, and unperformed content, playback or decoding checks must not be claimed.
+- Where `ffprobe` is available: `ffprobe -v error -show_entries format=duration:stream=codec_type,width,height,r_frame_rate -of compact=p=0 out/wave.mp4`. Compare with the requested output; for the assembly recipe above, check each shot and the final file for 1280x720, 24 fps, audio present and video/audio durations within ~0.05 s of each other. Where `ffmpeg` is available, `ffmpeg -v error -i out/film.mp4 -f null -` checks decoding. Delegate these checks when the task requires them and the current runtime lacks the tools.
+- With ffmpeg and ffprobe, inspect content using `llm_understand_media out/wave.mp4 --goal "does the clip match the requested scene and motion?"`. Or use ffmpeg to make a contact sheet: `ffmpeg -i out/film.mp4 -vf "fps=1,scale=320:-2,tile=4x2" -frames:v 1 sheet.png`, then `llm_understand_media sheet.png --goal "do the shots match the storyboard?"`; for the voice, `speech_to_text` on the final file.
 - Report the generation method, actual model when the task supplies it, real duration, size, shots used, task ids and cost. Preserve the successful AICC result and its output object ids as evidence; a successful command is not yet a correct film.
 
 #### Source and extending

@@ -763,6 +763,15 @@ impl InventoryBuilder {
             .as_deref()
             .unwrap_or(&profile.provider_profile_id);
         let rules = catalog.provider_rules(rules_id);
+        let default_rules_id = if rules.is_none() {
+            catalog
+                .known_provider(&adapter.protocol_family_id)
+                .filter(|provider| provider.protocol_adapter_id == adapter.protocol_adapter_id)
+                .and_then(|provider| provider.provider_rules_id.as_deref())
+                .filter(|id| catalog.provider_rules(id).is_some())
+        } else {
+            None
+        };
         let instance_rules = instance.instance_rules.clone().unwrap_or_default();
         let enabled_static_models = instance_rules.enabled_inventory_models.as_ref();
         if let (Some(enabled), Some(rules)) = (enabled_static_models, rules) {
@@ -1019,6 +1028,13 @@ impl InventoryBuilder {
                 static_api_types.retain(|api_type| discovered_api_types.contains(api_type));
             }
 
+            let default_operations = default_rules_id
+                .map(|id| catalog.resolve_provider_rule(id, &origin_model_id, &dimensions))
+                .transpose()
+                .map_err(|error| ProviderError::Inventory(error.to_string()))?
+                .flatten()
+                .map(|rule| rule.action.operations)
+                .unwrap_or_default();
             let mut api_types = Vec::new();
             let mut operations = BTreeMap::new();
             let mut adapter_features = BTreeSet::new();
@@ -1030,6 +1046,10 @@ impl InventoryBuilder {
                     discovered.remote_methods.as_ref(),
                     api_type,
                     &api_type_name,
+                    default_operations
+                        .get(api_type.typed_method())
+                        .or_else(|| default_operations.get(&api_type_name))
+                        .map(String::as_str),
                 )
                 .map_err(|error| {
                     ProviderError::Inventory(format!(

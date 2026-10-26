@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 1,
   "model_driver_id": "openai",
-  "revision_seq": 6,
+  "revision_seq": 7,
   "specs": [
     {"id": "gpt-nano"},
     {"id": "gpt-mini"},
@@ -13,6 +13,44 @@
     {"id": "gpt-codex"}
   ],
   "models": [
+    {
+      "id": "gpt-6.1-sol",
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img", "agent.computer_use"],
+      "capabilities": {
+        "streaming": true, "tool_call": true, "json_schema": true, "web_search": true,
+        "reasoning": true, "vision": true, "image_generation": true,
+        "max_context_tokens": 1050000, "max_output_tokens": 128000
+      },
+      "llm": {
+        "spec": "gpt-pro",
+        "effort": "high",
+        "additional_specs": [
+          {"spec": "gpt-standard", "effort": "medium", "weight": 61},
+          {"spec": "gpt-codex", "effort": "xhigh", "weight": 61}
+        ],
+        "stability": "stable",
+        "weight": 61,
+        "default_effort": "medium",
+        "supported_efforts": ["low", "medium", "high", "xhigh", "max"]
+      }
+    },
+    {
+      "id": "gpt-6.1-terra",
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img", "agent.computer_use"],
+      "capabilities": {
+        "streaming": true, "tool_call": true, "json_schema": true, "web_search": true,
+        "reasoning": true, "vision": true, "image_generation": true,
+        "max_context_tokens": 1050000, "max_output_tokens": 128000
+      },
+      "llm": {
+        "spec": "gpt-mini",
+        "effort": "low",
+        "stability": "stable",
+        "weight": 61,
+        "default_effort": "medium",
+        "supported_efforts": ["none", "low", "medium", "high", "xhigh", "max"]
+      }
+    },
     {
       "id": "gpt-6-luna",
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img", "agent.computer_use"],

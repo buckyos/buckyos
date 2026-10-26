@@ -383,15 +383,15 @@ routing_config:
 
     llm.plan:
       items:
-        - { name: gpt_pro, target: llm.gpt-pro, weight: 2.3 }
-        - { name: gpt_max, target: llm.gpt-max, weight: 2.6 }
+        - { name: gpt_max, target: llm.gpt-max, weight: 3.2 }
+        - { name: gpt_pro, target: llm.gpt-pro, weight: 3.1 }
       fallback: { mode: disabled }
       profile: quality_first
 
     llm.code:
       items:
-        - { name: gpt_codex, target: llm.gpt-codex, weight: 2.2 }
-        - { name: gpt_standard, target: llm.gpt-standard, weight: 2.1 }
+        - { name: gpt_codex, target: llm.gpt-codex, weight: 3.2 }
+        - { name: gpt_standard, target: llm.gpt-standard, weight: 3.0 }
       fallback: { mode: disabled }
 
     llm.swift:
