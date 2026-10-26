@@ -96,14 +96,9 @@ jobs:
       run: |
         python -m pip install "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git@main"
         python -c "import sys, yaml; print('Python:', sys.executable); print('PyYAML:', yaml.__version__)"
-    - name: Prepare SDK/Tool distribution
-      working-directory: ./src
-      env:
-        SDK_TOOL_WORK_DIR: ${{ runner.temp }}/sdk-tool-distribution
-      run: python tools/prepare_sdk_tool_distribution.py --work-dir "$SDK_TOOL_WORK_DIR"
     - name: Build BuckyOS
       working-directory: ./src
-      run: buckyos-build --app=buckyos --target=${{ inputs.arch }}-unknown-linux-${{ inputs.arch == 'aarch64' && 'gnu' || 'musl' }}
+      run: python buckyos-build.py --app=buckyos --target=${{ inputs.arch }}-unknown-linux-${{ inputs.arch == 'aarch64' && 'gnu' || 'musl' }}
     - name: Install staged payload
       working-directory: ./src
       env:

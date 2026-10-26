@@ -65,15 +65,9 @@ jobs:
           throw "Devkit installation failed with exit code $LASTEXITCODE"
         }
         python -c "import sys, yaml; print('Python:', sys.executable); print('PyYAML:', yaml.__version__)"
-    - name: Prepare SDK/Tool distribution
-      working-directory: ./src
-      shell: pwsh
-      env:
-        SDK_TOOL_WORK_DIR: ${{ runner.temp }}/sdk-tool-distribution
-      run: python tools/prepare_sdk_tool_distribution.py --work-dir $env:SDK_TOOL_WORK_DIR
     - name: Build BuckyOS
       working-directory: ./src
-      run: buckyos-build --app=buckyos --target=${{ inputs.arch }}-pc-windows-msvc
+      run: python buckyos-build.py --app=buckyos --target=${{ inputs.arch }}-pc-windows-msvc
     - name: Install staged payload
       working-directory: ./src
       shell: pwsh
