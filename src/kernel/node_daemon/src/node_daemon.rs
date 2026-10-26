@@ -350,17 +350,20 @@ async fn index_static_dir_pkg_meta_from_current_named_store(
     index_static_dir_pkg_meta_from_named_store(pkg_env_path, resolved_pkg_id, &store_mgr).await
 }
 
+// Returns whether any pkg was installed or repaired (even when others failed): cyfs-gateway
+// skips a dir server whose root is missing, so such a pkg is only served after a reload.
 async fn ensure_node_gateway_dir_pkgs_installed_in_env(
     pkg_env_path: &Path,
     node_gateway_info: &Value,
-) -> Result<()> {
+) -> (bool, Result<()>) {
     let Some(app_info_map) = node_gateway_info.get("app_info").and_then(Value::as_object) else {
-        return Ok(());
+        return (false, Ok(()));
     };
 
     let mut pkg_env = new_package_env(pkg_env_path.to_path_buf());
     let mut checked_pkg_ids = std::collections::HashSet::new();
     let mut failures = Vec::new();
+    let mut installed_any = false;
 
     for (host, app_entry) in app_info_map {
         let Some(app_info) = app_entry.as_object() else {
@@ -475,13 +478,18 @@ async fn ensure_node_gateway_dir_pkgs_installed_in_env(
                 app_id,
                 friendly_path.display()
             ));
+            continue;
         }
+        installed_any = true;
     }
 
     if failures.is_empty() {
-        Ok(())
+        (installed_any, Ok(()))
     } else {
-        Err(NodeDaemonErrors::ReasonError(failures.join("; ")))
+        (
+            installed_any,
+            Err(NodeDaemonErrors::ReasonError(failures.join("; "))),
+        )
     }
 }
 
@@ -541,7 +549,7 @@ async fn publish_static_web_deployment_evidence(
     }
 }
 
-async fn ensure_node_gateway_dir_pkgs_installed(node_gateway_info: &Value) -> Result<()> {
+async fn ensure_node_gateway_dir_pkgs_installed(node_gateway_info: &Value) -> (bool, Result<()>) {
     ensure_node_gateway_dir_pkgs_installed_in_env(
         get_buckyos_system_bin_dir().as_path(),
         node_gateway_info,
@@ -1522,8 +1530,12 @@ async fn node_daemon_main_loop(
                     None => true,
                     Some(old_id) => old_id != &new_node_gateway_info_id_value,
                 };
-                let ensure_result =
+                let (dir_pkgs_installed, ensure_result) =
                     ensure_node_gateway_dir_pkgs_installed(&new_node_gateway_info).await;
+                if dir_pkgs_installed {
+                    // Force a gateway reload below even if the gateway config is unchanged.
+                    node_gateway_config_id = None;
+                }
                 if let Err(err) = ensure_result {
                     error!("ensure static web dir pkg installed failed! {}", err);
                     let err_message = err.to_string();
@@ -2622,18 +2634,19 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         std::fs::create_dir_all(pkg_env_path.join("portal-web")).unwrap();
 
         let gateway_info = build_static_web_gateway_info("portal-web", meta_obj_id.as_str());
-        let result =
+        let (installed, result) =
             ensure_node_gateway_dir_pkgs_installed_in_env(pkg_env_path.as_path(), &gateway_info)
                 .await;
 
         cleanup_temp_pkg_env_path(&pkg_env_path);
         result.unwrap();
+        assert!(!installed);
     }
 
     #[tokio::test]
-    async fn test_ensure_node_gateway_dir_pkgs_installed_requires_friendly_path_for_exact_pkg() {
+    async fn test_ensure_node_gateway_dir_pkgs_installed_repairs_friendly_path_for_exact_pkg() {
         let pkg_env_path =
-            create_temp_pkg_env_path("ensure_node_gateway_dir_pkgs_installed_requires_friendly");
+            create_temp_pkg_env_path("ensure_node_gateway_dir_pkgs_installed_repairs_friendly");
         let (pkg_name, meta_obj_id) = index_test_pkg(&pkg_env_path, "portal-web", "1.0.0");
         let strict_dir = pkg_env_path
             .join("pkgs")
@@ -2642,13 +2655,15 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         std::fs::create_dir_all(&strict_dir).unwrap();
 
         let gateway_info = build_static_web_gateway_info("portal-web", meta_obj_id.as_str());
-        let result =
+        let (installed, result) =
             ensure_node_gateway_dir_pkgs_installed_in_env(pkg_env_path.as_path(), &gateway_info)
                 .await;
+        let friendly_is_dir = pkg_env_path.join("portal-web").is_dir();
 
         cleanup_temp_pkg_env_path(&pkg_env_path);
-        let err = result.expect_err("exact pkg without friendly path should not be accepted");
-        assert!(err.to_string().contains("portal-web"));
+        result.unwrap();
+        assert!(installed);
+        assert!(friendly_is_dir);
     }
 
     #[tokio::test]
@@ -2661,11 +2676,12 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         std::fs::create_dir_all(&friendly_dir).unwrap();
 
         let gateway_info = build_static_web_gateway_info("portal-web", meta_obj_id.as_str());
-        let result =
+        let (installed, result) =
             ensure_node_gateway_dir_pkgs_installed_in_env(pkg_env_path.as_path(), &gateway_info)
                 .await;
 
         cleanup_temp_pkg_env_path(&pkg_env_path);
+        assert!(!installed);
         let err = result.expect_err("friendly dir should not satisfy exact pkg objid");
         match err {
             NodeDaemonErrors::ReasonError(msg) => {
