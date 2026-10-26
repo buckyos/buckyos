@@ -272,9 +272,15 @@ export interface KnownRuntime {
   capabilities: unknown
   availability: 'available' | 'runtime_unavailable' | 'permission_denied'
   builtin: boolean
-  /** The runtime new sessions without a workspace start in. */
+  /** The session-runtime new sessions take unless one is named or inherited. */
   default: boolean
   computer: ComputerAccess
+  /** What its registrar declares it provides: decides the sessions' cmd_skills. */
+  baseline: RuntimeBaseline
+  /** Learned when it is checked (`os` linux | macos | windows). */
+  platform?: { os: string; arch: string; shell: string }
+  /** The last check of its standard tools: a hint, never the declaration. */
+  baseline_check?: { checked_at_ms: number; missing: string[]; ok: boolean; error?: string } | null
   revision: number
   registered_by: string
   registered_at_ms: number
@@ -321,8 +327,10 @@ export interface WorkspaceImportRequest {
 }
 
 /** `AgentSettings.runtimes` as the owner chose them for this agent. */
+export type RuntimeBaseline = 'standard' | 'extended'
+
 export interface RuntimeSettings {
-  runtimes: Record<string, { enabled: boolean; computer: ComputerAccess; target: unknown }>
+  runtimes: Record<string, { enabled: boolean; computer: ComputerAccess; target: unknown; baseline?: RuntimeBaseline | null }>
   default_runtime_id: string
 }
 
@@ -330,6 +338,7 @@ export interface RuntimeSettingPatch {
   runtime_id: string
   enabled?: boolean
   computer?: ComputerAccess
+  baseline?: RuntimeBaseline | null
   default?: boolean
 }
 

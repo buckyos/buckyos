@@ -204,7 +204,7 @@ impl Home {
     }
 
     /// Change one runtime the owner already has on this agent (enable /
-    /// disable, ComputerUse, default). Adding a runtime target is the
+    /// disable, ComputerUse, declared baseline, default). Adding a runtime target is the
     /// control panel's (`agent.update` / `agent.runtime_directory`): this
     /// side never invents a target. Returns the new settings.
     pub async fn set_runtime_settings(&self, params: &Value) -> Result<buckyos_api::AgentSettings, OpenDanError> {
@@ -225,6 +225,12 @@ impl Home {
             if let Some(computer) = params.get("computer").filter(|v| !v.is_null()) {
                 entry.computer = serde_json::from_value(computer.clone())
                     .map_err(|_| invalid("param `computer` takes none | observe | control".into()))?;
+            }
+            // What the owner declares the machine to provide (Q5): decides
+            // the cmd_skills of sessions created on it from now on.
+            if let Some(baseline) = params.get("baseline") {
+                entry.baseline = serde_json::from_value(baseline.clone())
+                    .map_err(|_| invalid("param `baseline` takes standard | extended | null".into()))?;
             }
         }
         if let Some(default) = params.get("default").and_then(Value::as_bool) {

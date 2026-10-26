@@ -542,7 +542,7 @@ async fn missing_tool_or_runtime_mismatch_fails_before_inference() {
     fsutil::publish_noreplace_json(
         &sd3.file(BINDING_FILE),
         &Binding {
-            schema: "opendan.binding/4".into(),
+            schema: libopendan::runtime::BINDING_SCHEMA.into(),
             target: serde_json::Value::Null,
             runtime_id: "rt-other-host".into(),
             kind: "native".into(),

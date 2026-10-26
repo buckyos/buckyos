@@ -6,7 +6,7 @@
     "agent_did": "did:bns:jarvis.alice",
     "kind": "work",
     "class": "work",
-    "created_at_ms": 1792819160958,
+    "created_at_ms": 1792976020384,
     "created_by": {
       "principal": "app:app2@alice",
       "via": "app"
@@ -53,7 +53,13 @@
       },
       "revision": 0,
       "selected_by": "default",
-      "computer": "none"
+      "computer": "none",
+      "baseline": "extended",
+      "platform": {
+        "os": "linux",
+        "arch": "x86_64",
+        "shell": "bash"
+      }
     }
   },
   "channels": {

@@ -500,7 +500,7 @@ pub(super) async fn queue_reply(sh: &Shared, s: &mut Session, run_id: &str, mut 
     };
     let anchor = take_placeholder(s, reply.turn);
     reply.has_placeholder = anchor.is_some();
-    reply.workdir = crate::runtime::resolve_workdir(&sh.dir, &s.config, sh.agent_root.as_deref()).ok();
+    reply.workdir = crate::runtime::resolve_workdir(&sh.dir).ok();
     let objects = sh.deps.objects.as_deref();
     let composed = match sink.compose(&s.config, base.clone(), &reply, objects).await {
         Ok(m) => m,

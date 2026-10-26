@@ -2,12 +2,12 @@
   "resource": "session:ui-notify",
   "epoch": 1,
   "holder": {
-    "runner_id": "rn-24cbdfb26fac4a85",
+    "runner_id": "rn-d9c198d565194caa",
     "principal": "app:app2@alice",
     "host": "${FIXTURE_HOST}",
-    "pid": 3525857,
+    "pid": 3019369,
     "runtime_id": "rt-fixture-native"
   },
-  "acquired_at_ms": 1792819163100,
-  "released_at_ms": 1792819163141
+  "acquired_at_ms": 1792976022558,
+  "released_at_ms": 1792976022595
 }

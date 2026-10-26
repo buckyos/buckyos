@@ -41,9 +41,11 @@ class BuckyosBuildEntrypointTests(unittest.TestCase):
         with (
             patch.object(module, "_find_command", return_value="/runtime/buckyos-build"),
             patch.object(module, "_prepare_sdk_tool_distribution", return_value=0),
+            patch.object(module, "_prepare_agent_tools", return_value=0) as agent_tools,
             patch.object(module.subprocess, "run", return_value=completed) as run,
         ):
             result = module.main(["--skip-web", "-s", "scheduler"])
+        agent_tools.assert_called_once_with()
 
         self.assertEqual(result, 23)
         run.assert_called_once_with(
@@ -52,6 +54,24 @@ class BuckyosBuildEntrypointTests(unittest.TestCase):
                 "/runtime/buckyos-build", str(SCRIPT_PATH.resolve().parent / "rootfs" / "libexec" / "buckyos-tool" / "cli" / "launcher.mjs"),
             ])},
         )
+
+    def test_agent_tools_are_copied_with_the_host_sdk_import(self) -> None:
+        module = _load_build_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "src"
+            (source / "commands").mkdir(parents=True)
+            (source / "aicc-tool.ts").write_text("// entry\n", encoding="utf-8")
+            (source / "commands" / "gen_image.ts").write_text("// cmd\n", encoding="utf-8")
+            (source / "deno.json").write_text('{"imports": {"buckyos": "../../rootfs/x.mjs"}}', encoding="utf-8")
+            target = Path(temporary) / "rootfs" / "libexec" / "buckyos-agent"
+            target.mkdir(parents=True)
+            (target / "stale.ts").write_text("old", encoding="utf-8")
+            self.assertEqual(module._prepare_agent_tools(source, target), 0)
+            config = module.json.loads((target / "deno.json").read_text(encoding="utf-8"))
+            self.assertEqual(config["imports"]["buckyos"], "../buckyos-tool/dist/node.mjs")
+            self.assertTrue((target / "commands" / "gen_image.ts").is_file())
+            self.assertFalse((target / "stale.ts").exists())
+            self.assertEqual(module._prepare_agent_tools(Path(temporary) / "missing", target), 2)
 
     def test_main_prepares_sdk_tool_distribution_before_build(self) -> None:
         module = _load_build_script()

@@ -725,23 +725,22 @@ pub struct RuntimeRequirement {
     pub app_tools: Vec<String>,
 }
 
-/// How a session's runtime was chosen (integration TODO §3.3).
+/// How a session's session-runtime was chosen (primary-runtime TODO §3):
+/// the workspace never chooses it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeSelection {
     /// Named by the creator (`--runtime`, a Todo's runtime).
     Explicit,
-    /// The runtime of the selected workspace.
-    Workspace,
     /// The parent session's frozen runtime.
     Inherited,
     /// The agent's default runtime.
     Default,
 }
 
-/// The runtime a session was frozen to at creation: the registration it
-/// resolved to and how that runtime is reached, so a restart or a changed
-/// default never moves the session to another target.
+/// The session-runtime a session was frozen to at creation: the
+/// registration it resolved to and how that runtime is reached, so a
+/// restart or a changed default never moves the session to another target.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct FrozenRuntime {
     pub runtime_id: String,
@@ -754,6 +753,13 @@ pub struct FrozenRuntime {
     pub selected_by: RuntimeSelection,
     #[serde(default)]
     pub computer: buckyos_api::ComputerAccess,
+    /// The registration's declared baseline: which cmd_skills the session
+    /// takes.
+    pub baseline: buckyos_api::RuntimeBaseline,
+    /// What is known of its platform at selection (empty fields: not yet
+    /// learned from the runtime).
+    #[serde(default)]
+    pub platform: super::RuntimePlatform,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

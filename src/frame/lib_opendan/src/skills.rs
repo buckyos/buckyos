@@ -383,11 +383,16 @@ pub fn install(root: &Path, pkg: &SkillPackage, replace: bool, who: &str) -> Res
         skills.entry((kind, name)).or_default().push((path.as_str(), f));
     }
     for (kind, name) in skills.keys() {
-        if *kind == SkillKind::Cmd && !pkg.files.contains_key(&format!("{}/{name}.md", kind.dir())) {
+        let manual = format!("{}/{name}.md", kind.dir());
+        let Some(file) = pkg.files.get(&manual) else {
             return Err(OpenDanError::InvalidArgument(format!(
                 "tools/{name}/ belongs to no cmd_skill: the package has no cmd_skills/{name}.md"
             )));
-        }
+        };
+        let text = String::from_utf8(file.bytes()?)
+            .map_err(|_| OpenDanError::InvalidArgument(format!("{manual} is not UTF-8 text")))?;
+        crate::protocol::skill_requirements(&crate::protocol::split_front_matter(&text).0)
+            .map_err(|e| OpenDanError::InvalidArgument(format!("{manual}: {e}")))?;
     }
     if skills.is_empty() {
         return Err(OpenDanError::InvalidArgument(format!(

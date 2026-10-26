@@ -643,6 +643,8 @@ export const createMockDataModel = (): OpenDanDataModel => {
       description: "The environment the agent itself runs in; commands run directly. It is the agent's container: paths here are not the owner's host paths.",
       runtime_host: 'mock-host', exec: { kind: 'native' }, roots: [`${ROOT}/workspaces`, '/home/devtest'],
       capabilities: { network: true, os: 'linux' }, availability: 'available', builtin: true, default: false, computer: 'none',
+      baseline: 'extended', platform: { os: 'linux', arch: 'x86_64', shell: 'bash' },
+      baseline_check: { checked_at_ms: ago(60), missing: [], ok: true },
       revision: 1, registered_by: 'app:jarvis@devtest', registered_at_ms: ago(86400), updated_at_ms: ago(86400),
       checked_at_ms: ago(60), last_error: null,
     },
@@ -652,6 +654,8 @@ export const createMockDataModel = (): OpenDanDataModel => {
       runtime_host: 'mock-host', exec: { kind: 'remote_node', remote_node: { node_did: 'did:dev:mock', profile_id: 'agent-0123456789ab' } },
       roots: ['/Users/devtest'], capabilities: { enabled: true, node_id: 'desktop', os: 'macos', computer: 'observe' },
       availability: 'available', builtin: true, default: true, computer: 'observe',
+      baseline: 'standard', platform: { os: 'macos', arch: 'aarch64', shell: 'zsh' },
+      baseline_check: { checked_at_ms: ago(60), missing: ['aicc-tool', 'gen_image'], ok: false },
       revision: 3, registered_by: 'app:jarvis@devtest', registered_at_ms: ago(86400), updated_at_ms: ago(600),
       checked_at_ms: ago(60), last_error: null,
     },
@@ -845,6 +849,7 @@ export const createMockDataModel = (): OpenDanDataModel => {
       if (entry) {
         if (patch.enabled !== undefined) entry.enabled = patch.enabled
         if (patch.computer) entry.computer = patch.computer
+        if (patch.baseline !== undefined) entry.baseline = patch.baseline
       }
       if (patch.default === true) runtimeSettings.default_runtime_id = patch.runtime_id
       if (patch.default === false && runtimeSettings.default_runtime_id === patch.runtime_id) runtimeSettings.default_runtime_id = 'container'
@@ -854,6 +859,7 @@ export const createMockDataModel = (): OpenDanDataModel => {
         r.default = runtimeSettings.default_runtime_id === r.runtime_id
         if (chosen) {
           r.computer = chosen.computer
+          r.baseline = chosen.baseline ?? 'standard'
           r.availability = chosen.enabled ? 'available' : 'runtime_unavailable'
           r.last_error = chosen.enabled ? null : 'the `host` runtime is not enabled for this agent'
           r.exec = chosen.enabled ? r.exec ?? { kind: 'remote_node' } : null

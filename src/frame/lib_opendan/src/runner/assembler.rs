@@ -637,11 +637,17 @@ fn commands_section(cfg: &SessionConfig, ui: bool) -> String {
         .as_ref()
         .map(|f| f.cmd_skills.iter().filter(|k| !k.text.trim().is_empty()).collect())
         .unwrap_or_default();
-    if skills.is_empty() {
+    let unavailable: &[UnavailableCmdSkill] = cfg
+        .prompt
+        .frozen
+        .as_ref()
+        .map(|f| f.unavailable_cmd_skills.as_slice())
+        .unwrap_or_default();
+    if skills.is_empty() && unavailable.is_empty() {
         return String::new();
     }
     let mut s = String::from("## Commands\n");
-    if !ui {
+    if !ui && !skills.is_empty() {
         s.push_str("The manuals below were chosen for this session: shortcuts that tend to get this kind of work done faster and more reliably. Use what fits; a better way for the task at hand is fine.\n\n");
     }
     let several = skills.len() > 1 || !ui;
@@ -651,6 +657,13 @@ fn commands_section(cfg: &SessionConfig, ui: bool) -> String {
         }
         s.push_str(k.text.trim());
         s.push_str("\n\n");
+    }
+    if !unavailable.is_empty() {
+        s.push_str("Not available on this session's runtime (work that needs them goes to a session on a runtime that has them):\n");
+        for u in unavailable {
+            s.push_str(&format!("- {}: {}\n", u.name, u.reason));
+        }
+        s.push('\n');
     }
     s
 }

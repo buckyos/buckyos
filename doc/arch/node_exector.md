@@ -390,7 +390,7 @@ Stream 上是长度前缀的 JSON 控制帧 + 二进制数据帧（单帧 ≤ 16
 
 | 操作 | 请求 | 返回 | 约束 |
 | --- | --- | --- | --- |
-| `exec` | `{cmd, cwd, env_overrides, execution_timeout_ms}` | `accepted` → `started{pid}` → stdout/stderr → `exited{code}` | cmd 作为数据经有界管道交给 shell，不进 argv；无交互 stdin（v1） |
+| `exec` | `{cmd, cwd, env_overrides, execution_timeout_ms}` | `accepted` → `started{pid}` → stdout/stderr → `exited{code}` | cmd 作为数据经有界管道交给 shell，不进 argv；无交互 stdin（v1）；命令环境另有执行器自己设的 `EXECUTOR_CALL_ID` / `EXECUTOR_RUN_ID`（本操作提交时的 call_id / run_id，覆盖同名 override），宿主配置的 `path_prefix`（BuckyOS 节点为 `$BUCKYOS_ROOT/bin/agent-tools`）排在 PATH 最前（2026-10-25） |
 | `read` | `{path, range}` | `accepted` → 数据帧流 + `done{hash}` | 节点侧解析 roots/symlink；持久保存本次读取结果 |
 | `write` | `{path, mode, expected_hash?, expected_size?, content_length, content_hash}` + 数据帧 + `upload_end` | `accepted` → `done{hash}` | 完整上传后才接受；`replace`/`create_new` 为目标目录临时文件 + 原子替换；`append` 原地追加、不读入已有内容（分块传输用）；hash/size 不符 Conflict |
 | `edit` | `{path, edits[], expected_hash?}` | `accepted` → `done{hash, diff_summary}` | 读、匹配、写在同一目标完成 |

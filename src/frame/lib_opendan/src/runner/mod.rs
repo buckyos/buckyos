@@ -16,6 +16,7 @@ pub mod history;
 mod hook;
 mod inputs;
 mod live;
+mod live_tasks;
 mod outbound;
 mod outcome;
 mod receipts;
@@ -48,6 +49,7 @@ pub use assembler::{
 };
 pub use children::{SessionTaskResolver, SESSION_TASK_PREFIX};
 pub use drive::drive;
+pub use live_tasks::answer_session_task;
 pub use outcome::AI_QUOTA_ERROR_KIND;
 pub use outbound::{
     compose_reply, has_pending_outbound, OutboundSink, SendResult, TurnReply, AGENT_TASK_META,

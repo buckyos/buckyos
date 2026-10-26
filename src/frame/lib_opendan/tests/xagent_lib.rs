@@ -1112,7 +1112,7 @@ async fn a_waited_child_hands_the_workspace_back_to_its_parent() {
             return tool_call(
                 "child-write",
                 "shell",
-                json!({"command":"echo child > handover.txt"}),
+                json!({"command":"echo child > \"$OPENDAN_WORKSPACE_DIR/handover.txt\""}),
             );
         }
         if has_tool_result(req, "parent-write").is_some() {
@@ -1124,7 +1124,7 @@ async fn a_waited_child_hands_the_workspace_back_to_its_parent() {
                 tool_call(
                     "parent-write",
                     "shell",
-                    json!({"command":"echo parent >> handover.txt"}),
+                    json!({"command":"echo parent >> \"$OPENDAN_WORKSPACE_DIR/handover.txt\""}),
                 )
             }
             None => tool_call(
@@ -1239,7 +1239,7 @@ async fn the_host_completes_a_workspace_delegation_chain_without_wait_timeouts()
                 tool_call(
                     "write-c",
                     "shell",
-                    json!({"command":"echo grandchild > handover.txt"}),
+                    json!({"command":"echo grandchild > \"$OPENDAN_WORKSPACE_DIR/handover.txt\""}),
                 )
             };
         }
@@ -1248,7 +1248,7 @@ async fn the_host_completes_a_workspace_delegation_chain_without_wait_timeouts()
                 "delegate-c",
                 "write-b",
                 "grandchild work",
-                "echo child >> handover.txt",
+                "echo child >> \"$OPENDAN_WORKSPACE_DIR/handover.txt\"",
                 "child finished",
             )
         } else {
@@ -1256,7 +1256,7 @@ async fn the_host_completes_a_workspace_delegation_chain_without_wait_timeouts()
                 "delegate-b",
                 "write-a",
                 "child work",
-                "echo parent >> handover.txt",
+                "echo parent >> \"$OPENDAN_WORKSPACE_DIR/handover.txt\"",
                 "parent finished",
             )
         };
@@ -1319,7 +1319,7 @@ async fn stopping_a_workspace_handoff_interrupts_the_child_and_parent() {
             return tool_call(
                 "child-long-write",
                 "shell",
-                json!({"command":"touch child-started; sleep 30"}),
+                json!({"command":"touch \"$OPENDAN_WORKSPACE_DIR/child-started\"; sleep 30"}),
             );
         }
         tool_call(

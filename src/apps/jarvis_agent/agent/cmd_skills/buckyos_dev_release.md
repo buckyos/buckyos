@@ -2,6 +2,7 @@
 name: buckyos_dev_release
 description: Shared BuckyOS develop-and-release loop — where to work, system build vs App build, PIKG build/pack/info, test install (first install, local new version, catalog upgrade) with versions/digests/task evidence, what App publish really does, and how system/SDK/image releases are made.
 requires: buckyos command (agent container: /usr/local/bin/buckyos with the host Tool mounted; host: $BUCKYOS_ROOT/bin/buckyos); installs need an identity the control-panel accepts; system builds, Docker images and releases need the host repo and the owner
+baseline: extended
 ---
 #### When to use
 Building, packaging, test-installing, upgrading or publishing anything for BuckyOS, and questions on how system or image releases happen. Writing the App itself is `buckyos_app_dev`; Agent templates, behaviors and skill packages are `opendan_agent_dev`; running-zone diagnosis is `buckyos_admin`. Those manuals point here for the shared steps.

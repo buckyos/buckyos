@@ -70,6 +70,8 @@ opendan --dev --agent-root <dir> --agent-did <did> --queue-dir <dir> \
 
 端口：`--service-port`（= `--port`）→ `$BUCKYOS_SERVICE_PORT` / `$OPENDAN_SERVICE_PORT`（调度器分配）→ 4060。`xagent` 可执行文件与 `web/` 目录取自 `opendan` 所在目录。
 
+多入口：`opendan` 按调用名分派——`xagent` / `agent-session` → xagent CLI；`llm_understand_media`；buckyos-agent 的 AICC 命令（`aicc-tool`、`gen_image` …）与 `buckyos` → 在 `$BUCKYOS_ROOT/libexec/buckyos-tool/runtime/deno` 上运行 `libexec/buckyos-agent` / 调 `bin/buckyos[.cmd]`，在 Session 上下文里补上 Agent 的 BuckyOS 身份（`session.service_token`）；`agent_tool` 的工具名 → agent_tool CLI。`opendan install-agent-tools [<dir>]` 把标准环境的命令（清单 `xagent runtime baseline`）布置成本程序的入口（缺省 `$BUCKYOS_ROOT/bin/agent-tools`；Unix 符号链接，Windows 硬链接或复制，不经脚本转参）；node-daemon 启动时调用它，并把该目录放在节点执行器每条命令 PATH 的最前面（primary-runtime TODO §2.2）。
+
 开发形态下用 xagent 创建由 OpenDAN 驱动的 Session：
 
 ```bash
@@ -188,6 +190,19 @@ WebUI 通过同源 `/api/opendan` 访问托管本页面的 Agent，由 zone 网�
 
 返回 `{index}`（`session.post` 另带 `key`）。投递后服务端让 Supervisor 装载该 Session。三个操作都要求 Session 有输入队列；没有队列的 Session（如一次性的 work session）返回 `channel` 错误，它的产物验收走 `artifacts.decide`。`session.stop` 另收 `scope: session | turn`（缺省 `session`）；对 Goal Session 任何 stop 都只结束当前 Activation。
 
+### Session 进程（session token）
+
+节点 session-runtime 上的 `agent-session` 等 helper 看不到 AgentRoot、也收不到 `OPENDAN_*` 环境：它在 Session 工作目录找到 `.opendan/session.json` 与 `.opendan/session.token`（每次绑定由 libopendan 写入，24 小时），以该 token 调用本服务（节点上经 `http://127.0.0.1:3180/kapi/<agent_id>`）。session token 不走 verify-hub，只能调用下面四个方法，`sid` 若给出须与 token 一致，拒绝为 `forbidden`：
+
+| 方法 | 参数 | 作用 |
+| --- | --- | --- |
+| `session.helper` | `{request: {argv, stdin?, call_id?}}` | 在本服务所在机器以该 Session 的环境（`OPENDAN_*`、AgentRoot、PATH 层）运行一条 `agent-session` 命令（`xagent` 程序），返回 `{exit_code, stdout, stderr}`；`call_id` 进 `XLLM_CALL_ID`（建子 Session 的幂等键） |
+| `session.task` | `{request: {op: state \| wait \| cancel, task_id, wait_ms?}}` | 本进程正在推进的该 Session 的 run 的 task resolver（等同本机的 `XLLM_TASK_ENDPOINT`）；没有进行中的 run 时 `unknown` |
+| `session.token_refresh` | `{}` | 新 token 与到期时间 |
+| `session.service_token` | `{}` | Agent 自己的 BuckyOS 会话 token、app id、owner：节点上的 `buckyos` / AICC 命令以 Agent 身份调用服务 |
+
+密钥在 `<agent_root>/state/session_token.key`；任何能看到 AgentRoot 的驱动者都能签发，服务端校验。实现：`libopendan::session_context`。
+
 ### Goals
 
 Agent State 门面的 `goals.*`（读：`goals.list / get / revision / changes / state / epoch_state / activations / schedule`；写：`goals.create / revise / set_status / reopen / restart`，参数与权限见 Agent State Protocol §9.5–§9.6，`session` 参数是调用方自报的所在 Session）。写成功后服务端让 Supervisor 立即 reconcile 该 Goal（建 Session、迁移 epoch）。驱动者 / 宿主写（`goals.write_state`、`goals.append_activations`、`goals.prepare_epoch`、`goals.end_epoch`、`goals.write_schedule`）一律拒绝。宿主另提供：
@@ -201,7 +216,7 @@ Goal 不存在 → `not_found`；Goal 已结束（achieved / archived）→ `goa
 
 ### Skills
 
-Agent State 门面的 `skills.*`：Agent 的 cmd_skills（`cmd_skills/<name>.md` + `tools/<name>/bin`）与 goal_skills（`goal_skills/<name>.md`）。服务挂在 `/kapi/opendan` 与 `/kapi/<agent_id>`（经 NodeGateway 可达）；用户侧 CLI 是 `buckyos skill list|install|remove --agent <agent_id>`，Agent 在 Session 里用 `agent-session skill …`（直接读写 AgentRoot）。
+Agent State 门面的 `skills.*`：Agent 的 cmd_skills（`cmd_skills/<name>.md` + `tools/<name>/bin`）与 goal_skills（`goal_skills/<name>.md`）。服务挂在 `/kapi/opendan` 与 `/kapi/<agent_id>`（经 NodeGateway 可达）；用户侧 CLI 是 `buckyos skill list|install|remove --agent <agent_id>`，Agent 在 Session 里用 `agent-session skill …`（直接读写 AgentRoot；节点 session-runtime 上经 `session.helper` 转发，`skill install` 读不到控制侧的包，须在 Agent 自己的 runtime 上执行）。`skill list` 的每项带 `baseline`（`standard | extended`）与 `platforms`：Session 冻结 cmd_skills 时按其 session-runtime 声明的基线与平台过滤，不满足的不注入并在 `## Commands` 末尾列出原因。
 
 | method | params | 说明 |
 |---|---|---|

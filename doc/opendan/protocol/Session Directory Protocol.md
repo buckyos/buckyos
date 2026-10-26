@@ -92,7 +92,8 @@ Schema：`schema/session_config.schema.json`。要点：
   "runtime": { "requirement": { "runtime_id": null, "tools": ["node"], "app_tools": [] },
                "tool_plan": null, "env": {},
                "frozen": { "runtime_id": "host", "kind": "host_native", "exec": { "kind": "remote_node", "remote_node": { "node_did": "did:dev:…", "profile_id": "agent-…" } },
-                           "revision": 3, "selected_by": "explicit | workspace | inherited | default", "computer": "observe" } },
+                           "revision": 3, "selected_by": "explicit | inherited | default", "computer": "observe",
+                           "baseline": "standard | extended", "platform": { "os": "macos", "arch": "aarch64", "shell": "zsh" } } },
   "workspace": null | { "workspace_id": "ws-…", "access": "read_write" },
   "workspace_binding": null | { "workspace_id": "ws-…", "revision": 1, "location_revision": 1, "runtime_host": "host:…", "location": { "runtime_id": "local", "directory": "/abs" }, "access": "read_write" },
   "artifact_id": null,
@@ -393,13 +394,15 @@ XML 的 `<report end="true">` 与工具 `is_end=true` 使用相同的宿主校�
 ## 9. binding.json 与 .runtime/bin
 
 ```jsonc
-{ "schema": "opendan.binding/4", "runtime_id": "rt-…", "kind": "native | remote_node", "target": {"host":"host:…", "uid":"1000"}, "workdir": "/abs", "workspace": null, "bound_at_ms": 0, "bound_by": "rn-…" }
+{ "schema": "opendan.binding/5", "runtime_id": "rt-…", "kind": "native | remote_node", "target": {"host":"host:…", "uid":"1000"}, "workdir": "/abs", "workspace": null, "bound_at_ms": 0, "bound_by": "rn-…" }
 ```
 
-- `runtime.frozen`（2026-10-23）：创建时由 `api::freeze_runtime` 一次解析并冻结的 runtime（Workspace 决定 > 显式 > 继承父 Session > Agent 默认），恢复与重试只用它，不再读 Agent 默认值；`kind` 为 `host_native | remote_node` 的 Session 经 Node Executor 执行，binding 的 `workdir` 是节点上的目录（`C:\…` 等按目标 OS 书写，控制侧不 canonicalize），`target` 含 node_did / profile_id / store_id / workdir_roots / identity_mode。幂等重建比较 `runtime.runtime_id()`：同 idempotency key 换 runtime 是冲突。
+- `runtime.frozen`（2026-10-25 起为 session-runtime）：创建时由 `api::freeze_runtime` 一次解析并冻结的 session-runtime（显式 > 继承父 Session > Agent 默认；Workspace 不参与），带登记时声明的 `baseline` 与已知的 `platform`，恢复与重试只用它，不再读 Agent 默认值；`kind` 为 `host_native | remote_node` 的 Session 经 Node Executor 执行，binding 的 `workdir` 是节点上的目录（`C:\…` 等按目标 OS 书写，控制侧不 canonicalize），`target` 含 node_did / profile_id / store_id / workdir_roots / identity_mode。幂等重建比较 `runtime.runtime_id()`：同 idempotency key 换 runtime 是冲突。
 
 - 首次推进时用不覆盖发布写入（`link` / `renameat2(NOREPLACE)`），之后不变；runtime_id 不同必须拒绝（RuntimeMismatch），发生在任何推理之前。
-- workdir：有 Workspace 时只采用创建时固化的 `workspace_binding.location.directory`；显式 Runtime workdir 必须与它一致。无 Workspace 时采用 SessionDir。`binding.workspace` 保存同一快照；运行及恢复时核验稳定身份和位置修订，失效终态失败、不重绑。见 [Agent Workspace Protocol](<Agent Workspace Protocol.md>)。
+- workdir：始终是 session-runtime 上的 Session 工作目录（container 为 SessionDir，节点为 `<roots[0]>/.opendan/<agent>/sessions/<sid>`）；显式 Runtime workdir 必须与它一致，否则绑定失败。Workspace 不改变默认位置：`binding.workspace` 保存创建时固化的 `workspace_binding` 快照（其 `location.runtime_id` 即 Workspace 的 runtime，可与 session-runtime 不同），运行及恢复时核验稳定身份和位置修订，失效终态失败、不重绑。见 [Agent Workspace Protocol](<Agent Workspace Protocol.md>)。版本 4 的 binding（workdir 曾是 Workspace 目录）读取即阻塞，不迁移。
+- 节点 Session 的工作目录里另有 `.opendan/session.json`（Session 上下文：agent、session、runtime、workdir、`state_url`、workspace 视图）与 `.opendan/session.token`（只对本 Agent 服务、本 Session 有效的 token，24 小时，每次绑定重写）：节点上的 `agent-session` 等 helper 由此经 kRPC（`session.helper / session.task / session.token_refresh / session.service_token`）找 AgentService，见 [Agent State Protocol](<Agent State Protocol.md>)。
+- `state/transfers/<transfer_id>.json`：`agent-session copy` 的记录（源 / 目的的 runtime 与实际路径、临时文件、大小、整文件 hash、`transferring | verifying | committed | failed | cancelled`、失败步骤）；同一调用的重试据此核验目标而不重复覆盖。
 - binding.json 核验打开后的 runtime_id、kind、target、workdir，不只比较声明的 kind；每次推进都要幂等修复并核验环境：`.runtime/bin` 按期望集合（tool_plan 墓碑 + `agent-session` 包装脚本）重写，`.manifest.json`（条目 → sha256）最后写入；核验失败（缺文件、内容不符、不可执行）不得推理，下次推进修复。
 - 墓碑：`#!/bin/sh` 输出 `{"blocked_by":"tool_plan",...}` 与人读说明到 stderr，`exit 127`。
 - **runtime 属于 Session**：同一 Session 的全部 Turn、behavior、子 context、fork 与恢复使用同一个 runtime 与绑定；子 Session 继承父冻结的 runtime 与配置，首次推进时自己绑定。创建 Session 不绑定。

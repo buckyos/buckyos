@@ -33,6 +33,7 @@ use kRPC::{RPCErrors, RPCHandler, RPCRequest, RPCResponse, RPCResult};
 use libopendan::host::Supervisor;
 use libopendan::protocol::*;
 use libopendan::state::krpc::{error_to_wire, is_write, serve_call};
+use libopendan::session_context::{is_session_method, is_session_token, SessionService};
 use libopendan::state::AgentStateClient;
 use libopendan::{OpenDanError, SessionDir};
 use serde::Serialize;
@@ -110,6 +111,9 @@ pub struct StateService {
     pub ui: Option<Arc<UiModule>>,
     pub access: Access,
     pub home: Home,
+    /// Session processes on other runtimes: their session tokens and
+    /// methods (`libopendan::session_context`).
+    pub sessions: Option<Arc<SessionService>>,
 }
 
 fn param<T: serde::de::DeserializeOwned>(params: &Value, name: &str) -> Result<T, OpenDanError> {
@@ -348,6 +352,7 @@ impl StateService {
                 // would catch up later).
                 if let Some(root) = crate::home::agent_root_of(self.agent.as_ref()) {
                     crate::loader::project_runtimes(self.agent.as_ref(), &root, &settings, who).await;
+                    tokio::spawn(crate::loader::check_runtimes(self.agent.clone()));
                 }
                 self.home.runtime_settings().await
             }
@@ -481,9 +486,36 @@ fn is_operation(method: &str) -> bool {
     )
 }
 
+impl StateService {
+    /// A call with a session token: only that session's own methods.
+    async fn session_call(&self, req: &RPCRequest, token: &str) -> Result<RPCResponse, RPCErrors> {
+        // Refusals in the facade's wire form: a Session process tells them
+        // apart from transport failures by kind.
+        let forbidden = |m: String| RPCErrors::ReasonError(error_to_wire(&OpenDanError::Forbidden(m)));
+        let sessions = self
+            .sessions
+            .as_ref()
+            .ok_or_else(|| forbidden("this host issues no session tokens".to_string()))?;
+        let claims = sessions
+            .authenticate(self.agent.agent_id(), token)
+            .map_err(|e| forbidden(e.to_string()))?;
+        if !is_session_method(&req.method) {
+            return Err(forbidden(format!("a session token cannot call {}", req.method)));
+        }
+        log::info!("service: {} by session {}", req.method, claims.session_id);
+        match sessions.call(self.agent.as_ref(), &claims, &req.method, &req.params).await {
+            Ok(v) => Ok(RPCResponse::new(RPCResult::Success(v), req.seq)),
+            Err(e) => Err(RPCErrors::ReasonError(error_to_wire(&e))),
+        }
+    }
+}
+
 #[async_trait]
 impl RPCHandler for StateService {
     async fn handle_rpc_call(&self, req: RPCRequest, ip_from: IpAddr) -> Result<RPCResponse, RPCErrors> {
+        if let Some(token) = req.token.as_deref().filter(|t| is_session_token(t)) {
+            return self.session_call(&req, token).await;
+        }
         let who = self.caller(&req, ip_from).await?;
         if is_write(&req.method) || is_operation(&req.method) {
             log::info!("service: {} by {who}", req.method);

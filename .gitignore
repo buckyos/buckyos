@@ -76,6 +76,7 @@ src/publish/win_pkg/scripts/uninstall_cleanup.ps1
 src/rootfs/bin/opendan/agent_tool
 src/rootfs/bin/opendan/xagent
 /src/rootfs/libexec/buckyos-tool/
+/src/rootfs/libexec/buckyos-agent/
 
 src/apps/sys_test/dist/
 src/apps/sys_test/dapp_dist/

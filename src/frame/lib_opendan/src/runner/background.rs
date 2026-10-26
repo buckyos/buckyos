@@ -142,7 +142,28 @@ pub fn lines(i: &BackgroundInput) -> Vec<BackgroundLine> {
         if !cwd.is_empty() {
             t.push_str(&format!(", cwd {cwd}"));
         }
+        let shell = field("shell_kind");
+        if !shell.is_empty() {
+            t.push_str(&format!(", shell {shell}"));
+        }
+        let baseline = field("baseline");
+        if !baseline.is_empty() {
+            t.push_str(&format!(", {baseline} environment"));
+        }
         out.push(BackgroundLine::new("runtime", t));
+    }
+    if let Some(w) = i.runtime_status.get("workspace").filter(|w| w.is_object()) {
+        let s = |k: &str| w.get(k).and_then(Value::as_str).unwrap_or_default();
+        let dir = w.get("directory").and_then(Value::as_str).unwrap_or_default();
+        let reach = if w.get("same_runtime").and_then(Value::as_bool) == Some(true) {
+            "on this runtime: cd there or use absolute paths"
+        } else {
+            "on another runtime: copy files with agent-session copy"
+        };
+        out.push(BackgroundLine::new(
+            "workspace",
+            format!("workspace {} at {dir} on runtime {} ({reach})", s("workspace_id"), s("runtime_id")),
+        ));
     }
     if let Some(t) = i.tunnel.filter(|t| !t.is_empty()) {
         out.push(BackgroundLine::new("channel", format!("channel: the user writes through {t}")));

@@ -47,24 +47,7 @@ pub struct RuntimeConfig {
     pub baseline: Option<RuntimeBaseline>,
 }
 
-/// Declared environment baseline of a runtime (primary-runtime TODO §2):
-/// `standard` has the core Agent tools and BuckyOS access, `extended` adds
-/// build tool chains and heavy tools.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum RuntimeBaseline {
-    Standard,
-    Extended,
-}
-
-impl RuntimeBaseline {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            RuntimeBaseline::Standard => "standard",
-            RuntimeBaseline::Extended => "extended",
-        }
-    }
-}
+pub use buckyos_api::RuntimeBaseline;
 
 /// Target of a `remote_node` runtime: the Node Executor of `node_did`, logged
 /// in under `profile_id`. Endpoint and credentials come from the host.

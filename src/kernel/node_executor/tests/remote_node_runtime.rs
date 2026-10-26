@@ -440,3 +440,104 @@ async fn runtime_files_copy_both_ways_between_native_and_remote_node() {
     assert_eq!(node.remove(&s(&back)).await.unwrap_err().code, ExecutorErrorCode::Forbidden);
     assert!(back.exists());
 }
+
+/// A node as a session-runtime of an agent (primary-runtime TODO §4–§6):
+/// its check learns the platform and finds the standard tools missing, a
+/// session copies files to it and back through libopendan's transfer, and
+/// the session's context lands in its working directory there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_node_session_runtime_is_checked_copied_to_and_given_its_context() {
+    use libopendan::protocol::*;
+    use libopendan::state::AgentStateClient;
+    use libopendan::transfer::{copy, CopyRequest, TransferState};
+    if unsafe { geteuid() } != 0 {
+        eprintln!("skipping: needs root");
+        return;
+    }
+    let dir = tempfile::Builder::new().prefix("nx-sr").tempdir_in("/tmp").unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let root = dir.path();
+    let work = root.join("work");
+    std::fs::create_dir(&work).unwrap();
+    std::os::unix::fs::chown(&work, Some(NOBODY), Some(NOBODY)).unwrap();
+    let connector = Arc::new(InProcess { exec: Mutex::new(executor(root, "ledger", &work).await) });
+    libopendan::runtime::set_node_connector(connector);
+    let agent_did = AppId::parse(APP).unwrap().app_did().to_string();
+    let agent_root = root.join("agent root");
+    let agent = libopendan::FsAgentStateClient::open(&agent_root, &agent_did, None, None).unwrap();
+    let exec = json!({"kind": "remote_node", "remote_node": {"node_did": NODE_DID, "profile_id": "dev"}});
+    agent
+        .runtimes()
+        .register(
+            &RuntimeRegister {
+                runtime_id: "lab".into(),
+                kind: RuntimeKind::RemoteNode,
+                name: "Lab".into(),
+                description: String::new(),
+                exec: Some(exec),
+                roots: vec![],
+                capabilities: json!({}),
+                default: false,
+                computer: Default::default(),
+                baseline: RuntimeBaseline::Standard,
+            },
+            "owner",
+        )
+        .await
+        .unwrap();
+    let lab = agent.runtimes().check("lab").await.unwrap();
+    assert_eq!(lab.availability, RuntimeAvailability::Available);
+    assert_eq!(lab.roots, vec![work.clone()]);
+    assert_eq!(lab.platform.os, std::env::consts::OS.replace("darwin", "macos"));
+    let checked = lab.baseline_check.clone().unwrap();
+    assert!(checked.error.is_none(), "{checked:?}");
+    assert!(!checked.ok && checked.missing.iter().any(|m| m == "agent-session"), "{checked:?}");
+    assert_eq!(lab.baseline, RuntimeBaseline::Standard, "the check never changes the declaration");
+
+    let channels = libopendan::channel::KmsgChannels::dir(root.join("kmsg")).unwrap();
+    let mut spec = libopendan::SessionTemplate::load("work", None).unwrap().spec("move material");
+    spec.input_channel = Some(libopendan::InputChannel::None);
+    let app_dir = root.join("sessions");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let sd = libopendan::create_session(&app_dir, spec, &agent, "app:test@devtest", &channels).await.unwrap();
+    let payload: Vec<u8> = (0..3 * 1024 * 1024 + 17).map(|i| (i % 249) as u8).collect();
+    std::fs::write(sd.path().join("素材 a.bin"), &payload).unwrap();
+    let remote = work.join("in").join("素材 a.bin");
+    let s = |p: &Path| p.to_string_lossy().to_string();
+    let req = |from: String, to: String, replace: bool| CopyRequest {
+        from: from.parse().unwrap(),
+        to: to.parse().unwrap(),
+        replace,
+        call_id: None,
+    };
+    let there = copy(&agent, &sd, &req("session:素材 a.bin".into(), format!("lab:{}", s(&remote)), false)).await.unwrap();
+    assert_eq!(there.state, TransferState::Committed, "{there:?}");
+    assert_eq!(there.hash.as_deref(), Some(executor_content_hash(&payload).as_str()));
+    assert_eq!(std::fs::read(&remote).unwrap(), payload);
+    let back = copy(&agent, &sd, &req(format!("lab:{}", s(&remote)), "session:back/".into(), false)).await.unwrap();
+    assert_eq!(back.state, TransferState::Committed, "{back:?}");
+    assert_eq!(std::fs::read(sd.path().join("back").join("素材 a.bin")).unwrap(), payload);
+    std::fs::write(sd.path().join("small.txt"), "v2").unwrap();
+    let refused = copy(&agent, &sd, &req("session:small.txt".into(), format!("lab:{}", s(&remote)), false)).await.unwrap();
+    assert_eq!((refused.state, refused.step.as_deref()), (TransferState::Failed, Some("commit")));
+    assert_eq!(std::fs::read(&remote).unwrap(), payload, "the target is unchanged");
+    assert!(!std::fs::read_dir(work.join("in")).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().ends_with(".part")));
+    let replaced = copy(&agent, &sd, &req("session:small.txt".into(), format!("lab:{}", s(&remote)), true)).await.unwrap();
+    assert_eq!(replaced.state, TransferState::Committed);
+    assert_eq!(std::fs::read_to_string(&remote).unwrap(), "v2");
+    let outside = copy(&agent, &sd, &req("session:small.txt".into(), "lab:/etc/x".into(), false)).await.unwrap();
+    assert_eq!(outside.state, TransferState::Failed);
+    assert!(outside.error.as_deref().unwrap().contains("Forbidden"), "{outside:?}");
+
+    // The context a helper there finds.
+    let key = libopendan::session_context::TokenKey::load_or_create(&agent_root).unwrap();
+    let workdir = s(&work.join(".opendan").join(&agent.agent_id()).join("sessions").join(sd.sid()));
+    let cfg = sd.config().unwrap();
+    let (ctx, token) = libopendan::session_context::new_context(&key, agent.agent_id(), &cfg, &workdir, "http://gw/kapi/x".into());
+    let target = libopendan::runtime::open_node_target(&lab, &root.join("ops")).await.unwrap();
+    libopendan::session_context::write_context(&target, &ctx, &token).await.unwrap();
+    let (path, found) = libopendan::session_context::discover(None, Path::new(&workdir)).unwrap();
+    assert_eq!(found, ctx);
+    let on_disk = std::fs::read_to_string(libopendan::session_context::token_path(&path, &found)).unwrap();
+    assert_eq!(key.verify(agent.agent_id(), &on_disk, libopendan::now_ms()).unwrap().session_id, sd.sid());
+}

@@ -185,6 +185,7 @@ impl Fixture {
             ExecutorOptions {
                 identity_mode: ExecutorIdentityMode::CurrentUser,
                 admission: ExecutorAdmission::Wss,
+                path_prefix: Vec::new(),
             },
             driver.clone(),
         )

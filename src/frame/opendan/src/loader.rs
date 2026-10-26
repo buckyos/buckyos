@@ -16,7 +16,7 @@ use libopendan::bridge::{EventBridge, KEventBridge, TimerBridge};
 use libopendan::channel::{KmsgChannels, Waker};
 use libopendan::host::goals::{GoalHost, GoalHostOptions};
 use libopendan::host::{HostDeps, Supervisor};
-use libopendan::protocol::builtin_runtimes;
+use libopendan::protocol::{builtin_runtimes, RuntimeAvailability};
 use libopendan::runner::{BehaviorAssembler, ObjectStore, OutboundSink, RunnerOptions};
 use libopendan::state::{
     register_in_process, unregister_in_process, AgentStateClient, FsAgentStateClient, WithNotify,
@@ -234,6 +234,7 @@ impl Loader {
         // the owner's host, further enabled nodes), before anything can
         // choose one; followed while running (`watch_runtime_settings`).
         project_runtimes(agent.as_ref(), &env.agent_root, &env.settings, &env.who).await;
+        tokio::spawn(check_runtimes(agent.clone()));
 
         let info = Arc::new(LoaderInfo {
             agent_did: env.agent_did.clone(),
@@ -395,6 +396,16 @@ impl Loader {
                     info: info.clone(),
                     ui: ui.clone(),
                     access: env.access.clone(),
+                    sessions: match libopendan::session_context::SessionService::new(
+                        &env.agent_root,
+                        env.session_cli.clone(),
+                    ) {
+                        Ok(s) => Some(Arc::new(s)),
+                        Err(e) => {
+                            log::warn!("loader: no session tokens ({e}); helpers on other runtimes cannot reach this agent");
+                            None
+                        }
+                    },
                     home: Home::new(
                         env.records.clone(),
                         env.owner_did.as_ref().map(|d| d.to_string()),
@@ -589,6 +600,38 @@ pub async fn project_runtimes(
     }
 }
 
+/// Check every usable runtime once it is projected (start, upgrade,
+/// settings change): whether it answers, and whether its standard tools are
+/// there (`baseline_check`, a hint beside the declared baseline). In the
+/// background: a node that does not answer never holds the loader up.
+pub async fn check_runtimes(agent: Arc<dyn AgentStateClient>) {
+    let runtimes = match agent.runtimes().list().await {
+        Ok(r) => r,
+        Err(e) => {
+            log::warn!("loader: runtimes not checked: {e}");
+            return;
+        }
+    };
+    for r in runtimes.into_iter().filter(|r| r.availability == RuntimeAvailability::Available) {
+        match agent.runtimes().check(&r.runtime_id).await {
+            Ok(c) => match &c.baseline_check {
+                Some(b) if !b.ok => log::warn!(
+                    "loader: runtime {} ({:?} declared {}): {}",
+                    c.runtime_id,
+                    c.availability,
+                    c.baseline.as_str(),
+                    b.error.clone().unwrap_or_else(|| format!(
+                        "standard tools missing: {} (install them on that machine, see `xagent runtime baseline`)",
+                        b.missing.join(", ")
+                    ))
+                ),
+                _ => log::info!("loader: runtime {} {:?}, standard tools complete", c.runtime_id, c.availability),
+            },
+            Err(e) => log::warn!("loader: runtime {} not checked: {e}", r.runtime_id),
+        }
+    }
+}
+
 /// The owner changes an agent's runtimes (enable the host, pick a default,
 /// adjust ComputerUse) while the agent runs: the projection follows the
 /// settings. Existing sessions keep what they froze.
@@ -612,6 +655,7 @@ async fn watch_runtime_settings(
         if current.runtimes != last.runtimes || current.default_runtime_id != last.default_runtime_id {
             log::info!("loader: runtime settings changed; re-projecting runtimes");
             project_runtimes(agent.as_ref(), &agent_root, &current, &who).await;
+            tokio::spawn(check_runtimes(agent.clone()));
             last = current;
         }
     }

@@ -151,6 +151,7 @@ async fn a_remote_report_uploads_the_file_and_the_ui_forwards_its_object_id() {
         runtime_id: "remote-media".into(), kind: RuntimeKind::RemoteNode, name: "Remote media".into(),
         description: String::new(), exec: Some(serde_json::to_value(&config).unwrap()), roots: vec![],
         capabilities: json!({}), default: false, computer: Default::default(),
+        baseline: buckyos_api::RuntimeBaseline::Standard,
     }, APP).await.unwrap();
     let mut spec = SessionTemplate::load("work", None).unwrap().spec("deliver the remote video");
     spec.prompt.llm_context = json!({"tools":{"enabled":true,"tools":[{"groupname":"bash"},{"name":"report"}]}});

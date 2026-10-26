@@ -4,6 +4,7 @@
 
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -175,6 +176,7 @@ fn open_executor(node_host_name: &str, node_did: &str, desktop: bool) -> Result<
         } else {
             ExecutorIdentityMode::SwitchUser
         },
+        path_prefix: agent_tools_dir().into_iter().collect(),
         ..ExecutorOptions::default()
     };
     #[cfg(any(target_os = "macos", windows))]
@@ -183,6 +185,41 @@ fn open_executor(node_host_name: &str, node_did: &str, desktop: bool) -> Result<
             .map_err(|e| e.to_string());
     }
     NodeExecutor::open_with_options(host, options).map_err(|e| e.to_string())
+}
+
+/// The host's agent tool directory (`bin/agent-tools`), laid out now by the
+/// installed multi-call `opendan` (`install-agent-tools`): the standard
+/// commands an Agent's session on this node finds first on its PATH
+/// (primary-runtime TODO §2.2). `None` when this install has no OpenDAN.
+fn agent_tools_dir() -> Option<PathBuf> {
+    let root = buckyos_kit::get_buckyos_root_dir();
+    let program = root
+        .join("bin")
+        .join("opendan")
+        .join(format!("opendan{}", std::env::consts::EXE_SUFFIX));
+    if !program.is_file() {
+        return None;
+    }
+    let dir = root.join("bin").join("agent-tools");
+    match std::process::Command::new(&program)
+        .arg("install-agent-tools")
+        .arg(&dir)
+        .env("BUCKYOS_ROOT", &root)
+        .output()
+    {
+        Ok(out) if out.status.success() => Some(dir),
+        Ok(out) => {
+            log::warn!(
+                "node executor: agent tools not laid out: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            dir.is_dir().then_some(dir)
+        }
+        Err(e) => {
+            log::warn!("node executor: cannot run {}: {e}", program.display());
+            dir.is_dir().then_some(dir)
+        }
+    }
 }
 
 /// The home of the user node_daemon runs as: the first root the owner's

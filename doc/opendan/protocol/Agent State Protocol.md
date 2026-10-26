@@ -178,6 +178,7 @@ Session 模板的覆盖在 `agent.toml`：`[session.<class>]` 的 `turns = "one"
 - Goal 的驱动者 / 宿主写（`goals.write_state`、`goals.append_activations`、`goals.prepare_epoch`、`goals.end_epoch`、`goals.write_schedule`）一律拒绝（错误说明需要 AgentRoot）。
 - 驱动者在 lease 下的写入（`report_state`、`perception.append`、`commit_cursor`、`register_version`、`update_location`、`commit_consolidation`）与 Agent 级锁依赖 flock，不经 kRPC：驱动者必须能看到 AgentRoot。
 - 通知（宿主有通知服务时）：`notify.send {request: NotifySendReq}`、`notify.state {notify_id}`、`notify.list {request?: NotifyListReq}`、`notify.cancel {notify_id, reason}`、`notify.answer {notify_id, answer: {dismiss?, option?, text?}, via?: {agent_did, session_id?, input?}}`，转给宿主的 `NotifyHost`（zone：msg-center `notify.*` + TaskMgr；`--dev`：`state/notifies/<id>.json` 文件实现 `LocalNotify`，目录存在即启用）。服务端按请求里 `source.session_id` 从登记表补全来源（所属 Goal、用户所在的会话）。Session 里的 `agent-session notify` 用文件版 Agent State 时没有宿主的通知服务，改以宿主交给工具进程的 `BUCKYOS_APPCLIENT_SESSION_TOKEN`（Agent App 身份，`appid` 即运行时 app id）直接调用 msg-center（`ZoneNotify::for_session_process`），来源在 CLI 侧补全。都没有时报 `notifications are not available here: <原因>`；通知已结束时报 `notify_conflict`（附当前状态）。请求与视图类型见 `doc/message_hub/System Notify.md`。
+- **Session 进程**（2026-10-25，primary-runtime TODO §6.1 / Q1）：不在 AgentService 机器上的 Session 进程（节点 session-runtime 上的 `agent-session` 等）以 Session 工作目录里 `.opendan/session.token` 的 token 调用（`odsess1.<sid>.<expires_at_ms>.<hmac>`，HMAC-SHA256，密钥 `state/session_token.key`，只对本 Agent 的服务与本 Session 有效）。这类 token 只能调用 `session.helper {request: {argv, stdin?, call_id?}}`（在控制侧以该 Session 的环境运行一条 `agent-session` 命令，返回 `{exit_code, stdout, stderr}`）、`session.task {request: {op, task_id, wait_ms?}}`（本进程正在推进的 run 的 task resolver，等同 `XLLM_TASK_ENDPOINT`）、`session.token_refresh`（续期）与 `session.service_token`（Agent 自己的 BuckyOS 会话 token、app id、owner：节点上的 `buckyos` / AICC 命令以 Agent 身份调用服务）；`sid` 参数若给出必须与 token 一致。拒绝以 `forbidden` 种类返回。节点经本机 gateway 访问：`state_url = http://127.0.0.1:3180/kapi/<agent_id>`（AgentService 进程的 `OPENDAN_NODE_STATE_URL` 可覆盖）。
 - 错误以 `{"kind","message"}` 的 JSON 文本传回，`kind` 与文件实现的错误种类相同（`input_full` 另带 `session_id`、`pending`，`queue_missing` 另带 `session_id`），调用方按种类处理（如 `input_full`、`queue_missing` 可重试）。
 
 
@@ -254,21 +255,25 @@ Goal Session 派生的 Work 的 `origin.goal = {goal_id, revision, epoch, activa
 Agent 的 Session 与 Workspace 能用哪些 Runtime。登记只说明“有这个 Runtime、本宿主现在能不能用、Workspace 建议放在哪”；在其中执行是 `agent_tool::runtime` 的事。schema：`schema/runtime_record.schema.json`。
 
 ```json
-{ "version": 2, "runtime_id": "container", "kind": "container | host_native | remote_node | remote_ssh",
+{ "version": 3, "runtime_id": "container", "kind": "container | host_native | remote_node | remote_ssh",
   "name": "Agent container", "description": "…", "runtime_host": "<native_host_id()>",
   "exec": { "kind": "native" },            // agent_tool RuntimeConfig；null = 未启用 / 还没有执行器
   "roots": ["<agent_root>/workspaces", "/home/<owner>"],
   "capabilities": { "network": true, "os": "linux" },
   "availability": "available | runtime_unavailable | permission_denied",
   "builtin": true, "default": false, "computer": "none | observe | control",
+  "baseline": "standard | extended",       // 登记者声明（Q5）：决定其上 Session 的 cmd_skills
+  "platform": { "os": "linux | macos | windows", "arch": "x86_64", "shell": "bash | pwsh | …" },
+  "baseline_check": { "checked_at_ms": 0, "missing": [], "ok": true, "error": null },  // 只作提示
   "revision": 1, "registered_by": "…", "registered_at_ms": 0, "updated_at_ms": 0,
   "checked_at_ms": 0, "last_error": null }
 ```
 
 - **内建 = 系统配置的投影**（2026-10-23）：宿主（Loader）启动时及 owner 改动 AgentSettings 后幂等补建 `container`（Agent 进程自己所在的环境，`exec = {kind: native}`）和 `AgentSettings.runtimes` 里的每个 runtime：`host`（owner 的桌面节点，`kind = host_native`）与其它节点（`kind = remote_node`），启用时 `exec = {kind: remote_node, remote_node: {node_did, profile_id: agent-<hash>}}`（profile 由 scheduler 从节点 `owner_agents` 策略派生），关闭时 `exec = null`、`capabilities.enabled = false`。`default` 标记 owner 的 `default_runtime_id`；`computer` 是 owner 给该 runtime 的 ComputerUse。settings 里没有 `host` 时仍补一个 `exec = null` 的占位说明原因。补建不覆盖 owner 改过的容器 `name / description / roots`；节点 runtime 的 roots 来自节点 `describe`（profile roots）。内建记录不能取消登记。
+- **基线**（2026-10-25，primary-runtime TODO §2）：`baseline` 是登记者的声明——容器声明 `extended`（aios 镜像：标准工具 + 工具链与媒体工具），节点 runtime 取 owner 在 `AgentSettings.runtimes[id].baseline` 的声明（缺省 `standard`），`register` 的请求自带。`check` 在可用时核验标准工具（清单见 libopendan `baseline.rs` / `xagent runtime baseline`；容器查本进程 PATH 与程序目录，节点经执行器跑 `command -v` / PowerShell `Get-Command`），结果写 `baseline_check`：`missing` 为缺的命令，`error` 为检查本身没能完成的原因。它只是提示，从不改变 `baseline`。Loader 在投影（启动、settings 变化）后台对每个可用 runtime 做一次 check。版本 2 的记录读取失败，内建记录由宿主重写。
 - **可用性**：`observe` 按配置判断——`exec` 为空 → `runtime_unavailable`（未启用 / 无执行器）、`container` 登记在别的宿主上 → `runtime_unavailable`；节点 runtime 配置齐全即 `available`。`check` 对节点 runtime 另做真实探测（login + describe），失败写 `last_error`，成功时把节点 roots、os、identity_mode、desktop readiness 写进记录。
 - **写**：`register`（owner 添加，同参数重试幂等，已存在的 id 拒绝）、`update`（CAS `expected_revision`，只改 `name / description / roots`）、`check`、`unregister`（CAS，内建拒绝）；`.locks/runtimes.lock` 互斥。`ensure_builtin` 只给宿主，kRPC 拒绝。
 - **id**：小写字母、数字、`-`、`_`；`local` 保留为 `container` 的旧名，`lookup("local")` 返回 `container`。
-- **使用者**：Workspace 位置的 `runtime_id` 是 `container`（旧记录的 `local`）或一个 `available` 的节点 runtime，目标侧目录操作经该 runtime 的执行器完成（[Agent Workspace Protocol](<Agent Workspace Protocol.md>)）；Session 创建时在 `api::freeze_runtime` 统一选择并冻结（Workspace > 显式 > 继承 > `default`），`create-worksession --runtime <id>` / Todo 的 `--runtime` 要求已登记且 `available`，否则拒绝。
-- kRPC（宿主 opendan 另有）：`runtimes.settings`（owner 的选择：`runtimes`、`default_runtime_id`）、`runtimes.settings_set {runtime_id, enabled?, computer?, default?}`（只改已有条目的启停 / ComputerUse / 默认，不新增目标；新增目标是 control-panel `agent.update` / `agent.runtime_directory` 的事）。
+- **使用者**：Workspace 位置的 `runtime_id` 是 `container`（旧记录的 `local`）或一个 `available` 的节点 runtime，目标侧目录操作经该 runtime 的执行器完成（[Agent Workspace Protocol](<Agent Workspace Protocol.md>)）；Session 创建时在 `api::freeze_runtime` 统一选择并冻结 session-runtime（显式 > 继承 > `default`；Workspace 不参与，它的 runtime 可与 session-runtime 不同），`create-worksession --runtime <id>` / Todo 的 `--runtime` 要求已登记且 `available`，否则拒绝。
+- kRPC（宿主 opendan 另有）：`runtimes.settings`（owner 的选择：`runtimes`、`default_runtime_id`）、`runtimes.settings_set {runtime_id, enabled?, computer?, baseline?, default?}`（只改已有条目的启停 / ComputerUse / 声明的基线 / 默认，不新增目标；新增目标是 control-panel `agent.update` / `agent.runtime_directory` 的事）。
 - kRPC：`runtimes.list`、`runtimes.lookup {runtime_id}`；写：`runtimes.register {request}`、`runtimes.update {runtime_id, request}`、`runtimes.check {runtime_id}`、`runtimes.unregister {runtime_id, expected_revision}`（署名为服务端看到的调用方）。

@@ -322,6 +322,7 @@ pub async fn run(options: DaemonOptions, mut stop: watch::Receiver<bool>) -> Res
     let executor_options = ExecutorOptions {
         identity_mode: ExecutorIdentityMode::CurrentUser,
         admission: ExecutorAdmission::Wss,
+        path_prefix: Vec::new(),
     };
     #[cfg(any(target_os = "macos", windows))]
     let opened =

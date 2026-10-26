@@ -400,10 +400,18 @@ pub async fn freeze_config(
         identity: catalog.identity().await?,
         behaviors: BTreeMap::new(),
         cmd_skills: Vec::new(),
+        unavailable_cmd_skills: Vec::new(),
     };
     // The session's command manuals are frozen with its behaviors: a
-    // cmd_skill the agent does not have is a configuration error.
+    // cmd_skill the agent does not have is a configuration error; one its
+    // session-runtime does not meet (declared baseline, platform) is left
+    // out and reported, never injected.
     check_cmd_skill_names(&cfg.prompt.cmd_skills)?;
+    let runtime = cfg
+        .runtime
+        .frozen
+        .as_ref()
+        .map(|f| (f.baseline, f.platform.os.clone(), f.runtime_id.clone()));
     for name in &cfg.prompt.cmd_skills {
         let Some(text) = catalog.cmd_skill(name).await? else {
             let known: Vec<String> = catalog
@@ -418,6 +426,15 @@ pub async fn freeze_config(
                 if known.is_empty() { "none".to_string() } else { known.join(", ") }
             )));
         };
+        if let Some((baseline, platform, runtime_id)) = &runtime {
+            if let Some(reason) = skill_meta(SkillKind::Cmd, name, &text).unmet_on(*baseline, platform) {
+                frozen.unavailable_cmd_skills.push(UnavailableCmdSkill {
+                    name: name.clone(),
+                    reason: format!("{reason} (runtime `{runtime_id}`)"),
+                });
+                continue;
+            }
+        }
         frozen.cmd_skills.push(CmdSkill {
             name: name.clone(),
             text: split_front_matter(&text).1.to_string(),

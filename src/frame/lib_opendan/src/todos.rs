@@ -103,8 +103,9 @@ fn todo_workspace(t: &TodoRecord, mode: TodoMode) -> SubWorkspace {
 }
 
 /// Whether a serial Todo executes in a work session of its own instead of
-/// a sub context of this session: it names another runtime, or another
-/// workspace than the session's (integration TODO §3.5).
+/// a sub context of this session: it names another session-runtime, or
+/// another workspace than the session's. The two are independent (primary
+/// runtime TODO §3): the work session takes both as named.
 pub fn needs_own_session(t: &TodoRecord, cfg: &SessionConfig) -> bool {
     if t.mode != TodoMode::Serial {
         return false;
@@ -270,6 +271,7 @@ end your step with a progress report to wait for one, then dispatch {todo_id} ag
         .config()
         .map(|c| AttemptTarget {
             runtime_id: Some(c.runtime.runtime_id().to_string()),
+            baseline: c.runtime.frozen.as_ref().map(|f| f.baseline.as_str().to_string()),
             workspace_id: c.workspace.map(|w| w.workspace_id),
         })
         .unwrap_or_default();

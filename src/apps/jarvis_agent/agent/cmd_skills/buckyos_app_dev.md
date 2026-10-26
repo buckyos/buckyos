@@ -2,6 +2,7 @@
 name: buckyos_app_dev
 description: Develop a traditional BuckyOS App — static web page, Python/TypeScript script service or Docker service — with SDK identity, AppDoc permissions/endpoints/data dirs, PIKG metadata, local debugging, test install and an upgrade that keeps the App's data.
 requires: buckyos command with pikg (agent container or host); node/deno/python for the App's own build; Docker Apps need a host with Docker; installs need an identity the control-panel accepts
+baseline: extended
 ---
 #### When to use
 Writing or converting an App that runs in a Zone: a web page/SPA, a small HTTP service in Python or TypeScript, or an existing Docker image; then installing and upgrading it for testing. The shared steps (build vs system build, `pikg` details, the three install paths, waiting for tasks, publish limits, error codes, evidence) are in `buckyos_dev_release`; when that manual is not in this session, read `$OPENDAN_AGENT_ROOT/cmd_skills/buckyos_dev_release.md`. Agents and skill packages are `opendan_agent_dev`.

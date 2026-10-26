@@ -491,13 +491,56 @@ fn invoked_name() -> Option<String> {
     )
 }
 
+/// `opendan install-agent-tools [<dir>]`: lay out this host's agent tool
+/// directory (default `$BUCKYOS_ROOT/bin/agent-tools`) as entries of this
+/// program; node-daemon puts it on the PATH of the commands its executor
+/// runs.
+fn install_agent_tools(dir: Option<std::ffi::OsString>) -> ! {
+    use libopendan::baseline::{buckyos_root, install_entries, AGENT_TOOLS_BIN};
+    let result = (|| -> Result<Vec<PathBuf>> {
+        let root = buckyos_root().ok_or_else(|| anyhow!("cannot tell $BUCKYOS_ROOT; set it"))?;
+        let dir = dir.map(PathBuf::from).unwrap_or_else(|| root.join(AGENT_TOOLS_BIN));
+        let program = std::env::current_exe().context("this program")?;
+        Ok(install_entries(&dir, &program)?)
+    })();
+    match result {
+        Ok(made) => {
+            println!("{}", serde_json::json!({ "entries": made }));
+            std::process::exit(0)
+        }
+        Err(e) => {
+            eprintln!("opendan install-agent-tools: {e:#}");
+            std::process::exit(1)
+        }
+    }
+}
+
 fn main() {
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    // On a node session-runtime the AICC clients get the agent's identity
+    // from its session (the executor passes no BUCKYOS_* environment).
+    if let Some(name @ ("agent_tool" | "llm_understand_media")) = invoked_name().as_deref() {
+        for (key, value) in libopendan::baseline::session_identity_env(name) {
+            std::env::set_var(key, value);
+        }
+    }
     match invoked_name().as_deref() {
-        Some("xagent") => libopendan::xagent_cli::main(),
+        Some("xagent" | "agent-session") => libopendan::xagent_cli::main(),
+        Some("llm_understand_media") => {
+            let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
+            let args = args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+            std::process::exit(rt.block_on(agent_tool::llm_understand_media::run_subcommand(args)))
+        }
+        Some(name) if libopendan::baseline::is_host_entry(name) => {
+            std::process::exit(libopendan::baseline::run_host_entry(name, &args))
+        }
         Some(name) if agent_tool_cli_dev::handles_invocation_name(name) => {
             agent_tool_cli_dev::main()
         }
         _ => {}
+    }
+    if args.first().and_then(|a| a.to_str()) == Some("install-agent-tools") {
+        install_agent_tools(args.get(1).cloned());
     }
     init_logging("opendan", true);
     pin_host_identity();

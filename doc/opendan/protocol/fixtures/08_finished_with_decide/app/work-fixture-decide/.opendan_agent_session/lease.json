@@ -2,12 +2,12 @@
   "resource": "session:work-fixture-decide",
   "epoch": 1,
   "holder": {
-    "runner_id": "rn-d7eb8a500ac74dd2",
+    "runner_id": "rn-ba004a962110493d",
     "principal": "app:app2@alice",
     "host": "${FIXTURE_HOST}",
-    "pid": 3525857,
+    "pid": 3019369,
     "runtime_id": "rt-fixture-native"
   },
-  "acquired_at_ms": 1792819161590,
-  "released_at_ms": 1792819161731
+  "acquired_at_ms": 1792976021062,
+  "released_at_ms": 1792976021216
 }

@@ -257,10 +257,14 @@ export interface AgentSettings {
 
 export type ComputerAccess = 'none' | 'observe' | 'control'
 
+/** What the owner declares a runtime provides: decides which cmd_skills its sessions take. */
+export type RuntimeBaseline = 'standard' | 'extended'
+
 export interface AgentRuntimeSetting {
   enabled: boolean
   computer: ComputerAccess
   target: { kind: 'node'; node_id: string; node_did: string } | { kind: 'executor'; executor_id: string }
+  baseline?: RuntimeBaseline | null
 }
 
 /** One machine the owner's Agents may run on (`agent.runtime_directory`). */
@@ -279,6 +283,7 @@ export interface AgentRuntimeOffer {
   withdrawn?: boolean
   enabled: boolean
   computer: ComputerAccess
+  baseline: RuntimeBaseline
 }
 
 export interface AgentRuntimeDirectory {
@@ -819,8 +824,8 @@ export const updateAgent = async (input: {
   allowGroup?: boolean
   homestation?: boolean
   autoShareResults?: boolean
-  /** `{ "<id>": { enabled?, computer? } | null }`; targets come from the directory, never from here. */
-  runtimes?: Record<string, { enabled?: boolean; computer?: ComputerAccess } | null>
+  /** `{ "<id>": { enabled?, computer?, baseline? } | null }`; targets come from the directory, never from here. */
+  runtimes?: Record<string, { enabled?: boolean; computer?: ComputerAccess; baseline?: RuntimeBaseline | null } | null>
   /** `null` or `'container'`: the Agent's own environment. */
   defaultRuntimeId?: string | null
 }): Promise<{ data: AgentEntry | null; error: unknown }> => {

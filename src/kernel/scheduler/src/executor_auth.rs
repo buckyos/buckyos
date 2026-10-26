@@ -612,6 +612,7 @@ mod tests {
                     enabled: true,
                     computer,
                     target: AgentRuntimeTarget::Node { node_id: "ood1".into(), node_did: device_did.clone() },
+                    baseline: None,
                 },
             )]),
             default_runtime_id: Some("host".into()),

@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use agent_tool::runtime::{Capabilities, RuntimeDescriptor};
-use buckyos_api::{owner_agent_profile_id, AgentRuntimeTarget, AgentSettings, ComputerAccess};
+use buckyos_api::{owner_agent_profile_id, AgentRuntimeTarget, AgentSettings, ComputerAccess, RuntimeBaseline};
 
-pub const RUNTIME_RECORD_VERSION: u32 = 2;
+pub const RUNTIME_RECORD_VERSION: u32 = 3;
 
 /// The environment the agent process itself runs in (its container; the
 /// host process under `debug_jarvis.sh` / `--dev`).
@@ -54,6 +54,56 @@ impl RuntimeKind {
     }
 }
 
+/// The platform of a runtime: `os` is `linux | macos | windows`, `shell`
+/// the program name commands are written for (`bash`, `pwsh`, …).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RuntimePlatform {
+    #[serde(default)]
+    pub os: String,
+    #[serde(default)]
+    pub arch: String,
+    #[serde(default)]
+    pub shell: String,
+}
+
+impl RuntimePlatform {
+    /// The platform as a runtime reports it (`darwin` is `macos`; the shell
+    /// by its program name).
+    pub fn reported(os: &str, arch: &str, shell: &str) -> Self {
+        let info = agent_tool::runtime::RuntimeInfo {
+            os: os.to_string(),
+            shell: shell.to_string(),
+            ..Default::default()
+        }
+        .with_declared(None);
+        Self {
+            os: info.platform,
+            arch: arch.to_string(),
+            shell: info.shell_kind,
+        }
+    }
+
+    /// The machine this process runs on.
+    pub fn local() -> Self {
+        let shell = if cfg!(windows) { "pwsh" } else { "bash" };
+        Self::reported(std::env::consts::OS, std::env::consts::ARCH, shell)
+    }
+}
+
+/// The last check of a runtime's standard tools ([`crate::baseline`]):
+/// only a hint, the declaration decides (Q5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct BaselineCheck {
+    pub checked_at_ms: u64,
+    /// Standard commands not found on the runtime's PATH.
+    #[serde(default)]
+    pub missing: Vec<String>,
+    pub ok: bool,
+    /// Why the check could not run (the runtime was not reachable).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeAvailability {
@@ -86,13 +136,24 @@ pub struct RuntimeRecord {
     /// Created by the host; cannot be unregistered.
     #[serde(default)]
     pub builtin: bool,
-    /// The runtime new sessions without a workspace run in (the owner's
-    /// `default_runtime_id`); exactly one record carries it.
+    /// The session-runtime new sessions take unless one is named or
+    /// inherited (the owner's `default_runtime_id`); exactly one record
+    /// carries it.
     #[serde(default)]
     pub default: bool,
     /// ComputerUse the owner granted the agent on this runtime.
     #[serde(default)]
     pub computer: ComputerAccess,
+    /// The environment its registrar declares (Q5): decides the sessions'
+    /// cmd_skills and what their prompts say.
+    pub baseline: RuntimeBaseline,
+    /// Learned from the runtime when it is checked.
+    #[serde(default)]
+    pub platform: RuntimePlatform,
+    /// The last check of its standard tools; a hint that never changes
+    /// `baseline`.
+    #[serde(default)]
+    pub baseline_check: Option<BaselineCheck>,
     pub revision: u64,
     pub registered_by: String,
     pub registered_at_ms: u64,
@@ -121,6 +182,12 @@ pub struct RuntimeRegister {
     pub default: bool,
     #[serde(default)]
     pub computer: ComputerAccess,
+    #[serde(default = "standard_baseline")]
+    pub baseline: RuntimeBaseline,
+}
+
+fn standard_baseline() -> RuntimeBaseline {
+    RuntimeBaseline::Standard
 }
 
 /// What an owner may change of a registration (CAS on `revision`).
@@ -171,6 +238,9 @@ pub fn builtin_runtimes(
         capabilities: serde_json::json!({ "network": true, "os": std::env::consts::OS }),
         default: default == CONTAINER_RUNTIME,
         computer: ComputerAccess::None,
+        // The aios image: the standard tools plus its toolchains and media
+        // tools (`build_aios` RUNTIME_PACKAGES, Node, Deno, uv).
+        baseline: RuntimeBaseline::Extended,
     }];
     let mut has_host = false;
     for (id, rs) in &settings.runtimes {
@@ -209,6 +279,7 @@ pub fn builtin_runtimes(
             capabilities,
             default: default == id,
             computer: rs.computer,
+            baseline: rs.baseline.unwrap_or(RuntimeBaseline::Standard),
         });
     }
     if !has_host {
@@ -222,6 +293,7 @@ pub fn builtin_runtimes(
             capabilities: serde_json::json!({ "enabled": false }),
             default: false,
             computer: ComputerAccess::None,
+            baseline: RuntimeBaseline::Standard,
         });
     }
     out

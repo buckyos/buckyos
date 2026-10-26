@@ -126,6 +126,7 @@ apps:
       opendan_web: bin/opendan/web/
       buckyos-tool-bin: bin/buckyos
       buckyos-tool: libexec/buckyos-tool/
+      buckyos-agent: libexec/buckyos-agent/
       scheduler-etc: etc/scheduler/
       boot-gateway-config: etc/boot_gateway.yaml
       util.py: bin/util.py

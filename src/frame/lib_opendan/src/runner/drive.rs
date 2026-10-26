@@ -140,20 +140,8 @@ async fn drive_locked(
             }
         }
     }
-    match crate::runtime::session_runtime(
-        sd,
-        &session.config,
-        &deps.runtime,
-        deps.agent.agent_root(),
-    ) {
+    match crate::runtime::session_runtime(sd, &session.config, &deps.runtime) {
         Ok(r) => deps.runtime = r,
-        Err(error @ OpenDanError::WorkspaceBindingInvalid(_)) => {
-            return fail_workspace(&mut session, &lease, deps.agent.as_ref(), &error).await;
-        }
-        Err(error) if session.config.workspace_binding.is_some() => {
-            let error = OpenDanError::WorkspaceBindingInvalid(error.to_string());
-            return fail_workspace(&mut session, &lease, deps.agent.as_ref(), &error).await;
-        }
         Err(e) => return DriveResult::BindFailed { error: e.to_json() },
     }
     // A finished session that takes no more input gave its queue back.
@@ -200,6 +188,7 @@ async fn drive_locked(
         external_stop_applied: AtomicBool::new(false),
         behavior_functions: Default::default(),
     });
+    super::live_tasks::register(sd.sid(), &sh);
     let r = Box::pin(drive_inner(&sh, until)).await;
     let failure = sh
         .workspace_failure
@@ -1392,7 +1381,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
             &sh.lease,
             sh.deps.runtime.as_ref(),
             &cfg,
-            sh.agent_root.as_deref(),
+            sh.agent(),
             &sh.deps.app_tools,
             &plan,
             &sh.deps.runner_id,
@@ -1401,11 +1390,6 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         let binding = match bound {
             Ok(b) => b,
             Err(e @ (OpenDanError::Bind(_) | OpenDanError::RuntimeMismatch { .. })) => {
-                if cfg.workspace_binding.is_some()
-                    && matches!(e, OpenDanError::RuntimeMismatch { .. })
-                {
-                    return Err(OpenDanError::WorkspaceBindingInvalid(e.to_string()));
-                }
                 let error = binding_error(&e).await;
                 let mut s = sh.session.lock().await;
                 s.state.last_error = Some(error.clone());
@@ -1424,6 +1408,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                 input_queue: s.config.channels.kmsg().map(|(_, q, _)| q.to_string()),
                 trace_id: s.sid().to_string(),
                 cmd_skills: crate::runtime::frozen_cmd_skills(&s.config),
+                workspace: s.config.workspace_binding.clone(),
                 extra_env: s
                     .config
                     .runtime
@@ -1771,8 +1756,16 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                 input: InputView::new(hook, now_ms, items),
                 hints,
                 active,
-                runtime_status: serde_json::to_value(sh.deps.runtime.info().await?)
-                    .unwrap_or_default(),
+                runtime_status: {
+                    let mut status = serde_json::to_value(sh.deps.runtime.info().await?)
+                        .unwrap_or_default();
+                    if let (Some(o), Some(w)) =
+                        (status.as_object_mut(), crate::runtime::workspace_view(&cfg))
+                    {
+                        o.insert("workspace".into(), w);
+                    }
+                    status
+                },
                 now_ms,
                 todos: None,
                 current_todo: super::todos::current(sh),

@@ -88,6 +88,13 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "baseline": {
+          "description": "The declared baseline of that runtime (`standard | extended`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "caller": {
           "anyOf": [
             {
@@ -297,7 +304,7 @@
           "type": "array"
         },
         "runtime_id": {
-          "description": "Where the Todo must execute: a runtime id (`None`: the session's own), and `inherit | none | <workspace id>` (`None`: a serial Todo inherits the session's workspace, an exploration takes none). A workspace decides the runtime; both named and in conflict is refused.",
+          "description": "Where the Todo must execute: a session-runtime id (`None`: the session's own), and `inherit | none | <workspace id>` (`None`: a serial Todo inherits the session's workspace, an exploration takes none). The two are chosen independently: a workspace on another runtime than the work's is reached by copying files.",
           "type": [
             "string",
             "null"

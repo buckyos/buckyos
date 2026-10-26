@@ -61,10 +61,13 @@ pub enum ExecutorAdmission {
     Wss,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ExecutorOptions {
     pub identity_mode: ExecutorIdentityMode,
     pub admission: ExecutorAdmission,
+    /// Host directories put first on every command's PATH (a BuckyOS host's
+    /// `bin/agent-tools`): what a profile's environment cannot name.
+    pub path_prefix: Vec<PathBuf>,
 }
 
 impl Default for ExecutorOptions {
@@ -76,6 +79,7 @@ impl Default for ExecutorOptions {
                 ExecutorIdentityMode::SwitchUser
             },
             admission: ExecutorAdmission::Node,
+            path_prefix: Vec::new(),
         }
     }
 }
@@ -193,7 +197,7 @@ impl NodeExecutor {
             identity.clone(),
             computer.clone(),
             host.node_id.clone(),
-        ));
+        ).with_path_prefix(options.path_prefix.clone()));
         let inner = Arc::new(ExecutorInner {
             node_id: host.node_id,
             node_did: host.node_did,

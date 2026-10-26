@@ -218,7 +218,7 @@ function defaultState(): MockState {
     runtime_offers: [{
       runtime_id: 'host', kind: 'node', node_id: 'desktop', node_did: 'did:dev:desktop',
       device_type: 'desktop', name: 'Alice’s computer', computer_max: 'control',
-      workdir_roots: ['/home/alice'], closed: false, enabled: false, computer: 'none',
+      workdir_roots: ['/home/alice'], closed: false, enabled: false, computer: 'none', baseline: 'standard',
     }],
     agents: [
       {

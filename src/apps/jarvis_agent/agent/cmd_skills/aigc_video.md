@@ -1,7 +1,8 @@
 ---
 name: aigc_video
 description: Make videos with the zone's AI models — one video.generate request takes a prompt plus start/end keyframes or reference images, clips and audio; video edit/extend/upscale as far as the providers support it; and multi-shot films from a storyboard (images, narration, clips, ffmpeg assembly with subtitles), with task ids recorded so long jobs resume instead of being paid twice.
-requires: aios agent container with the buckyos-agent commands on PATH (gen_video, edit_video, resume_aicc_task, …), ffmpeg/ffprobe and ImageMagick, and an AICC provider that serves video.generate; stored results are read through the Zone NDM proxy, which only read_write Agents may read
+requires: an extended session-runtime (the aios agent container is one) with the buckyos-agent commands on PATH (gen_video, edit_video, resume_aicc_task, …), ffmpeg/ffprobe and ImageMagick, and an AICC provider that serves video.generate; stored results are read through the Zone NDM proxy, which only read_write Agents may read
+baseline: extended
 ---
 #### When to use
 - One clip: from a description, from a start and/or end frame, or following reference images, clips or audio — all `gen_video`. Rewrite a clip (`edit_video`); continue one (`extend_video`); raise resolution (`upscale_video`).
@@ -10,7 +11,7 @@ requires: aios agent container with the buckyos-agent commands on PATH (gen_vide
 
 #### Before you start
 - `command -v gen_video resume_aicc_task ffmpeg`.
-- These commands are installed in the AIOS `container` runtime. If they are missing here, use `agent-session runtime list --available` and explicitly delegate generation to that runtime with `aigc_video` and no workspace; pass input object ids and return output object ids. Keep any user-selected runtime/workspace for its own work. If no compatible runtime is available, report the missing execution capability. A missing command on `host` is not evidence that `video.generate` is unavailable in the zone.
+- This manual needs an extended runtime (ffmpeg/ffprobe and ImageMagick besides the standard AICC commands): the AIOS `container` is one. If they are missing here, use `agent-session runtime list --available` and explicitly delegate generation to such a runtime with `aigc_video` and no workspace; hand inputs and outputs over by `agent-session copy` or object ids. Keep any user-selected runtime/workspace for its own work. If no compatible runtime is available, report the missing execution capability. A missing command on `host` is not evidence that `video.generate` is unavailable in the zone.
 - For a request to generate a video, use `gen_video` and require a successful AICC task and its playable output. Do not silently replace generation with Pillow/SVG animation, a slideshow or synthetic frames. Such a different production method needs the user's request or agreement and must be identified in the report.
 - Models, what each accepts and list prices: `ai_provider models --api-type video.generate`. OpenRouter lists MiniMax H3 (`minimax/hailuo-3`: 2K, 5–15 s, always with sound, 0.13 USD/s + 0.04 per reference image) and H3-Max (`minimax/hailuo-3-max`: 480p/768p, 5–15 s, cannot generate sound though its file carries an audio track, so `--audio` must stay `auto`; 0.05 USD/s at 480p, 0.08 at 768p) — catalog of 2026-10-22; the zone's own provider list decides what you can use. Gemini's Veo 3.1 Preview was shut down on 2026-10-22. Video is the expensive medium: say the estimated cost before a multi-shot job.
 - No health check is needed before a call; a refusal comes back in the result.

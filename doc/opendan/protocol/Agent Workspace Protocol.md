@@ -38,9 +38,9 @@ Workspace 的产品语义是 **runtime + directory + url**：`url` 是可选的�
 
 ## 5. Session 绑定与执行
 
-`session_config` 升为 `/7`，`binding` 升为 `/4`。`workspace` 为 `{workspace_id, access}`，不再接受 `kind:agent/external` 和路径引用；`workspace_binding` 持久保存稳定 ID、登记/位置修订、Runtime/目录、`runtime_host` 和访问模式。
+`session_config` 升为 `/7`，`binding` 升为 `/4`（2026-10-25 起 `/5`，见下）。`workspace` 为 `{workspace_id, access}`，不再接受 `kind:agent/external` 和路径引用；`workspace_binding` 持久保存稳定 ID、登记/位置修订、Runtime/目录、`runtime_host` 和访问模式。
 
-创建时解析并核验；无 Workspace 的任务使用自身 SessionDir。另行给出的 Runtime workdir 必须与所选目录一致，不能覆盖 Workspace 决策。已有 Session 的配置和 binding 均不得改为另一个 Workspace、目录或访问模式；子 Session 的继承也不能扩大访问能力。
+创建时解析并核验。**2026-10-25 起（primary-runtime TODO，`binding` 为 `/5`）Workspace 不决定 Session 的执行位置**：session-runtime 由显式选择 / 继承 / Agent 默认决定，默认 cwd 永远是 session-runtime 上的 Session 工作目录；Workspace 只贡献自己的 runtime 与目录（写在 binding 的 `workspace` 快照、提示词的 runtime 状态与本机 runtime 的 `OPENDAN_WORKSPACE_ID / _RUNTIME / _DIR` 里）。两者同 runtime 时命令可直接 `cd` 进 Workspace 目录；不同 runtime 时经 `agent-session copy --from workspace:<path> --to session:<path>`（及反向）复制文件，不要求共享磁盘。另行给出的 Runtime workdir 必须是 Session 工作目录。已有 Session 的配置和 binding 均不得改为另一个 Workspace、目录或访问模式；子 Session 的继承也不能扩大访问能力，只读 Workspace 也不接受复制写入。
 
 启动、恢复和工具调用前核验登记、位置修订、目录元信息和执行环境。绑定 Workspace 的 run 不允许独立 `xllm --resume` 绕过校验和写锁，必须由 `xagent run` 驱动。原绑定不可访问或失效时，Session 终态失败并保留原 binding 和执行证据；不重建目录、不改绑、不因访问恢复而重启失败 Session。后续工作须创建新 Session。
 

@@ -178,6 +178,9 @@ pub struct TodoAttempt {
     pub runtime_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
+    /// The declared baseline of that runtime (`standard | extended`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<String>,
     /// `running | blocked | completed | failed | timeout | stopped`.
     pub status: TodoStatus,
     pub started_at_ms: u64,
@@ -257,10 +260,11 @@ pub struct TodoRecord {
     /// Dispatch batch (explorations sent out together).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub batch: Option<String>,
-    /// Where the Todo must execute: a runtime id (`None`: the session's
-    /// own), and `inherit | none | <workspace id>` (`None`: a serial Todo
-    /// inherits the session's workspace, an exploration takes none). A
-    /// workspace decides the runtime; both named and in conflict is refused.
+    /// Where the Todo must execute: a session-runtime id (`None`: the
+    /// session's own), and `inherit | none | <workspace id>` (`None`: a
+    /// serial Todo inherits the session's workspace, an exploration takes
+    /// none). The two are chosen independently: a workspace on another
+    /// runtime than the work's is reached by copying files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -502,6 +506,7 @@ pub struct NewTodo {
 pub struct AttemptTarget {
     pub runtime_id: Option<String>,
     pub workspace_id: Option<String>,
+    pub baseline: Option<String>,
 }
 
 /// Which Todo `next_behavior = do` would execute now.
@@ -715,6 +720,7 @@ impl TodoList {
             dispatch: None,
             runtime_id: None,
             workspace_id: None,
+            baseline: None,
             status: TodoStatus::Running,
             started_at_ms: now_ms,
             ended_at_ms: None,
@@ -819,6 +825,7 @@ impl TodoList {
             dispatch: Some(DispatchState::Dispatching),
             runtime_id: t.runtime_id.clone(),
             workspace_id: t.workspace.clone().filter(|w| w.starts_with("ws-")),
+            baseline: None,
             status: TodoStatus::Running,
             started_at_ms: now_ms,
             ended_at_ms: None,
@@ -855,6 +862,9 @@ impl TodoList {
         }
         if target.workspace_id.is_some() {
             a.workspace_id = target.workspace_id;
+        }
+        if target.baseline.is_some() {
+            a.baseline = target.baseline;
         }
         t.touch(now_ms);
         self.bump();
@@ -1060,6 +1070,9 @@ impl TodoList {
             attrs.push_str(&format!(" review=\"{}\"", t.review_state().as_str()));
             if let Some(r) = a.and_then(|a| a.runtime_id.as_deref()).or(t.runtime_id.as_deref()) {
                 attrs.push_str(&format!(" runtime=\"{}\"", llm_context::escape_xml_attr(r)));
+            }
+            if let Some(b) = a.and_then(|a| a.baseline.as_deref()) {
+                attrs.push_str(&format!(" baseline=\"{}\"", llm_context::escape_xml_attr(b)));
             }
             if let Some(w) = a.and_then(|a| a.workspace_id.as_deref()).or(t.workspace.as_deref()) {
                 attrs.push_str(&format!(" workspace=\"{}\"", llm_context::escape_xml_attr(w)));

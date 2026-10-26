@@ -1,7 +1,8 @@
 ---
 name: aigc_image
 description: Generate and edit images through the zone's AI models — text to image, edit or restyle from a reference image, masked inpaint, upscale, background removal — check the files and hand them over.
-requires: aios agent container with the buckyos-agent commands on PATH (gen_image, edit_image, …) and an AICC provider that serves the image method; stored results are read through the Zone NDM proxy, which only read_write Agents may read
+requires: the buckyos-agent commands on PATH (gen_image, edit_image, …: aios agent container, or a node's agent-tools) and an AICC provider that serves the image method; stored results are read through the Zone NDM proxy, which only read_write Agents may read
+baseline: standard
 ---
 #### When to use
 - Make a new picture from a description (`gen_image`), change an existing one (`edit_image`), repaint a marked region (`inpaint_image`), enlarge it (`upscale_image`), cut out the subject (`remove_bg`).
@@ -9,7 +10,7 @@ requires: aios agent container with the buckyos-agent commands on PATH (gen_imag
 - Reading or describing an image is `llm_understand_media` (or `ocr_image` / `caption_image`); speech and music: aigc_audio; clips and films: aigc_video.
 
 #### Before you start
-- The commands below are installed in the AIOS `container` runtime. If absent here, check `agent-session runtime list --available` and explicitly delegate generation to that runtime with `aigc_image` and no workspace, exchanging input/output object ids. Preserve a user-selected runtime/workspace for its own work. Report a missing compatible runtime instead of treating missing host commands as absent models.
+- The commands below are standard-environment commands: in the AIOS `container`, and on a node through its `$BUCKYOS_ROOT/bin/agent-tools` (they run there as your agent). If absent here, check `agent-session runtime list --available` (each runtime's `baseline_check` names what it lacks) and explicitly delegate generation to a runtime that has them with `aigc_image` and no workspace, exchanging inputs and outputs by `agent-session copy` or object ids. Preserve a user-selected runtime/workspace for its own work. Report a missing compatible runtime instead of treating missing commands as absent models. `identify`/`convert` (ImageMagick) for checks are not standard: use them where they exist.
 - `command -v gen_image resume_aicc_task` — the second one is newer; when it is missing, re-running a command with the same `--idempotency-key` is the way back to an interrupted task (see When it fails).
 - No provider check is needed before a call: run the command and read its result. To see which models serve a method: `ai_provider models --api-type image.txt2img` (exact model, logical names, list price). `ai_provider list` shows providers and their health and lists only the models your owner may use. `ai_quota` lists the token quota rules that limit you; image, audio and video methods are not under token quota.
 - Work in the session's working directory (the shell starts there) and write results under it, e.g. `out/…`.

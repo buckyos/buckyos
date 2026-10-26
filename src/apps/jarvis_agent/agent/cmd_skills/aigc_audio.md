@@ -1,7 +1,8 @@
 ---
 name: aigc_audio
 description: Produce audio through the zone's AI models — read text aloud (text to speech), generate music, clean up a recording — then check that the file plays and hand it over; transcription is a side tool.
-requires: aios agent container with the buckyos-agent commands on PATH (text_to_speech, gen_music, enhance_audio, speech_to_text) plus ffmpeg/ffprobe, and an AICC provider that serves the audio method; stored results are read through the Zone NDM proxy, which only read_write Agents may read
+requires: an extended session-runtime (the aios agent container is one) with the buckyos-agent commands on PATH (text_to_speech, gen_music, enhance_audio, speech_to_text) plus ffmpeg/ffprobe, and an AICC provider that serves the audio method; stored results are read through the Zone NDM proxy, which only read_write Agents may read
+baseline: extended
 ---
 #### When to use
 - Typical requests: "read this aloud", "make a 30-second voice-over", "a short jingle for the intro", "remove the hum from this recording".
@@ -10,7 +11,7 @@ requires: aios agent container with the buckyos-agent commands on PATH (text_to_
 - Pictures: aigc_image; video and putting voice under video: aigc_video.
 
 #### Before you start
-- The commands below are installed in the AIOS `container` runtime. If absent here, check `agent-session runtime list --available` and explicitly delegate generation to that runtime with `aigc_audio` and no workspace, exchanging input/output object ids. Preserve a user-selected runtime/workspace for its own work. Report a missing compatible runtime instead of treating missing host commands as absent models.
+- This manual needs an extended runtime (ffmpeg/ffprobe besides the standard AICC commands): the AIOS `container` is one. If the commands are absent here, check `agent-session runtime list --available` and explicitly delegate generation to such a runtime with `aigc_audio` and no workspace, exchanging inputs and outputs by `agent-session copy` or object ids. Preserve a user-selected runtime/workspace for its own work. Report a missing compatible runtime instead of treating missing commands as absent models.
 - `command -v text_to_speech resume_aicc_task ffprobe` — `resume_aicc_task` is newer; without it, re-run with the same `--idempotency-key` to get back to an interrupted task.
 - Which models serve a method: `ai_provider models --api-type audio.tts` (exact model, logical names, price). No health check is needed before a call.
 - Defaults in this zone today: audio.tts → `gemini-2.5-flash-preview-tts`; audio.music → `lyria-3-clip-preview` (0.04 USD per request); audio.enhance → `fal-ai/deepfilternet3`; audio.asr → `gemini-3.5-transcribe`.

@@ -284,3 +284,12 @@ Session 接管额外保存并核验 runtime、PATH、环境和 bin manifest/help
 - `cargo test -p agent_tool --lib`：新增 `native_runtime_files_stream_guard_and_commit`、`runtime_info_carries_platform_shell_kind_and_declared_baseline`。
 - 2026-10-25 结果（root，`--test-threads=1`）：node_executor 全部 test target 通过（executor 13、remote_node_runtime 3、platform 3、computer 9）；agent_tool `--lib` 274 通过 / 5 忽略（SSH 真实传输用例）；buckyos-api 294 通过；scheduler `executor_auth` 4 通过；buckyos_agent_daemon 通过；libopendan 全部 test target 通过（1 项故障注入 child 入口默认忽略）；opendan 通过（1 忽略）；agent_tool_cli_dev 36 通过；`cargo check --workspace --all-targets` 通过。`xagent schema` 重新导出与 `doc/opendan/protocol/schema` 逐文件一致（RuntimeConfig 不在导出的 schema 里），fixtures 无需重生成。
 - 未执行：`uv run buckyos-build.py`、真实 Zone DV、Windows / macOS 实机、websdk 构建（只改了 `ExecutorOperation` 联合类型）。
+
+### 11.1 T1–T7 实施时的补充改动（2026-10-25）
+
+primary-runtime TODO T1–T7 实施时对本层与执行器的小改动（记录见 [primary-runtime TODO §10](opendan-primary-runtime-tools-todo.md#10-t1t7-实施记录2026-10-25未提交)）：
+
+- `RuntimeBaseline` 移到 buckyos-api（control-panel 的 `AgentRuntimeSettings.baseline` 也用它），`agent_tool::runtime::RuntimeBaseline` 改为重导出；新增 `meets()`。
+- `agent_tool::todo_tools`：`TodoAttempt.baseline` / `AttemptTarget.baseline`（派出的 attempt 所在 runtime 声明的基线），PLAN 视图属性 `baseline="…"`；`TodoRecord.runtime_id / workspace` 的注释改为“两者独立”。
+- node_executor：exec 的环境多 `EXECUTOR_CALL_ID / EXECUTOR_RUN_ID`（执行器自己的操作身份，buckyos-api 常量 `ENV_EXECUTOR_CALL_ID / ENV_EXECUTOR_RUN_ID`）；`ExecutorOptions.path_prefix`（宿主目录排在每条命令 PATH 最前），`ExecutorOptions` 去掉 `Copy`。
+- 发现：节点 runtime 只执行带调用 ID、有持久 run 目录的命令——libopendan 绑定时的 `requirement.tools` 探测此前在节点上不能成功；改由 libopendan `run_probe` 补调用 ID 与 run 目录，本层不变。

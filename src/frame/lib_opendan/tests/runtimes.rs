@@ -84,6 +84,7 @@ async fn builtin_runtimes_are_created_once_and_kept() {
         capabilities: json!({}),
         default: false,
         computer: Default::default(),
+        baseline: buckyos_api::RuntimeBaseline::Standard,
     };
     let studio = state.runtimes().register(&added, "owner").await.unwrap();
     assert_eq!(studio, state.runtimes().register(&added, "owner").await.unwrap(), "idempotent");
@@ -134,6 +135,7 @@ async fn runtimes_over_krpc() {
                 capabilities: json!({}),
                 default: false,
                 computer: Default::default(),
+                baseline: buckyos_api::RuntimeBaseline::Standard,
             },
             "forged",
         )

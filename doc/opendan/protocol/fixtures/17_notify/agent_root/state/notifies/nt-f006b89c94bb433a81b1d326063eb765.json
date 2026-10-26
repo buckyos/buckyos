@@ -1,0 +1,45 @@
+{
+  "view": {
+    "notify_id": "nt-f006b89c94bb433a81b1d326063eb765",
+    "url": "/messagehub?notify=nt-f006b89c94bb433a81b1d326063eb765",
+    "to_user": "",
+    "kind": "input",
+    "category": "agent",
+    "level": "timely",
+    "status": "open",
+    "prompt": {
+      "title": "Postgres or SQLite?",
+      "controls": [
+        {
+          "kind": "choice",
+          "id": "option",
+          "options": [
+            {
+              "value": "pg",
+              "label": "Postgres"
+            },
+            {
+              "value": "lite",
+              "label": "SQLite"
+            }
+          ],
+          "multiple": false,
+          "required": true
+        }
+      ]
+    },
+    "source": {
+      "app_id": "jarvis.alice",
+      "agent_did": "did:bns:jarvis.alice",
+      "session_id": "work-notify",
+      "turn": 1,
+      "call_id": "q1",
+      "operation": "Pick the database of the notes app"
+    },
+    "created_at_ms": 1792976022531,
+    "expires_at_ms": 1792986822524,
+    "task_id": "local-task-nt-f006b89c94bb433a81b1d326063eb765"
+  },
+  "idempotency_key": "work-notify:1:ask:q1",
+  "notes": []
+}

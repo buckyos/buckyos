@@ -55,8 +55,9 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   xagent xllm   <sid> [--run <id>]
   xagent workspace list|get|create|import|discover|check|archive|restore|unregister|set-url|runtime-impact|set-runtime ...
         (create/import: --runtime <id> --directory <abs path on that runtime> [--url <https://project>])
-  xagent runtime list [--available] | get <id> | check <id>
+  xagent runtime list [--available] | get <id> | check <id> | baseline [--json] [--check [--overlay]]
                  | register <id> --kind container|host_native|remote_ssh --name <n> [--description <t>] [--exec <json>] [--root <dir>]...
+                   [--baseline standard|extended]
                  | update <id> --expected-revision <n> [--name <n>] [--description <t>] [--root <dir>]...
                  | unregister <id> --expected-revision <n>
   xagent goal   create --objective <text> [--title <t>] [--lifecycle achieve|maintain] [--achieved-when <t>]
@@ -93,9 +94,13 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   todo review <todo_id> (--accept | --reject | --need-evidence) --reason <t> [--followup <todo_id>]...
   todo cancel <todo_id> --reason <t> | todo clean --reason <t> | todo retry <todo_id> --reason <t>
   ask-user <question> [--option <id>=<label>]... [--allow-text]   (ui sessions: the result is the user's next message)
+  copy --from <end> --to <end> [--replace] | copy status|cancel <transfer_id> | copy list
+        <end> = session:<path> | workspace:<path> | <runtime_id>:<absolute path>; one regular file between the session's
+        runtimes, verified by hash and committed by rename; an existing target only with --replace
+        (exit 0 committed, 1 failed, 4 cancelled)
   task state|wait|cancel <task_id> [--wait-ms <ms>]   (a shell command that continued as a task, in the run that started it;
         wait: default 25s, max 30 min — give the shell call a larger wait_ms; exit 0 running/finished, 1 failed, 2 unknown)
-  runtime list [--available] | get <id> | check <id> | workspace ...
+  runtime list [--available] | get <id> | check <id> | baseline [--json] | workspace ...
   goal ... (ui sessions: create / show / post / pause / resume / archive / reopen / restart / activate;
             goal sessions: show / skills add|remove / achieved --evidence / archive --reason)
   notify send --title <t> [--message <text>] [--level quiet|normal|timely|urgent] [--expires-in <dur>] [--key <k>]
@@ -109,6 +114,8 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
               | ack <id> | dismiss <id> | cancel <id> [--reason <r>]     (the owner's side; --dev and tests)
 
 identity and location (flags or environment):
+  --session-context <path>  a session's .opendan/session.json (default: found above the current directory when
+                       there is no $OPENDAN_SESSION_ID; on a node runtime, commands then go to AgentService)
   --agent <did>        [$OPENDAN_AGENT_DID]     --who <principal>  [$LIBOPENDAN_WHO]
   --agent-root <dir>   [$OPENDAN_AGENT_ROOT]    --state-url <url>  [$OPENDAN_AGENT_STATE_URL]
   --queue-dir <dir>    [$LIBOPENDAN_QUEUE_DIR]  development file queue; without it the zone's kmsg
@@ -791,6 +798,14 @@ fn env_sid() -> Option<String> {
     std::env::var("OPENDAN_SESSION_ID").ok().filter(|s| !s.is_empty())
 }
 
+/// The tool call this command runs for: xllm's variable on the agent's own
+/// machine, the Node Executor's operation call id on a node.
+fn env_call_id() -> Option<String> {
+    [agent_tool::llm_bash::ENV_CALL_ID, buckyos_api::ENV_EXECUTOR_CALL_ID]
+        .iter()
+        .find_map(|v| std::env::var(v).ok().filter(|c| !c.is_empty()))
+}
+
 async fn cmd_post(mut a: Args) -> R<i32> {
     let sid = a.next("<sid>")?;
     let c = ctx(&a, None, true).await?;
@@ -1154,9 +1169,7 @@ fn cmd_ask_user(mut a: Args) -> R<i32> {
     if env_sid().is_none() {
         return Err(bad("ask-user runs inside a session ($OPENDAN_SESSION_ID)"));
     }
-    let call_id = std::env::var(agent_tool::llm_bash::ENV_CALL_ID)
-        .ok()
-        .filter(|c| !c.is_empty())
+    let call_id = env_call_id()
         .ok_or_else(|| bad("ask-user is a tool call of the session's run ($XLLM_CALL_ID); run it as a shell command of the run"))?;
     let question = a.next("the question")?;
     let options = a
@@ -1198,8 +1211,8 @@ async fn cmd_create_worksession(a: Args) -> R<i32> {
         .ok_or_else(|| bad("create-worksession runs inside a session ($OPENDAN_SESSION_ID)"))?;
     let c = ctx(&a, None, true).await?;
     // The creating call: the idempotency key of the sub session.
-    let call = match (std::env::var(agent_tool::llm_bash::ENV_CALL_ID), a.get("key")) {
-        (Ok(call_id), None) if !call_id.is_empty() => {
+    let call = match (env_call_id(), a.get("key")) {
+        (Some(call_id), None) => {
             let run = c
                 .agent
                 .sessions()
@@ -1266,6 +1279,54 @@ async fn cmd_create_worksession(a: Args) -> R<i32> {
     Ok(0)
 }
 
+/// `copy --from <end> --to <end> [--replace]` | `copy status|cancel <id>` |
+/// `copy list`: one file between the session's runtimes (primary-runtime
+/// TODO §4); `<end>` is `session:<path>`, `workspace:<path>` or
+/// `<runtime_id>:<absolute path>`. Exit 0 committed, 1 failed, 4 cancelled.
+async fn cmd_copy(mut a: Args) -> R<i32> {
+    let sid = env_sid().ok_or_else(|| bad("copy runs inside a session ($OPENDAN_SESSION_ID)"))?;
+    let c = ctx(&a, None, false).await?;
+    let entry = c
+        .agent
+        .sessions()
+        .lookup(&sid)
+        .await?
+        .ok_or_else(|| bad(format!("session {sid} is not registered")))?;
+    let sd = SessionDir::open(&entry.location)?;
+    let record = match a.pos.front().map(String::as_str) {
+        Some("status") => {
+            a.next("status")?;
+            crate::transfer::status(&sd, &a.next("<transfer_id>")?)?
+        }
+        Some("cancel") => {
+            a.next("cancel")?;
+            crate::transfer::request_cancel(&sd, &a.next("<transfer_id>")?)?
+        }
+        Some("list") => {
+            print(&crate::transfer::list(&sd)?);
+            return Ok(0);
+        }
+        Some(other) => return Err(bad(format!("copy takes --from/--to, status, cancel or list, not `{other}`"))),
+        None => {
+            let end = |flag: &str| -> R<crate::transfer::Endpoint> {
+                a.get(flag)
+                    .ok_or_else(|| bad(format!("missing --{flag} <session|workspace|runtime_id>:<path>")))?
+                    .parse()
+                    .map_err(|e: OpenDanError| bad(e.to_string()))
+            };
+            let req = crate::transfer::CopyRequest {
+                from: end("from")?,
+                to: end("to")?,
+                replace: a.has("replace"),
+                call_id: env_call_id(),
+            };
+            crate::transfer::copy(c.agent.as_ref(), &sd, &req).await?
+        }
+    };
+    print(&record);
+    Ok(record.exit_code())
+}
+
 /// `--cmd-skill <name>` (repeatable, or `a,b`). `None`: not given.
 fn cmd_skills_arg(a: &Args, flag: &str) -> Option<Vec<String>> {
     let names: Vec<String> = a
@@ -1309,6 +1370,12 @@ async fn cmd_skill(mut a: Args) -> R<i32> {
             }
             for s in &skills {
                 let mut line = format!("{}  [{}] {}", s.name, s.kind.as_str(), s.description);
+                if s.baseline != buckyos_api::RuntimeBaseline::Standard || !s.platforms.is_empty() {
+                    line.push_str(&format!(" — needs: {} environment", s.baseline.as_str()));
+                    if !s.platforms.is_empty() {
+                        line.push_str(&format!(" on {}", s.platforms.join(", ")));
+                    }
+                }
                 if !s.requires.is_empty() {
                     line.push_str(&format!(" — requires: {}", s.requires));
                 }
@@ -1765,8 +1832,34 @@ async fn cmd_workspace(mut a: Args) -> R<i32> {
     Ok(0)
 }
 
+/// `runtime baseline [--json] [--check [--overlay]]`: the standard
+/// environment's commands; `--check` looks for them on this machine's PATH
+/// (`--overlay`: session helpers come from a session bin overlay, so their
+/// providing executables are looked for instead). Exit 1 when any is
+/// missing.
+fn cmd_runtime_baseline(a: &Args) -> R<i32> {
+    use crate::baseline::{missing_locally, required_commands, STANDARD_TOOLS};
+    if a.has("check") {
+        let names = required_commands(a.has("overlay"));
+        let missing = missing_locally(&names, None, &[]);
+        print(&json!({ "baseline": "standard", "checked": names, "missing": missing, "ok": missing.is_empty() }));
+        return Ok(if missing.is_empty() { 0 } else { 1 });
+    }
+    if a.has("json") {
+        print(&STANDARD_TOOLS);
+    } else {
+        for t in STANDARD_TOOLS {
+            println!("{:<22} {:<16} {}", t.name, serde_json::to_value(t.category).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(), t.source);
+        }
+    }
+    Ok(0)
+}
+
 async fn cmd_runtime(mut a: Args) -> R<i32> {
     let command = a.next("runtime command")?;
+    if command == "baseline" {
+        return cmd_runtime_baseline(&a);
+    }
     let c = ctx(&a, None, false).await?;
     let registry = c.agent.runtimes();
     match command.as_str() {
@@ -1809,6 +1902,11 @@ async fn cmd_runtime(mut a: Args) -> R<i32> {
                             capabilities: json!({}),
                             default: false,
                             computer: Default::default(),
+                            baseline: match a.get("baseline").as_deref() {
+                                None | Some("standard") => buckyos_api::RuntimeBaseline::Standard,
+                                Some("extended") => buckyos_api::RuntimeBaseline::Extended,
+                                Some(b) => return Err(bad(format!("--baseline takes standard | extended, not `{b}`"))),
+                            },
                         },
                         &c.who,
                     )
@@ -2426,6 +2524,108 @@ async fn cmd_goal_serve(a: Args) -> R<i32> {
     Ok(4)
 }
 
+// ---------------------------------------------------------------------------
+// A Session process on a runtime without the agent's environment (a node
+// session-runtime, primary-runtime TODO §6.1): its session is the context
+// in its working directory; what needs the control side goes to
+// AgentService over kRPC with the session's token.
+// ---------------------------------------------------------------------------
+
+/// The Session context of this process, when it has no agent environment:
+/// `--session-context <path>` (taken out of `argv`), else the nearest
+/// `.opendan/session.json` above the current directory.
+fn remote_context(argv: &mut Vec<String>) -> Option<(PathBuf, crate::session_context::SessionContext)> {
+    let explicit = argv.iter().position(|a| a == "--session-context").map(|i| {
+        let path = argv.get(i + 1).cloned().unwrap_or_default();
+        argv.drain(i..(i + 2).min(argv.len()));
+        PathBuf::from(path)
+    });
+    let local = [
+        "OPENDAN_SESSION_ID",
+        crate::state::ENV_AGENT_ROOT,
+        crate::state::ENV_AGENT_STATE_URL,
+    ]
+    .iter()
+    .any(|v| std::env::var_os(v).is_some_and(|x| !x.is_empty()));
+    if local && explicit.is_none() {
+        return None;
+    }
+    let cwd = std::env::current_dir().ok()?;
+    crate::session_context::discover(explicit.as_deref(), &cwd)
+}
+
+/// File arguments are read where the command runs: `--content-file <p>`
+/// becomes `--content <text>`, `@<file>` values their text, and a `-` value
+/// takes this process's stdin along.
+fn inline_files(argv: Vec<String>) -> R<(Vec<String>, Option<String>)> {
+    let mut out = Vec::with_capacity(argv.len());
+    let mut stdin = None;
+    let mut it = argv.into_iter();
+    while let Some(arg) = it.next() {
+        if arg == "--content-file" {
+            let path = it.next().ok_or_else(|| bad("--content-file needs a path"))?;
+            out.push("--content".to_string());
+            out.push(std::fs::read_to_string(&path).map_err(|e| bad(format!("{path}: {e}")))?);
+        } else if arg == "-" && stdin.is_none() {
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+            stdin = Some(text);
+            out.push(arg);
+        } else if let Some(file) = arg.strip_prefix('@').filter(|f| Path::new(f).is_file()) {
+            out.push(std::fs::read_to_string(file)?);
+        } else {
+            out.push(arg);
+        }
+    }
+    Ok((out, stdin))
+}
+
+async fn remote_main(remote: crate::session_context::SessionClient, cmd: String, argv: Vec<String>) -> R<i32> {
+    let sid = remote.ctx.session_id.clone();
+    if cmd == "task" {
+        use agent_tool::task_bridge::{TaskBridgeRequest, TaskBridgeResponse, TaskOp};
+        let mut a = Args::parse(argv, &[]);
+        let op = match a.next("state | wait | cancel")?.as_str() {
+            "state" => TaskOp::State,
+            "wait" => TaskOp::Wait,
+            "cancel" => TaskOp::Cancel,
+            other => return Err(bad(format!("task takes state | wait | cancel, not `{other}`"))),
+        };
+        let request = TaskBridgeRequest {
+            op,
+            task_id: a.next("<task_id>")?,
+            wait_ms: a.num("wait-ms")?,
+        };
+        let v = remote
+            .call("session.task", json!({ "sid": sid, "request": request }))
+            .await?;
+        let resp: TaskBridgeResponse = serde_json::from_value(v)?;
+        println!("{}", resp.text);
+        return Ok(resp.exit_code());
+    }
+    if cmd == "skill" && argv.first().map(String::as_str) == Some("install") {
+        return Err(bad(
+            "skill install reads the package where the command runs, and this runtime is not the agent's: \
+install it from a session on the agent's own runtime, or with `buckyos skill install`",
+        ));
+    }
+    let (argv, stdin) = inline_files(argv)?;
+    let mut full = vec![cmd];
+    full.extend(argv);
+    let request = crate::session_context::HelperRequest {
+        argv: full,
+        stdin,
+        call_id: env_call_id(),
+    };
+    let v = remote
+        .call("session.helper", json!({ "sid": sid, "request": request }))
+        .await?;
+    let out: crate::session_context::HelperOutput = serde_json::from_value(v)?;
+    print!("{}", out.stdout);
+    eprint!("{}", out.stderr);
+    Ok(out.exit_code)
+}
+
 async fn real_main() -> R<i32> {
     let mut argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.is_empty() || matches!(argv[0].as_str(), "-h" | "--help" | "help") {
@@ -2433,6 +2633,18 @@ async fn real_main() -> R<i32> {
         return Ok(if argv.is_empty() { 2 } else { 0 });
     }
     let cmd = argv.remove(0);
+    if let Some((path, sc)) = remote_context(&mut argv) {
+        // What only reads this machine runs here; the rest is the session's
+        // business on the control side.
+        match (cmd.as_str(), argv.first().map(String::as_str)) {
+            ("ask-user", _) => std::env::set_var("OPENDAN_SESSION_ID", &sc.session_id),
+            ("runtime", Some("baseline")) => {}
+            _ => {
+                let client = crate::session_context::SessionClient { path, ctx: sc };
+                return remote_main(client, cmd, argv).await;
+            }
+        }
+    }
     // `--run` is a flag of `status` and takes a run id for `xllm`;
     // `--accept` is a verdict of `todo review` and a criterion elsewhere.
     let extra: &[&str] = match (cmd.as_str(), argv.first().map(String::as_str)) {
@@ -2440,6 +2652,8 @@ async fn real_main() -> R<i32> {
         ("todo", Some("review")) => &["accept", "reject", "need-evidence", "json"],
         ("todo", _) => &["json"],
         ("skill", _) => &["json", "replace"],
+        ("runtime", Some("baseline")) => &["json", "check", "overlay"],
+        ("copy", _) => &["replace"],
         _ => &[],
     };
     let a = Args::parse(argv, extra);
@@ -2473,6 +2687,7 @@ async fn real_main() -> R<i32> {
         "todo" => cmd_todo(a).await,
         "task" => cmd_task(a).await,
         "skill" => cmd_skill(a).await,
+        "copy" => cmd_copy(a).await,
         other => {
             eprintln!("xagent: unknown command `{other}`\n\n{USAGE}");
             Ok(2)

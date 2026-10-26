@@ -53,7 +53,7 @@ async fn an_unbound_session_keeps_its_own_directory() {
 }
 
 #[tokio::test]
-async fn external_workspace_is_frozen_and_artifacts_use_its_directory() {
+async fn a_workspace_session_works_in_its_own_directory_and_reaches_the_workspace() {
     let env = Env::new();
     let directory = env.root.join("project");
     std::fs::create_dir(&directory).unwrap();
@@ -70,11 +70,13 @@ async fn external_workspace_is_frozen_and_artifacts_use_its_directory() {
         binding.location.directory,
         directory.canonicalize().unwrap()
     );
+    // The default location is the session's working directory (Q4); the
+    // workspace is named by the environment and reached explicitly.
     let llm = ScriptedLlm::new(|_, n| match n {
         0 => tool_call(
             "write",
             "shell",
-            json!({"command":"echo durable > result.txt"}),
+            json!({"command":"echo durable > result.txt && cp result.txt \"$OPENDAN_WORKSPACE_DIR/delivered.txt\" && printf %s \"$OPENDAN_WORKSPACE_ID $OPENDAN_WORKSPACE_RUNTIME\" > ws.txt"}),
         ),
         _ => tool_call(
             "deliver",
@@ -85,11 +87,17 @@ async fn external_workspace_is_frozen_and_artifacts_use_its_directory() {
     let result = drive(&sd, &env.deps(llm), StopWhen::Finished).await;
     assert!(result.is_finished(), "{result:?}");
     assert_eq!(sd.state().unwrap().outcome, Some(Outcome::Succeeded));
+    let bound = sd.binding_opt().unwrap().unwrap();
+    assert_eq!(bound.schema, libopendan::runtime::BINDING_SCHEMA);
+    assert_eq!(bound.workspace, Some(binding.clone()));
+    assert_eq!(bound.workdir, sd.path().canonicalize().unwrap().display().to_string());
+    assert!(sd.path().join("result.txt").is_file());
+    assert!(!directory.join("result.txt").exists());
+    assert_eq!(std::fs::read_to_string(directory.join("delivered.txt")).unwrap(), "durable\n");
     assert_eq!(
-        sd.binding_opt().unwrap().unwrap().workspace,
-        Some(binding.clone())
+        std::fs::read_to_string(sd.path().join("ws.txt")).unwrap(),
+        format!("{} container", reference.workspace_id)
     );
-    assert!(!sd.path().join("result.txt").exists());
     let report = sd.state().unwrap().final_report.unwrap();
     assert_eq!(
         std::fs::read_to_string(sd.path().join(&report.artifacts[0].reference)).unwrap(),
@@ -109,14 +117,14 @@ async fn external_workspace_is_frozen_and_artifacts_use_its_directory() {
 }
 
 #[tokio::test]
-async fn conflicting_workdir_is_rejected_at_creation() {
+async fn an_explicit_workdir_other_than_the_session_directory_does_not_bind() {
     let env = Env::new();
     let directory = env.root.join("project");
     std::fs::create_dir(&directory).unwrap();
     let mut spec = work_spec("wrong cwd");
     spec.workspace = Some(env.workspace(&directory).await);
-    spec.prompt.llm_context["runtime"] = json!({"kind":"native", "workdir":env.root});
-    let error = create_session(
+    spec.prompt.llm_context["runtime"] = json!({"kind":"native", "workdir":directory});
+    let sd = create_session(
         &env.app_dir,
         spec,
         env.agent().as_ref(),
@@ -124,8 +132,11 @@ async fn conflicting_workdir_is_rejected_at_creation() {
         env.channels().as_ref(),
     )
     .await
-    .unwrap_err();
-    assert!(error.to_string().contains("workdir conflicts"), "{error}");
+    .unwrap();
+    let llm = ScriptedLlm::new(|_, _| text("must not run"));
+    let result = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
+    assert!(matches!(result, DriveResult::BindFailed { .. }), "{result:?}");
+    assert_eq!(llm.count(), 0);
 }
 
 #[tokio::test]
@@ -197,9 +208,9 @@ async fn changed_identity_between_calls_prevents_the_next_side_effect() {
         batch(&[
             (
                 "remove-identity",
-                json!({"command":"mv .opendan-workspace.json identity.saved"}),
+                json!({"command":"cd \"$OPENDAN_WORKSPACE_DIR\" && mv .opendan-workspace.json identity.saved"}),
             ),
-            ("must-not-run", json!({"command":"touch forbidden"})),
+            ("must-not-run", json!({"command":"touch \"$OPENDAN_WORKSPACE_DIR/forbidden\""})),
         ])
     });
     let result = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
@@ -234,7 +245,7 @@ async fn concurrent_writers_and_unsettled_background_work_are_refused() {
         0 => tool_call(
             "hold",
             "shell",
-            json!({"command":"touch started; sleep 0.5"}),
+            json!({"command":"touch \"$OPENDAN_WORKSPACE_DIR/started\"; sleep 0.5"}),
         ),
         _ => text("done"),
     });

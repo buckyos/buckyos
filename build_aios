@@ -640,7 +640,10 @@ ENV AIOS_TARGET_ARCH="${TARGET_ARCH}" \
     PIP_CACHE_DIR=/opt/buckyos/instance/pip-cache \
     PATH="/opt/buckyos/tools/bin:/opt/buckyos/bin/opendan:${PATH}"
 
-RUN xagent --help >/dev/null && agent_tool --help >/dev/null
+# The standard environment baseline (libopendan `baseline.rs`): every
+# command it lists must be here; session helpers come from the session bin.
+RUN xagent --help >/dev/null && agent_tool --help >/dev/null && \
+    xagent runtime baseline --check --overlay >/dev/null
 
 EXPOSE 3180
 

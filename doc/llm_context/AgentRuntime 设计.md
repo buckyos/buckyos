@@ -254,9 +254,16 @@ Node 后端要求持久 Run 与真实 tool call ID，当前 PromptExec 请求没
 
 实现：[prompt_engine.rs](../../src/frame/llm_context/src/prompt_engine.rs)、[SandboxPromptExec / RuntimeValueLoader](../../src/frame/agent_tool/src/runtime/mod.rs)、[Session assembler](../../src/frame/lib_opendan/src/runner/assembler.rs)。
 
-### 6.4 libopendan Session 的 runtime 选择与冻结
+### 6.4 libopendan Session 的 session-runtime 与 workspace
 
-Session 创建时在 `api::freeze_runtime` 一处解析 runtime（集成 TODO §3.3）：有 Workspace 则取 Workspace 的 runtime，显式 `--runtime` 必须一致；子 Session 无显式目标时继承父 Session 冻结的 runtime；都没有时取 Agent 登记中 `default` 的 runtime（owner 的 `default_runtime_id`，Desktop owner 默认 `host`）。结果写入 `session_config.runtime.frozen = {runtime_id, kind, exec, revision, selected_by, computer}`，之后 `runtime_for_session` 只按冻结的 `exec` 构造 `remote_node`（不再读登记），工作目录 = 已绑定目录 / Workspace 目录 / 首次驱动时在节点 roots[0] 下创建的 `.opendan/<agent>/sessions/<sid>`。登记不可用或模板声明的 kind 与之矛盾在创建时拒绝，不静默回退 container；同一 Session 不换 runtime。
+agent-runtime 是本层的概念；“session-runtime / workspace”是 libopendan 在它之上的角色（[primary-runtime TODO](../../notepads/opendan-primary-runtime-tools-todo.md) S1–S6）。本层的 runtime 不认识 Session、Workspace 与 cmd_skills。
+
+- **选择**：Session 创建时在 `api::freeze_runtime` 一处解析 session-runtime：显式 `--runtime` > 子 Session 继承父 Session 冻结的 runtime > Agent 登记中 `default` 的 runtime（owner 的 `default_runtime_id`）。Workspace 不参与：它自带 runtime 与目录，与 session-runtime 相同或不同都合法。结果写入 `session_config.runtime.frozen = {runtime_id, kind, exec, revision, selected_by: explicit | inherited | default, computer, baseline, platform}`；`runtime_for_session` 只按冻结的 `exec` 构造 `remote_node`。登记不可用或模板声明的 kind 与之矛盾在创建时拒绝，不静默回退 container；同一 Session 不换 runtime。
+- **工作目录**：默认 cwd 固定为 Session 工作目录——container 是 Session 目录，节点是首次驱动时在 roots[0] 下创建的 `.opendan/<agent>/sessions/<sid>`。选了 Workspace 不改变默认位置；Workspace 的 `runtime_id / directory / same_runtime` 写进 runtime 状态（提示词），本机 runtime 另有 `OPENDAN_WORKSPACE_ID / _RUNTIME / _DIR` 环境变量。`binding.json` 为 `opendan.binding/5`：`workdir` 是 Session 工作目录，`workspace` 另记。
+- **基线**：`RuntimeConfig.baseline` 由 libopendan 按冻结的 `baseline` 设置（声明值，Q5），`RuntimeInfo.baseline` 只读展示，本层不探测。工具清单与检查见 libopendan `baseline.rs`（`xagent runtime baseline`）。
+- **Session 进程**：节点 Executor 不传 `OPENDAN_* / BUCKYOS_* / XLLM_*` 环境；libopendan 在每次绑定时经本层 `RuntimeFiles` 把 `.opendan/session.json` 与 Session 范围 token 写进节点上的 Session 工作目录，helper 据此经 kRPC 找 AgentService。Executor 为每个 exec 设 `EXECUTOR_CALL_ID / EXECUTOR_RUN_ID`（操作自身的身份），`ask-user` 等以此对应自己的调用。
+- **探测命令**：`requirement.tools` 与基线检查经 `Sandbox::exec` 执行，节点要求真实调用身份与持久 run 目录：libopendan 的 `run_probe` 给每次探测一个 `probe-<uuid>` 调用 ID 并绑定 `runtime_ops` 目录。
+- **跨 runtime 复制**：由 libopendan 在控制侧组合两端 `RuntimeFiles`（§6.1）完成，见 [primary-runtime TODO §4](../../notepads/opendan-primary-runtime-tools-todo.md)。
 
 ## 7. 长命令、task 与取消
 

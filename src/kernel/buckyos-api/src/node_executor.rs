@@ -552,6 +552,11 @@ fn is_valid_env_name(name: &str) -> bool {
         && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
+/// Set by the executor for every `exec`: the `call_id` and `run_id` the
+/// operation was submitted under (never taken from `env_overrides`).
+pub const ENV_EXECUTOR_CALL_ID: &str = "EXECUTOR_CALL_ID";
+pub const ENV_EXECUTOR_RUN_ID: &str = "EXECUTOR_RUN_ID";
+
 /// Identity and control-side variables never reach a worker.
 pub fn is_forbidden_env_name(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();

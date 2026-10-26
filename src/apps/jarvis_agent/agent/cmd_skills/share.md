@@ -2,6 +2,7 @@
 name: share
 description: Give someone a file or folder from the Zone as a link — snapshot, optional password and expiry — then list your shares, see views and downloads, change or stop them.
 requires: the buckyos command (agent container: /usr/local/bin/buckyos; host: $BUCKYOS_ROOT/bin/buckyos); the file must be readable by your owner; creating or changing shares requires read_write Agent permission
+baseline: standard
 ---
 #### When to use
 A person needs a file you produced or one the owner keeps, outside this conversation: make a link and hand it over.

@@ -11,6 +11,7 @@ import {
   type KnownWorkspace,
   type RegistryEntry,
   type WorkspaceLocation,
+  type RuntimeBaseline,
 } from '../model'
 import { ErrorBox } from '../ui'
 
@@ -357,7 +358,7 @@ const runtimeAvailability: Record<KnownRuntime['availability'], TextKey> = {
 function RuntimeCard({ runtime, chosen, refresh }: {
   runtime: KnownRuntime
   /** The owner's setting for this runtime on the agent, when there is one. */
-  chosen: { enabled: boolean; computer: ComputerAccess } | null
+  chosen: { enabled: boolean; computer: ComputerAccess; baseline?: RuntimeBaseline | null } | null
   refresh: () => Promise<unknown>
 }) {
   const [busy, setBusy] = useState(false)
@@ -396,7 +397,10 @@ function RuntimeCard({ runtime, chosen, refresh }: {
         {runtime.default && <span className="text-accent" data-testid="runtime-default">{t('runtimeDefault')}</span>}
         {runtime.builtin && <span>{t('runtimeBuiltin')}</span>}
         {!isContainer && <span>{t('runtimeComputer')}: {t(computerLabel[runtime.computer ?? 'none'])}</span>}
-        {capabilities.os && <span className="font-mono">{capabilities.os}{capabilities.identity_mode ? ` · ${capabilities.identity_mode}` : ''}</span>}
+        <span data-testid="runtime-baseline">{t(runtime.baseline === 'extended' ? 'runtimeBaselineExtended' : 'runtimeBaselineStandard')}</span>
+        {runtime.platform?.os
+          ? <span className="font-mono">{runtime.platform.os}{runtime.platform.shell ? ` · ${runtime.platform.shell}` : ''}{capabilities.identity_mode ? ` · ${capabilities.identity_mode}` : ''}</span>
+          : capabilities.os && <span className="font-mono">{capabilities.os}{capabilities.identity_mode ? ` · ${capabilities.identity_mode}` : ''}</span>}
         {capabilities.desktop?.ui && <span className={clsx(capabilities.desktop.ui.ready ? 'text-ok' : 'text-warn')}>
           desktop: {capabilities.desktop.ui.state ?? (capabilities.desktop.ui.ready ? 'ready' : 'not ready')}
         </span>}
@@ -407,6 +411,12 @@ function RuntimeCard({ runtime, chosen, refresh }: {
       </dl>}
       {runtime.last_error && runtime.availability !== 'available' &&
         <p className="mt-2 break-words text-xs text-warn">{runtime.last_error}</p>}
+      {runtime.baseline_check && !runtime.baseline_check.ok &&
+        <p className="mt-2 break-words text-xs text-warn" data-testid="runtime-tool-check">
+          {runtime.baseline_check.error
+            ? t('runtimeToolCheckFailed', { error: runtime.baseline_check.error })
+            : t('runtimeToolsMissing', { tools: runtime.baseline_check.missing.join(', ') })}
+        </p>}
       <ErrorBox error={error} />
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <button className="tap border border-line text-xs" disabled={busy} onClick={() => void run(() => dataModel.checkRuntime(runtime.runtime_id))}>{t('runtimeCheck')}</button>
@@ -418,6 +428,14 @@ function RuntimeCard({ runtime, chosen, refresh }: {
           onClick={() => void run(() => dataModel.setRuntimeSetting({ runtime_id: runtime.runtime_id, default: true }))}>
           {t('runtimeMakeDefault')}
         </button>}
+        {chosen && <label className="text-xs text-mute">
+          {t('runtimeBaseline')}
+          <select className="ml-1 rounded-lg border border-line bg-bg px-2 py-1 text-xs text-fg" value={chosen.baseline ?? 'standard'} disabled={busy}
+            data-testid="runtime-baseline-select"
+            onChange={(event) => void run(() => dataModel.setRuntimeSetting({ runtime_id: runtime.runtime_id, baseline: event.target.value as RuntimeBaseline }))}>
+            {(['standard', 'extended'] as RuntimeBaseline[]).map((value) => <option key={value} value={value}>{t(value === 'extended' ? 'runtimeBaselineExtended' : 'runtimeBaselineStandard')}</option>)}
+          </select>
+        </label>}
         {chosen && <label className="text-xs text-mute">
           {t('runtimeComputer')}
           <select className="ml-1 rounded-lg border border-line bg-bg px-2 py-1 text-xs text-fg" value={chosen.computer} disabled={busy}

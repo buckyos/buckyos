@@ -2385,3 +2385,103 @@ async fn a_notification_shown_in_a_conversation_is_observed() {
     assert_eq!(w.mail.sent()[0].1.content.content, "noted");
     loader.shutdown().await;
 }
+
+/// Q1 (primary-runtime TODO §6.1): a Session process on a machine without
+/// the agent's environment — no `OPENDAN_*` variable, no AgentRoot — finds
+/// its session in `.opendan/session.json` and reaches AgentService over
+/// kRPC with the session's token; what needs the control side runs there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_session_process_elsewhere_reaches_its_session_through_the_service() {
+    use libopendan::session_context::{SessionContext, TokenKey, CONTEXT_DIR, CONTEXT_FILE, TOKEN_FILE};
+    let w = World::new();
+    let port = free_port();
+    let bin = w.root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    for name in ["xagent", "agent-session"] {
+        std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_opendan"), bin.join(name)).unwrap();
+    }
+    let mut env = w.env(Llm::new(|_, _| "done".into()), port).await;
+    env.session_cli = Some(bin.join("xagent"));
+    let loader = Loader::start(env).await.unwrap();
+    until("service answers", || std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()).await;
+    let mut spec = work_spec("work driven elsewhere", "go");
+    spec.driver = Some("app:other@alice".into());
+    let sd = create_session(&w.root.join("sessions"), spec, loader.agent.as_ref(), WHO, w.channels().as_ref())
+        .await
+        .unwrap();
+
+    // The session's working directory on "another machine".
+    let workdir = w.root.join("node").join("sessions").join(sd.sid());
+    let deep = workdir.join("build").join("out");
+    std::fs::create_dir_all(&deep).unwrap();
+    std::fs::create_dir_all(workdir.join(CONTEXT_DIR)).unwrap();
+    let key = TokenKey::load_or_create(&w.root).unwrap();
+    let write_context = |token: &str| {
+        let ctx = SessionContext {
+            agent_did: AGENT.into(),
+            agent_id: loader.agent.agent_id().into(),
+            session_id: sd.sid().into(),
+            trace_id: sd.sid().into(),
+            runtime_id: "lab".into(),
+            workdir: workdir.display().to_string(),
+            state_url: format!("http://127.0.0.1:{port}{SERVICE_PATH}"),
+            token_file: TOKEN_FILE.into(),
+            expires_at_ms: libopendan::session_context::token_expiry(token).unwrap_or(0),
+            workspace: None,
+        };
+        std::fs::write(workdir.join(CONTEXT_DIR).join(CONTEXT_FILE), serde_json::to_vec(&ctx).unwrap()).unwrap();
+        std::fs::write(workdir.join(CONTEXT_DIR).join(TOKEN_FILE), token).unwrap();
+    };
+    let helper = |args: &[&str], stdin: Option<&str>| {
+        use std::io::Write;
+        let mut cmd = std::process::Command::new(bin.join("agent-session"));
+        cmd.args(args).current_dir(&deep).env_clear().env("PATH", "/usr/bin:/bin")
+            .env(buckyos_api::ENV_EXECUTOR_CALL_ID, "call-7")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = cmd.spawn().unwrap();
+        child.stdin.take().unwrap().write_all(stdin.unwrap_or_default().as_bytes()).unwrap();
+        child.wait_with_output().unwrap()
+    };
+    let soon = libopendan::now_ms() + 30 * 60 * 1000;
+    write_context(&key.sign(loader.agent.agent_id(), sd.sid(), soon));
+
+    let out = helper(&["sessions"], None);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains(sd.sid()));
+    let out = helper(&["todo", "add", "from the node", "--content", "-"], Some("the Todo's text"));
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let list = libopendan::todos::store_of(&sd).load().unwrap().render_view();
+    assert!(list.contains("from the node"), "{list}");
+    // The token was close to its end: it was renewed on the way.
+    let renewed = std::fs::read_to_string(workdir.join(CONTEXT_DIR).join(TOKEN_FILE)).unwrap();
+    assert!(libopendan::session_context::token_expiry(&renewed).unwrap() > soon);
+
+    // Tasks of a run that is not in progress here; ask-user answers for the
+    // call it belongs to without asking the service.
+    let out = helper(&["task", "state", "t-1"], None);
+    assert_eq!(out.status.code(), Some(2), "{}", String::from_utf8_lossy(&out.stdout));
+    let out = helper(&["ask-user", "Which database?"], None);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let asked: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(asked["task_id"], "userinput:call-7");
+
+    // A token of another agent's key, an expired one: refused.
+    let stranger = TokenKey::load_or_create(&w.root.join("elsewhere")).unwrap();
+    write_context(&stranger.sign(loader.agent.agent_id(), sd.sid(), soon * 2));
+    let out = helper(&["sessions"], None);
+    assert_eq!(out.status.code(), Some(6), "{}", String::from_utf8_lossy(&out.stderr));
+    write_context(&key.sign(loader.agent.agent_id(), sd.sid(), libopendan::now_ms() - 1));
+    let out = helper(&["sessions"], None);
+    assert_eq!(out.status.code(), Some(6));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("expired"));
+    // A session token is for the session's methods only.
+    let token = key.sign(loader.agent.agent_id(), sd.sid(), soon * 2);
+    let err = KrpcTransport::new(&format!("http://127.0.0.1:{port}{SERVICE_PATH}"), Some(token))
+        .call("sessions.post_input", json!({"sid": sd.sid()}))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("cannot call"), "{err}");
+    loader.shutdown().await;
+}

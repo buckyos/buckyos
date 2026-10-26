@@ -5,11 +5,11 @@
   "epoch": 1,
   "goal_revision_seen": 0,
   "usage": {
-    "period_start_ms": 1792819162695,
+    "period_start_ms": 1792976022160,
     "tokens": 0,
     "activations": 0,
     "works": 0,
     "work_tokens": 0
   },
-  "updated_at_ms": 1792819162695
+  "updated_at_ms": 1792976022160
 }

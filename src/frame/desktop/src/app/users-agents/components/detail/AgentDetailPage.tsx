@@ -257,7 +257,7 @@ export function AgentDetailPage({ agent, onRemoved }: { agent: AgentEntity; onRe
               ? agent.settings.default_runtime_id : t('usersAgents.agent.runtimeContainer')],
             ...Object.entries(agent.settings?.runtimes ?? {}).map(([id, runtime]) => [
               t('usersAgents.agent.runtimeEntry', undefined, { id }),
-              `${runtime.enabled ? t('agentSetup.yes') : t('agentSetup.no')} · ${t(`agentSetup.confirm.computer.${runtime.computer}`)} · ${runtime.target.kind === 'node' ? runtime.target.node_id : runtime.target.executor_id}`,
+              `${runtime.enabled ? t('agentSetup.yes') : t('agentSetup.no')} · ${t(`agentSetup.confirm.computer.${runtime.computer}`)} · ${t(runtime.baseline === 'extended' ? 'usersAgents.agent.baselineExtended' : 'usersAgents.agent.baselineStandard')} · ${runtime.target.kind === 'node' ? runtime.target.node_id : runtime.target.executor_id}`,
             ] as [string, string]),
           ]}
         />

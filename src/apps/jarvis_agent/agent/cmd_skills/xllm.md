@@ -2,6 +2,7 @@
 name: xllm
 description: One-shot model calls from the shell with `agent_tool xllm` — analysis, rewriting, translation and JSON/schema extraction over text, files or piped output, plus small tool-assisted jobs in a scratch directory, with run records you can inspect, re-export and resume.
 requires: `agent_tool` on PATH and the session shell's own token (BUCKYOS_APPCLIENT_SESSION_TOKEN, BUCKYOS_APP_ID); models come from the Zone's AICC routes
+baseline: standard
 ---
 #### When to use
 - One-off work on material you already have: classify, summarize, compare, rewrite, translate, pull fields
@@ -16,7 +17,8 @@ requires: `agent_tool` on PATH and the session shell's own token (BUCKYOS_APPCLI
 #### Before you start
 - `xllm` is not on PATH; call it as `agent_tool xllm …`.
 - In a session shell it logs in to AICC with the agent's token from the environment (refreshed per shell call,
-  ~15 min life). Without it (a bare `docker exec`) you get exit 2 `cannot initialize BuckyOS runtime …`.
+  ~15 min life); on a node session-runtime the `agent_tool` entry asks your agent for that token over the session's
+  `.opendan/` token. Without either (a bare `docker exec`) you get exit 2 `cannot initialize BuckyOS runtime …`.
 - Check: `agent_tool xllm --run-logs warn "Reply with: ok"` prints `ok`, exit 0.
 - A directory per task keeps runs and files apart:
   `mkdir -p xllm/<task> && cd xllm/<task> && printf 'runs_dir: ./runs\n' > .llm_context`.

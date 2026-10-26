@@ -1033,6 +1033,7 @@ async fn setup_current_user() -> Env {
     }, node_executor::ExecutorOptions {
         identity_mode: node_executor::ExecutorIdentityMode::CurrentUser,
         admission: node_executor::ExecutorAdmission::Wss,
+        path_prefix: Vec::new(),
     }).unwrap();
     let mut authorization = config(&work, 1, AgentPermissionMode::ReadWrite, 30_000);
     authorization.allowed_devices.clear();

@@ -875,13 +875,28 @@
             }
           ],
           "default": {}
+        },
+        "unavailable_cmd_skills": {
+          "description": "cmd_skills named for the session that its session-runtime does not meet (baseline, platform): not frozen, reported with the reason.",
+          "items": {
+            "$ref": "#/definitions/UnavailableCmdSkill"
+          },
+          "type": "array"
         }
       },
       "type": "object"
     },
     "FrozenRuntime": {
-      "description": "The runtime a session was frozen to at creation: the registration it resolved to and how that runtime is reached, so a restart or a changed default never moves the session to another target.",
+      "description": "The session-runtime a session was frozen to at creation: the registration it resolved to and how that runtime is reached, so a restart or a changed default never moves the session to another target.",
       "properties": {
+        "baseline": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/RuntimeBaseline"
+            }
+          ],
+          "description": "The registration's declared baseline: which cmd_skills the session takes."
+        },
         "computer": {
           "allOf": [
             {
@@ -897,6 +912,19 @@
         "kind": {
           "$ref": "#/definitions/RuntimeKind"
         },
+        "platform": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/RuntimePlatform"
+            }
+          ],
+          "default": {
+            "arch": "",
+            "os": "",
+            "shell": ""
+          },
+          "description": "What is known of its platform at selection (empty fields: not yet learned from the runtime)."
+        },
         "revision": {
           "description": "`RuntimeRecord.revision` the selection was read from.",
           "format": "uint64",
@@ -911,6 +939,7 @@
         }
       },
       "required": [
+        "baseline",
         "kind",
         "revision",
         "runtime_id",
@@ -1561,6 +1590,14 @@
         }
       ]
     },
+    "RuntimeBaseline": {
+      "description": "Declared environment baseline of an execution runtime: `standard` has the core Agent tools and BuckyOS access, `extended` adds build tool chains and heavy tools. Declared by whoever registers the runtime, never probed.",
+      "enum": [
+        "standard",
+        "extended"
+      ],
+      "type": "string"
+    },
     "RuntimeKind": {
       "oneOf": [
         {
@@ -1585,6 +1622,24 @@
           "type": "string"
         }
       ]
+    },
+    "RuntimePlatform": {
+      "description": "The platform of a runtime: `os` is `linux | macos | windows`, `shell` the program name commands are written for (`bash`, `pwsh`, …).",
+      "properties": {
+        "arch": {
+          "default": "",
+          "type": "string"
+        },
+        "os": {
+          "default": "",
+          "type": "string"
+        },
+        "shell": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "type": "object"
     },
     "RuntimeRequirement": {
       "properties": {
@@ -1648,19 +1703,12 @@
       "type": "object"
     },
     "RuntimeSelection": {
-      "description": "How a session's runtime was chosen (integration TODO §3.3).",
+      "description": "How a session's session-runtime was chosen (primary-runtime TODO §3): the workspace never chooses it.",
       "oneOf": [
         {
           "description": "Named by the creator (`--runtime`, a Todo's runtime).",
           "enum": [
             "explicit"
-          ],
-          "type": "string"
-        },
-        {
-          "description": "The runtime of the selected workspace.",
-          "enum": [
-            "workspace"
           ],
           "type": "string"
         },
@@ -2104,6 +2152,22 @@
       "required": [
         "kind",
         "ref"
+      ],
+      "type": "object"
+    },
+    "UnavailableCmdSkill": {
+      "description": "A cmd_skill a session did not take, and why.",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "reason"
       ],
       "type": "object"
     },

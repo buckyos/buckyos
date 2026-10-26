@@ -13,11 +13,11 @@
         "applied_input_seq": 1,
         "host_commit_pending": null,
         "inflight": [],
-        "run_id": "20261023-221921-0c2bd3",
+        "run_id": "20261025-175340-9d0d5d",
         "run_status": "completed"
       },
       "runs_on_disk": [
-        "20261023-221921-0c2bd3"
+        "20261025-175340-9d0d5d"
       ],
       "session_id": "work-fixture-tail",
       "state": {
@@ -35,7 +35,7 @@
       "worklog": {
         "committed_bytes": 131,
         "committed_seq": 1,
-        "file_bytes": 1588,
+        "file_bytes": 1661,
         "uncommitted_tail": true
       }
     }

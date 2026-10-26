@@ -19,6 +19,7 @@
 //! - [`xagent_cli`]: the `xagent` command line.
 
 pub mod api;
+pub mod baseline;
 pub mod bridge;
 pub mod channel;
 pub mod error;
@@ -34,11 +35,13 @@ pub mod protocol;
 pub mod runner;
 pub mod runtime;
 pub mod session;
+pub mod session_context;
 pub mod share;
 pub mod skills;
 pub mod state;
 pub mod template;
 pub mod todos;
+pub mod transfer;
 pub mod xagent_cli;
 
 pub use api::{

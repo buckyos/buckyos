@@ -530,6 +530,35 @@ pub struct AgentRuntimeSettings {
     #[serde(default)]
     pub computer: crate::ComputerAccess,
     pub target: AgentRuntimeTarget,
+    /// The environment the owner declares this runtime to provide (`None`:
+    /// standard). Decides which cmd_skills a session on it gets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<RuntimeBaseline>,
+}
+
+/// Declared environment baseline of an execution runtime: `standard` has
+/// the core Agent tools and BuckyOS access, `extended` adds build tool
+/// chains and heavy tools. Declared by whoever registers the runtime, never
+/// probed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeBaseline {
+    Standard,
+    Extended,
+}
+
+impl RuntimeBaseline {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RuntimeBaseline::Standard => "standard",
+            RuntimeBaseline::Extended => "extended",
+        }
+    }
+
+    /// Whether an environment of this baseline meets `required`.
+    pub fn meets(self, required: RuntimeBaseline) -> bool {
+        self == RuntimeBaseline::Extended || required == RuntimeBaseline::Standard
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

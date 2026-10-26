@@ -1,6 +1,39 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
+    "BaselineCheck": {
+      "description": "The last check of a runtime's standard tools ([`crate::baseline`]): only a hint, the declaration decides (Q5).",
+      "properties": {
+        "checked_at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "error": {
+          "description": "Why the check could not run (the runtime was not reachable).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "missing": {
+          "default": [],
+          "description": "Standard commands not found on the runtime's PATH.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "checked_at_ms",
+        "ok"
+      ],
+      "type": "object"
+    },
     "ComputerAccess": {
       "description": "ComputerUse capability of an Agent on a runtime: `none` grants no Computer operation, `observe` grants inspect/observe, `control` adds act.",
       "enum": [
@@ -15,6 +48,14 @@
         "available",
         "runtime_unavailable",
         "permission_denied"
+      ],
+      "type": "string"
+    },
+    "RuntimeBaseline": {
+      "description": "Declared environment baseline of an execution runtime: `standard` has the core Agent tools and BuckyOS access, `extended` adds build tool chains and heavy tools. Declared by whoever registers the runtime, never probed.",
+      "enum": [
+        "standard",
+        "extended"
       ],
       "type": "string"
     },
@@ -42,11 +83,49 @@
           "type": "string"
         }
       ]
+    },
+    "RuntimePlatform": {
+      "description": "The platform of a runtime: `os` is `linux | macos | windows`, `shell` the program name commands are written for (`bash`, `pwsh`, …).",
+      "properties": {
+        "arch": {
+          "default": "",
+          "type": "string"
+        },
+        "os": {
+          "default": "",
+          "type": "string"
+        },
+        "shell": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "type": "object"
     }
   },
   "properties": {
     "availability": {
       "$ref": "#/definitions/RuntimeAvailability"
+    },
+    "baseline": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/RuntimeBaseline"
+        }
+      ],
+      "description": "The environment its registrar declares (Q5): decides the sessions' cmd_skills and what their prompts say."
+    },
+    "baseline_check": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/BaselineCheck"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The last check of its standard tools; a hint that never changes `baseline`."
     },
     "builtin": {
       "default": false,
@@ -77,7 +156,7 @@
     },
     "default": {
       "default": false,
-      "description": "The runtime new sessions without a workspace run in (the owner's `default_runtime_id`); exactly one record carries it.",
+      "description": "The session-runtime new sessions take unless one is named or inherited (the owner's `default_runtime_id`); exactly one record carries it.",
       "type": "boolean"
     },
     "description": {
@@ -100,6 +179,19 @@
     },
     "name": {
       "type": "string"
+    },
+    "platform": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/RuntimePlatform"
+        }
+      ],
+      "default": {
+        "arch": "",
+        "os": "",
+        "shell": ""
+      },
+      "description": "Learned from the runtime when it is checked."
     },
     "registered_at_ms": {
       "format": "uint64",
@@ -142,6 +234,7 @@
   },
   "required": [
     "availability",
+    "baseline",
     "kind",
     "name",
     "registered_at_ms",

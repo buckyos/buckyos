@@ -2,6 +2,7 @@
 name: buckyos_admin
 description: Inspect and manage a BuckyOS Zone — identify runtime, identity and versions, read or change settings and apps, check tasks, query logs and diagnostic bundles, and trace a fault into the source of the running version.
 requires: the buckyos command (agent container: /usr/local/bin/buckyos with the host Tool mounted at /opt/buckyos/libexec/buckyos-tool; host: $BUCKYOS_ROOT/bin/buckyos); writes depend on the agent's and its owner's RBAC
+baseline: standard
 ---
 #### When to use
 The Zone itself: what runs, which version, is it healthy, change a setting, start/stop an app, why something fails,
@@ -19,7 +20,15 @@ buckyos system info                                 # BuckyOS version, build_ver
 - In the container the Tool scripts are the host's files mounted read-only (same version as the system), the endpoint
   is `BUCKYOS_TOOL_ENDPOINT` (host NodeGateway `http://host.docker.internal:3180`), the identity is
   `BUCKYOS_APPCLIENT_SESSION_TOKEN`: the agent app, `principal` = your owner, `appid` = your agent id.
-  On a host, `buckyos` uses the device identity on `127.0.0.1:3180` and asks for `--yes`.
+  On a host, `buckyos` uses the device identity on `127.0.0.1:3180` and asks for `--yes`. In a session on a node
+  runtime, `buckyos` is the node's `$BUCKYOS_ROOT/bin/agent-tools/buckyos` entry: it runs the host's launcher with
+  your agent's identity (asked of your agent over the session token in `.opendan/`), so `whoami` shows your agent.
+- Runtimes of an Agent: `agent-session runtime list` shows each one's declared `baseline` (standard | extended),
+  `platform` and its last tool check (`baseline_check.missing`); `agent-session runtime baseline` lists the standard
+  commands and `xagent runtime baseline --check [--overlay]` checks this machine. A node's agent tool directory is
+  `$BUCKYOS_ROOT/bin/agent-tools` (laid out by node-daemon with `opendan install-agent-tools`); missing entries mean
+  that node's install lacks OpenDAN. The owner declares a runtime extended in the Agent's runtime settings
+  (OpenDAN WebUI or control-panel `agent.update {runtimes: {"<id>": {"baseline": "extended"}}}`).
 - Container paths are not host paths. Your `/opt/buckyos/logs` is the host's `$BUCKYOS_ROOT/logs/apps/<instance-hash>/`;
   `/opt/buckyos/etc/` is the host's configuration directory mounted read-only. Host `security/`, `bin/`, other
   containers and processes are not visible to you. Startup credentials are in the host's `security/start_config.json`;

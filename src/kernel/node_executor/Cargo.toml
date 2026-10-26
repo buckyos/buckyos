@@ -23,3 +23,4 @@ agent_tool = { path = "../../frame/agent_tool" }
 kRPC = { workspace = true }
 name-lib = { workspace = true }
 llm_context = { path = "../../frame/llm_context" }
+libopendan = { path = "../../frame/lib_opendan" }

@@ -108,9 +108,9 @@ fn validate_artifact_path(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn remote_artifact_path(sh: &Shared, cfg: &SessionConfig, name: &str) -> Result<String> {
+fn remote_artifact_path(sh: &Shared, name: &str) -> Result<String> {
     validate_artifact_path(name)?;
-    let workdir = crate::runtime::target_workdir(&sh.dir, cfg)?
+    let workdir = crate::runtime::target_workdir(&sh.dir)?
         .ok_or_else(|| invalid("the session has no working directory on its runtime yet"))?;
     Ok(crate::runtime::target_join(&workdir, &[name]))
 }
@@ -175,10 +175,10 @@ pub(super) async fn validate(sh: &Shared, run: &RunHandle, args: &ReportArgs) ->
         }
         let cfg = sh.session.lock().await.config.clone();
         if cfg.runtime.is_node() {
-            remote_artifact_path(sh, &cfg, path)?;
+            remote_artifact_path(sh, path)?;
             continue;
         }
-        let workdir = crate::runtime::resolve_workdir(&sh.dir, &cfg, sh.agent_root.as_deref())?;
+        let workdir = crate::runtime::resolve_workdir(&sh.dir)?;
         artifact_bytes(&workdir, path)?;
     }
     if !args.is_end {
@@ -297,7 +297,7 @@ pub(super) async fn store_artifacts(
     paths: &[String],
 ) -> Result<Vec<ReportArtifact>> {
     let cfg = sh.session.lock().await.config.clone();
-    let workdir = crate::runtime::resolve_workdir(&sh.dir, &cfg, sh.agent_root.as_deref())?;
+    let workdir = crate::runtime::resolve_workdir(&sh.dir)?;
     let mut artifacts = Vec::new();
     for (index, path) in paths.iter().enumerate() {
         if let Some(obj_id) = artifact_obj_id(path) {
@@ -310,12 +310,12 @@ pub(super) async fn store_artifacts(
             continue;
         }
         let (digest, staging) = if cfg.runtime.is_node() {
-            let remote_path = remote_artifact_path(sh, &cfg, path)?;
+            let remote_path = remote_artifact_path(sh, path)?;
             let target = remote_artifact_target(sh, &cfg).await?;
             let parent = sh.dir.state_dir().join("reports").join(id);
             std::fs::create_dir_all(&parent).map_err(|e| OpenDanError::io(&parent, e))?;
             let staging = parent.join(format!(".{index}.download"));
-            let root = crate::runtime::target_workdir(&sh.dir, &cfg)?
+            let root = crate::runtime::target_workdir(&sh.dir)?
                 .ok_or_else(|| invalid("missing artifact working directory"))?;
             let downloaded = target.download_file(&root, &remote_path, &staging).await;
             match downloaded {
@@ -373,7 +373,7 @@ impl llm_context::OutputValidator for ReplyValidator {
         if let Some(list) = reply.get("artifacts").and_then(Value::as_array) {
             let cfg = self.sh.session.lock().await.config.clone();
             let workdir =
-                crate::runtime::resolve_workdir(&self.sh.dir, &cfg, self.sh.agent_root.as_deref())
+                crate::runtime::resolve_workdir(&self.sh.dir)
                     .map_err(|e| e.to_string())?;
             let mut seen = std::collections::HashSet::new();
             for a in list {
@@ -385,7 +385,7 @@ impl llm_context::OutputValidator for ReplyValidator {
                 }
                 if artifact_obj_id(path).is_none() {
                     if cfg.runtime.is_node() {
-                        remote_artifact_path(&self.sh, &cfg, path).map_err(|e| e.to_string())?;
+                        remote_artifact_path(&self.sh, path).map_err(|e| e.to_string())?;
                         continue;
                     }
                     artifact_bytes(Path::new(&workdir), path).map_err(|e| {

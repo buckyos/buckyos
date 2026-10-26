@@ -224,7 +224,7 @@ impl SkillKind {
 
 /// A skill as `skill list` shows it: the front matter of its manual and
 /// where it came from.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SkillMeta {
     pub kind: SkillKind,
     pub name: String,
@@ -243,6 +243,84 @@ pub struct SkillMeta {
     /// Commands it brings (`tools/<name>/bin`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<String>,
+    /// The environment it works in (front matter `baseline`): a session
+    /// whose session-runtime declares less does not take it.
+    #[serde(default = "standard_baseline")]
+    pub baseline: buckyos_api::RuntimeBaseline,
+    /// Platforms it works on (front matter `platforms`, comma separated:
+    /// `linux`, `macos`, `windows`); empty: all.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub platforms: Vec<String>,
+}
+
+fn standard_baseline() -> buckyos_api::RuntimeBaseline {
+    buckyos_api::RuntimeBaseline::Standard
+}
+
+impl Default for SkillMeta {
+    fn default() -> Self {
+        Self {
+            kind: SkillKind::Cmd,
+            name: String::new(),
+            description: String::new(),
+            requires: String::new(),
+            origin: String::new(),
+            install: None,
+            tools: Vec::new(),
+            baseline: standard_baseline(),
+            platforms: Vec::new(),
+        }
+    }
+}
+
+/// Platform names a skill may require.
+pub const SKILL_PLATFORMS: &[&str] = &["linux", "macos", "windows"];
+
+impl SkillMeta {
+    /// Why this skill does not work on a runtime of `baseline` and
+    /// `platform` (`None`: it does). `platform` empty: unknown, not checked.
+    pub fn unmet_on(&self, baseline: buckyos_api::RuntimeBaseline, platform: &str) -> Option<String> {
+        if !baseline.meets(self.baseline) {
+            return Some(format!(
+                "needs an {} environment; the session-runtime is {}",
+                self.baseline.as_str(),
+                baseline.as_str()
+            ));
+        }
+        if !platform.is_empty() && !self.platforms.is_empty() && !self.platforms.iter().any(|p| p == platform) {
+            return Some(format!(
+                "runs on {}; the session-runtime is {platform}",
+                self.platforms.join(", ")
+            ));
+        }
+        None
+    }
+}
+
+/// The `baseline` and `platforms` of a skill's front matter; an error names
+/// the value that is not one of the fixed words.
+pub fn skill_requirements(
+    fields: &BTreeMap<String, String>,
+) -> std::result::Result<(buckyos_api::RuntimeBaseline, Vec<String>), String> {
+    let baseline = match fields.get("baseline").map(|s| s.trim()) {
+        None | Some("") | Some("standard") => buckyos_api::RuntimeBaseline::Standard,
+        Some("extended") => buckyos_api::RuntimeBaseline::Extended,
+        Some(other) => return Err(format!("baseline `{other}` is not standard | extended")),
+    };
+    let mut platforms = Vec::new();
+    for p in fields.get("platforms").map(String::as_str).unwrap_or_default().split(',') {
+        let p = p.trim();
+        if p.is_empty() {
+            continue;
+        }
+        if !SKILL_PLATFORMS.contains(&p) {
+            return Err(format!("platform `{p}` is not one of {}", SKILL_PLATFORMS.join(", ")));
+        }
+        if !platforms.iter().any(|x| x == p) {
+            platforms.push(p.to_string());
+        }
+    }
+    Ok((baseline, platforms))
 }
 
 /// Where an installed skill came from (`.meta/skills.json`).
@@ -297,11 +375,19 @@ pub fn split_front_matter(text: &str) -> (BTreeMap<String, String>, &str) {
 /// The metadata of the manual `text` of skill `name`.
 pub fn skill_meta(kind: SkillKind, name: &str, text: &str) -> SkillMeta {
     let (fields, _) = split_front_matter(text);
+    // A value that is not one of the fixed words never widens where the
+    // skill applies: it counts as extended (installation refuses it).
+    let (baseline, platforms) = skill_requirements(&fields).unwrap_or_else(|e| {
+        log::warn!("skill {name}: {e}; taken as baseline extended");
+        (buckyos_api::RuntimeBaseline::Extended, Vec::new())
+    });
     SkillMeta {
         kind,
         name: name.to_string(),
         description: fields.get("description").cloned().unwrap_or_default(),
         requires: fields.get("requires").cloned().unwrap_or_default(),
+        baseline,
+        platforms,
         ..Default::default()
     }
 }
@@ -565,6 +651,17 @@ pub struct FrozenPrompt {
     /// frozen once.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cmd_skills: Vec<CmdSkill>,
+    /// cmd_skills named for the session that its session-runtime does not
+    /// meet (baseline, platform): not frozen, reported with the reason.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unavailable_cmd_skills: Vec<UnavailableCmdSkill>,
+}
+
+/// A cmd_skill a session did not take, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct UnavailableCmdSkill {
+    pub name: String,
+    pub reason: String,
 }
 
 impl SessionConfig {

@@ -11,8 +11,8 @@ use std::collections::BTreeMap;
 use ::kRPC::RPCErrors;
 use buckyos_api::{
     is_valid_runtime_id, node_settings_key, AgentRuntimeSettings, AgentRuntimeTarget,
-    AgentSettings, ComputerAccess, NodeSettings, CONTAINER_RUNTIME_ID, HOST_RUNTIME_ID,
-    ZONE_OWNER_USER_ID_KEY,
+    AgentSettings, ComputerAccess, NodeSettings, RuntimeBaseline, CONTAINER_RUNTIME_ID,
+    HOST_RUNTIME_ID, ZONE_OWNER_USER_ID_KEY,
 };
 use name_lib::DeviceInfo;
 use serde::Serialize;
@@ -118,6 +118,7 @@ pub(crate) async fn apply_create_defaults(kv: &dyn AgentKv, owner: &str, setting
                 node_id: host.node_id.clone(),
                 node_did: host.node_did.clone(),
             },
+            baseline: None,
         },
     );
     settings.default_runtime_id = Some(HOST_RUNTIME_ID.to_string());
@@ -167,6 +168,13 @@ pub(crate) async fn apply_update(
                 Some(_) => return Err(RPCErrors::ParseRequestError(format!("runtime `{id}` enabled must be a boolean"))),
             };
             let computer = parse_computer(change.get("computer"))?;
+            let baseline = match change.get("baseline") {
+                None => None,
+                Some(Value::Null) => Some(None),
+                Some(v) => Some(Some(serde_json::from_value::<RuntimeBaseline>(v.clone()).map_err(|_| {
+                    RPCErrors::ParseRequestError(format!("runtime `{id}` baseline takes standard | extended | null"))
+                })?)),
+            };
             let offer = offers.iter().find(|o| &o.runtime_id == id);
             let entry = match settings.runtimes.get(id).cloned() {
                 Some(current) => current,
@@ -181,6 +189,7 @@ pub(crate) async fn apply_update(
                             node_id: offer.node_id.clone(),
                             node_did: offer.node_did.clone(),
                         },
+                        baseline: None,
                     }
                 }
             };
@@ -204,6 +213,9 @@ pub(crate) async fn apply_update(
                     }
                 }
                 next.computer = computer;
+            }
+            if let Some(baseline) = baseline {
+                next.baseline = baseline;
             }
             if next != entry {
                 settings.runtimes.insert(id.clone(), next);
@@ -247,6 +259,7 @@ pub(crate) fn directory_view(offers: &[NodeRuntimeOffer], settings: Option<&Agen
                 "closed": o.closed,
                 "enabled": chosen.is_some_and(|c| c.enabled),
                 "computer": chosen.map(|c| c.computer).unwrap_or_default(),
+                "baseline": chosen.and_then(|c| c.baseline).unwrap_or(RuntimeBaseline::Standard),
             })
         })
         .collect();
@@ -264,6 +277,7 @@ pub(crate) fn directory_view(offers: &[NodeRuntimeOffer], settings: Option<&Agen
             let mut entry = json!({
                 "runtime_id": id, "kind": kind, "closed": true, "withdrawn": true,
                 "enabled": r.enabled, "computer": r.computer, "computer_max": ComputerAccess::None,
+                "baseline": r.baseline.unwrap_or(RuntimeBaseline::Standard),
             });
             if let Some(t) = target.as_object() {
                 entry.as_object_mut().unwrap().extend(t.clone());

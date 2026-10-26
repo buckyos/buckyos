@@ -98,6 +98,8 @@ pub struct SessionEnvCtx {
     /// The session's frozen cmd_skills: their commands
     /// (`<agent_root>/tools/<name>/bin`) come first on PATH.
     pub cmd_skills: Vec<String>,
+    /// The session's workspace: where it is, beside the working directory.
+    pub workspace: Option<WorkspaceBinding>,
 }
 
 /// `<agent_root>/tools/<name>/bin` of each cmd_skill that brings commands.
@@ -283,96 +285,34 @@ pub(crate) async fn workspace_waiting_children(
     Ok(children)
 }
 
-/// The control-side working directory of a session: its bound workspace
-/// in the agent's own environment, else the session directory. A session
-/// on a node runtime works there (see [`target_workdir`]); its control
-/// side (helpers, report staging) is the session directory.
-pub fn resolve_workdir(
-    sd: &SessionDir,
-    cfg: &SessionConfig,
-    _agent_root: Option<&Path>,
-) -> Result<PathBuf> {
-    let p = match (&cfg.workspace, &cfg.workspace_binding) {
-        (None, None) => sd.path().to_path_buf(),
-        (Some(reference), Some(binding))
-            if reference.workspace_id == binding.workspace_id
-                && reference.access == binding.access =>
-        {
-            if !is_native_runtime(&binding.location.runtime_id) {
-                if !cfg.runtime.is_node() {
-                    return Err(OpenDanError::WorkspaceBindingInvalid(
-                        "the workspace is on another runtime than the session".into(),
-                    ));
-                }
-                sd.path().to_path_buf()
-            } else if binding.runtime_host != native_host_id() {
-                return Err(OpenDanError::WorkspaceBindingInvalid(
-                    "the workspace belongs to another host".into(),
-                ));
-            } else {
-                binding.location.directory.clone()
-            }
-        }
-        _ => {
-            return Err(OpenDanError::WorkspaceBindingInvalid(
-                "the workspace binding is inconsistent".into(),
-            ))
-        }
-    };
-    p.canonicalize()
-        .map_err(|e| OpenDanError::WorkspaceBindingInvalid(format!("{}: {e}", p.display())))
+/// The control-side working directory of a session: its session directory
+/// (Q4: choosing a workspace never moves the default location). A session
+/// on a node runtime works in its directory there ([`target_workdir`]).
+pub fn resolve_workdir(sd: &SessionDir) -> Result<PathBuf> {
+    sd.path()
+        .canonicalize()
+        .map_err(|e| OpenDanError::Bind(format!("{}: {e}", sd.path().display())))
 }
 
-/// The working directory of a node-runtime session on its node, as far as
-/// it is already known: the binding's, else the bound workspace's. `None`:
-/// the session has no directory on the node yet (created at the first
-/// binding under the node's roots).
-pub fn target_workdir(sd: &SessionDir, cfg: &SessionConfig) -> Result<Option<String>> {
-    if let Some(b) = sd.binding_opt()? {
-        return Ok(Some(b.workdir));
-    }
-    match (&cfg.workspace, &cfg.workspace_binding) {
-        (Some(r), Some(b)) if r.workspace_id == b.workspace_id => {
-            if canonical_runtime(&b.location.runtime_id) != cfg.runtime.runtime_id() {
-                return Err(OpenDanError::WorkspaceBindingInvalid(format!(
-                    "workspace {} is on runtime `{}`, the session on `{}`",
-                    b.workspace_id,
-                    b.location.runtime_id,
-                    cfg.runtime.runtime_id()
-                )));
-            }
-            Ok(Some(b.location.directory.to_string_lossy().to_string()))
-        }
-        (None, None) => Ok(None),
-        _ => Err(OpenDanError::WorkspaceBindingInvalid(
-            "the workspace binding is inconsistent".into(),
-        )),
-    }
+/// The working directory of a node-runtime session on its node, once the
+/// first binding created it (`None` before).
+pub fn target_workdir(sd: &SessionDir) -> Result<Option<String>> {
+    Ok(sd.binding_opt()?.map(|b| b.workdir))
 }
 
-pub fn validate_workspace_workdir(cfg: &SessionConfig) -> Result<()> {
-    if let (Some(binding), Some(workdir)) = (
-        &cfg.workspace_binding,
-        cfg.prompt
-            .llm_context
-            .get("runtime")
-            .and_then(|r| r.get("workdir"))
-            .and_then(|v| v.as_str()),
-    ) {
-        let conflicts = if is_native_runtime(&binding.location.runtime_id) {
-            let path = Path::new(workdir);
-            !path.is_absolute()
-                || path.canonicalize().ok().as_ref() != Some(&binding.location.directory)
-        } else {
-            workdir != binding.location.directory.to_string_lossy()
-        };
-        if conflicts {
-            return Err(OpenDanError::WorkspaceBindingInvalid(
-                "explicit runtime workdir conflicts with the selected workspace".into(),
-            ));
-        }
-    }
-    Ok(())
+/// The workspace of a session as its prompt and helpers see it: its runtime
+/// and directory there, and whether that is the session-runtime (then a
+/// `cd` reaches it; otherwise files are copied between the two).
+pub fn workspace_view(cfg: &SessionConfig) -> Option<serde_json::Value> {
+    let b = cfg.workspace_binding.as_ref()?;
+    let runtime_id = canonical_runtime(&b.location.runtime_id);
+    Some(serde_json::json!({
+        "workspace_id": b.workspace_id,
+        "runtime_id": runtime_id,
+        "directory": b.location.directory,
+        "access": b.access,
+        "same_runtime": runtime_id == cfg.runtime.runtime_id(),
+    }))
 }
 
 /// The runtime configuration a session declares
@@ -393,11 +333,12 @@ fn declared_runtime(
 }
 
 /// Session rules laid over a runtime configuration (xAgent §5.2.1): the
-/// working directory is the session's workspace.
+/// working directory is the session's working directory, the baseline the
+/// session-runtime's declared one (a node runtime has both from
+/// [`runtime_for_session`]).
 fn settle_for_session(
     sd: &SessionDir,
     cfg: &SessionConfig,
-    agent_root: Option<&Path>,
     config: &mut agent_tool::runtime::RuntimeConfig,
 ) -> Result<()> {
     if cfg.runtime.is_node() {
@@ -415,12 +356,15 @@ fn settle_for_session(
         }
         return Ok(());
     }
-    let expected = resolve_workdir(sd, cfg, agent_root)?;
+    if let Some(frozen) = &cfg.runtime.frozen {
+        config.baseline = Some(frozen.baseline);
+    }
+    let expected = resolve_workdir(sd)?;
     if let Some(workdir) = &config.workdir {
         let path = Path::new(workdir);
         if !path.is_absolute() || path.canonicalize().ok().as_ref() != Some(&expected) {
-            return Err(OpenDanError::WorkspaceBindingInvalid(
-                "explicit runtime workdir conflicts with the session directory binding".into(),
+            return Err(OpenDanError::Bind(
+                "an explicit runtime workdir must be the session's working directory".into(),
             ));
         }
     }
@@ -431,9 +375,9 @@ fn settle_for_session(
 /// The runtime of a session, built from what it was frozen to: what a host
 /// puts into that session's `RunnerDeps.runtime`. A session on a node
 /// runtime gets its `remote_node` configuration from the frozen selection
-/// (never from the registry again) and its directory on the node — the
-/// bound workspace, or a session directory created under the node's roots
-/// on the first drive. Nothing else is opened here; that happens at the
+/// (never from the registry again) and its working directory on the node,
+/// created under the node's roots on the first drive (a workspace never
+/// takes its place). Nothing else is opened here; that happens at the
 /// binding, under the session lease.
 pub async fn runtime_for_session(
     sd: &SessionDir,
@@ -458,7 +402,8 @@ pub async fn runtime_for_session(
             }
             config.env.extend(declared.env);
         }
-        config.workdir = Some(node_workdir(sd, cfg, agent, &frozen.runtime_id, &config).await?);
+        config.baseline = Some(frozen.baseline);
+        config.workdir = Some(node_workdir(sd, agent, &frozen.runtime_id, &config).await?);
         let mut deps = deps.clone();
         if deps.node_executor.is_none() {
             deps.node_executor = Some(node_connector());
@@ -480,22 +425,21 @@ pub async fn runtime_for_session(
     if config.id.is_none() {
         config.id = cfg.runtime.requirement.runtime_id.clone();
     }
-    settle_for_session(sd, cfg, agent.agent_root(), &mut config)?;
+    settle_for_session(sd, cfg, &mut config)?;
     agent_tool::runtime::RuntimeRegistry::from_config(&config)
         .map_err(|e| OpenDanError::Bind(e.to_string()))
 }
 
-/// Where a node-runtime session works on its node: what is bound or the
-/// workspace, else `<first root>/.opendan/<agent>/sessions/<sid>`, created
-/// now (the executor's `mkdir`, idempotent).
+/// Where a node-runtime session works on its node: what is bound, else
+/// `<first root>/.opendan/<agent>/sessions/<sid>`, created now (the
+/// executor's `mkdir`, idempotent).
 async fn node_workdir(
     sd: &SessionDir,
-    cfg: &SessionConfig,
     agent: &dyn crate::state::AgentStateClient,
     runtime_id: &str,
     config: &RuntimeConfig,
 ) -> Result<String> {
-    if let Some(known) = target_workdir(sd, cfg)? {
+    if let Some(known) = target_workdir(sd)? {
         return Ok(known);
     }
     let target = open_node_target_of(runtime_id, config, &sd.state_dir().join("runtime_ops")).await?;
@@ -516,7 +460,6 @@ pub fn session_runtime(
     sd: &SessionDir,
     cfg: &SessionConfig,
     provided: &std::sync::Arc<dyn AgentRuntime>,
-    agent_root: Option<&Path>,
 ) -> Result<std::sync::Arc<dyn AgentRuntime>> {
     let original = provided.config();
     let mut config = original.clone();
@@ -535,7 +478,7 @@ pub fn session_runtime(
             config.merge_over(&r);
         }
     }
-    settle_for_session(sd, cfg, agent_root, &mut config)?;
+    settle_for_session(sd, cfg, &mut config)?;
     let differs = original.kind() != config.kind()
         || original.id.as_ref().is_some_and(|id| config.id.as_ref() != Some(id))
         || original
@@ -566,21 +509,27 @@ pub fn session_runtime(
         .map_err(|e| OpenDanError::Bind(e.to_string()))
 }
 
+/// The schema of `binding.json`: version 5 binds the session-runtime and
+/// the session's working directory there; the workspace is recorded beside
+/// it, never as the working directory.
+pub const BINDING_SCHEMA: &str = "opendan.binding/5";
+
 pub async fn bind_or_verify(
     sd: &SessionDir,
     lease: &crate::lock::Lease,
     rt: &dyn AgentRuntime,
     cfg: &SessionConfig,
-    agent_root: Option<&Path>,
+    agent: &dyn crate::state::AgentStateClient,
     app_tools: &[String],
     plan: &BinPlan,
     runner_id: &str,
 ) -> Result<Binding> {
+    let agent_root = agent.agent_root();
     if rt.config().kind() == "remote_ssh" {
         return Err(OpenDanError::Bind("Capability: remote Session helpers are not deployed; use SSH runtime with xllm independently".into()));
     }
     let node = cfg.runtime.is_node();
-    let fallback = resolve_workdir(sd, cfg, agent_root)?;
+    let fallback = resolve_workdir(sd)?;
     let open_workdir = if node {
         PathBuf::from(rt.config().workdir.ok_or_else(|| {
             OpenDanError::Bind("the node session has no working directory yet".into())
@@ -588,7 +537,7 @@ pub async fn bind_or_verify(
     } else {
         fallback.clone()
     };
-    let mut open = RuntimeOpenCtx::new(&open_workdir, sd.sid(), LoopModel::FunctionCall);
+    let open = RuntimeOpenCtx::new(&open_workdir, sd.sid(), LoopModel::FunctionCall);
     let _ = rt
         .open(
             &open,
@@ -603,7 +552,7 @@ pub async fn bind_or_verify(
     let desc = rt.descriptor();
     let existing = sd.binding_opt()?;
     let binding = Binding {
-        schema: "opendan.binding/4".into(),
+        schema: BINDING_SCHEMA.into(),
         runtime_id: desc.runtime_id.clone(),
         kind: desc.kind.clone(),
         target: desc.target.clone(),
@@ -618,8 +567,8 @@ pub async fn bind_or_verify(
         Path::new(&binding.workdir).canonicalize().ok().as_ref() == Some(&fallback)
     };
     if !workdir_matches {
-        return Err(OpenDanError::WorkspaceBindingInvalid(
-            "actual runtime workdir differs from the frozen binding".into(),
+        return Err(OpenDanError::Bind(
+            "the runtime's working directory differs from the session's".into(),
         ));
     }
     if let Some(b) = &existing {
@@ -655,54 +604,23 @@ pub async fn bind_or_verify(
     }
     bin_overlay::prepare(&sd.runtime_bin_dir(), plan)?;
     bin_overlay::verify(&sd.runtime_bin_dir(), plan)?;
-    if !node {
-        open.path_prefix = session_layers(sd, cfg, agent_root);
-    }
-    let (_, sandbox) = rt
-        .open(
-            &open,
-            &ToolsConfig {
-                enabled: Some(false),
-                ..Default::default()
-            },
-            &agent_tool::xllm::XllmDeps::default(),
-        )
-        .await
-        .map_err(|e| OpenDanError::Bind(e.to_string()))?;
+    let layers = if node { Vec::new() } else { session_layers(sd, cfg, agent_root) };
     let windows_target = node && desc.capabilities.os == "windows";
-    for name in &cfg.runtime.requirement.tools {
-        let probe = if windows_target {
-            format!("where {}", agent_tool::runtime::shell_quote(name))
-        } else {
-            format!("command -v {}", agent_tool::runtime::shell_quote(name))
-        };
-        let result = agent_tool::runtime::Sandbox::exec(
-            &sandbox,
-            agent_tool::llm_bash::BashRunRequest {
-                command: probe,
-                cwd: binding.workdir.clone().into(),
-                timeout_ms: 5000,
-                max_output_bytes: 4096,
-                env: Vec::new(),
-                target: agent_tool::llm_bash::BashTarget::Local,
-                call_id: None,
-            },
-            &agent_tool::SessionRuntimeContext {
-                trace_id: sd.sid().into(),
-                agent_name: "libopendan".into(),
-                behavior: "runtime_probe".into(),
-                tool_call_index: 0,
-                wakeup_id: String::new(),
-                session_id: sd.sid().into(),
-                read_token_limit: agent_tool::DEFAULT_READ_TOKEN_LIMIT,
-            },
-        )
-        .await
-        .map_err(|e| OpenDanError::Bind(e.to_string()))?;
-        if result.exit_code != 0 {
+    let tools: Vec<&str> = cfg.runtime.requirement.tools.iter().map(String::as_str).collect();
+    if !tools.is_empty() {
+        let probe = crate::baseline::missing_probe(&tools, windows_target);
+        let result = run_probe(rt, &open_workdir, layers, sd.sid(), &sd.state_dir().join("runtime_ops"), probe, 5000).await?;
+        let missing = crate::baseline::parse_missing(&result.stdout, &tools);
+        if result.exit_code != 0 || !missing.is_empty() {
             return Err(OpenDanError::Bind(format!(
-                "runtime lacks required tool {name}"
+                "runtime lacks required tool {}",
+                if missing.is_empty() { tools.join(", ") } else { missing.join(", ") }
             )));
+        }
+    }
+    if node {
+        if let Err(e) = write_session_context(sd, cfg, rt, agent, &binding.workdir).await {
+            log::warn!("session {}: no session context on runtime {}: {e}", sd.sid(), binding.runtime_id);
         }
     }
     if existing.is_none() {
@@ -721,6 +639,140 @@ pub async fn bind_or_verify(
         }
     }
     Ok(existing.unwrap_or(binding))
+}
+
+/// Write the session's context into its working directory on a node
+/// runtime, with a token signed now ([`crate::session_context`]): how its
+/// helpers there reach AgentService. Rewritten at every binding, so a lost
+/// file or an old token is replaced by the next drive.
+async fn write_session_context(
+    sd: &SessionDir,
+    cfg: &SessionConfig,
+    rt: &dyn AgentRuntime,
+    agent: &dyn crate::state::AgentStateClient,
+    workdir: &str,
+) -> Result<()> {
+    let root = agent
+        .agent_root()
+        .ok_or_else(|| OpenDanError::Bind("no AgentRoot here to sign the session's token".into()))?;
+    let key = crate::session_context::TokenKey::load_or_create(root)?;
+    let state_url = crate::session_context::node_state_url(agent.agent_id());
+    let (ctx, token) = crate::session_context::new_context(&key, agent.agent_id(), cfg, workdir, state_url);
+    let target = open_node_target_of(cfg.runtime.runtime_id(), &rt.config(), &sd.state_dir().join("runtime_ops")).await?;
+    crate::session_context::write_context(&target, &ctx, &token).await
+}
+
+/// Open `rt` at `workdir` without tools and run one command there (binding
+/// probes, baseline checks).
+pub async fn run_probe(
+    rt: &dyn AgentRuntime,
+    workdir: &Path,
+    path_prefix: Vec<PathBuf>,
+    session_id: &str,
+    ops_dir: &Path,
+    command: String,
+    timeout_ms: u64,
+) -> Result<agent_tool::llm_bash::BashRunOutput> {
+    let mut open = RuntimeOpenCtx::new(workdir, session_id, LoopModel::FunctionCall);
+    open.path_prefix = path_prefix;
+    let (_, mut sandbox) = rt
+        .open(
+            &open,
+            &ToolsConfig {
+                enabled: Some(false),
+                ..Default::default()
+            },
+            &agent_tool::xllm::XllmDeps::default(),
+        )
+        .await
+        .map_err(|e| OpenDanError::Bind(e.to_string()))?;
+    // A node keeps the operation's locator in a run directory.
+    sandbox.bind_run_dir("probe", Some(ops_dir.to_path_buf()));
+    agent_tool::runtime::Sandbox::exec(
+        &sandbox,
+        agent_tool::llm_bash::BashRunRequest {
+            command,
+            cwd: workdir.to_path_buf(),
+            timeout_ms,
+            max_output_bytes: 16 * 1024,
+            env: Vec::new(),
+            target: agent_tool::llm_bash::BashTarget::Local,
+            // A node runs a command only for an identified call.
+            call_id: Some(format!("probe-{}", uuid::Uuid::new_v4().simple())),
+        },
+        &agent_tool::SessionRuntimeContext {
+            trace_id: session_id.into(),
+            agent_name: "libopendan".into(),
+            behavior: "runtime_probe".into(),
+            tool_call_index: 0,
+            wakeup_id: String::new(),
+            session_id: session_id.into(),
+            read_token_limit: agent_tool::DEFAULT_READ_TOKEN_LIMIT,
+        },
+    )
+    .await
+    .map_err(|e| OpenDanError::Bind(e.to_string()))
+}
+
+/// The standard tools of a runtime ([`crate::baseline`]): looked for on this
+/// machine for the agent's own container (helpers come from the session
+/// bin), through the runtime's executor for a node. A check that cannot run
+/// says why; it never changes the declared baseline.
+pub async fn check_baseline(record: &RuntimeRecord, ops_dir: &Path) -> BaselineCheck {
+    let checked = async {
+        if record.kind == RuntimeKind::Container {
+            let names = crate::baseline::required_commands(true);
+            let beside: Vec<PathBuf> = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(Path::to_path_buf))
+                .into_iter()
+                .collect();
+            return Ok(crate::baseline::missing_locally(&names, None, &beside));
+        }
+        let exec = record
+            .exec
+            .as_ref()
+            .ok_or_else(|| OpenDanError::Bind(format!("runtime `{}` is not enabled", record.runtime_id)))?;
+        let mut config = node_config_of(&record.runtime_id, exec)?;
+        let root = record.roots.first().cloned().ok_or_else(|| {
+            OpenDanError::Bind(format!("runtime `{}`: the node grants no working directory root", record.runtime_id))
+        })?;
+        config.id = Some(record.runtime_id.clone());
+        config.workdir = Some(root.display().to_string());
+        let deps = XllmDeps {
+            node_executor: Some(node_connector()),
+            ..Default::default()
+        };
+        let rt = agent_tool::runtime::RuntimeRegistry::from_config_with(&config, &deps)
+            .map_err(|e| OpenDanError::Bind(e.to_string()))?;
+        let names = crate::baseline::required_commands(false);
+        let probe = crate::baseline::missing_probe(&names, record.platform.os == "windows");
+        let out = run_probe(rt.as_ref(), &root, Vec::new(), "baseline-check", ops_dir, probe, 30_000).await?;
+        if out.exit_code != 0 {
+            return Err(OpenDanError::Bind(format!(
+                "the check exited {}: {}",
+                out.exit_code,
+                out.stderr.trim()
+            )));
+        }
+        Ok(crate::baseline::parse_missing(&out.stdout, &names))
+    }
+    .await;
+    let checked_at_ms = crate::now_ms();
+    match checked {
+        Ok(missing) => BaselineCheck {
+            checked_at_ms,
+            ok: missing.is_empty(),
+            missing,
+            error: None,
+        },
+        Err(e) => BaselineCheck {
+            checked_at_ms,
+            ok: false,
+            missing: Vec::new(),
+            error: Some(e.to_string()),
+        },
+    }
 }
 
 /// The session's PATH layers live on this machine: a node runtime gets none
@@ -811,6 +863,17 @@ pub async fn session_env_vars(ctx: &SessionEnvCtx, runtime_id: &str) -> Result<V
     }
     if let Some(q) = &ctx.input_queue {
         v.push(("OPENDAN_INPUT_QUEUE".to_string(), q.clone()));
+    }
+    if let Some(w) = &ctx.workspace {
+        v.push(("OPENDAN_WORKSPACE_ID".to_string(), w.workspace_id.clone()));
+        v.push((
+            "OPENDAN_WORKSPACE_RUNTIME".to_string(),
+            canonical_runtime(&w.location.runtime_id).to_string(),
+        ));
+        v.push((
+            "OPENDAN_WORKSPACE_DIR".to_string(),
+            w.location.directory.display().to_string(),
+        ));
     }
     if let Ok(tok) = std::env::var("BUCKYOS_APPCLIENT_SESSION_TOKEN") {
         v.push(("BUCKYOS_APPCLIENT_SESSION_TOKEN".to_string(), tok));

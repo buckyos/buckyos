@@ -131,6 +131,9 @@ pub struct OpsManager {
     events: broadcast::Sender<OpEvent>,
     computer: crate::computer::SharedComputerDriver,
     executor_id: String,
+    /// Host directories searched first by every command (the host's agent
+    /// tool directory).
+    path_prefix: Vec<PathBuf>,
 }
 
 fn err(code: ExecutorErrorCode, msg: impl Into<String>) -> ExecutorError {
@@ -238,7 +241,13 @@ impl OpsManager {
             events,
             computer,
             executor_id,
+            path_prefix: Vec::new(),
         }
+    }
+
+    pub fn with_path_prefix(mut self, dirs: Vec<PathBuf>) -> Self {
+        self.path_prefix = dirs;
+        self
     }
 
     pub fn is_accepting(&self) -> bool {
@@ -799,6 +808,17 @@ impl OpsManager {
                 env.insert(name.to_string(), value);
             }
         }
+        if !self.path_prefix.is_empty() {
+            let key = env
+                .keys()
+                .find(|k| k.eq_ignore_ascii_case("PATH"))
+                .cloned()
+                .unwrap_or_else(|| "PATH".into());
+            let rest = env.get(&key).map(std::env::split_paths).into_iter().flatten();
+            if let Ok(joined) = std::env::join_paths(self.path_prefix.iter().cloned().chain(rest)) {
+                env.insert(key, joined.to_string_lossy().to_string());
+            }
+        }
         env
     }
 
@@ -836,7 +856,11 @@ impl OpsManager {
                 return Self::failed(e, state)
             }
         };
-        let env = self.base_env(&op.profile, env_overrides);
+        let mut env = self.base_env(&op.profile, env_overrides);
+        // The operation's own identity: a command that answers for its
+        // call (an Agent's ask-user) finds it here.
+        env.insert(buckyos_api::ENV_EXECUTOR_CALL_ID.into(), record.identity.call_id.clone());
+        env.insert(buckyos_api::ENV_EXECUTOR_RUN_ID.into(), record.identity.run_id.clone());
         let gate = self.gate.lock().await;
         if self.cancelled_before_start(op).await {
             drop(gate);

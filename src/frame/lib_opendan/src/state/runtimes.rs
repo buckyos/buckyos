@@ -145,7 +145,7 @@ impl FsRuntimes {
 
     /// Ask a node runtime's executor whether it accepts this agent now:
     /// login + describe through the host's connector. The node's profile
-    /// roots become the record's roots.
+    /// roots become the record's roots, its platform the record's platform.
     async fn probe(&self, record: &mut RuntimeRecord) {
         if !record.kind.is_node() || record.exec.is_none() {
             return;
@@ -154,6 +154,8 @@ impl FsRuntimes {
         match crate::runtime::open_node_target(record, &ops_dir).await {
             Ok(target) => {
                 record.roots = target.workdir_roots().iter().map(PathBuf::from).collect();
+                let info = &target.described().info;
+                record.platform = RuntimePlatform::reported(&info.os, &info.arch, &info.shell);
                 let mut caps = record.capabilities.as_object().cloned().unwrap_or_default();
                 caps.insert("os".into(), serde_json::Value::String(target.os().to_string()));
                 if let Some(mode) = &target.described().info.identity_mode {
@@ -190,6 +192,13 @@ impl FsRuntimes {
             builtin,
             default: req.default,
             computer: req.computer,
+            baseline: req.baseline,
+            platform: if req.kind == RuntimeKind::Container {
+                RuntimePlatform::local()
+            } else {
+                RuntimePlatform::default()
+            },
+            baseline_check: None,
             revision: 1,
             registered_by: who.to_string(),
             registered_at_ms: now,
@@ -210,6 +219,7 @@ fn same_registration(r: &RuntimeRecord, req: &RuntimeRegister) -> bool {
         && r.roots == req.roots
         && r.default == req.default
         && r.computer == req.computer
+        && r.baseline == req.baseline
 }
 
 #[async_trait]
@@ -269,15 +279,27 @@ impl RuntimeRegistry for FsRuntimes {
         Ok(record)
     }
 
+    /// Whether the runtime can be used now (reachable for a node), and
+    /// whether its standard tools are there ([`crate::baseline`]): two
+    /// separate answers; services it calls are only learned when used.
     async fn check(&self, runtime_id: &str) -> Result<RuntimeRecord> {
         let _lock = self.lock().await?;
         let mut record = self.require(canonical_runtime(runtime_id))?;
-        let before = (record.availability, record.last_error.clone(), record.roots.clone(), record.capabilities.clone());
+        let identity = |r: &RuntimeRecord| {
+            (r.availability, r.last_error.clone(), r.roots.clone(), r.capabilities.clone(), r.platform.clone())
+        };
+        let before = identity(&record);
+        let missing_before = record.baseline_check.as_ref().map(|c| (c.ok, c.missing.clone(), c.error.clone()));
         self.observe(&mut record);
         if record.availability == RuntimeAvailability::Available {
             self.probe(&mut record).await;
         }
-        if before != (record.availability, record.last_error.clone(), record.roots.clone(), record.capabilities.clone()) {
+        if record.availability == RuntimeAvailability::Available {
+            let ops_dir = self.layout.runtimes_dir().join(".probe");
+            record.baseline_check = Some(crate::runtime::check_baseline(&record, &ops_dir).await);
+        }
+        let missing_after = record.baseline_check.as_ref().map(|c| (c.ok, c.missing.clone(), c.error.clone()));
+        if before != identity(&record) || missing_before != missing_after {
             record.revision += 1;
             record.updated_at_ms = crate::now_ms();
         }
@@ -327,6 +349,7 @@ impl RuntimeRegistry for FsRuntimes {
                     r.builtin = true;
                     r.default = req.default;
                     r.computer = req.computer;
+                    r.baseline = req.baseline;
                     if r.kind != RuntimeKind::Container {
                         r.name = req.name.clone();
                         r.description = req.description.clone();
@@ -341,8 +364,9 @@ impl RuntimeRegistry for FsRuntimes {
                             r.capabilities = serde_json::Value::Object(caps);
                         }
                     }
-                    if r.runtime_host != crate::runtime::native_host_id() && r.kind == RuntimeKind::Container {
+                    if r.kind == RuntimeKind::Container {
                         r.runtime_host = crate::runtime::native_host_id();
+                        r.platform = RuntimePlatform::local();
                     }
                     self.observe(&mut r);
                     let changed = {
