@@ -374,7 +374,96 @@ fn validate_cell(p: &mut Planner, e: &mut EntityRow, changed: Option<&[String]>)
     if view_type == "connector" {
         validate_connector(p, e, changed)?;
     }
+    if view_type == "ink" && view.get("version").and_then(Value::as_u64).unwrap_or(1) == 1 && (importing || is_changed("config") || is_changed("view")) {
+        validate_ink(&e.payload)?;
+    }
     check_presentation(&mut e.payload, &view_type)
+}
+
+// ---- Ink (手写笔 TODO D0) ----
+
+/// Segments of one logical stroke, points of one segment.
+pub const MAX_INK_SEGMENTS: u64 = 64;
+pub const MAX_INK_POINTS: usize = 16_384;
+const INK_CONFIG_KEYS: &[&str] = &["format", "stroke", "seg", "segs", "color", "width", "pressure", "frame", "points"];
+const INK_CHANNELS: &[&str] = &["x", "y", "t", "p", "tilt_x", "tilt_y"];
+
+/// The id of the logical stroke an ink Cell is a segment of.
+pub fn ink_stroke(payload: &JsonMap) -> Option<&str> {
+    let view = payload.get("view")?;
+    if view.get("type").and_then(Value::as_str) != Some("ink") {
+        return None;
+    }
+    payload.get("config")?.get("stroke")?.as_str()
+}
+
+/// `view { type: ink, version: 1 }`, one segment of a pen stroke: `config { format: 1, stroke, seg, segs, color,
+/// width, pressure, frame { w, h }, points { x, y, t, p?, tilt_x?, tilt_y? } }`. Points are in the segment's own
+/// frame (`0..frame.w`, `0..frame.h`), which the placement box shows; `t` is ms since the stroke began.
+fn validate_ink(payload: &JsonMap) -> WsResult<()> {
+    if let Some(k) = ["source_ref", "bindings", "def_ref"].into_iter().find(|k| payload.get(*k).is_some_and(|v| !v.is_null())) {
+        return Err(bad(format!("an ink stroke cannot carry {k}")));
+    }
+    let c = payload.get("config").and_then(Value::as_object).ok_or_else(|| bad("ink needs config"))?;
+    if let Some(k) = c.keys().find(|k| !INK_CONFIG_KEYS.contains(&k.as_str())) {
+        return Err(bad(format!("ink config: unknown key {k}")));
+    }
+    if c.get("format").and_then(Value::as_u64) != Some(1) {
+        return Err(bad("ink config.format must be 1"));
+    }
+    if !c.get("stroke").and_then(Value::as_str).is_some_and(is_valid_id) {
+        return Err(bad("ink config.stroke must be an id"));
+    }
+    let segs = c.get("segs").and_then(Value::as_u64).filter(|n| (1..=MAX_INK_SEGMENTS).contains(n)).ok_or_else(|| bad(format!("ink config.segs must be 1..={MAX_INK_SEGMENTS}")))?;
+    if !c.get("seg").and_then(Value::as_u64).is_some_and(|n| n < segs) {
+        return Err(bad("ink config.seg must be below segs"));
+    }
+    let color = c.get("color").and_then(Value::as_str).unwrap_or("");
+    if !(color.len() == 7 && color.starts_with('#') && color[1..].bytes().all(|b| b.is_ascii_hexdigit())) {
+        return Err(bad("ink config.color must be #rrggbb"));
+    }
+    if !finite(c.get("width")).is_some_and(|w| w > 0.0 && w <= 256.0) {
+        return Err(bad("ink config.width must be in (0, 256]"));
+    }
+    if !c.get("pressure").is_some_and(Value::is_boolean) {
+        return Err(bad("ink config.pressure must be a boolean"));
+    }
+    let frame = c.get("frame").and_then(Value::as_object).filter(|f| f.len() == 2).ok_or_else(|| bad("ink config.frame must be { w, h }"))?;
+    let side = |k: &str| finite(frame.get(k)).filter(|v| *v > 0.0 && *v <= 1e7).ok_or_else(|| bad(format!("ink config.frame.{k} must be a positive number")));
+    let (fw, fh) = (side("w")?, side("h")?);
+    let points = c.get("points").and_then(Value::as_object).ok_or_else(|| bad("ink config.points must be an object"))?;
+    if let Some(k) = points.keys().find(|k| !INK_CHANNELS.contains(&k.as_str())) {
+        return Err(bad(format!("ink config.points: unknown channel {k}")));
+    }
+    let channel = |k: &str| -> WsResult<Option<Vec<f64>>> {
+        let Some(v) = points.get(k) else { return Ok(None) };
+        let list = v.as_array().ok_or_else(|| bad(format!("ink points.{k} must be an array")))?;
+        list.iter().map(|n| finite(Some(n)).ok_or_else(|| bad(format!("ink points.{k} must hold finite numbers")))).collect::<WsResult<Vec<_>>>().map(Some)
+    };
+    let need = |k: &str| channel(k)?.ok_or_else(|| bad(format!("ink points.{k} is required")));
+    let (x, y, t) = (need("x")?, need("y")?, need("t")?);
+    let n = x.len();
+    if n == 0 || n > MAX_INK_POINTS {
+        return Err(bad(format!("an ink segment holds 1..={MAX_INK_POINTS} points")));
+    }
+    let in_range = |list: &[f64], lo: f64, hi: f64| list.iter().all(|v| *v >= lo && *v <= hi);
+    if y.len() != n || t.len() != n {
+        return Err(bad("ink points channels must have the same length"));
+    }
+    if !in_range(&x, 0.0, fw) || !in_range(&y, 0.0, fh) {
+        return Err(bad("ink points must lie inside config.frame"));
+    }
+    if !t.iter().all(|v| v.fract() == 0.0 && *v >= 0.0 && *v <= 86_400_000.0) || t.windows(2).any(|w| w[1] < w[0]) {
+        return Err(bad("ink points.t must be non-decreasing whole milliseconds"));
+    }
+    for (k, lo, hi) in [("p", 0.0, 1.0), ("tilt_x", -90.0, 90.0), ("tilt_y", -90.0, 90.0)] {
+        if let Some(list) = channel(k)? {
+            if list.len() != n || !in_range(&list, lo, hi) {
+                return Err(bad(format!("ink points.{k} must have one value in [{lo}, {hi}] per point")));
+            }
+        }
+    }
+    Ok(())
 }
 
 // ---- presentation (third phase §4, §5, §6) ----

@@ -286,6 +286,10 @@ pub fn outline_extras(env: &mut Value, e: &EntityRow) {
                 }
                 env["connector"] = c;
             }
+            // the logical stroke a pen segment belongs to: its segments are selected, erased and copied together
+            if let Some(stroke) = types::ink_stroke(&e.payload) {
+                env["ink_stroke"] = json!(stroke);
+            }
         }
         TYPE_WISH => {
             env["executor"] = e.payload.get("executor").cloned().unwrap_or(Value::Null);

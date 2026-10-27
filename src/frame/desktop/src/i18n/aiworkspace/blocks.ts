@@ -367,6 +367,8 @@ export const en: Record<string, string> = {
   'aiworkspace.connector.edit.moveEnd': 'Connector: move end',
   'aiworkspace.connector.edit.adjustPath': 'Connector: adjust path',
   'aiworkspace.connector.edit.moveLabel': 'Connector: move label',
+  'aiworkspace.blocks.ink.title': 'Pen stroke',
+  'aiworkspace.blocks.ink.unreadable': 'This pen stroke cannot be read',
 }
 
 export const zh: Record<string, string> = {
@@ -732,4 +734,6 @@ export const zh: Record<string, string> = {
   'aiworkspace.connector.edit.moveEnd': '连接线：移动端点',
   'aiworkspace.connector.edit.adjustPath': '连接线：调整路径',
   'aiworkspace.connector.edit.moveLabel': '连接线：移动标签',
+  'aiworkspace.blocks.ink.title': '笔迹',
+  'aiworkspace.blocks.ink.unreadable': '这一笔笔迹无法读取',
 }

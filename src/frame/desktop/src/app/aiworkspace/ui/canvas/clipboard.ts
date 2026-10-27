@@ -77,6 +77,8 @@ async function snapshotItem(store: WorkspaceStore, laid: Map<string, Laid>, id: 
 }
 
 const hasLines = (items: ClipItem[]): boolean => items.some((item) => item.ends !== undefined || hasLines(item.children))
+const isInk = (payload: Record<string, Json>) => (payload.view as { type?: string } | undefined)?.type === 'ink'
+const hasInk = (items: ClipItem[]): boolean => items.some((item) => isInk(item.payload) || hasInk(item.children))
 
 /** The world placement of a laid-out object, rotation included. */
 function worldPlacement(l: Laid): Placement {
@@ -122,6 +124,10 @@ export interface PasteTarget {
  * `refused` says why nothing is pasted. */
 export function pasteOperations(store: WorkspaceStore, clip: Clip, target: PasteTarget): { operations: Operation[]; newIds: string[]; label: string; refused?: string } {
   if (!target.isFree && hasLines(clip.items)) return { operations: [], newIds: [], label: '', refused: aiwsT('aiworkspace.canvas.clipboard.linesOnFlowPage') }
+  // ink is written on free canvases (a flow page's handwriting is a later extension)
+  if (!target.isFree && (clip.kind === 'copy' ? hasInk(clip.items) : clip.items.some((item) => store.outline.get(item.id)?.view_type === 'ink' || store.outline.descendants(item.id).some((d) => d.view_type === 'ink')))) {
+    return { operations: [], newIds: [], label: '', refused: aiwsT('aiworkspace.canvas.clipboard.inkOnFlowPage') }
+  }
   const step = clip.kind === 'copy' ? 24 * (clip.pastes + 1) : 0
   const anchor = target.at ?? { x: target.center.x - clip.bounds.w / 2 + step, y: target.center.y - clip.bounds.h / 2 + step }
   const dx = Math.round(anchor.x - clip.bounds.x)
@@ -149,6 +155,15 @@ export function pasteOperations(store: WorkspaceStore, clip: Clip, target: Paste
   const allocate = (item: ClipItem) => { fresh.set(item.id, randomId(item.isGroup ? 'g' : 'c')); item.children.forEach(allocate) }
   clip.items.forEach(allocate)
   const lines: Operation[] = []
+  // a copied stroke is a stroke of its own: its segments get one new logical id, so erasing one never takes the other
+  const strokes = new Map<string, string>()
+  const freshInk = (payload: Record<string, Json>): Record<string, Json> => {
+    const config = payload.config as Record<string, Json> | undefined
+    const stroke = typeof config?.stroke === 'string' ? config.stroke : null
+    if (!isInk(payload) || !config || !stroke) return payload
+    if (!strokes.has(stroke)) strokes.set(stroke, randomId('k'))
+    return { ...payload, config: { ...config, stroke: strokes.get(stroke)! } }
+  }
   // own data of a Block copied onto the same canvas is cloned (D05); the planner then makes the copy own its clone
   const sameCanvas = clip.workspaceId === store.session.workspaceId && clip.surfaceId === target.surfaceId
   const cloned = new Map<string, string>()
@@ -180,7 +195,7 @@ export function pasteOperations(store: WorkspaceStore, clip: Clip, target: Paste
       return id
     }
     const own = item.isGroup ? null : ownData(item.payload)
-    const payload = own ? { ...item.payload, source_ref: { ...(item.payload.source_ref as Record<string, Json>), entity_id: own } } : item.payload
+    const payload = own ? { ...item.payload, source_ref: { ...(item.payload.source_ref as Record<string, Json>), entity_id: own } } : freshInk(item.payload)
     operations.push({ op: 'entity.create', entity_id: id, type_id: item.isGroup ? 'buckyos.container' : 'buckyos.cell', parent_id: parentId, order_key: orderKey, ...(placement ? { placement } : {}), payload })
     const here = placement ? { x: origin.x + placement.x, y: origin.y + placement.y } : origin
     let childKey: string | undefined

@@ -18,6 +18,7 @@
 .aiws-stage-black { position: absolute; inset: 0; z-index: 5; background: #000; }
 .aiws-stage-ink, .aiws-stage-pointer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .aiws-stage-ink { z-index: 2; }
+.aiws-stage-ink.is-tail { pointer-events: none; }
 .aiws-stage-pointer { z-index: 6; }
 .aiws-stage-ink.is-active { pointer-events: auto; cursor: crosshair; touch-action: none; }
 .aiws-stage-pointer.is-active { pointer-events: auto; cursor: none; }
