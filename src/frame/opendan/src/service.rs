@@ -617,7 +617,7 @@ mod permission_tests {
     #[test]
     fn read_only_agent_writes_only_its_own_state() {
         for method in [
-            "sessions.register", "sessions.post_input", "sessions.verify",
+            "sessions.reserve_id", "sessions.register", "sessions.post_input", "sessions.verify",
             "cognition.notebook_append", "artifacts.decide", "workspaces.create",
             "workspaces.import", "workspaces.discover", "workspaces.check", "workspaces.update",
             "workspaces.archive", "workspaces.unregister", "workspaces.set_runtime_available",

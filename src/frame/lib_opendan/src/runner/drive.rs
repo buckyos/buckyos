@@ -188,7 +188,7 @@ async fn drive_locked(
         external_stop_applied: AtomicBool::new(false),
         behavior_functions: Default::default(),
     });
-    super::live_tasks::register(sd.sid(), &sh);
+    super::live_tasks::register(sh.agent().agent_did(), sd.sid(), &sh);
     let r = Box::pin(drive_inner(&sh, until)).await;
     let failure = sh
         .workspace_failure

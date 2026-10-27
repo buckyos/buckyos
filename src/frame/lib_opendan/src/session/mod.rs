@@ -190,7 +190,19 @@ impl SessionDir {
         {
             return Ok((SessionDir::open(&final_dir)?, Publish::AlreadyExists));
         }
-        let tmp = parent.join(format!(".tmp-{}", uuid::Uuid::new_v4().simple()));
+        let mut attempt = 0u64;
+        let tmp = loop {
+            let path = parent.join(format!(".tmp-{sid}-{attempt}"));
+            match std::fs::create_dir(&path) {
+                Ok(()) => break path,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    attempt = attempt.checked_add(1).ok_or_else(|| {
+                        OpenDanError::InvalidArgument("session temporary directory numbers exhausted".into())
+                    })?;
+                }
+                Err(e) => return Err(OpenDanError::io(&path, e)),
+            }
+        };
         let build = || -> Result<()> {
             let state_dir = tmp.join(STATE_DIR);
             std::fs::create_dir_all(&state_dir).map_err(|e| OpenDanError::io(&state_dir, e))?;

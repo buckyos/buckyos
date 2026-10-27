@@ -939,6 +939,18 @@ async fn inbox_messages_are_answered_along_the_same_conversation() {
         .unwrap()
         .to_string();
     let entry = ui_entry(loader.agent.as_ref(), &route).expect("ui session of the inbox");
+    let (date, number) = entry.session_id.strip_prefix("ui-").unwrap().split_once('-').unwrap();
+    assert_eq!(date.len(), 8);
+    assert!(date.bytes().all(|b| b.is_ascii_digit()));
+    assert!(number.parse::<u64>().unwrap() > 0);
+    assert_eq!(
+        loader.agent.sessions().reserve_id(
+            SessionKind::Ui,
+            &opendan::ui::ui_session_key(AGENT, &route, 0),
+            None,
+        ).await.unwrap(),
+        entry.session_id,
+    );
     assert_eq!(entry.driver.principal, WHO);
     assert!(key.starts_with(&format!("{}:1:", entry.session_id)), "{key}");
     let sd = SessionDir::open(&entry.location).unwrap();
@@ -1842,7 +1854,7 @@ async fn a_turn_is_a_task_and_a_slow_reply_replaces_its_placeholder() {
     assert_eq!(task.new.name, "a slow question");
     assert_eq!(task.new.parent_id, None);
     assert_eq!(task.new.grant_user.as_deref(), Some("alice"));
-    assert_eq!(task.new.idempotency_key, format!("agent_turn:{}:1", entry.session_id));
+    assert_eq!(task.new.idempotency_key, format!("agent_turn:{AGENT}:{}:1", entry.session_id));
     assert_eq!(task.new.input["session_id"], json!(entry.session_id));
     assert_eq!(task.new.input["turn"], json!(1));
     assert_eq!(task.message, "answer 0");

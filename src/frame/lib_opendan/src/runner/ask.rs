@@ -225,7 +225,7 @@ pub(super) async fn send_notify_questions(
             prompt: crate::notify::input_prompt(title, message, options, allow_text),
             source: Some(source),
             expires_at_ms: Some(record.deadline_ms),
-            idempotency_key: format!("{sid}:{turn}:ask:{call_id}"),
+            idempotency_key: format!("{}:{sid}:{turn}:ask:{call_id}", sh.agent().agent_did()),
         };
         match notify.send(req).await {
             Ok(view) => {

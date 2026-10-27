@@ -415,9 +415,9 @@ pub struct UiModule {
     scan: Mutex<UiStatus>,
 }
 
-/// Session id of generation `generation` of the inbox `route_key`. The
+/// Reservation key of generation `generation` of the inbox `route_key`. The
 /// address itself has `:`, `/` and `%`; a session id goes into kevent paths.
-pub fn ui_session_id(agent_did: &str, route_key: &str, generation: usize) -> String {
+pub fn ui_session_key(agent_did: &str, route_key: &str, generation: usize) -> String {
     format!(
         "ui-{}",
         libopendan::ids::h(&["ui", agent_did, route_key, &generation.to_string()])
@@ -517,7 +517,16 @@ impl UiModule {
         // The objective is the conversation's design intent; whose
         // conversation it is stays in the route key.
         let mut spec = template.spec(template.objective_or_default(on == ON_MSG_GROUP));
-        spec.session_id = Some(ui_session_id(self.agent.agent_did(), route_key, bound.len()));
+        spec.session_id = Some(
+            self.agent
+                .sessions()
+                .reserve_id(
+                    SessionKind::Ui,
+                    &ui_session_key(self.agent.agent_did(), route_key, bound.len()),
+                    Some(&self.sessions_dir),
+                )
+                .await?,
+        );
         spec.route_key = Some(route_key.to_string());
         spec.owner = Some(self.owner.to_string());
         spec.driver = Some(self.who.clone());

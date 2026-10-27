@@ -32,18 +32,20 @@
 3. 没有被持有、没有进行中的 run 时，session 目录可以整体移动；移动后由驱动者更新登记表 `location`（`update_location`，`location_rev + 1`）。在登记表更新之前，runner 必须拒绝推进（登记表 `location` 与实际目录不一致 = 未登记）。
 4. 附件引用可以是 session 目录内的相对路径，也可以是 NamedStore 对象 id；不允许绝对路径（`binding.json` 与 `runs/` 除外）。
 
-## 2. session_id（全局唯一）
+## 2. session_id（Agent 内唯一）
 
-`H(args)` = 参数数组按紧凑 JSON 编码（UTF-8、无空白，如 `["work","did:bns:a","app:x@o","k"]`）的 SHA-256 完整小写 hex。
+自动 Session ID 为 `<kind前缀>-YYYYMMDD-N`，例如 `work-20260110-23`、`ui-20260110-24`。日期取分配主机本地日期，编号取同一 Agent 当天已有目录、登记和预留记录中的最大编号加 1，没有时从 1 开始；各 kind 共用当天编号。目录仍为 `sessions/<session_id>/`，节点工作目录也使用这个 Session ID。跨 Agent 的身份使用 `(agent_did, session_id)`，消息队列名称、TurnTask 与用户输入通知的幂等键、运行中任务查询均带 Agent 范围。
 
-| kind | 规则 |
+分配在文件锁内完成，`state/sessions/.ids/` 持久保存身份键到短 ID 的映射。创建者可以先预留 ID，再创建目录；同一身份键在重试、重启、跨日后仍取得原 ID，避免 Goal epoch 或 Todo 派发恢复时产生另一个 Session。`H(args)` = 参数数组按紧凑 JSON 编码（UTF-8、无空白，如 `["work","did:bns:a","app:x@o","k"]`）的 SHA-256 完整小写 hex。
+
+| kind / 前缀 | 身份键规则 |
 |---|---|
-| work | `work-<yyyymmddThhmmss>-<uuid_v4 32hex>`（UTC 时间）；带幂等键时 `work-H("work", agent_did, creator_principal, key)` |
-| self_check | `sc-H("self_check", agent_did)` |
-| goal | `goal-H("goal", agent_did, goal_id, epoch)`（epoch 为十进制字符串）；只由宿主为 Goal 创建（[Agent State Protocol](<Agent State Protocol.md>) §9），普通创建与子 Session 创建都拒绝 `goal` 类 |
-| ui | `ui-H("ui", agent_did, route_key)`；`route_key` 是该 Session 绑定的会话（OpenDAN 的 UI Session 用 msg-center 的 `MailboxAddress` 字符串）。未给 `route_key` 的 ui Session（本地对话）由创建函数补一个 `local:<幂等键或 uuid>`。宿主需要同一个 `route_key` 下的多代 Session 时显式传 sid（OpenDAN：`ui-H("ui", agent_did, route_key, <代次>)`） |
+| work / `work` | 无幂等键时生成随机身份键；带幂等键时用 `work-H("work", agent_did, creator_principal, key)` 预留短 ID |
+| self_check / `sc` | `sc-H("self_check", agent_did)` 预留单例短 ID |
+| goal / `goal` | `goal-H("goal", agent_did, goal_id, epoch)` 预留短 ID（epoch 为十进制字符串）；只由宿主为 Goal 创建（[Agent State Protocol](<Agent State Protocol.md>) §9），普通创建与子 Session 创建都拒绝 `goal` 类 |
+| ui / `ui` | `ui-H("ui", agent_did, route_key)` 预留短 ID；`route_key` 是该 Session 绑定的会话（OpenDAN 的 UI Session 用 msg-center 的 `MailboxAddress` 字符串）。未给 `route_key` 的本地对话补一个 `local:<幂等键或 uuid>`。OpenDAN 的多代 UI Session 用 `ui-H("ui", agent_did, route_key, <代次>)` 预留各代短 ID |
 
-字符集：字母、数字、`_ - .`，不以 `.` 开头，长度 1..=200。显式传入的 sid 必须满足同样的约束并由调用方保证全局唯一。
+字符集：字母、数字、`_ - .`，不以 `.` 开头，长度 1..=200。显式传入的 sid 必须满足同样的约束并由调用方保证在该 Agent 内唯一。
 
 ## 3. session_config.json
 
@@ -102,7 +104,7 @@ Schema：`schema/session_config.schema.json`。要点：
                                  | { "type": "task", "task_id": "…" } | { "type": "timer", "name": "…" } | { "type": "system", "id": "…" },
                        "watch": ["run_state","outcome"] } ],
   "channels": {
-    "inputs": [ { "kind": "kmsg", "id": "q", "queue": "<urn>", "subscriber": "opendan.<agent_id>.<sid>" } ],
+    "inputs": [ { "kind": "kmsg", "id": "q", "queue": "<urn>", "subscriber": "opendan.<H(agent_did,sid)>" } ],
     "outbound": null | { "to": "<对端或群的 DID>", "to_session": null, "kind": "chat" },  // 回复坐标，创建时固定
     "wake_event": "/opendan/<agent_id>/session/<sid>/input"
   },

@@ -96,7 +96,7 @@ xagent : AgentSession ──InputBus──► 输入批次 ──commit──►
    runs/ = xllm run 目录 ◄── xllm --resume 可接手
 ```
 
-`*` 只定义接口与桩。xagent 自身也会被包装进 `<sid>/.runtime/bin`（名字 `agent-session`，兼容现有 exec 内用法），exec 里的子进程用它向本 session 投递 control / perception、读写认知与登记表。
+`*` 只定义接口与桩。自动 `sid` 为 `<kind前缀>-YYYYMMDD-N`，在当前 Agent 内唯一，目录仍以 `sid` 命名；同一创建身份键通过 Agent State 的持久预留映射复用短 ID。xagent 自身也会被包装进 `<sid>/.runtime/bin`（名字 `agent-session`，兼容现有 exec 内用法），exec 里的子进程用它向本 session 投递 control / perception、读写认知与登记表。
 
 ---
 

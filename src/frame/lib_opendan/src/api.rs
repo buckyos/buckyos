@@ -19,7 +19,7 @@ pub struct SessionSpec {
     pub kind: SessionKind,
     #[serde(default = "default_class")]
     pub class: String,
-    /// Explicit session id; must be globally unique (§4.2) — the caller owns
+    /// Explicit session id; must be unique within the agent (§4.2) — the caller owns
     /// that guarantee. Normally left empty.
     #[serde(default)]
     pub session_id: Option<String>,
@@ -309,13 +309,16 @@ pub async fn create_session(
             ids::validate_session_id(s)?;
             s.clone()
         }
-        None => ids::derive_session_id(
-            spec.kind,
-            &agent_did,
-            who,
-            spec.idempotency_key.as_deref(),
-            spec.route_key.as_deref(),
-        )?,
+        None => {
+            let key = ids::session_identity_key(
+                spec.kind,
+                &agent_did,
+                who,
+                spec.idempotency_key.as_deref(),
+                spec.route_key.as_deref(),
+            )?;
+            agent.sessions().reserve_id(spec.kind, &key, Some(parent_dir)).await?
+        }
     };
     let driver = spec.driver.clone().unwrap_or_else(|| who.to_string());
     if spec.prompt.initial_inputs.len() > MAX_PENDING_INPUTS {
@@ -351,9 +354,9 @@ pub async fn create_session(
         let (app, owner) = ids::parse_app_principal(&driver)
             .unwrap_or_else(|| ("opendan".to_string(), "unknown".to_string()));
         let queue =
-            crate::channel::kmsg::ensure_queue(&client, &ids::queue_name(&sid), &app, &owner)
+            crate::channel::kmsg::ensure_queue(&client, &ids::queue_name(&agent_did, &sid), &app, &owner)
                 .await?;
-        let subscriber = ids::subscriber_id(agent.agent_id(), &sid);
+        let subscriber = ids::subscriber_id(&agent_did, &sid);
         crate::channel::kmsg::ensure_subscription(
             &client,
             &queue,
@@ -690,7 +693,7 @@ fn sub_session_key(parent_sid: &str, sub: &SubSessionSpec) -> Option<String> {
 /// `parent_sid` created by `who` — known before it exists, so a creator can
 /// record it first and find it again after a crash. Needs an idempotency
 /// identity (`sub.call` or `sub.key`).
-pub fn sub_session_id(
+pub async fn sub_session_id(
     agent: &dyn AgentStateClient,
     who: &str,
     parent_sid: &str,
@@ -701,7 +704,10 @@ pub fn sub_session_id(
     })?;
     let class = sub.class.clone().unwrap_or_else(|| "work".to_string());
     let template = crate::template::SessionTemplate::load(&class, agent.agent_root())?;
-    ids::derive_session_id(template.kind, agent.agent_did(), who, Some(&key), None)
+    let key = ids::session_identity_key(template.kind, agent.agent_did(), who, Some(&key), None)?;
+    let parent = agent.sessions().lookup(parent_sid).await?
+        .ok_or_else(|| OpenDanError::NotFound(format!("parent session {parent_sid}")))?;
+    agent.sessions().reserve_id(template.kind, &key, Path::new(&parent.location).parent()).await
 }
 
 /// Apply `accept | discard` to a finished Work that has no input queue,
@@ -862,7 +868,8 @@ pub async fn create_sub_session(
             "a goal session is never a sub session: create a goal (`agent-session goal create`)".into(),
         ));
     }
-    let sid = ids::derive_session_id(template.kind, agent.agent_did(), who, Some(&key), None)?;
+    let identity_key = ids::session_identity_key(template.kind, agent.agent_did(), who, Some(&key), None)?;
+    let sid = agent.sessions().reserve_id(template.kind, &identity_key, parent_dir.path().parent()).await?;
     // The same call again: the session it created, never a second one.
     if let Some(existing) = agent.sessions().lookup(&sid).await? {
         return SessionDir::open(&existing.location);

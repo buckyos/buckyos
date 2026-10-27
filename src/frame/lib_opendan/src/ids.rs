@@ -1,8 +1,8 @@
-//! Global session ids (§4.2) and naming helpers.
+//! Session allocation keys (§4.2) and naming helpers.
 //!
-//! A session id is globally unique across agents, apps and owners. Random ids
-//! keep the full UUID; idempotent / singleton ids hash a fixed-order JSON
-//! array (`H`) and keep the full SHA-256 hex.
+//! Stable keys preserve idempotency; Agent State reserves short session ids
+//! within each agent. Keys use a full UUID or the SHA-256 of a fixed-order
+//! JSON array (`H`).
 
 use sha2::{Digest, Sha256};
 
@@ -27,13 +27,13 @@ fn random_part() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
 
-/// Derive a session id following §4.2.
+/// Derive the session allocation key following §4.2.
 ///
 /// - `ui`: `ui-H("ui", agent_did, route_key)`
 /// - `work`: random, or `work-H("work", agent_did, creator, key)`
 /// - `self_check`: `sc-H("self_check", agent_did)`
-/// - `goal`: from the Goal only, [`goal_session_id`]
-pub fn derive_session_id(
+/// - `goal`: from the Goal only, [`goal_session_key`]
+pub fn session_identity_key(
     kind: SessionKind,
     agent_did: &str,
     creator_principal: &str,
@@ -51,7 +51,7 @@ pub fn derive_session_id(
         SessionKind::SelfCheck => format!("{prefix}-{}", h(&["self_check", agent_did])),
         SessionKind::Goal => {
             return Err(OpenDanError::InvalidArgument(
-                "a goal session id derives from its goal and epoch (ids::goal_session_id); goal sessions are created by the host for a goal".into(),
+                "a goal session allocation key derives from its goal and epoch (ids::goal_session_key); goal sessions are created by the host for a goal".into(),
             ))
         }
         SessionKind::Work => match idempotency_key {
@@ -64,9 +64,9 @@ pub fn derive_session_id(
     })
 }
 
-/// Session id of epoch `epoch` of a Goal: `goal-H("goal", agent_did,
+/// Session allocation key of epoch `epoch` of a Goal: `goal-H("goal", agent_did,
 /// goal_id, epoch)`.
-pub fn goal_session_id(agent_did: &str, goal_id: &str, epoch: u64) -> String {
+pub fn goal_session_key(agent_did: &str, goal_id: &str, epoch: u64) -> String {
     format!(
         "{}-{}",
         SessionKind::Goal.id_prefix(),
@@ -138,14 +138,14 @@ pub fn app_principal(appid: &str, owner: &str) -> String {
     format!("app:{appid}@{owner}")
 }
 
-/// kmsg queue name of a session (`opendan.session.<sid>`).
-pub fn queue_name(sid: &str) -> String {
-    format!("opendan.session.{sid}")
+/// kmsg queue name, scoped to the agent as well as the driving app.
+pub fn queue_name(agent_did: &str, sid: &str) -> String {
+    format!("opendan.session.{}", h(&[agent_did, sid]))
 }
 
 /// kmsg subscriber id (sub ids share one namespace across queues and apps).
-pub fn subscriber_id(agent_id: &str, sid: &str) -> String {
-    format!("opendan.{}.{sid}", sanitize_segment(agent_id))
+pub fn subscriber_id(agent_did: &str, sid: &str) -> String {
+    format!("opendan.{}", h(&[agent_did, sid]))
 }
 
 /// kevent id published after posting to the session queue.
@@ -163,9 +163,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn random_ids_keep_full_uuid() {
-        let a = derive_session_id(SessionKind::Work, "did:bns:a", "app:x@o", None, None).unwrap();
-        let b = derive_session_id(SessionKind::Work, "did:bns:a", "app:x@o", None, None).unwrap();
+    fn random_allocation_keys_keep_full_uuid() {
+        let a = session_identity_key(SessionKind::Work, "did:bns:a", "app:x@o", None, None).unwrap();
+        let b = session_identity_key(SessionKind::Work, "did:bns:a", "app:x@o", None, None).unwrap();
         assert_ne!(a, b);
         let parts: Vec<&str> = a.split('-').collect();
         assert_eq!(parts[0], "work");
@@ -175,17 +175,17 @@ mod tests {
     }
 
     #[test]
-    fn idempotent_ids_are_namespaced() {
+    fn idempotent_allocation_keys_are_namespaced() {
         let k = Some("req-1");
-        let a1 = derive_session_id(SessionKind::Work, "did:bns:a", "app:x@o", k, None).unwrap();
-        let a2 = derive_session_id(SessionKind::Work, "did:bns:a", "app:x@o", k, None).unwrap();
+        let a1 = session_identity_key(SessionKind::Work, "did:bns:a", "app:x@o", k, None).unwrap();
+        let a2 = session_identity_key(SessionKind::Work, "did:bns:a", "app:x@o", k, None).unwrap();
         assert_eq!(a1, a2);
         let other_agent =
-            derive_session_id(SessionKind::Work, "did:bns:b", "app:x@o", k, None).unwrap();
+            session_identity_key(SessionKind::Work, "did:bns:b", "app:x@o", k, None).unwrap();
         let other_creator =
-            derive_session_id(SessionKind::Work, "did:bns:a", "app:y@o", k, None).unwrap();
+            session_identity_key(SessionKind::Work, "did:bns:a", "app:y@o", k, None).unwrap();
         let other_owner =
-            derive_session_id(SessionKind::Work, "did:bns:a", "app:x@o2", k, None).unwrap();
+            session_identity_key(SessionKind::Work, "did:bns:a", "app:x@o2", k, None).unwrap();
         assert_ne!(a1, other_agent);
         assert_ne!(a1, other_creator);
         assert_ne!(a1, other_owner);
@@ -193,31 +193,31 @@ mod tests {
     }
 
     #[test]
-    fn deterministic_ids_include_agent() {
-        let u1 = derive_session_id(SessionKind::Ui, "did:bns:a", "", None, Some("tg:1")).unwrap();
-        let u2 = derive_session_id(SessionKind::Ui, "did:bns:b", "", None, Some("tg:1")).unwrap();
+    fn deterministic_allocation_keys_include_agent() {
+        let u1 = session_identity_key(SessionKind::Ui, "did:bns:a", "", None, Some("tg:1")).unwrap();
+        let u2 = session_identity_key(SessionKind::Ui, "did:bns:b", "", None, Some("tg:1")).unwrap();
         assert_ne!(u1, u2);
-        let c1 = derive_session_id(SessionKind::SelfCheck, "did:bns:a", "", None, None).unwrap();
-        let c2 = derive_session_id(SessionKind::SelfCheck, "did:bns:b", "", None, None).unwrap();
+        let c1 = session_identity_key(SessionKind::SelfCheck, "did:bns:a", "", None, None).unwrap();
+        let c2 = session_identity_key(SessionKind::SelfCheck, "did:bns:b", "", None, None).unwrap();
         assert_ne!(c1, c2);
         // Same agent name under two owners → different DIDs → different ids.
         let o1 =
-            derive_session_id(SessionKind::SelfCheck, "did:bns:jarvis.alice", "", None, None)
+            session_identity_key(SessionKind::SelfCheck, "did:bns:jarvis.alice", "", None, None)
                 .unwrap();
-        let o2 = derive_session_id(SessionKind::SelfCheck, "did:bns:jarvis.bob", "", None, None)
+        let o2 = session_identity_key(SessionKind::SelfCheck, "did:bns:jarvis.bob", "", None, None)
             .unwrap();
         assert_ne!(o1, o2);
     }
 
     #[test]
-    fn goal_session_ids_follow_the_goal_and_epoch() {
-        let a1 = goal_session_id("did:bns:a", "g-1", 1);
-        assert_eq!(a1, goal_session_id("did:bns:a", "g-1", 1));
-        assert_ne!(a1, goal_session_id("did:bns:a", "g-1", 2));
-        assert_ne!(a1, goal_session_id("did:bns:b", "g-1", 1));
+    fn goal_session_keys_follow_the_goal_and_epoch() {
+        let a1 = goal_session_key("did:bns:a", "g-1", 1);
+        assert_eq!(a1, goal_session_key("did:bns:a", "g-1", 1));
+        assert_ne!(a1, goal_session_key("did:bns:a", "g-1", 2));
+        assert_ne!(a1, goal_session_key("did:bns:b", "g-1", 1));
         assert!(a1.starts_with("goal-"));
         validate_session_id(&a1).unwrap();
-        assert!(derive_session_id(SessionKind::Goal, "did:bns:a", "app:x@o", Some("k"), None).is_err());
+        assert!(session_identity_key(SessionKind::Goal, "did:bns:a", "app:x@o", Some("k"), None).is_err());
         let k1 = new_goal_id("did:bns:a", "app:x@o", Some("k"));
         assert_eq!(k1, new_goal_id("did:bns:a", "app:x@o", Some("k")));
         assert_ne!(new_goal_id("did:bns:a", "app:x@o", None), new_goal_id("did:bns:a", "app:x@o", None));

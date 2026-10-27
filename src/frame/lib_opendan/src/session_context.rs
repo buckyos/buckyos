@@ -546,7 +546,7 @@ impl SessionService {
             }
             "session.task" => {
                 let req: agent_tool::task_bridge::TaskBridgeRequest = param(params, "request")?;
-                match crate::runner::answer_session_task(sid, &req).await {
+                match crate::runner::answer_session_task(agent.agent_did(), sid, &req).await {
                     Some(r) => to_json(&r),
                     None => to_json(&agent_tool::task_bridge::TaskBridgeResponse {
                         state: "unknown".into(),

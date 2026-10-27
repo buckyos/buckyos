@@ -419,9 +419,14 @@ impl FsGoals {
         reason: &str,
         keep: StateKeep,
         now: u64,
-    ) {
+    ) -> Result<()> {
         let epoch = goal.session.epoch + 1;
-        let sid = crate::ids::goal_session_id(&self.agent_did, &goal.goal_id, epoch);
+        let sid = super::registry::reserve_session_id(
+            &self.layout,
+            SessionKind::Goal,
+            &crate::ids::goal_session_key(&self.agent_did, &goal.goal_id, epoch),
+            None,
+        )?;
         goal.epochs.push(GoalEpoch {
             epoch,
             sid: sid.clone(),
@@ -434,6 +439,7 @@ impl FsGoals {
             end_reason: None,
         });
         goal.session = GoalSessionRef { epoch, sid };
+        Ok(())
     }
 
     fn state_file(&self, goal_id: &str) -> PathBuf {
@@ -525,7 +531,12 @@ impl GoalStore for FsGoals {
             return Ok(existing);
         }
         let now = crate::now_ms();
-        let sid = crate::ids::goal_session_id(&self.agent_did, &goal_id, 1);
+        let sid = super::registry::reserve_session_id(
+            &self.layout,
+            SessionKind::Goal,
+            &crate::ids::goal_session_key(&self.agent_did, &goal_id, 1),
+            None,
+        )?;
         let via = match &ck {
             CallerKind::Ui(sid) => format!("ui_session:{sid}"),
             _ => "owner".to_string(),
@@ -792,7 +803,7 @@ impl GoalStore for FsGoals {
         } else {
             StateKeep::All
         };
-        self.new_epoch(&mut goal, EpochStart::Reopened, &req.reason, keep, now);
+        self.new_epoch(&mut goal, EpochStart::Reopened, &req.reason, keep, now)?;
         goal.status = GoalStatus::Active;
         goal.status_changed_at_ms = now;
         goal.status_reason = Some(req.reason.clone());
@@ -839,7 +850,7 @@ impl GoalStore for FsGoals {
             e.end = Some(EpochEnd::Restarted);
             e.end_reason = Some(req.reason.clone());
         }
-        self.new_epoch(&mut goal, EpochStart::Restarted, &req.reason, keep, now);
+        self.new_epoch(&mut goal, EpochStart::Restarted, &req.reason, keep, now)?;
         goal.updated_at_ms = now;
         let mut change = Self::change("restarted", caller, &ck, Some(req.reason.clone()));
         change.epoch = Some(goal.session.epoch);

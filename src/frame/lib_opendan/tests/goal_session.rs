@@ -184,13 +184,26 @@ async fn the_host_creates_one_goal_session_per_goal_and_epoch() {
     let g1 = h.agent.goals().create(&req, &owner()).await.unwrap();
     let g2 = h.agent.goals().create(&req, &owner()).await.unwrap();
     assert_eq!(g1.goal_id, g2.goal_id);
+    assert_eq!(g1.session.sid, g2.session.sid);
     assert_eq!(h.agent.goals().list().await.unwrap().len(), 1);
     // Written, not hosted yet: no session.
     assert!(h.agent.sessions().lookup(&g1.session.sid).await.unwrap().is_none());
     assert_eq!(
         g1.session.sid,
-        libopendan::ids::goal_session_id(AGENT, &g1.goal_id, 1)
+        h.agent
+            .sessions()
+            .reserve_id(
+                SessionKind::Goal,
+                &libopendan::ids::goal_session_key(AGENT, &g1.goal_id, 1),
+                None,
+            )
+            .await
+            .unwrap()
     );
+    let (date, number) = g1.session.sid.strip_prefix("goal-").unwrap().split_once('-').unwrap();
+    assert_eq!(date.len(), 8);
+    assert!(chrono::NaiveDate::parse_from_str(date, "%Y%m%d").is_ok());
+    assert!(number.parse::<u64>().unwrap() > 0);
     h.tick().await;
     h.tick().await;
     let goal_sessions: Vec<RegistryEntry> = h
@@ -205,6 +218,7 @@ async fn the_host_creates_one_goal_session_per_goal_and_epoch() {
     assert_eq!(goal_sessions.len(), 1);
     let e = &goal_sessions[0];
     assert_eq!(e.session_id, g1.session.sid);
+    assert_eq!(Path::new(&e.location).file_name().unwrap().to_str(), Some(e.session_id.as_str()));
     assert_eq!(e.goal_id.as_deref(), Some(g1.goal_id.as_str()));
     assert!(e.origin.is_none(), "a goal session has no parent");
     let cfg = SessionDir::open(&e.location).unwrap().config().unwrap();

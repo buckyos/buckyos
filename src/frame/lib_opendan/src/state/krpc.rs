@@ -13,7 +13,7 @@
 //! versions) and the Agent-level locks depend on flock and stay with the
 //! processes that see the AgentRoot.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -110,7 +110,8 @@ fn out<T: Serialize>(v: T) -> Result<Value> {
 pub fn is_write(method: &str) -> bool {
     matches!(
         method,
-        "sessions.register"
+        "sessions.reserve_id"
+            | "sessions.register"
             | "sessions.post_input"
             | "sessions.verify"
             | "cognition.notebook_append"
@@ -170,6 +171,18 @@ pub async fn serve_call(
             "agent_did": agent.agent_did(),
             "agent_id": agent.agent_id(),
         })),
+        "sessions.reserve_id" => match (
+            arg::<SessionKind>(params, "kind"),
+            arg::<String>(params, "key"),
+            arg::<Option<PathBuf>>(params, "parent_dir"),
+        ) {
+            (Ok(kind), Ok(key), Ok(parent)) => agent
+                .sessions()
+                .reserve_id(kind, &key, parent.as_deref())
+                .await
+                .and_then(out),
+            (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Err(e),
+        },
         "sessions.register" => match arg::<RegistryEntry>(params, "entry") {
             Ok(entry) if entry.created_by.principal != who => Err(OpenDanError::InvalidArgument(
                 format!("entry.created_by is {}, the caller is {who}", entry.created_by.principal),
@@ -588,6 +601,19 @@ impl KrpcAgentStateClient {
 
 #[async_trait]
 impl SessionRegistry for KrpcAgentStateClient {
+    async fn reserve_id(
+        &self,
+        kind: SessionKind,
+        key: &str,
+        parent_dir: Option<&Path>,
+    ) -> Result<String> {
+        self.call(
+            "sessions.reserve_id",
+            json!({ "kind": kind, "key": key, "parent_dir": parent_dir }),
+        )
+        .await
+    }
+
     async fn register(&self, entry: RegistryEntry, _who: &str) -> Result<RegistryEntry> {
         self.call("sessions.register", json!({ "entry": entry })).await
     }

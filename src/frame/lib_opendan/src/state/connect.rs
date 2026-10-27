@@ -137,6 +137,18 @@ impl ForwardingStateClient {
 
 #[async_trait]
 impl SessionRegistry for ForwardingStateClient {
+    async fn reserve_id(
+        &self,
+        kind: SessionKind,
+        key: &str,
+        parent_dir: Option<&Path>,
+    ) -> Result<String> {
+        self.inner
+            .sessions()
+            .reserve_id(kind, key, parent_dir)
+            .await
+    }
+
     async fn register(&self, entry: RegistryEntry, who: &str) -> Result<RegistryEntry> {
         self.inner.sessions().register(entry, who).await
     }

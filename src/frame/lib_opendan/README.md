@@ -27,6 +27,8 @@
 
 ## 使用
 
+自动 Session ID 与目录名均为 `<kind前缀>-YYYYMMDD-N`（如 `work-20260110-23`），保持 `sessions/<session_id>/` 布局。日期取分配主机本地日期，同一 Agent 按当天已有目录、登记和预留记录的最大编号加 1；幂等身份键到短 ID 的映射保存在 `state/sessions/.ids/`，重试和跨日恢复沿用原 ID。节点工作目录同样使用短 Session ID；长期 Workspace 使用创建或导入时显式指定的目录。
+
 ```rust
 let channels = Arc::new(KmsgChannels::new(kmsg_client));          // 或 KmsgChannels::dir(dev_dir)
 let agent = Arc::new(FsAgentStateClient::open(agent_root, agent_did, Some(channels.client()), None)?);

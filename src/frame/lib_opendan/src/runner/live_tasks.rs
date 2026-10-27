@@ -10,24 +10,28 @@ use agent_tool::task_bridge::{TaskBridgeRequest, TaskBridgeResponse};
 
 use super::shared::Shared;
 
-static LIVE: Mutex<Option<HashMap<String, Weak<Shared>>>> = Mutex::new(None);
+static LIVE: Mutex<Option<HashMap<(String, String), Weak<Shared>>>> = Mutex::new(None);
 
 /// The drive of session `sid` in this process is `sh`.
-pub(super) fn register(sid: &str, sh: &Arc<Shared>) {
+pub(super) fn register(agent_did: &str, sid: &str, sh: &Arc<Shared>) {
     let mut live = LIVE.lock().expect("live drives");
     let map = live.get_or_insert_with(HashMap::new);
     map.retain(|_, w| w.strong_count() > 0);
-    map.insert(sid.to_string(), Arc::downgrade(sh));
+    map.insert((agent_did.to_string(), sid.to_string()), Arc::downgrade(sh));
 }
 
 /// Answer a task request of session `sid` from its current run; `None`:
 /// this process drives no run of that session now.
-pub async fn answer_session_task(sid: &str, req: &TaskBridgeRequest) -> Option<TaskBridgeResponse> {
+pub async fn answer_session_task(
+    agent_did: &str,
+    sid: &str,
+    req: &TaskBridgeRequest,
+) -> Option<TaskBridgeResponse> {
     let sh = LIVE
         .lock()
         .expect("live drives")
         .as_ref()
-        .and_then(|m| m.get(sid))
+        .and_then(|m| m.get(&(agent_did.to_string(), sid.to_string())))
         .and_then(Weak::upgrade)?;
     let resolver = sh.tasks.lock().expect("tasks").clone()?;
     Some(agent_tool::task_bridge::answer(resolver.as_ref(), req).await)

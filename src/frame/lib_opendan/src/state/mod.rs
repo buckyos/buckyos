@@ -52,6 +52,12 @@ pub use perception::{run_digest, PERCEPTION_LOCK_TIMEOUT};
 /// every session of an agent, wherever its directory lives.
 #[async_trait]
 pub trait SessionRegistry: Send + Sync {
+    async fn reserve_id(
+        &self,
+        kind: SessionKind,
+        key: &str,
+        parent_dir: Option<&Path>,
+    ) -> Result<String>;
     /// Called once by the creator; idempotent for the same identity.
     async fn register(&self, entry: RegistryEntry, who: &str) -> Result<RegistryEntry>;
     /// Driver only, after every commit; ignored unless `status.rev` is newer.

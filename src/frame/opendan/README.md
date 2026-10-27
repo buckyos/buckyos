@@ -43,7 +43,7 @@ Goals（`[loader.goals] enabled`，缺省开启，没有 Goal 时没有开销）
 
 托管循环在 `libopendan::host::Supervisor`：登记表里 `driver = 本进程身份` 且未结束（或有待处理 decide）的 Session 各有一个协程循环 `drive(Idle)`；启动后的第一次扫描就是恢复；空闲超过 `idle_unload_secs` 且没有待推进工作的 Session 被卸载，有新输入时再装载。
 
-Turn 与 task：zone 形态下每个 Turn 打开时在 TaskMgr 建 task（幂等键 `agent_turn:<sid>:<turn>`，input = `{agent_did, session_id, session_kind, turn, inputs}`），子 Session 的 Turn 挂在创建它的那个 Turn 的 task 下；Session 是 task 状态的唯一写入方（Running + message、Waiting(ChildTask / Dependency / External)、Succeeded `{summary}`、Failed、Stopped → Canceled）。`--dev` 没有 TaskMgr，不建 task。
+Turn 与 task：zone 形态下每个 Turn 打开时在 TaskMgr 建 task（幂等键 `agent_turn:<agent_did>:<sid>:<turn>`，input = `{agent_did, session_id, session_kind, turn, inputs}`），子 Session 的 Turn 挂在创建它的那个 Turn 的 task 下；Session 是 task 状态的唯一写入方（Running + message、Waiting(ChildTask / Dependency / External)、Succeeded `{summary}`、Failed、Stopped → Canceled）。`--dev` 没有 TaskMgr，不建 task。
 
 占位：Agent 包 `i18n/<语言>.toml` 的 `[outbound]` 有 `accepted` 文案、msg-center `msg.get_edit_capability` 回答可编辑、且 Turn 打开超过 `[loader] placeholder_delay_ms`（默认 3000）或已有首次工具调用时，先发占位（带 `agent_task`），Turn 结束时以一条 edit 替换；`stopped` / `finished` 是停止与无正文结束时收尾占位的文案。其余情况只发最终回复（同样带 `agent_task`）。
 
@@ -125,6 +125,7 @@ WebUI 通过同源 `/api/opendan` 访问托管本页面的 Agent，由 zone 网�
 | method | params | result |
 |---|---|---|
 | `agent.info` | – | `{agent_did, agent_id}` |
+| `sessions.reserve_id` | `{kind, key, parent_dir?: string}` | 预留或复用短 Session ID（`<kind前缀>-YYYYMMDD-N`） |
 | `sessions.lookup` | `{sid}` | `RegistryEntry \| null` |
 | `sessions.query` | `{query?: RegistryQuery}` | `RegistryEntry[]` |
 | `sessions.children_of` | `{parents: string[]}` | `RegistryEntry[]` |

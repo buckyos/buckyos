@@ -347,7 +347,10 @@ impl TurnTaskSink for TurnTasks {
                     "inputs": turn.inputs,
                 }),
                 parent_id: turn.parent_task.clone(),
-                idempotency_key: format!("agent_turn:{}:{}", turn.session_id, turn.turn),
+                idempotency_key: format!(
+                    "agent_turn:{}:{}:{}",
+                    turn.agent_did, turn.session_id, turn.turn
+                ),
                 grant_user: self.owner.clone(),
             })
             .await?;

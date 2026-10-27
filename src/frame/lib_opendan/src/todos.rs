@@ -241,7 +241,7 @@ async fn dispatch_as(
     };
     let behavior = todo_behavior(t, opts, mode);
     let sub = child_spec(&list, t, attempt, opts, mode);
-    let child_sid = sub_session_id(agent, who, &parent_sid, &sub)?;
+    let child_sid = sub_session_id(agent, who, &parent_sid, &sub).await?;
     let now = crate::now_ms();
     let n = lock
         .update(|l| match mode {

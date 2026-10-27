@@ -15,6 +15,7 @@
   sessions/<sid>/                           session 目录的默认位置（可选）
   state/
     sessions/<sid>.json                     登记表（全部 session，无论目录在哪）
+    sessions/.ids/                         身份键到短 session_id 的持久预留映射
     sessions/.unreachable/<sid>             巡检标记（目录不可达）
     perception/<sid>.jsonl                  感知
     perception/<sid>.jsonl.lock             感知文件短锁（追加与清理互斥）
@@ -37,7 +38,7 @@
   "created_by": { "principal": "app:app2@alice", "via": "app" }, "idempotency_key": null, "route_key": null,
   "driver": { "principal": "app:app2@alice" },
   "location": "/abs/path/<sid>", "location_rev": 0,
-  "input_queue": "app2::alice::opendan.session.<sid>", "wake_event": "/opendan/<agent_id>/session/<sid>/input",
+  "input_queue": "app2::alice::opendan.session.<H(agent_did,sid)>", "wake_event": "/opendan/<agent_id>/session/<sid>/input",
   "agent_access": "full | status_only", "origin": null, "workspace": null, "artifact_id": null,
   "objective": "…", "scope": { "paths": [], "objects": [] },
   "goal_id": "g-…",                          // Goal Session 的 Goal，或创建 Work 的 Goal（session.goal / origin.goal）
@@ -212,7 +213,7 @@ Goal 是 Agent State 中的持久对象，是唯一的真相；它的 Goal Sessi
 
 ### 9.2 Goal Session 与 epoch
 
-- 同一时刻一个 Goal 只有一个当前 epoch；Goal Session 的 sid = `goal-H("goal", agent_did, goal_id, epoch)`（`ids::goal_session_id`），幂等键 `goal:<goal_id>:<epoch>`，`kind = goal`、`class = goal`、驱动者为宿主身份、**没有 parent**，目录默认 `<agent_root>/sessions/`。登记表条目带 `goal_id`。
+- 同一时刻一个 Goal 只有一个当前 epoch；Goal Session 用 `goal-H("goal", agent_did, goal_id, epoch)` 身份键（`ids::goal_session_key`）在 Agent State 预留 `goal-YYYYMMDD-N` 短 sid，写进 Goal 定义后再创建 Session，重试沿用该预留 ID。幂等键为 `goal:<goal_id>:<epoch>`，`kind = goal`、`class = goal`、驱动者为宿主身份、**没有 parent**，目录默认 `<agent_root>/sessions/<sid>/`。登记表条目带 `goal_id`。
 - 由宿主按 Goal 列表补建（reconcile）：创建 Goal 只写 Goal；`create_session` 拒绝不经宿主创建 Goal Session，`create_sub_session` 拒绝 `goal` 类子 Session。
 - **reopen**（achieved / archived → active）与 **restart**（active / paused，开全新上下文）都在 `epochs[]` 追加新 epoch 并改 `session`；旧 Session 由其状态闸门在下一个提交点结束（restart：以 stopped 结束，`end = restarted`，**不停止 Work**）。宿主在旧 epoch 的 Session 结束且其 Goal State 全部发布后：`end_epoch` 记录结束时间；`prepare_epoch(n)` 把当前 `state.json` 存档到 `epochs/<旧 n>/state.json`，按新 epoch 的 `keep` 写出新的初始 state（`all`：整体保留；`facts`：只保留 `active_works / absorbed / recent_works / usage / goal_revision_seen`，skills 回到 `initial_skills`），再创建新 Session。各步幂等，中途崩溃由下一次 reconcile 补完。
 - reopen 默认 `keep = all`（`fresh_state` → `facts`），restart 默认 `facts`（`carry_state` → `all`）。restart / reopen 不重置周期用量。

@@ -4,7 +4,7 @@
 //! | kmsg reality | rule |
 //! |---|---|
 //! | `create_queue` / `subscribe` not idempotent | "already exists" = success, verified with `get_queue_stats` |
-//! | sub ids share one namespace | `opendan.<agent_id>.<sid>` |
+//! | sub ids share one namespace | `opendan.<H(agent_did,sid)>` |
 //! | cursors are not persisted (D-09) | "Subscription not found" → re-subscribe `At(acked + 1)` |
 //! | `commit_ack` is cumulative; kmsg drops what every subscription acknowledged (unless `keep_acked`) | only ack the committed contiguous position: what is acked is gone |
 //! | `delete_message_before` / retention limits drop records regardless of consumption | never used for session queues |

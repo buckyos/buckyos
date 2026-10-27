@@ -8,8 +8,8 @@
 
 | 通道 | 命名 |
 |---|---|
-| kmsg 队列 | 名称 `opendan.session.<sid>`，URN `<appid>::<owner>::opendan.session.<sid>`；由创建者（驱动者 App 身份）创建，`sync_write=true`、`keep_acked=false`（确认即删除）、`other_app_can_write=true` |
-| kmsg 订阅 | `opendan.<agent_id>.<sid>`（sub id 在全部队列与 App 间共用一个命名空间）；创建时 `Earliest` |
+| kmsg 队列 | 名称 `opendan.session.<H(agent_did,sid)>`，URN `<appid>::<owner>::opendan.session.<H(agent_did,sid)>`；哈希为参数数组紧凑 JSON 的 SHA-256 完整小写 hex（固定 64 字符），隔离共享驱动 App 的不同 Agent；由创建者（驱动者 App 身份）创建，`sync_write=true`、`keep_acked=false`（确认即删除）、`other_app_can_write=true` |
+| kmsg 订阅 | `opendan.<H(agent_did,sid)>`（sub id 在全部队列与 App 间共用一个命名空间）；创建时 `Earliest` |
 | kevent 唤醒 | `/opendan/<agent_id>/session/<sid>/input`，投递后发布 `{"sid": …}`；只表示“队列可能有变化”，重复与丢失都由轮询兜底，不对应任何推理入口 |
 
 Session 不直接读 msg-center：msg bridge 消费 inbox 后投递到总线（§7）。`agent_id` 默认取 agent DID 最后一段并把字母、数字、`_ - .` 之外的字符替换为 `_`。
