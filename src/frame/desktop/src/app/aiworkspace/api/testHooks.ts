@@ -16,7 +16,7 @@ interface TestHooks {
   /** Fault injection into the Replica Worker of the open workspace (replica session only). */
   replica?: { failTransactions(kind: 'quota' | 'error', count: number): Promise<void>; killWorker(): void }
   /** The render probe reads what the canvas mounted (phase two §9.5). */
-  canvas?: { surfaceId: string; blocks: number; mounted: number; hidden: number; placeholders: number; editors: number; html: number; zoom: number; mode: string }
+  canvas?: { surfaceId: string; blocks: number; mounted: number; hidden: number; placeholders: number; editors: number; html: number; zoom: number; mode: string; ink?: { busy: boolean; waiting: number; erasing: number } }
   /** Commit counter of the open workspace (gesture = one commit). */
   commits?: number
   /** The outline model's current entities (incremental structure, phase two §9.3). */

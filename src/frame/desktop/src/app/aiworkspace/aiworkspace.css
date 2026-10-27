@@ -785,6 +785,25 @@
 .aiws-canvas.is-hand { cursor: grab; }
 .aiws-canvas.is-hand:active { cursor: grabbing; }
 .aiws-canvas.is-placing { cursor: crosshair; }
+/* writing (手写笔 TODO D1): the canvas is a writing area — nothing in it takes the pointer, selects text, drags or opens a
+ * menu; touch-action is set before any gesture begins (it governs the browser's own gestures, not palm rejection) */
+.aiws-canvas.is-inking { cursor: crosshair; -webkit-touch-callout: none; }
+.aiws-canvas.is-inking.is-eraser { cursor: cell; }
+.aiws-canvas.is-inking .aiws-world { pointer-events: none; }
+.aiws-canvas.is-inking, .aiws-canvas.is-inking * { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.aiws-ink-live { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.aiws-ink { position: absolute; inset: 0; width: 100%; height: 100%; display: block; overflow: visible; pointer-events: none; }
+.aiws-ink path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.aiws-ink-unreadable { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; border: 1px dashed var(--cp-border); border-radius: 6px; color: var(--cp-muted); font-size: 11px; overflow: hidden; }
+.aiws-chrome-bottom { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 26; display: flex; max-width: calc(100% - 24px); pointer-events: none; }
+.aiws-ink-bar { pointer-events: auto; display: flex; align-items: center; gap: 2px; padding: 4px; overflow-x: auto; }
+.aiws-ink-sep { flex: none; width: 1px; align-self: stretch; margin: 4px; background: var(--cp-border); }
+.aiws-root button.aiws-ink-swatch { flex: none; width: 22px; height: 22px; min-width: 22px; margin: 0 3px; padding: 0; border-radius: 50%; border: 2px solid var(--cp-surface); box-shadow: 0 0 0 1px var(--cp-border); }
+.aiws-root button.aiws-ink-swatch.is-on { box-shadow: 0 0 0 2px var(--cp-accent); }
+.aiws-ink-dot { display: block; border-radius: 50%; background: currentColor; }
+.aiws-ink-switch { flex: none; display: inline-flex; align-items: center; gap: 4px; padding: 0 6px; font-size: 12px; white-space: nowrap; }
+.aiws-root .aiws-tool:has(.aiws-ink-locked) { position: relative; }
+.aiws-ink-locked { position: absolute; right: 5px; bottom: 5px; width: 7px; height: 7px; border-radius: 50%; background: var(--cp-accent); }
 .aiws-canvas-main.no-grid .aiws-canvas { background-image: none; }
 .aiws-place-ghost { position: absolute; left: 0; top: 0; z-index: 30; pointer-events: none; box-sizing: border-box; border: 2px dashed var(--cp-accent); border-radius: 8px; background: color-mix(in srgb, var(--cp-accent) 8%, transparent); display: flex; align-items: center; justify-content: center; color: var(--cp-accent); font-size: 12px; }
 .aiws-hint { position: absolute; top: 70px; left: 50%; transform: translateX(-50%); z-index: 26; padding: 6px 14px; border-radius: 999px; background: color-mix(in srgb, var(--cp-text) 86%, transparent); color: var(--cp-bg); font-size: 12px; white-space: nowrap; pointer-events: none; }

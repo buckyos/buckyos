@@ -1,42 +1,22 @@
 /* The presenter's marks on stage (第三期规划 §10.3): a laser pointer whose trail fades, and ink — pen, eraser, undo,
  * clear. Both live in this show's memory only; nothing is written to the document. Ink strokes are kept in world
  * coordinates of their Surface (so they scale with the canvas and stay when the page turns) with time offsets and the
- * pen pressure: the structure the fourth phase persists. */
+ * pen pressure. Sampling, the owning pointer, cancelling and drawing are the canvas pen's (ink/, 手写笔 TODO D2):
+ * only what a finished stroke becomes differs — a board mark here, a Block there. */
 
-import { useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { randomId } from '../api/ids'
+import { InkInput, type InkHost } from '../ink/input'
+import { settleChannels, simplify, SIMPLIFY_PX, touches, widePoints, type InkPoint, type InkStyle } from '../ink/model'
+import { InkCanvas } from '../ink/paint'
 import type { Camera } from '../ui/canvas/render/camera'
 
-export interface InkPoint { x: number; y: number; t: number; p?: number }
-export interface InkStroke { id: number; surfaceId: string; color: string; width: number; points: InkPoint[] }
+export interface InkStroke { id: string; surfaceId: string; color: string; width: number; points: InkPoint[] }
 export type MarkTool = 'none' | 'pointer' | 'pen' | 'eraser'
 
 const TRAIL_MS = 700
-const ERASE_PX = 10
 
-function drawStroke(ctx: CanvasRenderingContext2D, stroke: InkStroke, camera: Camera) {
-  const pts = stroke.points
-  if (pts.length === 0) return
-  ctx.strokeStyle = stroke.color
-  ctx.fillStyle = stroke.color
-  ctx.lineCap = 'round'
-  ctx.lineJoin = 'round'
-  if (pts.length === 1) {
-    const p = camera.toScreen(pts[0].x, pts[0].y)
-    ctx.beginPath()
-    ctx.arc(p.x, p.y, (stroke.width * camera.zoom) / 2, 0, Math.PI * 2)
-    ctx.fill()
-    return
-  }
-  for (let i = 1; i < pts.length; i++) {
-    const a = camera.toScreen(pts[i - 1].x, pts[i - 1].y)
-    const b = camera.toScreen(pts[i].x, pts[i].y)
-    ctx.lineWidth = Math.max(1, stroke.width * camera.zoom * (pts[i].p !== undefined ? 0.5 + (pts[i].p ?? 0) : 1))
-    ctx.beginPath()
-    ctx.moveTo(a.x, a.y)
-    ctx.lineTo(b.x, b.y)
-    ctx.stroke()
-  }
-}
+const styleOf = (stroke: { color: string; width: number }): InkStyle => ({ color: stroke.color, width: stroke.width, pressure: true })
 
 function fit(canvas: HTMLCanvasElement): CanvasRenderingContext2D | null {
   const dpr = window.devicePixelRatio || 1
@@ -63,78 +43,82 @@ export function InkLayer({ camera, surfaceId, tool, color, width, strokes, onStr
   onStrokes: (next: InkStroke[]) => void
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const drawing = useRef<InkStroke | null>(null)
-  const started = useRef(0)
-  const latest = useRef(strokes)
-  useEffect(() => { latest.current = strokes })
-
-  useEffect(() => {
-    const paint = () => {
-      const canvas = canvasRef.current
-      if (!canvas || !camera) return
-      const ctx = fit(canvas)
-      if (!ctx) return
-      for (const stroke of latest.current) if (stroke.surfaceId === surfaceId) drawStroke(ctx, stroke, camera)
-      if (drawing.current) drawStroke(ctx, drawing.current, camera)
-    }
-    paint()
-    const off = camera?.onChange(paint)
-    const observer = new ResizeObserver(paint)
-    if (canvasRef.current) observer.observe(canvasRef.current)
-    return () => { off?.(); observer.disconnect() }
-  }, [camera, surfaceId, strokes])
-
-  const world = (event: ReactPointerEvent) => {
-    const r = canvasRef.current!.getBoundingClientRect()
-    return camera!.toWorld(event.clientX - r.left, event.clientY - r.top)
-  }
-  const repaint = () => {
-    const canvas = canvasRef.current
-    if (!canvas || !camera) return
-    const ctx = fit(canvas)
-    if (!ctx) return
-    for (const stroke of latest.current) if (stroke.surfaceId === surfaceId) drawStroke(ctx, stroke, camera)
-    if (drawing.current) drawStroke(ctx, drawing.current, camera)
-  }
-  const erase = (event: ReactPointerEvent) => {
-    if (!camera) return
-    const p = world(event)
-    const r = ERASE_PX / camera.zoom
-    const kept = latest.current.filter((s) => s.surfaceId !== surfaceId || !s.points.some((q) => Math.hypot(q.x - p.x, q.y - p.y) <= r + s.width / 2))
-    if (kept.length !== latest.current.length) onStrokes(kept)
-  }
+  const tailRef = useRef<HTMLCanvasElement>(null)
+  const [painter] = useState(() => new InkCanvas({ toScreen: (x, y) => ({ x, y }), zoom: () => 1 }))
+  const [host] = useState<InkHost>(() => ({
+    toWorld: (x, y) => ({ x, y }), zoom: () => 1, tool: () => 'pen', style: () => ({ color, width, pressure: true }), capture: () => undefined, release: () => undefined, interrupt: () => undefined,
+    begin: () => undefined, draw: () => undefined, stroke: () => undefined, dropped: () => undefined, erase: () => undefined, eraseEnd: () => undefined,
+  }))
+  const [input] = useState(() => new InkInput(host, { fingers: true }))
   const active = (tool === 'pen' || tool === 'eraser') && camera !== null && surfaceId !== null
+
+  useLayoutEffect(() => {
+    if (camera) painter.setView({ toScreen: (x, y) => camera.toScreen(x, y), zoom: () => camera.zoom })
+  }, [camera, painter])
+  useLayoutEffect(() => {
+    let style: InkStyle = { color, width, pressure: true }
+    Object.assign(host, {
+      toWorld: (clientX: number, clientY: number) => {
+        const r = canvasRef.current?.getBoundingClientRect()
+        return camera ? camera.toWorld(clientX - (r?.left ?? 0), clientY - (r?.top ?? 0)) : { x: clientX, y: clientY }
+      },
+      zoom: () => camera?.zoom ?? 1,
+      tool: () => (tool === 'eraser' ? 'eraser' : 'pen'),
+      style: () => ({ color, width, pressure: true }),
+      capture: (id: number) => { try { canvasRef.current?.setPointerCapture(id) } catch { /* gone */ } },
+      release: (id: number) => { try { if (canvasRef.current?.hasPointerCapture(id)) canvasRef.current.releasePointerCapture(id) } catch { /* released */ } },
+      interrupt: () => undefined,
+      begin: (next: InkStyle) => { style = next; painter.begin(next.color) },
+      draw: (points, predicted) => painter.add(widePoints(points, style), widePoints(predicted, style)),
+      stroke: (points, used, zoom) => {
+        if (surfaceId) onStrokes([...strokes, { id: randomId('k'), surfaceId, color: used.color, width: used.width, points: simplify(settleChannels(points), SIMPLIFY_PX / zoom, used) }])
+        painter.end()
+      },
+      dropped: () => painter.end(),
+      // the board's eraser takes a stroke the moment it touches its line
+      erase: (a, b, r) => {
+        const kept = strokes.filter((s) => s.surfaceId !== surfaceId || !touches(widePoints(s.points, styleOf(s)), a, b, r))
+        if (kept.length !== strokes.length) onStrokes(kept)
+      },
+      eraseEnd: () => undefined,
+    } satisfies InkHost)
+  })
+  useEffect(() => {
+    painter.attach(canvasRef.current, tailRef.current)
+    return () => painter.attach(null, null)
+  }, [painter])
+  useEffect(() => {
+    painter.setWaiting(strokes.filter((s) => s.surfaceId === surfaceId).map((s) => ({ points: widePoints(s.points, styleOf(s)), color: s.color })))
+  }, [painter, strokes, surfaceId])
+  useEffect(() => {
+    const off = camera?.onChange(() => painter.redraw())
+    const observer = new ResizeObserver(() => painter.redraw())
+    if (canvasRef.current) observer.observe(canvasRef.current)
+    painter.redraw()
+    return () => { off?.(); observer.disconnect() }
+  }, [camera, painter])
+  // another tool or another page drops the stroke under way; the strokes drawn stay
+  useEffect(() => () => input.cancel(), [input, tool, surfaceId])
+
   return (
-    <canvas
-      ref={canvasRef}
-      className={`aiws-stage-ink aiws-stage-ui-pass${active ? ' is-active' : ''}`}
-      data-testid="aiws-stage-ink"
-      data-strokes={strokes.filter((s) => s.surfaceId === surfaceId).length}
-      onPointerDown={(event) => {
-        if (!active || event.button !== 0) return
-        event.preventDefault()
-        event.currentTarget.setPointerCapture(event.pointerId)
-        if (tool === 'eraser') { erase(event); return }
-        started.current = performance.now()
-        const p = world(event)
-        drawing.current = { id: Date.now(), surfaceId: surfaceId!, color, width, points: [{ x: p.x, y: p.y, t: 0, ...(event.pointerType === 'pen' ? { p: event.pressure } : {}) }] }
-        repaint()
-      }}
-      onPointerMove={(event) => {
-        if (!active || !(event.buttons & 1)) return
-        if (tool === 'eraser') { erase(event); return }
-        const stroke = drawing.current
-        if (!stroke) return
-        const p = world(event)
-        stroke.points.push({ x: p.x, y: p.y, t: Math.round(performance.now() - started.current), ...(event.pointerType === 'pen' ? { p: event.pressure } : {}) })
-        repaint()
-      }}
-      onPointerUp={() => {
-        const stroke = drawing.current
-        drawing.current = null
-        if (stroke) onStrokes([...latest.current, stroke])
-      }}
-    />
+    <>
+      <canvas
+        ref={canvasRef}
+        className={`aiws-stage-ink aiws-stage-ui-pass${active ? ' is-active' : ''}`}
+        data-testid="aiws-stage-ink"
+        data-strokes={strokes.filter((s) => s.surfaceId === surfaceId).length}
+        onPointerDown={(event) => {
+          if (!active) return
+          if (input.down(event.nativeEvent)) event.preventDefault()
+        }}
+        onPointerMove={(event) => { if (input.owns(event.pointerId)) input.move(event.nativeEvent) }}
+        onPointerUp={(event) => { if (input.owns(event.pointerId)) input.up(event.nativeEvent) }}
+        onPointerCancel={(event) => input.cancelPointer(event.pointerId)}
+        onLostPointerCapture={(event) => input.lost(event.pointerId)}
+        onContextMenu={(event) => { if (active) event.preventDefault() }}
+      />
+      <canvas ref={tailRef} className="aiws-stage-ink is-tail" aria-hidden="true" />
+    </>
   )
 }
 

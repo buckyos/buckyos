@@ -8,6 +8,11 @@
  *   two-finger tap  zooms out ×2
  *   long press      the context menu of the Block or of the blank spot
  *
+ * While a writing tool is on (手写笔 TODO D1) a finger never writes: one finger does nothing (no tap, drag, scroll or
+ * menu), two pan and zoom unless touch is locked, and once one of them lifts the other is left alone until it lifts
+ * too. A pen coming down stops everything and leaves every finger then on the glass alone until it lifts; so are
+ * fingers that come down while it writes — also after the pen lifted.
+ *
  * The browser does none of this itself: the canvas and everything in it is `touch-action: none`. This
  * class only recognises gestures and moves the camera; what a tap or a press means is the RenderHost's.
  * Moves and lifts arrive from window listeners, so a touch whose target left the DOM still ends. */
@@ -17,7 +22,10 @@ import type { Camera } from './camera'
 export interface Point { x: number; y: number }
 
 /** What a one-finger drag does, decided when the finger comes down. */
-export type OneFingerDrag = { kind: 'pan' } | { kind: 'scroll'; element: HTMLElement } | { kind: 'delegate' }
+export type OneFingerDrag = { kind: 'pan' } | { kind: 'scroll'; element: HTMLElement } | { kind: 'delegate' } | { kind: 'none' }
+
+/** Writing: whether a writing tool is on, touch is locked, and a stroke is under way. */
+export interface TouchInk { on: boolean; locked: boolean; busy: () => boolean }
 
 export interface TouchActions {
   /** The canvas-relative point of a client point. */
@@ -78,6 +86,9 @@ export class TouchGestures {
   private movingOn = false
   private lastTap: { at: number; p: Point } | null = null
   private readonly camera: Camera
+  private ink: TouchInk = { on: false, locked: false, busy: () => false }
+  /** Touches left alone until they lift (writing). */
+  private readonly ignored = new Set<number>()
 
   constructor(camera: Camera) {
     this.camera = camera
@@ -88,13 +99,45 @@ export class TouchGestures {
     this.actions = actions
   }
 
+  setInk(ink: TouchInk) {
+    this.ink = ink
+  }
+
+  /** A pen came down: the fingers on the glass are left alone until they lift; what they were doing stops. */
+  penDown() {
+    for (const id of this.points.keys()) this.ignored.add(id)
+    const g = this.gesture
+    if (g?.kind === 'one' && g.drag.kind === 'delegate') this.actions?.delegateEnd(true)
+    this.lastTap = null
+    this.reset()
+    this.camera.stopAnimation()
+  }
+
+  /** Is this touch being left alone? */
+  isIgnored(pointerId: number): boolean { return this.ignored.has(pointerId) }
+
+  /** Forget every touch (the page was hidden: lifts may never arrive). */
+  forget() {
+    this.ignored.clear()
+    this.lastTap = null
+    this.reset()
+  }
+
   down(event: PointerEvent) {
     const actions = this.actions
     if (!actions) return
+    // an id comes back only after its touch ended: a down with a left-alone id is a new touch
+    this.ignored.delete(event.pointerId)
+    if (this.ink.on && (this.ink.locked || this.ink.busy())) { this.ignored.add(event.pointerId); return }
     const client = { x: event.clientX, y: event.clientY }
     if (this.points.size === 0) {
       this.camera.stopAnimation()
       const p = actions.local(client.x, client.y)
+      if (this.ink.on) {
+        this.points.set(event.pointerId, client)
+        this.gesture = { kind: 'one', id: event.pointerId, drag: { kind: 'none' }, start: p, last: p, at: performance.now(), moved: false, pressed: false, target: null, samples: [], twoTap: null }
+        return
+      }
       const drag = actions.begin(event, p)
       if (!drag) return
       this.points.set(event.pointerId, client)
@@ -115,7 +158,7 @@ export class TouchGestures {
     if (!a || !b) return
     const dist = Math.max(1, distance(a, b))
     const mid = midpoint(a, b)
-    this.gesture = { kind: 'two', ids, at: performance.now(), moved: false, tapEligible: previous.kind === 'one' && !previous.moved && !previous.pressed, startDist: dist, startMid: mid, lastDist: dist, lastMid: mid }
+    this.gesture = { kind: 'two', ids, at: performance.now(), moved: false, tapEligible: !this.ink.on && previous.kind === 'one' && !previous.moved && !previous.pressed, startDist: dist, startMid: mid, lastDist: dist, lastMid: mid }
     this.setMoving(true)
   }
 
@@ -128,6 +171,7 @@ export class TouchGestures {
   }
 
   up(event: PointerEvent, cancel: boolean) {
+    if (this.ignored.delete(event.pointerId)) return
     if (!this.points.has(event.pointerId)) return
     // the last position counts: a quick gesture must not lose its final move
     if (this.frame) { cancelAnimationFrame(this.frame); this.frame = 0; this.flush() }
@@ -137,6 +181,13 @@ export class TouchGestures {
     if (!g || !actions) { if (this.points.size === 0) this.reset(); return }
     if (g.kind === 'two') {
       const rest = g.ids.find((id) => this.points.has(id))
+      // writing: the finger left from a pinch does nothing until it lifts
+      if (rest !== undefined && this.ink.on) {
+        this.points.delete(rest)
+        this.ignored.add(rest)
+        this.end()
+        return
+      }
       if (rest !== undefined && !cancel) {
         // one finger stays: it pans on (a pinch that did not move may still become a two-finger tap)
         const p = this.localOf(rest) ?? g.lastMid
@@ -149,6 +200,7 @@ export class TouchGestures {
     }
     if (g.id !== event.pointerId) return
     this.clearPress()
+    if (g.drag.kind === 'none') { this.end(); return }
     if (g.drag.kind === 'delegate') { this.gesture = null; this.points.clear(); actions.delegateEnd(cancel); return }
     if (cancel || g.pressed) { this.end(); return }
     if (g.moved) {
@@ -220,7 +272,7 @@ export class TouchGestures {
     if (!g) return
     if (g.kind === 'one') {
       const p = this.localOf(g.id)
-      if (!p) return
+      if (!p || g.drag.kind === 'none') return
       if (!g.moved) {
         if (distance(p, g.start) < TAP_SLOP) return
         g.moved = true

@@ -47,6 +47,8 @@ function extras(typeId: string, payload: Record<string, unknown>): Partial<Entit
     out.view_version = view?.version ?? null
     // a connector's geometry keys, as the backend's `outline_extras` projects them (连接线实现方案 §9.2)
     out.connector = view?.type === 'connector' ? connectorProjection(payload) : null
+    const stroke = (payload.config as { stroke?: unknown } | undefined)?.stroke
+    out.ink_stroke = view?.type === 'ink' && typeof stroke === 'string' ? stroke : null
     out.source_id = (payload.source_ref as { entity_id?: string } | undefined)?.entity_id ?? null
     out.def_id = (payload.def_ref as { entity_id?: string } | undefined)?.entity_id ?? null
     out.live = (payload.presentation as { live?: boolean } | undefined)?.live === true ? true : null
@@ -315,7 +317,7 @@ export class OutlineModel {
             const payload: Record<string, unknown> = {}
             let touchedExtras = false
             for (const op of keyed) for (const key of (op.keys as { key: string; value?: unknown }[] | undefined) ?? []) {
-              if (['title', 'source', 'view', 'source_ref', 'def_ref', 'kind', 'layout', 'executor', 'output_mode', 'target', 'media_type', 'def_id', 'icon', 'locked', 'start', 'end', 'presentation',
+              if (['title', 'source', 'view', 'source_ref', 'def_ref', 'kind', 'layout', 'executor', 'output_mode', 'target', 'media_type', 'def_id', 'icon', 'locked', 'start', 'end', 'presentation', 'config',
                 'surface_ref', 'center', 'zoom', 'purpose', 'stage', 'steps', ...CONNECTOR_KEYS].includes(key.key)) touchedExtras = true
               if (op.op === 'entity.set_keys') payload[key.key] = key.value
             }
@@ -330,6 +332,7 @@ export class OutlineModel {
                 executor: current.executor, output_mode: current.output_mode, def_id: current.def_id, media_type: current.media_type,
                 target: current.target_id ? { entity_id: current.target_id } : undefined,
                 ...(current.connector ?? {}),
+                config: current.ink_stroke ? { stroke: current.ink_stroke } : undefined,
                 presentation: current.live ? { live: true } : undefined,
                 surface_ref: current.viewport?.surface_id ? { entity_id: current.viewport.surface_id } : undefined,
                 center: current.viewport?.center ?? undefined, zoom: current.viewport?.zoom ?? undefined,

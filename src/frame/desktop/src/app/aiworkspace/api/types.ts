@@ -164,6 +164,8 @@ export interface EntityEnvelope {
   locked?: boolean | null
   /** A connector's geometry keys as the outline projects them (连接线实现方案 §9.2; `config` is not projected). */
   connector?: ConnectorProjection | null
+  /** An ink segment's logical stroke (手写笔 TODO D0): the segments of one stroke act as one. */
+  ink_stroke?: string | null
   parent_id?: string
   order_key?: string
   placement?: Placement

@@ -3,7 +3,7 @@
  * an object on a free Surface starts a one-shot placement; on a flow page it appends. */
 
 import { useRef, useSyncExternalStore, type ReactNode } from 'react'
-import { ChevronsLeft, ChevronsRight, Frame, Hand, Image, LetterText, Library, MousePointer2, Plus, Puzzle, Redo2, Shapes, Sparkles, Spline, StickyNote, Table, Type, Undo2, type LucideIcon } from 'lucide-react'
+import { ChevronsLeft, ChevronsRight, Eraser, Frame, Hand, Image, LetterText, Library, MousePointer2, PenLine, Plus, Puzzle, Redo2, Shapes, Sparkles, Spline, StickyNote, Table, Type, Undo2, type LucideIcon } from 'lucide-react'
 import { useOutlineVersion, useStore, useUserState } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
 import { blockRegistry } from '../blocks/registry'
@@ -53,8 +53,9 @@ function ShapeTool({ entry, pressed, title, onPick, extra }: { entry: CatalogEnt
   )
 }
 
-/** `connector`: press and drag draws a line (标准对象的交互改进 §6.1), one line at a time. */
-export type PointerTool = 'select' | 'hand' | 'connector'
+/** `connector`: press and drag draws a line (标准对象的交互改进 §6.1), one line at a time; `pen` writes and `eraser` erases
+ * whole strokes until another tool is picked (手写笔 TODO). */
+export type PointerTool = 'select' | 'hand' | 'connector' | 'pen' | 'eraser'
 
 export function ObjectToolbar({ isFree, tool, onTool, placingKey, insertReason, noteReason, onPick, onPickFile, onOpenCatalog, collapsed, onCollapsed }: {
   isFree: boolean
@@ -103,6 +104,12 @@ export function ObjectToolbar({ isFree, tool, onTool, placingKey, insertReason, 
             <div className="aiws-tool-group">
               <button type="button" className="aiws-tool" aria-pressed={tool === 'select' && !placingKey} aria-label={t('aiworkspace.canvas.tool.select')} title={t('aiworkspace.canvas.tool.selectTip')} data-testid="aiws-tool-select" onClick={() => onTool('select')}><MousePointer2 size={20} /></button>
               <button type="button" className="aiws-tool" aria-pressed={tool === 'hand' && !placingKey} aria-label={t('aiworkspace.canvas.tool.hand')} title={t('aiworkspace.canvas.tool.handTip')} data-testid="aiws-tool-hand" onClick={() => onTool('hand')}><Hand size={20} /></button>
+              {canInsert && (
+                <>
+                  <button type="button" className="aiws-tool" aria-pressed={tool === 'pen'} aria-label={t('aiworkspace.canvas.ink.pen')} title={t('aiworkspace.canvas.tool.penTip')} data-testid="aiws-tool-pen" onClick={() => onTool(tool === 'pen' ? 'select' : 'pen')}><PenLine size={20} /></button>
+                  <button type="button" className="aiws-tool" aria-pressed={tool === 'eraser'} aria-label={t('aiworkspace.canvas.ink.eraser')} title={t('aiworkspace.canvas.tool.eraserTip')} data-testid="aiws-tool-eraser" onClick={() => onTool(tool === 'eraser' ? 'select' : 'eraser')}><Eraser size={20} /></button>
+                </>
+              )}
             </div>
           )}
           {offered.length > 0 && (

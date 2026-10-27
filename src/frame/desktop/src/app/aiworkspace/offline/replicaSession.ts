@@ -81,6 +81,11 @@ function localTouched(request: CommitRequest): Touched[] {
   return out
 }
 
+/** The same entities as the working view sees a submission taken back out: a creation is gone, a deletion is back. */
+function reverted(touched: Touched[]): Touched[] {
+  return touched.map((item) => item.change === 'created' ? { ...item, change: 'deleted' } : item.change === 'deleted' ? { ...item, change: 'restored' } : item)
+}
+
 export class ReplicaWorkspaceSession implements WorkspaceSession {
   readonly workspaceId: string
   readonly sessionId: string
@@ -248,7 +253,7 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
     const moved: Touched[] = []
     for (const row of next) {
       const old = before.get(row.idempotency_key)
-      if (!old || old.applied !== row.applied) moved.push(...localTouched(row.request))
+      if (!old || old.applied !== row.applied) moved.push(...(old?.applied ? reverted(localTouched(row.request)) : localTouched(row.request)))
       if (!old || old.state !== row.state) this.emitSubmission({ key: row.idempotency_key, state: row.state, result: row.result, meta: row.meta, request: row.request })
     }
     for (const old of before.values()) {
@@ -257,7 +262,7 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
         const event = events.find((item) => item.idempotency_key === old.idempotency_key)
         this.emitSubmission({ key: old.idempotency_key, state: 'accepted', result: null, meta: old.meta, request: old.request, commit_id: event?.commit_id, seq: event?.seq })
       } else {
-        if (old.applied) moved.push(...localTouched(old.request))
+        if (old.applied) moved.push(...reverted(localTouched(old.request)))
         this.emitSubmission({ key: old.idempotency_key, state: 'discarded', result: null, meta: old.meta, request: old.request })
       }
     }

@@ -1,4 +1,4 @@
-# AI Workspace — Desktop app (phase one + phase two UI framework + UI improvement + standard object interaction + connectors + presentation)
+# AI Workspace — Desktop app (phase one + phase two UI framework + UI improvement + standard object interaction + connectors + presentation + handwriting)
 
 Front end of the `aiworkspace` service (`src/frame/aiworkspace`). Design:
 `doc/workspace/BuckyOS AI Workspace 第一期内置对象详细设计.md` ("the design" below),
@@ -99,6 +99,11 @@ ui/
                           context), builtin.tsx (table / richtext / record / asset / note /
                           frame / shape), editors.tsx (the data editors shared with the data-source view), samples.tsx
                           (extension sample 1: metric, bar chart, frame-sequence video)
+ink/                      pen handwriting (notepads/aiworkspace-handwriting-todo.md) — see "Handwriting" below:
+                          model.ts (format, width curve, sampling, simplification, segments, geometry, hit tests),
+                          input.ts (one stroke per pointer), paint.ts (the live layer), book.ts (decoded strokes, strokes
+                          waiting for their Blocks, writing and erasing), inkBlock.tsx (the `ink` Block), InkBar.tsx,
+                          prefs.ts (`ui:ink`)
   media/                  media assets (doc/workspace/BuckyOS AI Workspace 多媒体对象.md): kinds.ts, poster.ts
                           (poster and facts of a file: video frame, PDF first page via pdfPoster.ts, audio cover via
                           audioCover.ts), stage.ts (file + poster upload, Block size), source.ts (Preview Source
@@ -501,6 +506,60 @@ startup timeouts, crashes and disposal reject waiting calls and release the ifra
 - The app's own UI text is Chinese only (the app name and summary are in the Desktop dictionaries).
 - The zone transport follows the SDK's normal service path but has only been type-checked here; the e2e
   suite runs through the dev override.
+
+## Handwriting (notepads/aiworkspace-handwriting-todo.md)
+
+- **Entry**: the object toolbar's pen and eraser (free canvas, edit mode, insert permission; `P` / `E`), which show the
+  writing bar at the bottom: pen / eraser, six colours, three widths (2 / 4 / 8 canvas units), the pressure switch,
+  the canvas touch lock, done (`Esc` drops a running stroke, else puts the pen down). The settings are the user's own
+  (`ui:ink` in the user work state); a stroke stores the colour, width and pressure it was written with.
+- **Writing area**: with the pen or the eraser the RenderHost takes every press in the capture phase (Blocks,
+  editors, handles, iframes get nothing: the world layer has no pointer events), clears selection and editing,
+  suppresses text selection, drags and the context menu; `touch-action: none` is set before any gesture.
+  `ink/input.ts` binds a stroke to one pointer id (capture, coalesced samples or the event itself, duplicates
+  dropped, the up's position at the pressure the pen had); a second pen and other pointers' events change nothing.
+  pointercancel, a capture lost before the up, `Esc`, another tool or canvas, lost permission (the tool is put down),
+  a hidden page and unmounting drop the stroke under way. While a stroke runs the wheel does nothing and touches
+  are ignored; every point is mapped with the camera of its moment.
+- **Touch** (`touch.ts`): a finger never writes. One finger does nothing (no tap, drag, scroll, menu); two fingers
+  pan and zoom when no stroke runs and touch is not locked; the finger left from a pinch does nothing until it lifts.
+  A pen landing stops the running gesture, an object drag, a glide and timers, and leaves every finger then down —
+  and those that land while it writes — alone until each lifts, also after the pen lifted. With the touch lock no
+  finger moves the canvas. A palm the system reports as two contacts before the pen is detected still pans in the
+  default mode: that edge is the touch lock's job (palms are not recognised).
+- **Drawing**: `paint.ts` draws the stroke being written on two screen-space canvases above the content — finished
+  pieces once each, the open end and the predicted samples (Pointer Events `getPredictedEvents`, never stored) on
+  a tail canvas cleared per sample; a pan, a resize or a new pixel ratio redraws. A saved stroke stays on the live
+  layer until its Block has drawn it (`book.rendered`), so it neither blinks nor doubles. The `ink` Block draws the
+  same pieces (quadratic through midpoints, round caps) as SVG paths, one per 8 % step of width; zoomed out it draws
+  fewer points. Ink Blocks are never placeholders and are not counted by the mount budget; they hit (select, the
+  eraser) on their line, not their box. `pointerrawupdate`, desynchronized canvases and the Ink API are not used.
+- **Pressure**: width = base × (0.3 + 1.4 p): half pressure is the base width, zero stays visible. A stroke whose pen
+  only reported 0.5 (no pressure hardware) and a mouse stroke are stored without `p`; tilt is kept only when reported.
+- **Data** (format in the backend README "Ink"): world samples are simplified (RDP over position and pressure,
+  0.25 screen px at the zoom written at, windows of 2048 points), cut into segments of at most 60 KiB of canonical
+  JSON (measured, not estimated) and created in one commit (`store.submit`, one undo step) under the group under the
+  stroke's centre; order keys follow the strokes written before even when those are not back yet. A stroke whose raw
+  samples pass 8 × 60 KiB × 0.9 is saved there and goes on as a new stroke from the same point (a notice says so).
+- **Logical strokes**: the outline's `ink_stroke` groups the segments of one stroke: a click selects all of them (and
+  takes all of them out), copy/paste gives the copy a new stroke id, the eraser and Delete remove all of them in one
+  commit, flow pages refuse pasted or moved ink. A stroke of several segments has no resize or rotation handles (a
+  selection of several Blocks); a one-segment stroke resizes (proportions kept) and turns like any Block.
+- **Saving**: each stroke is submitted at once (the next one never waits). Refused → the live stroke goes, with an
+  error; unknown or not stored → it stays drawn and listed, and is resent with its idempotency key when the
+  connection is live again or from the notice's retry (no duplicate); dismissed in the save-state list → it goes.
+  Erasing hides the strokes at once and puts them back when the delete is refused or the gesture cancelled.
+- **Offline**: no offline path of its own. In a window holding a prepared replica (where the replica works, see
+  Offline) strokes, their undo and erases queue like any edit, survive a cold start and go out once on reconnect;
+  undoing a stroke still in the queue takes it out (the replica reports the creation as gone). Without a replica,
+  writing needs the connection like any other edit; online writing does not depend on the replica's browser support.
+- **Stage**: `presentation/overlays.tsx` (board marks) uses the same input and painter; its strokes stay in the
+  show's memory (page turns, undo, clear, gone on exit); a finger writes there too.
+- **Tests**: `tests/datamodel/aiworkspace-ink.test.ts` (Deno: format, simplification, segments, decoding, hit tests,
+  the input state machine; writes `../aiworkspace/fixtures/ink/strokes.json` with `AIWS_REGEN=1`),
+  `tests/aiworkspace/handwriting.spec.ts` (H01–H09, H11, H-scale → `test-results/aiworkspace-ink-scale.json`),
+  `offline-handwriting.spec.ts` (H10). Pens are CDP pointer events with pressure, fingers CDP touches; a second pen
+  and cancels are synthetic events. Real devices are not verified (the TODO's device matrix).
 
 ## Presentation (doc/workspace/BuckyOS AI Workspace 第三期规划.md)
 

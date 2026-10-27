@@ -66,7 +66,8 @@ Bytes the service produces itself (Source fetches, wish results and program sour
 ## Tests
 
 ```bash
-cargo test -p aiworkspace-core      # values, canonical ids, filters, rich text codec, planner, annotation anchors, phase2 (two trees, wishes, freshness)
+cargo test -p aiworkspace-core      # values, canonical ids, filters, rich text codec, planner, annotation anchors, phase2 (two trees, wishes, freshness),
+                                    # tests/ink.rs: pen strokes (fixtures/ink) committed and read back, malformed ink refused
 cargo test -p aiworkspace-store     # V01–V22, V24, write locks, Mock — against real SQLite files; tests/sso.rs: caller classes,
                                     # group / contact subjects, share entries;
                                     # tests/replica.rs: the offline engine incl. the incremental rows a replica persists
@@ -198,6 +199,29 @@ It may carry `title` (the label text), `config` (appearance, ≤ 64 KiB, not ins
   freshness, and is listed as an incoming reference by `doc.relations`.
 - **Outline**: a connector's envelope carries `connector: { start, end, flip?, route?, controls?, label? }`
   (`start` / `end` always present, `null` when free); `config` is read with `doc.read`.
+
+## Ink (手写笔, `notepads/aiworkspace-handwriting-todo.md` D0)
+
+A pen stroke is drawn as one or more Cells with `view { type: "ink", version: 1 }` on a free Surface — one per
+segment, consecutive segments sharing their boundary point, all created in one commit. The Desktop writes them
+(`desktop/src/app/aiworkspace/ink/model.ts`, which is also the reference encoder); `core/src/types.rs`
+`validate_ink` judges version 1 on create, import and any change of `view` / `config` (other versions are left to
+their renderer):
+
+| `config` key | Shape |
+| --- | --- |
+| `format` | `1` |
+| `stroke` | the logical stroke's id (an entity id): its segments are selected, erased and copied as one; a copy gets a new one |
+| `seg` / `segs` | segment index below the segment count, `segs` 1…64 |
+| `color` / `width` / `pressure` | `#rrggbb`; base width in canvas units, (0, 256]; whether pressure shapes the width |
+| `frame` | `{ w, h }` > 0: the segment's own coordinate frame, which the placement box shows (a resize scales it) |
+| `points` | channels of equal length, 1…16 384 points: `x` in [0, w], `y` in [0, h], `t` whole ms since the pen came down (non-decreasing); optional `p` in [0, 1], `tilt_x` / `tilt_y` in [-90, 90] |
+
+Unknown keys or channels are refused (`INVALID_SCHEMA`), so are `source_ref`, `bindings` and `def_ref`; the config
+limit of every Cell applies (≤ 64 KiB canonical JSON, `LIMIT_EXCEEDED`; the Desktop cuts segments at 60 KiB). The
+outline projects `ink_stroke` (the `stroke` id) on an ink Cell's envelope. The fixture
+`fixtures/ink/strokes.json` (a mouse line, a pen tap, a pressure stroke with tilt, a three-segment stroke) is
+written by `desktop/tests/datamodel/aiworkspace-ink.test.ts` and committed and read back by `core/tests/ink.rs`.
 
 ## Wish runs (许愿格 v0.2)
 
@@ -414,6 +438,7 @@ with `Validator class:`.
 | cell (connector) | `validate_connector` (shapes) | schema | `flip`, `route`, ≤ 64 `controls`, `label.t` in [0, 1]; `start` / `end` are `{ entity_id, anchor { kind: named, id } }` |
 | cell (connector) | `validate_connector` (endpoints) | reference | a bound endpoint is a readable Block or group on the connector's Surface, never itself or another line |
 | cell (connector) | `validate_connector` (Surface rule) | schema | created and bound only on a free-layout Surface; a self loop needs two anchors and a non-straight route |
+| cell (ink) | `validate_ink` | schema | version 1: `format`, logical `stroke` id, `seg` < `segs` ≤ 64, `#rrggbb`, width (0, 256], `frame`, equal-length point channels inside the frame, whole non-decreasing `t`, `p` in [0, 1], tilt in [-90, 90]; no data bindings |
 | cell (frame / any Block) | `check_presentation` / `check_notes` | schema | `presentation.live` boolean; `background` / `notes` / `caption` only on frames; notes ≤ 16 KiB, caption ≤ 2000 chars; none on a connector |
 | viewport | `validate_viewport` (fields) | schema | `center { x, y }` finite, `zoom` in [0.05, 4], title, notes, caption |
 | viewport | `validate_viewport` (`surface_ref`) | reference | the Surface exists (judged when written) |

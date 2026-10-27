@@ -6,6 +6,7 @@ import { registerDeclarativeBlock } from '../extensions/declarative'
 import { registerHtmlBlock } from '../extensions/HtmlBlockHost'
 import { registerWishBlock } from '../wish/wishBlock'
 import { connectorDefinition } from '../canvas/connectors/definition'
+import { inkDefinition } from '../../ink/inkBlock'
 import { blockRegistry } from './registry'
 import { testHooks } from '../../api/testHooks'
 
@@ -15,6 +16,7 @@ export function registerDefaultBlocks() {
   registered = true
   registerBuiltinBlocks()
   blockRegistry.register(connectorDefinition)
+  blockRegistry.register(inkDefinition)
   registerWishBlock()
   registerHtmlBlock()
   registerDeclarativeBlock()

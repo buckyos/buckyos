@@ -64,6 +64,9 @@ import { useSurfaceConfig } from './surfaceManage'
 import { createSurfaceOps, surfacesOf } from './surfaceOps'
 import { useSurfaceLayout } from './useSurfaceLayout'
 import { BlockInspector, ContextMenu, NearToolbar, type NearAction } from './tools'
+import { InkBar } from '../../ink/InkBar'
+import { InkControl } from '../../ink/input'
+import { inkStyleOf, useInkPrefs } from '../../ink/prefs'
 
 export interface CanvasFocus { surfaceId: string; blockId: string | null; nonce: number }
 
@@ -156,6 +159,9 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const [picker, setPicker] = useState<{ kind: 'add-view' | 'move-surface' } | null>(null)
   const [catalog, setCatalog] = useState<{ tab: CatalogTab; key?: string; world: { x: number; y: number } | null; parentId?: string; afterId?: string | null } | null>(null)
   const [tool, setTool] = useState<PointerTool>('select')
+  const inkTool = tool === 'pen' || tool === 'eraser'
+  const [inkPrefs, setInkPrefs] = useInkPrefs()
+  const [inkControl] = useState(() => new InkControl())
   const [placing, setPlacing] = useState<InsertRequest | null>(null)
   const [annotatePick, setAnnotatePick] = useState(false)
   /** A line just drawn to blank space offers to create the next object at its end (标准对象的交互改进 §6.1, R11). */
@@ -190,8 +196,26 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     setAnnotatePick(false)
     ui.annotate?.({ target: { entity_id: source.entity_id }, label: source.title ?? source.name ?? source.entity_id })
   }
+  /** The segments of each long pen stroke (手写笔 TODO D0): selected as one — a part of a stroke is never selected (the
+   * canvas takes a whole stroke out of a selection itself). */
+  const strokeCells = useMemo(() => {
+    const map = new Map<string, string[]>()
+    for (const [id, l] of laid) { const stroke = l.entity.ink_stroke; if (stroke) { const list = map.get(stroke); if (list) list.push(id); else map.set(stroke, [id]) } }
+    return map
+  }, [laid])
+  const wholeStrokes = (next: Set<string>): Set<string> => {
+    let out = next
+    for (const id of next) {
+      const stroke = laid.get(id)?.entity.ink_stroke
+      const cells = stroke ? strokeCells.get(stroke) : undefined
+      if (!cells || cells.length < 2 || cells.every((c) => out.has(c))) continue
+      if (out === next) out = new Set(next)
+      for (const c of cells) out.add(c)
+    }
+    return out
+  }
   // selection survives mode switches when the policy still allows it (§10.2); editors are released
-  const setSelection = (next: Set<string>) => { setSelectionState(next); pickForAnnotation(next) }
+  const setSelection = (next: Set<string>) => { const whole = wholeStrokes(next); setSelectionState(whole); pickForAnnotation(whole) }
   // activating an editor brings its Block into view (§8.2: the active Block is never half off-screen);
   // on a free canvas a wish opens in the right panel instead (its Block stays a card)
   const { setSide } = shell
@@ -222,7 +246,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     setPolicySeen(policyKey)
     if (!policy.select) setSelectionState(new Set())
     if (!policy.editContent) setEditingState(null)
-    if (!policy.insert) { setPlacing(null); setCatalog(null); setTool((t) => (t === 'connector' ? 'select' : t)) }
+    if (!policy.insert) { setPlacing(null); setCatalog(null); setTool((t) => (t === 'connector' || t === 'pen' || t === 'eraser' ? 'select' : t)) }
     if (!policy.annotate) setAnnotatePick(false)
   }
   const [laidSeen, setLaidSeen] = useState(laid)
@@ -323,6 +347,19 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const noteReason = !policy.annotate ? insertReason
     : !surface.capabilities.includes('structure') && !surface.capabilities.includes('comment') ? t('aiworkspace.canvas.reason.noNotePermission')
       : readOnlyReason
+  // writing needs a free canvas this user may insert on, now (手写笔 TODO D3): otherwise the pen is put down
+  const inkAllowed = isFree && !phone && insertReason === null
+  if (inkTool && !inkAllowed) setTool('select')
+  /** Pick a pointer tool; the pen and the eraser start with nothing selected or edited (the canvas is for writing). */
+  const chooseTool = (next: PointerTool) => {
+    setTool(next)
+    setPlacing(null)
+    if (next === 'pen' || next === 'eraser') {
+      setSelectionState(new Set()); setEditing(null); setAnnotatePick(false)
+      // the tool button keeps no focus: the canvas's keys (P, E, Esc) work at once
+      if (document.activeElement instanceof HTMLElement && document.activeElement.closest('.aiws-panel')) document.activeElement.blur()
+    }
+  }
   /** What the creation tools (edit mode only) offer for notes. */
   const toolNoteReason = policy.insert ? noteReason : insertReason
   const insertReasonOf = (type: string) => (type === 'note' ? noteReason : insertReason)
@@ -576,10 +613,12 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     let key = store.outline.childrenOf(targetId).at(-1)?.order_key
     const toFlow = target.layout?.mode !== 'free'
     const carried = (l: Laid) => [l.entity, ...store.outline.descendants(l.entity.entity_id)].some((e) => isConnector(e))
+    const inked = (l: Laid) => [l.entity, ...store.outline.descendants(l.entity.entity_id)].some((e) => e.view_type === 'ink')
     for (const id of unlocked(topLevel(laid, selection), 'move')) {
       const l = laid.get(id)
       if (!l) continue
       if (toFlow && carried(l)) { store.notify('info', t('aiworkspace.canvas.flowConnectorsNotMoved')); continue }
+      if (toFlow && inked(l)) { store.notify('info', t('aiworkspace.canvas.ink.flowNotMoved')); continue }
       key = store.core.order_key_between(key, undefined)
       const placement = movedPlacement(laid, l, 0, 0, '')
       store.noteLayoutIntent(id, placement, key, targetId)
@@ -792,6 +831,12 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       // a guide owns the keys while it runs (第三期规划 §10.4)
       if (shell.guide) return
       if (event.isComposing || target?.closest('input, textarea, select, [contenteditable="true"], [data-role="editor"]')) return
+      // Esc while writing drops the stroke under way, else puts the pen down (also from the writing bar's buttons)
+      if (event.key === 'Escape' && inkTool && !target?.closest('.aiws-popover, .aiws-dialog, .aiws-menu')) {
+        event.preventDefault()
+        if (inkControl.busy()) inkControl.cancel(); else setTool('select')
+        return
+      }
       // a placement or target pick started from a toolbar button is cancelled by Esc even while that button has the focus
       if (event.key === 'Escape' && (placing || annotatePick || tool === 'connector') && !target?.closest('.aiws-popover, .aiws-dialog, .aiws-menu')) { setPlacing(null); setAnnotatePick(false); setTool((t) => (t === 'connector' ? 'select' : t)); return }
       if (target?.closest('.aiws-panel, .aiws-popover, .aiws-dialog, .aiws-menu, .aiws-side, .aiws-near')) return
@@ -830,6 +875,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       if (!mod && !event.altKey && isFree && (event.key === 'v' || event.key === 'V')) { setTool('select'); setPlacing(null); return }
       if (!mod && !event.altKey && isFree && (event.key === 'h' || event.key === 'H')) { setTool('hand'); setPlacing(null); return }
       if (!mod && !event.altKey && isFree && (event.key === 'l' || event.key === 'L') && insertReason === null) { setTool('connector'); setPlacing(null); return }
+      if (!mod && !event.altKey && inkAllowed && (event.key === 'p' || event.key === 'P')) { chooseTool('pen'); return }
+      if (!mod && !event.altKey && inkAllowed && (event.key === 'e' || event.key === 'E')) { chooseTool('eraser'); return }
       if (mod && !event.altKey && !event.shiftKey) {
         const key = event.key.toLowerCase()
         // copy and cut let the browser's copy event run (it writes the marker); a paste waits for the paste event,
@@ -1065,6 +1112,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
               <RenderHost surfaceId={surfaceId} mode={mode} camera={camera} laid={laid} index={index} selection={selection} onSelectionChange={setSelection} editing={editing} onEditingChange={setEditing}
                 canLayout={canLayoutBlock} onCommitLayout={commitLayout} onOpenEntity={ui.openEntity} gesturesPaused={Boolean(menu || picker || catalog || overlayOpen)}
                 tool={tool} placing={placing ? { ...entrySize(placing.entry), label: placingTitle } : null}
+                ink={inkTool ? { style: inkStyleOf(inkPrefs), touchLock: inkPrefs.touchLock, control: inkControl } : null}
                 onPlace={(world) => {
                   const request = placing
                   setPlacing(null)
@@ -1099,8 +1147,13 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
             </div>
             {showObjectToolbar && (
               <div className="aiws-chrome-left">
-                <ObjectToolbar isFree={isFree} tool={tool} onTool={(next) => { setTool(next); setPlacing(null) }} placingKey={placing?.entry.key ?? (tool === 'connector' ? 'block:connector' : null)} insertReason={insertReason} noteReason={toolNoteReason}
+                <ObjectToolbar isFree={isFree} tool={tool} onTool={chooseTool} placingKey={placing?.entry.key ?? (tool === 'connector' ? 'block:connector' : null)} insertReason={insertReason} noteReason={toolNoteReason}
                   onPick={pickEntry} onPickFile={(entry, file) => pick({ entry, file })} onOpenCatalog={(tab, key) => openCatalog(tab, key)} collapsed={collapsed} onCollapsed={setCollapsed} />
+              </div>
+            )}
+            {inkTool && (
+              <div className="aiws-chrome-bottom">
+                <InkBar tool={tool === 'eraser' ? 'eraser' : 'pen'} prefs={inkPrefs} onTool={chooseTool} onPrefs={setInkPrefs} onDone={() => chooseTool('select')} />
               </div>
             )}
             {(placing || annotatePick || tool === 'connector') && (
