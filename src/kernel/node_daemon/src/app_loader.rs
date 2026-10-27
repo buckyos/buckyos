@@ -1726,7 +1726,7 @@ impl AppLoader {
         // what it prints before that (and panics).
         let log = self.worker_log_dir().join("native.log");
         process
-            .spawn(&program, &args, &env, &self.app_data_dir(), &log, &self.deployment_key(), ports)
+            .spawn(&program, &args, &env, &agent_root, &log, &self.deployment_key(), ports)
             .map(|_| ())
             .map_err(|error| (ERR_SPAWN, error.to_string()))
     }
