@@ -29,7 +29,7 @@ def _buckyos_root():
     if os.environ.get("BUCKYOS_ROOT"):
         return Path(os.environ["BUCKYOS_ROOT"])
     if system == "Windows":
-        return Path(os.environ.get("APPDATA", "")) / "buckyos"
+        return Path(r"C:\buckyos")
     return Path("/opt/buckyos")
 
 

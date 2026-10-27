@@ -88,9 +88,7 @@ export function getBuckyosRoot(): string {
     return fromEnv;
   }
   if (IS_WINDOWS) {
-    const appData = Deno.env.get("APPDATA") ?? Deno.env.get("USERPROFILE") ??
-      ".";
-    return path.join(appData, "buckyos");
+    return "C:\\buckyos";
   }
   return "/opt/buckyos/";
 }

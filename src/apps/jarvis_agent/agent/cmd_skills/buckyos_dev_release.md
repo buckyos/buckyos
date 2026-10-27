@@ -22,7 +22,7 @@ buckyos auth whoami                                 # identity + zone actually u
 
 #### Where to work
 - Your project (App or template): a directory in the session dir or bound workspace. Commit/keep `dapp_meta/`; `dapp_dist/` is regenerated and `pikg build` deletes the previous `.pikg` in it, so copy each PIKG you hand over (e.g. `releases/<name>-<ver>.pikg`).
-- BuckyOS itself (host): repo `buckyos/` with siblings `buckyos-websdk`, `buckyos-devkit`, `cyfs-gateway`; Cargo and `uv run` scripts run in `buckyos/src`; read `AGENTS.md` there first. Runtime root `$BUCKYOS_ROOT` (default `/opt/buckyos`).
+- BuckyOS itself (host): repo `buckyos/` with siblings `buckyos-websdk`, `buckyos-devkit`, `cyfs-gateway`; Cargo and `uv run` scripts run in `buckyos/src`; read `AGENTS.md` there first. Runtime root `$BUCKYOS_ROOT` (default `C:\buckyos` on Windows, `/opt/buckyos` on macOS/Linux).
 
 #### System build vs App build
 - Independent Linux/macOS Agent Daemon: from `buckyos/src`, `uv run buckyos-build.py --agent-daemon` builds only

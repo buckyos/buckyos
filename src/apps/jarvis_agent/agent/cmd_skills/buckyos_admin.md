@@ -45,7 +45,8 @@ buckyos system info                                 # BuckyOS version, build_ver
 - `buckyos` missing or ".../buckyos-tool/... not found": the Tool mount is not deployed in this container. Say so and
   give the owner the exact host commands instead of guessing results.
 - Host-side `uv run src/check.py` (repo) checks processes and ports. "Activation Ready" means waiting for activation,
-  not running; "Running" with exit 0 can still come with an error-heavy log warning below it.
+  not running; "Running" with exit 0 can still come with an error-heavy log warning below it. The host root uses
+  `BUCKYOS_ROOT` when set, otherwise `C:\buckyos` on Windows and `/opt/buckyos` on macOS/Linux.
 - macOS Desktop nodes run node_daemon as `$BUCKYOS_ROOT/bin/node-daemon/BuckyOS Runtime.app`, the LaunchAgent
   `com.buckyos.runtime` of the one OS user in `etc/desktop_runtime.json`. Host command for the owner:
   `"$BUCKYOS_ROOT/bin/node-daemon/BuckyOS Runtime.app/Contents/MacOS/node_daemon" service status` (bound user,

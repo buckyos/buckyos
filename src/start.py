@@ -193,7 +193,7 @@ def resolve_buckyos_root() -> Path:
         return Path(buckyos_root).expanduser()
 
     if platform.system() == "Windows":
-        default_root = os.path.join(os.path.expandvars("%AppData%"), "buckyos")
+        default_root = r"C:\buckyos"
     else:
         default_root = "/opt/buckyos"
 

@@ -125,7 +125,7 @@ def _parse_component_type(value: Any, *, field_name: str) -> str:
 def _expand_project_vars(raw: str, *, build_root: Path) -> str:
     out = os.path.expanduser(raw)
     replacements = {
-        "BUCKYOS_ROOT": os.environ.get("BUCKYOS_ROOT", "/opt/buckyos"),
+        "BUCKYOS_ROOT": os.environ.get("BUCKYOS_ROOT", r"c:\buckyos" if platform.system() == "Windows" else "/opt/buckyos"),
         "BUCKYOS_BUILD_ROOT": str(build_root),
         "APPDATA": os.environ.get("APPDATA") or "%APPDATA%",
         "LOCALAPPDATA": os.environ.get("LOCALAPPDATA") or "%LOCALAPPDATA%",

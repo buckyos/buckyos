@@ -33,7 +33,7 @@ type StartupOptions = {
   opendanArgs: string[]
 }
 
-const DEFAULT_BUCKYOS_ROOT = '/opt/buckyos'
+const DEFAULT_BUCKYOS_ROOT = Deno.build.os === 'windows' ? 'C:\\buckyos' : '/opt/buckyos'
 const SYSTEM_CONFIG_BOOTSTRAP_AUDIENCE = 'system-config-bootstrap'
 const DEFAULT_OPENDAN_SERVICE_PORT = 4060
 const DEFAULT_HOST_SCRIPT_SERVICE_PORT = 3000

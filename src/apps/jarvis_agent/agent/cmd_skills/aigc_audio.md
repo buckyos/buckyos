@@ -19,7 +19,7 @@ baseline: standard
 
 #### Find the real commands
 - `<command> --help`; source `/opt/buckyos/bin/opendan/buckyos-agent/commands/<command>.ts` shows exactly which request fields each option sets.
-- On a node, substitute `$BUCKYOS_ROOT/libexec/buckyos-agent` (default `/opt/buckyos/libexec/buckyos-agent`) for the container source root `/opt/buckyos/bin/opendan/buckyos-agent` in the examples below.
+- On a node, substitute `$BUCKYOS_ROOT/libexec/buckyos-agent` (default `C:\buckyos\libexec\buckyos-agent` on Windows, `/opt/buckyos/libexec/buckyos-agent` on macOS/Linux) for the container source root `/opt/buckyos/bin/opendan/buckyos-agent` in the examples below.
 
 #### Shortest path
 ```bash

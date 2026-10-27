@@ -131,7 +131,7 @@ WebUI 在各自目录运行 `pnpm install`、`pnpm build`。Desktop 和 OpenDAN 
 
 ### BuckyOS 运行时目录 `$BUCKYOS_ROOT`
 
-优先使用 `BUCKYOS_ROOT` 环境变量；默认是 `/opt/buckyos/`，Windows 开发脚本默认使用 `%APPDATA%\buckyos`。排查时以 `check.py` 输出和实际进程环境为准。
+优先使用 `BUCKYOS_ROOT` 环境变量；默认是 `/opt/buckyos/`，Windows 默认使用 `C:\buckyos`。排查时以 `check.py` 输出和实际进程环境为准。
 
 - **`logs/`**：服务日志；**`etc/`**：配置、`node_identity.json` 等；**`security/`**：私钥、keyref 等身份材料。
 - **`data/home/`**：用户数据；**`data/srv/`**：服务持久数据及 Zone 共享数据；**`storage/`**：内核持久存储。

@@ -145,8 +145,7 @@ def resolve_buckyos_root() -> Path:
         return Path(raw).expanduser()
 
     if platform.system() == "Windows":
-        user_data_dir = os.environ.get("APPDATA") or os.environ.get("USERPROFILE", ".")
-        return Path(user_data_dir).expanduser() / "buckyos"
+        return Path(r"C:\buckyos")
 
     return DEFAULT_BUCKYOS_ROOT
 

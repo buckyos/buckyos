@@ -107,7 +107,7 @@ uv run check.py
 uv run start.py
 ```
 
-`start.py` 会停止已知的 BuckyOS 进程，更新已安装产物，然后在后台启动 `node_daemon --enable_active`。运行根目录在 macOS/Linux 上默认为 `/opt/buckyos`，在 Windows 上默认为 `%APPDATA%\buckyos`，可通过 `BUCKYOS_ROOT` 覆盖。请确保当前用户具有运行目录与端口所需的权限。源码启动流程不会注册宿主机自启服务。
+`start.py` 会停止已知的 BuckyOS 进程，更新已安装产物，然后在后台启动 `node_daemon --enable_active`。运行根目录在 macOS/Linux 上默认为 `/opt/buckyos`，在 Windows 上默认为 `C:\buckyos`，可通过 `BUCKYOS_ROOT` 覆盖。请确保当前用户具有运行目录与端口所需的权限。源码启动流程不会注册宿主机自启服务。
 
 如果已有运行环境由 systemd、launchd 或 Windows 保活服务托管，请在安装或更新产物前，通过对应的服务管理器停止它。单独执行 `stop.py` 不会禁用自动重启。源码开发与 BuckyOS Desktop 测试应使用独立环境，避免争用相同的运行目录、服务和端口。
 

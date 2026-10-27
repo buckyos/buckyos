@@ -24,7 +24,7 @@
 
 | 变量 | 来源 | 消费方 | 语义 |
 | --- | --- | --- | --- |
-| `BUCKYOS_ROOT` | 用户、安装脚本、`start.py`、`node_control` | 路径工具、node-daemon、OpenDAN、安装/卸载脚本 | BuckyOS host 运行时根目录。类 Unix 默认 `/opt/buckyos`；Windows 默认 `%APPDATA%/buckyos`，部分工具再回退到 `%USERPROFILE%/buckyos`。 |
+| `BUCKYOS_ROOT` | 用户、安装脚本、`start.py`、`node_control` | 路径工具、node-daemon、OpenDAN、安装/卸载脚本 | BuckyOS host 运行时根目录。类 Unix 默认 `/opt/buckyos`；Windows 默认 `C:\buckyos`。 |
 | `BUCKYOS_BUILD_ROOT` | 用户或打包命令 | `make_local_pkg.py`、`src/publish/make_local_*` | 本地打包/发布 staging root，默认类 Unix `/opt/buckyosci`，Windows `C:\opt\buckyosci`。 |
 | `BUCKYOS_DEV_HOME` | 开发者 | `buckyos-api` AppClient runtime | AppClient 开发态配置目录覆盖；存在时优先于 `$BUCKYOS_ROOT/etc` 加载 runtime 配置。 |
 | `APPDATA` / `USERPROFILE` / `LOCALAPPDATA` | OS | Windows 路径解析与打包变量展开 | Windows 平台默认目录和 installer 模板展开使用。 |

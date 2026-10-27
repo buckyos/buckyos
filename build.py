@@ -117,7 +117,7 @@ def installed_buckyos_root() -> Path:
     if root:
         return Path(root).expanduser()
     if platform.system() == "Windows":
-        return Path(os.path.expandvars("%AppData%")) / "buckyos"
+        return Path(r"C:\buckyos")
     return Path("/opt/buckyos")
 
 

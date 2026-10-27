@@ -108,7 +108,7 @@ For normal updates and restarts:
 uv run start.py
 ```
 
-`start.py` stops known BuckyOS processes, updates installed artifacts, and starts `node_daemon --enable_active` in the background. The runtime root defaults to `/opt/buckyos` on macOS/Linux or `%APPDATA%\buckyos` on Windows; `BUCKYOS_ROOT` overrides it. Ensure the current user has the required runtime-directory and port permissions. Source startup does not register a host startup service.
+`start.py` stops known BuckyOS processes, updates installed artifacts, and starts `node_daemon --enable_active` in the background. The runtime root defaults to `/opt/buckyos` on macOS/Linux or `C:\buckyos` on Windows; `BUCKYOS_ROOT` overrides it. Ensure the current user has the required runtime-directory and port permissions. Source startup does not register a host startup service.
 
 If an existing runtime is managed by systemd, launchd, or a Windows keepalive service, stop it through that service manager before installing or updating artifacts. `stop.py` alone does not disable automatic restarts. Keep source development and BuckyOS Desktop testing in separate environments to avoid competing for the same runtime, services, and ports.
 

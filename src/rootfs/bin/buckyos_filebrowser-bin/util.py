@@ -164,10 +164,7 @@ def get_buckyos_root():
         return buckyos_root
 
     if system == "Windows":
-        user_data_dir = os.environ.get("APPDATA")
-        if not user_data_dir:
-            user_data_dir = os.environ.get("USERPROFILE", ".")
-        return os.path.join(user_data_dir, "buckyos")
+        return r"C:\buckyos"
     else:
         return "/opt/buckyos/"
 

@@ -10,7 +10,8 @@ Usage:
     python read_aicc_log.py [logfile] --print [--raw] [--no-color] [--errors]
 
     If no logfile is given, automatically finds the latest aicc log under
-    $BUCKYOS_ROOT/logs/aicc/ (defaults to /opt/buckyos/logs/aicc/).
+    $BUCKYOS_ROOT/logs/aicc/ (root defaults to C:\\buckyos on Windows,
+    /opt/buckyos elsewhere).
 
 Options:
     --print     Print to terminal instead of generating HTML
@@ -51,7 +52,7 @@ ROLE_COLORS = {
     "error": C_RED,
 }
 
-DEFAULT_BUCKYOS_ROOT = "/opt/buckyos"
+DEFAULT_BUCKYOS_ROOT = r"C:\buckyos" if sys.platform == "win32" else "/opt/buckyos"
 LOG_PREFIX_RE = (
     r"^(\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)\s+"
     r"(\w+)\s+"
