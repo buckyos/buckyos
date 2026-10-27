@@ -200,6 +200,18 @@ buckyos system info                                 # BuckyOS version, build_ver
   `*/instances/*` and `devices/*/info` are runtime reports; `*/doc` and `boot/config` are signed identity documents.
 
 #### Change loop
+
+For AICC or `llm_understand_media` failures with `HTTP 504 Gateway Timeout` / `response head timeout`,
+correlate the gateway log with the AICC task/trace. The shipped `etc/boot_gateway.yaml` sets
+`servers.node_gateway.response_timeout: 900s`; this covers all upstream responses through that HTTP server.
+Inspect the effective gateway configuration for overrides, then reload and read it back after a configuration
+change. Provider and client timeouts remain independent. A timed-out caller does not prove the provider
+cancelled the original request; check its outcome before repeating it. Configuration source and lifecycle:
+`doc/arch/gateway/boot_gateway的配置生成.md`.
+If AICC reports a provider HTTP error containing `response head timeout`, inspect the provider's proxy too:
+the local gateway setting does not change a remote proxy's response budget. Older gateways may return this
+diagnostic with HTTP 500; use the upstream address and AICC task/trace to locate the failing hop.
+
 1. Read and keep the current state: `buckyos system-config get <key> > $OPENDAN_SESSION_DIR/before.json` (value and
    `version`), or `buckyos app status <app_instance_id>`.
 2. Smallest change: edit the one field and write the whole JSON with `buckyos system-config set-file <key> --file new.json`

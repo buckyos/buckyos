@@ -1835,14 +1835,39 @@ fn openai_http_error(
         .and_then(|value| value.pointer("/error/message"))
         .or_else(|| value.as_ref().and_then(|value| value.get("message")))
         .and_then(Value::as_str)
+        .or_else(|| {
+            value
+                .is_none()
+                .then(|| std::str::from_utf8(body).ok())
+                .flatten()
+        })
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
         .unwrap_or("OpenAI request failed");
+    let prefix = message
+        .chars()
+        .take(32)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let message = if prefix.starts_with("<!doctype html") || prefix.starts_with("<html") {
+        "upstream returned an HTML error body (omitted)"
+    } else {
+        message
+    };
+    let redacted = crate::observability::redact(&Value::String(message.to_string()));
+    let message: String = redacted
+        .as_str()
+        .unwrap_or_default()
+        .chars()
+        .take(512)
+        .collect();
     let label = provider_code
         .as_deref()
         .or(provider_type)
         .unwrap_or("http_error");
     ProtocolError::new(
         super::protocol_error_kind_from_http_status(status),
-        format!("OpenAI {label}: {message}"),
+        format!("OpenAI HTTP {status} {label}: {message}"),
     )
     .with_provider_code(provider_code)
     .with_http_status(status.as_u16())
@@ -3721,6 +3746,38 @@ mod tests {
         );
         assert_eq!(numeric_error.provider_code.as_deref(), Some("502"));
         assert!(numeric_error.message.contains("502"));
+    }
+
+    #[test]
+    fn openai_http_error_keeps_status_and_bounded_redacted_plain_text() {
+        let body = format!(
+            "upstream timed out Bearer secret-value sk-123456789012345 {}",
+            "detail ".repeat(200)
+        );
+        let error = openai_http_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            body.as_bytes(),
+            "request-timeout",
+            None,
+        );
+        assert_eq!(error.kind, ProtocolErrorKind::Timeout);
+        assert_eq!(error.http_status, Some(504));
+        assert!(error.message.contains("HTTP 504 Gateway Timeout"));
+        assert!(error.message.contains("upstream timed out"));
+        assert!(!error.message.contains("secret-value"));
+        assert!(!error.message.contains("sk-123456789012345"));
+        assert!(error.message.len() < 600);
+
+        let error = openai_http_error(
+            StatusCode::BAD_GATEWAY,
+            b"<!DOCTYPE html><html>private upstream error</html>",
+            "request-html",
+            None,
+        );
+        assert!(error.message.contains("HTTP 502 Bad Gateway"));
+        assert!(error.message.contains("HTML error body (omitted)"));
+        assert!(!error.message.contains("private upstream error"));
+        assert!(!error.message.contains('<'));
     }
 
     #[tokio::test]

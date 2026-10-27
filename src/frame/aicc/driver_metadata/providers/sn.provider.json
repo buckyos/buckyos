@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 0,
-  "revision_seq": 1,
+  "revision_seq": 3,
   "provider_profile_id": "sn",
   "models": [],
   "patterns": [
@@ -18,10 +18,27 @@
     }
   ],
   "variants": [
-    {"model_driver": "openai", "variant": "reasoning-none", "match": {"origin_model_id": ["gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.5", "gpt-5.4"], "variant": "reasoning-none"}, "provider_options": {"reasoning": {"effort": "none"}}},
-    {"model_driver": "openai", "variant": "reasoning-low", "match": {"origin_model_id": ["gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.5", "gpt-5.4", "gpt-5.3-codex"], "variant": "reasoning-low"}, "provider_options": {"reasoning": {"effort": "low"}}},
-    {"model_driver": "openai", "variant": "reasoning-medium", "match": {"origin_model_id": ["gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.5", "gpt-5.4", "gpt-5.5-pro", "gpt-5.4-pro", "gpt-5.3-codex"], "variant": "reasoning-medium"}, "provider_options": {"reasoning": {"effort": "medium"}}},
-    {"model_driver": "openai", "variant": "reasoning-high", "match": {"origin_model_id": ["gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.5", "gpt-5.4", "gpt-5.5-pro", "gpt-5.4-pro", "gpt-5.3-codex"], "variant": "reasoning-high"}, "provider_options": {"reasoning": {"effort": "high"}}},
-    {"model_driver": "openai", "variant": "reasoning-xhigh", "match": {"origin_model_id": ["gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.5", "gpt-5.4", "gpt-5.5-pro", "gpt-5.4-pro", "gpt-5.3-codex"], "variant": "reasoning-xhigh"}, "provider_options": {"reasoning": {"effort": "xhigh"}}}
+    {"model_driver": "openai", "variant": "reasoning-none", "match": {"variant": "reasoning-none"}, "provider_options": {"reasoning": {"effort": "none"}}},
+    {"model_driver": "openai", "variant": "reasoning-low", "match": {"variant": "reasoning-low"}, "provider_options": {"reasoning": {"effort": "low"}}},
+    {"model_driver": "openai", "variant": "reasoning-medium", "match": {"variant": "reasoning-medium"}, "provider_options": {"reasoning": {"effort": "medium"}}},
+    {"model_driver": "openai", "variant": "reasoning-high", "match": {"variant": "reasoning-high"}, "provider_options": {"reasoning": {"effort": "high"}}},
+    {"model_driver": "openai", "variant": "reasoning-xhigh", "match": {"variant": "reasoning-xhigh"}, "provider_options": {"reasoning": {"effort": "xhigh"}}},
+    {"model_driver": "openai", "variant": "reasoning-max", "match": {"variant": "reasoning-max"}, "provider_options": {"reasoning": {"effort": "max"}}},
+    {"model_driver": "glm", "variant": "reasoning-none", "match": {"variant": "reasoning-none"}, "provider_options": {"reasoning": {"effort": "none"}}},
+    {"model_driver": "glm", "variant": "reasoning-thinking", "match": {"variant": "reasoning-thinking"}, "provider_options": {"reasoning": {"enabled": true}}},
+    {"model_driver": "glm", "variant": "reasoning-low", "match": {"variant": "reasoning-low"}, "provider_options": {"reasoning": {"effort": "low"}}},
+    {"model_driver": "glm", "variant": "reasoning-medium", "match": {"variant": "reasoning-medium"}, "provider_options": {"reasoning": {"effort": "medium"}}},
+    {"model_driver": "glm", "variant": "reasoning-high", "match": {"variant": "reasoning-high"}, "provider_options": {"reasoning": {"effort": "high"}}},
+    {"model_driver": "glm", "variant": "reasoning-max", "match": {"variant": "reasoning-max"}, "provider_options": {"reasoning": {"effort": "max"}}},
+    {"model_driver": "kimi", "variant": "reasoning-none", "match": {"variant": "reasoning-none"}, "provider_options": {"reasoning": {"effort": "none"}}},
+    {"model_driver": "kimi", "variant": "reasoning-low", "match": {"variant": "reasoning-low"}, "provider_options": {"reasoning": {"effort": "low"}}},
+    {"model_driver": "kimi", "variant": "reasoning-medium", "match": {"variant": "reasoning-medium"}, "provider_options": {"reasoning": {"effort": "medium"}}},
+    {"model_driver": "kimi", "variant": "reasoning-high", "match": {"variant": "reasoning-high"}, "provider_options": {"reasoning": {"effort": "high"}}},
+    {"model_driver": "kimi", "variant": "reasoning-max", "match": {"variant": "reasoning-max"}, "provider_options": {"reasoning": {"effort": "max"}}},
+    {"model_driver": "qwen", "variant": "reasoning-none", "match": {"variant": "reasoning-none"}, "provider_options": {"reasoning": {"effort": "none"}}},
+    {"model_driver": "qwen", "variant": "reasoning-thinking", "match": {"variant": "reasoning-thinking"}, "provider_options": {"reasoning": {"enabled": true}}},
+    {"model_driver": "qwen", "variant": "reasoning-low", "match": {"variant": "reasoning-low"}, "provider_options": {"reasoning": {"effort": "low"}}},
+    {"model_driver": "qwen", "variant": "reasoning-medium", "match": {"variant": "reasoning-medium"}, "provider_options": {"reasoning": {"effort": "medium"}}},
+    {"model_driver": "qwen", "variant": "reasoning-xhigh", "match": {"variant": "reasoning-xhigh"}, "provider_options": {"reasoning": {"effort": "xhigh"}}}
   ]
 }

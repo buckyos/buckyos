@@ -1977,8 +1977,16 @@ fn custom_provider_efforts_populate_logical_directories() {
 
 #[test]
 fn custom_provider_efforts_respect_adapter_rules_and_discovery() {
+    let mut builtin = crate::settings::load_builtin_metadata().unwrap();
+    let sn_rules = builtin
+        .iter_mut()
+        .find(|file| file.kind == crate::catalog::CatalogKind::ProviderRules && file.catalog_id == "sn")
+        .unwrap();
+    let mut rules: ProviderRulesCatalog = serde_json::from_slice(&sn_rules.contents).unwrap();
+    rules.variants.clear();
+    sn_rules.contents = serde_json::to_vec(&rules).unwrap();
     let catalog = crate::settings::MetadataSources {
-        builtin: crate::settings::load_builtin_metadata().unwrap(),
+        builtin,
         ..crate::settings::MetadataSources::default()
     }
     .build_snapshot(

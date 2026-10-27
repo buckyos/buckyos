@@ -529,7 +529,7 @@ impl CatalogSnapshot {
             .into_iter()
             .filter(|variant| variant.model_driver == driver)
             .filter(|variant| {
-                llm.is_none_or(|llm| {
+                llm.map_or(!variant.variant.starts_with("reasoning-"), |llm| {
                     llm.semantics
                         .supported_efforts
                         .iter()

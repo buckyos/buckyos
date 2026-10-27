@@ -5226,7 +5226,7 @@ impl AiccLlmClient {
                 response
                     .error
                     .as_ref()
-                    .and_then(|error| aicc_refusal(error.code))
+                    .and_then(aicc_provider_failure)
                     .unwrap_or(ProviderFailure::Unknown),
                 format!(
                     "aicc {method} failed{}: task_id={}, event_ref={}",
@@ -5274,13 +5274,44 @@ fn aicc_refusal(code: AiccErrorCode) -> Option<ProviderFailure> {
     }
 }
 
+fn aicc_provider_failure(error: &AiccError) -> Option<ProviderFailure> {
+    aicc_refusal(error.code).or_else(|| {
+        (error.code == AiccErrorCode::Timeout
+            || (error.code == AiccErrorCode::ProviderError
+                && matches!(
+                    error
+                        .details
+                        .as_ref()
+                        .and_then(|details| details.get("http_status"))
+                        .and_then(Value::as_u64),
+                    Some(408 | 504)
+                )))
+        .then_some(ProviderFailure::Transient)
+    })
+}
+
 /// kRPC 错误 → Provider 失败类别（AICC 的结构化错误码优先）。
 pub fn provider_error_from_rpc(context: &str, err: RPCErrors) -> LLMComputeError {
-    if let Some(failure) = AiccError::from_krpc_error(&err).and_then(|error| aicc_refusal(error.code))
+    if let Some(failure) = AiccError::from_krpc_error(&err)
+        .as_ref()
+        .and_then(aicc_provider_failure)
     {
         return LLMComputeError::provider(failure, format!("{context}: {err}"));
     }
     let failure = match &err {
+        RPCErrors::Detailed(detail)
+            if detail.code == "http_error"
+                && matches!(
+                    detail
+                        .data
+                        .as_ref()
+                        .and_then(|data| data.get("status"))
+                        .and_then(Value::as_u64),
+                    Some(408 | 504)
+                ) =>
+        {
+            ProviderFailure::Transient
+        }
         RPCErrors::S2sTransientError(_) => ProviderFailure::Transient,
         RPCErrors::InvalidToken(_)
         | RPCErrors::TokenExpired(_)
@@ -10923,6 +10954,95 @@ there]]></write_file>
             .await
             .unwrap_err();
         assert!(err.to_string().contains("nope.txt"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn rpc_http_timeout_pauses_without_retry_and_preserves_details() {
+        for (status, reason) in [(504, "Gateway Timeout"), (408, "Request Timeout")] {
+            let env = Env::new();
+            let upstream_reason = "response head timeout after 60000ms";
+            let message = format!("rpc call error: HTTP {status} {reason}: {upstream_reason}");
+            let err = provider_error_from_rpc(
+                "aicc helper.llm_chat failed",
+                RPCErrors::Detailed(::kRPC::RPCErrorDetail::new(
+                    "http_error",
+                    message.clone(),
+                    Some(json!({"status": status})),
+                )),
+            );
+            let llm = ScriptedLlm::new(vec![Err(err), text("must not retry automatically")]);
+            let outcome = env
+                .run(
+                    TaskInput::question("read this PDF"),
+                    env.overrides(),
+                    llm.clone(),
+                )
+                .await
+                .unwrap();
+            assert!(matches!(outcome, RunOutcome::Paused(_)));
+            let record = outcome.record().last_error.as_ref().unwrap();
+            assert!(record.recoverable);
+            assert_eq!(record.kind, "provider_transient");
+            assert!(record.message.contains("aicc helper.llm_chat failed"));
+            assert!(record.message.contains(&message));
+            assert_eq!(llm.calls(), 1);
+        }
+    }
+
+    #[test]
+    fn rpc_http_timeout_does_not_reclassify_unrelated_errors() {
+        for (code, data) in [
+            ("http_error", Some(json!({"status": 500}))),
+            ("http_error", None),
+            ("other_error", Some(json!({"status": 504}))),
+        ] {
+            let err = provider_error_from_rpc(
+                "aicc helper.llm_chat failed",
+                RPCErrors::Detailed(::kRPC::RPCErrorDetail::new(code, "upstream failed", data)),
+            );
+            assert!(matches!(
+                err,
+                LLMComputeError::Provider {
+                    failure: ProviderFailure::Unknown,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn aicc_http_timeout_is_recoverable_in_rpc_and_failed_responses() {
+        for (code, status, recoverable) in [
+            (AiccErrorCode::Timeout, 504, true),
+            (AiccErrorCode::ProviderError, 504, true),
+            (AiccErrorCode::ProviderError, 502, false),
+        ] {
+            let message = format!("OpenAI HTTP {status}: upstream response timed out");
+            let mut error = AiccError::new(code, message.clone());
+            error.retriable = true;
+            error.details = Some(json!({"http_status": status}));
+            let rpc_error =
+                provider_error_from_rpc("aicc helper.llm_chat failed", error.to_krpc_error());
+            let calls = Arc::new(StdMutex::new(Vec::new()));
+            let mut response = aicc_success_response();
+            response.status = AiMethodStatus::Failed;
+            response.message = None;
+            response.error = Some(error);
+            let client = AiccClient::new_in_process(Box::new(RecordingAicc {
+                calls: calls.clone(),
+                response,
+            }));
+            let response_error =
+                AiccLlmClient::infer_with_client(&client, aicc_inference_request("llm.chat"))
+                    .await
+                    .unwrap_err();
+            for error in [rpc_error, response_error] {
+                let record = XllmRun::classify_error(&error, &ProviderConfig::default());
+                assert_eq!(record.recoverable, recoverable);
+                assert!(record.message.contains(&message));
+            }
+            assert_eq!(calls.lock().unwrap().len(), 1);
+        }
     }
 
     #[tokio::test]

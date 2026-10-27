@@ -11,6 +11,7 @@ cyfs-gateway 上游已经完成 group forward 和 tunnel URL 状态查询后，B
 1. `src/rootfs/etc/boot_gateway.yaml`
    - 静态 boot 配置。
    - 定义 `node_rtcp`、`zone_gateway_http`、`node_gateway_http` 和 `node_gateway` HTTP server。
+   - `servers.node_gateway.response_timeout` 为 `900s`，覆盖 cyfs-gateway 的默认 `60s`，允许 AICC 同步推理等待模型完成。该值作用于整个 `node_gateway` 的上游响应头等待，从请求体发送完成起算；不改变请求体空闲超时。AICC kRPC 客户端默认等待 900 秒，xllm 单次模型调用和 AICC provider 请求默认均为 600 秒，各自独立计时；增大网关超时不会提高 xllm 的调用上限。
    - `node_rtcp.bind` 使用 `node_gateway_params.json` 中的字符串参数 `rtcp_port`。激活、种子物化和 node-daemon 启动均从本机设备文档写入该端口，缺省为 `2980`；自定义端口（如 `2981`）与对端读取的设备文档一致。
    - 从 `node_gateway_info.json` 读取 `APP_INFO`、`SERVICE_INFO`、`ROUTES`（升级前为 `NODE_ROUTE_MAP`）、`TRUST_KEY`、`NODE_INFO`。
    - 对私有 App 页面执行精确 SSO cookie 校验：route entry 的 AppId/AppInstanceId/owner 必须一致，token 必须来自 Verify Hub 且为 user session App target；System/refresh/sudo/旧格式 token 均 fail closed。`/sso_callback`、`/sso_refresh`、`/sso_logout` 先按 control-panel 服务路由，不被 App 页面 cookie 闸门拦截。

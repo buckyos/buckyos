@@ -115,6 +115,10 @@ impl RuntimeFactory for ServiceRuntimeFactory {
                         .ok()
                         .map(|configuration| configuration.provider_rules_id)
                 });
+                let request_timeout = provider
+                    .timeout_ms
+                    .map(Duration::from_millis)
+                    .unwrap_or_else(|| HttpTransportConfig::default().request_timeout);
                 let mut runtime_config = match provider_auth {
                     ProviderAuthConfig::ApiKey {
                         credential_ref,
@@ -133,9 +137,7 @@ impl RuntimeFactory for ServiceRuntimeFactory {
                         region: connection.region,
                         workspace: connection.workspace,
                         account: connection.account,
-                        request_timeout: Duration::from_millis(
-                            provider.timeout_ms.unwrap_or(120_000),
-                        ),
+                        request_timeout,
                         auto_sync_models: provider.auto_sync_models.unwrap_or(true),
                         instance_rules: provider
                             .instance_rules
@@ -162,8 +164,7 @@ impl RuntimeFactory for ServiceRuntimeFactory {
                         resolved.runtime
                     }
                 };
-                runtime_config.request_timeout =
-                    Duration::from_millis(provider.timeout_ms.unwrap_or(120_000));
+                runtime_config.request_timeout = request_timeout;
                 runtime_config.auto_sync_models = provider.auto_sync_models.unwrap_or(true);
                 runtime_config.instance_rules = provider
                     .instance_rules
@@ -747,7 +748,8 @@ mod startup_tests {
             }))
             .unwrap(),
         );
-        for _ in 0..2 {
+        for (timeout_ms, expected_timeout_secs) in [(None, 600), (Some(45_000), 45)] {
+            settings.providers.last_mut().unwrap().timeout_ms = timeout_ms;
             let prepared = factory
                 .prepare(
                     Arc::new(settings.clone()),
@@ -756,7 +758,16 @@ mod startup_tests {
                 )
                 .await
                 .unwrap();
-            assert!(prepared.state.providers.get("healthy").is_some());
+            assert_eq!(
+                prepared
+                    .state
+                    .providers
+                    .get("healthy")
+                    .unwrap()
+                    .config
+                    .request_timeout,
+                Duration::from_secs(expected_timeout_secs)
+            );
             for adapter in [
                 "glm-chat",
                 "kimi-chat",

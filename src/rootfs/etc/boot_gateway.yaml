@@ -134,6 +134,7 @@ servers:
 
   node_gateway:
     type: http
+    response_timeout: 900s
     gzip_vary: true
     gzip_types:
       - text/html

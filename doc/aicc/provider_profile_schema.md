@@ -221,6 +221,12 @@ Model Driver v2 声明精确模型 ID、API/能力、LLM 规格和 supported_eff
 
 native 使用 base；其他预设为 `reasoning-{effort}`，包括 minimal 和 thinking。模型侧不再重复定义 variants。非法 exact/cached 预设被拒绝；无映射的合法 effort 进入 unavailable_presets。调用参数不能覆盖已选定预设。
 
+模型支持哪些思考强度由 Model Driver 的 `supported_efforts` 决定；相同协议参数映射不应在 Provider Rules 中重复维护模型支持名单。SN 的 OpenAI、GLM、Kimi、Qwen 模型使用 Responses 参数映射，再与模型声明的强度及 discovery 限制求交：档位预设使用同名 `reasoning.effort`，GLM/Qwen 的 `thinking` 使用 `reasoning.enabled=true`，不能将 `thinking` 作为 effort 字符串。新模型只需更新 Model Driver 并被 SN 发现即可关联已有强度映射；API Token 与设备登录使用相同规则，不影响思考强度。
+
+SN 的 GLM/Kimi/Qwen 转发配置见 [sn-business release 配置](https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts)，其 reasoning 参数契约见 [OpenRouter Responses OpenAPI](https://openrouter.ai/openapi.json) 的 `ReasoningConfig`。
+
+LLM 通过 `规格 -> 家族预设 -> exact model` 动态挂载，原始 `logical_mounts` 为空不代表缺少 driver。排查任务无候选时先检查 Provider inventory 的 `unmatched_models` 与 `unavailable_presets`，再核对 `models.list` 的 `catalog`、`directory` 和 `routing.preview`。模型已匹配但预设报告 `missing_channel_mapping` 时，应补渠道协议映射，不能手工把 base model 塞进 `llm.chat` / `llm.code` / `llm.plan` 绕过规格。
+
 ### 3.3 fal 的临时模型归属
 
 当前 `fal-ai/esrgan`、`fal-ai/imageutils/rembg`、`fal-ai/deepfilternet3` 和 `fal-ai/video-upscaler` 尚无对应原厂 Provider 接入，暂时统一归属 `fal` Model Driver。其它配置随 fal 官方事实调整。

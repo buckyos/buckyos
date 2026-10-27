@@ -626,10 +626,14 @@ impl From<ProtocolError> for AiccError {
         let mut mapped = AiccError::new(code, error.message);
         mapped.provider_code = error.provider_code;
         mapped.retriable = retriable;
-        mapped.details = (error.request_id.is_some() || error.retry_after.is_some()).then(|| {
+        mapped.details = (error.request_id.is_some()
+            || error.retry_after.is_some()
+            || error.http_status.is_some())
+        .then(|| {
             serde_json::json!({
                 "request_id": error.request_id,
                 "retry_after_ms": error.retry_after.map(|duration| duration.as_millis() as u64),
+                "http_status": error.http_status,
             })
         });
         mapped
@@ -650,6 +654,24 @@ mod tests {
 
         let configuration: AiccError = ProtocolError::invalid_configuration("bad adapter").into();
         assert_eq!(configuration.code, AiccErrorCode::InternalError);
+    }
+
+    #[test]
+    fn protocol_http_status_survives_public_error_conversion() {
+        let error: AiccError = ProtocolError::new(
+            ProtocolErrorKind::Timeout,
+            "OpenAI HTTP 504 Gateway Timeout: upstream timed out",
+        )
+        .with_http_status(504)
+        .into();
+        assert_eq!(error.code, AiccErrorCode::Timeout);
+        assert!(error.retriable);
+        assert_eq!(error.details.as_ref().unwrap()["http_status"], 504);
+        assert!(error.message.contains("HTTP 504 Gateway Timeout"));
+        assert_eq!(
+            AiccError::from_krpc_error(&error.to_krpc_error()),
+            Some(error)
+        );
     }
 
     #[test]

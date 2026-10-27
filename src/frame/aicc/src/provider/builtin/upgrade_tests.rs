@@ -394,6 +394,60 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
             json!("none"),
         ),
         (
+            "sn",
+            "gpt-6.1-sol",
+            "medium",
+            "/reasoning/effort",
+            json!("medium"),
+        ),
+        (
+            "sn",
+            "gpt-6.1-sol",
+            "max",
+            "/reasoning/effort",
+            json!("max"),
+        ),
+        (
+            "sn",
+            "gpt-6.1-terra",
+            "none",
+            "/reasoning/effort",
+            json!("none"),
+        ),
+        (
+            "sn",
+            "gpt-5.5",
+            "high",
+            "/reasoning/effort",
+            json!("high"),
+        ),
+        ("sn", "glm-5", "thinking", "/reasoning/enabled", json!(true)),
+        ("sn", "glm-5", "none", "/reasoning/effort", json!("none")),
+        ("sn", "glm-5.3", "high", "/reasoning/effort", json!("high")),
+        ("sn", "glm-5.3", "max", "/reasoning/effort", json!("max")),
+        ("sn", "kimi-k3", "max", "/reasoning/effort", json!("max")),
+        (
+            "sn",
+            "qwen3.7-plus",
+            "thinking",
+            "/reasoning/enabled",
+            json!(true),
+        ),
+        (
+            "sn",
+            "qwen3.7-plus",
+            "none",
+            "/reasoning/effort",
+            json!("none"),
+        ),
+        (
+            "sn",
+            "qwen3.8-max-0902",
+            "xhigh",
+            "/reasoning/effort",
+            json!("xhigh"),
+        ),
+        (
             "openrouter",
             "openai/gpt-6.1-sol",
             "high",
@@ -583,6 +637,20 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
                 Some(&expected),
                 "{provider}/{id}/{effort}: {body}"
             );
+            if provider == "sn" {
+                assert_eq!(lowered.protocol_adapter_id, "sn-openai");
+                assert_eq!(lowered.operation, OPENAI_RESPONSES_OPERATION_ID);
+                assert_eq!(body["model"], id);
+                assert_eq!(
+                    body["reasoning"],
+                    if effort == "thinking" {
+                        json!({"enabled": true})
+                    } else {
+                        json!({"effort": effort})
+                    },
+                    "{provider}/{id}/{effort}: {body}"
+                );
+            }
             if provider == "openai" && id.starts_with("gpt-6.1-") {
                 if effort == "none" {
                     assert_eq!(body["temperature"], json!(0.4));
@@ -611,12 +679,12 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
 }
 
 #[test]
-fn gpt_6_1_presets_match_both_provider_channels_and_reject_unsupported_efforts() {
+fn gpt_6_1_presets_match_provider_channels_and_reject_unsupported_efforts() {
     let catalog = catalog();
     let providers = builtin_provider_registry(&catalog).unwrap();
     let openrouter_matcher =
         openrouter::OpenRouterDiscovery::new(HttpTransport::new(Default::default()).unwrap());
-    for (provider, prefix) in [("openai", ""), ("openrouter", "openai/")] {
+    for (provider, prefix) in [("openai", ""), ("openrouter", "openai/"), ("sn", "")] {
         let profile = providers
             .profiles()
             .find(|profile| profile.provider_profile_id == provider)
@@ -672,6 +740,88 @@ fn gpt_6_1_presets_match_both_provider_channels_and_reject_unsupported_efforts()
         assert!(registry
             .exact_model(&format!("{}:reasoning-minimal@test", ids[1]))
             .is_none());
+    }
+}
+
+#[test]
+fn sn_presets_follow_model_metadata_and_discovery_restrictions() {
+    let catalog = catalog();
+    let providers = builtin_provider_registry(&catalog).unwrap();
+    let profile = providers
+        .profiles()
+        .find(|profile| profile.provider_profile_id == "sn")
+        .unwrap();
+    let ids = catalog
+        .llm_models()
+        .filter(|(driver, _, _)| *driver == "openai")
+        .map(|(_, id, _)| id)
+        .collect::<Vec<_>>();
+    assert!(!ids.is_empty());
+    for disable_reasoning in [false, true] {
+        let mut discovered = discovery(&ids);
+        if disable_reasoning {
+            for model in &mut discovered.models {
+                model.unsupported_features.insert("reasoning".into());
+            }
+        }
+        let inventory = InventoryBuilder::build(
+            profile,
+            &instance(profile, "sn"),
+            discovered,
+            &catalog,
+            &providers.codecs(),
+        )
+        .unwrap();
+        assert!(inventory.unmatched_models.is_empty());
+        assert_eq!(inventory.models.len(), ids.len());
+        if !disable_reasoning {
+            assert!(inventory.unavailable_presets.is_empty());
+        }
+        for model in &inventory.models {
+            let expected = catalog
+                .llm_model("openai", &model.origin_model_id)
+                .unwrap()
+                .semantics
+                .supported_efforts
+                .iter()
+                .filter_map(|effort| effort.variant())
+                .filter(|variant| !disable_reasoning || variant == "reasoning-none")
+                .collect::<BTreeSet<_>>();
+            assert_eq!(
+                model
+                    .variants
+                    .iter()
+                    .map(|variant| variant.name.clone())
+                    .collect::<BTreeSet<_>>(),
+                expected,
+                "{} disable_reasoning={disable_reasoning}",
+                model.provider_model_id
+            );
+        }
+    }
+}
+
+#[test]
+fn sn_reasoning_presets_do_not_leak_to_non_llm_models_or_unsupported_drivers() {
+    let catalog = catalog();
+    let providers = builtin_provider_registry(&catalog).unwrap();
+    let profile = providers
+        .profiles()
+        .find(|profile| profile.provider_profile_id == "sn")
+        .unwrap();
+    let ids = ["gpt-image-2", "whisper-1", "claude-sonnet-5"];
+    let inventory = InventoryBuilder::build(
+        profile,
+        &instance(profile, "sn"),
+        discovery(&ids),
+        &catalog,
+        &providers.codecs(),
+    )
+    .unwrap();
+    assert!(inventory.unmatched_models.is_empty());
+    assert_eq!(inventory.models.len(), ids.len());
+    for model in &inventory.models {
+        assert!(model.variants.is_empty(), "{}", model.provider_model_id);
     }
 }
 

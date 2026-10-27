@@ -1220,6 +1220,151 @@ fn builtin_logical_definitions_make_llm_chat_routable_with_glm_only() {
     assert!(directory.get("llm.doubao-lite").is_some());
 }
 
+#[tokio::test]
+async fn sn_discovered_models_populate_catalog_and_builtin_llm_tasks() {
+    use crate::provider::{DiscoveredModel, InventoryBuilder, ModelAvailability};
+    use crate::runtime::ModelRegistryAssembler;
+
+    let catalog = crate::settings::MetadataSources {
+        builtin: crate::settings::load_builtin_metadata().unwrap(),
+        ..Default::default()
+    }
+    .build_snapshot(
+        crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+        &Default::default(),
+    )
+    .unwrap();
+    let providers = builtin_provider_registry(&catalog).unwrap();
+    let profile = providers
+        .profiles()
+        .find(|profile| profile.provider_profile_id == "sn")
+        .unwrap();
+    let config = ProviderInstanceConfig {
+        provider_instance_name: "sn-token".into(),
+        provider_profile_id: "sn".into(),
+        protocol_adapter_id: "sn-openai".into(),
+        base_url: "https://sn.example/api/v1/ai".into(),
+        operation_base_urls: BTreeMap::new(),
+        credential: CredentialReference {
+            reference: "secret://sn-token".into(),
+        },
+        credential_kind: Some(CredentialKind::Bearer),
+        provider_rules_id: Some("sn".into()),
+        region: None,
+        workspace: None,
+        account: None,
+        request_timeout: Duration::from_secs(30),
+        auto_sync_models: true,
+        instance_rules: None,
+    };
+    let ids = [
+        "glm-5",
+        "glm-5.3",
+        "kimi-k3",
+        "qwen3.6-plus",
+        "qwen3.7-plus",
+        "qwen3.8-max-0902",
+    ];
+    let inventory = InventoryBuilder::build(
+        profile,
+        &config,
+        ProviderDiscoverySnapshot {
+            revision: None,
+            discovered_at_ms: 1,
+            health: ProviderHealthState::Healthy,
+            models: ids
+                .into_iter()
+                .map(|id| DiscoveredModel {
+                    provider_model_id: id.into(),
+                    api_types: None,
+                    supported_features: None,
+                    unsupported_features: BTreeSet::new(),
+                    remote_methods: Some(BTreeSet::from(["responses.create".into()])),
+                    availability: ModelAvailability::Available,
+                    deprecated: false,
+                    pricing: None,
+                    video: None,
+                })
+                .collect(),
+        },
+        &catalog,
+        &providers.codecs(),
+    )
+    .unwrap();
+    assert_eq!(inventory.models.len(), ids.len());
+    assert!(inventory.unmatched_models.is_empty());
+    assert!(inventory.unavailable_presets.is_empty());
+    let registry = ServiceModelAssembler {
+        session: None,
+        events: None,
+    }
+    .build(catalog.clone(), vec![inventory.as_model_inventory()])
+    .await
+    .unwrap();
+    let directory = model_directory_json(&registry);
+    let provider = provider_public_view(&sn_provider(
+        "sn-token",
+        json!({"mode": "api_key", "credential_ref": "secret://sn-token", "credential_kind": "bearer"}),
+    ));
+    let view = model_catalog_json(&catalog, &registry, &[provider]);
+    for model in &inventory.models {
+        let llm = catalog
+            .llm_model(&model.model_driver_id, &model.origin_model_id)
+            .unwrap();
+        let exact = format!(
+            "{}:{}@sn-token",
+            model.provider_model_id,
+            llm.semantics.default_effort.variant().unwrap()
+        );
+        assert!(registry.exact_model(&exact).is_some(), "{exact}");
+        assert!(directory[&llm.family]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["target"] == exact));
+        for (spec, effort, _) in llm.semantics.spec_bindings() {
+            let target = format!("{}:{}", llm.family, effort.as_str());
+            assert!(directory[format!("llm.{spec}")]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["target"] == target));
+        }
+        let vendor = view["vendors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|vendor| vendor["id"] == model.model_driver_id)
+            .unwrap();
+        let entry = vendor["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == model.origin_model_id)
+            .unwrap();
+        assert_eq!(entry["providers"][0]["id"], "sn-token");
+        assert!(entry["providers"][0]["exact_models"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(exact)));
+    }
+    for (path, expected) in [
+        ("llm.chat", "qwen3.7-plus:reasoning-thinking@sn-token"),
+        ("llm.plan", "kimi-k3:reasoning-max@sn-token"),
+        ("llm.code", "kimi-k3:reasoning-max@sn-token"),
+    ] {
+        let candidates = registry
+            .resolve_candidates(path, buckyos_api::ApiType::Llm)
+            .unwrap();
+        assert_eq!(candidates.candidates.len(), 1, "{path}");
+        assert_eq!(
+            candidates.candidates[0].model.exact_model.as_str(),
+            expected,
+            "{path}"
+        );
+    }
+}
+
 #[test]
 fn builtin_plan_and_code_prefer_openai_and_keep_other_vendors_available() {
     let registry = builtin_tree(&[

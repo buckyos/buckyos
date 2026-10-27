@@ -43,7 +43,7 @@ impl Default for HttpTransportConfig {
     fn default() -> Self {
         Self {
             connect_timeout: Duration::from_secs(10),
-            request_timeout: Duration::from_secs(120),
+            request_timeout: Duration::from_secs(600),
             proxy: None,
             max_request_bytes: 32 * 1024 * 1024,
             max_response_bytes: 32 * 1024 * 1024,

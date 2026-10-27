@@ -290,6 +290,7 @@ interface RawLogicalRouteItem {
 
 interface RawLogicalDefinition {
   path?: unknown
+  kind?: unknown
   api_type?: unknown
   min_line?: unknown
   fallback?: unknown
@@ -1882,7 +1883,25 @@ function toStoreSnapshot(
   usageEvents: StoreSnapshot['usageEvents'] = [],
   routeTraces: RouteTrace[] = [],
 ): StoreSnapshot {
-  const rawModels = Array.isArray(directory.models) ? directory.models : []
+  const familyPaths = new Set((directory.logical_definitions ?? [])
+    .filter((definition) => definition.kind === 'family')
+    .map((definition) => asOptionalString(definition.path)))
+  const familyMounts = new Map<string, string[]>()
+  for (const [path, items] of Object.entries(directory.directory ?? {})) {
+    if (!familyPaths.has(path)) continue
+    for (const item of items) {
+      const target = asOptionalString(item.target)
+      if (!target?.includes('@')) continue
+      const mounts = familyMounts.get(target) ?? []
+      if (!mounts.includes(path)) mounts.push(path)
+      familyMounts.set(target, mounts)
+    }
+  }
+  const rawModels = (Array.isArray(directory.models) ? directory.models : []).map((model) =>
+    toApiTypes(model.api_types).includes('llm')
+      ? { ...model, logical_mounts: familyMounts.get(asNonEmptyString(model.exact_model, '')) ?? [] }
+      : model,
+  )
   const cloudProviders = (Array.isArray(providerList.providers) ? providerList.providers : [])
     .map((provider) => toProviderView(provider, rawModels))
   const localModels: LocalModel[] = []

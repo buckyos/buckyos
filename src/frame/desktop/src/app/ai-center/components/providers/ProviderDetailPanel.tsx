@@ -992,7 +992,13 @@ function ModelInventoryRow({ model, t, compact = false, groupLabel }: { model: M
         <div className="min-w-0">
           <LongField value={model.provider_model_id} className="text-sm font-medium" />
           <LongField
-            value={`${groupLabel ? `${groupLabel} / ` : ''}${model.logical_mounts.join(', ')} / ${model.api_types.join(', ')}`}
+            value={[
+              model.model_driver,
+              model.provider_actual_model_id !== model.provider_model_id ? model.provider_actual_model_id : undefined,
+              groupLabel,
+              model.logical_mounts.join(', '),
+              model.api_types.join(', '),
+            ].filter(Boolean).join(' / ')}
             className="text-xs"
             tone="muted"
             copyable={false}

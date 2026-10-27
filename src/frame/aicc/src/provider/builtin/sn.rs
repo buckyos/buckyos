@@ -696,7 +696,7 @@ mod tests {
         ModelDriverCatalog,
     };
     use crate::protocol::{HttpBody, ProtocolError, OPENAI_RESPONSES_OPERATION_ID};
-    use crate::provider::{openai_catalog_files, InventoryBuilder, StaticCredentialResolver};
+    use crate::provider::{InventoryBuilder, StaticCredentialResolver};
     use crate::settings::{MetadataFile, MetadataSource, MetadataSources};
     use bytes::Bytes;
     use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
@@ -819,11 +819,11 @@ mod tests {
     }
 
     #[test]
-    fn wp15_loads_sn_provider_catalogs_with_the_referenced_openai_model_driver() {
+    fn wp15_loads_sn_provider_catalogs_with_the_referenced_model_drivers() {
         let builtin = sn_catalog_files()
             .into_iter()
             .chain(
-                openai_catalog_files()
+                super::super::builtin_catalog_files(&["openai", "glm", "kimi", "qwen"])
                     .into_iter()
                     .filter(|file| file.kind == CatalogKind::ModelDriver),
             )
@@ -852,7 +852,7 @@ mod tests {
                 .provider_rules(SN_PROVIDER_PROFILE_ID)
                 .unwrap()
                 .revision_seq,
-            1
+            3
         );
         assert!(catalog.model_driver(SN_PROVIDER_PROFILE_ID).is_none());
     }
@@ -1073,23 +1073,53 @@ mod tests {
     }
 
     #[test]
-    fn rules_and_discovery_build_llm_inventory() {
+    fn reasoning_presets_follow_model_metadata_for_both_auth_modes() {
         let model_driver: ModelDriverCatalog = serde_json::from_value(json!({
             "format": "buckyos.aicc.model-driver-catalog",
             "schema_version": 2,
             "schema_revision": 0,
             "model_driver_id": "openai",
             "revision_seq": 1,
-            "models": [{"id": "gpt-5", "api_types": ["llm", "image.txt2img"], "llm":{"spec":"gpt-spec","effort":"native","default_effort":"native","supported_efforts":["native"],"stability":"stable","weight":1.0}}],
+            "models": [
+                {
+                    "id": "gpt-future",
+                    "api_types": ["llm", "image.txt2img"],
+                    "llm": {
+                        "spec": "gpt-spec",
+                        "effort": "medium",
+                        "default_effort": "medium",
+                        "supported_efforts": ["none", "medium", "max"],
+                        "stability": "stable",
+                        "weight": 1.0
+                    }
+                },
+                {
+                    "id": "gpt-native",
+                    "api_types": ["llm", "image.txt2img"],
+                    "llm": {
+                        "spec": "gpt-spec",
+                        "effort": "native",
+                        "default_effort": "native",
+                        "supported_efforts": ["native"],
+                        "stability": "stable",
+                        "weight": 1.0
+                    }
+                }
+            ],
             "patterns": [],
             "defaults": {},
             "specs": [{"id":"gpt-spec","direct_only":true}]
         }))
         .unwrap();
         let catalog = CatalogSnapshot::build(
-            2,
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
             CatalogDocuments {
-                model_drivers: vec![model_driver],
+                model_drivers: vec![
+                    model_driver,
+                    super::super::builtin_model_driver("glm"),
+                    super::super::builtin_model_driver("kimi"),
+                    super::super::builtin_model_driver("qwen"),
+                ],
                 provider_rules: vec![sn_provider_rules(1)],
                 known_providers: vec![KnownProviderCatalog {
                     exchange_rates: None,
@@ -1108,43 +1138,53 @@ mod tests {
         let mut registry = CodecRegistry::default();
         registry.register_codecs(base, codecs).unwrap();
         register_sn_openai_adapter(&mut registry).unwrap();
-        let instance = dynamic_instance().runtime;
-        let inventory = InventoryBuilder::build(
-            &sn_profile(),
-            &instance,
-            ProviderDiscoverySnapshot {
-                revision: Some("sn-v1".to_owned()),
-                discovered_at_ms: 1,
-                health: ProviderHealthState::Healthy,
-                models: vec![DiscoveredModel {
-                    provider_model_id: "gpt-5".to_owned(),
-
-                    api_types: Some(vec![buckyos_api::ApiType::Llm]),
-                    supported_features: None,
-                    unsupported_features: BTreeSet::new(),
-                    remote_methods: Some(BTreeSet::from(
-                        [OPENAI_RESPONSES_OPERATION_ID.to_owned()],
-                    )),
-                    availability: ModelAvailability::Available,
-                    deprecated: false,
-                    pricing: None,
-                    video: None,
-                }],
+        let api_key = resolve_sn_provider_instance(SnProviderInstanceInput {
+            provider_instance_name: "sn-key",
+            base_url: None,
+            account: None,
+            auth: ProviderAuthConfig::ApiKey {
+                credential_ref: "secret://sn/api-key".to_owned(),
+                credential_kind: None,
             },
-            &catalog,
-            &registry,
-        )
+        })
         .unwrap();
-        assert_eq!(inventory.provider_profile_id, SN_PROVIDER_PROFILE_ID);
-        assert_eq!(inventory.protocol_adapter_id, SN_OPENAI_ADAPTER_ID);
-        assert_eq!(inventory.models.len(), 1);
-        assert_eq!(
-            inventory.models[0].api_types,
-            vec![buckyos_api::ApiType::Llm]
-        );
-        assert_eq!(
-            inventory.models[0].operations["llm"],
-            OPENAI_RESPONSES_OPERATION_ID
-        );
+        for instance in [api_key.runtime, dynamic_instance().runtime] {
+            let discovery = parse_sn_models(
+                br#"{"models":[{"id":"gpt-future"},{"id":"gpt-native"}]}"#,
+                None,
+            )
+            .unwrap();
+            let inventory = InventoryBuilder::build(
+                &sn_profile(),
+                &instance,
+                discovery,
+                &catalog,
+                &registry,
+            )
+            .unwrap();
+            assert_eq!(inventory.provider_profile_id, SN_PROVIDER_PROFILE_ID);
+            assert_eq!(inventory.protocol_adapter_id, SN_OPENAI_ADAPTER_ID);
+            assert!(inventory.unmatched_models.is_empty());
+            assert!(inventory.unavailable_presets.is_empty());
+            assert_eq!(inventory.models.len(), 2);
+            for model in &inventory.models {
+                assert_eq!(model.api_types, vec![buckyos_api::ApiType::Llm]);
+                assert_eq!(model.operations["llm"], OPENAI_RESPONSES_OPERATION_ID);
+                let variants = model
+                    .variants
+                    .iter()
+                    .map(|variant| variant.name.as_str())
+                    .collect::<Vec<_>>();
+                if model.provider_model_id == "gpt-future" {
+                    assert_eq!(
+                        variants,
+                        ["reasoning-max", "reasoning-medium", "reasoning-none"]
+                    );
+                } else {
+                    assert_eq!(model.provider_model_id, "gpt-native");
+                    assert!(variants.is_empty());
+                }
+            }
+        }
     }
 }

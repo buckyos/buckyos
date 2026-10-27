@@ -66,6 +66,11 @@ The Zone's `llm.chat` lands on an OpenAI strict route: every property listed in 
   unchanged; AICC converts the selected effort to protocol parameters. Custom providers without dedicated
   rules use the matching protocol's default reasoning mappings. A preset with no supported mapping remains
   unavailable; see `doc/aicc/provider_profile_schema.md` for the selection boundary.
+- Model Driver `supported_efforts` defines each model's reasoning levels. SN maps OpenAI, GLM, Kimi and Qwen
+  presets to Responses parameters with either API Token or device login, without a separate model whitelist.
+  If `llm.chat` / `llm.code` / `llm.plan` has no candidates, check inventory `unmatched_models` and
+  `unavailable_presets` before changing routing. `missing_channel_mapping` means the preset lacks a channel
+  conversion; an empty LLM `logical_mounts` alone is normal because family/spec membership is generated.
 - Here `llm.chat`/`llm.plan` add provider web search: a trivial call bills ~4.7k input tokens (mostly cached)
   against ~0.3k on `llm.swift`. `--json` turns web search off for that run (JSON mode excludes it).
 - `--json` (or `json: true`) constrains the model result: JSON mode at the provider, the schema when
@@ -129,8 +134,11 @@ extraction or JSON check failed (raw reply saved).
 - Exit 3 (model timeout, transient provider error, rejected or expired token) → the printed hint
   `agent_tool xllm --resume --run <id> --runs-dir <dir>`. Resume reuses the saved config:
   later `.llm_context` edits and `--model`/`--tools` are ignored; `--llm-timeout`, `--timeout`, `--max-tokens`,
-  `--max-tool-iterations` can be raised. It retries the unfinished request — a continuation, not a fresh call;
-  a new run for the same job would duplicate the work.
+  `--max-tool-iterations` can be raised. Resume resends the unfinished model request; an interrupted HTTP
+  connection does not prove the provider stopped processing it. Check the original task/trace before retrying.
+- `HTTP 504 Gateway Timeout` with `response head timeout` means the gateway stopped waiting for the service.
+  Check `buckyos_admin` and the gateway/AICC logs; increasing only `--llm-timeout` cannot extend a gateway limit.
+  HTTP 408/504 keeps the upstream error text and pauses the run; it does not automatically replay the request.
 - Exit 4 (Ctrl-C/SIGINT): resumable. The interrupted tool call is not replayed, but the model may run it
   again; mind commands that are not idempotent.
 - Last error kind `quota_exhausted` / `quota_budget_exceeded` / `resource_not_permitted` (exit 1,

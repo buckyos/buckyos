@@ -38,6 +38,8 @@ AICC 启动和 `service.reload_settings` 时读取该 key，并原子重建 Prov
 
 `provider_instance_name` 是稳定主键；Profile、Protocol Adapter 和 Model Driver 是不同身份。Provider Instance 只保存 `provider_profile_id` 和 `protocol_adapter_id`，模型级 `model_driver_id` 由 catalog/inventory 解析产生。Provider Instance 不保存静态模型能力或逻辑挂载，catalog 更新也不能修改 `base_url`、凭据、区域和协议选择。
 
+Provider 的 `timeout_ms` 缺省或为 `null` 时采用 `600000` 毫秒（10 分钟），显式设置时使用该值。
+
 SN 使用独立 `sn-openai` Adapter，并显式选择认证模式。静态 API Key 示例：
 
 ```json
