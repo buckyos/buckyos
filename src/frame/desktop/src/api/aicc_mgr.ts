@@ -19,6 +19,7 @@ import { toAiccRpcCallOptions } from './aicc_rpc_options'
 import { parseProviderAdvancedRules, toProviderInstanceRules } from './provider_model_selection'
 import type {
   AIStatus,
+  FilteredProviderCapability,
   ApiNamespace,
   ApiType,
   KnownProviderProfile,
@@ -1002,6 +1003,7 @@ class BuckyOSAiccProvider implements AiccDataProvider {
       auth_valid: asBoolean(result.auth_valid, false),
       models_discovered: toStringArray(result.models_discovered),
       models_recognized: toStringArray(result.models_recognized),
+      filtered_capabilities: toFilteredCapabilities(result.filtered_capabilities),
       unmatched_models: Array.isArray(result.unmatched_models) ? result.unmatched_models : [],
       unavailable_presets: Array.isArray(result.unavailable_presets) ? result.unavailable_presets : [],
       routing_candidates: Object.fromEntries(Object.entries(asRecord(result.routing_candidates)).map(([path, models]) => [path, toStringArray(models)])),
@@ -1963,6 +1965,20 @@ function toStoreSnapshot(
   }
 }
 
+function toFilteredCapabilities(raw: unknown): FilteredProviderCapability[] {
+  if (!Array.isArray(raw)) return []
+  return raw.map((value) => {
+    const item = asRecord(value)
+    return {
+      provider_model_id: asNonEmptyString(item.provider_model_id, ''),
+      protocol_adapter_id: asNonEmptyString(item.protocol_adapter_id, ''),
+      api_type: asNonEmptyString(item.api_type, ''),
+      operation_id: asOptionalString(item.operation_id) ?? null,
+      reason: asNonEmptyString(item.reason, ''),
+    }
+  })
+}
+
 function toProviderView(raw: RawProviderInstanceView, allModels: RawModelMetadata[]): ProviderView {
   const providerId = asNonEmptyString(raw.provider_instance_name, 'unknown-provider')
   const profile = normalizeProviderType(raw.provider_profile_id)
@@ -2033,6 +2049,7 @@ function toProviderView(raw: RawProviderInstanceView, allModels: RawModelMetadat
       protocol_adapter_id: adapter,
       provider_origin: config.provider_origin,
       inventory_revision: asOptionalString(rawInventory.revision),
+      filtered_capabilities: toFilteredCapabilities(rawInventory.filtered_capabilities),
       models,
     },
     status,

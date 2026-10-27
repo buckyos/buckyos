@@ -144,3 +144,6 @@ Mock 模式使用当前模拟 Provider 库存，响应由 `mock/playground.ts` �
 pnpm run build
 pnpm exec playwright test tests/e2e/aicc-playground.spec.ts
 ```
+
+
+ValidationResult 和 ProviderInventory 通过 `filtered_capabilities` 展示按模型、API 类型过滤的能力项。字段包含 `provider_model_id`、`protocol_adapter_id`、`api_type`、可空 `operation_id` 和 `reason`。缺少协议绑定或适配器不支持的能力从可路由清单移除，不使整个 Provider 校验失败；Validation 与 Inventory 页可展开查看完整明细，不增加 RPC。

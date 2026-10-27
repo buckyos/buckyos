@@ -1,4 +1,7 @@
 const messages: Record<string, [string, string]> = {
+  "aiCenter.providers.filteredCapabilities": ["Unsupported capabilities filtered out", "已滤除的不支持能力"],
+  "aiCenter.providers.unregisteredBinding": ["No protocol binding for this capability and operation", "此能力与操作缺少协议绑定"],
+  "aiCenter.providers.unsupportedApiType": ["The selected protocol or discovery does not support this capability", "所选协议或发现结果不支持此能力"],
   "aiCenter.wizard.advancedRules": ["Advanced model and routing settings", "高级模型与路由配置"],
   "aiCenter.wizard.channelRules": ["Channel preset rules", "渠道预设规则"],
   "aiCenter.wizard.noInheritedRules": ["No inherited channel presets", "不继承渠道预设"],

@@ -954,6 +954,7 @@ fn empty_inventory(
         discovered_at_ms: 0,
         health: ProviderHealthState::Unknown,
         models: Vec::new(),
+        filtered_capabilities: Vec::new(),
         unmatched_models: Vec::new(),
         unavailable_presets: Vec::new(),
     }

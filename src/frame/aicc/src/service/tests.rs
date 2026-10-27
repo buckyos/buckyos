@@ -475,6 +475,7 @@ fn provider_public_view(provider: &ProviderSettings) -> ProviderInstanceView {
             configured: true,
         },
         inventory: ProviderInstanceInventoryView {
+            filtered_capabilities: Vec::new(),
             unmatched_models: Vec::new(),
             unavailable_presets: Vec::new(),
             unpriced_models: Vec::new(),

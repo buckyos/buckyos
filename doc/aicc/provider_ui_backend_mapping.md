@@ -57,3 +57,10 @@ beta 2.2 的 settings 将 `provider_driver` 拆为 `provider_profile_id` 和 `pr
 通用 `openai-responses` 的图片默认操作为文生图 `images.generate`、图生图及局部编辑 `images.edit`；`responses.create` 保留图片能力，供发现结果或显式规则选择。最高优先级仍有多个候选时拒绝歧义，不按名称或注册顺序猜测。所有对 custom 开放的适配器都必须对每项能力提供唯一默认操作，单测覆盖该约束。
 
 这些默认值不等于渠道能力认证。OpenRouter 等已有专用 profile 的渠道应使用其内置入口，以获得专用协议、发现和操作映射；不能仅凭 OpenAI 兼容探测成功推断其全部媒体接口可用。接入校验中的 `Inventory` 错误表示模型清单构建失败，应核对模型、适配器及操作映射，不能据此判断网络或 API Key 失败。
+
+
+## 不支持的能力项
+
+库存构建找不到 `adapter + operation + API 类型` 的 codec 绑定时，只滤除该模型对应的能力项，保留其他能力；适配器未声明的 API 类型也按不支持处理。滤除后不会把该项写入 `api_types`、`operations` 或对应逻辑挂载，不影响同一 Provider 的其他模型。显式操作映射缺失绑定同样过滤；操作选择歧义及其他配置错误仍报错。
+
+`provider.validate.filtered_capabilities`、`provider.list` 的 `inventory.filtered_capabilities` 和库存快照携带过滤明细：`provider_model_id`、`protocol_adapter_id`、`api_type`、可空的 `operation_id`、`reason`（`unregistered_binding` 或 `unsupported_api_type`）。Validation 页面及 Provider 模型清单页提供数量与可展开的完整列表，过滤记录不计入验证错误。发现接口报告的能力限制仍参与原有的能力求交。

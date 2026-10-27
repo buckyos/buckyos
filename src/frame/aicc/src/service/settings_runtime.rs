@@ -580,6 +580,7 @@ fn provider_inventory_validation(
         balance_available: false,
         models_discovered: discovered.into_iter().collect(),
         models_recognized: recognized,
+        filtered_capabilities: inventory.filtered_capabilities.clone(),
         unmatched_models: inventory
             .unmatched_models
             .iter()
@@ -747,7 +748,18 @@ mod startup_tests {
         let inventory =
             InventoryBuilder::build(&profile, &config, discovery, &catalog, &providers.codecs())
                 .unwrap();
+        let mut inventory = inventory;
+        inventory.filtered_capabilities.push(buckyos_api::FilteredProviderCapability {
+            provider_model_id: "qwen3.8-max-0902".into(),
+            protocol_adapter_id: "sn-openai".into(),
+            api_type: "image.img2img".into(),
+            operation_id: Some("images.generate".into()),
+            reason: "unregistered_binding".into(),
+        });
         let response = provider_inventory_validation(&catalog, &inventory, "sn-openai".into());
+        assert_eq!(response.filtered_capabilities, inventory.filtered_capabilities);
+        let wire = serde_json::to_value(&response).unwrap();
+        assert_eq!(wire["filtered_capabilities"][0]["api_type"], "image.img2img");
         assert!(response.errors.is_empty());
         assert_eq!(response.models_discovered.len(), 2);
         assert_eq!(response.models_recognized, ["qwen3.8-max-0902"]);

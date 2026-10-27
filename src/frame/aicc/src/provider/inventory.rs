@@ -681,6 +681,7 @@ pub(crate) struct ProviderInventorySnapshot {
     pub discovered_at_ms: i64,
     pub health: ProviderHealthState,
     pub models: Vec<ProviderInventoryModel>,
+    pub filtered_capabilities: Vec<buckyos_api::FilteredProviderCapability>,
     pub unmatched_models: Vec<UnmatchedInventoryModel>,
     pub unavailable_presets: Vec<UnavailablePreset>,
 }
@@ -911,6 +912,7 @@ impl InventoryBuilder {
         }
         let fingerprint = model_list_fingerprint(&discovery.models);
         let mut models = Vec::new();
+        let mut filtered_capabilities = Vec::new();
         let mut unmatched_models = Vec::new();
         let mut unavailable_presets = Vec::new();
 
@@ -1067,6 +1069,7 @@ impl InventoryBuilder {
             let mut api_types = Vec::new();
             let mut operations = BTreeMap::new();
             let mut adapter_features = BTreeSet::new();
+            let filtered_start = filtered_capabilities.len();
             for api_type_name in static_api_types {
                 let api_type = parse_api_type(&api_type_name)?;
                 let operation_id = resolve_operation(
@@ -1087,6 +1090,13 @@ impl InventoryBuilder {
                     ))
                 })?;
                 let Some(operation_id) = operation_id else {
+                    filtered_capabilities.push(buckyos_api::FilteredProviderCapability {
+                        provider_model_id: discovered.provider_model_id.clone(),
+                        protocol_adapter_id: instance.protocol_adapter_id.clone(),
+                        api_type: api_type_name,
+                        operation_id: None,
+                        reason: "unsupported_api_type".into(),
+                    });
                     continue;
                 };
                 if discovered.remote_methods.as_ref().is_some_and(|methods| {
@@ -1096,9 +1106,24 @@ impl InventoryBuilder {
                 }) {
                     continue;
                 }
-                let descriptor = codecs
-                    .operation_descriptor(&instance.protocol_adapter_id, &operation_id, api_type)
-                    .map_err(|error| ProviderError::Inventory(error.to_string()))?;
+                let descriptor = match codecs.operation_descriptor(
+                    &instance.protocol_adapter_id,
+                    &operation_id,
+                    api_type,
+                ) {
+                    Ok(descriptor) => descriptor,
+                    Err(error) if error.kind == ProtocolErrorKind::UnsupportedOperation => {
+                        filtered_capabilities.push(buckyos_api::FilteredProviderCapability {
+                            provider_model_id: discovered.provider_model_id.clone(),
+                            protocol_adapter_id: instance.protocol_adapter_id.clone(),
+                            api_type: api_type_name,
+                            operation_id: Some(operation_id),
+                            reason: "unregistered_binding".into(),
+                        });
+                        continue;
+                    }
+                    Err(error) => return Err(ProviderError::Inventory(error.to_string())),
+                };
                 let binding = descriptor
                     .binding(api_type)
                     .map_err(|error| ProviderError::Inventory(error.to_string()))?;
@@ -1190,11 +1215,18 @@ impl InventoryBuilder {
                 "discovery"
             }
             .to_owned();
-            let server_default_routes = instance_rules
+            let mut server_default_routes = instance_rules
                 .server_default_routes
                 .get(&discovered.provider_model_id)
                 .cloned()
                 .unwrap_or_default();
+            if !api_types.contains(&ApiType::Llm)
+                && filtered_capabilities[filtered_start..]
+                    .iter()
+                    .any(|item| item.api_type == "llm")
+            {
+                server_default_routes.clear();
+            }
             if !server_default_routes.is_empty() && !api_types.contains(&ApiType::Llm) {
                 return Err(ProviderError::InvalidConfiguration(format!(
                     "server defaults require a recognized LLM: {}",
@@ -1235,6 +1267,7 @@ impl InventoryBuilder {
             discovered_at_ms: discovery.discovered_at_ms,
             health: discovery.health,
             models,
+            filtered_capabilities,
             unmatched_models,
             unavailable_presets,
         })

@@ -765,6 +765,7 @@ mod tests {
             discovered_at_ms: 1,
             health,
             models: Vec::new(),
+            filtered_capabilities: Vec::new(),
             unmatched_models: Vec::new(),
             unavailable_presets: Vec::new(),
         };

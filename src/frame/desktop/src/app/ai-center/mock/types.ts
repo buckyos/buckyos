@@ -83,6 +83,7 @@ export interface ProviderInventory {
   provider_origin: ProviderOrigin
   version?: string
   inventory_revision?: string
+  filtered_capabilities?: FilteredProviderCapability[]
   models: ModelMetadata[]
 }
 
@@ -396,7 +397,16 @@ export interface ProviderSetupCatalog {
   protocol_families: ProtocolFamilyOption[]
 }
 
+export interface FilteredProviderCapability {
+  provider_model_id: string
+  protocol_adapter_id: string
+  api_type: string
+  operation_id: string | null
+  reason: string
+}
+
 export interface ValidationResult {
+  filtered_capabilities?: FilteredProviderCapability[]
   models_recognized?: string[]
   unmatched_models?: unknown[]
   unavailable_presets?: unknown[]

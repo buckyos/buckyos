@@ -1348,6 +1348,7 @@ fn runtime_admin_snapshot(
             let (inventory, health) = if !settings.enabled {
                 (
                     ProviderInstanceInventoryView {
+                        filtered_capabilities: Vec::new(),
                         unmatched_models: Vec::new(),
                         unavailable_presets: Vec::new(),
                         unpriced_models: Vec::new(),
@@ -1364,6 +1365,7 @@ fn runtime_admin_snapshot(
             } else if let Some(runtime) = runtime {
                 (
                     ProviderInstanceInventoryView {
+                        filtered_capabilities: runtime.inventory.filtered_capabilities.clone(),
                         unmatched_models: runtime
                             .inventory
                             .unmatched_models
@@ -1396,6 +1398,7 @@ fn runtime_admin_snapshot(
             } else {
                 (
                     ProviderInstanceInventoryView {
+                        filtered_capabilities: Vec::new(),
                         unmatched_models: Vec::new(),
                         unavailable_presets: snapshot.provider_metadata
                             .get(&settings.provider_instance_name)

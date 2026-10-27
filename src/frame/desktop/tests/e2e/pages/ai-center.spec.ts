@@ -76,3 +76,41 @@ test('custom provider requires explicit default task rules and preserves advance
   await expect(aliases).toHaveValue('{"my-model":"qwen/qwen3.7-plus"}')
   await expect(routes).toHaveValue('{"my-model":["llm.chat"]}')
 })
+
+test('provider validation shows filtered capabilities without blocking setup', async ({ page }) => {
+  await page.goto('/?scenario=normal&aiccScenario=populated')
+  await page.evaluate(async () => {
+    const modulePath = '/src/api/aicc_mgr.ts'
+    const { AICCModelStore } = await import(/* @vite-ignore */ modulePath)
+    AICCModelStore.prototype.validateConnection = async () => ({
+      base_url_reachable: true,
+      auth_valid: true,
+      models_discovered: ['google/gemini-2.5-flash-image'],
+      models_recognized: ['google/gemini-2.5-flash-image'],
+      balance_available: false,
+      errors: [],
+      filtered_capabilities: [{
+        provider_model_id: 'google/gemini-2.5-flash-image',
+        protocol_adapter_id: 'openai-responses',
+        api_type: 'image.img2img',
+        operation_id: 'images.generate',
+        reason: 'unregistered_binding',
+      }],
+    })
+  })
+  await page.getByTestId('desktop-app-ai-center').click()
+  await page.getByRole('button', { name: 'Providers', exact: true }).click()
+  await page.getByRole('button', { name: 'Add Provider' }).click()
+  await page.getByRole('button', { name: /Custom Provider/ }).click()
+  await page.getByRole('button', { name: 'Next', exact: true }).click()
+  await page.getByRole('combobox', { name: 'Protocol Family', exact: true }).selectOption('openai')
+  await page.getByPlaceholder('custom-main').fill('custom-filtered')
+  await page.getByPlaceholder('sk-...').fill('mock-key')
+  await page.getByRole('combobox', { name: /^Base URL/ }).fill('https://example.test/v1')
+  await page.getByRole('button', { name: 'Next', exact: true }).click()
+  await page.getByText('Unsupported capabilities filtered out', { exact: false }).click()
+  await expect(page.getByText('google/gemini-2.5-flash-image · image.img2img')).toBeVisible()
+  await expect(page.getByText('openai-responses · images.generate')).toBeVisible()
+  await expect(page.getByText('No protocol binding for this capability and operation')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Next', exact: true })).toBeEnabled()
+})

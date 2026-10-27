@@ -2192,3 +2192,120 @@ fn custom_operation_priority_ties_are_rejected() {
     )
     .is_err());
 }
+
+#[test]
+fn missing_protocol_bindings_filter_cells_and_preserve_supported_capabilities() {
+    let catalog = crate::settings::MetadataSources {
+        builtin: crate::settings::load_builtin_metadata().unwrap(),
+        ..Default::default()
+    }
+    .build_snapshot(
+        crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+        &Default::default(),
+    )
+    .unwrap();
+    let registry = builtin_provider_registry(&catalog).unwrap();
+    let codecs = registry.codecs();
+    let mut profile = profile();
+    profile.provider_profile_id = "custom".into();
+    profile.accepts_any_adapter = true;
+    let mut config = instance("filtered-cells");
+    config.provider_profile_id = "custom".into();
+    config.provider_rules_id = Some("openrouter".into());
+    let mut discovered = discovery("google/gemini-2.5-flash-image");
+    discovered.models[0].api_types = None;
+    discovered.models[0].remote_methods = None;
+    let inventory =
+        InventoryBuilder::build(&profile, &config, discovered.clone(), &catalog, &codecs).unwrap();
+    let model = &inventory.models[0];
+    assert!(model.api_types.contains(&ApiType::ImageTextToImage));
+    assert!(!model.api_types.contains(&ApiType::ImageImageToImage));
+    assert!(!model.operations.contains_key("image.img2img"));
+    let filtered = inventory
+        .filtered_capabilities
+        .iter()
+        .find(|item| item.api_type == "image.img2img")
+        .unwrap();
+    assert_eq!(filtered.provider_model_id, "google/gemini-2.5-flash-image");
+    assert_eq!(filtered.protocol_adapter_id, "openai-responses");
+    assert_eq!(filtered.operation_id.as_deref(), Some("images.generate"));
+    assert_eq!(filtered.reason, "unregistered_binding");
+    let wire = serde_json::to_value(&inventory).unwrap();
+    let restored: ProviderInventorySnapshot = serde_json::from_value(wire).unwrap();
+    assert_eq!(
+        restored.filtered_capabilities,
+        inventory.filtered_capabilities
+    );
+
+    config.protocol_adapter_id = "openai-chat-completions".into();
+    let inventory =
+        InventoryBuilder::build(&profile, &config, discovered, &catalog, &codecs).unwrap();
+    assert!(inventory.models[0].api_types.is_empty());
+    assert!(inventory.models[0].operations.is_empty());
+    assert!(inventory.models[0].server_default_routes.is_empty());
+    assert!(!inventory.filtered_capabilities.is_empty());
+}
+
+#[test]
+fn unsupported_adapter_capabilities_are_reported_without_an_operation() {
+    let catalog = crate::settings::MetadataSources {
+        builtin: crate::settings::load_builtin_metadata().unwrap(),
+        ..Default::default()
+    }
+    .build_snapshot(
+        crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+        &Default::default(),
+    )
+    .unwrap();
+    let registry = builtin_provider_registry(&catalog).unwrap();
+    let mut profile = profile();
+    profile.provider_profile_id = "custom".into();
+    let mut config = instance("unsupported-cells");
+    config.provider_profile_id = "custom".into();
+    config.protocol_adapter_id = "openai-chat-completions".into();
+    let mut discovered = discovery("google/gemini-2.5-flash-image");
+    discovered.models[0].api_types = None;
+    discovered.models[0].remote_methods = None;
+    let inventory =
+        InventoryBuilder::build(&profile, &config, discovered, &catalog, &registry.codecs())
+            .unwrap();
+    assert!(inventory.models[0].api_types.is_empty());
+    let filtered = inventory
+        .filtered_capabilities
+        .iter()
+        .find(|item| item.api_type == "image.img2img")
+        .unwrap();
+    assert_eq!(filtered.operation_id, None);
+    assert_eq!(filtered.reason, "unsupported_api_type");
+}
+
+#[test]
+fn filtering_llm_binding_removes_server_default_routes() {
+    let catalog = catalog();
+    let registry = builtin_provider_registry(&catalog).unwrap();
+    let mut config = instance("filtered-llm");
+    config.protocol_adapter_id = "openai-chat-completions".into();
+    config.instance_rules = Some(buckyos_api::ProviderInstanceRules {
+        server_default_routes: BTreeMap::from([(
+            "gpt-test".into(),
+            BTreeSet::from(["llm.chat".into()]),
+        )]),
+        ..Default::default()
+    });
+    let mut discovered = discovery("gpt-test");
+    discovered.models[0].remote_methods = None;
+    let inventory = InventoryBuilder::build(
+        &profile(),
+        &config,
+        discovered,
+        &catalog,
+        &registry.codecs(),
+    )
+    .unwrap();
+    assert!(inventory.models[0].api_types.is_empty());
+    assert!(inventory.models[0].server_default_routes.is_empty());
+    assert!(inventory
+        .filtered_capabilities
+        .iter()
+        .any(|item| { item.api_type == "llm" && item.reason == "unregistered_binding" }));
+}

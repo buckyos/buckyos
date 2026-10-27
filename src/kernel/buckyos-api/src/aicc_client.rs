@@ -837,6 +837,7 @@ mod canonical_contract_tests {
                 configured: true,
             },
             inventory: ProviderInstanceInventoryView {
+                filtered_capabilities: Vec::new(),
                 unmatched_models: Vec::new(),
                 unavailable_presets: Vec::new(),
                 unpriced_models: Vec::new(),
@@ -4647,9 +4648,20 @@ pub struct ProviderValidationErrorDetail {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FilteredProviderCapability {
+    pub provider_model_id: String,
+    pub protocol_adapter_id: String,
+    pub api_type: String,
+    pub operation_id: Option<String>,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderValidateResponse {
+    pub filtered_capabilities: Vec<FilteredProviderCapability>,
     #[serde(default)]
     pub models_recognized: Vec<String>,
     #[serde(default)]
@@ -4906,6 +4918,7 @@ pub struct ProviderInstanceRules {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderInstanceInventoryView {
+    pub filtered_capabilities: Vec<FilteredProviderCapability>,
     pub unmatched_models: Vec<Value>,
     pub unavailable_presets: Vec<Value>,
     pub unpriced_models: Vec<String>,
