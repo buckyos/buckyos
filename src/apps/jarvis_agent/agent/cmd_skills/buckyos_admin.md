@@ -47,6 +47,12 @@ buckyos system info                                 # BuckyOS version, build_ver
 - Host-side `uv run src/check.py` (repo) checks processes and ports. "Activation Ready" means waiting for activation,
   not running; "Running" with exit 0 can still come with an error-heavy log warning below it. The host root uses
   `BUCKYOS_ROOT` when set, otherwise `C:\buckyos` on Windows and `/opt/buckyos` on macOS/Linux.
+- OOD startup waits for an authenticated local system-config RPC before registering its device. Readiness and
+  each registration write have a 60-second retry budget for transport failures; authentication and permission
+  errors fail immediately. A missing `boot/config` is valid during first activation. If startup times out, inspect
+  node-daemon and system-config logs and port 3200; do not clear identity or user data. A successful `start.py`
+  launch or `local system-config RPC ready` log does not prove scheduler and the remaining services are ready;
+  use the host check above to verify the complete startup.
 - macOS Desktop nodes run node_daemon as `$BUCKYOS_ROOT/bin/node-daemon/BuckyOS Runtime.app`, the LaunchAgent
   `com.buckyos.runtime` of the one OS user in `etc/desktop_runtime.json`. Host command for the owner:
   `"$BUCKYOS_ROOT/bin/node-daemon/BuckyOS Runtime.app/Contents/MacOS/node_daemon" service status` (bound user,

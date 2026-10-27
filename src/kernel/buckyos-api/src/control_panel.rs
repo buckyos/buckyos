@@ -73,7 +73,9 @@ const DEVICE_DOC_RETRY_DELAY_MS: u64 = 500;
 fn is_transient_system_config_error(error: &SystemConfigError) -> bool {
     matches!(
         error,
-        SystemConfigError::ReasonError(_) | SystemConfigError::Timeout(_)
+        SystemConfigError::ReasonError(_)
+            | SystemConfigError::Timeout(_)
+            | SystemConfigError::TransportError(_)
     )
 }
 
@@ -739,6 +741,9 @@ mod system_config_read_error_tests {
         ));
         assert!(is_transient_system_config_error(
             &SystemConfigError::Timeout("15s".to_string())
+        ));
+        assert!(is_transient_system_config_error(
+            &SystemConfigError::TransportError("connection refused".to_string())
         ));
         assert!(!is_transient_system_config_error(
             &SystemConfigError::KeyNotFound("devices/ood1/doc".to_string())

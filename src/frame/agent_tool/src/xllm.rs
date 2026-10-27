@@ -5299,6 +5299,13 @@ pub fn provider_error_from_rpc(context: &str, err: RPCErrors) -> LLMComputeError
         return LLMComputeError::provider(failure, format!("{context}: {err}"));
     }
     let failure = match &err {
+        RPCErrors::HttpTransportError(_) => {
+            if err.is_retryable_transport() {
+                ProviderFailure::Transient
+            } else {
+                ProviderFailure::Permanent
+            }
+        }
         RPCErrors::Detailed(detail)
             if detail.code == "http_error"
                 && matches!(

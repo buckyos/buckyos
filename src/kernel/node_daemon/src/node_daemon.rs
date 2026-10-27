@@ -693,13 +693,12 @@ async fn populate_network_observation(
 async fn update_device_info_checked(
     device_info: &DeviceInfo,
     syste_config_client: &SystemConfigClient,
-) -> std::result::Result<(), String> {
+) -> SytemConfigResult<()> {
     let device_key = format!("devices/{}/info", device_info.name.as_str());
     let device_info_str = serde_json::to_string(&device_info).unwrap();
     syste_config_client
         .set(device_key.as_str(), device_info_str.as_str())
-        .await
-        .map_err(|err| format!("update device info to system_config failed! {}", err))?;
+        .await?;
     info!(
         "update {} info to system_config success!",
         device_info.name.as_str()
@@ -709,7 +708,7 @@ async fn update_device_info_checked(
 
 async fn update_device_info(device_info: &DeviceInfo, syste_config_client: &SystemConfigClient) {
     if let Err(err) = update_device_info_checked(device_info, syste_config_client).await {
-        error!("{}", err);
+        error!("update device info to system_config failed! {}", err);
     }
 }
 
@@ -719,10 +718,13 @@ async fn register_boot_device(
     system_config_client: &SystemConfigClient,
 ) -> std::result::Result<(), String> {
     let device_doc_key = format!("devices/{}/doc", device_doc.name.as_str());
-    system_config_client
-        .set(device_doc_key.as_str(), device_doc_jwt)
-        .await
-        .map_err(|err| format!("register device doc to system_config failed! {}", err))?;
+    retry_system_config_boot(
+        "register device document",
+        SYSTEM_CONFIG_BOOT_TIMEOUT,
+        SYSTEM_CONFIG_REQUEST_TIMEOUT,
+        || system_config_client.set(device_doc_key.as_str(), device_doc_jwt),
+    )
+    .await?;
     info!(
         "register {} device doc to system_config success!",
         device_doc.name.as_str()
@@ -735,7 +737,13 @@ async fn register_boot_device(
         .map_err(|err| format!("auto fill device info failed! {}", err))?;
     let mut boot_observer = NetworkObserver::new(NetworkObserverConfig::default());
     populate_network_observation(&mut boot_observer, &mut device_info, system_config_client).await;
-    update_device_info_checked(&device_info, system_config_client).await
+    retry_system_config_boot(
+        "register device info",
+        SYSTEM_CONFIG_BOOT_TIMEOUT,
+        SYSTEM_CONFIG_REQUEST_TIMEOUT,
+        || update_device_info_checked(&device_info, system_config_client),
+    )
+    .await
 }
 
 static KEVENT_SERVICE: OnceLock<Arc<kevent::KEventService>> = OnceLock::new();
@@ -988,8 +996,60 @@ async fn do_boot_schedule() -> std::result::Result<(), String> {
     }
 }
 
-async fn wait_sysmte_config_sync() -> std::result::Result<(), String> {
-    return Ok(());
+const SYSTEM_CONFIG_BOOT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const SYSTEM_CONFIG_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+async fn retry_system_config_boot<T, F, Fut>(
+    operation: &str,
+    timeout: std::time::Duration,
+    request_timeout: std::time::Duration,
+    mut request: F,
+) -> std::result::Result<T, String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = SytemConfigResult<T>>,
+{
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut delay = std::time::Duration::from_millis(200);
+    let mut attempts = 0;
+    let mut last_error = "no RPC attempt completed".to_string();
+    while tokio::time::Instant::now() < deadline {
+        attempts += 1;
+        let request_deadline = deadline.min(tokio::time::Instant::now() + request_timeout);
+        match tokio::time::timeout_at(request_deadline, request()).await {
+            Ok(Ok(value)) => return Ok(value),
+            Ok(Err(
+                error @ (SystemConfigError::Timeout(_) | SystemConfigError::TransportError(_)),
+            )) => {
+                last_error = error.to_string();
+            }
+            Ok(Err(error)) => return Err(format!("system-config {operation} failed: {error}")),
+            Err(_) => last_error = "RPC request timed out".to_string(),
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        warn!("system-config {operation} attempt {attempts} failed: {last_error}; retrying");
+        tokio::time::sleep_until(deadline.min(tokio::time::Instant::now() + delay)).await;
+        delay = (delay * 2).min(std::time::Duration::from_secs(2));
+    }
+    Err(format!(
+        "system-config {operation} timed out after {timeout:?} ({attempts} attempts): {last_error}"
+    ))
+}
+
+async fn wait_system_config_ready(
+    client: &SystemConfigClient,
+    timeout: std::time::Duration,
+    request_timeout: std::time::Duration,
+) -> std::result::Result<(), String> {
+    retry_system_config_boot("RPC readiness", timeout, request_timeout, || async {
+        match client.get("boot/config").await {
+            Ok(_) | Err(SystemConfigError::KeyNotFound(_)) => Ok(()),
+            Err(error) => Err(error),
+        }
+    })
+    .await
 }
 
 async fn keep_system_config_service(
@@ -2090,13 +2150,16 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
                 error!("start system_config_service failed! {}", err);
                 return String::from("start system_config_service failed!");
             })?;
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-        info!("wait system_config_service sync...");
-        wait_sysmte_config_sync().await?;
-        info!("system_config_service sync OK!,will connect to local system_config_service...");
-
         //This is ood, so we MUST connect to localhost's system_config_service
         syc_cfg_client = SystemConfigClient::new(None, Some(device_session_token_jwt.as_str()));
+        info!("wait for local system-config RPC readiness...");
+        wait_system_config_ready(
+            &syc_cfg_client,
+            SYSTEM_CONFIG_BOOT_TIMEOUT,
+            SYSTEM_CONFIG_REQUEST_TIMEOUT,
+        )
+        .await?;
+        info!("local system-config RPC ready");
         register_boot_device(device_doc_jwt.as_str(), &device_doc, &syc_cfg_client).await?;
 
         while boot_config_result_str.is_empty() {
@@ -2318,6 +2381,10 @@ pub(crate) fn run(matches: ArgMatches) -> std::result::Result<(), String> {
         }
     })
 }
+
+#[cfg(test)]
+#[path = "system_config_boot_tests.rs"]
+mod system_config_boot_tests;
 
 #[cfg(test)]
 mod tests {

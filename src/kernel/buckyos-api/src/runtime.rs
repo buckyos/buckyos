@@ -759,6 +759,13 @@ impl BuckyOSRuntime {
             };
         }
         match error {
+            RPCErrors::HttpTransportError(_) => {
+                if error.is_retryable_transport() {
+                    RuntimeErrorClass::Retryable
+                } else {
+                    RuntimeErrorClass::NonRetryable
+                }
+            }
             RPCErrors::Detailed(detail) if detail.code == "runtime_auth_retry_pending" => {
                 RuntimeErrorClass::Retryable
             }
