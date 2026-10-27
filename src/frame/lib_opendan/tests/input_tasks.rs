@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use buckyos_api::{AiContent, AiRole};
 use common::*;
 use libopendan::protocol::*;
-use libopendan::runner::{drive, DriveResult, RunnerDeps, StopWhen};
+use libopendan::runner::{drive, DriveResult, RunnerDeps, SessionTaskResolver, StopWhen};
 use libopendan::{OpenDanError, SessionDir};
 use llm_context::deps::LlmClient;
 use llm_context::tasks::{
@@ -114,6 +114,34 @@ impl RunningTaskResolver for FakeTasks {
     async fn cancel(&self, task_id: &str) -> Result<TaskState, CancelUnsupported> {
         self.cancelled.lock().unwrap().push(task_id.to_string());
         Ok(self.state(task_id).await)
+    }
+
+    async fn active(&self) -> Vec<TaskBrief> {
+        Vec::new()
+    }
+}
+
+/// A task manager that knows TaskMgr's ids (`t-`) only.
+struct ZoneOnly;
+
+#[async_trait]
+impl RunningTaskResolver for ZoneOnly {
+    async fn state(&self, _: &str) -> TaskState {
+        FakeTasks::running()
+    }
+
+    async fn wait(&self, task_id: &str, _: Option<u64>) -> TaskState {
+        self.state(task_id).await
+    }
+
+    async fn cancel(&self, task_id: &str) -> Result<TaskState, CancelUnsupported> {
+        Err(CancelUnsupported {
+            task_id: task_id.into(),
+        })
+    }
+
+    fn can_resolve(&self, task_id: &str) -> bool {
+        task_id.starts_with("t-")
     }
 
     async fn active(&self) -> Vec<TaskBrief> {
@@ -247,6 +275,34 @@ async fn a_waiting_run_needs_a_resolver_and_unknown_is_filled() {
     let res = results_of(&sd, "t1");
     assert_eq!(res.len(), 1);
     assert!(res[0].1.contains("state unknown"), "{res:?}");
+}
+
+/// A bare session id given as a task id does not reach the task manager:
+/// the answer says how that session is waited for.
+#[tokio::test]
+async fn a_session_id_is_not_a_task_id() {
+    let env = Env::new();
+    let sd = env.create_work(work_spec("child")).await;
+    let sid = sd.sid();
+    let resolver = SessionTaskResolver::new(env.agent(), Some(Arc::new(ZoneOnly)));
+    let TaskState::Unknown { reason } = resolver.wait(sid, Some(0)).await else {
+        panic!("a session id answered as a task");
+    };
+    assert!(
+        reason.contains(&format!("wait for that session as task session:{sid}")),
+        "{reason}"
+    );
+    assert!(!resolver.can_resolve(sid));
+    assert!(resolver.cancel(sid).await.is_err());
+    assert!(!matches!(
+        resolver.state(&format!("session:{sid}")).await,
+        TaskState::Unknown { .. }
+    ));
+    assert!(matches!(resolver.state("t-1").await, TaskState::Running { .. }));
+    let TaskState::Unknown { reason } = resolver.state("work-unknown").await else {
+        panic!("an unknown id answered");
+    };
+    assert!(reason.contains("no task manager"), "{reason}");
 }
 
 /// Stop while the run waits: the wait is cancelled, the call is answered,

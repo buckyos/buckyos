@@ -410,25 +410,41 @@ impl SessionTaskResolver {
             },
         }
     }
+
+    fn inner_for(&self, task_id: &str) -> Option<&Arc<dyn RunningTaskResolver>> {
+        self.inner.as_ref().filter(|i| i.can_resolve(task_id))
+    }
+
+    /// A task id no task manager of this runner answers for: a bare session
+    /// id is told how a session is waited for.
+    async fn not_a_task(&self, task_id: &str) -> TaskState {
+        let reason = match self.agent.sessions().lookup(task_id).await {
+            Ok(Some(_)) => format!(
+                "{task_id} is a session id, not a task id; wait for that session as task {SESSION_TASK_PREFIX}{task_id}"
+            ),
+            _ => "no task manager of this runner knows the task".into(),
+        };
+        TaskState::Unknown { reason }
+    }
 }
 
 #[async_trait]
 impl RunningTaskResolver for SessionTaskResolver {
     async fn state(&self, task_id: &str) -> TaskState {
-        match (task_id.strip_prefix(SESSION_TASK_PREFIX), &self.inner) {
-            (Some(sid), _) => self.session_state(sid).await,
-            (None, Some(inner)) => inner.state(task_id).await,
-            (None, None) => TaskState::Unknown {
-                reason: "no task manager of this runner knows the task".into(),
-            },
+        if let Some(sid) = task_id.strip_prefix(SESSION_TASK_PREFIX) {
+            return self.session_state(sid).await;
+        }
+        match self.inner_for(task_id) {
+            Some(inner) => inner.state(task_id).await,
+            None => self.not_a_task(task_id).await,
         }
     }
 
     async fn wait(&self, task_id: &str, until_ms: Option<u64>) -> TaskState {
         let Some(sid) = task_id.strip_prefix(SESSION_TASK_PREFIX) else {
-            return match &self.inner {
+            return match self.inner_for(task_id) {
                 Some(inner) => inner.wait(task_id, until_ms).await,
-                None => self.state(task_id).await,
+                None => self.not_a_task(task_id).await,
             };
         };
         loop {
@@ -443,19 +459,20 @@ impl RunningTaskResolver for SessionTaskResolver {
     }
 
     async fn cancel(&self, task_id: &str) -> std::result::Result<TaskState, CancelUnsupported> {
-        match (task_id.strip_prefix(SESSION_TASK_PREFIX), &self.inner) {
-            // Waiting for a session is not owning it: stopping it is an
-            // explicit `ctl <sid> stop`.
-            (Some(_), _) | (None, None) => Err(CancelUnsupported {
+        // Waiting for a session is not owning it: stopping it is an explicit
+        // `ctl <sid> stop`.
+        match self.inner_for(task_id) {
+            Some(inner) if !task_id.starts_with(SESSION_TASK_PREFIX) => {
+                inner.cancel(task_id).await
+            }
+            _ => Err(CancelUnsupported {
                 task_id: task_id.to_string(),
             }),
-            (None, Some(inner)) => inner.cancel(task_id).await,
         }
     }
 
     fn can_resolve(&self, task_id: &str) -> bool {
-        task_id.starts_with(SESSION_TASK_PREFIX)
-            || self.inner.as_ref().is_some_and(|i| i.can_resolve(task_id))
+        task_id.starts_with(SESSION_TASK_PREFIX) || self.inner_for(task_id).is_some()
     }
 
     fn result_seen(&self, task_id: &str) -> bool {
