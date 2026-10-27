@@ -2026,7 +2026,7 @@ fn custom_provider_efforts_respect_adapter_rules_and_discovery() {
             false,
             vec![],
         ),
-        ("openai-responses", Some("sn"), "gpt-6.1-sol", false, vec![]),
+        ("openai-responses", Some("sn"), "gpt-6-sol", false, vec![]),
     ] {
         let mut config = instance("custom-provider");
         config.provider_profile_id = "custom".into();

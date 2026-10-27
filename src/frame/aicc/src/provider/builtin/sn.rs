@@ -1158,7 +1158,9 @@ mod tests {
                 })
                 .collect(),
             },
-        })
+            &catalog,
+            &registry,
+        )
         .unwrap();
         assert_eq!(inventory.provider_profile_id, SN_PROVIDER_PROFILE_ID);
         assert_eq!(inventory.protocol_adapter_id, SN_OPENAI_ADAPTER_ID);

@@ -30,7 +30,7 @@ const OFFICIAL_PROTOCOL_SOURCE_HOSTS: Record<string, Set<string>> = {
   "google-gemini": new Set(["ai.google.dev"]),
   fal: new Set(["fal.ai"]),
   minimax: new Set(["platform.minimax.io"]),
-  openrouter: new Set(["openrouter.ai", "ai.google.dev", "platform.minimax.io"]),
+  openrouter: new Set(["openrouter.ai", "ai.google.dev", "platform.minimax.io", "developers.openai.com"]),
   kimi: new Set(["platform.kimi.com"]),
   glm: new Set(["docs.z.ai", "docs.bigmodel.cn"]),
   deepseek: new Set(["api-docs.deepseek.com"]),

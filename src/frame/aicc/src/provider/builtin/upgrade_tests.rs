@@ -466,21 +466,21 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
         ),
         (
             "sn",
-            "gpt-6.1-sol",
+            "gpt-6-sol",
             "medium",
             "/reasoning/effort",
             json!("medium"),
         ),
         (
             "sn",
-            "gpt-6.1-sol",
+            "gpt-6-sol",
             "max",
             "/reasoning/effort",
             json!("max"),
         ),
         (
             "sn",
-            "gpt-6.1-terra",
+            "gpt-6-luna",
             "none",
             "/reasoning/effort",
             json!("none"),
@@ -493,7 +493,7 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
             json!("high"),
         ),
         ("sn", "glm-5", "thinking", "/reasoning/enabled", json!(true)),
-        ("sn", "glm-5", "none", "/reasoning/effort", json!("none")),
+        ("sn", "glm-5", "none", "/reasoning/enabled", json!(false)),
         ("sn", "glm-5.3", "high", "/reasoning/effort", json!("high")),
         ("sn", "glm-5.3", "max", "/reasoning/effort", json!("max")),
         ("sn", "kimi-k3", "max", "/reasoning/effort", json!("max")),
@@ -508,8 +508,8 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
             "sn",
             "qwen3.7-plus",
             "none",
-            "/reasoning/effort",
-            json!("none"),
+            "/reasoning/enabled",
+            json!(false),
         ),
         (
             "sn",
@@ -741,6 +741,8 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
                     body["reasoning"],
                     if effort == "thinking" {
                         json!({"enabled": true})
+                    } else if effort == "none" && (id.starts_with("glm-") || id.starts_with("qwen")) {
+                        json!({"enabled": false})
                     } else {
                         json!({"effort": effort})
                     },
@@ -800,6 +802,13 @@ fn gpt_6_1_presets_match_provider_channels_and_reject_unsupported_efforts() {
         .unwrap();
         assert!(inventory.unmatched_models.is_empty(), "{provider}");
         assert!(inventory.unavailable_presets.is_empty(), "{provider}");
+        if provider == "sn" {
+            assert!(
+                inventory.models.is_empty(),
+                "unlisted SN models must remain excluded"
+            );
+            continue;
+        }
         assert_eq!(inventory.models.len(), 2, "{provider}");
         let registry =
             crate::service::builtin_registry_for_test(&catalog, &[inventory.as_model_inventory()]);
@@ -849,7 +858,11 @@ fn sn_presets_follow_model_metadata_and_discovery_restrictions() {
         .unwrap();
     let ids = catalog
         .llm_models()
-        .filter(|(driver, _, _)| *driver == "openai")
+        .filter(|(driver, id, _)| {
+            *driver == "openai"
+                && catalog.provider_rules("sn").unwrap().models.iter()
+                    .any(|rule| rule.id == *id && !rule.exclude)
+        })
         .map(|(_, id, _)| id)
         .collect::<Vec<_>>();
     assert!(!ids.is_empty());
@@ -915,10 +928,12 @@ fn sn_reasoning_presets_do_not_leak_to_non_llm_models_or_unsupported_drivers() {
     )
     .unwrap();
     assert!(inventory.unmatched_models.is_empty());
-    assert_eq!(inventory.models.len(), ids.len());
-    for model in &inventory.models {
-        assert!(model.variants.is_empty(), "{}", model.provider_model_id);
-    }
+    assert_eq!(inventory.models.len(), 1);
+    assert_eq!(inventory.models[0].provider_model_id, "gpt-image-2");
+    assert!(inventory.models[0].variants.is_empty());
+    assert!(!inventory.models.iter().any(|model| {
+        ["whisper-1", "claude-sonnet-5"].contains(&model.provider_model_id.as_str())
+    }));
 }
 
 #[test]

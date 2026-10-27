@@ -1314,7 +1314,12 @@ async fn sn_discovered_models_populate_catalog_and_builtin_llm_tasks() {
     .unwrap();
     assert_eq!(inventory.models.len(), ids.len());
     assert!(inventory.unmatched_models.is_empty());
-    assert!(inventory.unavailable_presets.is_empty());
+    assert_eq!(inventory.unavailable_presets.len(), 1);
+    assert_eq!(
+        inventory.unavailable_presets[0].provider_model_id,
+        "qwen3.8-max-0902"
+    );
+    assert_eq!(inventory.unavailable_presets[0].effort, "none");
     let registry = ServiceModelAssembler {
         session: None,
         events: None,
@@ -1344,6 +1349,11 @@ async fn sn_discovered_models_populate_catalog_and_builtin_llm_tasks() {
             .iter()
             .any(|item| item["target"] == exact));
         for (spec, effort, _) in llm.semantics.spec_bindings() {
+            if !model.variants.iter()
+                .any(|variant| effort.variant().as_ref() == Some(&variant.name))
+            {
+                continue;
+            }
             let target = format!("{}:{}", llm.family, effort.as_str());
             assert!(directory[format!("llm.{spec}")]
                 .as_array()
