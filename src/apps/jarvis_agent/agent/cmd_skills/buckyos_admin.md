@@ -338,3 +338,5 @@ using `BUCKYOS_TOOL_ENDPOINT` and the session token; this recipe is untested. Le
 Checked against: BuckyOS 0.7.0 (build261017.main.1b6e277fadd9.dirty), Tool/SDK 0.7.131 (`system info`, `log services`, `agent`, `ai` verbs from websdk source, run on the host as device and as devtest), test.buckyos.io; agent-identity results read from policy and code, not run in a container, 2026-10-17. User types, system user groups and projection RPCs: read from source and unit tests, not run on a Zone, 2026-10-21.
 
 Provider 接入诊断：在 AI Center 查看发现模型、身份匹配、不可用预设及聊天候选。自定义 Provider 的高级配置可设置渠道规则、模型身份别名和明确的服务端默认用途；协议兼容不会自动继承厂商预设。配置验证不发推理请求，不能代替真实对话验收。具体字段以当前 `src/kernel/buckyos-api/src/aicc_client.rs` 和 `doc/aicc/provider_server_defaults.md` 为准；不要用模型特定参数修改 Agent 的媒体调用方式。
+
+自定义 Provider 的协议探测不认证全部媒体能力。校验报 `Inventory` / `multiple default operations` 时，检查错误中的模型、适配器和渠道操作映射；不要直接归因为网络或 API Key。已有专用入口的渠道（如 OpenRouter）优先用内置 profile。默认操作选择与限制见 `doc/aicc/provider_ui_backend_mapping.md`。

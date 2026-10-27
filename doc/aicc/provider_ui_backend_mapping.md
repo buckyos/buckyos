@@ -49,3 +49,11 @@ beta 2.2 的 settings 将 `provider_driver` 拆为 `provider_profile_id` 和 `pr
 ## 自定义 Provider 高级接入
 
 向导及实例详情支持 `provider_rules_id`、`instance_rules.model_driver_overrides`、`instance_rules.server_default_routes`；读取 `provider.list` 后原样回填。验证请求也传递实例规则，显示发现、身份识别、不可用预设及聊天候选，配置验证不发推理请求。空渠道规则表示不继承任意厂商规则；更新时空字符串清除，省略保持。设计和验收见 [服务端默认模式](provider_server_defaults.md)。
+
+## 自定义 Provider 的默认操作
+
+协议族探测只选择适配器，不证明端点支持该适配器声明的全部能力。库存构建先按发现结果限制操作候选，再按 binding 的 `default_priority` 选择最高优先级；显式渠道规则的操作映射优先。调用 lowering 使用同一优先级约定，库存中已选定的操作仍由路由携带，不在推理时重新探测端点。
+
+通用 `openai-responses` 的图片默认操作为文生图 `images.generate`、图生图及局部编辑 `images.edit`；`responses.create` 保留图片能力，供发现结果或显式规则选择。最高优先级仍有多个候选时拒绝歧义，不按名称或注册顺序猜测。所有对 custom 开放的适配器都必须对每项能力提供唯一默认操作，单测覆盖该约束。
+
+这些默认值不等于渠道能力认证。OpenRouter 等已有专用 profile 的渠道应使用其内置入口，以获得专用协议、发现和操作映射；不能仅凭 OpenAI 兼容探测成功推断其全部媒体接口可用。接入校验中的 `Inventory` 错误表示模型清单构建失败，应核对模型、适配器及操作映射，不能据此判断网络或 API Key 失败。

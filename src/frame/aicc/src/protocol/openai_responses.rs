@@ -101,7 +101,7 @@ pub(super) fn openai_responses_adapter_with_reported_cost_currency(
         )],
         false,
     );
-    let images_generate = operation(
+    let mut images_generate = operation(
         OPENAI_IMAGES_GENERATE_OPERATION_ID,
         vec![binding(
             ApiType::ImageTextToImage,
@@ -110,7 +110,7 @@ pub(super) fn openai_responses_adapter_with_reported_cost_currency(
         )],
         false,
     );
-    let images_edit = operation(
+    let mut images_edit = operation(
         OPENAI_IMAGES_EDIT_OPERATION_ID,
         vec![
             binding(
@@ -126,6 +126,11 @@ pub(super) fn openai_responses_adapter_with_reported_cost_currency(
         ],
         false,
     );
+    for operation in [&mut images_generate, &mut images_edit] {
+        for binding in &mut operation.bindings {
+            binding.default_priority = 100;
+        }
+    }
     let audio_speech = operation(
         OPENAI_AUDIO_SPEECH_OPERATION_ID,
         vec![binding(

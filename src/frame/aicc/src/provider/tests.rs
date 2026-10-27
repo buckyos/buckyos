@@ -2092,3 +2092,103 @@ fn server_default_model_ids_accept_upstream_paths_and_reject_patterns() {
         );
     }
 }
+
+#[test]
+fn custom_provider_adapters_have_unique_defaults_for_every_api_type() {
+    let catalog = crate::model::llm_tests::builtin_catalog();
+    let registry = builtin_provider_registry(&catalog).unwrap();
+    let codecs = registry.codecs();
+    for adapter_id in registry.custom_provider_adapter_ids() {
+        let adapter = codecs.adapter(adapter_id).unwrap();
+        for binding in adapter
+            .operations
+            .values()
+            .flat_map(|operation| &operation.bindings)
+        {
+            let api_name = api_type_name(binding.api_type).unwrap();
+            assert!(resolve_operation(
+                adapter,
+                &BTreeMap::new(),
+                None,
+                binding.api_type,
+                &api_name
+            )
+            .unwrap_or_else(|error| panic!("{adapter_id}/{api_name}: {error}"))
+            .is_some());
+        }
+    }
+}
+
+#[test]
+fn custom_openai_image_inventory_respects_discovery_and_explicit_mappings() {
+    let catalog = crate::model::llm_tests::builtin_catalog();
+    let registry = builtin_provider_registry(&catalog).unwrap();
+    let codecs = registry.codecs();
+    let mut profile = profile();
+    profile.provider_profile_id = "custom".into();
+    profile.accepts_any_adapter = true;
+    let mut config = instance("custom-provider");
+    config.provider_profile_id = "custom".into();
+    for remote_methods in [None, Some(BTreeSet::from(["responses.create".into()]))] {
+        let mut discovered = discovery("google/gemini-2.5-flash-image");
+        discovered.models[0].api_types = None;
+        discovered.models[0].supported_features = None;
+        discovered.models[0].remote_methods = remote_methods.clone();
+        let inventory =
+            InventoryBuilder::build(&profile, &config, discovered, &catalog, &codecs).unwrap();
+        let model = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "google/gemini-2.5-flash-image")
+            .unwrap();
+        for (api, default) in [
+            ("image.txt2img", "images.generate"),
+            ("image.img2img", "images.edit"),
+        ] {
+            assert_eq!(
+                model.operations[api],
+                if remote_methods.is_some() {
+                    "responses.create"
+                } else {
+                    default
+                }
+            );
+        }
+    }
+    let adapter = codecs.adapter("openai-responses").unwrap();
+    for (api, name) in [
+        (ApiType::ImageTextToImage, "image.txt2img"),
+        (ApiType::ImageImageToImage, "image.img2img"),
+    ] {
+        let overrides = BTreeMap::from([(name.into(), "responses.create".into())]);
+        assert_eq!(
+            resolve_operation(adapter, &overrides, None, api, name)
+                .unwrap()
+                .as_deref(),
+            Some("responses.create")
+        );
+        let unsupported = BTreeSet::from(["embeddings.create".into()]);
+        assert_eq!(
+            resolve_operation(adapter, &BTreeMap::new(), Some(&unsupported), api, name).unwrap(),
+            None
+        );
+    }
+}
+
+#[test]
+fn custom_operation_priority_ties_are_rejected() {
+    let (mut adapter, _) = crate::protocol::openai_responses_adapter();
+    for operation in adapter.operations.values_mut() {
+        for binding in &mut operation.bindings {
+            binding.default_priority = 0;
+        }
+    }
+    assert!(resolve_operation(
+        &adapter,
+        &BTreeMap::new(),
+        None,
+        ApiType::ImageImageToImage,
+        "image.img2img"
+    )
+    .is_err());
+}

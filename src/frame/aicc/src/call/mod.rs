@@ -784,7 +784,21 @@ fn select_operation(
                         .iter()
                         .any(|binding| binding.api_type == api_type)
                 })
-                .map(|operation| operation.operation_id.clone())
+                .map(|operation| {
+                    let priority = operation
+                        .bindings
+                        .iter()
+                        .filter(|binding| binding.api_type == api_type)
+                        .map(|binding| binding.default_priority)
+                        .max()
+                        .unwrap_or_default();
+                    (operation.operation_id.clone(), priority)
+                })
+                .collect::<Vec<_>>();
+            let highest_priority = matching.iter().map(|(_, priority)| *priority).max();
+            let matching = matching
+                .into_iter()
+                .filter(|(_, priority)| Some(*priority) == highest_priority)
                 .collect::<Vec<_>>();
             match matching.as_slice() {
                 [] => {
@@ -793,7 +807,7 @@ fn select_operation(
                         api_type: api_name.into(),
                     });
                 }
-                [operation] => operation.clone(),
+                [(operation, _)] => operation.clone(),
                 _ => {
                     return Err(CallLoweringError::AmbiguousDefaultOperation {
                         adapter_id: adapter_id.into(),
@@ -2479,7 +2493,7 @@ mod tests {
     }
 
     #[test]
-    fn operation_precedence_is_method_then_api_type_then_unique_adapter_default() {
+    fn operation_precedence_is_method_then_api_type_then_preferred_adapter_default() {
         let codecs = codecs();
         let mappings = BTreeMap::from([
             ("images.generate".into(), "images.generate".into()),
@@ -2508,16 +2522,26 @@ mod tests {
             .unwrap(),
             "responses.create"
         );
-        assert!(matches!(
-            select_operation(
-                &codecs,
-                "openai-responses",
-                &BTreeMap::new(),
+        for (api_type, method, expected) in [
+            (
                 ApiType::ImageTextToImage,
                 "images.generate",
+                "images.generate",
             ),
-            Err(CallLoweringError::AmbiguousDefaultOperation { .. })
-        ));
+            (ApiType::ImageImageToImage, "images.edit", "images.edit"),
+        ] {
+            assert_eq!(
+                select_operation(
+                    &codecs,
+                    "openai-responses",
+                    &BTreeMap::new(),
+                    api_type,
+                    method
+                )
+                .unwrap(),
+                expected
+            );
+        }
         assert_eq!(
             select_operation(
                 &codecs,
@@ -2529,6 +2553,30 @@ mod tests {
             .unwrap(),
             "responses.create"
         );
+    }
+
+    #[test]
+    fn custom_provider_lowering_has_a_default_for_every_selectable_binding() {
+        let catalog = metadata_snapshot();
+        let registry = crate::provider::builtin_provider_registry(&catalog).unwrap();
+        let codecs = registry.codecs();
+        for adapter_id in registry.custom_provider_adapter_ids() {
+            let adapter = codecs.adapter(adapter_id).unwrap();
+            for binding in adapter
+                .operations
+                .values()
+                .flat_map(|operation| &operation.bindings)
+            {
+                select_operation(
+                    &codecs,
+                    adapter_id,
+                    &BTreeMap::new(),
+                    binding.api_type,
+                    binding.api_type.typed_method(),
+                )
+                .unwrap_or_else(|error| panic!("{adapter_id}/{:?}: {error}", binding.api_type));
+            }
+        }
     }
 
     #[test]
