@@ -43,8 +43,9 @@ async function precache() {
       const [url, path] = next
       const response = await fetch(new Request(url, { cache: 'reload' }))
       if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`)
-      // a static server with an index.html fallback answers a missing file with the page itself
-      if (path !== 'index.html' && /text\/html/i.test(response.headers.get('content-type') || '')) throw new Error(`${path}: got an HTML page instead of the file`)
+      // a static server with an index.html fallback answers a missing file with the page itself; built pages
+      // (index.html, an app's own .html) are HTML
+      if (!/\.html?$/i.test(path) && /text\/html/i.test(response.headers.get('content-type') || '')) throw new Error(`${path}: got an HTML page instead of the file`)
       await cache.put(url, response)
     }
   }

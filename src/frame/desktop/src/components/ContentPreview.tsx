@@ -136,6 +136,11 @@ export interface ContentPreviewProps {
   /** Prefetch ±1 neighbours once the current item is ready (§11.7). */
   prefetchAdjacent?: boolean
   autoFocus?: boolean
+  /** `inline`: hosted in a small surface of another UI (a canvas Block) — no toolbar, edge navigation or info panel;
+   * the renderer's own controls (media controls, PDF viewer) stay and a sound gets a compact stage. */
+  variant?: 'default' | 'inline'
+  /** Audio and video start playing once ready (the host acts on an explicit "play"). */
+  autoPlay?: boolean
   className?: string
   style?: CSSProperties
   'data-testid'?: string
@@ -358,10 +363,13 @@ export function ContentPreview(props: ContentPreviewProps) {
     allowExport = true,
     prefetchAdjacent = true,
     autoFocus = false,
+    variant = 'default',
+    autoPlay = false,
     className,
     style,
     ref,
   } = props
+  const inline = variant === 'inline'
   const { t } = useI18n()
   const reducedMotion = useReducedMotion()
   // Latest props for async work and event emitters (never read during render).
@@ -985,7 +993,7 @@ export function ContentPreview(props: ContentPreviewProps) {
     if (key === 'r' && !mod && capabilities.rotate) {
       rotate()
       event.preventDefault()
-    } else if (key === 'i' && !mod) {
+    } else if (key === 'i' && !mod && !inline) {
       setInfoOpen((v) => !v)
       event.preventDefault()
     } else if (key === 'f' && mod && capabilities.search) {
@@ -1045,6 +1053,8 @@ export function ContentPreview(props: ContentPreviewProps) {
               displayName={displayName}
               fitMode={fitMode}
               uiMode={uiMode}
+              compact={inline}
+              autoPlay={autoPlay}
               reducedMotion={reducedMotion}
               fontScale={fontScale}
               find={{ open: findOpen, query: findQuery, active: findActive, onCount: setFindCount }}
@@ -1078,7 +1088,7 @@ export function ContentPreview(props: ContentPreviewProps) {
         ) : null}
 
         {/* Session edge navigation */}
-        {sessionCount > 1 && uiMode !== 'silent' ? (
+        {sessionCount > 1 && uiMode !== 'silent' && !inline ? (
           <>
             <EdgeNav side="left" visible={showToolbar} disabled={!canPrev} onClick={() => step(-1)} label={t('preview.action.previous', 'Previous')} transition={transition} />
             <EdgeNav side="right" visible={showToolbar} disabled={!canNext} onClick={() => step(1)} label={t('preview.action.next', 'Next')} transition={transition} />
@@ -1086,7 +1096,7 @@ export function ContentPreview(props: ContentPreviewProps) {
         ) : null}
 
         {/* Toolbar (§10.8) */}
-        {uiMode !== 'silent' ? (
+        {uiMode !== 'silent' && !inline ? (
           <div
             data-testid="content-preview-toolbar"
             role="toolbar"
@@ -1259,7 +1269,7 @@ export function ContentPreview(props: ContentPreviewProps) {
       </div>
 
       {/* Info panel (§10.6) */}
-      {infoOpen ? (
+      {infoOpen && !inline ? (
         <InfoPanel
           displayName={displayName}
           item={itemInfo}
@@ -1656,6 +1666,8 @@ function RendererSwitch({
   displayName,
   fitMode,
   uiMode,
+  compact,
+  autoPlay,
   reducedMotion,
   fontScale,
   find,
@@ -1673,6 +1685,8 @@ function RendererSwitch({
   displayName: string
   fitMode: PreviewFitMode
   uiMode: PreviewUIMode
+  compact: boolean
+  autoPlay: boolean
   reducedMotion: boolean
   fontScale: number
   find: FindState
@@ -1715,6 +1729,8 @@ function RendererSwitch({
           mediaType={result.mediaType}
           title={displayName}
           uiMode={uiMode}
+          compact={compact}
+          autoPlay={autoPlay}
           onRendered={onRendered}
           onFailure={onFailure}
           onActivity={onActivity}
@@ -2153,6 +2169,8 @@ function MediaRenderer({
   mediaType,
   title,
   uiMode,
+  compact,
+  autoPlay,
   onRendered,
   onFailure,
   onActivity,
@@ -2163,6 +2181,8 @@ function MediaRenderer({
   mediaType: string
   title: string
   uiMode: PreviewUIMode
+  compact: boolean
+  autoPlay: boolean
   onRendered: (media?: LoadState['media']) => void
   onFailure: (failure: RenderFailure) => void
   onActivity: () => void
@@ -2213,6 +2233,7 @@ function MediaRenderer({
           src={url}
           title={title}
           controls={showControls}
+          autoPlay={autoPlay}
           playsInline
           preload="metadata"
           className="max-h-full max-w-full"
@@ -2232,6 +2253,27 @@ function MediaRenderer({
       </div>
     )
   }
+  if (compact) {
+    return (
+      <div className="absolute inset-0 flex flex-col items-stretch justify-center gap-1 px-2" data-testid="content-preview-audio-stage">
+        <div className="truncate px-1 text-[12px] font-medium">{title}</div>
+        <audio
+          ref={(el) => {
+            elementRef.current = el
+          }}
+          src={url}
+          title={title}
+          controls={showControls}
+          autoPlay={autoPlay}
+          preload="metadata"
+          className="w-full"
+          data-testid="content-preview-audio"
+          onLoadedMetadata={handleMetadata}
+          onError={handleError}
+        />
+      </div>
+    )
+  }
   return (
     <div className="absolute inset-0 flex flex-col items-center justify-center gap-6 p-6" data-testid="content-preview-audio-stage">
       <div className="flex h-28 w-28 items-center justify-center rounded-[36px] bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_30%,var(--cp-surface))] text-[color:var(--cp-accent)]">
@@ -2244,6 +2286,7 @@ function MediaRenderer({
         }}
         src={url}
         controls={showControls}
+        autoPlay={autoPlay}
         preload="metadata"
         className="w-full max-w-md"
         data-testid="content-preview-audio"

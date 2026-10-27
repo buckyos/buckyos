@@ -594,7 +594,11 @@ export interface KeyedContent<P> { payload: P; key_revs: Record<string, number>;
 export interface RecordPropDef { key: string; name: string; type: FieldType; required?: boolean; nullable?: boolean; scale?: number; options?: OptionDef[] }
 export interface RecordContent { schema: { properties: RecordPropDef[] }; props: Record<string, Json>; key_revs: Record<string, number> }
 
-export interface AssetPayload { object_id: string; media_type?: string; size?: number; file_name?: string; image?: { width: number; height: number } }
+/** `poster`: an image asset picturing the content (a video frame, a PDF's first page, a cover; 多媒体对象 §3). */
+export interface AssetPayload {
+  object_id: string; media_type?: string; size?: number; file_name?: string; image?: { width: number; height: number }
+  poster?: string; duration_ms?: number; page_count?: number
+}
 export interface AssetContent extends KeyedContent<AssetPayload> { availability: 'available' | 'missing' | 'corrupt' }
 
 /** A position inside an annotation's target: a built-in kind (`richtext_text`) or an application's `<app>/<name>`. */

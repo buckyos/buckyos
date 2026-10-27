@@ -27,6 +27,7 @@
     "loro-crdt": "1.16.4",
     "loro-prosemirror": "0.4.4",
     "lucide-react": "^1.7.0",
+    "pdfjs-dist": "6.4.299",
     "postcss": "^8.5.8",
     "prosemirror-commands": "1.7.2",
     "prosemirror-keymap": "1.2.3",

@@ -400,7 +400,7 @@ with `Validator class:`.
 | table-source | `plan_table.rs` `delete_field` / `migrate_field` | primitive | the title field cannot be deleted and stays a text field |
 | richtext | `plan_richtext::create` / `apply_update` | primitive | document conforms to `buckyos.richtext.basic.v1`, block ids unique, CRDT update applies to a known base |
 | richtext | `entity_refs` (`richtext_ref_edge`) | reference | `object_embed` / `object_link` targets are indexed as references; existence judged by the planner's `check_ref_target` |
-| asset | `validate_asset` | primitive | `object_id` is a `type:hex` object id; `media_type` / `size` come from the verified content, never the client; `image { width, height }` |
+| asset | `validate_asset` | primitive | `object_id` is a `type:hex` object id; `media_type` / `size` come from the verified content, never the client; `image { width, height }`; `poster` (an uploaded PNG / JPEG / WebP / GIF asset picturing the content: a video frame, a PDF's first page, a cover), `duration_ms`, `page_count` (positive integers); a new `object_id` without new values drops `image`, `poster`, `duration_ms`, `page_count` (`ASSET_CONTENT_KEYS`; doc/workspace/BuckyOS AI Workspace 多媒体对象.md) |
 | asset | `validate_asset` (object lookup) | reference | the object was uploaded and verified (`DEPENDENCY_UNAVAILABLE`); import tolerates a listed but missing object |
 | container | `validate_container` (kind, layout, system nodes) | primitive | tree node kinds `folder` / `surface` / `group`; `root` / `data` / `surfaces` only internal; kind never changes; `layout.mode` |
 | container | `validate_container` (`content_folder_id`) | reference | a Surface's content folder exists, is a folder and sits under `canvas-content` |
@@ -524,7 +524,7 @@ HTTP routes (same port, `Authorization: Bearer <session token>`):
 
 | Route | Use |
 | --- | --- |
-| `GET /kapi/aiworkspace/asset/<workspace_id>/<object_id>` | asset bytes from the named store, authorized through an entity that references the asset (collaborators, guests and run tokens have no rights on the owner's bucket) |
+| `GET /kapi/aiworkspace/asset/<workspace_id>/<object_id>` | asset bytes from the named store, authorized through an entity that references the asset — an AssetRef's poster too (collaborators, guests and run tokens have no rights on the owner's bucket); served with the sniffed type for pictures, PDF, plain text, audio and video, as `application/octet-stream` otherwise (SVG, HTML) |
 
 Uploads go through NDM (above); export packages and replica databases are read from nfs-server's data plane,
 `GET /bucket/v1/<bucket_id>/<key>?token=<token>` with the `download` of `doc.export` / `replica.bootstrap`.

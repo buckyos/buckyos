@@ -25,6 +25,7 @@ Implementation of `product/bucky_file/BuckyOS Preview App-Component PRD.md` (Dra
 
 - Sources: `cyfs-path`, `object-id`, plus the `blob` extension (host-provided bytes) — unknown kinds resolve to Unsupported unless a host registered a Source Resolver for them (see below).
 - Session contexts: `single`, `container` (enumerated through the provider), `list` (explicit, stable), `provider` (P1 — one-shot `listItems()` today).
+- Hosting: `variant="inline"` for a small surface inside another UI (an AI Workspace media Block) — no toolbar, edge navigation or info panel; media controls and the PDF viewer stay, a sound gets a compact stage (title + controls). `autoPlay` starts audio / video once ready (the host acts on an explicit "play").
 - Events: `onReady`, `onProgress`, `onItemChanged`, `onCapabilitiesChanged`, `onUiVisibilityChanged`, `onRequestExit`, `onRequestOpenWith`, `onActionInvoked`, `onError`.
 - Imperative handle (`ref`): `next/previous/goTo`, `zoomIn/zoomOut/fitToView/actualSize/rotate`, `toggleInfo`, `retry`, `getCapabilities/getStatus/getItem`.
 - Root data attributes for hosts/tests: `data-status`, `data-renderer`, `data-item-index`, `data-item-count`, `data-ui-visible`, `data-degraded`.
@@ -33,7 +34,7 @@ Shortcuts: `Esc` exit · `←/→` previous/next (media: seek ±5 s; use `PageUp
 
 ## Host-resolved sources (§10.2, §11.5)
 
-A host that owns content the system provider cannot address registers a resolver for its own source kind (`components/preview/hostSources.ts` → `registerPreviewSourceResolver(kind, resolver)`). `ensurePreviewProvider()` routes resolution of that kind to the host; Pipeline work stays with the system provider, keyed by `inputObjectId`. An extension ref's `value.name` / `value.reference` (strings) are used as display name and copyable reference. MessageHub registers `messagehub-object` (msg-center attachments, trusted external images).
+A host that owns content the system provider cannot address registers a resolver for its own source kind (`components/preview/hostSources.ts` → `registerPreviewSourceResolver(kind, resolver)`). `ensurePreviewProvider()` routes resolution of that kind to the host; Pipeline work stays with the system provider, keyed by `inputObjectId`. An extension ref's `value.name` / `value.reference` (strings) are used as display name and copyable reference. MessageHub registers `messagehub-object` (msg-center attachments, trusted external images); AI Workspace registers `aiworkspace-asset` (workspace assets read with the workspace session into a blob; the source value carries its reader function, which is not part of the source identity).
 
 ## Thumbnails (§9.3 `purpose: thumbnail`, §17.2)
 

@@ -99,6 +99,11 @@ ui/
                           context), builtin.tsx (table / richtext / record / asset / note /
                           frame / shape), editors.tsx (the data editors shared with the data-source view), samples.tsx
                           (extension sample 1: metric, bar chart, frame-sequence video)
+  media/                  media assets (doc/workspace/BuckyOS AI Workspace 多媒体对象.md): kinds.ts, poster.ts
+                          (poster and facts of a file: video frame, PDF first page via pdfPoster.ts, audio cover via
+                          audioCover.ts), stage.ts (file + poster upload, Block size), source.ts (Preview Source
+                          Resolver `aiworkspace-asset`, the Surface's media session), AssetMedia.tsx (picture /
+                          poster / card, in-place playback and the preview dialog with the system Preview component)
   extensions/             declarative.tsx (interpreter of `buckyos.block-def` declarative definitions),
                           HtmlBlockHost.tsx + htmlRuntime.ts + bridge.ts (HTML extension Blocks: same-origin iframe,
                           `window.aiws` v2 API — named bindings, watch, typed writes in one batch —, snapshots,
@@ -425,8 +430,8 @@ startup timeouts, crashes and disposal reject waiting calls and release the ifra
 - RichText: ProseMirror + Loro (`loro-prosemirror` sync plugin), confirmed + working documents,
   debounced updates (500 ms), remote updates into both documents (deferred during IME composition),
   block_id plugin, object_embed node view (read-only cell), object_link, refused update → draft.
-- Record, Asset (upload, authenticated fetch → blob URL, availability), Annotation (table cell / block,
-  anchor state).
+- Record, Asset (upload with a poster, authenticated fetch → blob URL, availability; videos and sounds play in
+  place, other files open the Preview dialog), Annotation (table cell / block, anchor state).
 - UndoCoordinator: one stack of editor steps and commits, Ctrl/Cmd+Z pops exactly one, redo.
 - Save states and conflict UI: my input is kept until I choose; unknown results can be resent.
 - Offline replica (previous section): explicit preparation, cold start without the network, the four

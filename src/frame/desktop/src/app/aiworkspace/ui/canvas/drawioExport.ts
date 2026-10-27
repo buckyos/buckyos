@@ -4,8 +4,9 @@
 
 import { exportDiagram, type ExportNode } from '@drawio/export'
 import { bytesToBase64 } from '@drawio/bytes'
-import type { CellPayload, EntityEnvelope, Json, KeyedContent } from '../../api/types'
+import type { AssetPayload, CellPayload, EntityEnvelope, Json, KeyedContent } from '../../api/types'
 import type { WorkspaceStore } from '../../state/store'
+import { assetMediaType, mediaKindOf } from '../media/kinds'
 
 /** The words of a rich text document (one line per block). */
 function plainText(node: unknown): string {
@@ -42,8 +43,15 @@ export async function exportSurfaceDrawio(store: WorkspaceStore, surface: Entity
           const source = await store.session.read<{ payload: Record<string, Json> } & { content?: unknown }>(sourceId)
           const content = source.content as unknown as { payload?: Record<string, Json>; content?: unknown }
           if (payload.view.type === 'asset' && typeof content.payload?.object_id === 'string') {
-            const blob = await store.session.fetchAsset(content.payload.object_id)
-            node.image = `data:${blob.type || content.payload.media_type || 'application/octet-stream'};base64,${bytesToBase64(new Uint8Array(await blob.arrayBuffer()))}`
+            // a picture as itself; any other file as its poster (多媒体对象 §5), or the title alone
+            const asset = content.payload as unknown as AssetPayload
+            const picture = mediaKindOf(asset.media_type, asset.file_name) === 'image' ? asset.object_id : asset.poster
+            if (picture) {
+              const blob = await store.session.fetchAsset(picture)
+              const type = picture === asset.object_id ? assetMediaType(asset.media_type, asset.file_name) : 'image/jpeg'
+              node.image = `data:${blob.type && blob.type !== 'application/octet-stream' ? blob.type : type};base64,${bytesToBase64(new Uint8Array(await blob.arrayBuffer()))}`
+            }
+            if (!node.title) node.title = asset.file_name
           } else if (payload.view.type === 'note') node.text = String(content.payload?.body ?? '')
           else if (payload.view.type === 'richtext') node.text = plainText(content.payload?.content ?? content.content)
         } catch { /* the Block exports with its title only */ }

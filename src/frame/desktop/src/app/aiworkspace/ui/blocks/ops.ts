@@ -5,6 +5,8 @@ import { aiwsT } from '../../i18n'
 import type { AssetContent, CellPayload, Json, KeyedContent, Operation } from '../../api/types'
 import type { WorkspaceStore } from '../../state/store'
 import type { CreateArgs, RenderContext } from './registry'
+import { mediaKindOf } from '../media/kinds'
+import { stageMediaFile } from '../media/stage'
 
 export const MAX_EMBED_DEPTH = 3
 
@@ -31,22 +33,31 @@ export function defaultRendererFor(typeId: string): string | null {
   }
 }
 
-/** Upload `file` and point the asset at it (one undoable write). */
+/** Upload `file` (with its poster, 多媒体对象 §3) and point the asset at it (one undoable write); the backend drops the
+ * old content's poster, size and length the new file does not bring. */
 export async function replaceAsset(store: WorkspaceStore, entityId: string, file: File): Promise<string | null> {
   try {
     const current = await store.session.read<AssetContent>(entityId)
-    const uploaded = await store.session.uploadAsset(file, file.name)
+    const { payload } = await stageMediaFile(store, file)
     const revs = current.content.key_revs ?? {}
     const outcome = await store.submit({
       editId: `key:${entityId}:object_id`, label: aiwsT('aiworkspace.blocks.edit.replaceAsset', { name: current.content.payload.file_name ?? entityId }),
-      operations: [{ op: 'entity.set_keys', entity_id: entityId, keys: [
-        { key: 'object_id', value: uploaded.object_id, expect: { rev: revs.object_id ?? 0 } },
-        { key: 'file_name', value: file.name, expect: { rev: revs.file_name ?? 0 } },
-      ] }],
+      operations: [{ op: 'entity.set_keys', entity_id: entityId, keys: Object.entries(payload).map(([key, value]) => ({ key, value: value as Json, expect: { rev: revs[key] ?? 0 } })) }],
     })
     return outcome.status === 'accepted' || outcome.status === 'saved_locally' ? null : aiwsT('aiworkspace.blocks.asset.replaceRejected')
   } catch (error) {
     return aiwsT('aiworkspace.blocks.asset.uploadFailed', { error: describeError(error) })
+  }
+}
+
+/** What "replace" offers to pick: a file of the same kind; any file for a file card. */
+export function replaceAccept(payload: AssetContent['payload']): string | undefined {
+  switch (mediaKindOf(payload.media_type, payload.file_name)) {
+    case 'image': return 'image/*'
+    case 'video': return 'video/*'
+    case 'audio': return 'audio/*'
+    case 'pdf': return 'application/pdf,.pdf'
+    default: return undefined
   }
 }
 

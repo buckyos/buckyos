@@ -396,6 +396,52 @@ fn block_snapshots_are_assets_in_grants_packages_and_replicas() {
     assert!(ws.can_read_asset(&bob(), object_id).unwrap());
 }
 
+#[test]
+fn media_assets_keep_their_poster_in_grants_packages_and_replicas() {
+    let env = env();
+    let id = project(&env);
+    let h = env.svc.workspace(&id).unwrap();
+    let mut ws = h.lock().unwrap();
+    let video = ws.stage_asset(&alice(), b"\0\0\0\x18ftypisom\0\0\x02\0isomiso2mp41 frames").unwrap();
+    assert_eq!(video["media_type"], "video/mp4", "the media type comes from the bytes");
+    let video_id = video["object_id"].as_str().unwrap().to_string();
+    let poster = ws.stage_asset(&alice(), &[0x89, b'P', b'N', b'G', 9, 9]).unwrap()["object_id"].as_str().unwrap().to_string();
+    let not_a_picture = ws.stage_asset(&alice(), b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>").unwrap()["object_id"].as_str().unwrap().to_string();
+    let create = |payload: Value| json!([{ "op": "entity.create", "entity_id": "clip", "type_id": "buckyos.asset-ref", "parent_id": "data", "order_key": "v", "payload": payload }]);
+    let base = json!({ "object_id": video_id, "file_name": "clip.mp4", "image": { "width": 640, "height": 360 }, "duration_ms": 4200 });
+    let with = |key: &str, value: Value| { let mut p = base.clone(); p[key] = value; create(p) };
+    assert_eq!(code(&commit(&mut ws, &alice(), with("poster", json!("cyfile:00ff")))), "DEPENDENCY_UNAVAILABLE");
+    assert_eq!(code(&commit(&mut ws, &alice(), with("poster", json!(not_a_picture)))), "INVALID_SCHEMA", "an SVG poster would be active content");
+    assert_eq!(code(&commit(&mut ws, &alice(), with("duration_ms", json!(-1)))), "INVALID_SCHEMA");
+    ok(&mut ws, &alice(), with("poster", json!(poster)));
+    let read = ws.read(&alice(), "clip", None).unwrap();
+    assert_eq!((&read["content"]["payload"]["poster"], &read["content"]["payload"]["duration_ms"]), (&json!(poster), &json!(4200)));
+    // whoever may read the asset may read its poster; both are retained, exported and in the replica
+    assert!(!ws.can_read_asset(&bob(), &poster).unwrap_or(false));
+    ws.grant(&alice(), "bob", Some("clip"), &["read".into()]).unwrap();
+    assert!(ws.can_read_asset(&bob(), &poster).unwrap() && ws.can_read_asset(&bob(), &video_id).unwrap());
+    assert_eq!(ws.verify_refs().unwrap()["ok"], true);
+    env.advance(25 * 3600 * 1000);
+    assert_eq!(ws.list_unretained(&alice()).unwrap()["unretained"].as_array().unwrap().iter().filter(|u| u["object_id"] == json!(poster)).count(), 0);
+    let replica = ws.replica_bootstrap(&alice()).unwrap();
+    let db = rusqlite::Connection::open(fetched(&ws.objects, &replica)).unwrap();
+    assert_eq!(db.query_row("SELECT media_type FROM assets WHERE object_id = ?1", [&poster], |r| r.get::<_, String>(0)).unwrap(), "image/png");
+    let exported = ws.export(&alice(), "share", true, None).unwrap();
+    assert!(exported["manifest"]["objects"].as_array().unwrap().iter().any(|o| o["id"] == json!(poster)));
+    let other = common::env();
+    let imported = other.svc.import(&bob(), &fetched(&ws.objects, &exported), "new", false).unwrap();
+    let h2 = other.svc.workspace(imported["workspace_id"].as_str().unwrap()).unwrap();
+    assert!(h2.lock().unwrap().can_read_asset(&bob(), &poster).unwrap());
+    // new content without a new poster: the old poster, length and size no longer describe it
+    let wav = ws.stage_asset(&alice(), b"RIFF\x24\0\0\0WAVEfmt ").unwrap();
+    assert_eq!(wav["media_type"], "audio/wav");
+    ok(&mut ws, &alice(), json!([{ "op": "entity.set_keys", "entity_id": "clip",
+        "keys": [{ "key": "object_id", "value": wav["object_id"], "expect": { "rev": read["content"]["key_revs"]["object_id"] } }] }]));
+    let payload = ws.read(&alice(), "clip", None).unwrap()["content"]["payload"].clone();
+    assert!(["poster", "duration_ms", "image"].iter().all(|k| payload.get(*k).is_none()), "{payload}");
+    assert_eq!(payload["media_type"], "audio/wav");
+}
+
 fn with_source(env: &mut Env) -> Arc<GeneratedSource> {
     let src = Arc::new(GeneratedSource::default());
     env.svc.sources.register("fixture", src.clone());

@@ -774,9 +774,15 @@ fn validate_container(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>
 
 // ---- AssetRef ----
 
-/// Validator class: primitive (AssetRef shape, media type and size from the verified content); reference for the uploaded object.
+/// Pictures a poster may be: what every browser draws, never active content.
+const POSTER_MEDIA_TYPES: &[&str] = &["image/png", "image/jpeg", "image/webp", "image/gif"];
+/// Keys describing the content of `object_id`: they go when the content is replaced without new ones.
+pub const ASSET_CONTENT_KEYS: &[&str] = &["image", "poster", "duration_ms", "page_count"];
+
+/// Validator class: primitive (AssetRef shape, media type and size from the verified content); reference for the uploaded
+/// object and its poster (a picture of the content: a video frame, a PDF's first page, an album cover).
 fn validate_asset(p: &mut Planner, e: &mut EntityRow) -> WsResult<()> {
-    check_keys(&e.payload, &["object_id", "media_type", "size", "file_name", "image", "source"], "asset")?;
+    check_keys(&e.payload, &["object_id", "media_type", "size", "file_name", "image", "poster", "duration_ms", "page_count", "source"], "asset")?;
     if let Some(s) = e.payload.get("source") {
         check_source(s)?;
     }
@@ -799,6 +805,22 @@ fn validate_asset(p: &mut Planner, e: &mut EntityRow) -> WsResult<()> {
         let dim = |k: &str| img.get(k).and_then(Value::as_u64).is_some_and(|n| n > 0 && n <= 1 << 20);
         if img.as_object().map_or(0, |o| o.len()) != 2 || !dim("width") || !dim("height") {
             return Err(bad("image must be { width, height }"));
+        }
+    }
+    if let Some(poster) = e.payload.get("poster") {
+        let poster = poster.as_str().filter(|id| crate::canonical::is_obj_id(id)).ok_or_else(|| bad("asset poster must be a type:hex object id"))?.to_string();
+        match p.ov.asset(&poster)? {
+            Some(info) if POSTER_MEDIA_TYPES.contains(&info.media_type.as_str()) => {
+                p.ov.assets.insert(poster, info);
+            }
+            Some(info) => return Err(bad(format!("asset poster must be a PNG, JPEG, WebP or GIF picture, not {}", info.media_type))),
+            None if p.env.import => {}
+            None => return Err(WsError::new(Code::DependencyUnavailable, format!("poster {poster} has not been uploaded"))),
+        }
+    }
+    for (key, max) in [("duration_ms", 1u64 << 40), ("page_count", 1 << 20)] {
+        if e.payload.get(key).is_some_and(|v| !v.as_u64().is_some_and(|n| n > 0 && n <= max)) {
+            return Err(bad(format!("asset {key} must be a positive integer")));
         }
     }
     Ok(())
@@ -1740,10 +1762,12 @@ pub fn validate_update(p: &mut Planner, before: &EntityRow, e: &mut EntityRow, c
             validate_cell(p, e, Some(changed))
         }
         TYPE_ASSET => {
-            // new content: dimensions of the old image do not describe it
+            // new content: the dimensions, poster and length of the old content do not describe it
             let has = |k: &str| changed.iter().any(|c| c == k);
-            if has("object_id") && !has("image") && before.payload.get("object_id") != e.payload.get("object_id") {
-                e.payload.remove("image");
+            if has("object_id") && before.payload.get("object_id") != e.payload.get("object_id") {
+                for key in ASSET_CONTENT_KEYS.iter().filter(|k| !has(k)) {
+                    e.payload.remove(*key);
+                }
             }
             validate_asset(p, e)
         }
@@ -1794,7 +1818,7 @@ fn ref_edge(src: &str, selector: &str, kind: &str, reference: &Value) -> RefEdge
 /// bodies and rich text references are maintained by their own planners.)
 pub fn entity_refs(e: &EntityRow) -> WsResult<BTreeSet<RefEdge>> {
     let mut out = BTreeSet::new();
-    if let Some(object_id) = asset_object_id(&e.type_id, &e.payload) {
+    for object_id in asset_object_ids(&e.type_id, &e.payload) {
         let mut edge = RefEdge::local(&e.entity_id, "", "asset", "");
         edge.dst_object_id = object_id.to_string();
         out.insert(edge);
@@ -1881,12 +1905,14 @@ pub fn entity_refs(e: &EntityRow) -> WsResult<BTreeSet<RefEdge>> {
     Ok(out)
 }
 
-pub fn asset_object_id<'a>(type_id: &str, payload: &'a JsonMap) -> Option<&'a str> {
+/// The stored content objects an entity's payload names: an AssetRef's file and its poster, a Block snapshot, a wish program.
+pub fn asset_object_ids<'a>(type_id: &str, payload: &'a JsonMap) -> Vec<&'a str> {
+    let text = |v: Option<&'a Value>| v.and_then(Value::as_str);
     match type_id {
-        TYPE_ASSET => payload.get("object_id").and_then(Value::as_str),
-        TYPE_CELL => payload.get("config")?.get("snapshot")?.get("object_id")?.as_str(),
-        TYPE_WISH => payload.get("program")?.get("source")?.as_str(),
-        _ => None,
+        TYPE_ASSET => [text(payload.get("object_id")), text(payload.get("poster"))].into_iter().flatten().collect(),
+        TYPE_CELL => text(payload.get("config").and_then(|c| c.get("snapshot")).and_then(|s| s.get("object_id"))).into_iter().collect(),
+        TYPE_WISH => text(payload.get("program").and_then(|p| p.get("source"))).into_iter().collect(),
+        _ => vec![],
     }
 }
 

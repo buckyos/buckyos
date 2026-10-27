@@ -415,9 +415,7 @@ pub fn load_ops(src: &dyn ObjectSource, content_root: &str, collab: &dyn Fn(&str
         let mut content = object["content"].as_object().cloned().unwrap_or_default();
         let mut payload = content.clone();
         if known {
-            if let Some(object_id) = types::asset_object_id(type_id, &content) {
-                assets.push(object_id.to_string());
-            }
+            assets.extend(types::asset_object_ids(type_id, &content).into_iter().map(str::to_string));
             match type_id {
                 TYPE_TABLE => {
                     let records = content.remove("records").unwrap_or(Value::Null);

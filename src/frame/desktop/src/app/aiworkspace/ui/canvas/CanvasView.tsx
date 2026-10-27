@@ -9,7 +9,6 @@
  * viewport of its own. */
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { imageSize } from '@drawio/bytes'
 import { looksLikeDrawio } from '@drawio/file'
 import { svgShapeFromDocument } from '@drawio/svg'
 import { Group, Lock, LockOpen, MessageSquarePlus, Sparkles, Ungroup } from 'lucide-react'
@@ -42,6 +41,8 @@ import { PathEditor } from '../../presentation/PathEditor'
 import { setLive } from '../../presentation/pathOps'
 import { WishPanel } from '../wish/WishPanel'
 import { entryId, entrySize, registryEntries, type CatalogEntry, type InsertRequest } from './catalog'
+import { describeMediaFile } from '../media/poster'
+import { mediaBlockSize, stageMediaFile } from '../media/stage'
 import { canvasClipboard, copyToClipboard, pasteOperations } from './clipboard'
 import { anchorWorld, axisOf, boxOf, facingAnchor } from './connectors/geometry'
 import { formOf, hasBoundEnd, isConnector } from './connectors/layout'
@@ -346,17 +347,28 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     // a flow page shows no connectors (连接线实现方案 §8.3)
     if (definition.type === 'connector' && !isFree) { store.notify('info', aiwsT('aiworkspace.canvas.flowNoConnectors')); return false }
     let config = request.entry.config || request.config ? { ...(request.entry.config ?? {}), ...(request.config ?? {}) } : undefined
+    let size = entrySize(request.entry)
     if (request.file) {
+      // a large file takes a while to read and upload: say so until it is placed
+      const notice = request.file.size > 4 * 1024 * 1024 ? store.notify('info', aiwsT('aiworkspace.canvas.mediaPreparing', { name: request.file.name })) : null
       try {
-        const uploaded = await store.session.uploadAsset(request.file, request.file.name)
-        config = { ...(config ?? {}), file: { object_id: uploaded.object_id, file_name: request.file.name } }
+        if (definition.type === 'asset') {
+          // with its poster and facts, at its own proportions unless the entry fixed a size (多媒体对象 §3)
+          const { facts, payload } = await stageMediaFile(store, request.file, request.facts)
+          config = { ...(config ?? {}), file: payload as Record<string, Json> }
+          if (!request.entry.size) size = mediaBlockSize(facts)
+        } else {
+          const uploaded = await store.session.uploadAsset(request.file, request.file.name)
+          config = { ...(config ?? {}), file: { object_id: uploaded.object_id, file_name: request.file.name } }
+        }
       } catch (error) {
         store.notify('error', aiwsT('aiworkspace.canvas.uploadFailed', { name: request.file.name, reason: describeError(error) }))
         return false
+      } finally {
+        if (notice !== null) store.dismissNotice(notice)
       }
     }
     const contentFolderId = surface.content_folder_id ?? ''
-    const size = entrySize(request.entry)
     const spot = world ?? centreSpot(size)
     // placed inside a lane or another group, it joins it (draw.io 导入 TODO §2.2)
     const parent = parentId ?? (isFree && world ? groupAt(laid, { x: spot.x + size.w / 2, y: spot.y + size.h / 2 }, surfaceId) : surfaceId)
@@ -442,7 +454,6 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     if (entry.catalog.needs === 'file') {
       const input = document.createElement('input')
       input.type = 'file'
-      if (entry.definition.type === 'asset') input.accept = 'image/*'
       input.onchange = () => { const file = input.files?.[0]; if (file) void insert({ entry, file }, null, parent, undefined, afterId) }
       input.click()
     } else if (entry.catalog.needs !== 'none') openCatalog(entry.group === 'extension' ? 'extension' : 'all', entry.key, null, parent, afterId)
@@ -685,21 +696,19 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       }, (error: unknown) => store.notify('error', t('aiworkspace.canvas.export.failed', { reason: describeError(error) })))
     },
   }
-  /** A picture as an image Block (its natural size, at most 480 wide or high), centred on `at` or the view. */
-  const insertImage = (file: File, bytes: Uint8Array, at: { x: number; y: number } | null) => {
+  /** A file as an asset Block — a picture, a video, a sound, a PDF or any other file — at its own proportions
+   * (at most 480 wide or high), centred on `at` or the view (多媒体对象 §3). */
+  const insertFile = async (file: File, at: { x: number; y: number } | null) => {
     const entry = registryEntries().find((e) => e.definition.type === 'asset' && !e.variant)
     if (!entry) return
-    const natural = imageSize(bytes, file.type) ?? entry.definition.defaultSize
-    const nw = 'width' in natural ? natural.width : natural.w
-    const nh = 'height' in natural ? natural.height : natural.h
-    const k = Math.min(1, 480 / Math.max(nw, nh, 1))
-    const size = { w: Math.max(24, Math.round(nw * k)), h: Math.max(24, Math.round(nh * k)) }
-    void insert({ entry: { ...entry, size }, file }, at ? { x: Math.round(at.x - size.w / 2), y: Math.round(at.y - size.h / 2) } : null)
+    const facts = await describeMediaFile(file)
+    const size = mediaBlockSize(facts)
+    void insert({ entry: { ...entry, size }, file, facts }, at ? { x: Math.round(at.x - size.w / 2), y: Math.round(at.y - size.h / 2) } : null)
   }
   /** An SVG document as a recolourable SVG shape (§2.4); too large for a Block's configuration, it stays a picture. */
   const insertSvg = (text: string, at: { x: number; y: number } | null, file?: File) => {
     const parsed = svgShapeFromDocument(text)
-    const asPicture = () => { const f = file ?? new File([text], 'image.svg', { type: 'image/svg+xml' }); insertImage(f, new TextEncoder().encode(text), at) }
+    const asPicture = () => { void insertFile(file ?? new File([text], 'image.svg', { type: 'image/svg+xml' }), at) }
     if (!parsed) { if (file) asPicture(); else store.notify('info', t('aiworkspace.canvas.svg.unreadable')); return }
     if (parsed.svg.body.length > 48 * 1024) { store.notify('info', t('aiworkspace.canvas.svg.tooLarge')); asPicture(); return }
     const entry = registryEntries().find((e) => e.definition.type === 'shape' && !e.variant)
@@ -716,8 +725,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       if (kind === 'drawio') await runImport({ name: file.name, bytes }, spot)
       else if (insertReason) { store.notify('info', insertReason); return }
       else if (kind === 'svg' && text) insertSvg(text, spot, file)
-      else if (kind === 'image') insertImage(file, bytes, spot)
-      else store.notify('info', t('aiworkspace.canvas.unsupportedFile', { name: file.name }))
+      else await insertFile(file, spot)
       spot = spot ? { x: spot.x + 24, y: spot.y + 24 } : null
     }
   }

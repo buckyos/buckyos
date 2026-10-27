@@ -55,11 +55,14 @@ export class TransportError extends Error {
   readonly kind: 'network' | 'protocol' | 'unconfigured'
   /** The service refused the session itself (D-4), e.g. a restricted session without the `aiworkspace` scope. */
   readonly denial: AccessDenial | null
-  constructor(kind: 'network' | 'protocol' | 'unconfigured', message: string, denial: AccessDenial | null = null) {
+  /** The HTTP status of a refused plain HTTP request (an asset download), else null. */
+  readonly status: number | null
+  constructor(kind: 'network' | 'protocol' | 'unconfigured', message: string, denial: AccessDenial | null = null, status: number | null = null) {
     super(message)
     this.name = 'TransportError'
     this.kind = kind
     this.denial = denial
+    this.status = status
   }
 }
 
@@ -142,7 +145,7 @@ async function httpError(response: Response): Promise<TransportError> {
   try {
     denial = parseAccessDenial((JSON.parse(text) as { error?: { denial?: unknown } } | null)?.error?.denial)
   } catch { /* not JSON */ }
-  return new TransportError('protocol', `HTTP ${response.status}${text ? `: ${text.slice(0, 300)}` : ''}`, denial)
+  return new TransportError('protocol', `HTTP ${response.status}${text ? `: ${text.slice(0, 300)}` : ''}`, denial, response.status)
 }
 
 class DevOverrideTransport implements Transport {

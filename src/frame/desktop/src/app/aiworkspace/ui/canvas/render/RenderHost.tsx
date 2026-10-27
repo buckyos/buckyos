@@ -1302,12 +1302,14 @@ export function RenderHost(props: RenderHostProps) {
       }}
       onDoubleClick={(event) => {
         // pointer capture retargets clicks to the root: the double-click is resolved geometrically here
-        if (!policy.editContent || insideEditor(event.target) || (event.target as Element).closest('.aiws-overlay-html') || event.timeStamp - handleDownAt.current < 600) return
+        if (insideEditor(event.target) || (event.target as Element).closest('.aiws-overlay-html') || event.timeStamp - handleDownAt.current < 600) return
         const p = screenPoint(event)
         const w = camera.toWorld(p.x, p.y)
         const hit = hitAt(w.x, w.y)
         const l = hit ? laid.get(hit.id) : undefined
         if (!hit || !l || l.isGroup) return
+        // reading: a media Block opens — plays in place, or shows its preview (多媒体对象 §4.1)
+        if (!policy.editContent) { if (l.entity.view_type === 'asset') requestIntent(hit.id, 'open'); return }
         // a line's label is typed in place (标准对象的交互改进 §4.4)
         if (l.connector && !lineEditable(hit.id)) return
         // rich text opens with the caret where the double-click was (§4.4)

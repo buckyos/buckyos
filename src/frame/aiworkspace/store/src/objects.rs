@@ -388,7 +388,7 @@ impl ObjectStore {
             self.add_member(f, out)?;
         }
         if let Some(payload) = c.as_object() {
-            if let Some(a) = aiworkspace_core::types::asset_object_id(type_id, payload) {
+            for a in aiworkspace_core::types::asset_object_ids(type_id, payload) {
                 self.add_member(a, out)?;
             }
         }
@@ -473,8 +473,31 @@ fn sniff(data: &[u8], utf8: bool) -> &'static str {
         [0xff, 0xd8, 0xff, ..] => "image/jpeg",
         [b'G', b'I', b'F', b'8', ..] => "image/gif",
         [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => "image/webp",
+        [b'B', b'M', ..] if data.len() >= 18 && matches!(u32::from_le_bytes([data[14], data[15], data[16], data[17]]), 12 | 40 | 52 | 56 | 64 | 108 | 124) => "image/bmp",
+        [b'I', b'I', 42, 0, ..] | [b'M', b'M', 0, 42, ..] => "image/tiff",
         [b'%', b'P', b'D', b'F', ..] => "application/pdf",
         [b'P', b'K', 3, 4, ..] => "application/zip",
+        [_, _, _, _, b'f', b't', b'y', b'p', ..] => iso_media(data),
+        [0x1a, 0x45, 0xdf, 0xa3, ..] => {
+            if data.windows(4).take(64).any(|w| w == b"webm") {
+                "video/webm"
+            } else {
+                "video/x-matroska"
+            }
+        }
+        [b'O', b'g', b'g', b'S', ..] => {
+            if data.windows(6).any(|w| w == b"theora") {
+                "video/ogg"
+            } else {
+                "audio/ogg"
+            }
+        }
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'A', b'V', b'E', ..] => "audio/wav",
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'A', b'V', b'I', b' ', ..] => "video/x-msvideo",
+        [b'f', b'L', b'a', b'C', ..] => "audio/flac",
+        [b'I', b'D', b'3', ..] => "audio/mpeg",
+        _ if mpeg_audio_frame(data) => "audio/mpeg",
+        [0xff, b, ..] if b & 0xf6 == 0xf0 => "audio/aac",
         _ if utf8 => {
             if data.iter().take(256).any(|b| *b == b'<') && String::from_utf8_lossy(&data[..data.len().min(256)]).contains("<svg") {
                 "image/svg+xml"
@@ -483,5 +506,57 @@ fn sniff(data: &[u8], utf8: bool) -> &'static str {
             }
         }
         _ => "application/octet-stream",
+    }
+}
+
+/// The header of an MPEG-1/2 audio frame of layer II or III (MP3): a UTF-16 byte order mark is not one.
+fn mpeg_audio_frame(h: &[u8]) -> bool {
+    h.len() >= 3 && h[0] == 0xff && h[1] & 0xe0 == 0xe0 && (h[1] >> 3) & 3 != 1 && matches!((h[1] >> 1) & 3, 1 | 2) && h[2] >> 4 != 0xf && (h[2] >> 2) & 3 != 3
+}
+
+/// An ISO base media file (`ftyp` box) by its major and compatible brands: still images first (HEIF and AVIF are
+/// ISO files too), then audio-only MPEG-4 and QuickTime, the rest is MPEG-4 video.
+fn iso_media(data: &[u8]) -> &'static str {
+    let end = (u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize).min(data.len());
+    // the major brand, then (after the minor version) the compatible brands
+    let brands: Vec<&[u8]> = data.get(8..end).unwrap_or_default().chunks_exact(4).enumerate().filter(|(i, _)| *i != 1).map(|(_, b)| b).collect();
+    let has = |names: &[&[u8]]| brands.iter().any(|b| names.contains(b));
+    match brands.first().copied().unwrap_or_default() {
+        b"avif" | b"avis" => "image/avif",
+        b"heic" | b"heix" | b"heim" | b"heis" | b"mif1" | b"msf1" if !has(&[b"avif".as_slice()]) => "image/heic",
+        b"mif1" | b"msf1" => "image/avif",
+        b"M4A " | b"M4B " | b"F4A " => "audio/mp4",
+        b"qt  " => "video/quicktime",
+        b"3gp4" | b"3gp5" | b"3gp6" | b"3g2a" => "video/3gpp",
+        _ => "video/mp4",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sniff_media_type as sniff;
+
+    #[test]
+    fn media_types_come_from_magic_bytes() {
+        let ftyp = |major: &[u8], compatible: &[u8]| [&[0, 0, 0, (16 + compatible.len()) as u8][..], b"ftyp", major, &[0, 0, 0, 0], compatible, b"rest"].concat();
+        assert_eq!(sniff(&ftyp(b"isom", b"isomavc1mp41")), "video/mp4");
+        assert_eq!(sniff(&ftyp(b"qt  ", b"qt  ")), "video/quicktime");
+        assert_eq!(sniff(&ftyp(b"M4A ", b"M4A mp42isom")), "audio/mp4");
+        assert_eq!(sniff(&ftyp(b"heic", b"mif1heic")), "image/heic");
+        assert_eq!(sniff(&ftyp(b"mif1", b"mif1avif")), "image/avif");
+        assert_eq!(sniff(b"\x1a\x45\xdf\xa3\x9f\x42\x86\x81\x01\x42\x82\x84webm\x42\x87"), "video/webm");
+        assert_eq!(sniff(b"\x1a\x45\xdf\xa3\x9f\x42\x82\x88matroska"), "video/x-matroska");
+        assert_eq!(sniff(b"OggS\0\x02\0\0\0\0\0\0\0\0\x01\x02\x03\x04\0\0\0\0\0\0\0\0\x01\x13OpusHead"), "audio/ogg");
+        assert_eq!(sniff(b"RIFF\x24\0\0\0WAVEfmt "), "audio/wav");
+        assert_eq!(sniff(b"RIFF\x24\0\0\0AVI LIST"), "video/x-msvideo");
+        assert_eq!(sniff(b"fLaC\0\0\0\x22"), "audio/flac");
+        assert_eq!(sniff(b"ID3\x04\0\0\0\0\0\0"), "audio/mpeg");
+        assert_eq!(sniff(&[0xff, 0xfb, 0x90, 0x64, 0, 0]), "audio/mpeg");
+        assert_eq!(sniff(&[0xff, 0xf1, 0x50, 0x80, 0, 0]), "audio/aac");
+        assert_eq!(sniff(&[b'B', b'M', 0, 0, 0, 0, 0, 0, 0, 0, 54, 0, 0, 0, 40, 0, 0, 0, 1, 0]), "image/bmp");
+        assert_eq!(sniff(b"II*\0\x08\0\0\0"), "image/tiff");
+        // look-alikes stay what they are: UTF-16 text starts with FF FE, a note may start with "BM"
+        assert_eq!(sniff(&[0xff, 0xfe, b'h', 0, b'i', 0]), "application/octet-stream");
+        assert_eq!(sniff(b"BMW sales figures for 2026"), "text/plain");
     }
 }

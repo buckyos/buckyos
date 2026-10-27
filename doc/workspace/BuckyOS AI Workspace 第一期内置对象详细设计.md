@@ -1265,6 +1265,7 @@ Filter := { "op": "and" | "or", "args": [Filter, ...] }      // args 1..32 个
 - `object_id` 是 FileObject 的 ObjectId。【裁决】在 JSON 中一律使用 `类型:十六进制` 形式，这是 ndn-lib `ObjId` 的 serde 形式；base32 形式只出现在 URL 中。
 - `media_type`、`size` 由后台在登记时从已校验的内容得出，不采信客户端声明（客户端声明只作为 `file_name` 的来源）。
 - 替换图片 = `set_keys` 改 `object_id`（及随之变化的元数据），旧内容因历史引用继续保留。
+- 多媒体（2026-10-26）：另有 `poster`（描绘内容的图片资产）、`duration_ms`、`page_count`，见《BuckyOS AI Workspace 多媒体对象》§6。
 
 **上传与登记流程**（资产准备不在 Commit 的 ACID 范围内，顺序是“先有已验证内容，再提交引用”）：
 

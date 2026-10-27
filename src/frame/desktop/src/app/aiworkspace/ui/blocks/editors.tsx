@@ -19,7 +19,8 @@ import { ConflictBox, TableViewCell } from '../TableViewCell'
 import { ValueEditor } from '../ValueEditor'
 import { UNSET, formatValue, type Input } from '../values'
 import { consumeIntent, useEditorToolbar, useIntent } from './editorToolbar'
-import { replaceAsset } from './ops'
+import { replaceAccept, replaceAsset } from './ops'
+import { AssetMedia, type AssetMediaProps } from '../media/AssetMedia'
 import { clearDraft, readDraft, recoverDraft, saveDraft, submitDraft } from '../../state/drafts'
 import type { ToolbarItem } from './registry'
 
@@ -230,40 +231,23 @@ function RecordProp({ entityId, prop, value, rev, editable }: { entityId: string
 
 const AVAILABILITY_TEXT: Record<string, string> = { available: 'aiworkspace.blocks.asset.available', missing: 'aiworkspace.blocks.asset.missing', corrupt: 'aiworkspace.blocks.asset.corrupt' }
 
-/** `bare`: the picture only (a canvas Block, §4.1); the file facts and "replace" stay in the data-source view. */
-export function AssetCell({ entityId, fit, readOnly, bare = false }: { entityId: string; fit: 'contain' | 'cover'; readOnly: boolean; bare?: boolean }) {
+/** `bare`: the picture only (a canvas Block, §4.1); the file facts and "replace" stay in the data-source view.
+ * The picture, poster or icon and the playback are the media view's (多媒体对象 §4). */
+export function AssetCell({ entityId, fit, readOnly, bare = false, media }: {
+  entityId: string; fit: 'contain' | 'cover'; readOnly: boolean; bare?: boolean
+  /** The Block showing the asset and how it was mounted (see `AssetMedia`). */
+  media?: Omit<AssetMediaProps, 'asset' | 'fit'>
+}) {
   const { t } = useAiwsText()
   const store = useStore()
   const version = useVersion(`e:${entityId}`)
   const load = useCallback(() => store.session.read<AssetContent>(entityId), [store, entityId])
   const asset = useLoad<ReadOk<AssetContent>>(load, version)
-  const objectId = asset.data?.content.payload.object_id
   const availability = asset.data?.content.availability
-  const [image, setImage] = useState<{ objectId: string; url: string | null; error: string | null } | null>(null)
   const [uploading, setUploading] = useState<string | null>(null)
-  useEffect(() => {
-    if (!objectId || availability !== 'available') return
-    let live = true
-    let url: string | null = null
-    // The asset route needs the session token, so the bytes are fetched here and shown through a blob URL.
-    const mediaType = asset.data?.content.payload.media_type
-    store.session.fetchAsset(objectId).then(
-      (blob) => {
-        if (!live) return
-        // the asset route serves unlisted types as octet-stream (e.g. SVG); the <img> needs the real type
-        const typed = mediaType && blob.type !== mediaType ? new Blob([blob], { type: mediaType }) : blob
-        url = URL.createObjectURL(typed)
-        setImage({ objectId, url, error: null })
-      },
-      (error: unknown) => { if (live) setImage({ objectId, url: null, error: describeError(error) }) },
-    )
-    return () => { live = false; if (url) URL.revokeObjectURL(url) }
-  }, [store, objectId, availability, asset.data?.content.payload.media_type])
   if (asset.error && !asset.data) return <div className="aiws-error" role="alert">{t('aiworkspace.blocks.asset.readFailed', { error: asset.error })}</div>
   if (!asset.data) return <div className="aiws-muted">{t('aiworkspace.blocks.loading')}</div>
   const payload = asset.data.content.payload
-  const isImage = (payload.media_type ?? '').startsWith('image/')
-  const current = image && image.objectId === objectId ? image : null
   const canReplace = !readOnly && asset.data.capabilities.includes('update')
   const replace = async (file: File) => {
     setUploading(t('aiworkspace.blocks.asset.uploading'))
@@ -274,13 +258,7 @@ export function AssetCell({ entityId, fit, readOnly, bare = false }: { entityId:
     <div className="aiws-asset" data-testid={`aiws-asset-${entityId}`} data-availability={availability}>
       {availability !== 'available' ? (
         <div className="aiws-asset-placeholder">{t('aiworkspace.blocks.asset.unavailable', { reason: availabilityText ?? '' })}</div>
-      ) : !isImage ? (
-        <div className="aiws-asset-placeholder">{t('aiworkspace.blocks.asset.attachment', { name: payload.file_name ?? '', type: payload.media_type ?? t('aiworkspace.blocks.asset.unknownType') })}</div>
-      ) : current?.url ? (
-        <img src={current.url} alt={payload.file_name ?? entityId} style={{ objectFit: fit }} data-testid="aiws-asset-image" />
-      ) : current?.error ? (
-        <div className="aiws-error" role="alert">{t('aiworkspace.blocks.asset.imageFailed', { error: current.error })}</div>
-      ) : <div className="aiws-muted">{t('aiworkspace.blocks.asset.readingImage')}</div>}
+      ) : <AssetMedia asset={asset.data} fit={fit} cellId={media?.cellId ?? null} activated={media?.activated} onActivate={media?.onActivate} onDone={media?.onDone} />}
       {!bare && <div className="aiws-asset-meta">
         <span>{payload.file_name ?? entityId}</span>
         <span>{payload.media_type}</span>
@@ -288,7 +266,7 @@ export function AssetCell({ entityId, fit, readOnly, bare = false }: { entityId:
         <span className={`aiws-chip ${availability === 'available' ? '' : 'aiws-chip-warn'}`} data-testid="aiws-asset-availability">{availabilityText}</span>
         {canReplace && (
           <label className="aiws-link">{t('aiworkspace.blocks.asset.replaceEllipsis')}
-            <input type="file" hidden accept="image/*" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void replace(file) }} />
+            <input type="file" hidden accept={replaceAccept(payload)} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void replace(file) }} />
           </label>
         )}
         {uploading && <span>{uploading}</span>}

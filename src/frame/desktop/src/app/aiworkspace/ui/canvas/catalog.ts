@@ -7,6 +7,7 @@ import { aiwsText } from '../../i18n'
 import type { WorkspaceStore } from '../../state/store'
 import { blockRegistry, type BlockDefinition, type CatalogGroup, type CatalogInfo, type CatalogVariant } from '../blocks/registry'
 import { MOCK_WISH_DEF_ID } from '../wish/mockWishDef'
+import type { MediaFacts } from '../media/poster'
 
 export interface CatalogEntry {
   /** `block:<type>` for a registered definition (`block:<type>:<variant>` for a variant), `def:<entity id>` for a workspace definition. */
@@ -78,6 +79,8 @@ export interface InsertRequest {
   sourceId?: string
   /** The file to upload first (needs `file`). */
   file?: File
+  /** What is already known of `file` (its poster, size, length; 多媒体对象 §3), else worked out on insertion. */
+  facts?: MediaFacts
   config?: Record<string, Json>
 }
 

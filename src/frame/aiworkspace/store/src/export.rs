@@ -101,7 +101,7 @@ pub fn closure(store: &ObjectStore, content_root: &str, assets: bool) -> WsResul
             add_file(f, &mut objects, &mut chunks)?;
         }
         if let Some(payload) = content["content"].as_object() {
-            if let Some(a) = aiworkspace_core::types::asset_object_id(e["type_id"].as_str().unwrap_or(""), payload) {
+            for a in aiworkspace_core::types::asset_object_ids(e["type_id"].as_str().unwrap_or(""), payload) {
                 if !assets || !add_file(a, &mut objects, &mut chunks)? {
                     missing.push(a.to_string());
                 }

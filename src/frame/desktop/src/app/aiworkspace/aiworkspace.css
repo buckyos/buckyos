@@ -26,15 +26,17 @@
 .aiws-root input,
 .aiws-root select,
 .aiws-root textarea { font: inherit; color: inherit; }
-.aiws-root button {
+/* not inside a hosted system component (the Preview component of a media Block): it styles its own buttons; `:where`
+   keeps the specificity of these base rules */
+.aiws-root button:where(:not(.aiws-preview-host *)) {
   border: 1px solid var(--cp-border);
   background: var(--cp-surface);
   border-radius: 6px;
   padding: 2px 8px;
   cursor: pointer;
 }
-.aiws-root button:hover:not(:disabled) { background: var(--cp-surface-2); }
-.aiws-root button:disabled { opacity: 0.5; cursor: default; }
+.aiws-root button:where(:not(.aiws-preview-host *)):hover:not(:disabled) { background: var(--cp-surface-2); }
+.aiws-root button:where(:not(.aiws-preview-host *)):disabled { opacity: 0.5; cursor: default; }
 /* buttons keep the Desktop's focus ring (index.css); fields get the same ring instead of a second outline */
 .aiws-root input:not([type='radio']):not([type='checkbox']):focus-visible,
 .aiws-root select:focus-visible,
@@ -592,9 +594,6 @@
 .aiws-richtext[data-size='l'] .aiws-prose { font-size: 17px; }
 .aiws-richtext[data-size='xl'] .aiws-prose { font-size: 22px; line-height: 1.35; }
 .aiws-frame-block .aiws-block-body[data-renderer='record'] .aiws-record { margin: 2px 4px; }
-.aiws-media-preview { position: fixed; inset: 0; z-index: 200; background: rgba(0, 0, 0, 0.6); display: flex; align-items: center; justify-content: center; }
-.aiws-media-preview-body { background: var(--cp-surface-opaque, #fff); padding: 12px; border-radius: 10px; max-width: 90vw; max-height: 90vh; overflow: auto; }
-.aiws-block-view-action { display: block; margin-top: 4px; }
 .aiws-metric-value { font-size: 28px; font-weight: 700; }
 .aiws-decl-metric .aiws-decl-number { font-size: 24px; font-weight: 700; }
 .aiws-decl-label { font-size: 11px; color: var(--cp-muted); }
@@ -1093,3 +1092,58 @@
 .aiws-library-name { font-size: 10px; line-height: 1.2; color: var(--cp-muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .aiws-library-note { font-size: 11px; }
 .aiws-surface-background { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--cp-border); display: flex; flex-direction: column; gap: 6px; }
+
+/* ---- media assets (多媒体对象 §4): picture, poster or icon card; a play button over what plays in place; the Preview
+   component playing in the Block, or previewing over the workspace */
+.aiws-root .aiws-media { position: relative; width: 100%; height: 100%; min-height: 0; overflow: hidden; }
+.aiws-root .aiws-media[data-kind='video'][data-poster='true'] { background: #000; }
+.aiws-root .aiws-media .aiws-media-picture { display: block; }
+.aiws-root .aiws-media-loading { padding: 8px; }
+.aiws-root .aiws-media[data-state='playing'][data-kind='video'] > .aiws-media-picture,
+.aiws-root .aiws-media[data-state='playing'][data-poster='false'] > .aiws-media-card { visibility: hidden; }
+.aiws-root button.aiws-media-play {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 52px; height: 52px; padding: 0 0 0 3px;
+  border: none; border-radius: 50%; background: rgb(0 0 0 / 0.55); color: #fff; display: grid; place-items: center;
+  box-shadow: 0 2px 10px rgb(0 0 0 / 0.3);
+}
+.aiws-root button.aiws-media-play:hover:not(:disabled) { background: rgb(0 0 0 / 0.72); }
+/* on a card the button sits at the end of the row, not over the name */
+.aiws-root .aiws-media[data-poster='false'] button.aiws-media-play { left: auto; right: 14px; transform: translateY(-50%); width: 36px; height: 36px; background: var(--cp-accent); box-shadow: none; }
+.aiws-root .aiws-media[data-poster='false'] button.aiws-media-play:hover:not(:disabled) { background: color-mix(in srgb, var(--cp-accent) 85%, #000); }
+.aiws-root .aiws-media-badge {
+  position: absolute; right: 6px; bottom: 6px; padding: 0 6px; border-radius: 4px; background: rgb(0 0 0 / 0.6); color: #fff;
+  font-size: 11px; line-height: 18px; font-variant-numeric: tabular-nums; pointer-events: none;
+}
+.aiws-root .aiws-media-card {
+  display: flex; align-items: center; gap: 12px; width: 100%; height: 100%; padding: 10px 14px; box-sizing: border-box;
+  background: var(--cp-surface); border: 1px solid var(--cp-border); border-radius: 10px;
+}
+.aiws-root .aiws-media[data-poster='false'][data-kind='video'] .aiws-media-card,
+.aiws-root .aiws-media[data-poster='false'][data-kind='audio'] .aiws-media-card { padding-right: 60px; }
+.aiws-root .aiws-media-card-icon {
+  position: relative; flex: none; width: 44px; height: 50px; display: grid; place-items: center; border-radius: 8px;
+  color: var(--cp-accent); background: color-mix(in srgb, var(--cp-accent) 12%, transparent);
+}
+.aiws-root .aiws-media-card-badge {
+  position: absolute; bottom: -6px; left: 50%; transform: translateX(-50%); max-width: 56px; padding: 0 4px; border-radius: 3px;
+  background: var(--cp-accent); color: #fff; font-size: 9px; font-weight: 600; line-height: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.aiws-root .aiws-media-card-text { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.aiws-root .aiws-media-card-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aiws-root .aiws-media-card-facts { font-size: 12px; color: var(--cp-muted); font-variant-numeric: tabular-nums; }
+.aiws-root .aiws-media-player { position: absolute; inset: 0; z-index: 1; }
+/* a sound over its cover: the controls take the bottom */
+.aiws-root .aiws-media[data-poster='true'] .aiws-media-player.is-audio { top: auto; height: 76px; }
+.aiws-root button.aiws-media-stop {
+  position: absolute; top: 6px; right: 6px; z-index: 30; width: 24px; height: 24px; padding: 0; border: none; border-radius: 50%;
+  background: rgb(0 0 0 / 0.55); color: #fff; display: grid; place-items: center; cursor: pointer; opacity: 0; transition: opacity 0.12s;
+}
+.aiws-root .aiws-media:hover button.aiws-media-stop, .aiws-root button.aiws-media-stop:focus-visible { opacity: 1; }
+.aiws-root .aiws-media-dialog { position: absolute; inset: 0; z-index: 80; display: flex; padding: 24px; box-sizing: border-box; background: rgb(0 0 0 / 0.55); }
+.aiws-root .aiws-media-dialog > .aiws-media-dialog-body, .aiws-media-dialog.is-page > .aiws-media-dialog-body { border-radius: 12px; box-shadow: 0 18px 48px rgb(0 0 0 / 0.35); }
+/* outside a workspace root (no such page today): over the whole page */
+.aiws-media-dialog.is-page { position: fixed; inset: 0; z-index: 10000; display: flex; padding: 24px; box-sizing: border-box; background: rgb(0 0 0 / 0.55); }
+/* a flow page sizes the Block by its content: a playing video keeps a playable height */
+.aiws-flow .aiws-media { height: auto; }
+.aiws-flow .aiws-media-card { height: auto; min-height: 72px; }
+.aiws-flow .aiws-media[data-state='playing'][data-kind='video'] { min-height: 240px; }

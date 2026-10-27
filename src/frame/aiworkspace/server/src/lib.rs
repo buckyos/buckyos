@@ -948,8 +948,10 @@ async fn asset(State(state): State<Arc<AppState>>, Path((workspace_id, object_id
     .await;
     match result {
         Ok((media, data)) => {
-            // user content is never served as active content from the service origin
-            let safe = matches!(media.as_str(), "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "application/pdf" | "text/plain");
+            // user content is never served as active content from the service origin: pictures, sound and video are
+            // passive, SVG and HTML are not
+            let safe = matches!(media.as_str(), "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/avif" | "image/bmp" | "application/pdf" | "text/plain")
+                || (media.starts_with("audio/") || media.starts_with("video/")) && !media.contains(['+', ';']);
             let ctype = if safe { media } else { "application/octet-stream".to_string() };
             ([(header::CONTENT_TYPE, ctype), (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
               (header::CACHE_CONTROL, "private, max-age=31536000, immutable".to_string())], data).into_response()
