@@ -2309,3 +2309,136 @@ fn filtering_llm_binding_removes_server_default_routes() {
         .iter()
         .any(|item| { item.api_type == "llm" && item.reason == "unregistered_binding" }));
 }
+
+#[test]
+fn custom_multi_operation_defaults_respect_every_discovered_subset() {
+    let expected = BTreeMap::from([
+        (("gemini-interactions", "llm"), "interactions.background"),
+        (
+            ("gemini-interactions", "vision.ocr"),
+            "interactions.background",
+        ),
+        (
+            ("gemini-interactions", "vision.caption"),
+            "interactions.background",
+        ),
+        (
+            ("gemini-interactions", "vision.detect"),
+            "interactions.background",
+        ),
+        (
+            ("gemini-interactions", "vision.segment"),
+            "interactions.background",
+        ),
+        (
+            ("gemini-interactions", "audio.asr"),
+            "interactions.background",
+        ),
+        (
+            ("gemini-interactions", "video.generate"),
+            "models.predictLongRunning",
+        ),
+        (
+            ("gemini-interactions", "video.extend"),
+            "models.predictLongRunning",
+        ),
+        (("openai-responses", "image.txt2img"), "images.generate"),
+        (("openai-responses", "image.img2img"), "images.edit"),
+    ]);
+    let catalog = crate::model::llm_tests::builtin_catalog();
+    let registry = builtin_provider_registry(&catalog).unwrap();
+    let codecs = registry.codecs();
+    let mut reviewed = BTreeSet::new();
+    for adapter_id in [
+        "gemini-interactions",
+        "claude-messages",
+        "openai-chat-completions",
+        "openai-responses",
+        "typesafe-systemone",
+    ] {
+        let adapter = codecs.adapter(adapter_id).unwrap();
+        let mut by_api = BTreeMap::new();
+        for operation in adapter.operations.values() {
+            for binding in &operation.bindings {
+                by_api
+                    .entry(api_type_name(binding.api_type).unwrap())
+                    .or_insert_with(|| (binding.api_type, Vec::new()))
+                    .1
+                    .push(operation.operation_id.clone());
+            }
+        }
+        for (api_name, (api_type, operations)) in by_api {
+            let default = if operations.len() > 1 {
+                reviewed.insert((adapter_id, api_name.clone()));
+                expected[&(adapter_id, api_name.as_str())]
+            } else {
+                &operations[0]
+            };
+            assert_eq!(
+                resolve_operation(adapter, &BTreeMap::new(), None, api_type, &api_name)
+                    .unwrap()
+                    .as_deref(),
+                Some(default),
+                "{adapter_id}/{api_name}"
+            );
+            for mask in 0..(1usize << operations.len()) {
+                let methods = operations
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| mask & (1 << index) != 0)
+                    .map(|(_, operation)| operation.clone())
+                    .collect::<BTreeSet<_>>();
+                let selected = resolve_operation(
+                    adapter,
+                    &BTreeMap::new(),
+                    Some(&methods),
+                    api_type,
+                    &api_name,
+                )
+                .unwrap();
+                let expected_selection = if methods.contains(default) {
+                    Some(default)
+                } else {
+                    methods.first().map(String::as_str)
+                };
+                assert_eq!(
+                    selected.as_deref(),
+                    expected_selection,
+                    "{adapter_id}/{api_name}: {methods:?}"
+                );
+            }
+            for operation in &operations {
+                for key in [api_name.as_str(), api_type.typed_method()] {
+                    let overrides = BTreeMap::from([(key.to_string(), operation.clone())]);
+                    assert_eq!(
+                        resolve_operation(adapter, &overrides, None, api_type, &api_name)
+                            .unwrap()
+                            .as_ref(),
+                        Some(operation),
+                        "{adapter_id}/{key}"
+                    );
+                }
+                let methods = BTreeSet::from([operation.clone()]);
+                assert_eq!(
+                    resolve_operation(
+                        adapter,
+                        &BTreeMap::new(),
+                        Some(&methods),
+                        api_type,
+                        &api_name
+                    )
+                    .unwrap()
+                    .as_ref(),
+                    Some(operation)
+                );
+            }
+        }
+    }
+    assert_eq!(
+        reviewed,
+        expected
+            .keys()
+            .map(|(adapter, api)| (*adapter, api.to_string()))
+            .collect()
+    );
+}

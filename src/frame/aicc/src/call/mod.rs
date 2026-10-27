@@ -2580,6 +2580,84 @@ mod tests {
     }
 
     #[test]
+    fn custom_multi_operation_lowering_preserves_defaults_and_overrides() {
+        let codecs = all_codecs();
+        for (adapter, api_type, expected, alternate) in [
+            (
+                "gemini-interactions",
+                ApiType::Llm,
+                "interactions.background",
+                "interactions.create",
+            ),
+            (
+                "gemini-interactions",
+                ApiType::VisionOcr,
+                "interactions.background",
+                "interactions.create",
+            ),
+            (
+                "gemini-interactions",
+                ApiType::VisionCaption,
+                "interactions.background",
+                "interactions.create",
+            ),
+            (
+                "gemini-interactions",
+                ApiType::VisionDetect,
+                "interactions.background",
+                "interactions.create",
+            ),
+            (
+                "gemini-interactions",
+                ApiType::VisionSegment,
+                "interactions.background",
+                "interactions.create",
+            ),
+            (
+                "gemini-interactions",
+                ApiType::AudioSpeechRecognition,
+                "interactions.background",
+                "interactions.create",
+            ),
+            (
+                "gemini-interactions",
+                ApiType::VideoGenerate,
+                "models.predictLongRunning",
+                "interactions.create",
+            ),
+            (
+                "gemini-interactions",
+                ApiType::VideoExtend,
+                "models.predictLongRunning",
+                "interactions.create",
+            ),
+            (
+                "openai-responses",
+                ApiType::ImageTextToImage,
+                "images.generate",
+                "responses.create",
+            ),
+            (
+                "openai-responses",
+                ApiType::ImageImageToImage,
+                "images.edit",
+                "responses.create",
+            ),
+        ] {
+            let method = api_type.typed_method();
+            assert_eq!(
+                select_operation(&codecs, adapter, &BTreeMap::new(), api_type, method).unwrap(),
+                expected
+            );
+            let mappings = BTreeMap::from([(api_type_name(api_type).into(), alternate.into())]);
+            assert_eq!(
+                select_operation(&codecs, adapter, &mappings, api_type, method).unwrap(),
+                alternate
+            );
+        }
+    }
+
+    #[test]
     fn web_search_lowering_preserves_function_tools_and_route_disables() {
         let catalog = metadata_snapshot();
         let codecs = all_codecs();

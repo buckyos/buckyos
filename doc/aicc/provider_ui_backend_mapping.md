@@ -56,6 +56,17 @@ beta 2.2 的 settings 将 `provider_driver` 拆为 `provider_profile_id` 和 `pr
 
 通用 `openai-responses` 的图片默认操作为文生图 `images.generate`、图生图及局部编辑 `images.edit`；`responses.create` 保留图片能力，供发现结果或显式规则选择。最高优先级仍有多个候选时拒绝歧义，不按名称或注册顺序猜测。所有对 custom 开放的适配器都必须对每项能力提供唯一默认操作，单测覆盖该约束。
 
+当前对 custom 开放的适配器中，多 operation 的 API 类型如下（优先级仅在同一适配器、同一 API 类型内比较）：
+
+| 适配器 | API 类型 | 候选操作及优先级 | 默认操作 |
+| --- | --- | --- | --- |
+| `gemini-interactions` | `llm`、`vision.ocr`、`vision.caption`、`vision.detect`、`vision.segment`、`audio.asr` | `interactions.background` 30，`interactions.create` 10 | `interactions.background` |
+| `gemini-interactions` | `video.generate`、`video.extend` | `models.predictLongRunning` 20，`interactions.create` 10 | `models.predictLongRunning` |
+| `openai-responses` | `image.txt2img` | `images.generate` 100，`responses.create` 0 | `images.generate` |
+| `openai-responses` | `image.img2img` | `images.edit` 100，`responses.create` 0 | `images.edit` |
+
+`claude-messages`、`openai-chat-completions`、`typesafe-systemone` 当前每项 API 类型只有一个 operation，无需增加优先级。单测逐项固定上述默认选择，并覆盖全部发现候选子集、显式映射以及调用 lowering，避免仅检查默认操作是否唯一而漏掉选择错误。
+
 这些默认值不等于渠道能力认证。OpenRouter 等已有专用 profile 的渠道应使用其内置入口，以获得专用协议、发现和操作映射；不能仅凭 OpenAI 兼容探测成功推断其全部媒体接口可用。接入校验中的 `Inventory` 错误表示模型清单构建失败，应核对模型、适配器及操作映射，不能据此判断网络或 API Key 失败。
 
 
