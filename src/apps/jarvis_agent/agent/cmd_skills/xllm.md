@@ -62,6 +62,10 @@ The Zone's `llm.chat` lands on an OpenAI strict route: every property listed in 
   availability can change the result. Check `response_model`, and use AICC's
   `src/frame/aicc/src/service/model_defaults.rs` and
   `src/frame/aicc/driver_metadata/models/openai.model.json` for current priorities and GPT family/effort bindings.
+- A fixed family preset such as `llm.gpt-6-1-sol:medium` is an AICC routing name. The remote model ID stays
+  unchanged; AICC converts the selected effort to protocol parameters. Custom providers without dedicated
+  rules use the matching protocol's default reasoning mappings. A preset with no supported mapping remains
+  unavailable; see `doc/aicc/provider_profile_schema.md` for the selection boundary.
 - Here `llm.chat`/`llm.plan` add provider web search: a trivial call bills ~4.7k input tokens (mostly cached)
   against ~0.3k on `llm.swift`. `--json` turns web search off for that run (JSON mode excludes it).
 - `--json` (or `json: true`) constrains the model result: JSON mode at the provider, the schema when

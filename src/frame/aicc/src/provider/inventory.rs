@@ -764,11 +764,10 @@ impl InventoryBuilder {
             .unwrap_or(&profile.provider_profile_id);
         let rules = catalog.provider_rules(rules_id);
         let default_rules_id = if rules.is_none() {
-            catalog
-                .known_provider(&adapter.protocol_family_id)
-                .filter(|provider| provider.protocol_adapter_id == adapter.protocol_adapter_id)
-                .and_then(|provider| provider.provider_rules_id.as_deref())
-                .filter(|id| catalog.provider_rules(id).is_some())
+            catalog.protocol_default_rules_id(
+                &adapter.protocol_family_id,
+                &adapter.protocol_adapter_id,
+            )
         } else {
             None
         };
@@ -1109,9 +1108,11 @@ impl InventoryBuilder {
             )
             .map_err(|error| ProviderError::Inventory(error.to_string()))?
             .as_stable_string();
-            let mut variants = if catalog.provider_rules(rules_id).is_none() {
-                Vec::new()
-            } else {
+            let llm = catalog.llm_model(&model_driver_id, &origin_model_id);
+            let variant_rules_id = rules
+                .map(|_| rules_id)
+                .or_else(|| default_rules_id.filter(|_| llm.is_some()));
+            let mut variants = if let Some(rules_id) = variant_rules_id {
                 catalog
                     .executable_variants(rules_id, &model_driver_id, &origin_model_id, &dimensions)
                     .map_err(|error| ProviderError::Inventory(error.to_string()))?
@@ -1122,8 +1123,10 @@ impl InventoryBuilder {
                         logical_mounts: Vec::new(),
                     })
                     .collect::<Vec<_>>()
+            } else {
+                Vec::new()
             };
-            if let Some(llm) = catalog.llm_model(&model_driver_id, &origin_model_id) {
+            if let Some(llm) = llm {
                 variants.retain(|variant| {
                     (!discovered.unsupported_features.contains("reasoning")
                         || variant.name == "reasoning-none")

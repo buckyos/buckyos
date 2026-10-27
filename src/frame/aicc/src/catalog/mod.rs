@@ -406,6 +406,17 @@ impl CatalogSnapshot {
             .and_then(|catalog| catalog.providers.get(*position))
     }
 
+    pub(crate) fn protocol_default_rules_id(
+        &self,
+        protocol_family_id: &str,
+        protocol_adapter_id: &str,
+    ) -> Option<&str> {
+        self.known_provider(protocol_family_id)
+            .filter(|provider| provider.protocol_adapter_id == protocol_adapter_id)
+            .and_then(|provider| provider.provider_rules_id.as_deref())
+            .filter(|id| self.provider_rules(id).is_some())
+    }
+
     pub(crate) fn known_providers(&self) -> impl Iterator<Item = &KnownProvider> {
         self.known_provider_index
             .values()

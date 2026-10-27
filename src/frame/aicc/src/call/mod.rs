@@ -687,7 +687,20 @@ impl<'a> CallResolver<'a> {
         let Some(variant) = variant else {
             return Ok(BTreeMap::new());
         };
-        let rules_id = rules_id.unwrap_or_default();
+        let rules_id = rules_id
+            .or_else(|| {
+                if !variant.starts_with("reasoning-") {
+                    return None;
+                }
+                self.catalog
+                    .llm_model(&selected.model_driver_id, &selected.origin_model_id)?;
+                let adapter = self.codecs.adapter(&selected.protocol_adapter_id)?;
+                self.catalog.protocol_default_rules_id(
+                    &adapter.protocol_family_id,
+                    &adapter.protocol_adapter_id,
+                )
+            })
+            .unwrap_or_default();
         let matches = if self.catalog.provider_rules(rules_id).is_some() {
             self.catalog
                 .executable_variants(
@@ -1816,6 +1829,59 @@ mod tests {
         assert_eq!(golden["execution_mode"], "immediate");
         assert_eq!(golden["credential_kind"], "bearer");
         assert!(!golden.to_string().contains("credential-secret"));
+    }
+
+    #[test]
+    fn custom_provider_reasoning_variants_lower_to_protocol_options() {
+        let catalog = metadata_snapshot();
+        let codecs = all_codecs();
+        let resolver = CallResolver::new(&catalog, &codecs);
+        for (model_id, origin, effort) in [
+            ("gpt-6.1-sol", "gpt-6.1-sol", "medium"),
+            ("ep-custom", "gpt-6-sol", "medium"),
+            ("gpt-6-luna", "gpt-6-luna", "none"),
+        ] {
+            let exact = format!("{model_id}:reasoning-{effort}@custom-provider");
+            let mut route = decision(&exact);
+            route.selected.provider_instance_name = "custom-provider".into();
+            route.selected.provider_profile_id = "custom".into();
+            route.selected.provider_model_id = model_id.into();
+            route.selected.origin_model_id = origin.into();
+            let mut target = target("test-secret");
+            target.provider_rules_id = None;
+            let mut request =
+                LlmChatInvokeRequest::new(exact, vec![AiMessage::text(AiRole::User, "hello")]);
+            request.temperature = Some(0.7);
+            let lowered = resolver
+                .lower(&route, &AiccCall::ChatCompletionsCreate(request), target)
+                .unwrap();
+            assert_eq!(lowered.provider_model_id, model_id);
+            assert_eq!(
+                lowered.input.resolved_parameters["reasoning"],
+                json!({"effort": effort})
+            );
+            assert!(lowered.pricing.pricing.is_none());
+            assert!(lowered.reported_cost_currency.is_none());
+            assert!(lowered.revisions.provider_rules_revision_seq.is_none());
+            let AiccCall::ChatCompletionsCreate(request) = &lowered.input.canonical_request else {
+                panic!("expected chat request");
+            };
+            assert_eq!(request.temperature, Some(0.7));
+            let encoded = codecs
+                .encode(
+                    "openai-responses",
+                    "responses.create",
+                    ApiType::Llm,
+                    &lowered.input,
+                    &lowered.context,
+                )
+                .unwrap();
+            let crate::protocol::HttpBody::Json(body) = encoded.body else {
+                panic!("expected JSON body");
+            };
+            assert_eq!(body["model"], model_id);
+            assert_eq!(body["reasoning"]["effort"], effort);
+        }
     }
 
     #[test]

@@ -120,7 +120,9 @@ derived protocol_adapter_id
 
 Provider Profile/Rules 必须在路由前得到一个确定的 Adapter 和 operation。内置 Provider 的默认选择由 Known Provider catalog 和 `.provider.json` 固定；用户添加 `custom` Provider 时只选择或识别 OpenAI、Claude、Gemini 等协议族，不选择 API 代际。接入测试只枚举无 `base_adapter_id` 且声明 `probe_path` 的协议族级 Adapter，按“官方新接口优先、运行时已注册的历史接口其次”的 `probe_priority` 顺序发送带认证的空 JSON 探测，成功识别后把 resolved `protocol_adapter_id` 固化到 Provider Instance。只有 `404/405/501` 继续下一候选；其它 4xx 证明接口存在，认证、限流、网络和 5xx 直接报告，不能被误判成历史接口需求。运行时只使用已固化 Adapter，不重新探测，也不在一次调用中静默切换新旧 Adapter。
 
-实例没有 Provider Rules 时，inventory 先按 discovery 的 `remote_methods` 和 Adapter binding 的 `default_priority` 选择 operation。若仍有多个候选，且当前 Adapter 与该协议族 Known Provider 的默认 Adapter 完全一致，则按 `origin_model_id` 查询其 Provider Rules，仅用 `operations` 中属于当前候选集的映射消除歧义。例如 OpenAI 协议下 GPT 的图像能力使用 `responses.create`，独立图像模型使用 `images.generate` / `images.edit`。此默认选择不继承官方价格、参数改写、variant、能力限制或准入规则；没有有效映射时仍报告歧义。
+实例没有 Provider Rules 时，inventory 先按 discovery 的 `remote_methods` 和 Adapter binding 的 `default_priority` 选择 operation。若仍有多个候选，且当前 Adapter 与该协议族 Known Provider 的默认 Adapter 完全一致，则按 `origin_model_id` 查询其 Provider Rules，用 `operations` 中属于当前候选集的映射消除歧义。例如 OpenAI 协议下 GPT 的图像能力使用 `responses.create`，独立图像模型使用 `images.generate` / `images.edit`；没有有效映射时仍报告歧义。
+
+相同条件下，LLM 的思考强度预设也使用该默认 Provider Rules 中明确匹配模型的 variant 映射。inventory 只注册模型声明支持、且未被 discovery 禁用的预设；请求转换复用同一映射，将 `reasoning-medium` 等内部 variant 转为协议参数，远端 `model` 仍使用原始 `provider_model_id`。显式 Provider Rules 优先，缺少映射的预设仍不可用，不静默改换强度。默认映射不继承官方价格、普通参数改写、非 LLM variant、能力限制或准入规则。
 
 一个 Provider 需要多套 protocol client 时，不把实例字段扩成无约束的 Adapter 数组。
 Adapter 是该 Provider 的可执行协议边界，可以注册多个按 operation 分派的

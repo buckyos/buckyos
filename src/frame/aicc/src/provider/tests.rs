@@ -1887,3 +1887,159 @@ fn custom_openai_inventory_uses_model_operations_and_discovery_limits() {
         assert!(model.provider_rules_revision.is_none(), "{model_id}");
     }
 }
+
+#[test]
+fn custom_provider_efforts_populate_logical_directories() {
+    let catalog = crate::settings::MetadataSources {
+        builtin: crate::settings::load_builtin_metadata().unwrap(),
+        ..crate::settings::MetadataSources::default()
+    }
+    .build_snapshot(
+        crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+        &CatalogBuildOptions::default(),
+    )
+    .unwrap();
+    let providers = builtin_provider_registry(&catalog).unwrap();
+    let mut config = instance("custom-provider");
+    config.provider_profile_id = "custom".into();
+    let binding = providers
+        .resolve_instance(&config, ProviderAuthMode::ApiKey, None)
+        .unwrap();
+    let mut discovered = discovery("gpt-6.1-sol");
+    discovered.models = ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"]
+        .into_iter()
+        .map(|id| {
+            let mut model = discovery(id).models.remove(0);
+            model.api_types = Some(vec![ApiType::Llm]);
+            model.supported_features = None;
+            model.remote_methods = None;
+            model.pricing = None;
+            model
+        })
+        .collect();
+    let inventory = InventoryBuilder::build(
+        &binding.profile,
+        &config,
+        discovered,
+        &catalog,
+        &providers.codecs(),
+    )
+    .unwrap();
+    assert_eq!(inventory.models.len(), 3);
+    assert!(inventory.unavailable_presets.is_empty());
+    for model in &inventory.models {
+        assert!(
+            model
+                .variants
+                .iter()
+                .any(|variant| variant.name == "reasoning-medium"),
+            "{}",
+            model.provider_model_id
+        );
+        assert!(model.pricing.is_none());
+        assert!(model.provider_rules_revision.is_none());
+    }
+    let registry = crate::model::llm_tests::gpt_registry(&[inventory.as_model_inventory()]);
+    for (path, exact) in [
+        (
+            "llm.gpt-standard",
+            "gpt-6.1-sol:reasoning-medium@custom-provider",
+        ),
+        (
+            "llm.gpt-6-1-sol",
+            "gpt-6.1-sol:reasoning-medium@custom-provider",
+        ),
+        (
+            "llm.gpt-6-1-sol:medium",
+            "gpt-6.1-sol:reasoning-medium@custom-provider",
+        ),
+        (
+            "llm.gpt-6-sol:medium",
+            "gpt-6-sol:reasoning-medium@custom-provider",
+        ),
+        ("llm.gpt-pro", "gpt-6.1-sol:reasoning-high@custom-provider"),
+        (
+            "llm.gpt-codex",
+            "gpt-6.1-sol:reasoning-xhigh@custom-provider",
+        ),
+        ("llm.gpt-nano", "gpt-6-luna:reasoning-none@custom-provider"),
+        ("llm.gpt-mini", "gpt-6-luna:reasoning-low@custom-provider"),
+    ] {
+        let candidates = registry.resolve_candidates(path, ApiType::Llm).unwrap();
+        assert_eq!(candidates.candidates.len(), 1, "{path}");
+        assert_eq!(
+            candidates.candidates[0].model.exact_model.as_str(),
+            exact,
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn custom_provider_efforts_respect_adapter_rules_and_discovery() {
+    let catalog = crate::settings::MetadataSources {
+        builtin: crate::settings::load_builtin_metadata().unwrap(),
+        ..crate::settings::MetadataSources::default()
+    }
+    .build_snapshot(
+        crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+        &CatalogBuildOptions::default(),
+    )
+    .unwrap();
+    let providers = builtin_provider_registry(&catalog).unwrap();
+    for (adapter, rules, model_id, disable_reasoning, expected) in [
+        (
+            "openai-responses",
+            None,
+            "gpt-6-luna",
+            true,
+            vec!["reasoning-none"],
+        ),
+        (
+            "openai-chat-completions",
+            None,
+            "gpt-6.1-sol",
+            false,
+            vec![],
+        ),
+        ("openai-responses", Some("sn"), "gpt-6.1-sol", false, vec![]),
+    ] {
+        let mut config = instance("custom-provider");
+        config.provider_profile_id = "custom".into();
+        config.protocol_adapter_id = adapter.into();
+        config.provider_rules_id = rules.map(str::to_owned);
+        let binding = providers
+            .resolve_instance(&config, ProviderAuthMode::ApiKey, None)
+            .unwrap();
+        let mut discovered = discovery(model_id);
+        discovered.models[0].api_types = Some(vec![ApiType::Llm]);
+        discovered.models[0].supported_features = None;
+        discovered.models[0].remote_methods = None;
+        if disable_reasoning {
+            discovered.models[0]
+                .unsupported_features
+                .insert("reasoning".into());
+        }
+        let inventory = InventoryBuilder::build(
+            &binding.profile,
+            &config,
+            discovered,
+            &catalog,
+            &providers.codecs(),
+        )
+        .unwrap();
+        assert_eq!(inventory.models.len(), 1);
+        assert_eq!(
+            inventory.models[0]
+                .variants
+                .iter()
+                .map(|variant| variant.name.as_str())
+                .collect::<Vec<_>>(),
+            expected,
+            "{adapter} {rules:?}"
+        );
+        assert!(inventory.unavailable_presets.iter().any(|preset| {
+            preset.effort == "medium" && preset.reason == "missing_channel_mapping"
+        }));
+    }
+}
