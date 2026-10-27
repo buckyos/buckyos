@@ -1,5 +1,8 @@
 // Builds and runs the real `aiworkspace` backend in standalone mode for the e2e suite:
 // a temporary data folder, static test identities, the port given by AIWS_E2E_BACKEND_PORT.
+// Objects live in a standalone nfs-server (port AIWS_E2E_NDM_PORT) that declares the service's
+// buckets (`--bucket-specs`, the same as `buckyos_api::aiworkspace_bucket_decls`): the Desktop
+// uploads into it through NDM and reads downloads from its `/bucket/v1` data plane.
 import { execFileSync, spawn } from 'node:child_process'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -34,7 +37,18 @@ const exported = join(root, 'files')
 mkdirSync(exported, { recursive: true })
 const storeConfig = join(root, 'named-store.json')
 writeFileSync(storeConfig, JSON.stringify({ stores: [{ path: store }] }))
-const nfs = spawn(nfsBinary, ['--data-dir', join(root, 'nfs'), '--export', `home=${exported}`, '--named-store', store, '--listen', `127.0.0.1:${process.env.AIWS_E2E_NDM_PORT}`, '--log-level', 'warn'], { stdio: 'inherit' })
+const bucketSpecs = join(root, 'bucket-specs.json')
+writeFileSync(bucketSpecs, JSON.stringify({
+  aiworkspace: {
+    storage_quota_mib: 16384,
+    buckets: {
+      assets: { kind: 'data', data_policy: 'app_data', scope: 'user' },
+      objects: { kind: 'data', data_policy: 'app_data', scope: 'user' },
+      exports: { kind: 'data', data_policy: 'temp', scope: 'user', default_ttl_days: 7 },
+    },
+  },
+}))
+const nfs = spawn(nfsBinary, ['--data-dir', join(root, 'nfs'), '--export', `home=${exported}`, '--named-store', store, '--bucket-specs', bucketSpecs, '--listen', `127.0.0.1:${process.env.AIWS_E2E_NDM_PORT}`, '--log-level', 'warn'], { stdio: 'inherit' })
 const auth = join(root, 'tokens.json')
 // a Limited account (restricted session) and an External DID stand for the hybrid SSO visitors (entries.spec.ts)
 writeFileSync(auth, JSON.stringify({
@@ -56,7 +70,7 @@ const env = { ...process.env, AIWS_E2E_LLM_KEY: 'e2e' }
 // a local run whose browser went away is interrupted within seconds (the browser heartbeats at a third of the lease)
 env.AIWS_RUN_LEASE_MS ??= '6000'
 delete env.AIWS_FAILPOINT
-const child = spawn(binary, ['--data-dir', join(root, 'data'), '--listen', `127.0.0.1:${port}`, '--auth-file', auth, '--fixture-sources', '--wish-config', wishConfig, '--named-store-config', storeConfig, '--ndm-gateway', ndmBase, '--log-level', 'warn'], { stdio: 'inherit', env })
+const child = spawn(binary, ['--data-dir', join(root, 'data'), '--listen', `127.0.0.1:${port}`, '--auth-file', auth, '--fixture-sources', '--wish-config', wishConfig, '--nfs-server', ndmBase, '--named-store-config', storeConfig, '--log-level', 'warn'], { stdio: 'inherit', env })
 
 let stopping = false
 const stop = () => {

@@ -1,10 +1,9 @@
 //! Private user settings (Feed Preferences, Topics, collectors, profile).
 
 use crate::audience::AudienceSpec;
-use crate::db::{get_setting, set_setting};
+use crate::db::{get_setting, set_setting, Conn};
 use crate::error::HsResult;
 use crate::Station;
-use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -105,14 +104,14 @@ impl Default for UserSettings {
 
 const KEY: &str = "user_settings";
 
-pub fn load(conn: &Connection) -> HsResult<UserSettings> {
+pub fn load(conn: &Conn) -> HsResult<UserSettings> {
     Ok(match get_setting(conn, KEY)? {
         Some(value) => serde_json::from_str(&value).unwrap_or_default(),
         None => UserSettings::default(),
     })
 }
 
-pub fn save(conn: &Connection, settings: &UserSettings) -> HsResult<()> {
+pub fn save(conn: &Conn, settings: &UserSettings) -> HsResult<()> {
     set_setting(conn, KEY, &serde_json::to_string(settings)?)
 }
 

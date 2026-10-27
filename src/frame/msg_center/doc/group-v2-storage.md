@@ -29,7 +29,7 @@
 
 host 每群一行 `GroupState` JSON 聚合。同群写入先在事务中 UPDATE 锁定该行，再读取并修改状态。序号、配置 CAS、幂等结果、正文、GROUP_INBOX、成员投影与投递队列使用同一个事务。创建使用 `group_locks` 的单行锁，原子提交群、初始 Session 和邀请。
 
-MsgObject 以 ObjectId 索引的独立 `group_objects` 行保存，不复制正文到邮箱记录。保存 canonical JSON 和 JWT 原文是为了支持事务内提交、原样返回签名及可靠撤回。附件仍由 NamedStore/CYFS 提供，群表仅存 ObjectId 引用，不内联二进制。
+MsgObject 以 ObjectId 索引的独立 `group_objects` 行保存，不复制正文到邮箱记录。保存 canonical JSON 和 JWT 原文是为了支持事务内提交、原样返回签名及可靠撤回。附件在 NamedStore 中，由 `zone/msg-center/_/attachments` 桶绑定保留（撤回时解绑，见 `doc/message_hub/Message Center Durable Data Schema.md`），群表仅存 ObjectId 引用，不内联二进制。
 
 该聚合布局用于第一版单 host 默认实现：读写群状态的成本与该群累计记录数相关，同群操作串行。大量历史或接近 10,000 个 Session 时，需要基准测试后将元数据和日志拆为可索引的行；配置上限不是已经验证的吞吐保证。
 

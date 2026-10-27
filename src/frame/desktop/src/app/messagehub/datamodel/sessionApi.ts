@@ -313,6 +313,9 @@ export async function postSendMessage(msg: MsgObject, idempotencyKey?: string): 
   return result
 }
 
+/** `msg.collect_attachment`: the attachment's copy in the caller's `collected` bucket. */
+export const collectAttachment = (objId: string, contextPath: string) => call<{ bucket_id: string; key: string }>('msg.collect_attachment', { obj_id: objId, context_path: contextPath })
+
 /* ── UI session state (legacy session-only KV and owner-scoped KV) ── */
 
 export const listUiSessionState = (sessionId: string, owner?: DID) => call<UiSessionStateEntry[] | null>('ui_session.list_state', owner ? { session_id: sessionId, owner } : { session_id: sessionId }).then(list => list ?? [])

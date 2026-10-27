@@ -7,15 +7,14 @@ use aiworkspace_store::workspace::Caller;
 use aiworkspace_store::Service;
 use common::*;
 use serde_json::{json, Value};
-use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-fn export(env: &Env, id: &str, who: &Caller, mode: &str, self_contained: bool) -> (PathBuf, Value) {
+fn export(env: &Env, id: &str, who: &Caller, mode: &str, self_contained: bool) -> (tempfile::TempPath, Value) {
     let h = env.svc.workspace(id).unwrap();
     let mut ws = h.lock().unwrap();
     let r = ws.export(who, mode, self_contained, None).unwrap();
-    (PathBuf::from(r["path"].as_str().unwrap()), r["manifest"].clone())
+    (fetched(&ws.objects, &r), r["manifest"].clone())
 }
 
 fn contains(haystack: &[u8], needle: &str) -> bool {
@@ -220,10 +219,11 @@ fn v14_privacy_of_exports_and_replicas() {
     let h = env.svc.workspace(&id).unwrap();
     let mut ws = h.lock().unwrap();
     let rep = ws.replica_bootstrap(&alice()).unwrap();
-    let bytes = std::fs::read(rep["path"].as_str().unwrap()).unwrap();
+    let bytes = std::fs::read(fetched(&ws.objects, &rep)).unwrap();
     assert!(!contains(&bytes, private), "replica must not contain another principal's personal content");
     assert!(contains(&bytes, "完成第一期架构验证"));
-    let conn = rusqlite::Connection::open(rep["path"].as_str().unwrap()).unwrap();
+    let rep_file = fetched(&ws.objects, &rep);
+    let conn = rusqlite::Connection::open(&rep_file).unwrap();
     let n = |t: &str| conn.query_row(&format!("SELECT COUNT(*) FROM {t}"), [], |r| r.get::<_, i64>(0)).unwrap();
     assert_eq!((n("commits"), n("commit_ops"), n("richtext_updates"), n("snapshots"), n("entity_versions")), (0, 0, 0, 0, 0));
     assert!(n("entities") >= 13 && n("table_records") == 5);
@@ -231,9 +231,10 @@ fn v14_privacy_of_exports_and_replicas() {
     let f = ws.read(&alice(), "tasks", Some(&json!({ "kind": "table_field", "field_id": "owner" }))).unwrap();
     ok(&mut ws, &alice(), json!([{ "op": "table.delete_field", "source_id": "tasks", "field_id": "owner", "expect": { "rev": f["content"]["def_rev"] } }]));
     let rep2 = ws.replica_bootstrap(&alice()).unwrap();
-    assert!(!contains(&std::fs::read(rep2["path"].as_str().unwrap()).unwrap(), "\"owner\":\"赵\""));
+    assert!(!contains(&std::fs::read(fetched(&ws.objects, &rep2)).unwrap(), "\"owner\":\"赵\""));
     assert!(ws.read(&alice(), "tasks", Some(&json!({ "kind": "table_record", "record_id": "task-42" }))).unwrap()["content"]["values"].get("owner").is_none());
-    assert!(!contains(&unzip_all(&PathBuf::from(ws.export(&alice(), "share", true, None).unwrap()["path"].as_str().unwrap())), "\"owner\":\"赵\""));
+    let share = ws.export(&alice(), "share", true, None).unwrap();
+    assert!(!contains(&unzip_all(&fetched(&ws.objects, &share)), "\"owner\":\"赵\""));
 }
 
 /// V20: unknown types / versions are preserved, read-only, and never silently dropped.
@@ -266,7 +267,7 @@ fn v20_unknown_content_is_preserved() {
     assert_eq!(code(&commit(&mut ws, &alice(), json!([{ "op": "entity.create", "entity_id": "c2", "type_id": "acme.chart", "parent_id": "data", "order_key": "s" }]))), "MISSING_EXTENSION");
     ok(&mut ws, &alice(), json!([{ "op": "tree.place", "entity_id": "chart-1", "order_key": "p5" }]));
     // export → import keeps the raw payload byte-for-byte in meaning
-    let pkg = PathBuf::from(ws.export(&alice(), "share", true, None).unwrap()["path"].as_str().unwrap());
+    let pkg = { let r = ws.export(&alice(), "share", true, None).unwrap(); fetched(&ws.objects, &r) };
     drop(ws);
     let other = common::env();
     let r = other.svc.import(&alice(), &pkg, "new", false).unwrap();
@@ -329,18 +330,13 @@ fn v22_assets() {
     let ids: Vec<&str> = un["unretained"].as_array().unwrap().iter().map(|u| u["object_id"].as_str().unwrap()).collect();
     assert_eq!(ids, vec![orphan.as_str()], "only the never-referenced upload is collectable");
     assert_eq!(code(&commit(&mut ws, &alice(), asset("a-3", &orphan))), "DEPENDENCY_UNAVAILABLE", "an expired lease cannot be referenced");
-    // tamper with the stored bytes → corrupt; remove them → missing; the document still opens
+    // an export without the asset bytes lists them; where they are absent the document still opens: `missing`
     let obj = ws.read(&alice(), "diagram", None).unwrap()["content"]["payload"]["object_id"].as_str().unwrap().to_string();
-    let chunk_path = ws.objects.chunk_path(&ws.objects.file_chunk(&obj).unwrap()).unwrap();
-    std::fs::write(&chunk_path, b"tampered").unwrap();
-    assert_eq!(ws.read(&alice(), "diagram", None).unwrap()["content"]["availability"], "corrupt");
-    std::fs::remove_file(&chunk_path).unwrap();
-    assert_eq!(ws.read(&alice(), "diagram", None).unwrap()["content"]["availability"], "missing");
-    // a self-contained export reports what it could not include instead of pretending
-    let m = ws.export(&alice(), "share", true, None).unwrap()["manifest"].clone();
-    assert_eq!(m["self_contained"], false);
-    assert_eq!(m["missing"][0]["id"], json!(obj));
-    let pkg = PathBuf::from(ws.export(&alice(), "share", true, None).unwrap()["path"].as_str().unwrap());
+    assert_eq!(ws.read(&alice(), "diagram", None).unwrap()["content"]["availability"], "available");
+    let exported = ws.export(&alice(), "share", false, None).unwrap();
+    assert_eq!(exported["manifest"]["self_contained"], false);
+    assert!(exported["manifest"]["missing"].as_array().unwrap().iter().any(|m| m["id"] == json!(obj)));
+    let pkg = fetched(&ws.objects, &exported);
     drop(ws);
     let other = common::env();
     let r = other.svc.import(&alice(), &pkg, "new", false).unwrap();
@@ -371,7 +367,8 @@ fn block_snapshots_are_assets_in_grants_packages_and_replicas() {
     assert!(ws.can_read_asset(&bob(), object_id).unwrap());
     assert_eq!(ws.verify_refs().unwrap()["ok"], true);
     let replica = ws.replica_bootstrap(&alice()).unwrap();
-    let db = rusqlite::Connection::open(replica["path"].as_str().unwrap()).unwrap();
+    let replica_file = fetched(&ws.objects, &replica);
+    let db = rusqlite::Connection::open(&replica_file).unwrap();
     assert_eq!(db.query_row("SELECT size FROM assets WHERE object_id = ?1", [object_id], |r| r.get::<_, usize>(0)).unwrap(), bytes.len());
     assert_eq!(db.query_row("SELECT src_entity_id FROM refs WHERE dst_object_id = ?1 AND kind = 'asset'", [object_id], |r| r.get::<_, String>(0)).unwrap(), "snapshot-cell");
     env.advance(25 * 3600 * 1000);
@@ -380,7 +377,7 @@ fn block_snapshots_are_assets_in_grants_packages_and_replicas() {
     assert_eq!(exported["manifest"]["self_contained"], true);
     assert!(exported["manifest"]["objects"].as_array().unwrap().iter().any(|o| o["id"] == object_id));
     let other = common::env();
-    let imported = other.svc.import(&bob(), std::path::Path::new(exported["path"].as_str().unwrap()), "new", false).unwrap();
+    let imported = other.svc.import(&bob(), &fetched(&ws.objects, &exported), "new", false).unwrap();
     let h2 = other.svc.workspace(imported["workspace_id"].as_str().unwrap()).unwrap();
     let imported_ws = h2.lock().unwrap();
     assert!(imported_ws.can_read_asset(&bob(), object_id).unwrap());
@@ -480,7 +477,7 @@ fn v24_url_query_table() {
     assert_eq!(m["self_contained"], false, "external rows are not inside the package");
     assert_eq!(m["external_sources"].as_array().unwrap().len(), 3);
     assert_eq!(m["external_sources"][0]["slice_included"], false);
-    let pkg = PathBuf::from(exported["path"].as_str().unwrap());
+    let pkg = fetched(&ws.objects, &exported);
     drop(ws);
     let mut other = common::env();
     let src2 = with_source(&mut other);

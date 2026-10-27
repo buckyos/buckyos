@@ -152,7 +152,7 @@ export async function prepareOffline(client: AiwsClient, workspaceId: string, op
     const info: WorkspaceInfo = unwrap(await client.wsGetInfo({ workspace_id: workspaceId }))
     const boot = unwrap(await client.replicaBootstrap({ workspace_id: workspaceId }))
     progress(aiwsT('aiworkspace.core.offline.progress.download'))
-    const file = await client.transport.download(`replica/${workspaceId}/${boot.replica_id}`)
+    const file = await client.transport.fetchDownload(boot.download)
     progress(aiwsT('aiworkspace.core.offline.progress.store'))
     const meta = await replica.call('importReplica', {
       bytes: await file.arrayBuffer(), principal: boot.principal, info: { ...info, epoch: boot.epoch }, epoch: boot.epoch,

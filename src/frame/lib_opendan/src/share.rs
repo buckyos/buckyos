@@ -287,7 +287,7 @@ impl ShareHost for ZoneShare {
                     "id": a.obj_id,
                     "kind": attachment_kind(mime),
                     "name": a.name,
-                    "status": "ready",
+                    "status": "uploaded",
                     "object": a.obj_id,
                 })),
                 Err(e) => {

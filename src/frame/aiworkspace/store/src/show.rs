@@ -7,8 +7,9 @@
 use crate::docdb::{db_err, meta_get, meta_set};
 use crate::service::Service;
 use crate::workspace::{random_id, Workspace};
+use aiworkspace_core::id::is_prefixed_id;
 use aiworkspace_core::{Code, WsError, WsResult};
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::Path;
@@ -111,20 +112,20 @@ impl Service {
 
     /// The temporary clone of a show (§8.3): both databases copied inside the source's writer, so the copy is one
     /// consistent state; entity ids, `seq` / epoch, rich text lineages, grants and wish runs are kept (run folders
-    /// hard-linked), user state, locks and uploads are not. Objects are content-addressed in the service's object
-    /// store, so the clone shares every asset, snapshot and program without copying a byte. Returns its id.
+    /// hard-linked), user state, locks and uploads are not. Objects are in the named store and the clone reads them
+    /// through the source's bindings, sharing every asset, snapshot and program without copying a byte. Returns its id.
     pub fn clone_for_show(&self, source_id: &str, show_id: &str, expires_at: &str) -> WsResult<String> {
         let id = random_id("ws_");
         let tmp = self.tmp_dir();
         let built = (|| -> WsResult<()> {
-            std::fs::create_dir_all(tmp.join("staging")).map_err(io)?;
+            std::fs::create_dir_all(&tmp).map_err(io)?;
             {
                 let handle = self.workspace(source_id)?;
                 let ws = handle.lock().unwrap();
                 // clones count on the source (D17): its quota, and at most MAX_CLONES at once
                 ws.check_quota(0, false)?;
-                let live: usize = ws.retentions()?.iter().filter(|(k, ..)| k == "clone").count();
-                if live >= MAX_CLONES {
+                let live = self.live_clones(&ws)?;
+                if live.len() >= MAX_CLONES {
                     return Err(WsError::limit(format!("at most {MAX_CLONES} shows of this workspace may run at once")));
                 }
                 for name in ["doc.sqlite", "local.sqlite"] {
@@ -133,8 +134,10 @@ impl Service {
                 }
                 link_tree(&ws.dir.join("runs"), &tmp.join("runs")).map_err(io)?;
                 link_tree(&ws.dir.join("cache"), &tmp.join("cache")).map_err(io)?;
-                // the clone retains the source's current content for the show (D06); it counts on the source (D17)
-                ws.add_retention("clone", &id, show_id, Some(expires_at))?;
+                // the clone reads the source's current content for the show (D06); it counts on the source (D17)
+                let mut clones = live;
+                clones.push(id.clone());
+                ws.local.execute("INSERT OR REPLACE INTO local_meta (key, value) VALUES ('show_clones', ?1)", [json!(clones).to_string()]).map_err(db_err)?;
                 let bytes = std::fs::metadata(tmp.join("doc.sqlite")).map(|m| m.len()).unwrap_or(0) as i64;
                 ws.add_usage("clones", bytes)?;
             }
@@ -148,7 +151,7 @@ impl Service {
             let local = Connection::open(tmp.join("local.sqlite")).map_err(db_err)?;
             local
                 .execute_batch(&format!(
-                    "DELETE FROM locks; DELETE FROM lock_events; DELETE FROM staged_assets; DELETE FROM upload_sessions; DELETE FROM user_state; \
+                    "DELETE FROM locks; DELETE FROM lock_events; DELETE FROM staged_assets; DELETE FROM user_state; DELETE FROM local_meta WHERE key = 'show_clones'; \
                      UPDATE runs SET state = 'interrupted' WHERE state IN ({});", crate::wish::runs::active_states_sql()
                 ))
                 .map_err(db_err)?;
@@ -167,20 +170,32 @@ impl Service {
         if !is_clone_dir(&self.ws_dir(id)) {
             return Err(WsError::invalid_op(format!("{id} is not a show clone")));
         }
+        // what the clone bound itself goes; the source's clone usage with it
+        if let Err(e) = self.release_folder(&self.ws_dir(id)) {
+            log::warn!("release bindings of show clone {id}: {e}");
+        }
         self.close(id);
-        // the source's retention root and clone usage go with it
         if let Ok(doc) = Connection::open_with_flags(self.ws_dir(id).join("doc.sqlite"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX) {
             if let Ok(Some(source)) = meta_get(&doc, "show_source") {
                 let bytes = std::fs::metadata(self.ws_dir(id).join("doc.sqlite")).map(|m| m.len()).unwrap_or(0) as i64;
                 drop(doc);
                 if let Ok(h) = self.workspace(&source) {
                     let ws = h.lock().unwrap();
-                    let _ = ws.release_retention("clone", id);
                     let _ = ws.add_usage("clones", -bytes);
                 }
             }
         }
-        std::fs::remove_dir_all(self.ws_dir(id)).map_err(io)
+        std::fs::remove_dir_all(self.ws_dir(id)).map_err(io)?;
+        // a request that opened it again meanwhile must not keep a writer of the removed folder
+        self.close(id);
+        Ok(())
+    }
+
+    /// The source's show clones whose folders still exist.
+    fn live_clones(&self, ws: &Workspace) -> WsResult<Vec<String>> {
+        let list: Option<String> = ws.local.query_row("SELECT value FROM local_meta WHERE key = 'show_clones'", [], |r| r.get(0)).optional().map_err(db_err)?;
+        let ids: Vec<String> = list.and_then(|l| serde_json::from_str(&l).ok()).unwrap_or_default();
+        Ok(ids.into_iter().filter(|id| is_prefixed_id("ws_", id) && self.ws_dir(id).exists()).collect())
     }
 
     /// Clones a crashed or restarted service left behind (their shows ended with it).
@@ -189,6 +204,7 @@ impl Service {
             let path = entry.map_err(io)?.path();
             if is_clone_dir(&path) {
                 log::info!("removing the clone of an ended show: {}", path.display());
+                self.release_folder(&path)?;
                 let _ = std::fs::remove_dir_all(&path);
             }
         }

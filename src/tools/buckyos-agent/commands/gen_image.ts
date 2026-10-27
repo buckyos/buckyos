@@ -7,7 +7,7 @@
 //   2) 构造 canonical helper request
 //   3) initRuntime() 拿到登录后的 BuckyOS 会话
 //   4) callAicc() 同步调用 + 等待 task 完成
-//   5) 从 typed response 的 ResourceRef 派生视图把产物拉回本地
+//   5) 把产物交到本 Agent 的 artifacts 桶（obj://bucket/...），需要时另存本地
 //   6) emit() 一行 AgentToolResult JSON 给上游
 //
 // 改用途时，主要变化点只有 (1) (2) (5)；(3)(4)(6) 是机械的。
@@ -18,6 +18,7 @@ import {
   ArgError,
   bailArgError,
   COMMON_OPTIONS_HELP,
+  DELIVERY_HELP,
   flagInt,
   parseArgvOrExit,
   requireString,
@@ -31,8 +32,8 @@ import {
 import type { TextToImageOptions } from "../lib/aicc.ts";
 import {
   pickArtifact,
-  saveArtifactToPath,
-  suffixPathByMime,
+  deliverArtifact,
+  deliveredSummary,
 } from "../lib/io.ts";
 import {
   bailAiccError,
@@ -51,11 +52,11 @@ const TOOL = "gen_image";
 const METHOD = "helper.text_to_image";
 const DEFAULT_LOGICAL_MODEL = "image.txt2img";
 
-export const HELP = `Usage: gen_image <prompt> <output_image> [options]
+export const HELP = `Usage: gen_image <prompt> [output_image] [options]
 
 Positional:
   <prompt>            Text prompt
-  <output_image>      Local path for the generated image
+  [output_image]      Optional local copy of the generated image
 
 Options:
   --negative <text>
@@ -65,7 +66,7 @@ Options:
   --quality <low|medium|high>
   --seed <int>
   --format <png|jpg|webp>
-${COMMON_OPTIONS_HELP}`;
+${COMMON_OPTIONS_HELP}${DELIVERY_HELP}`;
 
 const ASPECT = new Set(["1:1", "16:9", "9:16", "4:3", "3:4"]);
 const QUALITY = new Set(["low", "medium", "high"]);
@@ -81,7 +82,7 @@ function formatToMime(format: string | undefined): string | undefined {
 export async function run(argv: string[]): Promise<never> {
   // ── 1. 解析参数 ────────────────────────────────────────────────────────
   const parsed = parseArgvOrExit(TOOL, HELP, argv);
-  if (parsed.positional.length < 2) {
+  if (parsed.positional.length < 1) {
     emitAndExit(
       errorResult(TOOL, `${TOOL} => arg_error`, HELP, {
         error: "missing positional arguments",
@@ -158,38 +159,35 @@ export async function run(argv: string[]): Promise<never> {
     bailAiccFailed(TOOL, METHOD, call.taskId, describeFailure(call));
   }
 
-  // ── 5. 把产物拉到本地 ─────────────────────────────────────────────────
+  // ── 5. 把产物交到 Agent 的 artifacts 桶 ───────────────────────────────
   // pickArtifact: 按 mime 前缀（"image/" / "audio/" / "video/"）筛，没命中
   // 就返回第一个 artifact。
-  // saveArtifactToPath: 自动处理三种 resource:
-  //   - named_object → 通过 ndm_proxy.openReader 流式拉
-  //   - url          → fetch
-  //   - base64       → 解码
+  // deliverArtifact: 结果一律进本 Agent 的 artifacts 桶（返回 obj://bucket/...）:
+  //   - AICC 已存进它的 outputs 桶 → bucket.copy，不再上传字节
+  //   - 其他（url / base64 / 无桶引用的 named_object）→ 读出字节后上传
+  // 只有给了 outputPath 才另写一份本地文件（本地工具要路径时的降级）。
   const artifact = pickArtifact(call.summary, "image");
   if (!artifact) bailNoArtifact(TOOL, METHOD, call.taskId);
-  const dest = suffixPathByMime(outputPath, "image/png");
   // deno-lint-ignore no-explicit-any
   const ndmProxy = (ndm_proxy as any).createNdmProxyClient();
   let saved;
   try {
-    saved = await saveArtifactToPath(artifact, dest, ndmProxy);
+    saved = await deliverArtifact(runtime, call.summary, artifact, ndmProxy, {
+      tool: TOOL,
+      path: outputPath,
+      defaultMime: "image/png",
+    });
   } catch (err) {
     bailIoError(TOOL, call.taskId, err);
   }
 
   // ── 6. emit AgentToolResult ───────────────────────────────────────────
   emitAndExit(
-    successResult(TOOL, `${TOOL} => done`, `${TOOL} wrote ${saved.path}`, {
+    successResult(TOOL, `${TOOL} => done`, deliveredSummary(TOOL, [saved]), {
       method: METHOD,
       capability: "image",
       task_id: call.taskId,
-      files: [{
-        path: saved.path,
-        mime: saved.mime ?? null,
-        bytes: saved.bytes,
-        source_kind: saved.source_kind,
-        obj_id: saved.obj_id ?? null,
-      }],
+      files: [saved],
     }),
     EXIT_SUCCESS,
   );

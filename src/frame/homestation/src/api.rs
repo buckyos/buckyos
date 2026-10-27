@@ -148,7 +148,11 @@ impl Station {
                 json!({ "ok": true })
             }
 
-            "object.register" => self.register_object(&arg::<String>(p, "objId")?, p.get("metadata").cloned().unwrap_or_else(|| json!({}))).await?,
+            "object.upload_target" => self.upload_target(p.get("name").and_then(Value::as_str).unwrap_or_default())?,
+            "object.register" => {
+                let key = p.get("key").and_then(Value::as_str);
+                self.register_object(&arg::<String>(p, "objId")?, p.get("metadata").cloned().unwrap_or_else(|| json!({})), key).await?
+            }
             "publish.create" => {
                 let key: String = arg(p, "key")?;
                 let input: PublishInput = arg(p, "input")?;
@@ -343,11 +347,9 @@ impl Station {
                         self.reconcile_following().await?;
                         json!({ "ok": true })
                     }
-                    "retention" => json!(self.reconcile_retentions().await?),
                     other => return Err(bad(format!("unknown task {other}"))),
                 }
             }
-            "admin.retention" => self.retention_status().await?,
             "admin.compact_stream" => {
                 self.compact_stream(arg(p, "through")?).await?;
                 json!({ "ok": true })
@@ -374,8 +376,8 @@ impl Station {
             .db
             .call(|c| {
                 Ok(c.query_row(
-                    "SELECT COUNT(*), COUNT(CASE WHEN last_error IS NOT NULL AND paused=0 THEN 1 END) FROM sources",
-                    [],
+                    "SELECT COUNT(*), COUNT(CASE WHEN last_error IS NOT NULL AND paused=0 THEN 1 END) FROM sources WHERE owner=?1",
+                    [c.owner],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )?)
             })
@@ -386,8 +388,9 @@ impl Station {
         let following: Vec<Value> = self
             .db
             .call(|c| {
-                let mut stmt = c.prepare("SELECT did, name FROM sources WHERE kind='person' AND did IS NOT NULL AND basis!='[]' ORDER BY name")?;
-                let rows = stmt.query_map([], |r| Ok(json!({ "did": r.get::<_, String>(0)?, "name": r.get::<_, String>(1)? })))?.collect::<Result<Vec<_>, _>>()?;
+                let mut stmt =
+                    c.prepare("SELECT did, name FROM sources WHERE kind='person' AND did IS NOT NULL AND basis!='[]' AND owner=?1 ORDER BY name")?;
+                let rows = stmt.query_map([c.owner], |r| Ok(json!({ "did": r.get::<_, String>(0)?, "name": r.get::<_, String>(1)? })))?.collect::<Result<Vec<_>, _>>()?;
                 Ok(rows)
             })
             .await?;
@@ -527,7 +530,11 @@ impl Station {
                     .db
                     .call(move |c| {
                         let key: Option<String> =
-                            rusqlite::OptionalExtension::optional(c.query_row("SELECT key FROM publish_tasks WHERE entry=?1", [&entry], |r| r.get(0)))?;
+                            rusqlite::OptionalExtension::optional(c.query_row(
+                                "SELECT key FROM publish_tasks WHERE entry=?1 AND owner=?2",
+                                rusqlite::params![entry, c.owner],
+                                |r| r.get(0),
+                            ))?;
                         Ok(match key {
                             Some(k) => crate::publish::get_task(c, &k)?.map(|(r, _)| r),
                             None => None,
@@ -651,12 +658,12 @@ impl Station {
     async fn entry_debug(&self) -> HsResult<Value> {
         self.db
             .call(|c| {
-                let rows = list_entries(c, "ORDER BY updated_at DESC", &[])?;
+                let rows = list_entries(c, "ORDER BY updated_at DESC")?;
                 let mut out = Vec::new();
                 for row in rows {
-                    let mut stmt = c.prepare("SELECT seq, state, current, at FROM head_history WHERE entry=?1 ORDER BY seq")?;
+                    let mut stmt = c.prepare("SELECT seq, state, current, at FROM head_history WHERE entry=?1 AND owner=?2 ORDER BY seq")?;
                     let heads = stmt
-                        .query_map([&row.entry], |r| Ok(json!({ "seq": r.get::<_, i64>(0)?, "state": r.get::<_, String>(1)?, "current": r.get::<_, Option<String>>(2)?, "at": r.get::<_, i64>(3)? })))?
+                        .query_map(rusqlite::params![row.entry, c.owner], |r| Ok(json!({ "seq": r.get::<_, i64>(0)?, "state": r.get::<_, String>(1)?, "current": r.get::<_, Option<String>>(2)?, "at": r.get::<_, i64>(3)? })))?
                         .collect::<Result<Vec<_>, _>>()?;
                     out.push(json!({ "entry": row.entry, "kind": row.kind.as_str(), "audience": row.audience, "heads": heads }));
                 }
@@ -710,8 +717,8 @@ impl Station {
         self.db
             .call(move |c| {
                 c.execute(
-                    "UPDATE heads SET tier=?2, restricted=?3 WHERE entry=?1 AND NOT EXISTS (SELECT 1 FROM published WHERE entry=?1)",
-                    rusqlite::params![entry, tier, (tier != "public") as i64],
+                    "UPDATE heads SET tier=?2, restricted=?3 WHERE entry=?1 AND owner=?4 AND NOT EXISTS (SELECT 1 FROM published WHERE entry=?1 AND owner=?4)",
+                    rusqlite::params![entry, tier, (tier != "public") as i64, c.owner],
                 )?;
                 Ok(())
             })

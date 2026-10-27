@@ -454,7 +454,11 @@ async fn serve_group(center: &MessageCenter, req: &mut Request<Body>) -> Option<
                     center
                         .authorize_group_attachment(&actor, &id, context)
                         .await?;
-                    return Ok(crate::object_access::fetch_authorized_object(&id, false).await);
+                    let msg_id = crate::buckets::context_msg_id(context)?;
+                    return Ok(crate::object_access::bound_attachment_response(
+                        center, &msg_id, &id, false, None,
+                    )
+                    .await);
                 }
                 center.authorize_group_message(&actor, &id).await?;
                 let (object_group, body, jwt) =

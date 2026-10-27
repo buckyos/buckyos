@@ -758,7 +758,13 @@ export interface RunView {
   inputs: unknown[]
 }
 
-export interface ExportResult { export_id: string; manifest: { export_mode: string; content_root: string; self_contained: boolean; missing: unknown[]; excluded_entities: number; [key: string]: unknown } }
+/** A file the service put into the owner's `exports` bucket (7 days) and the read token for that key alone. */
+export interface BucketDownload { bucket_id: string; key: string; version: number; obj_id: string; token: string }
+/** Where an upload is bound (`ndm` finalize `auto_bind`): the caller's own bucket of this service. */
+export interface BucketBinding { bucket_id: string; key: string }
+export interface StagedAsset { object_id: string; media_type: string; size: number; bucket_id: string; key: string; version: number }
+
+export interface ExportResult { export_id: string; download: BucketDownload; manifest: { export_mode: string; content_root: string; self_contained: boolean; missing: unknown[]; excluded_entities: number; [key: string]: unknown } }
 
 /** `via_entry`: the share entry whose join wrote the row. Subjects: a principal (user id, External DID), `public`,
  * `*` (unrestricted accounts), `group:<id>`, `contact:<owner_did>#<tag>`. */

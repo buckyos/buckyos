@@ -20,9 +20,11 @@ pub enum ReportSource {
 }
 
 /// One artifact of a report: a file of the work directory (`path`, copied
-/// to `reference`) or a named object (`path` is its id). `obj_id` is what
-/// leaves the session: the submitted id, or the file put into the host's
-/// object store (`None`: the host has no object store).
+/// to `reference`), a named object (`path` is its id) or a bucket object
+/// (`path` is its `obj://bucket/...`). `obj_id` is what leaves the session:
+/// the submitted id, or what the host's object store keeps (`None`: the host
+/// has no object store); `url` is the host's bucket binding that retains it,
+/// after which the copy at `reference` is removed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ReportArtifact {
     pub path: String,
@@ -32,12 +34,14 @@ pub struct ReportArtifact {
     pub digest: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub obj_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 impl ReportArtifact {
-    /// The name shown for the artifact: the file name, or the object id.
+    /// The name shown for the artifact: the file (or key) name, or the object id.
     pub fn name(&self) -> &str {
-        if self.reference.is_empty() {
+        if self.reference.is_empty() && self.url.is_none() {
             return &self.path;
         }
         std::path::Path::new(&self.path)

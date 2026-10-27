@@ -13,7 +13,7 @@ use crate::{ControlPanelServer, RpcAuthPrincipal};
 use ::kRPC::{kRPC, RPCErrors, RPCRequest, RPCResponse, RPCResult, RPCSessionToken};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use buckyos_api::{
-    constant_time_eq, exclusive_invite_key, get_buckyos_api_runtime, invite_secret_digest,
+    exclusive_invite_key, get_buckyos_api_runtime, invite_secret_digest,
     user_did_from_doc_value, AccessDenial, AuthMethod, AuthTarget, DenyReason, ExclusiveInvite,
     ExclusiveInviteLoginRequest, ExclusiveInviteLoginResult, InviteChannel, InviteCredential,
     InviteCredentialKind, InviteCredentialState, InviteIssuer, InviteLoginRefusal, InviteResend, InviteResource,
@@ -31,6 +31,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 
 const INVITE_ID_PREFIX: &str = "ei-";
+const INVITE_SECRET_PREFIX: &str = "inv";
 const MAX_RETURN_PATH_LEN: usize = 2048;
 
 pub(crate) fn random_token(bytes: usize) -> String {
@@ -124,7 +125,7 @@ pub(crate) fn issue_credential_with_ttl(
     ttl_secs: u64,
     kind: InviteCredentialKind,
 ) -> (InviteCredential, String) {
-    let secret = random_token(32);
+    let secret = name_lib::bearer_token::issue(INVITE_SECRET_PREFIX);
     let credential = InviteCredential {
         version,
         digest: invite_secret_digest(&secret),
@@ -637,7 +638,7 @@ fn describe_outcome(
         },
         (result, invite) => {
             let holder = invite.filter(|invite| {
-                constant_time_eq(invite.credential.digest.as_bytes(), digest.as_bytes())
+                name_lib::bearer_token::digests_equal(&invite.credential.digest, digest)
             });
             InviteDescribeResult::Denied {
                 denial: result.err().unwrap_or(InviteLoginRefusal::Revoked).denial(),
@@ -1306,7 +1307,7 @@ pub(crate) mod tests {
             invite.credential.digest,
             invite_secret_digest(&created.secret)
         );
-        assert_eq!(URL_SAFE_NO_PAD.decode(&created.secret).unwrap().len(), 32);
+        assert!(name_lib::bearer_token::has_form(INVITE_SECRET_PREFIX, &created.secret));
         let stored: ExclusiveInvite = kv.read(&exclusive_invite_key(&invite.invite_id));
         assert_eq!(&stored, invite);
         assert!(!invite_view(&stored)

@@ -7,7 +7,8 @@ use crate::objects::StoredObject;
 use crate::protocol::*;
 use crate::{new_id, now_ms, now_s, Station};
 use async_trait::async_trait;
-use rusqlite::{params, Connection, OptionalExtension};
+use crate::db::Conn;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -294,29 +295,29 @@ fn record_from_row(r: &rusqlite::Row) -> rusqlite::Result<String> {
     r.get(0)
 }
 
-pub fn get_record(conn: &Connection, result_id: &str) -> HsResult<Option<EvalResult>> {
-    let body: Option<String> = conn.query_row("SELECT result FROM eval_records WHERE result_id=?1", [result_id], record_from_row).optional()?;
+pub fn get_record(conn: &Conn, result_id: &str) -> HsResult<Option<EvalResult>> {
+    let body: Option<String> = conn.query_row("SELECT result FROM eval_records WHERE result_id=?1 AND owner=?2", params![result_id, conn.owner], record_from_row).optional()?;
     Ok(body.and_then(|b| serde_json::from_str(&b).ok()))
 }
 
-pub fn latest_record(conn: &Connection, target_key: &str, profile: &str) -> HsResult<Option<EvalResult>> {
+pub fn latest_record(conn: &Conn, target_key: &str, profile: &str) -> HsResult<Option<EvalResult>> {
     let body: Option<String> = conn
         .query_row(
-            "SELECT result FROM eval_records WHERE target_key=?1 AND profile_id=?2 AND superseded_by IS NULL ORDER BY iat DESC, rowid DESC LIMIT 1",
-            params![target_key, profile],
+            "SELECT result FROM eval_records WHERE target_key=?1 AND profile_id=?2 AND superseded_by IS NULL AND owner=?3 ORDER BY iat DESC, rowid DESC LIMIT 1",
+            params![target_key, profile, conn.owner],
             record_from_row,
         )
         .optional()?;
     Ok(body.and_then(|b| serde_json::from_str(&b).ok()))
 }
 
-pub fn overrides_for(conn: &Connection, target_key: &str, scope: &str) -> HsResult<Vec<TagOverride>> {
+pub fn overrides_for(conn: &Conn, target_key: &str, scope: &str) -> HsResult<Vec<TagOverride>> {
     let mut stmt = conn.prepare(
         "SELECT id, target_key, dimension, tag, action, replacement, scope, created_at FROM tag_overrides
-         WHERE target_key=?1 AND revoked_at IS NULL AND (scope='global' OR scope=?2) ORDER BY created_at",
+         WHERE target_key=?1 AND revoked_at IS NULL AND (scope='global' OR scope=?2) AND owner=?3 ORDER BY created_at",
     )?;
     let rows = stmt
-        .query_map(params![target_key, scope], |r| {
+        .query_map(params![target_key, scope, conn.owner], |r| {
             Ok(TagOverride {
                 id: r.get(0)?,
                 target_key: r.get(1)?,
@@ -361,8 +362,8 @@ impl Station {
             self.db
                 .call(move |c| {
                     c.execute(
-                        "INSERT INTO eval_tasks(task_id, request, scope, state, created_at, updated_at) VALUES (?1, ?2, ?3, 'queued', ?4, ?4)",
-                        params![task_id2, req_s, scope_s, now],
+                        "INSERT INTO eval_tasks(owner, task_id, request, scope, state, created_at, updated_at) VALUES (?5, ?1, ?2, ?3, 'queued', ?4, ?4)",
+                        params![task_id2, req_s, scope_s, now, c.owner],
                     )?;
                     Ok(())
                 })
@@ -378,27 +379,27 @@ impl Station {
         let tasks: Vec<(String, String, String)> = self
             .db
             .call(|c| {
-                let mut stmt = c.prepare("SELECT task_id, request, scope FROM eval_tasks WHERE state='queued' ORDER BY created_at LIMIT 8")?;
-                let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<Result<Vec<_>, _>>()?;
+                let mut stmt = c.prepare("SELECT task_id, request, scope FROM eval_tasks WHERE state='queued' AND owner=?1 ORDER BY created_at LIMIT 8")?;
+                let rows = stmt.query_map(params![c.owner], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<Result<Vec<_>, _>>()?;
                 Ok(rows)
             })
             .await?;
         for (task_id, request, scope) in tasks {
             let request: EvalRequest = serde_json::from_str(&request)?;
             let id = task_id.clone();
-            self.db.call(move |c| Ok(c.execute("UPDATE eval_tasks SET state='running' WHERE task_id=?1", [id])?)).await?;
+            self.db.call(move |c| Ok(c.execute("UPDATE eval_tasks SET state='running' WHERE task_id=?1 AND owner=?2", params![id, c.owner])?)).await?;
             let outcome = self.evaluate_now(request, &scope).await;
             let now = now_ms();
             self.db
                 .call(move |c| {
                     match outcome {
                         Ok(r) => c.execute(
-                            "UPDATE eval_tasks SET state='done', result_ids=?2, updated_at=?3 WHERE task_id=?1",
-                            params![task_id, serde_json::to_string(&vec![r.result_id])?, now],
+                            "UPDATE eval_tasks SET state='done', result_ids=?2, updated_at=?3 WHERE task_id=?1 AND owner=?4",
+                            params![task_id, serde_json::to_string(&vec![r.result_id])?, now, c.owner],
                         )?,
                         Err(e) => c.execute(
-                            "UPDATE eval_tasks SET state='failed', error=?2, updated_at=?3 WHERE task_id=?1",
-                            params![task_id, e.to_string(), now],
+                            "UPDATE eval_tasks SET state='failed', error=?2, updated_at=?3 WHERE task_id=?1 AND owner=?4",
+                            params![task_id, e.to_string(), now, c.owner],
                         )?,
                     };
                     Ok(())
@@ -486,8 +487,8 @@ impl Station {
                 let tx = c.transaction()?;
                 let previous: Option<String> = tx
                     .query_row(
-                        "SELECT result_id FROM eval_records WHERE target_key=?1 AND profile_id=?2 AND superseded_by IS NULL ORDER BY iat DESC LIMIT 1",
-                        params![key2, profile2],
+                        "SELECT result_id FROM eval_records WHERE target_key=?1 AND profile_id=?2 AND superseded_by IS NULL AND owner=?3 ORDER BY iat DESC LIMIT 1",
+                        params![key2, profile2, tx.owner],
                         |r| r.get(0),
                     )
                     .optional()?;
@@ -495,8 +496,8 @@ impl Station {
                     result.supersedes = Some(previous.clone());
                 }
                 tx.execute(
-                    "INSERT INTO eval_records(result_id, target_key, target_kind, profile_id, profile_revision, dimensions, scope, state, iat, refresh_after, result)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    "INSERT INTO eval_records(owner, result_id, target_key, target_kind, profile_id, profile_revision, dimensions, scope, state, iat, refresh_after, result)
+                     VALUES (?12, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                     params![
                         result.result_id,
                         key2,
@@ -508,15 +509,16 @@ impl Station {
                         result.state,
                         result.iat as i64,
                         result.refresh_after.map(|v| v as i64),
-                        serde_json::to_string(&result)?
+                        serde_json::to_string(&result)?,
+                        tx.owner
                     ],
                 )?;
                 if let Some(previous) = previous {
-                    tx.execute("UPDATE eval_records SET superseded_by=?2 WHERE result_id=?1", params![previous, result.result_id])?;
+                    tx.execute("UPDATE eval_records SET superseded_by=?2 WHERE result_id=?1 AND owner=?3", params![previous, result.result_id, tx.owner])?;
                 }
                 tx.execute(
-                    "INSERT INTO eval_changes(target_key, result_id, kind, scope, at) VALUES (?1, ?2, 'result', ?3, ?4)",
-                    params![key2, result.result_id, scope, now_ms()],
+                    "INSERT INTO eval_changes(owner, target_key, result_id, kind, scope, at) VALUES (?5, ?1, ?2, 'result', ?3, ?4)",
+                    params![key2, result.result_id, scope, now_ms(), tx.owner],
                 )?;
                 tx.commit()?;
                 Ok(result)
@@ -570,7 +572,7 @@ impl Station {
 
     async fn bind_inner(&self, root: &str, inner: &str, requested_path: Option<&str>) -> HsResult<(EvalTarget, Option<Value>, Option<String>)> {
         let root = normalize_obj_id(root);
-        let obj = crate::objects::load_local(&self.db, self.chunks.as_ref(), &root).await?;
+        let obj = crate::objects::load_local(&self.db, &self.store, &root).await?;
         let mut resolution = json!({ "resolved_at": now_s(), "root_object_id": root, "inner_path": inner });
         if let Some(p) = requested_path {
             resolution["requested_path"] = json!(p);
@@ -589,7 +591,7 @@ impl Station {
     async fn content_evidence(&self, t: &EvalTarget) -> HsResult<Option<Evidence>> {
         let mut ev = Evidence::default();
         if let (Some(root), Some(inner)) = (&t.root_object_id, &t.inner_path) {
-            let Some(obj) = crate::objects::load_local(&self.db, self.chunks.as_ref(), root).await? else { return Ok(None) };
+            let Some(obj) = crate::objects::load_local(&self.db, &self.store, root).await? else { return Ok(None) };
             let Some(value) = json_pointer(&obj.body, inner) else { return Ok(None) };
             ev.text = match value {
                 Value::String(s) => s,
@@ -600,7 +602,7 @@ impl Station {
             return Ok(Some(ev));
         }
         let Some(id) = &t.object_id else { return Ok(None) };
-        let Some(obj) = crate::objects::load_local(&self.db, self.chunks.as_ref(), id).await? else { return Ok(None) };
+        let Some(obj) = crate::objects::load_local(&self.db, &self.store, id).await? else { return Ok(None) };
         ev.content_scope = "whole_content".into();
         match obj.obj_type.as_str() {
             OBJ_TYPE_FEED => {
@@ -651,7 +653,7 @@ impl Station {
 
     /// Text of a small text FileObject whose content is held locally.
     pub async fn text_of(&self, file_id: &str) -> HsResult<Option<String>> {
-        let Some(obj) = crate::objects::load_local(&self.db, self.chunks.as_ref(), file_id).await? else { return Ok(None) };
+        let Some(obj) = crate::objects::load_local(&self.db, &self.store, file_id).await? else { return Ok(None) };
         if obj.obj_type != OBJ_TYPE_FILE {
             return Ok(None);
         }
@@ -664,7 +666,7 @@ impl Station {
         if size > 2 * 1024 * 1024 || !crate::objects::is_chunk_id(chunk) {
             return Ok(None);
         }
-        let Some(data) = self.chunks.get_chunk(chunk).await? else { return Ok(None) };
+        let Some(data) = self.store.get_chunk(chunk).await? else { return Ok(None) };
         let mut text = String::from_utf8_lossy(&data).to_string();
         if mime == "text/html" {
             text = crate::spider::html_to_text(&text);
@@ -768,11 +770,11 @@ impl Station {
         let (objects, deliveries): (Vec<(String, String, String)>, i64) = self
             .db
             .call(move |c| {
-                let mut stmt = c.prepare("SELECT obj_id, text, tags FROM feed_index WHERE publisher=?1 AND iat>=?2 ORDER BY iat DESC LIMIT 200")?;
-                let rows = stmt.query_map(params![did2, from as i64], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<Result<Vec<_>, _>>()?;
+                let mut stmt = c.prepare("SELECT obj_id, text, tags FROM feed_index WHERE publisher=?1 AND iat>=?2 AND owner=?3 ORDER BY iat DESC LIMIT 200")?;
+                let rows = stmt.query_map(params![did2, from as i64, c.owner], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<Result<Vec<_>, _>>()?;
                 let deliveries: i64 = c.query_row(
-                    "SELECT COUNT(*) FROM inbox_receipts WHERE sender=?1 AND received_at>=?2",
-                    params![did2, (from * 1000) as i64],
+                    "SELECT COUNT(*) FROM inbox_receipts WHERE sender=?1 AND received_at>=?2 AND owner=?3",
+                    params![did2, (from * 1000) as i64, c.owner],
                     |r| r.get(0),
                 )?;
                 Ok((rows, deliveries))
@@ -875,23 +877,23 @@ impl Station {
             .call(move |c| {
                 let tx = c.transaction()?;
                 tx.execute(
-                    "UPDATE tag_overrides SET revoked_at=?5 WHERE target_key=?1 AND dimension=?2 AND tag=?3 AND scope=?4 AND revoked_at IS NULL",
-                    params![target_key, dimension, tag, scope, now],
+                    "UPDATE tag_overrides SET revoked_at=?5 WHERE target_key=?1 AND dimension=?2 AND tag=?3 AND scope=?4 AND revoked_at IS NULL AND owner=?6",
+                    params![target_key, dimension, tag, scope, now, tx.owner],
                 )?;
                 let id = match action {
                     Some(action) => {
                         let id = new_id("tov");
                         tx.execute(
-                            "INSERT INTO tag_overrides(id, target_key, dimension, tag, action, replacement, scope, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                            params![id, target_key, dimension, tag, action, replacement, scope, now],
+                            "INSERT INTO tag_overrides(owner, id, target_key, dimension, tag, action, replacement, scope, created_at) VALUES (?9, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                            params![id, target_key, dimension, tag, action, replacement, scope, now, tx.owner],
                         )?;
                         Some(id)
                     }
                     None => None,
                 };
                 tx.execute(
-                    "INSERT INTO eval_changes(target_key, result_id, kind, scope, at) VALUES (?1, NULL, 'override', ?2, ?3)",
-                    params![target_key, scope, now],
+                    "INSERT INTO eval_changes(owner, target_key, result_id, kind, scope, at) VALUES (?4, ?1, NULL, 'override', ?2, ?3)",
+                    params![target_key, scope, now, tx.owner],
                 )?;
                 tx.commit()?;
                 Ok(id)
@@ -910,7 +912,7 @@ impl Station {
                     return Ok(serde_json::to_value(r)?);
                 }
                 let task: Option<(String, String, Option<String>)> = c
-                    .query_row("SELECT state, result_ids, error FROM eval_tasks WHERE task_id=?1", [&id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                    .query_row("SELECT state, result_ids, error FROM eval_tasks WHERE task_id=?1 AND owner=?2", params![id, c.owner], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
                     .optional()?;
                 match task {
                     Some((state, ids, error)) => {
@@ -935,10 +937,10 @@ impl Station {
         self.db
             .call(move |c| {
                 let mut stmt = c.prepare(
-                    "SELECT cursor, target_key, result_id, kind, at FROM eval_changes WHERE cursor>?1 AND (scope='global' OR scope=?2) ORDER BY cursor LIMIT 200",
+                    "SELECT cursor, target_key, result_id, kind, at FROM eval_changes WHERE cursor>?1 AND (scope='global' OR scope=?2) AND owner=?3 ORDER BY cursor LIMIT 200",
                 )?;
                 let rows = stmt
-                    .query_map(params![since, scope], |r| {
+                    .query_map(params![since, scope, c.owner], |r| {
                         Ok(json!({ "cursor": r.get::<_, i64>(0)?, "target_key": r.get::<_, String>(1)?, "result_id": r.get::<_, Option<String>>(2)?, "kind": r.get::<_, String>(3)?, "at": r.get::<_, i64>(4)? }))
                     })?
                     .collect::<Result<Vec<_>, _>>()?;

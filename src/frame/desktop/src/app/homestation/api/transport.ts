@@ -64,8 +64,10 @@ async function httpError(response: Response): Promise<TransportError> {
   return new TransportError('protocol', `HTTP ${response.status}${text ? `: ${text.slice(0, 300)}` : ''}`)
 }
 
-const imports = new WeakMap<File, { sessionId: string; objId: string }>()
+const imports = new WeakMap<File, { sessionId: string; objId: string; bucketId: string; key: string }>()
 
+// An upload is bound, at finalize, where the HomeStation service says: a fresh key in the
+// user's `scratch` bucket (kept 7 days); publishing binds the object again in `published`.
 async function importAttachment(transport: Transport, endpoint: string, token: string, body: File | readonly File[], meta: UploadMeta, options: UploadOptions = {}): Promise<{ objId: ObjId }> {
   const files = Array.isArray(body) ? body : [body as File]
   if (!files.length) throw new Error('This browser cannot select an empty folder; use a directory drag-and-drop capable browser.')
@@ -73,17 +75,24 @@ async function importAttachment(transport: Transport, endpoint: string, token: s
   const first = files[0]
   let imported = imports.get(first)
   if (!imported) {
+    const target = await transport.call<{ bucketId: string; key: string }>('object.upload_target', { name: meta.name })
     const snapshot = await ndm.importFiles(files, { mode: meta.mime === 'application/x-directory' ? 'single_dir' : 'single_file', endpoint, sessionToken: token, signal: options.signal, autoStartUpload: false })
     const object = snapshot.items[0]
     if (!object) throw new Error('No file or folder was selected.')
-    imported = { sessionId: snapshot.sessionId, objId: object.objectId }
+    imported = { sessionId: snapshot.sessionId, objId: object.objectId, ...target }
     imports.set(first, imported)
   }
   const total = files.reduce((sum, file) => sum + file.size, 0)
-  const status = await ndm.ensureUploaded(imported.sessionId, { endpoint, sessionToken: token, signal: options.signal, onProgress: progress => options.onProgress?.(progress.uploadedBytes, total) })
-  if (status.objectStatus !== 'ready') throw new Error('Attachment object is not ready.')
+  const status = await ndm.ensureUploaded(imported.sessionId, {
+    endpoint,
+    sessionToken: token,
+    signal: options.signal,
+    onProgress: progress => options.onProgress?.(progress.uploadedBytes, total),
+    bind: { bucketId: imported.bucketId, key: imported.key, contentType: meta.mime },
+  })
+  if (status.objectStatus !== 'ready' || !status.binding) throw new Error('Attachment object is not ready.')
   options.signal?.throwIfAborted()
-  const result = await transport.call<{ objId: ObjId }>('object.register', { objId: imported.objId, metadata: meta })
+  const result = await transport.call<{ objId: ObjId }>('object.register', { objId: imported.objId, metadata: meta, key: imported.key })
   options.onProgress?.(total, total)
   ndm.releaseImportSession(imported.sessionId)
   imports.delete(first)

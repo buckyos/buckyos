@@ -21,7 +21,19 @@
     }
   ],
   "selector_type": "static",
-  "service_config_tips": {},
+  "service_config_tips": {
+    "buckets": {
+      "buffers": {
+        "kind": "data",
+        "data_policy": "app_data"
+      },
+      "recovery": {
+        "kind": "data",
+        "data_policy": "app_data"
+      }
+    },
+    "storage_quota_mib": 1024
+  },
   "content_handlers": [
     {
       "handler_id": "text",

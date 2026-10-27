@@ -3,6 +3,7 @@
 > RepoService 是 BuckyOS Content Network 的核心节点组件。  
 > 每个 OOD 节点运行一个 RepoService 实例。  
 > 它管理两样东西：**内容本体**（节点）和**内容的传播关系**（边），构成本节点对内容网络的局部视图。
+> 持久数据格式与“记录 ↔ 桶绑定”的一致性规则见 [Repo Service Durable Data Schema](Repo%20Service%20Durable%20Data%20Schema.md)：记录在 RDB `repo-service-main`，已持有内容的本体在 named store，由 zone 桶 `zone/repo-service/_/packages` 保留。
 
 ---
 
@@ -119,15 +120,16 @@ RepoService 管理的不仅是"我有哪些内容"，而是**每个内容在我�
 
 ### 3.1 本地内容管理
 
-#### `store(content_path) → ObjId`
+#### `store(content_id) → ObjId`
 
 创作者将自己创建的内容保存到 RepoService。
 
-- **输入**：内容实体在本地安全存储区的路径
+- **输入**：已写入本节点 named store 的内容 ObjId（`cyfile`、`cydir`，或包的 chunk / chunk list）
 - **行为**：
-  1. 计算内容哈希，得到 content_id（`ObjId`）
+  1. 校验内容在 named store 中完整
   2. 从内容中提取/构造 meta（含 owner DID、签名等）
-  3. 在 repo-db 中写入 objects 记录，origin = `local`，status = `pinned`
+  3. 绑定进桶 `zone/repo-service/_/packages`（key `<content_name>/<version>`，无版本的内容为 `<content_name>`；chunk 内容包成以包名命名的 FileObject 后绑定）
+  4. 在 repo-db 中写入 objects 记录，origin = `local`，status = `pinned`，`bucket_key` = 上述 key
 - **输出**：`ObjId`
 - **产生的证明**：无（创作者自己的内容不需要证明来源）
 - **原子性**：是
@@ -153,11 +155,11 @@ RepoService 管理的不仅是"我有哪些内容"，而是**每个内容在我�
 - **输入**：content_id，`download_action: ActionObject`
 - **前置条件**：
   1. repo-db 中已有该 content_id 的 collected 记录
-  2. 本地安全存储区中已存在该 content_id 对应的实体文件
+  2. 本节点 named store 中已有该 content_id 的完整内容（Downloader 下载完成）
 - **行为**：
-  1. 校验本地实体的哈希与 content_id 一致
+  1. 校验 named store 中内容完整（内容寻址，ObjId 即哈希）
   2. 校验 `download_action` 后写入 proofs 表
-  3. 更新 repo-db objects 记录 status = `pinned`
+  3. 先绑定进 `packages` 桶（同一 key 已绑定其他内容时报冲突，同一内容重复绑定视为重放），再更新 objects 记录 status = `pinned`、`bucket_key`；写记录失败时撤销本次新建的绑定
 - **输出**：成功/失败
 - **产生的证明**：落盘 download action
 - **原子性**：是
@@ -169,8 +171,8 @@ RepoService 管理的不仅是"我有哪些内容"，而是**每个内容在我�
 - **输入**：content_id，`force`
 - **行为**：
   1. 若 origin = `local`，返回警告（可能是全网唯一副本），需 force 参数确认
-  2. 删除本地存储区中的实体文件
-  3. 更新 repo-db objects 记录 status = `collected`
+  2. 更新 repo-db objects 记录 status = `collected`、`bucket_key` 置空
+  3. 删除桶绑定（之后内容是否回收由 named store GC 决定；删除失败留下的多余绑定由启动时对账清除）
 - **输出**：成功/失败
 - **产生的证明**：无（proofs 记录保留，不随 unpin 删除）
 - **原子性**：是
@@ -259,6 +261,7 @@ RepoService 管理的不仅是"我有哪些内容"，而是**每个内容在我�
 - **前置条件**：origin = `local`，content_name 已绑定
 - **行为**：调用 BNS 服务，将 content_meta 写入链上
 - **说明**：这是对 BNS 服务的封装调用，RepoService 自身不实现链上逻辑
+- **现状**：BNS 发布尚未接入；请求写入 RDB 表 `pending_announces`（按 content_id 去重，后到的请求覆盖前一个）
 
 ---
 
@@ -303,8 +306,8 @@ CREATE TABLE objects (
 
     -- === 本地存储信息 ===
 
-    -- 本地实体文件路径（status = pinned 时非空）
-    local_path      TEXT,
+    -- packages 桶中的 key（status = pinned 时非空）
+    bucket_key      TEXT,
 
     -- 实体大小（字节）
     content_size    INTEGER,
@@ -410,10 +413,10 @@ CREATE INDEX idx_receipt_buyer ON receipts(buyer_did);
 
 | 接口 | objects 表 | proofs 表 | receipts 表 | 产生的证明 |
 |------|-----------|-----------|-------------|-----------|
-| `store(path)` | INSERT (origin=local, status=pinned) | — | — | 无 |
+| `store(id)` | INSERT (origin=local, status=pinned, bucket_key)，之前绑定桶 | — | — | 无 |
 | `collect(meta, referral_action?)` | INSERT (origin=remote, status=collected) | INSERT shared action（若有） | — | referral_action |
-| `pin(id, download_action)` | UPDATE status=pinned | INSERT download action | — | download_action |
-| `unpin(id)` | UPDATE status=collected + 删除文件 | 不删除 | — | 无 |
+| `pin(id, download_action)` | UPDATE status=pinned, bucket_key，之前绑定桶 | INSERT download action | — | download_action |
+| `unpin(id)` | UPDATE status=collected，之后解除桶绑定 | 不删除 | — | 无 |
 | `uncollect(id)` | DELETE | 不删除（历史保留） | — | 无 |
 | `add_proof(proof)` | — | INSERT | — | 传入的 proof |
 | `serve(id, ctx)` | SELECT 校验 pinned | INSERT download action | SELECT 校验 receipt | download_action |
@@ -466,11 +469,11 @@ proofs 表的数据可被上层经济服务和信任服务读取，用于：
 │  经济模型服务     │ ◄──────────────────► │                  │
 │  信任模型服务     │  读取证明数据         └────────┬─────────┘
 └─────────────────┘                               │
-                                    content_ref   │ 本地文件读取
+                                    content_ref   │ 绑定 / 读取
                                     + proofs      │
                                                   ▼
 ┌─────────────────┐  下载完成          ┌───────────────────────┐
-│   Downloader    │ + download_action │   本地安全存储区         │
+│   Downloader    │ + download_action │ named store + packages 桶 │
 │                 │ ──────────────►   │                       │
 └────────┬────────┘                  └───────────────────────┘
          │                                      ▲
@@ -486,7 +489,7 @@ proofs 表的数据可被上层经济服务和信任服务读取，用于：
 **典型流程与证明产生：**
 
 **创作者发布内容：**
-store(local_path) → announce(content_id) → 无证明（自己的内容）
+内容写入 named store → store(content_id) → announce(content_id) → 无证明（自己的内容）
 
 **消费者发现内容（通过社交分享）：**
 A 分享给 B → A 创建 `ActionObject(action=shared)` → B 调用 `collect(meta, referral_action)` → shared action 落盘

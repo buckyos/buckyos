@@ -1,47 +1,173 @@
-//! Content-addressed object and chunk storage with CYFS identities.
+//! The Workspaces' objects: bytes and NamedObjects live in the zone's named store, and what a Workspace
+//! keeps is a binding in one of the service's application object buckets (doc/workspace
+//! `BuckyOS AiWorkspace Durable Data Schema.md`). Ids and encodings are those of ndn-lib (`type:hex`).
 //!
-//! Layout: `objects/<hex>.<obj_type>` (canonical NamedObject text) and
-//! `chunks/<hex>.mix256` (chunk bytes). Every write verifies that the id
-//! matches the content; every asset read re-verifies it.
-//!
-//! This is the storage boundary the named store plugs into (see the service
-//! README): ids, encodings and file names are those of ndn-lib.
+//! The store is synchronous like the rest of this crate: every named-store or bucket call runs on one
+//! process-wide runtime and the caller waits for it, so it can be used from blocking threads, plain test
+//! threads and async workers alike.
 
 use aiworkspace_core::canonical::{
-    self, chunk_id, chunk_len, file_object, obj_id_from_filename, obj_id_to_filename, parse_strict, ObjId, MAX_CHUNK_SIZE,
+    self, chunk_id, file_object, obj_id_to_filename, parse_strict, DirMember, ObjId, MAX_CHUNK_SIZE,
 };
 use aiworkspace_core::materialize::{ObjectSink, ObjectSource};
 use aiworkspace_core::{Code, WsError, WsResult};
-use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use bucket_store::{BucketDecl, BucketError, BucketId, BucketStore, Caller as BucketCaller, PutRequest, TokenRequest};
+use named_store::NamedDataMgr;
+use ndn_lib::{ChunkId, NdnError};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::future::Future;
+use std::path::Path;
+use std::sync::{Arc, Mutex, OnceLock};
+use tokio::io::AsyncReadExt;
 
-pub struct FsObjectStore {
-    root: PathBuf,
+/// The service's app id: its buckets are `user/aiworkspace/<owner>/<name>`.
+pub const APPID: &str = "aiworkspace";
+/// Assets (FileObjects) under `<ws>/<object_id>`.
+pub const ASSETS: &str = "assets";
+/// Retention DirObjects of snapshots (`<ws>/snapshot/<id>`) and generated versions (`<ws>/version/<epoch>/<seq>`).
+pub const OBJECTS: &str = "objects";
+/// Packages, replicas and fixed publications (7 days).
+pub const EXPORTS: &str = "exports";
+
+/// A bucket of the Workspace owner `owner`.
+pub fn bucket_id(owner: &str, name: &str) -> WsResult<String> {
+    BucketId::user(APPID, owner, name)
+        .map(|id| id.to_string())
+        .map_err(|_| WsError::new(Code::DependencyUnavailable, format!("{owner} has no {name} bucket")))
 }
 
-fn io(e: std::io::Error) -> WsError {
-    let code = if e.raw_os_error() == Some(28) { Code::StorageFull } else { Code::StorageIoError };
-    WsError::new(code, format!("object store: {e}"))
+/// Bindings as the service sees them (kRPC `bucket.*` at nfs-server in a Zone, the lib in-process otherwise).
+#[async_trait::async_trait]
+pub trait Buckets: Send + Sync {
+    /// Bind `obj_id` under `key`; the binding's version.
+    async fn put(&self, bucket: &str, key: &str, obj_id: &str) -> WsResult<u64>;
+    /// `(obj_id, version)` of the current binding, `None` when there is none.
+    async fn get(&self, bucket: &str, key: &str) -> WsResult<Option<(String, u64)>>;
+    /// Unbind; a missing key is fine.
+    async fn delete(&self, bucket: &str, key: &str) -> WsResult<()>;
+    /// A single-key read token (`bkt_…`) for the data plane, valid for `ttl_ms` from now (the bucket service's clock).
+    async fn read_token(&self, bucket: &str, key: &str, ttl_ms: i64) -> WsResult<String>;
 }
 
-/// Write-then-rename so a crash never leaves a half-written object under its id.
-pub fn write_atomic(path: &Path, bytes: &[u8]) -> WsResult<()> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(io)?;
+pub fn bucket_err(e: BucketError) -> WsError {
+    let code = match &e {
+        BucketError::QuotaExceeded(_) | BucketError::ObjectTooLarge { .. } => Code::StorageFull,
+        BucketError::ContentNotAvailable(_) | BucketError::ContentEvicted(_) | BucketError::NotHeld(_) => Code::DependencyUnavailable,
+        BucketError::BucketNotFound(_) | BucketError::NoSuchKey(_) => Code::NotFound,
+        _ => Code::StorageIoError,
+    };
+    WsError::new(code, format!("bucket: {e}"))
+}
+
+/// The bucket lib in this process (standalone servers without nfs-server, tests): buckets are created from
+/// the declarations on first use, like nfs-server does from the service spec.
+pub struct LocalBuckets {
+    store: Arc<BucketStore>,
+    decls: HashMap<String, BucketDecl>,
+    quota_mib: Option<u64>,
+    ensured: Mutex<HashSet<String>>,
+}
+
+impl LocalBuckets {
+    pub fn new(store: Arc<BucketStore>, decls: HashMap<String, BucketDecl>, quota_mib: Option<u64>) -> LocalBuckets {
+        LocalBuckets { store, decls, quota_mib, ensured: Mutex::new(HashSet::new()) }
     }
-    let tmp = path.with_extension(format!("tmp-{}", rand::random::<u64>()));
-    let mut f = fs::File::create(&tmp).map_err(io)?;
-    f.write_all(bytes).map_err(io)?;
-    f.sync_all().map_err(io)?;
-    fs::rename(&tmp, path).map_err(io)
+
+    fn bucket(&self, id: &str) -> WsResult<BucketId> {
+        let id: BucketId = id.parse().map_err(bucket_err)?;
+        let owner_key = format!("{}@{}", id.appid, id.owner);
+        if self.ensured.lock().unwrap().contains(&owner_key) {
+            return Ok(id);
+        }
+        for (name, decl) in &self.decls {
+            self.store.ensure_bucket(&BucketId::new(decl.scope, &id.appid, &id.owner, name).map_err(bucket_err)?, decl).map_err(bucket_err)?;
+        }
+        if self.decls.values().any(BucketDecl::needs_app_pool) {
+            self.store.set_declared_pool_quota(&id.appid, &id.owner, self.quota_mib.map(|m| m * 1024 * 1024)).map_err(bucket_err)?;
+        }
+        self.ensured.lock().unwrap().insert(owner_key);
+        Ok(id)
+    }
+}
+
+#[async_trait::async_trait]
+impl Buckets for LocalBuckets {
+    async fn put(&self, bucket: &str, key: &str, obj_id: &str) -> WsResult<u64> {
+        let id = self.bucket(bucket)?;
+        let req = PutRequest { key: key.to_string(), obj_id: obj_id.to_string(), ..Default::default() };
+        let r = self.store.put(&id, &BucketCaller::system(), req).await.map_err(bucket_err)?;
+        log::info!("bucket bind {bucket} key={key} obj_id={obj_id} version={}", r.version);
+        Ok(r.version)
+    }
+
+    async fn get(&self, bucket: &str, key: &str) -> WsResult<Option<(String, u64)>> {
+        let id = self.bucket(bucket)?;
+        match self.store.get(&id, &BucketCaller::system(), key, None).await {
+            Ok(b) if b.is_delete_marker => Ok(None),
+            Ok(b) => Ok(b.obj_id.map(|o| (o, b.version))),
+            Err(BucketError::NoSuchKey(_)) => Ok(None),
+            Err(e) => Err(bucket_err(e)),
+        }
+    }
+
+    async fn delete(&self, bucket: &str, key: &str) -> WsResult<()> {
+        let id = self.bucket(bucket)?;
+        match self.store.delete(&id, &BucketCaller::system(), key, None, None).await {
+            Ok(r) => {
+                log::info!("bucket unbind {bucket} key={key} version={:?}", r.version);
+                Ok(())
+            }
+            Err(BucketError::NoSuchKey(_)) => Ok(()),
+            Err(e) => Err(bucket_err(e)),
+        }
+    }
+
+    async fn read_token(&self, bucket: &str, key: &str, ttl_ms: i64) -> WsResult<String> {
+        let id = self.bucket(bucket)?;
+        let req = TokenRequest {
+            prefix: None,
+            key: Some(key.to_string()),
+            actions: [bucket_store::Action::Read].into_iter().collect(),
+            expires_at: bucket_store::now_ms() + ttl_ms,
+            max_uses: None,
+            bind_user_id: None,
+            bind_app_id: None,
+        };
+        Ok(self.store.create_access_token(&id, &BucketCaller::system(), req).await.map_err(bucket_err)?.token)
+    }
+}
+
+fn bridge() -> &'static tokio::runtime::Runtime {
+    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RT.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread().worker_threads(2).thread_name("aiws-objects").enable_all().build().expect("object store runtime")
+    })
+}
+
+/// Run `f` on the object store's runtime and wait for it (any thread).
+pub fn block_on<T: Send + 'static>(f: impl Future<Output = T> + Send + 'static) -> T {
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    bridge().spawn(async move {
+        let _ = tx.send(f.await);
+    });
+    rx.recv().expect("object store task failed")
+}
+
+fn ndn(e: NdnError) -> WsError {
+    match e {
+        NdnError::NotFound(m) => WsError::new(Code::DependencyUnavailable, format!("named store: {m} is missing")),
+        e => WsError::new(Code::StorageIoError, format!("named store: {e}")),
+    }
+}
+
+fn obj_id(id: &str) -> WsResult<ndn_lib::ObjId> {
+    ndn_lib::ObjId::new(id).map_err(|_| WsError::invalid_schema(format!("bad object id {id}")))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Availability {
     Available,
     Missing,
-    Corrupt,
 }
 
 impl Availability {
@@ -49,59 +175,66 @@ impl Availability {
         match self {
             Availability::Available => "available",
             Availability::Missing => "missing",
-            Availability::Corrupt => "corrupt",
         }
     }
 }
 
-impl FsObjectStore {
-    pub fn open(root: &Path) -> WsResult<FsObjectStore> {
-        fs::create_dir_all(root.join("objects")).map_err(io)?;
-        fs::create_dir_all(root.join("chunks")).map_err(io)?;
-        Ok(FsObjectStore { root: root.to_path_buf() })
+pub struct ObjectStore {
+    ndm: NamedDataMgr,
+    buckets: Arc<dyn Buckets>,
+}
+
+impl ObjectStore {
+    pub fn new(ndm: NamedDataMgr, buckets: Arc<dyn Buckets>) -> Arc<ObjectStore> {
+        Arc::new(ObjectStore { ndm, buckets })
     }
 
-    pub fn object_path(&self, id: &str) -> WsResult<PathBuf> {
-        let name = obj_id_to_filename(id).filter(|_| canonical::is_obj_id(id)).ok_or_else(|| WsError::invalid_schema(format!("bad object id {id}")))?;
-        Ok(self.root.join("objects").join(name))
+    /// A named store and a bucket index of its own under `dir` (standalone without nfs-server, tests).
+    pub fn embedded(dir: &Path, decls: HashMap<String, BucketDecl>, quota_mib: Option<u64>) -> WsResult<Arc<ObjectStore>> {
+        let dir = dir.to_path_buf();
+        block_on(async move {
+            std::fs::create_dir_all(&dir).map_err(|e| WsError::io(e.to_string()))?;
+            let local = named_store::NamedLocalStore::get_named_store_by_path(dir.join("named-store")).await.map_err(ndn)?;
+            let store_id = local.store_id().to_string();
+            let ndm = NamedDataMgr::new();
+            ndm.register_store(Arc::new(tokio::sync::Mutex::new(local))).await;
+            let target = named_store::StoreTarget { store_id, device_did: String::new(), capacity: None, used: None, readonly: false, enabled: true, weight: 1 };
+            ndm.add_layout(named_store::StoreLayout::new(1, vec![target], 0, 0)).await;
+            let index = bucket_store::IndexDb::open(&dir.join("bucket-index.db")).map_err(bucket_err)?;
+            let buckets = LocalBuckets::new(BucketStore::new(index, ndm.clone()), decls, quota_mib);
+            Ok(ObjectStore::new(ndm, Arc::new(buckets)))
+        })
     }
 
-    pub fn chunk_path(&self, id: &str) -> WsResult<PathBuf> {
-        let name = obj_id_to_filename(id).filter(|_| chunk_len(id).is_some()).ok_or_else(|| WsError::invalid_schema(format!("bad chunk id {id}")))?;
-        Ok(self.root.join("chunks").join(name))
+    pub fn named_store(&self) -> NamedDataMgr {
+        self.ndm.clone()
     }
 
     pub fn has_object(&self, id: &str) -> bool {
-        self.object_path(id).map(|p| p.exists()).unwrap_or(false)
+        let Ok(id) = obj_id(id) else { return false };
+        let ndm = self.ndm.clone();
+        block_on(async move { ndm.is_object_exist(&id).await.unwrap_or(false) })
     }
 
-    /// Remove an object or chunk file (the garbage collector's sweep); a missing file is fine.
-    pub fn remove(&self, id: &str) -> WsResult<u64> {
-        let path = if canonical::is_obj_id(id) { self.object_path(id)? } else { self.chunk_path(id)? };
-        match fs::metadata(&path) {
-            Ok(m) => {
-                fs::remove_file(&path).map_err(io)?;
-                Ok(m.len())
-            }
-            Err(_) => Ok(0),
+    /// Read-time diagnosis of an asset: the FileObject and every chunk it names are in the store.
+    pub fn availability(&self, file_object_id: &str) -> Availability {
+        let Ok(id) = obj_id(file_object_id) else { return Availability::Missing };
+        let ndm = self.ndm.clone();
+        match block_on(async move { ndm.is_object_stored(&id, None).await.unwrap_or(false) }) {
+            true => Availability::Available,
+            false => Availability::Missing,
         }
-    }
-
-    /// Seconds since the file of `id` was written (wall clock: the file system's time, not the service's).
-    pub fn age_secs(&self, id: &str) -> Option<i64> {
-        let path = if canonical::is_obj_id(id) { self.object_path(id).ok()? } else { self.chunk_path(id).ok()? };
-        let modified = fs::metadata(path).ok()?.modified().ok()?;
-        Some(std::time::SystemTime::now().duration_since(modified).map(|d| d.as_secs() as i64).unwrap_or(0))
     }
 
     /// Store canonical text under `id`, refusing content that does not hash to it.
     pub fn put_verified(&self, id: &str, text: &str) -> WsResult<()> {
         canonical::verify_named_object(id, text)?;
-        let path = self.object_path(id)?;
-        if !path.exists() {
-            write_atomic(&path, text.as_bytes())?;
-        }
-        Ok(())
+        self.put_text(id, text)
+    }
+
+    fn put_text(&self, id: &str, text: &str) -> WsResult<()> {
+        let (oid, text, ndm) = (obj_id(id)?, text.to_string(), self.ndm.clone());
+        block_on(async move { ndm.put_object(&oid, &text).await.map_err(ndn) })
     }
 
     pub fn put_chunk(&self, data: &[u8]) -> WsResult<ObjId> {
@@ -109,10 +242,9 @@ impl FsObjectStore {
             return Err(WsError::limit("files above 32 MiB need a chunk list, which this phase does not write"));
         }
         let id = chunk_id(data);
-        let path = self.chunk_path(&id)?;
-        if !path.exists() {
-            write_atomic(&path, data)?;
-        }
+        let chunk = ChunkId::new(&id).map_err(|_| WsError::invalid_schema(format!("bad chunk id {id}")))?;
+        let (data, ndm) = (data.to_vec(), self.ndm.clone());
+        block_on(async move { ndm.put_chunk(&chunk, &data).await.map_err(ndn) })?;
         Ok(id)
     }
 
@@ -125,107 +257,217 @@ impl FsObjectStore {
     }
 
     pub fn get_chunk(&self, id: &str) -> WsResult<Vec<u8>> {
-        let data = fs::read(self.chunk_path(id)?).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                WsError::new(Code::DependencyUnavailable, format!("chunk {id} is missing"))
-            } else {
-                io(e)
-            }
-        })?;
-        if chunk_id(&data) != id {
-            return Err(WsError::new(Code::DependencyUnavailable, format!("chunk {id} is corrupt")));
-        }
-        Ok(data)
+        let chunk = ChunkId::new(id).map_err(|_| WsError::invalid_schema(format!("bad chunk id {id}")))?;
+        let ndm = self.ndm.clone();
+        block_on(async move { ndm.get_chunk_data(&chunk).await.map_err(ndn) })
     }
 
-    /// The chunk id a FileObject points at.
+    /// The content (chunk or chunk list) a FileObject points at.
     pub fn file_chunk(&self, file_object_id: &str) -> WsResult<ObjId> {
         let v = parse_strict(&self.get_object(file_object_id)?)?;
         v["content"].as_str().map(str::to_string).ok_or_else(|| WsError::invalid_schema("file object without content"))
     }
 
-    /// Read-time diagnosis of an asset; it is not a persisted field.
-    pub fn availability(&self, file_object_id: &str) -> Availability {
-        let chunk = match self.file_chunk(file_object_id) {
-            Ok(c) => c,
-            Err(e) if e.code == Code::DependencyUnavailable => return Availability::Missing,
-            Err(_) => return Availability::Corrupt,
-        };
-        match self.get_chunk(&chunk) {
-            Ok(_) => Availability::Available,
-            Err(e) if e.detail.contains("missing") => Availability::Missing,
-            Err(_) => Availability::Corrupt,
-        }
+    /// Size a FileObject declares.
+    pub fn file_size(&self, file_object_id: &str) -> WsResult<u64> {
+        let v = parse_strict(&self.get_object(file_object_id)?)?;
+        Ok(v["size"].as_u64().unwrap_or(0))
     }
 
-    pub fn list_objects(&self) -> WsResult<Vec<ObjId>> {
-        let mut out = Vec::new();
-        for dir in ["objects", "chunks"] {
-            for entry in fs::read_dir(self.root.join(dir)).map_err(io)? {
-                let name = entry.map_err(io)?.file_name().to_string_lossy().to_string();
-                if let Some(id) = obj_id_from_filename(&name) {
-                    out.push(id);
+    /// The first `n` bytes of a file (media type sniffing).
+    pub fn file_head(&self, file_object_id: &str, n: u64) -> WsResult<Vec<u8>> {
+        let (id, ndm) = (obj_id(file_object_id)?, self.ndm.clone());
+        block_on(async move {
+            let (reader, _) = ndm.open_reader(&id, None).await.map_err(ndn)?;
+            let mut out = Vec::new();
+            reader.take(n).read_to_end(&mut out).await.map_err(|e| WsError::io(e.to_string()))?;
+            Ok(out)
+        })
+    }
+
+    /// Copy a file's bytes to `path` (a temporary file of the caller).
+    pub fn read_to_file(&self, file_object_id: &str, path: &Path) -> WsResult<u64> {
+        let (id, ndm, path) = (obj_id(file_object_id)?, self.ndm.clone(), path.to_path_buf());
+        block_on(async move {
+            let (mut reader, _) = ndm.open_reader(&id, None).await.map_err(ndn)?;
+            let mut file = tokio::fs::File::create(&path).await.map_err(|e| WsError::io(e.to_string()))?;
+            let n = tokio::io::copy(&mut reader, &mut file).await.map_err(|e| WsError::io(e.to_string()))?;
+            file.sync_all().await.map_err(|e| WsError::io(e.to_string()))?;
+            Ok(n)
+        })
+    }
+
+    /// Store a local file as a FileObject named `name` (chunk lists for large files).
+    pub fn store_file(&self, path: &Path, name: &str) -> WsResult<ObjId> {
+        let (path, name, ndm) = (path.to_path_buf(), name.to_string(), self.ndm.clone());
+        block_on(async move {
+            let mut template = ndn_lib::FileObject::default();
+            template.content_obj.name = name;
+            let store: &dyn ndn_toolkit::NamedObjectStore = &ndm;
+            let (_, id, _) = ndn_toolkit::cacl_file_object(
+                Some(store),
+                &path,
+                &template,
+                true,
+                &ndn_toolkit::CheckMode::ByFullHash,
+                ndn_lib::StoreMode::StoreInNamedMgr,
+                None,
+            )
+            .await
+            .map_err(ndn)?;
+            Ok(id.to_string())
+        })
+    }
+
+    pub fn bind(&self, bucket: &str, key: &str, obj_id: &str) -> WsResult<u64> {
+        let (b, bucket, key, obj_id) = (self.buckets.clone(), bucket.to_string(), key.to_string(), obj_id.to_string());
+        block_on(async move { b.put(&bucket, &key, &obj_id).await })
+    }
+
+    pub fn binding(&self, bucket: &str, key: &str) -> WsResult<Option<(String, u64)>> {
+        let (b, bucket, key) = (self.buckets.clone(), bucket.to_string(), key.to_string());
+        block_on(async move { b.get(&bucket, &key).await })
+    }
+
+    pub fn unbind(&self, bucket: &str, key: &str) -> WsResult<()> {
+        let (b, bucket, key) = (self.buckets.clone(), bucket.to_string(), key.to_string());
+        block_on(async move { b.delete(&bucket, &key).await })
+    }
+
+    pub fn read_token(&self, bucket: &str, key: &str, ttl_ms: i64) -> WsResult<String> {
+        let (b, bucket, key) = (self.buckets.clone(), bucket.to_string(), key.to_string());
+        block_on(async move { b.read_token(&bucket, &key, ttl_ms).await })
+    }
+
+    /// Bind a retention set: one DirObject naming every member (`<hex>.<type>` → id, time fields 0), so the
+    /// named store's cascade retains each of them — `jobj` members included, which a binding of their own
+    /// would not reach beyond themselves. Returns the DirObject's id and the binding's version.
+    pub fn retain(&self, bucket: &str, key: &str, members: &BTreeMap<ObjId, u64>) -> WsResult<(ObjId, u64)> {
+        let list: Vec<DirMember> = members
+            .iter()
+            .filter_map(|(id, size)| {
+                obj_id_to_filename(id).map(|name| DirMember { name, object_id: id.clone(), size: *size, is_file: id.starts_with("cyfile:") })
+            })
+            .collect();
+        let (id, text) = canonical::dir_object(&list)?;
+        self.put_verified(&id, &text)?;
+        let version = self.bind(bucket, key, &id)?;
+        Ok((id, version))
+    }
+
+    /// Bytes of a file a NamedObject names, as `members` of a retention set wants them sized.
+    fn member_size(&self, id: &str) -> WsResult<u64> {
+        let text = self.get_object(id)?;
+        if id.starts_with("cyfile:") {
+            return Ok(parse_strict(&text)?["size"].as_u64().unwrap_or(0));
+        }
+        Ok(text.len() as u64)
+    }
+
+    /// Add an object (when stored) and its size to a retention set.
+    pub fn add_member(&self, id: &str, out: &mut BTreeMap<ObjId, u64>) -> WsResult<bool> {
+        if out.contains_key(id) {
+            return Ok(true);
+        }
+        if !self.has_object(id) {
+            return Ok(false);
+        }
+        out.insert(id.to_string(), self.member_size(id)?);
+        Ok(true)
+    }
+
+    /// The retention set of one entity content object: the object, its record / document files, the
+    /// DirObject of a directory and the asset it references (when stored).
+    pub fn entity_members(&self, object_id: &str, type_id: &str, out: &mut BTreeMap<ObjId, u64>) -> WsResult<()> {
+        if !self.add_member(object_id, out)? {
+            return Ok(());
+        }
+        let content = parse_strict(&self.get_object(object_id)?)?;
+        let c = &content["content"];
+        for f in [c["records"]["file"].as_str(), c["doc"]["file"].as_str(), c["dir_object"].as_str()].into_iter().flatten() {
+            self.add_member(f, out)?;
+        }
+        if let Some(payload) = c.as_object() {
+            if let Some(a) = aiworkspace_core::types::asset_object_id(type_id, payload) {
+                self.add_member(a, out)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The retention set of a content root: the root, its entities file and every entity it lists.
+    pub fn content_members(&self, content_root: &str, out: &mut BTreeMap<ObjId, u64>) -> WsResult<()> {
+        if !self.add_member(content_root, out)? {
+            return Ok(());
+        }
+        let root = parse_strict(&self.get_object(content_root)?)?;
+        if let Some(f) = root["entities"]["file"].as_str() {
+            self.add_member(f, out)?;
+            let text = String::from_utf8(self.get_file(f)?).map_err(|_| WsError::invalid_schema("entities file is not UTF-8"))?;
+            for line in text.lines().filter(|l| !l.is_empty()) {
+                let e = parse_strict(line)?;
+                if let Some(obj) = e["object_id"].as_str() {
+                    self.entity_members(obj, e["type_id"].as_str().unwrap_or(""), out)?;
                 }
             }
         }
-        out.sort();
-        Ok(out)
+        Ok(())
     }
 }
 
-impl ObjectSource for FsObjectStore {
+impl ObjectSource for ObjectStore {
     fn get_object(&self, id: &str) -> WsResult<String> {
-        let text = fs::read_to_string(self.object_path(id)?).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                WsError::new(Code::DependencyUnavailable, format!("object {id} is missing"))
-            } else {
-                io(e)
-            }
-        })?;
-        canonical::verify_named_object(id, &text)?;
-        Ok(text)
+        let (oid, ndm) = (obj_id(id)?, self.ndm.clone());
+        block_on(async move { ndm.get_object(&oid).await.map_err(ndn) })
     }
     fn get_file(&self, file_object_id: &str) -> WsResult<Vec<u8>> {
-        self.get_chunk(&self.file_chunk(file_object_id)?)
+        let (id, ndm) = (obj_id(file_object_id)?, self.ndm.clone());
+        block_on(async move {
+            let (mut reader, _) = ndm.open_reader(&id, None).await.map_err(ndn)?;
+            let mut out = Vec::new();
+            reader.read_to_end(&mut out).await.map_err(|e| WsError::new(Code::DependencyUnavailable, format!("file {}: {e}", id.to_string())))?;
+            Ok(out)
+        })
     }
 }
 
-/// A sink writing into the store and remembering what it wrote (the closure of a snapshot).
+/// A sink writing into the store. What it writes is retained by the binding its caller makes in the same
+/// function (a snapshot's or a version's retention set, a staged asset).
 pub struct StoreSink<'a> {
-    pub store: &'a FsObjectStore,
-    pub written: Vec<ObjId>,
-    pub chunks: Vec<ObjId>,
+    pub store: &'a ObjectStore,
 }
 
 impl<'a> StoreSink<'a> {
-    pub fn new(store: &'a FsObjectStore) -> Self {
-        StoreSink { store, written: Vec::new(), chunks: Vec::new() }
+    pub fn new(store: &'a ObjectStore) -> Self {
+        StoreSink { store }
     }
 }
 
 impl ObjectSink for StoreSink<'_> {
     fn put_object(&mut self, obj_type: &str, canonical_text: &str) -> WsResult<ObjId> {
         let id = canonical::build_obj_id(obj_type, canonical_text);
-        let path = self.store.object_path(&id)?;
-        if !path.exists() {
-            write_atomic(&path, canonical_text.as_bytes())?;
-            // only what this sink wrote anew: a rolled-back transaction removes exactly these
-            self.written.push(id.clone());
-        }
+        self.store.put_text(&id, canonical_text)?;
         Ok(id)
     }
     fn put_file(&mut self, bytes: &[u8]) -> WsResult<ObjId> {
         let chunk = self.store.put_chunk(bytes)?;
         let (id, text) = file_object(bytes.len() as u64, &chunk)?;
-        let stored = self.put_object(canonical::OBJ_TYPE_FILE, &text)?;
-        debug_assert_eq!(id, stored);
-        self.chunks.push(chunk);
-        Ok(stored)
+        self.put_object(canonical::OBJ_TYPE_FILE, &text)?;
+        Ok(id)
     }
 }
 
 /// Media type from magic bytes — never from what the client claims.
 pub fn sniff_media_type(data: &[u8]) -> &'static str {
+    sniff(data, std::str::from_utf8(data).is_ok())
+}
+
+/// [`sniff_media_type`] of the first bytes of a longer file: a character cut at the end is still text.
+pub fn sniff_prefix(head: &[u8]) -> &'static str {
+    sniff(head, std::str::from_utf8(head).map(|_| true).unwrap_or_else(|e| e.error_len().is_none()))
+}
+
+fn sniff(data: &[u8], utf8: bool) -> &'static str {
     match data {
         [0x89, b'P', b'N', b'G', ..] => "image/png",
         [0xff, 0xd8, 0xff, ..] => "image/jpeg",
@@ -233,7 +475,7 @@ pub fn sniff_media_type(data: &[u8]) -> &'static str {
         [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => "image/webp",
         [b'%', b'P', b'D', b'F', ..] => "application/pdf",
         [b'P', b'K', 3, 4, ..] => "application/zip",
-        _ if std::str::from_utf8(data).is_ok() => {
+        _ if utf8 => {
             if data.iter().take(256).any(|b| *b == b'<') && String::from_utf8_lossy(&data[..data.len().min(256)]).contains("<svg") {
                 "image/svg+xml"
             } else {

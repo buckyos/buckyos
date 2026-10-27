@@ -114,7 +114,7 @@ export default defineConfig(() => {
         // listed first: more specific than the zone proxy's /kapi
         ...(aiwsTarget ? { '/kapi/aiworkspace': { target: aiwsTarget, changeOrigin: true } } : {}),
         ...hsProxy,
-        ...(nfsTarget ? { '/nfs/v1': { target: nfsTarget, changeOrigin: true }, '/ndm': { target: nfsTarget, changeOrigin: true } } : {}),
+        ...(nfsTarget ? { '/nfs/v1': { target: nfsTarget, changeOrigin: true }, '/ndm': { target: nfsTarget, changeOrigin: true }, '/bucket/v1': { target: nfsTarget, changeOrigin: true } } : {}),
         ...zoneProxy,
       },
     },
@@ -123,7 +123,7 @@ export default defineConfig(() => {
     preview: {
       proxy: {
         ...(aiwsTarget ? { '/kapi/aiworkspace': { target: aiwsTarget, changeOrigin: true } } : {}),
-        ...(nfsTarget ? { '/nfs/v1': { target: nfsTarget, changeOrigin: true }, '/ndm': { target: nfsTarget, changeOrigin: true } } : {}),
+        ...(nfsTarget ? { '/nfs/v1': { target: nfsTarget, changeOrigin: true }, '/ndm': { target: nfsTarget, changeOrigin: true }, '/bucket/v1': { target: nfsTarget, changeOrigin: true } } : {}),
         ...hsProxy,
       },
     },

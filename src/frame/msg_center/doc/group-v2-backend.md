@@ -84,7 +84,7 @@ inbox PUT 的 body 为 canonical MsgObject JSON 或 `application/cyfs-named-obje
 
 inbox GET 使用 after_seq/limit，返回 seq、obj_id、redacted；默认实现还返回 accepted_at_ms 供本地投影使用 host 排序。changes 使用 reader-bound opaque token，不暴露 group_seq；未知/过期 token 返回 limited。退群、移除、Session 删除和群删除保留当事人的最小通知，不能借此读取消息正文。
 
-read_markers 的标准 body 为 `{ "session": "群的规范 MailboxAddress", "last_read_seq": 42 }`。默认实现也接受原始 session_id/null。附件必须携带 `context_path=<规范群 Session 地址>/<消息 ObjectId>`；host 校验该消息可读且实际引用了目标对象，再交给 NamedStore/CYFS 获取。
+read_markers 的标准 body 为 `{ "session": "群的规范 MailboxAddress", "last_read_seq": 42 }`。默认实现也接受原始 session_id/null。附件必须携带 `context_path=<规范群 Session 地址>/<消息 ObjectId>`；host 校验该消息可读、实际引用了目标对象，且该消息在 `zone/msg-center/_/attachments` 的绑定（`<session>/<msg_id>/<n>`）持有它，再从 NamedStore 读取。
 
 公开资料有额外 GET `/<group_did>/doc`（ObjectId+Doc）和 `/<group_did>/did.json`（Doc 内容）入口。GroupDoc 来源于配置，包含 group DID context 和 iat，不作为规则来源。创建、公开配置/Owner 改变、归档和删除均在本地事务中登记发布待办；后台通过 system-config 原子发布 Zone resolver 的 group 类型文档或 tombstoned 状态，失败后重试。
 

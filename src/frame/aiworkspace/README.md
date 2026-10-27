@@ -12,7 +12,7 @@ core/      aiworkspace-core   pure logic, builds for wasm32-unknown-unknown (no 
                               anchor.rs: annotation anchors (target / range / quote) and per-type anchor adapters;
                               freshness.rs: dependency-based freshness and relation queries (shared with the replica);
                               wish.rs: wish v2 contracts and digests; markdown.rs: Markdown ⇄ rich text
-store/     aiworkspace-store  SQLite storage, object store, packages, Mock runs, URL sources;
+store/     aiworkspace-store  SQLite storage, objects in the named store retained by bucket bindings, packages, Mock runs, URL sources;
                               wish/: snapshot, context map, read tools, result collector, planner, run records
 server/    aiworkspace        process entry, kRPC dispatch, upload/download routes, auth;
                               wish/: run orchestration, xllm adapter and host tools, Deno program runner, llm.map
@@ -40,21 +40,28 @@ aiworkspace --data-dir /tmp/aiws-data --listen 127.0.0.1:4120 --auth-file /tmp/a
 ```
 
 BuckyOS service mode (no `--data-dir`): logs in through buckyos-api as kernel service `aiworkspace`,
-keeps Workspace folders under the service data folder, listens on port 4120, is reached through the
-generic gateway route `/kapi/aiworkspace`. Every request is authenticated by the service itself
+keeps Workspace folders under the service data folder and objects in the node's named store, retained by
+the service's buckets at nfs-server (`spec_config.buckets`, see Storage), listens on port 4120, is reached
+through the generic gateway route `/kapi/aiworkspace`. Every request is authenticated by the service itself
 (verify-hub session token); the gateway does not do it.
 
 `AIWS_FAILPOINT=before_txn|in_txn|after_commit[:abort][:N]` injects a fault into the N-th commit.
 
-Named-object imports in standalone mode require `--named-store-config <json>` and `--ndm-gateway <origin>` together. The config uses NamedDataMgr's `stores` array; both the NDM gateway and AIWorkspace must access that store. Service mode resolves both through the BuckyOS runtime. The Desktop Playwright backend starts an isolated NFS/NDM process and supplies these options automatically.
+Standalone objects: `--nfs-server <origin> --named-store-config <json>` use a standalone nfs-server started with
+`--named-store <dir> --bucket-specs <json>` (the specs declare the `aiworkspace` buckets of `buckyos_api::aiworkspace_bucket_decls`;
+the config is NamedDataMgr's `stores` array on that same directory). It is the NDM gateway of uploads and the `/bucket/v1`
+data plane of downloads. Without `--nfs-server` the data folder gets a named store and a bucket index of its own (`store/`):
+everything but NDM uploads and bucket downloads works (the Rust tests). The Desktop Playwright backend
+(`tests/aiworkspace/start-backend.mjs`) starts the nfs-server and supplies these options; the server tests start one in-process
+(`server/tests/common/nfs.rs`).
 
 ## File and folder imports
 
-The Desktop imports through WebSDK NDM and waits for object readiness, then calls `asset.import_object { workspace_id, obj_id }` for each FileObject. AIWorkspace checks workspace update/structure access and authorizes the object at the trusted NDM gateway using the original caller token. It reads the complete FileObject, including ChunkList content, locally from NamedStore and stages it in the existing workspace ObjectStore. The response retains the workspace `object_id` and adds `source_obj_id`; the two IDs are not interchangeable. This preserves AssetRef reads, package export, replica bootstrap and offline synchronization. The per-asset limit remains 32 MiB, including each leaf of a directory.
+Nothing is copied: the FileObject the browser uploaded is the asset (`object_id` is its id). A single file is uploaded through WebSDK NDM with `bind` into the caller's own `user/aiworkspace/<user>/assets` (key `<workspace_id>/<object_id>`), then `asset.import_object { workspace_id, bucket_id, key }` registers it: the service reads the binding (`bucket.get`), checks workspace update/structure access, binds the object under `<workspace_id>/<object_id>` in the Workspace owner's `assets` bucket (a collaborator's upload moves there and its own key goes) and lists it as staged. A folder or several files are uploaded without `bind` (NDM's 24 h hold covers them) and each FileObject is registered with `asset.import_object { workspace_id, obj_id }`: the service authorizes the object at the trusted NDM gateway with the caller's own token, then binds it. The per-asset limit remains 32 MiB, including each leaf of a directory.
 
 Directory roots and descendants become `buckyos.container` folders, and files become AssetRefs in one normal business commit. A canvas import also creates corresponding groups and asset cells. Online imports may be cancelled; after failure or refresh, reselecting the source uses NDM deduplication. There is no offline upload queue or automatic recovery of browser File handles. FileList-based folder pickers cannot enumerate empty folders; callers with an explicit directory tree can preserve them through the SDK. draw.io and workspace ZIP retain their format validation, while image replacement and generated snapshots use the same asset stage/commit semantics.
 
-The existing binary staging API remains available to service/fixture producers and format-specific workspace ZIP import. Staging sessions bind kind, caller and target workspace, persist under `staging/<upload_id>.upload.json`, expire after 24 hours and are swept every minute. The submission intent is persisted before the business operation; a failed finish retains its bytes for a same-parameter retry, and an accepted finish records its result before removing bytes. Repeating identical parameters recovers the same result, including after restart; different parameters are rejected. Workspace imports additionally store per-upload receipts with the committed workspace and preserve them across later restores, so replaying an older upload cannot undo newer work. A restore journal recovers interruption between backing up the old directory and promoting the new one. Restore holds the workspace writer lock while rechecking permission, copying ACLs and replacing its state; queued writers observe the new epoch. Final asset submission rechecks current workspace permission.
+Bytes the service produces itself (Source fetches, wish results and program sources, the assets a package brings, test fixtures) are staged by `Workspace::stage_asset`: stored as the single-chunk FileObject of `canonical::file_object` and bound the same way. A workspace package is uploaded with `bind` into the importer's own `exports` bucket and imported with `ws.import { bucket_id, key, semantics, replace? }`; a successful import consumes the package (its binding goes), so the same upload cannot be replayed onto newer work. A restore journal recovers interruption between backing up the old directory and promoting the new one. Restore holds the workspace writer lock while rechecking permission, copying ACLs and replacing its state; queued writers observe the new epoch; the restored Workspace keeps its owner (whose buckets hold its objects). Final asset submission rechecks current workspace permission.
 
 ## Tests
 
@@ -106,7 +113,7 @@ and gets an addressable version in `entity_versions` at every application. Fresh
 A result the user keeps against a later run ("保留人工修改") is re-recorded with that run's read set and `kept_manual: true`, so the wish is current again without regenerating it.
 those versions with the cells now: `current | stale | upstream_stale | unavailable | unknown`.
 
-Format version is `1.0` (内核架构改进 FORMAT 1.0: `schema_id`, the resource directory, the reference catalogue with `mode` / `integrity` and `owns`, the pure-application log, `$formula`, the `run` capability, delegation fields, the usage and retention ledgers, `user_state.revision`, `base_seq`; protocol `1.0`). Stores and packages of an older format are refused with `UNSUPPORTED_VERSION` (no migration). From 1.0 on, an incompatible change of the format needs an explicit conversion (D07); within 1.0 only additions an older implementation can ignore are allowed.
+Format version is `1.0` (内核架构改进 FORMAT 1.0: `schema_id`, the resource directory, the reference catalogue with `mode` / `integrity` and `owns`, the pure-application log, `$formula`, the `run` capability, delegation fields, the usage ledger, `user_state.revision`, `base_seq`; protocol `1.0`). Stores and packages of an older format are refused with `UNSUPPORTED_VERSION` (no migration). From 1.0 on, an incompatible change of the format needs an explicit conversion (D07); within 1.0 only additions an older implementation can ignore are allowed.
 
 ## Presentation (第三期规划 §4–§6, §8, §11)
 
@@ -150,7 +157,7 @@ paths and Viewports and nothing else; neither type is allowed anywhere else (`pl
 - With `live` (and write access) the show gets a temporary clone: `doc.sqlite` and `local.sqlite` are copied with
   `VACUUM INTO` inside the Workspace's writer, identity rewritten (`workspace_meta.purpose = show`, source, show id),
   grants and wish runs kept (run folders hard-linked, active runs marked interrupted), locks, uploads and user state
-  dropped. Objects are content-addressed in the service's store and shared, not copied (10,000 × 20 table: ~45 ms,
+  dropped. Objects are in the named store and the clone reads them through the source's bindings, nothing is copied or bound again (10,000 × 20 table: ~45 ms,
   release build). A clone is not listed by `ws.list`, cannot be prepared for offline or presented itself.
 - The relay, the lock and the clones live in memory: the lease is 60 s (`AIWS_SHOW_LEASE_MS` shortens it for tests);
   a sweeper ends shows that were not renewed (lock released, clone deleted); a restarted service drops every clone left
@@ -241,31 +248,38 @@ Deno: `deno` setting → `AIWS_DENO` → `$BUCKYOS_ROOT/libexec/buckyos-tool/run
 
 ## Storage
 
+Durable data schema: [BuckyOS AiWorkspace Durable Data Schema](<../../../doc/workspace/BuckyOS AiWorkspace Durable Data Schema.md>).
+
 ```text
 <data>/workspaces/<workspace_id>/doc.sqlite     the portable document (design §4.2)
 <data>/workspaces/<workspace_id>/local.sqlite   grants, share entries, locks, runs, staged uploads — never exported
-<data>/workspaces/<workspace_id>/staging/       export packages, replica databases
-<data>/objects/{objects,chunks}/                content-addressed NamedObjects and chunks (CYFS ids)
-<data>/trash/                                   deleted / replaced Workspaces
+<data>/workspaces/<workspace_id>/runs/, cache/  wish run working folders, the llm.map cache
+<data>/trash/                                   deleted / replaced Workspaces (30 days)
+named store                                     every object: assets, snapshots, versions, packages (CYFS ids)
+user/aiworkspace/<owner>/assets   (data, app_data)  <ws>/<object_id>                  staged and referenced assets
+user/aiworkspace/<owner>/objects  (data, app_data)  <ws>/snapshot/<id>, <ws>/version/<epoch>/<seq>   retention sets
+user/aiworkspace/<owner>/exports  (data, temp 7 d)  <ws>/export/<id>.bcanvas, <ws>/replica/<id>.sqlite, <ws>/fixed/<root>
 ```
 
-**Retention, quota and the collector (内核架构改进 D06, D19).** Every object or chunk is kept while a root reaches it:
-an asset an alive entity references (`assets.ended_seq IS NULL`), a history-only asset inside its retention period
-(`history_retention_days`, 30 by default; `ws.purge_deleted` ends it at once), generated entity versions, snapshots
-with a `retentions` row (checkpoints, exports, show clones), unexpired staged uploads, and every Workspace in
-`trash/` for 30 days. The collector (`Service::gc`, hourly, `diag.gc`) marks from those roots through the objects'
-own references and sweeps the rest once it is an hour old (an upload about to be referenced is never swept). The
-`usage` ledger (`ws.get_info.usage`: `content`, `assets`, `exports`, `clones`, `staged`) moves with every
-transaction; with a quota (`quota_bytes`) a Commit, an upload, an export or a show clone that would pass it is
-refused with `QUOTA_EXCEEDED` (retryable: the maintenance methods can release enough) or `QUOTA_LIMIT`, with
-`data { needed_bytes, reclaimable_bytes, quota_bytes, used_bytes, owner }`. The maintenance methods above are
-accepted over quota. An undo or version restore that needs a reclaimed resource answers `RESOURCE_RECLAIMED`.
+**Retention and quota (内核架构改进 D06, D19).** What a Workspace keeps is a binding in its owner's buckets; the
+named store reclaims what no binding holds. An asset is bound from its upload on: while staged (24 h unless a Commit
+references it), while an alive entity references it (`assets.ended_seq IS NULL`) and through its retention period as
+history (`history_retention_days`, 30 by default); `ws.purge_deleted` ends it at once. Every snapshot (checkpoints, exports,
+fork sources, import checks) and the versions a Commit generates are bound as one **retention set**: a DirObject naming every
+object of their closure, so the named store's cascade (which follows Dir / File / ChunkList, not `jobj`) keeps all of it.
+`ws.delete_checkpoint` / `ws.release_retention` unbind; the hourly sweep (`Service::sweep`) unbinds expired uploads and
+history and, after 30 days, what a trashed Workspace held. The `usage` ledger (`ws.get_info.usage`: `content`, `assets`,
+`clones`, `staged`) moves with every transaction; with a quota (`quota_bytes`) a Commit, an upload, an export or a show clone
+that would pass it is refused with `QUOTA_EXCEEDED` (retryable: the maintenance methods can release enough) or `QUOTA_LIMIT`,
+with `data { needed_bytes, reclaimable_bytes, quota_bytes, used_bytes, owner }`. The maintenance methods above are accepted
+over quota. An undo or version restore that needs a released asset answers `RESOURCE_RECLAIMED`. The service's buckets also
+count on the owner's app pool (`storage_quota_mib`).
 
 **Shows (D17).** A clone judges access by the grants of the Workspace it was cloned from as they are now
 (revoking there ends the audience's access here); any write right, a subtree's included, locks the Workspace
 for the show; a Workspace runs at most 4 clones at once and each counts on its quota (`clones`).
 
-`storage_schema_version` is 4 (FORMAT 1.0: `commit_deltas`, `retentions`, `usage`, `user_state.revision`, `refs.mode` / `integrity`, `entities.schema_id`, `grants.task_digest` / `outputs_json`); folders of an older version are refused, not migrated —
+`storage_schema_version` is 5 (FORMAT 1.0: `commit_deltas`, `usage`, `user_state.revision`, `refs.mode` / `integrity`, `entities.schema_id`, `grants.task_digest` / `outputs_json`; 5: `bucket_key` / `bucket_version` on `assets`, `snapshots`, `entity_versions` and `staged_assets`, no `retentions`); folders of an older version are refused, not migrated —
 reinstall the data of a development Zone.
 
 One writer per Workspace (a mutex around its connections); a Commit is planned on an overlay,
@@ -294,7 +308,7 @@ an **account** (principal = user id; *restricted* when its session carries a cei
 token is checked with `verify_session_token_opened(token, aiworkspace)` — a restricted session without the
 `aiworkspace` scope is refused before anything else; the class comes from the claims (`principal_kind`, `external`,
 `restricted`, `auth_method`), never from the shape of the principal. Restricted accounts, Externals and guests own
-nothing: `ws.create`, `ws.import`, `ws.begin_import`, `ws.fork` and `ws.list_subjects` refuse them
+nothing: `ws.create`, `ws.import`, `ws.fork` and `ws.list_subjects` refuse them
 (`session_kind_not_allowed`); `ws.list` shows them only Workspaces granted to them (by name, group, contact or a joined
 entry — never through `public` or `*`).
 
@@ -314,8 +328,8 @@ groups; its DID from `users/<id>/doc`) and msg-center. A membership that cannot 
 `authorization_unavailable` unless the caller already holds every capability; nothing is cached. A show's notes are read
 with the presenter's memberships settled again at each `show.notes`.
 
-**Guests.** A link's visitor has no session: `sys[1]` (or the bearer of the upload / asset / export
-routes) carries a guest token instead, `gt_` + 26 base32 chars the browser made up and keeps. The caller is
+**Guests.** A link's visitor has no session: `sys[1]` (or the bearer of the asset route) carries a guest
+token instead, `gt_` + base64url of 32 random bytes (`name_lib::bearer_token` form) the browser made up and keeps. The caller is
 then `guest:<26 chars>` (derived from the token's SHA-256, never the token itself), reaches the grants of subject
 `public` and the active entries open to guests (as everyone does), and cannot own anything. `ws.get_info` returns `principal` so a guest
 learns who it is.
@@ -464,9 +478,9 @@ lands. The list is `server/src/lib.rs` `METHOD_LEVELS`; this table mirrors it.
 | `entry.describe` | stable | `entry_id` only, no session → `EntryDescription` |
 | `ws.get_user_state` / `ws.set_user_state` | stable | `entries: { key: value \| null }` — user work state per subject and Workspace in `local.sqlite`; never a Commit |
 | `ws.set_wish_aicc` | stable | `mode: workspace_owner \| current_user` — whose AI resources wish runs started here use (`manage`; AI Center Quota PRD §3.3) |
-| `ws.begin_import` → PUT → `ws.import` | stable | `upload_id`, `semantics: "restore" \| "new"`, `replace?` |
-| `ws.release_retention` | stable | maintenance (`manage`, D19): `kind`, `ref` — end a retention root (`snapshot`, `export`, `clone`, `staged`) |
-| `ws.delete_checkpoint` | stable | maintenance (`manage`): `snapshot_id` — the snapshot and its retention go; the collector reclaims what nothing else holds |
+| `ws.import` | stable | `bucket_id` + `key` (the package the caller bound into its own `user/aiworkspace/<user>/exports`; a successful import consumes it) or `obj_id` (an unbound FileObject the caller may read, judged at the NDM gateway), `semantics: "restore" \| "new"`, `replace?` |
+| `ws.release_retention` | stable | maintenance (`manage`, D19): `kind`, `ref` — unbind what holds a `snapshot`, an `export` package or an unreferenced `staged` upload → `released` |
+| `ws.delete_checkpoint` | stable | maintenance (`manage`): `snapshot_id` — the snapshot row goes and its retention set is unbound; the named store reclaims what no binding holds |
 | `ws.purge_deleted` | stable | maintenance (`manage`): `entity_ids?` (default: every deleted entity) — content and references are given up for good (`entity.purge`), resources are reclaimable at once, undo and version restore answer `RESOURCE_RECLAIMED`, Block state is cleared |
 | `ws.clear_staged` | stable | maintenance (`manage`): staged uploads nobody referenced go, expired or not |
 | `doc.outline` | internal | — all readable entity envelopes in tree order |
@@ -486,10 +500,9 @@ lands. The list is `server/src/lib.rs` `METHOD_LEVELS`; this table mirrors it.
 | `doc.undo` | stable | `epoch`, `commit_id`, `idempotency_key`, `mode?`, `plan_digest?`, `session_id?` |
 | `doc.get_changes` | stable | `epoch`, `after_seq`, `limit?`, `filter: { detail: "touched" }?` — each change carries `touched`, and (unless `touched` only) `ops` and the row delta `rows` (D20); `after_seq` below `base_seq` is `BASE_TOO_OLD` |
 | `doc.wait_changes` | stable | `epoch?`, `after_seq`, `timeout_ms?` (long poll) |
-| `doc.checkpoint`, `doc.export` | experimental | `mode: "share" \| "personal_backup"`, `self_contained`, `include_notes?` |
-| `asset.begin_upload` → PUT → `asset.finish_upload` | stable | `size`, `upload_id` |
-| `asset.import_object` | stable | `workspace_id`, `obj_id` (ready NDM FileObject) → workspace `object_id`, `source_obj_id`, `size`, `media_type` |
-| `replica.bootstrap` | internal | — then `GET /replica/<workspace_id>/<replica_id>` |
+| `doc.checkpoint`, `doc.export` | experimental | `mode: "share" \| "personal_backup"`, `self_contained`, `include_notes?`; `doc.export` → `export_id`, `manifest`, `download: { bucket_id, key, version, obj_id, token }` (the package in the owner's `exports` bucket, 7 days; `GET /bucket/v1/<bucket_id>/<key>?token=`) |
+| `asset.import_object` | stable | `workspace_id` and either `bucket_id` + `key` (the uploader's own binding in `user/aiworkspace/<user>/assets`) or `obj_id` (an unbound, ready NDM FileObject the caller may read) → `object_id`, `media_type`, `size`, `expires_at`, `bucket_id`, `key`, `version` (staged under `<workspace_id>/<object_id>` in the owner's `assets` bucket) |
+| `replica.bootstrap` | internal | → `replica_id`, `epoch`, `head_seq`, `principal`, `prepared_at`, `download` (as `doc.export`) |
 | `proc.start` / `proc.get` / `proc.apply` / `proc.cancel` | experimental | `program`, `params`, `idempotency_key`; `run_id`, `session_id?` — wish programs below |
 | `proc.list` | experimental | `wish_id?`, `limit?` — wish runs, newest first |
 | `proc.claim` | experimental | `run_id`, `claim_token`, `executor?` — an executor takes the run (M3): the next attempt, a `run_token` (bearer for `proc.heartbeat` / `proc.report` / reads of this Workspace) and a lease (90 s) |
@@ -506,16 +519,15 @@ lands. The list is `server/src/lib.rs` `METHOD_LEVELS`; this table mirrors it.
 | `lock.acquire` / `lock.renew` / `lock.release` / `lock.break` / `lock.list` | stable | `entity_ids[]`, `session_id`; `lock_ids[]`; `entity_id` |
 | `show.start` / `show.heartbeat` / `show.publish` / `show.command` / `show.watch` / `show.notes` / `show.end` | internal | see “Non-public shows” |
 | `diag.list_unretained`, `diag.verify_refs` | internal | |
-| `diag.gc` | internal | `dry_run?` (default true) — the service-wide collector (an owning account) |
 
 HTTP routes (same port, `Authorization: Bearer <session token>`):
 
 | Route | Use |
 | --- | --- |
-| `PUT /kapi/aiworkspace/upload/<upload_id>` | asset bytes or an import package |
-| `GET /kapi/aiworkspace/asset/<workspace_id>/<object_id>` | verified asset bytes |
-| `GET /kapi/aiworkspace/export/<workspace_id>/<export_id>` | export package (zip) |
-| `GET /kapi/aiworkspace/replica/<workspace_id>/<replica_id>` | replica database built by `replica.bootstrap` |
+| `GET /kapi/aiworkspace/asset/<workspace_id>/<object_id>` | asset bytes from the named store, authorized through an entity that references the asset (collaborators, guests and run tokens have no rights on the owner's bucket) |
+
+Uploads go through NDM (above); export packages and replica databases are read from nfs-server's data plane,
+`GET /bucket/v1/<bucket_id>/<key>?token=<token>` with the `download` of `doc.export` / `replica.bootstrap`.
 | `GET /kapi/aiworkspace/schemas/richtext.basic.v1.json` | rich text schema definition (no auth) |
 | `POST /kapi/aiworkspace/wish-host/<token>/llm_map` | `aiws.llm.map` of a running wish program; the token is the run's (no session) |
 
@@ -527,7 +539,7 @@ Operations (`operations[]` of a Commit): `entity.create|delete|restore|rename|se
 ## Where this implementation differs from the design text
 
 - **Export/replica download routes carry the `workspace_id`** (`/export/<workspace_id>/<export_id>`): there is no service-level database to look an export id up in.
-- **Object storage is a content-addressed folder with CYFS ids and file names**, verified against ndn-lib in `store/tests/kernel.rs` (V01). It is not yet backed by the zone named store, so nothing is pinned there and assets are not fetchable through NDN. `FsObjectStore` is the boundary to replace. It is service-wide, so a show's clone shares every object without copying (第三期规划 §8.3 asked for the named store here; see the third phase report).
+- **Objects are in the zone's named store**, retained by bindings in the owner's buckets (Storage above); ids and encodings are ndn-lib's, verified in `store/tests/kernel.rs` (V01). The `objects` bucket is a `data` bucket of retention DirObjects, not an `object` bucket of `jobj` roots: binding a `jobj` would keep only that object.
 - **Files are single `mix256` chunks (≤ 32 MiB)**; ChunkList for larger assets and record files is not written.
 - **Undo `partial` mode** determines the applicable part by probing each inverse operation on its own.
 - **URL query sources** only reach adapters registered in the service (`fixture://` generated source for tests). There is no general HTTP fetcher: a URL in a document cannot make the service issue arbitrary requests.

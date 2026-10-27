@@ -165,7 +165,7 @@ Agent 按所选模式使用 Owner 的权限；只读模式限制用户数据写�
 
 权限页同时提供 Host runtime 开关。Zone Owner 在节点 `executor.enabled` 与 `owner_agents.enabled` 均开启时默认启用 `host`，可手动关闭。`agent.create` 的 `runtimes` / `default_runtime_id` 与 `agent.update` 使用相同格式：`runtimes: {"host": {"enabled": true, "computer": "none"}}, default_runtime_id: "host"` 表示启用；`runtimes: {"host": null}, default_runtime_id: "container"` 表示关闭。省略字段时按节点策略初始化，显式选择覆盖默认值，并参与幂等指纹；设置与创建预留记录原子保存，重试不重新开启。runtime 目标来自服务端目录，`computer` 不能超过节点授权，创建请求不修改节点策略。
 
-Control Panel 在校验 App session token 后读取绑定 Agent 的权限模式；只读 Agent 仅允许明确列出的读取 RPC，用户/Agent 配置、App 生命周期、容器操作等写请求返回 `NoPermission`。`/api/desktop` 的状态/会话写操作与壁纸上传使用同一限制。用户本人登录 Agent 页面取得的 User session token 继续按用户权限处理。
+Control Panel 在校验 App session token 后读取绑定 Agent 的权限模式；只读 Agent 仅允许明确列出的读取 RPC，用户/Agent 配置、App 生命周期、容器操作等写请求返回 `NoPermission`。`/api/desktop` 的状态/会话写操作使用同一限制；壁纸在用户自己的桶里，只读 Agent 由 nfs-server 的 Agent 策略拒绝写入。用户本人登录 Agent 页面取得的 User session token 继续按用户权限处理。
 
 | 方法 | 说明 |
 |---|---|
@@ -228,8 +228,8 @@ Control Panel 在校验 App session token 后读取绑定 Agent 的权限模式�
 * 存储路径：`users/{user_id}/desktop/{session_id}/{state_key}`，会话元数据存 `.../_meta`。
 * HTTP 入口：`POST /api/desktop`，需 session token（401 if 失败），按 `action` 分发。
 * 方法：`session.list` / `session.create`（生成 UUID v4）/ `session.delete` / `session.rename`；`state.get` / `state.set` / `state.delete`，后三者支持 `json_path`（点分路径）做部分读写删。任何 state 写都会刷新会话 `updated_at`；写入一个还没有 `_meta` 的会话时补建 `_meta`（`name` = session_id）。`session_id`、`state_key` 只接受 `[A-Za-z0-9_-]{1,64}`，`state_key` 不能以 `_` 开头，否则 400。`state.get` 读从未写过的 state 返回 `{value: null, version: null, exists: false}`（不是错误），存在时 `exists: true`。
-* **账号级外观**：Desktop 所有设备共用约定的会话 `default`，外观设置存在 `state_key = appearance`，每项设置单独按 `json_path` 写，不同设备改不同设置不会互相覆盖：`{theme: "light"|"dark", locale, iconSize: "small"|"medium"|"large", window: {titleBarOpacity, backgroundOpacity}, wallpaper: {image: {asset, width, height, name} | null, fit: "fill"|"fit"|"stretch"|"tile"|"center"|"panorama", tileScale, focusX, focusY}}`。前端先用本机缓存立即绘制，启动和回到前台时读账号值（账号优先；本机改了但账号还没确认的设置以本机为准，跨刷新保留）；账号缺的设置用本机值补写，但不会把浏览器里另一个账号的壁纸带给新账号。状态栏消息预览、安全区、任务栏和图标位置仍是设备级设置（桌面上有哪些项目跟着账号走，见下方“桌面文件夹”）。
-* **壁纸图片**：图片字节不进 SystemConfig（单值上限），存在用户 home：`data/home/{user}/.local/share/control-panel/wallpapers/{sha256 前 32 位}.{jpg|png|gif|webp|avif}`。`POST /api/desktop/wallpaper`（body 为图片原始字节，≤16 MiB，按文件头识别类型，其它类型 415、超限 413）返回 `{ok, data: {asset, bytes}}`，同时只保留最新 3 张、删除更早的；`GET /api/desktop/wallpaper/{asset}` 返回图片，名字即内容哈希，响应 `Cache-Control: private, max-age=31536000, immutable`。两者都需登录。CSS/`<img>` 加载带不了请求头，所以读图（`GET`）在没有 `X-Auth`/`Authorization`/查询参数 token 时优先认 Gateway SSO 会话 cookie `buckyos_session_token`（根域 SSO 登录后由 `/sso_refresh` 持续续期），其次才是旧的 `control-panel_token` 等 cookie；Desktop 因此直接把这个 URL 用作 CSS 背景，加载失败时再用带 `X-Auth` 的 fetch 取回。上传（`POST`）不认 SSO cookie，必须带请求头：同站其它子域应用发出的请求也会捎带这个 cookie。
+* **账号级外观**：Desktop 所有设备共用约定的会话 `default`，外观设置存在 `state_key = appearance`，每项设置单独按 `json_path` 写，不同设备改不同设置不会互相覆盖：`{theme: "light"|"dark", locale, iconSize: "small"|"medium"|"large", window: {titleBarOpacity, backgroundOpacity}, wallpaper: {image: {ref, width, height, name} | null, fit: "fill"|"fit"|"stretch"|"tile"|"center"|"panorama", tileScale, focusX, focusY}}`。前端先用本机缓存立即绘制，启动和回到前台时读账号值（账号优先；本机改了但账号还没确认的设置以本机为准，跨刷新保留）；账号缺的设置用本机值补写，但不会把浏览器里另一个账号的壁纸带给新账号。状态栏消息预览、安全区、任务栏和图标位置仍是设备级设置（桌面上有哪些项目跟着账号走，见下方“桌面文件夹”）。
+* **壁纸图片**：图片字节不进 SystemConfig（单值上限），存在账号的桶 `user/control-panel/{user}/wallpapers`（`data` / `app_data`），key 为 `{sha256 前 32 位}.{jpg|png|gif|webp|avif}`，`appearance.wallpaper.image.ref` 存 `obj://bucket/user/control-panel/{user}/wallpapers/{key}`。Desktop 用 websdk `putBytes`（`PUT /bucket/v1/...`，≤32 MiB）上传，随后自己 `bucket.list_objects` + `bucket.delete` 只保留最新 3 张（含当前）；显示时用 `bucketObjectUrl(ref)` 直接作为 CSS 背景（同源带 SSO cookie），加载失败时再用带 token 的 `fetchObject` 取回。Control Panel 不再提供壁纸 HTTP 端点。持久格式见 [Control Panel Durable Data Schema](Control%20Panel%20Durable%20Data%20Schema.md)。
 * **桌面文件夹**（`desktop_folder.rs`）：像 Windows 一样，桌面显示的是用户 home 下的一个文件夹 `data/home/{user}/Desktop`（Files 里是 `/home/{user}/Desktop`），所以所有设备、所有会话看到的是同一批项目，会话（设备 × 形态）只保存项目的位置。以 `.` 开头的名字隐藏。两类小 JSON 文件是桌面对象：`*.lnk` 快捷方式 `{"app": "<内置 id | AppId | 实例 id>"}`，`*.widget` 小组件 `{"widget": "clock"}` / `{"widget": "notepad", "text": "..."}`；其它文件和文件夹按文档/文件夹显示（文档用内容处理器打开，文件夹在 Files 中打开）。动作：
   * `items.list {seed?: [{name, text}]}` → `{path, created, items: [{name, kind: "file"|"dir", size, mtime, text?}]}`。文件夹不存在时创建并写入 `seed`（`created: true`，seed 只接受 `.lnk`/`.widget`，每个 ≤64 KiB、最多 64 个）；用户自己清空的文件夹保持为空，删掉整个文件夹则下次按 seed 重建。`.lnk`/`.widget` 文件（≤64 KiB）随列表返回内容 `text`；符号链接不跟随、不读内容。
   * `items.write {name, text, create?}` 写一个 `.lnk`/`.widget` 文件（临时文件 + rename）；`create: true` 时已存在则 400 `exists: {name}`。
@@ -308,7 +308,7 @@ identifier / staging handle
 ### 5.3 升级 / 卸载
 
 * **升级**：同一 Stage 流水线；`AppUpdateTaskRequest` 冻结已批准的 `Upgrade` plan 与 fingerprint，并用 plan 的 canonical task ID 创建 TaskManager task。以权威 Resolve 的 App Document Object ID / `document_version` 判定新版本，继承当前组件、权限、mount/settings/env/resource pool、实例数和停止期望。当前切换策略是 in-place/recreate，写新 spec 后存在停机窗口，不宣称 blue-green/rolling。Activate 失败先恢复冻结 previous spec，再等待 previous `DeploymentIdentity` 重新满足 readiness；结果区分 target failed + previous restored、rollback failed 与 partial target。
-* **卸载/生命周期**：`app.start/v1` 与 `app.uninstall/v1` 都是 delegated durable task，共用启动扫描/sweep 与 mutation ownership。卸载先 stop 并等待 exact target evidence 消失，再删除 spec/record；`delete` 只删除 typed manifest 中的私有 data/cache，`retain` 不删除。进入 metadata deletion 边界后 cancel 被禁止。
+* **卸载/生命周期**：`app.start/v1` 与 `app.uninstall/v1` 都是 delegated durable task，共用启动扫描/sweep 与 mutation ownership。卸载先 stop 并等待 exact target evidence 消失，再删除 spec/record（`Deleted` spec 清空 `spec_config.buckets`）；随后解绑该实例在 `packages` / `package_objects` 桶里的包，并调 nfs-server `bucket.release_app`：`documents` / `collected` 转孤儿桶，`app_data` 在 `retain` 时转孤儿、`delete` 时删除，`temp` / `cache` / `ambient` 删除。`delete` 另外删除 typed manifest 中的私有 data/cache 目录，`retain` 不删除。进入 metadata deletion 边界后 cancel 被禁止。Agent 删除走同一任务（`retain`）。
 * **批量升级**：`apps.upgrade` 创建 `app.update_batch/v1` root；每个 `UpdateAvailable` item 同时冻结 Upgrade plan 与 fingerprint，child 使用该 plan 的 canonical task ID，并通过 parent/root 和稳定派生 idempotency key 关联。单项失败不影响其它 child，root 结果保存每项 terminal outcome，可在 Control Panel 重启后恢复。
 
 ### 5.4 记录与凭证
@@ -382,7 +382,10 @@ export const PUBLIC_ROUTE_PREFIXES = ['/login', '/userprofile'] as const
 | RBAC 策略 | `system/rbac/policy` | `append`（事务后追加，注意非原子） |
 | Zone 展示设置 | `system/zone_presentation` | 调用者 sudo token + revision CAS（不存在时 create） |
 | UI Session | `users/{uid}/desktop/{session_id}/{state_key}` · `.../_meta` | 单次 `set`，写后刷新（或补建）`_meta.updated_at` |
-| 桌面壁纸图片 | 文件 `data/home/{uid}/.local/share/control-panel/wallpapers/{hash}.{ext}` | 临时文件 + rename，保留最新 3 张 |
+| 桌面壁纸图片 | 桶 `user/control-panel/{uid}/wallpapers`，key `{hash}.{ext}` | 浏览器 `PUT /bucket/v1` 直传，前端保留最新 3 张 |
+| 已安装 App 的包 | 桶 `zone/control-panel/_/packages`、`package_objects`，key `{uid}/{app_id}/{version}/{id}` | Acquire / Prepare 绑定，升级后解绑旧版本，卸载解绑 |
+| Agent 模板 PIKG | 桶 `zone/control-panel/_/agent_templates`，key `{uid}/{app_id}/{digest}.pikg`；记录 `users/{uid}/agent_templates/{app_id}` 存 `(bucket_key, bucket_version)` | 从 staging 绑定 |
+| PIKG staging | 桶 `zone/control-panel/_/pikg_staging`（temp），key = staging handle，metadata 在绑定里 | finalize 绑定，释放 / 过期解绑；`cache/control_panel/pikg_staging/incoming/` 只收外部投放 |
 | 桌面文件夹 | 目录 `data/home/{uid}/Desktop`（`*.lnk` / `*.widget` 由本服务写） | 首次列出时建目录并写 seed；单文件临时文件 + rename |
 
 ---

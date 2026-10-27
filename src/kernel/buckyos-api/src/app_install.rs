@@ -1046,9 +1046,6 @@ pub struct CandidateHandle {
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pikg_digest: Option<String>,
-    /// staging root 下 immutable 文件路径（服务端内部，不对外暴露）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub staging_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub staging_handle: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

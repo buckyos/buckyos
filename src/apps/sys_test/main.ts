@@ -47,6 +47,7 @@ type GroupId =
   | "kevent"
   | "service_clients"
   | "sdk_utilities"
+  | "bucket"
   | "ndm_proxy";
 
 type BootstrapState =
@@ -753,6 +754,40 @@ function buildGroupRunners(
     ];
   };
 
+  const bucketGroup = async (): Promise<SelftestCaseResult[]> => {
+    return [
+      await runSelftestCase(
+        "putBytes → fetchObject → bucket.delete in the app's smoke bucket",
+        async () => {
+          const client = sdk.buckyos.getBucketClient();
+          const bucketId = sdk.bucket.userBucketId(identity.appId, identity.ownerUserId, "smoke");
+          const key = `service/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`;
+          const body = `sys_test service putBytes ${key}`;
+          const put = await client.putBytes(bucketId, key, body, { contentType: "text/plain", if_none_match: "*" });
+          try {
+            const text = await (await client.fetchObject(bucketId, key)).text();
+            if (text !== body) {
+              throw new Error(`fetchObject returned ${JSON.stringify(text.slice(0, 80))}`);
+            }
+            const deleted = await client.delete(bucketId, key);
+            try {
+              await client.fetchObject(bucketId, key);
+            } catch (error) {
+              if (error instanceof sdk.bucket.BucketError && error.code === "no_such_key") {
+                return { bucketId, key, objId: put.obj_id, version: put.version, deleted: deleted.deleted };
+              }
+              throw error;
+            }
+            throw new Error(`${key} is still readable after bucket.delete`);
+          } catch (error) {
+            await client.delete(bucketId, key).catch(() => undefined);
+            throw error;
+          }
+        },
+      ),
+    ];
+  };
+
   const ndmProxyGroup = async (): Promise<SelftestCaseResult[]> => {
     return [
       await runSelftestCase(
@@ -837,6 +872,7 @@ function buildGroupRunners(
     kevent: keventGroup,
     service_clients: serviceClientsGroup,
     sdk_utilities: sdkUtilitiesGroup,
+    bucket: bucketGroup,
     ndm_proxy: ndmProxyGroup,
   };
 }
@@ -983,6 +1019,7 @@ Deno.serve({
     console.log(`  POST ${sdkRoutePrefix}/selftest/kevent`);
     console.log(`  POST ${sdkRoutePrefix}/selftest/service_clients`);
     console.log(`  POST ${sdkRoutePrefix}/selftest/sdk_utilities`);
+    console.log(`  POST ${sdkRoutePrefix}/selftest/bucket`);
     console.log(`  POST ${sdkRoutePrefix}/selftest/ndm_proxy`);
     console.log(`  GET  /support/panel                           (customer-service example panel)`);
     console.log(`  GET  ${sdkRoutePrefix}/support/summary`);

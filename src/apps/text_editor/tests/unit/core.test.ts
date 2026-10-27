@@ -81,14 +81,48 @@ test('an older queued upload never replaces a newer local prewrite', async () =>
   const { BufferStore } = await import('../../src/fs/bufferStore.ts')
   const records = new Map<string, any>()
   const local: any = { get: async (key: string) => records.get(key), put: async (key: string, value: unknown) => { records.set(key, value) }, delete: async (key: string) => { records.delete(key) } }
-  const store: any = { stat: async () => ({ etag: 'base' }), write: async () => ({}) }
-  const buffers = new BufferStore('cyfs:///home/alice/.local/share/app', store, local)
-  const first = { header: { format: 'buckyos.text-editor.buffer/1' as const, bufferId: 'id', source, displayName: 'a.md', encoding: 'utf-8', bom: false, eol: '\n' as const, createdAt: 1, updatedAt: 2, origin: { device: 'test' } }, text: 'first', path: 'cyfs:///buffer.buf', version: 1 }
+  const data: any = { put: async () => {} }
+  const buffers = new BufferStore(data, local)
+  const first = { header: { format: 'buckyos.text-editor.buffer/1' as const, bufferId: 'id', source, displayName: 'a.md', encoding: 'utf-8', bom: false, eol: '\n' as const, createdAt: 1, updatedAt: 2, origin: { device: 'test' } }, text: 'first', key: 'untitled.id.buf', version: 1 }
   await buffers.localWrite(first)
   const upload = buffers.flush(first)
   await buffers.localWrite({ ...first, text: 'latest', version: 2 })
   await upload
-  assert.equal(records.get('buffer:' + first.path).text, 'latest')
+  assert.equal(records.get('buffer:' + first.key).text, 'latest')
+})
+
+test('buffers and recovery entries are keys in the editor buckets, not files', async () => {
+  const { bucket } = await import('buckyos')
+  const { AppData } = await import('../../src/fs/appData.ts')
+  const { BufferStore } = await import('../../src/fs/bufferStore.ts')
+  const { RecoveryStore } = await import('../../src/fs/recoveryStore.ts')
+  const objects = new Map<string, Uint8Array>()
+  const client: any = {
+    putBytes: async (id: string, key: string, body: Uint8Array) => { objects.set(`${id}/${key}`, body); return {} },
+    fetchObject: async (id: string, key: string) => { const v = objects.get(`${id}/${key}`); if (!v) throw new bucket.BucketError('no_such_key', key, 404); return new Response(v) },
+    listObjects: async (id: string, req: { prefix?: string }) => ({ common_prefixes: [], items: [...objects].filter(([k]) => k.startsWith(`${id}/${req.prefix ?? ''}`)).map(([k, v]) => ({ key: k.slice(id.length + 1), size: v.length, created_at: 7 })) }),
+    delete: async (id: string, key: string) => ({ deleted: objects.delete(`${id}/${key}`) }),
+  }
+  const data = new AppData(client, 'alice')
+  assert.equal(data.bucketId('recovery'), 'user/text-editor.buckyos.bns.did/alice/recovery')
+  const recovery = new RecoveryStore(data)
+  const record = await recovery.archive(new TextEncoder().encode('mine'), { reason: 'discarded', side: 'mine', displayName: 'a.md', encoding: 'utf-8', bom: false, eol: '\n', origin: { device: 'd' } })
+  const prefix = `${data.bucketId('recovery')}/${record.id}/`
+  assert.deepEqual([...objects.keys()], [`${prefix}a.md`, `${prefix}entry.json`])
+  assert.equal(new TextDecoder().decode(await recovery.read(record)), 'mine')
+  objects.set(`${data.bucketId('recovery')}/20260101T000000-x/lost.txt`, new TextEncoder().encode('half'))
+  assert.deepEqual((await recovery.list()).map(r => [r.entry.displayName, !!r.incomplete]).sort(), [['a.md', false], ['lost.txt', true]])
+  await recovery.remove(record)
+  assert.deepEqual([...objects.keys()], [`${data.bucketId('recovery')}/20260101T000000-x/lost.txt`])
+  const entries = new Map<string, any>()
+  const local: any = { get: async (k: string) => entries.get(k), put: async (k: string, v: unknown) => { entries.set(k, v) }, delete: async (k: string) => { entries.delete(k) }, entries: async (p: string) => [...entries].filter(([k]) => k.startsWith(p)) }
+  const buffers = new BufferStore(data, local)
+  const buffer = { header: { format: 'buckyos.text-editor.buffer/1' as const, bufferId: 'b1', source, displayName: 'a.md', encoding: 'utf-8', bom: false, eol: '\n' as const, createdAt: 1, updatedAt: 2, origin: { device: 'test' } }, text: 'draft', key: 'k.b1.buf', version: 1 }
+  await buffers.flush(buffer)
+  assert.ok(objects.has(`${data.bucketId('buffers')}/k.b1.buf`))
+  assert.deepEqual((await buffers.list()).map(b => [b.key, b.text]), [['k.b1.buf', 'draft']])
+  await buffers.remove(buffer)
+  assert.ok(!objects.has(`${data.bucketId('buffers')}/k.b1.buf`))
 })
 
 test('Markdown and HTML outlines come from parsed syntax nodes', async () => {

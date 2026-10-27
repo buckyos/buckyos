@@ -14,6 +14,7 @@ import { getActiveSessionToken } from 'buckyos'
 import { NfspError, type NodeInfo, type WireRef } from '../../api/nfsp_client'
 import { effectiveListLimit, ensureSession, nfspBaseUrl, nfspClient } from '../../app/filebrowser/data/nfsp/client'
 import { extensionOf, mediaTypeFromExtension } from './mediaTypes'
+import { asBucketObjectRef, resolveBucketSource } from './bucketSource'
 import { resolveNdmSource } from './ndmSource'
 import { cyfsPathToLocal, normalizeCyfsPath, parentCyfsPath } from './session'
 import {
@@ -194,6 +195,8 @@ export function createNfspPreviewProvider(): PreviewProvider {
     id: 'nfsp',
 
     async resolvePreviewSource(source, { signal }) {
+      const bucketRef = asBucketObjectRef(source)
+      if (bucketRef) return resolveBucketSource(bucketRef, signal)
       if (isObjectIdRef(source)) {
         const endpoint = nfspBaseUrl()
         const token = new URL(endpoint).origin === window.location.origin ? await getActiveSessionToken() : null

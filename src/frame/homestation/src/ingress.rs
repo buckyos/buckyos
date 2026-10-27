@@ -7,7 +7,8 @@ use crate::protocol::*;
 use crate::publish::{add_version, get_entry, get_head, store_head_row, HeadRow};
 use crate::{now_ms, Station};
 use ndn_lib::{normalize_cyfs_dispatch_target, validate_cyfs_dispatch_body, CyfsDispatchResult, CyfsDispatchStatus, CyfsNamedObjectEncoding};
-use rusqlite::{params, Connection, OptionalExtension};
+use crate::db::Conn;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -73,40 +74,40 @@ fn rejected(status: u16, id: Option<ndn_lib::ObjId>, target: &str, reason: &str,
     reply(status, CyfsDispatchResult::rejected(id, target.to_string(), reason, retryable), None)
 }
 
-pub fn is_followed_source(conn: &Connection, did: &str) -> HsResult<Option<String>> {
+pub fn is_followed_source(conn: &Conn, did: &str) -> HsResult<Option<String>> {
     Ok(conn
         .query_row(
-            "SELECT id FROM sources WHERE did=?1 AND basis!='[]' AND paused=0",
-            [did],
+            "SELECT id FROM sources WHERE did=?1 AND basis!='[]' AND paused=0 AND owner=?2",
+            [did, conn.owner],
             |r| r.get::<_, String>(0),
         )
         .optional()?)
 }
 
-fn own_version(conn: &Connection, obj_id: &str) -> HsResult<bool> {
+fn own_version(conn: &Conn, obj_id: &str) -> HsResult<bool> {
     Ok(conn
         .query_row(
-            "SELECT 1 FROM entry_versions v JOIN published p ON p.entry=v.entry WHERE v.obj_id=?1",
-            [obj_id],
+            "SELECT 1 FROM entry_versions v JOIN published p ON p.owner=v.owner AND p.entry=v.entry WHERE v.obj_id=?1 AND v.owner=?2",
+            [obj_id, conn.owner],
             |_| Ok(()),
         )
         .optional()?
         .is_some())
 }
 
-fn tracked_target(conn: &Connection, obj_id: &str) -> HsResult<bool> {
-    Ok(conn.query_row("SELECT 1 FROM tracked WHERE target=?1", [obj_id], |_| Ok(())).optional()?.is_some())
+fn tracked_target(conn: &Conn, obj_id: &str) -> HsResult<bool> {
+    Ok(conn.query_row("SELECT 1 FROM tracked WHERE target=?1 AND owner=?2", [obj_id, conn.owner], |_| Ok(())).optional()?.is_some())
 }
 
 /// Merge a verified Head into the per-entry highest-seq state (§16.6).
-pub fn merge_head(conn: &Connection, head: &FeedHead, head_obj_id: &str, restricted: bool, now: i64) -> HsResult<HeadApply> {
+pub fn merge_head(conn: &Conn, head: &FeedHead, head_obj_id: &str, restricted: bool, now: i64) -> HsResult<HeadApply> {
     let existing = get_head(conn, &head.entry)?;
     match existing {
         Some(HeadRow { seq, head_obj_id: ref known, .. }) if seq == head.seq => {
             if known == head_obj_id {
                 Ok(HeadApply::Unchanged)
             } else {
-                conn.execute("UPDATE heads SET conflict_obj_id=?2 WHERE entry=?1", params![head.entry, head_obj_id])?;
+                conn.execute("UPDATE heads SET conflict_obj_id=?2 WHERE entry=?1 AND owner=?3", params![head.entry, head_obj_id, conn.owner])?;
                 Ok(HeadApply::Conflict)
             }
         }
@@ -123,7 +124,7 @@ pub fn merge_head(conn: &Connection, head: &FeedHead, head_obj_id: &str, restric
 }
 
 /// §5.4 rule 3: a Head's current version must declare the same entry and publisher.
-fn bind_version(conn: &Connection, entry: &str, publisher: &str, obj_id: &str, now: i64) -> HsResult<bool> {
+fn bind_version(conn: &Conn, entry: &str, publisher: &str, obj_id: &str, now: i64) -> HsResult<bool> {
     let Some(obj) = get_object(conn, obj_id)? else { return Ok(false) };
     let declared = obj.body.get("entry").and_then(Value::as_str);
     let by = obj.body.get("publisher").and_then(Value::as_str);
@@ -134,26 +135,26 @@ fn bind_version(conn: &Connection, entry: &str, publisher: &str, obj_id: &str, n
     Ok(false)
 }
 
-pub fn add_candidate(conn: &Connection, obj_id: &str, publisher: &str, path: &Value, private_capture: bool, now: i64) -> HsResult<bool> {
+pub fn add_candidate(conn: &Conn, obj_id: &str, publisher: &str, path: &Value, private_capture: bool, now: i64) -> HsResult<bool> {
     let existing: Option<String> =
-        conn.query_row("SELECT source_paths FROM candidates WHERE obj_id=?1", [obj_id], |r| r.get(0)).optional()?;
+        conn.query_row("SELECT source_paths FROM candidates WHERE obj_id=?1 AND owner=?2", [obj_id, conn.owner], |r| r.get(0)).optional()?;
     match existing {
         Some(paths) => {
             let mut paths: Vec<Value> = serde_json::from_str(&paths).unwrap_or_default();
             if !paths.contains(path) {
                 paths.push(path.clone());
                 conn.execute(
-                    "UPDATE candidates SET source_paths=?2, updated_at=?3 WHERE obj_id=?1",
-                    params![obj_id, serde_json::to_string(&paths)?, now],
+                    "UPDATE candidates SET source_paths=?2, updated_at=?3 WHERE obj_id=?1 AND owner=?4",
+                    params![obj_id, serde_json::to_string(&paths)?, now, conn.owner],
                 )?;
             }
             Ok(false)
         }
         None => {
             conn.execute(
-                "INSERT INTO candidates(obj_id, publisher, selection, source_paths, private_capture, arrived_at, updated_at)
-                 VALUES (?1, ?2, 'unscreened', ?3, ?4, ?5, ?5)",
-                params![obj_id, publisher, serde_json::to_string(&vec![path.clone()])?, private_capture as i64, now],
+                "INSERT INTO candidates(owner, obj_id, publisher, selection, source_paths, private_capture, arrived_at, updated_at)
+                 VALUES (?6, ?1, ?2, 'unscreened', ?3, ?4, ?5, ?5)",
+                params![obj_id, publisher, serde_json::to_string(&vec![path.clone()])?, private_capture as i64, now, conn.owner],
             )?;
             Ok(true)
         }
@@ -171,7 +172,7 @@ impl Station {
             .call(move |c| {
                 let source = is_followed_source(c, &did_s)?;
                 let follower = c
-                    .query_row("SELECT 1 FROM followers WHERE did=?1 AND state='active'", [&did_s], |_| Ok(()))
+                    .query_row("SELECT 1 FROM followers WHERE did=?1 AND state='active' AND owner=?2", params![did_s, c.owner], |_| Ok(()))
                     .optional()?
                     .is_some();
                 Ok((source, follower))
@@ -227,7 +228,7 @@ impl Station {
         let receipt = self
             .db
             .call(move |c| {
-                Ok(c.query_row("SELECT admission FROM inbox_receipts WHERE obj_id=?1", [id_s], |r| r.get::<_, Option<String>>(0))
+                Ok(c.query_row("SELECT admission FROM inbox_receipts WHERE obj_id=?1 AND owner=?2", params![id_s, c.owner], |r| r.get::<_, Option<String>>(0))
                     .optional()?)
             })
             .await;
@@ -258,13 +259,13 @@ impl Station {
             .db
             .call(move |c| {
                 c.execute(
-                    "INSERT OR IGNORE INTO inbox_receipts(obj_id, sender, admission, received_at) VALUES (?1, ?2, ?3, ?4)",
-                    params![id_s, sender, admission_s, now],
+                    "INSERT OR IGNORE INTO inbox_receipts(owner, obj_id, sender, admission, received_at) VALUES (?5, ?1, ?2, ?3, ?4)",
+                    params![id_s, sender, admission_s, now, c.owner],
                 )?;
                 if collect {
                     c.execute(
-                        "INSERT OR IGNORE INTO collector_index(obj_id, submitted_by, received_at) VALUES (?1, ?2, ?3)",
-                        params![id_s, sender, now],
+                        "INSERT OR IGNORE INTO collector_index(owner, obj_id, submitted_by, received_at) VALUES (?4, ?1, ?2, ?3)",
+                        params![id_s, sender, now, c.owner],
                     )?;
                 }
                 Ok(())
@@ -299,8 +300,8 @@ impl Station {
             .db
             .call(move |c| {
                 Ok(c.query_row(
-                    "SELECT COUNT(*) FROM inbox_receipts WHERE sender=?1 AND received_at>?2",
-                    params![sender_s, since],
+                    "SELECT COUNT(*) FROM inbox_receipts WHERE sender=?1 AND received_at>?2 AND owner=?3",
+                    params![sender_s, since, c.owner],
                     |r| r.get(0),
                 )?)
             })
@@ -327,7 +328,7 @@ impl Station {
                 let known = self
                     .db
                     .call(move |c| {
-                        Ok(c.query_row("SELECT 1 FROM heads WHERE entry=?1 UNION SELECT 1 FROM feed_index WHERE entry=?1", [entry], |_| Ok(()))
+                        Ok(c.query_row("SELECT 1 FROM heads WHERE entry=?1 AND owner=?2 UNION SELECT 1 FROM feed_index WHERE entry=?1 AND owner=?2", params![entry, c.owner], |_| Ok(()))
                             .optional()?
                             .is_some())
                     })
@@ -392,8 +393,8 @@ impl Station {
                     if let Ok(EntryRef::Path { namespace: EntryNamespace::Follows, .. }) = EntryRef::parse(&head.entry) {
                         let follow: Option<String> = tx
                             .query_row(
-                                "SELECT body FROM objects WHERE obj_type=?1 AND publisher=?2 AND json_extract(body,'$.entry')=?3",
-                                params![OBJ_TYPE_FOLLOW, head.publisher, head.entry],
+                                "SELECT body FROM objects WHERE obj_type=?1 AND publisher=?2 AND json_extract(body,'$.entry')=?3 AND owner=?4",
+                                params![OBJ_TYPE_FOLLOW, head.publisher, head.entry, tx.owner],
                                 |r| r.get(0),
                             )
                             .optional()?;
@@ -442,26 +443,26 @@ impl Station {
                     let entry = feed.entry.clone().unwrap();
                     add_version(&tx, &entry, &v.obj_id, now)?;
                     if restricted_hint {
-                        tx.execute("UPDATE heads SET restricted=1 WHERE entry=?1", [&entry])?;
+                        tx.execute("UPDATE heads SET restricted=1 WHERE entry=?1 AND owner=?2", params![entry, tx.owner])?;
                     }
                 }
                 let mut is_candidate = false;
                 if let Some(target) = feed.comment_target() {
                     if let Some((kind, source)) = arrival2.comment_source() {
                         tx.execute(
-                            "INSERT OR IGNORE INTO comment_sources(comment_id, source_kind, source, seen_at) VALUES (?1, ?2, ?3, ?4)",
-                            params![v.obj_id, kind, source, now],
+                            "INSERT OR IGNORE INTO comment_sources(owner, comment_id, source_kind, source, seen_at) VALUES (?5, ?1, ?2, ?3, ?4)",
+                            params![v.obj_id, kind, source, now, tx.owner],
                         )?;
                     }
                     tx.execute(
-                        "INSERT OR IGNORE INTO participants(target, did, seen_at) VALUES (?1, ?2, ?3)",
-                        params![target, feed.publisher, now],
+                        "INSERT OR IGNORE INTO participants(owner, target, did, seen_at) VALUES (?4, ?1, ?2, ?3)",
+                        params![target, feed.publisher, now, tx.owner],
                     )?;
                     if own_version(&tx, &target)? && settings.comments_open && feed.publisher != owner {
-                        let position: i64 = tx.query_row("SELECT COALESCE(MAX(position),0)+1 FROM author_list WHERE target=?1", [&target], |r| r.get(0))?;
+                        let position: i64 = tx.query_row("SELECT COALESCE(MAX(position),0)+1 FROM author_list WHERE target=?1 AND owner=?2", params![target, tx.owner], |r| r.get(0))?;
                         tx.execute(
-                            "INSERT OR IGNORE INTO author_list(target, comment_id, listed, position, updated_at) VALUES (?1, ?2, 1, ?3, ?4)",
-                            params![target, v.obj_id, position, now],
+                            "INSERT OR IGNORE INTO author_list(owner, target, comment_id, listed, position, updated_at) VALUES (?5, ?1, ?2, 1, ?3, ?4)",
+                            params![target, v.obj_id, position, now, tx.owner],
                         )?;
                     }
                     let shows_in_feed = matches!(feed.comment_type, Some(CommentType::Repost) | Some(CommentType::Quote) | Some(CommentType::Text));
@@ -565,7 +566,6 @@ impl Station {
             if crate::objects::obj_type_for_claims(&value).is_some() {
                 return Err(bad("signed objects must arrive as JWT"));
             }
-            self.chunks.put_named_object(&expected, body).await?;
             let obj = StoredObject {
                 obj_id: expected,
                 obj_type,
@@ -628,12 +628,12 @@ fn candidate_path(arrival: &Arrival, relation: &Relation) -> Option<Value> {
     }
 }
 
-pub fn set_follower(conn: &Connection, did: &str, entry: &str, state: HeadState, seq: u64, now: i64) -> HsResult<()> {
+pub fn set_follower(conn: &Conn, did: &str, entry: &str, state: HeadState, seq: u64, now: i64) -> HsResult<()> {
     conn.execute(
-        "INSERT INTO followers(did, entry, state, seq, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)
-         ON CONFLICT(did) DO UPDATE SET entry=excluded.entry, state=excluded.state, seq=excluded.seq, updated_at=excluded.updated_at
+        "INSERT INTO followers(owner, did, entry, state, seq, updated_at) VALUES (?6, ?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(owner, did) DO UPDATE SET entry=excluded.entry, state=excluded.state, seq=excluded.seq, updated_at=excluded.updated_at
          WHERE excluded.seq >= followers.seq",
-        params![did, entry, state.as_str(), seq as i64, now],
+        params![did, entry, state.as_str(), seq as i64, now, conn.owner],
     )?;
     Ok(())
 }

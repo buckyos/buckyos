@@ -119,6 +119,9 @@ const GUEST_KEY:&str="-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIEw6BLpRc
 fn owner() -> DID {
     DID::new("dev", "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8")
 }
+/// Account names (token subjects) of `member()` and `guest()`.
+const MEMBER_ACCOUNT: &str = "member";
+const GUEST_ACCOUNT: &str = "guest";
 fn member() -> DID {
     DID::new("dev", "mL_tm5diVGGkpt_6WmCZQxUsee4rHacyz7mx7TkKb-0")
 }
@@ -175,7 +178,11 @@ impl SessionTokenVerifier for Verifier {
         Ok(t)
     }
     async fn resolve_user_did(&self, id: &str) -> Result<DID> {
-        DID::from_str(id).map_err(invalid)
+        match id {
+            MEMBER_ACCOUNT => Ok(member()),
+            GUEST_ACCOUNT => Ok(guest()),
+            _ => DID::from_str(id).map_err(invalid),
+        }
     }
     async fn zone_agent(&self, d: &DID) -> Result<Option<ZoneAgentInfo>> {
         Ok(self.agents.get(d).cloned())
@@ -2566,72 +2573,52 @@ fn member_kind_comes_from_the_owner_document_not_the_zone_document() {
     assert!(member_entity_kind(&lucy, &owner_doc).is_err());
 }
 
-mod attachment_holds {
+mod attachment_buckets {
     use super::*;
-    use crate::attachment_retention::{attachment_owner, AttachmentStore};
-    use named_store::{NamedDataMgr, NamedLocalStore, PinScope, StoreLayout, StoreTarget};
-    use ndn_lib::{NdnError, ObjId};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use crate::buckets::{BucketHost, Buckets};
+    use buckyos_api::bucket_client::{BucketId, Origin};
+    use buckyos_api::{MSG_CENTER_ATTACHMENTS_BUCKET, MSG_CENTER_MESSAGES_BUCKET};
+    use named_store::NamedDataMgr;
+    use ndn_lib::ObjId;
 
-    /// The real store, with a switch that makes pins fail.
-    struct Flaky {
-        store: NamedDataMgr,
-        fail: AtomicBool,
+    /// An nfs-server of its own (no auth: msg-center's calls act with full
+    /// access) declaring the msg-center buckets, and its named store.
+    async fn bucket_host(dir: &std::path::Path) -> Buckets {
+        let mut config = nfs_server::ServerConfig::new(dir.join("nfs"), vec![]);
+        config.named_store = nfs_server::config::NamedStoreSource::Dir(dir.join("store"));
+        config.bucket_specs = serde_json::from_value(json!({"msg-center": {
+            "buckets": buckyos_api::msg_center_bucket_decls(),
+            "storage_quota_mib": buckyos_api::MSG_CENTER_STORAGE_QUOTA_MIB,
+        }}))
+        .unwrap();
+        let state = nfs_server::AppState::new(config).unwrap();
+        let store = state.share.store(&state.config).await.unwrap().clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/kapi/nfs-server", listener.local_addr().unwrap());
+        let app = nfs_server::build_router(state);
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        Buckets { client: Arc::new(buckyos_api::BucketClient::new(kRPC::kRPC::new(&url, None))), store }
     }
 
-    #[async_trait::async_trait]
-    impl AttachmentStore for Flaky {
-        async fn retain(&self, obj_id: &ObjId, owner: &str) -> Result<()> {
-            if self.fail.load(Ordering::SeqCst) {
-                return Err(kRPC::RPCErrors::ReasonError("named store: injected failure".into()));
-            }
-            self.store.retain(obj_id, owner).await
-        }
-        async fn release(&self, obj_id: &ObjId, owner: &str) -> Result<()> {
-            self.store.release(obj_id, owner).await
-        }
-        async fn issue(&self, obj_id: &ObjId) -> Option<String> {
-            self.store.issue(obj_id).await
-        }
+    async fn bound_center() -> (MessageCenter, TempDir, Buckets) {
+        let (c, tmp, _) = center().await;
+        let buckets = bucket_host(tmp.path()).await;
+        c.set_bucket_host(BucketHost::Fixed(buckets.clone()));
+        (c, tmp, buckets)
     }
 
-    async fn open_store(dir: &std::path::Path) -> NamedDataMgr {
-        let store = NamedLocalStore::get_named_store_by_path(dir.to_path_buf()).await.unwrap();
-        let store_id = store.store_id().to_string();
-        let mgr = NamedDataMgr::new();
-        mgr.register_store(Arc::new(tokio::sync::Mutex::new(store))).await;
-        let target = StoreTarget { store_id, device_did: String::new(), capacity: None, used: None, readonly: false, enabled: true, weight: 1 };
-        mgr.add_layout(StoreLayout::new(1, vec![target], 0, 0)).await;
-        mgr
-    }
-
-    /// One GC pass as a deployment would run it: deliver pending pin cascades, then evict.
-    async fn run_gc(mgr: &NamedDataMgr) -> named_store::GcReport {
-        let id = mgr.get_store_ids().await.pop().unwrap();
-        let store = mgr.get_store(&id).await.unwrap();
-        let store = store.lock().await;
-        loop {
-            let batch = store.fetch_outbox_ready(100).await.unwrap();
-            if batch.is_empty() {
-                break;
-            }
-            for entry in batch {
-                store.apply_edge(entry.msg.clone()).await.unwrap();
-                store.complete_outbox_entry(entry.seq).await.unwrap();
-            }
-        }
-        store.gc_round(0).await.unwrap()
-    }
-
-    /// A file as a share snapshot leaves it: chunk + FileObject, pinned by the share.
-    async fn snapshot(mgr: &NamedDataMgr, name: &str, data: &[u8]) -> (ObjId, ObjId) {
+    /// A file put in the store the way an upload leaves it, without any hold.
+    async fn file(store: &NamedDataMgr, name: &str, data: &[u8]) -> ObjId {
         let chunk = ndn_lib::ChunkHasher::new(None).unwrap().calc_mix_chunk_id_from_bytes(data).unwrap();
-        mgr.put_chunk(&chunk, data).await.unwrap();
-        let file = ndn_lib::FileObject::new(name.to_string(), data.len() as u64, chunk.to_string());
-        let (id, body) = file.gen_obj_id();
-        mgr.put_object(&id, &body).await.unwrap();
-        mgr.pin(&id, "share:s", PinScope::Recursive, None).await.unwrap();
-        (id, chunk.to_obj_id())
+        store.put_chunk(&chunk, data).await.unwrap();
+        let (id, body) = ndn_lib::FileObject::new(name.to_string(), data.len() as u64, chunk.to_string()).gen_obj_id();
+        store.put_object(&id, &body).await.unwrap();
+        id
+    }
+
+    /// A file id whose content this Zone never had.
+    fn absent(name: &str) -> ObjId {
+        ndn_lib::FileObject::new(name.to_string(), 3, "mix256:absent".to_string()).gen_obj_id().0
     }
 
     fn with_refs(mut msg: MsgObject, ids: &[&ObjId]) -> MsgObject {
@@ -2639,7 +2626,7 @@ mod attachment_holds {
             msg.content.refs.push(ndn_lib::RefItem {
                 role: ndn_lib::RefRole::Output,
                 target: ndn_lib::RefTarget::DataObj { obj_id: (*id).clone(), uri_hint: None },
-                label: None,
+                label: Some(format!("{}.bin", &id.to_string()[7..15])),
             });
         }
         msg
@@ -2651,47 +2638,263 @@ mod attachment_holds {
         msg
     }
 
-    async fn holds(mgr: &NamedDataMgr, obj: &ObjId, msg: &ObjId) -> bool {
-        match mgr.anchor_state(obj, &attachment_owner(msg)).await {
-            Ok(_) => true,
-            Err(NdnError::NotFound(_)) => false,
-            Err(e) => panic!("anchor_state: {e}"),
+    async fn bound(b: &Buckets, bucket: &BucketId, key: &str) -> Option<String> {
+        match b.client.get(bucket, key, None).await {
+            Ok(binding) => binding.obj_id,
+            Err(e) if buckyos_api::is_no_such_key(&e) => None,
+            Err(e) => panic!("bucket.get {key}: {e}"),
         }
     }
 
-    async fn rows(c: &MessageCenter, state: &str) -> i64 {
-        let sql = c.msg_box_db.render_sql("SELECT COUNT(*) AS n FROM msg_attachment_retentions WHERE state=?");
-        sqlx::Row::try_get(&sqlx::query(&sql).bind(state).fetch_one(c.msg_box_db.pool()).await.unwrap(), "n").unwrap()
+    fn attachments() -> BucketId {
+        crate::buckets::zone_bucket(MSG_CENTER_ATTACHMENTS_BUCKET)
+    }
+
+    fn messages() -> BucketId {
+        crate::buckets::zone_bucket(MSG_CENTER_MESSAGES_BUCKET)
+    }
+
+    fn att_key(msg: &MsgObject, n: usize) -> String {
+        format!("{}{n}", MessageCenter::attachment_prefix(&msg.gen_obj_id().0, msg))
+    }
+
+    async fn keys(b: &Buckets) -> usize {
+        b.client.list_objects(&attachments(), &Default::default()).await.unwrap().items.len()
     }
 
     #[tokio::test]
-    async fn outgoing_attachments_require_a_caller_grant_before_any_hold() {
-        let (c, tmp, _) = center().await;
-        let mgr = open_store(&tmp.path().join("store")).await;
-        c.set_attachment_store(Arc::new(mgr.clone()));
+    async fn messages_and_attachments_are_bound_where_they_are_stored() {
+        let (c, _tmp, b) = bound_center().await;
+        create(&c, json!({})).await;
+        join(&c, &member()).await;
+        call(&c, &owner(), "group.create_session", json!({"session_id":"files"})).await.unwrap();
+        let only_group = file(&b.store, "a.txt", b"only in the group").await;
+        let shared = file(&b.store, "b.txt", b"in the group and a direct message").await;
+        let inbound = file(&b.store, "c.txt", b"dispatched to the owner").await;
+
+        // Hosted group, local send and dispatch bind before they accept; a
+        // group message's body stays in RDB, a stored message is bound too.
+        let group_msg = with_refs(message(&owner(), Some("files"), "files", 1), &[&only_group, &shared]);
+        assert!(c.accept_group_message(&actor(owner()), group_msg.clone(), None).await.unwrap().ok);
+        let group_id = group_msg.gen_obj_id().0;
+        assert!(att_key(&group_msg, 0).starts_with(&format!("{}/{}/", session_key(&group(), Some("files")).unwrap(), group_id.to_string())));
+        assert_eq!(bound(&b, &attachments(), &att_key(&group_msg, 0)).await, Some(only_group.to_string()));
+        assert_eq!(bound(&b, &attachments(), &att_key(&group_msg, 1)).await, Some(shared.to_string()));
+        assert_eq!(bound(&b, &messages(), &group_id.to_string()).await, None);
+
+        let dm = with_refs(direct(&owner(), &member(), "for you", 2), &[&shared]);
+        let dm_id = c.post_send_internal(dm.clone(), None).await.unwrap().msg_id;
+        let sent = MailboxAddress::new(owner(), Some(format!("dm:{}", member().to_string()))).unwrap();
+        assert_eq!(att_key(&dm, 0), format!("{}/{}/0", sent, dm_id.to_string()));
+        assert_eq!(bound(&b, &messages(), &dm_id.to_string()).await, Some(dm_id.to_string()));
+        assert_eq!(bound(&b, &attachments(), &att_key(&dm, 0)).await, Some(shared.to_string()));
+        let incoming = with_refs(direct(&member(), &owner(), "for you too", 3), &[&inbound]);
+        assert!(c.handle_dispatch(incoming.clone(), None, None, context(&member())).await.unwrap().ok);
+        assert_eq!(bound(&b, &attachments(), &att_key(&incoming, 0)).await, Some(inbound.to_string()));
+        assert_eq!(keys(&b).await, 4);
+
+        // A recall ends the group message: its keys go, the direct message keeps the shared file.
+        let mut recall = message(&owner(), Some("files"), "", 4);
+        recall.relates_to = Some(MsgRelation { rel: MsgRelType::Redact, target: group_id.clone(), key: None });
+        assert!(c.accept_group_message(&actor(owner()), recall, None).await.unwrap().ok);
+        c.purge_group_objects().await.unwrap();
+        assert_eq!(bound(&b, &attachments(), &att_key(&group_msg, 0)).await, None);
+        assert_eq!(bound(&b, &attachments(), &att_key(&group_msg, 1)).await, None);
+        assert_eq!(bound(&b, &attachments(), &att_key(&dm, 0)).await, Some(shared.to_string()));
+        assert_eq!(keys(&b).await, 2);
+
+        // Content this Zone does not have fails a local send; a remote
+        // member's attachment kept in its own Zone is skipped. Only files and
+        // directories are attachments; a message not accepted gives its keys up.
+        let missing = absent("elsewhere.txt");
+        assert!(c.post_send_internal(with_refs(direct(&owner(), &member(), "lost", 6), &[&missing]), None).await.is_err());
+        let remote = GroupActor { did: member(), client: None, remote: true };
+        let from_afar = with_refs(message(&member(), None, "from afar", 7), &[&missing, &inbound]);
+        assert!(c.accept_group_message(&remote, from_afar.clone(), None).await.unwrap().ok);
+        assert_eq!(bound(&b, &attachments(), &att_key(&from_afar, 0)).await, None);
+        assert_eq!(bound(&b, &attachments(), &att_key(&from_afar, 1)).await, Some(inbound.to_string()));
+        let quoted = with_refs(direct(&owner(), &member(), "a message ref", 8), &[&dm_id]);
+        c.post_send_internal(quoted.clone(), None).await.unwrap();
+        assert_eq!(bound(&b, &attachments(), &att_key(&quoted, 0)).await, None);
+        let outsider = with_refs(message(&guest(), None, "not a member", 9), &[&shared]);
+        assert!(!c.accept_group_message(&actor(guest()), outsider.clone(), None).await.unwrap().ok);
+        assert_eq!(bound(&b, &attachments(), &att_key(&outsider, 0)).await, None);
+        assert!(!c.accept_group_message(&actor(guest()), outsider.clone(), None).await.unwrap().ok);
+        assert_eq!(bound(&b, &attachments(), &att_key(&outsider, 0)).await, None);
+    }
+
+    async fn read(c: &MessageCenter, ctx: &RPCContext, id: &ObjId, context: Option<&str>) -> (StatusCode, Vec<u8>) {
+        let mut uri = format!("{}{}/content", crate::object_access::OBJECTS_PATH, id.to_string());
+        if let Some(context) = context {
+            let encoded: String = context.bytes().map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => (b as char).to_string(),
+                _ => format!("%{b:02X}"),
+            }).collect();
+            uri.push_str(&format!("?context_path={encoded}"));
+        }
+        let req: Request<TestBody> = Request::builder()
+            .uri(uri)
+            .header("authorization", format!("Bearer {}", ctx.token.as_deref().unwrap()))
+            .body(http_body(""))
+            .unwrap();
+        let response = crate::object_access::serve(c, &req).await.unwrap();
+        let status = response.status();
+        (status, response.into_body().collect().await.unwrap().to_bytes().to_vec())
+    }
+
+    #[tokio::test]
+    async fn attachments_are_read_through_the_binding_of_their_message() {
+        let (c, _tmp, b) = bound_center().await;
+        let photo = file(&b.store, "photo.png", b"pixels").await;
+        let dm = with_refs(direct(&owner(), &member(), "look", 1), &[&photo]);
+        let dm_id = dm.gen_obj_id().0;
+        assert!(c.handle_dispatch(dm.clone(), None, None, context(&owner())).await.unwrap().ok);
+        let other = direct(&owner(), &member(), "no attachment", 2);
+        assert!(c.handle_dispatch(other.clone(), None, None, context(&owner())).await.unwrap().ok);
+
+        let (status, body) = read(&c, &context(&member()), &photo, Some(&dm_id.to_string())).await;
+        assert_eq!((status, body.as_slice()), (StatusCode::OK, &b"pixels"[..]));
+        // The message must be named, reference the object and be readable by the caller.
+        assert_eq!(read(&c, &context(&member()), &photo, None).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(read(&c, &context(&member()), &photo, Some(&other.gen_obj_id().0.to_string())).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(read(&c, &context(&guest()), &photo, Some(&dm_id.to_string())).await.0, StatusCode::NOT_FOUND);
+        // The binding decides: without it the stored content is not served.
+        b.client.delete(&attachments(), &att_key(&dm, 0), None).await.unwrap();
+        assert_eq!(read(&c, &context(&member()), &photo, Some(&dm_id.to_string())).await.0, StatusCode::NOT_FOUND);
+    }
+
+    /// The session of a zone user: an account name as the token subject.
+    fn account(name: &str) -> RPCContext {
+        let mut token = RPCSessionToken::from_string(context(&member()).token.as_deref().unwrap()).unwrap();
+        token.sub = Some(name.to_string());
+        token.token = None;
+        RPCContext {
+            token: Some(token.generate_jwt(None, &key(&owner())).unwrap()),
+            from_ip: Some("127.0.0.1".parse().unwrap()),
+            ..Default::default()
+        }
+    }
+
+    fn display_key(id: &ObjId) -> String {
+        format!("{}{}", crate::buckets::display_prefix(&group()).unwrap(), id.to_string())
+    }
+
+    fn display_context(session: Option<&str>) -> String {
+        format!("{}/_display", session_key(&group(), session).unwrap())
+    }
+
+    #[tokio::test]
+    async fn display_files_are_bound_while_a_display_shows_them() {
+        let (c, _tmp, b) = bound_center().await;
+        let rules = file(&b.store, "rules.pdf", b"house rules").await;
+        let faq = file(&b.store, "faq.pdf", b"ticket faq").await;
+        let menu = file(&b.store, "menu.pdf", b"new menu").await;
+        let created = call(&c, &owner(), "group.create", json!({"idempotency_key":"create",
+            "sessions":[{"session_id":"tickets","rule_overrides":{"display":{"files":[{"title":"FAQ","obj_id":faq}]}}}],
+            "configuration":{"display":{"files":[{"title":"Rules","obj_id":rules}]}}}))
+            .await
+            .unwrap();
+        join(&c, &member()).await;
+        assert_eq!(bound(&b, &attachments(), &display_key(&rules)).await, Some(rules.to_string()));
+        assert_eq!(bound(&b, &attachments(), &display_key(&faq)).await, Some(faq.to_string()));
+
+        // A member reads a file through a Session whose display shows it; a
+        // Session's own files replace the group's.
+        let (status, body) = read(&c, &context(&member()), &rules, Some(&display_context(None))).await;
+        assert_eq!((status, body.as_slice()), (StatusCode::OK, &b"house rules"[..]));
+        assert_eq!(read(&c, &context(&member()), &faq, Some(&display_context(Some("tickets")))).await.0, StatusCode::OK);
+        assert_eq!(read(&c, &context(&member()), &rules, Some(&display_context(Some("tickets")))).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(read(&c, &context(&member()), &faq, Some(&display_context(None))).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(read(&c, &context(&guest()), &rules, Some(&display_context(None))).await.0, StatusCode::NOT_FOUND);
+
+        // Replacing the group's files binds the new one and unbinds the old.
+        let patch = json!({"expected_revision":created["revision"],"idempotency_key":"menu","patch":{"display":{"files":[{"title":"Menu","obj_id":menu}]}}});
+        let applied = call(&c, &owner(), "group.apply_config", patch).await.unwrap();
+        assert_eq!(bound(&b, &attachments(), &display_key(&rules)).await, None);
+        assert_eq!(bound(&b, &attachments(), &display_key(&menu)).await, Some(menu.to_string()));
+        assert_eq!(read(&c, &context(&member()), &rules, Some(&display_context(None))).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(read(&c, &context(&member()), &menu, Some(&display_context(None))).await.0, StatusCode::OK);
+
+        // A file this Zone does not have is refused, and nothing changes.
+        let missing = absent("elsewhere.pdf");
+        let patch = json!({"expected_revision":applied["revision"],"idempotency_key":"lost","patch":{"display":{"files":[{"title":"Lost","obj_id":missing}]}}});
+        let refused = call(&c, &owner(), "group.apply_config", patch).await.unwrap_err();
+        assert_eq!(buckyos_api::bucket_error_code(&refused), Some("content_not_available"), "{refused}");
+        assert_eq!(bound(&b, &attachments(), &display_key(&menu)).await, Some(menu.to_string()));
+        assert_eq!(read(&c, &context(&member()), &menu, Some(&display_context(None))).await.0, StatusCode::OK);
+
+        // A deleted Session's files and a deleted group's go.
+        let revision = c.groups.load(&group()).await.unwrap().unwrap().sessions["tickets"].revision.clone();
+        call(&c, &owner(), "group.delete_session", json!({"session_id":"tickets","expected_revision":revision})).await.unwrap();
+        assert_eq!(bound(&b, &attachments(), &display_key(&faq)).await, None);
+        call(&c, &owner(), "group.delete", json!({})).await.unwrap();
+        assert_eq!(bound(&b, &attachments(), &display_key(&menu)).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_collected_attachment_outlives_the_message() {
+        let (c, _tmp, b) = bound_center().await;
+        create(&c, json!({})).await;
+        join(&c, &member()).await;
+        let report = file(&b.store, "report.pdf", b"%PDF").await;
+        let shared = with_refs(message(&owner(), None, "the report", 1), &[&report]);
+        let shared_id = shared.gen_obj_id().0;
+        assert!(c.accept_group_message(&actor(owner()), shared.clone(), None).await.unwrap().ok);
+        let context_path = format!("{}/{}", session_key(&group(), None).unwrap(), shared_id.to_string());
+
+        let params = json!({"obj_id": report, "context_path": context_path});
+        let collected = c.collect_attachment(params.clone(), &account(MEMBER_ACCOUNT)).await.unwrap();
+        let dst = BucketId::user("msg-center", MEMBER_ACCOUNT, "collected").unwrap();
+        let dst_key = format!("{}/0/{}", shared_id.to_string(), shared.content.refs[0].label.as_deref().unwrap());
+        assert_eq!(collected, json!({"bucket_id": dst.to_string(), "key": dst_key}));
+        let binding = b.client.get(&dst, &dst_key, None).await.unwrap();
+        assert_eq!(binding.obj_id, Some(report.to_string()));
+        let Origin { author, source, .. } = binding.origin.clone().unwrap();
+        assert_eq!((author, source), (owner().to_string(), format!("cyfs://{}", shared_id.to_string())));
+        // Collecting again keeps the same copy.
+        assert_eq!(c.collect_attachment(params.clone(), &account(MEMBER_ACCOUNT)).await.unwrap(), collected);
+        assert_eq!(b.client.get(&dst, &dst_key, None).await.unwrap().version, binding.version);
+
+        // A recall unbinds the conversation's copy, not the collected one.
+        let mut recall = message(&owner(), None, "", 2);
+        recall.relates_to = Some(MsgRelation { rel: MsgRelType::Redact, target: shared_id.clone(), key: None });
+        assert!(c.accept_group_message(&actor(owner()), recall, None).await.unwrap().ok);
+        c.purge_group_objects().await.unwrap();
+        assert_eq!(bound(&b, &attachments(), &att_key(&shared, 0)).await, None);
+        assert_eq!(bound(&b, &dst, &dst_key).await, Some(report.to_string()));
+        // What the caller cannot read, or no longer can, is not collected.
+        assert!(c.collect_attachment(params, &account(MEMBER_ACCOUNT)).await.is_err());
+        let dm = with_refs(direct(&owner(), &member(), "private", 3), &[&report]);
+        assert!(c.handle_dispatch(dm.clone(), None, None, context(&owner())).await.unwrap().ok);
+        let dm_params = json!({"obj_id": report, "context_path": dm.gen_obj_id().0.to_string()});
+        assert!(c.collect_attachment(dm_params.clone(), &account(GUEST_ACCOUNT)).await.is_err());
+        assert!(c.collect_attachment(dm_params, &account(MEMBER_ACCOUNT)).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn outgoing_attachments_require_a_caller_grant_before_anything_is_bound() {
+        let (c, _tmp, b) = bound_center().await;
         let verifier = verifier(false);
         c.set_token_verifier(verifier.clone());
-        let (known, _) = snapshot(&mgr, "private.txt", b"another target owns this").await;
+        let known = file(&b.store, "private.txt", b"another target owns this").await;
         let attempt = with_refs(direct(&owner(), &member(), "guess", 1), &[&known]);
-        let attempted_id = attempt.gen_obj_id().0;
         assert!(c.handle_post_send(attempt.clone(), None, context(&owner())).await.is_err());
-        assert!(!holds(&mgr, &known, &attempted_id).await);
-        assert!(c.msg_box_db.list_message_records(&attempted_id).await.unwrap().is_empty());
+        assert_eq!(bound(&b, &attachments(), &att_key(&attempt, 0)).await, None);
+        assert!(c.msg_box_db.list_message_records(&attempt.gen_obj_id().0).await.unwrap().is_empty());
 
         // A verified, complete import belongs to this caller's canonical target.
         verifier.imports.write().unwrap().insert((owner().to_string(), known.to_string()));
-        c.authorize_outgoing_attachments(&context(&owner()), &attempt).await.expect("valid import authorization");
-        c.handle_post_send(attempt, None, context(&owner())).await.expect("accept imported message");
-        assert!(holds(&mgr, &known, &attempted_id).await);
+        c.handle_post_send(attempt.clone(), None, context(&owner())).await.expect("accept imported message");
+        assert_eq!(bound(&b, &attachments(), &att_key(&attempt, 0)).await, Some(known.to_string()));
         verifier.imports.write().unwrap().clear();
         // The existing readable sent message remains a legitimate source.
         c.handle_post_send(with_refs(direct(&owner(), &member(), "forward", 2), &[&known]), None, context(&owner())).await.unwrap();
 
         // A group member can reuse a visible attachment, without an NDM import;
-        // recall revokes that source before a new message can pin it.
+        // recall revokes that source before a new message can bind it.
         create(&c, json!({})).await;
         join(&c, &member()).await;
-        let (group_file, _) = snapshot(&mgr, "group.txt", b"group-only").await;
+        let group_file = file(&b.store, "group.txt", b"group-only").await;
         let shared = with_refs(message(&owner(), None, "group file", 3), &[&group_file]);
         let shared_id = shared.gen_obj_id().0;
         assert!(c.accept_group_message(&actor(owner()), shared, None).await.unwrap().ok);
@@ -2701,77 +2904,7 @@ mod attachment_holds {
         recall.relates_to = Some(MsgRelation { rel: MsgRelType::Redact, target: shared_id, key: None });
         assert!(c.accept_group_message(&actor(owner()), recall, None).await.unwrap().ok);
         assert!(c.handle_post_send(forward.clone(), None, context(&member())).await.is_err());
-        assert!(!holds(&mgr, &group_file, &forward.gen_obj_id().0).await);
-    }
-
-    #[tokio::test]
-    async fn attachments_are_held_while_a_message_references_them() {
-        let (c, tmp, _) = center().await;
-        let mgr = open_store(&tmp.path().join("store")).await;
-        let flaky = Arc::new(Flaky { store: mgr.clone(), fail: AtomicBool::new(false) });
-        c.set_attachment_store(flaky.clone());
-        create(&c, json!({})).await;
-        join(&c, &member()).await;
-        call(&c, &owner(), "group.create_session", json!({"session_id":"files"})).await.unwrap();
-        let (only_group, _) = snapshot(&mgr, "a.txt", b"only in the group").await;
-        let (shared, _) = snapshot(&mgr, "b.txt", b"in the group and a direct message").await;
-        let (inbound, inbound_chunk) = snapshot(&mgr, "c.txt", b"dispatched to the owner").await;
-
-        // Hosted group, local send and dispatch all hold before they accept.
-        let group_msg = with_refs(message(&owner(), Some("files"), "files", 1), &[&only_group, &shared]);
-        assert!(c.accept_group_message(&actor(owner()), group_msg.clone(), None).await.unwrap().ok);
-        let group_id = group_msg.gen_obj_id().0;
-        let dm = with_refs(direct(&owner(), &member(), "for you", 2), &[&shared]);
-        let dm_id = c.post_send_internal(dm, None).await.unwrap().msg_id;
-        let incoming = with_refs(direct(&member(), &owner(), "for you too", 3), &[&inbound]);
-        let incoming_id = incoming.gen_obj_id().0;
-        assert!(c.handle_dispatch(incoming, None, None, context(&member())).await.unwrap().ok);
-        assert!(holds(&mgr, &only_group, &group_id).await && holds(&mgr, &shared, &group_id).await);
-        assert!(holds(&mgr, &shared, &dm_id).await);
-        assert!(holds(&mgr, &inbound, &incoming_id).await);
-        assert_eq!(rows(&c, "held").await, 4);
-
-        // The shares stop; GC keeps everything messages reference.
-        for id in [&only_group, &shared, &inbound] {
-            mgr.unpin(id, "share:s").await.unwrap();
-        }
-        assert_eq!(run_gc(&mgr).await.evicted_objects, 0);
-
-        // A recall ends the group message: its holds go, the direct message keeps the shared file.
-        let mut recall = message(&owner(), Some("files"), "", 4);
-        recall.relates_to = Some(MsgRelation { rel: MsgRelType::Redact, target: group_id.clone(), key: None });
-        assert!(c.accept_group_message(&actor(owner()), recall, None).await.unwrap().ok);
-        assert_eq!(rows(&c, "releasing").await, 2);
-        let report = c.reconcile_attachments(0).await.unwrap();
-        assert_eq!(report.released, 2, "{report:?}");
-        assert!(!holds(&mgr, &only_group, &group_id).await && !holds(&mgr, &shared, &group_id).await);
-        assert!(holds(&mgr, &shared, &dm_id).await);
-        assert_eq!(run_gc(&mgr).await.evicted_objects, 1);
-        assert!(!mgr.is_object_exist(&only_group).await.unwrap());
-        assert!(mgr.is_object_exist(&shared).await.unwrap() && mgr.is_object_exist(&inbound).await.unwrap());
-
-        // A failed pin fails the send; the reconcile drops the half-made hold; a retry works.
-        let (late, _) = snapshot(&mgr, "d.txt", b"sent while the store failed").await;
-        let retry = with_refs(direct(&owner(), &member(), "retry", 5), &[&late]);
-        flaky.fail.store(true, Ordering::SeqCst);
-        assert!(c.post_send_internal(retry.clone(), None).await.is_err());
-        assert_eq!(rows(&c, "pending").await, 1);
-        c.reconcile_attachments(0).await.unwrap();
-        assert_eq!(rows(&c, "pending").await, 0);
-        flaky.fail.store(false, Ordering::SeqCst);
-        let retry_id = c.post_send_internal(retry, None).await.unwrap().msg_id;
-        assert!(holds(&mgr, &late, &retry_id).await);
-
-        // Backfill: messages accepted before holds were recorded get them once; unreadable content is reported.
-        mgr.unpin(&shared, &attachment_owner(&dm_id)).await.unwrap();
-        for sql in ["DELETE FROM msg_attachment_retentions WHERE msg_id=?", "DELETE FROM msg_attachment_meta WHERE name<>?"] {
-            sqlx::query(&c.msg_box_db.render_sql(sql)).bind(dm_id.to_string()).execute(c.msg_box_db.pool()).await.unwrap();
-        }
-        mgr.remove_chunk(&ndn_lib::ChunkId::from_obj_id(&inbound_chunk)).await.unwrap();
-        let report = c.reconcile_attachments(0).await.unwrap();
-        assert_eq!(report.backfilled_messages, 1, "{report:?}");
-        assert!(holds(&mgr, &shared, &dm_id).await);
-        assert_eq!(report.issues, vec![(incoming_id.to_string(), inbound.to_string(), "content_missing".to_string())]);
+        assert_eq!(bound(&b, &attachments(), &att_key(&forward, 0)).await, None);
     }
 }
 

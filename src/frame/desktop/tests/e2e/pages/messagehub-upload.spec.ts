@@ -152,6 +152,26 @@ test('a file attachment downloads from its own button', async ({ page }) => {
   await expect(page.getByTestId('messagehub-media-viewer')).toHaveCount(0)
 })
 
+test('an attachment is saved to the viewer\'s collection through its message', async ({ page }) => {
+  await page.route('https://upload.wikimedia.org/**', route => route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600"/>' }))
+  await page.goto(`/messagehub?entityId=${encodeURIComponent(ALICE)}`)
+  const card = page.getByTestId('conversation-history').getByTestId('attachment-file').filter({ hasText: 'design-brief.pdf' })
+  await expect(card).toBeVisible({ timeout: 15_000 })
+  await card.scrollIntoViewIfNeeded()
+  await card.getByRole('button', { name: 'Save design-brief.pdf to my collection', exact: true }).click()
+  const saved = card.getByRole('button', { name: 'Saved to my collection', exact: true })
+  await expect(saved).toHaveAttribute('data-state', 'saved')
+  await page.screenshot({ path: 'test-results/messagehub-attachment-collect.png' })
+  const collected = await page.evaluate(async () => {
+    const modulePath = '/src/app/messagehub/mock/objects.ts'
+    const { mockCollected } = await import(modulePath)
+    return [...mockCollected.entries()]
+  })
+  expect(collected).toHaveLength(1)
+  expect(collected[0][0]).toMatch(/\/design-brief\.pdf$/)
+  expect(collected[0][1]).toBe('cyfile:mock-doc-brief')
+})
+
 test('directory enumeration retains empty nodes and reports file or reader failures', async ({ page }) => {
   await page.goto('/messagehub')
   const result = await page.evaluate(async () => {

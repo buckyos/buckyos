@@ -8,6 +8,7 @@ import {
   ArgError,
   bailArgError,
   COMMON_OPTIONS_HELP,
+  DELIVERY_HELP,
   parseArgvOrExit,
   requireString,
 } from "../lib/cli.ts";
@@ -17,8 +18,8 @@ import type { TypedRequestMap } from "../lib/aicc.ts";
 import {
   pickArtifact,
   resolveInputResource,
-  saveArtifactToPath,
-  suffixPathByMime,
+  deliverArtifact,
+  deliveredSummary,
 } from "../lib/io.ts";
 import {
   bailAiccError,
@@ -36,17 +37,17 @@ import {
 const TOOL = "remove_bg";
 const METHOD = "image.bg_remove";
 
-export const HELP = `Usage: remove_bg <input_image> <output_image> [options]
+export const HELP = `Usage: remove_bg <input_image> [output_image] [options]
 
 Options:
   --mode <rgba_image|mask>
-${COMMON_OPTIONS_HELP}`;
+${COMMON_OPTIONS_HELP}${DELIVERY_HELP}`;
 
 const MODE = new Set(["rgba_image", "mask"]);
 
 export async function run(argv: string[]): Promise<never> {
   const parsed = parseArgvOrExit(TOOL, HELP, argv);
-  if (parsed.positional.length < 2) {
+  if (parsed.positional.length < 1) {
     emitAndExit(
       errorResult(TOOL, `${TOOL} => arg_error`, HELP, {
         error: "missing positional",
@@ -100,27 +101,21 @@ export async function run(argv: string[]): Promise<never> {
   const ndmProxy = (ndm_proxy as any).createNdmProxyClient();
   let saved;
   try {
-    saved = await saveArtifactToPath(
-      artifact,
-      suffixPathByMime(outputPath, "image/png"),
-      ndmProxy,
-    );
+    saved = await deliverArtifact(runtime, call.summary, artifact, ndmProxy, {
+      tool: TOOL,
+      path: outputPath,
+      defaultMime: "image/png",
+    });
   } catch (err) {
     bailIoError(TOOL, call.taskId, err);
   }
 
   emitAndExit(
-    successResult(TOOL, `${TOOL} => done`, `${TOOL} wrote ${saved.path}`, {
+    successResult(TOOL, `${TOOL} => done`, deliveredSummary(TOOL, [saved]), {
       method: METHOD,
       capability: "image",
       task_id: call.taskId,
-      files: [{
-        path: saved.path,
-        mime: saved.mime ?? null,
-        bytes: saved.bytes,
-        source_kind: saved.source_kind,
-        obj_id: saved.obj_id ?? null,
-      }],
+      files: [saved],
     }),
     EXIT_SUCCESS,
   );

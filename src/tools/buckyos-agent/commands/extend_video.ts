@@ -7,6 +7,7 @@ import {
   ArgError,
   bailArgError,
   COMMON_OPTIONS_HELP,
+  DELIVERY_HELP,
   flagInt,
   parseArgvOrExit,
   requireString,
@@ -17,8 +18,8 @@ import { callAicc, commonPolicyOptions, describeFailure } from "../lib/aicc.ts";
 import type { TypedRequestMap } from "../lib/aicc.ts";
 import {
   resolveInputResource,
-  saveArtifactToPath,
-  suffixPathByMime,
+  deliverArtifact,
+  deliveredSummary,
 } from "../lib/io.ts";
 import {
   bailAiccError,
@@ -38,19 +39,19 @@ const TOOL = "extend_video";
 const METHOD = "video.extend";
 
 export const HELP =
-  `Usage: extend_video <previous_video> <prompt> <output_video> [options]
+  `Usage: extend_video <previous_video> <prompt> [output_video] [options]
 
 Options:
   --continuation-handle <provider_handle>  Optional; AICC restores it from the source task when available
   --duration <seconds>
   --resolution <720p|1080p|4k>
-${COMMON_OPTIONS_HELP}`;
+${COMMON_OPTIONS_HELP}${DELIVERY_HELP}`;
 
 const RESOLUTION = new Set(["720p", "1080p", "4k"]);
 
 export async function run(argv: string[]): Promise<never> {
   const parsed = parseArgvOrExit(TOOL, HELP, argv);
-  if (parsed.positional.length < 3) {
+  if (parsed.positional.length < 2) {
     emitAndExit(
       errorResult(TOOL, `${TOOL} => arg_error`, HELP, {
         error: "missing positional",
@@ -134,27 +135,21 @@ export async function run(argv: string[]): Promise<never> {
   const ndmProxy = (ndm_proxy as any).createNdmProxyClient();
   let saved;
   try {
-    saved = await saveArtifactToPath(
-      artifact,
-      suffixPathByMime(outputPath, "video/mp4"),
-      ndmProxy,
-    );
+    saved = await deliverArtifact(runtime, call.summary, artifact, ndmProxy, {
+      tool: TOOL,
+      path: outputPath,
+      defaultMime: "video/mp4",
+    });
   } catch (err) {
     bailIoError(TOOL, call.taskId, err);
   }
 
   emitAndExit(
-    successResult(TOOL, `${TOOL} => done`, `${TOOL} wrote ${saved.path}`, {
+    successResult(TOOL, `${TOOL} => done`, deliveredSummary(TOOL, [saved]), {
       method: METHOD,
       capability: "video",
       task_id: call.taskId,
-      files: [{
-        path: saved.path,
-        mime: saved.mime ?? null,
-        bytes: saved.bytes,
-        source_kind: saved.source_kind,
-        obj_id: saved.obj_id ?? null,
-      }],
+      files: [saved],
     }),
     EXIT_SUCCESS,
   );

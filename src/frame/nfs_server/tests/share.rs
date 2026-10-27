@@ -1,6 +1,7 @@
 //! Share module over real HTTP (design §5 M1): snapshot shares in a temporary
 //! named store, the `/s/{token}` data plane, policy changes, app handoffs,
-//! sweeper expiry and statistics. Tokens are signed like verify-hub session
+//! sweeper expiry, statistics and snapshot retention through the bucket
+//! `zone/nfs-server/_/shares`. Tokens are signed like verify-hub session
 //! tokens (test key, same as tests/acl.rs).
 
 use buckyos_api::*;
@@ -223,7 +224,10 @@ async fn file_share_lifecycle() {
     let got = alice.ok("share.get", json!({"share_id": share["share_id"]})).await;
     assert_eq!(got["url"], url);
     assert_eq!(got["audit"][0]["action"], "create");
-    assert!(got["retention"][0]["pin_owner"].as_str().unwrap().starts_with("share:"));
+    assert_eq!(got["retained"], true);
+    assert_eq!(got["retention"][0]["bucket_id"], "zone/nfs-server/_/shares");
+    assert_eq!(got["retention"][0]["key"], share["share_id"]);
+    assert_eq!(got["retention"][0]["obj_id"], share["obj_id"]);
     std::fs::write(srv.data.join("home/alice/report.txt"), b"hello share world").unwrap();
     let plan = alice.ok("share.plan", json!({"source": {"path": "home/alice/report.txt"}})).await;
     assert_eq!(plan["existing"].as_array().unwrap().len(), 1);
@@ -251,7 +255,8 @@ async fn file_share_lifecycle() {
     let unknown = srv.get("/s/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").send().await.unwrap();
     assert_eq!(unknown.status(), 404);
     let got = alice.ok("share.get", json!({"share_id": share["share_id"]})).await;
-    assert!(got["retention"][0]["released_at"].is_i64());
+    assert_eq!(got["retained"], false);
+    assert_eq!(got["retention"], json!([]));
     assert_eq!(got["audit"][0]["action"], "stop");
 }
 
@@ -497,7 +502,7 @@ async fn expiry_sweeper_and_stats() {
     nfs_server::share::sweep_once(&srv.state).await;
     let got = alice.ok("share.get", json!({"share_id": share_id})).await;
     assert_eq!(got["status"], "expired");
-    assert!(got["retention"][0]["released_at"].is_i64());
+    assert_eq!(got["retention"], json!([]));
     assert_eq!(got["audit"][0]["action"], "expire");
     assert_eq!(got["audit"][0]["source"], "system");
     let upd = alice.err("share.update", json!({"share_id": share_id, "revision": got["revision"], "changes": {"title": "x"}})).await;
@@ -699,7 +704,8 @@ async fn run_gc(state: &SharedState) -> named_store::GcReport {
 }
 
 #[tokio::test]
-async fn unpin_failure_keeps_stopping_until_sweeper_releases() {
+async fn snapshots_are_retained_by_the_shares_bucket() {
+    use bucket_store::{BucketError, Caller, PutRequest};
     let srv = start().await;
     let alice = srv.client("alice").await;
     let first = alice.create("home/alice/report.txt", json!({"access": "holder"})).await;
@@ -709,50 +715,56 @@ async fn unpin_failure_keeps_stopping_until_sweeper_releases() {
     let (a, b) = (first["share_id"].as_str().unwrap().to_string(), second["share_id"].as_str().unwrap().to_string());
     let (ta, tb) = (token_of(first["url"].as_str().unwrap()), token_of(second["url"].as_str().unwrap()));
     let oid = ndn_lib::ObjId::new(&obj_id).unwrap();
-    let pin_of = |id: &str| format!("share:{id}");
-
-    // Another writer holds the named store database: unpin fails with "database is locked".
-    let blocker = rusqlite::Connection::open(srv.data.parent().unwrap().join("store/named_store.db")).unwrap();
-    blocker.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    let bucket = nfs_share_bucket();
+    let owner = bucket.pin_owner();
+    let buckets = srv.state.buckets.store(&srv.state).await.unwrap().clone();
+    let bound = |key: String| {
+        let buckets = buckets.clone();
+        let bucket = bucket.clone();
+        async move { buckets.get(&bucket, &Caller::system(), &key, None).await }
+    };
+    for id in [&a, &b] {
+        assert_eq!(bound(id.clone()).await.unwrap().obj_id.as_deref(), Some(obj_id.as_str()));
+    }
+    let mgr = srv.state.share.store(&srv.state.config).await.unwrap();
+    assert!(mgr.anchor_state(&oid, &owner).await.is_ok(), "the bucket pins the snapshot once");
 
     let stopped = alice.ok("share.stop", json!({"share_id": a, "revision": 1})).await;
-    assert_eq!(stopped["status"], "stopping");
+    assert_eq!(stopped["status"], "stopped");
     for path in [format!("/s/{ta}"), format!("/s/{ta}/meta"), format!("/s/{ta}/d")] {
         assert_eq!(srv.get(&path).send().await.unwrap().status(), 404, "visitors lose access at once: {path}");
     }
-    nfs_server::share::sweep_once(&srv.state).await;
-    let got = alice.ok("share.get", json!({"share_id": a})).await;
-    assert_eq!(got["status"], "stopping", "a failed retry keeps the share stopping");
-    assert!(got["retention"][0]["released_at"].is_null());
-    let mgr = srv.state.share.store(&srv.state.config).await.unwrap();
-    assert!(mgr.anchor_state(&oid, &pin_of(&a)).await.is_ok(), "pin still held");
+    assert!(matches!(bound(a.clone()).await, Err(BucketError::NoSuchKey(_))));
+    assert!(mgr.anchor_state(&oid, &owner).await.is_ok(), "the other share still retains the snapshot");
 
-    // Storage recovers; a restarted server's sweeper finishes the stop.
-    blocker.execute_batch("ROLLBACK").unwrap();
-    drop(blocker);
-    let restarted = AppState::new(srv.state.config.clone()).unwrap();
-    nfs_server::share::sweep_once(&restarted).await;
-    nfs_server::share::sweep_once(&restarted).await;
-    let got = alice.ok("share.get", json!({"share_id": a})).await;
-    assert_eq!(got["status"], "stopped");
-    assert!(got["retention"][0]["released_at"].is_i64());
-    assert_eq!(got["audit"].as_array().unwrap().iter().filter(|e| e["action"] == "stop").count(), 1);
-    let mgr = restarted.share.store(&restarted.config).await.unwrap();
-    assert!(matches!(mgr.anchor_state(&oid, &pin_of(&a)).await, Err(ndn_lib::NdnError::NotFound(_))));
-    assert!(mgr.anchor_state(&oid, &pin_of(&b)).await.is_ok(), "the other share keeps its own pin");
-
-    // GC with the remaining share's pin: the snapshot and its chunk stay protected.
-    let report = run_gc(&restarted).await;
+    // GC with the remaining share's binding: the snapshot and its chunk stay protected.
+    let report = run_gc(&srv.state).await;
     assert_eq!(report.evicted_objects, 0, "{report:?}");
-    let chunk = content_chunk(&restarted, &oid).await;
+    let chunk = content_chunk(&srv.state, &oid).await;
     assert_eq!(mgr.debug_dump_expand_state(&oid).await.unwrap().eviction_class, 2);
     assert_eq!(mgr.debug_dump_expand_state(&chunk).await.unwrap().eviction_class, 1);
     let body = srv.get(&format!("/s/{tb}/d")).send().await.unwrap();
     assert_eq!(body.text().await.unwrap(), "hello share world");
 
-    // Once the last share stops, the snapshot is collected and its chunk loses protection.
+    // A key whose release failed is removed by the startup reconciliation; active shares keep theirs.
+    let stray = PutRequest { key: "sh_stray".into(), obj_id: obj_id.clone(), ..Default::default() };
+    buckets.put(&bucket, &Caller::system(), stray).await.unwrap();
+    let restarted = AppState::new(srv.state.config.clone()).unwrap();
+    nfs_server::share::reconcile_retention(&restarted, 0).await.unwrap();
+    assert!(matches!(bound("sh_stray".into()).await, Err(BucketError::NoSuchKey(_))));
+    assert!(bound(b.clone()).await.is_ok());
+
+    // The last stop completes even while the named store is busy; the bucket's own
+    // reconcile releases the pin once the store answers again.
+    let blocker = rusqlite::Connection::open(srv.data.parent().unwrap().join("store/named_store.db")).unwrap();
+    blocker.execute_batch("BEGIN EXCLUSIVE").unwrap();
     assert_eq!(alice.ok("share.stop", json!({"share_id": b, "revision": 1})).await["status"], "stopped");
-    assert_eq!(run_gc(&restarted).await.evicted_objects, 1);
+    blocker.execute_batch("ROLLBACK").unwrap();
+    drop(blocker);
+    assert!(matches!(bound(b.clone()).await, Err(BucketError::NoSuchKey(_))));
+    buckets.reconcile(false).await.unwrap();
+    assert!(matches!(mgr.anchor_state(&oid, &owner).await, Err(ndn_lib::NdnError::NotFound(_))));
+    assert_eq!(run_gc(&srv.state).await.evicted_objects, 1);
     assert!(!mgr.is_object_exist(&oid).await.unwrap());
     assert_eq!(mgr.debug_dump_expand_state(&chunk).await.unwrap().eviction_class, 0);
 }

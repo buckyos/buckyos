@@ -497,11 +497,9 @@ export default async function main(aiws) {{
         assert_eq!((f["items"][0]["status"].as_str(), f["items"][0]["external_data"].as_bool()), (Some("current"), Some(true)));
         // W18: a package carries the program (its source asset), the dependency records and the bindings
         let ex = srv.rpc("doc.export", json!({ "mode": "share", "self_contained": true })).await;
-        let pkg = srv.http.get(format!("{}/export/{}/{}", srv.base, srv.ws, ex["export_id"].as_str().unwrap())).bearer_auth("tok-alice").send().await.unwrap().bytes().await.unwrap();
-        let begin = srv.rpc("ws.begin_import", json!({})).await;
-        let put = srv.http.put(format!("{}/upload/{}", srv.base, begin["upload_id"].as_str().unwrap())).bearer_auth("tok-alice").body(pkg.to_vec()).send().await.unwrap();
-        assert!(put.status().is_success());
-        let imported = srv.rpc("ws.import", json!({ "upload_id": begin["upload_id"], "semantics": "new" })).await;
+        let pkg = srv.nfs.fetch(&ex["download"]).await;
+        let package = srv.nfs.put("alice", "exports", "import/w18.bcanvas", pkg).await;
+        let imported = srv.rpc("ws.import", json!({ "bucket_id": package["bucket_id"], "key": package["key"], "semantics": "new" })).await;
         let ws2 = imported["workspace_id"].as_str().unwrap().to_string();
         let w2 = srv.rpc("doc.read", json!({ "workspace_id": ws2, "entity_id": "w" })).await["content"]["payload"].clone();
         assert_eq!(w2["program"]["digest"], w["program"]["digest"]);

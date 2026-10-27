@@ -370,13 +370,15 @@ impl SystemConfigBuilder {
         // control-panel available through the existing scheduling pipeline.
         let service_doc = generate_control_panel_service_doc();
 
-        let config = build_kernel_service_spec(
+        let mut config = build_kernel_service_spec(
             CONTROL_PANEL_SERVICE_UNIQUE_ID,
             CONTROL_PANEL_SERVICE_PORT,
             1,
             service_doc,
         )
         .await?;
+        config.spec_config.buckets = buckyos_api::control_panel_bucket_decls();
+        config.spec_config.storage_quota_mib = Some(buckyos_api::CONTROL_PANEL_STORAGE_QUOTA_MIB);
 
         self.insert_json("services/control-panel/spec", &config)?;
         Ok(self)
@@ -460,6 +462,8 @@ impl SystemConfigBuilder {
             buckyos_api::AICC_USAGE_LOG_RDB_INSTANCE_ID.to_string(),
             buckyos_api::aicc_usage_log_default_rdb_instance_config(),
         );
+        service_spec.spec_config.buckets = buckyos_api::aicc_bucket_decls();
+        service_spec.spec_config.storage_quota_mib = Some(buckyos_api::AICC_STORAGE_QUOTA_MIB);
         self.insert_json("services/aicc/spec", &service_spec)?;
         let sn_ai_provider_endpoints = if config.llm_router_enabled() {
             Some(derive_sn_ai_provider_endpoints(zone_sn)?)
@@ -485,6 +489,9 @@ impl SystemConfigBuilder {
             buckyos_api::MSG_CENTER_RDB_INSTANCE_ID.to_string(),
             buckyos_api::msg_center_default_rdb_instance_config(),
         );
+        service_spec.spec_config.buckets = buckyos_api::msg_center_bucket_decls();
+        service_spec.spec_config.storage_quota_mib =
+            Some(buckyos_api::MSG_CENTER_STORAGE_QUOTA_MIB);
         self.insert_json("services/msg-center/spec", &service_spec)?;
         let settings = build_msg_center_settings(config);
         self.insert_json_if_absent("services/msg-center/settings", &settings)?;
@@ -535,6 +542,8 @@ impl SystemConfigBuilder {
             buckyos_api::REPO_SERVICE_RDB_INSTANCE_ID.to_string(),
             buckyos_api::repo_service_default_rdb_instance_config(),
         );
+        config.spec_config.buckets = buckyos_api::repo_service_bucket_decls();
+        config.spec_config.storage_quota_mib = Some(buckyos_api::REPO_SERVICE_STORAGE_QUOTA_MIB);
         self.insert_json("services/repo-service/spec", &config)?;
 
         let settings = RepoServiceSettings {
@@ -595,6 +604,8 @@ impl SystemConfigBuilder {
             buckyos_api::BUCKET_INDEX_RDB_INSTANCE_ID.to_string(),
             buckyos_api::bucket_index_rdb_instance_config(),
         );
+        config.spec_config.buckets = buckyos_api::nfs_server_bucket_decls();
+        config.spec_config.storage_quota_mib = Some(buckyos_api::NFS_SERVER_STORAGE_QUOTA_MIB);
         self.insert_json("services/nfs-server/spec", &config)?;
 
         let settings = NfsServerSettings::default();
@@ -605,13 +616,15 @@ impl SystemConfigBuilder {
     pub async fn add_aiworkspace(&mut self) -> Result<&mut Self> {
         let service_doc = generate_aiworkspace_doc();
         // reached through the generic /kapi/aiworkspace gateway route
-        let config = build_kernel_service_spec(
+        let mut config = build_kernel_service_spec(
             AIWORKSPACE_UNIQUE_ID,
             AIWORKSPACE_SERVICE_PORT,
             1,
             service_doc,
         )
         .await?;
+        config.spec_config.buckets = buckyos_api::aiworkspace_bucket_decls();
+        config.spec_config.storage_quota_mib = Some(buckyos_api::AIWORKSPACE_STORAGE_QUOTA_MIB);
         self.insert_json("services/aiworkspace/spec", &config)?;
 
         let settings = AiWorkspaceSettings::default();
@@ -623,13 +636,19 @@ impl SystemConfigBuilder {
         let service_doc = generate_homestation_doc();
         // owner kRPC through the generic /kapi/homestation route; the zone-level /home/
         // protocol paths are forwarded by boot_gateway.yaml
-        let config = build_kernel_service_spec(
+        let mut config = build_kernel_service_spec(
             HOMESTATION_UNIQUE_ID,
             HOMESTATION_SERVICE_PORT,
             1,
             service_doc,
         )
         .await?;
+        config.spec_config.rdb_instances.insert(
+            buckyos_api::HOMESTATION_RDB_INSTANCE_ID.to_string(),
+            buckyos_api::homestation_default_rdb_instance_config(),
+        );
+        config.spec_config.buckets = buckyos_api::homestation_bucket_decls();
+        config.spec_config.storage_quota_mib = Some(buckyos_api::HOMESTATION_STORAGE_QUOTA_MIB);
         self.insert_json("services/homestation/spec", &config)?;
 
         let settings = HomeStationSettings::default();

@@ -437,6 +437,7 @@ impl RuntimeProviderExecutionPort {
             })?;
         let resource = artifact.resource.clone();
         output.value = json!({"data": [], "data_resource": resource});
+        append_materialized_artifact_metadata(&mut output.value, &artifact);
         output.artifacts.push(artifact);
         Ok(output)
     }
@@ -566,12 +567,7 @@ impl RuntimeProviderExecutionPort {
                     }
                 }
             }
-            append_materialized_artifact_metadata(
-                &mut output.value,
-                obj_id.to_string(),
-                artifact.name.clone(),
-                artifact.mime.clone(),
-            );
+            append_materialized_artifact_metadata(&mut output.value, &artifact);
             output.artifacts[index] = artifact;
         }
         let mut value_resources = Vec::new();
@@ -616,12 +612,7 @@ impl RuntimeProviderExecutionPort {
                     ProtocolError::invalid_configuration("inline artifact ownership write failed")
                 })?;
             replace_resource_ref_value(&mut output.value, &resource, &artifact.resource)?;
-            append_materialized_artifact_metadata(
-                &mut output.value,
-                obj_id.to_string(),
-                artifact.name.clone(),
-                artifact.mime.clone(),
-            );
+            append_materialized_artifact_metadata(&mut output.value, &artifact);
             output.artifacts.push(artifact);
         }
         assert_materialized_output_has_no_inline_payloads(&output, &inline_payloads)?;

@@ -7,7 +7,7 @@ use common::*;
 use serde_json::{json, Value};
 
 async fn upload(net: &Net, name: &str, file: &str, mime: &str, data: Vec<u8>) -> Value {
-    let (id, object) = net.n(name).station.store_file(file, mime, data, json!({ "width": 4, "height": 3 })).await.unwrap();
+    let (id, object) = net.n(name).station.store_file(&format!("uploads/{file}"), file, mime, data, json!({ "width": 4, "height": 3 })).await.unwrap();
     json!({ "objId": id, "file": homestation::projection::file_view(&object), "object": object })
 }
 
@@ -140,7 +140,7 @@ async fn followed_candidates_view() {
     let with_read = net.rpc("bob", "candidates.list", json!({ "limit": 50, "includeRead": true })).await;
     assert_eq!(with_read["entries"].as_array().unwrap().len(), 5);
     // Admitted items never reappear as "never admitted", even after leaving the window (A39).
-    bob.station.db.call(|c| Ok(c.execute("DELETE FROM reading", [])?)).await.unwrap();
+    bob.station.db.call(|c| Ok(c.execute("DELETE FROM reading WHERE owner=?1", [c.owner])?)).await.unwrap();
     let followed = net.rpc("bob", "candidates.list", json!({ "limit": 50 })).await;
     assert_eq!(followed["entries"].as_array().unwrap().len(), 4);
 }

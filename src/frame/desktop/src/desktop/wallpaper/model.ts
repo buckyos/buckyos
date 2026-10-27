@@ -29,9 +29,9 @@ export const defaultWallpaperPreferences: WallpaperPreferences = {
   focusY: 50,
 }
 
-/** The picture as the account names it: a file in the user's home, by content-hash name. */
+/** The picture as the account names it: `obj://bucket/user/control-panel/{user}/wallpapers/{sha256[..32]}.{ext}`. */
 export interface AccountWallpaperImage {
-  asset: string
+  ref: string
   width: number
   height: number
   name: string
@@ -52,15 +52,15 @@ export interface WallpaperImageRef {
   name: string
 }
 
-const ASSET_NAME = /^[0-9a-f]{32}\.(jpg|png|gif|webp|avif)$/
+const PICTURE_REF = /^obj:\/\/bucket\/user\/control-panel\/[A-Za-z0-9._-]{1,128}\/wallpapers\/[0-9a-f]{32}\.(jpg|png|gif|webp|avif)$/
 
 function normalizeImage(raw: unknown): AccountWallpaperImage | null {
   if (!raw || typeof raw !== 'object') return null
   const value = raw as Record<string, unknown>
-  const { asset, width, height, name } = value
-  if (typeof asset !== 'string' || !ASSET_NAME.test(asset)) return null
+  const { ref, width, height, name } = value
+  if (typeof ref !== 'string' || !PICTURE_REF.test(ref)) return null
   if (typeof width !== 'number' || typeof height !== 'number' || !(width > 0) || !(height > 0)) return null
-  return { asset, width: Math.round(width), height: Math.round(height), name: typeof name === 'string' ? name.slice(0, 255) : '' }
+  return { ref, width: Math.round(width), height: Math.round(height), name: typeof name === 'string' ? name.slice(0, 255) : '' }
 }
 
 /** A stored or remote wallpaper from any JSON; an unusable picture reference becomes none. */

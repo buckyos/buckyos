@@ -27,6 +27,7 @@ pub struct RepoObjectRecord {
     pub access_policy: String,
     pub price: Option<String>,
     pub content_size: Option<u64>,
+    pub bucket_key: Option<String>,
     pub collected_at: Option<u64>,
     pub pinned_at: Option<u64>,
     pub updated_at: Option<u64>,
@@ -147,8 +148,8 @@ impl RepoDb {
         let sql = self.render_sql(
             "INSERT INTO objects (
                 content_id, content_name, status, origin, meta, owner_did, author,
-                access_policy, price, content_size, collected_at, pinned_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                access_policy, price, content_size, bucket_key, collected_at, pinned_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(content_id) DO UPDATE SET
                 content_name = excluded.content_name,
                 status = excluded.status,
@@ -159,6 +160,7 @@ impl RepoDb {
                 access_policy = excluded.access_policy,
                 price = excluded.price,
                 content_size = excluded.content_size,
+                bucket_key = excluded.bucket_key,
                 collected_at = excluded.collected_at,
                 pinned_at = excluded.pinned_at,
                 updated_at = excluded.updated_at",
@@ -174,6 +176,7 @@ impl RepoDb {
             .bind(record.access_policy)
             .bind(record.price)
             .bind(u64_to_i64_opt(record.content_size))
+            .bind(record.bucket_key)
             .bind(u64_to_i64_opt(record.collected_at))
             .bind(u64_to_i64_opt(record.pinned_at))
             .bind(u64_to_i64_opt(record.updated_at))
@@ -185,7 +188,7 @@ impl RepoDb {
     pub async fn get_object(&self, content_id: &str) -> DbResult<Option<RepoObjectRecord>> {
         let sql = self.render_sql(
             "SELECT content_id, content_name, status, origin, meta, owner_did, author,
-                    access_policy, price, content_size, collected_at, pinned_at, updated_at
+                    access_policy, price, content_size, bucket_key, collected_at, pinned_at, updated_at
              FROM objects
              WHERE content_id = ?",
         );
@@ -199,7 +202,7 @@ impl RepoDb {
     pub async fn list_objects(&self) -> DbResult<Vec<RepoObjectRecord>> {
         let sql = self.render_sql(
             "SELECT content_id, content_name, status, origin, meta, owner_did, author,
-                    access_policy, price, content_size, collected_at, pinned_at, updated_at
+                    access_policy, price, content_size, bucket_key, collected_at, pinned_at, updated_at
              FROM objects
              ORDER BY updated_at DESC, collected_at DESC",
         );
@@ -292,6 +295,51 @@ impl RepoDb {
         Ok(())
     }
 
+    /// Queues an announce request; a later request for the same content replaces it.
+    pub async fn upsert_announce(
+        &self,
+        content_id: &str,
+        content_name: Option<&str>,
+        meta: &Value,
+        requested_at: u64,
+    ) -> DbResult<()> {
+        let sql = self.render_sql(
+            "INSERT INTO pending_announces (content_id, content_name, meta, requested_at)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(content_id) DO UPDATE SET
+                content_name = excluded.content_name,
+                meta = excluded.meta,
+                requested_at = excluded.requested_at",
+        );
+        sqlx::query(&sql)
+            .bind(content_id.to_string())
+            .bind(content_name.map(str::to_string))
+            .bind(meta.to_string())
+            .bind(requested_at as i64)
+            .execute(self.pool())
+            .await?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub async fn list_announces(&self) -> DbResult<Vec<(String, Value, u64)>> {
+        let rows = sqlx::query(
+            "SELECT content_id, meta, requested_at FROM pending_announces ORDER BY requested_at ASC",
+        )
+        .fetch_all(self.pool())
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                let meta: String = row.try_get("meta")?;
+                Ok((
+                    row.try_get("content_id")?,
+                    serde_json::from_str(&meta).unwrap_or(Value::Null),
+                    row.try_get::<i64, _>("requested_at")?.max(0) as u64,
+                ))
+            })
+            .collect()
+    }
+
     pub async fn stat(&self) -> DbResult<RepoDbStat> {
         Ok(RepoDbStat {
             total_objects: self.scalar_u64("SELECT COUNT(*) FROM objects").await?,
@@ -354,6 +402,7 @@ fn object_from_row(row: AnyRow) -> DbResult<RepoObjectRecord> {
         access_policy: row.try_get("access_policy")?,
         price: row.try_get("price")?,
         content_size: i64_opt_to_u64(row.try_get("content_size")?),
+        bucket_key: row.try_get("bucket_key")?,
         collected_at: i64_opt_to_u64(row.try_get("collected_at")?),
         pinned_at: i64_opt_to_u64(row.try_get("pinned_at")?),
         updated_at: i64_opt_to_u64(row.try_get("updated_at")?),
@@ -462,6 +511,7 @@ mod tests {
             access_policy: "free".to_string(),
             price: None,
             content_size: Some(12),
+            bucket_key: Some("demo/mix256:test".to_string()),
             collected_at: Some(1),
             pinned_at: Some(2),
             updated_at: Some(3),
@@ -490,6 +540,7 @@ mod tests {
             .expect("load object")
             .expect("object exists");
         assert_eq!(object.content_name.as_deref(), Some("demo"));
+        assert_eq!(object.bucket_key.as_deref(), Some("demo/mix256:test"));
 
         let proofs = db.list_proofs("mix256:test").await.expect("load proofs");
         assert_eq!(proofs.len(), 1);
@@ -497,6 +548,18 @@ mod tests {
         let stat = db.stat().await.expect("load stat");
         assert_eq!(stat.total_objects, 1);
         assert_eq!(stat.total_proofs, 1);
+
+        let meta = serde_json::json!({"content_name": "demo"});
+        db.upsert_announce("mix256:test", Some("demo"), &meta, 5)
+            .await
+            .expect("queue announce");
+        db.upsert_announce("mix256:test", Some("demo"), &meta, 6)
+            .await
+            .expect("queue announce again");
+        assert_eq!(
+            db.list_announces().await.expect("list announces"),
+            vec![("mix256:test".to_string(), meta, 6)]
+        );
     }
 
     #[test]

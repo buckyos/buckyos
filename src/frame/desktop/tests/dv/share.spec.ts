@@ -194,7 +194,15 @@ test.describe.serial('sharing on a real zone', () => {
     const delivery = (await nfsp.call('share.list', { q: folder, kind: 'app_delivery' })).items.find((s: { name: string }) => s.name === 'report.pdf')
     await expect.poll(async () => (await nfsp.call('share.get', { share_id: delivery.share_id })).delivery_state).toBe('confirmed')
     const recipient = await login(browser, peer)
-    const content = await recipient.context.request.get(`${origin}/kapi/msg-center/objects/${delivery.obj_id}/content`, { headers: { Authorization: `Bearer ${recipient.token}` } })
+    // msg-center serves an attachment through the message that carries it (`context_path=<msg_id>`).
+    const listed = await recipient.context.request.post(`${origin}/kapi/msg-center`, {
+      headers: { Authorization: `Bearer ${recipient.token}` },
+      data: { method: 'msg.list_sessions', params: { owner: `did:web:${peer}.${zone}`, limit: 50, with_object: true, order_by: 'activity' }, sys: [1, recipient.token] },
+    })
+    const sessions = (await listed.json() as { result?: { items?: Array<{ last_record?: { record: { msg_id: string }; msg?: { content?: { refs?: Array<{ target: { obj_id?: string } }> } } } }> } }).result?.items ?? []
+    const carrier = sessions.map(item => item.last_record).find(last => last?.msg?.content?.refs?.some(ref => ref.target.obj_id === delivery.obj_id))
+    expect(carrier, `no session of ${peer} ends with the message carrying ${delivery.obj_id}`).toBeTruthy()
+    const content = await recipient.context.request.get(`${origin}/kapi/msg-center/objects/${delivery.obj_id}/content?context_path=${encodeURIComponent(carrier!.record.msg_id)}`, { headers: { Authorization: `Bearer ${recipient.token}` } })
     expect(content.status()).toBe(200)
     expect(await content.text()).toBe('%PDF-1.4 share dv')
     await recipient.context.close()

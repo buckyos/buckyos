@@ -7,7 +7,8 @@ use crate::protocol::*;
 use crate::publish::{entry_versions, get_entry, get_head, EntryKind, NewVersion};
 use crate::settings::Topic;
 use crate::{new_id, now_ms, now_s, Station};
-use rusqlite::{params, Connection, OptionalExtension};
+use crate::db::Conn;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -52,11 +53,11 @@ pub struct SourceResolution {
     pub intent_text: Option<String>,
 }
 
-fn source_row(c: &Connection, id: &str) -> HsResult<Option<SourceView>> {
+fn source_row(c: &Conn, id: &str) -> HsResult<Option<SourceView>> {
     let row = c
         .query_row(
-            "SELECT id, name, kind, did, url, description, basis, notify, last_success_at, last_error, paused, intent_id, follow_entry FROM sources WHERE id=?1",
-            [id],
+            "SELECT id, name, kind, did, url, description, basis, notify, last_success_at, last_error, paused, intent_id, follow_entry FROM sources WHERE id=?1 AND owner=?2",
+            [id, c.owner],
             |r| {
                 Ok((
                     SourceView {
@@ -87,8 +88,8 @@ fn source_row(c: &Connection, id: &str) -> HsResult<Option<SourceView>> {
         if let (Some(entry), Some(did)) = (&follow_entry, &view.did) {
             let state: Option<(String, i64)> = c
                 .query_row(
-                    "SELECT state, attempts FROM outbox WHERE entry=?1 AND recipient=?2 AND purpose='follow' ORDER BY id DESC LIMIT 1",
-                    params![entry, did],
+                    "SELECT state, attempts FROM outbox WHERE entry=?1 AND recipient=?2 AND purpose='follow' AND owner=?3 ORDER BY id DESC LIMIT 1",
+                    params![entry, did, c.owner],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()?;
@@ -116,17 +117,17 @@ impl Station {
     pub async fn list_sources(&self) -> HsResult<Value> {
         self.db
             .call(|c| {
-                let mut stmt = c.prepare("SELECT id FROM sources ORDER BY created_at")?;
-                let ids = stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+                let mut stmt = c.prepare("SELECT id FROM sources WHERE owner=?1 ORDER BY created_at")?;
+                let ids = stmt.query_map(params![c.owner], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
                 let mut sources = Vec::new();
                 for id in ids {
                     if let Some(s) = source_row(c, &id)? {
                         sources.push(s);
                     }
                 }
-                let mut stmt = c.prepare("SELECT id, text, status, source_ids, updated_at FROM intents ORDER BY created_at")?;
+                let mut stmt = c.prepare("SELECT id, text, status, source_ids, updated_at FROM intents WHERE owner=?1 ORDER BY created_at")?;
                 let intents = stmt
-                    .query_map([], |r| {
+                    .query_map(params![c.owner], |r| {
                         Ok(json!({
                             "id": r.get::<_, String>(0)?,
                             "text": r.get::<_, String>(1)?,
@@ -146,7 +147,7 @@ impl Station {
         let existing = self
             .db
             .call(move |c| {
-                let id: Option<String> = c.query_row("SELECT id FROM sources WHERE did=?1", [&did_s], |r| r.get(0)).optional()?;
+                let id: Option<String> = c.query_row("SELECT id FROM sources WHERE did=?1 AND owner=?2", params![did_s, c.owner], |r| r.get(0)).optional()?;
                 match id {
                     Some(id) => source_row(c, &id),
                     None => Ok(None),
@@ -262,7 +263,7 @@ impl Station {
                 let existing = self
                     .db
                     .call(move |c| {
-                        let id: Option<String> = c.query_row("SELECT id FROM sources WHERE url=?1", [url], |r| r.get(0)).optional()?;
+                        let id: Option<String> = c.query_row("SELECT id FROM sources WHERE url=?1 AND owner=?2", params![url, c.owner], |r| r.get(0)).optional()?;
                         match id {
                             Some(id) => source_row(c, &id),
                             None => Ok(None),
@@ -381,8 +382,8 @@ impl Station {
             self.db
                 .call(move |c| {
                     c.execute(
-                        "INSERT INTO intents(id, text, status, source_ids, created_at, updated_at) VALUES (?1, ?2, 'mapping', '[]', ?3, ?3)",
-                        params![id2, text, now],
+                        "INSERT INTO intents(owner, id, text, status, source_ids, created_at, updated_at) VALUES (?4, ?1, ?2, 'mapping', '[]', ?3, ?3)",
+                        params![id2, text, now, c.owner],
                     )?;
                     Ok(())
                 })
@@ -410,8 +411,8 @@ impl Station {
             self.db
                 .call(move |c| {
                     c.execute(
-                        "UPDATE intents SET source_ids=?2, status=?3, updated_at=?4 WHERE id=?1",
-                        params![intent, serde_json::to_string(&ids)?, status, now],
+                        "UPDATE intents SET source_ids=?2, status=?3, updated_at=?4 WHERE id=?1 AND owner=?5",
+                        params![intent, serde_json::to_string(&ids)?, status, now, c.owner],
                     )?;
                     Ok(())
                 })
@@ -430,21 +431,21 @@ impl Station {
             .call(move |c| {
                 if let Some(url) = &candidate.url {
                     let existing: Option<(String, String)> =
-                        c.query_row("SELECT id, basis FROM sources WHERE url=?1", [url], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+                        c.query_row("SELECT id, basis FROM sources WHERE url=?1 AND owner=?2", params![url, c.owner], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
                     if let Some((id, basis)) = existing {
                         let mut basis: Vec<String> = serde_json::from_str(&basis).unwrap_or_default();
                         if !basis.contains(&"active".to_string()) {
                             basis.push("active".into());
                         }
-                        c.execute("UPDATE sources SET basis=?2, updated_at=?3 WHERE id=?1", params![id, serde_json::to_string(&basis)?, now])?;
+                        c.execute("UPDATE sources SET basis=?2, updated_at=?3 WHERE id=?1 AND owner=?4", params![id, serde_json::to_string(&basis)?, now, c.owner])?;
                         return Ok(id);
                     }
                 }
                 let id = if candidate.id.starts_with("src-") { candidate.id.clone() } else { format!("src-{}", &new_id("s")[2..]) };
                 c.execute(
-                    "INSERT INTO sources(id, kind, did, url, name, description, basis, paused, intent_id, notify, created_at, updated_at)
-                     VALUES (?1, ?2, NULL, ?3, ?4, ?5, '[\"active\"]', 0, ?6, 'unsupported', ?7, ?7)",
-                    params![id, candidate.kind, candidate.url, candidate.name, candidate.description, intent_id, now],
+                    "INSERT INTO sources(owner, id, kind, did, url, name, description, basis, paused, intent_id, notify, created_at, updated_at)
+                     VALUES (?8, ?1, ?2, NULL, ?3, ?4, ?5, '[\"active\"]', 0, ?6, 'unsupported', ?7, ?7)",
+                    params![id, candidate.kind, candidate.url, candidate.name, candidate.description, intent_id, now, c.owner],
                 )?;
                 Ok(id)
             })
@@ -470,22 +471,22 @@ impl Station {
             .db
             .call(move |c| {
                 let existing: Option<(String, String)> =
-                    c.query_row("SELECT id, basis FROM sources WHERE did=?1", [&did_s], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+                    c.query_row("SELECT id, basis FROM sources WHERE did=?1 AND owner=?2", params![did_s, c.owner], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
                 match existing {
                     Some((id, basis)) => {
                         let mut list: Vec<String> = serde_json::from_str(&basis).unwrap_or_default();
                         if !list.contains(&basis_s) {
                             list.push(basis_s);
                         }
-                        c.execute("UPDATE sources SET basis=?2, updated_at=?3 WHERE id=?1", params![id, serde_json::to_string(&list)?, now])?;
+                        c.execute("UPDATE sources SET basis=?2, updated_at=?3 WHERE id=?1 AND owner=?4", params![id, serde_json::to_string(&list)?, now, c.owner])?;
                         Ok(id)
                     }
                     None => {
                         let id = format!("src-{}", &new_id("p")[2..]);
                         c.execute(
-                            "INSERT INTO sources(id, kind, did, name, basis, paused, intent_id, notify, created_at, updated_at)
-                             VALUES (?1, 'person', ?2, ?3, ?4, 0, ?5, 'pending', ?6, ?6)",
-                            params![id, did_s, name, serde_json::to_string(&vec![basis_s])?, intent_id, now],
+                            "INSERT INTO sources(owner, id, kind, did, name, basis, paused, intent_id, notify, created_at, updated_at)
+                             VALUES (?7, ?1, 'person', ?2, ?3, ?4, 0, ?5, 'pending', ?6, ?6)",
+                            params![id, did_s, name, serde_json::to_string(&vec![basis_s])?, intent_id, now, c.owner],
                         )?;
                         Ok(id)
                     }
@@ -498,7 +499,7 @@ impl Station {
         }
         let id2 = id.clone();
         let entry = self.own_entry(EntryNamespace::Follows, &follow_key(&self.cfg.owner, did));
-        self.db.call(move |c| Ok(c.execute("UPDATE sources SET follow_entry=?2 WHERE id=?1", params![id2, entry])?)).await?;
+        self.db.call(move |c| Ok(c.execute("UPDATE sources SET follow_entry=?2 WHERE id=?1 AND owner=?3", params![id2, entry, c.owner])?)).await?;
         self.bump(&["sources", "profile"]);
         self.wake.pull.notify_one();
         Ok(id)
@@ -555,7 +556,7 @@ impl Station {
         let id = source_id.to_string();
         let row: Option<(Option<String>, String)> = self
             .db
-            .call(move |c| Ok(c.query_row("SELECT did, basis FROM sources WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).optional()?))
+            .call(move |c| Ok(c.query_row("SELECT did, basis FROM sources WHERE id=?1 AND owner=?2", params![id, c.owner], |r| Ok((r.get(0)?, r.get(1)?))).optional()?))
             .await?;
         let Some((did, basis)) = row else { return Ok("removed") };
         let mut basis: Vec<String> = serde_json::from_str(&basis).unwrap_or_default();
@@ -567,7 +568,7 @@ impl Station {
         let now = now_ms();
         if let Some(derived) = DERIVED_BASES.iter().find(|b| basis.iter().any(|x| x == *b)) {
             self.db
-                .call(move |c| Ok(c.execute("UPDATE sources SET basis=?2, updated_at=?3 WHERE id=?1", params![id, serde_json::to_string(&basis)?, now])?))
+                .call(move |c| Ok(c.execute("UPDATE sources SET basis=?2, updated_at=?3 WHERE id=?1 AND owner=?4", params![id, serde_json::to_string(&basis)?, now, c.owner])?))
                 .await?;
             self.bump(&["sources"]);
             return Ok(if *derived == "friend" { "friend_basis" } else { "zone_basis" });
@@ -578,18 +579,18 @@ impl Station {
         self.db
             .call(move |c| {
                 let tx = c.transaction()?;
-                tx.execute("DELETE FROM sources WHERE id=?1", [&id])?;
-                let mut stmt = tx.prepare("SELECT id, source_ids FROM intents")?;
-                let intents = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+                tx.execute("DELETE FROM sources WHERE id=?1 AND owner=?2", params![id, tx.owner])?;
+                let mut stmt = tx.prepare("SELECT id, source_ids FROM intents WHERE owner=?1")?;
+                let intents = stmt.query_map(params![tx.owner], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
                 drop(stmt);
                 for (intent, ids) in intents {
                     let mut ids: Vec<String> = serde_json::from_str(&ids).unwrap_or_default();
                     if ids.contains(&id) {
                         ids.retain(|i| i != &id);
                         if ids.is_empty() {
-                            tx.execute("DELETE FROM intents WHERE id=?1", [&intent])?;
+                            tx.execute("DELETE FROM intents WHERE id=?1 AND owner=?2", params![intent, tx.owner])?;
                         } else {
-                            tx.execute("UPDATE intents SET source_ids=?2, updated_at=?3 WHERE id=?1", params![intent, serde_json::to_string(&ids)?, now])?;
+                            tx.execute("UPDATE intents SET source_ids=?2, updated_at=?3 WHERE id=?1 AND owner=?4", params![intent, serde_json::to_string(&ids)?, now, tx.owner])?;
                         }
                     }
                 }
@@ -603,7 +604,7 @@ impl Station {
 
     pub async fn pause_source(&self, source_id: &str, paused: bool) -> HsResult<()> {
         let id = source_id.to_string();
-        self.db.call(move |c| Ok(c.execute("UPDATE sources SET paused=?2 WHERE id=?1", params![id, paused as i64])?)).await?;
+        self.db.call(move |c| Ok(c.execute("UPDATE sources SET paused=?2 WHERE id=?1 AND owner=?3", params![id, paused as i64, c.owner])?)).await?;
         self.bump(&["sources"]);
         Ok(())
     }
@@ -614,8 +615,8 @@ impl Station {
         let active: Vec<String> = self
             .db
             .call(|c| {
-                let mut stmt = c.prepare("SELECT did, basis FROM sources WHERE kind='person' AND did IS NOT NULL")?;
-                let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+                let mut stmt = c.prepare("SELECT did, basis FROM sources WHERE kind='person' AND did IS NOT NULL AND owner=?1")?;
+                let rows = stmt.query_map(params![c.owner], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
                 Ok(rows
                     .into_iter()
                     .filter(|(_, basis)| serde_json::from_str::<Vec<String>>(basis).unwrap_or_default().iter().any(|b| b == "active"))
@@ -681,9 +682,9 @@ impl Station {
         let stale: Vec<(String, String, Vec<String>)> = self
             .db
             .call(move |c| {
-                let mut stmt = c.prepare("SELECT id, did, basis FROM sources WHERE kind='person' AND basis LIKE ?1")?;
+                let mut stmt = c.prepare("SELECT id, did, basis FROM sources WHERE kind='person' AND basis LIKE ?1 AND owner=?2")?;
                 let rows = stmt
-                    .query_map([pattern], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?
+                    .query_map(params![pattern, c.owner], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(rows
                     .into_iter()
@@ -697,11 +698,11 @@ impl Station {
             if list.is_empty() {
                 self.publish_follow(&did, false).await?;
                 let id = id.clone();
-                self.db.call(move |c| Ok(c.execute("DELETE FROM sources WHERE id=?1", [id])?)).await?;
+                self.db.call(move |c| Ok(c.execute("DELETE FROM sources WHERE id=?1 AND owner=?2", params![id, c.owner])?)).await?;
             } else {
                 let now = now_ms();
                 self.db
-                    .call(move |c| Ok(c.execute("UPDATE sources SET basis=?2, updated_at=?3 WHERE id=?1", params![id, serde_json::to_string(&list)?, now])?))
+                    .call(move |c| Ok(c.execute("UPDATE sources SET basis=?2, updated_at=?3 WHERE id=?1 AND owner=?4", params![id, serde_json::to_string(&list)?, now, c.owner])?))
                     .await?;
             }
         }

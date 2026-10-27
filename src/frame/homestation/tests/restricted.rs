@@ -1,6 +1,8 @@
 //! Restricted sessions (hybrid SSO contract §3.2–3.3): a Limited account and an External DID
 //! read portals and protocol paths as their own DID; publishing and managing a home stay closed.
 
+mod common;
+
 use homestation::standalone::{build, StandaloneConfig};
 use serde_json::{json, Value};
 
@@ -18,6 +20,7 @@ impl Zone {
         let (pem, _) = homestation::sign::generate_key();
         let cfg: StandaloneConfig = serde_json::from_value(json!({
             "owner": "did:test:alice", "owner_name": "alice", "user": "alice", "zone": "alice.test",
+            "nfs_server": common::nfs::start_nfs_server(&dir.path().join("nfs")).await,
             "private_key_pem": pem, "workers": false, "spider": false,
             "users": [{ "user": "carol", "did": "did:test:carol", "name": "carol", "zone_feed_writer": false }],
             "tokens": {

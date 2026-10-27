@@ -399,10 +399,7 @@ test('P3-10 a share export leaves the speaker notes out; captions and paths trav
   // the package itself, through the API
   const exported = await api.rpc(ALICE, 'doc.export', { workspace_id: ws.workspace_id, mode: 'share', self_contained: true })
   expect(exported.manifest.notes_included).toBe(false)
-  const zip = await fetch(`${api.base}/export/${ws.workspace_id}/${exported.export_id}`, { headers: { authorization: `Bearer ${ALICE}` } })
-  const begin = await api.rpc(ALICE, 'ws.begin_import', {})
-  await fetch(`${api.base}/upload/${begin.upload_id}`, { method: 'PUT', headers: { authorization: `Bearer ${ALICE}` }, body: Buffer.from(await zip.arrayBuffer()) })
-  const imported = await api.rpc(ALICE, 'ws.import', { upload_id: begin.upload_id, semantics: 'new' })
+  const imported = await api.importPackage(ALICE, await api.download(exported.download), 'new')
   expect(imported.ok, JSON.stringify(imported)).toBe(true)
   const copy = imported.workspace_id
   expect((await pathOf(api, copy)).steps.length).toBe(5)

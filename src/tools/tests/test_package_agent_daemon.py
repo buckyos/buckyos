@@ -14,9 +14,15 @@ SCRIPT = Path(__file__).parents[1] / "package_agent_daemon.py"
 spec = importlib.util.spec_from_file_location("package_agent_daemon", SCRIPT)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
+VERSION = f"{module.source_version()}+build261026"
 
 
 class AgentDaemonPackageTests(unittest.TestCase):
+    def setUp(self):
+        version = patch.object(module, "version", return_value=VERSION)
+        version.start()
+        self.addCleanup(version.stop)
+
     def test_windows_archive_contains_executable_and_matching_checksums(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -25,6 +31,8 @@ class AgentDaemonPackageTests(unittest.TestCase):
             for target in ("x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"):
                 with self.subTest(target=target):
                     archive = module.package(binary, target, root / "dist")
+                    self.assertEqual(archive.name, module.archive_name(target, VERSION))
+                    self.assertEqual(module.archive_version(archive, target), VERSION)
                     self.assertEqual(archive.suffix, ".zip")
                     checksum = archive.with_name(archive.name + ".sha256").read_text().split()[0]
                     self.assertEqual(checksum, hashlib.sha256(archive.read_bytes()).hexdigest())
@@ -33,6 +41,7 @@ class AgentDaemonPackageTests(unittest.TestCase):
                         executable = next(name for name in names if name.endswith("/buckyos_agent_daemon.exe"))
                         self.assertEqual(zipped.read(executable), binary.read_bytes())
                         manifest = json.loads(zipped.read(next(name for name in names if name.endswith("/manifest.json"))))
+                        self.assertEqual(manifest["version"], VERSION)
                         self.assertEqual(manifest["target"], target)
                         self.assertEqual(manifest["platform"], "windows")
                         self.assertEqual(manifest["binary"], "buckyos_agent_daemon.exe")
@@ -54,6 +63,7 @@ class AgentDaemonPackageTests(unittest.TestCase):
             binary.write_bytes(b"test executable payload")
             for target in ("aarch64-apple-darwin", "x86_64-apple-darwin"):
                 archive = module.package(binary, target, root / "dist")
+                self.assertEqual(module.archive_version(archive, target), VERSION)
                 checksum = archive.with_name(archive.name + ".sha256").read_text().split()[0]
                 self.assertEqual(checksum, hashlib.sha256(archive.read_bytes()).hexdigest())
                 with tarfile.open(archive) as tar:
@@ -80,7 +90,8 @@ class AgentDaemonPackageTests(unittest.TestCase):
                 with self.subTest(target=target), patch.object(module, "inspect_elf", return_value=facts) as inspect:
                     archive = module.package(binary, target, root / "dist" / target)
                     inspect.assert_called_once_with(binary, target)
-                    self.assertEqual(archive.name, module.archive_name(target))
+                    self.assertEqual(archive.name, module.archive_name(target, VERSION))
+                    self.assertEqual(module.archive_version(archive, target), VERSION)
                     checksum = archive.with_name(archive.name + ".sha256").read_text().split()[0]
                     self.assertEqual(checksum, hashlib.sha256(archive.read_bytes()).hexdigest())
                     launcher = archive.with_name("start-buckyos-agent-daemon.sh")
@@ -156,6 +167,7 @@ class AgentDaemonPackageTests(unittest.TestCase):
                 ):
                     self.assertEqual(module.main(["--target", "x86_64-pc-windows-msvc", "--output", "dist"]), 0)
                     build_env = run.call_args_list[0].kwargs["env"]
+                    self.assertEqual(build_env["VERSION"], module.source_version())
                     self.assertEqual(build_env["CARGO_ENCODED_RUSTFLAGS"], (expected + "\x1f" if expected else "") + "-C\x1ftarget-feature=+crt-static")
                     self.assertEqual(dict(module.os.environ), environment)
                     self.assertTrue(package.call_args.kwargs["static_crt"])
@@ -177,14 +189,42 @@ class AgentDaemonPackageTests(unittest.TestCase):
                         module.subprocess.CompletedProcess([], 0, stdout=json.dumps({"target_directory": str(root / "custom-target")})),
                     ]
                     output = root / "dist" / target
-                    with patch.object(module.subprocess, "run", side_effect=results):
+                    with patch.object(module.subprocess, "run", side_effect=results) as run:
                         self.assertEqual(module.main(["--target", target, "--output", str(output)]), 0)
+                        self.assertEqual(run.call_args_list[0].kwargs["env"]["VERSION"], module.source_version())
                         self.assertEqual(len(list(output.glob(pattern))), 1)
                         if filename.endswith(".exe"):
                             with zipfile.ZipFile(next(output.glob(pattern))) as zipped:
                                 manifest = json.loads(zipped.read(next(name for name in zipped.namelist() if name.endswith("/manifest.json"))))
                                 self.assertEqual(manifest["requirements"]["windows_crt"], "static")
                                 self.assertIsNone(manifest["requirements"]["visual_cpp_runtime"])
+
+
+class AgentDaemonVersionTests(unittest.TestCase):
+    def test_version_comes_from_the_binary_build_date(self):
+        binary = Path("prebuilt/buckyos_agent_daemon")
+        for suffix in (" (nightly)", ".main.abc123.dirty (beta)"):
+            with self.subTest(suffix=suffix), patch.object(
+                module.subprocess, "check_output", return_value=f"buckyos_agent_daemon {VERSION}{suffix}\n"
+            ) as run:
+                self.assertEqual(module.version(binary), VERSION)
+                run.assert_called_once_with([str(binary.resolve()), "--version"], text=True)
+
+    def test_wrong_source_or_missing_build_version_is_rejected(self):
+        for version in (module.source_version(), "0.0.0+build261026", f"{module.source_version()}+build2610267"):
+            with self.subTest(version=version), patch.object(module.subprocess, "check_output", return_value=version):
+                with self.assertRaises(ValueError):
+                    module.version(Path("daemon"))
+
+    def test_invalid_binary_version_does_not_create_an_archive(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "daemon"
+            binary.write_bytes(b"old executable")
+            with patch.object(module.subprocess, "check_output", return_value=module.source_version()):
+                with self.assertRaisesRegex(ValueError, "cannot parse BuckyOS build version"):
+                    module.package(binary, "aarch64-apple-darwin", root / "dist")
+            self.assertFalse((root / "dist").exists())
 
 
 if __name__ == "__main__":

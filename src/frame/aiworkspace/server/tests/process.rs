@@ -2,7 +2,11 @@
 //! and crash recovery at the three positions: before the transaction, inside
 //! it, and after it is durable but before the response).
 
+#[path = "common/nfs.rs"]
+mod nfs;
+
 use base64::Engine;
+use nfs::Nfs;
 use serde_json::{json, Value};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,13 +32,13 @@ fn free_port() -> u16 {
 }
 
 impl Server {
-    async fn start(dir: &std::path::Path, failpoint: Option<&str>) -> Server {
+    async fn start(dir: &std::path::Path, nfs: &Nfs, failpoint: Option<&str>) -> Server {
         let auth = dir.join("tokens.json");
         std::fs::write(&auth, json!({ "tokens": { "tok-alice": { "principal": "alice" }, "tok-bob": { "principal": "bob", "app_id": "system:control-panel" } } }).to_string()).unwrap();
         let port = free_port();
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_aiworkspace"));
         cmd.arg("--data-dir").arg(dir.join("data")).arg("--listen").arg(format!("127.0.0.1:{port}")).arg("--auth-file").arg(&auth)
-            .arg("--fixture-sources").arg("--log-level").arg("warn").stdout(Stdio::null()).stderr(Stdio::null());
+            .arg("--fixture-sources").args(nfs.args()).arg("--log-level").arg("warn").stdout(Stdio::null()).stderr(Stdio::null());
         if let Some(f) = failpoint {
             cmd.env("AIWS_FAILPOINT", f);
         } else {
@@ -75,30 +79,37 @@ impl Server {
         self.raw(Some(token), method, params).await.unwrap_or_else(|e| panic!("{method}: {e}"))
     }
 
-    async fn upload(&self, token: &str, begin: (&str, Value), bytes: Vec<u8>) -> String {
-        let b = self.rpc(token, begin.0, begin.1).await;
-        let id = b["upload_id"].as_str().unwrap_or_else(|| panic!("{b}")).to_string();
-        let r = self.http.put(format!("{}/upload/{id}", self.base)).bearer_auth(token).body(bytes).send().await.unwrap();
-        assert!(r.status().is_success(), "{}", r.text().await.unwrap());
-        id
+    /// The uploader binds the bytes into its own `assets` bucket; the service takes the binding over.
+    async fn upload_asset(&self, nfs: &Nfs, token: &str, user: &str, workspace: &str, bytes: Vec<u8>) -> Value {
+        static N: AtomicU64 = AtomicU64::new(1);
+        let bound = nfs.put(user, "assets", &format!("upload/{}", N.fetch_add(1, Ordering::SeqCst)), bytes).await;
+        self.rpc(token, "asset.import_object", json!({ "workspace_id": workspace, "bucket_id": bound["bucket_id"], "key": bound["key"] })).await
     }
 
-    async fn export_package(&self, token: &str, workspace: &str) -> Vec<u8> {
+    async fn export_package(&self, nfs: &Nfs, token: &str, workspace: &str) -> Vec<u8> {
         let export = self.rpc(token, "doc.export", json!({"workspace_id": workspace, "mode": "share", "self_contained": true})).await;
-        self.http.get(format!("{}/export/{workspace}/{}", self.base, export["export_id"].as_str().unwrap())).bearer_auth(token)
-            .send().await.unwrap().bytes().await.unwrap().to_vec()
+        nfs.fetch(&export["download"]).await
+    }
+
+    /// `ws.import` of a package the importer bound into its own `exports` bucket.
+    async fn import(&self, nfs: &Nfs, token: &str, user: &str, package: Vec<u8>, params: Value) -> (Value, Value) {
+        static N: AtomicU64 = AtomicU64::new(1);
+        let mut params = params;
+        let bound = nfs.put(user, "exports", &format!("import/{}.bcanvas", N.fetch_add(1, Ordering::SeqCst)), package).await;
+        params["bucket_id"] = bound["bucket_id"].clone();
+        params["key"] = bound["key"].clone();
+        (self.rpc(token, "ws.import", params).await, bound)
     }
 
     /// Create a Workspace and replay the shared fixture through the public interface only.
-    async fn project(&self, token: &str) -> (String, String) {
+    async fn project(&self, nfs: &Nfs, token: &str) -> (String, String) {
         let ws = self.rpc(token, "ws.create", json!({ "title": "项目工作区" })).await;
         let (id, epoch) = (ws["workspace_id"].as_str().unwrap().to_string(), ws["epoch"].as_str().unwrap().to_string());
         let fx: Value = serde_json::from_str(FIXTURE).unwrap();
         let mut text = serde_json::to_string(&fx["commits"]).unwrap();
         for a in fx["assets"].as_array().unwrap() {
             let bytes = base64::engine::general_purpose::STANDARD.decode(a["base64"].as_str().unwrap()).unwrap();
-            let up = self.upload(token, ("asset.begin_upload", json!({ "workspace_id": id, "size": bytes.len() })), bytes).await;
-            let fin = self.rpc(token, "asset.finish_upload", json!({ "workspace_id": id, "upload_id": up })).await;
+            let fin = self.upload_asset(nfs, token, token.trim_start_matches("tok-"), &id, bytes).await;
             assert_eq!(fin["media_type"], "image/png", "{fin}");
             text = text.replace(a["placeholder"].as_str().unwrap(), fin["object_id"].as_str().unwrap());
         }
@@ -130,12 +141,13 @@ fn mixed_batch(ws: &str, epoch: &str) -> Value {
 #[tokio::test(flavor = "multi_thread")]
 async fn v23_service_api_end_to_end() {
     let dir = tempfile::tempdir().unwrap();
-    let s = Server::start(dir.path(), None).await;
+    let nfs = Nfs::start(dir.path()).await;
+    let s = Server::start(dir.path(), &nfs, None).await;
     // authentication: no token / wrong token never reach a method; identity never comes from the body
     assert!(s.raw(None, "ws.list", json!({})).await.unwrap_err().contains("token"));
     assert!(s.raw(Some("nope"), "ws.list", json!({ "principal": "alice" })).await.is_err());
     assert!(s.raw(Some("tok-alice"), "no.such", json!({})).await.unwrap_err().contains("unknown method"));
-    let (id, epoch) = s.project("tok-alice").await;
+    let (id, epoch) = s.project(&nfs, "tok-alice").await;
     let w = json!({ "workspace_id": id });
     // reads, queries, structured business errors in `result`
     let info = s.rpc("tok-alice", "ws.get_info", w.clone()).await;
@@ -194,37 +206,41 @@ async fn v23_service_api_end_to_end() {
     // export → download → upload into a second, empty deployment → same content root
     let exp = s.rpc("tok-alice", "doc.export", json!({ "workspace_id": id, "mode": "share", "self_contained": true })).await;
     assert!(exp.get("path").is_none());
-    let pkg = s.http.get(format!("{}/export/{id}/{}", s.base, exp["export_id"].as_str().unwrap())).bearer_auth("tok-alice").send().await.unwrap().bytes().await.unwrap().to_vec();
+    assert_eq!(nfs.bound("alice", "exports", exp["download"]["key"].as_str().unwrap()).await.as_deref(), exp["download"]["obj_id"].as_str());
+    let pkg = nfs.fetch(&exp["download"]).await;
     assert_eq!(&pkg[..2], b"PK");
     let dir2 = tempfile::tempdir().unwrap();
-    let s2 = Server::start(dir2.path(), None).await;
-    let up = s2.upload("tok-bob", ("ws.begin_import", json!({})), pkg.clone()).await;
-    assert_eq!(s2.rpc("tok-bob", "ws.import", json!({ "upload_id": up, "semantics": "sideways" })).await["error"]["code"], "INVALID_OPERATION", "semantics has no default");
+    let nfs2 = Nfs::start(dir2.path()).await;
+    let s2 = Server::start(dir2.path(), &nfs2, None).await;
+    let by_id = s2.rpc("tok-alice", "ws.import", json!({ "obj_id": nfs2.put("alice", "exports", "elsewhere/p.bcanvas", pkg.clone()).await["obj_id"], "semantics": "new" })).await;
+    assert_eq!(by_id["content_root"], exp["manifest"]["content_root"], "an unbound package is imported by its id: {by_id}");
+    let (sideways, bound) = s2.import(&nfs2, "tok-bob", "bob", pkg.clone(), json!({ "semantics": "sideways" })).await;
+    assert_eq!(sideways["error"]["code"], "INVALID_OPERATION", "semantics has no default");
     assert_eq!(s2.rpc("tok-bob", "ws.list", json!({})).await["workspaces"], json!([]), "nothing became visible");
-    let imp = s2.rpc("tok-bob", "ws.import", json!({ "upload_id": up, "semantics": "new" })).await;
+    let theirs = s2.rpc("tok-alice", "ws.import", json!({ "bucket_id": bound["bucket_id"], "key": bound["key"], "semantics": "new" })).await;
+    assert_eq!(theirs["error"]["code"], "PERMISSION_DENIED", "a package is imported from the caller's own bucket: {theirs}");
+    let imp = s2.rpc("tok-bob", "ws.import", json!({ "bucket_id": bound["bucket_id"], "key": bound["key"], "semantics": "new" })).await;
     assert_eq!(imp["content_root"], exp["manifest"]["content_root"], "{imp}");
-    assert_eq!(s2.rpc("tok-bob", "ws.import", json!({ "upload_id": up, "semantics": "new" })).await, imp, "retry recovers the committed result");
-    drop(s2);
-    let staging = dir2.path().join("data/staging");
-    let manifest_path = staging.join(format!("{up}.upload.json"));
-    let mut manifest: Value = serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
-    manifest["result"] = Value::Null;
-    std::fs::write(&manifest_path, manifest.to_string()).unwrap();
-    std::fs::write(staging.join(format!("{up}.part")), pkg).unwrap();
-    let s2 = Server::start(dir2.path(), None).await;
-    assert_eq!(s2.rpc("tok-bob", "ws.import", json!({ "upload_id": up, "semantics": "restore", "replace": true })).await["error"]["code"], "INVALID_OPERATION");
-    assert_eq!(s2.rpc("tok-bob", "ws.import", json!({ "upload_id": up, "semantics": "new" })).await, imp, "workspace receipt recovers a crash before upload receipt persistence");
+    assert_eq!(s2.rpc("tok-bob", "ws.import", json!({ "bucket_id": bound["bucket_id"], "key": bound["key"], "semantics": "new" })).await["error"]["code"], "NOT_FOUND", "an import consumes its package");
+    assert!(nfs2.bound("bob", "exports", bound["key"].as_str().unwrap()).await.is_none());
+    // the imported Workspace's assets are bound in its owner's bucket
+    let imported = imp["workspace_id"].as_str().unwrap();
+    let diagram = s2.rpc("tok-bob", "doc.read", json!({ "workspace_id": imported, "entity_id": "diagram" })).await["content"]["payload"]["object_id"].as_str().unwrap().to_string();
+    assert_eq!(nfs2.bound("bob", "assets", &format!("{imported}/{diagram}")).await.as_deref(), Some(diagram.as_str()));
     assert_eq!(s2.rpc("tok-bob", "ws.list", json!({})).await["workspaces"].as_array().unwrap().len(), 1);
+    assert_eq!(s2.rpc("tok-alice", "ws.list", json!({})).await["workspaces"].as_array().unwrap().len(), 1);
+    drop(s2);
     let forked = s.rpc("tok-alice", "ws.fork", w.clone()).await;
     assert_eq!(forked["content_root"], s.rpc("tok-alice", "doc.checkpoint", w.clone()).await["content_root"]);
-    // the replica database is downloadable only by a workspace-level reader
+    // the replica database comes through a read token for its key
     let rep = s.rpc("tok-alice", "replica.bootstrap", w.clone()).await;
-    let db = s.http.get(format!("{}/replica/{id}/{}", s.base, rep["replica_id"].as_str().unwrap())).bearer_auth("tok-alice").send().await.unwrap().bytes().await.unwrap();
+    assert!(rep.get("path").is_none());
+    let db = nfs.fetch(&rep["download"]).await;
     assert_eq!(&db[..15], b"SQLite format 3");
     // restart the process: everything accepted is still there, with nothing in memory to rely on
     let head = s.rpc("tok-alice", "ws.get_info", w.clone()).await["head_seq"].clone();
     drop(s);
-    let s = Server::start(dir.path(), None).await;
+    let s = Server::start(dir.path(), &nfs, None).await;
     let info = s.rpc("tok-alice", "ws.get_info", w.clone()).await;
     assert_eq!((&info["head_seq"], &info["epoch"]), (&head, &json!(epoch)));
     let notes = s.rpc("tok-alice", "doc.read", json!({ "workspace_id": id, "entity_id": "notes" })).await;
@@ -234,68 +250,62 @@ async fn v23_service_api_end_to_end() {
 }
 
 #[tokio::test]
-async fn asset_upload_is_bound_to_workspace_and_recovers_after_restart() {
+async fn an_uploaded_asset_is_taken_over_by_the_workspace_owner() {
     let dir = tempfile::tempdir().unwrap();
-    let srv = Server::start(dir.path(), None).await;
+    let nfs = Nfs::start(dir.path()).await;
+    let srv = Server::start(dir.path(), &nfs, None).await;
     let first = srv.rpc("tok-alice", "ws.create", json!({"title": "first"})).await;
-    let second = srv.rpc("tok-alice", "ws.create", json!({"title": "second"})).await;
-    let id = first["workspace_id"].clone();
-    let upload = srv.upload("tok-alice", ("asset.begin_upload", json!({"workspace_id": id, "size": 4})), b"test".to_vec()).await;
-    let wrong = srv.rpc("tok-alice", "asset.finish_upload", json!({"workspace_id": second["workspace_id"], "upload_id": upload})).await;
-    assert_eq!(wrong["error"]["code"], "NOT_FOUND", "{wrong}");
-    let params = json!({"workspace_id": id, "upload_id": upload});
-    let staged = srv.rpc("tok-alice", "asset.finish_upload", params.clone()).await;
-    assert_eq!(staged["ok"], true, "{staged}");
-    assert_eq!(srv.rpc("tok-alice", "asset.finish_upload", params.clone()).await, staged);
-    assert_ne!(srv.rpc("tok-bob", "asset.finish_upload", params.clone()).await["ok"], true);
+    let id = first["workspace_id"].as_str().unwrap().to_string();
+    // alice's own upload, under any key of her bucket: bound again under `<ws>/<object_id>`, the upload key goes
+    let bound = nfs.put("alice", "assets", "upload/a.txt", b"test".to_vec()).await;
+    let staged = srv.rpc("tok-alice", "asset.import_object", json!({"workspace_id": id, "bucket_id": bound["bucket_id"], "key": bound["key"]})).await;
+    assert_eq!((staged["ok"].as_bool(), staged["media_type"].as_str(), staged["size"].as_u64()), (Some(true), Some("text/plain"), Some(4)), "{staged}");
+    let object_id = staged["object_id"].as_str().unwrap().to_string();
+    assert_eq!(staged["key"], json!(format!("{id}/{object_id}")));
+    assert_eq!(nfs.bound("alice", "assets", &format!("{id}/{object_id}")).await.as_deref(), Some(object_id.as_str()));
+    assert!(nfs.bound("alice", "assets", "upload/a.txt").await.is_none());
+    // a binding is registered by its own uploader only, and not twice
+    let again = srv.rpc("tok-alice", "asset.import_object", json!({"workspace_id": id, "bucket_id": bound["bucket_id"], "key": bound["key"]})).await;
+    assert_eq!(again["error"]["code"], "NOT_FOUND", "{again}");
+    let bobs = nfs.put("alice", "assets", "upload/b.txt", b"other".to_vec()).await;
+    assert_eq!(srv.rpc("tok-bob", "asset.import_object", json!({"workspace_id": id, "bucket_id": bobs["bucket_id"], "key": bobs["key"]})).await["error"]["code"], "PERMISSION_DENIED");
+    // a collaborator's upload lands in the owner's bucket
+    srv.rpc("tok-alice", "ws.grant", json!({"workspace_id": id, "subject": "bob", "capabilities": ["read", "update"]})).await;
+    let from_bob = srv.upload_asset(&nfs, "tok-bob", "bob", &id, b"from bob".to_vec()).await;
+    let bob_object = from_bob["object_id"].as_str().unwrap();
+    assert_eq!(from_bob["bucket_id"], "user/aiworkspace/alice/assets", "{from_bob}");
+    assert!(nfs.bound("alice", "assets", &format!("{id}/{bob_object}")).await.is_some());
+    // an unbound upload (a folder's leaf, an Agent's file) is named by its id; the NDM gateway judges the caller may read it
+    let leaf = nfs.put("alice", "assets", "elsewhere/leaf.txt", b"a leaf".to_vec()).await;
+    let by_id = srv.rpc("tok-alice", "asset.import_object", json!({"workspace_id": id, "obj_id": leaf["obj_id"]})).await;
+    assert_eq!((by_id["object_id"].as_str(), by_id["key"].as_str()), (leaf["obj_id"].as_str(), Some(format!("{id}/{}", leaf["obj_id"].as_str().unwrap()).as_str())), "{by_id}");
+    assert!(nfs.bound("alice", "assets", "elsewhere/leaf.txt").await.is_some(), "a binding the service did not take over stays");
+    // staged uploads survive a restart
     drop(srv);
-    let srv = Server::start(dir.path(), None).await;
-    assert_eq!(srv.rpc("tok-alice", "asset.finish_upload", params).await, staged);
-    drop(srv);
-    let staging = dir.path().join("data/staging");
-    let receipt = staging.join(format!("{upload}.upload.json"));
-    let mut expired: Value = serde_json::from_slice(&std::fs::read(&receipt).unwrap()).unwrap();
-    expired["expires_at"] = json!(1);
-    std::fs::write(&receipt, expired.to_string()).unwrap();
-    std::fs::write(staging.join(format!("{upload}.part")), b"expired owned bytes").unwrap();
-    let unrelated = staging.join("unrelated.part");
-    std::fs::write(&unrelated, b"keep").unwrap();
-    let _srv = Server::start(dir.path(), None).await;
-    assert!(!receipt.exists());
-    assert!(!staging.join(format!("{upload}.part")).exists());
-    assert_eq!(std::fs::read(unrelated).unwrap(), b"keep");
+    let srv = Server::start(dir.path(), &nfs, None).await;
+    let r = srv.rpc("tok-alice", "doc.commit", commit_req(&id, first["epoch"].as_str().unwrap(), "pic", json!([
+        { "op": "entity.create", "entity_id": "pic", "type_id": "buckyos.asset-ref", "parent_id": "data", "order_key": "p", "payload": { "object_id": object_id } }]))).await;
+    assert_eq!(r["status"], "accepted", "{r}");
 }
 
 #[tokio::test]
-async fn replaying_an_import_receipt_does_not_undo_a_later_restore() {
+async fn a_restore_journal_recovers_an_interrupted_replacement() {
     let dir = tempfile::tempdir().unwrap();
-    let srv = Server::start(dir.path(), None).await;
-    let workspace = srv.rpc("tok-alice", "ws.create", json!({"title": "restore receipts"})).await;
+    let nfs = Nfs::start(dir.path()).await;
+    let srv = Server::start(dir.path(), &nfs, None).await;
+    let workspace = srv.rpc("tok-alice", "ws.create", json!({"title": "restore"})).await;
     let id = workspace["workspace_id"].as_str().unwrap();
     assert_eq!(srv.rpc("tok-alice", "ws.grant", json!({"workspace_id": id, "subject": "bob", "capabilities": ["read"]})).await["ok"], true);
-    let first_package = srv.export_package("tok-alice", id).await;
-    let first = srv.upload("tok-alice", ("ws.begin_import", json!({})), first_package.clone()).await;
-    let params = json!({"upload_id": first, "semantics": "restore", "replace": true});
-    let accepted = srv.rpc("tok-alice", "ws.import", params.clone()).await;
+    let first_package = srv.export_package(&nfs, "tok-alice", id).await;
+    let (accepted, _) = srv.import(&nfs, "tok-alice", "alice", first_package, json!({"semantics": "restore", "replace": true})).await;
     assert_eq!(accepted["ok"], true, "{accepted}");
     let changed = srv.rpc("tok-alice", "doc.commit", commit_req(id, accepted["epoch"].as_str().unwrap(), "later", json!([
         {"op":"entity.create", "entity_id":"later-folder", "type_id":"buckyos.container", "parent_id":"data", "order_key":"z", "payload":{"kind":"folder", "title":"later"}}
     ]))).await;
     assert_eq!(changed["status"], "accepted", "{changed}");
-    let second_package = srv.export_package("tok-alice", id).await;
-    let second = srv.upload("tok-alice", ("ws.begin_import", json!({})), second_package).await;
-    let latest = srv.rpc("tok-alice", "ws.import", json!({"upload_id": second, "semantics": "restore", "replace": true})).await;
+    let second_package = srv.export_package(&nfs, "tok-alice", id).await;
+    let (latest, _) = srv.import(&nfs, "tok-alice", "alice", second_package, json!({"semantics": "restore", "replace": true})).await;
     assert_eq!(latest["ok"], true, "{latest}");
-    drop(srv);
-    let staging = dir.path().join("data/staging");
-    let receipt = staging.join(format!("{first}.upload.json"));
-    let mut incomplete: Value = serde_json::from_slice(&std::fs::read(&receipt).unwrap()).unwrap();
-    incomplete["result"] = Value::Null;
-    std::fs::write(receipt, incomplete.to_string()).unwrap();
-    std::fs::write(staging.join(format!("{first}.part")), first_package).unwrap();
-    let srv = Server::start(dir.path(), None).await;
-    assert_eq!(srv.rpc("tok-alice", "ws.import", params).await, accepted);
-    assert_eq!(srv.rpc("tok-alice", "ws.get_info", json!({"workspace_id": id})).await["epoch"], latest["epoch"]);
     assert_eq!(srv.rpc("tok-alice", "doc.read", json!({"workspace_id": id, "entity_id":"later-folder"})).await["ok"], true);
     drop(srv);
     let workspaces = dir.path().join("data/workspaces");
@@ -304,7 +314,7 @@ async fn replaying_an_import_receipt_does_not_undo_a_later_restore() {
     let backup = std::fs::read_dir(dir.path().join("data/trash")).unwrap().filter_map(Result::ok)
         .find(|entry| entry.file_name().to_string_lossy().starts_with("restore_")).unwrap().file_name().into_string().unwrap();
     std::fs::write(pending.join("restore-intent.json"), json!({"workspace_id": id, "backup": backup}).to_string()).unwrap();
-    let srv = Server::start(dir.path(), None).await;
+    let srv = Server::start(dir.path(), &nfs, None).await;
     assert!(!pending.exists());
     assert_eq!(srv.rpc("tok-bob", "doc.read", json!({"workspace_id": id, "entity_id":"later-folder"})).await["ok"], true);
     assert_eq!(srv.rpc("tok-alice", "ws.get_info", json!({"workspace_id": id})).await["epoch"], latest["epoch"]);
@@ -317,16 +327,17 @@ async fn replaying_an_import_receipt_does_not_undo_a_later_restore() {
 async fn crash_recovery_at_three_positions() {
     for (point, durable) in [("before_txn", false), ("in_txn", false), ("after_commit", true)] {
         let dir = tempfile::tempdir().unwrap();
+        let nfs = Nfs::start(dir.path()).await;
         // the 7th commit reaching the point is the mixed batch (the fixture is 6 commits)
-        let mut s = Server::start(dir.path(), Some(&format!("{point}:abort:7"))).await;
-        let (id, epoch) = s.project("tok-alice").await;
+        let mut s = Server::start(dir.path(), &nfs, Some(&format!("{point}:abort:7"))).await;
+        let (id, epoch) = s.project(&nfs, "tok-alice").await;
         let w = json!({ "workspace_id": id });
         let before_root = s.rpc("tok-alice", "doc.checkpoint", w.clone()).await["content_root"].clone();
         let lost = s.raw(Some("tok-alice"), "doc.commit", mixed_batch(&id, &epoch)).await;
         assert!(lost.unwrap_err().starts_with("transport"), "{point}: the process died without answering");
         assert!(!s.child.wait().unwrap().success(), "{point}: aborted");
         drop(s);
-        let s = Server::start(dir.path(), None).await;
+        let s = Server::start(dir.path(), &nfs, None).await;
         let info = s.rpc("tok-alice", "ws.get_info", w.clone()).await;
         let sub = s.rpc("tok-alice", "doc.get_submission", json!({ "workspace_id": id, "epoch": epoch, "idempotency_key": "mixed-1" })).await;
         let root = s.rpc("tok-alice", "doc.checkpoint", w.clone()).await["content_root"].clone();

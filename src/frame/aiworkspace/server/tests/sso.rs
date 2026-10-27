@@ -8,7 +8,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-const GUEST: &str = "gt_abcdefghijklmnopqrstuvwxyz";
+const GUEST: &str = "gt_YWl3cy1ndWVzdC10b2tlbi1maXh0dXJlLTMyYnl0ZXM";
 
 struct Server {
     child: Child,
@@ -98,7 +98,7 @@ async fn restricted_classes_entries_and_denials() {
 
     // PRE-03: restricted classes own nothing; the refusal says why (a product boundary, not a missing grant)
     for tok in ["tok-lim", "tok-ext"] {
-        for (method, params) in [("ws.create", json!({ "title": "x" })), ("ws.list_subjects", json!({})), ("ws.begin_import", json!({})), ("ws.fork", wsp.clone())] {
+        for (method, params) in [("ws.create", json!({ "title": "x" })), ("ws.list_subjects", json!({})), ("ws.import", json!({ "bucket_id": "user/aiworkspace/acme-c1/exports", "key": "import/x.bcanvas", "semantics": "new" })), ("ws.fork", wsp.clone())] {
             let r = srv.rpc(tok, method, params).await;
             assert_eq!((code(&r), reason(&r)), ("PERMISSION_DENIED", "session_kind_not_allowed"), "{tok} {method}: {r}");
             assert_eq!(r["error"]["denial"]["adjust"]["party"], "product");

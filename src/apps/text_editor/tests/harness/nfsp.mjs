@@ -2,6 +2,8 @@ import http from 'node:http'
 import { randomUUID } from 'node:crypto'
 let clock = 0
 let files = new Map()
+// Bucket bindings `<bucket_id>/<key>` of the editor's buffers / recovery buckets (data plane PUT/GET + kRPC list/delete).
+const objects = new Map()
 const uploads = new Map(), leases = new Map(), sessions = new Set(), streams = new Set()
 let failure = '', leasedPath = '', dropCommits = 0
 const replies = new Map()
@@ -31,14 +33,14 @@ const info = path => {
   return { kind: f.dir ? 'dir' : 'file', state: 'live', ref: ref(path), node_id: path, name: path.split('/').pop(), size: f.bytes?.length ?? 0, etag: String(f.version), capabilities: { list: !!f.dir, read: !f.dir, accepts_content: true, accepts_references: false, remove_semantics: 'destroy', ordered: false } }
 }
 function put(path, bytes, dir = false) { files.set(path, { dir, bytes: Buffer.from(bytes), version: ++clock }); for (const stream of streams) stream.write(`event: container_changed\ndata: {}\n\n`) }
-function reset() { files = new Map(); uploads.clear(); leases.clear(); replies.clear(); failure = ''; leasedPath = ''; dropCommits = 0; for (const path of ['/', '/home', '/home/test-user', '/home/test-user/notes']) put(path, '', true); put('/home/test-user/notes/demo.md', '# Hello\n\nOriginal\n'); put('/home/test-user/notes/other.txt', 'Other file\n'); put('/home/test-user/notes/page.html', '<h1>Heading</h1>\n'); put('/home/test-user/notes/binary.bin', Buffer.from([0, 1, 2])); }
+function reset() { files = new Map(); objects.clear(); uploads.clear(); leases.clear(); replies.clear(); failure = ''; leasedPath = ''; dropCommits = 0; for (const path of ['/', '/home', '/home/test-user', '/home/test-user/notes']) put(path, '', true); put('/home/test-user/notes/demo.md', '# Hello\n\nOriginal\n'); put('/home/test-user/notes/other.txt', 'Other file\n'); put('/home/test-user/notes/page.html', '<h1>Heading</h1>\n'); put('/home/test-user/notes/binary.bin', Buffer.from([0, 1, 2])); }
 reset()
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost'); const path = decodeURIComponent(url.pathname)
   let data = Buffer.alloc(0); for await (const chunk of req) data = Buffer.concat([data, chunk])
   const send = value => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(value)) }
   if (path === '/test/reset') { reset(); return send({}) }
-  if (path === '/test/state') return send(Object.fromEntries([...files].map(([key, f]) => [key, f.dir ? null : f.bytes.toString()])))
+  if (path === '/test/state') return send(Object.fromEntries([...[...files].map(([key, f]) => [key, f.dir ? null : f.bytes.toString()]), ...[...objects].map(([key, o]) => [`bucket:${key}`, o.bytes.toString()])]))
   if (path === '/test/modify') { const body = JSON.parse(data); put(body.path, body.text); return send({}) }
   if (path === '/test/delete') { files.delete(JSON.parse(data).path); return send({}) }
   if (path === '/test/fail') { failure = JSON.parse(data).path; return send({}) }
@@ -46,6 +48,25 @@ const server = http.createServer(async (req, res) => {
   // The next `count` commit_file answers are lost after the commit was applied (the client sees a network error).
   if (path === '/test/drop-commits') { dropCommits = JSON.parse(data).count; return send({}) }
   if (path === '/embed/preview') { res.setHeader('Content-Type', 'text/html; charset=utf-8'); return res.end(EMBED) }
+  if (path.startsWith('/bucket/v1/')) {
+    const id = path.slice('/bucket/v1/'.length)
+    if (req.method === 'PUT') {
+      if (failure && id.includes(failure)) { res.statusCode = 403; return send({ error: 'permission_denied', message: 'injected failure' }) }
+      const created = !objects.has(id); objects.set(id, { bytes: data, created_at: Date.now() })
+      return send({ version: ++clock, etag: `cyfile:${clock}`, created, obj_id: `cyfile:${clock}` })
+    }
+    const o = objects.get(id)
+    if (!o) { res.statusCode = 404; return send({ error: 'no_such_key', message: id }) }
+    res.setHeader('Content-Length', o.bytes.length); return res.end(o.bytes)
+  }
+  if (path === '/kapi/nfs-server') {
+    const { method, params, sys } = JSON.parse(data); const prefix = `${params.bucket_id}/`
+    const reply = result => send({ result, sys: [sys[0]] })
+    if (method === 'bucket.list_objects') return reply({ common_prefixes: [], items: [...objects].filter(([k]) => k.startsWith(prefix + (params.prefix ?? ''))).sort(([a], [b]) => a < b ? -1 : 1)
+      .map(([k, o]) => ({ bucket_id: params.bucket_id, key: k.slice(prefix.length), version: 1, is_current: true, size: o.bytes.length, etag: '', created_at: o.created_at, created_by: 'test-user|text-editor' })) })
+    if (method === 'bucket.delete') return reply({ deleted: objects.delete(prefix + params.key) })
+    return send({ error: `unknown method ${method}`, code: 'invalid_argument', sys: [sys[0]] })
+  }
   try {
     if (path.startsWith('/nfs/v1/read/')) {
       const target = path.slice('/nfs/v1/read/'.length); const node = info(target)

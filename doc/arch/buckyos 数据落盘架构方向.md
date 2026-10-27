@@ -354,6 +354,24 @@ RDB、对象本体和 Chunk 即使都分别具有备份，也不代表组合后�
 
 特别是 SQLite 实例，不能继续只表现为应用目录中一批无人统一识别的文件。这个资源清单是后续管理、备份和升级处理的基础。
 
+**2026-10-26 现状（Named Bucket 迁移后）。** 系统服务和默认应用的业务数据已收敛为“RDB instance + named store + 应用对象桶”（设计见《应用对象桶 Bucket 设计》，迁移记录见 `notepads/bucket-migration-todo.md`）。桶 ID 是 `<scope>/<appid>/<owner>/<name>`，zone 桶的 owner 写 `_`；每条绑定就是 named store 里的一个 pin（owner `bucket:<bucket_id>`），内容只存一份。各服务的表、key 与一致性规则以各自的 Durable Data Schema 文档为准：
+
+| 服务 / 应用 | RDB instance | 桶（kind / data_policy） | key |
+| --- | --- | --- | --- |
+| msg-center | `msg-center-main` | `zone/msg-center/_/messages`（object / app_data）；`zone/msg-center/_/attachments`（data / app_data）；`user/msg-center/<user>/collected`（data / collected） | `<msg_id>`；`<session>/<msg_id>/<n>`，群展示文件 `<group>/_display/<obj_id>`；`<msg_id>/<n>/<label>` |
+| HomeStation | `homestation-main`（owner 列区分用户） | `published`（data / documents，不开版本）、`entries`（object / documents）、`following`（data / ambient）、`following-entries`（object / ambient）、`scratch`（data / temp，7 天）、`cache`（data / cache），都在 `user/homestation/<user>/` 下 | `published`：`<namespace>/<entry>/<version ObjId>/<n>`；`entries`：`<namespace>/<entry>/<version ObjId>`；`following-entries`：`<feed ObjId>`；`following`：`<feed ObjId>/<file ObjId>`；`scratch`：`uploads/<id>/<文件名>` 等 |
+| AIWorkspace | 每 Workspace 一个 SQLite 文件夹（不在本次范围，TODO P3-6） | `user/aiworkspace/<owner>/assets`（data / app_data）、`objects`（data / app_data，绑“保留集”目录对象）、`exports`（data / temp，7 天） | `<ws>/<object_id>`；`<ws>/snapshot/<id>`、`<ws>/version/<epoch>/<seq>`；`<ws>/export/<id>.bcanvas`、`<ws>/replica/<id>.sqlite`、`<ws>/fixed/<root>` |
+| OpenDAN / Jarvis（Agent 是 App） | —（Session 目录仍是文件系统，见 §7） | `user/<agent app>/<owner>/artifacts`（data / documents）、`scratch`（data / temp，7 天） | `<ObjId 哈希前 16 位>/<文件名>` |
+| AICC | `aicc-usage-log` 等平台 RDB（用量、路由历史） | `user/aicc/<user>/outputs`（data / temp，7 天）、`inputs`（data / temp，1 天） | `<app>/<hash16>/<name>`（Desktop 上传为 `<hash16>/<文件名>`） |
+| control-panel | system config | `user/control-panel/<user>/wallpapers`（data / app_data）；`zone/control-panel/_/agent_templates`、`packages`（data / app_data）、`package_objects`（object / app_data）、`pikg_staging`（data / temp，1 天） | `<sha256 前 32 位>.<ext>`；`<owner>/<app>/<pikg digest>.pikg`；`<owner>/<app>/<version>/<content_id>`；`<owner>/<app>/<version>/<obj_id>`；staging handle |
+| repo-service | `repo-service-main` | `zone/repo-service/_/packages`（data / app_data） | `<content_name>/<version>` |
+| ShareContentMgr（nfs-server） | nfs-server filedb | `zone/nfs-server/_/shares`（data / app_data） | `<share_id>` |
+| 桶索引本身（nfs-server） | `bucket-index` | — | — |
+| Text Editor | — | `user/<app>/<user>/buffers`（data / app_data）、`recovery`（data / app_data） | `<pathKey>.<bufferId>.buf`；`<时间戳>-<uuid>/<原文件名>` 与 `entry.json` |
+| sys_test | — | `user/<app>/<user>/smoke`（data / temp，1 天） | 用例自建、用后删除 |
+
+`documents` 与 `collected` 桶在 Files 中只读投影到 `home/<user>/Apps/<App>/<bucket>/…` 和 `home/<user>/Collected/…`，删除即解绑。仍落在文件系统的只有 §7 列出的场景和各服务处理期间的临时文件；named store GC 宿主默认驱逐无 pin、无入边的对象与 24 小时未访问的 chunk。
+
 ### 10.2 再收敛对应用提供的稳定接口
 
 优先明确 RDB 的申请和访问接口，以及 Dump / Restore 的逻辑契约；同步细化应用级 Bucket 的作用、上传入口和统计口径。

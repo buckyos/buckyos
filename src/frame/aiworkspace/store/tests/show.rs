@@ -67,20 +67,21 @@ fn a_locked_workspace_refuses_every_write_until_the_lease_ends() {
 fn a_clone_is_a_private_full_copy_that_shares_objects() {
     let env = env();
     let id = project(&env);
-    let objects_before = std::fs::read_dir(env.dir.path().join("objects/objects")).unwrap().count();
-    let (head, epoch) = {
+    let (head, epoch, diagram) = {
         let h = env.svc.workspace(&id).unwrap();
         let mut ws = h.lock().unwrap();
         ws.grant(&alice(), "bob", None, &["read".into()]).unwrap();
         ws.set_user_state(&alice(), &json!({ "mode": "canvas" }), None).unwrap();
-        (ws.head_seq, ws.epoch.clone())
+        let diagram = ws.read(&alice(), "diagram", None).unwrap()["content"]["payload"]["object_id"].as_str().unwrap().to_string();
+        (ws.head_seq, ws.epoch.clone(), diagram)
     };
     lock(&env, &id, "sh_x");
     let clone = env.svc.clone_for_show(&id, "sh_x", "2026-10-04T08:01:00.000Z").unwrap();
     assert_ne!(clone, id);
     assert!(is_clone_dir(&env.dir.path().join("workspaces").join(&clone)));
-    // no bytes copied: assets, snapshots and programs stay where they are
-    assert_eq!(std::fs::read_dir(env.dir.path().join("objects/objects")).unwrap().count(), objects_before);
+    // no bytes copied and nothing bound again: the clone reads through the source's bindings
+    assert!(env.bound("alice", "assets", &format!("{id}/{diagram}")).is_some());
+    assert!(env.bound("alice", "assets", &format!("{clone}/{diagram}")).is_none());
     {
         let h = env.svc.workspace(&clone).unwrap();
         let mut ws = h.lock().unwrap();

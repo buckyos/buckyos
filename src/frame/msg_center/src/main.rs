@@ -1,4 +1,4 @@
-mod attachment_retention;
+mod buckets;
 mod contact_mgr;
 mod contact_lookup;
 mod contact_rpc;
@@ -224,6 +224,14 @@ impl RPCHandler for MsgCenterHttpServer {
                 let result = self.handle_reload_settings().await?;
                 return Ok(RPCResponse {
                     result: RPCResult::Success(result),
+                    seq: req.seq,
+                    trace_id: req.trace_id,
+                });
+            }
+            if req.method == buckyos_api::METHOD_MSG_COLLECT_ATTACHMENT {
+                let value = center.collect_attachment(req.params.clone(), &ctx).await?;
+                return Ok(RPCResponse {
+                    result: RPCResult::Success(value),
                     seq: req.seq,
                     trace_id: req.trace_id,
                 });
@@ -1426,12 +1434,11 @@ pub async fn start_msg_center_service() -> Result<()> {
     if let Some(signer) = zone_signer {
         center.zone_signer.set(signer);
     }
+    center.set_bucket_host(buckets::BucketHost::Runtime);
     center.start_idempotency_sweep();
     center.start_friend_request_sweep();
     center.start_notify_sweep();
     center.start_group_sync();
-    center.set_attachment_store(Arc::new(attachment_retention::RuntimeAttachmentStore));
-    center.start_attachment_retention();
 
     let executor_mgr = Arc::new(DeliveryExecutorMgr::new());
     register_message_hub(&center, executor_mgr.as_ref()).await?;

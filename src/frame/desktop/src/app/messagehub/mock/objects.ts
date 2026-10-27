@@ -219,4 +219,14 @@ export const mockObjectAccess: ObjectAccess = {
     }
     return pending
   },
+  async collect(objId, context) {
+    const spec = specOf(objId)
+    if (!spec || !context) throw new Error('404 object unavailable')
+    const key = `${context.slice(context.lastIndexOf('/') + 1)}/${spec.name}`
+    mockCollected.set(key, objId)
+    return { bucketId: 'user/msg-center/mock/collected', key }
+  },
 }
+
+/** What the viewer collected (`collect`): key → object id, for tests. */
+export const mockCollected = new Map<string, string>()

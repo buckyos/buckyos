@@ -293,7 +293,8 @@ fn restart_reports_interrupted_and_reconciles_applying() {
     run_test(|| async move {
     let dir = tempfile::tempdir().unwrap();
     let (ws_id, running, applying) = {
-        let svc = Service::open(&dir.path().join("data")).unwrap();
+        let objects = aiworkspace_store::objects::ObjectStore::embedded(&dir.path().join("pre-store"), buckyos_api::aiworkspace_bucket_decls(), None).unwrap();
+        let svc = Service::open(&dir.path().join("data"), objects).unwrap();
         let alice = aiworkspace_store::Caller::user("alice");
         let id = svc.create_workspace(&alice, "w", None).unwrap()["workspace_id"].as_str().unwrap().to_string();
         let h = svc.workspace(&id).unwrap();

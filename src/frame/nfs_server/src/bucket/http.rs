@@ -101,7 +101,7 @@ pub async fn export(
         return Err(BucketError::KindMismatch("only data buckets export to files".into()));
     }
     let actor = match session {
-        Session::Open => Actor::Admin(None),
+        Session::Open | Session::Device { .. } => Actor::Admin(None),
         Session::User { user, app_key, app_session: false, .. } if app_key.starts_with("system:") => {
             if crate::auth::is_zone_owner(state, user).await {
                 Actor::Admin(Some(user.clone()))

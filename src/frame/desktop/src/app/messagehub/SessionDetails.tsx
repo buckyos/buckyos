@@ -67,7 +67,7 @@ export function SessionDetails({ session, entity, context, access, showActions, 
       </div>
       {groupSession?.announcement && <div className="rounded-xl bg-[color:color-mix(in_srgb,var(--cp-accent)_8%,transparent)] px-3 py-2 text-[13px]" data-testid="session-announcement"><p className="text-xs text-[color:var(--cp-muted)]">{t('messagehub.announcement')}</p><p className="whitespace-pre-wrap break-words">{groupSession.announcement}</p></div>}
       {notices.length > 0 && <div className="space-y-1 rounded-xl bg-[color:color-mix(in_srgb,var(--cp-warning)_10%,transparent)] px-3 py-2 text-[13px]">{notices.map(notice => <p key={notice}>{notice}</p>)}</div>}
-      {groupSession && <GroupDisplaySection display={groupSession.display} nameOf={nameOf} testId="session-display" />}
+      {groupSession && <GroupDisplaySection display={groupSession.display} session={groupSession.key} nameOf={nameOf} testId="session-display" />}
       {groupSession && <GroupHooksSection hooks={groupSession.hooks} />}
       {group && groupSession && <GroupExtensionPanels panels={groupSession.panels} context={{ groupDid: group.did, sessionId: groupSession.sessionId, session: groupSession.key, locale }} hostDid={group.hostDid} allowOrigins={store.isMock ? mockPanelOrigins() : undefined} />}
       <DetailSection title={t('messagehub.members')}>

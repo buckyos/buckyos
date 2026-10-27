@@ -6,6 +6,7 @@
 //! the GC host and maintenance loops (`tasks`).
 
 pub mod http;
+pub mod projection;
 pub mod rpc;
 pub mod s3;
 pub mod spec;
@@ -29,11 +30,13 @@ pub struct BucketHost {
     /// Last spec sync per `<appid>@<owner>`.
     pub(crate) synced: Mutex<HashMap<String, Instant>>,
     groups: Mutex<HashMap<String, (Instant, Vec<String>, bool)>>,
+    /// Display names of apps owning buckets (Files projection folders), from their specs.
+    pub(crate) names: Mutex<HashMap<String, String>>,
 }
 
 impl Default for BucketHost {
     fn default() -> Self {
-        BucketHost { store: tokio::sync::OnceCell::new(), synced: Default::default(), groups: Default::default() }
+        BucketHost { store: tokio::sync::OnceCell::new(), synced: Default::default(), groups: Default::default(), names: Default::default() }
     }
 }
 
@@ -108,6 +111,15 @@ impl BucketHost {
             .await
     }
 
+    /// The store once opened; synchronous callers never open it themselves.
+    pub fn loaded(&self) -> Option<Arc<BucketStore>> {
+        self.store.get().cloned()
+    }
+
+    pub fn show_name(&self, appid: &str) -> Option<String> {
+        self.names.lock().unwrap().get(appid).cloned()
+    }
+
     /// `(groups, zone user)` of a user, from `users/<u>/settings` (cached).
     pub(crate) async fn user_groups(&self, state: &AppState, user: &str) -> (Vec<String>, bool) {
         if let Some((at, groups, zone_user)) = self.groups.lock().unwrap().get(user).cloned() {
@@ -149,8 +161,10 @@ pub enum Session {
     User { user: String, app_key: String, app: String, token: String, sudo: bool, app_session: bool },
     /// An Agent (DID session) acting for its owner.
     Agent { owner: String, agent: String, subject: String, app: String, token: String, read_write: bool },
-    /// A zone service or device acting as itself.
+    /// A zone service (or a device running it) acting as itself.
     Service { service: String, subject: String, app: String, token: String },
+    /// A zone device through the host CLI: an administrator, as in the file namespace.
+    Device { device: String },
     Anonymous,
 }
 
@@ -167,6 +181,9 @@ async fn agent_read_write(user: &str, agent: &str) -> bool {
         .map(|spec| spec.permission_mode == buckyos_api::AgentPermissionMode::ReadWrite)
         .unwrap_or(false)
 }
+
+/// The host CLI's device login (websdk `cli/core/auth.ts` `LOGIN_APP_ID`).
+const DEVICE_CLI: &str = "system:buckycli";
 
 /// Verifies a verify-hub session token; `None` is an anonymous request.
 pub async fn session_of(state: &AppState, token: Option<&str>) -> BucketResult<Session> {
@@ -195,6 +212,7 @@ pub async fn session_of(state: &AppState, token: Option<&str>) -> BucketResult<S
             let read_write = agent_read_write(&owner, &agent).await;
             Session::Agent { owner, agent, subject: claims.subject, app: claims.app_id, token: token.to_string(), read_write }
         }
+        TokenPrincipalKind::Device if claims.authorization_key == DEVICE_CLI => Session::Device { device: claims.subject },
         TokenPrincipalKind::System | TokenPrincipalKind::Device => Session::Service {
             service: app_name(&claims.authorization_key),
             subject: claims.subject,
@@ -363,6 +381,13 @@ pub async fn caller_of(state: &Arc<AppState>, session: &Session, bucket_token: O
                 principal: ndm::Principal::new(subject.clone(), app.clone(), app.clone(), Some(token.clone())),
             });
         }
+        Session::Device { device } => {
+            caller.user = Some(device.clone());
+            caller.app = Some(device.clone());
+            caller.zone_user = true;
+            caller.sudo = true;
+            caller.identity = Arc::new(bucket_store::AllowAll);
+        }
         Session::Anonymous => {}
     }
     caller
@@ -371,7 +396,7 @@ pub async fn caller_of(state: &Arc<AppState>, session: &Session, bucket_token: O
 /// Zone owner, or a user whose admin policy manages other users' buckets (D16).
 pub async fn is_admin(state: &Arc<AppState>, session: &Session) -> bool {
     match session {
-        Session::Open => true,
+        Session::Open | Session::Device { .. } => true,
         Session::User { user, app_key, app, token, sudo, .. } => {
             if crate::auth::is_zone_owner(state, user).await {
                 return true;

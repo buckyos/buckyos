@@ -136,7 +136,7 @@ export function GroupPanel({ entity, context }: { entity: Entity; context: Messa
   const extensions = group.lifecycle !== 'deleted' && defaultSession && (defaultSession.panels.length > 0 || hooks.length > 0 || !!defaultSession.display.announcement || defaultSession.display.links.length > 0 || defaultSession.display.files.length > 0 || defaultSession.display.featuredMembers.length > 0)
   return <section className="mb-4 rounded-xl p-3" style={{ background: 'color-mix(in srgb, var(--cp-text) 4%, transparent)' }} data-testid="group-panel" aria-label={t('messagehub.group.membersTitle')}>
     {extensions && <div className="mb-3 space-y-3" data-testid="group-extensions">
-      <GroupDisplaySection display={defaultSession.display} nameOf={nameOf} />
+      <GroupDisplaySection display={defaultSession.display} session={defaultSession.key} nameOf={nameOf} />
       <GroupHooksSection hooks={hooks} />
       <GroupExtensionPanels panels={defaultSession.panels} context={{ groupDid: group.did, sessionId: null, session: group.did, locale }} hostDid={group.hostDid} allowOrigins={store.isMock ? mockPanelOrigins() : undefined} />
     </div>}

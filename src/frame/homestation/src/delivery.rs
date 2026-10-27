@@ -74,10 +74,10 @@ impl Station {
                 let tx = c.transaction()?;
                 for (obj_id, recipient, purpose) in rows {
                     tx.execute(
-                        "INSERT INTO outbox(obj_id, recipient, target, entry, task_key, purpose, restricted, state, attempts, next_at, created_at, updated_at)
-                         VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, 'pending', 0, ?7, ?7, ?7)
-                         ON CONFLICT(obj_id, recipient) DO NOTHING",
-                        params![obj_id, recipient, entry, task_key, purpose, restricted as i64, now],
+                        "INSERT INTO outbox(owner, obj_id, recipient, target, entry, task_key, purpose, restricted, state, attempts, next_at, created_at, updated_at)
+                         VALUES (?8, ?1, ?2, NULL, ?3, ?4, ?5, ?6, 'pending', 0, ?7, ?7, ?7)
+                         ON CONFLICT(owner, obj_id, recipient) DO NOTHING",
+                        params![obj_id, recipient, entry, task_key, purpose, restricted as i64, now, tx.owner],
                     )?;
                 }
                 tx.commit()?;
@@ -108,11 +108,11 @@ impl Station {
                 let mut stmt = c.prepare(
                     "SELECT o.id, o.obj_id, o.recipient,
                             CASE WHEN o.restricted=1 THEN COALESCE(p.audience, '{\"kind\":\"dids\"}') END, o.attempts
-                     FROM outbox o LEFT JOIN published p ON p.entry=o.entry
-                     WHERE o.state='pending' AND o.next_at<=?1 ORDER BY o.id LIMIT 32",
+                     FROM outbox o LEFT JOIN published p ON p.owner=o.owner AND p.entry=o.entry
+                     WHERE o.owner=?2 AND o.state='pending' AND o.next_at<=?1 ORDER BY o.id LIMIT 32",
                 )?;
                 let rows = stmt
-                    .query_map([now], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
+                    .query_map(params![now, c.owner], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(rows)
             })
@@ -140,8 +140,8 @@ impl Station {
             self.db
                 .call(move |c| {
                     c.execute(
-                        "UPDATE outbox SET state=?2, admission=?3, attempts=attempts+1, next_at=?4, last_result=?5, target=COALESCE(?6, target), updated_at=?7 WHERE id=?1",
-                        params![id, state, admission, next_at, result_json, target, now],
+                        "UPDATE outbox SET state=?2, admission=?3, attempts=attempts+1, next_at=?4, last_result=?5, target=COALESCE(?6, target), updated_at=?7 WHERE id=?1 AND owner=?8",
+                        params![id, state, admission, next_at, result_json, target, now, c.owner],
                     )?;
                     Ok(())
                 })
@@ -164,7 +164,7 @@ impl Station {
             let recipient = recipient.to_string();
             self.db
                 .call(move |c| {
-                    c.execute("UPDATE sources SET notify='acknowledged' WHERE did=?1 AND notify!='unsupported'", [recipient])?;
+                    c.execute("UPDATE sources SET notify='acknowledged' WHERE did=?1 AND notify!='unsupported' AND owner=?2", params![recipient, c.owner])?;
                     Ok(())
                 })
                 .await?;
@@ -260,8 +260,8 @@ impl Station {
                                 COUNT(DISTINCT CASE WHEN state='accepted' THEN recipient END),
                                 COUNT(DISTINCT CASE WHEN state='pending' THEN recipient END),
                                 COUNT(DISTINCT CASE WHEN state IN ('rejected','failed') THEN recipient END)
-                         FROM outbox WHERE entry=?1 AND purpose IN ('object','follow')",
-                        [entry],
+                         FROM outbox WHERE entry=?1 AND purpose IN ('object','follow') AND owner=?2",
+                        params![entry, c.owner],
                         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                     )
                     .optional()?;
@@ -289,8 +289,8 @@ impl Station {
         self.db
             .call(move |c| {
                 c.execute(
-                    "UPDATE outbox SET state='pending', attempts=0, next_at=?2 WHERE entry=?1 AND state IN ('failed','rejected')",
-                    params![entry, now],
+                    "UPDATE outbox SET state='pending', attempts=0, next_at=?2 WHERE entry=?1 AND state IN ('failed','rejected') AND owner=?3",
+                    params![entry, now, c.owner],
                 )?;
                 Ok(())
             })

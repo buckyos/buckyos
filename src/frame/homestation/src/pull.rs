@@ -77,8 +77,8 @@ impl Station {
         let sources: Vec<(String, String, Option<String>)> = self
             .db
             .call(|c| {
-                let mut stmt = c.prepare("SELECT id, kind, did FROM sources WHERE paused=0 AND basis!='[]' ORDER BY COALESCE(last_fetch_at, 0)")?;
-                let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<Result<Vec<_>, _>>()?;
+                let mut stmt = c.prepare("SELECT id, kind, did FROM sources WHERE paused=0 AND basis!='[]' AND owner=?1 ORDER BY COALESCE(last_fetch_at, 0)")?;
+                let rows = stmt.query_map(params![c.owner], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<Result<Vec<_>, _>>()?;
                 Ok(rows)
             })
             .await?;
@@ -111,9 +111,9 @@ impl Station {
         let changed = self
             .db
             .call(move |c| {
-                let previous: Option<String> = c.query_row("SELECT last_error FROM sources WHERE id=?1", [&id], |r| r.get(0)).unwrap_or(None);
+                let previous: Option<String> = c.query_row("SELECT last_error FROM sources WHERE id=?1 AND owner=?2", params![id, c.owner], |r| r.get(0)).unwrap_or(None);
                 let same = previous.and_then(|p| serde_json::from_str::<Value>(&p).ok()).and_then(|p| p.get("reason").and_then(Value::as_str).map(str::to_string)) == Some(reason);
-                c.execute("UPDATE sources SET last_error=?2, last_fetch_at=?3 WHERE id=?1", params![id, error, now])?;
+                c.execute("UPDATE sources SET last_error=?2, last_fetch_at=?3 WHERE id=?1 AND owner=?4", params![id, error, now, c.owner])?;
                 Ok(!same)
             })
             .await?;
@@ -129,7 +129,7 @@ impl Station {
         let (did, name, cursor) = self
             .db
             .call(move |c| {
-                Ok(c.query_row("SELECT did, name, cursor FROM sources WHERE id=?1", [id], |r| {
+                Ok(c.query_row("SELECT did, name, cursor FROM sources WHERE id=?1 AND owner=?2", params![id, c.owner], |r| {
                     Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<i64>>(2)?))
                 })?)
             })
@@ -165,10 +165,10 @@ impl Station {
         let recovered = self
             .db
             .call(move |c| {
-                let had_error: bool = c.query_row("SELECT last_error IS NOT NULL FROM sources WHERE id=?1", [&id], |r| r.get(0)).unwrap_or(false);
+                let had_error: bool = c.query_row("SELECT last_error IS NOT NULL FROM sources WHERE id=?1 AND owner=?2", params![id, c.owner], |r| r.get(0)).unwrap_or(false);
                 c.execute(
-                    "UPDATE sources SET cursor=?2, last_success_at=?3, last_fetch_at=?3, last_error=NULL WHERE id=?1",
-                    params![id, since, now],
+                    "UPDATE sources SET cursor=?2, last_success_at=?3, last_fetch_at=?3, last_error=NULL WHERE id=?1 AND owner=?4",
+                    params![id, since, now, c.owner],
                 )?;
                 Ok(had_error)
             })
@@ -339,7 +339,7 @@ impl Station {
         for collector in settings.collectors {
             let key = format!("collector_cursor:{}", collector.did);
             let key2 = key.clone();
-            let since: i64 = self.db.call(move |c| crate::db::get_meta(c, &key2)).await?.and_then(|v| v.parse().ok()).unwrap_or(0);
+            let since: i64 = self.db.call(move |c| crate::db::get_setting(c, &key2)).await?.and_then(|v| v.parse().ok()).unwrap_or(0);
             let (home, origin) = match self.origin_for_did(&collector.did).await {
                 Ok(v) => v,
                 Err(_) => continue,
@@ -361,7 +361,7 @@ impl Station {
             }
             total += report.objects;
             let next = page.change_cursor;
-            self.db.call(move |c| crate::db::set_meta(c, &key, &next.to_string())).await?;
+            self.db.call(move |c| crate::db::set_setting(c, &key, &next.to_string())).await?;
         }
         Ok(total)
     }

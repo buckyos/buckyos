@@ -1386,11 +1386,8 @@ fn register_outputs(
         outputs = report
             .artifacts
             .iter()
-            // A file by its stable copy, an object by its id.
-            .map(|a| match &a.obj_id {
-                Some(id) if a.reference.is_empty() => id.clone(),
-                _ => a.reference.clone(),
-            })
+            // An object by its id, a file the host kept no object of by its stable copy.
+            .map(|a| a.obj_id.clone().unwrap_or_else(|| a.reference.clone()))
             .collect();
     } else if let Ok(rd) = std::fs::read_dir(s.dir.path()) {
         for e in rd.flatten() {

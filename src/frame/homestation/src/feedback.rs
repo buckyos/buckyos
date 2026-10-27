@@ -21,7 +21,7 @@ impl Station {
         let now = now_ms();
         self.db
             .call(move |c| {
-                c.execute("INSERT INTO behavior_events(obj_id, event, value, at) VALUES (?1, ?2, ?3, ?4)", params![obj_id, event, value, now])?;
+                c.execute("INSERT INTO behavior_events(owner, obj_id, event, value, at) VALUES (?5, ?1, ?2, ?3, ?4)", params![obj_id, event, value, now, c.owner])?;
                 Ok(())
             })
             .await
@@ -29,7 +29,7 @@ impl Station {
 
     pub async fn purge_behavior(&self) -> HsResult<usize> {
         let before = now_ms() - self.cfg.behavior_retention_days * 86_400_000;
-        self.db.call(move |c| Ok(c.execute("DELETE FROM behavior_events WHERE at<?1", [before])?)).await
+        self.db.call(move |c| Ok(c.execute("DELETE FROM behavior_events WHERE at<?1 AND owner=?2", params![before, c.owner])?)).await
     }
 
     /// Per-publisher bonus from recent engagement; a heuristic, never a protocol fact (§10.2).
@@ -37,9 +37,9 @@ impl Station {
         self.db
             .call(|c| {
                 let mut stmt = c.prepare(
-                    "SELECT f.publisher, e.event, COUNT(*) FROM behavior_events e JOIN feed_index f ON f.obj_id=e.obj_id GROUP BY f.publisher, e.event",
+                    "SELECT f.publisher, e.event, COUNT(*) FROM behavior_events e JOIN feed_index f ON f.owner=e.owner AND f.obj_id=e.obj_id WHERE e.owner=?1 GROUP BY f.publisher, e.event",
                 )?;
-                let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))?.collect::<Result<Vec<_>, _>>()?;
+                let rows = stmt.query_map(params![c.owner], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))?.collect::<Result<Vec<_>, _>>()?;
                 let mut out: HashMap<String, f64> = HashMap::new();
                 for (publisher, event, n) in rows {
                     let w = match event.as_str() {
@@ -70,9 +70,9 @@ impl Station {
         self.db
             .call(move |c| {
                 c.execute(
-                    "INSERT INTO agreements(id, target, receiver, action, terms, joined, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
-                     ON CONFLICT(id) DO UPDATE SET joined=excluded.joined, action=excluded.action, terms=excluded.terms, updated_at=excluded.updated_at",
-                    params![id2, target, receiver, action, terms, joined as i64, now],
+                    "INSERT INTO agreements(owner, id, target, receiver, action, terms, joined, created_at, updated_at) VALUES (?8, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+                     ON CONFLICT(owner, id) DO UPDATE SET joined=excluded.joined, action=excluded.action, terms=excluded.terms, updated_at=excluded.updated_at",
+                    params![id2, target, receiver, action, terms, joined as i64, now, c.owner],
                 )?;
                 Ok(())
             })
@@ -88,8 +88,8 @@ impl Station {
             .db
             .call(move |c| {
                 Ok(rusqlite::OptionalExtension::optional(c.query_row(
-                    "SELECT target, receiver, action, joined FROM agreements WHERE id=?1",
-                    [id],
+                    "SELECT target, receiver, action, joined FROM agreements WHERE id=?1 AND owner=?2",
+                    params![id, c.owner],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 ))?)
             })
@@ -121,8 +121,8 @@ impl Station {
             .call(move |c| {
                 crate::objects::put_object(c, &stored, Some("self"), now)?;
                 c.execute(
-                    "INSERT INTO consumption_proofs(obj_id, agreement_id, target, receiver, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                    params![stored.obj_id, agreement, target2, receiver2, now],
+                    "INSERT INTO consumption_proofs(owner, obj_id, agreement_id, target, receiver, created_at) VALUES (?6, ?1, ?2, ?3, ?4, ?5)",
+                    params![stored.obj_id, agreement, target2, receiver2, now, c.owner],
                 )?;
                 Ok(())
             })
@@ -136,11 +136,11 @@ impl Station {
             .call(|c| {
                 let mut stmt = c.prepare(
                     "SELECT a.id, a.target, a.receiver, a.action, a.joined, a.updated_at,
-                            (SELECT COUNT(*) FROM consumption_proofs p WHERE p.agreement_id=a.id)
-                     FROM agreements a ORDER BY a.updated_at DESC",
+                            (SELECT COUNT(*) FROM consumption_proofs p WHERE p.owner=a.owner AND p.agreement_id=a.id)
+                     FROM agreements a WHERE a.owner=?1 ORDER BY a.updated_at DESC",
                 )?;
                 let rows = stmt
-                    .query_map([], |r| {
+                    .query_map(params![c.owner], |r| {
                         Ok(json!({
                             "id": r.get::<_, String>(0)?, "target": r.get::<_, String>(1)?, "receiver": r.get::<_, String>(2)?,
                             "action": r.get::<_, String>(3)?, "joined": r.get::<_, i64>(4)? != 0, "updatedAt": r.get::<_, i64>(5)?,

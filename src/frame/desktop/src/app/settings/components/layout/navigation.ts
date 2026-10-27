@@ -1,4 +1,4 @@
-import { Code, FolderLock, Globe, KeyRound, Network, Palette, Settings, Shield } from 'lucide-react'
+import { Code, FolderLock, Globe, HardDrive, KeyRound, Network, Palette, Settings, Shield } from 'lucide-react'
 
 export const settingsPageGroups = [
   {
@@ -25,6 +25,13 @@ export const settingsPageDefinitions = [
     icon: Settings,
     labelKey: 'settings.nav.general',
     label: 'General',
+  },
+  {
+    key: 'storage',
+    group: 'system',
+    icon: HardDrive,
+    labelKey: 'settings.nav.storage',
+    label: 'Storage',
   },
   {
     key: 'appearance',

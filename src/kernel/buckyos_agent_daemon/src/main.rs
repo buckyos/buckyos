@@ -5,12 +5,13 @@ use buckyos_agent_daemon::{
     daemon::{run, DaemonOptions},
     local,
 };
+use buckyos_kit::get_version;
 use clap::{Parser, Subcommand};
 use tokio::sync::watch;
 
 #[derive(Parser)]
 #[command(
-    version,
+    version = get_version(),
     about = "BuckyOS Agent Daemon: foreground executor for Linux, macOS and Windows",
     arg_required_else_help = true
 )]
@@ -168,7 +169,7 @@ async fn main_async(args: Args) -> Result<(), String> {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
-                        "version": env!("CARGO_PKG_VERSION"), "identity": local::identity(),
+                        "version": get_version(), "identity": local::identity(),
                         "capabilities": capabilities, "instances": instances
                     }))
                     .map_err(|_| "cannot encode status")?
@@ -176,7 +177,7 @@ async fn main_async(args: Args) -> Result<(), String> {
             } else {
                 println!(
                     "BuckyOS Agent Daemon {} — {} backend",
-                    env!("CARGO_PKG_VERSION"),
+                    get_version(),
                     std::env::consts::OS
                 );
                 println!(

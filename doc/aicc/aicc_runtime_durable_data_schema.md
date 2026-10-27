@@ -24,7 +24,7 @@ Service：`aicc`
 | Provider inventory LKGS | AICC 平台 RDB instance | 见 Provider 持久 schema |
 | usage event | AICC 平台 RDB instance | 见 usage log schema |
 | Provider/settings | system-config | Zone 配置真相源，不复制到本 RDB |
-| artifact bytes/FileObject | NDM/Named Object | RDB 只保存归属，不保存内容 bytes |
+| artifact bytes/FileObject | named store + AICC 桶 `user/aicc/<user>/outputs`、`inputs` | RDB 只保存归属，不保存内容 bytes；桶绑定是唯一的保留（`temp`，7 天 / 1 天） |
 
 ### Disposable Data（可丢弃数据）
 
@@ -38,7 +38,18 @@ Service：`aicc`
 
 ## 3. Storage Strategy
 
-全部结构化记录使用 `get_rdb_instance("aicc", ..., AICC_USAGE_LOG_RDB_INSTANCE_ID)` 获得的平台 RDB instance，只依赖通用 SQL/RDB 接口，不绑定 SQLite 或 PostgreSQL。AICC 生成的大结果使用 Named Object；`aicc_artifact_scope` 只是授权索引，`obj_id` 指向平台对象存储。Provider artifact URL 的内容不在登记时下载；`aicc_artifact_url_source` 保存来源、授权范围、精确 URL、模型原厂和 nullable 内容摘要，读取时交回原 ProviderInstance 的 Adapter 下载协议，并在完整读到 EOF 后补全摘要。`aicc_provider_artifact` 不保存内容，只把 Provider 原生 ID 关联到内容摘要**或**对象 ID，作用域为 ProviderInstance + 模型原厂 + tenant。
+全部结构化记录使用 `get_rdb_instance("aicc", ..., AICC_USAGE_LOG_RDB_INSTANCE_ID)` 获得的平台 RDB instance，只依赖通用 SQL/RDB 接口，不绑定 SQLite 或 PostgreSQL。AICC 生成的大结果使用 Named Object，写入即绑定（见下表，契约见 [aicc_api设计.md](aicc_api设计.md) §3.1 物化即保留）；`aicc_artifact_scope` 只是授权索引，`obj_id` 指向平台对象存储。Provider artifact URL 的内容不在登记时下载；`aicc_artifact_url_source` 保存来源、授权范围、精确 URL、模型原厂和 nullable 内容摘要，读取时交回原 ProviderInstance 的 Adapter 下载协议，并在完整读到 EOF 后补全摘要。`aicc_provider_artifact` 不保存内容，只把 Provider 原生 ID 关联到内容摘要**或**对象 ID，作用域为 ProviderInstance + 模型原厂 + tenant。
+
+### Unstructured：应用对象桶
+
+`services/aicc/spec` 声明两个 user scope 桶（`buckyos_api::aicc_bucket_decls`，app 池 `storage_quota_mib = 8192`，按用户计）：
+
+| 桶 | kind / data_policy | key | 谁写、谁 pin | 谁读 |
+|---|---|---|---|---|
+| `user/aicc/<user>/outputs` | `data` / `temp`，`default_ttl_days = 7` | `<app>/<hash16>/<name>` | `ResourceManager::write_artifact` 写 chunk + FileObject 后立即 `bucket.put`（无条件写，同 key 同对象即刷新 TTL）；pin owner `bucket:<bucket_id>` | 该用户；业务 App 经 AICC 授的 `<app>/` 前缀只读 grant；frame 服务 |
+| `user/aicc/<user>/inputs` | `data` / `temp`，`default_ttl_days = 1` | `<app>/<hash16>/<name>`（Desktop 上传：`<hash16>/<文件名>`） | `ResourceManager::write_input`、只收 URL 的 Provider 的 inline 输入发布、浏览器上传 finalize 的 `auto_bind` | 同上 |
+
+调用方要长期保留结果就 `bucket.copy` 到自己的桶（OpenDAN/Agent：`user/<agent>/<owner>/artifacts`）。`aicc:input:*` Lease 与 `data/aicc/driver_metadata/cloud`（cache 分区，可重建）不变。
 
 ## 4. Schema Definitions
 

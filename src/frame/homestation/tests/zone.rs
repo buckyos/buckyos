@@ -57,7 +57,7 @@ async fn every_user_has_a_home() {
     let accepted: i64 = kai
         .station
         .db
-        .call(|c| Ok(c.query_row("SELECT COUNT(*) FROM outbox WHERE state='accepted'", [], |r| r.get(0))?))
+        .call(|c| Ok(c.query_row("SELECT COUNT(*) FROM outbox WHERE state='accepted' AND owner=?1", [c.owner], |r| r.get(0))?))
         .await
         .unwrap();
     assert!(accepted >= 2, "object and Head accepted by lin's inbox");
@@ -133,7 +133,7 @@ async fn zone_feed_lists_and_follows_changes() {
     let err = net.try_rpc("kai", "publish.create", json!({ "key": "k2", "input": restricted })).await.unwrap_err();
     assert!(err.contains("zoneFeedPublic"), "{err}");
     assert!(net.rpc("mia", "published.list", json!({})).await["entries"].as_array().unwrap().is_empty());
-    let (image_id, _) = lin.station.store_file("p.png", "image/png", vec![7u8; 64], json!({ "width": 4, "height": 3 })).await.unwrap();
+    let (image_id, _) = lin.station.store_file("uploads/p.png", "p.png", "image/png", vec![7u8; 64], json!({ "width": 4, "height": 3 })).await.unwrap();
     let image = json!({ "objId": image_id });
     let lin_post = publish(
         &net,

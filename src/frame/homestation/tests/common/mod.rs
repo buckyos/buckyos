@@ -1,7 +1,10 @@
-//! A small network of real HomeStations: each has its own key, database, chunk folder and
-//! HTTP listener; they reach each other only through the protocol paths.
+//! A small network of real HomeStations: each zone has its own key, database, nfs-server
+//! (named store and buckets) and HTTP listener; they reach each other only through the
+//! protocol paths.
 
 #![allow(dead_code)]
+
+pub mod nfs;
 
 use homestation::contacts::ContactInfo;
 use homestation::directory::{StaticDirectory, StaticIdentity};
@@ -32,7 +35,9 @@ pub struct Node {
     pub contacts: Arc<homestation::contacts::StaticContacts>,
     /// The zone's user list as its host reads it.
     pub users: Arc<homestation::users::StaticUsers>,
-    _dir: Option<TempDir>,
+    /// The zone's nfs-server.
+    pub nfs: String,
+    _dir: Option<Arc<TempDir>>,
 }
 
 impl Node {
@@ -129,7 +134,8 @@ impl Net {
         let collector_refs: Vec<CollectorRef> = collectors.iter().map(|c| CollectorRef { did: did_of(c), name: format!("{c} index") }).collect();
         let mut nodes = Vec::new();
         for ((name, (listener, port)), pem) in names.iter().zip(listeners).zip(keys) {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = Arc::new(tempfile::tempdir().unwrap());
+            let nfs = nfs::start_nfs_server(&dir.path().join("nfs")).await;
             let token = format!("tok-{name}");
             let mut settings = UserSettings::default();
             settings.profile.name = name.to_string();
@@ -143,6 +149,7 @@ impl Net {
                 "owner_name": name,
                 "user": name,
                 "zone": format!("{name}.test"),
+                "nfs_server": nfs,
                 "private_key_pem": pem,
                 "collector": collectors.contains(name),
                 "spider": spider.contains(name),
@@ -175,7 +182,7 @@ impl Net {
             }
             let mut cfg: StandaloneConfig = serde_json::from_value(raw).unwrap();
             cfg.directory = directory.clone();
-            let standalone = build(cfg, dir.path(), None, None).unwrap();
+            let standalone = build(cfg, &dir.path().join("hs"), None, None).unwrap();
             let state = standalone.state.clone();
             let serve_state = state.clone();
             let handle = tokio::spawn(async move {
@@ -197,7 +204,8 @@ impl Net {
                     station: standalone.host.station(u).await.unwrap().unwrap(),
                     contacts: standalone.user_contacts[*u].clone(),
                     users: standalone.users.clone(),
-                    _dir: None,
+                    nfs: nfs.clone(),
+                    _dir: Some(dir.clone()),
                 });
             }
             nodes.push(Node {
@@ -215,6 +223,7 @@ impl Net {
                 station: standalone.station,
                 contacts: standalone.contacts,
                 users: standalone.users,
+                nfs,
                 _dir: Some(dir),
             });
         }

@@ -1,7 +1,8 @@
 //! Share tables in filedb (design §3.3). Credentials stay in `grants`
 //! (`cap_id`, `token_hash`, `expires_at`, `revoked`); everything else about a
 //! share — the result record, its immutable content version, link policy,
-//! retention pins, app deliveries, audit and access statistics — lives here.
+//! app deliveries, audit and access statistics — lives here. Snapshots are
+//! retained by the bucket `zone/nfs-server/_/shares` (key `<share_id>`).
 
 use crate::error::{NfsError, NfsResult};
 use crate::filedb::FileDb;
@@ -66,14 +67,6 @@ CREATE TABLE IF NOT EXISTS share_link_policy(
   password_hash TEXT,
   password_rev INTEGER NOT NULL DEFAULT 0,
   allow_download INTEGER NOT NULL DEFAULT 1
-);
-CREATE TABLE IF NOT EXISTS share_retentions(
-  share_id TEXT NOT NULL REFERENCES shares(share_id),
-  obj_id TEXT NOT NULL,
-  pin_owner TEXT NOT NULL,
-  pinned_at INTEGER NOT NULL,
-  released_at INTEGER,
-  PRIMARY KEY(share_id, obj_id)
 );
 CREATE TABLE IF NOT EXISTS share_deliveries(
   share_id TEXT PRIMARY KEY REFERENCES shares(share_id),
@@ -207,14 +200,6 @@ pub struct DeliveryRow {
 }
 
 #[derive(Debug, Clone)]
-pub struct RetentionRow {
-    pub obj_id: String,
-    pub pin_owner: String,
-    pub pinned_at: i64,
-    pub released_at: Option<i64>,
-}
-
-#[derive(Debug, Clone)]
 pub struct CapRow {
     pub cap_id: String,
     pub subtree: String,
@@ -256,7 +241,6 @@ pub struct NewShare<'a> {
     pub grant: Option<(&'a str, &'a str, &'a str, Option<i64>)>,
     pub policy: Option<&'a PolicyRow>,
     pub delivery: Option<&'a DeliveryRow>,
-    pub pin_owner: &'a str,
     pub audit: AuditEntry<'a>,
 }
 
@@ -455,10 +439,6 @@ impl FileDb {
                 ],
             )?;
         }
-        tx.execute(
-            "INSERT INTO share_retentions(share_id, obj_id, pin_owner, pinned_at, released_at) VALUES(?1,?2,?3,?4,NULL)",
-            params![s.share_id, s.obj_id, n.pin_owner, s.created_at],
-        )?;
         insert_audit(&tx, &n.audit)?;
         tx.commit()?;
         Ok(())
@@ -627,28 +607,6 @@ impl FileDb {
             |r| r.get(0),
         )?;
         Ok((active, expiring))
-    }
-
-    // ---------- retention ----------
-
-    pub fn share_retentions(&self, share_id: &str) -> NfsResult<Vec<RetentionRow>> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare(
-            "SELECT obj_id, pin_owner, pinned_at, released_at FROM share_retentions WHERE share_id=?1 ORDER BY pinned_at",
-        )?;
-        let rows = stmt.query_map(params![share_id], |r| {
-            Ok(RetentionRow { obj_id: r.get(0)?, pin_owner: r.get(1)?, pinned_at: r.get(2)?, released_at: r.get(3)? })
-        })?;
-        Ok(rows.collect::<Result<Vec<_>, _>>()?)
-    }
-
-    pub fn share_retention_release(&self, share_id: &str, now: i64) -> NfsResult<()> {
-        let conn = self.lock();
-        conn.execute(
-            "UPDATE share_retentions SET released_at=?2 WHERE share_id=?1 AND released_at IS NULL",
-            params![share_id, now],
-        )?;
-        Ok(())
     }
 
     // ---------- deliveries ----------

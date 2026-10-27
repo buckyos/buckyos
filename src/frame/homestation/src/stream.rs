@@ -9,7 +9,8 @@ use crate::objects::{get_object, StoredObject};
 use crate::protocol::*;
 use crate::publish::{entry_versions, get_entry, get_head, EntryKind, EntryRow};
 use crate::{now_ms, Station};
-use rusqlite::{params, Connection, OptionalExtension};
+use crate::db::Conn;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -140,7 +141,7 @@ fn wire(obj: &StoredObject) -> String {
     obj.wire().0
 }
 
-pub(crate) fn readable_by_grants(conn: &Connection, obj_id: &str, reader: &Reader, rel: &ReaderRelations, collector: bool) -> HsResult<bool> {
+pub(crate) fn readable_by_grants(conn: &Conn, obj_id: &str, reader: &Reader, rel: &ReaderRelations, collector: bool) -> HsResult<bool> {
     let obj = get_object(conn, obj_id)?;
     if let Some(obj) = &obj {
         if obj.local_only {
@@ -150,8 +151,8 @@ pub(crate) fn readable_by_grants(conn: &Connection, obj_id: &str, reader: &Reade
     if *reader == Reader::Owner {
         return Ok(true);
     }
-    let mut stmt = conn.prepare("SELECT entry FROM object_grants WHERE obj_id=?1")?;
-    let entries = stmt.query_map([obj_id], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+    let mut stmt = conn.prepare("SELECT entry FROM object_grants WHERE obj_id=?1 AND owner=?2")?;
+    let entries = stmt.query_map(params![obj_id, conn.owner], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
     let is_head = obj.as_ref().is_some_and(|o| o.obj_type == OBJ_TYPE_HEAD);
     for entry in entries {
         let Some(row) = get_entry(conn, &entry)? else { continue };
@@ -170,10 +171,10 @@ pub(crate) fn readable_by_grants(conn: &Connection, obj_id: &str, reader: &Reade
     if collector {
         let in_index = conn
             .query_row(
-                "SELECT 1 FROM collector_index WHERE obj_id=?1
-                 UNION SELECT 1 FROM collector_index ci JOIN feed_index f ON f.obj_id=ci.obj_id
-                   JOIN heads h ON h.entry=f.entry WHERE h.head_obj_id=?1",
-                [obj_id],
+                "SELECT 1 FROM collector_index WHERE obj_id=?1 AND owner=?2
+                 UNION SELECT 1 FROM collector_index ci JOIN feed_index f ON f.owner=ci.owner AND f.obj_id=ci.obj_id
+                   JOIN heads h ON h.owner=f.owner AND h.entry=f.entry WHERE h.head_obj_id=?1 AND ci.owner=?2",
+                params![obj_id, conn.owner],
                 |_| Ok(()),
             )
             .optional()?
@@ -186,7 +187,7 @@ pub(crate) fn readable_by_grants(conn: &Connection, obj_id: &str, reader: &Reade
 }
 
 /// Attach an object and its parts when the reader may read them.
-fn attach(conn: &Connection, objects: &mut BTreeMap<String, String>, obj_id: &str, reader: &Reader, rel: &ReaderRelations, collector: bool, depth: u8) -> HsResult<()> {
+fn attach(conn: &Conn, objects: &mut BTreeMap<String, String>, obj_id: &str, reader: &Reader, rel: &ReaderRelations, collector: bool, depth: u8) -> HsResult<()> {
     let obj_id = normalize_obj_id(obj_id);
     if objects.contains_key(&obj_id) || !readable_by_grants(conn, &obj_id, reader, rel, collector)? {
         return Ok(());
@@ -224,9 +225,9 @@ impl Station {
         let (follower, audiences) = self
             .db
             .call(move |c| {
-                let follower = c.query_row("SELECT 1 FROM followers WHERE did=?1 AND state='active'", [did_s], |_| Ok(())).optional()?.is_some();
-                let mut stmt = c.prepare("SELECT DISTINCT audience FROM published")?;
-                let audiences = stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+                let follower = c.query_row("SELECT 1 FROM followers WHERE did=?1 AND state='active' AND owner=?2", params![did_s, c.owner], |_| Ok(())).optional()?.is_some();
+                let mut stmt = c.prepare("SELECT DISTINCT audience FROM published WHERE owner=?1")?;
+                let audiences = stmt.query_map(params![c.owner], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
                 Ok((follower, audiences))
             })
             .await?;
@@ -264,11 +265,12 @@ impl Station {
                 let owner = reader == Reader::Owner;
                 let mut stmt = c.prepare(
                     "SELECT p.entry, COALESCE(f.iat, p.created_at/1000) AS t FROM published p
-                     JOIN heads h ON h.entry=p.entry
-                     LEFT JOIN feed_index f ON f.obj_id=h.current
+                     JOIN heads h ON h.owner=p.owner AND h.entry=p.entry
+                     LEFT JOIN feed_index f ON f.owner=h.owner AND f.obj_id=h.current
+                     WHERE p.owner=?1
                      ORDER BY t DESC, p.entry DESC",
                 )?;
-                let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+                let rows = stmt.query_map(params![c.owner], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
                 let after = cursor.as_deref().and_then(|c| c.split_once('|')).map(|(t, e)| (t.parse::<i64>().unwrap_or(i64::MAX), e.to_string()));
                 let mut items = Vec::new();
                 let mut objects = BTreeMap::new();
@@ -308,7 +310,7 @@ impl Station {
                         iat: t.max(0) as u64,
                     });
                 }
-                let change_cursor: i64 = c.query_row("SELECT COALESCE(MAX(cursor), 0) FROM stream_changes", [], |r| r.get(0))?;
+                let change_cursor: i64 = c.query_row("SELECT COALESCE(MAX(cursor), 0) FROM stream_changes WHERE owner=?1", params![c.owner], |r| r.get(0))?;
                 Ok(DisplayPage { items, objects, next, change_cursor })
             })
             .await
@@ -323,14 +325,14 @@ impl Station {
         let limit = limit.clamp(1, 500) as i64;
         self.db
             .call(move |c| {
-                let compacted: i64 = crate::db::get_meta(c, "stream_compacted_through")?.and_then(|v| v.parse().ok()).unwrap_or(0);
-                let max_cursor: i64 = c.query_row("SELECT COALESCE(MAX(cursor), 0) FROM stream_changes", [], |r| r.get(0))?;
+                let compacted: i64 = crate::db::get_setting(c, "stream_compacted_through")?.and_then(|v| v.parse().ok()).unwrap_or(0);
+                let max_cursor: i64 = c.query_row("SELECT COALESCE(MAX(cursor), 0) FROM stream_changes WHERE owner=?1", params![c.owner], |r| r.get(0))?;
                 if since < compacted {
                     return Ok(ChangesPage { changes: vec![], objects: BTreeMap::new(), next_cursor: max_cursor, more: false, resync: true });
                 }
-                let mut stmt = c.prepare("SELECT cursor, entry, kind, seq FROM stream_changes WHERE cursor>?1 ORDER BY cursor LIMIT ?2")?;
+                let mut stmt = c.prepare("SELECT cursor, entry, kind, seq FROM stream_changes WHERE cursor>?1 AND owner=?3 ORDER BY cursor LIMIT ?2")?;
                 let rows = stmt
-                    .query_map(params![since, limit + 1], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?)))?
+                    .query_map(params![since, limit + 1, c.owner], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?)))?
                     .collect::<Result<Vec<_>, _>>()?;
                 let more = rows.len() as i64 > limit;
                 let mut changes = Vec::new();
@@ -343,7 +345,7 @@ impl Station {
                         continue;
                     }
                     let head_obj_id: Option<String> = if kind == "head" {
-                        c.query_row("SELECT head_obj_id FROM head_history WHERE entry=?1 AND seq=?2", params![entry, seq], |r| r.get(0)).optional()?
+                        c.query_row("SELECT head_obj_id FROM head_history WHERE entry=?1 AND seq=?2 AND owner=?3", params![entry, seq, c.owner], |r| r.get(0)).optional()?
                     } else {
                         get_head(c, &entry)?.map(|h| h.head_obj_id)
                     };
@@ -373,8 +375,8 @@ impl Station {
     pub async fn compact_stream(&self, through: i64) -> HsResult<()> {
         self.db
             .call(move |c| {
-                c.execute("DELETE FROM stream_changes WHERE cursor<=?1", [through])?;
-                crate::db::set_meta(c, "stream_compacted_through", &through.to_string())
+                c.execute("DELETE FROM stream_changes WHERE cursor<=?1 AND owner=?2", params![through, c.owner])?;
+                crate::db::set_setting(c, "stream_compacted_through", &through.to_string())
             })
             .await
     }
@@ -426,7 +428,7 @@ impl Station {
         if !self.object_readable(reader, chunk_id).await? {
             return Ok(None);
         }
-        self.chunks.get_chunk(&normalize_obj_id(chunk_id)).await
+        self.store.get_chunk(&normalize_obj_id(chunk_id)).await
     }
 
     /// Author view (§15.1) of comments on one of the owner's versions, or — on a collector —
@@ -442,8 +444,8 @@ impl Station {
             .call(move |c| {
                 let own: Option<String> = c
                     .query_row(
-                        "SELECT v.entry FROM entry_versions v JOIN published p ON p.entry=v.entry WHERE v.obj_id=?1",
-                        [&target],
+                        "SELECT v.entry FROM entry_versions v JOIN published p ON p.owner=v.owner AND p.entry=v.entry WHERE v.obj_id=?1 AND v.owner=?2",
+                        params![target, c.owner],
                         |r| r.get(0),
                     )
                     .optional()?;
@@ -462,14 +464,14 @@ impl Station {
                 let mut seen = std::collections::HashSet::new();
                 for version in &versions {
                     let ids: Vec<String> = if view == "author" {
-                        let mut stmt = c.prepare("SELECT comment_id FROM author_list WHERE target=?1 AND listed=1 ORDER BY position")?;
-                        let rows = stmt.query_map([version], |r| r.get(0))?.collect::<Result<Vec<_>, _>>()?;
+                        let mut stmt = c.prepare("SELECT comment_id FROM author_list WHERE target=?1 AND listed=1 AND owner=?2 ORDER BY position")?;
+                        let rows = stmt.query_map(params![version, c.owner], |r| r.get(0))?.collect::<Result<Vec<_>, _>>()?;
                         rows
                     } else {
                         let mut stmt = c.prepare(
-                            "SELECT f.obj_id FROM feed_index f JOIN collector_index ci ON ci.obj_id=f.obj_id WHERE f.target=?1 ORDER BY ci.received_at",
+                            "SELECT f.obj_id FROM feed_index f JOIN collector_index ci ON ci.owner=f.owner AND ci.obj_id=f.obj_id WHERE f.target=?1 AND f.owner=?2 ORDER BY ci.received_at",
                         )?;
-                        let rows = stmt.query_map([version], |r| r.get(0))?.collect::<Result<Vec<_>, _>>()?;
+                        let rows = stmt.query_map(params![version, c.owner], |r| r.get(0))?.collect::<Result<Vec<_>, _>>()?;
                         rows
                     };
                     for id in ids {
@@ -543,9 +545,9 @@ impl Station {
         let (followers, following) = self
             .db
             .call(|c| {
-                let followers: i64 = c.query_row("SELECT COUNT(*) FROM followers WHERE state='active'", [], |r| r.get(0))?;
+                let followers: i64 = c.query_row("SELECT COUNT(*) FROM followers WHERE state='active' AND owner=?1", params![c.owner], |r| r.get(0))?;
                 let following: i64 =
-                    c.query_row("SELECT COUNT(*) FROM sources WHERE kind='person' AND basis!='[]'", [], |r| r.get(0))?;
+                    c.query_row("SELECT COUNT(*) FROM sources WHERE kind='person' AND basis!='[]' AND owner=?1", params![c.owner], |r| r.get(0))?;
                 Ok((followers, following))
             })
             .await?;
@@ -608,7 +610,7 @@ impl Station {
                     }
                 }
                 let iat: i64 = match &head.current {
-                    Some(current) => c.query_row("SELECT iat FROM feed_index WHERE obj_id=?1", [current], |r| r.get(0)).optional()?.unwrap_or(row.created_at / 1000),
+                    Some(current) => c.query_row("SELECT iat FROM feed_index WHERE obj_id=?1 AND owner=?2", params![current, c.owner], |r| r.get(0)).optional()?.unwrap_or(row.created_at / 1000),
                     None => row.created_at / 1000,
                 };
                 Ok(Some((
@@ -677,11 +679,11 @@ impl Station {
             .call(move |c| {
                 let mut stmt = c.prepare(
                     "SELECT ci.obj_id, ci.received_at, f.entry, f.kind, f.iat FROM collector_index ci
-                     JOIN feed_index f ON f.obj_id=ci.obj_id
-                     WHERE ci.received_at>?1 AND f.kind='post' ORDER BY ci.received_at LIMIT ?2",
+                     JOIN feed_index f ON f.owner=ci.owner AND f.obj_id=ci.obj_id
+                     WHERE ci.received_at>?1 AND f.kind='post' AND ci.owner=?3 ORDER BY ci.received_at LIMIT ?2",
                 )?;
                 let rows = stmt
-                    .query_map(params![since, limit], |r| {
+                    .query_map(params![since, limit, c.owner], |r| {
                         Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, String>(3)?, r.get::<_, i64>(4)?))
                     })?
                     .collect::<Result<Vec<_>, _>>()?;

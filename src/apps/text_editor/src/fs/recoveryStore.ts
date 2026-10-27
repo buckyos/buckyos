@@ -1,7 +1,7 @@
 import type { TransferableContentRef } from 'buckyos/content'
-import type { TextFormat } from './codec.ts'
+import { MAX_FILE_SIZE, type TextFormat } from './codec.ts'
 import type { BufferHeader } from './bufferStore.ts'
-import { isMissing, type DocumentStore } from './documentStore.ts'
+import { isMissingObject, type AppData } from './appData.ts'
 export interface RecoveryEntry extends Omit<TextFormat, 'mixedEol'> {
   format: 'buckyos.text-editor.recovery/1'
   reason: 'conflict-reload' | 'conflict-overwrite' | 'deleted-close' | 'discarded' | 'taken-over'
@@ -15,41 +15,52 @@ export interface RecoveryEntry extends Omit<TextFormat, 'mixedEol'> {
   createdAt: number
   origin: BufferHeader['origin']
 }
-export interface RecoveryRecord { path: string; entry: RecoveryEntry; size: number; incomplete?: boolean }
+/** `id`: the entry's key prefix `<YYYYMMDDTHHMMSS>-<uuid>` in the `recovery` bucket, holding `<fileName>` and `entry.json`. */
+export interface RecoveryRecord { id: string; entry: RecoveryEntry; size: number; incomplete?: boolean }
 export class RecoveryStore {
-  root: string; store: DocumentStore
-  constructor(root: string, store: DocumentStore) { this.root = root; this.store = store }
+  data: AppData
+  constructor(data: AppData) { this.data = data }
   async archive(bytes: Uint8Array, entry: Omit<RecoveryEntry, 'format' | 'fileName' | 'createdAt'>): Promise<RecoveryRecord> {
     const name = entry.displayName.replace(/[\/\\\0]/g, '_') || 'untitled.txt'
     const fileName = name === 'entry.json' ? 'entry (content).json' : name
     const createdAt = Date.now()
-    const path = `${this.root}/recovery/${new Date(createdAt).toISOString().replace(/[-:]/g, '').slice(0, 15)}-${crypto.randomUUID()}`
+    const id = `${new Date(createdAt).toISOString().replace(/[-:]/g, '').slice(0, 15)}-${crypto.randomUUID()}`
     const full: RecoveryEntry = { ...entry, format: 'buckyos.text-editor.recovery/1', fileName, createdAt }
-    await this.store.mkdir(path)
-    await this.store.write(`${path}/${fileName}`, bytes, null)
-    await this.store.write(`${path}/entry.json`, new TextEncoder().encode(JSON.stringify(full)), null)
-    return { path, entry: full, size: bytes.length }
+    await this.data.put('recovery', `${id}/${fileName}`, bytes)
+    await this.writeEntry(id, full)
+    return { id, entry: full, size: bytes.length }
+  }
+  private async writeEntry(id: string, entry: RecoveryEntry): Promise<void> {
+    await this.data.put('recovery', `${id}/entry.json`, new TextEncoder().encode(JSON.stringify(entry)), 'application/json')
   }
   async annotate(record: RecoveryRecord, conflictCopyPath: string): Promise<void> {
-    const path = `${record.path}/entry.json`
-    const current = await this.store.stat({ kind: 'cyfs-path', path })
     const entry = { ...record.entry, conflictCopyPath }
-    await this.store.write(path, new TextEncoder().encode(JSON.stringify(entry)), current.etag)
+    await this.writeEntry(record.id, entry)
     record.entry = entry
   }
+  async read(record: RecoveryRecord): Promise<Uint8Array> { return this.data.read('recovery', `${record.id}/${record.entry.fileName}`, MAX_FILE_SIZE) }
+  async remove(record: RecoveryRecord): Promise<void> {
+    for (const object of await this.data.list('recovery', `${record.id}/`)) await this.data.remove('recovery', object.key)
+  }
   async list(): Promise<RecoveryRecord[]> {
+    const entries = new Map<string, Array<{ name: string; size: number; createdAt: number }>>()
+    for (const object of await this.data.list('recovery')) {
+      const split = object.key.indexOf('/')
+      if (split <= 0) continue
+      const id = object.key.slice(0, split)
+      entries.set(id, [...entries.get(id) ?? [], { name: object.key.slice(split + 1), size: object.size, createdAt: object.createdAt }])
+    }
     const records: RecoveryRecord[] = []
-    for (const child of await this.store.list(`${this.root}/recovery`)) {
-      if (child.target.kind !== 'dir') continue
-      const path = `${this.root}/recovery/${child.name}`
-      const files = await this.store.list(path)
+    for (const [id, files] of entries) {
       let entry: RecoveryEntry | undefined
-      try { entry = JSON.parse(new TextDecoder().decode((await this.store.read({ kind: 'cyfs-path', path: `${path}/entry.json` })).bytes)) } catch (e) { if (!isMissing(e) && !(e instanceof SyntaxError)) throw e }
+      if (files.some(f => f.name === 'entry.json')) {
+        try { entry = JSON.parse(new TextDecoder().decode(await this.data.read('recovery', `${id}/entry.json`, 65536))) } catch (e) { if (!isMissingObject(e) && !(e instanceof SyntaxError)) throw e }
+      }
       if (entry?.format === 'buckyos.text-editor.recovery/1') {
-        records.push({ path, entry, size: files.find(f => f.name === entry!.fileName)?.target.attrs?.size ?? 0 })
+        records.push({ id, entry, size: files.find(f => f.name === entry!.fileName)?.size ?? 0 })
       } else {
-        for (const file of files.filter(f => f.name !== 'entry.json' && f.target.kind === 'file')) {
-          records.push({ path, size: file.target.attrs?.size ?? 0, incomplete: true, entry: { format: 'buckyos.text-editor.recovery/1', reason: 'discarded', side: 'mine', displayName: file.name, fileName: file.name, createdAt: (file.target.attrs?.mtime ?? 0) * 1000, encoding: 'utf-8', bom: false, eol: '\n', origin: { device: '' } } })
+        for (const file of files.filter(f => f.name !== 'entry.json')) {
+          records.push({ id, size: file.size, incomplete: true, entry: { format: 'buckyos.text-editor.recovery/1', reason: 'discarded', side: 'mine', displayName: file.name, fileName: file.name, createdAt: file.createdAt, encoding: 'utf-8', bom: false, eol: '\n', origin: { device: '' } } })
         }
       }
     }
@@ -58,7 +69,7 @@ export class RecoveryStore {
   async cleanup(days: { discarded: number; takenOver: number }): Promise<void> {
     for (const record of await this.list()) {
       const retention = record.entry.reason === 'discarded' ? days.discarded : record.entry.reason === 'taken-over' ? days.takenOver : 0
-      if (!record.incomplete && retention > 0 && Date.now() - record.entry.createdAt > retention * 86400000) await this.store.remove(record.path, true)
+      if (!record.incomplete && retention > 0 && Date.now() - record.entry.createdAt > retention * 86400000) await this.remove(record)
     }
   }
 }

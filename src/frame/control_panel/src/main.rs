@@ -13,10 +13,10 @@ mod app_mutation;
 mod app_package_namespace;
 mod app_servcie_mgr;
 mod app_staging;
+mod buckets;
 mod cluster_mgr;
 mod dashboard;
 mod desktop_folder;
-mod desktop_wallpaper;
 mod diagnostic_mgr;
 mod download_mgr;
 mod exclusive_invite;
@@ -191,7 +191,6 @@ impl RpcAuthPrincipal {
                     | "container.overview"
                     | "desktop.session.list"
                     | "desktop.state.get"
-                    | "desktop.wallpaper.get"
             )
         {
             return Err(RPCErrors::NoPermission(format!(
@@ -242,7 +241,6 @@ mod agent_permission_tests {
             "desktop.session.delete",
             "desktop.state.set",
             "desktop.state.delete",
-            "desktop.wallpaper.write",
             "future.read",
         ] {
             assert!(
@@ -267,7 +265,6 @@ mod agent_permission_tests {
             "gateway.file.get",
             "desktop.session.list",
             "desktop.state.get",
-            "desktop.wallpaper.get",
         ] {
             assert!(
                 read_only.require_agent_permission(method).is_ok(),

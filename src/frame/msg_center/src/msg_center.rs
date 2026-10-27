@@ -117,8 +117,8 @@ pub struct MessageCenter {
     pub(crate) friend_lock: Arc<tokio::sync::Mutex<()>>,
     /// Unauthenticated signed ingress per sender: (window start, count).
     pub(crate) ingress_budget: Arc<std::sync::Mutex<HashMap<String, (u64, u32)>>>,
-    /// Where accepted messages hold their attachments (`attachment_retention.rs`).
-    pub(crate) attachment_store: Arc<crate::attachment_retention::AttachmentStoreSlot>,
+    /// Where stored messages and their attachments are bound (`buckets.rs`).
+    pub(crate) buckets: Arc<crate::buckets::BucketSlot>,
 }
 
 impl MessageCenter {
@@ -134,7 +134,6 @@ impl MessageCenter {
         let contact_mgr = ContactMgr::new_with_msg_box(msg_box_db.clone()).await?;
         let groups = crate::group_store::GroupStore::open(msg_box_db.clone()).await?;
         let notifies = crate::notify::NotifyStore::open(msg_box_db.clone()).await?;
-        crate::attachment_retention::open_tables(&msg_box_db).await?;
         let hosted = groups
             .list()
             .await?
@@ -162,7 +161,7 @@ impl MessageCenter {
             zone_signer: Arc::new(Default::default()),
             friend_lock: Arc::new(tokio::sync::Mutex::new(())),
             ingress_budget: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            attachment_store: Arc::new(Default::default()),
+            buckets: Arc::new(Default::default()),
         })
     }
 
@@ -277,7 +276,7 @@ impl MessageCenter {
         msg: &MsgObject,
     ) -> std::result::Result<(), RPCErrors> {
         match caller.filter(|caller| caller.restricted()) {
-            Some(caller) if !crate::attachment_retention::attachment_ids(msg).is_empty() => {
+            Some(caller) if !crate::buckets::attachment_ids(msg).is_empty() => {
                 Err(crate::owner_session::gate_denial(
                     buckyos_api::DenyReason::SessionKindNotAllowed,
                     &caller.user_id,
@@ -727,7 +726,7 @@ impl MessageCenter {
         result
     }
 
-    fn is_group_message(msg: &MsgObject) -> bool {
+    pub(crate) fn is_group_message(msg: &MsgObject) -> bool {
         msg.kind == MsgObjKind::GroupMsg
     }
 
@@ -919,7 +918,7 @@ impl MessageCenter {
     /// is a semantic hint and never a session key. Direct messages without
     /// `to_session` fall back to the legacy session hints, then to the peer
     /// DID, so both directions of a DM land in the same session.
-    fn derive_session_id(box_kind: &MailboxKind, msg: &MsgObject) -> Option<String> {
+    pub(crate) fn derive_session_id(box_kind: &MailboxKind, msg: &MsgObject) -> Option<String> {
         if Self::is_group_message(msg) {
             if *box_kind == MailboxKind::GroupInbox {
                 return msg.to_session.clone();
@@ -943,39 +942,6 @@ impl MessageCenter {
         }
     }
 
-    pub(crate) async fn store_message(
-        msg_id: &ObjId,
-        msg_json_str: &str,
-    ) -> std::result::Result<(), RPCErrors> {
-        let msg_id = msg_id.clone();
-        let msg_json = msg_json_str.to_string();
-        let runtime = match get_buckyos_api_runtime() {
-            Ok(runtime) => runtime,
-            Err(RPCErrors::ReasonError(reason))
-                if reason.contains("BuckyOSRuntime is not initialized") =>
-            {
-                warn!(
-                    "skip storing message {} to named_store because runtime is not initialized",
-                    msg_id.to_string()
-                );
-                return Ok(());
-            }
-            Err(error) => return Err(error),
-        };
-        let named_store = runtime.get_local_named_store().await?;
-        named_store
-            .put_object(&msg_id, &msg_json)
-            .await
-            .map_err(|error| {
-                RPCErrors::ReasonError(format!(
-                    "store message {} in named_store failed: {}",
-                    msg_id.to_string(),
-                    error
-                ))
-            })?;
-        Ok(())
-    }
-
     pub(crate) async fn load_message(
         &self,
         msg_id: &ObjId,
@@ -988,8 +954,7 @@ impl MessageCenter {
             return Ok(msg);
         }
         let msg_id = msg_id.clone();
-        let runtime = get_buckyos_api_runtime()?;
-        let named_store = runtime.get_local_named_store().await?;
+        let named_store = self.named_store().await?;
         let msg_json = named_store.get_object(&msg_id).await.map_err(|error| {
             RPCErrors::ReasonError(format!(
                 "load message {} from named_store failed: {}",
@@ -1496,19 +1461,6 @@ impl MessageCenter {
         let retention_key = Self::dispatch_idempotency_retention_key(&stored_msg, ingress.as_ref());
         let principal = Self::ingress_principal(ingress.as_ref());
 
-        Self::store_message(&stored_msg_id, &stored_msg_json).await?;
-
-        // Re-check idempotency before doing any work; a concurrent caller may
-        // have completed the same dispatch while we were awaiting store_message.
-        if let Some(key) = idempotency_key.as_ref() {
-            if let Some(cached) = self
-                .load_dispatch_idempotency(&idempotency_owner_scope, key)
-                .await?
-            {
-                return Ok(cached);
-            }
-        }
-
         let mut result = DispatchResult {
             ok: true,
             msg_id: stored_msg_id.clone(),
@@ -1662,7 +1614,13 @@ impl MessageCenter {
         }
 
         if !mailbox_records.is_empty() {
-            self.retain_attachments(&stored_msg_id, &stored_msg).await?;
+            let arrival = if receiver.is_some() {
+                crate::buckets::Arrival::Remote
+            } else {
+                crate::buckets::Arrival::Local
+            };
+            self.store_message(&stored_msg_id, &stored_msg_json, &stored_msg, arrival)
+                .await?;
         }
         let now_ms = Self::now_ms();
         let expires_at_ms = if receiver.is_some() {
@@ -1688,9 +1646,6 @@ impl MessageCenter {
         {
             IdempotencyCommitOutcome::Reused(cached) => return Ok(cached),
             IdempotencyCommitOutcome::Committed => {
-                if !mailbox_records.is_empty() {
-                    self.confirm_attachments(&stored_msg_id).await;
-                }
                 self.note_records_committed(&mailbox_records).await;
                 for record in mailbox_records.iter() {
                     Self::publish_box_changed_event(record, "upsert");
@@ -2014,7 +1969,13 @@ impl MessageCenter {
         // Phase 2: persist the message, the SENT mailbox record and one
         // delivery record per target. All ids are deterministic, so replays
         // converge onto the same rows.
-        Self::store_message(&stored_msg_id, &stored_msg_json).await?;
+        self.store_message(
+            &stored_msg_id,
+            &stored_msg_json,
+            &stored_msg,
+            crate::buckets::Arrival::Local,
+        )
+        .await?;
 
         if let Some(key) = idempotency_key.as_ref() {
             if let Some(cached) = self
@@ -2071,7 +2032,6 @@ impl MessageCenter {
             deliveries,
             reason: None,
         };
-        self.retain_attachments(&stored_msg_id, &stored_msg).await?;
         let expires_at_ms = Self::idempotency_expires_at(now_ms);
         match self
             .msg_box_db
@@ -2092,7 +2052,6 @@ impl MessageCenter {
         {
             IdempotencyCommitOutcome::Reused(cached) => return Ok(cached),
             IdempotencyCommitOutcome::Committed => {
-                self.confirm_attachments(&stored_msg_id).await;
                 self.note_records_committed(std::slice::from_ref(&sent_record))
                     .await;
                 Self::publish_box_changed_event(&sent_record, "upsert");

@@ -50,7 +50,13 @@ obj://config      # 系统配置 KV (system-config)
 obj://dfs         # 面向 Agent 的分布式文件系统服务对象，不是文件路径
 obj://taskmgr     # 任务管理器 (task-manager)
 obj://kmsg        # 消息队列服务 (kmsg)
+obj://bucket      # 应用对象桶 (nfs-server)：obj://bucket/<bucket_id>/<key>
 ```
+
+`obj://bucket/<scope>/<appid>/<owner>/<name>/<key>` 指向某个桶里 key 的当前绑定（zone 桶的 owner 写 `_`），
+是 Agent、CLI（`buckyos bucket get`）和服务持久引用一个对象时的标准写法；它本身不带读权，读取按桶的授权或
+`bkt_` 令牌判定。设计见 [应用对象桶 Bucket 设计](arch/应用对象桶%20Bucket%20设计.md) §4.2；
+Rust `buckyos_api::bucket_obj_url` / `parse_bucket_obj_url`，websdk `bucket.bucketObjUrl` / `parseBucketObjUrl`。
 
 ## 带类型的实体 id
 
@@ -107,6 +113,13 @@ http://public.$zone_hostname/xxxx -> 映射到 data/srv/publish
 
 ### zone内的 ndn 标准路径
 http://$zone_hostname/ndn/$chunkid (GET | HEAD | PUT/PATCH)
+
+### 应用对象桶的数据面
+https://$zone_hostname/bucket/v1/$bucket_id/$key (GET | HEAD | PUT | DELETE)
+
+`obj://bucket/$bucket_id/$key` 的浏览器形式。同源页面带 SSO cookie 即可放进 `<img src>`；跨主体读取带
+`?token=bkt_...`（`bucket.create_access_token` 签发的单 key 只读令牌）；`?version=N` 读历史版本。
+Desktop 公共入口是 `components/preview/bucketSource.ts` 的 `bucketObjectUrl()`。
 
 
 ### 用户（实体）profile

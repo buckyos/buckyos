@@ -8,6 +8,7 @@ import {
   ArgError,
   bailArgError,
   COMMON_OPTIONS_HELP,
+  DELIVERY_HELP,
   flagFloat,
   flagInt,
   parseArgvOrExit,
@@ -18,8 +19,8 @@ import { callAicc, commonPolicyOptions, describeFailure } from "../lib/aicc.ts";
 import type { TypedRequestMap } from "../lib/aicc.ts";
 import {
   pickArtifact,
-  saveArtifactToPath,
-  suffixPathByMime,
+  deliverArtifact,
+  deliveredSummary,
 } from "../lib/io.ts";
 import {
   bailAiccError,
@@ -37,7 +38,7 @@ import {
 const TOOL = "text_to_speech";
 const METHOD = "audio.tts";
 
-export const HELP = `Usage: text_to_speech <text> <output_audio> [options]
+export const HELP = `Usage: text_to_speech <text> [output_audio] [options]
 
 Options:
   --lang <language_tag>
@@ -47,7 +48,7 @@ Options:
   --speed <float>
   --format <mp3|wav|ogg>
   --sample-rate <hz>
-${COMMON_OPTIONS_HELP}`;
+${COMMON_OPTIONS_HELP}${DELIVERY_HELP}`;
 
 const GENDER = new Set(["male", "female", "neutral"]);
 const STYLE = new Set([
@@ -85,7 +86,7 @@ function formatToMime(f: string | undefined): string | undefined {
 
 export async function run(argv: string[]): Promise<never> {
   const parsed = parseArgvOrExit(TOOL, HELP, argv);
-  if (parsed.positional.length < 2) {
+  if (parsed.positional.length < 1) {
     emitAndExit(
       errorResult(TOOL, `${TOOL} => arg_error`, HELP, {
         error: "missing positional",
@@ -153,27 +154,21 @@ export async function run(argv: string[]): Promise<never> {
   const ndmProxy = (ndm_proxy as any).createNdmProxyClient();
   let saved;
   try {
-    saved = await saveArtifactToPath(
-      artifact,
-      suffixPathByMime(outputPath, "audio/mpeg"),
-      ndmProxy,
-    );
+    saved = await deliverArtifact(runtime, call.summary, artifact, ndmProxy, {
+      tool: TOOL,
+      path: outputPath,
+      defaultMime: "audio/mpeg",
+    });
   } catch (err) {
     bailIoError(TOOL, call.taskId, err);
   }
 
   emitAndExit(
-    successResult(TOOL, `${TOOL} => done`, `${TOOL} wrote ${saved.path}`, {
+    successResult(TOOL, `${TOOL} => done`, deliveredSummary(TOOL, [saved]), {
       method: METHOD,
       capability: "audio",
       task_id: call.taskId,
-      files: [{
-        path: saved.path,
-        mime: saved.mime ?? null,
-        bytes: saved.bytes,
-        source_kind: saved.source_kind,
-        obj_id: saved.obj_id ?? null,
-      }],
+      files: [saved],
     }),
     EXIT_SUCCESS,
   );

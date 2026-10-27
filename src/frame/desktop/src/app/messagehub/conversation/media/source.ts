@@ -82,17 +82,18 @@ export function isInlineImageType(mediaType: string | undefined): boolean {
 }
 
 /**
- * msg-center `context_path` of the objects a message of a hosted group session
- * shows (`ui_group_session` names the session's MailboxAddress): the session
- * plus the message that carries the refs, which is the latest edit once one
- * replaced the content. Other messages are read without one.
+ * msg-center `context_path` of the objects a message shows: the message that
+ * carries the refs, which is the latest edit once one replaced the content;
+ * msg-center serves an attachment only through the binding of that message.
+ * A message of a hosted group session (`ui_group_session` names the
+ * session's MailboxAddress) is prefixed with the session.
  */
 export function objectContextOf(message: MessageObject): string | undefined {
-  const session = message.ui_group_session
-  if (typeof session !== 'string' || !session) return undefined
   const edited = messageRelations(message)?.edited
   const holder = edited ? edited.edits.findLast(edit => edit.at === edited.at)?.id : messageObjId(message)
-  return holder ? `${session}/${holder}` : undefined
+  if (!holder) return undefined
+  const session = message.ui_group_session
+  return typeof session === 'string' && session ? `${session}/${holder}` : holder
 }
 
 export function messageAttachments(message: MessageObject, indexHint: number): MessageAttachment[] {

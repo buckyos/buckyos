@@ -91,13 +91,14 @@ test('a held microphone sends a voice note the peer can play', async ({ browser 
   expect(Math.max(...(message.voice?.waveform ?? [0]))).toBe(31)
   const fileId = message.content.refs[0].target.obj_id
   expect(message.content.refs[0].label).toMatch(/^voice-\d{8}-\d{6}\.(webm|ogg|m4a)$/)
-  const mine = await peakOf(me.page, `${origin}/kapi/msg-center/objects/${fileId}/content`, me.token)
+  const contentUrl = `${origin}/kapi/msg-center/objects/${fileId}/content?context_path=${encodeURIComponent(msgId!)}`
+  const mine = await peakOf(me.page, contentUrl, me.token)
   console.log(`sender reads ${fileId}: ${JSON.stringify(mine)}`)
   expect(mine.peak).toBeGreaterThan(0.01)
   await me.context.close()
 
   const them = await login(browser, peer)
-  const theirs = await peakOf(them.page, `${origin}/kapi/msg-center/objects/${fileId}/content`, them.token)
+  const theirs = await peakOf(them.page, contentUrl, them.token)
   expect(theirs).toEqual(mine)
   const theirHistory = await openConversation(them.page, didOf(sender))
   const received = theirHistory.locator(`[data-testid="message-voice"][data-message-id="${msgId}"]`)

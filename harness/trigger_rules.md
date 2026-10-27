@@ -48,14 +48,18 @@
 
 - Durable Data schema 变更；
 - version / schema version 变更；
-- 存储位置、字段语义、索引、兼容策略变更。
+- 存储位置、字段语义、索引、兼容策略变更；
+- 新增文件系统数据目录（`get_data_folder()` / `get_buckyos_service_data_dir()` 下的新子目录、按路径打开的 SQLite、自建对象目录）；
+- 新增 named store 写入方，或新增 / 修改桶声明（kind、data_policy、key 方案、配额）。
 
 必须追加的检查：
 
 - 数据兼容性检查；
 - 升级 / 迁移路径说明；
 - 读写测试补齐；
-- 明确当前是否仍处于“无需兼容”的开发阶段。
+- 明确当前是否仍处于“无需兼容”的开发阶段；
+- 新增的文件系统目录有书面理由（用户文件夹语义、可执行、外部程序按路径打开、Agent 工作目录），否则改为 RDB / 桶；
+- 每个 named store 写入回答“谁 pin”（某个桶或 ≤24h 的 Lease）。
 
 审查重点：
 

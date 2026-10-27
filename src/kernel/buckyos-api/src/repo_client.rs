@@ -1,3 +1,4 @@
+use crate::bucket_client::{BucketDecl, BucketId, BucketKind, BucketScope, DataPolicy};
 use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig, RdbPartition};
 use crate::{AppDoc, AppType, SelectorType};
 use ::kRPC::*;
@@ -20,7 +21,7 @@ pub const REPO_SERVICE_SERVICE_PORT: u16 = 4000;
 pub const REPO_SERVICE_RDB_INSTANCE_ID: &str = "repo-service-main";
 /// Version of the repo-service schema. Bump whenever the DDL below changes in a
 /// way that isn't trivially re-idempotent, so the scheduler can detect drift.
-pub const REPO_SERVICE_RDB_SCHEMA_VERSION: u64 = 1;
+pub const REPO_SERVICE_RDB_SCHEMA_VERSION: u64 = 2;
 
 /// Sqlite DDL for the repo-service database. `CREATE TABLE IF NOT EXISTS` so
 /// the migration is safe to re-run on every process start.
@@ -36,6 +37,7 @@ CREATE TABLE IF NOT EXISTS objects (
     access_policy   TEXT NOT NULL DEFAULT 'free',
     price           TEXT,
     content_size    INTEGER,
+    bucket_key      TEXT,
     collected_at    INTEGER,
     pinned_at       INTEGER,
     updated_at      INTEGER
@@ -76,6 +78,12 @@ CREATE TABLE IF NOT EXISTS receipts (
 );
 CREATE INDEX IF NOT EXISTS idx_receipt_content_name ON receipts(content_name);
 CREATE INDEX IF NOT EXISTS idx_receipt_buyer ON receipts(buyer_did);
+CREATE TABLE IF NOT EXISTS pending_announces (
+    content_id      TEXT PRIMARY KEY,
+    content_name    TEXT,
+    meta            TEXT NOT NULL,
+    requested_at    INTEGER NOT NULL
+);
 "#;
 
 /// Postgres DDL for the repo-service database. Same logical schema as the
@@ -92,6 +100,7 @@ CREATE TABLE IF NOT EXISTS objects (
     access_policy   TEXT NOT NULL DEFAULT 'free',
     price           TEXT,
     content_size    BIGINT,
+    bucket_key      TEXT,
     collected_at    BIGINT,
     pinned_at       BIGINT,
     updated_at      BIGINT
@@ -132,6 +141,12 @@ CREATE TABLE IF NOT EXISTS receipts (
 );
 CREATE INDEX IF NOT EXISTS idx_receipt_content_name ON receipts(content_name);
 CREATE INDEX IF NOT EXISTS idx_receipt_buyer ON receipts(buyer_did);
+CREATE TABLE IF NOT EXISTS pending_announces (
+    content_id      TEXT PRIMARY KEY,
+    content_name    TEXT,
+    meta            TEXT NOT NULL,
+    requested_at    BIGINT NOT NULL
+);
 "#;
 
 /// Default rdb-instance config for the repo-service. The scheduler drops this
@@ -154,6 +169,33 @@ pub fn repo_service_default_rdb_instance_config() -> RdbInstanceConfig {
         connection: String::new(),
         partitions: vec![RdbPartition::UserData],
     }
+}
+
+/// Zone bucket retaining pinned contents: `zone/repo-service/_/packages`
+/// (doc/repo_service/Repo Service Durable Data Schema.md).
+pub const REPO_SERVICE_PACKAGES_BUCKET: &str = "packages";
+/// App pool limit of the repo-service buckets (D17).
+pub const REPO_SERVICE_STORAGE_QUOTA_MIB: u64 = 32 * 1024;
+
+/// What the scheduler declares in `spec_config.buckets` of the repo-service.
+pub fn repo_service_bucket_decls() -> HashMap<String, BucketDecl> {
+    HashMap::from([(
+        REPO_SERVICE_PACKAGES_BUCKET.to_string(),
+        BucketDecl {
+            kind: BucketKind::Data,
+            data_policy: DataPolicy::AppData,
+            scope: BucketScope::Zone,
+            versioning: None,
+            quota_mib: None,
+            max_objects: None,
+            default_ttl_days: None,
+            lifecycle: Vec::new(),
+        },
+    )])
+}
+
+pub fn repo_service_packages_bucket() -> BucketId {
+    BucketId::zone(REPO_SERVICE_SERVICE_NAME, REPO_SERVICE_PACKAGES_BUCKET).expect("valid repo-service bucket id")
 }
 
 pub const REPO_STATUS_COLLECTED: &str = "collected";

@@ -107,6 +107,8 @@ gen_video "prompt" result.mp4
 
 实现允许在小文件或调试模式下使用 `ResourceRef::Base64`，但 CLI 对外不暴露协议差异。
 
+`obj://bucket/<bucket_id>/<key>`（例如上一条命令返回的 `detail.files[].url`）先经 `bucket.get` 解析为它绑定的 ObjId，再以 `ResourceRef::NamedObject` 传给 AICC。
+
 URL 输入通过 `--url` 或参数值的 URL scheme 识别，转换为：
 
 ```json
@@ -121,12 +123,12 @@ URL 输入通过 `--url` 或参数值的 URL scheme 识别，转换为：
 
 默认行为：
 
-1. 单文件输出命令把第一个匹配 artifact 下载到指定路径。
-2. 多文件输出命令要求输出目录。
+1. 媒体命令的每个结果都交到运行它的 Agent 的 `artifacts` 桶（`user/<agent app>/<owner>/artifacts`，`documents` 档）：AICC 已绑定进它的 `outputs` 桶（`user/aicc/<owner>/outputs`，7 天，见 [aicc_api设计.md](aicc_api设计.md) §3.1）的结果用 `bucket.copy` 复制过来（按 `extra.materialized_artifacts[].bucket_ref`），不再传字节；URL / base64 / raw PCM 结果读出后上传一次（≤32 MiB `PUT /bucket/v1`，更大走 NDM 上传 + `bind`）。key 为 `<16 位内容摘要>/<文件名>`。结果 `detail.files[] = {url, obj_id, path, bytes, mime, source_kind}`，`url` 是 `obj://bucket/...`，Agent 直接把它列进报告的 artifacts。
+2. 输出路径是可选的位置参数：给了才另写一份本地文件（本地工具需要路径时的降级），没有扩展名时按结果类型补上；多结果命令按 `<name>-<n>.<ext>` 写。之后要本地文件用 `materialize_resource obj://bucket/... <path>`。
 3. 结构化结果写 JSON 文件；如果未指定输出文件，则写 stdout。
 4. `--json` 时不做精简输出，直接输出完整 canonical typed response。
 
-输出文件不存在时创建，存在时覆盖。CLI 不做交互确认，因为这些工具面向 Agent 自动化。
+本地输出文件不存在时创建，存在时覆盖。CLI 不做交互确认，因为这些工具面向 Agent 自动化。
 
 Provider 返回的 `ResourceRef::Url` 可能要求 Provider credential，CLI 不直接匿名下载这类
 URL。CLI 先将 URL 交给 `POST /kapi/aicc/artifact/open`；AICC 只对已登记且属于当前 tenant
@@ -169,7 +171,7 @@ gen_image "A precise product photo of a matte black desk lamp." result.png
 参数：
 
 ```text
-gen_image <prompt> <output_image>
+gen_image <prompt> [output_image]
   --negative <text>
   --n <count>
   --aspect <1:1|16:9|9:16|4:3|3:4>
@@ -215,7 +217,7 @@ edit_image source.png "Change the background to a sunny beach." result.png
 参数：
 
 ```text
-edit_image <input_image> <prompt> <output_image>
+edit_image <input_image> <prompt> [output_image]
   --strength <0.0-1.0>
   --format <png|jpg|webp>
 ```
@@ -231,7 +233,7 @@ inpaint_image image.png mask.png "Add a vase of flowers on the table." result.pn
 参数：
 
 ```text
-inpaint_image <input_image> <mask_image> <prompt> <output_image>
+inpaint_image <input_image> <mask_image> <prompt> [output_image]
   --mask-semantics <white_area_is_edit_area|black_area_is_edit_area|alpha_zero_is_edit_area>
   --format <png|jpg|webp>
 ```
@@ -247,7 +249,7 @@ upscale_image source.png result.png --scale 4
 参数：
 
 ```text
-upscale_image <input_image> <output_image>
+upscale_image <input_image> [output_image]
   --scale <2|4>
   --target-width <px>
   --target-height <px>
@@ -266,7 +268,7 @@ remove_bg product.jpg product_rgba.png
 参数：
 
 ```text
-remove_bg <input_image> <output_image>
+remove_bg <input_image> [output_image]
   --mode <rgba_image|mask>
 ```
 
@@ -365,7 +367,7 @@ text_to_speech "你好，欢迎使用 AICC。" result.mp3
 参数：
 
 ```text
-text_to_speech <text> <output_audio>
+text_to_speech <text> [output_audio]
   --lang <language_tag>
   --gender <male|female|neutral>
   --style <AICC voice style>
@@ -411,7 +413,7 @@ gen_music "A 30-second cheerful acoustic folk song with guitar." result.mp3
 参数：
 
 ```text
-gen_music <prompt> <output_audio>
+gen_music <prompt> [output_audio]
   --duration <seconds>
   --instrumental
   --lyrics <text_or_file>
@@ -432,7 +434,7 @@ enhance_audio noisy.wav clean.wav --task denoise
 参数：
 
 ```text
-enhance_audio <input_audio> <output_audio>
+enhance_audio <input_audio> [output_audio]
   --task <denoise|dereverb|separate_voice|normalize>
   --strength <0.0-1.0>
   --return-stems
@@ -458,7 +460,7 @@ gen_video "@{hero} runs through the rain toward @{door}." result.mp4 --ref-image
 参数：
 
 ```text
-gen_video <prompt> <output_video>
+gen_video <prompt> [output_video]
   --first-frame <image>            # keyframe start（id "first"）
   --last-frame <image>             # keyframe end（id "last"）
   --ref-image <id>=<image>         # reference_image，可重复
@@ -489,7 +491,7 @@ edit_video source.mp4 "Shift the color palette to teal and warm backlight." resu
 参数：
 
 ```text
-edit_video <input_video> <prompt> <output_video>
+edit_video <input_video> <prompt> [output_video]
   --duration <seconds>
   --aspect <W:H>
   --short-edge <px> | --size <WxH>
@@ -513,7 +515,7 @@ extend_video previous.mp4 "Continue the shot over the rooftops." result.mp4 --co
 参数：
 
 ```text
-extend_video <input_video> <prompt> <output_video>
+extend_video <input_video> <prompt> [output_video]
   --continuation-handle <provider_handle>  # required; from a compatible previous generation
   --duration <seconds>
   --resolution <720p|1080p|4k>
@@ -530,7 +532,7 @@ upscale_video source.mp4 result.mp4 --target-resolution 4k
 参数：
 
 ```text
-upscale_video <input_video> <output_video>
+upscale_video <input_video> [output_video]
   --target-resolution <1080p|4k>
   --denoise
   --sharpen <0.0-1.0>
@@ -570,9 +572,10 @@ ai_quota --app aiworkspace
 
 ### 7.3 `materialize_resource`
 
-将非本地 `ResourceRef` 保存为当前 workspace 中的本地文件，供 ffmpeg 等本地命令继续处理。
+将非本地资源保存为当前 workspace 中的本地文件，供 ffmpeg 等本地命令继续处理（工具需要路径时的显式降级；交付和传给下一条命令用 `obj://bucket/...` 或对象 id）。
 
 ```bash
+materialize_resource 'obj://bucket/user/<agent>/<owner>/artifacts/<key>' inputs/clip.mp4
 materialize_resource 'named_object:cyfile:...' inputs/audio.mp3
 materialize_resource 'https://example.com/input.wav' inputs/audio.wav --mime audio/wav
 ```
@@ -584,7 +587,7 @@ materialize_resource <resource> <output_path>
   --mime <mime_type>
 ```
 
-支持 `named_object:<typed_object_id>`、直接的 `cyfile:` / `chunk:` typed ID、HTTP(S) URL
+支持 `obj://bucket/<bucket_id>/<key>`（经 `/bucket/v1` 数据面读取）、`named_object:<typed_object_id>`、直接的 `cyfile:` / `chunk:` typed ID、HTTP(S) URL
 和 data URL。命令保留完整 typed object ID，目标文件已存在时拒绝覆盖。它不创建 AICC
 推理任务，只复用 SDK 的 ResourceRef 读取能力。
 

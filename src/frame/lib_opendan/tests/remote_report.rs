@@ -12,7 +12,7 @@ use buckyos_api::{encode_executor_control, executor_content_hash, read_executor_
 use common::*;
 use libopendan::bridge::OutboundRecord;
 use libopendan::protocol::*;
-use libopendan::runner::{drive, DriveResult, ObjectStore, OutboundSink, SendResult, StopWhen};
+use libopendan::runner::{drive, DriveResult, ObjectStore, OutboundSink, SendResult, StopWhen, StoredObject};
 use libopendan::{AgentStateClient, SessionTemplate};
 use ndn_lib::{ObjId, RefTarget};
 use serde_json::{json, Value};
@@ -112,14 +112,16 @@ impl Objects {
     fn id() -> ObjId {
         ObjId::new_by_raw("cyfile".into(), vec![23; 32])
     }
+
+    const URL: &'static str = "obj://bucket/user/jarvis/alice/artifacts/1717/cat_halloween.mp4";
 }
 
 #[async_trait]
 impl ObjectStore for Objects {
-    async fn put_file(&self, path: &Path, name: &str) -> Result<ObjId, String> {
+    async fn put_file(&self, path: &Path, name: &str) -> Result<StoredObject, String> {
         assert!(path.components().any(|part| part.as_os_str() == "reports"));
         self.0.lock().unwrap().push((name.into(), std::fs::read(path).unwrap()));
-        Ok(Self::id())
+        Ok(StoredObject { obj_id: Self::id(), url: Some(Self::URL.into()) })
     }
 
     async fn name_of(&self, id: &ObjId) -> Option<String> {
@@ -177,7 +179,9 @@ async fn a_remote_report_uploads_the_file_and_the_ui_forwards_its_object_id() {
     let artifact = &report.artifacts[0];
     assert_eq!(artifact.obj_id.as_deref(), Some(Objects::id().to_string().as_str()));
     assert!(!artifact.reference.starts_with("remote-media:"));
-    assert_eq!(std::fs::read(work.path().join(&artifact.reference)).unwrap(), *payload);
+    assert_eq!(artifact.url.as_deref(), Some(Objects::URL));
+    // The bucket retains it: the downloaded copy is gone.
+    assert!(!work.path().join(&artifact.reference).exists());
     assert_eq!(*objects.0.lock().unwrap(), vec![("cat_halloween.mp4".into(), payload.as_ref().clone())]);
     assert_eq!(node.reads.lock().unwrap().len(), 3);
 

@@ -7,6 +7,7 @@
 //! so the background driver can resume from any persisted state.
 
 use crate::app_installer::{register_app_doc_authority, AppInstaller, InternalInstall};
+use crate::buckets::{BucketKeys, ZoneBucket};
 use crate::image_data_url::{validate_image_data_url, MAX_AVATAR_PX};
 use crate::pikg::{preferred_archive_name, PikgBuilder, PikgReader};
 use crate::pre_install_reconciler::{
@@ -16,6 +17,7 @@ use crate::user_mgr::{profile_system_contact, refresh_rbac_by_scheduler};
 use crate::{ControlPanelServer, RpcAuthPrincipal};
 use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult};
 use async_trait::async_trait;
+use buckyos_api::bucket_client::PutRequest;
 use buckyos_api::{
     agent_info_key, agent_install_record_key, agent_key_path, agent_profile_key,
     agent_settings_key, agent_short_name, agent_spec_key, agent_template_record_key,
@@ -29,13 +31,14 @@ use buckyos_api::{
     PreInstallPlanSeed, SystemConfigClient, SystemConfigError, SystemInstallSettings, TaskOutcome,
     TaskPhase, UserPrivateProfile, UserType, AGENT_SPEC_SCHEMA_VERSION, APP_INSTALL_TASK_SCHEMA_ID,
     APP_PERMISSION_USER_HOME, APP_REGISTRY_KEY, APP_UNINSTALL_TASK_SCHEMA_ID,
-    APP_UPDATE_TASK_SCHEMA_ID, MSG_CENTER_SERVICE_NAME,
+    APP_UPDATE_TASK_SCHEMA_ID, CONTROL_PANEL_AGENT_TEMPLATES_BUCKET, MSG_CENTER_SERVICE_NAME,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir, KVAction};
 use futures::future::BoxFuture;
 use jsonwebtoken::jwk::Jwk;
 use log::{info, warn};
 use name_lib::{generate_ed25519_key_pair, AgentDocument, DID};
+use named_store::NamedDataMgr;
 use ndn_lib::{build_named_object_by_json, ObjId};
 use package_lib::PackageId;
 use serde::{de::DeserializeOwned, Serialize};
@@ -46,7 +49,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-pub(crate) const AGENT_TEMPLATE_DIR: &str = "data/srv/control-panel/agent_templates";
 const AGENT_NAME_PREFIX: &str = "services/control_panel/agent_names";
 const GATEWAY_SETTINGS_KEY: &str = "services/gateway/settings";
 const DEFAULT_TEMPLATE_APP_ID: &str = "jarvis.buckyos.bns.did";
@@ -534,8 +536,42 @@ async fn load_install_settings(kv: &dyn AgentKv) -> Result<SystemInstallSettings
         .ok_or_else(|| reason("template_unavailable", "system/install_settings is missing"))
 }
 
+/// Installed templates: PIKG FileObjects bound in `zone/control-panel/_/agent_templates`.
+pub(crate) struct InstalledTemplates {
+    bucket: Arc<dyn BucketKeys>,
+    store: NamedDataMgr,
+}
+
+impl InstalledTemplates {
+    pub(crate) async fn open() -> Result<Self, RPCErrors> {
+        Ok(Self {
+            bucket: Arc::new(ZoneBucket(CONTROL_PANEL_AGENT_TEMPLATES_BUCKET)),
+            store: get_buckyos_api_runtime()?.get_local_named_store().await?,
+        })
+    }
+
+    async fn reader(&self, record: &AgentTemplateRecord) -> Result<PikgReader, RPCErrors> {
+        let binding = self
+            .bucket
+            .get(&record.bucket_key, Some(record.bucket_version))
+            .await?
+            .ok_or_else(|| reason("template_unavailable", &record.bucket_key))?;
+        let obj_id = binding
+            .obj_id
+            .as_deref()
+            .map(ObjId::new)
+            .transpose()
+            .map_err(template_error)?
+            .ok_or_else(|| reason("template_unavailable", &record.bucket_key))?;
+        PikgReader::open_named(self.store.clone(), &obj_id, Some(&record.digest))
+            .await
+            .map_err(template_error)
+    }
+}
+
 pub(crate) async fn load_agent_template(
     kv: &dyn AgentKv,
+    templates: &InstalledTemplates,
     root: &Path,
     owner: &str,
     template_id: &str,
@@ -555,12 +591,7 @@ pub(crate) async fn load_agent_template(
                 get_json::<AgentTemplateRecord>(kv, &agent_template_record_key(owner, &app_id))
                     .await?
                     .ok_or_else(|| reason("template_not_found", template_id))?;
-            let path = canonical_pikg_path(root, &record.pikg_path, AGENT_TEMPLATE_DIR)
-                .await
-                .map_err(|error| template_error(error.message))?;
-            PikgReader::open(&path, Some(&record.digest))
-                .await
-                .map_err(template_error)?
+            templates.reader(&record).await?
         }
     };
     validate_template(&reader, &app_id)?;
@@ -573,6 +604,7 @@ pub(crate) async fn load_agent_template(
 
 pub(crate) async fn list_agent_templates(
     kv: &dyn AgentKv,
+    templates: &InstalledTemplates,
     root: &Path,
     owner: &str,
 ) -> Result<Vec<Value>, RPCErrors> {
@@ -582,12 +614,12 @@ pub(crate) async fn list_agent_templates(
         .into_iter()
         .collect::<Vec<_>>();
     bundled.sort_by(|left, right| left.0.cmp(&right.0));
-    let mut templates = Vec::new();
+    let mut summaries = Vec::new();
     for (raw_app_id, config) in bundled {
         let app_id = AppId::parse(&raw_app_id).map_err(template_error)?;
         let reader = open_bundled_template(root, &config).await?;
         validate_template(&reader, &app_id)?;
-        templates.push(
+        summaries.push(
             AgentTemplate {
                 source: AgentTemplateSource::Bundled,
                 app_id,
@@ -601,13 +633,13 @@ pub(crate) async fn list_agent_templates(
     for raw_app_id in installed {
         let app_id = AppId::parse(&raw_app_id).map_err(template_error)?;
         let template_id = template_id_of(AgentTemplateSource::Installed, &app_id);
-        templates.push(
-            load_agent_template(kv, root, owner, &template_id)
+        summaries.push(
+            load_agent_template(kv, templates, root, owner, &template_id)
                 .await?
                 .summary(),
         );
     }
-    Ok(templates)
+    Ok(summaries)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -627,26 +659,32 @@ impl TemplateStoreAction {
     }
 }
 
-/// Copies an inspected template PIKG out of the short-lived staging area into
-/// the owner's template store and records it.
+/// Binds an inspected, staged template PIKG into the template bucket and records
+/// it for the owner; a newer version replaces the owner's earlier binding.
 pub(crate) async fn store_agent_template(
     kv: &dyn AgentKv,
-    root: &Path,
+    templates: &InstalledTemplates,
     owner: &str,
     app_doc: &AppDoc,
     app_doc_object_id: &ObjId,
     digest: &str,
-    source: &Path,
+    source: &ObjId,
     now: u64,
 ) -> Result<TemplateStoreAction, RPCErrors> {
     let app_id = AppId::from_app_did(app_doc.app_did()).map_err(template_error)?;
     let key = agent_template_record_key(owner, &app_id);
     let existing = get_json::<AgentTemplateRecord>(kv, &key).await?;
-    let relative = format!("{AGENT_TEMPLATE_DIR}/{owner}/{app_id}/{digest}.pikg");
+    let bucket_key = format!("{owner}/{app_id}/{digest}.pikg");
     let action = match existing.as_ref() {
         None => TemplateStoreAction::Registered,
         Some((record, _)) if &record.app_doc_object_id == app_doc_object_id => {
-            if root.join(&record.pikg_path).is_file() {
+            if record.bucket_key == bucket_key
+                && templates
+                    .bucket
+                    .get(&record.bucket_key, Some(record.bucket_version))
+                    .await?
+                    .is_some()
+            {
                 return Ok(TemplateStoreAction::Satisfied);
             }
             TemplateStoreAction::Satisfied
@@ -654,31 +692,23 @@ pub(crate) async fn store_agent_template(
         Some(_) => TemplateStoreAction::Updated,
     };
 
-    let target = root.join(&relative);
-    let parent = target
-        .parent()
-        .ok_or_else(|| template_error("invalid template path"))?;
-    tokio::fs::create_dir_all(parent)
+    let bound = templates
+        .bucket
+        .put(PutRequest {
+            key: bucket_key.clone(),
+            obj_id: source.to_string(),
+            content_type: Some("application/zip".to_string()),
+            ..Default::default()
+        })
         .await
         .map_err(|error| reason("template_store_failed", error))?;
-    let tmp = parent.join(format!(".{digest}.tmp"));
-    tokio::fs::copy(source, &tmp)
-        .await
-        .map_err(|error| reason("template_store_failed", error))?;
-    if let Err(error) = PikgReader::open(&tmp, Some(digest)).await {
-        let _ = tokio::fs::remove_file(&tmp).await;
-        return Err(template_error(error));
-    }
-    tokio::fs::rename(&tmp, &target)
-        .await
-        .map_err(|error| reason("template_store_failed", error))?;
-
     let record = AgentTemplateRecord {
         app_did: app_doc.app_did().clone(),
         app_doc_object_id: app_doc_object_id.clone(),
         version: app_doc.version.clone(),
         digest: digest.to_string(),
-        pikg_path: relative.clone(),
+        bucket_key: bucket_key.clone(),
+        bucket_version: bound.version,
         installed_at: now,
     };
     let raw = to_json(&record)?;
@@ -689,8 +719,10 @@ pub(crate) async fn store_agent_template(
     kv.exec_tx(HashMap::from([(key, action_kv)]), main_key)
         .await?;
     if let Some((old, _)) = existing {
-        if old.pikg_path != relative {
-            let _ = tokio::fs::remove_file(root.join(old.pikg_path)).await;
+        if old.bucket_key != bucket_key {
+            if let Err(error) = templates.bucket.delete(&old.bucket_key).await {
+                warn!("unbind replaced Agent template {}: {error}", old.bucket_key);
+            }
         }
     }
     Ok(action)
@@ -2331,9 +2363,18 @@ impl ControlPanelServer {
         owner: &str,
         record: &AgentInstallRecord,
     ) -> Result<RuntimeSubmit, AgentFailure> {
-        let template = load_agent_template(kv, &get_buckyos_root_dir(), owner, &record.template_id)
+        let templates = InstalledTemplates::open()
             .await
             .map_err(|error| AgentFailure::new("template_unavailable", error, true))?;
+        let template = load_agent_template(
+            kv,
+            &templates,
+            &get_buckyos_root_dir(),
+            owner,
+            &record.template_id,
+        )
+        .await
+        .map_err(|error| AgentFailure::new("template_unavailable", error, true))?;
         let profile = get_value::<AgentProfile>(kv, &agent_profile_key(owner, &record.agent_id))
             .await
             .unwrap_or_default();
@@ -2346,7 +2387,7 @@ impl ControlPanelServer {
                 .map(|(spec, _)| spec)
                 .ok_or_else(|| AgentFailure::new("spec_missing", "AgentSpec is missing", false))?,
         };
-        let work_dir = crate::app_install_driver::pikg_staging_root()
+        let work_dir = crate::app_install_driver::work_root()
             .join(format!(".agent-runtime-{}", uuid::Uuid::new_v4().simple()));
         let prepared = async {
             let built = build_agent_runtime_pikg(
@@ -2483,7 +2524,7 @@ impl ControlPanelServer {
             )));
         }
         let runtime = get_buckyos_api_runtime()?;
-        let (metadata, staged_path) = self
+        let (metadata, staged) = self
             .staging_store
             .resolve(
                 &staging_handle,
@@ -2494,7 +2535,9 @@ impl ControlPanelServer {
                 None,
             )
             .await?;
-        let reader = PikgReader::open(&staged_path, Some(&metadata.pikg_digest))
+        let reader = self
+            .staging_store
+            .reader(&staged, &metadata.pikg_digest)
             .await
             .map_err(template_error)?;
         let template = reader.inspection();
@@ -2510,12 +2553,12 @@ impl ControlPanelServer {
         let kv = ZoneKv::connect().await?;
         let action = store_agent_template(
             &kv,
-            &get_buckyos_root_dir(),
+            &InstalledTemplates::open().await?,
             &owner,
             &template.app_doc,
             &template.app_doc_object_id,
             pikg_digest,
-            &staged_path,
+            &staged,
             buckyos_get_unix_timestamp(),
         )
         .await?;
@@ -2788,8 +2831,13 @@ impl ControlPanelServer {
     ) -> Result<RPCResponse, RPCErrors> {
         let principal = Self::require_rpc_principal(principal)?;
         let kv = ZoneKv::connect().await?;
-        let templates =
-            list_agent_templates(&kv, &get_buckyos_root_dir(), &principal.owner_user_id).await?;
+        let templates = list_agent_templates(
+            &kv,
+            &InstalledTemplates::open().await?,
+            &get_buckyos_root_dir(),
+            &principal.owner_user_id,
+        )
+        .await?;
         Ok(RPCResponse::new(
             RPCResult::Success(json!({ "templates": templates })),
             req.seq,
@@ -2857,8 +2905,14 @@ impl ControlPanelServer {
             .await?
             .check(&request.name)
             .map_err(NameConflict::into_rpc)?;
-        let template =
-            load_agent_template(&kv, &get_buckyos_root_dir(), &owner, &request.template_id).await?;
+        let template = load_agent_template(
+            &kv,
+            &InstalledTemplates::open().await?,
+            &get_buckyos_root_dir(),
+            &owner,
+            &request.template_id,
+        )
+        .await?;
         if request.bot_token.is_some() && !Self::owner_has_telegram(&kv, &owner).await {
             return Err(reason(
                 "owner_identity_missing",
@@ -4350,64 +4404,106 @@ mod tests {
 
     #[tokio::test]
     async fn submitted_agent_templates_are_registered_satisfied_and_updated() {
+        use ndn_toolkit::{cacl_file_object, CheckMode};
         let root = temp_dir("templates");
         let kv = MemoryKv::default();
         let source = root.join("src");
         std::fs::create_dir_all(&source).unwrap();
-        let first = PikgReader::open(&template_pikg(&source, "0.7.0").await, None)
-            .await
-            .unwrap();
-        let store = |reader: &PikgReader| {
+        let named = crate::app_staging::tests::test_named_store(&root).await;
+        let bucket = Arc::new(crate::buckets::tests::MemoryBucket::new(
+            CONTROL_PANEL_AGENT_TEMPLATES_BUCKET,
+        ));
+        let templates = InstalledTemplates {
+            bucket: bucket.clone(),
+            store: named.clone(),
+        };
+        let staged = |path: PathBuf| {
+            let named = named.clone();
+            async move {
+                let (_, obj_id, _) = cacl_file_object(
+                    Some(&named),
+                    &path,
+                    &ndn_lib::FileObject::default(),
+                    true,
+                    &CheckMode::ByFullHash,
+                    ndn_lib::StoreMode::StoreInNamedMgr,
+                    None,
+                )
+                .await
+                .unwrap();
+                obj_id
+            }
+        };
+        let first_path = template_pikg(&source, "0.7.0").await;
+        let first = PikgReader::open(&first_path, None).await.unwrap();
+        let first_obj = staged(first_path).await;
+        let store = |reader: &PikgReader, obj_id: ObjId| {
             let inspection = reader.inspection().clone();
             let digest = reader.pikg_digest().to_string();
-            let path = source.join(format!("jarvis-{}.pikg", inspection.app_doc.version));
-            let root = root.clone();
             let kv = &kv;
+            let templates = &templates;
             async move {
                 store_agent_template(
                     kv,
-                    &root,
+                    templates,
                     OWNER,
                     &inspection.app_doc,
                     &inspection.app_doc_object_id,
                     &digest,
-                    &path,
+                    &obj_id,
                     1,
                 )
                 .await
                 .unwrap()
             }
         };
-        assert_eq!(store(&first).await, TemplateStoreAction::Registered);
-        assert_eq!(store(&first).await, TemplateStoreAction::Satisfied);
+        assert_eq!(
+            store(&first, first_obj.clone()).await,
+            TemplateStoreAction::Registered
+        );
+        assert_eq!(
+            store(&first, first_obj.clone()).await,
+            TemplateStoreAction::Satisfied
+        );
         let app_id = AppId::parse("jarvis.buckyos.bns.did").unwrap();
         let record: AgentTemplateRecord = kv.read(&agent_template_record_key(OWNER, &app_id));
+        let first_key = format!("{OWNER}/{app_id}/{}.pikg", first.pikg_digest());
         assert_eq!(
-            record.pikg_path,
-            format!(
-                "{AGENT_TEMPLATE_DIR}/{OWNER}/{app_id}/{}.pikg",
-                first.pikg_digest()
-            )
+            (record.bucket_key.as_str(), record.bucket_version),
+            (first_key.as_str(), 1)
         );
-        let first_file = root.join(&record.pikg_path);
-        assert!(first_file.is_file());
+        assert_eq!(
+            bucket.get(&first_key, None).await.unwrap().unwrap().obj_id,
+            Some(first_obj.to_string())
+        );
 
-        let second = PikgReader::open(&template_pikg(&source, "0.7.1").await, None)
-            .await
-            .unwrap();
-        assert_eq!(store(&second).await, TemplateStoreAction::Updated);
+        let second_path = template_pikg(&source, "0.7.1").await;
+        let second = PikgReader::open(&second_path, None).await.unwrap();
+        let second_obj = staged(second_path).await;
+        assert_eq!(
+            store(&second, second_obj).await,
+            TemplateStoreAction::Updated
+        );
         let record: AgentTemplateRecord = kv.read(&agent_template_record_key(OWNER, &app_id));
         assert_eq!(record.version, "0.7.1");
         assert_eq!(
             record.app_doc_object_id,
             second.inspection().app_doc_object_id
         );
-        assert!(!first_file.exists());
-        let loaded = load_agent_template(&kv, &root, OWNER, "installed:jarvis.buckyos.bns.did")
-            .await
-            .unwrap();
+        assert!(bucket.get(&first_key, None).await.unwrap().is_none());
+        let loaded = load_agent_template(
+            &kv,
+            &templates,
+            &root,
+            OWNER,
+            "installed:jarvis.buckyos.bns.did",
+        )
+        .await
+        .unwrap();
         assert_eq!(loaded.object_id(), &second.inspection().app_doc_object_id);
         assert!(loaded.summary()["is_default"] == json!(false));
+        drop(templates);
+        drop(named);
         let _ = std::fs::remove_dir_all(root);
     }
 

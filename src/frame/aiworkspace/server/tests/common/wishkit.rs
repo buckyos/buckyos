@@ -1,6 +1,9 @@
 #![allow(dead_code)]
 //! A wish test harness: the service in process with a scripted model (see wish.rs, quality.rs).
 
+#[path = "nfs.rs"]
+pub mod nfs;
+
 use aiworkspace_server::auth::StaticTokens;
 use aiworkspace_server::wish::WishConfig;
 use aiworkspace_server::{build_router, AppState, Limits};
@@ -103,6 +106,7 @@ pub struct Srv {
     pub model: Arc<ScriptedModel>,
     pub _dir: tempfile::TempDir,
     pub ws: String,
+    pub nfs: nfs::Nfs,
 }
 
 pub fn find_deno() -> String {
@@ -120,18 +124,20 @@ impl Srv {
     }
 
     pub async fn start_with_limits(dir: tempfile::TempDir, model: Arc<ScriptedModel>, tokens: Value, limits: Limits) -> Srv {
-        let svc = Service::open(&dir.path().join("data")).unwrap();
+        let nfs = nfs::Nfs::start(dir.path()).await;
+        let svc = Service::open(&dir.path().join("data"), nfs.objects().await).unwrap();
         let tokens: StaticTokens = serde_json::from_value(json!({ "tokens": tokens })).unwrap();
         let mut cfg = WishConfig::default();
         cfg.llm_override = Some(Arc::new(ScriptedFactory(model.clone())));
         cfg.deno = find_deno();
         cfg.program_timeout_secs = 60;
         let state = AppState::new(svc, Arc::new(tokens), limits, None, cfg);
+        let _ = state.ndm_gateway.set(nfs.base.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         *state.wish.host_base.lock().unwrap() = Some(format!("http://{addr}/kapi/aiworkspace"));
         tokio::spawn(async move { axum::serve(listener, build_router(state)).await.unwrap() });
-        Srv { base: format!("http://{addr}/kapi/aiworkspace"), http: reqwest::Client::new(), model, _dir: dir, ws: String::new() }
+        Srv { base: format!("http://{addr}/kapi/aiworkspace"), http: reqwest::Client::new(), model, _dir: dir, ws: String::new(), nfs }
     }
 
     pub async fn rpc(&self, method: &str, mut params: Value) -> Value {

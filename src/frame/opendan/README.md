@@ -15,6 +15,7 @@
 | `tasks.rs` | TaskMgr 接入：`TurnTasks`（每个 Turn 一个 `opendan.agent_turn/v1` task，Agent 自建自跑，root task grant 给 owner）、`CancelBridge`（TaskMgr 的 cancel → Session `stop`） |
 | `service.rs` | Agent State kRPC 服务、Session 观测、三个操作、Loader 状态 |
 | `home.rs` | 首页用的数据：Agent 资料卡、按模型的 token 用量、UI Session 对应的会话、Agent State 登记的 Workspace 展示 |
+| `objects.rs` | 产物出站：报告与回复的文件存进 named store 并绑进本 Agent 的 `artifacts` 桶，`obj://bucket/...` 引用复制进该桶（见下文“产物”） |
 | `web/` | WebUI：首页（资料卡、工作概况、Session 列表，按手机屏幕设计）+ 观测页（Sessions / Agent State / Loader，`#/sessions` 起），数据全部来自 kRPC |
 
 ## Agent 与它的 Owner
@@ -47,6 +48,8 @@ Turn 与 task：zone 形态下每个 Turn 打开时在 TaskMgr 建 task（幂等
 占位：Agent 包 `i18n/<语言>.toml` 的 `[outbound]` 有 `accepted` 文案、msg-center `msg.get_edit_capability` 回答可编辑、且 Turn 打开超过 `[loader] placeholder_delay_ms`（默认 3000）或已有首次工具调用时，先发占位（带 `agent_task`），Turn 结束时以一条 edit 替换；`stopped` / `finished` 是停止与无正文结束时收尾占位的文案。其余情况只发最终回复（同样带 `agent_task`）。
 
 提问：Session 里的 `agent-session ask-user` 让 Turn 等用户回答时，占位立即发出（不等 `placeholder_delay_ms`），问题以 `relates_to {thread → 占位}` + 顶层 `agent_ask {anchor, call_id, turn, input}` 出站；群聊里问题 `mentions` 主人（MessageHub 只对被提到的成员进入回答态）。用户的下一条消息就是答案（MessageHub 的回答带 `thread → 占位`，选项回答带 `machine {intent: "agent_ask.answer", data {call_id, option}}`）；Turn 结束时占位被 edit 成结果。TaskMgr 的 Turn task 在等待期间为 Waiting（reason `input`，“waiting for the user's answer”）。
+
+产物：报告的 `artifacts`、结构化回复的 `artifacts` 与回复正文的 `<attachment path=…>` 经 `objects.rs` 交出。工作目录里的文件以交付名存进 named store（`StoreInNamedMgr`，不链接本地文件），绑进模板声明的 `user/<agent_id>/<owner>/artifacts`（`data` / `documents`：归用户、卸载 Agent 不删、默认 versioning），key `<对象 id 前 16 位>/<名字>`，create-only（已存在且是同一对象即同一产物）；给出的是 `obj://bucket/...`（如 AICC 结果 `user/aicc/<owner>/outputs/...`）时 `bucket.copy` 进 `artifacts`，不再上传字节；`cyfile:` 等对象 id 原样转交。绑定成功才算交付：失败是 `report` 工具的错误（Agent 可改正重试）、结构化回复的 `artifacts not delivered`，或回复正文里该附件的拒绝说明。交付后 `ReportArtifact.url` 与回复 ref 的 `uri_hint` 都是这个 `obj://bucket/...`，`state/reports/<id>/` 里的稳定副本删除。中间文件用模板的 `scratch` 桶（`temp`，7 天，app 池 `storage_quota_mib` 只约束它）。入站附件保持 ObjId；AgentRoot、Session 工作目录、`runs/`、`usage.jsonl` 仍在文件系统（Agent 自己的电脑）。`--dev` 没有对象存储，产物只留稳定副本，在回复里按名字写出。
 
 Runtime：启动时在 Agent State 幂等补建内建 Runtime `container`（本进程所在环境，`roots` 为 AgentRoot 的 `workspaces/` 与 owner 的 home）与 `host`（宿主机，执行器落地前不可用），首页在 Workspace 旁列出。
 

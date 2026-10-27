@@ -88,6 +88,17 @@ For each durable data item, specify the storage approach:
 - **SHOULD NOT** design core data around filesystem paths.
 - Define object types, naming conventions, and metadata.
 
+### Object / Unstructured → Buckets
+
+Bytes and immutable objects go to the named store; **retention is expressed by binding them into an application object bucket** (`doc/arch/应用对象桶 Bucket 设计.md`; rules in `notepads/bucket-migration-todo.md` §1). For each item state:
+
+- **Bucket**: `user/<appid>/<user>/<name>` or `zone/<appid>/_/<name>`; declared in `install_config.buckets` (apps) or `spec_config.buckets` in `scheduler/src/system_config_builder.rs` (services).
+- **kind**: `data` (FileObject / DirObject: uploads, images, artifacts) or `object` (messages, posts, app objects).
+- **data_policy**: `documents` / `app_data` / `collected` / `ambient` / `temp` / `cache`, with `storage_quota_mib` when `app_data` or `temp` is declared, `default_ttl_days` for `temp`, `origin` for `collected` / `ambient`.
+- **Key scheme**: built from business ids so the RDB row and the binding can be reconciled; RDB stores the ObjId and/or `(bucket_id, key, version)`, never a local path.
+- **Who pins**: every named-store write names its keeper — a bucket binding, or a short Lease (≤24h, held while processing). "put without pin" is not allowed.
+- **Delete**: which business action unbinds (`bucket.delete`), and what an uninstall does (app_data / temp / cache dropped, documents / collected orphaned).
+
 ### Exception
 
 - If the service MUST use the filesystem directly as the core data model, explicitly state the reason. This will be flagged as a high-risk item during review.
@@ -183,7 +194,7 @@ This section helps reviewers verify that the schema design supports the service'
 The generated schema MUST comply with:
 
 1. **Structured data MUST use the platform RDB instance** — no direct sqlite/PostgreSQL binding.
-2. **Unstructured data SHOULD use object management** — no core-logic dependency on filesystem paths.
+2. **Unstructured data SHOULD use object management** — no core-logic dependency on filesystem paths; each named-store write is bound into a declared bucket or held by a short Lease.
 3. **Direct filesystem dependency MUST be documented and justified** — treated as high-risk.
 4. **Unified platform governance** — data flows through system-managed RDB for backup, security tracking, and recovery.
 
@@ -200,6 +211,8 @@ Before finalizing the document, verify:
 - [ ] No direct binding to a specific database engine.
 - [ ] Query patterns are documented with index support.
 - [ ] If filesystem is used as core data model, reason is stated.
+- [ ] Every object / byte item names its bucket (kind, data_policy, key scheme) and who pins it; nothing is put into the named store without a binding or Lease.
+- [ ] No RDB column, setting or RPC result stores a local filesystem path as a data reference.
 
 # Common Failure Modes
 
@@ -209,6 +222,8 @@ Before finalizing the document, verify:
 4. **Filesystem-centric design without justification** — Blocks platform governance (backup, security, recovery).
 5. **No query pattern analysis** — Schema may not support actual access patterns efficiently.
 6. **Mixing durable and disposable data** — Leads to unnecessary compatibility burden or accidental data loss.
+7. **Put without pin** — Content written to the named store with no bucket binding or Lease disappears once GC eviction runs.
+8. **Private content store** — A service-owned `objects/` / `chunks/` directory duplicates the named store and escapes backup, quota and GC.
 
 # Example
 

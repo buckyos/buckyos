@@ -93,7 +93,8 @@ pub use device_identity::*;
 pub use group_hook::*;
 pub use homestation_client::*;
 pub use bucket_client::{
-    bucket_event_id, bucket_index_rdb_instance_config, validate_app_buckets, BucketClient, BUCKET_DATA_PATH,
+    bucket_error_code, bucket_event_id, bucket_index_rdb_instance_config, bucket_obj_url, is_no_such_key,
+    is_precondition_failed, parse_bucket_obj_url, validate_app_buckets, BucketClient, BUCKET_DATA_PATH,
     BUCKET_EVENT_PREFIX, BUCKET_INDEX_RDB_INSTANCE_ID,
 };
 pub use hybrid_sso::*;

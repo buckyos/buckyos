@@ -1,13 +1,13 @@
 /* ── The desktop picture of the signed-in account ──
  *
  * The account holds the wallpaper (`appearance.wallpaper` of the desktop state, see AccountAppearanceSync); the
- * picture itself is a file in the user's home, uploaded here. This store is what the page shows: it starts
- * from the copy cached in localStorage, so the desktop paints at once, and takes the account's value when it
- * arrives. Another tab of this browser follows through the `storage` event.
+ * picture itself is in the account's wallpapers bucket, uploaded here and drawn from the bucket URL. This store
+ * is what the page shows: it starts from the copy cached in localStorage, so the desktop paints at once, and
+ * takes the account's value when it arrives. Another tab of this browser follows through the `storage` event.
  */
 
 import { useSyncExternalStore } from 'react'
-import { fetchWallpaperWithToken, uploadWallpaper, wallpaperAssetUrl, wallpaperAssetUrlNow } from '../../api/desktop_state'
+import { fetchWallpaperWithToken, uploadWallpaper, wallpaperUrl, wallpaperUrlNow } from '../../api/desktop_state'
 import type { DesktopWallpaper } from '../../models/ui'
 import { prepareWallpaperImage } from './image'
 import {
@@ -21,6 +21,23 @@ import {
 const CACHE_KEY = 'buckyos.desktop.wallpaper.v2'
 /** A server picture that fails to load, even with the token in a header, is tried again (say, offline). */
 const RETRY_DELAYS_MS = [2_000, 8_000, 30_000]
+
+/** Where pictures go and how they are drawn (the account's bucket; a stand-in in tests). */
+export interface WallpaperIo {
+  upload(blob: Blob): Promise<string>
+  /** The picture's URL when known without a round trip. */
+  urlNow(ref: string): string | null
+  url(ref: string): Promise<string | null>
+  /** The picture fetched with the session token, as a `blob:` URL; null when that fails too. */
+  fetchWithToken(ref: string): Promise<string | null>
+}
+
+export const bucketWallpaperIo: WallpaperIo = {
+  upload: uploadWallpaper,
+  urlNow: wallpaperUrlNow,
+  url: wallpaperUrl,
+  fetchWithToken: fetchWallpaperWithToken,
+}
 
 export interface WallpaperSnapshot {
   /** The account's wallpaper (as last known here). */
@@ -61,9 +78,12 @@ export class WallpaperStore {
   /** `blob:` URLs this store made from a token fetch; revoked once the picture moves on. */
   private readonly ownBlobUrls = new Set<string>()
 
-  constructor() {
+  private readonly io: WallpaperIo
+
+  constructor(io: WallpaperIo = bucketWallpaperIo) {
+    this.io = io
     const account = readCache()
-    const url = account.image ? wallpaperAssetUrlNow(account.image.asset) : null
+    const url = account.image ? io.urlNow(account.image.ref) : null
     this.snapshot = { account, url, wallpaper: derive(account, url) }
   }
 
@@ -106,12 +126,12 @@ export class WallpaperStore {
    * cookie) is fetched again with the token in a header; if that fails too it is retried later.
    */
   private watchLoad(url: string, attempt = 0) {
-    if (url.startsWith('blob:') || typeof Image === 'undefined') return
-    const asset = this.snapshot.account.image?.asset
-    const current = () => this.snapshot.url === url && this.snapshot.account.image?.asset === asset
+    const ref = this.snapshot.account.image?.ref
+    if (url.startsWith('blob:') || typeof Image === 'undefined' || !ref) return
+    const current = () => this.snapshot.url === url && this.snapshot.account.image?.ref === ref
     const probe = new Image()
     probe.onerror = () => {
-      void fetchWallpaperWithToken(url).then((blobUrl) => {
+      void this.io.fetchWithToken(ref).then((blobUrl) => {
         if (!current()) {
           if (blobUrl) URL.revokeObjectURL(blobUrl)
           return
@@ -135,18 +155,18 @@ export class WallpaperStore {
 
   private async lookUp(account: AccountWallpaper) {
     const seq = ++this.imageSeq
-    const url = account.image ? await wallpaperAssetUrl(account.image.asset).catch(() => null) : null
+    const url = account.image ? await this.io.url(account.image.ref).catch(() => null) : null
     if (seq === this.imageSeq) this.patch(this.snapshot.account, url)
   }
 
   /** Shows `account`; a new picture is looked up. `cache: false` when it came from the cache itself. */
   private show(account: AccountWallpaper, cache = true) {
-    const sameImage = account.image?.asset === this.snapshot.account.image?.asset
+    const sameImage = account.image?.ref === this.snapshot.account.image?.ref
     if (sameImage) {
       this.patch(account, this.snapshot.url)
     } else {
       this.imageSeq++
-      const url = account.image ? wallpaperAssetUrlNow(account.image.asset) : null
+      const url = account.image ? this.io.urlNow(account.image.ref) : null
       this.patch(account, url)
       if (account.image && !url) void this.lookUp(account)
     }
@@ -159,21 +179,21 @@ export class WallpaperStore {
   }
 
   /**
-   * Uploads the picture to the user's home and shows it. Throws `WallpaperImageError` when the file is not a
-   * usable picture, `DesktopApiError` when the upload fails; the current wallpaper stays then.
+   * Uploads the picture to the account's wallpapers bucket and shows it. Throws `WallpaperImageError` when the
+   * file is not a usable picture, `DesktopApiError` when the upload fails; the current wallpaper stays then.
    */
   async setImage(file: File): Promise<void> {
     const seq = ++this.imageSeq
     const prepared = await prepareWallpaperImage(file)
-    const asset = await uploadWallpaper(prepared.blob)
-    const url = await wallpaperAssetUrl(asset)
+    const ref = await this.io.upload(prepared.blob)
+    const url = await this.io.url(ref)
     if (seq !== this.imageSeq) return
     // A new picture starts centred; the fit is the user's choice and stays.
     const account: AccountWallpaper = {
       ...this.snapshot.account,
       focusX: 50,
       focusY: 50,
-      image: { asset, width: prepared.width, height: prepared.height, name: prepared.name },
+      image: { ref, width: prepared.width, height: prepared.height, name: prepared.name },
     }
     this.patch(account, url)
     writeCache(account)

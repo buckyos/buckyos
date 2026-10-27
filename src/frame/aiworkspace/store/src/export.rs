@@ -2,12 +2,12 @@
 //! asset staging (design doc §2.10, §3.6, §4.4, §6.2).
 
 use crate::docdb::{db_err, meta_set};
-use crate::objects::{sniff_media_type, write_atomic, FsObjectStore, StoreSink};
+use crate::objects::{sniff_media_type, sniff_prefix, ObjectStore, StoreSink, ASSETS, EXPORTS, OBJECTS};
 use crate::schema::{DOC_DDL, REPLICA_TABLES};
 use crate::workspace::{random_id, Caller, CommitOpts, Workspace};
 use aiworkspace_core::access::{Access, Cap};
 use aiworkspace_core::canonical::{self, named_object, obj_id_from_filename, obj_id_to_filename, parse_strict, ObjId, OBJ_TYPE_JSON};
-use aiworkspace_core::materialize::{self, load_ops, materialize_with, snapshot_root, ObjectSource};
+use aiworkspace_core::materialize::{self, load_ops, materialize_with, snapshot_root, ObjectSink, ObjectSource};
 use aiworkspace_core::model::*;
 use aiworkspace_core::value::format_utc_ms;
 use aiworkspace_core::{richtext, Code, WsError, WsResult};
@@ -21,10 +21,34 @@ pub const PACKAGE_FORMAT: &str = "buckyos.ai-workspace";
 pub const MAX_PACKAGE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub const MAX_PACKAGE_ENTRIES: usize = 200_000;
 pub const STAGED_ASSET_TTL_MS: i64 = 24 * 3600 * 1000;
+/// How long a download token of an export or a replica is good for.
+pub const DOWNLOAD_TOKEN_MS: i64 = 3_600_000;
 
 fn io(e: std::io::Error) -> WsError {
     let code = if e.raw_os_error() == Some(28) { Code::StorageFull } else { Code::StorageIoError };
     WsError::new(code, e.to_string())
+}
+
+/// Key of an export package in the owner's `exports` bucket.
+pub fn export_key(workspace_id: &str, export_id: &str) -> String {
+    format!("{workspace_id}/export/{export_id}.bcanvas")
+}
+
+/// A file of this process while it is built or read (packages, replicas): removed when dropped.
+pub struct TempFile(pub PathBuf);
+
+impl TempFile {
+    pub fn new(name: &str) -> WsResult<TempFile> {
+        let dir = std::env::temp_dir().join("buckyos").join("aiworkspace");
+        std::fs::create_dir_all(&dir).map_err(io)?;
+        Ok(TempFile(dir.join(format!("{}-{name}", random_id("")))))
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 pub struct Checkpoint {
@@ -45,7 +69,7 @@ impl Checkpoint {
 
 /// Everything reachable from a content root: NamedObjects and chunks.
 /// `assets` decides whether asset bytes belong to the closure.
-pub fn closure(store: &FsObjectStore, content_root: &str, assets: bool) -> WsResult<(BTreeSet<ObjId>, BTreeSet<ObjId>, Vec<ObjId>)> {
+pub fn closure(store: &ObjectStore, content_root: &str, assets: bool) -> WsResult<(BTreeSet<ObjId>, BTreeSet<ObjId>, Vec<ObjId>)> {
     let (mut objects, mut chunks, mut missing) = (BTreeSet::new(), BTreeSet::new(), Vec::new());
     let add_file = |file: &str, objects: &mut BTreeSet<ObjId>, chunks: &mut BTreeSet<ObjId>| -> WsResult<bool> {
         if !store.has_object(file) {
@@ -128,17 +152,19 @@ impl Workspace {
         let snap = snapshot_root(&self.workspace_id, self.head_seq, &self.head_commit_id, &m.content_root, forked.as_ref());
         let (snapshot_id, text) = named_object(OBJ_TYPE_JSON, &snap)?;
         self.objects.put_verified(&snapshot_id, &text)?;
+        // every snapshot is retained (D06) by its retention set until `ws.release_retention` / `ws.delete_checkpoint`
+        let mut members = BTreeMap::new();
+        self.objects.add_member(&snapshot_id, &mut members)?;
+        if let Some(source) = forked.as_ref().and_then(|f| f["snapshot"].as_str()) {
+            self.objects.add_member(source, &mut members)?;
+        }
+        self.objects.content_members(&m.content_root, &mut members)?;
+        let key = format!("{}/snapshot/{snapshot_id}", self.workspace_id);
+        let (_, version) = self.objects.retain(&self.bucket(OBJECTS)?, &key, &members)?;
         self.doc
             .execute(
-                "INSERT OR REPLACE INTO snapshots (snapshot_id, content_root, seq, kind, created_at, created_by) VALUES (?1,?2,?3,?4,?5,?6)",
-                params![snapshot_id, m.content_root, self.head_seq, kind, now, by],
-            )
-            .map_err(db_err)?;
-        // every snapshot is a retention root of its content root (D06): `ws.release_retention` ends it
-        self.doc
-            .execute(
-                "INSERT OR REPLACE INTO retentions (kind, ref, holder, expires_at, created_at) VALUES ('snapshot', ?1, ?2, NULL, ?3)",
-                params![snapshot_id, by, now],
+                "INSERT OR REPLACE INTO snapshots (snapshot_id, content_root, seq, kind, created_at, created_by, bucket_key, bucket_version) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![snapshot_id, m.content_root, self.head_seq, kind, now, by, key, version],
             )
             .map_err(db_err)?;
         Ok(Checkpoint { snapshot_id, content_root: m.content_root, seq: self.head_seq, excluded: m.excluded, unresolved: m.unresolved, objects: m.objects })
@@ -155,7 +181,7 @@ impl Workspace {
         self.materialize_for(&access, "checkpoint", &caller.principal)
     }
 
-    /// `doc.export`: write a package file into staging and return its manifest.
+    /// `doc.export`: build a package into the owner's `exports` bucket and return its manifest and download.
     ///
     /// `share`: a new content snapshot of what the caller may read — no drafts,
     /// no history, no CRDT bytes, no credentials. `personal_backup`: additionally
@@ -179,10 +205,8 @@ impl Workspace {
         let now = self.now();
         let ctx = self.ctx(&now);
         let export_id = random_id("ex_");
-        let dir = self.dir.join("staging").join("exports");
-        std::fs::create_dir_all(&dir).map_err(io)?;
-        let path = dir.join(format!("{export_id}.bcanvas"));
-        let file = std::fs::File::create(&path).map_err(io)?;
+        let tmp = TempFile::new(&format!("{export_id}.bcanvas"))?;
+        let file = std::fs::File::create(&tmp.0).map_err(io)?;
         let mut zip = zip::ZipWriter::new(file);
         let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         let zerr = |e: zip::result::ZipError| WsError::io(format!("package: {e}"));
@@ -262,42 +286,73 @@ impl Workspace {
         zip.start_file("manifest.json", opts).map_err(zerr)?;
         zip.write_all(serde_json::to_string_pretty(&manifest).unwrap().as_bytes()).map_err(io)?;
         zip.finish().map_err(zerr)?.sync_all().map_err(io)?;
-        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) as i64;
-        self.add_retention("export", &export_id, &caller.principal, None)?;
-        self.add_usage("exports", size)?;
-        Ok(json!({ "ok": true, "export_id": export_id, "path": path.to_string_lossy(), "manifest": manifest }))
+        let download = self.store_download(&tmp, &export_key(&self.workspace_id, &export_id))?;
+        Ok(json!({ "ok": true, "export_id": export_id, "manifest": manifest, "download": download }))
     }
 
-    pub fn export_path(&self, export_id: &str) -> Option<PathBuf> {
-        if !aiworkspace_core::id::is_prefixed_id("ex_", export_id) {
-            return None;
-        }
-        let p = self.dir.join("staging").join("exports").join(format!("{export_id}.bcanvas"));
-        p.exists().then_some(p)
+    /// Put a file this Workspace built into the owner's `exports` bucket (7 days) and say how to fetch it: the
+    /// bucket, the key and a read token for that key alone (the caller need not be the owner).
+    fn store_download(&self, file: &TempFile, key: &str) -> WsResult<Value> {
+        let name = key.rsplit('/').next().unwrap_or(key);
+        let object_id = self.objects.store_file(&file.0, name)?;
+        let bucket = self.bucket(EXPORTS)?;
+        let version = self.objects.bind(&bucket, key, &object_id)?;
+        let token = self.objects.read_token(&bucket, key, DOWNLOAD_TOKEN_MS)?;
+        Ok(json!({ "bucket_id": bucket, "key": key, "version": version, "obj_id": object_id, "token": token }))
     }
 
     /// Register uploaded bytes as an available asset (step 1 of §3.6): the
     /// content exists and is verified *before* any Commit may reference it.
     pub fn stage_asset(&mut self, caller: &Caller, data: &[u8]) -> WsResult<Value> {
-        let access = self.require_ws_any(caller)?;
-        if !access.ws_caps.has(Cap::Update) && !access.ws_caps.has(Cap::Structure) {
-            return Err(WsError::denied("update or structure capability required"));
-        }
+        require_update(&self.require_ws_any(caller)?)?;
         self.check_quota(data.len() as u64, false)?;
-        let chunk = self.objects.put_chunk(data)?;
-        let (object_id, text) = canonical::file_object(data.len() as u64, &chunk)?;
-        self.objects.put_verified(&object_id, &text)?;
-        let media_type = sniff_media_type(data);
+        let object_id = StoreSink::new(&self.objects).put_file(data)?;
+        self.stage_bound(caller, &object_id, sniff_media_type(data), data.len() as u64)
+    }
+
+    /// `asset.import_object`: a FileObject already in the named store becomes a staged asset without copying a
+    /// byte. `binding` names where the uploader bound it (`bucket.get` proves it); without one the server binds the
+    /// object itself (the caller's right to read it was checked at the NDM gateway).
+    pub fn stage_object(&mut self, caller: &Caller, object_id: &str, max_bytes: u64) -> WsResult<Value> {
+        require_update(&self.require_ws_any(caller)?)?;
+        if !object_id.starts_with("cyfile:") {
+            return Err(WsError::invalid_op("an asset must be a FileObject; import folders as workspace containers"));
+        }
+        if self.objects.availability(object_id) != crate::objects::Availability::Available {
+            return Err(WsError::new(Code::DependencyUnavailable, "the imported object is incomplete"));
+        }
+        let size = self.objects.file_size(object_id)?;
+        if size > max_bytes {
+            return Err(WsError::limit(format!("workspace assets are limited to {max_bytes} bytes")));
+        }
+        self.check_quota(size, false)?;
+        let media_type = sniff_prefix(&self.objects.file_head(object_id, 512)?);
+        self.stage_bound(caller, object_id, media_type, size)
+    }
+
+    /// Bind a stored FileObject under `<ws>/<object_id>` in the owner's `assets` bucket and list it as staged.
+    fn stage_bound(&mut self, caller: &Caller, object_id: &str, media_type: &str, size: u64) -> WsResult<Value> {
+        let bucket = self.bucket(ASSETS)?;
+        let key = format!("{}/{object_id}", self.workspace_id);
+        let version = self.objects.bind(&bucket, &key, object_id)?;
         let expires = format_utc_ms((self.clock)() + STAGED_ASSET_TTL_MS);
+        let fresh = self
+            .local
+            .query_row("SELECT 1 FROM staged_assets WHERE object_id = ?1", [object_id], |_| Ok(()))
+            .optional()
+            .map_err(db_err)?
+            .is_none();
         self.local
             .execute(
-                "INSERT OR REPLACE INTO staged_assets (object_id, media_type, size, principal, expires_at) VALUES (?1,?2,?3,?4,?5)",
-                params![object_id, media_type, data.len() as i64, caller.principal, expires],
+                "INSERT OR REPLACE INTO staged_assets (object_id, media_type, size, principal, expires_at, bucket_key, bucket_version) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                params![object_id, media_type, size as i64, caller.principal, expires, key, version],
             )
             .map_err(db_err)?;
-        self.add_retention("staged", &object_id, &caller.principal, Some(&expires))?;
-        self.add_usage("staged", data.len() as i64)?;
-        Ok(json!({ "ok": true, "object_id": object_id, "media_type": media_type, "size": data.len(), "expires_at": expires }))
+        if fresh {
+            self.add_usage("staged", size as i64)?;
+        }
+        Ok(json!({ "ok": true, "object_id": object_id, "media_type": media_type, "size": size, "expires_at": expires,
+                   "bucket_id": bucket, "key": key, "version": version }))
     }
 
     pub fn asset_info(&self, object_id: &str) -> WsResult<Option<AssetInfo>> {
@@ -357,10 +412,9 @@ impl Workspace {
             return Err(WsError::invalid_op("a show clone is not prepared for offline use"));
         }
         let now = self.now();
-        let dir = self.dir.join("staging").join("replicas");
-        std::fs::create_dir_all(&dir).map_err(io)?;
         let replica_id = random_id("rp_");
-        let path = dir.join(format!("{replica_id}.sqlite"));
+        let tmp = TempFile::new(&format!("{replica_id}.sqlite"))?;
+        let path = tmp.0.clone();
         {
             let fresh = Connection::open(&path).map_err(db_err)?;
             fresh.execute_batch(DOC_DDL).map_err(db_err)?;
@@ -446,16 +500,14 @@ impl Workspace {
             tx.commit().map_err(db_err)
         })();
         self.doc.execute("DETACH DATABASE replica", []).map_err(db_err)?;
-        if let Err(e) = result {
-            let _ = std::fs::remove_file(&path);
-            return Err(e);
-        }
+        result?;
         {
             // one self-contained file: no WAL sidecar travels separately
             let fresh = Connection::open(&path).map_err(db_err)?;
             fresh.pragma_update(None, "journal_mode", "DELETE").map_err(db_err)?;
         }
-        Ok(json!({ "ok": true, "replica_id": replica_id, "path": path.to_string_lossy(), "epoch": self.epoch,
+        let download = self.store_download(&tmp, &format!("{}/replica/{replica_id}.sqlite", self.workspace_id))?;
+        Ok(json!({ "ok": true, "replica_id": replica_id, "download": download, "epoch": self.epoch,
                    "head_seq": self.head_seq, "principal": caller.principal, "prepared_at": now }))
     }
 }
@@ -473,7 +525,7 @@ pub struct OpenedPackage {
 /// Unpack and verify a package into the object store. Every object must be
 /// canonical JSON hashing to its file name; every chunk must hash to its id.
 /// Nothing becomes visible as a Workspace here.
-pub fn open_package(path: &Path, store: &FsObjectStore) -> WsResult<OpenedPackage> {
+pub fn open_package(path: &Path, store: &ObjectStore) -> WsResult<OpenedPackage> {
     let file = std::fs::File::open(path).map_err(io)?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| WsError::invalid_schema(format!("not a package: {e}")))?;
     if zip.len() > MAX_PACKAGE_ENTRIES {
@@ -545,28 +597,29 @@ pub struct LoadSpec<'a> {
 
 /// Build a complete Workspace folder at `dir` from a content root: one
 /// `origin: "import"` commit at `seq = 1` under a fresh epoch, followed by the
-/// assertion that re-materializing yields the very same content root.
+/// assertion that re-materializing yields the very same content root. `owner`
+/// is whose buckets retain it (the caller, or the owner of the Workspace a
+/// restore replaces).
 pub fn load_workspace(
     dir: &Path,
     spec: LoadSpec,
     caller: &Caller,
-    objects: std::sync::Arc<FsObjectStore>,
+    owner: &str,
+    objects: std::sync::Arc<ObjectStore>,
     clock: crate::workspace::Clock,
 ) -> WsResult<Workspace> {
     let mut ws = Workspace::create(dir, spec.workspace_id, spec.title, &caller.principal, objects.clone(), clock)?;
+    if owner != caller.principal {
+        ws.local.execute("UPDATE local_meta SET value = ?1 WHERE key = 'owner'", [owner]).map_err(db_err)?;
+    }
     let collab = &spec.collab;
     let plan = load_ops(objects.as_ref(), spec.content_root, &|id| collab.get(id).cloned())?;
-    // assets the package brought along are available for the import commit
+    // assets the package brought along are available for the import commit: bound for the new Workspace now
     for a in &plan.asset_objects {
         if objects.availability(a) == crate::objects::Availability::Available {
-            let chunk = objects.file_chunk(a)?;
-            let data = objects.get_chunk(&chunk)?;
-            ws.local
-                .execute(
-                    "INSERT OR REPLACE INTO staged_assets (object_id, media_type, size, principal, expires_at) VALUES (?1,?2,?3,?4,?5)",
-                    params![a, sniff_media_type(&data), data.len() as i64, caller.principal, format_utc_ms((ws.clock)() + STAGED_ASSET_TTL_MS)],
-                )
-                .map_err(db_err)?;
+            let size = objects.file_size(a)?;
+            let media_type = sniff_prefix(&objects.file_head(a, 512)?);
+            ws.stage_bound(caller, a, media_type, size)?;
         }
     }
     let commit = |ws: &mut Workspace, key: &str, ops: Vec<Value>| -> WsResult<()> {
@@ -600,6 +653,9 @@ pub fn load_workspace(
     Ok(ws)
 }
 
-pub fn write_bytes(path: &Path, bytes: &[u8]) -> WsResult<()> {
-    write_atomic(path, bytes)
+fn require_update(access: &Access) -> WsResult<()> {
+    if !access.ws_caps.has(Cap::Update) && !access.ws_caps.has(Cap::Structure) {
+        return Err(WsError::denied("update or structure capability required"));
+    }
+    Ok(())
 }

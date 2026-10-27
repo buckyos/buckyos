@@ -436,6 +436,7 @@ impl AppState {
             Node::ViewGroup { group, .. } => Ok((group.node_id, group.label.clone())),
             Node::CollectionGroup { entity, name, .. } => Ok((entity.node_id, name.clone())),
             Node::Root => Err(invalid("the namespace root cannot be a reference target")),
+            Node::Projection(_) => Err(invalid("projected bucket entries cannot be reference targets")),
         }
     }
 }

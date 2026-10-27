@@ -8,6 +8,7 @@ import {
   ArgError,
   bailArgError,
   COMMON_OPTIONS_HELP,
+  DELIVERY_HELP,
   flagBool,
   flagInt,
   parseArgvOrExit,
@@ -19,8 +20,8 @@ import type { TypedRequestMap } from "../lib/aicc.ts";
 import {
   pickArtifact,
   resolveInputResource,
-  saveArtifactToPath,
-  suffixPathByMime,
+  deliverArtifact,
+  deliveredSummary,
 } from "../lib/io.ts";
 import {
   bailAiccError,
@@ -38,7 +39,7 @@ import {
 const TOOL = "upscale_image";
 const METHOD = "image.upscale";
 
-export const HELP = `Usage: upscale_image <input_image> <output_image> [options]
+export const HELP = `Usage: upscale_image <input_image> [output_image] [options]
 
 Options:
   --scale <2|4>
@@ -46,7 +47,7 @@ Options:
   --target-height <px>
   --preserve-faces
   --format <png|jpg|webp>
-${COMMON_OPTIONS_HELP}`;
+${COMMON_OPTIONS_HELP}${DELIVERY_HELP}`;
 
 function formatToMime(f: string | undefined): string | undefined {
   if (!f) return undefined;
@@ -58,7 +59,7 @@ function formatToMime(f: string | undefined): string | undefined {
 
 export async function run(argv: string[]): Promise<never> {
   const parsed = parseArgvOrExit(TOOL, HELP, argv);
-  if (parsed.positional.length < 2) {
+  if (parsed.positional.length < 1) {
     emitAndExit(
       errorResult(TOOL, `${TOOL} => arg_error`, HELP, {
         error: "missing positional",
@@ -121,27 +122,21 @@ export async function run(argv: string[]): Promise<never> {
   const ndmProxy = (ndm_proxy as any).createNdmProxyClient();
   let saved;
   try {
-    saved = await saveArtifactToPath(
-      artifact,
-      suffixPathByMime(outputPath, "image/png"),
-      ndmProxy,
-    );
+    saved = await deliverArtifact(runtime, call.summary, artifact, ndmProxy, {
+      tool: TOOL,
+      path: outputPath,
+      defaultMime: "image/png",
+    });
   } catch (err) {
     bailIoError(TOOL, call.taskId, err);
   }
 
   emitAndExit(
-    successResult(TOOL, `${TOOL} => done`, `${TOOL} wrote ${saved.path}`, {
+    successResult(TOOL, `${TOOL} => done`, deliveredSummary(TOOL, [saved]), {
       method: METHOD,
       capability: "image",
       task_id: call.taskId,
-      files: [{
-        path: saved.path,
-        mime: saved.mime ?? null,
-        bytes: saved.bytes,
-        source_kind: saved.source_kind,
-        obj_id: saved.obj_id ?? null,
-      }],
+      files: [saved],
     }),
     EXIT_SUCCESS,
   );

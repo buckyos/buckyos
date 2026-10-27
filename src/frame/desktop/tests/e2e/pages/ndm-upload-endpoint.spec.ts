@@ -4,7 +4,7 @@ type Call = { method: string; endpoint?: string; sessionId?: string; sessionToke
 
 declare global {
   interface Window {
-    __uploadEndpointTest: { calls: Call[]; failNext: boolean; buckyos: object; ndm: object }
+    __uploadEndpointTest: { calls: Call[]; failNext: boolean; buckyos: object; ndm: object; bucket: object }
   }
 }
 
@@ -12,7 +12,7 @@ async function prepare(page: Page, serviceUrl: string, override?: { token: strin
   await page.route('**/__upload_endpoint_test', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Upload endpoint regression</title>' }))
   await page.route(/\/(?:buckyos\.js|(?:buckyos|buckyos-websdk)\/dist\/browser\.mjs)(?:\?.*)?$/, route => route.fulfill({
     contentType: 'text/javascript',
-    body: 'export const { buckyos, ndm } = window.__uploadEndpointTest; export const accessDenialOf = () => null;',
+    body: 'export const { buckyos, ndm, bucket } = window.__uploadEndpointTest; export const accessDenialOf = () => null;',
   }))
   await page.route('**/src/runtime.ts*', route => route.fulfill({
     contentType: 'text/javascript',
@@ -35,7 +35,7 @@ async function prepare(page: Page, serviceUrl: string, override?: { token: strin
       failNext: false,
       buckyos: {
         getZoneServiceURL: () => serviceUrl,
-        getAccountInfo: async () => ({ session_token: 'test-token' }),
+        getAccountInfo: async () => ({ session_token: 'test-token', user_id: 'alice' }),
         getServiceRpcClient: () => ({ getSessionToken: () => 'test-token', call: rpc }),
       },
       ndm: {
@@ -53,6 +53,7 @@ async function prepare(page: Page, serviceUrl: string, override?: { token: strin
         },
         releaseImportSession: (sessionId: string) => calls.push({ method: 'releaseImportSession', sessionId }),
       },
+      bucket: { userBucketId: (appid: string, owner: string, name: string) => `user/${appid}/${owner}/${name}` },
     }
     const originalFetch = window.fetch.bind(window)
     window.fetch = async (input, init) => {

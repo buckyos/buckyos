@@ -1,6 +1,7 @@
 import type { TransferableContentRef } from 'buckyos/content'
 import { MAX_FILE_SIZE, type TextFormat } from './codec.ts'
-import { isMissing, sourceKey, type DocumentStore } from './documentStore.ts'
+import { sourceKey } from './documentStore.ts'
+import { isMissingObject, type AppData } from './appData.ts'
 import { LocalStore, holdLock } from './localStore.ts'
 export interface BufferHeader extends Omit<TextFormat, 'mixedEol'> {
   format: 'buckyos.text-editor.buffer/1'
@@ -13,7 +14,9 @@ export interface BufferHeader extends Omit<TextFormat, 'mixedEol'> {
   updatedAt: number
   origin: { device: string; windowId?: string }
 }
-export interface BufferRecord { header: BufferHeader; text: string; path: string; version: number; active?: boolean }
+/** `key`: `<pathKey>.<bufferId>.buf` in the `buffers` bucket. */
+export interface BufferRecord { header: BufferHeader; text: string; key: string; version: number; active?: boolean }
+const MAX_BUFFER_SIZE = MAX_FILE_SIZE * 3 + 65536
 export function encodeBuffer(record: Pick<BufferRecord, 'header' | 'text'>): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(record.header) + '\n' + record.text)
 }
@@ -34,31 +37,30 @@ export async function pathKey(source?: TransferableContentRef): Promise<string> 
 export class BufferStore {
   private queue = new Map<string, Promise<void>>()
   private locks = new Map<string, () => Promise<void>>()
-  root: string; store: DocumentStore; local: LocalStore
-  constructor(root: string, store: DocumentStore, local: LocalStore) { this.root = root; this.store = store; this.local = local }
+  data: AppData; local: LocalStore
+  constructor(data: AppData, local: LocalStore) { this.data = data; this.local = local }
   async create(header: BufferHeader, text: string, version: number): Promise<BufferRecord> {
-    const path = `${this.root}/buffers/${await pathKey(header.source)}.${header.bufferId}.buf`
+    const key = `${await pathKey(header.source)}.${header.bufferId}.buf`
     const release = await holdLock(`te.buffer.${header.bufferId}`)
     if (!release) throw new Error('buffer-in-use')
     this.locks.set(header.bufferId, release)
-    return { header, text, path, version }
+    return { header, text, key, version }
   }
-  async localWrite(record: BufferRecord): Promise<void> { await this.local.put(`buffer:${record.path}`, record) }
+  async localWrite(record: BufferRecord): Promise<void> { await this.local.put(`buffer:${record.key}`, record) }
+  /** One writer per buffer (its window holds the Web Lock), so a plain PUT replaces the previous version. */
   flush(record: BufferRecord): Promise<void> {
-    const run = (this.queue.get(record.path) ?? Promise.resolve()).catch(() => {}).then(async () => {
-      let etag: string | null = null
-      try { etag = (await this.store.stat({ kind: 'cyfs-path', path: record.path })).etag } catch (e) { if (!isMissing(e)) throw e }
-      await this.store.write(record.path, encodeBuffer(record), etag)
-      const pending = await this.local.get<BufferRecord>(`buffer:${record.path}`)
-      if (pending && pending.version <= record.version) await this.local.delete(`buffer:${record.path}`)
+    const run = (this.queue.get(record.key) ?? Promise.resolve()).catch(() => {}).then(async () => {
+      await this.data.put('buffers', record.key, encodeBuffer(record))
+      const pending = await this.local.get<BufferRecord>(`buffer:${record.key}`)
+      if (pending && pending.version <= record.version) await this.local.delete(`buffer:${record.key}`)
     })
-    this.queue.set(record.path, run)
+    this.queue.set(record.key, run)
     return run
   }
   async remove(record: BufferRecord): Promise<void> {
-    await this.queue.get(record.path)?.catch(() => {})
-    await this.store.remove(record.path)
-    await this.local.delete(`buffer:${record.path}`)
+    await this.queue.get(record.key)?.catch(() => {})
+    await this.data.remove('buffers', record.key)
+    await this.local.delete(`buffer:${record.key}`)
     await this.locks.get(record.header.bufferId)?.(); this.locks.delete(record.header.bufferId)
   }
   release(record: BufferRecord): void { this.locks.get(record.header.bufferId)?.(); this.locks.delete(record.header.bufferId) }
@@ -70,13 +72,11 @@ export class BufferStore {
   }
   async list(): Promise<BufferRecord[]> {
     const local = await this.local.entries<BufferRecord>('buffer:')
-    const records = new Map(local.map(([, r]) => [r.path, r]))
-    for (const entry of await this.store.list(`${this.root}/buffers`)) {
-      if (!entry.name.endsWith('.buf')) continue
-      const path = `${this.root}/buffers/${entry.name}`
-      const data = await this.store.read({ kind: 'cyfs-path', path }, MAX_FILE_SIZE * 3 + 65536)
-      const decoded = decodeBuffer(data.bytes)
-      if (!records.has(path) || records.get(path)!.header.updatedAt < decoded.header.updatedAt) records.set(path, { ...decoded, path, version: 0 })
+    const records = new Map(local.map(([, r]) => [r.key, r]))
+    for (const { key } of await this.data.list('buffers')) {
+      if (!key.endsWith('.buf')) continue
+      const decoded = decodeBuffer(await this.data.read('buffers', key, MAX_BUFFER_SIZE))
+      if (!records.has(key) || records.get(key)!.header.updatedAt < decoded.header.updatedAt) records.set(key, { ...decoded, key, version: 0 })
     }
     for (const record of records.values()) record.active = await this.active(record)
     return [...records.values()].sort((a, b) => b.header.updatedAt - a.header.updatedAt)
@@ -85,8 +85,8 @@ export class BufferStore {
     for (const [, record] of await this.local.entries<BufferRecord>('buffer:')) {
       if (await this.active(record)) continue
       let newer = false
-      try { newer = decodeBuffer((await this.store.read({ kind: 'cyfs-path', path: record.path }, MAX_FILE_SIZE * 3 + 65536)).bytes).header.updatedAt > record.header.updatedAt } catch (e) { if (!isMissing(e)) throw e }
-      if (newer) await this.local.delete(`buffer:${record.path}`)
+      try { newer = decodeBuffer(await this.data.read('buffers', record.key, MAX_BUFFER_SIZE)).header.updatedAt > record.header.updatedAt } catch (e) { if (!isMissingObject(e)) throw e }
+      if (newer) await this.local.delete(`buffer:${record.key}`)
       else await this.flush(record)
     }
   }

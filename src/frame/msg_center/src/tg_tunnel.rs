@@ -50,6 +50,10 @@ const TG_BOT_API_ENDPOINT: &str = "https://api.telegram.org";
 const TG_TASK_SHUTDOWN_TIMEOUT_MS: u64 = 5_000;
 const TG_BOT_API_OFFSET_CURSOR_KEY: &str = "bot_api_update_offset";
 const TG_EDIT_FALLBACK_KEY_PREFIX: &str = "edit_fallback:";
+/// A downloaded attachment is held until its message binds it in
+/// `attachments` (`buckets.rs`).
+const TG_INGRESS_HOLD_PREFIX: &str = "msg-center-ingress:";
+const TG_INGRESS_HOLD_SECS: u64 = 24 * 60 * 60;
 const TG_EDIT_ORIGINAL_PENDING_CODE: &str = "edit_original_pending";
 const TG_BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("new", "Create a new session"),
@@ -702,6 +706,21 @@ impl TgMessageConverter {
             .map_err(|error| {
                 anyhow::anyhow!(
                     "store telegram attachment file object {} failed: {}",
+                    file_obj_id.to_string(),
+                    error
+                )
+            })?;
+        named_store
+            .pin(
+                &file_obj_id,
+                &format!("{TG_INGRESS_HOLD_PREFIX}{}", file_obj_id.to_string()),
+                named_store::PinScope::Recursive,
+                Some(Duration::from_secs(TG_INGRESS_HOLD_SECS)),
+            )
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "hold telegram attachment {} failed: {}",
                     file_obj_id.to_string(),
                     error
                 )

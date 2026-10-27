@@ -2,7 +2,7 @@ name: Agent Daemon Release
 
 # Builds the standalone BuckyOS Agent Daemon for six targets and, on a release
 # tag or an explicit dispatch, publishes two GitHub Releases:
-#   agent-daemon-v<src/VERSION>  immutable, versioned file names
+#   agent-daemon-v<version>     immutable, versioned file names (includes +buildYYMMDD)
 #   agent-daemon-latest          rolling, unversioned file names + latest.json
 # Stable download links:
 #   https://github.com/buckyos/buckyos/releases/download/agent-daemon-latest/buckyos-agent-daemon-<target>.tar.gz|.zip
@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish GitHub Release agent-daemon-v<src/VERSION> and refresh agent-daemon-latest
+        description: Publish GitHub Release using the binary version (+buildYYMMDD) and refresh agent-daemon-latest
         type: boolean
         default: false
       allow_missing:
@@ -123,7 +123,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           python3 -m unittest discover -s test/agent_daemon -p 'test_launcher.py'
-          python3 -m unittest discover -s .github/scripts -p 'test_agent_daemon_release.py'
+          python3 -m unittest discover -s .github/scripts -p 'test_agent_daemon_*.py'
       - name: Package release archive
         run: python src/tools/package_agent_daemon.py --target '${{ matrix.target }}' --output dist/agent-daemon
       - name: Verify archive, manifest, doctor and dynamic dependencies
@@ -173,7 +173,7 @@ jobs:
           set -euo pipefail
           if gh release view "$TAG" --json assets --jq '.assets | length' > "$RUNNER_TEMP/assets" 2>/dev/null; then
             if [[ "$(cat "$RUNNER_TEMP/assets")" != "0" ]]; then
-              echo "::error::release $TAG already has assets; bump src/VERSION instead of republishing" >&2
+              echo "::error::release $TAG already has assets; publish a new BuckyOS build version instead of republishing" >&2
               exit 1
             fi
             gh release upload "$TAG" dist/release/versioned/assets/*

@@ -216,10 +216,7 @@ test('UI16 export and import carry Surfaces, Blocks, definitions, wishes and dep
   const rev = (await api.cell(ALICE, ws.workspace_id, 'sales', 's-1', 'revenue')).rev
   await api.commit(ALICE, ws, [{ op: 'table.set_values', source_id: 'sales', values: [{ record_id: 's-1', field_id: 'revenue', value: 1, expect: { rev } }] }])
   const exported = await api.rpc(ALICE, 'doc.export', { workspace_id: ws.workspace_id, mode: 'share', self_contained: true })
-  const pkg = await (await fetch(`${api.base}/export/${ws.workspace_id}/${exported.export_id}`, { headers: { authorization: `Bearer ${ALICE}` } })).arrayBuffer()
-  const begin = await api.rpc(ALICE, 'ws.begin_import', {})
-  await fetch(`${api.base}/upload/${begin.upload_id}`, { method: 'PUT', headers: { authorization: `Bearer ${ALICE}` }, body: Buffer.from(pkg) })
-  const imported = await api.rpc(ALICE, 'ws.import', { upload_id: begin.upload_id, semantics: 'new' })
+  const imported = await api.importPackage(ALICE, await api.download(exported.download), 'new')
   expect(imported.ok).toBe(true)
   const outline = await api.outline(ALICE, imported.workspace_id)
   const ids = new Set(outline.map((e: { entity_id: string }) => e.entity_id))

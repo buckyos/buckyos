@@ -6,9 +6,7 @@ const ALICE = 'tok-alice'
 test('Block snapshots are cached and displayed after an offline cold start', async ({ page, context, api, net }) => {
   const ws = await api.sample(ALICE, `snapshot-offline ${Date.now()}`)
   const bytes = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" fill="red"/></svg>')
-  const begin = await api.rpc(ALICE, 'asset.begin_upload', { workspace_id: ws.workspace_id, size: bytes.length })
-  await fetch(`${api.base}/upload/${begin.upload_id}`, { method: 'PUT', headers: { authorization: `Bearer ${ALICE}` }, body: bytes })
-  const asset = await api.rpc(ALICE, 'asset.finish_upload', { workspace_id: ws.workspace_id, upload_id: begin.upload_id })
+  const asset = await api.uploadAsset(ALICE, ws.workspace_id, bytes)
   expect((await api.commit(ALICE, ws, [
     { op: 'entity.create', entity_id: 'snapshot-def', type_id: 'buckyos.block-def', parent_id: 'data', order_key: 'zz', payload: { def_id: 'test.snapshot', kind: 'html', allow_no_source: true, html: { html: '<div/>', js: 'aiws.ready()' } } },
     { op: 'entity.create', entity_id: 'snapshot-cell', type_id: 'buckyos.cell', parent_id: 'surface-main', order_key: 'zz', payload: { view: { type: 'html' }, def_ref: { entity_id: 'snapshot-def' }, config: { snapshot: { object_id: asset.object_id } } } },

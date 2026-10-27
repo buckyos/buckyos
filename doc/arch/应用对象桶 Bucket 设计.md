@@ -1,10 +1,10 @@
 # BuckyOS 应用对象桶（Bucket）设计
 
-> 版本：v0.6 设计定稿，D1–D20 全部定案（修订记录见 §19；v0.6 按内容网络视角把数据策略重排为"自己创作 / 别人创作但认真收集 / 别人创作最好能有"三档，新增 `collected` 与 `ambient`，并入原 `archive`）  
+> 版本：v0.7，D1–D20 全部定案（修订记录见 §19；v0.7 改判 D18 并记录迁移落地；v0.6 按内容网络视角把数据策略重排为"自己创作 / 别人创作但认真收集 / 别人创作最好能有"三档，新增 `collected` 与 `ambient`，并入原 `archive`）  
 > 日期：2026-10-26  
 > 上游文档：[buckyos 数据落盘架构方向](./buckyos%20数据落盘架构方向.md) §6.3–§6.6、§9.3、§10.4  
 > 底层契约：cyfs-ndn `doc/GC/named_store_gc.md`（三档存活、pins、outbox）、`doc/NDM Protocol/*`（tus 上传、store JSON API）、`doc/CYFS Protocol/CYFS 标准对象.md`（FileObject / DirObject / ChunkList）  
-> 实施：M0–M4 已实现，差异与未完成项见 §20。  
+> 实施：M0–M4 与系统服务、默认应用的迁移已实现，差异与未完成项见 §20。  
 > 性质：本文把落盘方向文档里"待设计"的 Bucket 收敛成可实施的中间件设计。标注 **【已定】** 的是已拍板的判断（全部裁决见 §18）；标注 **【现状】** 的是当前代码事实。
 
 ## 0. 一句话
@@ -144,7 +144,7 @@ Bucket 的归属沿用 RDB Instance 的三元组：`(appid, owner_user_id | zone
 ```text
 bucket_id  = <scope>/<appid>/<owner>/<name>
              user/photos.app.bns.did/alice/library
-             zone/homestation/_/published
+             zone/msg-center/_/attachments
 
 obj://bucket/<bucket_id>/<key>                 Agent 与 RBAC 使用的资源 URL
 https://$zone/bucket/v1/<bucket_id>/<key>      HTTP 数据面（§12.2）
@@ -273,7 +273,7 @@ bucket.list_access_tokens { bucket_id }
 - 允许 `write` 令牌【已定 D15】：限前缀、≤7 天、不含 `list` / `delete`。典型用途：给外部联系人一个 7 天的下载链接；给浏览器一个只能 `write` 到 `uploads/<session>/` 前缀的直传令牌（S3 presigned PUT 的标准用法）；Agent 把中间结果交给外部工具处理。
 - 与 D10 不冲突：令牌是**点对点、有期限、可撤销**的能力，不是公开；永久公开仍只经 ShareContentMgr / HomeStation。
 - 签发需要 `manage`，或对该前缀同时有被授出的全部动作（用户给自己的照片签一个只读链接不需要 manage）。
-- 既有的 `gt_` 访客令牌与自托管群 48 小时链接（EXT-11）是同一类东西，实施时并入同一个签发与校验模块【已定 D18】。
+- 既有的 `gt_` 访客令牌（AIWorkspace，浏览器自造的访客身份）与自托管群 48 小时链接（EXT-11，verify-hub 的专属邀请登录凭据）不是桶内容的能力，各自留在原服务里签发、登记和撤销；三者只共用令牌格式与校验代码（`name_lib::bearer_token`：`<前缀>_<32 字节随机数 base64url>`、只存 `base64url(sha256(令牌))`、常量时间比对）【已定 D18，2026-10-26 修订】。
 
 #### 4.4.6 对象所有权
 
@@ -947,7 +947,7 @@ CREATE TABLE s3_multipart_parts (
 | `BucketStore` API：put / get / delete / list / copy / batch / 条件写 / 版本 | kRPC `bucket.*` 处理器：`NfsSessionClaims` → `Principal`，错误码映射 |
 | `bucket_pins` 状态机、reconcile、与 `NamedDataMgr` 的 pin / unpin 对接 | RBAC 第一层（默认 policy 写在 `buckyos-api` 的 `rbac_config.rs`），放行后再调 lib 的第二层 |
 | 数据策略语义、配额记账与超限判定、生命周期评估、`last_access` LRU 淘汰 | spec 消费：从 system_config 读 `install_config.buckets` / `storage_quota_mib` 懒建桶；admin 覆盖写回 |
-| grant 与能力令牌的**数据模型与判定**（主体是不透明字符串） | 令牌**签发与校验模块**（并入 `gt_` 与群 48h 链接，D18）、S3 密钥管理与控制面板 UI |
+| grant 与能力令牌的**数据模型与判定**（主体是不透明字符串） | S3 密钥管理与控制面板 UI；令牌格式与摘要校验用 buckyos-base `name_lib::bearer_token`（与 `gt_`、群 48h 链接共用，D18） |
 | 快照 / 恢复 / 导出（复用 ShareMgr 已有的 DirObject 构造，该代码随之下沉到 cyfs-ndn） | `res_pool` 用户池、kmsg 事件、System Notify 告警 |
 | HTTP 数据面处理器（`GET/HEAD/PUT /bucket/v1/...`，`buckyos-http-server` 的 `HttpServer` 实现，无鉴权，同 `NamedDataMgrZoneGateway` 的形态） | 鉴权后把请求转交数据面处理器；`boot_gateway.yaml` 路由；Files 只读投影（filedb namespace binding） |
 | S3 协议编解码（SigV4 校验给定 secret、XML 请求响应、分段会话表），M3 时作为同仓第二个 crate `s3_gateway` | S3 密钥查找回调、`s3.$zone` 主机名路由 |
@@ -968,17 +968,21 @@ CREATE TABLE s3_multipart_parts (
 
 ### 14.3 与现有保留实现的关系
 
-| 现有 | 处置 |
-| --- | --- |
-| nfs-server `ndm_holdings` + `ndm-hold:<主体>` 24h Lease、`import/finalize` 的 24h Recursive | 保留，作为"持有证明"与两段式之间的 grace；`finalize` 增加 `auto_bind` 后直接接力成桶绑定 |
-| nfs-server `ShareMgr`（owner `share:<share_id>`，Recursive；快照把文件复制成 chunk + ChunkList + FileObject + DirObject） | 保留现状；它的快照构造代码是 §10.1 `bucket.snapshot` 的直接基础 |
-| msg-center `attachment_retention.rs`（owner `msg-center:<msg_id>`） | 迁到 zone 桶 `zone/msg-center/_/attachments`，key = `<session>/<msg_id>/<n>`；**不给任何用户授权**，附件读取仍由 msg-center 按会话成员关系代为读取或签单 key 只读令牌；私聊永不释放的规则变成"不写 lifecycle" |
-| HomeStation `retention.rs`（owner `homestation:<entry>`） | 迁到 `zone/homestation/_/published`，key = `<user>/<entry>/<version>/<n>`；撤回 = 解绑 |
-| AIWorkspace `FsObjectStore`（自己的 `objects/` + `chunks/` 内容寻址目录，导入资产时**复制字节**，不 pin） | 第一个迁移对象：改为 `user/aiworkspace/<user>/assets` 桶绑定，去掉第二份存储 |
-| OpenDAN Agent 产物（只 put，不 pin，LocalLink ≥ 12 KiB） | 写入 `user/<agent_id>/<owner>/artifacts`，MessageHub 的 DataObj ref 可同时带 `obj://bucket/...` |
-| 短期 Lease 使用者：`nfs-import:<uuid>`（1h）、`control-panel:pikg-import:<uuid>`（24h）、`aicc:input:<ns>:<n>`（24h 续租） | 不变；它们是"处理期间持有"，不是保留 |
+2026-10-26 按 `notepads/bucket-migration-todo.md` 迁移后的处置（各服务的桶、key 与谁 pin 见其 Durable Data Schema 文档）：
 
-迁移不是第一期的前置条件；第一期先让新代码走 Bucket，旧的保留表在各自业务改造时替换。两套机制在 named store 里是不同的 pin owner，互不干扰。
+| 原有 | 处置 |
+| --- | --- |
+| nfs-server `ndm_holdings` + `ndm-hold:<主体>` 24h Lease、`import/finalize` 的 24h Recursive | 保留，作为"持有证明"与两段式之间的 grace；`finalize` 的 `auto_bind` 直接接力成桶绑定 |
+| nfs-server `ShareMgr`（owner `share:<share_id>` + `share_retentions`） | 已迁：快照绑进 `zone/nfs-server/_/shares`，key `<share_id>`；`share_retentions` 与 `share:` owner 删除；快照构造代码仍是 §10.1 `bucket.snapshot` 的基础 |
+| msg-center `attachment_retention.rs`（owner `msg-center:<msg_id>`） | 已迁：附件 `zone/msg-center/_/attachments`（key `<session>/<msg_id>/<n>`，群展示文件 `<group>/_display/<obj_id>`）、消息对象 `zone/msg-center/_/messages`（key `<msg_id>`）；不给任何用户授权，读取仍由 msg-center 按会话成员关系代读（必须带消息上下文）；收藏 = `bucket.copy` 到 `user/msg-center/<user>/collected` |
+| HomeStation `retention.rs`（owner `homestation:<entry>`） | 已迁：`user/homestation/<user>/published`（documents）与 `entries`（object / documents），key `<命名空间>/<条目>/<版本 ObjId>[/<n>]`，撤回 = 解绑；关注预取进 `following` / `following-entries`（ambient，带 origin）；上传与网页快照进 `scratch`（temp 7 天） |
+| AIWorkspace `FsObjectStore`（自己的 `objects/` + `chunks/`，导入资产复制字节、不 pin） | 已迁：资产 `user/aiworkspace/<user>/assets`、快照与程序对象 `objects`、导出 `exports`（temp） |
+| OpenDAN Agent 产物（只 put，不 pin，LocalLink ≥ 12 KiB） | 已迁：一律入库并绑进 `user/<agent app>/<owner>/artifacts`（documents），中间产物 `scratch`（temp 7 天）；AICC 生成物先绑进 `user/aicc/<user>/outputs`（temp 7 天），OpenDAN `bucket.copy` 到 `artifacts`；MessageHub 的 DataObj ref 在 `uri_hint` 带 `obj://bucket/...` |
+| control-panel 包正文、Agent 模板、壁纸 | 已迁：`zone/control-panel/_/packages`、`package_objects`、`agent_templates`、`pikg_staging`（temp），`user/control-panel/<user>/wallpapers` |
+| repo-service 包内容（`pin`/`unpin` 只改 DB） | 已迁：`zone/repo-service/_/packages`，key `<content_name>/<version>`，与 `REPO_STATUS_PINNED` 按 §15.1 顺序衔接 |
+| 短期 Lease 使用者：`nfs-import:<uuid>`（1h）、`control-panel:pikg-import:<uuid>`（24h）、`aicc:input:<ns>:<n>`（24h 续租）、`msg-center-ingress:<obj_id>`（24h，Telegram 入站附件） | 不变；它们是"处理期间持有"，不是保留 |
+
+旧的保留表与 pin owner（`msg-center:`、`homestation:`、`share:`）已随迁移删除，不保留兼容读取；全新安装后这些 owner 下不应有任何 pin。
 
 另一个现状值得写明：App 运行时的 `RuntimeNamedStore`（Rust）**没有 pin 方法**，只有 Kernel / KernelService 才拿得到带 pin 的本地 `NamedDataMgr`。也就是说，今天一个普通 App 根本没有合法途径表达"我要保留这个对象"。Bucket 是它唯一的保留入口，而不是又一个可选项。
 
@@ -989,10 +993,10 @@ Bucket 把保留表达成 pin，但 pin 要有效果，依赖 named store 侧几
 | 事项 | 现状 | 需要 |
 | --- | --- | --- |
 | 生产环境运行 GC 循环与 outbox 投递 | 没有任何进程调用 `OutboxSender::spawn`、`run_background_gc`、`expire_pins`、`flush_lru`；级联只在测试里手工投递 | 指定 **一个** 宿主（建议 nfs-server）负责 Zone 内 named store 的后台任务；其他进程只读写不 GC |
-| chunk 字节回收 | `gc_round` 只扫 `objects` 表；chunk 只在 `chunk_items` 里有 `owned_bytes`，永远不是 GC 候选 | 实现 GC 设计 §4.1 对 `chunk_items` 的回收 |
+| chunk 字节回收 | 已实现（2026-10-26）：`gc_round` 在对象一轮后由 `NamedStore::gc_chunks` 扫 `chunk_items`，没有 pin / incoming / fs anchor、且最近一次写读超过 24h（`CHUNK_GC_GRACE_SECS`）的 chunk 删行并删字节 | — |
 | `last_access_time` | 没有调用方 `touch`，LRU 无效 | 读路径（§6.2）调 `touch` |
 | 按 owner 列 pin | 只有 `unpin_owner` | `list_pins_by_owner(prefix, cursor)`，供 reconcile |
-| 结构化对象的子项遍历 | `parse_obj_refs` 只认 Dir / File / ChunkList | 接入 `MsgObject` 等标准对象（D1 的前提） |
+| 结构化对象的子项遍历 | 已实现（2026-10-26）：`KnownStandardObject::Msg`，`MsgObject` 的子项是 `content.refs` 里的 DataObj（附件）；其他标准对象仍待接入 | 接入其余标准对象（D1 的前提） |
 | Skeleton 硬屏障 | GC 设计 §0.3 已定义，实现状态待核实 | `ambient` 档依赖它；按 `origin` 拉取依赖 CYFS 协议 pull 路径（NDM 网关下载路径目前未实现） |
 | 多进程共用 SQLite | nfs-server、msg-center、homestation、control-panel、aicc、aiworkspace、repo-service、node-daemon、cyfs-gateway 各自打开同一组 `named_store.db` | 不是 Bucket 的阻塞项，但 GC 宿主唯一化后应逐步收敛为经 nfs-server 的 proxy 访问 |
 
@@ -1072,7 +1076,7 @@ Bucket 把保留表达成 pin，但 pin 要有效果，依赖 named store 侧几
 | D15 | 写令牌 | 允许，限前缀、≤7 天、不含 `list` / `delete` | §4.4.5 |
 | D16 | admin 权限 | 对用户桶默认只有 `list` `read` `manage` | §4.4.3 |
 | D17 | App 池配额声明 | 声明 `app_data` / `temp` 桶时 `storage_quota_mib` 必填 | §4.3 |
-| D18 | 令牌模块 | `gt_` 访客令牌与群 48h 链接并入 `bucket_access_tokens` 的签发校验模块 | §4.4.5 |
+| D18 | 令牌模块 | （2026-10-26 修订）`bkt_`、`gt_` 访客令牌与群 48h 链接只共用令牌格式与校验代码 `name_lib::bearer_token`，不并表：访客令牌是浏览器自造的身份、48h 链接是 verify-hub 的登录凭据，都不是桶内容能力，并入会让内核登录依赖 nfs-server | §4.4.5 |
 | D19 | 第二、三档的落法 | 新增 `collected`（Recursive、必带 `origin`、与 documents 同级备份）与 `ambient`（Skeleton 锁描述、内容按 origin 再拉），原 `archive` 并入 ambient | §4.5 |
 | D20 | ambient 的 v1 范围 | v1 只做 Skeleton 保留与"有则用、无则 404"，按 `origin` 自动拉取放 P2（依赖 NDM 下载路径） | §17 |
 
@@ -1085,6 +1089,7 @@ Bucket 把保留表达成 pin，但 pin 要有效果，依赖 named store 侧几
 | v0.3 | 2026-10-25 | 补 §4.4 权限模型与 §8 两级配额接口 |
 | v0.4 | 2026-10-25 | §18 全部裁决定案；§14.1 代码归属 cyfs-ndn lib + nfs-server loader |
 | v0.6 | 2026-10-26 | 内容网络视角：数据策略按"我创作 / 别人创作我认真收集 / 别人创作最好能有"三档重排，新增 `collected`、`ambient`，并入 `archive`；Binding 增 `origin`；Files 投影增 `Collected/`；D19–D20 定案 |
+| v0.7 | 2026-10-26 | D18 改判：`bkt_` / `gt_` / 群 48h 链接不并表，只共用令牌格式与校验代码（`name_lib::bearer_token`）；§14.3 改写为迁移后的处置表；§20 记录迁移落地（`notepads/bucket-migration-todo.md`） |
 | v0.5 | 2026-10-26 | 按 review：zone 只表达服务级归属、默认不共享，新增 `create` 动作与创建者覆盖规则；PUT 成功 = 持久保存三条件，状态机去掉 pending；`Expires` 保持 HTTP 缓存含义，删除 TTL 用 `x-bucky-expires-at`；预签名 URL 无状态，与 `bkt_` 令牌区分；快照 manifest 权威 + tree 派生、冲突改名、快照计费、备份时间点契约；版本成本措辞收窄；`storage_class` 改名 `data_policy`；新增 §3.4 三概念 |
 
 ## 20. 实施状态（2026-10-26）
@@ -1097,14 +1102,22 @@ Bucket 把保留表达成 pin，但 pin 要有效果，依赖 named store 侧几
 | M2 | 已实现：Rust `BucketClient`（含 `put_file`）、websdk `BucketClient` 与 `startUpload({ bind })`、CLI `buckyos bucket ls/stat/put/get/rm/link`；首个调用方为 OpenDAN 报告产物（Jarvis 模板声明 `artifacts` 桶，产物绑定进 `user/<agent app>/<owner>/artifacts`） | websdk `src/bucket_client.ts`、`cli/modules/bucket.ts`；`frame/opendan/src/objects.rs` |
 | M4 | 已实现：生命周期每小时、对象 TTL、版本开关 `bucket.set_versioning`、`snapshot` / `list_snapshots` / `delete_snapshot` / `restore_from_snapshot` / `export` / `verify_references`、对象与配额事件 | 同上 |
 | M3 | 已实现：cyfs-ndn `s3_gateway`（SigV4 header 与预签名、aws-chunked 含 chunk 签名校验、MinIO 式 ETag、第一期操作集 + ListObjects v1 / GetBucketVersioning、multipart、ACL 只读返回 owner FULL_CONTROL），密钥与分段会话表在 `bucket_store::s3`；nfs-server `/s3/*` 与 `s3.<zone>`、kRPC `bucket.create_s3_key / list_s3_keys / revoke_s3_key`、CLI `buckyos bucket s3-key-create / s3-keys / s3-key-revoke`、每日清理 7 天未完成的上传 | cyfs-ndn `src/s3_gateway`；nfs-server `src/bucket/s3.rs` |
+| cyfs-ndn 迁移前置（P0-4） | 已实现：`KnownStandardObject::Msg`（JSON 或 JWT，子项为 `content.refs` 里的数据对象）、chunk 字节回收 `NamedStore::gc_chunks`（无 pin、无入边、24h 未访问）、`bucket_store` 提交路径的 bind / unbind 日志、`bkt_` 改用 `name_lib::bearer_token` | cyfs-ndn `src/ndn-lib/src/lib.rs`、`src/named_store/src/{named_store,store_db}.rs`、`src/bucket_store/src/{store,access}.rs`；buckyos-base `src/name-lib/src/bearer_token.rs` |
+| 迁移（`notepads/bucket-migration-todo.md`） | 已实现：公共件（Rust `put_reader` / `put_bytes` / `put_json_object` / `copy_to`、websdk `importFiles({ bind })`、Desktop `bucket-object` 预览来源、`obj://bucket` URL）；Files 投影 `home/<user>/Apps/<App>/<bucket>/…` 与 `Collected/`（只读，删除 = 解绑）；系统服务和默认应用全部改为 RDB + 桶：AIWorkspace、msg-center、HomeStation、OpenDAN / Jarvis、AICC、control-panel（壁纸、Agent 模板、PIKG、安装暂存、`bucket.release_app`、存储空间页）、repo-service、ShareContentMgr、Text Editor、sys_test；旧保留表与 `msg-center:` / `homestation:` / `share:` pin owner 删除；GC 宿主默认驱逐 | 各服务的 `buckets.rs` 或等价模块；资源清单见《buckyos 数据落盘架构方向》§10.1；nfs-server `src/bucket/projection.rs` |
 
 与本文的差异和未完成项：
 
 1. 事件走 kevent（全局事件 `/bucket/<bucket_id>`，池告警 `/bucket-quota/<kind>/<appid>/<owner>`），不是 kmsg：事件是尽力投递的通知，没有消费确认语义。
 2. `ambient` 档的描述字节不计入任何资源池（只受桶级软配额约束）；`ambient` 的 v1 读取按 D20“有则用、无则 404 `origin_unavailable`”，不返回 202。
 3. `s3_access_keys` 存密钥本身（SigV4 校验需要原密钥），不是 hash。S3 面：桶名 `<appid>-<name>`（小写、非字母数字转 `-`），只列出密钥 (user, app) 的 user 桶里 `kind=data` 的；region 固定 `us-east-1`、只支持路径风格；没有存过 MD5 的绑定（原生接口写入的）给出 `<hash 前 32 位>-1` 形式的 ETag，让客户端不把它当 MD5；分段上传的段用 `s3-upload:<upload_id>` 的 7 天 Lease 保留、完成后不立即解除（级联异步收敛）；`UploadPartCopy` 与第二期操作（版本列举、生命周期配置、通知）未做；控制面板的密钥管理 UI 未做（用 kRPC / CLI）。
-4. 未做：documents / collected 的 Files 只读投影（D11）、`gt_` 与群 48h 链接并入令牌模块（D18）、配额告警的 System Notify、卸载流程对孤儿桶的处置 UI、存储空间页、AIWorkspace `FsObjectStore` 迁移、msg-center / HomeStation 保留表迁移、`bucket.prefetch`（P2）。
-5. cyfs-ndn 并行项未做：chunk 字节回收、`MsgObject` 子项遍历。GC 宿主默认不驱逐（`services/nfs-server/settings.named_store_gc_evict = false`），因为仍有写入方只 put 不 pin，打开驱逐会删掉它们的内容。
+4. Files 投影只做了列举、stat、读 URL 和删除（= 解绑）；投影内复制到可写目录（需要放宽 NDM 按 ObjId 的读权）和 watch 推送未做。D18 按 v0.7 改判：令牌各自存表，共用 `name_lib::bearer_token` 的格式（`<prefix>_<base64url 32 字节>`）与摘要比较。
+5. 迁移中有三处有意偏离本文的默认做法：
+   - AIWorkspace 的 `objects` 桶是 `data` 类型。快照和版本是 `jobj`，级联不跟 `jobj` 的引用，所以每个保留根绑一个列出全部被引用对象的 `cydir`（保留集），释放即删 key。
+   - AIWorkspace 资产和 msg-center 附件保留服务代读端点（Q5）：协作者、访客、External DID 对 owner 的桶没有权限。
+   - HomeStation 的 RDB 仍存自己发布的 Feed Object 正文 / JWT，同时绑定进 `entries` 桶。
+6. 未做：配额告警的 System Notify、`bucket.prefetch`（P2）。AIWorkspace 每 Workspace 一个 SQLite 文件夹不在本次范围（TODO P3-6）。
+7. 主机 `buckyos` CLI 以设备身份登录（目标 `system:buckycli`）时在桶层是管理员，与 nfs-server 文件命名空间和 system-config 对设备的处理一致；设备上运行的系统服务（设备令牌、目标为该服务）和其它系统服务一样，只能操作自己 appid 的桶。
+8. 桶声明的序列化省略默认值（`scope: user`、空 `lifecycle`），PIKG 工具写 AppDoc 时同样去掉，否则安装时按 Rust 重新序列化算出的 AppDoc ObjectId 与包内不一致、安装被拒。
 
 ## 附录 A：与落盘方向文档待定清单的对应
 

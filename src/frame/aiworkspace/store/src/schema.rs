@@ -1,8 +1,10 @@
 //! Storage DDL (design doc §4.2, §2.11, §7). Version 3 added share entries and `grants.via_entry` (hybrid SSO);
 //! version 4 is FORMAT 1.0 (内核架构改进 §13.6): reference `mode` / `integrity`, the pure-application commit delta,
-//! the retention roots and the usage ledger, `user_state.revision`. Older stores are refused, not migrated.
+//! the retention roots and the usage ledger, `user_state.revision`; version 5 keeps objects in the named
+//! store, retained by bucket bindings (`bucket_key` / `bucket_version`, doc/workspace `BuckyOS AiWorkspace
+//! Durable Data Schema.md`). Older stores are refused, not migrated.
 
-pub const STORAGE_SCHEMA_VERSION: u32 = 4;
+pub const STORAGE_SCHEMA_VERSION: u32 = 5;
 
 /// The document database: the working form of one portable Workspace.
 pub const DOC_DDL: &str = r#"
@@ -135,7 +137,9 @@ CREATE TABLE assets (
   media_type  TEXT NOT NULL,
   size        INTEGER NOT NULL,
   first_seq   INTEGER NOT NULL,
-  ended_seq   INTEGER
+  ended_seq   INTEGER,
+  bucket_key  TEXT,
+  bucket_version INTEGER
 ) WITHOUT ROWID;
 
 CREATE TABLE entity_versions (
@@ -145,6 +149,8 @@ CREATE TABLE entity_versions (
   derived_json TEXT,
   kind         TEXT NOT NULL DEFAULT 'checkpoint',
   created_at   TEXT NOT NULL DEFAULT '',
+  bucket_key   TEXT,
+  bucket_version INTEGER,
   PRIMARY KEY (entity_id, content_rev)
 ) WITHOUT ROWID;
 CREATE INDEX entity_versions_object ON entity_versions(object_id);
@@ -155,16 +161,9 @@ CREATE TABLE snapshots (
   seq          INTEGER NOT NULL,
   kind         TEXT NOT NULL,
   created_at   TEXT NOT NULL,
-  created_by   TEXT NOT NULL
-) WITHOUT ROWID;
-
-CREATE TABLE retentions (
-  kind       TEXT NOT NULL,
-  ref        TEXT NOT NULL,
-  holder     TEXT NOT NULL,
-  expires_at TEXT,
-  created_at TEXT NOT NULL,
-  PRIMARY KEY (kind, ref, holder)
+  created_by   TEXT NOT NULL,
+  bucket_key   TEXT,
+  bucket_version INTEGER
 ) WITHOUT ROWID;
 
 CREATE TABLE usage (
@@ -274,16 +273,8 @@ CREATE TABLE staged_assets (
   media_type TEXT NOT NULL,
   size       INTEGER NOT NULL,
   principal  TEXT NOT NULL,
-  expires_at TEXT NOT NULL
-) WITHOUT ROWID;
-
-CREATE TABLE upload_sessions (
-  upload_id  TEXT PRIMARY KEY,
-  kind       TEXT NOT NULL,
-  principal  TEXT NOT NULL,
-  size       INTEGER NOT NULL,
-  file_name  TEXT,
-  state      TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  expires_at TEXT NOT NULL,
+  bucket_key TEXT NOT NULL,
+  bucket_version INTEGER NOT NULL
 ) WITHOUT ROWID;
 "#;

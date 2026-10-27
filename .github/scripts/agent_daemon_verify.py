@@ -75,14 +75,14 @@ def check_macos_imports(binary: Path) -> list[str]:
 
 def verify(dist: Path, target: str) -> dict:
     packager = load_packager()
-    version = packager.version()
     expected_platform, _ = packager.TARGETS[target]
-    archive = dist / packager.archive_name(target)
-    if not archive.is_file():
-        raise ValueError(f"missing {archive}")
+    archive = packager.find_archive(dist, target)
+    if archive is None:
+        raise ValueError(f"missing release archive for {target}")
     recorded = archive.with_name(archive.name + ".sha256").read_text(encoding="ascii").split()
     if recorded != [hashlib.sha256(archive.read_bytes()).hexdigest(), archive.name]:
         raise ValueError(f"{archive.name}.sha256 does not match the archive")
+    version = packager.archive_version(archive, target)
     if expected_platform == "linux" and not (dist / "start-buckyos-agent-daemon.sh").is_file():
         raise ValueError("Linux dist lacks start-buckyos-agent-daemon.sh")
     with tempfile.TemporaryDirectory(prefix="agent-daemon-verify-") as temporary:
@@ -100,6 +100,8 @@ def verify(dist: Path, target: str) -> dict:
             raise ValueError("Windows release must be built with a static CRT")
         if expected_platform != "windows":
             binary.chmod(0o755)
+        if packager.version(binary) != version:
+            raise ValueError(f"binary version does not match archive version {version}")
         doctor = subprocess.run(
             [str(binary), "--data-dir", str(Path(temporary) / "data"), "doctor", "--json"],
             capture_output=True, text=True, timeout=120,
@@ -107,7 +109,7 @@ def verify(dist: Path, target: str) -> dict:
         if doctor.returncode != 0:
             raise ValueError(f"doctor --json failed ({doctor.returncode}): {doctor.stderr.strip()}")
         report = json.loads(doctor.stdout)
-        if report.get("version") != version:
+        if packager.release_version(report.get("version", "")) != version:
             raise ValueError(f"doctor reports version {report.get('version')!r}, expected {version!r}")
         imports = []
         if expected_platform == "windows":

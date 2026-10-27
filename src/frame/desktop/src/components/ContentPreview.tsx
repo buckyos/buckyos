@@ -80,6 +80,7 @@ import {
   extensionRefField,
   isAbortError,
   isBlobRef,
+  isBucketObjectRef,
   isCyfsPathRef,
   isObjectIdRef,
   PreviewError,
@@ -209,6 +210,7 @@ function formatDuration(seconds: number | undefined): string {
 function sourceLabel(ref: ContentRef): string {
   if (isCyfsPathRef(ref)) return ref.path.startsWith('cyfs://') ? ref.path : `cyfs://${ref.path.startsWith('/') ? '' : '/'}${ref.path}`
   if (isObjectIdRef(ref)) return ref.objectId
+  if (isBucketObjectRef(ref)) return ref.url
   if (isBlobRef(ref)) return ref.value.name ?? 'blob'
   return extensionRefField(ref, 'reference') ?? ref.kind
 }

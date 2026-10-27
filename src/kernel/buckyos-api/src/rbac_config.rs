@@ -222,6 +222,7 @@ p, users, obj://bucket/user/{appid}/{users}/*, list|read|create|write|delete|man
 p, admin, obj://bucket/user/{appid}/{admin}/*, list|read|create|write|delete|manage, allow
 p, admin, obj://bucket/*, list|read|manage, allow
 p, app, obj://bucket/user/{app}/*, list|read|create|write|delete|manage, allow
+p, agent_read_only, obj://bucket/user/{agent_read_only}/*, list|read|create|write, allow
 p, frame, obj://bucket/user/{frame}/*, all, allow
 p, frame, obj://bucket/zone/{frame}/*, all, allow
 
@@ -378,6 +379,24 @@ mod tests {
     // otherwise a parallel test can swap the policy out from under us.
     lazy_static! {
         static ref TEST_LOCK: Mutex<()> = Mutex::new(());
+    }
+
+    #[tokio::test]
+    async fn agents_write_their_own_buckets_whatever_their_permission_mode() {
+        let _guard = TEST_LOCK.lock().await;
+        let config = build_current_rbac_config(Some(
+            "g, alice, users\ng, app:writer.example.com, agent_read_write\ng, app:writer.example.com, app\ng, app:reader.example.com, agent_read_only",
+        ));
+        rbac::create_enforcer(&config.model, &config.policy).await.unwrap();
+        let own = "obj://bucket/user/reader.example.com/alice/artifacts/r/report.md";
+        for action in ["list", "read", "create", "write"] {
+            assert!(rbac::enforce("alice", "app:reader.example.com", own, action, None).await, "{action}");
+        }
+        assert!(!rbac::enforce("alice", "app:reader.example.com", own, "delete", None).await);
+        let other = "obj://bucket/user/photos/alice/library/a.jpg";
+        assert!(rbac::enforce("alice", "app:reader.example.com", other, "read", None).await);
+        assert!(!rbac::enforce("alice", "app:reader.example.com", other, "write", None).await);
+        assert!(rbac::enforce("alice", "app:writer.example.com", "obj://bucket/user/writer.example.com/alice/artifacts/x", "write", None).await);
     }
 
     #[tokio::test]

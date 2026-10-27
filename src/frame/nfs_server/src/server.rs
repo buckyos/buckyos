@@ -61,6 +61,7 @@ pub fn build_router(state: SharedState) -> Router {
                 .layer(axum::extract::DefaultBodyLimit::disable()),
         )
         .route(crate::bucket::rpc::KRPC_PATH, post(crate::bucket::rpc::krpc))
+        .route(crate::bucket::rpc::KRPC_PATH_SLASH, post(crate::bucket::rpc::krpc))
         .route(
             "/bucket/v1/{*path}",
             get(crate::bucket::http::handle)
@@ -279,6 +280,9 @@ async fn dispatch(
     if method.starts_with("share.") {
         return crate::share::rpc::dispatch(state, actor, method, args, bearer).await;
     }
+    if let (Some(user), "resolve" | "stat" | "list" | "batch" | "delete") = (actor.user_id(), method) {
+        crate::bucket::spec::sync_projection_names(state, user).await;
+    }
     match method {
         "bye" => {
             state.leases.release_session(session);
@@ -303,7 +307,19 @@ async fn dispatch(
         "batch" => op_batch(state, actor, env).await,
         "mkdir" => state.op_mkdir(actor, at, args),
         "move" => state.op_move(actor, args),
-        "delete" => state.op_delete(actor, at, args),
+        "delete" => {
+            if let Some(parent) = state.projection_parent(actor, at, args) {
+                let name = args["name"].as_str().ok_or_else(|| invalid("delete requires name"))?;
+                crate::fsutil::validate_name(name)?;
+                if let Some(expected) = args["expected_revision"].as_str() {
+                    if expected != state.projection_revision(&parent) {
+                        return Err(NfsError::new(ErrorCode::RevMismatch, "the directory changed"));
+                    }
+                }
+                return state.projection_delete(actor, &parent, name, args["recursive"].as_bool().unwrap_or(false)).await;
+            }
+            state.op_delete(actor, at, args)
+        }
         "bind_ref" => state.op_bind_ref(actor, args),
         "unlink" => state.op_unlink(actor, args),
         "abort_write" => state.op_abort_write(args, session),

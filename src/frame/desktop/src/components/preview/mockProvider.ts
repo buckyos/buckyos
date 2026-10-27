@@ -33,6 +33,7 @@ import {
   type PreviewWorkState,
   type ResolvedPreviewSource,
 } from './types'
+import { asBucketObjectRef } from './bucketSource'
 
 // ─── Deterministic helpers ───
 
@@ -618,6 +619,12 @@ export function createMockPreviewProvider(): PreviewProvider {
           return resolveSample(source, sample)
         }
         return resolveLibraryPath(source, local)
+      }
+      const bucketRef = asBucketObjectRef(source)
+      if (bucketRef) {
+        const sample = SAMPLES.find((s) => s.name === bucketRef.url.split('/').pop())
+        if (!sample) throw new PreviewError('NOT_FOUND', 'This content no longer exists')
+        return resolveSample(source, sample)
       }
       if (isObjectIdRef(source)) {
         const id = source.objectId

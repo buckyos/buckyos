@@ -1,11 +1,6 @@
 {
   "description": "Request / response shapes of the stable methods, in the order server/tests/contract.rs calls them. Values are types, not data. Regenerate with AIWS_REGEN=1.",
-  "not_covered": [
-    {
-      "method": "asset.import_object",
-      "reason": "needs the Zone's named store (NDM); covered by DV"
-    }
-  ],
+  "not_covered": [],
   "steps": [
     {
       "method": "ws.create",
@@ -744,45 +739,29 @@
       }
     },
     {
-      "method": "asset.begin_upload",
+      "method": "asset.import_object",
       "params": {
-        "size": "number",
+        "bucket_id": "string",
+        "key": "string",
         "workspace_id": "string"
       },
       "result": {
-        "ok": "boolean",
-        "put": "string",
-        "upload_id": "string"
-      }
-    },
-    {
-      "method": "asset.finish_upload",
-      "params": {
-        "upload_id": "string",
-        "workspace_id": "string"
-      },
-      "result": {
+        "bucket_id": "string",
         "expires_at": "string",
+        "key": "string",
         "media_type": "string",
         "object_id": "string",
         "ok": "boolean",
-        "size": "number"
-      }
-    },
-    {
-      "method": "ws.begin_import",
-      "params": {},
-      "result": {
-        "ok": "boolean",
-        "put": "string",
-        "upload_id": "string"
+        "size": "number",
+        "version": "number"
       }
     },
     {
       "method": "ws.import",
       "params": {
-        "semantics": "string",
-        "upload_id": "string"
+        "bucket_id": "string",
+        "key": "string",
+        "semantics": "string"
       },
       "result": {
         "content_root": "string",

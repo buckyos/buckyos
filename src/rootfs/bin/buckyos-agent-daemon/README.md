@@ -32,6 +32,8 @@ GitHub Actions 为 Linux x86_64（静态 musl）/ARM64、macOS Apple silicon/Int
 - 归档：`https://github.com/buckyos/buckyos/releases/download/agent-daemon-latest/buckyos-agent-daemon-<target>.tar.gz`（Windows 为 `.zip`），`<target>` 取 `x86_64-unknown-linux-musl`、`aarch64-unknown-linux-gnu`、`aarch64-apple-darwin`、`x86_64-apple-darwin`、`x86_64-pc-windows-msvc`、`aarch64-pc-windows-msvc`
 - 固定版本：`https://github.com/buckyos/buckyos/releases/download/agent-daemon-v<version>/buckyos-agent-daemon-<version>-<target>.tar.gz`
 
+`<version>` 为从实际二进制提取的 BuckyOS 包版本 `<src/VERSION>+build<YYMMDD>`，例如 `0.7.0+build261026`；归档、`manifest.json` 和 `latest.json` 使用同一版本。`--version`、`doctor` 和 `status` 报告包含 channel 等信息的完整运行时版本。同一基础版本在同一编译日重建不会自动递增，已发布的固定版本不会覆盖。
+
 Linux 可用启动脚本自动下载、校验并前台运行；脚本不把 URL 写入文件，`--url-stdin` 让接入 URL 不进入命令行：
 
 ```sh

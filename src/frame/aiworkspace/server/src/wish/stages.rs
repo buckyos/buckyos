@@ -586,8 +586,8 @@ fn fill_candidate(c: &mut Value, ev: &Value, executor: &str, st: &Arc<StageState
     c["simulated"] = json!(executor == "mock");
 }
 
-/// Files the results reference, and the program source, become staged assets (content addressed;
-/// re-staged at application).
+/// Files the results reference, and the program source, become staged assets (content addressed; bound
+/// again at application). The run keeps their object ids and bindings, not the paths in its work folder.
 async fn stage_files(state: &Arc<AppState>, caller: &Caller, ws_id: &str, cand: &mut Value) -> WsResult<()> {
     let mut paths: Vec<(String, PathBuf)> = Vec::new();
     for (i, r) in cand["results"].as_array().into_iter().flatten().enumerate() {
@@ -606,16 +606,24 @@ async fn stage_files(state: &Arc<AppState>, caller: &Caller, ws_id: &str, cand: 
         let mut out = Vec::new();
         for (k, p) in paths {
             let bytes = std::fs::read(&p).map_err(|e| WsError::io(format!("{}: {e}", p.display())))?;
-            out.push((k, ws.stage_asset(&c, &bytes)?["object_id"].clone()));
+            out.push((k, ws.stage_asset(&c, &bytes)?));
         }
         Ok(out)
     })
     .await?;
-    for (k, obj) in staged {
-        if k == "program" {
-            cand["program"]["object_id"] = obj;
+    for (k, staged) in staged {
+        let target = if k == "program" {
+            &mut cand["program"]
         } else if let Some(i) = k.strip_prefix('r').and_then(|n| n.parse::<usize>().ok()) {
-            cand["results"][i]["file"]["object_id"] = obj;
+            &mut cand["results"][i]["file"]
+        } else {
+            continue;
+        };
+        for field in ["object_id", "key", "version"] {
+            target[field] = staged[field].clone();
+        }
+        if let Some(o) = target.as_object_mut() {
+            o.remove("path");
         }
     }
     Ok(())

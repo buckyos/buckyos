@@ -83,7 +83,7 @@ async fn push_admission_and_idempotency() {
         .db
         .call({
             let id = obj_id.clone();
-            move |c| Ok(c.query_row("SELECT state, admission FROM outbox WHERE obj_id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))?)
+            move |c| Ok(c.query_row("SELECT state, admission FROM outbox WHERE obj_id=?1 AND owner=?2", [id.as_str(), c.owner], |r| Ok((r.get(0)?, r.get(1)?)))?)
         })
         .await
         .unwrap();
@@ -91,9 +91,9 @@ async fn push_admission_and_idempotency() {
 
     // A stranger's post to Bob's inbox is not admitted.
     publish(&net, "eve", "e1", text_input("buy now", public())).await;
-    let eve_post = eve.station.db.call(|c| Ok(c.query_row("SELECT obj_id FROM published p JOIN heads h ON h.entry=p.entry LIMIT 1", [], |r| r.get::<_, String>(0)).ok())).await.unwrap();
+    let eve_post = eve.station.db.call(|c| Ok(c.query_row("SELECT obj_id FROM published p JOIN heads h ON h.owner=p.owner AND h.entry=p.entry WHERE p.owner=?1 LIMIT 1", [c.owner], |r| r.get::<_, String>(0)).ok())).await.unwrap();
     let _ = eve_post;
-    let eve_obj: String = eve.station.db.call(|c| Ok(c.query_row("SELECT current FROM heads LIMIT 1", [], |r| r.get(0))?)).await.unwrap();
+    let eve_obj: String = eve.station.db.call(|c| Ok(c.query_row("SELECT current FROM heads WHERE owner=?1 LIMIT 1", [c.owner], |r| r.get(0))?)).await.unwrap();
     let outcome = eve.station.dispatch_to(&eve_obj, &bob.did, None).await.unwrap().1;
     assert_eq!(outcome, homestation::delivery::DispatchOutcome::Rejected { reason: "not-admitted".into(), retryable: false });
 
@@ -108,7 +108,7 @@ async fn push_admission_and_idempotency() {
         .db
         .call({
             let id = obj_id.clone();
-            move |c| Ok(c.query_row("SELECT COUNT(*), MAX(source_paths) FROM candidates WHERE obj_id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))?)
+            move |c| Ok(c.query_row("SELECT COUNT(*), MAX(source_paths) FROM candidates WHERE obj_id=?1 AND owner=?2", [id.as_str(), c.owner], |r| Ok((r.get(0)?, r.get(1)?)))?)
         })
         .await
         .unwrap();
@@ -117,7 +117,7 @@ async fn push_admission_and_idempotency() {
     assert!(paths.iter().any(|p| p["transport"] == "push") && paths.iter().any(|p| p["transport"] == "pull"), "{paths:?}");
 
     // A gateway that forwards with a loopback Host still reaches this zone's inbox.
-    let jwt: String = alice.station.db.call({ let id = obj_id.clone(); move |c| Ok(c.query_row("SELECT jwt FROM objects WHERE obj_id=?1", [id], |r| r.get(0))?) }).await.unwrap();
+    let jwt: String = alice.station.db.call({ let id = obj_id.clone(); move |c| Ok(c.query_row("SELECT jwt FROM objects WHERE obj_id=?1 AND owner=?2", [id.as_str(), c.owner], |r| r.get(0))?) }).await.unwrap();
     let forwarded = net
         .http
         .put(format!("{}/inbox", bob.home))
@@ -181,7 +181,7 @@ async fn heads_versions_withdraw_and_conflicts() {
         .db
         .call({
             let e = entry.clone();
-            move |c| Ok(c.query_row("SELECT o.jwt FROM head_history h JOIN objects o ON o.obj_id=h.head_obj_id WHERE h.entry=?1 AND h.seq=1", [e], |r| r.get(0))?)
+            move |c| Ok(c.query_row("SELECT o.jwt FROM head_history h JOIN objects o ON o.owner=h.owner AND o.obj_id=h.head_obj_id WHERE h.entry=?1 AND h.seq=1 AND h.owner=?2", [e.as_str(), c.owner], |r| r.get(0))?)
         })
         .await
         .unwrap();
@@ -213,13 +213,13 @@ async fn heads_versions_withdraw_and_conflicts() {
         .db
         .call({
             let e = entry.clone();
-            move |c| Ok(c.query_row("SELECT o.jwt FROM heads h JOIN objects o ON o.obj_id=h.head_obj_id WHERE h.entry=?1", [e], |r| r.get(0))?)
+            move |c| Ok(c.query_row("SELECT o.jwt FROM heads h JOIN objects o ON o.owner=h.owner AND o.obj_id=h.head_obj_id WHERE h.entry=?1 AND h.owner=?2", [e.as_str(), c.owner], |r| r.get(0))?)
         })
         .await
         .unwrap();
     let v = homestation::objects::verify_jwt(carol.station.directory.as_ref(), &withdrawn_head, None).await.unwrap();
     carol.station.ingest_head(v, false).await.unwrap();
-    let p1_jwt: String = alice.station.db.call({ let p = p1.clone(); move |c| Ok(c.query_row("SELECT jwt FROM objects WHERE obj_id=?1", [p], |r| r.get(0))?) }).await.unwrap();
+    let p1_jwt: String = alice.station.db.call({ let p = p1.clone(); move |c| Ok(c.query_row("SELECT jwt FROM objects WHERE obj_id=?1 AND owner=?2", [p.as_str(), c.owner], |r| r.get(0))?) }).await.unwrap();
     carol.station.ingest_wire(&p1_jwt, homestation::ingress::Arrival::Fetch, false).await.unwrap();
     let card = net.rpc("carol", "item.get", json!({ "objId": p1 })).await;
     assert_eq!(card["item"]["entry"]["state"], "withdrawn");

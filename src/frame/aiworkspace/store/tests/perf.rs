@@ -152,11 +152,11 @@ fn scale_probes() {
     println!("checkpoint again (cached objects)      {:>9.1} ms", ms(t));
     let t = Instant::now();
     let ex = ws.export(&alice(), "share", true, None).unwrap();
-    let pkg = std::fs::metadata(ex["path"].as_str().unwrap()).unwrap().len();
+    let pkg = std::fs::metadata(fetched(&ws.objects, &ex)).unwrap().len();
     println!("export share package                   {:>9.1} ms   {:.1} MiB", ms(t), pkg as f64 / 1048576.0);
     let t = Instant::now();
     let rep = ws.replica_bootstrap(&alice()).unwrap();
-    println!("replica bootstrap                      {:>9.1} ms   {:.1} MiB", ms(t), std::fs::metadata(rep["path"].as_str().unwrap()).unwrap().len() as f64 / 1048576.0);
+    println!("replica bootstrap                      {:>9.1} ms   {:.1} MiB", ms(t), std::fs::metadata(fetched(&ws.objects, &rep)).unwrap().len() as f64 / 1048576.0);
     // the temporary clone of a show (第三期规划 §8.3, M0 target ≤ 1 s): both databases, objects shared
     drop(ws);
     let t = Instant::now();

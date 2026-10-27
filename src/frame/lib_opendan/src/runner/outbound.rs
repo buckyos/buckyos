@@ -25,7 +25,7 @@ use crate::error::{OpenDanError, Result};
 use crate::protocol::*;
 use crate::session::Session;
 
-use super::reports::ObjectStore;
+use super::reports::{ObjectStore, StoredObject};
 use super::shared::{commit_and_report, Shared};
 
 /// The Turn a reply is produced for.
@@ -379,19 +379,23 @@ fn closing_text(status: TurnStatus) -> &'static str {
 struct AllowAll;
 impl AttachmentValidator for AllowAll {}
 
-/// `<attachment path=…>` of an answer: the file is put in the host's
-/// object store (a relative path is taken in the work directory).
+/// `<attachment path=…>` of an answer: the file (a relative path is taken
+/// in the work directory) or the `obj://bucket/...` object is retained by
+/// the host's object store; `urls` remembers the bindings for the refs.
 struct AnswerFiles<'a> {
     objects: Option<&'a dyn ObjectStore>,
     workdir: Option<&'a Path>,
+    urls: std::sync::Mutex<Vec<(ObjId, String)>>,
 }
 
-#[async_trait]
-impl LocalFileResolver for AnswerFiles<'_> {
-    async fn resolve(&self, path: &str) -> std::result::Result<ObjId, String> {
+impl AnswerFiles<'_> {
+    async fn store(&self, path: &str) -> std::result::Result<StoredObject, String> {
         let Some(objects) = self.objects else {
             return Err(format!("local file `{path}` cannot be attached: the host has no object store"));
         };
+        if super::reports::is_bucket_url(path) {
+            return objects.retain_url(path).await;
+        }
         let path = Path::new(path);
         let file = match self.workdir {
             _ if path.is_absolute() => path.to_path_buf(),
@@ -406,10 +410,33 @@ impl LocalFileResolver for AnswerFiles<'_> {
     }
 }
 
+#[async_trait]
+impl LocalFileResolver for AnswerFiles<'_> {
+    async fn resolve(&self, path: &str) -> std::result::Result<ObjId, String> {
+        let stored = self.store(path).await?;
+        if let Some(url) = stored.url {
+            self.urls.lock().unwrap_or_else(|p| p.into_inner()).push((stored.obj_id.clone(), url));
+        }
+        Ok(stored.obj_id)
+    }
+}
+
+/// A data ref of `obj_id` carries the bucket binding that retains it.
+fn hint_bucket_urls(msg: &mut MsgObject, urls: &[(ObjId, String)]) {
+    for item in &mut msg.content.refs {
+        if let RefTarget::DataObj { obj_id, uri_hint } = &mut item.target {
+            if uri_hint.is_none() {
+                *uri_hint = urls.iter().find(|(id, _)| id == obj_id).map(|(_, url)| url.clone());
+            }
+        }
+    }
+}
+
 /// Fill `base` with the reply: its answer (text, `<attachment>` tags as
-/// refs, local files put in `objects`) and the final report's artifacts as
-/// object refs. An artifact without an object is named in the text. `None`
-/// when there is neither text nor an attachment.
+/// refs, local files and bucket objects retained by `objects`) and the final
+/// report's artifacts as object refs, each with its `obj://bucket/...`
+/// binding as the ref's `uri_hint`. An artifact without an object is named
+/// in the text. `None` when there is neither text nor an attachment.
 pub async fn compose_reply(
     base: MsgObject,
     reply: &TurnReply,
@@ -426,8 +453,9 @@ pub async fn compose_reply(
         let files = AnswerFiles {
             objects,
             workdir: reply.workdir.as_deref(),
+            urls: Default::default(),
         };
-        ai_message_to_msg_object_with_base_validated_async(
+        let mut msg = ai_message_to_msg_object_with_base_validated_async(
             &message,
             base,
             &AllowAll,
@@ -435,16 +463,18 @@ pub async fn compose_reply(
             &files,
         )
         .await
-        .map_err(|e| OpenDanError::InvalidArgument(format!("reply cannot be converted: {e}")))?
+        .map_err(|e| OpenDanError::InvalidArgument(format!("reply cannot be converted: {e}")))?;
+        hint_bucket_urls(&mut msg, &files.urls.into_inner().unwrap_or_else(|p| p.into_inner()));
+        msg
     };
     for a in &reply.artifacts {
         let Some(id) = &a.obj_id else { continue };
         let obj_id = ObjId::new(id)
             .map_err(|e| OpenDanError::InvalidArgument(format!("artifact {id}: {e}")))?;
-        // A file is shown by its name; a forwarded object by the name it
-        // carries, when the store knows it.
+        // A file or bucket object is shown by its name; a forwarded object
+        // by the name it carries, when the store knows it.
         let label = match objects {
-            _ if !a.reference.is_empty() => Some(a.name().to_string()),
+            _ if !a.reference.is_empty() || a.url.is_some() => Some(a.name().to_string()),
             Some(store) => store.name_of(&obj_id).await,
             None => None,
         };
@@ -452,7 +482,7 @@ pub async fn compose_reply(
             role: RefRole::Input,
             target: RefTarget::DataObj {
                 obj_id,
-                uri_hint: None,
+                uri_hint: a.url.clone(),
             },
             label,
         });

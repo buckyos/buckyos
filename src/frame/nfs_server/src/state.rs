@@ -36,7 +36,10 @@ pub struct AppState {
 pub type SharedState = Arc<AppState>;
 
 impl AppState {
-    pub fn new(config: ServerConfig) -> NfsResult<SharedState> {
+    pub fn new(mut config: ServerConfig) -> NfsResult<SharedState> {
+        if !matches!(config.auth, crate::config::AuthMode::Runtime) {
+            crate::share::declare_bucket(&mut config);
+        }
         std::fs::create_dir_all(&config.data_dir)?;
         for root in &config.exports {
             if !root.path.is_dir() {

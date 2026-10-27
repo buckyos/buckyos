@@ -543,6 +543,15 @@ pub enum ResourceRef {
 
 `base64` 是输入和 Adapter 解码中间态，不是最终输出形态。Adapter 解析 provider 响应后，AICC 必须在结果持久化边界把所有内联二进制写入对象存储，并把 typed output、`artifacts`、`provider_state` / `provider_states` 中的对应字段替换为 `named_object`。最终结果优先使用 `named_object`；只有已登记来源、有效期和访问策略且当前不需要下载内容的 Provider URL 可以保留为 `url`。TaskMgr result 的任何位置不得出现 `ResourceRef::Base64`、裸 base64 或 data URL。
 
+物化即保留：每个写入对象存储的结果在同一次写入里绑定进调用用户的 AICC 桶，绑定失败即写入失败。桶由 `services/aicc/spec` 声明（`buckyos_api::aicc_bucket_decls`），归属是请求的归属用户（`AuthorizedCaller.tenant_id`：用户本人、Agent 的 owner、`on_behalf_of` 的用户；无委托的系统服务调用归属其设备主体）：
+
+| 桶 | 档位 | 内容 |
+|---|---|---|
+| `user/aicc/<user>/outputs` | `data` / `temp`，7 天 | 调用的结果（图片、音频、视频、embedding JSON） |
+| `user/aicc/<user>/inputs` | `data` / `temp`，1 天 | 为调用上传或由输入派生的文件：Desktop AI Center 上传（浏览器 finalize 时 `auto_bind`）、为只收 URL 的 Provider 发布的 inline 输入、视频素材变换 |
+
+key 为 `<app>/<对象 id 前 16 位>/<name>`，`<app>` 是调用的业务 App（直接调用为 AppId / AgentId，系统 UI 或系统服务为 `system:<service>`）。业务 App 不是 `system:*` 时，AICC 首次为它写入时给该用户桶授 `{grantee: app, prefix: "<app>/", actions: [read]}`：App 会话（含 Agent 运行时）只能读到自己的前缀，用 `bucket.copy` 把要长期保留的结果复制进自己的桶（不传输字节）；同一用户的其它 App 读不到。结果里的引用：`AiArtifact.metadata.bucket_ref` 与 `extra.materialized_artifacts[] = {obj_id, name, mime, bucket_ref}`，`bucket_ref` 为 `obj://bucket/user/aicc/<user>/<bucket>/<key>`（`bucket_ref` 是保留 metadata key，Provider attributes 不得写入）。输入 Lease `aicc:input:*`（24h 续租）照旧保护请求期间读取的输入对象。
+
 物化后执行两道公共门禁：第一道验证本次被物化的 payload 没有以其它字符串副本残留；第二道按 `runner_complete` 的实际 `{ result: { output } }` 包装计算 JSON 大小，必须低于 kRPC 1 MiB 上限并保留 64 KiB envelope 余量。大小门禁位于 usage/billing 和 staging 之前，并在 staged result recovery/commit 时重复执行。超限属于明确、不可重试的任务失败，不能让任务停留在 Accepted/running。
 
 当 `obj_id` 指向 FileObject 时，AICC 从 FileObject meta 获取资源属性：

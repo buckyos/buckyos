@@ -6,7 +6,12 @@ import {
   parseArgvOrExit,
   requireString,
 } from "../lib/cli.ts";
-import { resolveInputResource, saveResourceToPath } from "../lib/io.ts";
+import {
+  isBucketObjectRef,
+  resolveInputResource,
+  saveBucketObjectToPath,
+  saveResourceToPath,
+} from "../lib/io.ts";
 import { initRuntime } from "../lib/runtime.ts";
 import {
   bailIoError,
@@ -23,7 +28,11 @@ const TOOL = "materialize_resource";
 export const HELP =
   `Usage: materialize_resource <resource> <output_path> [options]
 
+Writes a resource to a local file, for a tool that needs a path; deliver and
+pass on results by their obj://bucket/... or object id instead.
+
 Resource forms:
+  obj://bucket/<bucket_id>/<key>   e.g. a media command's detail.files[].url
   named_object:<typed_object_id>
   cyfile:<object_id>
   chunk:<object_id>
@@ -69,12 +78,16 @@ export async function run(argv: string[]): Promise<never> {
   }
 
   try {
-    const resource = await resolveInputResource(input, mimeHint);
     // deno-lint-ignore no-explicit-any
     const ndmProxy = (ndm_proxy as any).createNdmProxyClient();
-    const saved = await saveResourceToPath(resource, outputPath, ndmProxy, {
-      overwrite: false,
-    });
+    const saved = isBucketObjectRef(input)
+      ? await saveBucketObjectToPath(input, outputPath, { overwrite: false })
+      : await saveResourceToPath(
+        await resolveInputResource(input, mimeHint),
+        outputPath,
+        ndmProxy,
+        { overwrite: false },
+      );
     const absolutePath = await Deno.realPath(saved.path);
     emitAndExit(
       successResult(

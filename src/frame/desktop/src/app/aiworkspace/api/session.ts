@@ -18,6 +18,7 @@ import {
   type LockInfo, type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type WorkspaceInfo,
   type AnnotationRead, type ListAnnotationsParams, type Capability, type DerivedRecord, type FreshnessInfo, type GrantList, type RelationsInfo,
   type Subject, type VersionInfo, type WishChoices, type WishRunView, type ShowLockInfo, type ServiceError, type WishAiccMode, type WishClaim, type WishToolAnswer, type HostedExecConfig, type Publication, type Referrer,
+  type BucketBinding, type StagedAsset,
 } from './types'
 
 export type SessionStatus =
@@ -45,7 +46,39 @@ export interface CommitOptions {
   meta?: PendingMeta
 }
 
-export type ImportedAsset = { kind: 'file'; name: string; object_id: string; source_obj_id: string; size: number } | { kind: 'dir'; name: string; children: ImportedAsset[] }
+export type ImportedAsset = { kind: 'file'; name: string; object_id: string; size: number } | { kind: 'dir'; name: string; children: ImportedAsset[] }
+
+/** One file into a Workspace (design §3.6, Durable Data Schema §3.3): uploaded through NDM and bound into the
+ * caller's own `assets` bucket at finalize, then taken over by the service into the Workspace owner's bucket.
+ * A caller without a bucket of its own (a guest) uploads unbound and the service binds what it may read. */
+export async function uploadWorkspaceAsset(client: AiwsClient, workspaceId: string, file: File): Promise<StagedAsset> {
+  const options = await client.transport.importOptions()
+  const own = await client.transport.ownBucket('assets')
+  const snapshot = await ndm.importFiles([file], { ...options, mode: 'single_file', autoStartUpload: false })
+  const ws = { workspace_id: workspaceId }
+  try {
+    if (!own) {
+      await ndm.ensureUploaded(snapshot.sessionId, options)
+      return unwrap(await client.assetImportObject(ws, { obj_id: snapshot.selection.objectId }))
+    }
+    const status = await ndm.ensureUploaded(snapshot.sessionId, { ...options, bind: { bucketId: own, key: `${workspaceId}/${snapshot.selection.objectId}` } })
+    if (!status.binding) throw new Error('the upload was not bound')
+    return unwrap(await client.assetImportObject(ws, { bucket_id: status.binding.bucket_id, key: status.binding.key }))
+  } finally { ndm.releaseImportSession(snapshot.sessionId) }
+}
+
+/** A workspace package into the caller's own `exports` bucket, ready for `ws.import`. */
+export async function uploadWorkspacePackage(client: AiwsClient, file: File): Promise<BucketBinding> {
+  const own = await client.transport.ownBucket('exports')
+  if (!own) throw new Error('A workspace package is imported by a signed-in account (it is uploaded into its own bucket).')
+  const options = await client.transport.importOptions()
+  const snapshot = await ndm.importFiles([file], { ...options, mode: 'single_file', autoStartUpload: false })
+  try {
+    const status = await ndm.ensureUploaded(snapshot.sessionId, { ...options, bind: { bucketId: own, key: `import/${randomId()}.bcanvas` } })
+    if (!status.binding) throw new Error('the upload was not bound')
+    return { bucket_id: status.binding.bucket_id, key: status.binding.key }
+  } finally { ndm.releaseImportSession(snapshot.sessionId) }
+}
 
 /** How this window is connected to the Workspace (design §6.1). */
 export type SessionMode =
@@ -160,7 +193,7 @@ export interface WorkspaceSession {
   lockBreak(entityId: string): Promise<void>
   lockList(): Promise<LockInfo[]>
 
-  uploadAsset(file: Blob, fileName?: string): Promise<{ object_id: string; media_type: string; size: number }>
+  uploadAsset(file: Blob, fileName?: string): Promise<StagedAsset>
   importAssets(files: File[], folder: boolean, signal?: AbortSignal): Promise<ImportedAsset[]>
   fetchAsset(objectId: string): Promise<Blob>
 
@@ -619,12 +652,7 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
   async uploadAsset(file: Blob, fileName?: string) {
     if (file.size > 32 * 1024 * 1024) throw new Error('Workspace assets are limited to 32 MiB.')
     const source = file instanceof File ? file : new File([file], fileName ?? 'asset', { type: file.type })
-    const options = await this.client.transport.importOptions()
-    const snapshot = await ndm.importFiles([source], { ...options, mode: 'single_file', autoStartUpload: false })
-    try {
-      await ndm.ensureUploaded(snapshot.sessionId, options)
-      return unwrap(await this.client.assetImportObject(this.ws, snapshot.selection.objectId))
-    } finally { ndm.releaseImportSession(snapshot.sessionId) }
+    return uploadWorkspaceAsset(this.client, this.workspaceId, source)
   }
 
   async importAssets(files: File[], folder: boolean, signal?: AbortSignal): Promise<ImportedAsset[]> {
@@ -640,8 +668,8 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
           for (const child of item.children ?? []) children.push(await stage(child))
           return { kind: 'dir', name: item.name, children }
         }
-        const asset = unwrap(await this.client.assetImportObject(this.ws, item.objectId))
-        return { kind: 'file', name: item.name, ...asset }
+        const asset = unwrap(await this.client.assetImportObject(this.ws, { obj_id: item.objectId }))
+        return { kind: 'file', name: item.name, object_id: asset.object_id, size: asset.size }
       }
       const items: ImportedAsset[] = []
       for (const item of snapshot.items) items.push(await stage(item))

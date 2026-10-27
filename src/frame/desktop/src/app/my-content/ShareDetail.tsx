@@ -221,7 +221,7 @@ export function ShareDetail({
           </details>
         </Row>
         <Row label={t('myContent.detail.retention')}>
-          {detail.retained ? t('myContent.detail.retained') : t('myContent.detail.released', '', { time: formatTime(detail.retention.find((r) => r.released_at)?.released_at ?? detail.stopped_at, locale) })}
+          {detail.retained ? t('myContent.detail.retained') : t('myContent.detail.released', '', { time: formatTime(detail.stopped_at, locale) })}
         </Row>
       </dl>
 

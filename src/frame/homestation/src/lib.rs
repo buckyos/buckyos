@@ -23,7 +23,6 @@ pub mod protocol;
 pub mod publish;
 pub mod pull;
 pub mod resources;
-pub mod retention;
 pub mod selection;
 pub mod settings;
 pub mod sign;
@@ -34,11 +33,16 @@ pub mod stream;
 pub mod users;
 pub mod zone;
 
+/// A zone's in-process nfs-server for unit tests (shared with tests/ and examples/).
+#[cfg(test)]
+#[path = "../tests/common/nfs.rs"]
+pub(crate) mod test_nfs;
+
 use crate::contacts::CachedContacts;
 use crate::db::Db;
 use crate::directory::Directory;
 use crate::evaluation::ModelClient;
-use crate::objects::ChunkStore;
+use crate::objects::Storage;
 use crate::protocol::HomeRef;
 use crate::sign::Signer;
 use std::collections::BTreeMap;
@@ -130,7 +134,7 @@ pub struct Station {
     pub signer: Signer,
     pub directory: Arc<dyn Directory>,
     pub contacts: CachedContacts,
-    pub chunks: Arc<dyn ChunkStore>,
+    pub store: Arc<Storage>,
     pub http: reqwest::Client,
     pub model: Option<Arc<dyn ModelClient>>,
     pub wake: Wakers,
@@ -148,7 +152,7 @@ impl Station {
         signer: Signer,
         directory: Arc<dyn Directory>,
         contacts: CachedContacts,
-        chunks: Arc<dyn ChunkStore>,
+        store: Arc<Storage>,
         model: Option<Arc<dyn ModelClient>>,
     ) -> Arc<Self> {
         let http = reqwest::Client::builder()
@@ -163,7 +167,7 @@ impl Station {
             signer,
             directory,
             contacts,
-            chunks,
+            store,
             http,
             model,
             wake: Wakers::default(),
@@ -213,22 +217,6 @@ impl Station {
         tokio::spawn(async move { station.comment_sync_loop().await });
         let station = self.clone();
         tokio::spawn(async move { station.housekeeping_loop().await });
-        let station = self.clone();
-        tokio::spawn(async move { station.retention_loop().await });
-    }
-
-    /// Finishes interrupted pins and releases, and backfills older entries (D17).
-    async fn retention_loop(self: Arc<Self>) {
-        loop {
-            match self.reconcile_retentions().await {
-                Ok(report) if report.pinned + report.released + report.failed > 0 || !report.issues.is_empty() => {
-                    log::info!("retention of {}: {:?}", self.cfg.user, report)
-                }
-                Ok(_) => {}
-                Err(e) => log::warn!("retention reconcile failed: {e}"),
-            }
-            tokio::time::sleep(Duration::from_secs(600)).await;
-        }
     }
 
     async fn housekeeping_loop(self: Arc<Self>) {

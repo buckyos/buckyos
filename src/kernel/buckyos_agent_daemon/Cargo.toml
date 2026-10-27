@@ -7,6 +7,7 @@ edition = "2021"
 node_executor = { path = "../node_executor" }
 computer_driver = { path = "../computer_driver" }
 buckyos-api = { path = "../buckyos-api" }
+buckyos-kit = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }

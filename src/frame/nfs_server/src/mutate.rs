@@ -52,6 +52,20 @@ impl AppState {
         }
     }
 
+    /// The parent of a `delete` when it is a projected bucket directory.
+    pub fn projection_parent(&self, actor: &Actor, at: Option<&Locator>, args: &Value) -> Option<Box<crate::bucket::projection::Projection>> {
+        let node = if args.get("parent_ref").map(|v| !v.is_null()).unwrap_or(false) {
+            let r: WireRef = serde_json::from_value(args["parent_ref"].clone()).ok()?;
+            self.resolve_ref_for(actor, &r, Level::Traverse, "write").ok()?
+        } else {
+            self.resolve_for(actor, at?, Level::Traverse, "write").ok()?
+        };
+        match node {
+            Node::Projection(p) if !p.is_file() => Some(p),
+            _ => None,
+        }
+    }
+
     fn dir_parts(&self, node: &Node) -> NfsResult<(String, String, PathBuf)> {
         match node {
             Node::Native { root, rel, .. } => {

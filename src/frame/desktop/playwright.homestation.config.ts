@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { defineConfig, devices } from '@playwright/test'
 
@@ -9,7 +10,9 @@ import { defineConfig, devices } from '@playwright/test'
  *   pnpm exec playwright test --config=playwright.homestation.config.ts
  *
  * Starts the seeded `devnet` example (me on :4231 with token tok-me; alice, bob, sarah, index on
- * :4232–4235; a fixture RSS site on :4236) with a fresh data folder, and Vite with
+ * :4232–4235; a fixture RSS site on :4236; each zone with an in-process nfs-server for its named
+ * store and buckets) with a fresh data folder outside test-results/ (other Playwright runs clean
+ * that folder while this one is still serving from it), and Vite with
  * HS_BACKEND=http://127.0.0.1:4231. The Desktop shell stays on its mock runtime; the HomeStation app
  * talks to the service through the dev override of src/app/homestation/api/transport.ts (?hsDevToken=tok-me).
  *
@@ -23,7 +26,7 @@ function freePort(): string {
 process.env.HS_REAL_E2E = '1'
 process.env.HS_E2E_WEB_PORT ??= freePort()
 const devnet = process.env.HS_DEVNET_BIN ?? resolve(process.env.CARGO_TARGET_DIR ?? resolve(import.meta.dirname, '../../target'), 'debug/examples/devnet')
-const dataDir = resolve(import.meta.dirname, 'test-results/homestation-devnet')
+const dataDir = resolve(tmpdir(), 'homestation-devnet-e2e')
 const backend = 'http://127.0.0.1:4231'
 const web = `http://127.0.0.1:${process.env.HS_E2E_WEB_PORT}`
 

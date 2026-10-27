@@ -1743,6 +1743,26 @@ async fn update_rbac(
         }
     }
 
+    // A static web app has no service spec but acts as its app all the same
+    // (its own settings, uploads and buckets).
+    match get_web_app_list(input_config) {
+        Ok(web_apps) => {
+            let mut lines = web_apps
+                .iter()
+                .filter(|app| !read_only_apps.iter().any(|id| id.as_str() == app.app_id().as_str()))
+                .map(|app| format!("g, app:{}, app", app.app_id().as_str()))
+                .collect::<Vec<_>>();
+            lines.sort();
+            lines.dedup();
+            for line in lines {
+                if !rbac_policy.lines().any(|l| l == line) {
+                    push_policy_line(&mut rbac_policy, line);
+                }
+            }
+        }
+        Err(error) => warn!("web apps left out of the app group: {error}"),
+    }
+
     for agent_spec in &agent_specs {
         let runtime_app_id = agent_spec.binding.target_app_instance_id.app_id();
         let runtime_subject = format!("app:{runtime_app_id}");
@@ -2327,6 +2347,22 @@ pub(crate) mod app_lifecycle_tests {
             state: ServiceState::Running,
             spec_config,
         }
+    }
+
+    #[tokio::test]
+    async fn static_web_apps_act_as_their_app_in_rbac() {
+        let mut spec = app_spec();
+        spec.app_doc.selector_type = SelectorType::Static;
+        let input = HashMap::from([(
+            buckyos_api::user_app_spec_key("alice", spec.app_id()),
+            serde_json::to_string(&spec).unwrap(),
+        )]);
+        let actions = update_rbac_for_test(&input).await;
+        let Some(KVAction::Update(policy)) = actions.get("system/rbac/policy") else {
+            panic!("RBAC policy should be generated");
+        };
+        let line = format!("g, app:{}, app", spec.app_id().as_str());
+        assert_eq!(policy.lines().filter(|l| *l == line).count(), 1, "{policy}");
     }
 
     fn input_with_instance(

@@ -207,7 +207,11 @@ impl Station {
         let id = source_id.to_string();
         let (kind, url, name) = self
             .db
-            .call(move |c| Ok(c.query_row("SELECT kind, url, name FROM sources WHERE id=?1", [id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?)))?))
+            .call(move |c| {
+                Ok(c.query_row("SELECT kind, url, name FROM sources WHERE id=?1 AND owner=?2", params![id, c.owner], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?))
+                })?)
+            })
             .await?;
         let url = url.ok_or_else(|| bad("source has no URL"))?;
         let (body, _) = self.fetch_text(&url).await?;
@@ -228,7 +232,7 @@ impl Station {
         let now = now_ms();
         self.db
             .call(move |c| {
-                c.execute("UPDATE sources SET last_success_at=?2, last_fetch_at=?2, last_error=NULL WHERE id=?1", params![id, now])?;
+                c.execute("UPDATE sources SET last_success_at=?2, last_fetch_at=?2, last_error=NULL WHERE id=?1 AND owner=?3", params![id, now, c.owner])?;
                 Ok(())
             })
             .await?;
@@ -247,8 +251,9 @@ impl Station {
             .db
             .call(move |c| {
                 Ok(c.query_row(
-                    "SELECT obj_id, body FROM objects WHERE local_only=1 AND obj_type=?1 AND json_extract(body, '$.source.original_url')=?2 ORDER BY received_at DESC LIMIT 1",
-                    params![OBJ_TYPE_FEED, link2],
+                    "SELECT obj_id, body FROM objects WHERE local_only=1 AND obj_type=?1 AND json_extract(body, '$.source.original_url')=?2 AND owner=?3
+                     ORDER BY received_at DESC LIMIT 1",
+                    params![OBJ_TYPE_FEED, link2, c.owner],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()?)
@@ -314,7 +319,10 @@ impl Station {
                 index_feed(&tx, &id, &obj, false)?;
                 add_candidate(&tx, &id, &owner, &path, true, now)?;
                 if let Some(old) = replaces {
-                    tx.execute("UPDATE candidates SET selection='dropped', reason='replaced', replaced_by=?2 WHERE obj_id=?1 AND selection!='admitted'", params![old, id])?;
+                    tx.execute(
+                        "UPDATE candidates SET selection='dropped', reason='replaced', replaced_by=?2 WHERE obj_id=?1 AND selection!='admitted' AND owner=?3",
+                        params![old, id, tx.owner],
+                    )?;
                 }
                 tx.commit()?;
                 Ok(())
@@ -325,7 +333,9 @@ impl Station {
     }
 
     /// Selected link-card captures get a snapshot: the page stored as a FileObject, wrapped by
-    /// a new local object that replaces the card (§18.1). Returns the object to admit.
+    /// a new local object that replaces the card (§18.1). Returns the object to admit. The
+    /// snapshot is a processing product (`scratch`, 7 days) until sharing the capture
+    /// publishes it into `published`.
     pub async fn maybe_snapshot(&self, obj_id: &str) -> HsResult<String> {
         let id = obj_id.to_string();
         let stored = self.db.call(move |c| get_object(c, &id)).await?;
@@ -339,7 +349,7 @@ impl Station {
         if !content_type.contains("html") && !html.trim_start().starts_with('<') {
             return Ok(obj_id.to_string());
         }
-        let snapshot = self.store_text_file("snapshot.html", "text/html", html.as_bytes()).await?;
+        let snapshot = self.store_text_file(&format!("snapshots/{}.html", normalize_obj_id(obj_id)), "snapshot.html", "text/html", html.as_bytes()).await?;
         let mut wrapped = feed.clone();
         wrapped.nonce = Some(new_id("n"));
         wrapped.iat = now_s();
@@ -349,11 +359,14 @@ impl Station {
         }
         wrapped.source = Some(FeedSource { captured_at_ms: now_ms() as u64, ..source.clone() });
         let id = obj_id.to_string();
-        let paths: String = self.db.call(move |c| Ok(c.query_row("SELECT source_paths FROM candidates WHERE obj_id=?1", [id], |r| r.get(0))?)).await?;
+        let paths: String = self
+            .db
+            .call(move |c| Ok(c.query_row("SELECT source_paths FROM candidates WHERE obj_id=?1 AND owner=?2", params![id, c.owner], |r| r.get(0))?))
+            .await?;
         let path = serde_json::from_str::<Vec<Value>>(&paths).ok().and_then(|p| p.into_iter().next()).unwrap_or(json!({ "transport": "pull" }));
         let new_id_ = self.store_capture(wrapped, path, Some(obj_id.to_string())).await?;
         let id = new_id_.clone();
-        self.db.call(move |c| Ok(c.execute("UPDATE candidates SET selection='preparing' WHERE obj_id=?1", [id])?)).await?;
+        self.db.call(move |c| Ok(c.execute("UPDATE candidates SET selection='preparing' WHERE obj_id=?1 AND owner=?2", params![id, c.owner])?)).await?;
         Ok(new_id_)
     }
 }

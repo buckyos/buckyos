@@ -6,8 +6,9 @@ Service: `msg-center`
 
 MessageCenter persists mailbox projections, delivery state, contacts, friend
 requests, group subscriptions, idempotency results, tunnel recovery cursors, and
-UI session state in the platform-provided RDB instance. Message objects remain content-addressed in
-named store. The corresponding behavior and RPC model are described in
+UI session state in the platform-provided RDB instance. Message objects and
+attachments are content-addressed in the named store and retained by
+msg-center's buckets (§3). The corresponding behavior and RPC model are described in
 `doc/message_hub/Message Center.md` and
 `doc/message_hub/Message Tunnel Design.md`.
 
@@ -23,6 +24,10 @@ named store. The corresponding behavior and RPC model are described in
 | `msg_tunnel_cursors` | External ingress recovery position |
 | `contacts`, `contact_metadata`, `group_subscribers` | Contacts and external-group subscriptions |
 | `friend_requests` | Each side's record of a friend request; not reconstructible from messages |
+| `group_object_purges` | Redacted messages whose bucket keys and named-store object still have to be removed |
+| Stored messages (`messages` bucket) | Message bodies referenced by mailbox and delivery records |
+| Attachments (`attachments` bucket) | Files referenced by messages; another Zone's sender may no longer have them |
+| Collected attachments (`collected` bucket) | A user's own copy, kept after the message is recalled |
 
 ### Disposable Data
 
@@ -40,8 +45,72 @@ Log data follow the target contract below, independently of these runtime keys.
 ## 3. Storage Strategy
 
 All structured durable data uses the platform RDB instance and supports both
-SQLite and PostgreSQL DDL. Message bodies and attachments use named store
-objects. No durable state is stored in service-private filesystem paths.
+SQLite and PostgreSQL DDL. Hosted group messages keep their bodies in RDB
+(`group_objects`); every other message body and every attachment is a
+named-store object retained by a bucket binding (`buckets.rs`). No business
+state is stored in service-private filesystem paths; the one exception is the
+Telegram client's session files.
+
+### Buckets
+
+Declared in `system_config_builder.rs::add_msg_center` from
+`buckyos_api::msg_center_bucket_decls()`. The app pool of `messages` +
+`attachments` (`msg-center@_`) is `storage_quota_mib = 102400` (100 GiB): it
+holds every user's chat attachments, so it is sized for years of a family or
+small team; over it, a send with a new attachment fails with `quota_exceeded`
+and an admin raises it with `bucket.set_pool_quota`. The two zone buckets set
+`max_objects = 100_000_000`, since a chat Zone outgrows the default million keys.
+
+| Bucket | kind / data_policy | Key | Written (who pins) | Unbound |
+|---|---|---|---|---|
+| `zone/msg-center/_/messages` | `object` / `app_data` | `<msg_id>` | `store_message` (`put_object_str`), before the records of a dispatch, `post_send`, friend message or notice commit | Group redaction (`purge_message`), followed by `remove_object` |
+| `zone/msg-center/_/attachments` | `data` / `app_data` | `<session>/<msg_id>/<n>` | With the message, before its records commit: `store_message`, and `bind_attachments` for hosted group messages (body in RDB) | Group redaction: every key under `<session>/<msg_id>/`; a hosted group message that is not accepted gives up its keys |
+| `zone/msg-center/_/attachments` (display files) | `data` / `app_data` | `<group address>/_display/<obj_id>` | When a group change makes a hosted group's display (EXT-04) show a file: `bind_display_files` before `group.create` / any `group.*` mutation commits, a file not in this Zone fails the change | The change after which no Session's display shows it (config edit, Session deleted, group deleted): `unbind_display_files` after the commit |
+| `user/msg-center/<user>/collected` | `data` / `collected` | `<msg_id>/<n>/<label>` | `msg.collect_attachment` (`bucket.copy`, `origin = {author: sender DID, source: cyfs://<msg_id>}`) | The user, in Files or with `bucket.delete` |
+
+- `<session>` is the message's own address: `session_key(group, to_session)`
+  for a group message, the author's SENT mailbox address
+  (`<from>/<derive_session_id(SENT)>`) otherwise. `<n>` is the position of the
+  object among the message's distinct `DataObj` refs; only FileObject /
+  DirObject refs are bound (a data bucket binds nothing else), other referenced
+  objects are not attachments msg-center keeps.
+- Display files: the bound set is the files of every live Session's effective
+  display (`rules(sid).display.over(group display)`), each once per group
+  (`_display` cannot be a Session id: `_`-prefixed ids are reserved). A group
+  mutation compares that set before and after; only when it changed does it
+  list `<group address>/_display/` and put the missing keys (before commit) and
+  delete the extra ones (after commit; a failed delete is retried by the next
+  change). They are read with `context_path=<session address>/_display`: the
+  caller reads that Session (membership, guest participation, read hooks), its
+  effective display lists the file, and the key holds it.
+- Zone buckets grant no user anything. Attachments are read through
+  `GET /kapi/msg-center/objects/{obj_id}[/content]?context_path=[<session address>/]<msg_id>`:
+  the caller must be able to read that message (mailbox record or hosted group
+  Session), and `bucket.get` of its key must hold `obj_id`; then msg-center reads
+  the named store. The `collected` bucket is the user's: it is read directly at
+  `/bucket/v1/user/msg-center/<user>/collected/<key>`.
+- Private messages have no server-side delete: their keys are never released
+  and no lifecycle rule is declared. A session deletion releases only the
+  messages it redacts (those no mailbox record still references).
+- A local message whose attachment is not in this Zone fails the send
+  (`content_not_available`). A message from another Zone (signed ingress, or a
+  remote member of a hosted group) binds what this Zone has and skips the
+  rest with a warning: its sender's Zone keeps it.
+- Uploads from MessageHub go through the NDM gateway, whose finalize holds the
+  file 24h for the uploader (`ndm-hold:<user>|<app>`); `post_send` binds it
+  into `attachments` within that window or fails. Telegram ingress puts the
+  downloaded file with a 24h Lease (`msg-center-ingress:<obj_id>`) until its
+  message binds it.
+- A redaction queues `group_object_purges(obj_id, attachment_prefix)` in its
+  transaction, the prefix read from the body before it is cleared; the group
+  sync loop (every 30 s) deletes the keys, the `messages` key and the
+  named-store object, then the row.
+
+### Filesystem
+
+| Path | Reason |
+|---|---|
+| `$BUCKYOS_ROOT/data/var/msg-center/tg_sessions` | grammers opens its SQLite session (bot credentials) by path |
 
 ## 4. Schema Definitions
 
@@ -122,6 +191,19 @@ Only the current payload format is read. A payload that still carries `groups`
 or an access level outside the list above fails the owner store load, so every
 operation on that owner returns an error; the stored rows are neither rewritten
 nor deleted.
+
+### Table: `group_object_purges`
+
+| Column | Type | Nullable | Description |
+|---|---|---|---|
+| `obj_id` | TEXT | No | Redacted message (primary key) |
+| `attachment_prefix` | TEXT | Yes | `<session>/<msg_id>/` of its `attachments` keys, from the body before it was cleared; absent when no body was held, then derived from the stored message if there is one |
+| `schema_version` | BIGINT | No | `1` |
+
+Created by `GroupStore::open`. The attachment retention tables
+(`msg_attachment_retentions`, `msg_attachment_issues`, `msg_attachment_meta`)
+and the `msg-center:<msg_id>` pins are no longer created; an installation that
+has them is reinstalled.
 
 ### Existing durable tables
 

@@ -194,8 +194,8 @@ pub struct PublishOutput {
     /// 最终 App Document body（canonical 前的 JSON 值，供工具链/测试消费）。
     pub app_doc_value: Value,
     pub pikg_digest: String,
+    /// Staging handle of the self-checked PIKG, owned by the caller (installable with `apps.submit`).
     pub pikg_handle: String,
-    pub staged_pikg_path: PathBuf,
     /// 发布状态：发布到 Repo/NamedStore 与发布 App DID 是两个动作；
     /// 这里只完成前者，App Document 仍是未经权威发布的 candidate。
     pub publish_status: &'static str,
@@ -384,6 +384,7 @@ impl AppInstaller {
         for expose in spec.spec_config.expose_config.values_mut() {
             expose.allow_guest = false;
         }
+        spec.spec_config.buckets.clear();
 
         let app_instance_id = spec.app_instance_id();
         let policy_key = app_availability_policy_key(app_instance_id);
@@ -908,6 +909,25 @@ impl AppInstaller {
         );
 
         self.wait_for_instances_removed(&spec).await?;
+
+        task_mgr
+            .runner_progress(
+                &task_id,
+                Some(json!({"percent": 70.0})),
+                Some("Releasing app storage".to_string()),
+            )
+            .await?;
+        let owner = request.app_instance_id.owner_user_id();
+        let app_id = request.app_instance_id.app_id().as_str();
+        crate::buckets::PackageBuckets::zone()
+            .release(owner, app_id, None)
+            .await?;
+        crate::buckets::release_app_buckets(
+            owner,
+            app_id,
+            request.data_disposition == AppDataDisposition::Retain,
+        )
+        .await?;
 
         let deleted_paths = if request.data_disposition == AppDataDisposition::Delete {
             task_mgr
@@ -1555,6 +1575,9 @@ impl AppInstaller {
         app_type: AppType,
         local_dir: &Path,
         app_doc_template: &AppDoc,
+        staging: &crate::app_staging::PikgStagingStore,
+        owner_user_id: &str,
+        owner_app_id: &str,
     ) -> Result<PublishOutput, RPCErrors> {
         info!(
             "begin publish app `{}` type `{}` from `{}`",
@@ -1575,12 +1598,23 @@ impl AppInstaller {
             }
         };
 
-        // 生成本地 .pikg 并用同一个 PikgReader 自校验（packer/verifier 单实现）。
-        let pikg_result = self
-            .build_publish_pikg(&prepared, &final_doc, &meta_values)
-            .await;
+        // 生成 .pikg 后 staging：入 named store 并用同一个 PikgReader 自校验（packer/verifier 单实现）。
+        let pikg_result = async {
+            let pikg = self
+                .build_publish_pikg(&prepared, &final_doc, &meta_values)
+                .await?;
+            let zone_did = get_buckyos_api_runtime()?.zone_id.clone();
+            staging
+                .stage_preinstall_file(&pikg, owner_user_id, owner_app_id, &zone_did)
+                .await
+                .map_err(|error| {
+                    RPCErrors::ReasonError(format!("published pikg failed self-check: {error}"))
+                })
+        }
+        .await;
         let _ = fs::remove_dir_all(&prepared.temp_root).await;
-        let (pikg_digest, staged_pikg_path) = pikg_result?;
+        let staged = pikg_result?;
+        let pikg_digest = staged.pikg_digest.clone();
 
         info!(
             "publish completed for app `{}` version `{}` obj `{}` pikg sha256:{}",
@@ -1593,20 +1627,19 @@ impl AppInstaller {
             app_did: final_doc.app_did().clone(),
             app_doc_object_id: final_obj_id,
             app_doc_value,
-            pikg_handle: format!("{}{}", buckyos_api::PIKG_STAGING_HANDLE_PREFIX, pikg_digest),
+            pikg_handle: staged.handle.to_string(),
             pikg_digest,
-            staged_pikg_path,
             publish_status: "repo_stored_candidate",
         })
     }
 
-    /// 打包 pikg -> staging root -> 自校验（结构 + 全部内容 hash）。
+    /// 在发布临时目录打包 pikg。
     async fn build_publish_pikg(
         &self,
         prepared: &PreparedPublishPlan,
         final_doc: &AppDoc,
         meta_values: &[Value],
-    ) -> Result<(String, PathBuf), RPCErrors> {
+    ) -> Result<PathBuf, RPCErrors> {
         let mut builder = crate::pikg::PikgBuilder::new()
             .app_doc(final_doc)
             .map_err(|error| RPCErrors::ReasonError(format!("pikg builder: {error}")))?;
@@ -1629,25 +1662,7 @@ impl AppInstaller {
             .write_to(&tmp_pikg)
             .await
             .map_err(|error| RPCErrors::ReasonError(format!("write pikg failed: {error}")))?;
-
-        let staging_root = crate::app_install_driver::pikg_staging_root();
-        let (digest, staged_path) =
-            crate::pikg::PikgReader::stage_pikg_file(&tmp_pikg, &staging_root)
-                .await
-                .map_err(|error| {
-                    RPCErrors::ReasonError(format!("stage published pikg failed: {error}"))
-                })?;
-
-        // 自校验：packer 与 verifier 不允许两套规则漂移。
-        let reader = crate::pikg::PikgReader::open(&staged_path, Some(&digest))
-            .await
-            .map_err(|error| {
-                RPCErrors::ReasonError(format!("published pikg failed self-check: {error}"))
-            })?;
-        reader.verify_all_contents().await.map_err(|error| {
-            RPCErrors::ReasonError(format!("published pikg failed content self-check: {error}"))
-        })?;
-        Ok((digest, staged_path))
+        Ok(tmp_pikg)
     }
 
     fn canonical_packaged_name(key: &str, desc: &SubPkgDesc, app_id: &str) -> Option<String> {
@@ -2066,7 +2081,7 @@ impl ControlPanelServer {
         req: RPCRequest,
         principal: Option<&RpcAuthPrincipal>,
     ) -> Result<RPCResponse, RPCErrors> {
-        let _principal = Self::require_rpc_principal(principal)?;
+        let principal = Self::require_rpc_principal(principal)?;
         let local_dir = Self::require_param_str(&req, "local_dir")?;
         let app_doc_value = req
             .params
@@ -2087,7 +2102,14 @@ impl ControlPanelServer {
         );
         let output = self
             .app_installer
-            .publish_app_to_repo(app_type, std::path::Path::new(local_dir.as_str()), &app_doc)
+            .publish_app_to_repo(
+                app_type,
+                std::path::Path::new(local_dir.as_str()),
+                &app_doc,
+                &self.staging_store,
+                principal.username.as_str(),
+                principal.authenticated_app_id.as_str(),
+            )
             .await
             .map_err(|error| {
                 warn!(
@@ -2104,7 +2126,6 @@ impl ControlPanelServer {
                 "app_doc_id": output.app_doc_object_id.to_string(),
                 "pikg_handle": output.pikg_handle,
                 "pikg_digest": output.pikg_digest,
-                "pikg_path": output.staged_pikg_path.to_string_lossy(),
                 "app_doc": output.app_doc_value,
                 // 发布到 Repo/NamedStore ≠ 发布 App DID：仍是未权威发布的 candidate。
                 "publish_status": output.publish_status,

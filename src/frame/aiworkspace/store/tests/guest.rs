@@ -7,7 +7,7 @@ use aiworkspace_store::workspace::{Caller, PUBLIC_SUBJECT};
 use common::*;
 use serde_json::json;
 
-const GUEST_TOKEN: &str = "gt_abcdefghijklmnopqrstuvwxyz";
+const GUEST_TOKEN: &str = "gt_YWl3cy1ndWVzdC10b2tlbi1maXh0dXJlLTMyYnl0ZXM";
 
 #[test]
 fn guest_principals_come_from_the_token_only() {
@@ -15,9 +15,9 @@ fn guest_principals_come_from_the_token_only() {
     assert!(g.is_guest());
     assert!(g.principal.starts_with("guest:") && g.principal.len() == "guest:".len() + 26, "{}", g.principal);
     assert_eq!(Caller::guest(GUEST_TOKEN).unwrap().principal, g.principal, "same browser, same guest");
-    assert_ne!(Caller::guest("gt_abcdefghijklmnopqrstuvwxy2").unwrap().principal, g.principal);
-    assert!(!g.principal.contains("abcdefghij"), "the token itself is never part of the principal");
-    for bad in ["gt_short", "pt_abcdefghijklmnopqrstuvwxyz", "tok-alice", ""] {
+    assert_ne!(Caller::guest("gt_YWl3cy1ndWVzdC10b2tlbi1maXh0dXJlLTMyYnl0ZXQ").unwrap().principal, g.principal);
+    assert!(!g.principal.contains(&GUEST_TOKEN[3..13]), "the token itself is never part of the principal");
+    for bad in ["gt_short", "gt_abcdefghijklmnopqrstuvwxyz", "pt_YWl3cy1ndWVzdC10b2tlbi1maXh0dXJlLTMyYnl0ZXM", "tok-alice", ""] {
         assert!(Caller::guest(bad).is_none(), "{bad}");
     }
     assert!(!alice().is_guest());

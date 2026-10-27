@@ -109,8 +109,9 @@ fn a_fixed_version_resolves_only_while_a_snapshot_retains_it() {
     ok(&mut ws, &alice(), json!([{ "op": "entity.rename", "entity_id": "t", "name": "later", "expect": { "rev": seq } }]));
     assert_eq!(ws.resolve(&alice(), Some(&at(seq)), None).unwrap()["object_id"], r["object_id"]);
     assert_eq!(ws.resolve(&alice(), Some(&at(seq + 1)), None).unwrap_err().code.as_str(), "VERSION_NOT_RETAINED");
-    // releasing the checkpoint's retention makes the version unavailable, and an unknown epoch never resolves
+    // releasing the checkpoint's retention (its binding) makes the version unavailable, and an unknown epoch never resolves
     assert!(ws.release_retention("snapshot", &cp.snapshot_id).unwrap());
+    assert!(env.bound("alice", "objects", &format!("{id}/snapshot/{}", cp.snapshot_id)).is_none());
     assert_eq!(ws.resolve(&alice(), Some(&at(seq)), None).unwrap_err().code.as_str(), "VERSION_NOT_RETAINED");
     assert_eq!(ws.resolve(&alice(), Some(&json!({ "entity_id": "t", "mode": "fixed", "version": { "epoch": "ep_other", "seq": 1 } })), None).unwrap_err().code.as_str(), "VERSION_NOT_RETAINED");
 }
@@ -132,18 +133,23 @@ fn history_floor_retention_roots_and_usage_ledger() {
     let rev = created["seq"].as_u64().unwrap();
     ok(&mut ws, &alice(), json!([{ "op": "table.set_values", "source_id": "t", "values": [{ "record_id": "r1", "field_id": "n", "value": 1234567, "expect": { "rev": rev } }] }]));
     assert!(ws.usage().unwrap()["content"].as_i64().unwrap() > before);
-    // a staged upload and a checkpoint register retention roots; an export too
+    // a staged upload, a checkpoint and an export are bindings in the owner's buckets
     let staged = ws.stage_asset(&alice(), b"hello").unwrap();
+    let object_id = staged["object_id"].as_str().unwrap();
+    assert_eq!(env.bound("alice", "assets", &format!("{id}/{object_id}")).as_deref(), Some(object_id));
+    assert_eq!(staged["bucket_id"], "user/aiworkspace/alice/assets");
     let cp = ws.checkpoint(&alice()).unwrap();
+    assert!(env.bound("alice", "objects", &format!("{id}/snapshot/{}", cp.snapshot_id)).is_some_and(|d| d.starts_with("cydir:")));
     let ex = ws.export(&alice(), "share", true, None).unwrap();
-    let roots: Vec<(String, String)> = ws.retentions().unwrap().into_iter().map(|(k, r, ..)| (k, r)).collect();
-    assert!(roots.contains(&("staged".to_string(), staged["object_id"].as_str().unwrap().to_string())), "{roots:?}");
-    assert!(roots.contains(&("snapshot".to_string(), cp.snapshot_id.clone())), "{roots:?}");
-    assert!(roots.contains(&("export".to_string(), ex["export_id"].as_str().unwrap().to_string())), "{roots:?}");
+    let key = format!("{id}/export/{}.bcanvas", ex["export_id"].as_str().unwrap());
+    assert_eq!((ex["download"]["bucket_id"].as_str(), ex["download"]["key"].as_str()), (Some("user/aiworkspace/alice/exports"), Some(key.as_str())));
+    assert!(ex["download"]["token"].as_str().is_some_and(|t| t.starts_with("bkt_")));
+    assert_eq!(env.bound("alice", "exports", &key), ex["download"]["obj_id"].as_str().map(str::to_string));
     let usage = ws.usage().unwrap();
-    assert!(usage["exports"].as_i64().unwrap() > 0 && usage["staged"].as_i64().unwrap() == 5, "{usage}");
+    assert!(usage.get("exports").is_none() && usage["staged"].as_i64().unwrap() == 5, "{usage}");
     assert!(ws.release_retention("export", ex["export_id"].as_str().unwrap()).unwrap());
-    assert!(!ws.retentions().unwrap().iter().any(|(k, ..)| k == "export"));
+    assert!(env.bound("alice", "exports", &key).is_none());
+    assert!(!ws.release_retention("export", ex["export_id"].as_str().unwrap()).unwrap());
     // the floor: nothing below base_seq 0, so every request passes; the code path is the error's
     assert!(ws.get_changes(&alice(), &ws.epoch.clone(), 0, 10, false).is_ok());
 }

@@ -1,4 +1,4 @@
-import { buckyos } from 'buckyos'
+import { bucket, buckyos } from 'buckyos'
 import { callRpc, type RpcCallOptions } from './rpc.ts'
 import { isMockRuntime } from '../runtime.ts'
 
@@ -211,6 +211,42 @@ export interface ZoneOverviewResponse {
 
 export const fetchZoneOverview = async (): RpcResult<ZoneOverviewResponse> =>
   callSettingsRpc<ZoneOverviewResponse>('zone.overview')
+
+// ---- Storage ----
+
+/** The signed-in user's buckets, across the apps that keep data for them (installed or not). */
+export interface StorageOverview {
+  user: string
+  buckets: bucket.BucketInfo[]
+}
+
+export const fetchStorageOverview = async (): RpcResult<StorageOverview> => {
+  if (isMockRuntime()) {
+    const { mockStorageOverview } = await import('./settings_mock.ts')
+    return { data: mockStorageOverview(), error: null }
+  }
+  try {
+    const user = (await buckyos.getAccountInfo())?.user_id
+    if (!user) throw new Error('not signed in')
+    const buckets = await buckyos.getBucketClient().list({ scope: 'user' })
+    return { data: { user, buckets: buckets.filter((item) => item.owner === user) }, error: null }
+  } catch (error) {
+    return { data: null, error }
+  }
+}
+
+/** Deletes one bucket; a documents or collected bucket needs the user's sudo session. */
+export const deleteStorageBucket = async (bucketId: string, sessionToken: string | null): RpcResult<{ deleted: boolean }> => {
+  if (isMockRuntime()) {
+    const { deleteMockStorageBucket } = await import('./settings_mock.ts')
+    return { data: deleteMockStorageBucket(bucketId), error: null }
+  }
+  try {
+    return { data: await buckyos.getBucketClient().deleteBucket(bucketId, { sessionToken }), error: null }
+  } catch (error) {
+    return { data: null, error }
+  }
+}
 
 // ---- Developer tools ----
 

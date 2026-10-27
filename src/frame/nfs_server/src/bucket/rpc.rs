@@ -9,11 +9,14 @@ use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use bucket_store::*;
+use buckyos_api::bucket_client::{AppRelease, ReleaseAction, ReleasedBucket};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 pub const KRPC_PATH: &str = "/kapi/nfs-server";
+/// Browser runtimes address services as `/kapi/<service>/`.
+pub const KRPC_PATH_SLASH: &str = "/kapi/nfs-server/";
 
 fn arg<T: DeserializeOwned>(p: &Value, key: &str) -> BucketResult<T> {
     serde_json::from_value(p.get(key).cloned().unwrap_or(Value::Null)).map_err(|e| BucketError::InvalidArgument(format!("{key}: {e}")))
@@ -87,6 +90,28 @@ fn require_admin(admin: bool) -> BucketResult<()> {
     } else {
         Err(BucketError::PermissionDenied("admin only".into()))
     }
+}
+
+/// An app instance was uninstalled (§4.5.1): documents and collected buckets stay as
+/// orphans for the user, app_data stays only when the user kept the app's data, the
+/// rest are deleted. The caller has already withdrawn the declarations, so the spec
+/// sync that follows does not bring them back.
+async fn release_app(state: &SharedState, store: &BucketStore, appid: &str, owner: &str, keep_app_data: bool) -> BucketResult<AppRelease> {
+    let mut buckets = Vec::new();
+    for b in store.list_buckets(Some(owner), Some(appid), None)? {
+        let keep = b.data_policy.user_owned() || (keep_app_data && b.data_policy == DataPolicy::AppData);
+        let action = if keep {
+            store.mark_orphaned(&b.bucket_id)?;
+            ReleaseAction::Orphaned
+        } else {
+            store.delete_bucket(&b.bucket_id, &Caller::system()).await?;
+            ReleaseAction::Deleted
+        };
+        log::info!("released bucket {} ({}) of {appid}@{owner}: {action:?}", b.bucket_id, b.data_policy);
+        buckets.push(ReleasedBucket { bucket_id: b.bucket_id, data_policy: b.data_policy, unique_bytes: b.unique_bytes, action });
+    }
+    state.buckets.synced.lock().unwrap().insert(format!("{appid}@{owner}"), std::time::Instant::now());
+    Ok(AppRelease { appid: appid.to_string(), owner: owner.to_string(), buckets })
 }
 
 pub async fn dispatch(state: &SharedState, session: &Session, method: &str, p: &Value) -> BucketResult<Value> {
@@ -285,6 +310,15 @@ pub async fn dispatch(state: &SharedState, session: &Session, method: &str, p: &
         "bucket.revoke_s3_key" => {
             store.revoke_s3_key(&own_user(session)?, &arg::<String>(p, "access_key_id")?)?;
             Ok(json!({"revoked": true}))
+        }
+        "bucket.release_app" => {
+            let control_panel = matches!(session, Session::Service { service, .. } if service == buckyos_api::CONTROL_PANEL_SERVICE_NAME);
+            if !control_panel {
+                require_admin(is_admin(state, session).await)?;
+            }
+            let appid: String = arg(p, "appid")?;
+            let owner: String = arg(p, "owner")?;
+            to_value(release_app(state, &store, &appid, &owner, opt(p, "keep_app_data")?.unwrap_or(false)).await?)
         }
         "bucket.prefetch" => Err(BucketError::InvalidArgument("bucket.prefetch is not available yet (P2)".into())),
         other => Err(BucketError::InvalidArgument(format!("unknown method {other}"))),

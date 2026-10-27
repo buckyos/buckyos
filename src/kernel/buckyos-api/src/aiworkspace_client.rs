@@ -7,12 +7,28 @@
 
 use ::kRPC::kRPC;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
+use std::collections::HashMap;
 
 pub const AIWORKSPACE_UNIQUE_ID: &str = "aiworkspace";
 pub const AIWORKSPACE_SERVICE_NAME: &str = "aiworkspace";
 pub const AIWORKSPACE_SERVICE_PORT: u16 = 4120;
 pub const AIWORKSPACE_HTTP_PATH: &str = "/kapi/aiworkspace";
+/// App pool of the service's `app_data` and `temp` buckets per user (D17).
+pub const AIWORKSPACE_STORAGE_QUOTA_MIB: u64 = 16_384;
+
+/// The per-user buckets the service declares in `services/aiworkspace/spec` (doc/workspace
+/// `BuckyOS AiWorkspace Durable Data Schema.md`): `assets` (uploaded and generated files),
+/// `objects` (one retention DirObject per snapshot / generated version), `exports` (packages,
+/// replicas, fixed publications and uploaded packages; 7 days).
+pub fn aiworkspace_bucket_decls() -> HashMap<String, bucket_store::BucketDecl> {
+    serde_json::from_value(json!({
+        "assets": { "kind": "data", "data_policy": "app_data", "scope": "user" },
+        "objects": { "kind": "data", "data_policy": "app_data", "scope": "user" },
+        "exports": { "kind": "data", "data_policy": "temp", "scope": "user", "default_ttl_days": 7 }
+    }))
+    .expect("aiworkspace bucket declarations")
+}
 
 /// `services/aiworkspace/settings`. Seeded by the scheduler boot builder with
 /// defaults (insert_json_if_absent, so user edits survive re-boot).

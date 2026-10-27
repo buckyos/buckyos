@@ -71,6 +71,7 @@ impl AppState {
             Node::Native { root, rel, .. } => self.acls.level(actor, root, rel),
             Node::Collection(c) => collection_level(actor, c),
             Node::CollectionGroup { collection, .. } => collection_level(actor, collection),
+            Node::Projection(p) => self.acls.level(actor, HOME_ROOT, &p.rel),
             Node::View(_) | Node::ViewGroup { .. } => match actor {
                 Actor::Anonymous | Actor::Delegated { .. } => Level::None,
                 _ => Level::Read,

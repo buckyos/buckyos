@@ -2,6 +2,7 @@
 //! Shared helpers: a service on a temp folder with a controllable clock, and
 //! the `project-workspace` fixture replayed through the service interface.
 
+use aiworkspace_store::objects::ObjectStore;
 use aiworkspace_store::workspace::{Caller, CommitOpts, Workspace};
 use aiworkspace_store::Service;
 use base64::Engine;
@@ -16,14 +17,21 @@ pub struct Env {
     pub dir: tempfile::TempDir,
     pub svc: Service,
     pub clock: Arc<AtomicI64>,
+    pub objects: Arc<ObjectStore>,
+}
+
+/// A named store and a bucket index of the test's own, the service's bucket declarations.
+pub fn objects(dir: &std::path::Path) -> Arc<ObjectStore> {
+    ObjectStore::embedded(&dir.join("store"), buckyos_api::aiworkspace_bucket_decls(), Some(buckyos_api::AIWORKSPACE_STORAGE_QUOTA_MIB)).unwrap()
 }
 
 pub fn env() -> Env {
     let dir = tempfile::tempdir().unwrap();
     let clock = Arc::new(AtomicI64::new(T0));
     let c = clock.clone();
-    let svc = Service::open_with_clock(dir.path(), Arc::new(move || c.load(Ordering::SeqCst))).unwrap();
-    Env { dir, svc, clock }
+    let objects = objects(dir.path());
+    let svc = Service::open_with_clock(dir.path(), objects.clone(), Arc::new(move || c.load(Ordering::SeqCst))).unwrap();
+    Env { dir, svc, clock, objects }
 }
 
 impl Env {
@@ -31,11 +39,16 @@ impl Env {
         self.clock.fetch_add(ms, Ordering::SeqCst);
     }
     pub fn reopen(self) -> Env {
-        let Env { dir, svc, clock } = self;
+        let Env { dir, svc, clock, objects } = self;
         drop(svc);
         let c = clock.clone();
-        let svc = Service::open_with_clock(dir.path(), Arc::new(move || c.load(Ordering::SeqCst))).unwrap();
-        Env { dir, svc, clock }
+        let svc = Service::open_with_clock(dir.path(), objects.clone(), Arc::new(move || c.load(Ordering::SeqCst))).unwrap();
+        Env { dir, svc, clock, objects }
+    }
+    /// The object a binding of the Workspace owner `owner` holds under `key` of bucket `name`.
+    pub fn bound(&self, owner: &str, name: &str, key: &str) -> Option<String> {
+        let bucket = aiworkspace_store::objects::bucket_id(owner, name).unwrap();
+        self.objects.binding(&bucket, key).unwrap().map(|(obj, _)| obj)
     }
 }
 
@@ -104,4 +117,11 @@ pub fn cell_rev(ws: &Workspace, who: &Caller, record: &str, field: &str) -> u64 
 pub fn set_cell(record: &str, field: &str, value: Value, rev: u64) -> Value {
     json!([{ "op": "table.set_values", "source_id": "tasks",
              "values": [{ "record_id": record, "field_id": field, "value": value, "expect": { "rev": rev } }] }])
+}
+
+/// The file a download (an `export` / `replica_bootstrap` result) names, read back from the named store.
+pub fn fetched(objects: &ObjectStore, r: &Value) -> tempfile::TempPath {
+    let path = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+    objects.read_to_file(r["download"]["obj_id"].as_str().unwrap(), &path).unwrap();
+    path
 }

@@ -5,9 +5,13 @@
 //! Starts the zone of `me` (the Desktop's user, token `tok-me`; a second user `kai` of the same
 //! zone, token `tok-kai`) on --port, then the zones of alice, bob, sarah, a collector `index`
 //! and a small RSS/web fixture site on the following ports. All of them talk only through the
-//! HomeStation protocol paths; me and kai through their own zone's. Point the Desktop dev
-//! server at `HS_BACKEND=http://127.0.0.1:<port>` (see
+//! HomeStation protocol paths; me and kai through their own zone's. Each zone has its own
+//! in-process nfs-server (named store and HomeStation's buckets, no authentication) on a free
+//! port. Point the Desktop dev server at `HS_BACKEND=http://127.0.0.1:<port>` (see
 //! src/frame/desktop/src/app/homestation/UI_DATAMODEL.md §11).
+
+#[path = "../tests/common/nfs.rs"]
+mod nfs;
 
 use axum::response::IntoResponse;
 use homestation::contacts::ContactInfo;
@@ -66,7 +70,7 @@ impl Net {
     }
 
     async fn upload(&self, name: &str, file: &str, data: Vec<u8>) -> String {
-        self.st(name).store_file(file, "image/svg+xml", data, json!({ "width": 1200, "height": 800 })).await.unwrap().0
+        self.st(name).store_file(&format!("uploads/{file}"), file, "image/svg+xml", data, json!({ "width": 1200, "height": 800 })).await.unwrap().0
     }
 
     async fn post(&self, name: &str, key: &str, input: Value) -> Value {
@@ -126,7 +130,7 @@ async fn main() {
     if args.iter().any(|a| a == "--fresh") {
         let _ = std::fs::remove_dir_all(&data);
     }
-    let fresh = !homestation::standalone::user_db_path(&data.join("me").join("users"), "me").exists();
+    let fresh = !data.join("me").join("homestation-main.db").exists();
     let fixture_port = port + NAMES.len() as u16;
     fixture(fixture_port).await;
 
@@ -193,6 +197,7 @@ async fn main() {
             "owner_name": display,
             "user": name,
             "zone": format!("{name}.devnet"),
+            "nfs_server": nfs::start_nfs_server(&data.join(name).join("nfs")).await,
             "zone_name": if *name == "me" { "Lin & Kai's zone".to_string() } else { format!("{name}.devnet") },
             "private_key_pem": pem,
             "listen": format!("127.0.0.1:{}", port + i as u16),

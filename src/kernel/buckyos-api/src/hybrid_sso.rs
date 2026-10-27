@@ -776,7 +776,7 @@ impl ExclusiveInvite {
             return Err(InviteLoginRefusal::Consumed);
         }
         if self.credential.state != InviteCredentialState::Active
-            || !constant_time_eq(self.credential.digest.as_bytes(), digest.as_bytes())
+            || !name_lib::bearer_token::digests_equal(&self.credential.digest, digest)
         {
             return Err(InviteLoginRefusal::LinkReplaced);
         }
@@ -889,11 +889,9 @@ pub fn owner_canonical_zone(owner: &name_lib::OwnerDocument) -> name_lib::DID {
         .unwrap_or_else(|| owner.id.clone())
 }
 
-/// base64url(sha256(secret)) as stored in invite records.
+/// What invite records keep instead of the secret (`name_lib::bearer_token::digest`).
 pub fn invite_secret_digest(secret: &str) -> String {
-    use base64::Engine;
-    use sha2::Digest;
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(secret.as_bytes()))
+    name_lib::bearer_token::digest(secret)
 }
 
 #[cfg(test)]

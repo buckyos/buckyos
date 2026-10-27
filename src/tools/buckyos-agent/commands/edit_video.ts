@@ -8,6 +8,7 @@ import {
   ArgError,
   bailArgError,
   COMMON_OPTIONS_HELP,
+  DELIVERY_HELP,
   parseArgvOrExit,
 } from "../lib/cli.ts";
 import { initRuntime } from "../lib/runtime.ts";
@@ -15,8 +16,8 @@ import { callAicc, commonPolicyOptions, describeFailure } from "../lib/aicc.ts";
 import type { TypedRequestMap } from "../lib/aicc.ts";
 import {
   resolveInputResource,
-  saveArtifactToPath,
-  suffixPathByMime,
+  deliverArtifact,
+  deliveredSummary,
 } from "../lib/io.ts";
 import { pickVideo, VIDEO_OUTPUT_HELP, videoOutputSpec } from "../lib/video.ts";
 import {
@@ -36,17 +37,17 @@ const TOOL = "edit_video";
 const METHOD = "video.edit";
 
 export const HELP =
-  `Usage: edit_video <input_video> <prompt> <output_video> [options]
+  `Usage: edit_video <input_video> <prompt> [output_video] [options]
 
 Rewrites an existing video as the prompt says. To make a new video that
 follows a reference clip, use gen_video --ref-video instead.
 
 ${VIDEO_OUTPUT_HELP}
-${COMMON_OPTIONS_HELP}`;
+${COMMON_OPTIONS_HELP}${DELIVERY_HELP}`;
 
 export async function run(argv: string[]): Promise<never> {
   const parsed = parseArgvOrExit(TOOL, HELP, argv);
-  if (parsed.positional.length < 3) {
+  if (parsed.positional.length < 2) {
     emitAndExit(
       errorResult(TOOL, `${TOOL} => arg_error`, HELP, {
         error: "missing positional",
@@ -101,27 +102,21 @@ export async function run(argv: string[]): Promise<never> {
   const ndmProxy = (ndm_proxy as any).createNdmProxyClient();
   let saved;
   try {
-    saved = await saveArtifactToPath(
-      artifact,
-      suffixPathByMime(outputPath, artifact.mime ?? "video/mp4"),
-      ndmProxy,
-    );
+    saved = await deliverArtifact(runtime, call.summary, artifact, ndmProxy, {
+      tool: TOOL,
+      path: outputPath,
+      defaultMime: artifact.mime ?? "video/mp4",
+    });
   } catch (err) {
     bailIoError(TOOL, call.taskId, err);
   }
 
   emitAndExit(
-    successResult(TOOL, `${TOOL} => done`, `${TOOL} wrote ${saved.path}`, {
+    successResult(TOOL, `${TOOL} => done`, deliveredSummary(TOOL, [saved]), {
       method: METHOD,
       capability: "video",
       task_id: call.taskId,
-      files: [{
-        path: saved.path,
-        mime: saved.mime ?? null,
-        bytes: saved.bytes,
-        source_kind: saved.source_kind,
-        obj_id: saved.obj_id ?? null,
-      }],
+      files: [saved],
       video: artifact.metadata ?? null,
     }),
     EXIT_SUCCESS,

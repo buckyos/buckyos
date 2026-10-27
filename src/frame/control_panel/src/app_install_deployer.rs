@@ -172,6 +172,19 @@ impl ProductionInstallDriver {
             let record =
                 reconcile_execution(&scheduler, plan, InstallStage::Activate, false).await?;
             if record.state == InstallPlanExecutionState::Completed {
+                if let Err(error) = crate::buckets::PackageBuckets::zone()
+                    .release(
+                        &plan.owner_user_id,
+                        plan.app_instance_id.app_id().as_str(),
+                        Some(&plan.app_doc.version),
+                    )
+                    .await
+                {
+                    log::warn!(
+                        "release earlier package versions of {} failed: {error}",
+                        plan.app_instance_id
+                    );
+                }
                 return Ok(InstallTaskResult {
                     install_record_key: Some(install_record_key(
                         &plan.owner_user_id,

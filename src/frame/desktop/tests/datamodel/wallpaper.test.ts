@@ -9,7 +9,8 @@ import {
 } from '../../src/desktop/wallpaper/model.ts'
 import { planSync, readAppearance, type AccountAppearance } from '../../src/desktop/appearance/model.ts'
 import { AppearanceSync, type AppearanceSyncIo } from '../../src/desktop/appearance/sync.ts'
-import { WallpaperStore } from '../../src/desktop/wallpaper/store.ts'
+import { WallpaperStore, type WallpaperIo } from '../../src/desktop/wallpaper/store.ts'
+import { wallpapersToPrune } from '../../src/api/desktop_state.ts'
 import {
   MAX_WALLPAPER_EDGE,
   WallpaperImageError,
@@ -100,19 +101,25 @@ Deno.test('center and tile draw the picture pixel for pixel; the preview scales 
 
 // ── Appearance that follows the account ──
 
-const ASSET = `${'a'.repeat(32)}.jpg`
+const KEY = `${'a'.repeat(32)}.jpg`
+const REF = `obj://bucket/user/control-panel/alice/wallpapers/${KEY}`
 const local: AccountAppearance = {
   theme: 'light',
   locale: 'zh-CN',
   iconSize: 'medium',
   window: { titleBarOpacity: 100, backgroundOpacity: 100 },
-  wallpaper: { ...defaultAccountWallpaper, image: { asset: ASSET, width: 1200, height: 800, name: 'a.jpg' } },
+  wallpaper: { ...defaultAccountWallpaper, image: { ref: REF, width: 1200, height: 800, name: 'a.jpg' } },
 }
 
-Deno.test('an account wallpaper names a picture by content hash; anything else is no picture', () => {
-  assertEquals(normalizeAccountWallpaper({ fit: 'tile', image: { asset: ASSET, width: 10, height: 20, name: 'x' } }).image?.asset, ASSET, 'kept')
-  assertEquals(normalizeAccountWallpaper({ image: { asset: '../../settings', width: 10, height: 20 } }).image, null, 'path refused')
-  assertEquals(normalizeAccountWallpaper({ image: { asset: ASSET, width: 0, height: 20 } }).image, null, 'no size')
+Deno.test('an account wallpaper names a picture in its wallpapers bucket by content hash; anything else is no picture', () => {
+  assertEquals(normalizeAccountWallpaper({ fit: 'tile', image: { ref: REF, width: 10, height: 20, name: 'x' } }).image?.ref, REF, 'kept')
+  assertEquals(normalizeAccountWallpaper({ image: { ref: KEY, width: 10, height: 20 } }).image, null, 'a bare key refused')
+  assertEquals(
+    normalizeAccountWallpaper({ image: { ref: `obj://bucket/user/photos/alice/library/${KEY}`, width: 10, height: 20 } }).image,
+    null,
+    'another bucket refused',
+  )
+  assertEquals(normalizeAccountWallpaper({ image: { ref: REF, width: 0, height: 20 } }).image, null, 'no size')
   assertEquals(readAppearance({ theme: 'blue', locale: 'xx', iconSize: 'huge', window: { titleBarOpacity: 300 } }), {}, 'invalid fields dropped')
   assertEquals(readAppearance({ theme: 'dark', iconSize: 'large' }), { theme: 'dark', iconSize: 'large' }, 'valid fields kept')
 })
@@ -205,10 +212,22 @@ Deno.test('sync engine: a change the account has not confirmed survives a reload
   second.stop()
 })
 
-Deno.test('a server picture refused as a plain load (no usable cookie) is fetched with the token instead', async () => {
+Deno.test('only the newest pictures stay in the bucket, and never the one shown', () => {
+  const items = [
+    { key: 'a', created_at: 1 },
+    { key: 'b', created_at: 4 },
+    { key: 'c', created_at: 3 },
+    { key: 'd', created_at: 2 },
+    { key: 'new', created_at: 5 },
+  ]
+  assertEquals(wallpapersToPrune(items, 'new', 3), ['d', 'a'], 'the two newest besides it are kept')
+  assertEquals(wallpapersToPrune(items, 'a', 3), ['c', 'd'], 'the current picture is kept even when older')
+})
+
+Deno.test('a bucket picture refused as a plain load (no usable cookie) is fetched with the token instead', async () => {
   const requests: string[] = []
   const globals = globalThis as Record<string, unknown>
-  const saved = { window: globals.window, Image: globals.Image, fetch: globals.fetch }
+  const saved = { window: globals.window, Image: globals.Image }
   globals.window = { localStorage: new MemoryStorage(), addEventListener: () => {} }
   // A CSS/<img> load that the server refuses.
   globals.Image = class {
@@ -217,18 +236,24 @@ Deno.test('a server picture refused as a plain load (no usable cookie) is fetche
       setTimeout(() => this.onerror?.(), 0)
     }
   }
-  globals.fetch = (url: string) => {
-    requests.push(url)
-    return Promise.resolve(new Response(new Blob(['picture'], { type: 'image/jpeg' }), { status: 200 }))
+  const url = `/bucket/v1/user/control-panel/alice/wallpapers/${KEY}`
+  const io: WallpaperIo = {
+    upload: () => Promise.reject(new Error('not used')),
+    urlNow: (ref) => (ref === REF ? url : null),
+    url: (ref) => Promise.resolve(ref === REF ? url : null),
+    fetchWithToken: (ref) => {
+      requests.push(ref)
+      return Promise.resolve(URL.createObjectURL(new Blob(['picture'], { type: 'image/jpeg' })))
+    },
   }
   try {
-    const store = new WallpaperStore()
+    const store = new WallpaperStore(io)
     const stop = store.subscribe(() => {})
-    store.applyAccount({ ...defaultAccountWallpaper, image: { asset: ASSET, width: 1200, height: 800, name: 'a.jpg' } })
-    assertEquals(store.getSnapshot().url, `/api/desktop/wallpaper/${ASSET}`, 'drawn from the server URL first')
+    store.applyAccount({ ...defaultAccountWallpaper, image: { ref: REF, width: 1200, height: 800, name: 'a.jpg' } })
+    assertEquals(store.getSnapshot().url, url, 'drawn from the bucket URL first')
     for (let i = 0; i < 20 && !store.getSnapshot().url?.startsWith('blob:'); i++) await new Promise((done) => setTimeout(done, 5))
     assertEquals(store.getSnapshot().url?.startsWith('blob:'), true, 'then from the fetched copy')
-    assertEquals(requests, [`/api/desktop/wallpaper/${ASSET}`], 'one fetch')
+    assertEquals(requests, [REF], 'one fetch')
     assertEquals(store.getSnapshot().wallpaper?.imageUrl, store.getSnapshot().url, 'the desktop draws it')
     stop()
   } finally {

@@ -348,14 +348,14 @@ Store 的选择（`store/createStore.ts`）：设置了开发覆盖（见 §11�
 | `quote`、`comment` | `interact.quote {objId, text, audience}`、`interact.comment {objId, text}` | |
 | `withdraw`、`editPost`、`setAudience`、`retryDelivery` | `entry.withdraw {entry}`、`entry.edit {entry, text}`、`entry.set_audience {entry, audience}`、`entry.retry_delivery {entry}` | |
 | `publish`、`retryPublish`、`shareCapture` | `publish.create {key, input}`、`publish.retry {key}`、`publish.share_capture {objId}` | |
-| `uploadAttachment(fileOrFolder, kind, {signal, onProgress})` | SDK `importFiles` → `ensureUploaded` → `object.register {objId, metadata}` | 文件/目录均以就绪 ObjId 交付；图片尺寸、音视频时长在浏览器读出，保存为业务元数据，不修改 canonical 对象 |
+| `uploadAttachment(fileOrFolder, kind, {signal, onProgress})` | `object.upload_target {name}` → SDK `importFiles` → `ensureUploaded({ bind })`（finalize 时绑进本人 `scratch` 桶的该 key）→ `object.register {objId, key, metadata}` | 文件/目录均以就绪 ObjId 交付；图片尺寸、音视频时长在浏览器读出，保存为业务元数据，不修改 canonical 对象 |
 | `fetchLinkPreview` | `publish.link_preview {url}` | |
 | `resolveSourceInput`、`follow`、`unfollow`、`pauseSource`、`listSources` | `sources.resolve {kind, text}`、`sources.follow {resolution}`、`sources.unfollow {sourceId}`、`sources.pause {sourceId, paused}`、`sources.list` | |
 | `setMuteRule`、`setFilterRule`、`setTagOverride`、`markLessLike`、`setDefaultAudience` | `prefs.set_mute_rule {rule, on}`、`prefs.set_filter_rule {rule}`、`prefs.set_tag_override {objId, tag, override}`、`prefs.mark_less_like {objId}`、`prefs.set_default_audience {audience}` | 设置先在本地生效，写完后重取 bootstrap |
 | `setFeatured` | `profile.set_featured {order}` | |
 | `peekHome` | `ui.bootstrap` 的 `home` | `{ zone, user, defaultFeed, zoneFeed: { feed, name, writer } }`；发布框据此显示 Zone 主页选项，我的主页据此给出公开链接 |
 | `setZoneListing` | `zone.set_listing {entry, listed}` | “我的发表”中的“同步到 / 移出 Zone 主页”；条目的 `zoneFeed: true` 表示已列入 |
-| 媒体地址 | `GET /home/<user>/objects/<ObjId>/content?access=<token>` | 应用内用自己的主页（`ui.bootstrap.user`，所有者能读本地的全部对象）；门户用所看的 feed（`<user>` 或 `~zone`），匿名时不带令牌（`transport.setContentHome`）。令牌出现在 URL 中，已知风险 |
+| 媒体地址 | `GET /home/<user>/objects/<ObjId>/content?access=<token>` | 应用内用自己的主页（`ui.bootstrap.user`，所有者能读本地的全部对象，别人动态的内容不在本地时由服务按需再取）；门户用所看的 feed（`<user>` 或 `~zone`），匿名时不带令牌（`transport.setContentHome`）。令牌出现在 URL 中，已知风险；不改用 `/bucket/v1` 单 key 令牌的理由见《协议与实现》§9“媒体令牌” |
 
 门户 store（`api/portalStore.ts`）只读：`portal.profile {feed}`（`getProfile`）、`portal.list {feed, kind?, cursor}`（`listPublished`）、`portal.item {feed, objId | key}`（`watchCard`、`getItem`、条目页）、`portal.comments {feed, objId, type}`（作者视图）、`portal.wrapped_body`；写方法一律拒绝（`homestation.portal.readOnly`）。路由先取 `portal.home` 得到默认发表流与读者；登录读者在他人主页上可以关注（调用自己 HomeStation 的 `sources.resolve` + `sources.follow`），匿名读者看到登录链接（登录页在 Zone 主机，回跳到同一门户页的 Zone 主机地址）。卡片的 `openDetail` 换算为 `/homestation/<user>/<key>`；在短域名上所有链接都指向 Zone 主机。
 
@@ -379,4 +379,4 @@ HS_BACKEND=http://127.0.0.1:4131 pnpm run dev
 
 通用附件支持 `kind: file | dir`，与 image/video/audio 分开选择；目录引用作为 `content.type: files` 的部件发布，包含通用附件的批次保持全部附件的 ObjId。目录浏览和逐项下载遵守发布受众；支持 File System Access 的浏览器还可保存真实目录。文件夹 picker 基于 FileList，保留根和层级，但不能枚举空子目录；不支持目录选择的浏览器禁用该入口。每个文件最大 64 MiB，与服务端有界内容下载一致。
 
-上传状态为 uploading/uploaded/failed/cancelled，保留具体 error、真实字节 progress；移除中断该任务，失败项可单独重试同一导入 session，成功登记后释放客户端 session。媒体入口校验 MIME、非空和浏览器解码，通用目录不压缩其中的图片。`object.register` 将当前浏览器 session 转发 NDM 验证读取权，然后检查全部依赖并登记本用户对象与展示元数据；发布仍由 `publish.create` 的 key 保证幂等，正式发布按根递归 retention。
+上传状态为 uploading/uploaded/failed/cancelled，保留具体 error、真实字节 progress；移除中断该任务，失败项可单独重试同一导入 session，成功登记后释放客户端 session。媒体入口校验 MIME、非空和浏览器解码，通用目录不压缩其中的图片。上传在 finalize 时绑定到服务给的 `scratch` key（7 天），`object.register` 读这个绑定确认它绑的正是该 ObjId，然后检查全部依赖并登记本用户对象与展示元数据；发布仍由 `publish.create` 的 key 保证幂等，正式发布时服务把每个附件绑进本人的 `published` 桶，撤回即解绑。

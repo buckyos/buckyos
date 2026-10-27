@@ -35,7 +35,7 @@ struct AuthLoginResponse {
 
 /// Control Panel methods a restricted Limited session (scope `account_self`)
 /// reaches; each acts on the caller's own account only. `desktop.api` stands
-/// for the desktop state, Desktop folder and wallpaper HTTP API.
+/// for the desktop state and Desktop folder HTTP API.
 const ACCOUNT_SELF_METHODS: [&str; 12] = [
     "auth.invite.set_password",
     PREPARE_APP_LAUNCH_METHOD,
@@ -787,14 +787,6 @@ impl ControlPanelServer {
                 }
             })
             .and_then(|value| Self::normalize_session_token(Some(value)))
-    }
-
-    /// The Gateway SSO session cookie (host-only, renewed by `/sso_refresh`): what a browser page signed in
-    /// at the Zone root carries on plain loads it cannot add headers to, such as an image.
-    pub(super) fn extract_http_sso_session_cookie(
-        req: &http::Request<BoxBody<Bytes, ServerError>>,
-    ) -> Option<String> {
-        Self::extract_http_cookie(req, GATEWAY_SSO_SESSION_COOKIE)
     }
 
     /// Subjects of the SSO session and refresh cookies the browser already holds,

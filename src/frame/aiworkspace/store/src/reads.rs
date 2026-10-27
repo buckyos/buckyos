@@ -249,12 +249,11 @@ impl Workspace {
         if epoch != self.epoch {
             return Err(not_retained(format!("epoch {epoch} is not this Workspace's history")));
         }
-        let mut st = self.doc.prepare_cached("SELECT snapshot_id, content_root FROM snapshots WHERE seq = ?1 ORDER BY created_at").map_err(db_err)?;
+        let mut st = self.doc.prepare_cached("SELECT snapshot_id, content_root FROM snapshots WHERE seq = ?1 AND bucket_version IS NOT NULL ORDER BY created_at").map_err(db_err)?;
         let snaps: Vec<(String, String)> = st.query_map([seq], |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
         let mut retained = None;
         for (id, root) in snaps {
-            let kept: bool = self.doc.query_row("SELECT 1 FROM retentions WHERE kind = 'snapshot' AND ref = ?1", [&id], |_| Ok(true)).optional().map_err(db_err)?.unwrap_or(false);
-            if kept && self.objects.has_object(&root) {
+            if self.objects.has_object(&root) {
                 retained = Some((id, root));
                 break;
             }

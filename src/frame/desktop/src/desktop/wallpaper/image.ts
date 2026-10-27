@@ -1,6 +1,6 @@
 /* ── Turning a picked file into the stored wallpaper image ──
  *
- * The picture stays in this browser (IndexedDB), so unlike avatars it is kept large. A file is stored as it is
+ * The picture goes to the account's wallpapers bucket, so unlike avatars it is kept large. A file is stored as it is
  * unless it is too big, which keeps GIF animation, transparency and the original quality; a bigger one is
  * scaled down to MAX_WALLPAPER_EDGE on its longest side.
  */

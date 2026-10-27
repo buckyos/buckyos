@@ -2,12 +2,16 @@
 //! entries, keeps the stream's change sequence and read grants, and records publish tasks.
 
 use crate::audience::AudienceSpec;
+use crate::db::Conn;
 use crate::error::{bad, HsError, HsResult};
-use crate::objects::{get_object, index_feed, put_object, StoredObject};
+use crate::objects::{bucket_err, canonical, get_object, index_feed, put_object, StoredObject};
 use crate::protocol::*;
 use crate::sign::Signer;
 use crate::{new_id, now_ms, now_s, Station};
-use rusqlite::{params, Connection, OptionalExtension};
+use buckyos_api::bucket_client::{BucketId, ListRequest};
+use buckyos_api::{HOMESTATION_BUCKET_ENTRIES, HOMESTATION_BUCKET_PUBLISHED, HOMESTATION_BUCKET_SCRATCH};
+use rusqlite::{params, OptionalExtension};
+use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -96,15 +100,15 @@ fn entry_row(r: &rusqlite::Row) -> rusqlite::Result<EntryRow> {
 
 pub const ENTRY_COLUMNS: &str = "entry, key, namespace, kind, audience, category, target, created_at, updated_at";
 
-pub fn get_entry(conn: &Connection, entry: &str) -> HsResult<Option<EntryRow>> {
+pub fn get_entry(conn: &Conn, entry: &str) -> HsResult<Option<EntryRow>> {
     Ok(conn
-        .query_row(&format!("SELECT {ENTRY_COLUMNS} FROM published WHERE entry=?1"), [entry], entry_row)
+        .query_row(&format!("SELECT {ENTRY_COLUMNS} FROM published WHERE entry=?1 AND owner=?2"), [entry, conn.owner], entry_row)
         .optional()?)
 }
 
-pub fn list_entries(conn: &Connection, sql_where: &str, args: &[&dyn rusqlite::ToSql]) -> HsResult<Vec<EntryRow>> {
-    let mut stmt = conn.prepare(&format!("SELECT {ENTRY_COLUMNS} FROM published {sql_where}"))?;
-    let rows = stmt.query_map(args, entry_row)?.collect::<Result<Vec<_>, _>>()?;
+pub fn list_entries(conn: &Conn, order_by: &str) -> HsResult<Vec<EntryRow>> {
+    let mut stmt = conn.prepare(&format!("SELECT {ENTRY_COLUMNS} FROM published WHERE owner=?1 {order_by}"))?;
+    let rows = stmt.query_map([conn.owner], entry_row)?.collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
 }
 
@@ -121,11 +125,11 @@ pub struct HeadRow {
     pub updated_at_ms: i64,
 }
 
-pub fn get_head(conn: &Connection, entry: &str) -> HsResult<Option<HeadRow>> {
+pub fn get_head(conn: &Conn, entry: &str) -> HsResult<Option<HeadRow>> {
     Ok(conn
         .query_row(
-            "SELECT entry, publisher, seq, state, current, head_obj_id, conflict_obj_id, restricted, updated_at_ms FROM heads WHERE entry=?1",
-            [entry],
+            "SELECT entry, publisher, seq, state, current, head_obj_id, conflict_obj_id, restricted, updated_at_ms FROM heads WHERE entry=?1 AND owner=?2",
+            [entry, conn.owner],
             |r| {
                 let state: String = r.get(3)?;
                 Ok(HeadRow {
@@ -145,28 +149,28 @@ pub fn get_head(conn: &Connection, entry: &str) -> HsResult<Option<HeadRow>> {
 }
 
 /// Known versions of an entry, oldest first.
-pub fn entry_versions(conn: &Connection, entry: &str) -> HsResult<Vec<String>> {
+pub fn entry_versions(conn: &Conn, entry: &str) -> HsResult<Vec<String>> {
     let mut stmt = conn.prepare(
-        "SELECT v.obj_id FROM entry_versions v LEFT JOIN feed_index f ON f.obj_id=v.obj_id
-         WHERE v.entry=?1 ORDER BY COALESCE(f.iat, 0), v.first_seen, v.rowid",
+        "SELECT v.obj_id FROM entry_versions v LEFT JOIN feed_index f ON f.owner=v.owner AND f.obj_id=v.obj_id
+         WHERE v.entry=?1 AND v.owner=?2 ORDER BY COALESCE(f.iat, 0), v.first_seen, v.rowid",
     )?;
-    let rows = stmt.query_map([entry], |r| r.get(0))?.collect::<Result<Vec<String>, _>>()?;
+    let rows = stmt.query_map([entry, conn.owner], |r| r.get(0))?.collect::<Result<Vec<String>, _>>()?;
     Ok(rows)
 }
 
-pub fn add_version(conn: &Connection, entry: &str, obj_id: &str, now: i64) -> HsResult<()> {
+pub fn add_version(conn: &Conn, entry: &str, obj_id: &str, now: i64) -> HsResult<()> {
     conn.execute(
-        "INSERT OR IGNORE INTO entry_versions(entry, obj_id, first_seen) VALUES (?1, ?2, ?3)",
-        params![entry, obj_id, now],
+        "INSERT OR IGNORE INTO entry_versions(owner, entry, obj_id, first_seen) VALUES (?4, ?1, ?2, ?3)",
+        params![entry, obj_id, now, conn.owner],
     )?;
     Ok(())
 }
 
 /// Read grant: `obj_id` may be served to whoever may read `entry` (§4.5). FileObjects pass the
 /// grant on to their content chunk, wrapped Feed Objects to their own parts.
-pub fn grant(conn: &Connection, obj_id: &str, entry: &str, depth: u8) -> HsResult<()> {
+pub fn grant(conn: &Conn, obj_id: &str, entry: &str, depth: u8) -> HsResult<()> {
     let obj_id = normalize_obj_id(obj_id);
-    conn.execute("INSERT OR IGNORE INTO object_grants(obj_id, entry) VALUES (?1, ?2)", params![obj_id, entry])?;
+    conn.execute("INSERT OR IGNORE INTO object_grants(owner, obj_id, entry) VALUES (?3, ?1, ?2)", params![obj_id, entry, conn.owner])?;
     if let Some(obj) = get_object(conn, &obj_id)? {
         if matches!(obj.obj_type.as_str(), OBJ_TYPE_FILE | OBJ_TYPE_DIR | ndn_lib::OBJ_TYPE_CHUNK_LIST) && depth < 128 {
             for child in crate::objects::object_dependencies(&obj_id, &crate::objects::canonical(&obj.body))? {
@@ -179,7 +183,10 @@ pub fn grant(conn: &Connection, obj_id: &str, entry: &str, depth: u8) -> HsResul
                 }
                 if let Some(entry_of_inner) = &feed.entry {
                     if let Some(head) = get_head(conn, entry_of_inner)? {
-                        conn.execute("INSERT OR IGNORE INTO object_grants(obj_id, entry) VALUES (?1, ?2)", params![head.head_obj_id, entry])?;
+                        conn.execute(
+                            "INSERT OR IGNORE INTO object_grants(owner, obj_id, entry) VALUES (?3, ?1, ?2)",
+                            params![head.head_obj_id, entry, conn.owner],
+                        )?;
                     }
                 }
             }
@@ -188,19 +195,19 @@ pub fn grant(conn: &Connection, obj_id: &str, entry: &str, depth: u8) -> HsResul
     Ok(())
 }
 
-pub fn append_change(conn: &Connection, entry: &str, kind: &str, seq: u64, now: i64) -> HsResult<i64> {
+pub fn append_change(conn: &Conn, entry: &str, kind: &str, seq: u64, now: i64) -> HsResult<i64> {
     conn.execute(
-        "INSERT INTO stream_changes(entry, kind, seq, at) VALUES (?1, ?2, ?3, ?4)",
-        params![entry, kind, seq as i64, now],
+        "INSERT INTO stream_changes(owner, entry, kind, seq, at) VALUES (?5, ?1, ?2, ?3, ?4)",
+        params![entry, kind, seq as i64, now, conn.owner],
     )?;
     Ok(conn.last_insert_rowid())
 }
 
-pub fn store_head_row(conn: &Connection, head: &FeedHead, head_obj_id: &str, restricted: bool, now: i64) -> HsResult<()> {
+pub fn store_head_row(conn: &Conn, head: &FeedHead, head_obj_id: &str, restricted: bool, now: i64) -> HsResult<()> {
     conn.execute(
-        "INSERT INTO heads(entry, publisher, seq, state, current, head_obj_id, conflict_obj_id, restricted, updated_at_ms, verified_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9)
-         ON CONFLICT(entry) DO UPDATE SET publisher=excluded.publisher, seq=excluded.seq, state=excluded.state,
+        "INSERT INTO heads(owner, entry, publisher, seq, state, current, head_obj_id, conflict_obj_id, restricted, updated_at_ms, verified_at)
+         VALUES (?10, ?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9)
+         ON CONFLICT(owner, entry) DO UPDATE SET publisher=excluded.publisher, seq=excluded.seq, state=excluded.state,
            current=excluded.current, head_obj_id=excluded.head_obj_id, conflict_obj_id=NULL,
            restricted=excluded.restricted, updated_at_ms=excluded.updated_at_ms, verified_at=excluded.verified_at",
         params![
@@ -212,7 +219,8 @@ pub fn store_head_row(conn: &Connection, head: &FeedHead, head_obj_id: &str, res
             head_obj_id,
             restricted as i64,
             head.updated_at_ms as i64,
-            now
+            now,
+            conn.owner
         ],
     )?;
     Ok(())
@@ -221,7 +229,7 @@ pub fn store_head_row(conn: &Connection, head: &FeedHead, head_obj_id: &str, res
 /// Next Head of an owner entry: the seq is assigned under the database lock, so Heads of one
 /// entry are strictly serial (§16.5).
 fn write_own_head(
-    conn: &Connection,
+    conn: &Conn,
     signer: &Signer,
     owner: &str,
     entry: &str,
@@ -230,7 +238,7 @@ fn write_own_head(
     restricted: bool,
     now: i64,
 ) -> HsResult<(String, u64)> {
-    let last: Option<i64> = conn.query_row("SELECT MAX(seq) FROM head_history WHERE entry=?1", [entry], |r| r.get(0))?;
+    let last: Option<i64> = conn.query_row("SELECT MAX(seq) FROM head_history WHERE entry=?1 AND owner=?2", [entry, conn.owner], |r| r.get(0))?;
     let seq = last.unwrap_or(0) as u64 + 1;
     let head = FeedHead {
         kind: HEAD_KIND.into(),
@@ -260,13 +268,13 @@ fn write_own_head(
         now,
     )?;
     conn.execute(
-        "INSERT INTO head_history(entry, seq, head_obj_id, state, current, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![entry, seq as i64, head_obj_id, state.as_str(), current, now],
+        "INSERT INTO head_history(owner, entry, seq, head_obj_id, state, current, at) VALUES (?7, ?1, ?2, ?3, ?4, ?5, ?6)",
+        params![entry, seq as i64, head_obj_id, state.as_str(), current, now, conn.owner],
     )?;
     store_head_row(conn, &head, &head_obj_id, restricted, now)?;
-    conn.execute("INSERT OR IGNORE INTO object_grants(obj_id, entry) VALUES (?1, ?2)", params![head_obj_id, entry])?;
+    conn.execute("INSERT OR IGNORE INTO object_grants(owner, obj_id, entry) VALUES (?3, ?1, ?2)", params![head_obj_id, entry, conn.owner])?;
     append_change(conn, entry, "head", seq, now)?;
-    conn.execute("UPDATE published SET updated_at=?2 WHERE entry=?1", params![entry, now])?;
+    conn.execute("UPDATE published SET updated_at=?2 WHERE entry=?1 AND owner=?3", params![entry, now, conn.owner])?;
     Ok((head_obj_id, seq))
 }
 
@@ -317,25 +325,16 @@ impl Station {
     /// Create the entry with its first Head, or publish a new version on it (§16.4 编辑).
     pub async fn publish_version(&self, version: NewVersion) -> HsResult<Published> {
         let obj = self.sign_object(version.obj_type, &version.claims)?;
-        let files = match obj.obj_type.as_str() {
-            OBJ_TYPE_FEED => serde_json::from_value::<FeedObject>(obj.body.clone()).map(|f| crate::retention::file_parts(&f)).unwrap_or_default(),
-            _ => vec![],
-        };
         let entry = version.entry.clone();
-        // The files are held before anyone can see the version (D17); a failure below is
-        // undone here or by the retention reconcile.
-        self.retain_parts(&entry, &files).await?;
+        let key = self.entry_key(&entry)?;
         let signer = self.signer.clone();
         let owner = self.cfg.owner.clone();
-        let key = match EntryRef::parse(&version.entry).map_err(bad)? {
-            EntryRef::Path { home, namespace, key } => {
-                if home != self.home() {
-                    return Err(bad("entry is not in this user's home"));
-                }
-                (namespace, key)
-            }
-            EntryRef::Did(_) => return Err(bad("DID entries are published through their name document")),
-        };
+        // Bound before anyone can see the version (bucket design §15.1); a failure below is
+        // undone by settling the entry's bindings against what was committed.
+        if let Err(e) = self.bind_version(&entry, &obj).await {
+            self.settle_bindings(&entry).await;
+            return Err(e);
+        }
         let now = now_ms();
         let result = self
             .db
@@ -349,8 +348,8 @@ impl Station {
                 };
                 if existing.is_none() {
                     tx.execute(
-                        "INSERT INTO published(entry, key, namespace, kind, audience, category, target, created_at, updated_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+                        "INSERT INTO published(owner, entry, key, namespace, kind, audience, category, target, created_at, updated_at)
+                         VALUES (?9, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
                         params![
                             version.entry,
                             key.1,
@@ -359,7 +358,8 @@ impl Station {
                             serde_json::to_string(&audience)?,
                             version.category,
                             version.target,
-                            now
+                            now,
+                            tx.owner
                         ],
                     )?;
                 }
@@ -373,7 +373,6 @@ impl Station {
                 let restricted = !audience.is_public();
                 let (head_obj_id, seq) =
                     write_own_head(&tx, &signer, &owner, &version.entry, HeadState::Active, Some(&obj.obj_id), restricted, now)?;
-                crate::retention::confirm_pending(&tx, &version.entry, now)?;
                 tx.commit()?;
                 Ok(Published { entry: version.entry, obj_id: Some(obj.obj_id), head_obj_id, seq, state: HeadState::Active })
             })
@@ -381,9 +380,7 @@ impl Station {
         let result = match result {
             Ok(result) => result,
             Err(e) => {
-                if let Err(undo) = self.sync_retention(&entry).await {
-                    log::warn!("releasing the files of unpublished {entry} failed: {undo}");
-                }
+                self.settle_bindings(&entry).await;
                 return Err(e);
             }
         };
@@ -414,10 +411,8 @@ impl Station {
                 Ok(Published { entry, obj_id: current, head_obj_id, seq, state })
             })
             .await?;
-        // A withdrawn entry stops holding its files; a failure is retried by the reconcile.
-        if let Err(e) = self.sync_retention(&result.entry).await {
-            log::warn!("retention of {} after {:?} not settled: {e}", result.entry, result.state);
-        }
+        // A withdrawn entry stops holding its versions and files; withdrawing again retries.
+        self.settle_bindings(&result.entry).await;
         self.bump(&["published", "profile", "comments", "saved"]);
         self.zone_touch(&result.entry, "head").await;
         Ok(result)
@@ -439,10 +434,10 @@ impl Station {
                     return Err(bad("the audience of interactions follows their target"));
                 }
                 tx.execute(
-                    "UPDATE published SET audience=?2, updated_at=?3 WHERE entry=?1",
-                    params![entry2, serde_json::to_string(&audience2)?, now],
+                    "UPDATE published SET audience=?2, updated_at=?3 WHERE entry=?1 AND owner=?4",
+                    params![entry2, serde_json::to_string(&audience2)?, now, tx.owner],
                 )?;
-                tx.execute("UPDATE heads SET restricted=?2 WHERE entry=?1", params![entry2, (!audience2.is_public()) as i64])?;
+                tx.execute("UPDATE heads SET restricted=?2 WHERE entry=?1 AND owner=?3", params![entry2, (!audience2.is_public()) as i64, tx.owner])?;
                 let head = get_head(&tx, &entry2)?.ok_or_else(|| HsError::Internal("entry without head".into()))?;
                 append_change(&tx, &entry2, "audience", head.seq, now)?;
                 let versions = entry_versions(&tx, &entry2)?;
@@ -491,8 +486,8 @@ impl Station {
     pub async fn active_followers(&self) -> HsResult<Vec<String>> {
         self.db
             .call(|c| {
-                let mut stmt = c.prepare("SELECT did FROM followers WHERE state='active'")?;
-                let rows = stmt.query_map([], |r| r.get(0))?.collect::<Result<Vec<String>, _>>()?;
+                let mut stmt = c.prepare("SELECT did FROM followers WHERE state='active' AND owner=?1")?;
+                let rows = stmt.query_map([c.owner], |r| r.get(0))?.collect::<Result<Vec<String>, _>>()?;
                 Ok(rows)
             })
             .await
@@ -508,8 +503,8 @@ impl Station {
         let entry = entry.to_string();
         self.db
             .call(move |c| {
-                let mut stmt = c.prepare("SELECT DISTINCT recipient FROM outbox WHERE entry=?1")?;
-                let rows = stmt.query_map([entry], |r| r.get(0))?.collect::<Result<Vec<String>, _>>()?;
+                let mut stmt = c.prepare("SELECT DISTINCT recipient FROM outbox WHERE entry=?1 AND owner=?2")?;
+                let rows = stmt.query_map(params![entry, c.owner], |r| r.get(0))?.collect::<Result<Vec<String>, _>>()?;
                 Ok(rows)
             })
             .await
@@ -523,6 +518,7 @@ impl Station {
             return Err(HsError::Forbidden("only the entry controller can withdraw it (§16.4)".into()));
         }
         if head.state == HeadState::Withdrawn {
+            self.settle_bindings(entry).await;
             return Ok(None);
         }
         let published = self.set_entry_state(entry, HeadState::Withdrawn, None).await?;
@@ -615,7 +611,10 @@ impl Station {
                 let Some(head) = get_head(c, &entry)? else { return Ok(()) };
                 if head.state == HeadState::Withdrawn && row.kind == EntryKind::Bookmark {
                     if let Some(target) = &row.target {
-                        c.execute("UPDATE personal SET bookmark_entry=NULL WHERE obj_id=?1 AND bookmark_entry=?2", params![target, entry])?;
+                        c.execute(
+                            "UPDATE personal SET bookmark_entry=NULL WHERE obj_id=?1 AND bookmark_entry=?2 AND owner=?3",
+                            params![target, entry, c.owner],
+                        )?;
                     }
                 }
                 Ok(())
@@ -727,11 +726,11 @@ pub struct PublishTaskRow {
     pub created_at: i64,
 }
 
-pub fn get_task(conn: &Connection, key: &str) -> HsResult<Option<(PublishTaskRow, String)>> {
+pub fn get_task(conn: &Conn, key: &str) -> HsResult<Option<(PublishTaskRow, String)>> {
     Ok(conn
         .query_row(
-            "SELECT key, stage, entry, obj_id, error, created_at, input FROM publish_tasks WHERE key=?1",
-            [key],
+            "SELECT key, stage, entry, obj_id, error, created_at, input FROM publish_tasks WHERE key=?1 AND owner=?2",
+            [key, conn.owner],
             |r| {
                 Ok((
                     PublishTaskRow {
@@ -749,10 +748,10 @@ pub fn get_task(conn: &Connection, key: &str) -> HsResult<Option<(PublishTaskRow
         .optional()?)
 }
 
-fn set_task(conn: &Connection, key: &str, stage: &str, entry: Option<&str>, obj_id: Option<&str>, error: Option<&str>, now: i64) -> HsResult<()> {
+fn set_task(conn: &Conn, key: &str, stage: &str, entry: Option<&str>, obj_id: Option<&str>, error: Option<&str>, now: i64) -> HsResult<()> {
     conn.execute(
-        "UPDATE publish_tasks SET stage=?2, entry=?3, obj_id=?4, error=?5, updated_at=?6 WHERE key=?1",
-        params![key, stage, entry, obj_id, error, now],
+        "UPDATE publish_tasks SET stage=?2, entry=?3, obj_id=?4, error=?5, updated_at=?6 WHERE key=?1 AND owner=?7",
+        params![key, stage, entry, obj_id, error, now, conn.owner],
     )?;
     Ok(())
 }
@@ -808,8 +807,8 @@ impl Station {
                     set_task(c, &key_s, "uploading", None, None, None, now)?;
                 } else {
                     c.execute(
-                        "INSERT INTO publish_tasks(key, stage, input, created_at, updated_at) VALUES (?1, 'uploading', ?2, ?3, ?3)",
-                        params![key_s, stored_input, now],
+                        "INSERT INTO publish_tasks(owner, key, stage, input, created_at, updated_at) VALUES (?4, ?1, 'uploading', ?2, ?3, ?3)",
+                        params![key_s, stored_input, now, c.owner],
                     )?;
                 }
                 Ok(None)
@@ -839,18 +838,42 @@ impl Station {
         Ok(row)
     }
 
-    pub async fn register_object(&self, obj_id: &str, metadata: Value) -> HsResult<Value> {
+    /// Where the browser binds an upload (`ndm` finalize with `auto_bind`): a fresh key in the
+    /// user's `scratch` bucket, kept 7 days unless a publication binds the object in `published`.
+    pub fn upload_target(&self, name: &str) -> HsResult<Value> {
+        let name: String = name.chars().map(|c| if c == '/' || c == '\\' || c.is_control() { '_' } else { c }).take(120).collect();
+        let name = if name.trim_matches('.').is_empty() { "file".to_string() } else { name };
+        let bucket = self.bucket(HOMESTATION_BUCKET_SCRATCH)?;
+        Ok(json!({ "bucketId": bucket.to_string(), "key": format!("uploads/{}/{name}", new_id("u")) }))
+    }
+
+    /// An attachment for a later publication. `upload_key`: where the browser's upload bound it
+    /// in the user's `scratch` bucket, which proves the caller holds it; without one the HTTP
+    /// layer checks the caller's NDM read access.
+    pub async fn register_object(&self, obj_id: &str, metadata: Value, upload_key: Option<&str>) -> HsResult<Value> {
         let root = normalize_obj_id(obj_id);
         if !matches!(obj_type_of(&root).as_deref(), Some(OBJ_TYPE_FILE | OBJ_TYPE_DIR)) {
             return Err(bad("attachment must be a FileObject or DirObject"));
         }
-        if !self.chunks.is_complete(&root).await? { return Err(HsError::Unavailable("upload_missing".into())); }
+        if let Some(key) = upload_key {
+            let binding = self.store.buckets().await?.get(&self.bucket(HOMESTATION_BUCKET_SCRATCH)?, key, None).await.map_err(|e| {
+                if buckyos_api::is_no_such_key(&e) {
+                    HsError::Unavailable("upload_missing".into())
+                } else {
+                    bucket_err(e)
+                }
+            })?;
+            if binding.obj_id.as_deref().map(normalize_obj_id).as_deref() != Some(root.as_str()) {
+                return Err(HsError::Forbidden("the upload binds another object".into()));
+            }
+        }
+        if !self.store.is_complete(&root).await? { return Err(HsError::Unavailable("upload_missing".into())); }
         let mut pending = vec![root.clone()];
         let mut seen = std::collections::HashSet::new();
         let mut result = None;
         while let Some(id) = pending.pop() {
             if !seen.insert(id.clone()) || crate::objects::is_chunk_id(&id) { continue; }
-            let obj = crate::objects::load_local(&self.db, self.chunks.as_ref(), &id).await?.ok_or_else(|| HsError::Unavailable("upload_missing".into()))?;
+            let obj = crate::objects::load_local(&self.db, &self.store, &id).await?.ok_or_else(|| HsError::Unavailable("upload_missing".into()))?;
             if id == root { result = Some(obj.body.clone()); }
             pending.extend(crate::objects::object_dependencies(&id, &crate::objects::canonical(&obj.body))?);
         }
@@ -859,7 +882,10 @@ impl Station {
         if mime.len() > 128 || !mime.contains('/') || mime.chars().any(char::is_control) { return Err(bad("invalid attachment mime")); }
         let metadata = serde_json::to_string(&metadata)?;
         self.db.call(move |c| {
-            c.execute("INSERT INTO import_metadata(obj_id, metadata) VALUES (?1, ?2) ON CONFLICT(obj_id) DO NOTHING", params![key, metadata])?;
+            c.execute(
+                "INSERT INTO import_metadata(owner, obj_id, metadata) VALUES (?3, ?1, ?2) ON CONFLICT(owner, obj_id) DO NOTHING",
+                params![key, metadata, c.owner],
+            )?;
             Ok(())
         }).await?;
         Ok(json!({ "objId": root, "object": result }))
@@ -874,7 +900,7 @@ impl Station {
             if obj.obj_type != if directory { OBJ_TYPE_DIR } else { OBJ_TYPE_FILE } {
                 return Err(bad("attachment type does not match object"));
             }
-            if !self.chunks.is_complete(&id).await? { return Err(HsError::Unavailable("upload_missing".into())); }
+            if !self.store.is_complete(&id).await? { return Err(HsError::Unavailable("upload_missing".into())); }
             if matches!(attachment.kind.as_str(), "image" | "video" | "audio") {
                 let key = id.clone();
                 let metadata = self.db.call(move |c| crate::objects::import_metadata(c, &key)).await?;
@@ -918,7 +944,8 @@ impl Station {
             c.media = input.attachments.iter().map(|item| MediaPart { object: item.object.clone().unwrap(), alt: Some(item.name.clone()) }).collect();
             obj.content = Some(c);
         } else if let Some(article) = &input.article {
-            let file = self.store_text_file(&format!("{}.md", slug(&article.title)), "text/markdown", article.markdown.as_bytes()).await?;
+            let name = format!("{}.md", slug(&article.title));
+            let file = self.store_text_file(&format!("articles/{}/{name}", new_id("a")), &name, "text/markdown", article.markdown.as_bytes()).await?;
             let mut c = content(ContentType::Article, text_opt.clone());
             c.title = Some(article.title.clone());
             c.summary = (!article.summary.is_empty()).then(|| article.summary.clone());
@@ -1021,8 +1048,8 @@ impl Station {
         self.db
             .call(move |c| {
                 c.execute(
-                    "INSERT OR REPLACE INTO capture_shares(capture_id, shared_id, entry) VALUES (?1, ?2, ?3)",
-                    params![id, shared, entry2],
+                    "INSERT OR REPLACE INTO capture_shares(owner, capture_id, shared_id, entry) VALUES (?4, ?1, ?2, ?3)",
+                    params![id, shared, entry2, c.owner],
                 )?;
                 Ok(())
             })
@@ -1037,16 +1064,17 @@ impl Station {
     }
 
     /// Store bytes as a single-chunk FileObject (`cyfile`), the content-reference form (§5.5).
-    pub async fn store_text_file(&self, name: &str, mime: &str, data: &[u8]) -> HsResult<String> {
-        let (obj_id, _) = self.store_file(name, mime, data.to_vec(), Value::Null).await?;
+    pub async fn store_text_file(&self, scratch_key: &str, name: &str, mime: &str, data: &[u8]) -> HsResult<String> {
+        let (obj_id, _) = self.store_file(scratch_key, name, mime, data.to_vec(), Value::Null).await?;
         Ok(obj_id)
     }
 
-    pub async fn store_file(&self, name: &str, mime: &str, data: Vec<u8>, extra_meta: Value) -> HsResult<(String, Value)> {
+    /// Bytes this station produced (an article body, a page snapshot), bound at `scratch_key` in
+    /// `scratch` until a publication binds them in `published`.
+    pub async fn store_file(&self, scratch_key: &str, name: &str, mime: &str, data: Vec<u8>, extra_meta: Value) -> HsResult<(String, Value)> {
         let chunk_id = crate::objects::chunk_id_of(&data)?;
         let size = data.len() as u64;
-        self.chunks.put_chunk(&chunk_id, data).await?;
-        let mut file = ndn_lib::FileObject::new(name.to_string(), size, chunk_id);
+        let mut file = ndn_lib::FileObject::new(name.to_string(), size, chunk_id.clone());
         file.meta.insert("mime".into(), json!(mime));
         if let Value::Object(map) = extra_meta {
             for (k, v) in map {
@@ -1057,7 +1085,8 @@ impl Station {
         }
         let body = serde_json::to_value(&file)?;
         let (obj_id, jcs) = obj_id_of(OBJ_TYPE_FILE, &body).map_err(bad)?;
-        self.chunks.put_named_object(&obj_id, &jcs).await?;
+        let scratch = self.bucket(HOMESTATION_BUCKET_SCRATCH)?;
+        self.store.put_bound_file(&scratch, scratch_key, &chunk_id, &data, &obj_id, &jcs, Some(mime.to_string()), None).await?;
         let stored = StoredObject {
             obj_id: obj_id.clone(),
             obj_type: OBJ_TYPE_FILE.into(),
@@ -1071,6 +1100,126 @@ impl Station {
         let now = now_ms();
         self.db.call(move |c| put_object(c, &stored, Some("upload"), now)).await?;
         Ok((obj_id, body))
+    }
+}
+
+/// FileObjects and DirObjects among a Feed Object's content parts, in binding order.
+pub fn file_parts(feed: &FeedObject) -> Vec<String> {
+    feed.content_parts().into_iter().filter(|p| matches!(obj_type_of(p).as_deref(), Some(OBJ_TYPE_FILE | OBJ_TYPE_DIR))).collect()
+}
+
+fn version_files(obj: &StoredObject) -> Vec<String> {
+    match obj.obj_type.as_str() {
+        OBJ_TYPE_FEED => serde_json::from_value::<FeedObject>(obj.body.clone()).map(|f| file_parts(&f)).unwrap_or_default(),
+        _ => vec![],
+    }
+}
+
+fn part_mime(conn: &Conn, id: &str) -> HsResult<Option<String>> {
+    let metadata = crate::objects::import_metadata(conn, id)?;
+    let file = get_object(conn, id)?.map(|o| o.body).unwrap_or_default();
+    Ok(metadata.get("mime").or_else(|| file.get("mime_type")).or_else(|| file.get("mime")).and_then(Value::as_str).map(str::to_string))
+}
+
+/* ── bucket bindings of the owner's entries (doc/homestation/HomeStation Durable Data Schema.md) ── */
+
+impl Station {
+    /// One of this user's buckets, `user/homestation/<user>/<name>`.
+    pub fn bucket(&self, name: &str) -> HsResult<BucketId> {
+        BucketId::user(buckyos_api::HOMESTATION_SERVICE_NAME, &self.cfg.user, name).map_err(|e| HsError::Internal(format!("bucket {name}: {e}")))
+    }
+
+    fn entry_key(&self, entry: &str) -> HsResult<(EntryNamespace, String)> {
+        match EntryRef::parse(entry).map_err(bad)? {
+            EntryRef::Path { home, namespace, key } if home == self.home() => Ok((namespace, key)),
+            EntryRef::Path { .. } => Err(bad("entry is not in this user's home")),
+            EntryRef::Did(_) => Err(bad("DID entries are published through their name document")),
+        }
+    }
+
+    /// Key prefix of an own entry in `entries` and `published`: `<namespace>/<entry key>`.
+    fn entry_prefix(&self, entry: &str) -> HsResult<String> {
+        let (namespace, key) = self.entry_key(entry)?;
+        Ok(format!("{}/{key}", namespace.as_str()))
+    }
+
+    /// Binds one version of an own entry: the object at `<prefix>/<version>` in `entries`,
+    /// its n-th file at `<prefix>/<version>/<n>` in `published`.
+    async fn bind_version(&self, entry: &str, obj: &StoredObject) -> HsResult<()> {
+        let prefix = self.entry_prefix(entry)?;
+        let files = version_files(obj);
+        let lookup = files.clone();
+        let mimes = self.db.call(move |c| lookup.iter().map(|f| part_mime(c, f)).collect::<HsResult<Vec<_>>>()).await?;
+        let published = self.bucket(HOMESTATION_BUCKET_PUBLISHED)?;
+        for (n, (part, mime)) in files.iter().zip(mimes).enumerate() {
+            self.store.bind(&published, &format!("{prefix}/{}/{n}", obj.obj_id), part, mime, None).await?;
+        }
+        let entries = self.bucket(HOMESTATION_BUCKET_ENTRIES)?;
+        self.store.put_bound_object(&entries, &format!("{prefix}/{}", obj.obj_id), &obj.obj_id, &canonical(&obj.body), None).await
+    }
+
+    pub(crate) async fn bound_keys(&self, bucket: &BucketId, prefix: &str) -> HsResult<Vec<String>> {
+        let client = self.store.buckets().await?;
+        let mut keys = Vec::new();
+        let mut start_after = None;
+        loop {
+            let req = ListRequest { prefix: prefix.to_string(), start_after, ..Default::default() };
+            let page = client.list_objects(bucket, &req).await.map_err(bucket_err)?;
+            keys.extend(page.items.into_iter().map(|b| b.key));
+            match page.next_start_after {
+                Some(next) => start_after = Some(next),
+                None => return Ok(keys),
+            }
+        }
+    }
+
+    /// Brings an own entry's bindings to its Head: every version and its files while Active,
+    /// nothing once withdrawn (撤回 = 解绑).
+    pub async fn sync_entry_bindings(&self, entry: &str) -> HsResult<()> {
+        let prefix = self.entry_prefix(entry)?;
+        let entry_s = entry.to_string();
+        let versions = self
+            .db
+            .call(move |c| {
+                if get_head(c, &entry_s)?.is_none_or(|h| h.state != HeadState::Active) {
+                    return Ok(vec![]);
+                }
+                let mut out = Vec::new();
+                for version in entry_versions(c, &entry_s)? {
+                    out.extend(get_object(c, &version)?);
+                }
+                Ok(out)
+            })
+            .await?;
+        let (entries, published) = (self.bucket(HOMESTATION_BUCKET_ENTRIES)?, self.bucket(HOMESTATION_BUCKET_PUBLISHED)?);
+        let mut wanted: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for obj in &versions {
+            let key = format!("{prefix}/{}", obj.obj_id);
+            let files = (0..version_files(obj).len()).map(|n| format!("{key}/{n}")).collect();
+            wanted.insert(key, files);
+        }
+        let bound_entries = self.bound_keys(&entries, &format!("{prefix}/")).await?;
+        let bound_files = self.bound_keys(&published, &format!("{prefix}/")).await?;
+        for obj in &versions {
+            let key = format!("{prefix}/{}", obj.obj_id);
+            if !bound_entries.contains(&key) || wanted[&key].iter().any(|f| !bound_files.contains(f)) {
+                self.bind_version(entry, obj).await?;
+            }
+        }
+        let client = self.store.buckets().await?;
+        for key in bound_entries.iter().filter(|k| !wanted.contains_key(*k)) {
+            client.delete(&entries, key, None).await.map_err(bucket_err)?;
+        }
+        for key in bound_files.iter().filter(|k| !wanted.values().flatten().any(|f| f == *k)) {
+            client.delete(&published, key, None).await.map_err(bucket_err)?;
+        }
+        Ok(())
+    }
+
+    async fn settle_bindings(&self, entry: &str) {
+        if let Err(e) = self.sync_entry_bindings(entry).await {
+            log::warn!("bindings of {entry} not settled: {e}");
+        }
     }
 }
 

@@ -20,6 +20,54 @@ pub const CONTROL_PANEL_SERVICE_NAME: &str = "control-panel";
 pub const CONTROL_PANEL_SERVICE_UNIQUE_ID: &str = "control-panel";
 pub const CONTROL_PANEL_SERVICE_PORT: u16 = 4020;
 
+/// `user/control-panel/<user>/wallpapers`: the account's desktop pictures, key `<sha256[..32]>.<ext>`.
+pub const CONTROL_PANEL_WALLPAPERS_BUCKET: &str = "wallpapers";
+/// `zone/control-panel/_/agent_templates`: Agent template PIKGs installed with the CLI, key `<owner>/<app_id>/<digest>.pikg`.
+pub const CONTROL_PANEL_AGENT_TEMPLATES_BUCKET: &str = "agent_templates";
+/// `zone/control-panel/_/packages`: payloads of installed apps, key `<owner>/<app_id>/<version>/<content_id>`.
+pub const CONTROL_PANEL_PACKAGES_BUCKET: &str = "packages";
+/// `zone/control-panel/_/package_objects`: AppDoc and Package Meta objects of installed apps, key `<owner>/<app_id>/<version>/<obj_id>`.
+pub const CONTROL_PANEL_PACKAGE_OBJECTS_BUCKET: &str = "package_objects";
+/// `zone/control-panel/_/pikg_staging`: PIKGs between finalize and install, key = staging handle.
+pub const CONTROL_PANEL_PIKG_STAGING_BUCKET: &str = "pikg_staging";
+pub const CONTROL_PANEL_STORAGE_QUOTA_MIB: u64 = 256 * 1024;
+
+pub fn control_panel_bucket_decls() -> HashMap<String, crate::bucket_client::BucketDecl> {
+    use crate::bucket_client::{BucketDecl, BucketKind, BucketScope, DataPolicy};
+    let decl = |kind, data_policy, scope, quota_mib, default_ttl_days| BucketDecl {
+        kind,
+        data_policy,
+        scope,
+        versioning: None,
+        quota_mib,
+        max_objects: None,
+        default_ttl_days,
+        lifecycle: Vec::new(),
+    };
+    HashMap::from([
+        (
+            CONTROL_PANEL_WALLPAPERS_BUCKET.to_string(),
+            decl(BucketKind::Data, DataPolicy::AppData, BucketScope::User, Some(128), None),
+        ),
+        (
+            CONTROL_PANEL_AGENT_TEMPLATES_BUCKET.to_string(),
+            decl(BucketKind::Data, DataPolicy::AppData, BucketScope::Zone, None, None),
+        ),
+        (
+            CONTROL_PANEL_PACKAGES_BUCKET.to_string(),
+            decl(BucketKind::Data, DataPolicy::AppData, BucketScope::Zone, None, None),
+        ),
+        (
+            CONTROL_PANEL_PACKAGE_OBJECTS_BUCKET.to_string(),
+            decl(BucketKind::Object, DataPolicy::AppData, BucketScope::Zone, None, None),
+        ),
+        (
+            CONTROL_PANEL_PIKG_STAGING_BUCKET.to_string(),
+            decl(BucketKind::Data, DataPolicy::Temp, BucketScope::Zone, Some(2048), Some(1)),
+        ),
+    ])
+}
+
 const DEVICE_DOC_RETRY_DELAY_MS: u64 = 500;
 
 fn is_transient_system_config_error(error: &SystemConfigError) -> bool {

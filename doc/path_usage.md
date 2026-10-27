@@ -14,7 +14,8 @@
 /config/* =>  buckyos的system_config : 只读,扩展的system config配置读取,遵循system_config配置。写入需要通过SDK API
     /config/boot/config => buckyos的system_config的/boot/config
 /home/$username/ => cyfs://$zone_id/home/$username : 用户home目录，根据配置通常是只读或不可访问, 
-/home/$username/.local/share/$appid => cyfs://$zone_id/home/$username/.local/share/$appid ：app有读写权限的永久数据区，谨慎写入。会在app卸载时用户可选删除
+/home/$username/.local/share/$appid => cyfs://$zone_id/home/$username/.local/share/$appid ：app有读写权限的永久数据区，谨慎写入。会在app卸载时用户可选删除。新开发的 App 不在这里保存业务数据，改用声明的应用对象桶（见下文「数据放在哪里」）
+/home/$username/Apps/<App>/<桶>/ 、/home/$username/Collected/<App>/<桶>/ ：nfs-server 把用户 `documents` / `collected` 档的数据桶只读投影到这里（不是真实目录；删除文件 = 在桶里解绑）
 /mnt/alice.bns.did/pub/ => cyfs://alice.bns.did/pub/ ：buckyos支持的internet filesystem,由另一个zone配置权限
 /srv/library/ => cyfs://$zone_id/srv/library/ : zone级别的库数据，对zone外不可见，zone内默认所有用户都有读写权限，但是只对自己创建的文件有删除权限
 /srv/publish/ => cyfs://$zone_id/srv/publish/ : zone级别的分享数据，通常只读
@@ -93,6 +94,25 @@ cyfs://$this_zone_id/ => $buckyos_root/data/下
 桌面安装支持的和当前host-node的Home目录的融合，是通过link实现的，比如建立一个软链接
 $buckyos_root/data/home/$username/Documents => c:/users/alice/Documents
 
+## 数据放在哪里（服务与 App 通用）
+
+业务数据不再由进程自己在数据目录里写文件：结构化记录进 RDB instance，对象本体进 named store，保留意图用应用对象桶表达
+（`doc/arch/应用对象桶 Bucket 设计.md`，改造指南 `notepads/bucket-migration-todo.md`）。每个要落盘的数据项先回答四问：
+
+| 问 | 答案 | 去处 |
+| --- | --- | --- |
+| 是结构化业务记录、要按字段查询吗 | 是 | `buckyos-api::rdb_mgr` 的 RDB instance；表里存 ObjId 或 `(bucket_id, key, version)`，不存本机路径。系统服务一个 instance，多用户靠 `owner` 列 |
+| 是一个不可变的对象本体（消息、动态、包、便签、快照）吗 | 是 | named store `put_object` + `object` 桶绑定 |
+| 是非结构化字节（上传文件、图片、产物、导入目录）吗 | 是 | named store（上传链路 / `put_file`）+ `data` 桶绑定 |
+| 必须有文件系统语义吗（用户文件夹、可执行、被外部程序按路径打开、Agent 工作目录） | 是 | 文件系统，并在持久数据格式文档里写明理由 |
+
+- 写进 named store 的每一处都要回答“谁 pin”：某个桶，或处理期间持有的短期 Lease（≤24h）。ObjId 本身不带保留、不带读权。
+- 桶在包里声明：App 写 `dapp_meta/app.json` 的 `install_config.buckets`，系统服务写 scheduler `system_config_builder.rs` 里的 `spec_config.buckets`；
+  bucket_id 为 `user/<appid>/<user>/<name>` 或 `zone/<appid>/_/<name>`。
+- 读取一律 URL 化：浏览器 `/bucket/v1/<bucket_id>/<key>`，Agent / CLI `obj://bucket/<bucket_id>/<key>`。
+- 仍然使用目录的只有：`/tmp/buckyos/<svc>` 与 cache 分区里可重建的派生物、处理期间的临时文件、用户文件夹（Desktop、Downloads、Files 里的用户目录）、
+  Agent 的电脑（AgentRoot、Session 工作目录、`runs/`）、内核层（system-config、`security/`、kmsg 队列）和传统应用的兼容数据目录。
+
 ## 系统服务视角(kernel/frame service)
 
 服务通常需要通过buckyos-base的API把逻辑path映射到本机path(host-node-path)
@@ -101,6 +121,9 @@ $buckyos_root/data/home/$username/Documents => c:/users/alice/Documents
 
 
 ### 服务常用的目录
+
+业务数据进 RDB 与桶（见上节），下面的目录只剩临时数据与可重建的 cache；新服务不得在这些目录下自建 `objects/`、`chunks/` 之类的内容寻址存储，
+也不按路径打开 SQLite（经 `rdb_mgr`），RPC 与 RDB 里不保存本机路径。
 
 /config/services/$service_name/* :服务保存配置的在system_config
 $buckyos_service_data => cyfs://$zone_id/var/$service_name/ => $buckyos_root/data/var/$service_name : 服务有读写权限,系统卸载的时候会删除

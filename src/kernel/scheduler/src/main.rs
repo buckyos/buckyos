@@ -493,7 +493,20 @@ mod test {
         assert!(init_map.contains_key("services/repo-service/spec"));
         assert!(init_map.contains_key("services/repo-service/settings"));
         assert!(init_map.contains_key("services/repo-service/pkg_list"));
-        assert!(init_map.contains_key("services/aicc/spec"));
+        let aicc_spec: buckyos_api::KernelServiceSpec = serde_json::from_str(
+            init_map
+                .get("services/aicc/spec")
+                .expect("AICC spec should be initialized"),
+        )
+        .expect("AICC spec should be valid");
+        assert_eq!(
+            aicc_spec.spec_config.buckets,
+            buckyos_api::aicc_bucket_decls()
+        );
+        assert_eq!(
+            aicc_spec.spec_config.storage_quota_mib,
+            Some(buckyos_api::AICC_STORAGE_QUOTA_MIB)
+        );
         let aicc_settings: serde_json::Value = serde_json::from_str(
             init_map
                 .get("services/aicc/settings")

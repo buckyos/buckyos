@@ -66,8 +66,8 @@ impl Station {
                 let participants: Vec<String> = self
                     .db
                     .call(move |c| {
-                        let mut stmt = c.prepare("SELECT did FROM participants WHERE target=?1 LIMIT 50")?;
-                        let rows = stmt.query_map([t], |r| r.get(0))?.collect::<Result<Vec<String>, _>>()?;
+                        let mut stmt = c.prepare("SELECT did FROM participants WHERE target=?1 AND owner=?2 LIMIT 50")?;
+                        let rows = stmt.query_map(params![t, c.owner], |r| r.get(0))?.collect::<Result<Vec<String>, _>>()?;
                         Ok(rows)
                     })
                     .await?;
@@ -161,8 +161,8 @@ impl Station {
         let now = now_ms();
         self.db
             .call(move |c| {
-                c.execute("INSERT OR IGNORE INTO personal(obj_id, updated_at) VALUES (?1, ?2)", params![obj_id, now])?;
-                let sql = format!("UPDATE personal SET {column}=?2, updated_at=?3 WHERE obj_id=?1");
+                c.execute("INSERT OR IGNORE INTO personal(owner, obj_id, updated_at) VALUES (?3, ?1, ?2)", params![obj_id, now, c.owner])?;
+                let sql = format!("UPDATE personal SET {column}=?2, updated_at=?3 WHERE obj_id=?1 AND owner=?4");
                 let v: Box<dyn rusqlite::ToSql> = match value {
                     Value::Null => Box::new(Option::<String>::None),
                     Value::Bool(b) => Box::new(b as i64),
@@ -170,7 +170,7 @@ impl Station {
                     Value::String(s) => Box::new(s),
                     other => Box::new(other.to_string()),
                 };
-                c.execute(&sql, params![obj_id, v, now])?;
+                c.execute(&sql, params![obj_id, v, now, c.owner])?;
                 Ok(())
             })
             .await
@@ -205,7 +205,7 @@ impl Station {
         let id = target.obj_id.clone();
         let existing: Option<(Option<String>, Option<String>)> = self
             .db
-            .call(move |c| Ok(c.query_row("SELECT bookmark_private, bookmark_entry FROM personal WHERE obj_id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).optional()?))
+            .call(move |c| Ok(c.query_row("SELECT bookmark_private, bookmark_entry FROM personal WHERE obj_id=?1 AND owner=?2", params![id, c.owner], |r| Ok((r.get(0)?, r.get(1)?))).optional()?))
             .await?;
         let (private_obj, _) = existing.unwrap_or((None, None));
         if on && private_obj.is_none() {
@@ -243,6 +243,9 @@ impl Station {
         }
         self.set_personal(&target.obj_id, "bookmark_on", json!(on)).await?;
         self.set_personal(&target.obj_id, "saved_at", if on { json!(now_ms()) } else { Value::Null }).await?;
+        if !on {
+            self.release_following(vec![target.obj_id.clone()]).await;
+        }
         let make_public = on && public;
         let key = reaction_key(&self.cfg.owner, &target.obj_id, CommentType::Bookmark);
         let entry = self.own_entry(EntryNamespace::Reactions, &key);
@@ -260,6 +263,9 @@ impl Station {
         let id = normalize_obj_id(obj_id);
         self.set_personal(&id, "read_later", json!(on)).await?;
         self.set_personal(&id, "read_later_at", if on { json!(now_ms()) } else { Value::Null }).await?;
+        if !on {
+            self.release_following(vec![id.clone()]).await;
+        }
         self.bump(&["saved"]);
         self.personal(&id).await
     }
@@ -418,12 +424,12 @@ impl Station {
     pub async fn list_saved(&self, kind: &str) -> HsResult<Value> {
         let column = if kind == "bookmark" { "saved_at" } else { "read_later_at" };
         let flag = if kind == "bookmark" { "bookmark_on" } else { "read_later" };
-        let sql = format!("SELECT obj_id, {column} FROM personal WHERE {flag}=1 AND {column} IS NOT NULL ORDER BY {column} DESC");
+        let sql = format!("SELECT obj_id, {column} FROM personal WHERE owner=?1 AND {flag}=1 AND {column} IS NOT NULL ORDER BY {column} DESC");
         let bookmark = kind == "bookmark";
         self.db
             .call(move |c| {
                 let mut stmt = c.prepare(&sql)?;
-                let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+                let rows = stmt.query_map(params![c.owner], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
                 let mut out = Vec::new();
                 for (obj_id, saved_at) in rows {
                     let feed = get_feed(c, &obj_id)?;

@@ -35,7 +35,7 @@ impl GroupStore {
             "CREATE TABLE IF NOT EXISTS group_create_operations (actor TEXT NOT NULL, operation_key TEXT NOT NULL, request_json TEXT NOT NULL, result_json TEXT NOT NULL, PRIMARY KEY(actor,operation_key))",
             "CREATE TABLE IF NOT EXISTS group_locks (lock_key TEXT PRIMARY KEY, schema_version BIGINT NOT NULL)",
             "INSERT INTO group_locks(lock_key,schema_version) VALUES ('create',1) ON CONFLICT(lock_key) DO NOTHING",
-            "CREATE TABLE IF NOT EXISTS group_object_purges (obj_id TEXT PRIMARY KEY, schema_version BIGINT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS group_object_purges (obj_id TEXT PRIMARY KEY, attachment_prefix TEXT, schema_version BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS group_doc_publications (group_did TEXT PRIMARY KEY, generation BIGINT NOT NULL, published_generation BIGINT NOT NULL DEFAULT 0, document_status TEXT NOT NULL, document_json TEXT)",
             "CREATE TABLE IF NOT EXISTS joined_groups (owner TEXT NOT NULL, group_did TEXT NOT NULL, state_json TEXT NOT NULL, PRIMARY KEY(owner, group_did))",
         ] { sqlx::query(ddl).execute(db.pool()).await.map_err(db_error)?; }
@@ -172,6 +172,31 @@ impl GroupStore {
         Ok(token)
     }
 }
+/// Queues the cleanup of a redacted message (`purge_group_objects`); its
+/// attachment keys come from its body, read before the body is cleared.
+pub async fn queue_purge(db: &MsgBoxDbMgr, tx: &mut Transaction<'_, Any>, id: &ObjId) -> Result<()> {
+    let sql = db.render_sql("SELECT body_json FROM group_objects WHERE obj_id=?");
+    let body: Option<String> = sqlx::query(&sql)
+        .bind(id.to_string())
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(db_error)?
+        .map(|r| r.try_get::<Option<String>, _>("body_json"))
+        .transpose()
+        .map_err(db_error)?
+        .flatten();
+    let prefix = body
+        .and_then(|body| serde_json::from_str::<MsgObject>(&body).ok())
+        .map(|msg| crate::msg_center::MessageCenter::attachment_prefix(id, &msg));
+    let sql = db.render_sql("INSERT INTO group_object_purges(obj_id,attachment_prefix,schema_version) VALUES(?,?,1) ON CONFLICT(obj_id) DO NOTHING");
+    sqlx::query(&sql)
+        .bind(id.to_string())
+        .bind(prefix)
+        .execute(&mut **tx)
+        .await
+        .map_err(db_error)?;
+    Ok(())
+}
 impl GroupTransaction<'_> {
     pub async fn object(&mut self, msg: &MsgObject, jwt: Option<&str>) -> Result<()> {
         let (id, body) = msg.gen_obj_id();
@@ -211,18 +236,11 @@ impl GroupTransaction<'_> {
             .await
     }
     pub async fn redact(&mut self, id: &ObjId) -> Result<()> {
-        let purge=self.store.db.render_sql("INSERT INTO group_object_purges(obj_id,schema_version) VALUES(?,1) ON CONFLICT(obj_id) DO NOTHING");
-        sqlx::query(&purge)
-            .bind(id.to_string())
-            .execute(&mut *self.tx)
-            .await
-            .map_err(db_error)?;
+        queue_purge(&self.store.db, &mut self.tx, id).await?;
         for stmt in [
             "UPDATE group_objects SET body_json=NULL,jwt=NULL WHERE obj_id=?",
             "DELETE FROM msg_jwt_originals WHERE msg_id=?",
             "UPDATE delivery_records SET state='DEAD' WHERE msg_id=? AND state!='SENT'",
-            // Its attachments are released by the attachment retention reconcile.
-            "UPDATE msg_attachment_retentions SET state='releasing' WHERE msg_id=?",
         ] {
             let sql = self.store.db.render_sql(stmt);
             sqlx::query(&sql)

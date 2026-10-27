@@ -1,16 +1,16 @@
 import { useState } from 'react'
 import { ExternalLink, FileText, Star, Webhook } from 'lucide-react'
 import { useI18n } from '../../../i18n/provider'
-import { getObjectAccess } from '../conversation/history/objectAccess'
+import { displayContext, getObjectAccess } from '../conversation/history/objectAccess'
 import { hookServiceHost, type GroupDisplayInfo, type GroupHookInfo } from './model'
 
 /**
  * The display configuration of a group or Session (EXT-04): announcement,
  * links, files and featured members. Nothing here grants anything; a
  * featured member is a mark, a file opens through the viewer's own object
- * access.
+ * access, read through the display of `session` (its address).
  */
-export function GroupDisplaySection({ display, nameOf, testId = 'group-display' }: { display: GroupDisplayInfo; nameOf: (did: string) => string; testId?: string }) {
+export function GroupDisplaySection({ display, session, nameOf, testId = 'group-display' }: { display: GroupDisplayInfo; session: string; nameOf: (did: string) => string; testId?: string }) {
   const { t } = useI18n()
   if (!display.announcement && display.links.length === 0 && display.files.length === 0 && display.featuredMembers.length === 0) return null
   return <div className="space-y-2" data-testid={testId}>
@@ -19,7 +19,7 @@ export function GroupDisplaySection({ display, nameOf, testId = 'group-display' 
       {display.links.map(link => <li key={`${link.title}\n${link.url}`}><a href={link.url} target="_blank" rel="noopener noreferrer" className="flex min-h-9 items-center gap-2 text-[13px] text-[color:var(--cp-accent)] hover:underline"><ExternalLink size={14} aria-hidden className="shrink-0" /><span className="min-w-0 truncate" title={link.url}>{link.title}</span></a></li>)}
     </ul>}
     {display.files.length > 0 && <ul className="space-y-1" data-testid="display-files">
-      {display.files.map(file => <DisplayFile key={`${file.title}\n${file.objId}`} title={file.title} objId={file.objId} />)}
+      {display.files.map(file => <DisplayFile key={`${file.title}\n${file.objId}`} title={file.title} objId={file.objId} context={displayContext(session)} />)}
     </ul>}
     {display.featuredMembers.length > 0 && <div className="flex flex-wrap gap-1.5" data-testid="display-featured">
       {display.featuredMembers.map(did => <span key={did} title={did} className="flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px]" style={{ background: 'color-mix(in srgb, var(--cp-warning) 14%, transparent)', color: 'color-mix(in srgb, var(--cp-warning) 70%, var(--cp-text))' }}><Star size={11} aria-hidden />{nameOf(did)}</span>)}
@@ -27,7 +27,7 @@ export function GroupDisplaySection({ display, nameOf, testId = 'group-display' 
   </div>
 }
 
-function DisplayFile({ title, objId }: { title: string; objId: string }) {
+function DisplayFile({ title, objId, context }: { title: string; objId: string; context: string }) {
   const { t } = useI18n()
   const [state, setState] = useState<'idle' | 'opening' | 'failed'>('idle')
   const open = async () => {
@@ -35,7 +35,7 @@ function DisplayFile({ title, objId }: { title: string; objId: string }) {
     if (!access) { setState('failed'); return }
     setState('opening')
     try {
-      const url = await access.contentUrl(objId)
+      const url = await access.contentUrl(objId, context)
       window.open(url, '_blank', 'noopener')
       setState('idle')
     } catch {

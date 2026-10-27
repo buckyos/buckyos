@@ -1,5 +1,6 @@
-use std::path::{Path, PathBuf};
+use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::repo_db::{
     RepoDb, RepoDbStat, RepoObjectRecord as DbRecord, RepoProofRecord,
@@ -7,8 +8,10 @@ use crate::repo_db::{
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use buckyos_api::bucket_client::{now_ms, Conditions, ListRequest, PutRequest};
 use buckyos_api::{
-    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, BuckyOSRuntimeType,
+    get_buckyos_api_runtime, init_buckyos_api_runtime, is_precondition_failed,
+    repo_service_packages_bucket, set_buckyos_api_runtime, BucketClient, BuckyOSRuntimeType,
     RepoActionProof, RepoContentRef, RepoHandler, RepoListFilter, RepoProof, RepoProofFilter,
     RepoRecord, RepoServeRequestContext, RepoServeResult, RepoServerHandler, RepoStat,
     REPO_ACCESS_POLICY_FREE, REPO_ACCESS_POLICY_PAID, REPO_ORIGIN_LOCAL, REPO_ORIGIN_REMOTE,
@@ -29,81 +32,96 @@ use http_body_util::combinators::BoxBody;
 use kRPC::{RPCContext, RPCErrors, RPCHandler, RPCRequest, RPCResponse};
 use log::{info, warn};
 use name_lib::decode_jwt_claim_without_verify;
-use named_store::{NamedDataMgr, NamedLocalStore, StoreLayout, StoreTarget};
+use named_store::NamedDataMgr;
 use ndn_lib::{
-    build_obj_id, load_named_object_from_obj_str, verify_named_object, ActionObject, ChunkId,
-    InclusionProof, NamedObject, ObjId, ACTION_TYPE_DOWNLOAD, ACTION_TYPE_INSTALLED,
-    ACTION_TYPE_SHARED,
+    build_obj_id, load_named_obj, load_named_object_from_obj_str, verify_named_object,
+    ActionObject, ChunkId, ChunkList, DirObject, FileObject, InclusionProof, NamedObject, ObjId,
+    ACTION_TYPE_DOWNLOAD, ACTION_TYPE_INSTALLED, ACTION_TYPE_SHARED, OBJ_TYPE_CHUNK_LIST,
+    OBJ_TYPE_DIR, OBJ_TYPE_FILE,
 };
 use serde_json::{json, Value};
-use tokio::fs;
 
-const ANNOUNCES_DIR: &str = "pending_announces";
-const READY_CHECK_STORE_DIR: &str = "ready_check_store";
+const RECONCILE_GRACE_MS: i64 = 10 * 60 * 1000;
+
+/// Where content is read from and who retains it: the node named store and the
+/// zone bucket `zone/repo-service/_/packages`.
+#[derive(Clone)]
+pub enum RepoStorage {
+    Runtime,
+    #[cfg(test)]
+    Fixed {
+        store: NamedDataMgr,
+        buckets: Arc<BucketClient>,
+    },
+}
+
+impl RepoStorage {
+    async fn store(&self) -> std::result::Result<NamedDataMgr, RPCErrors> {
+        match self {
+            RepoStorage::Runtime => get_buckyos_api_runtime()
+                .map_err(to_rpc_error)?
+                .get_local_named_store()
+                .await
+                .map_err(|err| {
+                    RPCErrors::ReasonError(format!("open system named store failed: {err}"))
+                }),
+            #[cfg(test)]
+            RepoStorage::Fixed { store, .. } => Ok(store.clone()),
+        }
+    }
+
+    async fn buckets(&self) -> std::result::Result<Arc<BucketClient>, RPCErrors> {
+        match self {
+            RepoStorage::Runtime => get_buckyos_api_runtime()
+                .map_err(to_rpc_error)?
+                .get_bucket_client()
+                .await
+                .map(Arc::new)
+                .map_err(|err| {
+                    RPCErrors::ReasonError(format!("bucket service unavailable: {err}"))
+                }),
+            #[cfg(test)]
+            RepoStorage::Fixed { buckets, .. } => Ok(buckets.clone()),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct RepoService {
     db: Arc<RepoDb>,
-    state: Arc<RepoState>,
-}
-
-#[derive(Debug)]
-struct RepoState {
-    announces_dir: PathBuf,
-    ready_check_store_dir: PathBuf,
+    storage: RepoStorage,
 }
 
 impl RepoService {
-    pub async fn new(db: Arc<RepoDb>, data_dir: PathBuf) -> Result<Self> {
-        fs::create_dir_all(&data_dir)
-            .await
-            .with_context(|| format!("create repo data dir failed: {}", data_dir.display()))?;
-        let announces_dir = data_dir.join(ANNOUNCES_DIR);
-        let ready_check_store_dir = data_dir.join(READY_CHECK_STORE_DIR);
-        fs::create_dir_all(&announces_dir)
-            .await
-            .with_context(|| format!("create announce dir failed: {}", announces_dir.display()))?;
-        fs::create_dir_all(&ready_check_store_dir)
-            .await
-            .with_context(|| {
-                format!(
-                    "create ready check store dir failed: {}",
-                    ready_check_store_dir.display()
-                )
-            })?;
-
-        let state = Arc::new(RepoState {
-            announces_dir,
-            ready_check_store_dir,
-        });
-        let service = Self { db, state };
-        Ok(service)
+    pub fn new(db: Arc<RepoDb>, storage: RepoStorage) -> Self {
+        Self { db, storage }
     }
 
-    async fn get_named_store_mgr(&self) -> std::result::Result<NamedDataMgr, RPCErrors> {
-        if let Ok(runtime) = get_buckyos_api_runtime() {
-            return runtime.get_local_named_store().await.map_err(|err| {
-                RPCErrors::ReasonError(format!("open system named store failed: {err}"))
-            });
-        }
-
-        create_ready_check_store_mgr(&self.state.ready_check_store_dir).await
-    }
-
+    /// Size (and object JSON) of a content that is complete in the named store.
+    /// Only what a data bucket retains is accepted: a file, a dir, or raw chunk /
+    /// chunk list content.
     async fn inspect_local_content(
         &self,
         content_id: &ObjId,
-    ) -> std::result::Result<(Option<u64>, Option<Value>), RPCErrors> {
-        let store_mgr = self.get_named_store_mgr().await?;
+    ) -> std::result::Result<(u64, Option<Value>), RPCErrors> {
+        let store_mgr = self.storage.store().await?;
+        if !store_mgr
+            .is_object_stored(content_id, None)
+            .await
+            .unwrap_or(false)
+        {
+            return Err(RPCErrors::ReasonError(format!(
+                "content {} is not available in named store",
+                content_id
+            )));
+        }
         if content_id.is_chunk() {
-            let chunk_id = ChunkId::from_obj_id(content_id);
-            if !store_mgr.have_chunk(&chunk_id).await {
-                return Err(RPCErrors::ReasonError(format!(
-                    "content {} is not available in named store",
-                    content_id
-                )));
-            }
-            return Ok((chunk_id.get_length(), None));
+            let size = ChunkId::from_obj_id(content_id)
+                .get_length()
+                .ok_or_else(|| {
+                    RPCErrors::ReasonError(format!("chunk {} has no encoded length", content_id))
+                })?;
+            return Ok((size, None));
         }
 
         let object_str = store_mgr.get_object(content_id).await.map_err(|err| {
@@ -112,87 +130,179 @@ impl RepoService {
                 content_id
             ))
         })?;
+        let parse_error = |err: ndn_lib::NdnError| {
+            RPCErrors::ReasonError(format!(
+                "parse published content {} from named store failed: {err}",
+                content_id
+            ))
+        };
+        let size = match content_id.obj_type.as_str() {
+            OBJ_TYPE_FILE => {
+                load_named_obj::<FileObject>(&object_str)
+                    .map_err(parse_error)?
+                    .size
+            }
+            OBJ_TYPE_DIR => {
+                load_named_obj::<DirObject>(&object_str)
+                    .map_err(parse_error)?
+                    .total_size
+            }
+            OBJ_TYPE_CHUNK_LIST => {
+                ChunkList::from_json(&object_str)
+                    .map_err(parse_error)?
+                    .total_size
+            }
+            other => {
+                return Err(RPCErrors::ReasonError(format!(
+                    "content {} is a {other}; repo-service keeps files, dirs and chunk content",
+                    content_id
+                )))
+            }
+        };
         let object_json = serde_json::from_str::<Value>(object_str.as_str())
             .or_else(|_| load_named_object_from_obj_str(object_str.as_str()))
-            .map_err(|err| {
-                RPCErrors::ReasonError(format!(
-                    "parse published content {} from named store failed: {err}",
-                    content_id
-                ))
-            })?;
-
-        let chunk_ids_result = if let Ok(runtime) = get_buckyos_api_runtime() {
-            runtime
-                .get_chunklist_from_known_named_object(content_id, &object_json)
-                .await
-        } else {
-            ndn_toolkit::get_chunklist_from_known_named_object(&store_mgr, content_id, &object_json)
-                .await
-                .map_err(|err| {
-                    RPCErrors::ReasonError(format!(
-                        "get chunklist from content {} failed: {err}",
-                        content_id
-                    ))
-                })
-        };
-
-        let chunk_ids = match chunk_ids_result {
-            Ok(chunk_ids) => chunk_ids,
-            Err(error) => {
-                let error_text = error.to_string();
-                if error_text.contains("not a supported known named object")
-                    || error_text.contains("invalid obj type")
-                {
-                    warn!(
-                        "treat content {} as metadata-only object because chunklist lookup is unsupported: {}",
-                        content_id, error_text
-                    );
-                    let object_size = u64::try_from(object_str.len()).ok();
-                    return Ok((object_size, Some(object_json)));
-                }
-                return Err(error);
-            }
-        };
-
-        for chunk_id in &chunk_ids {
-            if !store_mgr.have_chunk(chunk_id).await {
-                return Err(RPCErrors::ReasonError(format!(
-                    "content {} is missing chunk {} in named store",
-                    content_id,
-                    chunk_id.to_string()
-                )));
-            }
-        }
-
-        let content_size = if chunk_ids.is_empty() {
-            Some(0)
-        } else {
-            let mut total_size = 0u64;
-            for chunk_id in &chunk_ids {
-                let chunk_len = chunk_id.get_length().ok_or_else(|| {
-                    RPCErrors::ReasonError(format!(
-                        "content {} has chunk {} without encoded length",
-                        content_id,
-                        chunk_id.to_string()
-                    ))
-                })?;
-                total_size += chunk_len;
-            }
-            Some(total_size)
-        };
-
-        Ok((content_size, Some(object_json)))
+            .map_err(parse_error)?;
+        Ok((size, Some(object_json)))
     }
 
-    async fn ensure_local_content(
+    /// Binds a pinned content in `zone/repo-service/_/packages`: a file or dir as
+    /// itself, raw chunk content wrapped in a FileObject named after the package.
+    /// The key is never rebound to other content; binding the same object again
+    /// is accepted, so a retry replays. Returns whether this call created the key.
+    async fn bind_content(
         &self,
+        key: &str,
         content_id: &ObjId,
-        record: &DbRecord,
-    ) -> std::result::Result<Option<u64>, RPCErrors> {
-        let (content_size, _) = self.inspect_local_content(content_id).await?;
-        Ok(content_size
-            .or(record.content_size)
-            .or_else(|| extract_content_size(&record.meta)))
+        name: &str,
+        size: u64,
+    ) -> std::result::Result<bool, RPCErrors> {
+        let buckets = self.storage.buckets().await?;
+        let bucket = repo_service_packages_bucket();
+        let (obj_id, put) = if content_id.is_chunk() || content_id.is_chunk_list() {
+            let (obj_id, obj_str) =
+                FileObject::new(name.to_string(), size, content_id.to_string()).gen_obj_id();
+            let store = self.storage.store().await?;
+            let put = buckets
+                .put_object_str(
+                    &store,
+                    &bucket,
+                    key,
+                    &obj_id,
+                    &obj_str,
+                    Conditions::create_only(),
+                )
+                .await;
+            (obj_id, put)
+        } else {
+            let req = PutRequest {
+                key: key.to_string(),
+                obj_id: content_id.to_string(),
+                conditions: Conditions::create_only(),
+                ..Default::default()
+            };
+            (content_id.clone(), buckets.put(&bucket, &req).await)
+        };
+        match put {
+            Ok(result) => Ok(result.created),
+            Err(err) if is_precondition_failed(&err) => {
+                let bound = buckets.get(&bucket, key, None).await?;
+                if bound.obj_id.as_deref() == Some(obj_id.to_string().as_str()) {
+                    Ok(false)
+                } else {
+                    Err(RPCErrors::ReasonError(format!(
+                        "{key} is already pinned with other content ({}); unpin it first",
+                        bound.obj_id.unwrap_or_default()
+                    )))
+                }
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Releases a binding; a failure leaves extra retention that reconciliation removes.
+    async fn unbind(&self, key: &str) {
+        let result = match self.storage.buckets().await {
+            Ok(buckets) => buckets
+                .delete(&repo_service_packages_bucket(), key, None)
+                .await
+                .map(|_| ()),
+            Err(err) => Err(err),
+        };
+        if let Err(err) = result {
+            warn!("unbind repo package {key} failed, left to reconciliation: {err}");
+        }
+    }
+
+    /// Design §15.1 reconciliation of `objects` with the packages bucket: keys no
+    /// pinned row references are unbound (unless bound within `grace_ms`, which
+    /// may be a pin still writing its row); a pinned row whose binding is gone is
+    /// bound again while its content is still in the named store.
+    pub async fn reconcile(&self, grace_ms: i64) -> std::result::Result<(), RPCErrors> {
+        let buckets = self.storage.buckets().await?;
+        let bucket = repo_service_packages_bucket();
+        let records = self.load_all_records().await?;
+        let referenced: HashSet<String> = records
+            .iter()
+            .filter(|record| record.status == REPO_STATUS_PINNED)
+            .filter_map(|record| record.bucket_key.clone())
+            .collect();
+        let cutoff = now_ms() - grace_ms;
+        let mut bound = HashSet::new();
+        let mut start_after = None;
+        loop {
+            let page = buckets
+                .list_objects(
+                    &bucket,
+                    &ListRequest {
+                        start_after: start_after.take(),
+                        limit: Some(1000),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            for item in page.items {
+                if referenced.contains(&item.key) {
+                    bound.insert(item.key);
+                } else if item.created_at <= cutoff {
+                    self.unbind(&item.key).await;
+                }
+            }
+            match page.next_start_after {
+                Some(next) => start_after = Some(next),
+                None => break,
+            }
+        }
+        for mut record in records {
+            if record.status != REPO_STATUS_PINNED
+                || record
+                    .bucket_key
+                    .as_ref()
+                    .is_some_and(|key| bound.contains(key))
+            {
+                continue;
+            }
+            let content_id = parse_obj_id(&record.content_id)?;
+            let key = package_key(&record);
+            let rebound = match self.inspect_local_content(&content_id).await {
+                Ok((size, _)) => {
+                    self.bind_content(&key, &content_id, &package_name(&record), size)
+                        .await
+                }
+                Err(err) => Err(err),
+            };
+            match rebound {
+                Ok(_) if record.bucket_key.as_deref() != Some(key.as_str()) => {
+                    record.bucket_key = Some(key);
+                    self.write_object_record(record).await?;
+                }
+                Ok(_) => {}
+                Err(err) => warn!(
+                    "pinned repo content {} has no binding and cannot be bound again: {err}",
+                    record.content_id
+                ),
+            }
+        }
+        Ok(())
     }
 
     async fn write_object_record(&self, record: DbRecord) -> std::result::Result<(), RPCErrors> {
@@ -228,36 +338,13 @@ impl RepoService {
         self.db.upsert_receipt(receipt).await.map_err(to_rpc_error)
     }
 
-    async fn cache_announce_request(
-        &self,
-        content_id: &str,
-        meta: &Value,
-    ) -> std::result::Result<(), RPCErrors> {
-        let file_name = format!(
-            "{}-{}.json",
-            buckyos_get_unix_timestamp(),
-            sanitize_content_id(content_id)
-        );
-        let payload = json!({
-            "content_id": content_id,
-            "meta": meta,
-            "requested_at": buckyos_get_unix_timestamp(),
-        });
-        fs::write(
-            self.state.announces_dir.join(file_name),
-            serde_json::to_vec_pretty(&payload).map_err(|err| {
-                RPCErrors::ReasonError(format!("serialize announce payload failed: {err}"))
-            })?,
-        )
-        .await
-        .map_err(|err| RPCErrors::ReasonError(format!("write announce request failed: {err}")))
-    }
-
+    /// Bind first, then write the row (design §15.1): a failed row write deletes
+    /// the binding this call created; a key the row no longer uses is released.
     async fn pin_record(
         &self,
         mut record: DbRecord,
         content_id: &ObjId,
-        content_size: Option<u64>,
+        content_size: u64,
         download_proof: Option<RepoActionProof>,
     ) -> std::result::Result<(), RPCErrors> {
         if let Some(download_proof) = download_proof {
@@ -265,13 +352,30 @@ impl RepoService {
             self.save_proof(RepoProof::action(download_proof)).await?;
         }
 
+        let key = package_key(&record);
+        let created = self
+            .bind_content(&key, content_id, &package_name(&record), content_size)
+            .await?;
+        let previous = record
+            .bucket_key
+            .replace(key.clone())
+            .filter(|old| old != &key);
         let now = buckyos_get_unix_timestamp();
         record.status = REPO_STATUS_PINNED.to_string();
-        record.content_size = content_size.or(record.content_size);
+        record.content_size = Some(content_size);
         record.pinned_at = Some(now);
         record.updated_at = Some(now);
         record.collected_at = record.collected_at.or(Some(now));
-        self.write_object_record(record).await
+        if let Err(err) = self.write_object_record(record).await {
+            if created {
+                self.unbind(&key).await;
+            }
+            return Err(err);
+        }
+        if let Some(previous) = previous {
+            self.unbind(&previous).await;
+        }
+        Ok(())
     }
 }
 
@@ -284,15 +388,7 @@ impl RepoHandler for RepoService {
     ) -> std::result::Result<ObjId, RPCErrors> {
         let content_id = parse_obj_id(content_id)?;
         let existing = self.load_record(content_id.to_string()).await?;
-        let (inspected_size, inspected_meta) = self.inspect_local_content(&content_id).await?;
-        let content_size = inspected_size
-            .or_else(|| existing.as_ref().and_then(|row| row.content_size))
-            .or_else(|| {
-                existing
-                    .as_ref()
-                    .and_then(|row| extract_content_size(&row.meta))
-            })
-            .unwrap_or(0);
+        let (content_size, inspected_meta) = self.inspect_local_content(&content_id).await?;
         let meta = existing
             .as_ref()
             .map(|row| row.meta.clone())
@@ -313,11 +409,12 @@ impl RepoHandler for RepoService {
                 .map(|row| row.status.clone())
                 .unwrap_or_else(|| REPO_STATUS_COLLECTED.to_string()),
             content_size: Some(content_size),
+            bucket_key: existing.as_ref().and_then(|row| row.bucket_key.clone()),
             collected_at: existing.as_ref().and_then(|row| row.collected_at),
             pinned_at: existing.as_ref().and_then(|row| row.pinned_at),
             updated_at: existing.as_ref().and_then(|row| row.updated_at),
         };
-        self.pin_record(record, &content_id, Some(content_size), None)
+        self.pin_record(record, &content_id, content_size, None)
             .await?;
         Ok(content_id)
     }
@@ -357,6 +454,7 @@ impl RepoHandler for RepoService {
                 .as_ref()
                 .and_then(|row| row.content_size)
                 .or_else(|| extract_content_size(&meta)),
+            bucket_key: existing.as_ref().and_then(|row| row.bucket_key.clone()),
             collected_at: existing
                 .as_ref()
                 .and_then(|row| row.collected_at)
@@ -381,7 +479,7 @@ impl RepoHandler for RepoService {
             .ok_or_else(|| {
                 RPCErrors::ReasonError(format!("content {} not collected", content_id))
             })?;
-        let content_size = self.ensure_local_content(&content_id, &record).await?;
+        let (content_size, _) = self.inspect_local_content(&content_id).await?;
         self.pin_record(record, &content_id, content_size, Some(download_proof))
             .await?;
         Ok(true)
@@ -409,13 +507,18 @@ impl RepoHandler for RepoService {
         }
 
         let now = buckyos_get_unix_timestamp();
+        let key = record.bucket_key.clone();
         let updated = DbRecord {
             status: REPO_STATUS_COLLECTED.to_string(),
             pinned_at: None,
+            bucket_key: None,
             updated_at: Some(now),
             ..record
         };
         self.write_object_record(updated).await?;
+        if let Some(key) = key {
+            self.unbind(&key).await;
+        }
         Ok(true)
     }
 
@@ -566,7 +669,7 @@ impl RepoHandler for RepoService {
                 ));
             }
         };
-        if let Err(err) = self.ensure_local_content(&content_id, &record).await {
+        if let Err(err) = self.inspect_local_content(&content_id).await {
             warn!(
                 "serve rejected for {} because content is not ready: {}",
                 content_id, err
@@ -639,8 +742,15 @@ impl RepoHandler for RepoService {
                 content_id
             )));
         }
-        self.cache_announce_request(content_id, &record.meta)
-            .await?;
+        self.db
+            .upsert_announce(
+                content_id,
+                record.content_name.as_deref(),
+                &record.meta,
+                buckyos_get_unix_timestamp(),
+            )
+            .await
+            .map_err(to_rpc_error)?;
         warn!(
             "repo announce request queued locally for {}; external BNS publishing is not wired in this repository yet",
             content_id
@@ -714,9 +824,6 @@ pub async fn run_service() -> Result<()> {
     runtime
         .set_main_service_port(REPO_SERVICE_SERVICE_PORT)
         .await;
-    let data_dir = runtime
-        .get_data_folder()
-        .context("repo-service resolve data folder failed")?;
     set_buckyos_api_runtime(runtime).context("register repo-service runtime failed")?;
 
     let db = Arc::new(
@@ -725,7 +832,14 @@ pub async fn run_service() -> Result<()> {
             .map_err(|err| anyhow::anyhow!("init repo-db failed: {}", err))?,
     );
     info!("repo-service database initialized");
-    let service = RepoService::new(db, data_dir).await?;
+    let service = RepoService::new(db, RepoStorage::Runtime);
+    let reconciler = service.clone();
+    tokio::spawn(async move {
+        while let Err(err) = reconciler.reconcile(RECONCILE_GRACE_MS).await {
+            warn!("repo-service package reconciliation failed, retrying in 60s: {err}");
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
+    });
     let server = Arc::new(RepoHttpServer::new(service));
     let runner = Runner::new(REPO_SERVICE_SERVICE_PORT);
     runner
@@ -735,16 +849,7 @@ pub async fn run_service() -> Result<()> {
         .add_http_server("/kapi/repo".to_string(), server)
         .context("register /kapi/repo failed")?;
 
-    if let Ok(runtime) = get_buckyos_api_runtime() {
-        info!(
-            "repo-service started: port={}, data_dir={}",
-            REPO_SERVICE_SERVICE_PORT,
-            runtime
-                .get_data_folder()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|error| format!("<unavailable: {}>", error))
-        );
-    }
+    info!("repo-service started: port={}", REPO_SERVICE_SERVICE_PORT);
     runner.run().await.context("repo-service runner failed")
 }
 
@@ -1143,91 +1248,122 @@ fn validate_receipt(
     })
 }
 
-async fn create_ready_check_store_mgr(
-    store_root: &Path,
-) -> std::result::Result<NamedDataMgr, RPCErrors> {
-    let store = NamedLocalStore::get_named_store_by_path(store_root.to_path_buf())
-        .await
-        .map_err(|err| {
-            RPCErrors::ReasonError(format!(
-                "open ready check named store failed at {}: {err}",
-                store_root.display()
-            ))
-        })?;
-    let store_id = store.store_id().to_string();
-    let store_ref = Arc::new(tokio::sync::Mutex::new(store));
-
-    let store_mgr = NamedDataMgr::new();
-    store_mgr.register_store(store_ref).await;
-    store_mgr
-        .add_layout(StoreLayout::new(
-            1,
-            vec![StoreTarget {
-                store_id,
-                device_did: String::new(),
-                capacity: None,
-                used: None,
-                readonly: false,
-                enabled: true,
-                weight: 1,
-            }],
-            0,
-            0,
-        ))
-        .await;
-    Ok(store_mgr)
+/// Bucket key of a pinned content: `<content_name>/<version>`, or `<content_name>`
+/// for content whose meta has no version.
+fn package_key(record: &DbRecord) -> String {
+    let name = package_name(record);
+    match record.meta.get("version").and_then(Value::as_str) {
+        Some(version) => format!("{name}/{version}"),
+        None => name,
+    }
 }
 
-fn sanitize_content_id(content_id: &str) -> String {
-    content_id.replace(['/', ':'], "_")
+fn package_name(record: &DbRecord) -> String {
+    record
+        .content_name
+        .clone()
+        .unwrap_or_else(|| record.content_id.clone())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use buckyos_api::{RdbBackend, RepoClient, RepoListFilter};
+    use buckyos_api::{
+        is_no_such_key, repo_service_bucket_decls, RdbBackend, RepoClient, RepoListFilter,
+        REPO_SERVICE_STORAGE_QUOTA_MIB,
+    };
     use name_lib::DID;
     use ndn_lib::{FileObject, StoreMode};
     use ndn_toolkit::{cacl_file_object, CheckMode};
+    use nfs_server::config::{NamedStoreSource, ServerConfig};
     use package_lib::PackageMeta;
+    use std::path::Path;
     use tempfile::TempDir;
 
-    async fn test_service() -> (TempDir, RepoService, RepoClient) {
+    struct TestRepo {
+        _dir: TempDir,
+        service: RepoService,
+        client: RepoClient,
+        store: NamedDataMgr,
+        buckets: Arc<BucketClient>,
+    }
+
+    /// A repo-service whose bucket service is a standalone nfs-server (no auth)
+    /// declaring `zone/repo-service/_/packages`, sharing its named store.
+    async fn test_service() -> TestRepo {
         let dir = tempfile::tempdir().expect("create temp dir");
-        let db_path = dir.path().join("repo.db");
-        let conn = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
+        let exports = dir.path().join("exports");
+        std::fs::create_dir_all(&exports).expect("create exports");
+        let mut config = ServerConfig::new(
+            dir.path().join("fsdb"),
+            vec![nfs_server::ExportRoot {
+                id: "home".into(),
+                path: exports,
+            }],
+        );
+        config.named_store = NamedStoreSource::Dir(dir.path().join("store"));
+        config.bucket_specs.insert(
+            REPO_SERVICE_SERVICE_NAME.to_string(),
+            nfs_server::bucket::spec::AppBuckets {
+                buckets: repo_service_bucket_decls(),
+                storage_quota_mib: Some(REPO_SERVICE_STORAGE_QUOTA_MIB),
+                ..Default::default()
+            },
+        );
+        let state = nfs_server::AppState::new(config).expect("nfs-server state");
+        let store = state
+            .share
+            .store(&state.config)
+            .await
+            .expect("named store")
+            .clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind nfs-server");
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let app = nfs_server::build_router(state);
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let buckets = Arc::new(BucketClient::new(kRPC::kRPC::new(
+            &format!("{base}/kapi/nfs-server"),
+            None,
+        )));
+
+        let conn = format!(
+            "sqlite://{}?mode=rwc",
+            dir.path().join("repo.db").to_str().unwrap()
+        );
         let db = Arc::new(
             RepoDb::open(&conn, RdbBackend::Sqlite, None)
                 .await
                 .expect("open test repo db"),
         );
-        let service = RepoService::new(db, dir.path().to_path_buf())
-            .await
-            .expect("init repo service");
+        let service = RepoService::new(
+            db,
+            RepoStorage::Fixed {
+                store: store.clone(),
+                buckets: buckets.clone(),
+            },
+        );
         let client = RepoClient::new_in_process(Box::new(service.clone()));
-        (dir, service, client)
+        TestRepo {
+            _dir: dir,
+            service,
+            client,
+            store,
+            buckets,
+        }
     }
 
-    async fn write_file(path: &Path, content: &[u8]) {
-        fs::write(path, content).await.expect("write file");
-    }
-
-    #[tokio::test]
-    async fn store_creates_local_pinned_record() {
-        let (_dir, service, client) = test_service().await;
+    /// Stores `content` in the named store; returns its FileObject and raw content id.
+    async fn put_content(store: &NamedDataMgr, name: &str, content: &[u8]) -> (FileObject, ObjId) {
         let source_dir = tempfile::tempdir().expect("create source dir");
-        let file_path = source_dir.path().join("demo.tar.gz");
-        write_file(&file_path, b"repo-service-store").await;
-        let store_mgr = service
-            .get_named_store_mgr()
-            .await
-            .expect("load named store");
-        let file_template = FileObject::default();
+        let path = source_dir.path().join(name);
+        tokio::fs::write(&path, content).await.expect("write file");
         let (file_object, _file_obj_id, _file_obj_str) = cacl_file_object(
-            Some(&store_mgr),
-            &file_path,
-            &file_template,
+            Some(store),
+            Path::new(&path),
+            &FileObject::default(),
             true,
             &CheckMode::ByFullHash,
             StoreMode::StoreInNamedMgr,
@@ -1236,12 +1372,50 @@ mod tests {
         .await
         .expect("store content into named store");
         let content_id = parse_obj_id(&file_object.content).expect("parse content id");
+        (file_object, content_id)
+    }
 
-        let stored_id = client
+    fn package_meta(name: &str, version: &str, file: &FileObject) -> Value {
+        let owner = DID::from_str("did:bns:publisher").expect("parse owner did");
+        let mut meta = PackageMeta::new(name, version, "publisher", &owner, None);
+        meta.content = file.content.clone();
+        meta.size = file.size;
+        serde_json::to_value(meta).expect("serialize package meta")
+    }
+
+    fn download(content_id: &ObjId, who: &str) -> ActionObject {
+        ActionObject {
+            subject: build_actor_obj_id(who),
+            action: ACTION_TYPE_DOWNLOAD.to_string(),
+            target: content_id.clone(),
+            base_on: None,
+            details: Some(json!({"subject_did": who})),
+            iat: buckyos_get_unix_timestamp(),
+            exp: buckyos_get_unix_timestamp() + 3600,
+        }
+    }
+
+    async fn binding(repo: &TestRepo, key: &str) -> std::result::Result<FileObject, RPCErrors> {
+        let bound = repo
+            .buckets
+            .get(&repo_service_packages_bucket(), key, None)
+            .await?;
+        let obj_id = parse_obj_id(bound.obj_id.as_deref().unwrap()).unwrap();
+        Ok(load_named_obj(&repo.store.get_object(&obj_id).await.unwrap()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn store_creates_local_pinned_record() {
+        let repo = test_service().await;
+        let (_, content_id) = put_content(&repo.store, "demo.tar.gz", b"repo-service-store").await;
+
+        let stored_id = repo
+            .client
             .store(&content_id.to_string())
             .await
             .expect("store content");
-        let records = client
+        let records = repo
+            .client
             .list(Some(RepoListFilter::new(
                 Some(REPO_STATUS_PINNED.to_string()),
                 Some(REPO_ORIGIN_LOCAL.to_string()),
@@ -1258,57 +1432,43 @@ mod tests {
         assert_eq!(record.status, REPO_STATUS_PINNED);
         assert_eq!(record.origin, REPO_ORIGIN_LOCAL);
 
-        let (_reader, stored_size) = store_mgr
-            .open_reader(&content_id, None)
+        let wrapper = binding(&repo, &content_id.to_string())
             .await
-            .expect("open stored content");
-        assert_eq!(stored_size, b"repo-service-store".len() as u64);
+            .expect("content is bound under its id");
+        assert_eq!(wrapper.content, content_id.to_string());
+        assert_eq!(wrapper.size, b"repo-service-store".len() as u64);
+        assert!(repo
+            .client
+            .unpin(&content_id.to_string(), false)
+            .await
+            .is_err());
+        repo.client
+            .unpin(&content_id.to_string(), true)
+            .await
+            .expect("force unpin");
+        let gone = binding(&repo, &content_id.to_string()).await.unwrap_err();
+        assert!(is_no_such_key(&gone));
     }
 
     #[tokio::test]
     async fn store_promotes_existing_record_to_local_via_pin_path() {
-        let (_dir, service, client) = test_service().await;
-        let content_dir = tempfile::tempdir().expect("create content dir");
-        let content_path = content_dir.path().join("pkg.tar.gz");
-        write_file(&content_path, b"repo-service-store-existing").await;
-
-        let store_mgr = service
-            .get_named_store_mgr()
-            .await
-            .expect("load named store");
-        let file_template = FileObject::default();
-        let (file_object, _file_obj_id, _file_obj_str) = cacl_file_object(
-            Some(&store_mgr),
-            &content_path,
-            &file_template,
-            true,
-            &CheckMode::ByFullHash,
-            StoreMode::StoreInNamedMgr,
-            None,
-        )
-        .await
-        .expect("store content into named store");
-        let content_id = parse_obj_id(&file_object.content).expect("parse content id");
-
-        let owner = DID::from_str("did:bns:publisher").expect("parse owner did");
-        let mut meta = PackageMeta::new("existing-app", "1.0.0", "publisher", &owner, None);
-        meta.content = content_id.to_string();
-        meta.size = file_object.size;
-        client
-            .collect(
-                serde_json::to_value(meta.clone()).expect("serialize meta"),
-                None,
-            )
+        let repo = test_service().await;
+        let (file_object, content_id) =
+            put_content(&repo.store, "pkg.tar.gz", b"repo-service-store-existing").await;
+        repo.client
+            .collect(package_meta("existing-app", "1.0.0", &file_object), None)
             .await
             .expect("collect content");
 
-        let stored_id = client
+        let stored_id = repo
+            .client
             .store(&content_id.to_string())
             .await
             .expect("store content");
         assert_eq!(stored_id, content_id);
 
-        let records = client
+        let records = repo
+            .client
             .list(Some(RepoListFilter::new(
                 None,
                 None,
@@ -1322,39 +1482,18 @@ mod tests {
         assert_eq!(record.content_id, content_id.to_string());
         assert_eq!(record.status, REPO_STATUS_PINNED);
         assert_eq!(record.origin, REPO_ORIGIN_LOCAL);
+        let wrapper = binding(&repo, "existing-app/1.0.0")
+            .await
+            .expect("package bound by name and version");
+        assert_eq!(wrapper.name, "existing-app");
+        assert_eq!(wrapper.content, content_id.to_string());
     }
 
     #[tokio::test]
     async fn collect_pin_and_serve_round_trip() {
-        let (_dir, service, client) = test_service().await;
-        let source_dir = tempfile::tempdir().expect("create source dir");
-        let content_path = source_dir.path().join("pkg.tar.gz");
-        write_file(&content_path, b"repo-service-collect-pin").await;
-
-        let store_mgr = service
-            .get_named_store_mgr()
-            .await
-            .expect("load named store");
-        let file_template = FileObject::default();
-        let (file_object, _file_obj_id, _file_obj_str) = cacl_file_object(
-            Some(&store_mgr),
-            &content_path,
-            &file_template,
-            true,
-            &CheckMode::ByFullHash,
-            StoreMode::StoreInNamedMgr,
-            None,
-        )
-        .await
-        .expect("store content into named store");
-        let content_id = parse_obj_id(&file_object.content).expect("parse content id");
-        let size = file_object.size;
-
-        let owner = DID::from_str("did:bns:publisher").expect("parse owner did");
-        let mut meta = PackageMeta::new("shared-app", "2.0.0", "publisher", &owner, None);
-        meta.content = content_id.to_string();
-        meta.size = size;
-        let meta_value = serde_json::to_value(meta).expect("serialize package meta");
+        let repo = test_service().await;
+        let (file_object, content_id) =
+            put_content(&repo.store, "pkg.tar.gz", b"repo-service-collect-pin").await;
 
         let referral = ActionObject {
             subject: build_actor_obj_id("did:bns:alice"),
@@ -1365,32 +1504,36 @@ mod tests {
             iat: buckyos_get_unix_timestamp(),
             exp: buckyos_get_unix_timestamp() + 3600,
         };
-        client
-            .collect(meta_value, Some(referral.clone()))
+        repo.client
+            .collect(
+                package_meta("shared-app", "2.0.0", &file_object),
+                Some(referral.clone()),
+            )
             .await
             .expect("collect content");
+        assert!(is_no_such_key(
+            &binding(&repo, "shared-app/2.0.0").await.unwrap_err()
+        ));
 
-        let download = ActionObject {
-            subject: build_actor_obj_id("did:bns:bob"),
-            action: ACTION_TYPE_DOWNLOAD.to_string(),
-            target: content_id.clone(),
-            base_on: Some(referral.gen_obj_id().0),
-            details: Some(json!({"subject_did":"did:bns:bob"})),
-            iat: buckyos_get_unix_timestamp(),
-            exp: buckyos_get_unix_timestamp() + 3600,
-        };
-        client
+        let mut download = download(&content_id, "did:bns:bob");
+        download.base_on = Some(referral.gen_obj_id().0);
+        repo.client
             .pin(&content_id.to_string(), download.clone())
             .await
             .expect("pin content");
+        binding(&repo, "shared-app/2.0.0")
+            .await
+            .expect("pinned package is bound");
 
-        let proofs = client
+        let proofs = repo
+            .client
             .get_proofs(&content_id.to_string(), None)
             .await
             .expect("get proofs");
         assert_eq!(proofs.len(), 2);
 
-        let serve_result = client
+        let serve_result = repo
+            .client
             .serve(
                 &content_id.to_string(),
                 RepoServeRequestContext::new(
@@ -1411,7 +1554,8 @@ mod tests {
             Some(content_id.to_string())
         );
 
-        let proofs = client
+        let proofs = repo
+            .client
             .get_proofs(
                 &content_id.to_string(),
                 Some(RepoProofFilter::new(
@@ -1425,5 +1569,113 @@ mod tests {
             .await
             .expect("get filtered proofs");
         assert_eq!(proofs.len(), 2);
+
+        repo.client
+            .uncollect(&content_id.to_string(), false)
+            .await
+            .expect("uncollect remote content");
+        assert!(is_no_such_key(
+            &binding(&repo, "shared-app/2.0.0").await.unwrap_err()
+        ));
+    }
+
+    #[tokio::test]
+    async fn same_package_version_with_other_content_is_refused() {
+        let repo = test_service().await;
+        let (first_file, first) = put_content(&repo.store, "a.tar.gz", b"first build").await;
+        let (second_file, second) = put_content(&repo.store, "b.tar.gz", b"second build").await;
+        for file in [&first_file, &second_file] {
+            repo.client
+                .collect(package_meta("dup-app", "1.0.0", file), None)
+                .await
+                .expect("collect");
+        }
+        repo.client
+            .pin(&first.to_string(), download(&first, "did:bns:bob"))
+            .await
+            .expect("pin first");
+        repo.client
+            .pin(&first.to_string(), download(&first, "did:bns:bob"))
+            .await
+            .expect("pinning again replays");
+        assert!(repo
+            .client
+            .pin(&second.to_string(), download(&second, "did:bns:bob"))
+            .await
+            .is_err());
+        let second_record = repo
+            .service
+            .db
+            .get_object(&second.to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(second_record.status, REPO_STATUS_COLLECTED);
+        assert_eq!(
+            binding(&repo, "dup-app/1.0.0").await.unwrap().content,
+            first.to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_matches_the_bucket_to_pinned_rows() {
+        let repo = test_service().await;
+        let (file_object, content_id) = put_content(&repo.store, "pkg.tar.gz", b"reconciled").await;
+        repo.client
+            .collect(package_meta("kept-app", "3.0.0", &file_object), None)
+            .await
+            .expect("collect");
+        repo.client
+            .pin(
+                &content_id.to_string(),
+                download(&content_id, "did:bns:bob"),
+            )
+            .await
+            .expect("pin");
+        let bucket = repo_service_packages_bucket();
+        let (orphan_file, _) = put_content(&repo.store, "orphan.tar.gz", b"orphan").await;
+        let (orphan_id, orphan_str) = orphan_file.gen_obj_id();
+        repo.buckets
+            .put_object_str(
+                &repo.store,
+                &bucket,
+                "orphan/1.0.0",
+                &orphan_id,
+                &orphan_str,
+                Conditions::default(),
+            )
+            .await
+            .expect("bind orphan");
+        repo.buckets
+            .delete(&bucket, "kept-app/3.0.0", None)
+            .await
+            .expect("drop pinned binding");
+
+        repo.service.reconcile(0).await.expect("reconcile");
+        assert!(is_no_such_key(
+            &binding(&repo, "orphan/1.0.0").await.unwrap_err()
+        ));
+        assert_eq!(
+            binding(&repo, "kept-app/3.0.0").await.unwrap().content,
+            content_id.to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn content_missing_from_the_store_is_not_pinned() {
+        let repo = test_service().await;
+        let (file_object, content_id) = put_content(&repo.store, "pkg.tar.gz", b"missing").await;
+        let mut meta = package_meta("missing-app", "1.0.0", &file_object);
+        let (fake, _) = FileObject::new("x".into(), 1, content_id.to_string()).gen_obj_id();
+        meta["content"] = json!(fake.to_string());
+        repo.client.collect(meta, None).await.expect("collect");
+        assert!(repo
+            .client
+            .pin(&fake.to_string(), download(&fake, "did:bns:bob"))
+            .await
+            .is_err());
+        assert!(is_no_such_key(
+            &binding(&repo, "missing-app/1.0.0").await.unwrap_err()
+        ));
     }
 }

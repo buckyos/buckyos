@@ -352,7 +352,8 @@ impl RuntimeInferencePort {
             caller.user_id.clone(),
             request_id.to_string(),
         )
-        .map_err(resource_rpc_error)?;
+        .map_err(resource_rpc_error)?
+        .with_app(caller.artifact_app());
         call.resource_access_context = Some(context.clone());
         if call.resource_requirements.is_empty() {
             return Ok(());

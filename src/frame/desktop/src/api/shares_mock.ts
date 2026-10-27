@@ -293,7 +293,7 @@ export function createMockShareService(): ShareService {
       const related = rec.info.related_share_id ? shares.get(rec.info.related_share_id) : undefined
       return {
         ...view(rec),
-        retention: [{ obj_id: rec.info.obj_id, pin_owner: `share:${id}`, pinned_at: rec.info.created_at, released_at: rec.info.retained ? null : rec.info.stopped_at ?? now() }],
+        retention: rec.info.retained ? [{ bucket_id: 'zone/nfs-server/_/shares', key: id, obj_id: rec.info.obj_id, version: 1, bound_at: rec.info.created_at }] : [],
         audit: [...rec.audit].reverse(),
         related: related ? view(related) : undefined,
       }

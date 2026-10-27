@@ -27,17 +27,58 @@ TARGETS = {
 ELF_MACHINES = {"x86_64": "Advanced Micro Devices X86-64", "aarch64": "AArch64"}
 
 
-def version() -> str:
+def source_version() -> str:
     value = (SOURCE / "VERSION").read_text(encoding="utf-8").strip()
-    if not re.fullmatch(r"[A-Za-z0-9._+-]+", value):
+    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)*", value):
         raise ValueError("invalid src/VERSION")
     return value
 
 
-def archive_name(target: str) -> str:
+def release_version(value: str) -> str:
+    match = re.search(r"\b[0-9]+(?:\.[0-9]+)*\+build[0-9]{6}(?![0-9])", value)
+    if match is None:
+        raise ValueError(f"cannot parse BuckyOS build version from {value!r}")
+    release = match.group()
+    if release.split("+", 1)[0] != source_version():
+        raise ValueError(f"binary version {release} does not match src/VERSION {source_version()}")
+    return release
+
+
+def version(binary: Path) -> str:
+    output = subprocess.check_output([str(binary.resolve()), "--version"], text=True)
+    return release_version(output)
+
+
+def archive_name(target: str, release: str) -> str:
     """File name of the release archive for a target, without directory."""
     platform, _ = TARGETS[target]
-    return f"buckyos-agent-daemon-{version()}-{target}{'.zip' if platform == 'windows' else '.tar.gz'}"
+    return f"buckyos-agent-daemon-{release}-{target}{'.zip' if platform == 'windows' else '.tar.gz'}"
+
+
+def find_archive(dist: Path, target: str) -> Path | None:
+    archives = sorted(dist.glob(archive_name(target, "*")))
+    if len(archives) > 1:
+        raise ValueError(f"multiple release archives for {target}")
+    return archives[0] if archives else None
+
+
+def archive_version(archive: Path, target: str) -> str:
+    directory = archive.name.removesuffix(".zip").removesuffix(".tar.gz")
+    manifest_path = f"{directory}/manifest.json"
+    try:
+        if archive.suffix == ".zip":
+            with zipfile.ZipFile(archive) as zipped:
+                manifest = json.loads(zipped.read(manifest_path))
+        else:
+            with tarfile.open(archive) as tar:
+                with tar.extractfile(manifest_path) as stream:
+                    manifest = json.load(stream)
+        release = release_version(manifest["version"])
+        if manifest["version"] != release or manifest["target"] != target or archive.name != archive_name(target, release):
+            raise ValueError(f"manifest does not match archive {archive.name}")
+    except (KeyError, TypeError, AttributeError, tarfile.TarError, zipfile.BadZipFile) as error:
+        raise ValueError(f"invalid release manifest in {archive.name}: {error}") from error
+    return release
 
 
 def inspect_elf(binary: Path, target: str) -> dict:
@@ -62,11 +103,11 @@ def package(binary: Path, target: str, output: Path, *, static_crt: bool = False
     platform, arch = TARGETS[target]
     if not binary.is_file():
         raise ValueError(f"daemon binary not found: {binary}")
-    release = version()
+    release = version(binary)
     name = f"buckyos-agent-daemon-{release}-{target}"
     linux = inspect_elf(binary, target) if platform == "linux" else {}
     output.mkdir(parents=True, exist_ok=True)
-    archive = output / archive_name(target)
+    archive = output / archive_name(target, release)
     with tempfile.TemporaryDirectory(prefix="buckyos-agent-daemon-") as temporary:
         payload = Path(temporary) / name
         payload.mkdir()
@@ -132,14 +173,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build and package a foreground BuckyOS Agent Daemon")
     parser.add_argument("--target", required=True, choices=TARGETS)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--binary", type=Path, help="Package an already built binary without running Cargo; Windows CRT dependencies remain unverified")
+    parser.add_argument("--binary", type=Path, help="Package an already built binary that can run --version on this host; Windows CRT dependencies remain unverified")
     args = parser.parse_args(argv)
     binary = args.binary
     static_crt = binary is None and TARGETS[args.target][0] == "windows"
     if binary is None:
-        build_options = {"cwd": SOURCE}
+        environment = {**os.environ, "VERSION": source_version()}
+        build_options = {"cwd": SOURCE, "env": environment}
         if static_crt:
-            environment = os.environ.copy()
             if "CARGO_ENCODED_RUSTFLAGS" in environment:
                 encoded = environment["CARGO_ENCODED_RUSTFLAGS"]
             else:
@@ -147,7 +188,6 @@ def main(argv: list[str] | None = None) -> int:
             environment["CARGO_ENCODED_RUSTFLAGS"] = (
                 (encoded + "\x1f" if encoded else "") + "-C\x1ftarget-feature=+crt-static"
             )
-            build_options["env"] = environment
         result = subprocess.run([
             "cargo", "build", "--release", "--package", "buckyos_agent_daemon", "--target", args.target,
         ], **build_options)

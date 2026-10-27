@@ -96,8 +96,12 @@ async fn krpc(State(state): State<AppState>, body: Bytes) -> Response {
         if caller.as_ref().is_some_and(|caller| caller.restricted) {
             return rpc_failure(seq, &denied(buckyos_api::DenyReason::SessionKindNotAllowed, "object.register"));
         }
-        if let Err(error) = authorize_import(token, params.get("objId").and_then(Value::as_str).unwrap_or_default()).await {
-            return rpc_failure(seq, &error);
+        // An upload bound in the caller's scratch bucket is checked by the station; any other
+        // object must be readable by the caller's own NDM session.
+        if params.get("key").is_none() {
+            if let Err(error) = authorize_import(token, params.get("objId").and_then(Value::as_str).unwrap_or_default()).await {
+                return rpc_failure(seq, &error);
+            }
         }
     }
     match state.host.handle_rpc(caller.as_ref(), &method, params).await {
@@ -292,7 +296,7 @@ async fn object_content(State(state): State<AppState>, headers: HeaderMap, Path(
         Ok(None) => return (StatusCode::NOT_FOUND, "not found").into_response(),
         Err(r) => return r,
     };
-    let data = match station.chunks.read_file(&id).await {
+    let data = match station.store.read_file(&id).await {
         Ok(Some(d)) => d,
         Ok(None) if reader == Reader::Owner => match station.fetch_content_on_demand(&id).await {
             Ok(Some(d)) => d,
@@ -465,7 +469,13 @@ impl Station {
     pub async fn inbox_receipt(&self, obj_id: &str) -> crate::error::HsResult<Option<Option<String>>> {
         let id = obj_id.to_string();
         self.db
-            .call(move |c| Ok(rusqlite::OptionalExtension::optional(c.query_row("SELECT admission FROM inbox_receipts WHERE obj_id=?1", [id], |r| r.get::<_, Option<String>>(0)))?))
+            .call(move |c| {
+                Ok(rusqlite::OptionalExtension::optional(c.query_row(
+                    "SELECT admission FROM inbox_receipts WHERE obj_id=?1 AND owner=?2",
+                    rusqlite::params![id, c.owner],
+                    |r| r.get::<_, Option<String>>(0),
+                ))?)
+            })
             .await
     }
 
@@ -473,8 +483,10 @@ impl Station {
         let id = obj_id.to_string();
         self.db
             .call(move |c| {
-                let mut stmt = c.prepare("SELECT p.audience FROM object_grants g JOIN published p ON p.entry=g.entry WHERE g.obj_id=?1")?;
-                let audiences = stmt.query_map([id], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+                let mut stmt = c.prepare(
+                    "SELECT p.audience FROM object_grants g JOIN published p ON p.owner=g.owner AND p.entry=g.entry WHERE g.obj_id=?1 AND g.owner=?2",
+                )?;
+                let audiences = stmt.query_map(rusqlite::params![id, c.owner], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
                 Ok(!audiences.is_empty() && audiences.iter().all(|a| !a.contains("\"public\"")))
             })
             .await

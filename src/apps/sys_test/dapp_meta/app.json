@@ -25,6 +25,15 @@
           "allow_guest": true
         }
       }
-    }
+    },
+    "buckets": {
+      "smoke": {
+        "kind": "data",
+        "data_policy": "temp",
+        "default_ttl_days": 1,
+        "quota_mib": 16
+      }
+    },
+    "storage_quota_mib": 64
   }
 }

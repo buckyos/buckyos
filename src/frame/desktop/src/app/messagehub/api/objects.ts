@@ -1,11 +1,13 @@
 /**
  * Attachment access through the msg-center object route
- * (`GET /kapi/msg-center/objects/{obj_id}[/content][?context_path=…]`,
- * bearer session token). Results are cached per viewer (`identityKey`),
- * `context_path` and object id; a new viewer drops them and revokes the
- * Blob URLs (`resetObjectCaches`).
+ * (`GET /kapi/msg-center/objects/{obj_id}[/content]?context_path=…`,
+ * bearer session token; `context_path` names the message the object is read
+ * through). Results are cached per viewer (`identityKey`), `context_path`
+ * and object id; a new viewer drops them and revokes the Blob URLs
+ * (`resetObjectCaches`). Collecting copies the attachment into the viewer's
+ * `collected` bucket (`msg.collect_attachment`).
  */
-import { currentSessionToken, msgCenterServiceUrl } from '../datamodel/sessionApi'
+import { collectAttachment, currentSessionToken, msgCenterServiceUrl } from '../datamodel/sessionApi'
 import { onObjectCachesReset, resetObjectCaches, type ObjectAccess, type ObjectInfo } from '../conversation/history/objectAccess'
 
 const infoCache = new Map<string, Promise<ObjectInfo>>()
@@ -25,7 +27,7 @@ export function setObjectViewer(identityKey: string) {
   viewer = identityKey
 }
 
-/** `context` is the `context_path` of an object shown in a hosted group session. */
+/** `context` is the `context_path` of the message that shows the object (`objectContextOf`). */
 export function objectUrl(objId: string, content = false, context?: string, innerPath?: string): string {
   const base = msgCenterServiceUrl().replace(/\/$/, '')
   const params = new URLSearchParams()
@@ -91,5 +93,10 @@ export const apiObjectAccess: ObjectAccess = {
       contentCache.set(key, pending)
     }
     return pending
+  },
+  async collect(objId, context) {
+    if (!context) throw new ObjectRouteError(404, 'not-found')
+    const { bucket_id: bucketId, key } = await collectAttachment(objId, context)
+    return { bucketId, key }
   },
 }

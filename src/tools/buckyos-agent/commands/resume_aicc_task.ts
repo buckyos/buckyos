@@ -10,7 +10,8 @@ import { ndm_proxy } from "buckyos";
 import { bailArgError, flagBool, parseArgvOrExit } from "../lib/cli.ts";
 import { initRuntime } from "../lib/runtime.ts";
 import { describeFailure, resumeAiccTask } from "../lib/aicc.ts";
-import { saveArtifactToPath, suffixPathByMime } from "../lib/io.ts";
+import { deliverArtifact, deliveredSummary, suffixPathByMime } from "../lib/io.ts";
+import type { DeliveredOutput } from "../lib/io.ts";
 import {
   bailAiccError,
   bailAiccFailed,
@@ -34,12 +35,13 @@ export const HELP =
 
 Picks up an AICC task (the task_id in a media command's result, its wait_timeout
 error, or its __BUCKYOS_AGENT_PROGRESS__ stderr lines) without submitting it
-again: waits while it runs, then saves its result files.
+again: waits while it runs, then keeps its result files in this Agent's
+artifacts bucket (detail.files[].url = obj://bucket/...).
 
 Positional:
   <aicc_task_id>   task-manager id of the AICC task, e.g. t-0123abcd...
-  [output_path]    where to save the result; several results are saved as
-                   <name>-<n>.<ext>. Omit it to only report state and results.
+  [output_path]    also write local copies; several results are saved as
+                   <name>-<n>.<ext>.
 
 Options:
   --no-wait            report the current state at once
@@ -119,39 +121,26 @@ export async function run(argv: string[]): Promise<never> {
     bailAiccFailed(TOOL, method, taskId, describeFailure(task));
   }
 
-  // ── 5. 把产物拉到本地 ─────────────────────────────────────────────────
+  // ── 5. 把产物交到 Agent 的 artifacts 桶（给了路径才另存本地）─────────
   const artifacts = aiResponseArtifacts(task.summary);
   const text = aiResponseText(task.summary);
-  const files: Array<
-    {
-      path: string;
-      mime: string | null;
-      bytes: number;
-      source_kind: string;
-      obj_id: string | null;
+  const files: DeliveredOutput[] = [];
+  // deno-lint-ignore no-explicit-any
+  const ndmProxy = (ndm_proxy as any).createNdmProxyClient();
+  try {
+    for (let i = 0; i < artifacts.length; i += 1) {
+      const a = artifacts[i];
+      const path = !outputPath
+        ? undefined
+        : artifacts.length === 1
+        ? outputPath
+        : numberedPath(outputPath, i + 1, artifactMime(a));
+      files.push(
+        await deliverArtifact(runtime, task.summary, a, ndmProxy, { tool: TOOL, path }),
+      );
     }
-  > = [];
-  if (outputPath) {
-    // deno-lint-ignore no-explicit-any
-    const ndmProxy = (ndm_proxy as any).createNdmProxyClient();
-    try {
-      for (let i = 0; i < artifacts.length; i += 1) {
-        const a = artifacts[i];
-        const dest = artifacts.length === 1
-          ? suffixPathByMime(outputPath, artifactMime(a) ?? undefined)
-          : numberedPath(outputPath, i + 1, artifactMime(a));
-        const saved = await saveArtifactToPath(a, dest, ndmProxy);
-        files.push({
-          path: saved.path,
-          mime: saved.mime ?? null,
-          bytes: saved.bytes,
-          source_kind: saved.source_kind,
-          obj_id: saved.obj_id ?? null,
-        });
-      }
-    } catch (err) {
-      bailIoError(TOOL, taskId, err);
-    }
+  } catch (err) {
+    bailIoError(TOOL, taskId, err);
   }
 
   // ── 6. emit AgentToolResult ───────────────────────────────────────────
@@ -163,9 +152,7 @@ export async function run(argv: string[]): Promise<never> {
     metadata: a.metadata ?? null,
   }));
   const summary = files.length
-    ? `${TOOL} wrote ${files.map((f) => f.path).join(", ")}`
-    : artifacts.length
-    ? `AICC task ${taskId} succeeded with ${artifacts.length} result file(s); pass an output path to save them`
+    ? deliveredSummary(TOOL, files)
     : `AICC task ${taskId} succeeded`;
   emitAndExit(
     successResult(

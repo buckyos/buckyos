@@ -281,7 +281,9 @@ test('in a standalone tab, Preview stays inline and Open with goes to the Zone r
 test('closing a changed document while the server is unreachable keeps the draft on this device', async ({ browser }) => {
   const { context, page } = await desktop(browser)
   const editor = await openInDesktop(page, 'notes.md')
-  await page.route(`${editorOrigin}/nfs/v1/**`, route => route.abort('internetdisconnected'))
+  // the file service and the buffer buckets are both on the server
+  const server = (url: URL) => url.origin === editorOrigin && /^\/(nfs\/v1|bucket\/v1|kapi\/nfs-server)(\/|$)/.test(url.pathname)
+  await page.route(server, route => route.abort('internetdisconnected'))
   await editor.locator('.cm-content').click(); await page.keyboard.press('Control+End'); await page.keyboard.insertText('\noffline words')
   const started = Date.now()
   await editorWindow(page, 'notes.md').getByRole('button', { name: 'Close' }).first().click()
@@ -290,7 +292,7 @@ test('closing a changed document while the server is unreachable keeps the draft
   expect(Date.now() - started).toBeLessThan(6000)
   await dialog.getByRole('button', { name: 'Keep on this device and close', exact: true }).click()
   await expect(editorWindow(page, 'notes.md')).toHaveCount(0)
-  await page.unroute(`${editorOrigin}/nfs/v1/**`)
+  await page.unroute(server)
   const again = await openInDesktop(page, 'notes.md')
   await expect(again.locator('.cm-content')).toContainText('offline words', { timeout: 30_000 })
   await context.close()

@@ -1,17 +1,18 @@
 use buckyos_api::{
-    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, zone_document_hostname, BuckyOSRuntimeType, HomeStationSettings,
-    ZonePresentationConfig, ZonePresentationFields, HOMESTATION_SERVICE_NAME, HOMESTATION_SERVICE_PORT, ZONE_PRESENTATION_KEY,
+    get_buckyos_api_runtime, get_rdb_instance, init_buckyos_api_runtime, set_buckyos_api_runtime, zone_document_hostname, BuckyOSRuntimeType,
+    HomeStationSettings, RdbBackend, ZonePresentationConfig, ZonePresentationFields, HOMESTATION_RDB_INSTANCE_ID, HOMESTATION_SERVICE_NAME,
+    HOMESTATION_SERVICE_PORT, ZONE_PRESENTATION_KEY,
 };
 use clap::{Arg, ArgAction, Command};
 use homestation::auth::{RuntimeAccounts, RuntimeAuth};
 use homestation::contacts::{CachedContacts, MsgCenterContacts};
-use homestation::db::Db;
+use homestation::db::{sqlite_path, Db};
 use homestation::directory::NameDirectory;
 use homestation::error::HsResult;
 use homestation::evaluation::{AiccModel, ModelClient};
 use homestation::host::{Host, HostConfig, ZoneBrand};
 use homestation::http::{serve, AppState};
-use homestation::objects::{ChunkStore, NdmChunkStore};
+use homestation::objects::Storage;
 use homestation::sign::Signer;
 use homestation::users::{SystemConfigUsers, UserRegistry, ZoneUser};
 use homestation::zone::ZoneFeed;
@@ -26,11 +27,25 @@ fn main() {
         .arg(Arg::new("config").long("config").help("Standalone config JSON"))
         .arg(Arg::new("listen").long("listen").help("Listen address (standalone mode)"))
         .arg(Arg::new("keygen").long("keygen").action(ArgAction::SetTrue).help("Print a new ed25519 key (pem, x) and exit"))
+        .arg(
+            Arg::new("bucket-specs")
+                .long("bucket-specs")
+                .action(ArgAction::SetTrue)
+                .help("Print the buckets HomeStation declares, as `nfs_server --bucket-specs` reads them, and exit"),
+        )
         .arg(Arg::new("log-level").long("log-level").default_value("info"))
         .get_matches();
     if matches.get_flag("keygen") {
         let (pem, x) = homestation::sign::generate_key();
         println!("{}", serde_json::json!({ "private_key_pem": pem, "public_key_x": x, "did_dev": format!("did:dev:{x}") }));
+        return;
+    }
+    if matches.get_flag("bucket-specs") {
+        let specs = serde_json::json!({ HOMESTATION_SERVICE_NAME: {
+            "buckets": buckyos_api::homestation_bucket_decls(),
+            "storage_quota_mib": buckyos_api::HOMESTATION_STORAGE_QUOTA_MIB,
+        } });
+        println!("{specs}");
         return;
     }
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -78,9 +93,9 @@ fn main() {
 }
 
 /// BuckyOS service mode: kernel-service login; every user of the zone gets a HomeStation (own
-/// database under `users/<user>/`, own Message Center contacts), all signed with the OOD
-/// device key (zone custody); the zone named store; gateway route `/kapi/homestation` plus
-/// the zone-level `/home/` protocol paths.
+/// rows in the `homestation-main` RDB instance, own buckets, own Message Center contacts), all
+/// signed with the OOD device key (zone custody); the zone named store; gateway route
+/// `/kapi/homestation` plus the zone-level `/home/` protocol paths.
 async fn service_main() {
     let mut runtime = match init_buckyos_api_runtime(HOMESTATION_SERVICE_NAME, None, BuckyOSRuntimeType::KernelService).await {
         Ok(r) => r,
@@ -109,13 +124,6 @@ async fn service_main() {
             HomeStationSettings::default()
         }
     };
-    let data_dir = match runtime.get_data_folder() {
-        Ok(d) => d,
-        Err(e) => {
-            log::error!("data folder unavailable: {e}");
-            std::process::exit(1);
-        }
-    };
     let zone_doc = match runtime.get_zone_config().map(|z| z.zone_document()) {
         Some(Ok(doc)) => doc,
         _ => {
@@ -138,6 +146,28 @@ async fn service_main() {
         log::error!("set runtime failed: {e}");
         std::process::exit(1);
     }
+    let db_path = match get_rdb_instance(HOMESTATION_SERVICE_NAME, None, HOMESTATION_RDB_INSTANCE_ID).await {
+        Ok(instance) if instance.backend == RdbBackend::Sqlite => sqlite_path(&instance.connection),
+        Ok(instance) => {
+            log::error!("rdb instance {HOMESTATION_RDB_INSTANCE_ID} uses an unsupported backend {:?}", instance.backend);
+            std::process::exit(1);
+        }
+        Err(e) => {
+            log::error!("rdb instance {HOMESTATION_RDB_INSTANCE_ID} unavailable: {e}");
+            std::process::exit(1);
+        }
+    };
+    let db = match db_path.as_deref().map(Db::open) {
+        Some(Ok(db)) => db,
+        Some(Err(e)) => {
+            log::error!("homestation database: {e}");
+            std::process::exit(1);
+        }
+        None => {
+            log::error!("rdb instance {HOMESTATION_RDB_INSTANCE_ID} is not a sqlite file");
+            std::process::exit(1);
+        }
+    };
     let users = Arc::new(UserRegistry::new(Box::new(SystemConfigUsers), Duration::from_secs(60)));
     let owner_user = users.by_did(&owner).await.map(|u| u.user);
     if owner_user.is_none() {
@@ -148,18 +178,18 @@ async fn service_main() {
     origins.entry(zone.clone()).or_insert_with(|| format!("http://127.0.0.1:{HOMESTATION_SERVICE_PORT}"));
     let directory = Arc::new(NameDirectory::new(&zone, vec![device_did], users.clone(), origins));
     let model: Option<Arc<dyn ModelClient>> = settings.evaluation_model.clone().map(|m| Arc::new(AiccModel { logical_model: m }) as Arc<dyn ModelClient>);
-    let chunks: Arc<dyn ChunkStore> = Arc::new(NdmChunkStore { ndm });
+    let store = Arc::new(Storage::zone(ndm));
     let mut template = StationConfig::new(&owner, "", &zone, "");
     template.disclose_admission = settings.disclose_admission;
     template.spider_enabled = settings.spider;
     template.reading_window = settings.reading_window;
-    let users_dir = data_dir.join("users");
     let builder = {
         let directory = directory.clone();
         let owner = owner.clone();
         let collector = settings.collector;
+        let db = db.clone();
         Box::new(move |user: &ZoneUser| -> HsResult<Arc<Station>> {
-            let db = Db::open(&homestation::standalone::user_db_path(&users_dir, &user.user))?;
+            let db = db.for_owner(&user.user);
             let mut cfg = template.clone();
             cfg.owner = user.did.clone();
             cfg.owner_name = user.name.clone();
@@ -168,7 +198,7 @@ async fn service_main() {
             cfg.collector = collector && user.did == owner;
             cfg.agent = user.agent.clone();
             let contacts = CachedContacts::new(Box::new(MsgCenterContacts { owner: user.did.clone() }), Duration::from_secs(30));
-            Ok(Station::new(cfg, db, signer.clone(), directory.clone(), contacts, chunks.clone(), model.clone()))
+            Ok(Station::new(cfg, db, signer.clone(), directory.clone(), contacts, store.clone(), model.clone()))
         })
     };
     let mut host_cfg = HostConfig::new(&zone);
@@ -177,13 +207,7 @@ async fn service_main() {
     host_cfg.owner_user = owner_user;
     host_cfg.default_feed = settings.default_feed.clone();
     host_cfg.zone_feed_writers = settings.zone_feed_writers.clone();
-    let zone_feed = match ZoneFeed::open(&data_dir.join("zone.db")) {
-        Ok(z) => z,
-        Err(e) => {
-            log::error!("zone feed database: {e}");
-            std::process::exit(1);
-        }
-    };
+    let zone_feed = ZoneFeed::new(&db);
     let host = Host::new(host_cfg, directory, Arc::new(RuntimeAuth::new(Box::new(RuntimeAccounts), users.clone())), users, zone_feed, builder);
     {
         let host = host.clone();

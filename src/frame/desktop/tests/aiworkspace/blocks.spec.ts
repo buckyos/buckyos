@@ -46,11 +46,9 @@ test('snapshot remains readable to collaborators and after package import', asyn
   const response = await fetch(`${api.base}/asset/${ws.workspace_id}/${id}`, { headers: { authorization: `Bearer ${BOB}` } })
   expect(await response.text()).toContain('中文快照')
   const ex = await api.rpc(ALICE, 'doc.export', { workspace_id: ws.workspace_id, mode: 'share', self_contained: true })
-  const pkg = await (await fetch(`${api.base}/export/${ws.workspace_id}/${ex.export_id}`, { headers: { authorization: `Bearer ${ALICE}` } })).arrayBuffer()
+  const pkg = await api.download(ex.download)
   expect(ex.manifest.objects.some((object: { id: string }) => object.id === id)).toBe(true)
-  const begin = await api.rpc(ALICE, 'ws.begin_import', {})
-  await fetch(`${api.base}/upload/${begin.upload_id}`, { method: 'PUT', headers: { authorization: `Bearer ${ALICE}` }, body: Buffer.from(pkg) })
-  const imported = await api.rpc(ALICE, 'ws.import', { upload_id: begin.upload_id, semantics: 'new' })
+  const imported = await api.importPackage(ALICE, pkg, 'new')
   expect(imported.ok).toBe(true)
   const importedStatus = (await fetch(`${api.base}/asset/${imported.workspace_id}/${id}`, { headers: { authorization: `Bearer ${ALICE}` } })).status
   expect.soft(response.status).toBe(200)

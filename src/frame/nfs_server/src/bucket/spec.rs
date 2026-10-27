@@ -18,12 +18,27 @@ pub struct AppBuckets {
     pub buckets: HashMap<String, BucketDecl>,
     #[serde(default)]
     pub storage_quota_mib: Option<u64>,
+    /// Standalone only: the app's folder name in the Files projection.
+    #[serde(default)]
+    pub show_name: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct SpecView {
     #[serde(default)]
+    state: Option<buckyos_api::ServiceState>,
+    #[serde(default)]
     spec_config: AppBuckets,
+    #[serde(default)]
+    app_doc: Option<DocView>,
+    #[serde(default)]
+    service_doc: Option<DocView>,
+}
+
+#[derive(Deserialize)]
+struct DocView {
+    #[serde(default)]
+    show_name: String,
 }
 
 async fn load_runtime(appid: &str, owner: &str) -> BucketResult<Option<AppBuckets>> {
@@ -38,7 +53,12 @@ async fn load_runtime(appid: &str, owner: &str) -> BucketResult<Option<AppBucket
         match client.get(&key).await {
             Ok(v) => {
                 let view: SpecView = serde_json::from_str(&v.value).map_err(|e| BucketError::Internal(format!("{key}: {e}")))?;
-                return Ok(Some(view.spec_config));
+                if view.state == Some(buckyos_api::ServiceState::Deleted) {
+                    return Ok(Some(AppBuckets::default()));
+                }
+                let mut declared = view.spec_config;
+                declared.show_name = view.app_doc.or(view.service_doc).map(|d| d.show_name).filter(|n| !n.trim().is_empty());
+                return Ok(Some(declared));
             }
             Err(buckyos_api::SystemConfigError::KeyNotFound(_)) => continue,
             Err(e) => return Err(BucketError::Internal(format!("{key}: {e}"))),
@@ -62,6 +82,9 @@ pub async fn sync_app(state: &AppState, appid: &str, owner: &str, force: bool) -
     }
     let store = state.buckets.store(state).await?;
     let declared = load(state, appid, owner).await?.unwrap_or_default();
+    if let Some(name) = &declared.show_name {
+        state.buckets.names.lock().unwrap().insert(appid.to_string(), name.clone());
+    }
     let scope = if owner == ZONE_OWNER { BucketScope::Zone } else { BucketScope::User };
     let mut names = Vec::new();
     for (name, decl) in &declared.buckets {
@@ -139,4 +162,24 @@ pub async fn sync_zone(state: &AppState) -> BucketResult<()> {
         }
     }
     Ok(())
+}
+
+/// Loads the display names of the apps whose documents / collected buckets a
+/// user's Files projection shows (each app at most once per sync interval).
+pub async fn sync_projection_names(state: &AppState, user: &str) {
+    let Some(store) = state.buckets.loaded() else { return };
+    let Ok(buckets) = store.list_buckets(Some(user), None, Some(BucketScope::User)) else { return };
+    let missing: std::collections::BTreeSet<String> = {
+        let names = state.buckets.names.lock().unwrap();
+        buckets
+            .into_iter()
+            .filter(|b| b.kind == bucket_store::BucketKind::Data && b.data_policy.user_owned() && !names.contains_key(&b.appid))
+            .map(|b| b.appid)
+            .collect()
+    };
+    for appid in missing {
+        if let Err(e) = sync_app(state, &appid, user, false).await {
+            log::debug!("bucket spec of {appid} for {user}: {e}");
+        }
+    }
 }

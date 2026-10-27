@@ -227,9 +227,10 @@ test.describe('MessageHub on a real zone (mobile and attachments)', () => {
       expect(refs.length).toBe(1)
       const objId = String((refs[0].target as JsonRecord).obj_id)
       expect(objId.startsWith('cyfile:')).toBe(true)
-      const unauthenticated = await request.get(`${baseURL}/kapi/msg-center/objects/${encodeURIComponent(objId)}/content`)
+      const contentUrl = `${baseURL}/kapi/msg-center/objects/${encodeURIComponent(objId)}/content?context_path=${encodeURIComponent(String(item.msg_id))}`
+      const unauthenticated = await request.get(contentUrl)
       expect(unauthenticated.status()).toBe(401)
-      const content = await request.get(`${baseURL}/kapi/msg-center/objects/${encodeURIComponent(objId)}/content`, { headers: { authorization: `Bearer ${token}` } })
+      const content = await request.get(contentUrl, { headers: { authorization: `Bearer ${token}` } })
       expect(content.status()).toBe(200)
       expect((await content.text()).includes('"name": "buckyos-web-desktop"')).toBe(true)
       await page.screenshot({ path: 'test-results-real/real-attachment-1440.png' })

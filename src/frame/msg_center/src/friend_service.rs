@@ -375,7 +375,8 @@ impl MessageCenter {
         Box::pin(async move {
             let msg = Self::friend_message(owner, &outgoing)?;
             let (msg_id, msg_json) = msg.gen_obj_id();
-            Self::store_message(&msg_id, &msg_json).await?;
+            self.store_message(&msg_id, &msg_json, &msg, crate::buckets::Arrival::Local)
+                .await?;
             self.with_state_write(|state| {
                 Self::ensure_message(state, msg.clone());
                 Ok(())

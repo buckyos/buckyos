@@ -8,6 +8,7 @@ import {
   ArgError,
   bailArgError,
   COMMON_OPTIONS_HELP,
+  DELIVERY_HELP,
   flagFloat,
   parseArgvOrExit,
   requireString,
@@ -18,8 +19,8 @@ import type { TypedRequestMap } from "../lib/aicc.ts";
 import {
   pickArtifact,
   resolveInputResource,
-  saveArtifactToPath,
-  suffixPathByMime,
+  deliverArtifact,
+  deliveredSummary,
 } from "../lib/io.ts";
 import {
   bailAiccError,
@@ -38,12 +39,12 @@ const TOOL = "edit_image";
 const METHOD = "image.img2img";
 
 export const HELP =
-  `Usage: edit_image <input_image> <prompt> <output_image> [options]
+  `Usage: edit_image <input_image> <prompt> [output_image] [options]
 
 Options:
   --strength <0.0-1.0>
   --format <png|jpg|webp>
-${COMMON_OPTIONS_HELP}`;
+${COMMON_OPTIONS_HELP}${DELIVERY_HELP}`;
 
 function formatToMime(format: string | undefined): string | undefined {
   if (!format) return undefined;
@@ -56,7 +57,7 @@ function formatToMime(format: string | undefined): string | undefined {
 export async function run(argv: string[]): Promise<never> {
   // 1. 参数
   const parsed = parseArgvOrExit(TOOL, HELP, argv);
-  if (parsed.positional.length < 3) {
+  if (parsed.positional.length < 2) {
     emitAndExit(
       errorResult(TOOL, `${TOOL} => arg_error`, HELP, {
         error: "missing positional",
@@ -119,28 +120,22 @@ export async function run(argv: string[]): Promise<never> {
   const ndmProxy = (ndm_proxy as any).createNdmProxyClient();
   let saved;
   try {
-    saved = await saveArtifactToPath(
-      artifact,
-      suffixPathByMime(outputPath, "image/png"),
-      ndmProxy,
-    );
+    saved = await deliverArtifact(runtime, call.summary, artifact, ndmProxy, {
+      tool: TOOL,
+      path: outputPath,
+      defaultMime: "image/png",
+    });
   } catch (err) {
     bailIoError(TOOL, call.taskId, err);
   }
 
   // 6. emit
   emitAndExit(
-    successResult(TOOL, `${TOOL} => done`, `${TOOL} wrote ${saved.path}`, {
+    successResult(TOOL, `${TOOL} => done`, deliveredSummary(TOOL, [saved]), {
       method: METHOD,
       capability: "image",
       task_id: call.taskId,
-      files: [{
-        path: saved.path,
-        mime: saved.mime ?? null,
-        bytes: saved.bytes,
-        source_kind: saved.source_kind,
-        obj_id: saved.obj_id ?? null,
-      }],
+      files: [saved],
     }),
     EXIT_SUCCESS,
   );

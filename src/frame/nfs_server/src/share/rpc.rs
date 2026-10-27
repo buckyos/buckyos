@@ -4,7 +4,7 @@
 
 use super::db::*;
 use super::snapshot::{self, SourcePlan};
-use super::{pin_owner, settle_share, ShareMgr};
+use super::{release, ShareMgr};
 use crate::acl::{Actor, Level, PUBLIC};
 use crate::error::*;
 use crate::fsutil::unix_now;
@@ -120,7 +120,7 @@ pub async fn dispatch(
         "share.create" => create(state, &p, args, bearer, Intent::Link).await,
         "share.app.handoff" => create(state, &p, args, bearer, Intent::Handoff).await,
         "share.operation" => operation(state, &p, args),
-        "share.get" => get(state, &p, args),
+        "share.get" => get(state, &p, args).await,
         "share.list" => list(state, &p, args),
         "share.update" => update(state, &p, args),
         "share.stop" => stop(state, &p, args).await,
@@ -290,7 +290,8 @@ pub fn share_view(state: &SharedState, viewer: &str, s: &ShareRow) -> NfsResult<
     };
     let delivery = state.db.share_delivery(&s.share_id)?;
     let (totals, last) = state.db.share_stats_total(&s.share_id)?;
-    let retained = state.db.share_retentions(&s.share_id)?.iter().any(|r| r.released_at.is_none());
+    // An active share's snapshot is bound in the shares bucket; stop / expiry release it.
+    let retained = s.status == "active";
     let mine = s.owner_user_id == viewer;
     let mut v = json!({
         "share_id": s.share_id,
@@ -866,15 +867,6 @@ struct NewCtx<'a> {
     source: &'static str,
 }
 
-async fn pin(state: &SharedState, share_id: &str, obj_id: &str) -> NfsResult<()> {
-    let store = state.share.store(&state.config).await?;
-    let id = ndn_lib::ObjId::new(obj_id).map_err(|e| internal(format!("bad obj id: {e}")))?;
-    store
-        .pin(&id, &pin_owner(share_id), named_store::PinScope::Recursive, None)
-        .await
-        .map_err(|e| internal(format!("pin snapshot: {e}")))
-}
-
 fn base_row(ctx: &NewCtx, share_id: &str, kind: &str, related: Option<&str>, cap_id: Option<&str>) -> ShareRow {
     let now = unix_now();
     ShareRow {
@@ -897,11 +889,12 @@ fn base_row(ctx: &NewCtx, share_id: &str, kind: &str, related: Option<&str>, cap
     }
 }
 
-async fn insert_pinned(state: &SharedState, new: NewShare<'_>) -> NfsResult<()> {
-    pin(state, &new.share.share_id, &new.share.obj_id).await?;
-    let (share_id, obj_id) = (new.share.share_id.clone(), new.share.obj_id.clone());
+/// Binds the snapshot first, then writes the share; a failed write releases the key again.
+async fn insert_retained(state: &SharedState, new: NewShare<'_>) -> NfsResult<()> {
+    super::retain(state, &new.share.share_id, &new.share.obj_id).await?;
+    let share_id = new.share.share_id.clone();
     if let Err(e) = state.db.share_create(new) {
-        super::release_pin(state, &share_id, &obj_id).await;
+        release(state, &share_id).await;
         return Err(e);
     }
     Ok(())
@@ -926,14 +919,13 @@ async fn create_link_share(
         password_rev: 0,
         allow_download: policy.allow_download,
     };
-    insert_pinned(
+    insert_retained(
         state,
         NewShare {
             share: &row,
             grant: Some((&cap_id, &token_hash, &subtree, policy.expires_at)),
             policy: Some(&policy_row),
             delivery: None,
-            pin_owner: &pin_owner(&share_id),
             audit: AuditEntry {
                 share_id: &share_id,
                 action: "create",
@@ -967,14 +959,13 @@ async fn create_delivery(state: &SharedState, ctx: &NewCtx<'_>, target: &str, li
         reported_at: None,
         error: None,
     };
-    insert_pinned(
+    insert_retained(
         state,
         NewShare {
             share: &row,
             grant: None,
             policy: None,
             delivery: Some(&delivery),
-            pin_owner: &pin_owner(&share_id),
             audit: AuditEntry {
                 share_id: &share_id,
                 action: "create",
@@ -1089,14 +1080,13 @@ fn operation(state: &SharedState, p: &Principal, args: &Value) -> NfsResult<Valu
 
 // ---------- read ----------
 
-fn get(state: &SharedState, p: &Principal, args: &Value) -> NfsResult<Value> {
+async fn get(state: &SharedState, p: &Principal, args: &Value) -> NfsResult<Value> {
     let share = load_share(state, p, str_arg(args, "share_id")?)?;
     let mut v = share_view(state, &p.owner, &share)?;
-    v["retention"] = json!(state
-        .db
-        .share_retentions(&share.share_id)?
+    v["retention"] = json!(super::retention(state, &share.share_id)
+        .await?
+        .map(|b| json!({"bucket_id": b.bucket_id, "key": b.key, "obj_id": b.obj_id, "version": b.version, "bound_at": b.created_at}))
         .into_iter()
-        .map(|r| json!({"obj_id": r.obj_id, "pin_owner": r.pin_owner, "pinned_at": r.pinned_at, "released_at": r.released_at}))
         .collect::<Vec<_>>());
     v["audit"] = json!(state.db.share_audit(&share.share_id, 50)?);
     if let Some(rel) = &share.related_share_id {
@@ -1264,7 +1254,7 @@ fn update(state: &SharedState, p: &Principal, args: &Value) -> NfsResult<Value> 
 async fn stop(state: &SharedState, p: &Principal, args: &Value) -> NfsResult<Value> {
     let share = load_share(state, p, str_arg(args, "share_id")?)?;
     let expected = args["revision"].as_i64().ok_or_else(|| invalid("revision required"))?;
-    if matches!(share.status.as_str(), "stopped" | "stopping" | "expired" | "failed") {
+    if matches!(share.status.as_str(), "stopped" | "expired" | "failed") {
         return Ok(json!({"status": share.status, "revision": share.revision}));
     }
     let now = unix_now();
@@ -1273,7 +1263,7 @@ async fn stop(state: &SharedState, p: &Principal, args: &Value) -> NfsResult<Val
     let outcome = state.db.share_update(&share.share_id, expected, |tx, cur| {
         use rusqlite::params;
         tx.execute(
-            "UPDATE shares SET status='stopping', status_reason=?2, revision=revision+1, updated_at=?3 WHERE share_id=?1",
+            "UPDATE shares SET status='stopped', status_reason=?2, revision=revision+1, updated_at=?3, stopped_at=COALESCE(stopped_at, ?3) WHERE share_id=?1",
             params![cur.share_id, reason_text, now],
         )?;
         if let Some(cap) = &cur.cap_id {
@@ -1300,10 +1290,8 @@ async fn stop(state: &SharedState, p: &Principal, args: &Value) -> NfsResult<Val
         Ok(rev) => rev,
         Err(current) => return Err(conflict(state, p, &current)),
     };
-    let stopping = state.db.share_get(&share.share_id)?.ok_or_else(|| internal("share vanished"))?;
-    settle_share(state, &stopping, "stopped", "stop").await;
-    let status = state.db.share_get(&share.share_id)?.map(|s| s.status).unwrap_or_else(|| "stopping".into());
-    Ok(json!({"status": status, "revision": rev}))
+    release(state, &share.share_id).await;
+    Ok(json!({"status": "stopped", "revision": rev}))
 }
 
 fn hide(state: &SharedState, p: &Principal, args: &Value) -> NfsResult<Value> {
@@ -1389,9 +1377,8 @@ async fn report(state: &SharedState, p: &Principal, args: &Value) -> NfsResult<V
                             Ok(())
                         })?.ok();
                     }
-                    state.db.share_set_status(&s.share_id, "stopping", Some(delivery_state), true, None)?;
-                    let stopping = state.db.share_get(&s.share_id)?.ok_or_else(|| internal("share vanished"))?;
-                    settle_share(state, &stopping, "stopped", "stop").await;
+                    state.db.share_set_status(&s.share_id, "stopped", Some(delivery_state), true, None)?;
+                    release(state, &s.share_id).await;
                 }
             }
         }

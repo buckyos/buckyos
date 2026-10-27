@@ -3,6 +3,9 @@
 //! value types, never the volatile values) is compared with `fixtures/protocol/stable-methods.json`.
 //! `AIWS_REGEN=1` re-records the file. The README method table must list the same levels.
 
+#[path = "common/nfs.rs"]
+mod nfs;
+
 use aiworkspace_server::auth::StaticTokens;
 use aiworkspace_server::wish::WishConfig;
 use aiworkspace_server::{build_router, AppState, Limits, METHOD_LEVELS};
@@ -15,12 +18,13 @@ const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../fixtures/protocol
 const README: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../README.md");
 
 /// Stable methods no in-process test can reach, with the reason (the README says the same).
-const NOT_COVERED: &[(&str, &str)] = &[("asset.import_object", "needs the Zone's named store (NDM); covered by DV")];
+const NOT_COVERED: &[(&str, &str)] = &[];
 
 struct Srv {
     base: String,
     http: reqwest::Client,
     steps: Vec<Value>,
+    nfs: nfs::Nfs,
 }
 
 /// The shape of a JSON value: scalars become their type name, arrays keep the shape of their first element.
@@ -37,13 +41,15 @@ fn shape(v: &Value) -> Value {
 
 impl Srv {
     async fn start(dir: &std::path::Path) -> Srv {
-        let svc = Service::open(&dir.join("data")).unwrap();
+        let nfs = nfs::Nfs::start(dir).await;
+        let svc = Service::open(&dir.join("data"), nfs.objects().await).unwrap();
         let tokens: StaticTokens = serde_json::from_value(json!({ "tokens": { "tok-alice": { "principal": "alice" }, "tok-bob": { "principal": "bob" } } })).unwrap();
         let state = AppState::new(svc, Arc::new(tokens), Limits::default(), None, WishConfig::default());
+        let _ = state.ndm_gateway.set(nfs.base.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, build_router(state)).await.unwrap() });
-        Srv { base: format!("http://{addr}/kapi/aiworkspace"), http: reqwest::Client::new(), steps: Vec::new() }
+        Srv { base: format!("http://{addr}/kapi/aiworkspace"), http: reqwest::Client::new(), steps: Vec::new(), nfs }
     }
 
     /// Call `method` and record the shapes of its request and result.
@@ -66,10 +72,6 @@ impl Srv {
         self.call(Some("tok-alice"), method, params).await
     }
 
-    async fn put(&self, route: &str, bytes: Vec<u8>) {
-        let r = self.http.put(format!("{}/{route}", self.base)).bearer_auth("tok-alice").body(bytes).send().await.unwrap();
-        assert!(r.status().is_success(), "{}", r.text().await.unwrap());
-    }
 }
 
 fn commit(ws: &str, epoch: &str, key: &str, ops: Value) -> Value {
@@ -126,15 +128,12 @@ async fn every_stable_method_keeps_its_recorded_shape() {
     let lock = s.rpc("lock.acquire", wsp(json!({ "entity_ids": ["t1"], "session_id": "s1" }))).await;
     let lock_ids: Vec<Value> = lock["locks"].as_array().map(|a| a.iter().map(|l| l["lock_id"].clone()).collect()).unwrap_or_default();
     s.rpc("lock.release", wsp(json!({ "lock_ids": lock_ids }))).await;
-    let bytes = b"hello contract".to_vec();
-    let up = s.rpc("asset.begin_upload", wsp(json!({ "size": bytes.len() }))).await;
-    s.put(&format!("upload/{}", up["upload_id"].as_str().unwrap()), bytes).await;
-    s.rpc("asset.finish_upload", wsp(json!({ "upload_id": up["upload_id"] }))).await;
+    let uploaded = s.nfs.put("alice", "assets", "upload/hello.txt", b"hello contract".to_vec()).await;
+    s.rpc("asset.import_object", wsp(json!({ "bucket_id": uploaded["bucket_id"], "key": uploaded["key"] }))).await;
     let export = s.http.post(&s.base).json(&json!({ "method": "doc.export", "params": wsp(json!({ "mode": "share", "self_contained": true })), "sys": [9000, "tok-alice"] })).send().await.unwrap().json::<Value>().await.unwrap();
-    let pkg = s.http.get(format!("{}/export/{ws}/{}", s.base, export["result"]["export_id"].as_str().unwrap())).bearer_auth("tok-alice").send().await.unwrap().bytes().await.unwrap().to_vec();
-    let begin = s.rpc("ws.begin_import", json!({})).await;
-    s.put(&format!("upload/{}", begin["upload_id"].as_str().unwrap()), pkg).await;
-    let imported = s.rpc("ws.import", json!({ "upload_id": begin["upload_id"], "semantics": "new" })).await;
+    let pkg = s.nfs.fetch(&export["result"]["download"]).await;
+    let package = s.nfs.put("alice", "exports", "import/contract.bcanvas", pkg).await;
+    let imported = s.rpc("ws.import", json!({ "bucket_id": package["bucket_id"], "key": package["key"], "semantics": "new" })).await;
     s.rpc("doc.undo", wsp(json!({ "epoch": epoch, "commit_id": accepted["commit_id"], "idempotency_key": "u1" }))).await;
     // the maintenance channel (D19)
     let cp = s.http.post(&s.base).json(&json!({ "method": "doc.checkpoint", "params": wsp(json!({})), "sys": [9001, "tok-alice"] })).send().await.unwrap().json::<Value>().await.unwrap();

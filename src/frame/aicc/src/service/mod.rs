@@ -1150,12 +1150,18 @@ fn replace_resource_ref_value(
     Ok(())
 }
 
-fn append_materialized_artifact_metadata(
-    value: &mut Value,
-    obj_id: String,
-    name: String,
-    mime: Option<String>,
-) {
+/// `extra.materialized_artifacts[]`: each stored artifact by object id, with
+/// the `obj://bucket/...` binding that retains it.
+fn append_materialized_artifact_metadata(value: &mut Value, artifact: &buckyos_api::AiArtifact) {
+    let buckyos_api::ResourceRef::NamedObject { obj_id } = &artifact.resource else {
+        return;
+    };
+    let bucket_ref = artifact
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("bucket_ref"))
+        .cloned()
+        .unwrap_or(Value::Null);
     let Some(root) = value.as_object_mut() else {
         return;
     };
@@ -1172,9 +1178,10 @@ fn append_materialized_artifact_metadata(
         return;
     };
     materialized.push(json!({
-        "obj_id": obj_id,
-        "name": name,
-        "mime": mime,
+        "obj_id": obj_id.to_string(),
+        "name": artifact.name,
+        "mime": artifact.mime,
+        "bucket_ref": bucket_ref,
     }));
 }
 

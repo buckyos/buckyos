@@ -54,6 +54,8 @@ export class Workspace {
   store: DocumentStore; buffers: BufferStore; recovery: RecoveryStore; local: LocalStore; settingsStore: SettingsStore
   origin: { device: string; windowId: string } = { device: '', windowId: crypto.randomUUID() }
   revision = 0
+  /** `cyfs:///home/<user>`: where location choices start without an open document. */
+  home = ''
   /** The Zone's system entry: where the embedded Preview is served from. */
   systemOrigin = ''
   /** Hands "Open with…" to the system chooser; false when no system entry is reachable. */
@@ -333,7 +335,7 @@ export class Workspace {
     } else this.items = []
     this.emit()
   }
-  async refreshRecords(): Promise<void> { this.abandoned = (await this.buffers.list()).filter(b => ![...this.documents.values()].some(d => d.buffer?.path === b.path)); this.recoveries = await this.recovery.list(); this.emit() }
+  async refreshRecords(): Promise<void> { this.abandoned = (await this.buffers.list()).filter(b => ![...this.documents.values()].some(d => d.buffer?.key === b.key)); this.recoveries = await this.recovery.list(); this.emit() }
   async restoreBuffer(record: BufferRecord): Promise<void> {
     if (await this.buffers.active(record)) throw new Error('buffer-in-use')
     let doc: EditorDocument
@@ -357,8 +359,7 @@ export class Workspace {
     await this.buffers.remove(record); await this.refreshRecords()
   }
   async openRecovery(record: RecoveryRecord, restore = false): Promise<void> {
-    const data = await this.store.read({ kind: 'cyfs-path', path: `${record.path}/${record.entry.fileName}` })
-    const decoded = decodeText(data.bytes)
+    const decoded = decodeText(await this.recovery.read(record))
     let doc: EditorDocument
     if (restore && record.entry.source) {
       try { await this.open({ requestId: crypto.randomUUID(), source: record.entry.source }, false, false); doc = this.active! }

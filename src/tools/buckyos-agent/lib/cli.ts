@@ -59,6 +59,14 @@ Common options:
   --json                          (informational; AgentToolResult JSON is always emitted)
 `;
 
+// Media commands keep every result in this Agent's `artifacts` bucket.
+export const DELIVERY_HELP = `
+Result: kept in this Agent's artifacts bucket; detail.files[].url is its
+obj://bucket/... (list it as a report artifact). The output path is optional:
+give it only when a local tool needs the file (an extension is added from the
+result's type when it has none).
+`;
+
 export class ArgError extends Error {
   constructor(message: string) {
     super(message);

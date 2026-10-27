@@ -181,14 +181,18 @@ impl Workspace {
         if fixed {
             let mut sink = crate::objects::StoreSink::new(&self.objects);
             let root = content_object(&ctx, &e, &mut sink)?;
+            // a consumer pins this version: the owner's `exports` bucket keeps it a week past its last fixed read
+            let mut members = std::collections::BTreeMap::new();
+            self.objects.entity_members(&root, &e.type_id, &mut members)?;
+            self.objects.retain(&self.bucket(crate::objects::EXPORTS)?, &format!("{}/fixed/{root}", self.workspace_id), &members)?;
             v["content_root"] = json!(root);
             v["reference"] = json!({ "workspace_id": self.workspace_id, "entity_id": entity_id, "mode": "fixed", "version": { "content_root": root } });
         }
         Ok(v)
     }
 
-    /// The content a consumer pinned (`version.content_root`), read back from the object store: valid as long as
-    /// the object is retained.
+    /// The content a consumer pinned (`version.content_root`), read back from the named store: valid as long as
+    /// it is there (its `exports` binding keeps it seven days after the last fixed read).
     pub fn public_fixed_content(&self, content_root: &str) -> WsResult<Value> {
         if !self.objects.has_object(content_root) {
             return Err(WsError::new(Code::VersionNotRetained, "that fixed version is no longer retained"));

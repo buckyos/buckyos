@@ -6,6 +6,7 @@ import fixture from '../fixtures/project-workspace.commits.json'
 import { unwrap, type AiwsClient } from './client'
 import { TemplateFailure } from './demos'
 import { base64ToBytes } from './ids'
+import { uploadWorkspaceAsset } from './session'
 import { aiwsT } from '../i18n'
 import { PROTOCOL_VERSION, type Operation, type WorkspaceSummary } from './types'
 
@@ -31,9 +32,7 @@ async function fillSample(client: AiwsClient, workspace: WorkspaceSummary) {
   for (const asset of data.assets) {
     // assets first: a commit may only reference content the backend has already verified (design §3.6)
     const bytes = base64ToBytes(asset.base64)
-    const begin = unwrap(await client.assetBeginUpload(ws, bytes.length, asset.file_name))
-    await client.transport.upload(begin.upload_id, bytes)
-    const done = unwrap(await client.assetFinishUpload(ws, begin.upload_id))
+    const done = await uploadWorkspaceAsset(client, ws.workspace_id, new File([bytes as BlobPart], asset.file_name))
     text = text.split(asset.placeholder).join(done.object_id)
   }
   const commits = JSON.parse(text) as Fixture['commits']

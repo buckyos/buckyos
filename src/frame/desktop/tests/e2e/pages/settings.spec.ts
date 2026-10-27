@@ -102,7 +102,12 @@ test.describe('settings', () => {
     await expect(section.getByTestId('settings-wallpaper-tile-scale')).toBeAttached()
 
     // The account (the mock control-panel state) now holds the picture and its fit.
-    await expect.poll(() => accountAppearance(page)).toMatchObject({ wallpaper: { fit: 'tile', image: { width: 1200, height: 800, name: 'sunset.jpg' } } })
+    await expect.poll(() => accountAppearance(page)).toMatchObject({
+      wallpaper: {
+        fit: 'tile',
+        image: { ref: expect.stringMatching(/^obj:\/\/bucket\/user\/control-panel\/alice\/wallpapers\/[0-9a-f]{32}\.jpg$/), width: 1200, height: 800, name: 'sunset.jpg' },
+      },
+    })
     expect((await accountAppearance(page)).wallpaper.focusX).toBeLessThan(50)
 
     await page.reload()
@@ -157,6 +162,24 @@ test.describe('settings', () => {
     await win.getByTestId('settings-wallpaper-file').setInputFiles({ name: 'broken.png', mimeType: 'image/png', buffer: Buffer.from('not a png') })
     await expect(win.getByTestId('settings-wallpaper').getByRole('alert')).toContainText('could not be read')
     await expect(page.getByTestId('desktop-background')).not.toHaveAttribute('data-wallpaper-mode')
+  })
+
+  test('storage: what each app keeps; an uninstalled app leaves its data until it is deleted', async ({ page }) => {
+    const win = await openSettings(page, 'Storage')
+    const storage = win.getByTestId('settings-storage')
+    await expect(storage.getByTestId('settings-storage-total')).toContainText('kept by 5 apps')
+    const notes = storage.getByTestId('settings-storage-app-notes.alice.bns.did')
+    await expect(notes).toContainText('Uninstalled')
+    await expect(notes).toContainText('Documents')
+    const collected = storage.getByTestId('settings-storage-app-msg-center')
+    await expect(collected).toContainText('Collected')
+    await expect(collected.getByRole('button', { name: 'Delete' })).toHaveCount(0)
+
+    await notes.getByTestId('settings-storage-delete-user/notes.alice.bns.did/alice/notes').click()
+    await expect(notes).toContainText('This cannot be undone')
+    await notes.getByTestId('settings-storage-confirm-user/notes.alice.bns.did/alice/notes').click()
+    await expect(storage.getByTestId('settings-storage-bucket-user/notes.alice.bns.did/alice/notes')).toHaveCount(0)
+    await expect(storage.getByTestId('settings-storage-bucket-user/notes.alice.bns.did/alice/index')).toBeVisible()
   })
 
   test('cluster: devices with their hardware, Linux device creation, certificates', async ({ page }) => {

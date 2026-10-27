@@ -1,12 +1,14 @@
-/* Mock-runtime stand-in for control-panel `/api/desktop`: the account's state lives in this browser's
- * localStorage and its wallpaper pictures in IndexedDB, so a reload (or a "new device" that only loses the
- * page's own caches) finds them again. Shapes follow ui_session_mgr.rs / desktop_wallpaper.rs. */
+/* Mock-runtime stand-in for control-panel `/api/desktop` and the account's wallpapers bucket: the state lives
+ * in this browser's localStorage and the pictures in IndexedDB by bucket key, so a reload (or a "new device"
+ * that only loses the page's own caches) finds them again. Shapes follow ui_session_mgr.rs and the bucket. */
 
-import type { DesktopStateRead } from './desktop_state'
+import { bucket } from 'buckyos'
+import { WALLPAPER_APP_ID, WALLPAPER_BUCKET, wallpaperKey, wallpapersToPrune, type DesktopStateRead } from './desktop_state'
 
 const STATE_PREFIX = 'buckyos.mock.desktop-state.'
 const DB_NAME = 'buckyos-desktop-wallpaper'
 const DB_STORE = 'assets'
+const MOCK_USER = 'alice'
 
 function readJson(key: string): unknown {
   try {
@@ -64,30 +66,33 @@ async function inStore<T>(mode: IDBTransactionMode, run: (store: IDBObjectStore)
   }
 }
 
-const extensions: Record<string, string> = {
-  'image/jpeg': 'jpg',
-  'image/png': 'png',
-  'image/gif': 'gif',
-  'image/webp': 'webp',
-  'image/avif': 'avif',
-}
+const mockWallpaperBucket = () => bucket.userBucketId(WALLPAPER_APP_ID, MOCK_USER, WALLPAPER_BUCKET)
 
 export async function uploadMockWallpaper(blob: Blob): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer()))
-  const hash = Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('').slice(0, 32)
-  const asset = `${hash}.${extensions[blob.type] ?? 'jpg'}`
-  await inStore('readwrite', (store) => store.put(blob, asset))
-  return asset
+  const key = await wallpaperKey(blob)
+  await inStore('readwrite', (store) => store.put({ blob, createdAt: Date.now() }, key))
+  const kept = await inStore<IDBValidKey[]>('readonly', (store) => store.getAllKeys())
+  const entries = await Promise.all(
+    kept.map(async (item) => {
+      const value = await inStore<unknown>('readonly', (store) => store.get(item))
+      return { key: String(item), created_at: (value as { createdAt?: number } | undefined)?.createdAt ?? 0 }
+    }),
+  )
+  for (const stale of wallpapersToPrune(entries, key)) await inStore('readwrite', (store) => store.delete(stale))
+  return bucket.bucketObjUrl(mockWallpaperBucket(), key)
 }
 
 const urls = new Map<string, string>()
 
-export async function mockWallpaperUrl(asset: string): Promise<string | null> {
-  const known = urls.get(asset)
+export async function mockWallpaperUrl(ref: string): Promise<string | null> {
+  const key = bucket.parseBucketObjUrl(ref)?.key
+  if (!key) return null
+  const known = urls.get(key)
   if (known) return known
-  const blob = await inStore<unknown>('readonly', (store) => store.get(asset)).catch(() => null)
+  const value = await inStore<unknown>('readonly', (store) => store.get(key)).catch(() => null)
+  const blob = (value as { blob?: unknown } | null)?.blob
   if (!(blob instanceof Blob)) return null
   const url = URL.createObjectURL(blob)
-  urls.set(asset, url)
+  urls.set(key, url)
   return url
 }

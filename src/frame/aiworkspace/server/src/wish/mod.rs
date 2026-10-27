@@ -539,13 +539,9 @@ pub fn apply(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) -> 
             None => run["detail"]["plan_order"].as_array().and_then(|o| o.last()).and_then(Value::as_str).map(str::to_string).ok_or_else(|| WsError::invalid_op("plan_digest required: preview first"))?,
         };
         if let Some(plan) = run["detail"]["plans"].get(&digest) {
+            // the result files were staged when the candidate was collected: bound again for this Commit
             for a in plan["assets"].as_array().into_iter().flatten() {
-                let path = a["path"].as_str().unwrap_or("");
-                let bytes = std::fs::read(path).map_err(|e| WsError::new(Code::DependencyUnavailable, format!("result file {path} is gone: {e}")))?;
-                let staged = ws.stage_asset(caller, &bytes)?;
-                if staged["object_id"] != a["object_id"] {
-                    return Err(WsError::new(Code::DependencyUnavailable, "a result file changed after the preview"));
-                }
+                ws.stage_object(caller, a["object_id"].as_str().unwrap_or(""), state.limits.max_asset_bytes)?;
             }
         }
         let applied = ws.wish_apply(caller, run_id, &digest, p.get("session_id").and_then(Value::as_str))?;

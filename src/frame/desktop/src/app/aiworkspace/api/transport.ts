@@ -2,7 +2,8 @@
  *
  * Production: the Desktop's normal service path — `buckyos.getServiceRpcClient('aiworkspace')`
  * (kRPC through the zone gateway at /kapi/aiworkspace, session token managed by the SDK); the
- * upload/download routes get `Authorization: Bearer <session token>`.
+ * asset route gets `Authorization: Bearer <session token>`. Uploads go through NDM into the caller's
+ * own buckets of the service; downloads (exports, replicas) come from `/bucket/v1/...` with a token.
  *
  * Development / e2e against the standalone backend (`aiworkspace --data-dir … --auth-file …`):
  * an explicit override, never active by accident:
@@ -12,7 +13,7 @@
  * Vite dev server forwards to `AIWS_BACKEND`). There is no mock backend.
  *
  * Guests (a public link, UI improvement §8.3): without a signed-in account the zone transport sends a
- * guest token instead of a session — `gt_` + 26 base32 chars this browser made up once and keeps in
+ * guest token instead of a session — `gt_` + base64url of 32 random bytes (the zone's bearer token form) this browser made up once and keeps in
  * localStorage['aiworkspace.guest']. The service derives the guest principal from it, so the same
  * browser stays the same guest. `{"guest":true}` in the dev override does the same against the
  * standalone backend.
@@ -22,9 +23,11 @@
  * as a kRPC failure with `code: access_denied`; TransportError carries its denial. `{"restricted":true}` in the dev
  * override stands for such a session against the standalone backend. */
 
-import { accessDenialOf, buckyos, parseAccessDenial, ACCESS_DENIED_ERROR_CODE, type AccessDenial } from 'buckyos'
+import { accessDenialOf, bucket, buckyos, parseAccessDenial, ACCESS_DENIED_ERROR_CODE, type AccessDenial } from 'buckyos'
+import { bucketObjectUrl } from '../../../components/preview/bucketSource'
 import { isMockRuntime } from '../../../runtime'
 import { aiwsT } from '../i18n'
+import type { BucketDownload } from './types'
 
 export const SERVICE_NAME = 'aiworkspace'
 export const DEV_OVERRIDE_KEY = 'aiworkspace.dev'
@@ -35,16 +38,14 @@ export function isGuestPrincipal(principal: string | null | undefined): boolean 
   return typeof principal === 'string' && principal.startsWith(GUEST_PREFIX)
 }
 
-const BASE32 = 'abcdefghijklmnopqrstuvwxyz234567'
-
 /** This browser's guest token (made once, kept for good): the service turns it into the guest principal. */
 export function guestToken(): string {
   try {
     const kept = window.localStorage.getItem(GUEST_TOKEN_KEY)
-    if (kept && /^gt_[a-z2-7]{26}$/.test(kept)) return kept
+    if (kept && /^gt_[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/.test(kept)) return kept
   } catch { /* storage unavailable: a fresh guest each time */ }
-  const bytes = crypto.getRandomValues(new Uint8Array(26))
-  const token = `gt_${Array.from(bytes, (b) => BASE32[b % 32]).join('')}`
+  const bytes = crypto.getRandomValues(new Uint8Array(32))
+  const token = `gt_${btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`
   try { window.localStorage.setItem(GUEST_TOKEN_KEY, token) } catch { /* see above */ }
   return token
 }
@@ -85,10 +86,28 @@ export interface Transport {
   importOptions(): Promise<{ endpoint: string; sessionToken: string | null }>
   /** kRPC call; resolves with `result` (business results live there), rejects with TransportError. */
   call<T>(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<T>
-  /** `PUT /upload/<upload_id>`. */
-  upload(uploadId: string, body: Blob | Uint8Array): Promise<void>
-  /** Authenticated `GET <base>/<path>` (asset, export, replica routes). */
+  /** Authenticated `GET <base>/<path>` (the asset route). */
   download(path: string): Promise<Blob>
+  /** The caller's own bucket `name` of this service (`user/aiworkspace/<user>/<name>`); null for a guest. */
+  ownBucket(name: string): Promise<string | null>
+  /** A file the service left in a bucket (an export, a replica), read with its token. */
+  fetchDownload(download: BucketDownload): Promise<Blob>
+}
+
+function userBucket(principal: string | null, name: string): string | null {
+  if (!principal || isGuestPrincipal(principal)) return null
+  try { return bucket.userBucketId(SERVICE_NAME, principal, name) } catch { return null }
+}
+
+async function fetchBlob(url: string): Promise<Blob> {
+  let response: Response
+  try {
+    response = await fetch(url, { credentials: 'same-origin' })
+  } catch (error) {
+    throw new TransportError('network', error instanceof Error ? error.message : String(error))
+  }
+  if (!response.ok) throw await httpError(response)
+  return response.blob()
 }
 
 interface DevOverride { token: string; guest: boolean; baseUrl?: string; principal?: string; restricted?: boolean; llm?: DevModelEndpoint }
@@ -116,7 +135,7 @@ function readDevOverride(): DevOverride | null {
   }
 }
 
-/** A failed upload / download route: its body is `{ ok: false, error }`, a refusal's `error.denial` included. */
+/** A failed asset or bucket download: its body is `{ ok: false, error }`, a refusal's `error.denial` included. */
 async function httpError(response: Response): Promise<TransportError> {
   const text = await response.text().catch(() => '')
   let denial: AccessDenial | null = null
@@ -154,16 +173,6 @@ class DevOverrideTransport implements Transport {
     return guestCall<T>(this.base, method, params, this.token, this.seq++, signal)
   }
 
-  async upload(uploadId: string, body: Blob | Uint8Array): Promise<void> {
-    let response: Response
-    try {
-      response = await fetch(`${this.base}/upload/${uploadId}`, { method: 'PUT', headers: { Authorization: `Bearer ${this.token}` }, body: body as BodyInit })
-    } catch (error) {
-      throw new TransportError('network', error instanceof Error ? error.message : String(error))
-    }
-    if (!response.ok) throw await httpError(response)
-  }
-
   async download(path: string): Promise<Blob> {
     let response: Response
     try {
@@ -173,6 +182,13 @@ class DevOverrideTransport implements Transport {
     }
     if (!response.ok) throw await httpError(response)
     return response.blob()
+  }
+
+  async ownBucket(name: string): Promise<string | null> { return this.guest ? null : userBucket(this.principalHint, name) }
+
+  // the dev server forwards `/bucket` to the standalone nfs-server, as the zone gateway does
+  fetchDownload(download: BucketDownload): Promise<Blob> {
+    return fetchBlob(`${bucket.bucketObjectPath(download.bucket_id, download.key)}?token=${encodeURIComponent(download.token)}`)
   }
 }
 
@@ -242,17 +258,6 @@ class ZoneTransport implements Transport {
     return buckyos.getZoneServiceURL(SERVICE_NAME).replace(/\/+$/, '')
   }
 
-  async upload(uploadId: string, body: Blob | Uint8Array): Promise<void> {
-    const token = await this.bearer()
-    let response: Response
-    try {
-      response = await fetch(`${this.base()}/upload/${uploadId}`, { method: 'PUT', headers: { Authorization: `Bearer ${token}` }, body: body as BodyInit })
-    } catch (error) {
-      throw new TransportError('network', error instanceof Error ? error.message : String(error))
-    }
-    if (!response.ok) throw await httpError(response)
-  }
-
   async download(path: string): Promise<Blob> {
     const token = await this.bearer()
     let response: Response
@@ -263,6 +268,15 @@ class ZoneTransport implements Transport {
     }
     if (!response.ok) throw await httpError(response)
     return response.blob()
+  }
+
+  async ownBucket(name: string): Promise<string | null> {
+    if (await this.isGuest()) return null
+    return userBucket(await this.principal(), name)
+  }
+
+  fetchDownload(download: BucketDownload): Promise<Blob> {
+    return fetchBlob(bucketObjectUrl({ bucketId: download.bucket_id, key: download.key }, { token: download.token }))
   }
 }
 

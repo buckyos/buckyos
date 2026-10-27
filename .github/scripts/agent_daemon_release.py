@@ -65,19 +65,23 @@ def read_checksum(archive: Path) -> str:
     return actual
 
 
-def collect(dist: Path, packager, version: str, *, allow_missing: bool) -> dict:
+def collect(dist: Path, packager, *, allow_missing: bool) -> tuple[str, dict]:
     assets = {}
     missing = []
+    versions = set()
     for target in packager.TARGETS:
-        archive = dist / packager.archive_name(target)
-        if not archive.is_file():
+        archive = packager.find_archive(dist, target)
+        if archive is None:
             missing.append(target)
             continue
         assets[target] = {"file": archive.name, "path": archive, "sha256": read_checksum(archive)}
+        versions.add(packager.archive_version(archive, target))
     if missing and not allow_missing:
         raise ValueError("missing release archives for: " + ", ".join(missing))
     if not assets:
         raise ValueError("no release archives found")
+    if len(versions) != 1:
+        raise ValueError("release archives have different versions: " + ", ".join(sorted(versions)))
     unexpected = sorted(
         entry.name for entry in dist.iterdir()
         if entry.is_file() and entry.name not in {LAUNCHER, *(a["file"] for a in assets.values()), *(a["file"] + ".sha256" for a in assets.values())}
@@ -86,7 +90,7 @@ def collect(dist: Path, packager, version: str, *, allow_missing: bool) -> dict:
         raise ValueError("unexpected files in dist: " + ", ".join(unexpected))
     if not (dist / LAUNCHER).is_file():
         raise ValueError(f"missing {LAUNCHER}")
-    return assets
+    return versions.pop(), assets
 
 
 def write_checksum(path: Path) -> str:
@@ -137,11 +141,10 @@ def notes(version: str, commit: str, repo_url: str, assets: dict, *, rolling: bo
 
 def assemble(dist: Path, output: Path, *, repo_url: str, commit: str, tag: str | None, allow_missing: bool) -> dict:
     packager = load_packager()
-    version = packager.version()
+    version, assets = collect(dist, packager, allow_missing=allow_missing)
     expected = release_tag(version)
     if tag is not None and tag != expected:
-        raise ValueError(f"tag {tag} does not match src/VERSION {version} (expected {expected})")
-    assets = collect(dist, packager, version, allow_missing=allow_missing)
+        raise ValueError(f"tag {tag} does not match archive version {version} (expected {expected})")
     if output.exists():
         shutil.rmtree(output)
     versioned = output / "versioned" / "assets"
@@ -190,7 +193,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--repo-url", default="https://github.com/buckyos/buckyos")
     parser.add_argument("--commit", default=os.environ.get("GITHUB_SHA", "unknown"))
-    parser.add_argument("--tag", help="pushed tag; must equal agent-daemon-v<src/VERSION>")
+    parser.add_argument("--tag", help="pushed tag; must equal agent-daemon-v<archive version>, including +buildYYMMDD")
     parser.add_argument("--allow-missing", action="store_true", help="publish even if some targets did not build")
     args = parser.parse_args(argv)
     try:

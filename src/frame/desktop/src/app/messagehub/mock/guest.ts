@@ -31,7 +31,7 @@ const PANELS = [
   { id: 'orders', title: 'Order status', entryUrl: `${typeof window !== 'undefined' ? window.location.origin : 'http://localhost'}/messagehub/mock-panel.html` },
   { id: 'foreign', title: 'Foreign widget', entryUrl: 'https://widgets.example.net/acme' },
 ]
-const DISPLAY = { announcement: 'Support hours: 9:00–17:00 (Mon–Fri).', links: [{ title: 'Return policy', url: 'https://acme.example/returns' }], files: [], featuredMembers: [STAFF] }
+const DISPLAY = { announcement: 'Support hours: 9:00–17:00 (Mon–Fri).', links: [{ title: 'Return policy', url: 'https://acme.example/returns' }], files: [{ title: 'Return label', objId: 'cyfile:mock-doc-brief' }], featuredMembers: [STAFF] }
 
 type Participation = 'invited' | 'included' | 'removed'
 
@@ -122,7 +122,9 @@ async function authorizeObject(objId: string, context: string | undefined) {
   const msgId = context?.slice(slash + 1)
   const host = loadHost()
   const message = sessionId ? messages[sessionId]?.find(item => item.objId === msgId) : undefined
-  const referenced = message?.msg.content.refs?.some(ref => ref.target.type === 'data_obj' && ref.target.obj_id === objId)
+  // A display file is read through the display of the Session that shows it.
+  const shown = msgId === '_display' && DISPLAY.files.some(file => file.objId === objId)
+  const referenced = shown || message?.msg.content.refs?.some(ref => ref.target.type === 'data_obj' && ref.target.obj_id === objId)
   if (!sessionId || host.participants[sessionId]?.[did] !== 'included' || !referenced) throw new Error('404 object unavailable')
 }
 

@@ -298,7 +298,7 @@ impl ReadCtx for SqlCtx<'_> {
     fn asset(&self, object_id: &str) -> WsResult<Option<AssetInfo>> {
         let known = self
             .conn
-            .query_row("SELECT media_type, size FROM assets WHERE object_id = ?1", [object_id], |r| {
+            .query_row("SELECT media_type, size FROM assets WHERE object_id = ?1 AND bucket_version IS NOT NULL", [object_id], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, u64>(1)?))
             })
             .optional()

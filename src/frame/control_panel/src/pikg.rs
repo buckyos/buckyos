@@ -6,19 +6,24 @@
 //! - 包内 App Document 永远是 candidate，Reader 不赋予任何发布状态；
 //! - `load` 与 `import` 分离：读取只在事务内使用，落 NamedStore 由
 //!   Prepare 的 materialize 策略显式决定；
-//! - Reader 只应打开位于受控 staging root 下、以 pikg_digest 命名的
-//!   immutable 文件（`stage_pikg_file`），防止校验后被替换（TOCTOU）。
+//! - Reader 打开的是不可变来源：named store 中的 FileObject（staging 与
+//!   已安装模板，`open_named`），或服务自己生成/随系统分发的本地文件，
+//!   防止校验后被替换（TOCTOU）。
 //!
 //! Packer（`PikgBuilder`）与 Verifier（`PikgReader`）共用同一套常量与
 //! 命名规则，发布侧写完必须用同一个 Reader 自校验，禁止两套规则漂移。
 
 use buckyos_api::{AppDoc, OBJ_TYPE_APP_DOC};
-use ndn_lib::{build_named_object_by_json, ChunkId, ChunkType, ObjId};
+use named_store::NamedDataMgr;
+use ndn_lib::{
+    build_named_object_by_json, load_named_obj_and_verify, ChunkId, ChunkReader, ChunkType,
+    FileObject, ObjId,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 
 // ---------------------------------------------------------------------------
@@ -26,7 +31,6 @@ use std::path::{Component, Path, PathBuf};
 // ---------------------------------------------------------------------------
 
 pub const PIKG_PACKAGE_META_SCHEMA: &str = "buckyos.pikg.package-meta.v1";
-pub const PIKG_FILE_EXT: &str = "pikg";
 
 pub const APPDOC_JWT_ENTRY: &str = "APPDOC.jwt";
 pub const APPDOC_JSON_ENTRY: &str = "APPDOC.json";
@@ -268,29 +272,155 @@ fn metadata_entry_limit(name: &str) -> u64 {
 /// 只读 pikg 访问器。构造即完成结构校验（Inspect 级）；
 /// payload hash 校验是显式操作（Verify 级），不在打开时全量执行。
 pub struct PikgReader {
-    path: PathBuf,
+    source: PikgSource,
     inspection: PikgInspection,
     entry_index: HashMap<String, usize>,
 }
 
-impl PikgReader {
-    /// 把来源文件原子化固定到 staging root（copy -> sha256 -> rename 为
-    /// `{digest}.pikg`），返回 (pikg_digest_hex, staged_path)。
-    /// 后续 Stage 不得再打开用户可替换的原路径。
-    pub async fn stage_pikg_file(src: &Path, staging_root: &Path) -> PikgResult<(String, PathBuf)> {
-        let src = src.to_path_buf();
-        let staging_root = staging_root.to_path_buf();
-        tokio::task::spawn_blocking(move || stage_pikg_file_blocking(&src, &staging_root))
-            .await
-            .map_err(|err| io_err("join stage_pikg_file", err))?
-    }
+/// pikg 字节所在：本地文件，或 named store 中的 FileObject。
+#[derive(Clone)]
+enum PikgSource {
+    File(PathBuf),
+    Named(NamedPikg),
+}
 
-    /// 打开 staging root 下的 immutable 文件并完成结构校验。
+#[derive(Clone)]
+struct NamedPikg {
+    store: NamedDataMgr,
+    content: ObjId,
+    size: u64,
+    runtime: tokio::runtime::Handle,
+}
+
+impl NamedPikg {
+    async fn open(store: NamedDataMgr, obj_id: &ObjId) -> PikgResult<Self> {
+        if !obj_id.is_file_object() {
+            return Err(invalid(format!(
+                "pikg source `{obj_id}` is not a FileObject"
+            )));
+        }
+        let body = store
+            .get_object(obj_id)
+            .await
+            .map_err(|err| io_err("read pikg FileObject", err))?;
+        let file: FileObject = load_named_obj_and_verify(obj_id, &body)
+            .map_err(|err| invalid(format!("pikg FileObject `{obj_id}` is invalid: {err}")))?;
+        let content = ObjId::new(&file.content)
+            .map_err(|err| invalid(format!("pikg FileObject content is invalid: {err}")))?;
+        Ok(Self {
+            store,
+            content,
+            size: file.size,
+            runtime: tokio::runtime::Handle::current(),
+        })
+    }
+}
+
+trait ReadSeek: Read + Seek + Send {}
+impl<T: Read + Seek + Send> ReadSeek for T {}
+
+impl PikgSource {
+    /// 阻塞线程内调用：named store 经 runtime handle 读取。
+    fn open(&self) -> PikgResult<Box<dyn ReadSeek>> {
+        match self {
+            Self::File(path) => Ok(Box::new(
+                std::fs::File::open(path).map_err(|err| io_err("open pikg file", err))?,
+            )),
+            Self::Named(named) => Ok(Box::new(std::io::BufReader::with_capacity(
+                HASH_BUF_SIZE,
+                NamedPikgReader {
+                    named: named.clone(),
+                    pos: 0,
+                    reader: None,
+                },
+            ))),
+        }
+    }
+}
+
+/// 同步 `Read + Seek` 视图：seek 只记位置，下一次读从该偏移重开 chunk reader。
+struct NamedPikgReader {
+    named: NamedPikg,
+    pos: u64,
+    reader: Option<ChunkReader>,
+}
+
+impl Read for NamedPikgReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if buf.is_empty() || self.pos >= self.named.size {
+            return Ok(0);
+        }
+        let named = &self.named;
+        if self.reader.is_none() {
+            let offset = self.pos;
+            let (reader, _) = named
+                .runtime
+                .block_on(async {
+                    if named.content.is_chunk_list() {
+                        named
+                            .store
+                            .open_chunklist_reader(&named.content, offset)
+                            .await
+                    } else {
+                        named
+                            .store
+                            .open_chunk_reader(&ChunkId::from_obj_id(&named.content), offset)
+                            .await
+                    }
+                })
+                .map_err(std::io::Error::other)?;
+            self.reader = Some(reader);
+        }
+        let reader = self.reader.as_mut().expect("reader opened above");
+        let read = named
+            .runtime
+            .block_on(tokio::io::AsyncReadExt::read(reader, buf))?;
+        self.pos += read as u64;
+        Ok(read)
+    }
+}
+
+impl Seek for NamedPikgReader {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        let next = match pos {
+            SeekFrom::Start(offset) => Some(offset),
+            SeekFrom::End(delta) => self.named.size.checked_add_signed(delta),
+            SeekFrom::Current(delta) => self.pos.checked_add_signed(delta),
+        }
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "seek before the pikg start",
+            )
+        })?;
+        if next != self.pos {
+            self.reader = None;
+            self.pos = next;
+        }
+        Ok(next)
+    }
+}
+
+impl PikgReader {
+    /// 打开本地 immutable 文件（随系统分发的模板、服务刚生成的包）并完成结构校验。
     /// `expected_digest` 提供时校验整个文件字节的 sha256。
     pub async fn open(path: &Path, expected_digest: Option<&str>) -> PikgResult<Self> {
-        let path = path.to_path_buf();
+        Self::open_source(PikgSource::File(path.to_path_buf()), expected_digest).await
+    }
+
+    /// 打开 named store 中的 pikg FileObject（不落本地文件）。
+    pub async fn open_named(
+        store: NamedDataMgr,
+        obj_id: &ObjId,
+        expected_digest: Option<&str>,
+    ) -> PikgResult<Self> {
+        let source = PikgSource::Named(NamedPikg::open(store, obj_id).await?);
+        Self::open_source(source, expected_digest).await
+    }
+
+    async fn open_source(source: PikgSource, expected_digest: Option<&str>) -> PikgResult<Self> {
         let expected = expected_digest.map(|value| value.to_string());
-        tokio::task::spawn_blocking(move || Self::open_blocking(&path, expected.as_deref()))
+        tokio::task::spawn_blocking(move || Self::open_blocking(source, expected.as_deref()))
             .await
             .map_err(|err| io_err("join pikg open", err))?
     }
@@ -315,11 +445,11 @@ impl PikgReader {
             .content_entry(digest)
             .cloned()
             .ok_or_else(|| PikgError::ContentMissing(digest.to_string()))?;
-        let path = self.path.clone();
+        let source = self.source.clone();
         let index = self.entry_index_of(&entry.path)?;
         let package_meta_content = self.package_meta_content_for(&entry);
         tokio::task::spawn_blocking(move || {
-            verify_content_blocking(&path, index, &entry, package_meta_content.as_deref())
+            verify_content_blocking(&source, index, &entry, package_meta_content.as_deref())
         })
         .await
         .map_err(|err| io_err("join verify_content", err))?
@@ -359,10 +489,10 @@ impl PikgReader {
         let Some(index) = self.entry_index.get(&entry_name).copied() else {
             return Ok(None);
         };
-        let path = self.path.clone();
+        let source = self.source.clone();
         let obj_id = obj_id.clone();
         tokio::task::spawn_blocking(move || {
-            let mut archive = open_archive(&path)?;
+            let mut archive = open_archive(&source)?;
             let mut entry = archive
                 .by_index(index)
                 .map_err(|err| io_err("open object entry", err))?;
@@ -391,9 +521,9 @@ impl PikgReader {
             .cloned()
             .ok_or_else(|| PikgError::ContentMissing(digest.to_string()))?;
         let index = self.entry_index_of(&entry.path)?;
-        let path = self.path.clone();
+        let source = self.source.clone();
         let dest = dest.to_path_buf();
-        tokio::task::spawn_blocking(move || copy_content_blocking(&path, index, &entry, &dest))
+        tokio::task::spawn_blocking(move || copy_content_blocking(&source, index, &entry, &dest))
             .await
             .map_err(|err| io_err("join copy_content_to_file", err))?
     }
@@ -405,9 +535,9 @@ impl PikgReader {
             .cloned()
             .ok_or_else(|| PikgError::ContentMissing(digest.to_string()))?;
         let index = self.entry_index_of(&entry.path)?;
-        let path = self.path.clone();
+        let source = self.source.clone();
         tokio::task::spawn_blocking(move || {
-            let mut archive = open_archive(&path)?;
+            let mut archive = open_archive(&source)?;
             let zentry = archive
                 .by_index(index)
                 .map_err(|err| io_err("open package archive content", err))?;
@@ -440,9 +570,9 @@ impl PikgReader {
             .map(|value| value.to_string())
     }
 
-    fn open_blocking(path: &Path, expected_digest: Option<&str>) -> PikgResult<Self> {
+    fn open_blocking(source: PikgSource, expected_digest: Option<&str>) -> PikgResult<Self> {
         // 1. magic 检查（扩展名只用于 UX，不作为格式判断）。
-        let mut file = std::fs::File::open(path).map_err(|err| io_err("open pikg file", err))?;
+        let mut file = source.open()?;
         let mut magic = [0u8; 4];
         file.read_exact(&mut magic)
             .map_err(|err| invalid(format!("pikg file too small: {err}")))?;
@@ -451,7 +581,7 @@ impl PikgReader {
         }
 
         // 2. 整文件 sha256（pikg_digest）。
-        let pikg_digest = sha256_file_hex(path)?;
+        let pikg_digest = sha256_hex(source.open()?)?;
         if let Some(expected) = expected_digest {
             let expected = expected.trim().to_ascii_lowercase();
             let expected = expected.strip_prefix("sha256:").unwrap_or(&expected);
@@ -464,7 +594,7 @@ impl PikgReader {
 
         // 3. 自扫中央目录：entry 数上限 + 重复 entry（zip crate 会静默按名
         //    去重 last-wins，重复检测必须在库之外做）+ 全部原始名安全校验。
-        let raw_names = scan_central_directory_names(path)?;
+        let raw_names = scan_central_directory_names(&source)?;
         {
             let mut seen: HashSet<String> = HashSet::new();
             for raw in &raw_names {
@@ -475,7 +605,7 @@ impl PikgReader {
             }
         }
 
-        let mut archive = open_archive(path)?;
+        let mut archive = open_archive(&source)?;
         if archive.len() > PIKG_MAX_ENTRIES {
             return Err(invalid(format!(
                 "too many entries: {} > {}",
@@ -734,7 +864,7 @@ impl PikgReader {
         };
 
         Ok(Self {
-            path: path.to_path_buf(),
+            source,
             inspection,
             entry_index,
         })
@@ -745,9 +875,9 @@ impl PikgReader {
 // blocking 工具
 // ---------------------------------------------------------------------------
 
-fn open_archive(path: &Path) -> PikgResult<zip::ZipArchive<std::fs::File>> {
-    let file = std::fs::File::open(path).map_err(|err| io_err("open pikg file", err))?;
-    zip::ZipArchive::new(file).map_err(|err| invalid(format!("not a readable zip: {err}")))
+fn open_archive(source: &PikgSource) -> PikgResult<zip::ZipArchive<Box<dyn ReadSeek>>> {
+    zip::ZipArchive::new(source.open()?)
+        .map_err(|err| invalid(format!("not a readable zip: {err}")))
 }
 
 const EOCD_SIG: [u8; 4] = [0x50, 0x4B, 0x05, 0x06];
@@ -777,14 +907,11 @@ fn read_u64(bytes: &[u8], offset: usize) -> u64 {
 /// zip crate 解析时会按名字去重（last-wins），从它的视角看不到重复 entry；
 /// 而"重复 entry 必须拒绝"是 D1 的安全规则（防同名后写覆盖先校验内容），
 /// 所以重复检测必须在这里做。支持 ZIP64。
-fn scan_central_directory_names(path: &Path) -> PikgResult<Vec<Vec<u8>>> {
-    use std::io::{Seek, SeekFrom};
-
-    let mut file = std::fs::File::open(path).map_err(|err| io_err("open for scan", err))?;
+fn scan_central_directory_names(source: &PikgSource) -> PikgResult<Vec<Vec<u8>>> {
+    let mut file = source.open()?;
     let file_len = file
-        .metadata()
-        .map_err(|err| io_err("stat for scan", err))?
-        .len();
+        .seek(SeekFrom::End(0))
+        .map_err(|err| io_err("stat for scan", err))?;
 
     // 定位 EOCD（末尾最多 22 + 65535 字节内）。
     let tail_len = file_len.min(22 + 65535);
@@ -874,7 +1001,10 @@ fn scan_central_directory_names(path: &Path) -> PikgResult<Vec<Vec<u8>>> {
 }
 
 fn sha256_file_hex(path: &Path) -> PikgResult<String> {
-    let mut file = std::fs::File::open(path).map_err(|err| io_err("open for digest", err))?;
+    sha256_hex(std::fs::File::open(path).map_err(|err| io_err("open for digest", err))?)
+}
+
+fn sha256_hex(mut file: impl Read) -> PikgResult<String> {
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; HASH_BUF_SIZE];
     loop {
@@ -904,65 +1034,13 @@ fn read_entry_limited<R: Read>(entry: &mut R, limit: u64, label: &str) -> PikgRe
     Ok(buf)
 }
 
-fn stage_pikg_file_blocking(src: &Path, staging_root: &Path) -> PikgResult<(String, PathBuf)> {
-    std::fs::create_dir_all(staging_root).map_err(|err| io_err("create staging root", err))?;
-    let staging_root_canonical = staging_root
-        .canonicalize()
-        .map_err(|err| io_err("canonicalize staging root", err))?;
-
-    let mut src_file = std::fs::File::open(src).map_err(|err| io_err("open source pikg", err))?;
-    let tmp_path = staging_root_canonical.join(format!(
-        ".staging-{}-{}.tmp",
-        std::process::id(),
-        buckyos_kit::buckyos_get_unix_timestamp()
-    ));
-    let mut tmp_file =
-        std::fs::File::create(&tmp_path).map_err(|err| io_err("create staging tmp", err))?;
-
-    let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; HASH_BUF_SIZE];
-    loop {
-        let read = src_file
-            .read(&mut buf)
-            .map_err(|err| io_err("read source pikg", err))?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buf[..read]);
-        tmp_file
-            .write_all(&buf[..read])
-            .map_err(|err| io_err("write staging tmp", err))?;
-    }
-    tmp_file
-        .sync_all()
-        .map_err(|err| io_err("sync staging tmp", err))?;
-    drop(tmp_file);
-
-    let digest = hex::encode(hasher.finalize());
-    let final_path = staging_root_canonical.join(format!("{digest}.{PIKG_FILE_EXT}"));
-    if final_path.exists() {
-        let _ = std::fs::remove_file(&tmp_path);
-    } else {
-        std::fs::rename(&tmp_path, &final_path).map_err(|err| io_err("rename staging", err))?;
-    }
-
-    // handle 解析结果必须仍位于 staging root 内（D5）。
-    let canonical = final_path
-        .canonicalize()
-        .map_err(|err| io_err("canonicalize staged file", err))?;
-    if !canonical.starts_with(&staging_root_canonical) {
-        return Err(invalid("staged file escaped staging root"));
-    }
-    Ok((digest, final_path))
-}
-
 fn verify_content_blocking(
-    path: &Path,
+    source: &PikgSource,
     index: usize,
     entry: &PikgContentIndexEntry,
     package_meta_content: Option<&str>,
 ) -> PikgResult<()> {
-    let mut archive = open_archive(path)?;
+    let mut archive = open_archive(source)?;
     let mut zentry = archive
         .by_index(index)
         .map_err(|err| io_err("open content entry", err))?;
@@ -1015,7 +1093,7 @@ fn verify_content_blocking(
 }
 
 fn copy_content_blocking(
-    path: &Path,
+    source: &PikgSource,
     index: usize,
     entry: &PikgContentIndexEntry,
     dest: &Path,
@@ -1023,7 +1101,7 @@ fn copy_content_blocking(
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|err| io_err("create dest dir", err))?;
     }
-    let mut archive = open_archive(path)?;
+    let mut archive = open_archive(source)?;
     let mut zentry = archive
         .by_index(index)
         .map_err(|err| io_err("open content entry", err))?;
@@ -1395,7 +1473,7 @@ mod tests {
         extra: Vec<(String, Vec<u8>)>,
     ) {
         use zip::write::SimpleFileOptions;
-        let mut archive = open_archive(src).unwrap();
+        let mut archive = open_archive(&PikgSource::File(src.to_path_buf())).unwrap();
         let out = std::fs::File::create(dest).unwrap();
         let mut writer = zip::ZipWriter::new(out);
         let options =
@@ -1500,7 +1578,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mut archive = open_archive(&pikg_path).unwrap();
+        let mut archive = open_archive(&PikgSource::File(pikg_path.clone())).unwrap();
         let entry_names = (0..archive.len())
             .map(|index| archive.by_index(index).unwrap().name().to_string())
             .collect::<Vec<_>>();
@@ -1539,32 +1617,79 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn staging_fixes_digest_and_detects_tamper() {
+    async fn named_store_source_reads_and_checks_the_digest() {
+        use named_store::{NamedLocalStore, StoreLayout, StoreTarget};
+        use ndn_lib::StoreMode;
+        use ndn_toolkit::{cacl_file_object, CheckMode};
+
         let fixture = build_fixture();
         let pikg_path = build_valid_pikg(&fixture).await;
-
-        let staging_root = fixture.dir.join("staging");
-        let (digest, staged) = PikgReader::stage_pikg_file(&pikg_path, &staging_root)
+        let local = NamedLocalStore::get_named_store_by_path(fixture.dir.join("store"))
             .await
             .unwrap();
-        assert!(staged
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .contains(&digest));
+        let store_id = local.store_id().to_string();
+        let store = NamedDataMgr::new();
+        store
+            .register_store(std::sync::Arc::new(tokio::sync::Mutex::new(local)))
+            .await;
+        store
+            .add_layout(StoreLayout::new(
+                1,
+                vec![StoreTarget {
+                    store_id,
+                    device_did: String::new(),
+                    capacity: None,
+                    used: None,
+                    readonly: false,
+                    enabled: true,
+                    weight: 1,
+                }],
+                0,
+                0,
+            ))
+            .await;
+        let (_, obj_id, _) = cacl_file_object(
+            Some(&store),
+            &pikg_path,
+            &FileObject::default(),
+            true,
+            &CheckMode::ByFullHash,
+            StoreMode::StoreInNamedMgr,
+            None,
+        )
+        .await
+        .unwrap();
+        let local = PikgReader::open(&pikg_path, None).await.unwrap();
+        let digest = local.pikg_digest().to_string();
 
-        // 篡改原文件不影响 staged 副本（TOCTOU 防护）。
+        // 原文件被替换不影响已入库的不可变对象（TOCTOU 防护）。
         std::fs::write(&pikg_path, b"tampered").unwrap();
-        let reader = PikgReader::open(&staged, Some(&digest)).await.unwrap();
+        let reader = PikgReader::open_named(store.clone(), &obj_id, Some(&digest))
+            .await
+            .unwrap();
+        assert_eq!(
+            reader.inspection().app_doc_object_id,
+            local.inspection().app_doc_object_id
+        );
         reader.verify_all_contents().await.unwrap();
+        let content = reader
+            .inspection()
+            .bundled_content_digests()
+            .next()
+            .unwrap()
+            .to_string();
+        reader.verify_package_archive(&content).await.unwrap();
 
-        // 篡改 staged 文件后按 digest 打开必须失败。
-        let mut bytes = std::fs::read(&staged).unwrap();
-        let last = bytes.len() - 1;
-        bytes[last] ^= 0xFF;
-        std::fs::write(&staged, &bytes).unwrap();
-        let result = PikgReader::open(&staged, Some(&digest)).await;
+        let result = PikgReader::open_named(store.clone(), &obj_id, Some(&"0".repeat(64))).await;
         assert!(matches!(result, Err(PikgError::InvalidPackage(_))));
+        let chunk = ObjId::new(&{
+            let body = store.get_object(&obj_id).await.unwrap();
+            ndn_lib::load_named_obj::<FileObject>(&body)
+                .unwrap()
+                .content
+        })
+        .unwrap();
+        assert!(PikgReader::open_named(store, &chunk, None).await.is_err());
 
         let _ = std::fs::remove_dir_all(&fixture.dir);
     }
@@ -1631,7 +1756,7 @@ mod tests {
         let bad = fixture.dir.join("symlink.pikg");
         {
             use zip::write::SimpleFileOptions;
-            let mut archive = open_archive(&pikg_path).unwrap();
+            let mut archive = open_archive(&PikgSource::File(pikg_path.clone())).unwrap();
             let out = std::fs::File::create(&bad).unwrap();
             let mut writer = zip::ZipWriter::new(out);
             let options = SimpleFileOptions::default();

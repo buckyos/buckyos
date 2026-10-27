@@ -1,5 +1,4 @@
 use crate::app_installer::InternalInstall;
-use crate::pikg::PikgReader;
 use crate::ControlPanelServer;
 use buckyos_api::{
     get_buckyos_api_runtime, AppId, AppInstanceId, AppType, InstallPlanExecutionKey,
@@ -120,6 +119,24 @@ impl PreInstallReconciler {
             Ok(Err(error)) if !scheduler_transport_unavailable(error.to_string().as_str()) => {}
             Ok(Err(error)) => return Err(format!("Scheduler endpoint unavailable: {error}")),
             Err(_) => return Err("Scheduler endpoint readiness probe timed out".to_string()),
+        }
+        // Staged PIKGs are bound in control-panel's bucket.
+        let buckets = runtime
+            .get_bucket_client()
+            .await
+            .map_err(|error| format!("bucket service unavailable: {error}"))?;
+        match tokio::time::timeout(
+            SCHEDULER_PROBE_TIMEOUT,
+            buckets.list(
+                Some(buckyos_api::bucket_client::BucketScope::Zone),
+                Some(buckyos_api::CONTROL_PANEL_SERVICE_NAME),
+            ),
+        )
+        .await
+        {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => return Err(format!("bucket service unavailable: {error}")),
+            Err(_) => return Err("bucket service readiness probe timed out".to_string()),
         }
 
         let mut apps = settings.pre_install_apps.into_iter().collect::<Vec<_>>();
@@ -252,7 +269,7 @@ impl PreInstallReconciler {
             )
             .await
             .map_err(|error| PreInstallError::new("PIKG_STAGE_FAILED", false, error.to_string()))?;
-        let (_, staged_path) = self
+        let (_, staged) = self
             .server
             .staging_store
             .resolve(
@@ -267,7 +284,10 @@ impl PreInstallReconciler {
             .map_err(|error| {
                 PreInstallError::new("PIKG_STAGE_RESOLVE_FAILED", true, error.to_string())
             })?;
-        let reader = PikgReader::open(&staged_path, Some(metadata.pikg_digest.as_str()))
+        let reader = self
+            .server
+            .staging_store
+            .reader(&staged, metadata.pikg_digest.as_str())
             .await
             .map_err(|error| PreInstallError::new("INVALID_PIKG", false, error.to_string()))?;
         let inspection = reader.inspection();

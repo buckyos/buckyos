@@ -4,7 +4,7 @@
 //! keeps accepting edits. Grants are captured once, when the stage starts.
 
 use crate::docdb::{db_err, meta_get, DocCache, SqlCtx};
-use crate::objects::FsObjectStore;
+use crate::objects::ObjectStore;
 use crate::workspace::{Caller, Workspace};
 use aiworkspace_core::access::Access;
 use aiworkspace_core::model::*;
@@ -26,7 +26,7 @@ pub struct WishSnapshot {
     /// The head the snapshot sees (locates it; never a conflict condition by itself, §6.3).
     pub head_seq: u64,
     pub ws_dir: PathBuf,
-    pub objects: Arc<FsObjectStore>,
+    pub objects: Arc<ObjectStore>,
 }
 
 impl WishSnapshot {

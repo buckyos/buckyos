@@ -17,6 +17,7 @@ const ORIGIN = { app: 'preview' }
 
 function parseReference(input: string): ContentRef {
   const value = input.trim()
+  if (value.startsWith('obj://bucket/')) return { kind: 'bucket-object', url: value }
   // Object ids carry no path separators; anything else is a path.
   if (!value.includes('/') && /^[A-Za-z0-9:_-]{16,}$/.test(value)) return { kind: 'object-id', objectId: value }
   return { kind: 'cyfs-path', path: value }

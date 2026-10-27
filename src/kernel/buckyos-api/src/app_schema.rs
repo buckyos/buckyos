@@ -788,7 +788,9 @@ pub struct AgentTemplateRecord {
     pub app_doc_object_id: ObjId,
     pub version: String,
     pub digest: String,
-    pub pikg_path: String,
+    /// Key in `zone/control-panel/_/agent_templates` and the bound version.
+    pub bucket_key: String,
+    pub bucket_version: u64,
     pub installed_at: u64,
 }
 

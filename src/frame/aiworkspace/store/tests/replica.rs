@@ -61,7 +61,7 @@ fn root_of(m: &MemStore) -> String {
 
 fn bootstrap(ws: &mut Workspace, who: &Caller, peer: u64) -> Replica {
     let b = ws.replica_bootstrap(who).unwrap();
-    let confirmed = load_rows(&replica_tables(b["path"].as_str().unwrap())).unwrap();
+    let confirmed = load_rows(&replica_tables(fetched(&ws.objects, &b).to_str().unwrap())).unwrap();
     Replica::new(&who.principal, &ws.workspace_id, &ws.epoch, confirmed, b["head_seq"].as_u64().unwrap(), peer)
 }
 
@@ -271,7 +271,7 @@ fn unknown_results_revoked_permission_and_epoch_change() {
     assert_eq!(r["code"], "LOCK_REQUIRED");
 
     // 5. the Workspace is restored from a package: the old epoch is dead, nothing is replayed onto the new history
-    let pkg = std::path::PathBuf::from(ws.export(&alice(), "share", true, None).unwrap()["path"].as_str().unwrap());
+    let pkg = { let r = ws.export(&alice(), "share", true, None).unwrap(); fetched(&ws.objects, &r) };
     drop(ws);
     env.svc.import(&alice(), &pkg, "restore", true).unwrap();
     let h = env.svc.workspace(&id).unwrap();

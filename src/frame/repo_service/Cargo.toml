@@ -41,3 +41,5 @@ buckyos-http-server = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+axum = { workspace = true }
+nfs_server = { path = "../nfs_server" }

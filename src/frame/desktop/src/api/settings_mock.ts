@@ -1,6 +1,7 @@
 /* Mock-runtime answers for the Settings app's control-panel reads (`?scenario=empty` gives a
  * freshly activated single-node Zone). Shapes follow the Rust handlers in control_panel. */
 
+import type { bucket } from 'buckyos'
 import type {
   BuckyOSDevConfig,
   BuckyOSInfo,
@@ -10,6 +11,7 @@ import type {
   ZoneDevice,
   ZoneDevicesResponse,
   ZoneOverviewResponse,
+  StorageOverview,
 } from './settings.ts'
 
 const GB = 1024 ** 3
@@ -218,6 +220,62 @@ function gatewayFile(name: unknown): GatewayFileResponse {
   const content = GATEWAY_FILES[key]
   if (content === undefined) throw new Error(`Unsupported gateway config file: ${key}`)
   return { name: key, path: `/opt/buckyos/etc/${key}`, sizeBytes: content.length, modifiedAt: new Date().toISOString(), content }
+}
+
+const MB = 1024 ** 2
+
+function mockBucket(
+  appid: string,
+  name: string,
+  data_policy: bucket.DataPolicy,
+  unique_bytes: number,
+  key_count: number,
+  orphaned = false,
+): bucket.BucketInfo {
+  return {
+    bucket_id: `user/${appid}/alice/${name}`,
+    kind: 'data',
+    data_policy,
+    scope: 'user',
+    appid,
+    owner: 'alice',
+    name,
+    versioning: data_policy === 'documents' || data_policy === 'collected',
+    unique_bytes: Math.round(unique_bytes),
+    key_bytes: Math.round(unique_bytes),
+    key_count,
+    version_count: key_count,
+    snapshot_only_bytes: 0,
+    ...(orphaned ? { orphaned_at: Date.now() - 6 * 86_400_000 } : {}),
+    created_at: Date.now() - 30 * 86_400_000,
+  }
+}
+
+let storageBuckets: bucket.BucketInfo[] | null = null
+
+function mockBuckets(): bucket.BucketInfo[] {
+  storageBuckets ??=
+    scenario() === 'empty'
+      ? []
+      : [
+          mockBucket('control-panel', 'wallpapers', 'app_data', 9.4 * MB, 2),
+          mockBucket('jarvis.alice.web3.buckyos.ai', 'artifacts', 'documents', 412 * MB, 38),
+          mockBucket('jarvis.alice.web3.buckyos.ai', 'scratch', 'temp', 56 * MB, 11),
+          mockBucket('aicc', 'outputs', 'temp', 23 * MB, 7),
+          mockBucket('msg-center', 'collected', 'collected', 1.2 * GB, 214),
+          mockBucket('notes.alice.bns.did', 'notes', 'documents', 3.1 * MB, 64, true),
+          mockBucket('notes.alice.bns.did', 'index', 'app_data', 18 * MB, 1, true),
+        ]
+  return storageBuckets
+}
+
+export function mockStorageOverview(): StorageOverview {
+  return { user: 'alice', buckets: mockBuckets().map((item) => ({ ...item })) }
+}
+
+export function deleteMockStorageBucket(bucketId: string): { deleted: boolean } {
+  storageBuckets = mockBuckets().filter((item) => item.bucket_id !== bucketId)
+  return { deleted: true }
 }
 
 const executorDevices = new Map<string, Record<string, unknown>>()

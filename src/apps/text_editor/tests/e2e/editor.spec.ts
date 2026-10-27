@@ -3,6 +3,8 @@ const path = '/home/test-user/notes/demo.md'
 const open = async (page: Page) => { await page.goto('/?src=' + encodeURIComponent('cyfs://' + path)); await expect(page.locator('.cm-content')).toContainText('Hello') }
 const replace = async (page: Page, text: string) => { const editor = page.locator('.cm-content').first(); await editor.click(); await page.keyboard.press('Control+a'); await page.keyboard.insertText(text) }
 const state = async (page: Page) => (await page.request.get('http://127.0.0.1:3260/test/state')).json()
+/** Everything the editor reaches on the server: NFSP for files, the bucket service for its buffers and recovery area. */
+const server = /\/(nfs|bucket)\/v1\/|\/kapi\/nfs-server/
 const action = async (page: Page, name: string) => { await page.getByRole('button', { name: 'Actions', exact: true }).first().click(); await page.getByRole('menuitem', { name, exact: true }).click() }
 test.beforeEach(async ({ request }) => { await request.post('http://127.0.0.1:3260/test/reset') })
 test('a narrow direct launch keeps welcome actions usable after restoring an open sidebar', async ({ page }) => {
@@ -120,14 +122,14 @@ test('App Frame handshake, open reuse, theme and pending close guard', async ({ 
 
 test('offline editing keeps local prewrite and reconnect synchronizes', async ({ page }) => {
   await open(page)
-  await page.route('**/nfs/v1/**', route => route.abort('internetdisconnected'))
+  await page.route(server, route => route.abort('internetdisconnected'))
   await replace(page, '# Offline draft\n')
   await expect(page.locator('.disk-state')).toContainText('not synced')
   await expect.poll(async () => page.evaluate(async () => {
     const w = (window as any).editorWorkspace
     return (await w.local.entries('buffer:')).some(([, b]: any) => b.text.includes('Offline draft'))
   })).toBe(true)
-  await page.unroute('**/nfs/v1/**')
+  await page.unroute(server)
   await page.evaluate(() => window.dispatchEvent(new Event('online')))
   await expect.poll(async () => Object.entries(await state(page)).some(([p, text]) => p.endsWith('.buf') && String(text).includes('Offline draft'))).toBe(true)
   await expect(page.locator('.disk-state')).toHaveText('Unsaved (synced)')
@@ -308,7 +310,7 @@ test('closing while the server is unreachable keeps the draft on this device and
   await page.goto('/tests/harness/shell.html')
   const editor = page.frameLocator('#app')
   await expect(editor.locator('.cm-content')).toContainText('Hello')
-  await page.route('**/nfs/v1/**', route => route.abort('internetdisconnected'))
+  await page.route(server, route => route.abort('internetdisconnected'))
   await editor.locator('.cm-content').click(); await page.keyboard.press('Control+End'); await page.keyboard.insertText('offline words')
   const started = Date.now()
   await page.getByRole('button', { name: 'Close window' }).click()
@@ -318,7 +320,7 @@ test('closing while the server is unreachable keeps the draft on this device and
   await expect(dialog.getByRole('button', { name: 'Keep changes', exact: true })).toHaveCount(0)
   await dialog.getByRole('button', { name: 'Keep on this device and close', exact: true }).click()
   await expect(page.locator('#app')).toHaveCount(0)
-  await page.unroute('**/nfs/v1/**')
+  await page.unroute(server)
   await page.goto('/?src=' + encodeURIComponent('cyfs://' + path))
   await expect(page.locator('.cm-content')).toContainText('offline words')
 })
@@ -326,7 +328,7 @@ test('when nothing could be stored, closing does not pretend the draft is safe',
   await page.goto('/tests/harness/shell.html')
   const editor = page.frameLocator('#app')
   await expect(editor.locator('.cm-content')).toContainText('Hello')
-  await page.route('**/nfs/v1/**', route => route.abort('internetdisconnected'))
+  await page.route(server, route => route.abort('internetdisconnected'))
   await page.frames().find(f => f.url().includes('bfp='))!.evaluate(() => { const w = (window as any).editorWorkspace; w.local.put = async () => { throw new Error('QuotaExceededError') } })
   await editor.locator('.cm-content').click(); await page.keyboard.insertText('unsafe ')
   await page.getByRole('button', { name: 'Close window' }).click()

@@ -17,14 +17,44 @@ export const SPEC_LOCALE = 'zh-CN'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any
 
-/** Direct kRPC access to the backend under test — what the assertions "through the API" use. */
+/** Direct kRPC access to the backend under test — what the assertions "through the API" use. Uploads and downloads go
+ * through the standalone nfs-server's `/bucket/v1` data plane, as the Desktop's NDM uploads and bucket URLs do. */
 export class Api {
   private seq = 1
   readonly base: string
+  readonly nfs: string
   constructor() {
     const backend = process.env.AIWS_E2E_BACKEND
     if (!backend) throw new Error('AIWS_E2E_BACKEND is not set: run with --config=playwright.aiworkspace.config.ts')
     this.base = `${backend}/kapi/aiworkspace`
+    this.nfs = `http://127.0.0.1:${process.env.AIWS_E2E_NDM_PORT}`
+  }
+
+  /** Bytes bound into the token's user's own bucket `name` (what a browser upload with `bind` leaves). */
+  async bind(token: string, name: 'assets' | 'exports', key: string, bytes: Uint8Array | ArrayBuffer): Promise<{ bucket_id: string; key: string }> {
+    const bucket_id = `user/aiworkspace/${token.replace(/^tok-/, '')}/${name}`
+    const put = await fetch(`${this.nfs}/bucket/v1/${bucket_id}/${key}`, { method: 'PUT', body: bytes as BodyInit })
+    expect(put.ok, await put.clone().text()).toBe(true)
+    return { bucket_id, key }
+  }
+
+  /** An asset upload: bound by the uploader, taken over by the service (`asset.import_object`). */
+  async uploadAsset(token: string, workspaceId: string, bytes: Uint8Array): Promise<Json> {
+    const bound = await this.bind(token, 'assets', `upload/${Math.random().toString(36).slice(2)}`, bytes)
+    return this.rpc(token, 'asset.import_object', { workspace_id: workspaceId, ...bound })
+  }
+
+  /** A download a result names (`doc.export` / `replica.bootstrap` → `download`), read with its token. */
+  async download(download: Json): Promise<ArrayBuffer> {
+    const response = await fetch(`${this.nfs}/bucket/v1/${download.bucket_id}/${download.key}?token=${encodeURIComponent(download.token)}`)
+    expect(response.ok).toBe(true)
+    return response.arrayBuffer()
+  }
+
+  /** `ws.import` of a package the token's user bound into its own `exports` bucket. */
+  async importPackage(token: string, pkg: ArrayBuffer, semantics: 'new' | 'restore', replace = false): Promise<Json> {
+    const bound = await this.bind(token, 'exports', `import/${Math.random().toString(36).slice(2)}.bcanvas`, pkg)
+    return this.rpc(token, 'ws.import', { ...bound, semantics, ...(replace ? { replace: true } : {}) })
   }
 
   async rpc(token: string, method: string, params: Json): Promise<Json> {
@@ -44,11 +74,7 @@ export class Api {
     const fixture = JSON.parse(readFileSync(BACKEND_FIXTURE, 'utf8')) as Json
     let text = JSON.stringify(fixture.commits)
     for (const asset of fixture.assets) {
-      const bytes = Buffer.from(asset.base64, 'base64')
-      const begin = await this.rpc(token, 'asset.begin_upload', { workspace_id: ws.workspace_id, size: bytes.length })
-      const put = await fetch(`${this.base}/upload/${begin.upload_id}`, { method: 'PUT', headers: { authorization: `Bearer ${token}` }, body: bytes })
-      expect(put.ok).toBe(true)
-      const done = await this.rpc(token, 'asset.finish_upload', { workspace_id: ws.workspace_id, upload_id: begin.upload_id })
+      const done = await this.uploadAsset(token, ws.workspace_id, Buffer.from(asset.base64, 'base64'))
       text = text.split(asset.placeholder).join(done.object_id)
     }
     const commits = JSON.parse(text) as Json[]

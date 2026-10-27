@@ -79,7 +79,8 @@ impl RuntimeInferencePort {
             caller.user_id.clone(),
             request_id.to_string(),
         )
-        .map_err(resource_rpc_error)?;
+        .map_err(resource_rpc_error)?
+        .with_app(caller.artifact_app());
         let manager = ResourceManager::new(
             Arc::new(AuthenticatedResourceAuthorizer {
                 tenant_id: caller.tenant_id.clone(),
@@ -222,7 +223,7 @@ impl RuntimeInferencePort {
                         MediaContainer::Gif => "gif",
                     };
                     let artifact = manager
-                        .write_artifact(
+                        .write_input(
                             &context,
                             &output,
                             ArtifactSpec {

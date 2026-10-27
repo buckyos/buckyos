@@ -41,12 +41,19 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-/// pikg staging root：Control Panel 数据目录下的受控子目录（D5）。
+/// 外部投放 pikg 的受控目录（D5，只用 `incoming/`）；staged pikg 本身在 named store。
 pub fn pikg_staging_root() -> PathBuf {
     buckyos_kit::get_buckyos_root_dir()
         .join("cache")
         .join("control_panel")
         .join("pikg_staging")
+}
+
+/// 处理期间的临时文件（解出的 payload、构造中的 Agent runtime 包）。
+pub fn work_root() -> PathBuf {
+    buckyos_kit::get_buckyos_root_dir()
+        .join("tmp")
+        .join(buckyos_api::CONTROL_PANEL_SERVICE_NAME)
 }
 
 fn inherit_upgrade_params(mut params: InstallParams, spec: &AppServiceSpec) -> InstallParams {
@@ -80,26 +87,32 @@ fn inherit_upgrade_params(mut params: InstallParams, spec: &AppServiceSpec) -> I
 
 pub struct ProductionInstallDriver {
     resolver: Arc<dyn AppDidResolver>,
-    staging_root: PathBuf,
     staging_store: Arc<PikgStagingStore>,
+}
+
+fn retain_error(stage: InstallStage, error: kRPC::RPCErrors) -> InstallError {
+    InstallError::new(
+        stage,
+        InstallErrorCode::AcquisitionFailed,
+        true,
+        format!("retain installed packages failed: {error}"),
+    )
 }
 
 impl ProductionInstallDriver {
     pub fn new(staging_store: Arc<PikgStagingStore>) -> Self {
         Self {
             resolver: Arc::new(NameClientAppResolver::new()),
-            staging_root: pikg_staging_root(),
             staging_store,
         }
     }
 
+    /// Writes the candidate PIKG's AppDoc, Package Metas and payloads into the
+    /// named store, then binds everything the plan deploys into the package buckets.
     pub(crate) async fn materialize_candidate_pikg(
         &self,
         data: &AppInstallTaskData,
     ) -> Result<(), InstallError> {
-        let Some(reader) = self.open_candidate_pikg(data).await? else {
-            return Ok(());
-        };
         let plan = data.state.plan.as_ref().ok_or_else(|| {
             InstallError::new(
                 InstallStage::Prepare,
@@ -124,7 +137,23 @@ impl ProductionInstallDriver {
                 format!("open named store for pikg materialization failed: {error}"),
             )
         })?;
+        if let Some(reader) = self.open_candidate_pikg(data).await? {
+            self.materialize_pikg(&reader, plan, data, &named_store)
+                .await?;
+        }
+        crate::buckets::PackageBuckets::zone()
+            .retain_plan(&named_store, plan, true)
+            .await
+            .map_err(|error| retain_error(InstallStage::Prepare, error))
+    }
 
+    async fn materialize_pikg(
+        &self,
+        reader: &PikgReader,
+        plan: &InstallPlan,
+        data: &AppInstallTaskData,
+        named_store: &named_store::NamedDataMgr,
+    ) -> Result<(), InstallError> {
         let app_doc_value = data.state.resolved_app_doc.clone().ok_or_else(|| {
             InstallError::new(
                 InstallStage::Prepare,
@@ -209,7 +238,7 @@ impl ProductionInstallDriver {
             if named_store.have_chunk(&chunk_id).await {
                 continue;
             }
-            let temp_path = self.staging_root.join(format!(
+            let temp_path = work_root().join(format!(
                 ".materialize-{}-{}.tmp",
                 plan.task_id,
                 uuid::Uuid::new_v4().simple()
@@ -229,7 +258,7 @@ impl ProductionInstallDriver {
                             ),
                         )
                     })?;
-                store_pikg_payload(&named_store, &temp_path, &chunk_id)
+                store_pikg_payload(named_store, &temp_path, &chunk_id)
                     .await
                     .map_err(|error| {
                         InstallError::new(
@@ -271,22 +300,40 @@ impl ProductionInstallDriver {
         if candidate.kind != "pikg" {
             return Ok(None);
         }
-        let (Some(path), Some(digest)) = (
-            candidate.staging_path.as_ref(),
+        let (Some(handle), Some(digest)) = (
+            candidate.staging_handle.as_ref(),
             candidate.pikg_digest.as_ref(),
         ) else {
             return Ok(None);
         };
-        let reader = PikgReader::open(std::path::Path::new(path), Some(digest))
+        let runtime = get_buckyos_api_runtime().map_err(|error| {
+            Self::invalid_request(format!("get runtime for staging handle failed: {error}"))
+        })?;
+        let reopen_error = |err: kRPC::RPCErrors| {
+            InstallError::new(
+                InstallStage::Inspect,
+                InstallErrorCode::InvalidPackage,
+                false,
+                format!("reopen staged pikg failed: {err}"),
+            )
+        };
+        let (_, obj_id) = self
+            .staging_store
+            .resolve(
+                handle,
+                data.request.creator_user_id.as_str(),
+                data.request.creator_app_id.as_str(),
+                &runtime.zone_id,
+                PikgStagingPurpose::Inspect,
+                None,
+            )
             .await
-            .map_err(|err| {
-                InstallError::new(
-                    InstallStage::Inspect,
-                    InstallErrorCode::InvalidPackage,
-                    false,
-                    format!("reopen staged pikg failed: {err}"),
-                )
-            })?;
+            .map_err(reopen_error)?;
+        let reader = self
+            .staging_store
+            .reader(&obj_id, digest)
+            .await
+            .map_err(reopen_error)?;
         Ok(Some(reader))
     }
 
@@ -307,7 +354,7 @@ impl ProductionInstallDriver {
             PikgStagingPurpose::Install
         };
         let lease = (view.id != "inspect-only").then_some(view.id.as_str());
-        let (metadata, staged_path) = self
+        let (metadata, obj_id) = self
             .staging_store
             .resolve(
                 staging_handle,
@@ -319,30 +366,16 @@ impl ProductionInstallDriver {
             )
             .await
             .map_err(|error| Self::invalid_request(error.to_string()))?;
-        let digest = metadata.pikg_digest;
-
-        // canonical path 必须仍在 staging root 内（D5）。
-        let canonical = staged_path
-            .canonicalize()
-            .map_err(|err| Self::invalid_request(format!("staging path invalid: {err}")))?;
-        let root_canonical = self
-            .staging_root
-            .canonicalize()
-            .map_err(|err| Self::invalid_request(format!("staging root invalid: {err}")))?;
-        if !canonical.starts_with(&root_canonical) {
-            return Err(Self::invalid_request(
-                "staging handle escaped staging root".to_string(),
-            ));
-        }
-
-        let reader = PikgReader::open(&canonical, Some(&digest))
+        let reader = self
+            .staging_store
+            .reader(&obj_id, &metadata.pikg_digest)
             .await
             .map_err(|err| {
                 InstallError::new(
                     InstallStage::Resolve,
                     InstallErrorCode::InvalidPackage,
                     false,
-                    format!("open staged pikg failed: {err}"),
+                    err.to_string(),
                 )
             })?;
         let inspection = reader.inspection();
@@ -372,7 +405,6 @@ impl ProductionInstallDriver {
             candidate: Some(CandidateHandle {
                 kind: "pikg".to_string(),
                 pikg_digest: Some(inspection.pikg_digest.clone()),
-                staging_path: Some(canonical.to_string_lossy().to_string()),
                 staging_handle: Some(staging_handle.to_string()),
                 app_doc_object_id: Some(candidate_obj_id),
                 source_url: None,
@@ -438,7 +470,6 @@ impl ProductionInstallDriver {
                     candidate: Some(CandidateHandle {
                         kind: "named_object".to_string(),
                         pikg_digest: None,
-                        staging_path: None,
                         staging_handle: None,
                         app_doc_object_id: Some(candidate_obj_id),
                         source_url: None,
@@ -907,6 +938,15 @@ impl InstallStageDriver for ProductionInstallDriver {
                 format!("missing after acquire: {}", still_missing.join(", ")),
             ));
         }
+        let named_store = get_buckyos_api_runtime()
+            .map_err(|error| retain_error(InstallStage::Acquire, error))?
+            .get_local_named_store()
+            .await
+            .map_err(|error| retain_error(InstallStage::Acquire, error))?;
+        crate::buckets::PackageBuckets::zone()
+            .retain_plan(&named_store, persisted_plan, false)
+            .await
+            .map_err(|error| retain_error(InstallStage::Acquire, error))?;
         Ok(inspection.status)
     }
 

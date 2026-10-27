@@ -117,7 +117,11 @@ impl Station {
                 let row = get_entry(c, &entry_s)?;
                 let head = get_head(c, &entry_s)?;
                 let iat: Option<i64> = match head.as_ref().and_then(|h| h.current.clone()) {
-                    Some(current) => rusqlite::OptionalExtension::optional(c.query_row("SELECT iat FROM feed_index WHERE obj_id=?1", [current], |r| r.get(0)))?,
+                    Some(current) => rusqlite::OptionalExtension::optional(c.query_row(
+                        "SELECT iat FROM feed_index WHERE obj_id=?1 AND owner=?2",
+                        rusqlite::params![current, c.owner],
+                        |r| r.get(0),
+                    ))?,
                     None => None,
                 };
                 Ok((row, head, iat))

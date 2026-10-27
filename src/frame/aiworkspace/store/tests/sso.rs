@@ -8,7 +8,7 @@ use aiworkspace_core::{Code, Deny, WsError};
 use common::*;
 use serde_json::{json, Value};
 
-const GUEST_TOKEN: &str = "gt_abcdefghijklmnopqrstuvwxyz";
+const GUEST_TOKEN: &str = "gt_YWl3cy1ndWVzdC10b2tlbi1maXh0dXJlLTMyYnl0ZXM";
 
 fn limited(id: &str) -> Caller {
     Caller::account(id, true)
@@ -333,7 +333,7 @@ fn restore_keeps_grants_and_entries() {
         let h = env.svc.workspace(&id).unwrap();
         let mut ws = h.lock().unwrap();
         let r = ws.export(&alice(), "personal_backup", true, None).unwrap();
-        std::path::PathBuf::from(r["path"].as_str().unwrap())
+        fetched(&ws.objects, &r)
     };
     env.svc.import(&alice(), &pkg, "restore", true).unwrap();
     let h = env.svc.workspace(&id).unwrap();

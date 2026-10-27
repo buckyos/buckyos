@@ -11,11 +11,14 @@ import { FilePermissionsPage } from './pages/FilePermissionsPage'
 import { DeveloperModePage } from './pages/DeveloperModePage'
 import { ZonePage } from './pages/ZonePage'
 import { SsoPage } from './pages/SsoPage'
+import { StoragePage } from './pages/StoragePage'
 
 function PageRouter({ page, appProps }: { page: SettingsPage; appProps: AppContentLoaderProps }) {
   switch (page) {
     case 'general':
       return <GeneralPage />
+    case 'storage':
+      return <StoragePage />
     case 'appearance':
       return <AppearancePage appProps={appProps} />
     case 'zone':

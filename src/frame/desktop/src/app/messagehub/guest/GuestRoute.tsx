@@ -227,7 +227,7 @@ function GuestConversation({ hub, snapshot, session }: { hub: GuestHub; snapshot
   // The Session's panels and display, as any member sees them (EXT-02/04); the guest page passes no viewer identity either.
   const extensions = (session.panels.length > 0 || !!session.display.announcement || session.display.links.length > 0 || session.display.files.length > 0 || session.display.featuredMembers.length > 0) && snapshot.hostDid
     ? <div className="space-y-3" data-testid="guest-extensions">
-      <GroupDisplaySection display={session.display} nameOf={hub.nameOf} testId="session-display" />
+      <GroupDisplaySection display={session.display} session={session.address} nameOf={hub.nameOf} testId="session-display" />
       <GroupExtensionPanels panels={session.panels} context={{ groupDid: hub.groupDid, sessionId: session.sessionId, session: session.address, locale }} hostDid={snapshot.hostDid} allowOrigins={isMessageHubMock() ? mockPanelOrigins() : undefined} defaultOpen />
     </div>
     : null

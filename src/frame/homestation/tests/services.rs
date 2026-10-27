@@ -7,7 +7,7 @@ use common::*;
 use serde_json::{json, Value};
 
 async fn upload_text(net: &Net, name: &str, file: &str, text: &str) -> String {
-    net.n(name).station.store_file(file, "text/markdown", text.as_bytes().to_vec(), Value::Null).await.unwrap().0
+    net.n(name).station.store_file(&format!("uploads/{file}"), file, "text/markdown", text.as_bytes().to_vec(), Value::Null).await.unwrap().0
 }
 
 /// A57–A62, E20–E22: identity and content targets without any Feed entry, paths bound to a
@@ -124,7 +124,7 @@ async fn consumption_proofs() {
     let stored: Value = brand
         .station
         .db
-        .call(move |c| Ok(serde_json::from_str(&c.query_row("SELECT body FROM objects WHERE obj_id=?1", [proof_id], |r| r.get::<_, String>(0))?)?))
+        .call(move |c| Ok(serde_json::from_str(&c.query_row("SELECT body FROM objects WHERE obj_id=?1 AND owner=?2", [proof_id.as_str(), c.owner], |r| r.get::<_, String>(0))?)?))
         .await
         .unwrap();
     assert_eq!(stored["action"], "video_complete");

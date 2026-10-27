@@ -378,6 +378,20 @@ impl AuthorizedCaller {
         }
     }
 
+    /// The App AICC files this call's artifacts under in the user's buckets:
+    /// the business App of a direct call, `system:<service>` otherwise.
+    pub(crate) fn artifact_app(&self) -> Option<String> {
+        match &self.principal {
+            CallerPrincipal::Account {
+                mode: AiccAttributionMode::Direct,
+                ..
+            } => self.app_id.clone(),
+            CallerPrincipal::Account { caller, .. } | CallerPrincipal::System { caller } => {
+                Some(business_app(caller))
+            }
+        }
+    }
+
     pub(crate) fn attribution(&self) -> AiccAttribution {
         match &self.principal {
             CallerPrincipal::Account {

@@ -75,6 +75,17 @@ SDK 依赖跟随 `buckyos-websdk#main`。每次 `pnpm build` 先更新工作区�
 
 `pnpm build` 和在 `src/` 执行的 `uv run buckyos-build.py -s buckyos_systest` 均通过，生成 `dapp_dist/buckyos-systest.buckyos.bns.did-0.5.1.pikg`。后台使用现有 OOD 应用容器内的临时候选进程，保留容器网关和设备环境；浏览器加载候选静态文件并连接该进程，SSO 与系统服务请求走真实 ZoneGateway。未替换已安装应用；大文件分块上传、断线重试及长期运行未在本轮验证。
 
+## 应用对象桶冒烟（DV）
+
+`dapp_meta/app.json` 声明一个小桶 `smoke`（`data` / `temp`，默认 1 天过期，`quota_mib` 16，App 池 `storage_quota_mib` 64），实例为 `user/buckyos-systest.buckyos.bns.did/<user>/smoke`。页面的“应用对象桶（DV 冒烟）”组：
+
+| 用例 | 写入 | 读取 | 删除 |
+| --- | --- | --- | --- |
+| `putBytes → objectUrl → bucket.delete` | `BucketClient.putBytes`（`PUT /bucket/v1/...`，`if_none_match: *`） | `objectUrl` 只带 Cookie 的 `fetch`（同 `<img src>`） | `bucket.delete` 后 `fetchObject` 必须得到错误码 `no_such_key` |
+| `ndm.importFiles + ensureUploaded({ bind })` | NDM 上传，finalize 时 `auto_bind` 直达桶，结果带 `binding` | 同上 | 同上 |
+
+后台 `POST /sdk/appservice/selftest/bucket` 用 AppService 会话对 `user/<appid>/<安装账号>/smoke` 做 `putBytes → fetchObject → delete`。失败时用例会尽力删除自己写的 key；漏删的 key 一天后由桶的 TTL 解绑。DV 验收：两组都通过，且 `buckyos bucket stat user/buckyos-systest.buckyos.bns.did/<user>/smoke` 的 key 数回到 0。依赖 websdk 的 `bucket.userBucketId`、`ndm.ensureUploaded({ bind })`（本仓库构建时取 `buckyos-websdk#main`，需先发布）。
+
 ## 文件 / 目录 SDK 导入演示
 
 NDM 卡片提供单文件、多文件和目录选择，统一调用 `ndm.pickupAndImport` → `ndm.ensureUploaded`。页面只展示 SDK 给出的稳定 ObjId、对象就绪状态、逻辑进度、实际发送 payload 字节与查重警告；不重算 ChunkList，不读取 SDK 私有字段，不向后台发送 canonical 对象登记请求。旧 `/sdk/appservice/ndm_query` 登记接口已删除，浏览器使用自己的当前用户 / AppInstance session 完成 NDM finalize。

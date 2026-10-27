@@ -106,31 +106,31 @@ Beta2.2 应作为后续覆盖升级的第一份正式数据基线。凡升级后
 
 ### F06 NDN 对象、chunks、引用关系与 GC 状态
 
-**内容：** Named Store 的 `named_store.json`、`named_store.db`、`chunks/`；数据库 objects、chunk_items、incoming_refs、edge_outbox、pins、fs_anchors；上层持久化的 File/Dir/Msg/Package 等对象。
+**内容：** Named Store 的 `named_store.json`、`named_store.db`、`chunks/`；数据库 objects、chunk_items、incoming_refs、edge_outbox、pins、fs_anchors；上层持久化的 File/Dir/Msg/Package 等对象。应用对象桶索引：nfs-server 的 RDB `bucket-index`（桶、绑定 key → ObjId / 版本 / origin、配额、grant、`bkt_` 令牌摘要、快照、S3 密钥）；每条绑定对应一个 owner 为 `bucket:<bucket_id>` 的 pin。
 
 **文档必须包括：** ObjectId/ChunkId 算法与编码、对象类型与规范化/哈希输入、chunk 布局、外部文件引用、分片/差分结构、pins 与引用图、GC 根、跨 store outbox。各业务对象 schema 必须另有定义，不能只记录底层“存储 JSON 字符串”。
 
-**兼容策略：** 存储布局可以迁移，已发布 ObjectId/ChunkId 必须继续解析到原内容。不能重新序列化旧内容后把新摘要冒充旧 ID；若新旧对象并存，要保留旧解析与引用关系。迁移期间应避免 GC 把尚未转换的引用当成无主对象回收。
+**兼容策略：** 存储布局可以迁移，已发布 ObjectId/ChunkId 必须继续解析到原内容。不能重新序列化旧内容后把新摘要冒充旧 ID；若新旧对象并存，要保留旧解析与引用关系。迁移期间应避免 GC 把尚未转换的引用当成无主对象回收。GC 宿主默认驱逐（`named_store_gc_evict = true`）：没有 pin、没有入边的对象和 24 小时未访问的 chunk 会被回收，所以桶索引与 `pins` 必须一起保留、一起恢复；只恢复 named store 而丢掉桶索引，等于删除全部应用数据。
 
 依据：[named_store.rs](../../../cyfs-ndn/src/named_store/src/named_store.rs)、[store_db.rs](../../../cyfs-ndn/src/named_store/src/store_db.rs)。已有 [CYFS 标准对象](<../../../cyfs-ndn/doc/CYFS Protocol/CYFS 标准对象.md>)、[Named Store GC](../../../cyfs-ndn/doc/GC/named_store_gc.md)。需补发布版磁盘布局、数据库版本和跨业务引用验收。
 
 ### F07 软件包、离线包与 Repo 发布数据
 
-**内容：** `.pikg`、Package Meta、AppDoc/ServiceDoc/AgentDoc、包签名和验证材料；PackageEnv 的 `pkg.cfg.json`、`pkgs/meta_index.db`、`pkgs/env.lock`；repo-service 的 objects/proofs/receipts；本机应用清单 `bin/applist.json`。后者在当前安装配置中属于保留数据，不能把整个 `bin/` 一概理解为可替换程序。
+**内容：** `.pikg`、Package Meta、AppDoc/ServiceDoc/AgentDoc、包签名和验证材料；PackageEnv 的 `pkg.cfg.json`、`pkgs/meta_index.db`、`pkgs/env.lock`；repo-service 的 RDB `repo-service-main`（objects/proofs/receipts、待公告队列）与桶 `zone/repo-service/_/packages`（key `<content_name>/<version>`，被 pin 内容的唯一保留）；control-panel 的包桶 `zone/control-panel/_/{packages,package_objects,agent_templates}`（key 带 `<owner>/<app_id>/<version>`）与安装暂存 `pikg_staging`（temp，可丢弃）；本机应用清单 `bin/applist.json`。后者在当前安装配置中属于保留数据，不能把整个 `bin/` 一概理解为可替换程序。
 
 **文档必须包括：** 包封装、manifest、依赖及版本选择、平台选择、包名和 DID/ObjectId 的映射、签名验证、部署产物目录、导入/导出。区分可重新下载的索引/解包目录与唯一的本地发布包、证明和收据。
 
-**兼容策略：** 已安装旧应用、已保存的离线包和旧发布内容仍能识别；本地发布事实不可当作远端索引缓存清空。格式转换必须保持文档签名与内容寻址语义。
+**兼容策略：** 已安装旧应用、已保存的离线包和旧发布内容仍能识别；本地发布事实不可当作远端索引缓存清空。格式转换必须保持文档签名与内容寻址语义。`objects.bucket_key` 与桶绑定要成对迁移：repo-service 启动对账会删除没有记录的绑定。
 
 依据：[交付与包系统](05_delivery_pkg_system.md)、[Repo v2](<../repo_service/Repo v2.md>)、[repo_client.rs](../../src/kernel/buckyos-api/src/repo_client.rs)、[package-lib](../../../cyfs-ndn/src/package-lib/src/env.rs)。
 
 ### F08 Message Center 业务数据
 
-**内容：** RDB `msg-center-main`，默认 `data/msg-center/msg-center-main.db`；mailbox_records、delivery_records、msg_refs、contacts/contact_metadata、group_subscribers、msg_idempotency、msg_tunnel_cursors、持久 UI session 设置；named store 消息正文和附件。
+**内容：** RDB `msg-center-main`，默认 `data/msg-center/msg-center-main.db`；mailbox_records、delivery_records、msg_refs、contacts/contact_metadata、group_subscribers、msg_idempotency、msg_tunnel_cursors、持久 UI session 设置；named store 消息正文和附件，由桶保留：`zone/msg-center/_/messages`（object，key `<msg_id>`）、`zone/msg-center/_/attachments`（data，key `<session>/<msg_id>/<n>`，群展示文件 `<group>/_display/<obj_id>`），用户收藏的附件在 `user/msg-center/<user>/collected`（`collected` 档，带 origin）。
 
 **文档必须包括：** 邮箱/会话/联系人 key、消息对象版本、owner 和成员范围、投递状态、幂等 key 作用域与 retention、外部通道 cursor、对象引用生命周期。桌面标题/草稿等与 typing/在线状态分开处理。
 
-**兼容策略：** 数据库与对象存储联合保留；恢复后不漏投、不因 cursor/幂等信息丢失而重新发送已完成消息。消息正文可解析不等于已保留邮箱、已读或投递状态。
+**兼容策略：** 数据库、桶索引与对象存储联合保留；恢复后不漏投、不因 cursor/幂等信息丢失而重新发送已完成消息。消息正文可解析不等于已保留邮箱、已读或投递状态。消息 key 是 `msg_id`，不能在迁移中重新编号；`collected` 桶属于用户内容，卸载 msg-center 也只成为孤儿桶。
 
 已有 [Message Center Durable Data Schema](<../message_hub/Message Center Durable Data Schema.md>)；当前仍声明 Beta2.2 no-compat，需明确该规则仅适用于本次发布前。实际表定义见 [msg_center_client.rs](../../src/kernel/buckyos-api/src/msg_center_client.rs)，建库入口见 [msg_box_db.rs](../../src/frame/msg_center/src/msg_box_db.rs)。
 
@@ -158,11 +158,11 @@ Beta2.2 应作为后续覆盖升级的第一份正式数据基线。凡升级后
 
 ### F11 AICC 配置、执行、用量与产物归属
 
-**内容：** `services/aicc/settings` 与 Control Panel Provider 设置；RDB `aicc-usage-log`（默认 `data/aicc/aicc-usage-log.db`）中的执行、用量/费用、路由 trace、artifact tenant/owner、外部 Provider 产物 ID、URL source、audit、inventory LKGS；metadata catalog 与防回退序列。
+**内容：** `services/aicc/settings` 与 Control Panel Provider 设置；RDB `aicc-usage-log`（默认 `data/aicc/aicc-usage-log.db`）中的执行、用量/费用、路由 trace、artifact tenant/owner、外部 Provider 产物 ID、URL source、audit、inventory LKGS；metadata catalog 与防回退序列。产物字节在 named store，由用户 temp 桶 `user/aicc/<user>/outputs`（7 天）与 `inputs`（1 天）保留，key `<app>/<hash16>/<name>`；RDB 只记归属与 `bucket_ref`。
 
 **文档必须包括：** Provider identity/凭据引用、方法与模型选择、金额/计量单位、`*_json` 权威 payload 与查询投影的关系、外部异步任务 handle、归属与可访问性、metadata schema/version/revision_seq。
 
-**兼容策略：** 历史用量及费用不因单位或投影变化被误读；正在执行的 Provider 任务不得按空库重发；产物归属不可从 URL/对象内容猜测。可重建的 inventory/search 等缓存与防回退水位分开处理。
+**兼容策略：** 历史用量及费用不因单位或投影变化被误读；正在执行的 Provider 任务不得按空库重发；产物归属不可从 URL/对象内容猜测。可重建的 inventory/search 等缓存与防回退水位分开处理。产物是 temp 档：升级不承诺保留过期产物，但不得缩短未到期绑定的 TTL；业务方需要长期保留时自行复制进自己的桶。
 
 已有 [Runtime Durable Data Schema](../aicc/aicc_runtime_durable_data_schema.md)、[Provider Durable Data Schema](../aicc/provider_architecture_durable_data_schema.md)。runtime 文档与 [storage/mod.rs](../../src/frame/aicc/src/storage/mod.rs) 的全局 schema 现均为 3：空库直接建当前表集，已有库只接受版本 3，开发期的迁移代码已删除；正式基线发布后的升级路径仍需单独定义。
 
@@ -188,21 +188,21 @@ Beta2.2 应作为后续覆盖升级的第一份正式数据基线。凡升级后
 
 ### F14 AI Workspace 与便携文档包
 
-**内容：** 默认 `data/aiworkspace/workspaces/<workspace_id>/{doc.sqlite,local.sqlite}`、共享 `objects/`、trash 与有效 staging；`.bcanvas` 导出包。doc 库有 entities/tree/refs/table/richtext/commit/assets/snapshot；local 库有 grants/user_state/runs/locks 等。
+**内容：** 默认 `data/aiworkspace/workspaces/<workspace_id>/{doc.sqlite,local.sqlite}` 与 trash；资产、快照、版本和导出包在 named store，由 Workspace owner 的桶保留：`user/aiworkspace/<owner>/assets`（key `<ws>/<object_id>`）、`objects`（`<ws>/snapshot/<id>`、`<ws>/version/<epoch>/<seq>`，值是列出该根全部引用对象的保留集目录对象）、`exports`（temp 7 天：`.bcanvas`、离线副本、固定发布版本）；`.bcanvas` 导出包。旧的共享 `objects/`、`staging/` 与 `retentions` / `upload_sessions` 表已删除（storage schema 5）。doc 库有 entities/tree/refs/table/richtext/commit/assets/snapshot；local 库有 grants/user_state/runs/locks 等。
 
 **文档必须包括：** storage schema、每种 entity/type/payload schema、稳定 ID、树与引用、revision/seq/tombstone、富文本 engine/version/encoding 与二进制 update、commit/undo/幂等、对象内容与包 manifest。导出格式版本应与内部存储版本区分。
 
-**兼容策略：** 文档、附件、授权、个人状态和已接受 run 要分别迁移；`local.sqlite` 不随便携导出，不代表可在原部署升级时丢弃。保留原 entity/object ID 及外部引用。旧 `.bcanvas` 应能导入或通过转换器读取。
+**兼容策略：** 文档、附件、授权、个人状态和已接受 run 要分别迁移；`local.sqlite` 不随便携导出，不代表可在原部署升级时丢弃。保留原 entity/object ID 及外部引用。旧 `.bcanvas` 应能导入或通过转换器读取。`assets.bucket_key` / `bucket_version` 与桶绑定成对迁移；撤销和版本恢复按“绑定已删”判断资源已回收。
 
 依据：[schema.rs](../../src/frame/aiworkspace/store/src/schema.rs)、[workspace.rs](../../src/frame/aiworkspace/store/src/workspace.rs)、[export.rs](../../src/frame/aiworkspace/store/src/export.rs)。已有 [核心设计](<../workspace/BuckyOS AI Workspace 实现的核心设计.md>) 等多份阶段文档，需收敛发布存储契约。当前打开文档要求 storage schema 精确匹配，尚不能据此推断具备跨版本迁移能力。
 
 ### F15 用户文件与 nfs-server 元数据
 
-**内容：** `data/home`、`data/srv` 等实际文件与链接；`data/.fsdb/filedb.sqlite` 中 entities、anchors、namespace_bindings、views/view_patch、collections、meta_records、grants 等；`cyfs://`、anchor、node_id、object 引用。
+**内容：** `data/home`、`data/srv` 等实际文件与链接；`data/.fsdb/filedb.sqlite` 中 entities、anchors、namespace_bindings、views/view_patch、collections、meta_records、grants 等；`cyfs://`、anchor、node_id、object 引用。ShareContentMgr 的分享记录在同一 filedb（shares、share_versions、share_deliveries、link 凭据等），分享快照由 `zone/nfs-server/_/shares`（key `<share_id>`）保留；应用桶的 Files 投影 `home/<user>/Apps/…`、`Collected/…` 不落盘，由桶索引即时生成。
 
 **文档必须包括：** namespace/挂载映射、路径规范化、稳定锚点、实体/引用/视图/集合 ID、删除与改名、用户元数据、capability/撤销状态、外部路径链接及跨平台权限处理。
 
-**兼容策略：** 扫描文件可重建部分物理属性，但不能重建用户集合、视图修改、授权或所有旧 anchor。明确哪些表是扫描投影、哪些是权威数据，并验证旧链接和对象引用继续可用。普通用户文件按字节保留；其第三方应用内部格式由该应用负责，OS 负责路径和挂载契约。
+**兼容策略：** 扫描文件可重建部分物理属性，但不能重建用户集合、视图修改、授权或所有旧 anchor。明确哪些表是扫描投影、哪些是权威数据，并验证旧链接和对象引用继续可用。普通用户文件按字节保留；其第三方应用内部格式由该应用负责，OS 负责路径和挂载契约。投影路径与 `bk_` ref 依赖应用显示名与桶 key，升级时随桶索引保持；分享启动对账会删除没有有效分享的绑定，所以 filedb 与桶索引必须同一时间点。
 
 依据：[config.rs](../../src/frame/nfs_server/src/config.rs)、[filedb.rs](../../src/frame/nfs_server/src/filedb.rs)、[路径规范](../path_usage.md)。需补面向发布的 FileDB 持久 schema 与迁移规范。
 
@@ -222,6 +222,16 @@ Beta2.2 应作为后续覆盖升级的第一份正式数据基线。凡升级后
 - DCFS/fs_meta/fs_buffer：当前单机路径与未来分布式文件系统不能混为一谈；交付并启用时，应补 inode/dentry、overlay、journal、chunk 映射和存储拓扑格式。
 - control-panel 旧 `share_content_mgr.rs`（`data/share_content_mgr.sqlite3`）从未启用，已于 2026-10-19 删除；分享改由 nfs-server 实现，数据在 filedb（`data/.fsdb/filedb.sqlite`）的 `share_*` 表，快照对象在 named store 并以 `share:<share_id>` pin（`product/bucky_file/nfs_server.md` §12）。
 - 其他预装/第三方 App：OS 要保留挂载的数据目录与 App 绑定；若随 OS 同时升级 App，还要取得该 App 自己的 schema 与转换方案。前端原型、本地 mock 不自动视为已经上线的服务存储。
+
+### F17 HomeStation 发表、关注与读取授权
+
+**内容：** RDB `homestation-main`（owner 列区分用户）：本人条目、Head 历史、变化序列、读取授权、发布任务、关注与待读窗口、本人发表版本对象的正文与签名 JWT；用户桶 `user/homestation/<user>/published`（documents，key `<namespace>/<entry>/<version ObjId>/<n>`）、`entries`（documents，版本对象）、`following` / `following-entries`（ambient，别人动态的预取，带 origin）、`scratch`（temp 7 天）、`cache`。
+
+**文档必须包括：** 条目 / namespace / version 的 ID 规则、Head 与变化序列的单调性、读取授权与 `access` 参数、本人对象的签名输入、ambient 预取与待读窗口的释放规则。
+
+**兼容策略：** 已对外发布的 Head、ObjectId 与媒体 URL（`/home/<user>/objects/<id>/content?access=`）必须继续可用；`published` / `entries` 是用户创作，与 RDB 同时点保留。`following*` 是可再拉取的描述持久数据，丢失后按 origin 重新获取，不影响关注关系本身。
+
+已有 [HomeStation Durable Data Schema](<../homestation/HomeStation Durable Data Schema.md>)。
 
 ## 5. 已确认的版本与文档缺口
 

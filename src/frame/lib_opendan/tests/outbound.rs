@@ -197,10 +197,10 @@ impl Objects {
 
 #[async_trait]
 impl libopendan::runner::ObjectStore for Objects {
-    async fn put_file(&self, path: &std::path::Path, name: &str) -> Result<ndn_lib::ObjId, String> {
+    async fn put_file(&self, path: &std::path::Path, name: &str) -> Result<libopendan::runner::StoredObject, String> {
         assert!(path.is_file(), "{}", path.display());
         self.put.lock().unwrap().push((path.to_path_buf(), name.to_string()));
-        Ok(Self::id_of(name))
+        Ok(libopendan::runner::StoredObject { obj_id: Self::id_of(name), url: None })
     }
 
     async fn name_of(&self, obj_id: &ndn_lib::ObjId) -> Option<String> {
@@ -239,14 +239,14 @@ async fn a_failed_artifact_upload_is_correctable_before_delivery() {
     struct UnavailableOnce(Mutex<usize>);
     #[async_trait]
     impl libopendan::runner::ObjectStore for UnavailableOnce {
-        async fn put_file(&self, path: &std::path::Path, name: &str) -> Result<ndn_lib::ObjId, String> {
+        async fn put_file(&self, path: &std::path::Path, name: &str) -> Result<libopendan::runner::StoredObject, String> {
             assert_eq!(std::fs::read(path).unwrap(), b"video content");
             let mut attempts = self.0.lock().unwrap();
             *attempts += 1;
             if *attempts == 1 {
                 return Err("object store temporarily unavailable".into());
             }
-            Ok(Objects::id_of(name))
+            Ok(libopendan::runner::StoredObject { obj_id: Objects::id_of(name), url: None })
         }
     }
     let env = Env::new();
@@ -324,6 +324,88 @@ async fn a_final_report_is_the_reply_with_its_artifacts_as_objects() {
     assert_eq!(sent.len(), 2);
     assert_eq!(sent[1].msg.content.content, "nothing to attach");
     assert!(sent[1].msg.content.refs.is_empty());
+}
+
+/// A host that keeps everything in a bucket: files are put in, bucket
+/// objects bound elsewhere are copied into `artifacts`.
+#[derive(Default)]
+struct Bucketed {
+    put: Mutex<Vec<String>>,
+    retained: Mutex<Vec<String>>,
+}
+
+const ARTIFACTS: &str = "obj://bucket/user/agentx/alice/artifacts";
+
+#[async_trait]
+impl libopendan::runner::ObjectStore for Bucketed {
+    async fn put_file(&self, path: &std::path::Path, name: &str) -> Result<libopendan::runner::StoredObject, String> {
+        assert!(path.is_file(), "{}", path.display());
+        self.put.lock().unwrap().push(name.to_string());
+        Ok(libopendan::runner::StoredObject { obj_id: Objects::id_of(name), url: Some(format!("{ARTIFACTS}/0001/{name}")) })
+    }
+
+    async fn retain_url(&self, url: &str) -> Result<libopendan::runner::StoredObject, String> {
+        self.retained.lock().unwrap().push(url.to_string());
+        let name = url.rsplit('/').next().unwrap();
+        Ok(libopendan::runner::StoredObject { obj_id: Objects::id_of(name), url: Some(format!("{ARTIFACTS}/0002/{name}")) })
+    }
+}
+
+fn uri_hints(msg: &ndn_lib::MsgObject) -> Vec<Option<String>> {
+    msg.content
+        .refs
+        .iter()
+        .map(|r| match &r.target {
+            ndn_lib::RefTarget::DataObj { uri_hint, .. } => uri_hint.clone(),
+            other => panic!("not a data object: {other:?}"),
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn bucket_bindings_travel_with_the_reply_and_retained_copies_are_dropped() {
+    let env = Env::new();
+    let sd = env.create_work(report_ui_spec()).await;
+    std::fs::write(sd.path().join("chart.png"), "png").unwrap();
+    let generated = "obj://bucket/user/aicc/alice/outputs/agentx/0123/image_1.png";
+    let agent = env.agent();
+    let llm = ScriptedLlm::new(move |_, n| match n {
+        0 => final_report("r1", "chart and picture", json!(["chart.png", generated])),
+        1 => text(&format!("the picture again\n<attachment path=\"{generated}\" />")),
+        _ => panic!("unexpected inference {n}"),
+    });
+    let sink = Arc::new(Sink::default());
+    let objects = Arc::new(Bucketed::default());
+    let mut deps = env.deps(llm);
+    deps.outbound = Some(sink.clone());
+    deps.objects = Some(objects.clone());
+    libopendan::post_input(agent.as_ref(), sd.sid(), &from_bob("chart?")).await.unwrap();
+    drive(&sd, &deps, StopWhen::TurnClosed).await;
+
+    let report = sd.state().unwrap().final_report.unwrap();
+    assert_eq!(report.artifacts[0].url.as_deref(), Some(format!("{ARTIFACTS}/0001/chart.png").as_str()));
+    assert!(!sd.path().join(&report.artifacts[0].reference).exists(), "the bucket keeps the file");
+    assert_eq!(report.artifacts[1].url.as_deref(), Some(format!("{ARTIFACTS}/0002/image_1.png").as_str()));
+    assert_eq!(report.artifacts[1].name(), "image_1.png");
+    let sent = sink.sent.lock().unwrap()[0].msg.clone();
+    assert_eq!(
+        data_refs(&sent),
+        vec![
+            (Objects::id_of("chart.png").to_string(), Some("chart.png".to_string())),
+            (Objects::id_of("image_1.png").to_string(), Some("image_1.png".to_string())),
+        ]
+    );
+    assert_eq!(
+        uri_hints(&sent),
+        vec![Some(format!("{ARTIFACTS}/0001/chart.png")), Some(format!("{ARTIFACTS}/0002/image_1.png"))]
+    );
+
+    libopendan::post_input(agent.as_ref(), sd.sid(), &from_bob("once more")).await.unwrap();
+    drive(&sd, &deps, StopWhen::TurnClosed).await;
+    let sent = sink.sent.lock().unwrap()[1].msg.clone();
+    assert_eq!(uri_hints(&sent), vec![Some(format!("{ARTIFACTS}/0002/image_1.png"))]);
+    assert_eq!(*objects.retained.lock().unwrap(), vec![generated.to_string(), generated.to_string()]);
+    assert_eq!(*objects.put.lock().unwrap(), vec!["chart.png".to_string()]);
 }
 
 #[tokio::test]

@@ -38,8 +38,6 @@ export interface DocumentStore {
   /** `createParents`: a formal save may create the missing folders on the way to `path`. */
   write(path: string, bytes: Uint8Array, expected: string | null, options?: { createParents?: boolean }): Promise<WriteResult>
   list(path: string): Promise<Entry[]>
-  mkdir(path: string): Promise<void>
-  remove(path: string, recursive?: boolean): Promise<void>
 }
 export function splitPath(path: string): { parent: string; name: string } {
   const index = path.lastIndexOf('/')
@@ -157,11 +155,6 @@ export class NfspDocumentStore implements DocumentStore {
       do { const listing = await this.client.list(path, { limit: 1000, cursor }, ['base', 'ident']); entries.push(...listing.entries); cursor = listing.next_cursor } while (cursor)
       return entries
     })
-  }
-  async mkdir(path: string): Promise<void> { await this.call(() => this.client.mkdir(path)) }
-  async remove(path: string, recursive = false): Promise<void> {
-    const { parent, name } = splitPath(path)
-    try { await this.call(() => this.client.delete(parent, name, { recursive })) } catch (e) { if (!isMissing(e)) throw e }
   }
 }
 export const sourceKey = (source?: TransferableContentRef): string => source ? contentRefString(source) : 'untitled'

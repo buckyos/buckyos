@@ -11,7 +11,8 @@ use crate::publish::get_head;
 use crate::resources::ResourceState;
 use crate::settings::{FilterRule, MuteRule, UserSettings};
 use crate::{now_ms, Station};
-use rusqlite::{params, Connection, OptionalExtension};
+use crate::db::Conn;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -47,7 +48,7 @@ pub fn dimension_of_tag(tag: &str) -> &'static str {
 }
 
 /// Author tags (declared) + local evaluation + user corrections; the object is never changed (§8.5).
-pub fn effective_tags(conn: &Connection, obj_id: &str, feed: &FeedObject, scope: &str) -> HsResult<(Vec<EffectiveTag>, Classified)> {
+pub fn effective_tags(conn: &Conn, obj_id: &str, feed: &FeedObject, scope: &str) -> HsResult<(Vec<EffectiveTag>, Classified)> {
     let mut tags: Vec<EffectiveTag> = feed
         .tags
         .iter()
@@ -227,19 +228,19 @@ pub struct CandidatePage {
     pub last_fetch_at: i64,
 }
 
-fn head_withdrawn(conn: &Connection, feed: &FeedObject) -> HsResult<bool> {
+fn head_withdrawn(conn: &Conn, feed: &FeedObject) -> HsResult<bool> {
     Ok(match &feed.entry {
         Some(entry) => get_head(conn, entry)?.is_some_and(|h| h.state == HeadState::Withdrawn),
         None => false,
     })
 }
 
-fn source_label(conn: &Connection, path: &Value) -> HsResult<String> {
+fn source_label(conn: &Conn, path: &Value) -> HsResult<String> {
     if let Some(label) = path.get("label").and_then(Value::as_str) {
         return Ok(label.to_string());
     }
     if let Some(sender) = path.get("sender").and_then(Value::as_str) {
-        let name: Option<String> = conn.query_row("SELECT name FROM sources WHERE did=?1", [sender], |r| r.get(0)).optional()?;
+        let name: Option<String> = conn.query_row("SELECT name FROM sources WHERE did=?1 AND owner=?2", params![sender, conn.owner], |r| r.get(0)).optional()?;
         return Ok(name.unwrap_or_else(|| sender.to_string()));
     }
     Ok(String::new())
@@ -280,9 +281,9 @@ impl Station {
             .db
             .call(move |c| {
                 let mut stmt = c.prepare(
-                    "SELECT obj_id, selection FROM candidates WHERE selection IN ('unscreened','not_selected','preparing') AND arrived_at>=?1 ORDER BY arrived_at DESC LIMIT 400",
+                    "SELECT obj_id, selection FROM candidates WHERE owner=?2 AND selection IN ('unscreened','not_selected','preparing') AND arrived_at>=?1 ORDER BY arrived_at DESC LIMIT 400",
                 )?;
-                let rows = stmt.query_map([since], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+                let rows = stmt.query_map(params![since, c.owner], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<Vec<_>, _>>()?;
                 Ok(rows)
             })
             .await?;
@@ -309,16 +310,16 @@ impl Station {
                 for (obj_id, _) in &pending {
                     let Some(feed) = get_feed(&tx, obj_id)? else { continue };
                     if head_withdrawn(&tx, &feed)? {
-                        tx.execute("UPDATE candidates SET selection='dropped', reason='withdrawn', updated_at=?2 WHERE obj_id=?1", params![obj_id, now])?;
+                        tx.execute("UPDATE candidates SET selection='dropped', reason='withdrawn', updated_at=?2 WHERE obj_id=?1 AND owner=?3", params![obj_id, now, tx.owner])?;
                         continue;
                     }
                     let (tags, classified) = effective_tags(&tx, obj_id, &feed, "global")?;
                     let hits = filter_hits(&tags, &classified, &settings2.filter_rules);
                     if is_muted(&feed.publisher, &settings2.mute_rules, &contacts2) {
-                        tx.execute("UPDATE candidates SET selection='not_selected', reason='muted', updated_at=?2 WHERE obj_id=?1", params![obj_id, now])?;
+                        tx.execute("UPDATE candidates SET selection='not_selected', reason='muted', updated_at=?2 WHERE obj_id=?1 AND owner=?3", params![obj_id, now, tx.owner])?;
                         continue;
                     }
-                    let paths: String = tx.query_row("SELECT source_paths FROM candidates WHERE obj_id=?1", [obj_id], |r| r.get(0))?;
+                    let paths: String = tx.query_row("SELECT source_paths FROM candidates WHERE obj_id=?1 AND owner=?2", params![obj_id, tx.owner], |r| r.get(0))?;
                     let paths: Vec<Value> = serde_json::from_str(&paths).unwrap_or_default();
                     let followed = crate::ingress::is_followed_source(&tx, &feed.publisher)?;
                     let friend = friends.contains(&feed.publisher);
@@ -332,7 +333,7 @@ impl Station {
                     let mut text = Vec::new();
                     let name = || -> HsResult<String> {
                         Ok(tx
-                            .query_row("SELECT name FROM sources WHERE did=?1", [&feed.publisher], |r| r.get::<_, String>(0))
+                            .query_row("SELECT name FROM sources WHERE did=?1 AND owner=?2", params![&feed.publisher, tx.owner], |r| r.get::<_, String>(0))
                             .optional()?
                             .unwrap_or_else(|| feed.publisher.clone()))
                     };
@@ -378,32 +379,32 @@ impl Station {
                     if !hits.is_empty() {
                         // Filtered before preparation (§8.2); kept with its reason so the user can still look (A56).
                         tx.execute(
-                            "UPDATE candidates SET selection='filtered', reason=?2, rule_ids=?3, score=?4, updated_at=?5 WHERE obj_id=?1",
-                            params![obj_id, reason.to_string(), serde_json::to_string(&hits)?, score, now],
+                            "UPDATE candidates SET selection='filtered', reason=?2, rule_ids=?3, score=?4, updated_at=?5 WHERE obj_id=?1 AND owner=?6",
+                            params![obj_id, reason.to_string(), serde_json::to_string(&hits)?, score, now, tx.owner],
                         )?;
                         continue;
                     }
-                    tx.execute("UPDATE candidates SET score=?2, updated_at=?3 WHERE obj_id=?1", params![obj_id, score, now])?;
+                    tx.execute("UPDATE candidates SET score=?2, updated_at=?3 WHERE obj_id=?1 AND owner=?4", params![obj_id, score, now, tx.owner])?;
                     scored.push((obj_id.clone(), score, reason));
                 }
                 scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-                let reading: i64 = tx.query_row("SELECT COUNT(*) FROM reading", [], |r| r.get(0))?;
+                let reading: i64 = tx.query_row("SELECT COUNT(*) FROM reading WHERE owner=?1", params![tx.owner], |r| r.get(0))?;
                 let mut chosen = Vec::new();
                 for (obj_id, score, reason) in scored {
                     if chosen.len() < batch && score >= 1.0 {
-                        tx.execute("UPDATE candidates SET selection='preparing', reason=?2, updated_at=?3 WHERE obj_id=?1", params![obj_id, reason.to_string(), now])?;
+                        tx.execute("UPDATE candidates SET selection='preparing', reason=?2, updated_at=?3 WHERE obj_id=?1 AND owner=?4", params![obj_id, reason.to_string(), now, tx.owner])?;
                         chosen.push((obj_id, reason));
                     } else {
                         let why = if score < 1.0 { "below_threshold" } else if reading as usize >= window { "reading_window_full" } else { "batch_full" };
                         tx.execute(
-                            "UPDATE candidates SET selection='not_selected', reason=?2, updated_at=?3 WHERE obj_id=?1 AND selection!='preparing'",
-                            params![obj_id, why, now],
+                            "UPDATE candidates SET selection='not_selected', reason=?2, updated_at=?3 WHERE obj_id=?1 AND owner=?4 AND selection!='preparing'",
+                            params![obj_id, why, now, tx.owner],
                         )?;
                     }
                 }
                 let mut changed = 0;
                 for (obj_id, previous) in &pending {
-                    let current: Option<String> = tx.query_row("SELECT selection FROM candidates WHERE obj_id=?1", [obj_id], |r| r.get(0)).optional()?;
+                    let current: Option<String> = tx.query_row("SELECT selection FROM candidates WHERE obj_id=?1 AND owner=?2", params![obj_id, tx.owner], |r| r.get(0)).optional()?;
                     if current.as_deref() != Some(previous.as_str()) {
                         changed += 1;
                     }
@@ -436,8 +437,8 @@ impl Station {
             self.db
                 .call(move |c| {
                     c.execute(
-                        "UPDATE candidates SET selection='not_selected', reason='resources_unavailable', resources='unavailable', updated_at=?2 WHERE obj_id=?1",
-                        params![id, now],
+                        "UPDATE candidates SET selection='not_selected', reason='resources_unavailable', resources='unavailable', updated_at=?2 WHERE obj_id=?1 AND owner=?3",
+                        params![id, now, c.owner],
                     )?;
                     Ok(())
                 })
@@ -457,26 +458,26 @@ impl Station {
                 let hits = filter_hits(&tags, &classified, &rules);
                 if !hits.is_empty() {
                     tx.execute(
-                        "UPDATE candidates SET selection='filtered', reason=?5, rule_ids=?2, resources=?3, updated_at=?4 WHERE obj_id=?1",
-                        params![id, serde_json::to_string(&hits)?, state.as_str(), now, reason.to_string()],
+                        "UPDATE candidates SET selection='filtered', reason=?5, rule_ids=?2, resources=?3, updated_at=?4 WHERE obj_id=?1 AND owner=?6",
+                        params![id, serde_json::to_string(&hits)?, state.as_str(), now, reason.to_string(), tx.owner],
                     )?;
                     tx.commit()?;
                     return Ok(false);
                 }
                 let topics = topics_for(&tags, &settings);
                 tx.execute(
-                    "INSERT INTO reading(obj_id, admitted_at, order_key, reason, resources, topics) VALUES (?1, ?2, ?2, ?3, ?4, ?5)
-                     ON CONFLICT(obj_id) DO UPDATE SET resources=excluded.resources",
-                    params![id, now, reason.to_string(), state.as_str(), serde_json::to_string(&topics)?],
+                    "INSERT INTO reading(owner, obj_id, admitted_at, order_key, reason, resources, topics) VALUES (?6, ?1, ?2, ?2, ?3, ?4, ?5)
+                     ON CONFLICT(owner, obj_id) DO UPDATE SET resources=excluded.resources",
+                    params![id, now, reason.to_string(), state.as_str(), serde_json::to_string(&topics)?, tx.owner],
                 )?;
                 tx.execute(
-                    "INSERT INTO admission_history(obj_id, first_admitted_at) VALUES (?1, ?2)
-                     ON CONFLICT(obj_id) DO UPDATE SET first_admitted_at=COALESCE(admission_history.first_admitted_at, excluded.first_admitted_at)",
-                    params![id, now],
+                    "INSERT INTO admission_history(owner, obj_id, first_admitted_at) VALUES (?3, ?1, ?2)
+                     ON CONFLICT(owner, obj_id) DO UPDATE SET first_admitted_at=COALESCE(admission_history.first_admitted_at, excluded.first_admitted_at)",
+                    params![id, now, tx.owner],
                 )?;
                 tx.execute(
-                    "UPDATE candidates SET selection='admitted', resources=?2, updated_at=?3 WHERE obj_id=?1",
-                    params![id, state.as_str(), now],
+                    "UPDATE candidates SET selection='admitted', resources=?2, updated_at=?3 WHERE obj_id=?1 AND owner=?4",
+                    params![id, state.as_str(), now, tx.owner],
                 )?;
                 tx.commit()?;
                 Ok(true)
@@ -487,25 +488,34 @@ impl Station {
     /// Leaving the window is not deletion, not "read", and the admission record stays (A39).
     async fn trim_reading_window(&self) -> HsResult<()> {
         let window = self.cfg.reading_window as i64;
-        self.db
+        let trimmed = self
+            .db
             .call(move |c| {
-                c.execute(
-                    "DELETE FROM reading WHERE obj_id IN (SELECT obj_id FROM reading ORDER BY order_key DESC LIMIT -1 OFFSET ?1)",
-                    [window],
-                )?;
-                Ok(())
+                let mut stmt = c.prepare("SELECT obj_id FROM reading WHERE owner=?2 ORDER BY order_key DESC LIMIT -1 OFFSET ?1")?;
+                let ids = stmt.query_map(params![window, c.owner], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+                for id in &ids {
+                    c.execute("DELETE FROM reading WHERE obj_id=?1 AND owner=?2", params![id, c.owner])?;
+                }
+                Ok(ids)
             })
-            .await
+            .await?;
+        self.release_following(trimmed).await;
+        Ok(())
     }
 
     pub async fn expire_candidates(&self) -> HsResult<()> {
         let before = now_ms() - self.cfg.candidate_retention_days * 86_400_000;
-        self.db
+        let expired = self
+            .db
             .call(move |c| {
-                c.execute("DELETE FROM candidates WHERE arrived_at<?1 AND selection!='admitted'", [before])?;
-                Ok(())
+                let mut stmt = c.prepare("SELECT obj_id FROM candidates WHERE arrived_at<?1 AND selection!='admitted' AND owner=?2")?;
+                let ids = stmt.query_map(params![before, c.owner], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+                c.execute("DELETE FROM candidates WHERE arrived_at<?1 AND selection!='admitted' AND owner=?2", params![before, c.owner])?;
+                Ok(ids)
             })
-            .await
+            .await?;
+        self.release_following(expired).await;
+        Ok(())
     }
 
     /// Reading query (§17.4): one list, views by filter / Topic / search; mute and filter rules
@@ -520,13 +530,13 @@ impl Station {
                 // Admitted entries plus candidates the rules filtered before admission: both are
                 // "hidden by rules" and both can be shown on request (§8.5, A56).
                 let mut stmt = c.prepare(
-                    "SELECT obj_id, reason, order_key AS k FROM reading
+                    "SELECT obj_id, reason, order_key AS k FROM reading WHERE owner=?2
                      UNION ALL
                      SELECT obj_id, COALESCE(reason, '{}'), arrived_at AS k FROM candidates
-                       WHERE selection='filtered' AND arrived_at>=?1 AND obj_id NOT IN (SELECT obj_id FROM reading)
+                       WHERE owner=?2 AND selection='filtered' AND arrived_at>=?1 AND obj_id NOT IN (SELECT obj_id FROM reading WHERE owner=?2)
                      ORDER BY k DESC, obj_id",
                 )?;
-                let rows = stmt.query_map([since], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+                let rows = stmt.query_map(params![since, c.owner], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
                 let mut visible = Vec::new();
                 let (mut hidden_rules, mut hidden_mute) = (0, 0);
                 let search = query.search.trim().to_lowercase();
@@ -596,12 +606,12 @@ impl Station {
             .call(move |c| {
                 let mut stmt = c.prepare(
                     "SELECT c.obj_id, c.selection, c.source_paths, c.arrived_at, c.resources, h.first_admitted_at, h.opened_at, c.publisher
-                     FROM candidates c LEFT JOIN admission_history h ON h.obj_id=c.obj_id
-                     WHERE c.arrived_at>=?1 AND c.private_capture=0 ORDER BY c.arrived_at DESC",
+                     FROM candidates c LEFT JOIN admission_history h ON h.owner=c.owner AND h.obj_id=c.obj_id
+                     WHERE c.owner=?2 AND c.arrived_at>=?1 AND c.private_capture=0 ORDER BY c.arrived_at DESC",
                 )?;
                 type Row = (String, String, String, i64, String, Option<i64>, Option<i64>, String);
                 let rows: Vec<Row> = stmt
-                    .query_map([since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)))?
+                    .query_map(params![since, c.owner], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)))?
                     .collect::<Result<Vec<_>, _>>()?;
                 let mut entries = Vec::new();
                 let mut read_count = 0;
@@ -653,7 +663,7 @@ impl Station {
                 let total = entries.len();
                 let slice: Vec<CandidateView> = entries.into_iter().skip(start).take(page).collect();
                 let next_cursor = if start + page < total && !slice.is_empty() { slice.last().map(|e| e.obj_id.clone()) } else { None };
-                let last_fetch_at: i64 = c.query_row("SELECT COALESCE(MAX(last_fetch_at), 0) FROM sources", [], |r| r.get(0))?;
+                let last_fetch_at: i64 = c.query_row("SELECT COALESCE(MAX(last_fetch_at), 0) FROM sources WHERE owner=?1", params![c.owner], |r| r.get(0))?;
                 Ok(CandidatePage { entries: slice, next_cursor, read_count, retention_days: retention, last_fetch_at })
             })
             .await
@@ -672,9 +682,9 @@ impl Station {
         self.db
             .call(move |c| {
                 c.execute(
-                    "INSERT INTO admission_history(obj_id, opened_at) VALUES (?1, ?2)
-                     ON CONFLICT(obj_id) DO UPDATE SET opened_at=COALESCE(admission_history.opened_at, excluded.opened_at)",
-                    params![id, now],
+                    "INSERT INTO admission_history(owner, obj_id, opened_at) VALUES (?3, ?1, ?2)
+                     ON CONFLICT(owner, obj_id) DO UPDATE SET opened_at=COALESCE(admission_history.opened_at, excluded.opened_at)",
+                    params![id, now, c.owner],
                 )?;
                 Ok(())
             })
@@ -698,10 +708,10 @@ impl Station {
             .call(move |c| {
                 let row: Option<(i64, String, String)> = c
                     .query_row(
-                        "SELECT admitted_at, reason, resources FROM reading WHERE obj_id=?1
+                        "SELECT admitted_at, reason, resources FROM reading WHERE obj_id=?1 AND owner=?2
                          UNION ALL SELECT arrived_at, COALESCE(reason, '{}'), CASE resources WHEN 'unknown' THEN 'reachable' ELSE resources END
-                           FROM candidates WHERE obj_id=?1 AND selection='filtered' LIMIT 1",
-                        [&id],
+                           FROM candidates WHERE obj_id=?1 AND owner=?2 AND selection='filtered' LIMIT 1",
+                        params![&id, c.owner],
                         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                     )
                     .optional()?;
@@ -732,8 +742,8 @@ impl Station {
             .call({
                 let settings = settings.clone();
                 move |c| {
-                    let mut stmt = c.prepare("SELECT obj_id FROM reading WHERE admitted_at>=?1")?;
-                    let ids = stmt.query_map([week_ago], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+                    let mut stmt = c.prepare("SELECT obj_id FROM reading WHERE admitted_at>=?1 AND owner=?2")?;
+                    let ids = stmt.query_map(params![week_ago, c.owner], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
                     let mut counts: std::collections::HashMap<String, usize> = Default::default();
                     for id in ids {
                         let Some(feed) = get_feed(c, &id)? else { continue };
@@ -761,7 +771,7 @@ impl Station {
     pub async fn rescreen(&self) -> HsResult<()> {
         self.db
             .call(|c| {
-                c.execute("UPDATE candidates SET selection='not_selected' WHERE selection='filtered'", [])?;
+                c.execute("UPDATE candidates SET selection='not_selected' WHERE selection='filtered' AND owner=?1", params![c.owner])?;
                 Ok(())
             })
             .await?;

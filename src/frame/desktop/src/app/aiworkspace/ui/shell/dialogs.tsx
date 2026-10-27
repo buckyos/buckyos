@@ -6,7 +6,7 @@ import { useState, type ReactNode } from 'react'
 import { unwrap, type AiwsClient } from '../../api/client'
 import { createDemoWorkspace, TemplateFailure } from '../../api/demos'
 import { createSampleWorkspace } from '../../api/sample'
-import { describeError } from '../../api/session'
+import { describeError, uploadWorkspacePackage } from '../../api/session'
 import type { ExportResult, WorkspaceSummary } from '../../api/types'
 import type { WorkspaceStore } from '../../state/store'
 import type { AiwsText } from '../../i18n'
@@ -213,7 +213,7 @@ export function ExportForm({ client, workspace, onDone }: { client: AiwsClient; 
     setMessage(null)
     try {
       const result = unwrap(await client.export({ workspace_id: workspace.workspace_id }, mode, selfContained, notes))
-      const blob = await client.transport.download(`export/${workspace.workspace_id}/${result.export_id}`)
+      const blob = await client.transport.fetchDownload(result.download)
       saveBlob(blob, `${workspace.title}-${mode === 'share' ? 'share' : 'backup'}.zip`)
       setExported(result)
       const text = t('aiworkspace.shell.export.done', { name: workspace.title, size: blob.size })
@@ -258,9 +258,8 @@ export function ImportForm({ client, onDone }: { client: AiwsClient; onDone: (me
     setBusy(true)
     setError(null)
     try {
-      const begin = unwrap(await client.wsBeginImport())
-      await client.transport.upload(begin.upload_id, file)
-      const result = unwrap(await client.wsImport(begin.upload_id, semantics, semantics === 'restore' && replace))
+      const pkg = await uploadWorkspacePackage(client, file)
+      const result = unwrap(await client.wsImport(pkg, semantics, semantics === 'restore' && replace))
       setFile(null)
       onDone(semantics === 'new' ? t('aiworkspace.shell.import.doneNew', { id: result.workspace_id }) : t('aiworkspace.shell.import.doneRestore', { id: result.workspace_id }), result.workspace_id)
     } catch (failure) {

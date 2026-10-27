@@ -133,7 +133,13 @@ buckyos system info                                 # BuckyOS version, build_ver
   the submitted OwnerDocument must match that DID and declare this Zone. These differ from exclusive invite links.
 - The local gateway's RTCP listener follows the device document's `rtcp_port` (default `2980`), rendered into
   `etc/node_gateway_params.json` at activation and startup. Inspect the document and listening socket together.
-- Storage: no settings API; `system status` warns on disk/memory/swap of the control-panel host.
+- Storage: `system status` warns on disk/memory/swap of the control-panel host. Application data lives in object buckets
+  hosted by nfs-server: `buckyos bucket ls [--appid <app_id>]` (on the host the device identity sees every bucket; an Agent sees its owner's), `bucket stat <bucket_id>` (key / version counts, bytes,
+  `orphaned_at` of an uninstalled App's bucket, reconcile `issues`), `bucket get obj://bucket/<bucket_id>/<key>`.
+  Named-store eviction (GC actually freeing bytes of unretained objects and chunks) is
+  `services/nfs-server/settings.named_store_gc_evict` (default `true`); unretained chunk bytes survive at least 24 h
+  after their last write or read. Pool and bucket quotas: kRPC `bucket.get_pool_quota|set_pool_quota|get_quota|set_quota`
+  (admin) and `bucket.usage_report`; no CLI verb, Desktop Settings › Storage lists per-App usage.
 - AI providers: `buckyos ai providers` (auth as configured/kind, health, models; never secrets), `ai routing`,
   `ai usage [--range last1d|last7d|last30d | --since <t>] [--group-by provider_instance_name,provider_model] [--bucket day]`
   (your own calls only; an admin's Desktop Usage page can show the whole Zone); per-model health and prices:
@@ -248,6 +254,11 @@ Keep a timeline: symptom (user words, time) → evidence (command, `trace_id`, q
   checked). Scheduler logs run to tens of MB per hour; narrow the window.
 - Logs and bundles come redacted (`[REDACTED_TOKEN]`). Don't print tokens, `BUCKYOS_APPCLIENT_SESSION_TOKEN`, key
   files or `users/<u>/settings` (it holds a password hash); summarize the fields you need.
+- "My file / image / message attachment disappeared": find the binding first — `buckyos bucket stat <bucket_id>` and
+  `bucket get obj://bucket/<bucket_id>/<key>` (a delete marker or `no_such_key` = the App unbound it; an `evicted`
+  availability = content gone although bound, report it). nfs-server logs one `bucket bind|unbind <bucket_id> key=…
+  obj_id=… version=…` line per change: `buckyos log query --service nfs-server --keyword "<key>"`; the calling service
+  logs the same line on its side.
 - Host-side evidence (processes, ports, docker, node_daemon, `etc/`, `security/`, other apps' container logs): name the
   host command for the owner, e.g. `uv run src/check.py`, `docker ps`, `ls $BUCKYOS_ROOT/logs/apps/`.
 

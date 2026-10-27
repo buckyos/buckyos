@@ -1,12 +1,16 @@
 //! A public link against the real process: a guest token (`gt_…`) in the kRPC envelope or as a bearer
 //! stands in for a session, reaches `public` grants only, and can own nothing.
 
+#[path = "common/nfs.rs"]
+mod nfs;
+
+use nfs::Nfs;
 use serde_json::{json, Value};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-const GUEST: &str = "gt_abcdefghijklmnopqrstuvwxyz";
+const GUEST: &str = "gt_YWl3cy1ndWVzdC10b2tlbi1maXh0dXJlLTMyYnl0ZXM";
 
 struct Server {
     child: Child,
@@ -22,13 +26,13 @@ impl Drop for Server {
 }
 
 impl Server {
-    async fn start(dir: &std::path::Path) -> Server {
+    async fn start(dir: &std::path::Path, nfs: &Nfs) -> Server {
         let auth = dir.join("tokens.json");
         std::fs::write(&auth, json!({ "tokens": { "tok-alice": { "principal": "alice" } } }).to_string()).unwrap();
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let child = Command::new(env!("CARGO_BIN_EXE_aiworkspace"))
             .arg("--data-dir").arg(dir.join("data")).arg("--listen").arg(format!("127.0.0.1:{port}")).arg("--auth-file").arg(&auth)
-            .arg("--log-level").arg("warn").env_remove("AIWS_FAILPOINT")
+            .args(nfs.args()).arg("--log-level").arg("warn").env_remove("AIWS_FAILPOINT")
             .stdout(Stdio::null()).stderr(Stdio::null())
             .spawn()
             .expect("spawn aiworkspace");
@@ -64,14 +68,13 @@ fn code(v: &Value) -> &str {
 #[tokio::test]
 async fn a_guest_token_reaches_public_grants_only() {
     let dir = tempfile::tempdir().unwrap();
-    let srv = Server::start(dir.path()).await;
+    let nfs = Nfs::start(dir.path()).await;
+    let srv = Server::start(dir.path(), &nfs).await;
     let ws = srv.rpc("tok-alice", "ws.create", json!({ "title": "公开的" })).await;
     let id = ws["workspace_id"].as_str().unwrap().to_string();
     // an asset to fetch through the bearer route
-    let begin = srv.rpc("tok-alice", "asset.begin_upload", json!({ "workspace_id": id, "size": 4 })).await;
-    let put = srv.http.put(format!("{}/upload/{}", srv.base, begin["upload_id"].as_str().unwrap())).bearer_auth("tok-alice").body("abcd").send().await.unwrap();
-    assert!(put.status().is_success());
-    let staged = srv.rpc("tok-alice", "asset.finish_upload", json!({ "workspace_id": id, "upload_id": begin["upload_id"] })).await;
+    let bound = nfs.put("alice", "assets", "upload/abcd", b"abcd".to_vec()).await;
+    let staged = srv.rpc("tok-alice", "asset.import_object", json!({ "workspace_id": id, "bucket_id": bound["bucket_id"], "key": bound["key"] })).await;
     let object_id = staged["object_id"].as_str().unwrap().to_string();
     let r = srv.rpc("tok-alice", "doc.commit", json!({ "protocol_version": "1.0", "workspace_id": id, "epoch": ws["epoch"], "idempotency_key": "a/1", "session_id": "s",
         "operations": [{ "op": "entity.create", "entity_id": "pic", "type_id": "buckyos.asset-ref", "parent_id": "data", "order_key": "m", "payload": { "object_id": object_id, "media_type": "text/plain", "size": 4 } }] })).await;
@@ -83,7 +86,7 @@ async fn a_guest_token_reaches_public_grants_only() {
     assert_eq!(srv.rpc(GUEST, "ws.list", json!({})).await["workspaces"], json!([]));
     assert_eq!(code(&srv.rpc(GUEST, "ws.create", json!({ "title": "x" })).await), "PERMISSION_DENIED");
     assert_eq!(code(&srv.rpc(GUEST, "ws.list_subjects", json!({})).await), "PERMISSION_DENIED");
-    assert_eq!(code(&srv.rpc(GUEST, "ws.begin_import", json!({})).await), "PERMISSION_DENIED");
+    assert_eq!(code(&srv.rpc(GUEST, "ws.import", json!({ "bucket_id": bound["bucket_id"], "key": bound["key"], "semantics": "new" })).await), "PERMISSION_DENIED");
     assert!(srv.raw("gt_tooshort", "ws.get_info", json!({ "workspace_id": id })).await.is_err(), "a malformed guest token is no session");
     let asset = srv.http.get(format!("{}/asset/{}/{}", srv.base, id, object_id)).bearer_auth(GUEST).send().await.unwrap();
     assert_eq!(asset.status(), 404);

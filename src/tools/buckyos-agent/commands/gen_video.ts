@@ -10,6 +10,7 @@ import {
   ArgError,
   bailArgError,
   COMMON_OPTIONS_HELP,
+  DELIVERY_HELP,
   flagInt,
   parseArgvOrExit,
   requireString,
@@ -17,7 +18,7 @@ import {
 import { initRuntime } from "../lib/runtime.ts";
 import { callAicc, commonPolicyOptions, describeFailure } from "../lib/aicc.ts";
 import type { TypedRequestMap } from "../lib/aicc.ts";
-import { saveArtifactToPath, suffixPathByMime } from "../lib/io.ts";
+import { deliverArtifact, deliveredSummary } from "../lib/io.ts";
 import {
   pickVideo,
   takeRepeatedFlags,
@@ -42,7 +43,7 @@ import {
 const TOOL = "gen_video";
 const METHOD = "video.generate";
 
-export const HELP = `Usage: gen_video <prompt> <output_video> [options]
+export const HELP = `Usage: gen_video <prompt> [output_video] [options]
 
 The prompt names a material as @{id} (write @@ for a literal @). Say what a
 reference is for in the prompt; the model sees it as "image 1", "video 2"...
@@ -66,7 +67,7 @@ ${VIDEO_OUTPUT_HELP}
   --seed <int>                    (only some models)
 
 An option the chosen model cannot honour is refused, never dropped.
-${COMMON_OPTIONS_HELP}`;
+${COMMON_OPTIONS_HELP}${DELIVERY_HELP}`;
 
 export async function run(argv: string[]): Promise<never> {
   let repeated;
@@ -76,7 +77,7 @@ export async function run(argv: string[]): Promise<never> {
     bailArgError(TOOL, err as Error);
   }
   const parsed = parseArgvOrExit(TOOL, HELP, repeated.rest);
-  if (parsed.positional.length < 2) {
+  if (parsed.positional.length < 1) {
     emitAndExit(
       errorResult(TOOL, `${TOOL} => arg_error`, HELP, {
         error: "missing positional",
@@ -137,27 +138,21 @@ export async function run(argv: string[]): Promise<never> {
   const ndmProxy = (ndm_proxy as any).createNdmProxyClient();
   let saved;
   try {
-    saved = await saveArtifactToPath(
-      artifact,
-      suffixPathByMime(outputPath, artifact.mime ?? "video/mp4"),
-      ndmProxy,
-    );
+    saved = await deliverArtifact(runtime, call.summary, artifact, ndmProxy, {
+      tool: TOOL,
+      path: outputPath,
+      defaultMime: artifact.mime ?? "video/mp4",
+    });
   } catch (err) {
     bailIoError(TOOL, call.taskId, err);
   }
 
   emitAndExit(
-    successResult(TOOL, `${TOOL} => done`, `${TOOL} wrote ${saved.path}`, {
+    successResult(TOOL, `${TOOL} => done`, deliveredSummary(TOOL, [saved]), {
       method: METHOD,
       capability: "video",
       task_id: call.taskId,
-      files: [{
-        path: saved.path,
-        mime: saved.mime ?? null,
-        bytes: saved.bytes,
-        source_kind: saved.source_kind,
-        obj_id: saved.obj_id ?? null,
-      }],
+      files: [saved],
       video: artifact.metadata ?? null,
     }),
     EXIT_SUCCESS,

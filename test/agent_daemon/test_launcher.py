@@ -73,6 +73,14 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("does not match", result.stderr)
         self.assertFalse(list((self.root / "cache").glob("9.9.9-*")))
 
+    def test_build_version_is_preserved_in_the_download_cache(self):
+        version = "0.7.0+build261026"
+        digest = release_archive(self.archive, version=version)
+        result = self.run_launcher("--download-only", digest=digest,
+                                   env={**self.env, "BUCKYOS_AGENT_VERSION": version})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(Path(result.stdout.strip()).parent.name, f"{version}-{TARGET}-{digest}")
+
     def test_archive_without_daemon_is_rejected(self):
         with tarfile.open(self.archive, "w:gz") as archive:
             item = tarfile.TarInfo(f"buckyos-agent-daemon-9.9.9-{TARGET}/manifest.json")

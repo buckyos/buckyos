@@ -1,7 +1,7 @@
 # BuckyOS Text Editor
 
-> 文档状态：v0.4（已实现）
-> 日期：2026-10-06（v0.2：增加文件缓冲区与恢复区；§15 记录已确认决策。v0.3：覆盖时提供“覆盖 / 覆盖并保留冲突副本”两个选项）；2026-10-23 v0.4（issue #675：编辑区内嵌系统 Preview §7.6、系统“打开方式”选择器 §7.3、关闭不再等待服务端 §7.4、保存创建缺失目录与分阶段错误 §8.7、焦点/标题回环修复 §7.2）
+> 文档状态：v0.5（已实现）
+> 日期：2026-10-06（v0.2：增加文件缓冲区与恢复区；§15 记录已确认决策。v0.3：覆盖时提供“覆盖 / 覆盖并保留冲突副本”两个选项）；2026-10-23 v0.4（issue #675：编辑区内嵌系统 Preview §7.6、系统“打开方式”选择器 §7.3、关闭不再等待服务端 §7.4、保存创建缺失目录与分阶段错误 §8.7、焦点/标题回环修复 §7.2）；2026-10-26 v0.5（缓冲区与恢复区从 NFSP App 数据目录改为 App 自己的对象桶 `user/<appid>/<user>/{buffers,recovery}`，§8.2、§8.6、§8.8）
 > 上游需求：[BuckyOS Preview App / Component PRD](../../../product/bucky_file/BuckyOS%20Preview%20App-Component%20PRD.md)（§4 非目标、§8 支持级别、§10.6“使用专用应用打开”、§11 Session Context、§23.8 第 10 项）、[内容扩展机制 Content Extension](../../../doc/sdk/context%20ext.md)（`open` 意图、Content Registry、调用模型）
 > 关联协议：[App 安装协议](../../../doc/App%20安装协议.md)（AppDoc v1、预装）、[路径约定](../../../doc/path_usage.md)（App 数据区）、NFSP（`cyfs-ndn/doc/NamedFileSystem_Protocol_v0.md`、[nfs_server 产品设计](../../../product/bucky_file/nfs_server.md)、`src/frame/nfs_server/README.md`）
 > 读者：BuckyOS 系统 / Desktop / buckyos-websdk / nfs_server 开发者，以及按本文实施的 Code Agent
@@ -51,7 +51,7 @@ Text Editor 本质上是一个**网络编辑器**：它编辑的文件位于 Zon
 | V2 | 编辑器能**声明式**注册“我能打开哪些内容” | AppDoc `content_handlers.open` → scheduler 投影 `system/content_registry` → `resolve(open)`；安装或卸载后 File Browser 的默认打开方式随之变化，Desktop 无须重新构建 |
 | V3 | 系统能把“打开某内容”的请求交给编辑器 | `OpenRequest` 经 URL 模板和 App Frame Protocol 两条通道到达；桌面窗口与独立浏览器标签页都能工作 |
 | V4 | 编辑器能在用户权限内读写内容，并安全处理并发修改 | NFSP 读取、`open_write → tus → commit_file` 保存、etag 冲突检测、外部修改感知 |
-| V5 | 编辑器能在自己的 App 数据区可靠保存工作成果 | 文件缓冲区持续写入 `.local/share/<app_id>/`；冲突中被替换的版本先进入恢复区，再执行破坏性动作；跨窗口、跨设备、崩溃后都能找回（§8.6、§8.8） |
+| V5 | 编辑器能在自己的 App 数据区可靠保存工作成果 | 文件缓冲区持续写入 App 自己的 `buffers` 桶（不是文件系统目录）；冲突中被替换的版本先进入恢复区，再执行破坏性动作；跨窗口、跨设备、崩溃后都能找回（§8.6、§8.8） |
 | V6 | 编辑器能像内建应用一样融入窗口系统 | 窗口标题与未保存标记、关闭前确认、同应用窗口复用、主题与语言、移动端返回 |
 | V7 | 编辑器缺席时系统正确回落 | 卸载、停用、禁用 Handler 后双击回到 Preview；Preview 中“使用专用应用打开”只列出可用 Handler |
 | V8 | 扩展点对多个编辑器成立，而不是为 Text Editor 定制 | 第二个夹具 App（§14.3）声明同类内容，出现在“打开方式”中，可设为默认并切换回来 |
@@ -88,7 +88,7 @@ Text Editor 本质上是一个**网络编辑器**：它编辑的文件位于 Zon
 | 版本标识 | 文件 `etag = "<size>-<mtime>"`，mtime 精度为整秒；读端点返回 `ETag: W/"<size>-<mtime>"`（格式与 stat 不同，需要归一化）；未锚定文件的 ref（`nh_…`）在 inode 变化后返回 `STALE`（410） | `namespace.rs`、`server.rs`、`handle.rs` |
 | 变更通知 | `GET /nfs/v1/watch` SSE，按**目录** watch_token 推送 `container_changed`；没有文件级事件；旁路修改靠 Reconciler 扫描（BuckyOS 模式 30 s） | `server.rs`、`watch.rs`、`reconciler.rs` |
 | 鉴权 | NFSP 控制面只要求 `hello` 会话，读端点与上传端点不校验身份；`grant` 签发的 token 没有任何地方校验；没有按 App 的访问范围 | `server.rs`、nfs_server README |
-| App 数据区 | `/home/$user/.local/share/$appid` ↔ `cyfs:///home/$user/.local/share/$appid`，是 App 有读写权限的永久数据区，卸载时用户可选删除 | `doc/path_usage.md` |
+| App 数据区 | `/home/$user/.local/share/$appid` ↔ `cyfs:///home/$user/.local/share/$appid`，是 App 有读写权限的永久数据区，卸载时用户可选删除；本编辑器不使用它，自己的数据放在对象桶（§8.2） | `doc/path_usage.md` |
 | 点目录 | nfs_server 只跳过 `data/` 下以 `.` 开头的一级导出根，home 内的 `.local` 可以正常寻址；`mkdir` 只建一级 | `src/frame/nfs_server/src/config.rs`、`mutate.rs` |
 | 网关 | 任意主机上的 `/nfs/v1/*`、`/kapi/*` 路径路由优先于 App 路由，所以 App 页面可以同源调用 NFSP 与 kRPC | `src/rootfs/etc/boot_gateway.yaml` |
 | 浏览器登录 | static-web App 只需 `initBuckyOS(appId)` + `login()`；sys_test 作为 iframe 嵌入桌面且使用同一流程，是可用先例 | `buckyos-websdk/src/sdk_core.ts`、`src/apps/sys_test/web/index.ts` |
@@ -117,7 +117,8 @@ flowchart LR
   end
   SDK -->|/nfs/v1 同源| NFS[nfs_server]
   NFS --- UF[(用户文件)]
-  NFS --- AD2[(App 数据区: buffers / recovery)]
+  SDK -->|/bucket/v1 + /kapi/nfs-server 同源| BK[应用对象桶: buffers / recovery]
+  NFS --- BK
   SDK -->|/kapi/system_config| SC[system-config]
   CRC -->|读| REG[(system/content_registry)]
   CRC -->|读写| DEF[(users/user/content_defaults)]
@@ -132,12 +133,12 @@ flowchart LR
 | 声明 | 我能打开哪些内容、以什么入口打开 | §5 | AppDoc `content_handlers`（`open` 子集） |
 | 解析 | 用户要打开某内容时由谁处理 | §5.4 | `system/content_registry` + `content_defaults` + websdk `resolve` |
 | 启动 | 内容引用与浏览上下文如何交给编辑器 | §6 | `OpenRequest`（URL 模板 + App Frame） |
-| 内容 | 编辑器如何读、写、保全工作成果、感知变化 | §8 | NFSP（websdk `nfsp` 模块）+ App 数据区 |
+| 内容 | 编辑器如何读、写、保全工作成果、感知变化 | §8 | NFSP（websdk `nfsp` 模块）读写用户文件；应用对象桶（websdk `bucket`）保存缓冲区与恢复区 |
 | 窗口 | 编辑器如何与桌面窗口协作 | §7 | App Frame Protocol（websdk `app-frame` 模块） |
 
 回落规则贯穿全部协议面：`resolve(open)` 中永远存在 `provider: system` 的 Preview 条目（`mime:*/*`，`fidelity: partial`），任何 App Handler 缺席、被禁用或启动失败时都落到 Preview。
 
-文件缓冲区与恢复区（§8.6、§8.8）只使用 NFSP 与 App 自己的数据区，不依赖任何系统私有能力，任何第三方编辑器都可以照同样方式实现；P2 视需要沉淀为 websdk 辅助库。
+文件缓冲区与恢复区（§8.6、§8.8）只使用 App 在 `dapp_meta/app.json` 声明的两个对象桶，不依赖任何系统私有能力，也不在文件系统里留目录；任何第三方编辑器都可以照同样方式实现（“默认 Web 应用不用文件系统保存自己的数据”的样板）。
 
 ---
 
@@ -203,7 +204,7 @@ src/apps/text_editor/
       documentStore.ts         # DocumentStore 接口 + NFSP 实现（加载、保存、stat、watch）
       codec.ts                 # 编码、BOM、换行、二进制检测
       saveFlow.ts              # 保存状态机与冲突分类（纯函数，可单测）
-      appData.ts               # App 数据区定位与目录初始化
+      appData.ts               # App 自己的桶（buffers / recovery）：putBytes / fetchObject / listObjects / delete
       bufferStore.ts           # 文件缓冲区（服务端）+ 本地预写（IndexedDB）
       recoveryStore.ts         # 恢复区写入、列举、清理
     model/                     # Workspace / Document / Group / Tab 状态
@@ -244,7 +245,7 @@ UI 框架用 React + Vite（与 Desktop 一致）；编辑内核用 CodeMirror 6
 
 **用户卸载后不再预装（已确认）。** 预装 reconciler 发现种子对应的 AppServiceSpec 存在且 `state=Deleted` 时，记录终态 `user_removed`：不报错、不重装；系统升级带来新版本种子时同样跳过。用户手动重新安装后 App 回到已安装状态，此后种子版本升级照常进行。当前实现把这种情况记成 Conflict 错误，需要修改（§12 S4）。
 
-卸载时如选择删除数据，会一并删除 App 数据区中的缓冲区与恢复区（§8.6、§8.8）。P1 的 Desktop 卸载入口需要提示其中尚有多少未保存修改和恢复记录（§12 D7）。
+缓冲区与恢复区是 `app_data` 档的桶：卸载时按数据策略随 App 删除（用户可选保留，见桶设计 §4.5.1），在存储空间页按 App 聚合计量（§8.6、§8.8）。P1 的 Desktop 卸载入口需要提示其中尚有多少未保存修改和恢复记录（§12 D7）。
 
 ### 4.5 访问、登录与多用户
 
@@ -253,7 +254,7 @@ UI 框架用 React + Vite（与 Desktop 一致）；编辑内核用 CodeMirror 6
 - 若 iframe 内 SSO 被浏览器策略阻断（第三方 Cookie、登录页禁止嵌入），编辑器显示“需要登录”，按钮用顶层弹窗完成登录，然后回到 iframe 重试 `/sso_refresh`。这是 V1/V3 的验证项。
 - **Shell origin 与系统入口不写死、不拆主机名。** 系统入口是 Zone 根域：`${protocol}//${buckyos.getZoneHostName()}`（`initBuckyOS` 之后由 SDK 给出）。App Frame 消息只发给嵌入方：websdk `embedderOrigin()` 先取 `location.ancestorOrigins[0]`、再取 `document.referrer`，限本 Zone（`originInZone`）；都没有时用系统入口。只看 referrer 不够：iframe 内经 `sys.<zone>/login` 走过一次 SSO 后 referrer 变成 `sys.<zone>`，握手静默失败，旧版随后把“Preview”跳到 `sys.<zone>/?open=…`，而 `sys.` 不能签发 control-panel 令牌（issue #675 第 5 点的完整链路）。
 - **会话保活与失效。** 浏览器 runtime 的 token 续期由 websdk 自己完成（`getAccountInfo()` 在 access token 临近过期时调 `/sso_refresh`，并维持续期定时器），App 不另做刷新。编辑器只处理两件事：① 启动时在 `getAccountInfo()` 返回前只显示“正在连接…”，不显示登录按钮，避免用户在会话仍有效时误触发整套 SSO；② 运行中一旦 `getAccountInfo()` 返回空（refresh token 失效、Zone 重装、verify-hub 重启等都会让 gateway 清掉 SSO Cookie），顶部显示“登录已失效”横幅，点“登录”先把所有文档落到本地缓冲区再跳 SSO，回来后按 `restoreSession` 恢复工作区。
-- **多用户（已确认的安装策略）**：Owner 安装 App，默认所有用户可用，除非手工改为仅自己可用。预装实例 `text-editor.buckyos.bns.did@<owner>` 与主机 `text-editor` 由全体可用用户共用；每个用户以自己的会话登录，读写都以自己的身份进行。设置、缓冲区、恢复区都放在**当前用户**自己的路径下（`users/<当前用户>/apps/...`、`cyfs:///home/<当前用户>/.local/share/...`），用户之间互不可见。
+- **多用户（已确认的安装策略）**：Owner 安装 App，默认所有用户可用，除非手工改为仅自己可用。预装实例 `text-editor.buckyos.bns.did@<owner>` 与主机 `text-editor` 由全体可用用户共用；每个用户以自己的会话登录，读写都以自己的身份进行。设置、缓冲区、恢复区都归**当前用户**（`users/<当前用户>/apps/...`、桶 `user/text-editor.buckyos.bns.did/<当前用户>/...`），用户之间互不可见。
 
 ---
 
@@ -579,7 +580,7 @@ sequenceDiagram
 - 写冲突是常态：同一用户的多个窗口、多台设备，Zone 内的其他用户，以及宿主机上直接改文件的程序，都可能在编辑期间写同一个文件。
 - **工作成果优先**：用户的修改在任何时刻至少存在于一个持久位置；离开内存之前先进本地预写，几秒内进入服务端缓冲区。
 - **先存档，后破坏**：任何会让某个版本消失的动作（放弃修改并重新加载、覆盖磁盘上他人的版本、不保存就关闭、接管他处的缓冲区），都必须先把将被替换的版本写入恢复区并确认成功，才执行该动作；存档失败则中止动作并告知用户。
-- **可找回**：缓冲区与恢复区都在 App 自己的数据区里，以普通文件保存，编辑器提供“未保存的修改”和“恢复区”两个入口，任何时候都能找到。
+- **可找回**：缓冲区与恢复区都在 App 自己的对象桶里，编辑器提供“未保存的修改”和“恢复区”两个入口，任何时候都能找到。
 
 ### 8.2 三层模型
 
@@ -588,27 +589,27 @@ sequenceDiagram
    │ 本地预写：IndexedDB，去抖 300 ms（断网、崩溃保护）
    │ 服务端缓冲区：去抖 2 s，连续输入时最长 10 s
    ▼
-文件缓冲区（App 数据区 buffers/，服务端持久）
+文件缓冲区（桶 buffers，服务端持久）
    │ 保存（Ctrl+S，etag 冲突检测，§8.7）
    ▼
-用户文件（目标文件）
+用户文件（目标文件，Files 里的普通文件，经 NFSP 读写）
 
-恢复区（App 数据区 recovery/）：冲突、放弃、接管时被替换的版本
+恢复区（桶 recovery）：冲突、放弃、接管时被替换的版本
 ```
 
 “未保存”的含义是“缓冲区与文件不一致”，不再是“只存在于内存”。
 
-App 数据区路径：`cyfs:///home/<当前用户>/.local/share/text-editor.buckyos.bns.did/`（`doc/path_usage.md`：App 有读写权限的永久数据区，卸载时用户可选删除）。nfs_server 只隐藏 `data/` 下的一级点目录，home 内的 `.local` 可以正常寻址；`mkdir` 只建一级，编辑器首次使用时逐级创建并忽略“已存在”。
+三层里只有用户文件是文件系统语义的数据（用户以文件夹组织、其他程序按路径打开）；缓冲区与恢复区是编辑器替用户生成的工作数据，按 `doc/arch/应用对象桶 Bucket 设计.md` 放在 App 自己声明的桶里，不再写 `.local/share/<app_id>/`：
 
-```text
-.local/share/text-editor.buckyos.bns.did/
-  buffers/
-    <pathKey>.<bufferId>.buf       # 一个窗口中一个文档的缓冲区
-  recovery/
-    <YYYYMMDD-HHMMSS>-<rand>/
-      entry.json                   # 来源、原因、版本信息
-      <原文件名>                    # 原始字节（原编码、原换行），任何应用都能直接打开
-```
+| 桶 | bucket_id | kind / data_policy | key | 写入方 |
+|---|---|---|---|---|
+| `buffers` | `user/text-editor.buckyos.bns.did/<当前用户>/buffers` | `data` / `app_data` | `<pathKey>.<bufferId>.buf` | 持有该缓冲区的窗口 |
+| `recovery` | `user/text-editor.buckyos.bns.did/<当前用户>/recovery` | `data` / `app_data` | `<YYYYMMDDTHHMMSS>-<uuid>/<原文件名>`、`…/entry.json` | 执行破坏性动作之前的窗口 |
+
+- 声明：`dapp_meta/app.json` 的 `service_config_tips.buckets`（`scope` 默认 `user`）与 `storage_quota_mib`（App 池配额，D17），安装时合成到 `users/<user>/apps/<appid>/spec`，nfs-server 首次访问时为该用户懒建。
+- 读写：websdk `BucketClient`，与 NFSP 同源（`/bucket/v1/<bucket_id>/<key>` 的 `PUT` / `GET`，`/kapi/nfs-server` 的 `bucket.list_objects` / `bucket.delete`），带同一个会话 token。默认 RBAC 已放行“用户 ∧ App”对 `obj://bucket/user/<appid>/<user>/*` 的全部动作，不需要额外的 `permissions` 声明。
+- `PUT` 成功即由桶保留（named store 内容 + 桶绑定，§6.1 的“成功即持久”）；单个对象上限 32 MiB（≥ 16 MiB 文件的 UTF-8 缓冲区）。
+- 缺失的 key 按错误码 `no_such_key` 判断；删除已不存在的 key 不报错。
 
 ### 8.3 客户端与会话
 
@@ -641,9 +642,9 @@ App 数据区路径：`cyfs:///home/<当前用户>/.local/share/text-editor.buck
 
 **格式。** 每个缓冲区是一个文件 `<pathKey>.<bufferId>.buf`：
 
-- `pathKey` = base32(sha256(规范化源路径)) 的前 16 位；未命名文档为 `untitled`。一次 `list buffers/` 即可按前缀找到某文件的全部缓冲区；
+- `pathKey` = base32(sha256(规范化源路径)) 的前 16 位；未命名文档为 `untitled`。一次 `bucket.list_objects(buffers, prefix = pathKey)` 即可找到某文件的全部缓冲区；
 - `bufferId` 对每个“窗口 × 文档”随机生成，每个缓冲区文件只有一个写入方，缓冲区之间不会产生写冲突或租约冲突；
-- 内容 = 首行 JSON 头 + `\n` + 编辑器文本（UTF-8，`\n` 换行）。一个文件对应一次 `commit_file`，原子替换，不会出现头与内容不一致。
+- 内容 = 首行 JSON 头 + `\n` + 编辑器文本（UTF-8，`\n` 换行）。一次写入是一次 `PUT`，整体替换绑定，不会出现头与内容不一致。
 
 ```ts
 interface BufferHeader {
@@ -662,7 +663,7 @@ interface BufferHeader {
 }
 ```
 
-**写入。** 首次写入用 `open_write({ parent_ref: buffers 目录, name })`，此后用 `open_write({ ref })`，再 `PATCH` 与 `commit_file`。写入进行中又有新修改时，写完立即再排队一次。服务端写入失败（断网、服务不可用）时内容保留在本地预写中并标记“待同步”，指数退避重试，状态栏显示“修改尚未同步到服务器”；页面重新打开时先把比服务端缓冲区更新的本地预写推上去。本地预写只是断网与崩溃保护，持久真相是服务端缓冲区。
+**写入。** 每次写入都是 `putBytes(buffers, key, 字节)`；一个 key 只有一个写入方（持有 Web Lock 的窗口），所以不需要条件写。写入进行中又有新修改时，写完立即再排队一次。服务端写入失败（断网、服务不可用）时内容保留在本地预写中并标记“待同步”，指数退避重试，状态栏显示“修改尚未同步到服务器”；页面重新打开时先把比服务端缓冲区更新的本地预写推上去。本地预写只是断网与崩溃保护，持久真相是服务端缓冲区。
 
 **生命周期：**
 
@@ -683,7 +684,7 @@ interface BufferHeader {
   - **恢复**：以缓冲区内容打开，复制为本窗口的新缓冲区，旧缓冲区移入恢复区（原因 `taken-over`）。若缓冲区的 `base.etag` 与当前磁盘 etag 不同，文档直接处于 `external-modified` 状态，保存时进入冲突流程；
   - **打开磁盘版本**：不动缓冲区，横幅可随时重新打开；
   - **丢弃**：移入恢复区（原因 `discarded`）。
-- 起始页的“未保存的修改”列出数据区中的全部缓冲区（包括源文件已被删除或移走的），点击即恢复。所以即使原文件已不存在，修改也能找到并另存。
+- 起始页的“未保存的修改”列出 `buffers` 桶中的全部缓冲区（包括源文件已被删除或移走的），点击即恢复。所以即使原文件已不存在，修改也能找到并另存。
 
 ### 8.7 保存与冲突
 
@@ -753,7 +754,7 @@ save(doc):
 
 ### 8.8 恢复区
 
-**条目格式。** 每个条目一个目录 `recovery/<YYYYMMDD-HHMMSS>-<rand>/`，内含被保全版本的原始字节（使用原文件名、原编码、原换行，在 File Browser 中也能直接打开）和 `entry.json`：
+**条目格式。** 每个条目是 `recovery` 桶里的一个 key 前缀 `<YYYYMMDDTHHMMSS>-<uuid>/`，其下是被保全版本的原始字节（key 用原文件名，内容保留原编码、原换行；`GET /bucket/v1/...` 下载即可用任何应用打开）和 `entry.json`：
 
 ```ts
 interface RecoveryEntry {
@@ -774,7 +775,7 @@ interface RecoveryEntry {
 }
 ```
 
-写入顺序：先 `mkdir` 条目目录，再写内容文件，最后写 `entry.json`。列举时缺少 `entry.json` 的条目仍会显示（按文件名与时间），存档过程中断也不会让内容不可见。
+写入顺序：先写内容 key，再写 `entry.json`；两个 `PUT` 都成功才算存档完成（之后才执行破坏性动作）。列举是一次 `list_objects(recovery)` 后按前缀分组，缺少 `entry.json` 的条目仍会显示（按 key 与绑定时间），存档过程中断也不会让内容不可见。删除条目 = 删除其前缀下的全部 key。
 
 **入口与操作。** “恢复区”面板可从起始页、标签栏溢出菜单和冲突通知进入，按源文件分组、时间倒序。每个条目可以：打开（只读）、对比当前文件（P1）、恢复到原位置（打开原文件，把内容替换为存档内容并标记未保存，再由用户保存，走正常冲突流程）、另存为、删除。
 
@@ -800,7 +801,7 @@ interface RecoveryEntry {
   - 文档无修改且开启“自动重新加载”（默认开）→ 静默重新加载，按行列保留光标与滚动位置；
   - 文档有修改 → 标签与状态栏显示“磁盘上的文件已更改”，保存时进入冲突流程，用户也可以主动“重新加载（我的版本先存入恢复区）/ 对比”。
 - 文件消失 → 标记 `deleted`。重命名跟踪 P1。
-- 编辑器自己保存后会收到同一目录的事件，复查时 etag 与第 7 步一致，不会误报。缓冲区与恢复区的写入发生在 App 数据区，不在被监视的目录中。
+- 编辑器自己保存后会收到同一目录的事件，复查时 etag 与第 7 步一致，不会误报。缓冲区与恢复区的写入在桶里，不在任何被监视的目录中。
 - 旁路修改（宿主机直接改文件）最长约 30 s（Reconciler 周期）后才会被感知，窗口回到前台时的 stat 可以缩短这一延迟。
 
 ---
@@ -972,7 +973,7 @@ macOS 上非保留键用 `⌘` 替代 `Ctrl`；`⌥` 组合在 macOS 输入时�
 目标模型（未实现部分标注依赖）：
 
 1. **App 自身权限**：AppDoc `permissions` 声明 `user/home` 读写，安装时由用户确认。nfs_server 接通鉴权后，按“用户 RBAC ∧ App RBAC”判定（N4）。AppDocBuilder 清空 `web` App `permissions` 的规则取消（已确认，§12 S1）：静态 Web App 的全部访问都以“用户会话 + appid”进行，App 侧 RBAC 依赖这些声明。
-2. **App 数据区**：`.local/share/<app_id>/` 属于 App 的默认读写范围，不依赖 `user/home` 声明，也不受下面的按次授权收窄影响，缓冲区与恢复区始终可写。
+2. **App 自己的桶**：`user/<app_id>/<当前用户>/{buffers,recovery}` 由默认 RBAC（用户 ∧ App 对 `obj://bucket/user/<appid>/<user>/*`）放行，不依赖 `user/home` 声明，也不受下面的按次授权收窄影响，缓冲区与恢复区始终可写。
 3. **按次授权（P1）**：用户从 File Browser 显式打开某个文件，等同于用户把这个文件交给编辑器。Open Router 为该文件签发短期、限定 `audience = 编辑器 AppInstance` 的 NFSP `grant`（`read` 或 `read,write`），随 `frame.init.launch` / `frame.open` 传递（仅 App Frame 通道，不进 URL）。届时编辑器的 `user/home` 权限可以收窄，仍能编辑用户显式打开的文件。这需要 nfs_server 校验 grant token（N4）。
 4. **现状**：NFSP 不校验身份，任何 App 都能读写全部 `cyfs:///`。P0 不宣称 V9 已验证，只保证编辑器侧已经按目标模型携带凭证。
 
@@ -1024,7 +1025,7 @@ macOS 上非保留键用 `⌘` 替代 `Ctrl`；`⌥` 组合在 macOS 输入时�
 2. App Frame：严格校验 `source` / `origin` / nonce，消息中没有凭证，`content.open` 有频率限制且只触发 Shell 的打开动作（§7.1、§7.3）。
 3. Open Router 只把 `cyfs-path` / `object-id` 交给 App Handler，宿主私有引用与 blob 不跨源（§6.1）。
 4. 修改默认打开方式只能来自 Desktop 中的用户操作；App 无法写 `content_defaults`（§5.4）。新安装的 App 接管某类内容时，Desktop 发通知并提供一键禁用（Content Extension §11.8，P1）。
-5. 缓冲区与恢复区位于当前用户自己的 App 数据区，用户之间天然隔离；它们包含文件内容副本，访问控制与用户 home 一致（N4 接通前同样不受保护，与用户文件本身处于同一风险级别）。本地预写只存于编辑器源的 IndexedDB，按用户隔离，同步成功后清除。
+5. 缓冲区与恢复区位于当前用户自己的桶（`user/<appid>/<当前用户>/...`），用户之间天然隔离：桶对其他用户默认无权限（桶设计 §4.4.3），只有该用户与本 App 能读写。本地预写只存于编辑器源的 IndexedDB，按用户隔离，同步成功后清除。
 6. 鉴权现状与目标见 §9.10。
 
 ---
@@ -1128,7 +1129,7 @@ Text Editor 推动的全部系统改动。每项都是通用能力，任何第�
 - [ ] V2：安装后 `system/content_registry` 含 `text` 与 `any-as-text` 两个条目；卸载后条目消失；全程不重新构建 Desktop。
 - [ ] V3：File Browser 双击 `.md` 在 Text Editor 窗口中打开；直接在浏览器访问 `https://text-editor.<zone>/?src=cyfs:///…` 也能打开同一文件；目录打开时文件列表是该目录的文件，多选打开时是选中项。
 - [ ] V4：编辑保存后 File Browser / Preview 看到新内容；另一个客户端先保存同一文件后，本窗口保存进入 `external-modified` 冲突且未覆盖对方内容；宿主机直接修改文件后，未修改的标签在 30 s 内（或窗口回到前台时）自动重新加载。
-- [ ] V5：编辑后约 10 s 内 App 数据区出现对应缓冲区；强制关闭窗口后，在另一浏览器（或另一设备）打开同一文件能看到“未保存的修改”并恢复；冲突中选“重新加载”后我的版本出现在恢复区，选“覆盖”后被覆盖的磁盘版本出现在恢复区，选“覆盖并保留冲突副本”后原目录还会出现命名正确的冲突副本（重名时自动编号），且另一个用户能直接打开它；原目录不可写时提示“仅覆盖 / 取消”；恢复区写入失败（注入错误）时重新加载 / 覆盖不执行；原文件被删除后，修改仍能从起始页找到并另存。
+- [ ] V5：编辑后约 10 s 内 `buffers` 桶出现对应缓冲区（`buckyos bucket ls user/text-editor.buckyos.bns.did/<user>/buffers`）；强制关闭窗口后，在另一浏览器（或另一设备）打开同一文件能看到“未保存的修改”并恢复；冲突中选“重新加载”后我的版本出现在恢复区，选“覆盖”后被覆盖的磁盘版本出现在恢复区，选“覆盖并保留冲突副本”后原目录还会出现命名正确的冲突副本（重名时自动编号），且另一个用户能直接打开它；原目录不可写时提示“仅覆盖 / 取消”；恢复区写入失败（注入错误）时重新加载 / 覆盖不执行；原文件被删除后，修改仍能从起始页找到并另存。
 - [ ] V6：窗口标题随活动标签变化并显示未保存标记；关闭有未保存内容的窗口时出现确认，选“取消”窗口保留，选“保留修改”后下次打开自动恢复；再次双击另一个文本文件时在已有编辑器窗口新开标签；“在新窗口中打开”新建窗口；切换桌面主题后编辑器同步。
 - [ ] V7：卸载、停用、禁用 Handler 三种方式后，双击文本文件都进入 Preview；Preview 的“使用专用应用打开”在编辑器存在时列出它，缺席时不列出；Owner 把 App 改为仅自己可用后，其他用户双击进入 Preview。
 - [ ] V8：安装夹具 App 后，“打开方式”同时列出 Text Editor、夹具 App 和 Preview；设为“始终使用夹具 App”后双击进入夹具 App；恢复默认后回到 Text Editor。
@@ -1213,6 +1214,6 @@ VITE_CP_USE_MOCK=1 pnpm exec playwright test tests/e2e/pages/content-open.spec.t
 
 产物为 `dapp_dist/text-editor.buckyos.bns.did-0.1.0.pikg`，并汇总到 `src/rootfs/data/cache/`。第二个 Handler 夹具位于 `test/app_installer_test/pikg_samples/content-open-handler/`；其 README 提供构建和安装验证方式。
 
-本地验证覆盖编码往返、冲突与存档顺序、较旧上传不覆盖较新预写、窗口恢复与多窗口归属、断网恢复、只读另存为、分屏同步与撤销、App Frame 握手和关闭守卫；独立真实 NFSP 验证 CRLF、宿主机写入冲突、两侧存档、冲突副本及缓冲落盘。Desktop mock 验证通用 Handler、默认切换、禁用回落与 D6；Rust 验证 AppDoc 身份、RBAC、scheduler 投影与 abort_write。
+本地验证覆盖编码往返、冲突与存档顺序、较旧上传不覆盖较新预写、缓冲区与恢复区的桶 key 布局、窗口恢复与多窗口归属、断网恢复、只读另存为、分屏同步与撤销、App Frame 握手和关闭守卫（e2e 的模拟服务同时模拟 `/bucket/v1` 与 `bucket.list_objects` / `bucket.delete`）；独立真实 NFSP（`--named-store` + `--bucket-specs` 取自 `dapp_meta/app.json`）验证 CRLF、宿主机写入冲突、两侧存档进 `recovery` 桶、冲突副本、缓冲进 `buffers` 桶，且用户 home 下不再出现 `.local`。Desktop mock 验证通用 Handler、默认切换、禁用回落与 D6；Rust 验证 AppDoc 身份、RBAC、scheduler 投影与 abort_write。
 
 §14.1 的真实 Zone 验收清单保留未勾选：尚未执行全新 Zone 预装、SSO、第二用户、卸载/升级种子及真实夹具安装的 DV。N2–N4、N6 和按次授权仍属 P1：当前 etag 检查不等同文件级原子 CAS，不能保证识别同秒同长度的旁路覆盖，也不宣称完整 NFSP 用户/App 鉴权已通过。

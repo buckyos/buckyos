@@ -61,6 +61,11 @@ test('an invited customer joins the session, reads it with its attachment and re
   const requests = await page.evaluate(() => window.__messageHubGuestMock.objectRequests)
   expect(requests).toContainEqual({ objId: 'cyfile:mock-doc-brief', context: `${GROUP}/t-123/cymsg:mock-t123-2` })
   expect(requests.every(request => request.context !== undefined)).toBe(true)
+  // A file of the Session's display is read through that display.
+  const opened = page.waitForEvent('popup')
+  await page.getByTestId('session-display').getByRole('button', { name: 'Return label', exact: true }).click()
+  await (await opened).close()
+  expect(await page.evaluate(() => window.__messageHubGuestMock.objectRequests)).toContainEqual({ objId: 'cyfile:mock-doc-brief', context: `${GROUP}/t-123/_display` })
 
   // No owner surfaces: entity list, personal sessions, group management or uploads.
   await expect(page.getByTestId('hub-create-menu')).toHaveCount(0)

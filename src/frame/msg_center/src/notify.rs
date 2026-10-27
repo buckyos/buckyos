@@ -963,7 +963,8 @@ impl MessageCenter {
     ) -> Result<MailboxRecord> {
         let msg = self.with_state_write(|s| Ok(Self::ensure_message(s, msg)))?;
         let (msg_id, msg_json) = msg.gen_obj_id();
-        Self::store_message(&msg_id, &msg_json).await?;
+        self.store_message(&msg_id, &msg_json, &msg, crate::buckets::Arrival::Local)
+            .await?;
         let record = Self::build_mailbox_record(
             owner.clone(),
             MailboxKind::Inbox,

@@ -69,7 +69,7 @@ test('UI-SSO1 entry links: create with chosen ways in, Zone-closed ways marked, 
   await row.getByTestId('aiws-share-entry-close').click()
   await expect(page.getByTestId('aiws-share-entry')).toHaveCount(0)
   expect((await api.rpc(ALICE, 'ws.list_entries', { workspace_id: ws.workspace_id })).entries[0].state).toBe('closed')
-  const token = 'gt_abcdefghijklmnopqrstuvwxyz'
+  const token = 'gt_YWl3cy1ndWVzdC10b2tlbi1maXh0dXJlLTMyYnl0ZXM'
   const info = await api.rpc(token, 'ws.get_info', { workspace_id: ws.workspace_id })
   expect(info.error.denial.reason).toBe('resource_grant_missing')
 })

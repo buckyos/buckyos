@@ -1658,7 +1658,8 @@ UI 通过有权限的 owner/session 事件投影或受控轮询触发 Session AP
 | `EntitySession.isPinned/isMuted` | `ui_session.get_state` | KV 反序列化 + schema 校验 |
 | `EntitySession.lifecycle` / `lastActiveAt` / `requestCount` | `msg.list_sessions(lifecycle: 'all', order_by: 'activity')` 的 `lifecycle` / `last_activity_ms` / `request_count` | 服务端按活动时间排序并给出同口径游标 |
 | `MessageObject[]` | `msg.list_session`（当前 owner，`with_object: true`，最新页 + 向上分页） | `api/reader.ts::itemToMessage`，记录上下文置于 `ui_record` |
-| 附件对象 / 内容 | `GET /kapi/msg-center/objects/{obj_id}[/content]`（Bearer 会话 token） | `api/objects.ts`，按 `obj_id` 访问，`uri_hint` 只作提示 |
+| 附件对象 / 内容 | `GET /kapi/msg-center/objects/{obj_id}[/content]?context_path=[<session MailboxAddress>/]<msg_id>`（Bearer 会话 token） | `api/objects.ts`，`context_path` 由 `objectContextOf` 给出（携带附件的消息，编辑后是最新一次编辑）；msg-center 只经该消息在 `attachments` 桶的绑定代读；群 / Session 展示文件（EXT-04）用 `displayContext(<session MailboxAddress>)` = `<session>/_display`；`uri_hint` 只作提示 |
+| 收藏附件 | `msg.collect_attachment {obj_id, context_path}` → `{bucket_id: "user/msg-center/<user>/collected", key}` | `ObjectAccess.collect`；之后经 `/bucket/v1/<bucket_id>/<key>` 读，消息撤回不影响 |
 | `ui_message_id` | `SessionMessageItem.record_id` | 直接 |
 | `ui_delivery_status` | `SessionMessageItem.delivery.overall` | 枚举映射，见 3.5 |
 | `ui_sender_name` | `MailboxRecord.from_name` | 缺失时回落 DID |
@@ -1796,7 +1797,7 @@ P1（记录语义、提交结果、会话生命周期、请求准入、授权边
 | 待接受的邀请 | `group.list_by_member` 的 `session_invitations` |
 | 加入 / 发起咨询 | `group.accept_session_invitation {group_did, session_id, idempotency_key}`；`group.submit_guest_request {group_did, request_id}` |
 | 会话、成员、消息 | `group.list_sessions`、`group.list_session_members`、`group.list_messages`、`group.update_read_marker` |
-| 消息与附件对象 | `GET /kapi/msg-center/objects/<id>?context_path=<session MailboxAddress>/<msg_id>`；无上下文时受限会话被拒 |
+| 消息与附件对象 | `GET /kapi/msg-center/objects/<id>?context_path=<session MailboxAddress>/<msg_id>`，展示文件为 `<session MailboxAddress>/_display`；无上下文时受限会话被拒 |
 | 发送 | `msg.post_send {msg:{from:<caller DID>, to:[group], kind:"group_msg", to_session}, idempotency_key}`（首期不带附件） |
 
 拒绝一律按 `access_denied` 的 `reason` 分支；未开放与不存在对访客相同（`resource_grant_missing`）。对象缓存按 `identityKey` + 上下文 + 对象 id 隔离，身份变化时清空并回收 Blob URL。

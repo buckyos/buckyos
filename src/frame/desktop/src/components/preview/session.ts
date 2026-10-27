@@ -9,6 +9,7 @@
 import {
   extensionRefField,
   isBlobRef,
+  isBucketObjectRef,
   isCyfsPathRef,
   isObjectIdRef,
   type ContentRef,
@@ -69,6 +70,7 @@ export function lastSegment(path: string): string {
 export function refIdentity(ref: ContentRef): string {
   if (isCyfsPathRef(ref)) return `path:${normalizeCyfsPath(ref.path)}${ref.version ? `@${ref.version}` : ''}`
   if (isObjectIdRef(ref)) return `obj:${ref.objectId}${ref.version ? `@${ref.version}` : ''}`
+  if (isBucketObjectRef(ref)) return `bucket:${ref.url}${ref.version !== undefined ? `@${ref.version}` : ''}`
   if (isBlobRef(ref)) {
     const { blob, name } = ref.value
     return `blob:${name ?? ''}#${blob.size}#${blob.type}`
@@ -93,6 +95,7 @@ export function refDisplayName(ref: ContentRef): string {
     const id = ref.objectId
     return id.length > 20 ? `${id.slice(0, 10)}…${id.slice(-6)}` : id
   }
+  if (isBucketObjectRef(ref)) return ref.url.split('/').pop() || ref.url
   if (isBlobRef(ref)) return ref.value.name ?? 'Untitled'
   return extensionRefField(ref, 'name') ?? ref.kind
 }

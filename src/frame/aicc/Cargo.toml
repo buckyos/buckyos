@@ -32,3 +32,7 @@ zip = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+axum = { workspace = true }
+jsonwebtoken = { workspace = true }
+nfs_server = { path = "../nfs_server" }
+rbac = { workspace = true }

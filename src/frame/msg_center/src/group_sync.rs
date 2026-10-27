@@ -491,7 +491,8 @@ impl MessageCenter {
                 .or_insert(*seq);
         }
         for id in purges {
-            for statement in ["UPDATE group_objects SET body_json=NULL,jwt=NULL WHERE obj_id=?","DELETE FROM msg_jwt_originals WHERE msg_id=?","INSERT INTO group_object_purges(obj_id,schema_version) VALUES(?,1) ON CONFLICT(obj_id) DO NOTHING"] {
+            crate::group_store::queue_purge(&self.msg_box_db, &mut tx, &ObjId::new(&id).map_err(invalid)?).await?;
+            for statement in ["UPDATE group_objects SET body_json=NULL,jwt=NULL WHERE obj_id=?","DELETE FROM msg_jwt_originals WHERE msg_id=?"] {
                 let sql=self.msg_box_db.render_sql(statement);sqlx::query(&sql).bind(&id).execute(&mut *tx).await.map_err(db_error)?;
             }
         }
@@ -628,25 +629,20 @@ impl JoinedGroupRoute {
     }
 }
 impl MessageCenter {
-    async fn purge_group_objects(&self) -> Result<()> {
-        let Ok(runtime) = buckyos_api::get_buckyos_api_runtime() else {
+    /// Unbinds and removes the messages redactions queued (`queue_purge`).
+    pub(crate) async fn purge_group_objects(&self) -> Result<()> {
+        let Some(buckets) = self.open_buckets().await? else {
             return Ok(());
         };
-        let store = runtime.get_local_named_store().await?;
-        for row in sqlx::query("SELECT obj_id FROM group_object_purges LIMIT 100")
+        for row in sqlx::query("SELECT obj_id,attachment_prefix FROM group_object_purges LIMIT 100")
             .fetch_all(self.msg_box_db.pool())
             .await
             .map_err(db_error)?
         {
             let raw: String = row.try_get("obj_id").map_err(db_error)?;
+            let prefix: Option<String> = row.try_get("attachment_prefix").map_err(db_error)?;
             let id = ObjId::new(&raw).map_err(db_error)?;
-            match store.remove_object(&id).await {
-                Ok(_) => {}
-                Err(e)
-                    if e.to_string().to_lowercase().contains("notfound")
-                        || e.to_string().to_lowercase().contains("not found") => {}
-                Err(e) => return Err(db_error(e)),
-            }
+            self.purge_message(&buckets, &id, prefix).await?;
             let sql = self
                 .msg_box_db
                 .render_sql("DELETE FROM group_object_purges WHERE obj_id=?");

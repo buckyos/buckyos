@@ -4,7 +4,7 @@
 //! serially through it (design doc §2.5.2, §4.3).
 
 use crate::docdb::{apply_changes, db_err, meta_get, meta_set, DocCache, SqlCtx, WriteStats};
-use crate::objects::FsObjectStore;
+use crate::objects::{bucket_id, ObjectStore, ASSETS, OBJECTS};
 use crate::schema::{DOC_DDL, LOCAL_DDL, STORAGE_SCHEMA_VERSION};
 use aiworkspace_core::access::{Access, Cap, CapSet};
 use aiworkspace_core::canonical::{canonical_json, sha256_hex};
@@ -73,6 +73,7 @@ pub const PUBLIC_SUBJECT: &str = "public";
 /// Grant subject that applies to every unrestricted account of the Zone.
 pub const ANY_AUTHENTICATED_SUBJECT: &str = "*";
 pub const GUEST_PREFIX: &str = "guest:";
+pub const GUEST_TOKEN_PREFIX: &str = "gt";
 /// `group:<id>`: the members of a system user group.
 pub const GROUP_PREFIX: &str = "group:";
 /// `contact:<owner_did>#<tag>`: the DIDs in an owner's contact group (projections included).
@@ -107,15 +108,14 @@ impl Caller {
         Self::with_class(principal, CallerClass::Service)
     }
     /// An unauthenticated visitor: the principal is derived from a bearer token the browser made up
-    /// (`gt_` + 26 base32 chars) and keeps, so the same browser stays the same guest (its own
-    /// annotations stay "mine") without the token ever being stored or shown.
+    /// (`name_lib::bearer_token` form, prefix `gt`) and keeps, so the same browser stays the same guest
+    /// (its own annotations stay "mine") without the token ever being stored or shown.
     pub fn guest(token: &str) -> Option<Caller> {
-        if !is_prefixed_id("gt_", token) {
+        if !name_lib::bearer_token::has_form(GUEST_TOKEN_PREFIX, token) {
             return None;
         }
-        let digest = sha256_hex(token.as_bytes());
-        let bytes: Vec<u8> = (0..17).map(|i| u8::from_str_radix(&digest[i * 2..i * 2 + 2], 16).unwrap()).collect();
-        Some(Self::with_class(&prefixed_id(GUEST_PREFIX, bytes.as_slice().try_into().unwrap()), CallerClass::Guest))
+        let digest = name_lib::bearer_token::digest_bytes(token);
+        Some(Self::with_class(&prefixed_id(GUEST_PREFIX, digest[..17].try_into().unwrap()), CallerClass::Guest))
     }
     pub fn is_guest(&self) -> bool {
         self.class == CallerClass::Guest
@@ -275,7 +275,7 @@ pub struct Workspace {
     pub(crate) doc: Connection,
     pub(crate) local: Connection,
     pub(crate) cache: RefCell<DocCache>,
-    pub objects: Arc<FsObjectStore>,
+    pub objects: Arc<ObjectStore>,
     pub head_seq: u64,
     pub head_commit_id: String,
     pub(crate) peer_id: u64,
@@ -410,11 +410,11 @@ impl Workspace {
 
     /// Build a new Workspace folder at `dir` (a temporary name; the caller
     /// renames it into place once complete).
-    pub fn create(dir: &Path, workspace_id: &str, title: &str, owner: &str, objects: Arc<FsObjectStore>, clock: Clock) -> WsResult<Workspace> {
+    pub fn create(dir: &Path, workspace_id: &str, title: &str, owner: &str, objects: Arc<ObjectStore>, clock: Clock) -> WsResult<Workspace> {
         if !is_prefixed_id("ws_", workspace_id) {
             return Err(WsError::invalid_op("workspace_id must be ws_ + 26 base32 chars"));
         }
-        std::fs::create_dir_all(dir.join("staging")).map_err(|e| WsError::io(e.to_string()))?;
+        std::fs::create_dir_all(dir).map_err(|e| WsError::io(e.to_string()))?;
         let doc = open_db(&dir.join("doc.sqlite"), true)?;
         let local = open_db(&dir.join("local.sqlite"), false)?;
         doc.execute_batch(DOC_DDL).map_err(db_err)?;
@@ -454,7 +454,7 @@ impl Workspace {
         Workspace::open(dir, objects, clock)
     }
 
-    pub fn open(dir: &Path, objects: Arc<FsObjectStore>, clock: Clock) -> WsResult<Workspace> {
+    pub fn open(dir: &Path, objects: Arc<ObjectStore>, clock: Clock) -> WsResult<Workspace> {
         if !dir.join("doc.sqlite").exists() {
             return Err(WsError::not_found("workspace not found"));
         }
@@ -509,7 +509,7 @@ impl Workspace {
         if used + needed <= quota {
             return Ok(());
         }
-        let reclaimable: u64 = ["exports", "clones", "staged", "history"].iter().map(|c| usage[c].as_i64().unwrap_or(0).max(0) as u64).sum();
+        let reclaimable: u64 = ["clones", "staged"].iter().map(|c| usage[c].as_i64().unwrap_or(0).max(0) as u64).sum();
         let over = used + needed - quota;
         let data = json!({ "needed_bytes": over, "reclaimable_bytes": reclaimable, "quota_bytes": quota, "used_bytes": used, "owner": self.owner()?.unwrap_or_default() });
         if reclaimable >= over {
@@ -519,34 +519,84 @@ impl Workspace {
         }
     }
 
-    /// `ws.delete_checkpoint { snapshot_id }` (maintenance, `manage`): the snapshot row and its retention go;
-    /// its objects are reclaimed by the collector when nothing else holds them.
+    /// `ws.delete_checkpoint { snapshot_id }` (maintenance, `manage`): the snapshot row goes and its retention
+    /// set is unbound; the named store reclaims what no other binding holds.
     pub fn delete_checkpoint(&mut self, caller: &Caller, snapshot_id: &str) -> WsResult<Value> {
         self.require_ws(caller, Cap::Manage)?;
+        let released = self.release_snapshot(snapshot_id)?;
         let n = self.doc.execute("DELETE FROM snapshots WHERE snapshot_id = ?1", [snapshot_id]).map_err(db_err)?;
-        let released = self.release_retention("snapshot", snapshot_id)?;
         Ok(json!({ "ok": true, "removed": n > 0, "released": released }))
     }
 
     /// `ws.clear_staged` (maintenance, `manage`): staged uploads nobody referenced go, expired or not.
     pub fn clear_staged(&mut self, caller: &Caller) -> WsResult<Value> {
         self.require_ws(caller, Cap::Manage)?;
-        let mut st = self.local.prepare("SELECT object_id, size FROM staged_assets").map_err(db_err)?;
-        let rows: Vec<(String, i64)> = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
+        let (removed, bytes) = self.drop_staged(None)?;
+        Ok(json!({ "ok": true, "removed": removed, "bytes": bytes }))
+    }
+
+    /// Unbind and forget the staged uploads no asset row took over (all, or those expired by `now`).
+    fn drop_staged(&self, expired_by: Option<&str>) -> WsResult<(u64, i64)> {
+        let mut st = self.local.prepare("SELECT object_id, size, bucket_key, expires_at FROM staged_assets").map_err(db_err)?;
+        let rows: Vec<(String, i64, String, String)> =
+            st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
         drop(st);
         let (mut removed, mut bytes) = (0, 0i64);
-        for (id, size) in rows {
-            let referenced: bool = self.doc.query_row("SELECT 1 FROM assets WHERE object_id = ?1", [&id], |_| Ok(true)).optional().map_err(db_err)?.unwrap_or(false);
-            if referenced {
+        for (id, size, key, expires) in rows {
+            if expired_by.is_some_and(|now| expires.as_str() > now) {
                 continue;
             }
+            let referenced: bool = self.doc.query_row("SELECT 1 FROM assets WHERE object_id = ?1 AND bucket_version IS NOT NULL", [&id], |_| Ok(true)).optional().map_err(db_err)?.unwrap_or(false);
+            if !referenced && self.own_key(&key) {
+                self.objects.unbind(&self.bucket(ASSETS)?, &key)?;
+            }
             self.local.execute("DELETE FROM staged_assets WHERE object_id = ?1", [&id]).map_err(db_err)?;
-            self.release_retention("staged", &id)?;
-            removed += 1;
-            bytes += size;
+            if !referenced {
+                removed += 1;
+                bytes += size;
+            }
         }
         self.add_usage("staged", -bytes)?;
-        Ok(json!({ "ok": true, "removed": removed, "bytes": bytes }))
+        Ok((removed, bytes))
+    }
+
+    /// Unbind history-only assets: purged ones (`ended_seq = 0`) at once, the others once their last live
+    /// reference ended `history_retention_ms` ago (D06). Their rows stay; an undo or restore that needs one answers
+    /// `RESOURCE_RECLAIMED`.
+    fn release_history(&self, now_ms: i64) -> WsResult<u64> {
+        let mut st = self
+            .doc
+            .prepare("SELECT a.object_id, a.bucket_key, a.ended_seq, c.accepted_at FROM assets a LEFT JOIN commits c ON c.seq = a.ended_seq \
+                      WHERE a.ended_seq IS NOT NULL AND a.bucket_version IS NOT NULL")
+            .map_err(db_err)?;
+        let rows: Vec<(String, Option<String>, i64, Option<String>)> =
+            st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
+        drop(st);
+        let mut released = 0;
+        for (id, key, ended, at) in rows {
+            let expired = ended == 0 || at.and_then(|a| aiworkspace_core::value::parse_datetime_ms(&a)).is_some_and(|t| now_ms - t >= self.history_retention_ms);
+            if !expired {
+                continue;
+            }
+            let staged: bool = self.local.query_row("SELECT 1 FROM staged_assets WHERE object_id = ?1", [&id], |_| Ok(true)).optional().map_err(db_err)?.unwrap_or(false);
+            if let Some(key) = key.filter(|k| self.own_key(k) && !staged) {
+                self.objects.unbind(&self.bucket(ASSETS)?, &key)?;
+            }
+            self.doc.execute("UPDATE assets SET bucket_version = NULL WHERE object_id = ?1", [&id]).map_err(db_err)?;
+            released += 1;
+        }
+        Ok(released)
+    }
+
+    /// The periodic release of what nothing retains any more (the service's sweep): expired staged uploads and
+    /// history-only assets past their retention. A show clone holds the source's bindings and releases nothing.
+    pub fn release_expired(&mut self) -> WsResult<Value> {
+        if self.purpose().is_some() {
+            return Ok(json!({ "staged": 0, "history": 0 }));
+        }
+        let (staged, _) = self.drop_staged(Some(&self.now()))?;
+        let history = self.release_history((self.clock)())?;
+        Ok(json!({ "staged": staged, "history": history }))
     }
 
     /// `ws.purge_deleted { entity_ids? }` (maintenance, `manage`): deleted entities give up content and
@@ -581,16 +631,17 @@ impl Workspace {
         if r["status"] != json!("accepted") {
             return Err(WsError::new(Code::InvalidOperation, "purge was not accepted").with_data(r));
         }
-        // their history-only resources are reclaimable now, not after the retention period
+        // their history-only resources are released now, not after the retention period
         for object_id in &objects {
             self.doc.execute("UPDATE assets SET ended_seq = 0 WHERE object_id = ?1 AND ended_seq IS NOT NULL", [object_id]).map_err(db_err)?;
         }
+        self.release_history((self.clock)())?;
         self.clear_block_state(&ids)?;
         Ok(json!({ "ok": true, "purged": ids, "commit_id": r["commit_id"] }))
     }
 
-    /// Object ids a set of operations would need that the store no longer holds although this Workspace
-    /// once referenced them (reclaimed after their retention, D06): such an undo or restore is refused.
+    /// Object ids a set of operations would need that this Workspace once referenced but no longer retains
+    /// (released after their retention or purged, D06): such an undo or restore is refused.
     pub fn reclaimed_objects(&self, ops: &[Value]) -> WsResult<Vec<String>> {
         fn walk(v: &Value, out: &mut Vec<String>) {
             match v {
@@ -616,11 +667,9 @@ impl Workspace {
         ids.dedup();
         let mut gone = Vec::new();
         for id in ids {
-            if self.objects.has_object(&id) {
-                continue;
-            }
-            let known: bool = self.doc.query_row("SELECT 1 FROM assets WHERE object_id = ?1", [&id], |_| Ok(true)).optional().map_err(db_err)?.unwrap_or(false);
-            if known {
+            let released: bool = self.doc.query_row("SELECT 1 FROM assets WHERE object_id = ?1 AND bucket_version IS NULL", [&id], |_| Ok(true)).optional().map_err(db_err)?.unwrap_or(false);
+            let staged: bool = self.local.query_row("SELECT 1 FROM staged_assets WHERE object_id = ?1", [&id], |_| Ok(true)).optional().map_err(db_err)?.unwrap_or(false);
+            if released && !staged {
                 gone.push(id);
             }
         }
@@ -1034,24 +1083,85 @@ impl Workspace {
         add_usage(&self.doc, category, bytes)
     }
 
-    /// Register a retention root (D06): `kind` ∈ checkpoint / export / clone / staged / run_input …
-    pub fn add_retention(&self, kind: &str, reference: &str, holder: &str, expires_at: Option<&str>) -> WsResult<()> {
-        let now = self.now();
-        self.doc
-            .execute("INSERT OR REPLACE INTO retentions (kind, ref, holder, expires_at, created_at) VALUES (?1, ?2, ?3, ?4, ?5)", params![kind, reference, holder, expires_at, now])
-            .map_err(db_err)?;
-        Ok(())
+    /// A bucket of this Workspace's owner (doc/workspace `BuckyOS AiWorkspace Durable Data Schema.md`).
+    pub fn bucket(&self, name: &str) -> WsResult<String> {
+        bucket_id(&self.owner()?.unwrap_or_default(), name)
     }
 
-    /// End a retention root; `true` when a row went.
+    /// Keys under this Workspace's own prefix: a show clone also sees the source's keys and never releases them.
+    pub(crate) fn own_key(&self, key: &str) -> bool {
+        key.strip_prefix(self.workspace_id.as_str()).is_some_and(|rest| rest.starts_with('/'))
+    }
+
+    /// `ws.release_retention { kind, ref }` (maintenance): unbind what holds a snapshot (`snapshot`), an export
+    /// package (`export`) or an unreferenced upload (`staged`); `true` when a binding went.
     pub fn release_retention(&self, kind: &str, reference: &str) -> WsResult<bool> {
-        Ok(self.doc.execute("DELETE FROM retentions WHERE kind = ?1 AND ref = ?2", params![kind, reference]).map_err(db_err)? > 0)
+        match kind {
+            "snapshot" => self.release_snapshot(reference),
+            "export" => {
+                if !is_prefixed_id("ex_", reference) {
+                    return Ok(false);
+                }
+                let key = crate::export::export_key(&self.workspace_id, reference);
+                let bucket = self.bucket(crate::objects::EXPORTS)?;
+                let held = self.objects.binding(&bucket, &key)?.is_some();
+                self.objects.unbind(&bucket, &key)?;
+                Ok(held)
+            }
+            "staged" => {
+                let key: Option<String> = self.local.query_row("SELECT bucket_key FROM staged_assets WHERE object_id = ?1", [reference], |r| r.get(0)).optional().map_err(db_err)?;
+                let Some(key) = key else { return Ok(false) };
+                let referenced: bool = self.doc.query_row("SELECT 1 FROM assets WHERE object_id = ?1 AND bucket_version IS NOT NULL", [reference], |_| Ok(true)).optional().map_err(db_err)?.unwrap_or(false);
+                if referenced {
+                    return Ok(false);
+                }
+                if self.own_key(&key) {
+                    self.objects.unbind(&self.bucket(ASSETS)?, &key)?;
+                }
+                let size: i64 = self.local.query_row("SELECT size FROM staged_assets WHERE object_id = ?1", [reference], |r| r.get(0)).map_err(db_err)?;
+                self.local.execute("DELETE FROM staged_assets WHERE object_id = ?1", [reference]).map_err(db_err)?;
+                self.add_usage("staged", -size)?;
+                Ok(true)
+            }
+            "clone" => Ok(false),
+            _ => Err(WsError::invalid_op("kind must be snapshot, export or staged")),
+        }
     }
 
-    pub fn retentions(&self) -> WsResult<Vec<(String, String, String, Option<String>)>> {
-        let mut st = self.doc.prepare_cached("SELECT kind, ref, holder, expires_at FROM retentions ORDER BY kind, ref").map_err(db_err)?;
-        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
-        Ok(rows)
+    /// Unbind a snapshot's retention set; the row stays as history.
+    pub fn release_snapshot(&self, snapshot_id: &str) -> WsResult<bool> {
+        let key: Option<Option<String>> = self
+            .doc
+            .query_row("SELECT bucket_key FROM snapshots WHERE snapshot_id = ?1 AND bucket_version IS NOT NULL", [snapshot_id], |r| r.get(0))
+            .optional()
+            .map_err(db_err)?;
+        let Some(key) = key.flatten() else { return Ok(false) };
+        if self.own_key(&key) {
+            self.objects.unbind(&self.bucket(OBJECTS)?, &key)?;
+        }
+        self.doc.execute("UPDATE snapshots SET bucket_version = NULL WHERE snapshot_id = ?1", [snapshot_id]).map_err(db_err)?;
+        Ok(true)
+    }
+
+    /// Every binding this Workspace's folder records as its own: `(bucket name, key)` (the release of a folder
+    /// that goes for good, `Service`).
+    pub fn held_keys(&self) -> WsResult<BTreeSet<(String, String)>> {
+        let mut out = BTreeSet::new();
+        let doc_rows = |sql: &str, name: &str, out: &mut BTreeSet<(String, String)>| -> WsResult<()> {
+            let mut st = self.doc.prepare(sql).map_err(db_err)?;
+            for k in st.query_map([], |r| r.get::<_, String>(0)).map_err(db_err)? {
+                out.insert((name.to_string(), k.map_err(db_err)?));
+            }
+            Ok(())
+        };
+        doc_rows("SELECT bucket_key FROM assets WHERE bucket_version IS NOT NULL AND bucket_key IS NOT NULL", ASSETS, &mut out)?;
+        doc_rows("SELECT bucket_key FROM snapshots WHERE bucket_version IS NOT NULL AND bucket_key IS NOT NULL", OBJECTS, &mut out)?;
+        doc_rows("SELECT DISTINCT bucket_key FROM entity_versions WHERE bucket_version IS NOT NULL AND bucket_key IS NOT NULL", OBJECTS, &mut out)?;
+        let mut st = self.local.prepare("SELECT bucket_key FROM staged_assets").map_err(db_err)?;
+        for k in st.query_map([], |r| r.get::<_, String>(0)).map_err(db_err)? {
+            out.insert((ASSETS.to_string(), k.map_err(db_err)?));
+        }
+        Ok(out)
     }
 
     pub fn info(&self, caller: &Caller) -> WsResult<Value> {
@@ -1287,10 +1397,13 @@ impl Workspace {
         let stats = apply_changes(&tx, changes, seq)?;
         add_usage(&tx, "content", content_delta)?;
         add_usage(&tx, "assets", asset_delta)?;
-        // a staged upload this Commit references is an asset now: its staging root and usage end
+        // a staged upload this Commit references is an asset now: its binding moves to the asset row, its usage ends
         let mut staged_bytes: i64 = 0;
         for (id, a) in &changes.assets {
-            if tx.execute("DELETE FROM retentions WHERE kind = 'staged' AND ref = ?1", [id]).map_err(db_err)? > 0 {
+            let staged: Option<(String, i64)> =
+                self.local.query_row("SELECT bucket_key, bucket_version FROM staged_assets WHERE object_id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(db_err)?;
+            if let Some((key, version)) = staged {
+                tx.execute("UPDATE assets SET bucket_key = ?2, bucket_version = ?3 WHERE object_id = ?1", params![id, key, version]).map_err(db_err)?;
                 staged_bytes += a.size as i64;
             }
         }
@@ -1303,22 +1416,38 @@ impl Workspace {
             .filter(|o| o.op["op"] == json!("entity.set_derived"))
             .filter_map(|o| o.op["entity_id"].as_str().map(str::to_string))
             .collect();
-        let mut written_objects: Vec<String> = Vec::new();
+        // the versions of this Commit are retained together: one retention set under `<ws>/version/<epoch>/<seq>`,
+        // bound before the transaction commits and unbound when it does not
+        let mut version_key: Option<String> = None;
         if !versioned.is_empty() {
             let ctx = SqlCtx { conn: &tx, local: Some(&self.local), cache: &self.cache, now };
             let mut sink = crate::objects::StoreSink::new(&self.objects);
+            let mut members = BTreeMap::new();
+            let mut rows = Vec::new();
             for id in versioned {
                 let Some(e) = changes.entities.get(&id) else { continue };
                 let object_id = aiworkspace_core::materialize::content_object(&ctx, e, &mut sink)?;
+                self.objects.entity_members(&object_id, &e.type_id, &mut members)?;
+                rows.push((id, e.content_rev, object_id, e.derived.as_ref().map(Value::to_string)));
+            }
+            let key = format!("{}/version/{}/{seq}", self.workspace_id, self.epoch);
+            let (_, version) = self.objects.retain(&self.bucket(OBJECTS)?, &key, &members)?;
+            version_key = Some(key.clone());
+            for (id, rev, object_id, derived) in rows {
                 tx.execute(
-                    "INSERT INTO entity_versions (entity_id, content_rev, object_id, derived_json, kind, created_at) VALUES (?1, ?2, ?3, ?4, 'generated', ?5) \
-                     ON CONFLICT(entity_id, content_rev) DO UPDATE SET object_id = excluded.object_id, derived_json = excluded.derived_json, kind = 'generated', created_at = excluded.created_at",
-                    params![id, e.content_rev, object_id, e.derived.as_ref().map(Value::to_string), now],
+                    "INSERT INTO entity_versions (entity_id, content_rev, object_id, derived_json, kind, created_at, bucket_key, bucket_version) VALUES (?1, ?2, ?3, ?4, 'generated', ?5, ?6, ?7) \
+                     ON CONFLICT(entity_id, content_rev) DO UPDATE SET object_id = excluded.object_id, derived_json = excluded.derived_json, kind = 'generated', created_at = excluded.created_at, \
+                     bucket_key = excluded.bucket_key, bucket_version = excluded.bucket_version",
+                    params![id, rev, object_id, derived, now, key, version],
                 )
                 .map_err(db_err)?;
             }
-            written_objects = sink.written.clone();
         }
+        let unbind_versions = |objects: &ObjectStore, bucket: WsResult<String>| {
+            if let (Some(key), Ok(bucket)) = (&version_key, bucket) {
+                let _ = objects.unbind(&bucket, key);
+            }
+        };
         tx.execute(
             "INSERT INTO commits (seq, commit_id, principal, app_id, session_id, origin, run_id, undo_group, undoes, idem_key, \
              request_digest, message, accepted_at, result_json) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
@@ -1345,16 +1474,12 @@ impl Workspace {
         meta_set(&tx, "head_commit_id", commit_id)?;
         if fail_in_txn {
             drop(tx); // rollback: neither data nor history nor the idempotency record exists
-            for id in &written_objects {
-                let _ = self.objects.remove(id); // generated result objects of a rolled-back transaction (13.2)
-            }
+            unbind_versions(&self.objects, self.bucket(OBJECTS));
             self.fire(FailAt::InTxn)?;
             return Err(WsError::io("injected failure"));
         }
         if let Err(e) = tx.commit() {
-            for id in &written_objects {
-                let _ = self.objects.remove(id);
-            }
+            unbind_versions(&self.objects, self.bucket(OBJECTS));
             return Err(db_err(e));
         }
         Ok(stats)

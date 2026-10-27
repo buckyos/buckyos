@@ -2,7 +2,7 @@
  * method, no behaviour of its own: retries, idempotency and the change stream live in session.ts. */
 
 import type {
-  AnnotationRead, ChangesPage, CollabState, CommitRequest, CommitResult, EntityEnvelope, ExportResult, GrantList, ListAnnotationsParams, LockInfo, PrepareResult,
+  AnnotationRead, BucketBinding, BucketDownload, ChangesPage, CollabState, CommitRequest, CommitResult, EntityEnvelope, ExportResult, GrantList, ListAnnotationsParams, LockInfo, PrepareResult, StagedAsset,
   QueryPage, QueryParams, ReadResult, Result, RunView, Selector, WorkspaceInfo, WorkspaceSummary, Capability, Json, WishAiccMode,
   DerivedRecord, FreshnessInfo, Operation, RelationsInfo, Subject, VersionInfo, WishChoices, WishRunView,
   ShowCommand, ShowLockInfo, ShowNotes, ShowStart, ShowState, ShowWatch, ShareEntry, EntryJoin, WishClaim, WishToolAnswer, HostedExecConfig, Publication, Referrer,
@@ -53,9 +53,9 @@ export class AiwsClient {
   wsGetUserState(ws: Ws) { return this.call<Result<{ entries: Record<string, Json>; updated_at: Record<string, string>; revisions: Record<string, number> }>>('ws.get_user_state', ws) }
   /** `expect: { key: revision }` makes a write conditional (D13): a moved revision is a REVISION_CONFLICT. */
   wsSetUserState(ws: Ws, entries: Record<string, Json | null>, expect?: Record<string, number>) { return this.call<Result<{ updated_at: string; revisions: Record<string, number> }>>('ws.set_user_state', { ...ws, entries, ...(expect ? { expect } : {}) }) }
-  wsBeginImport() { return this.call<Result<{ upload_id: string }>>('ws.begin_import', {}) }
-  wsImport(upload_id: string, semantics: 'restore' | 'new', replace: boolean) {
-    return this.call<Result<{ workspace_id: string; epoch: string; content_root?: string }>>('ws.import', { upload_id, semantics, ...(replace ? { replace: true } : {}) })
+  /** The package the caller bound into its own `exports` bucket; a successful import consumes it. */
+  wsImport(pkg: BucketBinding, semantics: 'restore' | 'new', replace: boolean) {
+    return this.call<Result<{ workspace_id: string; epoch: string; content_root?: string }>>('ws.import', { bucket_id: pkg.bucket_id, key: pkg.key, semantics, ...(replace ? { replace: true } : {}) })
   }
 
   // ---- reads
@@ -112,18 +112,12 @@ export class AiwsClient {
 
   // ---- offline replica (design §6.2)
   replicaBootstrap(ws: Ws) {
-    return this.call<Result<{ replica_id: string; epoch: string; head_seq: number; principal: string; prepared_at: string }>>('replica.bootstrap', ws)
+    return this.call<Result<{ replica_id: string; epoch: string; head_seq: number; principal: string; prepared_at: string; download: BucketDownload }>>('replica.bootstrap', ws)
   }
 
-  // ---- assets
-  assetBeginUpload(ws: Ws, size: number, file_name?: string) {
-    return this.call<Result<{ upload_id: string }>>('asset.begin_upload', { ...ws, size, ...(file_name ? { file_name } : {}) })
-  }
-  assetFinishUpload(ws: Ws, upload_id: string) {
-    return this.call<Result<{ object_id: string; media_type: string; size: number }>>('asset.finish_upload', { ...ws, upload_id })
-  }
-  assetImportObject(ws: Ws, obj_id: string) {
-    return this.call<Result<{ object_id: string; source_obj_id: string; media_type: string; size: number }>>('asset.import_object', { ...ws, obj_id })
+  // ---- assets: uploaded through NDM, then taken over into the Workspace owner's `assets` bucket
+  assetImportObject(ws: Ws, source: { obj_id: string } | BucketBinding) {
+    return this.call<Result<StagedAsset>>('asset.import_object', { ...ws, ...source })
   }
 
   // ---- controlled processing (Mock)

@@ -62,13 +62,13 @@ async fn offline_recipient_retry() {
     let row: (String, i64, String) = alice
         .station
         .db
-        .call(|c| Ok(c.query_row("SELECT state, attempts, last_result FROM outbox WHERE purpose='object'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?))
+        .call(|c| Ok(c.query_row("SELECT state, attempts, last_result FROM outbox WHERE purpose='object' AND owner=?1", [c.owner], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?))
         .await
         .unwrap();
     assert_eq!((row.0.as_str(), row.1), ("pending", 1));
     assert!(row.2.contains("no_response"), "{}", row.2);
     bob.start().await;
-    alice.station.db.call(|c| Ok(c.execute("UPDATE outbox SET next_at=0", [])?)).await.unwrap();
+    alice.station.db.call(|c| Ok(c.execute("UPDATE outbox SET next_at=0 WHERE owner=?1", [c.owner])?)).await.unwrap();
     net.deliver_all().await;
     let task = net.rpc("alice", "publish.task", json!({ "key": "p1" })).await;
     assert_eq!(task["delivery"]["state"], "delivered");
@@ -94,7 +94,7 @@ async fn spider_private_captures_and_share() {
     assert_eq!(added[0]["url"], format!("{site}/feed.xml"));
     net.rpc("bob", "admin.run", json!({ "task": "pull" })).await;
     net.rpc("bob", "admin.run", json!({ "task": "pull" })).await;
-    let captures: i64 = bob.station.db.call(|c| Ok(c.query_row("SELECT COUNT(*) FROM candidates WHERE private_capture=1 AND selection!='dropped'", [], |r| r.get(0))?)).await.unwrap();
+    let captures: i64 = bob.station.db.call(|c| Ok(c.query_row("SELECT COUNT(*) FROM candidates WHERE private_capture=1 AND selection!='dropped' AND owner=?1", [c.owner], |r| r.get(0))?)).await.unwrap();
     assert_eq!(captures, 2, "each item once");
     net.rpc("bob", "admin.run", json!({ "task": "selection" })).await;
     let page = net.rpc("bob", "reading.list", json!({ "query": { "filter": "news", "topicId": null, "search": "", "showFiltered": false } })).await;
@@ -210,8 +210,8 @@ async fn friends_without_homestation() {
     assert!(err.contains("noHome"), "{err}");
     publish(&net, "alice", "p1", text_input("friends only", json!({ "kind": "friends" }))).await;
     let queued: Vec<String> = alice.station.db.call(|c| {
-        let mut stmt = c.prepare("SELECT DISTINCT recipient FROM outbox")?;
-        let rows = stmt.query_map([], |r| r.get(0))?.collect::<Result<Vec<String>, _>>()?;
+        let mut stmt = c.prepare("SELECT DISTINCT recipient FROM outbox WHERE owner=?1")?;
+        let rows = stmt.query_map([c.owner], |r| r.get(0))?.collect::<Result<Vec<String>, _>>()?;
         Ok(rows)
     }).await.unwrap();
     assert_eq!(queued, vec![bob.did.clone()]);

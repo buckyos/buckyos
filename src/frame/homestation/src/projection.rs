@@ -8,7 +8,8 @@ use crate::protocol::*;
 use crate::publish::{entry_versions, get_entry, get_head};
 use crate::settings::UserSettings;
 use crate::{hue_of, Station};
-use rusqlite::{Connection, OptionalExtension};
+use crate::db::Conn;
+use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -46,13 +47,16 @@ impl Station {
             if let Some(avatar) = c.avatar.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
                 avatars.insert(c.did.clone(), avatar.to_string());
             }
-            names.insert(c.did.clone(), (c.name.clone(), "person".into()));
+            // A contact added only by following has no name of its own; the source has one.
+            if !c.name.trim().is_empty() && c.name != c.did {
+                names.insert(c.did.clone(), (c.name.clone(), "person".into()));
+            }
         }
         let sources: Vec<(String, String)> = self
             .db
             .call(|c| {
-                let mut stmt = c.prepare("SELECT did, name FROM sources WHERE did IS NOT NULL")?;
-                let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+                let mut stmt = c.prepare("SELECT did, name FROM sources WHERE did IS NOT NULL AND owner=?1")?;
+                let rows = stmt.query_map(params![c.owner], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<Vec<_>, _>>()?;
                 Ok(rows)
             })
             .await
@@ -116,7 +120,7 @@ pub fn file_view(body: &Value) -> Value {
     json!({ "kind": "file", "name": body.get("name").and_then(Value::as_str).unwrap_or(""), "meta": meta })
 }
 
-fn local_file(conn: &Connection, id: &str) -> HsResult<Option<Value>> {
+fn local_file(conn: &Conn, id: &str) -> HsResult<Option<Value>> {
     let Some(object) = get_object(conn, id)?.filter(|o| o.obj_type == OBJ_TYPE_FILE) else { return Ok(None) };
     let mut view = file_view(&object.body);
     if let Value::Object(metadata) = crate::objects::import_metadata(conn, id)? {
@@ -127,7 +131,7 @@ fn local_file(conn: &Connection, id: &str) -> HsResult<Option<Value>> {
     Ok(Some(view))
 }
 
-pub fn entry_state(conn: &Connection, obj_id: &str, feed: &FeedObject) -> HsResult<Option<Value>> {
+pub fn entry_state(conn: &Conn, obj_id: &str, feed: &FeedObject) -> HsResult<Option<Value>> {
     let Some(entry) = &feed.entry else { return Ok(None) };
     let Some(head) = get_head(conn, entry)? else { return Ok(None) };
     let versions = entry_versions(conn, entry)?;
@@ -155,13 +159,13 @@ pub fn tier_spec(tier: &str) -> AudienceSpec {
 }
 
 /// Own entries show their full audience; others only reveal the tier (§4.5).
-fn audience_view(conn: &Connection, ctx: &ViewCtx, feed: &FeedObject) -> HsResult<Value> {
+fn audience_view(conn: &Conn, ctx: &ViewCtx, feed: &FeedObject) -> HsResult<Value> {
     let Some(entry) = &feed.entry else { return Ok(json!({ "spec": { "kind": "public" }, "restricted": false })) };
     if let Some(row) = get_entry(conn, entry)? {
         let spec = if ctx.is_owner() { row.audience.clone() } else { tier_spec(row.audience.tier()) };
         return Ok(json!({ "spec": spec, "restricted": !row.audience.is_public() }));
     }
-    let row: Option<(i64, Option<String>)> = conn.query_row("SELECT restricted, tier FROM heads WHERE entry=?1", [entry], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+    let row: Option<(i64, Option<String>)> = conn.query_row("SELECT restricted, tier FROM heads WHERE entry=?1 AND owner=?2", params![entry, conn.owner], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
     let (restricted, tier) = row.map(|(r, t)| (r != 0, t)).unwrap_or((false, None));
     let spec = match (restricted, tier.as_deref()) {
         (false, _) => AudienceSpec::Public,
@@ -171,21 +175,21 @@ fn audience_view(conn: &Connection, ctx: &ViewCtx, feed: &FeedObject) -> HsResul
     Ok(json!({ "spec": spec, "restricted": restricted }))
 }
 
-pub fn readable(conn: &Connection, ctx: &ViewCtx, obj_id: &str) -> HsResult<bool> {
+pub fn readable(conn: &Conn, ctx: &ViewCtx, obj_id: &str) -> HsResult<bool> {
     if ctx.is_owner() {
         return Ok(get_object(conn, obj_id)?.is_some());
     }
     crate::stream::readable_by_grants(conn, obj_id, &ctx.reader, &ctx.rel, ctx.collector)
 }
 
-fn withdrawn(conn: &Connection, feed: &FeedObject) -> HsResult<bool> {
+fn withdrawn(conn: &Conn, feed: &FeedObject) -> HsResult<bool> {
     Ok(match &feed.entry {
         Some(e) => get_head(conn, e)?.is_some_and(|h| h.state == HeadState::Withdrawn),
         None => false,
     })
 }
 
-pub fn item_view(conn: &Connection, ctx: &ViewCtx, obj_id: &str, depth: u8) -> HsResult<Option<Value>> {
+pub fn item_view(conn: &Conn, ctx: &ViewCtx, obj_id: &str, depth: u8) -> HsResult<Option<Value>> {
     let obj_id = normalize_obj_id(obj_id);
     let Some(stored) = get_object(conn, &obj_id)? else { return Ok(None) };
     let Ok(feed) = serde_json::from_value::<FeedObject>(stored.body.clone()) else { return Ok(None) };
@@ -208,7 +212,7 @@ pub fn item_view(conn: &Connection, ctx: &ViewCtx, obj_id: &str, depth: u8) -> H
             };
             let inner = get_feed(conn, target)?;
             let unavailable: Option<String> = conn
-                .query_row("SELECT resources FROM candidates WHERE obj_id=?1", [&obj_id], |r| r.get(0))
+                .query_row("SELECT resources FROM candidates WHERE obj_id=?1 AND owner=?2", params![obj_id, conn.owner], |r| r.get(0))
                 .optional()?;
             let view = match inner {
                 None if unavailable.as_deref() == Some("unavailable") => json!({ "relation": relation, "visibility": "not_visible" }),
@@ -267,11 +271,11 @@ pub fn item_view(conn: &Connection, ctx: &ViewCtx, obj_id: &str, depth: u8) -> H
     })))
 }
 
-fn delivery_state(conn: &Connection, entry: &str) -> HsResult<&'static str> {
+fn delivery_state(conn: &Conn, entry: &str) -> HsResult<&'static str> {
     let (total, pending, failed, accepted): (i64, i64, i64, i64) = conn.query_row(
         "SELECT COUNT(*), COUNT(CASE WHEN state='pending' THEN 1 END), COUNT(CASE WHEN state IN ('failed','rejected') THEN 1 END),
-                COUNT(CASE WHEN state='accepted' THEN 1 END) FROM outbox WHERE entry=?1",
-        [entry],
+                COUNT(CASE WHEN state='accepted' THEN 1 END) FROM outbox WHERE entry=?1 AND owner=?2",
+        params![entry, conn.owner],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
     )?;
     Ok(if total == 0 {
@@ -285,7 +289,7 @@ fn delivery_state(conn: &Connection, entry: &str) -> HsResult<&'static str> {
     })
 }
 
-fn flag(conn: &Connection, entry: Option<String>, default_visibility: &str) -> HsResult<Value> {
+fn flag(conn: &Conn, entry: Option<String>, default_visibility: &str) -> HsResult<Value> {
     let Some(entry) = entry else { return Ok(json!({ "on": false, "visibility": default_visibility, "delivery": "none" })) };
     let head = get_head(conn, &entry)?;
     let row = get_entry(conn, &entry)?;
@@ -304,11 +308,11 @@ fn flag(conn: &Connection, entry: Option<String>, default_visibility: &str) -> H
     }))
 }
 
-pub fn personal_state(conn: &Connection, obj_id: &str) -> HsResult<Value> {
+pub fn personal_state(conn: &Conn, obj_id: &str) -> HsResult<Value> {
     let row: Option<(Option<String>, Option<String>, i64, Option<String>, i64, i64)> = conn
         .query_row(
-            "SELECT like_entry, repost_entry, bookmark_on, bookmark_entry, read_later, dislike FROM personal WHERE obj_id=?1",
-            [obj_id],
+            "SELECT like_entry, repost_entry, bookmark_on, bookmark_entry, read_later, dislike FROM personal WHERE obj_id=?1 AND owner=?2",
+            params![obj_id, conn.owner],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
         )
         .optional()?;
@@ -332,7 +336,7 @@ pub fn personal_state(conn: &Connection, obj_id: &str) -> HsResult<Value> {
 }
 
 /// Why a card cannot be reposted (§4.5, §12.5).
-pub fn repost_block(conn: &Connection, ctx: &ViewCtx, item: &Value) -> HsResult<Option<&'static str>> {
+pub fn repost_block(conn: &Conn, ctx: &ViewCtx, item: &Value) -> HsResult<Option<&'static str>> {
     let _ = (conn, ctx);
     if item["contentType"] == "reaction" {
         return Ok(Some("reaction"));
@@ -352,26 +356,26 @@ pub fn repost_block(conn: &Connection, ctx: &ViewCtx, item: &Value) -> HsResult<
     Ok(None)
 }
 
-pub fn resources_of(conn: &Connection, obj_id: &str) -> HsResult<String> {
-    let reading: Option<String> = conn.query_row("SELECT resources FROM reading WHERE obj_id=?1", [obj_id], |r| r.get(0)).optional()?;
+pub fn resources_of(conn: &Conn, obj_id: &str) -> HsResult<String> {
+    let reading: Option<String> = conn.query_row("SELECT resources FROM reading WHERE obj_id=?1 AND owner=?2", params![obj_id, conn.owner], |r| r.get(0)).optional()?;
     if let Some(r) = reading {
         return Ok(r);
     }
-    let candidate: Option<String> = conn.query_row("SELECT resources FROM candidates WHERE obj_id=?1", [obj_id], |r| r.get(0)).optional()?;
+    let candidate: Option<String> = conn.query_row("SELECT resources FROM candidates WHERE obj_id=?1 AND owner=?2", params![obj_id, conn.owner], |r| r.get(0)).optional()?;
     Ok(match candidate.as_deref() {
         Some("unknown") | None => "local".into(),
         Some(r) => r.into(),
     })
 }
 
-pub fn card_view(conn: &Connection, ctx: &ViewCtx, obj_id: &str, reading: Option<Value>) -> HsResult<Option<Value>> {
+pub fn card_view(conn: &Conn, ctx: &ViewCtx, obj_id: &str, reading: Option<Value>) -> HsResult<Option<Value>> {
     let obj_id = normalize_obj_id(obj_id);
     if !readable(conn, ctx, &obj_id)? {
         return Ok(None);
     }
     let Some(item) = item_view(conn, ctx, &obj_id, 0)? else { return Ok(None) };
     let block = repost_block(conn, ctx, &item)?;
-    let shared_as: Option<String> = conn.query_row("SELECT shared_id FROM capture_shares WHERE capture_id=?1", [&obj_id], |r| r.get(0)).optional()?;
+    let shared_as: Option<String> = conn.query_row("SELECT shared_id FROM capture_shares WHERE capture_id=?1 AND owner=?2", params![obj_id, conn.owner], |r| r.get(0)).optional()?;
     let stats = crate::comments::stats(conn, ctx, &obj_id, "local")?;
     Ok(Some(without_nulls(json!({
         "item": item,

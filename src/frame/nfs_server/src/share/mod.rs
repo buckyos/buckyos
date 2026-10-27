@@ -3,7 +3,9 @@
 //! handoffs (MessageHub, HomeStation), audit, access statistics and the Public
 //! (`srv/publish`) projection.
 //!
-//! - `db`: share tables in filedb; `snapshot`: source → immutable named object.
+//! - `db`: share tables in filedb; `snapshot`: source → immutable named object,
+//!   retained while the share is active by key `<share_id>` of the bucket
+//!   `zone/nfs-server/_/shares` (nfs-server hosts it, so in process).
 //! - `rpc`: NFSP extension methods `share.*` (same envelope/session as files).
 //! - `serving`: the visitor data plane and page; `public`: Public observations.
 //!
@@ -22,6 +24,7 @@ use crate::filedb::FileDb;
 use crate::fsutil::unix_now;
 use crate::state::SharedState;
 use base64::Engine;
+use bucket_store::{BucketError, BucketStore, Caller, Conditions, ListRequest, PutRequest};
 use db::{AccessEvent, AuditEntry};
 use hmac::{Hmac, Mac};
 use named_store::NamedDataMgr;
@@ -252,52 +255,118 @@ async fn open_local_store(dir: &std::path::Path) -> Result<NamedDataMgr, String>
     Ok(mgr)
 }
 
-pub fn pin_owner(share_id: &str) -> String {
-    format!("share:{share_id}")
+/// Standalone servers declare the shares bucket themselves; in service mode it
+/// comes from `services/nfs-server/spec` (scheduler `add_nfs_server`).
+pub fn declare_bucket(config: &mut ServerConfig) {
+    let own = config.bucket_specs.entry(buckyos_api::NFS_SERVER_SERVICE_NAME.to_string()).or_default();
+    for (name, decl) in buckyos_api::nfs_server_bucket_decls() {
+        own.buckets.entry(name).or_insert(decl);
+    }
+    own.storage_quota_mib.get_or_insert(buckyos_api::NFS_SERVER_STORAGE_QUOTA_MIB);
 }
 
-/// Releases a share's retention pin; Ok(false) when the store refused (retried later).
-pub async fn release_pin(state: &SharedState, share_id: &str, obj_id: &str) -> bool {
-    let Ok(store) = state.share.store(&state.config).await else { return false };
-    let Ok(id) = ndn_lib::ObjId::new(obj_id) else { return true };
-    match store.unpin(&id, &pin_owner(share_id)).await {
-        Ok(()) => true,
-        Err(ndn_lib::NdnError::NotFound(_)) => true,
-        Err(e) => {
-            log::warn!("unpin {} for share {} failed: {}", obj_id, share_id, e);
-            false
-        }
+fn bucket_error(e: BucketError) -> NfsError {
+    match e {
+        BucketError::QuotaExceeded(_) => NfsError::new(ErrorCode::QuotaExceeded, e.to_string()).with("reason", serde_json::json!("quota_exceeded")),
+        e => internal(format!("share bucket: {e}")),
     }
 }
 
-/// Finishes `stopping` / expired shares: unpin, then mark the final status.
-pub async fn settle_share(state: &SharedState, share: &db::ShareRow, final_status: &str, audit_action: &str) {
-    if release_pin(state, &share.share_id, &share.obj_id).await {
-        let now = unix_now();
-        if let Err(e) = state.db.share_retention_release(&share.share_id, now) {
-            log::warn!("record retention release for {} failed: {}", share.share_id, e);
-        }
-        let audit = (audit_action == "expire").then(|| AuditEntry {
-            share_id: &share.share_id,
-            action: "expire",
-            revision_before: Some(share.revision),
-            revision_after: Some(share.revision + 1),
-            actor_user_id: "system",
-            actor_app_id: None,
-            source: "system",
-            reason: None,
-            outcome: "ok",
-            at: now,
-        });
-        if let Err(e) = state.db.share_set_status(&share.share_id, final_status, None, audit.is_some(), audit) {
-            log::warn!("settle share {} failed: {}", share.share_id, e);
-        }
+async fn share_bucket(state: &SharedState) -> NfsResult<&Arc<BucketStore>> {
+    crate::bucket::spec::ensure(state, &buckyos_api::nfs_share_bucket()).await.map_err(bucket_error)?;
+    state.buckets.store(state).await.map_err(bucket_error)
+}
+
+/// Retains a share's snapshot under its share id; success means the bucket holds it.
+pub async fn retain(state: &SharedState, share_id: &str, obj_id: &str) -> NfsResult<()> {
+    let id = buckyos_api::nfs_share_bucket();
+    let req = PutRequest { key: share_id.into(), obj_id: obj_id.into(), conditions: Conditions::create_only(), ..Default::default() };
+    let put = share_bucket(state).await?.put(&id, &Caller::system(), req).await.map_err(bucket_error)?;
+    log::info!("bucket bind {id} key={share_id} obj_id={obj_id} version={}", put.version);
+    Ok(())
+}
+
+/// Stops retaining a share's snapshot. The share row is already final; a key
+/// left by a failed release is removed by `reconcile_retention`.
+pub async fn release(state: &SharedState, share_id: &str) {
+    let id = buckyos_api::nfs_share_bucket();
+    let deleted = match share_bucket(state).await {
+        Ok(store) => store.delete(&id, &Caller::system(), share_id, None, None).await.map_err(bucket_error),
+        Err(e) => Err(e),
+    };
+    match deleted {
+        Ok(r) => log::info!("bucket unbind {id} key={share_id} deleted={} version={:?}", r.deleted, r.version),
+        Err(e) => log::warn!("release snapshot of share {share_id} failed, left to reconciliation: {e}"),
     }
 }
 
-/// Once a minute: expire due links, finish stops, flush statistics, prune
-/// the access log, and every 5 minutes rescan Public.
+/// The binding retaining a share's snapshot, if any.
+pub async fn retention(state: &SharedState, share_id: &str) -> NfsResult<Option<bucket_store::Binding>> {
+    match share_bucket(state).await?.get(&buckyos_api::nfs_share_bucket(), &Caller::system(), share_id, None).await {
+        Ok(b) => Ok(Some(b)),
+        Err(BucketError::NoSuchKey(_)) => Ok(None),
+        Err(e) => Err(bucket_error(e)),
+    }
+}
+
+/// Keys of the shares bucket equal the active shares (bind before the row,
+/// release after it): stray keys are deleted unless bound within `grace_ms`
+/// (a share still being created), an active share missing its key is bound again.
+pub async fn reconcile_retention(state: &SharedState, grace_ms: i64) -> NfsResult<()> {
+    let id = buckyos_api::nfs_share_bucket();
+    let store = share_bucket(state).await?;
+    let mut active: HashMap<String, String> =
+        state.db.shares_in_status("active")?.into_iter().map(|s| (s.share_id, s.obj_id)).collect();
+    let cutoff = bucket_store::now_ms() - grace_ms;
+    let mut req = ListRequest { limit: Some(1000), ..Default::default() };
+    loop {
+        let page = store.list_objects(&id, &Caller::system(), &req).await.map_err(bucket_error)?;
+        for item in page.items {
+            if active.remove(&item.key).is_none() && item.created_at <= cutoff {
+                release(state, &item.key).await;
+            }
+        }
+        match page.next_start_after {
+            Some(next) => req.start_after = Some(next),
+            None => break,
+        }
+    }
+    for (share_id, obj_id) in active {
+        if let Err(e) = retain(state, &share_id, &obj_id).await {
+            log::warn!("active share {share_id} has no retained snapshot: {}", e.message);
+        }
+    }
+    Ok(())
+}
+
+/// Marks a due link expired, then releases its snapshot.
+async fn expire(state: &SharedState, share: &db::ShareRow) {
+    let audit = AuditEntry {
+        share_id: &share.share_id,
+        action: "expire",
+        revision_before: Some(share.revision),
+        revision_after: Some(share.revision + 1),
+        actor_user_id: "system",
+        actor_app_id: None,
+        source: "system",
+        reason: None,
+        outcome: "ok",
+        at: unix_now(),
+    };
+    match state.db.share_set_status(&share.share_id, "expired", None, true, Some(audit)) {
+        Ok(()) => release(state, &share.share_id).await,
+        Err(e) => log::warn!("expire share {} failed: {}", share.share_id, e),
+    }
+}
+
+/// Once a minute: expire due links, flush statistics, prune the access log,
+/// and every 5 minutes rescan Public. Snapshot retention is reconciled once at start.
 pub async fn sweeper_loop(state: SharedState) {
+    if ShareMgr::store_configured(&state.config) {
+        if let Err(e) = reconcile_retention(&state, 10 * 60 * 1000).await {
+            log::warn!("share retention reconciliation: {}", e.message);
+        }
+    }
     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(5));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut tick: u64 = 0;
@@ -321,15 +390,10 @@ pub async fn sweep_once(state: &SharedState) {
     match state.db.shares_expired_active(now) {
         Ok(rows) => {
             for share in rows {
-                settle_share(state, &share, "expired", "expire").await;
+                expire(state, &share).await;
             }
         }
         Err(e) => log::warn!("share sweeper: {}", e),
-    }
-    if let Ok(rows) = state.db.shares_in_status("stopping") {
-        for share in rows {
-            settle_share(state, &share, "stopped", "stop").await;
-        }
     }
     if let Err(e) = state.db.share_access_prune(now - ACCESS_LOG_DAYS * 86400) {
         log::warn!("share access log prune: {}", e);

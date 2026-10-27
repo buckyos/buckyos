@@ -183,10 +183,7 @@ test('the history is replaced while offline (EPOCH_MISMATCH): sending stops, pen
 
   // the workspace is restored from a backup: a new epoch
   const exportResult = await api.rpc(ALICE, 'doc.export', { workspace_id: ws.workspace_id, mode: 'personal_backup', self_contained: true })
-  const pkg = await (await fetch(`${api.base}/export/${ws.workspace_id}/${exportResult.export_id}`, { headers: { authorization: `Bearer ${ALICE}` } })).arrayBuffer()
-  const begin = await api.rpc(ALICE, 'ws.begin_import', {})
-  expect((await fetch(`${api.base}/upload/${begin.upload_id}`, { method: 'PUT', headers: { authorization: `Bearer ${ALICE}` }, body: pkg })).ok).toBe(true)
-  const restored = await api.rpc(ALICE, 'ws.import', { upload_id: begin.upload_id, semantics: 'restore', replace: true })
+  const restored = await api.importPackage(ALICE, await api.download(exportResult.download), 'restore', true)
   expect(restored.epoch).not.toBe(ws.epoch)
   const head = await api.headSeq(ALICE, ws.workspace_id)
 

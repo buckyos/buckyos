@@ -1,12 +1,15 @@
 import {
+  deleteStorageBucket,
   fetchBuckyOSDevConfig,
   fetchBuckyOSInfo,
+  fetchStorageOverview,
   fetchZoneCertificates,
   fetchZoneDevices,
   fetchZoneOverview,
   setBuckyOSDevMode,
   type BuckyOSDevConfig,
   type BuckyOSInfo,
+  type StorageOverview,
   type ZoneCertificatesResponse,
   type ZoneDevicesResponse,
   type ZoneOverviewResponse,
@@ -27,6 +30,7 @@ interface ResourceData {
   certificates: ZoneCertificatesResponse
   zoneOverview: ZoneOverviewResponse
   privacy: PrivacyOverview
+  storage: StorageOverview
 }
 
 export type ResourceKey = keyof ResourceData
@@ -58,6 +62,7 @@ const loaders: { [K in ResourceKey]: () => Promise<ResourceData[K]> } = {
   certificates: () => required(fetchZoneCertificates()),
   zoneOverview: () => required(fetchZoneOverview()),
   privacy: loadPrivacyOverview,
+  storage: () => required(fetchStorageOverview()),
 }
 
 const ICON_SIZE_KEY = 'buckyos.desktop.iconSize'
@@ -92,6 +97,7 @@ export class SettingsStore {
     certificates: idle(),
     zoneOverview: idle(),
     privacy: idle(),
+    storage: idle(),
     developerSaving: false,
     desktopIconSize: readIconSize(),
     messagePreview: readMessagePreview(),
@@ -152,6 +158,13 @@ export class SettingsStore {
     } finally {
       this.patch({ developerSaving: false })
     }
+  }
+
+  /** Deletes a bucket and reloads the storage overview; `sudoToken` is the user's sudo grant (documents, collected). */
+  async deleteBucket(bucketId: string, sudoToken: string | null): Promise<void> {
+    const { data, error } = await deleteStorageBucket(bucketId, sudoToken)
+    if (!data) throw error instanceof Error ? error : new Error(errorText(error, 'the bucket could not be deleted'))
+    await this.load('storage', true)
   }
 
   setDesktopIconSize(size: GridDensity) {

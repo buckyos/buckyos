@@ -10,7 +10,7 @@ its source directory and Desktop entry have been removed. Current test routing i
 There is **no mock backend**. In the Desktop's mock runtime the app says so and stays empty unless the
 dev override below points it at a real backend process.
 
-File/folder import is available in the data tree and canvas insert catalog. `OnlineWorkspaceSession.importAssets` uses SDK NDM import → ready → `asset.import_object`, preserving the selected directory root and mapping leaves to workspace AssetRefs. `importedAssetOps` builds one structure commit; canvas imports add matching groups/cells. Each asset keeps the existing 32 MiB limit and local ObjectStore ID, so exports and prepared offline replicas continue to contain the bytes. Image replacement and derived snapshots use `uploadAsset`, which shares this NDM path. Offline sessions reject imports while disconnected; cancellation or refresh does not preserve browser File handles, and retry requires reselecting the source. FileList pickers cannot represent empty folders, as stated beside the picker.
+File/folder import is available in the data tree and canvas insert catalog. `OnlineWorkspaceSession.importAssets` uses SDK NDM import → ready → `asset.import_object { obj_id }` (the service binds each FileObject into the Workspace owner's `assets` bucket), preserving the selected directory root and mapping leaves to workspace AssetRefs. `importedAssetOps` builds one structure commit; canvas imports add matching groups/cells. Each asset keeps the 32 MiB limit; its id is the uploaded FileObject's, so exports and prepared offline replicas contain the bytes. Image replacement and derived snapshots use `uploadAsset` (`api/session.ts` `uploadWorkspaceAsset`): one file uploaded with `bind` into the caller's own `user/aiworkspace/<user>/assets`, then `asset.import_object { bucket_id, key }`. Export packages and replica databases are fetched from `/bucket/v1/<bucket_id>/<key>?token=` (the `download` of `doc.export` / `replica.bootstrap`; `Transport.fetchDownload`); a package to import is uploaded with `bind` into the caller's own `exports` bucket (`uploadWorkspacePackage`). Offline sessions reject imports while disconnected; cancellation or refresh does not preserve browser File handles, and retry requires reselecting the source. FileList pickers cannot represent empty folders, as stated beside the picker.
 
 `tests/aiworkspace/features.spec.ts` exercises a real browser, isolated NDM and AIWorkspace processes: nested Chinese/space paths, equal-content files in different folders, zero-byte assets, byte readback, ID deduplication and refresh. The existing image replacement/embed/link regression runs against the same fixture.
 
@@ -235,9 +235,10 @@ token plays a visitor of a public link (no identity of its own; see below). With
 Vite config is unchanged.
 
 In a real zone nothing is configured: the app uses `buckyos.getServiceRpcClient('aiworkspace')` and
-sends `Authorization: Bearer <session token>` to the upload / asset / export routes. Without a signed-in
-account (`/workspace/<id>` is a login-optional route) it sends a guest token instead — `gt_` + 26 base32
-chars kept in `localStorage['aiworkspace.guest']` — which reaches a workspace's `public` grant only (the
+sends `Authorization: Bearer <session token>` to the asset route (uploads go through NDM, downloads through
+`/bucket/v1`; the dev server forwards both to `VITE_NFS_PROXY`). Without a signed-in
+account (`/workspace/<id>` is a login-optional route) it sends a guest token instead — `gt_` + base64url of 32
+random bytes (the zone's bearer token form, `name_lib::bearer_token`) kept in `localStorage['aiworkspace.guest']` — which reaches a workspace's `public` grant only (the
 "一键公开分享" of the share panel); a guest whose link is not public is sent to `/login` and comes back.
 
 ## Tests

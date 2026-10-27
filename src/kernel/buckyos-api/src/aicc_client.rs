@@ -20,6 +20,34 @@ pub const AICC_SERVICE_UNIQUE_ID: &str = "aicc";
 pub const AICC_SERVICE_SERVICE_NAME: &str = "aicc";
 pub const AICC_SERVICE_SERVICE_PORT: u16 = 4040;
 
+/// `user/aicc/<user>/outputs`: what a call produced for its user, kept
+/// [`AICC_OUTPUTS_TTL_DAYS`]; whoever keeps a result longer copies it into its own bucket.
+pub const AICC_BUCKET_OUTPUTS: &str = "outputs";
+/// `user/aicc/<user>/inputs`: files uploaded for a call or derived from its inputs.
+pub const AICC_BUCKET_INPUTS: &str = "inputs";
+pub const AICC_OUTPUTS_TTL_DAYS: u32 = 7;
+pub const AICC_INPUTS_TTL_DAYS: u32 = 1;
+/// Per-user app pool over `outputs` + `inputs`.
+pub const AICC_STORAGE_QUOTA_MIB: u64 = 8192;
+
+pub fn aicc_bucket_decls() -> HashMap<String, crate::bucket_client::BucketDecl> {
+    use crate::bucket_client::{BucketDecl, BucketKind, BucketScope, DataPolicy};
+    let temp = |days| BucketDecl {
+        kind: BucketKind::Data,
+        data_policy: DataPolicy::Temp,
+        scope: BucketScope::User,
+        versioning: None,
+        quota_mib: None,
+        max_objects: None,
+        default_ttl_days: Some(days),
+        lifecycle: Vec::new(),
+    };
+    HashMap::from([
+        (AICC_BUCKET_OUTPUTS.to_string(), temp(AICC_OUTPUTS_TTL_DAYS)),
+        (AICC_BUCKET_INPUTS.to_string(), temp(AICC_INPUTS_TTL_DAYS)),
+    ])
+}
+
 pub mod ai_methods {
     pub const ROUTE_RESOLVE: &str = "route.resolve";
     pub const CHAT_COMPLETIONS_CREATE: &str = "chat.completions.create";
@@ -141,6 +169,18 @@ mod canonical_contract_tests {
 
     fn named_object() -> ResourceRef {
         ResourceRef::named_object(ObjId::new("chunk:123456").unwrap())
+    }
+
+    #[test]
+    fn aicc_buckets_are_valid_service_declarations() {
+        let decls = aicc_bucket_decls();
+        assert_eq!(
+            crate::validate_app_buckets(&decls, Some(AICC_STORAGE_QUOTA_MIB)),
+            Vec::<String>::new()
+        );
+        assert_eq!(crate::validate_app_buckets(&decls, None).len(), 1);
+        assert_eq!(decls[AICC_BUCKET_OUTPUTS].default_ttl_days, Some(7));
+        assert_eq!(decls[AICC_BUCKET_INPUTS].default_ttl_days, Some(1));
     }
 
     #[test]

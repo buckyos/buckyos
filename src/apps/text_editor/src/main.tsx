@@ -1,11 +1,11 @@
 import { createRoot } from 'react-dom/client'
-import { buckyos } from 'buckyos'
+import { buckyos, bucket } from 'buckyos'
 import { NfspClient } from 'buckyos/nfsp'
 import { AppFrameClient, embedderOrigin, originInZone, type FrameInit } from 'buckyos/app-frame'
 import { type OpenRequest } from 'buckyos/content'
 import { App, handleBack } from './ui/App.tsx'
 import { Workspace, dirty } from './model/workspace.ts'
-import { APP_ID, initializeAppData } from './fs/appData.ts'
+import { APP_ID, AppData } from './fs/appData.ts'
 import { NfspDocumentStore } from './fs/documentStore.ts'
 import { BufferStore } from './fs/bufferStore.ts'
 import { RecoveryStore } from './fs/recoveryStore.ts'
@@ -93,10 +93,14 @@ async function start(): Promise<void> {
   if (!account?.user_id) { if (window.parent !== window) await buckyos.login(); else renderLogin(); return }
   const client = new NfspClient({ baseUrl: location.origin, uploadChunkSize: 4 * 1024 * 1024, sessionToken: () => sessionToken(test) })
   const store = new NfspDocumentStore(client)
-  const data = await initializeAppData(store, account.user_id)
+  // Buffers and recovery entries live in the editor's own buckets, same origin and session as NFSP; the user's files stay in Files.
+  const token = () => sessionToken(test)
+  const buckets = new bucket.BucketClient(new buckyos.kRPCClient(`${location.origin}/kapi/nfs-server`, null, null, { sessionTokenProvider: token }), { dataPlaneBase: location.origin, sessionTokenProvider: token })
+  const data = new AppData(buckets, account.user_id)
   const local = new LocalStore(account.user_id)
   const config = test ? { get: async (key: string) => ({ value: localStorage.getItem(key) ?? '{}' }), set: async (key: string, value: string) => { localStorage.setItem(key, value) } } : buckyos.getSystemConfigClient()
-  workspace = new Workspace(store, new BufferStore(data, store, local), new RecoveryStore(data, store), local, new SettingsStore(config, account.user_id))
+  workspace = new Workspace(store, new BufferStore(data, local), new RecoveryStore(data), local, new SettingsStore(config, account.user_id))
+  workspace.home = `cyfs:///home/${account.user_id}`
   workspace.onLogin = relogin
   workspace.systemOrigin = system
   workspace.onOpenWith = ({ request, hints }) => frame.openContent(request, 'chooser', { hints })

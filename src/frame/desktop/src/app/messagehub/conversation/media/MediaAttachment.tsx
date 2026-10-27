@@ -1,8 +1,8 @@
-import { Download, File, FileArchive, FileText, Film, FolderOpen, Loader2, Music, Play } from 'lucide-react'
+import { Bookmark, BookmarkCheck, Download, File, FileArchive, FileText, Film, FolderOpen, Loader2, Music, Play } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { usePreviewThumbnail } from '../../../../components/preview/thumbnail'
 import { useI18n } from '../../../../i18n/provider'
-import { getObjectAccess, type ObjectInfo } from '../history/objectAccess'
+import { getObjectAccess, isLocalObjectId, type ObjectInfo } from '../history/objectAccess'
 import { useOpenAttachment } from './context'
 import { knownReadyObject, objectCacheKey, readyObjectKind, readyObjects, rememberReadyObject, type ReadyObjectState } from './objectCache'
 import { useMediaSettings } from './settings'
@@ -87,7 +87,12 @@ function ObjectAttachment({ attachment, isSelf, onKind }: { attachment: MessageA
   const kind = readyKind ?? 'file'
   let body: ReactNode
   if (kind === 'image' && state.contentUrl) {
-    body = <InlineImage attachment={attachment} url={state.contentUrl} isGif={mediaType === 'image/gif'} />
+    body = (
+      <div className="group/collect relative w-fit max-w-full">
+        <InlineImage attachment={attachment} url={state.contentUrl} isGif={mediaType === 'image/gif'} />
+        <CollectButton attachment={attachment} name={info.name ?? label} overlay />
+      </div>
+    )
   } else if (kind === 'video' || kind === 'image') {
     body = <ThumbnailTile attachment={attachment} kind={kind} info={info} />
   } else {
@@ -193,6 +198,7 @@ function ThumbnailTile({ attachment, kind, info }: { attachment: MessageAttachme
       </button>
       <span className="flex max-w-[min(100%,420px)] items-center gap-1">
         <span className="min-w-0 flex-1 truncate text-[11px] opacity-75">{info.name ?? attachment.label}{info.size !== undefined ? ` · ${formatBytes(info.size)}` : ''}</span>
+        <CollectButton attachment={attachment} name={info.name ?? attachment.label} compact />
         <DownloadButton attachment={attachment} name={info.name ?? attachment.label} compact />
       </span>
     </div>
@@ -225,8 +231,44 @@ function FileCard({ attachment, kind, info, mediaType, isSelf }: { attachment: M
           <span className="block truncate text-[11px] opacity-75">{[info.size !== undefined ? formatBytes(info.size) : null, mediaType].filter(Boolean).join(' · ')}</span>
         </span>
       </button>
+      <CollectButton attachment={attachment} name={info.name ?? attachment.label} />
       <DownloadButton attachment={attachment} name={info.name ?? attachment.label} />
     </div>
+  )
+}
+
+/** Saves the attachment to the viewer's collection, which keeps it after the message is recalled. */
+function CollectButton({ attachment, name, compact = false, overlay = false }: { attachment: MessageAttachment; name: string; compact?: boolean; overlay?: boolean }) {
+  const { t } = useI18n()
+  const [state, setState] = useState<'idle' | 'saving' | 'saved' | 'failed'>('idle')
+  const access = getObjectAccess()
+  const objId = attachment.objId
+  if (!access?.collect || !objId || !attachment.context || isLocalObjectId(objId)) return null
+  const collect = access.collect
+  const save = () => {
+    if (state === 'saving' || state === 'saved') return
+    setState('saving')
+    collect(objId, attachment.context).then(() => setState('saved'), () => setState('failed'))
+  }
+  const label = state === 'saved' ? t('messagehub.media.collected') : state === 'failed' ? `${t('messagehub.media.collectFailed')} · ${t('messagehub.retry')}` : t('messagehub.media.collect', undefined, { name })
+  const size = compact || overlay ? 14 : 18
+  const placement = overlay
+    ? `absolute right-2 top-2 h-8 w-8 rounded-full text-white ${state === 'idle' ? 'opacity-0 group-hover/collect:opacity-100 focus-visible:opacity-100' : ''}`
+    : `rounded-lg ${compact ? 'h-8 w-8' : 'h-11 w-11'}`
+  return (
+    <button
+      type="button"
+      onClick={save}
+      className={`flex shrink-0 items-center justify-center focus-visible:outline focus-visible:outline-2 focus-visible:outline-[color:var(--cp-accent)] ${placement}`}
+      style={overlay ? { background: 'rgba(0,0,0,0.55)', color: state === 'failed' ? 'var(--cp-danger)' : undefined } : { color: state === 'failed' ? 'var(--cp-danger)' : 'inherit', opacity: state === 'idle' ? 0.8 : 1 }}
+      aria-label={label}
+      title={label}
+      aria-busy={state === 'saving'}
+      data-testid="attachment-collect"
+      data-state={state}
+    >
+      {state === 'saving' ? <Loader2 size={size} className="animate-spin" /> : state === 'saved' ? <BookmarkCheck size={size} /> : <Bookmark size={size} />}
+    </button>
   )
 }
 

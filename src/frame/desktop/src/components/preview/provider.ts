@@ -40,7 +40,7 @@ function dataModeOverride(): 'mock' | 'nfsp' | null {
 
 let installing: Promise<PreviewProvider> | null = null
 
-const CORE_SOURCE_KINDS = new Set(['cyfs-path', 'object-id', 'blob'])
+const CORE_SOURCE_KINDS = new Set(['cyfs-path', 'object-id', 'bucket-object', 'blob'])
 const routed = new WeakMap<PreviewProvider, PreviewProvider>()
 
 function withHostSources(base: PreviewProvider): PreviewProvider {

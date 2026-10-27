@@ -20,7 +20,11 @@
 ### 2.2 实现阶段
 
 - [ ] 已复用已有基础设施，而不是重造存储与访问机制
-- [ ] 若涉及结构化数据，已使用系统 RDB instance
+- [ ] 若涉及结构化数据，已使用系统 RDB instance（经 `rdb_mgr`，一个服务一个 instance，多用户靠 `owner` 列）
+- [ ] 无 `std::fs` / `tokio::fs` 的业务数据写入：数据目录只剩 `/tmp/buckyos/<svc>`、cache 分区的可重建派生物与处理期间的临时文件；没有自建 `objects/` / `chunks/` 内容寻址目录
+- [ ] 每个 named store 写入（`put_object` / `put_chunk` / `cacl_file_object`）在同一函数或事务里能看到对应的桶绑定或短期 Lease（≤24h）
+- [ ] 桶已在 spec 声明（kind、data_policy、key 方案，`app_data` / `temp` 带 `storage_quota_mib`），读取走 `/bucket/v1/...` 或 `obj://bucket/...`，不自写 ObjId 下载端点
+- [ ] RPC、RDB、system-config 不返回、不保存本机路径作为数据引用
 - [ ] 若核心依赖 filesystem，已在文档中说明理由
 - [ ] 若涉及长任务，已使用 task manager / keymessage queue / executor pattern
 

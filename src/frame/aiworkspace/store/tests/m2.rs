@@ -1,4 +1,4 @@
-//! Kernel closure (内核架构改进 M2): the collector and retention roots, history resource retention, quota
+//! Kernel closure (内核架构改进 M2): bindings and their release, history resource retention, quota
 //! admission and the maintenance channel, the restart scan, the history floor and show-clone access.
 
 mod common;
@@ -12,11 +12,11 @@ fn asset_ops(object_id: &str) -> Value {
 }
 
 #[test]
-fn the_collector_keeps_what_a_root_reaches_and_reclaims_the_rest() {
-    let mut env = env();
+fn the_sweep_unbinds_what_nothing_retains_any_more() {
+    let env = env();
     let id = env.svc.create_workspace(&alice(), "回收", None).unwrap()["workspace_id"].as_str().unwrap().to_string();
     let h = env.svc.workspace(&id).unwrap();
-    let (staged, cp, pic_version) = {
+    let (staged, cp, pic) = {
         let mut ws = h.lock().unwrap();
         let staged = ws.stage_asset(&alice(), b"a picture").unwrap();
         let oid = staged["object_id"].as_str().unwrap().to_string();
@@ -25,34 +25,34 @@ fn the_collector_keeps_what_a_root_reaches_and_reclaims_the_rest() {
         let cp = ws.checkpoint(&alice()).unwrap();
         (other, cp, oid)
     };
-    // nothing is swept while it is fresh (an upload may still be about to reference it)
-    let r = env.svc.gc(false).unwrap();
-    assert_eq!(r["reclaimed"], 0, "{r}");
-    env.svc.gc_grace_secs = 0;
-    // two days later: the staged upload expired (24 h) and nothing references it — it goes; the picture and the
-    // checkpoint's objects stay
+    let (pic_key, staged_key, snapshot_key) = (format!("{id}/{pic}"), format!("{id}/{staged}"), format!("{id}/snapshot/{}", cp.snapshot_id));
+    // nothing is released while it is fresh (an upload may still be about to be referenced)
+    let r = env.svc.sweep().unwrap();
+    assert_eq!((r["staged"].as_u64(), r["history"].as_u64()), (Some(0), Some(0)), "{r}");
+    assert!(env.bound("alice", "assets", &staged_key).is_some());
+    // two days later: the staged upload expired (24 h) and nothing references it — its binding goes; the picture
+    // and the checkpoint stay bound
     env.advance(2 * 24 * 3_600_000);
-    let dry = env.svc.gc(true).unwrap();
-    assert!(dry["reclaimed"].as_u64().unwrap() >= 1, "{dry}");
-    env.svc.gc(false).unwrap();
-    assert!(!env.svc.objects.has_object(&staged), "an expired, unreferenced upload is swept");
-    assert!(env.svc.objects.has_object(&pic_version));
-    assert!(env.svc.objects.has_object(&cp.content_root));
-    // delete the picture: history-only, kept through its retention period, reclaimed after it
+    let r = env.svc.sweep().unwrap();
+    assert_eq!(r["staged"], 1, "{r}");
+    assert!(env.bound("alice", "assets", &staged_key).is_none(), "an expired, unreferenced upload is unbound");
+    assert_eq!(env.bound("alice", "assets", &pic_key).as_deref(), Some(pic.as_str()));
+    assert!(env.bound("alice", "objects", &snapshot_key).is_some());
+    // delete the picture and the checkpoint: the snapshot goes at once, the history-only picture after its retention period
     {
         let mut ws = h.lock().unwrap();
         let rev = ws.read(&alice(), "pic", None).unwrap()["life_rev"].as_u64().unwrap();
         ok(&mut ws, &alice(), json!([{ "op": "entity.delete", "entity_id": "pic", "expect": { "rev": rev } }]));
         ws.delete_checkpoint(&alice(), &cp.snapshot_id).unwrap();
     }
+    assert!(env.bound("alice", "objects", &snapshot_key).is_none(), "a deleted checkpoint releases its retention set");
     env.advance(2 * 24 * 3_600_000);
-    env.svc.gc(false).unwrap();
-    assert!(env.svc.objects.has_object(&pic_version), "inside the retention period the history keeps it");
+    env.svc.sweep().unwrap();
+    assert!(env.bound("alice", "assets", &pic_key).is_some(), "inside the retention period the history keeps it");
     env.advance(31 * 24 * 3_600_000);
-    let dry = env.svc.gc(true).unwrap();
-    env.svc.gc(false).unwrap();
-    assert!(!env.svc.objects.has_object(&pic_version), "after the retention period it is reclaimed: {dry}");
-    assert!(!env.svc.objects.has_object(&cp.content_root), "an unretained snapshot is reclaimed");
+    let r = env.svc.sweep().unwrap();
+    assert_eq!(r["history"], 1, "{r}");
+    assert!(env.bound("alice", "assets", &pic_key).is_none(), "after the retention period it is unbound");
     // the undo that would bring the picture back says so
     let mut ws = h.lock().unwrap();
     let changes = ws.get_changes(&alice(), &ws.epoch.clone(), 0, 10, false).unwrap();
@@ -63,9 +63,8 @@ fn the_collector_keeps_what_a_root_reaches_and_reclaims_the_rest() {
 }
 
 #[test]
-fn purge_reclaims_at_once_and_closes_undo() {
-    let mut env = env();
-    env.svc.gc_grace_secs = 0;
+fn purge_releases_at_once_and_closes_undo() {
+    let env = env();
     let id = env.svc.create_workspace(&alice(), "清除", None).unwrap()["workspace_id"].as_str().unwrap().to_string();
     let h = env.svc.workspace(&id).unwrap();
     let mut ws = h.lock().unwrap();
@@ -74,17 +73,14 @@ fn purge_reclaims_at_once_and_closes_undo() {
     ws.set_user_state(&alice(), &json!({ "block:pic/draft": 1 }), None).unwrap();
     let rev = ws.read(&alice(), "pic", None).unwrap()["life_rev"].as_u64().unwrap();
     let deleted = ok(&mut ws, &alice(), json!([{ "op": "entity.delete", "entity_id": "pic", "expect": { "rev": rev } }]));
+    assert!(env.bound("alice", "assets", &format!("{id}/{oid}")).is_some(), "history keeps a deleted entity's asset");
     let purged = ws.purge_deleted(&alice(), None, None).unwrap();
     assert_eq!(purged["purged"], json!(["pic"]));
+    assert!(env.bound("alice", "assets", &format!("{id}/{oid}")).is_none(), "purged content is released before any retention period");
     assert!(ws.get_user_state(&alice()).unwrap()["entries"].get("block:pic/draft").is_none());
     let (wid, epoch) = (ws.workspace_id.clone(), ws.epoch.clone());
     assert_eq!(code(&ws.commit(&json!({ "protocol_version": "1.0", "workspace_id": wid, "epoch": epoch, "idempotency_key": "r1",
         "operations": [{ "op": "entity.restore", "entity_id": "pic", "expect": { "rev": deleted["seq"] } }] }), &alice(), &Default::default())), "RESOURCE_RECLAIMED");
-    drop(ws);
-    env.advance(2 * 3_600_000);
-    let dry = env.svc.gc(true).unwrap();
-    env.svc.gc(false).unwrap();
-    assert!(!env.svc.objects.has_object(&oid), "purged content is reclaimable before any retention period: {dry}");
 }
 
 #[test]
@@ -175,15 +171,21 @@ fn a_show_clone_follows_the_source_workspaces_current_grants() {
         let h = env.svc.workspace(&id).unwrap();
         let mut ws = h.lock().unwrap();
         ws.revoke(&alice(), "bob", None).unwrap();
-        assert!(ws.retentions().unwrap().iter().any(|(k, r, ..)| k == "clone" && r == &clone), "the clone is a retention root of its source");
-        assert!(ws.usage().unwrap()["clones"].as_i64().unwrap() > 0);
+        assert!(ws.usage().unwrap()["clones"].as_i64().unwrap() > 0, "the clone counts on its source");
     }
     let h = env.svc.workspace(&clone).unwrap();
-    let ws = h.lock().unwrap();
+    let mut ws = h.lock().unwrap();
     assert_eq!(ws.read(&bob(), "tasks", None).unwrap_err().code.as_str(), "NOT_FOUND", "revoking on the source ends access to the clone");
+    // the clone reads through the source's bindings; what it binds itself goes with it
+    let own = ws.stage_asset(&alice(), b"written during the show").unwrap()["object_id"].as_str().unwrap().to_string();
+    let source_asset = ws.read(&alice(), "diagram", None).unwrap()["content"]["payload"]["object_id"].as_str().unwrap().to_string();
+    assert_eq!(ws.bucket("assets").unwrap(), "user/aiworkspace/alice/assets");
     drop(ws);
+    assert!(env.bound("alice", "assets", &format!("{clone}/{own}")).is_some());
     env.svc.drop_clone(&clone).unwrap();
+    assert!(env.bound("alice", "assets", &format!("{clone}/{own}")).is_none());
+    assert!(env.bound("alice", "assets", &format!("{id}/{source_asset}")).is_some(), "the source's bindings stay");
     let h = env.svc.workspace(&id).unwrap();
     let ws = h.lock().unwrap();
-    assert!(!ws.retentions().unwrap().iter().any(|(k, ..)| k == "clone"));
+    assert_eq!(ws.usage().unwrap()["clones"].as_i64().unwrap_or(0), 0);
 }

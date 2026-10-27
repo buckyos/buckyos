@@ -34,12 +34,27 @@ pub(super) struct ReportArgs {
     pub is_end: bool,
 }
 
+/// An object leaving a session as the host keeps it: its id and the
+/// `obj://bucket/...` binding that retains it (`None`: no bucket keeps it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredObject {
+    pub obj_id: ObjId,
+    pub url: Option<String>,
+}
+
 /// The host's object store: report artifacts leave a session as named
 /// objects. A file artifact is put in when its report is accepted.
 #[async_trait]
 pub trait ObjectStore: Send + Sync {
-    /// Put the file at `path` in as an object named `name`.
-    async fn put_file(&self, path: &Path, name: &str) -> std::result::Result<ObjId, String>;
+    /// Put the file at `path` in as an object named `name`; `Ok` means the
+    /// host retains it.
+    async fn put_file(&self, path: &Path, name: &str) -> std::result::Result<StoredObject, String>;
+
+    /// Retain what an `obj://bucket/...` reference binds, the way `put_file`
+    /// retains a file.
+    async fn retain_url(&self, url: &str) -> std::result::Result<StoredObject, String> {
+        Err(format!("`{url}` cannot be attached: the host keeps no bucket objects"))
+    }
 
     /// The name an object carries (a file object's name), when known.
     async fn name_of(&self, obj_id: &ObjId) -> Option<String> {
@@ -57,6 +72,11 @@ fn artifact_obj_id(artifact: &str) -> Option<ObjId> {
     ObjId::new(artifact).ok()
 }
 
+/// An artifact given as a bucket object (`obj://bucket/<bucket_id>/<key>`).
+pub(super) fn is_bucket_url(artifact: &str) -> bool {
+    buckyos_api::parse_bucket_obj_url(artifact).is_some()
+}
+
 pub(super) struct ReportTool;
 
 #[async_trait]
@@ -64,7 +84,7 @@ impl AgentTool for ReportTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_REPORT.into(),
-            description: "Submit a progress report, or finish this context with is_end=true. Final reports require all tasks and child work to be settled. Accepted completion skips remaining calls in the batch. Artifacts are explicit files relative to the work directory, or object ids (e.g. `cyfile:…` from another report); the host delivers them with the final report as attachments. Result is optional application JSON. Reports are delivered by the host, not sent as messages by this tool.".into(),
+            description: "Submit a progress report, or finish this context with is_end=true. Final reports require all tasks and child work to be settled. Accepted completion skips remaining calls in the batch. Artifacts are explicit files relative to the work directory, bucket objects (`obj://bucket/…` a command returned) or object ids (e.g. `cyfile:…` from another report); the host keeps them in the agent's `artifacts` bucket and delivers them with the final report as attachments. Result is optional application JSON. Reports are delivered by the host, not sent as messages by this tool.".into(),
             args_schema: json!({"type":"object", "additionalProperties":false, "properties": {
                 "report":{"type":"string","minLength":1},
                 "artifacts":{"type":"array","items":{"type":"string"}},
@@ -170,7 +190,7 @@ pub(super) async fn validate(sh: &Shared, run: &RunHandle, args: &ReportArgs) ->
         if !seen.insert(path) {
             return Err(invalid("duplicate artifact path"));
         }
-        if artifact_obj_id(path).is_some() {
+        if artifact_obj_id(path).is_some() || is_bucket_url(path) {
             continue;
         }
         let cfg = sh.session.lock().await.config.clone();
@@ -289,8 +309,10 @@ pub(super) async fn submit(
 }
 
 /// Artifacts leaving the session under `id` (a report, a structured reply):
-/// an object id as it is; a file of the work directory copied to a stable
-/// place (`state/reports/<id>/…`) and put into the host's object store.
+/// an object id as it is; a bucket object retained by the host's store; a
+/// file of the work directory copied to a stable place
+/// (`state/reports/<id>/…`) and put into the host's object store, the copy
+/// removed once a bucket retains it.
 pub(super) async fn store_artifacts(
     sh: &Shared,
     id: &str,
@@ -306,6 +328,26 @@ pub(super) async fn store_artifacts(
                 reference: String::new(),
                 digest: String::new(),
                 obj_id: Some(obj_id.to_string()),
+                url: None,
+            });
+            continue;
+        }
+        if is_bucket_url(path) {
+            let store = sh
+                .deps
+                .objects
+                .as_ref()
+                .ok_or_else(|| invalid(format!("artifact {path}: the host has no object store")))?;
+            let stored = store
+                .retain_url(path)
+                .await
+                .map_err(|e| invalid(format!("artifact {path} could not be attached: {e}")))?;
+            artifacts.push(ReportArtifact {
+                path: path.clone(),
+                reference: String::new(),
+                digest: String::new(),
+                obj_id: Some(stored.obj_id.to_string()),
+                url: stored.url,
             });
             continue;
         }
@@ -343,11 +385,20 @@ pub(super) async fn store_artifacts(
             reference,
             digest,
             obj_id: None,
+            url: None,
         };
         if let Some(store) = &sh.deps.objects {
-            artifact.obj_id = Some(store.put_file(&stable, artifact.name()).await
-                .map_err(|e| invalid(format!("artifact {path} could not be attached: {e}")))?
-                .to_string());
+            let stored = store
+                .put_file(&stable, artifact.name())
+                .await
+                .map_err(|e| invalid(format!("artifact {path} could not be attached: {e}")))?;
+            artifact.obj_id = Some(stored.obj_id.to_string());
+            artifact.url = stored.url;
+            if artifact.url.is_some() {
+                if let Err(e) = std::fs::remove_file(&stable) {
+                    log::warn!("artifact {path}: stable copy {} not removed: {e}", stable.display());
+                }
+            }
         }
         artifacts.push(artifact);
     }
@@ -383,13 +434,13 @@ impl llm_context::OutputValidator for ReplyValidator {
                 if !seen.insert(path) {
                     return Err(format!("artifact `{path}` is listed twice"));
                 }
-                if artifact_obj_id(path).is_none() {
+                if artifact_obj_id(path).is_none() && !is_bucket_url(path) {
                     if cfg.runtime.is_node() {
                         remote_artifact_path(&self.sh, path).map_err(|e| e.to_string())?;
                         continue;
                     }
                     artifact_bytes(Path::new(&workdir), path).map_err(|e| {
-                        format!("{e}; an artifact is a file you made (path relative to your working directory, created first) or an object id")
+                        format!("{e}; an artifact is a file you made (path relative to your working directory, created first), an `obj://bucket/…` a command returned, or an object id")
                     })?;
                 }
             }

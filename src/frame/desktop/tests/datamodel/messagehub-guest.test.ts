@@ -1,6 +1,7 @@
 import { buckyos, RPCError, type CurrentIdentity } from 'buckyos'
 import { objectUrl, ObjectRouteError } from '../../src/app/messagehub/api/objects.ts'
 import { objectContextOf } from '../../src/app/messagehub/conversation/media/source.ts'
+import { displayContext } from '../../src/app/messagehub/conversation/history/objectAccess.ts'
 import { foldMessageRelations } from '../../src/app/messagehub/conversation/history/relations.ts'
 import { GuestHub } from '../../src/app/messagehub/guest/hub.ts'
 import type { GuestApi, GuestMessagePage } from '../../src/app/messagehub/guest/api.ts'
@@ -15,7 +16,7 @@ const ME = 'did:bns:acme-c1', STAFF = 'did:bns:bob'
 const denial = (method: string) => new RPCError('access denied: resource_grant_missing', 'access_denied', { reason: 'resource_grant_missing', adjust: { party: 'sharer', location: 'share_panel' }, service: 'msg-center', method })
 const message = (from: string, content: string, extra: Partial<MsgObject> = {}): MsgObject => ({ from, to: [GROUP], kind: 'group_msg', to_session: 't-123', created_at_ms: 1, content: { format: 'text/plain', content }, ...extra })
 
-Deno.test('attachments of a hosted group session are read with the context_path of the message that carries them', () => {
+Deno.test('attachments are read with the context_path of the message that carries them', () => {
   const getZoneServiceURL = buckyos.getZoneServiceURL
   buckyos.getZoneServiceURL = () => 'https://test.buckyos.io/kapi/msg-center/'
   try {
@@ -32,8 +33,10 @@ Deno.test('attachments of a hosted group session are read with the context_path 
   const edit2: MessageObject = { ...message(STAFF, 'v3', { relates_to: { rel: 'edit', target: 'cymsg:orig' }, created_at_ms: 3 }), content: { format: 'text/plain', content: 'v3', refs: [ref] }, ui_message_id: 'cymsg:e2' }
   const [folded] = foldMessageRelations([original, edit2, edit1])
   equal(objectContextOf(folded), `${ADDRESS}/cymsg:e2`)
-  // A message of anything but a hosted group session is read without one.
-  equal(objectContextOf({ ...message(STAFF, 'x'), ui_message_id: 'cymsg:dm' }), undefined)
+  // Any other message is read through itself.
+  equal(objectContextOf({ ...message(STAFF, 'x'), ui_message_id: 'cymsg:dm' }), 'cymsg:dm')
+  // A display file is read through the display of its Session.
+  equal(displayContext(ADDRESS), `${ADDRESS}/_display`)
 })
 
 Deno.test('the guest page model: paths, sessions, named objects and the timeline', () => {

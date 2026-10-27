@@ -96,7 +96,8 @@ export const msgCenterGuestApi: GuestApi = {
   async markRead(groupDid, sessionId, seq) {
     await updateGroupReadMarker(groupDid, sessionId, seq)
   },
-  objects: apiObjectAccess,
+  // A Session Only guest has no collection of its own.
+  objects: { describe: apiObjectAccess.describe, contentUrl: apiObjectAccess.contentUrl },
   signOut: endSessionInPlace,
 }
 

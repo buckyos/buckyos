@@ -8,7 +8,8 @@ use crate::projection::{identity_view, item_view, ViewCtx};
 use crate::protocol::*;
 use crate::publish::{entry_versions, get_head};
 use crate::{now_ms, Station};
-use rusqlite::{params, Connection, OptionalExtension};
+use crate::db::Conn;
+use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
@@ -23,9 +24,9 @@ struct CommentRow {
 }
 
 /// The entry a version belongs to (any publisher), with its known versions.
-fn versions_of(conn: &Connection, obj_id: &str) -> HsResult<Vec<String>> {
+fn versions_of(conn: &Conn, obj_id: &str) -> HsResult<Vec<String>> {
     let entry: Option<String> = conn
-        .query_row("SELECT entry FROM feed_index WHERE obj_id=?1 AND entry_valid=1", [obj_id], |r| r.get(0))
+        .query_row("SELECT entry FROM feed_index WHERE obj_id=?1 AND entry_valid=1 AND owner=?2", params![obj_id, conn.owner], |r| r.get(0))
         .optional()?
         .flatten();
     Ok(match entry {
@@ -41,16 +42,16 @@ fn versions_of(conn: &Connection, obj_id: &str) -> HsResult<Vec<String>> {
     })
 }
 
-fn comments_on(conn: &Connection, targets: &[String]) -> HsResult<Vec<CommentRow>> {
+fn comments_on(conn: &Conn, targets: &[String]) -> HsResult<Vec<CommentRow>> {
     let mut out = Vec::new();
     let mut stmt = conn.prepare(
         "SELECT f.obj_id, f.publisher, f.comment_type, f.target, f.entry, f.iat, f.entry_valid FROM feed_index f
-         JOIN objects o ON o.obj_id=f.obj_id
-         WHERE f.target=?1 AND f.kind='comment' AND o.verified=1 AND o.local_only=0",
+         JOIN objects o ON o.owner=f.owner AND o.obj_id=f.obj_id
+         WHERE f.target=?1 AND f.kind='comment' AND o.verified=1 AND o.local_only=0 AND f.owner=?2",
     )?;
     for target in targets {
         let rows = stmt
-            .query_map([target], |r| {
+            .query_map(params![target, conn.owner], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, String>(3)?, r.get::<_, Option<String>>(4)?, r.get::<_, i64>(5)?, r.get::<_, i64>(6)?))
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -64,7 +65,7 @@ fn comments_on(conn: &Connection, targets: &[String]) -> HsResult<Vec<CommentRow
 }
 
 /// `Some(true)` active, `Some(false)` withdrawn, `None` contested (same seq conflict, A30).
-fn record_state(conn: &Connection, row: &CommentRow) -> HsResult<Option<bool>> {
+fn record_state(conn: &Conn, row: &CommentRow) -> HsResult<Option<bool>> {
     let Some(entry) = &row.entry else { return Ok(Some(true)) };
     match get_head(conn, entry)? {
         None => Ok(Some(true)),
@@ -74,34 +75,34 @@ fn record_state(conn: &Connection, row: &CommentRow) -> HsResult<Option<bool>> {
     }
 }
 
-fn sources_of(conn: &Connection, comment_id: &str) -> HsResult<Vec<(String, String)>> {
-    let mut stmt = conn.prepare("SELECT source_kind, source FROM comment_sources WHERE comment_id=?1")?;
-    let rows = stmt.query_map([comment_id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+fn sources_of(conn: &Conn, comment_id: &str) -> HsResult<Vec<(String, String)>> {
+    let mut stmt = conn.prepare("SELECT source_kind, source FROM comment_sources WHERE comment_id=?1 AND owner=?2")?;
+    let rows = stmt.query_map(params![comment_id, conn.owner], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
 }
 
-fn own_target(conn: &Connection, target: &str) -> HsResult<bool> {
+fn own_target(conn: &Conn, target: &str) -> HsResult<bool> {
     Ok(conn
-        .query_row("SELECT 1 FROM entry_versions v JOIN published p ON p.entry=v.entry WHERE v.obj_id=?1", [target], |_| Ok(()))
+        .query_row("SELECT 1 FROM entry_versions v JOIN published p ON p.owner=v.owner AND p.entry=v.entry WHERE v.obj_id=?1 AND v.owner=?2", params![target, conn.owner], |_| Ok(()))
         .optional()?
         .is_some())
 }
 
-fn listed_by_author(conn: &Connection, row: &CommentRow, target_publisher: &str, owner: &str) -> HsResult<bool> {
+fn listed_by_author(conn: &Conn, row: &CommentRow, target_publisher: &str, owner: &str) -> HsResult<bool> {
     if target_publisher == owner && own_target(conn, &row.target)? {
         return Ok(conn
-            .query_row("SELECT listed FROM author_list WHERE target=?1 AND comment_id=?2", params![row.target, row.id], |r| r.get::<_, i64>(0))
+            .query_row("SELECT listed FROM author_list WHERE target=?1 AND comment_id=?2 AND owner=?3", params![row.target, row.id, conn.owner], |r| r.get::<_, i64>(0))
             .optional()?
             .is_some_and(|l| l != 0));
     }
     Ok(sources_of(conn, &row.id)?.iter().any(|(k, s)| k == "author_list" && s == target_publisher))
 }
 
-fn listed_by_collector(conn: &Connection, row: &CommentRow, collector: Option<&str>) -> HsResult<bool> {
+fn listed_by_collector(conn: &Conn, row: &CommentRow, collector: Option<&str>) -> HsResult<bool> {
     Ok(sources_of(conn, &row.id)?.iter().any(|(k, s)| k == "collector" && collector.is_none_or(|c| c == s)))
 }
 
-fn in_view(conn: &Connection, row: &CommentRow, view: &str, target_publisher: &str, owner: &str) -> HsResult<bool> {
+fn in_view(conn: &Conn, row: &CommentRow, view: &str, target_publisher: &str, owner: &str) -> HsResult<bool> {
     if view == "local" {
         return Ok(true);
     }
@@ -116,7 +117,7 @@ fn in_view(conn: &Connection, row: &CommentRow, view: &str, target_publisher: &s
 
 /// Counts of one exact version in one view: one per logical publication or interaction key,
 /// withdrawn and contested records excluded, private bookmarks never counted (§15.5).
-pub fn stats(conn: &Connection, ctx: &ViewCtx, obj_id: &str, view: &str) -> HsResult<Value> {
+pub fn stats(conn: &Conn, ctx: &ViewCtx, obj_id: &str, view: &str) -> HsResult<Value> {
     let obj_id = normalize_obj_id(obj_id);
     let target_publisher = get_feed(conn, &obj_id)?.map(|f| f.publisher).unwrap_or_default();
     let rows = comments_on(conn, std::slice::from_ref(&obj_id))?;
@@ -150,7 +151,7 @@ pub fn stats(conn: &Connection, ctx: &ViewCtx, obj_id: &str, view: &str) -> HsRe
         }
     }
     let (synced_at, tracked): (Option<i64>, bool) = conn
-        .query_row("SELECT last_sync_at FROM tracked WHERE target=?1", [&obj_id], |r| r.get(0))
+        .query_row("SELECT last_sync_at FROM tracked WHERE target=?1 AND owner=?2", params![obj_id, conn.owner], |r| r.get(0))
         .optional()?
         .map(|v| (v, true))
         .unwrap_or((None, false));
@@ -172,7 +173,7 @@ pub fn stats(conn: &Connection, ctx: &ViewCtx, obj_id: &str, view: &str) -> HsRe
         "bookmarks": keys.get(&CommentType::Bookmark).map_or(0, |k| k.len()),
         "contested": contested,
     });
-    let claimed: Option<String> = crate::db::get_meta(conn, &format!("claimed:{obj_id}"))?;
+    let claimed: Option<String> = crate::db::get_setting(conn, &format!("claimed:{obj_id}"))?;
     if let Some(claimed) = claimed.and_then(|c| serde_json::from_str::<Value>(&c).ok()) {
         if target_publisher != ctx.owner {
             out["claimed"] = json!({ "likes": claimed.get("likes"), "source": identity_view(ctx, &target_publisher)["name"] });
@@ -182,9 +183,9 @@ pub fn stats(conn: &Connection, ctx: &ViewCtx, obj_id: &str, view: &str) -> HsRe
 }
 
 /// Comments removed from a maintainer's complete list between two complete snapshots (§16.3).
-fn observed_removals(conn: &Connection, view: &str, target: &str) -> HsResult<HashSet<String>> {
-    let mut stmt = conn.prepare("SELECT comment_ids FROM view_snapshots WHERE view=?1 AND target=?2 AND complete=1 ORDER BY at DESC, id DESC LIMIT 2")?;
-    let snaps = stmt.query_map(params![view, target], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+fn observed_removals(conn: &Conn, view: &str, target: &str) -> HsResult<HashSet<String>> {
+    let mut stmt = conn.prepare("SELECT comment_ids FROM view_snapshots WHERE view=?1 AND target=?2 AND complete=1 AND owner=?3 ORDER BY at DESC, id DESC LIMIT 2")?;
+    let snaps = stmt.query_map(params![view, target, conn.owner], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
     if snaps.len() < 2 {
         return Ok(HashSet::new());
     }
@@ -270,8 +271,8 @@ impl Station {
         self.db
             .call(move |c| {
                 c.execute(
-                    "INSERT OR IGNORE INTO tracked(target, author, reason, created_at) VALUES (?1, ?2, ?3, ?4)",
-                    params![target, author, reason, now],
+                    "INSERT OR IGNORE INTO tracked(owner, target, author, reason, created_at) VALUES (?5, ?1, ?2, ?3, ?4)",
+                    params![target, author, reason, now, c.owner],
                 )?;
                 Ok(())
             })
@@ -295,8 +296,8 @@ impl Station {
         let targets: Vec<(String, String)> = self
             .db
             .call(move |c| {
-                let mut stmt = c.prepare("SELECT target, author FROM tracked WHERE paused=0 AND author!=?1 ORDER BY COALESCE(last_sync_at, 0) LIMIT 50")?;
-                let rows = stmt.query_map([owner], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+                let mut stmt = c.prepare("SELECT target, author FROM tracked WHERE paused=0 AND author!=?1 AND owner=?2 ORDER BY COALESCE(last_sync_at, 0) LIMIT 50")?;
+                let rows = stmt.query_map(params![owner, c.owner], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<Vec<_>, _>>()?;
                 Ok(rows)
             })
             .await?;
@@ -309,7 +310,7 @@ impl Station {
                     self.snapshot("author", &target, &page.records.iter().map(|r| r.comment_id.clone()).collect::<Vec<_>>(), page.complete).await?;
                     if let Some(claimed) = page.claimed {
                         let key = format!("claimed:{target}");
-                        self.db.call(move |c| crate::db::set_meta(c, &key, &claimed.to_string())).await?;
+                        self.db.call(move |c| crate::db::set_setting(c, &key, &claimed.to_string())).await?;
                     }
                 }
                 Ok(None) => {}
@@ -322,7 +323,7 @@ impl Station {
             }
             let t = target.clone();
             let now = now_ms();
-            self.db.call(move |c| Ok(c.execute("UPDATE tracked SET last_sync_at=?2 WHERE target=?1", params![t, now])?)).await?;
+            self.db.call(move |c| Ok(c.execute("UPDATE tracked SET last_sync_at=?2 WHERE target=?1 AND owner=?3", params![t, now, c.owner])?)).await?;
             synced += 1;
         }
         if synced > 0 && self.comment_fingerprint().await? != before {
@@ -336,8 +337,8 @@ impl Station {
         self.db
             .call(|c| {
                 Ok(c.query_row(
-                    "SELECT (SELECT COUNT(*) FROM comment_sources), (SELECT COUNT(*) FROM view_snapshots), (SELECT COALESCE(SUM(seq), 0) FROM heads)",
-                    [],
+                    "SELECT (SELECT COUNT(*) FROM comment_sources WHERE owner=?1), (SELECT COUNT(*) FROM view_snapshots WHERE owner=?1), (SELECT COALESCE(SUM(seq), 0) FROM heads WHERE owner=?1)",
+                    params![c.owner],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )?)
             })
@@ -351,12 +352,12 @@ impl Station {
         self.db
             .call(move |c| {
                 let last: Option<String> = c
-                    .query_row("SELECT comment_ids FROM view_snapshots WHERE view=?1 AND target=?2 ORDER BY at DESC, id DESC LIMIT 1", params![view, target], |r| r.get(0))
+                    .query_row("SELECT comment_ids FROM view_snapshots WHERE view=?1 AND target=?2 AND owner=?3 ORDER BY at DESC, id DESC LIMIT 1", params![view, target, c.owner], |r| r.get(0))
                     .optional()?;
                 if last.as_deref() != Some(ids.as_str()) {
                     c.execute(
-                        "INSERT INTO view_snapshots(view, target, complete, comment_ids, at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                        params![view, target, complete as i64, ids, now],
+                        "INSERT INTO view_snapshots(owner, view, target, complete, comment_ids, at) VALUES (?6, ?1, ?2, ?3, ?4, ?5)",
+                        params![view, target, complete as i64, ids, now, c.owner],
                     )?;
                 }
                 Ok(())
@@ -373,11 +374,11 @@ impl Station {
                 if !own_target(c, &target)? {
                     return Err(HsError::Forbidden("only the author's own versions have an author list".into()));
                 }
-                let position: i64 = c.query_row("SELECT COALESCE(MAX(position),0)+1 FROM author_list WHERE target=?1", [&target], |r| r.get(0))?;
+                let position: i64 = c.query_row("SELECT COALESCE(MAX(position),0)+1 FROM author_list WHERE target=?1 AND owner=?2", params![target, c.owner], |r| r.get(0))?;
                 c.execute(
-                    "INSERT INTO author_list(target, comment_id, listed, position, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)
-                     ON CONFLICT(target, comment_id) DO UPDATE SET listed=excluded.listed, updated_at=excluded.updated_at",
-                    params![target, comment_id, listed as i64, position, now],
+                    "INSERT INTO author_list(owner, target, comment_id, listed, position, updated_at) VALUES (?6, ?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT(owner, target, comment_id) DO UPDATE SET listed=excluded.listed, updated_at=excluded.updated_at",
+                    params![target, comment_id, listed as i64, position, now, c.owner],
                 )?;
                 Ok(())
             })

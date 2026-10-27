@@ -27,6 +27,10 @@ async fn init_rbac() {
 }
 
 fn token(sub: &str, kind: TokenPrincipalKind, target: &str) -> String {
+    signed(sub, kind, target, false)
+}
+
+fn signed(sub: &str, kind: TokenPrincipalKind, target: &str, sudo: bool) -> String {
     let mut token = RPCSessionToken {
         token_type: RPCSessionTokenType::JWT,
         token: None,
@@ -36,7 +40,7 @@ fn token(sub: &str, kind: TokenPrincipalKind, target: &str) -> String {
         jti: None,
         sub: Some(sub.into()),
         appid: None,
-        sudo: false,
+        sudo,
         extra: Default::default(),
     };
     bind_token_principal_kind(&mut token, kind);
@@ -321,4 +325,75 @@ async fn s3_face_with_keys_issued_by_the_user() {
     srv.call(&ui("alice"), "bucket.revoke_s3_key", json!({"access_key_id": key["access_key_id"]})).await.unwrap();
     let revoked = s3_request(&srv, &key, reqwest::Method::GET, "/s3/", Vec::new()).send().await.unwrap();
     assert_eq!(revoked.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn release_app_disposes_of_buckets_by_data_policy() {
+    let srv = start().await;
+    let control_panel = token("control-panel", TokenPrincipalKind::System, "system:control-panel");
+    for user in ["alice", "bob"] {
+        let app = via(user, "photos");
+        for bucket in ["library", "index"] {
+            let r = srv.data(Method::PUT, &format!("user/photos/{user}/{bucket}/a.txt"), Some(&app)).body(format!("{user} {bucket}")).send().await.unwrap();
+            assert_eq!(r.status(), StatusCode::CREATED);
+        }
+    }
+    let release = json!({"appid": "photos", "owner": "alice"});
+    assert_eq!(srv.call(&ui("alice"), "bucket.release_app", release.clone()).await.unwrap_err().0, "permission_denied");
+    assert_eq!(srv.call(&via("alice", "photos"), "bucket.release_app", release.clone()).await.unwrap_err().0, "permission_denied");
+
+    let released = srv.call(&control_panel, "bucket.release_app", release).await.unwrap();
+    let actions: std::collections::BTreeMap<String, String> = released["buckets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| (b["bucket_id"].as_str().unwrap().to_string(), b["action"].as_str().unwrap().to_string()))
+        .collect();
+    assert_eq!(
+        actions,
+        [(LIB.to_string(), "orphaned".to_string()), ("user/photos/alice/index".to_string(), "deleted".to_string())].into_iter().collect()
+    );
+    let store = srv.state.share.store(&srv.state.config).await.unwrap();
+    assert!(store.list_pins_by_owner("bucket:user/photos/alice/index", None, 10).await.unwrap().is_empty());
+    assert_eq!(store.list_pins_by_owner(&format!("bucket:{LIB}"), None, 10).await.unwrap().len(), 1);
+
+    let list = srv.call(&ui("alice"), "bucket.list", json!({"appid": "photos"})).await.unwrap();
+    let mine: Vec<&Value> = list.as_array().unwrap().iter().filter(|b| b["owner"] == "alice").collect();
+    assert_eq!(mine.len(), 1, "{list}");
+    assert_eq!(mine[0]["bucket_id"], LIB);
+    assert!(mine[0]["orphaned_at"].as_i64().is_some(), "documents stay as an orphan of the user");
+    assert_eq!(srv.data(Method::GET, &format!("{LIB}/a.txt"), Some(&ui("alice"))).send().await.unwrap().text().await.unwrap(), "alice library");
+
+    // The owner chose to keep the app's data: app_data stays too.
+    let kept = srv.call(&ui("owner"), "bucket.release_app", json!({"appid": "photos", "owner": "bob", "keep_app_data": true})).await.unwrap();
+    assert!(kept["buckets"].as_array().unwrap().iter().all(|b| b["action"] == "orphaned"), "{kept}");
+
+    // Deleting an orphaned documents bucket takes the user's sudo session.
+    let delete = json!({"bucket_id": LIB});
+    assert_eq!(srv.call(&ui("alice"), "bucket.delete_bucket", delete.clone()).await.unwrap_err().0, "permission_denied");
+    let sudo = signed("alice", TokenPrincipalKind::User, "system:control-panel", true);
+    srv.call(&sudo, "bucket.delete_bucket", delete).await.unwrap();
+    assert!(store.list_pins_by_owner(&format!("bucket:{LIB}"), None, 10).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_zone_device_administers_every_bucket() {
+    let srv = start().await;
+    for user in ["alice", "bob"] {
+        let r = srv.data(Method::PUT, &format!("user/photos/{user}/library/a.txt"), Some(&via(user, "photos"))).body(user).send().await.unwrap();
+        assert_eq!(r.status(), StatusCode::CREATED);
+    }
+    let device = token("ood1", TokenPrincipalKind::Device, "system:buckycli");
+    let list = srv.call(&device, "bucket.list", json!({"appid": "photos"})).await.unwrap();
+    let owners: std::collections::BTreeSet<&str> = list.as_array().unwrap().iter().map(|b| b["owner"].as_str().unwrap()).collect();
+    assert!(owners.contains("alice") && owners.contains("bob"), "{list}");
+    let stat = srv.call(&device, "bucket.stat", json!({"bucket_id": "user/photos/bob/library"})).await.unwrap();
+    assert_eq!(stat["key_count"], 1, "{stat}");
+    assert_eq!(srv.data(Method::GET, "user/photos/bob/library/a.txt", Some(&device)).send().await.unwrap().text().await.unwrap(), "bob");
+    for service in [
+        token("control-panel", TokenPrincipalKind::System, "system:control-panel"),
+        token("ood1", TokenPrincipalKind::Device, "system:control-panel"),
+    ] {
+        assert_eq!(srv.call(&service, "bucket.stat", json!({"bucket_id": "user/photos/bob/library"})).await.unwrap_err().0, "permission_denied", "a service stays inside its own app's buckets");
+    }
 }

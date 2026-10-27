@@ -8,7 +8,6 @@ use base64::Engine;
 use common::*;
 use loro::LoroDoc;
 use serde_json::{json, Value};
-use std::path::PathBuf;
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -144,8 +143,8 @@ fn v06_richtext_restore_and_lineage() {
         // a client that went offline now and keeps an unsent edit
         let offline = Client::open(&ws, &alice(), "notes", 777);
         let pending = offline.edit(&[insert_after("p-0", "late", "离线期间写的")]);
-        let backup = PathBuf::from(ws.export(&alice(), "personal_backup", true, None).unwrap()["path"].as_str().unwrap());
-        let share = PathBuf::from(ws.export(&alice(), "share", true, None).unwrap()["path"].as_str().unwrap());
+        let backup = { let r = ws.export(&alice(), "personal_backup", true, None).unwrap(); fetched(&ws.objects, &r) };
+        let share = { let r = ws.export(&alice(), "share", true, None).unwrap(); fetched(&ws.objects, &r) };
         (pending, offline.lineage, backup, share)
     };
     // restart: memory is rebuilt from snapshot + updates

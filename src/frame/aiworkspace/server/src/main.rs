@@ -3,13 +3,19 @@
 //! Standalone (independent testing):
 //!
 //!   aiworkspace --data-dir ./aiws-data --listen 127.0.0.1:4120 \
-//!               --auth-file tokens.json [--fixture-sources] [--log-level info]
+//!               --auth-file tokens.json [--fixture-sources] [--log-level info] \
+//!               [--nfs-server http://127.0.0.1:3290 --named-store-config store.json]
 //!
 //!   tokens.json: { "tokens": { "<token>": { "principal": "alice" } } }
 //!
+//! With `--nfs-server` objects go to that nfs-server's named store and buckets (started with
+//! `--bucket-specs` declaring the `aiworkspace` buckets); without it the data folder holds a named
+//! store and a bucket index of its own (no NDM uploads, no `/bucket/v1` downloads).
+//!
 //! BuckyOS service mode (no --data-dir; how node_daemon launches it): logs in
 //! via buckyos-api (KernelService runtime), keeps Workspace folders under the
-//! service data folder (user data, kept across soft reset), listens on
+//! service data folder (user data, kept across soft reset), objects in the
+//! zone's named store retained by the service's buckets, listens on
 //! AIWORKSPACE_SERVICE_PORT and is reached through the generic
 //! `/kapi/aiworkspace` gateway route. Every request is authenticated here.
 //!
@@ -17,14 +23,16 @@
 //! into the N-th commit (crash tests).
 
 use aiworkspace_server::auth::{Authenticator, RuntimeAuth, StaticTokens};
+use aiworkspace_server::buckets::ZoneBuckets;
 use aiworkspace_server::wish::WishConfig;
 use aiworkspace_server::{AppState, Limits, Wake};
 use aiworkspace_store::urlsource::GeneratedSource;
+use aiworkspace_store::objects::ObjectStore;
 use aiworkspace_store::workspace::FailPoint;
 use aiworkspace_store::Service;
 use buckyos_api::{
-    init_buckyos_api_runtime, set_buckyos_api_runtime, zone_document_hostname, AiWorkspaceSettings, BuckyOSRuntimeType, AIWORKSPACE_SERVICE_NAME,
-    AIWORKSPACE_SERVICE_PORT,
+    aiworkspace_bucket_decls, init_buckyos_api_runtime, set_buckyos_api_runtime, zone_document_hostname, AiWorkspaceSettings, BucketClient,
+    BuckyOSRuntimeType, AIWORKSPACE_SERVICE_NAME, AIWORKSPACE_SERVICE_PORT, AIWORKSPACE_STORAGE_QUOTA_MIB, NFS_SERVER_SERVICE_NAME,
 };
 use buckyos_kit::init_logging;
 use clap::{Arg, ArgAction, Command};
@@ -37,8 +45,8 @@ fn main() {
         .arg(Arg::new("data-dir").long("data-dir").help("Data directory (standalone mode)"))
         .arg(Arg::new("listen").long("listen").help("Address to listen on (standalone; default 127.0.0.1:4120)"))
         .arg(Arg::new("auth-file").long("auth-file").help("Static test identities JSON (standalone mode)"))
-        .arg(Arg::new("named-store-config").long("named-store-config").requires("ndm-gateway").requires("data-dir").help("NamedStore configuration for standalone object imports"))
-        .arg(Arg::new("ndm-gateway").long("ndm-gateway").requires("named-store-config").help("Trusted NDM gateway URL for caller authorization"))
+        .arg(Arg::new("nfs-server").long("nfs-server").requires("named-store-config").requires("data-dir").help("Standalone: the nfs-server origin holding the buckets and the NDM gateway"))
+        .arg(Arg::new("named-store-config").long("named-store-config").requires("nfs-server").help("Standalone: NamedDataMgr configuration of that nfs-server's named store"))
         .arg(Arg::new("fixture-sources").long("fixture-sources").action(ArgAction::SetTrue).help("Register the generated fixture:// data source (dev/test)"))
         .arg(Arg::new("wish-config").long("wish-config").help("Wish runs (standalone): JSON { provider: { type, base_url, api_key_env }, analyze_model, execute_model, map_model, deno, … }"))
         .arg(Arg::new("public-base").long("public-base").help("Standalone: the origin publications are linked at, with {workspace_id} substituted, e.g. http://aiws-{workspace_id}.localhost:4120"))
@@ -73,9 +81,9 @@ fn main() {
                 }
             }
         }
-        let named_import = matches.get_one::<String>("named-store-config").map(|config| (PathBuf::from(config), matches.get_one::<String>("ndm-gateway").unwrap().clone()));
+        let nfs = matches.get_one::<String>("nfs-server").map(|origin| (origin.trim_end_matches('/').to_string(), PathBuf::from(matches.get_one::<String>("named-store-config").unwrap())));
         let limits = Limits { public_base: matches.get_one::<String>("public-base").cloned(), ..Limits::default() };
-        rt.block_on(run(PathBuf::from(data_dir), listen, Arc::new(tokens), limits, fixtures, None, wish, named_import));
+        rt.block_on(run(PathBuf::from(data_dir), listen, Arc::new(tokens), limits, fixtures, None, wish, Objects::Standalone(nfs)));
     } else {
         init_logging("aiworkspace", true);
         rt.block_on(buckyos_service_main(matches.get_flag("fixture-sources")));
@@ -159,12 +167,48 @@ async fn buckyos_service_main(fixtures: bool) {
     log::info!("aiworkspace buckyos mode: data in {}", data_dir.display());
     // models are reached through AICC with this service's session, on behalf of the user each run is charged to
     let wish = WishConfig::from_settings(&settings.wish, serde_json::json!({ "type": "buckyos" }));
-    run(data_dir, listen, Arc::new(RuntimeAuth), limits, fixtures, Some(tx), wish, None).await;
+    run(data_dir, listen, Arc::new(RuntimeAuth), limits, fixtures, Some(tx), wish, Objects::Zone).await;
+}
+
+/// Where objects and bindings are.
+enum Objects {
+    /// The zone's named store (this node's) and nfs-server's buckets, as the service itself.
+    Zone,
+    /// `--nfs-server` + `--named-store-config`, or a store of the data folder's own.
+    Standalone(Option<(String, PathBuf)>),
+}
+
+async fn open_objects(objects: Objects, data_dir: &std::path::Path) -> Result<(Arc<ObjectStore>, Option<String>), String> {
+    match objects {
+        Objects::Zone => {
+            let runtime = buckyos_api::get_buckyos_api_runtime().map_err(|e| e.to_string())?;
+            let ndm = runtime.get_local_named_store().await.map_err(|e| e.to_string())?;
+            let gateway = runtime.get_zone_service_url(NFS_SERVER_SERVICE_NAME, false).await.map_err(|e| e.to_string())?;
+            Ok((ObjectStore::new(ndm, Arc::new(ZoneBuckets::Runtime)), Some(gateway)))
+        }
+        Objects::Standalone(Some((origin, config))) => {
+            let ndm = named_store::NamedDataMgr::get_store_mgr(&config, &Default::default()).await.map_err(|e| e.to_string())?;
+            let client = BucketClient::new(kRPC::kRPC::new(&format!("{origin}/kapi/nfs-server"), None));
+            Ok((ObjectStore::new(ndm, Arc::new(ZoneBuckets::Fixed(client))), Some(origin)))
+        }
+        Objects::Standalone(None) => {
+            let store = ObjectStore::embedded(&data_dir.join("store"), aiworkspace_bucket_decls(), Some(AIWORKSPACE_STORAGE_QUOTA_MIB)).map_err(|e| e.to_string())?;
+            Ok((store, None))
+        }
+    }
 }
 
 async fn run(data_dir: PathBuf, listen: String, auth: Arc<dyn Authenticator>, limits: Limits, fixtures: bool,
-             wake: Option<tokio::sync::mpsc::UnboundedSender<Wake>>, wish: WishConfig, named_import: Option<(PathBuf, String)>) {
-    let mut svc = match Service::open(&data_dir) {
+             wake: Option<tokio::sync::mpsc::UnboundedSender<Wake>>, wish: WishConfig, objects: Objects) {
+    let (objects, gateway) = match open_objects(objects, &data_dir).await {
+        Ok(o) => o,
+        Err(e) => {
+            log::error!("object store startup failed: {e}");
+            eprintln!("object store startup failed: {e}");
+            std::process::exit(1);
+        }
+    };
+    let mut svc = match Service::open(&data_dir, objects) {
         Ok(s) => s,
         Err(e) => {
             log::error!("startup failed: {e}");
@@ -180,11 +224,8 @@ async fn run(data_dir: PathBuf, listen: String, auth: Arc<dyn Authenticator>, li
         log::warn!("failpoint armed: {spec}");
     }
     let state = AppState::new(svc, auth, limits, wake, wish);
-    if let Some((config, gateway)) = named_import {
-        match named_store::NamedDataMgr::get_store_mgr(&config, &Default::default()).await {
-            Ok(store) => { let _ = state.named_import.set((store, gateway)); }
-            Err(error) => { eprintln!("named store startup failed: {error}"); std::process::exit(1); }
-        }
+    if let Some(gateway) = gateway {
+        let _ = state.ndm_gateway.set(gateway);
     }
     if let Err(e) = aiworkspace_server::serve(state, &listen).await {
         log::error!("server error on {listen}: {e}");

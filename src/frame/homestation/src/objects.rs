@@ -1,16 +1,18 @@
 //! Local named-object storage and the receiver-side checks of §5.4 / §16.6: JWT signature
 //! against the publisher's authorized keys, ObjId from the claims, entry namespace ownership.
 
-use crate::db::Db;
+use crate::db::{Conn, Db};
 use crate::directory::{DirError, Directory};
 use crate::error::{bad, HsError, HsResult};
 use crate::protocol::*;
 use crate::sign::{decode_unverified, kid_did, verify_signature};
-use async_trait::async_trait;
-use ndn_lib::{ChunkHasher, ChunkId};
-use rusqlite::{params, Connection, OptionalExtension};
+use buckyos_api::bucket_client::{BucketClient, BucketId, Origin, PutRequest};
+use named_store::NamedDataMgr;
+use ndn_lib::{ChunkHasher, ChunkId, NdnError, ObjId};
+use ndn_toolkit::{NamedObjectStore, NdmClient, NdmClientConfig};
+use rusqlite::{params, OptionalExtension};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct StoredObject {
@@ -38,11 +40,11 @@ pub fn canonical(value: &Value) -> String {
     ndn_lib::build_named_object_by_json("x", value).1
 }
 
-pub fn put_object(conn: &Connection, obj: &StoredObject, origin: Option<&str>, now: i64) -> HsResult<()> {
+pub fn put_object(conn: &Conn, obj: &StoredObject, origin: Option<&str>, now: i64) -> HsResult<()> {
     conn.execute(
-        "INSERT INTO objects(obj_id, obj_type, body, jwt, signer, publisher, verified, local_only, origin, received_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-         ON CONFLICT(obj_id) DO UPDATE SET
+        "INSERT INTO objects(owner, obj_id, obj_type, body, jwt, signer, publisher, verified, local_only, origin, received_at)
+         VALUES (?11, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         ON CONFLICT(owner, obj_id) DO UPDATE SET
            jwt = COALESCE(objects.jwt, excluded.jwt),
            signer = COALESCE(objects.signer, excluded.signer),
            verified = MAX(objects.verified, excluded.verified),
@@ -57,18 +59,19 @@ pub fn put_object(conn: &Connection, obj: &StoredObject, origin: Option<&str>, n
             obj.verified as i64,
             obj.local_only as i64,
             origin,
-            now
+            now,
+            conn.owner
         ],
     )?;
     Ok(())
 }
 
-pub fn get_object(conn: &Connection, obj_id: &str) -> HsResult<Option<StoredObject>> {
+pub fn get_object(conn: &Conn, obj_id: &str) -> HsResult<Option<StoredObject>> {
     let obj_id = normalize_obj_id(obj_id);
     let row = conn
         .query_row(
-            "SELECT obj_id, obj_type, body, jwt, signer, publisher, verified, local_only FROM objects WHERE obj_id=?1",
-            [&obj_id],
+            "SELECT obj_id, obj_type, body, jwt, signer, publisher, verified, local_only FROM objects WHERE obj_id=?1 AND owner=?2",
+            params![obj_id, conn.owner],
             |r| {
                 Ok((
                     r.get::<_, String>(0)?,
@@ -98,14 +101,14 @@ pub fn get_object(conn: &Connection, obj_id: &str) -> HsResult<Option<StoredObje
     })
 }
 
-pub fn has_object(conn: &Connection, obj_id: &str) -> HsResult<bool> {
+pub fn has_object(conn: &Conn, obj_id: &str) -> HsResult<bool> {
     Ok(conn
-        .query_row("SELECT 1 FROM objects WHERE obj_id=?1", [normalize_obj_id(obj_id)], |_| Ok(()))
+        .query_row("SELECT 1 FROM objects WHERE obj_id=?1 AND owner=?2", params![normalize_obj_id(obj_id), conn.owner], |_| Ok(()))
         .optional()?
         .is_some())
 }
 
-pub fn get_feed(conn: &Connection, obj_id: &str) -> HsResult<Option<FeedObject>> {
+pub fn get_feed(conn: &Conn, obj_id: &str) -> HsResult<Option<FeedObject>> {
     match get_object(conn, obj_id)? {
         Some(obj) if obj.obj_type == OBJ_TYPE_FEED => Ok(serde_json::from_value(obj.body).ok()),
         _ => Ok(None),
@@ -113,11 +116,11 @@ pub fn get_feed(conn: &Connection, obj_id: &str) -> HsResult<Option<FeedObject>>
 }
 
 /// Searchable facts of a Feed Object; `entry_valid` is the namespace check result (A46).
-pub fn index_feed(conn: &Connection, obj_id: &str, obj: &FeedObject, entry_valid: bool) -> HsResult<()> {
+pub fn index_feed(conn: &Conn, obj_id: &str, obj: &FeedObject, entry_valid: bool) -> HsResult<()> {
     conn.execute(
-        "INSERT INTO feed_index(obj_id, publisher, kind, comment_type, content_type, entry, entry_valid, target, wraps, iat, category, text, tags)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-         ON CONFLICT(obj_id) DO UPDATE SET entry_valid = MAX(feed_index.entry_valid, excluded.entry_valid)",
+        "INSERT INTO feed_index(owner, obj_id, publisher, kind, comment_type, content_type, entry, entry_valid, target, wraps, iat, category, text, tags)
+         VALUES (?14, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+         ON CONFLICT(owner, obj_id) DO UPDATE SET entry_valid = MAX(feed_index.entry_valid, excluded.entry_valid)",
         params![
             obj_id,
             obj.publisher,
@@ -135,14 +138,15 @@ pub fn index_feed(conn: &Connection, obj_id: &str, obj: &FeedObject, entry_valid
             obj.publication_category,
             obj.search_text(),
             serde_json::to_string(&obj.tags)?,
+            conn.owner,
         ],
     )?;
     Ok(())
 }
 
-pub fn entry_valid(conn: &Connection, obj_id: &str) -> HsResult<bool> {
+pub fn entry_valid(conn: &Conn, obj_id: &str) -> HsResult<bool> {
     Ok(conn
-        .query_row("SELECT entry_valid FROM feed_index WHERE obj_id=?1", [obj_id], |r| r.get::<_, i64>(0))
+        .query_row("SELECT entry_valid FROM feed_index WHERE obj_id=?1 AND owner=?2", [obj_id, conn.owner], |r| r.get::<_, i64>(0))
         .optional()?
         .is_some_and(|v| v != 0))
 }
@@ -256,162 +260,152 @@ pub fn is_chunk_id(value: &str) -> bool {
     ChunkId::new(value).is_ok()
 }
 
-/// File content storage: the zone named store in system mode, a folder standalone.
-#[async_trait]
-pub trait ChunkStore: Send + Sync {
-    async fn put_chunk(&self, chunk_id: &str, data: Vec<u8>) -> HsResult<()>;
-    async fn get_chunk(&self, chunk_id: &str) -> HsResult<Option<Vec<u8>>>;
-    async fn has_chunk(&self, chunk_id: &str) -> bool;
-    /// Named objects stored by other zone apps (FileObjects uploaded through NDM).
-    async fn get_named_object(&self, obj_id: &str) -> HsResult<Option<String>>;
-    async fn put_named_object(&self, obj_id: &str, body: &str) -> HsResult<()>;
-    /// Keeps `obj_id` and everything it references for `owner` until released (share design D17).
-    async fn retain(&self, obj_id: &str, owner: &str) -> HsResult<()>;
-    async fn release(&self, obj_id: &str, owner: &str) -> HsResult<()>;
-    async fn is_complete(&self, obj_id: &str) -> HsResult<bool> {
-        let mut pending = vec![obj_id.to_string()];
-        let mut seen = std::collections::HashSet::new();
-        while let Some(id) = pending.pop() {
-            if !seen.insert(id.clone()) { continue; }
-            if is_chunk_id(&id) {
-                if !self.has_chunk(&id).await { return Ok(false); }
-                continue;
+const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+enum Named {
+    /// The zone named store (kernel service).
+    Local(NamedDataMgr),
+    /// A named store behind an nfs-server's NDM proxy (standalone).
+    Remote(NdmClient),
+}
+
+macro_rules! named_call {
+    ($named:expr, $method:ident($($arg:expr),* $(,)?)) => {
+        match $named {
+            Named::Local(store) => store.$method($($arg),*).await,
+            Named::Remote(store) => store.$method($($arg),*).await,
+        }
+    };
+}
+
+enum Buckets {
+    /// `bucket.*` of the zone's nfs-server, with a fresh service session per call.
+    Runtime,
+    Fixed(Arc<BucketClient>),
+}
+
+/// File contents and objects of the zone, and the users' HomeStation buckets that retain them
+/// (doc/homestation/HomeStation Durable Data Schema.md). Writes to the named store happen
+/// only together with a bucket binding.
+pub struct Storage {
+    named: Named,
+    buckets: Buckets,
+}
+
+fn named_err(e: NdnError) -> HsError {
+    HsError::Unavailable(format!("named store: {e}"))
+}
+
+pub fn bucket_err(e: kRPC::RPCErrors) -> HsError {
+    HsError::Unavailable(format!("bucket: {e}"))
+}
+
+impl Storage {
+    pub fn zone(ndm: NamedDataMgr) -> Self {
+        Self { named: Named::Local(ndm), buckets: Buckets::Runtime }
+    }
+
+    /// A standalone nfs-server (`--bucket-specs` declaring `homestation`): its NDM proxy and `bucket.*`.
+    pub fn nfs_server(base_url: &str) -> Self {
+        let base = base_url.trim_end_matches('/');
+        Self {
+            named: Named::Remote(NdmClient::new(NdmClientConfig { base_url: base.to_string() })),
+            buckets: Buckets::Fixed(Arc::new(BucketClient::new(kRPC::kRPC::new(&format!("{base}/kapi/nfs-server"), None)))),
+        }
+    }
+
+    pub fn named(&self) -> &dyn NamedObjectStore {
+        match &self.named {
+            Named::Local(store) => store,
+            Named::Remote(store) => store,
+        }
+    }
+
+    pub async fn buckets(&self) -> HsResult<Arc<BucketClient>> {
+        match &self.buckets {
+            Buckets::Fixed(client) => Ok(client.clone()),
+            Buckets::Runtime => {
+                let runtime = buckyos_api::get_buckyos_api_runtime().map_err(bucket_err)?;
+                Ok(Arc::new(runtime.get_bucket_client().await.map_err(bucket_err)?))
             }
-            let Some(body) = self.get_named_object(&id).await? else { return Ok(false) };
-            pending.extend(object_dependencies(&id, &body)?);
         }
-        Ok(true)
-    }
-    async fn read_file(&self, obj_id: &str) -> HsResult<Option<Vec<u8>>> {
-        let Some(body) = self.get_named_object(obj_id).await? else { return Ok(None) };
-        let file: ndn_lib::FileObject = ndn_lib::load_named_obj(&body).map_err(|e| bad(e.to_string()))?;
-        if file.size > 64 * 1024 * 1024 { return Err(bad("file exceeds 64 MiB download limit")); }
-        if is_chunk_id(&file.content) { return self.get_chunk(&file.content).await; }
-        let Some(list) = self.get_named_object(&file.content).await? else { return Ok(None) };
-        let chunks = ndn_lib::ChunkList::from_json(&list).map_err(|e| bad(e.to_string()))?;
-        if chunks.total_size != file.size { return Err(bad("file size does not match chunks")); }
-        let mut bytes = Vec::with_capacity(file.size as usize);
-        for chunk in chunks.body {
-            let Some(data) = self.get_chunk(&chunk.to_string()).await? else { return Ok(None) };
-            bytes.extend_from_slice(&data);
-        }
-        Ok(Some(bytes))
     }
 
-}
-
-pub struct FsChunkStore {
-    pub dir: PathBuf,
-}
-
-impl FsChunkStore {
-    fn path(&self, id: &str) -> HsResult<PathBuf> {
-        let id = ndn_lib::ObjId::new(id).map_err(|e| bad(format!("invalid id: {e}")))?;
-        Ok(self.dir.join(id.to_filename()))
+    /// Binds a stored data object (FileObject / DirObject) under `key`; `origin` for ambient buckets.
+    pub async fn bind(&self, bucket: &BucketId, key: &str, obj_id: &str, content_type: Option<String>, origin: Option<Origin>) -> HsResult<()> {
+        let req = PutRequest { key: key.to_string(), obj_id: obj_id.to_string(), content_type, origin, ..Default::default() };
+        self.buckets().await?.put(bucket, &req).await.map_err(bucket_err)?;
+        Ok(())
     }
-}
 
-#[async_trait]
-impl ChunkStore for FsChunkStore {
-    async fn put_chunk(&self, chunk_id: &str, data: Vec<u8>) -> HsResult<()> {
-        if !verify_chunk(chunk_id, &data) {
+    /// Stores a JSON object (an `object` bucket's value) and binds it under `key`.
+    pub async fn put_bound_object(&self, bucket: &BucketId, key: &str, obj_id: &str, body: &str, origin: Option<Origin>) -> HsResult<()> {
+        let id = ObjId::new(obj_id).map_err(|e| bad(format!("invalid id: {e}")))?;
+        self.named().put_object(&id, body).await.map_err(named_err)?;
+        let req = PutRequest { key: key.to_string(), obj_id: obj_id.to_string(), origin, ..Default::default() };
+        self.buckets().await?.put(bucket, &req).await.map_err(bucket_err)?;
+        Ok(())
+    }
+
+    /// Stores a single-chunk FileObject (`body`, hashing to `obj_id`) with its bytes and binds it under `key`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn put_bound_file(
+        &self,
+        bucket: &BucketId,
+        key: &str,
+        chunk_id: &str,
+        data: &[u8],
+        obj_id: &str,
+        body: &str,
+        content_type: Option<String>,
+        origin: Option<Origin>,
+    ) -> HsResult<()> {
+        let chunk = ChunkId::new(chunk_id).map_err(|e| bad(format!("invalid chunk id: {e}")))?;
+        self.named().put_chunk(&chunk, data).await.map_err(named_err)?;
+        let id = ObjId::new(obj_id).map_err(|e| bad(format!("invalid id: {e}")))?;
+        self.named().put_object(&id, body).await.map_err(named_err)?;
+        self.bind(bucket, key, obj_id, content_type, origin).await
+    }
+
+    /// Puts a fetched chunk or descriptor object; the caller binds the root right after.
+    pub(crate) async fn put_fetched_chunk(&self, chunk_id: &str, data: &[u8]) -> HsResult<()> {
+        if !verify_chunk(chunk_id, data) {
             return Err(bad("chunk data does not match its id"));
         }
-        let path = self.path(chunk_id)?;
-        tokio::fs::create_dir_all(&self.dir).await.map_err(|e| HsError::Internal(e.to_string()))?;
-        let tmp = path.with_extension("tmp");
-        tokio::fs::write(&tmp, &data).await.map_err(|e| HsError::Internal(e.to_string()))?;
-        tokio::fs::rename(&tmp, &path).await.map_err(|e| HsError::Internal(e.to_string()))
-    }
-
-    async fn get_chunk(&self, chunk_id: &str) -> HsResult<Option<Vec<u8>>> {
-        match tokio::fs::read(self.path(chunk_id)?).await {
-            Ok(data) => Ok(Some(data)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(HsError::Internal(e.to_string())),
-        }
-    }
-
-    async fn has_chunk(&self, chunk_id: &str) -> bool {
-        match self.path(chunk_id) {
-            Ok(path) => tokio::fs::metadata(path).await.is_ok(),
-            Err(_) => false,
-        }
-    }
-
-    async fn get_named_object(&self, obj_id: &str) -> HsResult<Option<String>> {
-        match tokio::fs::read_to_string(self.path(obj_id)?).await {
-            Ok(data) => Ok(Some(data)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(HsError::Internal(e.to_string())),
-        }
-    }
-
-    async fn put_named_object(&self, obj_id: &str, body: &str) -> HsResult<()> {
-        tokio::fs::create_dir_all(&self.dir).await.map_err(|e| HsError::Internal(e.to_string()))?;
-        tokio::fs::write(self.path(obj_id)?, body).await.map_err(|e| HsError::Internal(e.to_string()))
-    }
-
-    /// The folder store never collects anything.
-    async fn retain(&self, _obj_id: &str, _owner: &str) -> HsResult<()> {
-        Ok(())
-    }
-
-    async fn release(&self, _obj_id: &str, _owner: &str) -> HsResult<()> {
-        Ok(())
-    }
-}
-
-pub struct NdmChunkStore {
-    pub ndm: named_store::NamedDataMgr,
-}
-
-#[async_trait]
-impl ChunkStore for NdmChunkStore {
-    async fn is_complete(&self, obj_id: &str) -> HsResult<bool> {
-        let id = ndn_lib::ObjId::new(obj_id).map_err(|e| bad(e.to_string()))?;
-        self.ndm.is_object_stored(&id, None).await.map_err(|e| HsError::Unavailable(e.to_string()))
-    }
-
-    async fn read_file(&self, obj_id: &str) -> HsResult<Option<Vec<u8>>> {
-        use tokio::io::AsyncReadExt;
-        let id = ndn_lib::ObjId::new(obj_id).map_err(|e| bad(e.to_string()))?;
-        let (mut reader, size) = match self.ndm.open_reader(&id, None).await {
-            Ok(value) => value,
-            Err(ndn_lib::NdnError::NotFound(_)) => return Ok(None),
-            Err(e) => return Err(HsError::Unavailable(e.to_string())),
-        };
-        if size > 64 * 1024 * 1024 { return Err(bad("file exceeds 64 MiB download limit")); }
-        let mut bytes = Vec::with_capacity(size as usize);
-        reader.read_to_end(&mut bytes).await.map_err(|e| HsError::Unavailable(e.to_string()))?;
-        Ok(Some(bytes))
-    }
-
-    async fn put_chunk(&self, chunk_id: &str, data: Vec<u8>) -> HsResult<()> {
         let id = ChunkId::new(chunk_id).map_err(|e| bad(format!("invalid chunk id: {e}")))?;
-        self.ndm.put_chunk(&id, &data).await.map_err(|e| HsError::Internal(format!("named store: {e}")))
+        self.named().put_chunk(&id, data).await.map_err(named_err)
     }
 
-    async fn get_chunk(&self, chunk_id: &str) -> HsResult<Option<Vec<u8>>> {
+    pub(crate) async fn put_fetched_object(&self, obj_id: &str, body: &str) -> HsResult<()> {
+        let id = ObjId::new(obj_id).map_err(|e| bad(format!("invalid id: {e}")))?;
+        self.named().put_object(&id, body).await.map_err(named_err)
+    }
+
+    pub async fn get_chunk(&self, chunk_id: &str) -> HsResult<Option<Vec<u8>>> {
         let id = ChunkId::new(chunk_id).map_err(|e| bad(format!("invalid chunk id: {e}")))?;
-        if !self.ndm.have_chunk(&id).await {
+        if !self.named().have_chunk(&id).await {
             return Ok(None);
         }
-        self.ndm.get_chunk_data(&id).await.map(Some).map_err(|e| HsError::Internal(format!("named store: {e}")))
+        match named_call!(&self.named, get_chunk_data(&id)) {
+            Ok(data) => Ok(Some(data)),
+            Err(NdnError::NotFound(_)) => Ok(None),
+            Err(e) => Err(named_err(e)),
+        }
     }
 
-    async fn has_chunk(&self, chunk_id: &str) -> bool {
+    pub async fn has_chunk(&self, chunk_id: &str) -> bool {
         match ChunkId::new(chunk_id) {
-            Ok(id) => self.ndm.have_chunk(&id).await,
+            Ok(id) => self.named().have_chunk(&id).await,
             Err(_) => false,
         }
     }
 
-    async fn get_named_object(&self, obj_id: &str) -> HsResult<Option<String>> {
-        let id = ndn_lib::ObjId::new(obj_id).map_err(|e| bad(format!("invalid id: {e}")))?;
-        match self.ndm.get_object(&id).await {
+    /// Named objects stored by other zone apps (FileObjects uploaded through NDM).
+    pub async fn get_named_object(&self, obj_id: &str) -> HsResult<Option<String>> {
+        let id = ObjId::new(obj_id).map_err(|e| bad(format!("invalid id: {e}")))?;
+        match self.named().get_object(&id).await {
             Ok(body) => Ok(Some(body)),
-            Err(ndn_lib::NdnError::NotFound(_)) => Ok(None),
+            Err(NdnError::NotFound(_)) => Ok(None),
             Err(e) => {
                 log::debug!("named store get {obj_id}: {e}");
                 Ok(None)
@@ -419,30 +413,31 @@ impl ChunkStore for NdmChunkStore {
         }
     }
 
-    async fn put_named_object(&self, obj_id: &str, body: &str) -> HsResult<()> {
-        let id = ndn_lib::ObjId::new(obj_id).map_err(|e| bad(format!("invalid id: {e}")))?;
-        self.ndm.put_object(&id, body).await.map_err(|e| HsError::Internal(format!("named store: {e}")))
+    /// The object and everything it references are in the store.
+    pub async fn is_complete(&self, obj_id: &str) -> HsResult<bool> {
+        let id = ObjId::new(obj_id).map_err(|e| bad(e.to_string()))?;
+        named_call!(&self.named, is_object_stored(&id, None)).map_err(named_err)
     }
 
-    async fn retain(&self, obj_id: &str, owner: &str) -> HsResult<()> {
-        let id = ndn_lib::ObjId::new(obj_id).map_err(|e| bad(format!("invalid id: {e}")))?;
-        self.ndm
-            .pin(&id, owner, named_store::PinScope::Recursive, None)
-            .await
-            .map_err(|e| HsError::Internal(format!("named store pin: {e}")))
-    }
-
-    async fn release(&self, obj_id: &str, owner: &str) -> HsResult<()> {
-        let id = ndn_lib::ObjId::new(obj_id).map_err(|e| bad(format!("invalid id: {e}")))?;
-        match self.ndm.unpin(&id, owner).await {
-            Ok(()) | Err(ndn_lib::NdnError::NotFound(_)) => Ok(()),
-            Err(e) => Err(HsError::Internal(format!("named store unpin: {e}"))),
+    pub async fn read_file(&self, obj_id: &str) -> HsResult<Option<Vec<u8>>> {
+        use tokio::io::AsyncReadExt;
+        let id = ObjId::new(obj_id).map_err(|e| bad(e.to_string()))?;
+        let (mut reader, size) = match named_call!(&self.named, open_reader(&id, None)) {
+            Ok(value) => value,
+            Err(NdnError::NotFound(_)) => return Ok(None),
+            Err(e) => return Err(named_err(e)),
+        };
+        if size > MAX_FILE_BYTES {
+            return Err(bad("file exceeds 64 MiB download limit"));
         }
+        let mut bytes = Vec::with_capacity(size as usize);
+        reader.read_to_end(&mut bytes).await.map_err(|e| HsError::Unavailable(e.to_string()))?;
+        Ok(Some(bytes))
     }
 }
 
 /// Read an object from the local store, or, for FileObjects, from the zone named store.
-pub async fn load_local(db: &Db, chunks: &dyn ChunkStore, obj_id: &str) -> HsResult<Option<StoredObject>> {
+pub async fn load_local(db: &Db, store: &Storage, obj_id: &str) -> HsResult<Option<StoredObject>> {
     let id = normalize_obj_id(obj_id);
     let id2 = id.clone();
     if let Some(obj) = db.call(move |c| get_object(c, &id2)).await? {
@@ -452,7 +447,7 @@ pub async fn load_local(db: &Db, chunks: &dyn ChunkStore, obj_id: &str) -> HsRes
     if kind != OBJ_TYPE_FILE && kind != OBJ_TYPE_DIR && kind != ndn_lib::OBJ_TYPE_CHUNK_LIST {
         return Ok(None);
     }
-    let Some(body) = chunks.get_named_object(&id).await? else { return Ok(None) };
+    let Some(body) = store.get_named_object(&id).await? else { return Ok(None) };
     let value: Value = serde_json::from_str(&body).map_err(|_| bad("named store returned invalid JSON"))?;
     let computed = object_id(&kind, &body)?;
     if computed != id {
@@ -501,7 +496,8 @@ pub fn object_dependencies(id: &str, body: &str) -> HsResult<Vec<String>> {
     Err(bad("unsupported attachment object type"))
 }
 
-pub fn import_metadata(conn: &Connection, id: &str) -> HsResult<Value> {
-    let value: Option<String> = conn.query_row("SELECT metadata FROM import_metadata WHERE obj_id=?1", [id], |row| row.get(0)).optional()?;
+pub fn import_metadata(conn: &Conn, id: &str) -> HsResult<Value> {
+    let value: Option<String> =
+        conn.query_row("SELECT metadata FROM import_metadata WHERE obj_id=?1 AND owner=?2", [id, conn.owner], |row| row.get(0)).optional()?;
     Ok(value.and_then(|value| serde_json::from_str(&value).ok()).unwrap_or(Value::Null))
 }

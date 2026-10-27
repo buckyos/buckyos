@@ -620,7 +620,24 @@ RPC `msg.create_session` / `msg.archive_session` / `msg.restore_session` / `msg.
 摘要新增 `last_activity_ms` / `request_count` / `lifecycle` / `state`；`list_session` 与摘要都只统计删除水位之后的记录。
 新普通消息提交后自动解除归档。`ui_session.*` 带 `owner` 时读写 `owner_ui_session_states`。
 读取按 verify-hub 用户 token 校验：本人或 zone 托管的非用户身份（Agent）可读，写动作只允许本人；
-服务 / 设备 token 与无 token 的进程内调用保持原行为。附件经 `GET /kapi/msg-center/objects/{obj_id}[/content]` 访问。
+服务 / 设备 token 与无 token 的进程内调用保持原行为。
+
+附件经 `GET /kapi/msg-center/objects/{obj_id}[/content]?context_path=…` 访问，`context_path` 必填，指明经由哪条消息读：
+
+- `<msg_id>`：调用者能读的私信或通知（邮箱记录）；`<session MailboxAddress>/<msg_id>`：托管群 Session 的消息；
+  `<session MailboxAddress>/_display`：该 Session 展示配置（EXT-04 `display.files`）里的文件。
+- 调用者能读该消息（或该 Session），消息引用了 `obj_id`（或展示配置列出了它），且 `zone/msg-center/_/attachments`
+  中对应的 key（`<session>/<msg_id>/<n>`，展示文件为 `<group MailboxAddress>/_display/<obj_id>`）绑定的正是该对象，
+  才从 named store 读出；任一不满足、或没有上下文，都返回 404（受限会话的 404 带 `access_denied` /
+  `resource_grant_missing` 拒绝体）。
+- 托管群的消息对象本身也经此路由读：受限会话以 `<session MailboxAddress>/<msg_id>` 为上下文，其他调用者能读该消息即可，不带上下文。
+- 可选 `inner_path` 读目录附件内的文件。
+
+`msg.collect_attachment {obj_id, context_path}` 把调用者经上述同一规则能读的附件复制进自己的
+`user/msg-center/<user>/collected` 桶（`origin = {author: 发送者 DID, source: cyfs://<msg_id>}`），返回
+`{bucket_id, key}`，key 为 `<msg_id>/<n>/<label>`；重复收藏返回同一个 key。只有 Zone 用户可调用（外部用户、受限会话拒绝）。
+收藏的副本之后经 `/bucket/v1/<bucket_id>/<key>` 读，消息撤回不影响它。桶的声明、key 与解绑规则见
+`Message Center Durable Data Schema.md` §3。
 
 归档只改变会话在活动列表中的可见性，保留历史、逐记录阅读状态、未读计数和草稿；恢复沿用原会话与活动时间。
 有效普通新消息可以解除归档，运行态与 Action Log 不解除归档。归档属于独立的持久 Session 元数据。

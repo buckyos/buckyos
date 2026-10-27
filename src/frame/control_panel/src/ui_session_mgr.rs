@@ -29,7 +29,6 @@ items.* 动作），各 session 只记录项目的位置。
 */
 
 use super::desktop_folder;
-use super::desktop_wallpaper::WALLPAPER_ROUTE;
 use super::ControlPanelServer;
 use buckyos_api::{get_buckyos_api_runtime, SystemConfigError};
 use buckyos_http_server::*;
@@ -209,10 +208,6 @@ impl ControlPanelServer {
         &self,
         req: http::Request<BoxBody<Bytes, ServerError>>,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        let path = req.uri().path();
-        if path == WALLPAPER_ROUTE || path.starts_with(&format!("{}/", WALLPAPER_ROUTE)) {
-            return self.handle_desktop_wallpaper(req).await;
-        }
         if req.method() != Method::POST {
             return self.desktop_json_response(
                 StatusCode::METHOD_NOT_ALLOWED,

@@ -5,7 +5,7 @@
  * `/sdk/appservice/selftest` (see ../../main.ts), so the user can compare
  * "in page" vs "in background service" results side by side.
  */
-import { bns, buckyos, mailboxAddress, mailboxResource, ndm_proxy, parseSessionTokenClaims, sn } from 'buckyos'
+import { bns, bucket, buckyos, mailboxAddress, mailboxResource, ndm, ndm_proxy, parseSessionTokenClaims, sn } from 'buckyos'
 
 type Sdk = typeof buckyos
 
@@ -44,6 +44,33 @@ async function readJsonResponse(response: Response): Promise<Record<string, unkn
   } catch {
     throw new Error(`non-json response (${response.status}): ${text.slice(0, 200)}`)
   }
+}
+
+/** The app's own `smoke` bucket (`dapp_meta/app.json`: data / temp, 1 day). */
+const SMOKE_BUCKET = 'smoke'
+
+function smokeKey(kind: string): string {
+  return `${kind}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`
+}
+
+/** Reads a key through its data-plane URL with the page's cookies only, as an `<img src>` would. */
+async function readObjectUrl(client: bucket.BucketClient, bucketId: string, key: string): Promise<{ url: string; text: string }> {
+  const url = client.objectUrl(bucketId, key)
+  const response = await fetch(url, { credentials: 'include' })
+  if (!response.ok) throw new Error(`GET ${url} answered ${response.status}: ${(await response.text()).slice(0, 200)}`)
+  return { url, text: await response.text() }
+}
+
+/** `bucket.delete`, then the key must be gone (`no_such_key` by code, never by message). */
+async function deleteAndConfirm(client: bucket.BucketClient, bucketId: string, key: string): Promise<boolean> {
+  const deleted = await client.delete(bucketId, key)
+  try {
+    await client.fetchObject(bucketId, key)
+  } catch (error) {
+    if (error instanceof bucket.BucketError && error.code === 'no_such_key') return deleted.deleted
+    throw error
+  }
+  throw new Error(`${key} is still readable after bucket.delete`)
 }
 
 async function publishKEvent(sdk: Sdk, eventid: string, data: Record<string, unknown>): Promise<void> {
@@ -403,6 +430,53 @@ export const TEST_GROUPS: TestGroup[] = [
             throw new Error(`unexpected SN normalization: ${authUrl}, ${region}`)
           }
           return { authUrl, region }
+        },
+      },
+    ],
+  },
+  {
+    id: 'bucket',
+    title: '应用对象桶（DV 冒烟）',
+    description: '本 App 声明的 user 桶 smoke（data / temp，1 天）：小对象 putBytes 直传与 NDM 上传 finalize 时 auto_bind 直达桶，objectUrl 只带 Cookie 读回，bucket.delete 后读取得到 no_such_key。后台用 AppService 会话走 putBytes / fetchObject / delete。',
+    cases: [
+      {
+        name: 'putBytes → objectUrl → bucket.delete',
+        run: async ({ sdk, userId, appId }) => {
+          const client = sdk.getBucketClient()
+          const bucketId = bucket.userBucketId(appId, userId, SMOKE_BUCKET)
+          const key = smokeKey('put')
+          const body = `sys_test putBytes ${key}`
+          const put = await client.putBytes(bucketId, key, body, { contentType: 'text/plain', if_none_match: '*' })
+          try {
+            const read = await readObjectUrl(client, bucketId, key)
+            if (read.text !== body) throw new Error(`objectUrl returned ${JSON.stringify(read.text.slice(0, 80))}`)
+            return { bucketId, key, objId: put.obj_id, version: put.version, url: read.url, deleted: await deleteAndConfirm(client, bucketId, key) }
+          } catch (error) {
+            await client.delete(bucketId, key).catch(() => undefined)
+            throw error
+          }
+        },
+      },
+      {
+        name: 'ndm.importFiles + ensureUploaded({ bind }) → objectUrl → bucket.delete',
+        run: async ({ sdk, userId, appId }) => {
+          const client = sdk.getBucketClient()
+          const bucketId = bucket.userBucketId(appId, userId, SMOKE_BUCKET)
+          const key = smokeKey('upload')
+          const body = `sys_test upload direct to bucket ${key}`
+          const snapshot = await ndm.importFiles([new File([body], key.split('/').pop()!, { type: 'text/plain' })], { mode: 'single_file' })
+          try {
+            const status = await ndm.ensureUploaded(snapshot.sessionId, { bind: { bucketId, key, contentType: 'text/plain', ifNoneMatch: '*' } })
+            if (!status.binding || status.binding.key !== key) throw new Error(`finalize did not bind ${key}: ${JSON.stringify(status.binding)}`)
+            const read = await readObjectUrl(client, bucketId, key)
+            if (read.text !== body) throw new Error(`objectUrl returned ${JSON.stringify(read.text.slice(0, 80))}`)
+            return { bucketId, key, binding: status.binding, url: read.url, deleted: await deleteAndConfirm(client, bucketId, key) }
+          } catch (error) {
+            await client.delete(bucketId, key).catch(() => undefined)
+            throw error
+          } finally {
+            ndm.releaseImportSession(snapshot.sessionId)
+          }
         },
       },
     ],

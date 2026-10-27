@@ -411,6 +411,49 @@ CREATE INDEX IF NOT EXISTS idx_friend_requests_expire
     ON friend_requests(state, expires_at_ms);
 "#;
 
+/// Zone bucket of the messages msg-center stores (`object`, key `<msg_id>`).
+pub const MSG_CENTER_MESSAGES_BUCKET: &str = "messages";
+/// Zone bucket of their attachments (`data`, key `<session>/<msg_id>/<n>`).
+pub const MSG_CENTER_ATTACHMENTS_BUCKET: &str = "attachments";
+/// Per-user bucket of the attachments a user collected (`msg.collect_attachment`).
+pub const MSG_CENTER_COLLECTED_BUCKET: &str = "collected";
+/// App pool of `messages` + `attachments`: every user's chat attachments.
+pub const MSG_CENTER_STORAGE_QUOTA_MIB: u64 = 100 * 1024;
+/// A chat zone outgrows the per-bucket default of one million keys.
+const MSG_CENTER_BUCKET_MAX_OBJECTS: u64 = 100_000_000;
+pub const METHOD_MSG_COLLECT_ATTACHMENT: &str = "msg.collect_attachment";
+
+/// Buckets the scheduler declares in `services/msg-center/spec`
+/// (`doc/message_hub/Message Center Durable Data Schema.md`, Storage Strategy).
+pub fn msg_center_bucket_decls() -> HashMap<String, crate::bucket_client::BucketDecl> {
+    use crate::bucket_client::{BucketDecl, BucketKind, BucketScope, DataPolicy};
+    let decl = |kind, data_policy, scope, max_objects| BucketDecl {
+        kind,
+        data_policy,
+        scope,
+        versioning: None,
+        quota_mib: None,
+        max_objects,
+        default_ttl_days: None,
+        lifecycle: Vec::new(),
+    };
+    let zone_max = Some(MSG_CENTER_BUCKET_MAX_OBJECTS);
+    HashMap::from([
+        (
+            MSG_CENTER_MESSAGES_BUCKET.to_string(),
+            decl(BucketKind::Object, DataPolicy::AppData, BucketScope::Zone, zone_max),
+        ),
+        (
+            MSG_CENTER_ATTACHMENTS_BUCKET.to_string(),
+            decl(BucketKind::Data, DataPolicy::AppData, BucketScope::Zone, zone_max),
+        ),
+        (
+            MSG_CENTER_COLLECTED_BUCKET.to_string(),
+            decl(BucketKind::Data, DataPolicy::Collected, BucketScope::User, None),
+        ),
+    ])
+}
+
 /// Default rdb-instance config for the msg-center service. The scheduler drops
 /// this into `spec_config.rdb_instances` when bootstrapping the service.
 pub fn msg_center_default_rdb_instance_config() -> RdbInstanceConfig {
@@ -4915,6 +4958,17 @@ mod tests {
             build_msg_tunnel_ui_session_id(" tg ", "bot:one", " chat:1 "),
             "tg:bot_one:chat_1"
         );
+    }
+
+    #[test]
+    fn bucket_declarations_pass_the_install_checks() {
+        let decls = msg_center_bucket_decls();
+        assert_eq!(
+            crate::validate_app_buckets(&decls, Some(MSG_CENTER_STORAGE_QUOTA_MIB)),
+            Vec::<String>::new()
+        );
+        assert!(!crate::validate_app_buckets(&decls, None).is_empty());
+        assert!(decls.values().all(|d| d.lifecycle.is_empty()));
     }
 
     #[test]

@@ -153,10 +153,7 @@ test('UI-P03 rename in place: Enter one commit, Esc none, a concurrent rename ke
   await expect(bob.getByTestId('aiws-surface-icon')).toBeDisabled()
   await context.close()
   const exported = await api.rpc(ALICE, 'doc.export', { workspace_id: ws.workspace_id, mode: 'share', self_contained: true })
-  const pkg = await (await fetch(`${api.base}/export/${ws.workspace_id}/${exported.export_id}`, { headers: { authorization: `Bearer ${ALICE}` } })).arrayBuffer()
-  const begin = await api.rpc(ALICE, 'ws.begin_import', {})
-  await fetch(`${api.base}/upload/${begin.upload_id}`, { method: 'PUT', headers: { authorization: `Bearer ${ALICE}` }, body: Buffer.from(pkg) })
-  const imported = await api.rpc(ALICE, 'ws.import', { upload_id: begin.upload_id, semantics: 'new' })
+  const imported = await api.importPackage(ALICE, await api.download(exported.download), 'new')
   expect((await api.outline(ALICE, imported.workspace_id)).find((e: { entity_id: string }) => e.entity_id === 'sf-p')?.icon).toBe('rocket')
 })
 
@@ -450,7 +447,7 @@ test('UI-P16 one-click public link: a guest opens it without signing in, reads a
   const principal = (await guest.getByTestId('aiws-principal').getAttribute('data-principal')) ?? ''
   expect(principal).toMatch(/^guest:[a-z2-7]{26}$/)
   const token = await guest.evaluate(() => window.localStorage.getItem('aiworkspace.guest'))
-  expect(token).toMatch(/^gt_[a-z2-7]{26}$/)
+  expect(token).toMatch(/^gt_[A-Za-z0-9_-]{43}$/)
   expect(principal).not.toContain(token!.slice(3, 13))
   // read and comment, nothing else: of the insert tools only the note (a note is an annotation), no new workspace, no way to manage the link
   await expect(guest.getByTestId('aiws-tool-insert-note')).toBeVisible()

@@ -542,6 +542,7 @@ impl MessageCenter {
             }
             return Ok(saved.result.clone());
         }
+        let shown = crate::buckets::display_files(&tx.state).ok();
         let result = self
             .mutate_group(&mut tx, &actor, method, &p, attestation)
             .await?;
@@ -554,7 +555,15 @@ impl MessageCenter {
                 },
             );
         }
+        let display = crate::buckets::display_files(&tx.state)?;
+        let display_changed = shown.as_ref() != Some(&display);
+        if display_changed {
+            self.bind_display_files(&group, &display).await?;
+        }
         tx.commit().await?;
+        if display_changed {
+            self.unbind_display_files(&group, &display).await;
+        }
         Self::publish_event(
             format!("/msg_center/group/{}/changed", group.to_string()),
             json!({"group_did":group}),
@@ -885,6 +894,8 @@ impl MessageCenter {
             .execute(&mut *tx.tx)
             .await
             .map_err(db_error)?;
+        self.bind_display_files(&did, &crate::buckets::display_files(&tx.state)?)
+            .await?;
         tx.commit().await?;
         Self::publish_event(
             format!("/msg_center/group/{}/changed", did.to_string()),
@@ -3184,13 +3195,23 @@ impl MessageCenter {
         }
         let group = msg.to[0].clone();
         let id = msg.gen_obj_id().0;
-        // Held before the group transaction locks the database; a rejected
-        // message drops its holds below.
-        self.retain_attachments(&id, &msg).await?;
+        // Bound before the group transaction locks the database; a message
+        // that is not accepted gives its keys up below.
+        let arrival = if a.remote {
+            crate::buckets::Arrival::Remote
+        } else {
+            crate::buckets::Arrival::Local
+        };
+        self.bind_attachments(&id, &msg, arrival).await?;
         let mut tx = self.groups.begin(&group).await?;
         let key = format!("message:{}", id.to_string());
         if let Some(saved) = tx.state.operations.get(&key) {
-            return serde_json::from_value(saved.result.clone()).map_err(db_error);
+            let saved: DispatchResult = serde_json::from_value(saved.result.clone()).map_err(db_error)?;
+            drop(tx);
+            if !saved.ok {
+                self.unbind_attachments(&id, &msg).await;
+            }
+            return Ok(saved);
         }
         let result = self
             .accept_group_message_tx(&mut tx, a, &msg, jwt.as_deref())
@@ -3225,10 +3246,8 @@ impl MessageCenter {
             },
         );
         tx.commit().await?;
-        if result.ok {
-            self.confirm_attachments(&id).await;
-        } else {
-            self.drop_unaccepted_attachments(&id).await;
+        if !result.ok {
+            self.unbind_attachments(&id, &msg).await;
         }
         if let Some(group) = &result.delivered_group {
             Self::publish_event(
@@ -3454,40 +3473,6 @@ impl MessageCenter {
 }
 
 impl MessageCenter {
-    pub(crate) async fn authorize_attachment(
-        &self,
-        ctx: &RPCContext,
-        id: &ObjId,
-        context_path: Option<&str>,
-    ) -> Result<()> {
-        if let Some(path) = context_path {
-            let actor = self.group_actor(ctx).await?;
-            return self.authorize_group_attachment(&actor, id, path).await;
-        }
-        let actor = self.group_actor(ctx).await?;
-        use sqlx::Row;
-        let sql = self
-            .msg_box_db
-            .render_sql("SELECT msg_id FROM msg_refs WHERE owner=?");
-        for row in sqlx::query(&sql)
-            .bind(actor.did.to_string())
-            .fetch_all(self.msg_box_db.pool())
-            .await
-            .map_err(db_error)?
-        {
-            let raw: String = row.try_get("msg_id").map_err(db_error)?;
-            let msg_id = ObjId::new(&raw).map_err(db_error)?;
-            if self.authorize_message(ctx, &msg_id).await.is_err() {
-                continue;
-            }
-            if let Ok(message) = self.load_message(&msg_id).await {
-                if Self::message_references(&message, id) {
-                    return Ok(());
-                }
-            }
-        }
-        Err(missing())
-    }
     /// An object of a hosted group Session by its context
     /// (`<session address>/<msg_id>`): the message itself, or an object that
     /// message references. The Session is readable and the message is in the
@@ -3517,6 +3502,42 @@ impl MessageCenter {
             return Err(missing());
         }
         Ok(())
+    }
+    /// The `attachments` key of display file `id` once the caller may read
+    /// the hosted group Session at `session` and its display shows `id`.
+    pub(crate) async fn authorize_display_file(
+        &self,
+        ctx: &RPCContext,
+        id: &ObjId,
+        session: &str,
+    ) -> Result<String> {
+        let address = MailboxAddress::try_from(session.to_string()).map_err(|_| missing())?;
+        let g = self
+            .groups
+            .load(address.owner())
+            .await?
+            .filter(|g| g.lifecycle != "deleted")
+            .ok_or_else(missing)?;
+        let actor = self.group_actor(ctx).await?;
+        g.check_client(&actor)?;
+        let sid = address.session_id();
+        g.require_session(&actor, sid, true)?;
+        if !self
+            .run_group_hooks(&g, &actor, sid, "read", true, None)
+            .await
+            .unwrap_or(false)
+        {
+            return Err(missing());
+        }
+        let shown = g.rules(sid)?.display.over(&g.config()?.display).files;
+        if !shown.iter().any(|f| &f.obj_id == id) {
+            return Err(missing());
+        }
+        Ok(format!(
+            "{}{}",
+            crate::buckets::display_prefix(&g.group_did)?,
+            id.to_string()
+        ))
     }
     pub(crate) async fn authorize_group_attachment(
         &self,

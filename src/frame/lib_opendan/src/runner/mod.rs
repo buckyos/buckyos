@@ -55,7 +55,7 @@ pub use outcome::AI_QUOTA_ERROR_KIND;
 pub use outbound::{
     compose_reply, has_pending_outbound, OutboundSink, SendResult, TurnReply, AGENT_TASK_META,
 };
-pub use reports::ObjectStore;
+pub use reports::{ObjectStore, StoredObject};
 pub use turn_task::{
     has_pending_turn_tasks, TurnTaskEnd, TurnTaskOpen, TurnTaskSink, TurnTaskStatus,
 };

@@ -1,5 +1,7 @@
 //! Standalone mode: one zone's HomeStation service from a JSON config — the zone owner and any
-//! other users of the zone, the zone key that signs for all of them, peers, contacts, tokens.
+//! other users of the zone, the zone key that signs for all of them, peers, contacts, tokens,
+//! and the zone's standalone nfs-server (named store and buckets, started with
+//! `--bucket-specs` declaring `homestation`). The database is `<data-dir>/homestation-main.db`.
 //! Used by `homestation --data-dir --config` and by the multi-node tests.
 
 use crate::auth::{StaticIdentity, StaticTokens};
@@ -10,7 +12,7 @@ use crate::error::{HsError, HsResult};
 use crate::evaluation::ModelClient;
 use crate::host::{Host, HostConfig};
 use crate::http::AppState;
-use crate::objects::{ChunkStore, FsChunkStore};
+use crate::objects::Storage;
 use crate::settings::UserSettings;
 use crate::sign::Signer;
 use crate::users::{StaticUsers, UserRegistry, ZoneUser};
@@ -18,7 +20,7 @@ use crate::zone::ZoneFeed;
 use crate::{Station, StationConfig};
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -59,6 +61,8 @@ pub struct StandaloneConfig {
     #[serde(default)]
     pub user: Option<String>,
     pub zone: String,
+    /// Base URL of the zone's nfs-server (`http://127.0.0.1:<port>`).
+    pub nfs_server: String,
     #[serde(default)]
     pub zone_name: Option<String>,
     /// The zone key: signs for every user of the zone (kid defaults to `<owner>#main_key`).
@@ -145,19 +149,8 @@ struct UserSetup {
 }
 
 pub fn build(cfg: StandaloneConfig, data_dir: &Path, config_dir: Option<&Path>, model: Option<Arc<dyn ModelClient>>) -> HsResult<Standalone> {
-    let chunks: Arc<dyn ChunkStore> = Arc::new(FsChunkStore { dir: data_dir.join("chunks") });
-    build_with_store(cfg, data_dir, config_dir, model, chunks)
-}
-
-/// As [`build`], with file contents in `chunks` (a named store in retention tests).
-pub fn build_with_store(
-    cfg: StandaloneConfig,
-    data_dir: &Path,
-    config_dir: Option<&Path>,
-    model: Option<Arc<dyn ModelClient>>,
-    chunks: Arc<dyn ChunkStore>,
-) -> HsResult<Standalone> {
-    std::fs::create_dir_all(data_dir).map_err(|e| HsError::Internal(format!("data dir: {e}")))?;
+    let store = Arc::new(Storage::nfs_server(&cfg.nfs_server));
+    let db = Db::open(&data_dir.join("homestation-main.db"))?;
     let pem = match (&cfg.private_key_pem, &cfg.private_key_file) {
         (Some(pem), _) => pem.clone(),
         (None, Some(file)) => {
@@ -229,15 +222,15 @@ pub fn build_with_store(
         template.comment_sync_interval = Duration::from_secs(v);
     }
 
-    let users_dir = data_dir.join("users");
     let setups = Arc::new(setups);
     let builder = {
         let directory = directory.clone();
         let setups = setups.clone();
         let signer = signer.clone();
+        let db = db.clone();
         Box::new(move |user: &ZoneUser| -> HsResult<Arc<Station>> {
             let setup = setups.get(&user.user);
-            let db = Db::open(&user_db_path(&users_dir, &user.user))?;
+            let db = db.for_owner(&user.user);
             if let Some(initial) = setup.and_then(|s| s.settings.as_ref()) {
                 db.with(|c| {
                     if crate::db::get_setting(c, "user_settings")?.is_none() {
@@ -254,7 +247,7 @@ pub fn build_with_store(
             station_cfg.user = user.user.clone();
             station_cfg.collector = setup.is_some_and(|s| s.collector);
             station_cfg.agent = user.agent.clone();
-            Ok(Station::new(station_cfg, db, signer.clone(), directory.clone(), cached, chunks.clone(), model.clone()))
+            Ok(Station::new(station_cfg, db, signer.clone(), directory.clone(), cached, store.clone(), model.clone()))
         })
     };
     let mut host_cfg = HostConfig::new(&zone);
@@ -266,7 +259,7 @@ pub fn build_with_store(
     let static_users = Arc::new(StaticUsers(Mutex::new(zone_users.clone())));
     let registry = Arc::new(UserRegistry::new(Box::new(SharedUsers(static_users.clone())), Duration::from_millis(0)));
     let auth = Arc::new(StaticTokens { tokens: cfg.tokens.clone() });
-    let zone_feed = ZoneFeed::open(&data_dir.join("zone.db"))?;
+    let zone_feed = ZoneFeed::new(&db);
     let host = Host::new(host_cfg, directory, auth, registry, zone_feed, builder);
     let mut station = None;
     for user in &zone_users {
@@ -285,8 +278,4 @@ pub fn build_with_store(
         user_contacts,
         listen,
     })
-}
-
-pub fn user_db_path(users_dir: &Path, user: &str) -> PathBuf {
-    users_dir.join(user).join("homestation.db")
 }

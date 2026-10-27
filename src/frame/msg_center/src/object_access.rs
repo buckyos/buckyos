@@ -1,23 +1,28 @@
 //! Authenticated object access for MessageHub attachments:
 //!
-//!   GET /kapi/msg-center/objects/{obj_id}          → named object JSON
-//!   GET /kapi/msg-center/objects/{obj_id}/content  → FileObject bytes
+//!   GET /kapi/msg-center/objects/{obj_id}?context_path=…          → named object JSON
+//!   GET /kapi/msg-center/objects/{obj_id}/content?context_path=…  → FileObject bytes
 //!
-//! The zone gateway has no CYFS download route yet, so the message center
-//! exposes the objects referenced by messages (`refs[].target.obj_id`,
-//! `cyfs://<obj_id>` hints) to authenticated zone principals. The caller must
-//! present a verified session token (`Authorization: Bearer` or `?token=`).
+//! msg-center reads its zone `attachments` bucket on behalf of the members of
+//! a conversation. `context_path` (`[<session address>/]<msg_id>`) names the
+//! message the attachment is read through: the caller must be able to read
+//! that message, and its binding (`<session>/<msg_id>/<n>`) must hold the
+//! object. A hosted group's message objects come through the same route, and
+//! the files its displays show with `context_path=<session address>/_display`
+//! (the caller reads that Session, its display shows the file, and
+//! `<group address>/_display/<obj_id>` holds it). The caller presents a
+//! verified session token (`Authorization: Bearer` or `?token=`).
 
 use crate::msg_center::MessageCenter;
 use buckyos_api::{
-    get_buckyos_api_runtime, AccessDenial, DenyReason, SessionScope, ACCESS_DENIED_ERROR_CODE,
-    MSG_CENTER_SERVICE_NAME,
+    AccessDenial, DenyReason, SessionScope, ACCESS_DENIED_ERROR_CODE, MSG_CENTER_SERVICE_NAME,
 };
 use buckyos_http_server::ServerError;
 use bytes::Bytes;
 use http::{Request, Response, StatusCode};
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
 use kRPC::RPCContext;
+use named_store::NamedDataMgr;
 use ndn_lib::{load_named_obj, FileObject, ObjId};
 use tokio::io::AsyncReadExt;
 
@@ -180,7 +185,28 @@ async fn serve_object(center: &MessageCenter, req: &Request<Body>) -> Option<Res
             return Some(text_response(StatusCode::UNAUTHORIZED, "unauthenticated"));
         }
     };
-    let context = query_param(req.uri().query().unwrap_or(""), "context_path");
+    let query = req.uri().query().unwrap_or("");
+    let context = query_param(query, "context_path");
+    let inner_path = query_param(query, "inner_path");
+
+    if let Some(session) = context.as_deref().and_then(crate::buckets::display_context) {
+        if !caller.restricted()
+            && center
+                .authorize_resource(&ctx, "obj://msg-center/objects", "read")
+                .await
+                .is_err()
+        {
+            return Some(text_response(StatusCode::FORBIDDEN, "object access denied"));
+        }
+        let Ok(key) = center.authorize_display_file(&ctx, &obj_id, session).await else {
+            return Some(if caller.restricted() {
+                grant_missing(&caller.user_id)
+            } else {
+                text_response(StatusCode::NOT_FOUND, "not-found")
+            });
+        };
+        return Some(bound_key_response(center, &key, &obj_id, want_content, inner_path).await);
+    }
 
     // A restricted session (Session Only guest) has no objects grant: it
     // reads a Session message, or an object one references, only through
@@ -193,13 +219,14 @@ async fn serve_object(center: &MessageCenter, req: &Request<Body>) -> Option<Res
                 .is_ok(),
             None => false,
         };
-        if !authorized {
+        let msg_id = context.as_deref().map(crate::buckets::context_msg_id);
+        let (true, Some(Ok(msg_id))) = (authorized, msg_id) else {
             return Some(grant_missing(&caller.user_id));
-        }
+        };
         if let Ok(Some((_, body, jwt))) = center.groups.object(&obj_id).await {
             return Some(group_message_response(body, jwt));
         }
-        return Some(fetch_authorized_object_path(&obj_id, want_content, query_param(req.uri().query().unwrap_or(""), "inner_path")).await);
+        return Some(bound_attachment_response(center, &msg_id, &obj_id, want_content, inner_path).await);
     }
 
     if center
@@ -216,14 +243,13 @@ async fn serve_object(center: &MessageCenter, req: &Request<Body>) -> Option<Res
         }
         return Some(group_message_response(body, jwt));
     }
-    if center
-        .authorize_attachment(&ctx, &obj_id, context.as_deref())
-        .await
-        .is_err()
-    {
+    let Some(context) = context else {
         return Some(text_response(StatusCode::NOT_FOUND, "not-found"));
-    }
-    Some(fetch_authorized_object_path(&obj_id, want_content, query_param(req.uri().query().unwrap_or(""), "inner_path")).await)
+    };
+    let Ok(msg_id) = center.authorize_attachment(&ctx, &obj_id, &context).await else {
+        return Some(text_response(StatusCode::NOT_FOUND, "not-found"));
+    };
+    Some(bound_attachment_response(center, &msg_id, &obj_id, want_content, inner_path).await)
 }
 
 /// A stored group message: its signed form when it has one.
@@ -266,19 +292,52 @@ fn denial_response(status: StatusCode, denial: AccessDenial) -> Response<Body> {
         .unwrap()
 }
 
-pub(crate) async fn fetch_authorized_object(obj_id: &ObjId, want_content: bool) -> Response<Body> {
-    fetch_authorized_object_path(obj_id, want_content, None).await
+/// Attachment `id` of message `msg_id`, the caller already authorized for
+/// that message: served once the message's binding in `attachments` holds it.
+pub(crate) async fn bound_attachment_response(
+    center: &MessageCenter,
+    msg_id: &ObjId,
+    id: &ObjId,
+    want_content: bool,
+    inner_path: Option<String>,
+) -> Response<Body> {
+    let buckets = match center.open_buckets().await {
+        Ok(Some(buckets)) => buckets,
+        _ => return text_response(StatusCode::SERVICE_UNAVAILABLE, "bucket service unavailable"),
+    };
+    match center.bound_attachment(&buckets, msg_id, id).await {
+        Ok(Some(_)) => fetch_object_path(&buckets.store, id, want_content, inner_path).await,
+        Ok(None) => text_response(StatusCode::NOT_FOUND, "not-found"),
+        Err(error) => {
+            log::warn!("attachment {} of {} not checked: {}", id.to_string(), msg_id.to_string(), error);
+            text_response(StatusCode::SERVICE_UNAVAILABLE, "bucket service unavailable")
+        }
+    }
 }
 
-async fn fetch_authorized_object_path(root: &ObjId, want_content: bool, inner_path: Option<String>) -> Response<Body> {
-    let runtime = match get_buckyos_api_runtime() {
-        Ok(runtime) => runtime,
-        Err(_) => return text_response(StatusCode::SERVICE_UNAVAILABLE, "named store unavailable"),
+/// Object `id` once `key` of `attachments` holds it.
+async fn bound_key_response(
+    center: &MessageCenter,
+    key: &str,
+    id: &ObjId,
+    want_content: bool,
+    inner_path: Option<String>,
+) -> Response<Body> {
+    let buckets = match center.open_buckets().await {
+        Ok(Some(buckets)) => buckets,
+        _ => return text_response(StatusCode::SERVICE_UNAVAILABLE, "bucket service unavailable"),
     };
-    let named_store = match runtime.get_local_named_store().await {
-        Ok(store) => store,
-        Err(_) => return text_response(StatusCode::SERVICE_UNAVAILABLE, "named store unavailable"),
-    };
+    match MessageCenter::key_holds(&buckets, key, id).await {
+        Ok(true) => fetch_object_path(&buckets.store, id, want_content, inner_path).await,
+        Ok(false) => text_response(StatusCode::NOT_FOUND, "not-found"),
+        Err(error) => {
+            log::warn!("{key} not checked: {error}");
+            text_response(StatusCode::SERVICE_UNAVAILABLE, "bucket service unavailable")
+        }
+    }
+}
+
+async fn fetch_object_path(named_store: &NamedDataMgr, root: &ObjId, want_content: bool, inner_path: Option<String>) -> Response<Body> {
     let mut obj_id = root.clone();
     if let Some(path) = inner_path {
         for name in path.split('/') {
@@ -293,15 +352,8 @@ async fn fetch_authorized_object_path(root: &ObjId, want_content: bool, inner_pa
     }
     let obj_str = match named_store.get_object(&obj_id).await {
         Ok(value) => value,
-        Err(error) => {
-            let message = error.to_string();
-            let status = if message.contains("NotFound") || message.contains("not found") {
-                StatusCode::NOT_FOUND
-            } else {
-                StatusCode::BAD_GATEWAY
-            };
-            return text_response(status, "object unavailable");
-        }
+        Err(ndn_lib::NdnError::NotFound(_)) => return text_response(StatusCode::NOT_FOUND, "object unavailable"),
+        Err(_) => return text_response(StatusCode::BAD_GATEWAY, "object unavailable"),
     };
 
     if !want_content {

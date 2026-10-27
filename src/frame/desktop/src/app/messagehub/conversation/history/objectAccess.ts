@@ -3,10 +3,10 @@
  * that resolves `refs[].target.obj_id` through the msg-center object route;
  * mock mode leaves it unregistered so renderers fall back to `uri_hint`.
  *
- * `context` is msg-center's `context_path` of an object shown in a hosted
- * group session (`<session MailboxAddress>/<msg ObjId>`, see
- * `objectContextOf`); the host only serves a group attachment, to a guest in
- * particular, with it.
+ * `context` is msg-center's `context_path` of the object: the message that
+ * carries it, prefixed with the session in a hosted group session
+ * (`[<session MailboxAddress>/]<msg ObjId>`, see `objectContextOf`).
+ * msg-center serves an attachment only through the message it is read with.
  */
 export interface ObjectInfo {
   objId: string
@@ -18,10 +18,18 @@ export interface ObjectInfo {
   entries?: string[]
 }
 
+/** Where a collected attachment is kept: a key of the viewer's `collected` bucket. */
+export interface CollectedObject {
+  bucketId: string
+  key: string
+}
+
 export interface ObjectAccess {
   describe(objId: string, context?: string, innerPath?: string): Promise<ObjectInfo>
   /** Blob URL of the file content (cached per viewer, context and object id). */
   contentUrl(objId: string, context?: string, innerPath?: string): Promise<string>
+  /** Copies the attachment into the viewer's collection; absent where the viewer has none. */
+  collect?(objId: string, context?: string): Promise<CollectedObject>
 }
 
 export interface LocalObject {
@@ -46,6 +54,7 @@ export function registerObjectAccess(access: ObjectAccess | null) {
       const local = innerPath ? undefined : localObjects.get(objId)
       return local ? Promise.resolve(local.url) : access.contentUrl(objId, context, innerPath)
     },
+    ...(access.collect ? { collect: access.collect.bind(access) } : {}),
   } : null
 }
 
@@ -71,6 +80,11 @@ export function resetObjectCaches() {
 
 export function localObject(objId: string | undefined): LocalObject | undefined {
   return objId ? localObjects.get(objId) : undefined
+}
+
+/** `context_path` of the files the display of the hosted group Session at `session` shows (EXT-04). */
+export function displayContext(session: string): string {
+  return `${session}/_display`
 }
 
 export function isLocalObjectId(objId: string): boolean {

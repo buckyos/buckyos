@@ -143,8 +143,8 @@ fn field_type(s: &str) -> FieldType {
 pub struct Plan {
     pub operations: Vec<Value>,
     pub preconditions: Vec<Value>,
-    /// Assets the plan references: `(object_id, absolute path of the bytes)` — re-staged at apply.
-    pub assets: Vec<(String, String)>,
+    /// Assets the plan references (staged when the candidate was collected; bound again at apply).
+    pub assets: Vec<String>,
     pub summary: Value,
     pub digest: String,
     /// No blocking problem and every required choice was made.
@@ -154,7 +154,7 @@ pub struct Plan {
 impl Plan {
     pub fn to_json(&self) -> Value {
         json!({ "operations": self.operations, "preconditions": self.preconditions,
-                "assets": self.assets.iter().map(|(o, p)| json!({ "object_id": o, "path": p })).collect::<Vec<_>>(),
+                "assets": self.assets.iter().map(|o| json!({ "object_id": o })).collect::<Vec<_>>(),
                 "summary": self.summary, "plan_digest": self.digest, "ready": self.ready })
     }
 }
@@ -168,7 +168,7 @@ struct Planner<'a> {
     destructive: bool,
     confirm_structure: bool,
     results_summary: Vec<Value>,
-    assets: Vec<(String, String)>,
+    assets: Vec<String>,
     /// result name → entity id (links between results and html bindings)
     ids: BTreeMap<String, String>,
     inputs: BTreeMap<String, String>,
@@ -409,8 +409,8 @@ impl Workspace {
             if before.as_ref() != prog.get("digest") {
                 let stored = json!({ "language": "js", "api_version": aiworkspace_core::wish::PROGRAM_API_VERSION, "source": prog["object_id"], "digest": prog["digest"],
                                      "produces": prog.get("produces").cloned().unwrap_or(json!([])), "run_id": req.run_id });
-                if let Some(path) = prog.get("path").and_then(Value::as_str) {
-                    p.assets.push((prog["object_id"].as_str().unwrap_or("").to_string(), path.to_string()));
+                if let Some(source) = prog.get("object_id").and_then(Value::as_str) {
+                    p.assets.push(source.to_string());
                 }
                 after.insert("program".into(), stored.clone());
                 wish_keys.push(json!({ "key": "program", "value": stored, "expect": { "rev": wish.key_rev("program") } }));
@@ -1322,9 +1322,7 @@ fn plan_columns(p: &mut Planner, it: &Item, wish_id: &str, run_id: &str, choice:
 fn plan_asset(p: &mut Planner, it: &Item, parent: &str) -> WsResult<bool> {
     let f = &it.r()["file"];
     let obj = f["object_id"].as_str().ok_or_else(|| WsError::invalid_op(format!("result {} has no staged file", it.name())))?.to_string();
-    if let Some(path) = f["path"].as_str() {
-        p.assets.push((obj.clone(), path.to_string()));
-    }
+    p.assets.push(obj.clone());
     let image = f.get("image").filter(|i| i["width"].as_u64().is_some() && i["height"].as_u64().is_some()).cloned();
     match it.existing() {
         Some(e) => {

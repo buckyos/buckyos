@@ -31,7 +31,7 @@ Agent 应当能直接读 `commands/*.ts` 学到怎么调 AICC，然后自己写�
 2) 按 SDK 类型构造 canonical method request
 3) initRuntime() 拿到登录后的 BuckyOS 会话
 4) 逻辑模型先 route.resolve，再调用 typed inference；文生图直接调用 Helper
-5) 从 typed response 把产物拉回本地（或读取文本）
+5) 把产物交到本 Agent 的 artifacts 桶（命令返回 obj://bucket/...；给了输出路径才另存本地），或读取文本
 6) emit() 一行 AgentToolResult JSON 给上游
 ```
 
@@ -44,7 +44,8 @@ Agent 应当能直接读 `commands/*.ts` 学到怎么调 AICC，然后自己写�
 |---|---|
 | `lib/runtime.ts` | `initRuntime()` — 登录 BuckyOS |
 | `lib/aicc.ts` | `callAicc()` canonical 路由与 typed inference + task-manager 轮询；`textToImage()`、`commonPolicyOptions()`、`describeFailure()` |
-| `lib/io.ts` | `resolveInputResource()` 把字符串映射成 ResourceRef；`pickArtifact()`、`saveArtifactToPath()` 落盘 artifact；`suffixPathByMime()` |
+| `lib/io.ts` | `resolveInputResource()` 把字符串映射成 ResourceRef；`pickArtifact()`；`deliverArtifact()` 把产物交到 artifacts 桶（可选另存本地）；`saveResourceToPath()` / `saveBucketObjectToPath()` 落盘；`suffixPathByMime()` |
+| `lib/bucket.ts` | 本 Agent 的桶：`uploadNamed()`（字节直传 `artifacts` 或 `scratch`，≤32 MiB 走 `PUT /bucket/v1`，更大走 NDM 上传 + `bind`）、`copyToArtifacts()`（`bucket.copy`）、`readBucketObject()`、`obj://bucket/...` 解析 |
 | `lib/cli.ts` | `parseArgvOrExit()`、`requireString/flagInt/flagFloat/flagBool`、`COMMON_OPTIONS_HELP`、`bailArgError()` |
 | `lib/result.ts` | AgentToolResult builders + `emit/emitAndExit`、各种 `bail*` 错误收敛、退出码常量 |
 | `lib/types.ts` | Agent 输出类型，以及从发布版 `buckyos` SDK 派生的 AICC response / `ResourceRef` 视图 |
@@ -126,9 +127,10 @@ CLI 始终将 `AgentToolResult` JSON 写到 stdout（与 `src/frame/agent_tool` 
 
 ### 输入/输出处理
 
-- 输入文件：本地路径 → base64；`http(s)://...` → URL；`named_object:<obj_id>` → NamedObject
-- 输出 artifact：`named_object` 走 `ndm_proxy.openReader` 拉取并落盘；URL/base64 直接写文件
-- 资源落盘：`materialize_resource named_object:<obj_id> <output_path>`；目标文件已存在时拒绝覆盖
+- 输入文件：本地路径 → base64；`http(s)://...` → URL；`named_object:<obj_id>` → NamedObject；`obj://bucket/<bucket_id>/<key>` → 它绑定的 NamedObject
+- 输出 artifact：一律进本 Agent 的 `artifacts` 桶（`user/<agent app>/<owner>/artifacts`，`documents` 档，归用户、备份），结果 `detail.files[].url` 是 `obj://bucket/...`，直接列进报告的 artifacts。AICC 已存进它的 `outputs` 桶（`user/aicc/<owner>/outputs`，7 天）的结果用 `bucket.copy` 复制过来，不再传字节；URL/base64/raw PCM 读出字节后上传一次
+- 中间文件：`uploadNamed(runtime, bytes, name, { bucket: "scratch" })` 进 `scratch` 桶（`temp`，7 天）
+- 资源落盘：`materialize_resource obj://bucket/... | named_object:<obj_id> <output_path>`（本地工具需要路径时的显式降级）；目标文件已存在时拒绝覆盖
 
 ### 环境变量
 

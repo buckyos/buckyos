@@ -5,7 +5,8 @@
 //! entries win name conflicts, conflicting bindings surface via `conflicts[]`
 //! (never silently覆盖 or rebound — nfs_server.md §3.5).
 
-use crate::acl::{Actor, Level};
+use crate::acl::{Actor, Level, HOME_ROOT};
+use crate::bucket::projection::{self, Projection};
 use crate::error::*;
 use crate::filedb::{Anchor, BindingRow, CollectionRow, Entity, ViewGroupRow, ViewRow};
 use crate::fsutil::*;
@@ -36,6 +37,8 @@ pub enum Node {
         collection: CollectionRow,
         name: String,
     },
+    /// A read-only projection of the user's buckets (`home/<user>/Apps|Collected/...`).
+    Projection(Box<Projection>),
 }
 
 impl Node {
@@ -46,11 +49,17 @@ impl Node {
             Node::View(_) => "view",
             Node::Collection(_) => "collection",
             Node::ViewGroup { .. } | Node::CollectionGroup { .. } => "group",
+            Node::Projection(p) if p.is_file() => "file",
+            Node::Projection(_) => "dir",
         }
     }
 
     pub fn is_container(&self) -> bool {
-        !matches!(self, Node::Native { meta, .. } if meta.kind != "dir")
+        match self {
+            Node::Native { meta, .. } => meta.kind == "dir",
+            Node::Projection(p) => !p.is_file(),
+            _ => true,
+        }
     }
 
     pub fn display_name(&self) -> String {
@@ -63,6 +72,7 @@ impl Node {
             Node::Collection(c) => c.title.clone(),
             Node::ViewGroup { group, .. } => group.label.clone(),
             Node::CollectionGroup { name, .. } => name.clone(),
+            Node::Projection(p) => p.name(),
         }
     }
 
@@ -77,6 +87,8 @@ impl Node {
             Node::Collection(c) => Some(ContainerKey::Node(c.node_id)),
             Node::ViewGroup { group, .. } => Some(ContainerKey::Node(group.node_id)),
             Node::CollectionGroup { entity, .. } => Some(ContainerKey::Node(entity.node_id)),
+            Node::Projection(p) if p.is_file() => None,
+            Node::Projection(p) => Some(ContainerKey::Dir { root: HOME_ROOT.to_string(), rel: p.rel.clone() }),
         }
     }
 }
@@ -190,13 +202,16 @@ impl AppState {
             .root(&root_id)
             .ok_or_else(|| not_found(format!("export root '{}' not found", root_id)))?;
         let full = join_root(&root.path, &rel);
-        let meta = lstat(&full).map_err(|e| {
-            if e.code == ErrorCode::NotFound {
-                not_found(format!("path '/{}' not found", rel_all))
-            } else {
-                e
+        let meta = match lstat(&full) {
+            Ok(meta) => meta,
+            Err(e) if e.code == ErrorCode::NotFound => {
+                if let Some(p) = self.projection_at(&root_id, &rel)? {
+                    return Ok(Node::Projection(Box::new(p)));
+                }
+                return Err(not_found(format!("path '/{}' not found", rel_all)));
             }
-        })?;
+            Err(e) => return Err(e),
+        };
         let anchored = self.lookup_anchor_entity(&root_id, &rel, &meta)?;
         Ok(Node::Native { root: root_id, rel, meta, anchored })
     }
@@ -232,6 +247,15 @@ impl AppState {
                 }
                 if node_id.starts_with("nh_") {
                     return self.resolve_handle(node_id);
+                }
+                if let Some(encoded) = node_id.strip_prefix("bk_") {
+                    let rel = projection::decode_rel(encoded)?;
+                    return match self.projection_at(HOME_ROOT, &rel) {
+                        Ok(Some(p)) => Ok(Node::Projection(Box::new(p))),
+                        Ok(None) => Err(stale(format!("'{}' is no longer projected", rel))),
+                        Err(e) if e.code == ErrorCode::NotFound => Err(stale(e.message)),
+                        Err(e) => Err(e),
+                    };
                 }
                 if let Some(idstr) = node_id.strip_prefix("n_") {
                     let id: i64 =
@@ -400,6 +424,7 @@ impl AppState {
             Node::CollectionGroup { entity, .. } => {
                 WireRef::live(format!("n_{}", entity.node_id), entity.gen)
             }
+            Node::Projection(p) => WireRef::live(format!("bk_{}", projection::encode_rel(&p.rel)), 0),
         }
     }
 
@@ -427,6 +452,8 @@ impl AppState {
             Node::CollectionGroup { collection, .. } => {
                 Some(format!("g-{}", collection.generation))
             }
+            Node::Projection(p) if p.is_file() => None,
+            Node::Projection(p) => Some(self.projection_revision(p)),
         }
     }
 
@@ -467,6 +494,16 @@ impl AppState {
                 out["mtime"] = json!(meta.mtime);
                 out["ctime"] = json!(meta.ctime);
             }
+            if let Node::Projection(p) = node {
+                if let projection::ProjAt::File { binding, .. } = &p.at {
+                    out["size"] = json!(binding.size);
+                    out["mtime"] = json!(binding.created_at / 1000);
+                    out["ctime"] = json!(binding.created_at / 1000);
+                    if let Some(ct) = &binding.content_type {
+                        out["content_type"] = json!(ct);
+                    }
+                }
+            }
             out["flags"] = json!(self.node_flags(node));
         }
         if want.has("ident") {
@@ -486,6 +523,14 @@ impl AppState {
                     }
                 }
             }
+            if let Node::Projection(p) = node {
+                if let projection::ProjAt::File { binding, .. } = &p.at {
+                    out["etag"] = json!(binding.etag);
+                    if let Some(id) = &binding.obj_id {
+                        out["obj_id"] = json!(id);
+                    }
+                }
+            }
         }
         if want.has("access") {
             out["access_urls"] = json!(self.access_urls(actor, node, true));
@@ -502,13 +547,13 @@ impl AppState {
     }
 
     fn writable(node: &Node, level: Level) -> bool {
-        level >= Level::Write && !matches!(node, Node::Root | Node::View(_) | Node::ViewGroup { .. })
+        level >= Level::Write && !matches!(node, Node::Root | Node::View(_) | Node::ViewGroup { .. } | Node::Projection(_))
     }
 
     pub fn node_flags(&self, node: &Node) -> Vec<&'static str> {
         let mut flags = Vec::new();
         match node {
-            Node::Root | Node::View(_) | Node::ViewGroup { .. } => flags.push("read_only"),
+            Node::Root | Node::View(_) | Node::ViewGroup { .. } | Node::Projection(_) => flags.push("read_only"),
             Node::Native { root, rel, meta, .. } if meta.kind == "file" => {
                 if self.leases.get(root, rel).is_some() {
                     flags.push("writing");
@@ -535,6 +580,7 @@ impl AppState {
             }
             Node::ViewGroup { group, .. } => (None, Some(group.node_id)),
             Node::CollectionGroup { entity, .. } => (None, Some(entity.node_id)),
+            Node::Projection(p) => (Some(canonical_path(HOME_ROOT, &p.rel)), None),
         };
         if let Some(url) = direct {
             out.push(json!({"url": url, "via": "direct"}));
@@ -561,6 +607,12 @@ impl AppState {
     /// files under `srv/publish` (served as `public.<zone>`), and — for the
     /// caller's own active share links, on single-node lookups — `signed`.
     fn access_urls(&self, actor: &Actor, node: &Node, with_signed: bool) -> Vec<Value> {
+        if let Node::Projection(p) = node {
+            return match &p.at {
+                projection::ProjAt::File { bucket, binding } => self.projection_access_urls(p, bucket, binding),
+                _ => vec![json!({"kind": "fs", "url": canonical_path(HOME_ROOT, &p.rel), "primary": true})],
+            };
+        }
         let Node::Native { root, rel, meta, .. } = node else { return Vec::new() };
         let mut out = vec![json!({"kind": "fs", "url": canonical_path(root, rel), "primary": true})];
         if meta.kind != "dir" {
@@ -632,6 +684,7 @@ impl AppState {
                 self.collection_entries_json(actor, collection, Some(entity.node_id), want)?,
                 Vec::new(),
             ),
+            Node::Projection(p) => ("name", self.projection_entries(actor, p, want)?, Vec::new()),
         };
         let order = args.order.clone().unwrap_or_else(|| default_order.to_string());
         if order != "manual" {
@@ -806,6 +859,16 @@ impl AppState {
                     "target": target,
                 }),
             });
+        }
+        if root == HOME_ROOT && !rel.is_empty() && !rel.contains('/') && dir_level >= Level::Read {
+            for section in self.projection_sections(&rel) {
+                if native_names.contains(section.dir()) {
+                    continue;
+                }
+                if let Some(p) = self.projection_at(&root, &rel_join(&rel, section.dir()))? {
+                    rows.push(self.projection_row(actor, p, want));
+                }
+            }
         }
         // Sidecar merge: virtual bindings of this dir (only when it is anchored).
         let mut conflicts = Vec::new();
@@ -988,6 +1051,9 @@ impl AppState {
                         })
                     }
                     Err(e) if e.code == ErrorCode::NotFound => {
+                        if let Some(p) = self.projection_at(root, &child_rel)? {
+                            return Ok(Node::Projection(Box::new(p)));
+                        }
                         // Fall through to virtual bindings.
                         if let Some(ent) = anchored {
                             for b in self.db.bindings_by_parent(ent.node_id)? {
@@ -1025,6 +1091,7 @@ impl AppState {
                 }
                 Err(not_found(format!("no group '{}' in view", name)))
             }
+            Node::Projection(p) => Ok(Node::Projection(Box::new(self.projection_child(p, name)?))),
             _ => Err(NfsError::new(
                 ErrorCode::NotAContainer,
                 format!("cannot walk into {}", node.kind()),
