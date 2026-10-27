@@ -1,4 +1,7 @@
+use super::model_defaults::{builtin_logical_model_definitions, builtin_logical_tree_overlay};
 use super::*;
+use crate::model::ModelRegistry;
+use buckyos_api::ApiType;
 
 pub(crate) struct ServiceRuntimeFactory {
     storage: Arc<AiccStorage>,
@@ -484,13 +487,14 @@ impl ProviderValidator for RuntimeProviderValidator {
             provider_profile_id: request.provider_profile_id,
             protocol_adapter_id: adapter.clone(),
             provider_rules_id: request.provider_rules_id,
+            instance_rules: request.instance_rules.or(binding.instance_rules.clone()),
             base_url: Some(request.base_url),
             operation_base_urls: request.operation_base_urls,
             region: request.region,
             workspace: request.workspace,
-            account: request.account,
+            account: request.account.clone(),
             auth,
-            dynamic_login_user_name: None,
+            dynamic_login_user_name: request.account,
         };
         match manager
             .validate_draft(
@@ -501,20 +505,11 @@ impl ProviderValidator for RuntimeProviderValidator {
             )
             .await
         {
-            Ok(negotiated) => Ok(ProviderValidateResponse {
-                base_url_reachable: true,
-                auth_valid: true,
-                models_discovered: negotiated
-                    .inventory
-                    .models
-                    .iter()
-                    .map(|model| model.provider_model_id.clone())
-                    .collect(),
-                balance_available: true,
-                errors: Vec::new(),
-                error_details: Vec::new(),
-                resolved_protocol_adapter_id: Some(negotiated.protocol_adapter_id),
-            }),
+            Ok(negotiated) => Ok(provider_inventory_validation(
+                &snapshot.catalog,
+                &negotiated.inventory,
+                negotiated.protocol_adapter_id,
+            )),
             Err(error) => {
                 let kind = match error.stage {
                     ProviderDraftValidationStage::Connection => {
@@ -555,10 +550,111 @@ impl ProviderValidator for RuntimeProviderValidator {
                         message,
                     }],
                     resolved_protocol_adapter_id: Some(adapter),
+                    ..Default::default()
                 })
             }
         }
     }
+}
+
+fn provider_inventory_validation(
+    catalog: &CatalogSnapshot,
+    inventory: &crate::provider::ProviderInventorySnapshot,
+    adapter: String,
+) -> ProviderValidateResponse {
+    let recognized = inventory
+        .models
+        .iter()
+        .map(|model| model.provider_model_id.clone())
+        .collect::<Vec<_>>();
+    let mut discovered = recognized.iter().cloned().collect::<BTreeSet<_>>();
+    discovered.extend(
+        inventory
+            .unmatched_models
+            .iter()
+            .map(|model| model.provider_model_id.clone()),
+    );
+    let mut response = ProviderValidateResponse {
+        base_url_reachable: true,
+        auth_valid: true,
+        balance_available: false,
+        models_discovered: discovered.into_iter().collect(),
+        models_recognized: recognized,
+        unmatched_models: inventory
+            .unmatched_models
+            .iter()
+            .map(|model| json!(model))
+            .collect(),
+        unavailable_presets: inventory
+            .unavailable_presets
+            .iter()
+            .map(|preset| json!(preset))
+            .collect(),
+        resolved_protocol_adapter_id: Some(adapter),
+        ..Default::default()
+    };
+    let factory = builtin_logical_tree_overlay();
+    let registry = match ModelRegistry::build(
+        catalog,
+        &[inventory.as_model_inventory()],
+        builtin_logical_model_definitions(),
+        crate::model::RegistryLayers {
+            factory: Some(&factory),
+            ..Default::default()
+        },
+    ) {
+        Ok(registry) => registry,
+        Err(error) => {
+            response.errors.push(error.to_string());
+            response
+                .error_details
+                .push(buckyos_api::ProviderValidationErrorDetail {
+                    kind: buckyos_api::ProviderValidationErrorKind::Configuration,
+                    message: error.to_string(),
+                });
+            return response;
+        }
+    };
+    for view in registry.logical_model_views().into_iter().filter(|view| {
+        view.kind == buckyos_api::AiccLogicalDirectoryKind::Task
+            && view.api_type.as_deref() == Some("llm")
+    }) {
+        let candidates = registry
+            .resolve_available_candidates(&view.path, ApiType::Llm, &mut |_, _| true)
+            .map(|expanded| {
+                expanded
+                    .candidates
+                    .into_iter()
+                    .map(|candidate| candidate.model.exact_model.to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        response.routing_candidates.insert(view.path, candidates);
+    }
+    if !response.unmatched_models.is_empty() {
+        response
+            .warnings
+            .push("Some discovered models need an explicit model identity mapping".into());
+    }
+    if !response.unavailable_presets.is_empty() {
+        response
+            .warnings
+            .push("Some manufacturer presets have no mapping on this channel".into());
+    }
+    if inventory
+        .models
+        .iter()
+        .any(|model| model.api_types.contains(&ApiType::Llm))
+        && response
+            .routing_candidates
+            .get("llm.chat")
+            .is_none_or(Vec::is_empty)
+    {
+        response.warnings.push(
+            "No llm.chat candidate: check channel presets and specification admission".into(),
+        );
+    }
+    response
 }
 
 #[cfg(test)]
@@ -585,6 +681,80 @@ mod startup_tests {
         ) -> Result<Arc<CatalogSnapshot>, SettingsError> {
             Ok(self.catalog.clone())
         }
+    }
+
+    #[test]
+    fn readiness_separates_identity_presets_and_chat_admission() {
+        use crate::provider::{CredentialReference, ProviderInstanceConfig};
+        use crate::provider::{
+            DiscoveredModel, InventoryBuilder, ModelAvailability, ProviderDiscoverySnapshot,
+            ProviderHealthState,
+        };
+        use crate::settings::MetadataSources;
+        let catalog = MetadataSources {
+            builtin: crate::settings::load_builtin_metadata().unwrap(),
+            ..Default::default()
+        }
+        .build_snapshot(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            &Default::default(),
+        )
+        .unwrap();
+        let providers = builtin_provider_registry(&catalog).unwrap();
+        let mut profile = providers
+            .profiles()
+            .find(|profile| profile.provider_profile_id == "sn")
+            .unwrap()
+            .clone();
+        profile.provider_profile_id = "custom".into();
+        let config = ProviderInstanceConfig {
+            provider_instance_name: "readiness".into(),
+            provider_profile_id: "custom".into(),
+            protocol_adapter_id: "sn-openai".into(),
+            base_url: "https://sn.example/api/v1/ai".into(),
+            operation_base_urls: Default::default(),
+            credential: CredentialReference {
+                reference: "test".into(),
+            },
+            credential_kind: None,
+            provider_rules_id: None,
+            region: None,
+            workspace: None,
+            account: None,
+            request_timeout: std::time::Duration::from_secs(30),
+            auto_sync_models: true,
+            instance_rules: None,
+        };
+        let discovery = ProviderDiscoverySnapshot {
+            revision: None,
+            discovered_at_ms: 1,
+            health: ProviderHealthState::Healthy,
+            models: ["qwen3.8-max-0902", "unknown-model"]
+                .into_iter()
+                .map(|id| DiscoveredModel {
+                    provider_model_id: id.into(),
+                    api_types: None,
+                    supported_features: None,
+                    unsupported_features: Default::default(),
+                    remote_methods: None,
+                    availability: ModelAvailability::Available,
+                    deprecated: false,
+                    pricing: None,
+                    video: None,
+                })
+                .collect(),
+        };
+        let inventory =
+            InventoryBuilder::build(&profile, &config, discovery, &catalog, &providers.codecs())
+                .unwrap();
+        let response = provider_inventory_validation(&catalog, &inventory, "sn-openai".into());
+        assert!(response.errors.is_empty());
+        assert_eq!(response.models_discovered.len(), 2);
+        assert_eq!(response.models_recognized, ["qwen3.8-max-0902"]);
+        assert_eq!(response.unmatched_models.len(), 1);
+        assert_eq!(response.unavailable_presets.len(), 4);
+        assert!(response.routing_candidates["llm.chat"].is_empty());
+        assert_eq!(response.warnings.len(), 3);
     }
 
     #[tokio::test]

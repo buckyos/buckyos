@@ -112,3 +112,5 @@ src/deno.lock
 src/frame/desktop/test-results/
 src/frame/opendan/web/test-results-zone/
 src/apps/jarvis_runtime/dapp_dist/
+
+/test/aicc_test/*_REVIEW.md

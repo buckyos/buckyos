@@ -289,3 +289,7 @@ inventory 行迁移或重建失败不能阻止 AICC 使用已验证的内置 def
 | pricing/provider rule 解析 | effective catalog 构建内存索引 | 每次调用，高 |
 
 云目标序列与所有 Provider applied seq 相同时，不允许在每次模型调用中扫描 metadata 文件。推理前或 Provider 定时库存刷新发现序列不一致时，必须捕获云目标序列、按 `system-config > local > cloud > builtin` 逐身份选择并加载对应完整有效 metadata snapshot，再统一收敛所有落后库存；不得按当前调用或 Provider 局部处理。local/system-config 变化由 reload 路径发布新 RuntimeSnapshot 并触发相应 inventory 重建。定时 discovery 的 model 列表未变化且序列相同时只探测，不写 inventory。
+
+## 显式默认用途
+
+实例配置的 `instance_rules.server_default_routes` 为模型 ID 到 LLM task 路径集合的映射，使用现有 settings revision/CAS。库存模型快照持久化同名集合，并转为运行时模型属性供路由树重建；空集合不产生默认用途。该数据沿现有 inventory LKGS 恢复，不增加独立存储。管理接口和验收见 [服务端默认模式](provider_server_defaults.md)。

@@ -528,6 +528,18 @@ impl AiccStorage {
             .map(|row| row.get("tenant_id")))
     }
 
+    pub(crate) async fn artifact_owner(
+        &self,
+        obj_id: &str,
+    ) -> StorageResult<Option<(String, String)>> {
+        let sql = self.sql("SELECT tenant_id,user_id FROM aicc_artifact_scope WHERE obj_id=?");
+        Ok(sqlx::query(&sql)
+            .bind(obj_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .map(|row| (row.get("tenant_id"), row.get("user_id"))))
+    }
+
     pub(crate) async fn remember_artifact_url_source(
         &self,
         record: &ArtifactUrlSourceRecord,
@@ -2936,6 +2948,11 @@ mod tests {
             Some("tenant-a")
         );
         assert_eq!(db.artifact_tenant("cyfile:missing").await.unwrap(), None);
+        assert_eq!(
+            db.artifact_owner("cyfile:artifact").await.unwrap(),
+            Some(("tenant-a".to_owned(), "user-a".to_owned()))
+        );
+        assert_eq!(db.artifact_owner("cyfile:missing").await.unwrap(), None);
     }
 
     fn completion(id: &str, task: &str, idem: &str, at: i64) -> ProviderCompletion {
@@ -3069,6 +3086,7 @@ mod tests {
                 active_poll_elapsed_ms: 0,
                 max_request_bytes: 1_048_576,
                 max_response_bytes: 8_388_608,
+                url_fallback: None,
             }),
             pricing: Some(PinnedPricingSnapshot {
                 currency: "USD".into(),

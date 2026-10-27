@@ -542,7 +542,14 @@ fn encode_image_url(source: &ResourceRef, context: &CodecContext) -> ProtocolRes
         return Ok(url.to_string());
     }
     match source {
-        ResourceRef::Url { url, .. } => Ok(url.clone()),
+        ResourceRef::Url { url, .. } => match context.materialized_resource(source) {
+            Ok(resource) => Ok(format!(
+                "data:{};base64,{}",
+                resource.mime,
+                STANDARD.encode(&resource.bytes)
+            )),
+            Err(_) => Ok(url.clone()),
+        },
         ResourceRef::Base64 { mime, data_base64 } => {
             Ok(format!("data:{mime};base64,{data_base64}"))
         }

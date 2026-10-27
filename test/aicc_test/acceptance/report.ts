@@ -12,6 +12,14 @@ import { FAILURE_CLASSES, RESULT_STATUSES } from "./types.ts";
 
 export const ACCEPTANCE_REPORT_SCHEMA_VERSION = 1 as const;
 
+export function resumedRunStartedAt(runId:string): string {
+  const match=/^aicc-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z-[a-f0-9]{8}$/.exec(runId);
+  if(!match) throw new Error("invalid resume run ID");
+  const value=`${match[1]}T${match[2]}:${match[3]}:${match[4]}.${match[5]}Z`;
+  if(!Number.isFinite(Date.parse(value))) throw new Error("invalid resume run timestamp");
+  return value;
+}
+
 const SECRET_KEY = /(?:api[_-]?key|authorization|password|private[_-]?key|session[_-]?token|refresh[_-]?token|access[_-]?token|cookie)/i;
 const SECRET_VALUE = /(?:bearer\s+[a-z0-9._~+/=-]+|sk-[a-z0-9_-]{12,}|-----BEGIN [A-Z ]+PRIVATE KEY-----)/ig;
 
@@ -50,6 +58,8 @@ export function isProviderRestricted(error: unknown): boolean {
     message.includes("modelnotopen") ||
     message.includes("has not activated the model") ||
     message.includes("accessdenied") ||
+    (message.includes("access to model denied") &&
+      message.includes("eligible for using the model")) ||
     message.includes("do not have access to the requested resource") ||
     message.includes("invalid x-api-key") ||
     (message.includes("permission denied") && /not found (?:the )?model/.test(message)) ||

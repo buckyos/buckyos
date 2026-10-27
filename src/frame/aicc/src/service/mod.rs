@@ -11,8 +11,8 @@ mod settings_runtime;
 mod video_materials;
 
 use events::AiccEventLog;
-use inference::{inference_error, next_inference_id, now_ms, AuthenticatedResourceAuthorizer};
 pub(crate) use identity::{RuntimeAuthorizer, SystemConfigUserDirectory, UserDirectory};
+use inference::{inference_error, next_inference_id, now_ms, AuthenticatedResourceAuthorizer};
 pub(crate) use inference::{
     DriverMetadataPort, ProviderValidator, RuntimeInferencePort, UsageQueryPort,
 };
@@ -92,24 +92,25 @@ use tokio::sync::{broadcast, Mutex};
 
 use crate::call::{
     CallResolver, PricingSource as CallPricingSource, ProviderCallTarget, ResolvedPricing,
-    ResolvedProviderCall,
+    ResolvedProviderCall, ResourceRequirement,
 };
 use crate::catalog::CatalogSnapshot;
 use crate::error::{NativeTaskResumeError, QuotaSourceError, ResourceError, RuntimeError};
 use crate::execution::{
     task_result_payload, ExecutionEngine, ExecutionOutput, ExecutionState, NativeTaskPoll,
-    NativeTaskResumeDescriptor, PinnedProviderTask, ProviderExecution, ProviderExecutionPort,
-    ProviderStartFailure, ResumeCredential, ResumeCredentialKind, TaskBinding, TaskManagerPort,
-    TaskSpec,
+    NativeTaskResumeDescriptor, NativeTaskUrlFallback, NativeTaskUrlFallbackTarget,
+    PinnedProviderTask, ProviderExecution, ProviderExecutionPort, ProviderStartFailure,
+    ResumeCredential, ResumeCredentialKind, TaskBinding, TaskManagerPort, TaskSpec,
 };
 use crate::health::{HealthFailureKind, ModelHealthRegistry};
 #[cfg(test)]
 use crate::model::{ModelRegistry, ProviderInventory as ModelProviderInventory, RegistryLayers};
 use crate::protocol::{
-    AdapterStatus, CodecContext, CodecLimits, CodecRegistry, CredentialKind, ExecutionMode,
-    HttpTransport, HttpTransportConfig, MaterializedResource as CodecMaterializedResource,
-    NativeTaskInput, NativeTaskOperation, NativeTaskOutput, ProtocolError, ProtocolErrorKind,
-    ProtocolEvent, ProtocolOutput, ProtocolStream,
+    AdapterStatus, CodecContext, CodecInput, CodecLimits, CodecRegistry, CredentialKind,
+    ExecutionMode, HttpTransport, HttpTransportConfig,
+    MaterializedResource as CodecMaterializedResource, NativeTaskHandle, NativeTaskInput,
+    NativeTaskOperation, NativeTaskOutput, ProtocolError, ProtocolErrorKind, ProtocolEvent,
+    ProtocolOutput, ProtocolStream,
 };
 use crate::provider::{
     builtin_provider_codecs, builtin_provider_registry, resolve_sn_provider_instance_with_config,
@@ -121,7 +122,7 @@ use crate::provider::{
 };
 use crate::resource::MaterializedResource as RawMaterializedResource;
 use crate::resource::{
-    ArtifactSpec, DisabledNamedObjectUrlProvider, EmbeddingArtifactMetadata,
+    ArtifactSpec, DisabledNamedObjectUrlProvider, EmbeddingArtifactMetadata, FetchedResource,
     NamedDataMgrResourceStore, NamedObjectUrlProvider, ReqwestUrlResourceFetcher,
     ResourceAccessContext, ResourceAccessOperation, ResourceAuthorizer, ResourceFailure,
     ResourceInputForm, ResourceLimits, ResourceManager, ResourceStore, ResourceTarget,
@@ -542,6 +543,7 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
         storage.clone(),
         resource_store,
         url_fetcher,
+        provider_execution.clone(),
         model_health,
         quota_service.clone(),
     ));
@@ -795,7 +797,7 @@ impl AiccService {
             )
         })?;
         reader
-            .open_artifact_url_reader(&caller.tenant_id, url, artifact_id)
+            .open_artifact_url_reader(&caller.tenant_id, &caller.user_id, url, artifact_id)
             .await
     }
 
@@ -1036,6 +1038,9 @@ fn provider_from_add(
 }
 
 fn apply_provider_update(provider: &mut ProviderSettings, request: ProviderUpdateRequest) {
+    if let Some(rules) = request.provider_rules_id {
+        provider.provider_rules_id = (!rules.trim().is_empty()).then_some(rules);
+    }
     if let Some(enabled) = request.enabled {
         provider.enabled = enabled;
     }
@@ -1410,6 +1415,8 @@ fn runtime_admin_snapshot(
                 )
             };
             ProviderInstanceView {
+                provider_rules_id: settings.provider_rules_id.clone(),
+                instance_rules: settings.instance_rules.clone(),
                 provider_instance_name: settings.provider_instance_name.clone(),
                 provider_type: settings.provider_type.clone(),
                 provider_profile_id: settings.provider_profile_id.clone(),
@@ -1802,4 +1809,13 @@ pub(crate) fn builtin_registry_for_test(
         },
     )
     .unwrap()
+}
+
+#[cfg(test)]
+pub(crate) fn issue666_test_definitions() -> Vec<crate::model::LogicalModelDefinition> {
+    builtin_logical_model_definitions()
+}
+#[cfg(test)]
+pub(crate) fn issue666_test_overlay() -> buckyos_api::AiccRouteOverlay {
+    builtin_logical_tree_overlay()
 }

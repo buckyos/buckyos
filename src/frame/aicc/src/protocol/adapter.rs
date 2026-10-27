@@ -307,9 +307,8 @@ pub(crate) struct MaterializedResource {
     pub bytes: Bytes,
     /// Set when the protocol consumes this resource as a URL, in which case
     /// `bytes` is empty: the payload never entered this process. The URL is
-    /// either the object's own zone URL (for `ResourceRef::NamedObject`, and for
-    /// a `ResourceRef::Base64` payload published to NDN because the protocol
-    /// only takes URLs).
+    /// either a caller-supplied public URL or the object's own public zone URL
+    /// for an unscoped `ResourceRef::NamedObject`.
     pub url: Option<String>,
     pub mime: String,
     pub file_name: Option<String>,
@@ -733,6 +732,14 @@ pub(crate) trait OperationCodec: Send + Sync {
 
     fn encode(&self, call: &CodecCall<'_>) -> ProtocolResultValue<HttpRequest>;
     async fn decode(&self, response: HttpResponse) -> ProtocolResultValue<ProtocolExecution>;
+
+    fn continuation_request(
+        &self,
+        _response: &HttpResponse,
+        _call: &CodecCall<'_>,
+    ) -> ProtocolResultValue<Option<(HttpRequest, Option<buckyos_api::AiUsage>)>> {
+        Ok(None)
+    }
 
     async fn decode_with_input(
         &self,
@@ -1437,6 +1444,23 @@ impl CodecRegistry {
             .expect("registry validated operation codec")
             .decode(response)
             .await
+    }
+
+    pub(crate) fn continuation_request(
+        &self,
+        adapter_id: &str,
+        operation_id: &str,
+        api_type: ApiType,
+        response: &HttpResponse,
+        input: &CodecInput,
+        context: &CodecContext,
+    ) -> ProtocolResultValue<Option<(HttpRequest, Option<buckyos_api::AiUsage>)>> {
+        let registered = self.registered(adapter_id, operation_id, api_type)?;
+        input.validate_for(&registered.binding)?;
+        context.validate()?;
+        registered.codec.as_ref().ok_or_else(|| {
+            ProtocolError::invalid_configuration("buffered operation codec is missing")
+        })?.continuation_request(response, &CodecCall { api_type, input, context })
     }
 
     pub(crate) async fn decode_with_input(

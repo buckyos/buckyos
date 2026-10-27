@@ -227,6 +227,7 @@ impl ProviderValidator for FakeValidator {
             resolved_protocol_adapter_id: request
                 .protocol_adapter_id
                 .or(Some("openai-responses".to_string())),
+            ..Default::default()
         })
     }
 }
@@ -459,6 +460,8 @@ fn sn_provider(name: &str, auth: Value) -> ProviderSettings {
 
 fn provider_public_view(provider: &ProviderSettings) -> ProviderInstanceView {
     ProviderInstanceView {
+        provider_rules_id: None,
+        instance_rules: None,
         provider_instance_name: provider.provider_instance_name.clone(),
         provider_type: provider.provider_type.clone(),
         provider_profile_id: provider.provider_profile_id.clone(),
@@ -496,7 +499,7 @@ fn provider_public_view(provider: &ProviderSettings) -> ProviderInstanceView {
 }
 
 #[tokio::test]
-async fn aicc_artifact_authorizer_is_tenant_scoped() {
+async fn aicc_artifact_authorizer_is_owner_scoped() {
     let storage = Arc::new(
         AiccStorage::open("sqlite::memory:", buckyos_api::RdbBackend::Sqlite)
             .await
@@ -522,6 +525,20 @@ async fn aicc_artifact_authorizer_is_tenant_scoped() {
         )
         .await
         .is_ok());
+    let same_tenant_other_user = AuthenticatedResourceAuthorizer {
+        tenant_id: "tenant-a".into(),
+        caller_id: "bob".into(),
+        storage: storage.clone(),
+        token: None,
+    };
+    assert!(same_tenant_other_user
+        .authorize(
+            &ResourceAccessContext::new("tenant-a", "bob", "request-b").unwrap(),
+            &target,
+            ResourceAccessOperation::ReadContent,
+        )
+        .await
+        .is_err());
     let foreign = AuthenticatedResourceAuthorizer {
         tenant_id: "tenant-b".into(),
         caller_id: "bob".into(),
@@ -1095,12 +1112,7 @@ fn model_catalog_preserves_known_models_and_specs_without_providers() {
         .find(|model| model["id"] == "qwen3.5-27b")
         .unwrap();
     assert_eq!(model["metadata"]["local_deployable"], true);
-    for model_id in [
-        "qwen3.8-max",
-        "qwen3.8-flash",
-        "qwen3.8-omni-flash",
-        "qwen3.7-plus",
-    ] {
+    for model_id in ["qwen3.8-flash", "qwen3.7-plus"] {
         let model = qwen["models"]
             .as_array()
             .unwrap()
@@ -1111,6 +1123,15 @@ fn model_catalog_preserves_known_models_and_specs_without_providers() {
             model["metadata"]["api_types"],
             json!(["llm", "vision.caption", "vision.ocr"])
         );
+    }
+    for model_id in ["qwen3.8-max", "qwen3.8-omni-flash"] {
+        let model = qwen["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|model| model["id"] == model_id)
+            .unwrap();
+        assert_eq!(model["metadata"]["api_types"], json!(["llm", "vision.caption"]));
     }
 }
 
@@ -1201,7 +1222,7 @@ fn builtin_logical_definitions_make_llm_chat_routable_without_routing_config() {
 #[test]
 fn builtin_logical_definitions_make_llm_chat_routable_with_glm_only() {
     let inventory =
-        crate::model::llm_tests::inventory("glm", "glm-5.3", "glm-channel", "glm-main", &["high"]);
+        crate::model::llm_tests::inventory("glm", "glm-5.3", "glm-channel", "glm-main", &["max"]);
     let registry = builtin_tree(&[inventory]);
     let candidates = registry
         .resolve_candidates("llm.chat", buckyos_api::ApiType::Llm)
@@ -1209,7 +1230,7 @@ fn builtin_logical_definitions_make_llm_chat_routable_with_glm_only() {
     assert_eq!(candidates.candidates.len(), 1);
     assert_eq!(
         candidates.candidates[0].model.exact_model.as_str(),
-        "glm-channel:reasoning-high@glm-main"
+        "glm-channel:reasoning-max@glm-main"
     );
     let directory = model_directory_json(&registry);
     assert_eq!(
@@ -1293,7 +1314,12 @@ async fn sn_discovered_models_populate_catalog_and_builtin_llm_tasks() {
     .unwrap();
     assert_eq!(inventory.models.len(), ids.len());
     assert!(inventory.unmatched_models.is_empty());
-    assert!(inventory.unavailable_presets.is_empty());
+    assert_eq!(inventory.unavailable_presets.len(), 1);
+    assert_eq!(
+        inventory.unavailable_presets[0].provider_model_id,
+        "qwen3.8-max-0902"
+    );
+    assert_eq!(inventory.unavailable_presets[0].effort, "none");
     let registry = ServiceModelAssembler {
         session: None,
         events: None,
@@ -1323,6 +1349,11 @@ async fn sn_discovered_models_populate_catalog_and_builtin_llm_tasks() {
             .iter()
             .any(|item| item["target"] == exact));
         for (spec, effort, _) in llm.semantics.spec_bindings() {
+            if !model.variants.iter()
+                .any(|variant| effort.variant().as_ref() == Some(&variant.name))
+            {
+                continue;
+            }
             let target = format!("{}:{}", llm.family, effort.as_str());
             assert!(directory[format!("llm.{spec}")]
                 .as_array()
@@ -1524,7 +1555,7 @@ fn builtin_logical_tree_is_not_an_inventory_snapshot() {
             .model_drivers()
             .map(|driver| driver.specs.len())
             .sum::<usize>(),
-        51
+        53
     );
     let mut task = None;
     let mut count = 0;
@@ -1632,6 +1663,35 @@ async fn service_assembler_builds_with_only_builtin_model_metadata() {
         model_directory_json(&registry),
         model_directory_json(&builtin_tree(&[]))
     );
+}
+
+#[test]
+fn provider_advanced_update_roundtrips_and_can_clear_channel_rules() {
+    let mut provider = sn_provider(
+        "primary",
+        json!({"mode":"api_key", "credential_ref":"test"}),
+    );
+    let mut request = ProviderUpdateRequest::new("primary", 5);
+    request.provider_rules_id = Some("sn".into());
+    let mut rules = buckyos_api::ProviderInstanceRules::default();
+    rules
+        .model_driver_overrides
+        .insert("alias".into(), "qwen/qwen3.7-plus".into());
+    rules.server_default_routes.insert(
+        "alias".into(),
+        std::collections::BTreeSet::from(["llm.chat".into()]),
+    );
+    request.instance_rules = Some(rules.clone());
+    let restored =
+        ProviderUpdateRequest::from_json(serde_json::to_value(request).unwrap()).unwrap();
+    apply_provider_update(&mut provider, restored);
+    assert_eq!(provider.provider_rules_id.as_deref(), Some("sn"));
+    assert_eq!(provider.instance_rules, Some(rules));
+    let mut clear = ProviderUpdateRequest::new("primary", 5);
+    clear.provider_rules_id = Some(String::new());
+    apply_provider_update(&mut provider, clear);
+    assert!(provider.provider_rules_id.is_none());
+    assert!(provider.instance_rules.is_some());
 }
 
 #[tokio::test]
@@ -2295,10 +2355,12 @@ fn media_family_preferences_remain_static_and_cannot_be_bypassed_by_auto_mounts(
     for task in ["image.txt2img", "image.img2img", "video.generate"] {
         let entries = directory[task].as_array().unwrap();
         media_count += entries.len();
-        assert!(entries.iter().all(|item| item["target"]
-            .as_str()
-            .unwrap()
-            .starts_with(&format!("{task}."))));
+        assert!(entries.iter().all(|item| {
+            item["target"]
+                .as_str()
+                .unwrap()
+                .starts_with(&format!("{task}."))
+        }));
     }
     assert_eq!(media_count, 43);
     let mut contract_count = 0;

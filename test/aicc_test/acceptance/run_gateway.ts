@@ -13,6 +13,8 @@ import {
   callChatCompletions,
   callInference,
   loginGateway,
+  loginRefreshingGateway,
+  hasCompletedInference,
   openAiccArtifact,
   type GatewaySession,
   type RpcClient,
@@ -20,13 +22,14 @@ import {
 import { analyzeProviderMatrix, validateProviderBaseline } from "./manifest.ts";
 import {
   assertResponseShape,
+  firstReusableResource,
   buildExactRequest,
   type FixtureRefs,
   type ResourceFixture,
   type ResourceRef,
 } from "./payloads.ts";
 import { runPreflight } from "./preflight.ts";
-import { defectFromFailure, isProviderRestricted, writeReport } from "./report.ts";
+import { defectFromFailure, isProviderRestricted, resumedRunStartedAt, writeReport } from "./report.ts";
 import type {
   AcceptanceReport,
   CaseReport,
@@ -119,6 +122,9 @@ type Options = {
   shardIndex: number;
   shardCount: number;
   caseIds: string[];
+  caseSkips: Record<string, string>;
+  captureArtifacts: boolean;
+  resumeRunId?: string;
   ndnGatewayBinary: string;
   ndnNamedStoreConfigPath: string;
   ndnGatewayControlUrl: string;
@@ -505,6 +511,8 @@ async function parseOptions(args: string[]): Promise<Options> {
     shardIndex: tomlNumber(config, "runner.shard_index") ?? 0,
     shardCount: tomlNumber(config, "runner.shard_count") ?? 1,
     caseIds: [],
+    caseSkips: {},
+    captureArtifacts: false,
     ndnGatewayBinary: tomlString(config, "fixtures.ndn_gateway_binary") ??
       env("AICC_NDN_GATEWAY_BINARY") ?? "/opt/buckyos/bin/cyfs-gateway/cyfs_gateway",
     ndnNamedStoreConfigPath: tomlString(config, "fixtures.ndn_named_store_config") ??
@@ -569,6 +577,16 @@ async function parseOptions(args: string[]): Promise<Options> {
     else if (arg === "--shard-index") options.shardIndex = Number(requiredArg(args, index++, arg));
     else if (arg === "--shard-count") options.shardCount = Number(requiredArg(args, index++, arg));
     else if (arg === "--case") options.caseIds.push(requiredArg(args, index++, arg));
+    else if (arg === "--capture-artifacts") options.captureArtifacts = true;
+    else if (arg === "--resume-run") options.resumeRunId = requiredArg(args, index++, arg);
+    else if (arg === "--skip-case") {
+      const entry = requiredArg(args, index++, arg);
+      const separator = entry.indexOf("=");
+      if (separator < 1 || !entry.slice(separator + 1).trim()) {
+        throw new Error("--skip-case requires case_id=evidence-backed reason");
+      }
+      options.caseSkips[entry.slice(0, separator)] = entry.slice(separator + 1).trim();
+    }
     else if (arg === "--provider-limit") {
       const [provider, concurrency, interval] = requiredArg(args, index++, arg).split(":");
       if (!provider || concurrency === undefined || interval === undefined) {
@@ -816,11 +834,12 @@ function retryable(error: unknown): boolean {
   ].some((marker) => message.includes(marker)) || /\b5\d\d\b/.test(message);
 }
 
-function estimatedCellCost(cell: { estimated_cost_usd?: number }, fallback: number): number {
-  return typeof cell.estimated_cost_usd === "number" &&
+function estimatedCellCost(cell: { estimated_cost_usd?: number; api_type?: string }, fallback: number): number {
+  const estimate = typeof cell.estimated_cost_usd === "number" &&
       Number.isFinite(cell.estimated_cost_usd) && cell.estimated_cost_usd >= 0
     ? cell.estimated_cost_usd
     : fallback;
+  return estimate * (cell.api_type === "agent.computer_use" ? 2 : 1);
 }
 
 function semanticRubric(cell: { api_type: string; method: string }): string[] {
@@ -842,7 +861,7 @@ function semanticRubric(cell: { api_type: string; method: string }): string[] {
   if (apiType === "video.edit") return ["The output is a coherent edit of the supplied video."];
   if (apiType === "video.extend") return ["The output coherently extends the supplied video rather than replacing it with unrelated content."];
   if (apiType === "video.upscale") return ["The output preserves the supplied video content at improved resolution or visual quality."];
-  if (apiType === "agent.computer_use") return ["The result reports the title visible in the supplied test environment and does not invent an action result."];
+  if (apiType === "agent.computer_use") return [];
   return [];
 }
 
@@ -869,11 +888,12 @@ function decodeBase64(value: string): Uint8Array {
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
-async function validateTerminalArtifacts(input: {
+export async function validateTerminalArtifacts(input: {
   terminal: unknown;
   ndm: ReadableNamedData;
   gatewayUrl: string;
   sessionToken: string;
+  capture?: (bytes:Uint8Array,audit:ArtifactAudit,index:number) => Promise<void>;
 }): Promise<{ audits: ArtifactAudit[]; ids: string[] }> {
   const sources = artifactSources(input.terminal);
   const seen = new Set<string>();
@@ -886,13 +906,17 @@ async function validateTerminalArtifacts(input: {
     if (typeof source.obj_id === "string") {
       if (seen.has(`obj:${source.obj_id}`)) continue;
       seen.add(`obj:${source.obj_id}`);
-      audits.push(await validateNamedArtifact(input.ndm, { obj_id: source.obj_id, label }));
+      audits.push(await validateNamedArtifact(input.ndm, { obj_id: source.obj_id, label,
+        capture:input.capture ? (bytes,audit) => input.capture!(bytes,audit,audits.length) : undefined }));
       ids.push(source.obj_id);
     } else if (typeof source.data_base64 === "string") {
       const key = `base64:${source.data_base64.length}:${source.data_base64.slice(0, 32)}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      audits.push(await validateArtifactBytes(decodeBase64(source.data_base64), { id: "[inline-base64]", label }));
+      const bytes = decodeBase64(source.data_base64);
+      const audit = await validateArtifactBytes(bytes, { id: "[inline-base64]", label });
+      await input.capture?.(bytes,audit,audits.length);
+      audits.push(audit);
     } else if (typeof source.url === "string") {
       if (seen.has(`url:${source.url}`)) continue;
       seen.add(`url:${source.url}`);
@@ -906,7 +930,9 @@ async function validateTerminalArtifacts(input: {
       if (Number.isFinite(declared) && declared > 256 * 1024 * 1024) throw new Error("artifact URL exceeds 256 MiB safety limit");
       const bytes = new Uint8Array(await response.arrayBuffer());
       if (bytes.length > 256 * 1024 * 1024) throw new Error("artifact URL exceeds 256 MiB safety limit");
-      audits.push(await validateArtifactBytes(bytes, { id: "[downloaded-url]", label: label || response.headers.get("content-type") || undefined }));
+      const audit = await validateArtifactBytes(bytes, { id: "[downloaded-url]", label: label || response.headers.get("content-type") || undefined });
+      await input.capture?.(bytes,audit,audits.length);
+      audits.push(audit);
     }
   }
   return { audits, ids };
@@ -931,15 +957,21 @@ async function commitId(): Promise<string> {
 }
 
 async function main(): Promise<void> {
-  const runStartedAt = new Date().toISOString();
   await runPreflight();
   const options = await parseOptions(Deno.args);
-  const runId = `aicc-${new Date().toISOString().replace(/[:.]/g, "-")}-${crypto.randomUUID().slice(0, 8)}`;
+  const runStartedAt = options.resumeRunId ? resumedRunStartedAt(options.resumeRunId) : new Date().toISOString();
+  const runId = options.resumeRunId ?? `aicc-${new Date().toISOString().replace(/[:.]/g, "-")}-${crypto.randomUUID().slice(0, 8)}`;
   const outputDir = join(options.reportDir, runId);
+  if(options.resumeRunId) {
+    if(!(await Deno.stat(outputDir)).isDirectory) throw new Error("resume report directory is missing");
+    try { await Deno.stat(join(outputDir,"summary.md")); throw new Error("cannot resume a completed report"); }
+    catch(error) { if(!(error instanceof Deno.errors.NotFound)) throw error; }
+    console.log(`[resume] reusing original idempotency keys and audit window: ${runId}`);
+  }
   const baseline = validateProviderBaseline(JSON.parse(
     await readFile(join(here, "provider_capability_baseline.json"), "utf8"),
   ));
-  const session = await loginGateway({
+  const session = await loginRefreshingGateway({
     gatewayUrl: options.gatewayUrl,
     sessionToken: options.sessionToken,
     username: options.username,
@@ -1140,13 +1172,16 @@ async function executeAcceptance(input: {
   const ndm = ndm_proxy.createNdmProxyClient({
     endpoint: options.gatewayUrl,
     sessionToken: session.sessionToken,
-    fetcher: (request: RequestInfo | URL, init?: RequestInit) => {
+    fetcher: async (request: RequestInfo | URL, init?: RequestInit) => {
+      await session.ensureAuthenticated?.();
       const target = typeof request === "string"
         ? request.replaceAll("%3A", ":").replaceAll("%3a", ":")
         : request instanceof URL
         ? new URL(request.toString().replaceAll("%3A", ":").replaceAll("%3a", ":"))
         : request;
-      return fetch(target, init);
+      const headers = new Headers(init?.headers ?? (request instanceof Request ? request.headers : undefined));
+      headers.set("authorization", `Bearer ${session.sessionToken}`);
+      return fetch(target, { ...init, headers });
     },
   }) as ReadableNamedData & {
     removeChunk: (request: { chunk_id: string }) => Promise<unknown>;
@@ -1421,7 +1456,22 @@ async function executeAcceptance(input: {
     }
   }
   const preparedRequests = new Map<string, Record<string, unknown>>();
+  for (const caseId of Object.keys(options.caseSkips)) {
+    if (!selectedCells.some((cell) => cell.case_id === caseId)) {
+      throw new Error(`--skip-case is outside the selected matrix: ${caseId}`);
+    }
+  }
   for (const cell of selectedCells) {
+    if (options.caseSkips[cell.case_id]) {
+      cases.push({run_id:runId,case_id:cell.case_id,layer:"T2",status:"skipped",
+        provider_driver:cell.provider_driver,provider_instance:cell.provider_instance,
+        exact_model:cell.exact_model,api_type:cell.api_type,method:cell.method,
+        outbound_message_ids:[],artifact_ids:[],attempts:[{attempt:1,
+          started_at:new Date().toISOString(),elapsed_ms:0,status:"skipped",
+          failure_class:"platform_limitation",diagnostic:options.caseSkips[cell.case_id],
+          estimated_cost_usd:0,cost_status:"not_called"}]});
+      continue;
+    }
     try {
       preparedRequests.set(cell.case_id, buildExactRequest({ cell, runId, fixtures: options.fixtures }));
     } catch (error) {
@@ -1457,10 +1507,15 @@ async function executeAcceptance(input: {
   if (judgedCells.length > 0) assertJudgeModelAvailable(judgeModel, selectedInventories);
   const continuationPrerequisiteCells = [...new Map(
     executableCells
-      .filter((cell) => cell.api_type === "video.extend")
-      .map((cell) => [cell.exact_model, cell]),
+      .filter((cell) => cell.generated_artifact_source_api_type || cell.api_type === "video.extend")
+      .map((cell) => [
+        `${cell.exact_model}:${cell.generated_artifact_source_api_type ?? "video.generate"}`,
+        cell,
+      ]),
   ).values()];
-  const plannedCalls = plannedCases * options.maxAttempts + judgedCells.length + continuationPrerequisiteCells.length;
+  const plannedCalls = executableCells.reduce((sum, cell) =>
+    sum + (cell.api_type === "agent.computer_use" ? 2 : 1) * options.maxAttempts, 0)
+    + judgedCells.length + continuationPrerequisiteCells.length;
   const estimatedCost = executableCells.reduce(
     (sum, cell) => sum + estimatedCellCost(cell, options.estimatedCostPerCallUsd) * options.maxAttempts,
     continuationPrerequisiteCells.reduce(
@@ -1530,6 +1585,16 @@ async function executeAcceptance(input: {
       options.providerLimits,
       options.providerLimitOverrides,
     );
+    const captureArtifacts = (caseId:string,taskId:string) => options.captureArtifacts
+      ? async (bytes:Uint8Array,audit:ArtifactAudit,index:number) => {
+        const directory = join(outputDir,"artifacts");
+        await Deno.mkdir(directory,{recursive:true});
+        const suffix = bytes[0] === 0x89 && bytes[1] === 0x50 ? "png"
+          : bytes[0] === 0xff && bytes[1] === 0xd8 ? "jpg" : "bin";
+        const path = join(directory,`${caseId.replace(/[^a-zA-Z0-9._-]/g,"_")}-${taskId}-${index}.${suffix}`);
+        await Deno.writeFile(path,bytes,{mode:0o600});
+        audit.metadata = {...audit.metadata,local_review_file:path};
+      } : undefined;
     const continuationPrerequisites = new Map<string, Promise<ResourceRef>>();
     const continuationResource = (cell: typeof executableCells[number]): Promise<ResourceRef> => {
       const sourceApiType = cell.generated_artifact_source_api_type ??
@@ -1538,7 +1603,7 @@ async function executeAcceptance(input: {
       const key = `${cell.exact_model}:${sourceApiType}`;
       const existing = continuationPrerequisites.get(key);
       if (existing) return existing;
-      const pending = scheduler.execute(cell.provider_driver, async () => {
+      const invokePrerequisite = async () => {
         if (actualCalls >= options.maxRealCalls) {
           throw new Error(`max_real_calls ${options.maxRealCalls} exhausted before generated artifact prerequisite`);
         }
@@ -1591,13 +1656,10 @@ async function executeAcceptance(input: {
             ndm,
             gatewayUrl: options.gatewayUrl,
             sessionToken: session.sessionToken,
+            capture: captureArtifacts(prerequisiteCell.case_id,initial.task_id),
           });
           prerequisiteArtifactIds.push(...artifacts.ids);
-          const source = artifactSources(terminal).find((candidate) =>
-            typeof candidate.obj_id === "string" || typeof candidate.url === "string" ||
-            typeof candidate.data_base64 === "string"
-          );
-          if (!source) throw new Error(`${sourceApiType} prerequisite produced no reusable artifact`);
+          const source = firstReusableResource(artifactSources(terminal));
           const finance = extractFinance(terminal);
           costBudget.settle(reservation, finance.actualCostUsd);
           financialEntries.push({
@@ -1617,8 +1679,7 @@ async function executeAcceptance(input: {
             credit_applied_usd: finance.creditAppliedUsd,
             cost_status: finance.actualCostUsd === undefined ? "unknown" : "actual",
           });
-          const { _content_type: _, ...resource } = source;
-          return resource as ResourceRef;
+          return source;
         } catch (error) {
           costBudget.settle(reservation);
           financialEntries.push({
@@ -1636,7 +1697,12 @@ async function executeAcceptance(input: {
           });
           throw error;
         }
-      });
+      };
+      const pending = (async () => {
+        const completed = options.resumeRunId && await hasCompletedInference({taskManager:session.taskManager,
+          userId:session.userId,idempotencyKey:`${runId}:continuation:${sourceApiType}:${cell.exact_model}`});
+        return completed ? await invokePrerequisite() : await scheduler.execute(cell.provider_driver,invokePrerequisite);
+      })();
       continuationPrerequisites.set(key, pending);
       return pending;
     };
@@ -1667,7 +1733,7 @@ async function executeAcceptance(input: {
             request = structuredClone(request);
             (request.payload as Record<string, unknown>).resources = [generatedVideo];
           }
-          const initial = await scheduler.execute(cell.provider_driver, async () => {
+          const invokeTarget = async () => {
             if (actualCalls >= options.maxRealCalls) {
               throw new Error(`max_real_calls ${options.maxRealCalls} exhausted`);
             }
@@ -1680,16 +1746,21 @@ async function executeAcceptance(input: {
               }) as { selected_exact_model: string };
               if (resolved.selected_exact_model !== cell.exact_model) throw new Error("decision route selected a different physical model than its T2 cell");
             }
-            return await callInference(session.aicc, cell.method, request) as AiMethodResponse;
-          });
-          taskManagerTaskIds.add(initial.task_id);
-          const terminal = await waitForTask(session.taskManager, initial, options.timeoutMs);
+            const initial = await callInference(session.aicc, cell.method, request) as AiMethodResponse;
+            taskManagerTaskIds.add(initial.task_id);
+            caseReport.task_id = initial.task_id;
+            return {initial,terminal:await waitForTask(session.taskManager, initial, options.timeoutMs)};
+          };
+          const completed = options.resumeRunId && await hasCompletedInference({taskManager:session.taskManager,
+            userId:session.userId,idempotencyKey:String(request.idempotency_key)});
+          const {initial,terminal} = await (completed ? invokeTarget() : scheduler.execute(cell.provider_driver,invokeTarget));
           assertResponseShape(cell, terminal);
           const artifacts = await validateTerminalArtifacts({
             terminal,
             ndm,
             gatewayUrl: options.gatewayUrl,
             sessionToken: session.sessionToken,
+            capture: captureArtifacts(cell.case_id,initial.task_id),
           });
           if (cell.api_type === "image.bg_remove") {
             assertBackgroundRemovalTransparency(artifacts.audits);
@@ -2317,7 +2388,7 @@ function targetedRetestCommand(cases: CaseReport[], configPath: string, timeoutM
   ].join(" ");
 }
 
-main().catch((error) => {
+if (import.meta.main) main().catch((error) => {
   console.error(`AICC gateway acceptance failed: ${String(error)}`);
   Deno.exitCode = 1;
 });

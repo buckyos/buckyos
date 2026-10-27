@@ -6,7 +6,7 @@
 - T1.5 经 Zone Gateway 调用真实 AICC typed method 和 Protocol Adapter，再连接按 Provider 官方资料独立实现的高保真 Mock；它验证请求、正常响应、streaming、异步状态和官方错误，不验证推理语义。
 - T2 对每个获准 Provider instance 的全部 active 基础物理模型生成 `ProviderInstance × model × API-Type` 矩阵，每个单元只运行一个最小正确性请求。metadata variant、输入排列、资源表示、文档格式和错误注入不生成 T2 单元。
 
-T2 的模型库存基准来自 Runner 直接调用 `provider_capability_baseline.json` 配置的 Provider 官方目录接口。Provider 没有可用的 API Key 目录、但有明确且当前有效的官方模型文档时，baseline 可使用 `format = frozen` 的固定模型清单，并必须记录 `checked_at` 和未实时确认的 `risk`；Runner 不会在目录失败时自动回退到冻结清单。Runner 先取得这份独立官方库存，再确定本轮每个 Provider instance，对每个选中 instance 调用 `provider.refresh_models` 直到首次成功，之后读取刷新后的 AICC `models.list` 参与双向 diff。不同 Provider 并行刷新；单个 Provider 串行有限重试并指数退避，间隔不小于该 Provider 的 `min_interval_ms`，首次成功后本轮不再主动刷新。最大尝试次数和基础间隔由 `runner.inventory_refresh_max_attempts`、`runner.inventory_refresh_retry_delay_ms` 配置；最终失败会在执行 case 前终止。官方目录抓取失败或为空时不会回退到 AICC inventory。目录请求默认复用本地 TOML 的 Provider 凭据，也可用 `official_catalog_credentials.<provider>.api_token`（或 `AICC_<PROVIDER>_CATALOG_TOKEN`）单独覆盖，凭据不会写入报告；SN 的目录凭据是 SN SSO session token，必须使用独立覆盖。`provider_credentials.apply_to_aicc_settings` 只控制 Provider API token 是否同时临时注入 AICC，不影响目录认证。
+T2 的模型库存基准来自 Runner 直接调用 `provider_capability_baseline.json` 配置的 Provider 官方目录接口。Provider 没有可用的 API Key 目录、但有明确且当前有效的官方模型文档时，baseline 可使用 `format = frozen` 的固定模型清单，并必须记录 `checked_at` 和未实时确认的 `risk`；Runner 不会在目录失败时自动回退到冻结清单。Runner 先取得这份独立官方库存，再确定本轮每个 Provider instance，对每个选中 instance 调用 `provider.refresh_models` 直到首次成功，之后读取刷新后的 AICC `models.list` 参与双向 diff。不同 Provider 并行刷新；单个 Provider 串行有限重试并指数退避，间隔不小于该 Provider 的 `min_interval_ms`，首次成功后本轮不再主动刷新。最大尝试次数和基础间隔由 `runner.inventory_refresh_max_attempts`、`runner.inventory_refresh_retry_delay_ms` 配置；最终失败会在执行 case 前终止。官方目录抓取失败或为空时不会回退到 AICC inventory。目录请求默认复用本地 TOML 的 Provider 凭据，也可用 `official_catalog_credentials.<provider>.api_token`（或 `AICC_<PROVIDER>_CATALOG_TOKEN`）单独覆盖，凭据不会写入报告；SN 当前目录同时接受 Provider API Key 与 SSO session token；使用 API Key 时复用本地 TOML 的 Provider 凭据即可，需要独立目录身份时再配置覆盖。`provider_credentials.apply_to_aicc_settings` 只控制 Provider API token 是否同时临时注入 AICC，不影响目录认证。
 
 这组测试对应 `doc/aicc/aicc_e2e_test_requirements.md`：
 
@@ -108,6 +108,18 @@ T2 会为 OpenAI、Claude、Google Gemini、Fal、MiniMax、OpenRouter、Kimi、
 
 普通 `chat.completions.create` 用例显式关闭 AICC 默认附加的 `web_search`，避免把基础聊天错误地限定为必须支持联网搜索；联网搜索作为独立 capability 分支验证。Provider 凭据临时写入后，runner 会等待 system-config 与 AICC runtime settings 收敛，再验证 settings 字节恢复、运行时 inventory、Named Data 和消息资源清理。
 
+T2 在提供用户名和密码时会提前续期 Gateway 登录，并在服务明确返回 token 过期时重新登录后重发同一请求，保留原 idempotency key；Provider 协议或推理错误不会触发此重发。RPC、任务查询和 NDN 下载使用同一份更新后的登录凭据。仅提供 session token 时无法自动重新登录，应确保其有效期覆盖整轮测试。计划调用数和费用包含按模型/源 API 去重的生成物前置调用。
+
+`agent.computer_use` 使用 `generate_fixtures.py` 生成的 1280×720 截图，其中只有一个蓝色按钮；请求要求单次左键点击，断言坐标位于按钮范围内且需要下一次观察。截图与 viewport 一致，不要求模型输出固定中心像素。该用例依据 [OpenAI computer-use 官方流程](https://developers.openai.com/api/docs/guides/tools-computer-use)：允许协议先请求截图，AICC 最多使用当前输入 observation 完成一次无副作用握手，业务动作白名单不放宽，也不在真实桌面执行点击。调用预算为每个 computer-use 单元最多两次上游请求，费用估算亦按两次预留；AICC usage.request_units 记录实际轮数。
+
+已确认的外部协议缺口可用 `--skip-case '完整case_id=证据与原因'` 显式登记；只能跳过本轮选定的单元，报告保留 `platform_limitation`、零调用和原因，不计为通过。SN 的 Responses 生图和 GPT OCR 使用独立的 `responses.background` NativeTask operation；不支持异步提交或查询时不回退同步协议。背景任务的 T1.5 依据 [Responses background 官方协议](https://developers.openai.com/api/docs/guides/background) 验证提交、查询、结果、取消、失败、超时和过期响应。
+
+需要人工语义复核时，传入 `--capture-artifacts` 将已下载并通过结构校验的制品保存到本轮报告目录的 `artifacts/`，避免远端清理后失去复核依据；不会新增模型调用。该目录只保留本地证据，不能提交 Git，逐 case audit 的 `metadata.local_review_file` 记录本地路径。
+
+进程中断且尚未生成 `summary.md` 时，可用相同配置、目标及预算加 `--resume-run <run-id>` 恢复。必须保留该轮目录；Runner 复用原幂等键、原任务和用量审计时间窗，由 AICC 的请求指纹拒绝内容不一致的重放，不覆盖已有完整报告。调用计数含恢复时的幂等 RPC 重放，不能直接当成新增上游推理次数；新增任务及实际上游请求应通过 TaskMgr 和用量证据核对。恢复不会把 SN 异步缺口改为同步调用。
+
+恢复时先按当前 owner 和原幂等键核对 TaskMgr。已成功任务仅进行幂等回读，不占真实 Provider 的启动间隔；未完成或未创建的任务仍经过完整调度门禁。图生图等前置生成的结果复用只接受带 `kind` 和对应地址字段的 canonical `ResourceRef`，不把 `materialized_artifacts` 中的 `{obj_id, mime}` 清单项当作输入引用。T1.5 与 T2 共用此引用选择规则。
+
 TypeSafe 的 T1.5 依据官方 System One 文档，固定混合 choice/score/noul fixture 在 `fixtures/typesafe-systemone.json`。T2 的 decision cell 先携带题型/容量要求调用 `route.resolve`，再向所选 exact model 发一批三题，验证完整概率、已知标记、优先级和 usage。`--provider typesafe` 只执行当前有限 Jev 物理模型集合；线上调用仍需已配置实例、凭据与明确授权。
 
 OpenRouter Decisions 的独立 wire/catalog/schema fixture 在 `fixtures/openrouter-*`，
@@ -129,3 +141,9 @@ Provider attempt、60 秒、USD 0.01。它临时将已有实例的 timeout 设�
 实例、预算、禁止 fallback/failover；结束通过既有 settings transaction 恢复。
 凭据读取忽略的 TOML `[auth]`，结果写入忽略的 `reports/openrouter-jev-smoke.json`。
 DV 自签名证书需按本地测试证书配置运行环境，不改变生产 HTTP transport。
+
+SN 真实测试需要区分账户权限：OpenAI 模型使用设备身份动态登录的 `sn-ai-provider-main`；受限测试 key 使用独立实例。不得把测试 key 注入动态登录实例。两类凭据分别读取各自的官方模型目录并形成 T2 矩阵；动态登录实例的目录 token 只用于目录校验，真实推理由 AICC 自行登录。
+
+Native task 的 TaskMgr 暂时进度上报失败由执行器保持原远端任务继续轮询，不能重新提交模型任务；故障注入单测覆盖可重试及不可重试路径。
+
+定向验证某个物理模型的所有预设时，可用 `--model <provider-model-id>` 隔离库存；它要求同时指定一个 `--provider` 和明确的 `--case`。Runner 保留选中模型的官方预设契约，并通过临时实例规则排除其他模型，防止其他模型掩盖缺口或阻塞无关的定向回归。未知模型和未知 case 仍会失败。默认参数用途的网关回归以 `server_default_mode` 标记，验证高级配置回读、模型/预设发现、基础模型准入和最终请求不注入思考档位。

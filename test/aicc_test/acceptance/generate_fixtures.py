@@ -210,7 +210,18 @@ def media() -> list[Path]:
             frames.extend(struct.pack("<hh", sample, sample))
         output.writeframes(frames)
     subtitle = write_text("marker.srt", f"1\n00:00:00,000 --> 00:00:02,000\n{MARKER}\n")
-    return [transparent, mask, inpaint_image, inpaint_mask, bg_remove_image, jpeg, wav, subtitle]
+    computer_rows = bytearray()
+    for y in range(720):
+        computer_rows.append(0)
+        for x in range(1280):
+            computer_rows.extend((35, 100, 220) if 480 <= x < 800 and 300 <= y < 420 else (245, 247, 250))
+    computer_image = png("computer_click.png", 1280, 720, 2, bytes(computer_rows))
+    computer = write_text("computer_click.json", json.dumps({
+        "screenshot": {"kind": "base64", "mime": "image/png", "data_base64": base64.b64encode(computer_image.read_bytes()).decode()},
+        "viewport": {"width": 1280, "height": 720},
+        "target": {"left": 480, "top": 300, "right": 800, "bottom": 420},
+    }, indent=2) + "\n")
+    return [transparent, mask, inpaint_image, inpaint_mask, bg_remove_image, jpeg, wav, subtitle, computer_image, computer]
 
 
 def archives() -> list[Path]:

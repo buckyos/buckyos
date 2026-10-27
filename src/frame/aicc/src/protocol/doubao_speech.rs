@@ -696,9 +696,9 @@ impl AsrAudio {
 
 /// 把规范化音频还原成本 Codec 在 `resource_input_form` 里声明过的形态。
 ///
-/// `UrlOnly`（标准版）只会走到前两个分支：`ResourceRef::Url` 由物化阶段原样透传，
-/// 其余形态则因为「协议只要 URL」而被提前发布成 NDN 对象，`materialized_url` 给回
-/// 对象 URL。`allow_bytes` 只对 `UrlOrBytes`（极速版）为真，用于内联字节。
+/// `UrlOnly`（标准版）只接受物化阶段确认可公开访问的 URL；私有 Provider URL、
+/// AICC 私有 NamedObject 和 Base64 会在进入 codec 前被拒绝。`allow_bytes` 只对
+/// `UrlOrBytes`（极速版）为真，用于内联字节。
 fn resolve_asr_audio(
     resource: &ResourceRef,
     context: &CodecContext,
@@ -1520,7 +1520,7 @@ mod tests {
         let registry = speech_registry();
         let resource = ResourceRef::base64("audio/wav".to_owned(), STANDARD.encode(b"RIFFdata"));
         // The codec looks resources up by the canonical `ResourceKey`; reuse the
-        // key the materialization stage would have published.
+        // key under which the materialization stage would have stored the bytes.
         let mut base = context(ASR_BASE_URL);
         base.resources.insert(
             crate::resource::ResourceKey::from_ref(&resource)

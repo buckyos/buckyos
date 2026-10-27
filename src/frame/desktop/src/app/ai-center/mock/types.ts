@@ -89,6 +89,8 @@ export interface ProviderInventory {
 // ========== Provider ==========
 
 export interface ProviderConfig {
+  provider_rules_id?: string
+  instance_rules?: Record<string, unknown>
   id: string
   name: string
   enabled: boolean
@@ -318,6 +320,9 @@ export interface AIStatus {
 // ========== Wizard ==========
 
 export interface WizardDraft {
+  provider_rules_id?: string
+  model_driver_overrides_json?: string
+  server_default_routes_json?: string
   provider_instance_name?: string
   provider_profile_id: ProviderType | null
   display_name: string
@@ -392,6 +397,11 @@ export interface ProviderSetupCatalog {
 }
 
 export interface ValidationResult {
+  models_recognized?: string[]
+  unmatched_models?: unknown[]
+  unavailable_presets?: unknown[]
+  routing_candidates?: Record<string, string[]>
+  warnings?: string[]
   base_url_reachable: boolean
   auth_valid: boolean
   models_discovered: string[]

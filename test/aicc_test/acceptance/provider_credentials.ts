@@ -15,6 +15,7 @@ const SUPPORTED_TOKEN_DRIVERS = [
   "doubao-agent-plan",
   "doubao-speech",
   "qwen",
+  "sn-ai-provider",
 ] as const;
 
 export type ProviderTokenDriver = (typeof SUPPORTED_TOKEN_DRIVERS)[number];
@@ -40,7 +41,7 @@ function object(value: unknown): JsonObject | undefined {
 }
 
 function profileId(driver: ProviderTokenDriver): string {
-  return driver === "google-gemini" ? "gemini" : driver;
+  return driver === "google-gemini" ? "gemini" : driver === "sn-ai-provider" ? "sn" : driver;
 }
 
 function defaultInstance(
@@ -62,6 +63,7 @@ function defaultInstance(
     "doubao-agent-plan": "https://ark.cn-beijing.volces.com/api/plan/v3",
     "doubao-speech": "https://openspeech.bytedance.com",
     qwen: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "sn-ai-provider": "https://sn.buckyos.ai/api/v1/ai",
   };
   const adapters: Record<ProviderTokenDriver, string> = {
     openai: "openai-responses",
@@ -77,6 +79,7 @@ function defaultInstance(
     "doubao-agent-plan": "doubao-responses",
     "doubao-speech": "doubao-responses",
     qwen: "qwen-responses",
+    "sn-ai-provider": "sn-openai",
   };
   const profile = profileId(driver);
   return {
@@ -93,9 +96,10 @@ function defaultInstance(
   };
 }
 
-function instanceDriver(instance: JsonObject): string {
+export function instanceDriver(instance: JsonObject): string {
   const value = instance.provider_profile_id;
   if (value === "gemini") return "google-gemini";
+  if (value === "sn") return "sn-ai-provider";
   return typeof value === "string" && value.trim() ? value.trim() : "";
 }
 
@@ -311,6 +315,7 @@ export function applyProviderTokens(
         "doubao-agent-plan": "doubao-agent-plan-main",
         "doubao-speech": "doubao-speech-main",
         qwen: "qwen-main",
+        "sn-ai-provider": "sn-ai-provider-main",
       };
       const name = selectedName || defaultNames[driver];
       const created = defaultInstance(driver, name, token);

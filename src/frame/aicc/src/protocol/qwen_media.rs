@@ -24,6 +24,7 @@ use std::time::Duration;
 
 pub(crate) const QWEN_MEDIA_ADAPTER_ID: &str = "qwen-media";
 pub(crate) const QWEN_IMAGE_OPERATION_ID: &str = "dashscope.image_synthesis";
+pub(crate) const QWEN_IMAGE_GENERATION_OPERATION_ID: &str = "dashscope.image_generation";
 pub(crate) const QWEN_IMAGE_EDIT_OPERATION_ID: &str = "dashscope.image_edit";
 pub(crate) const QWEN_VIDEO_OPERATION_ID: &str = "dashscope.video_synthesis";
 const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
@@ -31,25 +32,39 @@ const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
 pub(super) fn qwen_media_registration() -> (Vec<OperationDescriptor>, CodecRegistration) {
     let image = task_operation(QWEN_IMAGE_OPERATION_ID, &[ApiType::ImageTextToImage]);
+    let image_generation = task_operation_without_cancel(
+        QWEN_IMAGE_GENERATION_OPERATION_ID,
+        &[ApiType::ImageTextToImage, ApiType::ImageImageToImage],
+    );
     let image_edit = immediate_operation(QWEN_IMAGE_EDIT_OPERATION_ID, ApiType::ImageImageToImage);
     let video = task_operation(QWEN_VIDEO_OPERATION_ID, &[ApiType::VideoGenerate]);
     let native_task_codecs = [
         (image.clone(), ApiType::ImageTextToImage),
+        (image_generation.clone(), ApiType::ImageTextToImage),
+        (image_generation.clone(), ApiType::ImageImageToImage),
         (video.clone(), ApiType::VideoGenerate),
     ]
     .into_iter()
     .map(|(descriptor, api_type)| {
-        Arc::new(QwenMediaCodec {
-            descriptor,
-            api_type,
-        }) as Arc<dyn NativeTaskCodec>
+        if descriptor.operation_id == QWEN_IMAGE_GENERATION_OPERATION_ID {
+            Arc::new(QwenImageGenerationTaskCodec {
+                descriptor,
+                api_type,
+            }) as Arc<dyn NativeTaskCodec>
+        } else {
+            Arc::new(QwenMediaCodec {
+                descriptor,
+                api_type,
+            }) as Arc<dyn NativeTaskCodec>
+        }
     })
     .collect();
     (
-        vec![image, image_edit.clone(), video],
+        vec![image, image_generation.clone(), image_edit.clone(), video],
         CodecRegistration {
             operation_codecs: vec![Arc::new(QwenImageEditCodec {
                 descriptor: image_edit,
+                api_type: ApiType::ImageImageToImage,
             })],
             native_task_codecs,
         },
@@ -93,6 +108,12 @@ fn task_operation(id: &str, api_types: &[ApiType]) -> OperationDescriptor {
     }
 }
 
+fn task_operation_without_cancel(id: &str, api_types: &[ApiType]) -> OperationDescriptor {
+    let mut descriptor = task_operation(id, api_types);
+    descriptor.supports_cancel = false;
+    descriptor
+}
+
 fn immediate_operation(id: &str, api_type: ApiType) -> OperationDescriptor {
     OperationDescriptor {
         operation_id: id.to_owned(),
@@ -107,6 +128,7 @@ fn immediate_operation(id: &str, api_type: ApiType) -> OperationDescriptor {
 #[derive(Clone)]
 struct QwenImageEditCodec {
     descriptor: OperationDescriptor,
+    api_type: ApiType,
 }
 
 #[async_trait]
@@ -119,53 +141,23 @@ impl OperationCodec for QwenImageEditCodec {
         &self.descriptor
     }
     fn api_type(&self) -> ApiType {
-        ApiType::ImageImageToImage
+        self.api_type
     }
     fn execution_modes(&self) -> BTreeSet<ExecutionMode> {
         BTreeSet::from([ExecutionMode::Immediate])
     }
 
     fn encode(&self, call: &CodecCall<'_>) -> ProtocolResultValue<HttpRequest> {
-        require_only_model(&call.input.resolved_parameters)?;
-        let model = provider_model_id(&call.input.resolved_parameters)?;
-        let AiccCall::ImageToImage(request) = &call.input.canonical_request else {
-            return Err(ProtocolError::invalid_request(
-                "Qwen image edit codec received the wrong canonical request",
-            ));
-        };
-        if request.images.is_empty() || request.images.len() > 3 {
-            return Err(ProtocolError::invalid_request(
-                "Qwen image edit requires one to three images",
-            ));
-        }
-        call.context.ignore_unsupported_options(
-            "Qwen image edit",
-            &[("strength", request.strength.is_some())],
-        );
-        let mut content = request
-            .images
-            .iter()
-            .map(|image| resource_string(image, call.context).map(|image| json!({"image":image})))
-            .collect::<ProtocolResultValue<Vec<_>>>()?;
-        content.push(json!({"text":request.prompt}));
-        let mut parameters = Map::new();
-        if let Some(size) = request
-            .output
-            .as_ref()
-            .and_then(|output| output.size.as_ref())
-        {
-            parameters.insert(
-                "size".to_owned(),
-                json!(size.replace('x', "*").replace('X', "*")),
-            );
-        }
         json_request(
             call.context,
             Method::POST,
             "services/aigc/multimodal-generation/generation",
-            Some(
-                json!({"model":model,"input":{"messages":[{"role":"user","content":content}]},"parameters":parameters}),
-            ),
+            Some(encode_qwen_image_request(
+                &call.input.canonical_request,
+                &call.input.resolved_parameters,
+                call.context,
+                self.api_type,
+            )?),
             false,
         )
     }
@@ -173,43 +165,243 @@ impl OperationCodec for QwenImageEditCodec {
     async fn decode(&self, response: HttpResponse) -> ProtocolResultValue<ProtocolExecution> {
         ensure_success(&response)?;
         let value: Value = response.json(self.descriptor.max_response_bytes)?;
-        let content = value
-            .pointer("/output/choices/0/message/content")
-            .and_then(Value::as_array)
-            .ok_or_else(|| {
-                ProtocolError::invalid_response(
-                    "Qwen image edit response is missing output.choices content",
-                )
-            })?;
-        let images = content
-            .iter()
-            .filter_map(|item| item.get("image").and_then(Value::as_str))
-            .filter(|url| !url.is_empty())
-            .map(|url| ResourceRef::url(url.to_owned(), Some("image/png".to_owned())))
-            .collect::<Vec<_>>();
-        if images.is_empty() {
-            return Err(ProtocolError::invalid_response(
-                "Qwen image edit response contains no images",
+        Ok(ProtocolExecution::Immediate(decode_qwen_image_result(
+            &value,
+        )?))
+    }
+}
+
+fn encode_qwen_image_request(
+    canonical_request: &AiccCall,
+    resolved_parameters: &BTreeMap<String, Value>,
+    context: &super::CodecContext,
+    api_type: ApiType,
+) -> ProtocolResultValue<Value> {
+    require_only_model(resolved_parameters)?;
+    let model = provider_model_id(resolved_parameters)?;
+    let (content, size, n, seed) = match canonical_request {
+        AiccCall::ImagesGenerate(request) if api_type == ApiType::ImageTextToImage => {
+            context.ignore_unsupported_options(
+                "Qwen image generation",
+                &[
+                    ("aspect_ratio", request.aspect_ratio.is_some()),
+                    ("quality", request.quality.is_some()),
+                    ("style", request.style.is_some()),
+                ],
+            );
+            (
+                vec![json!({"text":request.prompt})],
+                request.size.as_ref(),
+                request.n,
+                request.seed,
+            )
+        }
+        AiccCall::ImageToImage(request) if api_type == ApiType::ImageImageToImage => {
+            if request.images.is_empty() || request.images.len() > 3 {
+                return Err(ProtocolError::invalid_request(
+                    "Qwen image edit requires one to three images",
+                ));
+            }
+            context.ignore_unsupported_options(
+                "Qwen image edit",
+                &[("strength", request.strength.is_some())],
+            );
+            let mut content = request
+                .images
+                .iter()
+                .map(|image| resource_string(image, context).map(|image| json!({"image":image})))
+                .collect::<ProtocolResultValue<Vec<_>>>()?;
+            content.push(json!({"text":request.prompt}));
+            (
+                content,
+                request
+                    .output
+                    .as_ref()
+                    .and_then(|output| output.size.as_ref()),
+                None,
+                None,
+            )
+        }
+        _ => {
+            return Err(ProtocolError::invalid_request(
+                "Qwen image generation codec received the wrong canonical request",
             ));
         }
-        let artifacts = images
-            .iter()
-            .enumerate()
-            .map(|(index, resource)| AiArtifact {
-                name: format!("image-{}", index + 1),
-                resource: resource.clone(),
-                mime: Some("image/png".to_owned()),
-                metadata: None,
-            })
-            .collect();
-        Ok(ProtocolExecution::Immediate(ProtocolOutput {
-            value: json!({"images":images,"provider_states":[]}),
-            usage: Some(AiUsage {
-                image_units: Some(images.len() as u64),
-                ..AiUsage::request_units(1)
-            }),
-            artifacts,
-        }))
+    };
+    let mut parameters = Map::new();
+    if let Some(size) = size {
+        parameters.insert(
+            "size".to_owned(),
+            json!(size.replace('x', "*").replace('X', "*")),
+        );
+    }
+    if let Some(n) = n {
+        parameters.insert("n".to_owned(), json!(n));
+    }
+    if let Some(seed) = seed {
+        parameters.insert("seed".to_owned(), json!(seed));
+    }
+    Ok(
+        json!({"model":model,"input":{"messages":[{"role":"user","content":content}]},"parameters":parameters}),
+    )
+}
+
+fn decode_qwen_image_result(value: &Value) -> ProtocolResultValue<ProtocolOutput> {
+    let content = value
+        .pointer("/output/choices/0/message/content")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            ProtocolError::invalid_response(
+                "Qwen image edit response is missing output.choices content",
+            )
+        })?;
+    let images = content
+        .iter()
+        .filter_map(|item| item.get("image").and_then(Value::as_str))
+        .filter(|url| !url.is_empty())
+        .map(|url| ResourceRef::url(url.to_owned(), Some("image/png".to_owned())))
+        .collect::<Vec<_>>();
+    if images.is_empty() {
+        return Err(ProtocolError::invalid_response(
+            "Qwen image edit response contains no images",
+        ));
+    }
+    let artifacts = images
+        .iter()
+        .enumerate()
+        .map(|(index, resource)| AiArtifact {
+            name: format!("image-{}", index + 1),
+            resource: resource.clone(),
+            mime: Some("image/png".to_owned()),
+            metadata: None,
+        })
+        .collect();
+    Ok(ProtocolOutput {
+        value: json!({"images":images,"provider_states":[]}),
+        usage: Some(AiUsage {
+            image_units: Some(images.len() as u64),
+            ..AiUsage::request_units(1)
+        }),
+        artifacts,
+    })
+}
+
+#[derive(Clone)]
+struct QwenImageGenerationTaskCodec {
+    descriptor: OperationDescriptor,
+    api_type: ApiType,
+}
+
+#[async_trait]
+impl NativeTaskCodec for QwenImageGenerationTaskCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        crate::resource::ResourceInputForm::UrlOrBytes
+    }
+
+    fn descriptor(&self) -> &OperationDescriptor {
+        &self.descriptor
+    }
+
+    fn api_type(&self) -> ApiType {
+        self.api_type
+    }
+
+    fn operations(&self) -> BTreeSet<NativeTaskOperation> {
+        BTreeSet::from([
+            NativeTaskOperation::Submit,
+            NativeTaskOperation::Status,
+            NativeTaskOperation::Result,
+        ])
+    }
+
+    fn encode_native(&self, input: &NativeTaskInput<'_>) -> ProtocolResultValue<HttpRequest> {
+        match input.operation {
+            NativeTaskOperation::Submit => {
+                let codec_input = input.codec_input.ok_or_else(|| {
+                    ProtocolError::invalid_request("Qwen image submit requires canonical input")
+                })?;
+                json_request(
+                    input.context,
+                    Method::POST,
+                    "services/aigc/image-generation/generation",
+                    Some(encode_qwen_image_request(
+                        &codec_input.canonical_request,
+                        input.resolved_parameters,
+                        input.context,
+                        self.api_type,
+                    )?),
+                    true,
+                )
+            }
+            NativeTaskOperation::Status | NativeTaskOperation::Result => {
+                let id = safe_task_id(input.remote_task_id)?;
+                json_request(
+                    input.context,
+                    Method::GET,
+                    &format!("tasks/{id}"),
+                    None,
+                    false,
+                )
+            }
+            NativeTaskOperation::Cancel => Err(ProtocolError::invalid_request(
+                "Qwen image generation tasks do not expose cancellation",
+            )),
+        }
+    }
+
+    async fn decode_native(
+        &self,
+        operation: NativeTaskOperation,
+        response: HttpResponse,
+    ) -> ProtocolResultValue<NativeTaskOutput> {
+        ensure_success(&response)?;
+        let retry_after = response.retry_after;
+        let value: Value = response.json(self.descriptor.max_response_bytes)?;
+        match operation {
+            NativeTaskOperation::Submit => {
+                let mut handle =
+                    NativeTaskHandle::new(required_pointer(&value, "/output/task_id")?)?;
+                handle.poll_after = retry_after.or(Some(Duration::from_secs(5)));
+                Ok(NativeTaskOutput::Submitted(handle))
+            }
+            NativeTaskOperation::Status => {
+                let state = decode_state(&required_pointer(&value, "/output/task_status")?)?;
+                if state == NativeTaskState::Failed {
+                    let error = value.get("output").unwrap_or(&value);
+                    return Err(ProtocolError::new(
+                        ProtocolErrorKind::ProviderRejected,
+                        error
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("Provider image task failed"),
+                    )
+                    .with_provider_code(error.get("code").filter(|code| !code.is_null()).map(
+                        |code| {
+                            code.as_str()
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| code.to_string())
+                        },
+                    ))
+                    .with_http_status(response.status.as_u16())
+                    .with_request_id(Some(response.request_id.clone())));
+                }
+                Ok(NativeTaskOutput::Status {
+                    result_usage: None,
+                    state,
+                    retry_after: retry_after.or(Some(Duration::from_secs(5))),
+                    result_ref: (state == NativeTaskState::Succeeded)
+                        .then(|| required_pointer(&value, "/output/task_id"))
+                        .transpose()?,
+                    result_artifacts: BTreeMap::new(),
+                })
+            }
+            NativeTaskOperation::Result => {
+                Ok(NativeTaskOutput::Result(decode_qwen_image_result(&value)?))
+            }
+            NativeTaskOperation::Cancel => Err(ProtocolError::invalid_request(
+                "Qwen image generation tasks do not expose cancellation",
+            )),
+        }
     }
 }
 
@@ -592,21 +784,24 @@ fn resource_string(
     resource: &ResourceRef,
     context: &super::CodecContext,
 ) -> ProtocolResultValue<String> {
-    // Materialization may have handed this resource over as a URL because the
-    // protocol takes one (`ResourceInputForm`), in which case there are no
-    // bytes to inline and the URL is the only usable form.
     if let Some(url) = context.materialized_url(resource) {
         return Ok(url.to_string());
     }
     match resource {
-        ResourceRef::Url { url, .. } => Ok(url.clone()),
         ResourceRef::Base64 { mime, data_base64 } => {
             STANDARD.decode(data_base64).map_err(|_| {
                 ProtocolError::invalid_request("Qwen media resource contains invalid base64")
             })?;
             Ok(format!("data:{mime};base64,{data_base64}"))
         }
-        ResourceRef::NamedObject { .. } => {
+        ResourceRef::Url { url, .. }
+            if !context
+                .resources
+                .contains_key(crate::resource::ResourceKey::from_ref(resource).as_str()) =>
+        {
+            Ok(url.clone())
+        }
+        ResourceRef::Url { .. } | ResourceRef::NamedObject { .. } => {
             let value = context.materialized_resource(resource)?;
             Ok(format!(
                 "data:{};base64,{}",
@@ -674,7 +869,8 @@ fn ensure_success(response: &HttpResponse) -> ProtocolResultValue<()> {
 mod tests {
     use super::*;
     use crate::protocol::{
-        CodecContext, CodecInput, CodecLimits, CodecRegistry, ResolvedCredential,
+        CodecContext, CodecInput, CodecLimits, CodecRegistry, MaterializedResource,
+        ResolvedCredential,
     };
     use crate::video::test_support::{model_contract, plan_parameters};
     use crate::video::VideoMaterialFacts;
@@ -682,6 +878,7 @@ mod tests {
         ImageToImageRequest, ProviderStateCoordinate, VideoAudioMode, VideoGenerateRequest,
         VideoOutputSpec, VideoSize,
     };
+    use bytes::Bytes;
 
     fn context() -> CodecContext {
         CodecContext {
@@ -703,35 +900,90 @@ mod tests {
     }
 
     #[test]
-    fn splits_synchronous_image_edit_from_async_video() {
+    fn uses_native_tasks_for_qwen_image_3_generation_and_editing() {
         let (descriptor, registration) = qwen_media_adapter();
         let mut registry = CodecRegistry::default();
         registry.register_codecs(descriptor, registration).unwrap();
-        let context = context();
+        let public_context = context();
         let parameters =
-            BTreeMap::from([("provider_model_id".to_owned(), json!("qwen-image-2.0"))]);
+            BTreeMap::from([("provider_model_id".to_owned(), json!("qwen-image-3.0-pro"))]);
+        let source = ResourceRef::url(
+            "https://public.example/a.png".to_owned(),
+            Some("image/png".to_owned()),
+        );
         let edit = CodecInput {
             canonical_request: AiccCall::ImageToImage(ImageToImageRequest::new(
                 "ignored",
-                vec![ResourceRef::url(
-                    "https://example.com/a.png".to_owned(),
-                    Some("image/png".to_owned()),
-                )],
+                vec![source],
                 "edit".to_owned(),
             )),
             resolved_parameters: parameters.clone(),
         };
+        let input = NativeTaskInput {
+            operation: NativeTaskOperation::Submit,
+            remote_task_id: None,
+            codec_input: Some(&edit),
+            resolved_parameters: &parameters,
+            context: &public_context,
+        };
         let request = registry
-            .encode(
+            .encode_native(
                 QWEN_MEDIA_ADAPTER_ID,
-                QWEN_IMAGE_EDIT_OPERATION_ID,
+                QWEN_IMAGE_GENERATION_OPERATION_ID,
                 ApiType::ImageImageToImage,
-                &edit,
-                &context,
+                &input,
             )
             .unwrap();
-        assert_eq!(request.url, "https://ws.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation");
-        assert!(request.headers.get("x-dashscope-async").is_none());
+        assert_eq!(request.url, "https://ws.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/image-generation/generation");
+        assert_eq!(request.headers.get("x-dashscope-async").unwrap(), "enable");
+        let HttpBody::Json(body) = &request.body else {
+            panic!("Qwen image edit did not encode a JSON body")
+        };
+        assert_eq!(
+            body["input"]["messages"][0]["content"][0]["image"],
+            "https://public.example/a.png"
+        );
+
+        let protected_source = ResourceRef::url(
+            "https://owner-only.example/a.png".to_owned(),
+            Some("image/png".to_owned()),
+        );
+        let mut protected_context = context();
+        protected_context.resources.insert(
+            crate::resource::ResourceKey::from_ref(&protected_source).into_string(),
+            MaterializedResource::new(Bytes::from_static(b"image"), "image/png", None).unwrap(),
+        );
+        let protected_edit = CodecInput {
+            canonical_request: AiccCall::ImageToImage(ImageToImageRequest::new(
+                "ignored",
+                vec![protected_source],
+                "edit".to_owned(),
+            )),
+            resolved_parameters: parameters.clone(),
+        };
+        let protected_input = NativeTaskInput {
+            operation: NativeTaskOperation::Submit,
+            remote_task_id: None,
+            codec_input: Some(&protected_edit),
+            resolved_parameters: &parameters,
+            context: &protected_context,
+        };
+        let protected_request = registry
+            .encode_native(
+                QWEN_MEDIA_ADAPTER_ID,
+                QWEN_IMAGE_GENERATION_OPERATION_ID,
+                ApiType::ImageImageToImage,
+                &protected_input,
+            )
+            .unwrap();
+        let HttpBody::Json(protected_body) = &protected_request.body else {
+            panic!("Qwen image edit did not encode a JSON body")
+        };
+        assert_eq!(
+            protected_body["input"]["messages"][0]["content"][0]["image"],
+            "data:image/png;base64,aW1hZ2U="
+        );
+        assert!(!protected_body.to_string().contains("owner-only.example"));
 
         let mut generate = VideoGenerateRequest::new("wan@qwen", Some("cat".to_owned()));
         generate.negative_prompt = Some("blur".to_owned());
@@ -757,7 +1009,7 @@ mod tests {
             remote_task_id: None,
             codec_input: Some(&video),
             resolved_parameters: &video_parameters,
-            context: &context,
+            context: &public_context,
         };
         let request = registry
             .encode_native(

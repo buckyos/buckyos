@@ -227,3 +227,7 @@ agent_runtime.computer_use
 ## Decision 目录与资格（2026-09-25）
 
 `decision` 是非 LLM Hybrid 入口，默认 strict / cost_first，零库存也可查询；TypeSafe 通过 `logical_mounts` 进入该目录，不声明 `llm` 或 effort。`requirements.decision` 合并请求与目录下限，包括题型集合、结构化输入/规则、题数、选项、等级和字节数。候选还须支持 `decision.probabilities`；exact、preview、fallback 使用相同硬过滤和现有逐层权重展开。见 [Decision API](decision_api.md)。
+
+## 显式服务端默认用途
+
+`instance_rules.server_default_routes` 是普通 task→spec 准入之外的显式入口。仅对已识别的 LLM 基础 exact，按实例和模型 ID 将其加入指定任务，来源为 `provider_default`；不生成 effort，不放宽普通 overlay 的结构校验，不绕过 direct_only、实验模型与策略限制。参数与持久化契约见 [服务端默认模式](provider_server_defaults.md)。

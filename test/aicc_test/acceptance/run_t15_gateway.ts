@@ -1,4 +1,5 @@
 import { decisionInput, assertDecisionResult } from "./decision.ts";
+import {firstReusableResource} from "./payloads.ts";
 import { type ChildProcess, spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -22,7 +23,7 @@ import {
   setCloudUpdateSource,
   waitCloudUpdateConverged,
 } from "./cloud_update_transaction.ts";
-import { validateCaseManifest } from "./manifest.ts";
+import { validateCaseManifest, validateProviderBaseline } from "./manifest.ts";
 import {
   buildT15Manifest,
   loadProviderProtocolCatalog,
@@ -42,6 +43,7 @@ import type {
   CaseReport,
   ProviderInventory,
   ProviderModel,
+  ProviderBaseline,
 } from "./types.ts";
 
 type Options = {
@@ -58,6 +60,7 @@ type Options = {
   configAllowsMutation: boolean;
   cliAllowsMutation: boolean;
   providers: string[];
+  modelIds: string[];
   caseIds: string[];
   reportDir: string;
   timeoutMs: number;
@@ -78,7 +81,7 @@ type CaseResult = {
   method: string;
   protocol_contract_id?: string;
   scenario: string | null;
-  status: "passed" | "failed";
+  status: "passed" | "failed" | "skipped";
   diagnostic?: string;
   captured_requests: number;
   started_at: string;
@@ -143,6 +146,7 @@ function options(args: string[]): Options {
     configAllowsMutation: process.env.AICC_T15_ALLOW_CONFIG_MUTATION === "true",
     cliAllowsMutation: false,
     providers: [],
+    modelIds: [],
     caseIds: [],
     reportDir: "reports/acceptance",
     timeoutMs: 120_000,
@@ -170,6 +174,8 @@ function options(args: string[]): Options {
       parsed.password = required(args, index++, arg);
     } else if (arg === "--provider") {
       parsed.providers.push(required(args, index++, arg));
+    } else if (arg === "--model") {
+      parsed.modelIds.push(required(args, index++, arg));
     } else if (arg === "--case") {
       parsed.caseIds.push(required(args, index++, arg));
     } else if (arg === "--mock-base-url") {
@@ -313,6 +319,7 @@ async function capturedRequests(baseUrl: string): Promise<
     pathname?: string;
     body?: unknown;
     async_step?: "poll" | "result" | "cancel";
+    method?: string;
   }>
 > {
   const response = await fetch(`${baseUrl}/__mock/requests`);
@@ -330,12 +337,35 @@ async function capturedRequests(baseUrl: string): Promise<
   >;
 }
 
+export function protocolModelIds(provider: ProviderProtocolCatalog["providers"][number]): string[] {
+  return [...new Set([
+    ...Object.values(provider.official_first_party_model_ids ?? {}).flat(), ...Object.values(provider.official_aggregated_model_ids ?? {}).flat(),
+    ...(provider.official_variant_rules ?? []).flatMap((rule) => rule.model_ids), ...Object.values(provider.test_model_ids),
+    ...provider.contracts.flatMap((contract) => [...Object.values(contract.test_model_ids ?? {}), ...Object.values(contract.conformance_test_model_ids ?? {}).flat()]),
+  ])];
+}
+
+export function scopeProtocolModels(catalog: ProviderProtocolCatalog, drivers: readonly string[], ids: readonly string[]): ProviderProtocolCatalog {
+  if (!ids.length) return catalog;
+  if (drivers.length !== 1) throw new Error("--model requires exactly one --provider");
+  const copy = structuredClone(catalog);
+  const provider = copy.providers.find((provider) => provider.provider_driver === drivers[0]);
+  if (!provider || ids.some((id) => !protocolModelIds(provider).includes(id))) throw new Error("unknown model in the selected official protocol inventory");
+  provider.official_variant_rules = provider.official_variant_rules?.map((rule) => ({ ...rule, model_ids: rule.model_ids.filter((id) => ids.includes(id)) })).filter((rule) => rule.model_ids.length > 0);
+  for (const field of ["official_first_party_model_ids", "official_aggregated_model_ids"] as const) {
+    const models = provider[field];
+    if (models) provider[field] = Object.fromEntries(Object.entries(models).map(([api, models]) => [api, models.filter((id) => ids.includes(id))]));
+  }
+  return copy;
+}
+
 async function addProvider(
   session: GatewaySession,
   catalog: ProviderProtocolCatalog,
   driver: string,
   instance: string,
   mockBaseUrl: string,
+  excludedModels: readonly string[] = [],
 ): Promise<void> {
   const provider = catalog.providers.find((candidate) =>
     candidate.provider_driver === driver
@@ -427,6 +457,7 @@ async function addProvider(
     ...provider.instance_fields,
     ...(catalogDiscovery ? { discovery: catalogDiscovery } : {}),
     auto_sync_models: driver !== "google-gemini",
+    ...(excludedModels.length ? { instance_rules: { exclude_models: excludedModels } } : {}),
   };
   try {
     await session.aicc.call("provider.add", draft);
@@ -1055,20 +1086,20 @@ export function buildT15TypedParams(
     case "video.edit":
       return {
         ...common,
-        video: resource("video/mp4"),
-        prompt: "Make it snow",
+        video: typedOptions.sourceResource ?? resource("video/mp4"),
+        prompt: "Preserve motion",
       };
     case "video.extend":
       return {
         ...common,
-        video: resource("video/mp4"),
+        video: typedOptions.sourceResource ?? resource("video/mp4"),
         prompt: "Continue the motion",
         duration_seconds: 2,
       };
     case "video.upscale":
       return {
         ...common,
-        video: resource("video/mp4"),
+        video: typedOptions.sourceResource ?? resource("video/mp4"),
         target_resolution: "1080p",
       };
     case "decision": return { ...common, ...decisionInput() };
@@ -1306,18 +1337,8 @@ function artifactSources(
   ];
 }
 
-function firstReusableArtifact(value: unknown): Record<string, unknown> {
-  const source = artifactSources(value).find((candidate) =>
-    typeof candidate.obj_id === "string" ||
-    typeof candidate.url === "string" ||
-    typeof candidate.data_base64 === "string"
-  );
-  if (!source) {
-    throw new Error(
-      "generated artifact source did not expose a reusable resource reference",
-    );
-  }
-  return source;
+export function firstReusableArtifact(value: unknown): Record<string, unknown> {
+  return firstReusableResource(artifactSources(taskResultPayload(value)));
 }
 
 async function downloadUrlArtifacts(
@@ -1403,6 +1424,25 @@ export function assertT15ResponseMapping(
       `typed ${apiType} response is missing Provider operation attribution`,
     );
   }
+}
+
+export function variantWireDiagnostics(
+  expectedModel: string,
+  expectedOptions: Record<string, unknown>,
+  requests: Array<{body?:unknown;pathname?:string}>,
+): string[] {
+  const submit = requests.find((request) => request.body && typeof request.body === "object");
+  const body = submit?.body as Record<string,unknown> | undefined;
+  const diagnostics: string[] = [];
+  if (body?.model !== expectedModel && !submit?.pathname?.includes(encodeURIComponent(expectedModel))) {
+    diagnostics.push(`variant model was not lowered to ${expectedModel}`);
+  }
+  for (const [name,expected] of Object.entries(expectedOptions)) {
+    if (!sameJsonSemantics(body?.[name], expected)) {
+      diagnostics.push(`variant Provider option ${name} was not lowered to ${JSON.stringify(expected)}`);
+    }
+  }
+  return diagnostics;
 }
 
 async function executeCase(
@@ -1619,6 +1659,12 @@ async function executeCase(
   const observedAsyncSteps = new Set(
     requests.map((request) => request.async_step).filter(Boolean),
   );
+  if (contract.computer_screenshot_handshake && !expectsFailure) {
+    const turns = requests.filter((request) => request.method === "POST" && request.pathname === contract.path);
+    if (turns.length !== 2 || (turns[1].body as Record<string, unknown>)?.previous_response_id !== "resp_observation_mock_1") {
+      diagnostics.push("computer-use did not complete the correlated screenshot handshake");
+    }
+  }
   if (testCase.mock_scenario === "async_success") {
     for (
       const step of contract.async_steps?.filter((candidate) =>
@@ -1646,35 +1692,12 @@ async function executeCase(
     testCase.model_selector?.kind === "exact" &&
     model.exact_model === testCase.model_selector.value
   );
-  if (selectedModel?.provider_actual_model_id) {
-    const providerRequest = requests.at(-1);
-    const body =
-      providerRequest?.body && typeof providerRequest.body === "object"
-        ? providerRequest.body as Record<string, unknown>
-        : {};
-    if (
-      body.model !== selectedModel.provider_actual_model_id &&
-      !providerRequest?.pathname?.includes(
-        encodeURIComponent(selectedModel.provider_actual_model_id),
-      )
-    ) {
-      diagnostics.push(
-        `variant model was not lowered to ${selectedModel.provider_actual_model_id}`,
-      );
-    }
-    for (
-      const [name, expected] of Object.entries(
-        testCase.expected_provider_options ?? {},
-      )
-    ) {
-      if (JSON.stringify(body[name]) !== JSON.stringify(expected)) {
-        diagnostics.push(
-          `variant Provider option ${name} was not lowered to ${
-            JSON.stringify(expected)
-          }`,
-        );
-      }
-    }
+  const variantProvider = catalog.providers.find((provider) => provider.provider_driver === testCase.provider_driver);
+  const expectedVariantModel = selectedModel && variantProvider?.official_variant_rules?.flatMap((rule) =>
+    rule.model_ids.filter((modelId) => Object.keys(rule.variants).some((variant) =>
+      `${modelId}:${variant}` === selectedModel.provider_model_id))).at(0);
+  if (expectedVariantModel) {
+    diagnostics.push(...variantWireDiagnostics(expectedVariantModel,testCase.expected_provider_options ?? {},requests));
   }
   if (testCase.tags.includes("cloud_update")) {
     const body = requests.at(-1)?.body;
@@ -1744,6 +1767,61 @@ async function executeCase(
     started_at: startedAt,
     elapsed_ms: Date.now() - started,
   };
+}
+
+async function executeServerDefaultCase(session: GatewaySession, catalog: ProviderProtocolCatalog, testCase: AcceptanceCase, input: Options, runId: string): Promise<CaseResult> {
+  const started = Date.now();
+  const startedAt = new Date().toISOString();
+  const provider = catalog.providers.find((provider) => provider.provider_driver === testCase.provider_driver)!;
+  const config = provider.server_default_test!;
+  const instance = `${runId}-server-default`;
+  const result: CaseResult = { case_id: testCase.case_id, provider_driver: provider.provider_driver, provider_instance: instance,
+    api_type: "llm", method: testCase.method, protocol_contract_id: config.contract_id, scenario: "success", status: "failed", captured_requests: 0, started_at: startedAt, elapsed_ms: 0 };
+  let added = false;
+  try {
+    await selectMock(input.mockControlUrl, testCase, runId);
+    const draft = {
+      provider_instance_name: instance, provider_type: "cloud_api", provider_profile_id: "custom",
+      provider_rules_id: provider.provider_profile_id, protocol_adapter_id: config.protocol_adapter_id,
+      base_url: `${input.mockBaseUrl}${provider.endpoint_path}/custom`,
+      operation_base_urls: { [protocolContract(catalog, provider.provider_driver, config.contract_id).operation]: `${input.mockBaseUrl}${provider.endpoint_path}` },
+      credentials: { api_token: { inline_secret: `t15-mock-${provider.provider_driver}` } },
+      instance_rules: { model_driver_overrides: { [config.model_id]: config.model_driver }, server_default_routes: { [config.model_id]: ["llm.chat"] } },
+      discovery: { revision: runId, discovered_at_ms: Date.now(), health: "healthy", models: [{ provider_model_id: config.model_id, api_types: ["llm"], availability: "available", deprecated: false }] },
+    };
+    const validation = await session.aicc.call("provider.validate", draft) as Record<string, unknown>;
+    if ((validation.errors as unknown[])?.length) throw new Error(`default configuration validation failed: ${JSON.stringify(validation.errors)}`);
+    const expected = `${config.model_id}@${instance}`;
+    if (!(validation.models_recognized as string[])?.includes(config.model_id) || !(validation.routing_candidates as Record<string, string[]>)?.["llm.chat"]?.includes(expected)) throw new Error("advanced configuration was not reflected in readiness validation");
+    await session.aicc.call("provider.add", draft);
+    added = true;
+    const inventory = await waitInventory(session, instance, input.timeoutMs, [config.model_id]);
+    if (!inventory.models.some((model) => model.exact_model.startsWith(`${config.model_id}:reasoning-`))) throw new Error(`configured channel presets were not materialized: ${JSON.stringify(inventory.models.map((model) => model.exact_model))}`);
+    const route = await session.aicc.call("route.resolve", { api_type: "llm", logical_model: "llm.chat", disable: { web_search: true }, policy: { allowed_provider_instances: [instance] } }) as Record<string, unknown>;
+    const exact = `${config.model_id}@${instance}`;
+    if (route.selected_exact_model !== exact) throw new Error(`server default route chose ${String(route.selected_exact_model)}`);
+    const response = await session.aicc.call("chat.completions.create", { exact_model: exact,
+      messages: [{ role: "user", content: [{ type: "text", text: "Return the acceptance marker" }] }],
+      web_search: false, max_output_tokens: 32, idempotency_key: `${runId}:server-default`,
+    }) as Record<string, unknown>;
+    if (response.status !== "succeeded") throw new Error(`server default call status ${String(response.status)}`);
+    assertT15ResponseMapping("llm", response, protocolContract(catalog, provider.provider_driver, config.contract_id));
+    const requests = (await capturedRequests(input.mockControlUrl)).filter((request) => request.method === "POST");
+    result.captured_requests = requests.length;
+    if (requests.length !== 1 || requests.some((request) => (request.validation_errors?.length ?? 0) > 0)) throw new Error("server default request failed the official wire contract");
+    const body = requests[0].body as Record<string, unknown>;
+    if (body.model !== config.model_id || ["reasoning", "thinking", "reasoning_effort", "enable_thinking"].some((field) => field in body)) throw new Error("server default call injected preset reasoning parameters");
+    result.status = "passed"; result.exact_model = exact;
+    result.diagnostic = "identity and presets discovered; llm.chat selected base exact; official wire omitted reasoning controls; typed result and usage decoded";
+  } catch (error) { result.diagnostic = String(error); }
+  finally {
+    if (added) {
+      try { await session.aicc.call("provider.delete", { provider_instance_name: instance }); await waitInventoryAbsent(session, instance, input.timeoutMs); }
+      catch (error) { result.status = "failed"; result.diagnostic = `${result.diagnostic}; cleanup: ${String(error)}`; }
+    }
+    result.elapsed_ms = Date.now() - started;
+  }
+  return result;
 }
 
 async function executeProviderSwitchCase(
@@ -1948,6 +2026,7 @@ async function executeGeneratedArtifactCase(
   const sourceProvider = testCase.artifact_source_provider_driver!;
   const sourceContractId = testCase.artifact_source_contract_id!;
   const sourceApiType = testCase.artifact_source_api_type!;
+  const sourceContract = protocolContract(catalog, sourceProvider, sourceContractId);
   const sourceCase: AcceptanceCase = {
     ...testCase,
     case_id: `${testCase.case_id}.source`,
@@ -1997,13 +2076,16 @@ async function executeGeneratedArtifactCase(
     await selectMock(controlUrl, sourceCase, `${runId}:artifact-source`);
     const sourceResult = await session.aicc.call(
       sourceCase.method,
-      buildT15TypedParams(
-        sourceApiType,
-        sourceExactModel,
-        runId,
-        "immediate",
-        `${testCase.case_id}.source-artifact`,
-      ),
+      {
+        ...buildT15TypedParams(
+          sourceApiType,
+          sourceExactModel,
+          runId,
+          "immediate",
+          `${testCase.case_id}.source-artifact`,
+        ),
+        ...(sourceContract.canonical_request_overrides ?? {}),
+      },
     ) as Record<string, unknown>;
     const sourceTerminal = await terminal(
       session,
@@ -2074,7 +2156,7 @@ async function executeGeneratedArtifactCase(
   const targetBody = targetRequests.find((request) => request.body)?.body;
   const hasProviderArtifactId = containsString(
     targetBody,
-    "gemini_image_mock_1",
+    sourceContract.provider_artifact_identity!.fixture_artifact_id,
   );
   if (testCase.artifact_target_expect_provider_id && !hasProviderArtifactId) {
     diagnostics.push(
@@ -2180,8 +2262,9 @@ export function variantCells(
       return officialModels.size === 0 || officialModels.has(baseModelId);
     }).map((apiType) => {
       const candidates = provider.contracts.filter((candidate) =>
-          candidate.api_types.includes(apiType) ||
-          candidate.variant_api_types?.includes(apiType)
+          (candidate.api_types.includes(apiType) ||
+          candidate.variant_api_types?.includes(apiType)) &&
+          (!candidate.model_ids_by_api_type?.[apiType] || candidate.model_ids_by_api_type[apiType].includes(baseModelId))
         );
       const aggregated = new Set(
         provider.official_aggregated_model_ids?.[apiType] ?? [],
@@ -2217,11 +2300,27 @@ export function variantCells(
   });
 }
 
+export function channelDisablesCase(catalog: ProviderProtocolCatalog, baseline: ProviderBaseline, testCase: AcceptanceCase): boolean {
+  const provider = catalog.providers.find((provider) => provider.provider_driver === testCase.provider_driver);
+  const contract = provider?.contracts.find((contract) => contract.id === testCase.protocol_contract_id);
+  const api = testCase.api_type ?? "";
+  const selected = testCase.model_selector?.kind === "exact" ? testCase.model_selector.value : contract?.test_model_ids?.[api] ?? provider?.test_model_ids[api];
+  if (!selected) return false;
+  const model = selected.split("@")[0].split(":")[0];
+  const profile = baseline.providers.find((profile) => profile.provider_driver === testCase.provider_driver);
+  const rule = profile?.rules.find((rule) => new RegExp(`^${rule.model_pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`, "i").test(model));
+  return rule?.disabled_api_types?.includes(api) ?? false;
+}
+
 async function main(): Promise<void> {
   const input = options(process.argv.slice(2));
   const startedAt = new Date().toISOString();
   await runPreflight();
-  const catalog = await loadProviderProtocolCatalog();
+  const originalCatalog = await loadProviderProtocolCatalog();
+  if (input.modelIds.length && !input.caseIds.length) throw new Error("--model requires explicit --case selections");
+  const catalog = scopeProtocolModels(originalCatalog, input.providers, input.modelIds);
+  const excludedModels = (driver: string) => input.modelIds.length ? protocolModelIds(originalCatalog.providers.find((provider) => provider.provider_driver === driver)!).filter((id) => !input.modelIds.includes(id)) : [];
+  const capabilityBaseline = validateProviderBaseline(JSON.parse(await readFile(join(here, "provider_capability_baseline.json"), "utf8")));
   const selectedProviders = input.providers.length > 0
     ? new Set(input.providers)
     : new Set(catalog.providers.map((provider) => provider.provider_driver));
@@ -2401,7 +2500,7 @@ async function main(): Promise<void> {
         "-",
       );
       let instance = baseInstance;
-      await addProvider(session, catalog, driver, instance, input.mockBaseUrl);
+      await addProvider(session, catalog, driver, instance, input.mockBaseUrl, excludedModels(driver));
       created.push(instance);
       phase = `provider:${driver}:inventory`;
       let inventory = await waitInventory(
@@ -2442,6 +2541,13 @@ async function main(): Promise<void> {
           phase = `provider:${driver}:cases`;
           let isolationGeneration = 0;
           for (const [index, testCase] of manifest.entries()) {
+            if (channelDisablesCase(catalog, capabilityBaseline, testCase)) {
+              results.push({ case_id: testCase.case_id, provider_driver: driver, provider_instance: instance,
+                api_type: testCase.api_type ?? undefined, method: testCase.method, protocol_contract_id: testCase.protocol_contract_id,
+                scenario: testCase.mock_scenario ?? null, status: "skipped", captured_requests: 0,
+                diagnostic: "Explicitly disabled by the reviewed channel capability policy; no inference sent", started_at: new Date().toISOString(), elapsed_ms: 0 });
+              continue;
+            }
             if (index > 0 && input.providerMinIntervalMs > 0) {
               await new Promise((resolvePromise) =>
                 setTimeout(resolvePromise, input.providerMinIntervalMs)
@@ -2493,7 +2599,9 @@ async function main(): Promise<void> {
                 input.timeoutMs,
               );
             }
-            const result = testCase.tags.includes("same_provider_artifact_id")
+            const result = testCase.tags.includes("server_default_mode")
+              ? await executeServerDefaultCase(session!, catalog, testCase, input, runId)
+              : testCase.tags.includes("same_provider_artifact_id")
               ? await executeGeneratedArtifactCase(
                 session!,
                 catalog,
@@ -2540,6 +2648,7 @@ async function main(): Promise<void> {
                   driver,
                   instance,
                   input.mockBaseUrl,
+                  excludedModels(driver),
                 );
                 created.push(instance);
                 inventory = await waitInventory(

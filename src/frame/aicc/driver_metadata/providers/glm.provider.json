@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 4,
+  "revision_seq": 5,
   "provider_profile_id": "glm",
   "supplemental_inventory_api_types": [
     "image.txt2img",
@@ -1782,7 +1782,6 @@
         "origin_model_id": [
           "glm-5v-turbo",
           "glm-5.1",
-          "glm-5.3",
           "glm-5.3-flash",
           "glm-5.2",
           "glm-5-turbo",

@@ -324,9 +324,8 @@ impl fmt::Debug for ResourceMetadata {
 ///   (nothing is downloaded), a `Base64` stays bytes, and a `NamedObject` is
 ///   handed over as the zone's NDN object URL whenever the zone serves named
 ///   objects over HTTP — which avoids inlining a possibly large payload.
-/// - `UrlOnly`: the field is an absolute URL and nothing else. A `Base64`
-///   payload is published into the local NDN store first so that it gains an
-///   object URL of its own.
+/// - `UrlOnly`: the field is an absolute public URL. Inline payloads are
+///   published as named objects when the zone provides object URLs.
 /// - `BytesOnly`: the field carries the payload itself (multipart upload,
 ///   `bytesBase64Encoded`, ...). A `Url` is downloaded and a `NamedObject` is
 ///   read before encoding.
@@ -2007,9 +2006,6 @@ fn inspect_zip(
     Ok(())
 }
 
-/// Names the object under which a `ResourceRef::Base64` payload is published
-/// when the selected protocol needs a URL. The name only has to be a safe file
-/// name — the object's real identity is its content hash, not this string.
 fn inline_resource_name(key: &ResourceKey, mime: &str) -> String {
     let extension = mime
         .split_once('/')
@@ -2544,7 +2540,6 @@ mod tests {
             url.starts_with(ZONE_BASE_URL),
             "unexpected object URL: {url}"
         );
-        // `WriteArtifact` is authorized for the object we just created.
         assert_eq!(
             authorizer.operations.lock().unwrap().as_slice(),
             &[
@@ -2553,17 +2548,15 @@ mod tests {
                 ResourceAccessOperation::WriteArtifact
             ]
         );
-        // The URL must carry the canonical `{obj_type}:{hex}` spelling (the one
-        // `ObjId::to_string` emits), not the base32 spelling of `Display`.
         let advertised = url.strip_prefix(ZONE_BASE_URL).unwrap();
         assert!(
             advertised.contains(':'),
             "object URL must use the `{{obj_type}}:{{hex}}` form, got {advertised}"
         );
-        // The payload really landed in the store under the advertised object.
         let stored = store.files.lock().unwrap().get(advertised).cloned();
         assert_eq!(stored.map(|entry| entry.1), Some(payload.to_vec()));
     }
+
 
     #[tokio::test]
     async fn url_or_bytes_and_bytes_only_forms_keep_base64_inline() {

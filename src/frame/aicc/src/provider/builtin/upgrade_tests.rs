@@ -252,6 +252,77 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
     let openrouter_matcher =
         openrouter::OpenRouterDiscovery::new(HttpTransport::new(Default::default()).unwrap());
     for (provider, id, effort, pointer, expected) in [
+        ("sn", "glm-5", "none", "/reasoning/enabled", json!(false)),
+        ("sn", "glm-5", "thinking", "/reasoning/enabled", json!(true)),
+        ("sn", "glm-5.3", "low", "/reasoning/effort", json!("low")),
+        ("sn", "glm-5.3", "high", "/reasoning/effort", json!("high")),
+        ("sn", "glm-5.3", "max", "/reasoning/effort", json!("max")),
+        ("sn", "kimi-k3", "low", "/reasoning/effort", json!("low")),
+        ("sn", "kimi-k3", "high", "/reasoning/effort", json!("high")),
+        ("sn", "kimi-k3", "max", "/reasoning/effort", json!("max")),
+        (
+            "sn",
+            "qwen3.6-plus",
+            "none",
+            "/reasoning/enabled",
+            json!(false),
+        ),
+        (
+            "sn",
+            "qwen3.6-plus",
+            "thinking",
+            "/reasoning/enabled",
+            json!(true),
+        ),
+        (
+            "sn",
+            "qwen3.7-plus",
+            "none",
+            "/reasoning/enabled",
+            json!(false),
+        ),
+        (
+            "sn",
+            "qwen3.7-plus",
+            "thinking",
+            "/reasoning/enabled",
+            json!(true),
+        ),
+        (
+            "sn",
+            "qwen3.8-max-0902",
+            "low",
+            "/reasoning/effort",
+            json!("low"),
+        ),
+        (
+            "sn",
+            "qwen3.8-max-0902",
+            "medium",
+            "/reasoning/effort",
+            json!("medium"),
+        ),
+        (
+            "sn",
+            "qwen3.8-max-0902",
+            "xhigh",
+            "/reasoning/effort",
+            json!("xhigh"),
+        ),
+        (
+            "qwen",
+            "qwen3.8-max-0902",
+            "none",
+            "/reasoning/effort",
+            json!("none"),
+        ),
+        (
+            "openrouter",
+            "qwen/qwen3.8-max-0902",
+            "xhigh",
+            "/reasoning/effort",
+            json!("xhigh"),
+        ),
         (
             "qwen",
             "qwen3.8-flash",
@@ -395,21 +466,21 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
         ),
         (
             "sn",
-            "gpt-6.1-sol",
+            "gpt-6-sol",
             "medium",
             "/reasoning/effort",
             json!("medium"),
         ),
         (
             "sn",
-            "gpt-6.1-sol",
+            "gpt-6-sol",
             "max",
             "/reasoning/effort",
             json!("max"),
         ),
         (
             "sn",
-            "gpt-6.1-terra",
+            "gpt-6-luna",
             "none",
             "/reasoning/effort",
             json!("none"),
@@ -422,7 +493,7 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
             json!("high"),
         ),
         ("sn", "glm-5", "thinking", "/reasoning/enabled", json!(true)),
-        ("sn", "glm-5", "none", "/reasoning/effort", json!("none")),
+        ("sn", "glm-5", "none", "/reasoning/enabled", json!(false)),
         ("sn", "glm-5.3", "high", "/reasoning/effort", json!("high")),
         ("sn", "glm-5.3", "max", "/reasoning/effort", json!("max")),
         ("sn", "kimi-k3", "max", "/reasoning/effort", json!("max")),
@@ -437,8 +508,8 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
             "sn",
             "qwen3.7-plus",
             "none",
-            "/reasoning/effort",
-            json!("none"),
+            "/reasoning/enabled",
+            json!(false),
         ),
         (
             "sn",
@@ -528,12 +599,23 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
         let models =
             crate::service::builtin_registry_for_test(&catalog, &[inv.as_model_inventory()]);
         let exact = format!("{id}:reasoning-{effort}@test");
+        if provider == "sn" {
+            assert!(
+                models
+                    .resolve_candidates("llm.chat", ApiType::Llm)
+                    .unwrap()
+                    .candidates
+                    .iter()
+                    .any(|candidate| candidate.model.identity.provider_model_id == id),
+                "{exact} not admitted to chat"
+            );
+        }
         let caller = CallerIdentity {
             tenant_id: "tenant".into(),
             user_id: "user".into(),
             app_id: None,
         };
-        let request = RoutingRequest::new("trace", "request", &exact, ApiType::Llm, caller);
+        let request = RoutingRequest::new("trace", "request", &exact, ApiType::Llm, caller.clone());
         let runtime = models
             .model_views()
             .into_iter()
@@ -581,6 +663,19 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
         let route = Router::new(&models, &policy, &runtime)
             .route(&request)
             .unwrap();
+        if provider == "sn" {
+            let chat = Router::new(&models, &policy, &runtime)
+                .route(&RoutingRequest::new(
+                    "chat-trace",
+                    "chat-request",
+                    "llm.chat",
+                    ApiType::Llm,
+                    caller,
+                ))
+                .unwrap();
+            assert_eq!(chat.selected.provider_model_id, id);
+            assert_eq!(chat.selected.provider_instance_name, "test");
+        }
         // The output cap is optional in the canonical request; protocols that
         // require one get a default, the others must not grow one.
         for max_output_tokens in [Some(2048), None] {
@@ -602,6 +697,7 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
             };
             let target = ProviderCallTarget {
                 provider_rules_id: Some(provider.into()),
+                use_server_defaults: false,
                 base_url: config.base_url.clone(),
                 operation_base_urls: BTreeMap::new(),
                 credential,
@@ -645,6 +741,8 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
                     body["reasoning"],
                     if effort == "thinking" {
                         json!({"enabled": true})
+                    } else if effort == "none" && (id.starts_with("glm-") || id.starts_with("qwen")) {
+                        json!({"enabled": false})
                     } else {
                         json!({"effort": effort})
                     },
@@ -704,6 +802,13 @@ fn gpt_6_1_presets_match_provider_channels_and_reject_unsupported_efforts() {
         .unwrap();
         assert!(inventory.unmatched_models.is_empty(), "{provider}");
         assert!(inventory.unavailable_presets.is_empty(), "{provider}");
+        if provider == "sn" {
+            assert!(
+                inventory.models.is_empty(),
+                "unlisted SN models must remain excluded"
+            );
+            continue;
+        }
         assert_eq!(inventory.models.len(), 2, "{provider}");
         let registry =
             crate::service::builtin_registry_for_test(&catalog, &[inventory.as_model_inventory()]);
@@ -753,7 +858,11 @@ fn sn_presets_follow_model_metadata_and_discovery_restrictions() {
         .unwrap();
     let ids = catalog
         .llm_models()
-        .filter(|(driver, _, _)| *driver == "openai")
+        .filter(|(driver, id, _)| {
+            *driver == "openai"
+                && catalog.provider_rules("sn").unwrap().models.iter()
+                    .any(|rule| rule.id == *id && !rule.exclude)
+        })
         .map(|(_, id, _)| id)
         .collect::<Vec<_>>();
     assert!(!ids.is_empty());
@@ -819,10 +928,12 @@ fn sn_reasoning_presets_do_not_leak_to_non_llm_models_or_unsupported_drivers() {
     )
     .unwrap();
     assert!(inventory.unmatched_models.is_empty());
-    assert_eq!(inventory.models.len(), ids.len());
-    for model in &inventory.models {
-        assert!(model.variants.is_empty(), "{}", model.provider_model_id);
-    }
+    assert_eq!(inventory.models.len(), 1);
+    assert_eq!(inventory.models[0].provider_model_id, "gpt-image-2");
+    assert!(inventory.models[0].variants.is_empty());
+    assert!(!inventory.models.iter().any(|model| {
+        ["whisper-1", "claude-sonnet-5"].contains(&model.provider_model_id.as_str())
+    }));
 }
 
 #[test]

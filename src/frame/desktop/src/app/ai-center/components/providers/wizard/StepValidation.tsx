@@ -26,6 +26,7 @@ export function StepValidation({ draft, onResult }: StepValidationProps) {
     { key: 'balance', label: t('aiCenter.wizard.checkBalance', 'Checking balance capability...'), status: 'pending' },
   ])
   const [models, setModels] = useState<string[]>([])
+  const [readiness, setReadiness] = useState<ValidationResult | null>(null)
 
   const detailFor = (result: ValidationResult, ...kinds: NonNullable<ValidationResult['error_details']>[number]['kind'][]) =>
     result.error_details?.find((item) => kinds.includes(item.kind))?.message
@@ -36,6 +37,7 @@ export function StepValidation({ draft, onResult }: StepValidationProps) {
 
     void store.validateConnection(draft).then((result) => {
       if (cancelled) return
+      setReadiness(result)
       const steps = [
         {
           key: 'base_url',
@@ -140,6 +142,16 @@ export function StepValidation({ draft, onResult }: StepValidationProps) {
 
   return (
     <div className="flex flex-col gap-4 max-w-lg">
+      {readiness && (
+        <div className="rounded-lg border p-3 text-xs" style={{ borderColor: 'var(--cp-border)' }}>
+          <p>{t('aiCenter.wizard.recognizedModels', 'Recognized models')}: {readiness.models_recognized?.length ?? 0}</p>
+          <p>{t('aiCenter.wizard.chatCandidates', 'Configured chat candidates')}: {readiness.routing_candidates?.['llm.chat']?.length ?? 0}</p>
+          <p>{t('aiCenter.wizard.unmappedPresets', 'Presets without channel mapping')}: {readiness.unavailable_presets?.length ?? 0}</p>
+          <p>{t('aiCenter.wizard.unknownModels', 'Models needing an identity mapping')}: {readiness.unmatched_models?.length ?? 0}</p>
+          {(readiness.warnings ?? []).map((warning) => <p key={warning} style={{ color: 'var(--cp-warning)' }}>{warning}</p>)}
+          <p>{t('aiCenter.wizard.readinessScope', 'These checks validate configuration only. Access policies and a real model call are required to confirm conversation readiness.')}</p>
+        </div>
+      )}
       {checks.map((check) => (
         <div key={check.key} className="flex items-start gap-3">
           <div className="pt-0.5">{statusIcon(check.status)}</div>

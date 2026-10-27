@@ -1,5 +1,6 @@
 import { decisionInput, assertDecisionResult } from "./decision.ts";
 import type { MatrixCell } from "./types.ts";
+import computerFixture from "../fixtures/computer_click.json" with { type: "json" };
 
 export type ResourceRef =
   | { kind: "url"; url: string; mime_hint?: string }
@@ -7,6 +8,22 @@ export type ResourceRef =
   | { kind: "base64"; mime: string; data_base64: string };
 
 export type ResourceRepresentation = ResourceRef["kind"];
+
+export function firstReusableResource(candidates:readonly Record<string,unknown>[]): ResourceRef {
+  for(const candidate of candidates) {
+    if(candidate.kind === "named_object" && typeof candidate.obj_id === "string" && candidate.obj_id) {
+      return {kind:"named_object",obj_id:candidate.obj_id};
+    }
+    if(candidate.kind === "url" && typeof candidate.url === "string" && candidate.url) {
+      return {kind:"url",url:candidate.url,...(typeof candidate.mime_hint === "string" ? {mime_hint:candidate.mime_hint} : {})};
+    }
+    if(candidate.kind === "base64" && typeof candidate.data_base64 === "string" && candidate.data_base64 &&
+        typeof candidate.mime === "string" && candidate.mime) {
+      return {kind:"base64",mime:candidate.mime,data_base64:candidate.data_base64};
+    }
+  }
+  throw new Error("generated artifact source did not expose a reusable ResourceRef");
+}
 export type ResourceFixture = ResourceRef | Partial<Record<ResourceRepresentation, ResourceRef>>;
 
 export type FixtureRefs = {
@@ -207,16 +224,12 @@ function io(
     case "agent.computer_use":
       return {
         input_json: {
-          task: "Report the title visible in the supplied test environment.",
+          task: "Use the computer tool to return exactly one left-click action inside the only blue rectangular button on the attached screenshot. Do not wait or type.",
           environment: {
             environment_id: "aicc-t1-browser",
             session_id: "aicc-t1-computer-session",
-            screenshot: {
-              kind: "base64",
-              mime: "image/png",
-              data_base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
-            },
-            viewport: { width: 1280, height: 720 },
+            screenshot: computerFixture.screenshot,
+            viewport: computerFixture.viewport,
           },
           allowed_actions: ["left_click"],
         },
@@ -378,12 +391,23 @@ export function assertResponseShape(
     ...(response.image ? [{ type: "image", source: response.image }] : []),
     ...(response.audio ? [{ type: "audio", source: response.audio }] : []),
     ...(response.video ? [{ type: "video", source: response.video }] : []),
+    ...(Array.isArray(response.videos) ? response.videos.map((video) => {
+      const value = video as Record<string, unknown>;
+      return { type: "video", source: { ...(value.resource as Record<string, unknown>), mime_hint: value.media_type } };
+    }) : []),
     ...(response.artifacts && typeof response.artifacts === "object"
       ? Object.values(response.artifacts as Record<string, unknown>).map((source) => ({ type: "document", source }))
       : []),
   ];
   const typedMessage = response.message && typeof response.message === "object"
-    ? response.message
+    ? {
+      ...response.message,
+      content: [
+        ...(Array.isArray((response.message as Record<string, unknown>).content)
+          ? (response.message as Record<string, unknown>).content as unknown[] : []),
+        ...typedArtifacts,
+      ],
+    }
     : {
       role: "assistant",
       content: [
@@ -532,9 +556,12 @@ export function assertResponseShape(
       throw new Error("computer-use must return exactly one action");
     }
     const action = actions[0] as Record<string, unknown>;
-    if (action.type !== "left_click" || action.x !== 640 || action.y !== 360 ||
+    const target = computerFixture.target;
+    if (action.type !== "left_click" || typeof action.x !== "number" || !Number.isFinite(action.x) ||
+      typeof action.y !== "number" || !Number.isFinite(action.y) ||
+      action.x < target.left || action.x >= target.right || action.y < target.top || action.y >= target.bottom ||
       response.requires_next_observation !== true) {
-      throw new Error("computer-use did not return the allowed deterministic click action");
+      throw new Error("computer-use did not return one allowed click inside the screenshot button");
     }
     return;
   }
@@ -555,14 +582,16 @@ export function assertResponseShape(
     const hasMime = artifacts.some((item, index) => {
       const source = (item as Record<string, unknown>).source;
       if (!source || typeof source !== "object") return false;
-      const resource = source as Record<string, unknown>;
+      const envelope = source as Record<string, unknown>;
+      const resource = envelope.resource && typeof envelope.resource === "object" && !Array.isArray(envelope.resource)
+        ? envelope.resource as Record<string, unknown> : envelope;
       const materializedMime = materialized.find((entry) => entry.content_index === index)?.mime;
       const sidebandMime = sidebandArtifacts.find((entry) => {
         const artifactResource = entry.resource;
         return artifactResource && typeof artifactResource === "object" && !Array.isArray(artifactResource) &&
           (artifactResource as Record<string, unknown>).obj_id === resource.obj_id;
       })?.mime;
-      const mime = resource.mime_hint ?? resource.mime ?? materializedMime ?? sidebandMime;
+      const mime = resource.mime_hint ?? envelope.mime ?? resource.mime ?? materializedMime ?? sidebandMime;
       const contentType = (item as Record<string, unknown>).type;
       const addressable = typeof resource.url === "string" || typeof resource.obj_id === "string" ||
         typeof resource.data_base64 === "string";

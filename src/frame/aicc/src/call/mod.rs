@@ -42,6 +42,7 @@ pub(crate) struct ResolvedPricing {
 #[derive(Clone)]
 pub(crate) struct ProviderCallTarget {
     pub provider_rules_id: Option<String>,
+    pub use_server_defaults: bool,
     pub base_url: String,
     pub operation_base_urls: BTreeMap<String, String>,
     pub credential: ResolvedCredential,
@@ -381,7 +382,7 @@ impl<'a> CallResolver<'a> {
                 canonical_fields.extend(request_rule.canonical_fields.clone());
             }
         }
-        let canonical_provider_options =
+        let mut canonical_provider_options =
             apply_canonical_mappings(&mut canonical_json, &mut normalized, &canonical_fields)?;
         merge_user_options(&mut normalized, &canonical_json, option_keys);
         if let Some(rule) = &provider_rule {
@@ -445,6 +446,30 @@ impl<'a> CallResolver<'a> {
                     &mut normalized,
                     &serde_json::json!({"generation_config": config}),
                 );
+            }
+        }
+        if target.use_server_defaults && api_type == ApiType::Llm {
+            for key in [
+                "reasoning",
+                "reasoning_effort",
+                "thinking",
+                "thinking_budget",
+                "enable_thinking",
+                "preserve_thinking",
+            ] {
+                normalized
+                    .as_object_mut()
+                    .expect("normalized object")
+                    .remove(key);
+                canonical_provider_options.remove(key);
+            }
+            if let Some(config) = normalized
+                .get_mut("generation_config")
+                .and_then(Value::as_object_mut)
+            {
+                for key in ["thinking_level", "thinking_budget", "thinking_config"] {
+                    config.remove(key);
+                }
             }
         }
         let descriptor = self
@@ -1297,7 +1322,7 @@ fn provider_parameters(
     parameters
 }
 
-fn collect_resource_requirements(value: &Value) -> Vec<ResourceRequirement> {
+pub(crate) fn collect_resource_requirements(value: &Value) -> Vec<ResourceRequirement> {
     fn visit(value: &Value, pointer: &str, output: &mut Vec<ResourceRequirement>) {
         if value.get("kind").and_then(Value::as_str).is_some() {
             if let Ok(resource) = serde_json::from_value::<ResourceRef>(value.clone()) {
@@ -1746,6 +1771,7 @@ mod tests {
     fn target(secret: &str) -> ProviderCallTarget {
         ProviderCallTarget {
             provider_rules_id: Some("openai".into()),
+            use_server_defaults: false,
             base_url: "https://api.openai.test/v1".into(),
             operation_base_urls: BTreeMap::new(),
             credential: ResolvedCredential::bearer("secret://openai/main", secret).unwrap(),
@@ -1772,6 +1798,46 @@ mod tests {
         request.top_p = Some(0.9);
         request.max_output_tokens = Some(200);
         AiccCall::ChatCompletionsCreate(request)
+    }
+
+    #[test]
+    fn issue666_server_default_base_call_does_not_inject_reasoning() {
+        let catalog = catalog();
+        let codecs = codecs();
+        let mut call = call();
+        let AiccCall::ChatCompletionsCreate(request) = &mut call else {
+            unreachable!()
+        };
+        request.exact_model = "gpt-5.2@openai-primary".into();
+        let mut route = decision("gpt-5.2@openai-primary");
+        route.selected.model_uid = "openai:gpt-5.2:openai-responses".into();
+        let mut destination = target("test-secret");
+        destination.use_server_defaults = true;
+        let lowered = CallResolver::new(&catalog, &codecs)
+            .lower(&route, &call, destination)
+            .unwrap();
+        assert!(lowered.variant.is_none());
+        assert!(!lowered.input.resolved_parameters.contains_key("reasoning"));
+        assert!(!lowered.input.resolved_parameters.contains_key("thinking"));
+        assert!(!lowered
+            .input
+            .resolved_parameters
+            .contains_key("reasoning_effort"));
+        let wire = codecs
+            .encode(
+                "openai-responses",
+                &lowered.operation,
+                lowered.api_type,
+                &lowered.input,
+                &lowered.context,
+            )
+            .unwrap();
+        let crate::protocol::HttpBody::Json(body) = wire.body else {
+            panic!("expected JSON")
+        };
+        for key in ["reasoning", "thinking", "reasoning_effort"] {
+            assert!(body.get(key).is_none(), "{body}");
+        }
     }
 
     #[test]
@@ -2741,7 +2807,7 @@ mod tests {
             .map(str::to_owned)
             .collect::<Vec<_>>();
         assert_eq!(golden, documented);
-        assert_eq!(golden.len(), 113);
+        assert_eq!(golden.len(), 131);
         assert!(golden.contains(&"typesafe|typesafe-systemone|decision|systemone.evaluate".into()));
         assert!(golden.contains(&"openai|openai-responses|llm|responses.create".into()));
         assert!(
@@ -2774,6 +2840,8 @@ mod tests {
         assert!(golden.contains(&"qwen|qwen-responses|llm|responses.create".into()));
         assert!(golden.contains(&"qwen|qwen-responses|llm|chat.completions.create".into()));
         assert!(golden.contains(&"sn|sn-openai|llm|responses.create".into()));
+        assert!(golden.contains(&"sn|sn-openai|embedding.text|embeddings.create".into()));
+        assert!(golden.contains(&"sn|sn-openai|image.txt2img|images.generate".into()));
     }
     #[test]
     fn request_rewrites_cannot_override_a_selected_effort() {

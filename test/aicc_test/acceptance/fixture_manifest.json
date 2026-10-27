@@ -435,6 +435,38 @@
       "source": "deterministic:generate_fixtures.py"
     },
     {
+      "id": "computer-click-png",
+      "path": "../fixtures/computer_click.png",
+      "mime": "image/png",
+      "size": 4108,
+      "sha256": "f59672d39029791d4339bcc9f303f96b093f0d0397d0a8f4313518853805c9f6",
+      "facts": [
+        "computer_click"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "computer-click-json",
+      "path": "../fixtures/computer_click.json",
+      "mime": "application/json",
+      "size": 5721,
+      "sha256": "da07ea9b1a594fc50564298eb093c3716fe0fc76ed4eedca5a0dc43c4e06bc3d",
+      "facts": [
+        "computer_click"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
       "id": "zip-single-document-zip",
       "path": "../fixtures/zip_single_document.zip",
       "mime": "application/zip",

@@ -649,6 +649,7 @@ fn connection_contract() -> ProviderConnectionContract {
 
 fn draft(auth: ProviderAuthConfig) -> ProviderDraftConfig {
     ProviderDraftConfig {
+        instance_rules: None,
         provider_instance_name: "draft-provider".into(),
         provider_profile_id: "openai".into(),
         protocol_adapter_id: "openai-responses".into(),
@@ -783,15 +784,23 @@ fn inventory_intersects_capabilities_and_uses_dynamic_pricing() {
 async fn draft_validation_negotiates_without_runtime_or_storage_side_effects() {
     let store = Arc::new(MemoryStore::default());
     let discovery = Arc::new(WorkspaceRecordingDiscovery {
-        snapshot: discovery("gpt-test"),
+        snapshot: discovery("endpoint-alias"),
         workspaces: Mutex::new(Vec::new()),
     });
     let (manager, _) = manager(store.clone(), discovery.clone());
-    let draft = draft(ProviderAuthConfig::ApiKey {
+    let mut draft = draft(ProviderAuthConfig::ApiKey {
         credential_ref: "system-config://secrets/aicc/openai".into(),
         credential_kind: None,
     });
 
+    let mut rules = buckyos_api::ProviderInstanceRules::default();
+    rules
+        .model_driver_overrides
+        .insert("endpoint-alias".into(), "openai/gpt-test".into());
+    rules
+        .server_default_routes
+        .insert("endpoint-alias".into(), BTreeSet::from(["llm.chat".into()]));
+    draft.instance_rules = Some(rules);
     let negotiated = manager
         .validate_draft(&draft, &connection_contract(), discovery.as_ref(), None)
         .await
@@ -810,6 +819,11 @@ async fn draft_validation_negotiates_without_runtime_or_storage_side_effects() {
     );
     assert_eq!(negotiated.catalog_revision_seq, 7);
     assert_eq!(negotiated.inventory.models.len(), 1);
+    assert_eq!(negotiated.inventory.models[0].origin_model_id, "gpt-test");
+    assert_eq!(
+        negotiated.inventory.models[0].server_default_routes,
+        BTreeSet::from(["llm.chat".into()])
+    );
     assert_eq!(store.commits.load(Ordering::SeqCst), 0);
     assert!(store.records.lock().await.is_empty());
     assert!(manager.runtimes.lock().await.is_empty());
@@ -1422,6 +1436,7 @@ async fn disabled_auto_sync_keeps_initial_discovery_without_periodic_task() {
 fn instance_rules_exclude_models_before_inventory_publication() {
     let mut config = instance("filtered");
     config.instance_rules = Some(buckyos_api::ProviderInstanceRules {
+        server_default_routes: BTreeMap::new(),
         policy_region: None,
         exclude_models: BTreeSet::from(["gpt-test".to_string()]),
         model_driver_overrides: BTreeMap::new(),
@@ -1442,6 +1457,7 @@ fn instance_rules_exclude_models_before_inventory_publication() {
 fn instance_driver_override_maps_endpoint_ids_without_global_provider_rules() {
     let mut config = instance("doubao-endpoint");
     config.instance_rules = Some(buckyos_api::ProviderInstanceRules {
+        server_default_routes: BTreeMap::new(),
         policy_region: None,
         exclude_models: BTreeSet::new(),
         model_driver_overrides: BTreeMap::from([(
@@ -2010,7 +2026,7 @@ fn custom_provider_efforts_respect_adapter_rules_and_discovery() {
             false,
             vec![],
         ),
-        ("openai-responses", Some("sn"), "gpt-6.1-sol", false, vec![]),
+        ("openai-responses", Some("sn"), "gpt-6-sol", false, vec![]),
     ] {
         let mut config = instance("custom-provider");
         config.provider_profile_id = "custom".into();
@@ -2049,5 +2065,30 @@ fn custom_provider_efforts_respect_adapter_rules_and_discovery() {
         assert!(inventory.unavailable_presets.iter().any(|preset| {
             preset.effort == "medium" && preset.reason == "missing_channel_mapping"
         }));
+    }
+}
+
+#[test]
+fn server_default_model_ids_accept_upstream_paths_and_reject_patterns() {
+    for model in [
+        "qwen/qwen3.7-plus",
+        "local-model",
+        "*",
+        "model?",
+        "model@instance",
+        "model:reasoning-low",
+        "",
+    ] {
+        let mut config = instance("custom-defaults");
+        let mut rules = buckyos_api::ProviderInstanceRules::default();
+        rules
+            .server_default_routes
+            .insert(model.into(), BTreeSet::from(["llm.chat".into()]));
+        config.instance_rules = Some(rules);
+        assert_eq!(
+            config.validate().is_ok(),
+            ["qwen/qwen3.7-plus", "local-model"].contains(&model),
+            "{model}"
+        );
     }
 }

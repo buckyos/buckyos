@@ -445,4 +445,40 @@ fn media_request_lowering_uses_integer_duration_and_provider_sizes() {
         panic!()
     };
     assert_eq!(body["parameters"]["size"], "1024*1024");
+    let mut image = buckyos_api::TextToImageInvokeRequest::new("ignored", "cat");
+    image.size = Some("1024x1024".into());
+    image.n = Some(1);
+    let input = CodecInput {
+        canonical_request: AiccCall::ImagesGenerate(image),
+        resolved_parameters: BTreeMap::from([(
+            "provider_model_id".into(),
+            json!("qwen-image-3.0-pro"),
+        )]),
+    };
+    let mut qwen_context = context.clone();
+    qwen_context.base_url = "https://example.com/compatible-mode/v1".into();
+    let request = registry
+        .encode_native(
+            "qwen-media",
+            "dashscope.image_generation",
+            ApiType::ImageTextToImage,
+            &NativeTaskInput {
+                operation: NativeTaskOperation::Submit,
+                remote_task_id: None,
+                codec_input: Some(&input),
+                resolved_parameters: &input.resolved_parameters,
+                context: &qwen_context,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        request.url,
+        "https://example.com/api/v1/services/aigc/image-generation/generation"
+    );
+    let HttpBody::Json(body) = request.body else {
+        panic!()
+    };
+    assert_eq!(body["input"]["messages"][0]["content"][0]["text"], "cat");
+    assert_eq!(body["parameters"]["size"], "1024*1024");
+    assert_eq!(body["parameters"]["n"], 1);
 }

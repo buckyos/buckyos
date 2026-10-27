@@ -356,6 +356,12 @@
       "capabilities": {"max_context_tokens": 16000, "max_output_tokens": 2000}
     },
     {
+      "id": "gpt-4o-transcribe-diarize",
+      "api_types": ["audio.asr"],
+      "logical_mounts": ["audio.asr", "audio.asr.openai", "audio.asr.{model}"],
+      "capabilities": {"max_context_tokens": 16000, "max_output_tokens": 2000}
+    },
+    {
       "id": "gpt-4o-mini-tts",
       "api_types": ["audio.tts"],
       "logical_mounts": ["audio.tts", "audio.tts.openai", "audio.tts.{model}"],

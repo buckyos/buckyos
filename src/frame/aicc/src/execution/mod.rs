@@ -768,6 +768,22 @@ pub(crate) struct NativeTaskResumeDescriptor {
     pub active_poll_elapsed_ms: u64,
     pub max_request_bytes: u64,
     pub max_response_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url_fallback: Option<NativeTaskUrlFallback>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeTaskUrlFallback {
+    pub method: String,
+    pub canonical_params: Value,
+    pub target: NativeTaskUrlFallbackTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub(crate) enum NativeTaskUrlFallbackTarget {
+    Bytes,
+    PublicNamedObject { base_url: String },
 }
 
 impl NativeTaskResumeDescriptor {
@@ -814,6 +830,41 @@ impl NativeTaskResumeDescriptor {
                 return Err(aicc_error(
                     AiccErrorCode::InternalError,
                     "native task resume named-header credential is incomplete",
+                    false,
+                ));
+            }
+        }
+        if self.url_fallback.as_ref().is_some_and(|fallback| {
+            fallback.method.trim().is_empty() || !fallback.canonical_params.is_object()
+        }) {
+            return Err(aicc_error(
+                AiccErrorCode::InternalError,
+                "native task URL fallback context is invalid",
+                false,
+            ));
+        }
+        if let Some(NativeTaskUrlFallback {
+            target: NativeTaskUrlFallbackTarget::PublicNamedObject { base_url },
+            ..
+        }) = &self.url_fallback
+        {
+            let url = reqwest::Url::parse(base_url).map_err(|_| {
+                aicc_error(
+                    AiccErrorCode::InternalError,
+                    "native task public Named Object URL is invalid",
+                    false,
+                )
+            })?;
+            if url.scheme() != "https"
+                || url.host_str().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.query().is_some()
+                || url.fragment().is_some()
+            {
+                return Err(aicc_error(
+                    AiccErrorCode::InternalError,
+                    "native task public Named Object URL is invalid",
                     false,
                 ));
             }
@@ -1101,6 +1152,7 @@ impl ProviderStartFailure {
 #[derive(Debug)]
 pub(crate) enum NativeTaskPoll {
     Pending(NativeTaskState, Option<Value>, Option<Duration>),
+    Rebound(NativeTaskHandle, NativeTaskResumeDescriptor),
     Complete(ProtocolOutput),
     Failed(ProtocolError),
 }
@@ -1202,13 +1254,45 @@ enum AttemptFailure {
     Provider(ProviderStartFailure),
 }
 
+#[derive(Clone)]
 pub(crate) struct ExecutionEngine {
     store: Arc<dyn ExecutionStore>,
     tasks: Arc<dyn TaskManagerPort>,
     providers: Arc<dyn ProviderExecutionPort>,
     usage: Arc<dyn UsageCompletionPort>,
     admission: Option<Arc<dyn AdmissionPort>>,
-    active: Mutex<BTreeMap<String, ActiveExecution>>,
+    active: Arc<Mutex<BTreeMap<String, ActiveExecution>>>,
+}
+
+struct ExecutionLease {
+    engine: ExecutionEngine,
+    task_id: String,
+}
+
+impl Drop for ExecutionLease {
+    fn drop(&mut self) {
+        if self.engine.active.lock().expect("active execution lock").remove(&self.task_id).is_none() {
+            return;
+        }
+        let engine = self.engine.clone();
+        let task_id = self.task_id.clone();
+        tokio::spawn(async move {
+            let result = match engine.store.get_task(&task_id).await {
+                Ok(Some(record)) if record.state.is_terminal() => return,
+                Ok(Some(record)) if record.binding.as_ref().is_some_and(|binding| binding.remote_task_id.is_some()) => {
+                    engine.drive_native(&task_id).await.map(|_| ())
+                }
+                Ok(Some(record)) if record.output.is_some() => {
+                    engine.commit_staged_success(&task_id, record.output.unwrap()).await.map(|_| ())
+                }
+                Ok(Some(_)) => engine.finish_failure(&task_id, aicc_error(AiccErrorCode::ProviderError,
+                    "inference connection ended before Provider completion; upstream outcome is unknown", false)).await.map(|_| ()),
+                Ok(None) => return,
+                Err(error) => Err(error),
+            };
+            if let Err(error) = result { log::error!("interrupted execution recovery failed: task_id={} error={}", task_id, error); }
+        });
+    }
 }
 
 impl ExecutionEngine {
@@ -1224,7 +1308,7 @@ impl ExecutionEngine {
             providers,
             usage,
             admission: None,
-            active: Mutex::new(BTreeMap::new()),
+            active: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -1367,6 +1451,12 @@ impl ExecutionEngine {
 
         log_llm_input(&record, &request.primary);
 
+        let (cancel, cancellation) = cancellation_pair();
+        self.active
+            .lock()
+            .expect("active execution lock")
+            .insert(record.task_id.clone(), ActiveExecution { cancel });
+        let _lease = ExecutionLease { engine:self.clone(), task_id:record.task_id.clone() };
         self.tasks
             .report_state(
                 &record.task_id,
@@ -1374,11 +1464,6 @@ impl ExecutionEngine {
                 json_state("submitted", None, record.trace_id.as_deref()),
             )
             .await?;
-        let (cancel, cancellation) = cancellation_pair();
-        self.active
-            .lock()
-            .expect("active execution lock")
-            .insert(record.task_id.clone(), ActiveExecution { cancel });
 
         let mut calls = Vec::with_capacity(1 + request.failover.len());
         calls.push(request.primary);
@@ -1789,6 +1874,47 @@ impl ExecutionEngine {
                     .await;
             };
             match polled {
+                Ok(NativeTaskPoll::Rebound(handle, resume)) => {
+                    if let Err(error) = resume.validate() {
+                        return self.finish_failure(task_id, error).await;
+                    }
+                    binding.remote_task_id = Some(handle.remote_task_id.clone());
+                    binding.result_artifacts = handle.result_artifacts.clone();
+                    binding.cancel_supported = handle.cancel_supported;
+                    binding.resume = Some(resume);
+                    let state = ExecutionState::from(handle.state);
+                    if !self
+                        .store
+                        .set_running(task_id, state, binding.clone())
+                        .await?
+                    {
+                        self.remove_active(task_id);
+                        return self.current_receipt(task_id).await;
+                    }
+                    if let Err(error) = self
+                        .tasks
+                        .report_state(
+                            task_id,
+                            state,
+                            json_state(
+                                "provider_task_rebound_after_url_fallback",
+                                None,
+                                record.trace_id.as_deref(),
+                            ),
+                        )
+                        .await
+                    {
+                        if !error.retriable {
+                            return self.finish_failure(task_id, error).await;
+                        }
+                        log::warn!(
+                            "native task progress delivery deferred: task_id={} error={}",
+                            task_id,
+                            error
+                        );
+                    }
+                    next_poll_after = Some(handle.poll_after.unwrap_or(Duration::from_secs(3)));
+                }
                 Ok(NativeTaskPoll::Pending(state, progress, retry_after)) => {
                     if state.is_terminal() {
                         self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
@@ -1817,13 +1943,24 @@ impl ExecutionEngine {
                         self.remove_active(task_id);
                         return self.current_receipt(task_id).await;
                     }
-                    self.tasks
+                    if let Err(error) = self
+                        .tasks
                         .report_state(
                             task_id,
                             ExecutionState::from(state),
                             json_state("provider_progress", progress, record.trace_id.as_deref()),
                         )
-                        .await?;
+                        .await
+                    {
+                        if !error.retriable {
+                            return self.finish_failure(task_id, error).await;
+                        }
+                        log::warn!(
+                            "native task progress delivery deferred: task_id={} error={}",
+                            task_id,
+                            error
+                        );
+                    }
                     next_poll_after = Some(retry_after.unwrap_or(Duration::from_secs(3)));
                 }
                 Ok(NativeTaskPoll::Complete(output)) => {
@@ -2585,6 +2722,7 @@ mod tests {
         events: Mutex<Vec<(String, ExecutionState, Value)>>,
         completed: Mutex<Vec<(String, Option<String>)>>,
         commit_error: Mutex<Option<AiccError>>,
+        report_error: Mutex<Option<AiccError>>,
         failed: Mutex<Vec<(String, Option<String>)>>,
         cancelled: Mutex<Vec<(String, Option<String>)>>,
     }
@@ -2632,6 +2770,9 @@ mod tests {
             state: ExecutionState,
             data: Value,
         ) -> Result<(), AiccError> {
+            if let Some(error) = self.report_error.lock().unwrap().take() {
+                return Err(error);
+            }
             self.events
                 .lock()
                 .unwrap()
@@ -2694,6 +2835,7 @@ mod tests {
     }
 
     enum StartPlan {
+        Pending,
         Success(ProviderExecution),
         Failure(ProviderStartFailure),
     }
@@ -2728,7 +2870,9 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(runtime_generation);
-            match self.plans.lock().unwrap().pop_front().unwrap() {
+            let plan = self.plans.lock().unwrap().pop_front().unwrap();
+            match plan {
+                StartPlan::Pending => futures_util::future::pending().await,
                 StartPlan::Success(result) => Ok(result),
                 StartPlan::Failure(error) => Err(error),
             }
@@ -2808,6 +2952,7 @@ mod tests {
             active_poll_elapsed_ms: 0,
             max_request_bytes: 1_024,
             max_response_bytes: 2_048,
+            url_fallback: None,
         }
     }
 
@@ -3257,7 +3402,6 @@ mod tests {
         assert!((at_boundary.amount - (boundary as f64 * 8e-6)).abs() < 1e-12);
     }
 
-    #[test]
     /// An attempt that reported usage has already been charged upstream, so it
     /// is neither retried nor moved to another Provider.
     #[test]
@@ -3495,6 +3639,30 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[tokio::test]
+    async fn dropped_provider_start_fails_locally_without_resubmitting() {
+        let providers = Arc::new(FakeProviders::default());
+        providers.plans.lock().unwrap().push_back(StartPlan::Pending);
+        let (engine, store, tasks, usage) = make_engine(providers.clone());
+        let running = engine.clone();
+        let execution = tokio::spawn(async move {running.execute(request(call("primary"))).await});
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while providers.starts.lock().unwrap().is_empty() { tokio::task::yield_now().await; }
+        }).await.unwrap();
+        let task_id = store.tasks.lock().unwrap().keys().next().unwrap().clone();
+        execution.abort();
+        let _ = execution.await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while tasks.failed.lock().unwrap().is_empty() { tokio::task::yield_now().await; }
+        }).await.unwrap();
+        let record = store.get_task(&task_id).await.unwrap().unwrap();
+        assert_eq!(record.state, ExecutionState::Failed);
+        assert!(!record.error.unwrap().retriable);
+        assert!(engine.active.lock().unwrap().is_empty());
+        assert_eq!(providers.starts.lock().unwrap().len(), 1);
+        assert!(usage.writes.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -4470,6 +4638,106 @@ mod tests {
             tasks.completed.lock().unwrap().as_slice(),
             [(started.task_id, Some("trace-1".into()))]
         );
+    }
+
+    #[tokio::test]
+    async fn native_polling_survives_transient_taskmgr_progress_failure_without_resubmitting() {
+        for retriable in [true, false] {
+            let providers = Arc::new(FakeProviders::default());
+            let mut handle = NativeTaskHandle::new("remote-progress-recovery").unwrap();
+            handle.state = NativeTaskState::Queued;
+            handle.poll_after = Some(Duration::ZERO);
+            providers
+                .plans
+                .lock()
+                .unwrap()
+                .push_back(StartPlan::Success(ProviderExecution::NativeTask {
+                    handle,
+                    resume: resume_descriptor(),
+                }));
+            providers.polls.lock().unwrap().extend([
+                NativeTaskPoll::Pending(NativeTaskState::Running, None, Some(Duration::ZERO)),
+                NativeTaskPoll::Complete(output("completed")),
+            ]);
+            let (engine, store, tasks, usage) = make_engine(providers.clone());
+            let started = engine.execute(request(call("primary"))).await.unwrap();
+            *tasks.report_error.lock().unwrap() = Some(aicc_error(
+                AiccErrorCode::InternalError,
+                "TaskMgr progress unavailable",
+                retriable,
+            ));
+            let completed = engine.drive_native(&started.task_id).await.unwrap();
+            assert_eq!(
+                completed.state,
+                if retriable {
+                    ExecutionState::Succeeded
+                } else {
+                    ExecutionState::Failed
+                }
+            );
+            assert!(engine.active.lock().unwrap().is_empty());
+            assert_eq!(providers.start_generations.lock().unwrap().len(), 1);
+            assert_eq!(usage.writes.lock().unwrap().len(), usize::from(retriable));
+            let persisted = store.get_task(&started.task_id).await.unwrap().unwrap();
+            assert_eq!(
+                persisted.binding.unwrap().remote_task_id.as_deref(),
+                Some("remote-progress-recovery")
+            );
+            assert_eq!(
+                tasks.completed.lock().unwrap().len(),
+                usize::from(retriable)
+            );
+            assert_eq!(tasks.failed.lock().unwrap().len(), usize::from(!retriable));
+        }
+    }
+
+    #[tokio::test]
+    async fn native_url_fallback_rebinds_remote_id_without_changing_local_task() {
+        let providers = Arc::new(FakeProviders::default());
+        let mut first = NativeTaskHandle::new("remote-url").unwrap();
+        first.state = NativeTaskState::Queued;
+        first.poll_after = Some(Duration::ZERO);
+        let mut first_resume = resume_descriptor();
+        first_resume.url_fallback = Some(NativeTaskUrlFallback {
+            method: "image.img2img".into(),
+            canonical_params: json!({"exact_model":"image@test"}),
+            target: NativeTaskUrlFallbackTarget::Bytes,
+        });
+        providers
+            .plans
+            .lock()
+            .unwrap()
+            .push_back(StartPlan::Success(ProviderExecution::NativeTask {
+                handle: first,
+                resume: first_resume,
+            }));
+        let mut rebound = NativeTaskHandle::new("remote-bytes").unwrap();
+        rebound.state = NativeTaskState::Queued;
+        rebound.poll_after = Some(Duration::ZERO);
+        providers.polls.lock().unwrap().extend([
+            NativeTaskPoll::Rebound(rebound, resume_descriptor()),
+            NativeTaskPoll::Complete(output("image")),
+        ]);
+        let (engine, store, tasks, _) = make_engine(providers);
+        let started = engine.execute(request(call("primary"))).await.unwrap();
+        let local_task_id = started.task_id.clone();
+
+        let recovered = engine.recover().await.unwrap();
+
+        assert_eq!(recovered[0].task_id, local_task_id);
+        assert_eq!(recovered[0].state, ExecutionState::Succeeded);
+        let persisted = store.get_task(&local_task_id).await.unwrap().unwrap();
+        assert_eq!(
+            persisted
+                .binding
+                .as_ref()
+                .and_then(|binding| binding.remote_task_id.as_deref()),
+            Some("remote-bytes")
+        );
+        assert!(tasks.events.lock().unwrap().iter().any(|(_, _, value)| {
+            value.pointer("/progress/status").and_then(Value::as_str)
+                == Some("provider_task_rebound_after_url_fallback")
+        }));
     }
 
     #[tokio::test]

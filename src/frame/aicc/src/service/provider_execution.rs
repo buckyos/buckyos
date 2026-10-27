@@ -204,9 +204,321 @@ impl RuntimeProviderExecutionPort {
         mentions_media_ref && mentions_invalid_ref
     }
 
+    fn has_passthrough_url(call: &ResolvedProviderCall) -> bool {
+        call.resource_requirements.iter().any(|requirement| {
+            matches!(requirement.resource, buckyos_api::ResourceRef::Url { .. })
+                && !call.context.resources.contains_key(
+                    crate::resource::ResourceKey::from_ref(&requirement.resource).as_str(),
+                )
+        })
+    }
+
+    fn resource_input_form(&self, call: &ResolvedProviderCall) -> ResourceInputForm {
+        self.codecs.resource_input_form(
+            &call.protocol_adapter_id,
+            &call.operation,
+            call.api_type,
+            call.execution_mode,
+            &call
+                .resource_requirements
+                .iter()
+                .map(|requirement| requirement.request_pointer.as_str())
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    async fn url_fallback_target(
+        &self,
+        call: &ResolvedProviderCall,
+    ) -> Option<NativeTaskUrlFallbackTarget> {
+        if !Self::has_passthrough_url(call) {
+            return None;
+        }
+        let public_named_object_base_url = self
+            .runtime
+            .capture()
+            .await
+            .settings
+            .public_named_object_base_url
+            .clone();
+        Self::fallback_target_for_input_form(
+            self.resource_input_form(call),
+            public_named_object_base_url,
+        )
+    }
+
+    fn fallback_target_for_input_form(
+        input_form: ResourceInputForm,
+        public_named_object_base_url: Option<String>,
+    ) -> Option<NativeTaskUrlFallbackTarget> {
+        match input_form {
+            ResourceInputForm::UrlOrBytes => Some(NativeTaskUrlFallbackTarget::Bytes),
+            ResourceInputForm::UrlOnly => public_named_object_base_url
+                .map(|base_url| NativeTaskUrlFallbackTarget::PublicNamedObject { base_url }),
+            ResourceInputForm::BytesOnly => None,
+        }
+    }
+
+    fn should_retry_url_fallback(error: &ProtocolError) -> bool {
+        if !matches!(
+            error.kind,
+            ProtocolErrorKind::InvalidRequest
+                | ProtocolErrorKind::ProviderRejected
+                | ProtocolErrorKind::InvalidResponse
+        ) {
+            return false;
+        }
+        let mut text = error.message.to_ascii_lowercase();
+        if let Some(provider_code) = &error.provider_code {
+            text.push(' ');
+            text.push_str(&provider_code.to_ascii_lowercase());
+        }
+        [
+            "url",
+            "uri",
+            "download",
+            "fetch",
+            "image input",
+            "input image",
+            "source image",
+            "input resource",
+            "media",
+        ]
+        .iter()
+        .any(|needle| text.contains(needle))
+    }
+
+    pub(super) async fn fetch_artifact_url_resource(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        url: &reqwest::Url,
+        max_bytes: u64,
+    ) -> Result<FetchedResource, ResourceError> {
+        let mut reader = self
+            .open_artifact_url_reader(tenant_id, user_id, url.as_str(), None)
+            .await
+            .map_err(|error| {
+                ResourceError::new(
+                    if error.code == AiccErrorCode::PolicyDenied {
+                        ResourceFailure::Unauthorized
+                    } else {
+                        ResourceFailure::Unavailable
+                    },
+                    error.message,
+                )
+            })?;
+        if reader
+            .content_length
+            .is_some_and(|content_length| content_length > max_bytes)
+        {
+            return Err(ResourceError::new(
+                ResourceFailure::LimitExceeded,
+                "Provider artifact exceeds byte limit",
+            ));
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = reader.body.next().await {
+            let chunk = chunk.map_err(|_| {
+                ResourceError::new(
+                    ResourceFailure::Unavailable,
+                    "Provider artifact read failed",
+                )
+            })?;
+            if bytes.len() as u64 + chunk.len() as u64 > max_bytes {
+                return Err(ResourceError::new(
+                    ResourceFailure::LimitExceeded,
+                    "Provider artifact exceeds byte limit",
+                ));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(FetchedResource {
+            bytes,
+            mime: reader.content_type,
+            file_name: url
+                .path_segments()
+                .and_then(|mut segments| segments.next_back())
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned),
+        })
+    }
+
+    async fn fetch_url_resource(
+        &self,
+        url: &str,
+        access: &ResourceAccessContext,
+        max_bytes: u64,
+    ) -> Result<FetchedResource, ProtocolError> {
+        let parsed = reqwest::Url::parse(url)
+            .map_err(|_| ProtocolError::invalid_request("resource URL is invalid"))?;
+        let source = self
+            .storage
+            .artifact_url_source(url, now_ms() as i64)
+            .await
+            .map_err(|_| {
+                ProtocolError::invalid_configuration("artifact URL source lookup failed")
+            })?;
+        if source.is_some() {
+            return self
+                .fetch_artifact_url_resource(&access.tenant_id, &access.caller_id, &parsed, max_bytes)
+                .await
+                .map_err(|error| {
+                    let kind = match error.failure {
+                        ResourceFailure::Unauthorized => ProtocolErrorKind::Authentication,
+                        ResourceFailure::LimitExceeded => ProtocolErrorKind::InvalidRequest,
+                        _ => ProtocolErrorKind::Transport,
+                    };
+                    ProtocolError::new(kind, error.message)
+                });
+        }
+        self.url_fetcher
+            .fetch(&parsed, max_bytes)
+            .await
+            .map_err(|error| ProtocolError::new(ProtocolErrorKind::Transport, error.to_string()))
+    }
+
+    async fn materialize_url_fallback(
+        &self,
+        requirements: &[ResourceRequirement],
+        access: &ResourceAccessContext,
+        context: &mut CodecContext,
+        target: &NativeTaskUrlFallbackTarget,
+    ) -> Result<(), ProtocolError> {
+        let limits = ResourceLimits::default();
+        let mut total_bytes = 0u64;
+        for (index, requirement) in requirements.iter().enumerate() {
+            let buckyos_api::ResourceRef::Url { url, mime_hint } = &requirement.resource else {
+                continue;
+            };
+            let key = crate::resource::ResourceKey::from_ref(&requirement.resource);
+            if context.resources.contains_key(key.as_str()) {
+                continue;
+            }
+            let fetched = self
+                .fetch_url_resource(url, access, limits.max_single_bytes)
+                .await?;
+            total_bytes = total_bytes
+                .checked_add(fetched.bytes.len() as u64)
+                .filter(|size| *size <= limits.max_total_bytes)
+                .ok_or_else(|| {
+                    ProtocolError::invalid_request("resource batch exceeds byte limit")
+                })?;
+            let mime = mime_hint
+                .clone()
+                .or(fetched.mime)
+                .unwrap_or_else(|| DEFAULT_RESOURCE_MIME.to_owned());
+            let materialized = match target {
+                NativeTaskUrlFallbackTarget::Bytes => {
+                    CodecMaterializedResource::new(fetched.bytes, mime, fetched.file_name)?
+                }
+                NativeTaskUrlFallbackTarget::PublicNamedObject { base_url } => {
+                    let scope_fingerprint = credential_fingerprint(&format!(
+                        "{}\0{}\0{}",
+                        access.tenant_id, access.caller_id, access.request_id
+                    ));
+                    let manager = ResourceManager::new(
+                        Arc::new(AuthenticatedResourceAuthorizer {
+                            tenant_id: access.tenant_id.clone(),
+                            caller_id: access.caller_id.clone(),
+                            storage: self.storage.clone(),
+                            token: None,
+                        }),
+                        self.resource_store.clone(),
+                        self.url_fetcher.clone(),
+                        limits.clone(),
+                    )
+                    .map_err(|_| {
+                        ProtocolError::invalid_configuration("artifact writer is unavailable")
+                    })?;
+                    let artifact = manager
+                        .write_artifact(
+                            access,
+                            &fetched.bytes,
+                            ArtifactSpec {
+                                name: format!(
+                                    "provider-url-fallback-{scope_fingerprint}-{}",
+                                    index + 1
+                                ),
+                                mime: mime.clone(),
+                                attributes: Map::new(),
+                                embedding: None,
+                            },
+                        )
+                        .await
+                        .map_err(|error| ProtocolError::invalid_request(error.to_string()))?;
+                    let buckyos_api::ResourceRef::NamedObject { obj_id } = artifact.resource else {
+                        return Err(ProtocolError::invalid_configuration(
+                            "URL fallback artifact did not produce a Named Object",
+                        ));
+                    };
+                    self.storage
+                        .remember_artifact_scope(
+                            &obj_id.to_string(),
+                            &access.tenant_id,
+                            &access.caller_id,
+                            None,
+                            now_ms() as i64,
+                        )
+                        .await
+                        .map_err(|_| {
+                            ProtocolError::invalid_configuration(
+                                "URL fallback artifact ownership write failed",
+                            )
+                        })?;
+                    let public_url = ZoneNamedObjectUrlProvider::new(base_url.clone())
+                        .object_url(&obj_id)
+                        .ok_or_else(|| {
+                            ProtocolError::invalid_configuration(
+                                "public Named Object URL is unavailable",
+                            )
+                        })?;
+                    CodecMaterializedResource::from_url(public_url, mime, fetched.file_name)?
+                }
+            };
+            context.resources.insert(key.into_string(), materialized);
+        }
+        Ok(())
+    }
+
+    async fn call_with_url_fallback(
+        &self,
+        call: &ResolvedProviderCall,
+        target: &NativeTaskUrlFallbackTarget,
+    ) -> Result<ResolvedProviderCall, ProtocolError> {
+        let valid = matches!(
+            (self.resource_input_form(call), target),
+            (
+                ResourceInputForm::UrlOrBytes,
+                NativeTaskUrlFallbackTarget::Bytes
+            ) | (
+                ResourceInputForm::UrlOnly,
+                NativeTaskUrlFallbackTarget::PublicNamedObject { .. }
+            )
+        );
+        if !valid {
+            return Err(ProtocolError::invalid_request(
+                "Provider protocol URL fallback target is invalid",
+            ));
+        }
+        let access = call.resource_access_context.as_ref().ok_or_else(|| {
+            ProtocolError::invalid_configuration("resource access context is missing")
+        })?;
+        let mut retry = call.clone();
+        self.materialize_url_fallback(
+            &call.resource_requirements,
+            access,
+            &mut retry.context,
+            target,
+        )
+        .await?;
+        Ok(retry)
+    }
+
     pub(crate) async fn open_artifact_url_reader(
         &self,
         tenant_id: &str,
+        user_id: &str,
         url: &str,
         artifact_id: Option<&str>,
     ) -> Result<crate::protocol::ArtifactUrlReader, AiccError> {
@@ -230,6 +542,12 @@ impl RuntimeProviderExecutionPort {
             return Err(AiccError::new(
                 AiccErrorCode::PolicyDenied,
                 "Provider artifact belongs to another tenant",
+            ));
+        }
+        if source.user_id != user_id {
+            return Err(AiccError::new(
+                AiccErrorCode::PolicyDenied,
+                "Provider artifact belongs to another user",
             ));
         }
         if artifact_id.is_some_and(|artifact_id| source.artifact_id.as_deref() != Some(artifact_id))
@@ -870,6 +1188,111 @@ impl RuntimeProviderExecutionPort {
         Ok(output)
     }
 
+    async fn retry_native_url_fallback(
+        &self,
+        binding: &PinnedProviderTask,
+        cancellation: &crate::protocol::Cancellation,
+    ) -> Result<(NativeTaskHandle, NativeTaskResumeDescriptor), NativeTaskResumeError> {
+        let fallback = binding
+            .resume
+            .as_ref()
+            .and_then(|resume| resume.url_fallback.clone())
+            .ok_or_else(|| {
+                NativeTaskResumeError::Protocol(ProtocolError::invalid_request(
+                    "native task has no URL fallback",
+                ))
+            })?;
+        let canonical_request = buckyos_api::AiccCall::from_method_and_params(
+            &fallback.method,
+            fallback.canonical_params.clone(),
+        )
+        .map_err(|error| {
+            NativeTaskResumeError::Protocol(ProtocolError::invalid_configuration(error.to_string()))
+        })?;
+        let requirements = crate::call::collect_resource_requirements(&fallback.canonical_params);
+        let input_form = self.codecs.resource_input_form(
+            &binding.protocol_adapter_id,
+            &binding.operation,
+            binding.api_type,
+            ExecutionMode::NativeTask,
+            &requirements
+                .iter()
+                .map(|requirement| requirement.request_pointer.as_str())
+                .collect::<Vec<_>>(),
+        );
+        let valid = matches!(
+            (input_form, &fallback.target),
+            (
+                ResourceInputForm::UrlOrBytes,
+                NativeTaskUrlFallbackTarget::Bytes
+            ) | (
+                ResourceInputForm::UrlOnly,
+                NativeTaskUrlFallbackTarget::PublicNamedObject { .. }
+            )
+        );
+        if !valid {
+            return Err(NativeTaskResumeError::Protocol(
+                ProtocolError::invalid_request("Provider protocol URL fallback target is invalid"),
+            ));
+        }
+        let (mut context, parameters) = self.resume_context(binding).await?;
+        let access = binding
+            .resume
+            .as_ref()
+            .ok_or(NativeTaskResumeError::CredentialUnavailable)?
+            .resource_access_context
+            .clone();
+        self.materialize_url_fallback(&requirements, &access, &mut context, &fallback.target)
+            .await
+            .map_err(NativeTaskResumeError::Protocol)?;
+        let input = CodecInput {
+            canonical_request,
+            resolved_parameters: parameters,
+        };
+        let request = self
+            .codecs
+            .encode_native(
+                &binding.protocol_adapter_id,
+                &binding.operation,
+                binding.api_type,
+                &NativeTaskInput {
+                    operation: NativeTaskOperation::Submit,
+                    remote_task_id: None,
+                    codec_input: Some(&input),
+                    resolved_parameters: &input.resolved_parameters,
+                    context: &context,
+                },
+            )
+            .map_err(NativeTaskResumeError::Protocol)?;
+        let transport =
+            Self::transport(&context.limits).map_err(NativeTaskResumeError::Protocol)?;
+        let response = Self::send_cancelable(cancellation, transport.send(request))
+            .await
+            .map_err(NativeTaskResumeError::Protocol)?;
+        let output = self
+            .codecs
+            .decode_native(
+                &binding.protocol_adapter_id,
+                &binding.operation,
+                binding.api_type,
+                NativeTaskOperation::Submit,
+                response,
+            )
+            .await
+            .map_err(NativeTaskResumeError::Protocol)?;
+        let NativeTaskOutput::Submitted(handle) = output else {
+            return Err(NativeTaskResumeError::Protocol(
+                ProtocolError::invalid_response("native URL fallback submit returned no task"),
+            ));
+        };
+        let mut resume = binding
+            .resume
+            .clone()
+            .ok_or(NativeTaskResumeError::CredentialUnavailable)?;
+        resume.url_fallback = None;
+        Ok((handle, resume))
+    }
+
     async fn start_once(
         &self,
         call: &ResolvedProviderCall,
@@ -900,9 +1323,27 @@ impl RuntimeProviderExecutionPort {
                         &call.context,
                     )
                     .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
-                let response = Self::send_cancelable(cancellation, transport.send(request))
+                let mut response = Self::send_cancelable(cancellation, transport.send(request))
                     .await
                     .map_err(ProviderStartFailure::after_accept)?;
+                let continuation = self.codecs.continuation_request(
+                    &call.protocol_adapter_id, &call.operation, call.api_type,
+                    &response, &call.input, &call.context,
+                ).map_err(ProviderStartFailure::after_accept)?;
+                let mut continuation_usage = None;
+                if let Some((request, usage)) = continuation {
+                    continuation_usage = usage;
+                    response = Self::send_cancelable(cancellation, transport.send(request))
+                        .await.map_err(ProviderStartFailure::after_accept)?;
+                    if self.codecs.continuation_request(
+                        &call.protocol_adapter_id, &call.operation, call.api_type,
+                        &response, &call.input, &call.context,
+                    ).map_err(ProviderStartFailure::after_accept)?.is_some() {
+                        return Err(ProviderStartFailure::after_accept(ProtocolError::invalid_response(
+                            "Provider exceeded the observation handshake limit",
+                        )));
+                    }
+                }
                 let decoded = self
                     .codecs
                     .decode_with_input(
@@ -917,6 +1358,10 @@ impl RuntimeProviderExecutionPort {
                 match decoded {
                     crate::protocol::ProtocolExecution::Immediate(output) => {
                         let mut output = output;
+                        if let Some(usage) = continuation_usage {
+                            merge_continuation_usage(output.usage.get_or_insert_with(Default::default), usage)
+                                .map_err(ProviderStartFailure::after_accept)?;
+                        }
                         if let AiccCall::DecisionEvaluate(request) = &call.input.canonical_request {
                             let output = Self::validate_decision_output(
                                 request,
@@ -1126,6 +1571,25 @@ impl RuntimeProviderExecutionPort {
                     format!("{}:{}", call.provider_instance_name, handle.remote_task_id),
                     call.resource_leases.clone(),
                 );
+                let url_fallback = self
+                    .url_fallback_target(call)
+                    .await
+                    .map(|target| {
+                        call.input
+                            .canonical_request
+                            .to_params()
+                            .map(|canonical_params| NativeTaskUrlFallback {
+                                method: call.method.clone(),
+                                canonical_params,
+                                target,
+                            })
+                    })
+                    .transpose()
+                    .map_err(|_| {
+                        ProviderStartFailure::after_accept(ProtocolError::invalid_configuration(
+                            "native URL fallback request cannot be serialized",
+                        ))
+                    })?;
                 Ok(ProviderExecution::NativeTask {
                     handle,
                     resume: NativeTaskResumeDescriptor {
@@ -1144,6 +1608,7 @@ impl RuntimeProviderExecutionPort {
                         active_poll_elapsed_ms: 0,
                         max_request_bytes: call.context.limits.max_request_bytes as u64,
                         max_response_bytes: call.context.limits.max_response_bytes as u64,
+                        url_fallback,
                     },
                 })
             }
@@ -1187,9 +1652,10 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
         cancellation: crate::protocol::Cancellation,
     ) -> Result<ProviderExecution, ProviderStartFailure> {
         let started = Instant::now();
-        let mut result = self.start_once(call, &cancellation).await;
-        let retry_call;
-        if Self::uses_provider_artifact_id(call)
+        let mut attempted_call = call.clone();
+        let url_fallback_target = self.url_fallback_target(&attempted_call).await;
+        let mut result = self.start_once(&attempted_call, &cancellation).await;
+        if Self::uses_provider_artifact_id(&attempted_call)
             && result.as_ref().err().is_some_and(|failure| {
                 Self::should_retry_without_provider_artifact_id(&failure.error)
             })
@@ -1200,8 +1666,33 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                 call.exact_model,
                 call.api_type
             );
-            retry_call = Self::without_provider_artifact_ids(call);
-            result = self.start_once(&retry_call, &cancellation).await;
+            attempted_call = Self::without_provider_artifact_ids(&attempted_call);
+            result = self.start_once(&attempted_call, &cancellation).await;
+        }
+        if Self::has_passthrough_url(&attempted_call)
+            && url_fallback_target.is_some()
+            && result
+                .as_ref()
+                .err()
+                .is_some_and(|failure| Self::should_retry_url_fallback(&failure.error))
+        {
+            let target = url_fallback_target
+                .as_ref()
+                .expect("fallback target checked");
+            log::warn!(
+                "Provider rejected URL resource; retrying once with fallback input: provider={} model={} api_type={:?} target={:?}",
+                call.provider_instance_name,
+                call.exact_model,
+                call.api_type,
+                target
+            );
+            match self.call_with_url_fallback(&attempted_call, target).await {
+                Ok(retry_call) => {
+                    attempted_call = retry_call;
+                    result = self.start_once(&attempted_call, &cancellation).await;
+                }
+                Err(error) => result = Err(ProviderStartFailure::before_accept(error, false)),
+            }
         }
         let result = match result {
             Ok(ProviderExecution::Stream(stream)) => {
@@ -1292,10 +1783,32 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
             retained.insert(lease_key.clone(), leases);
         }
         drop(retained);
-        let result = match self
+        let status = self
             .native_request(binding, NativeTaskOperation::Status, Some(&cancellation))
-            .await?
-        {
+            .await;
+        let status = match status {
+            Err(NativeTaskResumeError::Protocol(error))
+                if binding
+                    .resume
+                    .as_ref()
+                    .is_some_and(|resume| resume.url_fallback.is_some())
+                    && Self::should_retry_url_fallback(&error) =>
+            {
+                log::warn!(
+                    "native Provider task rejected URL resource; resubmitting with fallback input: provider={} model={} api_type={:?}",
+                    binding.provider_instance_name,
+                    binding.exact_model,
+                    binding.api_type
+                );
+                let (handle, resume) = self
+                    .retry_native_url_fallback(binding, &cancellation)
+                    .await?;
+                return Ok(NativeTaskPoll::Rebound(handle, resume));
+            }
+            Err(error) => return Err(error),
+            Ok(status) => status,
+        };
+        let result = match status {
             NativeTaskOutput::Status {
                 state,
                 result_ref,
@@ -1521,6 +2034,42 @@ fn merge_native_result_usage(
     }
 }
 
+fn merge_continuation_usage(target: &mut buckyos_api::AiUsage, source: buckyos_api::AiUsage) -> Result<(), ProtocolError> {
+    macro_rules! add {
+        ($($field:ident),*) => {$(
+            target.$field = match (target.$field, source.$field) {
+                (None, None) => None,
+                (left, right) => Some(left.unwrap_or(0).checked_add(right.unwrap_or(0))
+                    .ok_or_else(|| ProtocolError::invalid_response("continuation usage overflow"))?),
+            };
+        )*};
+    }
+    add!(input_tokens, output_tokens, total_tokens, cache_read_input_tokens,
+        cache_write_input_tokens, cache_write_1h_input_tokens, reasoning_tokens,
+        audio_input_tokens, image_input_tokens, audio_output_tokens, image_output_tokens,
+        image_units, request_units, characters);
+    macro_rules! add_float {
+        ($($field:ident),*) => {$(
+            if source.$field.is_some() {
+                let sum = target.$field.unwrap_or(0.0) + source.$field.unwrap_or(0.0);
+                if !sum.is_finite() { return Err(ProtocolError::invalid_response("continuation usage overflow")); }
+                target.$field = Some(sum);
+            }
+        )*};
+    }
+    add_float!(audio_seconds, video_seconds, reported_cost);
+    if let Some(cost) = source.cost {
+        if let Some(target_cost) = target.cost.as_mut() {
+            if target_cost.currency != cost.currency {
+                return Err(ProtocolError::invalid_response("continuation usage currency mismatch"));
+            }
+            target_cost.amount += cost.amount;
+            if !target_cost.amount.is_finite() { return Err(ProtocolError::invalid_response("continuation cost overflow")); }
+        } else { target.cost = Some(cost); }
+    }
+    Ok(())
+}
+
 fn health_failure_kind(error: &ProtocolError) -> HealthFailureKind {
     if error.is_account_exhausted() {
         HealthFailureKind::Permanent
@@ -1716,4 +2265,87 @@ mod tests {
         let auth = ProtocolError::new(ProtocolErrorKind::Authentication, "invalid API key");
         assert!(!RuntimeProviderExecutionPort::should_retry_without_provider_artifact_id(&auth));
     }
+
+    #[test]
+    fn url_fallback_requires_an_explicit_resource_rejection() {
+        for error in [
+            ProtocolError::invalid_request("input image URL is inaccessible"),
+            ProtocolError::new(
+                ProtocolErrorKind::ProviderRejected,
+                "failed to download source image",
+            ),
+        ] {
+            assert!(RuntimeProviderExecutionPort::should_retry_url_fallback(
+                &error
+            ));
+        }
+        assert!(!RuntimeProviderExecutionPort::should_retry_url_fallback(
+            &ProtocolError::new(ProtocolErrorKind::Timeout, "image URL timed out")
+        ));
+        assert!(!RuntimeProviderExecutionPort::should_retry_url_fallback(
+            &ProtocolError::new(
+                ProtocolErrorKind::ProviderRejected,
+                "content policy rejected"
+            )
+        ));
+    }
+
+    #[test]
+    fn url_fallback_target_follows_the_protocol_input_form() {
+        let public_url = Some("https://zone.example/ndn".to_owned());
+        assert_eq!(
+            RuntimeProviderExecutionPort::fallback_target_for_input_form(
+                ResourceInputForm::UrlOrBytes,
+                public_url.clone(),
+            ),
+            Some(NativeTaskUrlFallbackTarget::Bytes)
+        );
+        assert_eq!(
+            RuntimeProviderExecutionPort::fallback_target_for_input_form(
+                ResourceInputForm::UrlOnly,
+                public_url.clone(),
+            ),
+            Some(NativeTaskUrlFallbackTarget::PublicNamedObject {
+                base_url: public_url.unwrap(),
+            })
+        );
+        assert_eq!(
+            RuntimeProviderExecutionPort::fallback_target_for_input_form(
+                ResourceInputForm::UrlOnly,
+                None,
+            ),
+            None
+        );
+        assert_eq!(
+            RuntimeProviderExecutionPort::fallback_target_for_input_form(
+                ResourceInputForm::BytesOnly,
+                Some("https://zone.example/ndn".to_owned()),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn provider_artifact_origin_comparison_ignores_paths_and_default_ports() {
+        assert!(super::inference::same_url_origin(
+            "https://dashscope.aliyuncs.com/api/v1/files/a.png?token=x",
+            "https://dashscope.aliyuncs.com:443/api/v1"
+        ));
+        assert!(!super::inference::same_url_origin(
+            "https://cdn.example.com/a.png?token=x",
+            "https://dashscope.aliyuncs.com/api/v1"
+        ));
+    }
 }
+    #[test]
+    fn continuation_usage_sums_both_calls_and_rejects_currency_changes() {
+        let mut target = buckyos_api::AiUsage {input_tokens:Some(4),output_tokens:Some(3),total_tokens:Some(7),
+            request_units:Some(1),cost:Some(buckyos_api::AiCost::new(0.01,"USD")),..Default::default()};
+        let source = target.clone();
+        merge_continuation_usage(&mut target, source).unwrap();
+        assert_eq!(target.total_tokens, Some(14));
+        assert_eq!(target.request_units, Some(2));
+        assert_eq!(target.cost.as_ref().unwrap().amount, 0.02);
+        assert!(merge_continuation_usage(&mut target,buckyos_api::AiUsage {
+            cost:Some(buckyos_api::AiCost::new(1.0,"CNY")),..Default::default()}).is_err());
+    }

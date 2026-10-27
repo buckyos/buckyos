@@ -252,7 +252,7 @@ function validateHeader(bytes: Uint8Array, label = ""): void {
 
 export async function validateNamedArtifact(
   ndm: ReadableNamedData,
-  input: { obj_id: string; label?: string },
+  input: { obj_id: string; label?: string; capture?: (bytes:Uint8Array,audit:ArtifactAudit) => Promise<void> },
 ): Promise<ArtifactAudit> {
   const opened = await ndm.openReader({ obj_id: input.obj_id });
   if (!opened.body) throw new Error(`named object ${input.obj_id} returned no readable body`);
@@ -261,7 +261,9 @@ export async function validateNamedArtifact(
   if (opened.totalSize !== null && opened.totalSize !== bytes.length) {
     throw new Error(`named object ${input.obj_id} size mismatch: ${opened.totalSize} != ${bytes.length}`);
   }
-  return await validateArtifactBytes(bytes, { id: input.obj_id, label: input.label });
+  const audit = await validateArtifactBytes(bytes, { id: input.obj_id, label: input.label });
+  await input.capture?.(bytes,audit);
+  return audit;
 }
 
 export async function validateArtifactBytes(

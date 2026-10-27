@@ -16,7 +16,21 @@ export type GatewaySession = {
   aicc: RpcClient;
   taskManager: RpcClient;
   systemConfig: RpcClient;
+  ensureAuthenticated?: () => Promise<void>;
 };
+
+export async function hasCompletedInference(input:{taskManager:RpcClient;userId:string;idempotencyKey:string}): Promise<boolean> {
+  const page=await input.taskManager.call("list_tasks",{creator_user_id:input.userId,
+    idempotency_key:input.idempotencyKey,limit:2}) as {tasks?:Array<{task_id:string}>};
+  if(!Array.isArray(page.tasks)) throw new Error("resume task lookup returned invalid tasks");
+  if(page.tasks.length>1) throw new Error("resume idempotency key has multiple tasks");
+  if(page.tasks.length===0) return false;
+  const id=page.tasks[0].task_id;
+  if(typeof id!=="string"||!id) throw new Error("resume task lookup omitted task ID");
+  const raw=await input.taskManager.call("get_task",{task_id:id}) as Record<string,unknown>;
+  const task=(raw.task ?? raw) as Record<string,unknown>;
+  return task.phase === "Terminal" && task.outcome === "Succeeded";
+}
 
 export async function openAiccArtifact(input: {
   gatewayUrl: string;
@@ -381,6 +395,66 @@ export async function loginSudoSystemConfig(
     `${gatewayUrl}/kapi/system_config`,
     sessionToken,
   ) as RpcClient;
+}
+
+export function refreshingGatewaySession(
+  initial: GatewaySession,
+  reconnect: () => Promise<GatewaySession>,
+): GatewaySession {
+  let current = initial;
+  let refresh: Promise<void> | undefined;
+  const renew = async (expired: GatewaySession): Promise<void> => {
+    if (current !== expired) return;
+    if (!refresh) {
+      refresh = reconnect().then((session) => {
+        current = session;
+      }).finally(() => {
+        refresh = undefined;
+      });
+    }
+    await refresh;
+  };
+  const ensureAuthenticated = async (): Promise<void> => {
+    let expiresAt = Infinity;
+    try {
+      const payload = current.sessionToken.split(".")[1].replaceAll("-", "+").replaceAll("_", "/");
+      const claims = JSON.parse(atob(payload));
+      if (typeof claims.exp === "number") expiresAt = claims.exp * 1000;
+    } catch {}
+    if (expiresAt <= Date.now() + 30_000) await renew(current);
+  };
+  const client = (service: "aicc" | "taskManager" | "systemConfig"): RpcClient => ({
+    async call(method, params) {
+      await ensureAuthenticated();
+      const session = current;
+      try {
+        return await session[service].call(method, params);
+      } catch (error) {
+        if (!isExpiredTokenError(error)) throw error;
+        await renew(session);
+        return await current[service].call(method, params);
+      }
+    },
+  });
+  return {
+    get sessionToken() { return current.sessionToken; },
+    get userId() { return current.userId; },
+    aicc: client("aicc"),
+    taskManager: client("taskManager"),
+    systemConfig: client("systemConfig"),
+    ensureAuthenticated,
+  };
+}
+
+export async function loginRefreshingGateway(
+  credentials: GatewayCredentials,
+): Promise<GatewaySession> {
+  const initial = await loginGateway(credentials);
+  if (!credentials.username || !credentials.password) return initial;
+  return refreshingGatewaySession(initial, () => loginGateway({
+    ...credentials,
+    sessionToken: undefined,
+  }));
 }
 
 function isExpiredTokenError(error: unknown): boolean {

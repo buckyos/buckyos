@@ -8,6 +8,7 @@ pub(crate) struct RuntimeInferencePort {
     pub(super) storage: Arc<AiccStorage>,
     pub(super) resource_store: Arc<dyn ResourceStore>,
     pub(super) url_fetcher: Arc<dyn UrlResourceFetcher>,
+    artifact_url_reader: Arc<RuntimeProviderExecutionPort>,
     model_health: Arc<ModelHealthRegistry>,
     governance: Arc<QuotaService>,
 }
@@ -34,6 +35,56 @@ fn cached_materialization(
         .map(|(_, _, materialized)| materialized.clone())
 }
 
+pub(super) fn same_url_origin(left: &str, right: &str) -> bool {
+    let Ok(left) = reqwest::Url::parse(left) else {
+        return false;
+    };
+    let Ok(right) = reqwest::Url::parse(right) else {
+        return false;
+    };
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
+}
+
+struct ProviderArtifactUrlFetcher {
+    reader: Arc<RuntimeProviderExecutionPort>,
+    tenant_id: String,
+    user_id: String,
+}
+
+fn provider_url_requires_bytes(
+    input_form: ResourceInputForm,
+    url: &str,
+    source_instance: &str,
+    target_instance: &str,
+    source_base_url: Option<&str>,
+) -> bool {
+    if input_form == ResourceInputForm::BytesOnly {
+        true
+    } else if input_form.requires_url() || source_instance == target_instance {
+        false
+    } else {
+        source_base_url
+            .filter(|base_url| !base_url.is_empty())
+            .map(|base_url| same_url_origin(url, base_url))
+            .unwrap_or(true)
+    }
+}
+
+#[async_trait]
+impl UrlResourceFetcher for ProviderArtifactUrlFetcher {
+    async fn fetch(
+        &self,
+        url: &reqwest::Url,
+        max_bytes: u64,
+    ) -> Result<FetchedResource, ResourceError> {
+        self.reader
+            .fetch_artifact_url_resource(&self.tenant_id, &self.user_id, url, max_bytes)
+            .await
+    }
+}
+
 impl RuntimeInferencePort {
     pub(crate) fn new(
         runtime: Arc<RuntimeState>,
@@ -43,6 +94,7 @@ impl RuntimeInferencePort {
         storage: Arc<AiccStorage>,
         resource_store: Arc<dyn ResourceStore>,
         url_fetcher: Arc<dyn UrlResourceFetcher>,
+        artifact_url_reader: Arc<RuntimeProviderExecutionPort>,
         model_health: Arc<ModelHealthRegistry>,
         governance: Arc<QuotaService>,
     ) -> Self {
@@ -54,6 +106,7 @@ impl RuntimeInferencePort {
             storage,
             resource_store,
             url_fetcher,
+            artifact_url_reader,
             model_health,
             governance,
         }
@@ -313,6 +366,19 @@ impl RuntimeInferencePort {
                 call,
                 ProviderCallTarget {
                     provider_rules_id,
+                    use_server_defaults: crate::model::ExactModelName::parse(
+                        &decision.selected.exact_model,
+                    )
+                    .is_ok_and(|model| model.variant().is_none())
+                        && provider
+                            .config
+                            .instance_rules
+                            .as_ref()
+                            .is_some_and(|rules| {
+                                rules
+                                    .server_default_routes
+                                    .contains_key(&decision.selected.provider_model_id)
+                            }),
                     base_url: provider.config.base_url.clone(),
                     operation_base_urls: provider.config.operation_base_urls.clone(),
                     credential,
@@ -375,20 +441,6 @@ impl RuntimeInferencePort {
                 .map(|requirement| requirement.request_pointer.as_str())
                 .collect::<Vec<_>>(),
         );
-        let manager = ResourceManager::new(
-            Arc::new(AuthenticatedResourceAuthorizer {
-                tenant_id: caller.tenant_id.clone(),
-                caller_id: caller.user_id.clone(),
-                storage: self.storage.clone(),
-                token: Some(caller.token.clone()),
-            }),
-            self.resource_store.clone(),
-            self.url_fetcher.clone(),
-            ResourceLimits::default(),
-        )
-        .map_err(resource_rpc_error)?
-        .with_input_form(input_form)
-        .with_object_url_provider(named_object_url_provider(settings));
         let resources = call
             .resource_requirements
             .iter()
@@ -421,6 +473,84 @@ impl RuntimeInferencePort {
                 }
             }
         }
+        let runtime = self.runtime.capture().await;
+        let mut protected_resources = Vec::new();
+        let mut ordinary_resources = Vec::new();
+        for resource in &resources {
+            let protected = match resource {
+                ResourceRef::Url { url, .. } => {
+                    let source = self
+                        .storage
+                        .artifact_url_source(url, now_ms() as i64)
+                        .await
+                        .map_err(|_| {
+                            inference_error(
+                                AiccErrorCode::InternalError,
+                                "Provider artifact source lookup failed",
+                            )
+                        })?;
+                    if let Some(source) = source {
+                        if source.tenant_id != caller.tenant_id || source.user_id != caller.user_id
+                        {
+                            return Err(inference_error(
+                                AiccErrorCode::PolicyDenied,
+                                "Provider artifact belongs to another user",
+                            ));
+                        }
+                        provider_url_requires_bytes(
+                            input_form,
+                            url,
+                            &source.provider_instance_name,
+                            &call.provider_instance_name,
+                            runtime
+                                .providers
+                                .get(&source.provider_instance_name)
+                                .map(|provider| provider.config.base_url.as_str()),
+                        )
+                    } else {
+                        false
+                    }
+                }
+                ResourceRef::NamedObject { obj_id } => {
+                    let owner = self
+                        .storage
+                        .artifact_owner(&obj_id.to_string())
+                        .await
+                        .map_err(|_| {
+                            inference_error(
+                                AiccErrorCode::InternalError,
+                                "artifact ownership lookup failed",
+                            )
+                        })?;
+                    if let Some((tenant_id, user_id)) = owner {
+                        if tenant_id != caller.tenant_id || user_id != caller.user_id {
+                            return Err(inference_error(
+                                AiccErrorCode::PolicyDenied,
+                                "AICC artifact belongs to another user",
+                            ));
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                }
+                // Inline bytes are private request content. They may be sent
+                // to a byte-capable Provider, but must never be published to a
+                // public object URL just to satisfy a URL-only wire grammar.
+                ResourceRef::Base64 { .. } => true,
+            };
+            if protected {
+                protected_resources.push(resource.clone());
+            } else {
+                ordinary_resources.push(resource.clone());
+            }
+        }
+        if input_form.requires_url() && !protected_resources.is_empty() {
+            return Err(inference_error(
+                AiccErrorCode::ResourceInvalid,
+                "Provider protocol requires a public URL but the input resource is owner-scoped",
+            ));
+        }
         // A `ResourceRef::NamedObject` input carries the object id with it, and
         // the resource key is derived from that same id — so this map recovers
         // the id the key was built from. That matters because the object id is
@@ -435,21 +565,80 @@ impl RuntimeInferencePort {
                 _ => None,
             })
             .collect::<HashMap<_, _>>();
-        let materialized = match cached_materialization(cache, input_form, &resources) {
-            Some(materialized) => materialized,
-            None => {
-                let inspected = manager
-                    .inspect(&context, &resources)
-                    .await
-                    .map_err(resource_rpc_error)?;
-                let materialized = manager
-                    .materialize_after_provider_selected(&context, &call.exact_model, inspected)
-                    .await
-                    .map_err(resource_rpc_error)?;
-                cache.push((input_form, resources.clone(), materialized.clone()));
-                materialized
-            }
-        };
+        let authorizer = Arc::new(AuthenticatedResourceAuthorizer {
+            tenant_id: caller.tenant_id.clone(),
+            caller_id: caller.user_id.clone(),
+            storage: self.storage.clone(),
+            token: Some(caller.token.clone()),
+        });
+        let mut materialized = Vec::new();
+        if !ordinary_resources.is_empty() {
+            let ordinary = match cached_materialization(cache, input_form, &ordinary_resources) {
+                Some(materialized) => materialized,
+                None => {
+                    let manager = ResourceManager::new(
+                        authorizer.clone(),
+                        self.resource_store.clone(),
+                        self.url_fetcher.clone(),
+                        ResourceLimits::default(),
+                    )
+                    .map_err(resource_rpc_error)?
+                    .with_input_form(input_form)
+                    .with_object_url_provider(named_object_url_provider(settings));
+                    let inspected = manager
+                        .inspect(&context, &ordinary_resources)
+                        .await
+                        .map_err(resource_rpc_error)?;
+                    let materialized = manager
+                        .materialize_after_provider_selected(&context, &call.exact_model, inspected)
+                        .await
+                        .map_err(resource_rpc_error)?;
+                    cache.push((input_form, ordinary_resources.clone(), materialized.clone()));
+                    materialized
+                }
+            };
+            materialized.extend(ordinary);
+        }
+        if !protected_resources.is_empty() {
+            let protected_form = ResourceInputForm::BytesOnly;
+            let protected =
+                match cached_materialization(cache, protected_form, &protected_resources) {
+                    Some(materialized) => materialized,
+                    None => {
+                        let manager = ResourceManager::new(
+                            authorizer,
+                            self.resource_store.clone(),
+                            Arc::new(ProviderArtifactUrlFetcher {
+                                reader: self.artifact_url_reader.clone(),
+                                tenant_id: caller.tenant_id.clone(),
+                                user_id: caller.user_id.clone(),
+                            }),
+                            ResourceLimits::default(),
+                        )
+                        .map_err(resource_rpc_error)?
+                        .with_input_form(protected_form);
+                        let inspected = manager
+                            .inspect(&context, &protected_resources)
+                            .await
+                            .map_err(resource_rpc_error)?;
+                        let materialized = manager
+                            .materialize_after_provider_selected(
+                                &context,
+                                &call.exact_model,
+                                inspected,
+                            )
+                            .await
+                            .map_err(resource_rpc_error)?;
+                        cache.push((
+                            protected_form,
+                            protected_resources.clone(),
+                            materialized.clone(),
+                        ));
+                        materialized
+                    }
+                };
+            materialized.extend(protected);
+        }
         for resource in materialized {
             let parts = resource.into_codec_parts().map_err(resource_rpc_error)?;
             if let Some(url) = parts.url.clone() {
@@ -594,7 +783,7 @@ impl ResourceAuthorizer for AuthenticatedResourceAuthorizer {
             if let ResourceTarget::NamedObject { obj_id } = target {
                 let owner = self
                     .storage
-                    .artifact_tenant(&obj_id.to_string())
+                    .artifact_owner(&obj_id.to_string())
                     .await
                     .map_err(|_| {
                         ResourceError::new(
@@ -602,13 +791,12 @@ impl ResourceAuthorizer for AuthenticatedResourceAuthorizer {
                             "artifact ownership lookup failed",
                         )
                     })?;
-                if owner
-                    .as_ref()
-                    .is_some_and(|owner| owner != &context.tenant_id)
-                {
+                if owner.as_ref().is_some_and(|(tenant_id, user_id)| {
+                    tenant_id != &context.tenant_id || user_id != &context.caller_id
+                }) {
                     return Err(ResourceError::new(
                         ResourceFailure::Unauthorized,
-                        "AICC artifact belongs to another tenant",
+                        "AICC artifact belongs to another user",
                     ));
                 }
                 if owner.is_none() {
@@ -1046,6 +1234,14 @@ impl InferencePort for RuntimeInferencePort {
             })
             .await
             .map_err(|error| error.to_krpc_error())?;
+        if receipt.provider_task_ref.is_some() && !receipt.state.is_terminal() {
+            let execution = Arc::clone(&self.execution);
+            let task_id = receipt.task_id.clone();
+            let initial_poll_after = receipt.initial_poll_after;
+            tokio::spawn(async move {
+                let _ = execution.drive_native_after(&task_id, initial_poll_after).await;
+            });
+        }
         self.storage
             .write_route_trace(&RouteTraceRecord {
                 trace: AiccRouteTraceEvent {
@@ -1070,16 +1266,6 @@ impl InferencePort for RuntimeInferencePort {
             })
             .await
             .map_err(|error| inference_error(AiccErrorCode::InternalError, error.to_string()))?;
-        if receipt.provider_task_ref.is_some() && !receipt.state.is_terminal() {
-            let execution = Arc::clone(&self.execution);
-            let task_id = receipt.task_id.clone();
-            let initial_poll_after = receipt.initial_poll_after;
-            tokio::spawn(async move {
-                let _ = execution
-                    .drive_native_after(&task_id, initial_poll_after)
-                    .await;
-            });
-        }
         inference_response(receipt, public_route_trace(&routed.decision))
     }
 }
@@ -1661,6 +1847,42 @@ pub(crate) trait DriverMetadataPort: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_url_input_policy_uses_instance_and_protocol_form() {
+        let base = Some("https://provider.example/v1");
+        for (url, source_base) in [
+            ("https://provider.example/result.png", base),
+            ("https://cdn.example/result.png?signature=x", base),
+            ("https://provider.example/result.png", None),
+        ] {
+            for target in ["source", "other"] {
+                assert!(provider_url_requires_bytes(
+                    ResourceInputForm::BytesOnly, url, "source", target, source_base
+                ));
+                assert!(!provider_url_requires_bytes(
+                    ResourceInputForm::UrlOnly, url, "source", target, source_base
+                ));
+            }
+            assert!(!provider_url_requires_bytes(
+                ResourceInputForm::UrlOrBytes, url, "source", "source", source_base
+            ));
+        }
+        assert!(provider_url_requires_bytes(
+            ResourceInputForm::UrlOrBytes,
+            "https://provider.example/result.png", "source", "other", base
+        ));
+        assert!(!provider_url_requires_bytes(
+            ResourceInputForm::UrlOrBytes,
+            "https://cdn.example/result.png?signature=x", "source", "other", base
+        ));
+        for missing_base in [None, Some("")] {
+            assert!(provider_url_requires_bytes(
+                ResourceInputForm::UrlOrBytes,
+                "https://provider.example/result.png", "source", "other", missing_base
+            ));
+        }
+    }
 
     #[test]
     fn resource_materialization_cache_is_scoped_by_codec_input_form() {

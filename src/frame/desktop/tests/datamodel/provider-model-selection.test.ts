@@ -34,3 +34,27 @@ Deno.test('catalog-only model selection keeps using the static inventory allowli
     'catalog-only selection must retain the selected static inventory allowlist',
   )
 })
+
+Deno.test('custom model identity and server defaults are independent from channel presets', () => {
+  const rules = toProviderInstanceRules({
+    model_driver_overrides_json: '{"local-qwen":"qwen/qwen3.7-plus"}',
+    server_default_routes_json: '{"local-qwen":["llm.chat"]}',
+  })
+  assert(rules !== undefined, 'explicit advanced settings must survive serialization')
+  assert(JSON.stringify(rules.model_driver_overrides) === '{"local-qwen":"qwen/qwen3.7-plus"}', 'alias identity must be retained')
+  assert(JSON.stringify(rules.server_default_routes) === '{"local-qwen":["llm.chat"]}', 'server defaults need explicit task admission')
+  assert(!('reasoning' in rules), 'server defaults must not disable or prescribe thinking')
+})
+
+Deno.test('invalid advanced settings cannot produce a provider payload', () => {
+  for (const draft of [
+    { model_driver_overrides_json: '[]' },
+    { model_driver_overrides_json: '{"local":"unknown"}' },
+    { server_default_routes_json: '{"local":["model@instance"]}' },
+    { server_default_routes_json: '{"local":[]}' },
+  ]) {
+    let rejected = false
+    try { toProviderInstanceRules(draft) } catch { rejected = true }
+    assert(rejected, 'invalid identity/routes must be rejected before submission')
+  }
+})

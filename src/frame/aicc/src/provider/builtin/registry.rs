@@ -1035,7 +1035,7 @@ mod tests {
     fn metadata_source_manager_supplies_all_builtin_catalogs_to_registry() {
         let registry = registry();
         let files = load_builtin_metadata().unwrap();
-        assert_eq!(files.len(), 40);
+        assert_eq!(files.len(), 42);
         assert_eq!(
             files
                 .iter()
@@ -1055,7 +1055,7 @@ mod tests {
                 .iter()
                 .filter(|file| file.kind == CatalogKind::ModelDriver)
                 .count(),
-            12
+            14
         );
 
         let snapshot = MetadataSources {
@@ -1187,16 +1187,21 @@ mod tests {
         // the payload must never be downloaded. The derived adapters
         // (`doubao-responses`, `glm-chat`, `kimi-chat`) must forward the base
         // declaration.
-        for (adapter, operation) in [
-            ("openai-responses", "responses.create"),
-            ("doubao-responses", "responses.create"),
-            ("claude-messages", "messages.create"),
-            ("glm-chat", "chat.completions.create"),
-            ("kimi-chat", "chat.completions.create"),
-            ("gemini-interactions", "interactions.create"),
+        for (adapter, operation, api_type) in [
+            ("openai-responses", "responses.create", ApiType::Llm),
+            ("doubao-responses", "responses.create", ApiType::Llm),
+            ("claude-messages", "messages.create", ApiType::Llm),
+            ("glm-chat", "chat.completions.create", ApiType::Llm),
+            ("kimi-chat", "chat.completions.create", ApiType::Llm),
+            ("gemini-interactions", "interactions.create", ApiType::Llm),
+            (
+                "qwen-media",
+                "dashscope.image_edit",
+                ApiType::ImageImageToImage,
+            ),
         ] {
             assert_eq!(
-                form(adapter, operation, ApiType::Llm),
+                form(adapter, operation, api_type),
                 crate::resource::ResourceInputForm::UrlOrBytes,
                 "{adapter} accepts a URL and an inlined payload"
             );

@@ -122,6 +122,7 @@ Qwen3 Max 的非思考输出上限是 65,536，思考模式是 32,768；当前�
 | kimi-k2.8-preview | max_output_tokens | Kimi Code 官方模型表明确 1M 上下文，但未发布最大 completion 整数 |
 | charglm-4、emohaa | max_context_tokens、max_output_tokens | 当前官方型号表和 API 参数表未给出可确认的型号级限制 |
 | glm-4-32b-0414-128k | max_output_tokens | 官方开源卡和部署说明给出上下文，未给出这个托管 ID 的独立输出上限 |
+| voxtral-small-24b-2507 | max_output_tokens | Mistral 官方模型页给出 32K 上下文，但未发布独立的最大输出整数 |
 
 Kimi 来源：[K2.6 快速开始](https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart)、[当前模型文档](https://platform.kimi.com/docs/models)、[当前 API 文档](https://platform.kimi.com/docs/api/chat)、[Kimi Code 模型表](https://www.kimi.com/code/docs/en/kimi-code/models)。新 K3 的默认值和上限不能回填给 K2.x；Agent Plan 新增型号也不能据名称外推硬限制。
 
