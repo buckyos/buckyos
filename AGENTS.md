@@ -136,7 +136,7 @@ WebUI 在各自目录运行 `pnpm install`、`pnpm build`。Desktop 和 OpenDAN 
 - **`logs/`**：服务日志；**`etc/`**：配置、`node_identity.json` 等；**`security/`**：私钥、keyref 等身份材料。
 - **`data/home/`**：用户数据；**`data/srv/`**：服务持久数据及 Zone 共享数据；**`storage/`**：内核持久存储。
 - **`data/var/`**、**`data/cache/`**、**`local/`**：服务运行数据、缓存、本机服务数据，生命周期与持久用户数据不同。
-- **`data/home/<owner_user_id>/.local/share/<app_id>/agents/<agent_id>/`**：宿主机上的 OpenDAN AgentRootFS。每个 Agent 基于模板构造一个独立 App，其 AppId 等于 AgentId（如 `xiaobai.test.buckyos.io`），AppInstanceId 为 `<agent_id>@<owner>`；AgentId 从实际 `AgentSpec` 读取，不能用短名代替。
+- **`data/home/<owner_user_id>/agents/<agent_id>/`**：宿主机上的 OpenDAN AgentRootFS。每个 Agent 基于模板构造一个独立 App，其 AppId 等于 AgentId（如 `xiaobai.test.buckyos.io`），AppInstanceId 为 `<agent_id>@<owner>`；AgentId 从实际 `AgentSpec` 读取，不能用短名代替。
 
 路径与容器映射详见 `doc/path_usage.md`，Agent 路径装配见 `src/frame/opendan/src/main.rs`。诊断先运行 `check.py`：未激活时重点检查 `3182`，已激活时检查网关 `80/3180`、system-config `3200`、verify-hub `3300`、control-panel `4020`。脚本退出码为 0 也可能只是 `Activation Ready`，执行 DV 前还需确认输出中的激活状态和服务状态。
 

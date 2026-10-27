@@ -20,7 +20,7 @@ def _windows_subprocess_kwargs(detached: bool = False) -> dict[str, object]:
 
     creationflags = subprocess.CREATE_NO_WINDOW
     if detached:
-        creationflags |= subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
 
     return {
         "startupinfo": startupinfo,
@@ -61,7 +61,7 @@ def check_process_exists(process_full_path):
         try:
             process_name = os.path.basename(process_full_path)
             check_args = ["tasklist", "/FI", f"IMAGENAME eq {process_name}", "/FO", "CSV"]
-            output = subprocess.check_output(check_args).decode(get_system_encoding(), errors='ignore')
+            output = subprocess.check_output(check_args, **_windows_subprocess_kwargs()).decode(get_system_encoding(), errors='ignore')
             # 检查输出中是否包含进程名（排除标题行）
             lines = output.strip().split('\n')
             if len(lines) > 1:  # 有数据行
@@ -71,7 +71,7 @@ def check_process_exists(process_full_path):
             # 如果tasklist失败，尝试使用wmic（兼容性）
             try:
                 check_args = ["wmic", "process", "where", f"ExecutablePath like '%{process_full_path}%'", "get", "ProcessId", "/format:list"]
-                output = subprocess.check_output(check_args).decode(get_system_encoding(), errors='ignore')
+                output = subprocess.check_output(check_args, **_windows_subprocess_kwargs()).decode(get_system_encoding(), errors='ignore')
                 return bool(output.strip())
             except (subprocess.CalledProcessError, FileNotFoundError):
                 print(f"Warning: Unable to check process existence on Windows. Both tasklist and wmic failed.")

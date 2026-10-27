@@ -300,6 +300,38 @@ fn capped(bytes: Vec<u8>) -> String {
     s
 }
 
+#[cfg(windows)]
+fn helper_workdir(path: &Path) -> Result<PathBuf> {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    if wide.len() < 258 {
+        return Ok(path.to_path_buf());
+    }
+    wide.push(0);
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetShortPathNameW(long: *const u16, short: *mut u16, capacity: u32) -> u32;
+    }
+    let capacity = unsafe { GetShortPathNameW(wide.as_ptr(), std::ptr::null_mut(), 0) };
+    if capacity == 0 {
+        return Err(OpenDanError::io(path, std::io::Error::last_os_error()));
+    }
+    let mut short = vec![0u16; capacity as usize];
+    let len = unsafe { GetShortPathNameW(wide.as_ptr(), short.as_mut_ptr(), capacity) };
+    if len == 0 {
+        return Err(OpenDanError::io(path, std::io::Error::last_os_error()));
+    }
+    if len >= capacity || len >= 258 {
+        return Err(OpenDanError::Other(format!(
+            "session helper working directory exceeds the Windows process path limit and has no usable short path: {}",
+            path.display()
+        )));
+    }
+    short.truncate(len as usize);
+    Ok(std::ffi::OsString::from_wide(&short).into())
+}
+
 /// Run an `agent-session` command for session `sid` on the control side,
 /// where the session directory and the AgentRoot are: the session's
 /// environment (as a local session's shell has it), its directory as the
@@ -333,16 +365,21 @@ pub async fn run_helper(
         env.push((agent_tool::llm_bash::ENV_CALL_ID.to_string(), call.clone()));
     }
     let mut cmd = tokio::process::Command::new(session_cli);
+    buckyos_api::hide_child_console_async(&mut cmd);
+    #[cfg(windows)]
+    let workdir = helper_workdir(sd.path())?;
+    #[cfg(not(windows))]
+    let workdir = sd.path();
     cmd.args(&req.argv)
-        .current_dir(sd.path())
+        .current_dir(workdir)
         .envs(env)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| OpenDanError::Other(format!("start {}: {e}", session_cli.display())))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        OpenDanError::Other(format!("start {} in {}: {e}", session_cli.display(), sd.path().display()))
+    })?;
     if let Some(mut stdin) = child.stdin.take() {
         if let Some(text) = &req.stdin {
             use tokio::io::AsyncWriteExt;

@@ -15,6 +15,13 @@ stores its ledger under `%LOCALAPPDATA%\buckyos-agent-daemon` by default. Its de
 the primary display with visual/auto observations, click, Unicode type, keypress, line scrolling and
 delay waits. Semantic/hybrid, dragging and pixel scrolling are unsupported. Do not run it in Session 0.
 Desktop grants, local pause/resume and recovery are documented in `doc/arch/agent_daemon.md`.
+On Windows, node startup and OpenDAN helpers launch console tools without opening a console window;
+use the service logs and command stdout/stderr for diagnostics. Rust launch sites reuse
+`src/kernel/buckyos-api/src/process_util.rs`.
+For `session.helper` on Windows, long Session working directories use the same directory's 8.3 path
+when starting xagent; relative file arguments still resolve inside the Session. If the filesystem
+provides no usable short path, use a shorter BuckyOS data location and inspect
+`src/frame/lib_opendan/src/session_context.rs` and the reported directory.
 If the Windows input monitor stops being healthy after sleep, a debugger pause or a scheduling stall,
 restart the daemon and check readiness; local resume alone cannot restore it. Query old operations and observe again.
 The planned `buckyos computer` CLI and image-to-model bridge are not yet available; PNG bytes alone
@@ -31,7 +38,7 @@ Making a new Agent template or changing one (identity text, behaviors, session c
 #### The pieces
 - Template = a PIKG with `categories:["agent"]` (`app_type agent`), sub package `agent` (the AgentRootFS files) and optionally `agent_skills`; it needs a `www` http endpoint (Jarvis: inner_port 4060). Jarvis is the built-in one (`bundled:jarvis.buckyos.bns.did`); your own package working copy is readable at `/opt/buckyos/bin/<agent_id>/`.
 - Agent = its own DID created at `agent.create`: AgentId `<name>.<zone>` = AppId of a per-Agent App built from the template, AppInstanceId `<agent_id>@<owner>`, `AgentSpec.binding` → that instance and service `www`. Control Panel generates the key (system-config `users/<owner>/agents/<agent_id>/key`); the Loader writes `.meta/identity.json` and `.meta/role_supplement.md`. A template therefore carries no keys, sessions, memory or state.
-- AgentRoot (`$OPENDAN_AGENT_ROOT`, host `data/home/<owner>/.local/share/<agent_id>/agents/<agent_id>/`) = template files + instance data (`.meta/`, `state/`, `sessions/`, `memory/`, `notebook/`, `workspace/`, installed skills). On a template update (agents with `template_auto_update`), new files are added and files you never changed are replaced; files changed locally are kept (with a warning), files dropped from the package stay, installed skills are untouched, and running sessions keep what they froze.
+- AgentRoot (`$OPENDAN_AGENT_ROOT`, host `data/home/<owner>/agents/<agent_id>/`) = template files + instance data (`.meta/`, `state/`, `sessions/`, `memory/`, `notebook/`, `workspace/`, installed skills). On a template update (agents with `template_auto_update`), new files are added and files you never changed are replaced; files changed locally are kept (with a warning), files dropped from the package stay, installed skills are untouched, and running sessions keep what they froze.
 - The owner's creation choice `permission_mode` is `read_write` by default or `read_only`. Owner home follows that mode; your own `$OPENDAN_AGENT_ROOT` always stays writable for sessions, memory, workspaces, tools and skills. This is stored in `AgentSpec`, not in `agent.toml` or editable agent settings; template updates preserve it.
 
 #### Before you start

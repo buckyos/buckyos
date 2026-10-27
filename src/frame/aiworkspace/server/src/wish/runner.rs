@@ -83,6 +83,7 @@ pub async fn run_in(deno: &Path, workdir: &Path, env: Vec<(String, String)>, tim
     let _ = std::fs::remove_file(&results);
     std::fs::create_dir_all(workdir.join("output")).map_err(|e| e.to_string())?;
     let mut cmd = tokio::process::Command::new(deno);
+    buckyos_api::hide_child_console_async(&mut cmd);
     cmd.arg("run")
         .arg("--no-prompt")
         .arg("--quiet")

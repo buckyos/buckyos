@@ -152,7 +152,7 @@ def _windows_subprocess_kwargs(detached: bool = False) -> dict[str, object]:
 
     creationflags = subprocess.CREATE_NO_WINDOW
     if detached:
-        creationflags |= subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
 
     return {
         "startupinfo": startupinfo,

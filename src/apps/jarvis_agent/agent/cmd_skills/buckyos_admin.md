@@ -249,6 +249,10 @@ Keep a timeline: symptom (user words, time) → evidence (command, `trace_id`, q
   not read, and `opendan` there is the host's. Your own runtime logs are files under `/opt/buckyos/logs/` in your container.
   A natively run Agent Service has no container: its log is the host's `$BUCKYOS_ROOT/logs/opendan/opendan.<pid>.log`
   (service `opendan`), its process record `$BUCKYOS_ROOT/local/app_native/<instance>.json` (pid, start time, port).
+- Windows background services and their tool processes should run without a console window, including
+  `opendan.exe install-agent-tools` during node startup. A flashing window warrants checking the launch site:
+  Rust callers reuse `src/kernel/buckyos-api/src/process_util.rs`; Python launchers use `CREATE_NO_WINDOW`
+  without `DETACHED_PROCESS` or `CREATE_NEW_CONSOLE`. Check logs to diagnose startup failures.
 - `buckyos diagnostic collect --services a,b --since <RFC3339>` (privileged; waits for the task; result has `bundle_id`,
   expiring in about an hour) → `buckyos diagnostic export <bundle_id> --path $OPENDAN_SESSION_DIR/diag.zip` (sha256
   checked). Scheduler logs run to tens of MB per hour; narrow the window.
@@ -294,6 +298,7 @@ Keep a timeline: symptom (user words, time) → evidence (command, `trace_id`, q
   or denial; resolve authorization through the owner/admin first. `docker restart` keeps the expired startup assertion.
   Preserve AgentRootFS, message storage and Session ACK/outbox state. Check the original pending message is consumed
   and answered once, then observe subsequent renewal; a successful restart task alone is insufficient.
+  AgentRootFS is `$BUCKYOS_ROOT/data/home/<owner>/agents/<agent_id>/` (full AgentId, not a short name or `did:web:` string).
 - `SESSION_EXPIRED` in a long `tail`/`wait`: the injected token lasts minutes and is refreshed per shell call; rerun in
   a new call. `CONNECTION_REQUIRED`: no endpoint; add `--endpoint http://host.docker.internal:3180`.
 - Re-running writes: pass `--idempotency-key <k>` to app and diagnostic verbs; re-read before repeating a set.

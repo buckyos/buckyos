@@ -260,7 +260,9 @@ pub fn run_host_entry(name: &str, args: &[std::ffi::OsString]) -> i32 {
     let env = session_identity_env(name);
     if name == "buckyos" {
         let launcher = root.join("bin").join(if cfg!(windows) { "buckyos.cmd" } else { "buckyos" });
-        return match std::process::Command::new(&launcher).args(args).envs(env).env("BUCKYOS_ROOT", &root).status() {
+        let mut cmd = std::process::Command::new(&launcher);
+        cmd.args(args).envs(env).env("BUCKYOS_ROOT", &root);
+        return match buckyos_api::hide_child_console(&mut cmd).status() {
             Ok(status) => status.code().unwrap_or(1),
             Err(e) => {
                 eprintln!("buckyos: start {}: {e}", launcher.display());
@@ -285,6 +287,7 @@ fn run_deno_command(root: &Path, name: &str, args: &[std::ffi::OsString], env: V
         }
     }
     let mut cmd = std::process::Command::new(&deno);
+    buckyos_api::hide_child_console(&mut cmd);
     cmd.arg("run")
         .arg("--config")
         .arg(tool.join("deno.json"))

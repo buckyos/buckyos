@@ -159,6 +159,7 @@ def run_command(args: list[str]) -> subprocess.CompletedProcess[str] | None:
             text=True,
             errors="replace",
             check=False,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
     except Exception:
         return None

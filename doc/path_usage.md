@@ -69,15 +69,18 @@ Agent 容器另有两组只读 bind mount(普通 script 容器没有):
 应用不能把运行时生成物写入 `/opt/buckyos/tools`;需要写入且可执行的内容放到 `/opt/buckyos/instance`。
 `/home/$username/.local/share/$appid` 仍是 app 的永久 user/app data,host 上对应
 `$buckyos_root/data/home/$username/.local/share/$appid`,不用于承载 session-bin 或依赖缓存 upper。
-OpenDAN 在该 App 数据目录下继续按 AgentId 隔离 AgentRootFS：
-`/home/$username/.local/share/$appid/agents/$agent_id`。
+OpenDAN 的 AgentRootFS 独立放在 owner home 的 `agents/` 下，按 AgentId 隔离：
+`/home/$username/agents/$agent_id`。
+目录名是完整 AgentId（例如 `xiaobai.test.buckyos.io`），不使用含冒号的 `did:web:...` 或短名。
+Agent 的 `BUCKYOS_DATA_DIR` 直接指向 AgentRootFS，模板、Session、记忆、工作区和已安装技能都在其中。
+当前开发版本直接使用新目录，不自动迁移或读取旧的 `.local/share/<app_id>/agents/<agent_id>`；旧目录不会因此删除。
 
 Agent 创建向导的 `permission_mode` 默认 `read_write`，可选 `read_only`。对应用户 home 的读写 / 只读挂载；AgentRoot 始终可读写，用户选择只读仍可保存 Session、记忆、工作区和技能。实际 Docker Worker 路径带 `/opt/buckyos/data` 前缀：
 
 | 目录 | 容器路径 | 宿主路径 | Agent 权限 |
 | --- | --- | --- | --- |
 | Owner home | `/opt/buckyos/data/home/<owner>/` | `$BUCKYOS_ROOT/data/home/<owner>/` | `permission_mode` 为 `read_write` 时读写，`read_only` 时只读 |
-| AgentRoot | `/opt/buckyos/data/home/<owner>/.local/share/<agent_id>/agents/<agent_id>/` | `$BUCKYOS_ROOT/data/home/<owner>/.local/share/<agent_id>/agents/<agent_id>/` | 始终读写 |
+| AgentRoot | `/opt/buckyos/data/home/<owner>/agents/<agent_id>/` | `$BUCKYOS_ROOT/data/home/<owner>/agents/<agent_id>/` | 始终读写 |
 | Agent 私有 storage | `/opt/buckyos/storage/` | `$BUCKYOS_ROOT/storage/apps/<runtime_key>/` | 始终读写，`runtime_key` 为 AppInstanceId 派生的目录键 |
 
 Agent 的 storage 不挂载宿主全局 `storage/`；其他 Worker 的既有 storage 映射不变。`BUCKYOS_ROOT` 本身可为符号链接，其下 Agent 使用的 home、App 数据、日志与私有 storage 挂载根不能经符号链接重定向。模板声明不能把只读 Owner home 重新开放为可写目录。API 访问还需经过用户与 runtime App 两侧的授权校验。`debug_jarvis.sh` / `opendan --dev` 直接运行在宿主进程环境中，文件访问受宿主进程权限约束，不提供 Docker 的只读挂载隔离。

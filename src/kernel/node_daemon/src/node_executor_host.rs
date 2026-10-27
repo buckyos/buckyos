@@ -223,7 +223,7 @@ fn agent_tools_dir() -> Option<PathBuf> {
         return None;
     }
     let dir = root.join("bin").join("agent-tools");
-    match std::process::Command::new(&program)
+    match buckyos_api::hide_child_console(&mut std::process::Command::new(&program))
         .arg("install-agent-tools")
         .arg(&dir)
         .env("BUCKYOS_ROOT", &root)

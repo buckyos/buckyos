@@ -88,7 +88,10 @@ def _append_result(results: list[ActionResult], kind: str, target: str, status: 
 
 def _run_command(args: list[str]) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="ignore")
+        return subprocess.run(
+            args, capture_output=True, text=True, encoding="utf-8", errors="ignore",
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
     except FileNotFoundError:
         return subprocess.CompletedProcess(args=args, returncode=127, stdout="", stderr=f"command not found: {args[0]}")
 

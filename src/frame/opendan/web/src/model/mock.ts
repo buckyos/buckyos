@@ -20,7 +20,7 @@ import type {
 const WHO = 'app:jarvis@devtest'
 const AGENT = 'did:bns:jarvis.devtest'
 const OWNER = 'did:bns:devtest'
-const ROOT = '/opt/buckyos/data/home/devtest/.local/share/jarvis/agents/jarvis'
+const ROOT = '/opt/buckyos/data/home/devtest/agents/jarvis.test.buckyos.io'
 const now = Date.now()
 const ago = (seconds: number) => now - seconds * 1000
 

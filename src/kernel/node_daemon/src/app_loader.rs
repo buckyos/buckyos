@@ -2044,7 +2044,7 @@ impl AppLoader {
                 );
                 env_vars.insert(
                     BUCKYOS_DATA_DIR_ENV.to_string(),
-                    container_app_data_dir(&self.owner_user_id, &self.app_id),
+                    self.container_app_data_dir(),
                 );
                 let app_config_str = serde_json::to_string(config).map_err(|error| {
                     ControlRuntItemErrors::ParserConfigError(format!(
@@ -2488,7 +2488,7 @@ impl AppLoader {
             let host_path = resolve_external_mount_host_path(&container_path, &host_relative)?;
             let permission = mount_access_to_docker(
                 &config.access,
-                default_mount_permission(&container_path, &self.app_id, &self.owner_user_id),
+                default_mount_permission(&container_path, &self.container_app_data_dir()),
             );
             mounts.insert(container_path, (host_path, permission));
         }
@@ -2549,7 +2549,7 @@ impl AppLoader {
         HashMap::from([
             ("/tmp".to_string(), (self.app_local_cache_dir(), "rw")),
             (
-                container_app_data_dir(&self.owner_user_id, &self.app_id),
+                self.container_app_data_dir(),
                 (self.app_data_dir(), "rw"),
             ),
         ])
@@ -2586,13 +2586,17 @@ impl AppLoader {
     }
 
     fn app_data_dir(&self) -> PathBuf {
-        get_buckyos_root_dir()
-            .join("data")
-            .join("home")
-            .join(&self.owner_user_id)
-            .join(".local")
-            .join("share")
-            .join(&self.app_id)
+        let home = get_buckyos_root_dir().join("data").join("home").join(&self.owner_user_id);
+        if self.effective_app_type() == AppType::Agent {
+            home.join("agents").join(&self.app_id)
+        } else {
+            home.join(".local").join("share").join(&self.app_id)
+        }
+    }
+
+    fn container_app_data_dir(&self) -> String {
+        let directory = if self.effective_app_type() == AppType::Agent { "agents" } else { ".local/share" };
+        format!("/opt/buckyos/data/home/{}/{directory}/{}", self.owner_user_id, self.app_id)
     }
 
     fn app_cache_dir(&self) -> PathBuf {
@@ -2682,7 +2686,7 @@ impl AppLoader {
         ensure_directory(&log_root, true)?;
         ensure_directory(&storage_root, true)?;
 
-        let app_data_container = container_app_data_dir(&self.owner_user_id, &self.app_id);
+        let app_data_container = self.container_app_data_dir();
         let instance_volume_mount = format!(
             "{}:{}:rw",
             self.instance_volume_name(),
@@ -2719,7 +2723,7 @@ impl AppLoader {
             let host_path = resolve_external_mount_host_path(&container_path, &host_relative)?;
             let permission = mount_access_to_docker(
                 &config.access,
-                default_mount_permission(&container_path, &self.app_id, &self.owner_user_id),
+                default_mount_permission(&container_path, &self.container_app_data_dir()),
             );
             mounts.insert(container_path, (host_path, permission));
         }
@@ -2945,7 +2949,7 @@ impl AppLoader {
         );
         env_vars.insert(
             BUCKYOS_DATA_DIR_ENV.to_string(),
-            container_app_data_dir(&self.owner_user_id, &self.app_id),
+            self.container_app_data_dir(),
         );
         env_vars.insert(
             "BUCKYOS_LOG_DIR".to_string(),
@@ -3441,7 +3445,7 @@ impl AppLoader {
         docker_run_args.push("-v".to_string());
         docker_run_args.push(format!(
             "<app_data>:{}:rw",
-            container_app_data_dir(&self.owner_user_id, &self.app_id)
+            self.container_app_data_dir()
         ));
         if let Some((container_path, host_path, permission)) = system_config_mount() {
             docker_run_args.push("-v".to_string());
@@ -3495,7 +3499,7 @@ impl AppLoader {
         docker_run_args.push("-e".to_string());
         docker_run_args.push(format!(
             "BUCKYOS_DATA_DIR={}",
-            container_app_data_dir(&self.owner_user_id, &self.app_id)
+            self.container_app_data_dir()
         ));
         docker_run_args.push("-e".to_string());
         docker_run_args.push(format!("BUCKYOS_LOG_DIR={}", WORKER_CONTAINER_LOG_ROOT));
@@ -4020,19 +4024,13 @@ fn mount_access_to_docker(access: &str, default: &'static str) -> &'static str {
 /// else falls through to `ro` and must be opted into writability explicitly.
 fn default_mount_permission(
     container_path: &str,
-    app_id: &str,
-    owner_user_id: &str,
+    app_data: &str,
 ) -> &'static str {
     let path = trim_trailing_slash(container_path);
-    let app_data = container_app_data_dir(owner_user_id, app_id);
     if path == app_data || path.starts_with(format!("{app_data}/").as_str()) {
         return "rw";
     }
     "ro"
-}
-
-fn container_app_data_dir(owner_user_id: &str, app_id: &str) -> String {
-    format!("/opt/buckyos/data/home/{owner_user_id}/.local/share/{app_id}")
 }
 
 /// Resolve a developer-declared host path (relative to BUCKYOS_ROOT) into an

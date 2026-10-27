@@ -35,7 +35,11 @@ die() {
 : "${BUCKYOS_PKG_SOURCE_DIR:=/mnt/buckyos/pkg}"
 : "${BUCKYOS_INSTANCE_VOLUME:=${BUCKYOS_ROOT}/instance}"
 : "${BUCKYOS_PKG_DIR:=${BUCKYOS_ROOT}/bin/${BUCKYOS_APP_ID}}"
-: "${BUCKYOS_DATA_DIR:=${BUCKYOS_ROOT}/data/home/default/.local/share/${BUCKYOS_APP_ID}}"
+if [[ "$BUCKYOS_APP_TYPE" == "agent" ]]; then
+  : "${BUCKYOS_DATA_DIR:=${BUCKYOS_ROOT}/data/home/${BUCKYOS_OWNER_USER_ID:-default}/agents/${BUCKYOS_APP_ID}}"
+else
+  : "${BUCKYOS_DATA_DIR:=${BUCKYOS_ROOT}/data/home/default/.local/share/${BUCKYOS_APP_ID}}"
+fi
 : "${BUCKYOS_EXTTOOL_DIR:=${BUCKYOS_ROOT}/tools}"
 : "${BUCKYOS_SAFE_MODE:=0}"
 

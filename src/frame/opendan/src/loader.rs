@@ -103,13 +103,13 @@ pub struct Loader {
 
 /// Where workspaces are best placed in the agent's own environment: the
 /// AgentRoot's `workspaces/`, and the owner's home when the AgentRoot lives
-/// under it (`<home>/.local/share/<app>/agents/<agent>`).
+/// under it (`<home>/agents/<agent>`).
 fn container_roots(agent_root: &std::path::Path) -> Vec<PathBuf> {
     let mut roots = vec![agent_root.join("workspaces")];
     let home = agent_root
-        .ancestors()
-        .find(|p| p.file_name().is_some_and(|n| n == ".local"))
-        .and_then(|local| local.parent());
+        .parent()
+        .filter(|p| p.file_name().is_some_and(|n| n == "agents"))
+        .and_then(|agents| agents.parent());
     if let Some(home) = home.filter(|h| h.is_dir()) {
         roots.push(home.to_path_buf());
     }
@@ -689,5 +689,20 @@ async fn report_loaded(records: Arc<dyn AgentRecords>, info: AgentRuntimeInfo, s
                 backoff = (backoff * 2).min(Duration::from_secs(30));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_workspace_roots_include_its_owners_home() {
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().join("agents/xiaobai.test.buckyos.io");
+        std::fs::create_dir_all(&root).unwrap();
+        assert_eq!(container_roots(&root), vec![root.join("workspaces"), home.path().to_path_buf()]);
+        let dev_root = home.path().join("dev-agent");
+        assert_eq!(container_roots(&dev_root), vec![dev_root.join("workspaces")]);
     }
 }

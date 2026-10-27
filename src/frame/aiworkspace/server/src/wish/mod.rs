@@ -583,7 +583,7 @@ fn kill(pid: u32) {
 }
 #[cfg(not(unix))]
 fn kill(pid: u32) {
-    let _ = std::process::Command::new("taskkill").args(["/F", "/PID", &pid.to_string()]).status();
+    let _ = buckyos_api::hide_child_console(&mut std::process::Command::new("taskkill")).args(["/F", "/PID", &pid.to_string()]).status();
 }
 
 /// `proc.list`: the caller's runs of a wish, newest first.

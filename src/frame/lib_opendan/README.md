@@ -46,6 +46,8 @@ RunnerDeps.runtime 使用 agent_tool::runtime::AgentRuntime；.llm_context.runti
 
 Session 的宿主 `report` 工具提交阶段报告或以 `is_end=true` 请求完成；Behavior XML 用 `<report end="true">`，结束与动作/切换互斥。`session.policy.completion = explicit_report` 可要求显式完成（默认 natural）；无输入队列时漏报会失败，有输入队列的普通 Done 关闭 Turn 并等待。报告、显式稳定产物和可选 JSON result 统一持久化，恢复不重执行报告、不新增推理；子 context 的结束只交回调用方。持久身份、提交窗口与历史投影见 [Session Directory Protocol §7.1](<../../../doc/opendan/protocol/Session Directory Protocol.md>)。
 
+UI Session 的结构化回复只交付 `reply` 正文，`topic` 和 `artifacts` 分别更新话题和附件；空正文不回退到 JSON 原文。格式或附件校验纠正一次后仍失败时，Turn 以 `output_format` 错误结束，由宿主发送失败提示，原文保留在 run / worklog 中供诊断。恢复已结束的 run 时执行相同的校验和交付规则。
+
 ## xagent
 
 设计见 [xAgent](../../../doc/opendan/xAgent.md)。xagent 是 xllm 的上一层：xllm 把一个 run 推进到一个 Outcome，xagent 把一个 Agent Session 推进到一个 Turn 关闭，或常驻地推进它。

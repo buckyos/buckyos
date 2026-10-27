@@ -413,7 +413,7 @@ async fn convert_with_ffmpeg(bytes: &[u8], mime: &str) -> Result<Vec<u8>, String
         tokio::fs::write(&input_path, bytes)
             .await
             .map_err(|err| format!("write temporary image failed: {err}"))?;
-        let output = Command::new("ffmpeg")
+        let output = buckyos_api::hide_child_console_async(&mut Command::new("ffmpeg"))
             .args(["-v", "error", "-y", "-i"])
             .arg(&input_path)
             .args(["-frames:v", "1"])

@@ -1000,11 +1000,7 @@ fn local_path_candidates(raw: &Path, session_id: Option<&str>) -> Vec<PathBuf> {
     // The agent process does not always carry `OPENDAN_AGENT_ROOT`; recover the
     // agent root from the deployment layout instead.
     if let Some(data_dir) = env_path("BUCKYOS_DATA_DIR") {
-        if let Ok(entries) = std::fs::read_dir(data_dir.join("agents")) {
-            for entry in entries.flatten() {
-                agent_roots.push(entry.path());
-            }
-        }
+        agent_roots.push(data_dir);
     }
     local_path_candidates_under(raw, session_id, &agent_roots)
 }
@@ -1574,7 +1570,7 @@ async fn extract_video_frames(media: &ResolvedMedia) -> Result<Vec<(f64, Resourc
         tokio::fs::write(&input_path, bytes)
             .await
             .map_err(|err| format!("write temporary video failed: {err}"))?;
-        let probe = Command::new("ffprobe")
+        let probe = buckyos_api::hide_child_console_async(&mut Command::new("ffprobe"))
             .args([
                 "-v",
                 "error",
@@ -1616,7 +1612,7 @@ async fn extract_video_frames(media: &ResolvedMedia) -> Result<Vec<(f64, Resourc
         for index in 0..frame_count {
             let timestamp = duration * (index as f64 + 0.5) / frame_count as f64;
             let frame_path = temp_dir.join(format!("frame-{index:02}.jpg"));
-            let output = Command::new("ffmpeg")
+            let output = buckyos_api::hide_child_console_async(&mut Command::new("ffmpeg"))
                 .args(["-v", "error", "-y", "-ss", &format!("{timestamp:.6}")])
                 .arg("-i")
                 .arg(&input_path)
@@ -2597,6 +2593,25 @@ mod tests {
         let err = resolve_local_file_path(Path::new(missing), Some("ui-test")).unwrap_err();
         assert!(err.contains("does not exist"), "{err}");
         assert!(err.contains("absolute path"), "{err}");
+    }
+
+    #[test]
+    fn media_finds_sessions_directly_in_the_agents_data_directory() {
+        if let Some(root) = env_path("BUCKYOS_MEDIA_ROOT_TEST") {
+            let candidates = local_path_candidates(Path::new("frame.png"), Some("ui-test"));
+            assert!(candidates.contains(&root.join("sessions/ui-test/frame.png")));
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "llm_understand_media::tests::media_finds_sessions_directly_in_the_agents_data_directory"])
+            .env_remove(crate::runtime_context::OPENDAN_AGENT_ROOT_ENV)
+            .env("BUCKYOS_DATA_DIR", root.path())
+            .env("BUCKYOS_MEDIA_ROOT_TEST", root.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+        assert!(String::from_utf8_lossy(&out.stdout).contains("1 passed"));
     }
 
     #[test]

@@ -179,7 +179,7 @@ OpenDAN 的后续职责（本期不实施，见附录 A）：
 | 组件 | 现状 | 对本计划的影响 |
 |---|---|---|
 | 存储 / DFS | 没有可挂载的 DFS：`nfs_server` 是 HTTP RPC（NFSP），多数调用不鉴权；cyfs-ndn 的 `fs_daemon` 未部署，没有 flock 与 ACL。唯一真实的锁是单机 flock（xllm 的 run 锁即如此） | 锁只依赖 flock 语义（§5）；DFS 上线时要提供同一语义 |
-| AgentRoot | 位于 `$BUCKYOS_ROOT/data/home/<owner>/.local/share/<runtime_appid>/agents/<agent_id>`，即 Agent runtime app 的私有数据目录 | 文件版 `AgentStateClient` 的可达性前提（A8） |
+| AgentRoot | 位于 `$BUCKYOS_ROOT/data/home/<owner>/agents/<agent_id>`，与普通用户文件、App 数据目录分开 | 文件版 `AgentStateClient` 的可达性前提（A8） |
 | 权限 | RBAC 里没有 AgentRoot / 文件路径这类资源；跨主体授权只能写字面 `p` 行，而 policy tail 会被 scheduler 整体重写；`DIDObjectRequestContext` 不带鉴权信息 | “以 Agent 身份”的授权模型另行设计（§15.1）；DID Object 宿主后移 |
 | kmsg | `create_queue` / `subscribe` 不幂等（已存在时返回字符串错误）；`commit_ack` 直接把游标设为 `index + 1`（可回退、无 fencing）；游标不落盘（D-09），服务重启可能丢订阅；没有权限校验（D-07）；retention 未实现（D-06）；`delete_message_before` 与 post 有竞态，会复用 index 覆盖消息；sub_id 在所有队列间共用一个命名空间 | §4.5 的 kmsg 使用规则 |
 | kevent | 跨节点投递未接线；事件名每段只允许字母、数字和 `_ - .`（DID 不能直接进路径）；TS SDK 没有 publish | wake_event 命名规则；唤醒丢失靠轮询兜底 |

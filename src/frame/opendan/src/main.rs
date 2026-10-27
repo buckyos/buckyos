@@ -19,7 +19,7 @@ use buckyos_api::{
     set_buckyos_api_runtime, user_app_spec_key, AgentId, AgentSpec, AppInstanceId,
     AppServiceInstanceConfig, AppServiceSpec, BuckyOSRuntimeType, OPENDAN_SERVICE_PORT,
 };
-use buckyos_kit::{get_buckyos_app_data_dir, init_logging};
+use buckyos_kit::{get_buckyos_root_dir, init_logging};
 use libopendan::channel::{KEventWaker, KmsgChannels, PollWaker};
 use libopendan::protocol::parse_did;
 use libopendan::runner::RunnerOptions;
@@ -270,7 +270,10 @@ async fn zone_env(args: &Args) -> Result<LoaderEnv> {
         ),
         Err(e) => log::warn!("opendan: profile of {} not readable: {e}", spec.agent_id),
     }
-    let agent_root = get_buckyos_app_data_dir(&runtime.get_app_id(), &owner)
+    let agent_root = get_buckyos_root_dir()
+        .join("data")
+        .join("home")
+        .join(&owner)
         .join("agents")
         .join(spec.agent_id.as_str());
     let package_root = args

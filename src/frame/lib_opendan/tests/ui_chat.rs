@@ -5,11 +5,17 @@
 mod common;
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
 use common::*;
+use libopendan::bridge::OutboundRecord;
 use libopendan::protocol::*;
-use libopendan::runner::{drive, StopWhen};
+use libopendan::runner::{
+    compose_reply, drive, DriveResult, OutboundSink, SendResult, StopWhen, TurnReply,
+};
 use libopendan::SessionTemplate;
+use ndn_lib::MsgObject;
 use serde_json::json;
 
 fn ui_spec() -> libopendan::api::SessionSpec {
@@ -46,6 +52,160 @@ fn ui_spec() -> libopendan::api::SessionSpec {
 
 fn shell(call_id: &str, command: &str) -> buckyos_api::AiResponse {
     tool_call(call_id, "shell", json!({ "command": command }))
+}
+
+#[derive(Default)]
+struct ReplySink {
+    replies: Mutex<Vec<TurnReply>>,
+}
+
+#[async_trait]
+impl OutboundSink for ReplySink {
+    async fn compose(
+        &self,
+        _cfg: &SessionConfig,
+        base: MsgObject,
+        reply: &TurnReply,
+        objects: Option<&dyn libopendan::runner::ObjectStore>,
+    ) -> libopendan::Result<Option<MsgObject>> {
+        self.replies.lock().unwrap().push(reply.clone());
+        if reply.status != TurnStatus::Completed {
+            return Ok(None);
+        }
+        compose_reply(base, reply, objects).await
+    }
+
+    async fn send(&self, _sid: &str, _record: &OutboundRecord) -> SendResult {
+        SendResult::Sent {
+            msg_id: None,
+            deliveries: vec![],
+        }
+    }
+}
+
+#[tokio::test]
+async fn structured_reply_repair_delivers_only_the_answer() {
+    let env = Env::new();
+    let sd = env.create_work(ui_spec()).await;
+    post_blocking(&env.queue_dir, &queue_of(&sd), msg("hello"));
+    let llm = ScriptedLlm::new(|req, n| match n {
+        0 => text("plain answer"),
+        1 => {
+            assert!(last_user_text(req).contains("Your reply does not meet the required format"));
+            text(r#"{"reply":"你好","topic":{"title":"问候","tags":["chat"]},"artifacts":[]}"#)
+        }
+        _ => panic!("unexpected inference"),
+    });
+    let sink = Arc::new(ReplySink::default());
+    let mut deps = env.deps(llm.clone());
+    deps.outbound = Some(sink.clone());
+    let result = drive(&sd, &deps, StopWhen::TurnClosed).await;
+    assert!(matches!(result, DriveResult::TurnClosed { status: TurnStatus::Completed, .. }), "{result:?}");
+    assert_eq!(llm.count(), 2);
+    let state = sd.state().unwrap();
+    assert_eq!(state.outbox.len(), 1);
+    assert_eq!(state.outbox[0].msg.content.content, "你好");
+    assert_eq!(state.topic.title, "问候");
+    assert_eq!(state.topic.tags, ["chat"]);
+    assert_eq!(sink.replies.lock().unwrap()[0].answer.as_deref(), Some("你好"));
+}
+
+#[tokio::test]
+async fn structured_reply_failure_never_delivers_raw_output() {
+    for raw in [
+        "```json\n{broken json\n```",
+        r#"{"reply":"visible text","topic":null,"artifacts":[],"extra":"invalid"}"#,
+        r#"{"reply":"attached","topic":null,"artifacts":["missing.txt"]}"#,
+    ] {
+        let env = Env::new();
+        let sd = env.create_work(ui_spec()).await;
+        post_blocking(&env.queue_dir, &queue_of(&sd), msg("hello"));
+        let llm = ScriptedLlm::new(move |_, n| {
+            if n < 2 {
+                text(raw)
+            } else {
+                text(r#"{"reply":"recovered","topic":null,"artifacts":[]}"#)
+            }
+        });
+        let sink = Arc::new(ReplySink::default());
+        let mut deps = env.deps(llm.clone());
+        deps.outbound = Some(sink.clone());
+        let result = drive(&sd, &deps, StopWhen::TurnClosed).await;
+        assert!(matches!(result, DriveResult::TurnClosed { status: TurnStatus::Failed, answer: None, .. }), "{result:?}");
+        assert_eq!(llm.count(), 2);
+        let state = sd.state().unwrap();
+        assert_eq!(state.last_error.as_ref().unwrap()["kind"], "output_format");
+        assert_eq!(state.turns_completed, 0);
+        assert!(state.outbox.is_empty());
+        assert!(state.topic.title.is_empty());
+        let replies = sink.replies.lock().unwrap();
+        assert_eq!(replies[0].status, TurnStatus::Failed);
+        assert!(replies[0].answer.is_none());
+        assert!(replies[0].artifacts.is_empty());
+        drop(replies);
+        assert!(read_worklog(&sd).iter().any(|e| matches!(&e.body, WorklogBody::AssistantMessage { assistant, .. } if assistant == raw)));
+        post_blocking(&env.queue_dir, &queue_of(&sd), msg("try again"));
+        drive(&sd, &deps, StopWhen::TurnClosed).await;
+        assert_eq!(sd.state().unwrap().outbox[0].msg.content.content, "recovered");
+        assert_eq!(llm.count(), 3);
+    }
+}
+
+#[tokio::test]
+async fn structured_reply_empty_answer_does_not_fall_back_to_json() {
+    let env = Env::new();
+    let sd = env.create_work(ui_spec()).await;
+    post_blocking(&env.queue_dir, &queue_of(&sd), msg("hello"));
+    let llm = ScriptedLlm::new(|_, _| text(r#"{"reply":"","topic":null,"artifacts":[]}"#));
+    let sink = Arc::new(ReplySink::default());
+    let mut deps = env.deps(llm.clone());
+    deps.outbound = Some(sink.clone());
+    let result = drive(&sd, &deps, StopWhen::TurnClosed).await;
+    assert!(matches!(result, DriveResult::TurnClosed { status: TurnStatus::Completed, .. }), "{result:?}");
+    assert_eq!(llm.count(), 1);
+    assert_eq!(sink.replies.lock().unwrap()[0].answer.as_deref(), Some(""));
+    assert!(sd.state().unwrap().outbox.is_empty());
+}
+
+#[tokio::test]
+async fn structured_reply_recovery_uses_the_same_delivery_rules() {
+    for (raw, expected) in [
+        (r#"{"reply":"recovered","topic":{"title":"topic","tags":["tag"]},"artifacts":[]}"#, Some("recovered")),
+        (r#"{"reply":"","topic":null,"artifacts":[]}"#, Some("")),
+        (r#"{"reply":"invalid","topic":null,"artifacts":[],"extra":1}"#, None),
+        (r#"{"reply":"attached","topic":null,"artifacts":["missing.txt"]}"#, None),
+    ] {
+        let env = Env::new();
+        let sd = env.create_work(ui_spec()).await;
+        post_blocking(&env.queue_dir, &queue_of(&sd), msg("hello"));
+        let llm = ScriptedLlm::fallible(|_, _| Err(llm_context::LLMComputeError::Timeout));
+        let sink = Arc::new(ReplySink::default());
+        let mut deps = env.deps(llm.clone());
+        deps.outbound = Some(sink.clone());
+        drive(&sd, &deps, StopWhen::MaxOutcomes { n: 1 }).await;
+        let run_id = sd.state().unwrap().live_run.unwrap().run_id;
+        let runs = sd.runs();
+        let mut record = runs.record(&run_id).unwrap();
+        let mut snapshot = runs.store().get_snapshot(&run_id, record.latest_snapshot_idx.unwrap()).unwrap();
+        snapshot.state.accumulated.push(buckyos_api::AiMessage::text(buckyos_api::AiRole::Assistant, raw));
+        record.latest_snapshot_idx = Some(runs.store().put_snapshot(&run_id, &snapshot).unwrap());
+        record.status = agent_tool::xllm::RunStatus::Completed;
+        runs.store().write_record(&record).unwrap();
+        drive(&sd, &deps, StopWhen::Idle).await;
+        assert_eq!(llm.count(), 1);
+        let replies = sink.replies.lock().unwrap();
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].answer.as_deref(), expected);
+        assert_eq!(replies[0].status, if expected.is_some() { TurnStatus::Completed } else { TurnStatus::Failed });
+        if expected == Some("recovered") {
+            let state = sd.state().unwrap();
+            assert_eq!(state.outbox[0].msg.content.content, "recovered");
+            assert_eq!(state.topic.title, "topic");
+            assert_eq!(state.topic.tags, ["tag"]);
+        } else {
+            assert!(sd.state().unwrap().outbox.is_empty());
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

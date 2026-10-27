@@ -269,7 +269,7 @@ impl SshTransport {
         args
     }
     pub async fn connect(config: &SshConfig) -> Result<Self, XllmError> {
-        let out = Command::new("ssh")
+        let out = buckyos_api::hide_child_console_async(&mut Command::new("ssh"))
             .args(Self::args(config, false))
             .arg("-G")
             .arg(config.host.as_ref().unwrap())
@@ -318,6 +318,7 @@ impl SshTransport {
     }
     pub async fn script(&self, script: &str, effect: bool) -> ToolResult<Vec<u8>> {
         let mut c = Command::new("ssh");
+        buckyos_api::hide_child_console_async(&mut c);
         c.args(self.connection_args(false))
             .arg(self.config.host.as_ref().unwrap())
             .arg("bash --noprofile --norc -s");
@@ -371,6 +372,7 @@ impl SshTransport {
     }
     async fn sftp(&self, batch: &str, effect: bool) -> ToolResult<()> {
         let mut c = Command::new("sftp");
+        buckyos_api::hide_child_console_async(&mut c);
         c.args(self.connection_args(true))
             .args(["-q", "-b", "-"])
             .arg(self.config.host.as_ref().unwrap());

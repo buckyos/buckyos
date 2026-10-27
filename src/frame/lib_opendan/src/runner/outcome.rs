@@ -113,8 +113,6 @@ pub(super) struct Next {
     pub(super) reply_artifacts: Vec<ReportArtifact>,
     /// Structured reply: what the conversation is about now.
     pub(super) topic: Option<Topic>,
-    /// The reply broke its contract after the allowed repair: the raw text
-    /// went out as it was, and this is why (recorded in the worklog).
     pub(super) reply_error: Option<String>,
 }
 
@@ -163,6 +161,65 @@ impl StructuredReply {
                 .map(str::to_string)
                 .collect(),
         }
+    }
+}
+
+pub(super) fn is_ui_reply(
+    cfg: &SessionConfig,
+    snapshot: &LLMContextSnapshot,
+    child: bool,
+) -> bool {
+    !child
+        && cfg.session.kind == SessionKind::Ui
+        && matches!(
+            snapshot.request.output,
+            llm_context::OutputSpec::Json { max_repairs: Some(_), .. }
+        )
+}
+
+pub(super) async fn apply_ui_reply(
+    sh: &Arc<Shared>,
+    run: &RunHandle,
+    cfg: &SessionConfig,
+    next: &mut Next,
+    output: &ContextOutput,
+) {
+    if next.report.is_some() {
+        return;
+    }
+    match output {
+        ContextOutput::Json { content } => {
+            let r = StructuredReply::parse(content);
+            next.answer = Some(r.reply);
+            next.topic = r.topic;
+            if !r.artifacts.is_empty() {
+                let id = crate::ids::h(&[run.run_id(), "structured_reply"]);
+                match super::reports::store_artifacts(sh, &id, &r.artifacts).await {
+                    Ok(a) => next.reply_artifacts = a,
+                    Err(e) => {
+                        log::warn!("session {}: reply artifacts not delivered: {e}", sh.dir.sid());
+                        next.reply_error = Some(format!("artifacts not delivered: {e}"));
+                    }
+                }
+            }
+        }
+        ContextOutput::Invalid { error, .. } => {
+            *next = Next {
+                kind: FinishKind::Error,
+                run_ended: true,
+                turn_end: Some(TurnStatus::Failed),
+                usage: next.usage.take(),
+                reply_error: Some(error.clone()),
+                error: Some(json!({
+                    "kind": "output_format",
+                    "message": error,
+                    "recoverable": false,
+                })),
+                ..Default::default()
+            };
+            fail_unattended(cfg, next);
+        }
+        ContextOutput::Text { .. } => {}
     }
 }
 
@@ -522,9 +579,6 @@ pub(super) async fn handle_context_outcome(
             response,
             ..
         } => {
-            // A reply contract: a UI conversation's reply is structured
-            // (`{reply, topic, artifacts}`); a reply that broke the
-            // contract twice goes out as it is.
             let contract = matches!(
                 snapshot.request.output,
                 llm_context::OutputSpec::Json {
@@ -532,17 +586,8 @@ pub(super) async fn handle_context_outcome(
                     ..
                 }
             );
-            let mut structured = None;
             let mut reply_error = None;
             let text = match &output {
-                ContextOutput::Json { content }
-                    if contract && !site.child && cfg.session.kind == SessionKind::Ui =>
-                {
-                    let r = StructuredReply::parse(content);
-                    let reply = r.reply.clone();
-                    structured = Some(r);
-                    reply
-                }
                 ContextOutput::Invalid { content, error } if contract => {
                     log::warn!(
                         "session {}: the reply of run {} does not meet its contract: {error}",
@@ -593,19 +638,8 @@ pub(super) async fn handle_context_outcome(
             next.report = final_report;
             next.usage = Some(usage);
             next.reply_error = reply_error;
-            if let Some(r) = structured {
-                next.topic = r.topic;
-                if !r.artifacts.is_empty() {
-                    let id = crate::ids::h(&[lc.run.run_id(), "structured_reply"]);
-                    match super::reports::store_artifacts(sh, &id, &r.artifacts).await {
-                        Ok(a) => next.reply_artifacts = a,
-                        // Checked before the reply was accepted; gone since.
-                        Err(e) => {
-                            log::warn!("session {}: reply artifacts not delivered: {e}", sh.dir.sid());
-                            next.reply_error = Some(format!("artifacts not delivered: {e}"));
-                        }
-                    }
-                }
+            if is_ui_reply(&cfg, &snapshot, site.child) {
+                apply_ui_reply(sh, &lc.run, &cfg, &mut next, &output).await;
             }
             let yielded = behavior_result.as_ref().and_then(|b| b.decision())
                 == Some(llm_context::StepDecision::Yield);

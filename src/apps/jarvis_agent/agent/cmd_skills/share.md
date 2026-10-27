@@ -22,8 +22,8 @@ buckyos share stats [--share-id <share_id>] [--days 30] [--granularity day|hour]
 
 #### Paths
 - `<path>` is a Zone path as Files shows it, `/home/<owner>/Documents/report.pdf`, or `cyfs:///home/<owner>/…`.
-- Docker AgentRoot is `/opt/buckyos/data/home/<owner>/.local/share/<app_id>/agents/<agent_id>/`; use the Zone path
-  `/home/<owner>/.local/share/<app_id>/agents/<agent_id>/` when sharing a file there. `/tmp` and runtime/cache paths
+- Docker AgentRoot is `/opt/buckyos/data/home/<owner>/agents/<agent_id>/`; use the Zone path
+  `/home/<owner>/agents/<agent_id>/` when sharing a file there. `/tmp` and runtime/cache paths
   are not in the Zone; write the file under your AgentRoot first.
 - The link carries a snapshot taken now. Later edits of the file are not in it; share again for a new version.
 - Folders leave out `.git/`, `node_modules/`, `.env*`, `*.key`, `*.pem`, `.DS_Store`, symlinks and what the owner cannot

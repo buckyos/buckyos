@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use agent_tool::xllm::{LoopModel, RunRecord, RunStatus};
 use buckyos_api::AiRole;
+use llm_context::outcome::ContextOutput;
 use llm_context::state::LLMContextSnapshot;
+use llm_context::OutputValidator;
 use serde_json::json;
 
 use crate::error::{OpenDanError, Result};
@@ -15,8 +17,8 @@ use crate::session::runs::RunHandle;
 
 use super::live::remove_if_safe;
 use super::outcome::{
-    call_site_of, classify_done, finish_run, freeze_target, hand_over, has_report,
-    hold_for_children, CallSite, FinishKind, Next,
+    apply_ui_reply, call_site_of, classify_done, finish_run, freeze_target, hand_over, has_report,
+    hold_for_children, is_ui_reply, CallSite, FinishKind, Next,
 };
 use super::receipts::{apply_receipt, receipts_after, snapshot_host_meta, validate_receipts};
 use super::shared::Shared;
@@ -203,7 +205,7 @@ async fn finish_terminal_record(
     let next = match recorded {
         Some(n) => n,
         None => {
-            let mut next = derive_next(sh, &run.record(), snapshot, behavior).await;
+            let mut next = derive_next(sh, run, &run.record(), snapshot, behavior).await;
             hold_for_children(sh, &mut next).await?;
             next
         }
@@ -215,6 +217,7 @@ async fn finish_terminal_record(
 /// and final snapshot.
 async fn derive_next(
     sh: &Arc<Shared>,
+    run: &RunHandle,
     record: &RunRecord,
     snapshot: &LLMContextSnapshot,
     behavior: bool,
@@ -267,6 +270,35 @@ async fn derive_next(
                 .and_then(|v| serde_json::from_value::<Vec<ReportSubmission>>(v.clone()).ok())
                 .and_then(|r| r.into_iter().find(|r| r.is_end));
             let explicit_end = final_report.is_some();
+            let output = if is_ui_reply(&cfg, snapshot, child) && !explicit_end {
+                let content = answer.as_deref().unwrap_or_default();
+                let checked = async {
+                    let value = llm_context::json_check::parse_reply(content)
+                        .map_err(|e| format!("the reply is not one JSON value ({e})"))?;
+                    if let llm_context::OutputSpec::Json { schema: Some(schema), .. } =
+                        &snapshot.request.output
+                    {
+                        llm_context::json_check::validate(schema, &value)?;
+                    }
+                    super::reports::ReplyValidator {
+                        sh: sh.clone(),
+                        run: run.clone(),
+                    }
+                    .validate(&value)
+                    .await?;
+                    Ok::<_, String>(value)
+                }
+                .await;
+                Some(match checked {
+                    Ok(content) => ContextOutput::Json { content },
+                    Err(error) => ContextOutput::Invalid {
+                        content: content.to_string(),
+                        error,
+                    },
+                })
+            } else {
+                None
+            };
             let answer = final_report
                 .as_ref()
                 .map(ReportSubmission::delivery_text)
@@ -283,6 +315,9 @@ async fn derive_next(
             );
             next.report = final_report;
             next.usage = record.usage.main.clone();
+            if let Some(output) = output {
+                apply_ui_reply(sh, run, &cfg, &mut next, &output).await;
+            }
             next
         }
         RunStatus::Failed => Next {

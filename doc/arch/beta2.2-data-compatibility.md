@@ -34,7 +34,8 @@ Beta2.2 应作为后续覆盖升级的第一份正式数据基线。凡升级后
 | `local/kmsg/` | kmsg 的 Sled 队列库 | 队列、未消费消息、订阅与游标 |
 | `data/<service>/` | runtime `get_data_folder()`、RDB `user_data` 的默认服务位置 | 实际存在的持久数据区；不能只扫描 `data/srv` |
 | `data/<user>/<app>/` | runtime/RDB 的 App 数据路径 | 与挂载式 App home 数据路径不同；变更需迁移 |
-| `data/home/<user>/.local/share/<app>/` | 容器应用永久数据；其 `agents/<agent_id>/` 是 AgentRootFS | AppId、AgentId 与目录的绑定不能随版本重新分配 |
+| `data/home/<user>/.local/share/<app>/` | 普通应用永久数据 | AppId 与目录的绑定不能随版本重新分配 |
+| `data/home/<owner>/agents/<agent_id>/` | 当前开发分支的 AgentRootFS，与用户普通文件和 App 数据分开 | AgentId 使用完整域名；当前开发版不迁移旧 App 内目录，见 [路径约定](../path_usage.md) |
 | `data/srv/`、`data/home/` | 服务持久目录、共享库、发布目录、用户文件 | 文件内容、权限、链接、扩展元数据与引用 |
 | `storage/ndn/<mgr_id>/` 等对象存储根 | Named Store、对象与 chunks；实际 store 可由配置指定 | 存储布局、ObjectId/ChunkId、引用与 GC 根 |
 | `data/.fsdb/` | nfs-server 的 `filedb.sqlite` 和 staging | 数据库中有用户元数据和稳定 ID，不能整体重扫替代 |

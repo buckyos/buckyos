@@ -306,7 +306,7 @@ fn agent_permission_mount_boundaries() {
     }
     let root = buckyos_kit::get_buckyos_root_dir();
     let home = root.join("data/home/alice");
-    let data = home.join(".local/share/jarvis-agent.example");
+    let data = home.join("agents/jarvis-agent.example");
     let pkg = root.join("test-package");
     fs::create_dir_all(&pkg).unwrap();
     fs::create_dir_all(home.join("Documents")).unwrap();
@@ -344,14 +344,21 @@ fn agent_permission_mount_boundaries() {
             },
         );
         config.external_mount_point.insert(
-            "/opt/buckyos/data/home/alice/.local/share/jarvis-agent.example".into(),
+            "/other-agent".into(),
+            MountPointConfig {
+                target_path: "data/home/alice/agents/other-agent.example".into(),
+                access: "read_write".into(),
+            },
+        );
+        config.external_mount_point.insert(
+            "/opt/buckyos/data/home/alice/agents/jarvis-agent.example".into(),
             MountPointConfig {
                 target_path: "data/home/alice/Documents".into(),
                 access: "read_only".into(),
             },
         );
         config.external_mount_point.insert(
-            "/opt/buckyos/data/home/alice/.local/share/jarvis-agent.example/agents/reader".into(),
+            "/opt/buckyos/data/home/alice/agents/jarvis-agent.example/subdir".into(),
             MountPointConfig {
                 target_path: "data/home/alice/Documents".into(),
                 access: "read_only".into(),
@@ -365,6 +372,7 @@ fn agent_permission_mount_boundaries() {
             "/opt/buckyos/data/home/alice",
             "/home-alias",
             "/external-home-alias",
+            "/other-agent",
         ] {
             let (_, _, access) = mounts.iter().find(|(path, _, _)| path == target).unwrap();
             assert_eq!(*access, expected_access, "{target}");
@@ -372,18 +380,18 @@ fn agent_permission_mount_boundaries() {
         let (_, actual, access) = mounts
             .iter()
             .find(|(path, _, _)| {
-                path == "/opt/buckyos/data/home/alice/.local/share/jarvis-agent.example"
+                path == "/opt/buckyos/data/home/alice/agents/jarvis-agent.example"
             })
             .unwrap();
         assert_eq!(actual, &fs::canonicalize(&data).unwrap());
         assert_eq!(*access, "rw");
-        assert!(!mounts.iter().any(|(path, _, _)| path.ends_with("/agents/reader")));
+        assert!(!mounts.iter().any(|(path, _, _)| path.ends_with("/subdir")));
         let (_, storage, access) = mounts
             .iter()
             .find(|(path, _, _)| path == "/opt/buckyos/storage")
             .unwrap();
         assert_eq!(*access, "rw");
-        assert!(storage.starts_with(root.join("storage/apps")));
+        assert!(storage.starts_with(fs::canonicalize(root.join("storage/apps")).unwrap()));
         assert_ne!(storage, &root.join("storage"));
         if let Ok(image) = std::env::var("BUCKYOS_AGENT_MOUNTS_DOCKER_IMAGE") {
             let mut command = std::process::Command::new("docker");
@@ -408,7 +416,7 @@ fn agent_permission_mount_boundaries() {
             })
             .join("\n");
             let script = format!(
-                "set -eu\nmkdir -p /opt/buckyos/data/home/alice/.local/share/jarvis-agent.example/agents/reader\nprintf writable > /opt/buckyos/data/home/alice/.local/share/jarvis-agent.example/agents/reader/state\n{writes}"
+                "set -eu\nmkdir -p /opt/buckyos/data/home/alice/agents/jarvis-agent.example/subdir\nprintf writable > /opt/buckyos/data/home/alice/agents/jarvis-agent.example/subdir/state\n{writes}"
             );
             let output = command.args([&image, "-c", &script]).output().unwrap();
             assert!(
@@ -418,7 +426,7 @@ fn agent_permission_mount_boundaries() {
                 String::from_utf8_lossy(&output.stderr)
             );
             assert_eq!(
-                fs::read_to_string(data.join("agents/reader/state")).unwrap(),
+                fs::read_to_string(data.join("subdir/state")).unwrap(),
                 "writable"
             );
         }
@@ -1043,7 +1051,7 @@ fn docker_runtime_exact_match_rejects_another_deployment_generation() {
 
 #[test]
 fn agent_process_matching_distinguishes_wildcard_and_exact_checks() {
-    let agent_env = Path::new("/opt/buckyos/data/home/alice/.local/share/jarvis-agent.example");
+    let agent_env = Path::new("/opt/buckyos/data/home/alice/agents/jarvis-agent.example");
     let expected_root =
         Path::new("/opt/buckyos/env/pkgs/agent.jarvis-agent.example#pkg:1234567890");
     let exact_cmd = vec![
@@ -1289,7 +1297,7 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
         .args
         .contains(&"BUCKYOS_APP_TYPE=agent".to_string()));
     assert!(start.commands[1].args.contains(
-        &"BUCKYOS_DATA_DIR=/opt/buckyos/data/home/alice/.local/share/jarvis-agent.example"
+        &"BUCKYOS_DATA_DIR=/opt/buckyos/data/home/alice/agents/jarvis-agent.example"
             .to_string(),
     ));
     assert!(start.commands[1]
@@ -1335,7 +1343,7 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
         .args
         .iter()
         .any(|arg| arg
-            == "<app_data>:/opt/buckyos/data/home/alice/.local/share/jarvis-agent.example:rw"));
+            == "<app_data>:/opt/buckyos/data/home/alice/agents/jarvis-agent.example:rw"));
     assert!(start.commands[1]
         .args
         .iter()

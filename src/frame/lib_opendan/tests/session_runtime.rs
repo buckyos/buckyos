@@ -233,6 +233,52 @@ async fn helper_env() -> (Env, libopendan::SessionDir, SessionService) {
     (env, sd, svc)
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn forwarded_helpers_work_in_a_long_windows_session_directory() {
+    use std::os::windows::ffi::OsStrExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let mut root = tmp.path().canonicalize().unwrap();
+    while root.as_os_str().encode_wide().count() < 280 {
+        root = root.join("session helper 中文 directory");
+    }
+    let env = Env::at(&root);
+    let agent = env.agent();
+    agent.runtimes().register(&lab(RuntimeBaseline::Standard, false), APP).await.unwrap();
+    let sd = env.create_work(work_spec("long helper directory")).await;
+    assert!(sd.path().as_os_str().encode_wide().count() > 260);
+    let cli = Path::new(env!("CARGO_BIN_EXE_xagent"));
+    let run = |argv: Vec<String>| libopendan::session_context::HelperRequest {
+        argv,
+        stdin: None,
+        call_id: None,
+    };
+    let out = libopendan::session_context::run_helper(
+        agent.as_ref(),
+        cli,
+        sd.sid(),
+        &run(vec!["runtime".into(), "list".into()]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out.exit_code, 0, "{out:?}");
+    assert!(out.stdout.contains("lab"), "{out:?}");
+
+    std::fs::write(sd.path().join("任务.txt"), "content from the session directory").unwrap();
+    let out = libopendan::session_context::run_helper(
+        agent.as_ref(),
+        cli,
+        sd.sid(),
+        &run(vec!["todo".into(), "add".into(), "relative file".into(), "--content-file".into(), "任务.txt".into()]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out.exit_code, 0, "{out:?}");
+    let list = libopendan::todos::store_of(&sd).load().unwrap();
+    assert_eq!(list.todos[0].content, "content from the session directory");
+}
+
 #[tokio::test]
 async fn a_session_token_reaches_only_its_own_session_methods() {
     let (env, sd, svc) = helper_env().await;

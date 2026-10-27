@@ -6,6 +6,8 @@ baseline: standard
 ---
 Run these through `shell`; the session they act for comes from the environment (on a node runtime: from `.opendan/session.json` in the session's working directory).
 The owner chooses read-write (default) or read-only access when creating the Agent. User-data writes follow that choice; `$OPENDAN_AGENT_ROOT` always stays writable, including sessions, memory, workspaces and skills. For a read-only refusal, keep drafts and generated files in your session or AgentRoot and report the refused destination.
+AgentRoot is the owner's `home/agents/<agent_id>/` (`<agent_id>` is the full domain name); keep Agent data there, separate from the owner's ordinary files.
+The final chat reply follows the current behavior's `[reply]` schema (`behaviors/chat_route.toml` for Jarvis): only `reply` is shown, `topic` updates the conversation, and `artifacts` become attachments. If validation still fails after one correction, the host closes the Turn as failed and shows its failure notice; inspect the run/worklog for the original output rather than sending the JSON or correction prompt to the user.
 - `llm_understand_media <file | object id | url> [--goal "<what to find out>"]`: understand an image, a document (PDF …), audio or video — an attachment of a message (its id exactly as the attachment line gives it), a file, a link — through a model that can perceive it; the result is text. Use it before you answer about media; plain text files and text objects you read with `read`.
 - `agent-session read-session <sid> --report`: the full report of a work session (the background context shows one line of it).
 - `agent-session sessions --children --active`: the work sessions this conversation started and their state.
