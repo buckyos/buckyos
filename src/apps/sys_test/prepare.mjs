@@ -26,6 +26,7 @@ rmSync(distDir, { recursive: true, force: true });
 mkdirSync(distDir, { recursive: true });
 
 copyFileSync(join(rootDir, "main.ts"), join(distDir, "main.ts"));
+copyFileSync(join(rootDir, "static_web.ts"), join(distDir, "static_web.ts"));
 copyFileSync(join(rootDir, "xllm_selftest.ts"), join(distDir, "xllm_selftest.ts"));
 copyFileSync(join(rootDir, "support_group.ts"), join(distDir, "support_group.ts"));
 copyFileSync(join(rootDir, "deno.json"), join(distDir, "deno.json"));

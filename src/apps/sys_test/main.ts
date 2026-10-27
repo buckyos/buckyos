@@ -18,10 +18,10 @@
  * ../../../buckyos-websdk, which is the canonical reference for driving the
  * AppService runtime from a Deno process.
  */
-import { serveDir } from "jsr:@std/http/file-server";
 import { fromFileUrl, join, toFileUrl } from "jsr:@std/path@^1";
 import { runXllmIdentitySelftest } from "./xllm_selftest.ts";
 import { handleSupportRoute, type SupportContext } from "./support_group.ts";
+import { serveSystestStatic } from "./static_web.ts";
 
 type NodeSdkModule = typeof import("@sys-test/websdk-node-types");
 type AppInstanceIdentity = {
@@ -1204,27 +1204,7 @@ Deno.serve({
       );
     }
 
-    const staticResponse = await serveDir(req, {
-      fsRoot: staticRoot,
-      quiet: true,
-      showIndex: true,
-    });
-    // Fallback: if the static file is not found and the request is a
-    // navigation (not an asset), serve index.html so the SPA can handle
-    // client-side routing.
-    if (staticResponse.status === 404) {
-      const accept = req.headers.get("accept") ?? "";
-      if (accept.includes("text/html")) {
-        const fallback = await serveDir(
-          new Request(new URL("/index.html", req.url), req),
-          { fsRoot: staticRoot, quiet: true, showIndex: true },
-        );
-        if (fallback.status === 200) {
-          return tap("static[fallback]", fallback);
-        }
-      }
-    }
-    return tap("static", staticResponse);
+    return tap("static", await serveSystestStatic(req, staticRoot));
   } catch (error) {
     console.error(
       `[sys_test][req#${reqId}] !! handler threw: ${

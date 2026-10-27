@@ -67,6 +67,8 @@ pnpm build
 
 SDK 依赖跟随 `buckyos-websdk#main`。每次 `pnpm build` 先更新工作区根目录和 `web/` 的 SDK 依赖，再执行 Deno 后台和浏览器 TypeScript 类型检查，生成可打包的 `dist/`。`pnpm build:web` 和 `web/` 内的 `pnpm build` 也会先更新 SDK，无需手动执行 `pnpm update`。
 
+静态 HTML（含根路径、`index.html` 与 SPA 回退）使用 `Cache-Control: no-store`，不发布基于文件时间和长度的 ETag / Last-Modified；携带旧缓存校验头也返回当前页面。PIKG 解包文件的时间可能固定为 1970 年，同长度的新旧 HTML 不能据此判断未修改。带 hash 的 JS / CSS 保留静态服务器缓存行为。`pnpm test` 同时覆盖同长度、零时间戳页面升级、旧条件请求、GET / HEAD / SPA 回退及资产、404、405 行为；无需更新 SDK 或运行真实模型。
+
 在已由 node-daemon 启动的应用页面，分别点击各组的页面/后台检测按钮。也可向应用地址发送 `POST /sdk/appservice/selftest` 运行全部后台用例；HTTP 200 且 `ok: true` 才算通过。全量检测包含上述 xllm 真实模型请求。
 
 ## 验证记录（2026-10-03）
