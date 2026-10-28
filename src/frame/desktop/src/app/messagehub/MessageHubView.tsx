@@ -467,7 +467,9 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
     ...(mediaHost ? [{ key: 'media', label: t('messagehub.media.settings', 'Media settings'), icon: <ImagePlay size={16} />, onSelect: () => mediaHost.openSettings(), testId: 'media-settings' }] : []),
     ...(isDesktop ? [{ key: 'collapse', label: t('messagehub.collapseEntityList', 'Collapse entity list'), icon: <PanelLeftClose size={16} />, onSelect: handleCollapseEntityList, testId: 'collapse-entity-list' }] : []),
   ]
-  const syncStatus = !networkOnline ? t('messagehub.sync.offline') : store.syncStatus(context) === 'connecting' ? t('messagehub.sync.connecting') : undefined
+  const ownerStatus = store.ownerStatus(context)
+  const refreshing = ownerStatus.phase === 'ready' && ownerStatus.refreshing
+  const syncStatus = !networkOnline ? t('messagehub.sync.offline') : refreshing ? t('states.loading') : store.syncStatus(context) === 'connecting' ? t('messagehub.sync.connecting') : undefined
   // Pinning the entity's default session is enough to lift the entity and leaves its other sessions' order alone;
   // unpinning and muting cover every session, as the entity is pinned while any of them is and muted while all are.
   const updateEntityPreferences = async (entityIds: string[], patch: EntityPreferencePatch) => {

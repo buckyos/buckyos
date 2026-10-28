@@ -39,7 +39,8 @@ export interface ConnectionChoice {
 
 /** Load state of one owner's data (self or an observed agent). */
 export type OwnerStatus =
-  | { phase: 'idle' | 'loading' | 'ready' }
+  | { phase: 'idle' | 'loading' }
+  | { phase: 'ready'; refreshing?: boolean }
   | { phase: 'denied' }
   | { phase: 'error'; message: string }
 

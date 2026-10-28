@@ -2,6 +2,7 @@ import {
   ArrowLeft,
   FileUp,
   Lock,
+  Loader2,
   Menu,
   MoreVertical,
   Pin,
@@ -113,6 +114,8 @@ export function ConversationView({
   const store = useMessageHubStore()
   useMessageHubRuntime()
   const context = contextProp ?? store.defaultContext()
+  const ownerStatus = store.ownerStatus(context)
+  const refreshing = ownerStatus.phase === 'ready' && ownerStatus.refreshing
   const runtime = session ? store.runtimeFor(context, session.id) : []
   const requestCount = session?.requestCount ?? 0
   const canSend = access === undefined || access?.mode === 'read_write'
@@ -329,6 +332,7 @@ export function ConversationView({
           <button onClick={onOpenSessionDetails} disabled={!session} type="button" className="hidden max-w-full truncate text-xs text-[color:var(--cp-muted)] md:block" aria-label={t('messagehub.sessionDetails')} title={t('messagehub.sessionDetails')}>{subtitle}</button>
           <div role="status" data-testid="session-runtime" className="truncate text-xs text-[color:var(--cp-accent)]">{runtime.map(state => `${state.memberDid === context.ownerDid ? t('messagehub.you') : session?.members[state.memberDid]?.nickname || entity.name} · ${t(`messagehub.runtime.${state.status}`)}${state.statusLine ? ` · ${state.statusLine}` : ''}`).join(' · ')}</div>
         </div>
+        {refreshing ? <span role="status" className="flex min-w-0 max-w-28 items-center gap-1.5 text-xs text-[color:var(--cp-muted)]" data-testid="conversation-refresh-status"><Loader2 size={14} className="shrink-0 animate-spin" aria-hidden /><span className="truncate">{t('states.loading')}</span></span> : null}
         {onCreate && <button type="button" onClick={onCreate} disabled={!!creationReason} title={creationReason ? t(`messagehub.reason.${creationReason}`) : t('messagehub.newSession')} aria-label={t('messagehub.newSession')} className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-[color:var(--cp-muted)] disabled:opacity-40"><SquarePen size={18} /></button>}
         <button onClick={onOpenSessionDetails} disabled={!session} aria-label={t('messagehub.sessionDetails')} title={t('messagehub.sessionDetails')} className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-[color:var(--cp-muted)] disabled:opacity-40" type="button"><MoreVertical size={18} /></button>
       </div>

@@ -1264,7 +1264,7 @@ export type UiSessionStateKey = keyof z.infer<typeof uiSessionStateSchema>
 
 关系的显示规则、可用动作与确认强度统一由 [`components/network/UI_DATAMODEL.md`](../../components/network/UI_DATAMODEL.md) §3 定义，MessageHub 不再自带准入逻辑（store 的 `admission` / `setAdmission` 已删除）：
 
-- **请求横幅**（`RelationPanel.tsx` `RequestBanner`）：会话 `requestCount > 0`，且本人视角下对方既不是好友、也未被允许（`allow` 或有效 `temporary`）时显示。内容为请求数、`RelationBadge` 与 `RelationActions`（加好友 = `contact.send_friend_request`，允许消息 = 只改 `access_level: 'allow'`，屏蔽 = `contact.block_contact`，已屏蔽时为解除屏蔽，收到请求时为接受）。关系来自 network 缓存（`contact.list_contacts` + `contact.list_friend_requests`），动作完成后 `ensureOwner(refresh)`。
+- **请求横幅**（`RelationPanel.tsx` `RequestBanner`）：会话 `requestCount > 0`，且本人视角下对方既不是好友、也未被允许（`allow` 或有效 `temporary`）时显示。内容为请求数、`RelationBadge` 与 `RelationActions`（加好友 = `contact.send_friend_request`，允许消息 = 只改 `access_level: 'allow'`，屏蔽 = `contact.block_contact`，已屏蔽时为解除屏蔽，收到请求时为接受）。关系来自 network 缓存（`contact.list_contacts` + `contact.list_friend_requests`），动作完成后 `ensureOwner(refresh)`。已加载的界面保持挂载，刷新期间 owner 状态为 `ready` 并带 `refreshing: true`，会话标题栏与实体列表标题栏显示局部 loading；刷新完成后收起提示。首次加载仍显示 loading 页面。
 - **实体详情「关系」**（`RelationSection`）：人和 Agent 显示完整的 `RelationBadge` 与 `RelationActions`（含解除好友、删除联系人），并可「在“我的网络”中打开」（`openMyNetwork({ entity })`）。群、服务、系统通知和 Agent 观察不显示。
 - **好友请求卡片**：`machine.intent = 'buckyos.friend'`、`data.action = 'request'` 的消息（`friendNotice.ts`）渲染为卡片，状态取 `contact.list_friend_requests` 中同 `request_id` 的记录（`pending` / `accepted` / `ignored` / `rejected` / `cancelled` / `expired`），本人收到的待处理请求可接受 / 忽略 / 屏蔽（屏蔽先 `ignore` 再 `block_contact`），本人发出的可撤回。accept / reject / cancel / remove 不留邮箱记录。
 

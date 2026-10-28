@@ -86,3 +86,44 @@ test('an unknown DID opens a new conversation and its friend request card is ans
   await expect(card).toHaveAttribute('data-state', 'accepted')
   await expect(card.getByTestId('friend-notice-state')).toHaveText('You are friends')
 })
+
+for (const width of [1440, 375]) {
+  test(`accepting a request shows local loading without remounting the conversation at ${width}px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 })
+    await open(page, NINA)
+    await setRequestCount(page, NINA, 1)
+    const history = await page.getByTestId('conversation-history').elementHandle()
+    const composer = page.locator('textarea')
+    await composer.fill('Keep this draft')
+    await page.evaluate(({ context, did }) => {
+      const store = window.__messageHubMock
+      const session = store.sessions(context, did)[0]
+      const ownerStatus = store.ownerStatus.bind(store)
+      const ensureOwner = store.ensureOwner.bind(store)
+      let refreshing = false
+      store.ownerStatus = owner => refreshing ? { phase: 'ready', refreshing: true } : ownerStatus(owner)
+      store.ensureOwner = async (_owner?: unknown, refresh?: boolean) => {
+        if (!refresh) return ensureOwner()
+        refreshing = true
+        await store.injectState(context.ownerDid, session.id, {})
+        await new Promise<void>(resolve => window.addEventListener('finish-hub-refresh', () => resolve(), { once: true }))
+        refreshing = false
+        await store.injectState(context.ownerDid, session.id, {})
+      }
+    }, { context: OWN, did: NINA })
+    const banner = page.getByTestId('request-banner')
+    await banner.getByRole('button', { name: 'Accept', exact: true }).click()
+    const loading = page.getByTestId('conversation-refresh-status')
+    await expect(loading).toBeVisible()
+    await expect(loading).toHaveText('Loading...')
+    if (width === 1440) await expect(page.getByTestId('hub-sync-status')).toHaveText('Loading...')
+    expect(await history!.evaluate(element => element.isConnected)).toBe(true)
+    await expect(composer).toHaveValue('Keep this draft')
+    await page.screenshot({ path: testInfo.outputPath(`messagehub-local-loading-${width}.png`) })
+    await page.evaluate(() => window.dispatchEvent(new Event('finish-hub-refresh')))
+    await expect(loading).toHaveCount(0)
+    await expect(banner).toHaveCount(0)
+    expect(await history!.evaluate(element => element.isConnected)).toBe(true)
+    await expect(composer).toHaveValue('Keep this draft')
+  })
+}

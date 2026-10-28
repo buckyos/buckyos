@@ -152,7 +152,7 @@ Deno.test('owner refresh after a relationship action keeps the hub ready while u
     const unsubscribe = store.subscribe(() => phases.push(store.ownerStatus(context).phase))
     const refresh = store.ensureOwner(context, true)
     try {
-      equal(store.ownerStatus(context).phase, 'ready')
+      equal(store.ownerStatus(context), { phase: 'ready', refreshing: true })
       if (store.ensureOwner(context, true) !== refresh) throw Error('Refresh was not shared')
       equal(store.sessions(context).find(session => session.id === active)!.unreadCount, before)
       backend.records.get(active)!.forEach(record => { record.state = 'READ' })
@@ -162,7 +162,8 @@ Deno.test('owner refresh after a relationship action keeps the hub ready while u
       unsubscribe()
     }
     equal(store.ownerStatus(context).phase, 'ready')
-    equal(phases, ['ready'])
+    equal(store.ownerStatus(context), { phase: 'ready' })
+    equal(phases, ['ready', 'ready'])
     equal(store.sessions(context).find(session => session.id === active)!.unreadCount, 0)
   })
 })
