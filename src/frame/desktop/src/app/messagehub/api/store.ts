@@ -295,8 +295,10 @@ export class MessageHubApiStore implements MessageHubStore {
     // A failed timeline load is retried once the owner is refreshed (idle
     // histories are loaded again on the next read).
     for (const [sessionId, status] of data.historyStatus) if (status === 'error') data.historyStatus.set(sessionId, 'idle')
-    data.status = { phase: 'loading' }
-    this.notify()
+    if (data.status.phase !== 'ready') {
+      data.status = { phase: 'loading' }
+      this.notify()
+    }
     data.loading = (async () => {
       try {
         const ownerDid = context.ownerDid

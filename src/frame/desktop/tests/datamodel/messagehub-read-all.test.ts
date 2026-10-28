@@ -23,6 +23,7 @@ async function fixture(run: (store: MessageHubApiStore, backend: {
   failures: Set<string>
   messagePages: Map<string, number>
   beforeFirstWrite?: () => void
+  beforeSessionList?: () => Promise<void>
   maxConcurrent: number
 }) => Promise<void>) {
   const records = new Map<string, MailboxRecord[]>()
@@ -30,7 +31,7 @@ async function fixture(run: (store: MessageHubApiStore, backend: {
   for (let index = 0; index < 48; index++) records.set(`empty-${index}`, [])
   records.set(notification, [record(notification, 10)])
   records.set(archived, [record(archived, 1, 'UNREAD', 'REQUEST_BOX')])
-  const backend = { records, writes: [] as string[], failures: new Set<string>(), messagePages: new Map<string, number>(), beforeFirstWrite: undefined as (() => void) | undefined, maxConcurrent: 0 }
+  const backend = { records, writes: [] as string[], failures: new Set<string>(), messagePages: new Map<string, number>(), beforeFirstWrite: undefined as (() => void) | undefined, beforeSessionList: undefined as (() => Promise<void>) | undefined, maxConcurrent: 0 }
   const saved = { getCurrentIdentity: buckyos.getCurrentIdentity, getAccountInfo: buckyos.getAccountInfo, getServiceRpcClient: buckyos.getServiceRpcClient }
   let concurrent = 0
   buckyos.getCurrentIdentity = async () => ({ kind: 'anonymous' })
@@ -41,6 +42,7 @@ async function fixture(run: (store: MessageHubApiStore, backend: {
       if (method === 'agent.list') return { agents: [] }
       if (method === 'contact.list_contacts' || method === 'group.list_by_member') return []
       if (method === 'msg.list_sessions') {
+        await backend.beforeSessionList?.()
         equal([input.owner, input.lifecycle, input.order_by], [owner, 'all', 'activity'])
         let sessions = [...records].map(([session_id, values], index): SessionSummary => {
           const sorted = [...values].sort((a, b) => b.sort_key - a.sort_key || b.record_id.localeCompare(a.record_id))
@@ -136,5 +138,31 @@ Deno.test('mark all read reports partial failures, keeps successful writes, and 
     await store.markAllRead(context)
     equal(backend.writes.length, 69)
     equal(store.sessions(context).reduce((sum, session) => sum + session.unreadCount, 0), 0)
+  })
+})
+
+Deno.test('owner refresh after a relationship action keeps the hub ready while updating summaries', async () => {
+  await fixture(async (store, backend) => {
+    const context = store.defaultContext()
+    equal(store.ownerStatus(context).phase, 'ready')
+    const before = store.sessions(context).find(session => session.id === active)!.unreadCount
+    let release!: () => void
+    backend.beforeSessionList = () => new Promise<void>(resolve => { release = resolve })
+    const phases: string[] = []
+    const unsubscribe = store.subscribe(() => phases.push(store.ownerStatus(context).phase))
+    const refresh = store.ensureOwner(context, true)
+    try {
+      equal(store.ownerStatus(context).phase, 'ready')
+      if (store.ensureOwner(context, true) !== refresh) throw Error('Refresh was not shared')
+      equal(store.sessions(context).find(session => session.id === active)!.unreadCount, before)
+      backend.records.get(active)!.forEach(record => { record.state = 'READ' })
+    } finally {
+      release()
+      await refresh
+      unsubscribe()
+    }
+    equal(store.ownerStatus(context).phase, 'ready')
+    equal(phases, ['ready'])
+    equal(store.sessions(context).find(session => session.id === active)!.unreadCount, 0)
   })
 })
