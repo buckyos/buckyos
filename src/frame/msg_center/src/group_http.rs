@@ -102,8 +102,30 @@ async fn body(req: &mut Request<Body>, max: usize) -> Result<Vec<u8>> {
 }
 async fn principal(
     center: &MessageCenter,
-    req: &Request<Body>,
+    req: &mut Request<Body>,
+    group: &DID,
 ) -> Result<(GroupActor, RPCContext)> {
+    if let Some(proof) = req.headers().get(crate::group_auth::CYFS_HEADER_GROUP_REQUEST) {
+        if req.headers().contains_key("authorization") {
+            return Err(denied("remote-group-auth-failed"));
+        }
+        let proof = proof.to_str().map_err(|_| denied("remote-group-auth-failed"))?.to_owned();
+        let original = req.headers().get(CYFS_HEADER_ORIGINAL_USER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| DID::from_str(value).ok())
+            .ok_or_else(|| denied("remote-group-auth-failed"))?;
+        let host = req.headers().get("host")
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(|| denied("remote-group-auth-failed"))?.to_owned();
+        let max = center.cyfs_dispatch.read().unwrap().max_object_bytes;
+        let bytes = body(req, max).await?;
+        let actor = crate::group_auth::verify_group_request(
+            center, &proof, &original, group, &host, req.method().as_str(),
+            req.uri().path_and_query().map(|value| value.as_str()).unwrap_or("/"), &bytes,
+        ).await?;
+        *req.body_mut() = Full::new(Bytes::from(bytes)).map_err(|error| match error {}).boxed();
+        return Ok((actor, RPCContext::default()));
+    }
     let raw = req
         .headers()
         .get("authorization")
@@ -151,10 +173,16 @@ pub(crate) async fn serve(
 }
 async fn serve_group(center: &MessageCenter, req: &mut Request<Body>) -> Option<Response<Body>> {
     let path = req.uri().path().to_owned();
-    let parts: Vec<_> = path.trim_start_matches('/').split('/').collect();
+    let prefixed = path.strip_prefix("/kapi/msg-center/groups/");
+    let resource_path = prefixed.unwrap_or_else(|| path.trim_start_matches('/'));
+    let parts: Vec<_> = resource_path.split('/').collect();
     let group = DID::from_str(parts.first().copied().unwrap_or("")).ok()?;
     let state = match center.groups.load(&group).await {
         Ok(Some(g)) => g,
+        Ok(None) if prefixed.is_some() => return Some(reply(
+            StatusCode::NOT_FOUND,
+            json!({"error":"remote-group-not-found","retryable":false}),
+        )),
         Ok(None) => return None,
         Err(e) => return Some(error(e)),
     };
@@ -190,7 +218,7 @@ async fn serve_group(center: &MessageCenter, req: &mut Request<Body>) -> Option<
             }
         });
     }
-    let (actor, ctx) = match principal(center, req).await {
+    let (actor, ctx) = match principal(center, req, &group).await {
         Ok(a) => a,
         Err(e) => return Some(request_error(e, req, &target)),
     };
@@ -325,7 +353,7 @@ async fn serve_group(center: &MessageCenter, req: &mut Request<Body>) -> Option<
                     ),
                     CyfsNamedObjectEncoding::Jwt => {
                         let jwt = String::from_utf8(bytes).map_err(invalid)?;
-                        let signed = crate::cyfs_dispatch::verify_signed_message(&jwt)
+                        let signed = crate::cyfs_dispatch::verify_signed_message_with(&jwt, Some(center))
                             .await
                             .map_err(|(_, r)| denied(r))?;
                         (signed.msg, Some(jwt))
@@ -403,6 +431,11 @@ async fn serve_group(center: &MessageCenter, req: &mut Request<Body>) -> Option<
                     if !v.is_object() {
                         return Err(invalid("invalid-join-body"));
                     }
+                    for key in ["member_did", "idempotency_key"] {
+                        if let Some(value) = v.get(key) {
+                            p[key] = value.clone();
+                        }
+                    }
                     if let Some(invite) = params.get("invite") {
                         p["invite"] = json!(invite);
                     }
@@ -413,7 +446,15 @@ async fn serve_group(center: &MessageCenter, req: &mut Request<Body>) -> Option<
                         // bare join accepts the caller's pending invitation when
                         // one exists and no invite link was given, otherwise it
                         // is a join request.
-                        let explicit = v.get("invitation_id").and_then(Value::as_str);
+                        let explicit = v
+                            .get("invitation_id")
+                            .map(|value| {
+                                value
+                                    .as_str()
+                                    .filter(|id| !id.is_empty())
+                                    .ok_or_else(|| invalid("invalid-invitation-id"))
+                            })
+                            .transpose()?;
                         let pending = state
                             .members
                             .get(&actor.did.to_string())
@@ -435,12 +476,13 @@ async fn serve_group(center: &MessageCenter, req: &mut Request<Body>) -> Option<
                     _ if p.get("invitation_id").is_some() => "group.accept_invitation",
                     _ => "group.request_join",
                 };
-                Ok(reply(
-                    StatusCode::OK,
-                    center
-                        .group_rpc_authenticated(method, p, ctx, actor.clone())
-                        .await?,
-                ))
+                let mut result = center
+                    .group_rpc_authenticated(method, p, ctx, actor.clone())
+                    .await?;
+                if operation == "join" && sid.is_none() {
+                    result["group_did"] = json!(group);
+                }
+                Ok(reply(StatusCode::OK, result))
             }
             (&Method::GET, op) if op.starts_with("objects/") => {
                 let id = ObjId::new(op.trim_start_matches("objects/")).map_err(invalid)?;

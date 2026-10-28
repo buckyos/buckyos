@@ -4,7 +4,7 @@
 
 服务：`msg-center`。协议依据：[Self-Host Group v2](../../../../doc/message_hub/Self-Host-Groupv2.md)。本实现保存 host 的群配置、成员、Session、消息顺序、历史可见区间、操作日志和幂等结果，并保存本 Zone 成员从远端 host 获取的投影及同步水位。群规则与业务消息都必须在进程重启后保持一致。
 
-实现入口：[group_store.rs](../src/group_store.rs)、[group_types.rs](../src/group_types.rs)。新表与既有邮箱表使用同一个平台 RDB 实例；生产环境不另开数据库文件。
+实现入口：[group_store.rs](../src/group_store.rs)、[group_types.rs](../src/group_types.rs)、[group_remote.rs](../src/group_remote.rs)。新表与既有邮箱表使用同一个平台 RDB 实例；生产环境不另开数据库文件。
 
 ## 2. 数据分类
 
@@ -15,6 +15,7 @@
 | 消息序号、Action Log、已读水位、审计、幂等结果 | 持久 | 与状态变更事务提交；不能从发送方时钟重建 |
 | 邮箱投影、个人通知、tunnel 投递队列、本地 Session 登记 | 持久 | 复用 Message Center 现有表 |
 | Joined Group 同步位置、本地阅读和上报水位、已获取的消息副本 | 持久 | 后续撤权不回收已获取副本；撤回消息按协议清理 |
+| Joined Group 宿主绑定、待确认邀请、宿主返回的成员状态 | 持久 | 请求前记录用户确认，响应丢失或重启后恢复；不保存登录 token、请求签名或私钥 |
 | Joined Group 公开资料和 Session 列表缓存 | 可丢弃，存于持久行内 | 下次同步重建；Guest 不缓存其它 Session 或群配置 |
 | opaque 同步 token | 可丢弃，存于 RDB | 7 天有效；丢失、过期或读者不匹配时返回 `limited=true`，从 inbox 水位补同步 |
 | NamedStore 正文删除待办 | 持久 | 防止进程在撤回提交后退出，遗漏对象存储清理 |
@@ -51,7 +52,7 @@ MsgObject 以 ObjectId 索引的独立 `group_objects` 行保存，不复制正�
 | schema_version | 当前为 1 |
 | group_did, controller, owner, host, lifecycle, doc_updated_at_ms | 身份、DID 控制者、治理 Owner、host、生命周期和公开文档更新时间 |
 | configuration, config_history | 原始配置 JSON；revision → 配置快照，保留未知字段 |
-| members | DID → role、state、epoch、entity_kind、invited_by、邀请及到期信息 |
+| members | DID → role、state、epoch、entity_kind、invited_by、邀请及到期信息；接受后保留 invitation_id，供同一次邀请按当前成员状态重试 |
 | sessions | 原始 Session ID → 模板、成员策略、规则覆盖、revision、生命周期、创建者和请求 ID |
 | participants | Session ID → DID → kind、epoch、参与状态、since_seq、actor |
 | intervals | Session ID → DID → 半开 `group_seq` 可见区间 |
@@ -70,6 +71,8 @@ MsgObject 以 ObjectId 索引的独立 `group_objects` 行保存，不复制正�
 默认 Session 的内部 map 键为 `""`，邮箱 `session_id` 为 NULL；对外始终使用规范 MailboxAddress。具名 Session 的内部 ID 是解码字符串，对外编码为单个路径段。
 
 删除群清除配置、成员、Session、历史可见区间、阅读和业务状态，只保留身份墓碑、删除通知的最小受众（曾参与者 DID）及删除操作幂等结果。删除 Session 留下不可复用 ID，清除成员、共享/成员状态和 host 邮箱记录。成员已有的本地副本继续保留。
+
+`group.accept_invitation` 不写入或重放通用 operations 结果缓存。当前成员仍持有相同 invitation_id 且为 active / pending_admin_approval 时返回当前记录；新邀请替换 invitation_id，撤销、过期、退出、移除和删除仍按当前状态拒绝。这样成功响应丢失后的重试不会生成新的 epoch 或加入事件，也不会用历史成功结果绕过后续撤权。
 
 ### `group_objects`
 
@@ -129,7 +132,31 @@ MsgObject 以 ObjectId 索引的独立 `group_objects` 行保存，不复制正�
 | group_did | TEXT | 否 | 无 | 远端群 |
 | state_json | TEXT | 否 | 无 | `JoinedGroupState` JSON |
 
-联合主键 `(owner,group_did)`。JSON 包含 `schema_version=1`、owner_did、group_did、可见 session_cache、doc_cache、changes_token、session_seqs、last_read_seq、reported_read_seq 和 stopped。凭据不存于本表；authorization/upstream 来源于服务 Settings。
+联合主键 `(owner,group_did)`。JSON 包含 `schema_version=1`、owner_did、group_did、可见 session_cache、doc_cache、changes_token、session_seqs、last_read_seq、reported_read_seq 和 stopped。本表保存同步结果，不承担接受邀请的恢复队列。凭据不存于本表；自动登记从 `group_joined_bindings` 取得宿主并为每次请求生成 G3 签名，显式配置可从服务 Settings 取得 authorization/upstream。
+
+### `group_joined_bindings`
+
+| 列 | 类型 | 可空 | 默认 | 含义 |
+|---|---|---|---|---|
+| owner | TEXT | 否 | 无 | 本 Zone 托管的成员 DID |
+| group_did | TEXT | 否 | 无 | 远端群 DID |
+| binding_json | TEXT | 否 | 无 | `JoinedGroupBinding` JSON |
+
+联合主键 `(owner,group_did)`。JSON 字段：
+
+| 字段 | 内容 |
+|---|---|
+| schema_version | 当前为 1 |
+| owner_did, group_did, host | 本地成员、远端群及从群 DID Document 解析的宿主 |
+| pending_invitation_id | 用户已确认、尚未得到确定结果的邀请；发送远端请求前持久化 |
+| member | 宿主返回的成员记录，包括 state、epoch、invitation_id；为空表示尚未确认结果 |
+| doc_cache | 待审批群的公开资料缓存，用于邀请列表展示；可重新获取 |
+
+网络失败和响应丢失保留 pending_invitation_id，后台及 `group.sync_joined` 重新向宿主确认同一邀请。明确终局拒绝清理对应待办；已存在的其它有效成员状态不会被旧邀请失败覆盖。收到 pending_admin_approval 后保留成员记录，后台继续查询同一次接受的当前结果，获批后开始同步。
+
+成功结果和成员 epoch 变化引起的同步状态复位在同一个 RDB 事务提交：恢复 stopped、清除旧 changes_token/Session 缓存，同时保留已获取的消息和阅读水位。重入后历史移除事件不能覆盖宿主报告的当前 active 成员快照。进程内 join_lock 串行接受与恢复，sync_lock 协调同步状态更新；目前实现面向单实例，多副本需要额外联调。
+
+绑定中不保存 HTTP 凭据；upstream 使用现有 Zone origin 规则和 zone_origins 映射计算。请求签名只在发送时由当前 OOD signer 生成，并绑定 host、路径/查询、方法、正文摘要和短时有效期，不能作为可长期重放的数据库凭据。
 
 ### `group_doc_publications`
 
@@ -179,6 +206,7 @@ Joined Group 已获取副本和阅读水位属于用户数据；不能仅为了�
 | 读取 reader-bound token | group_sync_tokens 主键 | 单行并检查群、读者、期限 |
 | token 过期清理 | created_at_ms 条件扫描 | 尚无时间索引，长时间运行后需压测 |
 | 查询本地成员的 Joined Group | joined_groups 联合主键前缀 owner | 返回该成员的群 |
+| 查询远端群绑定和待审批记录 | group_joined_bindings 联合主键或 owner 前缀 | 单成员/群定位；后台恢复按绑定逐项处理 |
 | 邮箱分页、投递重试、本地 Session 列表 | 现有 Message Center 索引 | 沿用原实现 |
 | NamedStore 清理队列 | group_object_purges 主键 | 每轮最多 100 条，逐项幂等删除 |
 | 待发布 DID 文档 | group_doc_publications 条件扫描 | 每轮最多 100 条；已确认的相同文档不重复发布 |

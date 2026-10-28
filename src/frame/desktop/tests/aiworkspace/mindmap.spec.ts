@@ -2,7 +2,7 @@
  * (src/frame/aiworkspace/fixtures/mindmap/commits.json) drawn by the shared layout — four directions, a pinned node,
  * a nested control, a non-text node — folding as the reader's own state, building a map with the keyboard, dragging
  * nodes (re-hang, pin, refused outside), copy and paste of branches, a map on a flow page and an unknown control kind
- * drawn as a group. */
+ * drawn as a group, a canvas Block dragged onto a node and any object inserted under a node from its toolbar. */
 
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -252,4 +252,63 @@ test('MM08 a locked node is not re-hung or pinned by a drag', async ({ page, api
   await page.waitForTimeout(400)
   expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(seq)
   expect((await entity(api, ws.workspace_id, 'right-2'))?.parent_id).toBe('right-root')
+})
+
+test('MM09 a Block of the canvas dragged onto a node hangs under it: laid out by the map, its size kept', async ({ page, api }) => {
+  const ws = await mindWorkspace(api, `mm-drag-in ${Date.now()}`)
+  const result = await api.commit(ALICE, ws, [
+    { op: 'entity.create', entity_id: 'note-free', type_id: 'buckyos.annotation', parent_id: 's-mind-content', order_key: 'z', payload: { kind: 'note', body: '便签' } },
+    { op: 'entity.create', entity_id: 'blk-free', type_id: 'buckyos.cell', parent_id: 's-mind', order_key: 'z', placement: { x: 1500, y: 0, w: 220, h: 160 }, payload: { view: { type: 'note' }, source_ref: { entity_id: 'note-free' } } },
+  ]) as { status: string }
+  expect(result.status, JSON.stringify(result)).toBe('accepted')
+  await openCanvas(page, ALICE, ws.workspace_id)
+  await fitAll(page)
+  const from = await blockCenter(page, 'blk-free')
+  const to = await blockCenter(page, 'right-3')
+  await page.mouse.move(from.x, from.y)
+  await page.mouse.down()
+  await page.mouse.move(to.x, to.y, { steps: 14 })
+  await expect(page.getByTestId('aiws-drop-child-right-3')).toBeVisible()
+  // the dashed preview hangs it next to 三, where the drop puts it (not where it stood on the canvas)
+  const three = await box(page, 'right-3')
+  const hang = await page.getByTestId('aiws-mindmap-hang').boundingBox()
+  expect(hang!.x).toBeGreaterThanOrEqual(three.x + three.width - 2)
+  expect(hang!.x + hang!.width).toBeLessThan(three.x + three.width + 100)
+  await shot(page, 'mm09-drag-in')
+  await page.mouse.up()
+  await expect.poll(async () => (await entity(api, ws.workspace_id, 'blk-free'))?.parent_id).toBe('right-3')
+  expect((await entity(api, ws.workspace_id, 'blk-free'))?.placement).toEqual({ x: 'auto', y: 'auto', w: 220, h: 160 })
+  await expect(page.getByTestId('aiws-mindmap-edges-mm-right')).toHaveAttribute('data-edges', '11')
+  const parent = await box(page, 'right-3')
+  expect((await box(page, 'blk-free')).x).toBeGreaterThan(parent.x + parent.width)
+})
+
+test('MM10 the node toolbar inserts any object from the catalog under the node: a note, a nested map', async ({ page, api }) => {
+  const ws = await mindWorkspace(api, `mm-insert ${Date.now()}`)
+  await openCanvas(page, ALICE, ws.workspace_id)
+  await fitAll(page)
+  await page.getByTestId('aiws-canvas-block-right-2').click()
+  await page.getByTestId('aiws-near-mindmap-insert').click()
+  await expect(page.getByTestId('aiws-catalog')).toBeVisible()
+  // the entry hangs under the node: no placing by click, no imports onto the canvas
+  await expect(page.getByTestId('aiws-catalog-place')).toHaveCount(0)
+  await expect(page.getByTestId('aiws-catalog-import-drawio')).toHaveCount(0)
+  await page.getByTestId('aiws-catalog-entry-block-note').click()
+  await page.getByTestId('aiws-catalog-insert').click()
+  await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).filter((e: Json) => e.view_type === 'note' && e.parent_id === 'right-2').length).toBe(1)
+  const note = (await api.outline(ALICE, ws.workspace_id)).find((e: Json) => e.view_type === 'note' && e.parent_id === 'right-2')!
+  const placement = note.placement as Json
+  expect([placement.x, placement.y, typeof placement.w, typeof placement.h]).toEqual(['auto', 'auto', 'number', 'number'])
+  await page.keyboard.press('Escape')
+  await page.keyboard.press('Escape')
+  // a control is a node too: a nested map sizes itself
+  await page.getByTestId('aiws-canvas-block-right-4').click()
+  await page.getByTestId('aiws-near-mindmap-insert').click()
+  await page.getByTestId('aiws-catalog-entry-control-mindmap').click()
+  await page.getByTestId('aiws-catalog-insert').click()
+  await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).filter((e: Json) => e.kind === 'mindmap' && e.parent_id === 'right-4').length).toBe(1)
+  const nested = (await api.outline(ALICE, ws.workspace_id)).find((e: Json) => e.kind === 'mindmap' && e.parent_id === 'right-4')!
+  expect(nested.placement).toEqual({ x: 'auto', y: 'auto', w: 'auto', h: 'auto' })
+  await expect(page.getByTestId(`aiws-canvas-block-${note.entity_id}`)).toBeVisible()
+  await shot(page, 'mm10-insert')
 })

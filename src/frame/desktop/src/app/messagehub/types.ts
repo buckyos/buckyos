@@ -306,7 +306,7 @@ export interface GroupInvitation {
 
 export interface GroupInvitationView {
   groupName: string
-  state: 'pending' | 'joined' | 'approval' | 'expired'
+  state: 'pending' | 'joined' | 'approval' | 'expired' | 'syncing'
 }
 
 /** Read receipt of one own group message (`group.get_read_markers`). */

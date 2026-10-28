@@ -334,16 +334,29 @@ impl MessageCenter {
                     invitations.push(item);
                 }
             }
+            invitations.extend(self.remote_group_invitations(&actor.did).await?);
             let joined = self.joined_groups(&actor.did).await?;
             return Ok(
                 json!({"items":groups,"invitations":invitations,"session_invitations":session_invitations,"joined":joined}),
             );
         }
         let group: DID = field(&p, "group_did")?;
+        if !actor.remote && matches!(method, "group.accept_invitation" | "group.get_doc")
+            && self.groups.load(&group).await?.is_none()
+        {
+            return if method == "group.accept_invitation" {
+                self.accept_remote_group_invitation(&group, &actor, &p, &ctx).await
+            } else {
+                self.remote_group_doc(&actor.did, &group).await
+            };
+        }
         if method == "group.submit_guest_request" {
             self.require_guest_entry_method(&ctx, &group).await?;
         }
         if method == "group.sync_joined" {
+            if let Some(value) = self.sync_remote_group(&actor.did, &group).await? {
+                return Ok(value);
+            }
             let route = self
                 .cyfs_dispatch
                 .read()
@@ -484,7 +497,9 @@ impl MessageCenter {
             }
             _ => {}
         }
-        if let Some(key) = optional::<String>(&p, "idempotency_key")? {
+        if let Some(key) = optional::<String>(&p, "idempotency_key")?
+            .filter(|_| method != "group.accept_invitation")
+        {
             if let Some(saved) = self.groups.load(&group).await?.and_then(|g| {
                 g.operations
                     .get(&format!("{}|{}|{}", actor.did.to_string(), method, key))
@@ -535,6 +550,7 @@ impl MessageCenter {
         }
         let op_key = key
             .as_ref()
+            .filter(|_| method != "group.accept_invitation")
             .map(|key| format!("{}|{}|{}", authenticated_did.to_string(), method, key));
         if let Some(saved) = op_key.as_ref().and_then(|k| tx.state.operations.get(k)) {
             if saved.request != p {
@@ -676,7 +692,7 @@ impl MessageCenter {
 
     /// A zone Agent takes part in groups only while its `allow_group` setting
     /// is on; other members are not restricted here.
-    async fn require_group_enabled_agent(&self, d: &DID) -> Result<()> {
+    pub(crate) async fn require_group_enabled_agent(&self, d: &DID) -> Result<()> {
         if d.method == "msgtunnel" || !self.is_local_recipient(d) {
             return Ok(());
         }
@@ -1539,23 +1555,23 @@ impl MessageCenter {
         if !automatic {
             tx.state.check_client(a)?;
         }
-        let prior = tx.state.members.get(&a.did.to_string()).cloned();
-        if prior.as_ref().is_some_and(|m| {
-            matches!(
-                m.state,
-                MemberStatus::Active | MemberStatus::PendingAdminApproval
-            )
-        }) {
-            return Err(invalid("member-already-participating"));
-        }
-        let invite = prior
-            .as_ref()
-            .filter(|m| {
-                m.state == MemberStatus::Invited
-                    && m.expires_at_ms.is_none_or(|t| t > Self::now_ms())
-                    && m.invitation_id.as_deref() == Some(invitation_id)
-            })
+        let invite = tx
+            .state
+            .members
+            .get(&a.did.to_string())
+            .filter(|m| m.invitation_id.as_deref() == Some(invitation_id))
             .ok_or_else(|| denied("invitation-mismatch"))?;
+        match invite.state {
+            MemberStatus::Active | MemberStatus::PendingAdminApproval => return encoded(invite),
+            MemberStatus::Expired => return Err(denied("invitation-expired")),
+            MemberStatus::Revoked => return Err(denied("invitation-revoked")),
+            MemberStatus::Invited => {
+                if invite.expires_at_ms.is_some_and(|t| t <= Self::now_ms()) {
+                    return Err(denied("invitation-expired"));
+                }
+            }
+            _ => return Err(denied("invitation-mismatch")),
+        }
         let approval = !invite
             .invited_by
             .as_ref()
@@ -1565,7 +1581,10 @@ impl MessageCenter {
         if !automatic {
             Self::rate(&mut tx.state, &a.did, "join", false)?;
         }
-        self.join_group(tx, a, role, approval, invited_by).await
+        self.join_group(tx, a, role, approval, invited_by).await?;
+        let accepted = tx.state.members.get_mut(&a.did.to_string()).unwrap();
+        accepted.invitation_id = Some(invitation_id.to_owned());
+        encoded(accepted)
     }
     /// Join by own request or by invite link. Links count as prior admin
     /// approval unless they require it; plain requests follow `join_policy`.
@@ -3096,7 +3115,8 @@ impl MessageCenter {
             .groups
             .save_cursor(group, &a.did, position, Self::now_ms())
             .await?;
-        Ok(json!({"items":items,"next_token":token,"limited":limited}))
+        let member = g.members.get(&a.did.to_string()).map(|member| json!({"state":member.state,"epoch":member.epoch}));
+        Ok(json!({"items":items,"next_token":token,"limited":limited,"member":member}))
     }
     async fn audit_group_read(
         &self,
@@ -3277,7 +3297,7 @@ impl MessageCenter {
             return Err(invalid("message-too-large"));
         }
         if let Some(jwt) = jwt {
-            let signed = crate::cyfs_dispatch::verify_signed_message(jwt)
+            let signed = crate::cyfs_dispatch::verify_signed_message_with(jwt, Some(self))
                 .await
                 .map_err(|(_, reason)| denied(reason))?;
             if signed.msg != *msg {

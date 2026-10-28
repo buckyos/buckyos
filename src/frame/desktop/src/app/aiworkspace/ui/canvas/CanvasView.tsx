@@ -11,7 +11,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { looksLikeDrawio } from '@drawio/file'
 import { svgShapeFromDocument } from '@drawio/svg'
-import { fixed } from '@controls/placement'
+import { isControlKind } from '@controls/contract'
+import { ALL_AUTO, fixed } from '@controls/placement'
 import { Group, Lock, LockOpen, MessageSquarePlus, Sparkles, Ungroup } from 'lucide-react'
 import { describeError } from '../../api/session'
 import { randomId } from '../../api/ids'
@@ -411,6 +412,9 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     if (!definition.create || insertReasonOf(definition.type)) return false
     // a flow page shows no connectors (连接线实现方案 §8.3)
     if (definition.type === 'connector' && !isFree) { store.notify('info', aiwsT('aiworkspace.canvas.flowNoConnectors')); return false }
+    // under a node of a control: laid out by it, no lines inside (脑图方案 §7.2)
+    const intoNode = parentId !== undefined && Boolean(laid.get(parentId)?.node)
+    if (intoNode && definition.type === 'connector') { store.notify('info', aiwsT('aiworkspace.mindmap.noLinesInside')); return false }
     let config = request.entry.config || request.config ? { ...(request.entry.config ?? {}), ...(request.config ?? {}) } : undefined
     let size = entrySize(request.entry)
     if (request.file) {
@@ -450,6 +454,14 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       return false
     }
     if (!isFree) for (const op of operations) if (op.op === 'entity.create' && op.entity_id === cellId) delete (op as Record<string, unknown>).placement
+    // the control places the new Block; a nested control sizes itself, any other Block keeps the entry's size
+    if (intoNode) {
+      for (const op of operations) {
+        if (op.op !== 'entity.create' || op.parent_id !== parent) continue
+        const kind = (op.payload as { kind?: string } | undefined)?.kind
+        op.placement = op.type_id === 'buckyos.container' && isControlKind(kind) ? { ...ALL_AUTO } : { x: 'auto', y: 'auto', w: size.w, h: size.h }
+      }
+    }
     if (also) {
       try { operations = [...operations, ...await also(cellId, { ...spot, ...size })] } catch (error) { store.notify('error', aiwsT('aiworkspace.canvas.insertFailed', { name: request.entry.title, reason: describeError(error) })); return false }
     }
@@ -561,6 +573,11 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   useLayoutEffect(() => {
     commandRef.current = (command) => {
       if (command.kind === 'select') { setSelectionState(new Set(command.ids)); if (command.edit) setEditing(command.edit); return }
+      if (command.kind === 'insert') {
+        if (insertReason) { store.notify('info', insertReason); return }
+        if (laid.get(command.nodeId)?.node) openCatalog('all', undefined, null, command.nodeId)
+        return
+      }
       const l = laid.get(command.nodeId)
       const containerId = l?.node?.control
       if (!containerId) return
@@ -1277,9 +1294,12 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
                 setPicker(null)
               }
             }} />}
-            {catalog && (
-              <InsertCatalog initialTab={catalog.tab} initialKey={catalog.key} canPlace={isFree} onClose={() => setCatalog(null)} onImport={importReason === null ? () => { setCatalog(null); importCommand.run() } : undefined}
-                onImportAssets={insertReason === null ? async (files, folder, signal) => {
+            {catalog && (() => {
+              // for a mind-map node the entry becomes its child: no placing by click, no bulk imports onto the canvas
+              const intoNode = catalog.parentId !== undefined && Boolean(laid.get(catalog.parentId)?.node)
+              return (
+              <InsertCatalog initialTab={catalog.tab} initialKey={catalog.key} canPlace={isFree && !intoNode} onClose={() => setCatalog(null)} onImport={importReason === null && !intoNode ? () => { setCatalog(null); importCommand.run() } : undefined}
+                onImportAssets={insertReason === null && !intoNode ? async (files, folder, signal) => {
                   try {
                     const items = await store.session.importAssets(files, folder, signal)
                     signal.throwIfAborted()
@@ -1297,7 +1317,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
                 if (how === 'place') pick(request)
                 else void insert(request, at, parentId, undefined, catalog.afterId)
               }} />
-            )}
+              )
+            })()}
           </div>
           <SidePanel tabs={sideTabs} render={sideContent} />
         </div>

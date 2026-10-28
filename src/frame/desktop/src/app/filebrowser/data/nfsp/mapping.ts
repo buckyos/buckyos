@@ -41,7 +41,9 @@ export function cyfsToDfsPath(canonical: string): string | null {
 }
 
 export function unixToIso(seconds: number | undefined): string {
-  return new Date((seconds ?? 0) * 1000).toISOString()
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds)) return ''
+  const date = new Date(seconds * 1000)
+  return Number.isFinite(date.getTime()) ? date.toISOString() : ''
 }
 
 /** UI sort key → NFSP list order. `kind` has no backend order and is not advertised. */
@@ -157,7 +159,10 @@ export function mapEntryToItem(entry: Entry, context: EntryMapContext): FileItem
     name: entry.name,
     kind: isContainer ? 'folder' : target.kind === 'file' ? classifyFileKind(entry.name) : 'other',
     path,
-    modifiedAt: unixToIso(target.attrs?.mtime),
+    modifiedAt:
+      entry.binding === 'projection' && target.kind === 'dir' && target.attrs?.mtime === 0
+        ? ''
+        : unixToIso(target.attrs?.mtime),
   }
   if (typeof target.attrs?.size === 'number' && target.kind === 'file') {
     fileEntry.sizeBytes = target.attrs.size

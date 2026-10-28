@@ -160,7 +160,8 @@ try {
     const accepted = asRecord(await asMember("group.accept_invitation", { group_did: groupDid, invitation_id: data.invite_id }), "accept_invitation");
     memberState = String(accepted.state);
     assert(memberState === "active", `admin invitation activates on accept (got ${memberState})`);
-    await expectReject("accepting twice", () => asMember("group.accept_invitation", { group_did: groupDid, invitation_id: data.invite_id }));
+    const repeated = asRecord(await asMember("group.accept_invitation", { group_did: groupDid, invitation_id: data.invite_id }), "accept_invitation(retry)");
+    assert(repeated.state === "active" && repeated.epoch === accepted.epoch, "accepting twice preserves the active membership");
   } else {
     console.log("  ✓ member was auto-accepted (inviter is a friend)");
   }

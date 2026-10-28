@@ -80,6 +80,7 @@ interface OwnerData {
   /** `group.list_session_members` per local group session key; `value` stays undefined when the host refuses. */
   sessionMembers: Map<string, { groupDid: string; loaded: boolean; value?: GroupSessionParticipants; loading?: Promise<void> }>
   invitationNames: Map<string, string | null>
+  invitationStates: Map<string, GroupInvitationView['state']>
   /** Group DIDs of local group sessions already looked up in `group.list_by_member`. */
   groupLookups: Set<string>
   prefs: Record<string, { title: string; pinned: boolean; muted: boolean; pinnedMessage?: PinnedMessage | null }>
@@ -263,7 +264,7 @@ export class MessageHubApiStore implements MessageHubStore {
   private owner(ownerDid: string): OwnerData {
     let data = this.owners.get(ownerDid)
     if (!data) {
-      data = { status: { phase: 'idle' }, summaries: [], contacts: [], agentDids: [], groups: {}, peers: new Map(), groupInfo: new Map(), groupSessionTitles: {}, postAccess: new Map(), receipts: new Map(), sessionMembers: new Map(), invitationNames: new Map(), groupLookups: new Set(), prefs: {}, prefsLoaded: new Set(), version: 0, entitiesCache: new Map(), histories: new Map(), historyStatus: new Map(), runtime: new Map(), epoch: 0 }
+      data = { status: { phase: 'idle' }, summaries: [], contacts: [], agentDids: [], groups: {}, peers: new Map(), groupInfo: new Map(), groupSessionTitles: {}, postAccess: new Map(), receipts: new Map(), sessionMembers: new Map(), invitationNames: new Map(), invitationStates: new Map(), groupLookups: new Set(), prefs: {}, prefsLoaded: new Set(), version: 0, entitiesCache: new Map(), histories: new Map(), historyStatus: new Map(), runtime: new Map(), epoch: 0 }
       this.owners.set(ownerDid, data)
     }
     return data
@@ -310,6 +311,7 @@ export class MessageHubApiStore implements MessageHubStore {
         data.contacts = people.contacts
         data.agentDids = people.agentDids
         data.summaries = page.items ?? []
+        this.reconcileGroupInvitations(data, context.ownerDid)
         data.nextCursor = page.next_cursor_updated_at_ms !== undefined && page.next_cursor_session_id !== undefined ? { value: page.next_cursor_updated_at_ms, sessionId: page.next_cursor_session_id } : undefined
         data.status = { phase: 'ready' }
         this.bump(data)
@@ -370,9 +372,12 @@ export class MessageHubApiStore implements MessageHubStore {
     data.summaries = [...byId.values()]
   }
 
-  private async refreshSummaries(context: MessageHubContext) {
+  private async refreshSummaries(context: MessageHubContext, required = false) {
     const data = this.owner(context.ownerDid)
-    if (data.status.phase !== 'ready') return
+    if (data.status.phase !== 'ready') {
+      if (required) throw new Error('group-sync-pending')
+      return
+    }
     const epoch = data.epoch
     try {
       const page = await listSessions({ owner: context.ownerDid, limit: SESSION_PAGE_SIZE, with_object: true, lifecycle: 'all', order_by: 'activity' })
@@ -392,19 +397,27 @@ export class MessageHubApiStore implements MessageHubStore {
       }
       const unknownGroups = context.ownerDid === this.selfDid ? [...new Set(data.summaries.map(summary => summary.state?.origin === 'group' ? summary.state.peer_did : undefined).filter((did): did is string => Boolean(did) && !data.groups[did!] && !data.groupLookups.has(did!)))] : []
       const unknownGroup = unknownGroups.length > 0
-      if (unknownGroup) {
+      const pendingInvitations = context.ownerDid === this.selfDid && [...data.invitationStates.values()].some(state => state === 'syncing' || state === 'approval')
+      let groupsRefreshed = false
+      if (unknownGroup || pendingInvitations) {
         unknownGroups.forEach(did => data.groupLookups.add(did))
-        data.groups = await this.fetchGroups().catch(() => data.groups)
+        try {
+          data.groups = await this.fetchGroups()
+          groupsRefreshed = true
+        } catch { groupsRefreshed = false }
       }
       if (data.epoch !== epoch) return
+      if (groupsRefreshed) this.reconcileGroupInvitations(data, context.ownerDid)
       const reconnected = data.syncFailed
       data.syncFailed = false
-      if (reconnected || unknownGroup || JSON.stringify(data.summaries) !== before) this.bump(data)
+      if (reconnected || unknownGroup || pendingInvitations || JSON.stringify(data.summaries) !== before) this.bump(data)
     } catch (error) {
       console.warn('MessageHub summary refresh failed.', error)
-      if (data.epoch !== epoch || data.syncFailed) return
-      data.syncFailed = true
-      this.bump(data)
+      if (data.epoch === epoch && !data.syncFailed) {
+        data.syncFailed = true
+        this.bump(data)
+      }
+      if (required) throw error
     }
   }
 
@@ -1274,7 +1287,23 @@ export class MessageHubApiStore implements MessageHubStore {
       groups[joined.group_did] = doc ? groupEntry(doc, false) : { name: '', description: '', ownerDid: '', hostDid: '', lifecycle: 'active', hosted: false }
     }
     for (const item of result.items ?? []) if (item.doc?.id) groups[item.doc.id] = groupEntry(item.doc, true)
+    const data = this.owner(this.selfDid)
+    for (const invitation of result.invitations ?? []) {
+      const groupDid = invitation.group_did ?? invitation.doc?.id
+      const member = invitation.member
+      if (!groupDid || !member?.invitation_id || member.state !== 'pending_admin_approval') continue
+      data.invitationStates.set(JSON.stringify([groupDid, member.invitation_id, member.member_did ?? this.selfDid]), 'approval')
+      if (invitation.doc) data.invitationNames.set(groupDid, groupEntry(invitation.doc, false).name)
+    }
     return groups
+  }
+
+  private reconcileGroupInvitations(data: OwnerData, ownerDid: string) {
+    for (const [key, state] of data.invitationStates) {
+      if (state !== 'syncing' && state !== 'approval') continue
+      const [groupDid, , memberDid] = JSON.parse(key) as string[]
+      if (memberDid === ownerDid && data.groups[groupDid]) data.invitationStates.set(key, 'joined')
+    }
   }
 
   private async reloadGroups(context: MessageHubContext) {
@@ -1303,7 +1332,7 @@ export class MessageHubApiStore implements MessageHubStore {
     const current = data.groupInfo.get(groupDid)
     if (current?.loading) return current.loading
     if (current?.status === 'ready' && !refresh) return Promise.resolve()
-    const loading = this.loadGroup(context, groupDid).finally(() => {
+    const loading = Promise.resolve().then(() => this.loadGroup(context, groupDid)).finally(() => {
       const entry = data.groupInfo.get(groupDid)
       if (entry) entry.loading = undefined
     })
@@ -1517,6 +1546,7 @@ export class MessageHubApiStore implements MessageHubStore {
 
   groupInvitation(context: MessageHubContext, invitation: GroupInvitation): GroupInvitationView {
     const data = this.owner(context.ownerDid)
+    const accepted = data.invitationStates.get(JSON.stringify([invitation.groupDid, invitation.inviteId, invitation.memberDid ?? context.ownerDid]))
     if (this.own(context) && !data.invitationNames.has(invitation.groupDid) && !data.groups[invitation.groupDid]) {
       data.invitationNames.set(invitation.groupDid, null)
       void getGroupDoc(invitation.groupDid).then(envelope => {
@@ -1528,15 +1558,36 @@ export class MessageHubApiStore implements MessageHubStore {
     // its own state; the viewer's group directory says nothing about the agent.
     const joined = invitation.state === 'active' || (!invitation.memberDid && Boolean(data.groups[invitation.groupDid]))
     const groupName = data.groups[invitation.groupDid]?.name || data.invitationNames.get(invitation.groupDid) || shortDid(invitation.groupDid)
-    const state = joined ? 'joined' : invitation.state === 'pending_admin_approval' ? 'approval' : invitation.expiresAt !== undefined && invitation.expiresAt <= this.now() ? 'expired' : 'pending'
+    const state = accepted === 'syncing' ? accepted : joined ? 'joined' : accepted ?? (invitation.state === 'pending_admin_approval' ? 'approval' : invitation.expiresAt !== undefined && invitation.expiresAt <= this.now() ? 'expired' : 'pending')
     return { groupName, state }
   }
 
   /** Accepts a direct invitation (`invitation_id` guards against a re-issued one); `memberDid` is the viewer's agent when accepting for it. */
   async acceptGroupInvitation(context: MessageHubContext, invitation: GroupInvitation) {
     this.requireOwn(context)
-    try { await acceptGroupInvitation(invitation.groupDid, invitation.inviteId, invitation.memberDid) } catch (error) { throw groupFailure(error) }
-    await Promise.all([this.reloadGroups(context).catch(() => undefined), this.refreshSummaries(context)])
+    const data = this.owner(context.ownerDid)
+    const key = JSON.stringify([invitation.groupDid, invitation.inviteId, invitation.memberDid ?? context.ownerDid])
+    let record
+    try { record = await acceptGroupInvitation(invitation.groupDid, invitation.inviteId, invitation.memberDid) } catch (error) {
+      if (groupErrorReason(error) === 'group-sync-pending') {
+        data.invitationStates.set(key, 'syncing')
+        this.notify()
+      }
+      throw groupFailure(error)
+    }
+    if (record.state !== 'active' && record.state !== 'pending_admin_approval') throw new Error('invitation-mismatch')
+    data.invitationStates.set(key, record.state === 'pending_admin_approval' ? 'approval' : 'syncing')
+    this.notify()
+    if (record.sync_pending && record.state === 'active') throw new Error('group-sync-pending')
+    try {
+      await Promise.all([this.reloadGroups(context), this.refreshSummaries(context, true)])
+      if (record.state === 'active' && !invitation.memberDid && !data.groups[invitation.groupDid]) throw new Error('group-refresh-pending')
+    } catch {
+      if (record.state === 'active') data.invitationStates.set(key, 'syncing')
+      throw new Error('group-refresh-pending')
+    }
+    data.invitationStates.set(key, record.state === 'pending_admin_approval' ? 'approval' : 'joined')
+    this.notify()
   }
 
   groupSession(context: MessageHubContext, groupDid: string, sessionId: string): GroupSessionInfo | null {

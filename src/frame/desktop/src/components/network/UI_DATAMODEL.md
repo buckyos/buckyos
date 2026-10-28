@@ -160,6 +160,8 @@ type RequestItem =
 
 `useRequests()` 返回 `{ status: 'loading' | 'ready' | 'error' | 'partial', items, errors, retry }`；部分列表失败时为 `partial`。`actionableCount(items)` 不计发出的请求，用于角标。
 
+接受邀请仍使用本 Zone 的 RPC，由服务端完成群宿主路由。返回 `pending_admin_approval` 时保留等待审批语义；返回 `active` 时读回 `group.list_by_member`，确认本地 `items` 或远端 `joined` 包含群后才完成操作。`sync_pending = true` 显示 `group-sync-pending`，前端读回失败显示 `group-refresh-pending`；两者都说明邀请已接受并允许使用原邀请重试。远端不可达、身份验证失败及邀请过期、撤销均保留具体原因。
+
 ## 7. 对话框契约（zod，`schemas.ts`）
 
 所有结果只含 DID 与展示文字，不含邀请 token、会话 token 或消息正文；关闭/取消统一返回 `{ action: 'cancelled' }`，Promise 不会因取消而 reject。

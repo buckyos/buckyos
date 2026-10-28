@@ -179,10 +179,7 @@ impl DeliveryExecutor for MessageHubExecutor {
         } else {
             let configured = self
                 .center
-                .cyfs_dispatch
-                .read()
-                .unwrap()
-                .message_route(&msg, &envelope.target_did);
+                .native_message_route(&msg, &envelope.target_did).await;
             let snapshot = envelope.address.as_ref().and_then(|a| a.address.clone());
             let route = match configured {
                 Err(e) => {
@@ -241,7 +238,7 @@ impl DeliveryExecutor for MessageHubExecutor {
                     jwt = Some(signed);
                 }
             }
-            crate::cyfs_dispatch::send(&route, &msg, jwt.as_deref(), &envelope.msg_id).await
+            crate::cyfs_dispatch::send_authenticated(Some(&self.center), &route, &msg, jwt.as_deref(), &envelope.msg_id).await
         }
     }
 }

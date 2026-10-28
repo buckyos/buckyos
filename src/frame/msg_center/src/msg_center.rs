@@ -1668,7 +1668,7 @@ impl MessageCenter {
 
     /// Route planning of `post_send`: one delivery envelope per deduped
     /// `msg.to` target. Pure, no writes; one unroutable target fails the plan.
-    fn plan_delivery_envelopes(
+    async fn plan_delivery_envelopes(
         &self,
         msg: &MsgObject,
         msg_id: &ObjId,
@@ -1678,9 +1678,7 @@ impl MessageCenter {
         for target in targets {
             let mut envelope = self.build_delivery_envelope(msg_id, target.clone())?;
             if msg.kind == MsgObjKind::GroupMsg {
-                let settings = self.cyfs_dispatch.read().unwrap();
-                let route = settings
-                    .message_route(msg, &target)
+                let route = self.native_message_route(msg, &target).await
                     .map_err(|e| e.to_string())?
                     .ok_or_else(|| "joined-group-route-not-configured".to_string())?;
                 let snapshot = envelope.address.get_or_insert_with(Default::default);
@@ -1727,7 +1725,7 @@ impl MessageCenter {
         }
 
         let msg_id = msg.gen_obj_id().0;
-        let envelopes = match self.plan_delivery_envelopes(&msg, &msg_id) {
+        let envelopes = match self.plan_delivery_envelopes(&msg, &msg_id).await {
             Ok(envelopes) => envelopes,
             Err(reason) => return Ok(not_editable(reason)),
         };
@@ -1942,7 +1940,7 @@ impl MessageCenter {
         // Phase 1: resolve every target up front (pure, no writes). One
         // unroutable target fails the whole post_send with a clear reason —
         // the database keeps no partial state, never a silent fallback.
-        let envelopes = match self.plan_delivery_envelopes(&stored_msg, &stored_msg_id) {
+        let envelopes = match self.plan_delivery_envelopes(&stored_msg, &stored_msg_id).await {
             Ok(envelopes) => envelopes,
             Err(reason) => {
                 let result = PostSendResult {

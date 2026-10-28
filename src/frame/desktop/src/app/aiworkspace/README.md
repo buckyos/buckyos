@@ -413,13 +413,17 @@ own origin, i.e. its own OPFS, service worker and localStorage.
   canvas's fonts; the `mindnode` Block draws exactly the measured lines.
 - **Mind map** (`ui/controls/mindmap/`): `definition.tsx` (toolbar: direction, edges, spacing, outline; keys: Tab
   child, Enter sibling, arrows walk the tree, Ctrl+/ fold, Ctrl+D duplicate in `CanvasView`), `nodeBlock.tsx` (the
-  text node: inline Markdown title, typed in place, Tab saves and adds a child), `Chrome.tsx` (implicit edges in one
+  text node: inline Markdown title, typed in place, Tab saves and adds a child; its toolbar's Insert opens the insert
+  catalog for it — the entry is created as its child, x / y "auto", a nested control "auto" all over, any other Block
+  at the entry's size; no placing by click, no bulk imports, no lines), `Chrome.tsx` (implicit edges in one
   SVG, pins, the proposed layout while dragging), `ops.ts` (tree operations, navigation), `convert.ts` (rich text ⇄
   map, Markdown / OPML export, outline files dropped on a canvas), `FlowMindmap.tsx` (a map on a flow page: static
   SVG, pan and zoom).
 - **Gestures** (`RenderHost.tsx`): a node drag moves its subtree; on a node it hangs as its child (beside it near an
   edge across the growth), on the map's blank space it is pinned (R16), outside the map it is refused (R9) — the other
-  nodes show the proposed layout meanwhile. A root's drag moves its map. Controls have no resize handles, nodes do
+  nodes show the proposed layout meanwhile. Blocks of the canvas (not lines or pen strokes) dragged onto a node hang
+  the same way (child, or beside it), laid out at their own size; elsewhere they move as before. A root's drag moves
+  its map. Controls have no resize handles, nodes do
   not turn and have no connection handles (their fold handle is there; relation lines are drawn with the line
   tool). Fold handles are screen-sized overlay buttons.
 - **Clipboard** (`ui/canvas/clipboard.ts`): a node is copied with its subtree and its "auto" placement; pasted with

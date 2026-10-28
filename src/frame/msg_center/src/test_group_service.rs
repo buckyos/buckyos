@@ -109,7 +109,7 @@ fn joined_route(upstream: String, d: &DID) -> crate::group_sync::JoinedGroupRout
         group_did: group(),
         host: "test.example".into(),
         upstream,
-        authorization: format!("Bearer {}", context(d).token.unwrap()),
+        authorization: Some(format!("Bearer {}", context(d).token.unwrap())),
     }
 }
 
@@ -1899,14 +1899,17 @@ async fn friends_join_automatically_strangers_confirm_and_blocked_inviters_are_i
     assert!(inbox
         .iter()
         .any(|n| n["action"] == "invite" && n["data"]["state"] == "active"));
-    assert!(call(
-        &c,
-        &member(),
-        "group.accept_invitation",
-        json!({"invitation_id":friend["invite_id"]})
-    )
-    .await
-    .is_err());
+    assert_eq!(
+        call(
+            &c,
+            &member(),
+            "group.accept_invitation",
+            json!({"invitation_id":friend["invite_id"]})
+        )
+        .await
+        .unwrap()["state"],
+        "active"
+    );
 
     let stranger = call(
         &c,
@@ -1993,12 +1996,28 @@ async fn member_issued_invitations_need_approval_and_owners_appoint_admins_direc
         &c,
         &guest(),
         "group.accept_invitation",
-        json!({"invitation_id":invite["invite_id"]}),
+        json!({"invitation_id":invite["invite_id"],"idempotency_key":"pending-accept"}),
     )
     .await
     .unwrap();
     assert_eq!(accepted["state"], "pending_admin_approval");
     assert_eq!(accepted["invited_by"], json!(member()));
+    let pending_seq = c.groups.load(&group()).await.unwrap().unwrap().group_seq;
+    assert_eq!(
+        call(
+            &c,
+            &guest(),
+            "group.accept_invitation",
+            json!({"invitation_id":invite["invite_id"],"idempotency_key":"pending-accept"}),
+        )
+        .await
+        .unwrap(),
+        accepted
+    );
+    assert_eq!(
+        c.groups.load(&group()).await.unwrap().unwrap().group_seq,
+        pending_seq
+    );
     let pending = notices(&c, &owner(), &guest(), MailboxKind::RequestBox).await;
     assert!(pending.iter().any(|n| n["action"] == "pending_approval"
         && n["data"]["member_did"] == json!(guest())
@@ -2021,6 +2040,17 @@ async fn member_issued_invitations_need_approval_and_owners_appoint_admins_direc
     .unwrap();
     assert_eq!(approved["state"], "active");
     assert_eq!(approved["role"], "member");
+    assert_eq!(
+        call(
+            &c,
+            &guest(),
+            "group.accept_invitation",
+            json!({"invitation_id":invite["invite_id"],"idempotency_key":"pending-accept"}),
+        )
+        .await
+        .unwrap(),
+        approved
+    );
     assert!(call(
         &c,
         &member(),
@@ -2254,6 +2284,262 @@ async fn owner_transfer_takes_effect_only_when_the_target_accepts() {
 }
 
 #[tokio::test]
+async fn invitation_retries_follow_current_membership_instead_of_saved_operations() {
+    let (c, _tmp, path) = center().await;
+    create(&c, json!({"membership":{"join_policy":"open"}})).await;
+    let first = call(
+        &c,
+        &owner(),
+        "group.invite_member",
+        json!({"member_did":member()}),
+    )
+    .await
+    .unwrap();
+    let first_request = json!({"invitation_id":first["invite_id"],"idempotency_key":"accept"});
+    let accepted = call(
+        &c,
+        &member(),
+        "group.accept_invitation",
+        first_request.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(accepted["invitation_id"], first["invite_id"]);
+    let seq = c.groups.load(&group()).await.unwrap().unwrap().group_seq;
+    drop(c);
+    let c = opened(&path).await;
+    assert_eq!(
+        call(
+            &c,
+            &member(),
+            "group.accept_invitation",
+            first_request.clone()
+        )
+        .await
+        .unwrap(),
+        accepted
+    );
+    assert_eq!(
+        call(
+            &c,
+            &member(),
+            "group.accept_invitation",
+            json!({"invitation_id":first["invite_id"]})
+        )
+        .await
+        .unwrap(),
+        accepted
+    );
+    assert_eq!(
+        c.groups.load(&group()).await.unwrap().unwrap().group_seq,
+        seq
+    );
+
+    call(&c, &member(), "group.leave", json!({})).await.unwrap();
+    assert!(call(
+        &c,
+        &member(),
+        "group.accept_invitation",
+        first_request.clone()
+    )
+    .await
+    .is_err());
+    let second = call(
+        &c,
+        &owner(),
+        "group.invite_member",
+        json!({"member_did":member()}),
+    )
+    .await
+    .unwrap();
+    assert!(call(
+        &c,
+        &member(),
+        "group.accept_invitation",
+        first_request.clone()
+    )
+    .await
+    .is_err());
+    let second_request = json!({"invitation_id":second["invite_id"],"idempotency_key":"accept"});
+    let accepted_again = call(
+        &c,
+        &member(),
+        "group.accept_invitation",
+        second_request.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(accepted_again["epoch"], 2);
+    assert!(
+        call(&c, &member(), "group.accept_invitation", first_request)
+            .await
+            .is_err()
+    );
+    call(
+        &c,
+        &owner(),
+        "group.remove_member",
+        json!({"member_did":member()}),
+    )
+    .await
+    .unwrap();
+    assert!(call(
+        &c,
+        &member(),
+        "group.accept_invitation",
+        second_request.clone()
+    )
+    .await
+    .is_err());
+    let joined = call(&c, &member(), "group.request_join", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(joined["state"], "active");
+    assert_eq!(joined["epoch"], 3);
+    assert!(joined["invitation_id"].is_null());
+    assert!(call(
+        &c,
+        &member(),
+        "group.accept_invitation",
+        second_request.clone()
+    )
+    .await
+    .is_err());
+    call(&c, &owner(), "group.delete", json!({})).await.unwrap();
+    assert!(
+        call(&c, &member(), "group.accept_invitation", second_request)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn invitations_reject_impersonation_reissued_revoked_and_expired_requests() {
+    let (c, _tmp, _) = center().await;
+    create(&c, json!({})).await;
+    let first = call(
+        &c,
+        &owner(),
+        "group.invite_member",
+        json!({"member_did":member()}),
+    )
+    .await
+    .unwrap();
+    let first_request = json!({"invitation_id":first["invite_id"]});
+    assert!(call(
+        &c,
+        &guest(),
+        "group.accept_invitation",
+        first_request.clone()
+    )
+    .await
+    .is_err());
+    assert!(call(
+        &c,
+        &guest(),
+        "group.accept_invitation",
+        json!({
+            "invitation_id":first["invite_id"],"member_did":member()
+        })
+    )
+    .await
+    .is_err());
+    assert_eq!(
+        c.groups.load(&group()).await.unwrap().unwrap().members[&member().to_string()].state,
+        MemberStatus::Invited
+    );
+    let second = call(
+        &c,
+        &owner(),
+        "group.invite_member",
+        json!({"member_did":member()}),
+    )
+    .await
+    .unwrap();
+    assert_ne!(first["invite_id"], second["invite_id"]);
+    assert!(
+        call(&c, &member(), "group.accept_invitation", first_request)
+            .await
+            .is_err()
+    );
+    call(
+        &c,
+        &owner(),
+        "group.revoke_invite",
+        json!({"member_did":member()}),
+    )
+    .await
+    .unwrap();
+    let revoked = call(
+        &c,
+        &member(),
+        "group.accept_invitation",
+        json!({"invitation_id":second["invite_id"]}),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(revoked, kRPC::RPCErrors::NoPermission(reason) if reason == "invitation-revoked")
+    );
+    let third = call(
+        &c,
+        &owner(),
+        "group.invite_member",
+        json!({"member_did":member()}),
+    )
+    .await
+    .unwrap();
+    let mut tx = c.groups.begin(&group()).await.unwrap();
+    tx.state
+        .members
+        .get_mut(&member().to_string())
+        .unwrap()
+        .expires_at_ms = Some(MessageCenter::now_ms() - 1);
+    tx.commit().await.unwrap();
+    let expired = call(
+        &c,
+        &member(),
+        "group.accept_invitation",
+        json!({"invitation_id":third["invite_id"]}),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(expired, kRPC::RPCErrors::NoPermission(reason) if reason == "invitation-expired")
+    );
+    c.expire_group_invitations(&group()).await.unwrap();
+    let expired = call(
+        &c,
+        &member(),
+        "group.accept_invitation",
+        json!({"invitation_id":third["invite_id"]}),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(expired, kRPC::RPCErrors::NoPermission(reason) if reason == "invitation-expired")
+    );
+    let fourth = call(
+        &c,
+        &owner(),
+        "group.invite_member",
+        json!({"member_did":member()}),
+    )
+    .await
+    .unwrap();
+    let accepted = call(
+        &c,
+        &member(),
+        "group.accept_invitation",
+        json!({"invitation_id":fourth["invite_id"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(accepted["state"], "active");
+    assert_eq!(accepted["epoch"], 1);
+}
+
+#[tokio::test]
 async fn http_join_accepts_the_pending_invitation_and_reads_need_no_proofs() {
     let (c, _tmp, _) = center().await;
     create(&c, json!({})).await;
@@ -2286,23 +2572,52 @@ async fn http_join_accepts_the_pending_invitation_and_reads_need_no_proofs() {
             .status(),
         StatusCode::NOT_FOUND
     );
+    for invalid_id in [Value::Null, json!(42), json!("")] {
+        let mut malformed = request(
+            "PUT",
+            format!("/{}/join", group().to_string()),
+            &json!({"invitation_id":invalid_id}).to_string(),
+        );
+        assert_eq!(
+            crate::group_http::serve(&c, &mut malformed)
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let mut forged = request(
+        "PUT",
+        format!("/{}/join", group().to_string()),
+        &json!({"invitation_id":invite["invite_id"],"member_did":guest()}).to_string(),
+    );
+    assert_eq!(
+        crate::group_http::serve(&c, &mut forged)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
     let mut join = request("PUT", format!("/{}/join", group().to_string()), "");
     let response = crate::group_http::serve(&c, &mut join).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body: Value =
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(body["state"], "active");
+    let seq = c.groups.load(&group()).await.unwrap().unwrap().group_seq;
     let mut again = request(
         "PUT",
         format!("/{}/join", group().to_string()),
-        &json!({"invitation_id":invite["invite_id"]}).to_string(),
+        &json!({"invitation_id":invite["invite_id"],"idempotency_key":"http-retry"}).to_string(),
     );
+    let response = crate::group_http::serve(&c, &mut again).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let replayed: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(replayed, body);
     assert_eq!(
-        crate::group_http::serve(&c, &mut again)
-            .await
-            .unwrap()
-            .status(),
-        StatusCode::BAD_REQUEST
+        c.groups.load(&group()).await.unwrap().unwrap().group_seq,
+        seq
     );
     let mut sessions = request("GET", format!("/{}/sessions", group().to_string()), "");
     let response = crate::group_http::serve(&c, &mut sessions).await.unwrap();
@@ -2976,7 +3291,7 @@ async fn panel_declarations_display_and_hook_secrets_follow_the_extension_contra
     assert!(doc.get("panels").is_none() && doc.get("extensions").is_none());
 
     let mut revision = created["revision"].as_str().unwrap().to_string();
-    let mut rejected = |key: &str, patch: Value, reason: &str| {
+    let rejected = |key: &str, patch: Value, reason: &str| {
         let c = c.clone();
         let revision = revision.clone();
         let key = key.to_string();

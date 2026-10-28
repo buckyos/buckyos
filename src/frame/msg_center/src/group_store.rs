@@ -12,6 +12,7 @@ pub fn db_error(e: impl std::fmt::Display) -> kRPC::RPCErrors {
 pub struct GroupStore {
     pub db: MsgBoxDbMgr,
     pub sync_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
+    pub join_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
     pub read_hook_cache:
         std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>>,
 }
@@ -27,6 +28,7 @@ pub struct GroupTransaction<'a> {
 impl GroupStore {
     pub async fn open(db: MsgBoxDbMgr) -> Result<Self> {
         for ddl in [
+            "CREATE TABLE IF NOT EXISTS group_joined_bindings (owner TEXT NOT NULL, group_did TEXT NOT NULL, binding_json TEXT NOT NULL, PRIMARY KEY(owner, group_did))",
             "CREATE TABLE IF NOT EXISTS group_states (group_did TEXT PRIMARY KEY, state_json TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS group_objects (obj_id TEXT PRIMARY KEY, group_did TEXT NOT NULL, body_json TEXT, jwt TEXT)",
             "CREATE INDEX IF NOT EXISTS idx_group_objects_group ON group_objects(group_did)",
@@ -43,6 +45,7 @@ impl GroupStore {
             db,
             sync_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             read_hook_cache: Default::default(),
+            join_lock: Default::default(),
         })
     }
     pub async fn load(&self, d: &DID) -> Result<Option<GroupState>> {

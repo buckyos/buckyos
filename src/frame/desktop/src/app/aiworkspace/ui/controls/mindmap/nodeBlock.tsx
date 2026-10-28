@@ -5,7 +5,7 @@
  * and adds a child. Outside a control it draws like a root. Its look follows its depth and branch colour. */
 
 import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { CornerDownRight, ListPlus, LocateFixed, Minus, Plus } from 'lucide-react'
+import { CornerDownRight, ListPlus, LocateFixed, Minus, Plus, SquarePlus } from 'lucide-react'
 import { MAX_TEXT_WIDTH, NODE_PAD, runFont, typography } from '@controls/measure'
 import { isAuto, num } from '@controls/placement'
 import { aiwsT } from '../../../i18n'
@@ -122,7 +122,8 @@ function NodeEditor(context: RenderContext) {
 
 const canChange = (context: RenderContext): string | false => (context.capabilities.includes('update') && context.mode === 'edit' && context.readOnlyReason === null ? false : aiwsT('aiworkspace.blocks.noPermission'))
 
-/** The node's tools (§7): add a child / sibling, fold, branch colour, side under a two-sided root, back to the layout. */
+/** The node's tools (§7): add a child / sibling, insert any object as a child, fold, branch colour, side under a
+ * two-sided root, back to the layout. */
 function nodeToolbar(context: RenderContext, store: ReturnType<typeof useStore>): ToolbarItem[] {
   const id = context.cell.entity_id
   const info = nodeInfo(store.outline, id)
@@ -131,6 +132,7 @@ function nodeToolbar(context: RenderContext, store: ReturnType<typeof useStore>)
   const structure = context.cell.capabilities.includes('structure') && context.mode === 'edit' && context.readOnlyReason === null ? false : aiwsT('aiworkspace.blocks.noPermission')
   items.push({ kind: 'button', id: 'mindmap-add-child', icon: CornerDownRight, label: aiwsT('aiworkspace.mindmap.addChild'), key: 'Tab', disabled: structure, run: () => controlCommands.send({ kind: 'add-child', nodeId: id }) })
   if (info.depth > 0) items.push({ kind: 'button', id: 'mindmap-add-sibling', icon: ListPlus, label: aiwsT('aiworkspace.mindmap.addSibling'), key: 'Enter', disabled: structure, run: () => controlCommands.send({ kind: 'add-sibling', nodeId: id }) })
+  items.push({ kind: 'button', id: 'mindmap-insert', icon: SquarePlus, label: aiwsT('aiworkspace.mindmap.insertObject'), disabled: structure, run: () => controlCommands.send({ kind: 'insert', nodeId: id }) })
   if (blockChildren(store.outline, id).length > 0) {
     const folded = foldBook(store).isFolded(info.control.entity_id, id)
     items.push({ kind: 'button', id: 'mindmap-fold', icon: folded ? Plus : Minus, label: aiwsT(folded ? 'aiworkspace.mindmap.unfold' : 'aiworkspace.mindmap.fold'), key: 'Ctrl+/', run: () => foldBook(store).toggle(info.control.entity_id, id) })

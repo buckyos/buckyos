@@ -1,12 +1,12 @@
 import { createContext } from 'react'
 import type { DID, MessageObject } from '../../protocol/msgobj'
-import type { ReadReceipt } from '../../types'
+import type { GroupInvitationView, ReadReceipt } from '../../types'
 
 /** What a group notification card needs to show about its group. */
 export interface GroupNoticeView {
   groupName: string
   /** Only for invitations. */
-  state?: 'pending' | 'joined' | 'approval' | 'expired'
+  state?: GroupInvitationView['state']
 }
 
 /** Which relation actions the viewer may take on one message (host rules: author, time window, capability). */

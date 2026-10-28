@@ -228,6 +228,42 @@ test('Join group in the + menu previews the group; an unknown token is rejected,
   expect(await page.evaluate(({ context, group }) => window.__messageHubMock.group(context, group)?.myRole, { context: OWN, group: BOOK })).toBe('member')
 })
 
+test('an accepted invitation awaiting sync offers retry without claiming the group is ready', async ({ page }) => {
+  await openHub(page, BOB)
+  await page.evaluate(() => {
+    const store = window.__messageHubMock
+    const originalView = store.groupInvitation.bind(store)
+    const originalAccept = store.acceptGroupInvitation.bind(store)
+    let syncing = false
+    let firstAttempt = true
+    Object.assign(store, {
+      groupInvitation: (...args: Parameters<typeof originalView>) => {
+        const view = originalView(...args)
+        return syncing ? { ...view, state: 'syncing' } : view
+      },
+      acceptGroupInvitation: async (...args: Parameters<typeof originalAccept>) => {
+        if (firstAttempt) {
+          firstAttempt = false
+          syncing = true
+          throw Error('group-sync-pending')
+        }
+        await originalAccept(...args)
+        syncing = false
+      },
+    })
+  })
+  const card = page.getByTestId('group-notice')
+  await card.getByRole('button', { name: 'Join group' }).click()
+  await expect(card).toHaveAttribute('data-state', 'syncing')
+  await expect(card).toContainText('Accepted, waiting for group sync')
+  await expect(card.getByRole('alert')).toContainText('you can safely retry')
+  await expect(card.getByRole('button', { name: 'Open', exact: true })).toHaveCount(0)
+  await card.getByRole('button', { name: 'Retry', exact: true }).click()
+  await expect(card).toHaveAttribute('data-state', 'joined')
+  await expect(card.getByRole('button', { name: 'Open', exact: true })).toBeVisible()
+  await expect(card.getByRole('alert')).toHaveCount(0)
+})
+
 test('session guests: the invite card is accepted, the owner accepts for an agent, and guest sessions are badged', async ({ page }) => {
   await openHub(page, CAROL)
   const agentInvite = page.locator('[data-testid="group-notice"][data-action="invite"]')

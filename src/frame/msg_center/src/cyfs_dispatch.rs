@@ -61,6 +61,7 @@ impl Default for CyfsDispatchSettings {
 }
 
 impl CyfsDispatchSettings {
+    #[cfg(test)]
     pub(crate) fn message_route(
         &self,
         msg: &MsgObject,
@@ -72,24 +73,7 @@ impl CyfsDispatchSettings {
                 .iter()
                 .find(|r| r.owner_did == msg.from && &r.group_did == receiver)
                 .ok_or_else(|| anyhow::anyhow!("joined-group-route-not-configured"))?;
-            let mailbox =
-                buckyos_api::MailboxAddress::new(receiver.clone(), msg.to_session.clone())
-                    .map_err(|e| anyhow::anyhow!(e))?;
-            let path = match msg.to_session.as_ref() {
-                None => format!("/{}/inbox", receiver.to_string()),
-                Some(_) => format!(
-                    "/{}/sessions/{}/inbox",
-                    receiver.to_string(),
-                    mailbox.to_string().split_once('/').unwrap().1
-                ),
-            };
-            return Ok(Some(NativeDispatchRoute {
-                target: crate::group_http::group_target(&binding.host, &path)
-                    .map_err(|e| anyhow::anyhow!(e.to_string()))?,
-                upstream: binding.upstream.clone(),
-                authorization: Some(binding.authorization.clone()),
-                timeout_ms: 15_000,
-            }));
+            return Ok(Some(binding.message_route(msg)?));
         }
         Ok(self.outgoing.get(&receiver.to_string()).cloned())
     }
@@ -506,6 +490,7 @@ pub(crate) fn authorizes_signer(
     })
 }
 
+#[cfg(test)]
 pub(crate) async fn verify_signed_message(
     jwt: &str,
 ) -> std::result::Result<MsgObjectJwt, (StatusCode, &'static str)> {
@@ -691,7 +676,18 @@ pub(crate) fn delivery_report(result: CyfsDispatchResult) -> DeliveryReportResul
 
 /// Send one queued message. When the message was received in signed form, the
 /// JWT original is sent so the signature reaches the receiver.
+#[cfg(test)]
 pub(crate) async fn send(
+    route: &NativeDispatchRoute,
+    msg: &MsgObject,
+    jwt: Option<&str>,
+    expected_id: &ObjId,
+) -> anyhow::Result<DeliveryReportResult> {
+    send_authenticated(None, route, msg, jwt, expected_id).await
+}
+
+pub(crate) async fn send_authenticated(
+    center: Option<&MessageCenter>,
     route: &NativeDispatchRoute,
     msg: &MsgObject,
     jwt: Option<&str>,
@@ -719,13 +715,21 @@ pub(crate) async fn send(
         .build()?;
     let operation = async {
         let request = client
-            .put(url)
+            .put(url.clone())
             .header("host", target.host_str().unwrap())
             .header("content-type", encoding.content_type())
             .header(CYFS_HEADER_OBJ_ID, id.to_string())
             .header(CYFS_HEADER_ORIGINAL_USER, msg.from.to_string());
         let request = match route.authorization.as_deref() {
             Some(authorization) => request.header("authorization", authorization),
+            None if msg.kind == MsgObjKind::GroupMsg => {
+                let center = center.ok_or_else(|| anyhow::anyhow!("remote-group-auth-required"))?;
+                let group = msg.to.first().ok_or_else(|| anyhow::anyhow!("missing-group"))?;
+                let proof = crate::group_auth::signed_group_request(center, &msg.from, group,
+                    target.host_str().unwrap(), "PUT", url.path(), body.as_bytes())
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                request.header(crate::group_auth::CYFS_HEADER_GROUP_REQUEST, proof)
+            }
             None => request,
         };
         let mut response = request.body(body).send().await?;

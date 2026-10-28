@@ -4,8 +4,10 @@ mod contact_lookup;
 mod contact_rpc;
 mod cyfs_dispatch;
 mod friend_service;
+mod group_auth;
 mod group_http;
 mod group_publication;
+mod group_remote;
 mod group_service;
 mod group_store;
 mod group_sync;
@@ -23,6 +25,8 @@ mod owner_session_db;
 mod test_contact_network;
 #[cfg(test)]
 mod test_group_service;
+#[cfg(test)]
+mod test_group_remote;
 #[cfg(test)]
 mod test_hybrid_sso;
 #[cfg(test)]

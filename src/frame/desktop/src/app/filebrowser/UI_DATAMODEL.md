@@ -1243,7 +1243,7 @@ Search is a separate scoped query and MUST NOT be emulated by filtering only the
 | <code>FileEntry.path</code> meaning | Frozen | Current original locator/display path, not identity |
 | <code>FileEntry.kind</code> | Extensible | Unknown values fall back to other |
 | <code>FileEntry.sizeBytes</code> | Frozen | Optional byte count |
-| <code>FileEntry.modifiedAt</code> | Frozen | ISO timestamp in UI |
+| <code>FileEntry.modifiedAt</code> | Frozen | ISO timestamp in UI; empty string for unknown time, rendered as localized “Unknown” in lists, cards, preview and conflict details |
 | <code>FileItem.key</code> | Frozen | Listing occurrence identity |
 | <code>FileItem.entry</code> | Frozen | Target projection |
 | <code>FileItem.ref</code> dual-path meaning | Frozen | Collection occurrence context |
@@ -1448,7 +1448,7 @@ FileBrowser UI
 | File kind | target kind + MIME/name | dir/group → folder; classify file; unknown → other |
 | Original path | <code>Entry.canonical_path</code> | Convert current-Zone <code>cyfs:///</code> to UI DFS display path |
 | Size | <code>target.attrs.size</code> | Direct byte count, optional |
-| Modified | <code>target.attrs.mtime</code> | Unix seconds → ISO string |
+| Modified | <code>target.attrs.mtime</code> + binding/kind | Unix seconds → ISO string; missing or invalid time → empty string. Zero is unknown only for <code>binding: projection</code> + <code>kind: dir</code>; valid zero timestamps on real files/directories and projected files remain dates. |
 | Public URL | <code>target.attrs.access_urls</code> | Choose authorized external/public URL by kind/policy |
 | Broken | <code>target.target_state</code> | stale/missing/inaccessible → true with privacy-safe placeholder |
 | Ref context | binding + entry_ref + container | Build Collection URL/refPath/orderIndex |

@@ -1,6 +1,6 @@
 import { useI18n } from '../../../../i18n/provider'
 import { isActionMessage } from '../../sessionModel'
-import { groupErrorText, isAgentGroupDisabled, parseGroupNotice } from '../../groupModel'
+import { groupErrorCode, groupErrorText, isAgentGroupDisabled, parseGroupNotice } from '../../groupModel'
 import { AgentGroupSettingsLink } from '../../AgentGroupSettingsLink'
 import { parseFriendNotice } from '../../friendNotice'
 import { useEntityRelation } from '../../relation'
@@ -915,6 +915,7 @@ function GroupNoticeMessage({ message, context }: { message: MessageObject; cont
   const [state, setState] = useState<'idle' | 'pending' | 'done'>('idle')
   const [outcome, setOutcome] = useState('')
   const [error, setError] = useState('')
+  const [errorReason, setErrorReason] = useState('')
   const [agentGroupDisabled, setAgentGroupDisabled] = useState(false)
   const notice = parseGroupNotice(message)
   const view = notice ? actions.groupNotice?.(message) : null
@@ -925,7 +926,7 @@ function GroupNoticeMessage({ message, context }: { message: MessageObject; cont
   const run = (operation: ((message: MessageObject) => Promise<void>) | undefined, doneKey: string) => {
     if (!operation || state === 'pending') return
     setState('pending'); setError(''); setAgentGroupDisabled(false)
-    void operation(message).then(() => { setState('done'); setOutcome(doneKey) }, failure => { setState('idle'); setError(groupErrorText(t, failure)); setAgentGroupDisabled(isAgentGroupDisabled(failure)) })
+    void operation(message).then(() => { setState('done'); setOutcome(doneKey) }, failure => { setState('idle'); setError(groupErrorText(t, failure)); setErrorReason(groupErrorCode(failure)); setAgentGroupDisabled(isAgentGroupDisabled(failure)) })
   }
   const forAgent = invitation?.memberDid && invitation.memberDid !== context.selfDid ? nameOf(invitation.memberDid) : undefined
   const line = invitation ? (forAgent ? t('messagehub.group.invitedAgent', undefined, { name: inviter, agent: forAgent }) : t('messagehub.group.invitedBy', undefined, { name: inviter }))
@@ -951,6 +952,10 @@ function GroupNoticeMessage({ message, context }: { message: MessageObject; cont
         {invitation ? (
           <div className="mt-3 flex flex-wrap items-center gap-2">
             {view.state === 'pending' && actions.joinGroup ? <button type="button" className={primaryClass} style={{ background: 'var(--cp-accent)' }} disabled={state === 'pending'} onClick={() => run(actions.joinGroup, 'joined')}>{t(state === 'pending' ? 'messagehub.group.joining' : forAgent ? 'messagehub.group.acceptForAgent' : 'messagehub.group.join')}</button> : null}
+            {view.state === 'syncing' ? <>
+              <span className="text-xs font-medium" style={{ color: 'var(--cp-muted)' }}>{t('messagehub.group.syncPending')}</span>
+              {actions.joinGroup ? <button type="button" className={secondaryClass} style={{ borderColor: 'var(--cp-border)' }} disabled={state === 'pending'} onClick={() => run(actions.joinGroup, 'joined')}>{t(state === 'pending' ? 'messagehub.group.joining' : 'messagehub.retry')}</button> : null}
+            </> : null}
             {view.state === 'joined' ? <>
               <span className="text-xs font-medium" style={{ color: 'var(--cp-success)' }}>{t(forAgent ? 'messagehub.group.agentJoined' : 'messagehub.group.joined')}</span>
               {actions.openEntity && !forAgent ? <button type="button" className={secondaryClass} style={{ borderColor: 'var(--cp-border)' }} onClick={() => actions.openEntity?.(notice.groupDid)}>{t('messagehub.group.open')}</button> : null}
@@ -979,7 +984,7 @@ function GroupNoticeMessage({ message, context }: { message: MessageObject; cont
             </> : <button type="button" className={primaryClass} style={{ background: 'var(--cp-accent)' }} disabled={state === 'pending'} onClick={() => run(actions.acceptSessionInvitation, 'joined')}>{pendingLabel('messagehub.group.acceptSessionInvite')}</button>}
           </div>
         ) : null}
-        {error ? <p role="alert" className="mt-2 text-xs" style={{ color: 'var(--cp-danger)' }}>{error}</p> : null}
+        {error && !(view.state === 'joined' && ['group-sync-pending', 'group-refresh-pending'].includes(errorReason)) ? <p role="alert" className="mt-2 text-xs" style={{ color: 'var(--cp-danger)' }}>{error}</p> : null}
         {agentGroupDisabled && invitation?.memberDid ? <AgentGroupSettingsLink agentDid={invitation.memberDid} name={nameOf(invitation.memberDid)} /> : null}
         <MessageFooter message={message} isSelf={false} mode="card" />
       </div>

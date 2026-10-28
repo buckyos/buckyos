@@ -33,6 +33,7 @@ interface GroupMemberWire {
   role: GroupRole
   state: string
   entity_kind?: string
+  sync_pending?: boolean
 }
 
 interface MsgWire {
@@ -55,6 +56,8 @@ interface SessionItemWire {
 }
 
 interface ByMemberItem {
+  group_did?: string
+  hosted_here?: boolean
   doc?: unknown
   member?: { state?: string; role?: GroupRole | null; invitation_id?: string | null; invited_by?: string | null; expires_at_ms?: number | null } | null
 }
@@ -223,9 +226,9 @@ export function createRealNetworkBackend(): NetworkBackend {
         }
       }))
       const waiting = (result.invitations ?? []).flatMap((item): GroupRef[] => {
-        const doc = docOf(item.doc)
+        const doc = docOf(item.doc) ?? (item.group_did ? { id: item.group_did } : null)
         return doc && item.member?.state === 'pending_admin_approval'
-          ? [{ ...docInfo(doc), state: 'pending_admin_approval', hostedHere: true, canPost: false }]
+          ? [{ ...docInfo(doc), state: 'pending_admin_approval', hostedHere: item.hosted_here !== false, canPost: false }]
           : []
       })
       const remote = (result.joined ?? [])
@@ -276,6 +279,14 @@ export function createRealNetworkBackend(): NetworkBackend {
     acceptGroupInvitation: async (invitation) => {
       const record = await call<GroupMemberWire>('group.accept_invitation', { group_did: invitation.groupDid, invitation_id: invitation.inviteId })
       byMember = null
+      if (record.state !== 'active' && record.state !== 'pending_admin_approval') throw new Error('invitation-mismatch')
+      if (record.sync_pending && record.state === 'active') throw new Error('group-sync-pending')
+      try {
+        const result = await listByMember()
+        if (record.state === 'active' && !(result.items ?? []).some(item => docOf(item.doc)?.id === invitation.groupDid) && !(result.joined ?? []).some(item => item.group_did === invitation.groupDid)) throw new Error('group-refresh-pending')
+      } catch {
+        throw new Error('group-refresh-pending')
+      }
       return record.state === 'pending_admin_approval' ? 'pending_admin_approval' : 'active'
     },
     dismissGroupInvitation: async (invitation) => {

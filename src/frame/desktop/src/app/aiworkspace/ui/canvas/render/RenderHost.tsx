@@ -47,7 +47,7 @@ import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, u
 import { Lock, RotateCw } from 'lucide-react'
 import { isTextView } from '@controls/contract'
 import { placeControl, type ControlSource } from '@controls/solve'
-import type { StoredPlacement } from '../../../api/types'
+import type { EntityEnvelope, StoredPlacement } from '../../../api/types'
 import { ConnectorFrame } from '../connectors/ConnectorFrame'
 import { LineRegistry } from '../connectors/registry'
 import { findAnchor, SIDE_VEC, type Shape } from '../connectors/anchors'
@@ -114,10 +114,15 @@ const DOUBLE_PRESS_MS = 400
 const FALLBACK_INK: InkStyle = { color: '#111827', width: 2, pressure: true }
 
 export interface LayoutChange { id: string; placement: StoredPlacement; parentId?: string }
-/** A node re-hung inside its control (脑图方案 §7.2): under `parentId`, before `beforeId` (null: last). */
+/** A node re-hung inside its control, or a Block of the canvas dragged onto a node (脑图方案 §7.2): under `parentId`,
+ * before `beforeId` (null: last). */
 export interface NodeMove { id: string; parentId: string; beforeId: string | null }
 /** Where a dragged node would go: under a node, beside one, pinned on the map's blank space, or nowhere (outside). */
 type NodeDrop = { kind: 'child'; parent: string } | { kind: 'before' | 'after'; sibling: string; parent: string } | { kind: 'pin' } | { kind: 'outside' }
+type HangDrop = Extract<NodeDrop, { parent: string }>
+/** Blocks hung into a control by a drag (its own nodes, or Blocks dragged onto one of its nodes): what moves (`affected`:
+ * with their subtrees), where it would go, and the nodes moved aside to show it (`shown`). */
+interface Hang { control: string; ids: string[]; affected: string[]; dx: number; dy: number; drop: NodeDrop | null; shown: string[] }
 
 export interface RenderHostProps {
   surfaceId: string
@@ -132,7 +137,7 @@ export interface RenderHostProps {
   /** Can this user move, resize and rotate the Block (the canvas's editors: all; a commenter: its own notes)? */
   canLayout: (id: string) => boolean
   onCommitLayout: (changes: LayoutChange[]) => void
-  /** Nodes re-hung inside their control by a drag (one commit). */
+  /** Nodes re-hung inside their control, or Blocks dragged onto a node, by one drag (one commit). */
   onMoveNodes?: (moves: NodeMove[]) => void
   onContextMenu: (point: { screenX: number; screenY: number; worldX: number; worldY: number }, blockId: string | null) => void
   onOpenEntity: (entityId: string) => void
@@ -170,8 +175,9 @@ interface Snap { id: string; anchor: Anchor; point: Point; target: TargetGeom; e
 
 type Drag =
   | { kind: 'pan'; lastX: number; lastY: number; moved: boolean }
-  /** `lines`: lines re-routed per frame (bound to a moved Block, or moved with a bound end). */
-  | { kind: 'move'; ids: string[]; affected: string[]; lines: string[]; shifted: ReadonlySet<string>; startX: number; startY: number; dx: number; dy: number; moved: boolean; clicked: string; additive: boolean; wasSelected: boolean; ghost?: boolean }
+  /** `lines`: lines re-routed per frame (bound to a moved Block, or moved with a bound end). `hangable`: the Blocks may
+   * be dropped onto a node of a control to become its children (`hang`: the node under the pointer). */
+  | { kind: 'move'; ids: string[]; affected: string[]; lines: string[]; shifted: ReadonlySet<string>; startX: number; startY: number; dx: number; dy: number; moved: boolean; clicked: string; additive: boolean; wasSelected: boolean; ghost?: boolean; hangable: boolean; hang: Hang | null }
   | { kind: 'resize'; id: string; handle: string; startX: number; startY: number; start: Rect; rotation: number; aspect: 'free' | 'locked'; current: Rect; lines: string[]; backing?: string }
   | { kind: 'rotate'; id: string; center: Point; startAngle: number; start: number; current: number; lines: string[] }
   | { kind: 'marquee'; startX: number; startY: number; current: Rect | null; additive: boolean; moved: boolean }
@@ -453,24 +459,33 @@ export function RenderHost(props: RenderHostProps) {
   /** Where nodes dragged to world point `w` would go (脑图方案 §7.2): on a node — its child, or beside it near an edge
    * across the growth; a group or a nested control as a node takes no children (beside only); on the map's blank
    * space — pinned; further out — nowhere (R9). */
-  const nodeDropAt = (drag: Extract<Drag, { kind: 'node' }>, w: Point): NodeDrop => {
-    const moving = new Set(drag.affected)
+  /** The top-most node at world point `w` (of `control`, or of any control) that is not one of `moving`. */
+  const nodeUnder = (w: Point, moving: ReadonlySet<string>, control?: string): Laid | null => {
     let over: Laid | null = null
     for (const l of laid.values()) {
-      if (l.node?.control !== drag.control || moving.has(l.entity.entity_id)) continue
+      if (!l.node || (control !== undefined && l.node.control !== control) || moving.has(l.entity.entity_id)) continue
       const r = l.rect
       if (w.x < r.x || w.x > r.x + r.w || w.y < r.y || w.y > r.y + r.h) continue
       if (!over || l.paint > over.paint) over = l
     }
-    if (over?.node) {
-      const id = over.entity.entity_id
-      const t = over.node.grow === 'down' ? (w.x - over.rect.x) / Math.max(1, over.rect.w) : (w.y - over.rect.y) / Math.max(1, over.rect.h)
-      const root = over.node.parent === null
-      if (over.isGroup) return root ? { kind: 'pin' } : { kind: t < 0.5 ? 'before' : 'after', sibling: id, parent: over.parentId }
-      if (!root && t < 0.25) return { kind: 'before', sibling: id, parent: over.parentId }
-      if (!root && t > 0.75) return { kind: 'after', sibling: id, parent: over.parentId }
-      return { kind: 'child', parent: id }
-    }
+    return over
+  }
+  /** Dropped at `w` on node `over`: its child, or beside it near an edge across the growth; a group or a nested
+   * control as a node takes no children (beside it only; on a root, nowhere). */
+  const dropOnNode = (over: Laid, w: Point): HangDrop | null => {
+    const node = over.node
+    if (!node) return null
+    const id = over.entity.entity_id
+    const t = node.grow === 'down' ? (w.x - over.rect.x) / Math.max(1, over.rect.w) : (w.y - over.rect.y) / Math.max(1, over.rect.h)
+    const root = node.parent === null
+    if (over.isGroup) return root ? null : { kind: t < 0.5 ? 'before' : 'after', sibling: id, parent: over.parentId }
+    if (!root && t < 0.25) return { kind: 'before', sibling: id, parent: over.parentId }
+    if (!root && t > 0.75) return { kind: 'after', sibling: id, parent: over.parentId }
+    return { kind: 'child', parent: id }
+  }
+  const nodeDropAt = (drag: Extract<Drag, { kind: 'node' }>, w: Point): NodeDrop => {
+    const over = nodeUnder(w, new Set(drag.affected), drag.control)
+    if (over) return dropOnNode(over, w) ?? { kind: 'pin' }
     const box = laid.get(drag.control)?.rect
     const m = 40 / camera.zoom
     if (box && w.x >= box.x - m && w.x <= box.x + box.w + m && w.y >= box.y - m && w.y <= box.y + box.h + m) return { kind: 'pin' }
@@ -478,26 +493,29 @@ export function RenderHost(props: RenderHostProps) {
   }
   /** The control's layout with the dragged nodes where `drop` puts them (world rectangles of the others, and the slot
    * the first dragged node would take). */
-  const proposedLayout = (drag: Extract<Drag, { kind: 'node' }>, drop: NodeDrop): { rects: Map<string, Rect>; slot: Rect | null } => {
+  const proposedLayout = (drag: Hang, drop: NodeDrop): { rects: Map<string, Rect>; slot: Rect | null } => {
     const out = new Map<string, Rect>()
     let slot: Rect | null = null
     const c = laid.get(drag.control)
     const def = controlRegistry.get(c?.control?.kind)
     if (!c?.control || !def || drop.kind === 'outside') return { rects: out, slot }
     const moved = new Set(drag.ids)
+    /** A dragged Block as the drop will write it (the layout reads the placement of the children it is given). */
+    const asDropped = (e: EntityEnvelope): EntityEnvelope => {
+      if (!moved.has(e.entity_id)) return e
+      const l = laid.get(e.entity_id)
+      // pinned where it was dropped: its siblings close the gap
+      if (drop.kind === 'pin') return l ? { ...e, placement: movedPlacement(laid, l, drag.dx, drag.dy) } : e
+      // hung under a node it is laid out at its own size
+      return { ...e, placement: { x: 'auto', y: 'auto', w: e.placement?.w ?? 'auto', h: e.placement?.h ?? 'auto' } }
+    }
     const src: ControlSource = {
-      get: (id) => {
-        const e = store.outline.get(id)
-        const l = laid.get(id)
-        // pinned where it was dropped: its siblings close the gap
-        if (e && l && drop.kind === 'pin' && moved.has(id)) return { ...e, placement: movedPlacement(laid, l, drag.dx, drag.dy) }
-        return e
-      },
+      get: (id) => { const e = store.outline.get(id); return e && asDropped(e) },
       childrenOf: (id) => {
-        if (drop.kind === 'pin') return store.outline.childrenOf(id)
+        if (drop.kind === 'pin') return store.outline.childrenOf(id).map(asDropped)
         const list = store.outline.childrenOf(id).filter((e) => !moved.has(e.entity_id))
         if (id !== drop.parent) return list
-        const add = drag.ids.flatMap((m) => { const e = store.outline.get(m); return e ? [e] : [] })
+        const add = drag.ids.flatMap((m) => { const e = store.outline.get(m); return e ? [asDropped(e)] : [] })
         if (drop.kind === 'child') return [...list, ...add]
         const i = list.findIndex((e) => e.entity_id === drop.sibling)
         list.splice(drop.kind === 'before' ? i : i + 1, 0, ...add)
@@ -513,7 +531,7 @@ export function RenderHost(props: RenderHostProps) {
     return { rects: out, slot }
   }
   /** Show `drop` while dragging: the other nodes move to the proposed layout, the chrome draws its edges. */
-  const showDrop = (drag: Extract<Drag, { kind: 'node' }>, drop: NodeDrop) => {
+  const showDrop = (drag: Hang, drop: NodeDrop) => {
     const { rects, slot } = proposedLayout(drag, drop)
     const shown: string[] = []
     for (const id of drag.shown) if (!rects.has(id)) setTransform([id], 0, 0)
@@ -529,6 +547,28 @@ export function RenderHost(props: RenderHostProps) {
     // a re-hung node shows the slot it would take and its edge from the new parent; a pinned one is where it is dropped
     const parent = drop.kind === 'child' || drop.kind === 'before' || drop.kind === 'after' ? drop.parent : null
     setNodePreview({ control: drag.control, drop, preview: { rects, dragged: new Set(drag.affected), parent: parent && laid.get(parent)?.node ? parent : null, at: parent ? slot : null } })
+  }
+  /** Over a node of a control, Blocks dragged from the canvas show where they would hang; elsewhere they move as usual. */
+  const trackHang = (drag: Extract<Drag, { kind: 'move' }>, point: { clientX: number; clientY: number }) => {
+    const p = screenPoint(point)
+    const w = camera.toWorld(p.x, p.y)
+    const over = nodeUnder(w, drag.shifted)
+    const drop = over ? dropOnNode(over, w) : null
+    const control = over?.node?.control
+    if (drag.hang && (!drop || drag.hang.control !== control)) {
+      setTransform(drag.hang.shown, 0, 0)
+      setNodePreview(null)
+      drag.hang = null
+    }
+    if (!drop || !control) return
+    if (!drag.hang) drag.hang = { control, ids: drag.ids, affected: [...drag.shifted], dx: drag.dx, dy: drag.dy, drop: null, shown: [] }
+    if (JSON.stringify(drop) !== JSON.stringify(drag.hang.drop)) { drag.hang.drop = drop; showDrop(drag.hang, drop) }
+  }
+  /** `ids` hung where `drop` says: under its parent, before the sibling it names (or last). */
+  const hangMoves = (ids: string[], drop: HangDrop): NodeMove[] => {
+    const siblings = store.outline.childrenOf(drop.parent).filter((c) => !ids.includes(c.entity_id))
+    const beforeId = drop.kind === 'before' ? drop.sibling : drop.kind === 'after' ? siblings[siblings.findIndex((c) => c.entity_id === drop.sibling) + 1]?.entity_id ?? null : null
+    return ids.map((id) => ({ id, parentId: drop.parent, beforeId }))
   }
   // `translate` composes with a Block's own `rotate` (it is applied after it), unlike `transform`
   const setTransform = (ids: Iterable<string>, dx: number, dy: number) => {
@@ -680,16 +720,18 @@ export function RenderHost(props: RenderHostProps) {
         props.onCommitLayout(drag.ids.flatMap((id) => { const l = laid.get(id); return l ? [{ id, placement: movedPlacement(laid, l, drag.dx, drag.dy) }] : [] }))
         return
       }
-      const siblings = store.outline.childrenOf(drop.parent).filter((c) => !drag.ids.includes(c.entity_id))
-      const beforeId = drop.kind === 'before' ? drop.sibling : drop.kind === 'after' ? siblings[siblings.findIndex((c) => c.entity_id === drop.sibling) + 1]?.entity_id ?? null : null
-      props.onMoveNodes?.(drag.ids.map((id) => ({ id, parentId: drop.parent, beforeId })))
+      props.onMoveNodes?.(hangMoves(drag.ids, drop))
       return
     }
     if (drag.kind === 'move') {
       if (drag.ghost) { for (const gid of [...drag.affected, ...drag.lines]) { const el = frameEl(gid); if (el) el.style.visibility = '' } } else setTransform(drag.affected, 0, 0)
       restoreLines(drag.lines)
       selectionLayerRef.current?.removeAttribute('transform')
-      if (!cancel && drag.moved) {
+      const hang = drag.hang
+      if (hang) { setTransform(hang.shown, 0, 0); setNodePreview(null) }
+      const into = hang?.drop && hang.drop.kind !== 'pin' && hang.drop.kind !== 'outside' ? hang.drop : null
+      if (!cancel && drag.moved && into) props.onMoveNodes?.(hangMoves(drag.ids, into))
+      else if (!cancel && drag.moved) {
         const changes: LayoutChange[] = []
         const moving = new Set(drag.affected.concat(drag.ids))
         for (const id of drag.ids) {
@@ -839,7 +881,7 @@ export function RenderHost(props: RenderHostProps) {
         // a second press soon after the first edits the label (the first one shows handles that would take a dblclick)
         if (lineEditable(id) && !additive && secondPress(`line:${id}`, event)) { setDragging(false); props.onEditingChange(id); return }
         if (lineEditable(id)) beginBend(event, id, null, w, { clicked: true, additive, wasSelected })
-        else dragRef.current = { kind: 'move', ids: [], affected: [], lines: [], shifted: new Set(), startX: event.clientX, startY: event.clientY, dx: 0, dy: 0, moved: false, clicked: id, additive, wasSelected }
+        else dragRef.current = { kind: 'move', ids: [], affected: [], lines: [], shifted: new Set(), startX: event.clientX, startY: event.clientY, dx: 0, dy: 0, moved: false, clicked: id, additive, wasSelected, hangable: false, hang: null }
         return
       }
       // a node of a control is dragged within it (脑图方案 §7.2): its subtree follows, the control says where it would hang
@@ -862,8 +904,10 @@ export function RenderHost(props: RenderHostProps) {
       const affected = ids.flatMap((moved) => [moved, ...descendantsOf(moved)])
       const touching = linesTouching(affected)
       if (!wasSelected && !additive) props.onSelectionChange(new Set([id]))
+      // Blocks of the canvas (not lines, pen strokes or nodes) may be dropped onto a node to hang under it (脑图方案 §7.2)
+      const hangable = ids.length > 0 && ids.every((moved) => { const l = laid.get(moved); return Boolean(l && !l.node && !l.connector && l.entity.view_type !== 'ink') })
       // re-routed lines are repainted, not translated
-      dragRef.current = { kind: 'move', ids, affected: affected.filter((a) => !touching.includes(a)), lines: touching, shifted: new Set(affected), startX: event.clientX, startY: event.clientY, dx: 0, dy: 0, moved: false, clicked: id, additive, wasSelected }
+      dragRef.current = { kind: 'move', ids, affected: affected.filter((a) => !touching.includes(a)), lines: touching, shifted: new Set(affected), startX: event.clientX, startY: event.clientY, dx: 0, dy: 0, moved: false, clicked: id, additive, wasSelected, hangable, hang: null }
       return
     }
     if (editing) endEditing()
@@ -1059,6 +1103,7 @@ export function RenderHost(props: RenderHostProps) {
         }
         // the selection outlines follow in the DOM: no React work per frame (§9.3)
         selectionLayerRef.current?.setAttribute('transform', `translate(${dx * camera.zoom}, ${dy * camera.zoom})`)
+        if (current.hangable) trackHang(current, { clientX: point.x, clientY: point.y })
         return
       }
       if (current.kind === 'resize') {

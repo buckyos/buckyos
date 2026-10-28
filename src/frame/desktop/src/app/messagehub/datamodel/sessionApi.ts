@@ -2,6 +2,7 @@ import { accessDenialOf, buckyos, type AccessDenial, type EntryDescriptor } from
 import { fetchUserDetail } from '../../../api/user_mgr'
 import type { DID, MsgObject, NotifyCategory, NotifyKind, NotifyStatus } from '../protocol/msgobj'
 import type { NotifyView } from '../notify/model'
+import { groupErrorCode } from '../groupModel'
 
 /**
  * Thin client for the msg-center RPC surface used by MessageHub. Wire shapes
@@ -453,7 +454,7 @@ export interface PendingSessionInvitation {
   title?: string | null
   invited_by?: DID
 }
-export const listGroupsByMember = () => call<{ items?: GroupDocEnvelope[]; joined?: JoinedGroupSummary[]; session_invitations?: PendingSessionInvitation[] } | null>('group.list_by_member', {}).then(result => result ?? {})
+export const listGroupsByMember = () => call<{ items?: GroupDocEnvelope[]; joined?: JoinedGroupSummary[]; invitations?: Array<{ group_did?: DID; doc?: GroupDoc; member?: Partial<GroupMemberRecord> }>; session_invitations?: PendingSessionInvitation[] } | null>('group.list_by_member', {}).then(result => result ?? {})
 export const getGroupDoc = (groupDid: DID) => call<GroupDocEnvelope>('group.get_doc', { group_did: groupDid })
 export const getGroupConfig = (groupDid: DID) => call<GroupConfig>('group.get_config', { group_did: groupDid })
 /** Members of a hosted group plus the owner transfer still waiting for its target (members only; the public doc never carries it). */
@@ -490,7 +491,7 @@ export const deleteGroup = (groupDid: DID, idempotencyKey: string) => call<{ lif
 export const createGroupInviteLink = (groupDid: DID, options: { expires_at_ms?: number; max_uses?: number; require_approval?: boolean }, idempotencyKey: string) => call<GroupInviteLink>('group.create_invite_link', { group_did: groupDid, ...options, ...key(idempotencyKey) })
 export const revokeGroupInviteLink = (groupDid: DID, token: string, idempotencyKey: string) => call<unknown>('group.revoke_invite_link', { group_did: groupDid, token, ...key(idempotencyKey) })
 /** Accepts a direct invitation; `memberDid` only when the viewer accepts on behalf of its agent. */
-export const acceptGroupInvitation = (groupDid: DID, invitationId: string, memberDid?: DID) => call<GroupMemberRecord>('group.accept_invitation', { group_did: groupDid, invitation_id: invitationId, ...(memberDid ? { member_did: memberDid } : {}) })
+export const acceptGroupInvitation = (groupDid: DID, invitationId: string, memberDid?: DID) => call<GroupMemberRecord & { sync_pending?: boolean }>('group.accept_invitation', { group_did: groupDid, invitation_id: invitationId, ...(memberDid ? { member_did: memberDid } : {}) })
 /** Asks to join (open / request_and_approve policy) or joins through an invite link token. */
 export const requestGroupJoin = (groupDid: DID, invite?: string) => call<GroupMemberRecord>('group.request_join', { group_did: groupDid, ...(invite ? { invite } : {}) })
 export const createGroupSession = (groupDid: DID, input: { title?: string; idempotency_key: string }) => call<{ group_did: DID; session_id: string; session: string; revision: string }>('group.create_session', { group_did: groupDid, ...input })
@@ -517,10 +518,9 @@ export const updateGroupMemberState = (groupDid: DID, sessionId: string | undefi
 
 /** The host's reason code (`capability-denied`, `invitation-mismatch`, …) carried in an RPC error. */
 export function groupErrorReason(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error)
-  // msg-center refuses to add an Agent whose `allow_group` is off (NoPermission … agent_group_disabled).
-  if (message.includes('agent_group_disabled')) return 'agent-group-disabled'
-  return message.match(/[a-z0-9]+(?:-[a-z0-9]+)+/)?.[0] ?? 'unknown'
+  const reason = groupErrorCode(error)
+  if (reason === 'unknown' && error instanceof MessageHubApiError && error.kind === 'unavailable') return 'unavailable'
+  return reason
 }
 
 /* ── System Notify (`msg_notify.rs`) ── */
