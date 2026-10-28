@@ -18,7 +18,8 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium-real-zone',
-      use: { ...devices['Desktop Chrome'] },
+      // the Zone's self-signed CA: ignoreHTTPSErrors does not cover the service worker's script fetch
+      use: { ...devices['Desktop Chrome'], launchOptions: { args: ['--ignore-certificate-errors'] } },
     },
   ],
 })

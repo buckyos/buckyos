@@ -2,7 +2,7 @@
 
 日期：2026-10-27
 
-状态：**已实施（2026-10-28，未提交）**，实施记录与验收见 [doc/workspace/脑图实施记录与验收报告.md](../doc/workspace/脑图实施记录与验收报告.md)；下面的勾选与“实施说明”为准。依据 [doc/workspace/脑图对象方案讨论.md](../doc/workspace/脑图对象方案讨论.md) v0.4（R1–R24 全部已定）推导；第 2 节“现状”是推导时对源码的核对（基线 `02655b25e`），实施前重新核对当前分支。
+状态：**已实施（2026-10-28，提交 `8f30ad030`）；同日真实 Zone DV 通过（DV 中的修正未提交）**，实施记录与验收见 [doc/workspace/脑图实施记录与验收报告.md](../doc/workspace/脑图实施记录与验收报告.md)；下面的勾选与“实施说明”为准。依据 [doc/workspace/脑图对象方案讨论.md](../doc/workspace/脑图对象方案讨论.md) v0.4（R1–R24 全部已定）推导；第 2 节“现状”是推导时对源码的核对（基线 `02655b25e`），实施前重新核对当前分支。
 
 目标：在 aiws 自由画布默认提供脑图对象，产品形态参考 Miro。脑图不是专用对象，而是**第一个按 Block-control 机制实现的内置 control**：一个有自己布局算法、动作与键盘接管的容器，子节点是普通 Block。本 TODO 同时落地 control 机制里脑图用到的部分；Button 这类“皮 + 内容”的组合 control 只预留 schema，不在本单实现。
 
@@ -129,6 +129,8 @@ Desktop：
 
 完成条件：Agent 只凭 `controls.json` 和手册就能从一段 Markdown 建出脑图并扩展一个分支，全程不写坐标。
 
+> 10-28 DV：devtest 的 Jarvis 只收到一句中文需求，自己选了 `aiworkspace_template_dev`、读了 `controls describe mindmap`，两次 `doc.commit` 建图并在原图「风险」下扩展两条，节点全为 `"auto"`（报告 §8.3）。它用的是 commit 而不是 `import`。首次因容器内连不上 nfs-server 附件失败中断，与脑图无关。
+
 ## 7. M4：导入导出与收尾
 
 - [x] OPML 双向（共享模块，与大纲同构）。
@@ -150,4 +152,4 @@ Desktop：
 - core：`cargo test -p aiworkspace-core -p aiworkspace-store -p aiworkspace`；WASM：`PATH=/tmp/dev-cache-root/cargo/bin:$PATH CARGO_TARGET_DIR=/tmp/dev-cache-root/cargo-target bash src/frame/aiworkspace/wasm/build.sh`。
 - 共享模块：`deno test src/frame/aiworkspace/controls/`。
 - Desktop：`pnpm check && pnpm exec eslint src/app/aiworkspace tests/aiworkspace && pnpm build`；e2e：`PATH=/tmp/dev-cache-root/cargo/bin:$PATH AIWS_BIN=/tmp/dev-cache-root/cargo-target/debug/aiworkspace pnpm exec playwright test --config=playwright.aiworkspace.config.ts`（探针跑在 `vite preview` 上）。
-- 真实 Zone DV：全新安装（不写兼容），导入 M0 fixture，验 Agent 路径（M3）。
+- 真实 Zone DV：全新安装（不写兼容），导入 M0 fixture，验 Agent 路径（M3）。（10-28 实际：在现有 Zone 上替换服务、Desktop、CLI、Jarvis 包，未全新安装；`BUCKYOS_UI_DV_BASE_URL=https://test.buckyos.io BUCKYOS_TEST_ADMIN_PASSWORD=bucky2025 pnpm exec playwright test --config=playwright.dv.config.ts tests/dv/aiworkspace.mindmap.spec.ts` 3 passed；CLI 与 Agent 见报告 §8。）
