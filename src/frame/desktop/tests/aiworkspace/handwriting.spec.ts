@@ -159,6 +159,49 @@ test('H01 pen strokes: pressure widens the line, a tap is a dot, a fast stroke k
   await shot(page, 'h01-strokes')
 })
 
+test('H01 pen lifts keep strokes visible without loading text while their Blocks are read', async ({ page, api }) => {
+  const ws = await inkWorkspace(api, `h01-loading ${Date.now()}`)
+  await openNotes(page, ws.workspace_id)
+  await expect(page.getByTestId('aiws-block-box')).toBeVisible()
+  await pickPen(page)
+  const pen = await Pen.of(page)
+  const cam = await camera(page)
+  let releaseReads = () => {}
+  const readsReleased = new Promise<void>((resolve) => { releaseReads = resolve })
+  let delayedReads = 0
+  await page.route('**/kapi/aiworkspace', async (route) => {
+    const body = route.request().postDataJSON() as { method?: string; params?: { targets?: unknown[] } } | null
+    if (body?.method === 'doc.read' && body.params?.targets) {
+      delayedReads += 1
+      await readsReleased
+    }
+    await route.continue()
+  })
+  const liveHasInk = () => page.getByTestId('aiws-ink-live').evaluate((element) => {
+    const canvas = element as HTMLCanvasElement
+    const pixels = canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height).data
+    return pixels.some((value, index) => index % 4 === 3 && value > 0)
+  })
+  try {
+    for (const y of [300, 450]) {
+      await pen.stroke(page, wave(cam.toScreen({ x: 260, y }), cam.toScreen({ x: 600, y: y + 30 }), 20, 6))
+    }
+    const frames = page.locator('[data-testid^="aiws-canvas-block-"][data-view="ink"]')
+    await expect(frames).toHaveCount(2)
+    for (const frame of await frames.all()) await expect(frame).toHaveAttribute('data-mount', 'mounted')
+    await expect.poll(() => delayedReads).toBeGreaterThan(0)
+    await expect.poll(async () => (await hooks(page)).canvas?.['ink' as never]).toMatchObject({ busy: false, waiting: 2 })
+    await expect.poll(liveHasInk).toBe(true)
+    await expect(frames.locator('.aiws-block-loading')).toHaveCount(0)
+  } finally {
+    releaseReads()
+  }
+  await expect(page.locator('svg.aiws-ink')).toHaveCount(2)
+  await inkSettled(page)
+  await expect.poll(liveHasInk).toBe(false)
+  await page.unroute('**/kapi/aiworkspace')
+})
+
 test('H02 palm and pen: a palm before, during and after the pen never moves the canvas, writes or selects; two fingers navigate unless touch is locked', async ({ page, api }) => {
   const ws = await inkWorkspace(api, `h02 ${Date.now()}`)
   await openNotes(page, ws.workspace_id)

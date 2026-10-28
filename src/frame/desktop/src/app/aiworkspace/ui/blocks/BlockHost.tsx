@@ -8,6 +8,7 @@ import { Component, type ErrorInfo, type ReactNode, memo, useContext, useEffect,
 import { TriangleAlert } from 'lucide-react'
 import { describeError } from '../../api/session'
 import type { CellPayload, EntityEnvelope } from '../../api/types'
+import { INK_VIEW } from '../../ink/model'
 import { useStore } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
 import { linkAffordance, shapeOf, sourceLabel } from './affordances'
@@ -87,8 +88,9 @@ export function GenericFallback({ cell, payload, reason, detail, source }: { cel
 /** Memoised: pans and overlay updates re-render the frame list only; a Block re-renders when its own props change. */
 export const BlockHost = memo(function BlockHost(props: BlockHostProps) {
   const { t } = useAiwsText()
-  const { context, resolution, error, registryVersion } = useBlockContext(props)
+  const { cell, context, resolution, error, registryVersion } = useBlockContext(props)
   if (!context && error) return <div className="aiws-block-fallback" data-testid={`aiws-block-fallback-${props.cellId}`} data-reason="read_failed"><div className="aiws-error" role="alert">{t('aiworkspace.blocks.readFailed', { error })}</div></div>
+  if (!context && cell?.view_type === INK_VIEW) return null
   if (!context) return <div className="aiws-block-loading" data-testid={`aiws-block-loading-${props.cellId}`}>{t('aiworkspace.blocks.loading')}</div>
   if (!resolution) return <div className="aiws-block-loading">{t('aiworkspace.blocks.loadingDefinition')}</div>
   if (!resolution.ok) return <GenericFallback cell={context.cell} payload={context.payload} reason={resolution.reason} detail={resolution.detail} source={context.source} />

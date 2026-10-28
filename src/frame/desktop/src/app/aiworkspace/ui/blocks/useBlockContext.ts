@@ -75,7 +75,7 @@ export function useBlockContext(options: BlockContextOptions) {
   const readOnlyNow = useReadOnlyReason()
   const toolbarSink = useContext(EditorToolbarContext)
   const pointerType = usePointerType()
-  if (!cell || !payload) return { context: null, resolution, error: read.error, registryVersion }
+  if (!cell || !payload) return { cell, context: null, resolution, error: read.error, registryVersion }
   const dataState = dataStateOf(payload, source)
   const policy = modePolicy(mode)
   // on stage only the Blocks marked "operable on stage" take input (第三期规划 §10.2)
@@ -99,5 +99,5 @@ export function useBlockContext(options: BlockContextOptions) {
   const availableResolution: Resolution | null = dataState === 'missing' || dataState === 'unreadable' || dataState === 'degraded'
     ? { ok: false, reason: 'data_unavailable', detail: t(dataState === 'missing' ? 'aiworkspace.blocks.data.missing' : dataState === 'unreadable' ? 'aiworkspace.blocks.data.unreadable' : 'aiworkspace.blocks.data.degraded') }
     : resolution
-  return { context, resolution: availableResolution, error: read.error, registryVersion }
+  return { cell, context, resolution: availableResolution, error: read.error, registryVersion }
 }
