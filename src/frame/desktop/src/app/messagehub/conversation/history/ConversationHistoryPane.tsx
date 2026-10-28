@@ -6,6 +6,7 @@ import {
   startTransition,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -109,6 +110,7 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
   const bottomAnchorLockUntilRef = useRef(0)
   const bottomAnchorRequestIdRef = useRef(0)
   const keepRowsInPlaceRef = useRef<() => void>(() => {})
+  const takeRowHeightsRef = useRef<(stop: (element: HTMLElement, rect: DOMRect) => boolean) => number>(() => 0)
   const compensatingRef = useRef(false)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   const [focusRequest, setFocusRequest] = useState<{ messageId: string } | null>(null)
@@ -381,6 +383,32 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
       && scrollModeRef.current === 'free-scroll'
       && item.end <= (instance.scrollElement?.scrollTop ?? instance.scrollOffset ?? 0)
     )
+    // The heights the rows before `stop` are laid out with are handed to the
+    // virtualizer without letting it move the scroll position; the total
+    // change is returned.
+    takeRowHeightsRef.current = (stop) => {
+      const rows = rowsRef.current
+      if (!rows) return 0
+      const sizes = new Map(virtualizer.getVirtualItems().map(item => [item.index, item.size]))
+      const updates: Array<[number, number]> = []
+      let delta = 0
+      for (const element of Array.from(rows.children) as HTMLElement[]) {
+        const rect = element.getBoundingClientRect()
+        if (stop(element, rect)) break
+        const index = Number(element.dataset.index)
+        const size = sizes.get(index)
+        if (size === undefined || Math.abs(rect.height - size) < 0.5) continue
+        delta += rect.height - size
+        updates.push([index, rect.height])
+      }
+      compensatingRef.current = true
+      try {
+        for (const [index, height] of updates) virtualizer.resizeItem(index, height)
+      } finally {
+        compensatingRef.current = false
+      }
+      return delta
+    }
     // Rows are laid out in flow, so a row above the viewport that mounts or
     // changes height moves every visible row at once. Before that frame is
     // painted the difference is taken out of the scroll offset and the new
@@ -388,29 +416,10 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
     // it only on its next (deferred) measurement.
     keepRowsInPlaceRef.current = () => {
       const scroller = scrollRef.current
-      const rows = rowsRef.current
-      if (!scroller || !rows || filterAnchor.current) return
+      if (!scroller || filterAnchor.current) return
       const viewportTop = scroller.getBoundingClientRect().top
-      const sizes = new Map(virtualizer.getVirtualItems().map(item => [item.index, item.size]))
-      const updates: Array<[number, number]> = []
-      let delta = 0
-      for (const element of Array.from(rows.children) as HTMLElement[]) {
-        const rect = element.getBoundingClientRect()
-        if (rect.bottom > viewportTop) break
-        const index = Number(element.dataset.index)
-        const size = sizes.get(index)
-        if (size === undefined || Math.abs(rect.height - size) < 0.5) continue
-        delta += rect.height - size
-        updates.push([index, rect.height])
-      }
-      if (updates.length === 0) return
-      compensatingRef.current = true
-      try {
-        for (const [index, height] of updates) virtualizer.resizeItem(index, height)
-      } finally {
-        compensatingRef.current = false
-      }
-      scroller.scrollTop += delta
+      const delta = takeRowHeightsRef.current((_element, rect) => rect.bottom > viewportTop)
+      if (delta !== 0) scroller.scrollTop += delta
     }
   }, [virtualizer])
 
@@ -514,6 +523,24 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
     }
   }, [projection, virtualItems, itemsByIndex, hasOlder, onLoadOlder, onVisibleMessages])
 
+  // An anchored row that is still rendered after the rebuild (a record update,
+  // a filter toggle) is put back before the frame is painted, and the rows
+  // above it hand over the heights they were laid out with so they are not
+  // compensated a second time. Scrolling to the row and restoring it over the
+  // following frames is left to a row that is no longer rendered (an older
+  // page prepended in front of it); doing that for every update made the
+  // history shake while an Agent was streaming.
+  useLayoutEffect(() => {
+    const anchor = filterAnchor.current, container = scrollRef.current
+    if (!anchor || !projection || !container) return
+    const index = findAnchorIndex(projection, anchor.messageIndex)
+    const row = index >= 0 ? container.querySelector<HTMLElement>(`[data-index="${index}"]`) : null
+    if (!row) return
+    filterAnchor.current = null
+    takeRowHeightsRef.current(element => element === row)
+    container.scrollTop += row.getBoundingClientRect().top - container.getBoundingClientRect().top - anchor.offset
+  }, [projection])
+
   useEffect(() => {
     if (!projection || projection.totalCount === 0) {
       previousTotalCountRef.current = 0
@@ -527,7 +554,7 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
 
     if (filterAnchor.current) {
       const anchor = filterAnchor.current
-      const index = projection.entries.findIndex(entry => entry.kind === 'message' && entry.messageIndex >= anchor.messageIndex)
+      const index = findAnchorIndex(projection, anchor.messageIndex)
       if (index >= 0) {
         anchor.targetIndex = index
         const frame = requestAnimationFrame(() => virtualizer.scrollToIndex(index, { align: 'start' }))
@@ -693,6 +720,10 @@ function getStatusItemsSignature(
   return statusItems.map((item) => (
     `${item.id}:${item.position ?? 'tail'}:${item.status}:${item.label}:${item.createdAtMs ?? ''}`
   )).join('|')
+}
+
+function findAnchorIndex(projection: PaneProjection, messageIndex: number) {
+  return projection.entries.findIndex(entry => entry.kind === 'message' && entry.messageIndex >= messageIndex)
 }
 
 function getViewportProfile(width: number, height: number): ViewportProfile {

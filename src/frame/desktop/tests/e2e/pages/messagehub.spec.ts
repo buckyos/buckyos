@@ -666,6 +666,42 @@ for (const width of [1440, 375]) {
   })
 }
 
+test('an Agent reply streaming below does not shake the rows read above it', async ({ page }) => {
+  await openHub(page)
+  const id = await createSession(page, 'Streaming')
+  await page.evaluate(async ({ context, id }) => {
+    const store = window.__messageHubMock, now = store.now()
+    for (let index = 0; index < 60; index++) {
+      await store.injectMessage(context.ownerDid, id, { kind: 'chat', from: 'did:buckyos:agent:codeassistant', to: [context.ownerDid], created_at_ms: now + index, ui_message_id: `line-${index}`, content: { format: 'text/plain', content: `Line ${index}` } })
+    }
+  }, { context: OWN, id })
+  const history = page.getByTestId('conversation-history').locator('.shell-scrollbar')
+  await expect(page.getByTestId('conversation-history')).toHaveAttribute('data-raw-count', '60')
+  await history.hover()
+  await page.mouse.wheel(0, -600)
+  await expect(page.getByRole('button', { name: 'Scroll to bottom' })).toBeVisible()
+  // Every frame is sampled: a row that jumps away and back within a frame or two is what was seen.
+  await history.evaluate((container) => {
+    const top = () => container.getBoundingClientRect().top
+    const row = [...container.querySelectorAll<HTMLElement>('[data-message-index]')].find(item => item.getBoundingClientRect().top > top() + 40)!
+    const index = row.dataset.messageIndex, start = row.getBoundingClientRect().top - top()
+    const state = { drift: 0 }
+    Object.assign(window, { __rowDrift: state })
+    const sample = () => {
+      const current = container.querySelector(`[data-message-index="${index}"]`)
+      if (current) state.drift = Math.max(state.drift, Math.abs(current.getBoundingClientRect().top - top() - start))
+      requestAnimationFrame(sample)
+    }
+    requestAnimationFrame(sample)
+  })
+  for (let step = 1; step <= 8; step++) {
+    await page.evaluate(({ context, id, step }) => window.__messageHubMock.injectMessage(context.ownerDid, id, { kind: 'chat', from: 'did:buckyos:agent:codeassistant', to: [context.ownerDid], created_at_ms: window.__messageHubMock.now(), ui_message_id: `line-59-edit-${step}`, relates_to: { rel: 'edit', target: 'line-59' }, content: { format: 'text/plain', content: Array.from({ length: step }, (_, line) => `Streamed line ${line}`).join('\n') } }), { context: OWN, id, step })
+    await page.waitForTimeout(150)
+  }
+  await page.waitForTimeout(500)
+  expect(await page.evaluate(() => (window as unknown as { __rowDrift: { drift: number } }).__rowDrift.drift)).toBeLessThan(1)
+})
+
 test('rapid sends are queued in order while typing continues; a failure returns every unsent draft', async ({ page }) => {
   await openHub(page)
   const id = await createSession(page, 'Rapid sends')
