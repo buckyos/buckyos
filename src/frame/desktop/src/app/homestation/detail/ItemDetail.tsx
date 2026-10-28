@@ -1,5 +1,5 @@
-import { FileText, History, Loader2, Lock, Pause, Play, RefreshCw, Trash2 } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { FileText, History, Loader2, Lock, RefreshCw, Trash2 } from 'lucide-react'
+import { useMemo } from 'react'
 import useSWR from 'swr'
 import { ContentPreview } from '../../../components/ContentPreview'
 import type { PreviewSessionContext } from '../../../components/preview/types'
@@ -8,7 +8,7 @@ import { MessageMarkdown } from '../../messagehub/conversation/history/MessageMa
 import { ActionBar, ReadOnlyCounts } from '../card/ActionBar'
 import { ItemMenu } from '../card/ItemMenu'
 import { AudioBlock, CardHeader, EmbeddedCard, LinkPreview, ReasonLine, ResourceOverlay, TagRow } from '../card/parts'
-import { formatCount, formatDuration } from '../datamodel/format'
+import { formatCount } from '../datamodel/format'
 import type { CardView } from '../datamodel/types'
 import { useItemActions } from '../actions'
 import { fileSourceRef, mediaUrl } from '../media'
@@ -103,31 +103,21 @@ function ImageGallery({ view }: { view: CardView }) {
 }
 
 function VideoPlayer({ view }: { view: CardView }) {
-  const { t } = useI18n()
-  const [playing, setPlaying] = useState(false)
+  const { item } = view
   const resources = view.resources
   const ready = resources === 'local' || resources === 'reachable'
-  const duration = view.item.wrappedFile?.meta.duration_ms
   return (
     <div className="relative mt-3 w-full overflow-hidden rounded-2xl" style={{ aspectRatio: '16 / 9', background: '#000' }} data-testid="hs-video-player" data-resources={resources}>
-      {view.item.cover ? <img src={mediaUrl(view.item.cover.object, view.item.cover.file, view.item.object.content?.title)} alt="" className="absolute inset-0 h-full w-full object-cover" style={{ opacity: playing ? 0.35 : ready ? 1 : 0.45 }} /> : null}
-      <div className="absolute inset-0 flex items-center justify-center">
-        {ready ? (
-          <button type="button" className="flex h-16 w-16 items-center justify-center rounded-full" style={{ background: 'rgba(0,0,0,0.55)', color: 'white' }} aria-label={playing ? t('homestation.media.pause', 'Pause') : t('homestation.media.playVideo', 'Play video')} onClick={() => setPlaying(value => !value)} data-testid="hs-play">
-            {playing ? <Pause size={28} /> : <Play size={28} fill="white" />}
-          </button>
-        ) : (
-          <ResourceOverlay state={resources} objId={view.item.objId} kind="video" />
-        )}
-      </div>
-      {playing ? (
-        <div className="absolute inset-x-0 bottom-0 px-3 pb-2">
-          <p className="mb-1 text-[11px]" style={{ color: 'rgba(255,255,255,0.75)' }}>{t('homestation.media.simulated', 'Prototype playback — no real video bytes')}</p>
-          <div className="h-1 overflow-hidden rounded-full" style={{ background: 'rgba(255,255,255,0.25)' }}><div className="hs-playing-bar h-full" style={{ background: 'var(--cp-accent)' }} /></div>
-        </div>
-      ) : ready && duration ? (
-        <span className="absolute bottom-3 right-3 rounded px-2 py-0.5 text-xs font-medium" style={{ background: 'rgba(0,0,0,0.7)', color: 'white' }}>{formatDuration(duration)}</span>
-      ) : null}
+      {ready && item.object.wraps ? (
+        <ContentPreview source={fileSourceRef(item.object.wraps, item.wrappedFile, item.object.content?.title)} uiMode="auto" fitMode="contain" />
+      ) : (
+        <>
+          {item.cover ? <img src={mediaUrl(item.cover.object, item.cover.file, item.object.content?.title)} alt="" className="absolute inset-0 h-full w-full object-cover opacity-[0.45]" /> : null}
+          <div className="absolute inset-0 flex items-center justify-center">
+            <ResourceOverlay state={ready ? 'unavailable' : resources} objId={item.objId} kind="video" />
+          </div>
+        </>
+      )}
     </div>
   )
 }

@@ -546,7 +546,9 @@ export function ContentPreview(props: ContentPreviewProps) {
         if ('kind' in state) {
           const failure = skipDirect
           const label = contentLabelOf(classification)
-          if (failure === 'corrupted' || (failure && classification.confirmed)) {
+          if (failure === 'unsupported-encoding' && (classification.rendererType === 'video' || classification.rendererType === 'audio')) {
+            update({ phase: 'error', resolved, classification, error: { kind: 'unsupported', code: 'UNSUPPORTED_ENCODING', message: t('preview.error.encodingBody', 'This browser does not support this audio or video encoding'), retryable: false, contentLabel: label } })
+          } else if (failure === 'corrupted' || (failure && classification.confirmed)) {
             update({ phase: 'error', resolved, classification, error: { kind: 'corrupted', code: 'CORRUPTED', message: t('preview.error.corruptedBody', 'The content could not be decoded and may be damaged'), retryable: false, contentLabel: label } })
           } else {
             update({ phase: 'error', resolved, classification, error: unsupportedState(state.reason, label, state.detail) })
@@ -613,12 +615,15 @@ export function ContentPreview(props: ContentPreviewProps) {
         return
       }
       const label = state?.classification ? contentLabelOf(state.classification) : undefined
+      const unsupportedMediaEncoding = failure === 'unsupported-encoding' && (state?.result?.resultType === 'video' || state?.result?.resultType === 'audio')
       const err: PreviewErrorState =
         failure === 'network'
           ? { kind: 'error', code: 'NETWORK', message: t('preview.error.networkBody', 'The content could not be loaded'), retryable: true, contentLabel: label }
           : failure === 'runtime'
             ? { kind: 'unsupported', code: 'RUNTIME_UNSUPPORTED', message: t('preview.error.runtimeBody', 'This Runtime cannot display the content'), retryable: false, contentLabel: label }
-            : { kind: 'corrupted', code: 'CORRUPTED', message: t('preview.error.corruptedBody', 'The content could not be decoded and may be damaged'), retryable: false, contentLabel: label }
+            : unsupportedMediaEncoding
+              ? { kind: 'unsupported', code: 'UNSUPPORTED_ENCODING', message: t('preview.error.encodingBody', 'This browser does not support this audio or video encoding'), retryable: false, contentLabel: label }
+              : { kind: 'corrupted', code: 'CORRUPTED', message: t('preview.error.corruptedBody', 'The content could not be decoded and may be damaged'), retryable: false, contentLabel: label }
       setLoad((prev) => (prev && prev.key === loadKey ? { ...prev, phase: 'error', error: err } : prev))
     },
     [item, loadKey, t],
@@ -922,7 +927,7 @@ export function ContentPreview(props: ContentPreviewProps) {
       requestExit()
       return
     }
-    if (inField) return
+    if (inField || target.closest('video, audio')) return
     showUi()
     const isMedia = rendererType === 'audio' || rendererType === 'video'
     switch (event.key) {

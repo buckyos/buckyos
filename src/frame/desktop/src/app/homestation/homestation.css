@@ -285,19 +285,6 @@ button.hs-badge:hover {
   display: none;
 }
 
-.hs-playing-bar {
-  animation: hs-progress 8s linear infinite;
-}
-
-@keyframes hs-progress {
-  from {
-    width: 0;
-  }
-  to {
-    width: 100%;
-  }
-}
-
 @media (max-width: 768px) {
   .hs-icon-btn {
     min-width: 44px;

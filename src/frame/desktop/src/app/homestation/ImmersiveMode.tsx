@@ -1,6 +1,7 @@
-import { Bookmark, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Heart, Loader2, MessageCircle, Play, Repeat2, X } from 'lucide-react'
+import { Bookmark, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Heart, Loader2, MessageCircle, Repeat2, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import useSWR from 'swr'
+import { ContentPreview } from '../../components/ContentPreview'
 import { useI18n } from '../../i18n/provider'
 import { useItemActions } from './actions'
 import { reasonLabel } from './card/labels'
@@ -8,7 +9,7 @@ import { ResourceOverlay, VerificationBadge } from './card/parts'
 import { formatCount } from './datamodel/format'
 import type { CardView, ReadingQuery } from './datamodel/types'
 import { useReadingList } from './feed/useReadingList'
-import { mediaUrl } from './media'
+import { fileSourceRef, mediaUrl } from './media'
 import { useHsNav } from './navContext'
 import { useCardView, useHomeStationStore } from './store/context'
 
@@ -46,7 +47,7 @@ function ArticlePages({ view, page, onPages }: { view: CardView; page: number; o
   )
 }
 
-function ImmersiveItem({ objId, subIndex, onSubCount }: { objId: string; subIndex: number; onSubCount: (count: number) => void }) {
+function ImmersiveItem({ objId, subIndex, onSubCount, onClose }: { objId: string; subIndex: number; onSubCount: (count: number) => void; onClose: () => void }) {
   const { t } = useI18n()
   const view = useCardView(objId)
   const reportImages = view?.item.contentType === 'image' ? view.item.media.length : null
@@ -64,10 +65,16 @@ function ImmersiveItem({ objId, subIndex, onSubCount }: { objId: string; subInde
     const ready = resources === 'local' || resources === 'reachable'
     return (
       <div className="relative flex h-full w-full items-center justify-center" data-testid="hs-immersive-video" data-resources={resources}>
-        {item.cover ? <img src={mediaUrl(item.cover.object, item.cover.file, item.object.content?.title)} alt="" className="max-h-full max-w-full object-contain" style={{ opacity: ready ? 1 : 0.45 }} /> : null}
-        <div className="absolute inset-0 flex items-center justify-center">
-          {ready ? <span className="flex h-16 w-16 items-center justify-center rounded-full" style={{ background: 'rgba(255,255,255,0.2)' }} aria-label={t('homestation.media.playVideo', 'Play video')}><Play size={30} fill="white" color="white" /></span> : <ResourceOverlay state={resources} objId={item.objId} kind="video" />}
-        </div>
+        {ready && item.object.wraps ? (
+          <ContentPreview source={fileSourceRef(item.object.wraps, item.wrappedFile, item.object.content?.title)} variant="inline" uiMode="auto" fitMode="contain" onRequestExit={onClose} />
+        ) : (
+          <>
+            {item.cover ? <img src={mediaUrl(item.cover.object, item.cover.file, item.object.content?.title)} alt="" className="max-h-full max-w-full object-contain opacity-[0.45]" /> : null}
+            <div className="absolute inset-0 flex items-center justify-center">
+              <ResourceOverlay state={ready ? 'unavailable' : resources} objId={item.objId} kind="video" />
+            </div>
+          </>
+        )}
       </div>
     )
   }
@@ -121,6 +128,8 @@ export function ImmersiveMode({ query, onClose }: { query: ReadingQuery; onClose
   const goSub = useCallback((delta: number) => setSubIndex(current => Math.max(0, Math.min(current + delta, subCount - 1))), [subCount])
 
   const onKeyDown = (event: React.KeyboardEvent) => {
+    if (event.defaultPrevented) return
+    if (event.key !== 'Escape' && (event.target as HTMLElement).closest('video, audio, button, input, textarea, select, [role="slider"], [contenteditable="true"]')) return
     if (event.key === 'ArrowDown' || event.key === ' ') go(1)
     else if (event.key === 'ArrowUp') go(-1)
     else if (event.key === 'ArrowRight') goSub(1)
@@ -142,7 +151,11 @@ export function ImmersiveMode({ query, onClose }: { query: ReadingQuery; onClose
       style={{ background: '#05060a' }}
       data-testid="hs-immersive"
       onKeyDown={onKeyDown}
-      onTouchStart={event => { touchStart.current = { x: event.touches[0].clientX, y: event.touches[0].clientY } }}
+      onTouchStart={event => {
+        touchStart.current = (event.target as HTMLElement).closest('video, button, input, [role="slider"]')
+          ? null
+          : { x: event.touches[0].clientX, y: event.touches[0].clientY }
+      }}
       onTouchEnd={event => {
         const start = touchStart.current
         touchStart.current = null
@@ -173,7 +186,7 @@ export function ImmersiveMode({ query, onClose }: { query: ReadingQuery; onClose
             <p className="mt-1 text-xs">{t('homestation.immersive.emptyBody', 'Immersive mode uses the same filter, topic and search as your feed.')}</p>
           </div>
         ) : null}
-        {currentId ? <ImmersiveItem key={currentId} objId={currentId} subIndex={subIndex} onSubCount={setSubCount} /> : null}
+        {currentId ? <ImmersiveItem key={currentId} objId={currentId} subIndex={subIndex} onSubCount={setSubCount} onClose={onClose} /> : null}
         {subCount > 1 ? (
           <>
             <button type="button" className="absolute left-3 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full disabled:opacity-30" style={{ background: 'rgba(255,255,255,0.15)', color: 'white' }} disabled={subIndex === 0} onClick={() => goSub(-1)} aria-label={t('homestation.immersive.prevPage', 'Previous page')}><ChevronLeft size={20} /></button>
