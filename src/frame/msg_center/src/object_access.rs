@@ -7,11 +7,15 @@
 //! a conversation. `context_path` (`[<session address>/]<msg_id>`) names the
 //! message the attachment is read through: the caller must be able to read
 //! that message, and its binding (`<session>/<msg_id>/<n>`) must hold the
-//! object. A hosted group's message objects come through the same route, and
-//! the files its displays show with `context_path=<session address>/_display`
-//! (the caller reads that Session, its display shows the file, and
-//! `<group address>/_display/<obj_id>` holds it). The caller presents a
-//! verified session token (`Authorization: Bearer` or `?token=`).
+//! object. Without `context_path` the message is the newest one of the
+//! caller's own mailboxes that references the object (an Agent's, for the App
+//! an Agent runs as), so an Agent reads an attachment by its object id alone;
+//! restricted sessions always name the message. A hosted group's message
+//! objects come through the same route, and the files its displays show with
+//! `context_path=<session address>/_display` (the caller reads that Session,
+//! its display shows the file, and `<group address>/_display/<obj_id>` holds
+//! it). The caller presents a verified session token (`Authorization: Bearer`
+//! or `?token=`).
 
 use crate::msg_center::MessageCenter;
 use buckyos_api::{
@@ -32,6 +36,9 @@ pub(crate) const OBJECTS_PATH: &str = "/kapi/msg-center/objects/";
 /// Attachments are chat-sized; larger objects are refused instead of being
 /// buffered in memory.
 const MAX_CONTENT_BYTES: u64 = 64 * 1024 * 1024;
+/// How many of the newest messages of each of the caller's mailboxes a read
+/// without `context_path` looks through; older ones are read by naming them.
+const OWN_MESSAGES_SEARCHED: usize = 1000;
 
 fn text_response(status: StatusCode, message: &str) -> Response<Body> {
     Response::builder()
@@ -243,10 +250,15 @@ async fn serve_object(center: &MessageCenter, req: &Request<Body>) -> Option<Res
         }
         return Some(group_message_response(body, jwt));
     }
-    let Some(context) = context else {
-        return Some(text_response(StatusCode::NOT_FOUND, "not-found"));
+    let msg_id = match context {
+        Some(context) => center.authorize_attachment(&ctx, &obj_id, &context).await.ok(),
+        None => center
+            .own_message_referencing(&ctx, &obj_id, OWN_MESSAGES_SEARCHED)
+            .await
+            .ok()
+            .flatten(),
     };
-    let Ok(msg_id) = center.authorize_attachment(&ctx, &obj_id, &context).await else {
+    let Some(msg_id) = msg_id else {
         return Some(text_response(StatusCode::NOT_FOUND, "not-found"));
     };
     Some(bound_attachment_response(center, &msg_id, &obj_id, want_content, inner_path).await)

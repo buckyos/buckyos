@@ -431,7 +431,7 @@ impl MessageCenter {
         Self::refuse_guest_attachments(Some(&caller), msg)?;
         let token = ctx.token.as_deref().ok_or_else(|| RPCErrors::NoPermission("attachment token required".into()))?;
         for id in ids {
-            if matches!(self.mailbox_references(ctx, &id).await, Ok(true)) {
+            if matches!(self.own_message_referencing(ctx, &id, usize::MAX).await, Ok(Some(_))) {
                 continue;
             }
             // A group reference may be reused only while its original message
@@ -466,28 +466,49 @@ impl MessageCenter {
         Ok(())
     }
 
-    /// A message of the caller's mailboxes that the caller may read references `id`.
-    async fn mailbox_references(&self, ctx: &RPCContext, id: &ObjId) -> Result<bool> {
+    /// The newest message of the caller's own mailboxes that references `id`
+    /// and that the caller may read, looking at most `limit` messages back in
+    /// each. The App an Agent runs as reads its Agent's mailboxes first, then
+    /// its owner's.
+    pub(crate) async fn own_message_referencing(
+        &self,
+        ctx: &RPCContext,
+        id: &ObjId,
+        limit: usize,
+    ) -> Result<Option<ObjId>> {
         let actor = self.group_actor(ctx).await?;
-        let sql = self.msg_box_db.render_sql("SELECT msg_id FROM msg_refs WHERE owner=?");
-        for row in sqlx::query(&sql)
-            .bind(actor.did.to_string())
-            .fetch_all(self.msg_box_db.pool())
-            .await
-            .map_err(crate::group_store::db_error)?
-        {
-            let raw: String = row.try_get("msg_id").map_err(crate::group_store::db_error)?;
-            let msg_id = ObjId::new(&raw).map_err(crate::group_store::db_error)?;
-            if self.authorize_message(ctx, &msg_id).await.is_err() {
-                continue;
-            }
-            if let Ok(message) = self.load_message(&msg_id).await {
-                if Self::message_references(&message, id) {
-                    return Ok(true);
+        let mut owners = vec![actor.did.clone()];
+        if let Some(caller) = self.caller_identity(ctx).await? {
+            if caller.principal_kind == TokenPrincipalKind::App {
+                let app_id = caller.authorization_key.strip_prefix("app:").unwrap_or_default();
+                if let Some(agent) = self.agent_of_app(app_id, Some(&actor.did)).await {
+                    owners.insert(0, agent);
                 }
             }
         }
-        Ok(false)
+        let sql = self
+            .msg_box_db
+            .render_sql("SELECT msg_id FROM msg_refs WHERE owner=? ORDER BY created_at_ms DESC");
+        for owner in owners {
+            let rows = sqlx::query(&sql)
+                .bind(owner.to_string())
+                .fetch_all(self.msg_box_db.pool())
+                .await
+                .map_err(crate::group_store::db_error)?;
+            for row in rows.iter().take(limit) {
+                let raw: String = row.try_get("msg_id").map_err(crate::group_store::db_error)?;
+                let msg_id = ObjId::new(&raw).map_err(crate::group_store::db_error)?;
+                let Ok(message) = self.load_message(&msg_id).await else {
+                    continue;
+                };
+                if Self::message_references(&message, id)
+                    && self.authorize_message(ctx, &msg_id).await.is_ok()
+                {
+                    return Ok(Some(msg_id));
+                }
+            }
+        }
+        Ok(None)
     }
 }
 

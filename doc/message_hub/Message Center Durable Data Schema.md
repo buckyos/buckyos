@@ -87,7 +87,10 @@ and an admin raises it with `bucket.set_pool_quota`. The two zone buckets set
   `GET /kapi/msg-center/objects/{obj_id}[/content]?context_path=[<session address>/]<msg_id>`:
   the caller must be able to read that message (mailbox record or hosted group
   Session), and `bucket.get` of its key must hold `obj_id`; then msg-center reads
-  the named store. The `collected` bucket is the user's: it is read directly at
+  the named store. Without `context_path`, the message is the newest one of the
+  caller's own mailboxes (`msg_refs`, an Agent's first for the App the Agent
+  runs as) that references `obj_id` and that the caller may read; restricted
+  sessions must name it. The `collected` bucket is the user's: it is read directly at
   `/bucket/v1/user/msg-center/<user>/collected/<key>`.
 - Private messages have no server-side delete: their keys are never released
   and no lifecycle rule is declared. A session deletion releases only the

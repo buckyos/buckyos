@@ -2754,13 +2754,37 @@ mod attachment_buckets {
 
         let (status, body) = read(&c, &context(&member()), &photo, Some(&dm_id.to_string())).await;
         assert_eq!((status, body.as_slice()), (StatusCode::OK, &b"pixels"[..]));
-        // The message must be named, reference the object and be readable by the caller.
-        assert_eq!(read(&c, &context(&member()), &photo, None).await.0, StatusCode::NOT_FOUND);
+        // A named message must reference the object and be readable by the caller.
         assert_eq!(read(&c, &context(&member()), &photo, Some(&other.gen_obj_id().0.to_string())).await.0, StatusCode::NOT_FOUND);
         assert_eq!(read(&c, &context(&guest()), &photo, Some(&dm_id.to_string())).await.0, StatusCode::NOT_FOUND);
+        // Unnamed, it is a message of the caller's own mailboxes.
+        let (status, body) = read(&c, &context(&member()), &photo, None).await;
+        assert_eq!((status, body.as_slice()), (StatusCode::OK, &b"pixels"[..]));
+        assert_eq!(read(&c, &context(&guest()), &photo, None).await.0, StatusCode::NOT_FOUND);
         // The binding decides: without it the stored content is not served.
         b.client.delete(&attachments(), &att_key(&dm, 0), None).await.unwrap();
         assert_eq!(read(&c, &context(&member()), &photo, Some(&dm_id.to_string())).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(read(&c, &context(&member()), &photo, None).await.0, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn an_agent_runtime_reads_what_its_agent_received_by_object_id() {
+        let (c, _tmp, b) = bound_center().await;
+        let helper = DID::new("web", "helper.test.example");
+        c.set_token_verifier(Arc::new(Verifier {
+            imports: Default::default(),
+            agents: HashMap::from([(helper.clone(), ZoneAgentInfo { owner: owner(), allow_group: true })]),
+        }));
+        c.register_local_recipients([helper.clone()]);
+        // Someone other than the owner sends the owner's Agent a photo.
+        let photo = file(&b.store, "photo.png", b"pixels").await;
+        let dm = with_refs(direct(&member(), &helper, "what is this?", 1), &[&photo]);
+        assert!(c.handle_dispatch(dm, None, None, context(&member())).await.unwrap().ok);
+
+        let (status, body) = read(&c, &app_context(&owner(), "helper.test.example"), &photo, None).await;
+        assert_eq!((status, body.as_slice()), (StatusCode::OK, &b"pixels"[..]));
+        // Another App of the owner is no Agent: the owner's own mailboxes do not have it.
+        assert_eq!(read(&c, &app_context(&owner(), "other.test.example"), &photo, None).await.0, StatusCode::NOT_FOUND);
     }
 
     /// The session of a zone user: an account name as the token subject.

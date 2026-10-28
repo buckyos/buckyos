@@ -7,8 +7,9 @@
 //! result — so the two never drift apart. On top of that:
 //!
 //! - an object id (`cyfile:…`, `chunk:…`: an attachment or a report
-//!   artifact) is read from the object store ([`ObjectReader`]) without
-//!   being copied to disk first;
+//!   artifact) is read from the object store, or a message attachment the
+//!   store refuses through msg-center ([`ObjectReader`]), without being
+//!   copied to disk first;
 //! - `offset` / `limit` (0-based line paging) are accepted as another
 //!   spelling of `range`.
 //!
@@ -18,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use ndn_lib::ObjId;
+use ndn_lib::{FileObject, NdnError, ObjId};
 use serde_json::{json, Value as Json};
 
 use crate::file_tools::{FileToolConfig, ReadFileTool};
@@ -42,25 +43,100 @@ pub struct NamedStoreObjectReader;
 #[async_trait]
 impl ObjectReader for NamedStoreObjectReader {
     async fn read_object(&self, obj_id: &str) -> Result<Vec<u8>, AgentToolError> {
-        use tokio::io::AsyncReadExt;
         let id = ObjId::new(obj_id)
             .map_err(|e| AgentToolError::InvalidArgs(format!("bad object id {obj_id}: {e}")))?;
-        let store = buckyos_api::get_buckyos_api_runtime()
-            .map_err(|e| AgentToolError::ExecFailed(format!("no object store here: {e}")))?
-            .get_named_store()
+        read_named_object(&id)
             .await
-            .map_err(|e| AgentToolError::ExecFailed(format!("object store: {e}")))?;
-        let (mut reader, _) = store
-            .open_reader(&id, None)
-            .await
-            .map_err(|e| AgentToolError::ExecFailed(format!("open {obj_id}: {e}")))?;
-        let mut bytes = Vec::new();
-        reader
-            .read_to_end(&mut bytes)
-            .await
-            .map_err(|e| AgentToolError::ExecFailed(format!("read {obj_id}: {e}")))?;
-        Ok(bytes)
+            .map(|content| content.bytes)
+            .map_err(AgentToolError::ExecFailed)
     }
+}
+
+/// A data object's content and the media type its FileObject or its server
+/// gives, when either does.
+pub struct ObjectContent {
+    pub bytes: Vec<u8>,
+    pub mime: Option<String>,
+}
+
+/// Reads `obj_id` with the process's identity: from the zone's NamedStore, or,
+/// when the store refuses that identity (an attachment of a message, which
+/// only msg-center reads for the members of its conversation), through
+/// msg-center, which finds the message among the caller's own mailboxes.
+pub async fn read_named_object(obj_id: &ObjId) -> Result<ObjectContent, String> {
+    use tokio::io::AsyncReadExt;
+    let runtime = buckyos_api::get_buckyos_api_runtime()
+        .map_err(|e| format!("no object store here: {e}"))?;
+    let store = runtime
+        .get_named_store()
+        .await
+        .map_err(|e| format!("object store: {e}"))?;
+    let mime = match store.get_object(obj_id).await {
+        Ok(body) => file_object_mime(&body),
+        Err(NdnError::PermissionDenied(_)) => return read_message_attachment(runtime, obj_id).await,
+        Err(_) => None,
+    };
+    let (mut reader, _) = match store.open_reader(obj_id, None).await {
+        Ok(opened) => opened,
+        Err(NdnError::PermissionDenied(_)) => return read_message_attachment(runtime, obj_id).await,
+        Err(e) => return Err(format!("open {obj_id}: {e}")),
+    };
+    let mut bytes = Vec::new();
+    reader
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|e| format!("read {obj_id}: {e}"))?;
+    Ok(ObjectContent { bytes, mime })
+}
+
+fn file_object_mime(body: &str) -> Option<String> {
+    let file: FileObject = serde_json::from_str(body).ok()?;
+    file.meta
+        .get("mime_type")
+        .or_else(|| file.meta.get("mime"))
+        .and_then(Json::as_str)
+        .map(str::to_string)
+}
+
+/// `GET <msg-center>/objects/<obj_id>/content`.
+async fn read_message_attachment(
+    runtime: &buckyos_api::BuckyOSRuntime,
+    obj_id: &ObjId,
+) -> Result<ObjectContent, String> {
+    let base = runtime
+        .get_zone_service_url(buckyos_api::MSG_CENTER_SERVICE_NAME, runtime.force_https)
+        .await
+        .map_err(|e| format!("msg-center: {e}"))?;
+    runtime
+        .renew_token_from_verify_hub()
+        .await
+        .map_err(|e| format!("msg-center authentication: {e}"))?;
+    let response = reqwest::Client::new()
+        .get(format!("{base}/objects/{obj_id}/content"))
+        .bearer_auth(runtime.get_session_token().await)
+        .send()
+        .await
+        .map_err(|e| format!("msg-center: {e}"))?;
+    let status = response.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Err(format!(
+            "{obj_id} is not readable here: the object store refuses this identity, and no message it received references it"
+        ));
+    }
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("msg-center refused {obj_id}: HTTP {status}: {body}"));
+    }
+    let mime = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("read {obj_id} from msg-center: {e}"))?;
+    Ok(ObjectContent { bytes: bytes.to_vec(), mime })
 }
 
 /// A file backend over one object: `read_file`'s window logic applied to

@@ -622,13 +622,17 @@ RPC `msg.create_session` / `msg.archive_session` / `msg.restore_session` / `msg.
 读取按 verify-hub 用户 token 校验：本人或 zone 托管的非用户身份（Agent）可读，写动作只允许本人；
 服务 / 设备 token 与无 token 的进程内调用保持原行为。
 
-附件经 `GET /kapi/msg-center/objects/{obj_id}[/content]?context_path=…` 访问，`context_path` 必填，指明经由哪条消息读：
+附件经 `GET /kapi/msg-center/objects/{obj_id}[/content]?context_path=…` 访问，`context_path` 指明经由哪条消息读：
 
 - `<msg_id>`：调用者能读的私信或通知（邮箱记录）；`<session MailboxAddress>/<msg_id>`：托管群 Session 的消息；
   `<session MailboxAddress>/_display`：该 Session 展示配置（EXT-04 `display.files`）里的文件。
+- 不带 `context_path` 时，msg-center 在调用者自己的邮箱（`msg_refs`，每个 owner 最新 1000 条）里按时间倒序找第一条引用
+  `obj_id` 且调用者能读的消息，作为上下文。Agent 的构造 App（App token，AppId = AgentId 且属于 token 的 owner）先找
+  Agent 自己的邮箱，再找 owner 的：Agent 工具因此只凭附件的 obj_id 就能读到收到的附件（NDM 不给普通用户的 Agent
+  通用对象读权限）。受限会话必须带上下文。
 - 调用者能读该消息（或该 Session），消息引用了 `obj_id`（或展示配置列出了它），且 `zone/msg-center/_/attachments`
   中对应的 key（`<session>/<msg_id>/<n>`，展示文件为 `<group MailboxAddress>/_display/<obj_id>`）绑定的正是该对象，
-  才从 named store 读出；任一不满足、或没有上下文，都返回 404（受限会话的 404 带 `access_denied` /
+  才从 named store 读出；任一不满足、或找不到消息，都返回 404（受限会话的 404 带 `access_denied` /
   `resource_grant_missing` 拒绝体）。
 - 托管群的消息对象本身也经此路由读：受限会话以 `<session MailboxAddress>/<msg_id>` 为上下文，其他调用者能读该消息即可，不带上下文。
 - 可选 `inner_path` 读目录附件内的文件。

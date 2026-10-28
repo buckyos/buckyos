@@ -10,13 +10,14 @@
 // `artifacts` bucket and is named by its `obj://bucket/...`:
 //   - stored by AICC (its `outputs` bucket) → bucket.copy, no bytes move
 //   - otherwise the bytes are read and uploaded (lib/bucket.ts uploadNamed):
-//       named_object → ndm_proxy.openReader
+//       named_object → ndm_proxy.openReader; a message attachment the store
+//                      refuses → msg-center's object route
 //       url          → AICC Provider reader, then public fetch fallback
 //       base64       → decode
 // A local file is written only when the caller gives a path (the explicit
 // fallback for tools that need one; `materialize_resource` does the same later).
 
-import { buckyos } from "buckyos";
+import { buckyos, ndm_proxy } from "buckyos";
 
 import {
   boundObjectId,
@@ -209,10 +210,44 @@ async function readNamedObject(
   ndmProxy: NdmProxyClient,
   objId: string,
 ): Promise<{ bytes: Uint8Array; mime?: string }> {
-  const opened = await ndmProxy.openReader({ obj_id: objId });
+  let opened;
+  try {
+    opened = await ndmProxy.openReader({ obj_id: objId });
+  } catch (error) {
+    // The store refuses this identity a message attachment: msg-center reads
+    // it when a message of the caller's own mailboxes references it.
+    if (error instanceof ndm_proxy.NdmProxyApiError && error.status === 403) {
+      return await readMessageAttachment(objId);
+    }
+    throw error;
+  }
   const bytes = new Uint8Array(await opened.response.arrayBuffer());
   const mime = opened.response.headers.get("content-type") ?? undefined;
   return { bytes, mime };
+}
+
+async function readMessageAttachment(
+  objId: string,
+): Promise<{ bytes: Uint8Array; mime?: string }> {
+  const serviceUrl = buckyos.getZoneServiceURL("msg-center").replace(/\/$/, "");
+  const token = buckyos.getServiceRpcClient("msg-center").getSessionToken();
+  if (!token) throw new Error("msg-center session token is unavailable");
+  const response = await fetch(
+    `${serviceUrl}/objects/${encodeURIComponent(objId)}/content`,
+    { headers: { authorization: `Bearer ${token}` } },
+  );
+  if (!response.ok) {
+    const detail = (await response.text()).trim().slice(0, 4096);
+    throw new Error(
+      `${objId} is not readable here: the object store refuses this identity and msg-center answered ${response.status}${
+        detail ? `: ${detail}` : ""
+      }`,
+    );
+  }
+  return {
+    bytes: new Uint8Array(await response.arrayBuffer()),
+    mime: response.headers.get("content-type") ?? undefined,
+  };
 }
 
 async function readUrlArtifact(

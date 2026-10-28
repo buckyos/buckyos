@@ -10,10 +10,8 @@ use buckyos_api::{
 };
 use llm_context::deps::{LLMContextDeps, ToolManager};
 use llm_context::{ContextOutput, LlmClient};
-use ndn_lib::FileObject;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 mod image_fit;
@@ -1103,38 +1101,15 @@ async fn resolve_media(
             })
         }
         ResourceRef::NamedObject { obj_id } => {
-            let masked_obj_id = masked_resource_id(source);
-            let runtime = get_buckyos_api_runtime()
-                .map_err(|err| format!("get buckyos runtime failed: {err}"))?;
-            let named_store = runtime
-                .get_named_store()
+            let content = crate::read_tool::read_named_object(obj_id)
                 .await
-                .map_err(|err| format!("get named_store failed: {err}"))?;
-
-            let object_mime = match named_store.get_object(obj_id).await {
-                Ok(object_json) => file_object_mime_from_json(&object_json),
-                Err(err) => {
-                    log::warn!(
-                        "llm_understand_media: load named_object metadata failed: {}; obj_id={}",
-                        err,
-                        masked_obj_id
-                    );
-                    None
-                }
-            };
-            let (mut reader, _total_size) = named_store
-                .open_reader(obj_id, None)
-                .await
-                .map_err(|err| format!("open named_object {obj_id} reader failed: {err}"))?;
-            let mut bytes = Vec::new();
-            reader
-                .read_to_end(&mut bytes)
-                .await
-                .map_err(|err| format!("read named_object {obj_id} bytes failed: {err}"))?;
+                .map_err(|err| format!("read named_object failed: {err}"))?;
+            let bytes = content.bytes;
             if bytes.is_empty() {
                 return Err(format!("named_object {obj_id} has empty content"));
             }
 
+            let object_mime = content.mime.as_deref().and_then(normalize_mime);
             let mime = object_mime
                 .clone()
                 .filter(|mime| mime != "application/octet-stream")
@@ -1155,16 +1130,6 @@ async fn resolve_media(
             })
         }
     }
-}
-
-fn file_object_mime_from_json(object_json: &str) -> Option<String> {
-    let file_obj: FileObject = serde_json::from_str(object_json).ok()?;
-    file_obj
-        .meta
-        .get("mime_type")
-        .or_else(|| file_obj.meta.get("mime"))
-        .and_then(Value::as_str)
-        .and_then(normalize_mime)
 }
 
 fn resource_source_kind(source: &ResourceRef) -> &'static str {
