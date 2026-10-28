@@ -427,7 +427,7 @@ impl MessageCenter {
                     route.owner_did.clone(),
                     MailboxKind::Inbox,
                     msg,
-                    RecipientState::Unread,
+                    Self::inbound_initial_state(msg),
                     None,
                     vec![
                         format!("group:{}", route.group_did.to_string()),
@@ -457,7 +457,8 @@ impl MessageCenter {
                     box_kind: MailboxKind::Inbox,
                     msg_id: id.clone(),
                     msg_kind: ndn_lib::MsgObjKind::GroupMsg,
-                    state: RecipientState::Unread,
+                    // Already withdrawn before this member ever saw it: nothing to read.
+                    state: RecipientState::Read,
                     from: route.group_did.clone(),
                     from_name: None,
                     to: route.group_did.clone(),

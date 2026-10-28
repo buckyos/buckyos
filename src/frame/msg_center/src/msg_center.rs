@@ -1016,6 +1016,17 @@ impl MessageCenter {
         format!("dlv-{}", hex::encode(&hasher.finalize()[..16]))
     }
 
+    /// Initial `RecipientState` of an inbound record. A reaction, or the
+    /// redaction that cancels one, is a quick interaction folded into its
+    /// target by every client: it has no row of its own to be read with, so it
+    /// is stored READ and never counts towards a session's `unread_count`.
+    pub(crate) fn inbound_initial_state(msg: &MsgObject) -> RecipientState {
+        match msg.relates_to.as_ref().map(|relation| &relation.rel) {
+            Some(MsgRelType::Reaction | MsgRelType::Redact) => RecipientState::Read,
+            _ => RecipientState::Unread,
+        }
+    }
+
     pub(crate) fn build_mailbox_record(
         owner: DID,
         box_kind: MailboxKind,
@@ -1586,7 +1597,7 @@ impl MessageCenter {
                             recipient.clone(),
                             box_kind,
                             &stored_msg,
-                            RecipientState::Unread,
+                            Self::inbound_initial_state(&stored_msg),
                             ingress.clone(),
                             Vec::new(),
                             "inbox",

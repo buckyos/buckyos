@@ -1081,7 +1081,7 @@ impl MessageCenter {
             group.clone(),
             MailboxKind::GroupInbox,
             msg,
-            RecipientState::Unread,
+            Self::inbound_initial_state(msg),
             None,
             vec![format!("session_seq:{session_seq}")],
             "group-inbox",
@@ -1151,7 +1151,7 @@ impl MessageCenter {
                         did.clone(),
                         MailboxKind::Inbox,
                         msg,
-                        RecipientState::Unread,
+                        Self::inbound_initial_state(msg),
                         None,
                         vec![
                             format!("group:{}", group.to_string()),
