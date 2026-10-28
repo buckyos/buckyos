@@ -370,15 +370,7 @@ impl RuntimeInferencePort {
                         &decision.selected.exact_model,
                     )
                     .is_ok_and(|model| model.variant().is_none())
-                        && provider
-                            .config
-                            .instance_rules
-                            .as_ref()
-                            .is_some_and(|rules| {
-                                rules
-                                    .server_default_routes
-                                    .contains_key(&decision.selected.provider_model_id)
-                            }),
+                        && inventory_model.is_some_and(|model| !model.server_default_routes.is_empty()),
                     base_url: provider.config.base_url.clone(),
                     operation_base_urls: provider.config.operation_base_urls.clone(),
                     credential,

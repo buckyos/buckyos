@@ -342,3 +342,22 @@ Provider 接入诊断：在 AI Center 查看发现模型、身份匹配、不可
 自定义 Provider 的协议探测不认证全部媒体能力。校验报 `Inventory` / `multiple default operations` 时，检查错误中的模型、适配器和渠道操作映射；不要直接归因为网络或 API Key。已有专用入口的渠道（如 OpenRouter）优先用内置 profile。默认操作选择与限制见 `doc/aicc/provider_ui_backend_mapping.md`。
 
 接入结果中的 `filtered_capabilities` 表示当前渠道不支持的模型能力项；缺失协议绑定时只移除对应能力，保留其他可用项。AI Center 的 Validation 和 Provider 模型清单页可展开查看模型、API 类型、适配器、操作及过滤原因；过滤明细不是认证或网络错误，完整字段以 `buckyos-api` 的 `FilteredProviderCapability` 为准。
+
+#### Custom AI provider rules
+- On PC: AI Center → Providers → custom provider → 模型规则 / Provider rules. Search and page through discovered
+  models, including disabled/unrecognized ones. Use the highlighted “Configure” action to open one model’s side
+  panel. Task lists are finite dropdown selections; API operations come from the current adapter, and unconfigured
+  mappings use its defaults. Configure provider_options for each supported_effort explicitly: unconfigured efforts
+  are unsupported, while an enabled empty object is a valid mapping. “Finish editing and apply” validates and reloads
+  the instance. A failed save retains the draft. The module is unavailable on mobile.
+- Switch “Model list / Full configuration JSON” at the top to inspect the existing *.provider.json catalog or draft, copy or
+  export it. The file uses buckyos.aicc.provider-rules-catalog, with no outer envelope; tasks use
+  server_default_routes and disabled models use models[].exclude. Import preserves instance connection/policy settings. Per-column JSON previews have been removed. The side panel preserves a draft without applying it.
+- Task admission here uses upstream default thinking parameters; it does not disable thinking. Operation names
+  must be supported by the selected adapter. Export full JSON before changing a working configuration; import
+  loads a draft and does not apply it until editing is finished.
+- Source of the file contract and save/readback fields: doc/aicc/aicc-mgr.md (“Custom Provider 实例规则编辑”),
+  src/kernel/buckyos-api/src/aicc_client.rs and src/frame/aicc/src/catalog/schema.rs for the running version.
+  Rules exports omit credentials and use the instance configuration and actual inventory values. Missing prices
+  stay empty; choosing a protocol does not import a built-in price table. Instance catalogs are explicit snapshots; changing a shared preset later does
+  not overwrite an edited instance catalog. AIGC commands and task/artifact contracts remain unchanged.

@@ -90,10 +90,9 @@ Provider credential 只存在于统一 Provider Instance 的 typed credential so
 - `provider_type` 只表达部署类型，不表达厂商或协议。
 - `provider_profile_id` 必须来自 Known Provider catalog 或 `custom`。
 - `public_named_object_base_url` 可选；仅在 Zone 已部署第三方 Provider 可访问、且无需用户鉴权的 HTTPS Named Object 下载入口时配置。它也是 `UrlOnly` 原始 URL 被 Provider 明确拒绝后的重试能力开关：AICC 下载内容、写入带 tenant/user owner 记录的 Named Object，再用该公网入口生成的新 URL 重试。省略时 `UrlOnly` 保留原失败且不重试。`UrlOrBytes` 的 fallback 使用 bytes，不依赖此配置。直接输入的 tenant/user 私有 Named Object 不因此公开：字节兼容协议由 AICC 鉴权读取后传输，URL-only 协议明确失败。
-- `protocol_family_id` 用于 `custom` Provider 的创建/更新协商，表达 OpenAI-compatible、Claude-compatible、Gemini-compatible 等大类；后端必须从该族已注册 Adapter 中解析并持久化确定的 `protocol_adapter_id`，运行时不再猜测。
-- `protocol_adapter_id` 是后端解析并保存的内部执行字段，必须来自运行时 adapter registry；Known Provider 由 Profile 给出确定值，`custom` Provider 的创建请求不要求用户填写。
-- `custom` Provider 可以只提交协议族、`base_url` 和凭据，由 registry 选择该族默认 Adapter；也可显式提交属于该族的 Adapter。跨族组合必须拒绝，解析结果固化到 settings。
-- 只有明确的“接口不支持”结果才继续下一候选；连接、认证、限流和服务端故障直接返回，不能用旧接口测试掩盖。
+- `protocol_family_id` 表达 OpenAI、Claude、Gemini 等协议族；`custom` Provider 必须同时显式提交该族已开放的 `protocol_adapter_id`。
+- Known Provider 的 Adapter 由 Profile 给出确定值；`custom` Provider 在 UI 中明确选择，例如 `openai-chat-completions` 或 `openai-responses`。跨族组合必须拒绝，选择结果固化到 settings。
+- 接入验证不自动探测或切换协议，配置错误由选定 Adapter 的验证返回。
 - `credentials` 是 `map<string, ProviderCredential>`；`ProviderCredential` 是 `inline_secret|secret_ref|runtime_ref` 枚举，分别表达内嵌敏感值、外部 Secret Store 引用和运行时凭据引用。
 - `inline_secret` 当前由 system-config 持久化，必须按敏感值处理；`runtime_ref` 只保存运行时来源，`secret_ref` 在配置 Secret Resolver 前明确拒绝解析。凭据不进入 catalog、inventory、trace 或日志。
 - Catalog 更新不得修改实例名称、`base_url`、凭据、区域、账号或协议选择。
@@ -113,7 +112,7 @@ Provider credential 只存在于统一 Provider Instance 的 typed credential so
 
 `provider.catalog` 返回当前 active Known Provider catalog，至少包含 `provider_profile_id`、显示名、默认 `base_url`、内部默认 `protocol_adapter_id` 和 UI hints。Adapter 默认值供后端解析 Known Provider，不要求 UI 暴露 API 版本选择。Catalog 只提供表单默认值，不能覆盖 Provider Instance 私有配置。
 
-`protocol_adapter.list` 返回当前实际注册的 `protocol_family_id`、adapter ID、接口代际/状态、探测优先级、可选 `probe_path`、可选 `base_adapter_id`、支持的 operation 和协议能力。没有 `base_adapter_id` 且声明安全相对 `probe_path` 的协议族级 Adapter 才进入自动探测；Provider 派生 dialect 不参与 custom Provider 猜测。探测使用带认证的空 JSON 请求，`404/405/501` 表示接口不支持并继续下一候选，其它 4xx 表示接口存在；认证、限流、网络和 5xx 直接失败。每个协议族必须包含官方新接口；历史接口由首个真实 Provider 需求触发实现，之后作为协议族级 Adapter 被多个 Provider 或派生 Adapter 共享。`sn-openai` 等派生 Adapter 使用独立 ID，并展示其确定的基础 Adapter。该接口用于后端接入解析、诊断和管理员只读展示，不作为普通用户的 API 版本选择列表。
+`protocol_adapter.list` 返回当前实际注册的 `protocol_family_id`、adapter ID、接口代际/状态、探测元数据、可选 `base_adapter_id`、支持的 operation 和协议能力。Custom Provider 下拉框仅列出 `custom_provider_selectable=true` 的 Adapter，直接提交所选 ID，不执行自动探测。`provider.catalog` 的每个条目还返回所选 `provider_rules_id` 的 `model_driver_overrides`，供 Connection 页面回填模型别名并以列表或 JSON 编辑；`server_default_routes` 仅为实例规则，预制渠道未定义此字段，初始为空。
 
 Provider Wizard 每次打开只读取一次完整 catalog；catalog 不可用时仍允许进入手工模式。手工模式让用户选择 OpenAI-compatible、Claude-compatible、Gemini-compatible 等协议族，不要求识别 Responses、Chat Completions、Interactions 等 API 代际。保存前由后端执行 `base_url`、认证、协议和 discovery 验证并返回 resolved Adapter。
 
@@ -710,3 +709,49 @@ uv run buckyos-build.py --skip-web
 - 派生 Adapter 若把厂商分支下沉到基础 Adapter，会重新形成不可拆除的历史负担；代码评审和删除性测试必须阻止该情况。
 - 动态 token 刷新需要处理并发合并、过期和认证失败，但这些状态不能污染持久 catalog 或 inventory。
 - `provider.refresh_models` 需要把现有私有 `refresh_inventory_once` 抽成 trait 能力，涉及所有 Provider Adapter。
+
+## Custom Provider 实例规则编辑
+
+PC 的自定义 Provider 详情新增“模型规则”页；手机不展示或挂载编辑器。页面以 provider.list 的 discovered_model_ids 展示去重的发现模型，包括被 exclude_models 禁用、未识别或能力被滤除的条目，按启用优先、模型名升序排列，支持名称包含检索和每页 10/20/50/100 条。分页、检索使用同一次快照，不逐模型请求 RPC。
+
+ProviderInstanceRules.catalog 保存完整的 Provider Rules catalog，仅允许用于 custom。格式复用 [Provider Profile schema](provider_profile_schema.md)：协议映射为 models / patterns 的 operations，价格为 model_pricing。新增可选 model_variants 字典，键为端点模型 ID，值为 ProviderVariantRule 数组，对指定模型完整替换继承的 variants；空数组表示该模型不发布思考档位。别名使用 model_driver_overrides；用途仍为 server_default_routes，表示基础模型使用上游默认思考参数参与明确的 LLM task。
+
+编译时为每个实例生成独立规则索引，复用现有 schema、条件编译和引用校验，不修改共享预制 rules。实例目录价格优先于发现接口价格，没有目录价格时沿用发现价格。管理面额外返回不含凭据的 rules_catalog 和逐模型 resolved_model_rules。rules_catalog 仅返回该实例保存的目录，或实例显式绑定的 provider_rules_id 对应目录；未绑定规则时为空，不能根据协议族补入内置目录。resolved_model_rules 从实例模型 inventory 读取实际操作和价格，思考档位仅返回该实例已发布的档位映射；未配置且未发现的价格为空。页面使用这些实例值展示有效结果，接口默认值标注为默认，不写成显式覆盖；导出/保存仅包含实例的配置规则，不导入无关模型、默认映射或内置参考价。首次保存后，该快照成为实例的显式目录，后续预制目录更新不会覆盖它。
+
+进入编辑时冻结本地草稿；“结束编辑并生效”通过已有 provider.update 提交完整 instance_rules，携带 settings revision 做 CAS。成功完成校验、重新加载和回读后退出编辑；失败保留草稿和错误。取消不提交。切换详情页内其他标签保留编辑器草稿。
+
+预览、复制和导入/导出统一使用现有 `*.provider.json` 目录格式，不增加外层格式。导出文件名为 `<provider_instance_name>.provider.json`，示例：
+
+    {
+      "format": "buckyos.aicc.provider-rules-catalog",
+      "schema_version": 1,
+      "schema_revision": 1,
+      "revision_seq": 1,
+      "provider_profile_id": "custom",
+      "model_driver_overrides": {},
+      "server_default_routes": {},
+      "models": [],
+      "patterns": [],
+      "variants": [],
+      "model_variants": {},
+      "model_pricing": []
+    }
+
+用途列表写入目录的 `server_default_routes`，按端点模型 ID 映射到明确的 LLM 任务数组；Rust 库存构建和调用降级均读取该配置。实例显式用途配置优先于目录。模型启停沿用 `models[].exclude`，实例别名合并到 `model_driver_overrides`。可直接导入现有内置 `*.provider.json`，没有声明的可选数组按空值处理；条件规则、请求规则等未编辑字段完整保留。
+
+文件仅包含 Provider 规则，不含实例身份、URL、凭据、API Key 或实例地域策略。导入保留当前实例的连接和地域设置，上限 5 MB，只更新草稿；正式生效前仍执行相同服务端校验。顶部“模型列表 / 完整配置 JSON”切换展示模型摘要或整份规则目录，不再提供逐列预览。编辑中 JSON 展示完整草稿，包含无效字段时显示错误，不展示过期结果。
+
+本地 inventory 缓存同时保存实例规则指纹；修改实例规则后发生发现失败时，不允许回退到旧规则构造的模型目录。规则未变的既有缓存回退仍可使用。
+
+Provider 实例被停用或未加载时，管理快照可从该实例最近一次 inventory 缓存读取已发现 ID，供规则页继续编辑；不会用缓存中的旧操作、档位或价格替代当前配置，也不会自动启动 Provider 或调用上游。
+
+
+### 结构化模型参数编辑
+
+列表的用途、协议映射和思考档位以最多两项的紧凑列表展示，更多项从右侧固定的“配置参数”按钮进入单模型侧栏查看。宽面板使用表格，桌面窗口内可用宽度不足时按容器宽度改为模型摘要卡片，确保用途、协议、档位和价格均可见，不要求横向滚动才能看到参数。侧栏修改保留在页面草稿，返回列表不触发生效；页面级“结束编辑并生效”仍统一保存，取消丢弃整轮草稿。手机继续不挂载此模块。
+
+编辑选项复用 models.list 的内置模型 metadata 与 logical_definitions，以及 protocol_adapter.list 的导出接口和 default_operations，按需批量查询两次，不逐模型查询。用途仅允许 kind=task 且 api_type=llm 的定义；direct-only 模型不允许绕过规格准入。内置模型按 alias 或实例解析出的 model_driver/origin_model_id 匹配，读取 api_types 与 llm.supported_efforts；无法识别时先修正别名。查询 metadata 仅获取能力范围，不导入厂商价格或 provider_options 模板。
+
+ProtocolAdapterView.default_operations 按运行时相同的操作解析器返回每个 api-type 的默认接口；缺少可确定默认值时省略该项，由服务端解析或要求显式配置。接口下拉只允许当前 adapter 对所选 api-type 的绑定。未设置覆盖时使用默认接口，清除覆盖不禁用能力；能力禁用写入 remove_api_types。高级 request_rules 按 api_type 维护 defaults/set/remove/when，编辑其中一个作用域时保留全局及其他 api_type 的规则；模型整体规则也可通过高级 JSON 编辑。
+
+自定义 Provider 不再按协议族自动补思考档位。只有显式绑定的规则或实例目录中存在对应 effort 的 provider_options 映射，才发布该思考变体；直接调用未配置的变体同样失败。侧栏按 supported_efforts 列出开关，显式空对象也是已配置；取消后在 model_variants 写入该模型的剩余映射（空列表覆盖继承）。native 继续表示基础模型原生行为，不产生 reasoning 变体。

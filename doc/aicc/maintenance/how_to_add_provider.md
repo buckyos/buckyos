@@ -63,20 +63,21 @@ SN 的标准示例是 `sn-openai -> openai-responses`：SN 层实现 `api_key` �
 
 不使用 Provider family section、`instances[]` 包装、`provider_driver`、settings 中的 `endpoint`、section 级 token、`features` 或字段别名。`base_url` 是 Provider Instance settings 的正式字段；Profile 默认值只用于创建表单，不能覆盖实例显式配置。
 
-用户通过管理 RPC 添加自定义 Provider 时可以只提交协议族、`base_url` 和凭据；registry 解析族默认 Adapter。自定义 Provider 表单只展示至少包含一个 `custom_provider_selectable=true` Adapter 的协议族，该值由当前 Provider Rules JSON 的 `custom_provider_adapters` 数组推导。需要指定已注册的历史协议时可同时提交 `protocol_adapter_id`，但它必须属于所给协议族且被该数组开放；GLM、MiniMax 等内置复合 Adapter 以及渠道派生 Adapter 默认不接受显式提交。例如：
+用户通过管理 RPC 添加自定义 Provider 时必须显式提交协议族、`protocol_adapter_id`、`base_url` 和凭据。自定义 Provider 表单展示 `custom_provider_selectable=true` 的 Adapter，由当前 Provider Rules JSON 的 `custom_provider_adapters` 数组推导。OpenAI Chat Completions 与 Responses 分开选择；Adapter 必须属于所给协议族且被该数组开放。例如：
 
 ```json
 {
   "provider_instance_name": "compat-router",
   "provider_profile_id": "custom",
   "protocol_family_id": "openai",
+  "protocol_adapter_id": "openai-chat-completions",
   "base_url": "https://compat.example/v1"
 }
 ```
 
-这种 `custom` Provider 默认使用空 Provider Rules `{}`。接入测试解析出的 Adapter 只决定调用协议；discovery 返回的每个 `provider_model_id` 保持原样，并在系统当前安装的全部 Model Driver 中唯一匹配原厂 metadata。系统不自动删除 `openai/` 等前缀，也不复用 OpenRouter 等官方 Provider 的 origin mapping；需要非标准命名映射时，必须把该渠道升级为有独立 `.provider.json` 的官方支持 Provider。
+这种 `custom` Provider 默认使用空 Provider Rules `{}`，也可通过 `provider_rules_id` 继承渠道预设。显式选择的 Adapter 只决定调用协议；discovery 返回的每个 `provider_model_id` 保持原样，并在系统当前安装的全部 Model Driver 中唯一匹配原厂 metadata。非标准命名可通过 `instance_rules.model_driver_overrides` 指定端点模型到原厂/模型的映射。Connection 页面选择预制 rules 后回填已有别名，别名与 `server_default_routes` 均支持列表和 JSON 编辑；预制渠道没有定义服务端默认用途时，该列表为空。
 
-`provider.validate` / `provider.add` 通过 registry 校验协议族与 Adapter 的归属关系并保存确定的 `protocol_adapter_id`。当前不会通过发送推理请求盲探多个协议；调用方未显式指定 Adapter 时使用该协议族注册的默认项。该解析只发生在创建或更新阶段，运行时不得再次猜测或 fallback。
+`provider.validate` / `provider.add` 通过 registry 校验协议族与 Adapter 的归属关系并保存确定的 `protocol_adapter_id`。当前不会通过发送推理请求盲探多个协议；Custom Provider 调用方必须显式指定 Adapter。该解析只发生在创建或更新阶段，运行时不得再次猜测或 fallback。
 
 ## 4. 接入步骤
 

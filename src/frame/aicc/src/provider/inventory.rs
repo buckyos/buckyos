@@ -635,6 +635,8 @@ pub(crate) struct InventoryPricing {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProviderInventoryModel {
+    #[serde(default)]
+    pub variant_rules: Vec<crate::catalog::ProviderVariantRule>,
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub server_default_routes: BTreeSet<String>,
     pub inventory_source: String,
@@ -670,6 +672,10 @@ pub(crate) struct ProviderInventoryModel {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProviderInventorySnapshot {
+    #[serde(default)]
+    pub instance_rules_fingerprint: String,
+    #[serde(default)]
+    pub discovered_model_ids: BTreeSet<String>,
     pub schema_version: u32,
     pub provider_instance_name: String,
     pub provider_profile_id: String,
@@ -910,6 +916,11 @@ impl InventoryBuilder {
                 }
             }
         }
+        let discovered_model_ids = discovery
+            .models
+            .iter()
+            .map(|model| model.provider_model_id.clone())
+            .collect();
         let fingerprint = model_list_fingerprint(&discovery.models);
         let mut models = Vec::new();
         let mut filtered_capabilities = Vec::new();
@@ -1042,7 +1053,11 @@ impl InventoryBuilder {
             {
                 pricing = None;
             }
-            if let Some(value) = discovered.pricing.clone() {
+            if let Some(value) = discovered
+                .pricing
+                .clone()
+                .filter(|_| instance_rules.catalog.is_none() || pricing.is_none())
+            {
                 pricing = Some(InventoryPricing {
                     source: PricingSource::Discovery,
                     value,
@@ -1166,21 +1181,22 @@ impl InventoryBuilder {
             let llm = catalog.llm_model(&model_driver_id, &origin_model_id);
             let variant_rules_id = rules
                 .map(|_| rules_id)
-                .or_else(|| default_rules_id.filter(|_| llm.is_some()));
-            let mut variants = if let Some(rules_id) = variant_rules_id {
+                .or_else(|| default_rules_id.filter(|_| instance.provider_profile_id != "custom" && llm.is_some()));
+            let mut variant_rules = if let Some(rules_id) = variant_rules_id {
                 catalog
                     .executable_variants(rules_id, &model_driver_id, &origin_model_id, &dimensions)
                     .map_err(|error| ProviderError::Inventory(error.to_string()))?
                     .into_iter()
                     .filter(|variant| variant.model_driver == model_driver_id)
-                    .map(|variant| InventoryModelVariant {
-                        name: variant.variant.clone(),
-                        logical_mounts: Vec::new(),
-                    })
+                    .cloned()
                     .collect::<Vec<_>>()
             } else {
                 Vec::new()
             };
+            let mut variants = variant_rules.iter().map(|variant| InventoryModelVariant {
+                name: variant.variant.clone(),
+                logical_mounts: Vec::new(),
+            }).collect::<Vec<_>>();
             if let Some(llm) = llm {
                 variants.retain(|variant| {
                     (!discovered.unsupported_features.contains("reasoning")
@@ -1205,6 +1221,7 @@ impl InventoryBuilder {
             }
             variants.sort_by(|left, right| left.name.cmp(&right.name));
             variants.dedup_by(|left, right| left.name == right.name);
+            variant_rules.retain(|rule| variants.iter().any(|variant| variant.name == rule.variant));
             let inventory_source = if static_models.contains(&discovered.provider_model_id) {
                 "static_supplement"
             } else if profile.discovery_mode == DiscoveryMode::CatalogOnly {
@@ -1218,6 +1235,9 @@ impl InventoryBuilder {
             let mut server_default_routes = instance_rules
                 .server_default_routes
                 .get(&discovered.provider_model_id)
+                .or_else(|| {
+                    rules.and_then(|rules| rules.server_default_routes.get(&discovered.provider_model_id))
+                })
                 .cloned()
                 .unwrap_or_default();
             if !api_types.contains(&ApiType::Llm)
@@ -1234,6 +1254,7 @@ impl InventoryBuilder {
                 )));
             }
             models.push(ProviderInventoryModel {
+                variant_rules,
                 server_default_routes,
                 inventory_source,
                 provider_model_id: discovered.provider_model_id,
@@ -1257,6 +1278,8 @@ impl InventoryBuilder {
         }
         models.sort_by(|left, right| left.provider_model_id.cmp(&right.provider_model_id));
         Ok(ProviderInventorySnapshot {
+            instance_rules_fingerprint: instance_rules_fingerprint(instance),
+            discovered_model_ids,
             schema_version: INVENTORY_SCHEMA_VERSION,
             provider_instance_name: instance.provider_instance_name.clone(),
             provider_profile_id: profile.provider_profile_id.clone(),

@@ -49,6 +49,8 @@ Deno.test('custom model identity and server defaults are independent from channe
 Deno.test('invalid advanced settings cannot produce a provider payload', () => {
   for (const draft of [
     { model_driver_overrides_json: '[]' },
+    { model_driver_overrides_json: '{"":"qwen/qwen3.7-plus"}' },
+    { server_default_routes_json: '{"":["llm.chat"]}' },
     { model_driver_overrides_json: '{"local":"unknown"}' },
     { server_default_routes_json: '{"local":["model@instance"]}' },
     { server_default_routes_json: '{"local":[]}' },

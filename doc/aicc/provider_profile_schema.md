@@ -118,7 +118,7 @@ derived protocol_adapter_id
 
 同一个历史 API 代际只实现一份共享 Adapter。Provider 没有额外差异时，Provider Profile 或 Instance 直接保存这个 Adapter ID。确有渠道差异时，先用 `.provider.json` 的 operation、provider options、request rules、能力收窄及其它受限声明表达；只有不同 wire envelope、流事件状态机、签名/动态认证算法、任务生命周期或无法声明化的错误语义，才建立独立派生 Adapter，并用 `base_adapter_id` 指向共享历史 Adapter。多个派生 Adapter 可以引用同一个历史 Adapter，各自只实现剩余的最小逻辑差异，不复制历史 wire protocol，也不在代码中保存可由 Provider Rules 表达的参数表。
 
-Provider Profile/Rules 必须在路由前得到一个确定的 Adapter 和 operation。内置 Provider 的默认选择由 Known Provider catalog 和 `.provider.json` 固定；用户添加 `custom` Provider 时只选择或识别 OpenAI、Claude、Gemini 等协议族，不选择 API 代际。接入测试只枚举无 `base_adapter_id` 且声明 `probe_path` 的协议族级 Adapter，按“官方新接口优先、运行时已注册的历史接口其次”的 `probe_priority` 顺序发送带认证的空 JSON 探测，成功识别后把 resolved `protocol_adapter_id` 固化到 Provider Instance。只有 `404/405/501` 继续下一候选；其它 4xx 证明接口存在，认证、限流、网络和 5xx 直接报告，不能被误判成历史接口需求。运行时只使用已固化 Adapter，不重新探测，也不在一次调用中静默切换新旧 Adapter。
+Provider Profile/Rules 必须在路由前得到一个确定的 Adapter 和 operation。内置 Provider 的默认选择由 Known Provider catalog 和 `.provider.json` 固定；用户添加 `custom` Provider 时必须显式选择 `protocol_adapter_id`，同时提交所属 `protocol_family_id`。OpenAI Chat Completions 与 Responses 是独立选项。接入验证不发送协议探测请求，不枚举候选 Adapter；运行时只使用已固化 Adapter，不在一次调用中切换新旧 Adapter。
 
 实例没有 Provider Rules 时，inventory 先按 discovery 的 `remote_methods` 和 Adapter binding 的 `default_priority` 选择 operation。若仍有多个候选，且当前 Adapter 与该协议族 Known Provider 的默认 Adapter 完全一致，则按 `origin_model_id` 查询其 Provider Rules，用 `operations` 中属于当前候选集的映射消除歧义。例如 OpenAI 协议下 GPT 的图像能力使用 `responses.create`，独立图像模型使用 `images.generate` / `images.edit`；没有有效映射时仍报告歧义。
 
@@ -666,3 +666,10 @@ DeepSeek 官方旧 V4 Flash 调用名已重定向，V4.1 metadata 尚未接入�
 本地 JSON input/state+question 到 32000 bytes。目录 context 改变需重新核验。
 渠道价格只取 OpenRouter discovery，缺失为 unknown；零输出价保留为零。
 不配置静态 Jev 库存、不新增 `include_alpha`、实例或 TypeSafe key。
+
+### 实例目录与逐模型思考档位覆盖
+
+Custom Provider 的 instance_rules.catalog 保存完整的本格式目录，按实例隔离编译，不能修改内置 Provider 的共享预制规则。可选 model_variants 对象按端点模型 ID 指定 ProviderVariantRule 数组：存在该键时，仅使用该数组，不再匹配该模型的全局 variants；空数组清空该模型的档位。数组中的 match、model_driver、variant 和 provider_options 沿用既有校验和执行规则。详情页预览及导入导出直接使用本 `*.provider.json` 格式，不增加外层包装。可选 `server_default_routes` 按端点模型 ID 指定非空的具体 LLM 任务数组；实例显式用途设置优先，模型启停使用 `models[].exclude`。详细流程见 [管理面](aicc-mgr.md#custom-provider-实例规则编辑)。
+
+
+自定义 Provider 的思考档位只来自显式绑定规则或实例 model_variants/variants，不再从协议族对应的内置规则自动补齐。supported_efforts 是可配置范围，不表示渠道已经支持；provider_options 显式为空对象时仍算已配置。未配置 effort 不发布、不允许直接调用。基础模型 native 行为不创建 reasoning 变体。

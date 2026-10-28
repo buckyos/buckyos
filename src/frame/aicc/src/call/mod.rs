@@ -714,7 +714,7 @@ impl<'a> CallResolver<'a> {
         };
         let rules_id = rules_id
             .or_else(|| {
-                if !variant.starts_with("reasoning-") {
+                if selected.provider_profile_id == "custom" || !variant.starts_with("reasoning-") {
                     return None;
                 }
                 self.catalog
@@ -1928,7 +1928,11 @@ mod tests {
             route.selected.provider_model_id = model_id.into();
             route.selected.origin_model_id = origin.into();
             let mut target = target("test-secret");
-            target.provider_rules_id = None;
+            assert!(matches!(
+                resolver.resolve_variant(None, &route.selected, Some(&format!("reasoning-{effort}")), &MatchContext::new()),
+                Err(CallLoweringError::MissingProviderVariant { .. })
+            ));
+            target.provider_rules_id = Some("openai".into());
             let mut request =
                 LlmChatInvokeRequest::new(exact, vec![AiMessage::text(AiRole::User, "hello")]);
             request.temperature = Some(0.7);
@@ -1940,13 +1944,11 @@ mod tests {
                 lowered.input.resolved_parameters["reasoning"],
                 json!({"effort": effort})
             );
-            assert!(lowered.pricing.pricing.is_none());
-            assert!(lowered.reported_cost_currency.is_none());
-            assert!(lowered.revisions.provider_rules_revision_seq.is_none());
+            assert!(lowered.revisions.provider_rules_revision_seq.is_some());
             let AiccCall::ChatCompletionsCreate(request) = &lowered.input.canonical_request else {
                 panic!("expected chat request");
             };
-            assert_eq!(request.temperature, Some(0.7));
+            assert_eq!(request.temperature, if effort == "none" { Some(0.7) } else { None });
             let encoded = codecs
                 .encode(
                     "openai-responses",

@@ -578,6 +578,8 @@ pub(crate) struct ProviderRulesCatalog {
     pub static_inventory_models: Vec<String>,
     #[serde(default)]
     pub model_driver_overrides: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub server_default_routes: BTreeMap<String, BTreeSet<String>>,
     #[serde(default)]
     pub supplemental_inventory_api_types: BTreeSet<String>,
     #[serde(default)]
@@ -593,6 +595,8 @@ pub(crate) struct ProviderRulesCatalog {
     pub model_pricing: Vec<ModelPricingRule>,
     #[serde(default)]
     pub variants: Vec<ProviderVariantRule>,
+    #[serde(default)]
+    pub model_variants: BTreeMap<String, Vec<ProviderVariantRule>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -657,7 +661,7 @@ define_provider_rule!(
     }
 );
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub(crate) struct ProviderRuleAction {
     pub exclude: bool,
     pub operations: BTreeMap<String, String>,

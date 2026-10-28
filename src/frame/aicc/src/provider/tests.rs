@@ -1015,7 +1015,9 @@ async fn draft_validation_classifies_connection_auth_discovery_and_adapter_failu
         .unwrap_err();
     assert_eq!(error.stage, ProviderDraftValidationStage::Authentication);
     assert_eq!(error.kind, ProviderRefreshFailure::Credential);
-    assert!(error.message.contains("credential reference was not resolved"));
+    assert!(error
+        .message
+        .contains("credential reference was not resolved"));
 
     let mut invalid_adapter = draft(ProviderAuthConfig::ApiKey {
         credential_ref: "system-config://secrets/aicc/openai".into(),
@@ -1436,6 +1438,7 @@ async fn disabled_auto_sync_keeps_initial_discovery_without_periodic_task() {
 fn instance_rules_exclude_models_before_inventory_publication() {
     let mut config = instance("filtered");
     config.instance_rules = Some(buckyos_api::ProviderInstanceRules {
+        catalog: None,
         server_default_routes: BTreeMap::new(),
         policy_region: None,
         exclude_models: BTreeSet::from(["gpt-test".to_string()]),
@@ -1457,6 +1460,7 @@ fn instance_rules_exclude_models_before_inventory_publication() {
 fn instance_driver_override_maps_endpoint_ids_without_global_provider_rules() {
     let mut config = instance("doubao-endpoint");
     config.instance_rules = Some(buckyos_api::ProviderInstanceRules {
+        catalog: None,
         server_default_routes: BTreeMap::new(),
         policy_region: None,
         exclude_models: BTreeSet::new(),
@@ -1830,8 +1834,8 @@ fn custom_openai_inventory_uses_model_operations_and_discovery_limits() {
                 ("llm", "responses.create"),
                 ("vision.ocr", "responses.create"),
                 ("vision.caption", "responses.create"),
-                ("image.txt2img", "responses.create"),
-                ("image.img2img", "responses.create"),
+                ("image.txt2img", "images.generate"),
+                ("image.img2img", "images.edit"),
                 ("agent.computer_use", "responses.create"),
             ],
         ),
@@ -1851,8 +1855,8 @@ fn custom_openai_inventory_uses_model_operations_and_discovery_limits() {
                 ("llm", "responses.create"),
                 ("vision.ocr", "responses.create"),
                 ("vision.caption", "responses.create"),
-                ("image.txt2img", "responses.create"),
-                ("image.img2img", "responses.create"),
+                ("image.txt2img", "images.generate"),
+                ("image.img2img", "images.edit"),
                 ("agent.computer_use", "responses.create"),
             ],
         ),
@@ -1905,7 +1909,7 @@ fn custom_openai_inventory_uses_model_operations_and_discovery_limits() {
 }
 
 #[test]
-fn custom_provider_efforts_populate_logical_directories() {
+fn custom_provider_explicit_efforts_populate_logical_directories() {
     let catalog = crate::settings::MetadataSources {
         builtin: crate::settings::load_builtin_metadata().unwrap(),
         ..crate::settings::MetadataSources::default()
@@ -1918,6 +1922,7 @@ fn custom_provider_efforts_populate_logical_directories() {
     let providers = builtin_provider_registry(&catalog).unwrap();
     let mut config = instance("custom-provider");
     config.provider_profile_id = "custom".into();
+    config.provider_rules_id = Some("openai".into());
     let binding = providers
         .resolve_instance(&config, ProviderAuthMode::ApiKey, None)
         .unwrap();
@@ -1952,8 +1957,7 @@ fn custom_provider_efforts_populate_logical_directories() {
             "{}",
             model.provider_model_id
         );
-        assert!(model.pricing.is_none());
-        assert!(model.provider_rules_revision.is_none());
+        assert!(model.provider_rules_revision.is_some());
     }
     let registry = crate::model::llm_tests::gpt_registry(&[inventory.as_model_inventory()]);
     for (path, exact) in [
@@ -1996,7 +2000,9 @@ fn custom_provider_efforts_respect_adapter_rules_and_discovery() {
     let mut builtin = crate::settings::load_builtin_metadata().unwrap();
     let sn_rules = builtin
         .iter_mut()
-        .find(|file| file.kind == crate::catalog::CatalogKind::ProviderRules && file.catalog_id == "sn")
+        .find(|file| {
+            file.kind == crate::catalog::CatalogKind::ProviderRules && file.catalog_id == "sn"
+        })
         .unwrap();
     let mut rules: ProviderRulesCatalog = serde_json::from_slice(&sn_rules.contents).unwrap();
     rules.variants.clear();
@@ -2017,16 +2023,16 @@ fn custom_provider_efforts_respect_adapter_rules_and_discovery() {
             None,
             "gpt-6-luna",
             true,
-            vec!["reasoning-none"],
+            Vec::<&str>::new(),
         ),
         (
             "openai-chat-completions",
             None,
             "gpt-6.1-sol",
             false,
-            vec![],
+            Vec::<&str>::new(),
         ),
-        ("openai-responses", Some("sn"), "gpt-6-sol", false, vec![]),
+        ("openai-responses", Some("sn"), "gpt-6-sol", false, Vec::<&str>::new()),
     ] {
         let mut config = instance("custom-provider");
         config.provider_profile_id = "custom".into();
@@ -2111,7 +2117,8 @@ fn custom_provider_adapters_have_unique_defaults_for_every_api_type() {
                 &BTreeMap::new(),
                 None,
                 binding.api_type,
-                &api_name
+                &api_name,
+                None
             )
             .unwrap_or_else(|error| panic!("{adapter_id}/{api_name}: {error}"))
             .is_some());
@@ -2162,14 +2169,22 @@ fn custom_openai_image_inventory_respects_discovery_and_explicit_mappings() {
     ] {
         let overrides = BTreeMap::from([(name.into(), "responses.create".into())]);
         assert_eq!(
-            resolve_operation(adapter, &overrides, None, api, name)
+            resolve_operation(adapter, &overrides, None, api, name, None)
                 .unwrap()
                 .as_deref(),
             Some("responses.create")
         );
         let unsupported = BTreeSet::from(["embeddings.create".into()]);
         assert_eq!(
-            resolve_operation(adapter, &BTreeMap::new(), Some(&unsupported), api, name).unwrap(),
+            resolve_operation(
+                adapter,
+                &BTreeMap::new(),
+                Some(&unsupported),
+                api,
+                name,
+                None
+            )
+            .unwrap(),
             None
         );
     }
@@ -2188,7 +2203,8 @@ fn custom_operation_priority_ties_are_rejected() {
         &BTreeMap::new(),
         None,
         ApiType::ImageImageToImage,
-        "image.img2img"
+        "image.img2img",
+        None
     )
     .is_err());
 }
@@ -2286,6 +2302,7 @@ fn filtering_llm_binding_removes_server_default_routes() {
     let mut config = instance("filtered-llm");
     config.protocol_adapter_id = "openai-chat-completions".into();
     config.instance_rules = Some(buckyos_api::ProviderInstanceRules {
+        catalog: None,
         server_default_routes: BTreeMap::from([(
             "gpt-test".into(),
             BTreeSet::from(["llm.chat".into()]),
@@ -2375,7 +2392,7 @@ fn custom_multi_operation_defaults_respect_every_discovered_subset() {
                 &operations[0]
             };
             assert_eq!(
-                resolve_operation(adapter, &BTreeMap::new(), None, api_type, &api_name)
+                resolve_operation(adapter, &BTreeMap::new(), None, api_type, &api_name, None)
                     .unwrap()
                     .as_deref(),
                 Some(default),
@@ -2394,6 +2411,7 @@ fn custom_multi_operation_defaults_respect_every_discovered_subset() {
                     Some(&methods),
                     api_type,
                     &api_name,
+                    None,
                 )
                 .unwrap();
                 let expected_selection = if methods.contains(default) {
@@ -2411,7 +2429,7 @@ fn custom_multi_operation_defaults_respect_every_discovered_subset() {
                 for key in [api_name.as_str(), api_type.typed_method()] {
                     let overrides = BTreeMap::from([(key.to_string(), operation.clone())]);
                     assert_eq!(
-                        resolve_operation(adapter, &overrides, None, api_type, &api_name)
+                        resolve_operation(adapter, &overrides, None, api_type, &api_name, None)
                             .unwrap()
                             .as_ref(),
                         Some(operation),
@@ -2425,7 +2443,8 @@ fn custom_multi_operation_defaults_respect_every_discovered_subset() {
                         &BTreeMap::new(),
                         Some(&methods),
                         api_type,
-                        &api_name
+                        &api_name,
+                        None
                     )
                     .unwrap()
                     .as_ref(),
@@ -2441,4 +2460,101 @@ fn custom_multi_operation_defaults_respect_every_discovered_subset() {
             .map(|(adapter, api)| (*adapter, api.to_string()))
             .collect()
     );
+}
+
+#[test]
+fn custom_instance_catalog_updates_inventory_and_retains_disabled_discovery() {
+    let base = catalog();
+    let mut value = serde_json::to_value(base.provider_rules("openai").unwrap()).unwrap();
+    value["model_pricing"] =
+        serde_json::json!([{"id":"gpt-test","pricing":{"currency":"USD","input_token":0.25}}]);
+    value["server_default_routes"] = serde_json::json!({"gpt-test":["llm.chat"]});
+    let catalog = base.with_instance_catalog("rules-test", &value).unwrap();
+    let mut config = instance("rules-test");
+    config.provider_profile_id = "custom".into();
+    config.provider_rules_id = Some(CatalogSnapshot::instance_rules_id("rules-test"));
+    config.instance_rules = Some(buckyos_api::ProviderInstanceRules {
+        catalog: Some(value),
+        ..Default::default()
+    });
+    let mut discovered = discovery("gpt-test");
+    discovered.models[0].pricing.as_mut().unwrap().input_token = Some(9.0);
+    let inventory =
+        InventoryBuilder::build(&profile(), &config, discovered.clone(), &catalog, &codecs())
+            .unwrap();
+    assert_eq!(
+        inventory.models[0]
+            .pricing
+            .as_ref()
+            .unwrap()
+            .value
+            .input_token,
+        Some(0.25)
+    );
+    assert_eq!(inventory.models[0].operations["llm"], "responses.create");
+    assert_eq!(inventory.models[0].server_default_routes, BTreeSet::from(["llm.chat".into()]));
+    config
+        .instance_rules
+        .as_mut()
+        .unwrap()
+        .exclude_models
+        .insert("gpt-test".into());
+    let inventory =
+        InventoryBuilder::build(&profile(), &config, discovered, &catalog, &codecs()).unwrap();
+    assert!(inventory.models.is_empty());
+    assert_eq!(
+        inventory.discovered_model_ids,
+        BTreeSet::from(["gpt-test".into()])
+    );
+}
+
+#[tokio::test]
+async fn changed_instance_rules_do_not_restore_stale_cached_models() {
+    let store = Arc::new(MemoryStore::default());
+    let good = Arc::new(ScriptedDiscovery::new([], discovery("gpt-test")));
+    let (first, good) = manager(store.clone(), good);
+    first.start(instance("primary"), good).await.unwrap();
+    first.shutdown().await;
+    let failed = Arc::new(ScriptedDiscovery::new([Err("offline".into())], discovery("gpt-test")));
+    let (second, failed) = manager(store, failed);
+    let mut config = instance("primary");
+    config.instance_rules = Some(buckyos_api::ProviderInstanceRules {
+        exclude_models: BTreeSet::from(["gpt-test".into()]),
+        ..Default::default()
+    });
+    assert!(second.start(config, failed).await.is_err());
+    second.shutdown().await;
+}
+
+#[test]
+fn custom_provider_unconfigured_efforts_are_not_published() {
+    let catalog = crate::settings::MetadataSources {
+        builtin: crate::settings::load_builtin_metadata().unwrap(),
+        ..Default::default()
+    }.build_snapshot(crate::settings::BUILTIN_CATALOG_REVISION_SEQ, &Default::default()).unwrap();
+    let providers = builtin_provider_registry(&catalog).unwrap();
+    for (adapter, id) in [("openai-responses", "gpt-6.1-sol"), ("gemini-interactions", "gemini-4-argon")] {
+        let mut config = instance("custom-explicit");
+        config.provider_profile_id = "custom".into();
+        config.protocol_adapter_id = adapter.into();
+        let binding = providers.resolve_instance(&config, ProviderAuthMode::ApiKey, None).unwrap();
+        let mut discovered = discovery(id);
+        discovered.models[0].remote_methods = None;
+        discovered.models[0].supported_features = None;
+        let inventory = InventoryBuilder::build(&binding.profile, &config, discovered, &catalog, &providers.codecs()).unwrap();
+        assert_eq!(inventory.models.len(), 1);
+        assert!(inventory.models[0].variants.is_empty(), "{adapter}");
+        assert!(inventory.models[0].variant_rules.is_empty(), "{adapter}");
+        assert!(!inventory.unavailable_presets.is_empty(), "missing mappings must remain visible as unavailable");
+    }
+}
+
+#[test]
+fn provider_catalog_server_default_routes_reject_non_task_paths() {
+    let base = catalog();
+    for route in ["llm.chat", "llm", "image.generate", "llm.chat/other", "llm."] {
+        let mut value = serde_json::to_value(base.provider_rules("openai").unwrap()).unwrap();
+        value["server_default_routes"] = serde_json::json!({"gpt-test":[route]});
+        assert_eq!(base.with_instance_catalog("route-validation", &value).is_ok(), route == "llm.chat", "{route}");
+    }
 }

@@ -1,3 +1,4 @@
+import { createCustomRulesDraft, parseProviderRulesFile, toProviderRuleOptions, type ProviderRuleOptions } from './custom_provider_rules'
 import { buckyos, getActiveSessionToken } from 'buckyos'
 import { isMockRuntime } from '../runtime'
 import type { ModelCatalog } from '../app/ai-center/datamodel/model-catalog'
@@ -198,6 +199,9 @@ const MOCK_PROVIDER_SETUP_CATALOG: ProviderSetupCatalog = {
       ? 'catalog-only'
       : `${provider_profile_id}-models`,
     provider_rules_id: provider_profile_id,
+    model_driver_overrides: provider_profile_id === 'deepseek'
+      ? { 'deepseek-flash': 'deepseek/deepseek-v4.1-flash' }
+      : {} as Record<string, string>,
     ui_hints: isDoubaoProfile(provider_profile_id)
       ? {
         setup_group: doubaoSetupGroup(provider_profile_id),
@@ -231,9 +235,10 @@ const MOCK_PROVIDER_SETUP_CATALOG: ProviderSetupCatalog = {
           : {},
   })),
   protocol_families: [
-    { protocol_family_id: 'openai', display_name: 'OpenAI compatible' },
-    { protocol_family_id: 'claude', display_name: 'Claude compatible' },
-    { protocol_family_id: 'gemini', display_name: 'Gemini compatible' },
+    { protocol_family_id: 'openai', protocol_adapter_id: 'openai-chat-completions', display_name: 'OpenAI Chat Completions' },
+    { protocol_family_id: 'openai', protocol_adapter_id: 'openai-responses', display_name: 'OpenAI Responses' },
+    { protocol_family_id: 'claude', protocol_adapter_id: 'claude-messages', display_name: 'Claude compatible' },
+    { protocol_family_id: 'gemini', protocol_adapter_id: 'gemini-interactions', display_name: 'Gemini compatible' },
   ],
 }
 
@@ -318,6 +323,9 @@ interface RawUsageAggregate {
 }
 
 interface RawProviderInstanceView {
+  discovered_model_ids?: unknown
+  rules_catalog?: unknown
+  resolved_model_rules?: unknown
   provider_rules_id?: unknown
   instance_rules?: unknown
   provider_instance_name?: unknown
@@ -391,6 +399,7 @@ interface RawTraceQueryResponse {
 interface AiccDataProvider {
   fetchSnapshot(): Promise<StoreSnapshot>
   fetchProviderSetupCatalog(): Promise<ProviderSetupCatalog>
+  fetchProviderRuleOptions(): Promise<ProviderRuleOptions>
   fetchModelCatalog(): Promise<ModelCatalog>
   addProvider(draft: WizardDraft): Promise<void>
   deleteProvider(id: string): Promise<void>
@@ -419,6 +428,7 @@ export interface AICCMgr {
   getSnapshotVersion(): number
   refresh(): Promise<void>
   fetchProviderSetupCatalog(): Promise<ProviderSetupCatalog>
+  fetchProviderRuleOptions(): Promise<ProviderRuleOptions>
   fetchModelCatalog(): Promise<ModelCatalog>
   getUsageSummary(): UsageSummary
   getUsageTrend(granularity?: string): UsageTrendPoint[]
@@ -561,6 +571,10 @@ export class AICCModelStore implements AICCMgr {
 
   fetchProviderSetupCatalog(): Promise<ProviderSetupCatalog> {
     return this.provider.fetchProviderSetupCatalog()
+  }
+
+  fetchProviderRuleOptions(): Promise<ProviderRuleOptions> {
+    return this.provider.fetchProviderRuleOptions()
   }
 
   getUsageSummary(): UsageSummary {
@@ -721,6 +735,20 @@ class MockAiccProvider implements AiccDataProvider {
 
   async fetchModelCatalog(): Promise<ModelCatalog> {
     return mockModelCatalog(this.store.getSnapshot())
+  }
+
+  async fetchProviderRuleOptions(): Promise<ProviderRuleOptions> {
+    const [catalog, routing] = await Promise.all([this.fetchModelCatalog(), this.fetchRoutingWorkspace()])
+    const adapter = (id: string, defaults: Record<string, string>) => ({
+      protocol_adapter_id: id, default_operations: defaults,
+      operations: Object.entries(defaults).map(([api_type, operation_id]) => ({ operation_id, api_types: [api_type] })),
+    })
+    return toProviderRuleOptions(catalog, routing.directories, [
+      adapter('openai-responses', { llm: 'responses.create', 'image.txt2img': 'images.generate' }),
+      adapter('openai-chat-completions', { llm: 'chat.completions' }),
+      adapter('claude-messages', { llm: 'messages.create' }),
+      adapter('gemini-interactions', { llm: 'interactions.create' }),
+    ])
   }
 
   async fetchProviderSetupCatalog(): Promise<ProviderSetupCatalog> {
@@ -909,6 +937,14 @@ class BuckyOSAiccProvider implements AiccDataProvider {
     return response.catalog
   }
 
+  async fetchProviderRuleOptions(): Promise<ProviderRuleOptions> {
+    const [models, adapters] = await Promise.all([
+      this.call<{ catalog: ModelCatalog; logical_definitions?: unknown[] }>('models.list', {}),
+      this.call<RawProtocolAdapterListResponse>('protocol_adapter.list', {}),
+    ])
+    return toProviderRuleOptions(models.catalog, models.logical_definitions ?? [], adapters.adapters ?? [])
+  }
+
   async fetchProviderSetupCatalog(): Promise<ProviderSetupCatalog> {
     const [catalog, adapters] = await Promise.all([
       this.call<RawProviderCatalogResponse>('provider.catalog', {}),
@@ -955,12 +991,14 @@ class BuckyOSAiccProvider implements AiccDataProvider {
   }
 
   async updateProviderRules(provider: ProviderView, draft: Partial<WizardDraft>): Promise<void> {
+    const file = draft.rules_config_json ? parseProviderRulesFile(draft.rules_config_json, createCustomRulesDraft(provider.config)) : undefined
     const result = await this.callProviderUpdate({
       provider_instance_name: provider.config.provider_instance_name,
-      settings_revision: this.settingsRevision,
-      provider_rules_id: draft.provider_rules_id?.trim() ?? provider.config.provider_rules_id ?? '',
-      instance_rules: { ...provider.config.instance_rules, ...parseProviderAdvancedRules(draft) },
+      settings_revision: draft.rules_settings_revision ?? this.settingsRevision,
+      provider_rules_id: file?.provider_rules_id ?? draft.provider_rules_id?.trim() ?? provider.config.provider_rules_id ?? '',
+      instance_rules: file?.instance_rules ?? { ...provider.config.instance_rules, ...parseProviderAdvancedRules(draft) },
     })
+    if (result.ok !== true) throw new Error('Could not apply provider rules')
     this.settingsRevision = asNumber(result.settings_revision, this.settingsRevision)
   }
 
@@ -1279,7 +1317,7 @@ function toProviderWritePayload(draft: WizardDraft): Record<string, unknown> {
     provider_rules_id: draft.provider_rules_id?.trim() || undefined,
     provider_profile_id: providerType,
     protocol_family_id: providerType === 'custom' ? draft.protocol_family_id : undefined,
-    protocol_adapter_id: providerType === 'custom' ? undefined : draft.protocol_adapter_id,
+    protocol_adapter_id: draft.protocol_adapter_id,
     base_url: draft.base_url.trim(),
     operation_base_urls: Object.fromEntries(
       Object.entries(draft.operation_base_urls)
@@ -2015,6 +2053,9 @@ function toProviderView(raw: RawProviderInstanceView, allModels: RawModelMetadat
     provider_origin: 'system_config',
     provider_rules_id: asOptionalString(raw.provider_rules_id),
     instance_rules: asRecord(raw.instance_rules),
+    discovered_model_ids: toStringArray(raw.discovered_model_ids),
+    rules_catalog: isRecord(raw.rules_catalog) ? raw.rules_catalog : undefined,
+    resolved_model_rules: asRecord(raw.resolved_model_rules) as Record<string, Record<string, unknown>>,
     auth_mode: normalizeAuthMode(asRecord(raw.auth).mode),
     credential_configured: asBoolean(asRecord(raw.auth).configured, false),
     base_url: asNonEmptyString(raw.base_url, ''),
@@ -2609,6 +2650,7 @@ function toProviderSetupCatalog(
         protocol_adapter_id: asNonEmptyString(entry.protocol_adapter_id, ''),
         discovery_behavior_id: asNonEmptyString(entry.discovery_behavior_id, ''),
         provider_rules_id: asOptionalString(entry.provider_rules_id),
+        model_driver_overrides: asStringRecord(entry.model_driver_overrides),
         ui_hints: asRecord(entry.ui_hints),
         setup_group: toProviderSetupGroup(entry.ui_hints),
         endpoint_hints: toProviderEndpointHints(entry.ui_hints),
@@ -2617,20 +2659,26 @@ function toProviderSetupCatalog(
       }
     })
     .filter((item): item is NonNullable<typeof item> => item !== null)
-  const families = new Set<string>()
-  for (const item of Array.isArray(adapters.adapters) ? adapters.adapters : []) {
-    const adapter = asRecord(item)
-    if (adapter.custom_provider_selectable !== true) continue
-    const family = asOptionalString(adapter.protocol_family_id)
-    if (family) families.add(family)
-  }
+  const protocol_families = (Array.isArray(adapters.adapters) ? adapters.adapters : [])
+    .map(asRecord)
+    .filter((adapter) => adapter.custom_provider_selectable === true)
+    .map((adapter) => {
+      const protocol_adapter_id = asNonEmptyString(adapter.protocol_adapter_id, '')
+      return {
+        protocol_family_id: asNonEmptyString(adapter.protocol_family_id, ''),
+        protocol_adapter_id,
+        display_name: protocol_adapter_id === 'openai-chat-completions'
+          ? 'OpenAI Chat Completions'
+          : protocol_adapter_id === 'openai-responses'
+            ? 'OpenAI Responses'
+            : labelFromPath(protocol_adapter_id),
+      }
+    })
+    .sort((a, b) => a.display_name.localeCompare(b.display_name))
   return {
     catalog_revision: asNumber(catalog.catalog_revision, 0),
     providers: sortProviderProfiles(providers),
-    protocol_families: Array.from(families).sort().map((protocol_family_id) => ({
-      protocol_family_id,
-      display_name: `${labelFromPath(protocol_family_id)} compatible`,
-    })),
+    protocol_families,
   }
 }
 

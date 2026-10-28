@@ -460,6 +460,9 @@ fn sn_provider(name: &str, auth: Value) -> ProviderSettings {
 
 fn provider_public_view(provider: &ProviderSettings) -> ProviderInstanceView {
     ProviderInstanceView {
+        resolved_model_rules: BTreeMap::new(),
+        discovered_model_ids: Default::default(),
+        rules_catalog: None,
         provider_rules_id: None,
         instance_rules: None,
         provider_instance_name: provider.provider_instance_name.clone(),
@@ -1132,7 +1135,10 @@ fn model_catalog_preserves_known_models_and_specs_without_providers() {
             .iter()
             .find(|model| model["id"] == model_id)
             .unwrap();
-        assert_eq!(model["metadata"]["api_types"], json!(["llm", "vision.caption"]));
+        assert_eq!(
+            model["metadata"]["api_types"],
+            json!(["llm", "vision.caption"])
+        );
     }
 }
 
@@ -1350,7 +1356,9 @@ async fn sn_discovered_models_populate_catalog_and_builtin_llm_tasks() {
             .iter()
             .any(|item| item["target"] == exact));
         for (spec, effort, _) in llm.semantics.spec_bindings() {
-            if !model.variants.iter()
+            if !model
+                .variants
+                .iter()
                 .any(|variant| effort.variant().as_ref() == Some(&variant.name))
             {
                 continue;
@@ -1881,6 +1889,7 @@ async fn management_reads_and_krpc_dispatch_use_one_runtime_view() {
                 dynamic_login_behavior_id: None,
                 connection_behavior_id: None,
                 provider_rules_id: Some("openai".to_string()),
+                model_driver_overrides: BTreeMap::new(),
                 ui_hints: BTreeMap::new(),
             }],
         };
@@ -2457,4 +2466,44 @@ fn dir_item<'a>(directory: &'a Value, path: &str, name: &str) -> &'a Value {
         .as_array()
         .and_then(|items| items.iter().find(|item| item["name"] == name))
         .unwrap_or(&Value::Null)
+}
+
+#[tokio::test]
+async fn provider_list_hides_editable_rule_catalogs_from_non_managers() {
+    let fixture = fixture(false);
+    let settings = sn_provider("custom-private", json!({"mode":"api_key","credential_ref":"api_token"}));
+    let mut provider = provider_public_view(&settings);
+    provider.provider_profile_id = "custom".into();
+    provider.rules_catalog = Some(json!({"models":[{"id":"private-model"}]}));
+    provider.discovered_model_ids.insert("private-model".into());
+    provider.resolved_model_rules.insert("private-model".into(), json!({"operations":{"llm":"responses.create"}}));
+    provider.instance_rules = Some(buckyos_api::ProviderInstanceRules {
+        catalog: provider.rules_catalog.clone(),
+        ..Default::default()
+    });
+    fixture.runtime.snapshot.lock().await.providers = vec![provider];
+    let response = fixture.service.handle_list_providers(
+        ProviderListRequest::new(None), RPCContext::default()
+    ).await.unwrap();
+    let provider = &response.providers[0];
+    assert!(provider.rules_catalog.is_none());
+    assert!(provider.resolved_model_rules.is_empty());
+    assert!(provider.discovered_model_ids.is_empty());
+    assert!(provider.instance_rules.is_none());
+}
+
+#[test]
+fn protocol_adapter_views_export_the_runtime_default_operations() {
+    let catalog = crate::model::llm_tests::builtin_catalog();
+    let codecs = builtin_provider_registry(&catalog).unwrap().codecs();
+    let view = protocol_adapter_response(&codecs, &catalog.custom_provider_adapter_ids());
+    let openai = view.adapters.iter().find(|adapter| adapter.protocol_adapter_id == "openai-responses").unwrap();
+    assert_eq!(openai.default_operations["image.txt2img"], "images.generate");
+    assert_eq!(openai.default_operations["llm"], "responses.create");
+    for adapter in view.adapters {
+        for (api_type, operation) in adapter.default_operations {
+            assert!(adapter.operations.iter().any(|item| item.operation_id == operation
+                && item.api_types.iter().any(|kind| serde_json::to_value(kind).unwrap() == api_type)));
+        }
+    }
 }

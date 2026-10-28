@@ -540,6 +540,10 @@ impl AiccHandler for AiccService {
                         .unwrap_or(0);
                 }
                 if !manages {
+                    provider.rules_catalog = None;
+                    provider.resolved_model_rules.clear();
+                    provider.discovered_model_ids.clear();
+                    provider.instance_rules = None;
                     provider.inventory.unmatched_models.clear();
                     provider.inventory.unavailable_presets.clear();
                     provider.inventory.unpriced_models.clear();

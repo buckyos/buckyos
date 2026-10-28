@@ -779,7 +779,10 @@ mod canonical_contract_tests {
         assert_eq!(AiccError::from_krpc_error(&wire), Some(error));
         let other = AiccError::new(AiccErrorCode::ProviderError, "upstream failed");
         assert!(matches!(other.to_krpc_error(), RPCErrors::ReasonError(_)));
-        assert_eq!(AiccError::from_krpc_error(&other.to_krpc_error()), Some(other));
+        assert_eq!(
+            AiccError::from_krpc_error(&other.to_krpc_error()),
+            Some(other)
+        );
     }
 
     #[test]
@@ -822,6 +825,9 @@ mod canonical_contract_tests {
 
     fn provider_instance_view(enabled: bool) -> ProviderInstanceView {
         ProviderInstanceView {
+            resolved_model_rules: BTreeMap::new(),
+            discovered_model_ids: BTreeSet::new(),
+            rules_catalog: None,
             provider_rules_id: None,
             instance_rules: None,
             provider_instance_name: "openai-main".to_string(),
@@ -4383,6 +4389,8 @@ pub struct ProviderCatalogEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_rules_id: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_driver_overrides: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub ui_hints: BTreeMap<String, Value>,
 }
 
@@ -4440,6 +4448,8 @@ pub struct ProtocolAdapterOperation {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProtocolAdapterView {
+    #[serde(default)]
+    pub default_operations: BTreeMap<String, String>,
     pub protocol_family_id: String,
     pub protocol_adapter_id: String,
     #[serde(default)]
@@ -4897,6 +4907,8 @@ pub enum ProviderInstanceType {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderInstanceRules {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog: Option<Value>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub server_default_routes: BTreeMap<String, BTreeSet<String>>,
     /// Legal/account residency used by Provider metadata policy matching.
@@ -4952,6 +4964,12 @@ pub struct ProviderInstanceHealthView {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderInstanceView {
+    #[serde(default)]
+    pub resolved_model_rules: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub discovered_model_ids: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules_catalog: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_rules_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

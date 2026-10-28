@@ -184,25 +184,6 @@ impl BuiltinProviderRegistry {
         &self.custom_provider_adapter_ids
     }
 
-    pub(crate) fn custom_provider_probe_candidates(
-        &self,
-        protocol_family_id: &str,
-    ) -> ProviderResult<Vec<String>> {
-        let candidates = self
-            .codecs
-            .probe_candidates(protocol_family_id)
-            .map_err(|error| ProviderError::InvalidConfiguration(error.to_string()))?
-            .into_iter()
-            .filter(|adapter_id| self.custom_provider_adapter_ids.contains(adapter_id))
-            .collect::<Vec<_>>();
-        if candidates.is_empty() {
-            return Err(ProviderError::InvalidConfiguration(format!(
-                "protocol family `{protocol_family_id}` is not enabled for custom providers"
-            )));
-        }
-        Ok(candidates)
-    }
-
     pub(crate) fn dynamic_login_resolver(&self) -> Arc<dyn DynamicLoginCredentialResolver> {
         self.dynamic_login_resolvers
             .get("sn")

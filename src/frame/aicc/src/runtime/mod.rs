@@ -755,6 +755,8 @@ mod tests {
     #[test]
     fn provider_health_change_requires_a_new_runtime_snapshot() {
         let inventory = |health| ProviderInventorySnapshot {
+            instance_rules_fingerprint: String::new(),
+            discovered_model_ids: Default::default(),
             schema_version: 1,
             provider_instance_name: "primary".into(),
             provider_profile_id: "openai".into(),

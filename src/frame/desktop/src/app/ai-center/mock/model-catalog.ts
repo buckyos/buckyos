@@ -25,7 +25,7 @@ export function mockModelCatalog(snapshot: StoreSnapshot): ModelCatalog {
         metadata: {
           api_types: ['llm'], local_deployable: definition.local ?? false,
           capabilities: { streaming: true, tool_call: true, max_context_tokens: definition.context },
-          llm: { spec: definition.spec, effort: 'native', default_effort: 'native', supported_efforts: ['native'], stability: 'stable' },
+          llm: { spec: definition.spec, effort: 'native', default_effort: 'native', supported_efforts: id === 'openai' ? ['native', 'low', 'medium', 'high'] : ['native'], stability: 'stable' },
         },
         providers,
       }

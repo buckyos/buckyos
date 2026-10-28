@@ -614,7 +614,7 @@ fn validate_discovery(discovery: &ProviderDiscoverySnapshot) -> ProviderResult<(
     Ok(())
 }
 
-fn resolve_operation(
+pub(crate) fn resolve_operation(
     adapter: &crate::protocol::AdapterDescriptor,
     overrides: &BTreeMap<String, String>,
     remote_methods: Option<&BTreeSet<String>>,
@@ -627,6 +627,19 @@ fn resolve_operation(
         .or_else(|| overrides.get(api_type_name))
     {
         return Ok(Some(operation.clone()));
+    }
+    if let Some(default) = default_operation {
+        if !adapter.operations.get(default).is_some_and(|operation| {
+            operation
+                .bindings
+                .iter()
+                .any(|binding| binding.api_type == api_type)
+        }) {
+            return Err(ProviderError::Inventory(format!(
+                "adapter {:?} default operation {default:?} does not support api_type {api_type_name}",
+                adapter.protocol_adapter_id
+            )));
+        }
     }
     let matching = adapter
         .operations
@@ -715,6 +728,18 @@ fn retain_supported_features(
         adapter_features.contains(name)
             && discovery_features.is_none_or(|features| features.contains(name))
     });
+}
+
+fn instance_rules_fingerprint(config: &ProviderInstanceConfig) -> String {
+    let bytes = serde_json::to_vec(&(
+        &config.provider_rules_id,
+        &config.instance_rules,
+        &config.region,
+        &config.workspace,
+        &config.account,
+    ))
+    .expect("instance rules serialize");
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 fn model_list_fingerprint(models: &[DiscoveredModel]) -> String {

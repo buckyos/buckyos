@@ -90,6 +90,9 @@ export interface ProviderInventory {
 // ========== Provider ==========
 
 export interface ProviderConfig {
+  discovered_model_ids?: string[]
+  rules_catalog?: Record<string, unknown>
+  resolved_model_rules?: Record<string, Record<string, unknown>>
   provider_rules_id?: string
   instance_rules?: Record<string, unknown>
   id: string
@@ -321,6 +324,8 @@ export interface AIStatus {
 // ========== Wizard ==========
 
 export interface WizardDraft {
+  rules_config_json?: string
+  rules_settings_revision?: number
   provider_rules_id?: string
   model_driver_overrides_json?: string
   server_default_routes_json?: string
@@ -359,6 +364,7 @@ export interface KnownProviderProfile {
   protocol_adapter_id: string
   discovery_behavior_id: string
   provider_rules_id?: string
+  model_driver_overrides?: Record<string, string>
   ui_hints: Record<string, unknown>
   endpoint_hints: Record<string, ProviderEndpointHint>
   connection_fields: Partial<Record<'region' | 'workspace' | 'account' | 'policy_region', ProviderConnectionField>>
@@ -387,6 +393,7 @@ export interface ProviderConnectionField {
 }
 
 export interface ProtocolFamilyOption {
+  protocol_adapter_id: string
   protocol_family_id: string
   display_name: string
 }

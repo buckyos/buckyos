@@ -262,15 +262,30 @@ impl DriverMetadataPort for CloudUpdateDriverMetadataPort {
 pub(crate) struct RuntimeServiceAdapter {
     runtime: Arc<RuntimeState>,
     codecs: Arc<CodecRegistry>,
+    storage: Arc<AiccStorage>,
 }
 
 impl RuntimeServiceAdapter {
-    pub(crate) fn new(runtime: Arc<RuntimeState>, codecs: Arc<CodecRegistry>) -> Self {
-        Self { runtime, codecs }
+    pub(crate) fn new(runtime: Arc<RuntimeState>, codecs: Arc<CodecRegistry>, storage: Arc<AiccStorage>) -> Self {
+        Self { runtime, codecs, storage }
     }
 
     async fn snapshot(&self) -> RuntimeAdminSnapshot {
-        runtime_admin_snapshot(self.runtime.capture().await.as_ref(), self.codecs.as_ref())
+        let mut snapshot = runtime_admin_snapshot(self.runtime.capture().await.as_ref(), self.codecs.as_ref());
+        for provider in snapshot.providers.iter_mut().filter(|provider| {
+            provider.provider_profile_id == "custom" && provider.discovered_model_ids.is_empty()
+                && provider.inventory.state != ProviderInstanceInventoryState::Loaded
+        }) {
+            if let Ok(Some(record)) = self.storage.load_inventory(&provider.provider_instance_name).await {
+                if record.provider_profile_id == provider.provider_profile_id
+                    && record.protocol_adapter_id == provider.protocol_adapter_id
+                {
+                    provider.discovered_model_ids = record.snapshot.get("discovered_model_ids")
+                        .and_then(|value| serde_json::from_value(value.clone()).ok()).unwrap_or_default();
+                }
+            }
+        }
+        snapshot
     }
 }
 

@@ -149,6 +149,9 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
         ? profile?.region_base_urls[defaultRegion] ?? profile?.base_url ?? ''
         : profile?.base_url ?? '',
       operation_base_urls: {},
+      provider_rules_id: undefined,
+      model_driver_overrides_json: undefined,
+      server_default_routes_json: undefined,
       protocol_family_id: null,
       protocol_adapter_id: profile?.protocol_adapter_id,
       region: defaultRegion,

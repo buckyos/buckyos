@@ -114,7 +114,9 @@ impl ProviderRuntime {
             || current.unavailable_presets != candidate.inventory.unavailable_presets
             || current.provider_model_list_fingerprint
                 != candidate.inventory.provider_model_list_fingerprint
-            || current.metadata_applied_seq != candidate.inventory.metadata_applied_seq;
+            || current.metadata_applied_seq != candidate.inventory.metadata_applied_seq
+            || current.instance_rules_fingerprint != candidate.inventory.instance_rules_fingerprint
+            || current.discovered_model_ids != candidate.inventory.discovered_model_ids;
         if changed {
             if let Err(error) = self.commit_candidate(&candidate, publish).await {
                 if !matches!(error, ProviderError::StaleCandidate) {
@@ -890,6 +892,9 @@ async fn load_lkgs(
     let inventory: ProviderInventorySnapshot = serde_json::from_value(record.snapshot.clone())
         .map_err(|error| ProviderError::Inventory(error.to_string()))?;
     validate_inventory_identity(&inventory, &runtime.profile, &runtime.config)?;
+    if inventory.instance_rules_fingerprint != instance_rules_fingerprint(&runtime.config) {
+        return Ok(None);
+    }
     if inventory.provider_model_list_fingerprint != record.provider_model_list_fingerprint
         || inventory.metadata_applied_seq != record.metadata_applied_seq
         || inventory.inventory_revision != record.inventory_revision
@@ -944,6 +949,8 @@ fn empty_inventory(
     metadata_applied_seq: u64,
 ) -> ProviderInventorySnapshot {
     ProviderInventorySnapshot {
+        instance_rules_fingerprint: instance_rules_fingerprint(instance),
+        discovered_model_ids: Default::default(),
         schema_version: INVENTORY_SCHEMA_VERSION,
         provider_instance_name: instance.provider_instance_name.clone(),
         provider_profile_id: profile.provider_profile_id.clone(),

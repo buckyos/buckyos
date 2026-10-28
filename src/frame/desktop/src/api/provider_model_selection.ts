@@ -40,10 +40,10 @@ export function parseProviderAdvancedRules(draft: ProviderModelSelectionDraft): 
   const mapping: unknown = JSON.parse(draft.model_driver_overrides_json?.trim() || '{}')
   const routes: unknown = JSON.parse(draft.server_default_routes_json?.trim() || '{}')
   const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value)
-  if (!object(mapping) || Object.values(mapping).some((value) => typeof value !== 'string' || !value.includes('/'))) {
+  if (!object(mapping) || Object.keys(mapping).some((key) => !key.trim()) || Object.values(mapping).some((value) => typeof value !== 'string' || !value.includes('/'))) {
     throw new Error('Model aliases must map endpoint model IDs to manufacturer/model IDs')
   }
-  if (!object(routes) || Object.values(routes).some((value) => !Array.isArray(value) || value.length === 0 || value.some((path) => typeof path !== 'string' || !/^llm\.[a-z0-9_.-]+$/.test(path)))) {
+  if (!object(routes) || Object.keys(routes).some((key) => !key.trim()) || Object.values(routes).some((value) => !Array.isArray(value) || value.length === 0 || value.some((path) => typeof path !== 'string' || !/^llm\.[a-z0-9_.-]+$/.test(path)))) {
     throw new Error('Server default routes must map model IDs to explicit LLM task lists')
   }
   return { model_driver_overrides: mapping as Record<string, string>, server_default_routes: routes as Record<string, string[]> }
