@@ -1,5 +1,5 @@
 import { fetchCurrentAccount } from '../../../api/account.ts'
-import { userTypeCanCreateAgents } from '../../../api/user_type.ts'
+import { parseUserType, userTypeCanCreateAgents } from '../../../api/user_type.ts'
 import { fetchAppList } from '../../../api/app_mgr.ts'
 import {
   fetchAgentList,
@@ -40,7 +40,7 @@ function accountDetail(account: AccountInfo): UserDetail {
   return {
     user_id: account.user_id,
     show_name: account.user_name || account.user_id,
-    user_type: account.user_type || 'user',
+    user_type: account.user_type || '',
     state: 'active',
     res_pool_id: '',
     profile: {
@@ -172,6 +172,7 @@ export async function fetchMockUsersAgentsSnapshot(): Promise<UsersAgentsSnapsho
     self: {
       ...base.self,
       id: account?.user_id ?? base.self.id,
+      role: parseUserType(selfResult.data?.user_type ?? account?.user_type) ?? 'unknown',
       socialAccounts: toSocialAccounts(contact.bindings),
       ...(avatarUrl ? { avatarUrl } : {}),
       ...(typeof profile.bio === 'string' ? { bio: profile.bio } : {}),
@@ -193,6 +194,7 @@ export function createEmptyUsersAgentsSnapshot(): UsersAgentsSnapshot {
   const self: UsersAgentsSnapshot['self'] = {
     id: 'self',
     kind: 'self',
+    role: 'unknown',
     displayName: 'Current User',
     socialAccounts: [],
     createdAt,

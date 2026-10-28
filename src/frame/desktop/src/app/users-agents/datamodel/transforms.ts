@@ -209,6 +209,7 @@ export function toSelfEntity(
   return {
     ...fallback,
     id: detail.user_id,
+    role: parseUserType(detail.user_type) ?? 'unknown',
     displayName,
     avatarUrl: usableImageUrl(firstString(profile.avatar, profile.avatar_url, profile.avatarUrl, fallback.avatarUrl)),
     did: firstString(profile.did, asRecord(detail.local_profile).did, contact?.did, asRecord(detail.did_document).id, fallback.did),

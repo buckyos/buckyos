@@ -5,7 +5,7 @@ import type {
   AgentStatus,
   AgentTemplateBinding,
 } from '../../../api/user_mgr.ts'
-import type { AssignableUserType, ContactProjectionRule } from '../../../api/user_type.ts'
+import type { AssignableUserType, ContactProjectionRule, UserType } from '../../../api/user_type.ts'
 
 /* ── Users & Agents – UI datamodel type definitions ── */
 
@@ -53,6 +53,7 @@ export interface EntityBase {
 
 export interface SelfEntity extends EntityBase {
   kind: 'self'
+  role: UserType | 'unknown'
   bio?: string
   email?: string
   phone?: string

@@ -13,7 +13,7 @@ interface EntityCardProps {
 
 function getSubLabel(entity: AnyEntity, t: ReturnType<typeof useI18n>['t']) {
   if (entity.kind === 'self') {
-    return entity.bio ?? t('usersAgents.role.owner')
+    return entity.bio ?? t(`usersAgents.role.${entity.role}`)
   }
   if (entity.kind === 'agent') {
     return `@${entity.name} · ${t('usersAgents.agent.ownerShort', undefined, { owner: entity.ownerUserId })}`

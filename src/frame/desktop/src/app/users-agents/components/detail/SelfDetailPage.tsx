@@ -127,7 +127,7 @@ export function SelfDetailPage() {
         onSubtitleEdit={handleBioEdit}
         badges={
           <>
-            <Chip label={t('usersAgents.role.owner')} size="small" color="primary" variant="outlined" />
+            <Chip label={t(`usersAgents.role.${self.role}`)} size="small" color="primary" variant="outlined" />
             {self.twoFactorEnabled && (
               <Chip label="2FA" size="small" color="success" variant="outlined" />
             )}

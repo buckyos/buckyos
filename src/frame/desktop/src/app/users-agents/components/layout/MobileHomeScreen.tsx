@@ -58,7 +58,7 @@ function BadgeCard({
 
   // Badge label
   const badgeLabel =
-    isSelf ? t('usersAgents.role.owner') :
+    isSelf ? t(`usersAgents.role.${entity.role}`) :
     isAgent ? t('usersAgents.kind.agent') :
     t(roleConfig[(entity as LocalUserEntity).role]?.labelKey ?? 'usersAgents.role.user')
 

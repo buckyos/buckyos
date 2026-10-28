@@ -10,6 +10,7 @@ import type {
 export const mockSelf: SelfEntity = {
   id: 'alice',
   kind: 'self',
+  role: 'admin',
   displayName: 'Alice',
   avatarUrl: undefined,
   did: 'did:bns:alice',
@@ -28,7 +29,7 @@ export const mockSelf: SelfEntity = {
     website: 'https://alice.example.com',
   },
   settings: {
-    userType: 'Owner',
+    userType: 'admin',
     credential: 'Passkey + wallet',
     passwordPolicy: 'Owner approval required',
     apps: 'Files, MessageHub, HomeStation, Settings',

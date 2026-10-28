@@ -8,15 +8,54 @@ import {
 import {
   appListTargetUserIds,
   toLocalUserEntity,
+  toSelfEntity,
   toUserGroupsInfo,
   toVisibleLocalUserEntities,
 } from '../../src/app/users-agents/datamodel/transforms.ts'
+import type { SelfEntity } from '../../src/app/users-agents/datamodel/types.ts'
 
 function assertEquals<T>(actual: T, expected: T, message: string) {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
     throw new Error(`${message}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`)
   }
 }
+
+Deno.test('the signed-in profile displays its account type instead of assuming Owner', () => {
+  const fallback: SelfEntity = {
+    id: 'self',
+    kind: 'self',
+    role: 'unknown',
+    displayName: 'Current User',
+    socialAccounts: [],
+    createdAt: '1970-01-01T00:00:00Z',
+    info: {},
+    settings: {},
+    twoFactorEnabled: false,
+    lastLogin: 'Unknown',
+  }
+  const roles = [
+    ['user', 'user'],
+    ['admin', 'admin'],
+    ['limited', 'limited'],
+    ['root', 'root'],
+    ['', 'unknown'],
+    ['unrecognized', 'unknown'],
+  ] as const
+
+  for (const [user_type, expectedRole] of roles) {
+    const self = toSelfEntity({
+      user_id: 'bob',
+      show_name: 'Bob',
+      user_type,
+      state: 'active',
+      res_pool_id: '',
+      allow_password_change: true,
+    }, [], { ...fallback, role: 'root' })
+    assertEquals(self.role, expectedRole, `self role for ${user_type}`)
+  }
+
+  assertEquals(toSelfEntity(null, [], fallback).role, 'unknown', 'unloaded profile has no known role')
+})
 
 Deno.test('visible local users exclude the root tier, self, and duplicate ids', () => {
   const users: UserInfo[] = [
