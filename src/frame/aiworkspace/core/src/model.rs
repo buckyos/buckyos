@@ -44,7 +44,18 @@ pub const POLICY_LOCK: &str = "lock_required";
 /// Reserved key of `key_revs` holding `source.members_rev`.
 pub const MEMBERS_KEY: &str = "#members";
 pub const FORMAT_VERSION: &str = "1.0";
-pub const PROTOCOL_VERSION: &str = "1.0";
+/// 1.1: Block-controls (`mindmap` containers, `"auto"` placement components, Blocks under Blocks inside a control,
+/// `slot`; 脑图方案 R12). A minor version only adds: requests of an older minor are still accepted.
+pub const PROTOCOL_VERSION: &str = "1.1";
+
+/// Requests speaking `version` are understood: the same major version, a minor not newer than ours.
+pub fn supports_protocol(version: &str) -> bool {
+    let split = |v: &str| v.split_once('.').and_then(|(a, b)| Some((a.parse::<u32>().ok()?, b.parse::<u32>().ok()?)));
+    match (split(version), split(PROTOCOL_VERSION)) {
+        (Some((major, minor)), Some((our_major, our_minor))) => major == our_major && minor <= our_minor,
+        _ => false,
+    }
+}
 
 pub fn is_known_type(t: &str) -> bool {
     matches!(t, TYPE_CONTAINER | TYPE_RECORD | TYPE_RICHTEXT | TYPE_TABLE | TYPE_CELL | TYPE_ASSET | TYPE_ANNOTATION | TYPE_WISH | TYPE_BLOCK_DEF | TYPE_VIEWPORT | TYPE_SHOW_PATH | TYPE_DIR)

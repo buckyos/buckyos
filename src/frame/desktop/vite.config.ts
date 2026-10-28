@@ -36,6 +36,8 @@ function desktopServiceWorker(): Plugin {
 }
 
 const DRAWIO_DIR = resolve(import.meta.dirname, '../aiworkspace/import-drawio')
+// The Block-controls shared with Deno and Agents (脑图 TODO M1): layout, measuring, outline conversion, catalogue.
+const CONTROLS_DIR = resolve(import.meta.dirname, '../aiworkspace/controls')
 // The wish program host (src/frame/aiworkspace/aiws/aiws.js) the local executor's Worker runs programs with: the file the service runs.
 const AIWS_DIR = resolve(import.meta.dirname, '../aiworkspace/aiws')
 
@@ -104,10 +106,10 @@ export default defineConfig(() => {
       // (called in src/app/aiworkspace/richtext/loro.ts); loro-prosemirror must see the same instance.
       // The draw.io importer and the canvas geometry it shares live outside the app (they also run in Deno):
       // src/frame/aiworkspace/import-drawio (draw.io 导入 TODO §3).
-      alias: [{ find: /^loro-crdt$/, replacement: 'loro-crdt/web' }, { find: /^@drawio\//, replacement: `${DRAWIO_DIR}/` }],
+      alias: [{ find: /^loro-crdt$/, replacement: 'loro-crdt/web' }, { find: /^@drawio\//, replacement: `${DRAWIO_DIR}/` }, { find: /^@controls\//, replacement: `${CONTROLS_DIR}/` }],
     },
     server: {
-      fs: { allow: [searchForWorkspaceRoot(process.cwd()), DRAWIO_DIR, AIWS_DIR] },
+      fs: { allow: [searchForWorkspaceRoot(process.cwd()), DRAWIO_DIR, CONTROLS_DIR, AIWS_DIR] },
       host: '0.0.0.0',
       port: 5174,
       proxy: {

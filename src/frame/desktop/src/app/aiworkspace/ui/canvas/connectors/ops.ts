@@ -9,7 +9,7 @@ import type { CellPayload, ConnectorProjection, EntityEnvelope, Json, KeyedConte
 import { aiwsT } from '../../../i18n'
 import type { WorkspaceStore } from '../../../state/store'
 import type { Point } from '../geometry'
-import { placementOf, relativeTo, type Laid } from '../layout'
+import { relativeTo, type Laid } from '../layout'
 import { boxOf, decompose, simplify } from './geometry'
 import { CONNECTOR_VIEW, connectorKeys, type Binding, type ConnectorData, type Flip, type LabelPos, type Route } from './model'
 
@@ -78,7 +78,7 @@ export async function connectorChangeOps(store: WorkspaceStore, laid: Map<string
     if (!sameBinding(data[change.which], change.spec.binding)) keys.push({ key: change.which, value: change.spec.binding as unknown as Json, expect: expect(change.which) })
     if (!sameFlip(data.flip, flip)) keys.push({ key: 'flip', value: flipValue(flip), expect: expect('flip') })
     if (change.route && change.route !== data.route) keys.push({ key: 'route', value: change.route, expect: expect('route') })
-    const placement = placementOf(laid, l, l.parentId, rect)
+    const placement = relativeTo(laid, l.parentId, rect, 0, 0)
     // the end key before the corner: a box that is a point is only valid once an end is bound
     const operations: Operation[] = [...(keys.length ? [{ op: 'entity.set_keys', entity_id: id, keys } as Operation] : []), { op: 'tree.place', entity_id: id, placement }]
     const label = aiwsT(change.spec.binding
@@ -133,7 +133,7 @@ export async function freezeOps(store: WorkspaceStore, laid: Map<string, Laid>, 
       const revs = await keyRevs(store, id)
       ops.push({ op: 'entity.set_keys', entity_id: id, keys: [{ key: 'flip', value: flipValue(flip), expect: { rev: revs.flip ?? 0 } }] })
     }
-    ops.push({ op: 'tree.place', entity_id: id, placement: placementOf(laid, l, l.parentId, rect) })
+    ops.push({ op: 'tree.place', entity_id: id, placement: relativeTo(laid, l.parentId, rect, 0, 0) })
   }
   return ops
 }

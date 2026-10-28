@@ -7,7 +7,7 @@
    "class": "create",
    "undo": "compensable",
    "capability": "structure",
-   "note": "Create an entity and attach it to the tree in one step. Annotations need `comment` instead. A connector Cell needs a placement and a free-layout Surface."
+   "note": "Create an entity and attach it to the tree in one step. Annotations need `comment` instead. A connector Cell needs a placement and a free-layout Surface. Inside a control (a mindmap container) a Cell may hold Cells and containers (its child nodes); placement components may be \"auto\" there (see $defs.placement), and a Block's optional `slot` is unique among its siblings (SLOT_CONFLICT)."
   },
   {
    "op": "entity.delete",
@@ -63,14 +63,14 @@
    "class": "merge",
    "undo": "compensable",
    "capability": "structure",
-   "note": "Auto-merge: later arrival wins; cycles, deleted targets and name clashes are rejected. expect optional. A connector must keep a placement (see $defs.placement in commit-request.schema.json)."
+   "note": "Auto-merge: later arrival wins; cycles, deleted targets and name clashes are rejected. expect optional. A connector must keep a placement (see $defs.placement in commit-request.schema.json). A Block leaving a control cannot keep \"auto\" components, and a Cell holding Blocks cannot leave it (CHILD_NOT_ALLOWED)."
   },
   {
    "op": "tree.place",
    "class": "merge",
    "undo": "compensable",
    "capability": "structure",
-   "note": "Order/placement within the same parent. expect optional. `placement: null` clears a Block's placement; it is refused for a connector."
+   "note": "Order/placement within the same parent. expect optional. `placement: null` clears a Block's placement; it is refused for a connector. Writing \"auto\" back into a component resets it to the control's layout."
   },
   {
    "op": "entity.clone",

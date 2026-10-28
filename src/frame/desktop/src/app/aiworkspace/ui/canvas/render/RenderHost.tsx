@@ -35,11 +35,19 @@
  * press before Blocks, editors and handles do; a pen or the mouse writes or erases (ink/input.ts), touches follow the
  * writing rules of touch.ts, the camera stays put while a stroke runs, and the stroke is drawn on two screen-space
  * canvases above the content until its Block has drawn it (ink/paint.ts). Ink Blocks are drawn wherever they cross
- * the view (no mount budget, no placeholder) and hit where their line is, not anywhere in their box. */
+ * the view (no mount budget, no placeholder) and hit where their line is, not anywhere in their box.
+ *
+ * Block-controls (脑图方案 §6–§7): a control's frame draws its chrome (a mind map's implicit edges, fold handles, pins)
+ * under its Blocks; the control is sized by its layout (no resize handles) and moved by pressing its box or its root.
+ * Dragging a node moves its subtree and asks the control where it would hang — on a node: as its child, or before /
+ * after it near an edge; on the map's blank space: pinned there (a free topic, R16); outside the map: refused (R9). The
+ * other nodes show the proposed layout while the pointer moves. Resizing a node writes its size only; nodes do not turn. */
 
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import { Lock, RotateCw } from 'lucide-react'
-import type { Placement } from '../../../api/types'
+import { isTextView } from '@controls/contract'
+import { placeControl, type ControlSource } from '@controls/solve'
+import type { StoredPlacement } from '../../../api/types'
 import { ConnectorFrame } from '../connectors/ConnectorFrame'
 import { LineRegistry } from '../connectors/registry'
 import { findAnchor, SIDE_VEC, type Shape } from '../connectors/anchors'
@@ -62,6 +70,9 @@ import { FreshnessBadge } from '../../sources/FreshnessBadge'
 import { anchorName } from '../drawioText'
 import { angleFrom, centerOf, containsPoint, corners, normalizeRotation, resizeRotated, rotatePoint } from '../geometry'
 import { groupAt, movedPlacement, relativeTo, topLevel, type Laid } from '../layout'
+import { foldBook } from '../../controls/folds'
+import { nodeMeasurer } from '../../controls/measure'
+import { controlRegistry, type ControlChromeProps } from '../../controls/registry'
 import { Camera, intersects, type Rect } from './camera'
 import { SpatialIndex } from './spatialIndex'
 import { TouchGestures, type OneFingerDrag, type Point, type TouchActions } from './touch'
@@ -102,7 +113,11 @@ const EDGE_SPEED = 0.6
 const DOUBLE_PRESS_MS = 400
 const FALLBACK_INK: InkStyle = { color: '#111827', width: 2, pressure: true }
 
-export interface LayoutChange { id: string; placement: Placement; parentId?: string }
+export interface LayoutChange { id: string; placement: StoredPlacement; parentId?: string }
+/** A node re-hung inside its control (脑图方案 §7.2): under `parentId`, before `beforeId` (null: last). */
+export interface NodeMove { id: string; parentId: string; beforeId: string | null }
+/** Where a dragged node would go: under a node, beside one, pinned on the map's blank space, or nowhere (outside). */
+type NodeDrop = { kind: 'child'; parent: string } | { kind: 'before' | 'after'; sibling: string; parent: string } | { kind: 'pin' } | { kind: 'outside' }
 
 export interface RenderHostProps {
   surfaceId: string
@@ -117,6 +132,8 @@ export interface RenderHostProps {
   /** Can this user move, resize and rotate the Block (the canvas's editors: all; a commenter: its own notes)? */
   canLayout: (id: string) => boolean
   onCommitLayout: (changes: LayoutChange[]) => void
+  /** Nodes re-hung inside their control by a drag (one commit). */
+  onMoveNodes?: (moves: NodeMove[]) => void
   onContextMenu: (point: { screenX: number; screenY: number; worldX: number; worldY: number }, blockId: string | null) => void
   onOpenEntity: (entityId: string) => void
   /** Rendered in screen space above the selection (the near toolbar). */
@@ -167,6 +184,8 @@ type Drag =
    * a press on the line's body that does not move is a click (`clicked`). */
   | { kind: 'bend'; id: string; mode: 'move' | 'segment'; base: Point[]; index: number; press: Point; working: Point[] | null; startX: number; startY: number; moved: boolean; clicked: boolean; additive: boolean; wasSelected: boolean }
   | { kind: 'label'; id: string; startX: number; startY: number; label: { t: number; offset: number } | null; moved: boolean }
+  /** Dragging nodes of a control (`ids`, their subtrees in `affected`); `shown`: frames moved to the proposed layout. */
+  | { kind: 'node'; control: string; ids: string[]; affected: string[]; lines: string[]; startX: number; startY: number; dx: number; dy: number; moved: boolean; clicked: string; additive: boolean; wasSelected: boolean; drop: NodeDrop | null; shown: string[] }
 
 /** What a gesture shows next to the pointer: the size while resizing, the angle while rotating. */
 interface Hint { x: number; y: number; text: string }
@@ -289,6 +308,8 @@ export function RenderHost(props: RenderHostProps) {
   const [resizePreview, setResizePreview] = useState<{ id: string; rect: Rect } | null>(null)
   const [rotatePreview, setRotatePreview] = useState<{ id: string; rotation: number } | null>(null)
   const [hint, setHint] = useState<Hint | null>(null)
+  /** A node drag's proposed layout: the control's chrome draws it, the overlay marks where the node would go. */
+  const [nodePreview, setNodePreview] = useState<{ control: string; drop: NodeDrop; preview: NonNullable<ControlChromeProps['preview']> } | null>(null)
   const [, forceOverlay] = useState(0)
   const [settled, setSettled] = useState(0)
   const pointerTypeRef = useRef('mouse')
@@ -427,6 +448,88 @@ export function RenderHost(props: RenderHostProps) {
     for (const [cid, l] of laid) { let cur: string | undefined = l.parentId; while (cur) { if (cur === id) { out.push(cid); break } cur = laid.get(cur)?.parentId } }
     return out
   }, [laid])
+  /** What a press on a Block moves: a control's root stands for the control (dragging the root moves the map). */
+  const pressTarget = (id: string): string => { const n = laid.get(id)?.node; return n && n.parent === null ? n.control : id }
+  /** Where nodes dragged to world point `w` would go (脑图方案 §7.2): on a node — its child, or beside it near an edge
+   * across the growth; a group or a nested control as a node takes no children (beside only); on the map's blank
+   * space — pinned; further out — nowhere (R9). */
+  const nodeDropAt = (drag: Extract<Drag, { kind: 'node' }>, w: Point): NodeDrop => {
+    const moving = new Set(drag.affected)
+    let over: Laid | null = null
+    for (const l of laid.values()) {
+      if (l.node?.control !== drag.control || moving.has(l.entity.entity_id)) continue
+      const r = l.rect
+      if (w.x < r.x || w.x > r.x + r.w || w.y < r.y || w.y > r.y + r.h) continue
+      if (!over || l.paint > over.paint) over = l
+    }
+    if (over?.node) {
+      const id = over.entity.entity_id
+      const t = over.node.grow === 'down' ? (w.x - over.rect.x) / Math.max(1, over.rect.w) : (w.y - over.rect.y) / Math.max(1, over.rect.h)
+      const root = over.node.parent === null
+      if (over.isGroup) return root ? { kind: 'pin' } : { kind: t < 0.5 ? 'before' : 'after', sibling: id, parent: over.parentId }
+      if (!root && t < 0.25) return { kind: 'before', sibling: id, parent: over.parentId }
+      if (!root && t > 0.75) return { kind: 'after', sibling: id, parent: over.parentId }
+      return { kind: 'child', parent: id }
+    }
+    const box = laid.get(drag.control)?.rect
+    const m = 40 / camera.zoom
+    if (box && w.x >= box.x - m && w.x <= box.x + box.w + m && w.y >= box.y - m && w.y <= box.y + box.h + m) return { kind: 'pin' }
+    return { kind: 'outside' }
+  }
+  /** The control's layout with the dragged nodes where `drop` puts them (world rectangles of the others, and the slot
+   * the first dragged node would take). */
+  const proposedLayout = (drag: Extract<Drag, { kind: 'node' }>, drop: NodeDrop): { rects: Map<string, Rect>; slot: Rect | null } => {
+    const out = new Map<string, Rect>()
+    let slot: Rect | null = null
+    const c = laid.get(drag.control)
+    const def = controlRegistry.get(c?.control?.kind)
+    if (!c?.control || !def || drop.kind === 'outside') return { rects: out, slot }
+    const moved = new Set(drag.ids)
+    const src: ControlSource = {
+      get: (id) => {
+        const e = store.outline.get(id)
+        const l = laid.get(id)
+        // pinned where it was dropped: its siblings close the gap
+        if (e && l && drop.kind === 'pin' && moved.has(id)) return { ...e, placement: movedPlacement(laid, l, drag.dx, drag.dy) }
+        return e
+      },
+      childrenOf: (id) => {
+        if (drop.kind === 'pin') return store.outline.childrenOf(id)
+        const list = store.outline.childrenOf(id).filter((e) => !moved.has(e.entity_id))
+        if (id !== drop.parent) return list
+        const add = drag.ids.flatMap((m) => { const e = store.outline.get(m); return e ? [e] : [] })
+        if (drop.kind === 'child') return [...list, ...add]
+        const i = list.findIndex((e) => e.entity_id === drop.sibling)
+        list.splice(drop.kind === 'before' ? i : i + 1, 0, ...add)
+        return list
+      },
+    }
+    const book = foldBook(store)
+    const solved = def.layout.solve(src, drag.control, { measurer: nodeMeasurer, collapsed: (id) => book.folded(id), fallbackSize: (e) => blockRegistry.get(e.view_type ?? '')?.defaultSize ?? { w: 160, h: 90 } })
+    for (const n of placeControl(solved, c.control.origin).nodes.values()) {
+      if (n.id === drag.ids[0]) slot = { x: n.x, y: n.y, w: n.w, h: n.h }
+      if (!drag.affected.includes(n.id)) out.set(n.id, { x: n.x, y: n.y, w: n.w, h: n.h })
+    }
+    return { rects: out, slot }
+  }
+  /** Show `drop` while dragging: the other nodes move to the proposed layout, the chrome draws its edges. */
+  const showDrop = (drag: Extract<Drag, { kind: 'node' }>, drop: NodeDrop) => {
+    const { rects, slot } = proposedLayout(drag, drop)
+    const shown: string[] = []
+    for (const id of drag.shown) if (!rects.has(id)) setTransform([id], 0, 0)
+    for (const [id, r] of rects) {
+      const l = laid.get(id)
+      if (!l) continue
+      const dx = r.x - l.rect.x, dy = r.y - l.rect.y
+      if (Math.abs(dx) + Math.abs(dy) < 0.5) { if (drag.shown.includes(id)) setTransform([id], 0, 0); continue }
+      setTransform([id], dx, dy)
+      shown.push(id)
+    }
+    drag.shown = shown
+    // a re-hung node shows the slot it would take and its edge from the new parent; a pinned one is where it is dropped
+    const parent = drop.kind === 'child' || drop.kind === 'before' || drop.kind === 'after' ? drop.parent : null
+    setNodePreview({ control: drag.control, drop, preview: { rects, dragged: new Set(drag.affected), parent: parent && laid.get(parent)?.node ? parent : null, at: parent ? slot : null } })
+  }
   // `translate` composes with a Block's own `rotate` (it is applied after it), unlike `transform`
   const setTransform = (ids: Iterable<string>, dx: number, dy: number) => {
     for (const id of ids) { const el = frameEl(id); if (el) el.style.translate = dx === 0 && dy === 0 ? '' : `${dx}px ${dy}px` }
@@ -515,7 +618,7 @@ export function RenderHost(props: RenderHostProps) {
       const px = state.vx * dt
       const py = state.vy * dt
       camera.panBy(px, py)
-      if (d.kind === 'move' || d.kind === 'resize' || d.kind === 'marquee') { d.startX += px; d.startY += py }
+      if (d.kind === 'move' || d.kind === 'node' || d.kind === 'resize' || d.kind === 'marquee') { d.startX += px; d.startY += py }
       trackPointer(state.clientX, state.clientY)
       state.raf = requestAnimationFrame(step)
     }
@@ -563,6 +666,25 @@ export function RenderHost(props: RenderHostProps) {
       else next.add(id)
       props.onSelectionChange(next)
     }
+    if (drag.kind === 'node') {
+      setTransform([...drag.affected, ...drag.shown], 0, 0)
+      restoreLines(drag.lines)
+      selectionLayerRef.current?.removeAttribute('transform')
+      setNodePreview(null)
+      if (cancel) return
+      if (!drag.moved) { click(drag.clicked, drag.additive, drag.wasSelected); return }
+      const drop = drag.drop
+      // a Block stays in its control (R9): to put it elsewhere, copy and paste it
+      if (!drop || drop.kind === 'outside') { store.notify('info', aiwsT('aiworkspace.mindmap.cannotLeave')); return }
+      if (drop.kind === 'pin') {
+        props.onCommitLayout(drag.ids.flatMap((id) => { const l = laid.get(id); return l ? [{ id, placement: movedPlacement(laid, l, drag.dx, drag.dy) }] : [] }))
+        return
+      }
+      const siblings = store.outline.childrenOf(drop.parent).filter((c) => !drag.ids.includes(c.entity_id))
+      const beforeId = drop.kind === 'before' ? drop.sibling : drop.kind === 'after' ? siblings[siblings.findIndex((c) => c.entity_id === drop.sibling) + 1]?.entity_id ?? null : null
+      props.onMoveNodes?.(drag.ids.map((id) => ({ id, parentId: drop.parent, beforeId })))
+      return
+    }
     if (drag.kind === 'move') {
       if (drag.ghost) { for (const gid of [...drag.affected, ...drag.lines]) { const el = frameEl(gid); if (el) el.style.visibility = '' } } else setTransform(drag.affected, 0, 0)
       restoreLines(drag.lines)
@@ -590,7 +712,11 @@ export function RenderHost(props: RenderHostProps) {
       const bl = drag.backing ? laid.get(drag.backing) : undefined
       if (back && bl) { back.style.left = `${bl.rect.x}px`; back.style.top = `${bl.rect.y}px`; back.style.width = `${bl.rect.w}px`; back.style.height = `${bl.rect.h}px` }
       if (!cancel && l && (drag.current.w !== drag.start.w || drag.current.h !== drag.start.h || drag.current.x !== drag.start.x || drag.current.y !== drag.start.y)) {
-        props.onCommitLayout([{ id: drag.id, placement: relativeTo(laid, l.parentId, drag.current, l.rotation) }])
+        // a node is placed by its control: its size is written, a text node's height keeps following its text
+        const stored = l.entity.placement
+        props.onCommitLayout([{ id: drag.id, placement: l.node
+          ? { x: stored?.x ?? 'auto', y: stored?.y ?? 'auto', w: Math.round(drag.current.w), h: isTextView(l.entity.view_type) ? stored?.h ?? 'auto' : Math.round(drag.current.h) }
+          : relativeTo(laid, l.parentId, drag.current, l.rotation) }])
       }
     } else if (drag.kind === 'rotate') {
       setRotatePreview(null)
@@ -716,10 +842,23 @@ export function RenderHost(props: RenderHostProps) {
         else dragRef.current = { kind: 'move', ids: [], affected: [], lines: [], shifted: new Set(), startX: event.clientX, startY: event.clientY, dx: 0, dy: 0, moved: false, clicked: id, additive, wasSelected }
         return
       }
-      // locked Blocks are selected but never moved, also as part of a selection (§7.2); a pen stroke moves whole
+      // a node of a control is dragged within it (脑图方案 §7.2): its subtree follows, the control says where it would hang
+      const target = laid.get(pressTarget(id))
+      if (target?.node && policy.layout) {
+        const control = target.node.control
+        const picked = wasSelected && !additive ? [...selection].map(pressTarget) : [target.entity.entity_id]
+        const ids = topLevel(laid, new Set(picked)).filter((moved) => laid.get(moved)?.node?.control === control && !laid.get(moved)?.locked && canLayout(moved))
+        const affected = ids.flatMap((moved) => [moved, ...descendantsOf(moved)])
+        const touching = linesTouching(affected)
+        if (!wasSelected && !additive) props.onSelectionChange(new Set([id]))
+        dragRef.current = { kind: 'node', control, ids, affected: affected.filter((a) => !touching.includes(a)), lines: touching, startX: event.clientX, startY: event.clientY, dx: 0, dy: 0, moved: false, clicked: id, additive, wasSelected, drop: null, shown: [] }
+        return
+      }
+      // locked Blocks are selected but never moved, also as part of a selection (§7.2); a pen stroke moves whole; a
+      // control's root moves its control
       const stroke = laid.get(id)?.entity.ink_stroke
       const unit = (stroke ? strokeCells.get(stroke) : undefined) ?? [id]
-      const ids = policy.layout ? topLevel(laid, wasSelected && !additive ? new Set(selection) : new Set(unit)).filter((moved) => !laid.get(moved)?.locked && canLayout(moved)) : []
+      const ids = policy.layout ? topLevel(laid, new Set((wasSelected && !additive ? [...selection] : unit).map(pressTarget))).filter((moved) => !laid.get(moved)?.locked && canLayout(moved)) : []
       const affected = ids.flatMap((moved) => [moved, ...descendantsOf(moved)])
       const touching = linesTouching(affected)
       if (!wasSelected && !additive) props.onSelectionChange(new Set([id]))
@@ -880,6 +1019,24 @@ export function RenderHost(props: RenderHostProps) {
       if (current.kind === 'pan') {
         camera.panBy(point.x - current.lastX, point.y - current.lastY)
         current.lastX = point.x; current.lastY = point.y; current.moved = true
+        return
+      }
+      if (current.kind === 'node') {
+        const dx = (point.x - current.startX) / camera.zoom
+        const dy = (point.y - current.startY) / camera.zoom
+        if (!current.moved && Math.hypot(point.x - current.startX, point.y - current.startY) < 3) return
+        if (current.ids.length === 0) return
+        current.moved = true
+        current.dx = dx; current.dy = dy
+        worldRef.current?.classList.add('is-moving')
+        setTransform(current.affected, dx, dy)
+        const moved = new Set(current.affected)
+        const shift = (id: string) => { const l = laid.get(id); return l ? { rect: { ...l.rect, x: l.rect.x + dx, y: l.rect.y + dy }, rotation: l.rotation } : undefined }
+        rerouteLines(current.lines, (id) => (moved.has(id) ? shift(id) : undefined))
+        selectionLayerRef.current?.setAttribute('transform', `translate(${dx * camera.zoom}, ${dy * camera.zoom})`)
+        const p = screenPoint({ clientX: point.x, clientY: point.y })
+        const drop = nodeDropAt(current, camera.toWorld(p.x, p.y))
+        if (JSON.stringify(drop) !== JSON.stringify(current.drop)) { current.drop = drop; showDrop(current, drop) }
         return
       }
       if (current.kind === 'move') {
@@ -1288,6 +1445,12 @@ export function RenderHost(props: RenderHostProps) {
   const zoom = camera.settledZoom
   // lines depend on the zoom only through screen-sized details (1 px minimum width, markers): steps of 25 % re-render them
   const lineZoom = Math.pow(1.25, Math.round(Math.log(zoom) / Math.log(1.25)))
+  /** What a control draws under its Blocks (its edges, fold handles, pins). */
+  const chromeOf = (l: Laid): ReactNode => {
+    const Chrome = controlRegistry.get(l.control?.kind)?.Chrome
+    if (!Chrome) return null
+    return <Chrome container={l} laid={laid} mode={mode} zoom={zoom} preview={nodePreview?.control === l.entity.entity_id ? nodePreview.preview : null} />
+  }
   const frameList: ReactNode[] = []
   for (const id of frameOrder) {
     const state = mounts.get(id)
@@ -1307,7 +1470,7 @@ export function RenderHost(props: RenderHostProps) {
       <div
         key={id}
         ref={(el) => { if (el) frames.current.set(id, el); else frames.current.delete(id) }}
-        className={`aiws-frame-block${l.isGroup ? ' is-group' : ''}${selection.has(id) ? ' is-selected' : ''}${hover === id ? ' is-hovered' : ''}${editing === id ? ' is-editing' : ''}`}
+        className={`aiws-frame-block${l.isGroup ? ' is-group' : ''}${l.control ? ' is-control' : ''}${l.node ? ' is-node' : ''}${selection.has(id) ? ' is-selected' : ''}${hover === id ? ' is-hovered' : ''}${editing === id ? ' is-editing' : ''}`}
         data-block-id={id}
         data-testid={`aiws-canvas-block-${id}`}
         data-lod={lod}
@@ -1319,8 +1482,11 @@ export function RenderHost(props: RenderHostProps) {
         style={{ left: l.rect.x, top: l.rect.y, width: l.rect.w, height: l.rect.h, rotate: l.rotation ? `${l.rotation}deg` : undefined, display: state === 'hidden' ? 'none' : undefined, visibility: props.hidden?.has(id) || erasing.has(id) ? 'hidden' : undefined, zIndex: editing === id ? laid.size + 1 : l.paint + 1 }}
       >
         {l.isGroup ? (
-          // an untitled group (an imported container, a swimlane: its frame shows the title) draws no label
-          l.entity.title ? <div className="aiws-group-chrome"><span className="aiws-group-title">{l.entity.title}</span></div> : null
+          l.control ? chromeOf(l)
+            // an untitled group (an imported container, a swimlane: its frame shows the title) draws no label; a kind
+            // this client does not know is said so (R12)
+            : l.entity.title || l.unknownKind ? <div className="aiws-group-chrome"><span className="aiws-group-title">{l.entity.title}</span>
+              {l.unknownKind && <span className="aiws-group-unknown" data-testid={`aiws-unknown-kind-${id}`} title={t('aiworkspace.mindmap.unknownKind', { kind: l.unknownKind })}>{l.unknownKind}</span>}</div> : null
         ) : lod === 'placeholder' ? (
           <div className="aiws-block-placeholder" data-testid={`aiws-placeholder-${id}`}>{l.entity.title ?? l.entity.view_type ?? ''}</div>
         ) : (
@@ -1352,14 +1518,15 @@ export function RenderHost(props: RenderHostProps) {
   const hoverLaid = hover && !selection.has(hover) ? laid.get(hover) : undefined
   const hoverShape = hoverLaid ? shapeFor(hoverLaid.entity.entity_id) : null
   const hoverMeta = hover ? metaSink.get(hover) : undefined
-  const single = selected.length === 1 && policy.layout && canLayout(selected[0].id) && !selected[0].locked && !selected[0].line && editing !== selected[0].id && !dragging ? selected[0] : null
+  // a control is sized by its layout: no handles of its own
+  const single = selected.length === 1 && policy.layout && canLayout(selected[0].id) && !selected[0].locked && !selected[0].line && !laid.get(selected[0].id)?.control && editing !== selected[0].id && !dragging ? selected[0] : null
   const singleLaid = single ? laid.get(single.id) : undefined
   const handles = single ? (['nw', 'ne', 'se', 'sw'] as const).map((h, i) => ({ h, ...corners(single.rect, single.rotation)[i] })) : []
   const edges = single ? (['n', 'e', 's', 'w'] as const).map((h, i) => {
     const pts = corners(single.rect, single.rotation)
     return { h, a: pts[i], b: pts[(i + 1) % 4] }
   }) : []
-  const rotateAt = single && singleLaid && !singleLaid.isGroup ? (() => {
+  const rotateAt = single && singleLaid && !singleLaid.isGroup && !singleLaid.node ? (() => {
     const sw = corners(single.rect, single.rotation)[3]
     return rotatePoint({ x: sw.x - sizes.rotateOffset * 0.72, y: sw.y + sizes.rotateOffset * 0.72 }, sw, single.rotation)
   })() : null
@@ -1411,8 +1578,8 @@ export function RenderHost(props: RenderHostProps) {
   // the label's handle wins over a bend handle under it (a bend is still added by dragging the line elsewhere)
   const underLabel = (p: Point) => Boolean(lineLabel && p.x >= lineLabel.x - 6 && p.x <= lineLabel.x + lineLabel.w + 6 && p.y >= lineLabel.y - 6 && p.y <= lineLabel.y + lineLabel.h + 6)
   // connection handles: just outside the anchor each side starts from — n, e, s, w unless the Block declares its
-  // own (mouse only, §4.3)
-  const connectHandles = single && singleLaid && !singleLaid.isGroup && pointer === 'mouse' && props.onConnectorCreate && props.tool !== 'connector' ? (() => {
+  // own (mouse only, §4.3); a mind map node has its fold handle there (a relation line is drawn with the line tool)
+  const connectHandles = single && singleLaid && !singleLaid.isGroup && !singleLaid.node && pointer === 'mouse' && props.onConnectorCreate && props.tool !== 'connector' ? (() => {
     const target = targetOf(single.id)
     if (!target) return []
     return (['n', 'e', 's', 'w'] as const).flatMap((side) => {
@@ -1437,6 +1604,18 @@ export function RenderHost(props: RenderHostProps) {
     for (const h of connectHandles) keep(h.x, h.y, CONNECT_DOT + 4)
     return { x, y, w: x2 - x, h: y2 - y }
   }
+  // fold handles of mind map nodes (脑图方案 §7.3): screen-sized, just past the side the branch grows from, outside the
+  // resize zones; shown on the hovered and selected nodes and always on folded ones. Folding is the reader's own state:
+  // every mode may fold (not a show's stage, not while writing or dragging).
+  const folds = mode === 'show' || inkOn || dragging || props.placing ? [] : [...laid.values()].flatMap((l) => {
+    const n = l.node
+    const id = l.entity.entity_id
+    if (!n?.hasChildren || !(n.collapsed || hover === id || selection.has(id))) return []
+    const r = camera.rectToScreen(l.rect)
+    const gap = sizes.edge / 2 + 3
+    const at = n.grow === 'down' ? { left: r.x + r.w / 2 - 9, top: r.y + r.h + gap } : n.grow === 'left' && n.parent !== null ? { left: r.x - gap - 18, top: r.y + r.h / 2 - 9 } : { left: r.x + r.w + gap, top: r.y + r.h / 2 - 9 }
+    return [{ id, control: n.control, collapsed: n.collapsed, color: n.color, at }]
+  })
   const cutShapes = props.cutIds ? [...props.cutIds].flatMap((id) => { const s = shapeFor(id); return s ? [{ id, ...s, line: Boolean(laid.get(id)?.connector) }] : [] }) : []
   return (
     <div
@@ -1517,6 +1696,22 @@ export function RenderHost(props: RenderHostProps) {
           ))}
         </g>
         {marquee && <rect className="aiws-marquee" data-testid="aiws-marquee" x={marquee.x} y={marquee.y} width={marquee.w} height={marquee.h} />}
+        {nodePreview && (() => {
+          const drop = nodePreview.drop
+          if (drop.kind === 'outside') { const box = laid.get(nodePreview.control); if (!box) return null; const r = camera.rectToScreen(box.rect); return <rect className="aiws-drop-refused" data-testid="aiws-drop-refused" x={r.x - 4} y={r.y - 4} width={r.w + 8} height={r.h + 8} rx={10} /> }
+          if (drop.kind === 'child') { const t = laid.get(drop.parent); if (!t) return null; const r = camera.rectToScreen(nodePreview.preview.rects.get(drop.parent) ?? t.rect); return <rect className="aiws-drop-target" data-testid={`aiws-drop-child-${drop.parent}`} x={r.x - 3} y={r.y - 3} width={r.w + 6} height={r.h + 6} rx={8} /> }
+          if (drop.kind === 'before' || drop.kind === 'after') {
+            const t = laid.get(drop.sibling)
+            if (!t) return null
+            const r = camera.rectToScreen(nodePreview.preview.rects.get(drop.sibling) ?? t.rect)
+            const down = t.node?.grow === 'down'
+            const before = drop.kind === 'before'
+            return down
+              ? <line className="aiws-drop-line" data-testid={`aiws-drop-${drop.kind}-${drop.sibling}`} x1={before ? r.x - 6 : r.x + r.w + 6} y1={r.y} x2={before ? r.x - 6 : r.x + r.w + 6} y2={r.y + r.h} />
+              : <line className="aiws-drop-line" data-testid={`aiws-drop-${drop.kind}-${drop.sibling}`} x1={r.x} y1={before ? r.y - 5 : r.y + r.h + 5} x2={r.x + r.w} y2={before ? r.y - 5 : r.y + r.h + 5} />
+          }
+          return null
+        })()}
         {snapShape && snap && (
           <g className="aiws-snap" data-testid={`aiws-snap-${snap.id}`} data-anchor={snap.anchor.id} data-exact={snap.exact ? 'true' : 'false'}>
             <Outline shape={snapShape.shape} rect={snapShape.rect} transform={turned(snapShape.rect, snapShape.rotation)} className="aiws-snap-outline" />
@@ -1567,6 +1762,13 @@ export function RenderHost(props: RenderHostProps) {
             <RotateCw size={pointer === 'touch' ? 18 : 14} aria-hidden="true" />
           </div>
         )}
+        {folds.map((f) => (
+          <button key={`fold:${f.id}`} type="button" className={`aiws-fold${f.collapsed ? ' is-folded' : ''}`} style={{ ...f.at, borderColor: f.color ?? undefined }} data-testid={`aiws-fold-${f.id}`} aria-expanded={!f.collapsed}
+            aria-label={t(f.collapsed ? 'aiworkspace.mindmap.unfold' : 'aiworkspace.mindmap.fold')} title={t(f.collapsed ? 'aiworkspace.mindmap.unfold' : 'aiworkspace.mindmap.fold')}
+            onPointerDown={(event) => event.stopPropagation()} onClick={() => foldBook(store).toggle(f.control, f.id)}>
+            {f.collapsed ? store.outline.descendants(f.id).filter((d) => d.type_id === 'buckyos.cell' || d.type_id === 'buckyos.container').length : '−'}
+          </button>
+        ))}
         {lockBadge && <div className="aiws-lock-badge" data-testid="aiws-lock-badge" title={t('aiworkspace.canvas.lockedBadge')} style={{ left: lockBadge.x, top: lockBadge.y }}><Lock size={12} aria-hidden="true" /></div>}
         {affordMeta && affordances.map(({ a, at }) => a.kind === 'label' ? (
           <div key={a.id} className={`aiws-afford aiws-afford-label at-${a.at}`} data-testid={`aiws-afford-${a.id}`} style={at}>

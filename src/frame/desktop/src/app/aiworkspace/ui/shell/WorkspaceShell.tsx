@@ -4,6 +4,7 @@
  * views live under one store. The canvas draws its own floating toolbars; the data-source view gets the
  * same main toolbar as a bar above it. */
 
+import { isCanvasContainer } from '../controls/registry'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CapturedAnchor } from '../../anchors/registry'
 import type { AiwsClient } from '../../api/client'
@@ -212,7 +213,7 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
       store.userState.set('surface:active', surfaceId)
       if (!phone) setTopMode('canvas')
     }
-    if (entity.type_id === 'buckyos.cell' || entity.kind === 'group') { focusBlock(entityId); return }
+    if (entity.type_id === 'buckyos.cell' || isCanvasContainer(entity)) { focusBlock(entityId); return }
     if (entity.kind === 'surface') { setFocus({ surfaceId: entityId, blockId: null, nonce: Date.now() }); store.userState.set('surface:active', entityId); if (!phone) setTopMode('canvas'); return }
     if (phone) {
       const views = store.outline.all().filter((e) => e.type_id === 'buckyos.cell' && e.source_id === entityId && !e.deleted && surfaceOf(e.entity_id))

@@ -15,6 +15,8 @@ import { useAiwsText } from '../../useAiwsText'
 import { BlockHost } from '../blocks/BlockHost'
 import { requestIntent } from '../blocks/editorToolbar'
 import { FlowBlockContext, type FlowBlockApi } from '../blocks/flowContext'
+import { richtextToMindmap } from '../controls/mindmap/convert'
+import { controlRegistry } from '../controls/registry'
 import { modePolicy, type CanvasMode } from '../blocks/registry'
 import { MenuList, useOverlayMounted, type MenuItem } from '../shell/popover'
 import { registryEntries, type CatalogEntry } from './catalog'
@@ -220,7 +222,9 @@ function ContainerFlow({ container, ...props }: ItemProps & { container: EntityE
       {shown.map((entity, index) => (
         entity.type_id === 'buckyos.cell'
           ? <FlowBlock key={entity.entity_id} cell={entity} siblings={shown} index={index} {...props} />
-          : <FlowGroup key={entity.entity_id} group={entity} siblings={shown} index={index} {...props} />
+          : entity.kind === 'group'
+            ? <FlowGroup key={entity.entity_id} group={entity} siblings={shown} index={index} {...props} />
+            : <FlowControl key={entity.entity_id} control={entity} siblings={shown} index={index} {...props} />
       ))}
     </>
   )
@@ -261,6 +265,8 @@ function Gutter({ entity, siblings, index, kind, ...props }: ItemProps & { entit
     { id: 'up', testId: `aiws-up-${entity.entity_id}`, label: t('aiworkspace.canvas.flow.moveUp'), hint: 'Ctrl+Shift+↑', disabled: !canMove || index === 0, run: () => moveInFlow(store, entity, -1) },
     { id: 'down', testId: `aiws-down-${entity.entity_id}`, label: t('aiworkspace.canvas.flow.moveDown'), hint: 'Ctrl+Shift+↓', disabled: !canMove || index === siblings.length - 1, run: () => moveInFlow(store, entity, 1) },
     { id: 'inspect', testId: `aiws-inspect-${entity.entity_id}`, label: t('aiworkspace.canvas.inspector.title'), hint: 'F2', run: () => props.onInspect(entity.entity_id) },
+    // a text's lists as a mind map right after it (脑图方案 §8)
+    ...(entity.view_type === 'richtext' && canInsert ? [{ id: 'to-mindmap', testId: `aiws-to-mindmap-${entity.entity_id}`, label: t('aiworkspace.mindmap.fromList'), run: () => { void richtextToMindmap(store, null, entity, props.surfaceId) } }] : []),
     { id: 'sep-delete', separator: true },
     { id: 'delete', testId: kind === 'group' ? `aiws-delete-group-${entity.entity_id}` : `aiws-delete-block-${entity.entity_id}`, danger: true,
       label: kind === 'group' ? t('aiworkspace.canvas.flow.deleteGroup') : t('aiworkspace.common.delete'), hint: 'Delete', disabled: !canDelete,
@@ -305,6 +311,21 @@ function FlowGroup({ group, siblings, index, ...props }: ItemProps & { group: En
           </button>
         </div>
       )}
+    </section>
+  )
+}
+
+/** A control on a page (脑图方案 §6.3): one self-contained Block — its own drawing, moved and deleted as a whole. */
+function FlowControl({ control, siblings, index, ...props }: ItemProps & { control: EntityEnvelope; siblings: EntityEnvelope[]; index: number }) {
+  const def = controlRegistry.get(control.kind)
+  const { t } = useAiwsText()
+  const Flow = def?.Flow
+  return (
+    <section className={`aiws-cell aiws-fblock aiws-fcontrol${props.selected.has(control.entity_id) ? ' is-selected' : ''}${props.dragging === control.entity_id ? ' is-dragged' : ''}`} tabIndex={-1}
+      data-testid={`aiws-flow-control-${control.entity_id}`} data-cell-id={control.entity_id} data-parent-id={control.parent_id ?? undefined} data-flow-item="block" data-kind={control.kind}>
+      <Gutter entity={control} siblings={siblings} index={index} kind="block" {...props} />
+      {control.title && <div className="aiws-fblock-title">{control.title}</div>}
+      {Flow ? <Flow containerId={control.entity_id} mode={props.mode} /> : <div className="aiws-muted">{t('aiworkspace.mindmap.unknownKind', { kind: control.kind ?? '' })}</div>}
     </section>
   )
 }

@@ -1,0 +1,1436 @@
+{
+ "description": "脑图 TODO M0 fixture: a free Surface with mind maps (Block-controls, kind mindmap) — a minimal tree, the four directions, a pinned node and an explicit side, a nested control and a non-text node, and a control whose Blocks carry slots. Node placements are \"auto\" (computed by the control's layout, never stored). Replayed through the service interface; commit N gets seq N.",
+ "commits": [
+  {
+   "message": "一张自由画布",
+   "operations": [
+    {
+     "op": "entity.create",
+     "entity_id": "s-mind-content",
+     "type_id": "buckyos.container",
+     "parent_id": "canvas-content",
+     "order_key": "m",
+     "name": "脑图",
+     "payload": {
+      "kind": "folder",
+      "title": "脑图",
+      "system": "surface_content",
+      "surface_id": "s-mind"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "s-mind",
+     "type_id": "buckyos.container",
+     "parent_id": "surfaces",
+     "order_key": "m",
+     "name": "脑图",
+     "payload": {
+      "kind": "surface",
+      "layout": {
+       "mode": "free"
+      },
+      "title": "脑图",
+      "content_folder_id": "s-mind-content"
+     }
+    }
+   ]
+  },
+  {
+   "message": "最小树",
+   "operations": [
+    {
+     "op": "entity.create",
+     "entity_id": "mm-min",
+     "type_id": "buckyos.container",
+     "parent_id": "s-mind",
+     "order_key": "a",
+     "placement": {
+      "x": 0,
+      "y": 0,
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "kind": "mindmap",
+      "layout": {
+       "mode": "tree"
+      },
+      "title": "产品规划",
+      "config": {
+       "direction": "right",
+       "edge": "curve",
+       "spacing": {
+        "sibling": 12,
+        "level": 48
+       }
+      }
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "min-root",
+     "type_id": "buckyos.cell",
+     "parent_id": "mm-min",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "产品规划"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "min-1",
+     "type_id": "buckyos.cell",
+     "parent_id": "min-root",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "市场"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "min-1-1",
+     "type_id": "buckyos.cell",
+     "parent_id": "min-1",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "用户访谈"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "min-1-2",
+     "type_id": "buckyos.cell",
+     "parent_id": "min-1",
+     "order_key": "b",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "竞品"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "min-2",
+     "type_id": "buckyos.cell",
+     "parent_id": "min-root",
+     "order_key": "b",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "产品"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "min-2-1",
+     "type_id": "buckyos.cell",
+     "parent_id": "min-2",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "MVP"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "min-2-2",
+     "type_id": "buckyos.cell",
+     "parent_id": "min-2",
+     "order_key": "b",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "路线图"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "min-2-3",
+     "type_id": "buckyos.cell",
+     "parent_id": "min-2",
+     "order_key": "c",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "定价"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "min-3",
+     "type_id": "buckyos.cell",
+     "parent_id": "min-root",
+     "order_key": "c",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "工程"
+     }
+    }
+   ]
+  },
+  {
+   "message": "方向 right",
+   "operations": [
+    {
+     "op": "entity.create",
+     "entity_id": "mm-right",
+     "type_id": "buckyos.container",
+     "parent_id": "s-mind",
+     "order_key": "b",
+     "placement": {
+      "x": 0,
+      "y": 600,
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "kind": "mindmap",
+      "layout": {
+       "mode": "tree"
+      },
+      "title": "方向 right",
+      "config": {
+       "direction": "right",
+       "edge": "curve",
+       "spacing": {
+        "sibling": 12,
+        "level": 48
+       }
+      }
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "right-root",
+     "type_id": "buckyos.cell",
+     "parent_id": "mm-right",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "根 right"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "right-1",
+     "type_id": "buckyos.cell",
+     "parent_id": "right-root",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "一"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "right-1-1",
+     "type_id": "buckyos.cell",
+     "parent_id": "right-1",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "一.1"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "right-1-2",
+     "type_id": "buckyos.cell",
+     "parent_id": "right-1",
+     "order_key": "b",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "一.2"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "right-2",
+     "type_id": "buckyos.cell",
+     "parent_id": "right-root",
+     "order_key": "b",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "二"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "right-2-1",
+     "type_id": "buckyos.cell",
+     "parent_id": "right-2",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "二.1"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "right-3",
+     "type_id": "buckyos.cell",
+     "parent_id": "right-root",
+     "order_key": "c",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "三"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "right-3-1",
+     "type_id": "buckyos.cell",
+     "parent_id": "right-3",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "三.1"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "right-3-2",
+     "type_id": "buckyos.cell",
+     "parent_id": "right-3",
+     "order_key": "b",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "三.2"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "right-3-3",
+     "type_id": "buckyos.cell",
+     "parent_id": "right-3",
+     "order_key": "c",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "三.3"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "right-4",
+     "type_id": "buckyos.cell",
+     "parent_id": "right-root",
+     "order_key": "d",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "四"
+     }
+    }
+   ]
+  },
+  {
+   "message": "方向 left",
+   "operations": [
+    {
+     "op": "entity.create",
+     "entity_id": "mm-left",
+     "type_id": "buckyos.container",
+     "parent_id": "s-mind",
+     "order_key": "c",
+     "placement": {
+      "x": 1200,
+      "y": 600,
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "kind": "mindmap",
+      "layout": {
+       "mode": "tree"
+      },
+      "title": "方向 left",
+      "config": {
+       "direction": "left",
+       "edge": "curve",
+       "spacing": {
+        "sibling": 12,
+        "level": 48
+       }
+      }
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "left-root",
+     "type_id": "buckyos.cell",
+     "parent_id": "mm-left",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "根 left"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "left-1",
+     "type_id": "buckyos.cell",
+     "parent_id": "left-root",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "一"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "left-1-1",
+     "type_id": "buckyos.cell",
+     "parent_id": "left-1",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "一.1"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "left-1-2",
+     "type_id": "buckyos.cell",
+     "parent_id": "left-1",
+     "order_key": "b",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "一.2"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "left-2",
+     "type_id": "buckyos.cell",
+     "parent_id": "left-root",
+     "order_key": "b",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "二"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "left-2-1",
+     "type_id": "buckyos.cell",
+     "parent_id": "left-2",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "二.1"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "left-3",
+     "type_id": "buckyos.cell",
+     "parent_id": "left-root",
+     "order_key": "c",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "三"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "left-3-1",
+     "type_id": "buckyos.cell",
+     "parent_id": "left-3",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "三.1"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "left-3-2",
+     "type_id": "buckyos.cell",
+     "parent_id": "left-3",
+     "order_key": "b",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "三.2"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "left-3-3",
+     "type_id": "buckyos.cell",
+     "parent_id": "left-3",
+     "order_key": "c",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "三.3"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "left-4",
+     "type_id": "buckyos.cell",
+     "parent_id": "left-root",
+     "order_key": "d",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "四"
+     }
+    }
+   ]
+  },
+  {
+   "message": "方向 both",
+   "operations": [
+    {
+     "op": "entity.create",
+     "entity_id": "mm-both",
+     "type_id": "buckyos.container",
+     "parent_id": "s-mind",
+     "order_key": "d",
+     "placement": {
+      "x": 0,
+      "y": 1400,
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "kind": "mindmap",
+      "layout": {
+       "mode": "tree"
+      },
+      "title": "方向 both",
+      "config": {
+       "direction": "both",
+       "edge": "curve",
+       "spacing": {
+        "sibling": 12,
+        "level": 48
+       }
+      }
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "both-root",
+     "type_id": "buckyos.cell",
+     "parent_id": "mm-both",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "根 both"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "both-1",
+     "type_id": "buckyos.cell",
+     "parent_id": "both-root",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "一",
+      "config": {
+       "side": "left",
+       "branch_color": "#e8590c"
+      }
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "both-1-1",
+     "type_id": "buckyos.cell",
+     "parent_id": "both-1",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "一.1"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "both-1-2",
+     "type_id": "buckyos.cell",
+     "parent_id": "both-1",
+     "order_key": "b",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "一.2"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "both-2",
+     "type_id": "buckyos.cell",
+     "parent_id": "both-root",
+     "order_key": "b",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "二"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "both-2-1",
+     "type_id": "buckyos.cell",
+     "parent_id": "both-2",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "二.1"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "both-3",
+     "type_id": "buckyos.cell",
+     "parent_id": "both-root",
+     "order_key": "c",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "三"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "both-3-1",
+     "type_id": "buckyos.cell",
+     "parent_id": "both-3",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "三.1"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "both-3-2",
+     "type_id": "buckyos.cell",
+     "parent_id": "both-3",
+     "order_key": "b",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "三.2"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "both-3-3",
+     "type_id": "buckyos.cell",
+     "parent_id": "both-3",
+     "order_key": "c",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "三.3"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "both-4",
+     "type_id": "buckyos.cell",
+     "parent_id": "both-root",
+     "order_key": "d",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "四"
+     }
+    }
+   ]
+  },
+  {
+   "message": "方向 down",
+   "operations": [
+    {
+     "op": "entity.create",
+     "entity_id": "mm-down",
+     "type_id": "buckyos.container",
+     "parent_id": "s-mind",
+     "order_key": "e",
+     "placement": {
+      "x": 1400,
+      "y": 1400,
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "kind": "mindmap",
+      "layout": {
+       "mode": "tree"
+      },
+      "title": "方向 down",
+      "config": {
+       "direction": "down",
+       "edge": "curve",
+       "spacing": {
+        "sibling": 12,
+        "level": 48
+       }
+      }
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "down-root",
+     "type_id": "buckyos.cell",
+     "parent_id": "mm-down",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "根 down"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "down-1",
+     "type_id": "buckyos.cell",
+     "parent_id": "down-root",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "一"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "down-1-1",
+     "type_id": "buckyos.cell",
+     "parent_id": "down-1",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "一.1"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "down-1-2",
+     "type_id": "buckyos.cell",
+     "parent_id": "down-1",
+     "order_key": "b",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "一.2"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "down-2",
+     "type_id": "buckyos.cell",
+     "parent_id": "down-root",
+     "order_key": "b",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "二"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "down-2-1",
+     "type_id": "buckyos.cell",
+     "parent_id": "down-2",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "二.1"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "down-3",
+     "type_id": "buckyos.cell",
+     "parent_id": "down-root",
+     "order_key": "c",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "三"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "down-3-1",
+     "type_id": "buckyos.cell",
+     "parent_id": "down-3",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "三.1"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "down-3-2",
+     "type_id": "buckyos.cell",
+     "parent_id": "down-3",
+     "order_key": "b",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "三.2"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "down-3-3",
+     "type_id": "buckyos.cell",
+     "parent_id": "down-3",
+     "order_key": "c",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "三.3"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "down-4",
+     "type_id": "buckyos.cell",
+     "parent_id": "down-root",
+     "order_key": "d",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "四"
+     }
+    }
+   ]
+  },
+  {
+   "message": "pin 住一个节点",
+   "operations": [
+    {
+     "op": "tree.place",
+     "entity_id": "both-3",
+     "placement": {
+      "x": 420,
+      "y": -160,
+      "w": "auto",
+      "h": "auto"
+     }
+    }
+   ]
+  },
+  {
+   "message": "嵌套 control 与非文字节点",
+   "operations": [
+    {
+     "op": "entity.create",
+     "entity_id": "min-inner",
+     "type_id": "buckyos.container",
+     "parent_id": "min-2",
+     "order_key": "z",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "kind": "mindmap",
+      "layout": {
+       "mode": "tree"
+      },
+      "title": "内层脑图",
+      "config": {
+       "direction": "down",
+       "edge": "curve",
+       "spacing": {
+        "sibling": 12,
+        "level": 48
+       }
+      }
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "inner-root",
+     "type_id": "buckyos.cell",
+     "parent_id": "min-inner",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "内层根"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "inner-1",
+     "type_id": "buckyos.cell",
+     "parent_id": "inner-root",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "内层子 1"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "inner-2",
+     "type_id": "buckyos.cell",
+     "parent_id": "inner-root",
+     "order_key": "b",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "内层子 2"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "min-frame",
+     "type_id": "buckyos.cell",
+     "parent_id": "min-3",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": 160,
+      "h": 90
+     },
+     "payload": {
+      "view": {
+       "type": "frame"
+      },
+      "title": "框节点",
+      "config": {
+       "color": "#4f8df7"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "message": "含 slot 的组合容器",
+   "operations": [
+    {
+     "op": "entity.create",
+     "entity_id": "mm-slots",
+     "type_id": "buckyos.container",
+     "parent_id": "s-mind",
+     "order_key": "z",
+     "placement": {
+      "x": 2400,
+      "y": 0,
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "kind": "mindmap",
+      "layout": {
+       "mode": "tree"
+      },
+      "title": "slot 示例",
+      "config": {
+       "direction": "right",
+       "edge": "curve",
+       "spacing": {
+        "sibling": 12,
+        "level": 48
+       }
+      }
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "slot-root",
+     "type_id": "buckyos.cell",
+     "parent_id": "mm-slots",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "根",
+      "slot": "root"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "slot-bkg",
+     "type_id": "buckyos.cell",
+     "parent_id": "slot-root",
+     "order_key": "a",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "背景",
+      "slot": "bkg"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "slot-text",
+     "type_id": "buckyos.cell",
+     "parent_id": "slot-root",
+     "order_key": "b",
+     "placement": {
+      "x": "auto",
+      "y": "auto",
+      "w": "auto",
+      "h": "auto"
+     },
+     "payload": {
+      "view": {
+       "type": "mindnode"
+      },
+      "title": "文字",
+      "slot": "text"
+     }
+    }
+   ]
+  }
+ ]
+}

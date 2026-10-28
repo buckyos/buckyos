@@ -1,4 +1,5 @@
 import { useCallback, useContext, useMemo, useSyncExternalStore } from 'react'
+import { num } from '@controls/placement'
 import type { BlockDefRead, CellPayload, EntityEnvelope, KeyedContent } from '../../api/types'
 import { aiwsT } from '../../i18n'
 import { useEntity, useLoad, useReadOnlyReason, useStore, useVersion, useWorkspaceUi } from '../../state/hooks'
@@ -89,7 +90,7 @@ export function useBlockContext(options: BlockContextOptions) {
   const context: RenderContext = {
     cell, payload, keyRevs: current.content.key_revs, source, definition: resolution?.ok ? resolution.definition : MISSING_DEF, documentDefinition, depth,
     mode, view, selected: Boolean(options.selected), hovered: Boolean(options.hovered), editorActive: Boolean(options.editorActive) && editable && depth === 0,
-    capabilities: cell.capabilities, readOnlyReason, dataState, size: options.size ?? { w: cell.placement?.w ?? 320, h: cell.placement?.h ?? 200 }, zoom: options.zoom ?? 1,
+    capabilities: cell.capabilities, readOnlyReason, dataState, size: options.size ?? { w: num(cell.placement?.w) ?? 320, h: num(cell.placement?.h) ?? 200 }, zoom: options.zoom ?? 1,
     activateEditor: () => { if (editable && depth === 0 && resolution?.ok) options.onActivate?.() },
     deactivateEditor: () => options.onDeactivate?.(), openEntity: ui.openEntity,
     setEditorToolbar: (items: ToolbarItem[] | null) => toolbarSink?.set(`block:${cellId}`, items), pointerType,

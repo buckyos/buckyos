@@ -8,7 +8,7 @@ Debugging: `deno run -A lib/run.js` (prints a summary of the results; the full o
 
 ```js
 const sales = aiws.input('sales')        // get an input by input name (input names: see context/inputs.json and the output contract)
-sales.kind                               // 'table' | 'richtext' | 'record' | 'asset' | 'folder' | 'annotation'
+sales.kind                               // 'table' | 'richtext' | 'record' | 'asset' | 'folder' | 'annotation' | 'control'
 sales.fields()                           // [{ name, type, options?, id, visible }], in the table's field order
 sales.rows()                             // [{ field name: value, _id }]; a view input follows the view's filter and sort
 sales.rows({ fields: ['Month', 'Sales'], filter: { Status: 'Settled' }, sort: '-Sales', limit: 10 })
@@ -17,6 +17,7 @@ aiws.input('rules').markdown()           // rich text → Markdown
 aiws.input('profile').props()            // record → { property name: value }
 aiws.input('logo').bytes()               // asset → Uint8Array (.text() for the text)
 aiws.input('folder').members()           // folder members (each member also has rows/markdown/…)
+aiws.input('branch').outline()           // a control (a mind map) or one of its nodes → its tree as a Markdown outline (a node: the node is the root item); .control is its kind
 aiws.inputs()                            // all input names
 aiws.request                             // fixed parameters: { today, timezone, currency, … }; dates follow it
 aiws.resolve('Orders') / aiws.find('Sales') / aiws.outline()   // return metadata only; to read content it must be an input
@@ -35,7 +36,12 @@ aiws.result.record('kpi', { 'Total sales': 123.4, Orders: 12 })
 aiws.result.text('commentary', markdown)            // text the program generates from a template (also updated when only the program is re-run)
 aiws.result.file('chart', 'output/chart.svg', 'image/svg+xml')
 aiws.result.html('dashboard', { html, css, js, bindings: { orders: 'input:sales', summary: 'result:monthly' } })
+// a Block-control of catalog/controls.json (a mind map…): the tree as a Markdown outline or [{ text, children }]
+aiws.result.control('plan', { kind: 'mindmap', children: '- Launch\n  - Market\n  - Product', config: { direction: 'right' }, title: 'Launch' })
+aiws.result.control('more', { kind: 'mindmap', children: [{ text: 'Pricing', children: [] }], under: 'branch' })   // below the node of input `branch`
 ```
+
+A control result never carries coordinates or sizes: the control lays its nodes out. Each item becomes a text node (its inline Markdown is kept, at most 256 characters); at most 2000 nodes and 32 levels. Without `under` it is a new control in the result group (a re-run in overwrite mode replaces it in place); with `under` the items are appended below that node (a re-run replaces what the last run appended), and `config` / `title` do not apply.
 
 Field types: `text | number | decimal | boolean | date | datetime | select | multi_select`; inferred from the values when not declared. `decimal` keeps as many decimal places as the values need (at most 6; it never rounds to fewer); to fix the number of decimal places, use the array form `fields: [{ name: 'Gross margin', type: 'decimal', scale: 4 }]`, and the program then does its own rounding. A table is shown in the order of `rows` (up to 1000 rows; once the user sorts it on the Block, the user's order wins), so sort in the program when needed. A result name can be written only once; result names must be names in the output contract.
 

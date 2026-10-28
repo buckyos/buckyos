@@ -42,6 +42,7 @@ pub fn prefix_for(type_id: &str, kind: Option<&str>) -> &'static str {
         (TYPE_CELL, _) => "B",
         (TYPE_CONTAINER, Some("surface")) => "S",
         (TYPE_CONTAINER, Some("group")) => "G",
+        (TYPE_CONTAINER, Some(k)) if aiworkspace_core::types::is_control_kind(k) => "G",
         _ => "F",
     }
 }

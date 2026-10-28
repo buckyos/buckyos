@@ -85,15 +85,19 @@ impl Kind {
                 json!({ "type": "object", "properties": {} }),
             ),
             Kind::PutResult => (
-                "Submit a result agreed as direct (commentary, recommendations and other text, or a file under output/ not produced by the program); it is validated immediately and a preview is returned; submitting the same name again replaces it. Numbers in text may only cite facts or result tables.",
+                "Submit a result agreed as direct (commentary, recommendations and other text, a file under output/ not produced by the program, or a control such as a mind map given as an outline); it is validated immediately and a preview is returned; submitting the same name again replaces it. Numbers in text may only cite facts or result tables.",
                 json!({ "type": "object", "properties": {
                     "name": { "type": "string", "description": "The result name in the output contract" },
-                    "type": { "type": "string", "enum": ["text", "record", "file", "html"] },
+                    "type": { "type": "string", "enum": ["text", "record", "file", "html", "control"] },
                     "markdown": { "type": "string", "description": "The Markdown when type=text; [title](result:result name) / [title](input:input name) link to other results or inputs" },
                     "props": { "type": "object", "description": "The properties when type=record: { name: value }" },
                     "path": { "type": "string", "description": "The path of a file under output/ when type=file" },
                     "html": { "type": "string" }, "css": { "type": "string" }, "js": { "type": "string" },
                     "bindings": { "type": "object", "description": "The bindings when type=html: { binding name: \"input:input name\" | \"result:result name\" }" },
+                    "kind": { "type": "string", "description": "The control when type=control (catalog/controls.json), such as mindmap" },
+                    "config": { "type": "object", "description": "The control's configuration when type=control (optional)" },
+                    "children": { "description": "The tree when type=control: a Markdown outline (nested list) or [{ \"text\": …, \"children\": [...] }]; no coordinates", "anyOf": [{ "type": "string" }, { "type": "array", "items": { "type": "object" } }] },
+                    "under": { "type": "string", "description": "When type=control: the input name of a node of an existing control; the tree goes below that node instead of into a new control" },
                     "title": { "type": "string" } }, "required": ["name", "type"] }),
             ),
             Kind::CheckResults => (

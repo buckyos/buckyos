@@ -293,8 +293,14 @@ fn wish_freshness(ctx: &dyn ReadCtx, access: &Access, e: &EntityRow) -> WsResult
             let ty = b.get("type").and_then(Value::as_str).unwrap_or("");
             let id = b.get("entity_id").and_then(Value::as_str).unwrap_or("");
             let approach = b.get("approach").cloned().unwrap_or(Value::Null);
-            if ty == "table_columns" {
-                // derived columns live on an input table: their record is the run's read set
+            if ty == "control" && !ctx.entity(id)?.is_some_and(|c| c.alive()) {
+                status = worse(status, Status::Unavailable);
+                results.push(json!({ "name": name, "type": ty, "entity_id": id, "approach": approach, "status": "unavailable", "reason": "missing" }));
+                continue;
+            }
+            if ty == "table_columns" || ty == "control" {
+                // derived columns live on an input table, a control on the canvas without a generation record:
+                // their record is the run's read set
                 let (mut st, ls, up) = record_freshness(ctx, access, &read_set, &mut visited.clone(), 0)?;
                 if config_changed {
                     st = worse(st, Status::Stale);

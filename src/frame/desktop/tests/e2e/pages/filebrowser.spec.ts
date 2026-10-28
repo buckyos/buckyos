@@ -278,6 +278,7 @@ test.describe('File browser app panel', () => {
     // Success path: the committed entry appears in the destination listing.
     const chooser1 = page.waitForEvent('filechooser')
     await win.getByRole('button', { name: 'Upload', exact: true }).click()
+    await page.getByRole('menuitem', { name: 'Upload files', exact: true }).click()
     await (
       await chooser1
     ).setFiles({
@@ -293,6 +294,7 @@ test.describe('File browser app panel', () => {
     // completes the transfer.
     const chooser2 = page.waitForEvent('filechooser')
     await win.getByRole('button', { name: 'Upload', exact: true }).click()
+    await page.getByRole('menuitem', { name: 'Upload files', exact: true }).click()
     await (
       await chooser2
     ).setFiles({

@@ -3,6 +3,7 @@
  * path's stage size takes when fitted ("contain") into a window; the camera is the one that makes R fill S. Window
  * sizes change S only, never R, so every window shows the same content with more or less letterboxing. */
 
+import { fixed, num } from '@controls/placement'
 import type { EntityEnvelope, ShowPathPayload, ShowStep, StageSize, StepTransition } from '../api/types'
 import { aiwsT, localizedLabels } from '../i18n'
 import type { OutlineModel } from '../state/outline'
@@ -59,14 +60,16 @@ export function viewportOf(r: Rect, stage: StageSize): { center: { x: number; y:
 /** World rectangle and rotation of a Block, its placement made absolute through enclosing groups; null off a Surface. */
 export function worldRectOf(outline: OutlineModel, id: string): { surfaceId: string; rect: Rect; rotation: number } | null {
   const entity = outline.get(id)
-  if (!entity?.placement) return null
-  const rect = { x: entity.placement.x, y: entity.placement.y, w: entity.placement.w, h: entity.placement.h }
+  // a Block laid out by a control has no stored position: its rectangle is the canvas layout's
+  const placed = fixed(entity?.placement)
+  if (!entity || !placed) return null
+  const rect = { x: placed.x, y: placed.y, w: placed.w, h: placed.h }
   let parent = entity.parent_id ? outline.get(entity.parent_id) : undefined
   for (let i = 0; parent && i < 64; i++) {
-    if (parent.kind === 'surface') return { surfaceId: parent.entity_id, rect, rotation: entity.placement.rotation ?? 0 }
+    if (parent.kind === 'surface') return { surfaceId: parent.entity_id, rect, rotation: placed.rotation ?? 0 }
     if (parent.kind !== 'group') return null
-    rect.x += parent.placement?.x ?? 0
-    rect.y += parent.placement?.y ?? 0
+    rect.x += num(parent.placement?.x) ?? 0
+    rect.y += num(parent.placement?.y) ?? 0
     parent = parent.parent_id ? outline.get(parent.parent_id) : undefined
   }
   return null

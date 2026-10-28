@@ -92,6 +92,7 @@ test.describe('File browser on real nfs_server', () => {
     const uploadName = `e2e-upload-${stamp}.txt`
     const chooser = page.waitForEvent('filechooser')
     await win.getByRole('button', { name: 'Upload', exact: true }).click()
+    await page.getByRole('menuitem', { name: 'Upload files', exact: true }).click()
     await (await chooser).setFiles({
       name: uploadName,
       mimeType: 'text/plain',
@@ -108,6 +109,7 @@ test.describe('File browser on real nfs_server', () => {
     expect(firstUploadBytes).toBe(Buffer.byteLength(payload))
     const duplicateChooser = page.waitForEvent('filechooser')
     await win.getByRole('button', { name: 'Upload', exact: true }).click()
+    await page.getByRole('menuitem', { name: 'Upload files', exact: true }).click()
     await (await duplicateChooser).setFiles({ name: `${uploadName}.copy`, mimeType: 'text/plain', buffer: Buffer.from(payload) })
     await expect(page.getByTestId('transfer-success')).toHaveCount(2, { timeout: 20000 })
     expect(await readNfspText(page, `/home/Documents/${uploadName}.copy`)).toBe(payload)
@@ -122,7 +124,7 @@ test.describe('File browser on real nfs_server', () => {
     await writeFile(join(root, 'zero.txt'), '')
     try {
       const folderChooser = page.waitForEvent('filechooser')
-      await win.getByRole('button', { name: 'New', exact: true }).click()
+      await win.getByRole('button', { name: 'Upload', exact: true }).click()
       await page.getByRole('menuitem', { name: 'Upload folder', exact: true }).click()
       await (await folderChooser).setFiles(root)
       await expect(page.getByTestId('transfer-success')).toHaveCount(3, { timeout: 30000 })

@@ -60,6 +60,14 @@ pub struct Group {
     pub surface_id: String,
     pub title: Option<String>,
     pub rect: Rect,
+    /// `group`, or the kind of a Block-control (`mindmap`…)
+    pub kind: String,
+}
+
+impl Group {
+    pub fn is_control(&self) -> bool {
+        aiworkspace_core::types::is_control_kind(&self.kind)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -78,7 +86,9 @@ pub struct Canvas {
 
 const PURE_UI: &[&str] = &["frame", "shape"];
 
-fn walk(ctx: &dyn ReadCtx, can_read: &dyn Fn(&EntityRow) -> WsResult<bool>, parent: &str, surface: &str, origin: (f64, f64), group: Option<&str>, out: &mut Canvas) -> WsResult<()> {
+/// `in_control`: the Blocks under `parent` are laid out by a control, so a Block may hold Blocks (mind map nodes);
+/// their `"auto"` components read as 0 (the layout is the Desktop's).
+fn walk(ctx: &dyn ReadCtx, can_read: &dyn Fn(&EntityRow) -> WsResult<bool>, parent: &str, surface: &str, origin: (f64, f64), group: Option<&str>, in_control: bool, out: &mut Canvas) -> WsResult<()> {
     for edge in ctx.children(parent)? {
         let Some(e) = ctx.entity(&edge.child_id)?.filter(|e| e.alive()) else { continue };
         if !can_read(&e)? {
@@ -89,8 +99,10 @@ fn walk(ctx: &dyn ReadCtx, can_read: &dyn Fn(&EntityRow) -> WsResult<bool>, pare
         rect.y += origin.1;
         match e.type_id.as_str() {
             TYPE_CONTAINER => {
-                out.groups.push(Group { entity_id: e.entity_id.clone(), surface_id: surface.into(), title: e.payload.get("title").and_then(Value::as_str).map(str::to_string), rect });
-                walk(ctx, can_read, &e.entity_id, surface, (rect.x, rect.y), Some(&e.entity_id), out)?;
+                let kind = e.payload.get("kind").and_then(Value::as_str).unwrap_or("group").to_string();
+                let control = aiworkspace_core::types::is_control_kind(&kind);
+                out.groups.push(Group { entity_id: e.entity_id.clone(), surface_id: surface.into(), title: e.payload.get("title").and_then(Value::as_str).map(str::to_string), rect, kind });
+                walk(ctx, can_read, &e.entity_id, surface, (rect.x, rect.y), Some(&e.entity_id), control, out)?;
             }
             TYPE_CELL => {
                 let renderer = e.payload.get("view").and_then(|v| v["type"].as_str()).unwrap_or("").to_string();
@@ -107,6 +119,9 @@ fn walk(ctx: &dyn ReadCtx, can_read: &dyn Fn(&EntityRow) -> WsResult<bool>, pare
                     source_id: e.payload.get("source_ref").and_then(reference_entity_id).map(str::to_string),
                     payload: e.payload.clone(),
                 });
+                if in_control {
+                    walk(ctx, can_read, &e.entity_id, surface, (rect.x, rect.y), group, true, out)?;
+                }
             }
             _ => {}
         }
@@ -127,7 +142,7 @@ impl Canvas {
                 title: s.payload.get("title").and_then(Value::as_str).or(s.name.as_deref()).unwrap_or(&s.entity_id).to_string(),
                 mode: s.payload.get("layout").and_then(|l| l["mode"].as_str()).unwrap_or("free").to_string(),
             });
-            walk(ctx, can_read, &s.entity_id, &s.entity_id, (0.0, 0.0), None, &mut c)?;
+            walk(ctx, can_read, &s.entity_id, &s.entity_id, (0.0, 0.0), None, false, &mut c)?;
         }
         // frames: the smallest frame on the same Surface holding a Block's centre
         let frames: Vec<(String, String, Rect)> =

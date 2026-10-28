@@ -8,6 +8,7 @@
 //! (`record_id_for_key`), fields through their names; a type change of a logical result is a
 //! conflict, not a silent conversion; results missing this time are listed, never deleted.
 
+use super::outline::{node_title, tree_of, OutlineNode};
 use crate::docdb::SqlCtx;
 use crate::workspace::{Caller, Workspace};
 use aiworkspace_core::canonical::{canonical_json, sha256_hex};
@@ -37,6 +38,9 @@ pub fn default_renderer(ty: &str) -> &'static str {
         _ => "richtext",
     }
 }
+
+/// The grid slot a new control takes (its real box is its layout's).
+const CONTROL_SIZE: (f64, f64) = (480.0, 320.0);
 
 fn default_size(renderer: &str, ty: &str) -> (f64, f64) {
     match (renderer, ty) {
@@ -157,6 +161,18 @@ impl Plan {
                 "assets": self.assets.iter().map(|o| json!({ "object_id": o })).collect::<Vec<_>>(),
                 "summary": self.summary, "plan_digest": self.digest, "ready": self.ready })
     }
+}
+
+/// A new Block of a result, laid out in the result group's grid.
+struct Place {
+    id: String,
+    type_id: &'static str,
+    payload: Value,
+    size: (f64, f64),
+    /// A control: its box wraps its children (`w` / `h` "auto").
+    auto_size: bool,
+    /// What follows its creation (a control's nodes).
+    then: Vec<Value>,
 }
 
 struct Planner<'a> {
@@ -332,6 +348,23 @@ impl Workspace {
             let ty = r["type"].as_str().unwrap_or("").to_string();
             let binding = if mode == "overwrite" { prev_bindings.get(&name).cloned() } else { None };
             let choice = choices.get(&name).and_then(Value::as_str).map(str::to_string);
+            if ty == "control" {
+                // a control is a new container each time (an overwrite deletes the last one), or nodes under a node
+                // the wish read; there is no data entity
+                let entity_id = match r["control"]["under_id"].as_str() {
+                    Some(t) => t.to_string(),
+                    None => {
+                        let base = make_id(&[&group_id, &slug(&name)]);
+                        if p.ctx.entity(&base)?.is_some() { make_id(&[&group_id, &slug(&name), req.run_id]) } else { base }
+                    }
+                };
+                if let Some(was) = binding.as_ref().and_then(|b| b["type"].as_str()).filter(|t| *t != "control") {
+                    p.problems.push(format!("The type of result \"{name}\" changed from {was} to control: it cannot be converted in place; use a different result name, or switch to \"Create a new set each time\""));
+                }
+                p.ids.insert(name.clone(), entity_id.clone());
+                items.push(Item { r: r.clone(), name, ty, entity_id, existing: None, binding, choice, new_copy: false });
+                continue;
+            }
             let mut entity_id = match (&binding, ty.as_str()) {
                 (_, "table_columns") => r["columns"]["target_id"].as_str().unwrap_or("").to_string(),
                 (Some(b), _) => b["entity_id"].as_str().unwrap_or("").to_string(),
@@ -448,11 +481,22 @@ impl Workspace {
 
         // canvas group
         let group_exists = p.alive(&group_id)?.is_some();
-        let mut cells_to_place: Vec<(String, Value, (f64, f64))> = Vec::new();
+        let mut cells_to_place: Vec<Place> = Vec::new();
         let mut bindings_out: Map<String, Value> = Map::new();
         let mut produced: Vec<String> = Vec::new();
         for it in &items {
             let approach = it.r.get("approach").cloned().unwrap_or(Value::Null);
+            if it.ty == "control" {
+                let id_base = make_id(&[&wish_id, &slug(&it.name), req.run_id]);
+                let (binding, summary) = plan_control(&mut p, it, &approach, surface.is_some(), &id_base, &mut cells_to_place)?;
+                match binding.get("under") {
+                    Some(_) => produced.extend(binding["nodes"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string)),
+                    None => produced.push(it.entity_id.clone()),
+                }
+                p.results_summary.push(summary);
+                bindings_out.insert(it.name.clone(), binding);
+                continue;
+            }
             let mut action = if it.existing.is_some() { "update" } else { "create" };
             let mut cells: Vec<String> = it.binding.as_ref().and_then(|b| b["cells"].as_array()).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
             let mut binding = json!({ "type": it.ty, "entity_id": it.entity_id, "approach": approach, "title": it.r.get("title") });
@@ -541,7 +585,7 @@ impl Workspace {
                     if let (true, Some(o)) = (renderer == "table", &order) {
                         cp["manual_order"] = o.clone();
                     }
-                    cells_to_place.push((cell_id.clone(), cp, (w, h)));
+                    cells_to_place.push(Place { id: cell_id.clone(), type_id: TYPE_CELL, payload: cp, size: (w, h), auto_size: false, then: Vec::new() });
                     cells.push(cell_id);
                 }
             } else if let Some(o) = &order {
@@ -598,7 +642,7 @@ impl Workspace {
             if !cells_to_place.is_empty() {
                 let (ax, ay, aw, ah) = anchor;
                 let placement_hint = cand.get("placement").and_then(Value::as_str).unwrap_or("right_of_wish");
-                let col_w = cells_to_place.iter().map(|(_, _, (w, _))| *w).fold(0.0, f64::max);
+                let col_w = cells_to_place.iter().map(|c| c.size.0).fold(0.0, f64::max);
                 let mut x: f64 = 20.0;
                 let mut y: f64 = 48.0;
                 let mut row_h: f64 = 0.0;
@@ -607,7 +651,8 @@ impl Workspace {
                     let mut max_y: f64 = 0.0;
                     for edge in p.ctx.children(&group_id)? {
                         if let Some(pl) = edge.placement {
-                            max_y = max_y.max(pl["y"].as_f64().unwrap_or(0.0) + pl["h"].as_f64().unwrap_or(0.0));
+                            let h = pl["h"].as_f64().unwrap_or(if pl["h"] == json!("auto") { CONTROL_SIZE.1 } else { 0.0 });
+                            max_y = max_y.max(pl["y"].as_f64().unwrap_or(0.0) + h);
                         }
                     }
                     max_y + 20.0
@@ -617,7 +662,8 @@ impl Workspace {
                 y = y.max(start_y);
                 let mut max_x: f64 = 0.0;
                 let mut max_y: f64 = 0.0;
-                for (cell_id, cp, (w, h)) in &cells_to_place {
+                for c in &cells_to_place {
+                    let (w, h) = c.size;
                     if col == 2 {
                         col = 0;
                         x = 20.0;
@@ -625,11 +671,13 @@ impl Workspace {
                         row_h = 0.0;
                     }
                     let key = p.next_key(&group_id)?;
-                    p.ops.push(json!({ "op": "entity.create", "entity_id": cell_id, "type_id": TYPE_CELL, "parent_id": group_id, "order_key": key,
-                                       "placement": { "x": x, "y": y, "w": w, "h": h }, "payload": cp }));
+                    let placement = if c.auto_size { json!({ "x": x, "y": y, "w": "auto", "h": "auto" }) } else { json!({ "x": x, "y": y, "w": w, "h": h }) };
+                    p.ops.push(json!({ "op": "entity.create", "entity_id": c.id, "type_id": c.type_id, "parent_id": group_id, "order_key": key,
+                                       "placement": placement, "payload": c.payload }));
+                    p.ops.extend(c.then.iter().cloned());
                     max_x = max_x.max(x + w);
                     max_y = max_y.max(y + h);
-                    row_h = row_h.max(*h);
+                    row_h = row_h.max(h);
                     x += col_w + 20.0;
                     col += 1;
                 }
@@ -1389,6 +1437,127 @@ fn plan_html(p: &mut Planner, it: &Item, parent: &str, wish_id: &str, binding: &
             Ok(true)
         }
     }
+}
+
+/// The text node of the controls so far (mindmap).
+const CONTROL_NODE_VIEW: &str = "mindnode";
+
+fn sibling_keys(n: usize) -> WsResult<Vec<String>> {
+    let mut out: Vec<String> = Vec::with_capacity(n);
+    for _ in 0..n {
+        out.push(order_key_between(out.last().map(String::as_str), None)?);
+    }
+    Ok(out)
+}
+
+/// One text node per outline item under `parent`, all placed by the control. Returns the ids of `list`.
+fn node_ops(list: &[OutlineNode], parent: &str, keys: Vec<String>, base: &str, n: &mut usize, ops: &mut Vec<Value>) -> WsResult<Vec<String>> {
+    let mut ids = Vec::new();
+    for (node, key) in list.iter().zip(keys) {
+        *n += 1;
+        let id = make_id(&[base, &format!("n{n}")]);
+        ops.push(json!({ "op": "entity.create", "entity_id": id, "type_id": TYPE_CELL, "parent_id": parent, "order_key": key,
+                         "placement": { "x": "auto", "y": "auto", "w": "auto", "h": "auto" },
+                         "payload": { "view": { "type": CONTROL_NODE_VIEW }, "title": node.text } }));
+        node_ops(&node.children, &id, sibling_keys(node.children.len())?, base, n, ops)?;
+        ids.push(id);
+    }
+    Ok(ids)
+}
+
+/// `entity.delete` of `id` with every live Block below it.
+fn delete_subtree(p: &mut Planner, id: &str) -> WsResult<()> {
+    let Some(e) = p.alive(id)? else { return Ok(()) };
+    let mut below = Vec::new();
+    let mut stack = vec![id.to_string()];
+    while let Some(cur) = stack.pop() {
+        for edge in p.ctx.children(&cur)? {
+            if p.alive(&edge.child_id)?.is_some() {
+                below.push(json!(edge.child_id));
+                stack.push(edge.child_id);
+            }
+        }
+    }
+    p.ops.push(json!({ "op": "entity.delete", "entity_id": id, "subtree": { "delete": below }, "expect": { "rev": e.life_rev } }));
+    Ok(())
+}
+
+/// A control result (脑图 TODO M3): a container of the control's kind with one text node per outline item, laid
+/// out by the control, or (`under`) the items as new children of a node the wish read. A control has no data
+/// entity and no generation record: the result binding owns what was made, so an overwrite deletes it (with
+/// everything below) and puts the new tree in its place. Returns the binding and the summary line.
+fn plan_control(p: &mut Planner, it: &Item, approach: &Value, on_canvas: bool, id_base: &str, places: &mut Vec<Place>) -> WsResult<(Value, Value)> {
+    let c = &it.r()["control"];
+    let kind = c["kind"].as_str().unwrap_or("").to_string();
+    let tree = tree_of(&c["nodes"]);
+    let under = c["under_id"].as_str();
+    let mut old_place: Option<TreeEdge> = None;
+    let mut replaced = false;
+    if let Some(b) = it.binding().filter(|b| b["type"] == json!("control")) {
+        let was_under = b.get("under").is_some();
+        let owned: Vec<String> = if was_under {
+            b["nodes"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect()
+        } else {
+            b["entity_id"].as_str().map(str::to_string).into_iter().collect()
+        };
+        for id in owned {
+            if p.alive(&id)?.is_none() {
+                continue;
+            }
+            if !was_under {
+                old_place = p.ctx.edge(&id)?;
+            }
+            delete_subtree(p, &id)?;
+            replaced = true;
+        }
+    }
+    let mut ops = Vec::new();
+    let mut n = 0;
+    let roots = match under {
+        Some(target) => {
+            if p.alive(target)?.is_none() {
+                p.problems.push(format!("The node {target} that control result \"{}\" goes under no longer exists", it.name()));
+            }
+            let mut keys = Vec::new();
+            for _ in &tree {
+                keys.push(p.next_key(target)?);
+            }
+            let roots = node_ops(&tree, target, keys, id_base, &mut n, &mut ops)?;
+            p.ops.extend(ops);
+            roots
+        }
+        None => {
+            let title = it.r()["title"].as_str().or_else(|| (tree.len() == 1).then(|| tree[0].text.as_str())).unwrap_or(it.name());
+            // the layout is implied by the kind
+            let mut payload = json!({ "kind": kind, "title": node_title(title) });
+            if c["config"].as_object().is_some_and(|o| !o.is_empty()) {
+                payload["config"] = c["config"].clone();
+            }
+            let roots = node_ops(&tree, it.entity_id(), sibling_keys(tree.len())?, it.entity_id(), &mut n, &mut ops)?;
+            match old_place {
+                Some(edge) => {
+                    let mut op = json!({ "op": "entity.create", "entity_id": it.entity_id(), "type_id": TYPE_CONTAINER, "parent_id": edge.parent_id, "order_key": edge.order_key, "payload": payload });
+                    if let Some(mut pl) = edge.placement {
+                        pl["w"] = json!("auto");
+                        pl["h"] = json!("auto");
+                        op["placement"] = pl;
+                    }
+                    p.ops.push(op);
+                    p.ops.extend(ops);
+                }
+                None if on_canvas => places.push(Place { id: it.entity_id().to_string(), type_id: TYPE_CONTAINER, payload, size: CONTROL_SIZE, auto_size: true, then: ops }),
+                None => p.problems.push(format!("Control result \"{}\" is drawn on a canvas: set the wish block's output canvas", it.name())),
+            }
+            roots
+        }
+    };
+    let mut binding = json!({ "type": "control", "entity_id": it.entity_id(), "approach": approach, "title": it.r().get("title"), "kind": kind, "nodes": roots });
+    if let Some(t) = under {
+        binding["under"] = json!(t);
+    }
+    let summary = json!({ "name": it.name(), "type": "control", "title": it.r().get("title"), "entity_id": it.entity_id(), "action": if replaced { "update" } else { "create" },
+                          "approach": approach, "kind": kind, "nodes": n, "under": under, "blocks": if under.is_some() { 0 } else { 1 } });
+    Ok((binding, summary))
 }
 
 /// Is `entity_id` referenced as the source of any Block (helper for callers).

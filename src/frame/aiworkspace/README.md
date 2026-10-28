@@ -86,7 +86,7 @@ holding the presentation paths and Viewports (below). They exist from
 `seq` 0 and cannot be created, deleted, moved or renamed by operations. Structure rules (`core/src/plan.rs`
 `child_allowed`): `data` / `folder` take folders and data entities (TableSource, RichText, Record, AssetRef,
 Annotation, `buckyos.wish`, `buckyos.block-def`); `surfaces` takes `surface` containers; `surface` / `group`
-take Cells and groups only. A Surface names its content folder (`content_folder_id`); the folder may point back
+take Cells, groups and controls only (a control's Cells may hold Cells, see “Block-controls”). A Surface names its content folder (`content_folder_id`); the folder may point back
 (`surface_id`). A Surface may carry `icon`: the id of a client-side preset icon (`[a-z][a-z0-9-]{0,31}`, Surfaces
 only; the client owns the preset list), a shared, undoable key projected into the outline like `title`. A Surface may also
 carry `config`, its page settings (`background`, `page_size`; an object of at most 64 KiB the client checks, read with
@@ -114,7 +114,7 @@ and gets an addressable version in `entity_versions` at every application. Fresh
 A result the user keeps against a later run ("保留人工修改") is re-recorded with that run's read set and `kept_manual: true`, so the wish is current again without regenerating it.
 those versions with the cells now: `current | stale | upstream_stale | unavailable | unknown`.
 
-Format version is `1.0` (内核架构改进 FORMAT 1.0: `schema_id`, the resource directory, the reference catalogue with `mode` / `integrity` and `owns`, the pure-application log, `$formula`, the `run` capability, delegation fields, the usage ledger, `user_state.revision`, `base_seq`; protocol `1.0`). Stores and packages of an older format are refused with `UNSUPPORTED_VERSION` (no migration). From 1.0 on, an incompatible change of the format needs an explicit conversion (D07); within 1.0 only additions an older implementation can ignore are allowed.
+Format version is `1.0` (内核架构改进 FORMAT 1.0: `schema_id`, the resource directory, the reference catalogue with `mode` / `integrity` and `owns`, the pure-application log, `$formula`, the `run` capability, delegation fields, the usage ledger, `user_state.revision`, `base_seq`; protocol `1.0`). Stores and packages of an older format are refused with `UNSUPPORTED_VERSION` (no migration). From 1.0 on, an incompatible change of the format needs an explicit conversion (D07); within 1.0 only additions an older implementation can ignore are allowed. Protocol 1.1 added Block-controls (container kind `mindmap`, `"auto"` placement components, Cells holding Cells inside a control, `slot`; see “Block-controls”); requests speaking 1.0 are still accepted.
 
 ## Presentation (第三期规划 §4–§6, §8, §11)
 
@@ -199,6 +199,48 @@ It may carry `title` (the label text), `config` (appearance, ≤ 64 KiB, not ins
   freshness, and is listed as an incoming reference by `doc.relations`.
 - **Outline**: a connector's envelope carries `connector: { start, end, flip?, route?, controls?, label? }`
   (`start` / `end` always present, `null` when free); `config` is read with `doc.read`.
+
+## Block-controls (脑图方案, `notepads/aiworkspace-mindmap-todo.md` M0)
+
+Design: [脑图对象方案讨论](<../../../doc/workspace/脑图对象方案讨论.md>) v0.4. A **control** is a BlockTree container
+whose `kind` is a control id (`mindmap` is the first; the list is `controls/core.json`, read by the core with
+`include_str!` and by the Desktop): it lays out the Blocks it holds with a named algorithm the clients run (the
+shared module `controls/`), the core only judges shapes. A mind map's nodes are ordinary Cells: `parent_id` is the
+tree (a node's children are Cells under it), `order_key` the sibling order; edges are drawn, never stored.
+
+- **Container** (`types.rs` `validate_container`): `kind: "mindmap"`, `layout` implied (`{ mode: "tree" }`, any
+  other value refused), `config` checked (`direction` right / left / both / down, `edge` curve / elbow / straight,
+  `spacing { sibling?, level? }` in [0, 2000], `branch_colors` ≤ 64 colours; ≤ 64 KiB) and projected into the
+  outline, `locked` as on a group. A control sits on a Surface, in a group, or inside another control (R24).
+- **Children** (`plan.rs` `child_allowed`): a control holds Cells, groups and controls; inside a control a Cell may
+  hold Cells and containers too (its nearest container, walking up through Cells, is a control —
+  `types::laid_out_by_control`). Anywhere else a Cell stays a leaf; `tree.move` of a Cell that holds Blocks out of
+  a control is `CHILD_NOT_ALLOWED`. Connectors are drawn on the canvas, never created inside a control.
+- **`"auto"` placement** (`plan.rs` `check_placement`, protocol 1.1): each of `x`, `y`, `w`, `h` is a number or the
+  string `"auto"` — not stored, computed by the control when shown; a number pins it. `x` / `y` may be `"auto"` only
+  on a Block laid out by a control; `w` / `h` only on a control (its box wraps its children) or on a text view laid
+  out by one (`text_views` in `controls/core.json`: `mindnode`, `shape`, `richtext` — their size is their title's).
+  A non-text view keeps a numeric size (also when its `view` changes). A control's own `x` / `y` name its origin
+  (the first root's top-left), not its box. `"auto"` cannot leave a control (`tree.move` judges the new place).
+- **Slots** (R22): a Cell inside a control may carry `slot` (`^[a-z0-9][a-z0-9_-]{0,31}$`), unique among its live
+  siblings including those staged in the same Commit (`SLOT_CONFLICT`); projected into the outline. Paths like
+  `bkg.text` resolve one level per segment. The mind map uses none; the schema is there for composite controls.
+- **Outline**: a control's envelope carries `config`; a Cell's carries `slot`, and `side` / `branch_color` when its
+  `config` has valid ones (a node's layout hints: the layout runs on the outline alone).
+- **Versions** (R12): new kinds and the `"auto"` literal are additions within FORMAT 1.0; PROTOCOL is 1.1
+  (`model.rs` `supports_protocol`: requests of the same major and an older minor are accepted). A client that does
+  not know a control kind draws it as a group.
+- Tests: `core/tests/mindmap.rs` over `fixtures/mindmap/commits.json` (a minimal map, the four directions, a pinned
+  node, a nested control, a non-text node, slots); the layout itself is tested in `controls/` (`deno test -A`).
+
+The shared module `controls/` (TypeScript, no dependencies, browser and Deno, alias `@controls/*` in the Desktop):
+`tree.ts` (the `tree` layout: four directions, folded and pinned nodes), `measure.ts` (node text sizes),
+`solve.ts` (a control from the outline, nested controls bottom-up), `edges.ts` (implicit edges, branch colours),
+`outline.ts` / `opml.ts` (Markdown outline and OPML ⇄ a map), `svg.ts` (static drawing), `drawio.ts` (materialised
+for draw.io), `catalog.ts` + `mindmap.ts` (the control catalogue with each control's self-description for Agents,
+generated into `aiws/controls.json` by `deno run -A tools/build_catalog.ts`). Layout snapshots:
+`fixtures/mindmap/layout/*.json` (`MINDMAP_REGEN=1 deno test -A` after an intended change; the formula is not
+versioned, R18); outline cases shared with the service's parser: `fixtures/mindmap/outlines.json`.
 
 ## Ink (手写笔, `notepads/aiworkspace-handwriting-todo.md` D0)
 
@@ -541,6 +583,9 @@ lands. The list is `server/src/lib.rs` `METHOD_LEVELS`; this table mirrors it.
 | `ws.unpublish` | experimental | `entity_id` (`manage`) — every name and the public grant go; referrers keep their records and read `unavailable` |
 | `ws.list_publications` | experimental | the names, entities, `url` and referrer counts (what the caller may read) |
 | `ws.list_referrers` | experimental | `entity_id` (read) — who registered as reading it (`{ zone?, workspace_id, entity_id?, principal? }`, weak: never blocks an unpublish) |
+| `control.list`, `control.describe` | experimental | `kind` (describe) — the Block-control catalogue (`aiws/controls.json`: kind, summary, when, formats; describe adds the `agent` self-description) |
+| `control.import` | experimental | `parent_id`, `kind?` (`mindmap`), `format?` (`markdown` \| `opml`), `text`, `at? { x, y }`, `title?`, `config?`, `idempotency_key?` — a new control holding the outline, one Commit as the caller (its answer plus `container_id`, `nodes`) |
+| `control.export` | experimental | `entity_id`, `format?` — the control's Blocks as a Markdown outline or OPML (`text`), all expanded |
 | `lock.acquire` / `lock.renew` / `lock.release` / `lock.break` / `lock.list` | stable | `entity_ids[]`, `session_id`; `lock_ids[]`; `entity_id` |
 | `show.start` / `show.heartbeat` / `show.publish` / `show.command` / `show.watch` / `show.notes` / `show.end` | internal | see “Non-public shows” |
 | `diag.list_unretained`, `diag.verify_refs` | internal | |

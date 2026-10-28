@@ -8,9 +8,10 @@
  * with one toolbar (canvas switcher, annotation, zoom, identity, share) and touch gestures, and keeps a
  * viewport of its own. */
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { looksLikeDrawio } from '@drawio/file'
 import { svgShapeFromDocument } from '@drawio/svg'
+import { fixed } from '@controls/placement'
 import { Group, Lock, LockOpen, MessageSquarePlus, Sparkles, Ungroup } from 'lucide-react'
 import { describeError } from '../../api/session'
 import { randomId } from '../../api/ids'
@@ -43,7 +44,12 @@ import { WishPanel } from '../wish/WishPanel'
 import { entryId, entrySize, registryEntries, type CatalogEntry, type InsertRequest } from './catalog'
 import { describeMediaFile } from '../media/poster'
 import { mediaBlockSize, stageMediaFile } from '../media/stage'
-import { canvasClipboard, copyToClipboard, pasteOperations } from './clipboard'
+import { canvasClipboard, copyToClipboard, makeClip, pasteOperations } from './clipboard'
+import { controlCommands } from '../controls/commands'
+import { addNode } from '../controls/mindmap/definition'
+import { importOutline, outlineFileKind, richtextToMindmap } from '../controls/mindmap/convert'
+import { resetLayoutOps } from '../controls/mindmap/ops'
+import { controlRegistry, type ControlCommandContext } from '../controls/registry'
 import { anchorWorld, axisOf, boxOf, facingAnchor } from './connectors/geometry'
 import { formOf, hasBoundEnd, isConnector } from './connectors/layout'
 import { connectorChangeOps, createConnectorOp, freezeOps, type ConnectorChange, type NewConnector } from './connectors/ops'
@@ -59,7 +65,7 @@ import { importedAssetOps } from '../sources/dataOps'
 import { boundsOf, groupAt, movedPlacement, placementOf, relativeTo, surfaceBounds, topLevel, type Laid } from './layout'
 import { ObjectToolbar, type PointerTool } from './ObjectToolbar'
 import { Camera } from './render/camera'
-import { RenderHost, type LayoutChange } from './render/RenderHost'
+import { RenderHost, type LayoutChange, type NodeMove } from './render/RenderHost'
 import { useSurfaceConfig } from './surfaceManage'
 import { createSurfaceOps, surfacesOf } from './surfaceOps'
 import { useSurfaceLayout } from './useSurfaceLayout'
@@ -321,8 +327,9 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     // a group's backing (its frame or shape) keeps covering it (draw.io 导入 TODO §2.2)
     for (const change of changes) {
       const l = laid.get(change.id)
-      if (!l?.backingId || (Math.abs(l.rect.w - change.placement.w) < 0.5 && Math.abs(l.rect.h - change.placement.h) < 0.5)) continue
-      const placement = { x: 0, y: 0, w: change.placement.w, h: change.placement.h }
+      const size = fixed(change.placement)
+      if (!l?.backingId || !size || (Math.abs(l.rect.w - size.w) < 0.5 && Math.abs(l.rect.h - size.h) < 0.5)) continue
+      const placement = { x: 0, y: 0, w: size.w, h: size.h }
       ops.push({ op: 'tree.place', entity_id: l.backingId, placement })
       store.outline.patchLocal(l.backingId, { placement })
     }
@@ -333,6 +340,27 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       : changes.length === 1 ? aiwsT('aiworkspace.canvas.moveNamedLabel', { name: laid.get(changes[0].id)?.entity.title ?? changes[0].id }) : aiwsT('aiworkspace.canvas.layout.moveBlocks', { count: changes.length })
     void store.submit({ editId: `layout:${surfaceId}:${randomId().slice(0, 8)}`, label, operations: ops })
   }, [store, laid, policy.layout, surfaceId])
+
+  /** Nodes re-hung inside their control (脑图方案 §7.2): laid out again where they now hang, one commit. */
+  const moveNodes = useCallback((moves: NodeMove[]) => {
+    if (!policy.layout || moves.length === 0) return
+    const ops: Operation[] = []
+    // several nodes dropped together keep their order, one after the other
+    const last = new Map<string, string | undefined>()
+    for (const move of moves) {
+      const siblings = store.outline.childrenOf(move.parentId).filter((c) => !moves.some((m) => m.id === c.entity_id))
+      const i = move.beforeId ? siblings.findIndex((c) => c.entity_id === move.beforeId) : siblings.length
+      const low = last.has(move.parentId) ? last.get(move.parentId) : siblings[i - 1]?.order_key ?? undefined
+      const key = store.core.order_key_between(low, siblings[i]?.order_key ?? undefined)
+      last.set(move.parentId, key)
+      const stored = store.outline.get(move.id)?.placement
+      const placement = { x: 'auto' as const, y: 'auto' as const, w: stored?.w ?? 'auto', h: stored?.h ?? 'auto' }
+      store.noteLayoutIntent(move.id, placement, key, move.parentId)
+      store.outline.patchLocal(move.id, { parent_id: move.parentId, order_key: key, placement })
+      ops.push({ op: 'tree.move', entity_id: move.id, new_parent_id: move.parentId, order_key: key, placement })
+    }
+    void store.submit({ editId: `layout:${surfaceId}:${randomId().slice(0, 8)}`, label: t('aiworkspace.mindmap.moveNodes', { count: moves.length }), operations: ops })
+  }, [store, policy.layout, surfaceId, t])
 
   const canLayout = policy.layout && surface.capabilities.includes('structure') && !readOnlyNow
   /** A Block this user may move, resize and remove: anything on a canvas it may restructure, and — with `comment`
@@ -511,6 +539,47 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     editorActive: Boolean(subject && editing === subject.entity_id), zoom: camera.zoom,
     onActivate: () => { if (subject) setEditing(subject.entity_id) }, onDeactivate: () => setEditing(null),
   })
+  /** A Block-control's command context (脑图方案 §7.1) for the selected node `nodeId` or the control itself. */
+  const controlCtx = (containerId: string, nodeId: string | null): ControlCommandContext => ({
+    store, laid, nodeId, containerId, surface, canEdit: policy.insert && insertReason === null,
+    select: (ids) => setSelectionState(new Set(ids)),
+    edit: (id) => { if (policy.editContent) { requestIntent(id, 'end'); setEditing(id) } },
+  })
+  /** The control the selection belongs to: a node selected in it, or the control itself. */
+  const controlOfSelection = (): { containerId: string; nodeId: string | null } | null => {
+    const l = single ? laid.get(single.entity_id) : undefined
+    if (!l || selection.size !== 1) return null
+    if (l.node) return { containerId: l.node.control, nodeId: l.entity.entity_id }
+    if (l.control) return { containerId: l.entity.entity_id, nodeId: null }
+    return null
+  }
+  const selectionControl = controlOfSelection()
+  /** Nodes of a control in the selection: they stay in their control (no grouping, no other canvas, no stacking). */
+  const nodesSelected = [...selection].some((id) => laid.get(id)?.node)
+  // a node's editor or toolbar asks for a child or a sibling (it saves first); the canvas adds, selects and edits it
+  const commandRef = useRef<(command: ReturnType<typeof controlCommands.take>[number]) => void>(() => undefined)
+  useLayoutEffect(() => {
+    commandRef.current = (command) => {
+      if (command.kind === 'select') { setSelectionState(new Set(command.ids)); if (command.edit) setEditing(command.edit); return }
+      const l = laid.get(command.nodeId)
+      const containerId = l?.node?.control
+      if (!containerId) return
+      addNode(controlCtx(containerId, command.nodeId), command.kind === 'add-child' || !l?.node?.parent ? 'child' : 'sibling', command.nodeId)
+    }
+  })
+  useEffect(() => controlCommands.subscribe(() => { for (const command of controlCommands.take()) commandRef.current(command) }), [])
+  /** Ctrl+D: the selected node's subtree copied right after it (D05: own data cloned on the same canvas). */
+  const duplicateNode = async (nodeId: string) => {
+    const l = laid.get(nodeId)
+    if (!l?.node || insertReason) return
+    const clip = await makeClip(store, surfaceId, laid, new Set([nodeId]), 'copy')
+    if (!clip) return
+    const c = camera.center
+    const { operations, newIds, refused } = pasteOperations(store, clip, { surfaceId, isFree, at: null, center: camera.toWorld(c.x, c.y), into: { parentId: l.parentId, after: nodeId } })
+    if (refused) { store.notify('info', refused); return }
+    const outcome = await store.submit({ editId: `duplicate:${randomId().slice(0, 8)}`, label: t('aiworkspace.mindmap.duplicate'), operations })
+    if (outcome.status === 'accepted' || outcome.status === 'saved_locally') setSelectionState(new Set(newIds))
+  }
   /** Locked objects stay where they are (§7.2): skipped by delete, moves and grouping, with a note. */
   const unlocked = (ids: string[], what: 'delete' | 'group' | 'move') => {
     const kept = ids.filter((id) => !laid.get(id)?.locked)
@@ -563,7 +632,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   }
   const reorder = (direction: 'front' | 'back') => {
     const ops: Operation[] = []
-    for (const id of topLevel(laid, selection).filter(canLayoutBlock)) {
+    // a node's order is its place in the tree, not a stacking order
+    for (const id of topLevel(laid, selection).filter(canLayoutBlock).filter((id) => !laid.get(id)?.node)) {
       const l = laid.get(id)
       if (!l) continue
       const siblings = store.outline.childrenOf(l.parentId)
@@ -573,6 +643,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     if (ops.length) void store.submit({ editId: `order:${randomId().slice(0, 8)}`, label: t(direction === 'front' ? 'aiworkspace.canvas.order.front' : 'aiworkspace.canvas.order.back'), operations: ops })
   }
   const group = () => {
+    if (nodesSelected) { store.notify('info', t('aiworkspace.mindmap.nodesStay')); return }
     const ids = unlocked(topLevel(laid, selection), 'group')
     if (ids.length < 2) return
     const bounds = boundsOf(laid, ids)
@@ -617,6 +688,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     for (const id of unlocked(topLevel(laid, selection), 'move')) {
       const l = laid.get(id)
       if (!l) continue
+      if (l.node) { store.notify('info', t('aiworkspace.mindmap.nodesStay')); continue }
       if (toFlow && carried(l)) { store.notify('info', t('aiworkspace.canvas.flowConnectorsNotMoved')); continue }
       if (toFlow && inked(l)) { store.notify('info', t('aiworkspace.canvas.ink.flowNotMoved')); continue }
       key = store.core.order_key_between(key, undefined)
@@ -764,7 +836,17 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       if (kind === 'drawio') await runImport({ name: file.name, bytes }, spot)
       else if (insertReason) { store.notify('info', insertReason); return }
       else if (kind === 'svg' && text) insertSvg(text, spot, file)
-      else await insertFile(file, spot)
+      else {
+        // an OPML or Markdown outline becomes a mind map (脑图 TODO M4)
+        const decoded = kind === 'other' && file.size < 4 * 1024 * 1024 ? text ?? new TextDecoder().decode(bytes) : ''
+        const outline = decoded ? outlineFileKind(file.name, decoded) : null
+        if (outline) {
+          const c = camera.center
+          const at = isFree ? spot ?? camera.toWorld(c.x, c.y) : null
+          const id = await importOutline(store, { name: file.name, text: decoded }, outline, surfaceId, at ? { x: Math.round(at.x), y: Math.round(at.y) } : null)
+          if (id && isFree) setSelectionState(new Set([id]))
+        } else await insertFile(file, spot)
+      }
       spot = spot ? { x: spot.x + 24, y: spot.y + 24 } : null
     }
   }
@@ -802,7 +884,9 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     if (!current) return
     if (current.workspaceId !== store.session.workspaceId) { store.notify('info', t('aiworkspace.canvas.clipboard.crossWorkspace')); return }
     const c = camera.center
-    const { operations, newIds, label, refused } = pasteOperations(store, current, { surfaceId, isFree, at, center: camera.toWorld(c.x, c.y) })
+    // with a node (or a control) selected the clip hangs under it (脑图方案 §7.2)
+    const into = selectionControl && !at ? { parentId: selectionControl.nodeId ?? selectionControl.containerId } : undefined
+    const { operations, newIds, label, refused } = pasteOperations(store, current, { surfaceId, isFree, at, center: camera.toWorld(c.x, c.y), into })
     if (refused) { store.notify('info', refused); return }
     if (operations.length === 0) { store.notify('info', t('aiworkspace.canvas.clipboard.cutGone')); canvasClipboard.set(null); return }
     void store.submit({ editId: `paste:${randomId().slice(0, 8)}`, label, operations }).then((outcome) => {
@@ -856,7 +940,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       }
       if (placing && event.key === 'Enter') { event.preventDefault(); void insert(placing, null); setPlacing(null); return }
       // a selected text or note takes typing at once (§4.4): the key starts the editor (single-letter shortcuts yield)
-      const typable = subject && !editing && policy.editContent && (subject.view_type === 'richtext' || subject.view_type === 'note' || subject.view_type === 'shape') && !laid.get(subject.entity_id)?.locked
+      const typable = subject && !editing && policy.editContent && (subject.view_type === 'richtext' || subject.view_type === 'note' || subject.view_type === 'shape' || subject.view_type === 'mindnode') && !laid.get(subject.entity_id)?.locked
       // keys typed before the editor that typing opened has mounted (its Block still loading) are passed on to it
       const typed = typeAhead.get('typed')
       if (editing && typed?.id === editing && !mod && !event.altKey && event.key.length === 1) {
@@ -890,6 +974,12 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
         }
       }
       if (!policy.select) return
+      // a control takes the keys while it or one of its Blocks is selected (脑图方案 §7.1)
+      if (selectionControl && !editing && isFree) {
+        const def = controlRegistry.get(store.outline.get(selectionControl.containerId)?.kind)
+        if (def?.keys?.(controlCtx(selectionControl.containerId, selectionControl.nodeId), event)) { event.preventDefault(); return }
+        if (mod && event.key.toLowerCase() === 'd' && selectionControl.nodeId) { event.preventDefault(); void duplicateNode(selectionControl.nodeId); return }
+      }
       if ((event.key === 'Delete' || event.key === 'Backspace') && remove.reason === null) { event.preventDefault(); remove.run(); return }
       if (event.key === 'Enter' && subject && policy.editContent && !editing) { event.preventDefault(); requestIntent(subject.entity_id, 'end'); setEditing(subject.entity_id); return }
       // a flow page (流式页交互改进 §2.4): ↑ ↓ walk the Blocks, Ctrl+Shift+↑ ↓ move the selected one
@@ -997,9 +1087,19 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       try { typeItems.push(...definition.toolbar(context, store)) } catch (error) { console.error('[aiworkspace] block toolbar failed', error) }
     }
     if (single.kind === 'group' && canLayout && !singleLocked) typeItems.push({ kind: 'button', id: 'ungroup', icon: Ungroup, label: t('aiworkspace.canvas.ungroup'), key: 'Ctrl+Shift+G', run: ungroup })
+    // a control's own tools (direction, edges, spacing) while it is selected
+    if (selectionControl && !selectionControl.nodeId && mode === 'edit' && !singleLocked) {
+      const def = controlRegistry.get(single.kind)
+      try { if (def?.toolbar) typeItems.push(...def.toolbar(controlCtx(selectionControl.containerId, null))) } catch (error) { console.error('[aiworkspace] control toolbar failed', error) }
+    }
+    // a pinned node of another view goes back to the control's layout (§5.5); a text node has the tool on its toolbar
+    const pin = laid.get(single.entity_id)?.node?.pinned && single.view_type !== 'mindnode' ? single.entity_id : null
+    if (pin && canLayout && !singleLocked) moreActions.push({ id: 'mindmap-auto', label: t('aiworkspace.mindmap.backToLayout'), run: () => { void store.submit({ editId: `layout:${pin}`, label: t('aiworkspace.mindmap.backToLayout'), operations: resetLayoutOps(store, [pin]) }) } })
     if (definition?.Inspector || definition?.configFields || single.kind === 'group') moreActions.push({ id: 'inspector', label: t('aiworkspace.canvas.inspector.title'), key: 'F2', run: () => shell.setSide('inspector') })
     if (policy.annotate && source && ui.annotate) commonItems.push({ kind: 'button', id: 'annotate', icon: MessageSquarePlus, label: t('aiworkspace.canvas.annotate.label'), run: annotateSelection })
     if (source) moreActions.push({ id: 'relations', label: t('aiworkspace.canvas.relations'), run: () => shell.setSide('relations') })
+    // a rich text's lists as a mind map beside it (脑图方案 §8)
+    if (single.view_type === 'richtext' && source && insertReason === null) moreActions.push({ id: 'mindmap-from-list', label: t('aiworkspace.mindmap.fromList'), run: () => { void richtextToMindmap(store, laid, single, surfaceId).then((id) => { if (id) setSelectionState(new Set([id])) }) } })
     if (source && canLayout && !singleLocked) moreActions.push({ id: 'add-view', label: t('aiworkspace.canvas.addView'), run: () => setPicker({ kind: 'add-view' }) })
     if (single.kind === 'group' && canLayout && !singleLocked) moreActions.push({ id: 'ungroup', label: t('aiworkspace.canvas.ungroup'), key: 'Ctrl+Shift+G', run: ungroup })
   }
@@ -1014,8 +1114,9 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     if (cut.reason === null && !allLocked) moreActions.push({ id: 'cut', label: t('aiworkspace.canvas.clipboard.cutAction'), key: 'Ctrl+X', run: cut.run })
   }
   if (layoutable.length > 0 && !allLocked) {
-    moreActions.push({ id: 'front', label: t('aiworkspace.canvas.order.front'), key: 'Ctrl+]', run: () => reorder('front') }, { id: 'back', label: t('aiworkspace.canvas.order.back'), key: 'Ctrl+[', run: () => reorder('back') })
-    if (canLayout && surfacesOf(store).length > 1) moreActions.push({ id: 'move-surface', label: t('aiworkspace.canvas.moveToCanvasMenu'), run: () => setPicker({ kind: 'move-surface' }) })
+    if (!nodesSelected) moreActions.push({ id: 'front', label: t('aiworkspace.canvas.order.front'), key: 'Ctrl+]', run: () => reorder('front') }, { id: 'back', label: t('aiworkspace.canvas.order.back'), key: 'Ctrl+[', run: () => reorder('back') })
+    if (canLayout && surfacesOf(store).length > 1 && !nodesSelected) moreActions.push({ id: 'move-surface', label: t('aiworkspace.canvas.moveToCanvasMenu'), run: () => setPicker({ kind: 'move-surface' }) })
+    if (selectionControl?.nodeId && insertReason === null) moreActions.push({ id: 'mindmap-duplicate', label: t('aiworkspace.mindmap.duplicate'), key: 'Ctrl+D', run: () => { void duplicateNode(selectionControl.nodeId!) } })
     moreActions.push({ id: 'delete', label: t('aiworkspace.common.delete'), key: 'Delete', run: () => { void deleteSelection() } })
   }
   // a locked object offers "unlock" and reading only (§4.3): no type tools, nothing that moves or removes it
@@ -1110,7 +1211,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
               <EditorToolbarContext.Provider value={toolbarSink}>
               <OpenWishContext.Provider value={shell.side === 'wish' ? wishOpen?.cellId ?? null : null}>
               <RenderHost surfaceId={surfaceId} mode={mode} camera={camera} laid={laid} index={index} selection={selection} onSelectionChange={setSelection} editing={editing} onEditingChange={setEditing}
-                canLayout={canLayoutBlock} onCommitLayout={commitLayout} onOpenEntity={ui.openEntity} gesturesPaused={Boolean(menu || picker || catalog || overlayOpen)}
+                canLayout={canLayoutBlock} onCommitLayout={commitLayout} onMoveNodes={moveNodes} onOpenEntity={ui.openEntity} gesturesPaused={Boolean(menu || picker || catalog || overlayOpen)}
                 tool={tool} placing={placing ? { ...entrySize(placing.entry), label: placingTitle } : null}
                 ink={inkTool ? { style: inkStyleOf(inkPrefs), touchLock: inkPrefs.touchLock, control: inkControl } : null}
                 onPlace={(world) => {

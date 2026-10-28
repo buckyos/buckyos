@@ -1,11 +1,13 @@
 /* The insert catalog's entries (UI improvement §6.3, §7.1): built from the BlockRegistry (definitions
- * that carry `catalog` information) and from the workspace's readable `buckyos.block-def` entities. The
- * menus, the object toolbar, the context menu and the catalog dialog all read this one list. */
+ * that carry `catalog` information), the Block-controls (a mind map: its container and a root, 脑图 TODO M2) and the
+ * workspace's readable `buckyos.block-def` entities. The menus, the object toolbar, the context menu and the
+ * catalog dialog all read this one list. */
 
 import type { EntityEnvelope, Json } from '../../api/types'
 import { aiwsText } from '../../i18n'
 import type { WorkspaceStore } from '../../state/store'
 import { blockRegistry, type BlockDefinition, type CatalogGroup, type CatalogInfo, type CatalogVariant } from '../blocks/registry'
+import { controlRegistry, type ContainerDefinition } from '../controls/registry'
 import { MOCK_WISH_DEF_ID } from '../wish/mockWishDef'
 import type { MediaFacts } from '../media/poster'
 
@@ -25,7 +27,22 @@ export interface CatalogEntry {
   defEntity?: EntityEnvelope
 }
 
-export const STANDARD_ORDER = ['richtext', 'shape:text', 'note', 'shape', 'connector', 'frame', 'table', 'asset', 'wish']
+export const STANDARD_ORDER = ['richtext', 'shape:text', 'note', 'shape', 'connector', 'frame', 'mindmap', 'table', 'asset', 'wish']
+
+/** A control as an insertable entry: its definition creates the container and the first Block (selected and edited). */
+const controlEntries = new Map<string, BlockDefinition>()
+function controlEntry(def: ContainerDefinition): BlockDefinition {
+  let entry = controlEntries.get(def.kind)
+  if (!entry) {
+    entry = {
+      type: def.kind, version: def.version, get title() { return def.title }, accepts: [], allowNoSource: true, pureUi: true,
+      defaultSize: { w: 120, h: 44 }, cost: { editor: false, html: false }, Static: () => null, create: def.create,
+      catalog: { group: 'layout', get description() { return def.agent.summary }, needs: 'none', editAfterInsert: true, standard: true },
+    }
+    controlEntries.set(def.kind, entry)
+  }
+  return entry
+}
 
 /** An entry's id in test ids and menu ids: the type, or `type-variant`. */
 export const entryId = (entry: CatalogEntry) => (entry.variant ? `${entry.definition.type}-${entry.variant}` : entry.definition.type)
@@ -47,6 +64,10 @@ export function registryEntries(): CatalogEntry[] {
         catalog: { group: v.group, description: v.description, needs: 'none', editAfterInsert: v.editAfterInsert, standard: v.standard },
       })
     }
+  }
+  for (const def of controlRegistry.list()) {
+    const definition = controlEntry(def)
+    out.push({ key: `control:${def.kind}`, definition, catalog: definition.catalog!, title: definition.title, group: 'layout' })
   }
   const rank = (entry: CatalogEntry) => { const i = STANDARD_ORDER.indexOf(entry.variant ? `${entry.definition.type}:${entry.variant}` : entry.definition.type); return i < 0 ? 100 : i }
   const { compare } = aiwsText()

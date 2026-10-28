@@ -6,6 +6,7 @@
  * values (option labels, numbers) and typed writes; the host turns them into ordinary operations
  * with the right `expect`s. A batch collects typed writes into one commit and one undo step. */
 
+import { numericPlacement } from '../canvas/layout'
 import { randomId } from '../../api/ids'
 import type {
   CellPayload, EntityEnvelope, FieldDef, Json, KeyedContent, Operation, QueryPage, QueryParams, QueryRow, RecordContent, RichTextContent, Selector, TableSourceContent,
@@ -330,7 +331,7 @@ export function makeBridge(store: WorkspaceStore, target: BridgeTarget, onSnapsh
           if (!renderer) throw new Error(aiwsT('aiworkspace.extension.createBlockNeedsRenderer'))
           const parentId = target.cell.parent_id
           if (!parentId) throw new Error(aiwsT('aiworkspace.extension.notOnCanvas'))
-          const here = target.cell.placement ?? { x: 0, y: 0, w: 320, h: 200 }
+          const here = numericPlacement(target.cell.placement, { x: 0, y: 0, w: 320, h: 200 })
           const p = (a.placement ?? {}) as { x?: number; y?: number; w?: number; h?: number }
           const last = store.outline.childrenOf(parentId).at(-1)?.order_key ?? undefined
           const id = `blk-${randomId().slice(0, 12).toLowerCase()}`

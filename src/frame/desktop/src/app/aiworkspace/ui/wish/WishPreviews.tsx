@@ -1,13 +1,17 @@
 /* Previews of candidate results (许愿格 §11.1): what each result will look like once applied —
  * tables as tables, text as formatted text (the same Markdown conversion the service applies),
- * records as properties, images as images, HTML as its static markup — not JSON. */
+ * records as properties, images as images, HTML as its static markup, a mind map drawn by the shared layout
+ * (脑图 TODO M3) — not JSON. */
 
 import { useMemo, type ReactNode } from 'react'
 import type { Json, WishResult } from '../../api/types'
 import type { AiwsText } from '../../i18n'
 import { useStore } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
+import { solveControl, type ControlEntity } from '@controls/solve'
+import { controlSvg } from '@controls/svg'
 import { AssetBlobImage } from '../extensions/AssetBlobImage'
+import { nodeMeasurer } from '../controls/measure'
 
 interface Node { type: string; attrs?: Record<string, Json>; content?: Node[]; text?: string; marks?: { type: string; attrs?: Record<string, Json> }[] }
 
@@ -83,6 +87,32 @@ export function TablePreview({ fields, rows, total, keyFields, max = 8 }: { fiel
   )
 }
 
+type Tree = { text: string; children: unknown[] }
+
+/** A control result's tree as the control would draw it (all expanded). */
+function ControlPreview({ control }: { control: NonNullable<WishResult['control']> }) {
+  const { t } = useAiwsText()
+  const svg = useMemo(() => {
+    const by = new Map<string, ControlEntity & { parent: string }>()
+    by.set('c', { entity_id: 'c', type_id: 'buckyos.container', kind: control.kind, config: control.config ?? {}, parent: '' })
+    let n = 0
+    const add = (list: Tree[], parent: string) => list.forEach((node) => {
+      const id = `n${n++}`
+      by.set(id, { entity_id: id, type_id: 'buckyos.cell', view_type: 'mindnode', title: node.text, parent })
+      add(node.children as Tree[], id)
+    })
+    add(control.nodes, 'c')
+    const src = { get: (id: string) => by.get(id), childrenOf: (id: string) => [...by.values()].filter((e) => e.parent === id) }
+    return controlSvg(src, solveControl(src, 'c', { measurer: nodeMeasurer }), { measurer: nodeMeasurer, theme: { fill: 'var(--cp-surface-opaque, #fff)', rootFill: 'var(--cp-text, #1f2937)', text: 'var(--cp-text, #1f2937)', rootText: 'var(--cp-surface-opaque, #fff)', stroke: 'var(--cp-border, #d0d5dd)' } })
+  }, [control])
+  return (
+    <div className="aiws-wish-control-preview" data-testid="aiws-wish-control-preview">
+      {control.under && <div className="aiws-muted">{t('aiworkspace.wish.preview.under', { name: control.under })}</div>}
+      <div className="aiws-wish-control-art" dangerouslySetInnerHTML={{ __html: svg }} />
+    </div>
+  )
+}
+
 export function ResultPreview({ result }: { result: WishResult }) {
   const text = useAiwsText()
   const { t } = text
@@ -122,6 +152,7 @@ export function ResultPreview({ result }: { result: WishResult }) {
         </div>
       )
     }
+    case 'control': return result.control ? <ControlPreview control={result.control} /> : null
     default: return null
   }
 }

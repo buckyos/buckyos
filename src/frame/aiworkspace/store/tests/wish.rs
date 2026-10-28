@@ -29,6 +29,7 @@ fn opts(kind: StageKind) -> StageOptions {
         location: json!({ "cell_id": "blk-wish", "selection": ["blk-orders"] }),
         request: json!({ "today": "2026-10-06", "timezone": "Asia/Shanghai", "currency": "CNY" }),
         catalog: catalog(),
+        controls: json!({ "controls": [] }),
         map_budget_chars: 16_000,
         materialize: kind != StageKind::Analyze,
     }

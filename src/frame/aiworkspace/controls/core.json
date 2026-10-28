@@ -1,0 +1,5 @@
+{
+  "description": "Block-control constants shared by the core (include_str!) and the Desktop: container kinds that are controls (their direct children may have \"auto\" placement components) and the text views whose w / h may be \"auto\" (their size comes from the title).",
+  "control_kinds": ["mindmap"],
+  "text_views": ["mindnode", "shape", "richtext"]
+}

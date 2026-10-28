@@ -20,7 +20,7 @@ const CHECK_LABEL: Record<string, string> = {
 }
 const TYPE_LABEL: Record<string, string> = {
   table: 'aiworkspace.wish.type.table', table_columns: 'aiworkspace.wish.type.tableColumns', record: 'aiworkspace.wish.type.record', richtext: 'aiworkspace.wish.type.richtext',
-  image: 'aiworkspace.wish.type.image', asset: 'aiworkspace.wish.type.asset', html: 'aiworkspace.wish.type.html', video: 'aiworkspace.wish.type.video',
+  image: 'aiworkspace.wish.type.image', asset: 'aiworkspace.wish.type.asset', html: 'aiworkspace.wish.type.html', video: 'aiworkspace.wish.type.video', control: 'aiworkspace.wish.type.control',
 }
 const CHANGE_LABEL: Record<string, string> = {
   add_field: 'aiworkspace.wish.change.addField', delete_field: 'aiworkspace.wish.change.deleteField', change_type: 'aiworkspace.wish.change.changeType',

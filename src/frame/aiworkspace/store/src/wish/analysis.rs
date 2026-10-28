@@ -82,6 +82,27 @@ fn renderer_accepts(catalog: &Value, renderer: &str, ty: &str) -> Option<bool> {
 }
 
 impl Stage {
+    /// Is `id` (or a Block above it) a control this wish produced (`last_run.result_bindings`)?
+    fn in_own_control(&self, id: &str) -> WsResult<bool> {
+        let own: BTreeSet<String> = aiworkspace_core::wish::current_results(&self.wish.payload)
+            .into_iter()
+            .filter(|(_, b)| b["type"] == json!("control") && b.get("under").is_none())
+            .filter_map(|(_, b)| b["entity_id"].as_str().map(str::to_string))
+            .collect();
+        let ctx = self.ctx();
+        let mut cur = id.to_string();
+        for _ in 0..4096 {
+            if own.contains(&cur) {
+                return Ok(true);
+            }
+            match ctx.edge(&cur)? {
+                Some(e) => cur = e.parent_id,
+                None => break,
+            }
+        }
+        Ok(false)
+    }
+
     /// Validate the model's analysis. `Err(problems)` lists everything to fix.
     pub fn validate_analysis(&mut self, submitted: &Value) -> WsResult<Result<Validated, Vec<String>>> {
         let mut problems: Vec<String> = Vec::new();
@@ -138,7 +159,14 @@ impl Stage {
             };
             let mut selector = input.get("selector").cloned().filter(|s| !s.is_null());
             let mut data = e.clone();
-            if e.type_id == TYPE_CELL {
+            // a control or one of its nodes is read as its outline ("expand this branch", 脑图 TODO M3), not as the
+            // data a node may show
+            let control = super::outline::control_of(&self.ctx(), &e)?;
+            if control.is_some() && self.in_own_control(&e.entity_id)? {
+                problems.push(format!("{at}.ref {r} is part of a control this wish block produced: it would form a generation cycle; bind it from another wish block"));
+                continue;
+            }
+            if e.type_id == TYPE_CELL && control.is_none() {
                 match e.payload.get("source_ref").and_then(reference_entity_id) {
                     None => {
                         problems.push(format!("{at}.ref {r} is a pure UI block (frame/shape) with no data to bind"));
@@ -169,7 +197,7 @@ impl Stage {
                     problems.push(format!("{at}.ref {r} is a wish block itself: bind the results it produces"));
                     continue;
                 }
-                TYPE_BLOCK_DEF | TYPE_CELL => {
+                TYPE_BLOCK_DEF | TYPE_CELL if control.is_none() => {
                     problems.push(format!("{at}.ref {r} is not data"));
                     continue;
                 }
@@ -305,7 +333,7 @@ impl Stage {
             let at = format!("output_contract.results[{i}]");
             let mut r = r.clone();
             if let Some(m) = r.as_object_mut() {
-                m.retain(|k, _| matches!(k.as_str(), "name" | "type" | "title" | "approach" | "key" | "target" | "views" | "description" | "fields"));
+                m.retain(|k, _| matches!(k.as_str(), "name" | "type" | "title" | "approach" | "key" | "target" | "views" | "description" | "fields" | "kind"));
             }
             if let Err(e) = check_contract_result(&r) {
                 problems.push(format!("{at}: {}", e.detail));

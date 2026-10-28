@@ -3,7 +3,7 @@
  * an object on a free Surface starts a one-shot placement; on a flow page it appends. */
 
 import { useRef, useSyncExternalStore, type ReactNode } from 'react'
-import { ChevronsLeft, ChevronsRight, Eraser, Frame, Hand, Image, LetterText, Library, MousePointer2, PenLine, Plus, Puzzle, Redo2, Shapes, Sparkles, Spline, StickyNote, Table, Type, Undo2, type LucideIcon } from 'lucide-react'
+import { ChevronsLeft, ChevronsRight, Eraser, Frame, Hand, Image, LetterText, Library, MousePointer2, PenLine, Plus, Puzzle, Redo2, Shapes, Sparkles, Spline, StickyNote, Table, Type, Undo2, Network, type LucideIcon } from 'lucide-react'
 import { useOutlineVersion, useStore, useUserState } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
 import { blockRegistry } from '../blocks/registry'
@@ -13,7 +13,7 @@ import { entryId, extensionEntries, registryEntries, type CatalogEntry } from '.
 import { ShapeLibraryPanel } from './ShapeLibraryPanel'
 import { libraryShapeConfig } from './stencilLibrary'
 
-const ICONS: Record<string, LucideIcon> = { richtext: Type, 'shape-text': LetterText, note: StickyNote, shape: Shapes, connector: Spline, frame: Frame, table: Table, asset: Image, wish: Sparkles }
+const ICONS: Record<string, LucideIcon> = { richtext: Type, 'shape-text': LetterText, note: StickyNote, shape: Shapes, connector: Spline, frame: Frame, mindmap: Network, table: Table, asset: Image, wish: Sparkles }
 
 /** The shape library (§2.4): a picked shape is placed like any object. */
 function LibraryTool({ entry, onPick }: { entry: CatalogEntry; onPick: (entry: CatalogEntry) => void }) {

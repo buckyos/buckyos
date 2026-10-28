@@ -262,6 +262,12 @@ pub fn outline_extras(env: &mut Value, e: &EntityRow) {
                     env[k] = v.clone();
                 }
             }
+            // a control's attributes drive its layout, computed from the outline alone (脑图方案 §5.4)
+            if env["kind"].as_str().is_some_and(types::is_control_kind) {
+                if let Some(c) = e.payload.get("config") {
+                    env["config"] = c.clone();
+                }
+            }
         }
         TYPE_CELL => {
             env["view_type"] = e.payload.get("view").and_then(|v| v.get("type")).cloned().unwrap_or(Value::Null);
@@ -270,6 +276,18 @@ pub fn outline_extras(env: &mut Value, e: &EntityRow) {
             env["def_id"] = e.payload.get("def_ref").and_then(|r| r.get("entity_id")).cloned().unwrap_or(Value::Null);
             if let Some(v) = e.payload.get("locked") {
                 env["locked"] = v.clone();
+            }
+            // a Block's role inside its control (R22), and the layout hints of a mind map node (its side under a
+            // two-sided root, its branch colour): the layout reads the outline only
+            if let Some(v) = e.payload.get("slot") {
+                env["slot"] = v.clone();
+            }
+            let config = e.payload.get("config");
+            if let Some(side) = config.and_then(|c| c.get("side")).filter(|s| matches!(s.as_str(), Some("left" | "right"))) {
+                env["side"] = side.clone();
+            }
+            if let Some(color) = config.and_then(|c| c.get("branch_color")).filter(|c| types::is_color(c)) {
+                env["branch_color"] = color.clone();
             }
             // what a show needs before reading any content: which Blocks may be operated on stage (third phase §10.2)
             if e.payload.get("presentation").and_then(|p| p.get("live")) == Some(&json!(true)) {

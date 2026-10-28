@@ -116,6 +116,7 @@ pub fn open_stage(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &
         location: params.get("location").cloned().unwrap_or(json!({})),
         request: request.clone(),
         catalog: super::builtin_catalog(),
+        controls: super::controls_catalog(),
         map_budget_chars: state.wish.config.map_budget_chars,
         materialize: kind != StageKind::Analyze && program != super::PROGRAM_MOCK,
     };
@@ -393,6 +394,10 @@ fn input_lines(stage: &Stage) -> String {
         let mut l = format!("- `{}`: {} \"{}\" ({})", i.name, aiworkspace_store::wish::context::type_label(&i.type_id), i.label, meta["handle"].as_str().unwrap_or(""));
         if let Some(r) = meta["rows"].as_u64() {
             l.push_str(&format!(", {}", aiworkspace_store::wish::profile::count(r, "row", "rows")));
+        }
+        if let Some(k) = meta["control"].as_str() {
+            let what = if meta["node"] == json!(true) { format!("a node of a {k} with its branch") } else { format!("a {k}") };
+            l.push_str(&format!(", {what} ({}) as a Markdown outline in outline.md", aiworkspace_store::wish::profile::count(meta["nodes"].as_u64().unwrap_or(0), "node", "nodes")));
         }
         if let Some(v) = meta.get("view").filter(|v| v.is_object()) {
             l.push_str(&format!(", read through view {} ({})", v["handle"].as_str().unwrap_or(""), v["summary"].as_str().unwrap_or("")));
@@ -779,6 +784,17 @@ fn mock_results(st: &Arc<StageState>, provided: &Value) -> WsResult<Vec<Value>> 
                 if v.get("views").is_none() {
                     v["views"] = json!([{ "renderer": "sample.video" }]);
                 }
+            }
+            "control" => {
+                // checked like the model's: the tree and its bounds, `under` against this run's inputs
+                let collector = Collector { contract: json!({ "results": [], "dynamic": true }), inputs: st.stage.lock().unwrap().input_infos()?, ..Default::default() };
+                let mut raw = json!({ "name": name, "type": "control", "title": v["title"] });
+                for k in ["kind", "config", "children", "under"] {
+                    if let Some(x) = c.get(k) {
+                        raw[k] = x.clone();
+                    }
+                }
+                v = collector.normalize(&raw, "direct").map_err(|e| WsError::invalid_op(format!("Result {name}: {}", e.join("; "))))?;
             }
             t => return Err(WsError::invalid_op(format!("Mock result type {t} is not supported"))),
         }

@@ -29,6 +29,7 @@ pub const AIWS_JS: &str = include_str!("../../../aiws/aiws.js");
 pub const RUN_JS: &str = include_str!("../../../aiws/run.js");
 pub const AIWS_API: &str = include_str!("../../../aiws/README.md");
 pub const RENDERERS: &str = include_str!("../../../aiws/renderers.json");
+pub const CONTROLS: &str = include_str!("../../../aiws/controls.json");
 pub const ANALYZE_SYSTEM: &str = include_str!("../../../aiws/prompts/analyze.md");
 pub const EXECUTE_SYSTEM: &str = include_str!("../../../aiws/prompts/execute.md");
 
@@ -601,4 +602,8 @@ pub fn is_wish(program: &str) -> bool {
 
 pub fn builtin_catalog() -> Value {
     serde_json::from_str(RENDERERS).unwrap_or(json!([]))
+}
+
+pub fn controls_catalog() -> Value {
+    serde_json::from_str(CONTROLS).unwrap_or(json!({ "controls": [] }))
 }

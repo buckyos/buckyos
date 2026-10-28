@@ -6,8 +6,11 @@
  * Every Block subscribes to its own entry (`subscribeEntity`), so one Block's change re-renders
  * that Block alone. Children lists are kept per parent for the trees and the RenderHost. */
 
-import type { Capability, CommitEvent, ConnectorProjection, EntityEnvelope, Operation, Placement } from '../api/types'
+import { isControlKind } from '@controls/contract'
+import type { Capability, CommitEvent, ConnectorProjection, EntityEnvelope, Json, Operation, StoredPlacement } from '../api/types'
 import { Emitter } from './emitter'
+
+const COLOR = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/
 
 type Listener = () => void
 
@@ -40,6 +43,8 @@ function extras(typeId: string, payload: Record<string, unknown>): Partial<Entit
     for (const key of ['system', 'surface_id', 'content_folder_id'] as const) if (payload[key] !== undefined) (out as Record<string, unknown>)[key] = payload[key]
     out.icon = (payload.icon as string | undefined) ?? null
     out.locked = payload.locked === true ? true : null
+    // a control's attributes drive its layout (脑图方案 §5.4)
+    out.config = isControlKind(payload.kind as string) && payload.config && typeof payload.config === 'object' ? payload.config as Record<string, Json> : null
   } else if (typeId === 'buckyos.cell') {
     out.locked = payload.locked === true ? true : null
     const view = payload.view as { type?: string; version?: number } | undefined
@@ -52,6 +57,11 @@ function extras(typeId: string, payload: Record<string, unknown>): Partial<Entit
     out.source_id = (payload.source_ref as { entity_id?: string } | undefined)?.entity_id ?? null
     out.def_id = (payload.def_ref as { entity_id?: string } | undefined)?.entity_id ?? null
     out.live = (payload.presentation as { live?: boolean } | undefined)?.live === true ? true : null
+    // a Block's role in its control and a mind map node's layout hints, as the backend projects them
+    out.slot = typeof payload.slot === 'string' ? payload.slot : null
+    const config = payload.config as { side?: unknown; branch_color?: unknown } | undefined
+    out.side = config?.side === 'left' || config?.side === 'right' ? config.side : null
+    out.branch_color = typeof config?.branch_color === 'string' && COLOR.test(config.branch_color) ? config.branch_color : null
   } else if (typeId === 'buckyos.viewport') {
     out.viewport = {
       surface_id: (payload.surface_ref as { entity_id?: string } | undefined)?.entity_id ?? null,
@@ -94,7 +104,7 @@ export class OutlineModel {
   private readonly principal: string | null
   readonly subscribe = this.emitter.subscribe
   /** A remote structural change of a Block this window placed recently (layout conflict, D1). */
-  onRemoteLayoutChange: ((entityId: string, author: string | null, placement: Placement | undefined) => void) | null = null
+  onRemoteLayoutChange: ((entityId: string, author: string | null, placement: StoredPlacement | undefined) => void) | null = null
 
   constructor(load: () => Promise<EntityEnvelope[]>, readEnvelopes: (ids: string[]) => Promise<(EntityEnvelope | null)[]>, principal: string | null) {
     this.load = load
@@ -254,10 +264,10 @@ export class OutlineModel {
           const op = opsFor(id).find((candidate) => candidate.op === 'tree.move' || candidate.op === 'tree.place')
           if (!op) { if (event.local) reload = true; else reload = true; break }
           const update: Partial<EntityEnvelope> = { struct_rev: item.rev }
-          if (op.op === 'tree.move') { update.parent_id = op.new_parent_id as string; update.order_key = op.order_key as string; update.placement = (op.placement as Placement | null | undefined) ?? undefined }
+          if (op.op === 'tree.move') { update.parent_id = op.new_parent_id as string; update.order_key = op.order_key as string; update.placement = (op.placement as StoredPlacement | null | undefined) ?? undefined }
           else {
             if (typeof op.order_key === 'string') update.order_key = op.order_key
-            if ('placement' in op) update.placement = (op.placement as Placement | null) ?? undefined
+            if ('placement' in op) update.placement = (op.placement as StoredPlacement | null) ?? undefined
           }
           if (!this.patch(id, update)) { reload = true; break }
           changed.add(id)
@@ -273,7 +283,7 @@ export class OutlineModel {
           const entity: EntityEnvelope = {
             entity_id: id, type_id: op.type_id as string, schema_version: (op.schema_version as number | undefined) ?? 1,
             name: (op.name as string | undefined) ?? null, parent_id: op.parent_id as string, order_key: op.order_key as string,
-            placement: (op.placement as Placement | undefined) ?? undefined, scope: (op.scope as string | undefined) === 'personal' ? 'personal' : 'shared', deleted: false,
+            placement: (op.placement as StoredPlacement | undefined) ?? undefined, scope: (op.scope as string | undefined) === 'personal' ? 'personal' : 'shared', deleted: false,
             content_rev: item.rev, meta_rev: item.rev, life_rev: item.rev, struct_rev: item.rev, write_policy: 'open',
             capabilities: this.createdCapabilities(event, op, parent.capabilities), ...extras(op.type_id as string, payload),
           }
@@ -317,7 +327,7 @@ export class OutlineModel {
             const payload: Record<string, unknown> = {}
             let touchedExtras = false
             for (const op of keyed) for (const key of (op.keys as { key: string; value?: unknown }[] | undefined) ?? []) {
-              if (['title', 'source', 'view', 'source_ref', 'def_ref', 'kind', 'layout', 'executor', 'output_mode', 'target', 'media_type', 'def_id', 'icon', 'locked', 'start', 'end', 'presentation', 'config',
+              if (['title', 'source', 'view', 'source_ref', 'def_ref', 'kind', 'layout', 'executor', 'output_mode', 'target', 'media_type', 'def_id', 'icon', 'locked', 'start', 'end', 'presentation', 'config', 'slot',
                 'surface_ref', 'center', 'zoom', 'purpose', 'stage', 'steps', ...CONNECTOR_KEYS].includes(key.key)) touchedExtras = true
               if (op.op === 'entity.set_keys') payload[key.key] = key.value
             }
@@ -332,7 +342,9 @@ export class OutlineModel {
                 executor: current.executor, output_mode: current.output_mode, def_id: current.def_id, media_type: current.media_type,
                 target: current.target_id ? { entity_id: current.target_id } : undefined,
                 ...(current.connector ?? {}),
-                config: current.ink_stroke ? { stroke: current.ink_stroke } : undefined,
+                config: current.type_id === 'buckyos.container' ? current.config ?? undefined
+                  : current.ink_stroke || current.side || current.branch_color ? { ...(current.ink_stroke ? { stroke: current.ink_stroke } : {}), ...(current.side ? { side: current.side } : {}), ...(current.branch_color ? { branch_color: current.branch_color } : {}) } : undefined,
+                slot: current.slot ?? undefined,
                 presentation: current.live ? { live: true } : undefined,
                 surface_ref: current.viewport?.surface_id ? { entity_id: current.viewport.surface_id } : undefined,
                 center: current.viewport?.center ?? undefined, zoom: current.viewport?.zoom ?? undefined,

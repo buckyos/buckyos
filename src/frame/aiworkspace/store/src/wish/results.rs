@@ -35,6 +35,8 @@ pub struct InputInfo {
     pub type_id: String,
     /// table inputs: record ids present in the snapshot
     pub records: Option<BTreeSet<String>>,
+    /// a control or a Block laid out by one (a mind map node): the control's kind
+    pub control: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -260,6 +262,7 @@ impl Collector {
             "file" | "image" | "asset" => "file",
             "html" => "html",
             "video" => "video",
+            "control" => "control",
             other => return Err(vec![format!("Result \"{name}\" has unsupported type {other}")]),
         };
         let contract_ty = contract.as_ref().and_then(|c| c["type"].as_str()).unwrap_or("").to_string();
@@ -504,6 +507,10 @@ impl Collector {
                 out["html"] = json!({ "html": html, "css": raw.get("css").cloned().unwrap_or(json!("")), "js": raw.get("js").cloned().unwrap_or(json!("")), "bindings": bindings });
                 "html"
             }
+            "control" => {
+                self.control(&name, raw, contract.as_ref(), &mut out, &mut errs);
+                "control"
+            }
             _ => {
                 errs.push("video results need a real media tool and are not supported in the first version".into());
                 "video"
@@ -518,6 +525,58 @@ impl Collector {
         } else {
             Err(errs)
         }
+    }
+
+    /// A control result (脑图 TODO M3): `{ kind, config?, children: <Markdown outline> | [{ text, children }], under? }`
+    /// → `control: { kind, config, nodes: [{ text, children }], under?, under_id? }`. The tree is bounded and its
+    /// titles fit the core; `under` names an input that is a control or one of its nodes.
+    fn control(&self, name: &str, raw: &Value, contract: Option<&Value>, out: &mut Value, errs: &mut Vec<String>) {
+        let kind = raw["kind"].as_str().unwrap_or("");
+        if !aiworkspace_core::types::is_control_kind(kind) {
+            errs.push(format!("Control result \"{name}\" needs kind, a control of catalog/controls.json (not {kind:?})"));
+            return;
+        }
+        if let Some(k) = contract.and_then(|c| c["kind"].as_str()).filter(|k| *k != kind) {
+            errs.push(format!("Control result \"{name}\" is contracted as a {k}, not a {kind}"));
+        }
+        let mut config = Map::new();
+        match raw.get("config") {
+            None | Some(Value::Null) => {}
+            Some(Value::Object(c)) => {
+                config = c.clone();
+                // the attributes a control defines; the core checks their values again
+                if kind == "mindmap" {
+                    config.retain(|k, _| matches!(k.as_str(), "direction" | "edge" | "spacing" | "branch_colors"));
+                }
+                let size = aiworkspace_core::canonical::canonical_json(&Value::Object(config.clone())).map_or(usize::MAX, |s| s.len());
+                if size > aiworkspace_core::types::MAX_CONFIG_BYTES {
+                    errs.push(format!("The config of control result \"{name}\" exceeds {} KiB", aiworkspace_core::types::MAX_CONFIG_BYTES / 1024));
+                } else if let Err(e) = aiworkspace_core::types::check_control_config(kind, &config) {
+                    errs.push(format!("Control result \"{name}\": {}", e.detail));
+                }
+            }
+            Some(_) => errs.push(format!("The config of control result \"{name}\" must be an object")),
+        }
+        let tree = match super::outline::result_tree(raw.get("children")) {
+            Ok(t) => t,
+            Err(e) => {
+                errs.push(format!("Control result \"{name}\" {e}"));
+                Vec::new()
+            }
+        };
+        let mut c = json!({ "kind": kind, "config": config, "nodes": tree.iter().map(super::outline::OutlineNode::to_json).collect::<Vec<_>>() });
+        match raw.get("under").filter(|u| !u.is_null()) {
+            None => {}
+            Some(u) => match u.as_str().and_then(|n| self.inputs.get(n).map(|i| (n, i))) {
+                Some((n, i)) if i.control.as_deref() == Some(kind) => {
+                    c["under"] = json!(n);
+                    c["under_id"] = json!(i.entity_id);
+                }
+                Some((n, _)) => errs.push(format!("under: input {n} of control result \"{name}\" is not a {kind} or one of its nodes")),
+                None => errs.push(format!("under: {u} of control result \"{name}\" is not an input name")),
+            },
+        }
+        out["control"] = c;
     }
 
     /// The results now held (program first), by name.
@@ -577,6 +636,12 @@ impl Collector {
             }
             "image" | "asset" => p["file"] = json!({ "media_type": r["file"]["media_type"], "size": r["file"]["size"], "image": r["file"].get("image") }),
             "html" => p["html"] = json!({ "bytes": r["html"]["html"].as_str().map_or(0, str::len), "bindings": r["html"]["bindings"] }),
+            "control" => {
+                let c = &r["control"];
+                let tree = super::outline::tree_of(&c["nodes"]);
+                p["control"] = json!({ "kind": c["kind"], "config": c["config"], "nodes": super::outline::count(&tree), "under": c.get("under"),
+                                       "outline": super::outline::format_markdown_outline(&tree).chars().take(400).collect::<String>() });
+            }
             _ => {}
         }
         if let Some(b) = prev {

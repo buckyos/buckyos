@@ -5,6 +5,7 @@
 
 pub mod auth;
 pub mod buckets;
+pub mod control;
 pub mod show;
 pub mod source;
 pub mod wish;
@@ -475,6 +476,10 @@ pub const METHOD_LEVELS: &[(&str, &str)] = &[
     ("ws.unpublish", "experimental"),
     ("ws.list_publications", "experimental"),
     ("ws.list_referrers", "experimental"),
+    ("control.list", "experimental"),
+    ("control.describe", "experimental"),
+    ("control.import", "experimental"),
+    ("control.export", "experimental"),
 ];
 
 /// Synchronous method dispatch. Every method authorizes against the grants of
@@ -524,6 +529,11 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
             state.with_ws(ws, |w| w.close_entry(caller, local))?
         }
         "doc.outline" => state.with_ws(ws_id()?, |ws| ws.outline(caller))?,
+        // Block-controls (脑图方案 §8.1): the catalogue needs a session only; import / export act in a Workspace
+        "control.list" => control::list(),
+        "control.describe" => control::describe(s(p, "kind")?)?,
+        "control.import" => state.with_ws(ws_id()?, |ws| control::import(ws, caller, p))?,
+        "control.export" => state.with_ws(ws_id()?, |ws| control::export(ws, caller, p))?,
         "doc.resolve" => state.with_ws(ws_id()?, |ws| ws.resolve(caller, p.get("reference"), p.get("path").and_then(Value::as_str)))?,
         "doc.read" => state.with_ws(ws_id()?, |ws| match p.get("targets").and_then(Value::as_array) {
             // batch form: each item succeeds or fails on its own

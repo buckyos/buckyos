@@ -11,7 +11,8 @@ import { useState, type CSSProperties } from 'react'
 import { Pencil, Rows3, Trash2 } from 'lucide-react'
 import { inkOn } from '@drawio/shapes'
 import { keysAfter, randomId } from '@drawio/keys'
-import type { EntityEnvelope, Json, Operation, Placement } from '../../api/types'
+import { fixed, num } from '@controls/placement'
+import type { EntityEnvelope, Json, Operation, Placement, StoredPlacement } from '../../api/types'
 import { aiwsT } from '../../i18n'
 import { useAiwsText } from '../../useAiwsText'
 import { useStore } from '../../state/hooks'
@@ -112,8 +113,8 @@ export function backingOf(store: WorkspaceStore, groupId: string): EntityEnvelop
   if (!group || group.kind !== 'group') return undefined
   const first = store.outline.childrenOf(groupId).find((c) => c.type_id === 'buckyos.cell' || c.kind === 'group')
   if (!first || first.type_id !== 'buckyos.cell' || (first.view_type !== 'frame' && first.view_type !== 'shape')) return undefined
-  const p = first.placement
-  const g = group.placement
+  const p = fixed(first.placement)
+  const g = fixed(group.placement)
   if (!p || !g || Math.abs(p.x) > 1 || Math.abs(p.y) > 1 || Math.abs(p.w - g.w) > 1 || Math.abs(p.h - g.h) > 1) return undefined
   return first
 }
@@ -121,7 +122,7 @@ export function backingOf(store: WorkspaceStore, groupId: string): EntityEnvelop
 /** The lanes of a pool: its child groups backed by a frame, in reading order. */
 function lanesOf(store: WorkspaceStore, poolId: string, rows: boolean): EntityEnvelope[] {
   return store.outline.childrenOf(poolId).filter((c) => c.kind === 'group' && backingOf(store, c.entity_id)?.view_type === 'frame')
-    .sort((a, b) => (rows ? (a.placement?.y ?? 0) - (b.placement?.y ?? 0) : (a.placement?.x ?? 0) - (b.placement?.x ?? 0)))
+    .sort((a, b) => (rows ? (num(a.placement?.y) ?? 0) - (num(b.placement?.y) ?? 0) : (num(a.placement?.x) ?? 0) - (num(b.placement?.x) ?? 0)))
 }
 
 /** The pool a frame heads (its group holds lanes) or the pool its lane belongs to. */
@@ -138,13 +139,14 @@ function laneContext(store: WorkspaceStore, frameId: string): { pool: EntityEnve
 /** Lanes stacked top to bottom (a pool titled down its left side) or side by side. */
 function poolRows(store: WorkspaceStore, poolId: string): boolean {
   const lanes = lanesOf(store, poolId, true)
-  const a = lanes[0]?.placement
-  const b = lanes[1]?.placement
+  const a = fixed(lanes[0]?.placement)
+  const b = fixed(lanes[1]?.placement)
   if (a && b) return Math.abs(b.y - a.y) >= Math.abs(b.x - a.x)
   return a ? a.w >= a.h : true
 }
 
-const grow = (p: Placement, rows: boolean, d: number): Placement => (rows ? { ...p, h: Math.max(1, p.h + d) } : { ...p, w: Math.max(1, p.w + d) })
+/** A pool inside a control keeps its laid-out position ("auto"): only its size grows. */
+const grow = (p: StoredPlacement, rows: boolean, d: number): StoredPlacement => (rows ? { ...p, h: Math.max(1, (num(p.h) ?? 1) + d) } : { ...p, w: Math.max(1, (num(p.w) ?? 1) + d) })
 const shift = (p: Placement, rows: boolean, d: number): Placement => (rows ? { ...p, y: p.y + d } : { ...p, x: p.x + d })
 
 async function addLane(store: WorkspaceStore, frameId: string) {
@@ -153,9 +155,10 @@ async function addLane(store: WorkspaceStore, frameId: string) {
   const { pool, rows } = ctx
   const lanes = lanesOf(store, pool.entity_id, rows)
   const after = ctx.lane ?? lanes.at(-1)
-  if (!after?.placement || !pool.placement) return
-  const size = rows ? after.placement.h : after.placement.w
-  const at = shift(after.placement, rows, size)
+  const afterAt = fixed(after?.placement)
+  if (!after || !afterAt || !pool.placement) return
+  const size = rows ? afterAt.h : afterAt.w
+  const at = shift(afterAt, rows, size)
   const template = backingOf(store, after.entity_id)
   const read = template ? await store.session.read<{ payload: { config?: Record<string, Json> } }>(template.entity_id) : null
   const laneId = randomId('g')
@@ -167,7 +170,7 @@ async function addLane(store: WorkspaceStore, frameId: string) {
     { op: 'entity.create', entity_id: randomId('c'), type_id: 'buckyos.cell', parent_id: laneId, order_key: keysAfter(null, 1)[0], placement: { x: 0, y: 0, w: at.w, h: at.h }, payload: { view: { type: 'frame' }, title: aiwsT('aiworkspace.blocks.frame.lane', { n: lanes.length + 1 }), config: read?.content.payload.config ?? { color: '#4f8df7', header: 30, orientation: 'vertical' } } },
   ]
   // lanes after the new one move by its size; the pool and its frame grow by it
-  for (const lane of lanes) if (lane.placement && (rows ? lane.placement.y : lane.placement.x) > (rows ? after.placement.y : after.placement.x)) ops.push({ op: 'tree.place', entity_id: lane.entity_id, placement: shift(lane.placement, rows, size) })
+  for (const lane of lanes) { const p = fixed(lane.placement); if (p && (rows ? p.y : p.x) > (rows ? afterAt.y : afterAt.x)) ops.push({ op: 'tree.place', entity_id: lane.entity_id, placement: shift(p, rows, size) }) }
   ops.push({ op: 'tree.place', entity_id: pool.entity_id, placement: grow(pool.placement, rows, size) })
   const head = backingOf(store, pool.entity_id)
   if (head?.placement) ops.push({ op: 'tree.place', entity_id: head.entity_id, placement: grow(head.placement, rows, size) })
@@ -177,7 +180,7 @@ async function addLane(store: WorkspaceStore, frameId: string) {
 function deleteLane(store: WorkspaceStore, frameId: string) {
   const ctx = laneContext(store, frameId)
   const lane = ctx?.lane
-  const at = lane?.placement
+  const at = fixed(lane?.placement)
   const poolAt = ctx?.pool.placement
   if (!ctx || !lane || !at || !poolAt) return
   const { pool, rows } = ctx
@@ -186,7 +189,7 @@ function deleteLane(store: WorkspaceStore, frameId: string) {
   const size = rows ? at.h : at.w
   const descendants = store.outline.descendants(lane.entity_id)
   const ops: Operation[] = [{ op: 'entity.delete', entity_id: lane.entity_id, ...(descendants.length ? { subtree: { delete: descendants.map((d) => d.entity_id) } } : {}), expect: { rev: lane.life_rev } }]
-  for (const other of lanes) if (other.placement && (rows ? other.placement.y : other.placement.x) > (rows ? at.y : at.x)) ops.push({ op: 'tree.place', entity_id: other.entity_id, placement: shift(other.placement, rows, -size) })
+  for (const other of lanes) { const p = fixed(other.placement); if (p && (rows ? p.y : p.x) > (rows ? at.y : at.x)) ops.push({ op: 'tree.place', entity_id: other.entity_id, placement: shift(p, rows, -size) }) }
   ops.push({ op: 'tree.place', entity_id: pool.entity_id, placement: grow(poolAt, rows, -size) })
   const head = backingOf(store, pool.entity_id)
   if (head?.placement) ops.push({ op: 'tree.place', entity_id: head.entity_id, placement: grow(head.placement, rows, -size) })

@@ -55,7 +55,9 @@ class Input {
     this.name = name
     this.entity_id = info.entity_id
     this.type_id = info.type_id
-    this.kind = (info.type_id || '').replace('buckyos.', '').replace('table-source', 'table').replace('asset-ref', 'asset').replace('container', 'folder')
+    this.kind = info.control ? 'control' : (info.type_id || '').replace('buckyos.', '').replace('table-source', 'table').replace('asset-ref', 'asset').replace('container', 'folder')
+    /** A control input (a control, or one of its nodes): the control's kind. */
+    this.control = info.control ?? null
     this.title = info.label ?? info.title ?? name
     this.dir = join(host.root, info.dir ?? `context/entities/${info.entity_id}`)
     this.selector = info.selector ?? null
@@ -173,6 +175,12 @@ class Input {
     return dec.decode(this.bytes())
   }
 
+  /** A control as a Markdown outline (a node: its branch, the node as the one root item). */
+  outline() {
+    this.#expect('control')
+    return Deno.readTextFileSync(join(this.dir, 'outline.md'))
+  }
+
   /** Folder members as inputs (each with its own kind). */
   members() {
     this.#expect('folder')
@@ -286,6 +294,16 @@ export class ProgramHost {
         html(name, spec) {
           host.#push({ name, type: 'html', html: spec.html, css: spec.css ?? '', js: spec.js ?? '', bindings: spec.bindings ?? {}, title: spec.title })
         },
+        /**
+         * A Block-control (catalog/controls.json): `kind`, `children` a Markdown outline or `[{ text, children }]`,
+         * optional `config` and `title`; `under` (an input that is a control's node) puts the tree below that node.
+         */
+        control(name, spec = {}) {
+          if (typeof spec.kind !== 'string') throw new Error(`result.control(${name}): kind is required (see catalog/controls.json)`)
+          if (typeof spec.children !== 'string' && !Array.isArray(spec.children)) throw new Error(`result.control(${name}): children must be a Markdown outline or [{ text, children }]`)
+          if (spec.under !== undefined && input(spec.under).kind !== 'control') throw new Error(`result.control(${name}): under must name a control input`)
+          host.#push({ name, type: 'control', kind: spec.kind, config: spec.config, children: spec.children, title: spec.title, under: spec.under })
+        },
       },
       /** Numbers (and other values) the written text may cite. */
       facts(obj) {
@@ -354,6 +372,7 @@ export class ProgramHost {
         for (const row of r.rows.slice(0, 3)) lines.push('  ' + JSON.stringify(row))
       } else if (r.type === 'columns') lines.push(`columns ${r.name} on ${r.input}: ${Object.keys(r.values ?? {}).length} records`)
       else if (r.type === 'text') lines.push(`text ${r.name}: ${r.markdown.length} chars`)
+      else if (r.type === 'control') lines.push(`control ${r.name}: ${r.kind}${r.under ? ` under ${r.under}` : ''}`)
       else lines.push(`${r.type} ${r.name}`)
     }
     if (Object.keys(this.factsObj).length) lines.push('facts ' + JSON.stringify(this.factsObj))

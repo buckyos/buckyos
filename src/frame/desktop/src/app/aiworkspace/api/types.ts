@@ -1,7 +1,9 @@
 /* Wire types of the aiworkspace service (see src/frame/aiworkspace/README.md and the detailed design §2–§5).
  * Only what the Desktop app reads is typed; unknown keys are preserved as `unknown`. */
 
-export const PROTOCOL_VERSION = '1.0'
+import type { StoredPlacement } from '@controls/placement'
+
+export const PROTOCOL_VERSION = '1.1'
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
 
@@ -104,9 +106,13 @@ export const SYSTEM_IDS: ReadonlySet<string> = new Set([ROOT_ID, DATA_ID, SURFAC
 /** Free-layout placement relative to the parent container; stacking order is the sibling `order_key`. */
 /** `rotation`: degrees clockwise about the centre, `[0, 360)`, absent = 0 (标准对象的交互改进 §7.1). */
 export interface Placement { x: number; y: number; w: number; h: number; rotation?: number }
+/** A placement as stored (脑图方案 §5.1): inside a control a component may be `"auto"`, computed when shown. Read laid-out
+ * rectangles for geometry; only a Block outside any control has a plain `Placement`. */
+export type { StoredPlacement, Axis } from '@controls/placement'
 
-/** Container kinds of phase two: `folder` (data tree), `surface`, `group` (BlockTree); `root` / `data` / `surfaces` are system nodes. */
-export type ContainerKind = 'root' | 'data' | 'surfaces' | 'folder' | 'surface' | 'group'
+/** Container kinds of phase two: `folder` (data tree), `surface`, `group` (BlockTree); `root` / `data` / `surfaces` are system nodes;
+ * a Block-control's kind is its control id (`mindmap`, 脑图方案 §6.2). */
+export type ContainerKind = 'root' | 'data' | 'surfaces' | 'folder' | 'surface' | 'group' | 'mindmap'
 
 /** Generation dependency record of a result entity (phase two §7.3). */
 export interface DerivedInput {
@@ -152,7 +158,9 @@ export interface EntityEnvelope {
   name: string | null
   title?: string | null
   kind?: ContainerKind | string
-  layout?: { mode: 'flow' | 'free' } | null
+  layout?: { mode: 'flow' | 'free' | 'tree' } | null
+  /** A control's attributes (outline only; a Surface's `config` is not projected). */
+  config?: Record<string, Json> | null
   /** Folders: `canvas_content` (the area), `surface_content` (one Surface's folder) or `shows` (presentation paths). */
   system?: 'canvas_content' | 'surface_content' | 'shows' | null
   /** A content folder's Surface; a Surface's content folder. */
@@ -168,7 +176,7 @@ export interface EntityEnvelope {
   ink_stroke?: string | null
   parent_id?: string
   order_key?: string
-  placement?: Placement
+  placement?: StoredPlacement
   scope: string
   deleted: boolean
   content_rev: number
@@ -185,6 +193,10 @@ export interface EntityEnvelope {
   view_version?: number | null
   source_id?: string | null
   def_id?: string | null
+  /** A Block's role name inside its control (R22) and a mind map node's layout hints (`config.side`, `config.branch_color`). */
+  slot?: string | null
+  side?: 'left' | 'right' | null
+  branch_color?: string | null
   /** Wishes / definitions / annotations / assets (outline only). */
   executor?: string | null
   /** Set on a sourced entity (D12). */
@@ -314,12 +326,14 @@ export interface CellPayload {
   label?: ConnectorProjection['label']
   /** Presentation properties (第三期规划 §4.1, §10.2). */
   presentation?: PresentationProps
+  /** A Block's role name inside its control (R22). */
+  slot?: string
 }
 
 export type WishExecutor = 'mock' | 'xllm' | 'agent-work-session'
 /** A wish input: what is read (`entity`, a saved table view, a table query) and the stable name programs use (许愿格 §4.1). */
 export interface WishInput { entity_id: string; selector?: Selector; version?: { mode: 'follow' | 'fixed'; rev?: number; hash?: string }; label?: string; name?: string; appended_by?: string }
-export type WishResultType = 'richtext' | 'record' | 'table' | 'table_columns' | 'image' | 'asset' | 'html' | 'video'
+export type WishResultType = 'richtext' | 'record' | 'table' | 'table_columns' | 'image' | 'asset' | 'html' | 'video' | 'control'
 export interface WishView { renderer: string; config?: Record<string, Json>; title?: string; size?: { w: number; h: number } }
 export interface WishContractResult { name: string; type: WishResultType; title?: string; approach: 'program' | 'direct'; key?: string[]; target?: string; views?: WishView[]; description?: string; fields?: string[] }
 export interface WishCheckDef { id: string; kind: 'program' | 'review'; text: string }
@@ -406,6 +420,8 @@ export interface WishResult {
   markdown?: string
   file?: { media_type: string; size: number; image?: { width: number; height: number }; object_id?: string; file_name?: string }
   html?: { html: string; css?: string; js?: string; bindings?: Record<string, string> }
+  /** A Block-control instance (a mind map, 脑图 TODO M3): its tree; `under` names the input node it grows. */
+  control?: { kind: string; config?: Record<string, Json>; nodes: { text: string; children: unknown[] }[]; under?: string }
 }
 export interface WishCheckResult { id: string; kind: 'program' | 'review'; text: string; status: 'passed' | 'failed' | 'not_run' | 'review'; detail?: Json; self_assessment?: Json }
 export interface WishCandidate {

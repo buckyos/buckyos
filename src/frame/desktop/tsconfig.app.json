@@ -24,8 +24,9 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true,
 
-    /* The shared draw.io importer and canvas geometry (src/frame/aiworkspace/import-drawio) */
-    "paths": { "@drawio/*": ["../aiworkspace/import-drawio/*"] }
+    /* The shared draw.io importer and canvas geometry (src/frame/aiworkspace/import-drawio), the shared Block-controls
+       (src/frame/aiworkspace/controls: layout, outline conversion, catalogue) */
+    "paths": { "@drawio/*": ["../aiworkspace/import-drawio/*"], "@controls/*": ["../aiworkspace/controls/*"] }
   },
   "include": ["src"],
   "exclude": ["src/api", "src/auth"]

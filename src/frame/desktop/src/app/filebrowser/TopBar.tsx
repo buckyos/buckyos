@@ -21,6 +21,7 @@ import {
   FolderInput,
   FilePlus,
   FolderPlus,
+  FolderUp,
   LayoutGrid,
   List,
   Plus,
@@ -33,7 +34,7 @@ import {
   X,
 } from 'lucide-react'
 import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { useI18n } from '../../i18n/provider'
 import type { LocationCapabilities } from './data/FolderReader'
 import { crumbsForUrl, displayPath } from './data/urls'
@@ -202,6 +203,8 @@ export function TopBar({
   const { t } = useI18n()
   const [searchOpen, setSearchOpen] = useState(false)
   const [tabMenuAnchor, setTabMenuAnchor] = useState<HTMLElement | null>(null)
+  const [uploadMenuAnchor, setUploadMenuAnchor] = useState<HTMLElement | null>(null)
+  const uploadMenuId = useId()
   const [newMenuAnchor, setNewMenuAnchor] = useState<HTMLElement | null>(null)
   const [viewMenuAnchor, setViewMenuAnchor] = useState<HTMLElement | null>(null)
   const [sortMenuAnchor, setSortMenuAnchor] = useState<HTMLElement | null>(null)
@@ -529,16 +532,57 @@ export function TopBar({
       {/* Toolbar row: upload / new | clipboard ops | settings ··· view mode / sort / search */}
       <div data-testid="files-toolbar" className="flex flex-wrap items-center gap-1">
         <ToolbarIconButton title={t('filebrowser.mobile.places', 'Places')} onClick={onPlaces}><PlacesIcon size={16} /></ToolbarIconButton>
-        {onUpload ? (
-          <button
-            type="button"
-            onClick={onUpload}
-            disabled={!acceptsContent}
-            className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs text-[color:var(--cp-muted)] transition hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_12%,transparent)] hover:text-[color:var(--cp-text)] disabled:pointer-events-none disabled:opacity-40"
-          >
-            <Upload size={14} />
-            {t('filebrowser.actions.upload', 'Upload')}
-          </button>
+        {onUpload || onFolderUpload ? (
+          <>
+            <button
+              type="button"
+              onClick={(event) => setUploadMenuAnchor(event.currentTarget)}
+              disabled={!acceptsContent}
+              aria-haspopup="menu"
+              aria-expanded={Boolean(uploadMenuAnchor)}
+              aria-controls={uploadMenuAnchor ? uploadMenuId : undefined}
+              className={clsx(
+                'flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs text-[color:var(--cp-muted)] transition hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_12%,transparent)] hover:text-[color:var(--cp-text)] disabled:pointer-events-none disabled:opacity-40',
+                uploadMenuAnchor && 'bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_28%,var(--cp-surface))] text-[color:var(--cp-text)]',
+              )}
+            >
+              <Upload size={14} />
+              {t('filebrowser.actions.upload', 'Upload')}
+              <ChevronDown size={10} />
+            </button>
+            <Menu
+              id={uploadMenuId}
+              anchorEl={uploadMenuAnchor}
+              open={Boolean(uploadMenuAnchor)}
+              onClose={() => setUploadMenuAnchor(null)}
+              slotProps={{ paper: { sx: { minWidth: 180 } } }}
+            >
+              {onUpload ? (
+                <MenuItem
+                  disabled={!acceptsContent}
+                  onClick={() => {
+                    setUploadMenuAnchor(null)
+                    onUpload()
+                  }}
+                >
+                  <ListItemIcon><Upload size={15} /></ListItemIcon>
+                  <ListItemText primary={t('filebrowser.operation.uploadFiles', 'Upload files')} />
+                </MenuItem>
+              ) : null}
+              {onFolderUpload ? (
+                <MenuItem
+                  disabled={!acceptsContent}
+                  onClick={() => {
+                    setUploadMenuAnchor(null)
+                    onFolderUpload()
+                  }}
+                >
+                  <ListItemIcon><FolderUp size={15} /></ListItemIcon>
+                  <ListItemText primary={t('filebrowser.operation.uploadFolder', 'Upload folder')} />
+                </MenuItem>
+              ) : null}
+            </Menu>
+          </>
         ) : null}
         {onNewFolder || onNewFile ? (
           <>
@@ -572,7 +616,6 @@ export function TopBar({
                   <ListItemText primary={t('filebrowser.actions.newFolder', 'New folder')} />
                 </MenuItem>
               ) : null}
-              {onFolderUpload && <MenuItem onClick={() => { setNewMenuAnchor(null); onFolderUpload() }}>{t('filebrowser.operation.uploadFolder', 'Upload folder')}</MenuItem>}
               {onNewFile ? (
                 <MenuItem
                   onClick={() => {

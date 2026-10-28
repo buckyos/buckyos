@@ -21,6 +21,7 @@ AIWorkspaceAppPanel.tsx   entry: what opens (Desktop window: most recent workspa
                           the leave check, the Desktop close / logout guard, the tab's beforeunload
 AIWorkspaceRoute.tsx      the browser tab of its own: Desktop route `/workspace/:workspaceId?`
 links.ts                  the only definition of the tab / share address `/workspace/<id>?surface=&block=`
+ui/controls/              Block-controls (the mind map): registry, folds, node measuring — see "Block-controls" below
 i18n.ts, useAiwsText.ts   the app's text in the Desktop's language — see "Language" below
 api/
   transport.ts            the only module that knows how to reach the service (zone path / dev override)
@@ -397,6 +398,35 @@ own origin, i.e. its own OPFS, service worker and localStorage.
 - **Lifecycle** (`CanvasView.tsx`, `clipboard.ts`): deleting Blocks freezes their lines in the same commit; copy
   keeps only bindings inside the copied set; flow pages neither show nor accept lines; a line drawn to blank
   canvas offers the "next object" (note, text, shape, wish) bound to its end.
+
+## Block-controls and mind maps (doc/workspace/脑图对象方案讨论.md; notepads/aiworkspace-mindmap-todo.md)
+
+- **Registry** (`ui/controls/registry.ts`): a `ContainerDefinition` per control kind — attributes (`configSchema`),
+  child rules, the named layout (`layout.solve`, from the shared `@controls/*` module), the `Chrome` drawn in the
+  container's frame under its Blocks, the flow-page rendering, `create` (the insert catalog entry: container and a
+  first Block to type into), the near toolbar, the keys while it or one of its Blocks is selected, and the `agent`
+  self-description (the shared catalogue). A kind with no definition is drawn as a group with a note (R12).
+- **Layout** (`ui/canvas/layout.ts`): a control is solved from the outline alone (nested controls first, R24), its
+  `Laid.rect` is its box and `Laid.origin` what its stored x / y name; every node's `Laid.node` says its control,
+  depth, growth side, pin, fold and branch colour. Folded nodes (`ui/controls/folds.ts`, user state
+  `mindmap:collapsed:<container>`, R8) and their subtrees are not laid out. `nodeMeasurer` measures text with the
+  canvas's fonts; the `mindnode` Block draws exactly the measured lines.
+- **Mind map** (`ui/controls/mindmap/`): `definition.tsx` (toolbar: direction, edges, spacing, outline; keys: Tab
+  child, Enter sibling, arrows walk the tree, Ctrl+/ fold, Ctrl+D duplicate in `CanvasView`), `nodeBlock.tsx` (the
+  text node: inline Markdown title, typed in place, Tab saves and adds a child), `Chrome.tsx` (implicit edges in one
+  SVG, pins, the proposed layout while dragging), `ops.ts` (tree operations, navigation), `convert.ts` (rich text ⇄
+  map, Markdown / OPML export, outline files dropped on a canvas), `FlowMindmap.tsx` (a map on a flow page: static
+  SVG, pan and zoom).
+- **Gestures** (`RenderHost.tsx`): a node drag moves its subtree; on a node it hangs as its child (beside it near an
+  edge across the growth), on the map's blank space it is pinned (R16), outside the map it is refused (R9) — the other
+  nodes show the proposed layout meanwhile. A root's drag moves its map. Controls have no resize handles, nodes do
+  not turn and have no connection handles (their fold handle is there; relation lines are drawn with the line
+  tool). Fold handles are screen-sized overlay buttons.
+- **Clipboard** (`ui/canvas/clipboard.ts`): a node is copied with its subtree and its "auto" placement; pasted with
+  a node selected it hangs under it, pasted on the canvas nodes become a new map; a whole control is placed by its
+  origin.
+- **Exports**: draw.io materialises maps (shapes and real lines, `@controls/drawio`); duplicating a canvas copies
+  controls whole.
 
 ## Block extension contract
 

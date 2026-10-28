@@ -22,7 +22,8 @@
     "VIEW_BROKEN",
     "TREE_CYCLE",
     "CHILD_NOT_ALLOWED",
-    "SOURCE_READ_ONLY"
+    "SOURCE_READ_ONLY",
+    "SLOT_CONFLICT"
    ]
   },
   {

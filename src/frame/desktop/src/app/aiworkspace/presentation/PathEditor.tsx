@@ -5,6 +5,7 @@
  * This mode creates and adjusts Frames and Viewports and edits paths, nothing else; every action is one commit and
  * one undo step, and every edit of the steps replays itself on a newer version (pathOps). */
 
+import { fixed } from '@controls/placement'
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { ArrowDown, ArrowUp, Crosshair, Frame as FrameIcon, Play, Plus, Power, Trash2 } from 'lucide-react'
 import { describeError } from '../api/session'
@@ -191,8 +192,9 @@ export function PathEditor({ surface, camera, laid }: { surface: EntityEnvelope;
   const commitFrame = (s: ResolvedStep, rect: Rect) => run(t('aiworkspace.presentation.action.adjustFrame'), async () => {
     const frame = store.outline.get(s.targetId)
     const placed = worldRectOf(store.outline, s.targetId)
-    if (!frame?.placement || !placed) return
-    const placement = { ...frame.placement, x: Math.round(frame.placement.x + rect.x - placed.rect.x), y: Math.round(frame.placement.y + rect.y - placed.rect.y), w: Math.max(1, Math.round(rect.w)), h: Math.max(1, Math.round(rect.h)) }
+    const at = fixed(frame?.placement)
+    if (!at || !placed) return
+    const placement = { ...at, x: Math.round(at.x + rect.x - placed.rect.x), y: Math.round(at.y + rect.y - placed.rect.y), w: Math.max(1, Math.round(rect.w)), h: Math.max(1, Math.round(rect.h)) }
     store.noteLayoutIntent(s.targetId, placement)
     store.outline.patchLocal(s.targetId, { placement })
     await store.submit({ editId: `layout:${s.targetId}`, label: t('aiworkspace.presentation.edit.adjustTarget', { name: s.title }), operations: [{ op: 'tree.place', entity_id: s.targetId, placement }] })

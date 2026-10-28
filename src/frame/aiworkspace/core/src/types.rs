@@ -153,7 +153,7 @@ pub fn record_nested(payload: &JsonMap) -> Value {
 const CELL_KEYS: &[&str] = &[
     "source_ref", "view", "title", "fields", "filter", "sorts", "group", "manual_order", "options", "config", "def_ref", "bindings", "locked",
     "flip", "start", "end", "route", "controls", "label", "presentation",
-    "data_ownership",
+    "data_ownership", "slot",
 ];
 /// Named data bindings of a Block (`aiws` v2): at most this many names.
 pub const MAX_BINDINGS: usize = 32;
@@ -377,6 +377,17 @@ fn validate_cell(p: &mut Planner, e: &mut EntityRow, changed: Option<&[String]>)
     if view_type == "ink" && view.get("version").and_then(Value::as_u64).unwrap_or(1) == 1 && (importing || is_changed("config") || is_changed("view")) {
         validate_ink(&e.payload)?;
     }
+    if is_changed("slot") {
+        check_slot(p, e)?;
+    }
+    // only a text view's size comes from its title (R17): another view inside a control keeps a numeric size
+    if is_changed("view") && !is_text_view(&view_type) {
+        if let Some(pl) = p.ov.edge(&e.entity_id)?.and_then(|edge| edge.placement) {
+            if pl.get("w").is_some_and(Value::is_string) || pl.get("h").is_some_and(Value::is_string) {
+                return Err(bad(format!("a {view_type} Block needs a numeric w / h: only text views ({}) size themselves", controls_contract().1.join(", "))));
+            }
+        }
+    }
     check_presentation(&mut e.payload, &view_type)
 }
 
@@ -476,7 +487,7 @@ pub const MAX_SHOW_STEPS: usize = 500;
 pub const MAX_STEP_HIDE: usize = 200;
 
 /// `#rgb`, `#rrggbb` or `#rrggbbaa`.
-fn is_color(v: &Value) -> bool {
+pub fn is_color(v: &Value) -> bool {
     v.as_str().is_some_and(|s| {
         let hex = s.strip_prefix('#').unwrap_or("");
         matches!(hex.len(), 3 | 6 | 8) && hex.bytes().all(|b| b.is_ascii_hexdigit())
@@ -750,6 +761,13 @@ fn validate_connector(p: &Planner, e: &EntityRow, changed: Option<&[String]>) ->
     if changed.is_none() && !free {
         return Err(WsError::invalid_op("a connector can only be created on a free-layout Surface"));
     }
+    if changed.is_none() {
+        if let Some(edge) = p.ov.edge(&e.entity_id)? {
+            if laid_out_by_control(&p.ov, &edge.parent_id)? {
+                return Err(WsError::invalid_op("a connector lives on the canvas, not inside a control"));
+            }
+        }
+    }
     for (key, target) in [("start", start), ("end", end)] {
         let Some(id) = target.filter(|_| is_changed(key)) else { continue };
         if id == e.entity_id {
@@ -757,9 +775,8 @@ fn validate_connector(p: &Planner, e: &EntityRow, changed: Option<&[String]>) ->
         }
         // unreadable targets read as missing (REFERENCE_BROKEN): an id must not bypass the read check
         let Some(t) = p.check_ref_target(&json!({ "entity_id": id }), None)? else { continue };
-        let group = t.type_id == TYPE_CONTAINER && t.payload.get("kind").and_then(Value::as_str) == Some("group");
-        if !group && (t.type_id != TYPE_CELL || is_connector(&t.type_id, &t.payload)) {
-            return Err(bad(format!("{key}: {id} is not a Block or a group (connectors bind Blocks and groups, not data, Surfaces or other lines)")));
+        if !is_block_container(&t) && (t.type_id != TYPE_CELL || is_connector(&t.type_id, &t.payload)) {
+            return Err(bad(format!("{key}: {id} is not a Block or a group (connectors bind Blocks, groups and controls, not data, Surfaces or other lines)")));
         }
         // Blocks are bound, not data: the target must sit on this very canvas (an ancestor group is fine)
         if crate::plan::surface_of(&p.ov, id)?.map(|s| s.entity_id) != surface.as_ref().map(|s| s.entity_id.clone()) {
@@ -787,17 +804,30 @@ fn validate_connector(p: &Planner, e: &EntityRow, changed: Option<&[String]>) ->
 /// point back (`surface_id`, informative). A Surface may carry `icon`, the stable id of a preset
 /// icon chosen by the client (the client owns the preset list; an unknown id shows its default), and
 /// `config`, its page settings (background, page size; ≤ 64 KiB, checked by the client like a Cell's).
+/// A control kind (`mindmap`, 脑图方案 §6.2) is a BlockTree container too: its layout is implied by the kind and its
+/// `config` is the control's attributes (checked here, projected into the outline).
 fn validate_container(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>) -> WsResult<()> {
     check_keys(&e.payload, &["kind", "layout", "title", "content_folder_id", "system", "surface_id", "icon", "locked", "config"], "container")?;
     let kind = e.payload.get("kind").and_then(Value::as_str).ok_or_else(|| bad("container needs kind"))?.to_string();
+    let control = is_control_kind(&kind);
     match (kind.as_str(), before) {
         ("folder" | "surface" | "group", None) => {}
+        (k, None) if is_control_kind(k) => {}
         ("root" | "data" | "surfaces", None) if p.env.internal => {}
-        (_, None) => return Err(bad("container kind must be folder, surface or group")),
+        (_, None) => return Err(bad("container kind must be folder, surface, group or a control (mindmap)")),
         (k, Some(b)) if b.payload.get("kind").and_then(Value::as_str) == Some(k) => {}
         _ => return Err(WsError::invalid_op("container kind cannot be changed")),
     }
     let mode = match e.payload.get("layout") {
+        // a control's layout is its algorithm, implied by the kind (R2)
+        None if control => control_layout(&kind).to_string(),
+        Some(l) if control => {
+            let m = control_layout(&kind);
+            if l != &json!({ "mode": m }) {
+                return Err(bad(format!("the layout of a {kind} is {{ mode: {m} }}")));
+            }
+            m.to_string()
+        }
         None => "flow".to_string(),
         Some(l) => {
             let m = l.get("mode").and_then(Value::as_str).unwrap_or("");
@@ -819,8 +849,8 @@ fn validate_container(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>
             return Err(bad("surface_id must be an entity id on a folder"));
         }
     }
-    if e.payload.contains_key("locked") && kind != "group" {
-        return Err(bad("locked is only valid on a group"));
+    if e.payload.contains_key("locked") && kind != "group" && !control {
+        return Err(bad("locked is only valid on a group or a control"));
     }
     check_locked(&e.payload)?;
     if let Some(icon) = e.payload.get("icon") {
@@ -832,12 +862,11 @@ fn validate_container(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>
         }
     }
     if let Some(c) = e.payload.get("config") {
-        if kind != "surface" || !c.is_object() {
-            return Err(bad("config must be an object on a surface"));
-        }
-        if canonical_len(c) > MAX_CONFIG_BYTES {
+        let c = c.as_object().filter(|_| kind == "surface" || control).ok_or_else(|| bad("config must be an object on a surface or a control"))?;
+        if canonical_len(&Value::Object(c.clone())) > MAX_CONFIG_BYTES {
             return Err(WsError::limit(format!("config is limited to {MAX_CONFIG_BYTES} bytes")));
         }
+        check_control_config(&kind, c)?;
     }
     match e.payload.get("content_folder_id") {
         None if kind == "surface" => return Err(bad("a surface needs content_folder_id (its folder under canvas-content)")),
@@ -857,6 +886,133 @@ fn validate_container(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>
                 }
             }
         }
+    }
+    Ok(())
+}
+
+// ---- Block-control (脑图 TODO M0) ----
+
+/// The constants the core shares with the Desktop's control registry (one file, read by both).
+const CONTROLS_JSON: &str = include_str!("../../controls/core.json");
+
+fn controls_contract() -> &'static (Vec<String>, Vec<String>) {
+    static C: std::sync::OnceLock<(Vec<String>, Vec<String>)> = std::sync::OnceLock::new();
+    C.get_or_init(|| {
+        let v: Value = serde_json::from_str(CONTROLS_JSON).expect("controls/core.json is valid JSON");
+        let list = |k: &str| v[k].as_array().expect("controls/core.json lists").iter().map(|s| s.as_str().unwrap().to_string()).collect();
+        (list("control_kinds"), list("text_views"))
+    })
+}
+
+/// Container kinds that are Block-controls (方案 §6.2, R2): the kind is the control id; the control lays out the
+/// Blocks it holds with its named algorithm. `mindmap` is the first.
+pub fn is_control_kind(kind: &str) -> bool {
+    controls_contract().0.iter().any(|k| k == kind)
+}
+
+/// Text views (R17): their size comes from the title, so their `w` / `h` may be `"auto"` inside a control.
+pub fn is_text_view(view_type: &str) -> bool {
+    controls_contract().1.iter().any(|k| k == view_type)
+}
+
+/// A container drawn on a canvas: a UI group or a control.
+pub fn is_block_container(e: &EntityRow) -> bool {
+    e.type_id == TYPE_CONTAINER && e.payload.get("kind").and_then(Value::as_str).is_some_and(|k| k == "group" || is_control_kind(k))
+}
+
+/// The layout mode a control kind implies (stored in `layout`, never chosen by the writer).
+fn control_layout(kind: &str) -> &'static str {
+    match kind {
+        "mindmap" => "tree",
+        _ => "free",
+    }
+}
+
+/// A slot (R22): a Block's role name inside its control, unique among its siblings; paths like `bkg.text` resolve
+/// one slot per level.
+pub fn is_slot(s: &str) -> bool {
+    let b = s.as_bytes();
+    !b.is_empty() && b.len() <= 32 && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
+        && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'_' | b'-'))
+}
+
+/// The configuration of a control container (its `attr_def`, §6.2).
+pub fn check_control_config(kind: &str, c: &JsonMap) -> WsResult<()> {
+    if kind != "mindmap" {
+        return Ok(());
+    }
+    for (k, v) in c {
+        let ok = match k.as_str() {
+            "direction" => matches!(v.as_str(), Some("right" | "left" | "both" | "down")),
+            "edge" => matches!(v.as_str(), Some("curve" | "elbow" | "straight")),
+            "spacing" => v.as_object().is_some_and(|o| {
+                o.iter().all(|(k, v)| matches!(k.as_str(), "sibling" | "level") && finite(Some(v)).is_some_and(|n| (0.0..=2000.0).contains(&n)))
+            }),
+            "branch_colors" => v.as_array().is_some_and(|a| a.len() <= 64 && a.iter().all(is_color)),
+            _ => return Err(bad(format!("mindmap config: unknown key {k}"))),
+        };
+        if !ok {
+            return Err(bad(format!(
+                "mindmap config.{k} is invalid (direction: right | left | both | down; edge: curve | elbow | straight; spacing: {{ sibling?, level? }} in [0, 2000]; branch_colors: up to 64 colors)"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The kind of the container that lays out the Blocks under `parent_id`: the parent itself when it is a container,
+/// else the nearest container walking up through Blocks (nodes of a mind map sit under other nodes). `None` outside
+/// the BlockTree.
+pub fn enclosing_container(ctx: &dyn ReadCtx, parent_id: &str) -> WsResult<Option<EntityRow>> {
+    let mut cur = parent_id.to_string();
+    for _ in 0..4096 {
+        let Some(e) = ctx.entity(&cur)? else { return Ok(None) };
+        if e.type_id == TYPE_CONTAINER {
+            return Ok(Some(e));
+        }
+        if e.type_id != TYPE_CELL {
+            return Ok(None);
+        }
+        match ctx.edge(&cur)? {
+            Some(edge) => cur = edge.parent_id,
+            None => return Ok(None),
+        }
+    }
+    Ok(None)
+}
+
+/// Is the Block / container under `parent_id` laid out by a control (its placement may say `"auto"`)?
+pub fn laid_out_by_control(ctx: &dyn ReadCtx, parent_id: &str) -> WsResult<bool> {
+    Ok(enclosing_container(ctx, parent_id)?.is_some_and(|c| c.payload.get("kind").and_then(Value::as_str).is_some_and(is_control_kind)))
+}
+
+/// `slot` of a Block (R22): only inside a control, unique among the live siblings (those staged in this Commit
+/// included).
+fn check_slot(p: &Planner, e: &EntityRow) -> WsResult<()> {
+    let Some(slot) = e.payload.get("slot") else { return Ok(()) };
+    let slot = slot.as_str().filter(|s| is_slot(s)).ok_or_else(|| bad("slot must match ^[a-z0-9][a-z0-9_-]{0,31}$"))?;
+    let Some(edge) = p.ov.edge(&e.entity_id)? else { return Ok(()) };
+    if !laid_out_by_control(&p.ov, &edge.parent_id)? {
+        return Err(bad("slot is only valid on a Block inside a control"));
+    }
+    for sibling in p.ov.children(&edge.parent_id)? {
+        if sibling.child_id == e.entity_id {
+            continue;
+        }
+        if let Some(s) = p.ov.entity(&sibling.child_id)?.filter(|s| s.alive()) {
+            if s.payload.get("slot").and_then(Value::as_str) == Some(slot) {
+                return Err(WsError::sub(Code::InvalidOperation, "SLOT_CONFLICT", format!("slot {slot:?} is already used by {}", s.entity_id)));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Re-judge what depends on where a Block sits (after `tree.move`): its slot, and the `"auto"` size a non-text view
+/// may not have.
+pub fn check_position(p: &Planner, e: &EntityRow) -> WsResult<()> {
+    if e.type_id == TYPE_CELL && p.env.schema_checks && !p.env.import {
+        check_slot(p, e)?;
     }
     Ok(())
 }

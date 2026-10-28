@@ -333,3 +333,25 @@ test('UI-M04 notes on a phone: a public link guest long-presses blank canvas or 
   const centre = (await camera(page)).toWorld({ x: cam.box.x + cam.box.width / 2, y: cam.box.y + cam.box.height / 2 })
   expect(Math.abs(second.placement.x + second.placement.w / 2 - centre.x)).toBeLessThan(cam.box.width / cam.zoom / 2)
 })
+
+test('UI-M05 a mind map on a phone (脑图 R14): read and fold only — a tap selects a node, its fold handle folds the branch, nothing is written', async ({ page, api }) => {
+  const ws = await api.rpc(ALICE, 'ws.create', { title: `phone mindmap ${Date.now()}` }) as { workspace_id: string; epoch: string }
+  const fixture = JSON.parse(readFileSync(resolve('../aiworkspace/fixtures/mindmap/commits.json'), 'utf8')) as { commits: { operations: Record<string, unknown>[] }[] }
+  for (const commit of fixture.commits.slice(0, 3)) expect((await api.commit(ALICE, ws, commit.operations) as { status: string }).status).toBe('accepted')
+  await api.rpc(ALICE, 'ws.set_user_state', { workspace_id: ws.workspace_id, entries: { 'surface:active': 's-mind' } })
+  await openOnPhone(page, ws.workspace_id)
+  await expect(page.getByTestId('aiws-canvas')).toHaveAttribute('data-mode', 'view')
+  const fingers = await Fingers.of(page)
+  const seq = (await api.rpc(ALICE, 'ws.get_info', { workspace_id: ws.workspace_id })).head_seq
+  await expect(page.getByTestId('aiws-canvas-block-right-3')).toBeVisible()
+  const node = (await page.getByTestId('aiws-canvas-block-right-3').boundingBox())!
+  await fingers.tap({ x: node.x + node.width / 2, y: node.y + node.height / 2 })
+  await expect(page.getByTestId('aiws-selection-right-3')).toBeVisible()
+  const fold = (await page.getByTestId('aiws-fold-right-3').boundingBox())!
+  await fingers.tap({ x: fold.x + fold.width / 2, y: fold.y + fold.height / 2 })
+  await expect(page.getByTestId('aiws-canvas-block-right-3-1')).toHaveCount(0)
+  await expect(page.getByTestId('aiws-fold-right-3')).toHaveText('3')
+  // view mode: no editing tools, no commit
+  await expect(page.getByTestId('aiws-near-mindmap-add-child')).toHaveCount(0)
+  expect((await api.rpc(ALICE, 'ws.get_info', { workspace_id: ws.workspace_id })).head_seq).toBe(seq)
+})

@@ -382,3 +382,69 @@ test('P3-19 presentation probe: a show over 1,000 Blocks with HTML Blocks and ed
   // the target is on stage within the flight time plus the ready wait (fly ≤ 1.2 s, fade 2 × 150 ms + ≤ 300 ms)
   for (const s of steps) expect(s.arriveMs, JSON.stringify(s)).toBeLessThan(2500)
 })
+
+/* 脑图 TODO M1 probe: a mind map of 1,111 nodes (a root, 10 × 10 × 10) and a chain of 10 nested maps on one canvas.
+ * Recorded: time to the first view with the map's edges drawn, frame times while panning over it, folding a
+ * first-level branch (a new layout from the outline alone); the 10 nested maps are all laid out. */
+test('MM probe: a 1,000-node mind map and 10 nested controls', async ({ page, api }) => {
+  const { mindmapOperations } = await import('@controls/outline.ts')
+  const ws = await api.rpc(ALICE, 'ws.create', { title: `probe mindmap ${Date.now()}` }) as { workspace_id: string; epoch: string }
+  expect((await api.commit(ALICE, ws, [
+    { op: 'entity.create', entity_id: 'sf-mind-content', type_id: 'buckyos.container', parent_id: 'canvas-content', order_key: 'm', name: '脑图', payload: { kind: 'folder', title: '脑图', system: 'surface_content', surface_id: 'sf-mind' } },
+    { op: 'entity.create', entity_id: 'sf-mind', type_id: 'buckyos.container', parent_id: 'surfaces', order_key: 'm', name: '脑图', payload: { kind: 'surface', layout: { mode: 'free' }, title: '脑图', content_folder_id: 'sf-mind-content' } },
+  ])).status).toBe('accepted')
+  const tree = [{ text: '根', children: Array.from({ length: 10 }, (_, a) => ({ text: `分支 ${a}`, children: Array.from({ length: 10 }, (_, b) => ({ text: `${a}.${b} 子主题`, children: Array.from({ length: 10 }, (_, c) => ({ text: `${a}.${b}.${c}`, children: [] })) })) })) }]
+  let n = 0
+  const big = mindmapOperations(tree, { parentId: 'sf-mind', orderKey: 'a', at: { x: 0, y: 0 }, containerId: 'big', newId: (p) => `${p}${n++}` })
+  for (let i = 0; i < big.ops.length; i += 400) { const r = await api.commit(ALICE, ws, big.ops.slice(i, i + 400)); expect(r.status, JSON.stringify(r).slice(0, 400)).toBe('accepted') }
+  // a chain: each map hangs a map inside its root's only child
+  const chain: Record<string, unknown>[] = []
+  let parent = 'sf-mind'
+  for (let d = 0; d < 10; d++) {
+    const id = `nest${d}`
+    chain.push({ op: 'entity.create', entity_id: id, type_id: 'buckyos.container', parent_id: parent, order_key: `z${d}k`, placement: d === 0 ? { x: 3000, y: 0, w: 'auto', h: 'auto' } : { x: 'auto', y: 'auto', w: 'auto', h: 'auto' }, payload: { kind: 'mindmap', config: { direction: d % 2 ? 'down' : 'right' } } },
+      { op: 'entity.create', entity_id: `${id}-root`, type_id: 'buckyos.cell', parent_id: id, order_key: 'a', placement: { x: 'auto', y: 'auto', w: 'auto', h: 'auto' }, payload: { view: { type: 'mindnode' }, title: `第 ${d} 层` } },
+      { op: 'entity.create', entity_id: `${id}-kid`, type_id: 'buckyos.cell', parent_id: `${id}-root`, order_key: 'a', placement: { x: 'auto', y: 'auto', w: 'auto', h: 'auto' }, payload: { view: { type: 'mindnode' }, title: '子' } })
+    parent = `${id}-kid`
+  }
+  const nested = await api.commit(ALICE, ws, chain)
+  expect(nested.status, JSON.stringify(nested).slice(0, 400)).toBe('accepted')
+  await api.rpc(ALICE, 'ws.set_user_state', { workspace_id: ws.workspace_id, entries: { 'surface:active': 'sf-mind', mode: 'canvas' } })
+  await openProductionApp(page, ALICE)
+  const t0 = Date.now()
+  await page.locator(`[data-testid="aiws-workspace-card"][data-workspace-id="${ws.workspace_id}"]`).getByTestId('aiws-open').click()
+  await expect(page.getByTestId('aiws-mindmap-edges-big')).toHaveAttribute('data-edges', '1110')
+  const firstViewMs = Date.now() - t0
+  // every Block is laid out (1,111 nodes and their map, 10 nested maps with 2 nodes each); the first nested map is drawn
+  await expect.poll(async () => (await hooks(page)).canvas?.blocks).toBe(1111 + 1 + 10 * 3)
+  await expect(page.getByTestId('aiws-mindmap-edges-nest0')).toHaveAttribute('data-edges', '2')
+  // folding a branch lays the map out again (user state, no commit): "5.0", in view at the root's height
+  const seq = await api.headSeq(ALICE, ws.workspace_id)
+  await expect(page.getByTestId('aiws-canvas-block-n557')).toBeVisible()
+  const branch = await blockCenter(page, 'n557')
+  await page.mouse.click(branch.x, branch.y)
+  const fold0 = Date.now()
+  await page.keyboard.press('Control+/')
+  await expect(page.getByTestId('aiws-mindmap-edges-big')).toHaveAttribute('data-edges', '1100')
+  const foldMs = Date.now() - fold0
+  const canvas = page.getByTestId('aiws-canvas')
+  const box = (await canvas.boundingBox())!
+  const cx = box.x + box.width / 2, cy = box.y + box.height / 2
+  const pan = await measureFrames(page, async () => {
+    for (let round = 0; round < 3; round++) {
+      await page.mouse.move(cx, cy)
+      await page.mouse.down({ button: 'middle' })
+      for (let i = 0; i < 30; i++) await page.mouse.move(cx - i * 12, cy - i * 8)
+      await page.mouse.up({ button: 'middle' })
+      await page.waitForTimeout(150)
+    }
+  })
+  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(seq)
+  const dom = await domStats(page)
+  const report = { firstViewMs, foldMs, pan, dom, environment: { userAgent: await page.evaluate(() => navigator.userAgent), viewport: page.viewportSize(), build: 'vite preview (production build)', at: new Date().toISOString() } }
+  mkdirSync('test-results', { recursive: true })
+  writeFileSync('test-results/aiworkspace-probe-mindmap.json', JSON.stringify(report, null, 2))
+  test.info().annotations.push({ type: 'probe', description: JSON.stringify({ firstViewMs, foldMs, pan }) })
+  expect(firstViewMs).toBeLessThan(THRESHOLDS.firstViewMs * 2)
+  expect(pan.p95).toBeLessThan(THRESHOLDS.panP95Ms * 2)
+})

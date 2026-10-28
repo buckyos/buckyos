@@ -1,0 +1,185 @@
+{
+ "description": "Markdown outlines and the trees they become (脑图 TODO M3): shared by controls/outline_test.ts (the TypeScript parser) and the service's Rust parser of wish control results. Regenerate with MINDMAP_REGEN=1 deno test -A in src/frame/aiworkspace/controls.",
+ "cases": [
+  {
+   "name": "nested list",
+   "markdown": "- Root\n  - A\n    - A1\n    - A2\n  - B\n",
+   "tree": [
+    {
+     "text": "Root",
+     "children": [
+      {
+       "text": "A",
+       "children": [
+        {
+         "text": "A1",
+         "children": []
+        },
+        {
+         "text": "A2",
+         "children": []
+        }
+       ]
+      },
+      {
+       "text": "B",
+       "children": []
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "headings above lists",
+   "markdown": "# Plan\n\n## Market\n- interviews\n- competitors\n\n## Product\n1. MVP\n2. Pricing\n   - tiers\n",
+   "tree": [
+    {
+     "text": "Plan",
+     "children": [
+      {
+       "text": "Market",
+       "children": [
+        {
+         "text": "interviews",
+         "children": []
+        },
+        {
+         "text": "competitors",
+         "children": []
+        }
+       ]
+      },
+      {
+       "text": "Product",
+       "children": [
+        {
+         "text": "MVP",
+         "children": []
+        },
+        {
+         "text": "Pricing",
+         "children": [
+          {
+           "text": "tiers",
+           "children": []
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "a loose title line heads the list",
+   "markdown": "Launch plan\n- Market\n- Product\n  - MVP\n",
+   "tree": [
+    {
+     "text": "Launch plan",
+     "children": [
+      {
+       "text": "Market",
+       "children": []
+      },
+      {
+       "text": "Product",
+       "children": [
+        {
+         "text": "MVP",
+         "children": []
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "continuation lines and task boxes",
+   "markdown": "- [ ] first item\n  continues here\n- [x] done item\n",
+   "tree": [
+    {
+     "text": "first item continues here",
+     "children": []
+    },
+    {
+     "text": "done item",
+     "children": []
+    }
+   ]
+  },
+  {
+   "name": "code fences, rules and quotes are skipped",
+   "markdown": "- a\n```\n- not an item\n```\n---\n> quoted\n- b\n",
+   "tree": [
+    {
+     "text": "a",
+     "children": []
+    },
+    {
+     "text": "b",
+     "children": []
+    }
+   ]
+  },
+  {
+   "name": "inline formatting is kept",
+   "markdown": "- **Bold** idea with [a link](https://example.com)\n  - `code` and *emphasis*\n",
+   "tree": [
+    {
+     "text": "**Bold** idea with [a link](https://example.com)",
+     "children": [
+      {
+       "text": "`code` and *emphasis*",
+       "children": []
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "star and plus bullets, tabs",
+   "markdown": "* one\n\t+ two\n\t\t- three\n* four\n",
+   "tree": [
+    {
+     "text": "one",
+     "children": [
+      {
+       "text": "two",
+       "children": [
+        {
+         "text": "three",
+         "children": []
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "text": "four",
+     "children": []
+    }
+   ]
+  },
+  {
+   "name": "several roots",
+   "markdown": "- x\n- y\n  - y1\n",
+   "tree": [
+    {
+     "text": "x",
+     "children": []
+    },
+    {
+     "text": "y",
+     "children": [
+      {
+       "text": "y1",
+       "children": []
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

@@ -1166,3 +1166,39 @@
 .aiws-flow .aiws-media { height: auto; }
 .aiws-flow .aiws-media-card { height: auto; min-height: 72px; }
 .aiws-flow .aiws-media[data-state='playing'][data-kind='video'] { min-height: 240px; }
+
+/* ---- Block-controls: the mind map (脑图方案 §6–§7) */
+.aiws-frame-block.is-control > .aiws-control-edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.aiws-control-edges .aiws-control-box { fill: none; stroke: var(--cp-border); stroke-dasharray: 4 3; }
+.aiws-control-edges .aiws-control-hang { stroke: var(--cp-accent); stroke-dasharray: 5 4; opacity: 0.8; }
+.aiws-overlay-html > .aiws-fold { position: absolute; width: 18px; height: 18px; padding: 0; border-radius: 9px; border: 1.5px solid var(--cp-border); background: var(--cp-surface-opaque);
+  color: var(--cp-muted); font-size: 10px; line-height: 15px; font-weight: 600; text-align: center; cursor: pointer; pointer-events: auto; }
+.aiws-overlay-html > .aiws-fold:hover { color: var(--cp-text); box-shadow: 0 0 0 2px var(--cp-focus-ring, color-mix(in srgb, var(--cp-accent) 30%, transparent)); }
+.aiws-overlay-html > .aiws-fold.is-folded { color: var(--cp-text); }
+.aiws-frame-block.is-control > .aiws-pin-mark { position: absolute; display: flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 8px;
+  background: var(--cp-accent); color: #fff; pointer-events: auto; z-index: 1; }
+.aiws-mindnode { box-sizing: border-box; width: 100%; height: 100%; border-radius: 8px; border: 1px solid var(--cp-border); background: var(--cp-surface-opaque); color: var(--cp-text);
+  white-space: pre; overflow: visible; }
+.aiws-mindnode.is-depth-0 { border: none; border-radius: 10px; background: var(--cp-text); color: var(--cp-surface-opaque); }
+.aiws-mindnode.is-depth-1 { border: 2px solid var(--aiws-branch, var(--cp-accent)); }
+.aiws-mindnode-line { white-space: pre; }
+.aiws-mindnode-line > .is-code { background: color-mix(in srgb, var(--cp-text) 8%, transparent); border-radius: 3px; }
+.aiws-mindnode-line > a { color: inherit; }
+.aiws-mindnode-empty { color: var(--cp-muted); }
+.aiws-mindnode-edit { outline: none; white-space: pre-wrap; min-width: 1em; cursor: text; user-select: text; -webkit-user-select: text; }
+.aiws-mindnode-edit:empty::before { content: attr(data-placeholder); color: var(--cp-muted); }
+.aiws-frame-block.is-node.is-editing { overflow: visible; }
+.aiws-frame-block.is-node.is-editing .aiws-mindnode { width: auto; min-width: 100%; height: auto; min-height: 100%; }
+.aiws-drop-target { fill: none; stroke: var(--cp-accent); stroke-width: 2; }
+.aiws-drop-line { stroke: var(--cp-accent); stroke-width: 3; stroke-linecap: round; }
+.aiws-drop-refused { fill: color-mix(in srgb, var(--cp-danger) 6%, transparent); stroke: var(--cp-danger); stroke-width: 1.5; stroke-dasharray: 6 4; }
+.aiws-group-unknown { margin-left: 6px; padding: 0 4px; border-radius: 3px; border: 1px dashed var(--cp-warning); color: var(--cp-warning); }
+.aiws-flow-mindmap { position: relative; overflow: hidden; border: 1px solid var(--cp-border); border-radius: 8px; background: var(--cp-bg, transparent); cursor: grab; touch-action: none; }
+.aiws-flow-mindmap:active { cursor: grabbing; }
+.aiws-flow-mindmap-art { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.aiws-flow-mindmap-art > svg { display: block; overflow: visible; }
+.aiws-flow-mindmap-tools { position: absolute; right: 6px; top: 6px; display: flex; gap: 2px; }
+.aiws-flow-mindmap-tools > button { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; border: 1px solid var(--cp-border); border-radius: 6px;
+  background: var(--cp-surface-opaque); color: var(--cp-text); cursor: pointer; }
+.aiws-wish-control-preview { max-height: 360px; overflow: auto; }
+.aiws-wish-control-art > svg { display: block; max-width: 100%; height: auto; }

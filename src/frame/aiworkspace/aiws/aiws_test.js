@@ -116,3 +116,26 @@ export default async function main(aiws) {
   assertEquals(results.llm_map.items, 2)
   assertEquals(results.external, [`${base}/other/data`])
 })
+
+Deno.test('a control input reads as an outline, control results carry their tree', async () => {
+  const branch = { entity_id: 'n-market', type_id: 'buckyos.cell', dir: 'context/entities/n-market', label: 'Market', control: 'mindmap' }
+  const dir = await workdir(`
+export default async function main(aiws) {
+  const b = aiws.input('branch')
+  if (b.kind !== 'control' || b.control !== 'mindmap') throw new Error('kind ' + b.kind)
+  const items = b.outline().split('\\n').filter((l) => l.startsWith('  - ')).map((l) => l.trim().slice(2))
+  aiws.result.control('ideas', { kind: 'mindmap', children: items.map((t) => ({ text: t + ' next', children: [] })), under: 'branch' })
+  aiws.result.control('plan', { kind: 'mindmap', config: { direction: 'both' }, children: '- Plan\\n  - A\\n', title: 'Plan' })
+}`, { branch })
+  Deno.mkdirSync(`${dir}/context/entities/n-market`, { recursive: true })
+  Deno.writeTextFileSync(`${dir}/context/entities/n-market/outline.md`, '- Market\n  - interviews\n  - competitors\n')
+  const { code, stdout, results } = await run(dir)
+  assertEquals(code, 0, stdout)
+  assertEquals(results.results[0], { name: 'ideas', type: 'control', kind: 'mindmap', children: [{ text: 'interviews next', children: [] }, { text: 'competitors next', children: [] }], under: 'branch' })
+  assertEquals(results.results[1].config, { direction: 'both' })
+  assert(stdout.includes('control ideas: mindmap under branch'), stdout)
+  const bad = await workdir(`export default async function main(aiws) { aiws.result.control('x', { kind: 'mindmap', children: '- a', under: 'rules' }) }`)
+  assert((await run(bad)).results.error.includes('under must name a control input'))
+  const none = await workdir(`export default async function main(aiws) { aiws.result.control('x', { children: '- a' }) }`)
+  assert((await run(none)).results.error.includes('kind is required'))
+})

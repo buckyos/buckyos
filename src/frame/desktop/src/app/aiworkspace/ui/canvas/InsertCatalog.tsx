@@ -5,7 +5,7 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import FocusTrap from '@mui/material/Unstable_TrapFocus'
-import { ArrowDownToLine, Check, Database, FileUp, FlaskConical, FolderUp, Frame, Grid2X2, Image, Info, Layers3, LetterText, MousePointer2, Plus, Puzzle, Search, Shapes, Sparkles, Spline, StickyNote, Table, Type, X, type LucideIcon } from 'lucide-react'
+import { ArrowDownToLine, Check, Database, FileUp, FlaskConical, FolderUp, Frame, Grid2X2, Image, Info, Layers3, LetterText, MousePointer2, Plus, Puzzle, Search, Shapes, Sparkles, Spline, StickyNote, Table, Type, X, Network, type LucideIcon } from 'lucide-react'
 import type { BlockDefPayload, EntityEnvelope, Json } from '../../api/types'
 import type { ReadOk } from '../../api/session'
 import { useLoad, useOutlineVersion, useStore, useUserState } from '../../state/hooks'
@@ -21,7 +21,7 @@ import { allEntries, dataFor, entryId, entrySize, type CatalogEntry, type Insert
 export type CatalogTab = 'all' | CatalogGroup | 'existing'
 const TABS: CatalogTab[] = ['all', 'text', 'data', 'layout', 'ai', 'sample', 'extension', 'existing']
 const TAB_ICONS: Record<CatalogTab, LucideIcon> = { all: Grid2X2, text: Type, data: Database, layout: Shapes, ai: Sparkles, sample: FlaskConical, extension: Puzzle, existing: Layers3 }
-const ENTRY_ICONS: Record<string, LucideIcon> = { richtext: Type, 'shape-text': LetterText, note: StickyNote, shape: Shapes, connector: Spline, frame: Frame, table: Table, asset: Image, wish: Sparkles }
+const ENTRY_ICONS: Record<string, LucideIcon> = { richtext: Type, 'shape-text': LetterText, note: StickyNote, shape: Shapes, connector: Spline, frame: Frame, mindmap: Network, table: Table, asset: Image, wish: Sparkles }
 
 function EntryIcon({ entry }: { entry: CatalogEntry }) {
   const Icon = ENTRY_ICONS[entryId(entry)] ?? TAB_ICONS[entry.group]

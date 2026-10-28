@@ -5,7 +5,7 @@ import type { Schema } from 'prosemirror-model'
 import type { ReadOk, SubmissionEvent, WorkspaceSession } from '../api/session'
 import { ServiceFailure } from '../api/client'
 import { testHooks } from '../api/testHooks'
-import type { CommitConflict, CommitOutcome, CommitRejected, EntityEnvelope, Json, Operation, Placement } from '../api/types'
+import type { CommitConflict, CommitOutcome, CommitRejected, EntityEnvelope, Json, Operation, Placement, StoredPlacement } from '../api/types'
 import type { PendingMeta, PendingRow } from '../offline/protocol'
 import { richTextSchemaDef, type AiwsCore } from '../api/wasm'
 import { aiwsT } from '../i18n'
@@ -81,7 +81,7 @@ export class WorkspaceStore {
     Object.assign(this.canvasFocus, patch)
   }
   /** Last placement this window submitted per Block, for the layout-conflict notice (D1). */
-  private readonly layoutIntents = new Map<string, { placement: Placement; orderKey?: string; parentId?: string; at: number }>()
+  private readonly layoutIntents = new Map<string, { placement: StoredPlacement; orderKey?: string; parentId?: string; at: number }>()
   private notices: Notice[] = []
   private noticeId = 0
   private readonly noticeEmitter = new Emitter()
@@ -296,11 +296,11 @@ export class WorkspaceStore {
   }
 
   /** Remember what this window just placed, so a remote overwrite can be reported and re-applied (D1). */
-  noteLayoutIntent(entityId: string, placement: Placement, orderKey?: string, parentId?: string) {
+  noteLayoutIntent(entityId: string, placement: StoredPlacement, orderKey?: string, parentId?: string) {
     this.layoutIntents.set(entityId, { placement, orderKey, parentId, at: Date.now() })
   }
 
-  private onRemoteLayoutChange(entityId: string, author: string | null, placement: Placement | undefined) {
+  private onRemoteLayoutChange(entityId: string, author: string | null, placement: StoredPlacement | undefined) {
     const intent = this.layoutIntents.get(entityId)
     if (!intent || Date.now() - intent.at > LAYOUT_INTENT_MS) return
     if (placement && JSON.stringify(placement) === JSON.stringify(intent.placement)) return

@@ -95,7 +95,7 @@ impl CommitRequest {
     pub fn parse(v: &Value) -> WsResult<CommitRequest> {
         let req: CommitRequest =
             serde_json::from_value(v.clone()).map_err(|e| WsError::invalid_schema(format!("bad commit request: {e}")))?;
-        if req.protocol_version != PROTOCOL_VERSION {
+        if !supports_protocol(&req.protocol_version) {
             return Err(WsError::new(Code::UnsupportedVersion, format!("protocol_version {} not supported", req.protocol_version)));
         }
         check_idempotency_key(&req.idempotency_key)?;
@@ -1107,12 +1107,19 @@ fn container_kind(e: &EntityRow) -> &str {
 /// * the `shows` system folder: presentation paths and Viewports, nothing else (third phase §6.2);
 ///   they are never placed anywhere else.
 /// * `surfaces`: Surfaces only.
-/// * `surface` / `group`: Cells and UI groups only; the BlockTree holds no data.
+/// * `surface` / `group`: Cells, UI groups and controls only; the BlockTree holds no data.
+/// * a control (`mindmap`, 脑图方案 R2/R3/R24): Cells, groups and other controls; inside a control a Cell may hold
+///   Cells and containers too (a node's children). `in_control` says the parent is a Cell laid out by a control.
 /// * a TableSource holds the rich text bodies of its records.
-pub fn child_allowed(parent: &EntityRow, child_type: &str, child_kind: Option<&str>, child_scope: &str) -> bool {
+pub fn child_allowed(parent: &EntityRow, in_control: bool, child_type: &str, child_kind: Option<&str>, child_scope: &str) -> bool {
     if parent.entity_id == SHOWS_ID {
         return is_show_type(child_type) && child_scope == SCOPE_SHARED;
     }
+    let block = |child_type: &str| match child_type {
+        TYPE_CONTAINER => child_kind.is_some_and(|k| k == "group" || crate::types::is_control_kind(k)),
+        TYPE_CELL => child_scope == SCOPE_SHARED,
+        _ => false,
+    };
     match parent.type_id.as_str() {
         TYPE_CONTAINER => match container_kind(parent) {
             "data" | "folder" => match child_type {
@@ -1121,15 +1128,43 @@ pub fn child_allowed(parent: &EntityRow, child_type: &str, child_kind: Option<&s
                 t => is_data_type(t) && child_scope == SCOPE_SHARED,
             },
             "surfaces" => child_type == TYPE_CONTAINER && child_kind == Some("surface"),
-            "surface" | "group" => match child_type {
-                TYPE_CONTAINER => child_kind == Some("group"),
-                TYPE_CELL => child_scope == SCOPE_SHARED,
-                _ => false,
-            },
+            "surface" | "group" => block(child_type),
+            k if crate::types::is_control_kind(k) => block(child_type),
             _ => false,
         },
+        TYPE_CELL if in_control => block(child_type),
         TYPE_TABLE => child_type == TYPE_RICHTEXT,
         _ => false,
+    }
+}
+
+/// `child_allowed` for a parent in the current state: whether a Cell parent sits inside a control is read from the tree.
+fn child_allowed_here(p: &Planner, parent: &EntityRow, child_type: &str, child_kind: Option<&str>, child_scope: &str) -> WsResult<bool> {
+    let in_control = parent.type_id == TYPE_CELL && crate::types::laid_out_by_control(&p.ov, &parent.entity_id)?;
+    Ok(child_allowed(parent, in_control, child_type, child_kind, child_scope))
+}
+
+/// What a placement is judged against besides its own shape (脑图方案 §5.1–§5.2): where it sits and what it is.
+#[derive(Clone, Copy, Default)]
+pub struct PlaceRules<'a> {
+    /// The connector payload, for a line.
+    pub connector: Option<&'a JsonMap>,
+    pub internal: bool,
+    /// The parent's layout is a control's: `x` / `y` may be `"auto"`.
+    pub laid_out: bool,
+    /// `w` / `h` may be `"auto"`: a text view inside a control (its title gives the size), or a control itself (its
+    /// box wraps its children).
+    pub auto_size: bool,
+}
+
+impl<'a> PlaceRules<'a> {
+    /// The rules for `type_id` / `payload` placed under `parent_id`.
+    fn new(p: &Planner, parent_id: &str, type_id: &str, payload: &'a JsonMap) -> WsResult<PlaceRules<'a>> {
+        let connector = crate::types::is_connector(type_id, payload).then_some(payload);
+        let laid_out = crate::types::laid_out_by_control(&p.ov, parent_id)?;
+        let control = type_id == TYPE_CONTAINER && payload.get("kind").and_then(Value::as_str).is_some_and(crate::types::is_control_kind);
+        let text = type_id == TYPE_CELL && payload.get("view").and_then(|v| v.get("type")).and_then(Value::as_str).is_some_and(crate::types::is_text_view);
+        Ok(PlaceRules { connector, internal: p.env.internal, laid_out, auto_size: control || (laid_out && text) })
     }
 }
 
@@ -1138,14 +1173,18 @@ pub fn child_allowed(parent: &EntityRow, child_type: &str, child_kind: Option<&s
 /// `rotation` (optional, degrees clockwise about the centre, `[0, 360)`) is layout like x / y: it is
 /// relative to the parent, written with the same capability and merged the same way.
 ///
+/// `x`, `y`, `w`, `h` may each be the string `"auto"` (脑图方案 §5.1, R5/R6/R19): the value is not stored but
+/// computed when shown by the control laying the Block out. Only a Block under a control may say so (`laid_out`),
+/// and only a text view or a control sizes itself (`auto_size`); writing a number pins that component.
+///
 /// A connector (`connector` = its payload) stores the bounding box of its two stored endpoint positions
 /// (连接线方案 §4.2): a horizontal or vertical line has `w` or `h` 0, there is no rotation, and two coordinate
 /// ends must not collapse into one point. That last rule depends on the payload at the time, so it is not
 /// applied to internal callers: undo may put back a box written while the ends were still bound.
-fn check_placement(v: &Value, connector: Option<&JsonMap>, internal: bool) -> WsResult<()> {
+pub fn check_placement(v: &Value, rules: PlaceRules) -> WsResult<()> {
     let o = v.as_object().ok_or_else(|| WsError::invalid_schema("placement must be an object"))?;
     let num = |k: &str| o.get(k).and_then(Value::as_f64).filter(|f| f.is_finite());
-    if let Some(payload) = connector {
+    if let Some(payload) = rules.connector {
         let ok = o.keys().all(|k| matches!(k.as_str(), "x" | "y" | "w" | "h"))
             && num("x").is_some()
             && num("y").is_some()
@@ -1155,22 +1194,40 @@ fn check_placement(v: &Value, connector: Option<&JsonMap>, internal: bool) -> Ws
             return Err(WsError::invalid_schema("a connector's placement must be { x, y, w >= 0, h >= 0 } with finite numbers and no rotation"));
         }
         let coordinate = |k: &str| payload.get(k).is_none_or(Value::is_null);
-        if !internal && coordinate("start") && coordinate("end") && num("w").unwrap_or(0.0) + num("h").unwrap_or(0.0) <= 0.0 {
+        if !rules.internal && coordinate("start") && coordinate("end") && num("w").unwrap_or(0.0) + num("h").unwrap_or(0.0) <= 0.0 {
             return Err(WsError::invalid_schema("a connector with two coordinate ends cannot be a single point"));
         }
         return Ok(());
     }
+    let auto = |k: &str| o.get(k).and_then(Value::as_str) == Some("auto");
+    for k in ["x", "y"] {
+        if auto(k) && !rules.laid_out {
+            return Err(WsError::invalid_schema(format!("placement.{k} can be \"auto\" only on a Block laid out by a control")));
+        }
+    }
+    for k in ["w", "h"] {
+        if auto(k) && !rules.auto_size {
+            return Err(WsError::invalid_schema(format!(
+                "placement.{k} can be \"auto\" only on a control or on a text view inside one; other Blocks need a numeric size"
+            )));
+        }
+    }
     let ok = o.keys().all(|k| matches!(k.as_str(), "x" | "y" | "w" | "h" | "rotation"))
-        && num("x").is_some()
-        && num("y").is_some()
-        && num("w").is_some_and(|w| w > 0.0)
-        && num("h").is_some_and(|h| h > 0.0)
+        && (num("x").is_some() || auto("x"))
+        && (num("y").is_some() || auto("y"))
+        && (num("w").is_some_and(|w| w > 0.0) || auto("w"))
+        && (num("h").is_some_and(|h| h > 0.0) || auto("h"))
         && (!o.contains_key("rotation") || num("rotation").is_some_and(|r| (0.0..360.0).contains(&r)));
     if ok {
         Ok(())
     } else {
-        Err(WsError::invalid_schema("placement must be { x, y, w > 0, h > 0, rotation? in [0, 360) } with finite numbers (stacking order is order_key)"))
+        Err(WsError::invalid_schema("placement must be { x, y, w > 0, h > 0, rotation? in [0, 360) } with finite numbers or \"auto\" (stacking order is order_key)"))
     }
+}
+
+/// Does the stored placement say `"auto"` anywhere?
+pub fn has_auto(placement: Option<&Value>) -> bool {
+    placement.and_then(Value::as_object).is_some_and(|o| o.values().any(|v| v.as_str() == Some("auto")))
 }
 
 /// Is `id` inside the data tree (under `data`)? Used by annotation rules and the UI's "move to" checks.
@@ -1207,12 +1264,12 @@ pub fn surface_of(ctx: &dyn ReadCtx, id: &str) -> WsResult<Option<EntityRow>> {
 }
 
 /// A connector needs its box everywhere it is placed: the line is drawn from it.
-fn connector_placement(op: &Value, connector: Option<&JsonMap>, internal: bool) -> WsResult<Option<Value>> {
+fn connector_placement(op: &Value, rules: PlaceRules) -> WsResult<Option<Value>> {
     match op.get("placement") {
-        None | Some(Value::Null) if connector.is_some() => Err(WsError::invalid_schema("a connector needs a placement").at("/placement")),
+        None | Some(Value::Null) if rules.connector.is_some() => Err(WsError::invalid_schema("a connector needs a placement").at("/placement")),
         None | Some(Value::Null) => Ok(None),
         Some(v) => {
-            check_placement(v, connector, internal)?;
+            check_placement(v, rules)?;
             Ok(Some(v.clone()))
         }
     }
@@ -1255,7 +1312,7 @@ fn entity_create(p: &mut Planner, op: &Value) -> OpResult {
     }
     let parent = p.entity_alive(parent_id)?;
     let kind = payload.get("kind").and_then(Value::as_str);
-    if !child_allowed(&parent, type_id, kind, &scope) && !(p.env.internal && !known) {
+    if !child_allowed_here(p, &parent, type_id, kind, &scope)? && !(p.env.internal && !known) {
         return Err(WsError::sub(Code::InvalidOperation, "CHILD_NOT_ALLOWED", format!("{type_id} cannot be a child of {parent_id}")));
     }
     if type_id == TYPE_ANNOTATION {
@@ -1278,8 +1335,7 @@ fn entity_create(p: &mut Planner, op: &Value) -> OpResult {
         }
         Some(_) => return Err(WsError::invalid_op("name must be a string")),
     };
-    let connector = crate::types::is_connector(type_id, &payload).then_some(&payload);
-    let placement = connector_placement(op, connector, p.env.internal)?;
+    let placement = connector_placement(op, PlaceRules::new(p, parent_id, type_id, &payload)?)?;
     let seq = p.seq();
     let mut row = EntityRow {
         entity_id: id.to_string(),
@@ -1682,8 +1738,16 @@ fn tree_move(p: &mut Planner, op: &Value) -> OpResult {
     }
     let new_parent = p.entity_alive(new_parent_id)?;
     let kind = e.payload.get("kind").and_then(Value::as_str);
-    if !child_allowed(&new_parent, &e.type_id, kind, &e.scope) {
+    if !child_allowed_here(p, &new_parent, &e.type_id, kind, &e.scope)? {
         return Err(WsError::sub(Code::InvalidOperation, "CHILD_NOT_ALLOWED", format!("{} cannot be a child of {new_parent_id}", e.type_id)));
+    }
+    // a node keeps its children only where a control lays Blocks out (R3): out of it, a Cell is a leaf again
+    if e.type_id == TYPE_CELL && !crate::types::laid_out_by_control(&p.ov, new_parent_id)? {
+        let mut kids = Vec::new();
+        alive_descendants(p, id, &mut kids)?;
+        if !kids.is_empty() {
+            return Err(WsError::sub(Code::InvalidOperation, "CHILD_NOT_ALLOWED", format!("{id} holds Blocks: only a Block inside a control can")));
+        }
     }
     let mut edge = p.ov.edge(id)?.ok_or_else(|| WsError::invalid_op("entity has no tree edge"))?;
     let from_by_comment = p.by_comment(&e, id, Cap::Structure, false)?;
@@ -1719,8 +1783,9 @@ fn tree_move(p: &mut Planner, op: &Value) -> OpResult {
     if !to_by_comment {
         p.need_lock(&new_parent);
     }
-    // a connector moved into a flow page keeps its data (not rendered there, §8.3): only the box is judged
-    let placement = connector_placement(op, crate::types::is_connector(&e.type_id, &e.payload).then_some(&e.payload), p.env.internal)?;
+    // a connector moved into a flow page keeps its data (not rendered there, §8.3): only the box is judged; a Block
+    // moved out of a control cannot keep an "auto" placement (R9: the Desktop never moves one out)
+    let placement = connector_placement(op, PlaceRules::new(p, new_parent_id, &e.type_id, &e.payload)?)?;
     let seq = p.seq();
     let inverse = json!({ "op": "tree.move", "entity_id": id, "new_parent_id": edge.parent_id, "order_key": edge.order_key,
                           "placement": edge.placement, "expect": { "rev": seq } });
@@ -1729,6 +1794,7 @@ fn tree_move(p: &mut Planner, op: &Value) -> OpResult {
     edge.placement = placement;
     edge.struct_rev = seq;
     p.ov.put_edge(edge);
+    crate::types::check_position(p, &e)?;
     p.touch(id, None, "moved");
     Ok((op.clone(), Some(vec![inverse])))
 }
@@ -1740,8 +1806,8 @@ fn tree_place(p: &mut Planner, op: &Value) -> OpResult {
     if is_system_id(id) {
         return Err(WsError::invalid_op(format!("{id} is a system entity and cannot be placed")));
     }
-    let connector = crate::types::is_connector(&e.type_id, &e.payload).then_some(&e.payload);
     let mut edge = p.ov.edge(id)?.ok_or_else(|| WsError::invalid_op("the root cannot be placed"))?;
+    let rules = PlaceRules::new(p, &edge.parent_id, &e.type_id, &e.payload)?;
     if !p.by_comment(&e, &edge.parent_id, Cap::Structure, false)? {
         p.require(&edge.parent_id, Cap::Structure)?;
         p.need_parent_lock(id)?;
@@ -1761,7 +1827,7 @@ fn tree_place(p: &mut Planner, op: &Value) -> OpResult {
     }
     if op.get("placement").is_some() {
         inverse["placement"] = edge.placement.clone().unwrap_or(Value::Null);
-        edge.placement = connector_placement(op, connector, p.env.internal)?;
+        edge.placement = connector_placement(op, rules)?;
     }
     if op.get("order_key").map_or(true, Value::is_null) && op.get("placement").is_none() {
         return Err(WsError::invalid_op("tree.place needs order_key or placement"));
