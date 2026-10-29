@@ -328,8 +328,7 @@ main[data-wallpaper='image'] .swiper-pagination-bullet-active {
   bottom: 18px !important;
 }
 
-/* Mobile: the page dots are drawn into the dock strip under the launcher (an opaque shell surface),
-   so they are laid out in flow there and keep the theme colours whatever the wallpaper. */
+/* Mobile: the page dots are drawn into the pager row under the launcher, laid out in flow there. */
 .desktop-mobile-pager.swiper-pagination {
   position: static;
   bottom: auto !important;
@@ -339,15 +338,12 @@ main[data-wallpaper='image'] .swiper-pagination-bullet-active {
   width: 100%;
 }
 
-main[data-wallpaper='image'] .desktop-mobile-pager .swiper-pagination-bullet {
-  background: color-mix(in srgb, var(--cp-text) 18%, transparent);
-  border-color: color-mix(in srgb, var(--cp-border) 80%, transparent);
-  box-shadow: none;
-}
-
-main[data-wallpaper='image'] .desktop-mobile-pager .swiper-pagination-bullet-active {
-  background: var(--cp-accent);
-  border-color: color-mix(in srgb, var(--cp-accent) 70%, transparent);
+/* Phone launcher labels: the phone home-screen size (11px) whatever the density, which only changes the row
+   height there; four columns on a 390px phone give an 89px cell, where 11px keeps "HomeStation" on one line. */
+[data-form-factor='mobile'] {
+  --font-size-label: 11px;
+  --line-height-label: 14px;
+  --label-padding-top: 4px;
 }
 
 .desktop-scrollbar::-webkit-scrollbar,

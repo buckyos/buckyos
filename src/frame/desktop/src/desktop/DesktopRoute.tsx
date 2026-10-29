@@ -65,7 +65,7 @@ import { MobileWindowSheet } from './windows/MobileWindowSheet'
 import {
   desktopAvatarRowHeight,
   desktopWorkspaceInsets,
-  mobileDockRowHeight,
+  mobilePagerRowHeight,
   mobileStatusBarHeight,
   mobileStatusBarMode,
   type ConnectionState,
@@ -228,9 +228,12 @@ const zeroDeadZone = { top: 0, bottom: 0, left: 0, right: 0 }
 
 // Launcher offset below the mobile home status bar.
 const mobileLauncherTopInset = 42
-// Vertical breathing room of a mobile launcher page (top + bottom), see the slide below.
+// Breathing room of a mobile launcher page: 8px a side (vertical total 16), see the slide below. The side
+// padding is tight on purpose: four columns on a 390px phone leave 89px per cell, which is what an 11px
+// label like "HomeStation" needs on one line.
+const mobileSlidePaddingX = 8
 const mobileSlidePaddingY = 16
-// Selector of the dock strip's pagination element; Swiper draws the mobile page dots into it.
+// Selector of the pager row below the launcher; Swiper draws the mobile page dots into it.
 const mobilePagerSelector = '.desktop-mobile-pager'
 
 // Overlap-tolerant compactor: react-grid-layout must NOT displace other
@@ -773,11 +776,11 @@ export function DesktopRoute() {
     formFactor === 'mobile'
       ? safeArea.top + (topMobileWindow ? resolvedDeadZone.top : mobileLauncherTopInset)
       : safeArea.top + desktopAvatarRowHeight
-  // On mobile the launcher stops above the dock strip (page dots + bottom safe area). The strip is
+  // On mobile the launcher stops above the pager row (page dots) and the bottom safe area. The row is
   // reserved even while an app's sheet covers it, so opening an app never re-pages the launcher.
-  const mobileDockInset = resolvedDeadZone.bottom + safeArea.bottom
+  const mobilePagerInset = resolvedDeadZone.bottom + safeArea.bottom
   const workspaceBottomPadding =
-    formFactor === 'mobile' ? mobileDockInset + mobileDockRowHeight : resolvedDeadZone.bottom + safeArea.bottom
+    formFactor === 'mobile' ? mobilePagerInset + mobilePagerRowHeight : resolvedDeadZone.bottom + safeArea.bottom
   const workspaceInnerHeight = Math.max(
     workspaceSize.height - workspaceTopPadding - workspaceBottomPadding,
     360,
@@ -898,6 +901,7 @@ export function DesktopRoute() {
                 ref={setGridContainer}
                 className="relative overflow-hidden"
                 data-density={density}
+                data-form-factor={formFactor}
                 style={{
                   paddingTop: workspaceTopPadding,
                   paddingBottom: workspaceBottomPadding,
@@ -921,17 +925,17 @@ export function DesktopRoute() {
                   onSaveNote={handleSaveNote}
                   onViewportProgress={handleViewportProgress}
                   selectedItemId={selectedItemId}
-                  width={workspaceInnerWidth - (isMobile ? 32 : 48)}
+                  width={workspaceInnerWidth - (isMobile ? mobileSlidePaddingX * 2 : 48)}
                 />
               </div>
 
               {isMobile && (
                 <div
-                  data-testid="mobile-dock"
-                  className="absolute inset-x-0 bottom-0 z-30 border-t border-[color:color-mix(in_srgb,var(--cp-border)_80%,transparent)] bg-[color:var(--cp-surface-opaque)]"
-                  style={{ height: mobileDockInset + mobileDockRowHeight, paddingBottom: mobileDockInset }}
+                  data-testid="mobile-pager"
+                  className="pointer-events-none absolute inset-x-0 z-30"
+                  style={{ bottom: mobilePagerInset, height: mobilePagerRowHeight }}
                 >
-                  <div className="swiper-pagination desktop-mobile-pager" style={{ height: mobileDockRowHeight }} />
+                  <div className="swiper-pagination desktop-mobile-pager pointer-events-auto" style={{ height: mobilePagerRowHeight }} />
                 </div>
               )}
 
@@ -1187,7 +1191,7 @@ const DesktopPages = memo(function DesktopPages({
     >
       {layout.pages.map((page, pageIndex) => (
         <SwiperSlide key={page.id} className="h-full">
-          <div className={isMobile ? 'h-full px-4 py-2' : 'h-full px-6 pb-16 pt-6'}>
+          <div className={isMobile ? 'h-full px-2 py-2' : 'h-full px-6 pb-16 pt-6'}>
             <GridLayoutBase
               className="layout h-full"
               gridConfig={gridConfig}

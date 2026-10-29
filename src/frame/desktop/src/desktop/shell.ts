@@ -27,11 +27,10 @@ export function desktopWorkspaceInsets(taskbarPinned: boolean) {
 }
 
 /**
- * The mobile home screen ends in a dock strip that holds the page dots. It is an opaque shell surface flush
- * with the bottom edge (plus the bottom safe area), so iOS 26 Safari tints its own bottom bar from it
- * instead of from the page background, and the dots sit in that strip rather than over the launcher.
+ * The mobile home screen keeps a row for the page dots above the bottom safe area; the wallpaper runs
+ * edge to edge under it (and under the system status bar), as on a phone home screen.
  */
-export const mobileDockRowHeight = 28
+export const mobilePagerRowHeight = 24
 
 export type ConnectionState = 'online' | 'degraded' | 'offline'
 

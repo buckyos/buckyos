@@ -129,16 +129,13 @@ export function StatusBar({
   const activeMode = activeApp ? mobileStatusBarMode(activeApp) : null
   const barHeight = mobileStatusBarHeight(activeApp)
   const totalHeight = safeAreaTop + deadZone.top + barHeight
-  // The home screen and `standard` apps get an opaque bar; `compact` apps draw their own content under a
-  // see-through one. The bar is opaque on purpose: iOS 26 Safari fades and blurs whatever shows through
-  // under the system status bar, and paints the status bar solid in the colour of a full-width pinned
-  // element with a background at the top instead (a translucent one or backdrop-filter would not do).
-  const showSurface = activeMode !== 'compact'
-  const surfaceColor = !showSurface
-    ? undefined
-    : activeApp
-      ? `color-mix(in srgb, ${activeApp.accent} 14%, var(--cp-surface-2-opaque))`
-      : 'var(--cp-surface-opaque)'
+  // Only `standard` apps get a bar surface; the home screen and `compact` apps float their controls over
+  // the wallpaper or the app's own content. The surface is opaque on purpose: iOS 26 Safari paints the
+  // system status bar in the colour of a full-width pinned element at the top, treats a translucent one
+  // as opaque anyway, and may render backdrop-filter as solid white.
+  const showSurface = activeMode === 'standard'
+  const surfaceColor =
+    showSurface && activeApp ? `color-mix(in srgb, ${activeApp.accent} 14%, var(--cp-surface-2-opaque))` : undefined
 
   return (
     <div
