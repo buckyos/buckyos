@@ -23,8 +23,9 @@ buckyos system info                                 # BuckyOS version, build_ver
   On a host, `buckyos` uses the device identity on `127.0.0.1:3180` and asks for `--yes`. In a session on a node
   runtime, `buckyos` is the node's `$BUCKYOS_ROOT/bin/agent-tools/buckyos` entry: it runs the host's launcher with
   your agent's identity (asked of your agent over the session token in `.opendan/`), so `whoami` shows your agent.
-- Runtimes of an Agent: `agent-session runtime list` shows each one's declared `baseline` (standard | extended),
-  `platform` and its last tool check (`baseline_check.missing`); `agent-session runtime baseline` lists the standard
+- Runtimes of an Agent: `agent-session runtime list` prints a readable overview; `runtime list --json` or
+  `runtime get <id>` gives the complete record, including declared `baseline` (standard | extended), `platform`
+  and its last tool check (`baseline_check.missing`). `agent-session runtime baseline` lists the standard
   commands and `xagent runtime baseline --check [--overlay]` checks this machine. A node's agent tool directory is
   `$BUCKYOS_ROOT/bin/agent-tools` (laid out by node-daemon with `opendan install-agent-tools`); missing entries mean
   that node's install lacks OpenDAN. The owner declares a runtime extended in the Agent's runtime settings

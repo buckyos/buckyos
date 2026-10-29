@@ -52,6 +52,7 @@ Workspace 的产品语义是 **runtime + directory + url**：`url` 是可选的�
 
 ```bash
 xagent workspace list
+xagent workspace list --json
 xagent workspace create --runtime container --directory /projects/demo --name Demo --description "长期项目" --url https://github.com/org/demo --key create-demo-1
 xagent workspace create --runtime host --directory 'C:\Users\owner\demo' --name Demo --key create-demo-host-1   # 节点 runtime：目录在节点上创建
 xagent workspace import --runtime container --directory /projects/existing --name Existing --key import-existing-1
@@ -68,6 +69,8 @@ xagent workspace set-runtime container available
 xagent new --objective "更新项目" --workspace <workspace_id> --no-run
 agent-session create-worksession --objective "一次性系统操作" --workspace none
 ```
+
+`workspace list` 默认输出带标题的简洁文本列表；`--json` 输出完整登记记录的 JSON 数组，两种格式使用相同的过滤条件。`workspace get` 仍输出完整 JSON 记录。
 
 命令需要与 xagent 相同的 Agent 身份与 State 连接环境。`create` / `import` 要求 `--key`，重试使用相同 key；默认协作属性为 collaborative，可显式 `--usage private`。`set-runtime` 管理 Workspace 对该 Runtime 的访问状态，不销毁实际 Runtime 或目录。
 

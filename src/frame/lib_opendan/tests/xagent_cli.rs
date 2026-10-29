@@ -1,5 +1,5 @@
 //! Process level acceptance of the `xagent` executable (xAgent §8, §10):
-//! exit codes, one JSON document on stdout, state on disk. The LLM is an
+//! exit codes, readable lists or JSON on stdout, state on disk. The LLM is an
 //! OpenAI compatible mock served by the test.
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -184,6 +184,12 @@ impl Cli {
     fn run(&self, args: &[&str]) -> (i32, Value, String) {
         let out = self.command(args).output().unwrap();
         parse(out)
+    }
+
+    fn text(&self, args: &[&str]) -> String {
+        let out = self.command(args).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8(out.stdout).unwrap()
     }
 
     fn sessions(&self) -> String {
@@ -400,12 +406,23 @@ fn a_sub_session_is_created_and_waited_for_through_the_shell_tool() {
     let sd = SessionDir::open(v["path"].as_str().unwrap()).unwrap();
     assert!(sd.runtime_bin_dir().join("agent-session").is_file());
 
-    let (code, list, _) = cli.run(&["sessions", "--children", "--of", sd.sid()]);
+    let (code, list, _) = cli.run(&["sessions", "--json", "--children", "--of", sd.sid()]);
     assert_eq!(code, 0);
     let children = list.as_array().unwrap();
     assert_eq!(children.len(), 1, "{list}");
     assert_eq!(children[0]["run_state"], "finished");
     let child = children[0]["session_id"].as_str().unwrap();
+    assert_eq!(children[0]["parent"], sd.sid());
+    assert!(children[0].get("waiting_for").is_some());
+    assert!(children[0].get("pending_decision").is_some());
+    let text = cli.text(&["sessions", "--children", "--of", sd.sid()]);
+    assert!(text.starts_with("Sessions (1):\n"), "{text}");
+    assert!(text.contains(child) && text.contains("finished") && text.contains("compute the answer"), "{text}");
+    let text = cli.text(&["sessions", "--children", "--active", "--of", sd.sid()]);
+    assert!(text.starts_with("Sessions (0):\n") && text.contains("(none)"), "{text}");
+    let (code, active, err) = cli.run(&["sessions", "--json", "--active", "--children", "--of", sd.sid()]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(active, json!([]));
     let (_, st, _) = cli.run(&["status", child, "--report"]);
     let origin = &st["entry"]["origin"];
     assert_eq!(origin["parent_session"], sd.sid());
@@ -599,17 +616,27 @@ fn workspace_commands_preserve_identity_and_create_fixed_session_bindings() {
     let (code, retry, err) = cli.run(&args);
     assert_eq!(code, 0, "{err}");
     assert_eq!(retry["workspace_id"], id);
+    let text = cli.text(&["workspace", "list", "--active", "--text", "Project", "--runtime", "container"]);
+    assert!(text.starts_with("Workspaces (1):\n"), "{text}");
+    assert!(text.contains(id) && text.contains("Project") && text.contains(path), "{text}");
+    let (code, listed, err) = cli.run(&[
+        "workspace", "list", "--json", "--active", "--text", "Project", "--runtime", "container",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(listed, json!([created]));
+    let text = cli.text(&["workspace", "list", "--text", "unmatched-name"]);
+    assert!(text.starts_with("Workspaces (0):\n") && text.contains("(none)"), "{text}");
     let sd = cli.create(&["--objective", "work in project", "--workspace", id]);
     let cfg = sd.config().unwrap();
     assert_eq!(cfg.workspace.as_ref().unwrap().workspace_id, id);
     assert_eq!(
         cfg.workspace_binding.as_ref().unwrap().location.directory,
-        directory
+        std::fs::canonicalize(&directory).unwrap()
     );
     std::fs::write(directory.join("result.txt"), "retained").unwrap();
     let (code, _, err) = cli.run(&["workspace", "set-runtime", "local", "unavailable"]);
     assert_eq!(code, 0, "{err}");
-    let (code, listed, err) = cli.run(&["workspace", "list"]);
+    let (code, listed, err) = cli.run(&["workspace", "list", "--json"]);
     assert_eq!(code, 0, "{err}");
     assert_eq!(listed.as_array().unwrap().len(), 1);
     assert_eq!(listed[0]["availability"], "runtime_unavailable");
@@ -647,14 +674,67 @@ fn workspace_import_and_unregister_never_delete_project_files() {
     assert_ne!(code, 0);
     let (code, _, err) = cli.run(&["workspace", "unregister", id, "--expected-revision", &rev]);
     assert_eq!(code, 0, "{err}");
-    let (code, list, err) = cli.run(&["workspace", "list"]);
+    let (code, list, err) = cli.run(&["workspace", "list", "--json"]);
     assert_eq!(code, 0, "{err}");
     assert!(list.as_array().unwrap().is_empty());
+    let text = cli.text(&["workspace", "list"]);
+    assert!(text.starts_with("Workspaces (0):\n") && text.contains("(none)"), "{text}");
     assert!(directory.join(WORKSPACE_METADATA_FILE).is_file());
     assert_eq!(
         std::fs::read_to_string(directory.join("README.md")).unwrap(),
         "user content"
     );
+}
+
+#[test]
+fn runtime_lists_are_readable_and_json_preserves_records_and_filters() {
+    let cli = Cli::new();
+    for (args, title) in [
+        (vec!["workspace", "list"], "Workspaces"),
+        (vec!["runtime", "list"], "Runtimes"),
+        (vec!["sessions"], "Sessions"),
+    ] {
+        let text = cli.text(&args);
+        assert!(text.starts_with(&format!("{title} (0):\n")) && text.contains("(none)"), "{text}");
+        let mut json_args = args;
+        json_args.push("--json");
+        let (code, list, err) = cli.run(&json_args);
+        assert_eq!(code, 0, "{err}");
+        assert_eq!(list, json!([]));
+    }
+
+    let (code, local, err) = cli.run(&[
+        "runtime", "register", "local-box", "--kind", "container", "--name", "Local box",
+        "--exec", r#"{"kind":"native"}"#, "--baseline", "standard",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let (code, remote, err) = cli.run(&[
+        "runtime", "register", "remote-box", "--kind", "remote_ssh", "--name", "Remote box",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let text = cli.text(&["runtime", "list"]);
+    assert!(text.starts_with("Runtimes (2):\n"), "{text}");
+    assert!(text.contains("local-box: Local box") && text.contains("remote-box: Remote box"), "{text}");
+    assert!(text.contains("standard") && text.contains("runtime unavailable"), "{text}");
+    assert!(text.contains(local["platform"]["shell"].as_str().unwrap()), "{text}");
+    let (code, all, err) = cli.run(&["runtime", "list", "--json"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(all, json!([local, remote]));
+
+    let text = cli.text(&["runtime", "list", "--available"]);
+    assert!(text.starts_with("Runtimes (1):\n") && text.contains("local-box") && !text.contains("remote-box"), "{text}");
+    let (code, available, err) = cli.run(&["runtime", "list", "--json", "--available"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(available, json!([local]));
+
+    let revision = local["revision"].to_string();
+    let (code, _, err) = cli.run(&["runtime", "unregister", "local-box", "--expected-revision", &revision]);
+    assert_eq!(code, 0, "{err}");
+    let text = cli.text(&["runtime", "list", "--available"]);
+    assert!(text.starts_with("Runtimes (0):\n") && text.contains("(none)"), "{text}");
+    let (code, available, err) = cli.run(&["runtime", "list", "--json", "--available"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(available, json!([]));
 }
 
 fn call_report(id: &str, args: Value) -> Result<Value, u16> {

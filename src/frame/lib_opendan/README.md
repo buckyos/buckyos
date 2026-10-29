@@ -77,6 +77,8 @@ xagent behaviors [--frozen <sid>] ; xagent xllm <sid> ; xagent schema <dir>
 
 推进时 xagent 把自身包装成 session 的 `.runtime/bin/agent-session`，`shell` 里的命令用它访问本 Session 与 Agent State：`agent-session ctl activity --touch ws:foo`、`ctl perceive "…"`、`recall <tag>…`、`note <text>`、`sessions [--children] [--active]`、`read-session <sid>`、`artifact head|list`、`create-worksession --objective … [--behavior <b>] [--runtime <id>] [--report final|progress|none] [--wait] [--interactive]`、`wait <sid>`、`post <sid> --msg …`、`runtime list|get|check`、`ask-user "<问题>" [--option <id>=<label>]... [--allow-text]`（打印 `Pending{userinput:<call_id>}`；ui 类 Session 把问题以 `thread → 占位` + `agent_ask` 发给用户，下一条用户消息回填为这次调用的结果；没有队列的 Work 在宿主有通知服务时把问题作为 `input` 通知发出，有界等待其结果，见 [Session Input Protocol](<../../../doc/opendan/protocol/Session Input Protocol.md>) §9）、`notify send|list|show|answer|ack|cancel`（Session 内：发告知、列出本 Agent 的通知、代用户回答 / 确认在本会话呈现过的通知，不能处理本 Session 发起的；`xagent notify …` 在 Session 外扮演用户，供 `--dev` 与测试）。
 
+`workspace list`、`runtime list`、`sessions` 默认输出带标题的简洁文本列表，适合终端与 LLM 阅读；加 `--json` 返回原有 JSON 数组（Workspace / Runtime 完整记录、Session 摘要）。过滤参数在两种格式下相同；程序解析这些列表时应显式传入 `--json`。`workspace get` / `runtime get` 仍返回完整 JSON 记录。`xagent` 与 `agent-session` 使用同一实现，内部 `AgentToolResult` 协议不变。
+
 behavior 可以用 `[tool]` 把自己（`create_sub_context` / `fork`）声明为调用方模型看到的具名函数，调用方在 `tool_whitelist` 写 `behavior:<name>`；运行时由 `runner::tools::BehaviorTool` 生成（通用的 `call_behavior` 也是它），内部协议同 `call_behavior`。fork 目标的 `[budget]` 作用于分支的 run。
 
 ## 测试

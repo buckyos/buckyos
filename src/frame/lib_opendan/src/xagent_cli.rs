@@ -54,8 +54,9 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   xagent behaviors --agent <did> [--frozen <sid>]
   xagent xllm   <sid> [--run <id>]
   xagent workspace list|get|create|import|discover|check|archive|restore|unregister|set-url|runtime-impact|set-runtime ...
+        (list: [--active] [--runtime <id>] [--text <text>] [--json])
         (create/import: --runtime <id> --directory <abs path on that runtime> [--url <https://project>])
-  xagent runtime list [--available] | get <id> | check <id> | baseline [--json] [--check [--overlay]]
+  xagent runtime list [--available] [--json] | get <id> | check <id> | baseline [--json] [--check [--overlay]]
                  | register <id> --kind container|host_native|remote_ssh --name <n> [--description <t>] [--exec <json>] [--root <dir>]...
                    [--baseline standard|extended]
                  | update <id> --expected-revision <n> [--name <n>] [--description <t>] [--root <dir>]...
@@ -77,7 +78,7 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   <spec> = active|semi:object:<id>[#<event>] | semi:session:<sid>[:watch=f1,f2] | active|semi:timer:<name>
 
   inside a session's shell (as `agent-session`; the session comes from the environment):
-  ctl activity ... | ctl perceive <text> | recall <tag>... | note <text> | sessions [--active] [--children]
+  ctl activity ... | ctl perceive <text> | recall <tag>... | note <text> | sessions [--active] [--children] [--json]
   read-session <sid> [--report] [--worklog <n>] | artifact head <aid> | artifact list
   create-worksession --objective <t> [--msg <t>]... [--attach <obj_id>[=<name>]]... [--context recent:<n>|none]
         [--class <c>] [--behavior <b>] [--cmd-skill <name>]... [--workspace inherit|none|<id>] [--runtime inherit|<id>]
@@ -103,7 +104,8 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
         (exit 0 committed, 1 failed, 4 cancelled)
   task state|wait|cancel <task_id> [--wait-ms <ms>]   (a shell command that continued as a task, in the run that started it;
         wait: default 25s, max 30 min — give the shell call a larger wait_ms; exit 0 running/finished, 1 failed, 2 unknown)
-  runtime list [--available] | get <id> | check <id> | baseline [--json] | workspace ...
+  runtime list [--available] [--json] | get <id> | check <id> | baseline [--json] | workspace ...
+        (workspace list, runtime list and sessions: readable text by default; --json for structured output)
   goal ... (ui sessions: create / show / post / pause / resume / archive / reopen / restart / activate;
             goal sessions: show / skills add|remove / achieved --evidence / archive --reason)
   notify send --title <t> [--message <text>] [--level quiet|normal|timely|urgent] [--expires-in <dur>] [--key <k>]
@@ -277,6 +279,24 @@ impl Args {
 
 fn print(v: &impl serde::Serialize) {
     println!("{}", serde_json::to_string_pretty(v).unwrap_or_default());
+}
+
+fn list_label(value: impl serde::Serialize) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|v| v.as_str().map(|s| s.replace('_', " ")))
+        .unwrap_or_default()
+}
+
+fn inline_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn list_heading(name: &str, count: usize) {
+    println!("{name} ({count}):");
+    if count == 0 {
+        println!("(none)");
+    }
 }
 
 fn who(a: &Args) -> String {
@@ -1125,7 +1145,36 @@ async fn cmd_sessions(a: Args) -> R<i32> {
     if a.has("active") {
         entries.retain(|e| e.status.run_state != RunState::Finished);
     }
-    print(&entries.iter().map(brief).collect::<Vec<_>>());
+    if a.has("json") {
+        print(&entries.iter().map(brief).collect::<Vec<_>>());
+    } else {
+        list_heading("Sessions", entries.len());
+        for e in &entries {
+            let mut status = vec![inline_text(&e.class), e.status.run_state.as_str().to_string()];
+            if let Some(outcome) = e.status.outcome {
+                status.push(list_label(outcome));
+            }
+            println!("- {} [{}]: {}", e.session_id, status.join(", "), inline_text(&e.objective));
+            if !e.status.one_line_status.trim().is_empty() {
+                println!("  Status: {}", inline_text(&e.status.one_line_status));
+            }
+            if let Some(topic) = &e.status.topic {
+                println!("  Topic: {}", inline_text(&topic.title));
+            }
+            if let Some(waiting) = e.status.waiting_for {
+                println!("  Waiting for: {}", list_label(waiting));
+            }
+            if e.status.acceptance != Acceptance::NotApplicable {
+                println!("  Acceptance: {}", list_label(e.status.acceptance));
+            }
+            if e.status.pending_decision.is_some() {
+                println!("  Decision needed: agent-session read-session {}", e.session_id);
+            }
+            if let Some(parent) = e.origin.as_ref().and_then(|o| o.parent_session.as_deref()) {
+                println!("  Parent: {parent}");
+            }
+        }
+    }
     Ok(0)
 }
 
@@ -1748,16 +1797,35 @@ async fn cmd_workspace(mut a: Args) -> R<i32> {
         }
     };
     match command.as_str() {
-        "list" => print(
-            &manager
+        "list" => {
+            let entries = manager
                 .query(&WorkspaceQuery {
                     runtime_id: a.get("runtime"),
                     lifecycle: a.has("active").then_some(WorkspaceLifecycle::Active),
                     text: a.get("text"),
                     ..Default::default()
                 })
-                .await?,
-        ),
+                .await?;
+            if a.has("json") {
+                print(&entries);
+            } else {
+                list_heading("Workspaces", entries.len());
+                for w in &entries {
+                    println!(
+                        "- {}: {} — {}:{} [{}, {}, {}]",
+                        w.workspace_id, inline_text(&w.name), w.location.runtime_id,
+                        w.location.directory.display(), list_label(w.lifecycle),
+                        list_label(w.availability), list_label(w.usage),
+                    );
+                    if let Some(url) = &w.url {
+                        println!("  URL: {url}");
+                    }
+                    if let Some(error) = &w.last_error {
+                        println!("  Error: {}", inline_text(error));
+                    }
+                }
+            }
+        }
         "create" => print(
             &manager
                 .create(
@@ -1920,7 +1988,44 @@ async fn cmd_runtime(mut a: Args) -> R<i32> {
             if a.has("available") {
                 all.retain(|r| r.availability == RuntimeAvailability::Available);
             }
-            print(&all);
+            if a.has("json") {
+                print(&all);
+            } else {
+                list_heading("Runtimes", all.len());
+                for r in &all {
+                    let platform = [&r.platform.os, &r.platform.arch, &r.platform.shell]
+                        .into_iter()
+                        .filter(|s| !s.trim().is_empty())
+                        .map(|s| inline_text(s))
+                        .collect::<Vec<_>>();
+                    println!(
+                        "- {}: {} — {}; {}; {}{}; computer: {}",
+                        r.runtime_id, inline_text(&r.name),
+                        if platform.is_empty() { "platform unknown".into() } else { platform.join(" / ") },
+                        r.baseline.as_str(), list_label(r.availability),
+                        if r.default { "; default" } else { "" }, r.computer.as_str(),
+                    );
+                    if !r.roots.is_empty() {
+                        println!("  Workspace roots: {}", r.roots.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "));
+                    }
+                    match &r.baseline_check {
+                        Some(check) => {
+                            if !check.missing.is_empty() {
+                                println!("  Tool check: missing {}", check.missing.join(", "));
+                            } else {
+                                println!("  Tool check: {}", if check.ok { "ok" } else { "failed" });
+                            }
+                            if let Some(error) = &check.error {
+                                println!("  Tool check error: {}", inline_text(error));
+                            }
+                        }
+                        None => println!("  Tool check: not checked"),
+                    }
+                    if let Some(error) = &r.last_error {
+                        println!("  Error: {}", inline_text(error));
+                    }
+                }
+            }
         }
         "get" => {
             let id = a.next("runtime id")?;
@@ -2705,6 +2810,7 @@ async fn real_main() -> R<i32> {
         ("todo", _) => &["json"],
         ("skill", _) => &["json", "replace"],
         ("runtime", Some("baseline")) => &["json", "check", "overlay"],
+        ("workspace" | "runtime", Some("list")) | ("sessions", _) => &["json"],
         ("copy", _) => &["replace"],
         _ => &[],
     };

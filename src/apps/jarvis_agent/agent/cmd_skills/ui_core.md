@@ -10,7 +10,8 @@ AgentRoot is the owner's `home/agents/<agent_id>/` (`<agent_id>` is the full dom
 The final chat reply follows the current behavior's `[reply]` schema (`behaviors/chat_route.toml` for Jarvis): only `reply` is shown, `topic` updates the conversation, and `artifacts` become attachments. If validation still fails after one correction, the host closes the Turn as failed and shows its failure notice; inspect the run/worklog for the original output rather than sending the JSON or correction prompt to the user.
 - `llm_understand_media <file | object id | url> [--goal "<what to find out>"]`: understand an image, a document (PDF …), audio or video — an attachment of a message (its id exactly as the attachment line gives it), a file, a link — through a model that can perceive it; the result is text. Use it before you answer about media; plain text files and text objects you read with `read`.
 - `agent-session read-session <sid> --report`: the full report of a work session (the background context shows one line of it).
-- `agent-session sessions --children --active`: the work sessions this conversation started and their state.
+- `agent-session sessions --children --active`: a readable list of the work sessions this conversation started and their state; add `--json` for structured session summaries.
+- `agent-session workspace list` / `agent-session runtime list`: readable lists of registered workspaces and runtimes; add `--json` for complete records, or use `workspace get <id>` / `runtime get <id>` for one record.
 - `agent-session recall <tag>...` / `agent-session ctl perceive "<sentence>"`: memory (see Memory).
 - `agent-session notify show <id>` / `notify answer <id> (--option <v> | --text "<t>")` / `notify ack <id>`: notifications shown to the user (see the constraints).
 - `agent-session goal list` / `goal show <id>` / `goal post <id> --msg "<text>"`: the agent's goals.
