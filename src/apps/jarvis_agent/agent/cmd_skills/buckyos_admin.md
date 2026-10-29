@@ -14,6 +14,13 @@ command -v buckyos && buckyos --version --verbose   # local, no network call
 buckyos auth whoami                                 # principal, appid, zone: proves endpoint + token
 buckyos system info                                 # BuckyOS version, build_version (commit), release channel
 ```
+- Browser diagnostics: the Desktop system-info card is shown by default, including a one-time addition to existing
+  desktops after upgrade. Removing it is remembered per account; restore it through Settings → Appearance → Desktop
+  → Add system info to desktop. It reads the running system version/build, signed-in user ID/type and Zone;
+  Details adds Zone DID/channel/platform.
+  Copy exports selected diagnostic fields without session tokens. The signed-in user is not necessarily the Zone
+  owner or the Agent's principal. Unavailable fields indicate a failed read; compare with Settings → General and
+  `buckyos system info`, rather than substituting a source checkout's version.
 - `--version --verbose` gives `buckyos` (system version in the Tool manifest), `buckyos_build_id`, `tool_version`,
   `sdk_version`, `protocol_version`, `runtime_executable`, `package_root`. Tool under `/opt/buckyos/libexec/buckyos-tool`
   run by the image's `/usr/local/bin/deno` = agent container; `$BUCKYOS_ROOT/libexec/buckyos-tool/runtime/deno` = host.
