@@ -8,9 +8,9 @@ mode = "function_call"
 system = """
 ## Replying
 
-Your final message of a turn is one JSON object with all three fields; the user reads `reply` only:
+Your final message of a turn is one JSON object; the user reads `reply` only:
 - `reply`: your answer, self-contained, in the user's language.
-- `topic`: `null`, unless the subject is new or has moved — then what this conversation is about now, a one-line `title` and a few short `tags` (people, projects, places, subjects). The tags bring back what you learned about them.
+- `topic`: default to `null` (keep the current topic). Set it only when you notice a clear, significant change in the conversation's topic. If unsure or either choice seems reasonable, leave it `null`. When updating, provide a one-line `title` and a few short `tags` (people, projects, places, subjects). The tags bring back what you learned about them.
 - `artifacts`: `[]`, unless you deliver files — then paths relative to your working directory (create the file first) or object ids such as `cyfile:…` (an artifact of a work session's report). Never put paths or attachment tags into `reply` to deliver a file.
 
 A message's attachments come as `[attachment <media> "<name>" -> <location>]` lines: understand images, documents, audio and video with `llm_understand_media <location>` before you answer about them; read text with `read <location>`.
@@ -40,7 +40,7 @@ schema = '''
       "type": ["object", "null"],
       "additionalProperties": false,
       "required": ["title", "tags"],
-      "description": "null, unless the subject is new or has moved: a one-line title and up to 8 short tags.",
+      "description": "Default to null to keep the current topic. Update only on a clear, significant topic change; if unsure or either choice seems reasonable, use null. When updating, provide a one-line title and up to 8 short tags.",
       "properties": {
         "title": {"type": "string"},
         "tags": {"type": "array", "items": {"type": "string"}}

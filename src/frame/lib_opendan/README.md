@@ -50,6 +50,8 @@ Session 的宿主 `report` 工具提交阶段报告或以 `is_end=true` 请求�
 
 UI Session 的结构化回复只交付 `reply` 正文，`topic` 和 `artifacts` 分别更新话题和附件；空正文不回退到 JSON 原文。格式或附件校验纠正一次后仍失败时，Turn 以 `output_format` 错误结束，由宿主发送失败提示，原文保留在 run / worklog 中供诊断。恢复已结束的 run 时执行相同的校验和交付规则。
 
+UI Session 的 `function_call` context 在已关闭的 Turn 之后继续同一 context、继承 `recent_dialogue` 且尚未生成摘要时，从 `last_run` 快照的 `accumulated` 原样继承非 system 消息列表，保留角色、工具调用与结果、媒体等内容，不机械截断或包装成 `<session_history>`。新 run 的快照保存完整历史前缀，之后清理旧 run 不影响续聊。原始历史超过 `history_budget_tokens` 时先实际压缩；压缩后，以及 behavior loop / context 切换的历史装配，仍使用 `<session_history>` 中的摘要与机械渲染 worklog。持久格式不变，见 [Session Directory Protocol §6](<../../../doc/opendan/protocol/Session Directory Protocol.md>)。
+
 ## xagent
 
 设计见 [xAgent](../../../doc/opendan/xAgent.md)。xagent 是 xllm 的上一层：xllm 把一个 run 推进到一个 Outcome，xagent 把一个 Agent Session 推进到一个 Turn 关闭，或常驻地推进它。

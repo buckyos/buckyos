@@ -23,6 +23,70 @@ use crate::lock::Lease;
 use crate::protocol::*;
 use crate::session::Session;
 
+pub(super) async fn build_chat_history(
+    session: &mut Session,
+    lease: &Lease,
+    summarizer: &dyn Summarizer,
+    budget: u32,
+) -> Result<Vec<AiMessage>> {
+    let sm = session.summary()?;
+    if sm.start_offset == 0 && sm.history_summary.is_empty() {
+        if let Some(run_id) = session.state.last_run.as_deref() {
+            let (record, snapshot) = session.dir.runs().load_checked(run_id)?;
+            let ended_turn = crate::session::runs::finish_info(&record)
+                .is_some_and(|f| !f["turn_end"].is_null());
+            if record.config.loop_model == agent_tool::xllm::LoopModel::FunctionCall && ended_turn {
+                let snapshot = snapshot.ok_or_else(|| {
+                    OpenDanError::blocked("the previous chat run has no snapshot", Some(run_id))
+                })?;
+                if super::receipts::snapshot_host_meta(&snapshot).process_entry
+                    == session.state.process_entry
+                {
+                    let messages: Vec<_> = snapshot
+                        .state
+                        .accumulated
+                        .into_iter()
+                        .skip_while(|m| m.role == AiRole::System)
+                        .collect();
+                    let used = llm_context::context_window::estimate_messages(
+                        &llm_context::deps::ByteHeuristicTokenizer,
+                        &messages,
+                    );
+                    if used <= u64::from(budget) {
+                        return Ok(messages);
+                    }
+                    log::info!(
+                        "opendan.context.compaction.triggered {}",
+                        serde_json::json!({
+                            "session_id": session.sid(),
+                            "phase": "build_chat_history",
+                            "reason": "history_budget",
+                            "budget_tokens": budget,
+                            "raw_tokens": used,
+                        })
+                    );
+                    let keep = read_window(session, &sm, budget / 2)?;
+                    let (cut, cut_seq) = match (keep.oldest_offset, keep.oldest_seq) {
+                        (Some(cut), Some(seq)) if !keep.reached_start && cut > sm.start_offset => {
+                            (cut, seq)
+                        }
+                        _ => (
+                            session.state.worklog.committed_bytes,
+                            session.state.worklog.committed_seq + 1,
+                        ),
+                    };
+                    compact(session, lease, summarizer, cut, cut_seq, "context_limit").await?;
+                }
+            }
+        }
+    }
+    Ok(build_history(session, lease, Some(summarizer), budget)
+        .await?
+        .0
+        .into_iter()
+        .collect())
+}
+
 /// Rough token estimate (bytes / 4), same heuristic as the waist.
 pub fn tokens(s: &str) -> u32 {
     ((s.len() as u64 + 3) / 4).min(u32::MAX as u64) as u32

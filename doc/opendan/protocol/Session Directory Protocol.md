@@ -116,12 +116,12 @@ Schema：`schema/session_config.schema.json`。要点：
 
 - `prompt.llm_context` 为 `null` 时，参考实现使用 `{"tools":{"enabled":true}}`（buckyos Provider、`llm.chat`、function_call、内置 bash 工具组）。工具预算键为 `max_tool_iterations`（工具迭代，不是推理次数），见 [xllm 协议](../../llm_context/local_llm_context_protocol.md) §9.2。
 - `end_condition`：`llm_declares_done` / `output_schema` 在 `Done` 交付最终结果时 finished。`max_turns` 按**已完成**的 Turn（`turns_completed`）计：`Done` 交付最终结果时，算上本 Turn 已完成 `detail.n`（缺省 1）个则 finished，否则本 Turn 记为完成、session 等待下一输入。context 切换、子 context 的调用与返回等内部交接不是 Turn，不占额度。
-- `mechanical_compress.recent_full_responses`：从最新往前，完整渲染的模型 response 个数；单位是一条记录下来的 response，即 behavior 的 `step` 或 function call 的 `assistant_message`（连同其后的条目），更早的条目截到 `summary_chars`。
+- `mechanical_compress.recent_full_responses`：从最新往前，完整渲染的模型 response 个数；单位是一条记录下来的 response，即 behavior 的 `step` 或 function call 的 `assistant_message`（连同其后的条目），更早的条目截到 `summary_chars`。只作用于 worklog 历史视图，不作用于 §6 的未压缩 UI 原始消息续聊。
 - `extensions.opendan.behaviors.<name>`：目标 behavior 的进入配置（§8，schema `behavior_entry`）。进入模式由**目标**决定，没有缺省模式，也没有“同一 run 换 behavior”的普通切换：
   - `mode`（必填）：`switch_context | create_sub_context | fork`。
   - `prompt.system`：该 context 的应用 system prompt（替换会话的 `prompt.system`）；`llm_context`：按顶层键替换 `prompt.llm_context`（模型、工具、限额）。`fork` 不允许声明这两项（fork 保持调用方的 system 与配置）。
   - `prompt.on_init / on_input / on_context_switch / semi_subscription_snapshot`：该 context 的输入模板，按字段覆盖会话的同名模板；`input{mode, media}`：该 context 的消费策略（缺省用会话的）。见 [Session Input Protocol](<Session Input Protocol.md>) §6。
-  - `inherit`：新 context 的历史来源，`none`（缺省）| `recent_dialogue`（宿主渲染的 `<session_history>`：摘要 + 近期 worklog 记录）| `steps`（调用方已完成的 Step，按结构化记录继承，含各 Step 的 `<report>`；仅 `create_sub_context`，且双方都是 behavior loop）。`fork` 总是继承分叉点的完整有效历史，不接受 `inherit`。
+  - `inherit`：新 context 的历史来源，`none`（缺省）| `recent_dialogue`（宿主装配的会话历史，context 切换时为 `<session_history>`：摘要 + 近期 worklog 记录；未压缩 UI 跨 Turn 续聊见 §6）| `steps`（调用方已完成的 Step，按结构化记录继承，含各 Step 的 `<report>`；仅 `create_sub_context`，且双方都是 behavior loop）。`fork` 总是继承分叉点的完整有效历史，不接受 `inherit`。
   - `todo`（缺省 false，只允许 `create_sub_context`；behavior 的 `[entry] todo = true`）：Todo 执行器。`next_behavior` 交接到它时执行 Session 的下一个就绪串行 Todo（§4 `todos.json`，[Agent TodoList](<../Agent TodoList.md>) §4）：交接提交前宿主绑定 attempt（`call.todo`）并把 Todo 正文写入 `call.task`；没有就绪 Todo 时交接在 Step 生效前被可修正地拒绝，或在有未收齐的子 Session 时按等待处理。
   - 会话的初始 behavior（`prompt.behavior`）没有自己的条目时，视为使用会话基础配置的 `switch_context` 目标。交接到其它没有条目的 behavior 是配置错误：当前 Turn 以 `failed` 结束（`last_error.kind = behavior_config`）；发生在子 context 内时作为失败结果交回调用方。
   - 表在每次推进开始时校验，非法（未知 mode、fork 带 system 等）则不做任何推理。旧的 `extensions.opendan.process_modes` 不再接受。
@@ -281,7 +281,9 @@ Schema：`schema/session_state.schema.json`。
 ```
 
 - 缺失时等价于 `start_seq = start_offset = 0`、无摘要、`mechanical = session_config.prompt.mechanical_compress`。
-- 下一次 llm_context（没有 live_run 时）= system（身份 + 不可覆盖约束 + 应用 prompt + context + objective + xllm 能力/协议段）+ 一条历史消息（`<session_history>`：摘要 + 起点之后按机械压缩渲染的记录）；本次的输入由 run 的第一个输入批次（`<session_input hook=… time=…>` 消息 + receipt）注入。
+- 下一次 llm_context（没有 live_run 时）= system（身份 + 不可覆盖约束 + 应用 prompt + context + objective + xllm 能力/协议段）+ 按 `inherit` 装配的历史；本次的输入由 run 的第一个输入批次（`<session_input hook=… time=…>` 消息 + receipt）注入。
+- UI Session 的 `function_call` context 在已关闭的 Turn 之后继续同一 context、继承 `recent_dialogue` 且尚未生成摘要时，历史直接取 `last_run` 快照 `state.accumulated` 的非 system 消息列表。消息顺序、角色与内容原样保留，包括工具调用 / 结果和媒体，不经过机械截断、不包装成一条 user `<session_history>`。这些消息进入新 run 的 `request.input`，随新快照持久化；flush 只追加新 run 产生的部分，因此清理旧 run 不会丢失续聊前缀或重复写入 worklog。
+- 上述原始消息列表超过 `history_budget_tokens` 时，先实际压缩 worklog 并写入摘要，再使用 worklog 历史视图，不能只靠机械截断让未压缩会话进入预算。已有摘要、behavior loop、context 切换等其它 `recent_dialogue` 装配仍是一条 user 历史消息：`<session_history>` 包含可选的 `<summary upto_seq="…">` 摘要与起点之后按机械规则渲染的记录；没有独立的 `<session_summary>` 消息标签。
 - 机械渲染（`libopendan.mechanical/3`）：`turn_started` → `── turn N (hook) inputs: … ──`，`input_batch` → `── <hook> inputs: … ──`（如 `── on_context_switch ──`），`user_message` → `[input] …`，`assistant_message` → `[assistant] …`，`step` → `[step 3 plan] …` / `[step 3 plan correction] …`，`action_result` → `[result #<call_id> <status>] …`，`outcome` → `[outcome <kind> → <next_behavior>] …`，`turn_ended` → `── turn N completed ──`（默认在 `drop_kinds` 中，不渲染）。
 - 反向读取时预算先于起点耗尽：必须先压缩（新起点 = 已保留的最旧一条，摘要覆盖 `[旧起点, 新起点)`），摘要与原始记录之间不能留空洞。
 - 压缩只写 summary.json，并追加一条 `compaction` 条目后提交，从不改写 worklog。

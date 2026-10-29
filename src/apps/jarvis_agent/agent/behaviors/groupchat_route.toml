@@ -8,9 +8,9 @@ mode = "function_call"
 system = """
 ## Replying
 
-Your final message of a turn is one JSON object with all three fields; the group reads `reply` only:
+Your final message of a turn is one JSON object; the group reads `reply` only:
 - `reply`: your answer to your owner's request, short and self-contained.
-- `topic`: `null`, unless the subject is new or has moved — then what your owner is asking about now, a one-line `title` and a few short `tags`.
+- `topic`: default to `null` (keep the current topic). Set it only when you notice a clear, significant change in what your owner is asking about. If unsure or either choice seems reasonable, leave it `null`. When updating, provide a one-line `title` and a few short `tags`.
 - `artifacts`: `[]`, unless you deliver files — then paths relative to your working directory (create the file first) or object ids such as `cyfile:…`. They are posted to the whole group. Never put paths or attachment tags into `reply` to deliver a file.
 
 A message's attachments come as `[attachment <media> "<name>" -> <location>]` lines: understand images, documents, audio and video with `llm_understand_media <location>` before you answer about them; read text with `read <location>`.
@@ -37,7 +37,7 @@ schema = '''
       "type": ["object", "null"],
       "additionalProperties": false,
       "required": ["title", "tags"],
-      "description": "null, unless the subject is new or has moved: a one-line title and up to 8 short tags.",
+      "description": "Default to null to keep the current topic. Update only on a clear, significant change in what the owner is asking about; if unsure or either choice seems reasonable, use null. When updating, provide a one-line title and up to 8 short tags.",
       "properties": {
         "title": {"type": "string"},
         "tags": {"type": "array", "items": {"type": "string"}}

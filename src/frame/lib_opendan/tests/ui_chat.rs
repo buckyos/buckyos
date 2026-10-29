@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use buckyos_api::{AiContent, AiRole, ProviderStateCoordinate};
 use common::*;
 use libopendan::bridge::OutboundRecord;
 use libopendan::protocol::*;
@@ -52,6 +53,160 @@ fn ui_spec() -> libopendan::api::SessionSpec {
 
 fn shell(call_id: &str, command: &str) -> buckyos_api::AiResponse {
     tool_call(call_id, "shell", json!({ "command": command }))
+}
+
+#[tokio::test]
+async fn uncompressed_chat_keeps_native_messages_across_restarted_turns() {
+    let env = Env::new();
+    let sd = env.create_work(ui_spec()).await;
+    let long_input = format!("original request {} keep-this-ending", "detail ".repeat(900));
+    let provider_state = AiContent::ProviderState {
+        source: ProviderStateCoordinate {
+            provider_profile_id: "test-provider".into(),
+            adapter_type: "openai-responses".into(),
+            origin_provider: "openai".into(),
+            origin_model: "test-model".into(),
+        },
+        provider: "openai".into(),
+        value: json!({"type": "reasoning", "id": "original-item", "encrypted_content": "opaque"}),
+    };
+    let retained_state = provider_state.clone();
+    let llm = ScriptedLlm::new(move |req, n| {
+        assert!(!render(&req.messages).contains("<session_history>"));
+        match n {
+            0 => {
+                let mut response = shell("original-call", "echo original-tool-result");
+                response.message.content.insert(0, retained_state.clone());
+                response
+            }
+            1 => {
+                assert!(has_tool_result(req, "original-call")
+                    .unwrap()
+                    .contains("original-tool-result"));
+                text(r#"{"reply":"first answer","topic":null,"artifacts":[]}"#)
+            }
+            2 => text(r#"{"reply":"second answer","topic":null,"artifacts":[]}"#),
+            3 => text(r#"{"reply":"third answer","topic":null,"artifacts":[]}"#),
+            _ => panic!("unexpected inference {n}"),
+        }
+    });
+    let mut previous = Vec::new();
+    for (turn, input) in [long_input.as_str(), "second request", "third request"]
+        .into_iter()
+        .enumerate()
+    {
+        post_blocking(&env.queue_dir, &queue_of(&sd), msg(input));
+        let first_request = llm.count();
+        let result = drive(&sd, &env.deps(llm.clone()), StopWhen::TurnClosed).await;
+        assert!(matches!(result, DriveResult::TurnClosed { status: TurnStatus::Completed, .. }), "{result:?}");
+        let requests = llm.requests.lock().unwrap();
+        let messages = &requests[first_request].messages;
+        assert_eq!(messages[0].role, AiRole::System);
+        assert_eq!(&messages[1..1 + previous.len()], previous.as_slice());
+        assert_eq!(messages.len(), previous.len() + 2);
+        drop(requests);
+        let state = sd.state().unwrap();
+        assert_eq!(state.turns_completed, turn as u64 + 1);
+        let run_id = state.last_run.unwrap();
+        assert_eq!(sd.runs().list().unwrap(), vec![run_id.clone()]);
+        let (_, snapshot) = sd.runs().load_checked(&run_id).unwrap();
+        previous = snapshot.unwrap().state.accumulated[1..].to_vec();
+        assert!(sd.summary_opt().unwrap().is_none());
+    }
+    assert_eq!(llm.count(), 4);
+    assert_eq!(previous.iter().filter(|m| m.role == AiRole::User).count(), 3);
+    assert_eq!(previous.iter().filter(|m| m.role == AiRole::Assistant).count(), 4);
+    assert_eq!(previous.iter().filter(|m| m.role == AiRole::Tool).count(), 1);
+    assert!(previous[0].text_content().ends_with(&long_input));
+    assert_eq!(render(&previous).matches("keep-this-ending").count(), 1);
+    assert_eq!(previous.iter().flat_map(|m| &m.content).filter(|c| **c == provider_state).count(), 1);
+    let worklog = read_worklog(&sd);
+    assert_eq!(worklog.iter().filter(|e| matches!(&e.body, WorklogBody::UserMessage { .. })).count(), 3);
+    assert_eq!(worklog.iter().filter(|e| matches!(&e.body, WorklogBody::ActionResult { call_id, .. } if call_id == "original-call")).count(), 1);
+}
+
+#[tokio::test]
+async fn chat_compacts_when_native_history_exceeds_the_budget() {
+    let env = Env::new();
+    let mut spec = ui_spec();
+    spec.prompt.history_budget_tokens = Some(2_000);
+    let sd = env.create_work(spec).await;
+    let llm = ScriptedLlm::new(|req, n| match n {
+        0 => text(r#"{"reply":"first answer","topic":null,"artifacts":[]}"#),
+        1 => {
+            assert!(render(&req.messages).contains(libopendan::runner::history::SUMMARIZE_MARKER));
+            text("The user supplied a long request and received the first answer.")
+        }
+        2 => {
+            let history = req.messages[1].text_content();
+            assert!(history.starts_with("<session_history>\n<summary upto_seq="), "{history}");
+            assert!(history.contains("The user supplied a long request"), "{history}");
+            assert!(last_user_text(req).ends_with("continue"));
+            text(r#"{"reply":"second answer","topic":null,"artifacts":[]}"#)
+        }
+        _ => panic!("unexpected inference {n}"),
+    });
+    post_blocking(&env.queue_dir, &queue_of(&sd), msg("long request ".repeat(2_000)));
+    let result = drive(&sd, &env.deps(llm.clone()), StopWhen::TurnClosed).await;
+    assert!(matches!(result, DriveResult::TurnClosed { status: TurnStatus::Completed, .. }), "{result:?}");
+    assert!(sd.summary_opt().unwrap().is_none());
+    assert_eq!(llm.count(), 1);
+    post_blocking(&env.queue_dir, &queue_of(&sd), msg("continue"));
+    let result = drive(&sd, &env.deps(llm.clone()), StopWhen::TurnClosed).await;
+    assert!(matches!(result, DriveResult::TurnClosed { status: TurnStatus::Completed, .. }), "{result:?}");
+    assert_eq!(llm.count(), 3);
+    let summary = sd.summary_opt().unwrap().expect("native history triggered compaction");
+    assert!(summary.start_offset > 0);
+    assert!(summary.history_summary.contains("The user supplied a long request"));
+    assert_eq!(sd.state().unwrap().turns_completed, 2);
+}
+
+#[tokio::test]
+async fn uncompressed_chat_keeps_fork_results_without_the_child_transcript() {
+    let env = Env::new();
+    let mut spec = ui_spec();
+    spec.prompt.llm_context["tools"]["tools"] = json!([
+        {"groupname": "bash_core"}, {"name": "call_behavior"}
+    ]);
+    spec.extensions.insert(
+        "opendan".into(),
+        json!({"behaviors": {"research": {"mode": "fork"}}}),
+    );
+    let sd = env.create_work(spec).await;
+    let llm = ScriptedLlm::new(|req, n| match n {
+        0 => tool_call("fork-call", "call_behavior", json!({"behavior": "research", "task": "find the answer"})),
+        1 => shell("child-call", "echo CHILD-ONLY-TRANSCRIPT"),
+        2 => text(r#"{"reply":"child result","topic":null,"artifacts":[]}"#),
+        3 | 4 => {
+            let all = render(&req.messages);
+            assert!(!all.contains("<session_history>"), "{all}");
+            assert!(!all.contains("CHILD-ONLY-TRANSCRIPT"), "{all}");
+            assert!(has_tool_result(req, "child-call").is_none());
+            assert!(has_tool_result(req, "fork-call").unwrap().contains("child result"));
+            let uses: Vec<_> = req.messages.iter().filter(|m| {
+                m.role == AiRole::Assistant
+                    && m.tool_calls().iter().any(|call| call.call_id == "fork-call")
+            }).collect();
+            let results: Vec<_> = req.messages.iter().filter(|m| {
+                m.role == AiRole::Tool && m.content.iter().any(|block| {
+                    matches!(block, AiContent::ToolResult { call_id, .. } if call_id == "fork-call")
+                })
+            }).collect();
+            assert_eq!((uses.len(), results.len()), (1, 1));
+            text(r#"{"reply":"parent answer","topic":null,"artifacts":[]}"#)
+        }
+        _ => panic!("unexpected inference {n}"),
+    });
+    for input in ["research this", "continue"] {
+        post_blocking(&env.queue_dir, &queue_of(&sd), msg(input));
+        let result = drive(&sd, &env.deps(llm.clone()), StopWhen::TurnClosed).await;
+        assert!(matches!(result, DriveResult::TurnClosed { status: TurnStatus::Completed, .. }), "{result:?}");
+    }
+    assert_eq!(llm.count(), 5);
+    assert!(sd.summary_opt().unwrap().is_none());
+    assert!(read_worklog(&sd).iter().any(|e| {
+        matches!(&e.body, WorklogBody::ActionResult { call_id, .. } if call_id == "child-call")
+    }));
 }
 
 #[derive(Default)]

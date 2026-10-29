@@ -40,8 +40,8 @@ AgentSession 通过 prompt/input 和工具向 LLMContext 提供所需状态，LL
 ```
 
 - `system_prompt` 替换 `prompt.system_prompt`；`llm_context` 的顶层键替换 `prompt.llm_context` 的同名键（模型、工具、限制等）。
-- `inherit`（默认 `none`）：`recent_dialogue` 装配宿主渲染的 `<session_history>`；`steps` 只用于 `create_sub_context`。`fork` 条目不能声明 `system_prompt` / `llm_context` / `inherit`。
-- Session 的初始 behavior（`prompt.behavior`）没有自己的条目时，隐含为使用基础配置的 `switch_context` 目标（`inherit` 为 `recent_dialogue`；没有声明任何 behavior 的 Session 同样装配 `<session_history>`）。交接到其它没有条目的 behavior 不回退：Turn 以 `behavior_config` 错误失败；发生在子 context 内则作为失败结果返回调用方。
+- `inherit`（默认 `none`）：`recent_dialogue` 装配会话历史，context 切换时使用宿主渲染的 `<session_history>`；未压缩 UI 的跨 Turn 续聊保留原始消息列表，见下文。`steps` 只用于 `create_sub_context`。`fork` 条目不能声明 `system_prompt` / `llm_context` / `inherit`。
+- Session 的初始 behavior（`prompt.behavior`）没有自己的条目时，隐含为使用基础配置的 `switch_context` 目标（`inherit` 为 `recent_dialogue`；没有声明任何 behavior 的 Session 同样继承会话历史）。交接到其它没有条目的 behavior 不回退：Turn 以 `behavior_config` 错误失败；发生在子 context 内则作为失败结果返回调用方。
 - behavior 表在 drive 启动时校验；`extensions.opendan.process_modes` 被拒绝。“在同一个 run 里换 behavior / system、沿用原历史”的普通切换已移除。
 
 三种方式都不结束 Turn，也都不隔离文件系统、Session 状态、worklog 和对外消息；缓存是否命中取决于模型、system prompt、工具定义及历史渲染是否保持相同前缀。
@@ -106,7 +106,7 @@ AgentSession.drive():
         inputs = AgentSession.fetch_inputs()                  # msg / event 形成输入批次；change 只随行
         text   = SessionAssembler.render_input(inputs, hook)  # hook = on_init | on_wakeup | on_behavior_switch
         if 没有 text 且没有可恢复的 run: 等待输入; continue
-        ctx  = live run ?? AgentSession.new_run_context()     # input = [system, <session_history>]
+        ctx  = live run ?? AgentSession.new_run_context()     # input = [system, ...继承历史]
         AgentSession.commit_input_batch(ctx, text)            # LLMContext.inject(user:<session_input>)，提交 receipt；
                                                               # 没有打开的 Turn 就开新 Turn，否则并入当前 Turn
         outcome = AgentSession.run_compacting(ctx)            # LLMContext.run()，一个 Outcome
@@ -119,7 +119,9 @@ AgentSession.drive():
             失败 / 预算耗尽 / stop -> AgentSession.finish_run()  # Turn 以 failed / budget_exhausted / stopped 结束
 ```
 
-run 结束后，它的消息只留在 Session worklog 中。下一个 Turn 通常新建 run，之前的 Turn 以 `<session_history>`（摘要 + 最近记录）进入 input，而不是原样的消息列表。
+run 结束后，历史写入 Session worklog，`last_run` 的结果快照也保留。UI Session 的 `function_call` context 在已关闭的 Turn 之后继续同一 context、继承 `recent_dialogue` 且尚未生成摘要时，新 run 从该快照的 `accumulated` 原样继承非 system 消息列表；角色、工具调用 / 结果、媒体等内容不改写、不机械截断。新 run 的快照持有完整前缀，因此后续清理旧 run 不会丢失历史；继承部分不再重复写入 worklog。
+
+原始历史超过 `history_budget_tokens` 时先实际压缩。已有摘要、behavior loop 或 context 切换的历史装配仍使用 `<session_history>`（可选的 `<summary upto_seq="…">` 摘要 + 机械渲染的近期 worklog 记录）。`session_summary` 是磁盘摘要的 schema 名，当前没有独立的同名消息标签。细节见 [Session Directory Protocol §6](<../opendan/protocol/Session Directory Protocol.md>)。
 
 ### 标准 function_call Loop
 
@@ -136,13 +138,15 @@ LLMContext.run_inner():
 ```
 
 ```text
-[system] [user:<session_history>] [user:<session_input hook=on_wakeup> 输入]
+[system] [...继承历史] [user:<session_input hook=on_wakeup> 输入]
 [assistant:tool_calls] [tool] [tool]    @Round1
 [assistant:tool_calls] [tool]           @Round2
 [assistant:回答]                         @Round3 → Done
 ```
 
 三个 Round，没有 Step，一个 Turn，扣两次工具迭代额度（每个工具批次一次）。worklog 里每个 assistant response 记为 `assistant_message`。工具结果驱动下一个 Round；run 进行中只有半订阅变化可能在 Round 边界注入，新的 msg/event 等 run 返回后再作为输入批次进入（Turn 仍打开时并入当前 Turn）。
+
+未压缩 UI 的 `...继承历史` 是之前各 Turn 的原始 user / assistant / tool 消息序列；使用 worklog 视图时则是一条 user `<session_history>`。
 
 ### Behavior Loop
 

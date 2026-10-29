@@ -30,7 +30,7 @@ use crate::runtime::SessionEnv;
 use crate::session::runs::RunHandle;
 
 use super::flush::{run_history_entries, FlushMarks};
-use super::history::{build_history, compact_for_limit, LlmSummarizer, Summarizer};
+use super::history::{build_chat_history, build_history, compact_for_limit, LlmSummarizer, Summarizer};
 use super::hook::{scope_touching, SessionCheckpointHook};
 use super::inputs::confirm_inputs;
 use super::receipts::{
@@ -619,11 +619,23 @@ async fn own_run_context(
     // (`inherit: recent_dialogue`), never attached implicitly.
     let history = if inherit == InheritMode::RecentDialogue {
         let mut s = sh.session.lock().await;
-        build_history(&mut s, &sh.lease, Some(summarizer.as_ref()), budget)
-            .await?
-            .0
+        if cfg.session.kind == SessionKind::Ui
+            && function_call
+            && new.child.is_none()
+            && new.depth == 0
+            && s.state.open_turn.is_none()
+            && s.state.process_stack.is_empty()
+        {
+            build_chat_history(&mut s, &sh.lease, summarizer.as_ref(), budget).await?
+        } else {
+            build_history(&mut s, &sh.lease, Some(summarizer.as_ref()), budget)
+                .await?
+                .0
+                .into_iter()
+                .collect()
+        }
     } else {
-        None
+        Vec::new()
     };
     let runs = sh.dir.runs();
     let (run_id, lock) = runs.create_locked()?;
@@ -676,9 +688,7 @@ async fn own_run_context(
         sh.current_tool.clone(),
     );
     let mut input = vec![AiMessage::text(AiRole::System, system_prompt)];
-    if let Some(h) = history {
-        input.push(h);
-    }
+    input.extend(history);
     let behavior_name = new.behavior.clone();
     let mut request = agent_tool::xllm::hosted_request(
         &config,
