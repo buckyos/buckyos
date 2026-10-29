@@ -5,7 +5,7 @@ import {
   Ellipsis,
   Minimize2,
 } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { useI18n } from '../i18n/provider'
 import { useAppText } from '../presentation/appText'
 import type { AppDefinition, LayoutState, ThemeMode } from '../models/ui'
@@ -17,7 +17,6 @@ import {
   mobileStatusBarHeight,
   mobileStatusBarMode,
   type ConnectionState,
-  useMinuteClock,
 } from './shell'
 import { MessageTray, NotificationTray } from './tray/TrayButtons'
 import type { TraySnapshot } from './tray/trayModel'
@@ -63,27 +62,12 @@ function MobileBackButton({ onClick }: { onClick: () => void }) {
   )
 }
 
-function StatusTray({
-  locale,
-  now,
-  onNavigate,
-  tray,
-}: {
-  locale: string
-  now: Date
-  onNavigate: (path: string) => void
-  tray: TraySnapshot
-}) {
-  const timeLabel = useMemo(
-    () => new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit' }).format(now),
-    [locale, now],
-  )
-
+/** The message and notification trays; the phone's own status bar already shows the time. */
+function StatusTray({ onNavigate, tray }: { onNavigate: (path: string) => void; tray: TraySnapshot }) {
   return (
     <div className="shell-pill ml-auto shrink-0 gap-1.5 px-2 py-1 text-xs">
       <MessageTray onNavigate={onNavigate} snapshot={tray.messages} />
       <NotificationTray onNavigate={onNavigate} snapshot={tray} />
-      <span className="pl-0.5 pr-1 font-medium text-[color:var(--cp-text)]">{timeLabel}</span>
     </div>
   )
 }
@@ -123,7 +107,6 @@ export function StatusBar({
 }) {
   const { locale, t } = useI18n()
   const appText = useAppText()
-  const now = useMinuteClock()
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null)
   const mobileNav = useMobileNavState()
   const activeMode = activeApp ? mobileStatusBarMode(activeApp) : null
@@ -252,12 +235,7 @@ export function StatusBar({
                 ) : null}
               </div>
             ) : (
-              <StatusTray
-                locale={locale}
-                now={now}
-                onNavigate={onNavigate}
-                tray={tray}
-              />
+              <StatusTray onNavigate={onNavigate} tray={tray} />
             )}
           </>
         )}

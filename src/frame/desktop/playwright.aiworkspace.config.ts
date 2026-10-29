@@ -31,8 +31,11 @@ const backend = `http://127.0.0.1:${process.env.AIWS_E2E_BACKEND_PORT}`
 const ndmBackend = `http://127.0.0.1:${process.env.AIWS_E2E_NDM_PORT}`
 const preview = `http://127.0.0.1:${process.env.AIWS_E2E_PREVIEW_PORT}`
 const previewDir = 'test-results/aiworkspace-dist'
-const web = `http://127.0.0.1:${process.env.AIWS_E2E_WEB_PORT}`
+// the Zone host of the specs is `localhost`: a workspace's own origin `aiws-<label>.localhost:<port>` (its page, T4-8)
+// then has it as parent, as `aiws-<id>.<zone>` has the Zone host (Chromium resolves `*.localhost` to loopback)
+const web = `http://localhost:${process.env.AIWS_E2E_WEB_PORT}`
 process.env.AIWS_E2E_BACKEND = backend
+process.env.AIWS_E2E_PUBLIC_BASE = `http://aiws-{workspace_id}.localhost:${process.env.AIWS_E2E_WEB_PORT}`
 // a show's lease (第三期规划 §8.1) is shortened so that a crashed stage loses its show within the test's patience
 process.env.AIWS_SHOW_LEASE_MS ??= '6000'
 

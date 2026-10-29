@@ -320,6 +320,7 @@ CREATE TABLE IF NOT EXISTS share_entries (
 - Guest：入口 active 且允许 guest 时，`guest:` 主体在该 scope 获得入口模板能力（每次请求计算，入口关闭即失效）。现有 `public` grant 保留为“公开阅读”。
 - 已认证访问者：`ws.join_entry {entry_id}`，按 token 的 `auth_method` 与类别检查入口方式（`did_federation` 需 `did_login`；本地账号需 `password` 或 `self_register`），通过后为该主体写一条 grant（记录 `via_entry`）。关闭入口不回收已加入者的 grant，回收走 `ws.revoke`。
 - 授权对象：`<user_id>`（账号）、`<did>`（External）、`group:<id>`（系统用户组，服务端解析调用者所属组）、`contact:<owner_did>#<tag>`（经 `contact.check_membership` 精确查询）、`public`、`*`。`*` 只匹配非受限的 Admin / User 账号。
+- **工作区页面在自己的源上**（AI Workspace 内核架构改进 T4-8，2026-10-28）：`entry.describe` / `ws.join_entry` 返回的 `resource.path` 是资源页 URL——工作区为绝对地址 `https://aiws-<id>.<zonehost>/<workspace slug>`（无 public base 时为 `/`），不再是 Zone 相对路径。该源持有自己的会话：网关把 `aiws-<label>.<zone>` 折到 `aiws` 服务项，Control Panel 解析 `redirect_url` 时同样折叠，登录目标为 `System(aiworkspace)`（已加入可交互登录目标），`/sso_callback` 在该主机落 host-only cookie、`/sso_refresh` 续期。已登录的 Desktop 用户由 `auth.prepare_app_launch { service_id: "aiworkspace", redirect_url }` 委派（verify-hub `delegate_user_session` 允许 `App` 与可委派系统服务 `aiworkspace`；External 仍不可委派），Zone 根 `/login?redirect_url=<aiws url>` 对已登录者自动完成这一接力。所有 `aiws-*` 主机共用该目标：cookie 按主机隔离，token 不绑定工作区，服务按 grant 判权。
 
 ### 8.4 Message Hub 入口
 

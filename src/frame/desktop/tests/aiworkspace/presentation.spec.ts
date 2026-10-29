@@ -7,7 +7,7 @@
 import type { Locator, Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { mainMenu, openCanvas, setCanvasMode, test, expect, type Api } from './fixtures'
+import { mainMenu, openCanvas, openWorkspacePage, setCanvasMode, test, expect, type Api } from './fixtures'
 
 const ALICE = 'tok-alice'
 const BOB = 'tok-bob'
@@ -577,9 +577,7 @@ test('P3-14 a read-only show: turning pages, zoom, pointer and ink write nothing
 test('P3-15 the prompter link: no login, notes, page turns, several prompters, a reloaded stage, dead after the show', async ({ page, browser, api }) => {
   const ws = await showWorkspace(api, `p3-15 ${Date.now()}`)
   // the stage runs in a tab of its own (its address survives a reload)
-  await page.addInitScript((value) => window.localStorage.setItem('aiworkspace.dev', JSON.stringify({ token: value })), ALICE)
-  await page.goto(`/workspace/${ws.workspace_id}`)
-  await expect(page.getByTestId('aiws-workspace')).toBeVisible({ timeout: 30_000 })
+  await openWorkspacePage(page, ALICE, ws.workspace_id)
   await startShow(page)
   await onStep(page, 's1')
   await page.getByTestId('aiws-show-link').click()

@@ -19,8 +19,11 @@ File/folder import is available in the data tree and canvas insert catalog. `Onl
 ```text
 AIWorkspaceAppPanel.tsx   entry: what opens (Desktop window: most recent workspace > list; tab: the address),
                           the leave check, the Desktop close / logout guard, the tab's beforeunload
-AIWorkspaceRoute.tsx      the browser tab of its own: Desktop route `/workspace/:workspaceId?`
-links.ts                  the only definition of the tab / share address `/workspace/<id>?surface=&block=`
+AIWorkspaceRoute.tsx      Desktop route `/workspace`: the signed-in user's list in a tab (the phone's entry); opening goes to the workspace's origin
+standalone/StandalonePage.tsx
+                          the workspace's own page on `aiws-<id>.<zone>` (entry src/aiws.tsx → aiws.html, served by the service, T4-8)
+links.ts                  the only definition of the addresses: `https://aiws-<id>.<zone>/<workspace slug>/<surface slug>?id=&block=`, the Zone origin
+launch.ts                 going to a workspace's origin signed in (Control Panel `auth.prepare_app_launch { service_id: 'aiworkspace' }`)
 ui/controls/              Block-controls (the mind map): registry, folds, node measuring — see "Block-controls" below
 i18n.ts, useAiwsText.ts   the app's text in the Desktop's language — see "Language" below
 api/
@@ -218,8 +221,8 @@ text typed offline survives as pending rows (there is no separate `richtext_work
 
 **Application resources.** A production build has `sw.js` next to `index.html` (scope = the Desktop's
 directory, so the control-panel directory handler needs no extra headers). It precaches every built
-file into a cache named by a hash of the build, serves the entry — the Desktop root and the tab addresses
-`/workspace`, `/workspace/…` — network-first with the cached index.html as fallback, built files
+file into a cache named by a hash of the build, serves the entry — the Desktop root and `/workspace`, and on a
+workspace's own origin (`aiws-<id>.<zone>`) every navigation, with aiws.html — network-first with the cached entry as fallback, built files
 cache-first, and touches nothing else. The build's `base` is `/` (absolute asset URLs), so the entry
 works under a two-level path. A new build installs in the background
 and takes over when the old pages are closed (or on "现在更新并重新载入"); old caches are deleted on
@@ -243,7 +246,9 @@ AIWS_BACKEND=http://127.0.0.1:4120 pnpm run dev
 ```
 
 Open `http://localhost:5174/?scenario=normal&aiwsDevToken=tok-alice` and start "AI Workspace" from the
-desktop, or `http://localhost:5174/workspace?aiwsDevToken=tok-alice` for the app in a tab of its own. `aiwsDevToken` stores `localStorage['aiworkspace.dev'] = {"token":"tok-alice"}` (optional
+desktop, `http://localhost:5174/workspace?aiwsDevToken=tok-alice` for the list in a tab of its own, or
+`http://aiws-<id without ws_>.localhost:5174/w?aiwsDevToken=tok-alice` for a workspace's own page (the dev server serves aiws.html for
+`aiws-*` hosts; `--public-base http://aiws-{workspace_id}.localhost:5174` on the backend makes its links point there). `aiwsDevToken` stores `localStorage['aiworkspace.dev'] = {"token":"tok-alice"}` (optional
 `baseUrl`, `principal`); remove that key to go back to the zone path. `{"guest":true}` instead of a
 token plays a visitor of a public link (no identity of its own; see below). Without `AIWS_BACKEND` the
 Vite config is unchanged.
@@ -251,7 +256,7 @@ Vite config is unchanged.
 In a real zone nothing is configured: the app uses `buckyos.getServiceRpcClient('aiworkspace')` and
 sends `Authorization: Bearer <session token>` to the asset route (uploads go through NDM, downloads through
 `/bucket/v1`; the dev server forwards both to `VITE_NFS_PROXY`). Without a signed-in
-account (`/workspace/<id>` is a login-optional route) it sends a guest token instead — `gt_` + base64url of 32
+account (a workspace's page never requires one) it sends a guest token instead — `gt_` + base64url of 32
 random bytes (the zone's bearer token form, `name_lib::bearer_token`) kept in `localStorage['aiworkspace.guest']` — which reaches a workspace's `public` grant only (the
 "一键公开分享" of the share panel); a guest whose link is not public is sent to `/login` and comes back.
 
@@ -307,7 +312,7 @@ own origin, i.e. its own OPFS, service worker and localStorage.
 ## UI improvement (doc/workspace/BuckyOS AI Workspace UI改进.md)
 
 - **What opens.** The usual way is a browser tab of its own: `https://<zone host>/workspace` (the list) or
-  `/workspace/<workspace>` (one workspace, also the share link, with `?surface=<surface>&block=<block>`; the
+  `https://aiws-<id>.<zone host>/<workspace slug>/<surface slug>?id=<surface>&block=<block>` (one workspace on its own origin, also the share link; the
   two are removed from the address once the workspace is open). In a tab the address is the state: opening,
   switching and closing change it (after the leave check), back / forward / reload follow it, and nothing is
   restored automatically. In a Desktop window a normal start reopens the workspace this identity last opened

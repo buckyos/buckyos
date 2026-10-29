@@ -131,7 +131,8 @@ const router = createBrowserRouter([
     ),
   },
   {
-    path: '/workspace/:workspaceId?',
+    // the signed-in user's workspace list; a workspace itself lives on its own origin (AI Workspace T4-8)
+    path: '/workspace',
     element: (
       <Suspense fallback={null}>
         <AIWorkspaceRoute />

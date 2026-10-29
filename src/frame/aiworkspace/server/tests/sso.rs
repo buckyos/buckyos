@@ -42,6 +42,7 @@ impl Server {
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let child = Command::new(env!("CARGO_BIN_EXE_aiworkspace"))
             .arg("--data-dir").arg(dir.join("data")).arg("--listen").arg(format!("127.0.0.1:{port}")).arg("--auth-file").arg(&auth)
+            .arg("--public-base").arg("https://aiws-{workspace_id}.zone.invalid")
             .arg("--log-level").arg("warn").env_remove("AIWS_FAILPOINT")
             .stdout(Stdio::null()).stderr(Stdio::null())
             .spawn()
@@ -148,7 +149,9 @@ async fn restricted_classes_entries_and_denials() {
     assert!(entry_id.starts_with(&format!("{id}~se_")), "{created}");
     let described = srv.raw(None, "entry.describe", json!({ "entry_id": entry_id })).await["result"].clone();
     assert_eq!(described["state"], "active", "{described}");
-    assert_eq!(described["resource"], json!({ "kind": "workspace", "title": "DJ 电台", "owner_name": "alice", "path": format!("/workspace/{id}") }));
+    // the Workspace's page on its own origin (T4-8): `https://aiws-<id without ws_>.<zone>/<title slug>`
+    let page = format!("https://aiws-{}.zone.invalid/dj", id.strip_prefix("ws_").unwrap());
+    assert_eq!(described["resource"], json!({ "kind": "workspace", "title": "DJ 电台", "owner_name": "alice", "path": page }));
     assert_eq!(described["methods"], json!({ "guest": true, "password": true, "self_register": false, "did_login": true }));
     let parsed: buckyos_api::EntryDescription = serde_json::from_value(described.clone()).unwrap();
     assert_eq!(parsed.state, buckyos_api::EntryState::Active);
@@ -165,7 +168,7 @@ async fn restricted_classes_entries_and_denials() {
     // the DID way is turned off by the Zone, so the External uses the entry as a guest would (no grant); a guest
     // does not join
     let joined = srv.rpc("tok-lim", "ws.join_entry", json!({ "entry_id": entry_id })).await;
-    assert_eq!((joined["capabilities"].clone(), joined["path"].clone(), joined["granted"].clone()), (json!(["read", "append", "comment"]), json!(format!("/workspace/{id}")), json!(true)), "{joined}");
+    assert_eq!((joined["capabilities"].clone(), joined["path"].clone(), joined["granted"].clone()), (json!(["read", "append", "comment"]), json!(page), json!(true)), "{joined}");
     assert_eq!(srv.rpc("tok-lim", "ws.get_info", wsp.clone()).await["capabilities"], json!(["read", "append", "comment"]));
     let as_guest = srv.rpc("tok-ext", "ws.join_entry", json!({ "entry_id": entry_id })).await;
     assert_eq!((as_guest["granted"].clone(), as_guest["capabilities"].clone()), (json!(false), json!(["read", "append", "comment"])), "{as_guest}");

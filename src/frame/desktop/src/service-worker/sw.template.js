@@ -9,6 +9,8 @@
  *   - install: download every built file into one versioned cache (all or nothing);
  *   - a navigation to the Desktop entry or to an app route that works offline (`workspace/…`): network
  *     first (so a new deployment is picked up at once), the cached index.html when the network is not there;
+ *     on a Workspace's own origin (`aiws-<id>.<zone>`, where the same build's aiws.html is the whole site) every
+ *     navigation is such an entry and the cached aiws.html stands in;
  *   - a built file: cache first;
  *   - everything else (kRPC, uploads, other paths, other origins, non-GET) is not touched.
  * It never stores user data: the offline replica lives in OPFS, managed by the app.
@@ -22,13 +24,16 @@ const PRECACHE = __SW_PRECACHE__
 const PREFIX = 'buckyos-desktop-'
 const CACHE = PREFIX + VERSION
 const SCOPE = new URL(self.registration.scope)
-const INDEX = new URL('index.html', SCOPE).href
+const WORKSPACE_HOST = /^aiws-[a-z0-9]+\./.test(SCOPE.hostname)
+const ENTRY = WORKSPACE_HOST ? 'aiws.html' : 'index.html'
+const INDEX = new URL(ENTRY, SCOPE).href
 const ASSETS = new Map(PRECACHE.map((path) => [new URL(path, SCOPE).href, path]))
 const NAVIGATION_TIMEOUT_MS = 4000
 const OFFLINE_ROUTES = ['workspace']
 
 function isEntry(pathname) {
   if (!pathname.startsWith(SCOPE.pathname)) return false
+  if (WORKSPACE_HOST) return true
   const rest = pathname.slice(SCOPE.pathname.length)
   return rest === '' || rest === 'index.html' || OFFLINE_ROUTES.some((route) => rest === route || rest.startsWith(route + '/'))
 }
@@ -108,7 +113,7 @@ async function navigation(request) {
   }
   const cache = await caches.open(CACHE)
   const cached = await cache.match(INDEX)
-  if (!cached) return unavailablePage({ zh: '入口页面 index.html 不在缓存中', en: 'the entry page index.html is not in the cache' })
+  if (!cached) return unavailablePage({ zh: `入口页面 ${ENTRY} 不在缓存中`, en: `the entry page ${ENTRY} is not in the cache` })
   // The page is only useful with its scripts, styles and WASM modules: check before starting it.
   const have = new Set((await cache.keys()).map((entry) => entry.url))
   const missing = [...ASSETS.keys()].filter((url) => !have.has(url))

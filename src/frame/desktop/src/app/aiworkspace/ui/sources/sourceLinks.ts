@@ -33,7 +33,8 @@ export function parseLink(text: string, selfHost: string): ParsedLink {
   }
   const byHost = /^aiws-([a-z0-9]+)\.(.+)$/.exec(url.host)
   const segments = url.pathname.split('/').filter(Boolean)
-  if (byHost && segments.length === 2) {
+  // `/<workspace>/<surface>?id=` is a page of the workspace (T4-8), not a publication
+  if (byHost && segments.length === 2 && !url.searchParams.has('id')) {
     const workspaceId = `ws_${byHost[1]}`
     const zone = byHost[2] === selfHost ? undefined : byHost[2]
     const name = decodeURIComponent(segments[1])

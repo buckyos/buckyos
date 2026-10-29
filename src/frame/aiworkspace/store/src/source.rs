@@ -38,6 +38,9 @@ pub enum Fetched {
 }
 
 /// A name in a published link: lower-case ASCII letters, digits and dashes.
+/// First path segments a Workspace title may not take on its own host (see `workspace_slug`).
+pub const RESERVED_WORKSPACE_SLUGS: &[&str] = &["home", "kapi", "api", "s3", "bucket", "ndm", "nfs", "assets", "aiworkspace", "messagehub"];
+
 pub fn pub_name(s: &str) -> String {
     let ascii: String = s.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
     ascii.split('-').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("-").chars().take(64).collect()
@@ -99,10 +102,12 @@ impl Workspace {
                    "published_at": at, "published_by": by, "referrers": referrers }))
     }
 
-    /// The workspace's own segment of a link (D21): its title, slugified; the id is in the host.
+    /// The workspace's own segment of a link (D21): its title, slugified; the id is in the host. Empty, or one of
+    /// the first segments the Zone gateway routes elsewhere on every host (`/home/*` → HomeStation, `/kapi/*`,
+    /// `/s3/*`, `/bucket/*`, `/ndm/*`, `/nfs/*`) or the Desktop build's own directories, becomes `workspace`.
     pub fn workspace_slug(&self) -> String {
         let s = pub_name(&self.title());
-        if s.is_empty() { "workspace".into() } else { s }
+        if s.is_empty() || RESERVED_WORKSPACE_SLUGS.contains(&s.as_str()) { "workspace".into() } else { s }
     }
 
     /// `ws.list_publications` (any read): names, entities and how many referrers registered.

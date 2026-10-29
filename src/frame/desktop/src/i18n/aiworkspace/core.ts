@@ -4,6 +4,7 @@ export const en: Record<string, string> = {
   // app entry (AIWorkspaceAppPanel)
   'aiworkspace.core.app.unreachableNoReplica': 'The server is unreachable, and this window cannot use the offline copy ({{detail}})',
   'aiworkspace.core.app.openLinkGone': 'Cannot open the workspace in the link: it does not exist, or you have no access to it',
+  'aiworkspace.core.app.notWorkspaceHost': 'This address does not name a workspace (a workspace page lives on aiws-<id>.<zone>).',
   'aiworkspace.core.app.openLinkFailed': 'Cannot open the workspace in the link: {{error}}',
   'aiworkspace.core.app.restoreFailed': 'Did not reopen the last workspace: {{error}}',
   'aiworkspace.core.app.openFailed': 'Cannot open the workspace: {{error}}',
@@ -231,6 +232,7 @@ export const en: Record<string, string> = {
 export const zh: Record<string, string> = {
   'aiworkspace.core.app.unreachableNoReplica': '后台不可达，且此窗口不能使用离线副本（{{detail}}）',
   'aiworkspace.core.app.openLinkGone': '无法打开链接中的工作区：它不存在，或你没有访问权限',
+  'aiworkspace.core.app.notWorkspaceHost': '这个地址没有指向任何工作区（工作区页面位于 aiws-<id>.<zone>）。',
   'aiworkspace.core.app.openLinkFailed': '无法打开链接中的工作区：{{error}}',
   'aiworkspace.core.app.restoreFailed': '没有恢复上次打开的工作区：{{error}}',
   'aiworkspace.core.app.openFailed': '无法打开工作区：{{error}}',

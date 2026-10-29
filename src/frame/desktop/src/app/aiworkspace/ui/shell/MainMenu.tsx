@@ -8,7 +8,8 @@ import { describeError } from '../../api/session'
 import type { Json } from '../../api/types'
 import { aiwsT, aiwsText } from '../../i18n'
 import { pathsOf } from '../../presentation/model'
-import { workspaceUrl } from '../../links'
+import { openWorkspacePage } from '../../launch'
+import { shareLink } from './shellContext'
 import type { WorkspaceStore } from '../../state/store'
 import { CANVAS_MODE_LABEL, CANVAS_MODES, CATALOG_GROUP_LABEL, type CanvasMode, type CatalogGroup } from '../blocks/registry'
 import { entryId, extensionEntries, registryEntries, type CatalogEntry } from '../canvas/catalog'
@@ -98,7 +99,8 @@ export function buildMainMenu({ store, shell, canvas, mode }: { store: Workspace
       ] satisfies MenuItem[]),
     shell.home
       ? { id: 'home', label: t('aiworkspace.shell.menu.home'), run: shell.home }
-      : { id: 'new-tab', label: t('aiworkspace.shell.menu.newTab'), run: () => { window.open(workspaceUrl(store.session.workspaceId, { surfaceId: shell.topMode === 'canvas' ? shell.activeSurface?.entity_id ?? null : null }), '_blank', 'noopener') } },
+      // the workspace's own origin, signed in as this Desktop user (T4-8)
+      : { id: 'new-tab', label: t('aiworkspace.shell.menu.newTab'), run: () => { void openWorkspacePage(shareLink(store.session.info(), shell.topMode === 'canvas' ? shell.activeSurface : null), { newTab: true }) } },
     { id: 'sep-1', separator: true },
     { id: 'insert', label: t('aiworkspace.shell.menu.insert'), disabled: insertReason !== null && noteReason !== null, reason: insertReason, explain: true, items: insertItems },
     { id: 'insert-catalog', label: t('aiworkspace.shell.menu.insertCatalog'), disabled: insertReason !== null, reason: insertReason, run: () => canvas?.openCatalog('all') },

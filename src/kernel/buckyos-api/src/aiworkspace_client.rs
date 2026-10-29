@@ -14,6 +14,19 @@ pub const AIWORKSPACE_UNIQUE_ID: &str = "aiworkspace";
 pub const AIWORKSPACE_SERVICE_NAME: &str = "aiworkspace";
 pub const AIWORKSPACE_SERVICE_PORT: u16 = 4120;
 pub const AIWORKSPACE_HTTP_PATH: &str = "/kapi/aiworkspace";
+/// The gateway `app_info` key every Workspace host folds onto (AI Workspace 内核架构改进 D21): the scheduler
+/// registers it, `boot_gateway.yaml` folds `aiws-<label>.<zone>` onto it, the Control Panel resolves SSO
+/// redirects to it. The label is the workspace id without its `ws_` prefix (a DNS label carries no `_`).
+pub const AIWORKSPACE_GATEWAY_APP_KEY: &str = "aiws";
+pub const AIWORKSPACE_HOST_PREFIX: &str = "aiws-";
+
+/// Whether a host label (`<label>.<zone>`) is a Workspace's own origin: `aiws-` followed by `[a-z0-9]+`, the
+/// same rule the gateway applies.
+pub fn is_aiworkspace_host_label(label: &str) -> bool {
+    label
+        .strip_prefix(AIWORKSPACE_HOST_PREFIX)
+        .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()))
+}
 /// App pool of the service's `app_data` and `temp` buckets per user (D17).
 pub const AIWORKSPACE_STORAGE_QUOTA_MIB: u64 = 16_384;
 

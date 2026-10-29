@@ -108,7 +108,7 @@ test('a guest entry of an AI Workspace opens the workspace without an account', 
   await expect(page.getByTestId('sso-entry-method-self_register')).toBeVisible()
   await expect(page.getByTestId('sso-entry-method-did_login')).toHaveCount(0)
   await page.getByTestId('sso-entry-method-guest').click()
-  await page.waitForURL(new RegExp(`/workspace/${workspaceId}`))
+  await page.waitForURL(new RegExp(`^https://aiws-${workspaceId.replace(/^ws_/, '')}\\.`))
   await expect(page.getByTestId('aiws-open-error')).toHaveCount(0)
   await context.close()
 

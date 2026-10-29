@@ -5,9 +5,9 @@
 
 import { createContext, useContext, useSyncExternalStore } from 'react'
 import type { AiwsClient } from '../../api/client'
-import type { EntityEnvelope } from '../../api/types'
+import type { EntityEnvelope, WorkspaceInfo } from '../../api/types'
 import { localizedLabels } from '../../i18n'
-import { workspaceUrl } from '../../links'
+import { workspacePageUrl, WORKSPACE_ROUTE, zoneOrigin } from '../../links'
 import { useUserState } from '../../state/hooks'
 import { CANVAS_MODES, type CanvasMode } from '../blocks/registry'
 import type { OfflineActions } from '../WorkspaceView'
@@ -126,9 +126,11 @@ export const ZOOM_PRESETS = [25, 50, 75, 100, 150, 200]
 export const PUBLIC_SUBJECT = 'public'
 export const PUBLIC_LINK_CAPABILITIES = ['read', 'comment'] as const
 
-/** An access link (§8.3): it names the workspace and Surface, carries no credential and grants nothing. */
-export function shareLink(workspaceId: string, surfaceId: string | null): string {
-  return workspaceUrl(workspaceId, { surfaceId })
+/** An access link (§8.3): it names the workspace and Surface, carries no credential and grants nothing — the
+ * Workspace's own origin `aiws-<id>.<zone>/<workspace>/<surface>?id=` (T4-8). A deployment without a host has no
+ * page of the workspace to link to: the list is named instead. */
+export function shareLink(info: WorkspaceInfo, surface: EntityEnvelope | null): string {
+  return workspacePageUrl(info.public_base, info.title, surface ? { id: surface.entity_id, title: surface.title ?? surface.name ?? '' } : null) ?? `${zoneOrigin()}${WORKSPACE_ROUTE}`
 }
 
 export function useShell(): ShellApi {

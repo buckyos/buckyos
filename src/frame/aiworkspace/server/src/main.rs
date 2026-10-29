@@ -50,6 +50,7 @@ fn main() {
         .arg(Arg::new("fixture-sources").long("fixture-sources").action(ArgAction::SetTrue).help("Register the generated fixture:// data source (dev/test)"))
         .arg(Arg::new("wish-config").long("wish-config").help("Wish runs (standalone): JSON { provider: { type, base_url, api_key_env }, analyze_model, execute_model, map_model, deno, … }"))
         .arg(Arg::new("public-base").long("public-base").help("Standalone: the origin publications are linked at, with {workspace_id} substituted, e.g. http://aiws-{workspace_id}.localhost:4120"))
+        .arg(Arg::new("web").long("web").help("Standalone: the Desktop build directory (holds aiws.html) the AI Workspace page is served from on a Workspace's own host"))
         .arg(Arg::new("log-level").long("log-level").default_value("info"))
         .get_matches();
     // wish runs drive the xllm loop on worker threads: deep futures need more than the default stack
@@ -82,7 +83,7 @@ fn main() {
             }
         }
         let nfs = matches.get_one::<String>("nfs-server").map(|origin| (origin.trim_end_matches('/').to_string(), PathBuf::from(matches.get_one::<String>("named-store-config").unwrap())));
-        let limits = Limits { public_base: matches.get_one::<String>("public-base").cloned(), ..Limits::default() };
+        let limits = Limits { public_base: matches.get_one::<String>("public-base").cloned(), web_dir: aiworkspace_server::pages::locate_web_dir(matches.get_one::<String>("web").map(String::as_str)), ..Limits::default() };
         rt.block_on(run(PathBuf::from(data_dir), listen, Arc::new(tokens), limits, fixtures, None, wish, Objects::Standalone(nfs)));
     } else {
         init_logging("aiworkspace", true);
@@ -116,6 +117,12 @@ async fn buckyos_service_main(fixtures: bool) {
     if public_base.is_none() {
         log::warn!("zone host unknown: publication links are paths only");
     }
+    // the AI Workspace page served on `aiws-<id>.<zonehost>` is the Desktop build (T4-8)
+    let web_dir = aiworkspace_server::pages::locate_web_dir(None);
+    match &web_dir {
+        Some(dir) => log::info!("AI Workspace page files: {}", dir.display()),
+        None => log::warn!("no Desktop build found beside this service: Workspace pages are unavailable on their own hosts"),
+    }
     // a zone booted before this service existed has no settings key yet
     let settings: AiWorkspaceSettings = match runtime.get_my_settings().await {
         Ok(v) => serde_json::from_value(v).unwrap_or_default(),
@@ -144,6 +151,7 @@ async fn buckyos_service_main(fixtures: bool) {
         history_retention_ms: settings.history_retention_days as i64 * 24 * 3_600_000,
         traffic_quota_bytes: settings.traffic_quota_bytes,
         public_base,
+        web_dir,
         ..Limits::default()
     };
     // wake-up hints over kevent: only "there is a new head", never content or entity ids

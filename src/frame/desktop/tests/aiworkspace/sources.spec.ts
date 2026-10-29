@@ -16,7 +16,8 @@ test('M4: publish a table, insert its link elsewhere, the copy follows and stays
   await page.getByTestId('aiws-publish').click()
   await expect(page.getByTestId('aiws-publication')).toHaveAttribute('data-published', 'true')
   const link = (await page.getByTestId('aiws-publish-link').textContent()) ?? ''
-  expect(link).toContain(`/kapi/aiworkspace/pub/${a.workspace_id}/`)
+  // the publication link is on the workspace's own origin (the backend knows its public base)
+  expect(link).toContain(`aiws-${a.workspace_id.replace(/^ws_/, '')}.localhost`)
   const published = await api.rpc(ALICE, 'ws.list_publications', { workspace_id: a.workspace_id })
   expect(published.publications[0].entity_id).toBe('sales')
   const sourceRows = (await api.rpc(ALICE, 'doc.query', { workspace_id: a.workspace_id, source_id: 'sales', limit: 100 })).rows.length

@@ -68,6 +68,26 @@ function pdfjsAssets(): Plugin {
   }
 }
 
+// The AI Workspace page of a Workspace's own origin (`aiws-<id>.<zone>`, 内核架构改进 T4-8): the second entry of this
+// build, `aiws.html`, which the aiworkspace service serves there. The dev and preview servers do the same for a
+// request whose Host is such an origin (`aiws-<label>.localhost` resolves to loopback in browsers): a navigation
+// gets aiws.html, files and /kapi are untouched.
+const WORKSPACE_HOST = /^aiws-[a-z0-9]+\./
+function aiwsHostPages(): Plugin {
+  const rewrite = (req: { headers: { host?: string; accept?: string }; method?: string; url?: string }, _res: unknown, next: () => void) => {
+    const path = (req.url ?? '').split('?')[0]
+    if (req.method === 'GET' && WORKSPACE_HOST.test(req.headers.host ?? '') && /text\/html/.test(req.headers.accept ?? '') && !path.startsWith('/kapi/') && !/\.[a-z0-9]+$/i.test(path)) {
+      req.url = '/aiws.html'
+    }
+    next()
+  }
+  return {
+    name: 'aiworkspace-host-pages',
+    configureServer(server) { server.middlewares.use(rewrite) },
+    configurePreviewServer(server) { server.middlewares.use(rewrite) },
+  }
+}
+
 const DRAWIO_DIR = resolve(import.meta.dirname, '../aiworkspace/import-drawio')
 // The PDF importer shared with Deno and Agents (PDF 导入方案 §4): pdf.js page data → the draw.io importer's plans.
 const PDF_DIR = resolve(import.meta.dirname, '../aiworkspace/import-pdf')
@@ -130,7 +150,9 @@ export default defineConfig(() => {
     : {}
   return {
     base: '/',
-    plugins: [react(), pdfjsAssets(), desktopServiceWorker()],
+    plugins: [react(), pdfjsAssets(), aiwsHostPages(), desktopServiceWorker()],
+    // two pages of one build: the Desktop (index.html) and a Workspace's own page (aiws.html), sharing their chunks
+    build: { rollupOptions: { input: { index: resolve(import.meta.dirname, 'index.html'), aiws: resolve(import.meta.dirname, 'aiws.html') } } },
     // The Replica Worker (src/app/aiworkspace/offline/replica.worker.ts) is a module worker.
     worker: { format: 'es' as const },
     // sqlite-wasm locates its .wasm relative to its own module; pre-bundling would move the module.

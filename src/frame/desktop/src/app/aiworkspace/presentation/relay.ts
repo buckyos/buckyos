@@ -6,6 +6,7 @@ import { AiwsClient, ServiceFailure, unwrap } from '../api/client'
 import type { ShowCommand, ShowStart, ShowState } from '../api/types'
 import { TransportError } from '../api/transport'
 import { aiwsT } from '../i18n'
+import { zoneOrigin } from '../links'
 
 /** The stage renews well within the lease (§8.1: every 20 s, lease 60 s). */
 const HEARTBEAT_SHARE = 3
@@ -132,9 +133,10 @@ export class ShowRelay {
   detach() { this.stop() }
 }
 
-/** The prompter link of a show (§11.1): the token after `#` never reaches access logs or Referer headers. */
+/** The prompter link of a show (§11.1): the token after `#` never reaches access logs or Referer headers. Its page is
+ * the Desktop's route on the Zone host (a workspace's own origin serves the workspace page only). */
 export function prompterLink(workspaceId: string, start: Pick<ShowStart, 'show_id' | 'prompter_token'>): string {
-  return `${window.location.origin}/workspace/${encodeURIComponent(workspaceId)}/show/${encodeURIComponent(start.show_id)}#k=${encodeURIComponent(start.prompter_token)}`
+  return `${zoneOrigin()}/workspace/${encodeURIComponent(workspaceId)}/show/${encodeURIComponent(start.show_id)}#k=${encodeURIComponent(start.prompter_token)}`
 }
 
 /** A show this tab is running, kept for a reload of the stage (§11.3: "舞台刷新后继续"). Per tab, never shared. */

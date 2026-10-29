@@ -27,6 +27,7 @@ import { AiwsClient, unwrap as unwrapAiws } from '../../aiworkspace/api/client'
 import { resolveTransport as resolveAiwsTransport } from '../../aiworkspace/api/transport'
 import { homeStationTransport } from '../../homestation/api/transport'
 import type { AudienceSpec } from '../../homestation/datamodel/types'
+import { workspaceOriginOn, workspaceSlug } from '../../aiworkspace/links'
 
 export type Section<T> = { ok: true; data: T } | { ok: false; error: string }
 
@@ -276,7 +277,8 @@ async function loadPublicWorkspaces(zoneHost: string): Promise<Section<PublicWor
       .map((workspace) => ({
         workspaceId: workspace.workspace_id,
         title: workspace.title,
-        url: `https://${zoneHost}/workspace/${encodeURIComponent(workspace.workspace_id)}`,
+        // the workspace's own origin (AI Workspace T4-8)
+        url: `${workspaceOriginOn(zoneHost, workspace.workspace_id)}/${workspaceSlug(workspace.title)}`,
       }))
   })
 }

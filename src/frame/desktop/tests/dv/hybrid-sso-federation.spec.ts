@@ -134,7 +134,7 @@ test('a DID from another Zone reaches an AI Workspace entry on the target', asyn
 
   // Back on the target's entry page as the External identity the DID brought along: the join the
   // visitor chose before leaving runs by itself and opens the workspace.
-  await page.waitForURL(new RegExp(`^https://${zoneB.replaceAll('.', '\\.')}/workspace/${workspaceId}`))
+  await page.waitForURL(new RegExp(`^https://aiws-${workspaceId.replace(/^ws_/, '')}\\.${zoneB.replaceAll('.', '\\.')}/`))
   await expect(page.getByText(`联合入口 ${runId}`)).toBeVisible()
   await expect(page.getByTestId('aiws-open-error')).toHaveCount(0)
 

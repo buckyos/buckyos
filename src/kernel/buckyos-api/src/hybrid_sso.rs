@@ -546,7 +546,8 @@ pub struct EntryResource {
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_name: Option<String>,
-    /// Zone-relative path of the resource page.
+    /// The resource page: an absolute URL when the resource lives on its own origin (an AI Workspace on
+    /// `aiws-<id>.<zone>`, 内核架构改进 T4-8), else a Zone-relative path.
     pub path: String,
 }
 

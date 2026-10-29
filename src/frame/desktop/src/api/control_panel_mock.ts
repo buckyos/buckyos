@@ -885,7 +885,7 @@ function defaultSso(): MockSso {
         service: 'aiworkspace',
         entry_id: 'se-dj',
         state: 'active',
-        resource: { kind: 'workspace', title: 'DJ Radio', owner_name: 'DJ', path: '/workspace/ws-dj' },
+        resource: { kind: 'workspace', title: 'DJ Radio', owner_name: 'DJ', path: '/workspace' },
         methods: allMethods,
       },
       {
@@ -1059,7 +1059,8 @@ function defaultReturnPath(resource: InviteResource | undefined) {
   if (resource?.kind === 'group_session') {
     return `/messagehub/guest?group=${encodeURIComponent(resource.group_did)}&session=${encodeURIComponent(resource.session_id)}`
   }
-  if (resource?.kind === 'workspace') return `/workspace/${encodeURIComponent(resource.workspace_id)}`
+  // a workspace lives on its own origin (T4-8): the Zone host has only the list
+  if (resource?.kind === 'workspace') return '/workspace'
   return '/'
 }
 

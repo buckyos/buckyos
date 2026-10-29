@@ -18,6 +18,17 @@ interface I18nContextValue {
 
 const storageKey = 'buckyos.prototype.locale.v1'
 
+/** A page on an origin of its own (a workspace's `aiws-<id>.<zone>`) starts with an empty storage: before the provider
+ * mounts, the browser's language decides where there is a dictionary for it; the Desktop's own choice is per origin. */
+export function defaultLocaleFromBrowser() {
+  try {
+    if (window.localStorage.getItem(storageKey)) return
+    const wanted = (navigator.languages ?? [navigator.language]).map((l) => l.toLowerCase())
+    const pick = supportedLocales.find((locale) => wanted.some((l) => l === locale.toLowerCase() || l.split('-')[0] === locale.toLowerCase().split('-')[0]))
+    if (pick) window.localStorage.setItem(storageKey, pick)
+  } catch { /* no storage */ }
+}
+
 const I18nContext = createContext<I18nContextValue | null>(null)
 
 function interpolate(

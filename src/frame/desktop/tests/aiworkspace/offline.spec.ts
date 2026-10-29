@@ -1,5 +1,5 @@
 import { expect, editCell, grantPersistence, openCard, openDesktop, prepareOffline, saveSummary, serviceWorkerReady, test } from './offline-fixtures'
-import { closeWorkspace, openMock, openStatus, backToList } from './fixtures'
+import { closeWorkspace, openMock, openStatus, openWorkspacePage, backToList, workspacePage } from './fixtures'
 
 const ALICE = 'tok-alice'
 
@@ -32,13 +32,21 @@ test('Block snapshots are cached and displayed after an offline cold start', asy
 
 test('an offline cold start of a workspace address opens the prepared replica in a tab of its own', async ({ page, context, api, net }) => {
   const ws = await api.sample(ALICE, `tab-offline ${Date.now()}`)
-  await prepareOffline(page, net, ALICE, ws.workspace_id)
+  // the page lives on the workspace's own origin (T4-8): prepared there, it starts there without the network
+  const port = new URL(net.origin).port
+  await openWorkspacePage(page, ALICE, ws.workspace_id, null, port)
+  await grantPersistence(page.context(), page)
+  await expect(page.getByTestId('aiws-mode')).toHaveAttribute('data-mode', 'direct')
+  await expect(page.getByTestId('aiws-conn')).toHaveAttribute('data-status', 'live')
+  await openStatus(page)
+  await page.getByTestId('aiws-prepare-offline').click()
+  await expect(page.getByTestId('aiws-mode')).toHaveAttribute('data-mode', 'replica', { timeout: 60_000 })
   await serviceWorkerReady(page)
   await page.close()
   await net.down()
   await context.setOffline(true)
   const cold = await context.newPage()
-  await cold.goto(`${net.origin}/workspace/${ws.workspace_id}`)
+  await cold.goto(workspacePage(ws.workspace_id, null, port))
   expect(await cold.evaluate(() => navigator.serviceWorker.controller !== null)).toBe(true)
   await expect(cold.getByTestId('aiws-tab').getByTestId('aiws-workspace')).toHaveAttribute('data-workspace-id', ws.workspace_id, { timeout: 30_000 })
   await expect(cold.getByTestId('aiws-mode')).toHaveAttribute('data-mode', 'replica')

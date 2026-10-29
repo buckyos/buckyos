@@ -74,7 +74,7 @@ test.describe('share entry page', () => {
     await form.getByLabel('User name').fill('dj-fan')
     await form.getByLabel('Display name (optional)').fill('DJ Fan')
     await form.getByTestId('sso-register-submit').click()
-    await page.waitForURL('**/workspace/ws-dj')
+    await page.waitForURL('**/workspace')
     const state = await mockState(page)
     expect(state.sso.accounts['dj-fan']).toEqual({ show_name: 'DJ Fan', password_set: true, state: 'active' })
     expect(state.account.user_id).toBe('dj-fan')
@@ -103,7 +103,7 @@ test.describe('share entry page', () => {
     const entry = new URL(page.url())
     await page.evaluate((key) => window.sessionStorage.setItem('buckyos.sso.pending-join', key), `${entry.searchParams.get('service')}|${entry.searchParams.get('entry')}`)
     await page.goto(`${DJ_ENTRY}&join=1`)
-    await page.waitForURL('**/workspace/ws-dj')
+    await page.waitForURL('**/workspace')
   })
 
   test('a join=1 link that no sign-in here produced still asks to continue', async ({ page }) => {

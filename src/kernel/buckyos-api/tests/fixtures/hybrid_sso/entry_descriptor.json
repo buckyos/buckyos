@@ -1,1 +1,1 @@
-{"entry":{"service":"aiworkspace","entry_id":"se-3f9a"},"state":"active","resource":{"kind":"workspace","title":"DJ 电台","owner_name":"DJ","path":"/workspace/ws_dj"},"methods":{"guest":true,"password":true,"self_register":true,"did_login":false},"zone_disabled":["did_login"]}
+{"entry":{"service":"aiworkspace","entry_id":"se-3f9a"},"state":"active","resource":{"kind":"workspace","title":"DJ 电台","owner_name":"DJ","path":"https://aiws-dj.zone.example/dj"},"methods":{"guest":true,"password":true,"self_register":true,"did_login":false},"zone_disabled":["did_login"]}

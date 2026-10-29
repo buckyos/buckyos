@@ -8,14 +8,13 @@
 
 export const PUBLIC_ROUTE_PREFIXES = ['/login', '/userprofile', '/sso'] as const
 
-/** Login-optional paths that are not prefixes: an AI Workspace link (`/workspace/<id>`, a public
- * link opens for guests, any other sends them to log in) and the prompter link of a show
- * (`/workspace/<id>/show/<show>`), whose token is its only credential — but not `/workspace`
- * itself, the signed-in user's list; HomeStation portal pages (`/homestation/<user>`,
+/** Login-optional paths that are not prefixes: the prompter link of a show (`/workspace/<id>/show/<show>`),
+ * whose token is its only credential — but not `/workspace` itself, the signed-in user's list (a workspace's own
+ * page lives on `aiws-<id>.<zone>`, a page of its own); HomeStation portal pages (`/homestation/<user>`,
  * `/homestation/<user>/<key>`, `/homestation/~zone`) — but not `/homestation` itself, the signed-in
  * user's own app; the Message Hub guest page (`/messagehub/guest`), which sends a visitor without a
  * session to the group's entry. */
-const PUBLIC_ROUTE_PATTERNS: readonly RegExp[] = [/^\/workspace\/[^/]+$/, /^\/workspace\/[^/]+\/show\/[^/]+$/, /^\/homestation\/[^/]+(\/[^/]+)?$/, /^\/messagehub\/guest$/, /^\/users\/invite\/[^/]+$/]
+const PUBLIC_ROUTE_PATTERNS: readonly RegExp[] = [/^\/workspace\/[^/]+\/show\/[^/]+$/, /^\/homestation\/[^/]+(\/[^/]+)?$/, /^\/messagehub\/guest$/, /^\/users\/invite\/[^/]+$/]
 
 const normalizePath = (pathname: string) =>
   (pathname || '/').replace(/\/+$/, '') || '/'

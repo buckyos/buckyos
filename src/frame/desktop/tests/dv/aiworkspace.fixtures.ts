@@ -105,8 +105,16 @@ async function screenshot(page: Page, info: TestInfo, name: string) {
   await info.attach(name, { path, contentType: 'image/png' })
 }
 
+/** A workspace's own origin on this Zone (T4-8): `https://aiws-<label>.<zone host>`. */
+export function workspaceOrigin(actor: Actor, ws: Workspace): string {
+  const zone = new URL(actor.page.url()).host
+  return `https://aiws-${ws.workspace_id.replace(/^ws_/, '')}.${zone}`
+}
+
+/** Open the workspace's page on its own origin: a signed-in Desktop user is handed over by the Zone host's login
+ * page (the one-time callback signs them into that origin) when the page has no session yet. */
 export async function openWorkspace(actor: Actor, ws: Workspace) {
-  await actor.page.goto(`/workspace/${ws.workspace_id}`)
+  await actor.page.goto(`${workspaceOrigin(actor, ws)}/w`)
   await expect(actor.page.getByTestId('aiws-workspace')).toHaveAttribute('data-workspace-id', ws.workspace_id)
   await expect(actor.page.getByTestId('aiws-conn')).toHaveAttribute('data-status', 'live')
   await expect(actor.page.getByTestId('aiws-principal')).toHaveAttribute('data-principal', actor.userId)

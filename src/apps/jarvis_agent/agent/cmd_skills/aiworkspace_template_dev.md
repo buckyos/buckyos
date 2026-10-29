@@ -48,7 +48,7 @@ Check with `buckyos aiws query --workspace <ws> --source sales` and `buckyos aiw
 - An unknown result (the request timed out): `doc.get_submission { epoch, idempotency_key }` — `accepted` means it is in; otherwise resend the same key.
 
 #### Check the result
-`buckyos aiws info --workspace <ws>` (head sequence, capabilities, usage), `buckyos aiws read <entity> --workspace <ws>`, `buckyos aiws query --workspace <ws> --source <table>`; the Desktop opens it at `https://<zonehost>/workspace/<ws>`.
+`buckyos aiws info --workspace <ws>` (head sequence, capabilities, usage), `buckyos aiws read <entity> --workspace <ws>`, `buckyos aiws query --workspace <ws> --source <table>`. The workspace's page for people is on its own origin: `https://aiws-<id>.<zonehost>/<workspace>` (`<id>` is the workspace id without `ws_`; `ws.get_info.public_base` gives the origin), a Surface is `…/<workspace>/<surface>?id=<surface id>` — give users these links, never `/workspace/<ws>` on the Zone host (that is only the signed-in user's list).
 
 #### Source
 - Service and protocol: `src/frame/aiworkspace/README.md`; operations: `src/frame/aiworkspace/schemas/operations.json`; architecture decisions: `doc/workspace/BuckyOS AiWorkspace 内核架构改进.md`.

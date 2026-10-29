@@ -28,7 +28,7 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
     document.addEventListener('keydown', onKey, true)
     return () => document.removeEventListener('keydown', onKey, true)
   }, [onClose])
-  const link = shareLink(store.session.workspaceId, shell.topMode === 'canvas' ? shell.activeSurface?.entity_id ?? null : null)
+  const link = shareLink(store.session.info(), shell.topMode === 'canvas' ? shell.activeSurface : null)
   const where = shell.topMode === 'canvas' && shell.activeSurface ? t('aiworkspace.shell.share.whereCanvas', { name: shell.activeSurface.title ?? shell.activeSurface.name ?? '' }) : t('aiworkspace.shell.share.whereWorkspace')
   const canManage = store.session.info().capabilities.includes('manage')
   const loadGrants = useCallback(() => store.session.listGrants(), [store])

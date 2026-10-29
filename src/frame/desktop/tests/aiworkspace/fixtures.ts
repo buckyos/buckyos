@@ -126,6 +126,24 @@ export class Api {
   }
 }
 
+/** A workspace's own origin on the dev server (T4-8): `http://aiws-<label>.localhost:<port>`. */
+export function workspaceOrigin(workspaceId: string, port: string | number = process.env.AIWS_E2E_WEB_PORT ?? ''): string {
+  return `http://aiws-${workspaceId.replace(/^ws_/, '')}.localhost:${port}`
+}
+
+/** A workspace page: the service ignores the first segment and, with `id`, the second (links.ts). */
+export function workspacePage(workspaceId: string, surfaceId?: string | null, port?: string | number): string {
+  return surfaceId ? `${workspaceOrigin(workspaceId, port)}/w/s?id=${encodeURIComponent(surfaceId)}` : `${workspaceOrigin(workspaceId, port)}/w`
+}
+
+/** Open a workspace page on its own origin as `token` (`{ guest: true }` for nobody), in the specs' language, and
+ * wait for the workspace. */
+export async function openWorkspacePage(page: Page, who: string | { guest: true }, workspaceId: string, surfaceId?: string | null, port?: string | number) {
+  await asUser(page, who)
+  await page.goto(workspacePage(workspaceId, surfaceId, port))
+  await expect(page.getByTestId('aiws-workspace')).toHaveAttribute('data-workspace-id', workspaceId, { timeout: 30_000 })
+}
+
 /** Open the Desktop shell and the AI Workspace app in it, talking to the standalone backend as `token`, and
  * end on the workspace list (a normal start restores the last workspace: it is closed again here). */
 export async function openApp(page: Page, token: string) {
@@ -232,11 +250,25 @@ export async function hooks(page: Page): Promise<{ commits: number; canvas: { bl
   })
 }
 
+/** Talk to the backend as `who` (`{ guest: true }` for nobody) in the specs' language, on every origin this page visits
+ * (a workspace's own origin starts with an empty storage). */
+export async function asUser(page: Page, who: string | { guest: true }) {
+  await page.addInitScript(({ who, localeKey, locale }) => {
+    window.localStorage.setItem('aiworkspace.dev', JSON.stringify(typeof who === 'string' ? { token: who } : who))
+    window.localStorage.setItem(localeKey, locale)
+  }, { who, localeKey: LOCALE_STORAGE_KEY, locale: SPEC_LOCALE })
+}
+
 export const test = base.extend<{ api: Api }>({
   api: async ({}, use) => { await use(new Api()) },
+  // the specs' language on every origin, the workspace origins `aiws-<label>.localhost` included
+  context: async ({ context }, use) => {
+    await context.addInitScript(({ localeKey, locale }) => { if (!window.localStorage.getItem(localeKey)) window.localStorage.setItem(localeKey, locale) }, { localeKey: LOCALE_STORAGE_KEY, locale: SPEC_LOCALE })
+    await use(context)
+  },
   storageState: async ({}, use) => {
     const ports = [process.env.AIWS_E2E_WEB_PORT, process.env.AIWS_E2E_PREVIEW_PORT].filter(Boolean)
-    await use({ cookies: [], origins: ports.map((port) => ({ origin: `http://127.0.0.1:${port}`, localStorage: [{ name: LOCALE_STORAGE_KEY, value: SPEC_LOCALE }] })) })
+    await use({ cookies: [], origins: ports.map((port) => ({ origin: `http://localhost:${port}`, localStorage: [{ name: LOCALE_STORAGE_KEY, value: SPEC_LOCALE }] })) })
   },
 })
 export { expect }

@@ -202,6 +202,8 @@ iss            签发方（Zone 的 verify-hub）
 - **DID 登录**：见上一节。
 - **专属邀请**：管理员预建 Limited 账号并生成 `https://<zone>/sso/invite/<id>#s=<secret>`，secret 只在 fragment；48 小时内可重复免密进入，设密码后旧链接只作入口；过期后访客申请重发，签发方收到 System Notify 后在“用户与 Agent / 专属邀请”生成新链接，经原渠道发送（系统不发短信 / 邮件）。
 
+**AI Workspace 页面**（2026-10-28）：每个工作区是自己的站点 `https://aiws-<id>.<zone>/<工作区 slug>/<画布 slug>?id=<画布 id>`（`<id>` 去掉 `ws_`），由 aiworkspace 服务出页。它的登录态在该主机自持：从桌面或列表打开时 CP 用 `auth.prepare_app_launch { service_id: "aiworkspace", redirect_url }` 委派会话并经一次性 `/sso_callback` 落 cookie；直接打开链接而没有登录态时，公开工作区以访客身份打开，否则到 Zone 根 `/login?redirect_url=` 登录（已在 Zone 根登录者自动接力）。入口页进入工作区时也走这一步。
+
 Limited、External 及其衍生会话是**受限会话**：token 带 `restricted: true` 与 `scopes`（`account_self` / `msg_group` / `aiworkspace` / `homestation` / `aicc`）。`BuckyOSRuntime::verify_trusted_session_token` 默认拒绝受限会话，服务对需要开放的方法改用 `verify_session_token_opened(token, scope)`；类型升级不会让旧会话增权，降级在下一次 refresh 收窄。拒绝在 kRPC 失败响应中带 `code: "access_denied"` 与 `data: AccessDenial`（原因码与调整方），websdk 用 `accessDenialOf(error)` 读取，不解析错误文本。
 
 第三方网页不知道用户 Zone 时，用 websdk `buildJumpUrl(action, params)` 跳到 jump（默认 `https://jump.buckyos.org`，可由 `system/sso/settings.jump_base_url` 覆盖），由用户选择目标 Zone 后到达该 Zone 的同路径 action 页面，仍需在该 Zone 登录并确认操作；jump 页面见 `src/frame/jump/`。

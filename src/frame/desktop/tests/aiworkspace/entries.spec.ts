@@ -3,7 +3,7 @@
  * Panel of the Desktop shell here), guests let in while the entry is open — and what a restricted session (a
  * Limited account) sees: no workspace creation, and the category of a refusal instead of a sign-in prompt. */
 
-import { expect, openCanvas, test } from './fixtures'
+import { expect, openCanvas, openWorkspacePage, test, workspaceOrigin } from './fixtures'
 
 const ALICE = 'tok-alice'
 const LIMITED = 'tok-lim'
@@ -38,7 +38,9 @@ test('UI-SSO1 entry links: create with chosen ways in, Zone-closed ways marked, 
   // the public description the entry page starts from (no session)
   const described = await (await fetch(api.base, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ method: 'entry.describe', params: { entry_id: entry.entry_id }, sys: [1] }) })).json()
   expect(described.result.state).toBe('active')
-  expect(described.result.resource).toMatchObject({ kind: 'workspace', owner_name: 'alice', path: `/workspace/${ws.workspace_id}` })
+  // the workspace's page on its own origin (T4-8)
+  expect(described.result.resource).toMatchObject({ kind: 'workspace', owner_name: 'alice' })
+  expect(described.result.resource.path).toMatch(new RegExp(`^${workspaceOrigin(ws.workspace_id)}/`))
 
   // the Zone turned DID sign-in off: the panel says so on the entry (the Control Panel intersects the methods)
   await page.evaluate(({ key, id, methods }) => {
@@ -59,9 +61,7 @@ test('UI-SSO1 entry links: create with chosen ways in, Zone-closed ways marked, 
   // a guest with the link gets the entry's access
   const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } })
   const guest = await context.newPage()
-  await guest.addInitScript(() => window.localStorage.setItem('aiworkspace.dev', JSON.stringify({ guest: true })))
-  await guest.goto(`/workspace/${ws.workspace_id}`)
-  await expect(guest.getByTestId('aiws-workspace')).toHaveAttribute('data-workspace-id', ws.workspace_id, { timeout: 30_000 })
+  await openWorkspacePage(guest, { guest: true }, ws.workspace_id)
   await expect(guest.getByTestId('aiws-principal')).toHaveAttribute('data-guest', 'true')
   await context.close()
 
@@ -94,7 +94,7 @@ test('UI-SSO2 a restricted session owns nothing and is told the category of a re
   await expect(page.getByTestId('aiws-new-template')).toHaveCount(0)
 
   // a link to a workspace not shared with it: the refusal's category for a visitor, no sign-in redirect
-  await page.goto(`/workspace/${hidden.workspace_id}`)
+  await page.goto(`${workspaceOrigin(hidden.workspace_id)}/w`)
   await expect(page.getByTestId('aiws-open-error')).toContainText('它不存在，或你没有访问权限，请联系分享者', { timeout: 30_000 })
   await expect(page.getByTestId('aiws-open-error')).not.toContainText('分享面板')
   expect(new URL(page.url()).pathname).not.toBe('/login')

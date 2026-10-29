@@ -2232,6 +2232,8 @@ fn validate_beta22_app_state(input: &HashMap<String, String>) -> Result<()> {
         "homestation".to_string(),
         "share".to_string(),
         "s3".to_string(),
+        // every AI Workspace's own origin folds onto this entry (`aiws-<id>.<zone>`)
+        "aiws".to_string(),
     ]);
     if let Some(raw) = input.get("services/gateway/settings") {
         let settings: ZoneGatewaySettings = serde_json::from_str(raw)?;

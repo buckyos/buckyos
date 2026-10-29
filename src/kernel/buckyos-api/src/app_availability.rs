@@ -72,7 +72,10 @@ pub struct ValidatedTokenClaims {
     pub target: AuthTarget,
 }
 
-const SYSTEM_LOGIN_TARGETS: &[&str] = &["control-panel", "kernel", "system-config"];
+const SYSTEM_LOGIN_TARGETS: &[&str] = &["control-panel", "kernel", "system-config", "aiworkspace"];
+/// System services a Control Panel user session may be delegated to without a password (the Desktop opening a
+/// page on the service's own origin): AI Workspace pages live on `aiws-<id>.<zone>` (内核架构改进 D21).
+const SYSTEM_DELEGATION_TARGETS: &[&str] = &["aiworkspace"];
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -196,6 +199,11 @@ pub fn find_system_builtin_app(service_id: &str) -> Option<&'static SystemBuilti
 
 pub fn is_system_login_target(service_id: &str) -> bool {
     SYSTEM_LOGIN_TARGETS.contains(&service_id) || find_system_builtin_app(service_id).is_some()
+}
+
+/// Whether `delegate_user_session` may issue a `System(service_id)` session from a Control Panel user session.
+pub fn is_system_delegation_target(service_id: &str) -> bool {
+    SYSTEM_DELEGATION_TARGETS.contains(&service_id)
 }
 
 pub fn bind_token_principal_kind(token: &mut RPCSessionToken, principal_kind: TokenPrincipalKind) {

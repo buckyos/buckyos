@@ -4,7 +4,7 @@
  * commit counts are asserted through kRPC and the dev-override hooks, not only through the DOM. */
 
 import type { Page } from '@playwright/test'
-import { closeWorkspace, expect, fitAll, hooks, mainMenu, openCanvas, test, type Api } from './fixtures'
+import { asUser, closeWorkspace, expect, fitAll, hooks, mainMenu, openCanvas, openWorkspacePage, test, workspaceOrigin, workspacePage, type Api } from './fixtures'
 
 const ALICE = 'tok-alice'
 const BOB = 'tok-bob'
@@ -55,20 +55,21 @@ test('UI-P01 a normal start reopens the last workspace and Surface; a link wins 
   // closing goes back to the list and pauses the restore for this app session
   await closeWorkspace(page)
   await expect(page.getByTestId('aiws-list')).toBeVisible()
-  // an access link opens its own workspace and Surface in a tab of its own; the target leaves the address
-  await page.goto(`/workspace/${b.workspace_id}?surface=sf-detail`)
-  await expect(page.getByTestId('aiws-tab').getByTestId('aiws-workspace')).toHaveAttribute('data-workspace-id', b.workspace_id, { timeout: 30_000 })
+  // an access link opens its own workspace and Surface on the workspace's own origin (T4-8); the target leaves the address
+  await openWorkspacePage(page, ALICE, b.workspace_id, 'sf-detail')
+  await expect(page.getByTestId('aiws-tab').getByTestId('aiws-workspace')).toHaveAttribute('data-workspace-id', b.workspace_id)
   await expect(page.getByTestId('aiws-canvas')).toHaveAttribute('data-surface-id', 'sf-detail')
-  await expect.poll(() => pathOf(page)).toBe(`/workspace/${b.workspace_id}`)
+  await expect.poll(() => pathOf(page)).toBe('/w/s')
+  expect(new URL(page.url()).origin).toBe(workspaceOrigin(b.workspace_id))
   // a link to a Surface that is gone: the first readable Surface, and it says so
-  await page.goto(`/workspace/${a.workspace_id}?surface=sf-gone`)
+  await page.goto(workspacePage(a.workspace_id, 'sf-gone'))
   await expect(page.getByTestId('aiws-workspace')).toHaveAttribute('data-workspace-id', a.workspace_id, { timeout: 30_000 })
   await expect(page.getByTestId('aiws-notice').filter({ hasText: '链接指向的画布' })).toBeVisible()
   // another identity: no access to the link's workspace, nothing of alice's recent state; the list stays usable
   const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } })
   const bob = await context.newPage()
-  await bob.addInitScript((value) => window.localStorage.setItem('aiworkspace.dev', JSON.stringify({ token: value })), BOB)
-  await bob.goto(`/workspace/${a.workspace_id}`)
+  await asUser(bob, BOB)
+  await bob.goto(workspacePage(a.workspace_id))
   await expect(bob.getByTestId('aiws-open-error')).toContainText('不存在，或你没有访问权限', { timeout: 30_000 })
   await expect(bob.getByTestId('aiws-list')).toBeVisible()
   expect(await bob.evaluate(() => window.localStorage.getItem('aiworkspace.recent') ?? '')).not.toContain('|bob')
@@ -391,8 +392,10 @@ test('UI-P10/P11 collaboration opens the permissions; the share link points at t
   await expect(share).toHaveAttribute('aria-modal', 'true')
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('before share')
   const link = await page.getByTestId('aiws-share-link').inputValue()
-  expect(new URL(link).pathname).toBe(`/workspace/${ws.workspace_id}`)
-  expect(new URL(link).searchParams.get('surface')).toBe('sf-analysis')
+  // the workspace's own origin, the Surface by id (its slug is for people); the workspace slug is the title's
+  expect(new URL(link).origin).toBe(workspaceOrigin(ws.workspace_id))
+  expect(new URL(link).pathname.split('/')[1]).toMatch(/^p10-\d+$/)
+  expect(new URL(link).searchParams.get('id')).toBe('sf-analysis')
   expect(link).not.toContain('tok-')
   await expect(share).toContainText('不会授予权限')
   await page.getByTestId('aiws-share-copy').click()
@@ -403,8 +406,8 @@ test('UI-P10/P11 collaboration opens the permissions; the share link points at t
   // bob (read only) opens the link: the right Surface, his own grants only, no way to write
   const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } })
   const bob = await context.newPage()
-  await bob.addInitScript((value) => window.localStorage.setItem('aiworkspace.dev', JSON.stringify({ token: value })), BOB)
-  await bob.goto(link.replace(/^https?:\/\/[^/]+/, ''))
+  await asUser(bob, BOB)
+  await bob.goto(link)
   await expect(bob.getByTestId('aiws-workspace')).toHaveAttribute('data-workspace-id', ws.workspace_id, { timeout: 30_000 })
   await expect(bob.getByTestId('aiws-canvas')).toHaveAttribute('data-surface-id', 'sf-analysis')
   await bob.getByTestId('aiws-collab').click()
@@ -438,8 +441,8 @@ test('UI-P16 one-click public link: a guest opens it without signing in, reads a
   // a guest: no account, no test token, only the link (the dev override's guest mode stands in for "not signed in")
   const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } })
   const guest = await context.newPage()
-  await guest.addInitScript(() => window.localStorage.setItem('aiworkspace.dev', JSON.stringify({ guest: true })))
-  const path = link.replace(/^https?:\/\/[^/]+/, '')
+  await asUser(guest, { guest: true })
+  const path = link
   await guest.goto(path)
   await expect(guest.getByTestId('aiws-workspace')).toHaveAttribute('data-workspace-id', ws.workspace_id, { timeout: 30_000 })
   await expect(guest.getByTestId('aiws-canvas')).toHaveAttribute('data-surface-id', 'sf-analysis')
@@ -532,7 +535,9 @@ test('UI-P16 one-click public link: a guest opens it without signing in, reads a
   await expect(page.getByTestId('aiws-share-public-state')).toHaveAttribute('data-public', 'false')
   await guest.goto(path)
   await expect(guest).toHaveURL(/\/login\?redirect_url=/, { timeout: 30_000 })
-  expect(decodeURIComponent(new URL(guest.url()).searchParams.get('redirect_url') ?? '')).toContain(`/workspace/${ws.workspace_id}`)
+  // the login lives on the Zone host and comes back to the workspace's page
+  expect(new URL(guest.url()).origin).toBe(new URL(path).origin.replace(/^http:\/\/aiws-[a-z0-9]+\./, 'http://'))
+  expect(decodeURIComponent(new URL(guest.url()).searchParams.get('redirect_url') ?? '')).toContain(workspaceOrigin(ws.workspace_id))
   await context.close()
 })
 
@@ -619,10 +624,13 @@ test('UI-P15 a workspace in a browser tab of its own: the address names what is 
   await page.goto('/workspace')
   await expect(page.getByTestId('aiws-tab').getByTestId('aiws-list')).toBeVisible({ timeout: 30_000 })
   await expect(page).toHaveTitle('AI 工作区 · alice')
+  // opening goes to the workspace's own origin (T4-8); its address names the workspace
   await card(a.workspace_id).getByTestId('aiws-open').click()
   await expect(page.getByTestId('aiws-workspace')).toHaveAttribute('data-workspace-id', a.workspace_id, { timeout: 30_000 })
-  await expect.poll(() => pathOf(page)).toBe(`/workspace/${a.workspace_id}`)
-  await expect(page).toHaveTitle(/p14a .* · AI 工作区 · alice/)
+  await expect.poll(() => new URL(page.url()).origin).toBe(workspaceOrigin(a.workspace_id))
+  expect(pathOf(page)).toMatch(/^\/p14a-\d+$/)
+  // (the Zone's name is not known on the workspace's origin in the mock runtime)
+  await expect(page).toHaveTitle(/p14a .* · AI 工作区/)
   // the workspace fills the tab
   const box = (await page.getByTestId('aiws-root').boundingBox())!
   const viewport = page.viewportSize()!
@@ -635,7 +643,7 @@ test('UI-P15 a workspace in a browser tab of its own: the address names what is 
   await expect(page).toHaveTitle('AI 工作区 · alice')
   await card(b.workspace_id).getByTestId('aiws-open').click()
   await expect(page.getByTestId('aiws-workspace')).toHaveAttribute('data-workspace-id', b.workspace_id, { timeout: 30_000 })
-  await expect.poll(() => pathOf(page)).toBe(`/workspace/${b.workspace_id}`)
+  await expect.poll(() => new URL(page.url()).origin).toBe(workspaceOrigin(b.workspace_id))
   // back and forward walk the same entries
   await page.goBack()
   await expect(page.getByTestId('aiws-list')).toBeVisible({ timeout: 30_000 })
@@ -648,7 +656,7 @@ test('UI-P15 a workspace in a browser tab of its own: the address names what is 
   await mainMenu(page, 'aiws-menu-open-workspace')
   await expect(page.getByTestId('aiws-list')).toBeVisible()
   await card(a.workspace_id).getByTestId('aiws-open').click()
-  await expect.poll(() => pathOf(page)).toBe(`/workspace/${a.workspace_id}`)
+  await expect.poll(() => new URL(page.url()).origin).toBe(workspaceOrigin(a.workspace_id))
   // a reload reopens what the address names, without the list in between
   await page.reload()
   await expect(page.getByTestId('aiws-opening').or(page.getByTestId('aiws-workspace'))).toBeVisible({ timeout: 30_000 })
@@ -671,7 +679,7 @@ test('UI-P15 a workspace in a browser tab of its own: the address names what is 
   const tab = await opened
   await expect(tab.getByTestId('aiws-tab').getByTestId('aiws-workspace')).toHaveAttribute('data-workspace-id', b.workspace_id, { timeout: 30_000 })
   await expect(tab.getByTestId('aiws-canvas')).toHaveAttribute('data-surface-id', 'sf-detail')
-  await expect.poll(() => pathOf(tab)).toBe(`/workspace/${b.workspace_id}`)
+  expect(new URL(tab.url()).origin).toBe(workspaceOrigin(b.workspace_id))
   await tab.close()
 })
 

@@ -28,6 +28,26 @@ export async function requestAppLaunch(appInstanceId: string, appUrl: string): P
   return data
 }
 
+/**
+ * The same for a page of a system service on its own origin — an AI Workspace on `aiws-<id>.<zone>`
+ * (`auth.prepare_app_launch { service_id, redirect_url }`): the Control Panel delegates the Desktop session to
+ * that service target and parks it behind the one-time `/sso_callback` of the page's origin.
+ */
+export async function requestServiceLaunch(serviceId: string, pageUrl: string): Promise<AppLaunchResult | null> {
+  const { data, error } = isMockRuntime()
+    ? await (await import('./app_launch_mock.ts')).mockPrepareAppLaunch(pageUrl)
+    : await callRpc<AppLaunchResult>('auth.prepare_app_launch', { service_id: serviceId, redirect_url: pageUrl })
+  if (error || !data || !STATUSES.has(data.status)) return null
+  if (data.status === 'ready') {
+    try {
+      if (new URL(data.callback_url).origin !== new URL(pageUrl).origin) return null
+    } catch {
+      return null
+    }
+  }
+  return data
+}
+
 /** Desktop session refresh for the mock runtime; the real one goes through the SDK. */
 export async function mockRefreshDesktopSession(): Promise<boolean> {
   return (await import('./app_launch_mock.ts')).mockRefreshSession()

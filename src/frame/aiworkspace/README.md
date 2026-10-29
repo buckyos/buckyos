@@ -415,7 +415,8 @@ learns who it is.
   succeeds with `granted: false` and writes no grant (the access ends with the entry). Joining again changes nothing;
   nobody becomes the owner. Closing an entry does not take back joined grants (`ws.revoke` does).
 - `entry.describe` is public (no session): `buckyos_api::EntryDescription` (`state`, `resource: { kind: "workspace",
-  title, owner_name, path: "/workspace/<id>" }`, the entry's own `methods`, `expires_at`) plus `ok: true`; a missing,
+  title, owner_name, path }` — `path` is the workspace's page on its own origin, `https://aiws-<id>.<zonehost>/<workspace
+  slug>`, or `/` without a public base —, the entry's own `methods`, `expires_at`) plus `ok: true`; a missing,
   closed or expired entry is `{ state: "unavailable" }` and nothing else. The Control Panel's `auth.entry.describe`
   intersects the methods with the Zone switches.
 
@@ -441,8 +442,18 @@ schedule). Publishing (`ws.publish`) is the other side: the `public` subject rea
 `https://aiws-<workspace_id>.<zonehost>/<workspace_name>/<name>` (or `GET /kapi/aiworkspace/pub/<workspace_id>/<name>`) answers the
 publication — JSON (`format: buckyos.ai-workspace/pub/1.0`, `reference`, `content`; `?fixed=1` adds `content_root`; `?fixed=<root>` reads
 that pinned version) or, for a browser or crawler (`Accept: text/html`), a static HTML page with the title and the table or text.
-`POST …/referrers` registers a consumer of another Zone; same-service consumers are registered by their refresh. On the Workspace's own host
-`/` and `/<workspace_name>` open the Desktop page on the Zone host, `/<workspace_name>/<surface_name>` opens that Surface.
+`POST …/referrers` registers a consumer of another Zone; same-service consumers are registered by their refresh.
+
+**The Workspace's own host** (T4-8, `server/src/pages.rs`): everything else on `aiws-<id>.<zonehost>` is the AI Workspace page itself —
+the Desktop build's `aiws.html` entry and its files (`assets/…`, `aiworkspace/pdfjs/…`, `sw.js`), served from the directory `--web` names
+(standalone) or, in a Zone, `web/` beside the executable, else `../control-panel/web/` (both are kernel services of one node). `/` and
+`/<workspace slug>` are the page; `/<workspace slug>/<name>?id=<surface id>` is the page on that Surface (the names are for people and
+crawlers, the id decides); `/<workspace slug>/<name>` without `id` answers a publication of that name, else sends a Surface named by name,
+id or title slug to its canonical `?id=` address (the rest of the query, `block=` say, travels along), else the page. The workspace slug is
+the title slugified, `workspace` when empty or one of the first segments the gateway routes elsewhere (`home`, `kapi`, `s3`, `bucket`,
+`ndm`, `nfs`, `assets`, `aiworkspace`, `api`, `messagehub`). Without a web directory the page is 503. The page signs in on its own: the
+Zone host's `/sso_callback` sets host-only cookies there (the Control Panel resolves `aiws-*` hosts to the `aiws` gateway entry and the
+`System(aiworkspace)` login target; `auth.prepare_app_launch { service_id: "aiworkspace", redirect_url }` delegates a Desktop session).
 
 ### Validator classes (D01, D04)
 

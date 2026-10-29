@@ -6,6 +6,7 @@
 pub mod auth;
 pub mod buckets;
 pub mod control;
+pub mod pages;
 pub mod show;
 pub mod source;
 pub mod wish;
@@ -43,12 +44,15 @@ pub struct Limits {
     pub traffic_quota_bytes: Option<u64>,
     /// The Workspace's own origin (D21): `https://aiws-{workspace_id}.<zonehost>`; `None` = links are paths only.
     pub public_base: Option<String>,
+    /// The Desktop build this service serves the AI Workspace page from on a Workspace's own host (T4-8, `pages`);
+    /// `None` = the page is not available here.
+    pub web_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for Limits {
     fn default() -> Self {
         Limits { max_commit_bytes: 8 * 1024 * 1024, max_wait_ms: 30_000, max_asset_bytes: 32 * 1024 * 1024, max_package_bytes: 2 << 30,
-                 workspace_quota_bytes: None, history_retention_ms: aiworkspace_store::workspace::HISTORY_RETENTION_MS, traffic_quota_bytes: None, public_base: None }
+                 workspace_quota_bytes: None, history_retention_ms: aiworkspace_store::workspace::HISTORY_RETENTION_MS, traffic_quota_bytes: None, public_base: None, web_dir: None }
     }
 }
 
@@ -161,9 +165,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // publications (D26): by path on the service, and on the Workspace's own host (D21)
         .route(&format!("{HTTP_PATH}/pub/{{workspace_id}}/{{name}}"), get(source::pub_get))
         .route(&format!("{HTTP_PATH}/pub/{{workspace_id}}/{{name}}/referrers"), post(source::pub_referrer))
-        .route("/", get(source::host_root))
-        .route("/{workspace_name}", get(source::host_workspace_page))
-        .route("/{workspace_name}/{name}", get(source::host_path))
+        // everything else on a Workspace's own host (D21, T4-8): the AI Workspace page, its files, publications
+        .fallback(get(pages::any))
         .with_state(state)
 }
 
@@ -696,12 +699,13 @@ async fn describe_entry(state: &Arc<AppState>, p: &Value) -> WsResult<Value> {
             if ws.purpose().is_some() {
                 return Ok(None);
             }
-            Ok(ws.entry(local)?.filter(|e| e.state == EntryState::Active).map(|e| (e, ws.title(), ws.owner().ok().flatten())))
+            Ok(ws.entry(local)?.filter(|e| e.state == EntryState::Active).map(|e| (e, ws.title(), ws.owner().ok().flatten(), ws.workspace_slug())))
         });
         Ok(match found {
-            Ok(Some((entry, title, owner))) => EntryDescription {
+            Ok(Some((entry, title, owner, slug))) => EntryDescription {
                 state: buckyos_api::EntryState::Active,
-                resource: Some(EntryResource { kind: "workspace".into(), title, owner_name: owner, path: format!("/workspace/{ws_id}") }),
+                // the Workspace's page on its own origin (T4-8); only a deployment without a host has no page to name
+                resource: Some(EntryResource { kind: "workspace".into(), title, owner_name: owner, path: pages::page_url(&st, ws_id, &slug, None).unwrap_or_else(|| "/".into()) }),
                 methods: entry_methods(entry.methods),
                 expires_at: entry.expires_at.map(|e| e.max(0) as u64),
             },
@@ -741,10 +745,10 @@ async fn join_entry(state: &Arc<AppState>, p: &Value, caller: &Caller) -> WsResu
         _ => caller.auth_method.as_deref().and_then(AuthMethod::parse),
     };
     let (st, c) = (state.clone(), caller.clone());
-    let joined = blocking(move || st.with_ws(&ws_id, |ws| ws.join_entry(&c, &local, |bits| entry_admits(bits, &settings, method)))).await;
-    let mut v = joined.map_err(|e| if e.code == Code::NotFound && e.denial.is_none() { unavailable() } else { e })?;
+    let joined = blocking(move || st.with_ws(&ws_id, |ws| ws.join_entry(&c, &local, |bits| entry_admits(bits, &settings, method)).map(|v| (v, ws.workspace_slug())))).await;
+    let (mut v, slug) = joined.map_err(|e| if e.code == Code::NotFound && e.denial.is_none() { unavailable() } else { e })?;
     if let Some(ws) = v["workspace_id"].as_str() {
-        v["path"] = json!(format!("/workspace/{ws}"));
+        v["path"] = json!(pages::page_url(state, ws, &slug, None).unwrap_or_else(|| "/".into()));
     }
     log::info!("{} ({}) joined {}", caller.principal, class_name(caller), v["entry_id"]);
     Ok(v)

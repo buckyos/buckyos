@@ -1,6 +1,7 @@
 //! Sources on the service (内核架构改进 D12, D24, D26; M4): refresh runs, the credential-less public URL fetcher
-//! (the only in-service Source executor), the publication HTTP surface (`/pub/<workspace>/<name>`, and the
-//! same on `aiws-<id>.<zonehost>/<workspace_name>/<name>`), and the timer that refreshes Sources on schedule.
+//! (the only in-service Source executor), the publication HTTP surface (`/pub/<workspace>/<name>`; on the
+//! Workspace's own host `aiws-<id>.<zonehost>/<workspace_name>/<name>` it is reached through `pages`), and the timer
+//! that refreshes Sources on schedule.
 
 use crate::AppState;
 use aiworkspace_core::markdown::{from_richtext, to_richtext};
@@ -10,7 +11,7 @@ use aiworkspace_store::source::{Fetched, PUB_FORMAT};
 use aiworkspace_store::Caller;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
@@ -365,7 +366,7 @@ fn wants_html(headers: &HeaderMap, q: &HashMap<String, String>) -> bool {
     headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()).is_some_and(|a| a.contains("text/html"))
 }
 
-async fn published(state: &Arc<AppState>, ws_id: &str, name: &str, q: &HashMap<String, String>, headers: &HeaderMap) -> Response {
+pub(crate) async fn published(state: &Arc<AppState>, ws_id: &str, name: &str, q: &HashMap<String, String>, headers: &HeaderMap) -> Response {
     let fixed = q.get("fixed").cloned();
     let (st, w, n) = (state.clone(), ws_id.to_string(), name.to_string());
     let result = tokio::task::spawn_blocking(move || {
@@ -425,62 +426,10 @@ pub async fn pub_referrer(State(state): State<Arc<AppState>>, Path((ws_id, name)
 }
 
 /// The workspace id of an `aiws-<id>.<zonehost>` host, from the forwarded host (HTTP/2 carries it as :authority).
-fn host_workspace(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn host_workspace(headers: &HeaderMap) -> Option<String> {
     let host = headers.get("x-forwarded-host").or_else(|| headers.get(header::HOST)).and_then(|v| v.to_str().ok())?;
     let host = host.split(':').next().unwrap_or("");
     let rest = host.strip_prefix("aiws-")?;
     let id = rest.split('.').next()?;
     Some(format!("ws_{id}").replace("ws_ws_", "ws_"))
-}
-
-/// `GET /` on the Workspace's own host: the Desktop page of the Workspace (on the Zone host, where the login lives).
-pub async fn host_root(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    let Some(ws_id) = host_workspace(&headers) else { return StatusCode::NOT_FOUND.into_response() };
-    match desktop_url(&state, &ws_id, None) {
-        Some(u) => Redirect::temporary(&u).into_response(),
-        None => StatusCode::NOT_FOUND.into_response(),
-    }
-}
-
-/// `GET /{workspace_name}` on the Workspace's own host: the same.
-pub async fn host_workspace_page(State(state): State<Arc<AppState>>, Path(_name): Path<String>, headers: HeaderMap) -> Response {
-    host_root(State(state), headers).await
-}
-
-/// `GET /{workspace_name}/{name}` on the Workspace's own host (D21): a published data name answers the publication
-/// (HTML for a browser or crawler, JSON for a consumer); a Surface name opens the Desktop page on that Surface.
-pub async fn host_path(State(state): State<Arc<AppState>>, Path((_ws_name, name)): Path<(String, String)>, Query(q): Query<HashMap<String, String>>, headers: HeaderMap) -> Response {
-    let Some(ws_id) = host_workspace(&headers) else { return StatusCode::NOT_FOUND.into_response() };
-    let (st, w, n) = (state.clone(), ws_id.clone(), name.clone());
-    let kind = tokio::task::spawn_blocking(move || {
-        st.with_ws(&w, |ws| {
-            if ws.publication(&n)?.is_some() {
-                return Ok(json!({ "publication": true }));
-            }
-            Ok(json!({ "surface": ws.surface_by_name(&n)? }))
-        })
-    })
-    .await
-    .unwrap_or_else(|e| Err(WsError::io(e.to_string())));
-    match kind {
-        Ok(k) if k["publication"] == json!(true) => published(&state, &ws_id, &name, &q, &headers).await,
-        Ok(k) => match (k["surface"].as_str(), desktop_url(&state, &ws_id, k["surface"].as_str())) {
-            (Some(_), Some(u)) => Redirect::temporary(&u).into_response(),
-            _ => StatusCode::NOT_FOUND.into_response(),
-        },
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
-    }
-}
-
-/// `https://<zonehost>/workspace/<id>?surface=<sid>`: the Desktop page, derived from the public base's host.
-fn desktop_url(state: &Arc<AppState>, ws_id: &str, surface: Option<&str>) -> Option<String> {
-    let base = public_base(state, ws_id)?;
-    let (scheme, rest) = base.split_once("://")?;
-    let host = rest.split('/').next()?;
-    let zone = host.strip_prefix(&format!("aiws-{}.", host_label(ws_id)))?;
-    let mut u = format!("{scheme}://{zone}/workspace/{ws_id}");
-    if let Some(s) = surface {
-        u.push_str(&format!("?surface={s}"));
-    }
-    Some(u)
 }

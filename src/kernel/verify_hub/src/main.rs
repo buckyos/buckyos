@@ -1712,9 +1712,13 @@ impl VerifyHubApiHandler for VerifyHubServer {
     ) -> Result<DelegateUserSessionResult> {
         self.gc().await;
         authorize_control_panel_caller(caller_token, "delegate_user_session").await?;
-        if !matches!(target, AuthTarget::App { .. }) {
+        let delegable = match target {
+            AuthTarget::App { .. } => true,
+            AuthTarget::System { service_id } => is_system_delegation_target(service_id.as_str()),
+        };
+        if !delegable {
             return Err(RPCErrors::NoPermission(
-                "delegate_user_session only issues App targets".to_string(),
+                "delegate_user_session only issues App targets and delegable system services".to_string(),
             ));
         }
         let Some(source) = verify_delegation_source(source_session_token).await? else {
@@ -4572,6 +4576,40 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
             delegate(desktop.session_token.clone(), notes.clone()).await,
             Ok(DelegateUserSessionResult::SourceInactive)
         ));
+    }
+
+    #[tokio::test]
+    async fn delegate_issues_the_aiworkspace_system_target_and_no_other_system_target() {
+        setup_test_environment().await;
+        let (hub, zone) = test_hub();
+        let caller = cp_caller().await;
+        let user = unique_user("aiws");
+        zone.add_user(&user, UserType::User, Some("pw"));
+        let desktop = assertion_login(&hub, &user).await;
+        // AI Workspace pages live on `aiws-<id>.<zone>` and get their session the way an App does (内核架构改进 D21)
+        let issued = hub
+            .handle_delegate_user_session(
+                Some(caller.as_str()),
+                desktop.session_token.as_str(),
+                &system_target("aiworkspace"),
+            )
+            .await
+            .unwrap();
+        let DelegateUserSessionResult::Issued(pair) = issued else { panic!("expected an issued pair, got {issued:?}") };
+        let claims = validate_verify_hub_token_claims(&decoded(&pair.session_token), TokenUse::Session).unwrap();
+        assert_eq!(claims.target, system_target("aiworkspace"));
+        assert_eq!(decoded(&pair.session_token).sub.as_deref(), Some(user.as_str()));
+        // the other interactive system targets are never delegated
+        for service in ["control-panel", "kernel", "system-config", "messagehub"] {
+            let result = hub
+                .handle_delegate_user_session(
+                    Some(caller.as_str()),
+                    desktop.session_token.as_str(),
+                    &system_target(service),
+                )
+                .await;
+            assert!(matches!(result, Err(RPCErrors::NoPermission(_))), "{service}: {result:?}");
+        }
     }
 
     #[tokio::test]

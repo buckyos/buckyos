@@ -6,7 +6,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { devices, type CDPSession, type Page } from '@playwright/test'
-import { expect, test, type Api } from './fixtures'
+import { expect, openWorkspacePage, test, type Api } from './fixtures'
 
 const ALICE = 'tok-alice'
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the browser comes from the project, the rest is the phone
@@ -37,9 +37,7 @@ class Fingers {
 }
 
 async function openOnPhone(page: Page, workspaceId: string) {
-  await page.addInitScript((value) => window.localStorage.setItem('aiworkspace.dev', JSON.stringify({ token: value })), ALICE)
-  await page.goto(`/workspace/${workspaceId}`)
-  await expect(page.getByTestId('aiws-workspace')).toHaveAttribute('data-workspace-id', workspaceId, { timeout: 30_000 })
+  await openWorkspacePage(page, ALICE, workspaceId)
   await expect(page.getByTestId('aiws-conn')).toHaveAttribute('data-status', 'live')
   await expect(page.getByTestId('aiws-canvas')).toBeVisible()
 }
@@ -137,9 +135,7 @@ test('UI-M01 a phone opens the canvas in view mode with one toolbar: canvas icon
   await page.waitForTimeout(1500) // the user work state goes out after 0.8 s
   const desktop = await browser.newContext({ viewport: { width: 1600, height: 1000 } })
   const other = await desktop.newPage()
-  await other.addInitScript((value) => window.localStorage.setItem('aiworkspace.dev', JSON.stringify({ token: value })), ALICE)
-  await other.goto(`/workspace/${ws.workspace_id}`)
-  await expect(other.getByTestId('aiws-workspace')).toHaveAttribute('data-workspace-id', ws.workspace_id, { timeout: 30_000 })
+  await openWorkspacePage(other, ALICE, ws.workspace_id)
   await expect(other.getByTestId('aiws-workspace')).not.toHaveAttribute('data-phone', 'true')
   await expect(other.getByTestId('aiws-canvas')).toHaveAttribute('data-surface-id', 'sf-detail')
   await expect(other.getByTestId('aiws-canvas')).toHaveAttribute('data-mode', 'edit')
@@ -282,9 +278,7 @@ test('UI-M03 the guide on a phone (第三期规划 §7.3): offered in the one to
 test('UI-M04 notes on a phone: a public link guest long-presses blank canvas or uses the annotate menu, writes the note and finds it where it asked', async ({ page, api }) => {
   const ws = await quarterly(api, `m04 ${Date.now()}`)
   await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'public', capabilities: ['read', 'comment'] })
-  await page.addInitScript(() => window.localStorage.setItem('aiworkspace.dev', JSON.stringify({ guest: true })))
-  await page.goto(`/workspace/${ws.workspace_id}`)
-  await expect(page.getByTestId('aiws-workspace')).toHaveAttribute('data-workspace-id', ws.workspace_id, { timeout: 30_000 })
+  await openWorkspacePage(page, { guest: true }, ws.workspace_id)
   await expect(page.getByTestId('aiws-principal')).toHaveAttribute('data-guest', 'true')
   await expect(page.getByTestId('aiws-canvas')).toHaveAttribute('data-mode', 'view')
   const principal = await page.getByTestId('aiws-principal').getAttribute('data-principal')

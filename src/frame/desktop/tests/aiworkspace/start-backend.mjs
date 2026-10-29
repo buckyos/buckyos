@@ -70,7 +70,9 @@ const env = { ...process.env, AIWS_E2E_LLM_KEY: 'e2e' }
 // a local run whose browser went away is interrupted within seconds (the browser heartbeats at a third of the lease)
 env.AIWS_RUN_LEASE_MS ??= '6000'
 delete env.AIWS_FAILPOINT
-const child = spawn(binary, ['--data-dir', join(root, 'data'), '--listen', `127.0.0.1:${port}`, '--auth-file', auth, '--fixture-sources', '--wish-config', wishConfig, '--nfs-server', ndmBase, '--named-store-config', storeConfig, '--log-level', 'warn'], { stdio: 'inherit', env })
+// workspace pages live on `aiws-<label>.localhost:<dev server port>` (T4-8): the dev server serves aiws.html there
+const publicBase = process.env.AIWS_E2E_PUBLIC_BASE ? ['--public-base', process.env.AIWS_E2E_PUBLIC_BASE] : []
+const child = spawn(binary, ['--data-dir', join(root, 'data'), '--listen', `127.0.0.1:${port}`, '--auth-file', auth, '--fixture-sources', '--wish-config', wishConfig, '--nfs-server', ndmBase, '--named-store-config', storeConfig, ...publicBase, '--log-level', 'warn'], { stdio: 'inherit', env })
 
 let stopping = false
 const stop = () => {
