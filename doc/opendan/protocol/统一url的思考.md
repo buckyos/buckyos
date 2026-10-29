@@ -1,5 +1,7 @@
 # 统一URL
 
+> 本文是讨论记录。定稿规范见 [key url.md](../../key%20url.md) 第一部分（2026-10-29 按裁决 D1–D12 定稿），两者冲突时以 key url.md 为准。
+
 为什么需要统一 URL？我们有两个需求：
 
 AgentTool::Read
@@ -43,9 +45,7 @@ file://$devicename/local_path/
 /config/$inner_path 这种写法和/local_path存在潜在的冲突
 kv:///$inner_path   这种写法，轻易的就扩展了schema,太不严谨
 //config/$inner_path ? 
-obj://config/$inner_path
-等价于
-obj://config.alice.bns.did/$inner_path
+obj://config/$inner_path   （裁决 D4：就是 current zone 的 config 服务，不展开成 obj://config.alice.bns.did/...；跨 Zone 用 https）
 
 obj://dfs/$inner_path
 
@@ -74,8 +74,8 @@ obj://dfs
 obj://taskmgr
 obj://kmsg
 
-obj://$entity_id 鼓励各种id带类型，方便路由找到，比如
-obj://task_xxxx/ 系统可以识别到者是一个taskid,等价于obj://taskmgr/$taskid
+obj://$entity_id 的 host 段只允许带 Zone 的 did:bns / did:web 实体 id（agent-id、user-id、群组 DID 的 canonical hostname），不做类型简写：
+obj://task_xxxx/ 这种写法已废弃，一律写 obj://taskmgr/$taskid（裁决 D6）。
 
 > 在rbac中使用url来定义权限
 

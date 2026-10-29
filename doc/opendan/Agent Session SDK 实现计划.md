@@ -2018,6 +2018,6 @@ def self_improve_start_conditions(c) -> bool:              # 启动条件检查�
 - **`agent_tool_cli_dev`**：改为依赖 libopendan，支持 `OPENDAN_SESSION_DIR` / `OPENDAN_INPUT_QUEUE`；同时修复两个现有问题：
   - `get_session` 读取的是旧路径；
   - CLI 直接改写 `.meta/session.json`，与内存中的 meta 竞争。
-- **`agent-did-object-lib::AgentRuntimeAdapter`**（目前是桩）：实现 `agent://self/...` → `{base}/opendan/agents/{aid}/...`。
+- **`agent-did-object-lib::AgentRuntimeAdapter`**（目前是桩）：删除。Agent 自身对象按 2026-10-29 裁决 D5 以 agent-id 为 authority（`obj://<agent-id>/sessions/<sid>` 等，见 `doc/key url.md` §4.2），走通用 did_object 路径，由 OpenDAN 的 DID Object Provider 提供；`agent://` scheme 与 `agent://self` 不再保留。
 - **清理旧数据**：执行 `remove_open_dan_data.sh`。
 - **DV 验证**：`uv run src/check.py`、`./debug_jarvis.sh`，再用新增的 DV case（`uv run test/run.py -p <case>`）覆盖 A-04、A-11。

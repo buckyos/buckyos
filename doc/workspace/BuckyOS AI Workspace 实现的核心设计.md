@@ -1,7 +1,7 @@
 # BuckyOS AI Workspace实现的核心设计
 
-> 版本：0.2 · 核心设计稿\
-> 日期：2026-10-05\
+> 版本：0.3 · 核心设计稿\
+> 日期：2026-10-05；2026-10-29 增补 §3 现状说明\
 > 读者：系统技术负责人、内核与扩展开发者、后续执行实现任务的 Code Agent\
 > 依据：关于 AI Canvas(原名) / AI Workspace(正式定名) 的连续语音讨论，并参考原型 PRD 补充实现与验收契约。
 
@@ -153,6 +153,26 @@ Workspace 文档
 <a id="section-03"></a>
 
 ## 3. 文档文件、运行目录与导出模型
+
+> **现状说明（2026-10-29）**：本节 §3.2 的运行目录与 §3.3 的 manifest 是 2026-10-05 的草案，已被实际实现取代，不再作为格式依据；保留原文只为记录设计动机。权威文本如下：
+>
+> - **后端存储**：[BuckyOS AiWorkspace Durable Data Schema](<BuckyOS AiWorkspace Durable Data Schema.md>) 与 [aiworkspace README《Storage》](<../../src/frame/aiworkspace/README.md>)。每个 Workspace 一个文件夹：`doc.sqlite` 是可移植文档，`local.sqlite` 保存授权、分享、锁、run 与暂存，永不导出。对象本体（资产、快照、生成版本、导出包）全部在 named store，保留关系由应用对象桶 `assets` / `objects` / `exports` 的绑定表达，一个保留根绑一个保留集 DirObject。
+> - **导出包**：[第一期内置对象详细设计 §4.4](<BuckyOS AI Workspace 第一期内置对象详细设计.md>) 与 [store/src/export.rs](<../../src/frame/aiworkspace/store/src/export.rs>)（`export()` / `open_package()`），`FORMAT_VERSION = "1.0"`。包是 deflate zip，内容是以 `content_root` 为根的 NamedObject 闭包，不是按文件类别拆分的 JSON：
+>
+>   ```text
+>   example.bcanvas
+>     manifest.json                 # 不是 NamedObject，不参与哈希
+>     objects/<hex>.<obj_type>      # NamedObject canonical JSON，文件名 = ObjId
+>     chunks/<hex>.<chunk_type>     # 资产字节，self_contained 时才带
+>     collab/<entity_id>.loro       # 仅 personal_backup：富文本完整 CRDT 历史
+>     personal/entities.jsonl       # 仅 personal_backup：个人作用域实体
+>   ```
+>
+>   manifest 字段：`format`、`format_version`、`export_mode`（`share` | `personal_backup`）、`self_contained`、`workspace_id`、`title`、`snapshot`、`content_root`、`seq`、`objects[]`、`chunks[]`、`types[]`、`editor_schemas`、`missing[]`、`external_sources[]`、`excluded_entities`、`collab`、`personal_entities`、`notes_included`、`exported_at`、`exported_by`。导入以 `new`（Fork）或 `restore` 语义装载，重新物化并断言 `content_root` 相等；包不带 `commits` 历史，恢复后从 `seq = 1`、新 `epoch` 开始。
+>
+> 与草案的主要差异：没有 `document/`、`schemas/`、`renderers/`、`history/`、`publications/` 子目录，Cell、数据源、Viewport、Renderer 定义都是普通实体，随闭包进入 `objects/`；§3.4 的“引用型 / 自包含”两类导出对应 `self_contained` 开关，但外部数据源只以引用进入 `external_sources`（`slice_included` 恒为 false），“同步快照随包导出”未实现；§3.5 的“恢复 / 派生”区分即 `restore` / `new`。控件定义、源码与资源作为实体和资产已在闭包内，扩展实现思路（[§7.3](<BuckyOS AI Workspace 扩展实现思路.md>)）不改变本格式；PIKG 控件包是与 `.bcanvas` 并列的第二种包格式，不合并。
+>
+> 第四期开发完成后整理冻结文档时，本节应整体替换为上述现状，并把 §16.5 的格式演进要求改写为对 `FORMAT_VERSION` 与 `storage_schema_version` 的具体约束。
 
 ### 3.1 文件化，而不是否定在线服务
 

@@ -65,25 +65,78 @@ g, demo-app, app
 
 
 
-## 主要资源的路径
+## 基于 URL 的资源 key 布局（2026-10-29 定稿）
 
-> 从Agent的万能read开始考虑
+> 从 Agent 的万能 read 开始考虑：Agent 看到的对象 URL 与 RBAC 的资源 key 是同一个字符串。URL 规范见 [key url.md](../../key%20url.md) 第一部分，裁决记录见 [notepads/agent-object-url-todo.md](../../../notepads/agent-object-url-todo.md) §1.5。本节是第 1 段产出：只定规则与目标 policy，现有 policy 的改动在第 2 段随各服务 Provider 落地。
 
-资源有各个系统服务提供，用路表达
+### 原则
 
-- obj://config/*
-- obj://kmsg/* 
-- obj://msg_center/*
-- obj://task_mgr/* 由task-mgr提供的task资源，目前该服务有基于自己业务逻辑的权限管理
-- obj://$box_id，例如 obj:///msg_center/$userid/box_in_$userid
-- kevent 不独立配置，完全看相关对象的res_path 
+1. **对象路径 = 资源 key。** 服务对象 `obj://<service>/<path>` 与 Agent read / xcall 用的 URL 同形，enforce 不另做映射。host 段只允许 key url.md §4 的两类值：current zone 服务名、带 Zone 的实体 DID hostname。
+2. **别名归一化先于 enforce。** `//config/x`、`obj://config/x`、裸 key `x` 在进入 enforce 前归一化为同一个资源 key；带 selector / version 的 query 不参与资源 key（权限按对象给，不按视图给）。归一化后同一资源只有一个 key，换 scheme / 简写不能扩大权限（G4）。
+3. **RBAC 只治理 current zone 的资源。** 跨 Zone 的 https Object URL 到达本 Zone 服务后，由网关 / verify-hub 换成本 Zone 的 obj:// 资源 key 再 enforce；外部 token 走 external 主体规则，不绕过本表。
+4. **服务内细粒度 ACL 在 RBAC 之后。** RBAC 给组级粗粒度（能不能碰这类资源），msg-center 的 owner 绑定、bucket 的授权 / `bkt_` 令牌、aiworkspace 的分享、homestation 的 reader proof 在服务内再判。RBAC 放行不等于服务放行；RBAC 拒绝则服务不再判。
+5. **kevent 不独立配置。** 订阅 `/obj/<host>/<path>/<event>` 的权限 = 对 `obj://<host>/<path>` 的 `subscribe` 权限；`read` 不隐含 `subscribe`。
 
+### 各服务资源 key
 
-下面的是规划中未完整实现的
+| 服务 / host | 资源 key 布局 | 说明 |
+| --- | --- | --- |
+| `config` | `obj://config/<key_path>`（现有：`boot/*`、`system/*`、`users/{user}/{settings,doc,profile,apps/..,agents/..}`、`services/{service}/{info,settings,instances/{node}}`、`security/*`） | 不变。新增 Zone 级 `system/default_device`（key url.md §3 的 default device），读 `users` / 写 `admin` |
+| `dfs` | `obj://dfs/<path>`，与 `cyfs:///<path>` 同一资源、同一 key；现有 `cyfs:///users/{users}/*` 规则迁为 `obj://dfs/users/{users}/*` 并保留 cyfs 写法为别名 | 文件对象能力与文件数据共用权限；NFS 导出与挂载不改变 key |
+| `taskmgr` | `obj://taskmgr/<task_id>`（单个 Task）、`obj://taskmgr/users/{users}`（某用户 Task 集合视图） | 现有 `obj://task/{user}` 与服务名不一致，第 2 段改名为 `obj://taskmgr/users/{user}`；TaskMgr 内部按 creator app_id 的细判不变 |
+| `kmsg` | `obj://kmsg/<queue_id>` | `read` 拉取、`write` 投递、`subscribe` 事件 |
+| `bucket` | `obj://bucket/<scope>/<appid>/<owner>/<name>/<key>`（现有） | 不变；`list\|read\|create\|write\|delete\|manage` |
+| `ndm` | `obj://ndm/{uploads,objects,retain,manage}`（现有） | 不变 |
+| `msg-center` | 对象路径：`obj://msg-center/owners/<owner_did>/sessions[/<sid>]`、`obj://msg-center/owners/<owner_did>/contacts[/<did>]`、`obj://msg-center/messages/<msg_id>`。资源 key：现有 `inbox/<addr>`、`sent/<addr>`、`group_inbox/<addr>`、`request_box/<addr>`、`objects`、`notify`、`contact_tags/<app>`、`contact_membership`、`group`（create）保留 | `owners/<did>/...` 前缀与现有 `owners/*` 规则同形（裁决 D12）；群组对象 `obj://<group-did-host>/...` 的权限由 GroupMgr 按 action 判 |
+| `aiworkspace` | `obj://aiworkspace/<ws_id>`（工作区）、`obj://aiworkspace/<ws_id>/entities/<entity_id>`、`obj://aiworkspace/<ws_id>/path/<...>` | 组级：`users` 对 `obj://aiworkspace/*` `read\|write\|create`，`agent` 对 `obj://aiworkspace/*` `read\|list\|query\|subscribe`；owner / 分享 / public 在服务内按工作区 ACL 判。wish run 的 `proc.*` 仍按 `proc.claim` |
+| `homestation` | `obj://homestation/home/{users}`、`.../feed`、`.../feed/@/<key>`、`.../inbox`、`obj://homestation/home/~zone` | owner：`users` 对 `obj://homestation/home/{users}/*` `read\|write\|create\|delete`；public 读由 reader proof / 公开策略在服务内判；`inbox` 的 `write` 即投递动作；跨 Zone 投递经网关换成本 key 后以 external 主体 enforce |
+| `opendan` | `obj://opendan/`（发现，`list\|query`）；Agent 对象 `obj://<agent-id>/{sessions,workspaces,goals,artifacts}/...` | Agent 自己：`p, agent, obj://{agent}/*, all, allow`（matcher 以 `app:` + 变量绑定到 Agent 的 App 主体）；owner 读自己 Agent 的对象由 scheduler 在"添加 Agent"时生成精确规则 `p, <owner>, obj://<agent-id>/*, read\|list\|query\|subscribe, allow`；其他用户默认无 |
+| `aicc` | `obj://aicc/on_behalf_of`、`obj://config/services/aicc/*`（现有） | 不变 |
+| 实体对象（通用） | `obj://<entity-host>/<path>`，entity-host 为 User / Agent / Group / Device DID 的 canonical hostname | 实体自己 `all`；owner 规则由 scheduler 按实体类型生成；不靠通配 `obj://*` |
 
-- obj://workflow/*
-- obj://dfs/* dfs文件系统路径
+### agent 组的默认权限（G1 ③）
 
+现状 `p, agent_runtime, obj://msg-center/*, all, allow` 与 `p, agent, obj://msg-center/*, all, allow` 过宽，且 msg-center 的 owner 绑定对 App / Agent token 落 `_ => Ok(())`。目标：
+
+```rbac
+# Agent 自己的 mailbox（addr 以 Agent DID 开头）
+p, agent, obj://msg-center/inbox/{agent}/*,        read|write, allow
+p, agent, obj://msg-center/sent/{agent}/*,         read|write, allow
+p, agent, obj://msg-center/request_box/{agent}/*,  read|write, allow
+p, agent, obj://msg-center/objects,                read,       allow
+p, agent, obj://msg-center/notify,                 read|write, allow
+# 观察 owner 的会话与联系人：只读（Message Center.md §5.6），owner 绑定由 msg-center 按 agent_owner 判
+p, agent, obj://msg-center/owners/*/sessions/*,    read|list|query|subscribe, allow
+p, agent, obj://msg-center/owners/*/contacts/*,    read|list|query,           allow
+# agent_runtime（未绑定 AgentSpec 前的 App runtime）只读自己的 spec，不碰 msg-center
+```
+
+`agent_runtime` 组删除 msg-center 规则；`system:opendan` 的 `obj://msg-center/*` `all` 保留但只用于 loader 代 Agent 建 mailbox / 注册，不用于读 owner 数据。`agent_read_only` 的 `obj://*` `^(read|list|query|subscribe)$` 继续作为只读 Agent 的底座。
+
+### Profile `x-buckyos:rbac` / `risk` 与 RBAC action 的对应（G2）
+
+| Profile 能力 | `x-buckyos:risk` | RBAC action | Governance |
+| --- | --- | --- | --- |
+| property 读 | `read_only` | `read` | allow |
+| IndexTrait `query` / `page` | `read_only` | `list` 或 `query` | allow |
+| event 订阅 | `read_only` | `subscribe` | allow；`read` 不隐含 `subscribe` |
+| action，只读（不改资源） | `read_only` | `read` | allow |
+| action，幂等写（重试安全但改资源） | `idempotent_write` | `write` | 按资源走 require_approval；幂等 ≠ 只读 |
+| action，一般写 | `write` | `write` | require_approval |
+| action，创建子对象 | `write` | `create` | require_approval |
+| action，删除 | `destructive` | `delete` | require_approval，默认 deny 给 agent |
+| action，管理（权限、授权、令牌） | `admin` | `manage` | deny 给 agent，除非精确规则 |
+
+Profile 必须为每个 action 声明 `x-buckyos:rbac`（资源 key 模板 + action）与 `x-buckyos:risk`；未声明的方法不可调用，不由路径猜。Governance 的 allow / require_approval / deny 先看 RBAC（拒绝即止），再看 risk。
+
+### 现有 policy 的改动清单（第 2 段执行）
+
+1. 删除 `rbac_config.rs` 中 `agent_runtime` / `agent` 对 `obj://msg-center/*` 的 `all`，换成上面的 agent 组规则；msg-center `authorize_owner_read_identity` 的 `_ => Ok(())` 与 `None => Ok(())` 分支改为按 token owner / sub 校验。
+2. `obj://task/{user}` → `obj://taskmgr/users/{user}`，TaskMgr 的 enforce 调用同步。
+3. `cyfs:///users/{users}/*` → `obj://dfs/users/{users}/*`，归一化层把 `cyfs:///` 别名映射到同一 key。
+4. 新增 `aiworkspace`、`homestation`、`obj://opendan/`、实体对象的组级规则；scheduler "添加 Agent" 增量规则补 owner 对 `obj://<agent-id>/*` 的只读。
+5. kevent 订阅改为按对象 key 的 `subscribe` enforce；现有 `/msg_center/...`、`/aiworkspace/...`、`/task_mgr/...` 前缀随 D9 迁到 `/obj/<host>/...`。
+6. 新增 `system/default_device` 配置键及其读写规则。
 
 ## 调度器增量生成规则
 
