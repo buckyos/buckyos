@@ -232,9 +232,12 @@ fn op_hello(state: &SharedState, env: &Envelope, actor: Actor) -> NfsResult<Valu
         .as_array()
         .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
+    let repr = crate::share::ShareMgr::store_configured(&state.config).then(|| state.preview.refresh());
+    let repr_ready = repr.as_ref().is_some_and(|p| p.toolchain().is_some());
     let features: Vec<&str> = SERVER_FEATURES
         .iter()
         .copied()
+        .chain(repr_ready.then_some(crate::preview::FEATURE))
         .filter(|f| client_features.is_empty() || client_features.iter().any(|c| c == f))
         .collect();
     let identity = json!({
@@ -262,6 +265,7 @@ fn op_hello(state: &SharedState, env: &Envelope, actor: Actor) -> NfsResult<Valu
             "attr_ttl_ms": 5000,
         },
         "realms": [ {"id": "dfs", "writable": true} ],
+        "repr": repr.map(|p| p.describe()).unwrap_or_else(|| json!({"available": false, "detail": "the named store is not configured"})),
     }))
 }
 
@@ -339,6 +343,8 @@ async fn dispatch(
         "get_acl" => state.op_get_acl(actor, at, args),
         "set_acl" => state.op_set_acl(actor, at, args),
         "list_acls" => state.op_list_acls(actor),
+        "repr" => crate::preview::rpc::op_repr(state, actor, env, headers).await,
+        "get_repr" => crate::preview::rpc::op_get_repr(state, actor, args).await,
         other => Err(NfsError::new(
             ErrorCode::Unsupported,
             format!("unknown method '{}'", other),

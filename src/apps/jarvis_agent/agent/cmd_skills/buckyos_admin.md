@@ -147,6 +147,10 @@ buckyos system info                                 # BuckyOS version, build_ver
   `services/nfs-server/settings.named_store_gc_evict` (default `true`); unretained chunk bytes survive at least 24 h
   after their last write or read. Pool and bucket quotas: kRPC `bucket.get_pool_quota|set_pool_quota|get_quota|set_quota`
   (admin) and `bucket.usage_report`; no CLI verb, Desktop Settings › Storage lists per-App usage.
+  Preview conversion (HEIC/HEVC shown on browsers that cannot decode them) runs ffmpeg/ffprobe found in
+  `$BUCKYOS_ROOT/libexec/buckyos-tool/bin/` or `PATH`; nothing installs them. NFSP `hello` (`POST /nfs/v1/hello`)
+  reports the converter in `repr` (versions, or what is missing); results live in bucket `zone/nfs-server/_/preview-cache`,
+  capped by `services/nfs-server/settings.preview_cache_mib` (default 20480).
 - AI providers: `buckyos ai providers` (auth as configured/kind, health, models; never secrets), `ai routing`,
   `ai usage [--range last1d|last7d|last30d | --since <t>] [--group-by provider_instance_name,provider_model] [--bucket day]`
   (your own calls only; an admin's Desktop Usage page can show the whole Zone); per-model health and prices:

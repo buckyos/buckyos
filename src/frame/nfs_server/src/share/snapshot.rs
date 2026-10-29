@@ -231,7 +231,7 @@ fn ndn_err(e: impl std::fmt::Display) -> NfsError {
 /// Stores one file in 32 MiB ranges (a single chunk up to 32 MiB, as HomeStation
 /// attachments require; a chunk list beyond). Returns the FileObject and
 /// whether the file no longer matches the plan.
-async fn store_file(
+pub(crate) async fn store_file(
     store: &NamedDataMgr,
     disk: &std::path::Path,
     name: &str,

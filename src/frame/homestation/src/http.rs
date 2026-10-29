@@ -39,6 +39,7 @@ pub fn router(state: AppState) -> Router {
         .route("/home/{user}/index/recent", get(collector_recent))
         .route("/home/{user}/objects/{id}", get(object))
         .route("/home/{user}/objects/{id}/content", get(object_content))
+        .route("/home/{user}/objects/{id}/ref", get(object_ref))
         .route("/home/{user}/chunks/{id}", get(chunk))
         .route("/home/{user}/inbox", axum::routing::put(inbox_put).get(inbox_status))
         .route("/home/{user}/{ns}/@/{key}", get(entry_head))
@@ -284,8 +285,29 @@ async fn object(State(state): State<AppState>, headers: HeaderMap, Path((user, i
     }
 }
 
-/// `GET /home/<user>/objects/<file id>/content`: FileObject bytes, for
-/// media elements (session token may come as `?access=`).
+/// Single-range `bytes=` header: Ok(None) = whole body, Err = unsatisfiable.
+fn byte_range(header: Option<&str>, len: u64) -> Result<Option<(u64, u64)>, ()> {
+    let Some(spec) = header.and_then(|h| h.strip_prefix("bytes=")) else { return Ok(None) };
+    if spec.contains(',') {
+        return Ok(None);
+    }
+    let (a, b) = spec.split_once('-').ok_or(())?;
+    if len == 0 {
+        return Err(());
+    }
+    let (start, end) = match (a.trim(), b.trim()) {
+        ("", n) => (len.saturating_sub(n.parse::<u64>().map_err(|_| ())?.max(1)), len - 1),
+        (s, "") => (s.parse().map_err(|_| ())?, len - 1),
+        (s, e) => (s.parse().map_err(|_| ())?, e.parse::<u64>().map_err(|_| ())?.min(len - 1)),
+    };
+    if start > end || start >= len {
+        return Err(());
+    }
+    Ok(Some((start, end)))
+}
+
+/// `GET /home/<user>/objects/<file id>/content`: FileObject bytes, streamed with
+/// Range, for media elements and downloads (session token may come as `?access=`).
 async fn object_content(State(state): State<AppState>, headers: HeaderMap, Path((user, id)): Path<(String, String)>, Query(q): Query<HashMap<String, String>>) -> Response {
     let id = normalize_obj_id(&id);
     if obj_type_of(&id).as_deref() != Some(OBJ_TYPE_FILE) {
@@ -296,10 +318,14 @@ async fn object_content(State(state): State<AppState>, headers: HeaderMap, Path(
         Ok(None) => return (StatusCode::NOT_FOUND, "not found").into_response(),
         Err(r) => return r,
     };
-    let data = match station.store.read_file(&id).await {
-        Ok(Some(d)) => d,
+    let opened = match station.store.open_file(&id).await {
+        Ok(Some(opened)) => opened,
         Ok(None) if reader == Reader::Owner => match station.fetch_content_on_demand(&id).await {
-            Ok(Some(d)) => d,
+            Ok(Some(_)) => match station.store.open_file(&id).await {
+                Ok(Some(opened)) => opened,
+                Ok(None) => return (StatusCode::NOT_FOUND, "content not available").into_response(),
+                Err(e) => return error_response(e),
+            },
             Ok(None) => return (StatusCode::NOT_FOUND, "content not available").into_response(),
             Err(e) => return error_response(e),
         },
@@ -309,12 +335,52 @@ async fn object_content(State(state): State<AppState>, headers: HeaderMap, Path(
     let key = id.clone();
     let metadata = station.db.call(move |c| crate::objects::import_metadata(c, &key)).await.unwrap_or(Value::Null);
     let mime = metadata.get("mime").or_else(|| file.body.get("mime_type")).or_else(|| file.body.get("mime")).and_then(Value::as_str).unwrap_or("application/octet-stream").to_string();
-    let mut response = (StatusCode::OK, data).into_response();
-    if let Ok(v) = HeaderValue::from_str(&mime) {
-        response.headers_mut().insert(header::CONTENT_TYPE, v);
+    let (mut content, len) = opened;
+    let range = match byte_range(headers.get(header::RANGE).and_then(|v| v.to_str().ok()), len) {
+        Ok(r) => r,
+        Err(()) => return (StatusCode::RANGE_NOT_SATISFIABLE, [(header::CONTENT_RANGE, format!("bytes */{len}"))]).into_response(),
+    };
+    let (start, end) = range.unwrap_or((0, len.saturating_sub(1)));
+    if start > 0 {
+        use tokio::io::AsyncReadExt;
+        if let Err(e) = tokio::io::copy(&mut (&mut content).take(start), &mut tokio::io::sink()).await {
+            return error_response(HsError::Unavailable(e.to_string()));
+        }
     }
-    response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=86400, immutable"));
+    let count = if len == 0 { 0 } else { end - start + 1 };
+    let mut response = Response::new(axum::body::Body::new(named_store::chunk_reader_to_body(content, count)));
+    if range.is_some() {
+        *response.status_mut() = StatusCode::PARTIAL_CONTENT;
+        if let Ok(v) = HeaderValue::from_str(&format!("bytes {start}-{end}/{len}")) {
+            response.headers_mut().insert(header::CONTENT_RANGE, v);
+        }
+    }
+    let h = response.headers_mut();
+    if let Ok(v) = HeaderValue::from_str(&mime) {
+        h.insert(header::CONTENT_TYPE, v);
+    }
+    h.insert(header::CONTENT_LENGTH, HeaderValue::from(count));
+    h.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=86400, immutable"));
     response
+}
+
+/// `GET /home/<user>/objects/<file id>/ref`: where a reader of the object may
+/// read it on the bucket data plane — its binding and a short-lived read token.
+async fn object_ref(State(state): State<AppState>, headers: HeaderMap, Path((user, id)): Path<(String, String)>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let id = normalize_obj_id(&id);
+    if obj_type_of(&id).as_deref() != Some(OBJ_TYPE_FILE) {
+        return (StatusCode::BAD_REQUEST, "not a file object").into_response();
+    }
+    match find_object(&state, &user, &headers, &q, &id).await {
+        Ok(Some((station, _, _))) => match station.content_ref(&id).await {
+            Ok(Some(found)) => no_store(Json(found).into_response()),
+            Ok(None) => (StatusCode::NOT_FOUND, "not bound").into_response(),
+            Err(e) => error_response(e),
+        },
+        Ok(None) => (StatusCode::NOT_FOUND, "not found").into_response(),
+        Err(r) => r,
+    }
 }
 
 async fn chunk(State(state): State<AppState>, headers: HeaderMap, Path((user, id)): Path<(String, String)>, Query(q): Query<HashMap<String, String>>) -> Response {

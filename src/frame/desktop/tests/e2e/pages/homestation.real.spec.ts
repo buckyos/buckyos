@@ -43,7 +43,8 @@ test.describe('HomeStation on the homestation service (devnet)', () => {
     await expect(gallery).toHaveAttribute('data-content-type', 'image')
     const images = gallery.getByTestId('hs-media-grid').locator('img')
     await expect(images).toHaveCount(2)
-    await expect(images.first()).toHaveAttribute('src', /^\/home\/me\/objects\/cyfile[^/]+\/content\?access=/)
+    // A Preview Pipeline thumbnail when the node has ffmpeg, else the original content URL.
+    await expect(images.first()).toHaveAttribute('src', /^\/(home\/me\/objects\/cyfile[^/]+\/content\?access=|bucket\/v1\/zone\/nfs-server\/_\/preview-cache\/)/)
     await expect.poll(() => images.evaluateAll(list => list.every(img => (img as HTMLImageElement).complete && (img as HTMLImageElement).naturalWidth > 0))).toBe(true)
     const article = await scrollToCard(page, post(page, 'A week of balcony gardening'))
     await expect(article).toHaveAttribute('data-content-type', 'article')

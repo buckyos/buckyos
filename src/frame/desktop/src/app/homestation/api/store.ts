@@ -26,6 +26,7 @@ import type {
 } from '../datamodel/types'
 import type { Did, ObjId } from '../protocol/feed'
 import type { CommentList, EntryDebugView, HomeStationStore, ReadingSummary, StoreDomain, StoreSettings, StoreStatus } from '../store/types'
+import { attachmentKindOf, heifSizeOf, sniffFile } from './fileKind'
 import { setContentHome, type Transport, type UploadMeta } from './transport'
 import { didDisplayName } from '../../../presentation/model'
 
@@ -86,18 +87,20 @@ function loadMedia<T>(file: File, tag: 'img' | 'video' | 'audio', read: (element
   })
 }
 
+// Width, height and duration are best effort: a format this browser cannot decode (HEIC
+// or HEVC on Chromium) is still uploaded as media, its size read from the HEIF `ispe` box.
 async function uploadMeta(file: File, kind: AttachmentInput['kind']): Promise<UploadMeta> {
-  const meta: UploadMeta = { name: file.name, mime: file.type || 'application/octet-stream' }
+  const { mime, head } = await sniffFile(file)
+  const meta: UploadMeta = { name: file.name, mime }
   if (kind === 'file' || kind === 'dir') return meta
-  if (!file.size || !file.type.startsWith(`${kind}/`)) throw new Error(`Expected a non-empty ${kind} file.`)
+  if (!file.size || attachmentKindOf(mime) !== kind) throw new Error(`Expected a non-empty ${kind} file.`)
   if (kind === 'image') {
     const size = await loadMedia(file, 'img', element => ({ width: (element as HTMLImageElement).naturalWidth, height: (element as HTMLImageElement).naturalHeight }))
-    if (!size || !size.width || !size.height) throw new Error('The image could not be decoded.')
-    return { ...meta, ...size }
+    const known = size?.width && size.height ? size : heifSizeOf(head)
+    return known ? { ...meta, ...known } : meta
   }
   const duration = await loadMedia(file, kind, element => (element as HTMLMediaElement).duration)
-  if (!duration || !Number.isFinite(duration)) throw new Error(`The ${kind} could not be decoded.`)
-  return { ...meta, duration_ms: duration * 1000 }
+  return duration && Number.isFinite(duration) ? { ...meta, duration_ms: Math.round(duration * 1000) } : meta
 }
 
 let storeCounter = 0

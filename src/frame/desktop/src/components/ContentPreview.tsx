@@ -95,6 +95,7 @@ import {
   type PreviewReadRef,
   type PreviewReadyInfo,
   type PreviewResult,
+  type PreviewRuntimeProfile,
   type PreviewSessionContext,
   type PreviewStatus,
   type PreviewUIMode,
@@ -246,6 +247,41 @@ function errorStateFrom(err: unknown, contentLabel?: string): PreviewErrorState 
 
 function unsupportedState(reason: PreviewUnsupportedReason, contentLabel: string, detail?: string): PreviewErrorState {
   return { kind: 'unsupported', code: `UNSUPPORTED_${reason.toUpperCase().replace(/-/g, '_')}`, message: detail ?? '', retryable: false, contentLabel }
+}
+
+/**
+ * A renderer could not show the bytes and no Pipeline result replaced them.
+ * `<img onError>` cannot tell an unknown format from damage, so an image only
+ * counts as damaged when this Runtime decodes its (byte-confirmed) type
+ * natively; media errors tell the two apart themselves. An image format the
+ * Runtime lacks is never reported as corrupted (preview iPhone media TODO §3).
+ */
+function renderFailureState(
+  failure: RenderFailure | undefined,
+  classification: MediaClassification,
+  runtime: PreviewRuntimeProfile,
+  t: TranslateFn,
+): PreviewErrorState | null {
+  const contentLabel = contentLabelOf(classification)
+  const renderer = classification.rendererType
+  if (failure === 'network') {
+    return { kind: 'error', code: 'NETWORK', message: t('preview.error.networkBody', 'The content could not be loaded'), retryable: true, contentLabel }
+  }
+  if (failure === 'runtime') {
+    return { kind: 'unsupported', code: 'RUNTIME_UNSUPPORTED', message: t('preview.error.runtimeBody', 'This Runtime cannot display the content'), retryable: false, contentLabel }
+  }
+  const corrupted: PreviewErrorState = { kind: 'corrupted', code: 'CORRUPTED', message: t('preview.error.corruptedBody', 'The content could not be decoded and may be damaged'), retryable: false, contentLabel }
+  if (renderer === 'image' || renderer === 'svg') {
+    if (failure && classification.confirmed && runtime.imageMediaTypes.includes(classification.mediaType)) return corrupted
+    return { kind: 'unsupported', code: 'UNSUPPORTED_ENCODING', message: t('preview.error.imageFormatBody', 'This browser does not support this image format'), retryable: false, contentLabel }
+  }
+  if (renderer === 'video' || renderer === 'audio') {
+    // MEDIA_ERR_DECODE: the codec is supported (else SRC_NOT_SUPPORTED) yet the stream failed.
+    return failure === 'corrupted'
+      ? corrupted
+      : { kind: 'unsupported', code: 'UNSUPPORTED_ENCODING', message: t('preview.error.encodingBody', 'This browser does not support this audio or video encoding'), retryable: false, contentLabel }
+  }
+  return failure ? corrupted : null
 }
 
 function useReducedMotion(): boolean {
@@ -485,8 +521,8 @@ export function ContentPreview(props: ContentPreviewProps) {
             resolved = { ...resolved, size: probe.totalLength }
           }
         } catch (probeErr) {
-          if (probeErr instanceof PreviewError && (probeErr.code === 'PERMISSION_DENIED' || probeErr.code === 'NOT_FOUND')) throw probeErr
-          // A failed probe is not fatal: fall back to hints.
+          // The server answering with an error is the answer; an unreachable probe falls back to hints.
+          if (probeErr instanceof PreviewError && (probeErr.code === 'PERMISSION_DENIED' || probeErr.code === 'NOT_FOUND' || probeErr.status !== undefined)) throw probeErr
         }
         if (signal.aborted) return
         classification = classifyMedia({
@@ -536,23 +572,19 @@ export function ContentPreview(props: ContentPreviewProps) {
         }
         const retry = retryContextRef.current?.key === itemRef.id ? retryContextRef.current : null
         retryContextRef.current = null
+        // A video that just failed to play here is not playable whatever canPlayType said.
+        const pipelineRuntime = skipDirect && classification.rendererType === 'video' ? { ...runtime, videoCodecs: { ...runtime.videoCodecs, hevc: false } } : runtime
         let state = await provider.ensurePreviewWork({
           source: resolved,
-          runtimeProfile: runtime,
+          runtimeProfile: pipelineRuntime,
           targetProfile,
           options: { signal, retry: !!retry, expectedAttemptId: retry?.expectedAttemptId },
         })
         if (signal.aborted) return
         if ('kind' in state) {
-          const failure = skipDirect
-          const label = contentLabelOf(classification)
-          if (failure === 'unsupported-encoding' && (classification.rendererType === 'video' || classification.rendererType === 'audio')) {
-            update({ phase: 'error', resolved, classification, error: { kind: 'unsupported', code: 'UNSUPPORTED_ENCODING', message: t('preview.error.encodingBody', 'This browser does not support this audio or video encoding'), retryable: false, contentLabel: label } })
-          } else if (failure === 'corrupted' || (failure && classification.confirmed)) {
-            update({ phase: 'error', resolved, classification, error: { kind: 'corrupted', code: 'CORRUPTED', message: t('preview.error.corruptedBody', 'The content could not be decoded and may be damaged'), retryable: false, contentLabel: label } })
-          } else {
-            update({ phase: 'error', resolved, classification, error: unsupportedState(state.reason, label, state.detail) })
-          }
+          const browserLimited = !!skipDirect || (direct.ok === false && direct.reason === 'runtime-unsupported')
+          const failed = browserLimited && state.reason === 'no-pipeline' ? renderFailureState(skipDirect, classification, runtime, t) : null
+          update({ phase: 'error', resolved, classification, error: failed ?? unsupportedState(state.reason, contentLabelOf(classification), state.detail) })
           return
         }
         const startedAt = Date.now()
@@ -614,16 +646,14 @@ export function ContentPreview(props: ContentPreviewProps) {
         setFallbackNonce((n) => n + 1)
         return
       }
-      const label = state?.classification ? contentLabelOf(state.classification) : undefined
-      const unsupportedMediaEncoding = failure === 'unsupported-encoding' && (state?.result?.resultType === 'video' || state?.result?.resultType === 'audio')
-      const err: PreviewErrorState =
-        failure === 'network'
-          ? { kind: 'error', code: 'NETWORK', message: t('preview.error.networkBody', 'The content could not be loaded'), retryable: true, contentLabel: label }
-          : failure === 'runtime'
-            ? { kind: 'unsupported', code: 'RUNTIME_UNSUPPORTED', message: t('preview.error.runtimeBody', 'This Runtime cannot display the content'), retryable: false, contentLabel: label }
-            : unsupportedMediaEncoding
-              ? { kind: 'unsupported', code: 'UNSUPPORTED_ENCODING', message: t('preview.error.encodingBody', 'This browser does not support this audio or video encoding'), retryable: false, contentLabel: label }
-              : { kind: 'corrupted', code: 'CORRUPTED', message: t('preview.error.corruptedBody', 'The content could not be decoded and may be damaged'), retryable: false, contentLabel: label }
+      const classification = state?.classification
+      const shown = classification && state?.result ? { ...classification, rendererType: state.result.resultType, mediaType: state.result.mediaType } : classification
+      const err: PreviewErrorState = (shown ? renderFailureState(failure, shown, detectRuntimeProfile(), t) : null) ?? {
+        kind: 'corrupted',
+        code: 'CORRUPTED',
+        message: t('preview.error.corruptedBody', 'The content could not be decoded and may be damaged'),
+        retryable: false,
+      }
       setLoad((prev) => (prev && prev.key === loadKey ? { ...prev, phase: 'error', error: err } : prev))
     },
     [item, loadKey, t],
@@ -848,7 +878,8 @@ export function ContentPreview(props: ContentPreviewProps) {
   }, [current?.classification?.mediaType, current?.resolved, current?.result?.mediaType, invokeAction, itemInfo, latest])
 
   const downloadCurrent = useCallback(() => {
-    const readRef = current?.result?.readRef ?? current?.resolved?.readRef
+    // "Download original": the source's bytes, never a Pipeline result.
+    const readRef = current?.resolved?.readRef ?? current?.result?.readRef
     if (!readRef || !capabilities.export) return
     invokeAction('download')
     const anchor = document.createElement('a')
@@ -1028,6 +1059,7 @@ export function ContentPreview(props: ContentPreviewProps) {
       data-testid={props['data-testid'] ?? 'content-preview'}
       data-status={status}
       data-renderer={rendererType ?? ''}
+      data-via={current?.via ?? ''}
       data-item-index={index}
       data-item-count={sessionCount}
       data-degraded={current?.degraded ? 'true' : 'false'}
@@ -1085,7 +1117,7 @@ export function ContentPreview(props: ContentPreviewProps) {
             error={error}
             contentLabel={contentLabel}
             t={t}
-            onRetry={error.retryable ? retry : undefined}
+            onRetry={error.retryable || error.kind === 'permission-denied' || error.kind === 'not-found' ? retry : undefined}
             onOpenWith={capabilities.openWith ? requestOpenWith : undefined}
             onDownload={allowExport && current?.resolved && error.kind !== 'permission-denied' && error.kind !== 'not-found' ? downloadCurrent : undefined}
             onInfo={error.kind !== 'permission-denied' && current?.resolved ? () => setInfoOpen(true) : undefined}
@@ -2224,6 +2256,10 @@ function MediaRenderer({
     const el = elementRef.current
     if (!el) return
     const video = el as HTMLVideoElement
+    if (kind === 'video' && !video.videoWidth && !video.videoHeight) {
+      onFailure('unsupported-encoding')
+      return
+    }
     onRendered({ width: video.videoWidth || undefined, height: video.videoHeight || undefined, durationSeconds: Number.isFinite(el.duration) ? el.duration : undefined })
   }
   if (!url) return null

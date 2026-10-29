@@ -3,18 +3,18 @@
  * (PRD §23.1). Source Resolver = `resolve` (base/ident/access), container
  * enumeration = `list`, read references = the data plane `/nfs/v1/read/*`.
  *
- * Pipeline calls map onto the `repr` family (`repr` = ensure, `get_repr` =
- * query) that §23.7 leaves for the API Spec to freeze. The wire shape below
- * is PROVISIONAL: nfs_server does not advertise `repr` yet, so this provider
- * gates the Pipeline on the hello feature list and plans every non-Direct
- * format as Unsupported until the server ships it — never a fake result.
+ * Pipeline calls map onto `repr` (ensure) / `get_repr` (query). nfs_server
+ * advertises `repr` only while its converter (ffmpeg / ffprobe) is present;
+ * without it every non-Direct format plans as Unsupported with the node's
+ * reason — never a fake result. Results are read from the `preview-cache`
+ * bucket through the URL (with a short-lived token) the node signs.
  */
 
-import { getActiveSessionToken } from 'buckyos'
-import { NfspError, type NodeInfo, type WireRef } from '../../api/nfsp_client'
+import { bucket, getActiveSessionToken } from 'buckyos'
+import { NfspError, type NodeInfo, type ReprRecord, type ReprResult, type ReprSource, type WireRef } from '../../api/nfsp_client'
 import { effectiveListLimit, ensureSession, nfspBaseUrl, nfspClient } from '../../app/filebrowser/data/nfsp/client'
 import { extensionOf, mediaTypeFromExtension } from './mediaTypes'
-import { asBucketObjectRef, resolveBucketSource } from './bucketSource'
+import { asBucketObjectRef, bucketRefOf, resolveBucketSource } from './bucketSource'
 import { resolveNdmSource } from './ndmSource'
 import { cyfsPathToLocal, normalizeCyfsPath, parentCyfsPath } from './session'
 import {
@@ -25,10 +25,10 @@ import {
   type ContentRef,
   type PreviewProvider,
   type PreviewReadRef,
-  type PreviewRendererType,
   type PreviewResult,
   type PreviewSessionItemInput,
   type PreviewWorkState,
+  type ResolvedPreviewSource,
 } from './types'
 
 const REPR_FEATURE = 'repr'
@@ -95,76 +95,24 @@ async function resolveNode(source: ContentRef, signal?: AbortSignal): Promise<No
   return info
 }
 
-// ─── Provisional `repr` wire shape (to be frozen by the NFSP API Spec) ───
+// ─── `repr` wire (frozen with nfs_server preview/rpc.rs and websdk nfsp.ts) ───
 
-interface ReprWireProgress {
-  completed: number
-  total?: number
-  message?: string
-}
-
-interface ReprWireResult {
-  media_type: string
-  result_type?: string
-  read_url?: string
-  result_node_id?: string
-  result_obj_id?: string
-  source_version?: string
-  width?: number
-  height?: number
-  duration?: number
-  page_count?: number
-  fidelity?: string
-  progressive?: boolean
-}
-
-interface ReprWireRecord {
-  work_key: string
-  state: 'processing' | 'completed' | 'failed' | 'unsupported'
-  attempt_id?: string
-  task_id?: string
-  progress?: ReprWireProgress
-  retry_after_ms?: number
-  result?: ReprWireResult
-  error?: { code: string; message: string; retryable?: boolean; retry_after?: number }
-  reason?: string
-}
-
-function rendererOf(result: ReprWireResult): PreviewRendererType {
-  const declared = result.result_type as PreviewRendererType | undefined
-  if (declared) return declared
-  const type = result.media_type
-  if (type === 'image/svg+xml') return 'svg'
-  if (type.startsWith('image/')) return 'image'
-  if (type === 'text/html') return 'html'
-  if (type.startsWith('text/')) return 'text'
-  if (type === 'application/pdf') return 'pdf'
-  if (type.startsWith('audio/')) return 'audio'
-  return 'video'
-}
-
-function mapWireResult(result: ReprWireResult): PreviewResult {
-  const raw = nfspClient().raw
-  const nodeId = result.result_node_id ?? result.result_obj_id
-  const url = result.read_url ? absoluteUrl(result.read_url) : nodeId ? raw.readUrl(nodeId) : null
-  if (!url) throw new PreviewError('PIPELINE_FAILED', 'The Pipeline result has no readable reference')
+function mapWireResult(result: ReprResult): PreviewResult {
   return {
-    resultType: rendererOf(result),
-    readRef: { kind: 'url', url, downloadUrl: nodeId ? raw.readUrl(nodeId, { download: true }) : undefined },
+    resultType: result.result_type,
+    readRef: { kind: 'url', url: absoluteUrl(result.read_url) },
     mediaType: result.media_type,
     sourceVersion: result.source_version,
     width: result.width,
     height: result.height,
     durationSeconds: result.duration,
-    pageCount: result.page_count,
     fidelityNote: result.fidelity,
-    progressive: result.progressive,
     cacheable: true,
   }
 }
 
-function mapWireRecord(record: ReprWireRecord): PreviewWorkState {
-  if (record.state === 'completed' && record.result) {
+function mapWireRecord(record: Exclude<ReprRecord, { state: 'unsupported' }>): PreviewWorkState {
+  if (record.state === 'completed') {
     return { workKey: record.work_key, state: 'completed', attemptId: record.attempt_id, result: mapWireResult(record.result) }
   }
   if (record.state === 'failed') {
@@ -172,22 +120,23 @@ function mapWireRecord(record: ReprWireRecord): PreviewWorkState {
       workKey: record.work_key,
       state: 'failed',
       attemptId: record.attempt_id,
-      error: {
-        code: record.error?.code ?? 'PIPELINE_FAILED',
-        message: record.error?.message ?? 'The Pipeline failed',
-        retryable: record.error?.retryable ?? false,
-        retryAfter: record.error?.retry_after,
-      },
+      error: { code: record.error.code, message: record.error.message, retryable: record.error.retryable, retryAfter: record.error.retry_after },
     }
   }
-  return {
-    workKey: record.work_key,
-    state: 'processing',
-    attemptId: record.attempt_id,
-    taskId: record.task_id,
-    progress: record.progress,
-    retryAfterMs: record.retry_after_ms,
+  return { workKey: record.work_key, state: 'processing', attemptId: record.attempt_id, progress: record.progress, retryAfterMs: record.retry_after_ms }
+}
+
+/** Where the node finds the bytes: an NFSP ref, a bucket binding or a named object. */
+function reprTarget(resolved: ResolvedPreviewSource): { at: WireRef | null; source?: ReprSource } | null {
+  const bucketRef = bucketRefOf(resolved)
+  if (bucketRef) {
+    const parsed = bucket.parseBucketObjUrl(bucketRef.url)
+    if (!parsed) return null
+    return { at: null, source: { bucket: { bucket_id: parsed.bucketId, key: parsed.key, version: bucketRef.version, access_token: bucketRef.token } } }
   }
+  if (resolved.providerHandle) return { at: resolved.providerHandle as WireRef }
+  if (isObjectIdRef(resolved.originalSource) && resolved.sourceObjectId) return { at: null, source: { obj_id: resolved.sourceObjectId } }
+  return null
 }
 
 export function createNfspPreviewProvider(): PreviewProvider {
@@ -273,41 +222,30 @@ export function createNfspPreviewProvider(): PreviewProvider {
       await ensureSession()
       const raw = nfspClient().raw
       if (!raw.features.includes(REPR_FEATURE)) {
-        return { kind: 'unsupported', reason: 'no-pipeline', detail: 'The content server has no Preview Pipeline for this format yet' }
+        const capability = raw.reprCapability
+        const detail = capability && !capability.available ? capability.detail : undefined
+        return { kind: 'unsupported', reason: 'no-pipeline', detail: detail ?? 'The content server has no Preview Pipeline' }
       }
       const { source, runtimeProfile, targetProfile, options } = request
-      if (!source.inputObjectId && !source.providerHandle) {
-        return { kind: 'unsupported', reason: 'not-content', detail: 'The source has no stable content identity' }
-      }
+      const target = reprTarget(source)
+      if (!target) return { kind: 'unsupported', reason: 'not-content', detail: 'The source has no stable content identity' }
       try {
-        const record = (await raw.call('repr', {
-          at: source.providerHandle ? { ref: source.providerHandle as WireRef } : undefined,
-          args: {
-            purpose: targetProfile.purpose,
-            input_obj_id: source.inputObjectId,
-            version_token: source.versionToken,
+        const record = await raw.repr(target.at, {
+          purpose: targetProfile.purpose,
+          source: target.source,
+          runtime: {
             accept: runtimeProfile.acceptTypes,
-            runtime: {
-              image: runtimeProfile.imageMediaTypes,
-              video: runtimeProfile.videoMediaTypes,
-              audio: runtimeProfile.audioMediaTypes,
-              pdf_inline: runtimeProfile.pdfInline,
-            },
-            target: {
-              width: targetProfile.viewport.width,
-              height: targetProfile.viewport.height,
-              dpr: targetProfile.viewport.dpr,
-              quality: targetProfile.quality,
-              page: targetProfile.page,
-              time_range: targetProfile.timeRange,
-            },
-            retry: options?.retry,
-            expected_attempt_id: options?.expectedAttemptId,
+            image: runtimeProfile.imageMediaTypes,
+            video: runtimeProfile.videoMediaTypes,
+            audio: runtimeProfile.audioMediaTypes,
+            video_codecs: runtimeProfile.videoCodecs,
+            heic: runtimeProfile.heic,
+            pdf_inline: runtimeProfile.pdfInline,
           },
-        })) as ReprWireRecord
-        if (record.state === 'unsupported') {
-          return { kind: 'unsupported', reason: 'no-pipeline', detail: record.reason }
-        }
+          retry: options?.retry || undefined,
+          expected_attempt_id: options?.expectedAttemptId,
+        })
+        if (record.state === 'unsupported') return { kind: 'unsupported', reason: record.reason, detail: record.detail }
         return mapWireRecord(record)
       } catch (err) {
         const mapped = toPreviewError(err)
@@ -321,7 +259,8 @@ export function createNfspPreviewProvider(): PreviewProvider {
     async getPreviewWork(workKey, { signal }) {
       if (signal?.aborted) throw new PreviewError('CANCELLED', 'Cancelled')
       try {
-        const record = (await nfspClient().raw.call('get_repr', { args: { work_key: workKey } })) as ReprWireRecord
+        const record = await nfspClient().raw.getRepr(workKey)
+        if (record.state === 'unsupported') throw new PreviewError('UNSUPPORTED', record.detail ?? 'No Preview Pipeline for this content')
         return mapWireRecord(record)
       } catch (err) {
         throw toPreviewError(err)

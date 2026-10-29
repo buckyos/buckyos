@@ -17,6 +17,7 @@ pub mod host;
 pub mod http;
 pub mod ingress;
 pub mod interact;
+pub mod media_ref;
 pub mod objects;
 pub mod projection;
 pub mod protocol;

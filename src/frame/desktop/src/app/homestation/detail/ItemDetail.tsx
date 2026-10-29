@@ -11,7 +11,8 @@ import { AudioBlock, CardHeader, EmbeddedCard, LinkPreview, ReasonLine, Resource
 import { formatCount } from '../datamodel/format'
 import type { CardView } from '../datamodel/types'
 import { useItemActions } from '../actions'
-import { fileSourceRef, mediaUrl } from '../media'
+import { fileSourceRef } from '../media'
+import { MediaThumb } from '../MediaThumb'
 import { useHsNav } from '../navContext'
 import { useCardView, useHomeStationStore } from '../store/context'
 import { EmptyState, PageHeader } from '../ui/primitives'
@@ -55,7 +56,7 @@ function ArticleBody({ view }: { view: CardView }) {
     <div className="mt-3" data-testid="hs-article-body" data-state={state}>
       {content?.title ? <h1 className="text-2xl font-bold leading-tight">{content.title}</h1> : null}
       {content?.summary ? <p className="mt-2 text-sm italic leading-relaxed" style={{ color: 'var(--cp-muted)' }}>{content.summary}</p> : null}
-      {view.item.cover ? <img src={mediaUrl(view.item.cover.object, view.item.cover.file, content?.title)} alt="" className="mt-4 w-full rounded-2xl object-cover" style={{ aspectRatio: '16 / 9' }} /> : null}
+      {view.item.cover ? <MediaThumb objId={view.item.cover.object} file={view.item.cover.file} className="mt-4 w-full rounded-2xl object-cover" style={{ aspectRatio: '16 / 9' }} /> : null}
       <div className="mt-4">
         {state === 'loading' ? (
           <p className="flex items-center gap-2 text-sm" style={{ color: 'var(--cp-muted)' }}><Loader2 size={14} className="animate-spin" />{t('homestation.article.loading', 'Fetching the wrapped text by its object ID…')}</p>
@@ -112,7 +113,7 @@ function VideoPlayer({ view }: { view: CardView }) {
         <ContentPreview source={fileSourceRef(item.object.wraps, item.wrappedFile, item.object.content?.title)} uiMode="auto" fitMode="contain" />
       ) : (
         <>
-          {item.cover ? <img src={mediaUrl(item.cover.object, item.cover.file, item.object.content?.title)} alt="" className="absolute inset-0 h-full w-full object-cover opacity-[0.45]" /> : null}
+          {item.cover ? <MediaThumb objId={item.cover.object} file={item.cover.file} className="absolute inset-0 h-full w-full object-cover opacity-[0.45]" /> : null}
           <div className="absolute inset-0 flex items-center justify-center">
             <ResourceOverlay state={ready ? 'unavailable' : resources} objId={item.objId} kind="video" />
           </div>

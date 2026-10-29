@@ -164,6 +164,7 @@ pub fn content_type_for(name: &str) -> &'static str {
         Some("webp") => "image/webp",
         Some("svg") => "image/svg+xml",
         Some("heic") => "image/heic",
+        Some("heif") => "image/heif",
         Some("mp4") => "video/mp4",
         Some("webm") => "video/webm",
         Some("mov") => "video/quicktime",

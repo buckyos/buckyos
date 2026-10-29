@@ -22,6 +22,9 @@ pub struct NfsServerSettings {
     /// (class 0) objects and chunks. Every writer binds what it keeps into a
     /// bucket or holds a lease, so off is only for diagnosis.
     pub named_store_gc_evict: bool,
+    /// Size limit of the Preview Pipeline cache (`preview-cache` bucket); least
+    /// recently used results go first.
+    pub preview_cache_mib: u64,
 }
 
 impl Default for NfsServerSettings {
@@ -30,6 +33,7 @@ impl Default for NfsServerSettings {
             scan_interval_secs: 30,
             debug_api: false,
             named_store_gc_evict: true,
+            preview_cache_mib: 20 * 1024,
         }
     }
 }

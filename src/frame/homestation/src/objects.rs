@@ -419,6 +419,16 @@ impl Storage {
         named_call!(&self.named, is_object_stored(&id, None)).map_err(named_err)
     }
 
+    /// A FileObject's content as a stream with its size (no download limit).
+    pub async fn open_file(&self, obj_id: &str) -> HsResult<Option<(ndn_lib::ChunkReader, u64)>> {
+        let id = ObjId::new(obj_id).map_err(|e| bad(e.to_string()))?;
+        match named_call!(&self.named, open_reader(&id, None)) {
+            Ok(value) => Ok(Some(value)),
+            Err(NdnError::NotFound(_)) => Ok(None),
+            Err(e) => Err(named_err(e)),
+        }
+    }
+
     pub async fn read_file(&self, obj_id: &str) -> HsResult<Option<Vec<u8>>> {
         use tokio::io::AsyncReadExt;
         let id = ObjId::new(obj_id).map_err(|e| bad(e.to_string()))?;

@@ -9,7 +9,8 @@ import { ResourceOverlay, VerificationBadge } from './card/parts'
 import { formatCount } from './datamodel/format'
 import type { CardView, ReadingQuery } from './datamodel/types'
 import { useReadingList } from './feed/useReadingList'
-import { fileSourceRef, mediaUrl } from './media'
+import { fileSourceRef } from './media'
+import { MediaThumb } from './MediaThumb'
 import { useHsNav } from './navContext'
 import { useCardView, useHomeStationStore } from './store/context'
 
@@ -69,7 +70,7 @@ function ImmersiveItem({ objId, subIndex, onSubCount, onClose }: { objId: string
           <ContentPreview source={fileSourceRef(item.object.wraps, item.wrappedFile, item.object.content?.title)} variant="inline" uiMode="auto" fitMode="contain" onRequestExit={onClose} />
         ) : (
           <>
-            {item.cover ? <img src={mediaUrl(item.cover.object, item.cover.file, item.object.content?.title)} alt="" className="max-h-full max-w-full object-contain opacity-[0.45]" /> : null}
+            {item.cover ? <MediaThumb objId={item.cover.object} file={item.cover.file} className="max-h-full max-w-full object-contain opacity-[0.45]" /> : null}
             <div className="absolute inset-0 flex items-center justify-center">
               <ResourceOverlay state={ready ? 'unavailable' : resources} objId={item.objId} kind="video" />
             </div>
@@ -82,7 +83,9 @@ function ImmersiveItem({ objId, subIndex, onSubCount, onClose }: { objId: string
     const part = item.media[Math.min(subIndex, item.media.length - 1)]
     return (
       <div className="flex h-full w-full flex-col items-center justify-center" data-testid="hs-immersive-image">
-        <img src={mediaUrl(part.object, part.file, part.alt)} alt={part.alt ?? ''} className="max-h-[78%] max-w-full object-contain" />
+        <div className="relative h-[78%] w-full">
+          <ContentPreview key={part.object} source={fileSourceRef(part.object, part.file, part.alt)} variant="inline" uiMode="silent" fitMode="contain" />
+        </div>
         {item.media.length > 1 ? <span className="mt-3 text-xs" style={{ color: 'rgba(255,255,255,0.6)' }}>{t('homestation.immersive.imageOf', 'Image {{n}} of {{total}}', { n: Math.min(subIndex, item.media.length - 1) + 1, total: item.media.length })}</span> : null}
       </div>
     )

@@ -106,6 +106,10 @@ pub struct ServerConfig {
     pub bucket_specs: std::collections::HashMap<String, crate::bucket::spec::AppBuckets>,
     /// The GC host may evict class-0 named-store objects (off until every writer retains).
     pub gc_evict: bool,
+    /// Total size the preview cache keeps (least recently used results go first).
+    pub preview_cache_mib: u64,
+    /// Where to look for ffmpeg/ffprobe instead of the standard search (tests).
+    pub preview_tool_dirs: Option<Vec<PathBuf>>,
 }
 
 impl ServerConfig {
@@ -127,6 +131,8 @@ impl ServerConfig {
             ndm: NdmConfig::default(),
             bucket_specs: Default::default(),
             gc_evict: false,
+            preview_cache_mib: buckyos_api::NfsServerSettings::default().preview_cache_mib,
+            preview_tool_dirs: None,
         }
     }
 

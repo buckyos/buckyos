@@ -67,6 +67,17 @@ function textHead(bytes: Uint8Array, length = 512): string {
   return ascii(bytes, start, length).replace(/^\s+/, '')
 }
 
+/** HEVC-coded HEIF brands (image and sequence); `mif1`/`msf1` alone is generic HEIF. */
+const HEIC_BRANDS = new Set(['heic', 'heix', 'heim', 'heis', 'hevc', 'hevx', 'hevm', 'hevs'])
+
+function compatibleBrands(b: Uint8Array): string[] {
+  const size = (b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]
+  const end = Math.min(b.length, size > 16 ? size : 16)
+  const brands: string[] = []
+  for (let at = 16; at + 4 <= end; at += 4) brands.push(ascii(b, at, 4))
+  return brands
+}
+
 /** Returns the confirmed media type of a byte prefix, or null when unknown. */
 export function sniffMagic(bytes: Uint8Array | null | undefined): string | null {
   if (!bytes || bytes.length < 4) return null
@@ -88,8 +99,11 @@ export function sniffMagic(bytes: Uint8Array | null | undefined): string | null 
   if (b.length >= 12 && ascii(b, 4, 4) === 'ftyp') {
     const brand = ascii(b, 8, 4)
     if (brand === 'avif' || brand === 'avis') return 'image/avif'
-    if (brand === 'heic' || brand === 'heix' || brand === 'hevc' || brand === 'mif1' || brand === 'msf1') {
-      return 'image/heic'
+    if (HEIC_BRANDS.has(brand)) return 'image/heic'
+    if (brand === 'mif1' || brand === 'msf1') {
+      const compatible = compatibleBrands(b)
+      if (compatible.some((c) => c === 'avif' || c === 'avis')) return 'image/avif'
+      return compatible.some((c) => HEIC_BRANDS.has(c)) ? 'image/heic' : 'image/heif'
     }
     if (brand === 'qt  ') return 'video/quicktime'
     if (brand === 'M4A ') return 'audio/mp4'
@@ -231,18 +245,32 @@ export function contentLabelOf(classification: MediaClassification): string {
 // ─── Runtime Adapter ───
 
 let runtimeProfile: PreviewRuntimeProfile | null = null
-let avifProbe: Promise<boolean> | null = null
+let decodeProbes: Promise<void> | null = null
 
 // 2×2 AVIF used for feature detection (same probe as common capability libs).
 const AVIF_PROBE =
   'data:image/avif;base64,AAAAIGZ0eXBhdmlmAAAAAGF2aWZtaWYxbWlhZk1BMUIAAADybWV0YQAAAAAAAAAoaGRscgAAAAAAAAAAcGljdAAAAAAAAAAAAAAAAGxpYmF2aWYAAAAADnBpdG0AAAAAAAEAAAAeaWxvYwAAAABEAAABAAEAAAABAAABGgAAAB0AAAAoaWluZgAAAAAAAQAAABppbmZlAgAAAAABAABhdjAxQ29sb3IAAAAAamlwcnAAAABLaXBjbwAAABRpc3BlAAAAAAAAAAIAAAACAAAAEHBpeGkAAAAAAwgICAAAAAxhdjFDgQ0MAAAAABNjb2xybmNseAACAAIAAYAAAAAXaXBtYQAAAAAAAAABAAEEAQKDBAAAACVtZGF0EgAKCBgANogQEAwgMg8f8D///8WfhwB8+ErK42A='
 
+// 2×2 HEVC-coded HEIC (libheif), the same kind of probe as AVIF.
+const HEIC_PROBE =
+  'data:image/heic;base64,AAAAHGZ0eXBoZWljAAAAAG1pZjFoZWljbWlhZgAAAXxtZXRhAAAAAAAAACFoZGxyAAAAAAAAAABwaWN0AAAAAAAAAAAAAAAAAAAAACJpbG9jAAAAAERAAAEAAQAAAAABoAABAAAAAAAAACsAAAAjaWluZgAAAAAAAQAAABVpbmZlAgAAAAABAABodmMxAAAAAA5waXRtAAAAAAABAAAA/GlwcnAAAADcaXBjbwAAAHVodmNDAQNwAAAAkAAAAAAAHvAA/P34+AAADwNgAAEAGEABDAH//wNwAAADAJAAAAMAAAMAHroCQGEAAQApQgEBA3AAAAMAkAAAAwAAAwAeoCCBBZbqrprm4CGgwIAAAAyAAAADAIRiAAEABkQBwXPBiQAAABNjb2xybmNseAABAA0ABoAAAAAUaXNwZQAAAAAAAABAAAAAQAAAAChjbGFwAAAAAgAAAAEAAAACAAAAAf///8IAAAAC////wgAAAAIAAAAQcGl4aQAAAAADCAgIAAAAGGlwbWEAAAAAAAAAAQABBYECAwWEAAAAM21kYXQAAAAnKAGvEyExlvhOUKeW/WMCzQyVTFq5T6Vz3QpQk3J+uP7yh5PFYoLg'
+
+const DECODE_PROBE_TIMEOUT_MS = 3000
+
 function probeImageDecode(src: string): Promise<boolean> {
   if (typeof Image === 'undefined') return Promise.resolve(false)
   return new Promise((resolve) => {
     const img = new Image()
-    img.onload = () => resolve(img.width > 0)
-    img.onerror = () => resolve(false)
+    const finish = (ok: boolean) => {
+      window.clearTimeout(timer)
+      img.onload = null
+      img.onerror = null
+      img.removeAttribute('src')
+      resolve(ok)
+    }
+    const timer = window.setTimeout(() => finish(false), DECODE_PROBE_TIMEOUT_MS)
+    img.onload = () => finish(img.naturalWidth > 0)
+    img.onerror = () => finish(false)
     img.src = src
   })
 }
@@ -267,7 +295,7 @@ function pdfInlineSupported(): boolean {
   }
 }
 
-/** Synchronous profile (AVIF is filled in by `ensureRuntimeProfile`). */
+/** Synchronous profile (AVIF / HEIC decoding is filled in by `ensureRuntimeProfile`). */
 export function detectRuntimeProfile(): PreviewRuntimeProfile {
   if (runtimeProfile) return runtimeProfile
   const video = typeof document !== 'undefined' ? document.createElement('video') : null
@@ -279,22 +307,39 @@ export function detectRuntimeProfile(): PreviewRuntimeProfile {
     imageMediaTypes: [...BASELINE_IMAGE_TYPES, 'image/svg+xml'],
     videoMediaTypes: videoCandidates.filter((t) => canPlay(video, t)),
     audioMediaTypes: audioCandidates.filter((t) => canPlay(audio, t)),
+    videoCodecs: {
+      h264: canPlay(video, 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"'),
+      hevc: canPlay(video, 'video/mp4; codecs="hvc1.1.6.L93.B0"') || canPlay(video, 'video/mp4; codecs="hev1.1.6.L93.B0"'),
+    },
+    heic: false,
     pdfInline: pdfInlineSupported(),
   }
   return runtimeProfile
 }
 
-/** Resolves once the async probes (AVIF decode) have settled. */
+/** Resolves once the async decode probes (AVIF, HEIC) have settled. */
 export function ensureRuntimeProfile(): Promise<PreviewRuntimeProfile> {
   const profile = detectRuntimeProfile()
-  if (!avifProbe) {
-    avifProbe = probeImageDecode(AVIF_PROBE).then((ok) => {
-      if (ok && !profile.imageMediaTypes.includes('image/avif')) profile.imageMediaTypes.push('image/avif')
-      return ok
+  if (!decodeProbes) {
+    decodeProbes = Promise.all([probeImageDecode(AVIF_PROBE), probeImageDecode(HEIC_PROBE)]).then(([avif, heic]) => {
+      if (avif && !profile.imageMediaTypes.includes('image/avif')) profile.imageMediaTypes.push('image/avif')
+      profile.heic = heic
+      if (heic) {
+        for (const type of ['image/heic', 'image/heif']) {
+          if (!profile.imageMediaTypes.includes(type)) profile.imageMediaTypes.push(type)
+        }
+      }
     })
   }
-  return avifProbe.then(() => profile)
+  return decodeProbes.then(() => profile)
 }
+
+/**
+ * Video containers every Runtime is asked to play directly: `canPlayType`
+ * only hints (Chromium answers "" for `video/quicktime` yet plays H.264 MOV),
+ * a `MediaError` from `<video>` is what sends the item to the Pipeline.
+ */
+const DIRECT_VIDEO_CONTAINERS = new Set(['video/mp4', 'video/quicktime', 'video/webm', 'video/ogg', 'video/x-matroska', 'video/x-m4v'])
 
 export type DirectDecision =
   | { ok: true }
@@ -325,7 +370,7 @@ export function decideDirect(
   if (renderer === 'image' && !runtime.imageMediaTypes.includes(type)) {
     return { ok: false, reason: 'runtime-unsupported' }
   }
-  if (renderer === 'video' && !runtime.videoMediaTypes.includes(type)) {
+  if (renderer === 'video' && !DIRECT_VIDEO_CONTAINERS.has(type) && !runtime.videoMediaTypes.includes(type)) {
     return { ok: false, reason: 'runtime-unsupported' }
   }
   if (renderer === 'audio') {
@@ -339,4 +384,87 @@ export function decideDirect(
     return { ok: false, reason: 'too-large' }
   }
   return { ok: true }
+}
+
+// ─── HEIF primary image size (`ispe` + `irot`, no decoding) ───
+
+interface IsoBox {
+  type: string
+  start: number
+  end: number
+}
+
+function isoBoxes(view: DataView, start: number, end: number): IsoBox[] {
+  const boxes: IsoBox[] = []
+  let at = start
+  while (at + 8 <= end) {
+    let size = view.getUint32(at)
+    const type = String.fromCharCode(view.getUint8(at + 4), view.getUint8(at + 5), view.getUint8(at + 6), view.getUint8(at + 7))
+    let header = 8
+    if (size === 1) {
+      if (at + 16 > end) break
+      size = Number(view.getBigUint64(at + 8))
+      header = 16
+    } else if (size === 0) {
+      size = end - at
+    }
+    if (size < header) break
+    boxes.push({ type, start: at + header, end: Math.min(end, at + size) })
+    at += size
+  }
+  return boxes
+}
+
+/**
+ * Displayed size of a HEIF / HEIC primary image from the `meta` box of a
+ * bounded prefix: the primary item's `ispe`, swapped for a 90°/270° `irot`.
+ * Null when the prefix does not hold the box (or the file is no HEIF).
+ */
+export function heifImageSize(bytes: Uint8Array): { width: number; height: number } | null {
+  try {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    const meta = isoBoxes(view, 0, bytes.length).find((b) => b.type === 'meta')
+    if (!meta) return null
+    const children = isoBoxes(view, meta.start + 4, meta.end)
+    const pitm = children.find((b) => b.type === 'pitm')
+    const iprp = children.find((b) => b.type === 'iprp')
+    if (!pitm || !iprp) return null
+    const primary = view.getUint8(pitm.start) === 0 ? view.getUint16(pitm.start + 4) : view.getUint32(pitm.start + 4)
+    const props = isoBoxes(view, iprp.start, iprp.end)
+    const ipco = props.find((b) => b.type === 'ipco')
+    if (!ipco) return null
+    const properties = isoBoxes(view, ipco.start, ipco.end)
+    let width = 0
+    let height = 0
+    let quarterTurns = 0
+    for (const ipma of props.filter((b) => b.type === 'ipma')) {
+      const version = view.getUint8(ipma.start)
+      const wideIndex = (view.getUint8(ipma.start + 3) & 1) === 1
+      let at = ipma.start + 4
+      const count = view.getUint32(at)
+      at += 4
+      for (let i = 0; i < count && at < ipma.end; i += 1) {
+        const item = version < 1 ? view.getUint16(at) : view.getUint32(at)
+        at += version < 1 ? 2 : 4
+        const associations = view.getUint8(at)
+        at += 1
+        for (let j = 0; j < associations; j += 1) {
+          const index = wideIndex ? view.getUint16(at) & 0x7fff : view.getUint8(at) & 0x7f
+          at += wideIndex ? 2 : 1
+          if (item !== primary || index === 0) continue
+          const property = properties[index - 1]
+          if (property?.type === 'ispe') {
+            width = view.getUint32(property.start + 4)
+            height = view.getUint32(property.start + 8)
+          } else if (property?.type === 'irot') {
+            quarterTurns = view.getUint8(property.start) & 3
+          }
+        }
+      }
+    }
+    if (!width || !height) return null
+    return quarterTurns % 2 === 1 ? { width: height, height: width } : { width, height }
+  } catch {
+    return null
+  }
 }

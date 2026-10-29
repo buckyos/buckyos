@@ -27,12 +27,31 @@ export interface UploadOptions {
   onProgress?: (loaded: number, total: number) => void
 }
 
+/** Where a held file is bound on the nfs-server data plane, with a short-lived read token. */
+export interface ContentRefInfo {
+  bucketId: string
+  key: string
+  version?: number
+  token?: string
+  mime?: string
+  size?: number
+}
+
 export interface Transport {
   readonly mode: 'zone' | 'dev-override'
   call<T>(method: string, params?: Record<string, unknown>): Promise<T>
   upload(body: File | readonly File[], meta: UploadMeta, options?: UploadOptions): Promise<{ objId: ObjId }>
   contentUrl(objId: ObjId): string
   objectUrl(objId: ObjId): string
+  /** The file's bucket binding, or null when it is not bound (read `contentUrl` then). */
+  contentRef(objId: ObjId, signal?: AbortSignal): Promise<ContentRefInfo | null>
+}
+
+async function fetchContentRef(url: string, signal?: AbortSignal): Promise<ContentRefInfo | null> {
+  const response = await fetch(url, { signal, credentials: 'include' })
+  if (response.status === 404) return null
+  if (!response.ok) throw await httpError(response)
+  return await response.json() as ContentRefInfo
 }
 
 // Media are read from the home that serves the page: the signed-in user's own home in the
@@ -150,6 +169,10 @@ class DevOverrideTransport implements Transport {
   contentUrl(objId: ObjId) {
     return contentPath(this.origin, objId, this.token)
   }
+
+  contentRef(objId: ObjId, signal?: AbortSignal) {
+    return fetchContentRef(this.contentUrl(objId).replace('/content', '/ref'), signal)
+  }
 }
 
 class ZoneTransport implements Transport {
@@ -187,6 +210,10 @@ class ZoneTransport implements Transport {
 
   contentUrl(objId: ObjId) {
     return contentPath('', objId, this.client().getSessionToken() ?? this.knownToken ?? '')
+  }
+
+  contentRef(objId: ObjId, signal?: AbortSignal) {
+    return fetchContentRef(this.contentUrl(objId).replace('/content', '/ref'), signal)
   }
 }
 

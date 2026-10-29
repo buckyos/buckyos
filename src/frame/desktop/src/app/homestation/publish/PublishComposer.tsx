@@ -1,3 +1,4 @@
+import { attachmentKindOfFile } from '../api/fileKind'
 import { releaseAttachmentImport } from '../api/transport'
 import { zodResolver } from '@hookform/resolvers/zod'
 import clsx from 'clsx'
@@ -20,13 +21,6 @@ const selectHome = (store: HomeStationStore) => store.peekHome()
 
 function newPublishKey() {
   return `publish-${crypto.randomUUID()}`
-}
-
-function kindOfFile(file: File): AttachmentInput['kind'] {
-  if (file.type.startsWith('video/')) return 'video'
-  if (file.type.startsWith('audio/')) return 'audio'
-  if (file.type.startsWith('image/')) return 'image'
-  return 'file'
 }
 
 export function PublishComposer({ variant = 'full', onPublished }: { variant?: 'full' | 'compact'; onPublished?: () => void }) {
@@ -188,12 +182,12 @@ export function PublishComposer({ variant = 'full', onPublished }: { variant?: '
           <input
             ref={fileRef}
             type="file"
-            accept="image/*,video/*,audio/*"
+            accept="image/*,video/*,audio/*,.heic,.heif,.mov"
             multiple
             className="hidden"
             data-testid={`${idPrefix}-file`}
             onChange={event => {
-              for (const file of [...(event.target.files ?? [])]) void addAttachment(kindOfFile(file), file)
+              for (const file of [...(event.target.files ?? [])]) void attachmentKindOfFile(file).then(kind => addAttachment(kind, file))
               event.target.value = ''
             }}
           />

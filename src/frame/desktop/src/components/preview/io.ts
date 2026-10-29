@@ -29,11 +29,11 @@ function totalFromHeaders(resp: Response): number | null {
 }
 
 export function httpStatusToError(status: number, detail?: string): PreviewError {
-  if (status === 401 || status === 403) return new PreviewError('PERMISSION_DENIED', 'Access to this content is not allowed', { detail })
-  if (status === 404 || status === 410) return new PreviewError('NOT_FOUND', 'This content no longer exists', { detail })
-  if (status === 408 || status === 504) return new PreviewError('TIMEOUT', 'The content server timed out', { detail })
-  if (status >= 500) return new PreviewError('NETWORK', 'The content server is unavailable', { detail, retryable: true })
-  return new PreviewError('INTERNAL', `Unexpected response (${status})`, { detail })
+  if (status === 401 || status === 403) return new PreviewError('PERMISSION_DENIED', 'Access to this content is not allowed', { detail, status })
+  if (status === 404 || status === 410) return new PreviewError('NOT_FOUND', 'This content no longer exists', { detail, status })
+  if (status === 408 || status === 504) return new PreviewError('TIMEOUT', 'The content server timed out', { detail, status })
+  if (status >= 500) return new PreviewError('NETWORK', 'The content server is unavailable', { detail, retryable: true, status })
+  return new PreviewError('INTERNAL', `Unexpected response (${status})`, { detail, status })
 }
 
 /** Reads at most `length` bytes; a server without Range support is streamed and cut. */

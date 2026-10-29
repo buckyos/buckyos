@@ -239,6 +239,7 @@ async fn buckyos_service_main(matches: &clap::ArgMatches) {
     }
     config.scan_interval_secs = settings.scan_interval_secs;
     config.gc_evict = settings.named_store_gc_evict;
+    config.preview_cache_mib = settings.preview_cache_mib;
     // CLI --debug-api / --scan-interval-secs still win over settings (dev use).
     config.debug_api = settings.debug_api || matches.get_flag("debug-api");
     if let Some(secs) = parse_scan_interval(matches) {
@@ -278,6 +279,8 @@ async fn serve(config: ServerConfig) {
     tokio::spawn(nfs_server::ndm::sweeper_loop(state.clone()));
     if nfs_server::share::ShareMgr::store_configured(&state.config) {
         tokio::spawn(nfs_server::bucket::tasks::maintenance_loop(state.clone()));
+        nfs_server::preview::recover(&state);
+        tokio::spawn(nfs_server::preview::maintenance_loop(state.clone()));
     }
     let app = nfs_server::server::build_router(state);
     let listener = match tokio::net::TcpListener::bind(&listen).await {

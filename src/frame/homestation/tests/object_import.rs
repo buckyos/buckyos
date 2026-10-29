@@ -104,6 +104,26 @@ async fn uploads_are_published_into_buckets_and_withdrawn_from_them() {
     let (status, data, _) = net.get(&format!("{}/objects/{empty_file_id}/content", alice.home), Some(net.proof("bob", "alice"))).await;
     assert_eq!((status, data), (200, String::new()));
 
+    // Content streams with Range across the chunk list; the reader may also read it on the
+    // nfs-server data plane through its binding and a short read token.
+    let whole = pieces.concat();
+    let ranged = net.http.get(format!("{}/objects/{file_id}/content", alice.home)).header("authorization", net.proof("bob", "alice")).header("range", "bytes=6-14").send().await.unwrap();
+    assert_eq!(ranged.status().as_u16(), 206);
+    assert_eq!(ranged.headers()["content-range"], format!("bytes 6-14/{}", whole.len()).as_str());
+    assert_eq!(ranged.headers()["accept-ranges"], "bytes");
+    assert_eq!(ranged.bytes().await.unwrap().as_ref(), &whole[6..=14]);
+    let past = net.http.get(format!("{}/objects/{file_id}/content", alice.home)).header("authorization", net.proof("bob", "alice")).header("range", "bytes=999-").send().await.unwrap();
+    assert_eq!(past.status().as_u16(), 416);
+    let (status, found, _) = net.get(&format!("{}/objects/{file_id}/ref", alice.home), Some(net.proof("bob", "alice"))).await;
+    assert_eq!(status, 200, "{found}");
+    let found: serde_json::Value = serde_json::from_str(&found).unwrap();
+    assert_eq!((found["bucketId"].as_str(), found["key"].as_str()), (Some("user/homestation/alice/scratch"), Some("uploads/u1/file")));
+    let token = found["token"].as_str().unwrap();
+    let data_plane = net.http.get(format!("{}/bucket/v1/user/homestation/alice/scratch/uploads/u1/file?token={token}", alice.nfs)).header("range", "bytes=0-4").send().await.unwrap();
+    assert_eq!(data_plane.status().as_u16(), 206);
+    assert_eq!(data_plane.bytes().await.unwrap().as_ref(), &whole[0..=4]);
+    assert_eq!(net.get(&format!("{}/objects/{file_id}/ref", alice.home), Some(net.proof("eve", "alice"))).await.0, 404, "the same audience rules as /content");
+
     // An edit is a new version: both versions are bound while the entry is active.
     net.rpc("alice", "entry.edit", json!({ "entry": posted["entry"], "text": "A directory, renamed" })).await;
     assert_eq!(bound(station, HOMESTATION_BUCKET_ENTRIES, &prefix).await.len(), 2);

@@ -1,3 +1,4 @@
+import { bucketObjectRef, resolveBucketSource } from '../../components/preview/bucketSource'
 import { registerPreviewSourceResolver } from '../../components/preview/hostSources'
 import { PreviewError, type ContentRef, type ResolvedPreviewSource } from '../../components/preview/types'
 import { homeStationTransport } from './api/transport'
@@ -28,34 +29,49 @@ export function fileSourceRef(objId: ObjId, file: FileObject | undefined, alt?: 
   return { kind: HOMESTATION_FILE_SOURCE, value }
 }
 
-async function fetchContent(value: HomeStationFileSourceValue, url: string): Promise<Blob> {
-  let response: Response
-  try {
-    response = await fetch(url)
-  } catch (error) {
-    throw new PreviewError('NETWORK', error instanceof Error ? error.message : String(error))
-  }
-  if (response.status === 404) throw new PreviewError('NOT_FOUND', `${value.objId} is not held by your HomeStation`)
-  if (response.status === 401 || response.status === 403) throw new PreviewError('PERMISSION_DENIED', `HTTP ${response.status}`)
-  if (!response.ok) throw new PreviewError('NETWORK', `HTTP ${response.status}`)
-  return response.blob()
+function cancelled(error: unknown, signal?: AbortSignal): boolean {
+  return !!signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')
 }
 
-async function resolveFile(source: ContentRef): Promise<ResolvedPreviewSource> {
+/**
+ * A HomeStation file reads from its bucket binding on the nfs-server data
+ * plane (Range, a read token; the Pipeline can convert it), else from
+ * `/home/<user>/objects/<id>/content`, which streams with Range as well.
+ */
+async function resolveFile(source: ContentRef, { signal }: { signal?: AbortSignal }): Promise<ResolvedPreviewSource> {
   const value = (source as { value?: HomeStationFileSourceValue }).value
   if (!value?.objId) throw new PreviewError('NOT_FOUND', 'Unknown HomeStation file')
-  const blob = value.url
-    ? await fetchContent(value, value.url)
-    : new Blob([placeholderSvg(value.objId, value.file, value.alt)], { type: 'image/svg+xml' })
+  if (!value.url) {
+    const blob = new Blob([placeholderSvg(value.objId, value.file, value.alt)], { type: 'image/svg+xml' })
+    return { originalSource: source, sourceObjectId: value.objId, inputObjectId: value.objId, displayName: value.name, size: blob.size, objectType: 'file', mediaTypeHints: ['image/svg+xml'], readRef: { kind: 'blob', blob } }
+  }
+  const transport = homeStationTransport()
+  let bound = null
+  try {
+    bound = transport ? await transport.contentRef(value.objId, signal) : null
+  } catch (error) {
+    if (cancelled(error, signal)) throw new PreviewError('CANCELLED', 'Cancelled')
+  }
+  const hints = [value.file?.meta.mime ?? bound?.mime ?? ''].filter(Boolean)
+  if (bound) {
+    const bucketRef = bucketObjectRef({ bucketId: bound.bucketId, key: bound.key }, { version: bound.version, token: bound.token })
+    try {
+      const resolved = await resolveBucketSource(bucketRef, signal)
+      return { ...resolved, originalSource: source, sourceObjectId: value.objId, displayName: value.name, mediaTypeHints: hints.length ? hints : resolved.mediaTypeHints, providerHandle: bucketRef }
+    } catch (error) {
+      if (cancelled(error, signal) || (error instanceof PreviewError && error.code === 'CANCELLED')) throw new PreviewError('CANCELLED', 'Cancelled')
+      // No bucket client here (a dev override on the mock shell): the content route serves it too.
+    }
+  }
   return {
     originalSource: source,
     sourceObjectId: value.objId,
     inputObjectId: value.objId,
     displayName: value.name,
-    size: blob.size,
+    size: value.file?.meta.size,
     objectType: 'file',
-    mediaTypeHints: [value.url ? value.file?.meta.mime ?? blob.type : 'image/svg+xml'],
-    readRef: { kind: 'blob', blob },
+    mediaTypeHints: hints,
+    readRef: { kind: 'url', url: value.url },
   }
 }
 

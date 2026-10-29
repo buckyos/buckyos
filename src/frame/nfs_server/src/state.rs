@@ -31,6 +31,7 @@ pub struct AppState {
     pub share: crate::share::ShareMgr,
     pub ndm: crate::ndm::NdmMgr,
     pub buckets: crate::bucket::BucketHost,
+    pub preview: crate::preview::PreviewMgr,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -60,6 +61,10 @@ impl AppState {
         if matches!(config.auth, crate::config::AuthMode::Runtime) {
             seed_default_acls(&config, &db, &acls)?;
         }
+        let preview = config.preview_tool_dirs.clone().map(crate::preview::PreviewMgr::with_dirs).unwrap_or_default();
+        if crate::share::ShareMgr::store_configured(&config) {
+            preview.refresh();
+        }
         Ok(Arc::new(AppState {
             handles: HandleCodec::new(handle_key),
             watch_key: rand::random(),
@@ -75,6 +80,7 @@ impl AppState {
             share,
             ndm,
             buckets: Default::default(),
+            preview,
             db,
             config,
         }))

@@ -24,6 +24,7 @@ pub mod handle;
 pub mod mutate;
 pub mod namespace;
 pub mod ndm;
+pub mod preview;
 pub mod reconciler;
 pub mod search;
 pub mod server;

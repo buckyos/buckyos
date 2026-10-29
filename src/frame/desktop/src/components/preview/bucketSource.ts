@@ -45,6 +45,14 @@ function errorOf(error: unknown): PreviewError {
   return new PreviewError('NETWORK', 'Could not load the object from the content server', { retryable: true })
 }
 
+/** The bucket binding behind a resolved source: its own ref, or one a host resolver found for it. */
+export function bucketRefOf(resolved: ResolvedPreviewSource): BucketObjectRef | null {
+  const own = asBucketObjectRef(resolved.originalSource)
+  if (own) return own
+  const handle = resolved.providerHandle as { kind?: unknown; url?: unknown } | undefined
+  return handle?.kind === 'bucket-object' && typeof handle.url === 'string' ? (handle as BucketObjectRef) : null
+}
+
 /**
  * Resolves a bucket binding to a URL read reference: `bucket.head` for name,
  * size and type (and `availability`, so ambient content that is gone fails

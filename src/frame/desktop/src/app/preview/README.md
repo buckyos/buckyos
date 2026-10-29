@@ -54,7 +54,7 @@ HTML runs in `sandbox=""` with an injected CSP (`default-src 'none'`), so script
 
 ## Providers
 
-- **NFSP (`nfspProvider.ts`)** — Source Resolver = `resolve` (`base/ident/access`), containers = `list`, read refs = `/nfs/v1/read/{node_id}` (plus `?download=1` for exports). The Pipeline maps onto `repr` / `get_repr` and is gated on the hello feature list: nfs_server does not advertise `repr` yet, so every non-Direct format is planned as **Unsupported** until the server ships it. The wire shape in that file is provisional (§23.8 item 2) and isolated there.
+- **NFSP (`nfspProvider.ts`)** — Source Resolver = `resolve` (`base/ident/access`), containers = `list`, read refs = `/nfs/v1/read/{node_id}` (plus `?download=1` for exports). The Pipeline maps onto `repr` / `get_repr` (wire frozen with nfs_server `src/preview/rpc.rs` and websdk `NfspClient.repr`), gated on the hello feature list: nfs_server advertises `repr` only while ffmpeg/ffprobe are present, otherwise every non-Direct format plans as **Unsupported** with the node's reason. Sources go as `at` (NFSP ref), a bucket binding (`bucket-object`, or a host resolver's `providerHandle`) or an object id; results are read from the `preview-cache` bucket URL the node signs.
 - **Object IDs (`ndmSource.ts`)** — `cyfile`, chunk and chunk-list IDs use the authenticated NDM store/read endpoints; they do not use NFSP's unsupported object-ref resolution. File metadata supplies the name and MIME hint, and the server resolves single-chunk or chunk-list content. Object previews load the complete content into a Blob before rendering, with cancellation and a 256 MiB limit checked against metadata, response headers and received bytes. These previews currently have no HTTP Range streaming; CYFS path previews retain their existing streaming URLs. The SDK's structured store/proxy helpers reject Browser runtime, so this adapter calls the existing gateway endpoints with the active session token.
 - **Mock (`mockProvider.ts`)** — the File Browser mock library plus `cyfs:///samples` with generated content for every result family, `/home/Private` → permission denied, and a simulated built-in Pipeline catalog (`office-html`, `sheet-html` with a failing first attempt, `media-transmux` via MediaRecorder, `raster-decode`) with idempotent `ensure`, attempts, retry CAS and negative caching.
 
@@ -96,8 +96,7 @@ npx playwright test tests/e2e/pages/preview.spec.ts tests/e2e/pages/preview-embe
 
 ## Known gaps (tracked against the PRD)
 
-- `repr` Pipeline on nfs_server is not implemented server-side; the client contract is provisional.
 - "Open with…" resolves installed App Handlers through `buckyos/content`, filtered by `apps.list` visibility and user defaults. Download / Copy reference remain available. Manifest projection, App Frame hosting, the system chooser for Apps and default app selection are implemented; third-party preview handlers, sandbox policy and the system default-app settings page remain later work (§23.8 item 10).
 - Provider-based sessions are one-shot; no Session Navigation Stack (P1).
-- nfs_server has no `repr`, so real-mode thumbnails come only from Runtime frame capture (videos the browser plays) — other formats show the host's placeholder.
+- Without ffmpeg on the node there is no `repr`: real-mode thumbnails come only from Runtime frame capture (videos the browser plays) and natively decodable images.
 - Fullscreen uses the component's own element (`allowFullscreen`).

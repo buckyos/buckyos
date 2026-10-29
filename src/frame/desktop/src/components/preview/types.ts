@@ -241,8 +241,13 @@ export type PreviewResolution =
 export interface PreviewRuntimeProfile {
   acceptTypes: PreviewRendererType[]
   imageMediaTypes: string[]
+  /** Containers `canPlayType` answered for — a hint, never a Direct gate (video Direct is tried by container). */
   videoMediaTypes: string[]
   audioMediaTypes: string[]
+  /** `canPlayType` with codecs: hints sent to the Pipeline so it can remux instead of transcoding. */
+  videoCodecs: { h264: boolean; hevc: boolean }
+  /** The 2×2 HEIC decode probe succeeded (Safari 17+). */
+  heic: boolean
   pdfInline: boolean
 }
 
@@ -284,13 +289,16 @@ export class PreviewError extends Error {
   readonly code: PreviewErrorCode
   readonly retryable: boolean
   readonly detail?: string
+  /** HTTP status when the content server answered with an error. */
+  readonly status?: number
 
-  constructor(code: PreviewErrorCode, message: string, opts?: { retryable?: boolean; detail?: string }) {
+  constructor(code: PreviewErrorCode, message: string, opts?: { retryable?: boolean; detail?: string; status?: number }) {
     super(message)
     this.name = 'PreviewError'
     this.code = code
     this.retryable = opts?.retryable ?? (code === 'NETWORK' || code === 'TIMEOUT' || code === 'INTERNAL')
     this.detail = opts?.detail
+    this.status = opts?.status
   }
 }
 

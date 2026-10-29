@@ -25,7 +25,7 @@ import { useItemActions } from '../actions'
 import { audienceLabel, formatDuration, formatTimeAgo, restrictedLabel } from '../datamodel/format'
 import { actionText, GENERATION_TAGS, reasonLabel, tagLabel } from './labels'
 import type { CardView, EffectiveTag, EmbeddedView, FeedItemView, ReadingEntry, ResolvedMedia, ResourceState, Verification } from '../datamodel/types'
-import { mediaUrl } from '../media'
+import { MediaThumb } from '../MediaThumb'
 import type { HomeStationStore } from '../store/types'
 import { useHsNav } from '../navContext'
 import { useHomeStationStore, useNow, useStoreSelector } from '../store/context'
@@ -144,10 +144,11 @@ export function MediaGrid({ media, onOpen, large = false }: { media: ResolvedMed
       data-testid="hs-media-grid"
     >
       {images.map((part, index) => (
-        <img
+        <MediaThumb
           key={part.object}
-          src={mediaUrl(part.object, part.file, part.alt)}
-          alt={part.alt ?? ''}
+          objId={part.object}
+          file={part.file}
+          alt={part.alt}
           loading="lazy"
           className={clsx('h-full min-h-0 w-full object-cover', images.length === 3 && index === 0 && 'row-span-2')}
           style={{ background: 'var(--hs-chip-bg)' }}
@@ -197,7 +198,7 @@ export function VideoBlock({ item, resources, onOpen }: { item: FeedItemView; re
   const duration = item.wrappedFile?.meta.duration_ms
   return (
     <div className="relative mt-2 w-full overflow-hidden rounded-xl" style={{ aspectRatio: '16 / 9', background: '#111' }} data-testid="hs-video-block" data-resources={resources}>
-      {item.cover ? <img src={mediaUrl(item.cover.object, item.cover.file, item.object.content?.title)} alt="" className="absolute inset-0 h-full w-full object-cover" style={{ opacity: ready ? 1 : 0.55 }} /> : null}
+      {item.cover ? <MediaThumb objId={item.cover.object} file={item.cover.file} className="absolute inset-0 h-full w-full object-cover" style={{ opacity: ready ? 1 : 0.55 }} /> : null}
       <div className="absolute inset-0 flex items-center justify-center">
         {ready ? (
           <button type="button" onClick={onOpen} className="flex h-12 w-12 items-center justify-center rounded-full" style={{ background: 'rgba(0,0,0,0.6)', color: 'white' }} aria-label={t('homestation.media.playVideo', 'Play video')} data-testid="hs-play">
@@ -267,7 +268,7 @@ export function LinkPreview({ item, onOpenLink }: { item: FeedItemView; onOpenLi
       data-testid="hs-link-card"
       aria-label={t('homestation.link.openNamed', 'Open {{host}} in a new tab', { host })}
     >
-      {item.cover ? <img src={mediaUrl(item.cover.object, item.cover.file, content?.title)} alt="" className="h-auto w-28 flex-shrink-0 object-cover sm:w-36" /> : null}
+      {item.cover ? <MediaThumb objId={item.cover.object} file={item.cover.file} className="h-auto w-28 flex-shrink-0 object-cover sm:w-36" /> : null}
       <span className="min-w-0 flex-1 px-3 py-2.5">
         <span className="line-clamp-2 block text-sm font-semibold leading-5">{content?.title}</span>
         {content?.summary ? <span className="mt-0.5 line-clamp-2 block text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>{content.summary}</span> : null}
@@ -320,7 +321,7 @@ export function ContentBody({ view, mode = 'standard', onOpen, clampText = true 
     case 'article':
       return (
         <div className="cursor-pointer" onClick={onOpen}>
-          {item.cover && mode === 'image' ? <img src={mediaUrl(item.cover.object, item.cover.file, title)} alt="" className="mt-2 w-full rounded-xl object-cover" style={{ aspectRatio: '16 / 9' }} /> : null}
+          {item.cover && mode === 'image' ? <MediaThumb objId={item.cover.object} file={item.cover.file} className="mt-2 w-full rounded-xl object-cover" style={{ aspectRatio: '16 / 9' }} /> : null}
           {title ? <h3 className="mt-2 text-[15px] font-semibold leading-snug">{title}</h3> : null}
           {content?.summary ? <p className={clsx('mt-1 text-sm leading-relaxed', mode === 'longform' ? 'line-clamp-6' : 'line-clamp-3')} style={{ color: 'color-mix(in srgb, var(--cp-text) 82%, transparent)' }}>{content.summary}</p> : null}
           <span className="mt-1.5 inline-flex items-center gap-1 text-[11px]" style={{ color: 'var(--cp-muted)' }}><FileText size={11} />{t('homestation.article.readFull', 'Long read · open to read the full text')}</span>
@@ -398,7 +399,7 @@ export function EmbeddedCard({ embedded, onOpen }: { embedded: EmbeddedView; onO
           {content?.title ? <p className="line-clamp-2 text-sm font-semibold leading-5">{content.title}</p> : null}
           {content?.text || content?.summary ? <p className="line-clamp-3 text-[13px] leading-5" style={{ color: 'color-mix(in srgb, var(--cp-text) 82%, transparent)' }}>{content?.text ?? content?.summary}</p> : null}
         </div>
-        {firstImage ? <img src={mediaUrl(firstImage.object, firstImage.file, firstImage.alt)} alt="" className="h-16 w-16 flex-shrink-0 rounded-lg object-cover" /> : null}
+        {firstImage ? <MediaThumb objId={firstImage.object} file={firstImage.file} className="h-16 w-16 flex-shrink-0 rounded-lg object-cover" /> : null}
       </div>
     </div>
   )

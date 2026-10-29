@@ -4,7 +4,8 @@
 //!
 //! Persistent tables: entities, anchors, namespace_bindings, views, view_groups,
 //! view_base, view_patch, collections, collection_nodes, meta_records, grants, acls,
-//! and the share module's `share_*` / `public_observations` (share/db.rs).
+//! the share module's `share_*` / `public_observations` (share/db.rs), and the
+//! preview pipeline's `preview_works` / `preview_inputs` (preview/mod.rs).
 //! Cache tables (rebuildable, may be lost): content_index.
 
 use crate::error::{internal, not_found, NfsResult};
@@ -277,6 +278,7 @@ impl FileDb {
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(crate::share::db::SCHEMA)?;
         conn.execute_batch(crate::ndm::SCHEMA)?;
+        conn.execute_batch(crate::preview::SCHEMA)?;
         Ok(FileDb { conn: Mutex::new(conn) })
     }
 
@@ -285,6 +287,7 @@ impl FileDb {
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(crate::share::db::SCHEMA)?;
         conn.execute_batch(crate::ndm::SCHEMA)?;
+        conn.execute_batch(crate::preview::SCHEMA)?;
         Ok(FileDb { conn: Mutex::new(conn) })
     }
 

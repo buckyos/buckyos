@@ -76,13 +76,13 @@ cargo test -p nfs_server        # 单元与集成测试，不需要外部服务
 | 权限 | `get_acl` / `set_acl` / `list_acls` | ✅ 路径 ACL(实现扩展);继承/关闭继承、内置 owner 规则、owner 可列出全部记录 |
 | 分享(活子树) | `grant` / `revoke` | ⚠️ 需 `manage`;签发/撤销/落库完整,**数据面不凭活子树 cap 放行** |
 | 分享(快照) | `share.*`(实现扩展) | ✅ 快照进 named store,分享有效期间绑定在 zone 桶 `zone/nfs-server/_/shares`(key = share_id,停止/到期即解绑);`/s/{token}` 访客页/下载/密码/到期;审计、访问统计、Public 投影、MessageHub/HomeStation 交接;详见产品文档 §12 |
-| 派生 | `repr` | ❌ 未实现、不广告(依赖缩略图管线 + NamedStore) |
+| 派生 | `repr` / `get_repr`(实现扩展) | ✅ Preview Pipeline:ffmpeg/ffprobe 有则用、没有就 `unsupported`;产物进 zone 桶 `zone/nfs-server/_/preview-cache`;见下文「预览管线」 |
 | 通知 | `watch`(SSE) | ✅ `container_changed`/`meta_changed`/`resync`;连接首事件恒为 `resync`(D11);watch_token 过滤 |
 | 数据面 | `GET /nfs/v1/read/{node_id}` | ✅ Range/ETag(弱)/If-None-Match/Content-Disposition;**不发 immutable**(link 语义,§4.2) |
 
 `hello` 广告的 features:`view` `collection` `reference-binding` `watch.sse` `search.name` `acl` `share`,
-并返回 `identity {user_id, role}`。
-不广告(未实现):`frozen-subtree` `search.semantic` `repr` `get_tree` `publish_dir`。
+找到 ffmpeg/ffprobe 时再加 `repr`;并返回 `identity {user_id, role}` 与 `repr`(转换器能力,见「预览管线」)。
+不广告(未实现):`frozen-subtree` `search.semantic` `get_tree` `publish_dir`。
 
 ## filedb(§3.2 最小持久集)
 
@@ -139,7 +139,7 @@ v1 用**扫描循环 + 访问时校验**替代平台 watcher(inotify/USN/FSEvent
 
 1. 活子树 cap 校验(grant 数据面放行)与 App/Agent 主体的文件平面访问。按请求鉴权、路径 ACL 与快照分享已完成。
 2. NamedStore link 模式(`add_chunk_by_link_to_local_file` / qcid 阶梯)替换 `content_index`。
-3. `repr` 缩略图、`view_patch`、`get_tree`、`publish_dir`/Frozen、referral 设备视图。
+3. `view_patch`、`get_tree`、`publish_dir`/Frozen、referral 设备视图;`repr` 的 PDF/Office 等非音视频管线。
 4. NativeTree trait 冻结(M7):第二个实现(fs_meta)落地时从 `namespace.rs` 提取。
 
 ## 文件复制真实 E2E
@@ -214,6 +214,38 @@ manifest 可带 `auto_bind: { bucket_id, key, content_type?, metadata?, tags?, e
 - Files 投影（设计 §4.5.4，`src/bucket/projection.rs`）：用户 `documents` 档的 `data` 桶只读投影到 `cyfs:///home/<user>/Apps/<App 显示名>/<桶名>/<key 按 / 展开>`，`collected` 档到 `Collected/`；本地真实目录同名时真实目录优先。App 显示名取 spec 的 `app_doc.show_name` / `service_doc.show_name`（独立模式取 `--bucket-specs` 的 `show_name`），重名追加 ` (<appid>)`，App 全部桶都是孤儿时目录名加 `（已卸载）`（部分桶孤儿时加在桶目录上）；key `a` 与前缀 `a/` 并存时文件显示为 `a~file`。节点 ref 为 `bk_<base64url(home 下路径)>`、条目 `binding: "projection"`、`flags: ["read_only"]`、没有 `copy_ref`；文件的 `access_urls.read` 是 `/bucket/v1/<bucket_id>/<key>`。可写操作只有 `delete`：删文件 = 解绑该 key，删前缀目录要 `recursive: true`（解绑其下所有 key），桶与 App 目录不能从 Files 删除；权限按 home 的 NFS ACL（本人 Manage）。不提供：投影内新建/写入/移动/复制（复制走 `read` URL 下载）、目录变化的 watch 推送（revision 随桶的 key 数与版本数变化）。
 
 回归：`cargo test -p nfs_server --test bucket --test projection`；lib 单测 `cargo test -p bucket_store -p s3_gateway`（cyfs-ndn）。
+
+## 预览管线(repr)
+
+`src/preview/`:Preview 组件不能直显的内容(Chromium 上的 HEIC/HEIF、HEVC,浏览器播放失败的 MOV 等)
+由 nfs_server 进程内 spawn ffmpeg/ffprobe 转成兼容副本,原文件字节、ObjId、下载原文件不变
+(`notepads/preview-iphone-media-compatibility-todo.md` D1–D10、Preview PRD §23.6–23.7)。
+
+- **工具**(`tools.rs`):依次查 `$BUCKYOS_ROOT/libexec/buckyos-tool/bin/` → `PATH`(macOS 另查
+  `/opt/homebrew/bin`、`/usr/local/bin`),Windows 加 `.exe` 且子进程无控制台;**有则使用,没有就失败**,
+  不下载不安装。启动时、每次 `hello` 与 `repr` 前按 (路径, 大小, mtime) 复核(只 stat,变了才重新跑 `-version`);`hello.repr` 给出
+  `available`、两者路径与版本、`tonemap`(zscale+tonemap)、`h264_encoder`(libx264)、`heif`(≥7.1 才有 tile grid)、
+  `profiles`,缺失时给 `missing` 与 `detail`。HEIC 需要 ffmpeg ≥ 7.1。
+- **协议**(`rpc.rs`,websdk `NfspClient.repr/getRepr` 同形):`repr` 的源是 `at`(NFSP 路径/ref,按路径 ACL
+  判 read)或 `args.source`(`{bucket:{bucket_id,key,version?,access_token?}}` 按桶权限,`{obj_id}` 按 NDM 读权);
+  `args.purpose` = `preview|thumbnail`,`args.runtime` 是能力提示(`video_codecs.hevc` 决定重封装还是转码),
+  `retry` + `expected_attempt_id` 是显式重试的 CAS;未知参数拒绝。规划结果 `state:"unsupported"`
+  (`reason` = `no-pipeline|no-renderer|not-content`,`detail` 说明);执行失败 `state:"failed"` + `error`。
+  `get_repr {work_key}` 只查询,要求本主体一小时内 ensure 过。
+- **记录**(filedb `preview_works`):`work_key = sha256(输入 ObjId, nfs.preview/<版本>@ffmpeg-<版本>, params)`;
+  本地文件的输入 ObjId 是 `sha256:<内容>`,按 (路径, 大小, mtime) 缓存在 `preview_inputs`;桶/对象源用内容
+  chunk/chunklist id。同一 work_key 合并等待,调用方离开不杀进程;失败负缓存 10 分钟,显式 Retry 立即新 attempt;
+  重启把 `processing` 记为可重试的 `INTERRUPTED`。
+- **档位**(`convert.rs`):`preview-image` JPEG 长边 ≤4096(HEIF tile grid 拼接、`irot`/`imir` 烘进像素、透明→白底);
+  `preview-video` H.264 High ≤1080p yuv420p + AAC 128k `+faststart`(H.264,或 Runtime 可播的 HEVC 只 `-c copy`
+  重封装;旋转由 autorotate 烘进像素);`preview-audio` AAC/MP4;`thumbnail` JPEG 长边 ≤640(视频取 min(1s,10%) 帧)。
+  PQ/HLG 一律 tonemap 到 SDR BT.709 并在 `fidelity` 注明。并发按 CPU 1–2,超时 max(60s, 时长×10)。
+- **产物**:FileObject 绑定在 zone 桶 `zone/nfs-server/_/preview-cache`(`app_data`,key = work_key);结果的
+  `read_url` 是 `/bucket/v1/...?token=bkt_…`(只读、单 key、6 小时),每次 `repr` 先判源权限再签,命中缓存也一样。
+  30 天未被 `repr` 访问的结果过期,总量按 `services/nfs-server/settings.preview_cache_mib`(默认 20480)LRU 收缩;
+  绑定内容丢失时下一次 `repr` 重新转换。
+- **验证**:`cargo test -p nfs_server --test preview`(真实 HEIC/HEVC 样本在 `tests/fixtures/preview/`,由 libheif /
+  x265 编码;没装 ffmpeg 时转换用例跳过,只跑"缺失即 unsupported")。
 
 ## 编辑器取消写入
 
