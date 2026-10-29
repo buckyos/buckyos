@@ -262,15 +262,30 @@ impl DriverMetadataPort for CloudUpdateDriverMetadataPort {
 pub(crate) struct RuntimeServiceAdapter {
     runtime: Arc<RuntimeState>,
     codecs: Arc<CodecRegistry>,
+    storage: Arc<AiccStorage>,
 }
 
 impl RuntimeServiceAdapter {
-    pub(crate) fn new(runtime: Arc<RuntimeState>, codecs: Arc<CodecRegistry>) -> Self {
-        Self { runtime, codecs }
+    pub(crate) fn new(runtime: Arc<RuntimeState>, codecs: Arc<CodecRegistry>, storage: Arc<AiccStorage>) -> Self {
+        Self { runtime, codecs, storage }
     }
 
     async fn snapshot(&self) -> RuntimeAdminSnapshot {
-        runtime_admin_snapshot(self.runtime.capture().await.as_ref(), self.codecs.as_ref())
+        let mut snapshot = runtime_admin_snapshot(self.runtime.capture().await.as_ref(), self.codecs.as_ref());
+        for provider in snapshot.providers.iter_mut().filter(|provider| {
+            provider.provider_profile_id == "custom" && provider.discovered_model_ids.is_empty()
+                && provider.inventory.state != ProviderInstanceInventoryState::Loaded
+        }) {
+            if let Ok(Some(record)) = self.storage.load_inventory(&provider.provider_instance_name).await {
+                if record.provider_profile_id == provider.provider_profile_id
+                    && record.protocol_adapter_id == provider.protocol_adapter_id
+                {
+                    provider.discovered_model_ids = record.snapshot.get("discovered_model_ids")
+                        .and_then(|value| serde_json::from_value(value.clone()).ok()).unwrap_or_default();
+                }
+            }
+        }
+        snapshot
     }
 }
 
@@ -304,6 +319,24 @@ impl PreparedSettingsRuntime for PreparedRuntimeAdapter {
 impl ServiceRuntime for RuntimeServiceAdapter {
     async fn capture(&self) -> Result<RuntimeAdminSnapshot, RPCErrors> {
         Ok(self.snapshot().await)
+    }
+
+    async fn preview_provider_rules(&self, request: ProviderRulesPreviewRequest) -> Result<ProviderRulesPreviewResponse, RPCErrors> {
+        let snapshot = self.runtime.capture().await;
+        let settings = snapshot.settings.providers.iter()
+            .find(|provider| provider.provider_instance_name == request.provider_instance_name)
+            .ok_or_else(|| RPCErrors::ReasonError("unknown provider instance".into()))?;
+        if settings.provider_profile_id != "custom" {
+            return Err(RPCErrors::ReasonError("rule previews require a custom provider".into()));
+        }
+        let catalog = snapshot.catalog.with_instance_catalog(&request.provider_instance_name, &request.rules_catalog)
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        let mut settings = settings.clone();
+        settings.instance_rules.get_or_insert_with(Default::default).model_driver_overrides.clear();
+        let id = CatalogSnapshot::instance_rules_id(&request.provider_instance_name);
+        Ok(ProviderRulesPreviewResponse {
+            resolved_model_rules: resolved_provider_model_rules(&catalog, &settings, Some(&id), None, &request.model_ids),
+        })
     }
 
     async fn prepare_settings(

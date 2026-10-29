@@ -838,3 +838,56 @@ fn pricing_requires_a_usable_dimension_and_unit_for_amounts() {
     let price = serde_json::from_value(json!({"currency":"USD","tiers":{"dimension":"input_tokens","steps":[{"input_token":0.1,"output_token":0.2}]}})).unwrap();
     assert!(super::validation::validate_pricing("review", &price).is_ok());
 }
+
+#[test]
+fn instance_catalogs_are_isolated_and_override_per_model_variants() {
+    let base = build(complete_files()).unwrap();
+    let mut value = provider_rules();
+    value["models"] =
+        json!([{"id":"gpt-special","operations":{"image.txt2img":"images.generate"}}]);
+    value["model_pricing"] =
+        json!([{"id":"gpt-special","pricing":{"currency":"USD","unit":"request","amount":0.25}}]);
+    value["model_variants"] = json!({"gpt-special":[]});
+    let snapshot = base.with_instance_catalog("one", &value).unwrap();
+    let id = CatalogSnapshot::instance_rules_id("one");
+    let context = MatchContext::from([("provider_model_id".into(), json!("gpt-special"))]);
+    let rule = snapshot
+        .resolve_provider_rule(&id, "gpt-special", &context)
+        .unwrap()
+        .unwrap();
+    assert_eq!(rule.action.operations["image.txt2img"], "images.generate");
+    assert_eq!(rule.action.pricing.unwrap().amount, Some(0.25));
+    assert!(snapshot
+        .matching_provider_variants_for_model(&id, &context)
+        .unwrap()
+        .is_empty());
+    assert!(base.provider_rules(&id).is_none());
+    assert!(
+        base.resolve_provider_rule("openai", "gpt-special", &context)
+            .unwrap()
+            .unwrap()
+            .action
+            .exclude
+    );
+    assert!(
+        snapshot
+            .resolve_provider_rule("openai", "gpt-special", &context)
+            .unwrap()
+            .unwrap()
+            .action
+            .exclude
+    );
+    value["model_variants"] = json!({"gpt-special":[{
+        "model_driver":"openai","variant":"custom-high","match":"*","provider_options":{"reasoning":{"effort":"high"}}
+    }]});
+    let changed = snapshot.with_instance_catalog("one", &value).unwrap();
+    assert_eq!(
+        changed
+            .matching_provider_variants_for_model(&id, &context)
+            .unwrap()[0]
+            .variant,
+        "custom-high"
+    );
+    value["model_pricing"][0]["pricing"]["amount"] = json!(-1);
+    assert!(changed.with_instance_catalog("one", &value).is_err());
+}

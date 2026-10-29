@@ -388,30 +388,6 @@ export function StepConnection({ draft, catalog, onUpdate }: StepConnectionProps
         </div>
       )}
 
-      {providerType === 'custom' && (
-        <details className="rounded-lg border p-3" style={{ borderColor: 'var(--cp-border)' }}>
-          <summary className="cursor-pointer text-sm">{t('aiCenter.wizard.advancedRules', 'Advanced model and routing settings')}</summary>
-          <div className="mt-3 flex flex-col gap-3">
-            <label className="text-xs">
-              {t('aiCenter.wizard.channelRules', 'Channel preset rules')}
-              <select className="mt-1 block w-full rounded border p-2" value={draft.provider_rules_id ?? ''} onChange={(event) => onUpdate({ provider_rules_id: event.target.value })}>
-                <option value="">{t('aiCenter.wizard.noInheritedRules', 'No inherited channel presets')}</option>
-                {(catalog?.providers ?? []).filter((provider) => provider.provider_rules_id).map((provider) => <option key={provider.provider_profile_id} value={provider.provider_rules_id}>{provider.display_name}</option>)}
-              </select>
-            </label>
-            <label className="text-xs">
-              {t('aiCenter.wizard.modelAliases', 'Model aliases: endpoint model → manufacturer/model')}
-              <textarea aria-label="Model aliases" className="mt-1 block w-full rounded border p-2 font-mono" rows={3} value={draft.model_driver_overrides_json ?? '{}'} onChange={(event) => onUpdate({ model_driver_overrides_json: event.target.value })} placeholder={'{"my-model":"qwen/qwen3.7-plus"}'} />
-            </label>
-            <label className="text-xs">
-              {t('aiCenter.wizard.serverDefaults', 'Use server default parameters for selected tasks')}
-              <textarea aria-label="Server default routes" className="mt-1 block w-full rounded border p-2 font-mono" rows={3} value={draft.server_default_routes_json ?? '{}'} onChange={(event) => onUpdate({ server_default_routes_json: event.target.value })} placeholder={'{"my-model":["llm.chat"]}'} />
-            </label>
-            <p className="text-xs" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.wizard.serverDefaultsHelp', 'Server defaults omit preset reasoning parameters. They do not disable thinking. Only recognized LLMs can enter the tasks you explicitly select; capabilities and access policies still apply.')}</p>
-          </div>
-        </details>
-      )}
-
       {/* Protocol Type (custom only) */}
       {providerType === 'custom' && (
         <div className="flex flex-col gap-1.5">
@@ -421,8 +397,11 @@ export function StepConnection({ draft, catalog, onUpdate }: StepConnectionProps
           </label>
           <select
             aria-label={t('aiCenter.wizard.protocolFamily', 'Protocol Family')}
-            value={draft.protocol_family_id ?? ''}
-            onChange={(e) => onUpdate({ protocol_family_id: e.target.value || null })}
+            value={draft.protocol_adapter_id ?? ''}
+            onChange={(event) => {
+              const option = catalog?.protocol_families.find((family) => family.protocol_adapter_id === event.target.value)
+              onUpdate({ protocol_family_id: option?.protocol_family_id ?? null, protocol_adapter_id: option?.protocol_adapter_id })
+            }}
             className="w-full rounded-lg px-3 py-2.5 text-sm outline-none appearance-none"
             style={{
               background: 'var(--cp-bg)',
@@ -432,9 +411,30 @@ export function StepConnection({ draft, catalog, onUpdate }: StepConnectionProps
             }}
           >
             <option value="">{t('aiCenter.wizard.selectProtocolFamily', 'Select a protocol family')}</option>
-            {(catalog?.protocol_families ?? []).map((family) => <option key={family.protocol_family_id} value={family.protocol_family_id}>{family.display_name}</option>)}
+            {(catalog?.protocol_families ?? []).map((family) => <option key={family.protocol_adapter_id} value={family.protocol_adapter_id}>{family.display_name}</option>)}
           </select>
         </div>
+      )}
+
+      {providerType === 'custom' && (
+        <details className="rounded-lg border p-3" style={{ borderColor: 'var(--cp-border)' }}>
+          <summary className="cursor-pointer text-sm">{t('aiCenter.wizard.advancedRules', 'Advanced model and routing settings')}</summary>
+          <div className="mt-3 flex flex-col gap-3">
+            <label className="text-xs">
+              {t('aiCenter.wizard.channelRules', 'Channel preset rules')}
+              <select className="mt-1 block w-full rounded border p-2" value={draft.provider_rules_id ?? ''} onChange={(event) => {
+                onUpdate({
+                  provider_rules_id: event.target.value,
+                  model_driver_overrides_json: undefined,
+                  server_default_routes_json: undefined,
+                })
+              }}>
+                <option value="">{t('aiCenter.wizard.noInheritedRules', 'No inherited channel presets')}</option>
+                {(catalog?.providers ?? []).filter((provider) => provider.provider_rules_id).map((provider) => <option key={provider.provider_profile_id} value={provider.provider_rules_id}>{provider.display_name}</option>)}
+              </select>
+            </label>
+          </div>
+        </details>
       )}
     </div>
   )

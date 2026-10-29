@@ -244,6 +244,28 @@ fn validate_model_semantics(
 pub(super) fn validate_provider_rules(
     catalog: &ProviderRulesCatalog,
 ) -> Result<(), CatalogBuildError> {
+    for (model, routes) in &catalog.server_default_routes {
+        if model.is_empty()
+            || model.contains(['*', '?', '@', ':'])
+            || model.chars().any(char::is_whitespace)
+            || routes.is_empty()
+            || routes.iter().any(|route| {
+                !route.starts_with("llm.")
+                    || route.len() <= 4
+                    || !route.bytes().all(|value| {
+                        value.is_ascii_lowercase()
+                            || value.is_ascii_digit()
+                            || b"._-".contains(&value)
+                    })
+            })
+        {
+            return Err(CatalogBuildError::InvalidValue {
+                owner: catalog.provider_profile_id.clone(),
+                field: "server_default_routes",
+                reason: "requires explicit model IDs mapped to nonempty LLM task paths".into(),
+            });
+        }
+    }
     if catalog.reported_cost.as_ref().is_some_and(|policy| {
         policy.currency.len() != 3 || !policy.currency.bytes().all(|b| b.is_ascii_uppercase())
     }) {
@@ -321,7 +343,11 @@ pub(super) fn validate_provider_rules(
         validate_provider_rule_data(&catalog.provider_profile_id, rule)?;
     }
     validate_model_pricing(&catalog.provider_profile_id, &catalog.model_pricing)?;
-    for variant in &catalog.variants {
+    for variant in catalog
+        .variants
+        .iter()
+        .chain(catalog.model_variants.values().flatten())
+    {
         validate_nonempty_field(
             CatalogKind::ProviderRules,
             &catalog.provider_profile_id,
@@ -1283,7 +1309,12 @@ pub(super) fn validate_references(
                 });
             }
         }
-        for variant in &catalog.document.variants {
+        for variant in catalog
+            .document
+            .variants
+            .iter()
+            .chain(catalog.document.model_variants.values().flatten())
+        {
             require_model_driver(
                 model_drivers,
                 owner,

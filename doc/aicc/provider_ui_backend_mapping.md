@@ -49,3 +49,29 @@ beta 2.2 的 settings 将 `provider_driver` 拆为 `provider_profile_id` 和 `pr
 ## 自定义 Provider 高级接入
 
 向导及实例详情支持 `provider_rules_id`、`instance_rules.model_driver_overrides`、`instance_rules.server_default_routes`；读取 `provider.list` 后原样回填。验证请求也传递实例规则，显示发现、身份识别、不可用预设及聊天候选，配置验证不发推理请求。空渠道规则表示不继承任意厂商规则；更新时空字符串清除，省略保持。设计和验收见 [服务端默认模式](provider_server_defaults.md)。
+
+## 自定义 Provider 的默认操作
+
+协议族探测只选择适配器，不证明端点支持该适配器声明的全部能力。库存构建先按发现结果限制操作候选，再按 binding 的 `default_priority` 选择最高优先级；显式渠道规则的操作映射优先。调用 lowering 使用同一优先级约定，库存中已选定的操作仍由路由携带，不在推理时重新探测端点。
+
+通用 `openai-responses` 的图片默认操作为文生图 `images.generate`、图生图及局部编辑 `images.edit`；`responses.create` 保留图片能力，供发现结果或显式规则选择。最高优先级仍有多个候选时拒绝歧义，不按名称或注册顺序猜测。所有对 custom 开放的适配器都必须对每项能力提供唯一默认操作，单测覆盖该约束。
+
+当前对 custom 开放的适配器中，多 operation 的 API 类型如下（优先级仅在同一适配器、同一 API 类型内比较）：
+
+| 适配器 | API 类型 | 候选操作及优先级 | 默认操作 |
+| --- | --- | --- | --- |
+| `gemini-interactions` | `llm`、`vision.ocr`、`vision.caption`、`vision.detect`、`vision.segment`、`audio.asr` | `interactions.background` 30，`interactions.create` 10 | `interactions.background` |
+| `gemini-interactions` | `video.generate`、`video.extend` | `models.predictLongRunning` 20，`interactions.create` 10 | `models.predictLongRunning` |
+| `openai-responses` | `image.txt2img` | `images.generate` 100，`responses.create` 0 | `images.generate` |
+| `openai-responses` | `image.img2img` | `images.edit` 100，`responses.create` 0 | `images.edit` |
+
+`claude-messages`、`openai-chat-completions`、`typesafe-systemone` 当前每项 API 类型只有一个 operation，无需增加优先级。单测逐项固定上述默认选择，并覆盖全部发现候选子集、显式映射以及调用 lowering，避免仅检查默认操作是否唯一而漏掉选择错误。
+
+这些默认值不等于渠道能力认证。OpenRouter 等已有专用 profile 的渠道应使用其内置入口，以获得专用协议、发现和操作映射；不能仅凭 OpenAI 兼容探测成功推断其全部媒体接口可用。接入校验中的 `Inventory` 错误表示模型清单构建失败，应核对模型、适配器及操作映射，不能据此判断网络或 API Key 失败。
+
+
+## 不支持的能力项
+
+库存构建找不到 `adapter + operation + API 类型` 的 codec 绑定时，只滤除该模型对应的能力项，保留其他能力；适配器未声明的 API 类型也按不支持处理。滤除后不会把该项写入 `api_types`、`operations` 或对应逻辑挂载，不影响同一 Provider 的其他模型。显式操作映射缺失绑定同样过滤；操作选择歧义及其他配置错误仍报错。
+
+`provider.validate.filtered_capabilities`、`provider.list` 的 `inventory.filtered_capabilities` 和库存快照携带过滤明细：`provider_model_id`、`protocol_adapter_id`、`api_type`、可空的 `operation_id`、`reason`（`unregistered_binding` 或 `unsupported_api_type`）。Validation 页面及 Provider 模型清单页提供数量与可展开的完整列表，过滤记录不计入验证错误。发现接口报告的能力限制仍参与原有的能力求交。

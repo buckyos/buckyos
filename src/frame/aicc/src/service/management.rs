@@ -435,6 +435,11 @@ impl AiccHandler for AiccService {
         Ok(response)
     }
 
+    async fn handle_preview_provider_rules(&self, request: ProviderRulesPreviewRequest, ctx: RPCContext) -> Result<ProviderRulesPreviewResponse, RPCErrors> {
+        self.authorize(&ctx, "write", RESOURCE_SETTINGS).await?;
+        self.runtime.preview_provider_rules(request).await
+    }
+
     async fn handle_provider_catalog(
         &self,
         _request: ProviderCatalogRequest,
@@ -540,6 +545,10 @@ impl AiccHandler for AiccService {
                         .unwrap_or(0);
                 }
                 if !manages {
+                    provider.rules_catalog = None;
+                    provider.resolved_model_rules.clear();
+                    provider.discovered_model_ids.clear();
+                    provider.instance_rules = None;
                     provider.inventory.unmatched_models.clear();
                     provider.inventory.unavailable_presets.clear();
                     provider.inventory.unpriced_models.clear();

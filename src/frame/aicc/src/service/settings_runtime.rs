@@ -32,6 +32,24 @@ impl RuntimeFactory for ServiceRuntimeFactory {
         catalog: Arc<CatalogSnapshot>,
         target_seq: u64,
     ) -> Result<PreparedRuntime, RuntimeError> {
+        let mut effective_catalog = (*catalog).clone();
+        for provider in &settings.providers {
+            if let Some(value) = provider
+                .instance_rules
+                .as_ref()
+                .and_then(|rules| rules.catalog.as_ref())
+            {
+                if provider.provider_profile_id != "custom" {
+                    return Err(RuntimeError::Backend(
+                        "instance catalogs are only supported for custom providers".into(),
+                    ));
+                }
+                effective_catalog = effective_catalog
+                    .with_instance_catalog(&provider.provider_instance_name, value)
+                    .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+            }
+        }
+        let catalog = Arc::new(effective_catalog);
         let builtins = builtin_provider_registry(catalog.as_ref())
             .map_err(|error| RuntimeError::Backend(error.to_string()))?;
         let (resolver, auth) = settings_credentials(settings.as_ref());
@@ -112,12 +130,18 @@ impl RuntimeFactory for ServiceRuntimeFactory {
                         operation_base_urls: Some(&provider.operation_base_urls),
                     })
                     .map_err(|error| RuntimeError::Backend(error.to_string()))?;
-                let provider_rules_id = provider.provider_rules_id.clone().or_else(|| {
-                    catalog
-                        .resolve_provider_configuration(&provider.provider_profile_id)
-                        .ok()
-                        .map(|configuration| configuration.provider_rules_id)
-                });
+                let provider_rules_id = provider
+                    .instance_rules
+                    .as_ref()
+                    .and_then(|rules| rules.catalog.as_ref())
+                    .map(|_| CatalogSnapshot::instance_rules_id(&provider.provider_instance_name))
+                    .or_else(|| provider.provider_rules_id.clone())
+                    .or_else(|| {
+                        catalog
+                            .resolve_provider_configuration(&provider.provider_profile_id)
+                            .ok()
+                            .map(|configuration| configuration.provider_rules_id)
+                    });
                 let request_timeout = provider
                     .timeout_ms
                     .map(Duration::from_millis)
@@ -356,7 +380,14 @@ impl ProviderValidator for RuntimeProviderValidator {
         let profile_default = profile
             .filter(|profile| !profile.accepts_any_adapter)
             .map(|profile| profile.default_protocol_adapter_id.as_str());
-        let mut adapter = builtins
+        if profile.is_some_and(|profile| profile.accepts_any_adapter)
+            && request.protocol_adapter_id.is_none()
+        {
+            return Err(RPCErrors::ReasonError(
+                "custom providers require an explicit protocol adapter".to_owned(),
+            ));
+        }
+        let adapter = builtins
             .codecs()
             .resolve_adapter_id(
                 request.protocol_family_id.as_deref(),
@@ -394,76 +425,24 @@ impl ProviderValidator for RuntimeProviderValidator {
             .map(provider_discovery_snapshot)
             .transpose()
             .map_err(to_rpc_error)?;
-        if request.protocol_adapter_id.is_none()
-            && request.protocol_family_id.is_some()
-            && profile.is_some_and(|profile| profile.accepts_any_adapter)
+        let mut catalog = snapshot.catalog.clone();
+        let mut rules_id = request.provider_rules_id.clone();
+        if let Some(value) = request
+            .instance_rules
+            .as_ref()
+            .and_then(|rules| rules.catalog.as_ref())
         {
-            if let ProviderAuthConfig::ApiKey { credential_ref, .. } = &auth {
-                let resolver = StaticCredentialResolver::new(credentials.clone());
-                let family = request.protocol_family_id.as_deref().unwrap_or_default();
-                let mut selected = None;
-                for candidate in builtins
-                    .custom_provider_probe_candidates(family)
-                    .map_err(to_rpc_error)?
-                {
-                    let candidate_binding = builtins
-                        .resolve(BuiltinProviderRequest {
-                            provider_profile_id: &request.provider_profile_id,
-                            protocol_adapter_id: &candidate,
-                            auth_mode: auth.mode(),
-                            credential_kind: auth.credential_kind(),
-                            configured_inventory: configured_inventory.clone(),
-                        })
-                        .map_err(to_rpc_error)?;
-                    let connection = candidate_binding
-                        .connection
-                        .resolve(ProviderConnectionInput {
-                            base_url: Some(&request.base_url),
-                            region: request.region.as_deref(),
-                            workspace: request.workspace.as_deref(),
-                            account: request.account.as_deref(),
-                            operation_base_urls: Some(&request.operation_base_urls),
-                        })
-                        .map_err(to_rpc_error)?;
-                    let descriptor = candidate_binding
-                        .profile
-                        .credential_for(auth.credential_kind())
-                        .map_err(to_rpc_error)?;
-                    let credential = resolver
-                        .resolve(
-                            descriptor,
-                            &CredentialReference {
-                                reference: credential_ref.clone(),
-                            },
-                        )
-                        .await
-                        .map_err(to_rpc_error)?;
-                    if builtins
-                        .codecs()
-                        .probe_adapter(
-                            &candidate,
-                            &connection.base_url,
-                            &credential,
-                            Duration::from_secs(10),
-                        )
-                        .await
-                        .map_err(to_rpc_error)?
-                    {
-                        selected = Some(candidate);
-                        break;
-                    }
-                }
-                adapter = selected.ok_or_else(|| {
-                    RPCErrors::ReasonError(format!(
-                        "protocol family `{family}` is not supported by the provider endpoint"
-                    ))
-                })?;
-            } else {
+            if request.provider_profile_id != "custom" {
                 return Err(RPCErrors::ReasonError(
-                    "protocol-family negotiation requires API-key authentication or an explicit adapter"
-                        .to_owned(),
+                    "instance catalogs are only supported for custom providers".into(),
                 ));
             }
+            catalog = Arc::new(
+                catalog
+                    .with_instance_catalog(&provider_name, value)
+                    .map_err(to_rpc_error)?,
+            );
+            rules_id = Some(CatalogSnapshot::instance_rules_id(&provider_name));
         }
         let binding = builtins
             .resolve(BuiltinProviderRequest {
@@ -477,7 +456,7 @@ impl ProviderValidator for RuntimeProviderValidator {
         let manager = ProviderRuntimeManager::new(
             builtins.profiles().cloned().collect::<Vec<_>>(),
             Arc::new(StaticCredentialResolver::new(credentials)),
-            snapshot.catalog.clone(),
+            catalog.clone(),
             builtins.codecs(),
             self.storage.clone(),
         )
@@ -486,7 +465,7 @@ impl ProviderValidator for RuntimeProviderValidator {
             provider_instance_name: provider_name,
             provider_profile_id: request.provider_profile_id,
             protocol_adapter_id: adapter.clone(),
-            provider_rules_id: request.provider_rules_id,
+            provider_rules_id: rules_id,
             instance_rules: request.instance_rules.or(binding.instance_rules.clone()),
             base_url: Some(request.base_url),
             operation_base_urls: request.operation_base_urls,
@@ -506,7 +485,7 @@ impl ProviderValidator for RuntimeProviderValidator {
             .await
         {
             Ok(negotiated) => Ok(provider_inventory_validation(
-                &snapshot.catalog,
+                &catalog,
                 &negotiated.inventory,
                 negotiated.protocol_adapter_id,
             )),
@@ -530,7 +509,8 @@ impl ProviderValidator for RuntimeProviderValidator {
                     "provider validation failed at {:?}: {}",
                     error.stage, error.message
                 );
-                let provider_name = crate::observability::redact(&json!(draft.provider_instance_name));
+                let provider_name =
+                    crate::observability::redact(&json!(draft.provider_instance_name));
                 log::warn!("provider {provider_name}: {message}");
                 Ok(ProviderValidateResponse {
                     base_url_reachable: !matches!(
@@ -580,6 +560,7 @@ fn provider_inventory_validation(
         balance_available: false,
         models_discovered: discovered.into_iter().collect(),
         models_recognized: recognized,
+        filtered_capabilities: inventory.filtered_capabilities.clone(),
         unmatched_models: inventory
             .unmatched_models
             .iter()
@@ -747,7 +728,26 @@ mod startup_tests {
         let inventory =
             InventoryBuilder::build(&profile, &config, discovery, &catalog, &providers.codecs())
                 .unwrap();
+        let mut inventory = inventory;
+        inventory
+            .filtered_capabilities
+            .push(buckyos_api::FilteredProviderCapability {
+                provider_model_id: "qwen3.8-max-0902".into(),
+                protocol_adapter_id: "sn-openai".into(),
+                api_type: "image.img2img".into(),
+                operation_id: Some("images.generate".into()),
+                reason: "unregistered_binding".into(),
+            });
         let response = provider_inventory_validation(&catalog, &inventory, "sn-openai".into());
+        assert_eq!(
+            response.filtered_capabilities,
+            inventory.filtered_capabilities
+        );
+        let wire = serde_json::to_value(&response).unwrap();
+        assert_eq!(
+            wire["filtered_capabilities"][0]["api_type"],
+            "image.img2img"
+        );
         assert!(response.errors.is_empty());
         assert_eq!(response.models_discovered.len(), 2);
         assert_eq!(response.models_recognized, ["qwen3.8-max-0902"]);
@@ -755,6 +755,76 @@ mod startup_tests {
         assert_eq!(response.unavailable_presets.len(), 4);
         assert!(response.routing_candidates["llm.chat"].is_empty());
         assert_eq!(response.warnings.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn custom_validation_requires_explicit_adapter_without_probing() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = vec![0_u8; 4096];
+                let read = stream.read(&mut request).await.unwrap();
+                assert!(String::from_utf8_lossy(&request[..read]).starts_with("GET /v1/models "));
+                let body = r#"{"data":[{"id":"gpt-6-astra"}]}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let catalog = crate::settings::MetadataSources {
+            builtin: crate::settings::load_builtin_metadata().unwrap(),
+            ..Default::default()
+        }
+        .build_snapshot(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            &Default::default(),
+        )
+        .unwrap();
+        let storage = Arc::new(
+            AiccStorage::open("sqlite::memory:", buckyos_api::RdbBackend::Sqlite)
+                .await
+                .unwrap(),
+        );
+        let runtime = RuntimeState::bootstrap(
+            SettingsDocument::new(1, AiccSettings::default()).unwrap(),
+            Arc::new(BuiltinRuntimeInputs { catalog }),
+            Arc::new(ServiceRuntimeFactory::new(
+                storage.clone(),
+                Arc::new(AiccEventLog::default()),
+            )),
+        )
+        .await
+        .unwrap();
+        let validator = RuntimeProviderValidator::new(runtime.clone(), storage);
+        let mut request = ProviderValidateRequest::new(
+            ProviderInstanceType::CloudApi,
+            "custom",
+            format!("http://{address}/v1"),
+            serde_json::from_value(json!({"api_token": {"inline_secret": "mock-key"}})).unwrap(),
+        );
+        request.protocol_family_id = Some("openai".into());
+        assert!(validator
+            .validate(request.clone())
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("explicit protocol adapter"));
+        for adapter in ["openai-chat-completions", "openai-responses"] {
+            request.protocol_adapter_id = Some(adapter.into());
+            let response = validator.validate(request.clone()).await.unwrap();
+            assert!(response.errors.is_empty(), "{:?}", response.errors);
+            assert_eq!(
+                response.resolved_protocol_adapter_id.as_deref(),
+                Some(adapter)
+            );
+            assert_eq!(response.models_discovered, ["gpt-6-astra"]);
+        }
+        server.await.unwrap();
+        runtime.shutdown().await;
     }
 
     #[tokio::test]
@@ -840,6 +910,148 @@ mod startup_tests {
         assert!(!serde_json::to_string(&invalid)
             .unwrap()
             .contains("sk-test-validation-secret"));
+        server.await.unwrap();
+        runtime.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn disabled_custom_provider_keeps_cached_discovery_and_its_saved_catalog() {
+        let catalog = crate::settings::MetadataSources {
+            builtin: crate::settings::load_builtin_metadata().unwrap(),
+            ..Default::default()
+        }.build_snapshot(crate::settings::BUILTIN_CATALOG_REVISION_SEQ, &Default::default()).unwrap();
+        let codecs = builtin_provider_registry(&catalog).unwrap().codecs();
+        let mut rules = serde_json::to_value(catalog.provider_rules("openai").unwrap()).unwrap();
+        rules["model_variants"] = json!({"local-model":[]});
+        let provider: ProviderSettings = serde_json::from_value(json!({
+            "provider_instance_name":"disabled-custom",
+            "provider_type":"cloud_api",
+            "provider_profile_id":"custom",
+            "protocol_family_id":"openai",
+            "protocol_adapter_id":"openai-responses",
+            "base_url":"https://unused.example/v1",
+            "credentials":{"api_token":{"inline_secret":"not-used"}},
+            "enabled":false,
+            "instance_rules":{"catalog":rules}
+        })).unwrap();
+        let storage = Arc::new(AiccStorage::open("sqlite::memory:", buckyos_api::RdbBackend::Sqlite).await.unwrap());
+        let record = crate::storage::InventoryLkgsRecord::new(
+            "disabled-custom", "custom", "openai-responses", "previous", 1, None, 1,
+            json!({"discovered_model_ids":["local-model","unknown-model"]}), 1
+        ).unwrap();
+        storage.upsert_inventory(&record).await.unwrap();
+        let runtime = RuntimeState::bootstrap(
+            SettingsDocument::new(1, AiccSettings {providers: vec![provider], ..Default::default()}).unwrap(),
+            Arc::new(BuiltinRuntimeInputs { catalog }),
+            Arc::new(ServiceRuntimeFactory::new(storage.clone(), Arc::new(AiccEventLog::default()))),
+        ).await.unwrap();
+        let adapter = RuntimeServiceAdapter::new(runtime.clone(), codecs, storage);
+        let view = adapter.capture().await.unwrap();
+        let preset = view.provider_catalog.providers.iter().find(|preset| preset.provider_profile_id == "openai").unwrap();
+        assert_eq!(preset.rules_catalog.as_ref().unwrap()["format"], "buckyos.aicc.provider-rules-catalog");
+        assert!(preset.rules_catalog.as_ref().unwrap()["patterns"].is_array());
+        assert_eq!(view.providers[0].discovered_model_ids, BTreeSet::from(["local-model".into(), "unknown-model".into()]));
+        assert_eq!(view.providers[0].rules_catalog.as_ref().unwrap()["model_variants"]["local-model"], json!([]));
+        assert_eq!(view.providers[0].rules_catalog.as_ref().unwrap()["provider_profile_id"], "openai");
+        assert_eq!(view.providers[0].rules_catalog.as_ref().unwrap()["custom_provider_adapters"], view.provider_catalog.providers.iter().find(|preset| preset.provider_profile_id == "openai").unwrap().rules_catalog.as_ref().unwrap()["custom_provider_adapters"]);
+        assert_eq!(view.providers[0].inventory.state, ProviderInstanceInventoryState::Disabled);
+        let preset = view.provider_catalog.providers.iter().find(|preset| preset.provider_profile_id == "openrouter").unwrap();
+        let preview = adapter.preview_provider_rules(ProviderRulesPreviewRequest {
+            provider_instance_name: "disabled-custom".into(),
+            rules_catalog: preset.rules_catalog.clone().unwrap(),
+            model_ids: BTreeSet::from(["openai/gpt-6-sol".into(), "openai/gpt-6-sol-pro".into()]),
+        }).await.unwrap();
+        let known = &preview.resolved_model_rules["openai/gpt-6-sol"];
+        assert_eq!(known["model_driver"], "openai");
+        assert_eq!(known["origin_model_id"], "gpt-6-sol");
+        assert_eq!(known["rule"]["operations"]["llm"], "responses.create");
+        assert!(known["rule"]["operations"].get("audio.tts").is_none());
+        assert!(known["variants"].as_array().unwrap().iter().any(|variant| variant["variant"] == "reasoning-low" && variant["provider_options"]["reasoning"]["effort"] == "low"));
+        let unknown = &preview.resolved_model_rules["openai/gpt-6-sol-pro"];
+        assert_eq!(unknown["rule"]["operations"]["llm"], "responses.create");
+        assert!(unknown["model_metadata"].is_null());
+        assert_eq!(unknown["variants"], json!([]));
+        assert!(unknown["pricing"].is_null());
+        assert!(preset.rules_catalog.as_ref().unwrap().get("model_variants").is_none());
+        let mut scoped = preset.rules_catalog.clone().unwrap();
+        for variant in scoped["variants"].as_array_mut().unwrap() {
+            variant["match"]["provider_model_id"] = json!({"not":["openai/gpt-6-sol"]});
+        }
+        scoped["variants"].as_array_mut().unwrap().push(json!({
+            "model_driver":"openai", "variant":"reasoning-low", "match":{"provider_model_id":"openai/gpt-6-sol"},
+            "provider_options":{"reasoning":{"effort":"low"},"max_tokens":123}
+        }));
+        let scoped_preview = adapter.preview_provider_rules(ProviderRulesPreviewRequest {
+            provider_instance_name: "disabled-custom".into(), rules_catalog: scoped.clone(),
+            model_ids: BTreeSet::from(["openai/gpt-6-sol".into(), "openai/gpt-6-luna".into()]),
+        }).await.unwrap();
+        assert_eq!(scoped_preview.resolved_model_rules["openai/gpt-6-sol"]["variants"].as_array().unwrap().len(), 1);
+        assert_eq!(scoped_preview.resolved_model_rules["openai/gpt-6-sol"]["variants"][0]["provider_options"]["max_tokens"], 123);
+        assert!(scoped_preview.resolved_model_rules["openai/gpt-6-luna"]["variants"].as_array().unwrap().len() > 1);
+        scoped["variants"].as_array_mut().unwrap().pop();
+        let disabled_preview = adapter.preview_provider_rules(ProviderRulesPreviewRequest {
+            provider_instance_name: "disabled-custom".into(), rules_catalog: scoped,
+            model_ids: BTreeSet::from(["openai/gpt-6-sol".into()]),
+        }).await.unwrap();
+        assert_eq!(disabled_preview.resolved_model_rules["openai/gpt-6-sol"]["variants"], json!([]));
+        let after = adapter.capture().await.unwrap();
+        assert_eq!(after.settings_revision, view.settings_revision);
+        assert_eq!(after.providers[0].rules_catalog, view.providers[0].rules_catalog);
+        runtime.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn custom_gemini_rules_view_uses_instance_inventory_without_builtin_prices() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0_u8; 4096];
+            let read = stream.read(&mut request).await.unwrap();
+            assert!(String::from_utf8_lossy(&request[..read]).starts_with("GET /v1beta/models"));
+            let body = r#"{"models":[{"name":"models/gemini-4-argon"}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let catalog = crate::settings::MetadataSources {
+            builtin: crate::settings::load_builtin_metadata().unwrap(),
+            ..Default::default()
+        }.build_snapshot(crate::settings::BUILTIN_CATALOG_REVISION_SEQ, &Default::default()).unwrap();
+        assert!(!catalog.provider_rules("gemini").unwrap().model_pricing.is_empty());
+        let codecs = builtin_provider_registry(&catalog).unwrap().codecs();
+        let provider: ProviderSettings = serde_json::from_value(json!({
+            "provider_instance_name":"my-gemini",
+            "provider_type":"cloud_api",
+            "provider_profile_id":"custom",
+            "protocol_family_id":"gemini",
+            "protocol_adapter_id":"gemini-interactions",
+            "base_url":format!("http://{address}/v1beta"),
+            "credentials":{"api_token":{"inline_secret":"local-test"}},
+            "auto_sync_models":false
+        })).unwrap();
+        let storage = Arc::new(AiccStorage::open("sqlite::memory:", buckyos_api::RdbBackend::Sqlite).await.unwrap());
+        let runtime = RuntimeState::bootstrap(
+            SettingsDocument::new(1, AiccSettings { providers: vec![provider], ..Default::default() }).unwrap(),
+            Arc::new(BuiltinRuntimeInputs { catalog }),
+            Arc::new(ServiceRuntimeFactory::new(storage, Arc::new(AiccEventLog::default()))),
+        ).await.unwrap();
+        let snapshot = runtime.capture().await;
+        let provider = snapshot.providers.get("my-gemini").expect("custom Gemini must load");
+        let model = provider.inventory.models.iter().find(|model| model.provider_model_id == "gemini-4-argon").unwrap();
+        assert!(model.pricing.is_none());
+        let view = runtime_admin_snapshot(&snapshot, &codecs);
+        assert!(view.providers[0].rules_catalog.is_none(), "unbound Gemini catalogs must not be returned");
+        let resolved = &view.providers[0].resolved_model_rules["gemini-4-argon"];
+        assert_eq!(resolved["pricing"], Value::Null);
+        assert_eq!(resolved["operations"], serde_json::to_value(&model.operations).unwrap());
+        let variants = resolved["variants"].as_array().unwrap();
+        assert_eq!(resolved["variants"], serde_json::to_value(&model.variant_rules).unwrap());
+        assert_eq!(variants.len(), model.variants.len());
+        assert!(variants.iter().all(|variant| model.variants.iter().any(|actual| variant["variant"] == actual.name)));
+        assert!(resolved["rule"].is_null(), "unbound request rules must not be imported");
         server.await.unwrap();
         runtime.shutdown().await;
     }

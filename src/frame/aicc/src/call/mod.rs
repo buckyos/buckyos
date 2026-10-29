@@ -714,7 +714,7 @@ impl<'a> CallResolver<'a> {
         };
         let rules_id = rules_id
             .or_else(|| {
-                if !variant.starts_with("reasoning-") {
+                if selected.provider_profile_id == "custom" || !variant.starts_with("reasoning-") {
                     return None;
                 }
                 self.catalog
@@ -784,7 +784,21 @@ fn select_operation(
                         .iter()
                         .any(|binding| binding.api_type == api_type)
                 })
-                .map(|operation| operation.operation_id.clone())
+                .map(|operation| {
+                    let priority = operation
+                        .bindings
+                        .iter()
+                        .filter(|binding| binding.api_type == api_type)
+                        .map(|binding| binding.default_priority)
+                        .max()
+                        .unwrap_or_default();
+                    (operation.operation_id.clone(), priority)
+                })
+                .collect::<Vec<_>>();
+            let highest_priority = matching.iter().map(|(_, priority)| *priority).max();
+            let matching = matching
+                .into_iter()
+                .filter(|(_, priority)| Some(*priority) == highest_priority)
                 .collect::<Vec<_>>();
             match matching.as_slice() {
                 [] => {
@@ -793,7 +807,7 @@ fn select_operation(
                         api_type: api_name.into(),
                     });
                 }
-                [operation] => operation.clone(),
+                [(operation, _)] => operation.clone(),
                 _ => {
                     return Err(CallLoweringError::AmbiguousDefaultOperation {
                         adapter_id: adapter_id.into(),
@@ -1914,7 +1928,11 @@ mod tests {
             route.selected.provider_model_id = model_id.into();
             route.selected.origin_model_id = origin.into();
             let mut target = target("test-secret");
-            target.provider_rules_id = None;
+            assert!(matches!(
+                resolver.resolve_variant(None, &route.selected, Some(&format!("reasoning-{effort}")), &MatchContext::new()),
+                Err(CallLoweringError::MissingProviderVariant { .. })
+            ));
+            target.provider_rules_id = Some("openai".into());
             let mut request =
                 LlmChatInvokeRequest::new(exact, vec![AiMessage::text(AiRole::User, "hello")]);
             request.temperature = Some(0.7);
@@ -1926,13 +1944,11 @@ mod tests {
                 lowered.input.resolved_parameters["reasoning"],
                 json!({"effort": effort})
             );
-            assert!(lowered.pricing.pricing.is_none());
-            assert!(lowered.reported_cost_currency.is_none());
-            assert!(lowered.revisions.provider_rules_revision_seq.is_none());
+            assert!(lowered.revisions.provider_rules_revision_seq.is_some());
             let AiccCall::ChatCompletionsCreate(request) = &lowered.input.canonical_request else {
                 panic!("expected chat request");
             };
-            assert_eq!(request.temperature, Some(0.7));
+            assert_eq!(request.temperature, if effort == "none" { Some(0.7) } else { None });
             let encoded = codecs
                 .encode(
                     "openai-responses",
@@ -2479,7 +2495,7 @@ mod tests {
     }
 
     #[test]
-    fn operation_precedence_is_method_then_api_type_then_unique_adapter_default() {
+    fn operation_precedence_is_method_then_api_type_then_preferred_adapter_default() {
         let codecs = codecs();
         let mappings = BTreeMap::from([
             ("images.generate".into(), "images.generate".into()),
@@ -2508,16 +2524,26 @@ mod tests {
             .unwrap(),
             "responses.create"
         );
-        assert!(matches!(
-            select_operation(
-                &codecs,
-                "openai-responses",
-                &BTreeMap::new(),
+        for (api_type, method, expected) in [
+            (
                 ApiType::ImageTextToImage,
                 "images.generate",
+                "images.generate",
             ),
-            Err(CallLoweringError::AmbiguousDefaultOperation { .. })
-        ));
+            (ApiType::ImageImageToImage, "images.edit", "images.edit"),
+        ] {
+            assert_eq!(
+                select_operation(
+                    &codecs,
+                    "openai-responses",
+                    &BTreeMap::new(),
+                    api_type,
+                    method
+                )
+                .unwrap(),
+                expected
+            );
+        }
         assert_eq!(
             select_operation(
                 &codecs,
@@ -2529,6 +2555,108 @@ mod tests {
             .unwrap(),
             "responses.create"
         );
+    }
+
+    #[test]
+    fn custom_provider_lowering_has_a_default_for_every_selectable_binding() {
+        let catalog = metadata_snapshot();
+        let registry = crate::provider::builtin_provider_registry(&catalog).unwrap();
+        let codecs = registry.codecs();
+        for adapter_id in registry.custom_provider_adapter_ids() {
+            let adapter = codecs.adapter(adapter_id).unwrap();
+            for binding in adapter
+                .operations
+                .values()
+                .flat_map(|operation| &operation.bindings)
+            {
+                select_operation(
+                    &codecs,
+                    adapter_id,
+                    &BTreeMap::new(),
+                    binding.api_type,
+                    binding.api_type.typed_method(),
+                )
+                .unwrap_or_else(|error| panic!("{adapter_id}/{:?}: {error}", binding.api_type));
+            }
+        }
+    }
+
+    #[test]
+    fn custom_multi_operation_lowering_preserves_defaults_and_overrides() {
+        let codecs = all_codecs();
+        for (adapter, api_type, expected, alternate) in [
+            (
+                "gemini-interactions",
+                ApiType::Llm,
+                "interactions.background",
+                "interactions.create",
+            ),
+            (
+                "gemini-interactions",
+                ApiType::VisionOcr,
+                "interactions.background",
+                "interactions.create",
+            ),
+            (
+                "gemini-interactions",
+                ApiType::VisionCaption,
+                "interactions.background",
+                "interactions.create",
+            ),
+            (
+                "gemini-interactions",
+                ApiType::VisionDetect,
+                "interactions.background",
+                "interactions.create",
+            ),
+            (
+                "gemini-interactions",
+                ApiType::VisionSegment,
+                "interactions.background",
+                "interactions.create",
+            ),
+            (
+                "gemini-interactions",
+                ApiType::AudioSpeechRecognition,
+                "interactions.background",
+                "interactions.create",
+            ),
+            (
+                "gemini-interactions",
+                ApiType::VideoGenerate,
+                "models.predictLongRunning",
+                "interactions.create",
+            ),
+            (
+                "gemini-interactions",
+                ApiType::VideoExtend,
+                "models.predictLongRunning",
+                "interactions.create",
+            ),
+            (
+                "openai-responses",
+                ApiType::ImageTextToImage,
+                "images.generate",
+                "responses.create",
+            ),
+            (
+                "openai-responses",
+                ApiType::ImageImageToImage,
+                "images.edit",
+                "responses.create",
+            ),
+        ] {
+            let method = api_type.typed_method();
+            assert_eq!(
+                select_operation(&codecs, adapter, &BTreeMap::new(), api_type, method).unwrap(),
+                expected
+            );
+            let mappings = BTreeMap::from([(api_type_name(api_type).into(), alternate.into())]);
+            assert_eq!(
+                select_operation(&codecs, adapter, &mappings, api_type, method).unwrap(),
+                alternate
+            );
+        }
     }
 
     #[test]

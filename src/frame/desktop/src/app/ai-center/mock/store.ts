@@ -1,4 +1,5 @@
-import { parseProviderAdvancedRules } from '../../../api/provider_model_selection'
+import { createCustomRulesDraft, parseProviderRulesFile, ruleObject } from '../../../api/custom_provider_rules'
+import { parseProviderAdvancedRules, toProviderInstanceRules } from '../../../api/provider_model_selection'
 import type {
   AIStatus,
   ApiNamespace,
@@ -207,6 +208,9 @@ export class MockDataStore {
         provider_profile_id: providerType,
         protocol_adapter_id: draft.protocol_adapter_id ?? 'mock-adapter',
         provider_origin: 'user_config',
+        provider_rules_id: draft.provider_rules_id,
+        instance_rules: toProviderInstanceRules(draft),
+        discovered_model_ids: [...new Set(models.map((model) => model.provider_model_id))],
         auth_mode: draft.api_key ? 'api_key' : undefined,
         credential_configured: Boolean(draft.api_key),
         base_url: draft.base_url,
@@ -265,9 +269,11 @@ export class MockDataStore {
   updateProviderRules(id: string, draft: Partial<WizardDraft>): void {
     const provider = this.providers.get(id)
     if (!provider) return
+    const file = draft.rules_config_json ? parseProviderRulesFile(draft.rules_config_json, createCustomRulesDraft(provider.config)) : undefined
     this.providers.set(id, { ...provider, config: { ...provider.config,
-      provider_rules_id: draft.provider_rules_id || undefined,
-      instance_rules: { ...provider.config.instance_rules, ...parseProviderAdvancedRules(draft) },
+      provider_rules_id: file?.provider_rules_id || draft.provider_rules_id || undefined,
+      rules_catalog: file ? ruleObject(file.instance_rules.catalog) : provider.config.rules_catalog,
+      instance_rules: file?.instance_rules ?? { ...provider.config.instance_rules, ...parseProviderAdvancedRules(draft) },
     } })
     this.notify()
   }

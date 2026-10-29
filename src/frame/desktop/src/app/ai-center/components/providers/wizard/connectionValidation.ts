@@ -32,7 +32,7 @@ export const wizardDraftSchema = z.object({
   for (const [operation, url] of Object.entries(draft.operation_base_urls)) {
     if (!url.trim()) context.addIssue({ code: 'custom', path: ['operation_base_urls', operation], message: 'Operation Base URL is required' })
   }
-  if (draft.provider_profile_id === 'custom' && !draft.protocol_family_id) {
+  if (draft.provider_profile_id === 'custom' && (!draft.protocol_family_id || !draft.protocol_adapter_id)) {
     context.addIssue({ code: 'custom', path: ['protocol_family_id'], message: 'Protocol family is required' })
   }
   if (draft.auth_mode === 'api_key' && !draft.api_key.trim()) {

@@ -148,6 +148,26 @@ export function StepValidation({ draft, onResult }: StepValidationProps) {
           <p>{t('aiCenter.wizard.chatCandidates', 'Configured chat candidates')}: {readiness.routing_candidates?.['llm.chat']?.length ?? 0}</p>
           <p>{t('aiCenter.wizard.unmappedPresets', 'Presets without channel mapping')}: {readiness.unavailable_presets?.length ?? 0}</p>
           <p>{t('aiCenter.wizard.unknownModels', 'Models needing an identity mapping')}: {readiness.unmatched_models?.length ?? 0}</p>
+          {(readiness.filtered_capabilities?.length ?? 0) > 0 && (
+            <details className="rounded-lg border p-3 text-xs" style={{ borderColor: 'var(--cp-border)' }}>
+              <summary className="cursor-pointer" style={{ color: 'var(--cp-warning)' }}>
+                {t('aiCenter.providers.filteredCapabilities', 'Unsupported capabilities filtered out')}: {readiness.filtered_capabilities?.length}
+              </summary>
+              <div className="mt-2 max-h-64 overflow-auto">
+                {readiness.filtered_capabilities?.map((item, index) => (
+                  <div key={index} className="border-t py-2 break-words" style={{ borderColor: 'var(--cp-border)' }}>
+                    <p className="font-mono">{item.provider_model_id} · {item.api_type}</p>
+                    <p className="font-mono">{item.protocol_adapter_id}{item.operation_id ? ` · ${item.operation_id}` : ''}</p>
+                    <p>{item.reason === 'unregistered_binding'
+                      ? t('aiCenter.providers.unregisteredBinding', 'No protocol binding for this capability and operation')
+                      : item.reason === 'unsupported_api_type'
+                        ? t('aiCenter.providers.unsupportedApiType', 'The selected protocol or discovery does not support this capability')
+                        : item.reason}</p>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
           {(readiness.warnings ?? []).map((warning) => <p key={warning} style={{ color: 'var(--cp-warning)' }}>{warning}</p>)}
           <p>{t('aiCenter.wizard.readinessScope', 'These checks validate configuration only. Access policies and a real model call are required to confirm conversation readiness.')}</p>
         </div>
