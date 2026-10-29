@@ -17,7 +17,7 @@
 | `https://` | 标准的 http 链接。注意 cyfs 的 R-Link 也可以在这里表达。 |
 | `file://`  | 标准。支持 `file:///local_path`、`file://localhost/local_path`、`file://$device_id/path`。 |
 | `cyfs://`  | 我们的扩展，表示传统文件系统视角下的 CYFS 逻辑路径。 |
-| `obj://`   | 我们的扩展，表示 Agent 所见的 DID Object 世界。 |
+| `obj://`   | 我们的扩展，表示 Agent 所见的 DID Object 世界。 运行在buckyos上的信息，都可以用obj://表达|
 | `buckyos://` | 我们的扩展，用来拉起 current zone / buckyos app 的特定流程。 |
 
 ## 缩写路径的展开

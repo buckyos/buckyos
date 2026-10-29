@@ -2,6 +2,8 @@
 
 日期：2026-10-28（America/Los_Angeles）。关联：[issue #689](https://github.com/buckyos/buckyos/issues/689)。
 
+2026-10-29 补充：按“Agent 本质是特殊 appid、权限上限为 Owner、调度器按配置生成授权”的方向，重新核对 `buckyos@688df1577`，结果与后续 TODO 见 §15；§1–14 的源码现状仍对应原基线。
+
 本文用于讨论整体框架调整。**现状来自源码；推荐方案、协议字段草案和未勾选 TODO 均未实现，也不表示已经作出产品决定。** 本轮只写分析文档，没有修改服务、SDK 或部署环境，没有执行双 Zone 实测。
 
 核对基线：`buckyos@1156ff598`、`cyfs-ndn@0eee9ccc`、`cyfs-gateway@245a3780`、`buckyos-websdk@02be8616`。兄弟仓库链接按当前并排 checkout 布局书写。
@@ -496,3 +498,98 @@ cargo test -p nfs_server -- --test-threads=1
 | RTCP 设备身份上下文 | `cyfs-gateway/.../stack/rtcp_stack.rs:335` |
 
 文中事实主要来自以上源码；历史笔记只用于识别已有设计方向。实施完成的依据应是新协议契约、跨信任域测试和运行结果，而不是把本 TODO 勾选为完成。
+
+## 15. 2026-10-29：Agent 作为特殊 appid 的授权模型与资源命名
+
+### 15.1 用户确认的框架方向
+
+Agent 的资源执行身份保持为特殊 App。Owner 是权限上限，调度器根据受 Owner 控制的 Agent 配置构造 App 侧 RBAC，最多放开到 Owner 当前拥有的权限。扩大的是 Agent App 的授权范围，不给 Owner 增加权限，也不把 Agent 提升为系统服务。
+
+普通资源调用的目标判定为：
+
+```text
+允许 = Owner 对该资源和操作有权
+    AND Agent App 对该资源和操作有权
+    AND 该服务的资源关系／业务规则通过
+```
+
+AgentDID 仍可以标识消息作者、收件人、群成员和对象归属。它与执行授权主体的职责应明确：本地执行主体可以统一为 `(owner_user_id, app:<runtime_app_id>)`，业务 actor 可以是该 App 绑定的 AgentDID，绑定必须来自可信 AgentSpec，不能由请求者随意声明。不能为了统一 appid，把 Agent 发言改成 Owner 发言。
+
+“最大等于 Owner”按当前正常会话权限理解；Owner 能通过另一次 sudo 获得的权限，不自动变成 Agent 常驻权限。只读 Agent 仍可写自身运行状态、Session、记忆、自己的 mailbox／产物等已明确允许的资源；这些例外应在配置和策略里可见，并保持 Owner 上限。
+
+### 15.2 当前普通 RBAC 已具备核心交集
+
+在 `688df1577`：
+
+- `AgentSpec.permission_mode` 支持 `read_write`／`read_only`，默认读写。
+- scheduler 的 `update_rbac` 为绑定 App 生成 `g, app:<appid>, agent_read_write` 或 `agent_read_only`。读写 App 还有 agent_runtime／agent 角色；只读 App 不进入普通 app／agent_runtime 组，并在生成策略尾部追加兜底 deny，前序规则保留自身运行必需的操作。
+- 默认 `agent_read_write` 规则为 `obj://* all`；`agent_read_only` 为 `obj://*` 的 read／list／query／subscribe，另有敏感配置 deny 和自身产物写入等例外。当前模式粒度主要是读写／只读，尚不是任意资源的细粒度权限配置。
+- `runtime::enforce_verified` 从已验 token 取 `sub` 和 target 的 `authorization_key`，把原 resource/action 传给 `rbac::enforce`。
+- `buckyos-base` 的 `rbac::enforce` 先检查 appid，再检查 userid，合取放行；常规 Agent App session 的 sub 为 Owner、App target 绑定其 AppInstance。它没有在底层统一转换资源 URL。
+
+因此，对已经使用这条链路的 `obj://...` 调用，读写 Agent 的 App 侧已经很宽。失败应先定位 Owner 侧、实际资源名、token 主体及服务规则，而不是继续增加一条相同的 app 通配 allow。
+
+依据：[scheduler 动态策略](../src/kernel/scheduler/src/system_config_agent.rs)、[默认策略与模型](../src/kernel/buckyos-api/src/rbac_config.rs)、[runtime 鉴权](../src/kernel/buckyos-api/src/runtime.rs)、[底层双主体检查](../../buckyos-base/src/rbac/src/lib.rs)、[AgentSpec](../src/kernel/buckyos-api/src/app_schema.rs)。已有 `agent_permissions_preserve_owner_limits_and_read_only_runtime_state` 等测试表达了这一约束；本轮只阅读，未重新运行。
+
+### 15.3 整个 Home 的授权确实存在，但走的是挂载链
+
+创建 Agent 时，Control Panel 给构造 App 写入 `PermissionItem {scope_path: "user/home", actions: [read, write] 或 [read]}`。node-daemon 读取该授权，把 `$BUCKYOS_ROOT/data/home/<owner>` 整个映射到容器 `/opt/buckyos/data/home/<owner>`，读写模式分别为 rw／ro；自己的 AgentRoot 单独保持 rw，供 Session、记忆与技能运行。
+
+这里的 `user/home` 是权限声明 scope，不是传给 Casbin 的资源 URI。容器内程序直接 open/read/write 该挂载，受 Docker mount／OS 权限约束，不经过 `runtime::enforce`。宿主调试或 host runtime 还需按各自 OS／executor 边界审视，不能把 Docker 挂载限制当成所有执行路径都已统一。
+
+依据：[构造 App 权限](../src/frame/control_panel/src/agent_mgr.rs)、[权限 scope](../src/kernel/buckyos-api/src/permission.rs)、[挂载执行](../src/kernel/node_daemon/src/app_loader.rs)。关键位置分别为 `agent_mgr.rs:781`、`app_loader.rs:2638,2761`。
+
+### 15.4 `obj://` 与实际传入值的核对结果
+
+| 路径／接口 | 权限定义或定位方式 | 实际检查 | 结论 |
+|---|---|---|---|
+| system-config | 裸 key、`/config/...`、`obj://config/...` | 服务归一化为 `obj://config/<key>` 后鉴权 | 这里有显式转换，不能把客户端原参数直接等同 RBAC resource |
+| bucket | `obj://bucket/<scope>/<appid>/<owner>/<bucket>/<key>` | `BucketId::resource(key)` 生成同样的 `obj://bucket/...` | 资源名主线一致，但授权还包含 grant／token／服务分支 |
+| NDM | `/ndm/v1/...` HTTP 接口 | `obj://ndm/uploads`、`objects`、`retain`、`manage`，另校验 holding | HTTP URL 和 RBAC resource 不同，但当前常量与策略对应 |
+| msg-center 附件 | `/kapi/msg-center/objects/<id>` + context | `obj://msg-center/objects`，再检查消息和精确附件绑定 | 全局 API read 不等于任意附件 read |
+| NFS／NFSP 文件面 | `cyfs:///home/<user>/...` | 自己的 path ACL；App／Agent 映射为 Delegated，file plane 直接拒绝 | 即使 App 有 `obj://* all` 也不会放行此入口，需调整服务接入模型 |
+| Agent 容器 Home | `user/home` scope + 挂载路径 | mount rw／ro 与 OS 文件权限 | 没有一条 `obj://home/...` 检查覆盖这些本地文件操作 |
+
+当前还不能把问题概括为所有 `obj://` 都写错：bucket／NDM／msg-center 的上述资源名确实相互对应。更明确的偏差是**权限声明、资源 URI、文件 locator、挂载和服务内特殊分支没有统一的转换及执行契约**。
+
+通用 Casbin matcher 不会自动把 `cyfs:///...`、`obj://dfs/...`、`user/home`、HTTP 路径视为同一资源，`obj://*` 也不匹配 `cyfs://...`。路径别名、URL 编码、DID／AppId 中的标点、尾斜杠都应在服务入口通过规范化和共享 builder 处理，再使用同一结果执行鉴权与资源访问。
+
+文档也有滞后：[key url.md](../doc/key%20url.md) 的示例是 `cyfs:///users/{users}/*`，当前 NFSP 的 Home 是 `cyfs:///home/<user>/...`，且目前走自有 ACL；其中 `obj://dfs` 被定义为服务对象，不是文件路径。不能照抄该示例推导当前 Agent 的 Home 已通过 RBAC 放行。
+
+### 15.5 仍需统一的 Agent 特殊分支
+
+1. **NFSP 文件面**：`auth.rs::require_file_actor` 直接拒绝 App／Agent 的 Delegated actor，path ACL 对 Delegated 返回 None。它尚不能表达“Owner 可访问，Agent App 授权范围也覆盖，所以放行”。这与用户要求的统一 App 模型有实际偏差，不能靠 scheduler 再加一条 allow 修复。
+2. **独立 Agent token**：系统仍支持 `principal_kind=Agent、sub=AgentDID`，部分服务把它映射回 Owner，部分沿用 AgentDID。若要保证所有独立资源访问均不超过 Owner，应在通用认证／授权适配后形成可信 `(Owner, AppId)`，避免各服务自行猜测主体；消息／群身份仍保留 AgentDID。
+3. **bucket AgentPolicy**：App token 走 Owner＋App 的 RbacPolicy；Agent token 则有专门的 AgentPolicy，按 Owner 名下 user buckets 直接允许 list/read，并按 permission mode 允许 create/write，拒绝 delete/manage。它没有在该分支对每个资源调用同样的 Owner＋App RBAC，权限效果可能与 App session 不同。按统一方向需收敛这一差异，并覆盖 Limited／动态授权变化；不能仅声称“有 Owner 字段，所以已满足 Owner 上限”。
+4. **AppInstance 粒度**：当前动态角色主要绑定 `app:<appid>`；只读集合也按 AppId 汇总。一个 AppId 被多个实例／AgentSpec 复用时，应确认共享授权语义。当前共享 runtime 采用最严格只读的保护逻辑，后续细粒度 scope 不能把一个 Owner 的配置意外推广到其他实例。
+
+bucket 还有一层关键语义：`authorize_any` 依次尝试 Identity、grant、`bkt_` token，Identity 返回 false 只表示没有经该来源放行，不是强制 deny。Agent Caller 使用 Owner 作为 user，还会匹配授予 Owner 的 user grant；因此 read_only 的 Identity 拒绝仍可能被有效 write grant／token 放行。当前 Agent Caller 也没有设置 app，无法匹配 App grant 或带 bind_app_id 的 token。这些差异都应在统一 App 模型下消除。
+
+如果“Owner／Agent 配置上限”是必须遵守的约束，应在所有授权来源之外执行共同 ceiling，再选择 RBAC／grant／token 作为具体资源的授权依据；不能把 ceiling 仅实现为可被后续 grant 替代的 Identity false。Owner 的有效资源权利本身可以来自合法 grant，故 Owner 上限也不应被误写为仅检查默认 Owner RBAC 角色。依据：[bucket 授权组合](../../cyfs-ndn/src/bucket_store/src/access.rs)。
+
+依据：[NFS 认证与 file gate](../src/frame/nfs_server/src/auth.rs)、[NFS path ACL](../src/frame/nfs_server/src/acl.rs)、[bucket session／RbacPolicy／AgentPolicy](../src/frame/nfs_server/src/bucket/mod.rs)、[verify-hub 登录映射](../src/kernel/verify_hub/src/main.rs)。这些是静态代码结论，尚未在运行中比较两类 token 的效果。
+
+### 15.6 对 #689 的落地含义
+
+Agent 读取自己收到的附件，先在本 Zone 按可信 Owner＋App 授权；消息关系仍以实际 Agent 收件人／群成员身份检查。源 Zone 的授权也需要能验证这种身份与代理关系，不能直接使用接收 Zone 的 RBAC item 或转发本地 session token。
+
+扩大 Agent appid 权限可以解决“本 Zone 不允许该 App 发起读取”的问题；它本身不会赋予源 Zone 的附件权限，也不补齐 §6–8 的来源获取、完整性和保留链路。独立 Agent 与普通 MessageHub 应调用同一附件 ensure／读取流程，使用不同的可信 actor 上下文。
+
+### 15.7 按该方向新增 TODO
+
+- [ ] 将 `(Owner, appid)` 作为 Agent 独立资源执行的统一授权输入，校验 AgentSpec／AppInstance 绑定与当前状态；AgentDID 保留为业务 actor／地址。
+- [ ] 明确动态 App 权限是 Owner 权限的上限内授权，所有服务 adapter 都保留 Owner 侧检查；覆盖 Owner 降权、Limited、停用、Agent 配置收紧和旧 token。
+- [ ] 明确只读 Agent 的自身运行写入例外，保持 Session／记忆／产物可运行；不以全局服务提权实现这些例外。
+- [ ] 建立 PermissionItem scope → canonical resource／action → 执行边界的映射表；由 scheduler 和各服务使用共享类型／builder，不把 `user/home` 直接当资源 URI。
+- [ ] 对齐 NFSP 的 App／Agent 入口：以 Owner 文件 ACL 决定资源上限，以 App RBAC／grant 决定授权范围；替换仅凭 principal kind 一律拒绝的路径，保留 path／子树检查。
+- [ ] 收敛 bucket 的 App 与 Agent token 授权差异；对 grant／capability 路径同样明确 Owner 上限如何生效，不能默认 capability 旁路即可代表 Owner。
+- [ ] 审计 service API 的实际 `resource/action` 与 policy：config、bucket、NDM、msg-center、TaskMgr、NFSP；日志区分 App 拒绝、Owner 拒绝、业务 ACL 拒绝、token 类型 gate。
+- [ ] 对规范化后的资源做正反例验证：scheme、Home 名称、编码、DID 中的点、精确 key／前缀、跨 Owner 路径；scheduler 输出与服务输入应使用同一规范。
+- [ ] 分别验收 API 访问、Docker Home 挂载、host runtime／executor；记录各自执行边界，权限配置收紧需同步撤销旧执行能力。
+- [ ] 将可信 Owner／App／Agent actor 上下文接入跨 Zone 附件授权，验证 Owner 允许而 App 拒绝、App 允许而 Owner 拒绝、两侧允许但非消息收件人仍拒绝等场景。
+
+本轮只更新分析和 TODO，未改变授权行为或执行测试。核对依据是当前源码及已有测试断言，不表示部署中的 RBAC 已按该版本刷新。
+
+### 15.8 后续具体实施方案
+
+已继续整理为 [Agent App 统一授权契约与实施 TODO](agent-appid-authorization-implementation-todo.md)，包含按侧求值、grant/token 与强制权限上限的组合、匿名 bearer 的保证边界、NFSP 文件资源 URI 提案、各模块实施顺序和回归矩阵。该方案仍是待实施文档，不表示已改变授权行为。

@@ -2,7 +2,7 @@
 
 日期：2026-10-28
 
-状态：2026-10-28 Q1–Q5 已裁决（见 §2），§3.1–3.3 已实施未提交（勾选项），§4 真实 Zone DV 待做。来源是《BuckyOS AiWorkspace 内核架构改进》T4-8「独立域名」（D21、D10）。
+状态：2026-10-28 Q1–Q5 已裁决（见 §2），§3.1–3.3 已实施并由用户提交为 127a1eaad（10-29），§4 真实 Zone DV 待做。来源是《BuckyOS AiWorkspace 内核架构改进》T4-8「独立域名」（D21、D10）。
 
 ## 1. 已完成（不要重做）
 
@@ -46,7 +46,7 @@
 ## 4. 验收
 
 - [x] control-panel / verify-hub / buckyos-api 测试过（control-panel 另有既有失败 `sso_identity::account_identity_carries_ceiling_method_and_password_state`：期望 scopes 少了 `Aicc`，与本次无关）；`server/tests/pages.rs` 新增并通过；Desktop `pnpm check`/eslint/双入口构建过。
-- [ ] aiworkspace e2e 相关 spec（ui UI-P01/P10/P15/P16、entries、mobile、offline 子域冷启动、presentation P3-15、sources）与全套。
+- [x] aiworkspace e2e：子域相关 spec（ui UI-P01/P10/P15/P16、entries、mobile、offline 子域冷启动、presentation P3-15、sources）全部通过；全套 202 过 / 6 败（10-29 00:30 跑）：P3-12、P3-13、UI21 重跑即过（偶发），CN17 锚点 16≠8 与 i18n film 重载语言两个在 HEAD~1 基线（worktree + 现成二进制）上同样失败，属既有问题；collab (c) 中文 IME 基线通过、本分支失败——根因是 e2e 的 `openApp` 在 mock Desktop 场景状态异步加载完成前点图标（`initByMock` 开头 `windows: []` 重置），`fixtures.ts openApp` 改为 `goto(..., { waitUntil: "networkidle" })` 后再点（见 §5）。
 - [ ] 真实 Zone DV：子域打开（已登录成员无感、访客公开链接免登录、私有链接→登录→回落）、`?id=` 稳定、改名后旧链接仍开、SW 离线冷启动；`/sso_refresh` 在子域续期。
 
 ## 5. 实施备注（2026-10-28）
@@ -57,3 +57,4 @@
 - 子域页面上“打开其他工作区”（`shell.close`）回 Zone 根 `/workspace` 列表；“主页”回 Zone 根 `/`。
 - 部署：Desktop 构建仍只装到 `bin/control-panel/web/`，aiworkspace 服务按 `exe 旁 web/` → `../control-panel/web/` 找；多节点 Zone 若 aiworkspace 与 control-panel 不同节点需另给 `web/`（devkit 模块多路径安装未验证）。
 - 旧版 `/workspace/<id>` 链接（HomeStation 自动分享、聊天里的历史链接）现在落到 Zone 根路由 → 列表页；按 Q5 不迁移。
+- e2e 竞态：mock Desktop 首屏后才异步 `initByMock`（并在开始时清空 windows），`openApp` 若在其完成前点击应用图标，窗口会被重置；本分支 Zone 主机改为 `localhost` 后时序变化使 collab (c) 稳定踩中。修法是 `openApp` 等 `networkidle`。其他直接 `goto('/?scenario=normal')` 的 spec（basics/blocks/entries）未改。

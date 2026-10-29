@@ -149,7 +149,9 @@ export async function openWorkspacePage(page: Page, who: string | { guest: true 
 export async function openApp(page: Page, token: string) {
   // keeps what an earlier init script put there (the local executor spec adds its model endpoint)
   await page.addInitScript((value) => { let prev: Record<string, unknown> = {}; try { prev = JSON.parse(window.localStorage.getItem('aiworkspace.dev') ?? '{}') as Record<string, unknown> } catch { prev = {} }; window.localStorage.setItem('aiworkspace.dev', JSON.stringify({ ...prev, token: value })) }, token)
-  await page.goto('/?scenario=normal')
+  // the mock Desktop loads its scenario state after the first paint and resets the windows then: an icon clicked
+  // before that is lost, so the click waits for the loading to settle
+  await page.goto('/?scenario=normal', { waitUntil: 'networkidle' })
   await page.getByTestId('desktop-app-aiworkspace').click()
   // the window opens maximised: the canvas has the room the specs' coordinates assume
   await page.getByTestId('window-aiworkspace').getByRole('button', { name: /^(Maximize|最大化)$/ }).click()

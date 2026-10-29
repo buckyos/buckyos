@@ -1,26 +1,81 @@
-# BuckyOS AI Workspace 扩展实现思路：Render-Block 与 Block-control
+# BuckyOS AI Workspace 扩展实现思路：控件库、控件定义与两条实现路线
 
-> 状态：v0.1 讨论稿，2026-10-28。基线：脑图实施提交 `8f30ad030`（PROTOCOL 1.1、第一个 Block-control）之后的工作区源码，事实依据见[脑图实施记录与验收报告](<脑图实施记录与验收报告.md>)与[脑图对象方案讨论](<脑图对象方案讨论.md>) v0.4。本文把脑图实施中落下来的机制整理成**两条扩展路线**，并给出用户在 Workspace UI 里插入 / 导入扩展的交互思路。§7 是需要裁决的问题。
+> 状态：v0.5 讨论稿，2026-10-29。以“多人协作的 Delphi，可以安装控件包”为产品模型；开发者在自己的 Workspace 编辑源码、保存调试，再多选控件导出为全局可用或 PIKG 包，后续签名、发布与传播。两级控件库见 §1.1，开发 / 调试见 §6.7，导出见 §6.8，PIKG 控件包与 Workspace 模板包预留见 §6.9，已确认边界与待定细节见 §7。源码基线为脑图实施提交 `8f30ad030`（PROTOCOL 1.1、第一个 Block-control）之后的工作区，2026-10-29 复核。本文描述设计方向，不构成已实施记录。
 >
-> 读法沿用[连接线实现方案讨论](<连接线实现方案讨论.md>)：先给结论，再给现状，再给方案与 UI，最后是裁决表。§2 描述的是现状，每条都能在源码里找到。
+> §2 与标为“现状”的段落描述当前源码；§1、§3–§8 的新增定义、接口和流程是目标方案。PIKG 已有的包管理能力与待实现的 AIWS 本机控件目录接入分别说明。
 
 ## 1. 结论
 
-AI Workspace 的"一个对象"由两层组成：**Block 决定一格之内画什么，Block-control 决定一组 Block 怎么排、怎么连、怎么操作**。脑图实施证明这两层可以独立扩展，也证明了两层各有一个"核心函数"：
+AI Workspace 按**多人协作的可视化设计器**组织扩展：用户从自己的 BuckyOS 本机控件库选择控件，引入 Workspace，再共同创建、配置和运行控件实例。设计主线是 **PIKG 分发 → 本机控件库 → Workspace 控件定义 → 控件实例 → 协作运行**。
+
+开发者的标准循环从自己的 Workspace 开始：**用系统 Text Editor 编辑控件源码 → 保存并立即调试 → 在 Workspace 选择一个或多个控件导出 → 全局可用，或得到 `.pikg` → 后续签名、发布与传播**。日常调试不要求重新打包、重新引入或再次点击“应用”；导出时才冻结供复用的版本。
+
+PIKG 需要正式支持 Workspace 扩展内容，并为模板包保留共同结构：**Workspace 模板包 = 控件包的公共内容 + 工作区结构 / 实例、初始数据与参数**。首期交付控件包，在包清单、类型识别和消费方分派中预留模板入口；模板创建功能可后续实现。
+
+### 1.1 两级控件库（已确认）
+
+| 层次 | 职责 | 变化影响范围 |
+| --- | --- | --- |
+| BuckyOS 本机控件库 | BuckyOS 通过 PIKG 安装“本机可以插入的所有可用 AIWS 控件”；也接收从开发 Workspace 显式导出为“全局可用”的控件包，提供可发现、可选择的控件及资源 | 该 BuckyOS 的可用控件来源 |
+| Workspace 控件集合 | 有相应 Workspace 权限的人，从各自本机控件库选择并引入控件定义及必要依赖；集合属于工作区 | 该 Workspace 的所有协作者 |
+| 控件实例 | 从 Workspace 中的定义创建，保存实例属性、数据绑定和内容子节点 | 工作区中的一个具体对象 |
+
+例如：甲的 BuckyOS 有一组控件，甲选 A、B 引入 Workspace；乙从自己的 BuckyOS 选 C、D 引入同一 Workspace，工作区得到 A、B、C、D。甲乙随后都能使用这四个控件。丙即使没有通过 PIKG 安装这些控件包，也能在支持相应宿主 API 的客户端使用工作区已经拥有的控件。
+
+这里的“本机”是当前用户所连接、提供控件来源的 BuckyOS；浏览器客户端与 Workspace 所在服务可以在别处。不能只枚举 Workspace 服务所在机器的控件库来代替各协作者的来源。
+
+PIKG 负责分发与本机安装，AIWS 负责选择性引入与工作区内管理。有相应工作区权限的人都可引入，入口不限定 Owner，也不以操作 Workspace 所在机器的包管理权限为前提。本机包升级、卸载不会自动改变已引入的工作区控件；从本机库升级工作区内的包来源版本需要显式操作。编辑工作区内源码则走保存即生效的开发流程（§6.7）。
+
+“全局可用”指控件进入当前用户 BuckyOS 的本机控件库，供其他 Workspace 选择引入。开发者在 Workspace 多选控件后，可以导出并安装到该库，也可以只生成 `.pikg` 文件；两者共用同一份包内容（§6.8）。显式导出才更新本机库，后续源码保存仍只影响开发 Workspace，已引入它的其他 Workspace 不自动升级。
+
+### 1.2 同一控件体系，两条实现路线
+
+**Block 决定一格之内画什么，Block-control 决定一组 Block 怎么排、怎么连、怎么操作。** 两条路线共享定义身份、属性、绑定、目录、自述和更新规则，分别提供渲染与组合实现。下表的代码接口是已有基础，工作区组合定义是本方案新增部分。
 
 | 路线 | 核心 | 扩展的是什么 | 产物形态 | 典型例子 |
 | --- | --- | --- | --- | --- |
 | **路线一：扩展 Block** | **render-block**：`(RenderContext) → 视图`，即 `BlockDefinition.Static`（及其 View / Editor 变体） | 一个新的表现：给定 Cell、绑定数据、模式与尺寸，画出什么 | 代码注册的 `BlockDefinition`，或工作区里的 `buckyos.block-def` 实体（`declarative` / `html`） | KPI 卡、图表、日历、嵌入第三方可视化、许愿格 HTML 结果 |
-| **路线二：Block-control** | **solve + Chrome**：`(outline 子树, config) → 子节点的 auto 分量` 和 `(Laid) → 容器级外观` | 一种新的组合方式：把已有 Block 当节点，容器拥有布局、隐式边、键盘与工具栏 | 代码注册的 `ContainerDefinition` + 共享模块里的 `ControlDescriptor`，容器 kind 即 control id | 脑图（已实现）、组织结构图、看板、时间线、Button 类组合控件 |
+| **路线二：Block-control** | **solve + Chrome**：`(outline 子树, config) → 子节点的 auto 分量` 和 `(Laid) → 容器级外观` | 一种新的组合方式：把已有 Block 当节点，容器拥有布局、隐式边、键盘与工具栏 | 已有代码注册的 `ContainerDefinition`；目标新增工作区组合定义，实例由通用 `composite` 宿主承载 | 脑图（已实现）、组织结构图、看板、时间线、Button 类组合控件 |
 
 两条路线的分界只有一个问题：**新东西需不需要自己排布一组子 Block？** 不需要就是 Block（哪怕它内部很复杂，用 HTML 画），需要就是 control（哪怕节点只是普通文字）。control 不画节点，节点永远是 Block；Block 不排兄弟，排布永远属于父容器（脑图方案 §5.2 "布局由父容器拥有"）。
 
-现状对两条路线的支持程度不同：
+新建一个组合控件类型，可以复用已有布局算法。`composite` 是这种定义的实现方式；每个客户卡片、按钮都不应成为内核编译期的一个新 kind。首版复用已有或本期新增的具名算法，安装任意新算法代码的运行时契约另行设计。
 
-- **路线一**机制完整（第二期 §10 的两个扩展点 + 第一期的 `BlockRegistry`），**缺的是产品入口**：插入目录的"扩展"页签读 `buckyos.block-def`，空态文案说"可在数据源中导入"，但 Desktop 里没有任何导入 block-def 的入口，定义只能由许愿格 HTML 结果生成或由 Agent `doc.commit` 写入。
-- **路线二**机制刚落地（脑图 M0–M4），**缺的是泛化**：内核对容器 `config` 的校验是 mindmap 专用的硬编码，`layout.algorithm` 只有 `tree`，模板子节点（R23）的 Chrome 接口没落地，`control.import / export` 只认大纲格式。第二个 control 现在要碰内核、WASM、共享模块、Desktop、服务四处。
+### 1.3 定义、实例、片段与 Workspace 模板
 
-本文的建议（§5、§6）：路线一先补**导入与管理 UI**和 block-def 的**自述 / 目录元数据**；路线二先做**内核 config 校验按 kind 分派**和一个通用的 **`composite` control**（fixed 布局 + slots，子节点是任意 Block），这样"基于已有 Block 组合一个新对象"不必每次都发版。
+| 对象 | 保存的内容 | 关系 |
+| --- | --- | --- |
+| 控件定义 | 稳定身份、源码目录引用、来源版本、当前源码修订与活动实现修订；公开接口及运行实现由源码解析得到 | 存在 Workspace 的数据树，由实例引用；源码是开发时的编辑入口 |
+| 控件实例 | 定义引用、实例属性覆盖、命名数据绑定、事件绑定、位置和用户内容 | 存在 BlockTree；复制实例时分配新身份，保留定义关系 |
+| 可复用片段 | 一组对象及其初始化内容的可复制描述 | 插入后独立，不承担控件类型与统一升级的职责 |
+| Workspace 模板 | 可复用的工作区结构 / 实例图、初始数据、参数及其使用的控件集合 | 模板包复用控件包结构；创建 Workspace 时引入定义并实例化，包安装本身不创建工作区 |
+
+“定义为控件”与“保存为片段”是不同操作。组合控件的模板外观来自定义，背景、焦点框等按 R23 由 Chrome 绘制；用户内容 slots 中的 Block 是实际文档实体。定义保存在 `data/extensions/`，实际 control 容器与 Cell 仍只能放在 BlockTree，不能把标记为模板的容器直接放进数据树。
+
+引入时记录控件的稳定身份、来源版本与摘要、源码 / 实现资源及依赖；文件导入与工作区内生成也有各自来源。类型身份需要命名空间，显示名称不参与去重；Workspace 实体 ID 是本地引用身份。包是分发单位，可以选其中几个控件，但必须带齐其依赖闭包。工作区保留可编辑源码及可追踪的活动实现修订，后续打开、Fork、导出不依赖贡献者的机器仍在线。外部业务数据与联网服务仍遵守自身绑定和可用性规则。
+
+普通外观与行为修改在源码保存成功并通过校验后自动更新当前 Workspace 中引用该定义的实例，保留实例属性覆盖、绑定和用户内容。改变 `kind`、必填属性、绑定或内容结构时，源码仍可保存，但不兼容的候选修订不能自动激活，须显示迁移要求。新默认值只影响未被实例覆盖的属性。
+
+区分宿主 API / Renderer 版本、来源包 / 控件发布版本、工作区源码修订和活动实现修订。保存源码不要求递增来源发布版本；它产生新的工作区修订并标记本地改动，不修改上游 PIKG 产物。重新引入或升级来源包不能静默覆盖这些改动。发布版本并存策略见 Q1，源码与活动修订的切换见 §6.7。
+
+### 1.4 设计器与协作运行契约
+
+控件公开接口应可供人和 Agent 同时使用：属性有类型、默认值、编辑方式；绑定有名称、接受的数据类型及必填规则；动作 / 事件有参数和可绑定的宿主操作。例如按钮暴露 `text`、`enabled` 和 `click`，实例把 `click` 绑定到一个动作或程序。工具栏、快捷键是设计器入口，不能完整替代这个接口。
+
+设计态点击用于选择、移动和配置；运行态点击触发业务行为。“设计 / 运行”与当前 `edit / view / show`、读写权限分别建模，运行能力不能仅由画布模式推断。公共端及回放的规则见 §6.5。
+
+- **共享状态**：实例属性、绑定、内容和业务结果经宿主提交。目标是不同属性可独立合并、同一属性检测冲突；当前整块 `config` 的版本检查尚不足以满足这一点。个人撤销也应保留他人的无关修改。
+- **个人状态**：选择、hover、按下、焦点等放本地状态；需要记忆的个人偏好放 `user_state`，不污染共享实例。
+- **业务执行**：渲染、布局和订阅更新可在各客户端运行；一次点击以当前操作者身份发起动作，需要共享的执行复用 command / run 记录与幂等机制。其他端观察结果，不能因挂载或收到同步事件而重复产生副作用。
+
+### 1.5 当前差距
+
+- **路线一**已有渲染与定义引用机制，尚缺本机控件目录、引入与管理入口，以及实例配置 / 命名绑定的初始化。当前定义主要由许愿格 HTML 结果或 Agent `doc.commit` 写入。
+- **路线二**刚落地脑图。内核 config 校验、共享求解器与部分交互仍带有脑图假设，组合定义、通用实例和模板外观接口待补齐。
+- **共同缺口**：PIKG 的 Workspace 扩展类型与资源包安装分派、本机控件目录接入、选择性引入的依赖与资源处理、多选控件导出及本机复用、定义更新、公开属性 / 事件及协作运行契约。模板包需要预留共用内容模型。已有本机包管理能力不能当作这些流程已经实现。
+- **开发闭环**：系统已有 Text Editor，但尚无工作区资源文件的可写目标适配，以及“源文件保存 → 定义校验 → 实例自动重载”的完整链路。当前 HTML 宿主可随内联定义内容变化重新挂载，可作为重载的已有基础。
+
+实施先跑通“工作区创建或引入定义 → 实例调试 → 多选导出 → 本机库 / PIKG → 另一个 Workspace 引入”的共同路径，再覆盖组合控件与协作运行。交换文件导入与本机引入复用同一套工作区注册流程。
 
 ## 2. 现状：脑图实施留下的扩展机制
 
@@ -45,7 +100,7 @@ AI Workspace 的"一个对象"由两层组成：**Block 决定一格之内画什
 
 1. **代码注册**（随 Desktop 发布）：内置对象与扩展样本 `ui/blocks/samples.tsx`（指标、柱状图）。能用 React、能用全部字段。
 2. **声明式定义**（`buckyos.block-def` 实体，`kind: declarative`，`ui/extensions/declarative.tsx` 解释）：不执行代码；词汇只有六种 item（text / value / metric / bar / list / badge）、`stack | row` 布局、`view` 变体、动作只能映射到三个既有命令（`open_source` / `activate_editor` / `open_definition`）、inspector 字段。季度经营分析模板的 KPI 卡是现成例子（`api/demos.ts` `def-kpi`）。
-3. **HTML 定义**（`kind: html`，`ui/extensions/HtmlBlockHost.tsx` + `htmlRuntime.ts` + `bridge.ts`）：同源 iframe（第二期 D16：隔离样式与崩溃，不是安全边界，Owner 是信任根），`window.aiws` v2 API：`bindings`、`input(name).rows/fields/markdown/props/bytes`、`resolve/outline/find`、`watch`、`table(name).upsert/setColumn`、`record(name).set`、`text(name).setMarkdown`、`createBlock`、`batch`、`upload`、`snapshot`、`notify`。编辑与查看模式默认显示上次报告的静态快照，显式激活才挂载。
+3. **HTML 定义**（`kind: html`，`ui/extensions/HtmlBlockHost.tsx` + `htmlRuntime.ts` + `bridge.ts`）：同源 iframe（第二期 D16，不是安全边界），`window.aiws` v2 API：`bindings`、`input(name).rows/fields/markdown/props/bytes`、`resolve/outline/find`、`watch`、`table(name).upsert/setColumn`、`record(name).set`、`text(name).setMarkdown`、`createBlock`、`batch`、`upload`、`snapshot`、`notify`。自由画布编辑默认显示快照，显式激活后挂载；查看模式静态显示；现有非公开 show 默认静态，允许标记为 live 的节点显式激活。流式页编辑目前直接激活 Editor（`FlowSurface.tsx`，受挂载预算限制），尚未统一为静态优先。实际请求使用当前访问者的会话或 guest 凭据。
 
 **定义实体**（内核 `types.rs` `validate_block_def`）：payload 键只允许 `def_id`（Renderer id 格式）、`version`（默认 1）、`kind`、`title`、`description`、`accepts`、`allow_no_source`、`default_size`、`declarative`、`html { html, css?, js?, api_version? }`、`config_schema`、`actions`、`inspector`。Cell 通过 `def_ref` 引用定义，引用阻止删除；定义随导出包、Fork、离线副本携带。许愿格的 `aiws.result.html` 已经会把 HTML 产物落成一个 block-def（`def_id = wish.<hash>`）加一个 Cell（`store/src/wish/plan.rs`）。
 
@@ -61,14 +116,14 @@ AI Workspace 的"一个对象"由两层组成：**Block 决定一格之内画什
 | `objtemplate/children` | `children: { accepts, containers, slots? }` | `any`、允许嵌套 control、无 slot |
 | 子对象位置公式 | `layout: { direction, algorithm, solve }` | `tree`，`solve` 来自共享模块 `@controls/solve` |
 | 皮与边 | `Chrome`（画布）、`Flow`（流式页整体渲染） | 隐式边、折叠柄、pin 标记、嵌套框；`FlowMindmap` |
-| `method_def` + `eventlist` | `create`、`toolbar`、`keys`、`Inspector`、`describe` | 插入建容器 + 根；Tab / Enter / 方向键 / Ctrl+/ / Ctrl+D |
+| `method_def` + `eventlist` | 目前只有 `create`、`toolbar`、`keys` 等设计器入口；公开方法 / 事件绑定待补 | 插入建容器 + 根；Tab / Enter / 方向键 / Ctrl+/ / Ctrl+D |
 | 接口说明 | `agent: ControlDescriptor` | 共享模块 `controls/mindmap.ts` 的 Markdown 自述 |
 
 **共享模块** `src/frame/aiworkspace/controls/`（浏览器与 Deno 同用，无依赖）：`contract.ts`（`CONTROL_KINDS`、`TEXT_VIEWS`，与 `core.json` 一致）、`placement.ts`（`"auto"`）、`tree.ts`（四方向树布局、折叠、pin）、`measure.ts`（文字测量，Deno 侧用等宽近似）、`solve.ts`（从 outline 解出一个 control，嵌套自底向上）、`edges.ts`、`outline.ts` / `opml.ts`（大纲互转）、`svg.ts`（静态图）、`drawio.ts`（物化）、`catalog.ts` + `mindmap.ts`（目录与自述，生成 `aiws/controls.json`）。
 
 **内核**（`core/src/{types,plan,read,model}.rs`，`controls/core.json` 经 `include_str!` 共享）：`control_kinds` 列表决定哪些容器 kind 是 control；`validate_container` 校验 `layout`（隐含 `{ mode: "tree" }`）与 `config`；`child_allowed` 允许 control 内的 Cell 再带子 Cell；`check_placement` 允许 `"auto"` 分量（`x`/`y` 只在 control 直接子节点，`w`/`h` 只给 control 与 `text_views`）；`slot` 同父唯一；outline 投影 `config` / `slot` / `side` / `branch_color`；PROTOCOL 1.1。
 
-**Desktop 接入点**：`layout.ts`（`Laid.control / node / origin`，`placeControl`）、`useSurfaceLayout.ts`、`RenderHost.tsx`（Chrome、节点拖动与预览、折叠柄、手柄规则）、`CanvasView.tsx`（键盘接管、工具栏、重挂、粘贴、大纲文件导入）、`clipboard.ts`、`surfaceOps.ts`、`flowOps.ts`、`FlowSurface.tsx`、`drawioExport.ts`、`state/outline.ts`、`presentation/*`。grep 到 26 个文件引用 `controlRegistry` / `isControlKind` / `@controls/*`，**但其中绝大多数是按 `isControlKind` 与 `controlRegistry.get(kind)` 泛化的**：新增一个 control 只需注册，不必再改这些文件（脑图实施 M2 就是这样接的）。
+**Desktop 接入点**：`layout.ts`（`Laid.control / node / origin`，`placeControl`）、`useSurfaceLayout.ts`、`RenderHost.tsx`、`CanvasView.tsx`、`clipboard.ts`、`surfaceOps.ts`、`flowOps.ts`、`FlowSurface.tsx`、`drawioExport.ts`、`state/outline.ts`、`presentation/*`。部分路径已按注册表分派，但还不能保证新增 control 只需注册：例如 `clipboard.ts` 把 control 子节点粘贴到画布时固定包装为 `mindmap`，`CanvasView.tsx` 仍直接调用脑图的 `addNode`。泛化范围要覆盖这些操作。
 
 **服务与 Agent**：许愿格通用 `control` 结果（`aiws.result.control` / 模型 `put_result`，`kind` 必须在 `control_kinds` 里，支持 `under` 扩展某节点）；`control.list / describe / import / export`；websdk CLI `buckyos aiws controls list|describe`、`import`、`export`；手册只列目录，Agent 需要时再取自述（渐进式披露）。DV 已证明 Agent 只凭手册能在指定画布建图并扩展分支。
 
@@ -79,19 +134,28 @@ AI Workspace 的"一个对象"由两层组成：**Block 决定一格之内画什
 - 非文字节点的 `w`/`h` 必须是数值（`check_placement`）；扩展 Block 作为节点时同样如此，因为只有 `text_views` 的尺寸能从 `title` 算出。
 - Block 不能自己声明 `auto`，也不能按 id 引用兄弟（脑图方案 §5.3）。HTML Block 的 `createBlock` 只能在自己旁边建兄弟 Block，不能在某个 control 下建子节点。
 
+### 2.4 PIKG 的现有边界
+
+PIKG 已有归档、内容摘要、对象引用和自包含校验基础，但尚未支持 Workspace 控件包 / 模板包的完整消费流程：
+
+- **类型与安装**：WebSDK `pikg_protocol.ts` 仅接受 `doc_type: app`，`app_type` 为 service / dapp / web / agent / agent_skills；Rust `buckyos-api/src/app_doc.rs` 的 `AppType` 为前四类。Rust PIKG reader 按 AppDoc 解析，Installer 对 Agent 分流后，其余进入普通 App 安装。新增 Workspace 资源用途需要联动共享类型、两端校验及消费方分派。
+- **内容与依赖**：现有 `.pikg` 容器、PackageMeta、content index 和 payload 摘要可复用；CLI 完整包要求自包含，不接受 `source_url` 或非空第三方 `PackageMeta.deps`。控件依赖需冻结并打入包内，原控件身份 / 来源记录放在 AIWS 内容清单，不能直接套用普通 App 的外部子包依赖。
+- **签名与发布**：当前 CLI pack 生成 `APPDOC.json` candidate；info 可读取 JWT 形式但不完成离线身份验签，发布状态也未检查。现有 CLI 没有完整的 `pikg sign` / 正式发布闭环。§6.8 的“导出后签名发布”是目标流程，需要沿用命名对象与 Resolve/Verify 信任体系补齐入口。
+- **Workspace 内容**：当前 `store/src/export.rs` 导出 `.bcanvas`，提供 share / personal_backup；内置模板由 Desktop `api/demos.ts` 创建 Workspace 后提交内容。这些能力可供后续模板实例化参考，不能视为已经支持 PIKG Workspace 模板包。
+
 ## 3. 路线一：扩展 Block，核心是实现 render-block
 
 ### 3.1 定位
 
 路线一回答"这一格里画什么"。它适合：**内容由绑定数据决定、自身是一个整体、不需要排布兄弟**的对象。判断标准：能否用"一个 Cell + 一个或几个数据绑定"描述完整？能就是 Block。
 
-render-block 是这条路线的全部核心：给定 `RenderContext`，产出视图；配置、动作、工具栏、Inspector 都是围绕它的声明。它必须遵守的三条（第二期 §9.3、§10.2）：
+render-block 是这条路线的渲染核心：给定 `RenderContext`，产出视图；控件的公开接口、实例化与生命周期遵循 §1 的共同契约。渲染侧必须遵守的三条（第二期 §9.3、§10.2）：
 
 1. **静态优先**：`Static` 必需，无媒体播放、无代码、不执行许愿格；小尺寸时宿主用 `Simplified` 或占位。
 2. **模式正交**：不给 `View` / `Editor` 就回退到 `Static`，绝不继承另一个模式的写入行为。
 3. **写入经宿主**：所有写都是 Operation 经 `WorkspaceStore.submit`，复用权限、锁、撤销、保存状态。
 
-### 3.2 三档的能力边界
+### 3.2 三档的能力边界（现状）
 
 | 能力 | 代码注册 | `declarative` 定义 | `html` 定义 |
 | --- | --- | --- | --- |
@@ -101,35 +165,42 @@ render-block 是这条路线的全部核心：给定 `RenderContext`，产出视
 | 数据绑定 | 任意 | 一个 `source`（record / table） | 多个命名 `bindings`（input / result） |
 | 编辑器 / 工具栏 / Inspector | 全部 | inspector 字段、三个固定动作 | 自己画；工具栏项直到声明 `tools` 前显示为标签 |
 | 连接线锚点 `shape` / `anchors` | 可定义 | 宿主默认 | 宿主默认 |
-| 流式页 | 可定义 | 同画布 | 快照 / 激活 |
+| 流式页 | 可定义 | 同画布 | 查看显示快照；编辑目前自动激活 |
 | 离线 | 是 | 是 | 是（快照） |
 | 手机 | 是 | 是 | 只显示快照 |
 | 性能成本 | 自报 | 低 | `cost.html`，受同时挂载上限 |
-| 安全 | 受审代码 | 不执行代码 | 同源无沙箱（D16），Owner 承担 |
+| 执行边界 | 随宿主发布的代码 | 不执行扩展代码 | 同源无沙箱（D16），具有当前访问者的同源能力 |
 
-结论：**声明式是"安全的小词汇"，HTML 是"能力的大词汇"**。不要把 declarative 扩成布局引擎或表达式语言（脑图方案 §5.7 的边界同样适用于这里）；需要更强表现时直接走 HTML。
+目标中的 PIKG 分发与选择性引入覆盖可携带的定义和实现。代码注册的 React 组件目前仍随 Desktop 发布，不能仅打成 PIKG 就自动获得动态加载能力；首版范围见 Q8。declarative 保持有限的表现词汇，需要自定义表现可以走 HTML，需要组合可操作的子 Block 则走路线二。
 
 ### 3.3 缺口与建议
 
 | # | 缺口（现状） | 建议 |
 | --- | --- | --- |
-| B1 | block-def 没有**目录元数据与自述**：`validate_block_def` 的键里没有 icon / group / when / agent；插入目录里扩展只能显示标题与 `description`，Agent 也没有像 control 那样的 `describe` 可读 | 给 `BlockDefPayload` 加 `catalog { group?, icon?, when?, standard? }` 与 `agent`（Markdown 自述，对齐 `ControlDescriptor` 的 summary / when / formats / agent）；内核 `check_keys` 放开，大小计入 64 KiB；`aiws controls` 之外加 `aiws blocks list|describe`（读工作区 block-def，经服务），或并入统一的 `aiws catalog` |
-| B2 | HTML `createBlock` **只能建兄弟** | 加 `parent` 参数（`under: <binding 或 entity_id>`），允许在 control 节点下创建子 Block（placement 写 `auto`），与 `aiws.result.control` 的 `under` 同语义；内核已允许 control 内 Cell 带子 Cell |
-| B3 | 导入的 HTML 定义**没有快照**，编辑 / 查看模式只能显示占位 | 导入向导（§6.2）末尾"运行一次生成快照"；定义包（§6.2）可带 `snapshot.png` 作初始快照 |
-| B4 | 定义**更新策略**不明：同 `def_id` 新版本是新实体还是原地改？Cell `view.version` 跟谁走 | 定下来：原地改定义 = 所有 Cell 一起变（Bolt 的模板语义）；要并存就用新 `def_id`。导入遇到同 `def_id` 时让用户选"替换 / 另存为新定义 / 取消"（§6.2 第 3 步） |
+| B1 | 定义缺少目录元数据与 Agent 自述 | 补 `catalog`（分组、图标、用途）与 `agent`；两条实现路线共用对外描述，目录显式区分本机可引入与工作区已引入。元数据形状与大小需校验，不能只放开键名 |
+| B2 | HTML `createBlock` 只能建兄弟 | 拟加 `parent`，接受绑定或实体目标；对应 `aiws.result.control` 的 `under` 场景，受结构、slot、placement 和目标权限约束。非文字节点仍给数值尺寸 |
+| B3 | 新实例可能没有 HTML 快照 | 定义可携带目录预览，实例可引用初始预览；实际数据快照由扩展主动调用 `snapshot` 上报。“运行一次”不保证生成快照；缺失时显示占位，不阻止导入定义 |
+| B4 | 来源升级与源码迭代未区分 | 普通源码保存自动校验并热更新；包来源升级显式进行。两者均检查实例接口，必要迁移单独确认；失败保留最后可用活动修订。并存策略见 Q1，开发循环见 §6.7 |
 | B5 | 扩展 Block 作为脑图节点**不能 auto 尺寸** | 接受。手册与自述里已写"非文字节点要给尺寸"，block-def 的 `default_size` 就是节点尺寸 |
 | B6 | declarative **词汇与数据源种类**少（record / table） | 不扩布局；可按需加 item 种类（sparkline、progress、image）和 richtext / asset 绑定；每加一种都是解释器改动，随 Desktop 发版 |
-| B7 | 没有 **block-def 文件格式**与导入 / 导出 | 定义 `*.block.json`（单个 block-def payload）与 `*.block.zip`（payload + README + snapshot + 示例数据），见 §6.2 |
+| B7 | 没有定义交换格式与依赖清单 | 文件入口与 PIKG 本机来源共用定义校验、依赖闭包和 Workspace 注册。`.block.json` / `.block.zip` 作为导入和交换载体，日常编辑直接修改工作区文件，见 §6.2、§6.7 |
+| B8 | 插入详情只选单个 source，无法填写必填 config / 命名 bindings | 从定义生成初始化步骤：应用默认值，编辑实例属性，逐项映射绑定并验证；允许先只引入定义，稍后再插入实例 |
+| B9 | 尚未接入 PIKG 安装结果作为本机 AIWS 控件目录 | 复用 BuckyOS 包基础设施提供目录发现与所选控件读取；资源传入目标 Workspace 后按普通资产引用保留。跨 BuckyOS 传递不携带来源会话凭据 |
+| B10 | Text Editor 尚不能写回工作区资源文件，定义未关联源码变更 | 为通用内容编辑协议增加 Workspace 可写目标；保存通过资源暂存与带版本条件的成员更新，再以提交变更驱动校验和自动加载；诊断与活动修订可查询 |
+| B11 | 尚无从 Workspace 多选控件、导出为全局可用或 PIKG 的开发出口 | 冻结所选定义的源码、实现和依赖闭包；共用打包流程，分别接本机控件库安装与 .pikg 文件输出；签名与发布随后进行，见 §6.8 |
+| B12 | PIKG 类型和消费方未覆盖 Workspace 扩展，模板包无共同契约 | 增加 Workspace 资源用途识别、内容清单校验和本机库安装分派；控件包与模板包共享控件 / 资源结构，模板入口预留，见 §6.9 |
 
 ### 3.4 落点
 
 | 层 | 文件 |
 | --- | --- |
-| 内核 | `core/src/types.rs` `validate_block_def`（新键）、`schemas/*.json`、README |
-| 共享模块 | 新 `controls/blocks.ts`（block-def 文件格式的解析 / 校验，浏览器与 Deno 同用；名字待定，见 Q4） |
-| Desktop | `api/types.ts` `BlockDefPayload`、`ui/canvas/catalog.ts` `extensionEntries`（读 `catalog` 元数据）、`InsertCatalog.tsx`（导入按钮、详情）、`ui/sources/DataDetail.tsx`（更新 / 导出 / 被谁使用）、`ui/extensions/bridge.ts` `createBlock`（`parent`）、i18n |
-| 服务 | `block.import / export`（或并入 `control.*` 为 `catalog.*`）、许愿格 `aiws.result.html` 可带 `catalog` |
-| CLI / 手册 | `aiws import` 按扩展名分派：`.md` / `.opml` → control，`.block.json` / `.block.zip` → block-def；`aiworkspace_template_dev.md` 加一条 |
+| 内核 | `core/src/types.rs` 定义元数据与引用校验；`schemas/`、README；新增字段与协议版本一起评估 |
+| 共享模块 | 两种实现共用的定义 / 来源 / 依赖解析与校验（目录落点 Q4），供浏览器与 Deno 使用 |
+| Desktop | `api/types.ts`、`ui/canvas/catalog.ts`、`InsertCatalog.tsx`：两级目录与实例初始化；`DataDetail.tsx`：更新、导出、引用者；`ui/extensions/bridge.ts` 与属性编辑宿主 |
+| 编辑器接入 | 仓库路径 `src/apps/text_editor/src/fs/`、`src/apps/text_editor/src/model/workspace.ts` 及公共 Content / OpenRequest 协议：可写目标、冲突处理和文件上下文；UI 复用已有 Text Editor |
+| 服务 / SDK | 本机控件目录读取、Workspace 引入 / 更新与多选导出协议；资产暂存、依赖闭包、包内引用及 PIKG 构建 / 本机安装接入；同步 `buckyos-api`、websdk，不把拟议方法名当已有接口 |
+| PIKG / 安装 | WebSDK `cli/modules/pikg.ts`、`pikg_protocol.ts`；BuckyOS `src/kernel/buckyos-api/src/app_doc.rs`、`src/frame/control_panel/src/{pikg,app_installer}.rs`：用途识别、校验与资源库分派；模板清单预留，签名发布按统一信任体系补齐 |
+| CLI / 手册 | 区分查询本机库、引入 Workspace、列工作区控件、创建实例、多选导出到本机库 / PIKG；实现时同步 `aiworkspace_template_dev.md`、`aiworkspace_run.md` 及涉及的 PIKG 开发 / 发布手册 |
 
 ## 4. 路线二：基于已有 Block，实现 Block-control
 
@@ -137,7 +208,7 @@ render-block 是这条路线的全部核心：给定 `RenderContext`，产出视
 
 路线二回答"一组 Block 怎么排、怎么连、怎么操作"。它适合：**结构是 UI 的、内容绑数据**（脑图方案 §4.3）——节点可以是任意 Block，结构只在 BlockTree，数据源模式不显示结构。判断标准：去掉子节点后"它"还剩什么？剩的只是布局规则、边和键盘行为，就是 control。
 
-一个 control 的构成，按"必须 / 可选"：
+当前代码注册的 control 构成如下。这里的 `kind = control id` 是已有实现约束；工作区自定义控件以定义身份区分，通用宿主承载实例（K4）。
 
 | 部分 | 必须 | 说明 |
 | --- | --- | --- |
@@ -158,33 +229,34 @@ render-block 是这条路线的全部核心：给定 `RenderContext`，产出视
 
 1. **共享模块**：`controls/<kind>.ts`（自述 + 布局）、`catalog.ts` 注册、`core.json` 加 kind、`deno run -A tools/build_catalog.ts` 重生成 `aiws/controls.json`、布局快照测试。
 2. **内核**：因为 `core.json` 变了要重编译；`validate_container` 加该 kind 的 `config` 校验与隐含 `layout.mode`；`cargo test`；`bash wasm/build.sh` 重建 WASM（离线路径与 Desktop 内核同一份）。
-3. **Desktop**：`ui/controls/<kind>/definition.tsx`（`ContainerDefinition`）、`Chrome.tsx`、可选 `Flow`、`registerControls.ts` 注册、i18n、CSS。`layout.ts` / `RenderHost` / `CanvasView` / 剪贴板 / 导出等不改。
+3. **Desktop**：`ui/controls/<kind>/definition.tsx`（`ContainerDefinition`）、`Chrome.tsx`、可选 `Flow`、`registerControls.ts` 注册、i18n、CSS；检查 `layout.ts`、`RenderHost`、`CanvasView`、剪贴板和导出中的脑图专用分支，不能假定只注册就完成。
 4. **服务**：许愿格 `control` 结果与 `control.*` 自动认新 kind（都查 `is_control_kind`），但 `control.import / export` 的格式分派与 `wish` 的 children 解释目前都是"大纲 → 树"；非树形 control 要加自己的格式。
-5. **CLI / 手册**：不改（目录驱动）。
+5. **CLI / 手册**：目录驱动减少修改；引入新格式与实例化接口时仍需同步参数、示例和手册。
 
-四处里真正"重"的是 1 和 2：**改 `core.json` 等于发一次内核**。这就是 K1 / K4 要解的问题。
+当前每增加一种代码注册 kind 都要更新内核。目标是为宿主能力保留这条发布路径，同时允许大量组合控件仅由 Workspace 定义描述（K4）。
 
 ### 4.3 缺口与建议
 
 | # | 缺口 | 建议 |
 | --- | --- | --- |
-| K1 | 内核 **config 校验 mindmap 专用**（`types.rs` `validate_container` 的 `match kind`） | 把每个 control 的 `config_schema`（JSON Schema）放进 `controls/core.json`（或 `controls/<kind>.json` 由 `core.json` 索引），内核用 schema 校验，Desktop `configSchema` 直接复用同一份。新 control 的内核改动收缩为"加一行 + 重编译" |
-| K2 | **`layout.algorithm` 只有 `tree`** | 按需加具名算法，每个都遵守 §5.7（单向、只读自身数据、不组合）：`fixed`（固定相对坐标，Button 类）、`stack`（单列 / 单行堆叠，看板的一列）、`grid`（等宽列，看板整体 = grid 套 stack，靠 R24 嵌套而不是算法组合）、`timeline`（按节点 `config.at` 排一条轴） |
-| K3 | **模板子节点**（R23）的 Chrome 接口没落地 | 随第一个需要"皮"的 control（Button / 卡片壳）落地：`Chrome` 收到 `slots` 解析结果，按定义绘制不落实体的部分；运行态放组件 state 或 `user_state` |
-| K4 | **用户 / Agent 定义的 control 必须发版** | 不做数据态的 `control-def`（布局算法是代码，内核要认 kind）。改为提供一个内置通用 kind **`composite`**：`layout.algorithm = fixed`，`children.slots` 来自容器 `config.slots`（每个 slot 一个相对矩形与允许的 view），`Chrome` 画 `config.frame` 描述的皮。一份 `composite` 的 config 就是一个"用已有 Block 拼出来的新对象"，可以由许愿格 / Agent / 导入文件产出，不发版。这是路线二"基于已有 Block"最直接的体现 |
-| K5 | **`control.import / export` 只认大纲** | 按 kind 分派：树形 control 共用 outline / OPML；`composite` 用 JSON（容器 config + 子 Block 列表）；格式列表写在 `ControlDescriptor.formats` 里，CLI 按它提示 |
-| K6 | 自述与目录只在共享模块（代码） | 保持。目录是渐进式披露的第一层，必须稳定、可测试（`catalog_test.ts` 已校验 `controls.json` 是否最新）；`composite` 实例的"自述"是其 config 的 `description`，由 `control.describe <entity>` 读实例而非 kind |
+| K1 | 内核 config 校验仍是 mindmap 专用 | 区分宿主结构约束与控件属性 schema；结构和引用由内核校验，定义中的属性 schema 供前后端一致使用。是否引入 Rust JSON Schema 校验依赖、支持哪个子集见 Q3 |
+| K2 | 实际布局求解只有 tree | 增加 fixed，按需要加 stack / grid；继续遵守脑图 §5.7 的单向布局与 R24 嵌套。新组合类型引用已有算法；任意新算法代码的包加载不在首版 |
+| K3 | 模板外观（R23）与内容 slots 尚未形成接口 | 定义描述模板外观及公开属性映射，由 Chrome 绘制；内容 slots 指向真实子 Block。临时交互状态不写回定义；模板外观更新不得重建用户内容 |
+| K4 | 缺少工作区组合控件定义与实例关系 | 组合源码描述公开属性、绑定、slots、动作 / 事件、模板外观、布局和依赖，保存后生成运行投影；通用 `composite` 实例引用稳定定义身份。新定义无需增加内核 kind，源码热更新不重建实例。实体形态见 Q2 |
+| K5 | 定义交换与内容导入未区分 | `.md` / `.opml` 仍是内容导入；组合定义的交换载体保存接口、实现和依赖，进入共同引入流程；片段复制另行标识，不能混用 |
+| K6 | 目录只覆盖代码定义，Agent 无工作区组合类型自述 | 本机目录描述可引入类型；Workspace 目录描述已引入定义，两条实现路线共用。实例查询补充当前属性与绑定，不以 config.description 代替类型契约 |
 | K7 | 文字测量两端有差（浏览器 canvas / Deno 等宽） | 已接受（脑图方案 §5.4）。新 control 的节点若非文字 Block 不受影响 |
+| K8 | 复制 / 插入 / 拖动中仍有脑图假设 | 按宿主能力分派；从 composite 复制子节点不能强制包装为 mindmap。实例复制需明确私有内容克隆、共享绑定保留、引用重映射及 slot 处理 |
 
 ### 4.4 落点
 
 | 层 | 文件 |
 | --- | --- |
-| 共享模块 | `controls/core.json`（schema 索引）、`controls/<kind>.ts`、`controls/catalog.ts`、`controls/{fixed,stack,grid}.ts`（算法）、`controls/solve.ts`（按 `algorithm` 分派，现为 tree 直连）、`tools/build_catalog.ts` |
-| 内核 | `core/src/types.rs` `validate_container`（schema 校验替代 match）、`plan.rs` `check_placement`（`fixed` 下 `x`/`y` 的 `auto` 语义不变）、`core/tests/<kind>.rs` + fixtures、`wasm/build.sh` |
-| Desktop | `ui/controls/<kind>/*`、`ui/controls/registry.ts`（`layout.algorithm` 类型放开）、`registerControls.ts`、`ui/canvas/catalog.ts`（`composite` 实例作为可插入条目，见 §6.4） |
-| 服务 | `server/src/control.rs`（格式分派）、`store/src/wish/results.rs` `control`（children 的非树解释） |
-| CLI / 手册 | `aiws import --kind composite x.json`；手册目录自动带上 |
+| 共享模块 | `controls/core.json` 保留宿主能力；`controls/solve.ts` 求解分派；新增 fixed 等算法；组合定义解析与共同定义模块衔接 |
+| 内核 | `core/src/types.rs`、`plan.rs`：组合定义、实例引用、slot / placement、依赖与删除约束；`core/tests/`、fixtures、WASM 同步 |
+| Desktop | `ui/controls/registry.ts`、通用 composite 宿主、Chrome、属性 / 事件编辑；`catalog.ts` 列定义；`CanvasView`、剪贴板、流式页与导出能力分派 |
+| 服务 / SDK | `server/src/control.rs`、`store/src/wish/`：定义引入与实例化分离，支持内容初始化；读写协议同步 Rust API / websdk |
+| CLI / 手册 | 复用两级目录和共同引入流程，暴露组合定义接口与实例操作；实现时同步两份 AIWorkspace 手册 |
 
 ## 5. 选型：什么时候走哪条
 
@@ -194,13 +266,14 @@ render-block 是这条路线的全部核心：给定 `RenderContext`，产出视
 | 许愿格的程序产物要有交互 | 一（html，`aiws.result.html` 已有） | 同上 |
 | 节点是便签 / 文字 / 图片，要自动排布并画边 | 二（tree / stack / grid） | 布局属于父容器 |
 | 看板：列 + 卡片，卡片可拖到别的列 | 二（grid 套 stack，卡片是任意 Block） | 结构是 UI 的，卡片内容各自绑数据 |
-| 一个"按钮"：背景 + 文字 + 图标，点击触发动作 | 二（`composite` + slots）或一（html） | 子对象要能单独选中、改字、绑数据时选二；只要外观时选一 |
-| 要让 Agent / 许愿格直接产出，不发版 | 一（block-def）或二（`composite` 实例） | 两者都是数据态 |
-| 要新的布局算法 | 二，且必须发版 | 算法是代码，内核要认 kind |
+| 一个按钮：背景 + 文字 + 图标，点击触发动作 | 二（组合定义 + composite 宿主）或一（html） | 共同暴露属性与 click 事件；内部实现按是否需要可操作的子 Block 选择 |
+| 要让 Agent / 许愿格直接产出可复用控件，不发版 | render 定义或组合定义 | 定义存入 Workspace，创建实例保留定义关系 |
+| 多人各自贡献已安装的控件 | 任一路线 | 各自通过 PIKG 获得本机来源，选择性引入同一 Workspace |
+| 要新的布局算法 | 宿主能力扩展 | 首版随宿主发布；与只复用算法的新控件定义分开 |
 
-一条反例：**不要**用 HTML Block 自己画一棵树然后在里面排子项——那是把 control 做进了 Block，失去了选择、批注、锁、连接线、Agent 自述，也违反"Block 不排兄弟"。需要排布就做 control，哪怕节点只是普通文字。
+当节点需要 Workspace 原生的选择、批注、锁、连接线和 Agent 寻址时，应使用真实子 Block 与 control。仅作为整体展示的树形可视化可以用 HTML，其内部 DOM 不自动获得这些节点能力。
 
-## 6. UI：用户如何插入 / 导入扩展 Block
+## 6. UI：引入、实例化、开发与导出控件
 
 ### 6.1 现状
 
@@ -210,78 +283,253 @@ render-block 是这条路线的全部核心：给定 `RenderContext`，产出视
 - **control 的插入**：目录 `layout` 分组里的 `control:<kind>` 条目，插入即建容器 + 根并进入编辑；把 `.md` / `.opml` 文件拖到画布或经"导入文件"按钮会直接变成脑图（`CanvasView.handleFiles` → `importOutline`）；选中富文本里的嵌套列表可"转成脑图"。
 - **跨工作区**：导出包（`share` / `personal_backup`）携带 block-def；"从模板创建工作区"会带上模板里的定义（KPI 卡）；"把模板添加到当前工作区"是 UI 改进 §6.2 列明的未做项。
 
-### 6.2 导入扩展到工作区（新增）
+### 6.2 引入控件到 Workspace（新增）
 
-**文件格式**（B7）：
+**主要入口**是“从本机控件库添加…”。目录来自当前用户的 BuckyOS，展示 PIKG 已安装包中可导出的 AIWS 控件；支持按包浏览、按控件多选，列出版本、依赖、所需宿主 API 和已引入状态。主界面仍以“工作区控件”为可直接插入的目录。
 
-- `*.block.json`：一个 block-def 的 payload（`def_id`、`kind`、`title`、`description`、`accepts`、`default_size`、`declarative` 或 `html`、`config_schema`、`catalog`、`agent`）。用内核同一份 `validate_block_def` 校验（浏览器走 WASM，与离线提交同路径）。
-- `*.block.zip`：`block.json` + `README.md`（给人读）+ `snapshot.png`（初始快照）+ 可选 `sample/`（示例数据，一份 `operations.json`）。首版可以只做 `.block.json`。
-- `*.control.json`（路线二的 `composite` 实例，K4）：容器 config + 子 Block 列表，经 `control.import --kind composite`。
+从开发 Workspace 导出为“全局可用”的控件经同一本机安装 / 登记流程进入这个目录，与安装外部 PIKG 得到的控件使用相同的发现和引入机制。
 
-**入口三处**，共用一个导入向导：
+**交换入口**保留“从文件导入…”。拟议的 `.block.json` 是单个 render 定义的交换载体，`.control.json` 是组合定义的交换载体；都需要身份、公开接口、实现与依赖描述。`.block.zip` 可装定义、源码、README、预览及资源。精确 schema 在 P0 冻结；这些扩展名不代表已有 CLI 支持，也不代替 PIKG 本机安装。`.md` / `.opml` 导入脑图内容的现有语义不变。引入后日常编辑直接打开工作区内源码（§6.7），不重复走文件导入。
 
-1. 插入目录顶部"导入"组加"**导入扩展…**"，与"导入 draw.io…"并列；扩展页签空态的文案改成按钮"导入扩展…"。
-2. 数据源模式左栏"＋"菜单加"**导入 Block 定义**"；详情页加"更新定义…"（同一向导，预选"替换"）。
-3. **拖放**：把 `.block.json` / `.block.zip` 拖到画布，`handleFiles` 按扩展名分派（与 `.md` / `.opml` → 脑图、`.drawio` → 导入同一处判定）。拖到画布的额外含义是"导入后立即在落点插入一个实例"。
+两种来源共用引入流程，入口放在插入目录、工作区控件管理页及数据源模式。定义文件拖到画布时，进入同一流程并预选“引入后插入实例”。下表描述完整目标：P0/P1 的外部引入只支持新定义和来源版本的精确复用，异版本报告冲突；不限制已引入控件的普通源码保存与热更新。P2 开放来源升级、结构迁移和公共事件绑定；属性与事件的数据契约在 P0 冻结，尚不支持的事件要求明确显示并禁止触发。
 
-**向导步骤**：
-
-| 步 | 内容 | 失败处理 |
+| 步 | 内容 | 失败 / 冲突处理 |
 | --- | --- | --- |
-| 1 解析 | 读文件，`validate_block_def`；HTML 定义检查 `api_version` 是否被本宿主支持 | 列出错误码与位置，不落任何实体 |
-| 2 预览 | 名称、版本、kind、接受的数据类型、默认尺寸、`description`；HTML 定义显示 D16 风险提示（现有文案 `defHtmlRisk`）与代码体积；有快照显示快照 | — |
-| 3 冲突 | 同 `def_id` 已存在：**替换**（原地改 payload，所有使用它的 Block 一起变，B4）/ **另存为新定义**（改 `def_id` 后缀）/ 取消 | 只读工作区或无 `structure` 能力：按钮禁用并说明原因（与插入同策略） |
-| 4 落点 | 默认 `data/` 根（与许愿格生成的定义一致）；可选放入 `data/extensions/` 文件夹（首次创建） | — |
-| 5 完成 | 一次 `doc.commit`：`entity.create buckyos.block-def`（+ 快照资产 `asset.import_object`）；勾选"立即插入到画布"则同一提交里按 `needs` 走插入目录的详情步骤（选数据 / 放置） | 提交失败按现有保存异常流程 |
+| 1 选择与解析 | 读取本机所选控件或交换文件，解析定义、实现及依赖闭包；共用内核 / WASM 的数据校验，再检查宿主能力 | 明确列出缺失依赖、非法定义和不支持能力；本次引入不落半套定义 |
+| 2 预览 | 显示身份、版本、来源、属性与绑定要求、用途、依赖、预览和代码执行说明 | 同名按稳定身份区分，不自动覆盖；支持查看待引入的依赖 |
+| 3 已有定义处理 | 按身份、来源发布版本与来源摘要匹配；匹配时复用当前工作区定义，保留本地源码改动；不同来源版本进入升级（P2），列出本地改动和影响实例 | 外部包声称相同发布版本却带不同来源摘要应拒绝。合法源码保存产生工作区修订，不套用此规则；升级不得静默覆盖本地改动 |
+| 4 准备实例（可选） | 默认只引入定义；选“立即插入”时填写属性、命名绑定、事件绑定并选落点 | 必填参数未完成则暂不创建实例；可以退回仅引入定义 |
+| 5 资源就绪 | 上传并 stage 缺少的实现资源、图片或预览；定义默认保存到 data/extensions/ | 资源失败不提交定义；来源凭据不写入工作区，重试复用已就绪资源 |
+| 6 提交 | 一次文档提交创建 / 更新定义、依赖引用及可选实例；更新所需迁移包含在同一事务中 | 服务端复核权限与版本；冲突无部分生效，撤销沿用现有冲突检查 |
 
-**导入即一次提交**，可撤销；离线时与其它提交一样进 WASM 副本并在恢复后提交。
+`asset.import_object` 是独立的在线 RPC，不能作为 `doc.commit` Operation。原子性指资源就绪后的定义、引用和实例提交；上传暂存及清理沿用资产生命周期。引入多项定义时按稳定身份去重，并在最终提交时处理并发引入，不能只依赖前端预检。
 
-### 6.3 插入已在工作区的扩展
+离线只支持无需上传新资源、定义与依赖已可读取的本地提交；纯内联 JSON 可复用 WASM 副本路径。含新资源的控件需在线准备，本期不承诺离线上传队列。恢复同步时重新检查权限与定义版本。实例运行后上报快照是后续写入，不属于引入事务。
 
-保持现有路径，补三件事：
+### 6.3 从工作区控件创建实例
 
-- 扩展条目显示 `catalog.icon`（B1）而不是统一的拼图图标；详情页显示 `when`（何时用）与 `agent` 摘要的第一段。
-- 详情页"使用此定义的 Block：n 个"，点击在画布 / 数据源里定位（`def_ref` 已有反向信息）。
-- 固定到左侧工具栏（已有 `ui:pinned-defs`）在详情页加开关，不只在工具栏右键。
+工作区目录同时展示 render 定义和组合定义。当前用户本机是否安装来源 PIKG 包不影响使用已引入的定义；客户端缺少相应宿主能力时保留实例数据并显示回退，禁止依赖该能力的编辑，不能换成本机的另一个版本。
 
-### 6.4 control 与 `composite` 实例的插入
+- 条目显示图标、用途、版本及来源；详情展示公开属性、命名绑定与事件、自述以及引用实例。
+- 插入时计算定义默认值与实例覆盖后的有效属性，只把显式修改保存为覆盖；“恢复默认”清除相应覆盖。按绑定名逐项选择数据或创建定义允许的初始数据，必填项与 schema 校验通过后才创建实例。
+- 实例自己的内容数据按定义的归属规则创建；显式共享的数据绑定保留。插入两个实例不能意外共享各自应独立的便签 / 富文本内容。
+- 实例保留工作区定义引用。定义更新后，模板外观与未覆盖默认值按更新规则变化；实例覆盖与用户内容保留。
+- 固定到工具栏仍使用个人 `user_state`。工作区的控件集合及定义更新对协作者共享。
 
-- 新注册的 control 自动进目录 `layout` 分组与标准对象排序表（`STANDARD_ORDER` 需要手工加名字才会靠前）。
-- `composite` 实例（K4）作为"可插入的扩展"出现在**扩展页签**：来源是工作区里标记为模板的 `composite` 容器（`config.template = true`，放在 `data/extensions/` 下不显示在画布），插入 = 复制该容器与其子 Block（`clipboard.ts` 的子树复制已能做）。这样"把几个已有 Block 拼成一个新对象再复用"的用户路径是：画布上摆好 → 选中 → 右键"组合为控件…" → 命名、设 slot → 保存为模板 → 出现在扩展页签。
-- 文件导入统一走 §6.2 的向导：`.md` / `.opml` → 脑图（已有）；`.control.json` → `composite`；`.block.json` → block-def。
+### 6.4 定义组合控件与保存片段
 
-### 6.5 管理与只读
+“定义为控件…”的路径：选择画布对象 → 命名控件类型 → 声明公开属性、绑定、事件和内容 slots → 选择布局及模板外观 → 生成可编辑的工作区源码与组合定义 → 创建实例并通过 §6.7 的保存 / 热更新循环调试。可视化定义工具也写同一份源码，不能与文件各自维护一份可编辑配置。
 
-- 数据源模式 block-def 详情页：更新定义、导出 `.block.json`、被谁使用、删除（有 `def_ref` 时拒绝并列出引用者，现有规则）。
-- 查看模式、无写权限、服务停止同步：导入与插入一起禁用，工具提示说明原因（UI 改进 §7.2）。
-- 手机：不提供导入；HTML 扩展只显示快照。
-- 发布页 / 访客：HTML 定义以 Owner 的会话运行是已知风险（第二期 §15 R1、第四期 §4），导入向导的风险提示要指出"访客打开也会运行"。
+组合定义中保存可序列化的模板 / 初始化描述和依赖，实体形态见 Q2；实际 composite 容器与子 Cell 留在 BlockTree。按 R23，皮肤由 Chrome 绘制，内容 slots 使用真实 Block。公开属性如何映射到内部外观和 slots，需要在定义中明确。原选区是否替换为新实例由创建流程显式选择，不能在提取定义时删除已有用户内容。
 
-### 6.6 Agent 与许愿格的对应入口
+“保存为片段…”保存独立复制描述，插入后不跟随片段更新。实例复制与片段插入都要区分私有内容克隆、外部共享绑定保留、内部引用重映射。当前剪贴板仅在部分同画布场景克隆数据，不能直接当作完整模板实例化实现。
 
-- Agent：`buckyos aiws import x.block.json --workspace <ws>`（分派到 `block.import`）、`buckyos aiws blocks list|describe <def_id>`（B1）；手册 `aiworkspace_template_dev.md` 加一条"扩展 Block"，与"Block-controls"条目并列。
-- 许愿格：`aiws.result.html` 已产出 block-def + Cell；补 `catalog` / `agent` 字段的透传，使许愿格产出的扩展在目录里有图标与说明，并且能被后续 wish 以 `describe` 读到。
+Agent / 许愿格可以直接产出工作区定义，也可以只产出实例或片段。三者在结果类型与 UI 中明确区分。控件先在 Workspace 内调试，复用时通过 §6.8 多选导出到本机库或 PIKG；签名、发布与传播在得到包之后进行。
 
-## 7. 待裁决项
+### 6.5 管理、权限与运行
+
+- 工作区控件列表提供多选“导出控件…”，详情提供单控件导出、更新、依赖与实例引用者、移除。导出可选“全局可用”或“生成 PIKG 文件”（§6.8）。移除被实例或其他定义引用的控件应拒绝并列出依赖；本机 PIKG 卸载不删除工作区定义。
+- 实例与定义详情提供“编辑控件源码…”，通过系统内容打开机制交给 Text Editor 或用户选择的文本编辑器；同时显示源码修订、活动修订和加载诊断。此入口编辑的是本工作区的定义，所有引用实例受影响；只想修改一个实例的行为时先显式派生定义。
+- 引入与实例化沿用目标位置的结构权限；更新还需相应定义及迁移内容的写权限。按钮依据当前能力显示状态，最终由服务端裁决；不增加 Owner 专属门槛。具体能力映射见 Q9。
+- 查看模式不提供结构修改；离线能力按 §6.2 判断，不把正常离线与权限失效、同步错误混为一谈。后两者按现有保存异常流程处理。
+- 手机首版不提供从本机引入入口；已引入控件按现有移动端能力显示，HTML 保留静态预览。
+- 设计态 / 运行态遵循 §1.4；自由画布、流式页的 HTML 激活规则要统一验收，修正当前流式编辑自动挂载的例外。
+- 当前同源 HTML 执行使用访问者的身份与能力，不会因其是访客而获得 Owner 会话。引入定义不等于执行定义。公共端 / 回放按第四期规划采用静态快照或受控状态；是否开放 live 扩展由相应运行契约裁决，不能照搬现有非公开 show 的 live 行为。
+
+### 6.6 Agent、CLI 与许愿格
+
+现有 `buckyos aiws controls list|describe` 是代码 control 的目录，`aiws import` / `export` 处理大纲内容。目标接口至少提供：查询当前 BuckyOS 本机库、读取控件自述、选择性引入目标 Workspace、查询工作区控件、创建实例、读取 / 修改源码、显式升级来源版本，以及将所选定义导出到本机库或 PIKG 文件。两个目录范围必须可区分，两条实现路线在同一工作区目录可发现。方法名、参数与 CLI 动词在 P0 定义，不能把草案示例当成可执行命令。
+
+`aiws.result.html` 已能产出定义与 Cell；后续补来源 / 自述、初始化契约与共同校验。组合结果补定义引用及内容初始化，不能仍把所有 control 结果解释成大纲树。Agent 的读取、写入与执行使用自身授权，不借用贡献控件者的凭据。
+
+Agent 修改与 Text Editor 编辑使用同一份工作区源码，通过正常文档提交触发同一条校验 / 热更新链路；工具可将多个文件的变更合并为一次提交。诊断、源码修订与活动修订也应可查询，避免 Agent 只知道“文件已保存”却不知道控件是否已经采用它。
+
+实现时同步 `aiworkspace_template_dev.md`（发现、引入、定义、源码调试、多选导出、本机复用、来源升级）和 `aiworkspace_run.md`（绑定、执行身份、幂等、结果），PIKG 构建、签名与发布接入同时核对 `buckyos_app_dev.md` / `buckyos_dev_release.md`，保持 SDK / CLI / 服务协议一致。本次只更新设计，现有运行手册不提前写入未实现命令。
+
+### 6.7 用户开发与调试：编辑工作区文件，保存即生效
+
+**最低开发体验参照 Excel VBA：控件的可编辑源码就在 Workspace 内，用户用已有 Text Editor 改文件，保存成功并通过校验后，现有实例自动采用新行为。** 不要求每次打 PIKG 包、重新引入、重新插入实例、刷新整个工作区或另点“应用”。这里的触发点是文件保存成功；尚在编辑器缓冲区中的输入不传播给协作者。
+
+#### 标准流程（两条路线共用）
+
+1. **在自己的 Workspace 开发**：在“工作区控件”中新建 render / 组合定义，生成最小源码和一个测试实例；也可以选已有实例“编辑控件源码…”。从本机引入的控件也可直接修改其工作区副本。入口明确说明本工作区内哪些实例会受影响；需要独立变体时先派生定义。
+2. **编辑文件**：打开源码目录中的入口或行为文件，复用系统 Text Editor。先用最小样例跑通，再补公开属性、数据绑定、外观和行为；组合控件同时声明内容 slots、模板与布局。
+3. **保存并观察**：保存提交后自动校验、加载。已经激活的实例重新加载渲染或行为，组合实例重新计算布局 / 外观；实例 ID、属性覆盖、绑定及用户内容不变。未激活实例下次激活采用新活动修订；静态预览标明对应修订，旧快照不能冒充新代码的运行结果。
+4. **定位并修正**：控件详情显示“文件已保存 / 加载中 / 已生效 / 校验失败”、源码与活动修订；错误尽量定位到文件和行列，运行日志带实例与修订信息。改错后再保存即可重试；首版无需先建设完整 IDE 或断点调试器。
+5. **验证使用场景**：用至少两个实例检查默认值与覆盖、不同绑定和私有内容；在另一协作者客户端确认同一活动修订。触发一次动作后再改代码，验证重载不重复执行该动作。
+6. **多选导出并复用**：调试完成后，在 Workspace 中选一个或多个控件，选择“导出控件…”；结果可为本机“全局可用”，或得到一个 `.pikg` 文件。在干净 Workspace 验证导出内容可独立引入和运行；后续对 PIKG 签名，再发布或传播。包发布版本用于复用 / 分发，工作区日常保存使用自己的源码修订，详见 §6.8。
+
+两条路线编辑的对象不同，但保存生效的规则相同。以下文件名只是建议，不是已存在的格式或已冻结的 schema；最小实现可先用一个自包含 JSON 文件，再拆出实现文件。
+
+| 路线 | 工作区源码示例 | 保存后应观察到的变化 |
+| --- | --- | --- |
+| render-block | `component.json` 描述接口与资源入口；`view.html`、`style.css`、`behavior.js` 提供 HTML 实现，或 `declarative.json` 提供声明式实现 | 修改显示公式、样式或支持的事件处理后，既有 Cell 使用新实现，后续交互执行新行为 |
+| Block-control | `component.json` 描述接口；`composition.json` 描述模板、slots、具名布局及属性映射；支持脚本事件后可引用 `behavior.js` | 修改间距、模板外观或支持的交互后，既有 composite 实例更新；不重新生成用户内容 Block |
+
+这里不允许源码任意突破宿主能力：declarative 仍使用既有词汇，组合定义首版复用具名布局算法。P1 先完成组合描述文件的保存生效，通用脚本事件与公共事件绑定随 P2 契约接入；不支持的脚本能力须明确报错，不能悄悄忽略。
+
+#### 源码归属与 Text Editor 接入
+
+建议每个定义在工作区数据树 `data/extensions/` 下关联一个源码目录，用现有 `buckyos.dir` 成员引用文件对象。这里是 Workspace 内的逻辑目录，尚不等于已挂载成 Text Editor 可写的普通 NFSP 路径。定义持有稳定的源码目录 / 入口引用；保存时文件对象 ID 可变化，实例仍引用同一个定义。
+
+源码是可编辑的事实来源；公开接口与 runtime 实现是由某次源码快照解析出的结果。可视化控件设计工具也写回相同源码，不能再维护一份与文件并行修改的内联实现。现有内联 HTML 定义可在进入源码编辑流程时物化为文件，具体字段和迁移落点见 Q11。
+
+当前 Text Editor 已有普通路径的读取、版本检查、保存、冲突处理和草稿恢复，也能读取不可变对象；但 `object-id` 打开方式不能直接写回 Workspace 目录成员。需要在公共内容打开协议与编辑器存储接口间补齐 **Workspace 可写目标适配**，携带工作区、目录实体、成员名与期望修订，而不是仅传一个旧文件对象 ID。其他文本编辑器也应能使用这项协议，不在 Desktop 写死 Text Editor 的专用分支。
+
+保存链路的目标如下；这是待实现流程，不是已有 RPC 名称清单：
+
+```text
+Text Editor 保存
+  → 上传 / 暂存新文件对象
+  → dir.set_member 带成员版本条件提交
+  → Workspace 变更通知标识新的源码修订
+  → 固定这次源码及依赖快照，校验 / 准备实现
+  → 自动切换共享活动修订
+  → 各客户端更新引用该定义的实例
+```
+
+资源就绪后才提交成员替换；同文件并发保存检测冲突，不以最后写入静默覆盖。含新文件对象的保存需要在线资源准备，未提交成功的本地草稿不宣称已在协作者端生效。编辑器“保存成功”的含义是文件提交成功，控件是否加载成功单独显示。
+
+重载以 Workspace 正式提交及变更订阅为准。Text Editor 内部的保存提示、窗口焦点和普通文件轮询不能充当唯一通知源；否则 Agent 或另一协作者改文件时无法及时生效。当前 HTML 宿主已有内联实现变化时销毁旧 runtime、重新挂载的机制；新增的是资源文件到定义解析结果、共享活动修订与诊断的完整连接。
+
+#### 修订、失败与多人协作
+
+为避免编辑错误损坏正在使用的实例，建议区分 `source_revision`（最新已保存源码）与 `active_revision`（最后成功校验、接口兼容的活动实现）；这些是设计概念，字段形状在 Q11 冻结。
+
+- **普通保存自动切换**：通过校验的兼容修改无需额外确认。每次校验固定一份完整源码及依赖快照，不能混用不同时刻的文件；结果须仍匹配“自身源码与全部依赖修订”的输入摘要，较慢的旧任务不能覆盖较新的结果。被依赖控件的活动修订变化也触发使用者重新校验；不兼容时使用者保留原活动实现及依赖快照并显示诊断。多文件可批量提交，逐文件保存形成的中间错误按下一条处理。
+- **保存错误代码仍保留工作成果**：源码可保存，失败时显示诊断并继续使用上一个活动实现；从未成功加载的定义显示错误占位。活动实现及依赖随工作区保留，新加入的协作者、重新打开和 Fork 都能取得它，不能各客户端凭内存保留不同的“最后可用版”。
+- **接口不兼容不自动迁移数据**：删除被实例使用的 slot、破坏必填属性 / 绑定或改变内容结构时，保留源码但阻止候选激活，列出受影响实例和迁移要求。来源包升级也不得覆盖尚未合入的工作区源码改动。
+- **重载保留实例，清理旧运行时**：注销旧事件订阅与定时器，丢弃旧 runtime 的迟到 UI 回调；临时局部状态可重置，持久属性、绑定与内容保留。运行期个别实例报错需显示具体诊断，不能让该客户端自行切回另一个共享修订。
+- **重载不等于再次执行业务**：加载阶段只建立视图与事件处理；已经提交的 command / run 记录其使用的实现修订并继续原执行，下一次新事件才用新实现。收到源码同步、重新挂载或重连都不能自动重放已发生的业务动作。该生命周期约束需要实现；当前同源 HTML 执行并未提供隔离任意脚本副作用的保证。
+- **所有编辑入口共享规则**：人、可视化设计器与 Agent 的写入走同一权限和版本检查；源码撤销 / 重做也触发校验与重载。活动修订的维护作为派生更新，不额外占用个人撤销步骤。已发布快照与历史回放固定自己的实现修订，不跟随当前 Workspace 的源码变化。
+
+源码编辑与热更新只影响当前 Workspace。显式选择“导出为全局可用”才将一次导出结果安装到本机库；生成 PIKG、签名 / 发布与其他 Workspace 的来源升级也都是各自的操作。
+
+### 6.8 导出控件：全局可用或生成 PIKG
+
+导出是开发循环的正式出口。开发者先在自己的 Workspace 用源文件调试，再从“工作区控件”中多选定义，一次导出成一个控件包；render 与组合控件可以混选。从画布实例进入时，先解析其定义并去重。实际导出对象是可复用的控件定义及依赖。
+
+```text
+自己的 Workspace：编辑源码 → 保存 → 调试实例
+  → 选择一个或多个控件 → 导出控件
+      ├─ 全局可用：安装到自己的 BuckyOS 本机控件库
+      │    → 在其他 Workspace 选择引入
+      └─ 生成 .pikg：取得控件包文件
+           → 后续签名 → 发布 / 传播 → 他人安装并选择引入
+```
+
+两个出口使用同一套 PIKG 产物构建和控件清单。“全局可用”在构建后接本机开发态安装 / 登记；“生成 PIKG 文件”返回可保存、可继续签名的包。用户不需要为了本机复用而先完成对外发布，导出也不自动执行发布者签名或上传发布。这是目标产品流程；AIWS 控件包的元数据、构建适配和本机开发态安装支持需在 Q12 落实，不能视为当前 Installer 已支持。
+
+导出过程需要明确以下内容：
+
+- **所选定义与依赖**：展示用户选中的控件，以及自动补齐的控件、源码和资源依赖，按稳定身份及修订去重。一个包可包含多个控件；缺失或冲突的依赖显示具体原因，不生成半套包。
+- **固定导出修订**：基于一次固定的工作区状态，冻结校验通过的源码、活动实现和全部依赖。若最新源码尚未成功激活，先显示诊断，不能把新源码与旧实现悄悄混装；导出期间继续编辑不改变已冻结的内容。
+- **可独立使用的内容**：包携带定义、可编辑源码、所需实现 / 资源、公开接口、目录自述与声明的初始化模板。Workspace 实体引用转为包内引用，引入新 Workspace 时重新映射；本机库与 PIKG 都不能依赖开发 Workspace 持续在线。实例绑定的业务数据、运行记录和会话凭据不默认进入控件包；所需业务数据由新实例重新绑定。
+- **包身份与版本**：导出时填写或确认本次包身份、发布版本及控件清单，保留源码修订和上游来源记录。修改后的内容使用新的发布版本或派生身份，不能在同一发布身份 / 版本下替换内容；原来源摘要保留作溯源记录。
+- **完成结果**：本机出口显示已进入控件库的包和控件；文件出口提供 `.pikg` 及内容摘要。两者的控件内容应一致，后续修改源码须重新导出才会产生新结果。签名绑定导出内容对应的身份与内容图，改变内容后须重新打包并签名；PIKG 签名与发布入口沿用统一信任体系补齐，现状见 §2.4。
+
+“全局可用”增加的是当前用户 BuckyOS 的可引入控件来源，既有 Workspace 继续使用自己的定义副本。导出、安装、签名与发布的结果分别显示；获得包文件、进入本机库、完成签名和已对外发布是不同状态。
+
+### 6.9 PIKG 支持：控件包与 Workspace 模板包
+
+**将两者设计为同一类 Workspace 扩展内容：控件包提供公共部分，Workspace 模板包在其上增加工作区模板入口。** 复用 PIKG 的容器、内容身份、完整性校验与签名信任体系，AIWS 负责控件定义和模板内容的语义校验。PIKG 包描述需能显式识别该资源用途；最终类型值与字段在 Q13 冻结。
+
+#### 共用内容结构
+
+以下为逻辑结构建议，不是当前 AppDoc / PackageMeta 已支持的 wire 字段。建议在声明的 payload 内维护一份有版本的 AIWS 清单，两类包使用相同的控件和资源表达；不在多个子包之间复制维护同一控件定义。
+
+| 内容 | 控件包 | Workspace 模板包 |
+| --- | --- | --- |
+| 公共描述 | 清单版本、包用途 / 能力、所需宿主 API、目录信息 | 复用，并声明所需模板实例化能力 |
+| 控件集合（概念上为 `controls`） | 一个或多个可选择的根控件，以及完整的控件依赖闭包；带源码、确定实现修订和公开接口 | 原样复用，模板按稳定身份及固定修订引用同一集合；其中可复用控件仍可单独选择引入 |
+| 实现与资源 | 源码、运行实现、图片等文件，按内容去重并纳入 PIKG 内容校验 | 同一资源集合同时供控件与模板使用 |
+| Workspace 模板入口（概念上为 `workspace_templates`） | 缺省或空 | 一个或多个模板；描述 Surface / BlockTree、控件实例、数据结构、显式初始数据、创建参数与外部绑定要求 |
+
+“超集”指模板包扩展公共内容模型。只使用内置控件的 Workspace 模板允许自带控件集合为空，通过宿主能力要求声明内置依赖；不需要虚构一个控件来满足包结构。这里的 Workspace 模板也区别于 composite 的模板外观，以及单个控件的初始化模板。
+
+控件依赖图与模板内容图分别收集：前者包含其他控件、源码和运行资源；后者包含实例、连线和明确选入的初始数据。不能因测试实例绑定了业务表，就把整张表自动算进控件定义依赖。两种图最终共用包内资源和引用映射，完整依赖冻结到同一次导出快照，原控件发布身份及来源仍可追踪。
+
+首版继续采用自包含包；需要的第三方控件内容作为快照一并携带，由 AIWS 清单表达依赖关系，不要求 PIKG 新增跨包在线依赖安装。模板包必须能够脱离开发 Workspace 使用。
+
+#### 安装、引入与模板创建
+
+| 动作 | 结果与边界 |
+| --- | --- |
+| 安装控件包 | 校验用途及内容，登记到当前用户 BuckyOS 本机控件库；不生成普通 AppSpec，也不启动服务或实例 |
+| 安装 Workspace 模板包（预留） | 复用控件安装，再登记本机模板目录入口；安装本身不创建 / 修改 Workspace，也不执行模板动作 |
+| 选择控件引入 Workspace | 从任一种包的公共控件清单选择定义，复用 §6.2 的依赖、权限、版本与资源提交流程 |
+| 从模板创建 Workspace（后续） | 用户选模板并填写参数 / 绑定，按所需控件闭包引入定义，再创建结构、实例和初始数据；重复创建得到相互独立的工作区 |
+
+模板实例化时，包内局部实体 ID 映射成目标 Workspace 的实体 ID，统一重映射父子关系、`def_ref`、数据引用、命名绑定和连线端点。不可变资产可复用；模板私有可变数据每次独立创建，外部业务数据通过参数绑定。开发 Workspace 的权限成员、会话凭据、运行记录不随模板隐式复制；创建模板实例也不自动重放业务动作。将模板添加到已有 Workspace 的合并规则后续单独设计。
+
+#### 本期支持与模板预留
+
+P0 的交付范围是 **PIKG 控件包的构建 / 读取 / 校验、本机库安装与 Workspace 引入**，并在公共清单、包用途 / 能力识别及分派中为模板保留位置。模板编辑、模板导出和“从模板创建”的完整功能不因预留结构而视为已经实现。
+
+尚不支持模板实例化的客户端应明确显示该能力未支持；可以在公共清单版本受支持、内容校验通过时显式选择包内控件，但不能静默把安装模板包当作安装纯控件包并报告模板可用。未知必需能力或清单版本必须有明确的拒绝 / 回退结果。
+
+实现需要联动 PIKG 开发态输入、TS / Rust 描述类型与 reader、安装服务的资源分派、本机目录、AIWS 导出 / 引入和 SDK / CLI。新增用途不能只放宽 TypeScript 的类型列表，也不能仅往当前固定的 `PACKAGE_META.json` 加字段。格式、签名与安装协议的权威文档仍由 PIKG 文档体系维护；本节定义 AIWS 的消费要求。
+
+## 7. 已确认边界与待裁决项
+
+### 7.1 已确认的模型
+
+| # | 决定 | 依据 |
+| --- | --- | --- |
+| D1 | BuckyOS 通过 PIKG 安装本机可用 AIWS 控件库 | 用户确认 |
+| D2 | 有相应权限的人都可向 Workspace 引入控件；引入后的定义及依赖属于 Workspace | 用户确认 |
+| D3 | 各协作者从自己的 BuckyOS 选择控件，共同形成 Workspace 控件集合；甲 A/B、乙 C/D 得到 A/B/C/D | 用户确认 |
+| D4 | 本机库与 Workspace 集合分别管理；已引入定义及依赖留在 Workspace，本机升级 / 卸载不自动修改它 | 两级模型的约束 |
+| D5 | 两条路线作为同一控件体系的实现方式；控件定义、实例和独立片段分别处理 | 本轮设计方向 |
+| D6 | 两类控件都应能通过直接编辑 Workspace 内文件改变行为，复用系统 Text Editor；保存后自动生效，日常调试无需重新打包 / 引入 | 用户提出 VBA 式开发体验；保存触发与修订机制按 §6.7 细化 |
+| D7 | 开发者在自己的 Workspace 调试后，多选控件导出为全局可用或 PIKG；后续再对 PIKG 签名、发布 / 传播 | 用户确认；全局范围按两级库模型解释为当前用户 BuckyOS 本机控件库 |
+| D8 | PIKG 需要支持 Workspace 扩展控件，并为 Workspace 模板保留空间；模板包在控件包的公共内容上扩展 | 用户确认；本轮只预留模板契约，优先交付控件包 |
+
+### 7.2 实施前需冻结的细节
+
+以下为建议，未因本次文档更新而批准新增依赖或宣告协议已实现。
 
 | # | 问题 | 建议 |
 | --- | --- | --- |
-| Q1 | block-def 更新语义：原地替换还是新实体（B4） | 原地替换（Bolt 模板语义），并存用新 `def_id` |
-| Q2 | 是否做 `composite` 通用 control（K4），还是每个组合控件都发版 | 做；它是"基于已有 Block"路线不发版的唯一办法 |
-| Q3 | 内核 config 校验改为 JSON Schema（K1）是否接受增加 Rust 侧 schema 校验依赖 | 接受；block-def 的 `config_schema` 前端已用 `z.fromJSONSchema`，内核统一后两端一份 |
-| Q4 | block-def 文件格式解析放共享模块 `controls/` 还是新目录 `blocks/` | 新目录 `src/frame/aiworkspace/blocks/`，`controls/` 保持只管 control |
-| Q5 | 导入扩展的默认落点：`data/` 根还是 `data/extensions/` | `data/extensions/`，许愿格生成的定义仍随结果组 |
-| Q6 | `aiws` CLI 动词：`blocks list|describe` 单独，还是与 `controls` 合为 `catalog` | 单独；两者读的来源不同（control 读代码目录，block 读工作区） |
-| Q7 | 首版 `*.block.zip` 是否做 | 不做，先 `.block.json`；快照用"导入后运行一次"补 |
-| Q8 | HTML `createBlock` 的 `parent` 是否允许指向其它 control | 允许，受 `child_allowed` 与 `tree.move` 规则约束 |
+| Q1 | 来源版本升级与多版本共存 | 首版同一 Workspace 对同一控件类型使用一个定义及活动实现，来源包升级显式进行；兼容源码修改保存后自动切换，不能要求每次另点更新。需要独立变体时派生新类型身份。依赖冲突拒绝并解释，不要求整个来源 PIKG 包只能有一个版本 |
+| Q2 | 组合定义的持久化实体与引用 | 优先评估扩展 buckyos.block-def 承载组合实现，复用定义引用和资源闭包；必要时独立实体。通用 composite 宿主只增加一次，用户类型不进入编译期 kind 表 |
+| Q3 | 属性 schema 的共同校验 | 选择前后端一致的 JSON Schema 子集；评估 Rust / WASM 依赖、大小和错误行为后决定。整块 config 校验与属性级协作操作分别设计 |
+| Q4 | 共享定义解析的目录落点 | 同一模块承载两种实现的公共定义与依赖解析；布局算法仍在 controls/。具体目录随 Q2 定，避免两套格式漂移 |
+| Q5 | 定义在数据树的落点 | 引入定义默认 data/extensions/；许愿格现有定义可仍随结果组，目录按类型发现。真实 control 实例不得放数据目录 |
+| Q6 | 本机目录、工作区目录与 CLI | 显式表达来源范围，统一公开接口描述；本机读取复用 PIKG 安装结果，含 Workspace 导出的开发包；工作区读取文档定义。控件身份命名空间、目录元数据及多选导出 / 引入入口在 P0 冻结 |
+| Q7 | 交换文件与资源范围 | 首版支持 PIKG 控件包导出、纯 JSON 交换和本机来源的资源传递；额外的 .block.zip 交换可后置，PIKG 导出及依赖闭包不能后置。预览可缺省，运行不会自动补出快照 |
+| Q8 | 首版可携带实现与宿主 API | 先支持 declarative、HTML 与组合定义引用既有算法；任意 React 插件或新布局代码动态加载另列。导出器与浏览器均需声明能力与回退行为 |
+| Q9 | 权限、属性更新及定义升级前置条件 | 复用现有能力，明确引入 / 更新 / 迁移所需权限；属性更新以属性为冲突单位，依赖旧定义的写入携带版本条件，离线重放也检查 |
+| Q10 | HTML parent 与事件执行接口 | parent 支持合法 control / 内容节点；动作、事件参数和绑定以共同契约描述，持久副作用复用 command / run。设计 / 运行、公开 / 非公开的激活规则分别验收 |
+| Q11 | 源码入口、编辑器可写目标及活动修订协议 | P0 冻结源码目录 / 入口引用、固定依赖快照、通用 Content 可写目标和诊断接口；确定校验与活动修订条件提交的执行层，条件包含完整输入摘要，依赖变化触发使用者重新校验。复用资源暂存、dir.set_member 和变更订阅；内联定义物化后以源码为唯一编辑入口。不能将保存热更新后置到包升级阶段 |
+| Q12 | 多选导出与 PIKG 的接入契约 | P0 冻结包内控件清单 / 源码布局、依赖去重和引用映射，复用归档与内容身份校验；落实本机开发态安装 / 登记及其权限和版本规则。签名发布沿用统一信任体系补齐，导出与本机复用不以前置发布者签名为要求 |
+| Q13 | Workspace 扩展用途与模板超集结构 | P0 冻结 AppDoc / 包用途的表示方式、两端类型校验与资源安装分派；控件清单与资源为公共部分，预留有版本的模板入口、能力声明及内容图引用。模板可无自带控件；完整模板创建与合并流程后续设计，不能以普通 App 安装代替 |
 
-## 8. 建议的实施顺序
+## 8. 建议的实施顺序与验收
 
 | 阶段 | 内容 | 验收 |
 | --- | --- | --- |
-| P0 | §6.2 导入向导（`.block.json`）+ 扩展页签 / 数据源 / 拖放三处入口 + 详情页更新与导出；B1 的 `catalog` / `agent` 字段（内核键放开） | 导入季度经营分析的 KPI 卡定义到空工作区并插入；同 `def_id` 二次导入走三选一；Playwright 覆盖三处入口与只读禁用 |
-| P1 | K1 内核 config schema 化；K2 `fixed` / `stack` 算法；K4 `composite` control 与"组合为控件"右键；§6.4 实例进扩展页签 | 用便签 + 图片 + 文字拼一个卡片控件，保存为模板后插入两次，改模板不影响已插入实例；许愿格 `control` 结果产出一个 `composite` |
-| P2 | B2 `createBlock(parent)`；K5 格式分派与 `.control.json`；CLI `blocks` 动词与手册；`.block.zip` 与快照 | Agent 只凭手册把一个 HTML 定义导入并在脑图节点下创建子 Block |
+| P0 | 冻结公共定义 / 来源 / 依赖及属性 / 事件数据契约；PIKG Workspace 用途、TS / Rust 校验与资源库安装分派，预留模板清单；本机目录、新定义引入与精确复用；render 实例初始化；Text Editor 保存自动加载、共享活动修订与诊断；多选导出到本机库 / PIKG；同步 SDK / CLI / 手册 | 甲引入 A/B，乙引入 C/D，丙无需本机装包；异来源版本暂拒绝，失败无错误覆盖。源码保存后实例更新，失败保留共享可用修订；多选导出并在新 Workspace 使用，包可交后续签名。安装只登记资源库，不部署 App；模板预留与未支持状态可识别 |
+| P1 | 组合定义 + composite 宿主、fixed 及按需 stack、Chrome / slots、“定义为控件”；组合源码接入保存 / 重载及多选导出链路；私有内容复制、共享绑定和引用重映射；宿主交互泛化 | 两个客户卡片实例分别绑定数据，修改组合描述后布局 / 外观更新，私有内容不串改或重建；复制子节点不变成脑图。混选 render 与组合定义导出，共享依赖去重，在新 Workspace 可分别实例化 |
+| P2 | 公共事件绑定与脚本行为、设计 / 运行边界、属性级协作与撤销、显式来源包升级及结构迁移；执行幂等、离线旧定义检查；普通源码热更新已由 P0/P1 完成 | 甲改颜色、乙改文字均保留；一次点击只执行一次，改行为文件并保存后下一次点击用新实现，重载不重放旧动作。包升级 / 迁移保留实例覆盖与内容；旧客户端写入冲突可诊断 |
+| P3 | .block.zip 补充交换、更多布局、HTML parent、Agent 组合结果；补充移动端、工作区发布 / 回放和宿主能力不足的验证 | Agent 通过手册发现 / 引入 / 实例化控件；缺少宿主能力时可读回退且数据保留；公共端 / 回放不执行现场业务动作 |
+
+Workspace 模板包的完整导出、目录与实例化作为后续独立阶段；P0 先保证公共结构可以承载模板，避免届时另建一套控件 / 资源打包格式。
+
+跨阶段必须保留以下回归：
+
+- 本机 PIKG 更新或卸载后，既有 Workspace 保持原定义；显式来源升级才采用新包。工作区源码保存只改变本工作区，不反向修改本机库或其他工作区。
+- 工作区 Fork / 自包含导出携带控件实现、依赖和资源；贡献者离线不影响已携带内容。离线读取仍受本地缓存完备程度约束，联网控件如实显示数据不可用。
+- 含新资产的引入需要在线暂存；纯 JSON 离线提交在恢复时校验权限和定义版本。
+- 控件定义更新保留实例覆盖与内容；独立片段更新不传播到已插入对象。两者分别验收。
+- 默认值、必填 config、多个命名绑定和事件参数的初始化均有覆盖，不能只用无配置的 KPI 卡证明可安装控件模型成立。
+- Text Editor 保存 render 行为或组合描述文件后，无需重新打包、引入、插入实例或整页刷新；未激活实例下次采用新活动修订，旧快照可辨认。
+- 错误源码可保存但不覆盖活动实现；新加入协作者也取得同一活动修订。仅修改依赖也触发使用者重新校验，旧源码或旧依赖的校验任务迟到不能回滚新结果；同文件并发保存冲突不能静默丢失改动。
+- 连续源码保存、撤销、重连和实例重载均不重复触发已提交业务动作；运行中的动作引用的实现修订仍可读取。
+- 多选控件导出的本机库内容与 PIKG 内容一致；包带齐共享依赖及源码，开发 Workspace 离线时仍能在新 Workspace 引入，实例业务数据不随包混入。
+- 源码后续保存不修改已导出的控件包或本机库；再次导出使用明确的新修订 / 版本。导出时源码与活动实现不一致必须显式报出；未签名导出、本机复用和后续签名 / 发布分别验收。
+- PIKG 新用途在 TS / Rust 校验和安装消费方保持一致，篡改 / 缺失依赖均失败；控件包安装不创建 AppSpec 或启动服务。签名与发布验收单独证明，不能以 pack / info 成功代替。
+- 模板预留覆盖“带自定义控件”和“只用内置控件”两种结构，未支持的模板能力明确显示。后续模板功能验收至少包含：安装不建工作区、两次创建内容独立、定义与实例引用正确重映射。
 
 ## 9. 参考
 
@@ -289,4 +537,9 @@ render-block 是这条路线的全部核心：给定 `RenderContext`，产出视
 - [脑图实施记录与验收报告](<脑图实施记录与验收报告.md>)：§2 交付物（文件落点）、§6 未完成、§8 DV。
 - [第二期规划](<BuckyOS AI Workspace 第二期规划.md>) §10：两个扩展点、模式正交、Block 定义实体、HTML 扩展（D16）、扩展样本。
 - [UI 改进](<BuckyOS AI Workspace UI改进.md>) §6.2–§6.3、§7.1–§7.2：新建 / 插入对话框、左侧工具栏、插入状态。
+- [PIKG 文档入口](<../pikg/README.md>)：构建、包格式、安装与签名 / 发布的职责归属；本文新增 AIWS 控件导出契约，不另行定义 PIKG 格式。
+- [PIKG 当前格式](<../pikg/format.md>)、[AppDoc 类型](<../../src/kernel/buckyos-api/src/app_doc.rs>)、[PIKG reader](<../../src/frame/control_panel/src/pikg.rs>)、[安装分派](<../../src/frame/control_panel/src/app_installer.rs>)：当前类型、内容校验和消费方边界；新增 Workspace 用途需联动实现。
+- [Workspace 导出](<../../src/frame/aiworkspace/store/src/export.rs>)、[内置模板创建](<../../src/frame/desktop/src/app/aiworkspace/api/demos.ts>)：已有内容快照与创建基础，不等于已支持 PIKG 模板。
+- Text Editor 源码：[存储与版本检查](<../../src/apps/text_editor/src/fs/documentStore.ts>)、[文档可写性与保存流程](<../../src/apps/text_editor/src/model/workspace.ts>)、[内容打开与变更检查](<../../src/apps/text_editor/src/main.tsx>)。当前普通路径保存可复用，Workspace 成员可写目标待接入。
+- 工作区文件与重载基础：[dir.set_member](<../../src/frame/aiworkspace/core/src/plan.rs>)、[Workspace 变更订阅](<../../src/frame/desktop/src/app/aiworkspace/state/store.ts>)、[HTML 宿主](<../../src/frame/desktop/src/app/aiworkspace/ui/extensions/HtmlBlockHost.tsx>)。
 - 源码：`src/frame/desktop/src/app/aiworkspace/ui/{blocks/registry.ts,controls/registry.ts,canvas/catalog.ts,canvas/InsertCatalog.tsx,extensions/*}`；`src/frame/aiworkspace/{controls/,core/src/types.rs,README.md}`；`buckyos-websdk/cli/modules/aiws.ts`。
