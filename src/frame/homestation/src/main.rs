@@ -239,7 +239,7 @@ const USERS_REFRESH: Duration = Duration::from_secs(60);
 /// Message Center announces contact changes per owner; a burst is coalesced
 /// and each affected HomeStation re-reads its relations once.
 async fn watch_contact_changes(host: Arc<Host>) {
-    let pattern = format!("/msg_center/*/{}/**", buckyos_api::CONTACT_CHANGED_EVENT_BOX);
+    let pattern = buckyos_api::CONTACT_CHANGED_EVENT_PATTERN.to_string();
     loop {
         let reader = match get_buckyos_api_runtime() {
             Ok(runtime) => match runtime.get_kevent_client().await {

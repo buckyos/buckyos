@@ -23,6 +23,7 @@ pub mod fsutil;
 pub mod handle;
 pub mod mutate;
 pub mod namespace;
+pub mod obj_provider;
 pub mod ndm;
 pub mod preview;
 pub mod reconciler;

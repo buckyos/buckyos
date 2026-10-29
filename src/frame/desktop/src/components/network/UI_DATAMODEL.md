@@ -249,7 +249,7 @@ networkCache.refresh(key) / networkCache.lookup(input, opts) / networkCache.owne
 | `invitations` | `group.list_by_member` 的 `invitations`（见 §6） | `mailbox`、`groups` |
 | `joinRequests` | 我管理的群的 `list_members` | `groups` |
 
-`group.list_by_member` 在 1.5 秒内共享一次结果（三个资源都读它），入群、退群、审批后作废。事件来源（`realBackend.subscribe`）：kevent `/msg_center/<owner raw host>/CONTACTS/changed` → `contacts` + `requests`；`/REQUEST_BOX/**` → `mailbox`；`/INBOX/**` → `mailbox` + `groups`；浏览器 `online` → 全部。组件内的动作完成后立即按受影响资源重载，不等事件。只重载已经被读过的资源。
+`group.list_by_member` 在 1.5 秒内共享一次结果（三个资源都读它），入群、退群、审批后作废。事件来源（`realBackend.subscribe`）：kevent `/obj/msg-center/owners/<owner>/contacts/changed` → `contacts` + `requests`；`/obj/msg-center/owners/<owner>/sessions/**` 中事件名 `request_box` → `mailbox`、`inbox` → `mailbox` + `groups`；浏览器 `online` → 全部。组件内的动作完成后立即按受影响资源重载，不等事件。只重载已经被读过的资源。
 
 ## 10. Mock
 

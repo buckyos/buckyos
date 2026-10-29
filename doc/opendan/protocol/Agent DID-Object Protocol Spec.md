@@ -60,7 +60,7 @@ src/frame/agent-did-object-lib:
 | `name-lib::DIDObjectCard` | DID Object Card 结构、`DIDObjectService` 解析、基础校验、JWT encode/decode 入口。 |
 | `name-lib::ObjectProfile` | TD-style Profile 结构、trait/property/action/event 声明解析、默认 endpoint resolution、IndexTrait 基础成员校验。 |
 | `name-client::DIDObjectClient` | 通过 Object URL 获取 Card/Profile，解析 property/action/event endpoint，读取 property，调用 action。 |
-| `buckyos-http-server::DIDObjectHttpServer` | 暴露 `did.json`、`profile.json`、`props/{name}`、`methods/{name}`、`events[/name]` 的 HTTP adapter。 |
+| `buckyos-http-server::DIDObjectHttpServer` | 暴露对象路径本身（Card，`?type=profile` 为 Profile）、目录型 `did.json`、`profile.json`、`props/{name}`、`methods/{name}`、`events[/name]` 的 HTTP adapter；请求头与 query 进入 `DIDObjectRequestContext`，供 Provider 鉴权。 |
 | `DIDObjectServer` trait | 对象服务实现入口：`object_card_for`、`object_profile_for`、`read_property`、`invoke_action`、`handle_event_request`。 |
 | ObjURL pattern | 支持固定 Object URL、`/devices/{camera_id}`、`/devices/:camera_id` 和尾部 `*` pattern，把 path capture 放入 `DIDObjectRequestContext.object_params`。 |
 
@@ -176,7 +176,7 @@ resolve(input: ObjectURL | DID): Promise<ResolvedObjectCard>
 
 分类在拼 URL 之前完成，不能先去掉尾斜杠；query 不参与目录判断。`{object_url}/did.json` 只作为已配置 provider 的兼容路由保留。
 
-**当前实现差距**（第 2 段共享层修）：`DIDObjectCard::default_card_url` 固定拼 `/did.json`；`DIDObjectClient::resolve_card` 先 `trim_end_matches('/')` 再拼，client 侧无法区分路径型 / 目录型；server 侧 `DIDObjectHttpServer` 的 `DID_OBJECT_CARD_PATH` 同样只认追加后缀。
+**当前实现**（2026-10-29 第 2 段已对齐）：`DIDObjectCard::default_card_url` 先按尾斜杠分类，路径型返回原 URL、目录型补 `did.json`（保留 query）；`DIDObjectClient::resolve_card` 从 `BuckyOS-DID-Document` 响应头或 body（JSON / JWT）取 Card，两者同时出现必须一致；`DIDObjectHttpServer` 对对象路径本身的 GET 返回 Card、`?type=profile` 返回 Profile，`{object}/did.json` 仍作为目录型入口。BuckyOS 服务的 Provider 统一用 `buckyos_api::KrpcObjectProvider`（`/kapi/<host>/obj/<path>`）。
 
 `DIDObjectClient::resolve(object_url)` 当前返回：
 
@@ -191,7 +191,7 @@ ResolvedDIDObject {
 其中：
 
 - `object_url` 目前会做 trim 和去尾部 `/` 的规范化（与 §6.1 冲突，待改）。
-- `object_card` 目前来自 `GET {object_url}/did.json`，并通过 `DIDObjectCard::validate()` 做基础结构校验。
+- `object_card` 按 §4 的发现规则获取（路径型直取、目录型补 `did.json`），并通过 `DIDObjectCard::validate()` 做基础结构校验。
 - `object_profile` 根据 `DIDObjectService.serviceEndpoint` 和 `profile` 解析 URL 后 GET，并通过 `ObjectProfile::validate()` 做基础结构校验。
 
 当前 `DIDObjectClient` 的主入口是 Object URL；DID 解析路径仍主要由 `NameClient` / provider 层处理，例如测试中通过 `NameClient::resolve_did()` 解析 `did:web:127.0.0.1%3A...`。

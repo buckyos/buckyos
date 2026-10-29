@@ -18,6 +18,7 @@ mod msg_center;
 mod msg_tunnel;
 mod notify;
 mod network_directory;
+mod obj_provider;
 mod object_access;
 mod owner_session;
 mod owner_session_db;
@@ -171,6 +172,7 @@ impl Default for TelegramTunnelSettings {
 struct MsgCenterHttpServer {
     rpc_handler: MsgCenterServerHandler<MessageCenter>,
     zone_sync: Arc<ZoneSync>,
+    objects: std::sync::OnceLock<buckyos_http_server::DIDObjectHttpServer<buckyos_api::KrpcObjectProvider>>,
 }
 
 impl MsgCenterHttpServer {
@@ -178,7 +180,13 @@ impl MsgCenterHttpServer {
         Self {
             rpc_handler: MsgCenterServerHandler::new(center),
             zone_sync,
+            objects: std::sync::OnceLock::new(),
         }
+    }
+
+    fn enable_objects(self: &Arc<Self>, zone_did: name_lib::DID) {
+        let provider = obj_provider::provider(Arc::downgrade(self), zone_did);
+        let _ = self.objects.set(provider.into_http_server());
     }
 
     async fn handle_reload_settings(&self) -> std::result::Result<serde_json::Value, RPCErrors> {
@@ -269,6 +277,11 @@ impl HttpServer for MsgCenterHttpServer {
             }
             if let Some(response) = object_access::serve(&self.rpc_handler.0, &req).await {
                 return Ok(response);
+            }
+            if let Some(objects) = self.objects.get() {
+                if req.uri().path().starts_with(&format!("{MSG_CENTER_HTTP_PATH}/obj")) {
+                    return objects.serve_request(req, info).await;
+                }
             }
             if *req.method() == Method::POST
                 && (req.uri().path() == MSG_CENTER_HTTP_PATH
@@ -1463,6 +1476,9 @@ pub async fn start_msg_center_service() -> Result<()> {
     start_zone_sync(zone_sync.clone());
     start_delivery_pump(center.clone(), executor_mgr);
     let server = Arc::new(MsgCenterHttpServer::new(center, zone_sync));
+    if let Ok(runtime) = get_buckyos_api_runtime() {
+        server.enable_objects(runtime.zone_id.clone());
+    }
 
     let runner = Runner::new(MSG_CENTER_SERVICE_PORT);
     if let Err(err) = runner.add_http_server(MSG_CENTER_HTTP_PATH.to_string(), server.clone()) {

@@ -49,7 +49,7 @@ async fn evaluation_targets_and_binding() {
     // An entry path resolves to its current version; after an edit the old result is not the
     // path's result any more (A59); a withdrawn path is a state, not a judgement (A62).
     let post = publish(&net, "alice", "path-1", text_input("garden plan v1", public())).await;
-    let path = format!("cyfs://{}/home/alice/feed/@/{}", alice.zone, post["entry"].as_str().unwrap().rsplit('/').next().unwrap());
+    let path = format!("https://{}/home/alice/feed/@/{}", alice.zone, post["entry"].as_str().unwrap().rsplit('/').next().unwrap());
     let r1 = net.rpc("bob", "eval.evaluate", json!({ "request": { "target": { "kind": "content", "object_path": path }, "dimensions": ["topic"] } })).await;
     assert_eq!(r1["target"]["object_id"], post["objId"]);
     assert_eq!(r1["resolution"]["head_seq"], 1);
@@ -177,6 +177,6 @@ async fn permission_boundaries() {
     let (status, body, _) = net.get(&format!("{}/profile", alice.home), None).await;
     assert_eq!(status, 200);
     let profile: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(profile["stream"], format!("cyfs://{}/home/alice/feed", alice.zone));
-    assert_eq!(profile["inbox"], format!("cyfs://{}/home/alice/inbox", alice.zone));
+    assert_eq!(profile["stream"], format!("https://{}/home/alice/feed", alice.zone));
+    assert_eq!(profile["inbox"], format!("https://{}/home/alice/inbox", alice.zone));
 }

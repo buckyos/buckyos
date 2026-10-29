@@ -51,7 +51,7 @@ HomeStation 一个服务进程服务 Zone 的全部用户。它持久化三类�
 | `scratch` | data | temp，`default_ttl_days: 7` | `uploads/<id>/<文件名>`（`object.upload_target` 分配，浏览器 finalize 时 `auto_bind`）、`articles/<id>/<slug>.md`、`snapshots/<capture ObjId>.html` | 浏览器上传（NDM finalize）、`store_file`（长文正文、网页快照） | 到期自动解绑；发表时内容另绑进 `published`，不依赖 scratch |
 | `cache` | data | cache，`quota_mib: 1024`（软） | — | 当前没有写入方（为封面 / 缩略图等派生物预留） | 软配额 LRU |
 
-- `origin`：`author` = 动态的发表者 DID，`source` = 动态的入口 `cyfs://<zone>/home/<user>/<ns>/@/<key>`（没有入口时用发表者 DID），`collected_at` = 预取时刻。
+- `origin`：`author` = 动态的发表者 DID，`source` = 动态的入口 `https://<zone>/home/<user>/<ns>/@/<key>`（没有入口时用发表者 DID），`collected_at` = 预取时刻。
 - ambient 只锁描述对象（Skeleton），预取的 chunk 是 class 0 缓存；内容被逐出后，所有者读取走按需再取（`fetch_content_on_demand`），其他读者得到 404（D20 “有则用、无则 404”）。
 - 发表时附件一律按 ObjId `bucket.put` 进 `published`（frame 持有证明），不从 `scratch` copy：附件也可能来自 Agent 的 `artifacts` 桶（OpenDAN 自动分享，`object.register` 不带 key），两种来源走同一条路；用户对附件的持有在 `object.register` 时已验证（带 key：上传在用户自己的 `scratch` 中绑定的就是这个 ObjId；不带 key：调用者自己的会话能经 NDM 读到它）。
 - named store 写入点与对应绑定：`Storage::put_bound_file`（chunk + FileObject → 绑定）、`Storage::put_bound_object`（对象 → 绑定）、`prepare_file` / `fetch_content_on_demand`（`put_fetched_chunk` / `put_fetched_object` → `following` 绑定）。接收与拉取到的对象（含 FileObject 描述）只进 RDB `objects`，不写 named store。

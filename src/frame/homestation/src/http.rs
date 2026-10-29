@@ -14,7 +14,7 @@ use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -29,7 +29,11 @@ pub struct AppState {
 }
 
 pub fn router(state: AppState) -> Router {
+    let objects = Arc::new(crate::obj_provider::provider(state.clone()));
+    let objects_root = objects.clone();
     Router::new()
+        .route(crate::obj_provider::OBJ_PATH, any(move |req| crate::obj_provider::serve(objects_root.clone(), req)))
+        .route(&format!("{}/{{*rest}}", crate::obj_provider::OBJ_PATH), any(move |req| crate::obj_provider::serve(objects.clone(), req)))
         .route(KRPC_PATH, post(krpc))
         .route(&format!("{KRPC_PATH}/"), post(krpc))
         .route("/home/", get(zone_index))
@@ -175,7 +179,7 @@ async fn zone_index(State(state): State<AppState>, Query(q): Query<HashMap<Strin
 }
 
 /// `GET /home/<user>/feed?mode=display|changes` (§4.4), `GET /home/~zone/feed` (§4.6).
-async fn feed(State(state): State<AppState>, Path(user): Path<String>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
+pub(crate) async fn feed(State(state): State<AppState>, Path(user): Path<String>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
     let with_objects = q.get("objects").is_some_and(|v| v == "1" || v == "true");
     let limit = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(20);
     let mode = q.get("mode").map(String::as_str).unwrap_or("display");
@@ -230,7 +234,7 @@ fn named_object_response(wire: String, content_type: &str, restricted: bool) -> 
 }
 
 /// `GET /home/<user>/<ns>/@/<key>`: the entry's current Head; 404 also when not visible (E11).
-async fn entry_head(State(state): State<AppState>, headers: HeaderMap, Path((user, ns, key)): Path<(String, String, String)>, Query(q): Query<HashMap<String, String>>) -> Response {
+pub(crate) async fn entry_head(State(state): State<AppState>, headers: HeaderMap, Path((user, ns, key)): Path<(String, String, String)>, Query(q): Query<HashMap<String, String>>) -> Response {
     let station = match station_of(&state, &user).await {
         Ok(s) => s,
         Err(r) => return r,
@@ -420,7 +424,7 @@ async fn comments(State(state): State<AppState>, Path(user): Path<String>, heade
     }
 }
 
-async fn profile(State(state): State<AppState>, Path(user): Path<String>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
+pub(crate) async fn profile(State(state): State<AppState>, Path(user): Path<String>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
     if user == ZONE_FEED {
         return match state.host.zone_profile().await {
             Ok(p) => no_store(Json(p).into_response()),

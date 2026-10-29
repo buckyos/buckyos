@@ -412,6 +412,7 @@ impl Loader {
                             None
                         }
                     },
+                    objects: std::sync::OnceLock::new(),
                     home: Home::new(
                         env.records.clone(),
                         env.owner_did.as_ref().map(|d| d.to_string()),
@@ -421,6 +422,10 @@ impl Loader {
                         },
                     ),
                 });
+                if let Ok(agent_did) = name_lib::DID::from_str(&info.agent_did) {
+                    let provider = crate::obj_provider::provider(Arc::downgrade(&service), agent.agent_id(), agent_did);
+                    let _ = service.objects.set(provider.into_http_server());
+                }
                 for path in [SERVICE_PATH, WEB_API_PATH] {
                     runner
                         .add_http_server(path.to_string(), service.clone())

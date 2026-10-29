@@ -106,11 +106,7 @@ fn audit_resolver_cache_write(
 }
 
 fn strip_config_key_prefix(key_path: &str) -> &str {
-    let mut key = key_path.trim_start_matches(SYS_CONFIG_URI_PERFIX);
-    if key.starts_with("/config/") {
-        key = &key[8..];
-    }
-    key.trim_start_matches('/').trim_start_matches('\\')
+    buckyos_api::config_key_from_url(key_path)
 }
 
 fn is_internal_meta_key(key_path: &str) -> bool {

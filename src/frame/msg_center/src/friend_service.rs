@@ -451,7 +451,7 @@ impl MessageCenter {
                 }
             }
             let delivery = if local {
-                let target = format!("cyfs://local/{}/inbox", peer.to_string());
+                let target = format!("https://local/{}/inbox", peer.to_string());
                 match self.dispatch_to_receiver(msg, None, peer.clone(), target).await {
                     Ok(result) if result.delivered_recipients.contains(&peer) => FriendDelivery {
                         state: FriendDeliveryState::Delivered,

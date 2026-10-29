@@ -581,7 +581,7 @@ impl MessageCenter {
             self.unbind_display_files(&group, &display).await;
         }
         Self::publish_event(
-            format!("/msg_center/group/{}/changed", group.to_string()),
+            buckyos_api::group_changed_event_id(&group),
             json!({"group_did":group}),
         );
         Ok(result)
@@ -914,7 +914,7 @@ impl MessageCenter {
             .await?;
         tx.commit().await?;
         Self::publish_event(
-            format!("/msg_center/group/{}/changed", did.to_string()),
+            buckyos_api::group_changed_event_id(&did),
             json!({"group_did":did}),
         );
         self.register_local_recipients([did]);
@@ -3271,7 +3271,7 @@ impl MessageCenter {
         }
         if let Some(group) = &result.delivered_group {
             Self::publish_event(
-                format!("/msg_center/group/{}/changed", group.to_string()),
+                buckyos_api::group_changed_event_id(&group),
                 json!({"group_did":group}),
             );
         }

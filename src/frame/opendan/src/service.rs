@@ -114,6 +114,8 @@ pub struct StateService {
     /// Session processes on other runtimes: their session tokens and
     /// methods (`libopendan::session_context`).
     pub sessions: Option<Arc<SessionService>>,
+    /// The Agent's DID Object Provider (`/kapi/<agent_id>/obj`).
+    pub objects: std::sync::OnceLock<buckyos_http_server::DIDObjectHttpServer<buckyos_api::KrpcObjectProvider>>,
 }
 
 fn param<T: serde::de::DeserializeOwned>(params: &Value, name: &str) -> Result<T, OpenDanError> {
@@ -538,9 +540,24 @@ impl RPCHandler for StateService {
 impl HttpServer for StateService {
     async fn serve_request(
         &self,
-        req: http::Request<BoxBody<Bytes, ServerError>>,
+        mut req: http::Request<BoxBody<Bytes, ServerError>>,
         info: StreamInfo,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        if let Some(objects) = self.objects.get() {
+            let base = objects.inner().base_path().to_string();
+            let path = req.uri().path().to_string();
+            let rest = [base.as_str(), &format!("{SERVICE_PATH}/obj"), &format!("{WEB_API_PATH}/obj")]
+                .into_iter()
+                .find_map(|prefix| path.strip_prefix(prefix).filter(|r| r.is_empty() || r.starts_with('/')))
+                .map(str::to_string);
+            if let Some(rest) = rest {
+                let query = req.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
+                if let Ok(uri) = format!("{base}{rest}{query}").parse() {
+                    *req.uri_mut() = uri;
+                }
+                return objects.serve_request(req, info).await;
+            }
+        }
         if *req.method() == http::Method::POST {
             return serve_http_by_rpc_handler(req, info, self).await;
         }

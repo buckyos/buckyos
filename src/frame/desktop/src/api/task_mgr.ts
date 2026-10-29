@@ -1320,7 +1320,7 @@ export interface TaskWatchSource {
   getSubtasks(taskId: string, cursor: string | undefined, limit: number): Promise<{ tasks: TaskWatchNode[]; nextCursor?: string }>
   /** Persisted events of the whole tree under `rootId` the reader may see, oldest first. */
   listEvents(rootId: string, limit: number): Promise<TaskWatchEvent[]>
-  /** `task`: `/task_mgr/<id>`; `tree`: `/task_mgr/tree/<root_id>`. An event only says "read again". */
+  /** `task`: `/obj/taskmgr/<id>/changed`; `tree`: `/obj/taskmgr/<root_id>/tree`. An event only says "read again". */
   subscribe(scope: 'task' | 'tree', id: string, onHint: () => void): () => void
   failure(error: unknown): TaskReadFailure
 }

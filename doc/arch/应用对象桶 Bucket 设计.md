@@ -386,7 +386,7 @@ bucket.list_access_tokens { bucket_id }
 | 对象级 `expires_at` | 拒绝 | 允许 | 拒绝 | 允许 | 必填 | 允许 |
 | Binding `origin` | 可选 | 可选 | **必填** | **必填** | 可选 | 可选 |
 
-`origin` 的形状：`{ author: DID, source: cyfs:// 或 obj:// 地址, collected_at, proof?: jwt 或 cyinc 或 cypath }`。桶服务只校验形状与 `author` 是合法 DID，不验签；验签是读取方在需要时按 CYFS 协议做的事。
+`origin` 的形状：`{ author: DID, source: https:// / cyfs:// / obj:// 地址（跨 Zone 来源如 HomeStation 入口用 https，doc/key url.md §6）, collected_at, proof?: jwt 或 cyinc 或 cypath }`。桶服务只校验形状与 `author` 是合法 DID，不验签；验签是读取方在需要时按 CYFS 协议做的事。
 
 #### 4.5.4 Files 投影【已定 D11】
 

@@ -2,6 +2,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use anyhow::Result;
 use buckyos_api::{
+    rbac_literal,
     spec_schedule_status_key, AdmissionOrigin, AgentPermissionMode, AgentSlot, AgentSpec,
     AppAdmission, AppType, MailboxAddress, MailboxKind, ProductProfile, SelectorType,
     SpecScheduleStatus,
@@ -1790,6 +1791,13 @@ async fn update_rbac(
             rbac_literal(&agent_spec.binding.target_app_instance_id.to_string());
         let mailbox = MailboxAddress::new(agent_spec.agent_did.clone(), None)
             .map_err(anyhow::Error::msg)?;
+        let agent_host = rbac_literal(&agent_spec.agent_did.to_host_name());
+        for resource in [format!("obj://{agent_host}"), format!("obj://{agent_host}/*")] {
+            push_policy_line(
+                &mut rbac_policy,
+                format!("p, {owner}, {resource},read|list|query|subscribe,allow"),
+            );
+        }
         for subject in [&runtime_subject, &agent_subject] {
             for key in ["settings", "profile", "spec", "info"] {
                 push_policy_line(
@@ -1814,10 +1822,23 @@ async fn update_rbac(
             }
             push_policy_line(
                 &mut rbac_policy,
-                format!("p, {subject}, {},read|write,allow", mailbox.owner_resource()),
+                format!(
+                    "p, {subject}, {},read|write,allow",
+                    rbac_literal(&mailbox.owner_resource())
+                ),
             );
+            push_policy_line(
+                &mut rbac_policy,
+                format!(
+                    "p, {subject}, {}/*,read|write,allow",
+                    rbac_literal(&mailbox.owner_resource())
+                ),
+            );
+            for resource in [format!("obj://{agent_host}"), format!("obj://{agent_host}/*")] {
+                push_policy_line(&mut rbac_policy, format!("p, {subject}, {resource},all,allow"));
+            }
             for kind in [MailboxKind::Inbox, MailboxKind::Sent, MailboxKind::RequestBox] {
-                let resource = mailbox.resource(kind);
+                let resource = rbac_literal(&mailbox.resource(kind));
                 for resource in [resource.clone(), format!("{resource}/*")] {
                     push_policy_line(
                         &mut rbac_policy,
@@ -1863,16 +1884,6 @@ pub(crate) async fn update_rbac_for_test(
         .unwrap()
 }
 
-fn rbac_literal(value: &str) -> String {
-    let mut escaped = String::new();
-    for ch in value.chars() {
-        if "\\.^$|?*+()[]{}".contains(ch) {
-            escaped.push('\\');
-        }
-        escaped.push(ch);
-    }
-    escaped
-}
 
 #[cfg(test)]
 mod user_type_rbac_tests {

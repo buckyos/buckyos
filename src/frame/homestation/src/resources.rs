@@ -175,7 +175,7 @@ impl Station {
         if feed.publisher == self.cfg.owner {
             return None;
         }
-        let source = feed.entry.clone().filter(|e| e.starts_with("cyfs://") || e.starts_with("did:")).unwrap_or_else(|| feed.publisher.clone());
+        let source = feed.entry.clone().filter(|e| e.starts_with("https://") || e.starts_with("did:")).unwrap_or_else(|| feed.publisher.clone());
         Some(Following { key, origin: Origin { author: feed.publisher.clone(), source, collected_at: now_ms(), proof: None } })
     }
 

@@ -1315,8 +1315,8 @@ KEvent 是加速通知，不是真相源。订阅方收到事件、超时或重�
 订阅路径保持简单：
 
 ```text
-/task_mgr/{task_id}
-/task_mgr/tree/{root_id}
+/obj/taskmgr/{task_id}/changed
+/obj/taskmgr/{root_id}/tree
 ```
 
 事件至少包含：

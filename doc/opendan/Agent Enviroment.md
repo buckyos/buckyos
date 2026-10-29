@@ -259,7 +259,7 @@ MessageHub 入站消息在 OpenDAN 内部保持为独立 `AiMessage`：正文和
 
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |
-| `event_id` | string | 事件名 / 事件路径，例如 `timer.reminder_check` 或 `/task_mgr/<id>/status` |
+| `event_id` | string | 事件名 / 事件路径，例如 `timer.reminder_check` 或 `/obj/taskmgr/<id>/changed` |
 | `data` | object / null | 事件 payload |
 | `reason` | string / null | 订阅或调度方给出的可读原因；session 主动订阅事件时通常应填写 |
 | `observed_at_ms` | number | AgentSession 观察到事件并冻结输入的时间 |

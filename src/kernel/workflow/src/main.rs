@@ -185,7 +185,7 @@ pub async fn start_workflow_service() -> Result<()> {
     );
 
     // §3.3：用户在 TaskMgr UI 上点按钮 = 写一次 TaskData，task_manager 把
-    // TaskData 变更扇出到 `/task_mgr/{run_id}` 子树 channel。订阅管理器把这些
+    // TaskData 变更扇出到 `/obj/taskmgr/{run_id}/changed` 子树 channel。订阅管理器把这些
     // 事件回灌到 orchestrator.apply_task_data，把 human_action 翻译成内部状态机
     // 动作。每个 run 对应一条动态加进来的 pattern，run 终态后摘掉。
     let kevent_client = get_buckyos_api_runtime()

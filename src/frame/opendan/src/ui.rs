@@ -759,7 +759,8 @@ impl UiModule {
     pub async fn run(self: Arc<Self>, waker: Arc<dyn Waker>, poll: Duration) {
         let pattern = parse_did(self.agent.agent_did())
             .ok()
-            .map(|d| format!("/msg_center/{}/INBOX/**", d.to_raw_host_name()));
+            .and_then(|d| buckyos_api::MailboxAddress::new(d, None).ok())
+            .map(|mailbox| mailbox.owner_event_pattern());
         let mut backoff = Duration::from_secs(1);
         loop {
             let result = self.scan().await;

@@ -79,7 +79,9 @@ Zone 的 Agent 也是发表者（2026-10-23）：`users/<owner>/agents/<agent_id
 
 ### 2.4 入口与键
 
-- 入口 URL：`cyfs://<zone>/home/<user>/<namespace>/@/<key>`，user 为用户名（`[A-Za-z0-9_.-]`，`~zone` 保留给汇总列表、不能作入口），namespace 为 `feed`（正文、评论、引用转发）、`reactions`（点赞、点踩、公开收藏、普通转发）、`follows`（关注声明）。键字符集 `[A-Za-z0-9._-]{1,128}`。DID 形式的入口（E08）只接受名字系统解析出 `owner == publisher` 的内容 DID。
+- 入口 URL：`https://<zone>/home/<user>/<namespace>/@/<key>`，user 为用户名（`[A-Za-z0-9_.-]`，`~zone` 保留给汇总列表、不能作入口），namespace 为 `feed`（正文、评论、引用转发）、`reactions`（点赞、点踩、公开收藏、普通转发）、`follows`（关注声明）。键字符集 `[A-Za-z0-9._-]{1,128}`。DID 形式的入口（E08）只接受名字系统解析出 `owner == publisher` 的内容 DID。
+- 引用形式（2026-10-29，[key url.md](../key%20url.md) §6 / 裁决 D10、D11）：入口、发表流、投递入口、Follow 等跨 Zone 持久引用一律是 `https://<zone>/home/<user>/...`，它也是这些对象的默认 Object URL；本 Zone 内 `obj://homestation/home/<user>/...`（含 `obj://homestation/home/~zone`）是同一对象的别名，只在输入时归一化为 https 形式（`evaluation::path_to_entry`），不写入签名内容。旧的 `cyfs://<zone>/home/...` 形式不再解析。读者证明 `aud` 为 `https://<被读 zone>/home`。
+- DID Object Provider：`/kapi/homestation/obj/home/<user>[/feed[/@/<key>]|/inbox]`（`src/obj_provider.rs`），Card 的 `alsoKnownAs` 依次为 https 默认 URL、Provider 端点与 `obj://` 别名，Profile 在 `?type=profile`；读取走 `/home/<user>/...` 协议路径的同一读者规则（会话令牌）。inbox 投递动作仍是 CYFS dispatch 的 `PUT https://<zone>/home/<user>/inbox`，Provider 只暴露其 target。
 - 发表时的键：正文 `p-<随机>`、评论 `c-…`、引用转发 `q-…`、分享抓取 `clip-…`。
 - **互动键摘要**（§21）：`<type>-` + `hex(sha256("homestation/reaction/v1\n<互动者 DID>\n<目标 ObjId>\n<type>"))` 的前 16 字节；关注键 `f-` + `hex(sha256("homestation/follow/v1\n<关注者>\n<被关注者>"))` 前 16 字节。
 - 入口归属（§5.4 规则 2）：`home_of(publisher) == 入口的 (zone, user)`；同 Zone 其他用户的路径不算。不满足时对象按终态对象处理，Head 直接拒绝（A46）。
@@ -88,7 +90,7 @@ Zone 的 Agent 也是发表者（2026-10-23）：`users/<owner>/agents/<agent_id
 ### 2.5 关注声明、消费证明、共享评价
 
 ```json
-{ "kind": "follow", "publisher": "<Bob>", "iat": 1791421200, "entry": "cyfs://<Bob Zone>/home/bob/follows/@/f-…", "target": { "publisher": "<Alice>", "stream": "cyfs://<Alice Zone>/home/alice/feed" } }
+{ "kind": "follow", "publisher": "<Bob>", "iat": 1791421200, "entry": "https://<Bob Zone>/home/bob/follows/@/f-…", "target": { "publisher": "<Alice>", "stream": "https://<Alice Zone>/home/alice/feed" } }
 { "kind": "consumption_proof", "publisher": "<Bob>", "iat": …, "target": "<ObjId>", "action": "video_complete", "result": { … }, "receiver": "<DID>", "agreement": "agr-…", "nonce": "…" }
 ```
 
@@ -103,7 +105,7 @@ DID → 主页（zone + 用户名）：
 - 本 Zone 用户：查用户表（DID 的主机名落在本 Zone 下而查不到时，最多每 5 秒重新加载一次用户表）。本 Zone 内找不到的身份没有 HomeStation（`NotFound`）。
 - 其他身份：先得到 Zone（owner document 的 `binded_zone_list` 第一项；列表为空时取 owner DID 本身，支持自托管 Zone；owner document 解析失败时使用输入 DID），经 `DID::to_host_name()` 转为主机名，再问该 Zone：`GET https://<zone>/home/?did=<DID>` → `{ did, user, stream, inbox }`，404 表示该 Zone 不托管这个 DID。正反结果都缓存 10 分钟；网络失败不缓存。单机模式查配置（`directory.identities.<did>.user`）。
 
-Zone → HTTP 源站：`https://<zone>`，可在服务 settings 的 `peers` 或单机配置的 `directory.zones` 声明；**本 Zone 映射到本机监听**（服务模式 `http://127.0.0.1:4130`），同 Zone 用户之间的读取与投递不绕公网网关。发表流 `cyfs://<zone>/home/<user>/feed`，投递入口 `cyfs://<zone>/home/<user>/inbox`，`GET /home/<user>/profile` 也返回这两个地址。
+Zone → HTTP 源站：`https://<zone>`，可在服务 settings 的 `peers` 或单机配置的 `directory.zones` 声明；**本 Zone 映射到本机监听**（服务模式 `http://127.0.0.1:4130`），同 Zone 用户之间的读取与投递不绕公网网关。发表流 `https://<zone>/home/<user>/feed`，投递入口 `https://<zone>/home/<user>/inbox`，`GET /home/<user>/profile` 也返回这两个地址。
 
 ### 3.2 读者身份
 
@@ -113,7 +115,7 @@ Zone → HTTP 源站：`https://<zone>`，可在服务 settings 的 `peers` 或�
 | 读者证明 | `Authorization: DID <JWT>` | 其他 Zone 的用户 |
 | 会话令牌 | `Authorization: Bearer <session token>` 或 `?access=<token>` | 同 Zone 用户；读自己的主页得到所有者视图 |
 
-读者证明是自签 JWT：`{ "iss": "<读者 DID>", "aud": "cyfs://<被读 zone>/home", "iat", "exp" (≤ iat+600), "jti" }`，签名者须被 `iss` 授权（含 Zone 托管）。证明面向整个 Zone，读同一 Zone 内任何用户的主页都可用。HomeStation 代表某个用户 Pull 时以该用户为 `iss`、用 Zone 的签名者签发。**实现选择**：架构 §21 的“读者身份认证方式”在接入 CYFS 跨 Zone 身份机制前采用这一格式；证明在有效期内可以重放，只用于幂等读取。
+读者证明是自签 JWT：`{ "iss": "<读者 DID>", "aud": "https://<被读 zone>/home", "iat", "exp" (≤ iat+600), "jti" }`，签名者须被 `iss` 授权（含 Zone 托管）。证明面向整个 Zone，读同一 Zone 内任何用户的主页都可用。HomeStation 代表某个用户 Pull 时以该用户为 `iss`、用 Zone 的签名者签发。**实现选择**：架构 §21 的“读者身份认证方式”在接入 CYFS 跨 Zone 身份机制前采用这一格式；证明在有效期内可以重放，只用于幂等读取。
 
 ### 3.3 HTTP 路径
 
@@ -246,7 +248,7 @@ Push 对象（§13.1）：
 
 ### 5.3 评价服务（§6）
 
-- **目标**：`identity`（DID）；`content` 的 `object_id`、`object_path`（`cyfs://`/`https://` 的入口路径，先取得并验证 Head，固定当前版本）或 `root_object_id + inner_path`（JSON Pointer；成员是 ObjId 时固定为该对象，否则按“根 + 路径”评价，作用范围 `part`）。路径不存在、已撤回或解析失败返回 `state: unknown` 与 `failure`，不作负面判断（A62）。缺本地对象时向入口发表者取证。
+- **目标**：`identity`（DID）；`content` 的 `object_id`、`object_path`（`https://` 入口路径、本 Zone 别名 `obj://homestation/home/...` 或门户链接，先取得并验证 Head，固定当前版本）或 `root_object_id + inner_path`（JSON Pointer；成员是 ObjId 时固定为该对象，否则按“根 + 路径”评价，作用范围 `part`）。路径不存在、已撤回或解析失败返回 `state: unknown` 与 `failure`，不作负面判断（A62）。缺本地对象时向入口发表者取证。
 - **档案**：`rules`（修订号 `rules-1`）与 `model`（AICC `helper.llm_chat`，修订号 `model-1:<逻辑模型>`，需在 settings 配置 `evaluation_model`）。规则档案只在有证据时下判断：作者声明为 `declared`，规则推断为 `inferred` 并带置信度与依据；没有证据的维度列入 `unknown_dimensions`。
 - **复用**：同一目标键、档案与修订号、维度覆盖、未超过 `max_age` / `refresh_after` 时复用；`refresh` 生成新记录，并以 `supersedes` 链接旧记录。
 - **修正**：`add`/`remove`/`replace`/`confirm`，作用域为 `global` 或 `app:<id>`；修正不改评价记录，自动重算不会覆盖修正（A53）。变化流 `eval.changes` 记录新结果与修正。
@@ -262,7 +264,7 @@ Push 对象（§13.1）：
 ### 5.5 来源与关注（§7.6、§7.7）
 
 - Follow：`sources.resolve {kind: follow}` 只接受 DID（不是 DID 返回 `homestation.validation.did`），名称取自 Message Center 联系人；按名称找人由前端调用 Message Center 的 `contact.lookup`。读取对方 `/home/<user>/profile` 补充名称；已知没有 HomeStation 的身份返回 `homestation.follow.noHome`；建立来源后发表关注声明并投递，变化读取同步对方发表流（首次用展示读取回填）。
-- 好友：Message Center 中 `friend_state = friend` 且未拉黑的联系人（含同 Zone 用户）派生 `friend` 依据并发表关注声明，没有 HomeStation 的好友跳过；好友解除后移除该依据，没有其他依据时撤回关注声明并删除来源（A36）。同步在服务启动时做一次，之后每当 Message Center 发出该用户的联系人变更事件（kevent `/msg_center/*/CONTACTS/**`，一秒内的连续事件合并处理）时重做，不再每小时轮询。只有好友依据的来源不能单独取消关注，返回 `friend_basis`，界面引导改用“不看”。
+- 好友：Message Center 中 `friend_state = friend` 且未拉黑的联系人（含同 Zone 用户）派生 `friend` 依据并发表关注声明，没有 HomeStation 的好友跳过；好友解除后移除该依据，没有其他依据时撤回关注声明并删除来源（A36）。同步在服务启动时做一次，之后每当 Message Center 发出该用户的联系人变更事件（kevent `/obj/msg-center/owners/*/contacts/changed`，一秒内的连续事件合并处理）时重做，不再每小时轮询。只有好友依据的来源不能单独取消关注，返回 `friend_basis`，界面引导改用“不看”。
 - Zone 关系：`zone` 依据与 `friend` 同类（系统派生、`sources.unfollow` 返回 `zone_basis`）。Agent 关注它的主人与同 Zone 的其他 Agent，人关注自己名下的 Agent；期望集合之外的 `zone` 依据被移除，没有其他依据时撤回关注声明并删除来源。在服务启动、用户集合变化（§1）与 `admin.run friends` 时重做。主人 → Agent 还会经 Message Center 的 Agent 联系人（`friend_state = friend`）得到 `friend` 依据，两种依据并存。
 - 我关注的人：以主动依据（`active`）关注某人时，给该联系人加应用 tag `homestation.following`（Message Center `contact.update_tags`，联系人不存在时以陌生人创建；需要 RBAC `obj://msg-center/contact_tags/homestation` 的 write），取消主动关注时移除；好友派生的关注不打这个 tag。`sources` 表是关注的真相源，tag 只是投影：写失败只记日志；服务启动、每次联系人变更事件与 `admin.run friends` 时按 `sources` 对账，只写差异。
 - URL：先探测是否是 HomeStation 页面（`/homestation/<user>` 或 `/home/<user>/…` 取该用户的 `/home/<user>/profile`；`www.`/`homestation.` 短域名或 Zone 根的 `/` 取 `GET /home/` 的默认发表流；`profile.did` 给出 DID；汇总列表不按人关注），再识别 RSS/Atom 或网页声明的 feed，否则作为网站链接卡片来源；这些来源的通知状态为 `unsupported`（A45）。

@@ -25,10 +25,10 @@ pub const SYSTEM_ROLE_ZONE_TRUSTED: &str = "zone-trusted";
 /// capability "may act as this user's task control surface"; see the `task`
 /// section of buckyos-api's `rbac_config`.
 fn task_collection_resource(owner_user_id: &str) -> String {
-    format!("obj://task/{}", owner_user_id)
+    format!("obj://taskmgr/users/{}", owner_user_id)
 }
 
-/// Per-request memo for the `obj://task/{user}` RBAC check.
+/// Per-request memo for the `obj://taskmgr/users/{user}` RBAC check.
 ///
 /// The check is what lets a system control surface (the Task Center, running
 /// as `control-panel`) look past a Task's creator `app_id` and show the user
@@ -183,7 +183,7 @@ pub async fn compute_permission(
     // The owner's control surface. Every relation above matches on the exact
     // `{user_id, app_id}` principal, so a user cannot see the tasks their own
     // agents and apps created — which is precisely what the Task Center is
-    // for. An app the zone RBAC trusts to read `obj://task/{owner}` may look
+    // for. An app the zone RBAC trusts to read `obj://taskmgr/users/{owner}` may look
     // past the creator's `app_id`; apps without that grant keep the per-app
     // isolation of §8.5.
     if principal

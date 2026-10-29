@@ -14,7 +14,7 @@ function normalized(view: NotifyView): NotifyView {
  * msg-center `notify.get / ack / dismiss` and the TaskMgr side of an answer:
  * `get_task` and `commit_result` with `expected_revision`, using the
  * logged-in user's own permissions (the user is the task's assignee). The
- * task's `/task_mgr/<id>` kevent shares MessageHub's one event stream.
+ * task's `/obj/taskmgr/<id>/changed` kevent shares MessageHub's one event stream.
  */
 export function createApiNotifyBackend(): NotifyBackend {
   let username: Promise<string> | null = null

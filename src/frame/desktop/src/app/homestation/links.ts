@@ -43,8 +43,8 @@ export function portalShareUrl(feed: string, key?: string) {
   return `${zoneOrigin()}${portalPath(feed, key)}`
 }
 
-/** `cyfs://<zone>/home/<user>/<ns>/@/<key>` → `{ user, key }` (feed namespace only). */
+/** `https://<zone>/home/<user>/<ns>/@/<key>` → `{ user, key }` (feed namespace only). */
 export function parseEntry(entry: string | undefined): { user: string; key: string } | null {
-  const match = entry?.match(/^cyfs:\/\/[^/]+\/home\/([^/]+)\/feed\/@\/([^/]+)$/)
+  const match = entry?.match(/^https:\/\/[^/]+\/home\/([^/]+)\/feed\/@\/([^/]+)$/)
   return match ? { user: decodeURIComponent(match[1]), key: decodeURIComponent(match[2]) } : null
 }

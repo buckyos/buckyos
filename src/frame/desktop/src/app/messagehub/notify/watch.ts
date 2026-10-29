@@ -31,7 +31,7 @@ export interface NotifyBackend {
   /** TaskMgr error code of a failed call (`task_already_completed`, `revision_conflict`, …). */
   taskErrorCode(error: unknown): string | null
   failure(error: unknown): NotifyReadFailure
-  /** Calls `onHint` when the notification may have changed (`/task_mgr/<task_id>` for an `input`): only a hint to read again. */
+  /** Calls `onHint` when the notification may have changed (`/obj/taskmgr/<task_id>/changed` for an `input`): only a hint to read again. */
   subscribe(notifyId: string, taskId: string | undefined, onHint: () => void): () => void
   /** The logged-in user as TaskMgr names a submitter. */
   submitter(): Promise<string>

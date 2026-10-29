@@ -33,8 +33,8 @@ async fn every_user_has_a_home() {
     let (status, located) = get_json(&net, &format!("{}/home/?did={}", lin.base, kai.did), None).await;
     assert_eq!(status, 200);
     assert_eq!(located["user"], "kai");
-    assert_eq!(located["stream"], "cyfs://lin.test/home/kai/feed");
-    assert_eq!(located["inbox"], "cyfs://lin.test/home/kai/inbox");
+    assert_eq!(located["stream"], "https://lin.test/home/kai/feed");
+    assert_eq!(located["inbox"], "https://lin.test/home/kai/inbox");
     assert_eq!(net.get(&format!("{}/home/?did={}", lin.base, alice.did), None).await.0, 404);
     assert_eq!(net.get(&format!("{}/home/nobody/feed", lin.base), None).await.0, 404);
     let (_, profile) = get_json(&net, &format!("{}/profile", kai.home), None).await;
@@ -79,7 +79,7 @@ async fn every_user_has_a_home() {
     publish(&net, "lin", "l1", text_input("lin's own post", public())).await;
     let own = net.rpc("kai", "published.list", json!({})).await;
     assert_eq!(own["entries"].as_array().unwrap().len(), 1);
-    assert!(own["entries"][0]["entry"].as_str().unwrap().starts_with("cyfs://lin.test/home/kai/feed/@/"));
+    assert!(own["entries"][0]["entry"].as_str().unwrap().starts_with("https://lin.test/home/kai/feed/@/"));
     net.rpc("kai", "prefs.set_default_audience", json!({ "audience": { "kind": "friends" } })).await;
     assert_eq!(net.rpc("lin", "prefs.get", json!({})).await["defaultAudience"]["kind"], "public");
     assert_eq!(net.rpc("mia", "ui.bootstrap", json!({})).await["home"]["user"], "mia");
@@ -120,7 +120,7 @@ async fn zone_feed_lists_and_follows_changes() {
     let (lin, kai, alice) = (net.n("lin"), net.n("kai"), net.n("alice"));
     let (_, index) = get_json(&net, &format!("{}/home/", lin.base), None).await;
     assert_eq!(index["defaultFeed"], "~zone");
-    assert_eq!(index["zoneFeed"]["stream"], "cyfs://lin.test/home/~zone/feed");
+    assert_eq!(index["zoneFeed"]["stream"], "https://lin.test/home/~zone/feed");
 
     // Writers list public posts; others and restricted posts are refused before publishing.
     let mut input = text_input("kai on the zone page", public());

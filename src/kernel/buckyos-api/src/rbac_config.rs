@@ -78,9 +78,9 @@ m = (g(r.sub, p.sub) || r.sub == p.sub) && ((r.sub == keyGet3(r.obj, p.obj, p.su
 ### agent 相关
 
 ### task 相关
-- obj://task/{user} 该用户名下 Task 的集合视图。TaskMgr 用它回答“当前 principal 能否越过
+- obj://taskmgr/users/{user} 该用户名下 Task 的集合视图。TaskMgr 用它回答“当前 principal 能否越过
   Creator 的 app_id 看该用户的 Task”，从而让 control-panel 这类系统控制面成为用户的 Task
-  总览入口，而普通 app/agent（app/agent/frame 组没有 obj://task 规则）仍然只能看自己创建的
+  总览入口，而普通 app/agent（app/agent/frame 组没有 obj://taskmgr 规则）仍然只能看自己创建的
   Task。注意 enforce 是 app 侧和 user 侧的合取：app 侧决定“哪个 App 可以充当控制面”，
   user 侧的 {user} 占位符把可见范围绑定到请求者本人（root/su_admin 的全局通配规则除外）。
 
@@ -155,7 +155,7 @@ p, admin,obj://config/services/aicc/driver_metadata_update,read|write,allow
 p, admin,obj://config/services/msg-center/settings,read|write,allow
 p, admin,obj://config/services/{service}/instances/{node},write,allow
 p, admin,obj://config/services/*,read,allow
-p, admin,obj://task/{admin},read,allow
+p, admin,obj://taskmgr/users/{admin},read,allow
 
 p, users,obj://config/boot/*, read,allow
 # p, su_user,obj://config/users/{user}/*,all,allow
@@ -166,7 +166,7 @@ p, users,obj://config/users/{users}/agents,list|query,allow
 p, users,obj://config/users/{users}/agents/{agent}/{key},read|write,allow
 p, users,obj://config/services/{service}/info,read,allow
 p, users,obj://config/services/{service}/instances/{node},write,allow
-p, users,obj://task/{users},read,allow
+p, users,obj://taskmgr/users/{users},read,allow
 
 # Limited accounts carry no business or resource permission; they only read
 # their own settings and read/write their own profile. System user groups
@@ -211,8 +211,34 @@ p, system:aiworkspace,obj://aicc/on_behalf_of,write,allow
 p, system:homestation,obj://msg-center/contact_membership,read,allow
 p, system:opendan,obj://msg-center/*,all,allow
 p, system:msg-center,obj://msg-center/*,all,allow
-p, agent_runtime,obj://msg-center/*,all,allow
-p, agent,obj://msg-center/*,all,allow
+# Agents: their own mailbox rules are exact lines from the scheduler; observing
+# the owner's sessions and contacts is read-only and msg-center binds the owner.
+p, agent,obj://msg-center/owners/*,read|list|query|subscribe,allow
+p, agent,obj://msg-center/objects,read,allow
+p, agent,obj://msg-center/group_inbox/*,read,allow
+p, agent,obj://msg-center/notify,read|write,allow
+
+# Service object roots (doc/key url.md §4.1). Per-object owner, share and public
+# rules stay with each service after this coarse layer.
+p, users, obj://aiworkspace/*, read|list|query|subscribe|write|create, allow
+p, admin, obj://aiworkspace/*, read|list|query|subscribe|write|create, allow
+p, agent, obj://aiworkspace/*, read|list|query|subscribe, allow
+p, users, obj://homestation/home/{users}, read|list|query|subscribe|write|create|delete, allow
+p, users, obj://homestation/home/{users}/*, read|list|query|subscribe|write|create|delete, allow
+p, admin, obj://homestation/home/{admin}, read|list|query|subscribe|write|create|delete, allow
+p, admin, obj://homestation/home/{admin}/*, read|list|query|subscribe|write|create|delete, allow
+p, users, obj://homestation/home/*, read|list|query, allow
+p, admin, obj://homestation/home/*, read|list|query, allow
+p, agent, obj://homestation/home/*, read|list|query, allow
+p, users, obj://opendan, read|list|query, allow
+p, admin, obj://opendan, read|list|query, allow
+p, agent, obj://opendan, read|list|query, allow
+
+# Zone default device (doc/key url.md §3).
+p, users, obj://config/system/default_device, read, allow
+p, app, obj://config/system/default_device, read, allow
+p, agent, obj://config/system/default_device, read, allow
+p, admin, obj://config/system/default_device, read|write, allow
 
 # Application object buckets: obj://bucket/<scope>/<appid>/<owner>/<name>/<key>.
 # A user's own buckets, the app's own buckets, a service's own buckets; admin may
@@ -269,6 +295,19 @@ pub struct RbacConfig {
     pub policy_tail: String,
     pub policy_version: u64,
     pub is_changed: bool,
+}
+
+/// Escapes a literal resource (DID, app id, mailbox key) for use inside a policy
+/// pattern: keyMatch3 treats the pattern as a regex.
+pub fn rbac_literal(value: &str) -> String {
+    let mut escaped = String::new();
+    for ch in value.chars() {
+        if "\\.^$|?*+()[]{}".contains(ch) {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
 }
 
 pub fn overlap_rbac_policy(default_policy: &str, policy_tail: &str) -> String {
@@ -468,9 +507,13 @@ p, app:session-ui,obj://msg-center/inbox/did:bns:alice/session-a,read|write,allo
         let resource = address.resource(MailboxKind::Inbox);
         assert_eq!(
             resource,
-            "obj://msg-center/inbox/did:web:agent%2Ezone/approval%2E1"
+            "obj://msg-center/inbox/did:web:agent.zone/approval.1"
         );
-        let policy = format!("g, alice, users\ng, app:session-ui, app\np, app:session-ui,{resource},read,allow\np, app:session-ui,{},read,allow", address.owner_resource());
+        let policy = format!(
+            "g, alice, users\ng, app:session-ui, app\np, app:session-ui,{},read,allow\np, app:session-ui,{},read,allow",
+            rbac_literal(&resource),
+            rbac_literal(&address.owner_resource())
+        );
         let config = build_current_rbac_config(Some(&policy));
         rbac::create_enforcer(&config.model, &config.policy)
             .await
@@ -645,7 +688,7 @@ p, app:session-ui,obj://msg-center/inbox/did:bns:alice/session-a,read|write,allo
             ("obj://config/system/user_groups/customer", "read"),
             ("obj://config/boot/config", "read"),
             ("obj://msg-center/inbox/did:bns:carol", "read"),
-            ("obj://task/carol", "read"),
+            ("obj://taskmgr/users/carol", "read"),
             ("obj://ndm/uploads", "write"),
         ] {
             assert!(
@@ -1203,7 +1246,49 @@ g, did:bns:jarvis, agent
         );
     }
 
-    /// `obj://task/{user}` is the collection view TaskMgr consults to decide
+    #[tokio::test]
+    async fn agents_observe_owner_sessions_read_only_and_own_their_objects() {
+        use crate::{MailboxAddress, MailboxKind};
+        use name_lib::DID;
+        let _guard = TEST_LOCK.lock().await;
+        let agent = DID::new("web", "xiaobai.test.buckyos.io");
+        let mailbox = MailboxAddress::new(agent.clone(), None).unwrap();
+        let agent_sub = agent.to_string();
+        let mut tail = format!("g, bob, users\ng, {agent_sub}, agent\ng, app:xiaobai.test.buckyos.io, agent");
+        for resource in [
+            rbac_literal(&mailbox.owner_resource()),
+            format!("{}/*", rbac_literal(&mailbox.owner_resource())),
+            format!("{}/*", rbac_literal(&mailbox.resource(MailboxKind::Inbox))),
+            "obj://xiaobai\\.test\\.buckyos\\.io".to_string(),
+            "obj://xiaobai\\.test\\.buckyos\\.io/*".to_string(),
+        ] {
+            for subject in [agent_sub.as_str(), "app:xiaobai.test.buckyos.io"] {
+                tail.push_str(&format!("\np, {subject}, {resource},all,allow"));
+            }
+        }
+        tail.push_str("\np, bob, obj://xiaobai\\.test\\.buckyos\\.io/*,read|list|query|subscribe,allow");
+        let config = build_current_rbac_config(Some(&tail));
+        rbac::create_enforcer(&config.model, &config.policy)
+            .await
+            .unwrap();
+        let app = "app:xiaobai.test.buckyos.io";
+        let owner_sessions = "obj://msg-center/owners/did:bns:bob/sessions/chat-1";
+        assert!(rbac::enforce(&agent_sub, app, owner_sessions, "read", None).await);
+        assert!(!rbac::enforce(&agent_sub, app, owner_sessions, "write", None).await);
+        assert!(!rbac::enforce(&agent_sub, app, "obj://msg-center/inbox/did:bns:bob/chat-1", "read", None).await);
+        assert!(!rbac::enforce(&agent_sub, app, "obj://msg-center/sent/did:bns:bob/chat-1", "write", None).await);
+        assert!(rbac::enforce(&agent_sub, app, &format!("{}/s-1", mailbox.resource(MailboxKind::Inbox)), "write", None).await);
+        assert!(rbac::enforce(&agent_sub, app, "obj://xiaobai.test.buckyos.io/sessions/s-1", "write", None).await);
+        assert!(!rbac::enforce(&agent_sub, app, "obj://xiaohei.test.buckyos.io/sessions/s-1", "read", None).await);
+        assert!(!rbac::enforce(&agent_sub, app, "obj://xiaobaiXtestXbuckyosXio/sessions/s-1", "read", None).await);
+        assert!(rbac::enforce("bob", "system:control-panel", "obj://xiaobai.test.buckyos.io/sessions/s-1", "read", None).await);
+        assert!(!rbac::enforce("bob", "system:control-panel", "obj://xiaobai.test.buckyos.io/sessions/s-1", "write", None).await);
+        assert!(rbac::enforce(&agent_sub, app, "obj://opendan", "list", None).await);
+        assert!(rbac::enforce(&agent_sub, app, "obj://aiworkspace/ws_1/entities/e1", "read", None).await);
+        assert!(!rbac::enforce(&agent_sub, app, "obj://aiworkspace/ws_1/entities/e1", "write", None).await);
+    }
+
+    /// `obj://taskmgr/users/{user}` is the collection view TaskMgr consults to decide
     /// whether a principal may look past the creator's `app_id`. The bindings
     /// here mirror a real zone's policy tail (control-panel promoted to
     /// `kernel`, the owner bound to `admin`, agents left in `agent`).
@@ -1231,7 +1316,7 @@ g, app:buckyos_filebrowser, app
             rbac::enforce(
                 "devtest",
                 "system:control-panel",
-                "obj://task/devtest",
+                "obj://taskmgr/users/devtest",
                 "read",
                 None
             )
@@ -1241,7 +1326,7 @@ g, app:buckyos_filebrowser, app
             rbac::enforce(
                 "bob",
                 "system:control-panel",
-                "obj://task/bob",
+                "obj://taskmgr/users/bob",
                 "read",
                 None
             )
@@ -1253,7 +1338,7 @@ g, app:buckyos_filebrowser, app
             !rbac::enforce(
                 "devtest",
                 "system:control-panel",
-                "obj://task/bob",
+                "obj://taskmgr/users/bob",
                 "read",
                 None
             )
@@ -1263,7 +1348,7 @@ g, app:buckyos_filebrowser, app
             !rbac::enforce(
                 "bob",
                 "system:control-panel",
-                "obj://task/devtest",
+                "obj://taskmgr/users/devtest",
                 "read",
                 None
             )
@@ -1276,7 +1361,7 @@ g, app:buckyos_filebrowser, app
             !rbac::enforce(
                 "devtest",
                 "app:buckyos_jarvis",
-                "obj://task/devtest",
+                "obj://taskmgr/users/devtest",
                 "read",
                 None
             )
@@ -1286,7 +1371,7 @@ g, app:buckyos_filebrowser, app
             !rbac::enforce(
                 "devtest",
                 "app:buckyos_filebrowser",
-                "obj://task/devtest",
+                "obj://taskmgr/users/devtest",
                 "read",
                 None
             )
@@ -1298,7 +1383,7 @@ g, app:buckyos_filebrowser, app
             rbac::enforce(
                 "devtest",
                 "system:control-panel",
-                "obj://task/bob",
+                "obj://taskmgr/users/bob",
                 "read",
                 Some(rbac::SudoMode::Sudo("su_devtest".to_string())),
             )
@@ -1310,7 +1395,7 @@ g, app:buckyos_filebrowser, app
             !rbac::enforce(
                 "devtest",
                 "system:control-panel",
-                "obj://task/devtest",
+                "obj://taskmgr/users/devtest",
                 "write",
                 None
             )

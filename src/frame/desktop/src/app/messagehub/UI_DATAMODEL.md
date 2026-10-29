@@ -769,9 +769,9 @@ Action Log 是已确认变化的历史记录，按普通持久消息进入 Sessi
 **任务缓存（`conversation/tasks/taskWatch.ts` 的 `TaskWatch`，单例 `getTaskWatch()`）**
 
 - 数据源 `TaskWatchSource`（`src/api/task_mgr.ts` 的 `createTaskWatchSource()`，mock 为 `mock/tasks.ts`）：`getTask` / `getSubtasks` / `listEvents` / `subscribe('task' | 'tree')`，用登录用户自己的 TaskMgr 权限，不走 Task Center 的全量列表。
-- `watch(taskId)`：按 task_id 引用计数，已挂载的气泡共享一份快照和一个 `/task_mgr/<id>` 订阅。摘要 = task 本身 + 直接子任务第一页（20 条，用于计数和判断是否有子任务）。事件只是“重读”提示；同时有退避轮询兜底（2s → 30s，连续 120 次无新 revision 或 6 次失败后停止轮询，订阅保留）；比缓存 revision 旧的应答被丢弃；并发读上限 4，单次读 10s 超时。
+- `watch(taskId)`：按 task_id 引用计数，已挂载的气泡共享一份快照和一个 `/obj/taskmgr/<id>/changed` 订阅。摘要 = task 本身 + 直接子任务第一页（20 条，用于计数和判断是否有子任务）。事件只是“重读”提示；同时有退避轮询兜底（2s → 30s，连续 120 次无新 revision 或 6 次失败后停止轮询，订阅保留）；比缓存 revision 旧的应答被丢弃；并发读上限 4，单次读 10s 超时。
 - 终态收敛：task 为 `Terminal` 且已加载的直接子任务全部 `Terminal` 后，取消订阅并停止轮询；之后重新进入视口直接用缓存，不再读也不再订阅。`denied` / `missing` 同样不再跟踪。
-- `watchTree(rootId)`（气泡展开或消息详情打开时）：订阅 `/task_mgr/tree/<root_id>`，`expandNode` 逐层懒加载、`loadChildren(id, true)` 翻页、`loadEvents` 读事件；最后一个使用者离开时取消订阅并丢弃更深层节点和事件。
+- `watchTree(rootId)`（气泡展开或消息详情打开时）：订阅 `/obj/taskmgr/<root_id>/tree`，`expandNode` 逐层懒加载、`loadChildren(id, true)` 翻页、`loadEvents` 读事件；最后一个使用者离开时取消订阅并丢弃更深层节点和事件。
 - 断线：`online` 与页面重新可见时 `resync()` 对未收敛的 task 补读。读失败但已有快照时标 `stale`。
 - 消息侧刷新仍只靠 msg-center `box_changed` + 轮询；TaskMgr 事件只刷新任务区，不产生消息、未读或通知。
 
@@ -863,7 +863,7 @@ Action Log 是已确认变化的历史记录，按普通持久消息进入 Sessi
 
 - 一条通知（Notify）在 msg-center 里是 `kind = notify` 的消息，`content.machine = {intent: 'buckyos.notify', data: NotifyMessageData}`（`protocol/msgobj.ts` 的 `messageNotify()` 宽松读取：缺 `notify_id`、kind 不是 `notice | input`、category 不是 `todo | agent | app`、edit 上的数据 → 不是通知；不认识的控件与不完整的选项丢弃，未知 level 按 `normal`）。`content.content` 是给不认识这个 intent 的客户端（Telegram）看的纯文本，卡片不用它。
 - 每条通知在用户 INBOX 的分类会话 `sysnotify:todo | agent | app` 里有一条主记录（`home = true`，`from` = 系统通知发送者，即 Zone DID）；Agent 来源的通知还可能按等级另投到用户与该 Agent 的会话里（副本，`home = false`，`from` = Agent DID）。主记录与副本的 `machine.data` 相同。
-- **卡片状态不在消息里**：一律读 `notify.get`（`NotifyView`：`status / result / closed_reason / closed_at_ms / acked_by / home / deliveries`）。`notify/watch.ts` 的 `NotifyWatch` 按 `notify_id` 缓存一份状态，主记录与所有副本的卡片读同一份，因此状态一致。被观察（卡片在屏）且未结束时：`input` 订阅 TaskMgr kevent `/task_mgr/<task_id>`（与任务区共用一条 kevent 流，只是“再读一次”的提示），并按 3 s → 30 s 退避轮询（覆盖 `notice` 的已读 / 过期与丢失的事件）；结束（`answered / dismissed / expired / canceled`）后不再订阅、不再轮询。页面重新可见 / 恢复联网时重读。
+- **卡片状态不在消息里**：一律读 `notify.get`（`NotifyView`：`status / result / closed_reason / closed_at_ms / acked_by / home / deliveries`）。`notify/watch.ts` 的 `NotifyWatch` 按 `notify_id` 缓存一份状态，主记录与所有副本的卡片读同一份，因此状态一致。被观察（卡片在屏）且未结束时：`input` 订阅 TaskMgr kevent `/obj/taskmgr/<task_id>/changed`（与任务区共用一条 kevent 流，只是“再读一次”的提示），并按 3 s → 30 s 退避轮询（覆盖 `notice` 的已读 / 过期与丢失的事件）；结束（`answered / dismissed / expired / canceled`）后不再订阅、不再轮询。页面重新可见 / 恢复联网时重读。
 - 状态：`open`、`read`（只用于 `notice`）未结束；其余四个是最终状态。`notice` 的 `open` 在卡片上显示为“新通知”，`input` 的 `open` 为“待回答”。
 
 **通知卡片（`notify/NotifyCard.tsx`，渲染器顺序在“已撤回”之后、附件之前）**
@@ -1673,7 +1673,7 @@ UI 通过有权限的 owner/session 事件投影或受控轮询触发 Session AP
 | 群操作能力 | `group.check_access` | 按 actor 和 action（`session.post` 带 session_id）查询，不由 native / 本地托管推断 |
 | 回执详情 | `msg.list_read_receipts` | 独立于 mailbox 与 delivery；当前持久性限制见 6.5 |
 | 通知卡片状态 / `?notify=` 深链 | `notify.get { notify_id }` | `NotifyView`，见 3.5.6；`notify.list` 已封装（`datamodel/sessionApi.ts`），卡片未用 |
-| `input` 通知的任务快照 | TaskMgr `get_task`（登录用户自己的权限）+ kevent `/task_mgr/<task_id>` | 只取 `revision / phase / result`，用于提交前的 CAS |
+| `input` 通知的任务快照 | TaskMgr `get_task`（登录用户自己的权限）+ kevent `/obj/taskmgr/<task_id>/changed` | 只取 `revision / phase / result`，用于提交前的 CAS |
 
 ### 9.2 写入路径
 

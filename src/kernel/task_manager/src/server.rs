@@ -3613,7 +3613,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
 
     /// The Task Center runs as `control-panel`, so every relation in the
     /// preset — all keyed on the exact `{user_id, app_id}` — misses tasks the
-    /// user's own agent created. RBAC's `obj://task/{user}` is what closes it.
+    /// user's own agent created. RBAC's `obj://taskmgr/users/{user}` is what closes it.
     #[tokio::test(flavor = "current_thread")]
     async fn control_panel_sees_tasks_created_by_the_users_own_agent() {
         let _guard = ENFORCER_LOCK.get_or_init(Default::default).lock().await;

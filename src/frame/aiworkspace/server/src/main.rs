@@ -161,10 +161,14 @@ async fn buckyos_service_main(fixtures: bool) {
             let Ok(runtime) = buckyos_api::get_buckyos_api_runtime() else { continue };
             let Ok(client) = runtime.get_kevent_client().await else { continue };
             let (path, data) = match wake {
-                Wake::Head { workspace_id, epoch, head_seq } => {
-                    (format!("/aiworkspace/{workspace_id}/head"), serde_json::json!({ "epoch": epoch, "head_seq": head_seq }))
-                }
-                Wake::Locks { workspace_id, counter } => (format!("/aiworkspace/{workspace_id}/locks"), serde_json::json!({ "counter": counter })),
+                Wake::Head { workspace_id, epoch, head_seq } => (
+                    buckyos_api::obj_event_key("aiworkspace", &[workspace_id.as_str()], "head"),
+                    serde_json::json!({ "epoch": epoch, "head_seq": head_seq }),
+                ),
+                Wake::Locks { workspace_id, counter } => (
+                    buckyos_api::obj_event_key("aiworkspace", &[workspace_id.as_str()], "locks"),
+                    serde_json::json!({ "counter": counter }),
+                ),
             };
             if let Err(e) = client.pub_event(&path, data).await {
                 log::debug!("kevent publish {path} failed: {:?}", e); // clients fall back to wait_changes

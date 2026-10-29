@@ -18,6 +18,7 @@ pub mod http;
 pub mod ingress;
 pub mod interact;
 pub mod media_ref;
+pub mod obj_provider;
 pub mod objects;
 pub mod projection;
 pub mod protocol;
@@ -72,7 +73,7 @@ pub struct StationConfig {
     /// The publisher identity this HomeStation serves: one user of the zone.
     pub owner: String,
     pub owner_name: String,
-    /// Zone hostname: entries are `cyfs://<zone>/home/<user>/...`.
+    /// Zone hostname: entries are `https://<zone>/home/<user>/...`.
     pub zone: String,
     /// The user's path segment (zone username).
     pub user: String,
@@ -181,7 +182,7 @@ impl Station {
         &self.cfg.owner
     }
 
-    /// This user's home: `cyfs://<zone>/home/<user>`.
+    /// This user's home: `https://<zone>/home/<user>`.
     pub fn home(&self) -> HomeRef {
         HomeRef::new(&self.cfg.zone, &self.cfg.user)
     }

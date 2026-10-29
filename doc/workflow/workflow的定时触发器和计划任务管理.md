@@ -316,7 +316,7 @@ task_type = workflow/run
 当前 TaskMgr 主要发布更新事件。为了让 schedule root 下的新 run 能被订阅方及时发现，建议补：
 
 1. task create event：创建 task 后发布 `change_kind = "create"`。
-2. root fanout：child task create event 也发布到 `/task_mgr/{root_id}`。
+2. root fanout：child task create event 也发布到 `/obj/taskmgr/{root_id}/tree`。
 3. create event payload 至少包含 `task_id`、`parent_id`、`root_id`、`task_type`、`data` 摘要。
 
 这仍然是被动事件能力，不要求 TaskMgr 主动调度。

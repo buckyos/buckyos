@@ -85,7 +85,7 @@ async fn cyfs_dispatch_confirms_only_the_current_receiver_and_survives_restart()
         MsgObjKind::Chat,
     );
     let id = msg.gen_obj_id().0;
-    let target = "cyfs://alice.example/inbox";
+    let target = "https://alice.example/inbox";
     let first = center
         .dispatch_to_receiver(msg.clone(), None, alice.clone(), target.into())
         .await
@@ -104,7 +104,7 @@ async fn cyfs_dispatch_confirms_only_the_current_receiver_and_survives_restart()
         .unwrap()
         .is_none());
     assert!(center
-        .query_cyfs_dispatch(&sender.to_string(), "cyfs://alice.example/other", &id)
+        .query_cyfs_dispatch(&sender.to_string(), "https://alice.example/other", &id)
         .await
         .unwrap()
         .is_none());
@@ -126,7 +126,7 @@ async fn cyfs_dispatch_confirms_only_the_current_receiver_and_survives_restart()
         id
     );
     let second = center
-        .dispatch_to_receiver(msg, None, bob.clone(), "cyfs://alice.example/second".into())
+        .dispatch_to_receiver(msg, None, bob.clone(), "https://alice.example/second".into())
         .await
         .unwrap();
     assert_eq!(second.delivered_recipients, vec![bob]);
@@ -144,7 +144,7 @@ async fn cyfs_dispatch_cached_reports_retry_and_late_failure_cannot_downgrade_ac
     let delivery_id = post.deliveries[0].delivery_id.clone();
     let result = ndn_lib::CyfsDispatchResult::new(
         Some(id.clone()),
-        "cyfs://remote.example/inbox".into(),
+        "https://remote.example/inbox".into(),
         ndn_lib::CyfsDispatchStatus::Cached,
     );
     let report = crate::cyfs_dispatch::delivery_report(result);
@@ -528,7 +528,7 @@ async fn cyfs_dispatch_verifies_and_keeps_the_jwt_original_of_a_signed_message()
             signed.msg,
             Some(jwt.clone()),
             alice.clone(),
-            "cyfs://alice.example/inbox".into(),
+            "https://alice.example/inbox".into(),
         )
         .await
         .unwrap();

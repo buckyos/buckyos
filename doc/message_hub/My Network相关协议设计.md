@@ -156,7 +156,7 @@ User DID 是社交关系的主身份。Zone 是当前托管这个用户数据与
 Alice 输入 Bob 的 DID / BNS 名 / 域名
   -> contact.lookup：name_client 解析 Bob 的 DID Document（先按 Owner 文档）
   -> binded_zone_list 第一项 = Bob 的 Zone
-  -> 原生投递到 cyfs://<zone>/kapi/msg-center/<bob did>/inbox（upstream https://<zone>）
+  -> 原生投递到 https://<zone>/kapi/msg-center/<bob did>/inbox（upstream https://<zone>）
   -> 好友消息 MsgObject
 ```
 
@@ -428,7 +428,7 @@ Stranger / 无记录     -> REQUEST_BOX
 - 发起与处理好友请求，删除、解除好友、屏蔽；
 - 合并第三方账号、管理 Source Relation（未实现）。
 
-关系变化由 msg-center 按 owner 发 kevent `/msg_center/<owner>/CONTACTS/changed`（Contact Mgr.md §3.8）。订阅方（HomeStation、Desktop 公共组件的缓存）收到后重新读取，不另做同步。
+关系变化由 msg-center 按 owner 发 kevent `/obj/msg-center/owners/<owner>/contacts/changed`（Contact Mgr.md §3.8）。订阅方（HomeStation、Desktop 公共组件的缓存）收到后重新读取，不另做同步。
 
 ### 7.4 Tag
 
@@ -517,7 +517,7 @@ groups    = 用户 tag（受众“分组”与“不看”分组）
 following = 带 homestation.following
 ```
 
-- 好友默认互相关注：HomeStation 订阅 `/msg_center/*/CONTACTS/**`，事件到达时重新同步好友派生的关注，不再每小时轮询。
+- 好友默认互相关注：HomeStation 订阅 `/obj/msg-center/owners/*/contacts/changed`，事件到达时重新同步好友派生的关注，不再每小时轮询。
 - 主动关注 / 取消关注时写入或移除 `homestation.following`；因好友关系产生的关注不打这个 tag。HomeStation 的 `sources` 表仍是关注的真相源，tag 是它写出的投影，启动时和每次联系人变更后按 `sources` 对账。
 - 受众：
 

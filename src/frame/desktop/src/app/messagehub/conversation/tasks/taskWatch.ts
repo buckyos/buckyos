@@ -57,7 +57,7 @@ const TREE_HINT_DEBOUNCE_MS = 250
 /**
  * Shared task cache of the visible bubbles, keyed by task id and
  * deduplicated by revision. A watched task is read once, then re-read on a
- * `/task_mgr/<id>` event or a bounded backoff poll until its terminal
+ * `/obj/taskmgr/<id>/changed` event or a bounded backoff poll until its terminal
  * snapshot (and its direct children's) is cached; after that nothing is
  * subscribed or polled. Deeper levels and events are only read while a tree
  * is watched (an expanded bubble or the message details) and are dropped
@@ -125,7 +125,7 @@ export class TaskWatch {
     }
   }
 
-  /** Follows the whole tree under `rootId` (`/task_mgr/tree/<root_id>`) until released. */
+  /** Follows the whole tree under `rootId` (`/obj/taskmgr/<root_id>/tree`) until released. */
   watchTree(rootId: string): () => void {
     let tree = this.trees.get(rootId)
     if (!tree) { tree = { refs: 0, parents: new Set() }; this.trees.set(rootId, tree) }

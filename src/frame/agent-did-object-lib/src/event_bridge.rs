@@ -561,59 +561,40 @@ pub fn event_frame_payload(
     })
 }
 
+/// kevent key of a subscribed object event, by the shared object-event rule
+/// (`/obj/<host>/<path...>/<event>`, doc/key url.md §7); keys over the kevent
+/// limits fall back to a hash of the object.
 pub fn encode_object_event_id(object: &str, event: &str) -> String {
-    let event = safe_segment(event);
-    if let Ok(url) = Url::parse(object) {
-        if let Some(host) = url.host_str() {
-            let mut segments = url
-                .path_segments()
-                .map(|segments| {
-                    segments
-                        .filter(|segment| !segment.trim().is_empty())
-                        .map(safe_segment)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            if segments.is_empty() {
-                segments.push("by_hash".to_string());
-                segments.push(short_hash(object));
-            }
-            return format!(
-                "/obj/{}/{}/{}",
-                safe_segment(&host.to_lowercase()),
-                segments.join("/"),
-                event
-            );
+    let event = buckyos_api::kevent_segment(event);
+    let (host, segments) = match buckyos_api::parse_object_url(object) {
+        Ok(url @ buckyos_api::ObjectUrl::Obj { .. }) => {
+            (url.obj_host().map(|host| host.as_str().to_string()), url.obj_segments())
         }
+        _ => match Url::parse(object) {
+            Ok(url) => (
+                url.host_str().map(str::to_lowercase),
+                url.path_segments()
+                    .map(|segments| {
+                        segments
+                            .filter(|segment| !segment.is_empty())
+                            .map(|segment| {
+                                percent_encoding::percent_decode_str(segment)
+                                    .decode_utf8_lossy()
+                                    .into_owned()
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            ),
+            Err(_) => (None, Vec::new()),
+        },
+    };
+    let host = host.unwrap_or_else(|| "by_hash".to_string());
+    let key = buckyos_api::obj_event_key(&host, &segments, &event);
+    if buckyos_api::validate_eventid(&key).is_ok() {
+        return key;
     }
-    format!("/obj/by_hash/{}/{}", short_hash(object), event)
-}
-
-fn safe_segment(input: &str) -> String {
-    let mut value = String::new();
-    let mut chars = input.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '%' {
-            let first = chars.peek().copied();
-            if first.is_some_and(|value| value.is_ascii_hexdigit()) {
-                chars.next();
-                let second = chars.peek().copied();
-                if second.is_some_and(|value| value.is_ascii_hexdigit()) {
-                    chars.next();
-                }
-            }
-            value.push('_');
-        } else if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
-            value.push(ch);
-        } else {
-            value.push('_');
-        }
-    }
-    if value.is_empty() {
-        "_".to_string()
-    } else {
-        value
-    }
+    buckyos_api::obj_event_key(&host, &[format!("h{}", short_hash(object))], &event)
 }
 
 fn short_hash(input: &str) -> String {
@@ -657,15 +638,24 @@ mod tests {
     #[test]
     fn encodes_url_path_segments() {
         assert_eq!(
-            encode_object_event_id("https://MyHome.com/devices/cam 01", "low battery"),
-            "/obj/myhome.com/devices/cam_01/low_battery"
+            encode_object_event_id("https://MyHome.com/devices/cam 01", "low_battery"),
+            "/obj/x6d79686f6d652e636f6d/devices/x63616d203031/low_battery"
+        );
+        assert_eq!(
+            encode_object_event_id("obj://msg-center/owners/did:bns:bob/contacts", "changed"),
+            buckyos_api::contact_changed_event_id(&name_lib::DID::from_str("did:bns:bob").unwrap())
         );
     }
 
     #[test]
-    fn falls_back_to_hash_for_empty_path() {
-        let eventid = encode_object_event_id("https://example.com", "changed");
-        assert!(eventid.starts_with("/obj/example.com/by_hash/"));
+    fn object_root_and_long_paths() {
+        assert_eq!(
+            encode_object_event_id("https://example.com", "changed"),
+            "/obj/x6578616d706c652e636f6d/changed"
+        );
+        let long = format!("https://example.com/{}", "a/".repeat(20));
+        let eventid = encode_object_event_id(&long, "changed");
+        assert!(eventid.starts_with("/obj/x6578616d706c652e636f6d/h"));
         assert!(eventid.ends_with("/changed"));
     }
 

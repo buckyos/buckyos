@@ -6,6 +6,7 @@
 pub mod auth;
 pub mod buckets;
 pub mod control;
+pub mod obj_provider;
 pub mod pages;
 pub mod show;
 pub mod source;
@@ -21,7 +22,7 @@ use buckyos_api::{AccessDenial, AuthMethod, DenyReason, EntryDescription, EntryM
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -154,7 +155,14 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         }
     });
     let krpc_limit = state.limits.max_commit_bytes + 64 * 1024;
+    let zone_did = buckyos_api::get_buckyos_api_runtime()
+        .map(|runtime| runtime.zone_id.clone())
+        .unwrap_or_else(|_| name_lib::DID::new("web", "localhost"));
+    let objects = Arc::new(obj_provider::provider(state.clone(), zone_did));
+    let objects_root = objects.clone();
     Router::new()
+        .route(&obj_provider::obj_path(), any(move |req| obj_provider::serve(objects_root.clone(), req)))
+        .route(&format!("{}/{{*rest}}", obj_provider::obj_path()), any(move |req| obj_provider::serve(objects.clone(), req)))
         .route(HTTP_PATH, post(krpc))
         .route(&format!("{HTTP_PATH}/"), post(krpc))
         .layer(DefaultBodyLimit::max(krpc_limit))
@@ -274,7 +282,7 @@ pub(crate) async fn prepare_caller(state: &Arc<AppState>, caller: &mut Caller, m
     }
 }
 
-async fn krpc(State(state): State<Arc<AppState>>, body: bytes::Bytes) -> Response {
+pub(crate) async fn krpc(State(state): State<Arc<AppState>>, body: bytes::Bytes) -> Response {
     let req: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
         Err(e) => return rpc_error(0, &format!("invalid request: {e}")),

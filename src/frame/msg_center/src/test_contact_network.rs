@@ -271,7 +271,7 @@ async fn friend_requests_flow_inside_one_zone() {
         .load_message(&ndn_lib::ObjId::new(request.msg_id.as_deref().unwrap()).unwrap())
         .await
         .unwrap();
-    c.dispatch_to_receiver(msg, None, bob.clone(), "cyfs://local/replay/inbox".into())
+    c.dispatch_to_receiver(msg, None, bob.clone(), "https://local/replay/inbox".into())
         .await
         .unwrap();
     assert_eq!(requests(&c, &bob).await.len(), 1);

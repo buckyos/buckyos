@@ -840,14 +840,14 @@ TaskMgr 在任务状态、错误、进度或数据变化后发布 kevent 事件�
 订阅路径：
 
 ```text
-/task_mgr/{task_id}
-/task_mgr/{root_id}
+/obj/taskmgr/{task_id}/changed
+/obj/taskmgr/{root_id}/tree
 ```
 
 语义：
 
-- `/task_mgr/{task_id}`：订阅单个任务变化。
-- `/task_mgr/{root_id}`：订阅整棵任务树变化；子孙任务变化会 fanout 到 root channel。
+- `/obj/taskmgr/{task_id}/changed`：订阅单个任务变化。
+- `/obj/taskmgr/{root_id}/tree`：订阅整棵任务树变化；子孙任务变化会 fanout 到 root channel。
 - 根任务的 `root_id == task_id` 时不会重复发布同一事件到两个相同 channel。
 - `root_id` 中不能包含 `/`，且必须能通过 kevent event id 校验，否则不会发布 root fanout。
 
@@ -855,7 +855,7 @@ beta2.2 删除了 `/task_mgr/runner/{runner}/task_ready` runner inbox 事件；k
 
 ### 8.1 任务变更事件
 
-任务变更事件发布到 `/task_mgr/{task_id}` 和 `/task_mgr/{root_id}`。
+任务变更事件发布到 `/obj/taskmgr/{task_id}/changed` 和 `/obj/taskmgr/{root_id}/tree`。
 
 事件 payload 当前包含：
 

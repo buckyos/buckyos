@@ -38,7 +38,6 @@ const MAX_DELIVERY_RETRY: u32 = 5;
 const DELIVERY_SENDING_LEASE_MS: u64 = 60_000;
 const DELIVERY_RETRY_BASE_MS: u64 = 2_000;
 const DELIVERY_RETRY_MAX_MS: u64 = 300_000;
-const MSG_CENTER_BOX_CHANGED_EVENT_NAME: &str = "changed";
 const PRIVATE_EDIT_REDACT_SCAN_PAGE: usize = 200;
 const IDEMPOTENCY_SCOPE_DISPATCH: &str = "dispatch";
 const IDEMPOTENCY_SCOPE_POST_SEND: &str = "post_send";
@@ -660,18 +659,12 @@ impl MessageCenter {
     }
 
     pub(crate) fn publish_box_changed_event(record: &MailboxRecord, operation: &str) {
-        let box_id = format!(
-            "/msg_center/{}/{}/{}",
-            record.owner.to_raw_host_name(),
-            Self::box_kind_name(&record.box_kind),
-            hex::encode(record.mailbox.to_string())
-        );
-        let event_id = format!("{box_id}/changed");
+        let event_id = record.mailbox.box_event_id(record.box_kind.clone());
         let payload = json!({
             "operation": operation,
             "owner": record.owner.to_string(),
             "box_kind": Self::box_kind_name(&record.box_kind),
-            "box_id": box_id,
+            "box_id": event_id,
             "mailbox": record.mailbox,
             "record_id": record.record_id.clone(),
             "msg_id": record.msg_id.to_string(),
@@ -683,11 +676,7 @@ impl MessageCenter {
     }
 
     pub(crate) fn publish_delivery_changed_event(record: &DeliveryRecord, operation: &str) {
-        let executor_token = record.envelope.transport_did.to_raw_host_name();
-        let event_id = format!(
-            "/msg_center/{}/delivery_queue_{}/{}",
-            executor_token, executor_token, MSG_CENTER_BOX_CHANGED_EVENT_NAME
-        );
+        let event_id = buckyos_api::delivery_changed_event_id(&record.envelope.transport_did);
         let payload = json!({
             "operation": operation,
             "transport_did": record.envelope.transport_did.to_string(),

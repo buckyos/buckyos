@@ -8,6 +8,7 @@ authors = ["BuckyOS DAO", "codex"]
 agent_tool = { path = "../agent_tool" }
 async-trait = { workspace = true }
 buckyos-api = { path = "../../kernel/buckyos-api" }
+percent-encoding = { workspace = true }
 futures-util = { workspace = true }
 name-client = { workspace = true }
 name-lib = { workspace = true }

@@ -141,18 +141,18 @@ mod tests {
     async fn listing_orders_and_records_changes() {
         let dir = tempfile::tempdir().unwrap();
         let feed = ZoneFeed::new(&Db::open(&dir.path().join("homestation-main.db")).unwrap());
-        assert!(feed.set_listed("alice", "did:a", "cyfs://z/home/alice/feed/@/p1", 10, true).await.unwrap());
-        assert!(!feed.set_listed("alice", "did:a", "cyfs://z/home/alice/feed/@/p1", 10, true).await.unwrap());
-        assert!(feed.set_listed("bob", "did:b", "cyfs://z/home/bob/feed/@/p2", 20, true).await.unwrap());
-        assert!(!feed.set_listed("bob", "did:b", "cyfs://z/home/bob/feed/@/never", 30, false).await.unwrap());
+        assert!(feed.set_listed("alice", "did:a", "https://z/home/alice/feed/@/p1", 10, true).await.unwrap());
+        assert!(!feed.set_listed("alice", "did:a", "https://z/home/alice/feed/@/p1", 10, true).await.unwrap());
+        assert!(feed.set_listed("bob", "did:b", "https://z/home/bob/feed/@/p2", 20, true).await.unwrap());
+        assert!(!feed.set_listed("bob", "did:b", "https://z/home/bob/feed/@/never", 30, false).await.unwrap());
         let page = feed.page(None, 10).await.unwrap();
         assert_eq!(page.iter().map(|r| r.user.as_str()).collect::<Vec<_>>(), ["bob", "alice"]);
         let next = feed.page(Some((page[0].iat, page[0].entry.clone())), 10).await.unwrap();
         assert_eq!(next.len(), 1);
-        feed.touch("cyfs://z/home/alice/feed/@/p1", "head").await.unwrap();
-        feed.touch("cyfs://z/home/alice/feed/@/unlisted", "head").await.unwrap();
-        assert!(feed.set_listed("alice", "did:a", "cyfs://z/home/alice/feed/@/p1", 10, false).await.unwrap());
-        assert!(!feed.is_listed("cyfs://z/home/alice/feed/@/p1").await.unwrap());
+        feed.touch("https://z/home/alice/feed/@/p1", "head").await.unwrap();
+        feed.touch("https://z/home/alice/feed/@/unlisted", "head").await.unwrap();
+        assert!(feed.set_listed("alice", "did:a", "https://z/home/alice/feed/@/p1", 10, false).await.unwrap());
+        assert!(!feed.is_listed("https://z/home/alice/feed/@/p1").await.unwrap());
         let kinds: Vec<String> = feed.changes(0, 10).await.unwrap().into_iter().map(|c| c.kind).collect();
         assert_eq!(kinds, ["listed", "listed", "head", "unlisted"]);
         assert_eq!(feed.count().await.unwrap(), 1);

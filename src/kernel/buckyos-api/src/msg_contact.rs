@@ -35,8 +35,6 @@ pub const CONTACT_TAG_MAX_CHARS: usize = 64;
 /// RBAC resource a service needs (`write`) to change the tags of its namespace:
 /// `obj://msg-center/contact_tags/<app>`.
 pub const CONTACT_TAGS_RBAC_RESOURCE_PREFIX: &str = "obj://msg-center/contact_tags/";
-/// Name of the kevent published under `/msg_center/<owner>/CONTACTS/`.
-pub const CONTACT_CHANGED_EVENT_BOX: &str = "CONTACTS";
 
 pub const METHOD_CONTACT_LOOKUP: &str = "contact.lookup";
 pub const METHOD_CONTACT_UPDATE_TAGS: &str = "contact.update_tags";
@@ -516,7 +514,7 @@ pub struct ContactLookupReq {
     pub contact_mgr_owner: Option<DID>,
 }
 
-/// Payload of the `/msg_center/<owner>/CONTACTS/changed` kevent.
+/// Payload of the `/obj/msg-center/owners/<owner>/contacts/changed` kevent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContactChangedEvent {
     pub owner: DID,
@@ -529,12 +527,22 @@ pub struct ContactChangedEvent {
     pub updated_at_ms: u64,
 }
 
+/// `/obj/msg-center/owners/<owner>/contacts/changed` (doc/key url.md §7).
 pub fn contact_changed_event_id(owner: &DID) -> String {
-    format!(
-        "/msg_center/{}/{}/changed",
-        owner.to_raw_host_name(),
-        CONTACT_CHANGED_EVENT_BOX
-    )
+    crate::obj_event_key("msg-center", &["owners", &owner.to_string(), "contacts"], "changed")
+}
+
+/// Contact changes of every owner.
+pub const CONTACT_CHANGED_EVENT_PATTERN: &str = "/obj/msg-center/owners/*/contacts/changed";
+
+/// `/obj/<group host>/changed`: the group is an entity object (`obj://<group-did-host>`).
+pub fn group_changed_event_id(group: &DID) -> String {
+    crate::obj_event_key(&group.to_host_name(), &[] as &[&str], "changed")
+}
+
+/// `/obj/msg-center/delivery/<transport_did>/changed`: the delivery queue of one executor.
+pub fn delivery_changed_event_id(transport: &DID) -> String {
+    crate::obj_event_key("msg-center", &["delivery", &transport.to_string()], "changed")
 }
 
 /// The machine data of a friend message, if `content` carries one.

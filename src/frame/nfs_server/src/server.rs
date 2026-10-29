@@ -38,7 +38,11 @@ const WRITE_METHODS: &[&str] = &[
 ];
 
 pub fn build_router(state: SharedState) -> Router {
+    let objects = std::sync::Arc::new(crate::obj_provider::provider(state.clone()));
+    let objects_root = objects.clone();
     let mut router = Router::new()
+        .route(crate::obj_provider::OBJ_PATH, axum::routing::any(move |req| crate::obj_provider::serve(objects_root.clone(), req)))
+        .route(&format!("{}/{{*rest}}", crate::obj_provider::OBJ_PATH), axum::routing::any(move |req| crate::obj_provider::serve(objects.clone(), req)))
         .route("/nfs/v1/watch", get(watch_handler))
         .route("/nfs/v1/read/{node_id}", get(read_handler))
         .route(

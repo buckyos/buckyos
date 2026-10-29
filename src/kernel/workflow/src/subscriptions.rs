@@ -1,8 +1,8 @@
-//! 订阅 task_manager 的 `/task_mgr/{run_id}` 子树事件，把用户在 TaskMgr UI 上的
+//! 订阅 task_manager 的 `/obj/taskmgr/{run_id}/changed` 子树事件，把用户在 TaskMgr UI 上的
 //! `human_action`（写在 TaskData 里）回灌到 orchestrator 的 [`apply_task_data`]。
 //!
 //! 设计取舍：
-//! - **单 EventReader + 动态订阅集**：每个 run 一条 `/task_mgr/{run_id}`
+//! - **单 EventReader + 动态订阅集**：每个 run 一条 `/obj/taskmgr/{run_id}/changed`
 //!   pattern。task_manager 把整棵 task 树（root + descendants）扇出到 root_id
 //!   channel（[task_manager/server.rs §publish_task_changed_event]），所以一个
 //!   pattern 就能拿到这个 run 下所有 step / shard / thunk 的事件。
@@ -57,7 +57,7 @@ const SWEEP_INTERVAL_MS: u64 = 10_000;
 const STEP_TASK_TYPE: &str = "workflow/step";
 
 fn run_pattern(run_id: &str) -> String {
-    format!("/task_mgr/{}", run_id)
+    buckyos_api::task_mgr_task_event_path(run_id)
 }
 
 fn is_terminal(status: RunStatus) -> bool {
@@ -147,7 +147,7 @@ impl RunSubscriptionManager {
         });
     }
 
-    /// 把一个 run 的 `/task_mgr/{run_id}` 加入订阅集。
+    /// 把一个 run 的 `/obj/taskmgr/{run_id}/changed` 加入订阅集。
     pub async fn watch_run(&self, run_id: &str) {
         let pattern = run_pattern(run_id);
         let reader = {

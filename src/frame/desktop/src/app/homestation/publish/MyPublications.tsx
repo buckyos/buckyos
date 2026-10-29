@@ -41,7 +41,7 @@ function HeadDebugPanel() {
             const head = entry.heads[entry.heads.length - 1]
             return (
               <tr key={entry.entry} style={{ borderTop: '1px solid var(--hs-divider)' }} data-testid="hs-head-row" data-entry={entry.entry} data-seq={head.seq}>
-                <td className="max-w-[220px] truncate py-1 font-mono" title={entry.entry}>{entry.entry.replace(/^cyfs:\/\/[^/]+\/home\//, '')}</td>
+                <td className="max-w-[220px] truncate py-1 font-mono" title={entry.entry}>{entry.entry.replace(/^https:\/\/[^/]+\/home\//, '')}</td>
                 <td className="py-1">{entry.kind}</td>
                 <td className="py-1 text-right tabular-nums">{head.seq}</td>
                 <td className="py-1">{head.state}{head.current ? ` → ${shortObjId(head.current)}` : ''}</td>
@@ -54,7 +54,7 @@ function HeadDebugPanel() {
         <p className="mb-1 font-semibold">{t('homestation.debug.changes', 'Change log (what a follower reads with a change cursor)')}</p>
         <ol className="max-h-48 space-y-0.5 overflow-y-auto font-mono">
           {[...(changes.data ?? [])].reverse().slice(0, 30).map(change => (
-            <li key={change.cursor}>#{change.cursor} {change.kind} seq={change.seq} {change.state} {change.entry.replace(/^cyfs:\/\/[^/]+\/home\//, '')} · {formatDateTime(change.at, locale)}</li>
+            <li key={change.cursor}>#{change.cursor} {change.kind} seq={change.seq} {change.state} {change.entry.replace(/^https:\/\/[^/]+\/home\//, '')} · {formatDateTime(change.at, locale)}</li>
           ))}
         </ol>
       </div>

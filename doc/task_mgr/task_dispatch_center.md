@@ -792,7 +792,7 @@ Caller-owned step/mirror task (可选)
 - link 协议就是不可变的 `dispatch_id + target_task_id` 双向引用：
   `get_dispatch(dispatch_id)` 给出 `target_task_id`；Target Task 的
   `data.request.dispatch_id` 反向指回。
-- Caller 对目标 Task 只做只读观察（`task_mgr.get_task` + 订阅 `/task_mgr/{task_id}`）。
+- Caller 对目标 Task 只做只读观察（`task_mgr.get_task` + 订阅 `/obj/taskmgr/{task_id}/changed`）。
   可见性由 Target 建 Task 时的 owner 与 permissions 决定：如 OpenDAN 以
   `user_id = on_behalf_of 业务用户` 建 Task，read scope `User` 即可让委托人观察。
 - 取消、暂停、恢复、审批等对**当前 Task**的写操作调用 Target 的业务接口（如 OpenDAN 的

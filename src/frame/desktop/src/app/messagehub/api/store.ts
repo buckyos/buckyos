@@ -10,7 +10,7 @@ import { getAttachmentKey } from '../conversation/input/attachmentDraft'
  * - viewer → owner isolation: caches, drafts, readers and late responses are
  *   keyed by `(viewerDid, ownerDid, sessionId)`; observers never write.
  */
-import { buckyos, identityKey } from 'buckyos'
+import { buckyos, identityKey, objectUrl } from 'buckyos'
 import type { z } from 'zod'
 import { fetchAgentList } from '../../../api/user_mgr'
 import { onAgentsChanged, onOwnProfileChanged } from '../../agent-setup/events'
@@ -127,13 +127,6 @@ function labels(): ProjectionLabels {
     systemNotify: translate('messagehub.notify.entity', 'System notifications'),
     notifyCategories: { todo: translate('messagehub.notify.category.todo', 'To-do'), agent: translate('messagehub.notify.category.agent', 'Agent'), app: translate('messagehub.notify.category.app', 'App notifications') },
   }
-}
-
-function ownerToken(did: string): string {
-  const parts = did.split(':')
-  const method = parts[1] ?? ''
-  const id = parts.slice(2).join(':').split(':')[0] ?? ''
-  return method === 'web' ? id : `${id}.${method}.did`
 }
 
 function isUuid(value: string): boolean {
@@ -447,8 +440,7 @@ export class MessageHubApiStore implements MessageHubStore {
       void this.refreshRuntime(context, activeSessionId); void this.ensureSessionPrefs(context, activeSessionId)
     }
     let subscription: { close(): Promise<void> } | null = null
-    const token = ownerToken(context.ownerDid)
-    const patterns = ['INBOX', 'SENT', 'GROUP_INBOX', 'REQUEST_BOX'].map(kind => `/msg_center/${token}/${kind}/**`)
+    const patterns = [objectUrl.objEventPattern('msg-center', ['owners', context.ownerDid, 'sessions'])]
     void buckyos.subscribeKEvent(patterns, () => {
       if (stopped || data.epoch === -1) return
       void this.refreshSummaries(context)

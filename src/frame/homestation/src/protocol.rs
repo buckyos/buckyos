@@ -382,9 +382,19 @@ impl HomeRef {
         Self { zone: zone.trim_end_matches('.').to_ascii_lowercase(), user: user.to_string() }
     }
 
-    /// `cyfs://<zone>/home/<user>`
+    /// `https://<zone>/home/<user>`: the default Object URL, also across zones (doc/key url.md §6).
     pub fn base(&self) -> String {
-        format!("cyfs://{}/home/{}", self.zone, self.user)
+        format!("https://{}/home/{}", self.zone, self.user)
+    }
+
+    /// The current-zone alias `obj://homestation/home/<user>[/<rest>]`.
+    pub fn obj_url(&self, rest: &str) -> String {
+        let rest = rest.trim_matches('/');
+        if rest.is_empty() {
+            format!("obj://homestation/home/{}", self.user)
+        } else {
+            format!("obj://homestation/home/{}/{}", self.user, rest)
+        }
     }
 
     pub fn stream(&self) -> String {
@@ -415,7 +425,7 @@ pub fn valid_user_segment(user: &str) -> bool {
             && user != "..")
 }
 
-/// A mutable entry: a path under the publisher's home (`cyfs://<zone>/home/<user>/...`), or a
+/// A mutable entry: a path under the publisher's home (`https://<zone>/home/<user>/...`), or a
 /// content DID (E08).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntryRef {
@@ -432,7 +442,7 @@ impl EntryRef {
             }
             return Ok(Self::Did(entry.to_string()));
         }
-        let rest = entry.strip_prefix("cyfs://").ok_or_else(|| format!("entry must be a cyfs URL or DID: {entry:?}"))?;
+        let rest = entry.strip_prefix("https://").ok_or_else(|| format!("entry must be an https URL or DID: {entry:?}"))?;
         let (zone, path) = rest.split_once('/').ok_or_else(|| format!("entry has no path: {entry:?}"))?;
         let zone = zone.to_ascii_lowercase();
         if zone.is_empty() || zone.contains(':') {
@@ -442,7 +452,7 @@ impl EntryRef {
         let (home, user, ns, at, key) = (segments.next(), segments.next(), segments.next(), segments.next(), segments.next());
         let user = user.unwrap_or_default();
         if home != Some("home") || at != Some("@") || segments.next().is_some() || !valid_user_segment(user) || user == ZONE_FEED {
-            return Err(format!("entry must look like cyfs://<zone>/home/<user>/<namespace>/@/<key>: {entry:?}"));
+            return Err(format!("entry must look like https://<zone>/home/<user>/<namespace>/@/<key>: {entry:?}"));
         }
         let namespace = ns.and_then(EntryNamespace::parse).ok_or_else(|| format!("unknown entry namespace in {entry:?}"))?;
         let key = key.unwrap_or_default();
@@ -656,19 +666,21 @@ mod tests {
     fn entry_urls_round_trip() {
         let home = HomeRef::new("Example.org", "alice");
         let url = home.entry(EntryNamespace::Feed, "garden-0001");
-        assert_eq!(url, "cyfs://example.org/home/alice/feed/@/garden-0001");
-        assert_eq!(home.stream(), "cyfs://example.org/home/alice/feed");
-        assert_eq!(home.inbox(), "cyfs://example.org/home/alice/inbox");
+        assert_eq!(url, "https://example.org/home/alice/feed/@/garden-0001");
+        assert_eq!(home.stream(), "https://example.org/home/alice/feed");
+        assert_eq!(home.inbox(), "https://example.org/home/alice/inbox");
+        assert_eq!(home.obj_url("feed"), "obj://homestation/home/alice/feed");
         assert_eq!(home.path("objects/x"), "/home/alice/objects/x");
         let parsed = EntryRef::parse(&url).unwrap();
         assert_eq!(parsed.zone(), Some("example.org"));
         assert_eq!(parsed.home(), Some(&home));
-        assert!(EntryRef::parse("cyfs://example.org/home/feed/@/garden").is_err());
-        assert!(EntryRef::parse("cyfs://example.org/home/alice/feed/garden").is_err());
-        assert!(EntryRef::parse("https://example.org/home/alice/feed/@/x").is_err());
-        assert!(EntryRef::parse("cyfs://example.org/home/alice/feed/@/a/b").is_err());
-        assert!(EntryRef::parse("cyfs://example.org/home/~zone/feed/@/x").is_err());
-        assert!(EntryRef::parse("cyfs://example.org/home/a%2Fb/feed/@/x").is_err());
+        assert!(EntryRef::parse("https://example.org/home/feed/@/garden").is_err());
+        assert!(EntryRef::parse("https://example.org/home/alice/feed/garden").is_err());
+        assert!(EntryRef::parse("cyfs://example.org/home/alice/feed/@/x").is_err());
+        assert!(EntryRef::parse("obj://homestation/home/alice/feed/@/x").is_err());
+        assert!(EntryRef::parse("https://example.org/home/alice/feed/@/a/b").is_err());
+        assert!(EntryRef::parse("https://example.org/home/~zone/feed/@/x").is_err());
+        assert!(EntryRef::parse("https://example.org/home/a%2Fb/feed/@/x").is_err());
         assert!(matches!(EntryRef::parse("did:bns:plant-stand").unwrap(), EntryRef::Did(_)));
     }
 

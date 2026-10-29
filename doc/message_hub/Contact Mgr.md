@@ -300,13 +300,13 @@ well-known tag（`WELL_KNOWN_CONTACT_TAGS`，buckyos-api 与 websdk 各一份；
 
 ### 3.8 变更事件
 
-每次实际改变 owner 库的写入都发 kevent `/msg_center/<owner>/CONTACTS/changed`，`<owner>` 为 `owner.to_raw_host_name()`（如 `alice.bns.did`，见 `contact_changed_event_id`）。载荷 `ContactChangedEvent { owner, operation: upsert | remove | friend_request, dids, request_id?, updated_at_ms }`。
+每次实际改变 owner 库的写入都发 kevent `/obj/msg-center/owners/<owner>/contacts/changed`，`<owner>` 为 `owner.to_raw_host_name()`（如 `alice.bns.did`，见 `contact_changed_event_id`）。载荷 `ContactChangedEvent { owner, operation: upsert | remove | friend_request, dids, request_id?, updated_at_ms }`。
 
 - `upsert`：`update_contact`、block / unblock、临时授权、导入、`update_tags`、好友状态变化、Zone 同步（只在内容变化时）；
 - `remove`：删除联系人、合并的源 DID（目标 DID 另发 `upsert`）；
 - `friend_request`：每次保存请求记录，带 `request_id`。
 
-系统库没有事件。事件只是加速信号，订阅方收到后重新读取；HomeStation 订阅 `/msg_center/*/CONTACTS/**`。
+系统库没有事件。事件只是加速信号，订阅方收到后重新读取；HomeStation 订阅 `/obj/msg-center/owners/*/contacts/changed`。
 
 ### 3.9 数据迁移
 
