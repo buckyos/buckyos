@@ -35,11 +35,12 @@ uv run src/start.py --skip-update
 uv run src/stop.py
 ```
 
-WSLC 的会话、镜像、容器和卷与调用用户及权限上下文关联。请让 node-daemon、镜像导入和 stop.py 使用同一个 Windows 用户及相同的管理员权限级别；交互式用户拉取的镜像不能假定在 LocalSystem 服务中可见。正式安装包的 paios 镜像（`bin/paios-images/`）因此由 node-daemon 在自己的上下文里从包内 tar 执行 `load` 导入，安装器不导入；换了运行用户或权限级别后，node-daemon 会从 tar 重新导入。不要在已有容器运行时切换运行时；先用原运行时停止，两个运行时的镜像和命名卷分别保存。
+WSLC 的会话、镜像、容器和卷与调用用户及权限上下文关联。请让 node-daemon、镜像导入和 stop.py 使用同一个 Windows 用户及相同的管理员权限级别；交互式用户拉取的镜像不能假定在 LocalSystem 服务中可见。正式安装包的 paios 镜像（`bin/paios-images/`）因此由 node-daemon 在自己的上下文里从包内 tar 执行 `load` 导入，安装器不导入；换了运行用户或权限级别后，node-daemon 会从 tar 重新导入。手动执行 `wslc load -i <tar>` 恢复时，必须在 node-daemon 的运行账号、相同权限级别的 PowerShell 中执行；管理员窗口中 `wslc image ls` 可见的镜像不代表 node-daemon 可见。不要在已有容器运行时切换运行时；先用原运行时停止，两个运行时的镜像和命名卷分别保存。
 
 ## 运行行为
 
 - 容器生命周期、镜像加载/拉取/打标签、标签身份校验和健康状态沿用 AppLoader；WSLC 的 JSON 数组/JSON 流会转换成已有查询代码需要的字段。
+- WSLC 的错误信息随系统语言本地化，AppLoader 不解析错误文本：`image inspect` / `image rm` 失败后，用镜像列表（`images -q <ref>`，sha256 引用用 `images --quiet --no-trunc`）确认镜像不存在，才按缺失处理；列表查询也失败或列表中仍有该镜像时，按原命令失败上报。
 - Windows 路径直接绑定到容器，命名卷用于实例工作目录及共享 ExtTool；空卷由镜像内容初始化。
 - 容器通过 `host.wslc.internal` 访问 Windows 宿主。AppLoader 将其写入 `BUCKYOS_HOST_GATEWAY` 和 kevent 地址，不传 Docker 专用的 `--add-host ...:host-gateway`。
 - 服务端口仍按 AppLoader 的端口映射发布。WSLC 默认绑定 Windows loopback，供宿主上的 NodeGateway 访问。

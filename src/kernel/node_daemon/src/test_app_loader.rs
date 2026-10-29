@@ -1,7 +1,7 @@
 use crate::app_loader::{
     buckyos_tool_mounts, command_matches_agent_process, command_matches_exact_agent_process,
     container_list_contains_name, docker_deployment_health, docker_desc_requires_exact_match,
-    docker_image_tar_candidates_for_arch, docker_missing_text, docker_runtime_matches_deployment,
+    docker_image_tar_candidates_for_arch, docker_runtime_matches_deployment,
     docker_runtime_matches_target, inspect_docker_image_layout, normalize_digest,
     parse_docker_container_inspect, primary_service_port, validate_app_launch_config, AppLoader,
     CommandSpec,
@@ -792,21 +792,6 @@ fn default_tmp_mount_uses_platform_valid_host_path() {
             .join("alice")
             .join("demo.example")
     );
-}
-
-#[test]
-fn docker_missing_text_matches_lowercase_runtime_errors() {
-    assert!(docker_missing_text("error: no such object: 732418f568ce"));
-    assert!(docker_missing_text(
-        "Error response from daemon: No such container: demo"
-    ));
-    assert!(docker_missing_text("no such image: repo/demo:latest"));
-    assert!(docker_missing_text(
-        "Error response from daemon: get buckyos-exttool: no such volume"
-    ));
-    assert!(!docker_missing_text(
-        "permission denied while trying to connect to docker daemon"
-    ));
 }
 
 #[test]
@@ -1975,6 +1960,14 @@ fn docker_observation_loader(
                     ""
                 }
                 .to_string(),
+                ["images", "--quiet", "--no-trunc"] => {
+                    match (fixture.image_exists, fixture.container.as_ref()) {
+                        (true, Some(container)) => {
+                            container["Image"].as_str().unwrap_or_default().to_string()
+                        }
+                        _ => String::new(),
+                    }
+                }
                 _ => panic!("unexpected docker observation command: {args:?}"),
             };
             DockerExecOutcome {
@@ -2158,7 +2151,7 @@ async fn deployment_observation_retries_digest_inspect_after_failure() {
         loader.observe_deployment().await.unwrap().state,
         ServiceInstanceState::Started
     );
-    assert_eq!(fixture.lock().unwrap().commands.len(), 4);
+    assert_eq!(fixture.lock().unwrap().commands.len(), 5);
 }
 
 #[tokio::test]

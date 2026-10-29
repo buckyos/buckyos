@@ -43,6 +43,12 @@ async fn windows_wslc_lifecycle() {
         .await
         .trim()
         .is_empty());
+    assert!(docker_image_listed(None, "alpine:latest").await.unwrap());
+    assert!(crate::paios_images::PaiosDocker::new(None)
+        .inspect("buckyos-wslc-test-missing:never")
+        .await
+        .unwrap()
+        .is_none());
     let image_id = cli(&["image", "inspect", "--format={{.Id}}", "alpine:latest"]).await;
     assert!(image_id.starts_with("sha256:"));
     assert!(cli(&["images", "--quiet", "--no-trunc"])

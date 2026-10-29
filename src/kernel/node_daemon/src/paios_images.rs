@@ -6,7 +6,7 @@
 //! uses `<repo>:latest-<arch>` from the local Docker store. Neither mode pulls.
 
 use crate::app_loader::{
-    docker_object_missing, ensure_success, run_docker_with, CommandOutput, DockerCommandRunner,
+    docker_image_absent, ensure_success, run_docker_with, CommandOutput, DockerCommandRunner,
     PlatformArch, PlatformTarget,
 };
 use crate::run_item::{ControlRuntItemErrors, Result as RunResult};
@@ -575,7 +575,7 @@ impl<'a> PaiosDocker<'a> {
         let output = self
             .docker(&["image", "inspect", "--format={{json .}}", reference])
             .await?;
-        if !output.status.success() && docker_object_missing(&output) {
+        if !output.status.success() && docker_image_absent(self.runner, reference).await {
             return Ok(None);
         }
         ensure_success("docker image inspect", &output)?;
@@ -858,7 +858,7 @@ impl<'a> PaiosDocker<'a> {
                     "removed old paios image {} ({})",
                     entry.reference, entry.image_id
                 );
-            } else if docker_object_missing(&output) {
+            } else if docker_image_absent(self.runner, entry.reference.as_str()).await {
                 info!("old paios image {} is already gone", entry.reference);
             } else {
                 info!(
@@ -1245,6 +1245,8 @@ mod tests {
         volumes: Vec<String>,
         loads: HashMap<String, (String, serde_json::Value)>,
         seeded: bool,
+        inspect_fails: bool,
+        list_fails: bool,
         log: Vec<String>,
     }
 
@@ -1265,11 +1267,28 @@ mod tests {
                     stdout: String::new(),
                     stderr: stderr.to_string(),
                 };
+                let missing = |reference: &str| DockerExecOutcome {
+                    ok: false,
+                    stdout: "[]".to_string(),
+                    stderr: format!("未找到映像 '{reference}'。"),
+                };
                 match args.as_slice() {
                     ["image", "inspect", _, reference] => match store.images.get(*reference) {
+                        _ if store.inspect_fails => fail("无法连接到 WSLC 会话"),
                         Some(identity) => ok(identity.to_string()),
-                        None => fail("Error: No such image: x"),
+                        None => missing(reference),
                     },
+                    ["images", "-q", reference] => {
+                        if store.list_fails {
+                            fail("无法连接到 WSLC 会话")
+                        } else {
+                            ok(store
+                                .images
+                                .get(*reference)
+                                .map(|identity| identity["Id"].as_str().unwrap().to_string())
+                                .unwrap_or_default())
+                        }
+                    }
                     ["load", "-i", path] => match store.loads.get(*path).cloned() {
                         Some((reference, identity)) => {
                             store.images.insert(reference, identity);
@@ -1277,10 +1296,10 @@ mod tests {
                         }
                         None => fail("invalid tar"),
                     },
-                    ["image", "rm", reference] => {
-                        store.images.remove(*reference);
-                        ok(String::new())
-                    }
+                    ["image", "rm", reference] => match store.images.remove(*reference) {
+                        Some(_) => ok(String::new()),
+                        None => missing(reference),
+                    },
                     ["volume", "ls", ..] => ok(store.volumes.join("\n")),
                     ["volume", "create", name] => {
                         store.volumes.push(name.to_string());
@@ -1444,6 +1463,58 @@ mod tests {
             "{error}"
         );
         assert_eq!(log_has(&store, "pull"), 0);
+    }
+
+    #[tokio::test]
+    async fn localized_missing_image_loads_but_runtime_faults_keep_inspect_error() {
+        let (_root, aios, _) = pinned_root();
+        let image = pinned_image(PaiosImageKind::Aios, &aios);
+        let store = Arc::new(Mutex::new(FakeStore::default()));
+        store.lock().unwrap().loads.insert(
+            aios.tar_path.to_string_lossy().to_string(),
+            (aios.platform.reference.clone(), identity_of(&aios)),
+        );
+        let runner = fake_runner(store.clone());
+        let docker = PaiosDocker::new(Some(&runner));
+
+        {
+            let mut store = store.lock().unwrap();
+            store.inspect_fails = true;
+            store.list_fails = true;
+        }
+        let error = docker.ensure_image(&image).await.unwrap_err();
+        assert!(
+            matches!(&error, ControlRuntItemErrors::ExecuteError(step, _) if step == "docker image inspect"),
+            "{error}"
+        );
+        assert!(
+            error.to_string().contains("无法连接到 WSLC 会话"),
+            "{error}"
+        );
+        assert_eq!(log_has(&store, "load"), 0);
+
+        {
+            let mut store = store.lock().unwrap();
+            store.list_fails = false;
+            store
+                .images
+                .insert(aios.platform.reference.clone(), identity_of(&aios));
+        }
+        let error = docker.ensure_image(&image).await.unwrap_err();
+        assert!(
+            matches!(&error, ControlRuntItemErrors::ExecuteError(step, _) if step == "docker image inspect"),
+            "{error}"
+        );
+        assert_eq!(log_has(&store, "load"), 0);
+
+        {
+            let mut store = store.lock().unwrap();
+            store.inspect_fails = false;
+            store.images.clear();
+        }
+        let id = docker.ensure_image(&image).await.unwrap();
+        assert_eq!(id, aios.platform.image_id);
+        assert_eq!(log_has(&store, "load -i"), 1);
     }
 
     #[tokio::test]

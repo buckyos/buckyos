@@ -2305,39 +2305,25 @@ impl AppLoader {
     }
 
     async fn docker_image_reference_exists(&self, image_ref: &str) -> Result<bool> {
+        let runner = self.docker_command_runner.as_ref();
         if wslc::program()
             .map_err(ControlRuntItemErrors::ParserConfigError)?
             .is_some()
         {
-            if !image_ref.starts_with("sha256:") {
-                return self.check_docker_image_exists(image_ref, None).await;
-            }
-            let output = self
-                .run_docker(&[
-                    "images".to_string(),
-                    "--quiet".to_string(),
-                    "--no-trunc".to_string(),
-                ])
-                .await?;
-            ensure_success("wslc images", &output)?;
-            return Ok(output.stdout.lines().any(|id| id.trim() == image_ref));
+            return docker_image_listed(runner, image_ref).await;
         }
-        let output = run_command(
-            "docker",
-            &[
+        let output = self
+            .run_docker(&[
                 "image".to_string(),
                 "inspect".to_string(),
                 "--format={{.Id}}".to_string(),
                 image_ref.to_string(),
-            ],
-            None,
-            None,
-        )
-        .await?;
+            ])
+            .await?;
         if output.status.success() {
             return Ok(!output.stdout.trim().is_empty());
         }
-        if docker_object_missing(&output) {
+        if docker_image_absent(runner, image_ref).await {
             return Ok(false);
         }
         Err(ControlRuntItemErrors::ExecuteError(
@@ -3094,7 +3080,9 @@ impl AppLoader {
                 image_ref.to_string(),
             ])
             .await?;
-        if docker_object_missing(&output) {
+        if !output.status.success()
+            && docker_image_absent(self.docker_command_runner.as_ref(), image_ref).await
+        {
             return Ok(Vec::new());
         }
         ensure_success("docker image inspect RepoDigests", &output)?;
@@ -4449,20 +4437,43 @@ fn trim_to_option(value: &str) -> Option<String> {
     }
 }
 
-pub(crate) fn docker_missing_text(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    // `docker volume inspect <name>` (Docker Engine ≥ 25) phrases the
-    // missing-volume error as `get <name>: no such volume` — a different
-    // wording than the container/image paths, but still a "missing object"
-    // result from the caller's perspective.
-    lower.contains("no such object")
-        || lower.contains("no such image")
-        || lower.contains("no such container")
-        || lower.contains("no such volume")
+pub(crate) async fn docker_image_listed(
+    runner: Option<&DockerCommandRunner>,
+    reference: &str,
+) -> Result<bool> {
+    if reference.starts_with("sha256:") {
+        let output = run_docker_with(
+            runner,
+            &[
+                "images".to_string(),
+                "--quiet".to_string(),
+                "--no-trunc".to_string(),
+            ],
+        )
+        .await?;
+        ensure_success("docker images", &output)?;
+        return Ok(output.stdout.lines().any(|id| id.trim() == reference));
+    }
+    let output = run_docker_with(
+        runner,
+        &[
+            "images".to_string(),
+            "-q".to_string(),
+            reference.to_string(),
+        ],
+    )
+    .await?;
+    ensure_success("docker images -q", &output)?;
+    Ok(!output.stdout.trim().is_empty())
 }
 
-pub(crate) fn docker_object_missing(output: &CommandOutput) -> bool {
-    docker_missing_text(&output.stderr) || docker_missing_text(&output.stdout)
+/// A failed image command means "missing" only when the image list agrees:
+/// runtimes such as WSLC localize their error messages.
+pub(crate) async fn docker_image_absent(
+    runner: Option<&DockerCommandRunner>,
+    reference: &str,
+) -> bool {
+    matches!(docker_image_listed(runner, reference).await, Ok(false))
 }
 
 pub(crate) fn parse_docker_container_inspect(raw: &str) -> Result<DockerContainerInspectDoc> {
