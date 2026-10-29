@@ -34,6 +34,8 @@ sys_cfg_client.set("key","value")
 
 远程访问的服务地址解析、当前 session token 和续期由 SDK/runtime 处理，服务端继续验证调用身份与对象权限。应用私有 storage 无需放置宿主机的 `named_store.json`，也不需要挂载宿主机 NamedStore。选择后端不依赖配置文件是否存在；初始化或鉴权失败会返回错误，不自动切换到另一个后端。
 
+`AppService`、`FrameService` 的 NFS kRPC（包括 `get_bucket_client()`）与 NamedStore 使用同一 NodeGateway：`http://<host gateway>:<node_gateway_port>/kapi/nfs-server`。NFS 系统服务只监听宿主机回环地址，容器不能使用宿主网桥地址直连其 `4110` 端口。`AppClient` 继续使用显式网关或 Zone 地址；内核侧保留本机服务发现。Bucket client 保持短会话语义，每次操作重新获取，以使用当前 token；认证已失效时拒绝创建客户端。
+
 负责本机存储管理的内核服务可以调用 `runtime.get_local_named_store().await?`，取得具体的 `NamedDataMgr`，用于布局、保留关系、网关装配及本地包处理。该入口只允许 `Kernel`、`KernelService` 使用；普通附件读取和产物存储使用统一入口。
 
 ## init 到 login 之间的语义

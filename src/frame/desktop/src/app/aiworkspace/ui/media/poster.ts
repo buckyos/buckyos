@@ -141,7 +141,7 @@ async function audioFacts(file: File, signal: AbortSignal): Promise<Omit<MediaFa
 }
 
 async function pdfFacts(file: File, signal: AbortSignal): Promise<Omit<MediaFacts, 'kind'>> {
-  const { pdfFirstPage } = await import('./pdfPoster')
+  const { pdfFirstPage } = await import('./pdfDoc')
   const { canvas, pageCount } = await pdfFirstPage(new Uint8Array(await file.arrayBuffer()), POSTER_EDGE, signal)
   return { image: { width: canvas.width, height: canvas.height }, pageCount, poster: await encode(canvas) }
 }

@@ -1,0 +1,613 @@
+{
+ "plans": [
+  {
+   "id": "p1",
+   "name": "季度回顾 Quarterly Review",
+   "background": "#1e3a5f",
+   "pageSize": {
+    "w": 1920,
+    "h": 1080
+   },
+   "items": [
+    {
+     "key": "p1",
+     "parent": null,
+     "type": "group",
+     "rect": {
+      "x": 0,
+      "y": 0,
+      "w": 1920,
+      "h": 1080
+     },
+     "rotation": 0,
+     "config": {}
+    },
+    {
+     "key": "p1~frame",
+     "parent": "p1",
+     "type": "frame",
+     "rect": {
+      "x": 0,
+      "y": 0,
+      "w": 1920,
+      "h": 1080
+     },
+     "rotation": 0,
+     "title": "季度回顾 Quarterly Review",
+     "config": {
+      "color": "#9ca3af",
+      "fill": "#1e3a5f",
+      "stroke_width": 1,
+      "radius": 0,
+      "pdf_source": {
+       "page": 1,
+       "kind": "page"
+      }
+     },
+     "payload": {
+      "presentation": {
+       "background": "#1e3a5f"
+      }
+     }
+    },
+    {
+     "key": "p1~t0",
+     "parent": "p1",
+     "type": "shape",
+     "rect": {
+      "x": 114,
+      "y": 75.56,
+      "w": 1173.17,
+      "h": 118
+     },
+     "rotation": 0,
+     "config": {
+      "shape": "text",
+      "fill": "none",
+      "stroke": "none",
+      "text": "季度回顾 Quarterly Review",
+      "font_size": 88,
+      "font_color": "#ffffff",
+      "align": "left",
+      "valign": "top",
+      "wrap": false,
+      "bold": true,
+      "pdf_source": {
+       "page": 1,
+       "kind": "text",
+       "role": "H1"
+      }
+     },
+     "title": "季度回顾 Quarterly Review"
+    },
+    {
+     "key": "p1~s0",
+     "parent": "p1",
+     "type": "shape",
+     "rect": {
+      "x": 120,
+      "y": 240,
+      "w": 1680,
+      "h": 4
+     },
+     "rotation": 0,
+     "config": {
+      "shape": "rect",
+      "fill": "#94a3b8",
+      "stroke": "none",
+      "stroke_width": 0,
+      "pdf_source": {
+       "page": 1,
+       "kind": "rect"
+      }
+     }
+    },
+    {
+     "key": "p1~s1",
+     "parent": "p1",
+     "type": "shape",
+     "rect": {
+      "x": 158,
+      "y": 312,
+      "w": 14,
+      "h": 14
+     },
+     "rotation": 0,
+     "config": {
+      "shape": "svg",
+      "svg": {
+       "viewBox": "0 0 14 14",
+       "body": "<path d=\"M14 7C14 7.93 13.82 8.82 13.47 9.68C13.11 10.54 12.61 11.29 11.95 11.95C11.29 12.61 10.54 13.11 9.68 13.47C8.82 13.82 7.93 14 7 14C6.07 14 5.18 13.82 4.32 13.47C3.46 13.11 2.71 12.61 2.05 11.95C1.39 11.29 0.89 10.54 0.53 9.68C0.18 8.82 0 7.93 0 7C0 6.07 0.18 5.18 0.53 4.32C0.89 3.46 1.39 2.71 2.05 2.05C2.71 1.39 3.46 0.89 4.32 0.53C5.18 0.18 6.07 0 7 0C7.93 0 8.82 0.18 9.68 0.53C10.54 0.89 11.29 1.39 11.95 2.05C12.61 2.71 13.11 3.46 13.47 4.32C13.82 5.18 14 6.07 14 7Z\" fill=\"var(--aiws-shape-fill)\"/>",
+       "aspect": "stretch"
+      },
+      "fill": "#ffffff",
+      "stroke": "none",
+      "stroke_width": 1,
+      "pdf_source": {
+       "page": 1,
+       "kind": "svg"
+      }
+     }
+    },
+    {
+     "key": "p1~t1",
+     "parent": "p1",
+     "type": "shape",
+     "rect": {
+      "x": 194,
+      "y": 279.76,
+      "w": 331.5,
+      "h": 68
+     },
+     "rotation": 0,
+     "config": {
+      "shape": "text",
+      "fill": "none",
+      "stroke": "none",
+      "text": "收入增长 23%",
+      "font_size": 48,
+      "font_color": "#ffffff",
+      "align": "left",
+      "valign": "top",
+      "wrap": false,
+      "pdf_source": {
+       "page": 1,
+       "kind": "text",
+       "role": "LI"
+      }
+     },
+     "title": "收入增长 23%"
+    },
+    {
+     "key": "p1~s2",
+     "parent": "p1",
+     "type": "shape",
+     "rect": {
+      "x": 158,
+      "y": 384,
+      "w": 14,
+      "h": 14
+     },
+     "rotation": 0,
+     "config": {
+      "shape": "svg",
+      "svg": {
+       "viewBox": "0 0 14 14",
+       "body": "<path d=\"M14 7C14 7.93 13.82 8.82 13.47 9.68C13.11 10.54 12.61 11.29 11.95 11.95C11.29 12.61 10.54 13.11 9.68 13.47C8.82 13.82 7.93 14 7 14C6.07 14 5.18 13.82 4.32 13.47C3.46 13.11 2.71 12.61 2.05 11.95C1.39 11.29 0.89 10.54 0.53 9.68C0.18 8.82 0 7.93 0 7C0 6.07 0.18 5.18 0.53 4.32C0.89 3.46 1.39 2.71 2.05 2.05C2.71 1.39 3.46 0.89 4.32 0.53C5.18 0.18 6.07 0 7 0C7.93 0 8.82 0.18 9.68 0.53C10.54 0.89 11.29 1.39 11.95 2.05C12.61 2.71 13.11 3.46 13.47 4.32C13.82 5.18 14 6.07 14 7Z\" fill=\"var(--aiws-shape-fill)\"/>",
+       "aspect": "stretch"
+      },
+      "fill": "#ffffff",
+      "stroke": "none",
+      "stroke_width": 1,
+      "pdf_source": {
+       "page": 1,
+       "kind": "svg"
+      }
+     }
+    },
+    {
+     "key": "p1~t2",
+     "parent": "p1",
+     "type": "shape",
+     "rect": {
+      "x": 194,
+      "y": 353.37,
+      "w": 518.19,
+      "h": 68
+     },
+     "rotation": 0,
+     "config": {
+      "shape": "text",
+      "fill": "none",
+      "stroke": "none",
+      "text": "New customers: 1,204",
+      "font_size": 48,
+      "font_color": "#ffffff",
+      "align": "left",
+      "valign": "top",
+      "wrap": false,
+      "pdf_source": {
+       "page": 1,
+       "kind": "text",
+       "role": "LI"
+      }
+     },
+     "title": "New customers: 1,204"
+    },
+    {
+     "key": "p1~s3",
+     "parent": "p1",
+     "type": "shape",
+     "rect": {
+      "x": 158,
+      "y": 456,
+      "w": 14,
+      "h": 14
+     },
+     "rotation": 0,
+     "config": {
+      "shape": "svg",
+      "svg": {
+       "viewBox": "0 0 14 14",
+       "body": "<path d=\"M14 7C14 7.93 13.82 8.82 13.47 9.68C13.11 10.54 12.61 11.29 11.95 11.95C11.29 12.61 10.54 13.11 9.68 13.47C8.82 13.82 7.93 14 7 14C6.07 14 5.18 13.82 4.32 13.47C3.46 13.11 2.71 12.61 2.05 11.95C1.39 11.29 0.89 10.54 0.53 9.68C0.18 8.82 0 7.93 0 7C0 6.07 0.18 5.18 0.53 4.32C0.89 3.46 1.39 2.71 2.05 2.05C2.71 1.39 3.46 0.89 4.32 0.53C5.18 0.18 6.07 0 7 0C7.93 0 8.82 0.18 9.68 0.53C10.54 0.89 11.29 1.39 11.95 2.05C12.61 2.71 13.11 3.46 13.47 4.32C13.82 5.18 14 6.07 14 7Z\" fill=\"var(--aiws-shape-fill)\"/>",
+       "aspect": "stretch"
+      },
+      "fill": "#ffffff",
+      "stroke": "none",
+      "stroke_width": 1,
+      "pdf_source": {
+       "page": 1,
+       "kind": "svg"
+      }
+     }
+    },
+    {
+     "key": "p1~t3",
+     "parent": "p1",
+     "type": "shape",
+     "rect": {
+      "x": 194,
+      "y": 425.37,
+      "w": 473.03,
+      "h": 68
+     },
+     "rotation": 0,
+     "config": {
+      "shape": "text",
+      "fill": "none",
+      "stroke": "none",
+      "text": "Churn down to 2.1%",
+      "font_size": 48,
+      "font_color": "#ffffff",
+      "align": "left",
+      "valign": "top",
+      "wrap": false,
+      "pdf_source": {
+       "page": 1,
+       "kind": "text",
+       "role": "LI"
+      }
+     },
+     "title": "Churn down to 2.1%"
+    },
+    {
+     "key": "p1~s4",
+     "parent": "p1",
+     "type": "shape",
+     "rect": {
+      "x": 1203,
+      "y": 323,
+      "w": 486,
+      "h": 286
+     },
+     "rotation": 0,
+     "config": {
+      "shape": "rect",
+      "fill": "#f59e0b",
+      "stroke": "#b45309",
+      "stroke_width": 6,
+      "pdf_source": {
+       "page": 1,
+       "kind": "rect"
+      }
+     }
+    },
+    {
+     "key": "p1~s5",
+     "parent": "p1",
+     "type": "shape",
+     "rect": {
+      "x": 1200,
+      "y": 660,
+      "w": 480,
+      "h": 160
+     },
+     "rotation": 0,
+     "config": {
+      "shape": "svg",
+      "svg": {
+       "viewBox": "0 0 480 160",
+       "body": "<defs><linearGradient id=\"t1_3g0\" gradientUnits=\"userSpaceOnUse\" x1=\"0\" y1=\"0\" x2=\"240\" y2=\"0\" gradientTransform=\"matrix(2 0 0 2 0.0001 0)\"><stop offset=\"0\" stop-color=\"#22c55e\"/><stop offset=\"1\" stop-color=\"#3b82f6\"/></linearGradient></defs><path d=\"M0 0L480 0L480 160L0 160Z\" fill=\"url(#t1_3g0)\"/>",
+       "aspect": "stretch"
+      },
+      "fill": "none",
+      "stroke": "none",
+      "stroke_width": 1,
+      "pdf_source": {
+       "page": 1,
+       "kind": "svg"
+      }
+     }
+    },
+    {
+     "key": "p1~i0",
+     "parent": "p1",
+     "type": "asset",
+     "rect": {
+      "x": 120,
+      "y": 760,
+      "w": 240,
+      "h": 240
+     },
+     "rotation": 0,
+     "config": {
+      "pdf_source": {
+       "page": 1,
+       "kind": "image"
+      }
+     },
+     "image": {
+      "key": "tp1i1",
+      "name": "fixture-p001-img1.png",
+      "mediaType": "image/png",
+      "bytes": 8
+     },
+     "fallback": {
+      "config": {
+       "shape": "rect",
+       "fill": "none",
+       "stroke": "auto",
+       "stroke_width": 1,
+       "dash": "dashed",
+       "text": "Image",
+       "font_size": 14,
+       "pdf_source": {
+        "page": 1,
+        "kind": "image"
+       }
+      }
+     }
+    },
+    {
+     "key": "p1~t4",
+     "parent": "p1",
+     "type": "shape",
+     "rect": {
+      "x": 114,
+      "y": 1002.8,
+      "w": 368.36,
+      "h": 43
+     },
+     "rotation": 0,
+     "config": {
+      "shape": "text",
+      "fill": "none",
+      "stroke": "none",
+      "text": "Confidential — internal use",
+      "font_size": 28,
+      "font_color": "#ffffff",
+      "align": "left",
+      "valign": "top",
+      "wrap": false,
+      "italic": true,
+      "pdf_source": {
+       "page": 1,
+       "kind": "text",
+       "role": "P"
+      }
+     },
+     "title": "Confidential — internal use"
+    }
+   ],
+   "bounds": {
+    "x": 0,
+    "y": 0,
+    "w": 1920,
+    "h": 1080
+   },
+   "images": [
+    {
+     "key": "tp1i1",
+     "name": "fixture-p001-img1.png",
+     "mediaType": "image/png",
+     "bytes": 8
+    }
+   ],
+   "pageColor": "#1e3a5f",
+   "scale": 2.6666666666666665,
+   "counts": {
+    "text": 5,
+    "images": 1,
+    "shapes": 6,
+    "raster": false
+   }
+  },
+  {
+   "id": "p2",
+   "name": "Roadmap",
+   "background": "#ffffff",
+   "pageSize": {
+    "w": 1920,
+    "h": 1080
+   },
+   "items": [
+    {
+     "key": "p2",
+     "parent": null,
+     "type": "group",
+     "rect": {
+      "x": 0,
+      "y": 0,
+      "w": 1920,
+      "h": 1080
+     },
+     "rotation": 0,
+     "config": {}
+    },
+    {
+     "key": "p2~frame",
+     "parent": "p2",
+     "type": "frame",
+     "rect": {
+      "x": 0,
+      "y": 0,
+      "w": 1920,
+      "h": 1080
+     },
+     "rotation": 0,
+     "title": "Roadmap",
+     "config": {
+      "color": "#9ca3af",
+      "fill": "#ffffff",
+      "stroke_width": 1,
+      "radius": 0,
+      "pdf_source": {
+       "page": 2,
+       "kind": "page"
+      }
+     },
+     "payload": {
+      "presentation": {
+       "background": "#ffffff"
+      }
+     }
+    },
+    {
+     "key": "p2~t0",
+     "parent": "p2",
+     "type": "shape",
+     "rect": {
+      "x": 114,
+      "y": 70.51,
+      "w": 437,
+      "h": 118
+     },
+     "rotation": 0,
+     "config": {
+      "shape": "text",
+      "fill": "none",
+      "stroke": "none",
+      "text": "Roadmap",
+      "font_size": 88,
+      "font_color": "#222222",
+      "align": "left",
+      "valign": "top",
+      "wrap": false,
+      "bold": true,
+      "pdf_source": {
+       "page": 2,
+       "kind": "text",
+       "role": "H1"
+      }
+     },
+     "title": "Roadmap"
+    },
+    {
+     "key": "p2~s0",
+     "parent": "p2",
+     "type": "shape",
+     "rect": {
+      "x": 280,
+      "y": 380,
+      "w": 240,
+      "h": 240
+     },
+     "rotation": 0,
+     "config": {
+      "shape": "svg",
+      "svg": {
+       "viewBox": "0 0 240 240",
+       "body": "<path d=\"M240 120C240 123.93 239.81 127.85 239.42 131.76C239.04 135.67 238.46 139.56 237.69 143.41C236.93 147.27 235.97 151.07 234.83 154.83C233.69 158.59 232.37 162.29 230.87 165.92C229.36 169.55 227.68 173.1 225.83 176.57C223.98 180.03 221.96 183.4 219.78 186.67C217.59 189.94 215.25 193.09 212.76 196.13C210.27 199.17 207.63 202.07 204.85 204.85C202.07 207.63 199.17 210.27 196.13 212.76C193.09 215.25 189.94 217.59 186.67 219.78C183.4 221.96 180.03 223.98 176.57 225.83C173.1 227.68 169.55 229.36 165.92 230.87C162.29 232.37 158.59 233.69 154.83 234.83C151.07 235.97 147.27 236.93 143.41 237.69C139.56 238.46 135.67 239.04 131.76 239.42C127.85 239.81 123.93 240 120 240C116.07 240 112.15 239.81 108.24 239.42C104.33 239.04 100.44 238.46 96.59 237.69C92.73 236.93 88.93 235.97 85.17 234.83C81.4 233.69 77.71 232.37 74.08 230.87C70.45 229.36 66.9 227.68 63.43 225.83C59.97 223.98 56.6 221.96 53.33 219.78C50.06 217.59 46.91 215.25 43.87 212.76C40.83 210.27 37.93 207.63 35.15 204.85C32.37 202.07 29.73 199.17 27.24 196.13C24.75 193.09 22.41 189.94 20.22 186.67C18.04 183.4 16.02 180.03 14.17 176.57C12.32 173.1 10.64 169.55 9.13 165.92C7.63 162.29 6.31 158.59 5.17 154.83C4.03 151.07 3.07 147.27 2.31 143.41C1.54 139.56 0.96 135.67 0.58 131.76C0.19 127.85 0 123.93 0 120C0 116.07 0.19 112.15 0.58 108.24C0.96 104.33 1.54 100.44 2.31 96.59C3.07 92.73 4.03 88.93 5.17 85.17C6.31 81.4 7.63 77.71 9.13 74.08C10.64 70.45 12.32 66.9 14.17 63.43C16.02 59.97 18.04 56.6 20.22 53.33C22.41 50.06 24.75 46.91 27.24 43.87C29.73 40.83 32.37 37.93 35.15 35.15C37.93 32.37 40.83 29.73 43.87 27.24C46.91 24.75 50.06 22.41 53.33 20.22C56.6 18.04 59.97 16.02 63.43 14.17C66.9 12.32 70.45 10.64 74.08 9.13C77.71 7.63 81.4 6.31 85.17 5.17C88.93 4.03 92.73 3.07 96.59 2.31C100.44 1.54 104.33 0.96 108.24 0.58C112.15 0.19 116.07 0 120 0C123.93 0 127.85 0.19 131.76 0.58C135.67 0.96 139.56 1.54 143.41 2.31C147.27 3.07 151.07 4.03 154.83 5.17C158.59 6.31 162.29 7.63 165.92 9.13C169.55 10.64 173.1 12.32 176.57 14.17C180.03 16.02 183.4 18.04 186.67 20.22C189.94 22.41 193.09 24.75 196.13 27.24C199.17 29.73 202.07 32.37 204.85 35.15C207.63 37.93 210.27 40.83 212.76 43.87C215.25 46.91 217.59 50.06 219.78 53.33C221.96 56.6 223.98 59.97 225.83 63.43C227.68 66.9 229.36 70.45 230.87 74.08C232.37 77.71 233.69 81.4 234.83 85.17C235.97 88.93 236.93 92.73 237.69 96.59C238.46 100.44 239.04 104.33 239.42 108.24C239.81 112.15 240 116.07 240 120Z\" fill=\"var(--aiws-shape-fill)\"/>",
+       "aspect": "stretch"
+      },
+      "fill": "#ef4444",
+      "stroke": "none",
+      "stroke_width": 1,
+      "pdf_source": {
+       "page": 2,
+       "kind": "svg"
+      }
+     }
+    },
+    {
+     "key": "p2~s1",
+     "parent": "p2",
+     "type": "shape",
+     "rect": {
+      "x": 237,
+      "y": 596,
+      "w": 727,
+      "h": 267
+     },
+     "rotation": 0,
+     "config": {
+      "shape": "svg",
+      "svg": {
+       "viewBox": "0 0 727 267",
+       "body": "<path d=\"M363 204C463 4 663 4 723 204L363 204Z\" fill=\"var(--aiws-shape-fill)\"/><path d=\"M363 204C463 4 663 4 723 204L363 204Z\" fill=\"none\" stroke=\"var(--aiws-shape-stroke)\" stroke-width=\"8\"/><path d=\"M3 264L123 104L243 184L363 64\" fill=\"none\" stroke=\"#0ea5e9\" stroke-width=\"6\"/>",
+       "aspect": "stretch"
+      },
+      "fill": "#8b5cf6",
+      "stroke": "#4c1d95",
+      "stroke_width": 1,
+      "pdf_source": {
+       "page": 2,
+       "kind": "svg"
+      }
+     }
+    },
+    {
+     "key": "p2~t1",
+     "parent": "p2",
+     "type": "shape",
+     "rect": {
+      "x": 1114,
+      "y": 356.14,
+      "w": 723.77,
+      "h": 176
+     },
+     "rotation": 0,
+     "config": {
+      "shape": "text",
+      "fill": "none",
+      "stroke": "none",
+      "text": "This paragraph wraps over several\nlines so that the importer has to group\nthe lines into one text object.",
+      "font_size": 40,
+      "font_color": "#222222",
+      "align": "left",
+      "valign": "top",
+      "wrap": false,
+      "line_height": 1.4,
+      "pdf_source": {
+       "page": 2,
+       "kind": "text",
+       "role": "P"
+      }
+     },
+     "title": "This paragraph wraps over several"
+    }
+   ],
+   "bounds": {
+    "x": 0,
+    "y": 0,
+    "w": 1920,
+    "h": 1080
+   },
+   "images": [],
+   "pageColor": "#ffffff",
+   "scale": 2.6666666666666665,
+   "counts": {
+    "text": 2,
+    "images": 0,
+    "shapes": 2,
+    "raster": false
+   }
+  }
+ ],
+ "report": {
+  "pages": 2,
+  "objects": 18,
+  "images": 1,
+  "notes": [
+   {
+    "kind": "pdf_mixed_style",
+    "message": "Paragraphs with several styles imported in their main style",
+    "count": 2,
+    "samples": [
+     "季度回顾 Quarterly Review",
+     "收入增长 23%"
+    ]
+   }
+  ]
+ }
+}

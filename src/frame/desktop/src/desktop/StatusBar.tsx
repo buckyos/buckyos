@@ -1,4 +1,5 @@
 import { IconButton, Menu, MenuItem } from '@mui/material'
+import clsx from 'clsx'
 import {
   ChevronLeft,
   Ellipsis,
@@ -128,23 +129,23 @@ export function StatusBar({
   const activeMode = activeApp ? mobileStatusBarMode(activeApp) : null
   const barHeight = mobileStatusBarHeight(activeApp)
   const totalHeight = safeAreaTop + deadZone.top + barHeight
-  const showSurface = activeMode === 'standard'
+  // The home screen and `standard` apps get an opaque bar; `compact` apps draw their own content under a
+  // see-through one. The bar is opaque on purpose: iOS 26 Safari fades and blurs whatever shows through
+  // under the system status bar, and paints the status bar solid in the colour of a full-width pinned
+  // element with a background at the top instead (a translucent one or backdrop-filter would not do).
+  const showSurface = activeMode !== 'compact'
+  const surfaceColor = !showSurface
+    ? undefined
+    : activeApp
+      ? `color-mix(in srgb, ${activeApp.accent} 14%, var(--cp-surface-2-opaque))`
+      : 'var(--cp-surface-opaque)'
 
   return (
     <div
       aria-label={t('common.statusBar')}
-      className="pointer-events-none fixed inset-x-0 top-0 z-50"
-      style={{ height: totalHeight }}
+      className={clsx('fixed inset-x-0 top-0 z-50', showSurface ? 'pointer-events-auto' : 'pointer-events-none')}
+      style={{ height: totalHeight, backgroundColor: surfaceColor }}
     >
-      {showSurface && activeApp ? (
-        <div
-          className="absolute inset-x-0 top-0 backdrop-blur-xl"
-          style={{
-            height: totalHeight,
-            backgroundColor: `color-mix(in srgb, ${activeApp.accent} 14%, var(--cp-surface-2))`,
-          }}
-        />
-      ) : null}
       {showSurface ? (
         <div
           className="absolute inset-x-0 h-px bg-[color:var(--cp-border)]/80"

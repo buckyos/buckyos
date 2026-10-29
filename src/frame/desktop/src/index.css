@@ -328,6 +328,28 @@ main[data-wallpaper='image'] .swiper-pagination-bullet-active {
   bottom: 18px !important;
 }
 
+/* Mobile: the page dots are drawn into the dock strip under the launcher (an opaque shell surface),
+   so they are laid out in flow there and keep the theme colours whatever the wallpaper. */
+.desktop-mobile-pager.swiper-pagination {
+  position: static;
+  bottom: auto !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+
+main[data-wallpaper='image'] .desktop-mobile-pager .swiper-pagination-bullet {
+  background: color-mix(in srgb, var(--cp-text) 18%, transparent);
+  border-color: color-mix(in srgb, var(--cp-border) 80%, transparent);
+  box-shadow: none;
+}
+
+main[data-wallpaper='image'] .desktop-mobile-pager .swiper-pagination-bullet-active {
+  background: var(--cp-accent);
+  border-color: color-mix(in srgb, var(--cp-accent) 70%, transparent);
+}
+
 .desktop-scrollbar::-webkit-scrollbar,
 .shell-scrollbar::-webkit-scrollbar {
   width: 10px;

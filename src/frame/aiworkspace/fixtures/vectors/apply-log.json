@@ -65,7 +65,7 @@
           "def_rev": 1,
           "deleted_seq": null,
           "field_id": "n",
-          "order_key": "r",
+          "order_key": "i0000001",
           "source_id": "t",
           "type_rev": 1,
           "values_rev": 1
@@ -320,7 +320,7 @@
           "def_rev": 3,
           "deleted_seq": null,
           "field_id": "k",
-          "order_key": "w",
+          "order_key": "i0000002",
           "source_id": "t",
           "type_rev": 3,
           "values_rev": 0
@@ -330,7 +330,7 @@
           "def_rev": 1,
           "deleted_seq": null,
           "field_id": "n",
-          "order_key": "r",
+          "order_key": "i0000001",
           "source_id": "t",
           "type_rev": 1,
           "values_rev": 3
@@ -382,7 +382,7 @@
           "def_rev": 1,
           "deleted_seq": null,
           "field_id": "n",
-          "order_key": "r",
+          "order_key": "i0000001",
           "source_id": "t",
           "type_rev": 1,
           "values_rev": 4
@@ -502,5 +502,5 @@
     }
   ],
   "description": "Row deltas of core/tests/apply_log.rs's scripted history and the digest of the state they produce (D20). Applied without a planner; regenerate with AIWS_REGEN=1.",
-  "digest": "1a1d02e84b073ff135c800a6c8f1a7024ae362b91decd5ceb61bbcacc7f7ea32"
+  "digest": "e1ee6366330c97f2de1e1c2d694fada362c06d062fc42452626194bd7646b61a"
 }

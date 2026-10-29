@@ -36,6 +36,10 @@ export interface ImportOutcome {
   bounds: { x: number; y: number; w: number; h: number } | null
   /** Why it stopped (a refused commit, an unreadable file), if it did. */
   error?: string
+  /** A PDF import (PDF 导入方案 §5): its own summary line, and the presentation path it made. */
+  kind?: 'drawio' | 'pdf'
+  summary?: string
+  pathId?: string | null
 }
 
 /** The report of the last import, shown until closed: it outlives the canvas view (an import may switch canvases). */
@@ -167,7 +171,7 @@ export async function importDrawio(store: WorkspaceStore, input: { name: string;
 }
 
 /** What a dropped or pasted file is. */
-export type FileKind = 'drawio' | 'svg' | 'image' | 'other'
+export type FileKind = 'drawio' | 'svg' | 'image' | 'pdf' | 'other'
 
 export async function classifyFile(file: File): Promise<{ kind: FileKind; bytes: Uint8Array; text?: string }> {
   const bytes = new Uint8Array(await file.arrayBuffer())
@@ -188,5 +192,6 @@ export async function classifyFile(file: File): Promise<{ kind: FileKind; bytes:
     return { kind: looksLikeDrawio(text) ? 'drawio' : 'other', bytes, text }
   }
   if (file.type.startsWith('image/')) return { kind: 'image', bytes }
+  if (name.endsWith('.pdf') || file.type === 'application/pdf' || new TextDecoder('latin1').decode(bytes.subarray(0, 5)) === '%PDF-') return { kind: 'pdf', bytes }
   return { kind: 'other', bytes }
 }

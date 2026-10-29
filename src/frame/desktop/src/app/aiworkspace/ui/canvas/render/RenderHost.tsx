@@ -1389,8 +1389,13 @@ export function RenderHost(props: RenderHostProps) {
       draw: (points, predicted) => inkCanvas.add(widePoints(points, style), widePoints(predicted, style)),
       stroke: (points, used, zoom, split) => {
         // waiting for its Block before the live stroke goes: drawn all along
-        book.write(points, used, zoom, props.surfaceId, laid)
-        inkCanvas.end()
+        try {
+          book.write(points, used, zoom, props.surfaceId, laid)
+        } catch (error) {
+          store.notify('error', aiwsT('aiworkspace.canvas.ink.strokeRefused', { code: error instanceof Error ? error.message : String(error) }))
+        } finally {
+          inkCanvas.end()
+        }
         if (split) store.notify('info', aiwsT('aiworkspace.canvas.ink.split'))
       },
       dropped: () => inkCanvas.end(),

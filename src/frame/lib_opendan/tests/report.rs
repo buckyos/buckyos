@@ -611,6 +611,91 @@ async fn invalid_behavior_artifact_is_reported_back_for_correction() {
 }
 
 #[tokio::test]
+async fn behavior_artifact_storage_failure_recovers_without_inference_or_reexecution() {
+    use libopendan::runner::{ObjectStore, StoredObject};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    const BUCKET_URL: &str = "obj://bucket/user/agentx/alice/artifacts/0001/answer.txt";
+
+    #[derive(Default)]
+    struct UnavailableOnce(AtomicUsize);
+
+    impl UnavailableOnce {
+        fn store(&self) -> Result<StoredObject, String> {
+            if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Err("HTTP transport error: bucket service unreachable".into());
+            }
+            Ok(StoredObject {
+                obj_id: ndn_lib::ObjId::new_by_raw("cyfile".into(), vec![1; 32]),
+                url: Some(BUCKET_URL.into()),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl ObjectStore for UnavailableOnce {
+        async fn put_file(&self, path: &Path, name: &str) -> Result<StoredObject, String> {
+            assert_eq!(name, "answer.txt");
+            assert_eq!(std::fs::read_to_string(path).unwrap(), "stable artifact\n");
+            self.store()
+        }
+
+        async fn retain_url(&self, url: &str) -> Result<StoredObject, String> {
+            assert_eq!(url, BUCKET_URL);
+            self.store()
+        }
+    }
+
+    for artifact in ["answer.txt", BUCKET_URL] {
+        let env = Env::new();
+        let mut spec = report_spec("recover an unavailable artifact store");
+        spec.prompt.llm_context["loop_model"] = json!("behavior");
+        spec.prompt.llm_context["tools"]["tools2actions"] = json!(true);
+        let sd = env.create_work(spec).await;
+        std::fs::write(sd.path().join("answer.txt"), "stable artifact\n").unwrap();
+        let llm = ScriptedLlm::new(move |_, n| match n {
+            0 => text("<response><actions><shell><![CDATA[echo once >> artifact.marker]]></shell></actions></response>"),
+            1 => text(&format!("<response><report end=\"true\">recovered artifact delivery</report><artifacts>{}</artifacts></response>", json!([artifact]))),
+            _ => panic!("unexpected inference {n}"),
+        });
+        let objects = Arc::new(UnavailableOnce::default());
+        let mut deps = env.deps(llm.clone());
+        deps.objects = Some(objects.clone());
+        let result = drive(&sd, &deps, StopWhen::Finished).await;
+        assert!(matches!(&result, DriveResult::Error { error, .. } if error["kind"] == "artifact"), "{result:?}");
+        let state = sd.state().unwrap();
+        assert_eq!(state.last_error.as_ref().unwrap()["kind"], "artifact");
+        assert!(state.live_run.is_some());
+        assert!(state.latest_report.is_none());
+        assert!(state.final_report.is_none());
+        assert_eq!(deliveries(&sd, "recovered artifact delivery"), 0);
+        assert_eq!(llm.count(), 2);
+
+        let resumed_llm = ScriptedLlm::new(|_, n| panic!("artifact recovery must not infer: {n}"));
+        let mut resumed_deps = env.deps(resumed_llm.clone());
+        resumed_deps.objects = Some(objects.clone());
+        let result = drive(&sd, &resumed_deps, StopWhen::Finished).await;
+        assert!(result.is_finished(), "{result:?}");
+        assert_eq!(resumed_llm.count(), 0);
+        assert_eq!(objects.0.load(Ordering::SeqCst), 2);
+        assert_eq!(std::fs::read_to_string(sd.path().join("artifact.marker")).unwrap(), "once\n");
+        assert_eq!(std::fs::read_to_string(sd.path().join("answer.txt")).unwrap(), "stable artifact\n");
+        assert_one_completion(&sd, "recovered artifact delivery", 2);
+        let report = sd.state().unwrap().final_report.unwrap();
+        assert_eq!(report.artifacts.len(), 1);
+        assert_eq!(report.artifacts[0].url.as_deref(), Some(BUCKET_URL));
+        if artifact == "answer.txt" {
+            assert!(!sd.path().join(&report.artifacts[0].reference).exists());
+        }
+        let entries = read_worklog(&sd);
+        assert!(drive(&sd, &resumed_deps, StopWhen::Idle).await.is_finished());
+        assert_eq!(read_worklog(&sd), entries);
+        assert_eq!(objects.0.load(Ordering::SeqCst), 2);
+    }
+}
+
+#[tokio::test]
 async fn explicit_completion_without_a_queue_fails_when_the_model_omits_report() {
     let env = Env::new();
     let mut spec = report_spec("must explicitly deliver");

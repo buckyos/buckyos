@@ -1,10 +1,12 @@
 /* What one open workspace knows of its ink (手写笔 TODO D3): the decoded segments of the Blocks drawn so far (hit
  * tests and the eraser read them), and the strokes written here that wait for their Blocks — saved or still being
- * sent — which the live layer keeps drawing until their Blocks have drawn them (no gap, no double line) or they are
- * refused. A stroke is submitted at once: the next one never waits for the network. */
+ * sent — which the live layer keeps drawing until their Blocks have drawn them (no gap, no double line) or the user
+ * discards the unsaved input. Strokes normally submit at once; exhausted sibling order queues them until a guarded,
+ * non-undoable reorder is accepted. Drawing continues while those submissions wait. */
 
 import { randomId } from '../api/ids'
-import type { CommitOutcome, Operation } from '../api/types'
+import type { CommitOutcome, Json, Operation } from '../api/types'
+import type { SubmissionEvent } from '../api/session'
 import { aiwsT } from '../i18n'
 import type { WorkspaceStore } from '../state/store'
 import { groupAt, relativeTo, type Laid } from '../ui/canvas/layout'
@@ -16,7 +18,9 @@ const GONE_MS = 5000
 
 /** A stroke written here that its Blocks do not draw yet. `key`: the idempotency key of a submission whose result is
  * unknown — resent as it is (the same key, the same operations), so a retry never writes the stroke twice. */
-export interface WaitingInk { stroke: string; editId: string; surfaceId: string; cells: string[]; points: WidePoint[]; color: string; outcome: 'sending' | 'saved' | 'unknown'; operations: Operation[]; key?: string }
+export interface WaitingInk { stroke: string; editId: string; surfaceId: string; cells: string[]; points: WidePoint[]; color: string; outcome: 'queued' | 'sending' | 'saved' | 'unknown' | 'failed'; operations: Operation[]; key?: string }
+
+interface InkSubmission { waiting: WaitingInk; parentId: string; creates: Operation[]; state: 'queued' | 'sending' | 'unknown' | 'local' | 'failed'; compacting: boolean; attempts: number; idempotencyKey: string; notifiedUnknown?: boolean; terminal?: SubmissionEvent; preconditions?: unknown[] }
 
 export class InkBook {
   private readonly segments = new Map<string, { rev: number; ink: InkSegment }>()
@@ -27,25 +31,52 @@ export class InkBook {
   private version = 0
   private emitTimer = 0
   private readonly store: WorkspaceStore
-  /** The last order key given per parent: strokes written before the previous ones are back still stack in order. */
-  private readonly lastKey = new Map<string, string>()
+  private readonly submissions = new Map<string, InkSubmission>()
+  private readonly barriers = new Map<string, InkSubmission>()
 
   constructor(store: WorkspaceStore) {
     this.store = store
-    // an unsaved stroke given up in the save-state list is no longer drawn
     store.edits.subscribe(() => {
-      for (const w of [...this.waiting.values()]) {
-        const entry = store.edits.get(w.editId)
-        if (w.outcome === 'unknown' && (!entry || entry.state === 'needs_attention')) this.drop(w.stroke)
+      for (const submission of [...this.submissions.values()]) {
+        const { waiting, state, parentId } = submission
+        const entry = store.edits.get(waiting.editId)
+        if (!entry && (state === 'queued' || state === 'failed')) {
+          this.submissions.delete(waiting.stroke)
+          this.store.noteUnsaved(waiting.editId, null)
+          this.release(submission)
+          this.drop(waiting.stroke)
+          queueMicrotask(() => this.flush(parentId))
+        }
       }
     })
-    // the connection is back: strokes whose result is unknown are resent
     store.session.subscribeStatus(() => { if (store.session.status().kind === 'live') this.retryUnknown() })
+    store.session.offline?.subscribeSubmissions((event) => {
+      const submission = [...this.submissions.values()].find((s) => s.idempotencyKey === event.key)
+      if (!submission || !['accepted', 'discarded', 'conflict', 'rejected'].includes(event.state)) return
+      if (submission.state !== 'local') submission.terminal = event
+      else this.localTerminal(submission, event)
+    })
   }
 
-  /** Resend every stroke whose result is unknown (same key, same content). */
+  private localTerminal(submission: InkSubmission, event: SubmissionEvent) {
+    if (event.state === 'accepted') {
+      submission.state = 'sending'
+      void this.complete(submission)
+    } else if (event.state === 'discarded') {
+      this.submissions.delete(submission.waiting.stroke)
+      this.release(submission)
+      this.drop(submission.waiting.stroke)
+      this.store.noteUnsaved(submission.waiting.editId, null)
+      this.flush(submission.parentId)
+    } else if (event.state === 'conflict' || event.state === 'rejected') {
+      this.settle(submission, Promise.resolve(event.result as unknown as CommitOutcome))
+    }
+  }
+
   retryUnknown() {
-    for (const w of this.waiting.values()) if (w.outcome === 'unknown' && w.key) this.settle(w, this.store.retry({ editId: w.editId, label: aiwsT('aiworkspace.canvas.ink.strokeLabel'), operations: w.operations }, w.key))
+    for (const submission of this.submissions.values()) {
+      if (submission.state === 'unknown') this.settle(submission, this.store.submit(this.options(submission)))
+    }
   }
 
   /** Decoded segments: changes are announced once per tick (many Blocks mount together). */
@@ -103,14 +134,65 @@ export class InkBook {
     this.changed()
   }
 
-  /** The order key of a new child of `parentId`, after its last child and after any stroke given one before. */
-  nextKey(parentId: string): string {
-    const known = this.store.outline.childrenOf(parentId).at(-1)?.order_key ?? undefined
-    const mine = this.lastKey.get(parentId)
-    const after = mine && (!known || mine > known) ? mine : known
-    const key = this.store.core.order_key_between(after, undefined)
-    this.lastKey.set(parentId, key)
-    return key
+  private release(submission: InkSubmission) {
+    if (this.barriers.get(submission.parentId) === submission) this.barriers.delete(submission.parentId)
+  }
+
+  private allocate(creates: Operation[], after?: string): Operation[] {
+    return creates.map((op) => {
+      after = this.store.core.order_key_between(after, undefined)
+      return { ...op, order_key: after }
+    })
+  }
+
+  private options(submission: InkSubmission) {
+    const { waiting, preconditions } = submission
+    return { editId: waiting.editId, label: aiwsT('aiworkspace.canvas.ink.strokeLabel'), operations: waiting.operations, preconditions, idempotencyKey: submission.idempotencyKey, undoable: !submission.compacting }
+  }
+
+  private flush(parentId: string) {
+    if (this.barriers.has(parentId)) return
+    for (const submission of this.submissions.values()) {
+      if (submission.parentId !== parentId || submission.state !== 'queued') continue
+      const active = [...this.submissions.values()].filter((s) => s.parentId === parentId && (s.state === 'sending' || s.state === 'unknown' || (s.state === 'local' && s.waiting.cells.some((id) => !this.store.outline.get(id)))))
+      let after = this.store.outline.childrenOf(parentId).at(-1)?.order_key ?? undefined
+      for (const pending of active) {
+        for (const op of pending.waiting.operations) {
+          if (op.op === 'entity.create' && typeof op.order_key === 'string' && (!after || op.order_key > after)) after = op.order_key
+        }
+      }
+      try {
+        submission.waiting.operations = this.allocate(submission.creates, after)
+      } catch (error) {
+        if (String(error).includes('ORDER_KEY_EXHAUSTED')) {
+          if (active.length) return
+          submission.compacting = true
+          this.barriers.set(parentId, submission)
+          void this.rebalance(submission).catch((e) => this.fail(submission, String(e)))
+          return
+        }
+        this.fail(submission, String(error))
+        continue
+      }
+      this.settle(submission, this.store.submit(this.options(submission)))
+    }
+  }
+
+  private async rebalance(submission: InkSubmission) {
+    const siblings = this.store.outline.childrenOf(submission.parentId)
+    let after: string | undefined
+    const places: Operation[] = siblings.map((sibling) => {
+      after = this.store.core.order_key_between(after, undefined)
+      return { op: 'tree.place', entity_id: sibling.entity_id, order_key: after, expect: { rev: sibling.struct_rev ?? 0 } }
+    })
+    const operations = places
+    const ids = siblings.map((sibling) => sibling.entity_id).sort().join('\n')
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ids))
+    if (!this.submissions.has(submission.waiting.stroke)) return
+    const hash = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 32)
+    submission.preconditions = [{ target: { entity_id: submission.parentId, selector: { kind: 'tree_children' } }, expect: { hash } }]
+    submission.waiting.operations = operations
+    this.settle(submission, this.store.submit(this.options(submission)))
   }
 
   /** Save a stroke written on `surfaceId` (world points as sampled at `zoom`): simplified, cut into segments within the
@@ -129,36 +211,138 @@ export class InkBook {
     const operations: Operation[] = segments.map((s) => {
       const id = randomId('c')
       cells.push(id)
-      return { op: 'entity.create', entity_id: id, type_id: 'buckyos.cell', parent_id: parentId, order_key: this.nextKey(parentId), placement: relativeTo(laid, parentId, s.rect), payload: { view: { type: INK_VIEW, version: 1 }, config: s.config } }
+      return { op: 'entity.create', entity_id: id, type_id: 'buckyos.cell', parent_id: parentId, placement: relativeTo(laid, parentId, s.rect), payload: { view: { type: INK_VIEW, version: 1 }, config: s.config } }
     })
     const editId = `ink:${stroke}`
-    const waiting: WaitingInk = { stroke, editId, surfaceId, cells, points: widePoints(kept, used), color: used.color, outcome: 'sending', operations }
+    const waiting: WaitingInk = { stroke, editId, surfaceId, cells, points: widePoints(kept, used), color: used.color, outcome: 'queued', operations: [] }
+    this.store.edits.set({ id: editId, label: aiwsT('aiworkspace.canvas.ink.strokeLabel'), state: 'unsaved' })
     this.waiting.set(stroke, waiting)
+    this.submissions.set(stroke, { waiting, parentId, creates: operations, state: 'queued', compacting: false, attempts: 0, idempotencyKey: randomId('ink') })
+    this.remember(this.submissions.get(stroke)!)
     this.changed()
-    this.settle(waiting, this.store.submit({ editId, label: aiwsT('aiworkspace.canvas.ink.strokeLabel'), operations }))
+    this.flush(parentId)
     return stroke
   }
 
-  private settle(waiting: WaitingInk, submitted: Promise<CommitOutcome>) {
+  private remember(submission: InkSubmission, reason = aiwsT('aiworkspace.canvas.ink.strokeUnknown')) {
+    this.store.noteUnsaved(submission.waiting.editId, { label: aiwsT('aiworkspace.canvas.ink.strokeLabel'), operations: submission.creates, mine: submission.creates as unknown as Json, reason, at: new Date().toISOString() })
+  }
+
+  private async complete(submission: InkSubmission, key = submission.idempotencyKey) {
+    if (submission.idempotencyKey !== key || !this.submissions.has(submission.waiting.stroke)) return
+    if (submission.compacting) {
+      this.remember(submission)
+      this.store.edits.set({ id: submission.waiting.editId, label: aiwsT('aiworkspace.canvas.ink.strokeLabel'), state: 'unsaved' })
+    }
+    try {
+      if (submission.compacting || submission.waiting.cells.some((id) => !this.store.outline.get(id))) await this.store.outline.reload()
+    } catch (error) {
+      this.store.notify('error', String(error), { label: aiwsT('aiworkspace.common.retry'), run: () => { void this.complete(submission, key) } })
+      return
+    }
+    if (submission.idempotencyKey !== key || !this.submissions.has(submission.waiting.stroke)) return
+    if (submission.compacting) {
+      submission.compacting = false
+      submission.preconditions = undefined
+      submission.idempotencyKey = randomId('ink')
+      submission.terminal = undefined
+      submission.state = 'queued'
+      submission.waiting.outcome = 'queued'
+      submission.waiting.operations = []
+      this.remember(submission)
+    } else {
+      submission.waiting.outcome = 'saved'
+      this.submissions.delete(submission.waiting.stroke)
+      this.store.noteUnsaved(submission.waiting.editId, null)
+      const { cells, stroke } = submission.waiting
+      window.setTimeout(() => { if (cells.some((c) => !this.store.outline.get(c) || this.store.outline.get(c)?.deleted)) this.drop(stroke) }, GONE_MS)
+    }
+    this.release(submission)
+    this.flush(submission.parentId)
+  }
+
+  private fail(submission: InkSubmission, detail: string, code = 'INVALID_OPERATION') {
+    const { waiting, parentId } = submission
+    if (!this.submissions.has(waiting.stroke)) return
+    submission.state = 'failed'
+    waiting.outcome = 'failed'
+    this.waiting.set(waiting.stroke, waiting)
+    this.release(submission)
+    this.remember(submission, detail)
+    this.store.edits.set({ id: waiting.editId, label: aiwsT('aiworkspace.canvas.ink.strokeLabel'), state: 'needs_attention', code, detail, pendingKey: this.store.edits.get(waiting.editId)?.pendingKey })
+    this.store.notify('error', aiwsT('aiworkspace.canvas.ink.strokeRefused', { code }), {
+      label: aiwsT('aiworkspace.common.retry'),
+      run: () => {
+        if (!this.submissions.has(waiting.stroke) || submission.state !== 'failed') return
+        submission.state = 'queued'
+        submission.compacting = false
+        submission.attempts = 0
+        submission.preconditions = undefined
+        submission.idempotencyKey = randomId('ink')
+        submission.terminal = undefined
+        waiting.key = undefined
+        waiting.outcome = 'queued'
+        this.flush(parentId)
+      },
+    })
+    this.changed()
+    queueMicrotask(() => this.flush(parentId))
+  }
+
+  private settle(submission: InkSubmission, submitted: Promise<CommitOutcome>) {
+    const { waiting, parentId } = submission
+    const key = submission.idempotencyKey
+    submission.state = 'sending'
     waiting.outcome = 'sending'
-    void submitted.then((outcome) => {
-      const { stroke, cells } = waiting
-      if (outcome.status === 'accepted' || outcome.status === 'saved_locally') {
-        waiting.outcome = 'saved'
-        // saved but gone at once (deleted elsewhere, undone): nothing will draw it
-        window.setTimeout(() => { if (cells.some((c) => !this.store.outline.get(c) || this.store.outline.get(c)?.deleted)) this.drop(stroke) }, GONE_MS)
+    void submitted.catch((error): CommitOutcome => ({ status: 'unknown', idempotency_key: key, detail: String(error) })).then(async (outcome) => {
+      if (submission.idempotencyKey !== key || !this.submissions.has(waiting.stroke)) return
+      if (outcome.status === 'accepted') {
+        await this.complete(submission)
+        return
+      }
+      if (outcome.status === 'saved_locally') {
+        submission.state = 'local'
+        waiting.key = outcome.idempotency_key
+        if (submission.terminal) {
+          const event = submission.terminal
+          submission.terminal = undefined
+          this.localTerminal(submission, event)
+          return
+        }
+        if (submission.compacting) {
+          waiting.outcome = 'queued'
+          this.remember(submission)
+        } else {
+          waiting.outcome = 'saved'
+          this.store.noteUnsaved(waiting.editId, null)
+          this.flush(parentId)
+        }
         return
       }
       if (outcome.status === 'unknown' || outcome.status === 'storage_failed') {
-        // still drawn, still in the save-state list; resent with its key when the connection is back, or from here
-        const first = waiting.key === undefined
+        const first = !submission.notifiedUnknown
+        submission.notifiedUnknown = true
+        submission.state = 'unknown'
         waiting.outcome = 'unknown'
-        if (outcome.idempotency_key) waiting.key = outcome.idempotency_key
-        if (first && waiting.key) this.store.notify('error', aiwsT('aiworkspace.canvas.ink.strokeUnknown'), { label: aiwsT('aiworkspace.common.retry'), run: () => this.retryUnknown() })
+        waiting.key = submission.idempotencyKey
+        this.remember(submission, outcome.detail)
+        if (first) this.store.notify('error', aiwsT('aiworkspace.canvas.ink.strokeUnknown'), { label: aiwsT('aiworkspace.common.retry'), run: () => this.retryUnknown() })
+        this.changed()
         return
       }
-      this.drop(stroke)
-      this.store.notify('error', aiwsT('aiworkspace.canvas.ink.strokeRefused', { code: outcome.code }))
+      if (submission.compacting && outcome.status === 'conflict' && submission.attempts++ < 2) {
+        submission.state = 'queued'
+        waiting.outcome = 'queued'
+        try {
+          await this.store.outline.reload()
+          if (submission.idempotencyKey !== key || !this.submissions.has(waiting.stroke)) return
+          submission.idempotencyKey = randomId('ink')
+          submission.terminal = undefined
+          await this.rebalance(submission)
+        } catch (error) { this.fail(submission, String(error)) }
+        return
+      }
+      this.fail(submission, String((outcome.status === 'rejected' ? outcome.errors?.[0]?.detail : outcome.conflicts?.[0]?.detail) ?? outcome.detail ?? outcome.code), outcome.code)
     })
   }
 

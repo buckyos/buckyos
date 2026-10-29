@@ -6,13 +6,14 @@
  *
  *   look     fill, stroke, stroke_width, dash, opacity, radius, direction, flip_h / flip_v, shape_size
  *   text     text (multi-line; `title` stays the outline's name), font_size, font_color, bold / italic /
- *            underline, align, valign, label_position, wrap, label_fill
+ *            underline, align, valign, label_position, wrap, label_fill, line_height (a multiple of the size),
+ *            font_family (sans / serif / mono; the theme's when absent — PDF import writes it)
  *   anchors  the outline's compass anchors plus `config.anchors` (draw.io connection points, stencil ports) */
 
 import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { AlignCenter, AlignLeft, AlignRight, AlignVerticalJustifyCenter, AlignVerticalJustifyEnd, AlignVerticalJustifyStart, ALargeSmall, Baseline, Bold, Italic, PenLine, Shapes, Underline } from 'lucide-react'
 import { cleanAnchors, type AnchorDef } from '@drawio/anchors'
-import { DEFAULT_FILL, DEFAULT_STROKE, KIND_GROUPS, SHAPE_KINDS, dashArray, inkOn, labelBox, readLook, shapeAnchors, shapeOutline, shapePaths, type ShapeKind, type ShapeLook } from '@drawio/shapes'
+import { DEFAULT_FILL, DEFAULT_STROKE, FONT_FAMILIES, KIND_GROUPS, SHAPE_KINDS, dashArray, inkOn, labelBox, readLook, shapeAnchors, shapeOutline, shapePaths, type FontFamily, type ShapeKind, type ShapeLook } from '@drawio/shapes'
 import { sanitizeSvgBody } from '@drawio/svg'
 import type { CellPayload, Json, Operation } from '../../api/types'
 import { aiwsT, type AiwsText } from '../../i18n'
@@ -34,6 +35,9 @@ const KIND_LABEL: Record<ShapeKind, string> = {
   card: 'aiworkspace.blocks.shape.kind.card', note: 'aiworkspace.blocks.shape.kind.note', callout: 'aiworkspace.blocks.shape.kind.callout',
   step: 'aiworkspace.blocks.shape.kind.step', arrow: 'aiworkspace.blocks.shape.kind.arrow', double_arrow: 'aiworkspace.blocks.shape.kind.doubleArrow',
   line: 'aiworkspace.blocks.shape.kind.line', text: 'aiworkspace.blocks.shape.kind.text', svg: 'aiworkspace.blocks.shape.kind.svg',
+}
+const FONT_FAMILY_LABEL: Record<FontFamily, string> = {
+  sans: 'aiworkspace.blocks.shape.fontFamily.sans', serif: 'aiworkspace.blocks.shape.fontFamily.serif', mono: 'aiworkspace.blocks.shape.fontFamily.mono',
 }
 const GROUP_LABEL: Record<(typeof SHAPE_KINDS)[number]['group'], string> = {
   basic: 'aiworkspace.blocks.shape.group.basic', flow: 'aiworkspace.blocks.shape.group.flow', arrow: 'aiworkspace.blocks.shape.group.arrow', text: 'aiworkspace.blocks.shape.group.text',
@@ -72,6 +76,13 @@ export function ShapeArt({ look, w, h }: { look: ShapeLook; w: number; h: number
   )
 }
 
+/** CSS font stacks of the three families (Latin first, then the common CJK faces of each platform). */
+const FONT_STACK: Record<FontFamily, string> = {
+  sans: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, "Noto Sans", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif',
+  serif: '"Times New Roman", Times, "Liberation Serif", "Noto Serif", "Songti SC", SimSun, "Noto Serif CJK SC", serif',
+  mono: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", "Noto Sans Mono", monospace',
+}
+
 /** Where the text sits (inside, or one box away on a side) and how it is set. */
 function labelStyle(look: ShapeLook, w: number, h: number): CSSProperties {
   const box = labelBox(look, Math.max(w, 1), Math.max(h, 1))
@@ -81,6 +92,8 @@ function labelStyle(look: ShapeLook, w: number, h: number): CSSProperties {
     textAlign: look.align, fontSize: look.fontSize, color: inkFor(look),
     fontWeight: look.bold ? 700 : undefined, fontStyle: look.italic ? 'italic' : undefined, textDecoration: look.underline ? 'underline' : undefined,
     whiteSpace: look.wrap ? 'pre-wrap' : 'pre',
+    ...(look.lineHeight !== null ? { lineHeight: look.lineHeight } : {}),
+    ...(look.fontFamily ? { fontFamily: FONT_STACK[look.fontFamily] } : {}),
   }
 }
 
@@ -352,6 +365,8 @@ function ShapeInspector(context: RenderContext) {
         <textarea rows={3} defaultValue={look.text} key={`text:${look.text}`} disabled={readOnly} data-testid="aiws-shape-field-text" onBlur={(e) => { if (!readOnly) saveText(context, store, e.target.value) }} />
       </label>
       {number('font_size', t('aiworkspace.blocks.fontSize'), look.fontSize, 14)}
+      {select('font_family', t('aiworkspace.blocks.shape.fontFamily'), [{ value: '', label: t('aiworkspace.blocks.shape.fontFamilyTheme') }, ...FONT_FAMILIES.map((f) => ({ value: f, label: t(FONT_FAMILY_LABEL[f]) }))], look.fontFamily ?? '', '')}
+      {number('line_height', t('aiworkspace.blocks.shape.lineHeight'), look.lineHeight)}
       {color('font_color', t('aiworkspace.blocks.textColor'), look.fontColor || 'auto', ['auto'])}
       {flag('bold', t('aiworkspace.blocks.shape.bold'), look.bold)}
       {flag('italic', t('aiworkspace.blocks.shape.italic'), look.italic)}

@@ -85,7 +85,7 @@ export function buildOperations(plan: PagePlan, target: BuildTarget): BuiltPage 
   for (const item of plan.items) {
     const id = ids.get(item.key)!
     const base = { op: 'entity.create' as const, entity_id: id, parent_id: parentIdOf(item), order_key: orderKey.get(item.key)! }
-    const common: Record<string, Json> = { ...(item.title ? { title: item.title.slice(0, 256) } : {}), ...(item.locked ? { locked: true } : {}) }
+    const common: Record<string, Json> = { ...(item.payload ?? {}), ...(item.title ? { title: item.title.slice(0, 256) } : {}), ...(item.locked ? { locked: true } : {}) }
     if (item.type === 'group') {
       objects.push({ ...base, type_id: 'buckyos.container', placement: placementOf(item, item.rect), payload: { kind: 'group', layout: { mode: 'free' }, ...common } })
       continue

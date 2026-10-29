@@ -341,7 +341,7 @@ pub(super) async fn store_artifacts(
             let stored = store
                 .retain_url(path)
                 .await
-                .map_err(|e| invalid(format!("artifact {path} could not be attached: {e}")))?;
+                .map_err(|e| OpenDanError::Artifact(format!("artifact {path} could not be attached: {e}")))?;
             artifacts.push(ReportArtifact {
                 path: path.clone(),
                 reference: String::new(),
@@ -391,7 +391,7 @@ pub(super) async fn store_artifacts(
             let stored = store
                 .put_file(&stable, artifact.name())
                 .await
-                .map_err(|e| invalid(format!("artifact {path} could not be attached: {e}")))?;
+                .map_err(|e| OpenDanError::Artifact(format!("artifact {path} could not be attached: {e}")))?;
             artifact.obj_id = Some(stored.obj_id.to_string());
             artifact.url = stored.url;
             if artifact.url.is_some() {
@@ -523,7 +523,7 @@ pub(super) async fn call(
                 tool_result: None,
             })
         }
-        Err(OpenDanError::InvalidArgument(message)) => Ok(Observation::Error {
+        Err(OpenDanError::InvalidArgument(message) | OpenDanError::Artifact(message)) => Ok(Observation::Error {
             call_id: call.call_id.clone(),
             message,
             tool_result: None,

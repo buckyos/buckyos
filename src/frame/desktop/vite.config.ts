@@ -25,7 +25,7 @@ function desktopServiceWorker(): Plugin {
         }
       }
       try { walk(outDir) } catch { return } // the build failed before writing anything
-      const precache = files.filter((file) => file !== 'sw.js' && !file.endsWith('.map')).sort()
+      const precache = files.filter((file) => file !== 'sw.js' && !file.endsWith('.map') && !file.startsWith(PDFJS_PREFIX)).sort()
       if (!precache.includes('index.html')) return
       const hash = createHash('sha256')
       for (const file of precache) hash.update(file).update('\0').update(readFileSync(join(outDir, file)))
@@ -35,7 +35,42 @@ function desktopServiceWorker(): Plugin {
   }
 }
 
+// pdf.js's CMaps (CJK text of older PDFs) and standard font data (PDFs that do not embed the 14 base fonts), served
+// next to the app under aiworkspace/pdfjs/ and fetched only by pages that need them (PDF 导入方案 §2): never precached.
+const PDFJS_ASSET_DIRS = ['cmaps', 'standard_fonts']
+const PDFJS_PREFIX = 'aiworkspace/pdfjs/'
+function pdfjsAssets(): Plugin {
+  const root = resolve(import.meta.dirname, 'node_modules/pdfjs-dist')
+  const types: Record<string, string> = { '.bcmap': 'application/octet-stream', '.pfb': 'application/octet-stream', '.ttf': 'font/ttf' }
+  return {
+    name: 'aiworkspace-pdfjs-assets',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const path = (req.url ?? '').split('?')[0]
+        const m = new RegExp(`^/${PDFJS_PREFIX}(${PDFJS_ASSET_DIRS.join('|')})/([\\w.-]+)$`).exec(path)
+        if (!m) return next()
+        try {
+          const body = readFileSync(join(root, m[1], m[2]))
+          res.setHeader('Content-Type', m[2].startsWith('LICENSE') ? 'text/plain' : types[m[2].slice(m[2].lastIndexOf('.'))] ?? 'application/octet-stream')
+          res.end(body)
+        } catch { res.statusCode = 404; res.end() }
+      })
+    },
+    generateBundle() {
+      for (const dir of PDFJS_ASSET_DIRS) {
+        for (const name of readdirSync(join(root, dir))) {
+          // the data files and their licences (Adobe's CMaps, Foxit's and Liberation fonts)
+          if (!/\.(bcmap|pfb|ttf)$|^LICENSE/.test(name)) continue
+          this.emitFile({ type: 'asset', fileName: `${PDFJS_PREFIX}${dir}/${name}`, source: readFileSync(join(root, dir, name)) })
+        }
+      }
+    },
+  }
+}
+
 const DRAWIO_DIR = resolve(import.meta.dirname, '../aiworkspace/import-drawio')
+// The PDF importer shared with Deno and Agents (PDF 导入方案 §4): pdf.js page data → the draw.io importer's plans.
+const PDF_DIR = resolve(import.meta.dirname, '../aiworkspace/import-pdf')
 // The Block-controls shared with Deno and Agents (脑图 TODO M1): layout, measuring, outline conversion, catalogue.
 const CONTROLS_DIR = resolve(import.meta.dirname, '../aiworkspace/controls')
 // The wish program host (src/frame/aiworkspace/aiws/aiws.js) the local executor's Worker runs programs with: the file the service runs.
@@ -95,7 +130,7 @@ export default defineConfig(() => {
     : {}
   return {
     base: '/',
-    plugins: [react(), desktopServiceWorker()],
+    plugins: [react(), pdfjsAssets(), desktopServiceWorker()],
     // The Replica Worker (src/app/aiworkspace/offline/replica.worker.ts) is a module worker.
     worker: { format: 'es' as const },
     // sqlite-wasm locates its .wasm relative to its own module; pre-bundling would move the module.
@@ -106,10 +141,10 @@ export default defineConfig(() => {
       // (called in src/app/aiworkspace/richtext/loro.ts); loro-prosemirror must see the same instance.
       // The draw.io importer and the canvas geometry it shares live outside the app (they also run in Deno):
       // src/frame/aiworkspace/import-drawio (draw.io 导入 TODO §3).
-      alias: [{ find: /^loro-crdt$/, replacement: 'loro-crdt/web' }, { find: /^@drawio\//, replacement: `${DRAWIO_DIR}/` }, { find: /^@controls\//, replacement: `${CONTROLS_DIR}/` }],
+      alias: [{ find: /^loro-crdt$/, replacement: 'loro-crdt/web' }, { find: /^@drawio\//, replacement: `${DRAWIO_DIR}/` }, { find: /^@pdf\//, replacement: `${PDF_DIR}/` }, { find: /^@controls\//, replacement: `${CONTROLS_DIR}/` }],
     },
     server: {
-      fs: { allow: [searchForWorkspaceRoot(process.cwd()), DRAWIO_DIR, CONTROLS_DIR, AIWS_DIR] },
+      fs: { allow: [searchForWorkspaceRoot(process.cwd()), DRAWIO_DIR, PDF_DIR, CONTROLS_DIR, AIWS_DIR] },
       host: '0.0.0.0',
       port: 5174,
       proxy: {

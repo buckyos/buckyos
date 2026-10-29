@@ -65,11 +65,11 @@ export async function setPathKeys(store: WorkspaceStore, pathId: string, values:
   return store.submit({ editId: `path:${pathId}:keys`, label, operations })
 }
 
-/** A new path in the `shows` folder. */
-export function createPathOp(store: WorkspaceStore, title: string, purpose: 'presentation' | 'guide'): { op: Operation; id: string } {
+/** A new path in the `shows` folder, empty or with its stage, background and steps (an imported PDF's pages). */
+export function createPathOp(store: WorkspaceStore, title: string, purpose: 'presentation' | 'guide', init: Partial<Pick<ShowPathPayload, 'stage' | 'background' | 'steps'>> = {}): { op: Operation; id: string } {
   const id = randomId('p')
   const last = store.outline.childrenOf('shows').at(-1)?.order_key
-  const payload: ShowPathPayload = { title, purpose, stage: DEFAULT_STAGE, background: DEFAULT_BACKGROUND, steps: [] }
+  const payload: ShowPathPayload = { title, purpose, stage: init.stage ?? DEFAULT_STAGE, background: init.background ?? DEFAULT_BACKGROUND, steps: init.steps ?? [] }
   return { id, op: { op: 'entity.create', entity_id: id, type_id: 'buckyos.show-path', parent_id: 'shows', order_key: store.core.order_key_between(last ?? undefined, undefined), payload: payload as unknown as Json } }
 }
 

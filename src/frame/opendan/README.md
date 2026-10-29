@@ -279,6 +279,17 @@ zone 内启动时，进程把 `AGENT_TOOL_HOST_ID` 设为 `<device did>/<app ins
 
 ## 测试
 
+容器附件真实链路回归（在 `src/` 下编译，再将测试二进制放入正在运行的 Agent 容器）：
+
+```bash
+cargo test -p opendan --test container_artifact_dv --no-run
+docker cp <上述命令输出的测试二进制> <agent-container>:/tmp/container_artifact_dv
+docker exec -e OPENDAN_DV_AGENT_ROOT=<容器内现有AgentRoot> -e OPENDAN_DV_SESSION_ID=<现有sid> \
+  <agent-container> /tmp/container_artifact_dv --ignored --nocapture --test-threads=1
+```
+
+测试经 SessionService 获取 Agent 当前 token，使用 Rust runtime 将临时文件存入 NamedStore、经 NodeGateway 绑定到 artifacts 桶，再核对绑定和读回内容，最后删除本次测试的绑定。不会调用 LLM 或推进现有 Session；token 不打印、不落盘。测试二进制须与容器架构及运行库匹配，也可编译为对应 musl target。已有授权 token 文件时，可用 `OPENDAN_DV_SESSION_TOKEN_FILE` 代替上述两个环境变量。
+
 提示词人工 review（在 `src/` 下运行）：
 
 ```bash

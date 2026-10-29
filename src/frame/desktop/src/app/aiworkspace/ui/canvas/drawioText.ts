@@ -47,6 +47,13 @@ const REPORT: Record<string, string> = {
   anchor_on_box: 'aiworkspace.drawio.report.anchorOnBox', edge_to_edge: 'aiworkspace.drawio.report.edgeToEdge', cap_size: 'aiworkspace.drawio.report.capSize',
   jump: 'aiworkspace.drawio.report.jump', flow_animation: 'aiworkspace.drawio.report.flowAnimation', extra_labels: 'aiworkspace.drawio.report.extraLabels',
   hidden_layer: 'aiworkspace.drawio.report.hiddenLayer',
+  // PDF import (PDF 导入方案 §5): the converter's codes
+  pdf_image_sheared: 'aiworkspace.pdf.report.imageSheared', pdf_image_alpha: 'aiworkspace.pdf.report.imageAlpha', pdf_image_clipped: 'aiworkspace.pdf.report.imageClipped',
+  pdf_image_unreadable: 'aiworkspace.pdf.report.imageUnreadable', pdf_unreadable_text: 'aiworkspace.pdf.report.unreadableText', pdf_mixed_style: 'aiworkspace.pdf.report.mixedStyle',
+  pdf_invisible_text: 'aiworkspace.pdf.report.invisibleText', pdf_vertical_text: 'aiworkspace.pdf.report.verticalText', pdf_complex_page: 'aiworkspace.pdf.report.complexPage',
+  pdf_complex_whole: 'aiworkspace.pdf.report.complexWhole', pdf_effects: 'aiworkspace.pdf.report.effects', pdf_svg_too_large: 'aiworkspace.pdf.report.svgTooLarge',
+  pdf_raster_parts: 'aiworkspace.pdf.report.rasterParts', pdf_raster_failed: 'aiworkspace.pdf.report.rasterFailed', pdf_page_failed: 'aiworkspace.pdf.report.pageFailed',
+  pdf_original_missing: 'aiworkspace.pdf.report.originalMissing', pdf_path_failed: 'aiworkspace.pdf.report.pathFailed',
 }
 
 /** What an import report note says, by its kind (`stencil:<instruction>` names the instruction). */

@@ -1,0 +1,6 @@
+{
+  "imports": {
+    "@controls/": "../../../aiworkspace/controls/",
+    "@drawio/": "../../../aiworkspace/import-drawio/"
+  }
+}

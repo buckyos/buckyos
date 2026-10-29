@@ -26,7 +26,7 @@
 
     /* The shared draw.io importer and canvas geometry (src/frame/aiworkspace/import-drawio), the shared Block-controls
        (src/frame/aiworkspace/controls: layout, outline conversion, catalogue) */
-    "paths": { "@drawio/*": ["../aiworkspace/import-drawio/*"], "@controls/*": ["../aiworkspace/controls/*"] }
+    "paths": { "@drawio/*": ["../aiworkspace/import-drawio/*"], "@pdf/*": ["../aiworkspace/import-pdf/*"], "@controls/*": ["../aiworkspace/controls/*"] }
   },
   "include": ["src"],
   "exclude": ["src/api", "src/auth"]

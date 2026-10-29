@@ -75,8 +75,14 @@ function FrameView({ context, editing }: { context: RenderContext; editing: bool
   const id = context.cell.entity_id
   const title = editing ? <InPlaceTitle context={context} className="aiws-title-input" placeholder={t('aiworkspace.blocks.frame.title')} /> : <span>{context.payload.title ?? (look.header === null ? t('aiworkspace.blocks.frame.title') : '')}</span>
   if (look.header === null) {
+    // a fill, width or rounding of its own (a PDF page's Frame: the page colour, a thin square border)
+    const own: CSSProperties = {
+      ...(look.fill ? { background: look.fill === 'auto' ? 'var(--aiws-shape-auto-fill)' : look.fill } : {}),
+      ...(typeof context.payload.config?.stroke_width === 'number' ? { borderWidth: look.strokeWidth } : {}),
+      ...(look.radius !== null ? { borderRadius: look.radius } : {}),
+    }
     return (
-      <div className="aiws-frame" style={{ borderColor: look.color }} data-testid={`aiws-frame-${id}`}>
+      <div className="aiws-frame" style={{ borderColor: look.color, ...own }} data-testid={`aiws-frame-${id}`}>
         <div className={`aiws-frame-title${editing ? ' is-editing' : ''}`} style={{ background: look.color }}>{title}</div>
       </div>
     )

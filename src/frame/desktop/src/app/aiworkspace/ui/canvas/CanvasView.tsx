@@ -57,8 +57,10 @@ import { connectorChangeOps, createConnectorOp, freezeOps, type ConnectorChange,
 import { flowOrder, moveInFlow } from './flowOps'
 import { FlowSurface } from './FlowSurface'
 import { exportSurfaceDrawio, saveTextFile } from './drawioExport'
-import { classifyFile, importDrawio, importReports } from './drawioImport'
+import { classifyFile, importDrawio, importReports, type ImportOutcome } from './drawioImport'
 import { ImportReportDialog } from './ImportReportDialog'
+import { PdfImportHost } from './ImportPdfDialog'
+import { pdfImports } from './pdfImportRequest'
 import { MetadataForm } from './MetadataForm'
 import { libraryShapeConfig, SHAPE_DRAG_TYPE, stencilPack } from './stencilLibrary'
 import { InsertCatalog, type CatalogTab } from './InsertCatalog'
@@ -106,7 +108,8 @@ export function CanvasView({ focus }: { focus: CanvasFocus | null }) {
   return (
     <>
       {active ? <SurfaceView key={active.entity_id} surface={active} mode={mode} focus={focus} /> : <EmptyCanvas mode={mode} />}
-      {report && <ImportReportDialog outcome={report} onClose={() => importReports.show(null)} />}
+      <PdfImportHost />
+      {report && <ImportReportDialog outcome={report} onClose={() => importReports.show(null)} onStartShow={report.pathId ? () => { const pathId = report.pathId; importReports.show(null); shell.startShow({ pathId }) } : undefined} />}
     </>
   )
 }
@@ -813,6 +816,33 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     }
   }
   const importCommand: Command = { reason: importReason, run: () => importInput.current?.click() }
+  // ---- PDF import (PDF 导入方案 §5): pages on a new canvas, a path through them
+  const pdfInput = useRef<HTMLInputElement>(null)
+  const pdfReason = !canCreateSurfaces ? t('aiworkspace.pdf.reason.noStructure') : store.session.status().kind !== 'live' ? t('aiworkspace.pdf.reason.offline') : null
+  const finishPdfImport = (outcome: ImportOutcome) => {
+    if (outcome.surfaceId) {
+      // the new canvas opens showing all its pages (the window, and so the clear area, is this one's)
+      if (outcome.bounds) { const v = camera.fitted(outcome.bounds, 60); store.userState.set(`viewport:${outcome.surfaceId}`, { x: Math.round(v.x), y: Math.round(v.y), zoom: Number(v.zoom.toFixed(3)) }) }
+      shell.selectSurface(outcome.surfaceId)
+    }
+    const pathId = outcome.pathId ?? null
+    if (outcome.error || outcome.report.notes.size > 0) importReports.show(outcome)
+    if (!outcome.error) store.notify('info', t('aiworkspace.pdf.done', { name: outcome.name, summary: outcome.summary ?? '' }), pathId ? { label: t('aiworkspace.pdf.startShow'), run: () => shell.startShow({ pathId }) } : undefined)
+  }
+  /** Open the PDF import for a file: `ask` first when it was dropped or pasted (insert as a file, or as pages). */
+  const openPdfImport = async (file: File, bytes: Uint8Array | null, ask: boolean, at: { x: number; y: number } | null) => {
+    if (pdfImports.busy) { store.notify('info', t('aiworkspace.canvas.import.busy')); return }
+    pdfImports.open({ source: { name: file.name, bytes: bytes ?? new Uint8Array(await file.arrayBuffer()) }, step: ask ? 'ask' : 'options', insertAsFile: () => { void insertFile(file, at) }, finish: finishPdfImport })
+  }
+  const importPdfCommand: Command = { reason: pdfReason, run: () => pdfInput.current?.click() }
+  // an import started elsewhere (a PDF file Block's "expand into pages") ends on this canvas's terms
+  const finishRef = useRef(finishPdfImport)
+  useEffect(() => { finishRef.current = finishPdfImport })
+  useEffect(() => {
+    const finisher = (outcome: ImportOutcome) => finishRef.current(outcome)
+    pdfImports.finisher = finisher
+    return () => { if (pdfImports.finisher === finisher) pdfImports.finisher = null }
+  }, [])
   const exportCommand: Command = {
     reason: !isFree ? t('aiworkspace.canvas.export.onlyFree') : null,
     run: () => {
@@ -851,6 +881,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     for (const file of files) {
       const { kind, bytes, text } = await classifyFile(file)
       if (kind === 'drawio') await runImport({ name: file.name, bytes }, spot)
+      // a single PDF asks: a file, or editable pages (Q7); several are inserted as files
+      else if (kind === 'pdf' && files.length === 1 && pdfReason === null && !insertReason) await openPdfImport(file, bytes, true, spot)
       else if (insertReason) { store.notify('info', insertReason); return }
       else if (kind === 'svg' && text) insertSvg(text, spot, file)
       else {
@@ -1173,6 +1205,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     openCatalog: (tab, key) => openCatalog(tab, key),
     copy, cut, paste, remove,
     importDrawio: importCommand,
+    importPdf: importPdfCommand,
     exportDrawio: exportCommand,
     view: isFree ? { camera, fitAll, fitSelection, hasSelection: selection.size > 0 } : null,
     canvasTabs: CANVAS_SIDE_TABS,
@@ -1285,6 +1318,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
             <StatusDock />
             <input ref={importInput} type="file" hidden aria-hidden="true" tabIndex={-1} accept=".drawio,.xml,.png,.svg,application/xml,text/xml,image/png,image/svg+xml" data-testid="aiws-import-drawio-file"
               onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void file.arrayBuffer().then((buffer) => runImport({ name: file.name, bytes: new Uint8Array(buffer) }, null)) }} />
+            <input ref={pdfInput} type="file" hidden aria-hidden="true" tabIndex={-1} accept=".pdf,application/pdf" data-testid="aiws-import-pdf-file"
+              onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void openPdfImport(file, null, false, null) }} />
             {menu && <ContextMenu at={menu.at} items={menuItems} onClose={() => setMenu(null)} />}
             {picker && <Picker kind={picker.kind} selection={selectedEntities} surfaceId={surfaceId} onClose={() => setPicker(null)} onPick={(choice) => {
               if (picker.kind === 'move-surface') moveToSurface(choice)

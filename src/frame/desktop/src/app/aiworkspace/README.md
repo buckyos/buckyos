@@ -90,7 +90,9 @@ ui/
                           InsertCatalog + catalog.ts (the one insert catalog), clipboard.ts, surfaceManage.tsx
                           (rename / icon / delete pre-check), icons.tsx (preset canvas icons), FlowSurface +
                           flowOps.ts (the page as a document: handles, drag, insert after, continue writing), layout.ts,
-                          tools.tsx (near toolbar, context menu, inspector)
+                          tools.tsx (near toolbar, context menu, inspector); pdfImport.ts + ImportPdfDialog.tsx +
+                          pdfImportRequest.ts (PDF pages → a new canvas with a presentation path, doc/workspace/BuckyOS
+                          AI Workspace PDF 导入与放映方案讨论.md; the converter is ../aiworkspace/import-pdf, `@pdf/*`)
   canvas/render/          RenderHost (world layer + camera transform, three-level culling with hysteresis, LOD
                           placeholders, mount budget, overlay, gestures that commit once; painting and hit testing
                           share one order, BlockTree pre-order as a z-index, frames in a stable DOM order by id),
@@ -106,7 +108,8 @@ ink/                      pen handwriting (notepads/aiworkspace-handwriting-todo
                           waiting for their Blocks, writing and erasing), inkBlock.tsx (the `ink` Block), InkBar.tsx,
                           prefs.ts (`ui:ink`)
   media/                  media assets (doc/workspace/BuckyOS AI Workspace 多媒体对象.md): kinds.ts, poster.ts
-                          (poster and facts of a file: video frame, PDF first page via pdfPoster.ts, audio cover via
+                          (poster and facts of a file: video frame, PDF first page via pdfDoc.ts — pdf.js with the CMaps and
+                          standard fonts the build serves under aiworkspace/pdfjs/ —, audio cover via
                           audioCover.ts), stage.ts (file + poster upload, Block size), source.ts (Preview Source
                           Resolver `aiworkspace-asset`, the Surface's media session), AssetMedia.tsx (picture /
                           poster / card, in-place playback and the preview dialog with the system Preview component)
@@ -579,10 +582,15 @@ startup timeouts, crashes and disposal reject waiting calls and release the ifra
   takes all of them out), copy/paste gives the copy a new stroke id, the eraser and Delete remove all of them in one
   commit, flow pages refuse pasted or moved ink. A stroke of several segments has no resize or rotation handles (a
   selection of several Blocks); a one-segment stroke resizes (proportions kept) and turns like any Block.
-- **Saving**: each stroke is submitted at once (the next one never waits). Refused → the live stroke goes, with an
-  error; unknown or not stored → it stays drawn and listed, and is resent with its idempotency key when the
-  connection is live again or from the notice's retry (no duplicate); dismissed in the save-state list → it goes.
-  Erasing hides the strokes at once and puts them back when the delete is refused or the gesture cancelled.
+- **Ordering**: ordinary tail insertion uses dense base-36 keys, initially eight digits, within the existing
+  64-character limit. A saturated parent is rebalanced in its current sibling order using `tree.place` with
+  structure revisions and a `tree_children` membership precondition. This maintenance commit is not on the
+  handwriting undo stack. New strokes remain visible and exportable while waiting for the backend to accept
+  the rebalance; offline local acceptance alone does not release them into the new ordering space.
+- **Saving**: ordinary strokes submit immediately, reserving keys while earlier strokes are pending. A refused
+  stroke remains visible and exportable with a retry action; dismissing its save-state entry removes it. Unknown
+  or failed storage submissions retry the same operations with the same idempotency key. Failed allocations do
+  not reserve a tail key. Erasing hides strokes at once and restores them if deletion is refused or cancelled.
 - **Offline**: no offline path of its own. In a window holding a prepared replica (where the replica works, see
   Offline) strokes, their undo and erases queue like any edit, survive a cold start and go out once on reconnect;
   undoing a stroke still in the queue takes it out (the replica reports the creation as gone). Without a replica,
@@ -591,6 +599,8 @@ startup timeouts, crashes and disposal reject waiting calls and release the ifra
   show's memory (page turns, undo, clear, gone on exit); a finger writes there too.
 - **Tests**: `tests/datamodel/aiworkspace-ink.test.ts` (Deno: format, simplification, segments, decoding, hit tests,
   the input state machine; writes `../aiworkspace/fixtures/ink/strokes.json` with `AIWS_REGEN=1`),
+  `tests/datamodel/aiworkspace-ink-book.test.ts` (real WASM allocation, pending and failure recovery),
+  `tests/aiworkspace/handwriting-order.spec.ts` (400 pen strokes, saturation recovery and independent undo),
   `tests/aiworkspace/handwriting.spec.ts` (H01–H09, H11, H-scale → `test-results/aiworkspace-ink-scale.json`),
   `offline-handwriting.spec.ts` (H10). Pens are CDP pointer events with pressure, fingers CDP touches; a second pen
   and cancels are synthetic events. Real devices are not verified (the TODO's device matrix).

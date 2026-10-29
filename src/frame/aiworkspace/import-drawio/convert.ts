@@ -69,6 +69,8 @@ export interface PlanItem {
   image?: PlanImage
   fallback?: { config: Record<string, Json>; title?: string }
   line?: PlanLine
+  /** Further payload keys of the created Block (a PDF page's Frame: `presentation`). */
+  payload?: Record<string, Json>
 }
 
 export interface PagePlan {

@@ -35,6 +35,8 @@ export interface CanvasCommands {
   remove: Command
   /** draw.io files (draw.io 导入 TODO §3): import into this canvas or new ones; export this canvas. */
   importDrawio: Command
+  /** PDF files (PDF 导入方案 §5): pages on a new canvas with a presentation path. */
+  importPdf: Command
   exportDrawio: Command
   /** Free Surfaces only. */
   view: { camera: Camera; fitAll: () => void; fitSelection: () => void; hasSelection: boolean } | null
@@ -71,6 +73,8 @@ export function buildMainMenu({ store, shell, canvas, mode }: { store: Workspace
   // draw.io files (draw.io 导入 TODO §3): the file picker; dropping or pasting a file does the same
   insertItems.push({ id: 'sep-import', separator: true }, {
     id: 'import-drawio', testId: 'aiws-menu-import-drawio', label: t('aiworkspace.shell.menu.importDrawio'), hint: '.drawio .png .svg', disabled: !canvas || canvas.importDrawio.reason !== null, reason: canvas?.importDrawio.reason ?? notOnCanvas, run: () => canvas?.importDrawio.run(),
+  }, {
+    id: 'import-pdf', testId: 'aiws-menu-import-pdf', label: t('aiworkspace.shell.menu.importPdf'), hint: '.pdf', disabled: !canvas || canvas.importPdf.reason !== null, reason: canvas?.importPdf.reason ?? notOnCanvas, run: () => canvas?.importPdf.run(),
   })
   const side = (tab: SideTab): MenuItem => {
     const reason = canvas || tab === 'collab' || tab === 'edits' ? null : notOnCanvas

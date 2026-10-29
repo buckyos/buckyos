@@ -149,6 +149,8 @@ test('MD-02 a sound without a cover is a card that plays in place; a PDF shows i
   await expect(card.getByTestId('content-preview-audio')).toBeVisible()
 
   await drop(page, 'paper.pdf', 'application/pdf', pdf(), { x: 1000, y: 450 })
+  // a single PDF asks first: a file, or editable pages (PDF 导入方案 Q7)
+  await page.getByTestId('aiws-pdf-ask-file').click()
   const paper = await assetBlock(api, ws, 'paper.pdf')
   expect(paper.asset.media_type).toBe('application/pdf')
   expect(paper.asset.page_count).toBe(1)

@@ -2948,6 +2948,14 @@ impl BuckyOSRuntime {
                 return Ok(self.get_appclient_service_url(service_name, https_only));
             }
             BuckyOSRuntimeType::AppService | BuckyOSRuntimeType::FrameService => {
+                if service_name == NFS_SERVER_SERVICE_NAME {
+                    return Ok(format!(
+                        "http://{}:{}/kapi/{}",
+                        self.resolve_local_service_host(),
+                        self.node_gateway_port,
+                        service_name
+                    ));
+                }
                 let (result_url, _is_local) = self.get_kernel_service_url(service_name).await?;
                 return Ok(result_url);
 
@@ -3284,6 +3292,59 @@ mod tests {
             .await
             .unwrap()
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn bucket_clients_use_gateway_and_preserve_token_lifecycle() {
+        let _env = RefreshTestEnv::new();
+        let (mut runtime, mut requests, server) = refresh_test_runtime().await;
+        runtime
+            .replace_token_pair(refresh_test_pair("old", buckyos_get_unix_timestamp() + 600))
+            .await
+            .unwrap();
+        let old_token = runtime.get_session_token().await;
+        let old_client = runtime.get_bucket_client().await.unwrap();
+        runtime
+            .replace_token_pair(refresh_test_pair("new", buckyos_get_unix_timestamp() + 600))
+            .await
+            .unwrap();
+        let new_token = runtime.get_session_token().await;
+        assert_ne!(old_token, new_token);
+        let new_client = runtime.get_bucket_client().await.unwrap();
+        for (client, token) in [(old_client, old_token), (new_client, new_token)] {
+            let call = tokio::spawn(async move { client.list(None, None).await });
+            let (request, response) = next_refresh(&mut requests).await;
+            assert_eq!(request["method"], "bucket.list");
+            assert_eq!(request["sys"][1], token);
+            response.send(Some(serde_json::json!({ "result": [] }))).unwrap();
+            assert!(call.await.unwrap().unwrap().is_empty());
+        }
+        for state in [RuntimeAuthState::ReauthorizationRequired, RuntimeAuthState::Unavailable] {
+            runtime.authentication.write().await.state = state;
+            assert!(runtime.get_bucket_client().await.is_err());
+            assert!(requests.try_recv().is_err());
+        }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn container_nfs_rpc_uses_the_named_store_gateway() {
+        let _env = RefreshTestEnv::new();
+        env::set_var(BUCKYOS_HOST_GATEWAY_ENV, "192.0.2.20");
+        for runtime_type in [BuckyOSRuntimeType::AppService, BuckyOSRuntimeType::FrameService] {
+            for gateway_port in [DEFAULT_NODE_GATEWAY_PORT, 43180] {
+                let mut runtime = BuckyOSRuntime::new("notes.example.com", Some("alice".into()), runtime_type.clone());
+                runtime.node_gateway_port = gateway_port;
+                runtime.device_config = Some(DeviceDocument::new("ood1", "test-key".into()));
+                let expected = format!("http://192.0.2.20:{gateway_port}");
+                assert_eq!(runtime.named_store_base_url(), expected);
+                assert_eq!(
+                    runtime.get_zone_service_url(NFS_SERVER_SERVICE_NAME, false).await.unwrap(),
+                    format!("{expected}/kapi/nfs-server")
+                );
+                assert!(runtime.system_config_client.get().is_none());
+            }
+        }
     }
 
     #[tokio::test]
@@ -4139,7 +4200,7 @@ mod tests {
                             runtime.resolve_local_service_host(),
                             expected_host.unwrap_or("127.0.0.1")
                         );
-                        for service_name in ["system_config", "aicc", "verify-hub"] {
+                        for service_name in ["system_config", "aicc", "verify-hub", NFS_SERVER_SERVICE_NAME] {
                             let expected_url = match expected_host {
                                 Some(host) => format!(
                                     "http://{}:{}/kapi/{}",

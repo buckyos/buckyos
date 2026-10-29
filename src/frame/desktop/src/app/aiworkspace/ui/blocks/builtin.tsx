@@ -7,10 +7,10 @@
  * extension would be. */
 
 import { useCallback, type CSSProperties, type ReactNode } from 'react'
-import { ALargeSmall, Columns3, Eye, File as FileIcon, FileText, Film, Image as ImageIcon, ListFilter, ListTree, Music, Play, Plus, Replace, Reply, Scan, Table, Type } from 'lucide-react'
+import { ALargeSmall, Columns3, Eye, File as FileIcon, FileText, Film, Image as ImageIcon, LayoutGrid, ListFilter, ListTree, Music, Play, Plus, Replace, Reply, Scan, Table, Type } from 'lucide-react'
 import { randomId } from '../../api/ids'
 import type { ReadOk } from '../../api/session'
-import type { AnnotationContent, Json, Reference, RichTextContent } from '../../api/types'
+import type { AnnotationContent, Json, KeyedContent, Reference, RichTextContent } from '../../api/types'
 import { StaticRichText } from '../../richtext/RichTextEditor'
 import { isGuestPrincipal } from '../../api/transport'
 import { aiwsT } from '../../i18n'
@@ -18,6 +18,7 @@ import { useAiwsText } from '../../useAiwsText'
 import { authorLabel, readGuestName } from '../../state/guest'
 import { useEdit, useLoad, useStore, useVersion, useWorkspaceUi } from '../../state/hooks'
 import type { WorkspaceStore } from '../../state/store'
+import { pdfImports } from '../canvas/pdfImportRequest'
 import { TableViewCell } from '../TableViewCell'
 import { sourceLabel } from './affordances'
 import { requestIntent, useOnFreeCanvas } from './editorToolbar'
@@ -270,6 +271,22 @@ function pickReplacement(context: RenderContext, store: WorkspaceStore) {
   input.click()
 }
 
+/** A PDF file Block's pages as editable objects on a new canvas (PDF 导入方案 §5 入口): the stored file is the original. */
+async function expandPdf(context: RenderContext, store: WorkspaceStore) {
+  const sourceId = context.source?.entity_id
+  if (!sourceId) return
+  if (pdfImports.busy) { store.notify('info', aiwsT('aiworkspace.canvas.import.busy')); return }
+  try {
+    const read = await store.session.read<KeyedContent<{ object_id?: string; file_name?: string }>>(sourceId)
+    const objectId = read.content.payload.object_id
+    if (!objectId) return
+    const bytes = new Uint8Array(await (await store.session.fetchAsset(objectId)).arrayBuffer())
+    pdfImports.open({ source: { name: read.content.payload.file_name ?? context.source?.name ?? 'PDF', bytes, asset: { object_id: objectId } }, step: 'options' })
+  } catch (error) {
+    store.notify('error', aiwsT('aiworkspace.pdf.error.unreadable', { reason: error instanceof Error ? error.message : String(error) }))
+  }
+}
+
 const FIT_OPTIONS = [
   { value: 'contain', get label() { return aiwsT('aiworkspace.blocks.asset.fitContain') } },
   { value: 'cover', get label() { return aiwsT('aiworkspace.blocks.asset.fitCover') } },
@@ -294,6 +311,9 @@ const asset: BlockDefinition = {
         disabled: context.capabilities.includes('update') && context.mode === 'edit' ? false as const : aiwsT('aiworkspace.blocks.noPermission'),
         onPick: (value: string) => setCellConfig(context, store, { fit: value === 'contain' ? null : value }, aiwsT('aiworkspace.blocks.edit.change', { label: aiwsT('aiworkspace.blocks.asset.fit'), value: aiwsT(value === 'cover' ? 'aiworkspace.blocks.asset.fitCover' : 'aiworkspace.blocks.asset.fitContain') })) }] : []),
       { kind: 'button', id: 'asset-preview', icon: Eye, label: aiwsT('aiworkspace.blocks.asset.preview'), run: () => requestIntent(context.cell.entity_id, 'preview') },
+      ...(kind === 'pdf' && context.mode === 'edit' ? [{ kind: 'button' as const, id: 'asset-expand-pdf', icon: LayoutGrid, label: aiwsT('aiworkspace.blocks.asset.expandPdf'),
+        disabled: !store.session.info().capabilities.includes('structure') ? aiwsT('aiworkspace.pdf.reason.noStructure') : store.session.status().kind !== 'live' ? aiwsT('aiworkspace.pdf.reason.offline') : false as const,
+        run: () => { void expandPdf(context, store) } }] : []),
     ]
   },
   configFields: [{ key: 'fit', get label() { return aiwsT('aiworkspace.blocks.asset.fitField') }, kind: 'select', options: FIT_OPTIONS }],

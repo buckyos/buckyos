@@ -274,6 +274,10 @@ Keep a timeline: symptom (user words, time) → evidence (command, `trace_id`, q
   host command for the owner, e.g. `uv run src/check.py`, `docker ps`, `ls $BUCKYOS_ROOT/logs/apps/`.
 
 #### When it fails
+- Agent report attachment errors (`last_error.kind = "artifact"`): inspect the NFS endpoint and gateway reachability.
+  Container NFS/bucket RPC uses `http://<host gateway>:<node gateway port>/kapi/nfs-server` (normally port 3180).
+  A request to the host bridge's port 4110 comes from an outdated runtime; NFS listens on the host loopback.
+  Rebuild/deploy the Agent runtime, then resume the saved session; see `opendan_agent_dev` for report recovery.
 - HTTP 503 `service_not_ready:<service>` from `/kapi/<service>` means the gateway has no registered route for that
   service. Verify the requested service name, `services/<service>/info`, the node's `gateway_info`, and service/scheduler
   logs. For an Agent, the gateway service name is its full AgentId: use `/kapi/<agent_id>`; its own WebUI uses

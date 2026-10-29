@@ -1,0 +1,132 @@
+{
+ "plans": [
+  {
+   "id": "p1",
+   "name": "Page 1",
+   "background": "#ffffff",
+   "pageSize": {
+    "w": 1357,
+    "h": 1920
+   },
+   "items": [
+    {
+     "key": "p1",
+     "parent": null,
+     "type": "group",
+     "rect": {
+      "x": 0,
+      "y": 0,
+      "w": 1357,
+      "h": 1920
+     },
+     "rotation": 0,
+     "config": {}
+    },
+    {
+     "key": "p1~frame",
+     "parent": "p1",
+     "type": "frame",
+     "rect": {
+      "x": 0,
+      "y": 0,
+      "w": 1357,
+      "h": 1920
+     },
+     "rotation": 0,
+     "title": "Page 1",
+     "config": {
+      "color": "#9ca3af",
+      "fill": "#ffffff",
+      "stroke_width": 1,
+      "radius": 0,
+      "pdf_source": {
+       "page": 1,
+       "kind": "page"
+      }
+     },
+     "payload": {
+      "presentation": {
+       "background": "#ffffff"
+      }
+     }
+    },
+    {
+     "key": "p1~i0",
+     "parent": "p1",
+     "type": "asset",
+     "rect": {
+      "x": 0,
+      "y": 0,
+      "w": 1356.77,
+      "h": 1920
+     },
+     "rotation": 0,
+     "config": {
+      "pdf_source": {
+       "page": 1,
+       "kind": "image"
+      }
+     },
+     "image": {
+      "key": "tp1i1",
+      "name": "fixture-p001-img1.png",
+      "mediaType": "image/png",
+      "bytes": 8
+     },
+     "fallback": {
+      "config": {
+       "shape": "rect",
+       "fill": "none",
+       "stroke": "auto",
+       "stroke_width": 1,
+       "dash": "dashed",
+       "text": "Image",
+       "font_size": 14,
+       "pdf_source": {
+        "page": 1,
+        "kind": "image"
+       }
+      }
+     }
+    }
+   ],
+   "bounds": {
+    "x": 0,
+    "y": 0,
+    "w": 1357,
+    "h": 1920
+   },
+   "images": [
+    {
+     "key": "tp1i1",
+     "name": "fixture-p001-img1.png",
+     "mediaType": "image/png",
+     "bytes": 8
+    }
+   ],
+   "pageColor": "#ffffff",
+   "scale": 2.2802850356294537,
+   "counts": {
+    "text": 0,
+    "images": 1,
+    "shapes": 0,
+    "raster": false
+   }
+  }
+ ],
+ "report": {
+  "pages": 1,
+  "objects": 2,
+  "images": 1,
+  "notes": [
+   {
+    "kind": "pdf_invisible_text",
+    "message": "Invisible text (a scan’s recognised text) not imported",
+    "count": 1,
+    "samples": [
+     "p1"
+    ]
+   }
+  ]
+ }
+}

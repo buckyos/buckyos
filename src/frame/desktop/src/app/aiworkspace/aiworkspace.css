@@ -1098,6 +1098,15 @@
 .aiws-import-notes > li { margin: 4px 0; }
 .aiws-import-samples { font-size: 12px; overflow-wrap: anywhere; }
 .aiws-dialog.aiws-import-report { width: min(560px, 92vw); }
+/* PDF import (PDF 导入方案 §5 步 2) */
+.aiws-dialog.aiws-pdf-dialog { width: min(600px, 94vw); }
+.aiws-pdf-facts { display: flex; gap: 12px; align-items: flex-start; }
+.aiws-pdf-preview { width: 120px; max-height: 160px; object-fit: contain; border: 1px solid var(--cp-border); border-radius: 4px; background: #fff; flex: none; }
+.aiws-pdf-facts-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.aiws-pdf-dialog fieldset.aiws-field { gap: 6px; }
+.aiws-pdf-dialog input[type='number'] { width: 64px; }
+.aiws-pdf-progress { display: flex; flex-direction: column; gap: 4px; }
+.aiws-pdf-progress progress { width: 100%; }
 /* the shape library (draw.io 导入 TODO §2.4) */
 .aiws-popover.aiws-library-popover { width: 344px; max-height: min(72vh, 620px); }
 .aiws-library { display: flex; flex-direction: column; gap: 8px; }
