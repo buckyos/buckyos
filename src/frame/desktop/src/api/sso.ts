@@ -304,3 +304,6 @@ export const fetchAppLoginState = (appInstanceId: string): RpcResult<AppLoginSta
 
 export const setAppLoginEnabled = (appInstanceId: string, enabled: boolean): RpcResult<{ settings: AppLoginSettings; families_revoked: number }> =>
   callSession<{ settings: AppLoginSettings; families_revoked: number }>('apps.app_login.set', { app_instance_id: appInstanceId, enabled })
+
+export const describeLoginTarget = (redirectUrl: string): RpcResult<{ display_name: string }> =>
+  callPublic('auth.describe_target', { redirect_url: redirectUrl })

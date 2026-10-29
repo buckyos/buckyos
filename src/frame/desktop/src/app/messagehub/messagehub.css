@@ -137,18 +137,19 @@
   mask-image: linear-gradient(to right, transparent, #000 36px, #000 calc(100% - 36px), transparent);
 }
 
-/* Message hover bar (quick reactions + actions), Discord-style: shown while the
-   bubble is hovered or holds focus on pointer devices; touch devices use the
-   footer menu instead. */
 .mh-bubble {
   position: relative;
 }
 
 .mh-hover-bar {
   position: absolute;
-  top: -27px;
+  bottom: calc(100% - 7px);
   z-index: 5;
-  display: none;
+  display: flex;
+  visibility: hidden;
+  width: max-content;
+  max-width: calc(100vw - 40px);
+  flex-wrap: wrap;
   align-items: center;
   gap: 2px;
   padding: 2px;
@@ -169,14 +170,16 @@
   right: 8px;
 }
 
-@media (hover: hover) {
-  .mh-hover-bar {
-    display: flex;
-  }
+.mh-bubble[data-actions-open="true"] .mh-hover-bar,
+.mh-hover-bar[data-open="true"] {
+  visibility: visible;
+  opacity: 1;
+}
 
-  .mh-bubble:hover > .mh-hover-bar,
-  .mh-bubble:focus-within > .mh-hover-bar,
-  .mh-hover-bar[data-open="true"] {
+@media (hover: hover) {
+  .mh-bubble:hover .mh-hover-bar,
+  .mh-bubble:focus-within .mh-hover-bar {
+    visibility: visible;
     opacity: 1;
   }
 

@@ -1237,6 +1237,7 @@ impl ControlPanelServer {
             "ui.locale.set" => Box::pin(self.handle_ui_locale_set(req)),
             // Auth
             "auth.login" => Box::pin(self.handle_auth_login(req)),
+            "auth.describe_target" => Box::pin(self.handle_auth_describe_target(req)),
             sys_auth_backend::PREPARE_APP_LAUNCH_METHOD => {
                 Box::pin(self.handle_auth_prepare_app_launch(req, principal))
             }

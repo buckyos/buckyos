@@ -114,6 +114,53 @@ enum PendingSsoLookupResult {
 }
 
 impl ControlPanelServer {
+    pub(super) async fn handle_auth_describe_target(
+        &self,
+        req: RPCRequest,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let redirect_url = Self::require_param_str(&req, "redirect_url")?;
+        let runtime = get_buckyos_api_runtime()?;
+        let resolved = Self::resolve_sso_auth_target(
+            &redirect_url,
+            Self::sso_zone_host(runtime)?.as_str(),
+            !runtime.force_https,
+            runtime.node_gateway_port,
+        )?;
+        let display_name = match &resolved.auth_target {
+            AuthTarget::App { app_instance_id } => {
+                let client = runtime.get_system_config_client().await?;
+                let key = buckyos_api::user_app_spec_key(
+                    app_instance_id.owner_user_id(),
+                    app_instance_id.app_id(),
+                );
+                let spec = match client.get(&key).await {
+                    Ok(value) => Some(serde_json::from_str::<buckyos_api::AppServiceSpec>(&value.value)
+                        .map_err(|error| RPCErrors::ReasonError(error.to_string()))?),
+                    Err(buckyos_api::SystemConfigError::KeyNotFound(_)) => None,
+                    Err(error) => return Err(RPCErrors::ReasonError(error.to_string())),
+                };
+                spec.map(|spec| spec.app_doc.show_name)
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or_else(|| app_instance_id.app_id().to_string())
+            }
+            AuthTarget::System { service_id } => match service_id.as_str() {
+                "control-panel" => "Desktop".to_string(),
+                "aiworkspace" => "AI Workspace".to_string(),
+                "msg-center" => "Message Hub".to_string(),
+                _ => buckyos_api::find_system_builtin_app(service_id.as_str())
+                    .map(|app| app.show_name.to_string())
+                    .unwrap_or_else(|| service_id.to_string()),
+            },
+        };
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "target": resolved.auth_target,
+                "display_name": display_name,
+            })),
+            req.seq,
+        ))
+    }
+
     //这个不是kapi,只能在当前域名内调用
     pub(super) async fn handle_auth_login(
         &self,
@@ -1104,6 +1151,7 @@ impl ControlPanelServer {
             method,
             "auth.login"
                 | "auth.sso_config"
+                | "auth.describe_target"
                 | "auth.entry.describe"
                 | "auth.register"
                 | "auth.invite.describe"
@@ -1895,6 +1943,17 @@ mod tests {
         let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"EdDSA","typ":"JWT"}"#);
         let payload = URL_SAFE_NO_PAD.encode(json!({ "exp": exp }).to_string());
         format!("{}.{}.signature", header, payload)
+    }
+
+    #[test]
+    fn login_requester_uses_route_identity_on_custom_domains() {
+        let runtime = sso_runtime("streetycat-ood.cc.cd");
+        let root = resolve_sso_test_target(&runtime, "https://streetycat-ood.cc.cd/").unwrap();
+        assert_eq!(root.auth_target, AuthTarget::system("control-panel".parse().unwrap()));
+        let app = resolve_sso_test_target(&runtime, "https://files.streetycat-ood.cc.cd/").unwrap();
+        assert_eq!(app.auth_target, AuthTarget::app("filebrowser@alice".parse().unwrap()));
+        assert!(resolve_sso_test_target(&runtime, "https://unknown.streetycat-ood.cc.cd/").is_err());
+        assert!(ControlPanelServer::is_public_rpc_method("auth.describe_target"));
     }
 
     fn gateway_info() -> Value {

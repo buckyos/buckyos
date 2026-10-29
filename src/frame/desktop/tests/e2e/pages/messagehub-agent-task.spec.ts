@@ -147,11 +147,14 @@ test('expanding a bubble shows the Turn task tree level by level and releases it
   expect(await page.evaluate(() => window.__messageHubMockTasks.subscriptions())).toEqual([`task:${RUNNING}`])
 })
 
-test('message details open by click, by the Details action and by keyboard, and append the live task', async ({ page }) => {
+test('click and keyboard reveal the toolbar, whose Details action opens the live task', async ({ page }) => {
   await openTaskSession(page)
   const details = page.getByTestId('message-details-pane')
 
   await bubble(page, 'msg-ct-10').getByText('Got it, working on it').click()
+  await expect(details).toHaveCount(0)
+  await expect(bubble(page, 'msg-ct-10').getByTestId('message-hover-bar')).toHaveCSS('opacity', '1')
+  await bubble(page, 'msg-ct-10').getByTestId('message-hover-bar').getByTestId('message-details').click()
   await expect(details).toHaveAttribute('data-message-id', 'msg-ct-10')
   await details.getByTestId('detail-tab-message').click()
   await expect(details.getByTestId('detail-message-id')).toHaveText('msg-ct-10')
@@ -189,6 +192,10 @@ test('message details open by click, by the Details action and by keyboard, and 
   await details.getByRole('button', { name: 'Close', exact: true }).click()
   await bubble(page, 'msg-ct-4').focus()
   await page.keyboard.press('Enter')
+  await expect(details).toHaveCount(0)
+  await expect(bubble(page, 'msg-ct-4').getByTestId('message-hover-bar')).toHaveCSS('opacity', '1')
+  await bubble(page, 'msg-ct-4').getByTestId('message-hover-bar').getByTestId('message-details').focus()
+  await page.keyboard.press('Enter')
   await expect(details).toHaveAttribute('data-message-id', 'msg-ct-4')
   await details.getByTestId('detail-tab-message').click()
   await expect(details.getByTestId('detail-task-summary')).toHaveAttribute('data-state', 'succeeded')
@@ -196,6 +203,9 @@ test('message details open by click, by the Details action and by keyboard, and 
   // A task the viewer may not read says so instead of showing a state.
   await details.getByRole('button', { name: 'Close', exact: true }).click()
   await bubble(page, 'msg-ct-8').getByText('another workspace').click()
+  await expect(details).toHaveCount(0)
+  await expect(bubble(page, 'msg-ct-8').getByTestId('message-hover-bar')).toHaveCSS('opacity', '1')
+  await bubble(page, 'msg-ct-8').getByTestId('message-hover-bar').getByTestId('message-details').click()
   await expect(details.getByTestId('detail-task')).toHaveAttribute('data-status', 'denied')
   await expect(details.getByTestId('detail-task-unavailable')).toContainText('do not have access')
   await expect(details.getByTestId('detail-task-id')).toHaveText('task-turn-foreign')
@@ -203,6 +213,9 @@ test('message details open by click, by the Details action and by keyboard, and 
   // A message without a task has details too, without a task section.
   await details.getByRole('button', { name: 'Close', exact: true }).click()
   await bubble(page, 'msg-ct-9').getByText('release checklist').click()
+  await expect(details).toHaveCount(0)
+  await expect(bubble(page, 'msg-ct-9').getByTestId('message-hover-bar')).toHaveCSS('opacity', '1')
+  await bubble(page, 'msg-ct-9').getByTestId('message-hover-bar').getByTestId('message-details').click()
   await expect(details).toHaveAttribute('data-message-id', 'msg-ct-9')
   await expect(details.getByTestId('detail-effective')).toContainText('Check the MessageHub release checklist.')
   await expect(details.getByTestId('detail-task')).toHaveCount(0)

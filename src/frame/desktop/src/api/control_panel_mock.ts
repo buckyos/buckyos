@@ -1104,6 +1104,8 @@ function handleSso(state: MockState, method: string, params: Record<string, unkn
   const sso = ssoOf(state)
   const now = nowSecs()
   switch (method) {
+    case 'auth.describe_target':
+      return { target: { kind: 'system', service_id: 'control-panel' }, display_name: 'Desktop' }
     case 'auth.sso_config':
       return {
         self_register_enabled: sso.settings.self_register_enabled,

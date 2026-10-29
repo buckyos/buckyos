@@ -94,7 +94,7 @@ test('media settings: GIF autoplay off shows the first frame; the window target 
   await page.getByRole('menuitem', { name: 'Media settings', exact: true }).click()
   const dialog = page.getByTestId('messagehub-media-settings')
   await expect(dialog.getByRole('radio', { name: 'Preview window' })).toBeDisabled()
-  await dialog.getByRole('switch', { name: 'Autoplay GIFs' }).click()
+  await dialog.getByRole('checkbox', { name: 'Autoplay GIFs' }).uncheck()
   await dialog.getByRole('button', { name: 'Close', exact: true }).last().click()
   await expect(dialog).toHaveCount(0)
   const gif = history.getByTestId('attachment-image').filter({ has: page.getByRole('img', { name: 'orbit-loader.gif' }) })

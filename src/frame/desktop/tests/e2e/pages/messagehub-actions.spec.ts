@@ -27,7 +27,7 @@ const sessionTexts = (page: Page, entityId: string) => page.evaluate(async ({ co
   return session ? (await mock.reader(context, session.id).readRange(0, 500)).map(message => message.content.content) : []
 }, { context: OWN, entity: entityId })
 
-test('hover bar offers reply, copy, forward and delete as icons', async ({ page, context }) => {
+test('clicking keeps the action toolbar open without opening details', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   await openHub(page, BOB)
   const history = page.getByTestId('conversation-history')
@@ -35,6 +35,17 @@ test('hover bar offers reply, copy, forward and delete as icons', async ({ page,
   await bubble.hover()
   const bar = bubble.getByTestId('message-hover-bar')
   await expect(bar).toBeVisible()
+  await expect(bar).toHaveCSS('opacity', '1')
+  await bubble.click()
+  await page.mouse.move(0, 0)
+  await expect(bar).toHaveCSS('opacity', '1')
+  await expect(page.getByTestId('message-details-pane')).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await expect(bar).toBeHidden()
+  await bubble.click()
+  await page.locator('textarea').click()
+  await expect(bar).toBeHidden()
+  await bubble.hover()
   for (const name of ['Reply', 'Copy', 'Forward', 'Delete']) await expect(bar.getByRole('button', { name, exact: true })).toBeVisible()
   await page.screenshot({ path: 'test-results/messagehub-actions-hover.png' })
 
@@ -73,7 +84,7 @@ test('hover bar offers reply, copy, forward and delete as icons', async ({ page,
   await expect(history.getByTestId('message-redacted')).toHaveCount(0)
 })
 
-test('pictures and videos render without a bubble; files keep theirs', async ({ page }) => {
+test('pictures, videos and files show an actionable toolbar on hover', async ({ page }) => {
   await openHub(page, ALICE)
   const history = page.getByTestId('conversation-history')
   const gif = history.getByTestId('attachment-image').filter({ has: page.getByRole('img', { name: 'orbit-loader.gif' }) })
@@ -83,7 +94,38 @@ test('pictures and videos render without a bubble; files keep theirs', async ({ 
   expect(await media.evaluate(element => getComputedStyle(element).backgroundColor)).toBe('rgba(0, 0, 0, 0)')
   await expect(history.getByTestId('message-media').filter({ has: page.getByTestId('attachment-video') }).first()).toBeVisible({ timeout: 15_000 })
   await expect(history.getByTestId('message-media').filter({ has: page.getByTestId('attachment-file') })).toHaveCount(0)
+  for (const attachment of [gif, history.getByTestId('attachment-video').first(), history.getByTestId('attachment-file')]) {
+    const message = attachment.locator('xpath=ancestor::*[contains(concat(" ", normalize-space(@class), " "), " mh-bubble ")][1]')
+    const bar = message.getByTestId('message-hover-bar')
+    const id = await message.getAttribute('data-message-id')
+    await attachment.hover()
+    await expect(bar).toBeVisible()
+    await expect(bar).toHaveCSS('opacity', '1')
+    await bar.getByTestId('message-details').click()
+    const details = page.getByTestId('message-details-pane')
+    await expect(details).toHaveAttribute('data-message-id', id!)
+    await details.getByRole('button', { name: 'Close', exact: true }).click()
+  }
   await page.screenshot({ path: 'test-results/messagehub-media-frameless.png' })
+})
+
+test('touching a message shows the toolbar before its details', async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 320, height: 839 }, hasTouch: true, isMobile: true })
+  const page = await context.newPage()
+  await openHub(page, BOB)
+  const bubble = page.getByTestId('conversation-history').getByTestId('message-bubble').filter({ hasText: 'Ah makes sense' })
+  const bar = bubble.getByTestId('message-hover-bar')
+  await expect(bar).toBeHidden()
+  await bubble.tap()
+  await expect(bar).toBeVisible()
+  await expect(bar).toHaveCSS('opacity', '1')
+  await expect(page.getByTestId('message-details-pane')).toHaveCount(0)
+  const box = (await bar.boundingBox())!
+  expect(box.x).toBeGreaterThanOrEqual(0)
+  expect(box.x + box.width).toBeLessThanOrEqual(320)
+  await bar.getByTestId('message-details').tap()
+  await expect(page.getByTestId('message-details-pane')).toHaveAttribute('data-message-id', 'msg-b1-3')
+  await context.close()
 })
 
 test('a pinned message floats over the history in at most three lines', async ({ page }) => {

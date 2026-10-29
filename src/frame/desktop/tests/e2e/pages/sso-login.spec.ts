@@ -16,6 +16,13 @@ const mockState = (page: Page): Promise<any> =>
   page.evaluate((key) => JSON.parse(localStorage.getItem(key) ?? '{}'), MOCK_CONTROL_PANEL)
 
 test.describe('login page', () => {
+  test('custom domain requester is displayed as Desktop, not a hostname label', async ({ page }) => {
+    await seedControlPanel(page, { session: { kind: 'anonymous' } })
+    await page.goto(`/login?redirect_url=${encodeURIComponent('https://streetycat-ood.cc.cd/')}`)
+    await expect(page.getByText('Requested by Desktop')).toBeVisible()
+    await expect(page.getByText('Requested by streetycat-ood')).toHaveCount(0)
+  })
+
   test('has no remember-me option and signs in', async ({ page }) => {
     await seedControlPanel(page, { session: { kind: 'anonymous' } })
     await page.goto('/login')

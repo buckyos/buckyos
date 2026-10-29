@@ -417,3 +417,12 @@ CREATE TABLE IF NOT EXISTS share_entries (
 - App 登录码的“已兑换”标记在 verify-hub 内存与 CP 记录各一份：verify-hub 重启后，同 nonce 的幂等重试会得到 `consumed`（需重新领 code），不会重复签发。
 - `allowed_clients` 不能区分系统 SPA：Message Hub、Desktop、AI Workspace 的 `appid` 都是 `control-panel`（扩展 TODO D-4）。
 - External（DID 登录）仍不能 delegate 进 App；外部客户进 App 只能经 App 代登录（§5.6）。
+
+### 登录请求方展示
+
+登录页通过公开 CP RPC `auth.describe_target {redirect_url}` 获取 `{target, display_name}`。
+CP 与 `auth.login` 共用 redirect URL 校验和网关路由解析；`target` 是结构化的
+`AuthTarget`（App 的 `app_instance_id` 或 System 的 `service_id`）。App 名称取安装
+规格的 `app_doc.show_name`，缺失时显示 appid；系统入口使用服务展示名。
+前端解析失败时隐藏请求方，不从域名片段推断应用或用户名。此接口仅提供展示信息，
+不签发 token；提交登录时仍重新解析和校验目标。

@@ -132,6 +132,9 @@ buckyos system info                                 # BuckyOS version, build_ver
   channel yourself (the system sends no email/SMS). Limited and External sessions are restricted: a service that has
   not opened a method answers kRPC `code: "access_denied"` with `data.reason` (`session_kind_not_allowed` = product
   boundary, not a setting); branch on `data.reason`, never on the error text.
+- Login requester display: public CP RPC `auth.describe_target {redirect_url}` resolves the gateway route
+  to a structured App/System target and display name. For custom-domain display issues, inspect this response
+  and `node_gateway_info.json`; the hostname prefix is neither a username nor an appid.
 - Apps: `buckyos app list|get|status|start|stop|restart|install|upgrade|uninstall|cancel`. Availability
   (`apps.availability.*`) has no CLI verb and needs a user's Control Panel login.
 - Devices, network, gateway, certificates: control-panel `zone.devices.list`, `network.overview`, `gateway.overview`,

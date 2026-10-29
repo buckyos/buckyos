@@ -181,32 +181,37 @@ function isTextFormat(format: string | undefined): boolean {
   return format === undefined || format === 'text/plain' || format === 'text/markdown' || format === 'text/html'
 }
 
-const DETAILS_IGNORED_TARGETS = 'a, button, input, textarea, select, summary, video, audio, [role="button"], [role="menu"], [role="menuitem"], [data-no-details]'
+const ACTIONS_IGNORED_TARGETS = 'a, button, input, textarea, select, summary, video, audio, [role="button"], [role="menu"], [role="menuitem"], [data-no-details]'
 
-/**
- * Clicking a bubble (or Enter on it) opens the message details. Links,
- * attachments, buttons and a text selection inside it keep their own behaviour.
- */
-function useBubbleDetails(message: MessageObject): Pick<React.HTMLAttributes<HTMLDivElement>, 'tabIndex' | 'onClick' | 'onKeyDown'> {
+function useBubbleActions(message: MessageObject): React.HTMLAttributes<HTMLDivElement> & React.RefAttributes<HTMLDivElement> & { 'data-actions-open'?: boolean } {
   const { openDetails } = useContext(ConversationMessageActionsContext)
+  const [open, setOpen] = useState(false)
+  const root = useRef<HTMLDivElement>(null)
+  const close = useCallback(() => {
+    setOpen(false)
+    if (document.activeElement instanceof HTMLElement && root.current?.contains(document.activeElement)) document.activeElement.blur()
+  }, [])
+  useDismiss(open, root, close)
   if (!openDetails || !messageObjId(message)) return {}
   return {
+    ref: root,
     tabIndex: 0,
+    'data-actions-open': open || undefined,
     onClick: event => {
-      if (event.defaultPrevented || (event.target as HTMLElement).closest(DETAILS_IGNORED_TARGETS)) return
+      if (event.defaultPrevented || (event.target as HTMLElement).closest(ACTIONS_IGNORED_TARGETS)) return
       if (window.getSelection()?.toString()) return
-      openDetails(message)
+      setOpen(true)
     },
     onKeyDown: event => {
-      if (event.key !== 'Enter' || event.target !== event.currentTarget) return
+      if ((event.key !== 'Enter' && event.key !== ' ') || event.target !== event.currentTarget) return
       event.preventDefault()
-      openDetails(message)
+      setOpen(true)
     },
   }
 }
 
 function TextMessage({ message, context: { isGroup, selfDid, continued, peerMarkdown } }: { message: MessageObject; context: MessageRenderContext }) {
-  const details = useBubbleDetails(message)
+  const actions = useBubbleActions(message)
   const format = effectiveContent(message).format ?? 'text/plain'
   const isSelf = message.from === selfDid
   const senderName = getMessageSenderName(message)
@@ -220,7 +225,7 @@ function TextMessage({ message, context: { isGroup, selfDid, continued, peerMark
         style={bubbleStyle(isSelf, continued)}
         data-testid="message-bubble"
         data-message-id={messageObjId(message)}
-        {...details}
+        {...actions}
       >
         {!isSelf && isGroup && !continued ? (
           <p
@@ -251,12 +256,12 @@ function isBigEmoji(message: MessageObject): boolean {
 }
 
 function BigEmojiMessage({ message, context: { isGroup, selfDid, continued } }: { message: MessageObject; context: MessageRenderContext }) {
-  const details = useBubbleDetails(message)
+  const actions = useBubbleActions(message)
   const isSelf = message.from === selfDid
   const text = displayedContent(message).trim()
   return (
     <div className={rowClass(isSelf, continued)}>
-      <div className={`mh-bubble ${bubbleWidthClass} flex flex-col ${isSelf ? 'items-end' : 'items-start'}`} style={framelessStyle()} data-testid="message-emoji" data-message-id={messageObjId(message)} {...details}>
+      <div className={`mh-bubble ${bubbleWidthClass} flex flex-col ${isSelf ? 'items-end' : 'items-start'}`} style={framelessStyle()} data-testid="message-emoji" data-message-id={messageObjId(message)} {...actions}>
         {!isSelf && isGroup && !continued ? <p className="mb-1 text-[13px] font-semibold" style={{ color: 'var(--cp-accent)' }}>{getMessageSenderName(message)}</p> : null}
         <ReplyQuote message={message} />
         <p className="mh-big-emoji" data-count={emojiOnlyCount(text)}>{text}</p>
@@ -279,7 +284,7 @@ function voiceOf(message: MessageObject, messageIndex: number): { voice: VoiceNo
 }
 
 function VoiceMessage({ message, context }: { message: MessageObject; context: MessageRenderContext }) {
-  const details = useBubbleDetails(message)
+  const actions = useBubbleActions(message)
   const note = voiceOf(message, context.messageIndex)
   if (!note) return null
   const isSelf = message.from === context.selfDid
@@ -287,7 +292,7 @@ function VoiceMessage({ message, context }: { message: MessageObject; context: M
   const upload = outgoingUpload(message)
   return (
     <div className={rowClass(isSelf, context.continued)}>
-      <div className={`mh-bubble ${bubbleWidthClass} min-w-[200px]`} style={bubbleStyle(isSelf, context.continued)} data-testid="message-voice" data-message-id={messageObjId(message)} {...details}>
+      <div className={`mh-bubble ${bubbleWidthClass} min-w-[200px]`} style={bubbleStyle(isSelf, context.continued)} data-testid="message-voice" data-message-id={messageObjId(message)} {...actions}>
         {!isSelf && context.isGroup && !context.continued ? <p className="mb-1 text-[13px] font-semibold" style={{ color: 'var(--cp-accent)' }}>{getMessageSenderName(message)}</p> : null}
         <ReplyQuote message={message} />
         <VoiceNoteView id={messageObjId(message) ?? note.attachment.id} source={note.attachment} voice={note.voice} isSelf={isSelf} />
@@ -462,11 +467,6 @@ function MoreMenuItems({ message, mode, run, onDone }: { message: MessageObject;
   </>
 }
 
-/**
- * Discord-style bar on the bubble's top edge (pointer devices only, see
- * `messagehub.css`): quick reactions, the emoji picker, the common actions as
- * icons and a menu for the rest.
- */
 function MessageHoverBar({ message, isSelf, selfDid, mode }: { message: MessageObject; isSelf: boolean; selfDid?: string; mode: ActionMode }) {
   const { t } = useI18n()
   const [open, setOpen] = useState<ActionPopover>(null)
@@ -524,13 +524,13 @@ function MessageActionsMenu({ message, isSelf, selfDid, mode, selfTone }: { mess
 /** Placeholder for a redacted (recalled or deleted) message. */
 function RedactedMessage({ message, context }: { message: MessageObject; context: MessageRenderContext }) {
   const { t } = useI18n()
-  const details = useBubbleDetails(message)
+  const actions = useBubbleActions(message)
   const { displayName } = useContext(ConversationMessageActionsContext)
   const isSelf = message.from === context.selfDid
   const redacted = messageRelations(message)?.redacted
   const who = redacted?.by === message.from ? (isSelf ? t('messagehub.you') : displayName?.(message.from) ?? getMessageSenderName(message)) : displayName?.(redacted?.by ?? '') ?? redacted?.by ?? ''
   return <div className={rowClass(isSelf, context.continued)}>
-    <div className={`mh-bubble ${bubbleWidthClass} min-w-[80px]`} style={{ ...bubbleStyle(isSelf, context.continued), opacity: 0.7 }} data-testid="message-redacted" {...details}>
+    <div className={`mh-bubble ${bubbleWidthClass} min-w-[80px]`} style={{ ...bubbleStyle(isSelf, context.continued), opacity: 0.7 }} data-testid="message-redacted" {...actions}>
       <p className="text-[13px] italic">{t(redacted?.by === message.from ? 'messagehub.message.redacted' : 'messagehub.message.deletedBy', undefined, { name: who })}</p>
       <MessageFooter message={message} isSelf={isSelf} deliveryStatus={undefined} selfDid={context.selfDid} />
     </div>
@@ -652,7 +652,7 @@ function AttachmentMessage({ message, context }: { message: MessageObject; conte
   const isSelf = message.from === context.selfDid
   const senderName = getMessageSenderName(message)
   const deliveryStatus = getMessageDeliveryStatus(message)
-  const details = useBubbleDetails(message)
+  const actions = useBubbleActions(message)
   const caption = displayedContent(message).trim()
   const format = effectiveContent(message).format
   const captionBody = format === 'text/markdown' || (context.peerMarkdown && !isSelf && (format ?? 'text/plain') === 'text/plain') ? <div className="whitespace-normal"><MessageMarkdown text={caption} /></div> : caption
@@ -672,7 +672,7 @@ function AttachmentMessage({ message, context }: { message: MessageObject; conte
   if (frameless) {
     return (
       <div className={rowClass(isSelf, context.continued)}>
-        <div className={`mh-bubble ${bubbleWidthClass} flex min-w-[160px] flex-col ${isSelf ? 'items-end' : 'items-start'}`} style={framelessStyle()} data-testid="message-media" data-message-id={messageObjId(message)} {...details}>
+        <div className={`mh-bubble ${bubbleWidthClass} flex min-w-[160px] flex-col ${isSelf ? 'items-end' : 'items-start'}`} style={framelessStyle()} data-testid="message-media" data-message-id={messageObjId(message)} {...actions}>
           {sender}
           <ReplyQuote message={message} />
           <div className={`flex max-w-full flex-col gap-2 ${isSelf ? 'items-end' : 'items-start'}`} style={upload ? { opacity: 0.7 } : undefined} data-no-details>{items}</div>
@@ -692,7 +692,7 @@ function AttachmentMessage({ message, context }: { message: MessageObject; conte
         style={bubbleStyle(isSelf, context.continued)}
         data-testid="message-attachments"
         data-message-id={messageObjId(message)}
-        {...details}
+        {...actions}
       >
         {sender}
         <ReplyQuote message={message} />
