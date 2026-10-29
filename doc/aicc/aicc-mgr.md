@@ -112,7 +112,7 @@ Provider credential 只存在于统一 Provider Instance 的 typed credential so
 
 `provider.catalog` 返回当前 active Known Provider catalog，至少包含 `provider_profile_id`、显示名、默认 `base_url`、内部默认 `protocol_adapter_id` 和 UI hints。Adapter 默认值供后端解析 Known Provider，不要求 UI 暴露 API 版本选择。Catalog 只提供表单默认值，不能覆盖 Provider Instance 私有配置。
 
-`protocol_adapter.list` 返回当前实际注册的 `protocol_family_id`、adapter ID、接口代际/状态、探测元数据、可选 `base_adapter_id`、支持的 operation 和协议能力。Custom Provider 下拉框仅列出 `custom_provider_selectable=true` 的 Adapter，直接提交所选 ID，不执行自动探测。`provider.catalog` 的每个条目还返回所选 `provider_rules_id` 的 `model_driver_overrides`，供 Connection 页面回填模型别名并以列表或 JSON 编辑；`server_default_routes` 仅为实例规则，预制渠道未定义此字段，初始为空。
+`protocol_adapter.list` 返回当前实际注册的 `protocol_family_id`、adapter ID、接口代际/状态、探测元数据、可选 `base_adapter_id`、支持的 operation 和协议能力。Custom Provider 下拉框仅列出 `custom_provider_selectable=true` 的 Adapter，直接提交所选 ID，不执行自动探测。`provider.catalog` 的每个条目还返回所选 `provider_rules_id` 的 `model_driver_overrides` 和完整 `rules_catalog`。自定义 Provider 向导的高级设置仅选择 Channel preset rules，不展开别名、用途等规则细节；详情规则页复用同一预设列表导入完整目录。
 
 Provider Wizard 每次打开只读取一次完整 catalog；catalog 不可用时仍允许进入手工模式。手工模式让用户选择 OpenAI-compatible、Claude-compatible、Gemini-compatible 等协议族，不要求识别 Responses、Chat Completions、Interactions 等 API 代际。保存前由后端执行 `base_url`、认证、协议和 discovery 验证并返回 resolved Adapter。
 
@@ -642,6 +642,7 @@ let next = config_client.get("services/aicc/settings").await?;
 | `deleteProvider(id)` | `provider.delete`，成功后 `refresh()` |
 | `refreshProviderModels(id)` | `provider.refresh_models`，成功后 `refresh()` |
 | `validateConnection(draft)` | `provider.validate` |
+| `previewProviderRules(provider, catalog, modelIds)` | `provider.preview_rules` |
 | `getUsageSummary()` | 基于缓存的 `usage.query` 结果 |
 | `getUsageTrend()` | 基于缓存的 `usage.query` 结果 |
 
@@ -714,7 +715,7 @@ uv run buckyos-build.py --skip-web
 
 PC 的自定义 Provider 详情新增“模型规则”页；手机不展示或挂载编辑器。页面以 provider.list 的 discovered_model_ids 展示去重的发现模型，包括被 exclude_models 禁用、未识别或能力被滤除的条目，按启用优先、模型名升序排列，支持名称包含检索和每页 10/20/50/100 条。分页、检索使用同一次快照，不逐模型请求 RPC。
 
-ProviderInstanceRules.catalog 保存完整的 Provider Rules catalog，仅允许用于 custom。格式复用 [Provider Profile schema](provider_profile_schema.md)：协议映射为 models / patterns 的 operations，价格为 model_pricing。新增可选 model_variants 字典，键为端点模型 ID，值为 ProviderVariantRule 数组，对指定模型完整替换继承的 variants；空数组表示该模型不发布思考档位。别名使用 model_driver_overrides；用途仍为 server_default_routes，表示基础模型使用上游默认思考参数参与明确的 LLM task。
+ProviderInstanceRules.catalog 保存完整的 Provider Rules catalog，仅允许用于 custom。格式复用 [Provider Profile schema](provider_profile_schema.md)：协议映射为 models / patterns 的 operations，价格为 model_pricing。思考档位沿用现有 variants 数组；逐模型修改通过 match.provider_model_id 指定端点模型，不导出 model_variants。修改某模型时，将其从共享规则的匹配范围排除，再加入该模型启用的档位规则；全部关闭时不加入新规则，其他模型的匹配和参数保持原样。别名使用 model_driver_overrides；用途仍为 server_default_routes，表示基础模型使用上游默认思考参数参与明确的 LLM task。
 
 编译时为每个实例生成独立规则索引，复用现有 schema、条件编译和引用校验，不修改共享预制 rules。实例目录价格优先于发现接口价格，没有目录价格时沿用发现价格。管理面额外返回不含凭据的 rules_catalog 和逐模型 resolved_model_rules。rules_catalog 仅返回该实例保存的目录，或实例显式绑定的 provider_rules_id 对应目录；未绑定规则时为空，不能根据协议族补入内置目录。resolved_model_rules 从实例模型 inventory 读取实际操作和价格，思考档位仅返回该实例已发布的档位映射；未配置且未发现的价格为空。页面使用这些实例值展示有效结果，接口默认值标注为默认，不写成显式覆盖；导出/保存仅包含实例的配置规则，不导入无关模型、默认映射或内置参考价。首次保存后，该快照成为实例的显式目录，后续预制目录更新不会覆盖它。
 
@@ -733,11 +734,10 @@ ProviderInstanceRules.catalog 保存完整的 Provider Rules catalog，仅允许
       "models": [],
       "patterns": [],
       "variants": [],
-      "model_variants": {},
       "model_pricing": []
     }
 
-用途列表写入目录的 `server_default_routes`，按端点模型 ID 映射到明确的 LLM 任务数组；Rust 库存构建和调用降级均读取该配置。实例显式用途配置优先于目录。模型启停沿用 `models[].exclude`，实例别名合并到 `model_driver_overrides`。可直接导入现有内置 `*.provider.json`，没有声明的可选数组按空值处理；条件规则、请求规则等未编辑字段完整保留。
+用途列表写入目录的 `server_default_routes`，按端点模型 ID 映射到明确的 LLM 任务数组；Rust 库存构建和调用降级均读取该配置。实例显式用途配置优先于目录。模型启停沿用 `models[].exclude`，实例别名合并到 `model_driver_overrides`。除 JSON 文件外，也可在编辑模式选择与向导相同的 Channel preset rules 并点击“导入内置规则”，以替换当前草稿；导入期间不切换实例的连接参数或 adapter。可直接导入现有内置 `*.provider.json`，没有声明的可选数组按空值处理；条件规则、请求规则等未编辑字段完整保留。
 
 文件仅包含 Provider 规则，不含实例身份、URL、凭据、API Key 或实例地域策略。导入保留当前实例的连接和地域设置，上限 5 MB，只更新草稿；正式生效前仍执行相同服务端校验。顶部“模型列表 / 完整配置 JSON”切换展示模型摘要或整份规则目录，不再提供逐列预览。编辑中 JSON 展示完整草稿，包含无效字段时显示错误，不展示过期结果。
 
@@ -754,4 +754,12 @@ Provider 实例被停用或未加载时，管理快照可从该实例最近一�
 
 ProtocolAdapterView.default_operations 按运行时相同的操作解析器返回每个 api-type 的默认接口；缺少可确定默认值时省略该项，由服务端解析或要求显式配置。接口下拉只允许当前 adapter 对所选 api-type 的绑定。未设置覆盖时使用默认接口，清除覆盖不禁用能力；能力禁用写入 remove_api_types。高级 request_rules 按 api_type 维护 defaults/set/remove/when，编辑其中一个作用域时保留全局及其他 api_type 的规则；模型整体规则也可通过高级 JSON 编辑。
 
-自定义 Provider 不再按协议族自动补思考档位。只有显式绑定的规则或实例目录中存在对应 effort 的 provider_options 映射，才发布该思考变体；直接调用未配置的变体同样失败。侧栏按 supported_efforts 列出开关，显式空对象也是已配置；取消后在 model_variants 写入该模型的剩余映射（空列表覆盖继承）。native 继续表示基础模型原生行为，不产生 reasoning 变体。
+自定义 Provider 不再按协议族自动补思考档位。只有显式绑定的规则或实例目录中存在对应 effort 的 provider_options 映射，才发布该思考变体；直接调用未配置的变体同样失败。侧栏按 supported_efforts 列出开关，显式空对象也是已配置；取消后在标准 variants 中移除该模型对应档位，并用 match 排除共享规则对该模型的继承。native 继续表示基础模型原生行为，不产生 reasoning 变体。
+
+
+导入规则草稿后，页面调用 `provider.preview_rules`，提交当前实例名、完整 rules_catalog 和发现模型 ID 集合。该管理 RPC 要求 settings 写权限，使用现有 Rust 目录编译器与运行时相同的模型身份、精确/通配规则、思考档位和价格解析器，批量返回 resolved_model_rules；不修改配置、缓存或运行时，不调用上游。JSON 文件和内置预设导入共用此流程，预览解析失败时保留原草稿。原始 JSON 仍保留通配规则，不展开写成每模型覆盖。未知原厂模型仍能展示匹配的协议规则，但不伪造身份、思考档位、用途或价格。
+
+
+Provider 文件字段保持原 schema 的名称、值类型及嵌套结构：operations 留在 models/patterns，request_rules 保留 when/defaults/set/remove/canonical_fields，能力移除使用 remove_api_types/remove_features，思考映射使用 variants，价格使用 model_pricing[].pricing。价格数值不换算为每百万 token，零价格和复杂阶梯、时段、条件规则原样保留。导入时只作结构检查，最终由同一 Rust schema 编译校验；revision_seq 超出 JavaScript 安全整数范围时拒绝导入，避免静默改值。
+
+管理快照返回保存的原始实例规则目录，未保存时返回显式绑定的预设；保留 provider_profile_id、custom_provider_adapters 和 schema/revision 字段，不把文件标识重写成 custom 或清空 adapter 声明。实例的 provider_profile_id 和所选 protocol_adapter_id 继续由实例连接设置管理。实例编译器内部隔离规则 ID 和 adapter 声明，不影响文件回读。没有显式用途配置时，不自动补写 server_default_routes 空对象；该字段是本次新增的可选目录字段，并非 operations 的另一种名称。回归对 15 份内置 *.provider.json 的全部原有字段逐项检查导入导出后的 JSON 值与结构。

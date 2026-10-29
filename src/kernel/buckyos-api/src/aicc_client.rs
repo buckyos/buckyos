@@ -87,6 +87,7 @@ pub mod ai_methods {
     pub const ROUTING_UPDATE: &str = "routing.update";
     pub const ROUTING_PREVIEW: &str = "routing.preview";
     pub const EVENTS_LIST: &str = "events.list";
+    pub const PROVIDER_PREVIEW_RULES: &str = "provider.preview_rules";
     pub const PROVIDER_CATALOG: &str = "provider.catalog";
     pub const PROTOCOL_ADAPTER_LIST: &str = "protocol_adapter.list";
     pub const PROVIDER_VALIDATE: &str = "provider.validate";
@@ -147,6 +148,7 @@ pub mod ai_methods {
                 | ROUTING_UPDATE
                 | ROUTING_PREVIEW
                 | EVENTS_LIST
+                | PROVIDER_PREVIEW_RULES
                 | PROVIDER_CATALOG
                 | PROTOCOL_ADAPTER_LIST
                 | PROVIDER_VALIDATE
@@ -169,6 +171,17 @@ mod canonical_contract_tests {
 
     fn named_object() -> ResourceRef {
         ResourceRef::named_object(ObjId::new("chunk:123456").unwrap())
+    }
+
+    #[test]
+    fn provider_rule_preview_request_is_strict() {
+        let value = json!({"provider_instance_name":"custom-test", "rules_catalog":{}, "model_ids":["openai/gpt-6-sol"]});
+        let request: ProviderRulesPreviewRequest = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), value);
+        let mut invalid = value;
+        invalid["credential"] = json!("must-not-be-sent");
+        assert!(serde_json::from_value::<ProviderRulesPreviewRequest>(invalid).is_err());
+        assert!(ai_methods::is_management_method(ai_methods::PROVIDER_PREVIEW_RULES));
     }
 
     #[test]
@@ -595,6 +608,7 @@ mod canonical_contract_tests {
     #[test]
     fn management_requests_are_strict_and_methods_are_canonical() {
         for method in [
+            ai_methods::PROVIDER_PREVIEW_RULES,
             ai_methods::PROVIDER_CATALOG,
             ai_methods::PROTOCOL_ADAPTER_LIST,
             ai_methods::PROVIDER_VALIDATE,
@@ -4388,6 +4402,8 @@ pub struct ProviderCatalogEntry {
     pub connection_behavior_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_rules_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules_catalog: Option<Value>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub model_driver_overrides: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -4400,6 +4416,21 @@ pub struct ProviderCatalogResponse {
     pub catalog_revision: u64,
     #[serde(default)]
     pub providers: Vec<ProviderCatalogEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderRulesPreviewRequest {
+    pub provider_instance_name: String,
+    pub rules_catalog: Value,
+    pub model_ids: BTreeSet<String>,
+}
+impl_request_json!(ProviderRulesPreviewRequest);
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderRulesPreviewResponse {
+    pub resolved_model_rules: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -5987,6 +6018,13 @@ impl AiccClient {
         QueryRouteTraceResponse
     );
     client_typed_method!(
+        preview_provider_rules,
+        handle_preview_provider_rules,
+        ai_methods::PROVIDER_PREVIEW_RULES,
+        ProviderRulesPreviewRequest,
+        ProviderRulesPreviewResponse
+    );
+    client_typed_method!(
         provider_catalog,
         handle_provider_catalog,
         ai_methods::PROVIDER_CATALOG,
@@ -6501,6 +6539,10 @@ pub trait AiccHandler: Send + Sync {
         ))
     }
 
+    async fn handle_preview_provider_rules(&self, _request: ProviderRulesPreviewRequest, _ctx: RPCContext) -> std::result::Result<ProviderRulesPreviewResponse, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(ai_methods::PROVIDER_PREVIEW_RULES.to_string()))
+    }
+
     async fn handle_provider_catalog(
         &self,
         _request: ProviderCatalogRequest,
@@ -6909,6 +6951,11 @@ impl<T: AiccHandler> AiccServerHandler<T> {
                     .handle_query_trace(QueryRouteTraceRequest::from_json(req.params)?, ctx)
                     .await?
             )),
+            ai_methods::PROVIDER_PREVIEW_RULES => {
+                let request = ProviderRulesPreviewRequest::from_json(req.params)?;
+                let result = self.0.handle_preview_provider_rules(request, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
             ai_methods::PROVIDER_CATALOG => RPCResult::Success(json!(
                 self.0
                     .handle_provider_catalog(ProviderCatalogRequest::from_json(req.params)?, ctx)

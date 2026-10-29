@@ -669,7 +669,7 @@ DeepSeek 官方旧 V4 Flash 调用名已重定向，V4.1 metadata 尚未接入�
 
 ### 实例目录与逐模型思考档位覆盖
 
-Custom Provider 的 instance_rules.catalog 保存完整的本格式目录，按实例隔离编译，不能修改内置 Provider 的共享预制规则。可选 model_variants 对象按端点模型 ID 指定 ProviderVariantRule 数组：存在该键时，仅使用该数组，不再匹配该模型的全局 variants；空数组清空该模型的档位。数组中的 match、model_driver、variant 和 provider_options 沿用既有校验和执行规则。详情页预览及导入导出直接使用本 `*.provider.json` 格式，不增加外层包装。可选 `server_default_routes` 按端点模型 ID 指定非空的具体 LLM 任务数组；实例显式用途设置优先，模型启停使用 `models[].exclude`。详细流程见 [管理面](aicc-mgr.md#custom-provider-实例规则编辑)。
+Custom Provider 的 instance_rules.catalog 保存完整的本格式目录，按实例隔离编译，不能修改内置 Provider 的共享预制规则。思考档位统一使用既有 variants 数组，逐模型规则通过 match.provider_model_id 限定；编辑时用既有 not 条件从共享规则中排除目标模型，并添加该模型启用的档位。全部关闭则只排除、不添加，不能生成另一份 model_variants 文件字段。详情页预览及导入导出直接使用本 `*.provider.json` 格式，不增加外层包装。可选 `server_default_routes` 按端点模型 ID 指定非空的具体 LLM 任务数组；实例显式用途设置优先，模型启停使用 `models[].exclude`。详细流程见 [管理面](aicc-mgr.md#custom-provider-实例规则编辑)。
 
 
-自定义 Provider 的思考档位只来自显式绑定规则或实例 model_variants/variants，不再从协议族对应的内置规则自动补齐。supported_efforts 是可配置范围，不表示渠道已经支持；provider_options 显式为空对象时仍算已配置。未配置 effort 不发布、不允许直接调用。基础模型 native 行为不创建 reasoning 变体。
+自定义 Provider 的思考档位只来自显式绑定规则或实例 variants，不再从协议族对应的内置规则自动补齐。supported_efforts 是可配置范围，不表示渠道已经支持；provider_options 显式为空对象时仍算已配置。未配置 effort 不发布、不允许直接调用。基础模型 native 行为不创建 reasoning 变体。

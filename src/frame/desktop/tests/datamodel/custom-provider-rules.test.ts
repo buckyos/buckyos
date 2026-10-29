@@ -42,6 +42,7 @@ Deno.test('import rejects secrets, malformed versions and invalid task lists', (
     (file: Record<string, unknown>) => { file.api_key = 'secret' },
     (file: Record<string, unknown>) => { file.format = 'buckyos.aicc.custom-provider-rules' },
     (file: Record<string, unknown>) => { file.schema_version = 99 },
+    (file: Record<string, unknown>) => { file.revision_seq = Number.MAX_SAFE_INTEGER + 1 },
     (file: Record<string, unknown>) => { file.credentials = {} },
     (file: Record<string, unknown>) => { file.server_default_routes = { local: ['image.txt2img'] } },
     (file: Record<string, unknown>) => { file.models = {} },
@@ -79,7 +80,7 @@ Deno.test('a saved instance catalog takes precedence over an unavailable runtime
     instance_rules: { catalog: saved },
     rules_catalog: { ...saved, model_variants: {} },
   })
-  assert(JSON.stringify(ruleObject(file.instance_rules.catalog).model_variants) === '{"local":[]}', 'disabled or unloaded instances must retain their saved rules')
+  assert(modelRuleDraft(file, 'local').variants === '[]', 'disabled or unloaded instances must retain their saved rules')
 })
 
 
@@ -231,8 +232,39 @@ Deno.test('existing builtin provider JSON files can be imported without an envel
     const source = await Deno.readTextFile(new URL(entry.name, directory))
     const draft = parseProviderRulesFile(source)
     const original = JSON.parse(source)
-    assert(providerRulesFile(draft).provider_profile_id === original.provider_profile_id, entry.name)
+    const roundTrip = providerRulesFile(draft)
+    assert(roundTrip.provider_profile_id === original.provider_profile_id, entry.name)
+    for (const [key, value] of Object.entries(original)) {
+      assert(JSON.stringify(roundTrip[key]) === JSON.stringify(value), `${entry.name}: ${key} changed its value or structure`)
+    }
+    assert(!('server_default_routes' in roundTrip) || 'server_default_routes' in original, 'absent task settings must not add a new field')
+    assert(JSON.stringify(providerRulesFile(draft).variants ?? []) === JSON.stringify(original.variants ?? []), `${entry.name}: variants must be preserved without renaming`)
+    assert(!('model_variants' in providerRulesFile(draft)), 'provider files must use variants only')
     count++
   }
   assert(count > 0, 'must verify real provider files')
+})
+
+Deno.test('per-model effort edits export standard variants without changing other model scopes', () => {
+  const base = createCustomRulesDraft({})
+  const catalog = ruleObject(base.instance_rules.catalog)
+  catalog.variants = [
+    { model_driver: 'openai', variant: 'reasoning-low', match: { origin_model_id: ['gpt-6-sol', 'gpt-6-luna'], variant: 'reasoning-low' }, provider_options: { reasoning: { effort: 'low' } } },
+    { model_driver: 'openai', variant: 'reasoning-high', match: { provider_model_id: ['first', 'second'], variant: 'reasoning-high' }, provider_options: { reasoning: { effort: 'high' } } },
+  ]
+  const changed = applyModelRuleEdits(base, { first: { variants: '[{"model_driver":"openai","variant":"reasoning-low","match":{"provider_model_id":"first"},"provider_options":{}}]' } }, {})
+  const file = providerRulesFile(changed)
+  assert(!('model_variants' in file), 'export must not contain the invented field')
+  const variants = file.variants as Record<string, unknown>[]
+  assert(JSON.stringify(ruleObject(variants[0].match).provider_model_id) === '{"not":["first"]}', 'shared rules must exclude only the edited endpoint')
+  assert(JSON.stringify(ruleObject(variants[1].match).provider_model_id) === '["second"]', 'other endpoint bindings must remain')
+  assert(ruleObject(variants[2].match).provider_model_id === 'first', 'edited effort must be scoped by the existing match syntax')
+  const imported = parseProviderRulesFile(rulesJson(file))
+  assert(JSON.parse(modelRuleDraft(imported, 'first').variants).length === 1, 'standard variants must round-trip')
+  const disabled = providerRulesFile(applyModelRuleEdits(imported, { first: { variants: '[]' } }, {}))
+  assert((disabled.variants as Record<string, unknown>[]).length === 2, 'removing an effort must not leave a matching duplicate')
+  const invalid = { ...file, model_variants: {} }
+  let rejected = false
+  try { parseProviderRulesFile(rulesJson(invalid)) } catch { rejected = true }
+  assert(rejected, 'the file importer must reject the nonstandard field')
 })

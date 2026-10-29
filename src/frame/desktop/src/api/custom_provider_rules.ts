@@ -5,6 +5,7 @@ export type RuleObject = Record<string, unknown>
 export interface CustomRulesDraft {
   provider_rules_id: string
   instance_rules: RuleObject
+  modelVariants: Record<string, unknown>
 }
 export interface ModelRuleDraft {
   alias: string
@@ -27,7 +28,7 @@ export const rulesJson = (value: unknown) => JSON.stringify(value, null, 2)
 const emptyCatalog = () => ({
   format: 'buckyos.aicc.provider-rules-catalog', schema_version: 1, schema_revision: 1,
   revision_seq: 1, provider_profile_id: 'custom', models: [], patterns: [{ match: '*' }],
-  variants: [], model_variants: {}, model_pricing: [], model_driver_overrides: {},
+  variants: [], model_pricing: [], model_driver_overrides: {},
 })
 
 export function createCustomRulesDraft(config: {
@@ -48,23 +49,69 @@ export function createCustomRulesDraft(config: {
     ...ruleObject(instance.server_default_routes),
   }
   instance.exclude_models ??= []
+  const modelVariants = ruleObject(ruleObject(instance.catalog).model_variants)
+  delete ruleObject(instance.catalog).model_variants
   return {
+    modelVariants,
     provider_rules_id: config.provider_rules_id ?? '', instance_rules: instance,
   }
+}
+
+function variantsForModel(draft: CustomRulesDraft, id: string): unknown {
+  const catalog = ruleObject(draft.instance_rules.catalog)
+  const overrides = draft.modelVariants
+  if (id in overrides) return overrides[id]
+  const variants = ruleArray(catalog.variants).filter((variant) => ruleObject(variant.match).provider_model_id === id)
+  return variants.length ? variants : undefined
+}
+
+function narrowVariantMatch(rule: RuleObject, ids: Set<string>): RuleObject | null {
+  const match: RuleObject = typeof rule.match === 'string' ? { provider_model_id: rule.match } : { ...ruleObject(rule.match) }
+  const condition = match.provider_model_id
+  if (condition === undefined || condition === '*' || ruleObject(condition).exists === true) {
+    match.provider_model_id = { not: [...ids] }
+  } else if (typeof condition === 'string' || Array.isArray(condition)) {
+    const values = typeof condition === 'string' ? [condition] : condition
+    if (values.some((value) => typeof value !== 'string' || /[*?[\]\\]/.test(value))) {
+      throw new Error('This variant has a conditional model pattern. Narrow its provider_model_id match in the provider JSON before editing individual efforts.')
+    }
+    const remaining = values.filter((value) => !ids.has(String(value)))
+    if (!remaining.length) return null
+    match.provider_model_id = typeof condition === 'string' ? remaining[0] : remaining
+  } else if ('not' in ruleObject(condition)) {
+    const excluded = ruleObject(condition).not
+    match.provider_model_id = { not: [...new Set([...(Array.isArray(excluded) ? excluded : [excluded]), ...ids])] }
+  } else if (ruleObject(condition).exists !== false) {
+    throw new Error('Edit this variant model condition in the provider JSON before changing individual efforts.')
+  }
+  return { ...rule, match }
 }
 
 export function providerRulesFile(draft: CustomRulesDraft): RuleObject {
   const instance = draft.instance_rules
   const catalog = structuredClone(ruleObject(instance.catalog))
-  catalog.model_driver_overrides = { ...ruleObject(catalog.model_driver_overrides), ...ruleObject(instance.model_driver_overrides) }
-  catalog.server_default_routes = structuredClone(instance.server_default_routes ?? catalog.server_default_routes ?? {})
+  const aliases = { ...ruleObject(catalog.model_driver_overrides), ...ruleObject(instance.model_driver_overrides) }
+  if (catalog.model_driver_overrides !== undefined || Object.keys(aliases).length) catalog.model_driver_overrides = aliases
+  const routes = ruleObject(instance.server_default_routes ?? catalog.server_default_routes)
+  if (catalog.server_default_routes !== undefined || Object.keys(routes).length) catalog.server_default_routes = structuredClone(routes)
   const models = ruleArray(catalog.models)
   for (const id of (instance.exclude_models ?? []) as string[]) {
     const rule = models.find((rule) => rule.id === id)
     if (rule) rule.exclude = true
     else models.push({ id, exclude: true })
   }
-  catalog.models = models
+  if (catalog.models !== undefined || models.length) catalog.models = models
+  const overrides = draft.modelVariants
+  const ids = new Set(Object.keys(overrides))
+  if (ids.size) {
+    catalog.variants = [
+      ...ruleArray(catalog.variants).map((rule) => narrowVariantMatch(rule, ids)).filter((rule) => rule !== null),
+      ...Object.entries(overrides).flatMap(([id, variants]) => ruleArray(variants).map((variant) => ({
+        ...variant, match: { ...ruleObject(variant.match), provider_model_id: id },
+      }))),
+    ]
+  }
+  delete catalog.model_variants
   return catalog
 }
 
@@ -73,10 +120,10 @@ export function parseProviderRulesFile(source: string, base?: CustomRulesDraft):
   const fields = ['format', 'schema_version', 'schema_revision', 'revision_seq', 'provider_profile_id',
     'reported_cost', 'custom_provider_adapters', 'static_inventory_models', 'model_driver_overrides',
     'server_default_routes', 'supplemental_inventory_api_types', 'models', 'patterns', 'access_rules',
-    'model_pricing', 'variants', 'model_variants']
+    'model_pricing', 'variants']
   if (catalog.format !== 'buckyos.aicc.provider-rules-catalog' || catalog.schema_version !== 1
     || !Number.isInteger(catalog.schema_revision) || ![0, 1].includes(Number(catalog.schema_revision))
-    || !Number.isInteger(catalog.revision_seq) || Number(catalog.revision_seq) < 0
+    || !Number.isSafeInteger(catalog.revision_seq) || Number(catalog.revision_seq) < 0
     || typeof catalog.provider_profile_id !== 'string' || !catalog.provider_profile_id.trim()
     || Object.keys(catalog).some((key) => !fields.includes(key))) {
     throw new Error('Invalid .provider.json rules catalog')
@@ -84,7 +131,7 @@ export function parseProviderRulesFile(source: string, base?: CustomRulesDraft):
   for (const key of ['models', 'patterns', 'variants', 'model_pricing', 'access_rules', 'custom_provider_adapters', 'static_inventory_models', 'supplemental_inventory_api_types']) {
     if (catalog[key] !== undefined && !Array.isArray(catalog[key])) throw new Error(`${key} must be an array`)
   }
-  for (const key of ['model_driver_overrides', 'server_default_routes', 'model_variants']) {
+  for (const key of ['model_driver_overrides', 'server_default_routes']) {
     const value = catalog[key]
     if (value !== undefined && (!value || typeof value !== 'object' || Array.isArray(value))) throw new Error(`${key} must be an object`)
   }
@@ -92,7 +139,6 @@ export function parseProviderRulesFile(source: string, base?: CustomRulesDraft):
     model_driver_overrides_json: rulesJson(catalog.model_driver_overrides ?? {}),
     server_default_routes_json: rulesJson(catalog.server_default_routes ?? {}),
   })
-  if (Object.values(ruleObject(catalog.model_variants)).some((value) => !Array.isArray(value))) throw new Error('Model variants must be arrays')
   return createCustomRulesDraft({
     provider_rules_id: base?.provider_rules_id,
     instance_rules: {
@@ -107,7 +153,6 @@ export function modelRuleDraft(file: CustomRulesDraft, id: string, resolved: Rul
   const instance = file.instance_rules
   const catalog = ruleObject(instance.catalog)
   const exact = ruleArray(catalog.models).find((rule) => rule.id === id)
-  const variants = ruleObject(catalog.model_variants)
   const price = ruleArray(catalog.model_pricing).find((rule) => rule.id === id)
   return {
     alias: String(ruleObject(instance.model_driver_overrides)[id] ?? ruleObject(catalog.model_driver_overrides)[id] ?? ''),
@@ -115,7 +160,7 @@ export function modelRuleDraft(file: CustomRulesDraft, id: string, resolved: Rul
     operations: rulesJson(exact?.operations ?? ruleObject(resolved.rule).operations ?? {}),
     request_rules: rulesJson(exact?.request_rules ?? ruleObject(resolved.rule).request_rules ?? []),
     disabled_api_types: rulesJson(exact?.remove_api_types ?? ruleObject(resolved.rule).remove_api_types ?? []),
-    variants: rulesJson(variants[id] ?? resolved.variants ?? []),
+    variants: rulesJson(id in file.modelVariants ? file.modelVariants[id] : resolved.variants ?? variantsForModel(file, id) ?? []),
     pricing: rulesJson(price?.pricing ?? resolved.pricing ?? null),
     scoped_request_rules: {},
     effort_options: {},
@@ -132,7 +177,7 @@ export function applyModelRuleEdits(file: CustomRulesDraft, edits: Record<string
   const catalogRoutes = { ...ruleObject(catalog.server_default_routes) }
   let models = ruleArray(catalog.models)
   let prices = ruleArray(catalog.model_pricing)
-  const variants = { ...ruleObject(catalog.model_variants) }
+  const variants = { ...next.modelVariants }
   for (const [id, changes] of Object.entries(edits)) {
     try {
       if (changes.alias !== undefined) {
@@ -202,11 +247,11 @@ export function applyModelRuleEdits(file: CustomRulesDraft, edits: Record<string
   }
   instance.model_driver_overrides = aliases
   instance.server_default_routes = routes
-  catalog.model_driver_overrides = catalogAliases
-  catalog.server_default_routes = catalogRoutes
-  catalog.models = models
-  catalog.model_variants = variants
-  catalog.model_pricing = prices
+  if (catalog.model_driver_overrides !== undefined || Object.keys(catalogAliases).length) catalog.model_driver_overrides = catalogAliases
+  if (catalog.server_default_routes !== undefined || Object.keys(catalogRoutes).length) catalog.server_default_routes = catalogRoutes
+  if (catalog.models !== undefined || models.length) catalog.models = models
+  next.modelVariants = variants
+  if (catalog.model_pricing !== undefined || prices.length) catalog.model_pricing = prices
   return next
 }
 
@@ -219,7 +264,7 @@ export function previewRules(file: CustomRulesDraft, category: RuleCategory): un
       models: ruleArray(catalog.models).map(({ id, operations }) => ({ id, operations: operations ?? {} })),
       patterns: ruleArray(catalog.patterns).map((rule) => ({ match: rule.match, operations: rule.operations ?? {} })),
     }
-    case 'variants': return { variants: catalog.variants ?? [], model_variants: catalog.model_variants ?? {} }
+    case 'variants': return providerRulesFile(file).variants ?? []
     case 'pricing': return catalog.model_pricing ?? []
   }
 }

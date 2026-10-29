@@ -199,6 +199,14 @@ const MOCK_PROVIDER_SETUP_CATALOG: ProviderSetupCatalog = {
       ? 'catalog-only'
       : `${provider_profile_id}-models`,
     provider_rules_id: provider_profile_id,
+    rules_catalog: {
+      format: 'buckyos.aicc.provider-rules-catalog', schema_version: 1, schema_revision: 1,
+      revision_seq: 1, provider_profile_id, models: [], patterns: [{ match: '*',
+        ...(provider_profile_id === 'openrouter' ? { operations: { llm: 'responses.create' } } : {}),
+      }],
+      model_driver_overrides: provider_profile_id === 'deepseek'
+        ? { 'deepseek-flash': 'deepseek/deepseek-v4.1-flash' } : {},
+    },
     model_driver_overrides: provider_profile_id === 'deepseek'
       ? { 'deepseek-flash': 'deepseek/deepseek-v4.1-flash' }
       : {} as Record<string, string>,
@@ -400,6 +408,7 @@ interface AiccDataProvider {
   fetchSnapshot(): Promise<StoreSnapshot>
   fetchProviderSetupCatalog(): Promise<ProviderSetupCatalog>
   fetchProviderRuleOptions(): Promise<ProviderRuleOptions>
+  previewProviderRules(provider: ProviderView, catalog: Record<string, unknown>, modelIds: string[]): Promise<Record<string, Record<string, unknown>>>
   fetchModelCatalog(): Promise<ModelCatalog>
   addProvider(draft: WizardDraft): Promise<void>
   deleteProvider(id: string): Promise<void>
@@ -429,6 +438,7 @@ export interface AICCMgr {
   refresh(): Promise<void>
   fetchProviderSetupCatalog(): Promise<ProviderSetupCatalog>
   fetchProviderRuleOptions(): Promise<ProviderRuleOptions>
+  previewProviderRules(provider: ProviderView, catalog: Record<string, unknown>, modelIds: string[]): Promise<Record<string, Record<string, unknown>>>
   fetchModelCatalog(): Promise<ModelCatalog>
   getUsageSummary(): UsageSummary
   getUsageTrend(granularity?: string): UsageTrendPoint[]
@@ -571,6 +581,10 @@ export class AICCModelStore implements AICCMgr {
 
   fetchProviderSetupCatalog(): Promise<ProviderSetupCatalog> {
     return this.provider.fetchProviderSetupCatalog()
+  }
+
+  previewProviderRules(provider: ProviderView, catalog: Record<string, unknown>, modelIds: string[]): Promise<Record<string, Record<string, unknown>>> {
+    return this.provider.previewProviderRules(provider, catalog, modelIds)
   }
 
   fetchProviderRuleOptions(): Promise<ProviderRuleOptions> {
@@ -735,6 +749,20 @@ class MockAiccProvider implements AiccDataProvider {
 
   async fetchModelCatalog(): Promise<ModelCatalog> {
     return mockModelCatalog(this.store.getSnapshot())
+  }
+
+  async previewProviderRules(_provider: ProviderView, catalog: Record<string, unknown>, modelIds: string[]): Promise<Record<string, Record<string, unknown>>> {
+    const metadata = await this.fetchProviderRuleOptions()
+    const aliases = asRecord(catalog.model_driver_overrides)
+    const wildcard = (Array.isArray(catalog.patterns) ? catalog.patterns : []).map(asRecord).find((rule) => rule.match === '*')
+    return Object.fromEntries(modelIds.map((id) => {
+      const model = metadata.models.find((model) => model.target === (aliases[id] ?? id) || model.id === id)
+      const rule = (Array.isArray(catalog.models) ? catalog.models : []).map(asRecord).find((rule) => rule.id === id) ?? wildcard
+      return [id, { rule, variants: (Array.isArray(catalog.variants) ? catalog.variants : []).map(asRecord).filter((variant) => asRecord(variant.match).provider_model_id === id),
+        model_driver: model?.driver, origin_model_id: model?.id,
+        model_metadata: model ? { api_types: model.apiTypes, llm: { supported_efforts: model.efforts }, direct_only: model.directOnly } : undefined,
+      }]
+    }))
   }
 
   async fetchProviderRuleOptions(): Promise<ProviderRuleOptions> {
@@ -935,6 +963,13 @@ class BuckyOSAiccProvider implements AiccDataProvider {
     const response = await this.call<{ catalog: ModelCatalog }>('models.list', {})
     if (!Array.isArray(response.catalog?.vendors)) throw new Error('aicc.model_catalog_missing')
     return response.catalog
+  }
+
+  async previewProviderRules(provider: ProviderView, catalog: Record<string, unknown>, modelIds: string[]): Promise<Record<string, Record<string, unknown>>> {
+    const response = await this.call<{ resolved_model_rules: Record<string, Record<string, unknown>> }>('provider.preview_rules', {
+      provider_instance_name: provider.config.provider_instance_name, rules_catalog: catalog, model_ids: modelIds,
+    }, { requireSession: true })
+    return response.resolved_model_rules
   }
 
   async fetchProviderRuleOptions(): Promise<ProviderRuleOptions> {
@@ -2651,6 +2686,7 @@ function toProviderSetupCatalog(
         discovery_behavior_id: asNonEmptyString(entry.discovery_behavior_id, ''),
         provider_rules_id: asOptionalString(entry.provider_rules_id),
         model_driver_overrides: asStringRecord(entry.model_driver_overrides),
+        rules_catalog: isRecord(entry.rules_catalog) ? entry.rules_catalog : undefined,
         ui_hints: asRecord(entry.ui_hints),
         setup_group: toProviderSetupGroup(entry.ui_hints),
         endpoint_hints: toProviderEndpointHints(entry.ui_hints),

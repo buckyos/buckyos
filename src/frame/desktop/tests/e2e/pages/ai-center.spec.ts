@@ -51,7 +51,7 @@ test('AI Center exposes the complete catalog and expands multi-currency totals',
   await expect(page.getByRole('combobox', { name: /^Base URL\s*\*?$/ })).toHaveValue('https://{workspace}.{region}.maas.aliyuncs.com/compatible-mode/v1')
 })
 
-test('custom provider requires explicit default task rules and preserves advanced inputs', async ({ page }) => {
+test('custom provider advanced setup only selects channel preset rules', async ({ page }) => {
   await page.goto('/?scenario=normal&aiccScenario=populated')
   await page.getByTestId('desktop-app-ai-center').click()
   await page.getByRole('button', { name: 'Providers', exact: true }).click()
@@ -63,36 +63,18 @@ test('custom provider requires explicit default task rules and preserves advance
   await page.getByPlaceholder('sk-...').fill('mock-key')
   await page.getByRole('combobox', { name: /^Base URL/ }).fill('https://example.test/v1')
   await page.getByText('Advanced model and routing settings', { exact: true }).click()
-  const aliasEditor = page.getByRole('group', { name: 'Model aliases', exact: true })
-  const routeEditor = page.getByRole('group', { name: 'Server default routes', exact: true })
-  await page.locator('select').filter({ has: page.getByRole('option', { name: 'DeepSeek', exact: true }) }).selectOption('deepseek')
-  await expect(page.getByRole('textbox', { name: 'Model aliases: model 1', exact: true })).toHaveValue('deepseek-flash')
-  await expect(page.getByRole('textbox', { name: 'Model aliases: value 1', exact: true })).toHaveValue('deepseek/deepseek-v4.1-flash')
-  await page.getByRole('textbox', { name: 'Model aliases: value 1', exact: true }).fill('qwen/qwen3.7-plus')
-  await aliasEditor.getByRole('button', { name: 'JSON', exact: true }).click()
-  await routeEditor.getByRole('button', { name: 'JSON', exact: true }).click()
-  const aliases = page.getByRole('textbox', { name: 'Model aliases', exact: true })
-  const routes = page.getByRole('textbox', { name: 'Server default routes', exact: true })
-  expect(JSON.parse(await aliases.inputValue())).toEqual({ 'deepseek-flash': 'qwen/qwen3.7-plus' })
-  await expect(routes).toHaveValue('{}')
-  await aliases.fill('{"my-model":"qwen/qwen3.7-plus"}')
-  await routes.fill('{"my-model":["image.txt2img"]}')
-  await expect(page.getByRole('button', { name: 'Next', exact: true })).toBeDisabled()
-  await routes.fill('{"my-model":["llm.chat"]}')
-  await routeEditor.getByRole('button', { name: 'List', exact: true }).click()
-  await page.getByRole('textbox', { name: 'Server default routes: value 1', exact: true }).fill('llm.chat, llm.reason')
-  await routeEditor.getByRole('button', { name: 'JSON', exact: true }).click()
-  expect(JSON.parse(await routes.inputValue())).toEqual({ 'my-model': ['llm.chat', 'llm.reason'] })
-  await routes.fill('{"my-model":["llm.chat"]}')
+  const advanced = page.locator('details').filter({ hasText: 'Advanced model and routing settings' })
+  await expect(advanced.getByRole('combobox')).toHaveCount(1)
+  await expect(advanced.getByRole('textbox')).toHaveCount(0)
+  await expect(page.getByRole('group', { name: 'Model aliases', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('group', { name: 'Server default routes', exact: true })).toHaveCount(0)
+  await page.getByRole('combobox', { name: 'Channel preset rules', exact: true }).selectOption('deepseek')
   await expect(page.getByRole('button', { name: 'Next', exact: true })).toBeEnabled()
   await page.getByRole('button', { name: 'Previous' }).click()
   await page.getByRole('button', { name: 'Next' }).click()
   await page.getByText('Advanced model and routing settings', { exact: true }).click()
-  await aliasEditor.getByRole('button', { name: 'JSON', exact: true }).click()
-  await routeEditor.getByRole('button', { name: 'JSON', exact: true }).click()
   await expect(page.getByRole('combobox', { name: 'Protocol Family', exact: true })).toHaveValue('openai-chat-completions')
-  await expect(aliases).toHaveValue('{"my-model":"qwen/qwen3.7-plus"}')
-  await expect(routes).toHaveValue('{"my-model":["llm.chat"]}')
+  await expect(page.getByRole('combobox', { name: 'Channel preset rules', exact: true })).toHaveValue('deepseek')
 })
 
 test('provider validation shows filtered capabilities without blocking setup', async ({ page }) => {
@@ -192,7 +174,8 @@ test('custom provider rules use structured model editing and whole-file JSON pre
   const model = draft.models.find((model: { id: string }) => model.id === 'custom-chat-model')
   expect(model.operations?.llm).toBeUndefined()
   expect(model.request_rules[0].when.api_type).toEqual(['llm'])
-  expect(draft.model_variants['custom-chat-model']).toEqual([{
+  expect(draft.model_variants).toBeUndefined()
+  expect(draft.variants).toEqual([{
     model_driver: 'openai', variant: 'reasoning-low', match: { provider_model_id: 'custom-chat-model' }, provider_options: {},
   }])
   const downloadPromise = page.waitForEvent('download')
@@ -207,6 +190,39 @@ test('custom provider rules use structured model editing and whole-file JSON pre
   expect(exported.instance_rules).toBeUndefined()
   expect(exported.server_default_routes['custom-chat-model']).toEqual(['llm.chat'])
   expect(JSON.stringify(exported)).not.toContain('mock-key')
+  await page.evaluate(async () => {
+    const modulePath = '/src/api/aicc_mgr.ts'
+    const { AICCModelStore } = await import(/* @vite-ignore */ modulePath)
+    const preview = AICCModelStore.prototype.previewProviderRules
+    AICCModelStore.prototype.previewProviderRules = async function (...args: unknown[]) {
+      AICCModelStore.prototype.previewProviderRules = preview
+      await new Promise<void>((resolve) => { (globalThis as unknown as { releaseRulesImport: () => void }).releaseRulesImport = resolve })
+      return preview.apply(this, args)
+    }
+  })
+  await panel.getByRole('combobox', { name: 'Channel preset rules', exact: true }).selectOption('openrouter')
+  await panel.getByRole('button', { name: 'Import built-in rules', exact: true }).click()
+  await expect(panel.getByRole('button', { name: 'Importing...', exact: true })).toBeDisabled()
+  await expect(panel.getByRole('button', { name: 'Finish editing and apply', exact: true })).toBeDisabled()
+  await expect(panel.getByRole('button', { name: 'Saving...', exact: true })).toHaveCount(0)
+  await page.evaluate(() => (globalThis as unknown as { releaseRulesImport: () => void }).releaseRulesImport())
+  await expect(panel.getByRole('status')).toContainText('OpenRouter')
+  await panel.getByRole('button', { name: 'Model list', exact: true }).click()
+  await expect(panel.getByTestId('provider-rule-model')).toContainText('responses.create')
+  await panel.getByRole('button', { name: 'Configure', exact: true }).click()
+  await expect(editor.getByRole('combobox', { name: 'Adapter operation llm', exact: true })).toHaveValue('responses.create')
+  await editor.getByRole('button', { name: 'Back to model list', exact: true }).click()
+  await panel.getByRole('button', { name: 'Full configuration JSON', exact: true }).click()
+  await panel.getByRole('combobox', { name: 'Channel preset rules', exact: true }).selectOption('deepseek')
+  await panel.getByRole('button', { name: 'Import built-in rules', exact: true }).click()
+  await expect(panel.getByRole('status')).toContainText('DeepSeek')
+  const presetDraft = JSON.parse(await json.innerText())
+  expect(presetDraft.provider_profile_id).toBe('deepseek')
+  expect(presetDraft.model_driver_overrides['deepseek-flash']).toBe('deepseek/deepseek-v4.1-flash')
+  await panel.getByRole('button', { name: 'Finish editing and apply' }).click()
+  await expect(panel.getByRole('status')).toContainText('Rules applied')
+  expect(JSON.parse(await json.innerText()).provider_profile_id).toBe('deepseek')
+  await panel.getByRole('button', { name: 'Edit rules', exact: true }).click()
   exported.model_driver_overrides['custom-chat-model'] = 'openai/gpt-5.1-mini'
   await panel.getByLabel('Import full JSON', { exact: true }).setInputFiles({
     name: 'custom-rules.provider.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(exported)),

@@ -947,9 +947,56 @@ mod startup_tests {
         ).await.unwrap();
         let adapter = RuntimeServiceAdapter::new(runtime.clone(), codecs, storage);
         let view = adapter.capture().await.unwrap();
+        let preset = view.provider_catalog.providers.iter().find(|preset| preset.provider_profile_id == "openai").unwrap();
+        assert_eq!(preset.rules_catalog.as_ref().unwrap()["format"], "buckyos.aicc.provider-rules-catalog");
+        assert!(preset.rules_catalog.as_ref().unwrap()["patterns"].is_array());
         assert_eq!(view.providers[0].discovered_model_ids, BTreeSet::from(["local-model".into(), "unknown-model".into()]));
         assert_eq!(view.providers[0].rules_catalog.as_ref().unwrap()["model_variants"]["local-model"], json!([]));
+        assert_eq!(view.providers[0].rules_catalog.as_ref().unwrap()["provider_profile_id"], "openai");
+        assert_eq!(view.providers[0].rules_catalog.as_ref().unwrap()["custom_provider_adapters"], view.provider_catalog.providers.iter().find(|preset| preset.provider_profile_id == "openai").unwrap().rules_catalog.as_ref().unwrap()["custom_provider_adapters"]);
         assert_eq!(view.providers[0].inventory.state, ProviderInstanceInventoryState::Disabled);
+        let preset = view.provider_catalog.providers.iter().find(|preset| preset.provider_profile_id == "openrouter").unwrap();
+        let preview = adapter.preview_provider_rules(ProviderRulesPreviewRequest {
+            provider_instance_name: "disabled-custom".into(),
+            rules_catalog: preset.rules_catalog.clone().unwrap(),
+            model_ids: BTreeSet::from(["openai/gpt-6-sol".into(), "openai/gpt-6-sol-pro".into()]),
+        }).await.unwrap();
+        let known = &preview.resolved_model_rules["openai/gpt-6-sol"];
+        assert_eq!(known["model_driver"], "openai");
+        assert_eq!(known["origin_model_id"], "gpt-6-sol");
+        assert_eq!(known["rule"]["operations"]["llm"], "responses.create");
+        assert!(known["rule"]["operations"].get("audio.tts").is_none());
+        assert!(known["variants"].as_array().unwrap().iter().any(|variant| variant["variant"] == "reasoning-low" && variant["provider_options"]["reasoning"]["effort"] == "low"));
+        let unknown = &preview.resolved_model_rules["openai/gpt-6-sol-pro"];
+        assert_eq!(unknown["rule"]["operations"]["llm"], "responses.create");
+        assert!(unknown["model_metadata"].is_null());
+        assert_eq!(unknown["variants"], json!([]));
+        assert!(unknown["pricing"].is_null());
+        assert!(preset.rules_catalog.as_ref().unwrap().get("model_variants").is_none());
+        let mut scoped = preset.rules_catalog.clone().unwrap();
+        for variant in scoped["variants"].as_array_mut().unwrap() {
+            variant["match"]["provider_model_id"] = json!({"not":["openai/gpt-6-sol"]});
+        }
+        scoped["variants"].as_array_mut().unwrap().push(json!({
+            "model_driver":"openai", "variant":"reasoning-low", "match":{"provider_model_id":"openai/gpt-6-sol"},
+            "provider_options":{"reasoning":{"effort":"low"},"max_tokens":123}
+        }));
+        let scoped_preview = adapter.preview_provider_rules(ProviderRulesPreviewRequest {
+            provider_instance_name: "disabled-custom".into(), rules_catalog: scoped.clone(),
+            model_ids: BTreeSet::from(["openai/gpt-6-sol".into(), "openai/gpt-6-luna".into()]),
+        }).await.unwrap();
+        assert_eq!(scoped_preview.resolved_model_rules["openai/gpt-6-sol"]["variants"].as_array().unwrap().len(), 1);
+        assert_eq!(scoped_preview.resolved_model_rules["openai/gpt-6-sol"]["variants"][0]["provider_options"]["max_tokens"], 123);
+        assert!(scoped_preview.resolved_model_rules["openai/gpt-6-luna"]["variants"].as_array().unwrap().len() > 1);
+        scoped["variants"].as_array_mut().unwrap().pop();
+        let disabled_preview = adapter.preview_provider_rules(ProviderRulesPreviewRequest {
+            provider_instance_name: "disabled-custom".into(), rules_catalog: scoped,
+            model_ids: BTreeSet::from(["openai/gpt-6-sol".into()]),
+        }).await.unwrap();
+        assert_eq!(disabled_preview.resolved_model_rules["openai/gpt-6-sol"]["variants"], json!([]));
+        let after = adapter.capture().await.unwrap();
+        assert_eq!(after.settings_revision, view.settings_revision);
+        assert_eq!(after.providers[0].rules_catalog, view.providers[0].rules_catalog);
         runtime.shutdown().await;
     }
 

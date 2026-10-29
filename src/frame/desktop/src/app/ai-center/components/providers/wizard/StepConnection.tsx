@@ -1,5 +1,4 @@
 import { useId, useState } from 'react'
-import { RuleMappingEditor } from './RuleMappingEditor'
 import { Check, ChevronDown, Eye, EyeOff, MapPin } from 'lucide-react'
 import { useI18n } from '../../../../../i18n/provider'
 import type { ProviderSetupCatalog, WizardDraft } from '../../../../../api/aicc_mgr'
@@ -389,39 +388,6 @@ export function StepConnection({ draft, catalog, onUpdate }: StepConnectionProps
         </div>
       )}
 
-      {providerType === 'custom' && (
-        <details className="rounded-lg border p-3" style={{ borderColor: 'var(--cp-border)' }}>
-          <summary className="cursor-pointer text-sm">{t('aiCenter.wizard.advancedRules', 'Advanced model and routing settings')}</summary>
-          <div className="mt-3 flex flex-col gap-3">
-            <label className="text-xs">
-              {t('aiCenter.wizard.channelRules', 'Channel preset rules')}
-              <select className="mt-1 block w-full rounded border p-2" value={draft.provider_rules_id ?? ''} onChange={(event) => {
-                const preset = catalog?.providers.find((provider) => provider.provider_rules_id === event.target.value)
-                onUpdate({
-                  provider_rules_id: event.target.value,
-                  model_driver_overrides_json: JSON.stringify(preset?.model_driver_overrides ?? {}, null, 2),
-                  server_default_routes_json: '{}',
-                })
-              }}>
-                <option value="">{t('aiCenter.wizard.noInheritedRules', 'No inherited channel presets')}</option>
-                {(catalog?.providers ?? []).filter((provider) => provider.provider_rules_id).map((provider) => <option key={provider.provider_profile_id} value={provider.provider_rules_id}>{provider.display_name}</option>)}
-              </select>
-            </label>
-            <RuleMappingEditor
-              label={t('aiCenter.wizard.modelAliases', 'Model aliases: endpoint model → manufacturer/model')}
-              ariaLabel="Model aliases" value={draft.model_driver_overrides_json ?? '{}'}
-              onChange={(value) => onUpdate({ model_driver_overrides_json: value })}
-            />
-            <RuleMappingEditor
-              label={t('aiCenter.wizard.serverDefaults', 'Use server default parameters for selected tasks')}
-              ariaLabel="Server default routes" value={draft.server_default_routes_json ?? '{}'} routes
-              onChange={(value) => onUpdate({ server_default_routes_json: value })}
-            />
-            <p className="text-xs" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.wizard.serverDefaultsHelp', 'Server defaults omit preset reasoning parameters. They do not disable thinking. Only recognized LLMs can enter the tasks you explicitly select; capabilities and access policies still apply.')}</p>
-          </div>
-        </details>
-      )}
-
       {/* Protocol Type (custom only) */}
       {providerType === 'custom' && (
         <div className="flex flex-col gap-1.5">
@@ -448,6 +414,27 @@ export function StepConnection({ draft, catalog, onUpdate }: StepConnectionProps
             {(catalog?.protocol_families ?? []).map((family) => <option key={family.protocol_adapter_id} value={family.protocol_adapter_id}>{family.display_name}</option>)}
           </select>
         </div>
+      )}
+
+      {providerType === 'custom' && (
+        <details className="rounded-lg border p-3" style={{ borderColor: 'var(--cp-border)' }}>
+          <summary className="cursor-pointer text-sm">{t('aiCenter.wizard.advancedRules', 'Advanced model and routing settings')}</summary>
+          <div className="mt-3 flex flex-col gap-3">
+            <label className="text-xs">
+              {t('aiCenter.wizard.channelRules', 'Channel preset rules')}
+              <select className="mt-1 block w-full rounded border p-2" value={draft.provider_rules_id ?? ''} onChange={(event) => {
+                onUpdate({
+                  provider_rules_id: event.target.value,
+                  model_driver_overrides_json: undefined,
+                  server_default_routes_json: undefined,
+                })
+              }}>
+                <option value="">{t('aiCenter.wizard.noInheritedRules', 'No inherited channel presets')}</option>
+                {(catalog?.providers ?? []).filter((provider) => provider.provider_rules_id).map((provider) => <option key={provider.provider_profile_id} value={provider.provider_rules_id}>{provider.display_name}</option>)}
+              </select>
+            </label>
+          </div>
+        </details>
       )}
     </div>
   )

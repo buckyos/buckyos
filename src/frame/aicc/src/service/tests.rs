@@ -138,6 +138,10 @@ impl ServiceRuntime for FakeRuntime {
         Ok(self.snapshot.lock().await.clone())
     }
 
+    async fn preview_provider_rules(&self, _: ProviderRulesPreviewRequest) -> Result<ProviderRulesPreviewResponse, RPCErrors> {
+        Ok(ProviderRulesPreviewResponse::default())
+    }
+
     async fn prepare_settings(
         &self,
         settings: SettingsDocument,
@@ -176,6 +180,10 @@ struct SharedFakeRuntime(Arc<FakeRuntime>);
 impl ServiceRuntime for SharedFakeRuntime {
     async fn capture(&self) -> Result<RuntimeAdminSnapshot, RPCErrors> {
         self.0.capture().await
+    }
+
+    async fn preview_provider_rules(&self, _: ProviderRulesPreviewRequest) -> Result<ProviderRulesPreviewResponse, RPCErrors> {
+        Ok(ProviderRulesPreviewResponse::default())
     }
 
     async fn prepare_settings(
@@ -1889,6 +1897,7 @@ async fn management_reads_and_krpc_dispatch_use_one_runtime_view() {
                 dynamic_login_behavior_id: None,
                 connection_behavior_id: None,
                 provider_rules_id: Some("openai".to_string()),
+                rules_catalog: None,
                 model_driver_overrides: BTreeMap::new(),
                 ui_hints: BTreeMap::new(),
             }],
@@ -2505,5 +2514,17 @@ fn protocol_adapter_views_export_the_runtime_default_operations() {
             assert!(adapter.operations.iter().any(|item| item.operation_id == operation
                 && item.api_types.iter().any(|kind| serde_json::to_value(kind).unwrap() == api_type)));
         }
+    }
+}
+
+#[tokio::test]
+async fn rule_preview_requires_settings_write_permission() {
+    for denied in [false, true] {
+        let fixture = fixture(denied);
+        let result = fixture.service.handle_preview_provider_rules(ProviderRulesPreviewRequest {
+            provider_instance_name: "custom-test".into(), rules_catalog: json!({}), model_ids: BTreeSet::new(),
+        }, RPCContext::default()).await;
+        assert_eq!(result.is_err(), denied);
+        assert_eq!(fixture.authorizer.calls.lock().await.as_slice(), &[("write", RESOURCE_SETTINGS)]);
     }
 }

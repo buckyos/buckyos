@@ -321,6 +321,24 @@ impl ServiceRuntime for RuntimeServiceAdapter {
         Ok(self.snapshot().await)
     }
 
+    async fn preview_provider_rules(&self, request: ProviderRulesPreviewRequest) -> Result<ProviderRulesPreviewResponse, RPCErrors> {
+        let snapshot = self.runtime.capture().await;
+        let settings = snapshot.settings.providers.iter()
+            .find(|provider| provider.provider_instance_name == request.provider_instance_name)
+            .ok_or_else(|| RPCErrors::ReasonError("unknown provider instance".into()))?;
+        if settings.provider_profile_id != "custom" {
+            return Err(RPCErrors::ReasonError("rule previews require a custom provider".into()));
+        }
+        let catalog = snapshot.catalog.with_instance_catalog(&request.provider_instance_name, &request.rules_catalog)
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        let mut settings = settings.clone();
+        settings.instance_rules.get_or_insert_with(Default::default).model_driver_overrides.clear();
+        let id = CatalogSnapshot::instance_rules_id(&request.provider_instance_name);
+        Ok(ProviderRulesPreviewResponse {
+            resolved_model_rules: resolved_provider_model_rules(&catalog, &settings, Some(&id), None, &request.model_ids),
+        })
+    }
+
     async fn prepare_settings(
         &self,
         settings: SettingsDocument,

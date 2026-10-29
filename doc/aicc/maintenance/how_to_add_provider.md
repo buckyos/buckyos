@@ -75,7 +75,7 @@ SN 的标准示例是 `sn-openai -> openai-responses`：SN 层实现 `api_key` �
 }
 ```
 
-这种 `custom` Provider 默认使用空 Provider Rules `{}`，也可通过 `provider_rules_id` 继承渠道预设。显式选择的 Adapter 只决定调用协议；discovery 返回的每个 `provider_model_id` 保持原样，并在系统当前安装的全部 Model Driver 中唯一匹配原厂 metadata。非标准命名可通过 `instance_rules.model_driver_overrides` 指定端点模型到原厂/模型的映射。Connection 页面选择预制 rules 后回填已有别名，别名与 `server_default_routes` 均支持列表和 JSON 编辑；预制渠道没有定义服务端默认用途时，该列表为空。
+这种 `custom` Provider 默认使用空 Provider Rules `{}`，也可通过 `provider_rules_id` 继承渠道预设。显式选择的 Adapter 只决定调用协议；discovery 返回的每个 `provider_model_id` 保持原样，并在系统当前安装的全部 Model Driver 中唯一匹配原厂 metadata。非标准命名可通过 `instance_rules.model_driver_overrides` 指定端点模型到原厂/模型的映射。Connection 页面的高级设置仅保留 Channel preset rules 选择，不展开别名或用途参数；模型别名、默认用途等细节在创建后的 Provider rules 页编辑。规则页同时支持导入 JSON 文件和选择同一列表中的内置预设，两者均替换草稿，结束编辑后生效。
 
 `provider.validate` / `provider.add` 通过 registry 校验协议族与 Adapter 的归属关系并保存确定的 `protocol_adapter_id`。当前不会通过发送推理请求盲探多个协议；Custom Provider 调用方必须显式指定 Adapter。该解析只发生在创建或更新阶段，运行时不得再次猜测或 fallback。
 

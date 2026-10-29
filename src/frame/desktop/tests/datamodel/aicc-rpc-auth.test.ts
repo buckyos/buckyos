@@ -107,6 +107,7 @@ Deno.test('custom catalog aliases and explicit OpenAI adapters survive the RPC b
     call: async (method: string, params: Record<string, unknown>) => {
       if (method === 'provider.catalog') return { providers: [{
         provider_profile_id: 'deepseek', provider_rules_id: 'deepseek',
+        rules_catalog: { format: 'buckyos.aicc.provider-rules-catalog', provider_profile_id: 'deepseek', patterns: [{ match: '*', operations: { llm: 'chat.completions' } }] },
         model_driver_overrides: { 'deepseek-flash': 'deepseek/deepseek-v4.1-flash' },
       }] }
       if (method === 'protocol_adapter.list') return { adapters: [
@@ -122,6 +123,8 @@ Deno.test('custom catalog aliases and explicit OpenAI adapters survive the RPC b
     const manager = createAICCMgr({ useMock: false })
     const catalog = await manager.fetchProviderSetupCatalog()
     assert(catalog.providers[0].model_driver_overrides?.['deepseek-flash'] === 'deepseek/deepseek-v4.1-flash', 'preset aliases must be available to Connection')
+    assert(catalog.providers[0].rules_catalog?.provider_profile_id === 'deepseek', 'preset import must receive the complete rules catalog')
+    assert(JSON.stringify(catalog.providers[0].rules_catalog?.patterns).includes('chat.completions'), 'protocol rules must survive the RPC boundary')
     assert(catalog.protocol_families.length === 2, 'only selectable OpenAI adapters must be shown')
     for (const protocol_adapter_id of ['openai-chat-completions', 'openai-responses']) {
       assert(catalog.protocol_families.some((option) => option.protocol_adapter_id === protocol_adapter_id), 'OpenAI APIs must be separate choices')
@@ -215,4 +218,33 @@ Deno.test('rule editor metadata uses finite tasks and adapter defaults from two 
     assert(options.models[0].efforts.join(',') === 'low,high', 'supported_efforts must come from model metadata')
     assert(options.adapters[0].defaults.llm === 'responses.create', 'default operations must come from adapter metadata')
   } finally { sdk.getAccountInfo = originalAccountInfo; sdk.getServiceRpcClient = originalClient }
+})
+
+Deno.test('import preview resolves inherited rules through Rust without updating settings', async () => {
+  const { createAICCMgr } = await import('../../src/api/aicc_mgr.ts')
+  const sdk = buckyos as unknown as { getAccountInfo: () => Promise<unknown>; getServiceRpcClient: (service: string) => unknown }
+  const originalAccountInfo = sdk.getAccountInfo
+  const originalClient = sdk.getServiceRpcClient
+  const calls: string[] = []
+  sdk.getAccountInfo = async () => ({ session_token: 'test-session' })
+  sdk.getServiceRpcClient = () => ({ call: async (method: string, params: Record<string, unknown>) => {
+    calls.push(method)
+    if (method === 'provider.list') return { providers: [{ provider_instance_name: 'custom-import', provider_profile_id: 'custom', auth: {}, inventory: {}, health: {} }] }
+    if (method === 'provider.preview_rules') {
+      assert(params.provider_instance_name === 'custom-import', 'preview must retain instance context')
+      assert((params.model_ids as string[])[0] === 'openai/gpt-6-sol', 'preview must use discovered model IDs')
+      return { resolved_model_rules: { 'openai/gpt-6-sol': { rule: { operations: { llm: 'responses.create' } }, model_driver: 'openai', origin_model_id: 'gpt-6-sol' } } }
+    }
+    return {}
+  } })
+  try {
+    const manager = createAICCMgr({ useMock: false })
+    await manager.refresh()
+    const result = await manager.previewProviderRules(manager.getSnapshot().providers[0], { format: 'buckyos.aicc.provider-rules-catalog' }, ['openai/gpt-6-sol'])
+    assert(result['openai/gpt-6-sol'].origin_model_id === 'gpt-6-sol', 'resolved identity must reach the imported draft')
+    assert(!calls.includes('provider.update'), 'preview must not apply the imported draft')
+  } finally {
+    sdk.getAccountInfo = originalAccountInfo
+    sdk.getServiceRpcClient = originalClient
+  }
 })

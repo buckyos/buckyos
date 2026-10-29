@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Code2, Copy, List, Pencil } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
 import { useAICCStore } from '../../hooks/use-aicc-store'
-import type { ProviderView } from '../../../../api/aicc_mgr'
+import type { KnownProviderProfile, ProviderView } from '../../../../api/aicc_mgr'
 import { LongField } from '../shared/LongField'
 import { ModelRuleEditor } from './ModelRuleEditor'
 import {
@@ -35,6 +35,8 @@ export function ProviderRulesPanel({ provider, active: visible = true }: { provi
   const [editing, setEditing] = useState(false)
   const [editRevision, setEditRevision] = useState(store.getSnapshot().settingsRevision)
   const [saving, setSaving] = useState(false)
+  const [importing, setImporting] = useState<'file' | 'preset' | null>(null)
+  const busy = saving || importing !== null
   const [error, setError] = useState('')
   const [feedback, setFeedback] = useState('')
   const [query, setQuery] = useState('')
@@ -44,21 +46,24 @@ export function ProviderRulesPanel({ provider, active: visible = true }: { provi
   const [selected, setSelected] = useState<string | null>(null)
   const [edits, setEdits] = useState<Record<string, Partial<ModelRuleDraft>>>({})
   const [sourceFile, setSourceFile] = useState('')
+  const [importedRules, setImportedRules] = useState<Record<string, Record<string, unknown>>>({})
   const [options, setOptions] = useState<ProviderRuleOptions | null>(null)
+  const [presets, setPresets] = useState<KnownProviderProfile[]>([])
+  const [selectedPreset, setSelectedPreset] = useState('')
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [attempt, setAttempt] = useState(0)
   const input = useRef<HTMLInputElement>(null)
   const active = editing ? draft : current
-  const resolved = sourceFile ? {} : provider.config.resolved_model_rules ?? {}
+  const resolved = sourceFile ? importedRules : provider.config.resolved_model_rules ?? {}
   const definitions = options ?? EMPTY_OPTIONS
   const adapter = definitions.adapters.find((adapter) => adapter.id === provider.config.protocol_adapter_id)
 
   useEffect(() => {
     if (!visible || options) return
     let cancelled = false
-    void store.fetchProviderRuleOptions().then((value) => {
-      if (!cancelled) { setOptions(value); setLoading(false) }
+    void Promise.all([store.fetchProviderRuleOptions(), store.fetchProviderSetupCatalog()]).then(([value, catalog]) => {
+      if (!cancelled) { setOptions(value); setPresets(catalog.providers.filter((preset) => preset.provider_rules_id)); setLoading(false) }
     }).catch((cause: unknown) => {
       if (!cancelled) { setLoadError(cause instanceof Error ? cause.message : String(cause)); setLoading(false) }
     })
@@ -106,10 +111,25 @@ export function ProviderRulesPanel({ provider, active: visible = true }: { provi
   }
   const importFile = async (file: File) => {
     try {
-      setError('')
+      setError(''); setImporting('file')
       if (file.size > 5 * 1024 * 1024) throw new Error(t('aiCenter.rules.fileTooLarge', 'Rules file must be smaller than 5 MB.'))
-      setDraft(parseProviderRulesFile(await file.text(), active)); setEdits({}); setSourceFile(file.name); setSelected(null); setPage(0)
+      const next = parseProviderRulesFile(await file.text(), active)
+      const resolved = await store.previewProviderRules(provider, providerRulesFile(next), ids)
+      setImportedRules(resolved); setDraft(next); setEdits({}); setSourceFile(file.name); setSelected(null); setPage(0)
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
+    finally { setImporting(null) }
+  }
+  const importPreset = async () => {
+    try {
+      setImporting('preset')
+      const preset = presets.find((preset) => preset.provider_rules_id === selectedPreset)
+      if (!preset?.rules_catalog) throw new Error(t('aiCenter.rules.presetUnavailable', 'The selected built-in rules are unavailable.'))
+      const next = parseProviderRulesFile(rulesJson(preset.rules_catalog), active)
+      const resolved = await store.previewProviderRules(provider, providerRulesFile(next), ids)
+      setImportedRules(resolved); setDraft(next)
+      setEdits({}); setSourceFile(preset.display_name); setSelected(null); setPage(0); setError(''); setFeedback('')
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
+    finally { setImporting(null) }
   }
   const updateModel = <K extends keyof ModelRuleDraft>(id: string, field: K, value: ModelRuleDraft[K]) => {
     setEdits((before) => ({ ...before, [id]: { ...before[id], [field]: value } })); setError('')
@@ -130,7 +150,7 @@ export function ProviderRulesPanel({ provider, active: visible = true }: { provi
         </button>)}
       </div>
       <div className="flex flex-wrap gap-2">
-        <button type="button" disabled={saving || loading || Boolean(loadError)} onClick={() => {
+        <button type="button" disabled={busy || loading || Boolean(loadError)} onClick={() => {
           if (editing) { void finishEditing(); return }
           setDraft(current); setEditRevision(store.getSnapshot().settingsRevision); setEdits({}); setError(''); setFeedback(''); setEditing(true)
         }} className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium disabled:opacity-50"
@@ -138,14 +158,27 @@ export function ProviderRulesPanel({ provider, active: visible = true }: { provi
           {editing ? <Check size={16} /> : <Pencil size={16} />}
           {saving ? t('common.saving', 'Saving...') : editing ? t('aiCenter.rules.finish', 'Finish editing and apply') : t('aiCenter.rules.edit', 'Edit rules')}
         </button>
-        {editing && <button type="button" disabled={saving} className="rounded-lg border px-3 py-2 text-sm"
+        {editing && <button type="button" disabled={busy} className="rounded-lg border px-3 py-2 text-sm"
           onClick={() => { setEditing(false); setEdits({}); setError(''); setSourceFile(''); setSelected(null) }}>{t('common.cancel', 'Cancel')}</button>}
-        <button type="button" disabled={saving || !fullFile} onClick={exportFile} className="rounded-lg border px-3 py-2 text-sm">{t('aiCenter.rules.export', 'Export full JSON')}</button>
-        {editing && <button type="button" disabled={saving} onClick={() => input.current?.click()} className="rounded-lg border px-3 py-2 text-sm">{t('aiCenter.rules.import', 'Import full JSON')}</button>}
+        <button type="button" disabled={busy || !fullFile} onClick={exportFile} className="rounded-lg border px-3 py-2 text-sm">{t('aiCenter.rules.export', 'Export full JSON')}</button>
+        {editing && <button type="button" disabled={busy} onClick={() => input.current?.click()} className="rounded-lg border px-3 py-2 text-sm">{importing === 'file' ? t('aiCenter.rules.importing', 'Importing...') : t('aiCenter.rules.import', 'Import full JSON')}</button>}
       </div>
     </div>
+    {editing && <div className="flex flex-wrap items-end gap-3 rounded-lg border p-3" style={{ borderColor: 'var(--cp-border)' }}>
+      <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs">
+        {t('aiCenter.wizard.channelRules', 'Channel preset rules')}
+        <select value={selectedPreset} disabled={busy} onChange={(event) => setSelectedPreset(event.target.value)} className="rounded-lg border p-2 text-sm">
+          <option value="">{t('aiCenter.rules.selectPreset', 'Select built-in rules')}</option>
+          {presets.map((preset) => <option key={preset.provider_profile_id} value={preset.provider_rules_id}>{preset.display_name}</option>)}
+        </select>
+      </label>
+      <button type="button" disabled={busy || !selectedPreset} onClick={() => { void importPreset() }} className="rounded-lg border px-3 py-2 text-sm disabled:opacity-50">
+        {importing === 'preset' ? t('aiCenter.rules.importing', 'Importing...') : t('aiCenter.rules.importPreset', 'Import built-in rules')}
+      </button>
+      <p className="w-full text-xs" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.rules.importPresetHelp', 'Import replaces the rules draft. Finish editing to apply it.')}</p>
+    </div>}
     <input ref={input} type="file" accept=".json,application/json" className="hidden" aria-label={t('aiCenter.rules.import', 'Import full JSON')}
-      disabled={!editing || saving} onChange={(event) => { const file = event.target.files?.[0]; if (file) void importFile(file); event.target.value = '' }} />
+      disabled={!editing || busy} onChange={(event) => { const file = event.target.files?.[0]; if (file) void importFile(file); event.target.value = '' }} />
     <p className="text-xs" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.rules.structuredHelp', 'Configure one model at a time. Default operations are not saved as overrides. Thinking efforts are supported only when explicitly configured. Finish editing to apply the whole draft.')}</p>
     {loading && <p role="status" className="text-xs">{t('common.loading', 'Loading...')}</p>}
     {loadError && <p role="alert" style={{ color: 'var(--cp-danger)' }}>{loadError} <button type="button" onClick={retry} className="underline">{t('aiCenter.rules.retry', 'Retry')}</button></p>}
@@ -190,7 +223,7 @@ export function ProviderRulesPanel({ provider, active: visible = true }: { provi
               ...(price.amount !== undefined ? [`${price.currency} ${price.amount} / ${price.unit ?? 'request'}`] : []),
             ] : []
             return <tr key={id} data-testid="provider-rule-model" data-model={id} className="border-t" style={{ borderColor: 'var(--cp-border)' }}>
-              <td className={`${cell} rule-enabled-cell`}>{editing ? <input type="checkbox" aria-label={`${t('aiCenter.rules.enabled', 'Enabled')} ${id}`} checked={!disabled.has(id)} disabled={saving}
+              <td className={`${cell} rule-enabled-cell`}>{editing ? <input type="checkbox" aria-label={`${t('aiCenter.rules.enabled', 'Enabled')} ${id}`} checked={!disabled.has(id)} disabled={busy}
                 onChange={(event) => { const enabled = event.target.checked; setDraft((before) => setRuleModelEnabled(before, id, enabled, resolved)) }} />
                 : <span className="text-xs" style={{ color: disabled.has(id) ? 'var(--cp-muted)' : 'var(--cp-success)' }}>{disabled.has(id) ? '—' : <Check size={15} />}</span>}</td>
               <td className={`${cell} rule-model-cell`}><LongField value={id} className="text-sm font-medium" copyable />
@@ -214,7 +247,7 @@ export function ProviderRulesPanel({ provider, active: visible = true }: { provi
       </div>
     </>}
     {visible && selected && selectedRow && <ModelRuleEditor id={selected} row={selectedRow} options={definitions} resolved={resolved[selected] ?? {}}
-      adapterId={provider.config.protocol_adapter_id} editing={editing} saving={saving} loading={loading} loadError={loadError} onRetry={retry}
+      adapterId={provider.config.protocol_adapter_id} editing={editing} saving={busy} loading={loading} loadError={loadError} onRetry={retry}
       onChange={(key, value) => updateModel(selected, key, value)} onClose={() => setSelected(null)} />}
   </section>
 }

@@ -595,7 +595,7 @@ pub(crate) struct ProviderRulesCatalog {
     pub model_pricing: Vec<ModelPricingRule>,
     #[serde(default)]
     pub variants: Vec<ProviderVariantRule>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub model_variants: BTreeMap<String, Vec<ProviderVariantRule>>,
 }
 

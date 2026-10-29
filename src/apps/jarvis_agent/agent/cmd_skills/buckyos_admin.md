@@ -355,7 +355,14 @@ Provider 接入诊断：在 AI Center 查看发现模型、身份匹配、不可
   server_default_routes and disabled models use models[].exclude. Import preserves instance connection/policy settings. Per-column JSON previews have been removed. The side panel preserves a draft without applying it.
 - Task admission here uses upstream default thinking parameters; it does not disable thinking. Operation names
   must be supported by the selected adapter. Export full JSON before changing a working configuration; import
-  loads a draft and does not apply it until editing is finished.
+  loads a draft and does not apply it until editing is finished. Import can also select built-in Channel preset rules
+  from the same list as the Add Provider wizard. Effort mappings use the existing variants array with
+  match.provider_model_id, including after per-model edits; exported files do not contain model_variants.
+  File headers, adapter declarations, match conditions and pricing units retain their original values; instance
+  connection settings remain separate. Empty task mappings are omitted unless explicitly present in the source. It replaces the draft, preserving connection settings and adapter.
+  The wizard advanced section only selects a channel preset; configure detailed rules in the Provider rules tab.
+  Imported drafts resolve inherited rules through provider.preview_rules without applying settings or calling upstream.
+  Blank task/price fields can be valid when absent from the preset; unresolved model identities need an explicit alias.
 - Source of the file contract and save/readback fields: doc/aicc/aicc-mgr.md (“Custom Provider 实例规则编辑”),
   src/kernel/buckyos-api/src/aicc_client.rs and src/frame/aicc/src/catalog/schema.rs for the running version.
   Rules exports omit credentials and use the instance configuration and actual inventory values. Missing prices

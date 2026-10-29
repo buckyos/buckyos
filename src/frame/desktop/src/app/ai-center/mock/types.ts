@@ -365,6 +365,7 @@ export interface KnownProviderProfile {
   discovery_behavior_id: string
   provider_rules_id?: string
   model_driver_overrides?: Record<string, string>
+  rules_catalog?: Record<string, unknown>
   ui_hints: Record<string, unknown>
   endpoint_hints: Record<string, ProviderEndpointHint>
   connection_fields: Partial<Record<'region' | 'workspace' | 'account' | 'policy_region', ProviderConnectionField>>

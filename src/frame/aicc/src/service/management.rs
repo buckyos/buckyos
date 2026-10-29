@@ -435,6 +435,11 @@ impl AiccHandler for AiccService {
         Ok(response)
     }
 
+    async fn handle_preview_provider_rules(&self, request: ProviderRulesPreviewRequest, ctx: RPCContext) -> Result<ProviderRulesPreviewResponse, RPCErrors> {
+        self.authorize(&ctx, "write", RESOURCE_SETTINGS).await?;
+        self.runtime.preview_provider_rules(request).await
+    }
+
     async fn handle_provider_catalog(
         &self,
         _request: ProviderCatalogRequest,

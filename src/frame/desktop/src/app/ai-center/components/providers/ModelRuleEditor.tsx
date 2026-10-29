@@ -125,7 +125,7 @@ export function ModelRuleEditor({ id, row, options, resolved, adapterId, editing
                     onChange('operations', rulesJson(next))
                   }}>
                   <option value="">{t('aiCenter.rules.useDefault', 'Use adapter default')} · {defaultLabel}</option>
-                  {selected && !choices.some((choice) => choice.id === selected) && <option value={selected}>{selected} · {t('aiCenter.rules.unsupported', 'Unsupported')}</option>}
+                  {selected && (!allowed || !choices.some((choice) => choice.id === selected)) && <option value={selected}>{selected} · {t('aiCenter.rules.unsupported', 'Unsupported')}</option>}
                   {allowed && choices.map((operation) => <option key={operation.id} value={operation.id}>{operation.id}</option>)}
                 </select>
               </label>
