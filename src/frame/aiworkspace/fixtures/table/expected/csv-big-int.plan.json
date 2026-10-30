@@ -1,0 +1,46 @@
+{
+  "title": "big-int",
+  "header": true,
+  "columns": [
+    {
+      "name": "id",
+      "type": "decimal",
+      "scale": 0
+    },
+    {
+      "name": "count",
+      "type": "number"
+    }
+  ],
+  "fields": [
+    {
+      "field_id": "c1",
+      "name": "id",
+      "type": "decimal",
+      "scale": 0
+    },
+    {
+      "field_id": "c2",
+      "name": "count",
+      "type": "number"
+    }
+  ],
+  "titleFieldId": null,
+  "rows": 3,
+  "records": [
+    {
+      "c1": "9007199254740993",
+      "c2": 1
+    },
+    {
+      "c1": "12345678901234567890",
+      "c2": 2
+    },
+    {
+      "c1": "42",
+      "c2": 3
+    }
+  ],
+  "report": [],
+  "gridRows": 4
+}

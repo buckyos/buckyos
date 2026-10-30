@@ -7,7 +7,7 @@
  * extension would be. */
 
 import { useCallback, type CSSProperties, type ReactNode } from 'react'
-import { ALargeSmall, Columns3, Eye, File as FileIcon, FileText, Film, Image as ImageIcon, LayoutGrid, ListFilter, ListTree, Music, Play, Plus, Replace, Reply, Scan, Table, Type } from 'lucide-react'
+import { ALargeSmall, ClipboardCopy, Columns3, Eye, File as FileIcon, FileText, Film, Image as ImageIcon, LayoutGrid, ListFilter, ListTree, Music, Play, Plus, Replace, Reply, Scan, Table, Type } from 'lucide-react'
 import { randomId } from '../../api/ids'
 import type { ReadOk } from '../../api/session'
 import type { AnnotationContent, Json, KeyedContent, Reference, RichTextContent } from '../../api/types'
@@ -90,6 +90,8 @@ const table: BlockDefinition = {
     { kind: 'button', id: 'table-filter', icon: ListFilter, label: aiwsT('aiworkspace.blocks.table.filter'), run: () => openWith(context, 'filter') },
     ...(context.readOnlyReason === null && context.source?.capabilities.includes('structure') ? [{ kind: 'button' as const, id: 'table-fields', icon: Columns3, label: aiwsT('aiworkspace.blocks.table.fields'), run: () => openWith(context, 'fields') }] : []),
     ...(canAppend(context) ? [{ kind: 'button' as const, id: 'table-add', icon: Plus, label: aiwsT('aiworkspace.blocks.table.addRecord'), run: () => openWith(context, 'add') }] : []),
+    // "copy as table" (表格数据导入 TODO §4.1): run by the table's editor, which knows the view's rows
+    { kind: 'button', id: 'table-copy', icon: ClipboardCopy, label: aiwsT('aiworkspace.data.table.copyAsTable'), run: () => openWith(context, 'copy') },
   ],
   create: (args) => (args.existingSourceId ? [cellOp(args, 'table', args.existingSourceId)] : [
     createOp(args.dataId, 'buckyos.table-source', args.contentFolderId, args.dataOrderKey, {

@@ -1,0 +1,108 @@
+{
+  "title": "products",
+  "header": true,
+  "columns": [
+    {
+      "name": "id",
+      "type": "number"
+    },
+    {
+      "name": "name",
+      "type": "text"
+    },
+    {
+      "name": "price",
+      "type": "decimal",
+      "scale": 2
+    },
+    {
+      "name": "weight",
+      "type": "decimal",
+      "scale": 2
+    },
+    {
+      "name": "active",
+      "type": "boolean"
+    },
+    {
+      "name": "added",
+      "type": "date"
+    },
+    {
+      "name": "photo",
+      "type": "text",
+      "include": false
+    }
+  ],
+  "fields": [
+    {
+      "field_id": "c1",
+      "name": "id",
+      "type": "number"
+    },
+    {
+      "field_id": "c2",
+      "name": "name",
+      "type": "text"
+    },
+    {
+      "field_id": "c3",
+      "name": "price",
+      "type": "decimal",
+      "scale": 2
+    },
+    {
+      "field_id": "c4",
+      "name": "weight",
+      "type": "decimal",
+      "scale": 2
+    },
+    {
+      "field_id": "c5",
+      "name": "active",
+      "type": "boolean"
+    },
+    {
+      "field_id": "c6",
+      "name": "added",
+      "type": "date"
+    }
+  ],
+  "titleFieldId": "c2",
+  "rows": 3,
+  "records": [
+    {
+      "c1": 1,
+      "c2": "Kettle",
+      "c3": "29.90",
+      "c4": "1.25",
+      "c5": true,
+      "c6": "2026-01-15"
+    },
+    {
+      "c1": 2,
+      "c2": "Toaster",
+      "c3": "45.00",
+      "c4": "2.50",
+      "c5": false,
+      "c6": "2026-02-01"
+    },
+    {
+      "c1": 3,
+      "c2": "Mug",
+      "c3": "6.50",
+      "c4": "0.30",
+      "c5": true
+    }
+  ],
+  "report": [
+    {
+      "kind": "table_blob_column",
+      "count": 1,
+      "samples": [
+        "products.photo"
+      ]
+    }
+  ],
+  "gridRows": 4
+}

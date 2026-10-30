@@ -1,0 +1,56 @@
+{
+  "title": "quoted",
+  "header": true,
+  "columns": [
+    {
+      "name": "id",
+      "type": "number"
+    },
+    {
+      "name": "note",
+      "type": "text"
+    },
+    {
+      "name": "amount",
+      "type": "number"
+    }
+  ],
+  "fields": [
+    {
+      "field_id": "c1",
+      "name": "id",
+      "type": "number"
+    },
+    {
+      "field_id": "c2",
+      "name": "note",
+      "type": "text"
+    },
+    {
+      "field_id": "c3",
+      "name": "amount",
+      "type": "number"
+    }
+  ],
+  "titleFieldId": "c2",
+  "rows": 3,
+  "records": [
+    {
+      "c1": 1,
+      "c2": "line one\nline two",
+      "c3": 10
+    },
+    {
+      "c1": 2,
+      "c2": "say \"hi\"",
+      "c3": 20
+    },
+    {
+      "c1": 3,
+      "c2": "a, b, c",
+      "c3": 30
+    }
+  ],
+  "report": [],
+  "gridRows": 4
+}

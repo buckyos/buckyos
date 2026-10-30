@@ -1,0 +1,40 @@
+{
+  "title": "date-ambiguous",
+  "header": true,
+  "columns": [
+    {
+      "name": "event",
+      "type": "text"
+    },
+    {
+      "name": "when",
+      "type": "date"
+    }
+  ],
+  "fields": [
+    {
+      "field_id": "c1",
+      "name": "event",
+      "type": "text"
+    },
+    {
+      "field_id": "c2",
+      "name": "when",
+      "type": "date"
+    }
+  ],
+  "titleFieldId": "c1",
+  "rows": 2,
+  "records": [
+    {
+      "c1": "launch",
+      "c2": "2026-03-04"
+    },
+    {
+      "c1": "review",
+      "c2": "2026-05-06"
+    }
+  ],
+  "report": [],
+  "gridRows": 3
+}

@@ -59,10 +59,10 @@ impl Operator {
         match self {
             Operator::Eq | Operator::Ne => !matches!(t, MultiSelect),
             Operator::Lt | Operator::Lte | Operator::Gt | Operator::Gte => {
-                matches!(t, Number | Decimal | Date | Datetime)
+                matches!(t, Number | Decimal | Date | Datetime | Currency)
             }
             Operator::Contains | Operator::StartsWith => matches!(t, Text),
-            Operator::In => matches!(t, Text | Number | Decimal | Date | Datetime | Select),
+            Operator::In => matches!(t, Text | Number | Decimal | Date | Datetime | Select | Currency),
             Operator::HasAny | Operator::HasAll => matches!(t, MultiSelect),
             Operator::IsEmpty | Operator::IsNotEmpty => true,
         }
@@ -220,6 +220,13 @@ pub fn eval(c: &Compiled, values: &JsonMap) -> bool {
                 None | Some(Value::Null) => return false,
                 Some(v) => v,
             };
+            // an amount is only ordered against amounts of its own currency (no conversion, 表格导入 TODO §6.1)
+            if def.ty == FieldType::Currency
+                && matches!(op, Operator::Lt | Operator::Lte | Operator::Gt | Operator::Gte)
+                && value::currency_parts(cell).0 != value::currency_parts(value).0
+            {
+                return false;
+            }
             match op {
                 Operator::Eq => value::values_equal(def, cell, value),
                 Operator::Ne => !value::values_equal(def, cell, value),

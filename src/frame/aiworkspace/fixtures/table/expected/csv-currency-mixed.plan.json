@@ -1,0 +1,71 @@
+{
+  "title": "currency-mixed",
+  "header": true,
+  "columns": [
+    {
+      "name": "item",
+      "type": "text"
+    },
+    {
+      "name": "price",
+      "type": "currency",
+      "scale": 2,
+      "currency": "CNY"
+    }
+  ],
+  "fields": [
+    {
+      "field_id": "c1",
+      "name": "item",
+      "type": "text"
+    },
+    {
+      "field_id": "c2",
+      "name": "price",
+      "type": "currency",
+      "currency": "CNY"
+    }
+  ],
+  "titleFieldId": "c1",
+  "rows": 4,
+  "records": [
+    {
+      "c1": "a",
+      "c2": {
+        "amount": "200.00",
+        "currency": "CNY"
+      }
+    },
+    {
+      "c1": "b",
+      "c2": {
+        "amount": "500.00",
+        "currency": "CNY"
+      }
+    },
+    {
+      "c1": "c",
+      "c2": {
+        "amount": "300.00",
+        "currency": "CNY"
+      }
+    },
+    {
+      "c1": "d",
+      "c2": {
+        "amount": "10.00",
+        "currency": "EUR"
+      }
+    }
+  ],
+  "report": [
+    {
+      "kind": "table_currency_symbol",
+      "count": 1,
+      "samples": [
+        "price: ¥ → CNY"
+      ]
+    }
+  ],
+  "gridRows": 5
+}

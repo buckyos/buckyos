@@ -711,6 +711,12 @@ fn update_field(p: &mut Planner, op: &Value) -> OpResult {
                 restore.insert(k.clone(), json!(f.order_key));
                 f.order_key = key.to_string();
             }
+            // a currency field's default currency: only values written later take it (stored values carry their own)
+            "currency" => {
+                let c = v.as_str().ok_or_else(|| WsError::invalid_op("currency must be a string"))?;
+                restore.insert(k.clone(), json!(f.def.currency));
+                f.def.currency = Some(c.to_string());
+            }
             "required" | "nullable" | "unique" => {
                 let b = v.as_bool().ok_or_else(|| WsError::invalid_op(format!("{k} must be a boolean")))?;
                 let slot = match k.as_str() {
@@ -1031,14 +1037,20 @@ fn migrate_field(p: &mut Planner, op: &Value) -> OpResult {
     let mut to_json = from.to_value();
     {
         let o = to_json.as_object_mut().unwrap();
-        for k in ["scale", "options", "target_types"] {
+        for k in ["scale", "options", "target_types", "currency"] {
             o.remove(k);
         }
         for (k, v) in to {
-            if !matches!(k.as_str(), "type" | "scale") {
+            if !matches!(k.as_str(), "type" | "scale" | "currency") {
                 return Err(WsError::invalid_op(format!("migration target property {k} is not supported")));
             }
             o.insert(k.clone(), v.clone());
+        }
+        // currency → currency (another scale) keeps the default currency unless a new one is given
+        if o.get("type").and_then(Value::as_str) == Some("currency") && !o.contains_key("currency") {
+            if let Some(c) = &from.currency {
+                o.insert("currency".into(), json!(c));
+            }
         }
     }
     let target = FieldDef::from_value(&to_json)?;

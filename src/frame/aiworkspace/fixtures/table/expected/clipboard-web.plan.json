@@ -1,0 +1,66 @@
+{
+  "title": "web",
+  "header": true,
+  "columns": [
+    {
+      "name": "City",
+      "type": "text"
+    },
+    {
+      "name": "Population",
+      "type": "number"
+    },
+    {
+      "name": "Column C",
+      "type": "number"
+    }
+  ],
+  "fields": [
+    {
+      "field_id": "c1",
+      "name": "City",
+      "type": "text"
+    },
+    {
+      "field_id": "c2",
+      "name": "Population",
+      "type": "number"
+    },
+    {
+      "field_id": "c3",
+      "name": "Column C",
+      "type": "number"
+    }
+  ],
+  "titleFieldId": "c1",
+  "rows": 3,
+  "records": [
+    {
+      "c1": "Tokyo",
+      "c2": 37400068,
+      "c3": 2018
+    },
+    {
+      "c1": "Delhi",
+      "c2": 28514000,
+      "c3": 2018
+    },
+    {
+      "c2": 29399141,
+      "c3": 2019
+    }
+  ],
+  "report": [
+    {
+      "kind": "table_merged_header",
+      "count": 1,
+      "samples": []
+    },
+    {
+      "kind": "table_merged_cells",
+      "count": 1,
+      "samples": []
+    }
+  ],
+  "gridRows": 4
+}

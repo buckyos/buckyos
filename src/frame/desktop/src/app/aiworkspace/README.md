@@ -97,6 +97,14 @@ ui/
                           tools.tsx (near toolbar, context menu, inspector); pdfImport.ts + ImportPdfDialog.tsx +
                           pdfImportRequest.ts (PDF pages → a new canvas with a presentation path, doc/workspace/BuckyOS
                           AI Workspace PDF 导入与放映方案讨论.md; the converter is ../aiworkspace/import-pdf, `@pdf/*`)
+  import/                 table data import (notepads/aiworkspace-table-import-todo.md; the importer is
+                          ../aiworkspace/import-table, `@table/*`): tableImportRequest.ts (request sink: source, ask /
+                          wizard, canvas or data folder), TableImportDialog.tsx (ask step, one-screen wizard, progress,
+                          report; mounted at the shell so the data tree can open it), tableImport.ts (plans checked by
+                          WASM normalize_value, commits of ≤ 20 000 rows / 6 MiB, the original file kept),
+                          tabularFiles.ts + tableReader.worker.ts (CSV here; xlsx and SQLite — sqlite-wasm
+                          `sqlite3_deserialize` — in a Worker), clipboardTable.ts (is a paste a table), copyTable.ts
+                          ("copy as table": TSV + HTML with data-aiws-table / data-aiws-value)
   canvas/render/          RenderHost (world layer + camera transform, three-level culling with hysteresis, LOD
                           placeholders, mount budget, overlay, gestures that commit once; painting and hit testing
                           share one order, BlockTree pre-order as a z-index, frames in a stable DOM order by id),

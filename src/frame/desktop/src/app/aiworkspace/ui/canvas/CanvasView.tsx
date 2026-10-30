@@ -62,6 +62,9 @@ import { classifyFile, importDrawio, importReports, type ImportOutcome } from '.
 import { ImportReportDialog } from './ImportReportDialog'
 import { PdfImportHost } from './ImportPdfDialog'
 import { pdfImports } from './pdfImportRequest'
+import { TABULAR_ACCEPT, tabularKind } from '@table/files'
+import { clipboardTable } from '../import/clipboardTable'
+import { tableImports, type TableImportSource } from '../import/tableImportRequest'
 import { MetadataForm } from './MetadataForm'
 import { libraryShapeConfig, SHAPE_DRAG_TYPE, stencilPack } from './stencilLibrary'
 import { InsertCatalog, type CatalogTab } from './InsertCatalog'
@@ -855,6 +858,31 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     pdfImports.finisher = finisher
     return () => { if (pdfImports.finisher === finisher) pdfImports.finisher = null }
   }, [])
+  // ---- table data import (表格数据导入 TODO §3.5, §4, §5): a TableSource in the content folder, a table Block here
+  const tableInput = useRef<HTMLInputElement>(null)
+  const tableReason = insertReason
+  /** Where a table chosen from the insert catalog goes (the catalog's spot), for the file picker's answer. */
+  const catalogSpot = useRef<{ x: number; y: number } | null>(null)
+  const finishTableImport = (outcome: ImportOutcome) => {
+    if (outcome.created.length === 0) return
+    setSelectionState(new Set(outcome.created))
+    if (outcome.bounds) camera.fit(outcome.bounds, 60)
+  }
+  /** Open the table import: `ask` first for a dropped or pasted file (a table, or a file). */
+  const openTableImport = (source: TableImportSource, ask: boolean, at: { x: number; y: number } | null, file?: File) => {
+    if (tableReason) { store.notify('info', tableReason); return }
+    if (tableImports.busy) { store.notify('info', t('aiworkspace.import.busy')); return }
+    const c = camera.center
+    // a flow page: after the selected Block (when it sits on the page itself)
+    const afterId = !isFree && single && store.outline.get(single.entity_id)?.parent_id === surfaceId ? single.entity_id : null
+    tableImports.open({
+      source, step: ask ? 'ask' : 'wizard', finish: finishTableImport, insertAsFile: file ? () => { void insertFile(file, at) } : undefined,
+      destination: { canvas: { surfaceId, isFree, contentFolderId: surface.content_folder_id ?? '', at: isFree ? at : null, center: camera.toWorld(c.x, c.y), afterId } },
+    })
+  }
+  const importTableCommand: Command = { reason: tableReason, run: () => tableInput.current?.click() }
+  /** The insert catalog's "From a file…": the picker, the table at the catalog's spot. */
+  const importTableAt = (world: { x: number; y: number } | null) => { catalogSpot.current = world; tableInput.current?.click() }
   const exportCommand: Command = {
     reason: !isFree ? t('aiworkspace.canvas.export.onlyFree') : null,
     run: () => {
@@ -893,6 +921,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     for (const file of files) {
       const { kind, bytes, text } = await classifyFile(file)
       if (kind === 'drawio') await runImport({ name: file.name, bytes }, spot)
+      // a single table file asks: a table, or a file (表格数据导入 TODO §5.1); several are inserted as files
+      else if (kind === 'tabular' && files.length === 1 && !insertReason) openTableImport({ kind: 'file', name: file.name, bytes }, true, spot, file)
       // a single PDF asks: a file, or editable pages (Q7); several are inserted as files
       else if (kind === 'pdf' && files.length === 1 && pdfReason === null && !insertReason) await openPdfImport(file, bytes, true, spot)
       else if (insertReason) { store.notify('info', insertReason); return }
@@ -1089,7 +1119,9 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       const files = [...data.files]
       const text = data.getData('text/plain')
       const svg = /^\s*(<\?xml[^>]*>\s*)?(<!--[\s\S]*?-->\s*)*<svg[\s>]/i.test(text)
-      const foreign = files.length > 0 || (text !== '' && text !== copyMarker.current && (looksLikeDrawio(text) || svg))
+      // a table from a spreadsheet, a web page or another table view (after our own marker and files, before draw.io / SVG)
+      const table = files.length === 0 && text !== copyMarker.current ? clipboardTable(data) : null
+      const foreign = files.length > 0 || table !== null || (text !== '' && text !== copyMarker.current && (looksLikeDrawio(text) || svg))
       if (!foreign) {
         if (pendingPaste.current) { pendingPaste.current = false; event.preventDefault(); paste.run() }
         return
@@ -1097,6 +1129,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       event.preventDefault()
       pendingPaste.current = false
       if (files.length > 0) void handleFiles(files, null)
+      else if (table) openTableImport(table, false, null)
       else if (looksLikeDrawio(text)) void runImport({ name: t('aiworkspace.canvas.import.pastedName'), text }, null)
       else if (insertReason) store.notify('info', insertReason)
       else insertSvg(text, null)
@@ -1218,6 +1251,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     copy, cut, paste, remove,
     importDrawio: importCommand,
     importPdf: importPdfCommand,
+    importTable: importTableCommand,
     exportDrawio: exportCommand,
     view: isFree ? { camera, fitAll, fitSelection, hasSelection: selection.size > 0 } : null,
     canvasTabs: CANVAS_SIDE_TABS,
@@ -1332,6 +1366,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
               onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void file.arrayBuffer().then((buffer) => runImport({ name: file.name, bytes: new Uint8Array(buffer) }, null)) }} />
             <input ref={pdfInput} type="file" hidden aria-hidden="true" tabIndex={-1} accept=".pdf,application/pdf" data-testid="aiws-import-pdf-file"
               onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void openPdfImport(file, null, false, null) }} />
+            <input ref={tableInput} type="file" hidden aria-hidden="true" tabIndex={-1} accept={TABULAR_ACCEPT} data-testid="aiws-import-table-file"
+              onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; const at = catalogSpot.current; catalogSpot.current = null; if (file) void file.arrayBuffer().then((buffer) => openTableImport({ kind: 'file', name: file.name, bytes: new Uint8Array(buffer) }, false, at)) }} />
             {menu && <ContextMenu at={menu.at} items={menuItems} onClose={() => setMenu(null)} />}
             {picker && <Picker kind={picker.kind} selection={selectedEntities} surfaceId={surfaceId} onClose={() => setPicker(null)} onPick={(choice) => {
               if (picker.kind === 'move-surface') moveToSurface(choice)
@@ -1346,6 +1382,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
               const intoNode = catalog.parentId !== undefined && Boolean(laid.get(catalog.parentId)?.node)
               return (
               <InsertCatalog initialTab={catalog.tab} initialKey={catalog.key} canPlace={isFree && !intoNode} onClose={() => setCatalog(null)} onImport={importReason === null && !intoNode ? () => { setCatalog(null); importCommand.run() } : undefined}
+                onImportTable={tableReason === null && !intoNode ? () => { setCatalog(null); importTableAt(catalog.world ?? null) } : undefined}
                 onImportAssets={insertReason === null && !intoNode ? async (files, folder, signal) => {
                   try {
                     const items = await store.session.importAssets(files, folder, signal)
@@ -1361,6 +1398,16 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
                 const at = catalog.world
                 const parentId = catalog.parentId
                 setCatalog(null)
+                // a table file chosen for the file entry asks: a table, or a file (§5.1)
+                const file = request.file
+                if (file && request.entry.definition.type === 'asset' && !request.entry.variant && how === 'center' && !(parentId && laid.get(parentId)?.node)) {
+                  void file.arrayBuffer().then((buffer) => {
+                    const bytes = new Uint8Array(buffer)
+                    if (tabularKind(file.name, bytes)) openTableImport({ kind: 'file', name: file.name, bytes }, true, at, file)
+                    else void insert(request, at, parentId, undefined, catalog.afterId)
+                  })
+                  return
+                }
                 if (how === 'place') pick(request)
                 else void insert(request, at, parentId, undefined, catalog.afterId)
               }} />

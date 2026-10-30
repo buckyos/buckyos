@@ -1,0 +1,44 @@
+{
+  "title": "thousands",
+  "header": true,
+  "columns": [
+    {
+      "name": "region",
+      "type": "text"
+    },
+    {
+      "name": "revenue",
+      "type": "number"
+    }
+  ],
+  "fields": [
+    {
+      "field_id": "c1",
+      "name": "region",
+      "type": "text"
+    },
+    {
+      "field_id": "c2",
+      "name": "revenue",
+      "type": "number"
+    }
+  ],
+  "titleFieldId": "c1",
+  "rows": 3,
+  "records": [
+    {
+      "c1": "north",
+      "c2": 1234567
+    },
+    {
+      "c1": "south",
+      "c2": 89000
+    },
+    {
+      "c1": "east",
+      "c2": 1000
+    }
+  ],
+  "report": [],
+  "gridRows": 4
+}

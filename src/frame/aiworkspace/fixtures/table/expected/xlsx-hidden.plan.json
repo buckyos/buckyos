@@ -1,0 +1,26 @@
+{
+  "title": "Hidden",
+  "header": true,
+  "columns": [
+    {
+      "name": "secret",
+      "type": "number"
+    }
+  ],
+  "fields": [
+    {
+      "field_id": "c1",
+      "name": "secret",
+      "type": "number"
+    }
+  ],
+  "titleFieldId": null,
+  "rows": 1,
+  "records": [
+    {
+      "c1": 1
+    }
+  ],
+  "report": [],
+  "gridRows": 2
+}

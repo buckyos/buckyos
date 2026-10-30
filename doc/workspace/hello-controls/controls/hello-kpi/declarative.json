@@ -1,0 +1,13 @@
+{
+  "layout": "stack",
+  "items": [
+    { "kind": "metric", "label": "Tasks", "bind": "tasks.count", "format": "number" },
+    { "kind": "value", "label": "Hours", "bind": "tasks.sum:hours", "format": "number" },
+    { "kind": "bar", "label": "By status", "bind": "tasks.status" },
+    { "kind": "text", "text": "Edit controls/hello-kpi in your home folder, then build." }
+  ],
+  "inspector": [
+    { "key": "label", "label": "Label", "kind": "text" },
+    { "key": "accent", "label": "Accent", "kind": "color" }
+  ]
+}

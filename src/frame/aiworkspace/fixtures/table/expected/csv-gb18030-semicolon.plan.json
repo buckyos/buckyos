@@ -1,0 +1,58 @@
+{
+  "title": "gb18030-semicolon",
+  "header": true,
+  "columns": [
+    {
+      "name": "城市",
+      "type": "text"
+    },
+    {
+      "name": "人口",
+      "type": "number"
+    },
+    {
+      "name": "面积",
+      "type": "decimal",
+      "scale": 2
+    }
+  ],
+  "fields": [
+    {
+      "field_id": "c1",
+      "name": "城市",
+      "type": "text"
+    },
+    {
+      "field_id": "c2",
+      "name": "人口",
+      "type": "number"
+    },
+    {
+      "field_id": "c3",
+      "name": "面积",
+      "type": "decimal",
+      "scale": 2
+    }
+  ],
+  "titleFieldId": "c1",
+  "rows": 3,
+  "records": [
+    {
+      "c1": "北京",
+      "c2": 21893095,
+      "c3": "16410.54"
+    },
+    {
+      "c1": "上海",
+      "c2": 24870895,
+      "c3": "6340.50"
+    },
+    {
+      "c1": "广州",
+      "c2": 18676605,
+      "c3": "7434.40"
+    }
+  ],
+  "report": [],
+  "gridRows": 4
+}

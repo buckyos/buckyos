@@ -1,0 +1,4 @@
+Item	Price	Date	Paid
+Apple	$1,234.50	7/1/2026	是
+Pear	$980.00	7/2/2026	否
+Plum	$15.25	7/15/2026	是

@@ -1,0 +1,45 @@
+{
+  "title": "date-dm",
+  "header": true,
+  "columns": [
+    {
+      "name": "event",
+      "type": "text"
+    },
+    {
+      "name": "when",
+      "type": "date",
+      "dateOrder": "dm"
+    }
+  ],
+  "fields": [
+    {
+      "field_id": "c1",
+      "name": "event",
+      "type": "text"
+    },
+    {
+      "field_id": "c2",
+      "name": "when",
+      "type": "date"
+    }
+  ],
+  "titleFieldId": "c1",
+  "rows": 3,
+  "records": [
+    {
+      "c1": "launch",
+      "c2": "2026-07-13"
+    },
+    {
+      "c1": "review",
+      "c2": "2026-12-01"
+    },
+    {
+      "c1": "close",
+      "c2": "2027-01-02"
+    }
+  ],
+  "report": [],
+  "gridRows": 4
+}

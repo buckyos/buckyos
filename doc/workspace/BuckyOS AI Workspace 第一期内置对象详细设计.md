@@ -998,6 +998,7 @@ pub fn diff_blocks(base: &Ast, target: &Ast) -> Vec<BlockOp>;              // �
 | `select` | string | 必须是该字段现有的 `option_id` |
 | `multi_select` | array of string | 元素须为现有 `option_id`；去重；规范顺序为 `option_id` 字节序（显示顺序按字段的 options 顺序，与存储顺序无关） |
 | `object_ref` | object | §2.4 引用结构；字段可声明 `target_types`（允许的目标 `type_id` 列表）；目标须存在且未删除 |
+| `currency` | object `{ amount, currency }` | 1.1 新增（表格数据导入 TODO §6）。字段必须声明默认币种 `currency`（ISO 4217 三位大写字母），`scale` 可选（0–18，缺省 2）。输入为该对象（`amount` 是 decimal 字串或 JSON number），或裸 decimal 字串 / number（取字段默认币种）；`amount` 按 `decimal` 规则规范化到字段 `scale`。规范形式 `{ "amount": "500.00", "currency": "CNY" }`：**币种总是显式落库**，改字段默认币种（`table.update_field` 的 `currency`）不改变已有值。不接受 `"$12"`、`"USD 12"` 这类带符号文本（符号与别名由导入层和编辑器解析）。排序按 (币种, 金额)；`lt/lte/gt/gte` 只命中与右值同币种的值，`eq/ne/in` 需同币种；不支持 `unique`，不能分组 |
 
 `date` 与 `datetime` 之间没有隐式转换。`number` 与 `decimal` 之间没有隐式转换。JSON number 中的大整数限制与 canonical 编码一致：ndn-lib 使用的 `serde_jcs` 对超过 2^53 的整数按原样输出，与 JS 端按双精度格式化的结果不同，所以在值层面直接禁止。
 
@@ -1079,7 +1080,7 @@ pub fn diff_blocks(base: &Ast, target: &Ast) -> Vec<BlockOp>;              // �
   "on_failure": "reject" }
 ```
 
-第一期必须实现的转换：`text → date`、`text → number`、`text → decimal(scale)`、`number → decimal(scale)`、`select → text`（值变为选项的 `label`）。其他组合返回 `INVALID_OPERATION`（子码 `MIGRATION_UNSUPPORTED`）。
+第一期必须实现的转换：`text → date`、`text → number`、`text → decimal(scale)`、`number → decimal(scale)`、`select → text`（值变为选项的 `label`）。1.1 为 `currency` 增加：`number → currency`、`decimal → currency`（补目标默认币种）、`currency → decimal`（丢币种）、`currency → text`（`"USD 12.00"`）、`currency → currency`（改 `scale`，币种不变）。其他组合返回 `INVALID_OPERATION`（子码 `MIGRATION_UNSUPPORTED`）。
 
 - 转换函数是 `core` 中的纯函数，严格解析：`text → date` 只接受 `YYYY-MM-DD`；`text → number/decimal` 只接受 §3.4.2 的规范输入语法（允许首尾 ASCII 空白）。不猜测本地化格式。
 - **预检**：对迁移操作调用 `prepare`，返回报告 `{ total, convertible, failing: { count, sample: [ { record_id, value } ≤100 ] }, unset }`，不修改任何状态。

@@ -4,13 +4,15 @@ import { randomId } from '../api/ids'
 import type { ReadOk } from '../api/session'
 import type { CellPayload, FieldType, Json, KeyedContent, Operation } from '../api/types'
 
-export const CREATABLE_FIELD_TYPES: FieldType[] = ['text', 'number', 'decimal', 'date', 'datetime', 'boolean', 'select', 'multi_select']
+export const CREATABLE_FIELD_TYPES: FieldType[] = ['text', 'number', 'decimal', 'currency', 'date', 'datetime', 'boolean', 'select', 'multi_select']
 
 /** A new field, and — when the view lists its columns explicitly — the field added to this view in the same commit. */
-export function addFieldOps(sourceId: string, cell: ReadOk<KeyedContent<CellPayload>>, name: string, type: FieldType, scale = 2): Operation[] {
+export function addFieldOps(sourceId: string, cell: ReadOk<KeyedContent<CellPayload>>, name: string, type: FieldType, scale = 2, currency = 'USD'): Operation[] {
   const fieldId = randomId('f')
   const field: Record<string, Json> = { field_id: fieldId, name, type }
   if (type === 'decimal') field.scale = scale
+  // a currency field: its default currency, and the amount's scale when not the usual 2
+  if (type === 'currency') { field.currency = currency; if (scale !== 2) field.scale = scale }
   if (type === 'select' || type === 'multi_select') field.options = []
   const operations: Operation[] = [{ op: 'table.add_field', source_id: sourceId, field }]
   const viewFields = cell.content.payload.fields

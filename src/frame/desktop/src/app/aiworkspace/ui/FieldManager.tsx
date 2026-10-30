@@ -7,10 +7,21 @@ import type { CellPayload, FieldDef, FieldType, Json, KeyedContent, Operation, P
 import { useStore } from '../state/hooks'
 import { useAiwsText } from '../useAiwsText'
 import { addFieldOps, CREATABLE_FIELD_TYPES } from './fieldOps'
-import { FIELD_TYPE_LABEL } from './values'
+import { COMMON_CURRENCIES, FIELD_TYPE_LABEL, moneyParts } from './values'
 
 /** Conversions the backend implements (anything else answers MIGRATION_UNSUPPORTED). */
-const MIGRATIONS: Partial<Record<FieldType, FieldType[]>> = { text: ['date', 'number', 'decimal'], number: ['decimal'], decimal: ['decimal'], select: ['text'] }
+const MIGRATIONS: Partial<Record<FieldType, FieldType[]>> = { text: ['date', 'number', 'decimal'], number: ['decimal', 'currency'], decimal: ['decimal', 'currency'], select: ['text'], currency: ['decimal', 'text', 'currency'] }
+
+const CURRENCY_CODE = /^[A-Z]{3}$/
+/** A currency code input: the common currencies offered, any ISO 4217 code accepted. */
+function CurrencyInput({ value, onChange, label }: { value: string; onChange: (code: string) => void; label: string }) {
+  return (
+    <>
+      <input aria-label={label} title={label} list="aiws-currency-codes" style={{ width: 64 }} maxLength={3} value={value} data-testid="aiws-currency-input" onChange={(event) => onChange(event.target.value.toUpperCase())} />
+      <datalist id="aiws-currency-codes">{COMMON_CURRENCIES.map((code) => <option key={code} value={code} />)}</datalist>
+    </>
+  )
+}
 
 interface MigrationReport { total: number; convertible: number; unset: number; failing: { count: number; sample: { record_id: string; value: Json }[] } }
 
@@ -29,7 +40,7 @@ function readReport(result: PrepareResult): MigrationReport | null {
 }
 
 export function FieldManager({ source, cell }: { source: ReadOk<TableSourceContent>; cell: ReadOk<KeyedContent<CellPayload>> }) {
-  const { t } = useAiwsText()
+  const { t, locale } = useAiwsText()
   const store = useStore()
   const sourceId = source.entity_id
   const fields = source.content.fields
@@ -37,9 +48,11 @@ export function FieldManager({ source, cell }: { source: ReadOk<TableSourceConte
   const [newName, setNewName] = useState('')
   const [newType, setNewType] = useState<FieldType>('text')
   const [newScale, setNewScale] = useState('2')
+  const [newCurrency, setNewCurrency] = useState(() => (locale.startsWith('zh') ? 'CNY' : 'USD'))
+  const [currencyEdit, setCurrencyEdit] = useState<{ id: string; code: string } | null>(null)
   const [renaming, setRenaming] = useState<{ id: string; text: string } | null>(null)
   const [optionText, setOptionText] = useState<Record<string, string>>({})
-  const [migration, setMigration] = useState<{ fieldId: string; to: FieldType; scale: string; onFailure: 'reject' | 'unset'; report: MigrationReport | null; status: string | null } | null>(null)
+  const [migration, setMigration] = useState<{ fieldId: string; to: FieldType; scale: string; currency: string; onFailure: 'reject' | 'unset'; report: MigrationReport | null; status: string | null } | null>(null)
 
   const submit = (label: string, operations: Operation[]) => store.submit({ editId: `schema:${sourceId}:${randomId()}`, label, operations })
 
@@ -51,7 +64,8 @@ export function FieldManager({ source, cell }: { source: ReadOk<TableSourceConte
   const addField = () => {
     const name = newName.trim()
     if (!name) return
-    void submit(t('aiworkspace.data.field.addEdit', { name }), addFieldOps(sourceId, cell, name, newType, Number(newScale) || 0)).then((outcome) => { if (outcome.status === 'accepted') setNewName('') })
+    if (newType === 'currency' && !CURRENCY_CODE.test(newCurrency)) { store.notify('info', t('aiworkspace.data.field.currencyInvalid')); return }
+    void submit(t('aiworkspace.data.field.addEdit', { name }), addFieldOps(sourceId, cell, name, newType, Number(newScale) || 0, newCurrency)).then((outcome) => { if (outcome.status === 'accepted') setNewName('') })
   }
 
   const preCheck = async () => {
@@ -60,15 +74,26 @@ export function FieldManager({ source, cell }: { source: ReadOk<TableSourceConte
     if (!field) return
     const result = await store.session.prepare([migrationOp(field, migration)])
     const report = readReport(result)
-    const status = result.status === 'ok' ? t('aiworkspace.data.migration.precheckOk')
+    let status = result.status === 'ok' ? t('aiworkspace.data.migration.precheckOk')
       : result.status === 'rejected' ? t('aiworkspace.data.migration.precheckFailedDetail', { code: result.code, detail: result.errors?.[0]?.detail ?? '' })
         : t('aiworkspace.data.migration.precheckFailed', { code: result.code })
+    // currency → decimal drops each value's currency: say how many are not in the field's default (§6.1)
+    if (field.type === 'currency' && migration.to === 'decimal' && field.currency) {
+      let other = 0, cursor: string | undefined
+      for (let pages = 0; pages < 20; pages++) {
+        const page = await store.session.query({ source_id: sourceId, fields: [field.field_id], limit: 1000, consistency: 'best_effort', ...(cursor ? { cursor } : {}) })
+        for (const row of page.rows) { const money = moneyParts(row.values[field.field_id]); if (money && money.currency !== field.currency) other += 1 }
+        if (!page.next_cursor || page.rows.length === 0) break
+        cursor = page.next_cursor
+      }
+      if (other > 0) status = `${status} ${t('aiworkspace.data.migration.otherCurrencies', { count: other, currency: field.currency })}`
+    }
     setMigration({ ...migration, report, status })
   }
 
   const migrationOp = (field: FieldDef, plan: NonNullable<typeof migration>): Operation => ({
     op: 'table.migrate_field', source_id: sourceId, field_id: field.field_id, expect: { rev: field.def_rev },
-    to: { type: plan.to, ...(plan.to === 'decimal' ? { scale: Number(plan.scale) || 0 } : {}) }, on_failure: plan.onFailure,
+    to: { type: plan.to, ...(plan.to === 'decimal' || plan.to === 'currency' ? { scale: Number(plan.scale) || 0 } : {}), ...(plan.to === 'currency' ? { currency: plan.currency } : {}) }, on_failure: plan.onFailure,
   })
 
   return (
@@ -96,7 +121,19 @@ export function FieldManager({ source, cell }: { source: ReadOk<TableSourceConte
                   ) : <span title={field.field_id}>{field.name}</span>}
                 </td>
                 <td>
-                  {FIELD_TYPE_LABEL[field.type]}{field.type === 'decimal' ? `(${field.scale ?? 0})` : ''}{field.required ? t('aiworkspace.data.field.required') : ''}
+                  {FIELD_TYPE_LABEL[field.type]}{field.type === 'decimal' ? `(${field.scale ?? 0})` : field.type === 'currency' ? `(${field.currency ?? ''})` : ''}{field.required ? t('aiworkspace.data.field.required') : ''}
+                  {field.type === 'currency' && (currencyEdit?.id === field.field_id ? (
+                    <form className="aiws-inline-form" onSubmit={(event) => {
+                      event.preventDefault()
+                      if (!CURRENCY_CODE.test(currencyEdit.code)) { store.notify('info', t('aiworkspace.data.field.currencyInvalid')); return }
+                      // only values written later take the new default: stored values carry their own currency
+                      if (currencyEdit.code !== field.currency) void submit(t('aiworkspace.data.field.currencyEdit', { name: field.name, currency: currencyEdit.code }), [{ op: 'table.update_field', source_id: sourceId, field_id: field.field_id, changes: { currency: currencyEdit.code }, expect: { rev: field.def_rev } }])
+                      setCurrencyEdit(null)
+                    }}>
+                      <CurrencyInput label={t('aiworkspace.data.field.currency')} value={currencyEdit.code} onChange={(code) => setCurrencyEdit({ id: field.field_id, code })} />
+                      <button type="submit">{t('aiworkspace.common.save')}</button>
+                    </form>
+                  ) : <button type="button" className="aiws-link" title={t('aiworkspace.data.field.currencyHint')} data-testid={`aiws-field-currency-${field.field_id}`} onClick={() => setCurrencyEdit({ id: field.field_id, code: field.currency ?? '' })}>{t('aiworkspace.data.field.changeCurrency')}</button>)}
                   {(field.type === 'select' || field.type === 'multi_select') && (
                     <div className="aiws-options">
                       {(field.options ?? []).map((option) => (
@@ -140,7 +177,7 @@ export function FieldManager({ source, cell }: { source: ReadOk<TableSourceConte
                 <td>
                   <button type="button" className="aiws-link" onClick={() => setRenaming({ id: field.field_id, text: field.name })}>{t('aiworkspace.data.rename')}</button>
                   {MIGRATIONS[field.type] && (
-                    <button type="button" className="aiws-link" data-testid={`aiws-migrate-${field.field_id}`} onClick={() => setMigration({ fieldId: field.field_id, to: MIGRATIONS[field.type]?.[0] ?? 'text', scale: '2', onFailure: 'reject', report: null, status: null })}>{t('aiworkspace.data.field.changeType')}</button>
+                    <button type="button" className="aiws-link" data-testid={`aiws-migrate-${field.field_id}`} onClick={() => setMigration({ fieldId: field.field_id, to: MIGRATIONS[field.type]?.[0] ?? 'text', scale: String(field.scale ?? 2), currency: field.currency ?? newCurrency, onFailure: 'reject', report: null, status: null })}>{t('aiworkspace.data.field.changeType')}</button>
                   )}
                   <button type="button" className="aiws-link" onClick={() => {
                     void submit(t('aiworkspace.data.field.deleteEdit', { name: field.name }), [{ op: 'table.delete_field', source_id: sourceId, field_id: field.field_id, expect: { rev: field.def_rev } }])
@@ -160,7 +197,8 @@ export function FieldManager({ source, cell }: { source: ReadOk<TableSourceConte
             <select aria-label={t('aiworkspace.data.migration.targetType')} value={migration.to} onChange={(event) => setMigration({ ...migration, to: event.target.value as FieldType, report: null, status: null })}>
               {(MIGRATIONS[field.type] ?? []).map((type) => <option key={type} value={type}>{FIELD_TYPE_LABEL[type]}</option>)}
             </select>
-            {migration.to === 'decimal' && <input aria-label={t('aiworkspace.data.field.scale')} style={{ width: 48 }} value={migration.scale} onChange={(event) => setMigration({ ...migration, scale: event.target.value, report: null, status: null })} />}
+            {(migration.to === 'decimal' || migration.to === 'currency') && <input aria-label={t('aiworkspace.data.field.scale')} style={{ width: 48 }} value={migration.scale} onChange={(event) => setMigration({ ...migration, scale: event.target.value, report: null, status: null })} />}
+            {migration.to === 'currency' && <CurrencyInput label={t('aiworkspace.data.field.currency')} value={migration.currency} onChange={(code) => setMigration({ ...migration, currency: code, report: null, status: null })} />}
             <select aria-label={t('aiworkspace.data.migration.onFailure')} value={migration.onFailure} onChange={(event) => setMigration({ ...migration, onFailure: event.target.value === 'unset' ? 'unset' : 'reject', report: null, status: null })}>
               <option value="reject">{t('aiworkspace.data.migration.reject')}</option>
               <option value="unset">{t('aiworkspace.data.migration.unset')}</option>
@@ -188,6 +226,7 @@ export function FieldManager({ source, cell }: { source: ReadOk<TableSourceConte
           {CREATABLE_FIELD_TYPES.map((type) => <option key={type} value={type}>{FIELD_TYPE_LABEL[type]}</option>)}
         </select>
         {newType === 'decimal' && <input aria-label={t('aiworkspace.data.field.scale')} style={{ width: 48 }} value={newScale} onChange={(event) => setNewScale(event.target.value)} />}
+        {newType === 'currency' && <CurrencyInput label={t('aiworkspace.data.field.currency')} value={newCurrency} onChange={setNewCurrency} />}
         <button type="submit" data-testid="aiws-add-field">{t('aiworkspace.data.field.add')}</button>
       </form>
     </div>

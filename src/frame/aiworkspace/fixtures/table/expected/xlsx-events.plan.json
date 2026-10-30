@@ -1,0 +1,71 @@
+{
+  "title": "Events",
+  "header": true,
+  "columns": [
+    {
+      "name": "Event",
+      "type": "text"
+    },
+    {
+      "name": "At",
+      "type": "datetime"
+    },
+    {
+      "name": "Time",
+      "type": "text"
+    },
+    {
+      "name": "Day",
+      "type": "date"
+    }
+  ],
+  "fields": [
+    {
+      "field_id": "c1",
+      "name": "Event",
+      "type": "text"
+    },
+    {
+      "field_id": "c2",
+      "name": "At",
+      "type": "datetime"
+    },
+    {
+      "field_id": "c3",
+      "name": "Time",
+      "type": "text"
+    },
+    {
+      "field_id": "c4",
+      "name": "Day",
+      "type": "date"
+    }
+  ],
+  "titleFieldId": "c1",
+  "rows": 2,
+  "records": [
+    {
+      "c1": "Kickoff",
+      "c2": "2026-07-01T09:30:00.000Z",
+      "c3": "12:00:00",
+      "c4": "2026-07-01"
+    },
+    {
+      "c1": "ok",
+      "c2": "2026-07-02T18:00:15.000Z",
+      "c3": "18:00:00",
+      "c4": "2026-07-02"
+    }
+  ],
+  "report": [
+    {
+      "kind": "table_time_only",
+      "count": 2,
+      "samples": [
+        "C2",
+        "C3"
+      ]
+    }
+  ],
+  "gridRows": 3
+}

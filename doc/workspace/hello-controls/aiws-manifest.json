@@ -1,0 +1,16 @@
+{
+  "manifest_version": 1,
+  "purpose": "aiws",
+  "host_api": { "html": 2, "declarative": 1 },
+  "controls": [
+    { "ident": "did:bns:alice#hello-kpi", "name": "hello-kpi", "kind": "declarative", "version": 3,
+      "digest": "sha256:a934d4e9c4b7512e6976c74dda478a518132fb69adb6653847eeb6ff2f843805", "dir": "controls/hello-kpi/",
+      "title": "Hello KPI", "description": "Counts the rows of a bound task table, sums the hours and shows the status mix.",
+      "catalog": { "group": "hello", "description": "A counter card for any task table" } },
+    { "ident": "did:bns:alice#hello-card", "name": "hello-card", "kind": "html", "version": 5,
+      "digest": "sha256:3ca978da8f8fc3b120b57bd1beb027e5a669b5d31fa3aff238612328b04508bf", "dir": "controls/hello-card/",
+      "title": "Hello Card", "description": "Shows one task record as a card with a Done button.",
+      "catalog": { "group": "hello", "description": "One task as a card with a Done button" } }
+  ],
+  "workspace_templates": []
+}

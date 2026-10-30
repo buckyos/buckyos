@@ -79,13 +79,21 @@ class BuckyosBuildEntrypointTests(unittest.TestCase):
             (source / "commands").mkdir(parents=True)
             (source / "aicc-tool.ts").write_text("// entry\n", encoding="utf-8")
             (source / "commands" / "gen_image.ts").write_text("// cmd\n", encoding="utf-8")
-            (source / "deno.json").write_text('{"imports": {"buckyos": "../../rootfs/x.mjs"}}', encoding="utf-8")
+            (source / "deno.json").write_text('{"imports": {"buckyos": "../../rootfs/x.mjs", "@table/": "../../frame/aiworkspace/import-table/"}}', encoding="utf-8")
+            src_root = Path(temporary) / "tree"
+            (src_root / "frame" / "aiworkspace" / "import-table").mkdir(parents=True)
+            (src_root / "frame" / "aiworkspace" / "import-table" / "mod.ts").write_text("// shared\n", encoding="utf-8")
+            (src_root / "frame" / "aiworkspace" / "import-table" / "mod_test.ts").write_text("// test\n", encoding="utf-8")
             target = Path(temporary) / "rootfs" / "libexec" / "buckyos-agent"
             target.mkdir(parents=True)
             (target / "stale.ts").write_text("old", encoding="utf-8")
-            self.assertEqual(module._prepare_agent_tools(source, target), 0)
+            self.assertEqual(module._prepare_agent_tools(source, target, src_root), 0)
             config = module.json.loads((target / "deno.json").read_text(encoding="utf-8"))
             self.assertEqual(config["imports"]["buckyos"], "../buckyos-tool/dist/node.mjs")
+            # shared modules travel beside the commands, tests left out
+            self.assertEqual(config["imports"]["@table/"], "./vendor/frame/aiworkspace/import-table/")
+            self.assertTrue((target / "vendor" / "frame" / "aiworkspace" / "import-table" / "mod.ts").is_file())
+            self.assertFalse((target / "vendor" / "frame" / "aiworkspace" / "import-table" / "mod_test.ts").exists())
             self.assertTrue((target / "commands" / "gen_image.ts").is_file())
             self.assertFalse((target / "stale.ts").exists())
             self.assertEqual(module._prepare_agent_tools(Path(temporary) / "missing", target), 2)

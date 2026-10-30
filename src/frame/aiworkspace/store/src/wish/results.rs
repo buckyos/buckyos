@@ -68,10 +68,11 @@ fn is_datetime(s: &str) -> bool {
 
 /// Field type of a column from its values (declared types win).
 pub fn infer_type<'a>(values: impl Iterator<Item = &'a Value>) -> &'static str {
-    let (mut n, mut nums, mut bools, mut dates, mut dts, mut arrays) = (0, 0, 0, 0, 0, 0);
+    let (mut n, mut nums, mut bools, mut dates, mut dts, mut arrays, mut money) = (0, 0, 0, 0, 0, 0, 0);
     for v in values {
         match v {
             Value::Null => continue,
+            v if is_money(v) => money += 1,
             Value::Number(_) => nums += 1,
             Value::Bool(_) => bools += 1,
             Value::String(s) if is_date(s) => dates += 1,
@@ -94,12 +95,25 @@ pub fn infer_type<'a>(values: impl Iterator<Item = &'a Value>) -> &'static str {
         "datetime"
     } else if arrays == n {
         "multi_select"
+    } else if money == n {
+        "currency"
     } else {
         "text"
     }
 }
 
-const FIELD_TYPES: &[&str] = &["text", "number", "decimal", "boolean", "date", "datetime", "select", "multi_select"];
+const FIELD_TYPES: &[&str] = &["text", "number", "decimal", "currency", "boolean", "date", "datetime", "select", "multi_select"];
+
+/// `{ amount, currency }`: an amount (number or numeric text) with a three-letter code (表格导入 TODO §6).
+pub fn is_money(v: &Value) -> bool {
+    let Some(o) = v.as_object() else { return false };
+    let amount = match o.get("amount") {
+        Some(Value::Number(n)) => n.as_f64().is_some_and(f64::is_finite),
+        Some(Value::String(s)) => super::profile::numeric_text(s).is_some(),
+        _ => false,
+    };
+    amount && o.len() == 2 && o.get("currency").and_then(Value::as_str).is_some_and(|c| c.len() == 3 && c.chars().all(|c| c.is_ascii_alphabetic()))
+}
 
 /// `{ name: type }` or `[{ name, type, options?, scale? }]` → `[{ name, type, options?, scale? }]`.
 fn declared_fields(v: Option<&Value>) -> Result<Vec<Value>, String> {
@@ -127,6 +141,9 @@ pub fn check_value(ty: &str, v: &Value) -> bool {
         (_, Value::Null) => true,
         ("number" | "decimal", Value::Number(n)) => n.as_f64().is_some_and(f64::is_finite),
         ("number" | "decimal", Value::String(s)) => super::profile::numeric_text(s).is_some(),
+        ("currency", Value::Number(n)) => n.as_f64().is_some_and(f64::is_finite),
+        ("currency", Value::String(s)) => super::profile::numeric_text(s).is_some(),
+        ("currency", v @ Value::Object(_)) => is_money(v),
         ("boolean", Value::Bool(_)) => true,
         ("date", Value::String(s)) => is_date(s) || is_datetime(s),
         ("datetime", Value::String(s)) => is_datetime(s) || is_date(s),
@@ -850,6 +867,12 @@ mod tests {
         assert_eq!(infer_type([json!(1), json!(2.5), Value::Null].iter()), "number");
         assert_eq!(infer_type([json!("2026-07-01"), json!("2026-08-01")].iter()), "date");
         assert_eq!(infer_type([json!("a"), json!(1)].iter()), "text");
+        assert_eq!(infer_type([json!({"amount": 12.5, "currency": "USD"}), json!({"amount": "3", "currency": "CNY"})].iter()), "currency");
+        assert_eq!(infer_type([json!({"amount": 12.5, "currency": "USD"}), json!(3)].iter()), "text");
+        assert!(check_value("currency", &json!({"amount": "12.50", "currency": "EUR"})));
+        assert!(check_value("currency", &json!(12)));
+        assert!(!check_value("currency", &json!({"amount": "x", "currency": "EUR"})));
+        assert!(!check_value("currency", &json!("twelve")));
         let (m, d) = sniff_file(br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360"></svg>"#);
         assert_eq!((m.as_str(), d), ("image/svg+xml", Some((640, 360))));
     }

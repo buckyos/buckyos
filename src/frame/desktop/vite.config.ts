@@ -91,6 +91,8 @@ function aiwsHostPages(): Plugin {
 const DRAWIO_DIR = resolve(import.meta.dirname, '../aiworkspace/import-drawio')
 // The PDF importer shared with Deno and Agents (PDF 导入方案 §4): pdf.js page data → the draw.io importer's plans.
 const PDF_DIR = resolve(import.meta.dirname, '../aiworkspace/import-pdf')
+// The table importer shared with the Deno CLI (表格数据导入 TODO §2.1): pasted tables, CSV, xlsx, SQLite → TableSource plans.
+const TABLE_DIR = resolve(import.meta.dirname, '../aiworkspace/import-table')
 // The Block-controls shared with Deno and Agents (脑图 TODO M1): layout, measuring, outline conversion, catalogue.
 const CONTROLS_DIR = resolve(import.meta.dirname, '../aiworkspace/controls')
 // The wish program host (src/frame/aiworkspace/aiws/aiws.js) the local executor's Worker runs programs with: the file the service runs.
@@ -163,10 +165,10 @@ export default defineConfig(() => {
       // (called in src/app/aiworkspace/richtext/loro.ts); loro-prosemirror must see the same instance.
       // The draw.io importer and the canvas geometry it shares live outside the app (they also run in Deno):
       // src/frame/aiworkspace/import-drawio (draw.io 导入 TODO §3).
-      alias: [{ find: /^loro-crdt$/, replacement: 'loro-crdt/web' }, { find: /^@drawio\//, replacement: `${DRAWIO_DIR}/` }, { find: /^@pdf\//, replacement: `${PDF_DIR}/` }, { find: /^@controls\//, replacement: `${CONTROLS_DIR}/` }],
+      alias: [{ find: /^loro-crdt$/, replacement: 'loro-crdt/web' }, { find: /^@drawio\//, replacement: `${DRAWIO_DIR}/` }, { find: /^@pdf\//, replacement: `${PDF_DIR}/` }, { find: /^@table\//, replacement: `${TABLE_DIR}/` }, { find: /^@controls\//, replacement: `${CONTROLS_DIR}/` }],
     },
     server: {
-      fs: { allow: [searchForWorkspaceRoot(process.cwd()), DRAWIO_DIR, PDF_DIR, CONTROLS_DIR, AIWS_DIR] },
+      fs: { allow: [searchForWorkspaceRoot(process.cwd()), DRAWIO_DIR, PDF_DIR, TABLE_DIR, CONTROLS_DIR, AIWS_DIR] },
       host: '0.0.0.0',
       port: 5174,
       proxy: {

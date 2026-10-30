@@ -31,11 +31,13 @@ function EntryIcon({ entry }: { entry: CatalogEntry }) {
   return <span className="aiws-catalog-entry-icon" data-group={entry.group}><Icon size={20} aria-hidden="true" /></span>
 }
 
-export function InsertCatalog({ initialTab = 'all', initialKey, canPlace, onClose, onInsert, onImport, onImportAssets }: {
+export function InsertCatalog({ initialTab = 'all', initialKey, canPlace, onClose, onInsert, onImport, onImportAssets, onImportTable }: {
   initialTab?: CatalogTab
   initialKey?: string
   /** "Import draw.io…" (draw.io 导入 TODO §3), when importing is possible here. */
   onImport?: () => void
+  /** The table entry's "From a file…" (表格数据导入 TODO §5.1): straight to the file picker and the wizard. */
+  onImportTable?: () => void
   onImportAssets?: (files: File[], folder: boolean, signal: AbortSignal) => Promise<void>
   /** A free Surface: the entry can also be placed by a click on the canvas. */
   canPlace: boolean
@@ -130,7 +132,7 @@ export function InsertCatalog({ initialTab = 'all', initialKey, canPlace, onClos
                     ))}
                   </ul>
                 </div>
-                {chosen ? <EntryDetail key={chosen.key} entry={chosen} canPlace={canPlace} onInsert={onInsert} /> : <div className="aiws-catalog-detail aiws-catalog-empty"><MousePointer2 size={28} aria-hidden="true" /><span>{t('aiworkspace.canvas.catalog.chooseEntry')}</span></div>}
+                {chosen ? <EntryDetail key={chosen.key} entry={chosen} canPlace={canPlace} onInsert={onInsert} onImportTable={onImportTable} /> : <div className="aiws-catalog-detail aiws-catalog-empty"><MousePointer2 size={28} aria-hidden="true" /><span>{t('aiworkspace.canvas.catalog.chooseEntry')}</span></div>}
               </>
             )}
           </div>
@@ -141,7 +143,7 @@ export function InsertCatalog({ initialTab = 'all', initialKey, canPlace, onClos
   )
 }
 
-function EntryDetail({ entry, canPlace, onInsert }: { entry: CatalogEntry; canPlace: boolean; onInsert: (request: InsertRequest, how: 'center' | 'place') => void }) {
+function EntryDetail({ entry, canPlace, onInsert, onImportTable }: { entry: CatalogEntry; canPlace: boolean; onInsert: (request: InsertRequest, how: 'center' | 'place') => void; onImportTable?: () => void }) {
   const store = useStore()
   const { t, list } = useAiwsText()
   const [title, setTitle] = useState('')
@@ -223,6 +225,7 @@ function EntryDetail({ entry, canPlace, onInsert }: { entry: CatalogEntry; canPl
       <div className="aiws-dialog-actions aiws-catalog-actions">
         <button type="button" className="is-primary" data-testid="aiws-catalog-insert" disabled={!ready} onClick={() => onInsert(request(), 'center')}><Plus size={16} aria-hidden="true" />{t('aiworkspace.canvas.catalog.insertCenter')}</button>
         {canPlace && <button type="button" data-testid="aiws-catalog-place" disabled={!ready} onClick={() => onInsert(request(), 'place')}><MousePointer2 size={16} aria-hidden="true" />{t('aiworkspace.canvas.catalog.place')}</button>}
+        {entryId(entry) === 'table' && onImportTable && <button type="button" data-testid="aiws-catalog-import-table" onClick={onImportTable}><FileUp size={16} aria-hidden="true" />{t('aiworkspace.canvas.catalog.importTable')}</button>}
         {entry.defEntity && (
           <button type="button" className="aiws-link" data-testid="aiws-catalog-pin" onClick={() => store.userState.set('ui:pinned-defs', pinned.includes(defId) ? pinned.filter((id) => id !== defId) : [...pinned, defId].slice(-6))}>
             {t(pinned.includes(defId) ? 'aiworkspace.canvas.catalog.unpin' : 'aiworkspace.canvas.catalog.pin')}

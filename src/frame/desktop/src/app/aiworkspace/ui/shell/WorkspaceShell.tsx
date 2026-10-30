@@ -29,6 +29,7 @@ import { ShareDialog } from './ShareDialog'
 import { LAYOUT_KEYS, PREF_KEYS, ShellContext, SOURCES_SIDE_TABS, usePhone, type DialogRequest, type GuideState, type LayoutPrefs, type ShellApi, type SideTab, type SizeClass, type TopMode } from './shellContext'
 import { SidePanel } from './SidePanel'
 import { StatusDetail, StatusDock } from './StatusSummary'
+import { TableImportHost } from '../import/TableImportDialog'
 
 export type { TopMode } from './shellContext'
 
@@ -328,6 +329,7 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
             {dialog?.kind === 'help' && <HelpDialog onClose={() => setDialog(null)} />}
             {dialog?.kind === 'mock' && <MockDialog onClose={() => setDialog(null)} />}
             {dialog?.kind === 'extensions' && <ExtensionsDialog initialDefId={dialog.defId} phone={phone} onClose={() => setDialog(null)} />}
+            <TableImportHost />
           </WorkspaceUiContext.Provider>
         )}
       </ShellContext.Provider>

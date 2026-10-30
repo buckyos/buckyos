@@ -1,0 +1,78 @@
+{
+  "title": "numbers",
+  "header": true,
+  "columns": [
+    {
+      "name": "Project",
+      "type": "text"
+    },
+    {
+      "name": "Budget",
+      "type": "currency",
+      "scale": 2,
+      "currency": "CNY"
+    },
+    {
+      "name": "Done",
+      "type": "boolean"
+    },
+    {
+      "name": "Note",
+      "type": "text"
+    }
+  ],
+  "fields": [
+    {
+      "field_id": "c1",
+      "name": "Project",
+      "type": "text"
+    },
+    {
+      "field_id": "c2",
+      "name": "Budget",
+      "type": "currency",
+      "currency": "CNY"
+    },
+    {
+      "field_id": "c3",
+      "name": "Done",
+      "type": "boolean"
+    },
+    {
+      "field_id": "c4",
+      "name": "Note",
+      "type": "text"
+    }
+  ],
+  "titleFieldId": "c1",
+  "rows": 2,
+  "records": [
+    {
+      "c1": "Alpha",
+      "c2": {
+        "amount": "12000.00",
+        "currency": "CNY"
+      },
+      "c3": true,
+      "c4": "first\nsecond"
+    },
+    {
+      "c1": "Beta",
+      "c2": {
+        "amount": "8500.50",
+        "currency": "CNY"
+      },
+      "c3": false
+    }
+  ],
+  "report": [
+    {
+      "kind": "table_currency_symbol",
+      "count": 1,
+      "samples": [
+        "Budget: ¥ → CNY"
+      ]
+    }
+  ],
+  "gridRows": 3
+}

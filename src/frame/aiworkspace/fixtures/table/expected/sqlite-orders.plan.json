@@ -1,0 +1,130 @@
+{
+  "title": "orders",
+  "header": true,
+  "columns": [
+    {
+      "name": "id",
+      "type": "number"
+    },
+    {
+      "name": "product_id",
+      "type": "number"
+    },
+    {
+      "name": "qty",
+      "type": "number"
+    },
+    {
+      "name": "placed",
+      "type": "datetime"
+    },
+    {
+      "name": "status",
+      "type": "text"
+    },
+    {
+      "name": "big",
+      "type": "decimal",
+      "scale": 0
+    },
+    {
+      "name": "extra",
+      "type": "text"
+    }
+  ],
+  "fields": [
+    {
+      "field_id": "c1",
+      "name": "id",
+      "type": "number"
+    },
+    {
+      "field_id": "c2",
+      "name": "product_id",
+      "type": "number"
+    },
+    {
+      "field_id": "c3",
+      "name": "qty",
+      "type": "number"
+    },
+    {
+      "field_id": "c4",
+      "name": "placed",
+      "type": "datetime"
+    },
+    {
+      "field_id": "c5",
+      "name": "status",
+      "type": "text"
+    },
+    {
+      "field_id": "c6",
+      "name": "big",
+      "type": "decimal",
+      "scale": 0
+    },
+    {
+      "field_id": "c7",
+      "name": "extra",
+      "type": "text"
+    }
+  ],
+  "titleFieldId": "c5",
+  "rows": 6,
+  "records": [
+    {
+      "c1": 1,
+      "c2": 1,
+      "c3": 2,
+      "c4": "2026-03-01T10:00:00.000Z",
+      "c5": "open",
+      "c6": "9007199254740993",
+      "c7": "x"
+    },
+    {
+      "c1": 2,
+      "c2": 3,
+      "c3": 6,
+      "c4": "2026-03-02T11:30:00.000Z",
+      "c5": "done",
+      "c6": "12"
+    },
+    {
+      "c1": 3,
+      "c2": 2,
+      "c3": 1,
+      "c4": "2026-03-03T09:15:00.000Z",
+      "c5": "open",
+      "c6": "13",
+      "c7": "4.5"
+    },
+    {
+      "c1": 4,
+      "c2": 1,
+      "c3": 1,
+      "c4": "2026-03-04T16:45:00.000Z",
+      "c5": "done",
+      "c6": "14",
+      "c7": "y"
+    },
+    {
+      "c1": 5,
+      "c2": 3,
+      "c3": 3,
+      "c4": "2026-03-05T08:00:00.000Z",
+      "c5": "open",
+      "c6": "15"
+    },
+    {
+      "c1": 6,
+      "c2": 2,
+      "c3": 2,
+      "c4": "2026-03-06T12:00:00.000Z",
+      "c5": "open",
+      "c6": "16"
+    }
+  ],
+  "report": [],
+  "gridRows": 7
+}

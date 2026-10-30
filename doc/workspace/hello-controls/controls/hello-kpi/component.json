@@ -1,0 +1,24 @@
+{
+  "manifest_version": 1,
+  "ident": { "author_did": "did:bns:alice", "name": "hello-kpi" },
+  "kind": "declarative",
+  "title": "Hello KPI",
+  "description": "Counts the rows of a bound task table, sums the hours and shows the status mix. The smallest control that is useful.",
+  "accepts": ["buckyos.table-source"],
+  "allow_no_source": true,
+  "default_size": { "w": 260, "h": 160 },
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "label": { "type": "string", "title": "Label", "default": "Open tasks", "maxLength": 40 },
+      "accent": { "type": "string", "title": "Accent color", "default": "#4f8df7" }
+    }
+  },
+  "bindings": {
+    "tasks": { "accepts": ["buckyos.table-source"], "required": true, "title": "Tasks", "description": "The task table this card counts" }
+  },
+  "entry": "declarative.json",
+  "catalog": { "group": "hello", "description": "A counter card for any task table" },
+  "agent": "AGENT.md",
+  "deps": []
+}

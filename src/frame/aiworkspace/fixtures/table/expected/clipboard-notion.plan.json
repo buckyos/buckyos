@@ -1,0 +1,51 @@
+{
+  "title": "notion",
+  "header": true,
+  "columns": [
+    {
+      "name": "Name",
+      "type": "text"
+    },
+    {
+      "name": "Tags",
+      "type": "text"
+    },
+    {
+      "name": "Due",
+      "type": "date"
+    }
+  ],
+  "fields": [
+    {
+      "field_id": "c1",
+      "name": "Name",
+      "type": "text"
+    },
+    {
+      "field_id": "c2",
+      "name": "Tags",
+      "type": "text"
+    },
+    {
+      "field_id": "c3",
+      "name": "Due",
+      "type": "date"
+    }
+  ],
+  "titleFieldId": "c1",
+  "rows": 2,
+  "records": [
+    {
+      "c1": "Write spec",
+      "c2": "doc",
+      "c3": "2026-10-03"
+    },
+    {
+      "c1": "Review",
+      "c2": "meeting",
+      "c3": "2026-10-10"
+    }
+  ],
+  "report": [],
+  "gridRows": 3
+}

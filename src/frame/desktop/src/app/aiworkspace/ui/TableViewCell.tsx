@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Calendar, CalendarClock, CircleChevronDown, Columns3, Hash, Link2, ListFilter, Plus, SquareCheck, Tags, Trash2, Type } from 'lucide-react'
+import { Banknote, Calendar, CalendarClock, CircleChevronDown, ClipboardCopy, Columns3, Hash, Link2, ListFilter, Plus, SquareCheck, Tags, Trash2, Type } from 'lucide-react'
 import { randomId } from '../api/ids'
 import type { ReadOk } from '../api/session'
 import type {
@@ -20,10 +20,12 @@ import type { ToolbarItem } from './blocks/registry'
 import { FieldManager } from './FieldManager'
 import { addFieldOps, CREATABLE_FIELD_TYPES } from './fieldOps'
 import { useOverlayMounted } from './shell/popover'
+import { languageCurrency } from '@table/currency'
 import { TablePager, type PagerQuery } from './tablePager'
+import { COPY_LIMIT, tableClipboard } from './import/copyTable'
 import { ValueEditor } from './ValueEditor'
 import { asFormula, formulaResult } from './formula'
-import { FIELD_TYPE_LABEL, UNSET, formatValue, operatorsFor, SORTABLE, type Input } from './values'
+import { FIELD_TYPE_LABEL, UNSET, editText, formatValue, operatorsFor, parseInput, SORTABLE, type Input } from './values'
 
 const ROW_HEIGHT = 34
 const DEFAULT_WIDTH = 150
@@ -98,7 +100,8 @@ function TableViewBody({ cell, sourceMode, readOnly, compact, annotations, onAnn
   const intent = useIntent(intentKey)
   const [panel, setPanel] = useState<Panel>('none')
   const [intentSeen, setIntentSeen] = useState(0)
-  if (intent && intent.seq !== intentSeen) { setIntentSeen(intent.seq); setPanel(asPanel(intent.value)) }
+  const [copyAsked, setCopyAsked] = useState(0)
+  if (intent && intent.seq !== intentSeen) { setIntentSeen(intent.seq); if (intent.value === 'copy') setCopyAsked(intent.seq); else setPanel(asPanel(intent.value)) }
   useEffect(() => { if (intent) consumeIntent(intentKey, intent) }, [intent, intentKey])
 
   const savedKey = JSON.stringify([payload.filter ?? null, payload.sorts ?? null, payload.fields ?? null])
@@ -138,12 +141,36 @@ function TableViewBody({ cell, sourceMode, readOnly, compact, annotations, onAnn
   const canStructure = !readOnly && (source.data?.capabilities.includes('structure') ?? false)
   const canEditView = !readOnly && !sourceMode && cell.capabilities.includes('update')
 
+  /** "Copy as table" (表格数据导入 TODO §4.1): the shown columns, every row of the view's filter and order (≤ 20 000).
+   * The clipboard item is written at once (the click's user activation) with its data still being read. */
+  const copyAsTable = () => {
+    const shown = columns.map((column) => column.field)
+    const data = pager.fetchAll(COPY_LIMIT).then(({ rows: all, total }) => ({ ...tableClipboard(shown, all), count: all.length, total }))
+    const blob = (type: string, pick: (d: { text: string; html: string }) => string) => data.then((d) => new Blob([pick(d)], { type }))
+    let written: Promise<void>
+    try {
+      written = navigator.clipboard.write([new ClipboardItem({ 'text/plain': blob('text/plain', (d) => d.text), 'text/html': blob('text/html', (d) => d.html) })])
+    } catch (error) {
+      written = Promise.reject(error)
+    }
+    void written.then(() => data).then(
+      (d) => store.notify('info', d.total > d.count ? t('aiworkspace.data.table.copiedPart', { count: d.count, total: d.total }) : t('aiworkspace.data.table.copied', { count: d.count })),
+      (error: unknown) => store.notify('error', t('aiworkspace.data.table.copyFailed', { reason: error instanceof Error ? error.message : String(error) })))
+  }
+  // the Block toolbar's "copy as table" reaches the editor as an intent
+  const copyRef = useRef(copyAsTable)
+  useEffect(() => { copyRef.current = copyAsTable })
+  // once per request (effects run twice on a development mount)
+  const copiedFor = useRef(0)
+  const columnsReady = columns.length > 0
+  useEffect(() => { if (copyAsked && columnsReady && copiedFor.current !== copyAsked) { copiedFor.current = copyAsked; copyRef.current() } }, [copyAsked, columnsReady])
   // on a canvas the bar's controls are tools of the near toolbar; elsewhere the bar stays above the table
   const toggle = (next: Panel) => setPanel(panel === next ? 'none' : next)
   const tools: ToolbarItem[] | null = compact || !source.data ? null : [
     { kind: 'button', id: 'table-filter', icon: ListFilter, label: sessionView.filter || sessionView.sorts ? t('aiworkspace.data.table.filterSortSession') : payload.filter || payload.sorts?.length ? t('aiworkspace.data.table.filterSortSaved') : t('aiworkspace.data.table.filterSort'), active: panel === 'filter' || Boolean(sessionView.filter || sessionView.sorts), run: () => toggle('filter') },
     ...(canStructure ? [{ kind: 'button' as const, id: 'table-fields', icon: Columns3, label: t('aiworkspace.data.table.fields'), active: panel === 'fields', run: () => toggle('fields') }] : []),
     ...(canAppend ? [{ kind: 'button' as const, id: 'table-add', icon: Plus, label: t('aiworkspace.data.record.add'), active: panel === 'add', run: () => toggle('add') }] : []),
+    { kind: 'button', id: 'table-copy', icon: ClipboardCopy, label: t('aiworkspace.data.table.copyAsTable'), run: copyAsTable },
   ]
   const inNearToolbar = useEditorToolbar('table', tools)
 
@@ -202,6 +229,7 @@ function TableViewBody({ cell, sourceMode, readOnly, compact, annotations, onAnn
             onClick={() => setPanel(panel === 'filter' ? 'none' : 'filter')}><ListFilter size={15} aria-hidden="true" /></button>
           {canStructure && <button type="button" className="aiws-table-tool" aria-label={t('aiworkspace.data.table.fields')} title={t('aiworkspace.data.table.fieldsTitle')} aria-pressed={panel === 'fields'} data-testid={`aiws-fields-${cellId}`}
             onClick={() => setPanel(panel === 'fields' ? 'none' : 'fields')}><Columns3 size={15} aria-hidden="true" /></button>}
+          <button type="button" className="aiws-table-tool" aria-label={t('aiworkspace.data.table.copyAsTable')} title={t('aiworkspace.data.table.copyAsTable')} data-testid={`aiws-table-copy-${cellId}`} onClick={copyAsTable}><ClipboardCopy size={15} aria-hidden="true" /></button>
         </div>
       )}
       {diagnostics.length > 0 && (
@@ -316,12 +344,12 @@ function TableViewBody({ cell, sourceMode, readOnly, compact, annotations, onAnn
 
 /** Field type → header icon. */
 const FIELD_ICONS: Partial<Record<FieldDef['type'], typeof Type>> = {
-  text: Type, number: Hash, decimal: Hash, date: Calendar, datetime: CalendarClock, boolean: SquareCheck, select: CircleChevronDown, multi_select: Tags, object_ref: Link2,
+  text: Type, number: Hash, decimal: Hash, currency: Banknote, date: Calendar, datetime: CalendarClock, boolean: SquareCheck, select: CircleChevronDown, multi_select: Tags, object_ref: Link2,
 }
 
 /** "+" of the header: a field by name and type, nothing else asked (the field manager has the rest). */
 function QuickAddField({ source, cell, at, onClose }: { source: SourceRead; cell: CellRead; at: { top: number; left: number }; onClose: () => void }) {
-  const { t } = useAiwsText()
+  const { t, locale } = useAiwsText()
   const store = useStore()
   const [name, setName] = useState('')
   const [type, setType] = useState<FieldDef['type']>('text')
@@ -340,7 +368,8 @@ function QuickAddField({ source, cell, at, onClose }: { source: SourceRead; cell
   const submit = () => {
     const text = name.trim()
     if (!text) return
-    void store.submit({ editId: `schema:${source.entity_id}:${randomId()}`, label: t('aiworkspace.data.field.addEdit', { name: text }), operations: addFieldOps(source.entity_id, cell, text, type) })
+    // a currency column takes the interface language's currency (zh → CNY, else USD); the field manager can change it
+    void store.submit({ editId: `schema:${source.entity_id}:${randomId()}`, label: t('aiworkspace.data.field.addEdit', { name: text }), operations: addFieldOps(source.entity_id, cell, text, type, 2, languageCurrency(locale)) })
       .then((outcome) => { if (outcome.status === 'accepted' || outcome.status === 'saved_locally') onClose() })
   }
   return (
@@ -675,7 +704,7 @@ function FilterSortPanel({ fields, session, hasSavedFilter, hasSavedSorts, canSa
   const field = fields.find((item) => item.field_id === fieldId)
   const operators = field ? operatorsFor(field.type) : []
   const [operator, setOperator] = useState(current?.operator ?? operators[0]?.id ?? 'eq')
-  const [text, setText] = useState(current && current.value !== undefined ? String(current.value) : '')
+  const [text, setText] = useState(current && current.value !== undefined ? (field ? editText(field, current.value) : String(current.value)) : '')
   const sortable = fields.filter((item) => SORTABLE.has(item.type))
   const [sortField, setSortField] = useState(session.sorts?.[0]?.field_id ?? '')
   const [direction, setDirection] = useState<'asc' | 'desc'>(session.sorts?.[0]?.direction ?? 'asc')
@@ -689,6 +718,8 @@ function FilterSortPanel({ fields, session, hasSavedFilter, hasSavedSorts, canSa
         if (field.type === 'number') value = Number(text)
         else if (field.type === 'boolean') value = text === 'true'
         else if (field.type === 'multi_select') value = text.split(',').map((item) => item.trim()).filter(Boolean)
+        // `100` (the field's currency) or `CNY 100`, `¥100`
+        else if (field.type === 'currency') { const parsed = parseInput(field, text); value = parsed.ok && parsed.value !== UNSET ? parsed.value : text }
         else value = text
       }
       filter = { op: 'cmp', field_id: field.field_id, operator: activeOperator.id, ...(value !== undefined ? { value } : {}) }
@@ -754,7 +785,9 @@ function AddRecordForm({ store, source, onDone }: { store: WorkspaceStore; sourc
         if (field.required) { setError(t('aiworkspace.data.record.required', { name: field.name })); return }
         continue
       }
-      values[field.field_id] = field.type === 'number' ? Number(text) : field.type === 'boolean' ? text === 'true' : text
+      const parsed = field.type === 'currency' ? parseInput(field, text) : null
+      if (parsed && !parsed.ok) { setError(parsed.error); return }
+      values[field.field_id] = parsed?.ok ? parsed.value as Json : field.type === 'number' ? Number(text) : field.type === 'boolean' ? text === 'true' : text
       typeRevs[field.field_id] = field.type_rev
     }
     const recordId = randomId('r')

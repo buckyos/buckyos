@@ -38,6 +38,8 @@ export interface CanvasCommands {
   importDrawio: Command
   /** PDF files (PDF 导入方案 §5): pages on a new canvas with a presentation path. */
   importPdf: Command
+  /** Table data (表格数据导入 TODO §5.1): CSV / xlsx / SQLite as a table on this canvas. */
+  importTable: Command
   exportDrawio: Command
   /** Free Surfaces only. */
   view: { camera: Camera; fitAll: () => void; fitSelection: () => void; hasSelection: boolean } | null
@@ -82,6 +84,8 @@ export function buildMainMenu({ store, shell, canvas, mode }: { store: Workspace
     id: 'import-drawio', testId: 'aiws-menu-import-drawio', label: t('aiworkspace.shell.menu.importDrawio'), hint: '.drawio .png .svg', disabled: !canvas || canvas.importDrawio.reason !== null, reason: canvas?.importDrawio.reason ?? notOnCanvas, run: () => canvas?.importDrawio.run(),
   }, {
     id: 'import-pdf', testId: 'aiws-menu-import-pdf', label: t('aiworkspace.shell.menu.importPdf'), hint: '.pdf', disabled: !canvas || canvas.importPdf.reason !== null, reason: canvas?.importPdf.reason ?? notOnCanvas, run: () => canvas?.importPdf.run(),
+  }, {
+    id: 'import-table', testId: 'aiws-menu-import-table', label: t('aiworkspace.shell.menu.importTable'), hint: '.csv .xlsx .sqlite', disabled: !canvas || canvas.importTable.reason !== null, reason: canvas?.importTable.reason ?? notOnCanvas, run: () => canvas?.importTable.run(),
   })
   const side = (tab: SideTab): MenuItem => {
     const reason = canvas || tab === 'collab' || tab === 'edits' ? null : notOnCanvas

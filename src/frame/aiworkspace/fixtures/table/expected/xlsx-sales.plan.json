@@ -1,0 +1,149 @@
+{
+  "title": "Sales",
+  "header": true,
+  "columns": [
+    {
+      "name": "Month",
+      "type": "date"
+    },
+    {
+      "name": "Revenue",
+      "type": "currency",
+      "scale": 2,
+      "currency": "CNY"
+    },
+    {
+      "name": "Column C",
+      "type": "number"
+    },
+    {
+      "name": "Rate",
+      "type": "decimal",
+      "scale": 3
+    },
+    {
+      "name": "Total",
+      "type": "decimal",
+      "scale": 4
+    },
+    {
+      "name": "Note",
+      "type": "text"
+    },
+    {
+      "name": "Paid",
+      "type": "boolean"
+    }
+  ],
+  "fields": [
+    {
+      "field_id": "c1",
+      "name": "Month",
+      "type": "date"
+    },
+    {
+      "field_id": "c2",
+      "name": "Revenue",
+      "type": "currency",
+      "currency": "CNY"
+    },
+    {
+      "field_id": "c3",
+      "name": "Column C",
+      "type": "number"
+    },
+    {
+      "field_id": "c4",
+      "name": "Rate",
+      "type": "decimal",
+      "scale": 3
+    },
+    {
+      "field_id": "c5",
+      "name": "Total",
+      "type": "decimal",
+      "scale": 4
+    },
+    {
+      "field_id": "c6",
+      "name": "Note",
+      "type": "text"
+    },
+    {
+      "field_id": "c7",
+      "name": "Paid",
+      "type": "boolean"
+    }
+  ],
+  "titleFieldId": "c6",
+  "rows": 3,
+  "records": [
+    {
+      "c1": "2026-01-01",
+      "c2": {
+        "amount": "1200.50",
+        "currency": "CNY"
+      },
+      "c3": 1,
+      "c4": "0.125",
+      "c5": "150.0625",
+      "c6": "Big deal",
+      "c7": true
+    },
+    {
+      "c1": "2026-02-01",
+      "c2": {
+        "amount": "980.00",
+        "currency": "CNY"
+      },
+      "c3": 2,
+      "c4": "0.050",
+      "c5": "49.0000",
+      "c6": "東京",
+      "c7": false
+    },
+    {
+      "c1": "2026-03-01",
+      "c2": {
+        "amount": "15000.75",
+        "currency": "CNY"
+      },
+      "c3": 3,
+      "c4": "0.200",
+      "c6": "inline & text",
+      "c7": true
+    }
+  ],
+  "report": [
+    {
+      "kind": "table_formula",
+      "count": 2,
+      "samples": [
+        "E2",
+        "E3"
+      ]
+    },
+    {
+      "kind": "table_error_cells",
+      "count": 1,
+      "samples": [
+        "E4 #DIV/0!"
+      ]
+    },
+    {
+      "kind": "table_merged_header",
+      "count": 1,
+      "samples": [
+        "B1:C1"
+      ]
+    },
+    {
+      "kind": "table_percent",
+      "count": 1,
+      "samples": [
+        "Rate"
+      ]
+    }
+  ],
+  "gridRows": 4
+}

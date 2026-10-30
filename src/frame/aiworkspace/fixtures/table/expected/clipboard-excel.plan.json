@@ -1,0 +1,88 @@
+{
+  "title": "excel",
+  "header": true,
+  "columns": [
+    {
+      "name": "Item",
+      "type": "text"
+    },
+    {
+      "name": "Price",
+      "type": "currency",
+      "scale": 2,
+      "currency": "USD"
+    },
+    {
+      "name": "Date",
+      "type": "date"
+    },
+    {
+      "name": "Paid",
+      "type": "boolean"
+    }
+  ],
+  "fields": [
+    {
+      "field_id": "c1",
+      "name": "Item",
+      "type": "text"
+    },
+    {
+      "field_id": "c2",
+      "name": "Price",
+      "type": "currency",
+      "currency": "USD"
+    },
+    {
+      "field_id": "c3",
+      "name": "Date",
+      "type": "date"
+    },
+    {
+      "field_id": "c4",
+      "name": "Paid",
+      "type": "boolean"
+    }
+  ],
+  "titleFieldId": "c1",
+  "rows": 3,
+  "records": [
+    {
+      "c1": "Apple",
+      "c2": {
+        "amount": "1234.50",
+        "currency": "USD"
+      },
+      "c3": "2026-07-01",
+      "c4": true
+    },
+    {
+      "c1": "Pear",
+      "c2": {
+        "amount": "980.00",
+        "currency": "USD"
+      },
+      "c3": "2026-07-02",
+      "c4": false
+    },
+    {
+      "c1": "Plum",
+      "c2": {
+        "amount": "15.25",
+        "currency": "USD"
+      },
+      "c3": "2026-07-15",
+      "c4": true
+    }
+  ],
+  "report": [
+    {
+      "kind": "table_currency_symbol",
+      "count": 1,
+      "samples": [
+        "Price: $ → USD"
+      ]
+    }
+  ],
+  "gridRows": 4
+}

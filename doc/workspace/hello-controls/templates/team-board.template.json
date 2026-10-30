@@ -1,0 +1,18 @@
+{
+  "_comment": "P3 PROPOSAL. An entry of aiws-manifest.json `workspace_templates` (reserved and refused while non-empty today). Creating a Workspace from it imports the control closure, then writes structure, instances and initial data with one kernel-level subgraph import that remaps every id (Q17).",
+  "id": "team-board",
+  "title": "Team task board",
+  "requires": { "controls": ["did:bns:alice#hello-kpi", "did:bns:alice#hello-card", "did:bns:alice#hello-board"], "host_api": { "html": 2, "declarative": 1 } },
+  "params": {
+    "team_name": { "type": "string", "title": "Team name", "default": "Team" }
+  },
+  "data": {
+    "tasks": { "type": "buckyos.table-source", "fields": [["title", "text"], ["status", "select", ["todo", "doing", "done"]], ["hours", "number"], ["owner", "text"]], "rows": [] }
+  },
+  "surfaces": [
+    { "name": "Board", "layout": "free", "blocks": [
+      { "id": "kpi", "def": "did:bns:alice#hello-kpi", "bindings": { "tasks": "$data.tasks" }, "config": { "label": "{{params.team_name}} tasks" }, "placement": { "x": 40, "y": 40 } },
+      { "id": "board", "def": "did:bns:alice#hello-board", "config": { "title": "Today" }, "placement": { "x": 340, "y": 40 }, "children": [] }
+    ] }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "title": "Mac",
+  "header": true,
+  "columns": [
+    {
+      "name": "Day",
+      "type": "date"
+    },
+    {
+      "name": "Count",
+      "type": "number"
+    }
+  ],
+  "fields": [
+    {
+      "field_id": "c1",
+      "name": "Day",
+      "type": "date"
+    },
+    {
+      "field_id": "c2",
+      "name": "Count",
+      "type": "number"
+    }
+  ],
+  "titleFieldId": null,
+  "rows": 2,
+  "records": [
+    {
+      "c1": "2026-07-01",
+      "c2": 3
+    },
+    {
+      "c1": "2026-07-02",
+      "c2": 4
+    }
+  ],
+  "report": [],
+  "gridRows": 3
+}

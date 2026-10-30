@@ -1,0 +1,84 @@
+{
+  "title": "aiws",
+  "header": true,
+  "columns": [
+    {
+      "name": "Task",
+      "type": "text"
+    },
+    {
+      "name": "Status",
+      "type": "select",
+      "options": [
+        "Open",
+        "Done"
+      ]
+    },
+    {
+      "name": "Cost",
+      "type": "currency",
+      "scale": 2,
+      "currency": "EUR"
+    },
+    {
+      "name": "Due",
+      "type": "date"
+    }
+  ],
+  "fields": [
+    {
+      "field_id": "c1",
+      "name": "Task",
+      "type": "text"
+    },
+    {
+      "field_id": "c2",
+      "name": "Status",
+      "type": "select",
+      "options": [
+        {
+          "option_id": "o1",
+          "label": "Open"
+        },
+        {
+          "option_id": "o2",
+          "label": "Done"
+        }
+      ]
+    },
+    {
+      "field_id": "c3",
+      "name": "Cost",
+      "type": "currency",
+      "currency": "EUR"
+    },
+    {
+      "field_id": "c4",
+      "name": "Due",
+      "type": "date"
+    }
+  ],
+  "titleFieldId": "c1",
+  "rows": 2,
+  "records": [
+    {
+      "c1": "Plan",
+      "c2": "o1",
+      "c3": {
+        "amount": "12.50",
+        "currency": "EUR"
+      },
+      "c4": "2026-11-01"
+    },
+    {
+      "c1": "Ship",
+      "c2": "o2",
+      "c3": {
+        "amount": "99.00",
+        "currency": "USD"
+      }
+    }
+  ],
+  "report": [],
+  "gridRows": 3
+}

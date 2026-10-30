@@ -37,7 +37,7 @@ export interface ImportOutcome {
   /** Why it stopped (a refused commit, an unreadable file), if it did. */
   error?: string
   /** A PDF import (PDF 导入方案 §5): its own summary line, and the presentation path it made. */
-  kind?: 'drawio' | 'pdf'
+  kind?: 'drawio' | 'pdf' | 'table'
   summary?: string
   pathId?: string | null
 }
@@ -171,7 +171,7 @@ export async function importDrawio(store: WorkspaceStore, input: { name: string;
 }
 
 /** What a dropped or pasted file is. */
-export type FileKind = 'drawio' | 'svg' | 'image' | 'pdf' | 'other'
+export type FileKind = 'drawio' | 'svg' | 'image' | 'pdf' | 'tabular' | 'other'
 
 export async function classifyFile(file: File): Promise<{ kind: FileKind; bytes: Uint8Array; text?: string }> {
   const bytes = new Uint8Array(await file.arrayBuffer())
@@ -193,5 +193,8 @@ export async function classifyFile(file: File): Promise<{ kind: FileKind; bytes:
   }
   if (file.type.startsWith('image/')) return { kind: 'image', bytes }
   if (name.endsWith('.pdf') || file.type === 'application/pdf' || new TextDecoder('latin1').decode(bytes.subarray(0, 5)) === '%PDF-') return { kind: 'pdf', bytes }
+  // CSV / TSV / xlsx / SQLite, and the workbooks that are refused with advice (表格数据导入 TODO §5.1)
+  const { tabularKind } = await import('@table/files')
+  if (tabularKind(file.name, bytes)) return { kind: 'tabular', bytes }
   return { kind: 'other', bytes }
 }

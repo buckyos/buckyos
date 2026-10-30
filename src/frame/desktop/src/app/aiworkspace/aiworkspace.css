@@ -1107,6 +1107,26 @@
 .aiws-pdf-dialog input[type='number'] { width: 64px; }
 .aiws-pdf-progress { display: flex; flex-direction: column; gap: 4px; }
 .aiws-pdf-progress progress { width: 100%; }
+/* the table import wizard (表格数据导入 TODO §7): one screen, the preview scrolls sideways on narrow windows */
+.aiws-dialog.aiws-table-dialog { width: min(980px, 96vw); max-height: 92vh; overflow-y: auto; }
+.aiws-table-dialog .aiws-dialog-head { display: flex; gap: 12px; align-items: baseline; justify-content: space-between; flex-wrap: wrap; }
+.aiws-dialog fieldset.aiws-table-top { display: flex; flex-direction: row; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: flex-start; }
+.aiws-table-top input:not([type='checkbox']) { min-width: 180px; }
+.aiws-table-parts { display: flex; gap: 4px; flex-wrap: wrap; }
+.aiws-table-parts > button.is-active { background: var(--aiws-selected-bg); border-color: var(--aiws-selected-border); }
+.aiws-table-preview { overflow: auto; max-height: 46vh; border: 1px solid var(--cp-border); border-radius: 6px; }
+.aiws-table-preview table { border-collapse: collapse; font-size: 12px; min-width: 100%; }
+.aiws-table-preview th, .aiws-table-preview td { border-bottom: 1px solid var(--cp-border); padding: 4px 6px; text-align: left; vertical-align: top; white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.aiws-table-preview thead { position: sticky; top: 0; z-index: 1; background: var(--cp-surface); }
+.aiws-table-preview thead th { font-weight: 500; }
+.aiws-table-preview th input:not([type='checkbox']), .aiws-table-preview th select { width: 140px; max-width: 100%; }
+.aiws-table-preview td.is-excluded { opacity: 0.4; }
+.aiws-table-badge { display: block; font-size: 11px; font-weight: 400; }
+.aiws-table-currency { display: flex; flex-direction: column; gap: 2px; margin-top: 2px; font-weight: 400; }
+.aiws-table-currency select { width: 80px !important; }
+.aiws-table-invalid { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
+.aiws-table-advanced > fieldset { margin-top: 6px; }
+.aiws-table-tables { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
 /* the shape library (draw.io 导入 TODO §2.4) */
 .aiws-popover.aiws-library-popover { width: 344px; max-height: min(72vh, 620px); }
 .aiws-library { display: flex; flex-direction: column; gap: 8px; }

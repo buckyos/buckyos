@@ -128,7 +128,34 @@ pub fn store_value(ty: FieldType, scale: Option<u8>, options: &BTreeMap<String, 
             Value::Object(_) => v.clone(),
             _ => return None,
         },
+        // a bare amount takes the field's default currency (the core fills it in)
+        FieldType::Currency => {
+            let digits = scale.unwrap_or(aiworkspace_core::value::CURRENCY_DEFAULT_SCALE) as usize;
+            let amount = |a: &Value| match a {
+                Value::Number(n) => n.as_f64().map(|n| format!("{n:.digits$}")),
+                Value::String(s) => super::profile::numeric_text(s).map(|n| format!("{n:.digits$}")),
+                _ => None,
+            };
+            match v {
+                Value::Object(o) => json!({ "amount": amount(o.get("amount")?)?, "currency": o.get("currency")?.as_str()?.to_ascii_uppercase() }),
+                other => json!(amount(other)?),
+            }
+        }
     })
+}
+
+/// The default currency of a result's currency field: declared, else the most common code of its values, else USD.
+fn default_currency(declared: Option<&str>, values: &mut dyn Iterator<Item = &Value>) -> String {
+    if let Some(c) = declared.filter(|c| c.len() == 3 && c.chars().all(|c| c.is_ascii_alphabetic())) {
+        return c.to_ascii_uppercase();
+    }
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for v in values {
+        if let Some(c) = v.get("currency").and_then(Value::as_str) {
+            *counts.entry(c.to_ascii_uppercase()).or_default() += 1;
+        }
+    }
+    counts.into_iter().max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0))).map(|(c, _)| c).unwrap_or_else(|| "USD".into())
 }
 
 fn field_type(s: &str) -> FieldType {
@@ -140,6 +167,7 @@ fn field_type(s: &str) -> FieldType {
         "datetime" => FieldType::Datetime,
         "select" => FieldType::Select,
         "multi_select" => FieldType::MultiSelect,
+        "currency" => FieldType::Currency,
         _ => FieldType::Text,
     }
 }
@@ -921,9 +949,16 @@ fn plan_record(p: &mut Planner, it: &Item, parent: &str) -> WsResult<bool> {
         used.insert(key.clone());
         let mut def = json!({ "key": key, "name": name, "type": ty });
         let ft = field_type(ty);
-        let scale = if ft == FieldType::Decimal { Some(prop["scale"].as_u64().unwrap_or(2) as u8) } else { None };
+        let scale = match ft {
+            FieldType::Decimal => Some(prop["scale"].as_u64().unwrap_or(2) as u8),
+            FieldType::Currency => prop["scale"].as_u64().map(|s| s.min(18) as u8),
+            _ => None,
+        };
         if let Some(s) = scale {
             def["scale"] = json!(s);
+        }
+        if ft == FieldType::Currency {
+            def["currency"] = json!(default_currency(prop["currency"].as_str(), &mut rec["props"].get(&name).into_iter()));
         }
         let mut options = BTreeMap::new();
         if matches!(ft, FieldType::Select | FieldType::MultiSelect) {
@@ -1026,7 +1061,9 @@ fn field_plans(spec: &[Value], rows: &[&Map<String, Value>], existing: &[FieldRo
         };
         // decimals are never rounded silently: the declared scale, else what the values need; an
         // existing field keeps its scale unless that is too small
-        let (scale, widen) = if ty == FieldType::Decimal {
+        let (scale, widen) = if ty == FieldType::Currency {
+            (f["scale"].as_u64().map(|s| s.min(18) as u8).or_else(|| cur.and_then(|c| c.def.scale)), None)
+        } else if ty == FieldType::Decimal {
             let need = f["scale"].as_u64().map_or_else(|| needed_scale(rows, &name), |s| s.min(18) as u8);
             match cur.and_then(|c| c.def.scale.map(|s| (s, c.def_rev))) {
                 Some((s, rev)) if s < need => (Some(need), Some(rev)),
@@ -1064,6 +1101,11 @@ fn field_plans(spec: &[Value], rows: &[&Map<String, Value>], existing: &[FieldRo
         let mut def = json!({ "field_id": field_id, "name": name, "type": ty.as_str() });
         if let Some(s) = scale {
             def["scale"] = json!(s);
+        }
+        if ty == FieldType::Currency {
+            // an existing field keeps its default currency (stored values carry their own)
+            let code = cur.and_then(|c| c.def.currency.clone()).unwrap_or_else(|| default_currency(f["currency"].as_str(), &mut rows.iter().filter_map(|r| r.get(&name))));
+            def["currency"] = json!(code);
         }
         if matches!(ty, FieldType::Select | FieldType::MultiSelect) {
             let mut opts: Vec<(&String, &String)> = options.iter().collect();
@@ -1610,5 +1652,31 @@ impl Workspace {
             assets: Vec::new(),
             digest,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn currency_results() {
+        let none = BTreeMap::new();
+        let usd = |v: Value| store_value(FieldType::Currency, None, &none, &v);
+        assert_eq!(usd(json!(12.5)), Some(json!("12.50")));
+        assert_eq!(usd(json!("1,200")), Some(json!("1200.00")));
+        assert_eq!(usd(json!({ "amount": 3, "currency": "cny" })), Some(json!({ "amount": "3.00", "currency": "CNY" })));
+        assert_eq!(store_value(FieldType::Currency, Some(0), &none, &json!({ "amount": "300", "currency": "JPY" })), Some(json!({ "amount": "300", "currency": "JPY" })));
+        assert_eq!(usd(json!({ "amount": "x", "currency": "USD" })), None);
+        assert_eq!(usd(Value::Null), None);
+        let a = json!({ "price": { "amount": 1, "currency": "EUR" } });
+        let b = json!({ "price": { "amount": 2, "currency": "EUR" } });
+        let c = json!({ "price": 3 });
+        let rows: Vec<&Map<String, Value>> = vec![a.as_object().unwrap(), b.as_object().unwrap(), c.as_object().unwrap()];
+        let fps = field_plans(&[json!({ "name": "price", "type": "currency" })], &rows, &[], "f", &BTreeSet::new());
+        assert_eq!(fps[0].def, json!({ "field_id": "f1", "name": "price", "type": "currency", "currency": "EUR" }));
+        let fps = field_plans(&[json!({ "name": "price", "type": "currency", "currency": "gbp", "scale": 0 })], &rows, &[], "f", &BTreeSet::new());
+        assert_eq!(fps[0].def, json!({ "field_id": "f1", "name": "price", "type": "currency", "scale": 0, "currency": "GBP" }));
+        aiworkspace_core::value::FieldDef::from_value(&fps[0].def).expect("a valid field definition");
     }
 }

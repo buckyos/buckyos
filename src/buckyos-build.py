@@ -200,22 +200,35 @@ def _build_sdk_tool_distribution(env: dict[str, str]) -> int:
     return result
 
 
-def _prepare_agent_tools(source: Path | None = None, target: Path | None = None) -> int:
+# Shared TypeScript modules the buckyos-agent commands import from the source tree (`../../frame/…` in its
+# deno.json): copied beside them as `vendor/frame/…`, so the readable sources travel with the commands.
+AGENT_TOOL_SHARED_MODULES = ("frame/aiworkspace/import-table", "frame/aiworkspace/import-drawio")
+
+
+def _prepare_agent_tools(source: Path | None = None, target: Path | None = None, src_root: Path | None = None) -> int:
     """Host copy of the buckyos-agent commands (libexec/buckyos-agent): the
     standard AICC commands a host session-runtime runs on the Tool's Deno,
     importing the Tool's SDK beside it."""
     here = Path(__file__).resolve().parent
     source = source or here / "tools" / "buckyos-agent"
     target = target or here / "rootfs" / "libexec" / "buckyos-agent"
+    src_root = src_root or here
     if not (source / "aicc-tool.ts").is_file():
         print(f"buckyos-agent sources not found: {source}")
         return 2
     if target.exists():
         shutil.rmtree(target)
     shutil.copytree(source, target)
+    for module in AGENT_TOOL_SHARED_MODULES:
+        if (src_root / module).is_dir():
+            shutil.copytree(src_root / module, target / "vendor" / module, ignore=shutil.ignore_patterns("*_test.ts", "README.md"))
     config_path = target / "deno.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
-    config.setdefault("imports", {})["buckyos"] = "../buckyos-tool/dist/node.mjs"
+    imports = config.setdefault("imports", {})
+    imports["buckyos"] = "../buckyos-tool/dist/node.mjs"
+    for key, value in list(imports.items()):
+        if isinstance(value, str) and value.startswith("../../frame/"):
+            imports[key] = "./vendor/" + value[len("../../"):]
     config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return 0
 

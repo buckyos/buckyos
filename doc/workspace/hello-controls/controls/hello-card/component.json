@@ -1,0 +1,26 @@
+{
+  "manifest_version": 1,
+  "ident": { "author_did": "did:bns:alice", "name": "hello-card" },
+  "kind": "html",
+  "host_api": 2,
+  "title": "Hello Card",
+  "description": "Shows one task record as a card with a Done button. Writes go through the host (aiws.record().set), never to the data directly.",
+  "accepts": ["buckyos.record"],
+  "allow_no_source": true,
+  "default_size": { "w": 240, "h": 120 },
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "show_owner": { "type": "boolean", "title": "Show owner", "default": true },
+      "done_label": { "type": "string", "title": "Button text", "default": "Done", "maxLength": 24 }
+    }
+  },
+  "bindings": {
+    "task": { "accepts": ["buckyos.record"], "required": true, "title": "Task", "description": "The task record this card shows" }
+  },
+  "entry": { "html": "view.html", "css": "style.css", "js": "behavior.js" },
+  "assets": ["check.svg"],
+  "catalog": { "group": "hello", "description": "One task as a card with a Done button" },
+  "agent": "AGENT.md",
+  "deps": []
+}

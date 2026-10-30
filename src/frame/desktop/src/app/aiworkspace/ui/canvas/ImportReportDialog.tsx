@@ -16,14 +16,16 @@ export function ImportReportDialog({ outcome, onClose, onStartShow }: { outcome:
   return (
     <div className="aiws-modal-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
       <div className="aiws-dialog aiws-import-report" role="dialog" aria-modal="true" aria-label={t('aiworkspace.drawio.report.title')} data-testid="aiws-import-report" onKeyDown={(event) => { if (event.key === 'Escape') onClose() }}>
-        <b>{t(outcome.kind === 'pdf' ? (outcome.error ? 'aiworkspace.pdf.report.headingStopped' : 'aiworkspace.pdf.report.headingDone') : outcome.error ? 'aiworkspace.drawio.report.headingStopped' : 'aiworkspace.drawio.report.headingDone', { name: outcome.name })}</b>
+        <b>{t(outcome.kind === 'pdf' ? (outcome.error ? 'aiworkspace.pdf.report.headingStopped' : 'aiworkspace.pdf.report.headingDone')
+          : outcome.kind === 'table' ? (outcome.error ? 'aiworkspace.import.report.headingStopped' : 'aiworkspace.import.report.headingDone')
+            : outcome.error ? 'aiworkspace.drawio.report.headingStopped' : 'aiworkspace.drawio.report.headingDone', { name: outcome.name })}</b>
         {outcome.error && <div className="aiws-error" role="alert" data-testid="aiws-import-error">{outcome.error}</div>}
         <div className="aiws-muted" data-testid="aiws-import-summary">
-          {outcome.summary ?? (report.images ? t('aiworkspace.drawio.report.summaryWithImages', { ...counts, images: t('aiworkspace.drawio.count.images', { count: report.images }) }) : t('aiworkspace.drawio.report.summary', counts))}
+          {outcome.summary ?? (outcome.kind === 'table' ? '' : report.images ? t('aiworkspace.drawio.report.summaryWithImages', { ...counts, images: t('aiworkspace.drawio.count.images', { count: report.images }) }) : t('aiworkspace.drawio.report.summary', counts))}
         </div>
         {notes.length > 0 ? (
           <>
-            <div>{outcome.kind === 'pdf' ? t('aiworkspace.pdf.report.notKept') : tNode('aiworkspace.drawio.report.notKept', { code: <code>config.drawio</code> })}</div>
+            <div>{outcome.kind === 'pdf' ? t('aiworkspace.pdf.report.notKept') : outcome.kind === 'table' ? t('aiworkspace.import.report.notKept') : tNode('aiworkspace.drawio.report.notKept', { code: <code>config.drawio</code> })}</div>
             <ul className="aiws-import-notes" data-testid="aiws-import-notes">
               {notes.map((note) => (
                 <li key={note.kind} data-kind={note.kind}>

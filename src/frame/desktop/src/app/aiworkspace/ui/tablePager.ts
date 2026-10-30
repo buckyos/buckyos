@@ -168,6 +168,21 @@ export class TablePager {
     this.publish()
   }
 
+  /** Every row of the query in its order, up to `limit` (a fresh pass, apart from what is shown): "copy as table". */
+  async fetchAll(limit: number): Promise<{ rows: QueryRow[]; total: number }> {
+    const rows: QueryRow[] = []
+    let cursor: string | null = null
+    let total = 0
+    for (;;) {
+      const page = await this.session.query(this.params(Math.min(MAX_PAGE, limit - rows.length), cursor))
+      rows.push(...page.rows)
+      total = page.total
+      cursor = page.next_cursor ?? null
+      if (!cursor || page.rows.length === 0 || rows.length >= limit) break
+    }
+    return { rows: rows.slice(0, limit), total }
+  }
+
   refresh() {
     this.stale = true
     if (!this.loading && !this.disposed) void this.run()

@@ -1,0 +1,5 @@
+.card { font: 14px system-ui; padding: 12px; display: flex; flex-direction: column; gap: 6px; height: 100%; box-sizing: border-box; }
+.title { font-weight: 600; font-size: 16px; }
+.meta { opacity: .7; }
+.card[data-status="done"] .title { text-decoration: line-through; opacity: .6; }
+button { align-self: flex-start; margin-top: auto; }

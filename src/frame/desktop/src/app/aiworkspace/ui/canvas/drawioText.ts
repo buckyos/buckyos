@@ -54,6 +54,12 @@ const REPORT: Record<string, string> = {
   pdf_complex_whole: 'aiworkspace.pdf.report.complexWhole', pdf_effects: 'aiworkspace.pdf.report.effects', pdf_svg_too_large: 'aiworkspace.pdf.report.svgTooLarge',
   pdf_raster_parts: 'aiworkspace.pdf.report.rasterParts', pdf_raster_failed: 'aiworkspace.pdf.report.rasterFailed', pdf_page_failed: 'aiworkspace.pdf.report.pageFailed',
   pdf_original_missing: 'aiworkspace.pdf.report.originalMissing', pdf_path_failed: 'aiworkspace.pdf.report.pathFailed',
+  // table import (表格数据导入 TODO §7): the importer's codes
+  table_empty_rows: 'aiworkspace.import.report.emptyRows', table_merged_header: 'aiworkspace.import.report.mergedHeader', table_merged_cells: 'aiworkspace.import.report.mergedCells',
+  table_formula: 'aiworkspace.import.report.formula', table_error_cells: 'aiworkspace.import.report.errorCells', table_time_only: 'aiworkspace.import.report.timeOnly',
+  table_blob_column: 'aiworkspace.import.report.blobColumn', table_rows_limit: 'aiworkspace.import.report.rowsLimit', table_as_text: 'aiworkspace.import.report.asText',
+  table_percent: 'aiworkspace.import.report.percent', table_precision: 'aiworkspace.import.report.precision', table_long_text: 'aiworkspace.import.report.longText',
+  table_invalid: 'aiworkspace.import.report.invalid', table_currency_symbol: 'aiworkspace.import.report.currencySymbol', table_keep_failed: 'aiworkspace.import.report.keepFailed',
 }
 
 /** What an import report note says, by its kind (`stencil:<instruction>` names the instruction). */

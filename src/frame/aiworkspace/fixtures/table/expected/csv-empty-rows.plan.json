@@ -1,0 +1,50 @@
+{
+  "title": "empty-rows",
+  "header": true,
+  "columns": [
+    {
+      "name": "name",
+      "type": "text"
+    },
+    {
+      "name": "score",
+      "type": "number"
+    }
+  ],
+  "fields": [
+    {
+      "field_id": "c1",
+      "name": "name",
+      "type": "text"
+    },
+    {
+      "field_id": "c2",
+      "name": "score",
+      "type": "number"
+    }
+  ],
+  "titleFieldId": "c1",
+  "rows": 3,
+  "records": [
+    {
+      "c1": "ann",
+      "c2": 90
+    },
+    {
+      "c1": "bob",
+      "c2": 85
+    },
+    {
+      "c1": "cat",
+      "c2": 77
+    }
+  ],
+  "report": [
+    {
+      "kind": "table_empty_rows",
+      "count": 2,
+      "samples": []
+    }
+  ],
+  "gridRows": 4
+}

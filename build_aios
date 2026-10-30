@@ -482,6 +482,12 @@ prepare_buckyos_agent_package() {
   fi
   mkdir -p "$output_dir"
   cp -R "$BUCKYOS_AGENT_TOOLS_SOURCE/." "$output_dir/"
+  # shared modules the commands import from the source tree (deno.json `../../frame/…`), beside them as vendor/frame/…
+  for module in frame/aiworkspace/import-table frame/aiworkspace/import-drawio; do
+    mkdir -p "$output_dir/vendor/$module"
+    cp -R "$SRC_DIR/$module/." "$output_dir/vendor/$module/"
+    find "$output_dir/vendor/$module" -name '*_test.ts' -delete
+  done
 
   log "Fetching buckyos-websdk ref $BUCKYOS_WEBSDK_REF for the AICC tool build checks"
   git init -q "$sdk_checkout"
@@ -507,7 +513,11 @@ from pathlib import Path
 
 config_path = Path(sys.argv[1])
 config = json.loads(config_path.read_text(encoding="utf-8"))
-config.setdefault("imports", {})["buckyos"] = "/opt/buckyos/libexec/buckyos-tool/dist/node.mjs"
+imports = config.setdefault("imports", {})
+imports["buckyos"] = "/opt/buckyos/libexec/buckyos-tool/dist/node.mjs"
+for key, value in list(imports.items()):
+    if isinstance(value, str) and value.startswith("../../frame/"):
+        imports[key] = "./vendor/" + value[len("../../"):]
 config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 PY
 }

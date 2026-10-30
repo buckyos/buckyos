@@ -1,0 +1,90 @@
+{
+  "title": "select",
+  "header": true,
+  "columns": [
+    {
+      "name": "task",
+      "type": "text"
+    },
+    {
+      "name": "status",
+      "type": "select",
+      "options": [
+        "open",
+        "done",
+        "blocked"
+      ]
+    },
+    {
+      "name": "owner",
+      "type": "text"
+    }
+  ],
+  "fields": [
+    {
+      "field_id": "c1",
+      "name": "task",
+      "type": "text"
+    },
+    {
+      "field_id": "c2",
+      "name": "status",
+      "type": "select",
+      "options": [
+        {
+          "option_id": "o1",
+          "label": "open"
+        },
+        {
+          "option_id": "o2",
+          "label": "done"
+        },
+        {
+          "option_id": "o3",
+          "label": "blocked"
+        }
+      ]
+    },
+    {
+      "field_id": "c3",
+      "name": "owner",
+      "type": "text"
+    }
+  ],
+  "titleFieldId": "c1",
+  "rows": 6,
+  "records": [
+    {
+      "c1": "t1",
+      "c2": "o1",
+      "c3": "ann"
+    },
+    {
+      "c1": "t2",
+      "c2": "o2",
+      "c3": "bob"
+    },
+    {
+      "c1": "t3",
+      "c2": "o1",
+      "c3": "cat"
+    },
+    {
+      "c1": "t4",
+      "c2": "o3",
+      "c3": "dan"
+    },
+    {
+      "c1": "t5",
+      "c2": "o1",
+      "c3": "eve"
+    },
+    {
+      "c1": "t6",
+      "c2": "o2",
+      "c3": "fay"
+    }
+  ],
+  "report": [],
+  "gridRows": 7
+}

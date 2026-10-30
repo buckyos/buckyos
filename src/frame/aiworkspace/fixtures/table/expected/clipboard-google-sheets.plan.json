@@ -1,0 +1,81 @@
+{
+  "title": "google-sheets",
+  "header": true,
+  "columns": [
+    {
+      "name": "Region",
+      "type": "text"
+    },
+    {
+      "name": "Share",
+      "type": "decimal",
+      "scale": 3
+    },
+    {
+      "name": "Day",
+      "type": "date"
+    },
+    {
+      "name": "Sales",
+      "type": "currency",
+      "scale": 2,
+      "currency": "CNY"
+    }
+  ],
+  "fields": [
+    {
+      "field_id": "c1",
+      "name": "Region",
+      "type": "text"
+    },
+    {
+      "field_id": "c2",
+      "name": "Share",
+      "type": "decimal",
+      "scale": 3
+    },
+    {
+      "field_id": "c3",
+      "name": "Day",
+      "type": "date"
+    },
+    {
+      "field_id": "c4",
+      "name": "Sales",
+      "type": "currency",
+      "currency": "CNY"
+    }
+  ],
+  "titleFieldId": "c1",
+  "rows": 2,
+  "records": [
+    {
+      "c1": "North",
+      "c2": "0.125",
+      "c3": "2026-03-01",
+      "c4": {
+        "amount": "1500.00",
+        "currency": "CNY"
+      }
+    },
+    {
+      "c1": "South",
+      "c2": "0.050",
+      "c3": "2026-03-02",
+      "c4": {
+        "amount": "820.50",
+        "currency": "CNY"
+      }
+    }
+  ],
+  "report": [
+    {
+      "kind": "table_percent",
+      "count": 1,
+      "samples": [
+        "Share"
+      ]
+    }
+  ],
+  "gridRows": 3
+}

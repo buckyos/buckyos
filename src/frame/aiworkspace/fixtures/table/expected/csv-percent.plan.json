@@ -1,0 +1,54 @@
+{
+  "title": "percent",
+  "header": true,
+  "columns": [
+    {
+      "name": "item",
+      "type": "text"
+    },
+    {
+      "name": "rate",
+      "type": "decimal",
+      "scale": 3
+    }
+  ],
+  "fields": [
+    {
+      "field_id": "c1",
+      "name": "item",
+      "type": "text"
+    },
+    {
+      "field_id": "c2",
+      "name": "rate",
+      "type": "decimal",
+      "scale": 3
+    }
+  ],
+  "titleFieldId": "c1",
+  "rows": 3,
+  "records": [
+    {
+      "c1": "a",
+      "c2": "0.125"
+    },
+    {
+      "c1": "b",
+      "c2": "0.030"
+    },
+    {
+      "c1": "c",
+      "c2": "1.000"
+    }
+  ],
+  "report": [
+    {
+      "kind": "table_percent",
+      "count": 1,
+      "samples": [
+        "rate"
+      ]
+    }
+  ],
+  "gridRows": 4
+}

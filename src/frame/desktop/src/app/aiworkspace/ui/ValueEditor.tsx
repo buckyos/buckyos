@@ -86,6 +86,7 @@ export function ValueEditor({ def, value, initialText, ariaLabel, onCommit, onCa
         autoFocus
         type={def.type === 'date' ? 'date' : def.type === 'datetime' ? 'datetime-local' : 'text'}
         inputMode={def.type === 'number' || def.type === 'decimal' ? 'decimal' : undefined}
+        placeholder={def.type === 'currency' && def.currency ? def.currency : undefined}
         value={text}
         onChange={(event) => { setText(event.target.value); setError(null) }}
         onBlur={commit}

@@ -1,0 +1,40 @@
+{
+  "title": "odd \"name\"",
+  "header": true,
+  "columns": [
+    {
+      "name": "k",
+      "type": "text"
+    },
+    {
+      "name": "v",
+      "type": "number"
+    }
+  ],
+  "fields": [
+    {
+      "field_id": "c1",
+      "name": "k",
+      "type": "text"
+    },
+    {
+      "field_id": "c2",
+      "name": "v",
+      "type": "number"
+    }
+  ],
+  "titleFieldId": "c1",
+  "rows": 2,
+  "records": [
+    {
+      "c1": "a",
+      "c2": 1
+    },
+    {
+      "c1": "b",
+      "c2": 2
+    }
+  ],
+  "report": [],
+  "gridRows": 3
+}

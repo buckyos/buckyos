@@ -1,0 +1,44 @@
+{
+  "title": "datetime",
+  "header": true,
+  "columns": [
+    {
+      "name": "event",
+      "type": "text"
+    },
+    {
+      "name": "at",
+      "type": "datetime"
+    }
+  ],
+  "fields": [
+    {
+      "field_id": "c1",
+      "name": "event",
+      "type": "text"
+    },
+    {
+      "field_id": "c2",
+      "name": "at",
+      "type": "datetime"
+    }
+  ],
+  "titleFieldId": "c1",
+  "rows": 3,
+  "records": [
+    {
+      "c1": "start",
+      "c2": "2026-07-01T09:30:00.000Z"
+    },
+    {
+      "c1": "end",
+      "c2": "2026-07-01T10:00:00.000Z"
+    },
+    {
+      "c1": "mid",
+      "c2": "2026-07-01T12:00:05.250Z"
+    }
+  ],
+  "report": [],
+  "gridRows": 4
+}

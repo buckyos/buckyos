@@ -1,6 +1,6 @@
 # AI Workspace 表格数据导入 TODO
 
-日期：2026-10-29
+日期：2026-10-29（2026-10-30 T0–T6 已实施，实施回写见 §13–§16）
 需求：[BuckyOS Ai workspace 表格数据导入需求](<BuckyOS Ai workspace 表格数据导入需求.md>)（2026-10-29 口述整理稿）
 基线：当前工作区（draw.io / PDF 导入、脑图、多媒体、内核 M0–M5 已实施）。路径相对 `buckyos/`。
 
@@ -233,53 +233,53 @@ src/rootfs/libexec/buckyos-tool/cli/modules/aiws.ts   新 verb `import-table`
 
 ### T0 共享模块与实测（无 UI）
 
-- [ ] 新建 `import-table/`：`grid.ts text.ts csv.ts html.ts infer.ts plan.ts operations.ts mod.ts`；`deno test -A` 跑 `*_test.ts`；fixtures：`csv/`（UTF-8 BOM、gb18030、分号、引号换行、空行、无表头、超大整数、百分比、千分位、M/D 与 D/M 歧义、币种混合）、`clipboard/`（见 T1 第一项）、`expected/*.plan.json` 黄金计划（`TABLE_REGEN=1` 重生成，照 import-pdf）。
-- [ ] Vite 别名 `@table/*`、`tsconfig.app.json / tsconfig.node.json` paths、`server.fs.allow`；i18n 测试 `SOURCE_DIRS` 加目录。
-- [ ] 实测提交规模：standalone 与经网关各提交一次 20 000 行 × 20 列（文本 + 数字），记录请求体大小、耗时、是否被拒；据此定 §3.4 的批次常量并写进 `operations.ts` 注释。
-- [ ] `plan.ts` 输出能直接喂 `buildOperations` 风格的 `ImportOp[]`（或自带 `Operation[]`）；`ImportReport` 从 `@drawio/convert` 复用。
+- [x] 新建 `import-table/`：`grid.ts text.ts csv.ts html.ts infer.ts plan.ts operations.ts mod.ts`；`deno test -A` 跑 `*_test.ts`；fixtures：`csv/`（UTF-8 BOM、gb18030、分号、引号换行、空行、无表头、超大整数、百分比、千分位、M/D 与 D/M 歧义、币种混合）、`clipboard/`（见 T1 第一项）、`expected/*.plan.json` 黄金计划（`TABLE_REGEN=1` 重生成，照 import-pdf）。
+- [x] Vite 别名 `@table/*`、`tsconfig.app.json / tsconfig.node.json` paths、`server.fs.allow`；i18n 测试 `SOURCE_DIRS` 加目录。
+- [x] 实测提交规模（standalone 已测，经网关见 §15）：standalone 与经网关各提交一次 20 000 行 × 20 列（文本 + 数字），记录请求体大小、耗时、是否被拒；据此定 §3.4 的批次常量并写进 `operations.ts` 注释。
+- [x] `plan.ts` 输出能直接喂 `buildOperations` 风格的 `ImportOp[]`（或自带 `Operation[]`）；`ImportReport` 从 `@drawio/convert` 复用。
 
 ### T1 剪贴板导入（需求 §四）
 
-- [ ] **先采集真实剪贴板**：在 macOS / Windows 上用一段 devtools 脚本把 Excel、Numbers、Google Sheets、Notion、Miro、网页 `<table>` 复制出的 `text/html` 与 `text/plain` 存进 `fixtures/table/clipboard/<来源>.html|.txt`，`html_test.ts` 以它们为用例（Miro 若不出 HTML/TSV 则记录其 MIME 并在 §10 风险里登记）。
-- [ ] `ui/import/`：请求槽、`TableImportDialog`（ask + 向导 + 进度）、`tableImport.ts`（Grid → plan → WASM 校验 → 分批 submit → `ImportOutcome`）、`clipboardTable.ts`。
-- [ ] `CanvasView.tsx` `onPaste` 接表格判定（顺序：自己的标记 → 文件 → 表格 → draw.io → SVG）；自由 / 流式页落点按 §3.5。
-- [ ] i18n 新区 `import.ts`（en + zh），`index.ts` parts 与 i18n 测试 `PARTS` 加 `{ name: 'import', prefixes: ['import'] }`。
-- [ ] e2e `tests/aiworkspace/table-import.spec.ts`：TI-01～TI-04（§11）。
+- [ ] **先采集真实剪贴板**（未做：本机无 macOS / Windows 桌面应用；fixtures 按各应用的已知格式手写，见 §13）：在 macOS / Windows 上用一段 devtools 脚本把 Excel、Numbers、Google Sheets、Notion、Miro、网页 `<table>` 复制出的 `text/html` 与 `text/plain` 存进 `fixtures/table/clipboard/<来源>.html|.txt`，`html_test.ts` 以它们为用例（Miro 若不出 HTML/TSV 则记录其 MIME 并在 §10 风险里登记）。
+- [x] `ui/import/`：请求槽、`TableImportDialog`（ask + 向导 + 进度）、`tableImport.ts`（Grid → plan → WASM 校验 → 分批 submit → `ImportOutcome`）、`clipboardTable.ts`。
+- [x] `CanvasView.tsx` `onPaste` 接表格判定（顺序：自己的标记 → 文件 → 表格 → draw.io → SVG）；自由 / 流式页落点按 §3.5。
+- [x] i18n 新区 `import.ts`（en + zh），`index.ts` parts 与 i18n 测试 `PARTS` 加 `{ name: 'import', prefixes: ['import'] }`。
+- [x] e2e `tests/aiworkspace/table-import.spec.ts`：TI-01～TI-04（§11）。
 
 ### T2 CSV 双入口与文件分流（需求 §6.1）
 
-- [ ] `classifyFile` 加 `tabular`（csv / tsv / xlsx / sqlite 子类 + 魔数）；`handleFiles`、`InsertCatalog` asset 项、`DataTree` 导入文件三处对单个 tabular 文件走 ask。
-- [ ] 入口二三处：`InsertCatalog` table 项“从文件导入…”、主菜单“导入表格数据…”、`DataTree` “导入表格文件”；`CanvasView` 加 `tableInput`（accept 列表）。
-- [ ] 高级项：编码、分隔符；保留原文件（默认 CSV 关）→ `uploadAsset` + `buckyos.asset-ref`。
-- [ ] 数据树模式粘贴（若 T1 未做）。
-- [ ] e2e TI-05～TI-07。
+- [x] `classifyFile` 加 `tabular`（csv / tsv / xlsx / sqlite 子类 + 魔数）；`handleFiles`、`InsertCatalog` asset 项、`DataTree` 导入文件三处对单个 tabular 文件走 ask。
+- [x] 入口二三处：`InsertCatalog` table 项“从文件导入…”、主菜单“导入表格数据…”、`DataTree` “导入表格文件”；`CanvasView` 加 `tableInput`（accept 列表）。
+- [x] 高级项：编码、分隔符；保留原文件（默认 CSV 关）→ `uploadAsset` + `buckyos.asset-ref`。
+- [x] 数据树模式粘贴（若 T1 未做）。
+- [x] e2e TI-05～TI-07。
 
 ### T3 Currency（需求 §五）
 
-- [ ] core 改动（§6.2）+ 测试；`wasm/build.sh`；`results.rs`；aiws README。
-- [ ] Desktop 类型、显示、编辑、字段管理、筛选、排序、图标；记录视图与属性面板。
-- [ ] 导入层 §6.3 解析与列默认币种；向导的币种下拉与歧义符号选择。
-- [ ] 设计文档 §3.4.2、aiworkspace README、Desktop README 回写。
-- [ ] e2e TI-08；core 测试覆盖 §6.1 全部规则。
+- [x] core 改动（§6.2）+ 测试；`wasm/build.sh`；`results.rs`；aiws README。
+- [x] Desktop 类型、显示、编辑、字段管理、筛选、排序、图标；记录视图与属性面板。
+- [x] 导入层 §6.3 解析与列默认币种；向导的币种下拉与歧义符号选择。
+- [x] 设计文档 §3.4.2、aiworkspace README、Desktop README 回写。
+- [x] e2e TI-08；core 测试覆盖 §6.1 全部规则。
 
 ### T4 xlsx（需求 §6.2，Q3）
 
-- [ ] `xlsx.ts`（§5.3）+ fixtures（用 Python openpyxl 或手写 XML 生成：共享串、内联串、公式缓存、日期 1900/1904、货币 / 百分比 / 日期格式、合并单元格、隐藏表、多表）+ 测试。
-- [ ] 向导“工作表 / 每个工作表一张表”；多表落点。
-- [ ] `.xls / .numbers / .ods` 的友好拒绝文案。
-- [ ] e2e TI-09。
+- [x] `xlsx.ts`（§5.3）+ fixtures（用 Python openpyxl 或手写 XML 生成：共享串、内联串、公式缓存、日期 1900/1904、货币 / 百分比 / 日期格式、合并单元格、隐藏表、多表）+ 测试。
+- [x] 向导“工作表 / 每个工作表一张表”；多表落点。
+- [x] `.xls / .numbers / .ods` 的友好拒绝文案。
+- [x] e2e TI-09。
 
 ### T5 SQLite（需求 §6.4）
 
-- [ ] `sqlite.ts`（注入 exec）、`sqliteReader.worker.ts`、向导“表”多选（行数、视图开关）、列映射 §5.4。
-- [ ] fixtures：Python `sqlite3` 生成含 INTEGER / REAL / NUMERIC(10,2) / TEXT 日期 / BOOLEAN / BLOB / NULL / 视图 的库。
-- [ ] e2e TI-10。
+- [x] `sqlite.ts`（注入 exec）、`sqliteReader.worker.ts`、向导“表”多选（行数、视图开关）、列映射 §5.4。
+- [x] fixtures：Python `sqlite3` 生成含 INTEGER / REAL / NUMERIC(10,2) / TEXT 日期 / BOOLEAN / BLOB / NULL / 视图 的库。
+- [x] e2e TI-10。
 
 ### T6 aiws 内部复制与 Agent 工具
 
-- [ ] `TableViewCell` 工具栏“复制为表格”（TSV + 带 `data-aiws-table` 的 HTML）；粘贴时预填类型与选项。
-- [ ] `buckyos aiws import-table` + `tools/import.ts` + 手册两处。
-- [ ] 文档回写：本文件 §12 实施回写；aiworkspace README “File and folder imports” 加“表格数据导入”段；Desktop README 结构表加 `ui/import/`。
+- [x] `TableViewCell` 工具栏“复制为表格”（TSV + 带 `data-aiws-table` 的 HTML）；粘贴时预填类型与选项。
+- [x] `buckyos aiws import-table` + `tools/import.ts` + 手册两处。
+- [x] 文档回写：本文件 §12 实施回写；aiworkspace README “File and folder imports” 加“表格数据导入”段；Desktop README 结构表加 `ui/import/`。
 
 ## 10. 待裁决（建议值已写入上文，裁决不同再改）
 
@@ -324,3 +324,44 @@ src/rootfs/libexec/buckyos-tool/cli/modules/aiws.ts   新 verb `import-table`
 - 不做：`.xls` / `.numbers` / `.ods`、Notion / Miro 原生文件、汇率与币种统一、多层表头智能识别、再导入对齐（增量更新已有表）、`multi_select` / `object_ref` 自动推断、公式求值、单元格样式。
 - 风险：Miro 剪贴板可能只有自有 MIME（T1 第一项实测后决定是否只接 `text/plain`）；Numbers 复制出的 HTML 不带原始值，百分比 / 货币只能靠显示文本解析；Safari 的 `clipboardData.getData('text/html')` 在某些来源为空（回退 TSV）；大文件在手机上内存紧张（xlsx / SQLite 解析放 Worker，超限提示）；网关请求体上限未知（T0 实测）。
 - 实施回写：T0–T6 完成后在此追加“实施偏差”与“DV 记录”两节（照 draw.io / PDF TODO 的 §8–§10 写法）。
+
+## 13. 实施偏差（2026-10-30）
+
+按 §10 建议值实施；以下是与上文不同或上文没写到的地方。
+
+1. **提交按行数和字节双重切分**（T0 实测推翻“瓶颈未知”）：standalone 调试版提交 20 000 行 × 20 列（10 列 ~14 字符文本、5 列整数、5 列两位小数）请求 7.82 MiB、8.9 s 接受；12.4 MB 的请求被 `413 length limit exceeded` 拒绝——服务的 `Limits.max_commit_bytes` 缺省 8 MiB（`server/src/lib.rs` `DefaultBodyLimit`）。所以 `operations.ts` 一个 commit 在 20 000 行或操作 JSON 达到 6 MiB（UTF-8）时结束，宽表/长文本会比 20 000 行更早切分；`COMMIT_BYTES` 写在文件头注释里。
+2. **record_id 不是纯随机**：`r<一次导入一个随机前缀><行号定宽 base36>`。表格不排序时按 record_id 列出记录，纯 `randomId('r')` 会打乱源文件行序；现在默认顺序就是源文件顺序（TI-11 断言前三行 0/1/2）。Q9“不沿用来源主键”不变。
+3. **Currency 筛选的比较运算只命中同币种**：§6.1 只写了“按 (currency, amount) 字典序”；若比较运算也按字典序，`> 100`（默认 USD）会命中所有代码大于 USD 的币种（VND…）。`filter.rs` 对 `lt/lte/gt/gte` 先比币种代码，不同即不命中；排序仍按 (代码, 金额)。`in` 也允许（与 decimal 一致）。`currency → currency`（改 scale）是新增的迁移；改默认币种走 `table.update_field { changes: { currency } }`（plan_table 新增可改键）。
+4. **许愿格结果也能出 currency**：`results.rs` `FIELD_TYPES` / `infer_type`（`{ amount, currency }` 对象）/ `check_value`，`plan.rs` `store_value` / `field_plans` / 记录属性；结果字段默认币种 = 声明的 > 值里最多的代码 > USD。
+5. **SQLite 与 xlsx 共用一个 Worker**：`ui/import/tableReader.worker.ts`（不是 §2.1 的 `sqliteReader.worker.ts`），xlsx 的 XML 解析也不占主线程。
+6. **TEXT 类 SQLite 列按值推断**（§5.4 原样）；但“标题列不参与单选”规则对 SQLite 同样生效，所以 `orders.status`（`id/product_id/qty` 是数字、`placed` 是日期时间）作为首个文本列保持文本。
+7. **Agent 命令落在 `src/tools/buckyos-agent/commands/import_table.ts`，不是 websdk 的 `buckyos aiws import-table`**：websdk CLI 构建时拿不到 buckyos 仓库的共享模块，按 AGENTS.md“Agent 专用的配方类工具放 `src/tools/buckyos-agent`”。命令经 deno.json 的 `@table/` 引用 `src/frame/aiworkspace/import-table/`；`buckyos-build.py` `_prepare_agent_tools`（宿主 `libexec/buckyos-agent`）与 `build_aios`（镜像）把 `import-table`、`import-drawio` 复制为命令旁的 `vendor/frame/aiworkspace/…` 并改写 import。参数同 §8，另有 `--views --encoding --delimiter --locale`；Deno 宿主逻辑在 `import-table/tools/import.ts`（单独运行即 dry-run）。
+8. **剪贴板 fixtures 是手写的**：按 Excel（`x:num`、类样式 `mso-number-format`、`<!--StartFragment-->`、无引号属性）、Google Sheets（`data-sheets-value` / `data-sheets-numberformat`）、Numbers（只有显示文本、`<p>` 包裹、`<br>`）、Notion（`<thead>/<th>`）、网页（`rowspan/colspan`）的已知格式写成，没有在 macOS / Windows 上实采；Miro 未覆盖。
+9. **xlsx 读取器的边界**：只读 `t=s/str/inlineStr/b/d/e/n`；纯时刻格式（`h:mm`）按文本导入并报告 `table_time_only`；`[$¥-804]` 这类按 lcid 定币种，无 lcid 的单独符号按 §6.3 歧义规则；合并单元格把被覆盖的格标成 `covered`，表头判定把它当“有名”（否则合并表头会让首行不满足“全部非空”）。
+10. **向导细节**：不合法计数只对用户改过类型/scale/选项的列做（推断出的类型按构造无损），用 WASM `normalize_value`；提交时 `planTable` 对全部值调 WASM（同列同值缓存）。日期顺序与时区对所有工作表/表生效；多张表时上方是表的标签页。`data-testid` 按 §7，`aiws-table-policy-unset|text` 带列号后缀（`-<i>`），另有 `aiws-table-ask-table|file`、`aiws-table-size`、`aiws-table-dollar-<i>|yen-<i>`、`aiws-table-table-<name>`、`aiws-table-views`、`aiws-table-problem`、`aiws-near-table-copy`、`aiws-table-copy-<cell>`。
+11. **“复制为表格”的入口**：表格视图条（`aiws-table-copy-<cell>`）和画布 Block 的近工具栏（builtin `table-copy`，经 intent 交给编辑器执行，等字段读到再复制）。剪贴板用 `ClipboardItem` 的 Promise 值写入（保住点击的用户激活）。`object_ref` 列按文本复制。
+12. **入口**：画布粘贴（自己的标记 → 文件 → 表格 → draw.io → SVG）、拖放/粘贴文件（`classifyFile` 新增 `tabular`，单个问“导入为表格 / 作为文件插入”）、插入目录 file 项选表格文件（同样先问）、插入目录 table 项“从文件导入…”、主菜单“插入 → 导入表格数据…”、数据树“导入表格文件”与“导入文件”选单个表格文件（先问）、数据树模式粘贴。主菜单只在“插入”子菜单里加项（顶层不加，小窗口放不下）。
+
+## 14. 验证（2026-10-30）
+
+- `cargo test -p aiworkspace-core -p aiworkspace-store -p aiworkspace`：46 个测试二进制、224 个用例全部通过；新增 core `tests/currency.rs`（3）、`value.rs` 的 `currency` / `currency_migrate`、store `wish::plan::tests::currency_results` 与 results 推断断言。
+- `cd src/frame/aiworkspace/import-table && deno test -A`：33 个（14 个 CSV、6 个剪贴板、xlsx 4 张表、SQLite 3 张表的黄金计划 + 规则用例）；import-drawio 34、import-pdf 17、controls 20 照旧通过。
+- `uv run python -m unittest tools.tests.test_buckyos_build_entrypoint`：13 个通过（`_prepare_agent_tools` 的 vendor 复制与 import 改写）。
+- Desktop：`tsc -p tsconfig.app.json`、`eslint src/app/aiworkspace` 干净；`deno test -A tests/datamodel/aiworkspace-i18n.test.ts` 新增 `import` 分区通过，仍有两项既有失败（`canvas.catalog.sample/extension` 未用、`outline.rs` 的“字”）。
+- Desktop aiworkspace 全量 e2e（221 例，29 分钟）：218 通过；失败 3 例 —— CN17（`connectors.spec.ts:288`）与 `i18n.spec.ts:133` 是既有失败（未改动的 HEAD 上同样失败，见历次记录），wish T3-4（本地执行器恢复）单独复跑通过，属时序偶发。
+- e2e `tests/aiworkspace/table-import.spec.ts` TI-01～TI-12 全部通过（`AIWS_BIN=/tmp/dev-cache-root/cargo-target/debug/aiworkspace NFS_BIN=…/nfs_server pnpm exec playwright test --config=playwright.aiworkspace.config.ts tests/aiworkspace/table-import.spec.ts`），截图在 `test-results/aiworkspace-table/`。
+- Agent 命令：`import_table <xlsx|sqlite|csv> --dry-run` 在仓库与宿主副本（`rootfs/libexec/buckyos-agent`）都能出计划；`commitPlans` 对 standalone 服务提交 xlsx 两张表、SQLite 三张表、货币 CSV，重名得到 `select (2)`。
+
+## 15. DV 记录（2026-10-30，本机 test.buckyos.io）
+
+- 部署：`uv run buckyos-build.py -s aiworkspace desktop`，只替换 `/opt/buckyos/bin/aiworkspace/aiworkspace`（原子 mv 后杀进程，node-daemon 拉起新进程）、`/opt/buckyos/bin/control-panel/web`、`/opt/buckyos/libexec/buckyos-agent`；原文件备份在 `/home/lzc/project/deployment-backups/20261030-table-import/`。
+- 浏览器：`BUCKYOS_UI_DV_BASE_URL=https://test.buckyos.io BUCKYOS_TEST_ADMIN_PASSWORD=bucky2025 npx playwright test --config=playwright.dv.config.ts tests/dv/aiworkspace.table.spec.ts`，5 例全部通过：TI-01（Excel HTML 粘贴：text / currency USD / date / boolean，值逐格正确，Block 显示 `1,234.50`）、TI-05（拖入 CSV：先问，表格 / 文件各一次）、TI-08（货币：默认改 USD、`¥` 按 CNY，排序 c,b,d,a，`> 100` 只命中 USD 200）、xlsx（Worker 读取、每个工作表一张表、原文件经 NDM 上传成 asset-ref）、20 000 行 × 20 列。首轮有 2 例在 `browser.newContext` 时 Chromium SEGV（未进入页面，环境问题），单独复跑通过。
+- 经网关的 T0：20 000 × 20（CSV 4.55 MB）切成两个 commit——15 415 行 / 6.00 MiB 与 4 585 行 / 1.85 MiB——都被网关和服务接受；从点“导入”到对话框关闭 7.1 s（release 服务，含浏览器内 WASM 逐值校验，规划本身约 0.3 s）。6 MiB 的请求经网关通过；6–8 MiB 之间经网关未测。
+- Agent 命令：宿主副本 `/opt/buckyos/libexec/buckyos-agent`，用注入会话（`BUCKYOS_APPCLIENT_SESSION_TOKEN` = devtest 桌面登录令牌，`BUCKYOS_HOST_GATEWAY=127.0.0.1`）运行 `import_table workbook.xlsx --workspace ws_dbqdy3zs2p4ekauuxqsdvqkvtr --all-sheets --locale zh`：两张表提交成功，Revenue 为 `currency CNY`、Rate 为比例 `0.125`、Total 为公式缓存值。该工作区留在 Zone 上。本机没有 devtest 的 AppClient 私钥，不注入令牌时 `initRuntime` 找不到私钥（与本功能无关）。
+- 未在 DV 上跑：aios 容器内的 `import_table`（镜像未重建，`build_aios` 的 vendor 复制只在脚本层面检查过）、iPhone 粘贴 Numbers。
+
+## 16. 未做
+
+- 真实剪贴板采集（§9 T1 第一项）与 Miro；iPhone 上粘贴 Numbers 表格（§11 末）。
+- `multi_select` / `object_ref` 自动推断、`.xls / .numbers / .ods`（§12 原样不做）。
+- websdk 的 `buckyos aiws import-table`（见 §13.7）。

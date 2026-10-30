@@ -12,6 +12,9 @@ import { useAiwsText } from '../../useAiwsText'
 import { TYPE_LABEL, entityLabel, importedAssetOps, newDataOps, type NewDataKind } from './dataOps'
 import { FreshnessBadge } from './FreshnessBadge'
 import { insertLinkedSource } from './sourceLinks'
+import { TABULAR_ACCEPT, tabularKind } from '@table/files'
+import { tableImports } from '../import/tableImportRequest'
+import { clipboardTable } from '../import/clipboardTable'
 
 type TypeFilter = 'all' | 'buckyos.table-source' | 'buckyos.richtext' | 'buckyos.record' | 'buckyos.asset-ref' | 'buckyos.annotation' | 'buckyos.wish' | 'buckyos.block-def'
 type OriginFilter = 'all' | 'original' | 'generated'
@@ -142,8 +145,18 @@ export function DataTreeActions({ selected, onSelect }: { selected: string | nul
       if (outcome.status === 'accepted' || outcome.status === 'saved_locally') onSelect(id)
     } catch (error) { store.notify('error', t('aiworkspace.data.tree.uploadFailed', { error: describeError(error) })) }
   }
-  const importFiles = async (files: File[], folder: boolean) => {
+  /** Table data into the folder (表格数据导入 TODO §5.1): the wizard, or `ask` for a single file of the general import. */
+  const importTable = async (file: File, ask: boolean) => {
+    if (!target) return
+    if (tableImports.busy) { store.notify('info', t('aiworkspace.import.busy')); return }
+    const bytes = new Uint8Array(await file.arrayBuffer())
+    tableImports.open({ source: { kind: 'file', name: file.name, bytes }, step: ask ? 'ask' : 'wizard', destination: { folderId: target.entity_id },
+      insertAsFile: ask ? () => { void importFiles([file], false, true) } : undefined, finish: (outcome) => { if (!outcome.error) onSelect(null) } })
+  }
+  const importFiles = async (files: File[], folder: boolean, asFiles = false) => {
     if (!target || importing) return
+    // a single table file asks: a table, or a file
+    if (!asFiles && !folder && files.length === 1 && tabularKind(files[0].name, new Uint8Array(await files[0].slice(0, 64 * 1024).arrayBuffer()))) { await importTable(files[0], true); return }
     const controller = new AbortController()
     importController.current = controller
     setImporting(true)
@@ -158,6 +171,20 @@ export function DataTreeActions({ selected, onSelect }: { selected: string | nul
       if (!controller.signal.aborted) store.notify('error', t('aiworkspace.data.tree.uploadFailed', { error: describeError(error) }))
     } finally { setImporting(false); importController.current = null }
   }
+  // a table pasted while the data tree mode has the focus goes into the folder (表格数据导入 TODO §4)
+  useEffect(() => {
+    if (!canCreate || !target) return
+    const onPaste = (event: ClipboardEvent) => {
+      const el = event.target instanceof Element ? event.target : null
+      if (el?.closest('input, textarea, select, [contenteditable="true"], [contenteditable="plaintext-only"], .aiws-dialog') || !(el?.closest('.aiws-sources') || el === document.body)) return
+      const table = event.clipboardData ? clipboardTable(event.clipboardData) : null
+      if (!table || tableImports.busy) return
+      event.preventDefault()
+      tableImports.open({ source: table, step: 'wizard', destination: { folderId: target.entity_id } })
+    }
+    window.addEventListener('paste', onPaste)
+    return () => window.removeEventListener('paste', onPaste)
+  }, [canCreate, target])
   const precheck = async () => {
     if (!entity) return
     const descendants = store.outline.descendants(entity.entity_id)
@@ -198,6 +225,7 @@ export function DataTreeActions({ selected, onSelect }: { selected: string | nul
           <button type="submit" data-testid="aiws-new-data">{t('aiworkspace.data.tree.create')}</button>
           <label className="aiws-link">{t('aiworkspace.data.tree.image')}<input type="file" hidden accept="image/*" data-testid="aiws-new-image" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void addImage(file) }} /></label>
           <label className="aiws-link">{t('aiworkspace.data.tree.importFiles')}<input type="file" hidden multiple disabled={importing} data-testid="aiws-import-files" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ''; void importFiles(files, false) }} /></label>
+          <label className="aiws-link">{t('aiworkspace.data.tree.importTable')}<input type="file" hidden accept={TABULAR_ACCEPT} data-testid="aiws-datatree-import-table" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importTable(file, false) }} /></label>
           {'webkitdirectory' in document.createElement('input') && <label className="aiws-link">{t('aiworkspace.data.tree.importFolder')}<input type="file" hidden multiple disabled={importing} {...{ webkitdirectory: '' }} data-testid="aiws-import-folder" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ''; void importFiles(files, true) }} /></label>}
           <span className="aiws-muted">{t('aiworkspace.data.tree.folderLimit')}</span>
           {linkError && <div className="aiws-error" role="alert" data-testid="aiws-new-link-error">{linkError}</div>}

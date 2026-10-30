@@ -256,7 +256,7 @@ export interface Reference {
   workspace_id?: string
 }
 
-export type FieldType = 'text' | 'number' | 'decimal' | 'date' | 'datetime' | 'boolean' | 'select' | 'multi_select' | 'object_ref'
+export type FieldType = 'text' | 'number' | 'decimal' | 'date' | 'datetime' | 'boolean' | 'select' | 'multi_select' | 'object_ref' | 'currency'
 
 export interface OptionDef { option_id: string; label: string }
 
@@ -269,6 +269,8 @@ export interface FieldDef {
   unique?: boolean
   scale?: number
   options?: OptionDef[]
+  /** A currency field's default currency (ISO 4217); its values are `{ amount, currency }`. */
+  currency?: string
   description?: string
   maintained_by?: 'human' | 'program'
   order_key?: string
@@ -641,7 +643,7 @@ export interface Subject { subject: string; kind: 'user' | 'agent' | string }
 
 export interface KeyedContent<P> { payload: P; key_revs: Record<string, number>; diagnostics?: Diagnostic[] }
 
-export interface RecordPropDef { key: string; name: string; type: FieldType; required?: boolean; nullable?: boolean; scale?: number; options?: OptionDef[] }
+export interface RecordPropDef { key: string; name: string; type: FieldType; required?: boolean; nullable?: boolean; scale?: number; currency?: string; options?: OptionDef[] }
 export interface RecordContent { schema: { properties: RecordPropDef[] }; props: Record<string, Json>; key_revs: Record<string, number> }
 
 /** `poster`: an image asset picturing the content (a video frame, a PDF's first page, a cover; 多媒体对象 §3). */

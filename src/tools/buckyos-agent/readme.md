@@ -16,6 +16,13 @@ buckyos-agent tools 是用 TypeScript 编写、运行在 Deno 环境下的 Bucky
 
 2. aicc命令组
 
+## 表格数据导入 `import_table`
+
+`commands/import_table.ts`：把 CSV / TSV / xlsx / SQLite 文件导入 AI Workspace 成为 TableSource，推断规则与 Desktop
+导入向导相同（共享模块 `src/frame/aiworkspace/import-table/`，deno.json 里的 `@table/`；宿主副本与 aios 镜像里随命令
+放在 `vendor/frame/aiworkspace/`，由 `buckyos-build.py` 的 `_prepare_agent_tools` 与 `build_aios` 复制）。先
+`import_table <file> --dry-run` 看计划（字段、类型、行数、报告），再去掉 `--dry-run` 带 `--workspace` 提交。
+
 ## AICC Agent CLI Tools
 
 实现见 `aicc-tool.ts` + `commands/*.ts`，需求文档：[`doc/aicc/aicc_agent_cli_tools.md`](../../../doc/aicc/aicc_agent_cli_tools.md)。

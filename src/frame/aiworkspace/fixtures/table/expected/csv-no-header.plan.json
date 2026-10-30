@@ -1,0 +1,58 @@
+{
+  "title": "no-header",
+  "header": false,
+  "columns": [
+    {
+      "name": "Column A",
+      "type": "number"
+    },
+    {
+      "name": "Column B",
+      "type": "date"
+    },
+    {
+      "name": "Column C",
+      "type": "decimal",
+      "scale": 2
+    }
+  ],
+  "fields": [
+    {
+      "field_id": "c1",
+      "name": "Column A",
+      "type": "number"
+    },
+    {
+      "field_id": "c2",
+      "name": "Column B",
+      "type": "date"
+    },
+    {
+      "field_id": "c3",
+      "name": "Column C",
+      "type": "decimal",
+      "scale": 2
+    }
+  ],
+  "titleFieldId": null,
+  "rows": 3,
+  "records": [
+    {
+      "c1": 1,
+      "c2": "2026-01-05",
+      "c3": "12.50"
+    },
+    {
+      "c1": 2,
+      "c2": "2026-01-06",
+      "c3": "13.00"
+    },
+    {
+      "c1": 3,
+      "c2": "2026-01-07",
+      "c3": "14.25"
+    }
+  ],
+  "report": [],
+  "gridRows": 3
+}

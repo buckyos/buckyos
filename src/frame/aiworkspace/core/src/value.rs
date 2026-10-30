@@ -21,6 +21,8 @@ pub enum FieldType {
     Select,
     MultiSelect,
     ObjectRef,
+    /// A money amount with its ISO 4217 currency (表格导入 TODO §6, format 1.1).
+    Currency,
 }
 
 impl FieldType {
@@ -35,6 +37,7 @@ impl FieldType {
             FieldType::Select => "select",
             FieldType::MultiSelect => "multi_select",
             FieldType::ObjectRef => "object_ref",
+            FieldType::Currency => "currency",
         }
     }
     pub fn sortable(&self) -> bool {
@@ -77,9 +80,19 @@ pub struct FieldDef {
     pub options: Option<Vec<OptionDef>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_types: Option<Vec<String>>,
+    /// The default currency of a `currency` field (ISO 4217 code), given to values written without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
 }
 
 pub const TEXT_MAX_UTF16: usize = 65_536;
+/// The scale of a `currency` field that does not give one.
+pub const CURRENCY_DEFAULT_SCALE: u8 = 2;
+
+/// An ISO 4217 code: three uppercase ASCII letters (the list itself is not checked).
+pub fn is_currency_code(s: &str) -> bool {
+    s.len() == 3 && s.bytes().all(|c| c.is_ascii_uppercase())
+}
 
 impl FieldDef {
     pub fn from_value(v: &Value) -> WsResult<FieldDef> {
@@ -107,7 +120,9 @@ impl FieldDef {
         match (self.ty, self.scale) {
             (FieldType::Decimal, Some(s)) if s <= 18 => {}
             (FieldType::Decimal, _) => return bad("decimal field needs scale 0-18".into()),
-            (_, Some(_)) => return bad("scale is only valid on decimal fields".into()),
+            (FieldType::Currency, Some(s)) if s > 18 => return bad("currency scale must be 0-18".into()),
+            (FieldType::Currency, _) => {}
+            (_, Some(_)) => return bad("scale is only valid on decimal and currency fields".into()),
             _ => {}
         }
         let is_select = matches!(self.ty, FieldType::Select | FieldType::MultiSelect);
@@ -135,6 +150,13 @@ impl FieldDef {
         if self.target_types.is_some() && self.ty != FieldType::ObjectRef {
             return bad("target_types is only valid on object_ref fields".into());
         }
+        match (&self.currency, self.ty) {
+            (Some(c), FieldType::Currency) if is_currency_code(c) => {}
+            (Some(c), FieldType::Currency) => return bad(format!("currency must be an ISO 4217 code, got {c:?}")),
+            (None, FieldType::Currency) => return bad("currency field needs its default currency".into()),
+            (Some(_), _) => return bad("currency is only valid on currency fields".into()),
+            (None, _) => {}
+        }
         if let Some(m) = &self.maintained_by {
             if m != "human" && m != "program" {
                 return bad("maintained_by must be human or program".into());
@@ -151,6 +173,10 @@ impl FieldDef {
     }
     pub fn option_label(&self, id: &str) -> Option<&str> {
         self.options.as_ref()?.iter().find(|x| x.option_id == id).map(|x| x.label.as_str())
+    }
+    /// The scale a `currency` field's amounts are written with.
+    pub fn currency_scale(&self) -> u8 {
+        self.scale.unwrap_or(CURRENCY_DEFAULT_SCALE)
     }
 
     /// Normalize a non-absent value. `null` passes only on nullable fields.
@@ -213,8 +239,52 @@ impl FieldDef {
                 Ok(Value::Array(set.into_iter().map(Value::String).collect()))
             }
             FieldType::ObjectRef => normalize_reference(v),
+            FieldType::Currency => self.normalize_currency(v).map_err(|m| bad(&m)),
         }
     }
+
+    /// `{ amount, currency }` (amount a decimal string or a number), or a bare amount in the field's default
+    /// currency; stored as `{ "amount": "<decimal of the field's scale>", "currency": "<code>" }` — the currency is
+    /// always written out, so changing the field's default never changes a stored value. Symbols and names (`$12`,
+    /// `USD 12`) are the importer's and the editor's to resolve, not the core's.
+    fn normalize_currency(&self, v: &Value) -> Result<Value, String> {
+        let (amount, code) = match v {
+            Value::Object(o) => {
+                if o.keys().any(|k| k != "amount" && k != "currency") {
+                    return Err("currency value takes only amount and currency".into());
+                }
+                let code = o.get("currency").and_then(Value::as_str).ok_or("currency value needs its currency code")?;
+                if !is_currency_code(code) {
+                    return Err("currency must be an ISO 4217 code".into());
+                }
+                (o.get("amount").ok_or("currency value needs its amount")?, code.to_string())
+            }
+            Value::String(_) | Value::Number(_) => (v, self.currency.clone().ok_or("currency field has no default currency")?),
+            _ => return Err("expected { amount, currency } or an amount".into()),
+        };
+        let text = match amount {
+            Value::String(s) => s.clone(),
+            Value::Number(_) => plain_number(amount)?,
+            _ => return Err("amount must be a decimal string or a number".into()),
+        };
+        Ok(json!({ "amount": normalize_decimal(&text, self.currency_scale())?, "currency": code }))
+    }
+}
+
+/// A JSON number as plain decimal text (no exponent).
+fn plain_number(v: &Value) -> Result<String, String> {
+    let s = if let Some(i) = v.as_i64() {
+        i.to_string()
+    } else if let Some(u) = v.as_u64() {
+        u.to_string()
+    } else {
+        let f = v.as_f64().filter(|f| f.is_finite()).ok_or("not a finite number")?;
+        format!("{f}")
+    };
+    if s.contains('e') || s.contains('E') {
+        return Err("number not representable as plain decimal".into());
+    }
+    Ok(s)
 }
 
 fn normalize_number(v: &Value) -> Result<Value, String> {
@@ -634,7 +704,14 @@ pub fn compare(def: &FieldDef, a: &Value, b: &Value) -> Ordering {
             ia.cmp(&ib)
         }
         FieldType::MultiSelect | FieldType::ObjectRef => Ordering::Equal,
+        // grouped by code, then by amount (different currencies are never converted)
+        FieldType::Currency => currency_parts(a).0.cmp(currency_parts(b).0).then_with(|| cmp_decimal(currency_parts(a).1, currency_parts(b).1)),
     }
+}
+
+/// `(code, amount)` of a stored currency value.
+pub fn currency_parts(v: &Value) -> (&str, &str) {
+    (v.get("currency").and_then(Value::as_str).unwrap_or(""), v.get("amount").and_then(Value::as_str).unwrap_or("0"))
 }
 
 /// Equality used by `eq`/`ne`/`in` and unique checks.
@@ -644,6 +721,11 @@ pub fn values_equal(def: &FieldDef, a: &Value, b: &Value) -> bool {
         FieldType::Decimal => cmp_decimal(a.as_str().unwrap_or(""), b.as_str().unwrap_or("")) == Ordering::Equal,
         FieldType::ObjectRef => {
             reference_entity_id(a) == reference_entity_id(b) && a.get("workspace_id") == b.get("workspace_id")
+        }
+        FieldType::Currency => {
+            let (ca, aa) = currency_parts(a);
+            let (cb, ab) = currency_parts(b);
+            ca == cb && cmp_decimal(aa, ab) == Ordering::Equal
         }
         _ => a == b,
     }
@@ -672,13 +754,20 @@ pub fn migrate_value(from: &FieldDef, to: &FieldDef, v: &Value) -> Result<Value,
         (FieldType::Text, FieldType::Decimal) => {
             json!(v.as_str().unwrap_or("").trim_matches(|c: char| c.is_ascii_whitespace()))
         }
-        (FieldType::Number, FieldType::Decimal) => {
-            let f = v.as_f64().ok_or("not a number")?;
-            let s = if let Some(i) = v.as_i64() { i.to_string() } else { format!("{f}") };
-            if s.contains('e') || s.contains('E') {
-                return Err("number not representable as plain decimal".into());
-            }
-            json!(s)
+        (FieldType::Number, FieldType::Decimal) => json!(plain_number(v)?),
+        // the amount in the field's default currency
+        (FieldType::Number, FieldType::Currency) => json!(plain_number(v)?),
+        (FieldType::Decimal, FieldType::Currency) => v.clone(),
+        // the currency is dropped (the field manager warns about values not in the default currency first)
+        (FieldType::Currency, FieldType::Decimal) => json!(currency_parts(v).1),
+        (FieldType::Currency, FieldType::Text) => {
+            let (code, amount) = currency_parts(v);
+            json!(format!("{code} {amount}"))
+        }
+        // another scale: as decimal → decimal; the currency stays
+        (FieldType::Currency, FieldType::Currency) => {
+            let (code, amount) = currency_parts(v);
+            json!({ "amount": amount, "currency": code })
         }
         (FieldType::Select, FieldType::Text) => {
             json!(from.option_label(v.as_str().unwrap_or("")).ok_or("unknown option")?)
@@ -699,6 +788,11 @@ pub fn migration_supported(from: FieldType, to: FieldType) -> bool {
             | (FieldType::Number, FieldType::Decimal)
             | (FieldType::Decimal, FieldType::Decimal)
             | (FieldType::Select, FieldType::Text)
+            | (FieldType::Number, FieldType::Currency)
+            | (FieldType::Decimal, FieldType::Currency)
+            | (FieldType::Currency, FieldType::Decimal)
+            | (FieldType::Currency, FieldType::Text)
+            | (FieldType::Currency, FieldType::Currency)
     )
 }
 
@@ -786,5 +880,61 @@ mod tests {
         assert!(migrate_value(&numd, &dec, &json!(0.001)).is_err());
         assert_eq!(migrate_value(&text, &numd, &json!("42")).unwrap(), json!(42));
         assert!(migrate_value(&text, &numd, &json!("4e2")).is_err());
+    }
+
+    #[test]
+    fn currency() {
+        let c = def(json!({"field_id":"c","name":"c","type":"currency","currency":"USD"}));
+        assert_eq!(c.currency_scale(), 2);
+        // a bare amount takes the default currency; an object keeps its own
+        assert_eq!(c.normalize(&json!("200")).unwrap(), json!({"amount":"200.00","currency":"USD"}));
+        assert_eq!(c.normalize(&json!(12.5)).unwrap(), json!({"amount":"12.50","currency":"USD"}));
+        assert_eq!(c.normalize(&json!(-3)).unwrap(), json!({"amount":"-3.00","currency":"USD"}));
+        assert_eq!(c.normalize(&json!({"amount":"500","currency":"CNY"})).unwrap(), json!({"amount":"500.00","currency":"CNY"}));
+        assert_eq!(c.normalize(&json!({"amount":10,"currency":"EUR"})).unwrap(), json!({"amount":"10.00","currency":"EUR"}));
+        // symbols, names and loose text are the importer's job
+        for bad in [json!("$12"), json!("USD 12"), json!("12.345"), json!({"amount":"1"}), json!({"currency":"USD"}),
+            json!({"amount":"1","currency":"usd"}), json!({"amount":"1","currency":"US"}), json!({"amount":"1","currency":"USD","x":1}),
+            json!(true), json!(["1"])] {
+            assert!(c.normalize(&bad).is_err(), "{bad} must be refused");
+        }
+        assert!(c.normalize(&Value::Null).is_err());
+        let jpy = def(json!({"field_id":"j","name":"j","type":"currency","currency":"JPY","scale":0}));
+        assert_eq!(jpy.normalize(&json!("300")).unwrap(), json!({"amount":"300","currency":"JPY"}));
+        assert!(jpy.normalize(&json!("300.5")).is_err());
+        // definitions
+        assert!(FieldDef::from_value(&json!({"field_id":"c","name":"c","type":"currency"})).is_err());
+        assert!(FieldDef::from_value(&json!({"field_id":"c","name":"c","type":"currency","currency":"usd"})).is_err());
+        assert!(FieldDef::from_value(&json!({"field_id":"c","name":"c","type":"currency","currency":"USD","scale":19})).is_err());
+        assert!(FieldDef::from_value(&json!({"field_id":"c","name":"c","type":"currency","currency":"USD","unique":true})).is_err());
+        assert!(FieldDef::from_value(&json!({"field_id":"d","name":"d","type":"decimal","scale":2,"currency":"USD"})).is_err());
+        assert!(FieldDef::from_value(&json!({"field_id":"t","name":"t","type":"text","scale":2})).is_err());
+        assert!(FieldType::Currency.sortable());
+        // order: by code, then amount; equality needs the same code
+        let v = |a: &str, k: &str| json!({"amount":a,"currency":k});
+        assert_eq!(compare(&c, &v("500.00", "CNY"), &v("10.00", "USD")), Ordering::Less);
+        assert_eq!(compare(&c, &v("9.50", "USD"), &v("10.00", "USD")), Ordering::Less);
+        assert_eq!(compare(&c, &v("-1.00", "USD"), &v("0.00", "USD")), Ordering::Less);
+        assert!(values_equal(&c, &v("10.00", "USD"), &v("10.0", "USD")));
+        assert!(!values_equal(&c, &v("10.00", "USD"), &v("10.00", "EUR")));
+    }
+
+    #[test]
+    fn currency_migrate() {
+        let usd = def(json!({"field_id":"x","name":"x","type":"currency","currency":"USD"}));
+        let usd0 = def(json!({"field_id":"x","name":"x","type":"currency","currency":"USD","scale":0}));
+        let dec = def(json!({"field_id":"x","name":"x","type":"decimal","scale":2}));
+        let num = def(json!({"field_id":"x","name":"x","type":"number"}));
+        let text = def(json!({"field_id":"x","name":"x","type":"text"}));
+        assert_eq!(migrate_value(&dec, &usd, &json!("12.50")).unwrap(), json!({"amount":"12.50","currency":"USD"}));
+        assert_eq!(migrate_value(&num, &usd, &json!(7)).unwrap(), json!({"amount":"7.00","currency":"USD"}));
+        assert!(migrate_value(&num, &usd, &json!(0.001)).is_err());
+        assert_eq!(migrate_value(&usd, &dec, &json!({"amount":"5.00","currency":"EUR"})).unwrap(), json!("5.00"));
+        assert_eq!(migrate_value(&usd, &text, &json!({"amount":"5.00","currency":"EUR"})).unwrap(), json!("EUR 5.00"));
+        assert_eq!(migrate_value(&usd, &usd0, &json!({"amount":"5.00","currency":"JPY"})).unwrap(), json!({"amount":"5","currency":"JPY"}));
+        assert!(migrate_value(&usd, &usd0, &json!({"amount":"5.50","currency":"USD"})).is_err());
+        assert!(migration_supported(FieldType::Decimal, FieldType::Currency));
+        assert!(!migration_supported(FieldType::Text, FieldType::Currency));
+        assert!(!migration_supported(FieldType::Currency, FieldType::Number));
     }
 }
