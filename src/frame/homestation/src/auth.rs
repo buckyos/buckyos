@@ -1,12 +1,9 @@
 //! Caller identity. Owner methods take zone session tokens; protocol reads take a session
-//! token (same zone) or a self-signed reader proof (other zones, §4.4 读者身份), or nothing
-//! (anonymous). Only what this module verified counts as identity.
+//! token of this zone — another zone's reader signs in here first (跨Zone登录断言契约, an External
+//! session) — or nothing (anonymous). Only what this module verified counts as identity.
 
 use crate::audience::Reader;
-use crate::directory::Directory;
 use crate::error::{denied, HsError, HsResult};
-use crate::sign::{decode_unverified, kid_did, verify_signature, Signer};
-use crate::{new_id, now_s};
 use async_trait::async_trait;
 use buckyos_api::{
     token_is_external, token_session_ceiling, validate_verify_hub_token_claims, AccessDenial, ControlPanelClient, DenyReason, SessionScope,
@@ -15,7 +12,6 @@ use buckyos_api::{
 use kRPC::{RPCErrors, RPCSessionToken};
 use name_lib::DID;
 use serde::Deserialize;
-use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -40,6 +36,9 @@ pub trait Authenticator: Send + Sync {
 pub struct StaticTokens {
     /// `token → { principal, did, app_id?, restricted? }`
     pub tokens: HashMap<String, StaticIdentity>,
+    /// Sessions the standalone verify-hub signed for other zones' readers (External).
+    #[serde(skip)]
+    pub hub: Option<std::sync::Arc<crate::standalone_hub::StandaloneHub>>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -55,8 +54,11 @@ pub struct StaticIdentity {
 #[async_trait]
 impl Authenticator for StaticTokens {
     async fn authenticate(&self, token: &str) -> HsResult<Caller> {
-        match self.tokens.get(token) {
-            Some(id) => Ok(Caller { principal: id.principal.clone(), did: id.did.clone(), app_id: id.app_id.clone(), restricted: id.restricted }),
+        if let Some(id) = self.tokens.get(token) {
+            return Ok(Caller { principal: id.principal.clone(), did: id.did.clone(), app_id: id.app_id.clone(), restricted: id.restricted });
+        }
+        match self.hub.as_ref().and_then(|hub| hub.subject(token, "session")) {
+            Some(did) => Ok(Caller { principal: did.clone(), did, app_id: None, restricted: true }),
             None => Err(HsError::Unauthorized("invalid session token".to_string())),
         }
     }
@@ -177,57 +179,15 @@ impl Authenticator for RuntimeAuth {
     }
 }
 
-pub const READER_PROOF_TTL: u64 = 300;
-
-/// A short-lived statement "I am `iss` reading `aud`", signed by a key `iss` authorizes.
-pub fn make_reader_proof(signer: &Signer, reader: &str, target_zone: &str) -> Result<String, String> {
-    let iat = now_s();
-    let claims = json!({
-        "iss": reader,
-        "aud": format!("https://{target_zone}/home"),
-        "iat": iat,
-        "exp": iat + READER_PROOF_TTL,
-        "jti": new_id("r"),
-    });
-    signer.sign(&claims)
-}
-
-pub async fn verify_reader_proof(directory: &dyn Directory, jwt: &str, own_zone: &str) -> Result<String, String> {
-    let decoded = decode_unverified(jwt)?;
-    let iss = decoded.claims.get("iss").and_then(Value::as_str).ok_or("reader proof has no iss")?.to_string();
-    let aud = decoded.claims.get("aud").and_then(Value::as_str).unwrap_or_default();
-    if aud != format!("https://{own_zone}/home") {
-        return Err("reader proof is for another zone".into());
-    }
-    let iat = decoded.claims.get("iat").and_then(Value::as_u64).ok_or("reader proof has no iat")?;
-    let exp = decoded.claims.get("exp").and_then(Value::as_u64).ok_or("reader proof has no exp")?;
-    let now = now_s();
-    if exp < now || iat > now + 60 || exp.saturating_sub(iat) > 2 * READER_PROOF_TTL {
-        return Err("reader proof expired or too long-lived".into());
-    }
-    let signer = kid_did(&decoded.kid).to_string();
-    if !directory.authorizes(&iss, &signer, &decoded.kid).await.map_err(|e| e.to_string())? {
-        return Err(format!("{signer} may not sign for {iss}"));
-    }
-    let key = directory.signer_key(&signer, &decoded.kid).await.map_err(|e| e.to_string())?;
-    verify_signature(jwt, &key)?;
-    Ok(iss)
-}
-
-/// Reader of a protocol request: owner session, another zone user, a reader proof, or anonymous.
+/// Reader of a protocol request: owner session, another identity's session (of this zone or an
+/// External signed in from another zone), or anonymous.
 pub async fn reader_from_request(
     auth: &dyn Authenticator,
-    directory: &dyn Directory,
     owner: &str,
-    zone: &str,
     authorization: Option<&str>,
     access_token: Option<&str>,
 ) -> HsResult<Reader> {
     if let Some(value) = authorization {
-        if let Some(proof) = value.strip_prefix("DID ") {
-            let did = verify_reader_proof(directory, proof.trim(), zone).await.map_err(HsError::Unauthorized)?;
-            return Ok(if did == owner { Reader::Owner } else { Reader::Did(did) });
-        }
         if let Some(token) = value.strip_prefix("Bearer ") {
             return session_reader(auth, owner, token.trim()).await;
         }
@@ -247,6 +207,7 @@ async fn session_reader(auth: &dyn Authenticator, owner: &str, token: &str) -> H
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{json, Value};
     use axum::routing::post;
     use axum::{Json, Router};
     use buckyos_api::{

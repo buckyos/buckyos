@@ -1,5 +1,6 @@
 includes:
   - path: node_gateway_params.json
+  - path: cross_zone_socks_params.json
 
 collections:
   APP_INFO:
@@ -39,6 +40,9 @@ stacks:
     bind: "[::]:{{rtcp_port}}"
     device_did: "{{device_did}}"
     keep_tunnel: []
+    inbound_admission:
+      anonymous: reject
+      named_min_relation: known_owner
     hook_point:
       main:
         id: main
@@ -54,14 +58,23 @@ stacks:
                 match-include $EXECUTOR_ACL ${REQ.source_device_id} || reject;
                 forward "tcp:///127.0.0.1:3184";
               end
-          default:
-            id: default
+          # Peers outside this Zone (including the SN relay) reach only this
+          # node's public web entries: 80 is served here so node_gateway sees
+          # the RTCP identity, 443 is raw TLS for the local TLS stack.
+          external:
+            id: external
             priority: 1
             block: |
+              if !eq ${REQ.source_zone_relation} "same_zone" then
+                eq ${REQ.dest_port} "80" && return --from chain "server node_gateway";
+                eq ${REQ.dest_port} "443" && return --from chain "forward tcp:///127.0.0.1:443";
+                reject;
+              end
+          default:
+            id: default
+            priority: 2
+            block: |
               return "forward ${REQ.protocol}:///${REQ.dest_host}:${REQ.dest_port}";
-    # 基于RTCP（包括中转)的身份验证
-    # 1） new_http_stream的时候，可以把来源did写入到REQ中供后续使用，但rtcp中转后，只能看到中转节点的did(可以简单的要求中转节点)
-    # 2） new_rtcp_stream的时候，是中转，默认只允许zone内中转(来源必须是zone内的设备)
 
   zone_gateway_http:
     protocol: tcp
@@ -109,6 +122,21 @@ stacks:
               end
               reject;
 
+  # Cross-Zone exit for local system services: SOCKS5 CONNECT
+  # <zone hostname>:80 with the credentials node_daemon writes to
+  # etc/cross_zone_socks.json. Loopback only.
+  cross_zone_entry:
+    protocol: tcp
+    bind: "127.0.0.1:3186"
+    hook_point:
+      main:
+        priority: 1
+        blocks:
+          default:
+            priority: 1
+            block: |
+              return "server cross_zone_socks";
+
 servers:
   node_executor_socks:
     type: socks
@@ -127,6 +155,26 @@ servers:
               end
               eq ${REQ.target.type} "domain" || return "REJECT";
               return "PROXY rtcp://${REQ.target.host}/";
+
+  cross_zone_socks:
+    type: socks
+    target: rtcp://cross-zone.invalid/
+    username: "{{cross_zone_socks_username}}"
+    password: "{{cross_zone_socks_password}}"
+    hook_point:
+      main:
+        priority: 1
+        blocks:
+          default:
+            priority: 1
+            block: |
+              eq ${REQ.target.type} "domain" || return "REJECT";
+              eq ${REQ.target.port} "80" || return "REJECT";
+              if eq $NODE_INFO.cross_zone_relay "" then
+                return "PROXY rtcp://${REQ.target.host}/";
+              end
+              local relay=$(url_encode $NODE_INFO.cross_zone_relay);
+              return "PROXY rtcp://${relay}@${REQ.target.host}/";
 
   buckyos_public:
     type: dir
@@ -149,6 +197,13 @@ servers:
           default:
             priority: 1
             block: |
+              match-include $REQ "X-Cyfs-Rtcp-Device" && map-remove REQ X-Cyfs-Rtcp-Device;
+              match-include $REQ "X-Cyfs-Rtcp-Trust" && map-remove REQ X-Cyfs-Rtcp-Trust;
+              match-include $REQ "cyfs-original-user" && map-remove REQ cyfs-original-user;
+              if match-include $REQ "source_device_did" then
+                map-add REQ X-Cyfs-Rtcp-Device $REQ.source_device_did;
+                map-add REQ X-Cyfs-Rtcp-Trust $REQ.source_identity_trust;
+              end
               global THIS_NODE_ID=$NODE_INFO.this_node_id;
               global THIS_ZONE_HOST=$NODE_INFO.this_zone_host;
               global CONTROL_PANEL_URL="https://sys.${THIS_ZONE_HOST}/";

@@ -29,6 +29,12 @@ impl Signer {
     pub fn sign(&self, claims: &Value) -> Result<String, String> {
         ndn_lib::named_obj_to_jwt(claims, &self.key, Some(self.kid.clone())).map_err(|e| format!("sign failed: {e}"))
     }
+
+    /// The same key as the device signer cross-Zone logins are made with.
+    pub fn device_signer(&self) -> Result<buckyos_api::DeviceSigner, String> {
+        let did = name_lib::DID::from_str(&self.signer_did).map_err(|e| format!("signer is not a DID: {e}"))?;
+        Ok(buckyos_api::DeviceSigner::with_kid(did, self.kid.clone(), self.key.clone()))
+    }
 }
 
 pub fn kid_did(kid: &str) -> &str {
@@ -85,6 +91,13 @@ pub fn generate_key() -> (String, String) {
     let pem = key.to_pkcs8_pem(Default::default()).expect("pkcs8 encode").to_string();
     let x = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.verifying_key().to_bytes());
     (pem, x)
+}
+
+/// The base64url public key (`x`) of a PKCS#8 PEM private key.
+pub fn public_x_from_pem(pem: &str) -> Result<String, String> {
+    use ed25519_dalek::pkcs8::DecodePrivateKey;
+    let key = ed25519_dalek::SigningKey::from_pkcs8_pem(pem).map_err(|e| format!("invalid ed25519 key: {e}"))?;
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.verifying_key().to_bytes()))
 }
 
 pub fn decoding_key_from_x(x: &str) -> Result<DecodingKey, String> {

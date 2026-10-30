@@ -729,7 +729,6 @@ async fn group_http_keeps_the_real_client_of_a_restricted_account() {
             .uri(format!("/{}/sessions", group().to_string()))
             .header("host", ZONE)
             .header("authorization", format!("Bearer {}", ctx.token.as_deref().unwrap()))
-            .header(ndn_lib::CYFS_HEADER_ORIGINAL_USER, did.to_string())
             .body(http_body(""))
             .unwrap();
         let c = c.clone();

@@ -193,7 +193,6 @@ async fn cyfs_dispatch_http_rejects_forged_identity_before_receiving() {
         .method("PUT")
         .uri("/inbox")
         .header("host", "alice.example")
-        .header("cyfs-original-user", "did:bns:sender")
         .header("content-type", ndn_lib::CYFS_CONTENT_TYPE_NAMED_OBJECT_JSON)
         .body(
             Full::new(bytes::Bytes::from_static(b"{}"))
@@ -493,16 +492,30 @@ async fn cyfs_dispatch_verifies_and_keeps_the_jwt_original_of_a_signed_message()
         .to_jwt(&key, &format!("{}#main_key", sender.to_string()))
         .unwrap();
 
-    let signed = crate::cyfs_dispatch::verify_signed_message(&jwt)
+    // Documents come from nowhere: only key-class DIDs resolve.
+    center
+        .custody
+        .set(std::sync::Arc::new(buckyos_api::StaticCustodyResolver::default()));
+    let signed = crate::cyfs_dispatch::verify_signed_message_with(&jwt, &center)
         .await
         .unwrap();
     assert_eq!(signed.obj_id, id);
     assert_eq!(signed.msg, msg);
 
-    // The kid must name a key of `from`.
+    // The kid must name a key that exists, and one that may sign for `from`.
     let forged = msg.to_jwt(&key, "did:bns:someone-else#main_key").unwrap();
     assert_eq!(
-        crate::cyfs_dispatch::verify_signed_message(&forged)
+        crate::cyfs_dispatch::verify_signed_message_with(&forged, &center)
+            .await
+            .unwrap_err()
+            .1,
+        "unknown-signing-key"
+    );
+    let other_dev = msg
+        .to_jwt(&key, "did:dev:11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo#main_key")
+        .unwrap();
+    assert_eq!(
+        crate::cyfs_dispatch::verify_signed_message_with(&other_dev, &center)
             .await
             .unwrap_err()
             .1,
@@ -516,7 +529,7 @@ async fn cyfs_dispatch_verifies_and_keeps_the_jwt_original_of_a_signed_message()
         .to_jwt(&key, &format!("{}#main_key", other.from.to_string()))
         .unwrap();
     assert_eq!(
-        crate::cyfs_dispatch::verify_signed_message(&wrong_key)
+        crate::cyfs_dispatch::verify_signed_message_with(&wrong_key, &center)
             .await
             .unwrap_err()
             .1,

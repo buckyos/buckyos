@@ -4,7 +4,6 @@ mod contact_lookup;
 mod contact_rpc;
 mod cyfs_dispatch;
 mod friend_service;
-mod group_auth;
 mod group_http;
 mod group_publication;
 mod group_remote;
@@ -24,6 +23,8 @@ mod owner_session;
 mod owner_session_db;
 #[cfg(test)]
 mod test_contact_network;
+#[cfg(test)]
+mod test_cross_zone;
 #[cfg(test)]
 mod test_group_service;
 #[cfg(test)]
@@ -1425,19 +1426,17 @@ pub async fn start_msg_center_service() -> Result<()> {
     };
 
     // Native messages of this Zone's users leave signed by the OOD device
-    // (Zone custody); without the key they can only use configured routes.
-    let zone_signer = match runtime.load_device_private_key() {
-        Ok(()) => runtime
-            .device_private_key
-            .clone()
-            .zip(runtime.device_config.as_ref().map(|d| d.id.to_string()))
-            .map(|(key, device)| network_directory::ZoneSigner {
-                key,
-                kid: format!("{device}#main_key"),
-            }),
+    // (Zone custody), which also logs them in at other Zones.
+    let (zone_signer, cross_zone) = match runtime.load_device_private_key() {
+        Ok(()) => (
+            runtime.device_signer(),
+            buckyos_api::CrossZoneClient::from_runtime(&runtime)
+                .map_err(|err| warn!("cross-zone client unavailable: {}", err))
+                .ok(),
+        ),
         Err(err) => {
-            warn!("device key unavailable, native messages stay unsigned: {}", err);
-            None
+            warn!("device key unavailable, native messages stay unsigned and local: {}", err);
+            (None, None)
         }
     };
 
@@ -1450,6 +1449,12 @@ pub async fn start_msg_center_service() -> Result<()> {
     *center.cyfs_dispatch.write().unwrap() = cyfs_dispatch::CyfsDispatchSettings::parse(&settings)?;
     if let Some(signer) = zone_signer {
         center.zone_signer.set(signer);
+    }
+    if let Some(client) = cross_zone {
+        let origins = center.cyfs_dispatch.read().unwrap().zone_origins.clone();
+        center
+            .cross_zone
+            .set(std::sync::Arc::new(client.with_origins(origins)));
     }
     center.set_bucket_host(buckets::BucketHost::Runtime);
     center.start_idempotency_sweep();

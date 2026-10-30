@@ -42,6 +42,7 @@ buckyos-api = { path = "../buckyos-api" }
 anyhow = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+rand = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }

@@ -111,10 +111,10 @@ async fn spider_private_captures_and_share() {
     assert_eq!(body["state"], "ready");
     assert!(body["markdown"].as_str().unwrap().contains("Build four boxes"));
     // Private captures are not in Bob's stream (A72).
-    let (_, stream, _) = net.get(&format!("{}/feed?mode=display", bob.home), Some(net.proof("carol", "bob"))).await;
+    let (_, stream, _) = net.get(&format!("{}/feed?mode=display", bob.home), Some(net.proof("carol", "bob").await)).await;
     assert_eq!(serde_json::from_str::<Value>(&stream).unwrap()["items"].as_array().unwrap().len(), 0);
     let capture_id = card["item"]["objId"].as_str().unwrap().to_string();
-    assert_eq!(net.get(&format!("{}/objects/{capture_id}", bob.home), Some(net.proof("carol", "bob"))).await.0, 404);
+    assert_eq!(net.get(&format!("{}/objects/{capture_id}", bob.home), Some(net.proof("carol", "bob").await)).await.0, 404);
 
     // Sharing publishes Bob's own object wrapping the snapshot, with the source kept as data.
     let task = net.rpc("bob", "publish.share_capture", json!({ "objId": capture_id })).await;
@@ -128,7 +128,7 @@ async fn spider_private_captures_and_share() {
     assert_eq!(again["sharedAs"], task["objId"]);
     // Carol fetches the snapshot from Bob once it is part of a visible publication.
     let snapshot = shared["item"]["object"]["wraps"].as_str().unwrap().to_string();
-    assert_eq!(net.get(&format!("{}/objects/{snapshot}", bob.home), Some(net.proof("carol", "bob"))).await.0, 200);
+    assert_eq!(net.get(&format!("{}/objects/{snapshot}", bob.home), Some(net.proof("carol", "bob").await)).await.0, 200);
 }
 
 /// §7.6, A34, A36: Message Center friends follow each other by default; losing the friend

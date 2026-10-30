@@ -840,7 +840,7 @@ async fn group_http_signed_delivery_and_joined_sync_preserve_identity_order_and_
         .unwrap();
     assert!(route.target.contains("/sessions/"));
     assert!(!route.target.contains("项目"));
-    let result = crate::cyfs_dispatch::send(&route, &msg, Some(&jwt), &msg.gen_obj_id().0)
+    let result = crate::cyfs_dispatch::send(None, &route, &msg, Some(&jwt), &msg.gen_obj_id().0)
         .await
         .unwrap();
     assert!(result.ok, "{result:?}");
@@ -851,7 +851,7 @@ async fn group_http_signed_delivery_and_joined_sync_preserve_identity_order_and_
         .unwrap()
         .unwrap();
     assert_eq!(saved.2.as_deref(), Some(jwt.as_str()));
-    let replay = crate::cyfs_dispatch::send(&route, &msg, Some(&jwt), &msg.gen_obj_id().0)
+    let replay = crate::cyfs_dispatch::send(None, &route, &msg, Some(&jwt), &msg.gen_obj_id().0)
         .await
         .unwrap();
     assert!(replay.ok);
@@ -1531,7 +1531,6 @@ async fn shadow_members_require_registered_tunnel_consent_and_authenticated_tran
             "authorization",
             format!("Bearer {}", context(&shadow).token.unwrap()),
         )
-        .header(ndn_lib::CYFS_HEADER_ORIGINAL_USER, shadow.to_string())
         .body(http_body(""))
         .unwrap();
     assert_eq!(
@@ -1621,25 +1620,14 @@ fn delegated_signatures_are_bound_to_the_author_document_and_authorized_key() {
     let signer = member();
     let kid = format!("{}#allowed", signer.to_string());
     let doc = json!({"id":author,"authentication":[kid]});
-    assert!(crate::cyfs_dispatch::authorizes_signer(
-        &doc, &author, &signer, &kid
-    ));
-    assert!(!crate::cyfs_dispatch::authorizes_signer(
+    assert!(buckyos_api::lists_signer(&doc, &signer, &kid));
+    assert!(!buckyos_api::lists_signer(
         &doc,
-        &author,
         &signer,
         &format!("{}#other", signer.to_string())
     ));
-    assert!(!crate::cyfs_dispatch::authorizes_signer(
-        &doc,
-        &group(),
-        &signer,
-        &kid
-    ));
     let embedded = json!({"id":author,"authentication":[{"id":kid}]});
-    assert!(crate::cyfs_dispatch::authorizes_signer(
-        &embedded, &author, &signer, &kid
-    ));
+    assert!(buckyos_api::lists_signer(&embedded, &signer, &kid));
     let msg = message(&author, None, "delegated", 1);
     let jwt = msg.to_jwt(&key(&signer), &kid).unwrap();
     let verified =
@@ -2560,7 +2548,6 @@ async fn http_join_accepts_the_pending_invitation_and_reads_need_no_proofs() {
                 "authorization",
                 format!("Bearer {}", context(&member()).token.unwrap()),
             )
-            .header(ndn_lib::CYFS_HEADER_ORIGINAL_USER, member().to_string())
             .body(http_body(body.to_string()))
             .unwrap()
     };

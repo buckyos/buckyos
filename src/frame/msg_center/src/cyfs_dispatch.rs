@@ -1,6 +1,9 @@
 use crate::msg_center::MessageCenter;
-use crate::network_directory::DirectoryError;
-use buckyos_api::{get_buckyos_api_runtime, DeliveryReportResult, DispatchResult};
+use buckyos_api::{
+    canonical_zone_of, check_custody, get_buckyos_api_runtime, resolve_signer_key, AccessDenial,
+    CrossZoneError, CrossZoneRequest, CustodyError, DeliveryReportResult, DispatchResult,
+    Principal, ResolveFailure, SessionScope,
+};
 use buckyos_http_server::ServerError;
 use bytes::Bytes;
 use http::{Request, Response, StatusCode};
@@ -25,12 +28,15 @@ fn default_timeout() -> u64 {
 pub(crate) struct NativeDispatchRoute {
     pub target: String,
     pub upstream: String,
-    /// Configured routes carry a Bearer token; automatic routes send a
-    /// signed message instead.
+    /// Configured routes carry their own Bearer token; automatic routes log in
+    /// at the target Zone (`buckyos_api::CrossZoneClient`).
     #[serde(default)]
     pub authorization: Option<String>,
     #[serde(default = "default_timeout")]
     pub timeout_ms: u64,
+    /// Target Zone of an automatic route; requests go through the cross-Zone client.
+    #[serde(skip)]
+    pub zone: Option<DID>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -216,13 +222,15 @@ pub(crate) fn user_inbox_path(did: &DID) -> String {
 }
 
 pub(crate) const USER_INBOX_PREFIX: &str = "/kapi/msg-center/";
+/// Service id other Zones' msg-centers log in for.
+pub(crate) const MSG_CENTER_SERVICE: &str = "msg-center";
 
 fn parse_user_inbox_path(path: &str) -> Option<DID> {
     let did = path.strip_prefix(USER_INBOX_PREFIX)?.strip_suffix("/inbox")?;
     (!did.contains('/')).then(|| DID::from_str(did).ok()).flatten()
 }
 
-fn local_zone_host() -> Option<String> {
+pub(crate) fn local_zone_host() -> Option<String> {
     get_buckyos_api_runtime()
         .ok()
         .map(|runtime| runtime.zone_id.to_host_name())
@@ -264,46 +272,53 @@ pub(crate) async fn serve(center: &MessageCenter, mut req: Request<Body>) -> Res
             "method-not-allowed",
         );
     }
-    // Without a Bearer token only a signed message gets in; its verified
-    // sender is the principal (`Message Center.md` §4.5, signed ingress).
-    let bearer = req
+    // Only a verify-hub session of this Zone gets in: a sender of another Zone
+    // logged in by its Zone's device (跨Zone登录断言契约 §5), or the principal of
+    // a configured route. A signed message proves its content, not its sender.
+    let Some(token) = req
         .headers()
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .map(str::to_string);
-    let mut principal = None;
-    if let Some(token) = bearer.as_deref() {
-        let runtime = match get_buckyos_api_runtime() {
-            Ok(runtime) => runtime,
-            Err(_) => {
-                return unknown(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    &target,
-                    "authentication-unavailable",
-                )
-            }
-        };
-        principal = match runtime.verify_trusted_session_token(token).await {
-            Ok(token) => match token.sub.and_then(|s| {
-                config
-                    .principal_dids
-                    .get(&s)
-                    .cloned()
-                    .or_else(|| DID::from_str(&s).ok())
-            }) {
-                Some(principal) => Some(principal),
-                None => {
-                    return rejected(StatusCode::UNAUTHORIZED, &target, None, "invalid-principal")
-                }
-            },
-            Err(_) => return rejected(StatusCode::UNAUTHORIZED, &target, None, "unauthenticated"),
-        };
+        .map(str::to_string)
+    else {
+        return rejected(StatusCode::UNAUTHORIZED, &target, None, "unauthenticated");
+    };
+    let ctx = kRPC::RPCContext {
+        token: Some(token),
+        from_ip: Some(std::net::IpAddr::from([127, 0, 0, 1])),
+        ..Default::default()
+    };
+    let caller = crate::owner_session::serve_opened(
+        "cyfs_inbox",
+        SessionScope::MsgInbox,
+        center.caller_identity(&ctx),
+    )
+    .await;
+    let caller = match caller {
+        Ok(Some(caller)) => caller,
+        Err(error) if AccessDenial::from_rpc_error(&error).is_some() => {
+            return rejected(StatusCode::FORBIDDEN, &target, None, "acl-denied")
+        }
+        _ => return rejected(StatusCode::UNAUTHORIZED, &target, None, "unauthenticated"),
+    };
+    let principal = match caller
+        .user_did
+        .clone()
+        .or_else(|| config.principal_dids.get(&caller.user_id).cloned())
+        .or_else(|| DID::from_str(&caller.user_id).ok())
+    {
+        Some(principal) => principal,
+        None => return rejected(StatusCode::UNAUTHORIZED, &target, None, "invalid-principal"),
+    };
+    // Another Zone's senders share a budget per sender.
+    if caller.external && !center.take_ingress_budget(&principal) {
+        return response(
+            StatusCode::TOO_MANY_REQUESTS,
+            &CyfsDispatchResult::rejected(None, target.clone(), "rate-limited", true),
+        );
     }
     if req.method() == http::Method::GET {
-        let Some(principal) = principal else {
-            return rejected(StatusCode::UNAUTHORIZED, &target, None, "unauthenticated");
-        };
         let id = match parse_cyfs_dispatch_status_query(req.uri().query().unwrap_or("")) {
             Ok(id) => id,
             Err(_) => return rejected(StatusCode::BAD_REQUEST, &target, None, "invalid-query"),
@@ -344,9 +359,6 @@ pub(crate) async fn serve(center: &MessageCenter, mut req: Request<Body>) -> Res
             )
         }
     };
-    if principal.is_none() && encoding != CyfsNamedObjectEncoding::Jwt {
-        return rejected(StatusCode::UNAUTHORIZED, &target, None, "unauthenticated");
-    }
     let claimed = req
         .headers()
         .get(CYFS_HEADER_OBJ_ID)
@@ -409,19 +421,7 @@ pub(crate) async fn serve(center: &MessageCenter, mut req: Request<Body>) -> Res
         // form (CYFS 标准对象 §16.5).
         CyfsNamedObjectEncoding::Jwt => {
             let jwt = String::from_utf8(body).unwrap_or_default();
-            // Spend the sender's budget before resolving any signing key.
-            if principal.is_none() {
-                let claimed_from = decode_msg_object_jwt(&jwt).map(|decoded| decoded.msg.from);
-                if let Ok(from) = claimed_from {
-                    if !center.take_ingress_budget(&from) {
-                        return response(
-                            StatusCode::TOO_MANY_REQUESTS,
-                            &CyfsDispatchResult::rejected(Some(id), target.clone(), "rate-limited", true),
-                        );
-                    }
-                }
-            }
-            match verify_signed_message_with(&jwt, Some(center)).await {
+            match verify_signed_message_with(&jwt, center).await {
                 Ok(signed) => (signed.msg, signed.obj_id, Some(jwt)),
                 Err((code, reason)) => return rejected(code, &target, Some(id), reason),
             }
@@ -435,7 +435,6 @@ pub(crate) async fn serve(center: &MessageCenter, mut req: Request<Body>) -> Res
             "invalid-message-object-id",
         );
     }
-    let principal = principal.unwrap_or_else(|| msg.from.clone());
     if msg.from != principal || !msg.to.contains(receiver) {
         return rejected(
             StatusCode::FORBIDDEN,
@@ -473,139 +472,35 @@ pub(crate) async fn serve(center: &MessageCenter, mut req: Request<Body>) -> Res
     }
 }
 
-pub(crate) fn authorizes_signer(
-    doc: &serde_json::Value,
-    author: &DID,
-    signer: &DID,
-    kid: &str,
-) -> bool {
-    if doc["id"] != serde_json::json!(author) {
-        return false;
-    }
-    let signer = signer.to_string();
-    doc["authentication"].as_array().is_some_and(|keys| {
-        keys.iter()
-            .filter_map(|key| key.as_str().or_else(|| key["id"].as_str()))
-            .any(|id| id == kid || id == signer)
-    })
-}
-
-#[cfg(test)]
-pub(crate) async fn verify_signed_message(
-    jwt: &str,
-) -> std::result::Result<MsgObjectJwt, (StatusCode, &'static str)> {
-    verify_signed_message_with(jwt, None).await
-}
-
-/// Zone custody: a device of the Zone that hosts `author` signs for it
-/// (same rule as HomeStation; known risk: the Zone can sign for its users).
-/// `Err` when a Zone cannot be resolved right now: no proof either way.
-pub(crate) async fn zone_signs_for(
-    center: &MessageCenter,
-    signer: &DID,
-    author: &DID,
-) -> std::result::Result<bool, DirectoryError> {
-    let directory = center.directory.get();
-    let device_zone = match directory.zone_of(signer).await {
-        Ok(Some(zone)) => zone,
-        Ok(None) | Err(DirectoryError::NotFound(_)) => return Ok(false),
-        Err(error) => return Err(error),
-    };
-    if center.is_hosted_identity(author) {
-        let local_zone =
-            local_zone_host().or_else(|| center.cyfs_dispatch.read().unwrap().target_zone.clone());
-        if local_zone.is_some_and(|zone| zone.eq_ignore_ascii_case(&device_zone)) {
-            return Ok(true);
-        }
-    }
-    match directory.zone_of(author).await {
-        Ok(zone) => Ok(zone.is_some_and(|zone| zone.eq_ignore_ascii_case(&device_zone))),
-        Err(DirectoryError::NotFound(_)) => Ok(false),
-        Err(error) => Err(error),
-    }
-}
-
-/// `center` enables the Zone-custody rule for signers other than `from`.
+/// Verify a signed message: the key behind its kid, and that the signer may
+/// speak for `from` (the one custody rule, `buckyos_api::check_custody`).
 pub(crate) async fn verify_signed_message_with(
     jwt: &str,
-    center: Option<&MessageCenter>,
+    center: &MessageCenter,
 ) -> std::result::Result<MsgObjectJwt, (StatusCode, &'static str)> {
     let decoded =
         decode_msg_object_jwt(jwt).map_err(|_| (StatusCode::BAD_REQUEST, "invalid-message"))?;
-    let signer = decoded
-        .kid_did()
-        .ok_or((StatusCode::FORBIDDEN, "signer-mismatch"))?;
-    let mut custody = false;
-    if signer != decoded.msg.from {
-        let zone_rule = match center {
-            Some(center) => zone_signs_for(center, &signer, &decoded.msg.from).await,
-            None => Ok(false),
-        };
-        custody = matches!(zone_rule, Ok(true));
-        // An unresolved Zone proves nothing: the sender retries later.
-        let mismatch = match &zone_rule {
-            Err(error) => {
-                log::warn!(
-                    "zone of signer {} for {} unavailable: {}",
-                    signer.to_string(),
-                    decoded.msg.from.to_string(),
-                    error
-                );
-                (StatusCode::SERVICE_UNAVAILABLE, "signing-key-unavailable")
-            }
-            Ok(_) => (StatusCode::FORBIDDEN, "signer-mismatch"),
-        };
-        if !custody {
-            if decoded.msg.from.method == "dev" {
-                return Err(mismatch);
-            }
-            let doc = name_client::resolve_did(&decoded.msg.from, None)
-                .await
-                .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "signing-key-unavailable"))?
-                .to_json_value()
-                .map_err(|_| mismatch)?;
-            if !authorizes_signer(&doc, &decoded.msg.from, &signer, &decoded.kid) {
-                return Err(mismatch);
-            }
-        }
-    }
-    let from = &signer;
-    let key = if from.method == "dev" {
-        jsonwebtoken::DecodingKey::from_ed_components(&from.id)
-            .map_err(|_| (StatusCode::FORBIDDEN, "unknown-signing-key"))?
-    } else {
-        let fragment = decoded
-            .kid
-            .split_once('#')
-            .map(|(_, fragment)| format!("#{}", fragment));
-        let key = if custody {
-            name_client::resolve_did(from, Some(name_lib::DidDocType::Device))
-                .await
-                .and_then(name_lib::parse_did_doc)
-                .and_then(|doc| {
-                    doc.get_auth_key(fragment.as_deref())
-                        .map(|(key, _)| key)
-                        .ok_or_else(|| name_lib::NSError::NotFound("Invalid kid".into()))
-                })
-        } else {
-            name_client::resolve_auth_key(from, fragment.as_deref()).await
-        };
-        match key {
-            Ok(key) => key,
-            Err(name_lib::NSError::NotFound(_)) => {
-                return Err((StatusCode::FORBIDDEN, "unknown-signing-key"))
-            }
-            Err(error) => {
-                log::warn!(
-                    "resolve signing key of {} failed: {}",
-                    from.to_string(),
-                    error
-                );
-                return Err((StatusCode::SERVICE_UNAVAILABLE, "signing-key-unavailable"));
-            }
+    let resolver = center.custody.get();
+    let custody_error = |error: CustodyError| match error {
+        CustodyError::UnknownSigner => (StatusCode::FORBIDDEN, "unknown-signing-key"),
+        CustodyError::NotAuthorized => (StatusCode::FORBIDDEN, "signer-mismatch"),
+        // An unresolved document proves nothing: the sender retries later.
+        CustodyError::Unavailable(failure) => {
+            log::warn!("signer of {} unresolvable: {}", decoded.kid, failure);
+            (StatusCode::SERVICE_UNAVAILABLE, "signing-key-unavailable")
         }
     };
-    verify_msg_object_jwt(jwt, &key).map_err(|_| (StatusCode::FORBIDDEN, "invalid-signature"))
+    let signer = resolve_signer_key(resolver.as_ref(), &decoded.kid)
+        .await
+        .map_err(custody_error)?;
+    let local = center
+        .is_hosted_identity(&decoded.msg.from)
+        .then(|| center.local_zone_did())
+        .flatten();
+    check_custody(resolver.as_ref(), &signer, &decoded.msg.from, local)
+        .await
+        .map_err(custody_error)?;
+    verify_msg_object_jwt(jwt, &signer.key).map_err(|_| (StatusCode::FORBIDDEN, "invalid-signature"))
 }
 
 /// Where native delivery to `target` goes without configuration: the
@@ -622,30 +517,42 @@ pub(crate) async fn auto_route(
         retry_after_ms: retryable.then_some(60_000),
         ..Default::default()
     };
-    let zone = match center.directory.get().zone_of(target).await {
+    let Some(client) = center.cross_zone.get() else {
+        return Err(failure(
+            "native-route-unavailable",
+            "this node cannot reach other Zones (no device key)".into(),
+            false,
+        ));
+    };
+    let zone = match canonical_zone_of(center.custody.get().as_ref(), target, None).await {
         Ok(Some(zone)) => zone,
-        Ok(None) => {
+        Ok(None) | Err(ResolveFailure::NotFound(_)) => {
             return Err(failure(
                 "native-route-unresolved",
                 format!("{} has no Zone", target.to_string()),
                 false,
             ))
         }
-        Err(DirectoryError::NotFound(reason)) => {
-            return Err(failure("native-route-unresolved", reason, false))
-        }
-        Err(error @ (DirectoryError::Unavailable(_) | DirectoryError::Timeout)) => {
-            return Err(failure("native-route-unavailable", error.to_string(), true))
-        }
+        Err(error) => return Err(failure("native-route-unavailable", error.to_string(), true)),
     };
-    let target_url = normalize_cyfs_dispatch_target(&zone, &user_inbox_path(target))
+    let host = client.zone_host(&zone).await.map_err(|error| {
+        let retryable = error.is_retryable();
+        let code = if retryable {
+            "native-route-unavailable"
+        } else {
+            "native-route-unresolved"
+        };
+        failure(code, error.to_string(), retryable)
+    })?;
+    let target_url = normalize_cyfs_dispatch_target(&host, &user_inbox_path(target))
         .map_err(|error| failure("native-route-unresolved", error.to_string(), false))?;
-    let origin = center.cyfs_dispatch.read().unwrap().origin_of_zone(&zone);
+    let origin = center.cyfs_dispatch.read().unwrap().origin_of_zone(&host);
     Ok(NativeDispatchRoute {
         target: target_url,
         upstream: origin,
         authorization: None,
         timeout_ms: 15_000,
+        zone: Some(zone),
     })
 }
 
@@ -678,12 +585,13 @@ pub(crate) fn delivery_report(result: CyfsDispatchResult) -> DeliveryReportResul
 /// JWT original is sent so the signature reaches the receiver.
 #[cfg(test)]
 pub(crate) async fn send(
+    center: Option<&MessageCenter>,
     route: &NativeDispatchRoute,
     msg: &MsgObject,
     jwt: Option<&str>,
     expected_id: &ObjId,
 ) -> anyhow::Result<DeliveryReportResult> {
-    send_authenticated(None, route, msg, jwt, expected_id).await
+    send_authenticated(center, route, msg, jwt, expected_id).await
 }
 
 pub(crate) async fn send_authenticated(
@@ -707,32 +615,63 @@ pub(crate) async fn send_authenticated(
         None => (CyfsNamedObjectEncoding::Json, json_body),
     };
     let target = reqwest::Url::parse(&route.target)?;
-    let mut url = reqwest::Url::parse(&route.upstream)?;
-    url.set_path(target.path());
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?;
+    let host = target
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("native dispatch target has no host"))?
+        .to_string();
     let operation = async {
-        let request = client
-            .put(url.clone())
-            .header("host", target.host_str().unwrap())
-            .header("content-type", encoding.content_type())
-            .header(CYFS_HEADER_OBJ_ID, id.to_string())
-            .header(CYFS_HEADER_ORIGINAL_USER, msg.from.to_string());
-        let request = match route.authorization.as_deref() {
-            Some(authorization) => request.header("authorization", authorization),
-            None if msg.kind == MsgObjKind::GroupMsg => {
-                let center = center.ok_or_else(|| anyhow::anyhow!("remote-group-auth-required"))?;
-                let group = msg.to.first().ok_or_else(|| anyhow::anyhow!("missing-group"))?;
-                let proof = crate::group_auth::signed_group_request(center, &msg.from, group,
-                    target.host_str().unwrap(), "PUT", url.path(), body.as_bytes())
-                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-                request.header(crate::group_auth::CYFS_HEADER_GROUP_REQUEST, proof)
+        let mut response = match route.authorization.as_deref() {
+            // A configured route carries its own credential.
+            Some(authorization) => {
+                let mut url = reqwest::Url::parse(&route.upstream)?;
+                url.set_path(target.path());
+                reqwest::Client::builder()
+                    .no_proxy()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build()?
+                    .put(url)
+                    .header("host", &host)
+                    .header("authorization", authorization)
+                    .header("content-type", encoding.content_type())
+                    .header(CYFS_HEADER_OBJ_ID, id.to_string())
+                    .body(body)
+                    .send()
+                    .await?
             }
-            None => request,
+            None => {
+                let center = center.ok_or_else(|| anyhow::anyhow!("cross-zone-unavailable"))?;
+                let client = center
+                    .cross_zone
+                    .get()
+                    .ok_or_else(|| anyhow::anyhow!("cross-zone-unavailable"))?;
+                let request = CrossZoneRequest::new(http::Method::PUT, target.path())
+                    .header("content-type", encoding.content_type())
+                    .header(CYFS_HEADER_OBJ_ID, id.to_string())
+                    .body(body)
+                    .timeout(Duration::from_millis(route.timeout_ms));
+                let principal = Principal::new(msg.from.clone());
+                let sent = match &route.zone {
+                    Some(zone) => client.request_to(zone, &host, MSG_CENTER_SERVICE, &principal, request).await,
+                    None => client.request_host(&host, MSG_CENTER_SERVICE, &principal, request).await,
+                };
+                match sent {
+                    Ok(response) => response,
+                    Err(error @ CrossZoneError::Transport(_)) => return Err(error.into()),
+                    // The target Zone refused the sender: retrying changes nothing
+                    // unless it could not resolve a Zone right now.
+                    Err(error) => {
+                        return Ok(DeliveryReportResult {
+                            ok: false,
+                            error_code: Some("cross-zone-auth-rejected".into()),
+                            error_message: Some(error.to_string()),
+                            retryable: Some(error.is_retryable()),
+                            retry_after_ms: error.is_retryable().then_some(60_000),
+                            ..Default::default()
+                        })
+                    }
+                }
+            }
         };
-        let mut response = request.body(body).send().await?;
         let status = response.status();
         let headers = response.headers().clone();
         let mut bytes = Vec::new();
@@ -749,7 +688,17 @@ pub(crate) async fn send_authenticated(
             &id,
             &route.target,
             false,
-        )?;
+        )
+        .inspect_err(|error| {
+            log::warn!(
+                "unreadable dispatch answer from {}: HTTP {} {:?} body {:?}: {}",
+                route.target,
+                status,
+                headers.get("content-type"),
+                String::from_utf8_lossy(&bytes[..bytes.len().min(300)]),
+                error
+            )
+        })?;
         Ok::<_, anyhow::Error>(delivery_report(result))
     };
     tokio::time::timeout(Duration::from_millis(route.timeout_ms), operation).await?
@@ -768,6 +717,7 @@ mod tests {
             upstream: format!("http://{}", listener.local_addr().unwrap()),
             authorization: Some("Bearer original-token".into()),
             timeout_ms: 1000,
+            zone: None,
         };
         let msg = MsgObject {
             from: DID::new("bns", "bob"),
@@ -812,11 +762,11 @@ mod tests {
                 socket.write_all(response.as_bytes()).await.unwrap();
             }
         });
-        let pending = send(&route, &msg, None, &id).await.unwrap();
+        let pending = send(None, &route, &msg, None, &id).await.unwrap();
         assert!(!pending.ok);
         assert_eq!(pending.retryable, Some(true));
         assert_eq!(pending.error_code.as_deref(), Some("cyfs-cached"));
-        let accepted = send(&route, &msg, None, &id).await.unwrap();
+        let accepted = send(None, &route, &msg, None, &id).await.unwrap();
         assert!(accepted.ok);
         assert_eq!(
             accepted.external_msg_id.as_deref(),
@@ -833,6 +783,7 @@ mod tests {
             upstream: format!("http://{}", listener.local_addr().unwrap()),
             authorization: Some("Bearer original-token".into()),
             timeout_ms: 1000,
+            zone: None,
         };
         let msg = MsgObject {
             from: DID::new("dev", "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8"),
@@ -882,14 +833,14 @@ mod tests {
             let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\ncyfs-dispatch-status: accepted\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
             socket.write_all(response.as_bytes()).await.unwrap();
         });
-        let accepted = send(&route, &msg, Some(&jwt), &id).await.unwrap();
+        let accepted = send(None, &route, &msg, Some(&jwt), &id).await.unwrap();
         assert!(accepted.ok);
         task.await.unwrap();
 
         // A kept JWT that does not belong to the queued message is refused.
         let mut other = msg.clone();
         other.created_at_ms = 2;
-        assert!(send(&route, &other, Some(&jwt), &other.gen_obj_id().0)
+        assert!(send(None, &route, &other, Some(&jwt), &other.gen_obj_id().0)
             .await
             .is_err());
     }

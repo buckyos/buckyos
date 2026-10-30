@@ -280,12 +280,23 @@ impl Net {
         (status, response.text().await.unwrap(), headers)
     }
 
-    /// A reader proof as `reader` for `target`'s zone.
-    pub fn proof(&self, reader: &str, target: &str) -> String {
+    /// `Authorization` of `reader` at `target`'s zone: its zone's key signs it in there by a
+    /// cross-zone assertion (跨Zone登录断言契约), as the reader's own station would.
+    pub async fn proof(&self, reader: &str, target: &str) -> String {
         let node = self.n(reader);
         let signer = homestation::sign::Signer::from_pem(node.pem.as_bytes(), format!("{}#main_key", node.signer)).unwrap();
-        let proof = homestation::auth::make_reader_proof(&signer, &did_of(reader), &self.n(target).zone).unwrap();
-        format!("DID {proof}")
+        let zone = &self.n(target).zone;
+        let assertion = buckyos_api::sign_cross_zone_assertion(
+            &signer.device_signer().unwrap(),
+            &name_lib::DID::from_str(&did_of(reader)).unwrap(),
+            &name_lib::DID::new("web", zone),
+            &buckyos_api::AuthTarget::from_canonical_key("system:homestation").unwrap(),
+            None,
+        )
+        .unwrap();
+        let body = json!({ "method": buckyos_api::CROSS_ZONE_LOGIN_METHOD, "params": { "assertion": assertion }, "sys": [1] });
+        let answer: Value = self.http.post(format!("{}/kapi/verify-hub", self.n(target).base)).json(&body).send().await.unwrap().json().await.unwrap();
+        format!("Bearer {}", answer["result"]["session_token"].as_str().unwrap_or("refused"))
     }
 }
 

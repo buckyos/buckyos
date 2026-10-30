@@ -26,6 +26,8 @@ pub const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 #[derive(Clone)]
 pub struct AppState {
     pub host: Arc<Host>,
+    /// Standalone mode only: this zone's stand-in verify-hub for other zones' logins.
+    pub hub: Option<Arc<crate::standalone_hub::StandaloneHub>>,
 }
 
 /// Response header that carries an object's Card (base protocol §6.1).
@@ -38,6 +40,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route(crate::obj_provider::OBJ_PATH, any(move |req| crate::obj_provider::serve(objects_root.clone(), req)))
         .route(&format!("{}/{{*rest}}", crate::obj_provider::OBJ_PATH), any(move |req| crate::obj_provider::serve(objects.clone(), req)))
+        .route("/kapi/verify-hub", post(verify_hub))
         .route(KRPC_PATH, post(krpc))
         .route(&format!("{KRPC_PATH}/"), post(krpc))
         .route("/home/", get(zone_index))
@@ -162,9 +165,7 @@ async fn reader(state: &AppState, station: &Station, headers: &HeaderMap, query:
     let authorization = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok());
     reader_from_request(
         state.host.auth.as_ref(),
-        state.host.directory.as_ref(),
         station.owner(),
-        &state.host.cfg.zone,
         authorization,
         query.get("access").map(String::as_str),
     )
@@ -177,9 +178,7 @@ async fn viewer(state: &AppState, headers: &HeaderMap, query: &HashMap<String, S
     let authorization = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok());
     let reader = reader_from_request(
         state.host.auth.as_ref(),
-        state.host.directory.as_ref(),
         "",
-        &state.host.cfg.zone,
         authorization,
         query.get("access").map(String::as_str),
     )
@@ -486,10 +485,32 @@ fn dispatch_response(reply: crate::ingress::DispatchReply) -> Response {
     response
 }
 
-/// `PUT /home/<user>/inbox`: CYFS dispatch of one named object (§7.4).
+/// `POST /kapi/verify-hub` of a standalone zone: cross-zone logins (`standalone_hub.rs`).
+async fn verify_hub(State(state): State<AppState>, body: Bytes) -> Response {
+    match &state.hub {
+        Some(hub) => no_store(Json(hub.rpc(&body).await).into_response()),
+        None => not_found("no verify-hub here"),
+    }
+}
+
+/// `PUT /home/<user>/inbox`: CYFS dispatch of one named object (§7.4). Only a session of this zone
+/// delivers: another zone's station signs its owner in here first (跨Zone登录断言契约 §5); each
+/// object still carries its publisher's signature.
 async fn inbox_put(State(state): State<AppState>, Path(user): Path<String>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>, body: Bytes) -> Response {
     let host = headers.get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
     let target = state.host.home(&user).inbox();
+    let token = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer "));
+    let authenticated = match token {
+        Some(token) => state.host.auth.authenticate(token.trim()).await.is_ok(),
+        None => false,
+    };
+    if !authenticated {
+        return dispatch_response(crate::ingress::DispatchReply {
+            http_status: 401,
+            result: ndn_lib::CyfsDispatchResult::rejected(None, target, "unauthenticated", false),
+            admission: None,
+        });
+    }
     let station = match state.host.station(&user).await {
         Ok(Some(s)) => s,
         Ok(None) => {

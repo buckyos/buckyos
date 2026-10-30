@@ -142,6 +142,19 @@ async fn service_main() {
             std::process::exit(1);
         }
     };
+    // Reads and deliveries into other zones (and this one, through the node gateway, which
+    // also serves verify-hub) sign in as the station owner (跨Zone登录断言契约).
+    let cross_zone = match buckyos_api::CrossZoneClient::from_runtime(&runtime) {
+        Ok(client) => {
+            let mut origins = settings.peers.clone();
+            origins.insert(zone.clone(), format!("http://127.0.0.1:{}", buckyos_api::DEFAULT_NODE_GATEWAY_PORT));
+            Arc::new(client.with_origins(origins))
+        }
+        Err(e) => {
+            log::error!("cross-zone client unavailable: {e}");
+            std::process::exit(1);
+        }
+    };
     if let Err(e) = set_buckyos_api_runtime(runtime) {
         log::error!("set runtime failed: {e}");
         std::process::exit(1);
@@ -185,6 +198,7 @@ async fn service_main() {
     template.reading_window = settings.reading_window;
     let builder = {
         let directory = directory.clone();
+        let cross_zone = cross_zone.clone();
         let owner = owner.clone();
         let collector = settings.collector;
         let db = db.clone();
@@ -198,7 +212,7 @@ async fn service_main() {
             cfg.collector = collector && user.did == owner;
             cfg.agent = user.agent.clone();
             let contacts = CachedContacts::new(Box::new(MsgCenterContacts { owner: user.did.clone() }), Duration::from_secs(30));
-            Ok(Station::new(cfg, db, signer.clone(), directory.clone(), contacts, store.clone(), model.clone()))
+            Ok(Station::new(cfg, db, signer.clone(), directory.clone(), cross_zone.clone(), contacts, store.clone(), model.clone()))
         })
     };
     let mut host_cfg = HostConfig::new(&zone);
@@ -227,7 +241,7 @@ async fn service_main() {
     }
     tokio::spawn(watch_contact_changes(host.clone()));
     tokio::spawn(host.clone().refresh_loop(USERS_REFRESH));
-    if let Err(e) = serve(AppState { host }, &format!("0.0.0.0:{HOMESTATION_SERVICE_PORT}")).await {
+    if let Err(e) = serve(AppState { host, hub: None }, &format!("0.0.0.0:{HOMESTATION_SERVICE_PORT}")).await {
         log::error!("serve failed: {e}");
         std::process::exit(1);
     }

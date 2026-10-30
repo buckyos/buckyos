@@ -3,9 +3,9 @@ use crate::msg_box_db::MsgBoxDbMgr;
 use crate::msg_center::MessageCenter;
 use crate::msg_tunnel::DeliveryExecutor;
 use crate::network_directory::test_support::StaticDirectory;
-use crate::network_directory::{DidProfile, DirectoryError, NetworkDirectory, ZoneSigner};
+use crate::test_cross_zone::{connect, documents, sign_as, zone_server, ZONE_A, ZONE_B};
+use buckyos_api::{CustodyResolver, ResolveFailure, StaticCustodyResolver};
 use crate::owner_session::{SessionTokenVerifier, ZoneAgentInfo};
-use crate::test_group_service::http_fixture;
 use buckyos_api::{
     bind_token_principal_kind, bind_token_target, AccessGroupLevel, AuthTarget, Contact,
     ContactQuery, DeliveryRecord, DeliveryRecordWithObject, DeliveryState, FriendRequest,
@@ -24,7 +24,6 @@ use tempfile::{tempdir, TempDir};
 const ZONE_A_KEY: &str = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr\n-----END PRIVATE KEY-----";
 const ZONE_A_DEVICE: &str = "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8";
 const ZONE_B_KEY: &str = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIF5zplRSY5MsYbBMdbzItH90daUlrx/OflPm8Kp9m2j1\n-----END PRIVATE KEY-----";
-const ZONE_B_DEVICE: &str = "mL_tm5diVGGkpt_6WmCZQxUsee4rHacyz7mx7TkKb-0";
 
 fn user(name: &str, zone: &str) -> DID {
     DID::new("web", &format!("{name}.{zone}"))
@@ -149,14 +148,15 @@ async fn pump(c: &MessageCenter) -> usize {
 }
 
 /// Alice on Zone A and Bob on Zone B, each Zone signing with its OOD device
-/// and reaching the other without configured routes.
+/// and reaching the other without configured routes: senders log in at the
+/// other Zone's verify-hub by assertion.
 struct TwoZones {
     a: MessageCenter,
     b: MessageCenter,
     alice: DID,
     bob: DID,
     device_a: DID,
-    directory: Arc<StaticDirectory>,
+    documents: Arc<StaticCustodyResolver>,
     _keep: (
         TempDir,
         TempDir,
@@ -165,83 +165,77 @@ struct TwoZones {
     ),
 }
 
+/// Serve both centers, each as its Zone, and connect them to each other.
+async fn link(
+    a: &MessageCenter,
+    b: &MessageCenter,
+    documents: &Arc<StaticCustodyResolver>,
+) -> (String, String, tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>) {
+    sign_as(a, &ZONE_A, documents.clone());
+    sign_as(b, &ZONE_B, documents.clone());
+    let serve = |center: MessageCenter, request| async move {
+        crate::cyfs_dispatch::serve(&center, request).await
+    };
+    let (url_a, sa) = zone_server(a.clone(), &ZONE_A, serve).await;
+    let (url_b, sb) = zone_server(b.clone(), &ZONE_B, serve).await;
+    connect(a, &ZONE_A, documents, HashMap::from([("b.example".to_string(), url_b.clone())]));
+    connect(b, &ZONE_B, documents, HashMap::from([("a.example".to_string(), url_a.clone())]));
+    (url_a, url_b, sa, sb)
+}
+
 async fn two_zones(tag: &str) -> TwoZones {
     let alice = user("alice", "a.example");
     let bob = user("bob", "b.example");
-    let device_a = DID::new("dev", ZONE_A_DEVICE);
-    let device_b = DID::new("dev", ZONE_B_DEVICE);
     let (a, ta) = open(&format!("{tag}-a"), "a.example", &[alice.clone()]).await;
     let (b, tb) = open(&format!("{tag}-b"), "b.example", &[bob.clone()]).await;
-    let directory = StaticDirectory::with(vec![
-        (alice.clone(), LookupKind::User, "Alice", "a.example"),
-        (bob.clone(), LookupKind::User, "Bob", "b.example"),
-        (device_a.clone(), LookupKind::Device, "ood-a", "a.example"),
-        (device_b.clone(), LookupKind::Device, "ood-b", "b.example"),
-    ]);
-    for (center, key, device) in [(&a, ZONE_A_KEY, &device_a), (&b, ZONE_B_KEY, &device_b)] {
-        center.directory.set(directory.clone());
-        center.zone_signer.set(ZoneSigner {
-            key: EncodingKey::from_ed_pem(key.as_bytes()).unwrap(),
-            kid: format!("{}#main_key", device.to_string()),
-        });
-    }
-    let serve = |center: MessageCenter| {
-        http_fixture(move |req| {
-            let center = center.clone();
-            async move { crate::cyfs_dispatch::serve(&center, req).await }
-        })
-    };
-    let (url_a, sa) = serve(a.clone()).await;
-    let (url_b, sb) = serve(b.clone()).await;
-    a.cyfs_dispatch
-        .write()
-        .unwrap()
-        .zone_origins
-        .insert("b.example".into(), url_b);
-    b.cyfs_dispatch
-        .write()
-        .unwrap()
-        .zone_origins
-        .insert("a.example".into(), url_a);
+    let documents = Arc::new(documents(&[
+        (&ZONE_A, vec![alice.clone()]),
+        (&ZONE_B, vec![bob.clone()]),
+    ]));
+    let (_url_a, _url_b, sa, sb) = link(&a, &b, &documents).await;
     TwoZones {
         a,
         b,
         alice,
         bob,
-        device_a,
-        directory,
+        device_a: ZONE_A.device(),
+        documents,
         _keep: (ta, tb, sa, sb),
     }
 }
 
-/// `inner`, except that the next `timeouts` lookups of `did` time out.
-struct SlowDirectory {
-    inner: Arc<StaticDirectory>,
+/// `inner`, except that the next `failures` lookups of `did` time out.
+struct SlowResolver {
+    inner: Arc<StaticCustodyResolver>,
     did: DID,
-    timeouts: std::sync::Mutex<usize>,
+    failures: std::sync::Mutex<usize>,
 }
 
-impl SlowDirectory {
-    fn new(inner: Arc<StaticDirectory>, did: DID, timeouts: usize) -> Arc<Self> {
+impl SlowResolver {
+    fn new(inner: Arc<StaticCustodyResolver>, did: DID, failures: usize) -> Arc<Self> {
         Arc::new(Self {
             inner,
             did,
-            timeouts: std::sync::Mutex::new(timeouts),
+            failures: std::sync::Mutex::new(failures),
         })
     }
 }
 
 #[async_trait::async_trait]
-impl NetworkDirectory for SlowDirectory {
-    async fn describe(&self, did: &DID) -> Result<DidProfile, DirectoryError> {
+impl CustodyResolver for SlowResolver {
+    async fn resolve(
+        &self,
+        did: &DID,
+        doc_type: Option<name_lib::DidDocType>,
+    ) -> Result<name_lib::EncodedDocument, ResolveFailure> {
         if did == &self.did {
-            let mut left = self.timeouts.lock().unwrap();
+            let mut left = self.failures.lock().unwrap();
             if *left > 0 {
                 *left -= 1;
-                return Err(DirectoryError::Timeout);
+                return Err(ResolveFailure::Timeout);
             }
         }
-        self.inner.describe(did).await
+        self.inner.resolve(did, doc_type).await
     }
 }
 
@@ -741,42 +735,22 @@ async fn tags_are_written_only_by_their_owner() {
 async fn friend_request_and_chat_cross_two_zones() {
     let alice = user("alice", "a.example");
     let bob = user("bob", "b.example");
-    let device_a = DID::new("dev", ZONE_A_DEVICE);
-    let device_b = DID::new("dev", ZONE_B_DEVICE);
+    let device_a = ZONE_A.device();
+    let device_b = ZONE_B.device();
     let (a, _ta) = open("zone-a", "a.example", &[alice.clone()]).await;
     let (b, _tb) = open("zone-b", "b.example", &[bob.clone()]).await;
     let directory = StaticDirectory::with(vec![
         (alice.clone(), LookupKind::User, "Alice", "a.example"),
         (bob.clone(), LookupKind::User, "Bob", "b.example"),
-        (device_a.clone(), LookupKind::Device, "ood-a", "a.example"),
-        (device_b.clone(), LookupKind::Device, "ood-b", "b.example"),
         (user("ghost", "b.example"), LookupKind::User, "Ghost", "b.example"),
     ]);
-    for (center, key, device) in [(&a, ZONE_A_KEY, &device_a), (&b, ZONE_B_KEY, &device_b)] {
-        center.directory.set(directory.clone());
-        center.zone_signer.set(ZoneSigner {
-            key: EncodingKey::from_ed_pem(key.as_bytes()).unwrap(),
-            kid: format!("{}#main_key", device.to_string()),
-        });
-    }
-    let serve = |center: MessageCenter| {
-        http_fixture(move |req| {
-            let center = center.clone();
-            async move { crate::cyfs_dispatch::serve(&center, req).await }
-        })
-    };
-    let (url_a, _sa) = serve(a.clone()).await;
-    let (url_b, _sb) = serve(b.clone()).await;
-    a.cyfs_dispatch
-        .write()
-        .unwrap()
-        .zone_origins
-        .insert("b.example".into(), url_b);
-    b.cyfs_dispatch
-        .write()
-        .unwrap()
-        .zone_origins
-        .insert("a.example".into(), url_a);
+    a.directory.set(directory.clone());
+    b.directory.set(directory.clone());
+    let documents = Arc::new(documents(&[
+        (&ZONE_A, vec![alice.clone()]),
+        (&ZONE_B, vec![bob.clone(), user("ghost", "b.example")]),
+    ]));
+    let (url_a, _url_b, _sa, _sb) = link(&a, &b, &documents).await;
 
     let sent = send_request(&a, &alice, &bob).await.request.unwrap();
     assert_eq!(
@@ -810,7 +784,7 @@ async fn friend_request_and_chat_cross_two_zones() {
         .load_message(&ndn_lib::ObjId::new(sent.msg_id.as_deref().unwrap()).unwrap())
         .await
         .unwrap();
-    let replay = crate::cyfs_dispatch::send(&route, &msg, Some(&jwt), &ndn_lib::NamedObject::gen_obj_id(&msg).0)
+    let replay = crate::cyfs_dispatch::send(Some(&a), &route, &msg, Some(&jwt), &ndn_lib::NamedObject::gen_obj_id(&msg).0)
         .await
         .unwrap();
     assert!(replay.ok);
@@ -834,7 +808,7 @@ async fn friend_request_and_chat_cross_two_zones() {
     assert_eq!(pump(&b).await, 1);
     assert_eq!(dm_records(&a, &alice, &bob, MailboxKind::Inbox).await, 1);
 
-    // Unsigned objects without a Bearer token are refused.
+    // Nothing gets in without a session of the receiving Zone.
     let unsigned = MsgObject {
         from: bob.clone(),
         to: vec![alice.clone()],
@@ -842,15 +816,17 @@ async fn friend_request_and_chat_cross_two_zones() {
         created_at_ms: MessageCenter::now_ms(),
         ..Default::default()
     };
-    let report = crate::cyfs_dispatch::send(
-        &crate::cyfs_dispatch::auto_route(&b, &alice).await.unwrap(),
-        &unsigned,
-        None,
-        &ndn_lib::NamedObject::gen_obj_id(&unsigned).0,
-    )
-    .await
-    .unwrap();
-    assert!(!report.ok);
+    let (id, body) = ndn_lib::NamedObject::gen_obj_id(&unsigned);
+    let refused = reqwest::Client::new()
+        .put(format!("{url_a}{}", crate::cyfs_dispatch::user_inbox_path(&alice)))
+        .header("host", "a.example")
+        .header("content-type", "application/cyfs-named-object+json")
+        .header(ndn_lib::CYFS_HEADER_OBJ_ID, id.to_string())
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 401);
 
     // Zone B serves the agreed path only for the users it hosts.
     let ghost = user("ghost", "b.example");
@@ -868,6 +844,7 @@ async fn friend_request_and_chat_cross_two_zones() {
         )
         .unwrap();
     let report = crate::cyfs_dispatch::send(
+        Some(&a),
         &crate::cyfs_dispatch::auto_route(&a, &ghost).await.unwrap(),
         &to_ghost,
         Some(&signed),
@@ -877,7 +854,7 @@ async fn friend_request_and_chat_cross_two_zones() {
     .unwrap();
     assert!(!report.ok);
 
-    // A device of another Zone cannot sign for Alice.
+    // A device of another Zone cannot sign for Alice, even inside Alice's session.
     let forged = MsgObject {
         from: alice.clone(),
         to: vec![bob.clone()],
@@ -892,6 +869,7 @@ async fn friend_request_and_chat_cross_two_zones() {
         )
         .unwrap();
     let report = crate::cyfs_dispatch::send(
+        Some(&a),
         &crate::cyfs_dispatch::auto_route(&a, &bob).await.unwrap(),
         &forged,
         Some(&wrong),
@@ -902,24 +880,21 @@ async fn friend_request_and_chat_cross_two_zones() {
     assert!(!report.ok);
 }
 
-/// Zone B cannot tell yet which Zone signed Alice's request (name service
-/// timeout): that is a retryable refusal, not a signer mismatch, and the
+/// Zone B cannot tell yet which Zone Alice's device belongs to (name service
+/// timeout): the login is a retryable refusal, not a custody mismatch, and the
 /// next attempt goes through (issue #684).
 #[tokio::test]
 async fn unresolved_signer_zone_is_retried_not_dead() {
     let z = two_zones("slow-signer").await;
-    z.b.directory.set(SlowDirectory::new(
-        z.directory.clone(),
-        z.device_a.clone(),
-        1,
-    ));
+    z.b.custody
+        .set(SlowResolver::new(z.documents.clone(), z.device_a.clone(), 1));
     send_request(&z.a, &z.alice, &z.bob).await;
 
     let refused = pump_once(&z.a).await.unwrap();
     assert_eq!(refused.state, DeliveryState::Wait);
     let error = refused.last_error.unwrap();
     assert!(error.retryable);
-    assert_eq!(error.message, "signing-key-unavailable");
+    assert_eq!(error.error_code.as_deref(), Some("cross-zone-auth-rejected"));
     assert_eq!(
         requests(&z.a, &z.alice).await[0]
             .delivery
@@ -935,23 +910,34 @@ async fn unresolved_signer_zone_is_retried_not_dead() {
     );
 }
 
-/// Zone custody is refused only on definite answers; a Zone lookup that timed
-/// out leaves it undecided instead of reading as a mismatch (issue #684).
+/// The custody of a signed message is refused only on definite answers; a
+/// lookup that timed out leaves it undecided instead of reading as a
+/// mismatch (issue #684).
 #[tokio::test]
 async fn zone_custody_is_undecided_while_a_zone_is_unresolved() {
-    use crate::cyfs_dispatch::zone_signs_for;
+    use crate::cyfs_dispatch::verify_signed_message_with;
     let z = two_zones("custody").await;
-    let device_b = DID::new("dev", ZONE_B_DEVICE);
-    assert_eq!(zone_signs_for(&z.b, &z.device_a, &z.alice).await, Ok(true));
-    assert_eq!(zone_signs_for(&z.b, &device_b, &z.alice).await, Ok(false));
-    z.b.directory.set(SlowDirectory::new(
-        z.directory.clone(),
-        z.device_a.clone(),
-        1,
-    ));
+    let msg = MsgObject {
+        from: z.alice.clone(),
+        to: vec![z.bob.clone()],
+        kind: MsgObjKind::Chat,
+        created_at_ms: MessageCenter::now_ms(),
+        ..Default::default()
+    };
+    let sign = |zone: &crate::test_cross_zone::TestZone| {
+        let signer = zone.signer();
+        msg.to_jwt(signer.key(), &signer.kid).unwrap()
+    };
+    assert!(verify_signed_message_with(&sign(&ZONE_A), &z.b).await.is_ok());
     assert_eq!(
-        zone_signs_for(&z.b, &z.device_a, &z.alice).await,
-        Err(DirectoryError::Timeout)
+        verify_signed_message_with(&sign(&ZONE_B), &z.b).await.unwrap_err(),
+        (http::StatusCode::FORBIDDEN, "signer-mismatch")
+    );
+    z.b.custody
+        .set(SlowResolver::new(z.documents.clone(), z.alice.clone(), 1));
+    assert_eq!(
+        verify_signed_message_with(&sign(&ZONE_A), &z.b).await.unwrap_err(),
+        (http::StatusCode::SERVICE_UNAVAILABLE, "signing-key-unavailable")
     );
 }
 
@@ -959,11 +945,8 @@ async fn zone_custody_is_undecided_while_a_zone_is_unresolved() {
 #[tokio::test]
 async fn resending_a_request_requeues_its_dead_delivery() {
     let z = two_zones("requeue").await;
-    z.b.directory.set(SlowDirectory::new(
-        z.directory.clone(),
-        z.device_a.clone(),
-        usize::MAX,
-    ));
+    z.b.custody
+        .set(SlowResolver::new(z.documents.clone(), z.device_a.clone(), usize::MAX));
     let sent = send_request(&z.a, &z.alice, &z.bob).await.request.unwrap();
     assert_eq!(pump(&z.a).await, 0);
     assert_eq!(
@@ -974,7 +957,7 @@ async fn resending_a_request_requeues_its_dead_delivery() {
         Some(buckyos_api::FriendDeliveryState::Failed)
     );
 
-    z.b.directory.set(z.directory.clone());
+    z.b.custody.set(z.documents.clone());
     let again = send_request(&z.a, &z.alice, &z.bob).await.request.unwrap();
     assert_eq!(again.request_id, sent.request_id);
     assert_eq!(
@@ -1454,4 +1437,87 @@ async fn listed_system(c: &MessageCenter, ctx: RPCContext) -> Vec<Contact> {
     c.handle_list_contacts(ContactQuery::default(), None, ctx)
         .await
         .unwrap()
+}
+
+/// The inbox takes a message only from the sender its session names, only
+/// for a session opened to `msg_inbox`, and only a session of its own Zone.
+#[tokio::test]
+async fn inbox_takes_only_the_sender_its_session_names() {
+    use buckyos_api::{SessionCeiling, SessionScope};
+    use http_body_util::{BodyExt, Full};
+    let z = two_zones("inbox-session").await;
+    let put = |token: String, from: &DID| {
+        let msg = MsgObject {
+            from: from.clone(),
+            to: vec![z.bob.clone()],
+            kind: MsgObjKind::Chat,
+            created_at_ms: MessageCenter::now_ms(),
+            ..Default::default()
+        };
+        let (id, body) = ndn_lib::NamedObject::gen_obj_id(&msg);
+        http::Request::builder()
+            .method("PUT")
+            .uri(crate::cyfs_dispatch::user_inbox_path(&z.bob))
+            .header("host", "b.example")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", ndn_lib::CYFS_CONTENT_TYPE_NAMED_OBJECT_JSON)
+            .header(ndn_lib::CYFS_HEADER_OBJ_ID, id.to_string())
+            .body(Full::new(bytes::Bytes::from(body)).map_err(|e| match e {}).boxed())
+            .unwrap()
+    };
+    let session = |zone, scopes: Vec<SessionScope>| {
+        crate::test_cross_zone::mint(
+            zone,
+            &z.alice.to_string(),
+            &SessionCeiling::restricted(scopes),
+            buckyos_api::TokenUse::Session,
+        )
+    };
+    let inbox = vec![SessionScope::MsgInbox];
+    let status = |response: http::Response<_>| response.status();
+    let mallory = user("mallory", "a.example");
+    assert_eq!(
+        status(crate::cyfs_dispatch::serve(&z.b, put(session(&ZONE_B, inbox.clone()), &mallory)).await),
+        http::StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        status(crate::cyfs_dispatch::serve(&z.b, put(session(&ZONE_B, vec![SessionScope::MsgGroup]), &z.alice)).await),
+        http::StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        status(crate::cyfs_dispatch::serve(&z.b, put(session(&ZONE_A, inbox.clone()), &z.alice)).await),
+        http::StatusCode::UNAUTHORIZED
+    );
+    let accepted = crate::cyfs_dispatch::serve(&z.b, put(session(&ZONE_B, inbox), &z.alice)).await;
+    assert_ne!(accepted.status(), http::StatusCode::UNAUTHORIZED);
+    assert_ne!(accepted.status(), http::StatusCode::FORBIDDEN);
+}
+
+/// V-11: msg-center judges message signers by the shared custody table.
+#[tokio::test]
+async fn message_signers_follow_the_shared_custody_table() {
+    use buckyos_api::custody_cases::{cases, resolver, Outcome};
+    let (c, _tmp) = open("custody-table", "target.example", &[]).await;
+    c.custody.set(Arc::new(resolver()));
+    for case in cases() {
+        let msg = MsgObject {
+            from: DID::from_str(case.principal).unwrap(),
+            to: vec![user("bob", "target.example")],
+            kind: MsgObjKind::Chat,
+            created_at_ms: 1,
+            ..Default::default()
+        };
+        let jwt = msg
+            .to_jwt(
+                &EncodingKey::from_ed_pem(case.key_pem.as_bytes()).unwrap(),
+                &format!("{}#main_key", case.device),
+            )
+            .unwrap();
+        let outcome = match crate::cyfs_dispatch::verify_signed_message_with(&jwt, &c).await {
+            Ok(_) => Outcome::Allowed,
+            Err((http::StatusCode::SERVICE_UNAVAILABLE, _)) => Outcome::Retry,
+            Err(_) => Outcome::Refused,
+        };
+        assert_eq!(outcome, case.outcome, "{} for {}", case.device, case.principal);
+    }
 }

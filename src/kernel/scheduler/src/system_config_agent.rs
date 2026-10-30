@@ -16,7 +16,9 @@ use crate::service::*;
 use crate::system_config_builder::{
     derive_sn_ai_provider_endpoints, reconcile_managed_sn_ai_provider,
 };
-use crate::zone_route_builder::{build_forward_plan, DidIpHint, NodeGatewayRouteCandidate};
+use crate::zone_route_builder::{
+    build_forward_plan, cross_zone_relay_url, DidIpHint, NodeGatewayRouteCandidate,
+};
 use buckyos_api::{
     app_availability_policy_key, get_buckyos_api_runtime, zone_document_hostname,
     AppAvailabilityGroupRule, AppAvailabilityPolicy, AppId, AppInstanceId, AppRegistry,
@@ -779,6 +781,7 @@ impl Default for NodeGatewayAccessMode {
 struct NodeGatewayNodeInfo {
     this_node_id: String,
     this_zone_host: String,
+    cross_zone_relay: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1161,6 +1164,7 @@ pub(crate) async fn update_node_gateway_info(
         node_info: NodeGatewayNodeInfo {
             this_node_id: node_id.to_string(),
             this_zone_host: zone_host.clone(),
+            cross_zone_relay: cross_zone_relay_url(node_id, &zone_config, &zone_host, &device_list),
         },
         app_info: HashMap::new(),
         service_info: HashMap::new(),

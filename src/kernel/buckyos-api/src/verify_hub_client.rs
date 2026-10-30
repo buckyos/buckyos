@@ -488,6 +488,18 @@ pub enum LoginByRemoteVerifyHubResult {
     CanonicalUnavailable,
 }
 
+/// `login_by_cross_zone_assertion` (doc/arch/verify-hub/跨Zone登录断言契约.md §4): public;
+/// a device of another Zone presents a signed assertion for its user or Agent. Empty
+/// `scopes` asks for every scope the assertion's target allows. Answers a `TokenPair`;
+/// refusals are `CrossZoneLoginError` codes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CrossZoneLoginRequest {
+    pub assertion: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<crate::SessionScope>,
+}
+
 pub enum VerifyHubClient {
     InProcess(Box<dyn VerifyHubApiHandler>),
     KRPC(Box<kRPC>),
@@ -724,6 +736,19 @@ impl VerifyHubClient {
         }
     }
 
+    pub async fn login_by_cross_zone_assertion(
+        &self,
+        request: CrossZoneLoginRequest,
+    ) -> Result<TokenPair> {
+        match self {
+            Self::InProcess(handler) => handler.handle_login_by_cross_zone_assertion(request).await,
+            Self::KRPC(client) => {
+                client.reset_session_token().await;
+                Self::call_typed(client, crate::CROSS_ZONE_LOGIN_METHOD, request).await
+            }
+        }
+    }
+
     pub async fn verify_token(
         &self,
         session_token: &str,
@@ -839,6 +864,15 @@ pub trait VerifyHubApiHandler: Send + Sync {
     ) -> Result<LoginByRemoteVerifyHubResult> {
         Err(RPCErrors::UnknownMethod(
             "login_by_remote_verify_hub".to_string(),
+        ))
+    }
+
+    async fn handle_login_by_cross_zone_assertion(
+        &self,
+        _request: CrossZoneLoginRequest,
+    ) -> Result<TokenPair> {
+        Err(RPCErrors::UnknownMethod(
+            crate::CROSS_ZONE_LOGIN_METHOD.to_string(),
         ))
     }
 }
@@ -1006,6 +1040,14 @@ impl<T: VerifyHubApiHandler> RPCHandler for VerifyHubRpcHandler<T> {
                         req.token.as_deref(),
                         parse_request("login_by_remote_verify_hub", req.params)?,
                     )
+                    .await?,
+            )?,
+            crate::CROSS_ZONE_LOGIN_METHOD => success_value(
+                self.0
+                    .handle_login_by_cross_zone_assertion(parse_request(
+                        crate::CROSS_ZONE_LOGIN_METHOD,
+                        req.params,
+                    )?)
                     .await?,
             )?,
             "verify_token" => {

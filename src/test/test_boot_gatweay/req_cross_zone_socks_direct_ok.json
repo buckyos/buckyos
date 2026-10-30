@@ -1,0 +1,15 @@
+{
+  "input": {
+    "REQ": {
+      "target": {
+        "type": "domain",
+        "host": "bob.example",
+        "port": "80"
+      }
+    }
+  },
+  "id": "server:cross_zone_socks:main",
+  "output": [
+    "REQ"
+  ]
+}

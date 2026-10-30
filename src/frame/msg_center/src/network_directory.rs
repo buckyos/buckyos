@@ -4,8 +4,7 @@
 //! Zone-custody signature rule (G3) compares Zones with it.
 
 use async_trait::async_trait;
-use buckyos_api::LookupKind;
-use jsonwebtoken::EncodingKey;
+use buckyos_api::{CrossZoneClient, CustodyResolver, DeviceSigner, LookupKind, NameServiceResolver};
 use name_lib::DID;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -250,23 +249,16 @@ impl std::fmt::Debug for DirectorySlot {
 }
 
 /// The OOD device key msg-center signs native messages of its Zone's users
-/// with (Zone custody, `Message Center.md` §4.5).
-#[derive(Clone)]
-pub struct ZoneSigner {
-    pub key: EncodingKey,
-    /// `<device_did>#<fragment>` written into the JWT header.
-    pub kid: String,
-}
-
+/// with (Zone custody, `Message Center.md` §4.5): the runtime's device signer.
 #[derive(Default)]
-pub struct ZoneSignerSlot(RwLock<Option<ZoneSigner>>);
+pub struct ZoneSignerSlot(RwLock<Option<DeviceSigner>>);
 
 impl ZoneSignerSlot {
-    pub(crate) fn get(&self) -> Option<ZoneSigner> {
+    pub(crate) fn get(&self) -> Option<DeviceSigner> {
         self.0.read().unwrap().clone()
     }
 
-    pub(crate) fn set(&self, signer: ZoneSigner) {
+    pub(crate) fn set(&self, signer: DeviceSigner) {
         *self.0.write().unwrap() = Some(signer);
     }
 }
@@ -274,6 +266,52 @@ impl ZoneSignerSlot {
 impl std::fmt::Debug for ZoneSignerSlot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("ZoneSignerSlot")
+    }
+}
+
+/// Where signing keys and custody facts come from: the name service.
+pub struct CustodySlot(RwLock<Arc<dyn CustodyResolver>>);
+
+impl CustodySlot {
+    pub(crate) fn get(&self) -> Arc<dyn CustodyResolver> {
+        self.0.read().unwrap().clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set(&self, resolver: Arc<dyn CustodyResolver>) {
+        *self.0.write().unwrap() = resolver;
+    }
+}
+
+impl Default for CustodySlot {
+    fn default() -> Self {
+        Self(RwLock::new(Arc::new(NameServiceResolver)))
+    }
+}
+
+impl std::fmt::Debug for CustodySlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CustodySlot")
+    }
+}
+
+/// The client into other Zones; none until the device key is loaded.
+#[derive(Default)]
+pub struct CrossZoneSlot(RwLock<Option<Arc<CrossZoneClient>>>);
+
+impl CrossZoneSlot {
+    pub(crate) fn get(&self) -> Option<Arc<CrossZoneClient>> {
+        self.0.read().unwrap().clone()
+    }
+
+    pub(crate) fn set(&self, client: Arc<CrossZoneClient>) {
+        *self.0.write().unwrap() = Some(client);
+    }
+}
+
+impl std::fmt::Debug for CrossZoneSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CrossZoneSlot")
     }
 }
 

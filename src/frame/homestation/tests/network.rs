@@ -37,13 +37,13 @@ async fn stream_audience_per_reader() {
     let anonymous: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(ids(&anonymous), vec![public_post["objId"].as_str().unwrap()]);
 
-    let (_, body, _) = net.get(&feed, Some(net.proof("bob", "alice"))).await;
+    let (_, body, _) = net.get(&feed, Some(net.proof("bob", "alice").await)).await;
     let as_bob: Value = serde_json::from_str(&body).unwrap();
     let bob_ids = ids(&as_bob);
     assert!(bob_ids.contains(&followers_post["objId"].as_str().unwrap().to_string()));
     assert!(!bob_ids.contains(&friends_post["objId"].as_str().unwrap().to_string()));
 
-    let (_, body, _) = net.get(&feed, Some(net.proof("dave", "alice"))).await;
+    let (_, body, _) = net.get(&feed, Some(net.proof("dave", "alice").await)).await;
     let as_dave: Value = serde_json::from_str(&body).unwrap();
     let dave_ids = ids(&as_dave);
     for post in [&public_post, &friends_post, &group_post, &followers_post] {
@@ -56,13 +56,13 @@ async fn stream_audience_per_reader() {
 
     // Knowing an ObjId grants nothing (A32): Carol cannot read the friends-only object or its Head.
     let object = format!("{}/objects/{}", alice.home, friends_post["objId"].as_str().unwrap());
-    assert_eq!(net.get(&object, Some(net.proof("carol", "alice"))).await.0, 404);
-    assert_eq!(net.get(&object, Some(net.proof("dave", "alice"))).await.0, 200);
+    assert_eq!(net.get(&object, Some(net.proof("carol", "alice").await)).await.0, 404);
+    assert_eq!(net.get(&object, Some(net.proof("dave", "alice").await)).await.0, 200);
     let key = friends_post["entry"].as_str().unwrap().rsplit('/').next().unwrap().to_string();
     assert_eq!(net.get(&format!("{}/feed/@/{key}", alice.home), None).await.0, 404);
-    assert_eq!(net.get(&format!("{}/feed/@/{key}", alice.home), Some(net.proof("dave", "alice"))).await.0, 200);
+    assert_eq!(net.get(&format!("{}/feed/@/{key}", alice.home), Some(net.proof("dave", "alice").await)).await.0, 200);
     // A proof for another zone or a forged one is refused.
-    assert_eq!(net.get(&feed, Some(net.proof("bob", "carol"))).await.0, 401);
+    assert_eq!(net.get(&feed, Some(net.proof("bob", "carol").await)).await.0, 401);
 }
 
 /// §7.3, §7.4, A01, A04, A05: admission at the inbox, disclosure only on `accepted`,
@@ -118,9 +118,32 @@ async fn push_admission_and_idempotency() {
 
     // A gateway that forwards with a loopback Host still reaches this zone's inbox.
     let jwt: String = alice.station.db.call({ let id = obj_id.clone(); move |c| Ok(c.query_row("SELECT jwt FROM objects WHERE obj_id=?1 AND owner=?2", [id.as_str(), c.owner], |r| r.get(0))?) }).await.unwrap();
+    let unauthenticated = net
+        .http
+        .put(format!("{}/inbox", bob.home))
+        .header("content-type", "application/cyfs-named-object+jwt")
+        .header("cyfs-obj-id", ndn_lib::ObjId::new(&obj_id).unwrap().to_base32())
+        .body(jwt.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauthenticated.status().as_u16(), 401, "only a session of Bob's zone delivers");
+    // A session of Alice's zone means nothing at Bob's.
+    let elsewhere = net
+        .http
+        .put(format!("{}/inbox", bob.home))
+        .header("authorization", net.proof("bob", "alice").await)
+        .header("content-type", "application/cyfs-named-object+jwt")
+        .header("cyfs-obj-id", ndn_lib::ObjId::new(&obj_id).unwrap().to_base32())
+        .body(jwt.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(elsewhere.status().as_u16(), 401);
     let forwarded = net
         .http
         .put(format!("{}/inbox", bob.home))
+        .header("authorization", net.proof("alice", "bob").await)
         .header("content-type", "application/cyfs-named-object+jwt")
         .header("cyfs-obj-id", ndn_lib::ObjId::new(&obj_id).unwrap().to_base32())
         .body(jwt)
@@ -131,6 +154,7 @@ async fn push_admission_and_idempotency() {
     let other_zone = net
         .http
         .put(format!("{}/inbox", bob.home))
+        .header("authorization", net.proof("alice", "bob").await)
         .header("host", "carol.test")
         .header("content-type", "application/cyfs-named-object+jwt")
         .body("x.y.z")
@@ -193,6 +217,7 @@ async fn heads_versions_withdraw_and_conflicts() {
     let replay = net
         .http
         .put(format!("{}/inbox", bob.home))
+        .header("authorization", net.proof("alice", "bob").await)
         .header("host", &bob.zone)
         .header("content-type", "application/cyfs-named-object+jwt")
         .header("cyfs-obj-id", ndn_lib::ObjId::new(&id).unwrap().to_base32())

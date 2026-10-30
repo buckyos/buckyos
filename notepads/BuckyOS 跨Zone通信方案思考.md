@@ -3,6 +3,8 @@
 > 整理日期：2026 年 10 月 29 日  
 > 文档性质：方向性架构讨论稿  
 > 整理依据：本轮七段口述，以最后提出的“RTCP / HTTPS 统一登录换取 Token”方向为准；术语及用户唯一 canonical zone 的约束沿用此前确认的定义。
+>
+> 2026-10-30 回写：按 [review](cross-zone-comm-proposal-review.md) 核实现状并按 [实施 TODO](cross-zone-comm-todo.md) 落地后，正文中“待核”“尚未确定”处已就地补注（“**已实施**”“**已核实**”）。冻结的协议见 [跨Zone登录断言契约](../doc/arch/verify-hub/跨Zone登录断言契约.md)。
 
 ## 一、方案概述
 
@@ -56,7 +58,7 @@ RTCP 提供的可信设备身份仍然重要，但它主要服务于网关准入
 | User DID | 用户的全局身份。用户是否由某个 Zone 代表，需要独立验证。 |
 | App ID | 调用应用的身份标识。Zone 内短名称如何扩展为跨 Zone 无歧义标识，尚需明确。 |
 | `verify-hub` | Zone 内负责身份验证和 Session Token 签发的系统组件。语音中的 World Hub、Waterhub 等统一为此名称。 |
-| `cyfs-gateway` | 本轮讨论中承载用户态协议栈及相关代理、网关能力的组件。Service Gateway、Node Gateway 在下文描述逻辑职责，不预设必须拆成独立进程。 |
+| `cyfs-gateway` | 本轮讨论中承载用户态协议栈及相关代理、网关能力的组件。Service Gateway、Node Gateway 在下文描述逻辑职责，不预设必须拆成独立进程。SOCKS5 由其 cyfs-socks 组件提供，挂在 TCP stack 上。 |
 | RTCP Tunnel | 按本轮设计设想，由设备身份参与建立、可保持一段时间并复用的双向通信通道。 |
 | Session Token | 业务服务采用的会话身份凭据。跨 Zone 常规调用最终使用 Target Zone 自己签发的 Token。 |
 
@@ -120,6 +122,8 @@ RTCP 协议栈是设备级的。因此，“连接某个 Zone”最终会落实�
 
 本轮口述使用的 RTCP 默认端口为 **`2980`**，并明确指出可配置端口从 RTCP 初始设计阶段就已存在，应把已有机制用起来。
 
+> **已核实／已实施（10-30）**：字段存在（`DeviceDocument.rtcp_port`），原先 RTCP 客户端并不读取，连接端口只取自 URL；现已改为 URL 未显式给端口时读设备文档的 `rtcp_port`，缺省 2980（TODO P1-1）。
+
 典型场景是同一家庭内的多台设备共享一个公网 IPv4。各设备内部都可以监听 `2980`，但对外映射需要使用不同的端口。例如：
 
 | 对外入口示例 | 内部目标示例 |
@@ -153,6 +157,8 @@ RTCP 协议栈是设备级的。因此，“连接某个 Zone”最终会落实�
 
 **当前倾向第二种，但尚未定为最终协议规则。**
 
+> **已核实（10-30）**：现状与此倾向一致——设备文档 `ips` 或 DNS 有地址即按 2980（或文档 `rtcp_port`）尝试，都没有则不拨号。显式禁用 RTCP 的表示仍未设计（TODO P4）。
+
 理由是面向长期 IPv6 可达环境，让默认端口直连成为简单路径；非默认端口和 Relay 通过显式配置表达，而不完全按当前 IPv4 NAT 环境设计默认值。
 
 这里的“默认直连”只表示尝试规则，不构成可达性保证，也不意味着对任意地址进行扫描。如何显式表示“本 Zone 禁用 RTCP”，以及多地址如何选择，仍需明确。
@@ -177,6 +183,8 @@ RTCP 协议栈是设备级的。因此，“连接某个 Zone”最终会落实�
 根据口述中的现状回忆，SN 当前最重要的职责是为已注册节点提供可靠的 HTTP / HTTPS 访问相关能力，其 RTCP 权限控制较收敛。
 
 已注册 Zone 能与 SN 建立 RTCP 连接，并不等于 SN 允许它借道连接任意其他 Zone。当前是否存在例外或已实现部分转发能力，需要检查代码与配置，本文不把回忆当作核验结论。
+
+> **已核实（10-30）**：SN 入站准入为 `known_owner`，隧道／流钩子只 `accept` 不转发；`relay_mgr` 与 `check_relay_admission` 已有但零调用；SN-Relay.md 自述跨 Zone 准入未实现。中转本身已是隧道级（嵌套 bootstrap URL，中转节点只做 TCP splice）。
 
 本轮的职责划分方向是：**通用 RTCP Relay 应考虑独立的节点类型或能力，而不是默认扩展 SN 的现有职责。**
 
@@ -210,6 +218,8 @@ RTCP 协议栈是设备级的。因此，“连接某个 Zone”最终会落实�
 
 当前已有思路是：设备上的 `cyfs-gateway` 为本地进程提供 SOCKS5 接口，绑定 `127.0.0.1` 等回环地址，不向外部网络公开。
 
+> **已核实／已实施（10-30）**：SOCKS5 由 cyfs-socks 组件提供，挂在 TCP stack 上。原有的 Node Executor 入口是 `0.0.0.0:3185`，只按来源 IP `127.*`/`172.*` 放行，任意 App 容器都能借设备身份出站。跨 Zone 另开 `cross_zone_entry`：只绑 `127.0.0.1:3186`，用户名密码由 node_daemon 生成写入 `$BUCKYOS_ROOT/etc/cross_zone_socks.json`（只系统服务可读），只接受 `<Zone 主机名>:80` 目标并转成到 Target Zone 网关设备的 RTCP 流（尊重其 `rtcp_port`）；非网关节点用嵌套 bootstrap URL 经本 Zone 网关做 TCP 中转、端到端握手，Target 看到的 RTCP 对端仍是签断言的节点（TODO P1-8、P1-9）。
+
 本地调用方配置 SOCKS5 代理，并把对端 DID 对应的 Hostname 作为目标交给代理；Gateway 再完成身份解析、Endpoint 发现和 RTCP 连接。
 
 这里的 Hostname 是对现有 HTTP 客户端接口的适配方式，不改变 DID 的身份地位。DID 与代理目标地址之间的具体编码方式、服务寻址方式，本文不新增约定。
@@ -224,7 +234,11 @@ Zone 内需要身份的服务调用已有 Session Token 机制，常见业务身
 
 这里不能直接假定“标准 SOCKS5 天然能验证 HTTP Session Token”。若选择在代理侧执行相关校验，需要明确凭据如何交付、进程如何绑定、HTTP 语义由谁处理。这些是实现选择，而不是已经确定的协议能力。
 
+> **已实施（10-30）**：代理侧只做“是不是本机系统服务”的判断（回环绑定 + 只系统服务可读的口令）；“以谁的身份”由调用方签的登录断言决定，断言用本节点设备钥签，只有持钥的系统服务能签。App 不能直接用该出口。
+
 ### 6.4 目标端先做设备准入，再路由服务
+
+> **已核实／已实施（10-30）**：默认准入原为 `anonymous: reject` + `named_min_relation: same_zone`，外 Zone 命名设备被拒；且不带 `device_doc_jwt` 的裸 did:dev 以 KeyDid 直接放行、不受 `anonymous` 约束。现已关掉 KeyDid 口子（P1-2），buckyos 节点改为 `known_owner`；“同 Zone”由 RTCP 按已验证的 owner 与本节点锚点判定（`REQ.source_zone_relation`，不信设备文档自报的 `zone_did`），非同 Zone 来源只允许 80（交给 node_gateway，带受保护头）与 443（SN 中转 HTTPS 需要，等同公网 HTTPS），其余端口（含 3184）拒绝（P1-3）。注意：`known_owner` 下首次见到的外 Zone 设备，其文档不在本机缓存，握手按 anonymous 拒绝；同机任一进程（如 verify-hub 处理 HTTPS 降级登录时）解析过该设备文档后，下一次握手即可通过——所以首次登录总走 HTTPS，≤5 min 后的重探切回 RTCP。
 
 Target Zone 的 RTCP 协议栈取得经过验证的来源 Device DID 后，可以在握手或 Incoming 准入阶段执行系统安全策略，例如允许名单、拒绝名单或其他设备级约束。
 
@@ -237,6 +251,8 @@ Target Zone 的 RTCP 协议栈取得经过验证的来源 Device DID 后，可�
 RTCP 验证得到的来源设备身份，需要由接收端 Gateway 传给后续组件，尤其是 `verify-hub`。
 
 本轮明确采用 HTTP Header 承载这类来源上下文，但尚未指定字段名称。必须遵守的处理顺序是：
+
+> **已实施（10-30）**：字段为 `X-Cyfs-Rtcp-Device`、`X-Cyfs-Rtcp-Trust`；所有 HTTP 入口先删除它们与 `cyfs-original-user`，只在 RTCP 来源流上由网关写入。verify-hub 只用它做一致性校验（RTCP 对端与断言设备同 Zone），身份仍以签名断言为准（契约 §4.3、§6）。
 
 ```text
 验证 RTCP 对端设备身份
@@ -375,6 +391,8 @@ Target Zone verify-hub
 
 具体采用怎样的签名、挑战应答或其他来源证明，本轮尚未确定。实现时需要同时明确反查入口与所声明 DID 的绑定、请求证明的有效性，以及用户与 canonical zone 的关系验证。
 
+> **已定并实施（10-30，裁决 X-3）**：来源证明是**签名登录断言**——设备私钥签的 JWT（`iss`/`sub` 主体 DID、`dev` 设备、`aud` Target Zone、`target` 服务、`jti`、TTL ≤ 60 s）。Target 从 DID 文档取设备公钥验签，再按唯一一份 custody 规则（`buckyos_api::check_custody`）判断设备能否代表主体。不需要反查 Source Zone：信任根是 DID 文档里的设备公钥，与 RTCP 握手相同。RTCP 路径提交同一份断言。
+
 这项工作集中在 `verify-hub`，不要求每个业务服务分别实现。
 
 ### 8.4 HTTPS 登录可以触发反向 RTCP 建连
@@ -396,6 +414,8 @@ Target Zone → Source Zone：反查期间尝试反向建立 RTCP
 反向建连仍必须完成正常的身份验证和准入检查。若两端都没有可达入口、也没有可用 Relay，就继续使用 HTTPS 完成 SSO 和后续调用；不能把反向 RTCP 成功设为 HTTPS 登录的前置条件。
 
 ### 8.5 RTCP 与 HTTPS 的共性及差异
+
+> 注（10-30 核实）：RTCP 每条数据流是一条新 TCP 连接，由隧道发起方拨号；Target 回流走 ROpen，不要求 Source 可达，但两端都在 NAT 后时正反向都不通，只能 Relay。
 
 | 项目 | RTCP 路径 | HTTPS 路径 |
 | --- | --- | --- |
@@ -443,6 +463,8 @@ Token 保存于 SDK、进程、本机受控组件还是其他系统位置，也�
 
 Session Token 应有有效期。可以考虑复用已有体系中的双 Token／刷新机制，避免反复完整登录，但本轮没有确定有效时长、刷新接口或具体实现状态。
 
+> **已定并实施（10-30，裁决 X-1）**：沿用混合 SSO Q-03/Q-04 的 External 会话——access 15 min、refresh 7 d、家族 30 d 封顶，续期不向 Source 复核；刷新用现有 `refresh_token`。
+
 会话过期、来源授权变化、设备失去资格、用户 canonical zone 变更等情况，如何影响已签发 Token，需要后续明确。不能把建立过一次登录会话理解为永久授权。
 
 ### 9.4 外部身份不再只是 Zone 内短名称
@@ -459,6 +481,8 @@ Session Token 应有有效期。可以考虑复用已有体系中的双 Token／
 | 外部用户与本地映射记录 | 本地 Profile／别名不改变该用户的 canonical zone。 |
 
 具体采用完整 DID、带来源的复合标识，还是目标侧内部规范化标识，尚未确定。无论采用哪一种，都应保持可区分的主体身份，不能简单截短为末尾名称后进行权限判断。
+
+> **已定（10-30）**：外部主体用完整 DID（External 会话 `sub`）；token 另带 `zone`（签发 Zone）、`src_device`、`src_app`（声明的调用 App，只作记录）。
 
 在口述预期中，业务服务最主要的适配就是支持这些外部身份，而不是重做登录认证。落地时需要检查的不仅是字符串长度，也包括身份比较、存储字段、ACL 匹配和展示逻辑。
 
@@ -482,6 +506,8 @@ Session Token 应有有效期。可以考虑复用已有体系中的双 Token／
 
 尤其是把 HTTPS 降级和自动登录放入 SOCKS5 接入侧时，需要明确它是否只负责连接转发，还是同时理解应用层请求、执行 TLS 连接和管理 Token。不能仅凭“总是走 SOCKS5”就省略这些职责设计。
 
+> **已定并实施（10-30）**：SOCKS5 只做连接转发；发现、传输选择、降级与每 5 min 重探 RTCP、登录、Token 缓存与刷新都在 SDK 侧的 `buckyos_api::CrossZoneClient`。
+
 ### 10.3 传输可用性与登录状态分别管理
 
 跨 Zone 运行时至少面对两组独立状态。
@@ -499,6 +525,8 @@ Session Token 应有有效期。可以考虑复用已有体系中的双 Token／
 这里的“切换”首先应理解为后续请求选择新的传输路径，不预设已经发出一半的请求可以无损迁移，也不预设写操作可以被自动重放。
 
 统一 Token 机制为切换提供了基础，但 Token 是否绑定某个设备、通道或登录上下文尚未确定。如果存在绑定，切换时需要满足或更新该约束，不能假定任意通道都能直接复用同一凭据。
+
+> **已定（10-30）**：Token 不绑定通道；缓存键是（Target Zone、服务、主体 DID、App），RTCP 与 HTTPS 共用同一份 Token。
 
 ---
 
@@ -594,12 +622,12 @@ Session Token 应有有效期。可以考虑复用已有体系中的双 Token／
 
 | 项目 | 状态 |
 | --- | --- |
-| 未声明连接配置时尝试 TCP 2980 | 当前倾向，尚未定为协议默认值。 |
-| 现有端口配置能力及标准 RTCP 建连流程 | 口述认为已有，落地时需确认当前接口和完整行为。 |
-| SN 对通用跨 Zone RTCP 转发的限制 | 口述中的现状判断，需代码与权限配置核实。 |
-| RTCP Tunnel 双向复用及对集群暴露的能力 | 本轮依此设计；具体实现接口、可复用范围和限制需核实。 |
-| 本地 SOCKS5 的绑定、鉴权与 HTTP 处理能力 | 接入方向已提出，具体能力及新增工作待核。 |
-| 统一跨 Zone SSO、Token 刷新及透明切换 | 架构方向，不表示现有版本已经完整实现。 |
+| 未声明连接配置时尝试 TCP 2980 | **已核实**：有地址即按 2980（或文档 `rtcp_port`）尝试，无地址不拨号；禁用 RTCP 的表示未设计。 |
+| 现有端口配置能力及标准 RTCP 建连流程 | **已核实并修**：`DeviceDocument.rtcp_port` 原先不被 RTCP 客户端读取，10-30 起读取（P1-1）。 |
+| SN 对通用跨 Zone RTCP 转发的限制 | **已核实**：SN 入站 `known_owner`、只接受不转发；`relay_mgr::check_relay_admission` 零调用；跨 Zone Relay 留 P4。 |
+| RTCP Tunnel 双向复用及对集群暴露的能力 | **已核实**：入站 tunnel 可反向复用，但每条数据流是新 TCP、由隧道发起方拨号；非网关节点经 via-zone-gateway 借道网关的隧道（P1-9）；非 keep_tunnel 隧道补了空闲回收与探活（P1-5）。 |
+| 本地 SOCKS5 的绑定、鉴权与 HTTP 处理能力 | **已实施**：跨 Zone 入口 `127.0.0.1:3186` + 口令，只做转发（§6.2 注）。 |
+| 统一跨 Zone SSO、Token 刷新及透明切换 | **已实施**：`login_by_cross_zone_assertion` + `CrossZoneClient`；msg-center 投递与群同步、HomeStation 拉取与投递已切换；DV 结果见实施 TODO §8。 |
 
 ### 14.3 尚需设计的接口与机制
 

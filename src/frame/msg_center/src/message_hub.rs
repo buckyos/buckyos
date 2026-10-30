@@ -228,7 +228,7 @@ impl DeliveryExecutor for MessageHubExecutor {
             if jwt.is_none() && self.center.is_hosted_identity(&msg.from) {
                 if let Some(signer) = self.center.zone_signer.get() {
                     let signed = msg
-                        .to_jwt(&signer.key, &signer.kid)
+                        .to_jwt(signer.key(), &signer.kid)
                         .map_err(|error| anyhow!("sign native message failed: {}", error))?;
                     self.center
                         .msg_box_db

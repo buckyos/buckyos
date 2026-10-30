@@ -6,6 +6,7 @@ use ::kRPC::{RPCErrors, RPCSessionToken};
 use buckyos_api::{
     bind_token_auth_method, bind_token_ceiling, bind_token_external, AuthMethod, AuthTarget,
     SessionCeiling, SessionScope, SessionSource, TokenPrincipalKind, UserType,
+    TOKEN_SRC_APP_CLAIM, TOKEN_SRC_DEVICE_CLAIM,
 };
 use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
@@ -55,6 +56,11 @@ pub struct FamilyClaims {
     pub restricted: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scopes: Vec<SessionScope>,
+    /// Cross-Zone login: the device that vouched, and the App it declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub src_device: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub src_app: Option<String>,
 }
 
 impl FamilyClaims {
@@ -70,6 +76,23 @@ impl FamilyClaims {
         Self::with_ceiling(auth_method, true, &SessionCeiling::external())
     }
 
+    /// An External of another Zone signed in by its device's assertion, held to `scopes`.
+    pub fn cross_zone(
+        scopes: impl IntoIterator<Item = SessionScope>,
+        src_device: String,
+        src_app: Option<String>,
+    ) -> Self {
+        Self {
+            src_device: Some(src_device),
+            src_app,
+            ..Self::with_ceiling(
+                AuthMethod::CrossZoneAssertion,
+                true,
+                &SessionCeiling::restricted(scopes),
+            )
+        }
+    }
+
     /// An account session held below the account's own ceiling (App sign-in).
     pub fn restricted(auth_method: AuthMethod, scopes: impl IntoIterator<Item = SessionScope>) -> Self {
         Self::with_ceiling(auth_method, false, &SessionCeiling::restricted(scopes))
@@ -81,6 +104,8 @@ impl FamilyClaims {
             external,
             restricted: ceiling.restricted,
             scopes: ceiling.scopes.iter().copied().collect(),
+            src_device: None,
+            src_app: None,
         }
     }
 
@@ -99,6 +124,8 @@ impl FamilyClaims {
             external: self.external,
             restricted: ceiling.restricted,
             scopes: ceiling.scopes.into_iter().collect(),
+            src_device: self.src_device.clone(),
+            src_app: self.src_app.clone(),
         }
     }
 
@@ -110,6 +137,16 @@ impl FamilyClaims {
             bind_token_external(token);
         }
         bind_token_ceiling(token, &self.ceiling());
+        for (claim, value) in [
+            (TOKEN_SRC_DEVICE_CLAIM, &self.src_device),
+            (TOKEN_SRC_APP_CLAIM, &self.src_app),
+        ] {
+            if let Some(value) = value {
+                token
+                    .extra
+                    .insert(claim.to_string(), serde_json::Value::String(value.clone()));
+            }
+        }
     }
 }
 

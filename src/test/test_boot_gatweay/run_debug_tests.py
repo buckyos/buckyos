@@ -70,6 +70,7 @@ def build_typical_node_gateway_info(*, remote_app: bool) -> dict:
         "node_info": {
             "this_node_id": "ood1",
             "this_zone_host": "test.buckyos.io",
+            "cross_zone_relay": "",
         },
         "app_info": {
             "publicview": {
@@ -145,6 +146,17 @@ def stage_runtime(config: Path, node_gateway_info: dict) -> tuple[tempfile.Tempo
     params_src = config.parent / "node_gateway_params.json"
     if params_src.exists():
         shutil.copy2(params_src, etc_dir / "node_gateway_params.json")
+    (etc_dir / "cross_zone_socks_params.json").write_text(
+        json.dumps(
+            {
+                "params": {
+                    "cross_zone_socks_username": "buckyos",
+                    "cross_zone_socks_password": "debug-password",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
     (etc_dir / "node_gateway_info.json").write_text(
         json.dumps(node_gateway_info, indent=2),
         encoding="utf-8",
@@ -298,6 +310,11 @@ def build_node_gateway_info_for_case(case_name: str) -> dict:
             },
         }
         return info
+    if case_name == "req_cross_zone_socks_via_gateway_ok":
+        info = build_typical_node_gateway_info(remote_app=False)
+        info["node_info"]["this_node_id"] = "node1"
+        info["node_info"]["cross_zone_relay"] = "rtcp://ood1.test.buckyos.io/"
+        return info
     if case_name == "req_service_kmsg_via_routes_ok":
         info = build_typical_node_gateway_info(remote_app=False)
         info["service_info"]["kmsg"] = {
@@ -339,6 +356,16 @@ def request_header_equals(name, expected_value):
         actual = request.get(name)
         if actual != expected_value:
             return False, f"expected request header {name}={expected_value!r}, got {actual!r}"
+        return True, ""
+
+    return _check
+
+
+def request_header_absent(name):
+    def _check(result):
+        request = result.get("output", {}).get("REQ", {})
+        if name in request:
+            return False, f"expected request header {name} to be removed, got {request[name]!r}"
         return True, ""
 
     return _check
@@ -391,6 +418,39 @@ def assertions_for_case(case_name: str):
         return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:3200")]
     if case_name == "req_kevent_direct_ok":
         return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:3181")]
+    if case_name == "req_rtcp_identity_headers_ok":
+        return [
+            control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:10262"),
+            request_header_equals("X-Cyfs-Rtcp-Device", "did:web:ood1.bob.example"),
+            request_header_equals("X-Cyfs-Rtcp-Trust", "method_authority_current"),
+            request_header_absent("cyfs-original-user"),
+        ]
+    if case_name == "req_forged_rtcp_headers_removed":
+        return [
+            control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:10262"),
+            request_header_absent("X-Cyfs-Rtcp-Device"),
+            request_header_absent("X-Cyfs-Rtcp-Trust"),
+            request_header_absent("cyfs-original-user"),
+        ]
+    if case_name == "req_node_rtcp_external_http_ok":
+        return [control_matches({"return"}, exact_value="server node_gateway")]
+    if case_name == "req_node_rtcp_external_tls_ok":
+        return [control_matches({"return"}, exact_value="forward tcp:///127.0.0.1:443")]
+    if case_name in {"req_node_rtcp_external_reject", "req_node_rtcp_external_executor_reject"}:
+        return [control_matches({"exit"}, exact_value="reject")]
+    if case_name == "req_node_rtcp_same_zone_forward_ok":
+        return [control_matches({"return"}, exact_value="forward tcp:///127.0.0.1:3200")]
+    if case_name == "req_cross_zone_socks_direct_ok":
+        return [control_matches({"return"}, exact_value="PROXY rtcp://bob.example/")]
+    if case_name == "req_cross_zone_socks_via_gateway_ok":
+        return [
+            control_matches(
+                {"return"},
+                exact_value="PROXY rtcp://rtcp%3A%2F%2Food1.test.buckyos.io%2F@bob.example/",
+            )
+        ]
+    if case_name in {"req_cross_zone_socks_port_reject", "req_cross_zone_socks_ip_reject"}:
+        return [control_matches({"return"}, exact_value="REJECT")]
     return []
 
 

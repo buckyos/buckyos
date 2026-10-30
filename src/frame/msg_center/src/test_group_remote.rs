@@ -4,8 +4,8 @@ use crate::msg_box_db::MsgBoxDbMgr;
 use crate::msg_center::MessageCenter;
 use crate::msg_tunnel::DeliveryExecutor;
 use crate::network_directory::test_support::StaticDirectory;
-use crate::network_directory::ZoneSigner;
-use crate::owner_session::{SessionTokenVerifier, ZoneAgentInfo};
+use crate::test_cross_zone::{connect, documents, sign_as, verify_hub, TestZone, ZONE_A, ZONE_B};
+use buckyos_api::StaticCustodyResolver;
 use crate::test_group_service::{http_body, http_fixture};
 use buckyos_api::{
     bind_token_principal_kind, bind_token_target, AuthTarget, DeliveryRecordWithObject,
@@ -13,7 +13,7 @@ use buckyos_api::{
     TokenPrincipalKind, TokenUse,
 };
 use http::{Method, Response, StatusCode};
-use jsonwebtoken::{DecodingKey, EncodingKey};
+use jsonwebtoken::EncodingKey;
 use kRPC::{RPCContext, RPCErrors, RPCSessionToken, RPCSessionTokenType};
 use name_lib::DID;
 use ndn_lib::{MsgObjKind, MsgObject, NamedObject};
@@ -24,9 +24,7 @@ use std::sync::Arc;
 use tempfile::{tempdir, TempDir};
 
 const HOST_KEY: &str = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr\n-----END PRIVATE KEY-----";
-const HOST_DEVICE: &str = "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8";
 const LOCAL_KEY: &str = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIF5zplRSY5MsYbBMdbzItH90daUlrx/OflPm8Kp9m2j1\n-----END PRIVATE KEY-----";
-const LOCAL_DEVICE: &str = "mL_tm5diVGGkpt_6WmCZQxUsee4rHacyz7mx7TkKb-0";
 
 fn user(name: &str, zone: &str) -> DID {
     DID::new("web", &format!("{name}.{zone}"))
@@ -48,31 +46,6 @@ fn group() -> DID {
 }
 fn hub() -> DID {
     DID::new("web", "hub.local.example")
-}
-
-struct Verifier {
-    public_key: &'static str,
-}
-
-#[async_trait::async_trait]
-impl SessionTokenVerifier for Verifier {
-    async fn authorize(&self, _: &str, _: &str, _: &str) -> Result<(), RPCErrors> {
-        Ok(())
-    }
-    async fn verify(&self, raw: &str) -> Result<RPCSessionToken, RPCErrors> {
-        let mut token = RPCSessionToken::from_string(raw)?;
-        token.verify_by_key(&DecodingKey::from_ed_components(self.public_key).unwrap())?;
-        Ok(token)
-    }
-    async fn resolve_user_did(&self, id: &str) -> Result<DID, RPCErrors> {
-        DID::from_str(id).map_err(|error| RPCErrors::ParseRequestError(error.to_string()))
-    }
-    async fn zone_agent(&self, _: &DID) -> Result<Option<ZoneAgentInfo>, RPCErrors> {
-        Ok(None)
-    }
-    async fn sso_settings(&self) -> Result<buckyos_api::SsoSettings, RPCErrors> {
-        Ok(Default::default())
-    }
 }
 
 fn context(who: &DID) -> RPCContext {
@@ -111,24 +84,37 @@ fn context(who: &DID) -> RPCContext {
     }
 }
 
+fn zone_documents() -> Arc<StaticCustodyResolver> {
+    Arc::new(documents(&[
+        (&ZONE_A, vec![alice(), helper()]),
+        (&ZONE_B, vec![bob(), carol()]),
+    ]))
+}
+
 async fn open(path: &str, host: bool, directory: Arc<StaticDirectory>) -> MessageCenter {
     let db = MsgBoxDbMgr::open_default_sqlite(path).await.unwrap();
     let center = MessageCenter::open_with_db(db).await.unwrap();
-    let (zone, key, device, users) = if host {
-        ("a.example", HOST_KEY, HOST_DEVICE, vec![alice(), helper()])
+    let (zone, users) = if host {
+        (&ZONE_A, vec![alice(), helper()])
     } else {
-        ("b.example", LOCAL_KEY, LOCAL_DEVICE, vec![bob(), carol()])
+        (&ZONE_B, vec![bob(), carol()])
     };
-    center.cyfs_dispatch.write().unwrap().target_zone = Some(zone.into());
+    center.cyfs_dispatch.write().unwrap().target_zone = Some(zone.host.into());
     center.register_local_recipients(users);
     center.set_message_hub_did(hub());
-    center.set_token_verifier(Arc::new(Verifier { public_key: device }));
     center.directory.set(directory);
-    center.zone_signer.set(ZoneSigner {
-        key: EncodingKey::from_ed_pem(key.as_bytes()).unwrap(),
-        kid: format!("{}#main_key", DID::new("dev", device).to_string()),
-    });
+    sign_as(&center, zone, zone_documents());
     center
+}
+
+/// The member Zone reaches the host Zone (the only direction these tests need).
+fn reconnect(local: &MessageCenter, host_url: &str) {
+    connect(
+        local,
+        &ZONE_B,
+        &zone_documents(),
+        HashMap::from([("a.example".to_string(), host_url.to_string())]),
+    );
 }
 
 #[derive(Default)]
@@ -173,27 +159,20 @@ async fn two_zones() -> TwoZones {
         (bob(), LookupKind::User, "Bob", "b.example"),
         (carol(), LookupKind::User, "Carol", "b.example"),
         (group(), LookupKind::Group, "Support", "a.example"),
-        (
-            DID::new("dev", HOST_DEVICE),
-            LookupKind::Device,
-            "host-ood",
-            "a.example",
-        ),
-        (
-            DID::new("dev", LOCAL_DEVICE),
-            LookupKind::Device,
-            "local-ood",
-            "b.example",
-        ),
     ]);
     let host = open(&host_path, true, directory.clone()).await;
     let local = open(&local_path, false, directory.clone()).await;
     let faults = Arc::new(Faults::default());
-    let serve = |center: MessageCenter, faults: Arc<Faults>| {
-        http_fixture(move |mut request| {
+    let serve = |center: MessageCenter, zone: &'static TestZone, faults: Arc<Faults>| {
+        http_fixture(move |request| {
             let center = center.clone();
             let faults = faults.clone();
             async move {
+                let resolver = center.custody.get();
+                let mut request = match verify_hub(zone, resolver.as_ref(), request).await {
+                    Ok(response) => return response,
+                    Err(request) => request,
+                };
                 let is_join =
                     request.method() == Method::PUT && request.uri().path().ends_with("/join");
                 if request.uri().path().ends_with("/changes")
@@ -226,19 +205,16 @@ async fn two_zones() -> TwoZones {
             }
         })
     };
-    let (host_url, host_server) = serve(host.clone(), faults.clone()).await;
-    let (local_url, local_server) = serve(local.clone(), Arc::new(Faults::default())).await;
-    host.cyfs_dispatch
-        .write()
-        .unwrap()
-        .zone_origins
-        .insert("b.example".into(), local_url);
-    local
-        .cyfs_dispatch
-        .write()
-        .unwrap()
-        .zone_origins
-        .insert("a.example".into(), host_url.clone());
+    let (host_url, host_server) = serve(host.clone(), &ZONE_A, faults.clone()).await;
+    let (local_url, local_server) =
+        serve(local.clone(), &ZONE_B, Arc::new(Faults::default())).await;
+    connect(
+        &host,
+        &ZONE_A,
+        &zone_documents(),
+        HashMap::from([("b.example".to_string(), local_url)]),
+    );
+    reconnect(&local, &host_url);
     TwoZones {
         host,
         local,
@@ -488,13 +464,7 @@ async fn cross_zone_invitation_delivers_joins_syncs_sends_and_survives_restart()
         .is_err());
 
     zones.local = open(&zones.local_path, false, zones.directory.clone()).await;
-    zones
-        .local
-        .cyfs_dispatch
-        .write()
-        .unwrap()
-        .zone_origins
-        .insert("a.example".into(), zones.host_url.clone());
+    reconnect(&zones.local, &zones.host_url);
     let after_restart = host_message(&zones.host, "after restart", 4).await;
     sync(&zones.local, &bob()).await;
     assert!(projected(&zones.local, &bob())
@@ -544,13 +514,7 @@ async fn cross_zone_accept_recovers_lost_response_and_first_sync_failure() {
     );
     let seq = state.group_seq;
     zones.local = open(&zones.local_path, false, zones.directory.clone()).await;
-    zones
-        .local
-        .cyfs_dispatch
-        .write()
-        .unwrap()
-        .zone_origins
-        .insert("a.example".into(), zones.host_url.clone());
+    reconnect(&zones.local, &zones.host_url);
     zones.local.sync_remote_groups().await.unwrap();
     assert_eq!(
         list(&zones.local, &bob()).await["joined"][0]["group_did"],
@@ -760,13 +724,7 @@ async fn stale_invitation_cannot_erase_recovery_of_a_confirmed_invitation() {
         .is_empty());
     assert!(projected(&zones.local, &bob()).await.is_empty());
     zones.local = open(&zones.local_path, false, zones.directory.clone()).await;
-    zones
-        .local
-        .cyfs_dispatch
-        .write()
-        .unwrap()
-        .zone_origins
-        .insert("a.example".into(), zones.host_url.clone());
+    reconnect(&zones.local, &zones.host_url);
     zones.local.sync_remote_groups().await.unwrap();
     assert_eq!(
         list(&zones.local, &bob()).await["joined"][0]["group_did"],

@@ -3297,7 +3297,7 @@ impl MessageCenter {
             return Err(invalid("message-too-large"));
         }
         if let Some(jwt) = jwt {
-            let signed = crate::cyfs_dispatch::verify_signed_message_with(jwt, Some(self))
+            let signed = crate::cyfs_dispatch::verify_signed_message_with(jwt, self)
                 .await
                 .map_err(|(_, reason)| denied(reason))?;
             if signed.msg != *msg {

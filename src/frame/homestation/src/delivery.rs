@@ -200,24 +200,26 @@ impl Station {
             Ok(id) => id,
             Err(e) => return DispatchOutcome::Rejected { reason: format!("invalid object id: {e}"), retryable: false },
         };
+        let _ = origin;
         let target = home.inbox();
         let target = target.as_str();
-        let url = format!("{}{}", origin.trim_end_matches('/'), home.path("inbox"));
-        let mut request = self
-            .http
-            .put(&url)
-            .header("host", &home.zone)
+        let Ok(owner) = name_lib::DID::from_str(&self.cfg.owner) else {
+            return DispatchOutcome::Rejected { reason: "owner is not a DID".into(), retryable: false };
+        };
+        // Delivered in a session of the recipient's zone, signed in by this zone's device.
+        let mut request = buckyos_api::CrossZoneRequest::new(http::Method::PUT, home.path("inbox"))
             .header("content-type", content_type)
             .header("cyfs-obj-id", expected.to_base32())
-            .header("cyfs-original-user", self.cfg.owner.clone())
             .timeout(Duration::from_secs(15))
             .body(body);
         if let Some(tier) = tier.filter(|t| *t != "public") {
             request = request.header(HEADER_AUDIENCE, tier);
         }
-        let response = match request.send().await {
+        let principal = buckyos_api::Principal::new(owner);
+        let response = match self.cross_zone.request_host(&home.zone, crate::pull::HOMESTATION_SERVICE, &principal, request).await {
             Ok(r) => r,
-            Err(e) => return DispatchOutcome::NoResponse { detail: e.to_string() },
+            Err(e @ buckyos_api::CrossZoneError::Transport(_)) => return DispatchOutcome::NoResponse { detail: e.to_string() },
+            Err(e) => return DispatchOutcome::Rejected { reason: e.to_string(), retryable: e.is_retryable() },
         };
         let status = response.status().as_u16();
         let headers = response.headers().clone();

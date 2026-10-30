@@ -30,6 +30,7 @@ pub mod settings;
 pub mod sign;
 pub mod sources;
 pub mod standalone;
+pub mod standalone_hub;
 pub mod spider;
 pub mod stream;
 pub mod users;
@@ -135,6 +136,8 @@ pub struct Station {
     pub db: Db,
     pub signer: Signer,
     pub directory: Arc<dyn Directory>,
+    /// Reads from and deliveries to other zones, as this station's owner (跨Zone登录断言契约).
+    pub cross_zone: Arc<buckyos_api::CrossZoneClient>,
     pub contacts: CachedContacts,
     pub store: Arc<Storage>,
     pub http: reqwest::Client,
@@ -153,6 +156,7 @@ impl Station {
         db: Db,
         signer: Signer,
         directory: Arc<dyn Directory>,
+        cross_zone: Arc<buckyos_api::CrossZoneClient>,
         contacts: CachedContacts,
         store: Arc<Storage>,
         model: Option<Arc<dyn ModelClient>>,
@@ -168,6 +172,7 @@ impl Station {
             db,
             signer,
             directory,
+            cross_zone,
             contacts,
             store,
             http,

@@ -1884,8 +1884,26 @@ impl BuckyOSRuntime {
             .verify_by_key(&decoding_key)
             .map_err(|error| RPCErrors::InvalidToken(format!("JWT decode error: {}", error)))?;
         validate_verify_hub_token_claims(&rpc_token, TokenUse::Session)?;
+        // A token signed for another Zone never passes here, whatever key it verifies with.
+        if let Some(zone) = crate::token_zone(&rpc_token) {
+            let issued_here = DID::from_str(zone)
+                .is_ok_and(|zone| self.zone_id.is_valid() && crate::same_zone(&zone, &self.zone_id));
+            if !issued_here {
+                return Err(RPCErrors::InvalidToken(
+                    "session token was issued for another Zone".to_string(),
+                ));
+            }
+        }
 
         Ok(rpc_token)
+    }
+
+    /// This node's device key for signing as the Zone (`<device did>#main_key`); `None` until
+    /// [`Self::load_device_private_key`] ran.
+    pub fn device_signer(&self) -> Option<crate::DeviceSigner> {
+        let key = self.device_private_key.clone()?;
+        let device = self.device_config.as_ref()?.id.clone();
+        Some(crate::DeviceSigner::new(device, key))
     }
 
     pub async fn get_current_rbac_config(&self) -> Result<RbacConfig> {
@@ -2876,59 +2894,6 @@ impl BuckyOSRuntime {
             ),
             false,
         ));
-
-        //下面的实现其实永远不会进入，因为cyfs-gateway并不加载buckyos-sdk,而是通过process-chain规则完成下面逻辑
-        //  得到service的provider node列表，并随机选择一个
-        //  根据选择的deivce_id,查表得到forward url
-
-        // let mut total_weight = 0;
-        // for (_node_name, node_info) in service_info.node_list.iter() {
-        //     if node_info.state == ServiceInstanceState::Started {
-        //         total_weight += node_info.weight;
-        //     }
-        // }
-
-        // let mut rng = rand::thread_rng();
-        // let random_num = rng.gen_range(0..total_weight);
-        // let mut current_weight = 0;
-        // let mut last_best_same_lan_node_url = String::new();
-        // let mut last_best_wan_node_url = String::new();
-        // for (_node_name, node_info) in service_info.node_list.iter() {
-        //     if node_info.state == ServiceInstanceState::Started {
-        //         let maybe_port = Self::resolve_service_port(node_info, service_name);
-        //         if maybe_port.is_none() {
-        //             continue;
-        //         }
-        //         let port = maybe_port.unwrap();
-        //         if node_info.node_net_id == self.device_config.as_ref().unwrap().net_id {
-        //             last_best_same_lan_node_url = format!(
-        //                 "rtcp://{}/127.0.0.1:{}",
-        //                 node_info.node_did.to_string(),
-        //                 port
-        //             );
-        //         }
-        //         if node_info.node_net_id == Some("wan".to_string()) {
-        //             last_best_wan_node_url = format!(
-        //                 "rtcp://{}/127.0.0.1:{}",
-        //                 node_info.node_did.to_string(),
-        //                 port
-        //             );
-        //         }
-        //         current_weight += node_info.weight;
-        //         if current_weight >= random_num {
-        //             if last_best_same_lan_node_url.len() > 0 {
-        //                 return Ok((last_best_same_lan_node_url, false));
-        //             }
-        //             if last_best_wan_node_url.len() > 0 {
-        //                 return Ok((last_best_wan_node_url, false));
-        //             }
-        //         }
-        //     }
-        // }
-        // //todo: use wan_node to get the
-        // return Err(RPCErrors::ReasonError(
-        //     "no running instance found".to_string(),
-        // ));
     }
 
     fn resolve_service_port(_node_info: &ServiceNode, _service_name: &str) -> Option<u16> {
@@ -4290,6 +4255,45 @@ mod tests {
             resolve_kevent_daemon_endpoint(Some("  "), "127.0.0.1"),
             "127.0.0.1:3183"
         );
+    }
+
+    #[tokio::test]
+    async fn session_tokens_of_another_zone_are_refused() {
+        let (private_pem, public_jwk) = generate_ed25519_key_pair();
+        let key = EncodingKey::from_ed_pem(private_pem.as_bytes()).unwrap();
+        let jwk: jsonwebtoken::jwk::Jwk = serde_json::from_value(public_jwk).unwrap();
+        let mut runtime =
+            BuckyOSRuntime::new("msg-center", None, BuckyOSRuntimeType::KernelService);
+        runtime.zone_id = DID::new("web", "alice.example");
+        runtime
+            .set_trust_key(VERIFY_HUB_TOKEN_ISSUER, &DecodingKey::from_jwk(&jwk).unwrap())
+            .await
+            .unwrap();
+        let target = AuthTarget::system("msg-center".parse().unwrap());
+        let token = |zone: Option<&str>| {
+            let (_, mut token) =
+                RPCSessionToken::generate_jwt_token("bob", "msg-center", None, &key).unwrap();
+            token.iss = Some(VERIFY_HUB_TOKEN_ISSUER.to_string());
+            token
+                .extra
+                .insert("principal_kind".into(), Value::String("user".into()));
+            crate::bind_token_target(&mut token, &target, TokenUse::Session).unwrap();
+            if let Some(zone) = zone {
+                crate::bind_token_zone(&mut token, zone);
+            }
+            token
+                .generate_jwt(Some(VERIFY_HUB_TOKEN_ISSUER.to_string()), &key)
+                .unwrap()
+        };
+        for zone in [None, Some("did:web:alice.example"), Some("did:web:ALICE.example")] {
+            assert!(runtime.verify_trusted_session_token(&token(zone)).await.is_ok(), "{zone:?}");
+        }
+        assert!(matches!(
+            runtime
+                .verify_trusted_session_token(&token(Some("did:web:charlie.example")))
+                .await,
+            Err(RPCErrors::InvalidToken(_))
+        ));
     }
 }
 

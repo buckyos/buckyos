@@ -3,7 +3,8 @@ use crate::group_types::*;
 use crate::msg_center::MessageCenter;
 use buckyos_api::{MailboxAddress, MailboxKind, RecipientState};
 use name_lib::DID;
-use ndn_lib::{CyfsNamedObjectEncoding, MsgObject, NamedObject, ObjId, CYFS_HEADER_ORIGINAL_USER};
+use buckyos_api::{CrossZoneRequest, Principal};
+use ndn_lib::{CyfsNamedObjectEncoding, MsgObject, NamedObject, ObjId};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::Row;
@@ -38,7 +39,7 @@ impl JoinedGroupRoute {
         };
         Ok(crate::cyfs_dispatch::NativeDispatchRoute {
             target: crate::group_http::group_target(&self.host, &path).map_err(|error| anyhow::anyhow!(error.to_string()))?,
-            upstream: self.upstream.clone(), authorization: self.authorization.clone(), timeout_ms: 15_000,
+            upstream: self.upstream.clone(), authorization: self.authorization.clone(), timeout_ms: 15_000, zone: None,
         })
     }
     pub fn validate(&self) -> Result<()> {
@@ -68,26 +69,43 @@ impl JoinedGroupRoute {
             format!("/kapi/msg-center/groups/{}", self.group_did.to_string())
         }
     }
-    fn request(&self, center: &MessageCenter, method: reqwest::Method, url: reqwest::Url, body: Vec<u8>) -> Result<reqwest::RequestBuilder> {
+    /// A request to the group host as the member: a configured route's own Bearer, else a
+    /// session of the host Zone obtained by the member's Zone (`CrossZoneClient`).
+    async fn send(&self, center: &MessageCenter, method: reqwest::Method, path_and_query: &str, body: Vec<u8>) -> Result<(http::HeaderMap, Vec<u8>)> {
         self.validate()?;
-        let client = reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none())
-            .build().map_err(db_error)?;
-        let path = format!("{}{}", url.path(), url.query().map(|q| format!("?{q}")).unwrap_or_default());
-        let request = client.request(method.clone(), url)
-            .header("host", &self.host)
-            .header(CYFS_HEADER_ORIGINAL_USER, self.owner_did.to_string())
-            .timeout(std::time::Duration::from_secs(15));
-        let request = match self.authorization.as_deref() {
-            Some(value) => request.header("authorization", value),
-            None => request.header(crate::group_auth::CYFS_HEADER_GROUP_REQUEST,
-                crate::group_auth::signed_group_request(center, &self.owner_did, &self.group_did,
-                    &self.host, method.as_str(), &path, &body)?),
-        };
-        Ok(if body.is_empty() { request } else { request.header("content-type", "application/json").body(body) })
-    }
-    async fn response(request: reqwest::RequestBuilder) -> Result<(http::HeaderMap, Vec<u8>)> {
         let unavailable = |_| kRPC::RPCErrors::ReasonError("remote-group-unavailable".into());
-        let mut response = request.send().await.map_err(unavailable)?;
+        let timeout = std::time::Duration::from_secs(15);
+        let response = match self.authorization.as_deref() {
+            Some(authorization) => {
+                let url = reqwest::Url::parse(&self.upstream).map_err(invalid)?.join(path_and_query).map_err(invalid)?;
+                let client = reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none())
+                    .build().map_err(db_error)?;
+                let request = client.request(method, url).header("host", &self.host)
+                    .header("authorization", authorization).timeout(timeout);
+                let request = if body.is_empty() { request } else { request.header("content-type", "application/json").body(body) };
+                request.send().await.map_err(unavailable)?
+            }
+            None => {
+                let client = center.cross_zone.get().ok_or_else(|| kRPC::RPCErrors::ReasonError("remote-group-unavailable".into()))?;
+                let mut request = CrossZoneRequest::new(method, path_and_query).timeout(timeout);
+                if !body.is_empty() {
+                    request = request.header("content-type", "application/json").body(body);
+                }
+                let principal = Principal::new(self.owner_did.clone());
+                match client.request_host(&self.host, crate::cyfs_dispatch::MSG_CENTER_SERVICE, &principal, request).await {
+                    Ok(response) => response,
+                    Err(error) if error.is_retryable() => return Err(kRPC::RPCErrors::ReasonError("remote-group-unavailable".into())),
+                    Err(error) => {
+                        log::warn!("group host {} refused {}: {}", self.host, self.owner_did.to_string(), error);
+                        return Err(denied("remote-group-auth-failed"));
+                    }
+                }
+            }
+        };
+        Self::response(response).await
+    }
+    async fn response(mut response: reqwest::Response) -> Result<(http::HeaderMap, Vec<u8>)> {
+        let unavailable = |_| kRPC::RPCErrors::ReasonError("remote-group-unavailable".into());
         let status = response.status();
         let headers = response.headers().clone();
         let mut bytes = Vec::new();
@@ -112,25 +130,22 @@ impl JoinedGroupRoute {
         Ok((headers, bytes))
     }
     pub(crate) async fn put(&self, center: &MessageCenter, path: &str, body: &Value) -> Result<Value> {
-        let mut url = reqwest::Url::parse(&self.upstream).map_err(invalid)?;
-        url.set_path(path);
-        let (_, bytes) = Self::response(self.request(center, reqwest::Method::PUT, url,
-            serde_json::to_vec(body).map_err(invalid)?)?).await?;
+        let (_, bytes) = self.send(center, reqwest::Method::PUT, path, serde_json::to_vec(body).map_err(invalid)?).await?;
         serde_json::from_slice(&bytes).map_err(|_| invalid("invalid-group-response"))
     }
     pub(crate) async fn fetch(&self, center: &MessageCenter, path: &str, query: &[(&str, String)]) -> Result<Value> {
-        let mut url = reqwest::Url::parse(&self.upstream).map_err(invalid)?;
+        let mut url = reqwest::Url::parse("http://group.invalid").map_err(invalid)?;
         url.set_path(path);
         if !query.is_empty() {
             url.query_pairs_mut().extend_pairs(query.iter().map(|(k, v)| (*k, v.as_str())));
         }
-        let (_, bytes) = Self::response(self.request(center, reqwest::Method::GET, url, vec![])?) .await?;
+        let path_and_query = format!("{}{}", url.path(), url.query().map(|q| format!("?{q}")).unwrap_or_default());
+        let (_, bytes) = self.send(center, reqwest::Method::GET, &path_and_query, vec![]).await?;
         serde_json::from_slice(&bytes).map_err(invalid)
     }
     async fn object(&self, center: &MessageCenter, id: &ObjId) -> Result<(MsgObject, Option<String>)> {
-        let mut url = reqwest::Url::parse(&self.upstream).map_err(invalid)?;
-        url.set_path(&format!("{}/objects/{}", self.base_path(), id.to_string()));
-        let (headers, bytes) = Self::response(self.request(center, reqwest::Method::GET, url, vec![])?) .await?;
+        let path = format!("{}/objects/{}", self.base_path(), id.to_string());
+        let (headers, bytes) = self.send(center, reqwest::Method::GET, &path, vec![]).await?;
         let encoding = headers.get("content-type")
             .and_then(|h| h.to_str().ok())
             .and_then(CyfsNamedObjectEncoding::from_content_type)
@@ -147,7 +162,7 @@ impl JoinedGroupRoute {
                 None,
             ),
             CyfsNamedObjectEncoding::Jwt => {
-                let signed = crate::cyfs_dispatch::verify_signed_message_with(&raw, Some(center))
+                let signed = crate::cyfs_dispatch::verify_signed_message_with(&raw, center)
                     .await
                     .map_err(|(_, r)| denied(r))?;
                 (signed.msg, Some(raw))

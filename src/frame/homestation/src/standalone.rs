@@ -15,6 +15,7 @@ use crate::http::AppState;
 use crate::objects::Storage;
 use crate::settings::UserSettings;
 use crate::sign::Signer;
+use crate::standalone_hub::StandaloneHub;
 use crate::users::{StaticUsers, UserRegistry, ZoneUser};
 use crate::zone::ZoneFeed;
 use crate::{Station, StationConfig};
@@ -201,6 +202,15 @@ pub fn build(cfg: StandaloneConfig, data_dir: &Path, config_dir: Option<&Path>, 
     }
     directory.zones.entry(zone.clone()).or_insert_with(|| format!("http://{listen}"));
     let directory = Arc::new(directory);
+    // This zone signs other zones' readers in (`standalone_hub.rs`); its stations sign in at theirs.
+    let public_x = crate::sign::public_x_from_pem(&pem).map_err(HsError::BadRequest)?;
+    let hub = Arc::new(StandaloneHub::new(&zone, signer.clone(), &public_x, directory.clone()).map_err(HsError::BadRequest)?);
+    let cross_zone = Arc::new(
+        buckyos_api::CrossZoneClient::new(signer.device_signer().map_err(HsError::BadRequest)?, None)
+            .map_err(|e| HsError::Internal(e.to_string()))?
+            .with_resolver(directory.clone())
+            .with_origins(directory.zones.clone()),
+    );
 
     let mut template = StationConfig::new(&cfg.owner, "", &zone, &owner_user);
     template.spider_enabled = cfg.spider.unwrap_or(true);
@@ -227,6 +237,7 @@ pub fn build(cfg: StandaloneConfig, data_dir: &Path, config_dir: Option<&Path>, 
         let directory = directory.clone();
         let setups = setups.clone();
         let signer = signer.clone();
+        let cross_zone = cross_zone.clone();
         let db = db.clone();
         Box::new(move |user: &ZoneUser| -> HsResult<Arc<Station>> {
             let setup = setups.get(&user.user);
@@ -247,7 +258,7 @@ pub fn build(cfg: StandaloneConfig, data_dir: &Path, config_dir: Option<&Path>, 
             station_cfg.user = user.user.clone();
             station_cfg.collector = setup.is_some_and(|s| s.collector);
             station_cfg.agent = user.agent.clone();
-            Ok(Station::new(station_cfg, db, signer.clone(), directory.clone(), cached, store.clone(), model.clone()))
+            Ok(Station::new(station_cfg, db, signer.clone(), directory.clone(), cross_zone.clone(), cached, store.clone(), model.clone()))
         })
     };
     let mut host_cfg = HostConfig::new(&zone);
@@ -258,7 +269,7 @@ pub fn build(cfg: StandaloneConfig, data_dir: &Path, config_dir: Option<&Path>, 
     host_cfg.start_workers = cfg.workers.unwrap_or(true);
     let static_users = Arc::new(StaticUsers(Mutex::new(zone_users.clone())));
     let registry = Arc::new(UserRegistry::new(Box::new(SharedUsers(static_users.clone())), Duration::from_millis(0)));
-    let auth = Arc::new(StaticTokens { tokens: cfg.tokens.clone() });
+    let auth = Arc::new(StaticTokens { tokens: cfg.tokens.clone(), hub: Some(hub.clone()) });
     let zone_feed = ZoneFeed::new(&db);
     let host = Host::new(host_cfg, directory, auth, registry, zone_feed, builder);
     let mut station = None;
@@ -270,7 +281,7 @@ pub fn build(cfg: StandaloneConfig, data_dir: &Path, config_dir: Option<&Path>, 
     }
     let user_contacts = setups.iter().map(|(k, v)| (k.clone(), v.contacts.clone())).collect();
     Ok(Standalone {
-        state: AppState { host: host.clone() },
+        state: AppState { host: host.clone(), hub: Some(hub) },
         host,
         users: static_users,
         station: station.expect("owner station"),

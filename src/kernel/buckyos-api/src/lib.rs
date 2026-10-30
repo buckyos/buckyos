@@ -5,6 +5,8 @@ use log::{info, warn};
 
 mod aiworkspace_client;
 mod control_panel;
+mod cross_zone_auth;
+mod cross_zone_client;
 mod device_identity;
 mod group_hook;
 mod homestation_client;
@@ -84,6 +86,8 @@ pub use app_identity::*;
 pub use app_install::*;
 pub use app_schema::*;
 pub use control_panel::*;
+pub use cross_zone_auth::*;
+pub use cross_zone_client::*;
 pub use cyfs_gateway_api::{
     generate_sn_device_token, get_real_sn_host_name, sn_auth_login, sn_auth_register,
     sn_register_device_online, sn_resolve_ood_by_did, sn_resolve_ood_by_hostname,

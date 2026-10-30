@@ -199,8 +199,9 @@ fn format_relay_rtcp_url(
     zone_host: &str,
     port: u32,
 ) -> String {
+    let bootstrap_url = format!("{}{}.{}:{}", relay_url, target_node_id, zone_host, port);
     let encoded_relay_url: String =
-        url::form_urlencoded::byte_serialize(relay_url.as_bytes()).collect();
+        url::form_urlencoded::byte_serialize(bootstrap_url.as_bytes()).collect();
     if port == DEFAULT_RTCP_PORT {
         format!(
             "rtcp://{}@{}.{}/",
@@ -238,6 +239,26 @@ fn get_default_zone_gateway_relay(zone_config: &ZoneDocument) -> Option<String> 
         .iter()
         .find(|ood| can_use_as_zone_gateway_relay(ood))
         .map(|ood| ood.name.clone())
+}
+
+/// RTCP URL of the Zone's default gateway for nodes that leave the Zone through
+/// it; empty on the gateway itself.
+pub(crate) fn cross_zone_relay_url(
+    this_node_id: &str,
+    zone_config: &ZoneDocument,
+    zone_host: &str,
+    device_list: &HashMap<String, DeviceInfo>,
+) -> String {
+    match zone_config.get_default_zone_gateway() {
+        Some(gateway) if gateway != this_node_id => {
+            let port = device_list
+                .get(gateway.as_str())
+                .map(device_rtcp_port)
+                .unwrap_or(DEFAULT_RTCP_PORT);
+            format_rtcp_did_url(gateway.as_str(), zone_host, port)
+        }
+        _ => String::new(),
+    }
 }
 
 fn net_id_for_planning(device_info: &DeviceInfo) -> &str {
@@ -1224,7 +1245,78 @@ mod tests {
         assert!(via_gateway.backup);
         assert_eq!(via_gateway.kind, "rtcp_relay");
         assert_eq!(via_gateway.relay_node.as_deref(), Some("ood1"));
-        assert!(via_gateway.url.starts_with("rtcp://rtcp%3A%2F%2Food1."));
+        assert_eq!(
+            relay_bootstrap(&via_gateway.url),
+            format!("rtcp://ood1.{}/ood3.{}:2980", zone_host, zone_host)
+        );
+        let via_sn = ood3_routes
+            .iter()
+            .find(|candidate| candidate.id == "via-sn");
+        assert!(via_sn.is_none(), "test zone has no SN");
+    }
+
+    fn relay_bootstrap(route_url: &str) -> String {
+        let authority = route_url
+            .strip_prefix("rtcp://")
+            .unwrap()
+            .split('/')
+            .next()
+            .unwrap();
+        let (bootstrap, _) = authority.rsplit_once('@').unwrap();
+        url::form_urlencoded::parse(bootstrap.as_bytes())
+            .next()
+            .unwrap()
+            .0
+            .into_owned()
+    }
+
+    // P1-6: the relay hop names the target and its RTCP port.
+    #[test]
+    fn test_via_sn_bootstrap_names_target_and_port() {
+        let mut zone_config = create_test_zone_config();
+        zone_config.sn = Some("sn.example.com".to_string());
+        let zone_host = zone_config.id.to_host_name();
+        let mut device_ood2 = create_test_device_info("ood2");
+        device_ood2.device_doc.rtcp_port = Some(2981);
+        let device_list = HashMap::from([
+            ("ood1".to_string(), create_test_device_info("ood1")),
+            ("ood2".to_string(), device_ood2),
+        ]);
+        let plan = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
+        let via_sn = plan.routes["ood2"]
+            .iter()
+            .find(|candidate| candidate.id == "via-sn")
+            .unwrap();
+        assert_eq!(
+            relay_bootstrap(&via_sn.url),
+            format!("rtcp://sn.example.com/ood2.{}:2981", zone_host)
+        );
+        assert!(via_sn.url.ends_with(&format!("@ood2.{}:2981/", zone_host)));
+    }
+
+    // P1-9: every node except the default Zone gateway leaves the Zone through it.
+    #[test]
+    fn test_cross_zone_relay_is_the_default_zone_gateway() {
+        let zone_config = create_test_zone_config();
+        let zone_host = zone_config.id.to_host_name();
+        let mut device_ood1 = create_test_device_info("ood1");
+        device_ood1.device_doc.rtcp_port = Some(2981);
+        let device_list = HashMap::from([
+            ("ood1".to_string(), device_ood1),
+            ("node1".to_string(), create_test_device_info("node1")),
+        ]);
+        assert_eq!(
+            cross_zone_relay_url("node1", &zone_config, &zone_host, &device_list),
+            format!("rtcp://ood1.{}:2981/", zone_host)
+        );
+        assert_eq!(
+            cross_zone_relay_url("ood2", &zone_config, &zone_host, &device_list),
+            format!("rtcp://ood1.{}:2981/", zone_host)
+        );
+        assert_eq!(
+            cross_zone_relay_url("ood1", &zone_config, &zone_host, &device_list),
+            ""
+        );
     }
 
     #[test]

@@ -3,12 +3,16 @@
 //! and `/inbox`), zone → HTTP origin, and "may this signer sign for that DID".
 
 use crate::protocol::HomeRef;
-use crate::sign::{decoding_key_from_x, kid_fragment};
+use crate::sign::decoding_key_from_x;
+use buckyos_api::{
+    canonical_zone_of, check_custody, resolve_signer_key, zone_hostname, CustodyError, CustodyResolver, NameServiceResolver,
+    ResolveFailure,
+};
 use crate::users::UserRegistry;
 use async_trait::async_trait;
 use jsonwebtoken::DecodingKey;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -119,15 +123,58 @@ impl Directory for StaticDirectory {
         decoding_key_from_x(&x).map_err(DirError::NotFound)
     }
 
-    async fn authorizes(&self, principal: &str, signer: &str, _kid: &str) -> Result<bool, DirError> {
-        if principal == signer {
-            return Ok(true);
-        }
-        Ok(self.identity(principal).map_or(false, |i| i.devices.iter().any(|d| d == signer)))
+    async fn authorizes(&self, principal: &str, signer: &str, kid: &str) -> Result<bool, DirError> {
+        custody_authorizes(self, principal, signer, kid, None).await
     }
 
     async fn content_did_owner(&self, did: &str) -> Result<Option<String>, DirError> {
         Ok(self.identity(did).and_then(|i| i.owner.clone()))
+    }
+}
+
+/// The declared identities as DID documents, so the one custody rule (`buckyos_api::check_custody`)
+/// judges standalone zones too: a key in `#main_key`, the devices that sign for it listed, its zone.
+#[async_trait]
+impl CustodyResolver for StaticDirectory {
+    async fn resolve(&self, did: &name_lib::DID, _doc_type: Option<name_lib::DidDocType>) -> Result<name_lib::EncodedDocument, ResolveFailure> {
+        let id = did.to_string();
+        let identity = self.identity(&id).ok_or_else(|| ResolveFailure::NotFound(id.clone()))?;
+        let mut authentication: Vec<Value> = identity.devices.iter().map(|d| Value::String(format!("{d}#main_key"))).collect();
+        let mut methods = Vec::new();
+        if let Some(x) = &identity.public_key_x {
+            authentication.push(Value::String("#main_key".into()));
+            methods.push(json!({"type": "Ed25519VerificationKey2020", "id": "#main_key", "controller": id,
+                "publicKeyJwk": {"kty": "OKP", "crv": "Ed25519", "x": x}}));
+        }
+        let zone = identity.zone.as_ref().map(|zone| format!("did:web:{zone}"));
+        Ok(name_lib::EncodedDocument::JsonLd(json!({
+            "id": id, "verificationMethod": methods, "authentication": authentication,
+            "exp": 4102444800u64, "iat": 1, "owner": id, "device_type": "server", "name": id,
+            "zone_did": zone, "binded_zone_list": zone.into_iter().collect::<Vec<_>>(),
+        })))
+    }
+}
+
+/// `buckyos_api::check_custody` answered as `Directory::authorizes`: `local_zone` is this zone
+/// when the principal is known to live here.
+async fn custody_authorizes(
+    resolver: &dyn CustodyResolver,
+    principal: &str,
+    signer: &str,
+    kid: &str,
+    local_zone: Option<name_lib::DID>,
+) -> Result<bool, DirError> {
+    let principal = did(principal)?;
+    let kid = if kid.starts_with(signer) { kid.to_string() } else { format!("{signer}#main_key") };
+    let key = match resolve_signer_key(resolver, &kid).await {
+        Ok(key) => key,
+        Err(CustodyError::Unavailable(e)) => return Err(DirError::Unavailable(e.to_string())),
+        Err(_) => return Ok(false),
+    };
+    match check_custody(resolver, &key, &principal, local_zone).await {
+        Ok(_) => Ok(true),
+        Err(CustodyError::Unavailable(e)) => Err(DirError::Unavailable(e.to_string())),
+        Err(_) => Ok(false),
     }
 }
 
@@ -145,6 +192,8 @@ pub struct NameDirectory {
     pub zones: std::sync::Mutex<HashMap<String, (String, std::time::Instant)>>,
     /// DID → home of other zones (`GET /home/?did=`), positive and negative answers.
     pub homes: std::sync::Mutex<HashMap<String, (Result<HomeRef, DirError>, std::time::Instant)>>,
+    /// DID documents for keys and custody: the name service.
+    pub custody: Arc<dyn CustodyResolver>,
 }
 
 const ZONE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(600);
@@ -159,6 +208,7 @@ impl NameDirectory {
             http: reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build().expect("http client"),
             zones: Default::default(),
             homes: Default::default(),
+            custody: Arc::new(NameServiceResolver),
         }
     }
 
@@ -205,30 +255,6 @@ async fn resolve_doc(value: &str) -> Result<Value, DirError> {
     doc.to_json_value().map_err(|e| DirError::NotFound(format!("decode document of {value}: {e}")))
 }
 
-/// The document of a signer: a device of some zone (what zones sign with), else whatever its DID resolves to.
-async fn resolve_signer_doc(signer: &str) -> Result<name_lib::EncodedDocument, DirError> {
-    let signer_did = did(signer)?;
-    match name_client::resolve_did(&signer_did, Some(name_lib::DidDocType::Device)).await {
-        Ok(doc) => Ok(doc),
-        Err(_) => name_client::resolve_did(&signer_did, None)
-            .await
-            .map_err(|e| DirError::Unavailable(format!("resolve {signer}: {e}"))),
-    }
-}
-
-/// Whether `doc` lists `signer` / `kid` among its authentication keys. A relative id (`#key`) is a key of the
-/// document's own DID, never of another signer that happens to use the same fragment.
-fn lists_signer(doc: &Value, signer: &str, kid: &str) -> bool {
-    let doc_id = doc.get("id").and_then(Value::as_str).unwrap_or_default();
-    doc.get("authentication").and_then(Value::as_array).is_some_and(|items| {
-        items.iter().any(|item| {
-            let id = item.as_str().or_else(|| item.get("id").and_then(Value::as_str)).unwrap_or("");
-            let id = if id.starts_with('#') { format!("{doc_id}{id}") } else { id.to_string() };
-            id == kid || id == signer
-        })
-    })
-}
-
 #[async_trait]
 impl Directory for NameDirectory {
     async fn zone_of(&self, value: &str) -> Result<String, DirError> {
@@ -240,17 +266,18 @@ impl Directory for NameDirectory {
                 return Ok(zone.clone());
             }
         }
+        // OwnerDocument → canonical Zone → ZoneDocument hostname, as every service resolves it.
         let parsed = did(value)?;
-        let zone = match name_client::resolve_owner_document(&parsed).await {
-            Ok(doc) => Some(buckyos_api::owner_canonical_zone(&doc).to_host_name()),
-            Err(e) => {
-                log::debug!("owner document of {value} unavailable: {e}");
-                None
-            }
-        }
-        .unwrap_or_else(|| parsed.to_host_name())
-        .trim_end_matches('.')
-        .to_ascii_lowercase();
+        let resolver = self.custody.as_ref();
+        let unavailable = |e: ResolveFailure| match e {
+            ResolveFailure::NotFound(m) => DirError::NotFound(m),
+            e => DirError::Unavailable(e.to_string()),
+        };
+        let zone_did = canonical_zone_of(resolver, &parsed, None)
+            .await
+            .map_err(unavailable)?
+            .ok_or_else(|| DirError::NotFound(format!("{value} names no zone")))?;
+        let zone = zone_hostname(resolver, &zone_did).await.map_err(unavailable)?;
         self.zones.lock().unwrap().insert(value.to_string(), (zone.clone(), std::time::Instant::now()));
         Ok(zone)
     }
@@ -291,49 +318,21 @@ impl Directory for NameDirectory {
     }
 
     async fn signer_key(&self, signer: &str, kid: &str) -> Result<DecodingKey, DirError> {
-        if let Some(key) = did_dev_key(signer) {
-            return Ok(key);
+        let kid = if kid.starts_with(signer) { kid.to_string() } else { format!("{signer}#main_key") };
+        match resolve_signer_key(self.custody.as_ref(), &kid).await {
+            Ok(key) => Ok(key.key),
+            Err(CustodyError::Unavailable(e)) => Err(DirError::Unavailable(format!("document of {signer}: {e}"))),
+            Err(_) => Err(DirError::NotFound(format!("{kid} is not a key of {signer}"))),
         }
-        // Zones sign with their devices' keys: the key the signer's device document (else its document) names.
-        let fragment = kid_fragment(kid);
-        let doc = resolve_signer_doc(signer).await?;
-        name_lib::parse_did_doc(doc)
-            .map_err(|e| DirError::Unavailable(format!("document of {signer}: {e}")))?
-            .get_auth_key(fragment.as_deref())
-            .map(|(key, _)| key)
-            .ok_or_else(|| DirError::NotFound(format!("{kid} is not a key of {signer}")))
     }
 
-    /// The DID itself, a key its document lists, a device it owns, or — zone custody — a
-    /// device of the zone that hosts it: a zone signs for all of its users (known risk, §5.4).
+    /// The one custody rule (`buckyos_api::check_custody`): the DID itself, a key its document
+    /// lists, or — zone custody — a device of the zone that hosts it (known risk, §5.4). A user
+    /// of this zone is hosted here whatever the name service says.
     async fn authorizes(&self, principal: &str, signer: &str, kid: &str) -> Result<bool, DirError> {
-        if principal == signer {
-            return Ok(true);
-        }
-        if self.local_devices.iter().any(|d| d == signer) && self.local_users.by_did(principal).await.is_some() {
-            return Ok(true);
-        }
-        if let Ok(doc) = resolve_doc(principal).await {
-            if lists_signer(&doc, signer, kid) {
-                return Ok(true);
-            }
-        }
-        let signer_doc = resolve_signer_doc(signer)
-            .await?
-            .to_json_value()
-            .map_err(|e| DirError::NotFound(format!("decode document of {signer}: {e}")))?;
-        if signer_doc.get("owner").and_then(Value::as_str) == Some(principal) {
-            return Ok(true);
-        }
-        let device_zone = signer_doc
-            .get("zone_did")
-            .and_then(Value::as_str)
-            .and_then(|z| name_lib::DID::from_str(z).ok())
-            .map(|z| z.to_host_name().trim_end_matches('.').to_ascii_lowercase());
-        match device_zone {
-            Some(zone) => Ok(self.zone_of(principal).await? == zone),
-            None => Ok(false),
-        }
+        let local = (self.local_users.by_did(principal).await.is_some() || self.hosted_here(principal))
+            .then(|| name_lib::DID::new("web", &self.local_zone));
+        custody_authorizes(self.custody.as_ref(), principal, signer, kid, local).await
     }
 
     async fn content_did_owner(&self, value: &str) -> Result<Option<String>, DirError> {
@@ -343,18 +342,28 @@ impl Directory for NameDirectory {
 }
 
 #[cfg(test)]
-mod signer_tests {
+mod custody_tests {
     use super::*;
-    use serde_json::json;
+    use buckyos_api::custody_cases::{cases, resolver, Outcome};
 
-    #[test]
-    fn a_relative_key_id_belongs_to_the_documents_own_did() {
-        let alice = json!({ "id": "did:bns:alice", "authentication": ["#main_key"] });
-        assert!(lists_signer(&alice, "did:bns:alice", "did:bns:alice#main_key"));
-        // Another DID signing with a `#main_key` of its own is not one of alice's keys.
-        assert!(!lists_signer(&alice, "did:bns:ood1.alice", "did:bns:ood1.alice#main_key"));
-        assert!(!lists_signer(&alice, "did:bns:mallory", "did:bns:mallory#main_key"));
-        let listed = json!({ "id": "did:bns:alice", "authentication": [{ "id": "did:bns:ood1.alice#main_key" }] });
-        assert!(lists_signer(&listed, "did:bns:ood1.alice", "did:bns:ood1.alice#main_key"));
+    /// V-11: HomeStation judges signers by the shared custody table.
+    #[tokio::test]
+    async fn signers_follow_the_shared_custody_table() {
+        let users = Arc::new(UserRegistry::new(
+            Box::new(crate::users::StaticUsers(std::sync::Mutex::new(vec![]))),
+            std::time::Duration::from_secs(60),
+        ));
+        let mut directory = NameDirectory::new("target.example", vec![], users, HashMap::new());
+        directory.custody = Arc::new(resolver());
+        for case in cases() {
+            let kid = format!("{}#main_key", case.device);
+            let outcome = match directory.authorizes(case.principal, case.device, &kid).await {
+                Ok(true) => Outcome::Allowed,
+                Ok(false) => Outcome::Refused,
+                Err(DirError::Unavailable(_)) => Outcome::Retry,
+                Err(DirError::NotFound(_)) => Outcome::Refused,
+            };
+            assert_eq!(outcome, case.outcome, "{} for {}", case.device, case.principal);
+        }
     }
 }

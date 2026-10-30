@@ -1,0 +1,15 @@
+{
+  "input": {
+    "REQ": {
+      "protocol": "tcp",
+      "dest_host": "127.0.0.1",
+      "dest_port": "3200",
+      "source_device_id": "did:web:ood1.bob.example",
+      "source_zone_relation": "cross_zone"
+    }
+  },
+  "id": "stack:node_rtcp:main",
+  "output": [
+    "REQ"
+  ]
+}

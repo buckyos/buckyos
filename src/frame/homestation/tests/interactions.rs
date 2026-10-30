@@ -115,10 +115,10 @@ async fn restricted_targets() {
     // Bob's public stream does not show the comment; Alice (its audience) can read it.
     let (_, body, _) = net.get(&format!("{}/feed?mode=display", bob.home), None).await;
     assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["items"].as_array().unwrap().len(), 0);
-    let (_, body, _) = net.get(&format!("{}/feed?mode=display", bob.home), Some(net.proof("alice", "bob"))).await;
+    let (_, body, _) = net.get(&format!("{}/feed?mode=display", bob.home), Some(net.proof("alice", "bob").await)).await;
     assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["items"].as_array().unwrap().len(), 1);
     // Carol cannot even read the original through Bob or Alice.
-    assert_eq!(net.get(&format!("{}/objects/{f1}", alice.home), Some(net.proof("carol", "alice"))).await.0, 404);
+    assert_eq!(net.get(&format!("{}/objects/{f1}", alice.home), Some(net.proof("carol", "alice").await)).await.0, 404);
 }
 
 /// E11, E12, E13, A11, A28, A40, A49, A74: private bookmarks stay local; public bookmark and

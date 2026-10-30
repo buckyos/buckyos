@@ -112,6 +112,10 @@ pub struct MessageCenter {
     pub(crate) directory: Arc<crate::network_directory::DirectorySlot>,
     /// OOD device key used to sign native messages of this Zone's users.
     pub(crate) zone_signer: Arc<crate::network_directory::ZoneSignerSlot>,
+    /// Documents behind signing keys and custody (`buckyos_api::check_custody`).
+    pub(crate) custody: Arc<crate::network_directory::CustodySlot>,
+    /// Logins and requests into other Zones (`buckyos_api::CrossZoneClient`).
+    pub(crate) cross_zone: Arc<crate::network_directory::CrossZoneSlot>,
     /// Serializes friend request state changes (`friend_service.rs`).
     pub(crate) friend_lock: Arc<tokio::sync::Mutex<()>>,
     /// Unauthenticated signed ingress per sender: (window start, count).
@@ -158,6 +162,8 @@ impl MessageCenter {
             notify_lock: Arc::new(tokio::sync::Mutex::new(())),
             directory: Arc::new(Default::default()),
             zone_signer: Arc::new(Default::default()),
+            custody: Arc::new(Default::default()),
+            cross_zone: Arc::new(Default::default()),
             friend_lock: Arc::new(tokio::sync::Mutex::new(())),
             ingress_budget: Arc::new(std::sync::Mutex::new(HashMap::new())),
             buckets: Arc::new(Default::default()),
@@ -375,6 +381,22 @@ impl MessageCenter {
     /// accounts (a Limited account has no inbox but is still signed for).
     pub(crate) fn is_hosted_identity(&self, did: &DID) -> bool {
         self.is_local_recipient(did) || self.is_zone_account(did)
+    }
+
+    /// This Zone's DID: the runtime's, else the configured receive Zone's host.
+    pub(crate) fn local_zone_did(&self) -> Option<DID> {
+        buckyos_api::get_buckyos_api_runtime()
+            .ok()
+            .map(|runtime| runtime.zone_id.clone())
+            .filter(DID::is_valid)
+            .or_else(|| {
+                self.cyfs_dispatch
+                    .read()
+                    .unwrap()
+                    .target_zone
+                    .as_deref()
+                    .map(|host| DID::new("web", host))
+            })
     }
 
     /// Is this DID hosted by this zone? True for registered recipients, the

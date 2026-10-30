@@ -21,7 +21,7 @@ tokio-tungstenite = { workspace = true }
 futures-util = { workspace = true }
 jsonwebtoken = { workspace = true }
 openssl = { workspace = true }
-reqwest = { workspace = true }
+reqwest = { workspace = true, features = ["socks"] }
 url = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }

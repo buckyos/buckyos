@@ -68,9 +68,9 @@ async fn every_user_has_a_home() {
 
     // Audience per reader: a friend reads the friends-only post, another user of the zone does not.
     let feed = format!("{}/feed?mode=display", kai.home);
-    let (_, as_mia) = get_json(&net, &feed, Some(net.proof("mia", "lin"))).await;
+    let (_, as_mia) = get_json(&net, &feed, Some(net.proof("mia", "lin").await)).await;
     assert_eq!(as_mia["items"].as_array().unwrap().len(), 0);
-    let (_, as_lin) = get_json(&net, &feed, Some(net.proof("lin", "lin"))).await;
+    let (_, as_lin) = get_json(&net, &feed, Some(net.proof("lin", "lin").await)).await;
     assert_eq!(as_lin["items"].as_array().unwrap().len(), 1);
     let (_, as_lin_session) = get_json(&net, &format!("{feed}&access={}", lin.token), None).await;
     assert_eq!(as_lin_session["items"].as_array().unwrap().len(), 1);

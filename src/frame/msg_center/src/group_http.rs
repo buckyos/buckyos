@@ -103,29 +103,8 @@ async fn body(req: &mut Request<Body>, max: usize) -> Result<Vec<u8>> {
 async fn principal(
     center: &MessageCenter,
     req: &mut Request<Body>,
-    group: &DID,
+    _group: &DID,
 ) -> Result<(GroupActor, RPCContext)> {
-    if let Some(proof) = req.headers().get(crate::group_auth::CYFS_HEADER_GROUP_REQUEST) {
-        if req.headers().contains_key("authorization") {
-            return Err(denied("remote-group-auth-failed"));
-        }
-        let proof = proof.to_str().map_err(|_| denied("remote-group-auth-failed"))?.to_owned();
-        let original = req.headers().get(CYFS_HEADER_ORIGINAL_USER)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| DID::from_str(value).ok())
-            .ok_or_else(|| denied("remote-group-auth-failed"))?;
-        let host = req.headers().get("host")
-            .and_then(|value| value.to_str().ok())
-            .ok_or_else(|| denied("remote-group-auth-failed"))?.to_owned();
-        let max = center.cyfs_dispatch.read().unwrap().max_object_bytes;
-        let bytes = body(req, max).await?;
-        let actor = crate::group_auth::verify_group_request(
-            center, &proof, &original, group, &host, req.method().as_str(),
-            req.uri().path_and_query().map(|value| value.as_str()).unwrap_or("/"), &bytes,
-        ).await?;
-        *req.body_mut() = Full::new(Bytes::from(bytes)).map_err(|error| match error {}).boxed();
-        return Ok((actor, RPCContext::default()));
-    }
     let raw = req
         .headers()
         .get("authorization")
@@ -141,17 +120,10 @@ async fn principal(
         .caller_identity(&ctx)
         .await?
         .ok_or_else(|| denied("unauthenticated"))?;
+    // The actor is the session's subject: a member of another Zone signs in at
+    // this Zone's verify-hub (跨Zone登录断言契约 §5); no header names it.
     let mut actor = center.group_actor(&ctx).await?;
-    let original = req
-        .headers()
-        .get(CYFS_HEADER_ORIGINAL_USER)
-        .and_then(|h| h.to_str().ok())
-        .and_then(|s| DID::from_str(s).ok())
-        .ok_or_else(|| denied("original-user-required"))?;
-    if actor.did != original {
-        return Err(denied("original-user-mismatch"));
-    }
-    if original.method == "msgtunnel" {
+    if actor.did.method == "msgtunnel" {
         return Err(denied("shadow-endpoint-local-only"));
     }
     // An account of this Zone keeps its real client: a restricted session
@@ -193,7 +165,12 @@ async fn serve_group(center: &MessageCenter, req: &mut Request<Body>) -> Option<
         .and_then(|h| h.to_str().ok())
         .or_else(|| req.uri().host())
         .unwrap_or("");
-    let expected = config.target_zone.as_deref().unwrap_or_else(|| "localhost");
+    // The Zone this msg-center serves, as the inbox path reads it: configured, else the runtime's.
+    let local_zone = config
+        .target_zone
+        .clone()
+        .or_else(crate::cyfs_dispatch::local_zone_host);
+    let expected = local_zone.as_deref().unwrap_or("localhost");
     let target = match group_target(host, &path) {
         Ok(target) => target,
         Err(e) => return Some(error(e)),
@@ -353,7 +330,7 @@ async fn serve_group(center: &MessageCenter, req: &mut Request<Body>) -> Option<
                     ),
                     CyfsNamedObjectEncoding::Jwt => {
                         let jwt = String::from_utf8(bytes).map_err(invalid)?;
-                        let signed = crate::cyfs_dispatch::verify_signed_message_with(&jwt, Some(center))
+                        let signed = crate::cyfs_dispatch::verify_signed_message_with(&jwt, center)
                             .await
                             .map_err(|(_, r)| denied(r))?;
                         (signed.msg, Some(jwt))

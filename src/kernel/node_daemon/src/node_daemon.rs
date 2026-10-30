@@ -2117,6 +2117,12 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     if let Err(err) = crate::node_executor_host::write_boot_executor_acl() {
         warn!("write boot node_executor_acl.json failed: {}", err);
     }
+    crate::boot::write_cross_zone_socks_credentials(&get_buckyos_system_etc_dir()).map_err(
+        |err| {
+            error!("write cross_zone_socks.json failed! {}", err);
+            String::from("write cross_zone_socks.json failed!")
+        },
+    )?;
 
     keep_cyfs_gateway_service(
         node_id.as_str(),

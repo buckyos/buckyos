@@ -26,6 +26,10 @@ pub struct UserDoc {
 #[async_trait]
 pub trait ZoneDirectory: Send + Sync {
     async fn zone_did(&self) -> Result<DID>;
+    /// The hostname this Zone serves under (its ZoneDocument).
+    async fn zone_hostname(&self) -> Result<String> {
+        Ok(self.zone_did().await?.to_host_name())
+    }
     async fn user_settings(&self, user_id: &str) -> Result<Option<UserSettings>>;
     /// `None` when the account has no usable OwnerDocument.
     async fn user_doc(&self, user_id: &str) -> Result<Option<UserDoc>>;
@@ -79,6 +83,15 @@ impl ZoneDirectory for SystemConfigDirectory {
             .await
             .as_ref()
             .map(|config| config.zone_document.id.clone())
+            .ok_or_else(|| RPCErrors::ReasonError("verify_hub service config not loaded".into()))
+    }
+
+    async fn zone_hostname(&self) -> Result<String> {
+        crate::VERIFY_SERVICE_CONFIG
+            .lock()
+            .await
+            .as_ref()
+            .map(|config| buckyos_api::zone_document_hostname(&config.zone_document))
             .ok_or_else(|| RPCErrors::ReasonError("verify_hub service config not loaded".into()))
     }
 

@@ -23,6 +23,9 @@ pub enum AuthMethod {
     /// An App signed its external customer in with a one-time code it obtained
     /// from Control Panel (self-host-group-extension TODO EXT-09).
     AppAccessToken,
+    /// A device of another Zone vouched for its user or Agent with a signed assertion
+    /// (doc/arch/verify-hub/跨Zone登录断言契约.md).
+    CrossZoneAssertion,
 }
 
 impl AuthMethod {
@@ -33,6 +36,7 @@ impl AuthMethod {
             Self::DidFederation => "did_federation",
             Self::Assertion => "assertion",
             Self::AppAccessToken => "app_access_token",
+            Self::CrossZoneAssertion => "cross_zone_assertion",
         }
     }
 
@@ -43,6 +47,7 @@ impl AuthMethod {
             "did_federation" => Some(Self::DidFederation),
             "assertion" => Some(Self::Assertion),
             "app_access_token" => Some(Self::AppAccessToken),
+            "cross_zone_assertion" => Some(Self::CrossZoneAssertion),
             _ => None,
         }
     }
@@ -64,15 +69,18 @@ pub enum SessionScope {
     /// account may use still comes from the visibility policy of its groups.
     #[serde(rename = "aicc")]
     Aicc,
+    /// Another Zone delivering to an inbox of this Zone (`/kapi/msg-center/<did>/inbox`).
+    MsgInbox,
 }
 
 impl SessionScope {
-    pub const ALL: [SessionScope; 5] = [
+    pub const ALL: [SessionScope; 6] = [
         SessionScope::AccountSelf,
         SessionScope::MsgGroup,
         SessionScope::AiWorkspace,
         SessionScope::HomeStation,
         SessionScope::Aicc,
+        SessionScope::MsgInbox,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -82,6 +90,7 @@ impl SessionScope {
             Self::AiWorkspace => "aiworkspace",
             Self::HomeStation => "homestation",
             Self::Aicc => "aicc",
+            Self::MsgInbox => "msg_inbox",
         }
     }
 
@@ -113,7 +122,14 @@ impl SessionCeiling {
     /// Ceiling of an account session by its current type.
     pub fn for_user_type(user_type: UserType) -> Self {
         match user_type {
-            UserType::Limited => Self::restricted(SessionScope::ALL),
+            // `msg_inbox` belongs to cross-Zone logins only.
+            UserType::Limited => Self::restricted([
+                SessionScope::AccountSelf,
+                SessionScope::MsgGroup,
+                SessionScope::AiWorkspace,
+                SessionScope::HomeStation,
+                SessionScope::Aicc,
+            ]),
             UserType::Admin | UserType::User | UserType::Root => Self::unrestricted(),
         }
     }

@@ -1,7 +1,6 @@
 //! Pull (§4.4 "Pull 是事实来源"): read followed streams by change cursor, fetch objects and
 //! chunks by ObjId from whoever may hold them, resolve remote entries.
 
-use crate::auth::make_reader_proof;
 use crate::error::{bad, HsError, HsResult};
 use crate::ingress::Arrival;
 use crate::protocol::*;
@@ -17,6 +16,18 @@ pub struct SyncReport {
     pub heads: usize,
     pub objects: usize,
     pub resynced: bool,
+}
+
+/// Service id other zones' HomeStations sign in for.
+pub const HOMESTATION_SERVICE: &str = "homestation";
+
+/// A refused login is final for this attempt; anything else may pass later.
+pub fn cross_zone_error(e: buckyos_api::CrossZoneError) -> HsError {
+    if e.is_retryable() {
+        HsError::Unavailable(e.to_string())
+    } else {
+        HsError::Unauthorized(e.to_string())
+    }
 }
 
 pub fn dir_error(e: crate::directory::DirError) -> HsError {
@@ -35,19 +46,25 @@ impl Station {
         Ok((home, origin))
     }
 
-    /// GET a protocol path on another zone, identified by a reader proof.
+    /// GET a protocol path on another zone as this station's owner: a session of that zone,
+    /// signed in by this zone's device (`CrossZoneClient`).
     pub async fn remote_get(&self, zone: &str, origin: &str, path_and_query: &str) -> HsResult<reqwest::Response> {
         self.remote_get_as(zone, origin, path_and_query, true).await
     }
 
     /// `as_owner = false` reads as an anonymous visitor (portal previews).
     pub async fn remote_get_as(&self, zone: &str, origin: &str, path_and_query: &str, as_owner: bool) -> HsResult<reqwest::Response> {
-        let url = format!("{}{}", origin.trim_end_matches('/'), path_and_query);
-        let mut request = self.http.get(&url).header("host", zone).timeout(Duration::from_secs(20));
         if as_owner {
-            let proof = make_reader_proof(&self.signer, &self.cfg.owner, zone).map_err(HsError::Internal)?;
-            request = request.header("authorization", format!("DID {proof}"));
+            let owner = name_lib::DID::from_str(&self.cfg.owner).map_err(|e| HsError::Internal(format!("owner is not a DID: {e}")))?;
+            let request = buckyos_api::CrossZoneRequest::new(http::Method::GET, path_and_query).timeout(Duration::from_secs(20));
+            return self
+                .cross_zone
+                .request_host(zone, HOMESTATION_SERVICE, &buckyos_api::Principal::new(owner), request)
+                .await
+                .map_err(cross_zone_error);
         }
+        let url = format!("{}{}", origin.trim_end_matches('/'), path_and_query);
+        let request = self.http.get(&url).header("host", zone).timeout(Duration::from_secs(20));
         request.send().await.map_err(|e| HsError::Unavailable(format!("GET {url}: {e}")))
     }
 

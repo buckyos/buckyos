@@ -1,0 +1,19 @@
+{
+  "input": {
+    "REQ": {
+      "path": "/kapi/control-panel/ping",
+      "host": "api.test.buckyos.io",
+      "url": "https://api.test.buckyos.io/kapi/control-panel/ping",
+      "source_device_did": "did:web:ood1.bob.example",
+      "source_identity_trust": "method_authority_current",
+      "X-Cyfs-Rtcp-Device": "did:web:forged.example",
+      "X-Cyfs-Rtcp-Trust": "forged",
+      "cyfs-original-user": "did:web:victim.example"
+    }
+  },
+  "id": "server:node_gateway:main",
+  "output": [
+    "REQ",
+    "RESP"
+  ]
+}

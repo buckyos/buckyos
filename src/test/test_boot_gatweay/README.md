@@ -24,7 +24,7 @@ uv run src/test/test_boot_gatweay/run_debug_tests.py --binary ~/cyfs-gateway/src
 
 ## 说明
 
-- runner 每次会创建临时目录，并复制当前仓库的 `src/rootfs/etc/boot_gateway.yaml` 和 gateway params
+- runner 每次会创建临时目录，并复制当前仓库的 `src/rootfs/etc/boot_gateway.yaml` 和 gateway params，另写一份测试用 `cross_zone_socks_params.json`
 - `node_gateway_info.json` 由 runner 在测试时直接构造，不依赖运行态 `src/rootfs/etc/node_gateway_info.json`
 - 目前覆盖：
   - public app 未登录直接转发
@@ -37,3 +37,6 @@ uv run src/test/test_boot_gatweay/run_debug_tests.py --binary ~/cyfs-gateway/src
   - `/.well-known/*` 与 `/1.0/identifiers/*`
   - 非法 host reject
   - `/kapi/kevent/*` 早转发
+  - node_gateway 删除客户端自带的 `X-Cyfs-Rtcp-Device` / `X-Cyfs-Rtcp-Trust` / `cyfs-original-user`，只按 RTCP 来源（`REQ.source_device_did`）写回
+  - `node_rtcp`：外 Zone 来源只到 80（`server node_gateway`）与 443，其余（含 3184）reject；本 Zone 来源保持通用 forward
+  - `cross_zone_socks`：只放行 `<domain>:80`，本机不是 Zone 网关时经 `NODE_INFO.cross_zone_relay` 嵌套中转

@@ -5,6 +5,8 @@
 // 都可被复用，差异只在调用顺序与目标。
 
 use std::collections::HashMap;
+use std::io::Write;
+use std::path::Path;
 
 use jsonwebtoken::{DecodingKey, EncodingKey};
 use log::*;
@@ -16,6 +18,9 @@ use crate::sn_zone_info::device_requires_sn_keep_tunnel;
 
 const DEFAULT_RTCP_PORT: u32 = 2980;
 const SYSTEM_CONFIG_PORT: u16 = 3200;
+pub const CROSS_ZONE_SOCKS_FILE: &str = "cross_zone_socks.json";
+pub const CROSS_ZONE_SOCKS_PARAMS_FILE: &str = "cross_zone_socks_params.json";
+const CROSS_ZONE_SOCKS_USERNAME: &str = "buckyos";
 const FINDER_DISCOVERY_TIMEOUT_SECS: u64 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -237,10 +242,22 @@ pub fn build_boot_node_gateway_info(
         );
     }
 
+    let cross_zone_relay = match zone_document.get_default_zone_gateway() {
+        Some(gateway) if gateway != this_node_id => {
+            let port = discovered_oods
+                .get(gateway.as_str())
+                .map(|node| node.rtcp_port as u32)
+                .unwrap_or(DEFAULT_RTCP_PORT);
+            format_rtcp_did_url(gateway.as_str(), zone_host, port)
+        }
+        _ => String::new(),
+    };
+
     json!({
         "node_info": {
             "this_node_id": this_node_id,
             "this_zone_host": zone_host,
+            "cross_zone_relay": cross_zone_relay,
         },
         "app_info": {},
         "service_info": service_info,
@@ -304,7 +321,10 @@ fn format_relay_rtcp_url(
     zone_host: &str,
     target_port: u32,
 ) -> String {
-    let bootstrap_url = format!("rtcp://{}/", sn_host);
+    let bootstrap_url = format!(
+        "rtcp://{}/{}.{}:{}",
+        sn_host, target_node_id, zone_host, target_port
+    );
     let encoded: String = url::form_urlencoded::byte_serialize(bootstrap_url.as_bytes()).collect();
     if target_port == DEFAULT_RTCP_PORT {
         format!("rtcp://{}@{}.{}/", encoded, target_node_id, zone_host)
@@ -576,6 +596,61 @@ pub fn write_boot_node_gateway_info(content: &Value) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Credentials of the loopback `cross_zone_entry` SOCKS5 exit: services read
+/// `cross_zone_socks.json`, the gateway includes the same values as params.
+/// Existing credentials are kept so running clients stay valid.
+pub fn write_cross_zone_socks_credentials(etc_dir: &Path) -> std::io::Result<()> {
+    let path = etc_dir.join(CROSS_ZONE_SOCKS_FILE);
+    let existing = std::fs::read(&path)
+        .ok()
+        .and_then(|content| serde_json::from_slice::<Value>(&content).ok())
+        .and_then(|value| {
+            let username = value.get("username")?.as_str()?.to_string();
+            let password = value.get("password")?.as_str()?.to_string();
+            (!username.is_empty() && !password.is_empty()).then_some((username, password))
+        });
+    let (username, password) = existing.unwrap_or_else(|| {
+        (
+            CROSS_ZONE_SOCKS_USERNAME.to_string(),
+            hex::encode(rand::random::<[u8; 32]>()),
+        )
+    });
+    write_private_json(
+        &path,
+        &json!({ "username": username, "password": password }),
+    )?;
+    write_private_json(
+        &etc_dir.join(CROSS_ZONE_SOCKS_PARAMS_FILE),
+        &json!({
+            "params": {
+                "cross_zone_socks_username": username,
+                "cross_zone_socks_password": password,
+            }
+        }),
+    )
+}
+
+fn write_private_json(path: &Path, value: &Value) -> std::io::Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&tmp)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(&serde_json::to_vec_pretty(value)?)?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(&tmp, path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -663,6 +738,108 @@ mod tests {
                 "ood2.test-zone.example",
                 "sn.example.com",
             ]
+        );
+    }
+
+    fn decode_bootstrap(route_url: &str) -> (String, String) {
+        let authority = route_url
+            .strip_prefix("rtcp://")
+            .unwrap()
+            .split('/')
+            .next()
+            .unwrap();
+        let (bootstrap, remote) = authority.rsplit_once('@').unwrap();
+        let (bootstrap, _) = url::form_urlencoded::parse(bootstrap.as_bytes())
+            .next()
+            .unwrap();
+        (bootstrap.into_owned(), remote.to_string())
+    }
+
+    // P1-6: the relay hop names its target, otherwise the relay is asked to
+    // open a stream with an empty destination.
+    #[test]
+    fn via_sn_route_carries_the_relay_target() {
+        let (_, mut zone) = address_test_device_and_zone();
+        zone.oods = vec!["ood1".parse().unwrap(), "ood2".parse().unwrap()];
+        let info = build_boot_node_gateway_info(
+            "ood1",
+            "test-zone.example",
+            &zone,
+            &HashMap::new(),
+            Some("sn.example.com"),
+        );
+        let via_sn = info["routes"]["ood2"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|candidate| candidate["id"] == "via-sn")
+            .unwrap();
+        let (bootstrap, remote) = decode_bootstrap(via_sn["url"].as_str().unwrap());
+        assert_eq!(
+            bootstrap,
+            "rtcp://sn.example.com/ood2.test-zone.example:2980"
+        );
+        assert_eq!(remote, "ood2.test-zone.example");
+        let bootstrap = url::Url::parse(&bootstrap).unwrap();
+        assert_eq!(bootstrap.host_str(), Some("sn.example.com"));
+        assert_eq!(bootstrap.path(), "/ood2.test-zone.example:2980");
+    }
+
+    // P1-9: nodes other than the default Zone gateway leave the Zone through it.
+    #[test]
+    fn cross_zone_relay_points_at_the_default_zone_gateway() {
+        let (_, mut zone) = address_test_device_and_zone();
+        zone.oods = vec!["ood1".parse().unwrap(), "ood2".parse().unwrap()];
+        let relay = |node: &str| {
+            build_boot_node_gateway_info(node, "test-zone.example", &zone, &HashMap::new(), None)
+                ["node_info"]["cross_zone_relay"]
+                .clone()
+        };
+        assert_eq!(relay("node1"), json!("rtcp://ood1.test-zone.example/"));
+        assert_eq!(relay("ood2"), json!("rtcp://ood1.test-zone.example/"));
+        assert_eq!(relay("ood1"), json!(""));
+    }
+
+    #[test]
+    fn cross_zone_socks_credentials_are_private_and_stable() {
+        let dir = tempfile::tempdir().unwrap();
+        write_cross_zone_socks_credentials(dir.path()).unwrap();
+        let read = |name: &str| -> Value {
+            serde_json::from_slice(&std::fs::read(dir.path().join(name)).unwrap()).unwrap()
+        };
+        let credentials = read(CROSS_ZONE_SOCKS_FILE);
+        let password = credentials["password"].as_str().unwrap().to_string();
+        assert_eq!(credentials["username"], "buckyos");
+        assert_eq!(password.len(), 64);
+        assert_eq!(
+            read(CROSS_ZONE_SOCKS_PARAMS_FILE),
+            json!({"params": {
+                "cross_zone_socks_username": "buckyos",
+                "cross_zone_socks_password": password,
+            }})
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for name in [CROSS_ZONE_SOCKS_FILE, CROSS_ZONE_SOCKS_PARAMS_FILE] {
+                let mode = std::fs::metadata(dir.path().join(name))
+                    .unwrap()
+                    .permissions()
+                    .mode();
+                assert_eq!(mode & 0o777, 0o600, "{name}");
+            }
+        }
+
+        write_cross_zone_socks_credentials(dir.path()).unwrap();
+        assert_eq!(read(CROSS_ZONE_SOCKS_FILE)["password"], json!(password));
+
+        std::fs::write(dir.path().join(CROSS_ZONE_SOCKS_FILE), b"{}").unwrap();
+        write_cross_zone_socks_credentials(dir.path()).unwrap();
+        let regenerated = read(CROSS_ZONE_SOCKS_FILE)["password"].clone();
+        assert_ne!(regenerated, json!(password));
+        assert_eq!(
+            read(CROSS_ZONE_SOCKS_PARAMS_FILE)["params"]["cross_zone_socks_password"],
+            regenerated
         );
     }
 
