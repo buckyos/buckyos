@@ -4,6 +4,8 @@
 
 页面从 `/sdk/appservice/runtime` 读取应用实例和 Zone 域名，再初始化 Browser SDK。后台优先使用 `BUCKYOS_ZONE_HOST`，否则解析 node-daemon 注入的 `BUCKYOS_ZONE_CONFIG.zone_document`（JSON 或 JWT），避免将应用子域名误当成 Zone 导致 SSO 跳转失败。
 
+启动时 NodeGateway 或 Verify Hub 可能尚未就绪。后台对 Node.js / Deno 的 fetch 传输失败及 HTTP 502/503/504 按递增间隔重试（最长间隔 30 秒），成功后恢复 AppService 接口；身份环境缺失、HTTP 401/403 和登录断言被拒绝仍直接报错。`pnpm test` 包含真实 Deno 子进程的启动回归：网关先拒绝连接、随后返回 503、最后就绪，验证同一进程自动恢复，并验证认证失败不会无限重试。
+
 ## 自测约定
 
 - AppService 验证实例身份与 NodeGateway 服务地址，不要求 SDK 从容器本地文件推断 Zone 域名。

@@ -247,8 +247,9 @@ async function bootstrapSdk(): Promise<BootstrapState> {
 
 function isRetryableBootstrapFailure(state: BootstrapState): boolean {
   return state.kind === "failed" &&
-    (state.reason.includes("RPC call failed: fetch failed") ||
-      /RPC call error: 50[234]/.test(state.reason));
+    (/^RPC call failed: (?:fetch failed|error sending request for url)\b/.test(
+      state.reason,
+    ) || /^RPC call error: 50[234]\b/.test(state.reason));
 }
 
 function delay(durationMs: number): Promise<void> {
