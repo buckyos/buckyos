@@ -8,6 +8,7 @@ authors = ["BuckyOS DAO", "codex"]
 agent_tool = { path = "../agent_tool" }
 async-trait = { workspace = true }
 buckyos-api = { path = "../../kernel/buckyos-api" }
+buckyos-kit = { workspace = true }
 percent-encoding = { workspace = true }
 futures-util = { workspace = true }
 name-client = { workspace = true }
@@ -25,3 +26,6 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+axum = { workspace = true }
+buckyos-http-server = { workspace = true }
+kRPC = { workspace = true }

@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use agent_tool::read_tool::{UrlContent, UrlReader};
 use agent_tool::{
     AgentTool, AgentToolError, AgentToolResult, AgentToolStatus, CallingConventions,
     SessionRuntimeContext, ToolSpec,
@@ -139,6 +140,76 @@ impl AgentDIDObjectReadTool {
             }),
             max_tokens: Some(ctx.effective_read_token_limit() as usize),
             options,
+        })
+    }
+}
+
+/// `read`'s reader of URLs (agent_tool [`UrlReader`]): the object runtime's routes, rendered as text that `read`
+/// windows like a file.
+#[derive(Clone)]
+pub struct ObjectUrlReader {
+    runtime: Arc<AgentDIDObjectRuntime>,
+}
+
+impl std::fmt::Debug for ObjectUrlReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ObjectUrlReader")
+    }
+}
+
+impl ObjectUrlReader {
+    pub fn new(runtime: AgentDIDObjectRuntime) -> Self {
+        Self { runtime: Arc::new(runtime) }
+    }
+
+    /// The built-in routes ([`crate::BUILTIN_OBJECT_ROUTE_CONFIG`]) in this process's Zone.
+    pub fn builtin() -> Self {
+        Self::new(
+            AgentDIDObjectRuntime::new(crate::ObjectRouteConfig::builtin())
+                .expect("builtin object routes are valid"),
+        )
+    }
+}
+
+#[async_trait]
+impl UrlReader for ObjectUrlReader {
+    async fn read_url(
+        &self,
+        ctx: &SessionRuntimeContext,
+        url: &str,
+        property: Option<&str>,
+    ) -> Result<UrlContent, AgentToolError> {
+        let input = ReadInput {
+            object: url.to_string(),
+            purpose: None,
+            session_id: Some(ctx.session_id.clone()),
+            content_only: true,
+            range: None,
+            max_tokens: None,
+            options: property.map(|p| json!({ "properties": [p] })).unwrap_or_else(|| json!({})),
+        };
+        let response = self
+            .runtime
+            .read_response(&input)
+            .await
+            .map_err(object_error_to_agent_tool_error)?;
+        let mut text = response.content.clone().unwrap_or_default();
+        if !response.errors.is_empty() {
+            text.push_str("\n\nNot read:\n");
+            for error in &response.errors {
+                text.push_str(&format!("- {}\n", error.message));
+            }
+        }
+        Ok(UrlContent {
+            text,
+            details: json!({
+                "object": response.object,
+                "object_did": response.object_did,
+                "source": response.meta.source,
+                "content_type": response.meta.content_type,
+                "version": response.version,
+                "route": response.route,
+            }),
         })
     }
 }

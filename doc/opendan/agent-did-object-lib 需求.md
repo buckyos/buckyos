@@ -39,7 +39,7 @@ unsubscribe_event(subscription)   -> stop / release local bridge subscription
 2. 实现 `x_call()`：把 Agent 侧的 xcall 请求路由到对应 adapter，执行 action / method / command，并直接返回合法 `AgentToolResult`。
 3. 实现 subscription：把对象事件订阅路由到对应 adapter，并把可唤醒 Agent Session 的事件桥接成本地 KEvent pattern。
 4. 建立路由机制和路由配置，让不同 Object ID / Object pattern 能导向不同 adapter；这套配置必须可被 `xcall` 命令行单独使用。
-5. 定义统一 `AgentObjectAdapter` trait，让 filesystem、web、agent_runtime、DID Object、本地 HTTP 扩展 adapter 共享同一接口。
+5. 定义统一 `AgentObjectAdapter` trait，让 filesystem、web、cyfs（Zone 文件与内容对象）、DID Object、本地 HTTP 扩展 adapter 共享同一接口。Agent 自身对象是 `obj://<agent-id>/…`，走 DID Object adapter（2026-10-29 D5，原 `agent_runtime` adapter 与 `agent://` 已删除）。
 6. 支持用户通过本地 HTTP Server（例如 Agent Docker 容器内 TypeScript server）实现进程外 adapter。
 
 ---
@@ -103,7 +103,7 @@ src/frame/agent-did-object-lib/
     │   ├── mod.rs
     │   ├── filesystem.rs
     │   ├── web.rs
-    │   ├── agent_runtime.rs
+    │   ├── cyfs.rs
     │   ├── did_object.rs
     │   └── local_http.rs
     └── event_bridge.rs
@@ -161,7 +161,7 @@ Object ID 是路由输入，不等同于协议 wire endpoint。进入 `agent-did
 | 输入形态 | 说明 |
 |---|---|
 | `https://...` / `http://...` | DID Object Protocol 的主 Object URL。 |
-| `file://...` / `agent://...` / `obj://...` | BuckyOS 内部 adapter 可消费的 canonical URL。 |
+| `file://...` / `cyfs://...` / `obj://...` | BuckyOS 内部 adapter 可消费的 canonical URL（规则见 [key url.md](../key%20url.md)）。 |
 
 建议类型：
 
@@ -274,7 +274,7 @@ pub struct XCallInput {
 }
 ```
 
-`x_call()` 公开返回 `AgentToolResult`。对 DID Object adapter 来说，`detail` 通常来自协议层 `ActionResponse` 映射；对 filesystem / web / agent_runtime / local_http adapter 来说，`detail` 来自各自 adapter 的 action result。provider action error 应映射为 `AgentToolResult.status = "error"` 和结构化 `detail.error`，除非 HTTP / protocol envelope 本身不可解析，才返回 Rust error。
+`x_call()` 公开返回 `AgentToolResult`。对 DID Object adapter 来说，`detail` 通常来自协议层 `ActionResponse` 映射；对 filesystem / web / cyfs / local_http adapter 来说，`detail` 来自各自 adapter 的 action result。provider action error 应映射为 `AgentToolResult.status = "error"` 和结构化 `detail.error`，除非 HTTP / protocol envelope 本身不可解析，才返回 Rust error。
 
 ### 6.6 Event
 
@@ -323,10 +323,6 @@ id = "web"
 type = "web"
 
 [[adapters]]
-id = "agent-runtime"
-type = "agent_runtime"
-
-[[adapters]]
 id = "local-ts"
 type = "local_http"
 endpoint = "http://127.0.0.1:8787"
@@ -350,13 +346,6 @@ priority = 100
 match_type = "scheme"
 pattern = "obj"
 adapter = "local-ts"
-
-[[routes]]
-id = "agent-runtime-objects"
-priority = 95
-match_type = "scheme"
-pattern = "agent"
-adapter = "agent-runtime"
 
 [[routes]]
 id = "did-object-camera"
@@ -658,7 +647,7 @@ Guidance:
 - 链路可信：HTTPS、本地文件、Runtime direct、DID verified、HTTP unverified 等。
 - 内容可信：Object ID 是否是 hash，hash 校验是否匹配。
 - 声明信息可信：Meta / Owner / author 是否有数字签名或 DID 信任链支持。
-- 中转与信源信用：是否经过 local_http adapter、web adapter、agent_runtime adapter 等中转；每一层的作者 / 发布者信用如何。
+- 中转与信源信用：是否经过 local_http adapter、web adapter 等中转；每一层的作者 / 发布者信用如何。
 
 示例：
 
@@ -717,7 +706,7 @@ Session 级状态统一由 read 拼接层管理：
 |---|---|---:|---:|---:|
 | `filesystem` | 读取本地 workspace / file path；当前已有 `read` 能力主要属于这一类。 | MUST | MAY | MAY |
 | `web` | 读取传统 Web URL / HTTP 资源，并翻译成 LLM 友好的 read content。 | MUST | MAY | MAY |
-| `agent_runtime` | 高效访问 OpenDAN Runtime 内部定义的对象。 | MUST | SHOULD | SHOULD |
+| `cyfs` | Zone 文件（`cyfs:///<path>`，本机挂载或其 DFS 对象）与内容对象（`cyfs://<objid>/`）。 | MUST | MAY | MAY |
 | `did_object` | 消费 DID Object Protocol 的 Card / Profile / property / action / event。 | MUST | MUST | SHOULD |
 | `local_http` | 用户扩展 adapter，通过本地 HTTP Server 进程外实现。 | MUST | MUST | SHOULD |
 
@@ -812,7 +801,7 @@ resolve(Object URL)
   -> return KEvent pattern
 ```
 
-当前 `name-client::DIDObjectClient` 主入口是 Object URL。DID / `obj://` 输入在第一版可通过 route 交给 `local_http` / `agent_runtime` adapter，或返回明确错误；不能假装已经完成 DID resolver route。
+当前 `name-client::DIDObjectClient` 主入口是 Object URL。DID / `obj://` 输入在第一版可通过 route 交给 `local_http` adapter，或返回明确错误；不能假装已经完成 DID resolver route。（2026-10-29：`obj://` 已由 did_object adapter 经 buckyos-api `object_endpoint` 映射到 Provider 端点读取。）
 
 #### 10.4.1 read() 的最小渲染规则
 
@@ -1156,7 +1145,7 @@ Provider 侧策略不由本库替代。即使本库做了 declared capability �
 4. ObjectRef normalize：接受 hierarchical URL，拒绝 DID URI、alias、普通本地路径。
 5. filesystem adapter read：文本、二进制摘要、size limit / truncation metadata。
 6. web adapter read：HTML / text / JSON 到 LLM-friendly content / meta / guidance 片段的翻译。
-7. agent_runtime adapter：没有 runtime handle 时返回 `AdapterUnavailable`。
+7. did_object adapter：进程不在 Zone 内时 `obj://` 返回 `AdapterUnavailable`；cyfs adapter：本机挂载读、其他设备的 `file://` 返回不支持。
 8. DID Object adapter `x_call()`：fake DIDObjectClient 或测试 adapter 返回 success / error mapping。
 9. `read()` property 局部失败不导致整体失败。
 10. local HTTP adapter request / response JSON contract。
@@ -1228,8 +1217,8 @@ cargo test
 - route config 能表达 Object ID / pattern 到具体 adapter 的映射。
 - `read()` 必须通过 route 选择 adapter，不允许绕过 route。
 - `read()` 和 `x_call()` 公开返回值必须是合法 `AgentToolResult`。
-- `read()` 至少支持 filesystem、web、agent_runtime 骨架和 DID Object adapter。
-- `x_call()` 能用同一路由配置执行 DID Object action、local HTTP adapter action 或 agent_runtime 声明的轻量 action。
+- `read()` 至少支持 filesystem、web、cyfs 和 DID Object adapter。
+- `x_call()` 能用同一路由配置执行 DID Object action、local HTTP adapter action。
 - subscription 能用同一路由配置返回本地 KEvent pattern。
 - adapter trait 支持内置和用户扩展实现。
 - local HTTP adapter 可由 Agent Docker 容器内 TypeScript server 实现。

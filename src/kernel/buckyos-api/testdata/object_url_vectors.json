@@ -1,36 +1,208 @@
 [
-  {"input": "obj://config/users/alice/settings", "kind": "obj_service", "canonical": "obj://config/users/alice/settings", "resource_key": "obj://config/users/alice/settings"},
-  {"input": "OBJ://Config/users/alice/settings", "canonical": "obj://config/users/alice/settings"},
-  {"input": "//config/nodes/node1/config", "shorthand": true, "canonical": "obj://config/nodes/node1/config"},
-  {"input": "//unknown/x", "shorthand": true, "error": true},
-  {"input": "obj://config.alice.bns.did/users/alice", "error": true},
-  {"input": "obj://task_0001/", "error": true},
-  {"input": "obj://unknown-service/x", "error": true},
-  {"input": "obj://taskmgr/task_0001", "kind": "obj_service", "canonical": "obj://taskmgr/task_0001"},
-  {"input": "obj://opendan/", "kind": "obj_service", "canonical": "obj://opendan", "resource_key": "obj://opendan"},
-  {"input": "obj://xiaobai.test.buckyos.io/sessions/s-1/", "kind": "obj_entity", "canonical": "obj://xiaobai.test.buckyos.io/sessions/s-1", "resource_key": "obj://xiaobai.test.buckyos.io/sessions/s-1", "event": "finished", "event_key": "/obj/x7869616f6261692e746573742e6275636b796f732e696f/sessions/s-1/finished"},
-  {"input": "obj://xiaobai.test.buckyos.io", "kind": "obj_entity", "canonical": "obj://xiaobai.test.buckyos.io"},
-  {"input": "obj://msg-center/owners/did:bns:devtest/sessions/chat%201", "kind": "obj_service", "canonical": "obj://msg-center/owners/did:bns:devtest/sessions/chat%201", "resource_key": "obj://msg-center/owners/did:bns:devtest/sessions/chat%201", "event": "changed", "event_key": "/obj/msg-center/owners/x6469643a626e733a64657674657374/sessions/x636861742031/changed"},
-  {"input": "obj://msg-center/owners/did%3Abns%3Adevtest/contacts", "canonical": "obj://msg-center/owners/did:bns:devtest/contacts"},
-  {"input": "obj://aiworkspace/ws_1/entities/e1?mode=live&selector=%7B%22b%22%3A1%2C%20%22a%22%3A2%7D", "canonical": "obj://aiworkspace/ws_1/entities/e1?mode=live&selector=%7B%22a%22:2,%22b%22:1%7D", "resource_key": "obj://aiworkspace/ws_1/entities/e1"},
-  {"input": "obj://aiworkspace/ws_1/head", "event": "head", "event_key": "/obj/aiworkspace/ws_1/head/head"},
-  {"input": "obj://homestation/home/alice/feed/@/k1", "canonical": "obj://homestation/home/alice/feed/@/k1", "resource_key": "obj://homestation/home/alice/feed/@/k1"},
-  {"input": "obj://homestation/home/~zone", "canonical": "obj://homestation/home/~zone", "event": "changed", "event_key": "/obj/homestation/home/x7e7a6f6e65/changed"},
-  {"input": "obj://dfs/../etc", "error": true},
-  {"input": "obj://dfs/a//b", "error": true},
-  {"input": "obj://", "error": true},
-  {"input": "cyfs:///home/alice/report.md", "kind": "cyfs_path", "canonical": "cyfs:///home/alice/report.md", "resource_key": "obj://dfs/home/alice/report.md"},
-  {"input": "cyfs://_/home/alice/a%20b.md", "kind": "cyfs_path", "canonical": "cyfs:///home/alice/a%20b.md", "resource_key": "obj://dfs/home/alice/a%20b.md"},
-  {"input": "cyfs://test.buckyos.io/home/alice/", "kind": "cyfs_path", "canonical": "cyfs://test.buckyos.io/home/alice/", "resource_key": "obj://dfs/home/alice/"},
-  {"input": "cyfs://other.zone.io/home/alice/x", "kind": "cyfs_path", "canonical": "cyfs://other.zone.io/home/alice/x"},
-  {"input": "cyfs://config/x", "error": true},
-  {"input": "cyfs://cyfile:abcd/x", "error": true},
-  {"input": "file:///tmp/a.md", "kind": "file", "canonical": "file:///tmp/a.md"},
-  {"input": "file://localhost/tmp/a.md", "kind": "file", "canonical": "file:///tmp/a.md"},
-  {"input": "file://ood1/opt/buckyos/data/x", "kind": "file", "canonical": "file://ood1/opt/buckyos/data/x"},
-  {"input": "/tmp/a.md", "shorthand": true, "kind": "file", "canonical": "file:///tmp/a.md"},
-  {"input": "file://bad_host/x", "error": true},
-  {"input": "https://test.buckyos.io/home/alice/feed", "kind": "web", "canonical": "https://test.buckyos.io/home/alice/feed"},
-  {"input": "ftp://x/y", "error": true},
-  {"input": "relative/path", "error": true}
+  {
+    "input": "obj://config/users/alice/settings",
+    "kind": "obj_service",
+    "canonical": "obj://config/users/alice/settings",
+    "resource_key": "obj://config/users/alice/settings"
+  },
+  {
+    "input": "OBJ://Config/users/alice/settings",
+    "canonical": "obj://config/users/alice/settings"
+  },
+  {
+    "input": "//config/nodes/node1/config",
+    "shorthand": true,
+    "canonical": "obj://config/nodes/node1/config"
+  },
+  {
+    "input": "//unknown/x",
+    "shorthand": true,
+    "error": true
+  },
+  {
+    "input": "obj://config.alice.bns.did/users/alice",
+    "error": true
+  },
+  {
+    "input": "obj://task_0001/",
+    "error": true
+  },
+  {
+    "input": "obj://unknown-service/x",
+    "error": true
+  },
+  {
+    "input": "obj://taskmgr/task_0001",
+    "kind": "obj_service",
+    "canonical": "obj://taskmgr/task_0001"
+  },
+  {
+    "input": "obj://opendan/",
+    "kind": "obj_service",
+    "canonical": "obj://opendan",
+    "resource_key": "obj://opendan"
+  },
+  {
+    "input": "obj://xiaobai.test.buckyos.io/sessions/s-1/",
+    "kind": "obj_entity",
+    "canonical": "obj://xiaobai.test.buckyos.io/sessions/s-1",
+    "resource_key": "obj://xiaobai.test.buckyos.io/sessions/s-1",
+    "event": "finished",
+    "event_key": "/obj/x7869616f6261692e746573742e6275636b796f732e696f/sessions/s-1/finished"
+  },
+  {
+    "input": "obj://xiaobai.test.buckyos.io",
+    "kind": "obj_entity",
+    "canonical": "obj://xiaobai.test.buckyos.io"
+  },
+  {
+    "input": "obj://msg-center/owners/did:bns:devtest/sessions/chat%201",
+    "kind": "obj_service",
+    "canonical": "obj://msg-center/owners/did:bns:devtest/sessions/chat%201",
+    "resource_key": "obj://msg-center/owners/did:bns:devtest/sessions/chat%201",
+    "event": "changed",
+    "event_key": "/obj/msg-center/owners/x6469643a626e733a64657674657374/sessions/x636861742031/changed"
+  },
+  {
+    "input": "obj://msg-center/owners/did%3Abns%3Adevtest/contacts",
+    "canonical": "obj://msg-center/owners/did:bns:devtest/contacts"
+  },
+  {
+    "input": "obj://aiworkspace/ws_1/entities/e1?mode=live&selector=%7B%22b%22%3A1%2C%20%22a%22%3A2%7D",
+    "canonical": "obj://aiworkspace/ws_1/entities/e1?mode=live&selector=%7B%22a%22:2,%22b%22:1%7D",
+    "resource_key": "obj://aiworkspace/ws_1/entities/e1"
+  },
+  {
+    "input": "obj://aiworkspace/ws_1/head",
+    "event": "head",
+    "event_key": "/obj/aiworkspace/ws_1/head/head"
+  },
+  {
+    "input": "obj://homestation/home/alice/feed/@/k1",
+    "canonical": "obj://homestation/home/alice/feed/@/k1",
+    "resource_key": "obj://homestation/home/alice/feed/@/k1"
+  },
+  {
+    "input": "obj://homestation/home/~zone",
+    "canonical": "obj://homestation/home/~zone",
+    "event": "changed",
+    "event_key": "/obj/homestation/home/x7e7a6f6e65/changed"
+  },
+  {
+    "input": "obj://dfs/../etc",
+    "error": true
+  },
+  {
+    "input": "obj://dfs/a//b",
+    "error": true
+  },
+  {
+    "input": "obj://",
+    "error": true
+  },
+  {
+    "input": "cyfs:///home/alice/report.md",
+    "kind": "cyfs_path",
+    "canonical": "cyfs:///home/alice/report.md",
+    "resource_key": "obj://dfs/home/alice/report.md"
+  },
+  {
+    "input": "cyfs://_/home/alice/a%20b.md",
+    "kind": "cyfs_path",
+    "canonical": "cyfs:///home/alice/a%20b.md",
+    "resource_key": "obj://dfs/home/alice/a%20b.md"
+  },
+  {
+    "input": "cyfs://test.buckyos.io/home/alice/",
+    "kind": "cyfs_path",
+    "canonical": "cyfs://test.buckyos.io/home/alice/",
+    "resource_key": "obj://dfs/home/alice/"
+  },
+  {
+    "input": "cyfs://other.zone.io/home/alice/x",
+    "kind": "cyfs_path",
+    "canonical": "cyfs://other.zone.io/home/alice/x"
+  },
+  {
+    "input": "cyfs://config/x",
+    "error": true
+  },
+  {
+    "input": "cyfs://cyfile:abcd/x",
+    "error": true
+  },
+  {
+    "input": "file:///tmp/a.md",
+    "kind": "file",
+    "canonical": "file:///tmp/a.md"
+  },
+  {
+    "input": "file://localhost/tmp/a.md",
+    "kind": "file",
+    "canonical": "file:///tmp/a.md"
+  },
+  {
+    "input": "file://ood1/opt/buckyos/data/x",
+    "kind": "file",
+    "canonical": "file://ood1/opt/buckyos/data/x"
+  },
+  {
+    "input": "/tmp/a.md",
+    "shorthand": true,
+    "kind": "file",
+    "canonical": "file:///tmp/a.md"
+  },
+  {
+    "input": "file://bad_host/x",
+    "error": true
+  },
+  {
+    "input": "https://test.buckyos.io/home/alice/feed",
+    "kind": "web",
+    "canonical": "https://test.buckyos.io/home/alice/feed"
+  },
+  {
+    "input": "ftp://x/y",
+    "error": true
+  },
+  {
+    "input": "relative/path",
+    "error": true
+  },
+  {
+    "input": "obj://msg-center/owners/did:bns:alice/sessions",
+    "endpoint": "http://gw:3180/kapi/msg-center/obj/owners/did:bns:alice/sessions"
+  },
+  {
+    "input": "obj://aiworkspace/ws_1/entities/e_1?version=3",
+    "endpoint": "http://gw:3180/kapi/aiworkspace/obj/ws_1/entities/e_1?version=3"
+  },
+  {
+    "input": "obj://jarvis.test.buckyos.io/sessions/s-1",
+    "endpoint": "http://gw:3180/kapi/jarvis.test.buckyos.io/obj/sessions/s-1"
+  },
+  {
+    "input": "obj://dfs/",
+    "endpoint": "http://gw:3180/kapi/dfs/obj"
+  },
+  {
+    "input": "cyfs:///home/alice/docs/",
+    "endpoint": "http://gw:3180/kapi/dfs/obj/home/alice/docs"
+  },
+  {
+    "input": "cyfs://test.buckyos.io/home/alice/a.md",
+    "endpoint": "http://gw:3180/kapi/dfs/obj/home/alice/a.md"
+  },
+  {
+    "input": "cyfs://bob.example.org/home/bob/a.md",
+    "no_endpoint": true
+  },
+  {
+    "input": "https://test.buckyos.io/home/alice/feed",
+    "endpoint": "https://test.buckyos.io/home/alice/feed"
+  },
+  {
+    "input": "file:///tmp/a",
+    "no_endpoint": true
+  }
 ]

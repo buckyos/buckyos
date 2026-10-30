@@ -65,6 +65,12 @@ impl AgentDIDObjectRuntime {
     }
 
     pub async fn read(&self, input: ReadInput) -> Result<AgentToolResult, AgentDIDObjectError> {
+        let response = self.read_response(&input).await?;
+        Ok(read_response_to_tool_result(&input, response))
+    }
+
+    /// What the routed adapter read, before it is rendered as a tool result.
+    pub async fn read_response(&self, input: &ReadInput) -> Result<AdapterReadResponse, AgentDIDObjectError> {
         let object_ref = ObjectRef::parse(&input.object)?;
         let route_match = self.router.route(RouteMethod::Read, &object_ref)?;
         let adapter_config = self
@@ -80,7 +86,7 @@ impl AgentDIDObjectRuntime {
                 AgentDIDObjectError::AdapterNotFound(route_match.route.adapter.clone())
             })?;
 
-        let response = adapter
+        adapter
             .read(AdapterReadRequest {
                 object_ref,
                 input: input.clone(),
@@ -88,9 +94,7 @@ impl AgentDIDObjectRuntime {
                 route_trace: route_match.trace,
                 adapter_config,
             })
-            .await?;
-
-        Ok(read_response_to_tool_result(&input, response))
+            .await
     }
 
     pub async fn x_call(&self, input: XCallInput) -> Result<AgentToolResult, AgentDIDObjectError> {

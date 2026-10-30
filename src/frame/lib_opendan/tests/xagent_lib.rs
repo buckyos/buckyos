@@ -1379,6 +1379,30 @@ async fn system_text_of(sd: &SessionDir) -> String {
         .unwrap()
 }
 
+/// A Zone host's sessions name the objects they start from (agent-object-url TODO A5): stable lines in the
+/// system text, before the commands; a host whose `read` cannot reach objects names none.
+#[tokio::test]
+async fn zone_sessions_name_the_objects_they_start_from() {
+    use libopendan::runner::{DefaultAssembler, SessionAssembler};
+    let env = Env::new();
+    write_catalog(&env);
+    let ui = env.create_work(frozen_spec("conversation")).await;
+    let cfg = ui.config().unwrap();
+    let zone = BehaviorAssembler::new(DefaultAssembler { known_objects: true, ..Default::default() });
+    let system = zone.system_text(&cfg, None).await.unwrap();
+    let agent = name_lib::DID::from_str(&cfg.session.agent_did).unwrap();
+    for line in [
+        "## Objects\n".to_string(),
+        format!("- obj://{} — you: your sessions, workspaces, goals and artifacts", agent.to_host_name()),
+        format!("- obj://{}/sessions/{} — this session", agent.to_host_name(), ui.sid()),
+        format!("- obj://msg-center/owners/{}/sessions — your message sessions", agent.to_string()),
+    ] {
+        assert!(system.contains(&line), "missing `{line}` in {system}");
+    }
+    assert_eq!(system, zone.system_text(&cfg, None).await.unwrap(), "stable for the session");
+    assert!(!system_text_of(&ui).await.contains("## Objects"));
+}
+
 /// cmd_skills (opendan-builtin-cmd-skills-todo I01–I04): a work session
 /// takes the manuals chosen when it is created — known names, each once, at
 /// most 8 — frozen in that order and rendered as `## Commands` without

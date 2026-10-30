@@ -391,6 +391,11 @@ pub fn validate_principal(p: &str) -> Result<()> {
 }
 
 pub fn validate_object_path(p: &str) -> Result<()> {
+    // An object a memory is about may be named by its canonical URL (`obj://…`, `cyfs://…`); its
+    // segments nest like a path's (agent-object-url TODO A4).
+    if p.len() <= MAX_OBJECT_PATH_BYTES && buckyos_api::readable_object_url(p).as_deref() == Some(p) {
+        return Ok(());
+    }
     if p.is_empty() || p.len() > MAX_OBJECT_PATH_BYTES || p.chars().any(char::is_control) {
         return Err(AgentMemoryError::Invalid(format!(
             "invalid object path `{p}`"
@@ -987,5 +992,22 @@ pub fn validate_claim(kind: ItemKind, claim: &Value) -> Result<()> {
         ItemKind::EventEffect => need(&["effect"]),
         ItemKind::Salience => need(&["object_id", "reason"]),
         ItemKind::ObservationInference | ItemKind::Free => need(&["statement"]),
+    }
+}
+
+#[cfg(test)]
+mod object_path_tests {
+    use super::*;
+
+    #[test]
+    fn canonical_object_urls_are_object_paths_and_nest() {
+        validate_object_path("projects/alpha").unwrap();
+        validate_object_path("obj://aiworkspace/ws_1/entities/e_1").unwrap();
+        validate_object_path("cyfs:///home/alice/a.md").unwrap();
+        assert!(validate_object_path("OBJ://AIWorkspace/ws_1").is_err(), "only the canonical form");
+        assert!(validate_object_path("/tmp/a").is_err());
+        assert!(validate_object_path("a//b").is_err());
+        assert!(object_paths_overlap("obj://aiworkspace/ws_1", "obj://aiworkspace/ws_1/entities/e_1"));
+        assert!(!object_paths_overlap("obj://aiworkspace/ws_1", "obj://aiworkspace/ws_10"));
     }
 }

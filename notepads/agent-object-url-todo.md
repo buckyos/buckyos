@@ -2,7 +2,7 @@
 
 日期：2026-10-29（v0.4，Q1–Q12 已裁决，全文按裁决定稿）
 
-状态：**§6 第 1 段已完成（2026-10-29）；第 2 段（现有服务改造）2026-10-29 已实施，未提交、未做真实 Zone DV，记录与遗留见 §6 第 2 段"实施记录"。** 下一步是跨仓发布（顺序见实施记录）与真实 Zone DV，然后开第 3 段。§1.5 的裁决列已填，D1–D12 是定稿规则。第 1 段产出：[key url.md](../doc/key%20url.md) 第一部分重写（§1–§10：scheme、`file://<device_id>`、`obj://` host 两类规则与服务名表、`cyfs://` 判据、默认 URL / 跨 Zone https / query 契约、kevent 命名、缩写、非等价转换、RBAC 指引）；[统一url的思考](../doc/opendan/protocol/统一url的思考.md) 删展开与简写写法并指向 key url.md；buckyos-base [基础协议](../../buckyos-base/doc/did-object-protocol.md) §5.2 / §5.4 补 BuckyOS Object DID 与 `obj://` host 约定；[Agent Spec](../doc/opendan/protocol/Agent%20DID-Object%20Protocol%20Spec.md) §4 / §4.1 / §14 对齐 Card 发现与 `obj://` 规则并记录 client 差距；[Agent Session SDK 实现计划](../doc/opendan/Agent%20Session%20SDK%20实现计划.md) A.7 的 `agent://self` 改为删除；[RBAC 权限设计](../doc/arch/verify-hub/BuckyOS%20RBAC权限设计.md)"基于 URL 的资源 key 布局"一节（各服务 key 表、agent 组目标规则、risk↔action 对应表、第 2 段 policy 改动清单）。**运行代码未改。**
+状态：**§6 第 1、2 段已完成并提交（第 2 段 DV 见其小节）；第 3 段（Agent 工具，A1–A7、A9 读侧）2026-10-29 已实施、本机单 Zone DV 通过，未提交——记录、DV 与遗留见 §6 第 3 段。**§1.5 的裁决列已填，D1–D12 是定稿规则。第 1 段产出：[key url.md](../doc/key%20url.md) 第一部分重写（§1–§10：scheme、`file://<device_id>`、`obj://` host 两类规则与服务名表、`cyfs://` 判据、默认 URL / 跨 Zone https / query 契约、kevent 命名、缩写、非等价转换、RBAC 指引）；[统一url的思考](../doc/opendan/protocol/统一url的思考.md) 删展开与简写写法并指向 key url.md；buckyos-base [基础协议](../../buckyos-base/doc/did-object-protocol.md) §5.2 / §5.4 补 BuckyOS Object DID 与 `obj://` host 约定；[Agent Spec](../doc/opendan/protocol/Agent%20DID-Object%20Protocol%20Spec.md) §4 / §4.1 / §14 对齐 Card 发现与 `obj://` 规则并记录 client 差距；[Agent Session SDK 实现计划](../doc/opendan/Agent%20Session%20SDK%20实现计划.md) A.7 的 `agent://self` 改为删除；[RBAC 权限设计](../doc/arch/verify-hub/BuckyOS%20RBAC权限设计.md)"基于 URL 的资源 key 布局"一节（各服务 key 表、agent 组目标规则、risk↔action 对应表、第 2 段 policy 改动清单）。**运行代码未改。**
 
 v0.3 相对 v0.2 的变化（均为 2026-10-29 对照代码核出）：① HomeStation / msg-center 群组的 `cyfs://` 投递 target 来自 cyfs-ndn 共享的 dispatch 协议，cyfs-gateway 也在消费，改 OBJ 必须先裁决传输层去留（新 Q11）；② msg-center 对 agent 组的 RBAC 是 `all`，G1 扩为 RBAC 收窄；§4.2/4.3 对象路径与现有 RBAC key 布局不同（新 Q12）；③ Q1 被 `key url.md` 已有的 `file://$device_id/path` 收窄；Q4 有 sys_config_service 别名先例；Q5 有 Agent Session SDK 实现计划的 `agent://self` 先例；④ Card 发现漂移在 client 的 `normalize_object_url` 先去尾斜杠处，§2.1 / §7.1 补上；⑤ 工作树里 `doc/key url.md` 有一行未提交改动（`obj://` 行加"最大兼容"），随本 TODO 一起提交。
 
@@ -395,6 +395,43 @@ Provider 和 RBAC 稳定后再改 Agent 侧，避免工具先于服务定型：
 2. A3 Agent 自身对象、A4 Hint 带 url、A5 known objects。
 3. A6 subscribe_event、A7 xcall Governance（G2 / G3）。
 4. 同步内置手册与 cmd_skills：`build-in agent-tool手册`（read 一节现已落后）、`buckyos_admin`、`opendan_agent_dev`、`aiworkspace_run` 及受影响的产物 / 分享手册；跑 §7.2。
+
+#### 第 3 段实施方案（2026-10-29 开工时自定，实施中修订）
+
+- **一个 read，两层组合**（A1）：Session 的 `read` 仍是 agent_tool 的 `ReadTool`（文件、`cyfile:` 等 ObjId、range / first_chunk / offset / limit、filesystem policy 都不变）；其余 URL（`obj://`、`cyfs://`、`https://`、`http://`、host 不是本机的 `file://<device_id>/`）交给宿主注入的 `UrlReader`。对象库实现 `UrlReader`，OpenDAN 在 `zone_xllm_deps` 注入；dev CLI `agent_tool read` 用同一组合，所以 CLI 与 Session 行为一致。不让 bash_core 直接依赖对象库（对象库依赖 agent_tool，会成环）。llm_context 层的接口改动记在 `llm-context-agent-runtime-todo.md` §12。
+- **路由与端点**（A2）：内置路由表从 dev CLI 移进对象库（`ObjectRouteConfig::builtin()`）：`obj` → did_object；`cyfs` → cyfs adapter；`https` / `http` → did_object（按基础协议 §6.1 发现 Card，响应不是 Card 时退回普通网页内容）；`file` → filesystem（仅自定义配置与 dev 用）。`obj://` 到 Provider 端点的映射进共享模块（buckyos-api `object_endpoint` / websdk `objectEndpoint`，共用向量），CLI 的 `endpointOf` 改用它。容器内的网关源是节点网关（`http://<host-gw>:3180`），Card / Profile 的端点按转发头生成，已实测可直接跟随。
+- **凭据**：对象库对当前 Zone 的源（节点网关、Zone 主机名）带进程运行时的 session token；其他主机不带。Card 指向别处时 token 会随同一个 client 发出——Provider 都是本 Zone 服务，列为已知风险。
+- **文件归属**（D1–D3、A9 的读侧）：`$BUCKYOS_ROOT/data/<rel>` 是 DFS 文件 `cyfs:///<rel>`，与设备无关；Agent 容器把 owner 家目录与 AgentRoot 同路径挂进来，所以 `cyfs:///home/<owner>/…` 先按本地挂载读，读不到再走 DFS Provider（只有对象信息与列表，DFS 文件正文经 `/nfs/v1/read` 留作后续）。`file://<device_id>/p`：p 在 data 下按 DFS 文件读；否则是该设备上的文件，node executor 路由未接，明确报告不支持。容器私有路径（`/tmp`、镜像层）不转 CYFS。
+- **A3**：删除 `agent://` 路由、`agent_runtime` adapter 与 `AdapterType::AgentRuntime`；Agent 自身对象就是 `obj://<agent-id>/…`，走 did_object。
+
+#### 第 3 段实施记录（2026-10-29，未提交）
+
+- **A1 / A2**：agent_tool `read` 增 `UrlReader` 注入点与 `property` 参数（llm_context 层，见 `llm-context-agent-runtime-todo.md` §12）；空字符串参数等同未给、`range` 优先于 `offset` / `limit`（真实 Session 里模型按严格 schema 填满每个字段，旧规则让每次 read 都失败）。buckyos-api `object_endpoint`、`data_path_to_dfs` / `dfs_to_data_path`、`persistent_object_ref`、`readable_object_url`，websdk `objectEndpoint`（CLI `endpointOf` 改用），共用向量新增端点用例。对象库：`ObjectRouteConfig::builtin()`；did_object 经 `zone::ZoneAccess`（节点网关源、Zone 主机名、session token 只发本 Zone 源）定位 `obj://` 端点，本 Zone https 走节点网关，非 Card 的 https 退回网页内容，对象说明含身份 / 声明的属性动作事件（带 risk）/ 摘要属性值，`property` 读单个属性；新增 `cyfs` adapter（本机挂载读 Zone 文件与目录、未挂载走 DFS 对象、`cyfs://<objid>/` 读对象存储、其他设备的 `file://` 与其他 Zone 的 `cyfs://` 明确不支持）；`ObjectUrlReader`。OpenDAN `zone_xllm_deps` 注入；dev CLI `agent_tool read` 改为同一 `ReadTool` + `ObjectUrlReader`（参数与 Session 相同，首个非 `key=value` 参数是 uri），访问对象前按进程环境建 runtime。
+- **A3**：删 `agent_runtime` adapter、`AdapterType::AgentRuntime`、`agent://` 路由与 dev CLI 的旧默认路由表。
+- **A4**：agent_memory `validate_object_path` 接受规范对象 URL（按段嵌套）；libopendan 记录感知时把 objects / exceptions 与 `source_ref.uri` 转成持久引用（URL 规范化、data 下绝对路径转 `cyfs:///…`、其余原样）；memory `Hint.object_url`、prompt `Hint.object`，`<hint object="…">` 与 background 行 `about <url>`；consolidation 工具对 `objects` 的说明加 URL。
+- **A5**：`DefaultAssembler.known_objects`（OpenDAN 打开）→ 系统文本 `## Objects`。
+- **A6**：kevent bridge 原先把对象 URL 当 kevent pattern 传给 `create_event_reader`，对象订阅永远收不到事件，已改为传 pattern；msg-center 的会话集合 Profile 声明了 `inbox` 等事件，实际只发在单个会话上，现在 box 变化同时发会话与 owner 会话集合两条（`MailboxAddress::box_event_ids`，订阅 `…/owners/<owner>/**` 的会收到两条唤醒）；bridge 默认摘要只放事件数据（来源与事件名由渲染给出）；`ctl subscribe` 的对象订阅校验并规范化为本 Zone `obj://`（其他 Zone 的 https 对象明确拒绝），订阅 id 按规范形式算。不另做 `subscribe_event` 工具，沿用 `agent-session ctl subscribe`。
+- **A7**：`xcall` 走同一内置路由与 Zone 凭据，结果带 Profile 声明的 `risk` 与规范对象 URL；授权仍由 Provider 按调用者身份判（G1 已收窄）。审批门（非 read_only 动作先经用户确认）未做，按"先能力后安全"列为已知风险，手册要求先问用户。
+- **顺带修正**：HomeStation Card 的 https 默认 URL 改用 Zone 主机名（`KrpcObjectProvider::with_zone_host`），经节点网关读到的不再是 `https://172.17.0.1:3180/...`。
+- **手册**：内置工具手册 `read` 一节重写；AgentTool 开发指南 §5.8；`agent-did-object-lib 需求.md` 去 agent_runtime；`Agent Enviroment.md` §6.1；cmd_skills `ui_core`（read 对象 URL / property / xcall / 对象订阅）、`buckyos_admin`、`opendan_agent_dev`、`aiworkspace_run`。
+
+第 3 段遗留：
+1. `xcall` 的审批门：非 `read_only` 动作先经用户确认（现在只有 Provider 的 RBAC 与手册要求先问用户），已知风险。
+2. A9 的输出侧：只做了感知记录的对象引用归一化；文件工具 / 产物 / 发消息时的路径还没补成 `file://<device_id>/…` 或 `cyfs:///…`。
+3. 读其他设备的 `file://<device_id>/…` 需 node executor 路由（D3）；未挂载的 DFS 文件正文（`/nfs/v1/read`）只给 DFS 对象信息。
+4. HomeStation 的 https 路径不带 `BuckyOS-DID-Document`，读 https 链接得到的是网页 JSON，而不是对象说明（`obj://homestation/...` 正常）。
+5. OpenDAN 不发 `obj://<agent-id>/sessions/<sid>` 的对象事件（§7.2"订阅 Session 的 finished"仍靠 `semi:session` 与子 Session 汇报）。
+6. AI Workspace 无根对象，`## Objects` 不列它；跨 Zone 对象读取与事件归跨 Zone 鉴权 TODO。
+
+#### 第 3 段 DV（2026-10-29，本机单 Zone，重建 paios 镜像）
+
+- 容器内 `agent_tool read`（Agent 自己的 App 会话）：`obj://jarvis.test.buckyos.io`、owner 的 msg-center 会话（只读观察）、`cyfs:///home/devtest/`（本机挂载）、本 Zone https（`/home/devtest/feed`）、`obj://homestation/home/devtest/feed` 都读到；bob 的邮箱与 bob 的文件 `forbidden`。
+- 真实 Session：Jarvis 的 UI Session 用原生 `read` 读 `obj://msg-center/owners/did:bns:devtest/sessions`，得到对象说明并答出声明的动作 `page,query`（重建前这一轮因严格 schema 填满参数而每次 read 都失败，见 A1）。
+- `## Objects` 出现在该 Session 新一轮的系统文本里（run.json），六条引用与预期一致。
+- A6：Jarvis 在 shell 里 `agent-session ctl subscribe semi:object:obj://msg-center/owners/did:web:jarvis.test.buckyos.io/sessions#inbox`，下一条消息进来时该轮 `turn_started.events` 带 `kevent:/obj/msg-center/owners/<hex>/sessions/inbox:…`，background 行出现 `object:obj://… inbox`；测试订阅随后已由 Jarvis `ctl unsubscribe` 撤掉。
+- A7：容器内 `agent_tool xcall obj://msg-center/owners/did:bns:devtest/sessions query` 成功、结果 `risk=read_only`；对 bob 的同一调用 `forbidden`。
+- 未实测：A4 的 Hint 带 URL 只有单测（真实 Memory 里需要一条 scope 指向对象 URL 的认知）；跨 Zone 对象读取与事件（另一 TODO）；node executor 读其他设备文件。
+- 期间发现：宿主根分区 0 字节可用（`/tmp/dev-cache-root/cargo-target` 394 GB），apt 签名校验因此失败；已删其中 `debug/incremental`（97 GB，可重建缓存）。
 
 实施时的联动清单：buckyos-api、对象库 / agent_tool / libopendan、服务 Provider、网关 / node_executor、buckyos-base、**cyfs-ndn、cyfs-gateway（Q11）**、websdk / CLI、Desktop、协议文档、schema / fixtures、内置 cmd_skills。**本次仅修订设计 TODO，运行行为和现有命令未变，因此不修改代码或 cmd_skills；`doc/key url.md` 的一行未提交改动随本 TODO 一起提交。**
 

@@ -659,19 +659,21 @@ impl MailboxAddress {
         format!("{}/contacts", self.owner_resource())
     }
 
-    /// Object event of this mailbox's `box_kind` box (doc/key url.md §7):
-    /// `/obj/msg-center/owners/<owner>/sessions[/<session_id>]/<box>`; a session too long
-    /// for a kevent id falls back to the owner's session collection.
-    pub fn box_event_id(&self, box_kind: MailboxKind) -> String {
+    /// Object events of a change in this mailbox's `box_kind` box (doc/key url.md §7): the session's
+    /// `/obj/msg-center/owners/<owner>/sessions/<session_id>/<box>` (when it fits a kevent id) and the
+    /// owner's session collection `/obj/msg-center/owners/<owner>/sessions/<box>` — both objects declare it.
+    pub fn box_event_ids(&self, box_kind: MailboxKind) -> Vec<String> {
         let owner = self.owner.to_string();
         let event = box_kind.event_name();
+        let mut ids = Vec::new();
         if let Some(session) = self.session_id.as_deref() {
             let key = crate::obj_event_key("msg-center", &["owners", &owner, "sessions", session], event);
             if crate::validate_eventid(&key).is_ok() {
-                return key;
+                ids.push(key);
             }
         }
-        crate::obj_event_key("msg-center", &["owners", owner.as_str(), "sessions"], event)
+        ids.push(crate::obj_event_key("msg-center", &["owners", owner.as_str(), "sessions"], event));
+        ids
     }
 
     /// Every mailbox and contact event of the owner.
@@ -4926,6 +4928,19 @@ pub fn generate_msg_center_service_doc() -> AppDoc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_box_change_is_an_event_of_the_session_and_of_the_owners_sessions() {
+        let owner = DID::from_str("did:bns:alice").unwrap();
+        let session = MailboxAddress::new(owner.clone(), Some("s-1".into())).unwrap();
+        let hex = crate::kevent_segment("did:bns:alice");
+        assert_eq!(
+            session.box_event_ids(MailboxKind::Inbox),
+            vec![format!("/obj/msg-center/owners/{hex}/sessions/s-1/inbox"), format!("/obj/msg-center/owners/{hex}/sessions/inbox")]
+        );
+        let default = MailboxAddress::new(owner, None).unwrap();
+        assert_eq!(default.box_event_ids(MailboxKind::Inbox), vec![format!("/obj/msg-center/owners/{hex}/sessions/inbox")]);
+    }
 
     #[test]
     fn mailbox_address_is_exact_and_requires_the_new_wire_field() {

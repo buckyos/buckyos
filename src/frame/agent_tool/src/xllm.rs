@@ -3823,6 +3823,10 @@ pub struct XllmDeps {
     /// this run's task resolver through `XLLM_TASK_ENDPOINT`. `None`:
     /// `bash_core` keeps the task tools.
     pub task_cli: Option<String>,
+    /// Reads the URLs `read` does not read itself (`obj://`, `cyfs://`,
+    /// `https://`, another device's `file://`): the host's object resolver.
+    /// `None`: `read` refuses them.
+    pub url_reader: Option<Arc<dyn crate::read_tool::UrlReader>>,
 }
 
 /// The sections xllm appends to a hosted run's system text. A host that
@@ -3878,6 +3882,7 @@ impl Default for XllmDeps {
             host_prompt_sections: HostPromptSections::default(),
             shell_note: None,
             task_cli: None,
+            url_reader: None,
         }
     }
 }
@@ -4511,6 +4516,7 @@ struct ShellExtras {
     endpoint: Option<String>,
     note: Option<String>,
     context: ShellTaskContext,
+    urls: Option<Arc<dyn crate::read_tool::UrlReader>>,
 }
 
 /// 内置组 `bash`：`read_file` / `write_file` / `edit_file` / `shell`；
@@ -4552,7 +4558,7 @@ fn builtin_bash_group(
         .with_task_endpoint(extras.endpoint)
         .with_note(extras.note);
     let reader: Arc<dyn AgentTool> = if core {
-        Arc::new(crate::read_tool::ReadTool::new(cfg.clone()))
+        Arc::new(crate::read_tool::ReadTool::new(cfg.clone()).with_urls(extras.urls.clone()))
     } else {
         Arc::new(TypedToolHandle::with_null_host(ReadFileTool::new(
             cfg.clone(),
@@ -4604,6 +4610,7 @@ async fn expand_tool_sources(
                 }
                 let mut extras = ShellExtras {
                     note: deps.shell_note.clone(),
+                    urls: deps.url_reader.clone(),
                     context: ShellTaskContext {
                         run: Some(manager.run_binding()),
                         ..deps.shell_task_context.clone()

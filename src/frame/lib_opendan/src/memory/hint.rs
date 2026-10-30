@@ -116,6 +116,15 @@ pub struct Hint {
     pub valid_until: Option<String>,
     #[serde(default)]
     pub expand_recommended: bool,
+    /// The object it is about, as a URL `read` follows (TODO A4): its first object URL, else the URL it was
+    /// observed from. The hint is not the object; read gets the object as it is now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_url: Option<String>,
+}
+
+/// The first object of `scope` named by a URL.
+pub fn scope_object_url(scope: Option<&Scope>) -> Option<String> {
+    scope?.objects.iter().find_map(|o| buckyos_api::readable_object_url(o))
 }
 
 impl Hint {
@@ -155,6 +164,7 @@ impl Hint {
             replaced_by: item.replaced_by.clone(),
             valid_until: item.valid_until.clone(),
             expand_recommended: !item.review_when.is_empty() || item.status == ItemStatus::Disputed,
+            object_url: scope_object_url(item.scope.as_ref()),
         }
     }
 
@@ -217,6 +227,11 @@ impl Hint {
             replaced_by: None,
             valid_until: deadline,
             expand_recommended: false,
+            object_url: r
+                .objects
+                .iter()
+                .find_map(|o| buckyos_api::readable_object_url(o))
+                .or_else(|| r.source_ref.as_ref().and_then(|s| s.uri.as_deref()).and_then(buckyos_api::readable_object_url)),
         }
     }
 

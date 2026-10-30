@@ -268,12 +268,45 @@ pub struct DefaultAssembler {
     pub extra_constraints: Vec<String>,
     /// Host mapping of attachments to readable paths.
     pub attachment_paths: Option<AttachmentPathFn>,
+    /// The host's `read` reaches the Zone's objects: name the ones a session starts from (`## Objects`).
+    pub known_objects: bool,
+}
+
+/// `## Objects`: what a session of a Zone host starts from, one line each (agent-object-url TODO A5); `read`
+/// describes each object and how to go further. Stable for the session.
+fn objects_section(cfg: &SessionConfig) -> String {
+    use buckyos_api::{obj_entity_url, obj_service_url};
+    let Ok(agent) = name_lib::DID::from_str(&cfg.session.agent_did) else {
+        return String::new();
+    };
+    let agent_did = agent.to_string();
+    let mut lines = vec![
+        (obj_entity_url(&agent, &[] as &[&str]), "you: your sessions, workspaces, goals and artifacts".to_string()),
+        (obj_entity_url(&agent, &["sessions", cfg.session.session_id.as_str()]), "this session".to_string()),
+    ];
+    if let Some(ws) = &cfg.workspace {
+        lines.push((obj_entity_url(&agent, &["workspaces", ws.workspace_id.as_str()]), "this session's workspace".to_string()));
+    }
+    lines.push((obj_service_url("msg-center", &["owners", agent_did.as_str(), "sessions"]), "your message sessions".to_string()));
+    if let Some(owner) = cfg.session.owner.as_deref().filter(|o| !o.is_empty()) {
+        let account = did_account(owner);
+        lines.push((obj_service_url("msg-center", &["owners", owner, "sessions"]), "your owner's message sessions (read only)".to_string()));
+        lines.push((obj_service_url("homestation", &["home", account.as_str()]), "your owner's home: published feed and inbox".to_string()));
+        lines.push((format!("cyfs:///home/{account}/"), "your owner's files".to_string()));
+    }
+    let mut s = String::from("## Objects\nObjects to start from. `read` one to see what it offers (properties, actions, events) and how to read further:\n");
+    for (url, what) in lines {
+        s.push_str(&format!("- {url} — {what}\n"));
+    }
+    s.push('\n');
+    s
 }
 
 impl std::fmt::Debug for DefaultAssembler {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DefaultAssembler")
             .field("extra_constraints", &self.extra_constraints)
+            .field("known_objects", &self.known_objects)
             .finish()
     }
 }
@@ -361,6 +394,9 @@ impl SessionAssembler for DefaultAssembler {
                 ));
             }
             s.push('\n');
+        }
+        if self.known_objects {
+            s.push_str(&objects_section(cfg));
         }
         // 6. cmd_skills
         s.push_str(&commands_section(cfg, false));
@@ -519,8 +555,13 @@ impl Blocks {
         if !m.hints.is_empty() {
             hints.push_str("<hints>\n");
             for h in &m.hints {
+                let object = h
+                    .object
+                    .as_deref()
+                    .map(|o| format!(" object=\"{}\"", escape_xml_attr(o)))
+                    .unwrap_or_default();
                 hints.push_str(&format!(
-                    "<hint id=\"{}\" time=\"{}\">{}</hint>\n",
+                    "<hint id=\"{}\" time=\"{}\"{object}>{}</hint>\n",
                     escape_xml_attr(&h.id),
                     escape_xml_attr(&h.time),
                     esc(&h.sentence)
@@ -620,6 +661,9 @@ impl DefaultAssembler {
                 s.push_str(c.trim());
                 s.push_str("\n\n");
             }
+        }
+        if self.known_objects {
+            s.push_str(&objects_section(cfg));
         }
         s.push_str(&commands_section(cfg, true));
         s.trim_end().to_string()

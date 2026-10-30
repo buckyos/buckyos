@@ -412,25 +412,25 @@ Bash 的 `read` 是从标准输入读取变量的内建命令，优先于 PATH �
 
 `xcall` 是唯一的对象 action CLI 命令名，可使用 `agent_tool xcall ...`，也可以通过 `xcall` 别名直接调用。返回结果的 `tool` / `cmd_name` 均为 `xcall`。Rust API 和路由配置方法名仍为 `x_call`，本地 adapter HTTP endpoint 仍为 `/adapter/x-call`。
 
-`read` 和 `xcall` 加载同一份 `ObjectRouteConfig`，构造 `AgentDIDObjectRuntime` 后直接返回库生成的 `AgentToolResult`，CLI 不再二次拼接结果。
+`read` 就是 Session 的 `read`（agent_tool `ReadTool`，参数与 [内置工具手册](../../opendan/build-in%20agent-tool手册.md) §2 一致）：文件与 ObjId 自己读，其余 URL 交给 `agent-did-object-lib` 的 `ObjectUrlReader`。`xcall` 构造 `AgentDIDObjectRuntime` 后直接返回库生成的 `AgentToolResult`。两者用同一份 `ObjectRouteConfig`；访问对象前 CLI 按进程环境建立 BuckyOS runtime（Agent shell 里是该 Session 的身份）。
 
 配置加载顺序：
 
-1. 命令行 `--config <route.toml>` 或 `--route-config <route.toml>`。
+1. `xcall` 的 `--config <route.toml>` / `--route-config <route.toml>`。
 2. 环境变量 `AGENT_DID_OBJECT_ROUTE_CONFIG`。
 3. 环境变量 `OPENDAN_AGENT_OBJECT_ROUTE_CONFIG`。
-4. 内置 dev 默认配置：`file://` read 走 filesystem，`http://` / `https://` read 走 web，`https://` xcall 走 did_object，`agent://` 走 agent_runtime。
+4. 内置路由 `ObjectRouteConfig::builtin()`：`obj://` 与 `https://` / `http://` 走 did_object（经本进程网关访问 Provider，非对象的网页按网页读），`cyfs://` 与其他设备的 `file://` 走 cyfs adapter。
 
 示例：
 
 ```bash
-agent_tool read ./demo.txt --content-only --offset 1 --limit 20
-agent_tool read uri=file:///tmp/demo.txt content_only=true
+agent_tool read ./demo.txt range=1-20
+agent_tool read obj://aiworkspace/ws_1/entities/e_1 property=content
 agent_tool xcall --config ./object-routes.toml obj://demo/item reserve qty=2
 agent_tool xcall https://device.example.com/cam01 restart --params '{"delay_ms":1000}'
 ```
 
-CLI 层只做 Gateway 第一层的本地便利转换：没有 `://` 的 `read` / `xcall` object 会按当前工作目录解析成 canonical `file://` URL。进入 `agent-did-object-lib` 后仍只接受 URL，不接受 DID URI、alias 或裸路径。
+`xcall` 的 object 没有 `://` 时按当前工作目录解析成 canonical `file://` URL；进入 `agent-did-object-lib` 后只接受 URL。
 
 ### 5.9 stdout / stderr 分工
 

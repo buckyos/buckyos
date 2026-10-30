@@ -139,7 +139,10 @@ pub fn provider(state: AppState) -> DIDObjectHttpServer<KrpcObjectProvider> {
         .as_deref()
         .and_then(|d| DID::from_str(d).ok())
         .unwrap_or_else(|| DID::new("web", &state.host.cfg.zone));
-    KrpcObjectProvider::new("homestation", zone_did, object_kinds(), Arc::new(HomeBackend { state })).into_http_server()
+    let zone_host = state.host.cfg.zone.clone();
+    KrpcObjectProvider::new("homestation", zone_did, object_kinds(), Arc::new(HomeBackend { state }))
+        .with_zone_host(&zone_host)
+        .into_http_server()
 }
 
 /// axum handler of `/kapi/homestation/obj/...`.

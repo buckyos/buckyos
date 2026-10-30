@@ -29,6 +29,9 @@ pub struct Hint {
     pub sentence: String,
     #[serde(default)]
     pub kind: String,
+    /// The object it is about, as a URL `read` follows (TODO A4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -79,6 +82,7 @@ impl Cognition for FsCognition {
                     .map(|i| Hint {
                         id: format!("{}@{}", i.item_id, i.revision),
                         time: i.noticed_at,
+                        object: crate::memory::scope_object_url(i.scope.as_ref()),
                         sentence: i.content,
                         kind: i.semantic_kind.unwrap_or_else(|| i.kind.to_string()),
                     })

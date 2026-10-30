@@ -19,7 +19,63 @@ pub struct ObjectRouteConfig {
     pub routes: Vec<ObjectRoute>,
 }
 
+/// The routes an Agent reads with when nothing else is configured (TODO §6 第 3 段): objects through the Zone's
+/// Providers, https / http as DID Objects or web pages, Zone files and content objects through `cyfs`. Local files
+/// are `read`'s own; a `file://` URL that reaches here is another device's.
+pub const BUILTIN_OBJECT_ROUTE_CONFIG: &str = r#"
+version = 1
+
+[[adapters]]
+id = "did-object"
+type = "did_object"
+
+[[adapters]]
+id = "cyfs"
+type = "cyfs"
+
+[[routes]]
+id = "obj"
+priority = 100
+match_type = "scheme"
+pattern = "obj"
+adapter = "did-object"
+
+[[routes]]
+id = "https"
+priority = 10
+match_type = "scheme"
+pattern = "https"
+adapter = "did-object"
+
+[[routes]]
+id = "http"
+priority = 10
+match_type = "scheme"
+pattern = "http"
+adapter = "did-object"
+
+[[routes]]
+id = "cyfs"
+priority = 100
+match_type = "scheme"
+pattern = "cyfs"
+adapter = "cyfs"
+methods = ["read"]
+
+[[routes]]
+id = "file"
+priority = 100
+match_type = "scheme"
+pattern = "file"
+adapter = "cyfs"
+methods = ["read"]
+"#;
+
 impl ObjectRouteConfig {
+    pub fn builtin() -> Self {
+        Self::from_toml_str(BUILTIN_OBJECT_ROUTE_CONFIG).expect("builtin object routes are valid")
+    }
+
     pub fn from_toml_str(input: &str) -> Result<Self, AgentDIDObjectError> {
         let config: Self = toml::from_str(input)?;
         config.validate()?;
@@ -117,7 +173,7 @@ impl AdapterConfig {
 pub enum AdapterType {
     Filesystem,
     Web,
-    AgentRuntime,
+    Cyfs,
     DidObject,
     LocalHttp,
 }

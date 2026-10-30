@@ -276,7 +276,8 @@ impl TaskService for ZoneTaskService {
 /// xllm deps of a zone host: `shell` commands that outlive their wait are
 /// tasks of the zone's TaskMgr (`tool.shell/v1`), answered for by any
 /// process of the host; the process's own task manager is the fallback
-/// when TaskMgr cannot be reached.
+/// when TaskMgr cannot be reached. `read` reads object URLs through the
+/// Zone's Providers with the agent's session.
 pub fn zone_xllm_deps(agent_did: &str, owner_user: Option<String>) -> XllmDeps {
     let mut deps = XllmDeps::default();
     let shell_tasks = ZoneShellTasks::new(
@@ -289,6 +290,7 @@ pub fn zone_xllm_deps(agent_did: &str, owner_user: Option<String>) -> XllmDeps {
     deps.shell_tasks = Some(shell_tasks);
     deps.node_executor = agent_tool::runtime::node::SocksNodeConnector::from_buckyos_runtime()
         .map(|c| c as Arc<dyn agent_tool::runtime::node::NodeExecutorConnector>);
+    deps.url_reader = Some(Arc::new(agent_did_object_lib::ObjectUrlReader::builtin()));
     deps
 }
 

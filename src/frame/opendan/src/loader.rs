@@ -17,7 +17,7 @@ use libopendan::channel::{KmsgChannels, Waker};
 use libopendan::host::goals::{GoalHost, GoalHostOptions};
 use libopendan::host::{HostDeps, Supervisor};
 use libopendan::protocol::{builtin_runtimes, RuntimeAvailability};
-use libopendan::runner::{BehaviorAssembler, ObjectStore, OutboundSink, RunnerOptions};
+use libopendan::runner::{BehaviorAssembler, DefaultAssembler, ObjectStore, OutboundSink, RunnerOptions};
 use libopendan::state::{
     register_in_process, unregister_in_process, AgentStateClient, FsAgentStateClient, WithNotify,
 };
@@ -301,7 +301,10 @@ impl Loader {
             inputs: env.channels.clone(),
             waker: env.waker.clone(),
             xllm: env.xllm.clone(),
-            assembler: Arc::new(BehaviorAssembler::default()),
+            assembler: Arc::new(BehaviorAssembler::new(DefaultAssembler {
+                known_objects: true,
+                ..Default::default()
+            })),
             session_cli: env.session_cli.clone(),
             session_helpers: env.session_helpers.clone(),
             app_tools: Vec::new(),

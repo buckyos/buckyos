@@ -20,10 +20,11 @@ pub struct WebAdapter {
 
 impl WebAdapter {
     pub fn new(id: String) -> Self {
-        Self {
-            id,
-            client: Client::new(),
-        }
+        Self::with_client(id, Client::new())
+    }
+
+    pub fn with_client(id: String, client: Client) -> Self {
+        Self { id, client }
     }
 }
 

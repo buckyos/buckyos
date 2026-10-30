@@ -287,6 +287,8 @@ pub struct KrpcObjectProvider {
     rpc: Arc<dyn ProviderRpc>,
     root_card: DIDObjectCard,
     root_profile: Value,
+    /// The Zone hostname of the https default URLs (`same_path_https`); the request's host when unset.
+    zone_host: Option<String>,
 }
 
 /// `/kapi/<service>/obj`: the HTTP layout of a current-zone service Provider.
@@ -328,7 +330,15 @@ impl KrpcObjectProvider {
             rpc,
             root_card,
             root_profile,
+            zone_host: None,
         }
+    }
+
+    /// The https default URL of a `same_path_https` object is on this host whatever gateway the request came
+    /// through (an Agent reads through its node gateway).
+    pub fn with_zone_host(mut self, zone_host: &str) -> Self {
+        self.zone_host = Some(zone_host.to_string());
+        self
     }
 
     pub fn into_http_server(self) -> DIDObjectHttpServer<Self> {
@@ -468,7 +478,8 @@ impl KrpcObjectProvider {
         );
         if kind.same_path_https {
             if let ObjectUrl::Obj { path, .. } = url {
-                card.also_known_as.insert(0, format!("https://{}{path}", request_host(ctx)));
+                let host = self.zone_host.clone().unwrap_or_else(|| request_host(ctx));
+                card.also_known_as.insert(0, format!("https://{host}{path}"));
             }
         }
         card.also_known_as.push(url.to_string());
@@ -692,6 +703,27 @@ mod tests {
         let status = resp.status().as_u16();
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    #[tokio::test]
+    async fn the_https_default_url_is_on_the_zone_host_whatever_gateway_served_the_request() {
+        let rpc = Arc::new(FakeRpc { calls: Mutex::new(Vec::new()) });
+        let home = ObjectKind::new("home/{user}", "kmsg.home", "Home", "A home")
+            .summary_property("recent", "Recent notes", json!({ "type": "object" }), RpcBinding::new("notes.list", |c, _| Ok(json!({ "owner": c["user"] }))))
+            .same_path_https();
+        let server = KrpcObjectProvider::new("kmsg", DID::from_str("did:web:zone.example").unwrap(), vec![home], rpc)
+            .with_zone_host("zone.example")
+            .into_http_server();
+        let req = http::Request::builder()
+            .method("GET")
+            .uri("/kapi/kmsg/obj/home/alice")
+            .header("host", "host.docker.internal:3180")
+            .header("authorization", "Bearer good")
+            .body(Full::new(Bytes::new()).map_err(|never| match never {}).boxed())
+            .unwrap();
+        let resp = server.serve_request(req, StreamInfo::default()).await.unwrap();
+        let card: Value = serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(card["alsoKnownAs"][0], "https://zone.example/home/alice", "{card}");
     }
 
     #[tokio::test]

@@ -1676,3 +1676,22 @@ fn review_no_identifier_leaks() {
         vec!["A/secret".to_string()]
     );
 }
+
+/// A4 / A9: what an observation is about is kept as a reference another session can `read`: URLs in their
+/// canonical form, Zone data paths as `cyfs:///…`; its hint carries that URL.
+#[test]
+fn objects_are_kept_as_references_another_session_can_read() {
+    let (_t, mut h) = host();
+    let w = h.session("W", "ui-w", &[U1, A1], &[U1], &[ALPHA_GAME]);
+    let e = h.event("W/e1", "ui-w", ActorKind::User, "x");
+    let data = buckyos_kit::get_buckyos_root_dir().join("data/home/u1/notes/a.md");
+    let objects = ["OBJ://AIWorkspace/ws_1/entities/e_1", data.to_str().unwrap(), ALPHA_GAME];
+    w.record(&mut h, observation("看过这个实体", e, &objects, "W/e1/1")).unwrap();
+    let recs = read_records(&h.layout().perception_file("ui-w")).unwrap();
+    let rec = recs.last().unwrap();
+    assert!(rec.objects.contains(&"obj://aiworkspace/ws_1/entities/e_1".to_string()), "{:?}", rec.objects);
+    assert!(rec.objects.contains(&"cyfs:///home/u1/notes/a.md".to_string()), "{:?}", rec.objects);
+    assert!(rec.objects.contains(&ALPHA_GAME.to_string()), "{:?}", rec.objects);
+    let hint = Hint::from_perception(rec, None, Vec::new());
+    assert!(hint.object_url.as_deref().is_some_and(|u| u.starts_with("obj://") || u.starts_with("cyfs://")), "{hint:?}");
+}

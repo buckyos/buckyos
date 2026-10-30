@@ -13,13 +13,13 @@ use crate::types::{
     SubscribeEventInput, TrustGuidance, UnsubscribeEventInput, XCallInput,
 };
 
-pub mod agent_runtime;
+pub mod cyfs;
 pub mod did_object;
 pub mod filesystem;
 pub mod local_http;
 pub mod web;
 
-pub use agent_runtime::AgentRuntimeAdapter;
+pub use cyfs::CyfsAdapter;
 pub use did_object::DidObjectProtocolAdapter;
 pub use filesystem::FilesystemAdapter;
 pub use local_http::LocalHttpAdapter;
@@ -190,9 +190,7 @@ impl AdapterRegistry {
             let instance: Arc<dyn AgentObjectAdapter> = match adapter.adapter_type {
                 AdapterType::Filesystem => Arc::new(FilesystemAdapter::new(adapter.id.clone())),
                 AdapterType::Web => Arc::new(WebAdapter::new(adapter.id.clone())),
-                AdapterType::AgentRuntime => {
-                    Arc::new(AgentRuntimeAdapter::new(adapter.id.clone(), None))
-                }
+                AdapterType::Cyfs => Arc::new(CyfsAdapter::new(adapter.id.clone())),
                 AdapterType::DidObject => {
                     Arc::new(DidObjectProtocolAdapter::new(adapter.id.clone()))
                 }

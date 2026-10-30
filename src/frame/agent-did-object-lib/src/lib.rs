@@ -6,6 +6,7 @@ pub mod router;
 pub mod runtime;
 pub mod tool;
 pub mod types;
+pub mod zone;
 
 pub use adapters::{
     AdapterEventSubscription, AdapterEventTransport, AdapterReadRequest, AdapterReadResponse,
@@ -13,7 +14,7 @@ pub use adapters::{
     AdapterXCallRequest, AdapterXCallResponse, AgentObjectAdapter,
 };
 pub use agent_tool::{AgentToolResult, AgentToolStatus};
-pub use config::{AdapterConfig, AdapterType, ObjectRoute, ObjectRouteConfig};
+pub use config::{AdapterConfig, AdapterType, ObjectRoute, ObjectRouteConfig, BUILTIN_OBJECT_ROUTE_CONFIG};
 pub use error::AgentDIDObjectError;
 pub use event_bridge::{
     bridge_key, encode_object_event_id, event_frame_payload, filter_hash, BridgeState,
@@ -23,5 +24,5 @@ pub use event_bridge::{
 };
 pub use router::{ObjectRouter, RouteMatch, RouteMatchType, RouteMethod, RouteTrace};
 pub use runtime::AgentDIDObjectRuntime;
-pub use tool::{AgentDIDObjectReadTool, TOOL_READ};
+pub use tool::{AgentDIDObjectReadTool, ObjectUrlReader, TOOL_READ};
 pub use types::*;

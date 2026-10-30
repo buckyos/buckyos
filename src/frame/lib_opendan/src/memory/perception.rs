@@ -169,10 +169,18 @@ impl Memory {
                 "subject {s} is outside the session's grants"
             )));
         }
+        // Objects are kept as references another session can follow (TODO A4 / A9).
+        let data_root = buckyos_kit::get_buckyos_root_dir().join("data");
+        let persistent = |objects: &[String]| -> Vec<String> {
+            objects
+                .iter()
+                .map(|o| buckyos_api::persistent_object_ref(o, &data_root))
+                .collect()
+        };
         let scope = Scope {
             subjects,
-            objects: input.objects.clone(),
-            exceptions: input.exceptions.clone(),
+            objects: persistent(&input.objects),
+            exceptions: persistent(&input.exceptions),
         }
         .normalized();
         if !runtime || !scope.subjects.is_empty() {
@@ -190,7 +198,10 @@ impl Memory {
                 return Err(invalid("invalid idempotency_key"));
             }
         }
-        let source = self.check_source(input.source.as_ref(), runtime)?;
+        let source = self.check_source(input.source.as_ref(), runtime)?.map(|mut s| {
+            s.uri = s.uri.map(|u| buckyos_api::persistent_object_ref(&u, &data_root));
+            s
+        });
         let tags = agent_tool::agent_memory::normalize_tags(&input.tags)?;
 
         let view = self.graph_view().ok();

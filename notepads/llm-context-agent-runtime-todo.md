@@ -307,3 +307,14 @@ primary-runtime TODO T1–T7 实施时对本层与执行器的小改动（记录
 
 - `agent_tool::runtime::node::RemoteNodeClient::submit`：节点执行槽满时答 `Busy`（设计 §“并发槽满”：不记录任何东西），客户端原来直接把它当失败返回。Jarvis 在 owner 节点上原生启动后，两个 UI Session 与一个 Goal Session 同时 bind（每次 bind 写几份文件），节点默认 `max_concurrency = 2` → 总有一份写拿到 `Busy` → 三个 bind 每 5 s 同步重试、永远失败。现在 `submit` 对 `ExecutorErrorCode::Busy` 用同一 locator 退避重提（100 ms 起、最多 2 s 一次、共 60 s，`BUSY_RETRY_*`），重复提交由节点按 op_id 去重。测试：`node_executor/tests/remote_node_runtime.rs::an_operation_waits_for_a_free_execution_slot`（单槽节点上一条 `sleep 2` 占槽，随后的 write_file 等到槽位成功；去掉重试即复现 `remote_node Busy: no free execution slot`）。
 - 仍待定：60 s 窗口内槽位一直被长命令占着（默认 2 槽、一个 Agent 两条长命令即占满）时照样失败；节点默认并发是否该放大、是否按 profile 分槽，属于 Node Executor 的配置决定，未改。
+
+## 12. Agent 对象 URL 第 3 段：`read` 的 URL 注入点（2026-10-29 实施）
+
+宿主侧计划与裁决在 [agent-object-url-todo.md](./agent-object-url-todo.md) §6 第 3 段；本节只记 llm_context 层（agent_tool / xllm）的接口：
+
+- `read_tool::UrlReader`（`read_url(ctx, url, property) -> UrlContent { text, details }`；`read` 新增可选参数 `property`，只对对象 URL 有效，读 Profile 声明的某个属性而不是对象描述）：`read` 自己不读的 URL（`obj://`、`cyfs://` 路径、`https://` / `http://`、host 不是本机的 `file://<device_id>/`）交给它；返回的文本仍经 `read_file` 的窗口逻辑（range / first_chunk / offset / limit），结果的 `details.object` 是它给的身份与路由。没有注入时这些 URL 报 `InvalidArgs`（"this runtime has no object resolver"）。
+- `read` 的目标判定改用 buckyos-api `parse_object_url`：`file:///p`、`file://localhost/p` 是本 runtime 的文件（D1，旧的"非 localhost host 当 typo 拒绝"删除）；`cyfs://<objid>/`（无 innerpath、无来源 Zone）等同裸 ObjId，走 NamedStore；不合法的 URL（如未登记的 `obj://` host）报错。
+- 窗口参数：空字符串等同于没给，给了 `range` 时它优先于 `offset` / `limit`（原先两者同时出现报错）。真实 Session DV 中模型按严格 schema 把每个字段都填上（`range:"", first_chunk:"", offset:0, limit:200`），旧规则让每次 `read` 都失败。
+- `XllmDeps.url_reader: Option<Arc<dyn UrlReader>>`，`bash_core` 的 `read` 用它；`bash` 组的 `read_file` 不变。工具描述与 usage 增列 URL 形式。
+- 测试：`read_tool::tests::targets_are_told_apart`（URL 分类）、`urls_go_to_the_host_reader_and_are_windowed_like_files`。
+- agent_memory `validate_object_path` 另接受规范对象 URL（`obj://…`、`cyfs://…`，必须是 `readable_object_url` 的规范形式），使 Memory 的 scope 能指向一个可 `read` 的对象；`object_paths_overlap` 按 `/` 分段，URL 的层级照常嵌套（`model.rs` 的 `object_path_tests`）。宿主侧把感知记录的 objects 规范化后再写（agent-object-url TODO A4）。

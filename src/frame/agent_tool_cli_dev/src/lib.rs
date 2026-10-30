@@ -19,8 +19,7 @@ use tokio::fs;
 use tokio::io::{self, AsyncReadExt};
 
 use agent_did_object_lib::{
-    AgentDIDObjectRuntime, ObjectRouteConfig, ReadInput as ObjectReadInput, ReadLineRange,
-    XCallInput as ObjectXCallInput,
+    AgentDIDObjectRuntime, ObjectRouteConfig, ObjectUrlReader, XCallInput as ObjectXCallInput,
 };
 use agent_tool::agent_attention_signal::{
     AttentionSignal, CreateExtractionWindowInput, DiscoverEventArgs,
@@ -57,7 +56,6 @@ const TOOL_CHECK_TASK: &str = "check_task";
 const TOOL_CANCEL_TASK: &str = "cancel_task";
 const TOOL_FINISH_TASK: &str = "finish_task";
 const TOOL_READ_OBJECT: &str = "read";
-const READ_OBJECT_USAGE: &str = "agent_tool read <object-or-path> [--content-only] [--offset <1-based-line>] [--limit <lines>] [--config <route.toml>]";
 const TOOL_XCALL: &str = "xcall";
 const XCALL_USAGE: &str = "xcall <object> <action> [--params <json>] [key=value ...] [--key=value ...] [--config <route.toml>]";
 const TOOL_AGENT_MEMORY: &str = "agent-memory";
@@ -109,64 +107,6 @@ const ATTENTION_EXTRACTION_RUNTIME_REL_PATH: &str =
     ".runtime/attention_signal_extraction/current.json";
 const OBJECT_ROUTE_CONFIG_ENV: &str = "AGENT_DID_OBJECT_ROUTE_CONFIG";
 const OPENDAN_OBJECT_ROUTE_CONFIG_ENV: &str = "OPENDAN_AGENT_OBJECT_ROUTE_CONFIG";
-const DEFAULT_OBJECT_ROUTE_CONFIG: &str = r#"
-version = 1
-
-[[adapters]]
-id = "filesystem"
-type = "filesystem"
-
-[[adapters]]
-id = "web"
-type = "web"
-
-[[adapters]]
-id = "agent-runtime"
-type = "agent_runtime"
-
-[[adapters]]
-id = "did-object"
-type = "did_object"
-
-[[routes]]
-id = "file-read"
-priority = 100
-match_type = "scheme"
-pattern = "file"
-adapter = "filesystem"
-methods = ["read"]
-
-[[routes]]
-id = "http-web-read"
-priority = 10
-match_type = "scheme"
-pattern = "http"
-adapter = "web"
-methods = ["read"]
-
-[[routes]]
-id = "https-web-read"
-priority = 10
-match_type = "scheme"
-pattern = "https"
-adapter = "web"
-methods = ["read"]
-
-[[routes]]
-id = "https-did-object-call"
-priority = 10
-match_type = "scheme"
-pattern = "https"
-adapter = "did-object"
-methods = ["x_call", "subscribe_event"]
-
-[[routes]]
-id = "agent-runtime"
-priority = 10
-match_type = "scheme"
-pattern = "agent"
-adapter = "agent-runtime"
-"#;
 
 #[derive(Clone, Debug)]
 struct CliRuntimeEnv {
@@ -254,10 +194,6 @@ enum ParsedCommand {
     Tool {
         tool_name: String,
         raw_tokens: Vec<String>,
-    },
-    ObjectRead {
-        route_config_path: Option<PathBuf>,
-        input: ObjectReadInput,
     },
     ObjectXCall {
         tool_name: String,
@@ -495,6 +431,9 @@ async fn execute(
             tool_name,
             raw_tokens,
         } => {
+            if tool_name == TOOL_READ_OBJECT && raw_tokens.iter().any(|t| t.contains("://") && !t.contains("file://")) {
+                ensure_zone_runtime().await;
+            }
             let mgr = build_cli_tool_manager(&env).await?;
             let Some(tool) = mgr.get_any_tool(&tool_name) else {
                 return Err(AgentToolError::NotFound(tool_name));
@@ -517,10 +456,6 @@ async fn execute(
                 EXIT_SUCCESS,
             ))
         }
-        ParsedCommand::ObjectRead {
-            route_config_path,
-            input,
-        } => dispatch_object_read(&env, route_config_path, input).await,
         ParsedCommand::ObjectXCall {
             tool_name,
             route_config_path,
@@ -662,27 +597,6 @@ async fn dispatch_tool(
     }
 }
 
-async fn dispatch_object_read(
-    env: &CliRuntimeEnv,
-    route_config_path: Option<PathBuf>,
-    mut input: ObjectReadInput,
-) -> Result<CliRunOutput, AgentToolError> {
-    if input.session_id.is_none() {
-        input.session_id = Some(env.call_ctx.session_id.clone());
-    }
-    if input.max_tokens.is_none() {
-        input.max_tokens = Some(env.call_ctx.read_token_limit as usize);
-    }
-    let runtime = build_object_runtime(env, route_config_path).await?;
-    match runtime.read(input).await {
-        Ok(result) => Ok(render_cli_output(
-            &success_result(TOOL_READ_OBJECT, result),
-            EXIT_SUCCESS,
-        )),
-        Err(err) => Ok(render_object_error_output(Some(TOOL_READ_OBJECT), err)),
-    }
-}
-
 async fn dispatch_object_x_call(
     env: &CliRuntimeEnv,
     tool_name: &str,
@@ -695,6 +609,7 @@ async fn dispatch_object_x_call(
     if input.trace_id.is_none() {
         input.trace_id = Some(env.call_ctx.trace_id.clone());
     }
+    ensure_zone_runtime().await;
     let runtime = build_object_runtime(env, route_config_path).await?;
     match runtime.x_call(input).await {
         Ok(result) => {
@@ -712,6 +627,12 @@ async fn dispatch_object_x_call(
         }
         Err(err) => Ok(render_object_error_output(Some(tool_name), err)),
     }
+}
+
+/// Object URLs are read with this process's Zone identity (the session's token in an Agent's shell); without one
+/// the object library reports that there is no Zone here.
+async fn ensure_zone_runtime() {
+    let _ = agent_tool::xllm::ensure_buckyos_runtime().await;
 }
 
 async fn build_object_runtime(
@@ -736,8 +657,7 @@ async fn load_object_route_config(
             .await
             .map_err(object_error_to_agent_tool_error);
     }
-    ObjectRouteConfig::from_toml_str(DEFAULT_OBJECT_ROUTE_CONFIG)
-        .map_err(object_error_to_agent_tool_error)
+    Ok(ObjectRouteConfig::builtin())
 }
 
 fn render_object_error_output(
@@ -830,7 +750,6 @@ fn parse_tool_command(
     }
 
     match tool_name.as_str() {
-        TOOL_READ_OBJECT => parse_object_read_cli_command(tokens, current_dir),
         TOOL_XCALL => parse_object_x_call_cli_command(tool_name, tokens, current_dir),
         TOOL_CHECK_TASK => parse_check_task_cli_command(tool_name, tokens),
         TOOL_CANCEL_TASK => parse_cancel_task_cli_command(tool_name, tokens),
@@ -852,135 +771,6 @@ fn parse_tool_command(
             })
         }
     }
-}
-
-fn parse_object_read_cli_command(
-    tokens: &[String],
-    current_dir: &Path,
-) -> Result<ParsedCommand, AgentToolError> {
-    let mut route_config_path = None;
-    let mut object = None;
-    let mut purpose = None;
-    let mut session_id = None;
-    let mut content_only = false;
-    let mut offset = None;
-    let mut limit = None;
-    let mut options = json!({});
-    let mut idx = 0usize;
-
-    while idx < tokens.len() {
-        let token = &tokens[idx];
-        match token.as_str() {
-            "--config" | "--route-config" => {
-                idx += 1;
-                let Some(path) = tokens.get(idx) else {
-                    return Err(with_tool_usage(
-                        "missing route config path",
-                        TOOL_READ_OBJECT,
-                    ));
-                };
-                route_config_path = Some(resolve_cli_path(path, current_dir));
-            }
-            "--purpose" => {
-                idx += 1;
-                purpose = Some(required_token(tokens, idx, "--purpose", TOOL_READ_OBJECT)?);
-            }
-            "--session-id" => {
-                idx += 1;
-                session_id = Some(required_token(
-                    tokens,
-                    idx,
-                    "--session-id",
-                    TOOL_READ_OBJECT,
-                )?);
-            }
-            "--content-only" => content_only = true,
-            "--offset" => {
-                idx += 1;
-                offset = Some(parse_object_usize(
-                    &required_token(tokens, idx, "--offset", TOOL_READ_OBJECT)?,
-                    "offset",
-                    TOOL_READ_OBJECT,
-                )?);
-            }
-            "--limit" => {
-                idx += 1;
-                limit = Some(parse_object_usize(
-                    &required_token(tokens, idx, "--limit", TOOL_READ_OBJECT)?,
-                    "limit",
-                    TOOL_READ_OBJECT,
-                )?);
-            }
-            "--options" => {
-                idx += 1;
-                options = parse_json_arg(
-                    &required_token(tokens, idx, "--options", TOOL_READ_OBJECT)?,
-                    "--options",
-                    TOOL_READ_OBJECT,
-                )?;
-            }
-            _ if token.starts_with("--") => {
-                return Err(with_tool_usage(
-                    format!("unsupported flag `{token}`"),
-                    TOOL_READ_OBJECT,
-                ));
-            }
-            _ => {
-                if let Some((key, value)) = token.split_once('=') {
-                    match key {
-                        "object" | "uri" => object = Some(value.to_string()),
-                        "purpose" => purpose = Some(value.to_string()),
-                        "session_id" | "session-id" => session_id = Some(value.to_string()),
-                        "content_only" | "content-only" => {
-                            content_only = parse_object_bool(value, key, TOOL_READ_OBJECT)?
-                        }
-                        "offset" => {
-                            offset = Some(parse_object_usize(value, "offset", TOOL_READ_OBJECT)?)
-                        }
-                        "limit" => {
-                            limit = Some(parse_object_usize(value, "limit", TOOL_READ_OBJECT)?)
-                        }
-                        "options" => options = parse_json_arg(value, "options", TOOL_READ_OBJECT)?,
-                        _ => {
-                            return Err(with_tool_usage(
-                                format!("unsupported key `{key}`"),
-                                TOOL_READ_OBJECT,
-                            ));
-                        }
-                    }
-                } else if object.is_none() {
-                    object = Some(token.clone());
-                } else {
-                    return Err(with_tool_usage(
-                        format!("unexpected positional argument `{token}`"),
-                        TOOL_READ_OBJECT,
-                    ));
-                }
-            }
-        }
-        idx += 1;
-    }
-
-    let object = object
-        .map(|value| canonical_object_url_for_cli(&value, current_dir))
-        .transpose()?
-        .ok_or_else(|| with_tool_usage("missing object/uri", TOOL_READ_OBJECT))?;
-
-    Ok(ParsedCommand::ObjectRead {
-        route_config_path,
-        input: ObjectReadInput {
-            object,
-            purpose,
-            session_id,
-            content_only,
-            range: (offset.is_some() || limit.is_some()).then_some(ReadLineRange {
-                offset: offset.unwrap_or(1),
-                limit,
-            }),
-            max_tokens: None,
-            options,
-        },
-    })
 }
 
 fn parse_object_x_call_cli_command(
@@ -4471,6 +4261,13 @@ async fn build_cli_tool_manager(env: &CliRuntimeEnv) -> Result<AgentToolManager,
     mgr.register_typed_tool(GrepTool::new(file_cfg.clone()))?;
     mgr.register_typed_tool(DcrontabTool::new())?;
     mgr.register_typed_tool(ReadFileTool::new(file_cfg.clone()))?;
+    // The Session's `read` (agent_tool ReadTool) with the same object reader OpenDAN gives it.
+    let routes = load_object_route_config(env, None).await?;
+    let objects = AgentDIDObjectRuntime::new(routes).map_err(object_error_to_agent_tool_error)?;
+    mgr.register_tool_arc(Arc::new(
+        agent_tool::read_tool::ReadTool::new(file_cfg.clone())
+            .with_urls(Some(Arc::new(ObjectUrlReader::new(objects)))),
+    ))?;
     mgr.register_typed_tool(WriteFileTool::new(file_cfg.clone(), audit.clone()))?;
     mgr.register_typed_tool(EditFileTool::new(file_cfg, audit))?;
     mgr.register_typed_tool(CliBeginAttentionSignalExtractionTool {
@@ -4563,7 +4360,6 @@ async fn build_help_result(env: &CliRuntimeEnv, tool_name: Option<&str>) -> Agen
             }
         }
         match name {
-            TOOL_READ_OBJECT => READ_OBJECT_USAGE.to_string(),
             TOOL_XCALL => XCALL_USAGE.to_string(),
             TOOL_CHECK_TASK => "check_task <task_id>".to_string(),
             TOOL_CANCEL_TASK => "cancel_task <task_id> [--recursive]".to_string(),
@@ -4593,7 +4389,6 @@ async fn build_help_result(env: &CliRuntimeEnv, tool_name: Option<&str>) -> Agen
 
 fn with_tool_usage(message: impl Into<String>, tool_name: &str) -> AgentToolError {
     let usage = match tool_name {
-        TOOL_READ_OBJECT => READ_OBJECT_USAGE,
         TOOL_XCALL => XCALL_USAGE,
         TOOL_CHECK_TASK => "check_task <task_id>",
         TOOL_CANCEL_TASK => "cancel_task <task_id> [--recursive]",
@@ -5241,7 +5036,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn object_read_cli_uses_agent_did_runtime_for_bare_path() {
+    async fn read_cli_is_the_session_read() {
         let temp = tempdir().expect("create tempdir");
         let root = temp.path().join("agent");
         let cwd = root.join("workspace");
@@ -5252,107 +5047,32 @@ mod tests {
             .await
             .expect("write demo file");
 
-        let output = execute(
+        for args in [vec!["demo.txt", "range=2-2"], vec!["uri=demo.txt", "offset=1", "limit=1"]] {
+            let mut argv = vec![OsString::from("/tmp/agent_tool"), OsString::from("read")];
+            argv.extend(args.iter().map(OsString::from));
+            let output = execute(argv, test_env(root.clone(), cwd.clone()), None)
+                .await
+                .expect("run read");
+            assert_eq!(output.exit_code, EXIT_SUCCESS, "{}", output.stdout);
+            let payload: Json = serde_json::from_str(&output.stdout).expect("parse json");
+            assert_eq!(payload["status"], "success");
+            assert_eq!(payload["tool"], "read");
+            assert_eq!(payload["detail"]["content"], "line-2\n", "{args:?} {}", output.stdout);
+        }
+
+        // An object URL goes to the object library: refused without a Zone, not found in one.
+        let err = execute(
             vec![
                 OsString::from("/tmp/agent_tool"),
                 OsString::from("read"),
-                OsString::from("demo.txt"),
-                OsString::from("--content-only"),
-                OsString::from("--offset"),
-                OsString::from("2"),
-                OsString::from("--limit"),
-                OsString::from("1"),
+                OsString::from("obj://aiworkspace/ws_1"),
             ],
             test_env(root, cwd),
             None,
         )
         .await
-        .expect("run object read");
-
-        assert_eq!(output.exit_code, EXIT_SUCCESS);
-        let payload: Json = serde_json::from_str(&output.stdout).expect("parse json");
-        assert_eq!(payload["status"], "success");
-        assert_eq!(payload["tool"], "read");
-        assert_eq!(payload["cmd_name"], "read");
-        assert_eq!(payload["output"], "line-2");
-    }
-
-    #[tokio::test]
-    async fn object_read_cli_returns_unchanged_for_same_session_id_env() {
-        let _lock = nb_lock();
-        let temp = tempdir().expect("create tempdir");
-        let root = temp.path().join("agent");
-        let cwd = root.join("workspace");
-        fs::create_dir_all(&cwd)
-            .await
-            .expect("create workspace dir");
-        fs::write(cwd.join("demo.txt"), "line-1\nline-2\n")
-            .await
-            .expect("write demo file");
-        seed_agent_identity(&root, "alice", "did:example:agent");
-
-        struct EnvGuard {
-            key: &'static str,
-            previous: Option<std::ffi::OsString>,
-        }
-        impl EnvGuard {
-            fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
-                let previous = std::env::var_os(key);
-                std::env::set_var(key, value);
-                Self { key, previous }
-            }
-        }
-        impl Drop for EnvGuard {
-            fn drop(&mut self) {
-                if let Some(previous) = self.previous.as_ref() {
-                    std::env::set_var(self.key, previous);
-                } else {
-                    std::env::remove_var(self.key);
-                }
-            }
-        }
-
-        struct CwdGuard(std::path::PathBuf);
-        impl CwdGuard {
-            fn set(path: &Path) -> Self {
-                let previous = std::env::current_dir().expect("read current dir");
-                std::env::set_current_dir(path).expect("set current dir");
-                Self(previous)
-            }
-        }
-        impl Drop for CwdGuard {
-            fn drop(&mut self) {
-                let _ = std::env::set_current_dir(&self.0);
-            }
-        }
-
-        let session_id = format!("unchanged-session-{}", agent_tool::now_ms());
-        let _g1 = EnvGuard::set(agent_tool::OPENDAN_AGENT_ROOT_ENV, &root);
-        let _g2 = EnvGuard::set(agent_tool::OPENDAN_SESSION_ID_ENV, &session_id);
-        let _g3 = EnvGuard::set(agent_tool::OPENDAN_TRACE_ID_ENV, "trace-unchanged");
-        let _cwd = CwdGuard::set(&cwd);
-
-        let args = vec![
-            OsString::from("/tmp/agent_tool"),
-            OsString::from("read"),
-            OsString::from("demo.txt"),
-            OsString::from("--content-only"),
-        ];
-        let first = execute(args.clone(), CliRuntimeEnv::from_process().unwrap(), None)
-            .await
-            .expect("first read");
-        assert_eq!(first.exit_code, EXIT_SUCCESS);
-        let first_payload: Json = serde_json::from_str(&first.stdout).expect("parse first json");
-        assert_eq!(first_payload["detail"]["unchanged"], false);
-        assert_eq!(first_payload["output"], "line-1\nline-2\n");
-
-        let second = execute(args, CliRuntimeEnv::from_process().unwrap(), None)
-            .await
-            .expect("second read");
-        assert_eq!(second.exit_code, EXIT_SUCCESS);
-        let second_payload: Json = serde_json::from_str(&second.stdout).expect("parse second json");
-        assert_eq!(second_payload["detail"]["unchanged"], true);
-        assert_eq!(second_payload["output"], "和上一次read相比没有变化");
+        .expect_err("no such workspace");
+        assert!(err.to_string().contains("obj://aiworkspace/ws_1"), "{err}");
     }
 
     #[tokio::test]

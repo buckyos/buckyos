@@ -473,6 +473,10 @@ load_background_hits = "all"
 
 需要注意的是，`load_changed_background_hits` 会记录上一次加载状态，只返回相比上次调用发生变化的部分。为了让事件和其它背景变化有时间汇聚，函数还有一个 session 级 60 秒硬间隔：同一 session 只要返回过一次非空结果，未来 60 秒内每次调用都会直接返回空，不读取也不刷新 hint 指纹。没有配置 `load_background_hits = "all"` 的 hook 不会读取 hints，`session.background_hint_changed` 为 `false`。
 
+### 6.1 已知对象（`## Objects`）
+
+Zone 宿主（OpenDAN）在每个 Session 的系统文本里、`## Commands` 之前放一段 `## Objects`（`DefaultAssembler.known_objects`，`runner/assembler.rs`）：Agent 自己 `obj://<agent_id>`、本 Session `obj://<agent_id>/sessions/<sid>`、绑定的工作区、Agent 与 owner 的消息会话（`obj://msg-center/owners/<did>/sessions`，owner 的只读）、owner 的 HomeStation 主页与文件（`cyfs:///home/<owner>/`），每条一句说明。只给引用、不注入对象内容和挂载表，Session 内不变（稳定前缀）；`read` 这些 URL 才得到对象说明。不注入 Zone default device：Agent 产生的路径属于其来源 runtime。Hint 带对象时，`<hint>` 有 `object="<url>"` 属性，background 行写 `about <url>`（agent-object-url TODO A4 / A5）。
+
 ## 7. Include 与安全边界
 
 Behavior 模板应使用 `__INCLUDE__` 引入文件内容，不再依赖 `role_md` / `self_md` 这类 render-time extras。

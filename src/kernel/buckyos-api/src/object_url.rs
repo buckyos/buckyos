@@ -407,6 +407,80 @@ pub fn obj_entity_url<S: AsRef<str>>(entity: &DID, segments: &[S]) -> String {
     format!("obj://{}{}", entity.to_host_name(), encode_segments(segments))
 }
 
+/// DID Object 端点（TODO §1.4）：`obj://<host>/<p>?<q>` 是 `<origin>/kapi/<host>/obj/<p>?<q>`；当前 Zone 的路径型
+/// cyfs 是其 DFS 对象 `<origin>/kapi/dfs/obj/<p>`；https / http 原样。`origin` 是网关源（Zone 主机名或节点网关）。
+/// 其余（文件、ObjId、其他 Zone 的路径）没有 DID Object 端点。
+pub fn object_endpoint(url: &ObjectUrl, origin: &str, current_zone: Option<&str>) -> Option<String> {
+    let origin = origin.trim_end_matches('/');
+    match url {
+        ObjectUrl::Obj { host, .. } => {
+            let canonical = url.to_string();
+            let tail = &canonical["obj://".len() + host.as_str().len()..];
+            Some(format!("{origin}/kapi/{}/obj{tail}", host.as_str()))
+        }
+        ObjectUrl::CyfsPath { zone, path } if zone.is_none() || zone.as_deref() == current_zone => {
+            Some(format!("{origin}/kapi/dfs/obj{}", path.trim_end_matches('/')))
+        }
+        ObjectUrl::Web { url } => Some(url.clone()),
+        _ => None,
+    }
+}
+
+/// `$BUCKYOS_ROOT/data/<rel>` 下的本机路径 → DFS 路径 `/<rel>`（`cyfs:///<rel>`）；按路径段比较，不接受 `..`。
+pub fn data_path_to_dfs(data_root: &std::path::Path, path: &std::path::Path) -> Option<String> {
+    use std::path::Component;
+    let rel = path.strip_prefix(data_root).ok()?;
+    let mut out = String::new();
+    for part in rel.components() {
+        match part {
+            Component::Normal(seg) => {
+                out.push('/');
+                out.push_str(seg.to_str()?);
+            }
+            Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    Some(if out.is_empty() { "/".to_string() } else { out })
+}
+
+/// DFS 路径 `/<rel>` → `$BUCKYOS_ROOT/data/<rel>`；含 `..` 等非普通段时为 `None`。
+pub fn dfs_to_data_path(data_root: &std::path::Path, dfs_path: &str) -> Option<std::path::PathBuf> {
+    let mut out = data_root.to_path_buf();
+    for seg in decoded_segments(dfs_path) {
+        if seg.is_empty() || seg == "." || seg == ".." || seg.contains(['/', '\\']) {
+            return None;
+        }
+        out.push(seg);
+    }
+    Some(out)
+}
+
+/// 持久引用（Memory / Hint / 消息里保存的对象）：URL 取规范形式；`$BUCKYOS_ROOT/data` 下的绝对路径是 DFS 文件
+/// `cyfs:///<path>`（TODO A9）；其余原样保留——来源不明的裸路径不伪造 CYFS 引用。
+pub fn persistent_object_ref(raw: &str, data_root: &std::path::Path) -> String {
+    let raw = raw.trim();
+    if raw.contains("://") {
+        return parse_object_url(raw).map(|url| url.to_string()).unwrap_or_else(|_| raw.to_string());
+    }
+    let path = std::path::Path::new(raw);
+    if path.is_absolute() {
+        if let Some(dfs) = data_path_to_dfs(data_root, path) {
+            let encoded: Vec<String> = dfs.split('/').map(encode_obj_segment).collect();
+            return format!("cyfs://{}", encoded.join("/"));
+        }
+    }
+    raw.to_string()
+}
+
+/// 能 `read` 的引用：合法 URL 的规范形式；裸路径、`workspace:<id>` 这类标记不是。
+pub fn readable_object_url(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    raw.contains("://")
+        .then(|| parse_object_url(raw).ok().map(|url| url.to_string()))
+        .flatten()
+}
+
 /// `obj://config/<key>`、`/config/<key>`、`/<key>` → system-config key（与 sys_config_service 一致）。
 pub fn config_key_from_url(input: &str) -> &str {
     let mut key = input.strip_prefix("obj://config/").unwrap_or(input);
@@ -636,6 +710,10 @@ mod tests {
         #[serde(default)]
         resource_key: Option<String>,
         #[serde(default)]
+        endpoint: Option<String>,
+        #[serde(default)]
+        no_endpoint: bool,
+        #[serde(default)]
         event: Option<String>,
         #[serde(default)]
         event_key: Option<String>,
@@ -690,10 +768,46 @@ mod tests {
                     v.input
                 );
             }
+            let endpoint = object_endpoint(&parsed, "http://gw:3180", Some("test.buckyos.io"));
+            if let Some(expected) = &v.endpoint {
+                assert_eq!(endpoint.as_deref(), Some(expected.as_str()), "endpoint of {}", v.input);
+            }
+            if v.no_endpoint {
+                assert_eq!(endpoint, None, "{} has no endpoint", v.input);
+            }
             if let (Some(event), Some(key)) = (&v.event, &v.event_key) {
                 assert_eq!(&parsed.object_event_key(event).unwrap(), key, "event key of {}", v.input);
             }
         }
+    }
+
+    #[test]
+    fn persistent_refs_are_full_urls_or_left_alone() {
+        let root = std::path::Path::new("/opt/buckyos/data");
+        assert_eq!(
+            persistent_object_ref("/opt/buckyos/data/home/alice/agents/x/a b.md", root),
+            "cyfs:///home/alice/agents/x/a%20b.md"
+        );
+        assert_eq!(persistent_object_ref(" OBJ://AIWorkspace/ws_1 ", root), "obj://aiworkspace/ws_1");
+        assert_eq!(persistent_object_ref("/tmp/a.md", root), "/tmp/a.md");
+        assert_eq!(persistent_object_ref("reports/a.md", root), "reports/a.md");
+        assert_eq!(persistent_object_ref("workspace:ws-1", root), "workspace:ws-1");
+        assert_eq!(readable_object_url("obj://aiworkspace/ws_1?version=3").as_deref(), Some("obj://aiworkspace/ws_1?version=3"));
+        assert_eq!(readable_object_url("workspace:ws-1"), None);
+        assert_eq!(readable_object_url("obj://not-a-service/x"), None);
+    }
+
+    #[test]
+    fn data_paths_are_dfs_paths() {
+        let root = std::path::Path::new("/opt/buckyos/data");
+        let file = std::path::Path::new("/opt/buckyos/data/home/alice/agents/x/a b.md");
+        assert_eq!(data_path_to_dfs(root, file).as_deref(), Some("/home/alice/agents/x/a b.md"));
+        assert_eq!(data_path_to_dfs(root, root).as_deref(), Some("/"));
+        assert_eq!(data_path_to_dfs(root, std::path::Path::new("/opt/buckyos/database/x")), None);
+        assert_eq!(data_path_to_dfs(root, std::path::Path::new("/opt/buckyos/data/../etc")), None);
+        assert_eq!(data_path_to_dfs(root, std::path::Path::new("/tmp/a")), None);
+        assert_eq!(dfs_to_data_path(root, "/home/alice/a%20b.md"), Some(root.join("home/alice/a b.md")));
+        assert_eq!(dfs_to_data_path(root, "/home/%2E%2E/etc"), None);
     }
 
     #[test]

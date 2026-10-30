@@ -252,7 +252,10 @@ pub fn lines(i: &BackgroundInput) -> Vec<BackgroundLine> {
     for h in i.hints {
         out.push(BackgroundLine::new(
             format!("hint:{}", h.id),
-            format!("hint: {} (noticed {})", one_line(&h.sentence, 300), h.time),
+            match &h.object {
+                Some(object) => format!("hint: {} (noticed {}; about {object})", one_line(&h.sentence, 300), h.time),
+                None => format!("hint: {} (noticed {})", one_line(&h.sentence, 300), h.time),
+            },
         ));
     }
     out
@@ -359,6 +362,7 @@ mod tests {
             time: "2026-10-02".into(),
             sentence: "owner prefers Chinese".into(),
             kind: String::new(),
+            object: None,
         }];
         let (shown, map) = select(lines(&input(t0, &hints)), &BTreeMap::new(), t0);
         let keys: Vec<&str> = shown.iter().map(|l| l.key.as_str()).collect();

@@ -445,6 +445,7 @@ fn parse_subscription(spec: &str) -> R<Subscription> {
     };
     let (kind, rest) = rest.split_once(':').ok_or_else(err)?;
     let mut watch = Vec::new();
+    let mut id_spec = spec.to_string();
     let source = match kind {
         "session" => {
             // Pulled session state is always observed; an Input needs a
@@ -467,8 +468,16 @@ fn parse_subscription(spec: &str) -> R<Subscription> {
         }
         "object" => {
             let (object, event) = rest.split_once('#').unwrap_or((rest, ""));
+            // Events of an object are its kevents in this Zone (doc/key url.md §7): an `obj://` URL, kept in its
+            // canonical form; another Zone's objects have no event channel here yet.
+            let object = buckyos_api::parse_object_url(object)
+                .map_err(|e| bad(format!("`{spec}`: {e}")))?
+                .to_string();
+            crate::bridge::kevent::kevent_pattern(&object, event)
+                .map_err(|e| bad(format!("`{spec}`: {object} has no events this Zone delivers ({e})")))?;
+            id_spec = format!("{}:object:{object}#{event}", spec.split(':').next().unwrap_or_default());
             SubscriptionSource::ObjectEvent {
-                object: object.to_string(),
+                object,
                 event: event.to_string(),
             }
         }
@@ -481,7 +490,7 @@ fn parse_subscription(spec: &str) -> R<Subscription> {
         return Err(err());
     }
     Ok(Subscription {
-        id: format!("sub-{}", crate::ids::h(&[spec])),
+        id: format!("sub-{}", crate::ids::h(&[id_spec.as_str()])),
         mode,
         source,
         watch,
@@ -2875,4 +2884,28 @@ pub fn main() -> ! {
         }
     };
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod subscription_tests {
+    use super::*;
+
+    #[test]
+    fn object_subscriptions_are_canonical_object_urls_of_this_zone() {
+        let ok = |spec: &str| parse_subscription(spec).unwrap_or_else(|e| panic!("{spec}: {}", e.msg));
+        let a = ok("active:object:OBJ://AIWorkspace/ws_1#head");
+        let b = ok("active:object:obj://aiworkspace/ws_1#head");
+        assert_eq!(a.id, b.id, "one object, one subscription");
+        match &a.source {
+            SubscriptionSource::ObjectEvent { object, event } => {
+                assert_eq!((object.as_str(), event.as_str()), ("obj://aiworkspace/ws_1", "head"));
+            }
+            other => panic!("{other:?}"),
+        }
+        let Err(err) = parse_subscription("active:object:https://bob.example.org/home/bob/feed") else {
+            panic!("another Zone's object has no events here");
+        };
+        assert!(err.msg.contains("no events this Zone delivers"), "{}", err.msg);
+        assert!(parse_subscription("active:object:not a url").is_err());
+    }
 }

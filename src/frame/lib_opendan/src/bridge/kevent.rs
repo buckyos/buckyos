@@ -35,7 +35,7 @@ fn objects_of(cfg: &SessionConfig) -> Vec<(String, String, String)> {
         .collect()
 }
 
-fn kevent_pattern(object: &str, event: &str) -> std::result::Result<String, buckyos_api::ObjectUrlError> {
+pub(crate) fn kevent_pattern(object: &str, event: &str) -> std::result::Result<String, buckyos_api::ObjectUrlError> {
     let url = buckyos_api::parse_object_url(object)?;
     if event.is_empty() || event == "*" {
         url.object_event_pattern()
@@ -61,7 +61,7 @@ impl EventBridge for KEventBridge {
         let subs = objects_of(&cfg);
         let reader = self
             .client
-            .create_event_reader(subs.iter().map(|(_, o, _)| o.clone()).collect())
+            .create_event_reader(subs.iter().map(|(_, _, pattern)| pattern.clone()).collect())
             .await
             .map_err(|e| OpenDanError::Channel(format!("kevent reader: {e}")))?;
         loop {
@@ -79,9 +79,8 @@ impl EventBridge for KEventBridge {
                 .filter(|(_, _, pattern)| buckyos_api::match_global_pattern(pattern, &ev.eventid))
             {
                 let name = ev.eventid.rsplit('/').next().unwrap_or("changed").to_string();
-                let mut summary = text("summary").unwrap_or_else(|| {
-                    format!("{object} {name}: {}", ev.data)
-                });
+                // The rendering names the source and the event; the summary is what happened.
+                let mut summary = text("summary").unwrap_or_else(|| ev.data.to_string());
                 if summary.len() > MAX_EVENT_SUMMARY_BYTES {
                     let mut end = MAX_EVENT_SUMMARY_BYTES;
                     while !summary.is_char_boundary(end) {

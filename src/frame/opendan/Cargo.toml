@@ -28,6 +28,7 @@ buckyos-api = { path = "../../kernel/buckyos-api" }
 llm_context = { path = "../llm_context" }
 agent_tool = { path = "../agent_tool" }
 agent_tool_cli_dev = { path = "../agent_tool_cli_dev" }
+agent-did-object-lib = { path = "../agent-did-object-lib" }
 libopendan = { path = "../lib_opendan" }
 
 [dev-dependencies]

@@ -160,7 +160,8 @@ buckyos system info                                 # BuckyOS version, build_ver
   Provider endpoint without checking access; `buckyos obj read <url> [--property a,b]` follows the DID Object Card
   (`/kapi/<service>/obj/...`, `/kapi/<agent_id>/obj/...`, DFS at `/kapi/dfs/obj/...`) to its Profile and summary
   properties with your session. Object events are kevents `/obj/<host>/<path>/<event>` (e.g. task changes
-  `/obj/taskmgr/<task_id>/changed`). A 403 / 404 is the object's own ACL, not a URL error.
+  `/obj/taskmgr/<task_id>/changed`). A 403 / 404 is the object's own ACL, not a URL error. Inside an Agent session the
+  `read` tool (shell: `agent_tool read <url> [property=<name>]`) reads the same URLs as the Agent itself.
 - AI providers: `buckyos ai providers` (auth as configured/kind, health, models; never secrets), `ai routing`,
   `ai usage [--range last1d|last7d|last30d | --since <t>] [--group-by provider_instance_name,provider_model] [--bucket day]`
   (your own calls only; an admin's Desktop Usage page can show the whole Zone); per-model health and prices:

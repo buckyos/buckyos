@@ -659,12 +659,12 @@ impl MessageCenter {
     }
 
     pub(crate) fn publish_box_changed_event(record: &MailboxRecord, operation: &str) {
-        let event_id = record.mailbox.box_event_id(record.box_kind.clone());
+        let event_ids = record.mailbox.box_event_ids(record.box_kind.clone());
         let payload = json!({
             "operation": operation,
             "owner": record.owner.to_string(),
             "box_kind": Self::box_kind_name(&record.box_kind),
-            "box_id": event_id,
+            "box_id": event_ids.first(),
             "mailbox": record.mailbox,
             "record_id": record.record_id.clone(),
             "msg_id": record.msg_id.to_string(),
@@ -672,7 +672,9 @@ impl MessageCenter {
             "session_id": record.session_id.clone(),
             "updated_at_ms": record.updated_at_ms,
         });
-        Self::publish_event(event_id, payload);
+        for event_id in event_ids {
+            Self::publish_event(event_id, payload.clone());
+        }
     }
 
     pub(crate) fn publish_delivery_changed_event(record: &DeliveryRecord, operation: &str) {
