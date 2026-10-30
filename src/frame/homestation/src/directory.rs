@@ -205,12 +205,26 @@ async fn resolve_doc(value: &str) -> Result<Value, DirError> {
     doc.to_json_value().map_err(|e| DirError::NotFound(format!("decode document of {value}: {e}")))
 }
 
+/// The document of a signer: a device of some zone (what zones sign with), else whatever its DID resolves to.
+async fn resolve_signer_doc(signer: &str) -> Result<name_lib::EncodedDocument, DirError> {
+    let signer_did = did(signer)?;
+    match name_client::resolve_did(&signer_did, Some(name_lib::DidDocType::Device)).await {
+        Ok(doc) => Ok(doc),
+        Err(_) => name_client::resolve_did(&signer_did, None)
+            .await
+            .map_err(|e| DirError::Unavailable(format!("resolve {signer}: {e}"))),
+    }
+}
+
+/// Whether `doc` lists `signer` / `kid` among its authentication keys. A relative id (`#key`) is a key of the
+/// document's own DID, never of another signer that happens to use the same fragment.
 fn lists_signer(doc: &Value, signer: &str, kid: &str) -> bool {
-    let fragment = kid_fragment(kid);
+    let doc_id = doc.get("id").and_then(Value::as_str).unwrap_or_default();
     doc.get("authentication").and_then(Value::as_array).is_some_and(|items| {
         items.iter().any(|item| {
             let id = item.as_str().or_else(|| item.get("id").and_then(Value::as_str)).unwrap_or("");
-            id == kid || id == signer || fragment.as_deref() == Some(id)
+            let id = if id.starts_with('#') { format!("{doc_id}{id}") } else { id.to_string() };
+            id == kid || id == signer
         })
     })
 }
@@ -280,23 +294,14 @@ impl Directory for NameDirectory {
         if let Some(key) = did_dev_key(signer) {
             return Ok(key);
         }
+        // Zones sign with their devices' keys: the key the signer's device document (else its document) names.
         let fragment = kid_fragment(kid);
-        let signer_did = did(signer)?;
-        if self.local_devices.iter().any(|d| d == signer) {
-            // A device of this zone signs with the key its device document names.
-            return name_client::resolve_did(&signer_did, Some(name_lib::DidDocType::Device))
-                .await
-                .and_then(name_lib::parse_did_doc)
-                .and_then(|doc| {
-                    doc.get_auth_key(fragment.as_deref())
-                        .map(|(key, _)| key)
-                        .ok_or_else(|| name_lib::NSError::NotFound(format!("{kid} is not a key of {signer}")))
-                })
-                .map_err(|e| DirError::Unavailable(format!("device key of {signer}: {e}")));
-        }
-        name_client::resolve_auth_key(&signer_did, fragment.as_deref())
-            .await
-            .map_err(|e| DirError::Unavailable(format!("key of {signer}: {e}")))
+        let doc = resolve_signer_doc(signer).await?;
+        name_lib::parse_did_doc(doc)
+            .map_err(|e| DirError::Unavailable(format!("document of {signer}: {e}")))?
+            .get_auth_key(fragment.as_deref())
+            .map(|(key, _)| key)
+            .ok_or_else(|| DirError::NotFound(format!("{kid} is not a key of {signer}")))
     }
 
     /// The DID itself, a key its document lists, a device it owns, or — zone custody — a
@@ -313,7 +318,10 @@ impl Directory for NameDirectory {
                 return Ok(true);
             }
         }
-        let signer_doc = resolve_doc(signer).await?;
+        let signer_doc = resolve_signer_doc(signer)
+            .await?
+            .to_json_value()
+            .map_err(|e| DirError::NotFound(format!("decode document of {signer}: {e}")))?;
         if signer_doc.get("owner").and_then(Value::as_str) == Some(principal) {
             return Ok(true);
         }
@@ -331,5 +339,22 @@ impl Directory for NameDirectory {
     async fn content_did_owner(&self, value: &str) -> Result<Option<String>, DirError> {
         let doc = resolve_doc(value).await?;
         Ok(doc.get("owner").and_then(Value::as_str).map(str::to_string))
+    }
+}
+
+#[cfg(test)]
+mod signer_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_relative_key_id_belongs_to_the_documents_own_did() {
+        let alice = json!({ "id": "did:bns:alice", "authentication": ["#main_key"] });
+        assert!(lists_signer(&alice, "did:bns:alice", "did:bns:alice#main_key"));
+        // Another DID signing with a `#main_key` of its own is not one of alice's keys.
+        assert!(!lists_signer(&alice, "did:bns:ood1.alice", "did:bns:ood1.alice#main_key"));
+        assert!(!lists_signer(&alice, "did:bns:mallory", "did:bns:mallory#main_key"));
+        let listed = json!({ "id": "did:bns:alice", "authentication": [{ "id": "did:bns:ood1.alice#main_key" }] });
+        assert!(lists_signer(&listed, "did:bns:ood1.alice", "did:bns:ood1.alice#main_key"));
     }
 }

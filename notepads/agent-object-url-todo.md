@@ -374,7 +374,7 @@ DV 中顺带修正：msg-center 拒绝信息显示实际身份（Agent DID）而
 
 跨 Zone（ssotest VM 组，10-29 晚）：按用户同意重建了 bob 种子（旧 env 备份在 `~/buckycli-backup-20261029/bob.bns.did`；新种子由 `prepareSeedIdentity` 生成，口令哈希已核对），四个种子包全部通过 `make_sn_config` 校验，四台 VM 全新安装并启动。
 - msg-center 原生路由 `test/test_msg_center/test_native_routes_dv.mjs` 通过：bob 查 alice、charlie 可路由，bob → alice 的原生消息经 `did:bns:msg-hub.bob` 投递进 alice 的 REQUEST_BOX。
-- `test/object_url_dv/homestation_cross_zone_dv.mjs`：前两步通过——bob 的 profile 给出 `https://bob.web3.devtests.org/home/bob/{feed,inbox}`，feed Card 默认 URL 为 https，发表后的入口是 `https://.../home/bob/feed/@/<key>`；alice `sources.resolve` / `sources.follow` 成功。第 3 步拉取被拒：bob 校验 alice 的 reader proof 时返回 401（`signer_key` 解析远端设备钥未指定 doc type，解析器按 zone 取文档后被绑定校验拒收）。这属于跨 Zone 鉴权，按用户安排留给 `notepads/cross-zone-auth-overview.md`（细节已记在其 §5.1），第 3、4 步（拉取、评论经 https inbox target 投递）待该项修复后重跑本脚本。
+- `test/object_url_dv/homestation_cross_zone_dv.mjs`：前两步通过——bob 的 profile 给出 `https://bob.web3.devtests.org/home/bob/{feed,inbox}`，feed Card 默认 URL 为 https，发表后的入口是 `https://.../home/bob/feed/@/<key>`；alice `sources.resolve` / `sources.follow` 成功。第 3 步拉取被拒：bob 校验 alice 的 reader proof 时返回 401（`signer_key` 解析远端设备钥未指定 doc type，解析器按 zone 取文档后被绑定校验拒收）。这属于跨 Zone 鉴权，当时留给 `notepads/cross-zone-auth-overview.md`；10-29 晚按用户同意修复后重跑，第 3、4 步也已通过（见第 3 段下的"跨 Zone DV"）。
 
 DV 发现的既有问题（与本段无关，按用户要求随后修复）：
 1. `data/homestation` 等服务库不随 `start.py --all` 清理——这是 RDB `user_data` 分区（`data/<appid>/`）的既定语义，不改清理范围；`start.py` 新增 `--wipe-data`（仅与 `--all` / `--reinstall` 同用），全新安装前删除 `data/` 与 `storage/`，得到空 Zone（AGENTS.md 已写）。
@@ -444,6 +444,8 @@ Provider 和 RBAC 稳定后再改 Agent 侧，避免工具先于服务定型：
 - A：Session 内审批——`agent_tool xcall` 遇到非 `read_only` 动作，要求先用 `agent-session ask-user`（UI）/ 通知向 owner 要确认，CLI 凭该确认的 id 核对 Agent State 里 owner 的回答（绑定对象、动作、参数摘要）才放行。改动在 OpenDAN / CLI，不动 Provider。
 - B：Provider 侧确认协议——动作声明 `x-buckyos:action.confirm = "required"`，首调返回 `confirmation_required` 与绑定调用者 / 动作 / 参数的 token，owner 在 Desktop / MessageHub 确认后 Agent 带 `confirm_token` 重试。协议字段已有，需 Provider、Desktop 与 verify 逻辑。
 - C：维持现状——Provider 的 RBAC（Agent 身份、read-only Agent 无写权限）+ 结果带 risk + 手册要求先问用户；等第一个写动作出现时再定。
+
+跨 Zone DV（2026-10-29 晚，ssotest VM 组，VM 更新到 398d50449 + HomeStation 签名者修复）：msg-center 原生路由 bob → alice 通过；`homestation_cross_zone_dv.mjs` 全过——bob 的 https feed 响应带 Card（`did:bns:bob:homestation:home:bob:feed`，默认 URL 为该 https 路径）、alice 关注并拉到 bob 的条目（entry 为 https 形式）、alice 的评论经 `https://bob…/home/bob/inbox` 投递进 bob 的评论列表。卡住上次 DV 的 reader proof 401 已修（见 `cross-zone-auth-overview.md` §5.1，同时修了一处相对 key id 导致的冒充漏洞），伪造 proof 被拒。
 
 #### 第 3 段 DV（2026-10-29，本机单 Zone，重建 paios 镜像）
 

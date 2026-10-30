@@ -78,7 +78,9 @@
 
 三份的判定顺序略有差异（HomeStation 多一条“signer 文档 owner＝principal”，msg-center 多一条 `is_hosted_identity` 的本地 Zone 短路），行为是否完全一致没有测试覆盖。
 
-2026-10-29 ssotest VM DV（notepads/agent-object-url-todo.md 第 2 段 DV）实测：同一 VM 组里 msg-center 原生消息 bob → alice 投递通过，HomeStation 跨 Zone 读不通——alice 关注 bob 后拉 `https://bob.web3.devtests.org/home/bob/feed?...` 一直 401。bob 的回应体：`unavailable: key of did:bns:ood1.alice: ... web-provider: document binding: document body is a device document, requested zone; doc_type not specified for did:bns:ood1.alice; defaulted to zone`。即 `signer_key` 对非本 Zone 设备走 `name_client::resolve_auth_key`，没指定 doc type，解析器默认按 zone 取文档，绑定校验拒收设备文档；本 Zone 设备那一支已经显式传 `DidDocType::Device`。未修，留给本 TODO。
+2026-10-29 ssotest VM DV（notepads/agent-object-url-todo.md 第 2 段 DV）实测：同一 VM 组里 msg-center 原生消息 bob → alice 投递通过，HomeStation 跨 Zone 读不通——alice 关注 bob 后拉 `https://bob.web3.devtests.org/home/bob/feed?...` 一直 401。bob 的回应体：`unavailable: key of did:bns:ood1.alice: ... web-provider: document binding: document body is a device document, requested zone; doc_type not specified for did:bns:ood1.alice; defaulted to zone`。即 `signer_key` 对非本 Zone 设备走 `name_client::resolve_auth_key`，没指定 doc type，解析器默认按 zone 取文档，绑定校验拒收设备文档；本 Zone 设备那一支已经显式传 `DidDocType::Device`。
+
+2026-10-29 按用户同意修复（跨 Zone DV 时）：HomeStation `directory.rs` 的签名者文档与钥（`signer_key`、`authorizes` 里取 signer 文档）一律先按 Device 解析、取不到再按默认类型。同时发现并修了一处冒充漏洞：`lists_signer` 把 principal 文档里的相对 id（`#main_key`）与任意签名者 kid 的同名片段相配，任何 DID 用 `#main_key` 签 reader proof 都会被当成该 principal 授权的签名者（旧规则下 alice 的 proof 也是这样过的授权，而不是走 custody）；现在相对 id 只表示文档自身 DID 的钥，与 msg-center `authorizes_signer` 一致。ssotest VM 复验：alice 关注、拉取 bob 的发表、评论经 https inbox 投递回 bob 全过；伪造的 `did:dev:<x>#main_key` 签、`iss=did:bns:alice` 的 proof 被 bob 401 拒绝。HomeStation 的这条 custody 判定仍与 msg-center 分开实现（§5.1 三处重复的问题未动）。
 
 ## 6. 建议（未拍板）
 

@@ -44,7 +44,7 @@ function http(user, method, path, body, token) {
     const req = request(`https://${zone.host}${path}`, { method, ca, timeout: 30000, lookup, headers }, res => {
       let content = '';
       res.on('data', chunk => content += chunk);
-      res.on('end', () => resolve({ status: res.statusCode, body: content }));
+      res.on('end', () => resolve({ status: res.statusCode, body: content, headers: res.headers }));
     });
     req.on('timeout', () => req.destroy(new Error(`${user} ${path}: timeout`)));
     req.on('error', reject);
@@ -82,7 +82,13 @@ const profile = JSON.parse((await http('bob', 'GET', '/home/bob/profile')).body)
 assert(profile.stream === `${bobHome}/feed` && profile.inbox === `${bobHome}/inbox`, `bob profile ${JSON.stringify(profile)}`);
 const card = await http('bob', 'GET', '/kapi/homestation/obj/home/bob/feed', undefined, bobToken);
 assert(card.status === 200 && JSON.parse(card.body).alsoKnownAs[0] === `${bobHome}/feed`, `bob feed Card ${card.status} ${card.body.slice(0, 200)}`);
-console.log(JSON.stringify({ step: 'addresses', stream: profile.stream, inbox: profile.inbox }));
+// The https feed is the object itself: its response carries the Card (BuckyOS-DID-Document).
+const feedPage = await http('bob', 'GET', '/home/bob/feed?limit=1');
+const header = String(feedPage.headers['buckyos-did-document'] ?? '');
+assert(header.startsWith('json '), `bob's https feed carries its Card: ${header.slice(0, 40)}`);
+const feedCard = JSON.parse(Buffer.from(header.slice(5), 'base64url').toString('utf8'));
+assert(feedCard.alsoKnownAs[0] === `${bobHome}/feed`, `Card of the https feed ${JSON.stringify(feedCard.alsoKnownAs)}`);
+console.log(JSON.stringify({ step: 'addresses', stream: profile.stream, inbox: profile.inbox, card: feedCard.id }));
 
 // 2. bob publishes a public post
 const stamp = Date.now();
