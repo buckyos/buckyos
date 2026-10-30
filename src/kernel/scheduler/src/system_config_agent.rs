@@ -1535,6 +1535,14 @@ pub(crate) async fn update_node_gateway_infos(
     Ok(result)
 }
 
+/// The SN a node obtains its zone certificates through (DNS-01): the Zone's relay SN,
+/// else the SN the device publishes its address to (`wan_dyn`: DDNS without relay).
+fn node_sn_api_url(zone_sn: Option<&str>, ddns_sn_url: Option<&str>) -> Option<String> {
+    zone_sn
+        .map(|sn_host| format!("https://{}/kapi/sn", sn_host))
+        .or_else(|| ddns_sn_url.map(str::to_string))
+}
+
 pub(crate) async fn update_node_gateway_config(
     need_update_gateway_node_list: &HashSet<String>,
     input_system_config: &HashMap<String, String>,
@@ -1547,14 +1555,14 @@ pub(crate) async fn update_node_gateway_config(
     for node_id in need_update_gateway_node_list.iter() {
         let mut node_gateway_json = json!({});
 
-        if let Some(sn_host) = zone_config.sn.as_ref() {
+        let device_info = device_list.get(node_id);
+        let ddns_sn_url = device_info.and_then(|d| d.device_doc.ddns_sn_url.as_deref());
+        if let Some(sn_url) = node_sn_api_url(zone_config.sn.as_deref(), ddns_sn_url) {
             info!("SN enabled, add acme/tls stack for node {}", node_id);
-            let device_info = device_list
-                .get(node_id)
-                .ok_or_else(|| anyhow::anyhow!("device info {} not found", node_id))?;
+            let device_info =
+                device_info.ok_or_else(|| anyhow::anyhow!("device info {} not found", node_id))?;
             let identity_paths = buckyos_api::device_identity_paths(&device_info.device_doc.id)
                 .map_err(|err| anyhow::anyhow!("build device identity paths failed: {}", err))?;
-            let sn_url = format!("https://{}/kapi/sn", sn_host);
             let zone_hostname = zone_document_hostname(&zone_config);
             let wildcard_zone_domain = format!("*.{}", zone_hostname);
             node_gateway_json = json!({
@@ -1884,6 +1892,21 @@ pub(crate) async fn update_rbac_for_test(
         .unwrap()
 }
 
+#[cfg(test)]
+mod node_gateway_tests {
+    use super::*;
+
+    #[test]
+    fn a_zone_without_relay_gets_certificates_through_its_ddns_sn() {
+        let ddns = Some("https://sn.devtests.org/kapi/sn");
+        assert_eq!(
+            node_sn_api_url(Some("sn.devtests.org"), None).as_deref(),
+            Some("https://sn.devtests.org/kapi/sn")
+        );
+        assert_eq!(node_sn_api_url(None, ddns).as_deref(), ddns);
+        assert_eq!(node_sn_api_url(None, None), None);
+    }
+}
 
 #[cfg(test)]
 mod user_type_rbac_tests {

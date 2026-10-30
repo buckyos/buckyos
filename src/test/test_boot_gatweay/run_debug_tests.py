@@ -383,6 +383,8 @@ def assertions_for_case(case_name: str):
         ]
     if case_name == "req_ndm_ok":
         return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:4110")]
+    if case_name == "req_dfs_obj_ok":
+        return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:4110")]
     if case_name == "req_service_system_config_identifiers_ok":
         return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:3200")]
     if case_name == "req_service_system_config_well_known_ok":

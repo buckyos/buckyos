@@ -1,346 +1,148 @@
-import { initTestRuntime } from "../../test_helpers/buckyos_client.ts";
+/**
+ * TaskMgr kevent gateway smoke (DV-07): a task mutation is published as the kevent
+ * `/obj/taskmgr/<task_id>/changed`, and a child's mutation also as the root's
+ * `/obj/taskmgr/<root_id>/tree` (buckyos doc/key url.md §7). Both are subscribed through
+ * the Zone gateway `/kapi/kevent/stream`.
+ *
+ * Env: BUCKYOS_TEST_ZONE_HOST (test.buckyos.io), BUCKYOS_TEST_ADMIN_USER (devtest),
+ * BUCKYOS_TEST_ADMIN_PASSWORD (bucky2025), BUCKYOS_GATEWAY_BASE_URL (https://<zone>).
+ */
+import { buckyos } from "buckyos";
 
-type JsonPrimitive = string | number | boolean | null;
-type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
-type JsonObject = { [key: string]: JsonValue };
+type JsonRecord = Record<string, unknown>;
+type RpcClient = { call(method: string, params: JsonRecord): Promise<unknown> };
 
-type RpcClient = {
-  call: (method: string, params: Record<string, unknown>) => Promise<unknown>;
-};
+const KRpcClient = buckyos.kRPCClient as unknown as new (url: string, token?: string | null, seq?: number) => RpcClient;
+const hashPassword = buckyos.hashPassword as unknown as (username: string, password: string, nonce?: number) => string;
 
-type TaskRecord = {
-  id: number;
-  name: string;
-  task_type: string;
-  status: string;
-  root_id: string;
-  data?: JsonValue;
-};
+const env = (name: string, fallback: string) => Deno.env.get(name)?.trim() || fallback;
+const zoneHost = env("BUCKYOS_TEST_ZONE_HOST", "test.buckyos.io");
+const BASE = env("BUCKYOS_GATEWAY_BASE_URL", `https://${zoneHost}`);
+const adminUser = env("BUCKYOS_TEST_ADMIN_USER", "devtest");
+const adminPassword = env("BUCKYOS_TEST_ADMIN_PASSWORD", "bucky2025");
 
-type StreamReader = {
-  readFrame: (timeoutMs: number) => Promise<JsonObject>;
-  close: () => void;
-};
+let lastNonce = Date.now();
+const nextNonce = () => (lastNonce = Math.max(Date.now(), lastNonce + 1));
 
-const assert = {
-  ok(value: unknown, message?: string): void {
-    if (!value) throw new Error(message ?? "assertion failed");
-  },
-  equal(actual: unknown, expected: unknown, message?: string): void {
-    if (actual !== expected) {
-      throw new Error(
-        message ?? `expected ${String(expected)}, got ${String(actual)}`,
-      );
-    }
-  },
-};
-
-function getEnv(name: string, fallback?: string): string | undefined {
-  const value = Deno.env.get(name);
-  if (typeof value === "string" && value.trim().length > 0) {
-    return value.trim();
-  }
-  return fallback;
+function assert(cond: unknown, msg: string): asserts cond {
+  if (!cond) throw new Error(`assert failed: ${msg}`);
 }
 
-async function prepareAppClientConfig(): Promise<void> {
-  const sourceDir = getEnv(
-    "BUCKYOS_TEST_APP_CLIENT_DIR",
-    "/opt/buckyos/etc/.buckycli",
-  )!;
-  const tempDir = await Deno.makeTempDir({ prefix: "buckyos-appclient-" });
-
-  await Deno.copyFile(
-    `${sourceDir}/user_private_key.pem`,
-    `${tempDir}/user_private_key.pem`,
-  );
-
-  const userConfig = JSON.parse(
-    await Deno.readTextFile(`${sourceDir}/user_config.json`),
-  ) as JsonObject;
-  if (Array.isArray(userConfig["@context"])) {
-    const contexts = userConfig["@context"].filter((item) =>
-      typeof item === "string"
-    );
-    userConfig["@context"] = contexts.at(-1) ??
-      "https://buckyos.org/ns/owner/v1";
-  }
-  await Deno.writeTextFile(
-    `${tempDir}/user_config.json`,
-    `${JSON.stringify(userConfig, null, 2)}\n`,
-  );
-
-  try {
-    await Deno.copyFile(
-      `${sourceDir}/zone_config.json`,
-      `${tempDir}/zone_config.json`,
-    );
-  } catch {
-    // zone_config.json is not required by the WebSDK private key loader.
-  }
-
-  Deno.env.set("BUCKYOS_TEST_APP_CLIENT_DIR", tempDir);
+async function login(user: string, password: string): Promise<string> {
+  const nonce = nextNonce();
+  const result = await new KRpcClient(`${BASE}/kapi/control-panel`, null, nonce).call("auth.login", {
+    username: user,
+    password: hashPassword(user, password, nonce),
+    appid: "control-panel",
+    target: { kind: "system", service_id: "control-panel" },
+    login_nonce: nonce,
+  }) as JsonRecord;
+  return String(result.session_token);
 }
 
-function asObject(value: unknown, label: string): JsonObject {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${label} is not an object: ${JSON.stringify(value)}`);
-  }
-  return value as JsonObject;
+const token = await login(adminUser, adminPassword);
+
+async function taskMgr(method: string, params: JsonRecord): Promise<JsonRecord> {
+  const result = await new KRpcClient(`${BASE}/kapi/task-manager`, token, nextNonce()).call(method, params) as JsonRecord;
+  return (result.task as JsonRecord | undefined) ?? result;
 }
 
-function asTasks(value: unknown): TaskRecord[] {
-  const object = asObject(value, "task-manager response");
-  const tasks = object.tasks;
-  if (!Array.isArray(tasks)) {
-    throw new Error(`expected tasks array, got ${JSON.stringify(value)}`);
-  }
-  return tasks as TaskRecord[];
+async function createTask(name: string, parentId?: string): Promise<JsonRecord> {
+  return await taskMgr("create_task", {
+    name,
+    schema_id: "raw/v1",
+    input: { case: "DV-07" },
+    executor: { kind: "HumanSet", assignees: [adminUser] },
+    parent_id: parentId,
+    idempotency_key: crypto.randomUUID(),
+  });
 }
 
-async function rpcCall<T>(
-  rpc: RpcClient,
-  method: string,
-  params: Record<string, unknown>,
-): Promise<T> {
-  return await rpc.call(method, params) as T;
+/** `obj://taskmgr/<task_id>` kevent key (doc/key url.md §7). */
+function taskEventId(taskId: string, event: "changed" | "tree"): string {
+  const segment = /^[A-Za-z0-9_-]+$/.test(taskId) && !taskId.startsWith("x")
+    ? taskId
+    : "x" + Array.from(new TextEncoder().encode(taskId), (b) => b.toString(16).padStart(2, "0")).join("");
+  return `/obj/taskmgr/${segment}/${event}`;
 }
 
-async function openKeventStream(
-  gatewayBaseUrl: string,
-  pattern: string,
-): Promise<StreamReader> {
+/** Events of one kevent stream; `close` stops it. */
+async function keventStream(patterns: string[]): Promise<{ events: JsonRecord[]; close: () => Promise<void> }> {
   const controller = new AbortController();
-  const response = await fetch(`${gatewayBaseUrl}/kapi/kevent/stream`, {
+  const response = await fetch(`${BASE}/kapi/kevent/stream`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      patterns: [pattern],
-      keepalive_ms: 1000,
-    }),
+    body: JSON.stringify({ patterns, keepalive_ms: 1000 }),
     signal: controller.signal,
   });
-
-  if (!response.ok || !response.body) {
-    const text = await response.text().catch(() => "");
-    throw new Error(
-      `kevent stream failed: status=${response.status}, body=${text}`,
-    );
-  }
-
+  assert(response.ok && response.body, `kevent stream ${response.status}`);
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
+  const events: JsonRecord[] = [];
+  let acked = false;
   let buffer = "";
-
-  async function readFrame(timeoutMs: number): Promise<JsonObject> {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const newline = buffer.indexOf("\n");
-      if (newline >= 0) {
-        const line = buffer.slice(0, newline).trim();
-        buffer = buffer.slice(newline + 1);
-        if (line.length === 0) continue;
-        return asObject(JSON.parse(line), "kevent stream frame");
+  const pump = (async () => {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (!line) continue;
+        const frame = JSON.parse(line) as JsonRecord;
+        if (frame.type === "ack") acked = true;
+        if (frame.type === "event") events.push(frame.event as JsonRecord);
       }
-
-      const remaining = deadline - Date.now();
-      const readPromise = reader.read();
-      const timeoutPromise = new Promise<ReadableStreamReadResult<Uint8Array>>(
-        (_resolve, reject) =>
-          setTimeout(
-            () => reject(new Error("kevent stream read timeout")),
-            remaining,
-          ),
-      );
-      const chunk = await Promise.race([readPromise, timeoutPromise]);
-      if (chunk.done) throw new Error("kevent stream closed");
-      buffer += decoder.decode(chunk.value, { stream: true });
     }
-    throw new Error("kevent stream read timeout");
-  }
-
-  return {
-    readFrame,
-    close(): void {
-      controller.abort();
-      reader.cancel().catch(() => {});
-    },
-  };
+  })().catch(() => {});
+  const deadline = Date.now() + 5000;
+  while (!acked && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+  assert(acked, "kevent stream should ack");
+  return { events, close: async () => { controller.abort(); await pump; } };
 }
 
-async function createTask(
-  taskMgr: RpcClient,
-  args: {
-    name: string;
-    taskType: string;
-    sessionId: string;
-    data: JsonObject;
-  },
-): Promise<TaskRecord> {
-  // beta2.2: the recorded owner comes from the verified session token; the
-  // request no longer carries a runner and does not need identity fields.
-  const result = await rpcCall<JsonObject>(taskMgr, "create_task", {
-    name: args.name,
-    task_type: args.taskType,
-    session_id: args.sessionId,
-    data: args.data,
-  });
-  const resultTask = result.task === undefined || result.task === null
-    ? null
-    : asObject(result.task, "created task");
-  const id = resultTask?.id ?? result.task_id ?? result.id;
-  if (typeof id !== "number") {
-    throw new Error(`create_task did not return task id: ${JSON.stringify(result)}`);
-  }
-  const fetched = await rpcCall<JsonObject>(taskMgr, "get_task", { id });
-  return asObject(fetched.task ?? fetched, "created task") as unknown as TaskRecord;
-}
-
-async function deleteTask(taskMgr: RpcClient, id: number): Promise<void> {
-  try {
-    await taskMgr.call("delete_task", { id });
-  } catch (error) {
-    console.log("[warn] cleanup delete_task failed", id, String(error));
-  }
-}
-
-async function listPendingTasksByType(
-  taskMgr: RpcClient,
-  taskType: string,
-): Promise<TaskRecord[]> {
-  return asTasks(
-    await taskMgr.call("list_tasks", {
-      task_type: taskType,
-      status: "Pending",
-    }),
-  );
-}
-
-async function waitForTaskChangedEvent(
-  stream: StreamReader,
-  expectedEventId: string,
-  expectedTaskId: number,
-  expectedToStatus: string,
-): Promise<JsonObject> {
+async function waitEvent(events: JsonRecord[], eventId: string, taskId: string): Promise<JsonRecord> {
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
-    const frame = await stream.readFrame(Math.max(1, deadline - Date.now()));
-    if (frame.type !== "event") continue;
-    const event = asObject(frame.event, "kevent event");
-    if (event.eventid !== expectedEventId) continue;
-    const data = asObject(event.data, "task-changed payload");
-    if (data.task_id === expectedTaskId && data.to_status === expectedToStatus) {
-      return data;
-    }
+    const event = events.find((e) => e.eventid === eventId && (e.data as JsonRecord)?.task_id === taskId);
+    if (event) return event.data as JsonRecord;
+    await new Promise((r) => setTimeout(r, 200));
   }
-  throw new Error(
-    `did not receive ${expectedEventId} for task ${expectedTaskId}`,
-  );
+  throw new Error(`no ${eventId} for task ${taskId}; got ${JSON.stringify(events.map((e) => e.eventid))}`);
 }
 
-async function run(): Promise<void> {
-  await prepareAppClientConfig();
-  const { buckyos, zoneHost } = await initTestRuntime();
-  const gatewayBaseUrl = getEnv(
-    "BUCKYOS_GATEWAY_BASE_URL",
-    `https://${zoneHost}`,
-  )!;
-  const taskMgrGatewayUrl = getEnv(
-    "BUCKYOS_TASK_MANAGER_GATEWAY_URL",
-    "http://127.0.0.1:3180/kapi/task-manager",
-  )!;
-  const accountInfo = await buckyos.getAccountInfo();
-  if (!accountInfo?.session_token) {
-    throw new Error("missing session token for task-manager gateway RPC");
-  }
-  const taskMgr = new buckyos.kRPCClient(
-    taskMgrGatewayUrl,
-    accountInfo.session_token,
-  ) as RpcClient;
-  const tag = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
-  const taskType = "kevent_kmsg.task_changed.dv";
-  const sessionId = `kevent-kmsg-task-mgr-${tag}`;
-  const createdTaskIds: number[] = [];
-  let stream: StreamReader | null = null;
+const root = await createTask(`task-changed-signal-${Date.now()}`);
+const rootId = String(root.task_id);
+const changed = taskEventId(rootId, "changed");
+const tree = taskEventId(rootId, "tree");
+const stream = await keventStream([changed, tree]);
+const created: JsonRecord[] = [root];
+try {
+  // 1. A mutation of the task is its `changed` event.
+  await taskMgr("update_assignees", { task_id: rootId, add: [], remove: [], expected_revision: Number(root.revision) });
+  const data = await waitEvent(stream.events, changed, rootId);
+  assert(data.root_id === rootId && typeof data.revision === "number", `changed payload ${JSON.stringify(data)}`);
+  assert(!("runner" in data), "task-changed payload should not carry a runner field");
 
-  try {
-    // 1. Create the task first — its id is the kevent channel name.
-    const watched = await createTask(taskMgr, {
-      name: `task-changed-signal-${tag}`,
-      taskType,
-      sessionId,
-      data: { case: "DV-07", path: "event-driven", tag },
-    });
-    createdTaskIds.push(watched.id);
-    assert.equal(watched.status, "Pending");
-    assert.ok(
-      !("runner" in (watched as unknown as JsonObject)),
-      "task wire format should not carry a runner field",
-    );
+  // 2. A child's mutation is also the root's `tree` event.
+  const child = await createTask(`task-changed-child-${Date.now()}`, rootId);
+  created.push(child);
+  const childId = String(child.task_id);
+  const treeData = await waitEvent(stream.events, tree, childId);
+  assert(treeData.root_id === rootId, `tree payload ${JSON.stringify(treeData)}`);
 
-    // 2. Subscribe to the per-task channel, then drive a status change and
-    //    expect the task-changed event.
-    const eventId = `/task_mgr/${watched.id}`;
-    stream = await openKeventStream(gatewayBaseUrl, eventId);
-    const ack = await stream.readFrame(5000);
-    assert.equal(ack.type, "ack", "kevent stream should ack");
-
-    await rpcCall<JsonObject>(taskMgr, "update_task_status", {
-      id: watched.id,
-      status: "Running",
-    });
-
-    const eventData = await waitForTaskChangedEvent(
-      stream,
-      eventId,
-      watched.id,
-      "Running",
-    );
-    assert.equal(eventData.change_kind, "status");
-    assert.equal(eventData.from_status, "Pending");
-    assert.equal(eventData.to_status, "Running");
-    assert.equal(eventData.source_method, "update_task_status");
-    assert.ok(
-      !("runner" in eventData),
-      "task-changed payload should not carry a runner field",
-    );
-
-    const fetched = await rpcCall<JsonObject>(taskMgr, "get_task", {
-      id: watched.id,
-    });
-    const fetchedTask = asObject(fetched.task ?? fetched, "fetched task");
-    assert.equal(fetchedTask.id, watched.id);
-    assert.equal(fetchedTask.status, "Running");
-
-    stream.close();
-    stream = null;
-
-    // 3. Polling fallback: a fresh Pending task is visible via list_tasks
-    //    without any runner / source identity parameters.
-    const fallback = await createTask(taskMgr, {
-      name: `task-changed-poll-${tag}`,
-      taskType,
-      sessionId,
-      data: { case: "DV-07", path: "polling-fallback", tag },
-    });
-    createdTaskIds.push(fallback.id);
-
-    const listed = await listPendingTasksByType(taskMgr, taskType);
-    const ids = new Set(listed.map((task) => task.id));
-    assert.ok(ids.has(fallback.id), "list_tasks should find fallback task");
-
-    console.log(
-      JSON.stringify({
-        status: "passed",
-        case: "DV-07",
-        event_id: eventId,
-        task_ids: createdTaskIds,
-      }),
-    );
-  } finally {
-    if (stream) stream.close();
-    await Promise.all(createdTaskIds.map((id) => deleteTask(taskMgr, id)));
+  console.log(JSON.stringify({ status: "passed", case: "DV-07", events: [changed, tree], task_ids: created.map((t) => t.task_id) }));
+} finally {
+  await stream.close();
+  for (const task of created.reverse()) {
+    const latest = await taskMgr("get_task", { task_id: task.task_id }).catch(() => task);
+    await taskMgr("request_control", {
+      task_id: task.task_id,
+      action: "Cancel",
+      request_id: crypto.randomUUID(),
+      expected_revision: latest.revision,
+    }).catch((e) => console.log(`[warn] cleanup cancel ${task.task_id}: ${e}`));
   }
 }
-
-await run();

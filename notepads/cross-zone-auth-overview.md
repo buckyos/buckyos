@@ -23,7 +23,7 @@
 | 原生消息投递（自动路由） | ZA msg-center → ZB msg-center `/inbox` PUT | MsgObject JWT，kid＝ZA 设备 DID，`cyfs-original-user`＝msg.from | `verify_signed_message_with`：解析 from 的文档或走 custody，取设备公钥验签 | [cyfs_dispatch.rs:529-626](../src/frame/msg_center/src/cyfs_dispatch.rs#L529-L626) |
 | 原生消息投递（配置路由） | 同上 | 配置中的 `authorization: Bearer <token>` | 收方 `verify_trusted_session_token`，必须是收方 Zone 自己签的 token | [cyfs_dispatch.rs:24-33](../src/frame/msg_center/src/cyfs_dispatch.rs#L24-L33)、[cyfs_dispatch.rs:267-290](../src/frame/msg_center/src/cyfs_dispatch.rs#L267-L290) |
 | 群同步 GET/PUT | 成员 Zone → 群宿主 Zone | 一条 Operation MsgObject 作为 proof，绑定 audience、method、path、body sha256 | `verify_group_request`：先核绑定，再走与消息相同的 `verify_signed_message_with` | [group_auth.rs:34-130](../src/frame/msg_center/src/group_auth.rs#L34-L130) |
-| HomeStation 跨 Zone 读 feed/profile | ZB station → ZA station | `Authorization: DID <reader proof>`，iss＝读者 DID，aud＝`cyfs://<zone>/home`，TTL 300s，用本站设备钥签 | `verify_reader_proof` → `directory.authorizes`（custody）→ `directory.signer_key`（设备文档取钥） | [pull.rs:44-52](../src/frame/homestation/src/pull.rs#L44-L52)、[auth.rs:184-220](../src/frame/homestation/src/auth.rs#L184-L220)、[directory.rs:279-328](../src/frame/homestation/src/directory.rs#L279-L328) |
+| HomeStation 跨 Zone 读 feed/profile | ZB station → ZA station | `Authorization: DID <reader proof>`，iss＝读者 DID，aud＝`https://<zone>/home`，TTL 300s，用本站设备钥签 | `verify_reader_proof` → `directory.authorizes`（custody）→ `directory.signer_key`（设备文档取钥） | [pull.rs:44-52](../src/frame/homestation/src/pull.rs#L44-L52)、[auth.rs:184-220](../src/frame/homestation/src/auth.rs#L184-L220)、[directory.rs:279-328](../src/frame/homestation/src/directory.rs#L279-L328) |
 | 跨 Zone 用户登录（混合 SSO / DID 联合） | 用户在 ZB 用 ZA 的 DID 登录 | 浏览器跳 canonical Zone 授权，带回 code | ZB verify-hub 由 DID 解析 OwnerDocument → canonical ZoneDocument 主机名，后向 HTTPS 到 `https://<host>/kapi/verify-hub` 换 code 取 assertion，然后 ZB 自己签发 External 或账户 session | [verify_hub main.rs:2148-2282](../src/kernel/verify_hub/src/main.rs#L2148-L2282)、[verify_hub federation.rs:119-158](../src/kernel/verify_hub/src/federation.rs#L119-L158)、[control_panel federation.rs:514-615](../src/frame/control_panel/src/federation.rs#L514-L615) |
 | 消息附件对象 GET | MessageHub/Agent → 本 Zone msg-center | 本 Zone session Bearer + `context_path` | 只验本 Zone token；无跨 Zone 回源，见 #689 | [object_access.rs:17](../src/frame/msg_center/src/object_access.rs#L17)、[object_access.rs:175](../src/frame/msg_center/src/object_access.rs#L175) |
 | Node executor 端口 | Zone 内设备 → OOD 3184 | rtcp 握手身份 | 网关 process-chain `match-include $EXECUTOR_ACL ${REQ.source_device_id}` | [boot_gateway.yaml:54](../src/rootfs/etc/boot_gateway.yaml#L54) |
@@ -77,6 +77,8 @@
 | HomeStation | `NameDirectory::authorizes` + `signer_key`，[directory.rs:279-328](../src/frame/homestation/src/directory.rs#L279-L328) |
 
 三份的判定顺序略有差异（HomeStation 多一条“signer 文档 owner＝principal”，msg-center 多一条 `is_hosted_identity` 的本地 Zone 短路），行为是否完全一致没有测试覆盖。
+
+2026-10-29 ssotest VM DV（notepads/agent-object-url-todo.md 第 2 段 DV）实测：同一 VM 组里 msg-center 原生消息 bob → alice 投递通过，HomeStation 跨 Zone 读不通——alice 关注 bob 后拉 `https://bob.web3.devtests.org/home/bob/feed?...` 一直 401。bob 的回应体：`unavailable: key of did:bns:ood1.alice: ... web-provider: document binding: document body is a device document, requested zone; doc_type not specified for did:bns:ood1.alice; defaulted to zone`。即 `signer_key` 对非本 Zone 设备走 `name_client::resolve_auth_key`，没指定 doc type，解析器默认按 zone 取文档，绑定校验拒收设备文档；本 Zone 设备那一支已经显式传 `DidDocType::Device`。未修，留给本 TODO。
 
 ## 6. 建议（未拍板）
 

@@ -156,9 +156,9 @@ try {
   await msg("ui_session.update_state", { owner: selfDid, session_id: String(first.session_id), key: "ui.title", value: "我的标题" });
   const mineState = asRecord(await msg("ui_session.get_state", { owner: selfDid, session_id: String(first.session_id), key: "ui.title" }), "get_state");
   assert(mineState.value === "我的标题", "owner state round trip");
-  const legacy = await msg("ui_session.get_state", { session_id: String(first.session_id), key: "ui.title" });
-  assert(legacy === null || legacy === undefined, "legacy session-only KV untouched");
-  console.log("  ✓ owner-scoped ui state isolated from legacy KV");
+  const implicit = asRecord(await msg("ui_session.get_state", { session_id: String(first.session_id), key: "ui.title" }), "get_state(no owner)");
+  assert(implicit.value === "我的标题", "without owner the state is the caller's own");
+  console.log("  ✓ owner-scoped ui state; omitting owner means the caller");
 
   console.log("6. lifecycle");
   const archived = asRecord(await msg("msg.archive_session", { owner: selfDid, session_id: String(first.session_id) }), "archive");
@@ -186,16 +186,16 @@ try {
   console.log("  ✓ archive → restore → delete → replay verified");
 
   console.log("7. object access route");
+  // The route serves attachments read through a message (and hosted group messages); a
+  // private message's own id is no attachment (doc/message_hub/Message Center.md).
   const objectUrl = `https://${zoneHost}/kapi/msg-center/objects/${encodeURIComponent(String(sent.msg_id))}`;
   const unauthenticated = await fetch(objectUrl);
+  await unauthenticated.body?.cancel();
   assert(unauthenticated.status === 401, `object route without token is 401 (got ${unauthenticated.status})`);
-  const authenticated = await fetch(objectUrl, { headers: { authorization: `Bearer ${token}` } });
-  assert(authenticated.status === 200, `object route with token is 200 (got ${authenticated.status})`);
-  const objectJson = asRecord(await authenticated.json(), "object json");
-  assert(objectJson.from === selfDid, "object json is the sent message");
-  const content = await fetch(`${objectUrl}/content?token=${encodeURIComponent(token)}`);
-  assert(content.status === 415, `message object has no content (got ${content.status})`);
-  console.log("  ✓ objects route: 401 without token, 200 JSON with token, 415 content for non-file");
+  const notAttachment = await fetch(`${objectUrl}?context_path=${encodeURIComponent(String(sent.msg_id))}`, { headers: { authorization: `Bearer ${token}` } });
+  await notAttachment.body?.cancel();
+  assert(notAttachment.status === 404, `a private message is not an attachment (got ${notAttachment.status})`);
+  console.log("  ✓ objects route: 401 without token, 404 for a private message that is no attachment");
 
   console.log("ALL PASSED");
 } finally {

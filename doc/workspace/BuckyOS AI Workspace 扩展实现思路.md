@@ -1,6 +1,6 @@
 # BuckyOS AI Workspace 扩展实现思路：控件库、控件定义与两条实现路线
 
-> 状态：v0.7 讨论稿，2026-10-29（v0.6 增补 §7.3 对数据逻辑内核的影响与 Q14–Q17；v0.7 增补 §7.4 开工前裁决清单，按源码核对把 Q1–Q19 分为 P0 必裁决 / 按建议即定 / 推迟三组，裁决列待用户填写）。以“多人协作的 Delphi，可以安装控件包”为产品模型；开发者在自己的 Workspace 编辑源码、保存调试，再多选控件导出为全局可用或 PIKG 包，后续签名、发布与传播。两级控件库见 §1.1，开发 / 调试见 §6.7，导出见 §6.8，PIKG 控件包与 Workspace 模板包预留见 §6.9，已确认边界与待定细节见 §7，对数据逻辑内核的接触点见 §7.3，开工前裁决清单见 §7.4。源码基线为脑图实施提交 `8f30ad030`（PROTOCOL 1.1、第一个 Block-control）之后的工作区，2026-10-29 复核。本文描述设计方向，不构成已实施记录。
+> 状态：v0.8 讨论稿，2026-10-29（v0.6 增补 §7.3 与 Q14–Q17；v0.7 增补 §7.4 开工前裁决清单；用户在 §7.4.1 裁决 A1–A7，§7.5 评估影响；v0.8 按用户确认的"编辑 → build 原子部署"模型改写 D6、§1、§1.3、§1.5、§3.3、§3.4、§6.5–§6.8、Q11、Q14、§7.3、§8、§9）。以“多人协作的 Delphi，可以安装控件包”为产品模型；开发者在 home 目录编辑控件源码、build 进自己的 Workspace 调试，再多选控件导出为全局可用或 PIKG 包，后续签名、发布与传播。两级控件库见 §1.1，开发 / 调试见 §6.7，导出见 §6.8，PIKG 控件包与 Workspace 模板包预留见 §6.9，已确认边界与待定细节见 §7，对数据逻辑内核的接触点见 §7.3，开工前裁决清单见 §7.4。源码基线为脑图实施提交 `8f30ad030`（PROTOCOL 1.1、第一个 Block-control）之后的工作区，2026-10-29 复核。本文描述设计方向，不构成已实施记录。
 >
 > §2 与标为“现状”的段落描述当前源码；§1、§3–§8 的新增定义、接口和流程是目标方案。PIKG 已有的包管理能力与待实现的 AIWS 本机控件目录接入分别说明。
 
@@ -8,7 +8,7 @@
 
 AI Workspace 按**多人协作的可视化设计器**组织扩展：用户从自己的 BuckyOS 本机控件库选择控件，引入 Workspace，再共同创建、配置和运行控件实例。设计主线是 **PIKG 分发 → 本机控件库 → Workspace 控件定义 → 控件实例 → 协作运行**。
 
-开发者的标准循环从自己的 Workspace 开始：**用系统 Text Editor 编辑控件源码 → 保存并立即调试 → 在 Workspace 选择一个或多个控件导出 → 全局可用，或得到 `.pikg` → 后续签名、发布与传播**。日常调试不要求重新打包、重新引入或再次点击“应用”；导出时才冻结供复用的版本。
+开发者的标准循环是工程师熟悉的编辑 → build：**在自己 home 目录的源码文件夹里用任意编辑器修改控件源码 → `build` 同步校验并原子提交进自己的 Workspace，实例即时更新 → 在 Workspace 选择一个或多个控件导出 → 全局可用，或得到 `.pikg` → 后续签名、发布与传播**。日常调试不要求打包、重新引入或重新插入实例；build 失败不提交，Workspace 保持上一个可用版本；导出时才冻结供复用的版本（§6.7、§7.5）。
 
 PIKG 需要正式支持 Workspace 扩展内容，并为模板包保留共同结构：**Workspace 模板包 = 控件包的公共内容 + 工作区结构 / 实例、初始数据与参数**。首期交付控件包，在包清单、类型识别和消费方分派中预留模板入口；模板创建功能可后续实现。
 
@@ -24,9 +24,9 @@ PIKG 需要正式支持 Workspace 扩展内容，并为模板包保留共同结�
 
 这里的“本机”是当前用户所连接、提供控件来源的 BuckyOS；浏览器客户端与 Workspace 所在服务可以在别处。不能只枚举 Workspace 服务所在机器的控件库来代替各协作者的来源。
 
-PIKG 负责分发与本机安装，AIWS 负责选择性引入与工作区内管理。有相应工作区权限的人都可引入，入口不限定 Owner，也不以操作 Workspace 所在机器的包管理权限为前提。本机包升级、卸载不会自动改变已引入的工作区控件；从本机库升级工作区内的包来源版本需要显式操作。编辑工作区内源码则走保存即生效的开发流程（§6.7）。
+PIKG 负责分发与本机安装，AIWS 负责选择性引入与工作区内管理。有相应工作区权限的人都可引入，入口不限定 Owner，也不以操作 Workspace 所在机器的包管理权限为前提。本机包升级、卸载不会自动改变已引入的工作区控件；从本机库升级工作区内的包来源版本需要显式操作。修改控件源码走"home 目录编辑 → build"的开发流程（§6.7）。
 
-“全局可用”指控件进入当前用户 BuckyOS 的本机控件库，供其他 Workspace 选择引入。开发者在 Workspace 多选控件后，可以导出并安装到该库，也可以只生成 `.pikg` 文件；两者共用同一份包内容（§6.8）。显式导出才更新本机库，后续源码保存仍只影响开发 Workspace，已引入它的其他 Workspace 不自动升级。
+“全局可用”指控件进入当前用户 BuckyOS 的本机控件库，供其他 Workspace 选择引入。开发者在 Workspace 多选控件后，可以导出并安装到该库，也可以只生成 `.pikg` 文件；两者共用同一份包内容（§6.8）。显式导出才更新本机库，后续 build 仍只影响开发 Workspace，已引入它的其他 Workspace 不自动升级。
 
 ### 1.2 同一控件体系，两条实现路线
 
@@ -45,18 +45,18 @@ PIKG 负责分发与本机安装，AIWS 负责选择性引入与工作区内管�
 
 | 对象 | 保存的内容 | 关系 |
 | --- | --- | --- |
-| 控件定义 | 稳定身份、源码目录引用、来源版本、当前源码修订与活动实现修订；公开接口及运行实现由源码解析得到 | 存在 Workspace 的数据树，由实例引用；源码是开发时的编辑入口 |
+| 控件定义 | 稳定身份、来源版本、build 修订与 `derived.build` 摘要、build 通过的源码快照（`buckyos.dir`）与实现资源；公开接口及运行实现由该快照解析得到 | 存在 Workspace 的数据树，由实例引用；编辑入口是开发者 home 目录中的工作副本，`pull` / `build` 在两者间同步（§6.7） |
 | 控件实例 | 定义引用、实例属性覆盖、命名数据绑定、事件绑定、位置和用户内容 | 存在 BlockTree；复制实例时分配新身份，保留定义关系 |
 | 可复用片段 | 一组对象及其初始化内容的可复制描述 | 插入后独立，不承担控件类型与统一升级的职责 |
 | Workspace 模板 | 可复用的工作区结构 / 实例图、初始数据、参数及其使用的控件集合 | 模板包复用控件包结构；创建 Workspace 时引入定义并实例化，包安装本身不创建工作区 |
 
 “定义为控件”与“保存为片段”是不同操作。组合控件的模板外观来自定义，背景、焦点框等按 R23 由 Chrome 绘制；用户内容 slots 中的 Block 是实际文档实体。定义保存在 `data/extensions/`，实际 control 容器与 Cell 仍只能放在 BlockTree，不能把标记为模板的容器直接放进数据树。
 
-引入时记录控件的稳定身份、来源版本与摘要、源码 / 实现资源及依赖；文件导入与工作区内生成也有各自来源。类型身份需要命名空间，显示名称不参与去重；Workspace 实体 ID 是本地引用身份。包是分发单位，可以选其中几个控件，但必须带齐其依赖闭包。工作区保留可编辑源码及可追踪的活动实现修订，后续打开、Fork、导出不依赖贡献者的机器仍在线。外部业务数据与联网服务仍遵守自身绑定和可用性规则。
+引入时记录控件的稳定身份、来源版本与摘要、源码 / 实现资源及依赖；文件导入与工作区内生成也有各自来源。类型身份需要命名空间，显示名称不参与去重；Workspace 实体 ID 是本地引用身份。包是分发单位，可以选其中几个控件，但必须带齐其依赖闭包。工作区保留 build 通过的源码快照与实现，后续打开、Fork、导出、协作者 `pull` 都不依赖贡献者的机器仍在线。外部业务数据与联网服务仍遵守自身绑定和可用性规则。
 
-普通外观与行为修改在源码保存成功并通过校验后自动更新当前 Workspace 中引用该定义的实例，保留实例属性覆盖、绑定和用户内容。改变 `kind`、必填属性、绑定或内容结构时，源码仍可保存，但不兼容的候选修订不能自动激活，须显示迁移要求。新默认值只影响未被实例覆盖的属性。
+普通外观与行为修改在 build 通过后原子更新当前 Workspace 中引用该定义的实例，保留实例属性覆盖、绑定和用户内容。改变 `kind`、必填属性、绑定或内容结构时，源码仍可保存在 home，但 build 列出受影响实例并整次失败，须显式处理迁移。新默认值只影响未被实例覆盖的属性。
 
-区分宿主 API / Renderer 版本、来源包 / 控件发布版本、工作区源码修订和活动实现修订。保存源码不要求递增来源发布版本；它产生新的工作区修订并标记本地改动，不修改上游 PIKG 产物。重新引入或升级来源包不能静默覆盖这些改动。发布版本并存策略见 Q1，源码与活动修订的切换见 §6.7。
+区分宿主 API / Renderer 版本、来源包 / 控件发布版本和工作区 build 修订。build 不要求递增来源发布版本；它产生新的工作区修订并标记本地改动，不修改上游 PIKG 产物。重新引入或升级来源包不能静默覆盖这些改动。发布版本并存策略见 Q1，build 的校验与原子性见 §6.7。
 
 ### 1.4 设计器与协作运行契约
 
@@ -73,7 +73,7 @@ PIKG 负责分发与本机安装，AIWS 负责选择性引入与工作区内管�
 - **路线一**已有渲染与定义引用机制，尚缺本机控件目录、引入与管理入口，以及实例配置 / 命名绑定的初始化。当前定义主要由许愿格 HTML 结果或 Agent `doc.commit` 写入。
 - **路线二**刚落地脑图。内核 config 校验、共享求解器与部分交互仍带有脑图假设，组合定义、通用实例和模板外观接口待补齐。
 - **共同缺口**：PIKG 的 Workspace 扩展类型与资源包安装分派、本机控件目录接入、选择性引入的依赖与资源处理、多选控件导出及本机复用、定义更新、公开属性 / 事件及协作运行契约。模板包需要预留共用内容模型。已有本机包管理能力不能当作这些流程已经实现。
-- **开发闭环**：系统已有 Text Editor，但尚无工作区资源文件的可写目标适配，以及“源文件保存 → 定义校验 → 实例自动重载”的完整链路。当前 HTML 宿主可随内联定义内容变化重新挂载，可作为重载的已有基础。
+- **开发闭环**：编辑端零缺口（Text Editor 已能保存 `cyfs-path`，NFSP 已有 list / uploadFile / watch），缺的是服务端 `ext.build` 同步校验与原子提交、客户端 build / pull / watch 驱动、诊断呈现。当前 HTML 宿主可随定义内容变化重新挂载，Cell 已订阅定义实体变更，可作为重载的已有基础（§7.5）。
 
 实施先跑通“工作区创建或引入定义 → 实例调试 → 多选导出 → 本机库 / PIKG → 另一个 Workspace 引入”的共同路径，再覆盖组合控件与协作运行。交换文件导入与本机引入复用同一套工作区注册流程。
 
@@ -180,13 +180,13 @@ render-block 是这条路线的渲染核心：给定 `RenderContext`，产出视
 | B1 | 定义缺少目录元数据与 Agent 自述 | 补 `catalog`（分组、图标、用途）与 `agent`；两条实现路线共用对外描述，目录显式区分本机可引入与工作区已引入。元数据形状与大小需校验，不能只放开键名 |
 | B2 | HTML `createBlock` 只能建兄弟 | 拟加 `parent`，接受绑定或实体目标；对应 `aiws.result.control` 的 `under` 场景，受结构、slot、placement 和目标权限约束。非文字节点仍给数值尺寸 |
 | B3 | 新实例可能没有 HTML 快照 | 定义可携带目录预览，实例可引用初始预览；实际数据快照由扩展主动调用 `snapshot` 上报。“运行一次”不保证生成快照；缺失时显示占位，不阻止导入定义 |
-| B4 | 来源升级与源码迭代未区分 | 普通源码保存自动校验并热更新；包来源升级显式进行。两者均检查实例接口，必要迁移单独确认；失败保留最后可用活动修订。并存策略见 Q1，开发循环见 §6.7 |
+| B4 | 来源升级与源码迭代未区分 | 普通源码修改经 build 同步校验后原子生效；包来源升级显式进行。两者均检查实例接口，必要迁移单独确认；失败保留最后可用活动修订。并存策略见 Q1，开发循环见 §6.7 |
 | B5 | 扩展 Block 作为脑图节点**不能 auto 尺寸** | 接受。手册与自述里已写"非文字节点要给尺寸"，block-def 的 `default_size` 就是节点尺寸 |
 | B6 | declarative **词汇与数据源种类**少（record / table） | 不扩布局；可按需加 item 种类（sparkline、progress、image）和 richtext / asset 绑定；每加一种都是解释器改动，随 Desktop 发版 |
 | B7 | 没有定义交换格式与依赖清单 | 文件入口与 PIKG 本机来源共用定义校验、依赖闭包和 Workspace 注册。`.block.json` / `.block.zip` 作为导入和交换载体，日常编辑直接修改工作区文件，见 §6.2、§6.7 |
 | B8 | 插入详情只选单个 source，无法填写必填 config / 命名 bindings | 从定义生成初始化步骤：应用默认值，编辑实例属性，逐项映射绑定并验证；允许先只引入定义，稍后再插入实例 |
 | B9 | 尚未接入 PIKG 安装结果作为本机 AIWS 控件目录 | 复用 BuckyOS 包基础设施提供目录发现与所选控件读取；资源传入目标 Workspace 后按普通资产引用保留。跨 BuckyOS 传递不携带来源会话凭据 |
-| B10 | Text Editor 尚不能写回工作区资源文件，定义未关联源码变更 | 为通用内容编辑协议增加 Workspace 可写目标；保存通过资源暂存与带版本条件的成员更新，再以提交变更驱动校验和自动加载；诊断与活动修订可查询 |
+| B10 | 缺 build 链路：定义与 home 源码目录无关联，服务无同步校验 / 原子提交入口 | 新 RPC `ext.build`（输入文件 `obj_id` 清单，服务经网关以调用者 token 取字节、校验、一次 commit，同步返回诊断）；客户端共享的 build / pull / watch 驱动；Text Editor 与内容打开协议零改动（A1 / A2，§6.7、§7.5） |
 | B11 | 尚无从 Workspace 多选控件、导出为全局可用或 PIKG 的开发出口 | 冻结所选定义的源码、实现和依赖闭包；共用打包流程，分别接本机控件库安装与 .pikg 文件输出；签名与发布随后进行，见 §6.8 |
 | B12 | PIKG 类型和消费方未覆盖 Workspace 扩展，模板包无共同契约 | 增加 Workspace 资源用途识别、内容清单校验和本机库安装分派；控件包与模板包共享控件 / 资源结构，模板入口预留，见 §6.9 |
 
@@ -197,7 +197,7 @@ render-block 是这条路线的渲染核心：给定 `RenderContext`，产出视
 | 内核 | `core/src/types.rs` 定义元数据与引用校验；`schemas/`、README；新增字段与协议版本一起评估 |
 | 共享模块 | 两种实现共用的定义 / 来源 / 依赖解析与校验（目录落点 Q4），供浏览器与 Deno 使用 |
 | Desktop | `api/types.ts`、`ui/canvas/catalog.ts`、`InsertCatalog.tsx`：两级目录与实例初始化；`DataDetail.tsx`：更新、导出、引用者；`ui/extensions/bridge.ts` 与属性编辑宿主 |
-| 编辑器接入 | 仓库路径 `src/apps/text_editor/src/fs/`、`src/apps/text_editor/src/model/workspace.ts` 及公共 Content / OpenRequest 协议：可写目标、冲突处理和文件上下文；UI 复用已有 Text Editor |
+| 开发工具链 | Text Editor 与 websdk `content.ts` 零改动；新增 websdk 共享的 build / pull / watch 驱动（NFSP `list` / `uploadFile` / `watch` + `ext.build`），Desktop 的"编辑控件源码…"用 `filesOpenLaunch` 打开 home 目录、构建按钮与诊断面板，CLI `aiws` 模块接 NFSP |
 | 服务 / SDK | 本机控件目录读取、Workspace 引入 / 更新与多选导出协议；资产暂存、依赖闭包、包内引用及 PIKG 构建 / 本机安装接入；同步 `buckyos-api`、websdk，不把拟议方法名当已有接口 |
 | PIKG / 安装 | WebSDK `cli/modules/pikg.ts`、`pikg_protocol.ts`；BuckyOS `src/kernel/buckyos-api/src/app_doc.rs`、`src/frame/control_panel/src/{pikg,app_installer}.rs`：用途识别、校验与资源库分派；模板清单预留，签名发布按统一信任体系补齐 |
 | CLI / 手册 | 区分查询本机库、引入 Workspace、列工作区控件、创建实例、多选导出到本机库 / PIKG；实现时同步 `aiworkspace_template_dev.md`、`aiworkspace_run.md` 及涉及的 PIKG 开发 / 发布手册 |
@@ -242,7 +242,7 @@ render-block 是这条路线的渲染核心：给定 `RenderContext`，产出视
 | K1 | 内核 config 校验仍是 mindmap 专用 | 区分宿主结构约束与控件属性 schema；结构和引用由内核校验，定义中的属性 schema 供前后端一致使用。是否引入 Rust JSON Schema 校验依赖、支持哪个子集见 Q3 |
 | K2 | 实际布局求解只有 tree | 增加 fixed，按需要加 stack / grid；继续遵守脑图 §5.7 的单向布局与 R24 嵌套。新组合类型引用已有算法；任意新算法代码的包加载不在首版 |
 | K3 | 模板外观（R23）与内容 slots 尚未形成接口 | 定义描述模板外观及公开属性映射，由 Chrome 绘制；内容 slots 指向真实子 Block。临时交互状态不写回定义；模板外观更新不得重建用户内容 |
-| K4 | 缺少工作区组合控件定义与实例关系 | 组合源码描述公开属性、绑定、slots、动作 / 事件、模板外观、布局和依赖，保存后生成运行投影；通用 `composite` 实例引用稳定定义身份。新定义无需增加内核 kind，源码热更新不重建实例。实体形态见 Q2 |
+| K4 | 缺少工作区组合控件定义与实例关系 | 组合源码描述公开属性、绑定、slots、动作 / 事件、模板外观、布局和依赖，保存后生成运行投影；通用 `composite` 实例引用稳定定义身份。新定义无需增加内核 kind，build 不重建实例。实体形态见 Q2 |
 | K5 | 定义交换与内容导入未区分 | `.md` / `.opml` 仍是内容导入；组合定义的交换载体保存接口、实现和依赖，进入共同引入流程；片段复制另行标识，不能混用 |
 | K6 | 目录只覆盖代码定义，Agent 无工作区组合类型自述 | 本机目录描述可引入类型；Workspace 目录描述已引入定义，两条实现路线共用。实例查询补充当前属性与绑定，不以 config.description 代替类型契约 |
 | K7 | 文字测量两端有差（浏览器 canvas / Deno 等宽） | 已接受（脑图方案 §5.4）。新 control 的节点若非文字 Block 不受影响 |
@@ -291,7 +291,7 @@ render-block 是这条路线的渲染核心：给定 `RenderContext`，产出视
 
 **交换入口**保留“从文件导入…”。拟议的 `.block.json` 是单个 render 定义的交换载体，`.control.json` 是组合定义的交换载体；都需要身份、公开接口、实现与依赖描述。`.block.zip` 可装定义、源码、README、预览及资源。精确 schema 在 P0 冻结；这些扩展名不代表已有 CLI 支持，也不代替 PIKG 本机安装。`.md` / `.opml` 导入脑图内容的现有语义不变。引入后日常编辑直接打开工作区内源码（§6.7），不重复走文件导入。
 
-两种来源共用引入流程，入口放在插入目录、工作区控件管理页及数据源模式。定义文件拖到画布时，进入同一流程并预选“引入后插入实例”。下表描述完整目标：P0/P1 的外部引入只支持新定义和来源版本的精确复用，异版本报告冲突；不限制已引入控件的普通源码保存与热更新。P2 开放来源升级、结构迁移和公共事件绑定；属性与事件的数据契约在 P0 冻结，尚不支持的事件要求明确显示并禁止触发。
+两种来源共用引入流程，入口放在插入目录、工作区控件管理页及数据源模式。定义文件拖到画布时，进入同一流程并预选“引入后插入实例”。下表描述完整目标：P0/P1 的外部引入只支持新定义和来源版本的精确复用，异版本报告冲突；不限制对已引入控件 pull → 改 → build。P2 开放来源升级、结构迁移和公共事件绑定；属性与事件的数据契约在 P0 冻结，尚不支持的事件要求明确显示并禁止触发。
 
 | 步 | 内容 | 失败 / 冲突处理 |
 | --- | --- | --- |
@@ -318,7 +318,7 @@ render-block 是这条路线的渲染核心：给定 `RenderContext`，产出视
 
 ### 6.4 定义组合控件与保存片段
 
-“定义为控件…”的路径：选择画布对象 → 命名控件类型 → 声明公开属性、绑定、事件和内容 slots → 选择布局及模板外观 → 生成可编辑的工作区源码与组合定义 → 创建实例并通过 §6.7 的保存 / 热更新循环调试。可视化定义工具也写同一份源码，不能与文件各自维护一份可编辑配置。
+“定义为控件…”的路径：选择画布对象 → 命名控件类型 → 声明公开属性、绑定、事件和内容 slots → 选择布局及模板外观 → 在 home 源码目录生成可编辑源码并 build 出组合定义 → 创建实例并通过 §6.7 的编辑 → build 循环调试。可视化定义工具也写同一份 home 源码再 build，不能与文件各自维护一份可编辑配置。
 
 组合定义中保存可序列化的模板 / 初始化描述和依赖，实体形态见 Q2；实际 composite 容器与子 Cell 留在 BlockTree。按 R23，皮肤由 Chrome 绘制，内容 slots 使用真实 Block。公开属性如何映射到内部外观和 slots，需要在定义中明确。原选区是否替换为新实例由创建流程显式选择，不能在提取定义时删除已有用户内容。
 
@@ -329,7 +329,7 @@ Agent / 许愿格可以直接产出工作区定义，也可以只产出实例或
 ### 6.5 管理、权限与运行
 
 - 工作区控件列表提供多选“导出控件…”，详情提供单控件导出、更新、依赖与实例引用者、移除。导出可选“全局可用”或“生成 PIKG 文件”（§6.8）。移除被实例或其他定义引用的控件应拒绝并列出依赖；本机 PIKG 卸载不删除工作区定义。
-- 实例与定义详情提供“编辑控件源码…”，通过系统内容打开机制交给 Text Editor 或用户选择的文本编辑器；同时显示源码修订、活动修订和加载诊断。此入口编辑的是本工作区的定义，所有引用实例受影响；只想修改一个实例的行为时先显式派生定义。
+- 实例与定义详情提供“编辑控件源码…”（尚无工作副本时先 `pull` 到 home，再打开目录）、“构建”、watch 开关，并显示 build 修订、`derived.build` 摘要与最近一次 build 的诊断。build 改的是本工作区的定义，所有引用实例受影响；只想修改一个实例的行为时先显式派生定义。
 - 引入与实例化沿用目标位置的结构权限；更新还需相应定义及迁移内容的写权限。按钮依据当前能力显示状态，最终由服务端裁决；不增加 Owner 专属门槛。具体能力映射见 Q9。
 - 查看模式不提供结构修改；离线能力按 §6.2 判断，不把正常离线与权限失效、同步错误混为一谈。后两者按现有保存异常流程处理。
 - 手机首版不提供从本机引入入口；已引入控件按现有移动端能力显示，HTML 保留静态预览。
@@ -342,76 +342,67 @@ Agent / 许愿格可以直接产出工作区定义，也可以只产出实例或
 
 `aiws.result.html` 已能产出定义与 Cell；后续补来源 / 自述、初始化契约与共同校验。组合结果补定义引用及内容初始化，不能仍把所有 control 结果解释成大纲树。Agent 的读取、写入与执行使用自身授权，不借用贡献控件者的凭据。
 
-Agent 修改与 Text Editor 编辑使用同一份工作区源码，通过正常文档提交触发同一条校验 / 热更新链路；工具可将多个文件的变更合并为一次提交。诊断、源码修订与活动修订也应可查询，避免 Agent 只知道“文件已保存”却不知道控件是否已经采用它。
+Agent 与人编辑同一份 home 源码目录（经网关 NFSP 或同机本地文件），通过同一个 `ext.build` 提交，走同一条校验 / 原子生效链路；一次 build 天然把多个文件的变更合并为一次提交。诊断与 build 修订可查询，Agent 不会只知道“文件已保存”却不知道控件是否已经采用它。CLI 至少需要 `build`、`pull` 两个动词。
 
 实现时同步 `aiworkspace_template_dev.md`（发现、引入、定义、源码调试、多选导出、本机复用、来源升级）和 `aiworkspace_run.md`（绑定、执行身份、幂等、结果），PIKG 构建、签名与发布接入同时核对 `buckyos_app_dev.md` / `buckyos_dev_release.md`，保持 SDK / CLI / 服务协议一致。本次只更新设计，现有运行手册不提前写入未实现命令。
 
-### 6.7 用户开发与调试：编辑工作区文件，保存即生效
+### 6.7 用户开发与调试：编辑 home 目录源码，build 原子生效
 
-**最低开发体验参照 Excel VBA：控件的可编辑源码就在 Workspace 内，用户用已有 Text Editor 改文件，保存成功并通过校验后，现有实例自动采用新行为。** 不要求每次打 PIKG 包、重新引入、重新插入实例、刷新整个工作区或另点“应用”。这里的触发点是文件保存成功；尚在编辑器缓冲区中的输入不传播给协作者。
+**开发模型是工程师熟悉的"编辑 → build"（D6 修订，A1 / A2 裁决，评估见 §7.5）：控件源码放在开发者 home 目录下的普通文件夹，用任意编辑器修改（系统 Text Editor、IDE、Agent）；`build` 把一次源码快照提交给 aiworkspace 服务同步校验，通过则在一次 `doc.commit` 中原子更新定义、源码快照与实现资源，引用它的实例随之更新；失败则不提交，Workspace 保持上一个可用版本。** 日常调试不要求打包、重新引入、重新插入实例或刷新整个工作区；Desktop / CLI 提供 watch 模式自动触发 build，接近"保存即生效"的体验。
+
+#### 源码目录与 Workspace 的关系
+
+| 位置 | 内容 | 角色 |
+| --- | --- | --- |
+| home 工作副本 | `/home/<owner>/AI Workspace/<workspace>/controls/<control>/` 下的 `component.json`、实现文件与资源 | 编辑入口。只是建议布局：build 以显式参数或个人 `user_state`（`aiws:src:<defId>`）定位目录，定义里不存绝对路径，因为各人 home 不同 |
+| Workspace 快照 | `data/extensions/<def>/` 下的定义实体 + 源码快照（`buckyos.dir`，成员指向 FileObject）+ 实现资源 | build 通过的"已部署"状态。供实例渲染、导出、Fork、协作者 `pull` 与回放使用，不是编辑入口 |
+
+两者的关系类似工作副本与仓库：`pull` 把 Workspace 快照写回 home，`build` 把 home 提交进 Workspace。home 中未 build 的改动对协作者不可见。
 
 #### 标准流程（两条路线共用）
 
-1. **在自己的 Workspace 开发**：在“工作区控件”中新建 render / 组合定义，生成最小源码和一个测试实例；也可以选已有实例“编辑控件源码…”。从本机引入的控件也可直接修改其工作区副本。入口明确说明本工作区内哪些实例会受影响；需要独立变体时先派生定义。
-2. **编辑文件**：打开源码目录中的入口或行为文件，复用系统 Text Editor。先用最小样例跑通，再补公开属性、数据绑定、外观和行为；组合控件同时声明内容 slots、模板与布局。
-3. **保存并观察**：保存提交后自动校验、加载。已经激活的实例重新加载渲染或行为，组合实例重新计算布局 / 外观；实例 ID、属性覆盖、绑定及用户内容不变。未激活实例下次激活采用新活动修订；静态预览标明对应修订，旧快照不能冒充新代码的运行结果。
-4. **定位并修正**：控件详情显示“文件已保存 / 加载中 / 已生效 / 校验失败”、源码与活动修订；错误尽量定位到文件和行列，运行日志带实例与修订信息。改错后再保存即可重试；首版无需先建设完整 IDE 或断点调试器。
-5. **验证使用场景**：用至少两个实例检查默认值与覆盖、不同绑定和私有内容；在另一协作者客户端确认同一活动修订。触发一次动作后再改代码，验证重载不重复执行该动作。
-6. **多选导出并复用**：调试完成后，在 Workspace 中选一个或多个控件，选择“导出控件…”；结果可为本机“全局可用”，或得到一个 `.pikg` 文件。在干净 Workspace 验证导出内容可独立引入和运行；后续对 PIKG 签名，再发布或传播。包发布版本用于复用 / 分发，工作区日常保存使用自己的源码修订，详见 §6.8。
+1. **新建或引入**：在"工作区控件"中新建 render / 组合定义，或从本机库引入。Desktop 在 home 建目录骨架（`component.json` + 最小实现，NFSP `mkdir` / `uploadFile`）并生成一个测试实例。对已有定义点"编辑控件源码…"：尚无工作副本时先 `pull`，再用 File Browser / Text Editor 打开目录。入口明确说明本工作区内哪些实例会受影响；需要独立变体时先派生定义。
+2. **编辑文件**：任意编辑器。文件保存只改 home 中的文件，不影响 Workspace 与协作者。先用最小样例跑通，再补公开属性、数据绑定、外观和行为；组合控件同时声明内容 slots、模板与布局。
+3. **build**：Desktop 按钮、CLI（形如 `buckyos aiws build <dir> --workspace <ws>`，动词在 P0 定）或 watch 自动触发。客户端用 NFSP `list` 收集目录中每个文件的 `obj_id`（home 文件本身就是 NDN FileObject，不需再上传），调服务 `ext.build`；服务以调用者 token 经网关取字节、校验、一次 commit，同步返回诊断（尽量到文件和行列）。
+4. **观察**：commit 经 `doc.get_changes.touched` 到达各客户端，Cell 订阅 `e:<defId>` 重解析，激活中的 HTML 实例按新的实现引用重新挂载，组合实例重算布局 / 外观；实例 ID、属性覆盖、绑定及用户内容不变。未激活实例下次激活采用新实现；静态预览标明对应 build 修订，旧快照不能冒充新代码的运行结果。
+5. **修正**：build 失败只返回诊断，不提交任何内容；改完再 build。首版无需 IDE 或断点调试器。
+6. **验证使用场景**：用至少两个实例检查默认值与覆盖、不同绑定和私有内容；在另一协作者客户端确认同一 build 修订。触发一次动作后再 build，验证重载不重复执行该动作。
+7. **多选导出并复用**：调试完成后在"工作区控件"中选一个或多个控件导出（§6.8）。导出内容是 Workspace 快照，home 中未 build 的改动不会进入包。
 
-两条路线编辑的对象不同，但保存生效的规则相同。以下文件名只是建议，不是已存在的格式或已冻结的 schema；最小实现可先用一个自包含 JSON 文件，再拆出实现文件。
+两条路线编辑的对象不同，但 build 生效的规则相同。以下文件名只是建议，不是已存在的格式或已冻结的 schema；最小实现可先用一个自包含 JSON 文件，再拆出实现文件。
 
-| 路线 | 工作区源码示例 | 保存后应观察到的变化 |
+| 路线 | home 源码示例 | build 后应观察到的变化 |
 | --- | --- | --- |
 | render-block | `component.json` 描述接口与资源入口；`view.html`、`style.css`、`behavior.js` 提供 HTML 实现，或 `declarative.json` 提供声明式实现 | 修改显示公式、样式或支持的事件处理后，既有 Cell 使用新实现，后续交互执行新行为 |
 | Block-control | `component.json` 描述接口；`composition.json` 描述模板、slots、具名布局及属性映射；支持脚本事件后可引用 `behavior.js` | 修改间距、模板外观或支持的交互后，既有 composite 实例更新；不重新生成用户内容 Block |
 
-这里不允许源码任意突破宿主能力：declarative 仍使用既有词汇，组合定义首版复用具名布局算法。P1 先完成组合描述文件的保存生效，通用脚本事件与公共事件绑定随 P2 契约接入；不支持的脚本能力须明确报错，不能悄悄忽略。
+这里不允许源码任意突破宿主能力：declarative 仍使用既有词汇，组合定义首版复用具名布局算法。P1 先完成组合描述文件的 build 生效，通用脚本事件与公共事件绑定随 P2 契约接入；不支持的脚本能力须在 build 时明确报错，不能悄悄忽略。
 
-#### 源码归属与 Text Editor 接入
+#### build 的校验与原子性
 
-建议每个定义在工作区数据树 `data/extensions/` 下关联一个源码目录，用现有 `buckyos.dir` 成员引用文件对象。这里是 Workspace 内的逻辑目录，尚不等于已挂载成 Text Editor 可写的普通 NFSP 路径。定义持有稳定的源码目录 / 入口引用；保存时文件对象 ID 可变化，实例仍引用同一个定义。
+- **输入与输出**：一次 build 的输入是目录全部文件的 `obj_id` 清单加目标 Workspace 当前的定义 / 依赖修订；输出是一次 commit 或一份诊断。不存在"源码已保存但未生效"的共享中间状态，原 `source_revision` / `active_revision` 双修订合一为 build 修订。定义上由服务在同一 commit 内以系统主体经 `entity.set_derived` 写 `derived.build { input_digest, builder_version, built_at }`，不占个人撤销步骤（Q14 收窄后的形态）。
+- **校验内容**：`component.json` 结构与身份（A3）、HTML `api_version`、declarative 词汇、大小限制、`config_schema` 子集（A7）、资源引用存在；以及同 Workspace 内依赖者的接口兼容。删除被实例使用的 slot、破坏必填属性 / 绑定或改变内容结构时列出受影响实例，整次 build 失败，不自动迁移数据，也不留半套。
+- **并发**：commit 对定义键与 `dir` 成员带 `expect`；基于旧快照的 build 得到 `REVISION_CONFLICT`，提示先 `pull`。两人同时改同一控件按先到先得，不以最后写入静默覆盖。
+- **权限**：目标 folder 的 `structure` 与定义的 `update`；home 文件读取由调用者 token 在 NDM 网关判定，服务不越权读取。
+- **重载保留实例，清理旧运行时**：注销旧事件订阅与定时器，丢弃旧 runtime 的迟到 UI 回调；临时局部状态可重置，持久属性、绑定与内容保留。运行期个别实例报错需显示具体诊断，不能让该客户端自行切回另一个版本。
+- **重载不等于再次执行业务**：加载阶段只建立视图与事件处理；已经提交的 command / run 记录其使用的 build 修订并继续原执行，下一次新事件才用新实现。收到同步、重新挂载或重连都不能自动重放已发生的业务动作。该生命周期约束需要实现；当前同源 HTML 执行并未提供隔离任意脚本副作用的保证。
+- **已发布快照与历史回放**固定自己的 build 修订，不跟随当前 Workspace 的后续 build。
 
-源码是可编辑的事实来源；公开接口与 runtime 实现是由某次源码快照解析出的结果。可视化控件设计工具也写回相同源码，不能再维护一份与文件并行修改的内联实现。现有内联 HTML 定义可在进入源码编辑流程时物化为文件，具体字段和迁移落点见 Q11。
+#### 协作与多人
 
-当前 Text Editor 已有普通路径的读取、版本检查、保存、冲突处理和草稿恢复，也能读取不可变对象；但 `object-id` 打开方式不能直接写回 Workspace 目录成员。需要在公共内容打开协议与编辑器存储接口间补齐 **Workspace 可写目标适配**，携带工作区、目录实体、成员名与期望修订，而不是仅传一个旧文件对象 ID。其他文本编辑器也应能使用这项协议，不在 Desktop 写死 Text Editor 的专用分支。
-
-保存链路的目标如下；这是待实现流程，不是已有 RPC 名称清单：
-
-```text
-Text Editor 保存
-  → 上传 / 暂存新文件对象
-  → dir.set_member 带成员版本条件提交
-  → Workspace 变更通知标识新的源码修订
-  → 固定这次源码及依赖快照，校验 / 准备实现
-  → 自动切换共享活动修订
-  → 各客户端更新引用该定义的实例
-```
-
-资源就绪后才提交成员替换；同文件并发保存检测冲突，不以最后写入静默覆盖。含新文件对象的保存需要在线资源准备，未提交成功的本地草稿不宣称已在协作者端生效。编辑器“保存成功”的含义是文件提交成功，控件是否加载成功单独显示。
-
-重载以 Workspace 正式提交及变更订阅为准。Text Editor 内部的保存提示、窗口焦点和普通文件轮询不能充当唯一通知源；否则 Agent 或另一协作者改文件时无法及时生效。当前 HTML 宿主已有内联实现变化时销毁旧 runtime、重新挂载的机制；新增的是资源文件到定义解析结果、共享活动修订与诊断的完整连接。
-
-#### 修订、失败与多人协作
-
-为避免编辑错误损坏正在使用的实例，建议区分 `source_revision`（最新已保存源码）与 `active_revision`（最后成功校验、接口兼容的活动实现）；这些是设计概念，字段形状在 Q11 冻结。
-
-- **普通保存自动切换**：通过校验的兼容修改无需额外确认。每次校验固定一份完整源码及依赖快照，不能混用不同时刻的文件；结果须仍匹配“自身源码与全部依赖修订”的输入摘要，较慢的旧任务不能覆盖较新的结果。被依赖控件的活动修订变化也触发使用者重新校验；不兼容时使用者保留原活动实现及依赖快照并显示诊断。多文件可批量提交，逐文件保存形成的中间错误按下一条处理。
-- **保存错误代码仍保留工作成果**：源码可保存，失败时显示诊断并继续使用上一个活动实现；从未成功加载的定义显示错误占位。活动实现及依赖随工作区保留，新加入的协作者、重新打开和 Fork 都能取得它，不能各客户端凭内存保留不同的“最后可用版”。
-- **接口不兼容不自动迁移数据**：删除被实例使用的 slot、破坏必填属性 / 绑定或改变内容结构时，保留源码但阻止候选激活，列出受影响实例和迁移要求。来源包升级也不得覆盖尚未合入的工作区源码改动。
-- **重载保留实例，清理旧运行时**：注销旧事件订阅与定时器，丢弃旧 runtime 的迟到 UI 回调；临时局部状态可重置，持久属性、绑定与内容保留。运行期个别实例报错需显示具体诊断，不能让该客户端自行切回另一个共享修订。
-- **重载不等于再次执行业务**：加载阶段只建立视图与事件处理；已经提交的 command / run 记录其使用的实现修订并继续原执行，下一次新事件才用新实现。收到源码同步、重新挂载或重连都不能自动重放已发生的业务动作。该生命周期约束需要实现；当前同源 HTML 执行并未提供隔离任意脚本副作用的保证。
-- **所有编辑入口共享规则**：人、可视化设计器与 Agent 的写入走同一权限和版本检查；源码撤销 / 重做也触发校验与重载。活动修订的维护作为派生更新，不额外占用个人撤销步骤。已发布快照与历史回放固定自己的实现修订，不跟随当前 Workspace 的源码变化。
-
-源码编辑与热更新只影响当前 Workspace。显式选择“导出为全局可用”才将一次导出结果安装到本机库；生成 PIKG、签名 / 发布与其他 Workspace 的来源升级也都是各自的操作。
+- **协作者改源码**：`pull` → 改 → `build`，git 式而非 Google Docs 式（§7.5.4 R1）。跨 Zone 协作者同样：home 在各自 Zone，build 经目标 Workspace 的服务提交。Workspace 快照保证导出、Fork 与新协作者不依赖任何开发者的机器在线。
+- **Agent**：与其他客户端相同，经网关 NFSP 用自己的 token 读写 home，再跑 CLI build；与 OOD 同机时也可直接写本地文件（见 §7.5.4 R3 的扫描延迟）。诊断与 build 修订可查询，Agent 不会只知道"文件已保存"却不知道控件是否已经采用它。
+- **所有入口共享规则**：人、可视化设计器与 Agent 的 build 走同一权限、校验与版本检查。
+- build 只影响当前 Workspace。显式选择"导出为全局可用"才把一次导出结果安装到本机库；生成 PIKG、签名 / 发布与其他 Workspace 的来源升级也都是各自的操作（§6.8）。
 
 ### 6.8 导出控件：全局可用或生成 PIKG
 
-导出是开发循环的正式出口。开发者先在自己的 Workspace 用源文件调试，再从“工作区控件”中多选定义，一次导出成一个控件包；render 与组合控件可以混选。从画布实例进入时，先解析其定义并去重。实际导出对象是可复用的控件定义及依赖。
+导出是开发循环的正式出口。开发者先在 home 目录编辑、build 进自己的 Workspace 调试，再从“工作区控件”中多选定义，一次导出成一个控件包；render 与组合控件可以混选。从画布实例进入时，先解析其定义并去重。实际导出对象是可复用的控件定义及依赖。
 
 ```text
-自己的 Workspace：编辑源码 → 保存 → 调试实例
+home 目录编辑源码 → build 进自己的 Workspace → 调试实例
   → 选择一个或多个控件 → 导出控件
+      （服务返回定义 + 源码快照 + 依赖闭包的 bundle → 客户端写到 home 临时目录如 AI Workspace/exports/<pkg>/ → pikg pack，A6）
       ├─ 全局可用：安装到自己的 BuckyOS 本机控件库
       │    → 在其他 Workspace 选择引入
       └─ 生成 .pikg：取得控件包文件
@@ -423,7 +414,7 @@ Text Editor 保存
 导出过程需要明确以下内容：
 
 - **所选定义与依赖**：展示用户选中的控件，以及自动补齐的控件、源码和资源依赖，按稳定身份及修订去重。一个包可包含多个控件；缺失或冲突的依赖显示具体原因，不生成半套包。
-- **固定导出修订**：基于一次固定的工作区状态，冻结校验通过的源码、活动实现和全部依赖。若最新源码尚未成功激活，先显示诊断，不能把新源码与旧实现悄悄混装；导出期间继续编辑不改变已冻结的内容。
+- **固定导出修订**：基于一次固定的工作区状态，冻结 build 通过的源码快照、实现和全部依赖。导出的是 Workspace 快照而不是 home 文件；home 工作副本有未 build 的改动时提示，不能把未校验的源码混进包；导出期间继续编辑或 build 不改变已冻结的内容。
 - **可独立使用的内容**：包携带定义、可编辑源码、所需实现 / 资源、公开接口、目录自述与声明的初始化模板。Workspace 实体引用转为包内引用，引入新 Workspace 时重新映射；本机库与 PIKG 都不能依赖开发 Workspace 持续在线。实例绑定的业务数据、运行记录和会话凭据不默认进入控件包；所需业务数据由新实例重新绑定。
 - **包身份与版本**：导出时填写或确认本次包身份、发布版本及控件清单，保留源码修订和上游来源记录。修改后的内容使用新的发布版本或派生身份，不能在同一发布身份 / 版本下替换内容；原来源摘要保留作溯源记录。
 - **完成结果**：本机出口显示已进入控件库的包和控件；文件出口提供 `.pikg` 及内容摘要。两者的控件内容应一致，后续修改源码须重新导出才会产生新结果。签名绑定导出内容对应的身份与内容图，改变内容后须重新打包并签名；PIKG 签名与发布入口沿用统一信任体系补齐，现状见 §2.4。
@@ -466,7 +457,7 @@ Text Editor 保存
 
 P0 的交付范围是 **PIKG 控件包的构建 / 读取 / 校验、本机库安装与 Workspace 引入**，并在公共清单、包用途 / 能力识别及分派中为模板保留位置。模板编辑、模板导出和“从模板创建”的完整功能不因预留结构而视为已经实现。
 
-尚不支持模板实例化的客户端应明确显示该能力未支持；可以在公共清单版本受支持、内容校验通过时显式选择包内控件，但不能静默把安装模板包当作安装纯控件包并报告模板可用。未知必需能力或清单版本必须有明确的拒绝 / 回退结果。
+尚不支持模板实例化的客户端应明确显示该能力未支持；可以在公共清单版本受支持、内容校验通过时显式选择包内控件，但不能静默把安装模板包当作安装纯控件包并报告模板可用。未知必需能力或清单版本必须有明确的拒绝 / 回退结果。 **向下兼容原则（Q19 裁决）**：正式版向下兼容，用旧版本宿主 / 清单开发的控件要能在新版本上引入与 build；清单与 `component.json` 带版本号，新版本只加可选字段、不改既有字段语义，旧字段废弃时保留读取路径；`schemas/` 先追到 PROTOCOL 1.1，新增 block-def 键不升 PROTOCOL。
 
 实现需要联动 PIKG 开发态输入、TS / Rust 描述类型与 reader、安装服务的资源分派、本机目录、AIWS 导出 / 引入和 SDK / CLI。新增用途不能只放宽 TypeScript 的类型列表，也不能仅往当前固定的 `PACKAGE_META.json` 加字段。格式、签名与安装协议的权威文档仍由 PIKG 文档体系维护；本节定义 AIWS 的消费要求。
 
@@ -481,7 +472,7 @@ P0 的交付范围是 **PIKG 控件包的构建 / 读取 / 校验、本机库安
 | D3 | 各协作者从自己的 BuckyOS 选择控件，共同形成 Workspace 控件集合；甲 A/B、乙 C/D 得到 A/B/C/D | 用户确认 |
 | D4 | 本机库与 Workspace 集合分别管理；已引入定义及依赖留在 Workspace，本机升级 / 卸载不自动修改它 | 两级模型的约束 |
 | D5 | 两条路线作为同一控件体系的实现方式；控件定义、实例和独立片段分别处理 | 本轮设计方向 |
-| D6 | 两类控件都应能通过直接编辑 Workspace 内文件改变行为，复用系统 Text Editor；保存后自动生效，日常调试无需重新打包 / 引入 | 用户提出 VBA 式开发体验；保存触发与修订机制按 §6.7 细化 |
+| D6 | 控件源码放在开发者 home 目录，可用任意编辑器 / IDE / Agent 修改；`build` 同步校验并把通过的快照原子提交进 Workspace，实例即时更新，失败不提交；日常调试无需打包 / 引入；watch 模式可自动 build | 用户 2026-10-29 确认：工程师熟悉的编辑 → build 模型（原子化部署），取代原"Workspace 内文件保存即生效"；影响评估见 §7.5 |
 | D7 | 开发者在自己的 Workspace 调试后，多选控件导出为全局可用或 PIKG；后续再对 PIKG 签名、发布 / 传播 | 用户确认；全局范围按两级库模型解释为当前用户 BuckyOS 本机控件库 |
 | D8 | PIKG 需要支持 Workspace 扩展控件，并为 Workspace 模板保留空间；模板包在控件包的公共内容上扩展 | 用户确认；本轮只预留模板契约，优先交付控件包 |
 
@@ -501,10 +492,10 @@ P0 的交付范围是 **PIKG 控件包的构建 / 读取 / 校验、本机库安
 | Q8 | 首版可携带实现与宿主 API | 先支持 declarative、HTML 与组合定义引用既有算法；任意 React 插件或新布局代码动态加载另列。导出器与浏览器均需声明能力与回退行为 |
 | Q9 | 权限、属性更新及定义升级前置条件 | 复用现有能力，明确引入 / 更新 / 迁移所需权限；属性更新以属性为冲突单位，依赖旧定义的写入携带版本条件，离线重放也检查 |
 | Q10 | HTML parent 与事件执行接口 | parent 支持合法 control / 内容节点；动作、事件参数和绑定以共同契约描述，持久副作用复用 command / run。设计 / 运行、公开 / 非公开的激活规则分别验收 |
-| Q11 | 源码入口、编辑器可写目标及活动修订协议 | P0 冻结源码目录 / 入口引用、固定依赖快照、通用 Content 可写目标和诊断接口；确定校验与活动修订条件提交的执行层，条件包含完整输入摘要，依赖变化触发使用者重新校验。复用资源暂存、dir.set_member 和变更订阅；内联定义物化后以源码为唯一编辑入口。不能将保存热更新后置到包升级阶段 |
+| Q11 | 源码目录、build 协议与诊断 | **已由 A1 / A2 裁决收窄**：源码事实来源是 home 目录，Workspace 只存 build 通过的快照；不再有 Text Editor 可写目标、双修订与异步校验。P0 冻结：home 目录布局建议与 `component.json`、`ext.build` 入参（文件 `obj_id` 清单、目标 folder、期望修订）与出参（commit 或诊断）、`derived.build` 字段、`pull` 与 watch 行为、CLI 动词。复用 `dir.replace` / `dir.set_member` 的 `expect`、变更订阅与 NDM 网关授权取对象；内联定义进入源码编辑时物化到 home 再 build |
 | Q12 | 多选导出与 PIKG 的接入契约 | P0 冻结包内控件清单 / 源码布局、依赖去重和引用映射，复用归档与内容身份校验；落实本机开发态安装 / 登记及其权限和版本规则。签名发布沿用统一信任体系补齐，导出与本机复用不以前置发布者签名为要求 |
 | Q13 | Workspace 扩展用途与模板超集结构 | P0 冻结 AppDoc / 包用途的表示方式、两端类型校验与资源安装分派；控件清单与资源为公共部分，预留有版本的模板入口、能力声明及内容图引用。模板可无自带控件；完整模板创建与合并流程后续设计，不能以普通 App 安装代替 |
-| Q14 | 活动修订作为派生的共享状态 | `active_revision` 是从一次源码及依赖快照校验出的结果，所有协作者与新加入者必须取得同一份，且不占个人撤销步骤。冻结为：由服务以系统主体写入，复用 `entity.set_derived` / `entity_versions.generated` 路径，不新增写通道；`derived` 记录完整输入摘要（自身源码修订 + 全部依赖的活动修订 + 校验器版本），迟到的旧任务结果与当前摘要不符即丢弃；重放只看原语形状，不重新执行校验。见 §7.3 第 1 条 |
+| Q14 | build 结果作为派生的共享状态 | **随 A2 收窄**：没有异步任务，也就没有迟到结果；`active_revision` 概念合并进 build 修订。服务在 build 的同一 commit 内以系统主体经 `entity.set_derived` 写 `derived.build { input_digest（全部文件 obj_id + 依赖修订 + builder_version）, builder_version, built_at }`，不新增写通道，不占个人撤销步骤；重放只看原语形状，不重新执行校验。见 §7.3 第 1 条 |
 | Q15 | D01 方案 C 的实际拆分 | composite 宿主与定义声明的属性 schema 是方案 C 的第一个真实消费者：用户控件类型不进 `control_kinds` / 编译期 kind 表，内核只校验结构与引用（容器 kind、slot 唯一、placement 分量、`def_ref` 存在），config 值域由定义的 schema 在准入时校验，副本重放不执行业务 schema。P0 前先把 `types.rs` 的校验入口按 T0-1 分类表拆成“原语 / 引用”与“业务 Schema”两层，Q3 的 JSON Schema 子集在此之上选。见 §7.3 第 2 条 |
 | Q16 | 引用边种类与依赖图 | 现有 `RefEdge.kind` 只有 `bind` / `owns`（及 `def_ref` 阻止删除、AssetRef 进闭包）。新增“定义 → 定义依赖”“定义 → 源码目录 / 入口”两种边，并冻结每种边对删除（阻止 / 级联 / 置空）、导出与 Fork 闭包（是否随包）、重新校验传播（依赖变化触发使用者）的约束；依赖环在 `prepare` 阶段拒绝。核心设计 §16.7 的依赖图在内核落到这张边表上，不另建索引。见 §7.3 第 3 条 |
 | Q17 | 子图导入与 ID 重映射 | 模板实例化、引入时“Workspace 实体引用转为包内引用再重新映射”、复制组合实例的私有内容，都是“把带内部引用的子图写入另一处并重写 `def_ref`、父子、绑定与连线端点”。冻结为内核级操作（`doc.commit` 的一组 Operation 或 WASM 共享的规划函数），许愿格、CLI、Desktop 剪贴板复用同一实现；整包 `ws.import` 继续保留 ID 不走此路径。见 §7.3 第 4 条 |
@@ -517,14 +508,14 @@ P0 的交付范围是 **PIKG 控件包的构建 / 读取 / 校验、本机库安
 
 | 层 | 现状 | 扩展带来的内容 | 结论 |
 | --- | --- | --- | --- |
-| 原语 | 树节点、版本格对象、Table、RichText、AssetRef、资源目录 `buckyos.dir`（与 DirObject 同构） | 定义是 `buckyos.block-def` 实体，源码是 `dir` 里的文件对象，依赖是引用边 | 不新增原语 |
+| 原语 | 树节点、版本格对象、Table、RichText、AssetRef、资源目录 `buckyos.dir`（与 DirObject 同构） | 定义是 `buckyos.block-def` 实体，源码快照是 `dir` 里的文件对象，依赖是引用边 | 不新增原语 |
 | 存储与保留 | `doc.sqlite` / `local.sqlite`，对象在 named store，`assets` / `objects` / `exports` 三桶绑定保留集（[Durable Data Schema](<BuckyOS AiWorkspace Durable Data Schema.md>)） | 定义、源码、资源都是普通实体与资产，自然进入 content_root 闭包 | 不改表、不改桶 |
 | 导出包 | `.bcanvas` = manifest + NamedObject 闭包（第一期 §4.4，`FORMAT_VERSION` 1.0） | 工作区 Fork / 自包含导出要求携带控件实现、依赖与资源 | 现有闭包已覆盖；PIKG 控件包是并列的第二种包格式，不合并 |
-| 写入路径 | 一切修改经 `doc.commit` | 引入、保存、热更新、Text Editor 可写目标 | 最终都落成一次 commit，可写目标只是打开协议的适配 |
+| 写入路径 | 一切修改经 `doc.commit` | 引入、build、pull | build 就是一次 commit；pull 只读 Workspace 写 home，不经 commit |
 
 **四处接触点**
 
-1. **派生的共享状态（Q14）**。`source_revision` 是普通实体内容，`active_revision` 是服务校验后的派生结果，要求共享、持久、不进个人撤销栈。这与许愿结果一样属于“系统主体写入、绑定输入摘要的派生更新”，现有唯一同类路径是 `entity.set_derived` 与 `entity_versions.generated`。要冻结的是摘要构成与迟到结果的拒绝规则，不是新机制。
+1. **派生的共享状态（Q14）**。按 A2，校验与提交同步完成，Workspace 里只有 build 通过的快照，不存在"已保存未生效"的中间状态；`derived.build` 是服务在同一 commit 内写的派生摘要，要求共享、持久、不进个人撤销栈。这与许愿结果一样属于“系统主体写入、绑定输入摘要的派生更新”，现有同类路径是 `entity.set_derived` 与 `entity_versions.generated`。要冻结的只是摘要构成；异步任务与迟到结果的拒绝规则已不需要。
 2. **D01 方案 C 必须真正拆开（Q15）**。今天 `control_kinds` 是 `core.json` 固定列表，`validate_container` 是脑图专用 Rust 校验器，重放也执行它们。composite 宿主一旦存在，重放语义就从“内核校验全部业务规则”变成“内核校验结构，schema 校验由定义提供”。D01 已决定方向，T0-1 已做分类表，但 `types.rs` 的入口还没拆；扩展是逼它拆的第一个场景，也是四条里改动最大的一条。
 3. **引用边种类扩大（Q16）**。现在只有 `bind` / `owns` 两种边加 `def_ref` 的删除阻止。扩展要加定义到定义、定义到源码目录的依赖，并要求依赖变化触发使用者重新校验、导出时按依赖去重、循环要识别。核心设计 §16.7 设想的依赖图在内核就是这张边表的扩展，不另建索引。
 4. **子图导入带 ID 重映射（Q17）**。模板实例化与引入时的引用重映射需要把带内部引用的子图复制进另一个 Workspace 并重写全部引用。今天整包导入保留 ID，剪贴板重映射只在前端。应成为内核级操作，否则许愿格、CLI 与 Desktop 各做一套。
@@ -539,13 +530,19 @@ P0 的交付范围是 **PIKG 控件包的构建 / 读取 / 校验、本机库安
 
 | # | 对应 | 问题 | 代码现状 | 为什么不定就不能开工 | 建议 | 裁决 |
 | --- | --- | --- | --- | --- | --- | --- |
-| A1 | Q11 前半 | 源码文件怎样让 Text Editor 写回 Workspace | websdk `content.ts` 的 `TransferableContentRef` 只有 `cyfs-path` / `object-id` 两种；Text Editor `documentStore.ts` 只写 NFSP 路径（`splitPath` 要求 `cyfs:///`），`object-id` 打开永远只读（`workspace.ts:159`）；aiworkspace 没有任何 NFSP 路径。内核侧已就位：`buckyos.dir` 成员各有 `m:<name>` 修订，`dir.set_member` 带必填 `expect`（plan.rs:862-881） | 跨 websdk、text_editor、aiworkspace 三仓的协议改动，决定 Text Editor 要不要新存储后端。A）给 `OpenRequest.source` 加新 ref 种类 `{workspace_id, dir_entity_id, name, expect}`，Text Editor 增加 AIWS 存储后端，成员修订当 etag；B）nfs-server 把 Workspace `buckyos.dir` 挂成 NFSP 路径，Text Editor 零改动。A 需核实 dapp 的 app token 能否调 aiworkspace RPC（text_editor 目前只有 `user/home` 权限） | A。B 把 Workspace 的提交语义、权限与锁藏到文件系统后面，冲突与修订无法对上 | 待定 |
-| A2 | Q11 后半 / Q14 | 校验与 `active_revision` 在哪一层执行 | Q14 已定由服务以系统主体经 `entity.set_derived` 写入。但 store 没有提交后任务机制：唯一的服务端派生写入是 wish planner，且在同一次规划内同步完成；变更通知只有 `doc.wait_changes`（只给 head_seq）+ `doc.get_changes`（带 touched 实体） | 剩余决定：校验是"提交事务内同步"还是"提交后异步任务 + 第二次 `set_derived` commit"。前者让保存等校验、含依赖闭包时变慢且失败会卡住保存；后者要新建 store 内的任务队列与重启恢复 | 异步任务：commit 落库后对 touched 的 block-def / dir 成员入队，结果以系统主体单独 commit `set_derived`，摘要不符即丢弃（Q14）。Desktop 不用新通道：Cell 已订阅 `e:<defId>` 重解析（`useBlockContext.ts:63`），`HtmlActive` 以 `html` 子对象 JSON 为 remount key（`HtmlBlockHost.tsx:44`），只需把 key 换成活动实现引用 | 待定 |
-| A3 | Q6 前半 | 控件稳定身份与去重主键 | `def_id` 只查格式 `[a-z0-9][a-z0-9._-]{0,63}`、内核不查唯一（types.rs:1513-1517）；wish 用 `wish.<hash>`，demo 用 `sample.kpi-card`；`view.type` 是宿主 `html` / `declarative` 而非定义；`def_ref.version` 字段存在但无人读；实体 `name` 同级唯一（plan.rs:438-450） | §6.2 第 3 步"按身份、来源版本、摘要匹配"目前没有可用主键；64 字符放不下 DID 命名空间 | 身份 = `<包 AppDID 或 owner>/<def_id>`；引入时用实体 `name` 存身份放在 `data/extensions/` 下，借内核"同级 name 唯一"换并发去重，不加新校验；`def_ref.version` 用于 pin 来源版本 | 待定 |
-| A4 | Q13 | PIKG 用途在 AppDoc 上怎么表示 | Rust `AppDocWire` 为 `deny_unknown_fields`，`AppType` 只有 Service / dapp / Web / Agent；TS allowlist 同样严格；`app_submit_route` 按 app_type 分派（Agent + Rpc → 注册模板，其余 → 普通安装）；但 `SubPkgList.others` 允许任意子包 key，`agent_skills` 是 TS 侧类型不是 Rust 值 | 三条路工作量差一个量级：A）新 `AppType::WorkspaceExtension`（Rust 枚举 + product 准入 + 新 route，像 Agent template）；B）沿用现有 app_type + 约定子包 key `aiws_controls`；C）绕过 App Installer，像 `buckyos skill install` 那样 TS 校验后直接 POST 给 aiworkspace 服务 | A。B 会让普通 App 安装路径误吞控件包；C 拿不到统一的签名 / 发布与安装记录 | 待定 |
-| A5 | Q6 后半 | 本机控件库由谁持有、谁提供目录 | 没有通用"已安装包索引"；Agent 模板的现成模式是 control-panel 存 `users/{owner}/agent_templates/{app_id}` KV + zone bucket `agent_templates`（agent_mgr.rs:664-729）；`system:aiworkspace` 在 RBAC `frame` 组可读 `users*` | 决定 Desktop 调谁的 RPC 列目录，以及"导出为全局可用"写到哪。另外 `asset.import_object{obj_id}` 只认目标 Zone 网关可读的对象，跨 Zone 引入必须走客户端下载再上传 `{bucket_id,key}` | control-panel 照 agent_templates 做 `users/{owner}/aiws_controls/{app_id}` + bucket，提供 `aiws.list_controls` 类 RPC；aiworkspace 服务只读不存；跨 Zone 由客户端中转 | 待定 |
-| A6 | Q12 | 多选导出在哪一层构建 PIKG | 无选择性导出 RPC，`doc.export` 只能整库 `.bcanvas`（`export.rs:184-291`，`closure` 已能算资源闭包）；Rust 只有 PIKG reader（`pikg.rs`），writer 全在 TS CLI `pack`；websdk `AiWorkspaceClient` 连 export / assets / changes 的封装都没有 | 服务端建包要新写 Rust writer；客户端建包要新 RPC 吐出"定义 + 源码 + 依赖闭包"bundle，再由 Desktop / CLI 共用 TS `pack` | 新 RPC `doc.export_defs{entity_ids}` 复用 `closure` 产出 bundle，TS 侧建包；"全局可用"= 建包后调 A5 的登记 RPC；websdk 顺带补 export / assets / changes 封装 | 待定 |
-| A7 | Q3 / Q15 | `config_schema` 支持的 JSON Schema 子集 | Desktop 已在 `resolve` 用 `z.fromJSONSchema` 校验 `config`（registry.ts:297-311）；内核只检查是对象、从不校验；core 无 schema crate；Q15 已定内核只校验结构 | B8"从定义生成初始化表单"和引入校验都要知道支持哪些关键字；子集定了才能写表单生成器与手册 | 子集 = `type / enum / default / required / title / description / minimum / maximum / minLength / maxLength`，前端校验，内核继续不校验；写进 types.rs 注释与手册 | 待定 |
+| A1 | Q11 前半 | 源码文件怎样让 Text Editor 写回 Workspace | websdk `content.ts` 的 `TransferableContentRef` 只有 `cyfs-path` / `object-id` 两种；Text Editor `documentStore.ts` 只写 NFSP 路径（`splitPath` 要求 `cyfs:///`），`object-id` 打开永远只读（`workspace.ts:159`）；aiworkspace 没有任何 NFSP 路径。内核侧已就位：`buckyos.dir` 成员各有 `m:<name>` 修订，`dir.set_member` 带必填 `expect`（plan.rs:862-881） | 跨 websdk、text_editor、aiworkspace 三仓的协议改动，决定 Text Editor 要不要新存储后端。A）给 `OpenRequest.source` 加新 ref 种类 `{workspace_id, dir_entity_id, name, expect}`，Text Editor 增加 AIWS 存储后端，成员修订当 etag；B）nfs-server 把 Workspace `buckyos.dir` 挂成 NFSP 路径，Text Editor 零改动。A 需核实 dapp 的 app token 能否调 aiworkspace RPC（text_editor 目前只有 `user/home` 权限） | A。B 把 Workspace 的提交语义、权限与锁藏到文件系统后面，冲突与修订无法对上 | 已裁决：一个思路是，aiws的目录，要挂到 workspace owner的home目录下（相当于原来windows的my document),这样用户可以用传统的ide思路来编写相关代码？；模型与影响见 §7.5 |
+
+| A2 | Q11 后半 / Q14 | 校验与 `active_revision` 在哪一层执行 | Q14 已定由服务以系统主体经 `entity.set_derived` 写入。但 store 没有提交后任务机制：唯一的服务端派生写入是 wish planner，且在同一次规划内同步完成；变更通知只有 `doc.wait_changes`（只给 head_seq）+ `doc.get_changes`（带 touched 实体） | 剩余决定：校验是"提交事务内同步"还是"提交后异步任务 + 第二次 `set_derived` commit"。前者让保存等校验、含依赖闭包时变慢且失败会卡住保存；后者要新建 store 内的任务队列与重启恢复 | 异步任务：commit 落库后对 touched 的 block-def / dir 成员入队，结果以系统主体单独 commit `set_derived`，摘要不符即丢弃（Q14）。Desktop 不用新通道：Cell 已订阅 `e:<defId>` 重解析（`useBlockContext.ts:63`），`HtmlActive` 以 `html` 子对象 JSON 为 remount key（`HtmlBlockHost.tsx:44`），只需把 key 换成活动实现引用 | 已裁决：我觉得一致性问题还是同步比较好，相当于源码不是保存后立刻生效的，而是有一个命令行（类似build)执行后，才会针对调试的workspace生效。；模型与影响见 §7.5 |
+
+| A3 | Q6 前半 | 控件稳定身份与去重主键 | `def_id` 只查格式 `[a-z0-9][a-z0-9._-]{0,63}`、内核不查唯一（types.rs:1513-1517）；wish 用 `wish.<hash>`，demo 用 `sample.kpi-card`；`view.type` 是宿主 `html` / `declarative` 而非定义；`def_ref.version` 字段存在但无人读；实体 `name` 同级唯一（plan.rs:438-450） | §6.2 第 3 步"按身份、来源版本、摘要匹配"目前没有可用主键；64 字符放不下 DID 命名空间 | 身份 = `<包 AppDID 或 owner>/<def_id>`；引入时用实体 `name` 存身份放在 `data/extensions/` 下，借内核"同级 name 唯一"换并发去重，不加新校验；`def_ref.version` 用于 pin 来源版本 | 已裁决：按buckyos的惯例，控件由作者did共同构造完整的唯一名字 |
+
+| A4 | Q13 | PIKG 用途在 AppDoc 上怎么表示 | Rust `AppDocWire` 为 `deny_unknown_fields`，`AppType` 只有 Service / dapp / Web / Agent；TS allowlist 同样严格；`app_submit_route` 按 app_type 分派（Agent + Rpc → 注册模板，其余 → 普通安装）；但 `SubPkgList.others` 允许任意子包 key，`agent_skills` 是 TS 侧类型不是 Rust 值 | 三条路工作量差一个量级：A）新 `AppType::WorkspaceExtension`（Rust 枚举 + product 准入 + 新 route，像 Agent template）；B）沿用现有 app_type + 约定子包 key `aiws_controls`；C）绕过 App Installer，像 `buckyos skill install` 那样 TS 校验后直接 POST 给 aiworkspace 服务 | A。B 会让普通 App 安装路径误吞控件包；C 拿不到统一的签名 / 发布与安装记录 | 已裁决：增加新的类型 (aiws?)， aiws相关的扩展估计是未来buckyos最主要的pikg. |
+
+| A5 | Q6 后半 | 本机控件库由谁持有、谁提供目录 | 没有通用"已安装包索引"；Agent 模板的现成模式是 control-panel 存 `users/{owner}/agent_templates/{app_id}` KV + zone bucket `agent_templates`（agent_mgr.rs:664-729）；`system:aiworkspace` 在 RBAC `frame` 组可读 `users*` | 决定 Desktop 调谁的 RPC 列目录，以及"导出为全局可用"写到哪。另外 `asset.import_object{obj_id}` 只认目标 Zone 网关可读的对象，跨 Zone 引入必须走客户端下载再上传 `{bucket_id,key}` | control-panel 照 agent_templates 做 `users/{owner}/aiws_controls/{app_id}` + bucket，提供 `aiws.list_controls` 类 RPC；aiworkspace 服务只读不存；跨 Zone 由客户端中转 | 已裁决：由aiws系统服务持有。在本机安装 aiws控件扩展或模版扩展，都是安装到系统服务里。workspace只有在用到的时候才会插入 |
+
+| A6 | Q12 | 多选导出在哪一层构建 PIKG | 无选择性导出 RPC，`doc.export` 只能整库 `.bcanvas`（`export.rs:184-291`，`closure` 已能算资源闭包）；Rust 只有 PIKG reader（`pikg.rs`），writer 全在 TS CLI `pack`；websdk `AiWorkspaceClient` 连 export / assets / changes 的封装都没有 | 服务端建包要新写 Rust writer；客户端建包要新 RPC 吐出"定义 + 源码 + 依赖闭包"bundle，再由 Desktop / CLI 共用 TS `pack` | 新 RPC `doc.export_defs{entity_ids}` 复用 `closure` 产出 bundle，TS 侧建包；"全局可用"= 建包后调 A5 的登记 RPC；websdk 顺带补 export / assets / changes 封装 | 已裁决：导出到临时目录，再打包 |
+
+| A7 | Q3 / Q15 | `config_schema` 支持的 JSON Schema 子集 | Desktop 已在 `resolve` 用 `z.fromJSONSchema` 校验 `config`（registry.ts:297-311）；内核只检查是对象、从不校验；core 无 schema crate；Q15 已定内核只校验结构 | B8"从定义生成初始化表单"和引入校验都要知道支持哪些关键字；子集定了才能写表单生成器与手册 | 子集 = `type / enum / default / required / title / description / minimum / maximum / minLength / maxLength`，前端校验，内核继续不校验；写进 types.rs 注释与手册 | 已裁决：按你的建议吧 |
 
 #### 7.4.2 代码已给出答案，按建议即定（用户不改即视为采纳）
 
@@ -570,34 +567,93 @@ P0 的交付范围是 **PIKG 控件包的构建 / 读取 / 校验、本机库安
 
 | # | 问题 | 代码现状 | 建议 | 裁决 |
 | --- | --- | --- | --- | --- |
-| Q18 | declarative 读不到命名绑定 | `declarative.tsx` 只读单一 `context.source`；`CellPayload.bindings` 仅 HTML bridge 消费（bridge.ts:31-36）；Desktop 没有任何写 `bindings` 的 UI，只有 wish planner 写 | P0 的"render 实例初始化"二选一：只给 HTML 做多绑定，或让 declarative 解释器也认 `bindings`。建议后者，否则 B8 的绑定表单对 declarative 无意义 | 待定 |
-| Q19 | `schemas/` 漂移与 PROTOCOL 版本 | `commit-request.schema.json` 仍写 `protocol_version 1.0`，selector 枚举缺 `tree_children / tree_edge / folder_member / table_view / table_query`；`model.rs:213` 引用不存在的 `schemas/references.json`；新增 block-def 字段是否升 PROTOCOL 1.2 | P0 加字段前先把 schemas 追到 1.1；新增字段只扩 block-def payload 键名，不升 PROTOCOL | 待定 |
-
+| Q18 | declarative 读不到命名绑定 | `declarative.tsx` 只读单一 `context.source`；`CellPayload.bindings` 仅 HTML bridge 消费（bridge.ts:31-36）；Desktop 没有任何写 `bindings` 的 UI，只有 wish planner 写 | P0 的"render 实例初始化"二选一：只给 HTML 做多绑定，或让 declarative 解释器也认 `bindings`。建议后者，否则 B8 的绑定表单对 declarative 无意义 | 已裁决：按你的建议 |
+| Q19 | `schemas/` 漂移与 PROTOCOL 版本 | `commit-request.schema.json` 仍写 `protocol_version 1.0`，selector 枚举缺 `tree_children / tree_edge / folder_member / table_view / table_query`；`model.rs:213` 引用不存在的 `schemas/references.json`；新增 block-def 字段是否升 PROTOCOL 1.2 | P0 加字段前先把 schemas 追到 1.1；新增字段只扩 block-def payload 键名，不升 PROTOCOL | 已裁决：原理上正式版是向下兼容的。我们要尽量保证用旧版本开发的控件，能在新版本上用 |
 **裁决顺序建议**：先 A1、A2（决定 text_editor 与 store 各开什么工），再 A4、A5（决定 control-panel 改动），A3、A6、A7 与 Q18、Q19 可在写 TODO 时一并定。
+
+### 7.5 A1 / A2 裁决的影响评估（2026-10-29）
+
+> 用户在 §7.4.1 的裁决：A1 源码目录放 Workspace owner 的 home 目录下（类似 Windows 的 My Documents），用传统 IDE 思路编辑；A2 校验同步执行，源码不是保存即生效，而是运行一个类似 `build` 的命令后才对调试中的 Workspace 生效。本节评估这两条合起来的实际含义、改动面与代价。以下事实均为当日源码核对。
+
+#### 7.5.1 两条裁决合起来的模型
+
+| 项 | 原 §6.7 方案 | A1 + A2 之后 |
+| --- | --- | --- |
+| 源码事实来源 | Workspace 数据树 `data/extensions/<def>/` 下的 `buckyos.dir` | owner home 下的普通目录，建议 `/home/<owner>/AI Workspace/<workspace>/controls/<control>/`（与 Desktop 的 `/home/<user>/Desktop` 惯例一致） |
+| Workspace 保存什么 | 可编辑源码 + `source_revision` + `active_revision` 双修订 | **只保存 build 通过的快照**：定义实体 + 源码快照（`buckyos.dir`，供导出 / Fork / pull）+ 实现资源。源码修订恒等于活动修订 |
+| 写入路径 | Text Editor 保存 → `dir.set_member` → 服务异步校验 → `set_derived` | 任何编辑器改 home 文件 → `build` → 服务同步校验 → 一次 `doc.commit`（失败则不提交，旧实现自然保留） |
+| 生效时机 | 保存成功 | build 成功；Desktop / CLI 可提供 watch 模式自动触发 build 以接近"保存即生效" |
+| 协作者改源码 | 直接改 Workspace 内文件 | `pull` 快照到自己的 home → 改 → `build`；旧基线 build 被 `expect` 拒绝（git 式） |
+
+原 D6 "直接编辑 Workspace 内文件、保存后自动生效" 与此不一致。**用户 2026-10-29 确认采用编辑 → build 模型（原子化部署），D6 已按 §7.1 新文本改写**，§6.7 全节与 §7.5.6 所列位置已随之修订（v0.8）。
+
+> 确认
+
+#### 7.5.2 为什么改动面反而更小
+
+| 层 | 原方案 A 要做 | A1 + A2 要做 |
+| --- | --- | --- |
+| websdk `content.ts` | 新增 ref 种类并让所有内容处理器认识 | **零改动**：源码就是 `cyfs-path` |
+| Text Editor | 新存储后端、新 etag 语义、权限核实（dapp 的 app token 能否调 aiworkspace RPC） | **零改动**：`cyfs-path` 已可写，etag / 冲突 / 草稿恢复 / NFSP watch 都现成 |
+| 内核 | `source_revision` / `active_revision` 字段、依赖重校验传播、迟到结果拒绝 | **零新原语**：build = 一次 commit（block-def create / set_keys + `dir.replace` + 资产引用）。Q11 的双修订消失；Q14 退化为同一 commit 内服务写的 `derived.build {input_digest, builder_version, built_at}`，不再需要异步任务队列与重启恢复 |
+| store | 提交后任务队列 | 不需要；A2 的同步正好 |
+| Desktop 热更新 | 不变 | 不变：Cell 已订阅 `e:<defId>`（`useBlockContext.ts:63`），`HtmlActive` remount key 改为活动实现引用即可 |
+
+#### 7.5.3 需要新写的部分（改动面清单）
+
+| # | 层 | 内容 | 依据的现状 |
+| --- | --- | --- | --- |
+| W1 | aiworkspace 服务 | 新 RPC `ext.build {workspace_id, target_folder, files: [{name, obj_id}], options}`：按清单经 NDM 网关取字节、校验（`component.json` 结构、HTML `api_version`、declarative 词汇、大小、同 Workspace 内依赖者的接口兼容）、以调用者身份一次 commit、同步返回诊断（文件 / 行列）。**服务不读 NFSP 路径**：Rust 侧只有 `nfs_server_client.rs` 的 settings 结构，没有 NFSP 客户端；文件由客户端给 `obj_id`，服务用现有 `authorize_object`（`lib.rs:822-836`）+ 网关 `get_object` 取字节。home 文件本来就是 FileObject（`NodeInfo.ident.obj_id`），所以是零拷贝，不需再上传 | `asset.import_object{obj_id}` 已走同一授权路径 |
+| W2 | websdk 共享模块 | build 驱动（Desktop 与 CLI 共用）：NFSP `list` 源码目录 → 收集每个文件的 `obj_id` → 调 W1 → 呈现诊断；`pull`：把 Workspace 源码快照用 NFSP `uploadFile` 写回 home；watch 模式：NFSP watch SSE（lossy，收到 `resync` 先 re-list）+ debounce + 内容摘要相同不提交 | `NfspClient` 已有 list / uploadFile / watch；CLI 目前只有 `share.ts` 用它，`aiws.ts` 要新接 |
+| W3 | Desktop | 控件详情"编辑源码…"= 用 `filesOpenLaunch` 打开 home 中的源码目录（File Browser 已能按路径启动）；"构建"按钮与 watch 开关；诊断面板；"从本机库引入 / 新建控件"时在 home 建目录骨架（NFSP `mkdir` 已有） | `desktopFolderActions.ts:5` |
+| W4 | 导出（A6） | 服务新 RPC 吐出所选定义 + 源码快照 + 依赖闭包的 bundle；客户端写到 `/home/<owner>/AI Workspace/exports/<pkg>/` 再 `pikg pack`。服务不能写 NFSP，所以 A6 "导出到临时目录再打包" 的落点是客户端 | `export.rs` 的 `closure` 可复用 |
+| W5 | 手册与 Agent | `aiworkspace_template_dev.md` 加 新建 / pull / build / export 流程。Agent 与其他客户端一样经网关 `/nfs/v1` 用自己的 token 读写 home 目录，再跑 CLI build；与 OOD 同机时也可直接写本地 `data/home/<owner>/...`（AgentRoot 已在同一棵 home 树下），两条路都要可用 | `opendan_agent_dev.md:41`。**用户原则**：所有系统服务都对 Agent 可用，Agent 权限一般大于普通 App；DV 曾记录容器内会话产物直连 `172.17.0.1:4110` 失败（nfs-server 只监听 `127.0.0.1`，main.rs:227），应按此原则修复（走网关），不在本设计里绕行 |
+
+#### 7.5.4 代价与风险（需接受或另定）
+
+| # | 风险 | 说明 | 建议 |
+| --- | --- | --- | --- |
+| R1 | 协作模型变为 git 式 | 源码事实来源在 owner home，其他协作者（尤其跨 Zone）不能直接改；要 pull → 改 → build。两人同时 build 同一控件时后者被 `dir` 成员 `expect` 拒绝，需重新 pull。§1.3 "源码存 Workspace、是开发时的编辑入口" 要改为 "Workspace 存快照，home 存工作副本" | 接受。这正是 "多人协作的 Delphi" 中源码管理的常态；Workspace 快照保证导出 / Fork / 新协作者不依赖开发者机器在线 |
+| R2 | "保存即生效"体验降级 | 多一步 build；每次 build 是一次 commit，历史变多 | watch 模式 + debounce + 摘要相同不提交；commit 带 `origin: build` 便于历史过滤 |
+| R3 | 文件尚无 `obj_id` | 经 NFSP 保存（Text Editor、CLI、Agent 走网关）在 `commitFile` 后立即有 `obj_id`；只有直接写 OOD 本地文件（IDE 挂载、同机 Agent）要等 nfs-server 扫描（默认 `scan_interval_secs` 30 s）或主动 `stat`。`ref.type === 'live'` 时无 `obj_id` | build 驱动遇到 live 节点时等待 / 重试并提示；CLI 可先对目录 `stat` 触发扫描 |
+| R4 | 多文件取字节 | 网关 `get_object` 与 `authorize_object` 只接受 FileObject，`asset.import_object` 明确拒绝目录。一个控件多文件就是多次调用 | 首版按清单逐文件取（控件源码文件数小）；若要一次取，另议让 build 接受 nfs-server 已支持的 DirObject |
+| R5 | home 布局与 Workspace 改名 | 目录名若用 Workspace 标题会随改名漂移；定义里不能存绝对路径（各人 home 不同） | 默认 `AI Workspace/<标题>/controls/<def_id>/`，仅作建议；每人用 `user_state` 记 `aiws:src:<defId>` → 路径；build 不依赖该记录 |
+| R6 | 权限 | build 需目标 folder `structure` + 定义 `update`；home 文件读取由调用者 token 在网关判定，服务不越权。Desktop 内用用户会话 token，没有方案 A 的 dapp app token 疑问 | 无需新能力 |
+| R7 | 依赖者重校验 | 被依赖控件 build 时，同 Workspace 内依赖者的接口兼容在同一次 build 内同步检查；不兼容则整次 build 失败并列出依赖者 | 与 A2 同步语义一致，不需要 Q14 的迟到结果拒绝规则 |
+
+#### 7.5.5 与其余裁决的衔接
+
+- **A4 新 AppType `aiws`** + **A5 本机库由 aiws 系统服务持有**：Installer 的 `app_submit_route` 对 `aiws` 类型新增一条路由，像 `RegisterAgentTemplate` 调 agent_mgr 那样调用 aiworkspace 服务的 `ext.install`；aiworkspace 服务用自己的 bucket 存包并提供 `ext.list_library`。模板包同路。"导出为全局可用" = W4 bundle 后直接调 `ext.install`，不经 Installer。
+- **A3 身份 = 作者 DID + 控件名**：`def_id` 现有 64 字符正则放不下 DID，W1 校验时把身份存到新键 `ident {author_did, name}`（types.rs 需放开），`def_id` 保留为宿主内短 id；实体 `name` 存身份字符串借同级唯一去重。
+- **A6 导出到临时目录再打包**：落点见 W4。
+
+#### 7.5.6 连带要改的文档位置
+
+已于 v0.8 修订：D6（§7.1）、§1 开发循环与 §1.3 控件定义行、§1.5 开发闭环、§3.3 B4 / B10、§3.4 开发工具链行、§4.3 K4、§6.2、§6.4、§6.5 "编辑控件源码…"、§6.6、§6.7 全节、§6.8 导出流程、§7.2 Q11 与 Q14、§7.3 写入路径行与第 1 条、§8 P0 / P2 与回归项、§9 对 Text Editor 与 NFSP 的引用。§7.4.1 A1 / A2 行的"代码现状 / 建议"列保留为裁决前的记录。
 
 ## 8. 建议的实施顺序与验收
 
 | 阶段 | 内容 | 验收 |
 | --- | --- | --- |
-| P0 | 先完成 §7.4.1 的 A1–A7 与 Q18 / Q19 裁决；冻结公共定义 / 来源 / 依赖及属性 / 事件数据契约，以及 §7.3 的四个内核接触点（Q14–Q17：派生活动修订走 `set_derived`、`types.rs` 校验入口按 T0-1 拆层、引用边种类与闭包规则、子图重映射操作）；PIKG Workspace 用途、TS / Rust 校验与资源库安装分派，预留模板清单；本机目录、新定义引入与精确复用；render 实例初始化；Text Editor 保存自动加载、共享活动修订与诊断；多选导出到本机库 / PIKG；同步 SDK / CLI / 手册 | 甲引入 A/B，乙引入 C/D，丙无需本机装包；异来源版本暂拒绝，失败无错误覆盖。源码保存后实例更新，失败保留共享可用修订；多选导出并在新 Workspace 使用，包可交后续签名。安装只登记资源库，不部署 App；模板预留与未支持状态可识别 |
+| P0 | A1–A7 与 Q18 / Q19 已裁决，任务单见 [notepads/aiworkspace-extension-p0-todo.md](<../../notepads/aiworkspace-extension-p0-todo.md>)；冻结公共定义 / 来源 / 依赖及属性 / 事件数据契约，以及 §7.3 的四个内核接触点（Q14–Q17：`derived.build` 走 `set_derived`、`types.rs` 校验入口按 T0-1 拆层、引用边种类与闭包规则、子图重映射操作）；PIKG Workspace 用途、TS / Rust 校验与资源库安装分派，预留模板清单；本机目录、新定义引入与精确复用；render 实例初始化；`ext.build` 同步校验与原子提交、客户端 build / pull / watch 驱动与诊断；多选导出到本机库 / PIKG；同步 SDK / CLI / 手册 | 甲引入 A/B，乙引入 C/D，丙无需本机装包；异来源版本暂拒绝，失败无错误覆盖。build 后实例更新，失败不提交、Workspace 保持上一版本；多选导出并在新 Workspace 使用，包可交后续签名。安装只登记资源库，不部署 App；模板预留与未支持状态可识别 |
 | P1 | 组合定义 + composite 宿主、fixed 及按需 stack、Chrome / slots、“定义为控件”；组合源码接入保存 / 重载及多选导出链路；私有内容复制、共享绑定和引用重映射；宿主交互泛化 | 两个客户卡片实例分别绑定数据，修改组合描述后布局 / 外观更新，私有内容不串改或重建；复制子节点不变成脑图。混选 render 与组合定义导出，共享依赖去重，在新 Workspace 可分别实例化 |
-| P2 | 公共事件绑定与脚本行为、设计 / 运行边界、属性级协作与撤销、显式来源包升级及结构迁移；执行幂等、离线旧定义检查；普通源码热更新已由 P0/P1 完成 | 甲改颜色、乙改文字均保留；一次点击只执行一次，改行为文件并保存后下一次点击用新实现，重载不重放旧动作。包升级 / 迁移保留实例覆盖与内容；旧客户端写入冲突可诊断 |
+| P2 | 公共事件绑定与脚本行为、设计 / 运行边界、属性级协作与撤销、显式来源包升级及结构迁移；执行幂等、离线旧定义检查；源码 build 生效已由 P0/P1 完成 | 甲改颜色、乙改文字均保留；一次点击只执行一次，改行为文件并 build 后下一次点击用新实现，重载不重放旧动作。包升级 / 迁移保留实例覆盖与内容；旧客户端写入冲突可诊断 |
 | P3 | .block.zip 补充交换、更多布局、HTML parent、Agent 组合结果；补充移动端、工作区发布 / 回放和宿主能力不足的验证 | Agent 通过手册发现 / 引入 / 实例化控件；缺少宿主能力时可读回退且数据保留；公共端 / 回放不执行现场业务动作 |
 
 Workspace 模板包的完整导出、目录与实例化作为后续独立阶段；P0 先保证公共结构可以承载模板，避免届时另建一套控件 / 资源打包格式。
 
 跨阶段必须保留以下回归：
 
-- 本机 PIKG 更新或卸载后，既有 Workspace 保持原定义；显式来源升级才采用新包。工作区源码保存只改变本工作区，不反向修改本机库或其他工作区。
+- 本机 PIKG 更新或卸载后，既有 Workspace 保持原定义；显式来源升级才采用新包。build 只改变本工作区，不反向修改本机库或其他工作区。
 - 工作区 Fork / 自包含导出携带控件实现、依赖和资源；贡献者离线不影响已携带内容。离线读取仍受本地缓存完备程度约束，联网控件如实显示数据不可用。
 - 含新资产的引入需要在线暂存；纯 JSON 离线提交在恢复时校验权限和定义版本。
 - 控件定义更新保留实例覆盖与内容；独立片段更新不传播到已插入对象。两者分别验收。
 - 默认值、必填 config、多个命名绑定和事件参数的初始化均有覆盖，不能只用无配置的 KPI 卡证明可安装控件模型成立。
-- Text Editor 保存 render 行为或组合描述文件后，无需重新打包、引入、插入实例或整页刷新；未激活实例下次采用新活动修订，旧快照可辨认。
-- 错误源码可保存但不覆盖活动实现；新加入协作者也取得同一活动修订。仅修改依赖也触发使用者重新校验，旧源码或旧依赖的校验任务迟到不能回滚新结果；同文件并发保存冲突不能静默丢失改动。
-- 连续源码保存、撤销、重连和实例重载均不重复触发已提交业务动作；运行中的动作引用的实现修订仍可读取。
+- 编辑 render 行为或组合描述文件并 build 后，无需重新打包、引入、插入实例或整页刷新；未激活实例下次采用新实现，旧快照可辨认。watch 模式下保存文件即自动 build。
+- 错误源码可保存在 home，但 build 失败不提交、不覆盖 Workspace 中的实现；新加入协作者 `pull` 到的就是当前实现。被依赖控件 build 时同 Workspace 内依赖者一并校验，不兼容则整次失败；基于旧快照的 build 被 `expect` 拒绝并提示 pull，不静默覆盖他人改动。
+- 连续 build、撤销、重连和实例重载均不重复触发已提交业务动作；运行中的动作引用的实现修订仍可读取。
 - 多选控件导出的本机库内容与 PIKG 内容一致；包带齐共享依赖及源码，开发 Workspace 离线时仍能在新 Workspace 引入，实例业务数据不随包混入。
-- 源码后续保存不修改已导出的控件包或本机库；再次导出使用明确的新修订 / 版本。导出时源码与活动实现不一致必须显式报出；未签名导出、本机复用和后续签名 / 发布分别验收。
+- 后续 build 不修改已导出的控件包或本机库；再次导出使用明确的新修订 / 版本。导出内容始终是 Workspace 快照，home 有未 build 改动时必须提示；未签名导出、本机复用和后续签名 / 发布分别验收。
 - PIKG 新用途在 TS / Rust 校验和安装消费方保持一致，篡改 / 缺失依赖均失败；控件包安装不创建 AppSpec 或启动服务。签名与发布验收单独证明，不能以 pack / info 成功代替。
 - 模板预留覆盖“带自定义控件”和“只用内置控件”两种结构，未支持的模板能力明确显示。后续模板功能验收至少包含：安装不建工作区、两次创建内容独立、定义与实例引用正确重映射。
 
@@ -612,6 +668,6 @@ Workspace 模板包的完整导出、目录与实例化作为后续独立阶段�
 - [PIKG 文档入口](<../pikg/README.md>)：构建、包格式、安装与签名 / 发布的职责归属；本文新增 AIWS 控件导出契约，不另行定义 PIKG 格式。
 - [PIKG 当前格式](<../pikg/format.md>)、[AppDoc 类型](<../../src/kernel/buckyos-api/src/app_doc.rs>)、[PIKG reader](<../../src/frame/control_panel/src/pikg.rs>)、[安装分派](<../../src/frame/control_panel/src/app_installer.rs>)：当前类型、内容校验和消费方边界；新增 Workspace 用途需联动实现。
 - [Workspace 导出](<../../src/frame/aiworkspace/store/src/export.rs>)、[内置模板创建](<../../src/frame/desktop/src/app/aiworkspace/api/demos.ts>)：已有内容快照与创建基础，不等于已支持 PIKG 模板。
-- Text Editor 源码：[存储与版本检查](<../../src/apps/text_editor/src/fs/documentStore.ts>)、[文档可写性与保存流程](<../../src/apps/text_editor/src/model/workspace.ts>)、[内容打开与变更检查](<../../src/apps/text_editor/src/main.tsx>)。当前普通路径保存可复用，Workspace 成员可写目标待接入。
-- 工作区文件与重载基础：[dir.set_member](<../../src/frame/aiworkspace/core/src/plan.rs>)、[Workspace 变更订阅](<../../src/frame/desktop/src/app/aiworkspace/state/store.ts>)、[HTML 宿主](<../../src/frame/desktop/src/app/aiworkspace/ui/extensions/HtmlBlockHost.tsx>)。
+- Text Editor 源码：[存储与版本检查](<../../src/apps/text_editor/src/fs/documentStore.ts>)、[文档可写性与保存流程](<../../src/apps/text_editor/src/model/workspace.ts>)、[内容打开与变更检查](<../../src/apps/text_editor/src/main.tsx>)。按 A1 零改动：源码经 `cyfs-path` 普通保存。[NFSP 客户端](<../../../buckyos-websdk/src/nfsp.ts>) 的 `list` / `uploadFile` / `watch` 与 `NodeInfo.obj_id` 供 build / pull / watch 驱动。
+- 工作区文件与重载基础：[dir.replace / dir.set_member](<../../src/frame/aiworkspace/core/src/plan.rs>)（build 的 commit 复用其 `expect`）、[NDM 网关授权取对象](<../../src/frame/aiworkspace/server/src/lib.rs>)（`authorize_object`，`ext.build` 取字节复用）、[Workspace 变更订阅](<../../src/frame/desktop/src/app/aiworkspace/state/store.ts>)、[HTML 宿主](<../../src/frame/desktop/src/app/aiworkspace/ui/extensions/HtmlBlockHost.tsx>)。
 - 源码：`src/frame/desktop/src/app/aiworkspace/ui/{blocks/registry.ts,controls/registry.ts,canvas/catalog.ts,canvas/InsertCatalog.tsx,extensions/*}`；`src/frame/aiworkspace/{controls/,core/src/types.rs,README.md}`；`buckyos-websdk/cli/modules/aiws.ts`。

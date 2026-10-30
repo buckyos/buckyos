@@ -363,6 +363,30 @@ Provider（`/kapi/<host>/obj/...`）：msg-center（`owners/<did>/sessions[/<sid
 
 发布顺序：buckyos-base（Card 发现、ctx headers、`inner()`）→ cyfs-ndn（https dispatch target、bucket origin）→ cyfs-gateway（缓存 zone 前缀）→ buckyos + websdk（`Cargo.lock` 里 base / ndn 的提交需随推送更新）。各仓之间是 breaking change，按全新安装验证。
 
+#### 第 2 段 DV（2026-10-29，单 Zone test.buckyos.io，全新安装 + 重建 paios 镜像）
+
+已提交 9589c91f6（buckyos）/ 35bac92（base）/ 20db686（ndn）/ 1aa9edd（gateway）/ cb08cca（websdk）后的构建。脚本 `test/object_url_dv/`：
+- `object_url_dv.ts` 7/7：DFS（Card / info / 列表，bob 读 devtest 家目录 403，根 Profile 匿名可读）、msg-center 会话与联系人（bob 403）、msg-center 会话变化的 kevent `/obj/msg-center/owners/<hex>/sessions/<sid>/sent`、taskmgr 任务变化的 `/obj/taskmgr/<id>/changed`、HomeStation（默认 URL `https://<zone>/home/<user>`，feed 行全是 https 入口，inbox target https）、AI Workspace（工作区 / 实体 / 按路径，bob 无授权 404）、Agent `obj://jarvis.test.buckyos.io` 及其 sessions。
+- `agent_g1_dv.ts` 4/4：用设备密钥按 node-daemon 方式签 LoginAssertion → verify-hub `login_by_jwt` 拿到 Agent runtime 的 App 会话；读自己邮箱、只读观察 owner、读 bob 被拒、以 owner 身份建会话被拒。
+- 既有套件：HomeStation smoke 全过（第 5 步按 10-23 后的 NDM import + `object.register` 流程更新）；msg-center 群组 ALL PASSED、My Network 通过；nfs smoke 5/5、NDM 8/8；网关 `test_boot_gatweay` 33/33（新增 `req_dfs_obj_ok`）；宿主机 `buckyos obj resolve|read` 经节点网关可用。
+
+DV 中顺带修正：msg-center 拒绝信息显示实际身份（Agent DID）而非 token 的 `sub`；CLI `obj resolve` 无会话时给网关相对路径（原先拼出 `local:///...`）。
+
+跨 Zone（ssotest VM 组，10-29 晚）：按用户同意重建了 bob 种子（旧 env 备份在 `~/buckycli-backup-20261029/bob.bns.did`；新种子由 `prepareSeedIdentity` 生成，口令哈希已核对），四个种子包全部通过 `make_sn_config` 校验，四台 VM 全新安装并启动。
+- msg-center 原生路由 `test/test_msg_center/test_native_routes_dv.mjs` 通过：bob 查 alice、charlie 可路由，bob → alice 的原生消息经 `did:bns:msg-hub.bob` 投递进 alice 的 REQUEST_BOX。
+- `test/object_url_dv/homestation_cross_zone_dv.mjs`：前两步通过——bob 的 profile 给出 `https://bob.web3.devtests.org/home/bob/{feed,inbox}`，feed Card 默认 URL 为 https，发表后的入口是 `https://.../home/bob/feed/@/<key>`；alice `sources.resolve` / `sources.follow` 成功。第 3 步拉取被拒：bob 校验 alice 的 reader proof 时返回 401（`signer_key` 解析远端设备钥未指定 doc type，解析器按 zone 取文档后被绑定校验拒收）。这属于跨 Zone 鉴权，按用户安排留给 `notepads/cross-zone-auth-overview.md`（细节已记在其 §5.1），第 3、4 步（拉取、评论经 https inbox target 投递）待该项修复后重跑本脚本。
+
+DV 发现的既有问题（与本段无关，按用户要求随后修复）：
+1. `data/homestation` 等服务库不随 `start.py --all` 清理——这是 RDB `user_data` 分区（`data/<appid>/`）的既定语义，不改清理范围；`start.py` 新增 `--wipe-data`（仅与 `--all` / `--reinstall` 同用），全新安装前删除 `data/` 与 `storage/`，得到空 Zone（AGENTS.md 已写）。
+2. OpenDAN 归档旧 AgentRoot：AgentRoot 是容器里的 bind mount，rename 必然 EBUSY（跨挂载为 EXDEV）。`rootfs::archive_root` 在这两种错误下改为把内容复制进归档目录、再清空挂载点本身（不跟随符号链接）。
+3. msg-center `ui_session` 状态：调用者不是 System 时，`update/get/list_ui_session_state` 默认作用于调用者自己的 owner 分域（与 `owner_*_ui_session_state` 同一授权），不再落到无 users 组规则的全局 `obj://msg-center/ui-state`；System 调用者保持原路径。
+4. `test/kevent_kmsg/task_mgr/task_mgr_kevent_dv.ts` 按 TaskMgr 2.0 重写：口令登录，`raw/v1` + `HumanSet` 建任务，经网关 `/kapi/kevent/stream` 订阅 `/obj/taskmgr/<id>/changed` 与根任务的 `/obj/taskmgr/<root>/tree`（建子任务触发），结束时 `request_control Cancel`。
+5. `test/deno.json` 设 `"lock": false`（`deno.lock` 本就 gitignore，本地旧锁文件会锁住旧 websdk dist 哈希）。
+6. 跨 Zone DV 中发现：scheduler 只在 Zone 文档有 `sn` 时生成 `zone_tls`（443）与 ACME（DNS-01 经 SN）；10-22 起 `wan_dyn` 不写 Zone SN，按新规则重建的 bob 因此没有 443。`update_node_gateway_config` 改为 Zone SN 缺省时用设备的 `ddns_sn_url`（`node_sn_api_url`，附单测）；VM 更新后 bob 直连 HTTPS 正常（测试 CA 证书）。同类遗留未改：SN AI provider（`derive_sn_ai_provider_endpoints`）也只认 Zone SN，`wan_dyn` Zone 每 5 秒告警一次且不配 SN AI provider，要不要改成取哪台设备的 DDNS SN 需另定。
+7. `test/test_msg_center/test_messagehub_sessions.ts` 跟到现行契约：第 5 步不带 owner 的 ui state 即调用者自己的（上面第 3 条）；第 7 步 `/kapi/msg-center/objects/<id>` 自 10-26 起只服务经消息读取的附件与托管群消息，私信本身的 id 返回 404（`doc/message_hub/Message Center.md`），断言改为 401 / 404。现全程 ALL PASSED。
+
+修复后本机复验（`start.py` 更新重启，保留数据）：`object_url_dv.ts` 7/7、`agent_g1_dv.ts` 4/4、`task_mgr_kevent_dv.ts` 通过、`test_messagehub_sessions.ts` ALL PASSED；OpenDAN 归档在真实容器里验证：建临时 Agent `dvarch` 后把其 AgentRoot 的 `.meta/identity.json` 改成别的 Agent，重启容器，旧内容整体进 `.archived/`、挂载点原地清空后重新初始化、Agent 回到 running，随后删除该 Agent。单测：msg_center 207 通过、opendan 全过、start.py 11 通过；scheduler 单线程只剩既有的 `test_create_pod_instance_no_suitable_node`（并行跑时两个 RBAC 测试因共享全局 enforcer 偶发失败，非本次引入）。
+
 ### 第 3 段：Agent 工具
 
 Provider 和 RBAC 稳定后再改 Agent 侧，避免工具先于服务定型：

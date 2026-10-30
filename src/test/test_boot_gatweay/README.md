@@ -33,7 +33,7 @@ uv run src/test/test_boot_gatweay/run_debug_tests.py --binary ~/cyfs-gateway/src
   - 远端 app 转发（NODE_ROUTE_MAP 回退路径）
   - 远端 app 转发（ROUTES forward-plan 路径）
   - 远端 service 转发（ROUTES forward-plan 路径，单 primary peer）
-  - root host / host prefix / `/kapi` / `/sso_callback`；`/ndm` 转发到 nfs-server
+  - root host / host prefix / `/kapi` / `/sso_callback`；`/ndm`、`/kapi/dfs/obj`（DFS 的 DID Object Provider）转发到 nfs-server
   - `/.well-known/*` 与 `/1.0/identifiers/*`
   - 非法 host reject
   - `/kapi/kevent/*` 早转发

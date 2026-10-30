@@ -32,6 +32,8 @@ uv run start.py
 uv run start.py --skip-update
 # 全新安装，生成 dev 配置并启动（devtest / test.buckyos.io）
 uv run start.py --all
+# 同上，并删除 data/ 与 storage/（用户文件、服务库、named store），得到空 Zone
+uv run start.py --all --wipe-data
 # 全新安装，生成 release 配置并启动，进入待激活状态
 uv run start.py --reinstall release
 # 检查激活状态、进程、端口和日志
@@ -44,7 +46,7 @@ uv run stop.py
 
 macOS 上 node_daemon 是 `bin/node-daemon/BuckyOS Runtime.app` 的主程序（构建后由 `tools/macos_runtime_bundle.py assemble` 组装签名；直接跑 devkit `buckyos-build` 需补这一步），以绑定用户的 LaunchAgent `com.buckyos.runtime` 运行：`start.py` 在 GUI 会话中为当前用户注册并启动它，sudo/SSH 下退回直接启动且没有桌面能力；管理与诊断用 bundle 内 `node_daemon service status|start|stop|restart|autostart on|off`。
 
-`start.py` 默认要求 `rootfs/libexec/buckyos-tool/` 中已有构建生成的分发包。`--all` 与 `--reinstall` 走全新安装流程，清理范围由 `bucky_project.yaml` 的模块映射和 `clean_paths` 决定，不能当成普通重启；`data/home/`、`data/srv/`、`storage/` 属于保留数据。`start.py` 会调用 `stop.py`：后者按进程名停止服务、删除 `buckyos-app-*` 容器，并在非 Windows 平台停止 `devtest-*` 容器。
+`start.py` 默认要求 `rootfs/libexec/buckyos-tool/` 中已有构建生成的分发包。`--all` 与 `--reinstall` 走全新安装流程，清理范围由 `bucky_project.yaml` 的模块映射和 `clean_paths` 决定，不能当成普通重启；`data/`（含 `data/home/`、`data/srv/` 与 RDB `user_data` 分区的 `data/<appid>/`）和 `storage/` 属于保留数据，旧格式数据会带进新 Zone，需要空 Zone 时加 `--wipe-data`。`start.py` 会调用 `stop.py`：后者按进程名停止服务、删除 `buckyos-app-*` 容器，并在非 Windows 平台停止 `devtest-*` 容器。
 
 `cyfs-gateway` 需要单独构建和安装；仅构建本仓库不会生成网关可执行文件。以下命令从 `buckyos/src/` 出发，在同级网关仓库中运行（Bash）：
 

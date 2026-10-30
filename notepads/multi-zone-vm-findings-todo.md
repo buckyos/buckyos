@@ -12,7 +12,7 @@
 | F-2 | 已修复。中转设备 DID 从 Zone/boot 的权威 DID 推导，严格拒绝无效身份；强制 Charlie 经 SN 返回 HTTP 200，已移除 Alice/Bob 的 hosts 绕行。 |
 | F-3 | 已修复。Rust、SDK、开发种子和网关模板统一传递设备 `rtcp_port`，Charlie 实测仅监听 2981。跨 Zone 连接仍受用户要求保留的 `same_zone` 策略限制。 |
 | F-4 | 已修复。msg-center、HomeStation、AppClient runtime 统一自托管 owner 回退规则；实测 Bob 查 Alice 可路由且原生消息进入 Alice INBOX。 |
-| F-5 | 已修复。DDNS 与中转配置分开，`wan_dyn` 不写 Zone SN；DNS 对 Bob/Charlie 返回上报地址，Alice 仍返回 SN。 |
+| F-5 | 已修复。DDNS 与中转配置分开，`wan_dyn` 不写 Zone SN；DNS 对 Bob/Charlie 返回上报地址，Alice 仍返回 SN。2026-10-29 补：scheduler 原先只在 Zone SN 存在时生成 `zone_tls`（443）与 ACME，按新规则重建的 bob 种子因此没有 443；现在回退到设备的 `ddns_sn_url`（`node_sn_api_url`），重建后 bob 直连 HTTPS 正常。 |
 | F-6 | 已修复。后端要求匹配 DID 的 Control Panel 联合登录会话，接受邀请使用原子事务与版本检查；新增前端邀请入口。三 Zone 实测正确 DID 接受成功，匿名、错误 DID、密码会话、过期邀请均被拒绝。 |
 | F-7 | 已修复。物化前校验按实际用户名派生的开发口令哈希，旧种子明确报错且不写目标目录。 |
 | F-8 | 已修复。PVE 默认等待 guest agent 900 秒，创建失败汇总并非零退出，跳过 instance_commands，输出按行刷新。与 Cargo 构建并行的新建 VM 验证通过。 |

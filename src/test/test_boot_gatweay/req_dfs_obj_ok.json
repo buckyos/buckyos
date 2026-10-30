@@ -1,0 +1,14 @@
+{
+  "input": {
+    "REQ": {
+      "path": "/kapi/dfs/obj/home/devtest",
+      "host": "test.buckyos.io",
+      "url": "https://test.buckyos.io/kapi/dfs/obj/home/devtest"
+    }
+  },
+  "id": "server:node_gateway:main",
+  "output": [
+    "REQ",
+    "RESP"
+  ]
+}

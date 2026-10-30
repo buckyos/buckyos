@@ -3401,6 +3401,11 @@ impl MsgCenterHandler for MessageCenter {
         value: Value,
         ctx: RPCContext,
     ) -> std::result::Result<UiSessionStateEntry, RPCErrors> {
+        if let Some(owner) = self.caller_ui_state_owner(&ctx).await? {
+            return self
+                .handle_update_owner_ui_session_state(owner, session_id, key, value, ctx)
+                .await;
+        }
         self.authorize_resource(&ctx, "obj://msg-center/ui-state", "write")
             .await?;
         self.update_ui_session_state_internal(session_id, key, value)
@@ -3413,6 +3418,11 @@ impl MsgCenterHandler for MessageCenter {
         key: String,
         ctx: RPCContext,
     ) -> std::result::Result<Option<UiSessionStateEntry>, RPCErrors> {
+        if let Some(owner) = self.caller_ui_state_owner(&ctx).await? {
+            return self
+                .handle_get_owner_ui_session_state(owner, session_id, key, ctx)
+                .await;
+        }
         self.authorize_resource(&ctx, "obj://msg-center/ui-state", "read")
             .await?;
         self.get_ui_session_state_internal(session_id, key).await
@@ -3423,6 +3433,11 @@ impl MsgCenterHandler for MessageCenter {
         session_id: String,
         ctx: RPCContext,
     ) -> std::result::Result<Vec<UiSessionStateEntry>, RPCErrors> {
+        if let Some(owner) = self.caller_ui_state_owner(&ctx).await? {
+            return self
+                .handle_list_owner_ui_session_state(owner, session_id, ctx)
+                .await;
+        }
         self.authorize_resource(&ctx, "obj://msg-center/ui-state", "read")
             .await?;
         self.list_ui_session_state_internal(session_id).await

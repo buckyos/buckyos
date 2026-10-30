@@ -53,6 +53,52 @@ fn is_empty_dir(dir: &Path) -> Result<bool> {
 /// `<parent>/.archived/<name>-<ms>` (returned) and a new one is started:
 /// nothing is inherited from it. A directory nobody claimed yet (prepared
 /// by hand) is taken as it is.
+/// Moves an AgentRoot aside. In a container the AgentRoot is its own bind mount
+/// (renaming it is EBUSY, moving out of it EXDEV): its content is copied to
+/// `target` and then removed, the mount point itself stays.
+fn archive_root(agent_root: &Path, target: &Path) -> std::io::Result<()> {
+    match fs::rename(agent_root, target) {
+        Err(e) if matches!(e.kind(), std::io::ErrorKind::ResourceBusy | std::io::ErrorKind::CrossesDevices) => {
+            archive_by_copy(agent_root, target)
+        }
+        other => other,
+    }
+}
+
+fn archive_by_copy(agent_root: &Path, target: &Path) -> std::io::Result<()> {
+    copy_tree(agent_root, target)?;
+    for entry in fs::read_dir(agent_root)? {
+        let path = entry?.path();
+        if fs::symlink_metadata(&path)?.is_dir() {
+            fs::remove_dir_all(&path)?;
+        } else {
+            fs::remove_file(&path)?;
+        }
+    }
+    Ok(())
+}
+
+/// Copies a directory tree without following symlinks (they are copied as links).
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let (src, dst) = (entry.path(), to.join(entry.file_name()));
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            copy_tree(&src, &dst)?;
+        } else if kind.is_symlink() {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(fs::read_link(&src)?, &dst)?;
+            #[cfg(not(unix))]
+            fs::copy(&src, &dst).map(|_| ())?;
+        } else {
+            fs::copy(&src, &dst)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn claim(agent_root: &Path, identity: &RootIdentity) -> Result<Option<PathBuf>> {
     let path = agent_root.join(IDENTITY_FILE);
     let mut archived = None;
@@ -80,7 +126,7 @@ pub fn claim(agent_root: &Path, identity: &RootIdentity) -> Result<Option<PathBu
                     .join(format!("{name}-{}", libopendan::now_ms()));
                 fs::create_dir_all(target.parent().unwrap_or(parent))
                     .with_context(|| format!("create {}", parent.join(ARCHIVE_DIR).display()))?;
-                fs::rename(agent_root, &target).with_context(|| {
+                archive_root(agent_root, &target).with_context(|| {
                     format!("archive {} to {}", agent_root.display(), target.display())
                 })?;
                 log::warn!(
@@ -351,6 +397,24 @@ mod tests {
         assert_eq!(fs::read_to_string(root.join("cmd_skills/demo.md")).unwrap(), "installed demo");
         assert_eq!(fs::read_to_string(root.join("tools/demo/bin/demo")).unwrap(), "installed tool");
         assert!(root.join("goal_skills").is_dir());
+    }
+
+    #[test]
+    fn a_mounted_agentroot_is_archived_by_copy_and_emptied_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("agents").join("xiaobai.example.com");
+        fs::create_dir_all(root.join("memory/deep")).unwrap();
+        fs::write(root.join("memory/deep/notes.md"), "kept").unwrap();
+        fs::write(root.join("agent.toml"), "x").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("memory/deep/notes.md", root.join("link")).unwrap();
+        let target = dir.path().join("agents").join(ARCHIVE_DIR).join("xiaobai.example.com-1");
+        archive_by_copy(&root, &target).unwrap();
+        assert_eq!(fs::read_to_string(target.join("memory/deep/notes.md")).unwrap(), "kept");
+        #[cfg(unix)]
+        assert_eq!(fs::read_link(target.join("link")).unwrap(), Path::new("memory/deep/notes.md"));
+        assert!(root.is_dir(), "the mount point stays");
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
     }
 
     #[test]

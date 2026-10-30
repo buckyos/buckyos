@@ -64,6 +64,8 @@ def _print_help() -> int:
                 "  --all                 Fresh dev install before startup; preserve etc/devenv.json.",
                 "  --reinstall [GROUP]   Fresh install before startup, optionally running make_config.ts GROUP.",
                 "  --skip-update         Skip file update and only restart BuckyOS.",
+                "  --wipe-data           With --all/--reinstall: also delete data/ and storage/ (user files,",
+                "                        service databases, named store) for an empty Zone; destroys Zone data.",
                 "  --edition full|lite   With --all/--reinstall GROUP: the product edition to install",
                 "                        (lite = BuckyOS Desktop Lite, no containers; default full).",
                 "  -h, --help            Show this help message.",
@@ -239,6 +241,16 @@ def kill_all_processes():
         print(f"Warning: Some processes may not have been stopped: {e}")
         # Continue execution even if some processes fail to stop
 
+def wipe_zone_data(buckyos_root: Path) -> None:
+    """`--wipe-data`: what a fresh install keeps on purpose (data/: user files, RDB
+    `user_data` databases and service homes; storage/: the named store) is deleted too."""
+    for name in ("data", "storage"):
+        target = buckyos_root / name
+        if target.exists():
+            print(f"Wiping {target} ...")
+            shutil.rmtree(target)
+
+
 def update_files(install_all=False,config_group_name=None,edition=None):
     """Update files to installation directory"""
     print("Updating files...")
@@ -396,6 +408,7 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--reinstall", nargs="?", const="", metavar="GROUP")
     mode.add_argument("--skip-update", action="store_true")
     parser.add_argument("--edition", choices=("full", "lite"))
+    parser.add_argument("--wipe-data", action="store_true")
     try:
         options = parser.parse_args(args)
     except SystemExit as error:
@@ -413,6 +426,9 @@ def main(argv: list[str] | None = None) -> int:
     if options.edition and not config_group_name:
         print("--edition needs --all or --reinstall GROUP: the edition is part of a fresh install")
         return 2
+    if options.wipe_data and not install_all:
+        print("--wipe-data needs --all or --reinstall: it empties the Zone of a fresh install")
+        return 2
 
     if need_update and not _sdk_tool_distribution_ready():
         return 2
@@ -420,6 +436,8 @@ def main(argv: list[str] | None = None) -> int:
     with _preserve_devenv_config(options.all) as preserved_devenv:
         # Step 1: Kill all processes
         kill_all_processes()
+        if options.wipe_data:
+            wipe_zone_data(resolve_buckyos_root())
 
         if install_all or need_update:
             # Step 2: Update files

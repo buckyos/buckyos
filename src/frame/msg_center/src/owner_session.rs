@@ -811,6 +811,22 @@ impl MessageCenter {
         }
     }
 
+    /// UI state without an explicit owner: a user, App or Agent caller means its own
+    /// mailbox owner's state; Zone services, devices and in-process calls (tunnels)
+    /// keep the shared namespace guarded by `obj://msg-center/ui-state`.
+    pub(crate) async fn caller_ui_state_owner(
+        &self,
+        ctx: &RPCContext,
+    ) -> std::result::Result<Option<DID>, RPCErrors> {
+        let Some(caller) = self.caller_identity(ctx).await? else {
+            return Ok(None);
+        };
+        if caller.external {
+            return Err(external_denied());
+        }
+        Ok(self.caller_mailbox_identity(&caller).await?.map(|(own, _, _)| own))
+    }
+
     /// Read access of the caller to `owner`'s mailbox / sessions. In-process
     /// calls (`caller_identity` is `None`) and Zone services read any owner.
     async fn authorize_owner_read_identity(
@@ -841,7 +857,7 @@ impl MessageCenter {
         }
         Err(permission_denied(format!(
             "{} may not read mailbox of {}",
-            caller.user_id,
+            own.to_string(),
             owner.to_string()
         )))
     }
@@ -867,9 +883,9 @@ impl MessageCenter {
         match self.caller_mailbox_identity(&caller).await? {
             None => Ok(()),
             Some((own, _, _)) if &own == owner => Ok(()),
-            Some(_) => Err(permission_denied(format!(
+            Some((own, _, _)) => Err(permission_denied(format!(
                 "{} may not write as {}",
-                caller.user_id,
+                own.to_string(),
                 owner.to_string()
             ))),
         }

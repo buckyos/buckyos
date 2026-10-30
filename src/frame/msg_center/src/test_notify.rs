@@ -874,3 +874,25 @@ async fn mailbox_owner_binding_follows_the_tokens_principal() {
     assert!(c.authorize_owner_read(&system_ctx(), &bob()).await.is_ok());
     assert!(c.authorize_owner_write(&in_process(), &bob()).await.is_ok());
 }
+
+#[tokio::test]
+async fn ui_state_without_owner_is_the_callers_own() {
+    let env = env().await;
+    let c = &env.center;
+    let set = |ctx: RPCContext, value: Value| c.handle_update_ui_session_state("s-1".into(), "draft".into(), value, ctx);
+    set(user_ctx("alice"), json!("alice draft")).await.unwrap();
+    set(user_ctx("bob"), json!("bob draft")).await.unwrap();
+    let own = c.handle_get_ui_session_state("s-1".into(), "draft".into(), user_ctx("alice")).await.unwrap().unwrap();
+    assert_eq!(own.value, json!("alice draft"));
+    let via_owner = c
+        .handle_get_owner_ui_session_state(alice(), "s-1".into(), "draft".into(), user_ctx("alice"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(via_owner.value, json!("alice draft"), "the same entry as the owner-scoped form");
+    assert!(c.handle_get_owner_ui_session_state(alice(), "s-1".into(), "draft".into(), user_ctx("bob")).await.is_err());
+    let bob = c.handle_list_ui_session_state("s-1".into(), user_ctx("bob")).await.unwrap();
+    assert_eq!(bob.iter().map(|e| e.value.clone()).collect::<Vec<_>>(), vec![json!("bob draft")]);
+    c.handle_update_ui_session_state("s-1".into(), "cursor".into(), json!(7), in_process()).await.unwrap();
+    assert!(c.handle_get_ui_session_state("s-1".into(), "cursor".into(), user_ctx("alice")).await.unwrap().is_none(), "the shared namespace is not the user's");
+}

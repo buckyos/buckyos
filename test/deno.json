@@ -1,5 +1,6 @@
 {
   "imports": {
     "buckyos": "https://raw.githubusercontent.com/buckyos/buckyos-websdk/main/dist/node.mjs"
-  }
+  },
+  "lock": false
 }

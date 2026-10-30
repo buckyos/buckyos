@@ -9,7 +9,7 @@
  * Env: BUCKYOS_TEST_ZONE_HOST (test.buckyos.io), BUCKYOS_TEST_ADMIN_USER (devtest),
  * BUCKYOS_TEST_ADMIN_PASSWORD (bucky2025).
  */
-import { buckyos } from "buckyos";
+import { buckyos, ndm } from "buckyos";
 
 type JsonRecord = Record<string, unknown>;
 type RpcClient = { call(method: string, params: JsonRecord): Promise<unknown> };
@@ -74,7 +74,7 @@ const home = `/home/${adminUser}`;
 const profile = await get(`${home}/profile`);
 assert(profile.status === 200, `GET ${home}/profile → ${profile.status}: ${profile.body.slice(0, 200)}`);
 const profileJson = JSON.parse(profile.body) as JsonRecord;
-assert(String(profileJson.stream) === `cyfs://${zoneHost}${home}/feed`, `stream address: ${profileJson.stream}`);
+assert(String(profileJson.stream) === `https://${zoneHost}${home}/feed`, `stream address: ${profileJson.stream}`);
 const located = await get(`/home/?did=${encodeURIComponent(String(profileJson.did))}`);
 assert(located.status === 200 && (JSON.parse(located.body) as JsonRecord).user === adminUser, `DID lookup → ${located.status}: ${located.body}`);
 assert((await get("/home/?did=did:bns:nobody-here")).status === 404, "unknown DIDs have no home here");
@@ -126,13 +126,24 @@ assert((comments.comments as unknown[]).length >= 1, "comment listed");
 console.log("  ✓ edited, liked and commented");
 
 console.log("5. upload a file and fetch its content with the session token");
-const upload = await fetch(`https://${zoneHost}/kapi/homestation/upload?name=dv.txt&mime=text/plain`, {
-  method: "PUT",
-  headers: { authorization: `Bearer ${token}` },
-  body: "hello from the DV smoke test",
+// As the Desktop does (app/homestation/api/transport.ts): an NDM import bound in the user's
+// `scratch` bucket at the key HomeStation names, then `object.register`.
+const target = rec(await hs("object.upload_target", { name: "dv.txt" }), "object.upload_target");
+const ndmApi = ndm as unknown as {
+  importFiles(files: File[], options: JsonRecord): Promise<{ sessionId: string; items: { objectId: string }[] }>;
+  ensureUploaded(sessionId: string, options: JsonRecord): Promise<{ objectStatus: string; binding?: unknown }>;
+  releaseImportSession(sessionId: string): void;
+};
+const dvFile = new File(["hello from the DV smoke test"], "dv.txt", { type: "text/plain" });
+const snapshot = await ndmApi.importFiles([dvFile], { mode: "single_file", endpoint: `https://${zoneHost}`, sessionToken: token, autoStartUpload: false });
+const uploaded = await ndmApi.ensureUploaded(snapshot.sessionId, {
+  endpoint: `https://${zoneHost}`,
+  sessionToken: token,
+  bind: { bucketId: target.bucketId, key: target.key, contentType: "text/plain" },
 });
-assert(upload.ok, `upload → ${upload.status}: ${await upload.clone().text()}`);
-const file = (await upload.json()) as JsonRecord;
+assert(uploaded.objectStatus === "ready" && uploaded.binding, `upload → ${JSON.stringify(uploaded)}`);
+ndmApi.releaseImportSession(snapshot.sessionId);
+const file = rec(await hs("object.register", { objId: snapshot.items[0].objectId, metadata: { name: "dv.txt", mime: "text/plain" }, key: target.key }), "object.register");
 const content = await fetch(`https://${zoneHost}${home}/objects/${file.objId}/content?access=${encodeURIComponent(token)}`);
 assert(content.ok && (await content.text()) === "hello from the DV smoke test", `content → ${content.status}`);
 console.log(`  ✓ ${file.objId} stored in the zone named store and readable`);

@@ -618,7 +618,7 @@ archived_at_ms, delete_watermark_sort_key, delete_watermark_record_id, deleted_a
 RPC `msg.create_session` / `msg.archive_session` / `msg.restore_session` / `msg.delete_session` / `msg.get_session_state`。
 `list_sessions` 支持 `lifecycle` 过滤与 `order_by: activity`（按 chat / group_msg / deliver 记录的 `sort_key` 排序并给同口径游标），
 摘要新增 `last_activity_ms` / `request_count` / `lifecycle` / `state`；`list_session` 与摘要都只统计删除水位之后的记录。
-新普通消息提交后自动解除归档。`ui_session.*` 带 `owner` 时读写 `owner_ui_session_states`。
+新普通消息提交后自动解除归档。`ui_session.*` 带 `owner` 时读写 `owner_ui_session_states`；不带 `owner` 时，用户 / App / Agent 调用者取其自己的 mailbox owner（同样落在 `owner_ui_session_states`、按 owner 授权），只有 Zone 服务、设备与进程内调用使用全局 `ui_session_states`（资源 `obj://msg-center/ui-state`）。
 读取按 verify-hub 用户 token 校验：本人或 zone 托管的非用户身份（Agent）可读，写动作只允许本人；
 服务 / 设备 token 与无 token 的进程内调用保持原行为。
 

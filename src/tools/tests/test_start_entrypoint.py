@@ -51,10 +51,11 @@ class BuckyosStartEntrypointTests(unittest.TestCase):
 
     def test_startup_modes_select_expected_configuration(self) -> None:
         for args, expected_update in (
-            ([], (False, None)),
-            (["--all"], (True, "dev")),
-            (["--reinstall"], (True, None)),
-            (["--reinstall", "release"], (True, "release")),
+            ([], (False, None, None)),
+            (["--all"], (True, "dev", None)),
+            (["--reinstall"], (True, None, None)),
+            (["--reinstall", "release"], (True, "release", None)),
+            (["--all", "--edition", "lite"], (True, "dev", "lite")),
             (["--skip-update"], None),
         ):
             with self.subTest(args=args):
@@ -77,6 +78,49 @@ class BuckyosStartEntrypointTests(unittest.TestCase):
                 else:
                     update_files.assert_called_once_with(*expected_update)
 
+    def test_wipe_data_needs_a_fresh_install(self) -> None:
+        for args in (["--wipe-data"], ["--skip-update", "--wipe-data"]):
+            with self.subTest(args=args):
+                module = _load_start_script()
+                with (
+                    patch.object(module, "_sdk_tool_distribution_ready") as ready,
+                    patch.object(module, "kill_all_processes") as kill_all,
+                    patch.object(module, "wipe_zone_data") as wipe,
+                    patch.object(module, "start_system") as start_system,
+                    contextlib.redirect_stdout(io.StringIO()) as stdout,
+                ):
+                    result = module.main(args)
+                self.assertEqual(result, 2)
+                self.assertIn("--wipe-data needs", stdout.getvalue())
+                for call in (ready, kill_all, wipe, start_system):
+                    call.assert_not_called()
+
+    def test_wipe_data_empties_data_and_storage_before_the_fresh_install(self) -> None:
+        module = _load_start_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for path in ("data/homestation/homestation-main.db", "data/home/devtest/a.txt", "storage/named_store1/x", "etc/keep"):
+                (root / path).parent.mkdir(parents=True, exist_ok=True)
+                (root / path).write_text("x", encoding="utf-8")
+
+            def update(install_all, group, edition):
+                self.assertFalse((root / "data").exists())
+                self.assertFalse((root / "storage").exists())
+                self.assertTrue((root / "etc" / "keep").exists())
+
+            with (
+                patch.object(module, "resolve_buckyos_root", return_value=root),
+                patch.object(module, "_sdk_tool_distribution_ready", return_value=True),
+                patch.object(module, "kill_all_processes"),
+                patch.object(module, "update_files", side_effect=update) as update_files,
+                patch.object(module, "start_system"),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                result = module.main(["--all", "--wipe-data"])
+
+            self.assertEqual(result, 0)
+            update_files.assert_called_once()
+
     def test_all_restores_devenv_before_start_and_reports_it_last(self) -> None:
         module = _load_start_script()
         original = (
@@ -98,7 +142,7 @@ class BuckyosStartEntrypointTests(unittest.TestCase):
                 shutil.rmtree(config.parent)
                 return 0
 
-            def make_config(group, target):
+            def make_config(group, target, edition):
                 self.assertEqual((group, target), ("dev", root))
                 config.parent.mkdir()
                 config.write_text('{"aios": "paios/aios"}', encoding="utf-8")
@@ -146,7 +190,7 @@ class BuckyosStartEntrypointTests(unittest.TestCase):
                         raise SystemExit(7)
                     return 1 if failure == "install_returncode" else 0
 
-                def make_config(group, target):
+                def make_config(group, target, edition):
                     config.parent.mkdir()
                     config.write_text("{}", encoding="utf-8")
                     raise RuntimeError("configuration generation failed")
@@ -203,7 +247,7 @@ class BuckyosStartEntrypointTests(unittest.TestCase):
                 shutil.rmtree(config.parent)
                 return 0
 
-            def make_config(group, target):
+            def make_config(group, target, edition):
                 self.assertEqual((group, target), ("release", root))
                 config.parent.mkdir()
                 config.write_bytes(generated)
