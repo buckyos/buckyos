@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 64 64">
+  <title>BuckyOS</title>
+  <defs>
+    <linearGradient id="buckyos-blue" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#406AD5"/>
+      <stop offset="100%" stop-color="#7965E5"/>
+    </linearGradient>
+  </defs>
+  <circle cx="32" cy="32" r="32" fill="url(#buckyos-blue)"/>
+  <g transform="translate(1.5 0) rotate(14 32 32)" fill="#FFFFFF">
+    <path fill-rule="evenodd" d="M21 11H27V30C32 26 38 25 42 28C47 31 48 38 44 43C40 48 31 51 21 53ZM27 36V45C31 43.5 36 41 38 38C40 35 39 32.5 36 33C33 33.4 29.5 35 27 36Z"/>
+    <path d="M30.5 11H33.5V53H30.5Z"/>
+  </g>
+</svg>
