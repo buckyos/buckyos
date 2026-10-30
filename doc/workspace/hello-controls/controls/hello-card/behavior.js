@@ -12,6 +12,10 @@ function render(props) {
   done.disabled = props.status === 'done'
 }
 
+// P1 (proposal, not in host API 2): assets listed in component.json reach the iframe as blob URLs;
+// today `check.svg` travels with the snapshot and the package but cannot be referenced from here.
+//   done.style.backgroundImage = 'url(' + aiws.asset('check.svg') + ')'
+
 if (aiws.bindings.task) {
   aiws.input('task').props().then(render)
   // Re-render when the bound record changes (another client, an Agent, a wish).
