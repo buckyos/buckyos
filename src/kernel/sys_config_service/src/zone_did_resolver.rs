@@ -21,7 +21,7 @@
 //   503                            zone 对该名字没有意见（zone 外名字 / zone 身份
 //                                  尚不可用），客户端据此回退本机 cache 与 provider 链；
 //   400                            非法入参（key 类 DID 等，规则 10）；
-//   501 + historicalQuerySupported=false   带 iat 的历史查询：本 resolver 无历史
+//   501 + historicalQuerySupported=false   带 versionId / versionTime 的版本查询：本 resolver 无历史
 //                                  索引，按协议 §7 声明能力缺失，绝不能把当前
 //                                  状态伪装成历史快照；
 //   500                            zone 内条目损坏。注意：当前 ZoneResolverClient
@@ -202,9 +202,45 @@ enum ZoneAnswer {
     Missing(DidDocType),
     NoOpinion(String),
     BadRequest(String),
-    // 带 iat 的历史查询：本 resolver 无历史索引（协议 §7 的 501 分支）
+    // 带 versionId / versionTime 的版本查询：本 resolver 无历史索引（协议 §7.4 的 501 分支）
     HistoricalNotSupported(String),
     Internal(String),
+}
+
+/// Version query of the resolver API (buckyos-base doc/http_did_resolver_api.md §2、§7): `versionId`
+/// asks for the version with exactly that iat, `versionTime` for the closest one before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VersionQuery {
+    Exact(u64),
+    Closest(u64),
+}
+
+/// `type` and the version query of `/1.0/identifiers/{did}`; `versionId` and `versionTime` are
+/// mutually exclusive iat values.
+fn parse_identifiers_query(
+    query: Option<&str>,
+) -> Result<(Option<String>, Option<VersionQuery>), String> {
+    let mut typ = None;
+    let mut version = None;
+    for (key, value) in form_urlencoded::parse(query.unwrap_or("").as_bytes()) {
+        let make: fn(u64) -> VersionQuery = match key.as_ref() {
+            "type" => {
+                typ = Some(value.into_owned());
+                continue;
+            }
+            "versionId" => VersionQuery::Exact,
+            "versionTime" => VersionQuery::Closest,
+            _ => continue,
+        };
+        let iat = value
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| format!("{} must be an iat", key))?;
+        if version.replace(make(iat)).is_some() {
+            return Err("versionId and versionTime are mutually exclusive".to_string());
+        }
+    }
+    Ok((typ, version))
 }
 
 fn is_key_class_method(method: &str) -> bool {
@@ -1169,8 +1205,9 @@ impl ZoneDidResolver {
                     StatusCode::NOT_IMPLEMENTED,
                     CONTENT_TYPE_JSON,
                     json!({
-                        "error": reason,
-                        "buckyos": {"historicalQuerySupported": false},
+                        "didResolutionMetadata": {"error": "historicalQueryNotSupported"},
+                        "didDocument": null,
+                        "didDocumentMetadata": {"buckyos": {"historicalQuerySupported": false}},
                     })
                     .to_string(),
                 )
@@ -1364,7 +1401,7 @@ impl HttpServer for ZoneDidResolver {
             );
         }
 
-        // GET /1.0/identifiers/{did}?type={doc_type}[&iat={ts}]
+        // GET /1.0/identifiers/{did}?type={doc_type}[&versionId={iat}|&versionTime={iat}]
         let path = req.uri().path().to_string();
         if path.starts_with("/1.0/identifiers/") {
             let did_str = path.trim_start_matches("/1.0/identifiers/").to_string();
@@ -1376,29 +1413,16 @@ impl HttpServer for ZoneDidResolver {
                 );
             }
 
-            let mut typ: Option<String> = None;
-            let mut iat: Option<String> = None;
-            if let Some(query) = req.uri().query() {
-                for (key, value) in form_urlencoded::parse(query.as_bytes()) {
-                    match key.as_ref() {
-                        "type" => typ = Some(value.into_owned()),
-                        "iat" => iat = Some(value.into_owned()),
-                        _ => {}
-                    }
-                }
-            }
-            let doc_type = parse_doc_type(typ);
-
-            // 协议 §7：无历史索引时必须区分"能力缺失"（501）与"历史 missing"
-            //（404）。本 resolver 只有当前状态，任何带 iat 的查询都不能用当前
-            // 结果冒充历史快照。
-            let answer = if let Some(iat) = iat {
-                ZoneAnswer::HistoricalNotSupported(format!(
-                    "zone resolver keeps no historical index (iat={} ignored is unsafe)",
-                    iat
-                ))
-            } else {
-                self.resolve(did_str.as_str(), &doc_type).await
+            // 协议 §7.4：无历史索引时必须区分"能力缺失"（501）与"历史 missing"
+            //（404）。本 resolver 只有当前状态，任何版本查询都不能用当前结果冒充
+            // 历史快照。
+            let answer = match parse_identifiers_query(req.uri().query()) {
+                Err(reason) => ZoneAnswer::BadRequest(reason),
+                Ok((_, Some(version))) => ZoneAnswer::HistoricalNotSupported(format!(
+                    "zone resolver keeps no historical index ({:?})",
+                    version
+                )),
+                Ok((typ, None)) => self.resolve(did_str.as_str(), &parse_doc_type(typ)).await,
             };
             let (status, content_type, body) = Self::answer_to_response(did_str.as_str(), answer);
             return build_resp(status, content_type, body);
@@ -1470,6 +1494,54 @@ impl HttpServer for ZoneDidResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_queries_use_version_id_and_version_time_only() {
+        assert_eq!(parse_identifiers_query(None), Ok((None, None)));
+        assert_eq!(
+            parse_identifiers_query(Some("type=owner&versionId=7")),
+            Ok((Some("owner".to_string()), Some(VersionQuery::Exact(7))))
+        );
+        assert_eq!(
+            parse_identifiers_query(Some("versionTime=8&type=device")),
+            Ok((Some("device".to_string()), Some(VersionQuery::Closest(8))))
+        );
+        // `iat` is not a query parameter of the resolver API.
+        assert_eq!(
+            parse_identifiers_query(Some("type=owner&iat=7")),
+            Ok((Some("owner".to_string()), None))
+        );
+        for bad in ["versionId=7&versionTime=8", "versionId=7&versionId=8", "versionTime=soon"] {
+            assert!(parse_identifiers_query(Some(bad)).is_err(), "{bad}");
+        }
+    }
+
+    #[tokio::test]
+    async fn version_queries_are_answered_501_before_any_lookup() {
+        let resolver = ZoneDidResolver::new();
+        let request = |query: &str| {
+            http::Request::builder()
+                .uri(format!("/1.0/identifiers/did:bns:alice?{query}"))
+                .body(
+                    http_body_util::Full::new(bytes::Bytes::new())
+                        .map_err(|never| match never {})
+                        .boxed(),
+                )
+                .unwrap()
+        };
+        for query in ["type=owner&versionId=7", "type=owner&versionTime=8"] {
+            let response = resolver
+                .serve_request(request(query), StreamInfo::default())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED, "{query}");
+        }
+        let response = resolver
+            .serve_request(request("versionId=7&versionTime=8"), StreamInfo::default())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
 
     const TEST_JWK: &str =
         r#"{"kty":"OKP","crv":"Ed25519","x":"qJdNEtscIYwTo-I0K7iPEt_UZdBDRd4r16jdBfNR0tM"}"#;
@@ -1727,14 +1799,17 @@ mod tests {
             ZoneDidResolver::answer_to_response("x", ZoneAnswer::BadRequest("bad".to_string()));
         assert_eq!(status, StatusCode::BAD_REQUEST);
 
-        // iat 历史查询：501 + historicalQuerySupported=false（协议 §7）
+        // 版本查询：501 + historicalQuerySupported=false（协议 §7.4）
         let (status, _, body) = ZoneDidResolver::answer_to_response(
             "x",
             ZoneAnswer::HistoricalNotSupported("no history".to_string()),
         );
         assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
         let value: Value = serde_json::from_str(body.as_str()).unwrap();
-        assert_eq!(value["buckyos"]["historicalQuerySupported"], false);
+        assert_eq!(
+            value["didDocumentMetadata"]["buckyos"]["historicalQuerySupported"],
+            false
+        );
 
         let (status, _, _) =
             ZoneDidResolver::answer_to_response("x", ZoneAnswer::Internal("boom".to_string()));
