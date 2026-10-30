@@ -1031,7 +1031,7 @@ forward_msg { target_worksession_id: String }
 **本批次新增完成：**
 - §9.4 `PendingTool` 真接通：
   - `SessionMeta.pending_task_calls: Vec<PendingTaskCall>` 持久化字段（call_id ↔ task_id ↔ event_pattern 三元映射）
-  - `handle_outcome::PendingTool` 现在调 `TaskDispatch::dispatch_async_tool` 创建 task_mgr 任务、`subscribe_event("/task_mgr/<task_id>")` 加订阅并持久化 mapping，返回 `NextAction::WaitForTool`
+  - `handle_outcome::PendingTool` 现在调 `TaskDispatch::dispatch_async_tool` 创建 task_mgr 任务、`subscribe_event("/obj/taskmgr/<task_id>/changed")` 加订阅并持久化 mapping，返回 `NextAction::WaitForTool`
   - 新增 `persist_snapshot()`（tmp+rename 原子写）确保 PendingTool snapshot（含 `pending_tool_calls`）落盘，TurnHook 的 pre-inference 写入只覆盖 happy path
   - worker loop 重写：把 `pending_inputs` 里命中 `pending_task_calls` event_pattern 的 Event 单独成桶 → 用 `observation_from_task_event` 翻译 `to_status=Completed/Failed/Canceled` → 凑齐 snapshot.pending_tool_calls 后调 `LLMContext::resume(snap, ResumeFill::ToolResults{...})` 续跑；命中不全则保留 pending、wait
   - 续跑后自动 `clear_pending_task_calls()` + `unsubscribe_event(pattern)`，下一轮 PendingTool 干净起跑
@@ -1231,7 +1231,7 @@ forward_msg { target_worksession_id: String }
 - 从 msg-center 拉 msg → `Inbound::Msg` → UI session → `enqueue_pending` 落盘 → ack `Readed` → worker 在合适状态下走 `shell` + 读文件 → outcome `Done` 时把回复 `post_send` 回原 peer DID（用 record 上的 `route.tunnel_did` 当 `preferred_tunnel`）
 - 进程崩 / 重启：未消费的 msg、peer 路由信息、kevent 订阅列表、workspace 绑定、`pending_task_calls`、process 调用栈（`process_entry` / `process_stack`）、各 process 的独立 snapshot 文件全部从 `.meta/` 还原（at-least-once）
 - 任何 session 通过 `subscribe_event(pattern)` 加订阅 → 直接走 `event_pump.set_session_subscriptions` 立即生效 → `session_event_pump` 重建 reader → kevent 命中自动派发回该 session 的 `pending_inputs`
-- LLM 触发 `PendingTool` outcome → 自动转 `task_mgr` 任务、订阅 `/task_mgr/<task_id>`、session 进入 `WaitingTool` → 完成事件回来后自动 `ResumeFill::ToolResults` 续跑
+- LLM 触发 `PendingTool` outcome → 自动转 `task_mgr` 任务、订阅 `/obj/taskmgr/<task_id>/changed`、session 进入 `WaitingTool` → 完成事件回来后自动 `ResumeFill::ToolResults` 续跑
 - LLM 调 `create_worksession { title, objective, ... }` → 新建 workspace（按需）+ 新建 Work session 目录 + `readme.md` + 自动 bootstrap 首轮推理（objective 渲染进 system prompt）
 - LLM 调 `forward_msg { target_worksession_id, message }` → 进程内路由进 target 的 `pending_inputs`（合成 `record_id`，不走 msg-center）
 - **LLM 在 Done 时声明 `<next_behavior>X</next_behavior>` → 按 X 的 `switch_mode` 触发不同切换**：

@@ -154,11 +154,11 @@ export function zoneOf(did: Did) {
 }
 
 export function feedEntry(did: Did, key: string): EntryUrl {
-  return `cyfs://${zoneOf(did)}/home/${userOf(did)}/feed/@/${key}`
+  return `https://${zoneOf(did)}/home/${userOf(did)}/feed/@/${key}`
 }
 
 export function reactionEntry(did: Did, target: ObjId, type: CommentType): EntryUrl {
-  return `cyfs://${zoneOf(did)}/home/${userOf(did)}/reactions/@/${keyDigest(`${did}|${target}|${type}`)}`
+  return `https://${zoneOf(did)}/home/${userOf(did)}/reactions/@/${keyDigest(`${did}|${target}|${type}`)}`
 }
 
 interface PostSpec {

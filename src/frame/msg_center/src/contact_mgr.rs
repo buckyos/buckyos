@@ -1604,7 +1604,7 @@ impl ContactMgr {
         Ok(Some(result))
     }
 
-    /// `/msg_center/<owner>/CONTACTS/changed`; the system scope has no viewers.
+    /// `/obj/msg-center/owners/<owner>/contacts/changed`; the system scope has no viewers.
     pub(crate) fn publish_changed(owner: Option<&DID>, operation: &str, dids: Vec<DID>) {
         let Some(owner) = owner else {
             return;

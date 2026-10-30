@@ -188,7 +188,7 @@ impl Station {
         })
     }
 
-    /// CYFS dispatch receiver for `cyfs://<zone>/home/<user>/inbox` (§4.4, §7.4).
+    /// CYFS dispatch receiver for `https://<zone>/home/<user>/inbox` (§4.4, §7.4).
     pub async fn receive_dispatch(&self, host: &str, path: &str, content_type: &str, claimed: Option<&str>, restricted_hint: bool, body: &[u8]) -> DispatchReply {
         let host = host.split(':').next().unwrap_or(host);
         // A gateway may forward with a loopback Host; what reaches this service is for this zone.

@@ -155,6 +155,12 @@ buckyos system info                                 # BuckyOS version, build_ver
   `$BUCKYOS_ROOT/libexec/buckyos-tool/bin/` or `PATH`; nothing installs them. NFSP `hello` (`POST /nfs/v1/hello`)
   reports the converter in `repr` (versions, or what is missing); results live in bucket `zone/nfs-server/_/preview-cache`,
   capped by `services/nfs-server/settings.preview_cache_mib` (default 20480).
+- System URLs (`obj://`, `cyfs://`, `file://<device_id>`, https; rules in `doc/key url.md`): `buckyos obj resolve <url>`
+  normalizes a reference (also `//config/...`, `/abs/path`) and prints its canonical form, RBAC key, kevent pattern and
+  Provider endpoint without checking access; `buckyos obj read <url> [--property a,b]` follows the DID Object Card
+  (`/kapi/<service>/obj/...`, `/kapi/<agent_id>/obj/...`, DFS at `/kapi/dfs/obj/...`) to its Profile and summary
+  properties with your session. Object events are kevents `/obj/<host>/<path>/<event>` (e.g. task changes
+  `/obj/taskmgr/<task_id>/changed`). A 403 / 404 is the object's own ACL, not a URL error.
 - AI providers: `buckyos ai providers` (auth as configured/kind, health, models; never secrets), `ai routing`,
   `ai usage [--range last1d|last7d|last30d | --since <t>] [--group-by provider_instance_name,provider_model] [--bucket day]`
   (your own calls only; an admin's Desktop Usage page can show the whole Zone); per-model health and prices:

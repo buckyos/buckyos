@@ -32,7 +32,7 @@ TaskMgr 2.0 subsystem
 - App Runner 写操作携带 `(app_instance_id, runner_epoch, expected_revision)` 双重 fencing。
 - Runner 不轮询、不 claim：Dispatcher 按注册的 RunnerFunction 主动
   `offer_task`/`activate_task`（幂等，activate 前禁止业务副作用）。
-- KEvent（`/task_mgr/{task_id}`、`/task_mgr/tree/{root_id}`）只是加速；
+- KEvent（`/obj/taskmgr/{task_id}/changed`、`/obj/taskmgr/{root_id}/tree`）只是加速；
   真相源是 RDB snapshot + `task_event`。
 
 ## 测试

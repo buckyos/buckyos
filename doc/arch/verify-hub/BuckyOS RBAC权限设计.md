@@ -131,6 +131,8 @@ Profile 必须为每个 action 声明 `x-buckyos:rbac`（资源 key 模板 + act
 
 ### 现有 policy 的改动清单（第 2 段执行）
 
+> 2026-10-29 执行结果：1、2、4、6 已落地（`rbac_config.rs` 默认策略、scheduler `update_rbac`、msg-center `owner_session.rs`、task-manager `acl.rs`，回归测试 `rbac_config::tests::agents_observe_owner_sessions_read_only_and_own_their_objects`、msg-center `mailbox_owner_binding_follows_the_tokens_principal`）；3 无需迁移：默认策略里没有 `cyfs:///users` 规则，DFS 的路径权限在 nfs-server 的路径 ACL，`obj://dfs/<path>` 与 `cyfs:///<path>` 经 `buckyos_api::ObjectUrl::rbac_resource_key` 归一到同一 key；5 只完成了事件改名，kevent 服务目前不鉴权订阅者（kernel/kevent 无 enforce），按对象 key 的 `subscribe` enforce 仍待 kevent 携带调用者身份后实现。msg-center 的 RBAC key 编码同时调整：`MailboxAddress` 不再把 `.` 编成 `%2E`（与 `obj://` 规范化一致），scheduler 生成精确规则时用 `buckyos_api::rbac_literal` 转义正则元字符。
+
 1. 删除 `rbac_config.rs` 中 `agent_runtime` / `agent` 对 `obj://msg-center/*` 的 `all`，换成上面的 agent 组规则；msg-center `authorize_owner_read_identity` 的 `_ => Ok(())` 与 `None => Ok(())` 分支改为按 token owner / sub 校验。
 2. `obj://task/{user}` → `obj://taskmgr/users/{user}`，TaskMgr 的 enforce 调用同步。
 3. `cyfs:///users/{users}/*` → `obj://dfs/users/{users}/*`，归一化层把 `cyfs:///` 别名映射到同一 key。

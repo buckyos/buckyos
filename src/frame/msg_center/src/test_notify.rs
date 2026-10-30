@@ -851,3 +851,26 @@ async fn one_request_establishes_its_caller_once() {
     .await;
     assert_eq!(calls.take().0, 2);
 }
+
+#[tokio::test]
+async fn mailbox_owner_binding_follows_the_tokens_principal() {
+    let env = env().await;
+    let c = &env.center;
+    let agent_token = || token(&jarvis().to_string(), TokenPrincipalKind::Agent, AuthTarget::app("jarvis.test.buckyos.io@alice".parse().unwrap()));
+    for ctx in [agent_ctx, agent_token] {
+        assert!(c.authorize_owner_read(&ctx(), &jarvis()).await.is_ok(), "own mailbox");
+        assert!(c.authorize_owner_read(&ctx(), &alice()).await.is_ok(), "observes its owner");
+        assert!(c.authorize_owner_read(&ctx(), &bob()).await.is_err(), "another owner");
+        assert!(c.authorize_owner_write(&ctx(), &jarvis()).await.is_ok());
+        assert!(c.authorize_owner_write(&ctx(), &alice()).await.is_err(), "observation is read-only");
+    }
+    let notes = || app_ctx("notes.example.com", "alice");
+    assert!(c.authorize_owner_read(&notes(), &alice()).await.is_ok());
+    assert!(c.authorize_owner_read(&notes(), &jarvis()).await.is_ok(), "the user observes its agent");
+    assert!(c.authorize_owner_read(&notes(), &bob()).await.is_err());
+    assert!(c.authorize_owner_write(&notes(), &alice()).await.is_ok());
+    assert!(c.authorize_owner_write(&notes(), &jarvis()).await.is_err());
+    assert!(c.authorize_owner_read(&user_ctx("bob"), &alice()).await.is_err());
+    assert!(c.authorize_owner_read(&system_ctx(), &bob()).await.is_ok());
+    assert!(c.authorize_owner_write(&in_process(), &bob()).await.is_ok());
+}

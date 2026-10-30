@@ -172,7 +172,7 @@ impl Station {
         Ok(())
     }
 
-    /// PUT one object to the recipient's inbox `cyfs://<zone>/home/<user>/inbox`.
+    /// PUT one object to the recipient's inbox `https://<zone>/home/<user>/inbox`.
     pub async fn dispatch_to(&self, obj_id: &str, recipient: &str, tier: Option<String>) -> HsResult<(Option<String>, DispatchOutcome)> {
         let id = obj_id.to_string();
         let obj = self

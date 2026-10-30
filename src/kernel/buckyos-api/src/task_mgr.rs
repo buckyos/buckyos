@@ -390,14 +390,14 @@ impl FromStr for StorageDomain {
 /// Default policy preset applied when a create request does not name one.
 pub const TASK_POLICY_PRESET_COLLABORATIVE_TREE_V1: &str = "collaborative-tree/v1";
 
-/// KEvent path for a single task's change notifications.
+/// KEvent path for a single task's change notifications: `obj://taskmgr/<task_id>` event `changed`.
 pub fn task_mgr_task_event_path(task_id: &str) -> String {
-    format!("/task_mgr/{}", task_id)
+    crate::obj_event_key("taskmgr", &[task_id], "changed")
 }
 
-/// KEvent path fanning out every event under a task tree.
+/// KEvent path fanning out every event under a task tree: `obj://taskmgr/<root_id>` event `tree`.
 pub fn task_mgr_tree_event_path(root_id: &str) -> String {
-    format!("/task_mgr/tree/{}", root_id)
+    crate::obj_event_key("taskmgr", &[root_id], "tree")
 }
 
 // ---------------------------------------------------------------------------

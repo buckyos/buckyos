@@ -27,7 +27,7 @@ pub fn dir_error(e: crate::directory::DirError) -> HsError {
 }
 
 impl Station {
-    /// Home of a DID (`cyfs://<zone>/home/<user>`) and the HTTP origin serving its zone. In-zone
+    /// Home of a DID (`https://<zone>/home/<user>`) and the HTTP origin serving its zone. In-zone
     /// homes resolve to this node's own listener.
     pub async fn origin_for_did(&self, did: &str) -> HsResult<(HomeRef, String)> {
         let home = self.directory.home_of(did).await.map_err(dir_error)?;

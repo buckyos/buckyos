@@ -1,6 +1,6 @@
 /* ── msg-center relationship surface: websdk MsgCenterClient for `contact.*`, kRPC for `group.*` / `msg.*` ── */
 
-import { buckyos } from 'buckyos'
+import { buckyos, objectUrl } from 'buckyos'
 import type { MsgCenterClient } from 'buckyos'
 import { fetchUserDetail } from '../../api/user_mgr'
 import { GROUP_INVITATION_INTENT } from './relation'
@@ -76,14 +76,6 @@ function rpc() {
 
 function call<T>(method: string, params: Record<string, unknown>): Promise<T> {
   return rpc().call<T, Record<string, unknown>>(method, params)
-}
-
-/** `did:<method>:<id>` → the raw host name msg-center uses in its kevent paths. */
-function ownerEventToken(did: string): string {
-  const parts = did.split(':')
-  const method = parts[1] ?? ''
-  const id = parts.slice(2).join(':').split(':')[0] ?? ''
-  return method === 'web' ? id : `${id}.${method}.did`
 }
 
 function docOf(value: unknown): GroupDocWire | null {
@@ -315,19 +307,22 @@ export function createRealNetworkBackend(): NetworkBackend {
       const online = () => { listener('contacts'); listener('requests'); listener('mailbox'); listener('groups') }
       window.addEventListener('online', online)
       void ownerDid().then((did) => {
-        const token = ownerEventToken(did)
-        const contacts = `/msg_center/${token}/CONTACTS/changed`
-        return buckyos.subscribeKEvent([contacts, `/msg_center/${token}/REQUEST_BOX/**`, `/msg_center/${token}/INBOX/**`], (event) => {
+        const contacts = objectUrl.objEventKey('msg-center', ['owners', did, 'contacts'], 'changed')
+        const sessions = objectUrl.objEventPattern('msg-center', ['owners', did, 'sessions'])
+        return buckyos.subscribeKEvent([contacts, sessions], (event) => {
           if (stopped) return
-          byMember = null
           const id = String(event.eventid ?? '')
-          if (id.startsWith(contacts)) {
+          const box = id.split('/').pop()
+          if (id === contacts) {
+            byMember = null
             listener('contacts')
             listener('requests')
             return
           }
+          if (box !== 'inbox' && box !== 'request_box') return
+          byMember = null
           listener('mailbox')
-          if (id.includes('/INBOX/')) listener('groups')
+          if (box === 'inbox') listener('groups')
         })
       }).then((subscription) => {
         if (stopped) void subscription.close()

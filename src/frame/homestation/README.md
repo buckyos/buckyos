@@ -1,7 +1,7 @@
 # homestation — personal publication stream, delivery inbox and reading pipeline
 
 Backend of BuckyOS HomeStation. One service serves every user of the zone (like Message Center): each user has
-an own home `cyfs://<zone>/home/<user>` (stream, inbox, reading pipeline, private state: its own rows of the
+an own home `https://<zone>/home/<user>` (stream, inbox, reading pipeline, private state: its own rows of the
 service's one database and its own buckets), and the zone keeps a zone feed list at `/home/~zone`. Design: [架构设计](<../../../doc/homestation/BuckyOS HomeStation 架构设计.md>) v0.7;
 wire formats, endpoints, kRPC methods and implementation choices:
 [协议与实现](<../../../doc/homestation/HomeStation 协议与实现.md>); tables, buckets, keys and who binds what:

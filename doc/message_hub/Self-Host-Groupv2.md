@@ -1030,19 +1030,19 @@ pub struct HookBinding {
 DID Document     实体类型 group、host、controller、服务路径前缀
 
 写入
-PUT  cyfs://$host/<group_did>/inbox                          写入默认 Session（MsgObject 不带 to_session）
-PUT  cyfs://$host/<group_did>/sessions/<sid>/inbox           写入具名 Session（<sid> 必须等于 MsgObject.to_session）
-PUT  cyfs://$host/<group_did>/join[?invite=<token>]          接受邀请或申请入群；可附带邀请链接 token
-PUT  cyfs://$host/<group_did>/sessions/<sid>/join            Session Guest 接受邀请
-PUT  cyfs://$host/<group_did>/guest_requests                 Guest 发起请求，host 为其新建 Session
-PUT  cyfs://$host/<group_did>/read_markers                   上报已读水位
+PUT  https://$host/<group_did>/inbox                          写入默认 Session（MsgObject 不带 to_session）
+PUT  https://$host/<group_did>/sessions/<sid>/inbox           写入具名 Session（<sid> 必须等于 MsgObject.to_session）
+PUT  https://$host/<group_did>/join[?invite=<token>]          接受邀请或申请入群；可附带邀请链接 token
+PUT  https://$host/<group_did>/sessions/<sid>/join            Session Guest 接受邀请
+PUT  https://$host/<group_did>/guest_requests                 Guest 发起请求，host 为其新建 Session
+PUT  https://$host/<group_did>/read_markers                   上报已读水位
 
 读取
-GET  cyfs://$host/<group_did>/changes?since=&limit=          读者可见的变更流（§5.4.1）
-GET  cyfs://$host/<group_did>/sessions                       读者可见的 Session 列表
-GET  cyfs://$host/<group_did>/inbox?after_seq=&limit=
-GET  cyfs://$host/<group_did>/sessions/<sid>/inbox?after_seq=&limit=
-GET  cyfs://$host/<group_did>/objects/<obj_id>?context_path=  受群 ACL 约束的对象读取（§5.7）
+GET  https://$host/<group_did>/changes?since=&limit=          读者可见的变更流（§5.4.1）
+GET  https://$host/<group_did>/sessions                       读者可见的 Session 列表
+GET  https://$host/<group_did>/inbox?after_seq=&limit=
+GET  https://$host/<group_did>/sessions/<sid>/inbox?after_seq=&limit=
+GET  https://$host/<group_did>/objects/<obj_id>?context_path=  受群 ACL 约束的对象读取（§5.7）
 
 对象   MsgObject（§2.5 的群形态，含 §2.6 的关系消息）、Action Log event
 ```

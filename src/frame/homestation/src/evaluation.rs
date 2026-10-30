@@ -541,7 +541,7 @@ impl Station {
         }
         let Some(path) = &t.object_path else { return Err(bad("content target needs object_id, object_path or root_object_id + inner_path")) };
         let resolved_at = now_s();
-        let entry = path_to_entry(path);
+        let entry = path_to_entry(path, &self.cfg.zone);
         let Some(entry) = entry else {
             return Ok((t.clone(), Some(json!({ "requested_path": path, "resolved_at": resolved_at })), Some("unsupported_path".into())));
         };
@@ -1021,19 +1021,24 @@ fn validate_request(r: &EvalRequest) -> HsResult<()> {
     Ok(())
 }
 
-/// `cyfs://<zone>/home/<user>/<ns>/@/<key>`, the same path over https, or a portal link
+/// `https://<zone>/home/<user>/<ns>/@/<key>`, the current-zone alias
+/// `obj://homestation/home/<user>/<ns>/@/<key>`, or a portal link
 /// `https://<zone>/homestation/<user>/<key>` (a post of that user).
-pub fn path_to_entry(path: &str) -> Option<String> {
-    let rest = path.strip_prefix("cyfs://").or_else(|| path.strip_prefix("https://")).or_else(|| path.strip_prefix("http://"))?;
+pub fn path_to_entry(path: &str, own_zone: &str) -> Option<String> {
+    if let Some(p) = path.strip_prefix("obj://homestation/") {
+        let entry = format!("https://{}/{}", own_zone.to_ascii_lowercase(), p.split(['?', '#']).next().unwrap_or_default());
+        return EntryRef::parse(&entry).ok().map(|_| entry);
+    }
+    let rest = path.strip_prefix("https://").or_else(|| path.strip_prefix("http://"))?;
     let (host, p) = rest.split_once('/')?;
     let host = host.split(':').next()?.to_ascii_lowercase();
     let p = p.split(['?', '#']).next().unwrap_or_default();
     let entry = if let Some(tail) = p.strip_prefix("homestation/") {
         let (user, key) = tail.trim_end_matches('/').split_once('/')?;
         let zone = host.strip_prefix("www.").or_else(|| host.strip_prefix("homestation.")).unwrap_or(&host);
-        format!("cyfs://{zone}/home/{user}/{NS_FEED}/@/{key}")
+        format!("https://{zone}/home/{user}/{NS_FEED}/@/{key}")
     } else {
-        format!("cyfs://{host}/home/{}", p.strip_prefix("home/")?)
+        format!("https://{host}/home/{}", p.strip_prefix("home/")?)
     };
     EntryRef::parse(&entry).ok().map(|_| entry)
 }
@@ -1066,10 +1071,13 @@ mod tests {
 
     #[test]
     fn entry_paths() {
-        assert_eq!(path_to_entry("https://example.org/home/alice/feed/@/p-1").as_deref(), Some("cyfs://example.org/home/alice/feed/@/p-1"));
-        assert_eq!(path_to_entry("https://www.example.org/homestation/alice/p-1?x=1").as_deref(), Some("cyfs://example.org/home/alice/feed/@/p-1"));
-        assert_eq!(path_to_entry("https://example.org/home/feed/@/p-1"), None);
-        assert_eq!(path_to_entry("https://example.org/alice/home/works/@/x"), None);
-        assert_eq!(path_to_entry("https://example.org/homestation/alice"), None);
+        let zone = "example.org";
+        assert_eq!(path_to_entry("https://example.org/home/alice/feed/@/p-1", zone).as_deref(), Some("https://example.org/home/alice/feed/@/p-1"));
+        assert_eq!(path_to_entry("https://www.example.org/homestation/alice/p-1?x=1", zone).as_deref(), Some("https://example.org/home/alice/feed/@/p-1"));
+        assert_eq!(path_to_entry("obj://homestation/home/alice/feed/@/p-1", zone).as_deref(), Some("https://example.org/home/alice/feed/@/p-1"));
+        assert_eq!(path_to_entry("cyfs://example.org/home/alice/feed/@/p-1", zone), None);
+        assert_eq!(path_to_entry("https://example.org/home/feed/@/p-1", zone), None);
+        assert_eq!(path_to_entry("https://example.org/alice/home/works/@/x", zone), None);
+        assert_eq!(path_to_entry("https://example.org/homestation/alice", zone), None);
     }
 }

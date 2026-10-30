@@ -575,6 +575,18 @@ pub enum MailboxKind {
     RequestBox,
 }
 
+impl MailboxKind {
+    /// Object event name of this box (`/obj/msg-center/.../<box>`).
+    pub fn event_name(&self) -> &'static str {
+        match self {
+            MailboxKind::Inbox => "inbox",
+            MailboxKind::Sent => "sent",
+            MailboxKind::GroupInbox => "group_inbox",
+            MailboxKind::RequestBox => "request_box",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct MailboxAddress {
@@ -647,6 +659,37 @@ impl MailboxAddress {
         format!("{}/contacts", self.owner_resource())
     }
 
+    /// Object event of this mailbox's `box_kind` box (doc/key url.md §7):
+    /// `/obj/msg-center/owners/<owner>/sessions[/<session_id>]/<box>`; a session too long
+    /// for a kevent id falls back to the owner's session collection.
+    pub fn box_event_id(&self, box_kind: MailboxKind) -> String {
+        let owner = self.owner.to_string();
+        let event = box_kind.event_name();
+        if let Some(session) = self.session_id.as_deref() {
+            let key = crate::obj_event_key("msg-center", &["owners", &owner, "sessions", session], event);
+            if crate::validate_eventid(&key).is_ok() {
+                return key;
+            }
+        }
+        crate::obj_event_key("msg-center", &["owners", owner.as_str(), "sessions"], event)
+    }
+
+    /// Every mailbox and contact event of the owner.
+    pub fn owner_event_pattern(&self) -> String {
+        crate::obj_event_pattern("msg-center", &["owners", &self.owner.to_string()])
+    }
+
+    /// `obj://msg-center/owners/<owner_did>/sessions[/<session_id>]`: the object
+    /// URL and RBAC key of the owner's session collection or one session (D12).
+    pub fn sessions_resource(&self) -> String {
+        let mut resource = format!("{}/sessions", self.owner_resource());
+        if let Some(session) = self.session_id.as_deref() {
+            resource.push('/');
+            resource.push_str(&crate::encode_obj_segment(session));
+        }
+        resource
+    }
+
     fn encode_resource_address(value: &str) -> String {
         let mut result = String::new();
         for byte in value.as_bytes() {
@@ -656,6 +699,7 @@ impl MailboxAddress {
                 | b'0'..=b'9'
                 | b'-'
                 | b'_'
+                | b'.'
                 | b'~'
                 | b':'
                 | b'@'

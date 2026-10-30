@@ -137,7 +137,7 @@ impl DeliveryExecutor for MessageHubExecutor {
                 });
             }
             let target = configured_target.unwrap_or_else(|| {
-                format!("cyfs://local/{}/inbox", envelope.target_did.to_string())
+                format!("https://local/{}/inbox", envelope.target_did.to_string())
             });
             let dispatch = self
                 .center

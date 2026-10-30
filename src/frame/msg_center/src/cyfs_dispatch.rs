@@ -130,13 +130,13 @@ impl CyfsDispatchSettings {
         for (did, route) in &config.outgoing {
             DID::from_str(did).map_err(|e| anyhow::anyhow!("invalid native recipient: {e}"))?;
             let target = reqwest::Url::parse(&route.target)?;
-            if target.scheme() != "cyfs"
+            if target.scheme() != "https"
                 || target.query().is_some()
                 || target.fragment().is_some()
                 || normalize_cyfs_dispatch_target(target.host_str().unwrap_or(""), target.path())?
                     != route.target
             {
-                anyhow::bail!("native dispatch target must be a canonical CYFS target");
+                anyhow::bail!("native dispatch target must be a canonical https dispatch target");
             }
             let upstream = reqwest::Url::parse(&route.upstream)?;
             if !matches!(upstream.scheme(), "http" | "https")
@@ -764,7 +764,7 @@ mod tests {
     async fn cyfs_dispatch_sender_replays_identical_object_until_accepted() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let route = NativeDispatchRoute {
-            target: "cyfs://alice.example/inbox".into(),
+            target: "https://alice.example/inbox".into(),
             upstream: format!("http://{}", listener.local_addr().unwrap()),
             authorization: Some("Bearer original-token".into()),
             timeout_ms: 1000,
@@ -804,7 +804,7 @@ mod tests {
                 }
                 let result = CyfsDispatchResult::new(
                     Some(server_id.clone()),
-                    "cyfs://alice.example/inbox".into(),
+                    "https://alice.example/inbox".into(),
                     status,
                 );
                 let body = serde_json::to_string(&result).unwrap();
@@ -829,7 +829,7 @@ mod tests {
     async fn cyfs_dispatch_sender_replays_the_jwt_form_when_kept() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let route = NativeDispatchRoute {
-            target: "cyfs://alice.example/inbox".into(),
+            target: "https://alice.example/inbox".into(),
             upstream: format!("http://{}", listener.local_addr().unwrap()),
             authorization: Some("Bearer original-token".into()),
             timeout_ms: 1000,
@@ -875,7 +875,7 @@ mod tests {
             }
             let result = CyfsDispatchResult::new(
                 Some(server_id.clone()),
-                "cyfs://alice.example/inbox".into(),
+                "https://alice.example/inbox".into(),
                 CyfsDispatchStatus::Accepted,
             );
             let body = serde_json::to_string(&result).unwrap();
@@ -897,8 +897,8 @@ mod tests {
     #[test]
     fn cyfs_dispatch_settings_reject_ambiguous_routes() {
         for target in [
-            "cyfs://alice.example/inbox/@/field",
-            "cyfs://alice.example/a/../inbox",
+            "https://alice.example/inbox/@/field",
+            "https://alice.example/a/../inbox",
             "http://alice.example/inbox",
         ] {
             assert!(CyfsDispatchSettings::parse(&serde_json::json!({"cyfs_dispatch":{

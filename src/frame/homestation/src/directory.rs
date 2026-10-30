@@ -1,5 +1,5 @@
 //! Locating other HomeStations and the keys that may sign for a DID (§4.4 "发现", §5.4, §16.5).
-//! The protocol only needs: DID → home (zone and user segment: `cyfs://<zone>/home/<user>/feed`
+//! The protocol only needs: DID → home (zone and user segment: `https://<zone>/home/<user>/feed`
 //! and `/inbox`), zone → HTTP origin, and "may this signer sign for that DID".
 
 use crate::protocol::HomeRef;

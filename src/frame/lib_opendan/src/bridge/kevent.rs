@@ -1,10 +1,10 @@
 //! kevent bridge: `object_event` subscriptions of a session become
 //! `AgentEvent{source: object:<object>}` posted through the registry.
 //!
-//! The subscription's `object` is the kevent id (pattern) to read. Event
-//! data fields used when present: `event` (name), `seq`, `summary`,
-//! `data_ref`; otherwise the subscription's event name (or `changed`) and a
-//! compact rendering of the data.
+//! The subscription's `object` is an `obj://` URL; its kevent key is
+//! `/obj/<host>/<path>/<event>` (doc/key url.md §7), every event of the object
+//! when `event` is empty or `*`. Event data fields used when present: `seq`,
+//! `summary`, `data_ref`; the event name is the last key segment.
 
 use std::sync::Arc;
 
@@ -18,16 +18,30 @@ use crate::state::AgentStateClient;
 
 use super::EventBridge;
 
+/// `(subscription id, object url, kevent pattern)` of the session's object subscriptions.
 fn objects_of(cfg: &SessionConfig) -> Vec<(String, String, String)> {
     cfg.subscriptions
         .iter()
         .filter_map(|s| match &s.source {
-            SubscriptionSource::ObjectEvent { object, event } => {
-                Some((s.id.clone(), object.clone(), event.clone()))
-            }
+            SubscriptionSource::ObjectEvent { object, event } => match kevent_pattern(object, event) {
+                Ok(pattern) => Some((s.id.clone(), object.clone(), pattern)),
+                Err(e) => {
+                    log::warn!("object subscription {} of {object}: {e}", s.id);
+                    None
+                }
+            },
             _ => None,
         })
         .collect()
+}
+
+fn kevent_pattern(object: &str, event: &str) -> std::result::Result<String, buckyos_api::ObjectUrlError> {
+    let url = buckyos_api::parse_object_url(object)?;
+    if event.is_empty() || event == "*" {
+        url.object_event_pattern()
+    } else {
+        url.object_event_key(event)
+    }
 }
 
 pub struct KEventBridge {
@@ -60,14 +74,11 @@ impl EventBridge for KEventBridge {
                 }
             };
             let text = |k: &str| ev.data.get(k).and_then(Value::as_str).map(str::to_string);
-            for (sub, object, event) in subs.iter().filter(|(_, o, _)| o == &ev.eventid) {
-                let name = text("event").unwrap_or_else(|| {
-                    if event.is_empty() || event == "*" {
-                        "changed".to_string()
-                    } else {
-                        event.clone()
-                    }
-                });
+            for (sub, object, _) in subs
+                .iter()
+                .filter(|(_, _, pattern)| buckyos_api::match_global_pattern(pattern, &ev.eventid))
+            {
+                let name = ev.eventid.rsplit('/').next().unwrap_or("changed").to_string();
                 let mut summary = text("summary").unwrap_or_else(|| {
                     format!("{object} {name}: {}", ev.data)
                 });

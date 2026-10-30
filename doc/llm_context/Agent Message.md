@@ -55,7 +55,7 @@ Telegram update
        1v1：contact_mgr.check_access_permission 决定 INBOX / REQUEST_BOX / 丢弃
        群聊：写群 DID 名下的 GROUP_INBOX 记录，并扇出到各成员的 INBOX（tag "group:<gid>"）
        MailboxRecord{state = Unread, session_id = derive_session_id(..)}
-       -> 发布 kevent "/msg_center/<owner>/<BOX>/..."
+       -> 发布 kevent "/obj/msg-center/owners/<owner>/sessions[/<sid>]/<box>"
   -> OpenDAN msg_center_pump（kevent 加速 + 1s 超时全量扫描）
        list_mailboxes + get_next(box, [Unread], lock_on_take=true, with_object=true)
        （记录 Unread -> Reading）
@@ -99,7 +99,7 @@ Telegram update
 
 `msg_center_pump` 是一个**纯 fetcher**：
 
-- **订阅**：订阅 kevent `/msg_center/<owner>/{INBOX,GROUP_INBOX,REQUEST_BOX}/**`。kevent 只起加速作用；1 秒超时、reader 失效或未知事件时，都回退到三个 box 的全量扫描。
+- **订阅**：订阅 kevent `/obj/msg-center/owners/<owner>/**`（box 为事件名 `inbox` / `group_inbox` / `request_box` / `sent`）。kevent 只起加速作用；1 秒超时、reader 失效或未知事件时，都回退到三个 box 的全量扫描。
 - **取记录**：`get_next(mailbox, box_kind, [Unread], lock_on_take=true, with_object=true)`，每个 box 每次拉取最多取 128 条。
 - **不 ack**：ack 由 dispatcher 在 session 把输入持久化之后执行。进程在中途崩溃时，记录会停在 `Reading`，由 msg-center 的 lease 恢复机制重新投递。
 - **`from_name`**：优先用 `MailboxRecord.from_name`，缺失时查 `ContactLookup.from_name`。这是一个带缓存的 `get_contact` 查询（命中缓存 300s，未命中缓存 60s）。

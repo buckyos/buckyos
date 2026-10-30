@@ -2,7 +2,7 @@
 
 日期：2026-10-29（v0.4，Q1–Q12 已裁决，全文按裁决定稿）
 
-状态：**§6 第 1 段已完成（2026-10-29），待开第 2 段（现有服务改造）。** §1.5 的裁决列已填，D1–D12 是定稿规则；D7、D11 的解读已随第 1 段落地（用户 10-29 确认开工）。第 1 段产出：[key url.md](../doc/key%20url.md) 第一部分重写（§1–§10：scheme、`file://<device_id>`、`obj://` host 两类规则与服务名表、`cyfs://` 判据、默认 URL / 跨 Zone https / query 契约、kevent 命名、缩写、非等价转换、RBAC 指引）；[统一url的思考](../doc/opendan/protocol/统一url的思考.md) 删展开与简写写法并指向 key url.md；buckyos-base [基础协议](../../buckyos-base/doc/did-object-protocol.md) §5.2 / §5.4 补 BuckyOS Object DID 与 `obj://` host 约定；[Agent Spec](../doc/opendan/protocol/Agent%20DID-Object%20Protocol%20Spec.md) §4 / §4.1 / §14 对齐 Card 发现与 `obj://` 规则并记录 client 差距；[Agent Session SDK 实现计划](../doc/opendan/Agent%20Session%20SDK%20实现计划.md) A.7 的 `agent://self` 改为删除；[RBAC 权限设计](../doc/arch/verify-hub/BuckyOS%20RBAC权限设计.md)"基于 URL 的资源 key 布局"一节（各服务 key 表、agent 组目标规则、risk↔action 对应表、第 2 段 policy 改动清单）。**运行代码未改。**
+状态：**§6 第 1 段已完成（2026-10-29）；第 2 段（现有服务改造）2026-10-29 已实施，未提交、未做真实 Zone DV，记录与遗留见 §6 第 2 段"实施记录"。** 下一步是跨仓发布（顺序见实施记录）与真实 Zone DV，然后开第 3 段。§1.5 的裁决列已填，D1–D12 是定稿规则。第 1 段产出：[key url.md](../doc/key%20url.md) 第一部分重写（§1–§10：scheme、`file://<device_id>`、`obj://` host 两类规则与服务名表、`cyfs://` 判据、默认 URL / 跨 Zone https / query 契约、kevent 命名、缩写、非等价转换、RBAC 指引）；[统一url的思考](../doc/opendan/protocol/统一url的思考.md) 删展开与简写写法并指向 key url.md；buckyos-base [基础协议](../../buckyos-base/doc/did-object-protocol.md) §5.2 / §5.4 补 BuckyOS Object DID 与 `obj://` host 约定；[Agent Spec](../doc/opendan/protocol/Agent%20DID-Object%20Protocol%20Spec.md) §4 / §4.1 / §14 对齐 Card 发现与 `obj://` 规则并记录 client 差距；[Agent Session SDK 实现计划](../doc/opendan/Agent%20Session%20SDK%20实现计划.md) A.7 的 `agent://self` 改为删除；[RBAC 权限设计](../doc/arch/verify-hub/BuckyOS%20RBAC权限设计.md)"基于 URL 的资源 key 布局"一节（各服务 key 表、agent 组目标规则、risk↔action 对应表、第 2 段 policy 改动清单）。**运行代码未改。**
 
 v0.3 相对 v0.2 的变化（均为 2026-10-29 对照代码核出）：① HomeStation / msg-center 群组的 `cyfs://` 投递 target 来自 cyfs-ndn 共享的 dispatch 协议，cyfs-gateway 也在消费，改 OBJ 必须先裁决传输层去留（新 Q11）；② msg-center 对 agent 组的 RBAC 是 `all`，G1 扩为 RBAC 收窄；§4.2/4.3 对象路径与现有 RBAC key 布局不同（新 Q12）；③ Q1 被 `key url.md` 已有的 `file://$device_id/path` 收窄；Q4 有 sys_config_service 别名先例；Q5 有 Agent Session SDK 实现计划的 `agent://self` 先例；④ Card 发现漂移在 client 的 `normalize_object_url` 先去尾斜杠处，§2.1 / §7.1 补上；⑤ 工作树里 `doc/key url.md` 有一行未提交改动（`obj://` 行加"最大兼容"），随本 TODO 一起提交。
 
@@ -334,6 +334,34 @@ wish run 内已有 `ws_read / ws_profile / ws_outline` 可作为 summary props �
 6. AI Workspace Reference 的 URL 投影与运行外授权（§4.4，按 Q7）。
 7. DFS Provider 与文件 host → node / executor 映射（§4.6，按 Q1–Q3）。
 8. 每个服务完成后跑 §7.1 的解析向量和 §7.3 / §7.2 中属于该服务的项；`buckyos obj resolve / read`（A8 的 CLI 部分）在本段随 websdk 一起给出，用于 DV。
+
+#### 第 2 段实施记录（2026-10-29，未提交）
+
+共享层：
+- buckyos-base：`DIDObjectCard::default_card_url` 先分类（路径型原 URL、目录型补 `did.json`）；`DIDObjectClient::resolve_card` 从 `BuckyOS-DID-Document` 头或 body（JSON / JWT）取 Card，两者须一致；`DIDObjectHttpServer` 对对象路径 GET 返回 Card、`?type=profile` 返回 Profile；`DIDObjectRequestContext` 带 `headers` / `query`；`DIDObjectHttpServer::inner()`。测试改为关闭 WebProvider 兼容路由也能解析。
+- buckyos-api：`object_url.rs`（严格解析 / 规范化 / host 段两类校验 / `rbac_resource_key` / `object_event_key` / path DID / `expand_input_shorthand` / `file_url_device` / `DEFAULT_DEVICE_KEY`）+ `testdata/object_url_vectors.json`；`did_object_provider.rs`（`KrpcObjectProvider`：按路径模式声明对象种类，属性 / 索引查询 / action 直接调服务已有 kRPC，用调用者自己的 token；`RpcHandlerBackend`；`buffered_request` 供 axum 服务）；`aiws_reference_url` / `parse_aiws_reference_url`；`SystemConfigClient::default_device`；`rbac_literal` 移入。sys_config_service 的前缀剥离改调 `config_key_from_url`。
+- websdk：`src/object_url.ts`（同规则，`objectUrl` 命名空间导出）+ `tests/fixtures/object_url_vectors.json`（与 buckyos-api 同一份，测试会比对兄弟仓副本）；`aiwsReferenceUrl` / `parseAiwsReferenceUrl`；CLI `buckyos obj resolve|read`（`cli/modules/obj.ts`）。
+- RBAC（`rbac_config.rs` + scheduler）：删 `agent_runtime` / `agent` 对 `obj://msg-center/*` 的 `all`，换成 agent 组对 `owners/*` 只读、objects / group_inbox 读、notify；`obj://task/` → `obj://taskmgr/users/`；aiworkspace / homestation / opendan 组级规则；`system/default_device`（scheduler 在第一个 OOD 写入）；scheduler 为每个 Agent 生成 `obj://<agent-id>[/*]` 对 Agent 自己 `all`、对 owner 只读的精确规则。msg-center RBAC key 不再把 `.` 编成 `%2E`，精确规则经 `rbac_literal` 转义。
+
+D11：cyfs-ndn `normalize_cyfs_dispatch_target` 产出 `https://<host><path>`（CYFS Protocol 文档同步）；cyfs-gateway named_inbox_cache 的 zone 前缀校验跟随；msg-center 群组 / 原生投递 / 本地标签 `https://local/<did>/inbox`；bucket_store `Origin.source` 接受 `https://`。target 进入群组请求签名的 `audience` 与 dispatch 去重键，发送端、网关缓存、接收端用同一 helper，因此一起变；旧 `cyfs://` 缓存项会被网关视为外来项丢弃（全新安装）。
+
+D9：kevent 统一 `/obj/<host>/<path>/<event>`：msg-center 邮箱 `/obj/msg-center/owners/<owner>/sessions[/<sid>]/<box>`、联系人 `.../owners/<owner>/contacts/changed`、群组 `/obj/<group-host>/changed`、投递队列 `/obj/msg-center/delivery/<transport>/changed`；aiworkspace `/obj/aiworkspace/<ws>/{head,locks}`；taskmgr `/obj/taskmgr/<task_id>/{changed,tree}`。订阅端：HomeStation、OpenDAN ui、workflow、websdk / CLI、Desktop MessageHub 与 My Network、lib_opendan kevent bridge（`object_event.object` 现在是 `obj://` URL，确定性转 kevent key / pattern）、agent-did-object-lib EventBridge（同一编码）。
+
+G1：msg-center `authorize_owner_{read,write}_identity` 按 principal 判定：User = 自己 + 可观察的本人 Agent；Agent token（sub = Agent DID）= 自己的 mailbox，只读观察 owner；App token 若是 Agent runtime 同 Agent，否则同 User；System / Device 与进程内调用（`caller_identity` 为 `None` 只在进程内调用出现）放行。
+
+Provider（`/kapi/<host>/obj/...`）：msg-center（`owners/<did>/sessions[/<sid>]`、`owners/<did>/contacts[/<did>]`、`messages/<msg_id>`，事件 inbox / sent / group_inbox / request_box / changed）；OpenDAN（`obj://<agent-id>` 根与 sessions / workspaces / goals / artifacts，挂在 `/kapi/<agent_id>/obj`，`/kapi/opendan/obj`、`/api/opendan/obj` 同一对象，`--dev` 同样挂载）；HomeStation（home / feed / feed/@/<key> / inbox，Card 默认 URL 是同路径 https）；AI Workspace（工作区、`entities/<id>[?mode&selector&version]`、`path/<...>`，读走 kRPC 入口，无授权仍是 NOT_FOUND）；DFS（nfs-server `/kapi/dfs/obj/<path>`，网关新增 `/kapi/dfs/*` → nfs-server，与 NFSP 同一路径 ACL）。
+
+验证（本机，cargo 经 `--config` 指向本地 buckyos-base / cyfs-ndn）：buckyos-base `name-lib` / `name-client` / `buckyos-http-server` 全量；cyfs-ndn `ndn-lib` / `bucket_store` 全量；cyfs-gateway `cyfs-gateway-lib` 的 named_inbox / dispatch；buckyos `buckyos-api`、`system_config`、`task_manager`、`workflow`、`scheduler`、`libopendan`、`agent-did-object-lib`、`agent_tool`、`opendan`、`msg_center`、`homestation`、`aiworkspace`、`nfs_server` 全量（`--test-threads=1`）；websdk jest 全量（593 通过）与 CLI deno 全量（122 通过）；Desktop `tsc -b` 与改动文件 eslint。改动前就失败、与本段无关的测试：scheduler `test_create_pod_instance_no_suitable_node`（另两个 RBAC 测试在 git 版 base 下失败、本地 base 下通过），libopendan `context_limit` 的 3 个（stash 基线同样失败）。未做：真实 Zone DV、cyfs-gateway `test_boot_gatweay` 网关 DV、Desktop e2e。
+
+遗留（没有在本段完成，原因各自写明）：
+1. kevent 订阅按对象 key 的 `subscribe` enforce：kevent 服务目前不识别订阅者身份，需先让 kevent 携带调用者 token。
+2. msg-center 群组实体对象 `obj://<group-did-host>/...` 的 Provider（群组 HTTP 已有 `did.json`，未接 `KrpcObjectProvider`）。
+3. `obj://opendan` 发现根：Zone 内没有 Zone 级 OpenDAN 服务可承接（每个 Agent 一个 loader），候选宿主是 control-panel `agent.list`。
+4. HomeStation inbox 投递作为 Profile action（现仍是 `PUT https://<zone>/home/<user>/inbox`，Provider 只给 target）；各 Provider 的写 action 与事件 WebSocket 绑定（只声明了本 Zone kevent key）。
+5. agent-daemon 的 device id 仍是注册时的 `executor_id`，"稳定、用户可读"的生成规则属于注册流程，未改。
+6. 改动前就失败的测试（见上方验证）未修。
+
+发布顺序：buckyos-base（Card 发现、ctx headers、`inner()`）→ cyfs-ndn（https dispatch target、bucket origin）→ cyfs-gateway（缓存 zone 前缀）→ buckyos + websdk（`Cargo.lock` 里 base / ndn 的提交需随推送更新）。各仓之间是 breaking change，按全新安装验证。
 
 ### 第 3 段：Agent 工具
 

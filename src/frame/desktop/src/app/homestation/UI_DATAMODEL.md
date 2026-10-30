@@ -74,7 +74,7 @@ interface FileObject { kind: 'file'; name: string; meta: { mime; size; width?; h
 - 媒体只以 ObjId 引用；mime、尺寸、时长在 `FileObject.meta`。UI 通过 `media.ts` 把 ObjId 解析成地址：服务 store 下是同源 `/home/<user>/objects/<ObjId>/content?access=<session token>`，Mock 下是 `mock/media.ts` 生成的 SVG 占位图；图片详情把 `homestation-file` 源注册给 `ContentPreview`（服务 store 下取回该地址的 blob）。
 - URL 只出现在 `link` 与 `source.original_url`。
 - `commentTarget(object)`：转发／引用转发的目标是 `wraps`，其他评论是 `references` 中的 `comment_on`。
-- 入口：正文与评论 `cyfs://<zone>/home/feed/@/<key>`，公开互动 `cyfs://<zone>/home/reactions/@/<互动键摘要>`，商品可用内容 DID（seed：`did:bns:echoes-of-the-void`）。
+- 入口：正文与评论 `https://<zone>/home/<user>/feed/@/<key>`，公开互动 `https://<zone>/home/<user>/reactions/@/<互动键摘要>`，商品可用内容 DID（seed：`did:bns:echoes-of-the-void`）。
 
 ---
 

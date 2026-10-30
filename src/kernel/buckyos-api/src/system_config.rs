@@ -440,6 +440,15 @@ impl SystemConfigValue {
 }
 
 impl SystemConfigClient {
+    /// The Zone default device (`system/default_device`, doc/key url.md §3), if set.
+    pub async fn default_device(&self) -> SytemConfigResult<Option<String>> {
+        match self.get(crate::DEFAULT_DEVICE_KEY).await {
+            Ok(value) => Ok(serde_json::from_str::<String>(&value.value).ok().filter(|d| !d.is_empty())),
+            Err(SystemConfigError::KeyNotFound(_)) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     pub async fn get_buckyos_dev_config(&self) -> SytemConfigResult<BuckyOSDevConfig> {
         let value = self.get(BUCKYOS_DEV_CONFIG_KEY).await?;
         let config: BuckyOSDevConfig = serde_json::from_str(&value.value).map_err(|error| {

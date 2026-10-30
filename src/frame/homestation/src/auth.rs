@@ -184,7 +184,7 @@ pub fn make_reader_proof(signer: &Signer, reader: &str, target_zone: &str) -> Re
     let iat = now_s();
     let claims = json!({
         "iss": reader,
-        "aud": format!("cyfs://{target_zone}/home"),
+        "aud": format!("https://{target_zone}/home"),
         "iat": iat,
         "exp": iat + READER_PROOF_TTL,
         "jti": new_id("r"),
@@ -196,7 +196,7 @@ pub async fn verify_reader_proof(directory: &dyn Directory, jwt: &str, own_zone:
     let decoded = decode_unverified(jwt)?;
     let iss = decoded.claims.get("iss").and_then(Value::as_str).ok_or("reader proof has no iss")?.to_string();
     let aud = decoded.claims.get("aud").and_then(Value::as_str).unwrap_or_default();
-    if aud != format!("cyfs://{own_zone}/home") {
+    if aud != format!("https://{own_zone}/home") {
         return Err("reader proof is for another zone".into());
     }
     let iat = decoded.claims.get("iat").and_then(Value::as_u64).ok_or("reader proof has no iat")?;

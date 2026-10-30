@@ -699,6 +699,7 @@ impl SystemConfigBuilder {
         self.insert_json(&format!("nodes/{}/gateway_info", ood_name), &gateway_info)?;
 
         self.append_policy(&format!("g, {ood_name}, ood"))?;
+        self.insert_json_if_absent(buckyos_api::DEFAULT_DEVICE_KEY, &json!(ood_name))?;
         Ok(self)
     }
 

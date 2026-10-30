@@ -262,7 +262,7 @@ hover、focus-within 和触屏均能访问处理入口。对话框有 Tab 焦点
 | 偏好 | `ui.title` / `ui.pinned` / `ui.muted` → `ui_session.update_state(owner)`；`showActions`、草稿、创建策略为 viewer 本地 IndexedDB |
 | 运行态 | `ui_session.list_state(session_id)`（无 owner 的旧 KV）：typing 30s、status_line 10min 内有效，成员固定为 owner |
 | 权限 | 观察者全部只读；tunnel 默认只读 + 风险确认；群按 `group.check_access(group.post_message)`；native 由 `post_send` 校验 |
-| 刷新 | 20s 轮询摘要与当前会话尾页；kevent `/msg_center/<owner>/box_*_<owner>/changed` 作为额外信号 |
+| 刷新 | 20s 轮询摘要与当前会话尾页；kevent `/obj/msg-center/owners/<owner>/sessions/**` 作为额外信号 |
 
 仍未接入：批量已读 / 回执持久化、接受后请求记录迁移、共享 / 成员状态权威与 Action Log 发布、tunnel 能力声明与代发、
 已加载尾页之外的旧记录变更游标、`ui_session` owner 范围批量读取。验收命令、场景和截图见

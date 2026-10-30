@@ -7,7 +7,7 @@ import { TaskWatch, type TaskChildren, type TaskEvents, type TaskSnapshot } from
 let instance: TaskWatch | null = null
 let source: TaskWatchSource | null = null
 
-/** TaskMgr reads and `/task_mgr/<id>` hints of MessageHub: one kevent stream for every follower (task areas, notification cards). */
+/** TaskMgr reads and `/obj/taskmgr/<id>/changed` hints of MessageHub: one kevent stream for every follower (task areas, notification cards). */
 export function getTaskWatchSource(): TaskWatchSource {
   return source ??= isMessageHubMock() ? new MockTaskSource() : createTaskWatchSource()
 }

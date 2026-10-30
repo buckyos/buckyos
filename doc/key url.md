@@ -62,6 +62,10 @@ obj://<entity-id>/<inner-path>     实体对象，entity-id 自带 Zone
 
 `obj://` 是 resolver 的输入，不是 wire endpoint：真正的 HTTP 地址由服务的 Provider route 或 DID Object Card / Profile 决定，不从 URL 字符串推（见 buckyos-base `doc/did-object-protocol.md` §5.4）。
 
+当前 Provider route（2026-10-29 实现，`buckyos_api::obj_provider_path`）：`obj://<host>/<path>` → `https://<zone>/kapi/<host>/obj/<path>`，路径型 Object URL，GET 直接返回 Card，`?type=profile` 返回 Profile。已接入：`msg-center`、`aiworkspace`、`homestation`、`dfs`（网关把 `/kapi/dfs/*` 转给 nfs-server）、Agent 实体（`/kapi/<agent_id>/obj`，由该 Agent 的 OpenDAN 承接）。Provider 的属性 / 索引查询就是服务已有 kRPC 方法，以调用者自己的会话执行，权限与 kRPC 一致。
+
+语法与规范化的实现：Rust `buckyos_api::object_url`（`parse_object_url`、`expand_input_shorthand`、`rbac_resource_key`、`object_did`），websdk `objectUrl`（同名 camelCase），两端共用 `src/kernel/buckyos-api/testdata/object_url_vectors.json`（websdk `tests/fixtures/` 同一份副本）；CLI `buckyos obj resolve|read`。
+
 ### 4.1 系统约定的服务名
 
 | host | 服务 | 路径约定 |
@@ -129,7 +133,9 @@ cyfs://<objid>.<zone>/inner   同上，并给出内容来源 Zone 线索
   /obj/<agent-id>/sessions/<sid>/finished
 ```
 
-- `<host>` 与 `obj://` 的 host 段同值；kevent 段名只允许字母、数字、`_`、`-`，含 `.`、`:`、`@` 等字符的段用小写 hex 编码（`x` 前缀，与 msg-center 现有 `<hex>` 段做法一致）。
+- `<host>` 与 `obj://` 的 host 段同值；kevent 段名只允许字母、数字、`_`、`-`，含 `.`、`:`、`@` 等字符的段用小写 hex 编码（`x` 前缀）。以 `x` 开头的段即使字符合法也编码，保证编码段与原样段不会相撞。段按解码后的路径段编码（`did:bns:alice` → `x6469643a626e733a616c696365`）。
+- kevent 限制（总长 ≤ 256、深度 ≤ 8）放不下时由发布方落到上一级对象（如 msg-center 过长的 session 落到 `.../sessions/<box>`），payload 带完整对象信息。
+- 实现：Rust `buckyos_api::{obj_event_key, obj_event_pattern, ObjectUrl::object_event_key}`，websdk `objectUrl.{objEventKey, objEventPattern, objectEventKey}`。
 - Profile 声明的事件名就是最后一段 `<event>`，与 kevent key 一一对应，不再需要 bridge 映射表。
 - 首期只做本 Zone 的事件；远端订阅能力按实际实现报告。
 
@@ -163,7 +169,7 @@ p, ood,   obj://config/nodes/{device}/*,               read|write, allow
 p, app,   obj://config/users/*/apps/{app}/settings,    read|write, allow
 p, users, obj://config/users/{users}/*,                read,       allow
 p, users, obj://config/users/{users}/profile,          read|write, allow
-p, users, cyfs:///users/{users}/*,                       read|write, allow
+p, users, obj://dfs/users/{users}/*,                    read|write, allow
 ```
 
 `{users}` / `{app}` / `{device}` / `{service}` 为 enforce 时匹配的占位通配。policy 存于 system-config 的 `system/rbac/policy`，参见 [src/rootfs/etc/scheduler/boot.template.toml](../src/rootfs/etc/scheduler/boot.template.toml)。

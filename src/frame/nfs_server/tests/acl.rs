@@ -500,3 +500,40 @@ async fn records_of_items_removed_outside_do_not_reattach() {
     assert_eq!(anon.code("list", json!({"at": {"path": "/home/bob/share/pub"}})).await, "PERMISSION_DENIED");
     assert_eq!(s.client(Some("owner")).await.ok("list_acls", json!({})).await["records"].as_array().unwrap().len(), 0);
 }
+
+#[tokio::test]
+async fn dfs_objects_follow_the_path_acl() {
+    let s = start().await;
+    let _ = s.client(Some("alice")).await;
+    let http = reqwest::Client::new();
+    let get = |path: &str, user: &str| {
+        let req = http.get(format!("{}/kapi/dfs/obj{path}", s.base)).bearer_auth(token(user)).header("host", "zone.invalid");
+        async move {
+            let r = req.send().await.unwrap();
+            (r.status().as_u16(), r.json::<Value>().await.unwrap_or(Value::Null))
+        }
+    };
+    let (status, card) = get("/home/alice/docs/a.txt", "alice").await;
+    assert_eq!(status, 200, "{card}");
+    assert_eq!(card["alsoKnownAs"].as_array().unwrap().last().unwrap(), "obj://dfs/home/alice/docs/a.txt");
+    let (status, info) = get("/home/alice/docs/a.txt/props/info", "alice").await;
+    assert_eq!(status, 200, "{info}");
+    assert_eq!(info["uri"], "cyfs:///home/alice/docs/a.txt");
+    assert_eq!(get("/home/bob/secret.txt", "alice").await.0, 403, "the same ACL as NFSP");
+    assert_eq!(get("/home/bob/secret.txt/props/info", "bob").await.0, 200);
+
+    let page: Value = http
+        .post(format!("{}/kapi/dfs/obj/home/alice/docs/methods/query", s.base))
+        .bearer_auth(token("alice"))
+        .json(&json!({ "method": "query", "params": {} }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(page["result"]["rows"][0]["object"], "obj://dfs/home/alice/docs/a.txt", "{page}");
+    let (status, profile) = get("?type=profile", "alice").await;
+    assert_eq!(status, 200, "{profile}");
+    name_lib::ObjectProfile::from_value(profile).unwrap().validate().unwrap();
+}

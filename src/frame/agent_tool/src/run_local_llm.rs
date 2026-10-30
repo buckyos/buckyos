@@ -1630,7 +1630,7 @@ mod tests {
             })),
         };
 
-        let message = format_aicc_failed_message("t-1", Some("/task_mgr/t-1"), Some(&error));
+        let message = format_aicc_failed_message("t-1", Some("/obj/taskmgr/t-1/changed"), Some(&error));
 
         assert!(message.contains("task_id=t-1"));
         assert!(message.contains("provider_error"));

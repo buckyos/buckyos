@@ -34,6 +34,69 @@ pub const AIWORKSPACE_STORAGE_QUOTA_MIB: u64 = 16_384;
 /// `BuckyOS AiWorkspace Durable Data Schema.md`): `assets` (uploaded and generated files),
 /// `objects` (one retention DirObject per snapshot / generated version), `exports` (packages,
 /// replicas, fixed publications and uploaded packages; 7 days).
+/// The Object URL of an AI Workspace Reference (D10 → doc/key url.md §6): the
+/// default `obj://aiworkspace/<ws>/entities/<entity_id>` for a live reference
+/// without selector; `mode=fixed`, `selector` and `version` go into the query as
+/// canonical JSON, so one Reference has exactly one URL. `zone` stays out of the
+/// current-zone form.
+pub fn aiws_reference_url(reference: &Value, workspace_id: Option<&str>) -> Result<String, String> {
+    let ws = reference
+        .get("workspace_id")
+        .and_then(Value::as_str)
+        .or(workspace_id)
+        .ok_or("reference names no workspace")?;
+    let entity = reference
+        .get("entity_id")
+        .and_then(Value::as_str)
+        .ok_or("reference names no entity_id")?;
+    let mut url = crate::obj_service_url("aiworkspace", &[ws, "entities", entity]);
+    let mut query = Vec::new();
+    if reference.get("mode").and_then(Value::as_str) == Some("fixed") {
+        query.push(("mode", "fixed".to_string()));
+    }
+    for key in ["selector", "version"] {
+        if let Some(value) = reference.get(key).filter(|v| !v.is_null()) {
+            query.push((key, crate::canonical_json(value)));
+        }
+    }
+    if !query.is_empty() {
+        url.push('?');
+        url.push_str(
+            &query
+                .iter()
+                .map(|(k, v)| format!("{k}={}", crate::encode_obj_query_component(v)))
+                .collect::<Vec<_>>()
+                .join("&"),
+        );
+    }
+    crate::parse_object_url(&url)
+        .map(|u| u.to_string())
+        .map_err(|e| e.to_string())
+}
+
+/// The Reference an `obj://aiworkspace/<ws>/entities/<entity_id>[?...]` URL projects.
+pub fn parse_aiws_reference_url(url: &str) -> Result<Value, String> {
+    let parsed = crate::parse_object_url(url).map_err(|e| e.to_string())?;
+    let segments = parsed.obj_segments();
+    let (crate::ObjectUrl::Obj { host, query, .. }, [ws, entities, entity]) = (&parsed, segments.as_slice()) else {
+        return Err(format!("{url} is not an AI Workspace entity url"));
+    };
+    if host.as_str() != "aiworkspace" || entities != "entities" {
+        return Err(format!("{url} is not an AI Workspace entity url"));
+    }
+    let mut reference = json!({
+        "workspace_id": ws,
+        "entity_id": entity,
+        "mode": query.get("mode").map(String::as_str).unwrap_or("live"),
+    });
+    for key in ["selector", "version"] {
+        if let Some(value) = query.get(key) {
+            reference[key] = serde_json::from_str(value).map_err(|e| format!("{key}: {e}"))?;
+        }
+    }
+    Ok(reference)
+}
+
 pub fn aiworkspace_bucket_decls() -> HashMap<String, bucket_store::BucketDecl> {
     serde_json::from_value(json!({
         "assets": { "kind": "data", "data_policy": "app_data", "scope": "user" },
@@ -147,5 +210,27 @@ impl AiWorkspaceClient {
         params: Value,
     ) -> std::result::Result<Value, ::kRPC::RPCErrors> {
         self.client.call(method, params).await
+    }
+}
+
+#[cfg(test)]
+mod reference_url_tests {
+    use super::*;
+
+    #[test]
+    fn a_reference_has_one_url() {
+        let live = json!({ "workspace_id": "ws_1", "entity_id": "e_1", "mode": "live" });
+        assert_eq!(aiws_reference_url(&live, None).unwrap(), "obj://aiworkspace/ws_1/entities/e_1");
+        let fixed = json!({ "entity_id": "e_1", "mode": "fixed", "selector": { "b": [1, 2], "a": "x" }, "version": { "seq": 3, "epoch": "ep" } });
+        let url = aiws_reference_url(&fixed, Some("ws_1")).unwrap();
+        assert_eq!(url, "obj://aiworkspace/ws_1/entities/e_1?mode=fixed&selector=%7B%22a%22:%22x%22,%22b%22:%5B1,2%5D%7D&version=%7B%22epoch%22:%22ep%22,%22seq%22:3%7D");
+        let back = parse_aiws_reference_url(&url).unwrap();
+        assert_eq!(back["selector"], fixed["selector"]);
+        assert_eq!(back["version"], fixed["version"]);
+        assert_eq!(aiws_reference_url(&back, None).unwrap(), url);
+        assert!(parse_aiws_reference_url("obj://aiworkspace/ws_1/path/a").is_err());
+        let tricky = json!({ "entity_id": "e_1", "mode": "live", "selector": { "q": "a&b=c" } });
+        let url = aiws_reference_url(&tricky, Some("ws_1")).unwrap();
+        assert_eq!(parse_aiws_reference_url(&url).unwrap()["selector"], tricky["selector"]);
     }
 }
