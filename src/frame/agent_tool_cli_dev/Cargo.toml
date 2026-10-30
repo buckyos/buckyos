@@ -6,6 +6,7 @@ authors = ["BuckyOS DAO", "waterflier", "codex5.3"]
 
 [dependencies]
 agent-did-object-lib = { path = "../agent-did-object-lib" }
+buckyos-kit = { workspace = true }
 agent_tool = { path = "../agent_tool" }
 async-trait = { workspace = true }
 buckyos-api = { path = "../../kernel/buckyos-api" }

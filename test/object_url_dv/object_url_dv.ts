@@ -284,7 +284,7 @@ await test("homestation: https default url, feed rows are https entries", async 
   assert(inboxStatus === 200 && inbox.target === `https://${zoneHost}/home/${adminUser}/inbox`, `inbox ${JSON.stringify(inbox)}`);
 });
 
-await test("aiworkspace: workspace / entity / path, not visible without a grant", async () => {
+await test("aiworkspace: root / workspace / entity / path, not visible without a grant", async () => {
   const ws = String((await rpc("aiworkspace", "ws.create", { title: "object url dv" }, admin)).workspace_id);
   const path = `/kapi/aiworkspace/obj/${ws}`;
   await card(path, admin, `obj://aiworkspace/${ws}`);
@@ -297,6 +297,11 @@ await test("aiworkspace: workspace / entity / path, not visible without a grant"
   assert(status === 200, `entity content ${status}`);
   const [denied] = await get(path, user);
   assert(denied === 404, `${userName} without a grant: ${denied}`);
+  await card("/kapi/aiworkspace/obj", admin, "obj://aiworkspace");
+  const listed = rowsOf(await query("/kapi/aiworkspace/obj", admin)).map((r) => String(r.object));
+  assert(listed.includes(`obj://aiworkspace/${ws}`), `root lists ${JSON.stringify(listed)}`);
+  const othersSee = rowsOf(await query("/kapi/aiworkspace/obj", user)).map((r) => String(r.object));
+  assert(!othersSee.includes(`obj://aiworkspace/${ws}`), `${userName} sees ${JSON.stringify(othersSee)}`);
   await rpc("aiworkspace", "ws.delete", { workspace_id: ws }, admin).catch(() => {});
 });
 

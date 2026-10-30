@@ -163,14 +163,14 @@ impl Waker for KEventWaker {
 /// State change notifications (registry reports are separate).
 #[async_trait]
 pub trait Notifier: Send + Sync {
-    async fn session_changed(&self, sid: &str, rev: u64);
+    async fn session_changed(&self, sid: &str, status: &crate::protocol::SessionStatus);
 }
 
 pub struct NoopNotifier;
 
 #[async_trait]
 impl Notifier for NoopNotifier {
-    async fn session_changed(&self, _sid: &str, _rev: u64) {}
+    async fn session_changed(&self, _sid: &str, _status: &crate::protocol::SessionStatus) {}
 }
 
 /// Read-only source over `prompt.initial_inputs` ([`BOOTSTRAP_SRC`]): the

@@ -4535,6 +4535,9 @@ fn builtin_bash_group(
 ) -> Vec<Arc<dyn AgentTool>> {
     let mut cfg = FileToolConfig::new(workdir.to_path_buf());
     cfg.backend = files;
+    if runtime.kind == "native" {
+        cfg.dfs_root = Some(buckyos_kit::get_buckyos_root_dir().join("data"));
+    }
     let restrict_cwd = filesystem_policy == FilesystemPolicy::Workspace;
     if !restrict_cwd {
         cfg.allowed_read_roots.clear();

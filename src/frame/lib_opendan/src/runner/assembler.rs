@@ -294,6 +294,7 @@ fn objects_section(cfg: &SessionConfig) -> String {
         lines.push((obj_service_url("homestation", &["home", account.as_str()]), "your owner's home: published feed and inbox".to_string()));
         lines.push((format!("cyfs:///home/{account}/"), "your owner's files".to_string()));
     }
+    lines.push((obj_service_url("aiworkspace", &[] as &[&str]), "the AI Workspaces you can see".to_string()));
     let mut s = String::from("## Objects\nObjects to start from. `read` one to see what it offers (properties, actions, events) and how to read further:\n");
     for (url, what) in lines {
         s.push_str(&format!("- {url} — {what}\n"));

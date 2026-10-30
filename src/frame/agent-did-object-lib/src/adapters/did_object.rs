@@ -342,10 +342,12 @@ fn render_object_document(
 ) -> String {
     let text = |value: &Value, key: &str| value.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
     let mut lines = vec![format!("Object: {canonical}"), format!("Object DID: {}", did_to_string(&card.id))];
+    // Other names of the object, not the transport endpoints the Card was reached at.
+    let service = card.service_endpoint().ok().map(str::to_string);
     let aliases: Vec<String> = card
         .also_known_as
         .iter()
-        .filter(|aka| aka.as_str() != canonical && aka.as_str() != endpoint)
+        .filter(|aka| aka.as_str() != canonical && aka.as_str() != endpoint && Some(aka.as_str()) != service.as_deref())
         .cloned()
         .collect();
     if !aliases.is_empty() {

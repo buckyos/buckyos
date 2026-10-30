@@ -416,12 +416,34 @@ Provider 和 RBAC 稳定后再改 Agent 侧，避免工具先于服务定型：
 - **手册**：内置工具手册 `read` 一节重写；AgentTool 开发指南 §5.8；`agent-did-object-lib 需求.md` 去 agent_runtime；`Agent Enviroment.md` §6.1；cmd_skills `ui_core`（read 对象 URL / property / xcall / 对象订阅）、`buckyos_admin`、`opendan_agent_dev`、`aiworkspace_run`。
 
 第 3 段遗留：
-1. `xcall` 的审批门：非 `read_only` 动作先经用户确认（现在只有 Provider 的 RBAC 与手册要求先问用户），已知风险。
+1. `xcall` 的审批门：非 `read_only` 动作先经用户确认——用户裁决 C 维持现状（RBAC + risk + 手册），已知风险，写动作出现时再定。
 2. A9 的输出侧：只做了感知记录的对象引用归一化；文件工具 / 产物 / 发消息时的路径还没补成 `file://<device_id>/…` 或 `cyfs:///…`。
 3. 读其他设备的 `file://<device_id>/…` 需 node executor 路由（D3）；未挂载的 DFS 文件正文（`/nfs/v1/read`）只给 DFS 对象信息。
 4. HomeStation 的 https 路径不带 `BuckyOS-DID-Document`，读 https 链接得到的是网页 JSON，而不是对象说明（`obj://homestation/...` 正常）。
 5. OpenDAN 不发 `obj://<agent-id>/sessions/<sid>` 的对象事件（§7.2"订阅 Session 的 finished"仍靠 `semi:session` 与子 Session 汇报）。
 6. AI Workspace 无根对象，`## Objects` 不列它；跨 Zone 对象读取与事件归跨 Zone 鉴权 TODO。
+
+第 3 段遗留的处理方案（2026-10-29 开工时自定）：
+- 6：AI Workspace 加根对象（`ws.list` 列出调用者可见的工作区，行指向 `obj://aiworkspace/<ws>`），`## Objects` 列它。
+- 4：HomeStation 公开路径 `/home/...` 的 GET 响应带 `BuckyOS-DID-Document: json <base64url(Card)>`（向进程内 Provider 取同一路径的 Card，取不到就不带）；补 `/home/<user>` 路由，使 home 对象的 https 默认 URL 本身可读。
+- 5：libopendan `Notifier::session_changed` 带上会话状态；OpenDAN 实现它，发 `/obj/<agent-id>/sessions/<sid>/changed`，结束时再发 `finished`；Agent Provider 的 session 种类声明这两个事件。
+- 3：未挂载的 DFS 文件经 DFS 对象的 `info` 取 node id，再 `GET /nfs/v1/read/<node_id>` 读正文；其他设备的 `file://<device_id>/…` 经 Agent 已登记、目标是该设备的 node runtime 的文件后端读，没有这样的 runtime 时报告不可达。
+- 2（A9 输出侧）：产物本就以对象（`obj_id` / `obj://bucket/…`）交出；补文件工具：本机 runtime 下 Zone data 里的文件，`read` / `write_file` / `edit_file` 的结果带 `details.object = cyfs:///…`，供 Agent 跨上下文引用。
+- 1：审批门需要一个确认令牌的签发者与校验方（协议里有 `ActionPolicy.confirm` / `confirm_token`，系统里没有实现），属于需要用户定的设计，先不做，结束时列选项请用户定。
+
+第 3 段遗留的处理结果（2026-10-29，未提交）：
+- 6 已做：AI Workspace 根对象 `obj://aiworkspace`（摘要 / 索引 = 调用者可见的工作区，行指向 `obj://aiworkspace/<ws>`），`## Objects` 列出。DV：`object_url_dv.ts` 的 aiworkspace 用例增加根对象检查（bob 看不到 devtest 的工作区）7/7；容器内 Agent 读到根对象。
+- 4 已做：HomeStation `/home/...` 的 GET 经中间件向进程内 Provider 取同一路径的 Card，200 时带 `BuckyOS-DID-Document: json <base64url>`；补 `/home/<user>` 路由（home 对象的 https 默认 URL 原先 404）。测试 `tests/object_cards.rs`；DV：`https://test.buckyos.io/home/devtest/feed` 带该头，容器内 `agent_tool read https://test.buckyos.io/home/devtest/feed` 得到 HomeStation feed 的对象说明（不再是网页 JSON）。对象说明的 "Also known as" 不再列 Card 的服务端点。
+- 5 已做：`Notifier::session_changed(sid, &SessionStatus)`，`HostDeps.notifier`；OpenDAN `obj_provider::SessionEvents` 每次上报发 `/obj/<agent-id>/sessions/<sid>/changed`（data：run_state、outcome、one_line_status、summary），首次结束再发 `finished`；Agent Provider 的 session 种类声明这两个事件。单测用本地 kevent；DV：经 Zone 网关 `/kapi/kevent/stream` 订阅 `/obj/<agent hex>/sessions/**`，给 Jarvis 发消息后收到 `.../ui-20261030-7/changed`（`waiting: done: 收到`）。`finished` 只有单测。
+- 3 已做：cyfs adapter 对本机未挂载的 DFS 文件读 DFS 对象的 `info`（`kind=file`、`ref.node_id`）再 `GET /nfs/v1/read/<node_id>`（该接口经 curl 验证可用；容器里 Agent 能读的 DFS 路径都在 owner 家目录、都已挂载，端到端未覆盖）。OpenDAN `urls::AgentUrlReader` 把 data 之外的 `file://<device_id>/…` 交给 Agent 登记的、node_did 落在该设备上的 node runtime（`RemoteNodeTarget::read`），没有时报告不可达；Jarvis 当前只有 container 与不可用的 host runtime，正向路径未实测，单测覆盖设备映射与拒绝。
+- 2 已做：`FileToolConfig.dfs_root`（native runtime、dev CLI），`read` / `read_file` / `write_file` / `edit_file` 结果带 `cyfs_url`。DV：容器内读 `Desktop/Clock.widget` 得 `cyfs:///home/devtest/Desktop/Clock.widget`，`/etc/hostname` 不带。
+- 1 按用户裁决（2026-10-29）选 C 维持现状：Provider 的 RBAC + 结果带 risk + 手册要求先问用户；第一个写动作出现时再回到下面的选项。现在没有任何 Provider 声明非只读动作（只有 IndexTrait 的 `query` / `page`）。
+- 其他：`opendan` 的 `a_turn_is_a_task_and_a_slow_reply_replaces_its_placeholder` 在机器满载时偶发失败（快速 Turn 超过占位延迟被回成占位消息），单独重跑 3 次过 2 次，测试里没有 kevent client，与本轮 notifier 无关。
+
+审批门的选项（已定 C，A / B 留作写动作出现时的备选）：
+- A：Session 内审批——`agent_tool xcall` 遇到非 `read_only` 动作，要求先用 `agent-session ask-user`（UI）/ 通知向 owner 要确认，CLI 凭该确认的 id 核对 Agent State 里 owner 的回答（绑定对象、动作、参数摘要）才放行。改动在 OpenDAN / CLI，不动 Provider。
+- B：Provider 侧确认协议——动作声明 `x-buckyos:action.confirm = "required"`，首调返回 `confirmation_required` 与绑定调用者 / 动作 / 参数的 token，owner 在 Desktop / MessageHub 确认后 Agent 带 `confirm_token` 重试。协议字段已有，需 Provider、Desktop 与 verify 逻辑。
+- C：维持现状——Provider 的 RBAC（Agent 身份、read-only Agent 无写权限）+ 结果带 risk + 手册要求先问用户；等第一个写动作出现时再定。
 
 #### 第 3 段 DV（2026-10-29，本机单 Zone，重建 paios 镜像）
 

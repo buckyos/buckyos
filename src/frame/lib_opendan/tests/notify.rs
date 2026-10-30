@@ -482,6 +482,7 @@ async fn an_unloaded_waiting_work_is_rechecked() {
         notify: Some(local.clone()),
         share: None,
         runtime_id: None,
+        notifier: None,
     };
     let sup = Supervisor::new(host, Some(Duration::from_millis(100)))
         .with_recheck(Duration::from_millis(300));

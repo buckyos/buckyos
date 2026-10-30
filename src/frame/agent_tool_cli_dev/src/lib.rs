@@ -4313,6 +4313,7 @@ async fn build_cli_tool_manager(env: &CliRuntimeEnv) -> Result<AgentToolManager,
 
 fn build_cli_file_tool_config(env: &CliRuntimeEnv) -> FileToolConfig {
     let mut cfg = FileToolConfig::new(env.current_dir.clone());
+    cfg.dfs_root = Some(buckyos_kit::get_buckyos_root_dir().join("data"));
     cfg.allowed_read_roots.clear();
     if !env.has_agent_env {
         cfg.allowed_write_roots.clear();
@@ -4408,15 +4409,6 @@ fn required_token(
         .get(idx)
         .cloned()
         .ok_or_else(|| with_tool_usage(format!("missing value for `{flag}`"), tool_name))
-}
-
-fn parse_object_usize(raw: &str, name: &str, tool_name: &str) -> Result<usize, AgentToolError> {
-    raw.trim().parse::<usize>().map_err(|_| {
-        with_tool_usage(
-            format!("invalid `{name}` value `{raw}`, expected non-negative integer"),
-            tool_name,
-        )
-    })
 }
 
 fn parse_object_bool(raw: &str, name: &str, tool_name: &str) -> Result<bool, AgentToolError> {

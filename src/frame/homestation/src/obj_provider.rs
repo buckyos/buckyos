@@ -145,6 +145,23 @@ pub fn provider(state: AppState) -> DIDObjectHttpServer<KrpcObjectProvider> {
         .into_http_server()
 }
 
+/// `BuckyOS-DID-Document` of a public `/home/...` path: the Card the Provider gives the same object (base
+/// protocol §6.1, `json <base64url>`), so an https link reads as that object. `None` when the path is no object.
+pub async fn card_header(server: &DIDObjectHttpServer<KrpcObjectProvider>, path: &str, headers: &HeaderMap) -> Option<HeaderValue> {
+    use base64::Engine;
+    let mut request = http::Request::builder().method("GET").uri(format!("{OBJ_PATH}{path}")).body(()).ok()?;
+    *request.headers_mut() = headers.clone();
+    let (parts, _) = request.into_parts();
+    let response = server.serve_request(buckyos_api::buffered_request(parts, bytes::Bytes::new()), StreamInfo::default()).await.ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let body = response.into_body().collect().await.ok()?.to_bytes();
+    let card: Value = serde_json::from_slice(&body).ok()?;
+    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&card).ok()?);
+    HeaderValue::from_str(&format!("json {encoded}")).ok()
+}
+
 /// axum handler of `/kapi/homestation/obj/...`.
 pub async fn serve(server: Arc<DIDObjectHttpServer<KrpcObjectProvider>>, req: Request) -> Response {
     let (parts, body) = req.into_parts();

@@ -85,6 +85,7 @@ fn host(env: &Env, llm: Arc<dyn llm_context::deps::LlmClient>) -> HostDeps {
         notify: None,
         share: None,
         runtime_id: None,
+        notifier: None,
     }
 }
 

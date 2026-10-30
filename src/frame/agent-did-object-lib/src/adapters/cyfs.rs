@@ -68,11 +68,54 @@ impl CyfsAdapter {
                 Ok(self.response(&canonical, &local, text, "text/plain", Some(meta.len()), req))
             }
             Err(_) => {
+                if let Some((text, source)) = self.dfs_file_text(&canonical).await? {
+                    let size = text.len() as u64;
+                    let mut response = self.response(&canonical, Path::new(&source), text, "text/plain", Some(size), req);
+                    response.adapt_meta = json!({ "dfs_read": source });
+                    return Ok(response);
+                }
                 let mut dfs_req = req;
                 dfs_req.object_ref = ObjectRef::parse(&canonical)?;
                 self.objects.read(dfs_req).await
             }
         }
+    }
+
+    /// A DFS file not mounted here: its bytes through nfs-server (`/nfs/v1/read/<node_id>` of the DFS object's
+    /// `info`), with the caller's session. `None` when it is no file (a directory reads as its DFS object).
+    async fn dfs_file_text(&self, canonical: &str) -> Result<Option<(String, String)>, AgentDIDObjectError> {
+        let Some(origin) = self.zone.gateway_origin() else {
+            return Ok(None);
+        };
+        let url = buckyos_api::parse_object_url(canonical).map_err(|e| Self::unsupported(e.to_string()))?;
+        let Some(endpoint) = buckyos_api::object_endpoint(&url, &origin, self.zone.zone_host().as_deref()) else {
+            return Ok(None);
+        };
+        let http = crate::zone::client_for(self.zone.as_ref(), &endpoint).await;
+        let objects = name_client::DIDObjectClient::with_http_client(http.clone());
+        let Ok(resolved) = objects.resolve(&endpoint).await else {
+            return Ok(None);
+        };
+        let Ok(info) = objects.read_property_from_resolved(&resolved, "info").await else {
+            return Ok(None);
+        };
+        if info["kind"] != "file" {
+            return Ok(None);
+        }
+        let node_id = info["ref"]["node_id"].as_str().or_else(|| info["copy_ref"]["node_id"].as_str()).unwrap_or_default();
+        if node_id.is_empty() {
+            return Ok(None);
+        }
+        let source = format!("{}/nfs/v1/read/{node_id}", origin.trim_end_matches('/'));
+        let response = http.get(&source).send().await?;
+        if !response.status().is_success() {
+            return Err(AgentDIDObjectError::HttpError(format!("{canonical}: GET {source} returned {}", response.status())));
+        }
+        let bytes = response.bytes().await?;
+        let text = String::from_utf8(bytes.to_vec()).map_err(|_| {
+            Self::unsupported(format!("{canonical} is not text; use llm_understand_media to look at media files"))
+        })?;
+        Ok(Some((text, source)))
     }
 
     fn response(

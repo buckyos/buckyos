@@ -28,15 +28,20 @@ pub struct AppState {
     pub host: Arc<Host>,
 }
 
+/// Response header that carries an object's Card (base protocol §6.1).
+const DID_DOCUMENT_HEADER: &str = "BuckyOS-DID-Document";
+
 pub fn router(state: AppState) -> Router {
     let objects = Arc::new(crate::obj_provider::provider(state.clone()));
     let objects_root = objects.clone();
+    let cards = objects.clone();
     Router::new()
         .route(crate::obj_provider::OBJ_PATH, any(move |req| crate::obj_provider::serve(objects_root.clone(), req)))
         .route(&format!("{}/{{*rest}}", crate::obj_provider::OBJ_PATH), any(move |req| crate::obj_provider::serve(objects.clone(), req)))
         .route(KRPC_PATH, post(krpc))
         .route(&format!("{KRPC_PATH}/"), post(krpc))
         .route("/home/", get(zone_index))
+        .route("/home/{user}", get(profile))
         .route("/home/{user}/feed", get(feed))
         .route("/home/{user}/profile", get(profile))
         .route("/home/{user}/comments", get(comments))
@@ -48,6 +53,22 @@ pub fn router(state: AppState) -> Router {
         .route("/home/{user}/inbox", axum::routing::put(inbox_put).get(inbox_status))
         .route("/home/{user}/{ns}/@/{key}", get(entry_head))
         .route("/healthz", get(|| async { "ok" }))
+        // A public read of a home object carries its Card, so the https link is the object too.
+        .layer(axum::middleware::from_fn(move |req: axum::extract::Request, next: axum::middleware::Next| {
+            let cards = cards.clone();
+            async move {
+                let path = req.uri().path();
+                let lookup = (req.method() == axum::http::Method::GET && path.starts_with("/home/") && path != "/home/")
+                    .then(|| (path.to_string(), req.headers().clone()));
+                let mut response = next.run(req).await;
+                if let Some((path, headers)) = lookup.filter(|_| response.status().is_success()) {
+                    if let Some(card) = crate::obj_provider::card_header(&cards, &path, &headers).await {
+                        response.headers_mut().insert(DID_DOCUMENT_HEADER, card);
+                    }
+                }
+                response
+            }
+        }))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
         .with_state(state)
 }

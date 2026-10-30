@@ -318,3 +318,4 @@ primary-runtime TODO T1–T7 实施时对本层与执行器的小改动（记录
 - `XllmDeps.url_reader: Option<Arc<dyn UrlReader>>`，`bash_core` 的 `read` 用它；`bash` 组的 `read_file` 不变。工具描述与 usage 增列 URL 形式。
 - 测试：`read_tool::tests::targets_are_told_apart`（URL 分类）、`urls_go_to_the_host_reader_and_are_windowed_like_files`。
 - agent_memory `validate_object_path` 另接受规范对象 URL（`obj://…`、`cyfs://…`，必须是 `readable_object_url` 的规范形式），使 Memory 的 scope 能指向一个可 `read` 的对象；`object_paths_overlap` 按 `/` 分段，URL 的层级照常嵌套（`model.rs` 的 `object_path_tests`）。宿主侧把感知记录的 objects 规范化后再写（agent-object-url TODO A4）。
+- `FileToolConfig.dfs_root`（xllm 在 native runtime 下设为 `$BUCKYOS_ROOT/data`，dev CLI 同样）：`read` / `read_file` / `write_file` / `edit_file` 对其下的文件在结果里给 `cyfs_url`（`cyfs:///<path>`），远端 runtime 与对象读取不给（agent-object-url TODO 第 3 段遗留 2）。

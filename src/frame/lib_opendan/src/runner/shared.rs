@@ -177,7 +177,7 @@ pub async fn report(sh: &Shared, status: SessionStatus) {
     super::turn_task::sync_turn_task(sh).await;
     let sid = sh.dir.sid().to_string();
     let rev = status.rev;
-    match sh.agent().sessions().report_state(&sh.lease, &sid, status).await {
+    match sh.agent().sessions().report_state(&sh.lease, &sid, status.clone()).await {
         Ok(_) => {
             let mut s = sh.session.lock().await;
             if s.state.reported_rev < rev {
@@ -187,7 +187,7 @@ pub async fn report(sh: &Shared, status: SessionStatus) {
         }
         Err(e) => log::warn!("report state of {sid}: {e}"),
     }
-    sh.deps.notifier.session_changed(&sid, rev).await;
+    sh.deps.notifier.session_changed(&sid, &status).await;
 }
 
 pub(super) async fn commit_and_report(sh: &Shared, s: &mut Session) -> Result<()> {
@@ -195,10 +195,10 @@ pub(super) async fn commit_and_report(sh: &Shared, s: &mut Session) -> Result<()
     let status = s.status(sh.lease.epoch());
     let rev = status.rev;
     let sid = sh.dir.sid().to_string();
-    match sh.agent().sessions().report_state(&sh.lease, &sid, status).await {
+    match sh.agent().sessions().report_state(&sh.lease, &sid, status.clone()).await {
         Ok(_) => s.state.reported_rev = s.state.reported_rev.max(rev),
         Err(e) => log::warn!("report state of {sid}: {e}"),
     }
-    sh.deps.notifier.session_changed(&sid, rev).await;
+    sh.deps.notifier.session_changed(&sid, &status).await;
     Ok(())
 }

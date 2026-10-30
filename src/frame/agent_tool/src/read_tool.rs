@@ -391,6 +391,7 @@ impl ReadTool {
     fn object_cfg(&self, reader: Arc<dyn ObjectReader>) -> FileToolConfig {
         let mut cfg = self.cfg.clone();
         cfg.backend = Arc::new(ObjectBackend { reader });
+        cfg.dfs_root = None;
         cfg.allowed_read_roots.clear();
         cfg
     }
@@ -692,6 +693,29 @@ mod tests {
         let both = json!({"uri": "a.txt", "range": "2-3", "first_chunk": "", "property": "", "offset": 0, "limit": 200});
         let r = tool.call(&ctx(), both).await.unwrap();
         assert_eq!(r.details["content"], json!("beta\ngamma\n"));
+    }
+
+    #[tokio::test]
+    async fn zone_files_name_their_cyfs_url() {
+        let dir = tempdir().unwrap();
+        let data = dir.path().join("data");
+        let ws = data.join("home/u/ws");
+        fs::create_dir_all(&ws).unwrap();
+        fs::write(ws.join("a.txt"), "x\n").unwrap();
+        let mut cfg = FileToolConfig::new(ws.clone());
+        cfg.dfs_root = Some(data.clone());
+        let read = ReadTool::new(cfg.clone()).call(&ctx(), json!({"uri": "a.txt"})).await.unwrap();
+        assert_eq!(read.details["cyfs_url"], "cyfs:///home/u/ws/a.txt");
+        let audit = Arc::new(crate::file_tools::NoopFileWriteAudit);
+        let written = TypedToolHandle::with_null_host(crate::file_tools::WriteFileTool::new(cfg.clone(), audit))
+            .call(&ctx(), json!({"path": "b c.md", "content": "y"}))
+            .await
+            .unwrap();
+        assert_eq!(written.details["cyfs_url"], "cyfs:///home/u/ws/b%20c.md");
+        // Outside the data root (or with none): nothing to name.
+        cfg.dfs_root = Some(dir.path().join("elsewhere"));
+        let read = ReadTool::new(cfg).call(&ctx(), json!({"uri": "a.txt"})).await.unwrap();
+        assert!(read.details.get("cyfs_url").is_none(), "{:?}", read.details);
     }
 
     #[derive(Debug)]

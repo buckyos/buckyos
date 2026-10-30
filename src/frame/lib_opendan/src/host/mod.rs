@@ -58,6 +58,8 @@ pub struct HostDeps {
     /// Binding identity required of the sessions driven directly (not of
     /// their sub sessions).
     pub runtime_id: Option<String>,
+    /// Told of every reported state change of the sessions it drives (the host publishes their object events).
+    pub notifier: Option<Arc<dyn crate::channel::Notifier>>,
 }
 
 impl HostDeps {
@@ -91,6 +93,9 @@ impl HostDeps {
         deps.turn_tasks = self.turn_tasks.clone();
         deps.notify = self.notify.clone();
         deps.share = self.share.clone();
+        if let Some(notifier) = &self.notifier {
+            deps.notifier = notifier.clone();
+        }
         deps.stop = stop;
         Ok(deps)
     }

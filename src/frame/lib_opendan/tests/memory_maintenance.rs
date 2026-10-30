@@ -55,6 +55,7 @@ fn host_deps(env: &Env, llm: Arc<ScriptedLlm>) -> HostDeps {
         notify: None,
         share: None,
         runtime_id: None,
+        notifier: None,
     }
 }
 

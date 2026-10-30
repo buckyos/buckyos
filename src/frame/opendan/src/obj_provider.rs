@@ -86,7 +86,9 @@ pub fn object_kinds(agent: &str) -> Vec<ObjectKind> {
         "Worklog of the session",
         object.clone(),
         RpcBinding::new("session.worklog", |c, _| Ok(json!({ "sid": cap(c, "sid") }))),
-    );
+    )
+    .event("changed", "The session's state changed (run state, outcome, one-line status)")
+    .event("finished", "The session finished");
     let workspace = ObjectKind::new(
         "workspaces/{workspace_id}",
         "opendan.workspace",
@@ -206,5 +208,88 @@ mod tests {
         let (_, page) = send(&server, "POST", &format!("{base}/sessions/methods/query"), Some(json!({ "method": "query", "params": {} }))).await;
         let objects: Vec<&str> = page["result"]["rows"].as_array().unwrap().iter().map(|r| r["object"].as_str().unwrap()).collect();
         assert_eq!(objects, ["obj://xiaobai.test.buckyos.io/sessions/s-1", "obj://xiaobai.test.buckyos.io/sessions/s%202"]);
+    }
+}
+
+/// Object events of the Agent's sessions (`obj://<agent-id>/sessions/<sid>`, doc/key url.md §7): `changed` on every
+/// reported state change, `finished` once when a session finishes; what `ctl subscribe` and the kevent bridge follow.
+pub struct SessionEvents {
+    pub client: Arc<buckyos_api::KEventClient>,
+    pub agent: DID,
+    pub finished: std::sync::Mutex<std::collections::HashSet<String>>,
+}
+
+impl SessionEvents {
+    pub fn new(client: Arc<buckyos_api::KEventClient>, agent: DID) -> Self {
+        Self { client, agent, finished: Default::default() }
+    }
+
+    async fn publish(&self, sid: &str, event: &str, data: &Value) {
+        let host = self.agent.to_host_name();
+        let key = buckyos_api::obj_event_key(&host, &["sessions", sid], event);
+        if let Err(e) = self.client.pub_event(&key, data.clone()).await {
+            log::debug!("session event {key}: {e}");
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl libopendan::channel::Notifier for SessionEvents {
+    async fn session_changed(&self, sid: &str, status: &libopendan::protocol::SessionStatus) {
+        let state = status.run_state.as_str();
+        let data = json!({
+            "session": buckyos_api::obj_entity_url(&self.agent, &["sessions", sid]),
+            "rev": status.rev,
+            "run_state": state,
+            "outcome": status.outcome,
+            "one_line_status": status.one_line_status,
+            "summary": format!("{state}: {}", status.one_line_status),
+        });
+        self.publish(sid, "changed", &data).await;
+        let first_finish = status.run_state == libopendan::protocol::RunState::Finished
+            && self.finished.lock().map(|mut f| f.insert(sid.to_string())).unwrap_or(false);
+        if first_finish {
+            self.publish(sid, "finished", &data).await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod session_event_tests {
+    use super::*;
+    use libopendan::channel::Notifier;
+    use libopendan::protocol::{RunState, SessionStatus};
+
+    #[tokio::test]
+    async fn a_session_reports_changed_each_time_and_finished_once() {
+        let client = Arc::new(buckyos_api::KEventClient::new_local("ood1"));
+        let agent = DID::from_str("did:web:jarvis.test.buckyos.io").unwrap();
+        let host = "jarvis.test.buckyos.io";
+        let reader = client
+            .create_event_reader(vec![buckyos_api::obj_event_pattern(host, &["sessions", "work-1"])])
+            .await
+            .unwrap();
+        let events = SessionEvents::new(client, agent);
+        let mut status = SessionStatus::created(1);
+        status.run_state = RunState::Running;
+        events.session_changed("work-1", &status).await;
+        status.run_state = RunState::Finished;
+        events.session_changed("work-1", &status).await;
+        events.session_changed("work-1", &status).await;
+        let mut ids = Vec::new();
+        loop {
+            match reader.pull_event(Some(200)).await {
+                Ok(Some(ev)) => ids.push(ev.eventid),
+                Ok(None) => break,
+                Err(e) => panic!("pull: {e}"),
+            }
+        }
+        let changed = buckyos_api::obj_event_key(host, &["sessions", "work-1"], "changed");
+        let finished = buckyos_api::obj_event_key(host, &["sessions", "work-1"], "finished");
+        assert_eq!(ids.iter().filter(|i| **i == changed).count(), 3, "{ids:?}");
+        assert_eq!(ids.iter().filter(|i| **i == finished).count(), 1, "{ids:?}");
+        // The key a subscription to the object computes is the one published.
+        let url = buckyos_api::parse_object_url("obj://jarvis.test.buckyos.io/sessions/work-1").unwrap();
+        assert_eq!(url.object_event_key("finished").unwrap(), finished);
     }
 }

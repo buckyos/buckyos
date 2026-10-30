@@ -31,6 +31,9 @@ pub struct FileToolConfig {
     pub allow_create: bool,
     pub max_write_bytes: usize,
     pub max_diff_lines: usize,
+    /// `$BUCKYOS_ROOT/data` when `backend` is this machine's filesystem: a file below it is the Zone file
+    /// `cyfs:///<path>`, which results name so the file can be referred to from elsewhere.
+    pub dfs_root: Option<PathBuf>,
 }
 
 impl FileToolConfig {
@@ -44,7 +47,15 @@ impl FileToolConfig {
             max_diff_lines: usize::MAX,
             root_dir,
             backend: Arc::new(LocalFileBackend),
+            dfs_root: None,
         }
+    }
+
+    /// The Zone file reference of `abs_path`, when it is one.
+    pub fn cyfs_url(&self, abs_path: &Path) -> Option<String> {
+        let root = self.dfs_root.as_deref()?;
+        let reference = buckyos_api::persistent_object_ref(&abs_path.to_string_lossy(), root);
+        reference.starts_with("cyfs://").then_some(reference)
     }
 
     fn ensure_create_allowed(&self, raw_path: &str) -> Result<(), AgentToolError> {
@@ -132,6 +143,9 @@ pub struct EditFileArgs {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct EditFileOutput {
+    /// The Zone file this is (`cyfs:///…`), when it is one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cyfs_url: Option<String>,
     pub matched: bool,
     pub changed: bool,
     #[serde(rename = "mode")]
@@ -265,6 +279,7 @@ impl TypedTool for EditFileTool {
                 self.cfg.max_diff_lines,
             );
             return Ok(EditFileOutput {
+                cyfs_url: self.cfg.cyfs_url(&abs_path),
                 matched: true,
                 changed: result.changed,
                 operation: "replace".to_string(),
@@ -356,6 +371,7 @@ impl TypedTool for EditFileTool {
                 + 1,
         );
         Ok(EditFileOutput {
+                cyfs_url: self.cfg.cyfs_url(&abs_path),
             matched: true,
             changed,
             operation,
@@ -393,6 +409,9 @@ pub struct WriteFileArgs {
 
 #[derive(Serialize, JsonSchema)]
 pub struct WriteFileOutput {
+    /// The Zone file this is (`cyfs:///…`), when it is one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cyfs_url: Option<String>,
     pub created: bool,
     pub changed: bool,
     pub bytes_written: usize,
@@ -511,6 +530,7 @@ impl TypedTool for WriteFileTool {
                 }
                 .to_string();
                 return Ok(WriteFileOutput {
+                cyfs_url: self.cfg.cyfs_url(&abs_path),
                     created: result.created,
                     changed: result.changed,
                     bytes_written: result.size,
@@ -599,6 +619,7 @@ impl TypedTool for WriteFileTool {
 
         let written_lines = count_content_lines(&content);
         Ok(WriteFileOutput {
+                cyfs_url: self.cfg.cyfs_url(&abs_path),
             created: !exists,
             changed,
             bytes_written: updated_content.len(),
@@ -654,6 +675,9 @@ pub struct ReadFileArgs {
 
 #[derive(Serialize, JsonSchema)]
 pub struct ReadFileOutput {
+    /// The Zone file this is (`cyfs:///…`), when it is one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cyfs_url: Option<String>,
     pub content: String,
     pub matched: bool,
     pub line_range: String,
@@ -826,6 +850,7 @@ impl TypedTool for ReadFileTool {
         let cmd_line =
             build_read_result_cmd_line(&file_path, first_chunk.as_deref(), args.range.as_ref());
         Ok(ReadFileOutput {
+            cyfs_url: self.cfg.cyfs_url(&abs_path),
             content,
             matched,
             line_range: line_range_label,
@@ -1662,6 +1687,7 @@ mod tests {
             Arc::new(NoopFileWriteAudit::default()),
         );
         let summary = tool.build_summary(&WriteFileOutput {
+            cyfs_url: None,
             created: true,
             changed: true,
             bytes_written: 12,

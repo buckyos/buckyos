@@ -93,8 +93,31 @@ fn outline_rows(c: &Captures, outline: Value) -> Value {
     json!({ "rows": rows })
 }
 
+/// `ws.list` as index rows: one per visible workspace, linking to its object.
+fn workspace_rows(page: Value) -> Value {
+    let rows: Vec<Value> = page["workspaces"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|ws| {
+            let id = ws.get("workspace_id")?.as_str()?.to_string();
+            Some(json!({
+                "row_id": id,
+                "object": buckyos_api::obj_service_url("aiworkspace", &[id.as_str()]),
+                "cells": { "title": ws.get("title").cloned().unwrap_or(Value::Null), "head_seq": ws.get("head_seq").cloned().unwrap_or(Value::Null) },
+            }))
+        })
+        .collect();
+    json!({ "rows": rows })
+}
+
 pub fn object_kinds() -> Vec<ObjectKind> {
     let object = json!({ "type": "object" });
+    let list = || RpcBinding::new("ws.list", |_, _| Ok(json!({}))).map(|_, v| workspace_rows(v));
+    let root = ObjectKind::new("", "aiworkspace.root", "AI Workspaces", "The AI Workspaces the caller can see. Rows link to the workspace objects.")
+        .summary_property("workspaces", "The visible workspaces", object.clone(), list())
+        .index("List the visible workspaces", json!({ "title": "string", "head_seq": "integer" }), list());
     let workspace = ObjectKind::new("{ws}", "aiworkspace.workspace", "AI Workspace", "A workspace: its info and the readable entity tree. Rows link to the entity objects.")
         .summary_property("info", "Workspace info (title, owner, head, publications)", object.clone(), RpcBinding::new("ws.get_info", |c, _| Ok(json!({ "workspace_id": cap(c, "ws") }))))
         .index("The readable entity tree", json!({ "kind": "string", "title": "string", "parent": "string" }),
@@ -142,7 +165,7 @@ pub fn object_kinds() -> Vec<ObjectKind> {
         }
         v
     }));
-    vec![workspace, entity, by_path]
+    vec![root, workspace, entity, by_path]
 }
 
 pub fn provider(state: Arc<AppState>, zone_did: DID) -> DIDObjectHttpServer<KrpcObjectProvider> {

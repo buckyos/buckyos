@@ -606,6 +606,7 @@ fn host(c: &Ctx, a: &Args) -> R<HostDeps> {
         notify: crate::notify::StateNotify::of(c.agent.clone()),
         share: None,
         runtime_id: a.get("runtime"),
+        notifier: None,
     })
 }
 

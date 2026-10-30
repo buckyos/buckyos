@@ -473,6 +473,11 @@ pub fn persistent_object_ref(raw: &str, data_root: &std::path::Path) -> String {
     raw.to_string()
 }
 
+/// URL 路径（如 `file://<device>/<path>` 的 path）解码成目标文件系统上的路径。
+pub fn decode_url_path(path: &str) -> String {
+    percent_decode(path).unwrap_or_else(|_| path.to_string())
+}
+
 /// 能 `read` 的引用：合法 URL 的规范形式；裸路径、`workspace:<id>` 这类标记不是。
 pub fn readable_object_url(raw: &str) -> Option<String> {
     let raw = raw.trim();

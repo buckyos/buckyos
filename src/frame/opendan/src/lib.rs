@@ -23,3 +23,4 @@ pub mod rootfs;
 pub mod service;
 pub mod tasks;
 pub mod ui;
+pub mod urls;

@@ -12,6 +12,7 @@ serde_json = { workspace = true }
 schemars = { workspace = true }
 thiserror = { workspace = true }
 buckyos-api = { path = "../../kernel/buckyos-api" }
+buckyos-kit = { workspace = true }
 name-lib = { workspace = true }
 llm_context = { path = "../llm_context" }
 ndn-lib = { workspace = true }

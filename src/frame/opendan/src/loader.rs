@@ -300,7 +300,16 @@ impl Loader {
             agent: agent.clone(),
             inputs: env.channels.clone(),
             waker: env.waker.clone(),
-            xllm: env.xllm.clone(),
+            xllm: {
+                // `read` reaches other devices' files through the Agent's node runtimes.
+                let mut xllm = env.xllm.clone();
+                xllm.url_reader = Some(Arc::new(crate::urls::AgentUrlReader {
+                    objects: agent_did_object_lib::ObjectUrlReader::builtin(),
+                    agent: agent.clone(),
+                    ops_dir: env.agent_root.join(".meta").join("node-reads"),
+                }));
+                xllm
+            },
             assembler: Arc::new(BehaviorAssembler::new(DefaultAssembler {
                 known_objects: true,
                 ..Default::default()
@@ -322,6 +331,11 @@ impl Loader {
                 }) as Arc<dyn libopendan::runner::TurnTaskSink>
             }),
             runtime_id: None,
+            notifier: match (&env.kevent, DID::from_str(&env.agent_did)) {
+                (Some(client), Ok(agent)) => Some(Arc::new(crate::obj_provider::SessionEvents::new(client.clone(), agent))
+                    as Arc<dyn libopendan::channel::Notifier>),
+                _ => None,
+            },
         };
         let mut supervisor = Supervisor::new(
             host,

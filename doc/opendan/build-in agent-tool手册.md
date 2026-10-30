@@ -241,7 +241,7 @@ XML action 形态：`<read uri="obj://aiworkspace/ws_1/entities/e_1" property="c
 
 ### 输出
 
-`detail` 与 `read_file` 相同（`content`、`line_range`、`start_line` / `end_line`、`line_count`、`bytes`、`matched`）；读 URL 时另有 `detail.object`：规范 URL、对象 DID、实际访问的源、内容类型、版本与路由。对象说明的样子：
+`detail` 与 `read_file` 相同（`content`、`line_range`、`start_line` / `end_line`、`line_count`、`bytes`、`matched`）；本机 runtime 下 Zone data 里的文件另有 `detail.cyfs_url`（`cyfs:///<path>`，跨上下文引用它，`write_file` / `edit_file` 的结果同样带）；读 URL 时另有 `detail.object`：规范 URL、对象 DID、实际访问的源、内容类型、版本与路由。对象说明的样子：
 
 ```text
 Object: obj://msg-center/owners/did:bns:alice/sessions
