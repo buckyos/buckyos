@@ -1,6 +1,6 @@
-//! The product edition (`system/product`) as control-panel enforces and
-//! shows it: which apps an installation runs and who holds the one Agent run
-//! slot of BuckyOS Desktop Lite.
+//! The product edition (`system/product`) as control-panel publishes,
+//! enforces and shows it: which apps an installation runs and who holds the
+//! one Agent run slot of BuckyOS Desktop Lite.
 
 use crate::ControlPanelServer;
 use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult};
@@ -9,7 +9,33 @@ use buckyos_api::{
     InstallInspection, InstallReadiness, ProductProfile, ReadinessState, SystemConfigError,
     AGENT_SLOT_KEY, PRODUCT_PROFILE_KEY,
 };
+use buckyos_kit::get_buckyos_root_dir;
+use log::info;
 use serde_json::json;
+
+/// Keeps `system/product` equal to the installed product profile
+/// (`etc/product.json`), before control-panel serves anything: a fresh
+/// installation, a restart and a product update (e.g. a new preinstalled
+/// script app version) all show the edition the installation was shipped
+/// as. An unreadable profile stops control-panel, never runs it as the full
+/// edition.
+pub(crate) async fn publish_installed_product() -> anyhow::Result<()> {
+    let product =
+        ProductProfile::load_installed(&get_buckyos_root_dir()).map_err(anyhow::Error::msg)?;
+    let raw = serde_json::to_string(&product)?;
+    let client = get_buckyos_api_runtime()?.get_system_config_client().await?;
+    client.invalidate_cache(PRODUCT_PROFILE_KEY).await;
+    let current = match client.get(PRODUCT_PROFILE_KEY).await {
+        Ok(value) => Some(value.value),
+        Err(SystemConfigError::KeyNotFound(_)) => None,
+        Err(error) => anyhow::bail!("read {PRODUCT_PROFILE_KEY} failed: {error}"),
+    };
+    if current.as_deref() != Some(raw.as_str()) {
+        info!("product profile: {} edition ({PRODUCT_PROFILE_KEY} updated)", product.edition);
+        client.set(PRODUCT_PROFILE_KEY, &raw).await?;
+    }
+    Ok(())
+}
 
 pub(crate) async fn current_product() -> Result<ProductProfile, RPCErrors> {
     let client = get_buckyos_api_runtime()?.get_system_config_client().await?;

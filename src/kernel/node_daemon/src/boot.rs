@@ -470,13 +470,96 @@ pub fn merge_keep_tunnel_into_gateway_config(
     gateway_config
 }
 
-pub fn write_boot_node_gateway_config(keep_tunnels: &[String]) -> std::io::Result<()> {
+/// 本节点访问自己的 Zone resolver 要经过的 RTCP 主机：本机 3180 的 `/1.0/identifiers`
+/// 按 ROUTES 转发到跑 system_config 的节点，路由、NODE_ROUTE_MAP 与 keep-tunnel 目标里
+/// 出现的目标主机和中继主机都在这条路上。cyfs-gateway 解析它们的身份时必须跳过 Zone
+/// locker：否则解析要经 3180 → RTCP 转发，而转发又要先解析它们，形成回环（buckyos#710）。
+pub fn zone_locker_bypass_hosts(gateway_info: Option<&Value>, keep_tunnels: &[String]) -> Vec<String> {
+    let mut targets: Vec<&str> = Vec::new();
+    if let Some(gateway_info) = gateway_info {
+        if let Some(routes) = gateway_info.get("routes").and_then(Value::as_object) {
+            for candidates in routes.values() {
+                for candidate in candidates.as_array().into_iter().flatten() {
+                    if let Some(url) = candidate.get("url").and_then(Value::as_str) {
+                        targets.push(url);
+                    }
+                }
+            }
+        }
+        if let Some(route_map) = gateway_info.get("node_route_map").and_then(Value::as_object) {
+            targets.extend(route_map.values().filter_map(Value::as_str));
+        }
+    }
+    targets.extend(keep_tunnels.iter().map(String::as_str));
+
+    let mut hosts = Vec::new();
+    for target in targets {
+        collect_rtcp_target_hosts(target, &mut hosts);
+    }
+    // 固定顺序：名单进 node_gateway.json，顺序变化不应触发网关 reload。
+    hosts.sort();
+    hosts.dedup();
+    hosts
+}
+
+/// `rtcp://[<编码后的引导 URL>@]<host>[:port]/...` 或裸主机名：收集目标主机，并递归展开
+/// 引导 URL（经 SN / ZoneGateway 中继的路由）。
+fn collect_rtcp_target_hosts(target: &str, hosts: &mut Vec<String>) {
+    let target = target.trim();
+    let authority = target
+        .strip_prefix("rtcp://")
+        .unwrap_or(target)
+        .split('/')
+        .next()
+        .unwrap_or_default();
+    let host_port = match authority.rsplit_once('@') {
+        Some((bootstrap, host_port)) => {
+            if let Some((bootstrap_url, _)) = url::form_urlencoded::parse(bootstrap.as_bytes()).next() {
+                collect_rtcp_target_hosts(bootstrap_url.as_ref(), hosts);
+            }
+            host_port
+        }
+        None => authority,
+    };
+    let host = match host_port.rsplit_once(':') {
+        Some((host, port)) if port.chars().all(|c| c.is_ascii_digit()) => host,
+        _ => host_port,
+    };
+    if !host.is_empty() {
+        hosts.push(host.to_string());
+    }
+}
+
+/// 写入 cyfs-gateway 顶层 `name_client.zone_locker_bypass`。
+pub fn merge_zone_locker_bypass_into_gateway_config(
+    mut gateway_config: Value,
+    hosts: &[String],
+) -> Value {
+    if !gateway_config.is_object() {
+        gateway_config = json!({});
+    }
+    if gateway_config
+        .get("name_client")
+        .and_then(Value::as_object)
+        .is_none()
+    {
+        gateway_config["name_client"] = json!({});
+    }
+    gateway_config["name_client"]["zone_locker_bypass"] = json!(hosts);
+    gateway_config
+}
+
+pub fn write_boot_node_gateway_config(
+    keep_tunnels: &[String],
+    zone_locker_bypass: &[String],
+) -> std::io::Result<()> {
     let path = buckyos_kit::get_buckyos_system_etc_dir().join("node_gateway.json");
     let existing_config = std::fs::read_to_string(&path)
         .ok()
         .and_then(|content| serde_json::from_str::<Value>(content.as_str()).ok())
         .unwrap_or_else(|| json!({}));
     let content = merge_keep_tunnel_into_gateway_config(existing_config, keep_tunnels);
+    let content = merge_zone_locker_bypass_into_gateway_config(content, zone_locker_bypass);
     let body = serde_json::to_string_pretty(&content).unwrap_or_else(|_| "{}".to_string());
     std::fs::write(&path, body.as_bytes())?;
     info!("write boot node_gateway.json -> {}", path.display());
@@ -508,6 +591,79 @@ mod tests {
             device.get_default_key().unwrap(),
         );
         (device, zone)
+    }
+
+    fn encode_bootstrap(url: &str) -> String {
+        url::form_urlencoded::byte_serialize(url.as_bytes()).collect()
+    }
+
+    #[test]
+    fn zone_locker_bypass_covers_every_host_on_the_route_paths() {
+        let via_sn = format!(
+            "rtcp://{}@ood2.zone.example/",
+            encode_bootstrap("rtcp://sn.example.com/")
+        );
+        // 经 ZoneGateway 的路由，ZoneGateway 自身又经 SN 中继。
+        let via_gateway = format!(
+            "rtcp://{}@ood3.zone.example:2981/",
+            encode_bootstrap(
+                format!(
+                    "rtcp://{}@gw.zone.example/",
+                    encode_bootstrap("rtcp://sn.example.com/")
+                )
+                .as_str()
+            )
+        );
+        let gateway_info = json!({
+            "routes": {
+                "ood2": [
+                    {"url": "rtcp://ood2.zone.example:2981/", "keep_tunnel": true},
+                    {"url": via_sn, "keep_tunnel": false}
+                ],
+                "ood3": [{"url": via_gateway}]
+            },
+            "node_route_map": {"ood4": "rtcp://ood4.zone.example/"}
+        });
+
+        let hosts = zone_locker_bypass_hosts(
+            Some(&gateway_info),
+            &["relay.example.net".to_string()],
+        );
+        assert_eq!(
+            hosts,
+            vec![
+                "gw.zone.example",
+                "ood2.zone.example",
+                "ood3.zone.example",
+                "ood4.zone.example",
+                "relay.example.net",
+                "sn.example.com",
+            ]
+        );
+        let config = merge_zone_locker_bypass_into_gateway_config(json!({}), &hosts);
+        assert_eq!(config["name_client"]["zone_locker_bypass"], json!(hosts));
+        assert_eq!(zone_locker_bypass_hosts(None, &[]), Vec::<String>::new());
+    }
+
+    #[test]
+    fn boot_routes_feed_the_zone_locker_bypass() {
+        let (_, mut zone) = address_test_device_and_zone();
+        zone.oods = vec!["ood1".parse().unwrap(), "ood2".parse().unwrap()];
+        let info = build_boot_node_gateway_info(
+            "node1",
+            "test-zone.example",
+            &zone,
+            &HashMap::new(),
+            Some("sn.example.com"),
+        );
+        assert_eq!(
+            zone_locker_bypass_hosts(Some(&info), &[]),
+            vec![
+                "ood1.test-zone.example",
+                "ood2.test-zone.example",
+                "sn.example.com",
+            ]
+        );
     }
 
     #[test]

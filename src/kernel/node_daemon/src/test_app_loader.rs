@@ -2430,3 +2430,36 @@ async fn an_unsupported_runtime_is_observed_as_not_existing_with_its_reason() {
     assert_eq!(observed.state, ServiceInstanceState::NotExist);
     assert_eq!(observed.deployment_error.unwrap().code, "not_supported");
 }
+
+/// An Agent that ran natively and now has to run in a container this node
+/// does not have (its host runtime was closed) is not left running natively.
+#[tokio::test]
+async fn a_native_process_does_not_outlive_a_switch_to_an_unsupported_runtime() {
+    let state = tempdir().unwrap();
+    let native = build_native_agent_loader(false, state.path(), Path::new("/bin/sleep"));
+    native.test_spawn_native_agent(&["30".to_string()], state.path()).unwrap();
+    let pid = native.test_running_native_agent_pid().expect("the recorded process runs");
+
+    let app_doc = build_agent_doc_without_category();
+    let install_config = build_spec_config(&app_doc);
+    let app_spec = build_test_app_spec(app_doc, install_config);
+    let mut config = AppServiceInstanceConfig::new("ood1", &app_spec).unwrap();
+    config.run_mode = buckyos_api::AppRunMode::Container;
+    let container = AppLoader::new_for_service(&app_spec.app_instance_id.to_string(), config)
+        .with_platform(PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64))
+        .with_container_support_override(false)
+        .with_product(lite_product())
+        .with_native_agent("/bin/sleep", state.path());
+    let observed = container.observe_deployment().await.unwrap();
+    assert_eq!(observed.state, ServiceInstanceState::NotExist);
+    assert_eq!(observed.deployment_error.unwrap().code, "not_supported");
+    for _ in 0..50 {
+        crate::service_pkg::reap_detached_children();
+        if crate::service_pkg::read_process_identity(pid).is_none() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(crate::service_pkg::read_process_identity(pid).is_none(), "the process ended");
+    assert_eq!(native.test_running_native_agent_pid(), None);
+}

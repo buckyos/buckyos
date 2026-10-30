@@ -36,7 +36,8 @@ use crate::boot::{
     build_boot_node_gateway_info, build_keep_tunnel_targets, dedup_keep_tunnel_targets,
     discover_oods_in_lan, extract_keep_tunnel_targets_from_gateway_info,
     merge_keep_tunnel_into_gateway_config, read_local_gateway_keep_tunnel_targets,
-    write_boot_node_gateway_config, write_boot_node_gateway_info, NodeRole,
+    merge_zone_locker_bypass_into_gateway_config, write_boot_node_gateway_config,
+    write_boot_node_gateway_info, zone_locker_bypass_hosts, NodeRole,
 };
 use crate::finder::{add_discovered_device_cache, DiscoveredNode, NodeFinder, NodeFinderClient};
 use crate::frame_service_mgr::*;
@@ -1612,6 +1613,8 @@ async fn node_daemon_main_loop(
                 break;
             }
             let mut gateway_info_keep_tunnels: Vec<String> = Vec::new();
+            // 网关 Zone locker 例外名单的来源：与 keep-tunnel 同一份路由。
+            let mut gateway_info_routes: Option<Value> = None;
             let mut pending_static_gateway_info: Option<(Value, String)> = None;
             let gateway_info_path =
                 buckyos_kit::get_buckyos_system_etc_dir().join("node_gateway_info.json");
@@ -1620,6 +1623,7 @@ async fn node_daemon_main_loop(
             if let Ok(new_node_gateway_info) = new_node_gateway_info {
                 gateway_info_keep_tunnels =
                     extract_keep_tunnel_targets_from_gateway_info(&new_node_gateway_info);
+                gateway_info_routes = Some(new_node_gateway_info.clone());
                 let (new_node_gateway_info_id_value, new_node_gateway_info_str) =
                     build_named_object_by_json("node_gateway_info", &new_node_gateway_info);
                 let need_write = match node_gateway_info_id.as_ref() {
@@ -1663,6 +1667,7 @@ async fn node_daemon_main_loop(
                 {
                     gateway_info_keep_tunnels =
                         extract_keep_tunnel_targets_from_gateway_info(&local_gateway_info);
+                    gateway_info_routes = Some(local_gateway_info);
                 }
             }
 
@@ -1709,8 +1714,14 @@ async fn node_daemon_main_loop(
                 }
                 keep_tunnel_config_id = Some(new_keep_tunnel_config_id);
 
+                let zone_locker_bypass =
+                    zone_locker_bypass_hosts(gateway_info_routes.as_ref(), &keep_tunnels);
                 let new_node_gateway_config =
                     merge_keep_tunnel_into_gateway_config(new_node_gateway_config, &keep_tunnels);
+                let new_node_gateway_config = merge_zone_locker_bypass_into_gateway_config(
+                    new_node_gateway_config,
+                    &zone_locker_bypass,
+                );
                 let (new_node_gateway_config_id, new_node_gateway_config_str) =
                     build_named_object_by_json("nodeconfig", &new_node_gateway_config);
                 if node_gateway_config_id.is_none() {
@@ -2099,7 +2110,8 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         sn_host_name.as_deref(),
     );
     dedup_keep_tunnel_targets(&mut keep_tunnels);
-    if let Err(err) = write_boot_node_gateway_config(&keep_tunnels) {
+    let zone_locker_bypass = zone_locker_bypass_hosts(Some(&boot_gateway_info), &keep_tunnels);
+    if let Err(err) = write_boot_node_gateway_config(&keep_tunnels, &zone_locker_bypass) {
         warn!("write boot node_gateway.json failed: {}", err);
     }
     if let Err(err) = crate::node_executor_host::write_boot_executor_acl() {

@@ -2,16 +2,17 @@
 //!
 //! The release package decides the edition: `make_config.ts --edition` writes
 //! `$BUCKYOS_ROOT/etc/product.json` from the version-managed manifest in
-//! `src/product/`. node_daemon (activation, AppLoader) reads that file; the
-//! scheduler copies it to `system/product` at boot and on every start, so the
-//! scheduler, control-panel and Desktop see the same profile. An installation
-//! without the file is the full edition.
+//! `src/product/`. node_daemon (activation, AppLoader) reads that file;
+//! control-panel publishes it as `system/product` on every start, before it
+//! serves anything, so control-panel and Desktop see the same profile. An
+//! installation without the file is the full edition. The scheduler knows no
+//! product: it places by what an App needs and what a node offers.
 //!
 //! BuckyOS Desktop Lite (`notepads/buckyos-desktop-lite-todo.md`) runs without
 //! any container runtime: system services, the static web apps users add, the
 //! script host apps listed in the product manifest (run natively) and at most
 //! one Agent in the whole system. [`ProductProfile::admit_app`] is the single
-//! admission rule control-panel, the scheduler and node_daemon all apply.
+//! admission rule control-panel and node_daemon both apply.
 
 use crate::{AppDoc, AppType, SelectorType};
 use serde::{Deserialize, Serialize};
@@ -158,7 +159,8 @@ pub fn app_execution_forms(app_doc: &AppDoc) -> BTreeSet<AppExecutionForm> {
 }
 
 /// Who asks to run an app. Submissions carry an origin only control-panel
-/// sets; the scheduler and node_daemon check what is already deployed.
+/// sets; control-panel (install inspection) and node_daemon check what is
+/// already deployed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AdmissionOrigin {
     /// `apps.submit` / retries / batch updates from a user or another App.
@@ -167,7 +169,7 @@ pub enum AdmissionOrigin {
     Preinstall,
     /// control-panel installing the runtime App it constructs for an Agent.
     AgentRuntime,
-    /// A spec or instance that is already deployed (scheduler, node_daemon).
+    /// A spec or instance that is already deployed (control-panel, node_daemon).
     Deployed,
 }
 

@@ -1520,6 +1520,12 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
         .map_err(|err| anyhow::anyhow!("register control-panel runtime failed: {}", err))?;
 
     let control_panel_server = ControlPanelServer::new();
+    // Every product rule below (install admission, the Agent run slot,
+    // `system.product.get`) reads `system/product`: publish it first.
+    product::publish_installed_product().await.map_err(|error| {
+        log::error!("publish product profile failed: {:?}", error);
+        error
+    })?;
     // Agent 运行时 App 的本地 AppDoc 授权只在内存中，恢复安装任务前先重新注册。
     agent_mgr::register_agent_runtime_authorities().await;
     // 启动安装任务恢复循环；正常路径由业务 RPC 直接执行，TaskManager

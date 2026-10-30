@@ -44,31 +44,33 @@ fn load_app_service_spec(
     ))
 }
 
-/// How `node_id` runs an instance of `app_config`: natively when it is the
-/// zone owner's Agent whose default runtime is this node's host-native
-/// runtime ([`native_agent_node`]), else as before.
+/// How `node_id` runs an instance of `app_config`: an Agent as
+/// [`agent_run_mode`] says; an App with a script package in a container
+/// where the node has a container runtime, else natively; any other App in
+/// a container.
 pub fn app_run_mode(
+    node_id: &str,
+    node_info: &DeviceInfo,
+    app_config: &AppServiceSpec,
+    input_config: &HashMap<String, String>,
+) -> AppRunMode {
+    if app_config.app_doc.get_app_type() == AppType::Agent {
+        return agent_run_mode(node_id, app_config, input_config);
+    }
+    if app_config.app_doc.pkg_list.script.is_some() && !node_info.support_container {
+        return AppRunMode::Native;
+    }
+    AppRunMode::Container
+}
+
+/// How `node_id` runs an instance of the Agent `app_config`: natively when
+/// it is the zone owner's Agent whose default runtime is this node's
+/// host-native runtime ([`native_agent_node`]), else in a container.
+pub fn agent_run_mode(
     node_id: &str,
     app_config: &AppServiceSpec,
     input_config: &HashMap<String, String>,
 ) -> AppRunMode {
-    let product = ProductProfile::from_system_config(input_config).unwrap_or_default();
-    if app_config.app_doc.get_app_type() != AppType::Agent {
-        // A product without containers runs its preinstalled script apps
-        // with the node's own interpreter.
-        return match product.admit_app(&app_config.app_doc, AdmissionOrigin::Deployed) {
-            Ok(AppAdmission::PreinstalledScript(_)) if !product.container_enabled() => {
-                AppRunMode::Native
-            }
-            _ => AppRunMode::Container,
-        };
-    }
-    // Without containers an Agent can only ever run natively; losing its
-    // host default (or being removed) stops it, never flips it to a
-    // container the node cannot run.
-    if !product.container_enabled() {
-        return AppRunMode::Native;
-    }
     match native_agent_node(input_config, &app_config.owner_user_id, &app_config.app_id()) {
         Some(node) if node == node_id => AppRunMode::Native,
         _ => AppRunMode::Container,
@@ -185,7 +187,7 @@ pub fn instance_app_service(
         &app_config,
         &node_info,
         new_instance.service_ports.clone(),
-        app_run_mode(new_instance.node_id.as_str(), &app_config, input_config),
+        app_run_mode(new_instance.node_id.as_str(), node_info, &app_config, input_config),
     )?;
 
     let mut set_action = HashMap::new();

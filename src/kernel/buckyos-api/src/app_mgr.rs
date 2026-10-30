@@ -51,20 +51,6 @@ pub struct DeploymentError {
     pub detail: Option<String>,
 }
 
-/// Why the scheduler places no instance of an App spec: the product does not
-/// run it, or no node can (`services/<spec_id>/schedule_status`). Absent
-/// once the spec is placed.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct SpecScheduleStatus {
-    pub code: String,
-    pub message: String,
-}
-
-pub fn spec_schedule_status_key(spec_id: &str) -> String {
-    format!("services/{spec_id}/schedule_status")
-}
-
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct StaticWebDeploymentEvidence {

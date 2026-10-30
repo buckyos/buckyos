@@ -156,9 +156,6 @@ async fn create_init_list_by_template(
         builder.add_node(ood_name.as_str())?;
     }
     let mut config = builder.build();
-    // The product edition this installation was shipped as (etc/product.json).
-    let product = ProductProfile::load_installed(buckyos_root_dir).map_err(anyhow::Error::msg)?;
-    config.insert(PRODUCT_PROFILE_KEY.to_string(), serde_json::to_string(&product)?);
 
     Ok(config)
 }
@@ -242,24 +239,6 @@ async fn do_boot_scheduler() -> Result<()> {
     return Ok(());
 }
 
-/// Keeps `system/product` equal to the installed product profile: a product
-/// update ships a new `etc/product.json` (e.g. a new preinstalled script app
-/// version) and restarts the scheduler.
-async fn sync_product_profile(client: &SystemConfigClient) -> Result<()> {
-    let product = ProductProfile::load_installed(&get_buckyos_root_dir()).map_err(anyhow::Error::msg)?;
-    let raw = serde_json::to_string(&product)?;
-    let current = match client.get(PRODUCT_PROFILE_KEY).await {
-        Ok(value) => Some(value.value),
-        Err(SystemConfigError::KeyNotFound(_)) => None,
-        Err(error) => return Err(error.into()),
-    };
-    if current.as_deref() != Some(raw.as_str()) {
-        info!("product profile: {} edition ({PRODUCT_PROFILE_KEY} updated)", product.edition);
-        client.set(PRODUCT_PROFILE_KEY, &raw).await?;
-    }
-    Ok(())
-}
-
 async fn service_main(is_boot: bool) -> Result<i32> {
     init_logging("scheduler", true);
     info!("Starting scheduler service............................");
@@ -327,7 +306,6 @@ async fn service_main(is_boot: bool) -> Result<i32> {
         let system_config_client = get_buckyos_api_runtime()?
             .get_system_config_client()
             .await?;
-        sync_product_profile(&system_config_client).await?;
         let scheduler_server = SchedulerServer::new(system_config_client);
         scheduler_server.recover_install_plan_executions().await?;
 

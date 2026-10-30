@@ -225,14 +225,6 @@ fn initial_guest_availability_policy(
 }
 
 impl SchedulerServer {
-    async fn load_product(&self) -> Result<ProductProfile> {
-        match self.system_config_client.get(PRODUCT_PROFILE_KEY).await {
-            Ok(value) => ProductProfile::parse(&value.value).map_err(rpc_error),
-            Err(SystemConfigError::KeyNotFound(_)) => Ok(ProductProfile::full()),
-            Err(error) => Err(rpc_error(error)),
-        }
-    }
-
     async fn load_gateway_settings(&self) -> Result<(ZoneGatewaySettings, Option<u64>)> {
         match self.system_config_client.get(GATEWAY_SETTINGS_KEY).await {
             Ok(value) => Ok((
@@ -483,26 +475,6 @@ impl SchedulerServer {
                     .await
             }
         };
-        // The product edition decides whether this App runs at all; the
-        // Agent run slot is checked when its instance is scheduled.
-        if let Err(denied) = self
-            .load_product()
-            .await?
-            .admit_app(&record.plan.app_doc, AdmissionOrigin::Deployed)
-        {
-            return self
-                .fail_execution(
-                    &path,
-                    record,
-                    record_revision,
-                    install_error(
-                        InstallErrorCode::UnsupportedTarget,
-                        false,
-                        format!("{denied} ({})", denied.code()),
-                    ),
-                )
-                .await;
-        }
 
         for _ in 0..MAX_CAS_RETRIES {
             let registry_value = self

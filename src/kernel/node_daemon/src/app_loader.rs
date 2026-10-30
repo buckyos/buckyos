@@ -588,8 +588,18 @@ impl AppLoader {
             Ok(runtime) => runtime,
             // Nothing of a runtime this node cannot run exists here: a stopped
             // instance needs nothing, a started one fails at deploy with the
-            // same reason, which the report carries meanwhile.
+            // same reason, which the report carries meanwhile. The process it
+            // ran natively before (an Agent whose host runtime was closed)
+            // does not run on beside that.
             Err(ControlRuntItemErrors::NotSupport(message)) => {
+                let process = self.native_process();
+                if let Some(record) = process.running() {
+                    warn!(
+                        "app {} no longer runs natively here ({message}): stopping pid {}",
+                        self.app_id, record.pid
+                    );
+                    process.stop().await?;
+                }
                 return Ok(AppDeploymentObservation::native(
                     ServiceInstanceState::NotExist,
                     DeploymentHealth::Unhealthy,

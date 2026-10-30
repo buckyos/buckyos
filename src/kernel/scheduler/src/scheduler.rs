@@ -564,10 +564,6 @@ pub struct NodeScheduler {
     #[serde(default)]
     pub service_info_refresh_times: HashMap<String, u64>,
     pub schedule_time: u64,
-    /// Specs this round places no instance for, with the reason: the product
-    /// does not run them, or no node can. Recomputed every round.
-    #[serde(skip)]
-    pub unschedulable: HashMap<String, buckyos_api::SpecScheduleStatus>,
 }
 
 impl NodeScheduler {
@@ -582,7 +578,6 @@ impl NodeScheduler {
             service_infos: HashMap::new(),
             service_info_refresh_times: HashMap::new(),
             schedule_time: buckyos_get_unix_timestamp(),
-            unschedulable: HashMap::new(),
         }
     }
 
@@ -605,7 +600,6 @@ impl NodeScheduler {
             service_infos,
             service_info_refresh_times: HashMap::new(),
             schedule_time: now,
-            unschedulable: HashMap::new(),
         }
     }
 
@@ -692,10 +686,7 @@ impl NodeScheduler {
         }
 
         // Step2. 处理service_spec的实例化与反实例化
-        if self.is_spec_changed(last_snapshot)
-            || self.has_app_instances_to_resume()
-            || self.has_unplaced_specs()
-        {
+        if self.is_spec_changed(last_snapshot) || self.has_app_instances_to_resume() {
             debug!("spec changed, schedule spec change");
             let spec_actions = self.schedule_spec_change()?;
             actions.extend(spec_actions);
@@ -866,22 +857,8 @@ impl NodeScheduler {
             };
             match spec_snapshot.state {
                 ServiceSpecState::New | ServiceSpecState::Deployed => {
-                    // One spec no node can take must not stop the others.
                     let new_instances =
-                        match self.reconcile_spec_instances(&spec_snapshot, &mut shadow_nodes) {
-                            Ok(instances) => instances,
-                            Err(error) => {
-                                warn!("spec_id:{} cannot be placed: {}", spec_id, error);
-                                self.unschedulable.insert(
-                                    spec_id.clone(),
-                                    buckyos_api::SpecScheduleStatus {
-                                        code: "no_suitable_node".to_string(),
-                                        message: error.to_string(),
-                                    },
-                                );
-                                continue;
-                            }
-                        };
+                        self.reconcile_spec_instances(&spec_snapshot, &mut shadow_nodes)?;
                     for instance in new_instances {
                         self.replica_instances
                             .insert(instance.replica_key.clone(), instance.clone());
@@ -995,14 +972,6 @@ impl NodeScheduler {
         }
 
         false
-    }
-
-    /// A spec still `New` was never placed (no node could take it): try
-    /// again every round, so it lands once a node can.
-    fn has_unplaced_specs(&self) -> bool {
-        self.specs
-            .values()
-            .any(|spec| spec.state == ServiceSpecState::New)
     }
 
     fn has_app_instances_to_resume(&self) -> bool {
@@ -1187,18 +1156,6 @@ impl NodeScheduler {
                 service_spec.state,
                 node_list.len()
             );
-            if service_spec.need_container && !node_list.iter().any(|node| node.support_container) {
-                return Err(anyhow::anyhow!(
-                    "No suitable node found for service_spec: it needs a container runtime and no ready node provides one"
-                ));
-            }
-            if let Some(affinity) = service_spec.node_affinity.as_ref() {
-                if !node_list.iter().any(|node| node.labels.contains(affinity)) {
-                    return Err(anyhow::anyhow!(
-                        "No suitable node found for service_spec: its node ({affinity}) is not ready"
-                    ));
-                }
-            }
             return Err(anyhow::anyhow!("No suitable node found for service_spec"));
         }
         let candidate_node_count: u32 = candidate_nodes.len() as u32;
