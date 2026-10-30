@@ -69,13 +69,14 @@ function containShift(el: HTMLElement): number {
   return overflowRight > 0 ? -Math.min(overflowRight, Math.max(0, rect.left - bounds.left - 8)) : overflowLeft > 0 ? overflowLeft : 0
 }
 
-/** A panel below its anchor, kept inside the application container horizontally. */
+/** A panel below its anchor, kept inside the application container horizontally (by a margin, not a transform,
+ * so a floating menu inside it is not confined to it). */
 export function PopoverPanel({ children, align = 'start', label, testId, className = '' }: { children: ReactNode; align?: 'start' | 'end'; label: string; testId?: string; className?: string }) {
   const ref = useRef<HTMLDivElement>(null)
   const [shift, setShift] = useState(0)
   useLayoutEffect(() => { if (ref.current) setShift(containShift(ref.current)) }, [])
   return (
-    <div ref={ref} className={`aiws-popover aiws-popover-${align} ${className}`} role="dialog" aria-label={label} data-testid={testId} style={shift ? { transform: `translateX(${shift}px)` } : undefined}
+    <div ref={ref} className={`aiws-popover aiws-popover-${align} ${className}`} role="dialog" aria-label={label} data-testid={testId} style={shift ? (align === 'end' ? { marginRight: -shift } : { marginLeft: shift }) : undefined}
       onPointerDown={(event) => event.stopPropagation()}>
       {children}
     </div>
@@ -107,13 +108,21 @@ export function MenuList({ items, onDone, onBack, label, autoFocus = true, class
   const [subByKey, setSubByKey] = useState(false)
   const [placement, setPlacement] = useState<{ shift: number; lift: number; flip: boolean }>({ shift: 0, lift: 0, flip: false })
   // a top-level menu moves inside the application; a submenu without room on the right opens to the left
-  // and one running past the bottom moves up
+  // and one running past the bottom moves up; a floating menu (fixed, rendered at 0,0 of its containing block)
+  // goes under its anchor, or above it when there is no room below
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
-    if (!className.includes('aiws-submenu')) { setPlacement({ shift: containShift(el), lift: 0, flip: false }); return }
     const bounds = (el.closest('.aiws-root') ?? document.documentElement).getBoundingClientRect()
     const rect = el.getBoundingClientRect()
+    if (className.includes('is-floating') && el.parentElement) {
+      const at = el.parentElement.getBoundingClientRect()
+      const left = Math.max(bounds.left + 8, Math.min(className.includes('aiws-popover-end') ? at.right - rect.width : at.left, bounds.right - 8 - rect.width))
+      const top = at.bottom + 6 + rect.height > bounds.bottom - 8 ? Math.max(bounds.top + 8, at.top - 6 - rect.height) : at.bottom + 6
+      setPlacement({ shift: left - rect.left, lift: top - rect.top, flip: false })
+      return
+    }
+    if (!className.includes('aiws-submenu')) { setPlacement({ shift: containShift(el), lift: 0, flip: false }); return }
     setPlacement({ shift: 0, lift: Math.max(Math.min(0, bounds.bottom - 8 - rect.bottom), bounds.top + 8 - rect.top), flip: rect.right > bounds.right - 8 })
   }, [className])
   const enabled = () => [...(ref.current?.querySelectorAll<HTMLButtonElement>(':scope > .aiws-menu-entry > button[role="menuitem"]:not(:disabled)') ?? [])]
@@ -162,17 +171,25 @@ export function MenuList({ items, onDone, onBack, label, autoFocus = true, class
 }
 
 /** A trigger button with a menu (or any panel) under it. */
-export function MenuButton({ items, label, title, children, className = 'aiws-tool', testId, menuTestId, align = 'start', disabled }: {
+export function MenuButton({ items, label, title, children, className = 'aiws-tool', testId, menuTestId, align = 'start', disabled, floating = false }: {
   /** A function is evaluated when the menu opens (its items reflect the state at that moment). */
   items: MenuItem[] | (() => MenuItem[]); label: string; title?: string; children: ReactNode; className?: string; testId?: string; menuTestId?: string; align?: 'start' | 'end'; disabled?: boolean
+  /** In a scrolling list: the menu is fixed so the list does not clip it, and any scroll closes it. */
+  floating?: boolean
 }) {
-  const { open, toggle, close, bindAnchor, bindTrigger } = usePopover()
+  const { open, setOpen, toggle, close, bindAnchor, bindTrigger } = usePopover()
+  useEffect(() => {
+    if (!open || !floating) return
+    const onScroll = () => setOpen(false)
+    window.addEventListener('scroll', onScroll, true)
+    return () => window.removeEventListener('scroll', onScroll, true)
+  }, [open, floating, setOpen])
   return (
     <span ref={bindAnchor} className="aiws-anchor">
       <button ref={bindTrigger} type="button" className={className} aria-label={label} title={title ?? label} aria-haspopup="menu" aria-expanded={open} data-testid={testId} disabled={disabled} onClick={toggle}>
         {children}
       </button>
-      {open && <MenuList items={typeof items === 'function' ? items() : items} label={label} className={`aiws-popover aiws-popover-${align}`} onDone={close} testId={menuTestId} />}
+      {open && <MenuList items={typeof items === 'function' ? items() : items} label={label} className={`aiws-popover aiws-popover-${align}${floating ? ' is-floating' : ''}`} onDone={close} testId={menuTestId} />}
     </span>
   )
 }

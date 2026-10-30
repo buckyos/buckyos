@@ -818,6 +818,7 @@
 .aiws-root .aiws-popover-item { width: 100%; border: none; background: none; text-align: left; padding: 6px 8px; border-radius: 6px; min-height: 32px; }
 .aiws-root .aiws-popover-item:hover:not(:disabled) { background: var(--cp-surface-2); }
 .aiws-menu.aiws-popover, .aiws-menu.has-submenu { overflow: visible; max-height: none; }
+.aiws-menu.aiws-popover.is-floating { position: fixed; top: 0; left: 0; right: auto; }
 .aiws-menu-entry { position: relative; }
 .aiws-root .aiws-menu-entry > button { display: flex; width: 100%; align-items: center; gap: 6px; border: none; background: none; text-align: left; padding: 5px 8px; border-radius: 6px; min-height: 32px; white-space: nowrap; }
 .aiws-root .aiws-menu-entry > button:hover:not(:disabled), .aiws-root .aiws-menu-entry > button[aria-expanded='true'] { background: var(--cp-surface-2); }

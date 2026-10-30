@@ -256,7 +256,7 @@ export function SurfaceSwitcher({ phone = false }: { phone?: boolean }) {
                   </button>
                 )}
                 {!phone && (surface.capabilities.includes('structure') || surface.capabilities.includes('delete')) && (
-                  <MenuButton label={t('aiworkspace.shell.switcher.more', { name: surface.title ?? surface.name ?? '' })} className="aiws-tool aiws-tool-small" testId={`aiws-surface-more-${surface.entity_id}`} align="end"
+                  <MenuButton label={t('aiworkspace.shell.switcher.more', { name: surface.title ?? surface.name ?? '' })} className="aiws-tool aiws-tool-small" testId={`aiws-surface-more-${surface.entity_id}`} align="end" floating
                     items={[
                       { id: `rename-${surface.entity_id}`, label: t('aiworkspace.common.rename'), disabled: !surface.capabilities.includes('structure'), reason: t('aiworkspace.shell.switcher.noRenamePermission'),
                         run: () => setRenaming({ id: surface.entity_id, base: readBase(store, surface), value: surface.title ?? surface.name ?? '' }) },

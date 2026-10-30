@@ -121,6 +121,8 @@ test('UI04 Surfaces: create, move a Block across, delete with pre-check; referen
   await page.getByTestId('aiws-top-canvas').click()
   await page.getByTestId('aiws-surface-switch').click()
   await page.getByTestId(`aiws-surface-more-${third.entity_id}`).click()
+  // the last row's menu is not clipped by the scrolling list
+  await expect(page.getByTestId(`aiws-surface-delete-${third.entity_id}`)).toBeInViewport({ ratio: 1 })
   await page.getByTestId(`aiws-surface-delete-${third.entity_id}`).click()
   await expect(page.getByTestId('aiws-surface-delete-dialog')).toBeInViewport({ ratio: 1 })
   await page.getByTestId('aiws-surface-delete-confirm').click()
