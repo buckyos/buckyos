@@ -305,7 +305,7 @@ fn replica_keeps_anchors_it_does_not_know() {
         "operations": [{ "op": "entity.create", "entity_id": "note-future", "type_id": "buckyos.annotation", "parent_id": "data",
             "order_key": "zz", "payload": { "target": { "entity_id": "notes", "selector": { "kind": "richtext_line", "line": 2 } },
                 "range": { "kind": "richtext_columns", "from": 1 }, "kind": "note", "body": "来自新版本" } }] });
-    let r = ws.commit(&req, &alice(), &CommitOpts { internal: true, import: true, undoes: None, as_principal: None, maintenance: false, as_source: false });
+    let r = ws.commit(&req, &alice(), &CommitOpts { internal: true, import: true, undoes: None, as_principal: None, maintenance: false, as_source: false, as_build: false });
     assert_eq!(r["status"], "accepted", "{r}");
     catch_up(&ws, &alice(), &mut rep);
     let read = aiworkspace_core::read::read(&rep.working, &aiworkspace_core::access::Access::full("alice"), "note-future", None).unwrap();

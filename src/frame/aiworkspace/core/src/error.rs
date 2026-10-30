@@ -45,6 +45,10 @@ pub enum Code {
     DelegationStale,
     /// The run's authorization was revoked or an older attempt reports after a newer one (§9.5).
     RunRevoked,
+    /// `ext.build` refused a control's source: `data.diagnostics` says where (扩展控件 P0).
+    BuildFailed,
+    /// A control package (`.pikg` of type `aiws` or a bundle) is malformed, tampered or contradicts what the library holds.
+    LibraryPackageInvalid,
 }
 
 impl Code {
@@ -82,7 +86,14 @@ impl Code {
         Code::ExecutionContextMissing,
         Code::DelegationStale,
         Code::RunRevoked,
+        Code::BuildFailed,
+        Code::LibraryPackageInvalid,
     ];
+
+    /// The code a wire string names (`ALL` in reverse).
+    pub fn parse(s: &str) -> Option<Code> {
+        Code::ALL.iter().copied().find(|c| c.as_str() == s)
+    }
 
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -119,6 +130,8 @@ impl Code {
             Code::ExecutionContextMissing => "EXECUTION_CONTEXT_MISSING",
             Code::DelegationStale => "DELEGATION_STALE",
             Code::RunRevoked => "RUN_REVOKED",
+            Code::BuildFailed => "BUILD_FAILED",
+            Code::LibraryPackageInvalid => "LIBRARY_PACKAGE_INVALID",
         }
     }
 

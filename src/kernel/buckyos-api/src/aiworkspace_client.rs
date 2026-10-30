@@ -101,7 +101,8 @@ pub fn aiworkspace_bucket_decls() -> HashMap<String, bucket_store::BucketDecl> {
     serde_json::from_value(json!({
         "assets": { "kind": "data", "data_policy": "app_data", "scope": "user" },
         "objects": { "kind": "data", "data_policy": "app_data", "scope": "user" },
-        "exports": { "kind": "data", "data_policy": "temp", "scope": "user", "default_ttl_days": 7 }
+        "exports": { "kind": "data", "data_policy": "temp", "scope": "user", "default_ttl_days": 7 },
+        "library": { "kind": "data", "data_policy": "app_data", "scope": "user" }
     }))
     .expect("aiworkspace bucket declarations")
 }

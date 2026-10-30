@@ -3,6 +3,8 @@
 pub mod docdb;
 pub mod entries;
 pub mod export;
+pub mod ext;
+pub mod library;
 pub mod objects;
 pub mod proc;
 pub mod reads;

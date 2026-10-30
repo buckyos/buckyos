@@ -18,7 +18,7 @@ import {
   type LockInfo, type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type WorkspaceInfo,
   type AnnotationRead, type ListAnnotationsParams, type Capability, type DerivedRecord, type FreshnessInfo, type GrantList, type RelationsInfo,
   type Subject, type VersionInfo, type WishChoices, type WishRunView, type ShowLockInfo, type ServiceError, type WishAiccMode, type WishClaim, type WishToolAnswer, type HostedExecConfig, type Publication, type Referrer,
-  type BucketBinding, type StagedAsset,
+  type BucketBinding, type StagedAsset, type ExtBuildResult, type ExtExportResult, type LibraryPackage,
 } from './types'
 
 export type SessionStatus =
@@ -178,6 +178,13 @@ export interface WorkspaceSession {
   unpublish(entityId: string): Promise<void>
   listPublications(): Promise<Publication[]>
   listReferrers(entityId: string): Promise<Referrer[]>
+  /** Extension controls (扩展控件 P0, README “Extension controls”): builds, bundles, the caller's library; online only.
+   * A refused build throws a ServiceFailure whose `data.diagnostics` say where. */
+  extBuild(params: Record<string, Json>): Promise<ExtBuildResult>
+  extExport(entityIds: string[], purpose?: 'package' | 'pull'): Promise<ExtExportResult>
+  extImport(items: { pkg_id: string; ident: string }[]): Promise<ExtBuildResult>
+  extInstallFrom(entityIds: string[], pkg: { name: string; version: string; title?: string }): Promise<{ pkg_id: string; version: string; action: string }>
+  extListLibrary(): Promise<LibraryPackage[]>
 
   commit(operations: Operation[], options?: CommitOptions): Promise<CommitOutcome>
   /** Resend a submission whose result is still unknown: same key, same content. */
@@ -526,6 +533,11 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
   async unpublish(entityId: string) { try { unwrap(await this.client.wsUnpublish(this.ws, entityId)) } catch (error) { return this.fail(error) } }
   async listPublications() { try { return unwrap(await this.client.wsListPublications(this.ws)).publications } catch (error) { return this.fail(error) } }
   async listReferrers(entityId: string) { try { return unwrap(await this.client.wsListReferrers(this.ws, entityId)).referrers } catch (error) { return this.fail(error) } }
+  async extBuild(params: Record<string, Json>) { try { return unwrap(await this.client.extBuild(this.ws, params)) } catch (error) { return this.fail(error) } }
+  async extExport(entityIds: string[], purpose: 'package' | 'pull' = 'package') { try { return unwrap(await this.client.extExport(this.ws, entityIds, purpose)) } catch (error) { return this.fail(error) } }
+  async extImport(items: { pkg_id: string; ident: string }[]) { try { return unwrap(await this.client.extImport(this.ws, items)) } catch (error) { return this.fail(error) } }
+  async extInstallFrom(entityIds: string[], pkg: { name: string; version: string; title?: string }) { try { return unwrap(await this.client.extInstallFrom(this.ws, entityIds, pkg)) } catch (error) { return this.fail(error) } }
+  async extListLibrary() { try { return unwrap(await this.client.extListLibrary()).packages } catch (error) { return this.fail(error) } }
 
   // ---- writes (design §2.6)
 

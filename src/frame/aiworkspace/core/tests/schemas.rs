@@ -104,3 +104,37 @@ fn richtext_schema_file_is_wellformed() {
         }
     }
 }
+
+#[test]
+fn commit_request_schema_speaks_the_current_protocol() {
+    use aiworkspace_core::model::PROTOCOL_VERSION;
+    use aiworkspace_core::plan::SELECTOR_KINDS;
+    let file = load("commit-request.schema.json");
+    let versions = file["properties"]["protocol_version"]["enum"].as_array().unwrap();
+    assert!(versions.contains(&json!(PROTOCOL_VERSION)), "{versions:?}");
+    assert!(file["$id"].as_str().unwrap().ends_with(PROTOCOL_VERSION));
+    let listed: Vec<&str> = file["$defs"]["selector"]["properties"]["kind"]["enum"].as_array().unwrap().iter().map(|k| k.as_str().unwrap()).collect();
+    assert_eq!(listed, SELECTOR_KINDS);
+    // every listed kind is one the planner resolves (an unknown one would be MISSING_EXTENSION)
+    let ws = MemWorkspace::new();
+    for kind in SELECTOR_KINDS {
+        let e = aiworkspace_core::plan::resolve_cell(&ws.store, &json!({ "entity_id": "root", "selector": { "kind": kind } })).err();
+        assert!(e.is_none_or(|e| e.code != Code::MissingExtension), "{kind}");
+    }
+}
+
+#[test]
+fn extension_schemas_match_the_validators() {
+    use aiworkspace_core::types::{BLOCK_DEF_KEYS, MANIFEST_VERSION};
+    let def = load("block-def.schema.json");
+    let mut keys: Vec<&str> = def["properties"].as_object().unwrap().keys().map(String::as_str).collect();
+    let mut code_keys = BLOCK_DEF_KEYS.to_vec();
+    keys.sort();
+    code_keys.sort();
+    assert_eq!(keys, code_keys);
+    for (name, path) in [("block-def.schema.json", "/properties/manifest_version/maximum"), ("component.schema.json", "/properties/manifest_version/maximum"), ("aiws-manifest.schema.json", "/properties/manifest_version/maximum")] {
+        assert_eq!(load(name).pointer(path), Some(&json!(MANIFEST_VERSION)), "{name}");
+    }
+    // the reference kind the source snapshot uses is in the frozen catalogue
+    assert!(aiworkspace_core::model::REF_KINDS.iter().any(|(k, _, i, _)| *k == "def_source" && *i == "strong"));
+}

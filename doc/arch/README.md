@@ -37,6 +37,7 @@
 
 6) 网络与访问：cyfs-gateway / NodeGateway / ZoneGateway / SN
 - `06_network_and_gateways.md`
+- [跨 Zone 通信开发者指南](../sdk/cross-zone-communication.md)：当前认证与传输链路、系统服务接入、错误处理与排障
 
 7) 身份与权限：verify-hub / session-token / RBAC
 - `07_identity_and_rbac.md`

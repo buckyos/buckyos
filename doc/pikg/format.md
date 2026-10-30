@@ -81,8 +81,9 @@ AppDoc.pkg_list[key].pkg_objid
 | CLI build/pack/info | 完整、自包含 PIKG；普通 App、Agent 模板和独立 `agent_skills` 包 |
 | Rust 普通 App Installer | 受控 immutable staging 文件，重新验证普通 App/Agent 模板；上层执行信任、目标和权限校验 |
 | Agent skill CLI | TypeScript 验证后，仅将 `agent_skills` 中认可目录的文件提交到 Agent `skills.install` |
+| AI Workspace 控件库（`app_type=aiws`） | Rust `AppType::Aiws` 与 TypeScript 两端都只接受唯一子包 `pkg_list.aiws`（不得有 docker / script / web / native / Agent 子包）；payload `aiws.tar.gz` 是 AIWS bundle：`aiws-manifest.json` + `controls/<dir>/<file>`。`buckyos app install`（Installer `apps.submit`，仅 Rpc 来源）验证后由 control-panel 调 aiworkspace `ext.install`（mode `installer`），开发态由客户端直接调 `ext.install`（mode `dev`）；两条路都不建 AppSpec、不起服务，记录只在 aiworkspace 本机控件库。CLI `pikg build` / `pack` / `info` 与 aiworkspace 服务各自按 manifest 重算每个控件的 digest、校验 `component.json`。清单与库的协议见 [aiworkspace README “Extension controls”](../../src/frame/aiworkspace/README.md) |
 
-独立 `app_type=agent_skills` 是 TypeScript/Agent 路径支持的包类型，不是 Rust `AppType` 的新增枚举值。Agent 模板的 `app_type=agent` 与之不同，公共 App submit 为模板注册。内部 Rust builder 的部分包用例不代表 CLI 提供部分打包或普通 App 第三方依赖安装能力。
+独立 `app_type=agent_skills` 是 TypeScript/Agent 路径支持的包类型，不是 Rust `AppType` 的新增枚举值；`app_type=aiws` 则两端都是正式类型（Rust `AppType::Aiws`）。Agent 模板的 `app_type=agent` 与之不同，公共 App submit 为模板注册。内部 Rust builder 的部分包用例不代表 CLI 提供部分打包或普通 App 第三方依赖安装能力。
 
 ## 6. 回归入口
 

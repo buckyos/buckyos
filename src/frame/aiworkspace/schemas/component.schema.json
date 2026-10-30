@@ -1,0 +1,293 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "buckyos.ai-workspace/component/1",
+ "title": "component.json of an AI Workspace control (扩展控件 P0, manifest_version 1)",
+ "description": "The interface and file layout of one control's source directory (flat). `ext.build` checks it with the Rust validator (store/src/ext.rs), clients pre-check it with buckyos-websdk src/aiws_ext.ts. Newer manifest versions only add optional keys; older ones stay readable (Q19).",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "manifest_version",
+  "ident",
+  "kind",
+  "title",
+  "entry"
+ ],
+ "properties": {
+  "manifest_version": {
+   "type": "integer",
+   "minimum": 1,
+   "maximum": 1
+  },
+  "ident": {
+   "$ref": "#/$defs/ident"
+  },
+  "kind": {
+   "enum": [
+    "declarative",
+    "html"
+   ],
+   "description": "composite is reserved for P1"
+  },
+  "title": {
+   "type": "string",
+   "minLength": 1,
+   "maxLength": 256
+  },
+  "description": {
+   "type": "string",
+   "maxLength": 4000
+  },
+  "host_api": {
+   "type": "integer",
+   "minimum": 1,
+   "default": 1
+  },
+  "accepts": {
+   "$ref": "#/$defs/data_types"
+  },
+  "allow_no_source": {
+   "type": "boolean"
+  },
+  "default_size": {
+   "$ref": "#/$defs/size"
+  },
+  "config_schema": {
+   "$ref": "#/$defs/config_schema"
+  },
+  "bindings": {
+   "$ref": "#/$defs/bindings"
+  },
+  "entry": {
+   "oneOf": [
+    {
+     "$ref": "#/$defs/file",
+     "description": "declarative: a JSON file that becomes the definition's `declarative`"
+    },
+    {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "html"
+     ],
+     "properties": {
+      "html": {
+       "$ref": "#/$defs/file"
+      },
+      "css": {
+       "$ref": "#/$defs/file"
+      },
+      "js": {
+       "$ref": "#/$defs/file"
+      }
+     },
+     "description": "html: the files inlined into html { html, css, js }"
+    }
+   ]
+  },
+  "assets": {
+   "type": "array",
+   "items": {
+    "$ref": "#/$defs/file"
+   },
+   "maxItems": 64,
+   "uniqueItems": true
+  },
+  "catalog": {
+   "$ref": "#/$defs/catalog"
+  },
+  "agent": {
+   "$ref": "#/$defs/file",
+   "description": "Markdown self-description for Agents (≤ 64 KiB)"
+  },
+  "deps": {
+   "type": "array",
+   "maxItems": 0,
+   "description": "Reserved: definition → definition dependencies are P1."
+  }
+ },
+ "$defs": {
+  "name": {
+   "type": "string",
+   "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+   "description": "A renderer id; also the definition's def_id."
+  },
+  "file": {
+   "type": "string",
+   "pattern": "^[^/.\\u0000][^/\\u0000]{0,254}$",
+   "description": "A file of the flat source directory (no `/`, not starting with `.`)."
+  },
+  "data_types": {
+   "type": "array",
+   "items": {
+    "enum": [
+     "buckyos.table-source",
+     "buckyos.richtext",
+     "buckyos.record",
+     "buckyos.asset",
+     "buckyos.wish",
+     "buckyos.annotation",
+     "buckyos.block-def"
+    ]
+   },
+   "uniqueItems": true
+  },
+  "ident": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "author_did",
+    "name"
+   ],
+   "description": "Control identity (A3): written `<author_did>#<name>`, at most 128 bytes; the definition entity's name in the Workspace.",
+   "properties": {
+    "author_did": {
+     "type": "string",
+     "pattern": "^did:[a-z0-9]+:[^/#\\s]+$",
+     "maxLength": 120
+    },
+    "name": {
+     "$ref": "#/$defs/name"
+    }
+   }
+  },
+  "size": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "w",
+    "h"
+   ],
+   "properties": {
+    "w": {
+     "type": "number",
+     "exclusiveMinimum": 0
+    },
+    "h": {
+     "type": "number",
+     "exclusiveMinimum": 0
+    }
+   }
+  },
+  "config_schema": {
+   "description": "Instance properties: the JSON Schema subset of A7 (type, enum, default, required, title, description, minimum, maximum, minLength, maxLength; properties and items to nest). Other keywords fail the build. The Desktop validates values with it; the core never does (Q15).",
+   "type": "object",
+   "properties": {
+    "type": {
+     "oneOf": [
+      {
+       "enum": [
+        "object",
+        "array",
+        "string",
+        "number",
+        "integer",
+        "boolean",
+        "null"
+       ]
+      },
+      {
+       "type": "array",
+       "items": {
+        "enum": [
+         "object",
+         "array",
+         "string",
+         "number",
+         "integer",
+         "boolean",
+         "null"
+        ]
+       }
+      }
+     ]
+    },
+    "enum": {
+     "type": "array"
+    },
+    "default": {},
+    "required": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "title": {
+     "type": "string"
+    },
+    "description": {
+     "type": "string"
+    },
+    "minimum": {
+     "type": "number"
+    },
+    "maximum": {
+     "type": "number"
+    },
+    "minLength": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "maxLength": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "properties": {
+     "type": "object",
+     "additionalProperties": {
+      "$ref": "#/$defs/config_schema"
+     }
+    },
+    "items": {
+     "$ref": "#/$defs/config_schema"
+    }
+   },
+   "additionalProperties": false
+  },
+  "bindings": {
+   "type": "object",
+   "maxProperties": 32,
+   "propertyNames": {
+    "pattern": "^[a-z][a-z0-9_]{0,31}$"
+   },
+   "additionalProperties": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "accepts": {
+      "$ref": "#/$defs/data_types"
+     },
+     "required": {
+      "type": "boolean"
+     },
+     "title": {
+      "type": "string",
+      "maxLength": 256
+     },
+     "description": {
+      "type": "string",
+      "maxLength": 4000
+     }
+    }
+   },
+   "description": "Named data inputs; an instance binds them in its Cell `bindings` ({ <name>: { entity_id } })."
+  },
+  "catalog": {
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "group": {
+     "type": "string",
+     "maxLength": 64
+    },
+    "icon": {
+     "type": "string",
+     "pattern": "^[a-z][a-z0-9-]{0,31}$"
+    },
+    "description": {
+     "type": "string",
+     "maxLength": 1000
+    }
+   }
+  }
+ }
+}

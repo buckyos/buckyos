@@ -80,6 +80,13 @@ function extras(typeId: string, payload: Record<string, unknown>): Partial<Entit
   } else if (typeId === 'buckyos.block-def') {
     out.def_id = (payload.def_id as string) ?? null
     out.def_kind = (payload.kind as string) ?? null
+    // a control's identity and where it came from (扩展控件 P0), as the backend projects them
+    const ident = payload.ident as { author_did?: string; name?: string } | undefined
+    out.ident = ident?.author_did && ident.name ? `${ident.author_did}#${ident.name}` : null
+    out.manifest_version = typeof payload.manifest_version === 'number' ? payload.manifest_version : null
+    out.def_version = typeof payload.version === 'number' ? payload.version : null
+    out.provenance_pkg = (payload.provenance as { pkg_id?: string } | undefined)?.pkg_id ?? null
+    out.source_dir_id = (payload.source_dir as { entity_id?: string } | undefined)?.entity_id ?? null
   } else if (typeId === 'buckyos.annotation') {
     out.target_id = (payload.target as { entity_id?: string } | undefined)?.entity_id ?? null
     out.annotation_kind = (payload.kind as string) ?? null
@@ -328,7 +335,7 @@ export class OutlineModel {
             let touchedExtras = false
             for (const op of keyed) for (const key of (op.keys as { key: string; value?: unknown }[] | undefined) ?? []) {
               if (['title', 'source', 'view', 'source_ref', 'def_ref', 'kind', 'layout', 'executor', 'output_mode', 'target', 'media_type', 'def_id', 'icon', 'locked', 'start', 'end', 'presentation', 'config', 'slot',
-                'surface_ref', 'center', 'zoom', 'purpose', 'stage', 'steps', ...CONNECTOR_KEYS].includes(key.key)) touchedExtras = true
+                'surface_ref', 'center', 'zoom', 'purpose', 'stage', 'steps', 'ident', 'manifest_version', 'version', 'provenance', 'source_dir', ...CONNECTOR_KEYS].includes(key.key)) touchedExtras = true
               if (op.op === 'entity.set_keys') payload[key.key] = key.value
             }
             if (touchedExtras) {
@@ -350,6 +357,10 @@ export class OutlineModel {
                 center: current.viewport?.center ?? undefined, zoom: current.viewport?.zoom ?? undefined,
                 purpose: current.show_path?.purpose ?? undefined, stage: current.show_path?.stage ?? undefined,
                 steps: current.show_path ? new Array(current.show_path.steps) : undefined,
+                ident: current.ident ? (() => { const cut = current.ident.lastIndexOf('#'); return { author_did: current.ident.slice(0, cut), name: current.ident.slice(cut + 1) } })() : undefined,
+                manifest_version: current.manifest_version ?? undefined, version: current.def_version ?? undefined,
+                provenance: current.provenance_pkg ? { pkg_id: current.provenance_pkg } : undefined,
+                source_dir: current.source_dir_id ? { entity_id: current.source_dir_id } : undefined,
               }
               for (const op of keyed) if (op.op === 'entity.unset_keys') for (const key of (op.keys as { key: string }[] | undefined) ?? []) delete known[key.key]
               Object.assign(update, extras(current.type_id, { ...known, ...payload }))

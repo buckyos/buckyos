@@ -316,6 +316,21 @@ pub fn outline_extras(env: &mut Value, e: &EntityRow) {
         TYPE_BLOCK_DEF => {
             env["def_id"] = e.payload.get("def_id").cloned().unwrap_or(Value::Null);
             env["def_kind"] = e.payload.get("kind").cloned().unwrap_or(Value::Null);
+            // the control identity, for the catalogue and deduplication (扩展控件 P0)
+            if let Some(ident) = e.payload.get("ident").and_then(|i| types::ident_string(i).ok()) {
+                env["ident"] = json!(ident);
+            }
+            for (key, out) in [("manifest_version", "manifest_version"), ("version", "def_version")] {
+                if let Some(v) = e.payload.get(key) {
+                    env[out] = v.clone();
+                }
+            }
+            if let Some(pkg) = e.payload.get("provenance").and_then(|p| p.get("pkg_id")) {
+                env["provenance_pkg"] = pkg.clone();
+            }
+            if let Some(dir) = e.payload.get("source_dir").and_then(|d| d.get("entity_id")) {
+                env["source_dir_id"] = dir.clone();
+            }
         }
         TYPE_ANNOTATION => {
             env["target_id"] = e.payload.get("target").and_then(|t| t.get("entity_id")).cloned().unwrap_or(Value::Null);

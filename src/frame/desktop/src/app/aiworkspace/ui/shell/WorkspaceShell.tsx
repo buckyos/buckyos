@@ -4,6 +4,7 @@
  * views live under one store. The canvas draws its own floating toolbars; the data-source view gets the
  * same main toolbar as a bar above it. */
 
+import { ExtensionsDialog } from '../extensions/ExtensionsDialog'
 import { isCanvasContainer } from '../controls/registry'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CapturedAnchor } from '../../anchors/registry'
@@ -326,6 +327,7 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
             {dialog?.kind === 'import' && <ImportDialog client={client} onClose={() => setDialog(null)} onOpenWorkspace={onOpenWorkspace} />}
             {dialog?.kind === 'help' && <HelpDialog onClose={() => setDialog(null)} />}
             {dialog?.kind === 'mock' && <MockDialog onClose={() => setDialog(null)} />}
+            {dialog?.kind === 'extensions' && <ExtensionsDialog initialDefId={dialog.defId} phone={phone} onClose={() => setDialog(null)} />}
           </WorkspaceUiContext.Provider>
         )}
       </ShellContext.Provider>

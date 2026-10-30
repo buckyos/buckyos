@@ -31,6 +31,9 @@ pub const APP_CAPABILITY_MINI_GPU_TFLOPS: &str = "gpp.tflops";
 pub const APP_CAPABILITY_PUBLIC_INTERNET: &str = "internet";
 pub const APP_CAPABILITY_AI_LLM: &str = "ai.llm";
 
+/// The sub-package of an `aiws` package: the AIWS bundle (`aiws-manifest.json` + `controls/<dir>/<file>`).
+pub const AIWS_SUB_PKG: &str = "aiws";
+
 //buckyos 支持的应用类型,to_string后填写在app_doc.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -40,6 +43,8 @@ pub enum AppType {
     AppService, // 应用服务
     Web,     //静态网页
     Agent,   // AI Agent
+    /// AI Workspace 扩展控件包（`pkg_list.aiws`）：安装进 aiworkspace 服务的本机控件库，不建 AppSpec、不起服务。
+    Aiws,
 }
 
 impl TryFrom<&str> for AppType {
@@ -51,6 +56,7 @@ impl TryFrom<&str> for AppType {
             "dapp" => AppType::AppService,
             "web" => AppType::Web,
             "agent" => AppType::Agent,
+            "aiws" => AppType::Aiws,
             _ => return Err("Invalid app doc type"),
         })
     }
@@ -63,6 +69,7 @@ impl fmt::Display for AppType {
             AppType::AppService => "dapp",
             AppType::Web => "web",
             AppType::Agent => "agent",
+            AppType::Aiws => "aiws",
         };
         write!(f, "{}", value)
     }
@@ -316,7 +323,7 @@ pub fn derived_selector_for_key(key: &str) -> Option<PackageSelector> {
         "amd64_apple_app" => Some(PackageSelector::for_platform("macos", "x86_64")),
         "aarch64_apple_app" => Some(PackageSelector::for_platform("macos", "aarch64")),
         // 平台无关内容：空 selector 匹配所有目标。
-        "web" | "agent" | "agent_skills" | "agent_tools" | "script" => {
+        "web" | "agent" | "agent_skills" | "agent_tools" | "script" | AIWS_SUB_PKG => {
             Some(PackageSelector::default())
         }
         _ => None,
@@ -1232,6 +1239,12 @@ impl AppDocBuilder {
         self
     }
 
+    /// The bundle of an `aiws` package (AI Workspace controls).
+    pub fn aiws_pkg(mut self, desc: SubPkgDesc) -> Self {
+        self.pkg_list.others.insert(AIWS_SUB_PKG.to_string(), desc);
+        self
+    }
+
     pub fn agent_tools_pkg(mut self, desc: SubPkgDesc) -> Self {
         self.pkg_list.agent_tools = Some(desc);
         self
@@ -1281,8 +1294,12 @@ impl AppDocBuilder {
         let has_agent = self.pkg_list.agent.is_some();
         let has_agent_skills = self.pkg_list.agent_skills.is_some();
         let has_agent_tools = self.pkg_list.agent_tools.is_some();
+        let has_aiws = self.pkg_list.others.contains_key(AIWS_SUB_PKG);
 
         let mut errors: Vec<String> = vec![];
+        if has_aiws && self.app_type != AppType::Aiws {
+            errors.push("`pkg_list.aiws` belongs to an `aiws` package (change AppType)".to_string());
+        }
         match self.app_type {
             AppType::Service => {
                 if has_web {
@@ -1347,6 +1364,16 @@ impl AppDocBuilder {
 
                 self.selector_type = Some(SelectorType::Static);
                 self.service_config_tips = ServiceConfigTips::default();
+            }
+            AppType::Aiws => {
+                // one bundle of controls and nothing that runs (doc/pikg/format.md §5, aiworkspace README “Extension controls”)
+                let other_keys = self.pkg_list.others.keys().any(|k| k != AIWS_SUB_PKG);
+                if !has_aiws {
+                    errors.push("aiws package must include `pkg_list.aiws`".to_string());
+                }
+                if has_docker || has_script || has_web || has_native_app || has_agent || has_agent_skills || has_agent_tools || other_keys {
+                    errors.push("aiws package must contain only `pkg_list.aiws` (no docker, script, web, native or Agent packages)".to_string());
+                }
             }
             AppType::Agent => {
                 if !has_agent {

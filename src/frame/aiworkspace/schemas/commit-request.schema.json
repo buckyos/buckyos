@@ -1,6 +1,6 @@
 {
  "$schema": "https://json-schema.org/draft/2020-12/schema",
- "$id": "buckyos.ai-workspace/commit-request/1.0",
+ "$id": "buckyos.ai-workspace/commit-request/1.1",
  "title": "Commit request (doc.commit / doc.prepare)",
  "type": "object",
  "additionalProperties": false,
@@ -13,7 +13,11 @@
  ],
  "properties": {
   "protocol_version": {
-   "const": "1.0"
+   "enum": [
+    "1.0",
+    "1.1"
+   ],
+   "description": "1.1 added Block-controls (\"auto\" placement, Cells holding Cells in a control, slot); 1.0 requests are still accepted"
   },
   "workspace_id": {
    "type": "string",
@@ -42,7 +46,8 @@
     "import",
     "system"
    ],
-   "default": "human"
+   "default": "human",
+   "description": "Ignored: the service derives the origin (D08) — human, agent, program, import, system, source (a Source refresh) or build (ext.build / ext.import)."
   },
   "run_id": {
    "type": [
@@ -163,13 +168,18 @@
      "enum": [
       "entity",
       "doc_key",
+      "table_members",
       "table_field",
+      "table_field_type",
+      "table_field_values",
       "table_record",
       "table_cell",
+      "tree_children",
+      "tree_edge",
       "richtext_block",
-      "table_field_values",
-      "table_members",
-      "table_field_type"
+      "folder_member",
+      "table_view",
+      "table_query"
      ]
     },
     "key": {
@@ -183,6 +193,26 @@
     },
     "block_id": {
      "$ref": "#/$defs/id"
+    },
+    "name": {
+     "type": "string",
+     "description": "folder_member: the member name"
+    },
+    "cell_id": {
+     "$ref": "#/$defs/id",
+     "description": "table_view: the table view Block"
+    },
+    "filter": {
+     "type": "object"
+    },
+    "sorts": {
+     "type": "array"
+    },
+    "fields": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
     }
    }
   },

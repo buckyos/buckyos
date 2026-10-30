@@ -1,6 +1,7 @@
 mod agent_daemon;
 mod agent_mgr;
 mod agent_runtimes;
+mod aiws_pkg;
 mod app_install_deployer;
 mod app_login;
 mod app_install_driver;

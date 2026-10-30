@@ -211,6 +211,18 @@
    "retryable": false,
    "status": "rejected",
    "meaning": "The run's authorization was revoked, or an older execution attempt reports after a newer one took over (§9.5)."
+  },
+  {
+   "code": "BUILD_FAILED",
+   "retryable": false,
+   "status": "rejected",
+   "meaning": "ext.build refused a control's source; data.diagnostics lists { file, line?, col?, severity, message, instances? }. Nothing was committed."
+  },
+  {
+   "code": "LIBRARY_PACKAGE_INVALID",
+   "retryable": false,
+   "status": "rejected",
+   "meaning": "A control package (.pikg of type aiws, or a bundle) is malformed or tampered, or the same package id and version already holds other content."
   }
  ]
 }

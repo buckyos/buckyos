@@ -17,6 +17,9 @@ import { ShapePicker } from '../blocks/shapeBlock'
 import { svgShapeFromDocument } from '@drawio/svg'
 import type { ShapeKind } from '@drawio/shapes'
 import { allEntries, dataFor, entryId, entrySize, type CatalogEntry, type InsertRequest } from './catalog'
+import { InstanceForm } from '../extensions/InstanceForm'
+import { configProblems, missingBindings } from '../extensions/controls'
+import { useShell } from '../shell/shellContext'
 
 export type CatalogTab = 'all' | CatalogGroup | 'existing'
 const TABS: CatalogTab[] = ['all', 'text', 'data', 'layout', 'ai', 'sample', 'extension', 'existing']
@@ -40,6 +43,7 @@ export function InsertCatalog({ initialTab = 'all', initialKey, canPlace, onClos
   onInsert: (request: InsertRequest, how: 'center' | 'place') => void
 }) {
   const store = useStore()
+  const shell = useShell()
   const { t } = useAiwsText()
   useOutlineVersion()
   useOverlayMounted()
@@ -111,7 +115,9 @@ export function InsertCatalog({ initialTab = 'all', initialKey, canPlace, onClos
                 <div className="aiws-catalog-browser">
                   <div className="aiws-catalog-section-label">{tabLabel(tab)}<span className="aiws-catalog-count">{shown.length}</span></div>
                   <ul className="aiws-catalog-list" aria-label={t('aiworkspace.canvas.catalog.objects')} data-testid="aiws-catalog-list">
-                    {shown.length === 0 && <li className="aiws-catalog-empty"><Search size={24} aria-hidden="true" /><span>{t(tab === 'extension' && !q ? 'aiworkspace.canvas.catalog.noExtensions' : 'aiworkspace.canvas.catalog.noMatch')}</span></li>}
+                    {shown.length === 0 && <li className="aiws-catalog-empty"><Search size={24} aria-hidden="true" /><span>{t(tab === 'extension' && !q ? 'aiworkspace.canvas.catalog.noExtensions' : 'aiworkspace.canvas.catalog.noMatch')}</span>
+                      {tab === 'extension' && !q && <button type="button" className="aiws-link" data-testid="aiws-catalog-manage-controls" onClick={() => { onClose(); shell.openDialog({ kind: 'extensions' }) }}>{t('aiworkspace.ext.manage')}</button>}</li>}
+                    {tab === 'extension' && shown.length > 0 && <li><button type="button" className="aiws-link" data-testid="aiws-catalog-manage-controls" onClick={() => { onClose(); shell.openDialog({ kind: 'extensions' }) }}>{t('aiworkspace.ext.manage')}</button></li>}
                     {shown.map((entry) => (
                       <li key={entry.key}>
                         <button type="button" data-testid={`aiws-catalog-entry-${entry.key.replace(':', '-')}`} aria-pressed={chosen?.key === entry.key} className={chosen?.key === entry.key ? 'is-active' : undefined}
@@ -149,18 +155,26 @@ function EntryDetail({ entry, canPlace, onInsert }: { entry: CatalogEntry; canPl
   const defId = entry.defEntity?.entity_id ?? ''
   const loadDef = useCallback(async () => (defId ? store.readBatched<{ payload: BlockDefPayload }>(defId) : null), [store, defId])
   const def = useLoad<ReadOk<{ payload: BlockDefPayload }> | null>(loadDef).data?.content.payload
+  // a control instance: its property overrides and named bindings (扩展控件 P0, B8)
+  const [instanceConfig, setInstanceConfig] = useState<Record<string, Json>>({})
+  const [instanceBindings, setInstanceBindings] = useState<Record<string, string>>({})
+  const configIssues = entry.defEntity ? configProblems(def, instanceConfig) : []
+  const unbound = entry.defEntity ? missingBindings(def, instanceBindings) : []
   const accepts = entry.defEntity ? (def?.accepts ?? entry.definition.accepts) : entry.definition.accepts
   const needsData = entry.catalog.needs === 'data' || (entry.defEntity !== undefined && def !== undefined && def.allow_no_source !== true)
   const optionalData = entry.defEntity !== undefined && def?.allow_no_source === true && accepts.length > 0
   const data = needsData || optionalData ? dataFor(store, accepts) : []
   const needsFile = entry.catalog.needs === 'file'
   const ready = (!needsData || sourceId !== '') && (!needsFile || file !== null) && (!entry.defEntity || def !== undefined) && (entryId(entry) !== 'shape-svg' || (svg !== null && svg.svg.body.length <= 48 * 1024))
+    && configIssues.length === 0 && unbound.length === 0
   const svgSize = svg ? (() => { const k = Math.min(1, 320 / Math.max(svg.w, svg.h, 1)); return { w: Math.max(24, Math.round(svg.w * k)), h: Math.max(24, Math.round(svg.h * k)) } })() : null
   const request = (): InsertRequest => svg && svgSize ? ({ entry: { ...entry, size: svgSize }, title: title.trim() || undefined, config: { shape: 'svg', svg: svg.svg as unknown as Json, fill: svg.fill, stroke: svg.stroke ?? 'none', stroke_width: 1 } }) : ({
     entry, title: title.trim() || undefined, sourceId: sourceId || undefined, file: file ?? undefined,
-    config: entry.defEntity ? { def_id: entry.defEntity.entity_id } : entryId(entry) === 'shape' ? { shape: kind } : Object.keys(choices).length ? choices : undefined,
+    config: entry.defEntity ? { def_id: entry.defEntity.entity_id, ...instanceConfig } : entryId(entry) === 'shape' ? { shape: kind } : Object.keys(choices).length ? choices : undefined,
+    bindings: entry.defEntity && Object.keys(instanceBindings).length > 0 ? instanceBindings : undefined,
   })
-  const missing = needsData && sourceId === '' ? t('aiworkspace.canvas.catalog.missingData') : needsFile && !file ? t('aiworkspace.canvas.catalog.missingFile') : null
+  const missing = needsData && sourceId === '' ? t('aiworkspace.canvas.catalog.missingData') : needsFile && !file ? t('aiworkspace.canvas.catalog.missingFile')
+    : unbound.length > 0 ? t('aiworkspace.ext.form.missingBindings', { names: list(unbound) }) : configIssues.length > 0 ? t('aiworkspace.ext.form.invalidConfig', { issues: list(configIssues) }) : null
   return (
     <div className="aiws-catalog-detail" data-testid="aiws-catalog-detail" data-entry={entry.key}>
       <div className="aiws-catalog-detail-content">
@@ -200,6 +214,7 @@ function EntryDetail({ entry, canPlace, onInsert }: { entry: CatalogEntry; canPl
             <span className="aiws-muted">{t('aiworkspace.canvas.catalog.sharesData')}</span>
           </label>
         )}
+        {entry.defEntity && def && <InstanceForm def={def} config={instanceConfig} bindings={instanceBindings} onConfig={setInstanceConfig} onBindings={setInstanceBindings} />}
         {needsFile && (
           <label className="aiws-field">{t('aiworkspace.canvas.catalog.file')}<input type="file" aria-label={t('aiworkspace.canvas.catalog.chooseFile')} data-testid="aiws-catalog-file" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /></label>
         )}

@@ -67,9 +67,15 @@ export function buildMainMenu({ store, shell, canvas, mode }: { store: Workspace
         disabled: reasonOf(entry) !== null, reason: reasonOf(entry), run: () => canvas?.insert(entry) })),
     }
   })
+  // extension controls (扩展控件 P0): managing them sits under their own group, not at the top level (the menu must fit a small window)
   insertItems.push({
-    id: 'insert-group-extension', label: CATALOG_GROUP_LABEL.extension, disabled: extensions.length === 0 || insertReason !== null, reason: insertReason ?? t('aiworkspace.shell.menu.noDefinitions'),
-    items: extensions.map((entry) => ({ id: `insert-${entry.key}`, label: `${entry.title}…`, run: () => canvas?.openCatalog('extension', entry.key) })),
+    id: 'insert-group-extension', label: CATALOG_GROUP_LABEL.extension, items: [
+      ...(extensions.length === 0
+        ? [{ id: 'no-definitions', label: t('aiworkspace.shell.menu.noDefinitions'), disabled: true }]
+        : extensions.map((entry) => ({ id: `insert-${entry.key}`, label: `${entry.title}…`, disabled: insertReason !== null, reason: insertReason, run: () => canvas?.openCatalog('extension', entry.key) }))),
+      { id: 'sep-extensions', separator: true },
+      { id: 'extensions', testId: 'aiws-menu-extensions', label: t('aiworkspace.shell.menu.extensions'), hint: t('aiworkspace.shell.menu.extensionsHint'), run: () => shell.openDialog({ kind: 'extensions' }) },
+    ],
   })
   // draw.io files (draw.io 导入 TODO §3): the file picker; dropping or pasting a file does the same
   insertItems.push({ id: 'sep-import', separator: true }, {

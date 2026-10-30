@@ -203,6 +203,13 @@ export interface EntityEnvelope {
   source?: EntitySource | null
   output_mode?: string | null
   def_kind?: string | null
+  /** A control definition's identity `<author_did>#<name>`, manifest version, build revision, package and source
+   * snapshot directory (扩展控件 P0; outline only). */
+  ident?: string | null
+  manifest_version?: number | null
+  def_version?: number | null
+  provenance_pkg?: string | null
+  source_dir_id?: string | null
   target_id?: string | null
   annotation_kind?: string | null
   media_type?: string | null
@@ -524,7 +531,32 @@ export interface BlockDefPayload {
   config_schema?: Json
   actions?: Json
   inspector?: Json
+  /** Extension controls (扩展控件 P0, src/frame/aiworkspace/README.md “Extension controls”). */
+  ident?: { author_did: string; name: string }
+  manifest_version?: number
+  source_dir?: { entity_id: string }
+  bindings?: Record<string, ControlBinding>
+  catalog?: { group?: string; icon?: string; description?: string }
+  agent?: string
+  provenance?: { pkg_id?: string; version?: string; digest?: string }
 }
+
+/** A named data input a control declares (its instances bind it in the Cell's `bindings`). */
+export interface ControlBinding { accepts?: string[]; required?: boolean; title?: string; description?: string }
+
+/** One problem of a control's source (`ext.build`'s `BUILD_FAILED.data.diagnostics`). */
+export interface BuildDiagnostic { file: string; line?: number; col?: number; severity: 'error' | 'warning'; message: string; instances?: { entity_id: string; title?: string | null }[] }
+
+/** `ext.build` / `ext.import`: one entry per control. */
+export interface ExtControlResult { ident: string; def_entity_id: string; dir_entity_id?: string; action: 'created' | 'rebuilt' | 'unchanged' | 'satisfied'; version?: number; def_rev?: number; dir_rev?: number; build?: { input_digest: string; builder_version: string; built_at: string } }
+export interface ExtBuildResult extends Partial<ExtControlResult> { status: 'accepted' | 'unchanged' | 'checked'; commit_id?: string; seq?: number; unchanged?: boolean; controls: ExtControlResult[]; diagnostics: BuildDiagnostic[] }
+export interface ExtExportResult {
+  manifest: { manifest_version: number; purpose: 'aiws'; host_api?: Record<string, number>; controls: { ident: string; name: string; kind: string; version: number; digest: string; dir: string; title?: string }[]; workspace_templates: Json[] }
+  controls: { entity_id: string; ident: string; kind: string; version: number; def_rev: number; dir_rev: number; built: boolean; digest: string; dir: string; files: { name: string; obj_id?: string; size: number; text?: string }[] }[]
+  files: { path: string; obj_id?: string; size: number; text?: string }[]
+}
+export interface LibraryControl { ident: string; name: string; kind: string; version: number; digest: string; dir: string; title?: string | null; description?: string | null; catalog?: Record<string, Json> | null }
+export interface LibraryPackage { pkg_id: string; version: string; title: string; author: string; mode: string; installed_at: string; controls: LibraryControl[] }
 
 export type FreshnessStatus = 'current' | 'stale' | 'upstream_stale' | 'unavailable' | 'unknown' | 'none'
 export interface FreshnessInputLine {

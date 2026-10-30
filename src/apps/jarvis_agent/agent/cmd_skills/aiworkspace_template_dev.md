@@ -1,6 +1,6 @@
 ---
 name: aiworkspace_template_dev
-description: Build and maintain AI Workspaces from the command line — create a workspace, add tables, documents and Blocks by committing operations, put mind maps (Block-controls) on a canvas from a Markdown outline, export and import packages, reference data across workspaces, run wish blocks, publish data by path and insert published links.
+description: Build and maintain AI Workspaces from the command line — create a workspace, add tables, documents and Blocks by committing operations, put mind maps (Block-controls) on a canvas from a Markdown outline, develop controls (component.json in a home folder, build, pull, export to the library or a .pikg, import), export and import packages, reference data across workspaces, run wish blocks, publish data by path and insert published links.
 requires: the buckyos command (agent container: /usr/local/bin/buckyos; host: $BUCKYOS_ROOT/bin/buckyos) signed in; Deno for scripts that use the websdk directly; the workspace must grant you the capability each step needs (structure/update to write, manage to share or publish, run to start a wish)
 baseline: standard
 ---
@@ -41,6 +41,24 @@ Check with `buckyos aiws query --workspace <ws> --source sales` and `buckyos aiw
 - **Wish blocks**: create a `buckyos.wish` (`prompt`, `executor: "xllm"`, `output: { container_id, surface_id, name }`), then `proc.start { program: "wish.xllm@1", params: { wish_id, stage: "analyze" | "execute", execution: { mode: "local" | "hosted" } } }`; `proc.get` reports the candidate and a preview; `proc.apply { run_id, plan_digest, session_id }` writes it. In `hosted` mode the owner's Agent executes (`aiworkspace_run`).
 - **Sharing with people**: `ws.grant { subject, capabilities: ["read", ...], scope_entity_id? }` (manage); `ws.list_grants`; entries for visitors are `ws.create_entry` / `ws.list_entries`.
 
+#### Controls: develop, build, export, reuse
+A control is a Block definition (`declarative` items or `html`) whose source is a flat folder in a home directory, built into one workspace and then reused. Full contract: `src/frame/aiworkspace/README.md` “Extension controls” (`schemas/component.schema.json`).
+```bash
+buckyos pikg init /tmp/kpi --owner did:bns:$ME --kind aiws-controls --source ./aiws   # a sample control: /tmp/kpi/aiws/controls/kpi/{component.json,declarative.json,AGENT.md}
+DIR=/tmp/kpi/aiws/controls/kpi                       # a local folder (files go inline, ≤ 4 MiB), or a Zone path such as "/home/$ME/AI Workspace/Demo/controls/kpi"
+buckyos aiws build "$DIR" --workspace $WS            # → def_entity_id, version; instances update; .aiws-build.json in $DIR keeps the base
+buckyos aiws build "$DIR" --workspace $WS --dry-run  # diagnostics only
+buckyos aiws pull <def_entity_id> --workspace $WS --out "$DIR" [--local]   # the workspace version (also synthesizes source for wish-made HTML controls)
+buckyos aiws ext-export <def>,<def2> --workspace $WS --out ./pack --name kpi-pack --version 0.1.0 --install   # bundle → .pikg → your library
+buckyos aiws library list                            # pkg_id, controls (ident = <author_did>#<name>)
+buckyos aiws ext-import <pkg_id>#<ident> --workspace $OTHER_WS     # one commit into data/extensions
+```
+- `component.json` (`manifest_version: 1`): `ident { author_did, name }` (name `[a-z0-9][a-z0-9._-]{0,63}`), `kind`, `title`, `entry` (declarative: a JSON file; html: `{ html, css?, js? }`), optional `accepts`, `allow_no_source`, `default_size`, `config_schema` (only type / enum / default / required / title / description / minimum / maximum / minLength / maxLength / properties / items), `bindings { <name>: { accepts?, required?, title? } }`, `catalog`, `agent` (a Markdown file), `assets`, `deps: []`. No sub-folders, no file names starting with `.`.
+- Declarative items read the main source with `bind: "sum:amount" | "count" | "<field>" | "props.<key>"`, a named binding with `bind: "<binding>.count"` etc.; HTML reads `aiws.input("<binding>")` and `aiws.context.config`.
+- An instance is a `buckyos.cell` with `view: { type: "declarative" | "html" }`, `def_ref: { entity_id: <def> }`, `bindings: { <name>: { entity_id } }`, `config` (overrides only).
+- Rebuilding needs the base you last built or pulled (kept in `.aiws-build.json`): `REVISION_CONFLICT` / `BUILD_BASE_STALE` or `BUILD_BASE_REQUIRED` means pull, merge, build (or `--force`). `BUILD_FAILED` lists `data.diagnostics` (`file`, `line`, `col`, `message`, `instances`); nothing was committed. Removing a binding, making one required, narrowing `accepts` or adding a required property fails while instances use the control.
+- `build` of a Zone folder reads it over the file service with your session (`--watch` rebuilds on every save there); of a local folder it reads your disk. Either way the files go to the service (≤ 4 MiB per control per build; files the file service holds as objects go by reference).
+
 #### When it fails
 - `rejected` with `errors[]`: read `code` / `sub_code` (`ID_CONFLICT`, `NAME_CONFLICT`, `SOURCE_READ_ONLY`, `LOCK_REQUIRED`, `QUOTA_EXCEEDED`…), never the text. A conflict answers the current revision in `conflicts[]`: read again, resend with the new `expect`.
 - `PERMISSION_DENIED`: `ws.get_info.capabilities` lists what you may do; the owner grants more with `ws.grant`.
@@ -52,4 +70,4 @@ Check with `buckyos aiws query --workspace <ws> --source sales` and `buckyos aiw
 
 #### Source
 - Service and protocol: `src/frame/aiworkspace/README.md`; operations: `src/frame/aiworkspace/schemas/operations.json`; architecture decisions: `doc/workspace/BuckyOS AiWorkspace 内核架构改进.md`.
-- Client: `buckyos-websdk/src/aiworkspace_client.ts`; CLI verbs: `buckyos-websdk/cli/modules/aiws.ts`.
+- Client: `buckyos-websdk/src/aiworkspace_client.ts`; CLI verbs: `buckyos-websdk/cli/modules/aiws.ts`; control build / pull / watch / bundles: `buckyos-websdk/src/aiws_ext.ts`.

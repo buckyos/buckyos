@@ -628,7 +628,7 @@ pub fn load_workspace(
         }
         let req = json!({ "protocol_version": PROTOCOL_VERSION, "workspace_id": ws.workspace_id, "epoch": ws.epoch,
                           "idempotency_key": key, "origin": "import", "operations": ops });
-        let r = ws.commit(&req, caller, &CommitOpts { internal: true, import: true, undoes: None, as_principal: None, maintenance: false, as_source: false });
+        let r = ws.commit(&req, caller, &CommitOpts { internal: true, import: true, undoes: None, as_principal: None, maintenance: false, as_source: false, as_build: false });
         if r["status"] != json!("accepted") {
             return Err(WsError::invalid_schema("package content was rejected").with_data(r));
         }

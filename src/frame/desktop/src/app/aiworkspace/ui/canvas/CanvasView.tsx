@@ -8,6 +8,7 @@
  * with one toolbar (canvas switcher, annotation, zoom, identity, share) and touch gestures, and keeps a
  * viewport of its own. */
 
+import { onInsertDefinition } from '../extensions/extEvents'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { looksLikeDrawio } from '@drawio/file'
 import { svgShapeFromDocument } from '@drawio/svg'
@@ -457,6 +458,15 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       return false
     }
     if (!isFree) for (const op of operations) if (op.op === 'entity.create' && op.entity_id === cellId) delete (op as Record<string, unknown>).placement
+    // a control instance's named data bindings (扩展控件 P0): the Cell's `bindings`, each a reference
+    if (request.bindings) {
+      for (const op of operations) {
+        if (op.op !== 'entity.create' || op.entity_id !== cellId) continue
+        const payload = (op.payload ?? {}) as Record<string, Json>
+        payload.bindings = Object.fromEntries(Object.entries(request.bindings).map(([name, id]) => [name, { entity_id: id }])) as Json
+        op.payload = payload
+      }
+    }
     // the control places the new Block; a nested control sizes itself, any other Block keeps the entry's size
     if (intoNode) {
       for (const op of operations) {
@@ -522,6 +532,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     pick({ entry })
   }
   const openCatalog = (tab: CatalogTab, key?: string, world: { x: number; y: number } | null = null, parentId?: string, afterId?: string | null) => setCatalog({ tab, key, world, parentId, afterId })
+  // "insert an instance" from the Workspace controls dialog (扩展控件 P0)
+  useEffect(() => onInsertDefinition((defEntityId) => setCatalog({ tab: 'extension', key: `def:${defEntityId}`, world: null })), [])
 
   // ---- a flow page inserts where the user is (流式页交互改进 §2.3): after a Block, a file asked for first when needed
   const insertGroup = (parent: string, afterId?: string | null) => {

@@ -6,6 +6,7 @@ import type {
   QueryPage, QueryParams, ReadResult, Result, RunView, Selector, WorkspaceInfo, WorkspaceSummary, Capability, Json, WishAiccMode,
   DerivedRecord, FreshnessInfo, Operation, RelationsInfo, Subject, VersionInfo, WishChoices, WishRunView,
   ShowCommand, ShowLockInfo, ShowNotes, ShowStart, ShowState, ShowWatch, ShareEntry, EntryJoin, WishClaim, WishToolAnswer, HostedExecConfig, Publication, Referrer,
+  ExtBuildResult, ExtExportResult, LibraryPackage,
 } from './types'
 import { parseAccessDenial, type AccessDenial } from 'buckyos'
 import type { Transport } from './transport'
@@ -43,6 +44,14 @@ export class AiwsClient {
   wsUnpublish(ws: Ws, entity_id: string) { return this.call<Result<{ removed: number }>>('ws.unpublish', { ...ws, entity_id }) }
   wsListPublications(ws: Ws) { return this.call<Result<{ publications: Publication[] }>>('ws.list_publications', ws) }
   wsListReferrers(ws: Ws, entity_id: string) { return this.call<Result<{ referrers: Referrer[] }>>('ws.list_referrers', { ...ws, entity_id }) }
+  // extension controls (扩展控件 P0, README “Extension controls”): the Workspace's definitions and the caller's library
+  extBuild(ws: Ws, params: Record<string, unknown>) { return this.call<Result<ExtBuildResult>>('ext.build', { ...ws, ...params }) }
+  extExport(ws: Ws, entity_ids: string[], purpose: 'package' | 'pull' = 'package') { return this.call<Result<ExtExportResult>>('ext.export', { ...ws, entity_ids, purpose }) }
+  extImport(ws: Ws, items: { pkg_id: string; ident: string }[]) { return this.call<Result<ExtBuildResult>>('ext.import', { ...ws, items }) }
+  extInstallFrom(ws: Ws, entity_ids: string[], pkg: { name: string; version: string; title?: string }) {
+    return this.call<Result<{ pkg_id: string; version: string; action: string }>>('ext.install', { from: { ...ws, entity_ids }, package: pkg, mode: 'dev' })
+  }
+  extListLibrary() { return this.call<Result<{ packages: LibraryPackage[] }>>('ext.list_library', {}) }
   // share entries (hybrid SSO contract §8.3): links that offer sign-in methods and grant a template
   wsCreateEntry(ws: Ws, params: { capabilities: Capability[]; methods: ShareEntry['methods']; scope_entity_id?: string; expires_at?: number }) {
     return this.call<Result<{ entry: ShareEntry }>>('ws.create_entry', { ...ws, ...params })

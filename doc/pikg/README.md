@@ -15,6 +15,7 @@
 | 系统构建集成 | [Module type/format](../CI/module_build_type_and_format.md) | builder/formatter、PIKG rootfs 落位 |
 | SDK/Tool 分发 | [WebSDK distribution](https://github.com/buckyos/buckyos-websdk/blob/main/doc/distribution.md) | npm 与系统入口、runtime、产物完整性和更新归属 |
 | Agent skill 生命周期 | [OpenDAN 开发指南](../sdk/OpenDAN_Agent_Dev_Guide.md) | cmd_skills/goal_skills、安装接口、Session 冻结 |
+| AI Workspace 控件包（`app_type=aiws`） | [aiworkspace README “Extension controls”](../../src/frame/aiworkspace/README.md) | AIWS 清单、`component.json`、`ext.install` 本机库与引入；设计见 [扩展实现思路](../workspace/BuckyOS%20AI%20Workspace%20扩展实现思路.md) §6.9 |
 
 “当前权威”表示该领域的文档维护位置，不能覆盖实现证据。若规范与代码冲突，应在该文档明确差异并修正，不能从历史方案补出一项尚未交付的能力。尤其 `info` 内容通过、Owner 签名、BNS 当前发布和实际运行成功是不同证据。
 
@@ -23,6 +24,7 @@
 - 开发普通 App：[快速入门](../sdk/app-dev-quickstart.md)，结合 [Installer 样例](../../test/app_installer_test/pikg_samples/README.md)。
 - 开发 Agent：[Agent 手册](../../src/apps/jarvis_agent/agent/cmd_skills/opendan_agent_dev.md) 与 [Jarvis](../../src/apps/jarvis_agent/README.md)。
 - 独立 skill 包：[最小样例](../../test/skills_pikg_sample/README.md)。
+- AI Workspace 控件包：`buckyos pikg init --kind aiws-controls` 生成带一个 declarative 控件的骨架；从 Workspace 导出用 `buckyos aiws ext-export --pikg`，Agent 手册见 `aiworkspace_template_dev.md` “控件开发”。
 - 运行安装测试：[Installer DV](../../test/app_installer_test/README.md)。带日期旧结果已移出当前步骤。
 - 系统与企业部署：[企业部署指南](../sdk/buckyos-deploy.md)。行业项目专用配置与操作说明留在所属业务仓库。
 

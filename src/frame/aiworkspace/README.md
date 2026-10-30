@@ -242,6 +242,155 @@ generated into `aiws/controls.json` by `deno run -A tools/build_catalog.ts`). La
 `fixtures/mindmap/layout/*.json` (`MINDMAP_REGEN=1 deno test -A` after an intended change; the formula is not
 versioned, R18); outline cases shared with the service's parser: `fixtures/mindmap/outlines.json`.
 
+## Extension controls (扩展控件 P0, `notepads/aiworkspace-extension-p0-todo.md`)
+
+Design: [扩展实现思路](<../../../doc/workspace/BuckyOS AI Workspace 扩展实现思路.md>) v0.8 (D6 edit → build, A1–A7,
+Q18, Q19). A **control** of this section is a render Block definition (`buckyos.block-def`, `kind` `declarative` or
+`html`) whose source lives in its developer's home folder and is **built** into a Workspace; Block-controls (the
+previous section) are a different, code-registered thing. The flow: write a control in home → `ext.build` it into
+a Workspace (instances update) → export one or more controls as a bundle → install it into the caller's **library**
+(this service, per user) as a `.pikg` of type `aiws` → import it into another Workspace and instantiate it. Composite
+controls, HTML `parent`, events, source upgrades and Workspace templates are later phases; every contract below keeps
+room for them.
+
+**Where things live.**
+
+| Place | Content | Role |
+| --- | --- | --- |
+| home working copy | `/home/<owner>/AI Workspace/<workspace>/controls/<name>/` (a suggestion; the definition never stores a path, each person remembers theirs in `user_state` `aiws:src:<def_entity_id>`) | the editing entry: any editor, IDE or Agent |
+| Workspace snapshot | under a folder (default `data/extensions`, created by the first build): the definition entity (`name` = its identity) and its unnamed source directory (`buckyos.dir`, one member per file) | what a build accepted: instances, exports, forks and `pull` read it |
+| library | the caller's bucket `user/aiworkspace/<owner>/library` (key `<pkg_id>/<version>/<path>`) and `library.sqlite` in the service data folder | the controls this user may bring into any Workspace |
+
+A source directory is **flat** in P0: files only, no subfolders (`buckyos.dir` names cannot hold `/`), at most 64
+files, names not starting with `.` (clients keep their own state in dot files, e.g. `.aiws-build.json`).
+
+### Identity
+
+`ident { author_did, name }`, written `<author_did>#<name>`: `name` is a renderer id (`[a-z0-9][a-z0-9._-]{0,63}`, it
+is also the definition's `def_id`), `author_did` is `did:<method>:<id>` without `/`, `#`, whitespace or control
+characters, the whole string at most 128 bytes. The build sets the definition entity's `name` to that string, so
+the core's “sibling names are unique” rule deduplicates concurrent builds and imports of one identity into one folder
+(one Workspace, one identity, one definition: Q1). The author is part of the identity, not the caller: whoever pulls
+and builds Alice's control keeps `author_did` Alice's. `def_id` stays the short host-local id.
+
+### `component.json` (`manifest_version: 1`, [schemas/component.schema.json](schemas/component.schema.json))
+
+| Key | Shape |
+| --- | --- |
+| `manifest_version` | `1` (required). A build accepts every version up to its own and reads older ones as their newest form; newer versions only add optional keys (Q19) |
+| `ident` | `{ author_did, name }` (required) |
+| `kind` | `declarative` \| `html` (required; `composite` is reserved for P1) |
+| `title` / `description` | ≤ 256 / ≤ 4000 characters (`title` required) |
+| `host_api` | positive integer, default 1: the host API the control was written for (`html.api_version` of an HTML control; the declarative interpreter is version 1) |
+| `accepts`, `allow_no_source`, `default_size` | as on the definition: data types the main source may have, whether a Cell may have no source, `{ w, h }` |
+| `config_schema` | instance properties, the JSON Schema subset `type` / `enum` / `default` / `required` / `title` / `description` / `minimum` / `maximum` / `minLength` / `maxLength` (+ `properties` / `items` to nest); other keywords fail the build (A7). The Desktop validates values with it (`z.fromJSONSchema`) and builds the instance form from it; the core never checks values (Q15) |
+| `bindings` | named data inputs `{ <name>: { accepts?: [data types], required?: bool, title?, description? } }`, names `[a-z][a-z0-9_]{0,31}`, at most 32. An instance binds them in its Cell `bindings` (`{ <name>: { entity_id } }`); declarative items read them as `<name>.<expr>` (Q18), HTML through `aiws.input(name)` |
+| `entry` | `html`: `{ html, css?, js? }`, file names in the directory, inlined into the definition's `html { html, css, js, api_version }`; `declarative`: one file name, a JSON document that becomes the definition's `declarative` |
+| `assets` | file names carried with the source (pictures, data) — part of the snapshot and the package, not inlined |
+| `catalog` | `{ group?, icon?, description? }`: how the insert catalogue lists it |
+| `agent` | file name of a Markdown self-description (≤ 64 KiB) for Agents, inlined as the definition's `agent` |
+| `deps` | `[]` (anything else fails the build in P0; definition → definition dependencies are P1) |
+
+Every file the directory holds is part of the snapshot whether or not `component.json` names it; a named file that is
+missing fails the build. The definition stays ≤ 512 KiB with everything inlined.
+
+### The definition entity (`buckyos.block-def`)
+
+Besides the keys it always had (`def_id`, `version`, `kind`, `title`, `description`, `accepts`, `allow_no_source`,
+`default_size`, `declarative`, `html`, `config_schema`, `actions`, `inspector`), a definition may carry
+([schemas/block-def.schema.json](schemas/block-def.schema.json)):
+
+| Key | Shape |
+| --- | --- |
+| `ident` | `{ author_did, name }`, checked as above; `name` equals `def_id` |
+| `manifest_version` | the `component.json` version it was built from (positive integer ≤ the core's) |
+| `source_dir` | `{ entity_id }`: the live `buckyos.dir` holding the build's source snapshot; a strong `def_source` reference (the directory cannot be deleted while the definition uses it; exports and forks carry it). Not called `source`: that key is a Source (D12), which makes an entity read-only |
+| `bindings`, `catalog` | as in `component.json` |
+| `agent` | the self-description text, ≤ 64 KiB |
+| `provenance` | `{ pkg_id?, version?, digest? }`: the package an import came from (absent for a local build) |
+
+Definitions without these keys (wish results, templates, older Workspaces) read and work as before. A build writes
+`version` = the previous `version` + 1 (the build revision; a Cell's `view.version` is the host's, not this) and the
+dependency record `derived: { build: { input_digest, builder_version, built_at } }` in the same Commit
+(`entity.set_derived`; a `build` record is accepted from build and import Commits only, Q14). The Commit's origin is
+`build` and its message `build <ident>`. The outline projects `def_id`, `def_kind`, `ident` (string), `manifest_version`
+and `provenance_pkg`.
+
+### Methods
+
+| Method | Caller, rights | Params → result |
+| --- | --- | --- |
+| `ext.build` | `structure` on the folder (a new definition), `update` on the definition and its directory | `workspace_id`, `files: [{ name, obj_id } \| { name, base64 }]`, `folder_id?`, `expect?: { def_rev, dir_rev }`, `force?`, `provenance?`, `dry_run?`, `idempotency_key?` → `ok`, `status: accepted`, `commit_id`, `seq`, `def_entity_id`, `dir_entity_id`, `ident`, `version`, `def_rev`, `dir_rev`, `build`, `diagnostics` (warnings) — or `unchanged: true` (same input digest as the current build, nothing committed) |
+| `ext.export` | `export` on each definition (`purpose: "pull"`: `read`) | `workspace_id`, `entity_ids[]` (definitions, or Cells whose `def_ref` names one; deduplicated), `purpose?: package \| pull` → `manifest` (the AIWS manifest), `controls: [{ entity_id, ident, kind, version, def_rev, dir_rev, digest, dir, files: [{ name, obj_id?, size, text? }] }]`, `files: [{ path, obj_id?, size, text? }]` |
+| `ext.install` | the caller's own library (`mode: dev`); the control panel installing for `owner` (`mode: installer`; a service caller is known by its session's `appid`) | `pikg: { bucket_id, key }` (a `.pikg` the caller bound into its own `user/aiworkspace/<user>/exports`, consumed once installed) or `pikg: { obj_id }` (a `.pikg` FileObject the caller may read, judged at the NDM gateway; the Installer passes its staged object) or `from: { workspace_id, entity_ids[] }` + `package: { name, version, title? }` (export straight into the library), `mode`, `owner?` → `pkg_id`, `version`, `action: installed \| satisfied \| replaced`, `controls` |
+| `ext.list_library` | any account: its own library | → `packages: [{ pkg_id, version, title, author, mode, installed_at, controls: [{ ident, name, kind, version, digest, title, description, catalog, dir }] }]` |
+| `ext.uninstall` | its own library | `pkg_id` → `removed` (Workspaces keep what they imported, D4) |
+| `ext.library_bundle` | its own library | `pkg_id`, `idents?` → `manifest`, `controls: [{ ident, …, files: [{ name, size, obj_id, base64 }] }]` (the bytes, so a client can build them into a Workspace of another Zone) |
+| `ext.import` | as `ext.build` | `workspace_id`, `folder_id?`, `items: [{ pkg_id, ident }]` → one Commit for all items (`status`, `commit_id`, `controls: [{ ident, def_entity_id, action: created \| satisfied }]`) |
+
+- **Build.** The service never reads home paths: the client lists the directory over NFSP and passes each file either as
+  an `obj_id` — only a named-store FileObject (`cyfile:…`, e.g. a file the file service holds as an object), which the
+  service authorizes at the NDM gateway with the caller's token (as `asset.import_object`), stages and reads — or as
+  `base64` bytes the client read over NFSP with its own session (≤ 4 MiB per build). Files of a native home folder take
+  the second way: the `obj_id` NFSP reports for them, when it reports one, is a `sha256:` content hash, not an object
+  the service can fetch. Then: parse and check `component.json` and the entry files, compose
+  the definition, check compatibility with the instances (below), and commit once — folder (when missing), directory
+  (`entity.create` or `dir.replace`), definition (`entity.create` or `set_keys` / `unset_keys`), `entity.set_derived` —
+  with read-set preconditions on the definition's and the directory's `content_rev` (`expect`). Nothing is committed
+  on any failure. `dry_run` stops before staging and answers the diagnostics.
+- **Base revisions (git-like).** A build of an identity that already exists in the folder needs `expect` (the revisions
+  the client last built or pulled: `def_rev`, `dir_rev`) or `force: true`; without either it is `REVISION_CONFLICT` /
+  `BUILD_BASE_REQUIRED`, with stale ones `REVISION_CONFLICT` / `BUILD_BASE_STALE` (`data: { def_entity_id, def_rev,
+  dir_rev }`): pull, merge, build again.
+- **Diagnostics.** A failed build is `BUILD_FAILED` with `data.diagnostics: [{ file, line?, col?, severity: error |
+  warning, message, instances? }]` (JSON syntax errors carry line and column).
+- **Compatibility with instances.** Rebuilding an identity that Cells use fails when it narrows their contract:
+  `kind` changes, `accepts` loses a type, a binding disappears or becomes required, `config_schema.required` gains a
+  name; the diagnostic lists the Cells (`instances`). Migration is the user's (P2).
+- **Input digest.** `sha256:` of the canonical JSON `{ files: [[name, obj_id], …] (sorted by name; inline files by the
+  `obj_id` of their bytes), manifest_version, builder_version }`; `builder_version` is `aiws-ext-build/1`.
+- **Pull** is client-side: `ext.export { purpose: pull }` names the files (a definition that was never built from
+  source — a wish result, a template — answers synthesized `component.json` and entry files as `text`), the client
+  fetches `obj_id` files from `GET /kapi/aiworkspace/asset/<ws>/<obj_id>` and writes them into home over NFSP, and keeps
+  `{ workspace_id, def_entity_id, def_rev, dir_rev }` in `.aiws-build.json` for its next build.
+- **Import.** `ext.import` builds each item from the library files (no gateway round trip: they are in the service's
+  store) with `provenance { pkg_id, version, digest }`. An identity already in the folder with the same provenance is
+  `satisfied` (no change); with other content it is `INVALID_OPERATION` / `EXT_IDENT_EXISTS` (P0 refuses other source
+  versions; local changes are never overwritten). Across Zones the client takes `ext.library_bundle` from its own
+  Zone and calls the target's `ext.build` with `base64` files and `provenance`.
+
+### AIWS manifest and the `aiws` package
+
+A bundle (and the `aiws` sub-package of a `.pikg`) is `aiws-manifest.json` plus `controls/<dir>/<file>`
+([schemas/aiws-manifest.schema.json](schemas/aiws-manifest.schema.json)):
+
+```json
+{ "manifest_version": 1, "purpose": "aiws", "host_api": { "html": 1, "declarative": 1 },
+  "controls": [{ "ident": "did:bns:alice#kpi-card", "name": "kpi-card", "kind": "declarative", "version": 3,
+                 "digest": "sha256:…", "dir": "controls/kpi-card/", "title": "KPI card" }],
+  "workspace_templates": [] }
+```
+
+`digest` is `sha256:` of the canonical JSON `[[file name, sha256 hex of its bytes], …]` sorted by name: an installer
+recomputes it from the files. `workspace_templates` is reserved (Q13); a manifest naming any is refused until
+templates exist. The PIKG side: AppDoc `app_type: "aiws"`, exactly one sub-package `pkg_list.aiws` (payload
+`aiws.tar.gz` = the bundle), no docker / web / native packages; the package id is the AppId of the AppDoc `did`, its
+version the AppDoc `version`. Installing one (`buckyos app install x.pikg` → control panel → `ext.install` with
+`mode: installer`; or `ext.install` with `mode: dev` from a client) creates no AppSpec and starts nothing; the
+library records it. The same package id at the same version with other content is refused
+(`LIBRARY_PACKAGE_INVALID`); a new version replaces the old one in the library (Workspaces keep their copies).
+
+CLI (`buckyos aiws`, buckyos-websdk `cli/modules/aiws.ts`; `aiws import` / `aiws export` stay the Block-control outline
+verbs): `build <dir> --workspace <ws> [--folder <id>] [--watch] [--dry-run] [--force] [--zone-path]` (`<dir>` is a local
+folder when one exists there — its files go inline — or a Zone path, e.g. `/home/alice/AI Workspace/Demo/controls/kpi-card`;
+`.aiws-build.json` there keeps the base; `--watch` follows a Zone folder), `pull <def> --workspace <ws> --out <dir>
+[--local]`, `ext-export <def,…> --workspace <ws> --out <local dir> [--name <pkg>] [--version <v>] [--owner <did>]
+[--pikg] [--install]` (writes `<out>/aiws/`, then `pikg init/build/pack` in `<out>`; `--install` binds the `.pikg`
+into your `user/aiworkspace/<you>/exports` bucket and calls `ext.install`), `library list | install <file.pikg> | remove
+<pkg_id>`, `ext-import <pkg_id>#<ident>,… --workspace <ws> [--folder <id>]`; `pikg init --kind aiws-controls` writes a
+package skeleton with one declarative control, and `pikg build` / `pack` / `info` check an `aiws` bundle as the library
+does. The drivers are buckyos-websdk `src/aiws_ext.ts` (shared with the Desktop).
+
 ## Ink (手写笔, `notepads/aiworkspace-handwriting-todo.md` D0)
 
 A pen stroke is drawn as one or more Cells with `view { type: "ink", version: 1 }` on a free Surface — one per
@@ -597,6 +746,7 @@ lands. The list is `server/src/lib.rs` `METHOD_LEVELS`; this table mirrors it.
 | `control.list`, `control.describe` | experimental | `kind` (describe) — the Block-control catalogue (`aiws/controls.json`: kind, summary, when, formats; describe adds the `agent` self-description) |
 | `control.import` | experimental | `parent_id`, `kind?` (`mindmap`), `format?` (`markdown` \| `opml`), `text`, `at? { x, y }`, `title?`, `config?`, `idempotency_key?` — a new control holding the outline, one Commit as the caller (its answer plus `container_id`, `nodes`) |
 | `control.export` | experimental | `entity_id`, `format?` — the control's Blocks as a Markdown outline or OPML (`text`), all expanded |
+| `ext.build`, `ext.export`, `ext.install`, `ext.list_library`, `ext.uninstall`, `ext.library_bundle`, `ext.import` | experimental | see “Extension controls” |
 | `lock.acquire` / `lock.renew` / `lock.release` / `lock.break` / `lock.list` | stable | `entity_ids[]`, `session_id`; `lock_ids[]`; `entity_id` |
 | `show.start` / `show.heartbeat` / `show.publish` / `show.command` / `show.watch` / `show.notes` / `show.end` | internal | see “Non-public shows” |
 | `diag.list_unretained`, `diag.verify_refs` | internal | |

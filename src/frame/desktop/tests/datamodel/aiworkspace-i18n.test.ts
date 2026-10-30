@@ -23,6 +23,7 @@ import * as common from '../../src/i18n/aiworkspace/common.ts'
 import * as core from '../../src/i18n/aiworkspace/core.ts'
 import * as data from '../../src/i18n/aiworkspace/data.ts'
 import * as demos from '../../src/i18n/aiworkspace/demos.ts'
+import * as ext from '../../src/i18n/aiworkspace/ext.ts'
 import * as pdf from '../../src/i18n/aiworkspace/pdf.ts'
 import * as presentation from '../../src/i18n/aiworkspace/presentation.ts'
 import * as richtext from '../../src/i18n/aiworkspace/richtext.ts'
@@ -45,6 +46,7 @@ const PARTS: Part[] = [
   { name: 'core', prefixes: ['core'], ...core },
   { name: 'pdf', prefixes: ['pdf'], ...pdf },
   { name: 'demos', prefixes: ['demo'], ...demos },
+  { name: 'ext', prefixes: ['ext'], ...ext },
 ]
 
 const ROOT = new URL('../../', import.meta.url).pathname

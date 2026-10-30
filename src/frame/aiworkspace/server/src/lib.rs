@@ -6,6 +6,7 @@
 pub mod auth;
 pub mod buckets;
 pub mod control;
+pub mod ext;
 pub mod obj_provider;
 pub mod pages;
 pub mod show;
@@ -74,6 +75,8 @@ pub struct AppState {
     heads: Arc<Mutex<HashMap<String, watch::Sender<u64>>>>,
     /// The NDM gateway (nfs-server origin) that judges whether a caller may read an object it asks to import.
     pub ndm_gateway: std::sync::OnceLock<String>,
+    /// Each user's control library (扩展控件 P0, A5): `library.sqlite` in the data folder, files in the `library` buckets.
+    pub library: aiworkspace_store::library::Library,
 }
 
 impl AppState {
@@ -109,7 +112,8 @@ impl AppState {
                 }
             }));
         }));
-        Arc::new(AppState { svc, auth, limits, wish: wish::WishRuntime::new(wish), shows: show::Shows::default(), heads, ndm_gateway: std::sync::OnceLock::new() })
+        let library = aiworkspace_store::library::Library::open(&svc.data_dir.join("library.sqlite"), svc.objects.clone()).expect("the control library database opens");
+        Arc::new(AppState { svc, auth, limits, wish: wish::WishRuntime::new(wish), shows: show::Shows::default(), heads, ndm_gateway: std::sync::OnceLock::new(), library })
     }
 
     pub fn with_ws<T>(&self, id: &str, f: impl FnOnce(&mut Workspace) -> WsResult<T>) -> WsResult<T> {
@@ -358,6 +362,10 @@ pub(crate) async fn krpc(State(state): State<Arc<AppState>>, body: bytes::Bytes)
         join_entry(&state, &params, caller.as_ref().expect("authenticated above")).await
     } else if method == "asset.import_object" {
         import_asset_object(&state, &params, caller.as_ref().expect("authenticated above"), req["sys"][1].as_str().unwrap_or_default()).await
+    } else if method == "ext.build" {
+        ext::build(&state, &params, caller.as_ref().expect("authenticated above"), req["sys"][1].as_str().unwrap_or_default()).await
+    } else if method == "ext.install" {
+        ext::install(&state, &params, caller.as_ref().expect("authenticated above"), req["sys"][1].as_str().unwrap_or_default()).await
     } else if method == "ws.import" {
         import_package(&state, &params, caller.as_ref().expect("authenticated above"), req["sys"][1].as_str().unwrap_or_default()).await
     } else {
@@ -491,6 +499,13 @@ pub const METHOD_LEVELS: &[(&str, &str)] = &[
     ("control.describe", "experimental"),
     ("control.import", "experimental"),
     ("control.export", "experimental"),
+    ("ext.build", "experimental"),
+    ("ext.export", "experimental"),
+    ("ext.install", "experimental"),
+    ("ext.list_library", "experimental"),
+    ("ext.uninstall", "experimental"),
+    ("ext.library_bundle", "experimental"),
+    ("ext.import", "experimental"),
 ];
 
 /// Synchronous method dispatch. Every method authorizes against the grants of
@@ -545,6 +560,8 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
         "control.describe" => control::describe(s(p, "kind")?)?,
         "control.import" => state.with_ws(ws_id()?, |ws| control::import(ws, caller, p))?,
         "control.export" => state.with_ws(ws_id()?, |ws| control::export(ws, caller, p))?,
+        // extension controls (扩展控件 P0): the Workspace's definitions and the caller's library
+        m if m.starts_with("ext.") => ext::dispatch(state, m, p, caller)?,
         "doc.resolve" => state.with_ws(ws_id()?, |ws| ws.resolve(caller, p.get("reference"), p.get("path").and_then(Value::as_str)))?,
         "doc.read" => state.with_ws(ws_id()?, |ws| match p.get("targets").and_then(Value::as_array) {
             // batch form: each item succeeds or fails on its own

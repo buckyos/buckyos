@@ -163,7 +163,12 @@ impl Authenticator for RuntimeAuth {
             TokenPrincipalKind::Agent => Caller::agent(&principal),
             _ => Caller::service(&principal),
         };
-        caller.app_id = Some(claims.target.canonical_key());
+        // a service names itself in `appid` (kernel and frame services sign in with the device as subject); anyone
+        // else is recorded with the target the session was issued for
+        caller.app_id = match (&caller.class, verified.appid.as_deref().filter(|a| !a.is_empty())) {
+            (aiworkspace_store::CallerClass::Service, Some(app)) => Some(app.to_string()),
+            _ => Some(claims.target.canonical_key()),
+        };
         caller.auth_method = token_auth_method(&verified).map(|m| m.as_str().to_string());
         Ok(caller)
     }

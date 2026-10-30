@@ -178,6 +178,20 @@ impl Srv {
         r
     }
 
+    /// The three-state result of a Commit, whatever it is.
+    pub async fn commit_raw(&self, ops: Value) -> Value {
+        static K: AtomicU64 = AtomicU64::new(0);
+        let info = self.rpc("ws.get_info", json!({})).await;
+        self.rpc("doc.commit", json!({ "protocol_version": "1.0", "epoch": info["epoch"], "idempotency_key": format!("raw{}", K.fetch_add(1, Ordering::SeqCst)), "session_id": "s1", "operations": ops })).await
+    }
+
+    /// `GET /asset/<ws>/<object_id>` as alice.
+    pub async fn asset_bytes(&self, ws: &str, object_id: &str) -> Vec<u8> {
+        let r = self.http.get(format!("{}/asset/{ws}/{object_id}", self.base)).bearer_auth("tok-alice").send().await.unwrap();
+        assert!(r.status().is_success(), "asset {object_id}: {}", r.status());
+        r.bytes().await.unwrap().to_vec()
+    }
+
     /// Start a stage and wait until it leaves the working states.
     pub async fn run(&self, program: &str, params: Value) -> Value {
         static K: AtomicU64 = AtomicU64::new(0);

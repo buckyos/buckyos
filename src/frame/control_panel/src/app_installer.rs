@@ -1411,6 +1411,10 @@ impl AppInstaller {
                     sub_pkgs,
                 })
             }
+            // control packages are packed by the CLI (`pikg init --kind aiws-controls`) or exported from a Workspace
+            AppType::Aiws => Err(RPCErrors::ReasonError(
+                "AI Workspace control packages are built with `buckyos pikg` (kind aiws-controls) or exported from a Workspace, not published from a folder".to_string(),
+            )),
             AppType::Service => unreachable!(),
         }
     }
@@ -2035,6 +2039,8 @@ impl AppSubmitOrigin {
 pub(crate) enum AppSubmitRoute {
     Install,
     RegisterAgentTemplate,
+    /// An `aiws` package goes into the submitter's AI Workspace control library (`aiws_pkg.rs`).
+    RegisterAiwsPackage,
     Reject,
 }
 
@@ -2045,6 +2051,8 @@ pub(crate) fn app_submit_route(app_type: AppType, origin: AppSubmitOrigin) -> Ap
         (AppType::Agent, AppSubmitOrigin::Rpc) => AppSubmitRoute::RegisterAgentTemplate,
         (AppType::Agent, AppSubmitOrigin::Preinstall) => AppSubmitRoute::Reject,
         (AppType::Agent, AppSubmitOrigin::AgentRuntime) => AppSubmitRoute::Install,
+        (AppType::Aiws, AppSubmitOrigin::Rpc) => AppSubmitRoute::RegisterAiwsPackage,
+        (AppType::Aiws, _) => AppSubmitRoute::Reject,
         (_, AppSubmitOrigin::AgentRuntime) => AppSubmitRoute::Reject,
         _ => AppSubmitRoute::Install,
     }
@@ -3910,12 +3918,16 @@ impl ControlPanelServer {
                     .await?;
                 return Ok(RPCResponse::new(RPCResult::Success(result), req.seq));
             }
+            AppSubmitRoute::RegisterAiwsPackage => {
+                let result = self.register_aiws_package(&req, principal, &inspection).await?;
+                return Ok(RPCResponse::new(RPCResult::Success(result), req.seq));
+            }
             AppSubmitRoute::Reject => {
                 return Err(Self::install_error_to_rpc(buckyos_api::InstallError::new(
                     buckyos_api::InstallStage::Inspect,
                     buckyos_api::InstallErrorCode::ConfigBlocked,
                     false,
-                    "Agent templates cannot be pre-installed as Apps, and Agent runtime installs must be Agent Apps",
+                    "Agent templates and AI Workspace control packages are not pre-installed as Apps, and Agent runtime installs must be Agent Apps",
                 )));
             }
         }
@@ -4734,6 +4746,18 @@ mod submit_action_tests {
         assert_eq!(
             app_submit_route(AppType::AppService, AppSubmitOrigin::Preinstall),
             AppSubmitRoute::Install
+        );
+        assert_eq!(
+            app_submit_route(AppType::Aiws, AppSubmitOrigin::Rpc),
+            AppSubmitRoute::RegisterAiwsPackage
+        );
+        assert_eq!(
+            app_submit_route(AppType::Aiws, AppSubmitOrigin::Preinstall),
+            AppSubmitRoute::Reject
+        );
+        assert_eq!(
+            app_submit_route(AppType::Aiws, AppSubmitOrigin::AgentRuntime),
+            AppSubmitRoute::Reject
         );
         assert_eq!(
             app_submit_route(AppType::Web, AppSubmitOrigin::AgentRuntime),

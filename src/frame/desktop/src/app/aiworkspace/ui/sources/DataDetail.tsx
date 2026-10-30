@@ -1,6 +1,7 @@
 /* The middle column of the data-source view (phase two §6.1): the data itself, editable without a
  * Block, through the same editors the Blocks activate; plus the relations / dependencies tab. */
 
+import { useShell } from '../shell/shellContext'
 import { useCallback, useState } from 'react'
 import type { ReadOk } from '../../api/session'
 import type { BlockDefRead, EntityEnvelope, Reference } from '../../api/types'
@@ -91,13 +92,15 @@ function FolderDetail({ entity }: { entity: EntityEnvelope }) {
 }
 
 function BlockDefDetail({ entity }: { entity: EntityEnvelope }) {
-  const { t, tNode, list } = useAiwsText()
+  const { t, tNode, list, dateTime } = useAiwsText()
   const store = useStore()
+  const shell = useShell()
   const version = useVersion(`e:${entity.entity_id}`)
   const load = useCallback(() => store.session.read<BlockDefRead>(entity.entity_id), [store, entity.entity_id])
   const read = useLoad<ReadOk<BlockDefRead>>(load, version)
   if (!read.data) return <div className="aiws-muted">{read.error ?? t('aiworkspace.data.detail.defLoading')}</div>
   const payload = read.data.content.payload
+  const build = (read.data.derived as { build?: { built_at: string } } | null | undefined)?.build
   const users = store.outline.all().filter((e) => e.type_id === 'buckyos.cell' && e.def_id === entity.entity_id && !e.deleted)
   return (
     <div className="aiws-def-detail" data-testid="aiws-def-detail">
@@ -106,7 +109,11 @@ function BlockDefDetail({ entity }: { entity: EntityEnvelope }) {
         kind: payload.kind === 'html' ? t('aiworkspace.data.detail.defHtml') : t('aiworkspace.data.detail.defDeclarative'), accepts: list(payload.accepts ?? []),
       })}</div>
       {payload.description && <div className="aiws-muted">{payload.description}</div>}
+      {payload.ident && <div className="aiws-muted" data-testid="aiws-def-ident">{t('aiworkspace.data.detail.defIdent', { ident: `${payload.ident.author_did}#${payload.ident.name}` })}</div>}
+      {payload.provenance?.pkg_id && <div className="aiws-muted">{t('aiworkspace.data.detail.defProvenance', { pkg: `${payload.provenance.pkg_id} ${payload.provenance.version ?? ''}` })}</div>}
+      {build && <div className="aiws-muted">{t('aiworkspace.data.detail.defBuilt', { at: dateTime(build.built_at) })}</div>}
       <div className="aiws-muted">{t('aiworkspace.data.detail.defUsers', { count: users.length })}</div>
+      <button type="button" className="aiws-link" data-testid="aiws-def-manage" onClick={() => shell.openDialog({ kind: 'extensions', defId: entity.entity_id })}>{t('aiworkspace.ext.manage')}</button>
       {payload.kind === 'html' && <div className="aiws-warning">{t('aiworkspace.data.detail.defHtmlRisk')}</div>}
       <details><summary>{t('aiworkspace.data.detail.defShow')}</summary><pre className="aiws-raw">{JSON.stringify(payload.kind === 'html' ? { ...payload, html: { ...payload.html, js: t('aiworkspace.data.detail.defChars', { count: payload.html?.js?.length ?? 0 }) } } : payload, null, 2)}</pre></details>
     </div>

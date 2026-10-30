@@ -210,7 +210,7 @@ impl RefEdge {
     }
     /// The frozen reference catalogue (内核架构改进 D05, §5.2): every kind names its version selection
     /// (`live` follows the target, `fixed` names a content) and its integrity (`strong` keeps the target
-    /// alive, `weak` may dangle). `REF_KINDS` is what `schemas/references.json` and the README mirror.
+    /// alive, `weak` may dangle). `REF_KINDS` is what the README (“References”) mirrors.
     pub const KINDS: &'static [(&'static str, &'static str, &'static str, &'static str)] = REF_KINDS;
 
     pub fn mode(&self) -> &'static str {
@@ -238,6 +238,7 @@ pub const REF_KINDS: &[(&str, &str, &str, &str)] = &[
     ("def", "live", "strong", "a Block uses this Block definition"),
     ("asset", "fixed", "strong", "an AssetRef or a directory member names this content object"),
     ("member", "live", "strong", "a resource directory holds this child directory"),
+    ("def_source", "live", "strong", "a Block definition's build source snapshot (a resource directory; extension controls P0)"),
     ("object_link", "live", "weak", "an inline link in a rich text (dead when the target goes)"),
     ("input", "live", "weak", "a wish reads this entity"),
     ("derived", "fixed", "weak", "a result was generated from this version of the entity"),

@@ -2,7 +2,7 @@
 
 日期：2026-10-29
 
-状态：**未开工**。依据 [doc/workspace/BuckyOS AI Workspace 扩展实现思路.md](<../doc/workspace/BuckyOS AI Workspace 扩展实现思路.md>) v0.8（D1–D8、§7.4 A1–A7 与 Q18 / Q19 全部已裁决，§7.5 影响评估）推导 §8 的 P0。第 2 节“现状”是 2026-10-29 对源码的核对（基线 `688df1577` + 未提交集），实施前重新核对当前分支。组合控件（composite）、HTML `parent`、事件绑定、来源包升级、模板包创建都不在本单（§8 P1–P3）。
+状态：**2026-10-30 M0–M5 已实施（未提交），M6 手册已改、真实 Zone DV 见 §12**。实施中与本单的出入见 §12.1。原状态：未开工。依据 [doc/workspace/BuckyOS AI Workspace 扩展实现思路.md](<../doc/workspace/BuckyOS AI Workspace 扩展实现思路.md>) v0.8（D1–D8、§7.4 A1–A7 与 Q18 / Q19 全部已裁决，§7.5 影响评估）推导 §8 的 P0。第 2 节“现状”是 2026-10-29 对源码的核对（基线 `688df1577` + 未提交集），实施前重新核对当前分支。组合控件（composite）、HTML `parent`、事件绑定、来源包升级、模板包创建都不在本单（§8 P1–P3）。
 
 目标：跑通“在 home 目录写一个 render 控件 → build 进自己的 Workspace 调试 → 多选导出为本机全局可用或 `.pikg` → 另一个用户在另一个 Workspace 引入并实例化”的完整路径；两条实现路线中只交付 render-block（declarative / html），但所有契约为组合控件留位。
 
@@ -56,76 +56,76 @@
 
 目标：下面每个名字在 M0 结束后不再变；写进 aiworkspace README 协议表与 `schemas/`。
 
-- [ ] **`component.json`**（`manifest_version: 1`）：`ident { author_did, name }`、`kind: declarative｜html`、`title`、`description`、`host_api`（最低宿主 API，html 对应 `api_version`）、`accepts`、`allow_no_source`、`default_size`、`config_schema`（A7 子集）、`bindings: { <name>: { accepts, required, description } }`、`entry`（html: `{ html, css?, js? }` 文件名；declarative: 文件名）、`assets[]`、`catalog { group, icon?, description }`、`agent`（Markdown 文件名）、`deps[]`（P0 必须为空，占位）。写 JSON Schema 到 `schemas/component.schema.json`，共享 TS 与 Rust 各一份校验（Rust 在 build 服务端，TS 在客户端预检与 `pikg` 校验）。
-- [ ] **block-def payload 新键**：`ident`、`manifest_version`、`source { entity_id }`（源码快照 dir）、`bindings`（声明）、`catalog`、`agent`、`provenance { pkg_id?, version?, digest? }`；`derived.build { input_digest, builder_version, built_at }`。`ident` 字符串形式 `<author_did>#<name>` 同时作实体 `name`。
-- [ ] **`ext.build`**：入参 `{ workspace_id, folder_id（默认 data/extensions）, files: [{ name, obj_id }], expect?: { def_rev?, dir_rev? }, provenance?, dry_run? }`；出参成功 `{ commit, def_entity_id, build: derived.build, diagnostics: [] }`，失败 `{ code: BUILD_FAILED, diagnostics: [{ file, line?, col?, severity, message }] }`，无部分提交。输入摘要 = 文件 `obj_id` 排序串接 + `manifest_version` + `builder_version`。
-- [ ] **`ext.export`**：入参 `{ workspace_id, entity_ids[] }`；出参 bundle 清单 `{ aiws_manifest, files: [{ path, obj_id, size }] }`，客户端经 `GET /kapi/aiworkspace/asset/<ws>/<obj_id>` 取字节。缺依赖 / 未 build 改动（客户端比对 home）各自报错，不生成半套。
-- [ ] **AIWS 清单 `aiws-manifest.json`**（`manifest_version: 1`，Q13）：`purpose: "aiws"`、`host_api`、`controls: [{ ident, kind, version, digest, dir: "controls/<name>/" }]`、`workspace_templates: []`（预留）。包内布局 `controls/<name>/component.json + 文件`。
-- [ ] **`ext.install` / `ext.list_library` / `ext.import`**：`install { pikg: { bucket_id, key } | { obj_id }, mode: "installer" | "dev" }` 校验 AppDoc(`aiws`) + 清单后登记；`list_library {}` → `[{ pkg_id, version, author, controls: [...] }]`；`import { workspace_id, folder_id, items: [{ pkg_id, ident }] }` 同 Zone 服务端复用 build 内部路径（文件已在本机库 bucket）。跨 Zone：客户端 `ext.library_bundle { pkg_id }` 取清单后对目标 Workspace 调 `ext.build`（带 `provenance`）。
-- [ ] **PIKG `aiws` 类型**：AppDoc `app_type: "aiws"`、`pkg_list.aiws` 单子包、`categories[0] = "aiws"`；Rust / TS 两端规则一致；准入只允许 Rpc 提交。
-- [ ] **CLI 动词**：`buckyos aiws build <dir> --workspace <ws> [--watch] [--dry-run]`、`aiws pull <def> --workspace <ws> --out <dir>`、`aiws export --workspace <ws> <def...> --out <dir> [--install]`、`aiws library list`、`aiws import --workspace <ws> <pkg_id>#<ident>...`、`pikg init --kind aiws-controls`。
-- [ ] **权限表**：build / import = 目标 folder `structure` + 已有定义 `update`；export = `export`；install(dev) = 调用者本人；list_library = 任意登录用户看自己的库。
-- [ ] `schemas/` 追到 PROTOCOL 1.1（selector 枚举、`protocol_version`、删 `references.json` 引用）；`core/tests/schemas.rs` 加对 `commit-request.schema.json` 的一致性检查。README 协议表加 `ext.*`。
+- [x] **`component.json`**（`manifest_version: 1`）：`ident { author_did, name }`、`kind: declarative｜html`、`title`、`description`、`host_api`（最低宿主 API，html 对应 `api_version`）、`accepts`、`allow_no_source`、`default_size`、`config_schema`（A7 子集）、`bindings: { <name>: { accepts, required, description } }`、`entry`（html: `{ html, css?, js? }` 文件名；declarative: 文件名）、`assets[]`、`catalog { group, icon?, description }`、`agent`（Markdown 文件名）、`deps[]`（P0 必须为空，占位）。写 JSON Schema 到 `schemas/component.schema.json`，共享 TS 与 Rust 各一份校验（Rust 在 build 服务端，TS 在客户端预检与 `pikg` 校验）。
+- [x] **block-def payload 新键**：`ident`、`manifest_version`、`source { entity_id }`（源码快照 dir）、`bindings`（声明）、`catalog`、`agent`、`provenance { pkg_id?, version?, digest? }`；`derived.build { input_digest, builder_version, built_at }`。`ident` 字符串形式 `<author_did>#<name>` 同时作实体 `name`。
+- [x] **`ext.build`**：入参 `{ workspace_id, folder_id（默认 data/extensions）, files: [{ name, obj_id }], expect?: { def_rev?, dir_rev? }, provenance?, dry_run? }`；出参成功 `{ commit, def_entity_id, build: derived.build, diagnostics: [] }`，失败 `{ code: BUILD_FAILED, diagnostics: [{ file, line?, col?, severity, message }] }`，无部分提交。输入摘要 = 文件 `obj_id` 排序串接 + `manifest_version` + `builder_version`。
+- [x] **`ext.export`**：入参 `{ workspace_id, entity_ids[] }`；出参 bundle 清单 `{ aiws_manifest, files: [{ path, obj_id, size }] }`，客户端经 `GET /kapi/aiworkspace/asset/<ws>/<obj_id>` 取字节。缺依赖 / 未 build 改动（客户端比对 home）各自报错，不生成半套。
+- [x] **AIWS 清单 `aiws-manifest.json`**（`manifest_version: 1`，Q13）：`purpose: "aiws"`、`host_api`、`controls: [{ ident, kind, version, digest, dir: "controls/<name>/" }]`、`workspace_templates: []`（预留）。包内布局 `controls/<name>/component.json + 文件`。
+- [x] **`ext.install` / `ext.list_library` / `ext.import`**：`install { pikg: { bucket_id, key } | { obj_id }, mode: "installer" | "dev" }` 校验 AppDoc(`aiws`) + 清单后登记；`list_library {}` → `[{ pkg_id, version, author, controls: [...] }]`；`import { workspace_id, folder_id, items: [{ pkg_id, ident }] }` 同 Zone 服务端复用 build 内部路径（文件已在本机库 bucket）。跨 Zone：客户端 `ext.library_bundle { pkg_id }` 取清单后对目标 Workspace 调 `ext.build`（带 `provenance`）。
+- [x] **PIKG `aiws` 类型**：AppDoc `app_type: "aiws"`、`pkg_list.aiws` 单子包、`categories[0] = "aiws"`；Rust / TS 两端规则一致；准入只允许 Rpc 提交。
+- [x] **CLI 动词**：`buckyos aiws build <dir> --workspace <ws> [--watch] [--dry-run]`、`aiws pull <def> --workspace <ws> --out <dir>`、`aiws export --workspace <ws> <def...> --out <dir> [--install]`、`aiws library list`、`aiws import --workspace <ws> <pkg_id>#<ident>...`、`pikg init --kind aiws-controls`。
+- [x] **权限表**：build / import = 目标 folder `structure` + 已有定义 `update`；export = `export`；install(dev) = 调用者本人；list_library = 任意登录用户看自己的库。
+- [x] `schemas/` 追到 PROTOCOL 1.1（selector 枚举、`protocol_version`、删 `references.json` 引用）；`core/tests/schemas.rs` 加对 `commit-request.schema.json` 的一致性检查。README 协议表加 `ext.*`。
 
 完成条件：README + schemas 一次 review 通过；本单后续 M 不再改名字。
 
 ## 4. M1：内核
 
-- [ ] `validate_block_def` 新键与校验：`ident`（DID 格式 + name 正则 + 字符串 ≤ 128）、`manifest_version`（正整数，≤ 当前）、`source` 引用必须是活的 `buckyos.dir`、`bindings` 声明形状、`catalog` / `agent` 大小上限、`provenance` 形状；总大小仍 ≤ 512 KiB。
-- [ ] 引用边：`source` → dir 记为强边 `source`（阻止删 dir、进导出闭包）；`model.rs` 强边表加入；`check_ref_target` 覆盖。
-- [ ] `outline_extras` 投影 `ident`、`manifest_version`、`provenance.pkg_id`。
-- [ ] 许愿格 `plan_html` 补 `ident` 与 `manifest_version`（不改落点）。
-- [ ] 测试：`core/tests/extension.rs`（新键校验、source 边删除保护、ident 作 name 的同级唯一冲突、旧 payload（无新键）仍可读）；重建 WASM；`stable-methods.json` 重录。
+- [x] `validate_block_def` 新键与校验：`ident`（DID 格式 + name 正则 + 字符串 ≤ 128）、`manifest_version`（正整数，≤ 当前）、`source` 引用必须是活的 `buckyos.dir`、`bindings` 声明形状、`catalog` / `agent` 大小上限、`provenance` 形状；总大小仍 ≤ 512 KiB。
+- [x] 引用边：`source` → dir 记为强边 `source`（阻止删 dir、进导出闭包）；`model.rs` 强边表加入；`check_ref_target` 覆盖。
+- [x] `outline_extras` 投影 `ident`、`manifest_version`、`provenance.pkg_id`。
+- [x] 许愿格 `plan_html` 补 `ident` 与 `manifest_version`（不改落点）。
+- [x] 测试：`core/tests/extension.rs`（新键校验、source 边删除保护、ident 作 name 的同级唯一冲突、旧 payload（无新键）仍可读）；重建 WASM；`stable-methods.json` 重录。
 
 完成条件：`cargo test -p aiworkspace-core -p aiworkspace-store -p aiworkspace` 全绿；旧 fixture 全部仍能导入。
 
 ## 5. M2：服务
 
-- [ ] `server/src/ext.rs`：`ext.build`：按清单逐文件 `authorize_object` + 网关取字节（并发、总大小上限沿用 32 MiB/文件与 512 KiB 定义上限）→ 解析 `component.json`（Rust 校验器）→ 组装定义 payload（html 内联 / declarative 内联）→ `ws.stage_object` 每个文件 → 一次 commit：定义 create / set_keys（`expect`）、`dir.replace`（`expect`）、`entity.set_derived build`（系统主体，同一 commit）→ 返回。`dry_run` 只返回诊断。
-- [ ] 依赖者兼容检查钩子：P0 只对“同身份已有定义”检查 `accepts` / 必填 `bindings` / `config_schema.required` 的收窄，列出引用实例（`ws.list_referrers`）并失败；composite 依赖留接口。
-- [ ] `ext.export`：从定义 + `source` dir + `closure` 算文件清单，生成 `aiws-manifest.json` 内容（服务端算 digest），返回清单；不写任何桶。
-- [ ] 本机库：`ext.install`（读 PIKG：复用 `control_panel` 的 reader 逻辑能否 crate 化，否则在服务内按 `format.md` 解析 zip + `PACKAGE_META`；校验 AppDoc `aiws` + 清单 + 每控件 `component.json`；文件入服务自有 bucket `aiws_library`，索引进服务 SQLite 表 `library_packages / library_controls`）；`ext.list_library`；`ext.library_bundle`；`ext.import`（同 Zone：从库 bucket 取文件走 build 内部路径，带 `provenance`）。
-- [ ] 方法表登记 `experimental`；错误码 `BUILD_FAILED`、`LIBRARY_PACKAGE_INVALID` 进 `error-codes.json` 与 `Code::ALL`。
-- [ ] 测试：`server/tests/ext_build.rs`（成功 / 校验失败不提交 / 旧基线 `expect` 冲突 / 收窄 bindings 列出实例 / dry_run）、`ext_export.rs`（闭包与清单 digest）、`ext_library.rs`（install → list → import 同 Zone）。
+- [x] `server/src/ext.rs`：`ext.build`：按清单逐文件 `authorize_object` + 网关取字节（并发、总大小上限沿用 32 MiB/文件与 512 KiB 定义上限）→ 解析 `component.json`（Rust 校验器）→ 组装定义 payload（html 内联 / declarative 内联）→ `ws.stage_object` 每个文件 → 一次 commit：定义 create / set_keys（`expect`）、`dir.replace`（`expect`）、`entity.set_derived build`（系统主体，同一 commit）→ 返回。`dry_run` 只返回诊断。
+- [x] 依赖者兼容检查钩子：P0 只对“同身份已有定义”检查 `accepts` / 必填 `bindings` / `config_schema.required` 的收窄，列出引用实例（`ws.list_referrers`）并失败；composite 依赖留接口。
+- [x] `ext.export`：从定义 + `source` dir + `closure` 算文件清单，生成 `aiws-manifest.json` 内容（服务端算 digest），返回清单；不写任何桶。
+- [x] 本机库：`ext.install`（读 PIKG：复用 `control_panel` 的 reader 逻辑能否 crate 化，否则在服务内按 `format.md` 解析 zip + `PACKAGE_META`；校验 AppDoc `aiws` + 清单 + 每控件 `component.json`；文件入服务自有 bucket `aiws_library`，索引进服务 SQLite 表 `library_packages / library_controls`）；`ext.list_library`；`ext.library_bundle`；`ext.import`（同 Zone：从库 bucket 取文件走 build 内部路径，带 `provenance`）。
+- [x] 方法表登记 `experimental`；错误码 `BUILD_FAILED`、`LIBRARY_PACKAGE_INVALID` 进 `error-codes.json` 与 `Code::ALL`。
+- [x] 测试：`server/tests/ext_build.rs`（成功 / 校验失败不提交 / 旧基线 `expect` 冲突 / 收窄 bindings 列出实例 / dry_run）、`ext_export.rs`（闭包与清单 digest）、`ext_library.rs`（install → list → import 同 Zone）。
 
 完成条件：用测试里的最小 declarative 与 html 控件，build 后 `doc.read` 出的定义能被 Desktop 现有 `resolve` 解析。
 
 ## 6. M3：websdk 与 CLI
 
-- [ ] `AiWorkspaceClient` 补 `getChanges`、`waitChanges`、`assetImportObject`、`exportDoc`、`ext*` 全部封装；`controls*` 顺带补。
-- [ ] 共享模块 `buckyos-websdk/src/aiws_ext.ts`（Desktop 与 CLI 共用）：`collectSources(nfsp, dir)`（`list` 递归、取 `attrs.obj_id`，遇 live 节点等待 / `stat` 重试并报“文件尚未落对象”）、`build(client, ws, files, opts)`、`pull(client, nfsp, ws, defId, outDir)`（`doc.read` dir 成员 → asset GET → `uploadFile`）、`watch(nfsp, dir, onChange)`（SSE + debounce 500 ms + 内容摘要相同不 build）、`exportBundle(client, nfsp, ws, ids, outDir)`（取清单与字节、写 `aiws-manifest.json` 与 `controls/<name>/`）、`compatCheck(manifest)`（Q19：旧 `manifest_version` 升格读取）。
-- [ ] CLI `aiws.ts` 加 M0 动词；参照 `share.ts` 建 `NfspClient`；`export --install` = bundle → `pikg pack` → `ext.install { mode: dev }`。
-- [ ] `pikg_protocol.ts`：`app_type` 加 `aiws`；AppDoc 规则：`pkg_list.aiws` 单子包、无 docker / web；pack 时校验子包内 `aiws-manifest.json` 与每个 `component.json`（TS 校验器）。`pikg init --kind aiws-controls` 生成骨架（一个 declarative 样例）。
-- [ ] 单测：`collectSources` live 等待、`compatCheck`、pikg `aiws` 规则、argv。
+- [x] `AiWorkspaceClient` 补 `getChanges`、`waitChanges`、`assetImportObject`、`exportDoc`、`ext*` 全部封装；`controls*` 顺带补。
+- [x] 共享模块 `buckyos-websdk/src/aiws_ext.ts`（Desktop 与 CLI 共用）：`collectSources(nfsp, dir)`（`list` 递归、取 `attrs.obj_id`，遇 live 节点等待 / `stat` 重试并报“文件尚未落对象”）、`build(client, ws, files, opts)`、`pull(client, nfsp, ws, defId, outDir)`（`doc.read` dir 成员 → asset GET → `uploadFile`）、`watch(nfsp, dir, onChange)`（SSE + debounce 500 ms + 内容摘要相同不 build）、`exportBundle(client, nfsp, ws, ids, outDir)`（取清单与字节、写 `aiws-manifest.json` 与 `controls/<name>/`）、`compatCheck(manifest)`（Q19：旧 `manifest_version` 升格读取）。
+- [x] CLI `aiws.ts` 加 M0 动词；参照 `share.ts` 建 `NfspClient`；`export --install` = bundle → `pikg pack` → `ext.install { mode: dev }`。
+- [x] `pikg_protocol.ts`：`app_type` 加 `aiws`；AppDoc 规则：`pkg_list.aiws` 单子包、无 docker / web；pack 时校验子包内 `aiws-manifest.json` 与每个 `component.json`（TS 校验器）。`pikg init --kind aiws-controls` 生成骨架（一个 declarative 样例）。
+- [x] 单测：`collectSources` live 等待、`compatCheck`、pikg `aiws` 规则、argv。
 
 完成条件：不开 Desktop，仅用 CLI 完成 build → export → pack → install(dev) → 在第二个 Workspace import。
 
 ## 7. M4：PIKG / Installer（Rust）
 
-- [ ] `app_doc.rs`：`AppType::Aiws`（`"aiws"`）；builder 规则 `pkg_list.aiws` 必有且唯一；`product.rs` 准入只接受 Rpc。
-- [ ] `app_installer.rs`：`app_submit_route` 加 `Aiws + Rpc → RegisterAiwsPackage`、`Aiws + Preinstall → Reject`；执行时 reader 校验后以安装者身份调 aiworkspace `ext.install { pikg: { obj_id }, mode: "installer" }`；安装记录只在 aiworkspace 库中，不写 `users/{owner}/apps/*`。
-- [ ] `doc/pikg/format.md` §5 加 `aiws` 行；`README.md` 指向本单与设计 §6.9。
-- [ ] 测试：reader 对 `aiws` 包通过 / 篡改清单失败；route 单测。
+- [x] `app_doc.rs`：`AppType::Aiws`（`"aiws"`）；builder 规则 `pkg_list.aiws` 必有且唯一；`product.rs` 准入只接受 Rpc。
+- [x] `app_installer.rs`：`app_submit_route` 加 `Aiws + Rpc → RegisterAiwsPackage`、`Aiws + Preinstall → Reject`；执行时 reader 校验后以安装者身份调 aiworkspace `ext.install { pikg: { obj_id }, mode: "installer" }`；安装记录只在 aiworkspace 库中，不写 `users/{owner}/apps/*`。
+- [x] `doc/pikg/format.md` §5 加 `aiws` 行；`README.md` 指向本单与设计 §6.9。
+- [x] 测试：reader 对 `aiws` 包通过 / 篡改清单失败；route 单测。
 
 完成条件：`buckyos app install <aiws.pikg>` 不产生 AppSpec、不起服务，`ext.list_library` 能看到。
 
 ## 8. M5：Desktop
 
-- [ ] **工作区控件管理页**（数据源模式 `data/extensions/` 入口 + 主菜单“扩展”）：列表（ident、kind、版本、来源、引用实例数）、多选“导出控件…”（bundle → 写 home `exports/` → 调用 CLI 同一共享模块 pack → 可选“全局可用”）、“从本机库添加…”（`ext.list_library` → 多选 → `ext.import`；跨 Zone 时走客户端中转）、“新建控件…”（在 home 建骨架 + 立即 build + 插入测试实例）。
-- [ ] **定义详情**：“编辑控件源码…”（无工作副本先 `pull`，再 `filesOpenLaunch` 打开目录）、“构建”、watch 开关、最近 build 诊断与 `derived.build`、引用实例列表（`ws.list_referrers`）、移除（被引用拒绝）。`user_state` 键 `aiws:src:<defId>`。
-- [ ] **实例初始化表单**（B8）：`InsertCatalog` 对 def 条目按 `config_schema`（A7 子集，`z.fromJSONSchema`）生成字段，按 `bindings` 声明逐项选数据（必填校验），写 Cell `config` 与 `bindings`；“先只引入定义”仍可。`SelectionInspector` 用同一表单编辑 `config`。
-- [ ] **declarative 读 `bindings`**（Q18）：`bind` 语法 `<binding>.<expr>`，`watch` 每个绑定实体。
-- [ ] 扩展页签空态文案改为指向“从本机库添加 / 新建控件”；`BlockDefDetail` 显示 ident / 来源 / build 信息。
-- [ ] 手机：不提供引入与构建入口，列表只读。
-- [ ] i18n en + zh；e2e `tests/aiworkspace/extensions.spec.ts`（新建 → build → 实例更新；build 失败不改实例；初始化表单必填；从库添加；导出 bundle 文件存在）。
+- [x] **工作区控件管理页**（数据源模式 `data/extensions/` 入口 + 主菜单“扩展”）：列表（ident、kind、版本、来源、引用实例数）、多选“导出控件…”（bundle → 写 home `exports/` → 调用 CLI 同一共享模块 pack → 可选“全局可用”）、“从本机库添加…”（`ext.list_library` → 多选 → `ext.import`；跨 Zone 时走客户端中转）、“新建控件…”（在 home 建骨架 + 立即 build + 插入测试实例）。
+- [x] **定义详情**：“编辑控件源码…”（无工作副本先 `pull`，再 `filesOpenLaunch` 打开目录）、“构建”、watch 开关、最近 build 诊断与 `derived.build`、引用实例列表（`ws.list_referrers`）、移除（被引用拒绝）。`user_state` 键 `aiws:src:<defId>`。
+- [x] **实例初始化表单**（B8）：`InsertCatalog` 对 def 条目按 `config_schema`（A7 子集，`z.fromJSONSchema`）生成字段，按 `bindings` 声明逐项选数据（必填校验），写 Cell `config` 与 `bindings`；“先只引入定义”仍可。`SelectionInspector` 用同一表单编辑 `config`。
+- [x] **declarative 读 `bindings`**（Q18）：`bind` 语法 `<binding>.<expr>`，`watch` 每个绑定实体。
+- [x] 扩展页签空态文案改为指向“从本机库添加 / 新建控件”；`BlockDefDetail` 显示 ident / 来源 / build 信息。
+- [x] 手机：不提供引入与构建入口，列表只读。
+- [x] i18n en + zh；e2e `tests/aiworkspace/extensions.spec.ts`（新建 → build → 实例更新；build 失败不改实例；初始化表单必填；从库添加；导出 bundle 文件存在）。
 
 完成条件：甲乙两个账号在同一 Workspace 各自从本机库引入 A/B 与 C/D，丙（未装包）看到四个控件并能插入实例。
 
 ## 9. M6：手册、DV 与收尾
 
-- [ ] 手册：`aiworkspace_template_dev.md` 加“控件开发”一节（目录骨架、`component.json` 字段、build / pull / watch、导出与 install、从库引入；只列目录，自述按需 `describe`）；`aiworkspace_run.md` 加 `bindings` 用法；`buckyos_app_dev.md` 加 `aiws` 包类型一段；`buckyos_dev_release.md` 核对 install 动词。
-- [ ] 真实 Zone DV（全新安装，不写兼容）：(1) 用户 A 在 home 写 declarative 控件 → CLI build → Desktop 实例出现；改错 → build 失败实例不变；(2) 导出 `--install` → 在 Workspace 2 从库添加 → 实例化；(3) 用户 B 从自己 Zone 库向 A 的 Workspace 引入（跨 Zone 中转）；(4) Agent 只凭手册在 home 建控件并 build；(5) 旧 `manifest_version` 包可 install / import（Q19）。记录 DV 中 Agent 访问 nfs-server 的路径，若不可达按 bug 修。
-- [ ] 文档：aiworkspace README 协议表与 `ext.*`；Desktop README；设计文档 §8 P0 改“已实施”并写《扩展控件实施记录与验收报告》（沿用 `doc/workspace/*实施记录与验收报告.md` 格式）。
+- [x] 手册：`aiworkspace_template_dev.md` 加“控件开发”一节（目录骨架、`component.json` 字段、build / pull / watch、导出与 install、从库引入；只列目录，自述按需 `describe`）；`aiworkspace_run.md` 加 `bindings` 用法；`buckyos_app_dev.md` 加 `aiws` 包类型一段；`buckyos_dev_release.md` 核对 install 动词。
+- [ ] 真实 Zone DV（全新安装，不写兼容；**10-30 部分完成**：(1)(2) 与 Installer 通过，(3) 跨 Zone、(4) Agent 未跑、(5) 无旧版本可测，见实施记录 §7）：(1) 用户 A 在 home 写 declarative 控件 → CLI build → Desktop 实例出现；改错 → build 失败实例不变；(2) 导出 `--install` → 在 Workspace 2 从库添加 → 实例化；(3) 用户 B 从自己 Zone 库向 A 的 Workspace 引入（跨 Zone 中转）；(4) Agent 只凭手册在 home 建控件并 build；(5) 旧 `manifest_version` 包可 install / import（Q19）。记录 DV 中 Agent 访问 nfs-server 的路径，若不可达按 bug 修。
+- [x] 文档：aiworkspace README 协议表与 `ext.*`；Desktop README；设计文档 §8 P0 改“已实施”并写《扩展控件实施记录与验收报告》（沿用 `doc/workspace/*实施记录与验收报告.md` 格式）。
 
 ## 10. 不在本单
 
@@ -142,3 +142,23 @@
 - websdk：仓库 `buckyos-websdk` 的 `deno test`；CLI 用 `deno run -A cli/main.ts aiws build ...` 对本地服务跑一遍。
 - Desktop：`pnpm check && pnpm exec eslint src/app/aiworkspace tests/aiworkspace && pnpm build`；e2e：`PATH=/tmp/dev-cache-root/cargo/bin:$PATH AIWS_BIN=/tmp/dev-cache-root/cargo-target/debug/aiworkspace pnpm exec playwright test --config=playwright.aiworkspace.config.ts`。
 - 真实 Zone DV：`BUCKYOS_UI_DV_BASE_URL=... BUCKYOS_TEST_ADMIN_PASSWORD=... pnpm exec playwright test --config=playwright.dv.config.ts tests/dv/aiworkspace.extensions.spec.ts` + CLI / Agent 手工步骤按 §9。
+
+## 12. 实施记录（2026-10-30）
+
+落点、测试与 DV 见 [扩展控件实施记录与验收报告](<../doc/workspace/BuckyOS AI Workspace 扩展控件实施记录与验收报告.md>)。M0 契约写在 aiworkspace README “Extension controls” 与 `schemas/{component,aiws-manifest,block-def}.schema.json`。
+
+### 12.1 与本单的出入（实现时按代码事实定，已写进 README）
+
+1. **定义的源码快照键叫 `source_dir`，引用边叫 `def_source`**（强、live）：`source` 是 D12 的 Source 键，带它的实体整体只读；`source` 这个引用边种类也已被 D12 占用。
+2. **CLI 动词**：`aiws import` / `aiws export` 已是脑图大纲交换动词，扩展用 `aiws ext-export`、`aiws ext-import`、`aiws library list|install|remove`；`build`、`pull` 照旧。多个定义 / 条目用逗号分隔（CLI 没有可变长位置参数）。
+3. **源码目录只支持平铺**（`buckyos.dir` 成员名不能含 `/`），≤ 64 个文件，`.` 开头的文件是客户端自己的（`.aiws-build.json` 记基线）。
+4. **home 文件不是 FileObject**：原生 home 导出上 NFSP 报的 `obj_id`（只有算过全量哈希的节点才有）是 `sha256:` 内容摘要，不是 named store 里的 `cyfile:` 对象，服务取不到。`ext.build` 的文件因此两种：`cyfile:` 对象照旧按引用（网关鉴权 + stage），其余由客户端用自己的会话经 NFSP 读出、以 `base64` 内联（每次 ≤ 4 MiB）。设计 §7.5 W1 “零拷贝”只对对象成立。
+5. **`ext.install` 三种来源**：`pikg: { bucket_id, key }`（调用者自己的 `exports` 桶，装完即消费，CLI 用这个）、`pikg: { obj_id }`（Installer 传 staged 对象，或网关判定可读的对象）、`from: { workspace_id, entity_ids } + package`（Desktop “设为全局可用”：服务端直接把导出 bundle 记入库，内容与 `.pikg` 相同）。另加 `ext.uninstall`。
+6. **许愿格定义的作者**：规划时拿不到 owner 的 DID，`ident.author_did` 记 `did:aiws:<workspace_id>`（工作区自己生成的控件）。
+7. **build Commit 的 origin 是 `build`**，message `build <ident>`；`derived.build` 只接受 build / import / 撤销路径写入（人的 Commit 不能冒充构建记录）。撤销 build Commit 时定义、快照与记录一起回到上一版。
+8. **Desktop 不在浏览器里打 PIKG**：导出对话框提供“设为对我所有工作区可用”（`ext.install from`）和“把 bundle 写到我的 home”（再显示一条 `buckyos aiws ext-export … --pikg` 命令）。在工作区自己的域名（`aiws-<id>.<zone>`）上打开时，home 目录不可达，新建 / 编辑 / 构建 / 写 bundle 关闭并说明，库引入与“全局可用”照常。
+9. 新控件的作者 DID 默认 `did:bns:<用户名>`（Desktop 拿不到用户 DID，表单可改；CLI `ext-export` 的 `--owner` 同此默认）。
+10. `AppType::Aiws` 的准入在 `admit_app` 里先于“完整版不限制”判断：任何版本都只接受用户提交（进库），预装 / Agent / 已部署一律 `product_aiws_origin`。
+11. **CLI `build` / `pull` 也接受本地目录**（文件内联）：CLI 没有往 Zone home 写文件的动词，Agent 容器和开发机的源码在本地；Zone 路径照旧（`--zone-path` 强制按 Zone 路径解释，`--watch` 只跟随 Zone 目录）。
+12. **DV 发现并修正**：Rust `derived_selector_for_key` 没有 `aiws`（TS 有），Installer 检查会报 “no package matches target”；内核 / frame 服务以设备名（`ood1`）为 subject 登录，aiworkspace 改为对服务调用者记 token 的 `appid`（control-panel 据此被认作 Installer）；NFSP 对不存在路径的 `stat` 会让浏览器记 404 控制台错误，`ensureFolder` / `readBuildState` 改用父目录的过滤列表；首次 `buckyos app install` 要先 `app fetch --plan`。
+13. **主菜单入口在“插入 → 扩展控件”分组末尾**，不是顶层项：顶层再多一项，小窗口里最后的“关闭工作区”会落到窗口外（全量 e2e 的 i18n / offline 三例因此点不到）；分组在没有定义时也可展开，只显示“还没有 Block 定义”与管理入口。

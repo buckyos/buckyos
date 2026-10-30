@@ -254,6 +254,9 @@ pub struct CommitOpts {
     pub maintenance: bool,
     /// A Source refresh (D12): the Commit's origin is `source`, the only path that writes sourced content.
     pub as_source: bool,
+    /// An extension build or import (扩展控件 P0): the Commit's origin is `build`, the only one that may write a
+    /// definition's `derived.build` record.
+    pub as_build: bool,
 }
 
 pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
@@ -311,7 +314,7 @@ fn open_db(path: &Path, synchronous_full: bool) -> WsResult<Connection> {
 }
 
 /// The origin of a Commit as the server reads it (内核架构改进 D08): internal compensations are `system`,
-/// packages `import`, a run's result `program`, an Agent's own writes `agent`, everything else `human`
+/// packages `import`, a run's result `program`, an Agent's own writes `agent`, a Source refresh `source`, an extension build `build`, everything else `human`
 /// (SDK scripts with a user token included).
 pub fn derive_origin(caller: &Caller, opts: &CommitOpts, has_run: bool) -> &'static str {
     if opts.import {
@@ -320,6 +323,8 @@ pub fn derive_origin(caller: &Caller, opts: &CommitOpts, has_run: bool) -> &'sta
         "system"
     } else if opts.as_source {
         "source"
+    } else if opts.as_build {
+        "build"
     } else if has_run {
         "program"
     } else if caller.is_agent() {
@@ -626,7 +631,7 @@ impl Workspace {
         let ops: Vec<Value> = ids.iter().map(|id| json!({ "op": "entity.purge", "entity_id": id })).collect();
         let req = json!({ "protocol_version": PROTOCOL_VERSION, "workspace_id": self.workspace_id, "epoch": self.epoch,
                           "idempotency_key": format!("purge/{}", random_id("")), "session_id": session_id, "message": "purge deleted entities", "operations": ops });
-        let opts = CommitOpts { internal: true, import: false, undoes: None, as_principal: None, maintenance: true, as_source: false };
+        let opts = CommitOpts { internal: true, import: false, undoes: None, as_principal: None, maintenance: true, as_source: false, as_build: false };
         let r = self.commit(&req, caller, &opts);
         if r["status"] != json!("accepted") {
             return Err(WsError::new(Code::InvalidOperation, "purge was not accepted").with_data(r));
@@ -1616,7 +1621,7 @@ impl Workspace {
                     "idempotency_key": idem, "session_id": req.get("session_id").cloned().unwrap_or(Value::Null),
                     "origin": "human", "message": format!("undo {target}"), "operations": ops })
         };
-        let opts = CommitOpts { internal: true, import: false, undoes: Some(target.to_string()), as_principal: None, maintenance: false, as_source: false };
+        let opts = CommitOpts { internal: true, import: false, undoes: Some(target.to_string()), as_principal: None, maintenance: false, as_source: false, as_build: false };
         // applicability is the ordinary pipeline: every inverse carries `expect: { rev: S }`
         let dry = self.commit_inner(&build(&inverse), caller, &opts, true);
         let dry = match dry {

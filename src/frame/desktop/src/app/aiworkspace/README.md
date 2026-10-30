@@ -25,6 +25,7 @@ standalone/StandalonePage.tsx
 links.ts                  the only definition of the addresses: `https://aiws-<id>.<zone>/<workspace slug>/<surface slug>?id=&block=`, the Zone origin
 launch.ts                 going to a workspace's origin signed in (Control Panel `auth.prepare_app_launch { service_id: 'aiworkspace' }`)
 ui/controls/              Block-controls (the mind map): registry, folds, node measuring — see "Block-controls" below
+ui/extensions/            HTML / declarative hosts, and extension controls (dialog, instance form, home sources) — see "Extension controls"
 i18n.ts, useAiwsText.ts   the app's text in the Desktop's language — see "Language" below
 api/
   transport.ts            the only module that knows how to reach the service (zone path / dev override)
@@ -461,6 +462,30 @@ and conversion errors become a local `invalid_definition` fallback. Invalid valu
 follow Cell read permissions and travel through export/import and offline preparation (subject to the
 normal asset-size limit). `aiws.snapshot()` reports failed saves and refuses writes in view mode. HTML
 startup timeouts, crashes and disposal reject waiting calls and release the iframe; retry creates a new runtime.
+
+## Extension controls (notepads/aiworkspace-extension-p0-todo.md; backend README “Extension controls”)
+
+A control is a `buckyos.block-def` built from a flat source folder in the user's home (`component.json` + entry
+files) by `ext.build`; the Desktop drives the same code as the CLI (buckyos-websdk `buckyos/aiws_ext`) over the Files
+app's NFSP client (`ui/extensions/controlSources.ts`) and this Workspace's session.
+
+- **Workspace controls dialog** (`ui/extensions/ExtensionsDialog.tsx`; main menu Insert → Extension controls → “Workspace controls…” (not a top-level item: the main menu must fit a small window), the insert
+  catalog's extension tab, a definition's data-source detail): the definitions with identity, kind, build revision,
+  source (package, local build, inline) and instance count; per definition: edit source (pulls a working copy into
+  `/home/<user>/AI Workspace/<workspace>/controls/<name>` when there is none, then opens Files there), build, pull,
+  build on save (a watch per definition that outlives the dialog), last build and its diagnostics, instances,
+  insert an instance (the canvas opens its catalog at the definition, `ui/extensions/extEvents.ts`), remove (refused
+  while instances use it); new control (skeleton in home + build); add from my library (`ext.import`); export the
+  ticked controls to my library (`ext.install` from the Workspace) or as a bundle folder in my home. The folder each
+  person builds from is their `user_state` `aiws:src:<def>`; `.aiws-build.json` in it keeps the base of the next build.
+- On a Workspace's own host (`aiws-<id>.<zone>`) the home folder is out of reach: creating, editing, building and
+  writing bundles are off with an explanation; the library and “available to all my workspaces” still work. Phones
+  list only.
+- **Instance initialization** (`ui/extensions/InstanceForm.tsx`, `controls.ts`): the insert catalog shows a control's
+  properties (`config_schema`, the A7 subset, validated with `z.fromJSONSchema`; only changed values are stored) and
+  its named bindings (required ones block insertion); the new Cell gets `config` overrides and `bindings`.
+- **Declarative named bindings** (Q18): an item's `bind: "<binding>.<expr>"` reads that binding's data (watched like
+  the main source); other binds read the main source as before.
 
 ## What is implemented
 

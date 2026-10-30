@@ -1,5 +1,7 @@
 # 06. 网络与访问（cyfs-gateway / NodeGateway / ZoneGateway / SN）
 
+跨 Zone 系统服务调用的当前实现见[跨 Zone 通信开发者指南](../sdk/cross-zone-communication.md)，包括设备签名登录、Target Token、RTCP/HTTPS 选择与网关入口约束。
+
 BuckyOS 的网络设计默认假设：
 - 多设备跨 NAT、多网段、网络拓扑经常变化；
 - 不能依赖固定公网 IP 或稳定端口映射；

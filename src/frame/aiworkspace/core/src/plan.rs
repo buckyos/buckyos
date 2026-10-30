@@ -481,6 +481,12 @@ impl<'a> Planner<'a> {
 
 /// The version cell (or content token) a selector names — used by Commit-level
 /// read-set preconditions.
+/// The selector kinds `resolve_cell` knows (D04, frozen; `schemas/commit-request.schema.json` lists the same).
+pub const SELECTOR_KINDS: &[&str] = &[
+    "entity", "doc_key", "table_members", "table_field", "table_field_type", "table_field_values", "table_record", "table_cell",
+    "tree_children", "tree_edge", "richtext_block", "folder_member", "table_view", "table_query",
+];
+
 pub fn resolve_cell(ctx: &dyn ReadCtx, target: &Value) -> WsResult<Value> {
     let entity_id = get_str(target, "entity_id")?;
     let e = ctx.entity(entity_id)?.ok_or_else(|| WsError::not_found(format!("entity {entity_id} not found")))?;

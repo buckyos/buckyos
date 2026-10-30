@@ -549,6 +549,27 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
     if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.changeWishAicc'))
     return this.direct.listReferrers(entityId)
   }
+  // extension controls need the service (builds read objects at the NDM gateway; the library is the service's)
+  async extBuild(params: Record<string, Json>) {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.ext.offline'))
+    return this.direct.extBuild(params)
+  }
+  async extExport(entityIds: string[], purpose: 'package' | 'pull' = 'package') {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.ext.offline'))
+    return this.direct.extExport(entityIds, purpose)
+  }
+  async extImport(items: { pkg_id: string; ident: string }[]) {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.ext.offline'))
+    return this.direct.extImport(items)
+  }
+  async extInstallFrom(entityIds: string[], pkg: { name: string; version: string; title?: string }) {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.ext.offline'))
+    return this.direct.extInstallFrom(entityIds, pkg)
+  }
+  async extListLibrary() {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.ext.offline'))
+    return this.direct.extListLibrary()
+  }
 
   async getCollabState(entityId: string): Promise<CollabState> {
     const state = await this.replica.call('collab', entityId)

@@ -31,6 +31,11 @@ pub fn is_renderer_id(s: &str) -> bool {
         && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'.' | b'_' | b'-'))
 }
 
+/// A client-side preset icon id: `[a-z][a-z0-9-]{0,31}`.
+pub fn is_icon_id(s: &str) -> bool {
+    (1..=32).contains(&s.len()) && s.starts_with(|c: char| c.is_ascii_lowercase()) && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
 fn canonical_len(v: &Value) -> usize {
     crate::canonical::canonical_json(v).map(|s| s.len()).unwrap_or(usize::MAX)
 }
@@ -854,9 +859,7 @@ fn validate_container(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>
     }
     check_locked(&e.payload)?;
     if let Some(icon) = e.payload.get("icon") {
-        let valid = icon.as_str().is_some_and(|s| {
-            (1..=32).contains(&s.len()) && s.starts_with(|c: char| c.is_ascii_lowercase()) && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-        });
+        let valid = icon.as_str().is_some_and(is_icon_id);
         if kind != "surface" || !valid {
             return Err(bad("icon must be a preset id ([a-z][a-z0-9-]{0,31}) on a surface"));
         }
@@ -1506,14 +1509,114 @@ fn validate_wish(p: &mut Planner, e: &mut EntityRow, changed: Option<&[String]>)
     Ok(())
 }
 
-// ---- Block definition (phase two §10.3) ----
+// ---- Block definition (phase two §10.3; extension controls P0) ----
 
-/// Validator class: schema.
-fn validate_block_def(e: &mut EntityRow) -> WsResult<()> {
-    check_keys(&e.payload, &["def_id", "version", "kind", "title", "accepts", "allow_no_source", "default_size", "declarative", "html", "config_schema", "actions", "inspector", "description"], "block_def")?;
+/// The newest `component.json` / definition `manifest_version` this core reads (扩展控件 P0, Q19: older ones stay readable).
+pub const MANIFEST_VERSION: u64 = 1;
+/// Self-description text of a control (`agent`).
+pub const MAX_AGENT_BYTES: usize = 64 * 1024;
+/// Named data inputs a control declares.
+pub const MAX_DEF_BINDINGS: usize = 32;
+
+/// `did:<method>:<id>` as a control author: no `/`, `#`, whitespace or control characters (an identity is written
+/// `<author_did>#<name>` and serves as an entity name).
+pub fn is_author_did(s: &str) -> bool {
+    let mut parts = s.splitn(3, ':');
+    let (Some("did"), Some(method), Some(id)) = (parts.next(), parts.next(), parts.next()) else { return false };
+    !method.is_empty()
+        && method.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && !id.is_empty()
+        && !id.chars().any(|c| c == '/' || c == '#' || c.is_whitespace() || c.is_control())
+}
+
+/// The identity string `<author_did>#<name>` of `ident { author_did, name }`, checked (A3): ≤ 128 bytes.
+pub fn ident_string(ident: &Value) -> WsResult<String> {
+    let o = ident.as_object().ok_or_else(|| bad("ident must be { author_did, name }"))?;
+    if o.keys().any(|k| k != "author_did" && k != "name") {
+        return Err(bad("ident: unknown key (author_did, name)"));
+    }
+    let did = o.get("author_did").and_then(Value::as_str).filter(|d| is_author_did(d)).ok_or_else(|| bad("ident.author_did must be a DID (did:<method>:<id>, no '/', '#' or spaces)"))?;
+    let name = o.get("name").and_then(Value::as_str).filter(|n| is_renderer_id(n)).ok_or_else(|| bad("ident.name must be [a-z0-9][a-z0-9._-]{0,63}"))?;
+    let s = format!("{did}#{name}");
+    if s.len() > 128 {
+        return Err(bad("an identity <author_did>#<name> is at most 128 bytes"));
+    }
+    Ok(s)
+}
+
+/// A binding name of a control (`bindings`): `[a-z][a-z0-9_]{0,31}`.
+pub fn is_binding_name(s: &str) -> bool {
+    let b = s.as_bytes();
+    !b.is_empty() && b.len() <= 32 && b[0].is_ascii_lowercase() && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'_')
+}
+
+/// `bindings { <name>: { accepts?, required?, title?, description? } }` of a control (its named data inputs).
+pub fn check_def_bindings(v: &Value) -> WsResult<()> {
+    let o = v.as_object().ok_or_else(|| bad("bindings must be an object of name → declaration"))?;
+    if o.len() > MAX_DEF_BINDINGS {
+        return Err(WsError::limit(format!("a control declares at most {MAX_DEF_BINDINGS} bindings")));
+    }
+    for (name, d) in o {
+        if !is_binding_name(name) {
+            return Err(bad(format!("binding name {name:?} must be [a-z][a-z0-9_]{{0,31}}")));
+        }
+        let d = d.as_object().ok_or_else(|| bad(format!("binding {name} must be an object")))?;
+        for (k, x) in d {
+            let ok = match k.as_str() {
+                "accepts" => x.as_array().is_some_and(|l| l.iter().all(|t| t.as_str().is_some_and(is_data_type))),
+                "required" => x.is_boolean(),
+                "title" => x.as_str().is_some_and(|t| t.chars().count() <= 256),
+                "description" => x.as_str().is_some_and(|t| t.chars().count() <= 4000),
+                _ => return Err(bad(format!("binding {name}: unknown key {k}"))),
+            };
+            if !ok {
+                return Err(bad(format!("binding {name}: bad {k}")));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `catalog { group?, icon?, description? }`: how the insert catalogue lists a control.
+pub fn check_catalog(v: &Value) -> WsResult<()> {
+    let o = v.as_object().ok_or_else(|| bad("catalog must be an object"))?;
+    for (k, x) in o {
+        let ok = match k.as_str() {
+            "group" => x.as_str().is_some_and(|t| !t.is_empty() && t.chars().count() <= 64),
+            "icon" => x.as_str().is_some_and(is_icon_id),
+            "description" => x.as_str().is_some_and(|t| t.chars().count() <= 1000),
+            _ => return Err(bad(format!("catalog: unknown key {k}"))),
+        };
+        if !ok {
+            return Err(bad(format!("catalog: bad {k}")));
+        }
+    }
+    Ok(())
+}
+
+fn is_sha256_digest(s: &str) -> bool {
+    s.strip_prefix("sha256:").is_some_and(|h| h.len() == 64 && h.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)))
+}
+
+/// The keys of a definition payload (`schemas/block-def.schema.json` lists the same).
+pub const BLOCK_DEF_KEYS: &[&str] = &[
+    "def_id", "version", "kind", "title", "accepts", "allow_no_source", "default_size", "declarative", "html", "config_schema", "actions", "inspector", "description",
+    "ident", "manifest_version", "source_dir", "bindings", "catalog", "agent", "provenance",
+];
+
+/// Validator class: schema (the payload's keys and shapes); reference (`source_dir` names a live resource
+/// directory, judged when written).
+fn validate_block_def(p: &Planner, e: &mut EntityRow, changed: Option<&[String]>) -> WsResult<()> {
+    check_keys(&e.payload, BLOCK_DEF_KEYS, "block_def")?;
     let def_id = e.payload.get("def_id").and_then(Value::as_str).ok_or_else(|| bad("block_def needs def_id"))?;
     if !is_renderer_id(def_id) {
         return Err(bad("def_id must be a renderer id"));
+    }
+    if let Some(ident) = e.payload.get("ident") {
+        ident_string(ident)?;
+        if ident.get("name").and_then(Value::as_str) != Some(def_id) {
+            return Err(bad("ident.name must equal def_id"));
+        }
     }
     match e.payload.get("version") {
         None => {
@@ -1521,6 +1624,9 @@ fn validate_block_def(e: &mut EntityRow) -> WsResult<()> {
         }
         Some(v) if v.as_u64().is_some_and(|n| n >= 1 && n <= 1_000_000) => {}
         Some(_) => return Err(bad("version must be a positive integer")),
+    }
+    if e.payload.get("manifest_version").is_some_and(|v| !v.as_u64().is_some_and(|n| (1..=MANIFEST_VERSION).contains(&n))) {
+        return Err(WsError::new(Code::UnsupportedVersion, format!("manifest_version must be 1…{MANIFEST_VERSION}")));
     }
     let kind = e.payload.get("kind").and_then(Value::as_str).unwrap_or("");
     match kind {
@@ -1569,6 +1675,36 @@ fn validate_block_def(e: &mut EntityRow) -> WsResult<()> {
             return Err(bad(format!("{k} must be an object or array")));
         }
     }
+    if let Some(b) = e.payload.get("bindings") {
+        check_def_bindings(b)?;
+    }
+    if let Some(c) = e.payload.get("catalog") {
+        check_catalog(c)?;
+    }
+    if e.payload.get("agent").is_some_and(|a| !a.as_str().is_some_and(|t| t.len() <= MAX_AGENT_BYTES)) {
+        return Err(bad(format!("agent must be a text of at most {MAX_AGENT_BYTES} bytes")));
+    }
+    if let Some(v) = e.payload.get("provenance") {
+        let o = v.as_object().ok_or_else(|| bad("provenance must be { pkg_id?, version?, digest? }"))?;
+        for (k, x) in o {
+            let ok = match k.as_str() {
+                "pkg_id" => x.as_str().is_some_and(|t| !t.is_empty() && t.len() <= 128),
+                "version" => x.as_str().is_some_and(|t| !t.is_empty() && t.len() <= 64),
+                "digest" => x.as_str().is_some_and(is_sha256_digest),
+                _ => return Err(bad(format!("provenance: unknown key {k}"))),
+            };
+            if !ok {
+                return Err(bad(format!("provenance: bad {k}")));
+            }
+        }
+    }
+    if let Some(d) = e.payload.get("source_dir") {
+        let o = d.as_object().filter(|o| o.len() == 1).ok_or_else(|| bad("source_dir must be { entity_id }"))?;
+        let id = o.get("entity_id").and_then(Value::as_str).filter(|s| is_valid_id(s)).ok_or_else(|| bad("source_dir.entity_id must be an entity id"))?;
+        if changed.is_none_or(|c| c.iter().any(|k| k == "source_dir")) {
+            p.check_ref_target(&json!({ "entity_id": id }), Some(&[TYPE_DIR]))?;
+        }
+    }
     if canonical_len(&Value::Object(e.payload.clone())) > MAX_BLOCK_DEF_BYTES {
         return Err(WsError::limit(format!("a block definition is limited to {MAX_BLOCK_DEF_BYTES} bytes")));
     }
@@ -1582,6 +1718,9 @@ fn validate_block_def(e: &mut EntityRow) -> WsResult<()> {
 /// The version cells are the read set the application was guarded with; `generated_rev` is set here.
 pub fn check_derived(p: &Planner, v: &Value, content_rev: u64) -> WsResult<Value> {
     let o = v.as_object().ok_or_else(|| bad("derived must be an object"))?;
+    if o.contains_key("build") {
+        return check_build_record(p, o, content_rev);
+    }
     for k in o.keys() {
         if !matches!(
             k.as_str(),
@@ -1655,6 +1794,27 @@ pub fn check_derived(p: &Planner, v: &Value, content_rev: u64) -> WsResult<Value
         return Err(WsError::limit("derived record too large"));
     }
     Ok(Value::Object(out))
+}
+
+/// Validator class: schema. The record of an extension build (扩展控件 P0, Q14): `{ build: { input_digest,
+/// builder_version, built_at } }` on a Block definition. Only builds (origin `build`), packages and the undo path
+/// write one: a person's Commit cannot claim that the service built something.
+fn check_build_record(p: &Planner, o: &Map<String, Value>, content_rev: u64) -> WsResult<Value> {
+    if !(p.env.origin == "build" || p.env.import || p.env.internal || p.env.replay) {
+        return Err(WsError::invalid_op("a build record is written by ext.build"));
+    }
+    if o.keys().any(|k| k != "build" && k != "generated_rev") {
+        return Err(bad("derived: a build record holds `build` only"));
+    }
+    let b = o["build"].as_object().ok_or_else(|| bad("derived.build must be an object"))?;
+    if b.keys().any(|k| !matches!(k.as_str(), "input_digest" | "builder_version" | "built_at")) {
+        return Err(bad("derived.build: unknown key"));
+    }
+    let short = |k: &str| b.get(k).and_then(Value::as_str).is_some_and(|s| !s.is_empty() && s.len() <= 128);
+    if !b.get("input_digest").and_then(Value::as_str).is_some_and(is_sha256_digest) || !short("builder_version") || !short("built_at") {
+        return Err(bad("derived.build needs input_digest (sha256:…), builder_version and built_at"));
+    }
+    Ok(json!({ "build": b, "generated_rev": content_rev }))
 }
 
 // ---- Source (内核架构改进 D12, D24, D26): where a data entity's content comes from ----
@@ -1950,7 +2110,7 @@ pub fn init_entity(p: &mut Planner, row: &mut EntityRow, mut payload: JsonMap) -
         TYPE_BLOCK_DEF => {
             row.payload = payload;
             if schema {
-                validate_block_def(row)?;
+                validate_block_def(p, row, None)?;
             }
         }
         TYPE_VIEWPORT => {
@@ -2035,7 +2195,7 @@ pub fn validate_update(p: &mut Planner, before: &EntityRow, e: &mut EntityRow, c
             }
         }
         TYPE_WISH => validate_wish(p, e, Some(changed)),
-        TYPE_BLOCK_DEF => validate_block_def(e),
+        TYPE_BLOCK_DEF => validate_block_def(p, e, Some(changed)),
         TYPE_VIEWPORT => validate_viewport(p, e, Some(changed)),
         TYPE_SHOW_PATH => validate_show_path(p, e, Some(before), Some(changed)),
         TYPE_DIR => {
@@ -2145,6 +2305,12 @@ pub fn entity_refs(e: &EntityRow) -> WsResult<BTreeSet<RefEdge>> {
             }
         }
         TYPE_DIR => dir_refs(e, &mut out),
+        // the source snapshot a build produced: kept alive while the definition names it (扩展控件 P0)
+        TYPE_BLOCK_DEF => {
+            if let Some(id) = e.payload.get("source_dir").and_then(|d| d.get("entity_id")).and_then(Value::as_str) {
+                out.insert(RefEdge::local(&e.entity_id, "", "def_source", id));
+            }
+        }
         _ => {}
     }
     Ok(out)

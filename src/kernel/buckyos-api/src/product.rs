@@ -133,6 +133,8 @@ pub enum AppExecutionForm {
     Script,
     NativeBinary,
     Container,
+    /// AI Workspace controls (`pkg_list.aiws`): a library entry of the aiworkspace service, never a running App.
+    AiwsControls,
     /// A package key the product cannot classify.
     Unknown,
 }
@@ -150,6 +152,7 @@ pub fn app_execution_forms(app_doc: &AppDoc) -> BTreeSet<AppExecutionForm> {
                     "web" => AppExecutionForm::StaticWeb,
                     "agent" | "agent_skills" | "agent_tools" => AppExecutionForm::Agent,
                     "script" => AppExecutionForm::Script,
+                    crate::AIWS_SUB_PKG => AppExecutionForm::AiwsControls,
                     _ if key.ends_with("_app") => AppExecutionForm::NativeBinary,
                     _ => AppExecutionForm::Unknown,
                 }
@@ -180,6 +183,8 @@ pub enum AppAdmission {
     StaticWeb,
     Agent,
     PreinstalledScript(PreinstalledScriptApp),
+    /// An `aiws` package a user submits: it goes into their AI Workspace control library (no AppSpec, nothing runs).
+    AiwsLibrary,
 }
 
 /// Why the product does not run an app. Callers match on the variant, never
@@ -199,6 +204,8 @@ pub enum AdmissionDenied {
     /// Agent Apps are only constructed by the system for an Agent.
     AgentOrigin,
     StaticWebDisabled,
+    /// An `aiws` package is installed by a user into the AI Workspace library, never preinstalled or deployed.
+    AiwsOrigin,
 }
 
 impl AdmissionDenied {
@@ -211,6 +218,7 @@ impl AdmissionDenied {
             AdmissionDenied::MixedPackages(_) => "product_mixed_packages",
             AdmissionDenied::AgentOrigin => "product_agent_origin",
             AdmissionDenied::StaticWebDisabled => "product_static_web_disabled",
+            AdmissionDenied::AiwsOrigin => "product_aiws_origin",
         }
     }
 }
@@ -238,6 +246,9 @@ impl fmt::Display for AdmissionDenied {
             AdmissionDenied::StaticWebDisabled => {
                 f.write_str("this BuckyOS edition does not allow adding web apps")
             }
+            AdmissionDenied::AiwsOrigin => f.write_str(
+                "AI Workspace control packages are installed by a user into the AI Workspace library, not deployed as Apps",
+            ),
         }
     }
 }
@@ -369,10 +380,20 @@ impl ProductProfile {
         origin: AdmissionOrigin,
     ) -> Result<AppAdmission, AdmissionDenied> {
         let caps = &self.capabilities;
+        let forms = app_execution_forms(app_doc);
+        // controls are a library entry in every edition: only a user's submission adds one, nothing deploys it
+        if forms.contains(&AppExecutionForm::AiwsControls) || app_doc.app_type == AppType::Aiws {
+            if forms.len() != 1 || app_doc.app_type != AppType::Aiws {
+                return Err(AdmissionDenied::MixedPackages(forms.into_iter().collect()));
+            }
+            return match origin {
+                AdmissionOrigin::User => Ok(AppAdmission::AiwsLibrary),
+                _ => Err(AdmissionDenied::AiwsOrigin),
+            };
+        }
         if caps == &ProductCapabilities::full() {
             return Ok(AppAdmission::Unrestricted);
         }
-        let forms = app_execution_forms(app_doc);
         if forms.contains(&AppExecutionForm::Unknown) {
             return Err(AdmissionDenied::MixedPackages(forms.into_iter().collect()));
         }
@@ -577,6 +598,25 @@ mod tests {
             full.admit_app(&docker, AdmissionOrigin::User),
             Ok(AppAdmission::Unrestricted)
         );
+    }
+
+    #[test]
+    fn aiws_packages_only_enter_the_library_from_a_user() {
+        let controls = app_doc(
+            "kpi-pack",
+            "aiws",
+            "0.1.0",
+            json!({ "aiws": {
+                "pkg_id": "all.aiws.kpi-pack.buckyos.bns.did#0.1.0",
+                "pkg_objid": "pkg:d0e3ae4d030ef2ad25d0c9b37af6b095e04cd389ef4c0226f41a00ca5450da9b"
+            }}),
+        );
+        for profile in [ProductProfile::full(), lite()] {
+            assert_eq!(profile.admit_app(&controls, AdmissionOrigin::User), Ok(AppAdmission::AiwsLibrary));
+            for origin in [AdmissionOrigin::Preinstall, AdmissionOrigin::AgentRuntime, AdmissionOrigin::Deployed] {
+                assert_eq!(profile.admit_app(&controls, origin), Err(AdmissionDenied::AiwsOrigin));
+            }
+        }
     }
 
     #[test]

@@ -45,6 +45,7 @@ writeFileSync(bucketSpecs, JSON.stringify({
       assets: { kind: 'data', data_policy: 'app_data', scope: 'user' },
       objects: { kind: 'data', data_policy: 'app_data', scope: 'user' },
       exports: { kind: 'data', data_policy: 'temp', scope: 'user', default_ttl_days: 7 },
+      library: { kind: 'data', data_policy: 'app_data', scope: 'user' },
     },
   },
 }))

@@ -1511,6 +1511,54 @@ mod tests {
         }
     }
 
+    /// An `aiws` package (AI Workspace controls): one `aiws` sub-package carrying the bundle; the reader verifies it
+    /// like any other and a changed bundle no longer matches its digest.
+    #[tokio::test]
+    async fn aiws_package_reads_and_tampering_fails() {
+        let dir = temp_dir("aiws");
+        let payload_path = make_tar_gz(&dir, "aiws.tar.gz", &[("aiws-manifest.json", br#"{"manifest_version":1,"purpose":"aiws","controls":[],"workspace_templates":[]}"#), ("controls/kpi/component.json", b"{}")]);
+        let size = std::fs::metadata(&payload_path).unwrap().len();
+        let digest_hex = sha256_file_hex(&payload_path).unwrap();
+        let owner = DID::from_str("did:bns:tester").unwrap();
+        let mut meta = PackageMeta::new("all.aiws.kpi-pack.tester.bns.did", "0.1.0", "tester", &owner, None);
+        meta.size = size;
+        meta.content = format!("sha256:{digest_hex}");
+        let meta_value = serde_json::to_value(&meta).unwrap();
+        let (meta_obj_id, _) = build_named_object_by_json(ndn_lib::OBJ_TYPE_PKG, &meta_value);
+        let mut desc = SubPkgDesc::new("all.aiws.kpi-pack.tester.bns.did#0.1.0");
+        desc.pkg_objid = Some(meta_obj_id);
+        let app_doc = AppDoc::builder(AppType::Aiws, "kpi-pack", "0.1.0", "tester", &owner).aiws_pkg(desc.clone()).build().unwrap();
+        assert_eq!(app_doc.get_app_type(), AppType::Aiws);
+        // an aiws package carries nothing else
+        assert!(AppDoc::builder(AppType::Aiws, "kpi-pack", "0.1.0", "tester", &owner).aiws_pkg(desc.clone()).web_pkg(desc.clone()).build().is_err());
+        assert!(AppDoc::builder(AppType::Web, "kpi-pack", "0.1.0", "tester", &owner).web_pkg(desc.clone()).aiws_pkg(desc).build().is_err());
+
+        let dest = dir.join("kpi.pikg");
+        let builder = PikgBuilder::new().app_doc(&app_doc).unwrap();
+        let (builder, _) = builder.add_package_meta_value(meta_value).unwrap();
+        builder.add_payload_file("aiws", payload_path).unwrap().write_to(&dest).await.unwrap();
+        let reader = PikgReader::open(&dest, None).await.unwrap();
+        assert_eq!(reader.inspection().app_doc.get_app_type(), AppType::Aiws);
+        reader.verify_all_contents().await.unwrap();
+
+        let tampered = dir.join("tampered.pikg");
+        rewrite_zip(&dest, &tampered, |name, bytes| {
+            if name.ends_with(".tar.gz") {
+                let mut changed = bytes;
+                let last = changed.len() - 1;
+                changed[last] ^= 0xff;
+                Some(changed)
+            } else {
+                Some(bytes)
+            }
+        }, vec![]);
+        let failed = match PikgReader::open(&tampered, None).await {
+            Err(_) => true,
+            Ok(reader) => reader.verify_all_contents().await.is_err(),
+        };
+        assert!(failed, "a tampered aiws payload must not verify");
+    }
+
     #[tokio::test]
     async fn valid_partial_pikg_roundtrip() {
         let fixture = build_fixture();

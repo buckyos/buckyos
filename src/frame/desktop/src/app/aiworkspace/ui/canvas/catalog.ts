@@ -103,6 +103,8 @@ export interface InsertRequest {
   /** What is already known of `file` (its poster, size, length; 多媒体对象 §3), else worked out on insertion. */
   facts?: MediaFacts
   config?: Record<string, Json>
+  /** A control instance's named data bindings (`bindings` of the new Cell; 扩展控件 P0). */
+  bindings?: Record<string, string>
 }
 
 /** Data entities of the data tree a definition can show (for "needs data" and "add existing data"). */

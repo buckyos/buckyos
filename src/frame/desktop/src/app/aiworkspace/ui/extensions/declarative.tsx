@@ -5,10 +5,10 @@
  * variant and view-mode actions / inspector fields, which is how the extension sample proves mode
  * dispatch without touching the host. */
 
-import { useCallback, useMemo, type ReactNode } from 'react'
+import { useCallback, useMemo, useSyncExternalStore, type ReactNode } from 'react'
 import type { Json, QueryPage, RecordContent } from '../../api/types'
 import { aiwsT, aiwsText, type AiwsText } from '../../i18n'
-import { useLoad, useStore, useVersion } from '../../state/hooks'
+import { useLoad, useStore } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
 import { blockRegistry, type BlockAction, type BlockDefinition, type RenderContext } from '../blocks/registry'
 import { cellOp } from '../blocks/ops'
@@ -48,28 +48,36 @@ export function formatNumber(n: number, format: Item['format'], text: Pick<AiwsT
 
 type DataView = { kind: 'record'; props: Record<string, Json> } | { kind: 'table'; rows: Record<string, Json>[]; fields: Map<string, string> }
 
-function useSourceData(context: RenderContext): { data: DataView | null; error: string | null } {
+async function loadView(store: ReturnType<typeof useStore>, id: string, typeId: string | undefined): Promise<DataView | null> {
+  if (typeId === 'buckyos.record') {
+    const read = await store.readBatched<RecordContent>(id)
+    return { kind: 'record', props: read.content.props }
+  }
+  if (typeId === 'buckyos.table-source') {
+    const page: QueryPage = await store.session.query({ source_id: id, limit: 500, consistency: 'best_effort' })
+    const fields = new Map<string, string>()
+    const read = await store.readBatched<{ fields: { field_id: string; name: string }[] }>(id)
+    for (const f of read.content.fields) fields.set(f.field_id, f.name)
+    return { kind: 'table', rows: page.rows.map((r) => r.values), fields }
+  }
+  return null
+}
+
+/** The main source and every named binding of the Cell (Q18: `bind: "<binding>.<expr>"` reads a binding). */
+function useSourceData(context: RenderContext): { data: DataView | null; named: Record<string, DataView | null>; error: string | null } {
   const store = useStore()
   const source = context.source
   const id = source?.entity_id ?? ''
-  const version = useVersion(`e:${id}`)
-  const load = useCallback(async (): Promise<DataView | null> => {
-    if (!source) return null
-    if (source.type_id === 'buckyos.record') {
-      const read = await store.readBatched<RecordContent>(id)
-      return { kind: 'record', props: read.content.props }
-    }
-    if (source.type_id === 'buckyos.table-source') {
-      const page: QueryPage = await store.session.query({ source_id: id, limit: 500, consistency: 'best_effort' })
-      const fields = new Map<string, string>()
-      const read = await store.readBatched<{ fields: { field_id: string; name: string }[] }>(id)
-      for (const f of read.content.fields) fields.set(f.field_id, f.name)
-      return { kind: 'table', rows: page.rows.map((r) => r.values), fields }
-    }
-    return null
-  }, [store, id, source])
-  const loaded = useLoad<DataView | null>(load, version)
-  return { data: loaded.data ?? null, error: loaded.error }
+  const bound = useMemo(() => Object.entries(context.payload.bindings ?? {}).map(([name, b]) => [name, (b as { entity_id?: string } | null)?.entity_id ?? ''] as [string, string]).filter(([, e]) => e), [context.payload.bindings])
+  const keys = useMemo(() => [id, ...bound.map(([, e]) => e)].filter(Boolean).map((e) => `e:${e}`), [id, bound])
+  const version = useSyncExternalStore(store.versions.subscribe, () => keys.map((k) => store.versions.get(k)).join(','))
+  const load = useCallback(async (): Promise<{ data: DataView | null; named: Record<string, DataView | null> }> => {
+    const named: Record<string, DataView | null> = {}
+    for (const [name, entityId] of bound) named[name] = await loadView(store, entityId, store.outline.get(entityId)?.type_id).catch(() => null)
+    return { data: source ? await loadView(store, id, source.type_id) : null, named }
+  }, [store, id, source, bound])
+  const loaded = useLoad<{ data: DataView | null; named: Record<string, DataView | null> }>(load, version)
+  return { data: loaded.data?.data ?? null, named: loaded.data?.named ?? {}, error: loaded.error }
 }
 
 function resolveBind(data: DataView | null, bind: string | undefined, fieldByName?: (name: string) => string): { value: number | string | null; series?: { label: string; value: number }[] } {
@@ -93,18 +101,27 @@ function resolveBind(data: DataView | null, bind: string | undefined, fieldByNam
   return { value: data.rows.length > 0 ? (typeof data.rows[0][f] === 'number' ? (data.rows[0][f] as number) : String(data.rows[0][f] ?? '')) : null }
 }
 
-function Items({ items, data, accent, context }: { items: Item[]; data: DataView | null; accent: string; context: RenderContext }) {
+/** Field ids by name (and id) of a table's data, for `bind` / `by`. */
+function fieldLookup(data: DataView | null): ((name: string) => string) | undefined {
+  if (data?.kind !== 'table') return undefined
+  const map = new Map<string, string>()
+  for (const [id, name] of data.fields) { map.set(name, id); map.set(id, id) }
+  return (name: string) => map.get(name) ?? name
+}
+
+function Items({ items, data: main, named, accent, context }: { items: Item[]; data: DataView | null; named: Record<string, DataView | null>; accent: string; context: RenderContext }) {
   const text = useAiwsText()
   const { t } = text
-  const byName = useMemo(() => {
-    if (data?.kind !== 'table') return undefined
-    const map = new Map<string, string>()
-    for (const [id, name] of data.fields) { map.set(name, id); map.set(id, id) }
-    return (name: string) => map.get(name) ?? name
-  }, [data])
   return (
     <>
-      {items.map((item, index) => {
+      {items.map((rawItem, index) => {
+        // `<binding>.<expr>` reads a named binding (Q18); anything else reads the main source as before
+        const cut = rawItem.bind?.indexOf('.') ?? -1
+        const prefix = cut > 0 ? rawItem.bind!.slice(0, cut) : ''
+        const viaBinding = prefix !== '' && prefix !== 'props' && prefix in named
+        const data = viaBinding ? named[prefix] : main
+        const item = viaBinding ? { ...rawItem, bind: rawItem.bind!.slice(cut + 1) } : rawItem
+        const byName = fieldLookup(data)
         if (item.kind === 'text') return <div key={index} className="aiws-decl-text">{item.text}</div>
         if (item.kind === 'badge') return <span key={index} className="aiws-chip" style={{ borderColor: accent, color: accent }}>{item.text ?? item.label}</span>
         if (item.kind === 'value' || item.kind === 'metric') {
@@ -153,7 +170,7 @@ function useSpec(context: RenderContext): { spec: Spec | null; error: string | n
 function DeclarativeBody(context: RenderContext & { variant: 'edit' | 'view' }) {
   const { t } = useAiwsText()
   const { spec, error, title } = useSpec(context)
-  const { data, error: dataError } = useSourceData(context)
+  const { data, named, error: dataError } = useSourceData(context)
   if (error) return <div className="aiws-error" role="alert">{t('aiworkspace.extension.decl.readFailed', { error })}</div>
   if (!spec) return <div className="aiws-muted">{t('aiworkspace.extension.decl.loading')}</div>
   const accent = typeof context.payload.config?.accent === 'string' ? context.payload.config.accent : spec.accent ?? 'var(--cp-accent)'
@@ -162,7 +179,7 @@ function DeclarativeBody(context: RenderContext & { variant: 'edit' | 'view' }) 
     <div className={`aiws-decl aiws-decl-${spec.layout ?? 'stack'}`} data-testid={`aiws-decl-${context.cell.entity_id}`} data-variant={context.variant}>
       <div className="aiws-decl-title">{title}</div>
       {dataError && <div className="aiws-warning">{dataError}</div>}
-      <Items items={items} data={data} accent={accent} context={context} />
+      <Items items={items} data={data} named={named} accent={accent} context={context} />
     </div>
   )
 }

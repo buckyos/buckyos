@@ -1,0 +1,244 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "buckyos.ai-workspace/block-def/1.1",
+ "title": "Payload of a buckyos.block-def entity (phase two §10.3; 扩展控件 P0 keys)",
+ "description": "Checked by core/src/types.rs validate_block_def (≤ 512 KiB in all). ident, manifest_version, source_dir, bindings, catalog, agent and provenance were added by the extension P0 without a protocol change (Q19); definitions without them keep working. The dependency record of a build is `derived.build { input_digest, builder_version, built_at }`.",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "def_id",
+  "kind"
+ ],
+ "properties": {
+  "def_id": {
+   "$ref": "#/$defs/name"
+  },
+  "version": {
+   "type": "integer",
+   "minimum": 1,
+   "maximum": 1000000,
+   "default": 1
+  },
+  "kind": {
+   "enum": [
+    "declarative",
+    "html"
+   ]
+  },
+  "title": {
+   "type": "string",
+   "maxLength": 256
+  },
+  "description": {
+   "type": "string",
+   "maxLength": 4000
+  },
+  "accepts": {
+   "$ref": "#/$defs/data_types"
+  },
+  "allow_no_source": {
+   "type": "boolean"
+  },
+  "default_size": {
+   "$ref": "#/$defs/size"
+  },
+  "declarative": {
+   "type": "object"
+  },
+  "html": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "html"
+   ],
+   "properties": {
+    "html": {
+     "type": "string"
+    },
+    "css": {
+     "type": "string"
+    },
+    "js": {
+     "type": "string"
+    },
+    "api_version": {
+     "type": "integer",
+     "minimum": 1
+    }
+   }
+  },
+  "config_schema": {
+   "type": [
+    "object",
+    "array"
+   ]
+  },
+  "actions": {
+   "type": [
+    "object",
+    "array"
+   ]
+  },
+  "inspector": {
+   "type": [
+    "object",
+    "array"
+   ]
+  },
+  "ident": {
+   "$ref": "#/$defs/ident"
+  },
+  "manifest_version": {
+   "type": "integer",
+   "minimum": 1,
+   "maximum": 1
+  },
+  "source_dir": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "entity_id"
+   ],
+   "properties": {
+    "entity_id": {
+     "type": "string",
+     "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+    }
+   },
+   "description": "the live buckyos.dir of the build's source snapshot: a strong def_source reference"
+  },
+  "bindings": {
+   "$ref": "#/$defs/bindings"
+  },
+  "catalog": {
+   "$ref": "#/$defs/catalog"
+  },
+  "agent": {
+   "type": "string",
+   "maxLength": 65536
+  },
+  "provenance": {
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "pkg_id": {
+     "type": "string",
+     "maxLength": 128
+    },
+    "version": {
+     "type": "string",
+     "maxLength": 64
+    },
+    "digest": {
+     "type": "string",
+     "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+   }
+  }
+ },
+ "$defs": {
+  "name": {
+   "type": "string",
+   "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+   "description": "A renderer id; also the definition's def_id."
+  },
+  "data_types": {
+   "type": "array",
+   "items": {
+    "enum": [
+     "buckyos.table-source",
+     "buckyos.richtext",
+     "buckyos.record",
+     "buckyos.asset",
+     "buckyos.wish",
+     "buckyos.annotation",
+     "buckyos.block-def"
+    ]
+   },
+   "uniqueItems": true
+  },
+  "ident": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "author_did",
+    "name"
+   ],
+   "description": "Control identity (A3): written `<author_did>#<name>`, at most 128 bytes; the definition entity's name in the Workspace.",
+   "properties": {
+    "author_did": {
+     "type": "string",
+     "pattern": "^did:[a-z0-9]+:[^/#\\s]+$",
+     "maxLength": 120
+    },
+    "name": {
+     "$ref": "#/$defs/name"
+    }
+   }
+  },
+  "size": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "w",
+    "h"
+   ],
+   "properties": {
+    "w": {
+     "type": "number",
+     "exclusiveMinimum": 0
+    },
+    "h": {
+     "type": "number",
+     "exclusiveMinimum": 0
+    }
+   }
+  },
+  "bindings": {
+   "type": "object",
+   "maxProperties": 32,
+   "propertyNames": {
+    "pattern": "^[a-z][a-z0-9_]{0,31}$"
+   },
+   "additionalProperties": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "accepts": {
+      "$ref": "#/$defs/data_types"
+     },
+     "required": {
+      "type": "boolean"
+     },
+     "title": {
+      "type": "string",
+      "maxLength": 256
+     },
+     "description": {
+      "type": "string",
+      "maxLength": 4000
+     }
+    }
+   },
+   "description": "Named data inputs; an instance binds them in its Cell `bindings` ({ <name>: { entity_id } })."
+  },
+  "catalog": {
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "group": {
+     "type": "string",
+     "maxLength": 64
+    },
+    "icon": {
+     "type": "string",
+     "pattern": "^[a-z][a-z0-9-]{0,31}$"
+    },
+    "description": {
+     "type": "string",
+     "maxLength": 1000
+    }
+   }
+  }
+ }
+}

@@ -69,6 +69,7 @@ buckyos --non-interactive --yes --timeout 10m app install <x.pikg> --plan plan.j
 ```
 2. Local new version: bump `app.json.version` (and `pikg_file`), build/pack, then `app install <new.pikg> --policy local-developer` without `--plan`; `--dry-run` first shows `plan_use UPGRADE`. The same version is answered as satisfied and nothing reinstalls (from the code).
 3. Catalog upgrade: `buckyos app upgrade [<app_did>] [--dry-run]` resolves the App DID through BNS; it takes no PIKG. A local-developer App has no BNS record → `TRUST_RESOLUTION_REQUIRED`.
+- An `aiws` package (AI Workspace controls) goes through the same `app install`, but control-panel answers at once (no task): `action` `installed | satisfied | replaced`, `pkg_id`, `controls` — it is in the user's AI Workspace library (`buckyos aiws library list`), no App is deployed. A developer can skip the Installer with `buckyos aiws library install <x.pikg>`.
 - `local-developer` is the policy for unsigned dev packages. The default CLI timeout is 30 s: an install then exits 8 `TIMEOUT` while the task goes on. Use `--timeout 10m`, or `--no-wait` and `buckyos --timeout 10m task wait <task_id>`; `app cancel <task_id>` stops one.
 - Select installed Apps by DID or instance id: `app status did:bns:<name>.<owner>` / `<app_id>@<owner>`; a short name becomes `did:bns:<name>` → `APP_NOT_INSTALLED`.
 - Remove: `app uninstall <app_did> --data retain|delete --yes`. On 2026-10-17 `--data delete` left `data/home/<owner>/.local/share/<app_id>/` and the script instance volume; report leftovers instead of claiming deletion.
