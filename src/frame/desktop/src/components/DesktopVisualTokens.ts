@@ -13,8 +13,9 @@ export function appIconSurfaceStyle(
   accent: string,
   tone: 'tile' | 'window' = 'tile',
 ) {
-  const baseMix = tone === 'tile' ? '52%' : '46%'
-  const edgeMix = tone === 'tile' ? '42%' : '36%'
+  // Keep the app colour dominant so icon surfaces don't wash out in light themes.
+  const baseMix = tone === 'tile' ? '82%' : '76%'
+  const edgeMix = tone === 'tile' ? '72%' : '66%'
 
   return {
     background: `linear-gradient(165deg, color-mix(in srgb, ${accent} ${baseMix}, var(--cp-surface-2)), color-mix(in srgb, ${accent} ${edgeMix}, var(--cp-surface-2)))`,

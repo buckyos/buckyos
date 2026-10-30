@@ -1,4 +1,5 @@
 import { AppIcon, TierBadge } from '../../components/DesktopVisuals'
+import { appIconSurfaceStyle } from '../../components/DesktopVisualTokens'
 import { PanelIntro } from '../../components/AppPanelPrimitives'
 import { useI18n } from '../../i18n/provider'
 
@@ -63,7 +64,7 @@ export function MarketAppPanel() {
                   className="flex h-12 w-12 items-center justify-center rounded-[18px] border shadow-[0_14px_28px_color-mix(in_srgb,var(--cp-shadow)_12%,transparent)]"
                   style={{
                     borderColor: `color-mix(in srgb, ${app.accent} 26%, white)`,
-                    background: `linear-gradient(165deg, color-mix(in srgb, ${app.accent} 78%, white), color-mix(in srgb, ${app.accent} 24%, var(--cp-bg)))`,
+                    ...appIconSurfaceStyle(app.accent),
                   }}
                 >
                   <AppIcon iconKey={app.iconKey} className="text-white" />
