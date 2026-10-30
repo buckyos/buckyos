@@ -14,6 +14,7 @@ import { WorkspaceUiContext, useEdits, useLoad, useOutlineVersion, useStore, use
 import { useAiwsText } from '../../useAiwsText'
 import { BlockHost } from '../blocks/BlockHost'
 import { CanvasView, type CanvasFocus } from '../canvas/CanvasView'
+import { SurfaceDeleteDialog } from '../canvas/surfaceManage'
 import { surfacesOf } from '../canvas/surfaceOps'
 import { DataSourceView } from '../sources/DataSourceView'
 import { PermissionsPanel } from '../sources/PermissionsPanel'
@@ -329,6 +330,7 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
             {dialog?.kind === 'help' && <HelpDialog onClose={() => setDialog(null)} />}
             {dialog?.kind === 'mock' && <MockDialog onClose={() => setDialog(null)} />}
             {dialog?.kind === 'extensions' && <ExtensionsDialog initialDefId={dialog.defId} phone={phone} onClose={() => setDialog(null)} />}
+            {dialog?.kind === 'delete-surface' && <SurfaceDeleteDialog key={dialog.surface.entity_id} surface={dialog.surface} onClose={() => setDialog(null)} onDeleted={(next) => { if (next) selectSurface(next) }} />}
             <TableImportHost />
           </WorkspaceUiContext.Provider>
         )}

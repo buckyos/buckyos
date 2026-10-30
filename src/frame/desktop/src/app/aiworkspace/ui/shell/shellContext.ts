@@ -33,6 +33,7 @@ export type DialogRequest =
   | { kind: 'mock' }
   /** Workspace controls (扩展控件 P0): definitions, builds, library, export. */
   | { kind: 'extensions'; defId?: string }
+  | { kind: 'delete-surface'; surface: EntityEnvelope }
 
 /** Personal layout preferences (user work state, `ui:*`); "restore default layout" clears them. */
 export interface LayoutPrefs { objectToolbar: boolean; viewToolbar: boolean; grid: boolean }

@@ -122,6 +122,7 @@ test('UI04 Surfaces: create, move a Block across, delete with pre-check; referen
   await page.getByTestId('aiws-surface-switch').click()
   await page.getByTestId(`aiws-surface-more-${third.entity_id}`).click()
   await page.getByTestId(`aiws-surface-delete-${third.entity_id}`).click()
+  await expect(page.getByTestId('aiws-surface-delete-dialog')).toBeInViewport({ ratio: 1 })
   await page.getByTestId('aiws-surface-delete-confirm').click()
   await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).some((e: { entity_id: string }) => e.entity_id === third.entity_id)).toBe(false)
   expect((await api.outline(ALICE, ws.workspace_id)).some((e: { entity_id: string }) => e.entity_id === third.content_folder_id)).toBe(false)

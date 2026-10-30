@@ -105,14 +105,16 @@ export function MenuList({ items, onDone, onBack, label, autoFocus = true, class
   const ref = useRef<HTMLDivElement>(null)
   const [openSub, setOpenSub] = useState<string | null>(null)
   const [subByKey, setSubByKey] = useState(false)
-  const [placement, setPlacement] = useState<{ shift: number; flip: boolean }>({ shift: 0, flip: false })
+  const [placement, setPlacement] = useState<{ shift: number; lift: number; flip: boolean }>({ shift: 0, lift: 0, flip: false })
   // a top-level menu moves inside the application; a submenu without room on the right opens to the left
+  // and one running past the bottom moves up
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
-    if (!className.includes('aiws-submenu')) { setPlacement({ shift: containShift(el), flip: false }); return }
+    if (!className.includes('aiws-submenu')) { setPlacement({ shift: containShift(el), lift: 0, flip: false }); return }
     const bounds = (el.closest('.aiws-root') ?? document.documentElement).getBoundingClientRect()
-    setPlacement({ shift: 0, flip: el.getBoundingClientRect().right > bounds.right - 8 })
+    const rect = el.getBoundingClientRect()
+    setPlacement({ shift: 0, lift: Math.max(Math.min(0, bounds.bottom - 8 - rect.bottom), bounds.top + 8 - rect.top), flip: rect.right > bounds.right - 8 })
   }, [className])
   const enabled = () => [...(ref.current?.querySelectorAll<HTMLButtonElement>(':scope > .aiws-menu-entry > button[role="menuitem"]:not(:disabled)') ?? [])]
   useEffect(() => { if (autoFocus) enabled()[0]?.focus() }, [autoFocus])
@@ -132,8 +134,8 @@ export function MenuList({ items, onDone, onBack, label, autoFocus = true, class
     } else if (event.key === 'ArrowLeft' && onBack) { event.preventDefault(); onBack() }
   }
   return (
-    <div ref={ref} className={`aiws-menu ${className}${placement.flip ? ' is-flipped' : ''}`} role="menu" aria-label={label} data-testid={testId} onKeyDown={onKey}
-      style={placement.shift ? { transform: `translateX(${placement.shift}px)` } : undefined}>
+    <div ref={ref} className={`aiws-menu ${className}${placement.flip ? ' is-flipped' : ''}${items.some((item) => item.items) ? ' has-submenu' : ''}`} role="menu" aria-label={label} data-testid={testId} onKeyDown={onKey}
+      style={placement.shift || placement.lift ? { transform: `translate(${placement.shift}px, ${placement.lift}px)` } : undefined}>
       {items.map((item) => item.separator ? <hr key={item.id} /> : (
         <div key={item.id} className="aiws-menu-entry" role="none" onPointerEnter={() => { setSubByKey(false); setOpenSub(item.items && !item.disabled ? item.id : null) }}>
           <button type="button" role="menuitem" data-menu-id={item.id} data-testid={item.testId ?? `aiws-menu-${item.id}`} disabled={item.disabled}

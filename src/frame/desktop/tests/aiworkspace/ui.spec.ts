@@ -216,7 +216,10 @@ test('UI-P05 insertion: one-shot placement (Esc writes nothing), the main menu, 
   await page.getByTestId('aiws-canvas').click({ position: { x: 900, y: 700 } })
   await expect.poll(async () => (await api.read(ALICE, ws.workspace_id, note.source_id)).content.payload.body).toBe('放置后直接输入')
   // main menu → 插入 → 布局 → 框: at the centre of the view, without asking for a title
-  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-insert-group-layout', 'aiws-main-insert-frame')
+  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-insert-group-layout')
+  // the third level is not clipped by the second
+  await expect(page.getByTestId('aiws-main-insert-frame')).toBeInViewport({ ratio: 1 })
+  await page.getByTestId('aiws-main-insert-frame').click()
   await expect.poll(async () => (await cells(api, ws.workspace_id, 'sf-p')).some((c: { view_type: string }) => c.view_type === 'frame')).toBe(true)
   // context menu on a blank spot: the shape lands where the menu was opened
   const spot = await screenOf(page, { x: 100, y: 700 })

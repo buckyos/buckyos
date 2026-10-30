@@ -12,7 +12,7 @@ import { useOutlineVersion, useReadOnlyReason, useStore } from '../../state/hook
 import { useAiwsText } from '../../useAiwsText'
 import { CANVAS_MODE_LABEL } from '../blocks/registry'
 import { SURFACE_ICONS, SurfaceIcon } from '../canvas/icons'
-import { accepted, renameBase, renameSurface, setSurfaceBackground, setSurfaceIcon, SurfaceDeleteDialog, surfaceWriteReason, useSurfaceConfig, type RenameBase } from '../canvas/surfaceManage'
+import { accepted, renameBase, renameSurface, setSurfaceBackground, setSurfaceIcon, surfaceWriteReason, useSurfaceConfig, type RenameBase } from '../canvas/surfaceManage'
 import { buildMainMenu, type CanvasCommands } from './MainMenu'
 import { MenuButton, PopoverPanel, usePopover } from './popover'
 import { duplicateSurfaceOps } from '../canvas/surfaceOps'
@@ -195,7 +195,6 @@ export function SurfaceSwitcher({ phone = false }: { phone?: boolean }) {
   const { open, toggle, close, bindAnchor, bindTrigger } = usePopover()
   const [query, setQuery] = useState('')
   const [renaming, setRenaming] = useState<{ id: string; base: Promise<RenameBase>; value: string } | null>(null)
-  const [deleting, setDeleting] = useState<EntityEnvelope | null>(null)
   const canStructure = store.session.info().capabilities.includes('structure') && !phone
   const active = shell.activeSurface
   const workspaceTitle = store.session.info().title
@@ -263,7 +262,8 @@ export function SurfaceSwitcher({ phone = false }: { phone?: boolean }) {
                         run: () => setRenaming({ id: surface.entity_id, base: readBase(store, surface), value: surface.title ?? surface.name ?? '' }) },
                       { id: `surface-duplicate-${surface.entity_id}`, testId: `aiws-surface-duplicate-${surface.entity_id}`, label: t('aiworkspace.shell.switcher.duplicate'), disabled: !canStructure, reason: t('aiworkspace.shell.switcher.noRenamePermission'),
                         run: () => { void duplicateSurfaceOps(store, surface.entity_id).then((made) => store.submit({ editId: `surface:${made.surfaceId}`, label: t('aiworkspace.shell.switcher.duplicate'), operations: made.ops }).then((outcome) => { if (outcome.status === 'accepted' || outcome.status === 'saved_locally') { shell.selectSurface(made.surfaceId); shell.setTopMode('canvas') } })).catch((error: unknown) => store.notify('error', describeError(error))) } },
-                      { id: `surface-delete-${surface.entity_id}`, testId: `aiws-surface-delete-${surface.entity_id}`, label: t('aiworkspace.shell.switcher.delete'), danger: true, disabled: !surface.capabilities.includes('delete'), reason: t('aiworkspace.shell.switcher.noDeletePermission'), run: () => setDeleting(surface) },
+                      { id: `surface-delete-${surface.entity_id}`, testId: `aiws-surface-delete-${surface.entity_id}`, label: t('aiworkspace.shell.switcher.delete'), danger: true, disabled: !surface.capabilities.includes('delete'), reason: t('aiworkspace.shell.switcher.noDeletePermission'),
+                        run: () => { close(); shell.openDialog({ kind: 'delete-surface', surface }) } },
                     ]}>
                     <Ellipsis size={14} />
                   </MenuButton>
@@ -275,7 +275,6 @@ export function SurfaceSwitcher({ phone = false }: { phone?: boolean }) {
           {canStructure && <button type="button" className="aiws-popover-item" data-testid="aiws-surface-new" onClick={() => { close(); shell.openDialog({ kind: 'new', tab: 'canvas' }) }}>{t('aiworkspace.shell.switcher.new')}</button>}
         </PopoverPanel>
       )}
-      {deleting && <SurfaceDeleteDialog surface={deleting} onClose={() => setDeleting(null)} onDeleted={(next) => { if (next) shell.selectSurface(next) }} />}
     </span>
   )
 }
