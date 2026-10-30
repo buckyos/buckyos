@@ -317,6 +317,7 @@ const LoginPage = () => {
           <TextField
             label="Username"
             autoComplete="username"
+            slotProps={{ htmlInput: { autoCapitalize: 'none', autoCorrect: 'off', spellCheck: false } }}
             autoFocus
             value={username}
             onChange={(e) => setUsername(e.target.value)}

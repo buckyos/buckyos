@@ -180,6 +180,7 @@ function RegisterForm({ service, entryId, onCancel }: { service: EntryService; e
         size="small"
         label={t('sso.register.userId', 'User name')}
         autoComplete="username"
+        slotProps={{ htmlInput: { autoCapitalize: 'none', autoCorrect: 'off', spellCheck: false } }}
         value={userId}
         disabled={busy}
         error={fieldError?.field === 'userId'}

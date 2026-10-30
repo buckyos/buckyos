@@ -9,10 +9,10 @@
 
 ## 部署
 
-纯静态文件，无构建步骤、无第三方脚本：`index.html`、`jump-page.js`、`jump-core.js`、`jump.css`，每个登记路径放一份 `index.html`（当前 `sysdlg/app_installer/index.html`，内容与根 `index.html` 相同）。服务端需返回以下响应头（`<meta>` 无法设置 `frame-ancestors`）：
+纯静态文件，无构建步骤、无第三方脚本：`index.html`、`jump-page.js`、`jump-core.js`、`jump.css`、`favicon.svg`、`favicon.ico`、`apple-touch-icon.png`，每个登记路径放一份 `index.html`（当前 `sysdlg/app_installer/index.html`，内容与根 `index.html` 相同）。服务端需返回以下响应头（`<meta>` 无法设置 `frame-ancestors`）：
 
 ```
-Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
 Referrer-Policy: no-referrer
 Cache-Control: no-store
 X-Content-Type-Options: nosniff

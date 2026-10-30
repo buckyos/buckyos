@@ -29,6 +29,8 @@ test('stream shows GIFs animated, videos as Preview thumbnails and files as card
   const gif = history.getByTestId('attachment-image').filter({ has: page.getByRole('img', { name: 'orbit-loader.gif' }) })
   await expect(gif).toHaveAttribute('data-gif', 'animated')
   await expect.poll(() => gif.locator('img').evaluate(img => (img as HTMLImageElement).naturalWidth)).toBe(160)
+  await expect.poll(() => gif.evaluate(element => Math.round(element.getBoundingClientRect().width))).toBe(160)
+  await expect(gif).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
   await expect(history.getByRole('img', { name: 'harbor-sunset.png', exact: true })).toBeVisible()
 
   // WebM: no Pipeline plan in the mock catalog → Runtime frame capture.

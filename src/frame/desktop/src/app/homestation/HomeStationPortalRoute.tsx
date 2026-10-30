@@ -1,5 +1,5 @@
 import { useMediaQuery } from '@mui/material'
-import { ExternalLink, Globe2, Home, Loader2, LogIn, Users } from 'lucide-react'
+import { ExternalLink, Globe2, Waypoints, Loader2, LogIn, Users } from 'lucide-react'
 import { useCallback, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import useSWR from 'swr'
@@ -59,7 +59,7 @@ function PortalBar({ home, feed, entryKey }: { home: PortalHome; feed: string; e
         {viewer?.user ? (
           <>
             <a href={portalHref(viewer.user)} className="hs-chip" data-testid="hs-portal-my-page"><Users size={13} />{t('homestation.portal.myPage', 'My page')}</a>
-            <a href={`${zoneOrigin()}/homestation`} className="hs-chip" data-testid="hs-portal-open-app"><Home size={13} />{t('homestation.portal.openApp', 'My HomeStation')}</a>
+            <a href={`${zoneOrigin()}/homestation`} className="hs-chip" data-testid="hs-portal-open-app"><Waypoints size={13} />{t('homestation.portal.openApp', 'My HomeStation')}</a>
           </>
         ) : (
           <a href={login} className="hs-chip" data-testid="hs-portal-sign-in"><LogIn size={13} />{t('homestation.portal.signIn', 'Sign in')}</a>

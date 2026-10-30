@@ -3,7 +3,7 @@ import clsx from 'clsx'
 import {
   ChevronLeft,
   Ellipsis,
-  Minimize2,
+  Minus,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useI18n } from '../i18n/provider'
@@ -120,6 +120,52 @@ export function StatusBar({
   const surfaceColor =
     showSurface && activeApp ? `color-mix(in srgb, ${activeApp.accent} 14%, var(--cp-surface-2-opaque))` : undefined
 
+  const appControls = (
+    <div
+      className="pointer-events-auto ml-auto flex shrink-0 items-center overflow-hidden rounded-full border border-[color:var(--cp-border)] bg-[color:var(--cp-surface-2-opaque)]"
+    >
+      <IconButton
+        aria-label={t('shell.appMenu', 'App menu')}
+        aria-haspopup="menu"
+        aria-expanded={Boolean(menuAnchor)}
+        size="small"
+        onClick={(event) => setMenuAnchor(event.currentTarget)}
+        sx={{
+          width: 34,
+          height: 32,
+          borderRadius: 0,
+          border: 0,
+          backgroundColor: 'transparent',
+          color: 'var(--cp-text)',
+          '&.Mui-focusVisible': { backgroundColor: 'var(--cp-accent-soft)' },
+        }}
+      >
+        <Ellipsis size={18} />
+      </IconButton>
+      {onMinimizeWindow ? (
+        <>
+          <span aria-hidden="true" className="h-3.5 w-px bg-[color:var(--cp-border)]" />
+          <IconButton
+            aria-label={t('common.minimize')}
+            size="small"
+            onClick={onMinimizeWindow}
+            sx={{
+              width: 34,
+              height: 32,
+              borderRadius: 0,
+              border: 0,
+              backgroundColor: 'transparent',
+              color: 'var(--cp-text)',
+              '&.Mui-focusVisible': { backgroundColor: 'var(--cp-accent-soft)' },
+            }}
+          >
+            <Minus size={18} />
+          </IconButton>
+        </>
+      ) : null}
+    </div>
+  )
+
   return (
     <div
       aria-label={t('common.statusBar')}
@@ -171,26 +217,7 @@ export function StatusBar({
                 {mobileNav.titleOverride?.subtitle ?? appText(activeApp).summary}
               </p>
             </div>
-            <div className="ml-auto flex shrink-0 items-center gap-1">
-              <IconButton
-                aria-label={t('shell.appMenu', 'App menu')}
-                size="small"
-                onClick={(event) => setMenuAnchor(event.currentTarget)}
-                sx={{ pointerEvents: 'auto' }}
-              >
-                <Ellipsis className="size-4" />
-              </IconButton>
-              {onMinimizeWindow ? (
-                <IconButton
-                  aria-label={t('common.minimize')}
-                  size="small"
-                  onClick={onMinimizeWindow}
-                  sx={{ pointerEvents: 'auto' }}
-                >
-                  <Minimize2 className="size-4" />
-                </IconButton>
-              ) : null}
-            </div>
+            {appControls}
           </>
         ) : (
           <>
@@ -214,26 +241,7 @@ export function StatusBar({
               ) : null}
             </div>
             {activeMode === 'compact' && activeApp ? (
-              <div className="ml-auto flex shrink-0 items-center gap-1">
-                <IconButton
-                  aria-label={t('shell.appMenu', 'App menu')}
-                  size="small"
-                  onClick={(event) => setMenuAnchor(event.currentTarget)}
-                  sx={{ pointerEvents: 'auto' }}
-                >
-                  <Ellipsis className="size-4" />
-                </IconButton>
-                {onMinimizeWindow ? (
-                  <IconButton
-                    aria-label={t('common.minimize')}
-                    size="small"
-                    onClick={onMinimizeWindow}
-                    sx={{ pointerEvents: 'auto' }}
-                  >
-                    <Minimize2 className="size-4" />
-                  </IconButton>
-                ) : null}
-              </div>
+              appControls
             ) : (
               <StatusTray onNavigate={onNavigate} tray={tray} />
             )}

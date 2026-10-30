@@ -130,7 +130,6 @@ function InlineImage({ attachment, url, isGif }: { attachment: MessageAttachment
       type="button"
       onClick={() => open(attachment, 'image')}
       className="group relative block w-fit max-w-[min(100%,420px)] cursor-zoom-in overflow-hidden rounded-xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-[color:var(--cp-accent)]"
-      style={{ background: 'color-mix(in srgb, var(--cp-text) 6%, transparent)' }}
       title={t('messagehub.media.open', undefined, { name: attachment.label })}
       data-testid="attachment-image"
       data-gif={isGif ? (still ? 'still' : 'animated') : undefined}
@@ -176,7 +175,7 @@ function ThumbnailTile({ attachment, kind, info }: { attachment: MessageAttachme
         type="button"
         onClick={() => open(attachment, kind)}
         className="relative block w-fit max-w-[min(100%,420px)] cursor-pointer overflow-hidden rounded-xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-[color:var(--cp-accent)]"
-        style={{ background: 'color-mix(in srgb, var(--cp-text) 10%, transparent)' }}
+        style={{ background: ready ? undefined : 'color-mix(in srgb, var(--cp-text) 10%, transparent)' }}
         title={t('messagehub.media.open', undefined, { name: attachment.label })}
         data-testid={isVideo ? 'attachment-video' : 'attachment-thumbnail'}
         data-thumbnail={thumbnail.status}

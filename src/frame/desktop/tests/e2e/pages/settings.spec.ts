@@ -49,6 +49,22 @@ test.describe('settings', () => {
     expect((await download).suggestedFilename()).toMatch(/^buckyos-system-info-.*\.json$/)
   })
 
+  test('search finds inner settings and retains compact icon-only selection', async ({ page }) => {
+    const win = await openSettings(page)
+    const search = win.getByRole('searchbox', { name: 'Search settings' })
+    await search.fill('  ICON SIZE  ')
+    const result = win.getByRole('button', { name: 'Appearance Desktop icon size' })
+    await expect(result).toBeVisible()
+    await result.click()
+    await expect(win.getByTestId('settings-icon-size')).toBeVisible()
+    await expect(result).toHaveAttribute('aria-current', 'page')
+    await expect(result).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+    await search.fill('no-such-setting-xyz')
+    await expect(win.getByText('No matching settings')).toBeVisible()
+    await search.fill('')
+    await expect(win.getByRole('button', { name: 'General', exact: true })).toBeVisible()
+  })
+
   test('navigation names the Zone page "Zone Config"', async ({ page }) => {
     const win = await openSettings(page)
     await expect(win.getByRole('button', { name: 'Zone Config', exact: true })).toBeVisible()

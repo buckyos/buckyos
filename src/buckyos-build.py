@@ -19,6 +19,51 @@ SDK_TOOL_INPUTS = {
 }
 
 
+BUILD_HELP = """usage: buckyos-build.py [-h] [--agent-daemon] [--skip-web]
+                        [--timings] [--timings-dir DIR]
+                        [--app APP [APP ...]] [-s [MODULE ...]]
+                        [--target=TARGET] [amd64|aarch64]
+
+Prepare the SDK/CLI and agent tools, build BuckyOS modules via devkit,
+then assemble the macOS runtime bundle.
+
+options:
+  -h, --help             Show this help and exit without building anything
+  --agent-daemon         Build only buckyos_agent_daemon; skip SDK/CLI, agent
+                         tools and runtime assembly. Cannot combine with -s,
+                         --select or --app
+  --skip-web             Skip web modules (still prepares SDK/CLI)
+  --timings              Generate Cargo timings reports
+  --timings-dir DIR      Generate Cargo timings reports and copy them to DIR
+  --app APP [APP ...]    Build modules used by the specified apps;
+                         app names may also be comma-separated
+  -s, --select [MODULE ...]
+                         Select modules from bucky_project.yaml; omit names
+                         for interactive selection in a terminal
+  --target=TARGET        Override the Rust target triple
+  amd64                  Build for x86_64-unknown-linux-musl
+  aarch64                Build for aarch64-unknown-linux-musl
+
+SDK/CLI environment:
+  BUCKYOS_SDK_TOOL_SOURCE
+      Local buckyos-websdk checkout (defaults to the sibling repository).
+      If absent, use published buckyos@latest; local build failures stop.
+  BUCKYOS_SDK_TOOL_DENO
+      Deno executable path (otherwise discovered on PATH for local builds).
+  BUCKYOS_SDK_TOOL_ARTIFACT, BUCKYOS_SDK_TOOL_RELEASE_MANIFEST,
+  BUCKYOS_SDK_TOOL_SBOM
+      Prebuilt distribution inputs. Setting any of these requires all three
+      plus BUCKYOS_SDK_TOOL_DENO. Setting Deno alone keeps source/published mode.
+
+Examples:
+  uv run buckyos-build.py -s scheduler
+  uv run buckyos-build.py --skip-web
+  uv run buckyos-build.py --agent-daemon --target=x86_64-unknown-linux-musl
+
+Other arguments are forwarded unchanged to devkit's buckyos-build.
+"""
+
+
 def _command_names(command: str) -> list[str]:
     if os.name == "nt":
         return [f"{command}.exe", f"{command}.cmd", f"{command}.bat", command]
@@ -177,6 +222,10 @@ def _prepare_agent_tools(source: Path | None = None, target: Path | None = None)
 
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else list(argv)
+    if any(arg in ("-h", "--help") for arg in args):
+        print(BUILD_HELP)
+        return 0
+
     standalone_daemon = "--agent-daemon" in args
     if standalone_daemon:
         args.remove("--agent-daemon")

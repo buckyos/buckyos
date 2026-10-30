@@ -376,6 +376,11 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
       : Math.max(visibleItemCount * 3, 36),
   })
 
+  const measuredTotalSize = virtualizer.getTotalSize()
+  useLayoutEffect(() => {
+    if (scrollModeRef.current === 'bottom-anchored') stickToBottom(scrollRef.current)
+  }, [measuredTotalSize])
+
   useEffect(() => {
     virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => (
       !compensatingRef.current

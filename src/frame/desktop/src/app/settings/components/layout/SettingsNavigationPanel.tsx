@@ -1,3 +1,4 @@
+import { settingsSearchTerms } from './search'
 import { Search } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useI18n } from '../../../../i18n/provider'
@@ -23,7 +24,12 @@ export function SettingsNavigationPanel({
 
   const visibleItems = useMemo(
     () =>
-      settingsPageDefinitions.filter((item) => {
+      settingsPageDefinitions.map((item) => ({
+        ...item,
+        matches: normalizedQuery ? settingsSearchTerms[item.key]
+          .filter(([key, fallback]) => [t(key, fallback), fallback].some((text) => text.toLowerCase().includes(normalizedQuery)))
+          .map(([key, fallback]) => t(key, fallback)) : [],
+      })).filter((item) => {
         if ('adminOnly' in item && item.adminOnly && !isAdmin) {
           return false
         }
@@ -32,7 +38,7 @@ export function SettingsNavigationPanel({
         }
 
         const label = t(item.labelKey, item.label).toLowerCase()
-        return label.includes(normalizedQuery)
+        return label.includes(normalizedQuery) || item.label.toLowerCase().includes(normalizedQuery) || item.matches.length > 0
       }),
     [isAdmin, normalizedQuery, t],
   )
@@ -46,6 +52,7 @@ export function SettingsNavigationPanel({
         <Search size={16} />
         <input
           type="search"
+          aria-label={t('settings.searchPlaceholder', 'Search settings')}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder={t('settings.searchPlaceholder', 'Search settings')}
@@ -53,7 +60,7 @@ export function SettingsNavigationPanel({
           style={{ color: 'var(--cp-text)' }}
         />
       </label>
-      <div className="mt-4 space-y-1">
+      <div className="mt-2 space-y-0.5">
         {visibleItems.length > 0 ? (
           visibleItems.map((item) => {
             const active = currentPage === item.key
@@ -63,19 +70,16 @@ export function SettingsNavigationPanel({
                 key={item.key}
                 type="button"
                 onClick={() => onNavigate(item.key)}
-                className="flex w-full items-center gap-3 rounded-[18px] px-4 py-3 text-left text-sm transition-colors"
+                aria-current={active ? 'page' : undefined}
+                className="flex min-h-11 w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-sm transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--cp-accent)]"
                 style={{
-                  background: active
-                    ? 'color-mix(in srgb, var(--cp-accent-soft) 14%, var(--cp-surface-2))'
-                    : 'transparent',
-                  color: active ? 'var(--cp-text)' : 'var(--cp-muted)',
-                  border: active
-                    ? '1px solid color-mix(in srgb, var(--cp-accent) 22%, var(--cp-border))'
-                    : '1px solid transparent',
+                  background: 'transparent',
+                  color: 'var(--cp-text)',
+                  border: 'none',
                 }}
               >
                 <div
-                  className="flex h-9 w-9 items-center justify-center rounded-[14px]"
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl"
                   style={{
                     background: active
                       ? 'color-mix(in srgb, var(--cp-accent) 16%, transparent)'
@@ -85,7 +89,14 @@ export function SettingsNavigationPanel({
                 >
                   <item.icon size={16} />
                 </div>
-                <span className="font-medium">{t(item.labelKey, item.label)}</span>
+                <span className="min-w-0">
+                  <span className="block font-medium">{t(item.labelKey, item.label)}</span>
+                  {item.matches.length > 0 && (
+                    <span className="mt-0.5 block text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>
+                      {item.matches.join(' · ')}
+                    </span>
+                  )}
+                </span>
               </button>
             )
           })

@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { Alert, Button, CircularProgress, Switch, TextField } from '@mui/material'
-import { CheckCircle2, ChevronDown, ChevronRight, Home, ShieldCheck, Users } from 'lucide-react'
+import { CheckCircle2, ChevronDown, ChevronRight, Waypoints, ShieldCheck, Users } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
 import type { CurrentAccount } from '../../api/account'
 import { AvatarPicker } from './AvatarPicker'
@@ -345,7 +345,7 @@ export function PermissionsPage({
         <div className="space-y-4">
           <div className="flex items-start justify-between gap-3" data-testid="agent-setup-homestation">
             <div className="flex min-w-0 items-start gap-3">
-              <Home size={18} className="mt-0.5 shrink-0 text-[color:var(--cp-muted)]" />
+              <Waypoints size={18} className="mt-0.5 shrink-0 text-[color:var(--cp-muted)]" />
               <div className="min-w-0">
                 <div className="text-sm font-medium text-[color:var(--cp-text)]">{t('agentSetup.social.homestation')}</div>
                 <p className="mt-0.5 text-[12px] leading-5 text-[color:var(--cp-muted)]">{t('agentSetup.social.homestationHint')}</p>
