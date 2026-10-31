@@ -181,6 +181,9 @@ pub(crate) fn commit_event(tx: &Connection, now_ms: i64, actor: &str, origin: &s
 /// Demonstration time (§6.2): milliseconds since the session started, by the service's clock; 0 before the start.
 fn t_rel(conn: &Connection, now_ms: i64) -> WsResult<i64> {
     let t0: Option<i64> = meta_get(conn, "session_t0")?.and_then(|s| s.parse().ok());
+    // the demonstration time stops at the end: the length of the session, and where whatever comes later is put
+    let closed: Option<i64> = meta_get(conn, "session_closed")?.and_then(|s| s.parse().ok());
+    let now_ms = closed.map_or(now_ms, |c| now_ms.min(c));
     Ok(t0.map(|t0| (now_ms - t0).max(0)).unwrap_or(0))
 }
 

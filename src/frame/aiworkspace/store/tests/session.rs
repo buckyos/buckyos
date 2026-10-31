@@ -7,7 +7,7 @@ mod common;
 
 use aiworkspace_core::access::Access;
 use aiworkspace_store::session::registry::SessionRow;
-use aiworkspace_store::session::{feed_sample, Actor, Role};
+use aiworkspace_store::session::{feed_sample, Actor, NewEvent, Role};
 use aiworkspace_store::workspace::Caller;
 use common::*;
 use serde_json::{json, Value};
@@ -323,8 +323,23 @@ fn ending_saving_and_restarting_keep_what_was_confirmed() {
     // saved: archived with its manifest; the other, never saved, expires and keeps only its row
     let mut s = s;
     let p = env.svc.require_actor(&s, &alice(), None).unwrap();
+    env.advance(5_000);
     env.svc.session_end(&mut s, &p, 1000).unwrap();
+    // the session's time stops at the end: someone opening the replay later is put there, the length stays
+    env.advance(600_000);
+    let (end, late) = env
+        .svc
+        .with_run(&s, |ws| {
+            let (late, _) = ws.append_event(NewEvent { actor: "bob", scope: "presenter", track: "diag", kind: "presence.join", command_id: None, data: json!({}), t_rel_ms: None })?;
+            let (events, _) = ws.events_after(&p.access(), 0, 2000, None)?;
+            let end = events.iter().find(|e| e["type"] == "session.end").unwrap()["t_rel_ms"].as_i64().unwrap();
+            Ok((end, late["t_rel_ms"].as_i64().unwrap()))
+        })
+        .unwrap();
+    assert!(end >= 5_000, "{end}");
+    assert_eq!(late, end);
     let saved = env.svc.session_save(&mut s, &p).unwrap();
+    assert_eq!(saved["archive"]["duration_ms"], end);
     assert_eq!(saved["state"], "archived");
     assert_eq!(saved["archive"]["format"], "buckyos.ai-workspace/session-archive/1");
     assert!(saved["archive"]["events"]["last"].as_u64().unwrap() > 2);

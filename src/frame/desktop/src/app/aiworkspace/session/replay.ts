@@ -73,8 +73,10 @@ export class ReplayEngine {
     this.data = data
     this.replica = this.fresh()
     this.commitTimes = data.events.filter((e) => e.type === 'commit' && e.commit_seq).map((e) => ({ seq: e.commit_seq!, t: e.t_rel_ms })).sort((a, b) => a.seq - b.seq)
+    // the session ends at its end: what came later (people opening the replay) is not part of it
+    const end = data.events.find((e) => e.type === 'session.end')
     const last = data.events.reduce((m, e) => Math.max(m, e.t_rel_ms), 0)
-    this.duration = Math.max(data.bundle.duration_ms ?? 0, last)
+    this.duration = end ? end.t_rel_ms : Math.max(data.bundle.duration_ms ?? 0, last)
   }
 
   private fresh(): Replica {
@@ -120,6 +122,11 @@ export class ReplayEngine {
   read<C>(entityId: string, selector?: unknown): EntityEnvelope & { content: C; head_seq: number } {
     const r = JSON.parse(engine(() => this.replica.read(entityId, selector ? JSON.stringify(selector) : undefined))) as EntityEnvelope & { content: C; head_seq: number }
     r.head_seq = this.seq
+    if (r.type_id === 'buckyos.asset-ref' && r.content && typeof r.content === 'object') {
+      // availability is a fact of the backend's object store (its read adds it, the replica's does not); the bytes
+      // come from the run Workspace, which keeps every asset of the session
+      r.content = { availability: 'available', ...(r.content as Record<string, unknown>) } as C
+    }
     return r
   }
 

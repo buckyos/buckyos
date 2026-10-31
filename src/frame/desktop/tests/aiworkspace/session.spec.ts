@@ -7,11 +7,12 @@
 import type { Browser, Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { asUser, test, expect, workspaceOrigin, type Api } from './fixtures'
+import { asUser, BACKEND_FIXTURE, test, expect, workspaceOrigin, type Api } from './fixtures'
 
 const ALICE = 'tok-alice'
 const BOB = 'tok-bob'
 const FIXTURE = resolve('../aiworkspace/fixtures/presentation/commits.json')
+const PICTURE = 'picture1'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any
 
@@ -28,10 +29,19 @@ async function courseware(api: Api, title: string): Promise<{ workspace_id: stri
     expect(r.ok).toBe(true)
     bindings[feed] = { entity_id: r.entity_id }
   }
+  // a picture on the first page: the replay shows it from the run Workspace's assets
+  const png = (JSON.parse(readFileSync(BACKEND_FIXTURE, 'utf8')) as { assets: { base64: string }[] }).assets[0].base64
+  const asset = await api.uploadAsset(ALICE, ws.workspace_id, Buffer.from(png, 'base64'))
   const info = await api.rpc(ALICE, 'ws.get_info', { workspace_id: ws.workspace_id })
   const committed = await api.commit(ALICE, { workspace_id: ws.workspace_id, epoch: info.epoch }, [{
     op: 'entity.create', entity_id: 'choice1', type_id: 'buckyos.cell', parent_id: 's-launch', order_key: 'zz1', placement: { x: 850, y: 200, w: 650, h: 520 },
     payload: { view: { type: 'classroom.choice', version: 1 }, config: { question: '哪一项是对的？', options: ['甲', '乙', '丙'], multiple: false, slots: 1 }, bindings },
+  }, {
+    op: 'entity.create', entity_id: PICTURE, type_id: 'buckyos.asset-ref', parent_id: 's-launch-content', order_key: 'zz', name: '封面图',
+    payload: { object_id: asset.object_id, file_name: 'cover.png', image: { width: 16, height: 9 } },
+  }, {
+    op: 'entity.create', entity_id: 'picture1-cell', type_id: 'buckyos.cell', parent_id: 's-launch', order_key: 'zz2', placement: { x: 40, y: 600, w: 320, h: 180 },
+    payload: { source_ref: { entity_id: PICTURE }, view: { type: 'asset' }, options: { fit: 'contain' } },
   }], 'session-fx/choice')
   expect(committed.status).toBe('accepted')
   return { workspace_id: ws.workspace_id, epoch: info.epoch }
@@ -125,6 +135,10 @@ test('S-01 a public session: presenter, audience, guest and display in one room;
   await expect(bob.getByTestId('aiws-session-timeline')).toBeVisible({ timeout: 30_000 })
   await bob.getByTestId('aiws-session-replay-scrub').fill('0')
   await expect(bob.getByTestId('aiws-session-stage')).toHaveAttribute('data-step', 's1', { timeout: 15_000 })
+  // the first page's picture: available in the rebuilt Workspace, its bytes from the run Workspace
+  const picture = bob.getByTestId(`aiws-asset-${PICTURE}`)
+  await expect(picture).toHaveAttribute('data-availability', 'available', { timeout: 15_000 })
+  await expect.poll(() => picture.getByTestId('aiws-asset-image').evaluate((image: HTMLImageElement) => image.naturalWidth), { timeout: 15_000 }).toBe(16)
   const max = Number(await bob.getByTestId('aiws-session-replay-scrub').getAttribute('max'))
   await bob.getByTestId('aiws-session-replay-scrub').fill(String(max))
   await expect(bob.getByTestId('aiws-session-stage')).toHaveAttribute('data-step', 's2', { timeout: 15_000 })
