@@ -86,6 +86,7 @@ test('own limits, administrator views, rule creation and recharge', async ({ pag
 
   // Usage breakdown rows on Home open the editor prefilled for the row.
   await openPage(page, 'Home')
+  await page.getByTestId('usage-scope').selectOption('mine')
   await page.getByTestId('usage-set-quota').first().click()
   await expect(page.getByTestId('quota-editor')).toBeVisible()
   await page.getByTestId('quota-editor').getByRole('button', { name: 'Close' }).first().click()

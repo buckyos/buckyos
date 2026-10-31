@@ -153,6 +153,7 @@ export interface UsageEvent {
   requested_model: string
   api_type: ApiType
   tenant_id: string
+  user_id?: string
   app_id?: string
   agent_id?: string
   session_id?: string

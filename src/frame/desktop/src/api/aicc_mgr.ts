@@ -376,6 +376,7 @@ interface RawUsageBucketedRow {
 interface RawUsageEvent {
   event_id?: unknown
   tenant_id?: unknown
+  user_id?: unknown
   caller_app_id?: unknown
   task_id?: unknown
   capability?: unknown
@@ -420,6 +421,7 @@ interface AiccDataProvider {
   validateConnection(draft: WizardDraft): Promise<ValidationResult>
   getUsageSummary(): UsageSummary
   getUsageTrend(granularity?: string): UsageTrendPoint[]
+  queryUsageOverview(scope: UsageScope): Promise<UsageOverview>
   queryUsageEvents(params: UsageEventsQuery): Promise<UsageEventsPage>
   fetchRoutingWorkspace(): Promise<RoutingWorkspace>
   getRoutingState(): Promise<RoutingState>
@@ -442,6 +444,7 @@ export interface AICCMgr {
   fetchModelCatalog(): Promise<ModelCatalog>
   getUsageSummary(): UsageSummary
   getUsageTrend(granularity?: string): UsageTrendPoint[]
+  queryUsageOverview(scope: UsageScope): Promise<UsageOverview>
   addProvider(draft: WizardDraft): Promise<ProviderView>
   deleteProvider(id: string): Promise<void>
   refreshProviderModels(id: string): Promise<void>
@@ -487,8 +490,28 @@ export interface UsageTimeRange {
   endTimeMs: number
 }
 
+export interface UsageScope {
+  zoneWide?: boolean
+  userId?: string
+}
+
+export interface UserUsageSummary {
+  user_id: string
+  total_tokens: number
+  total_requests: number
+  finance_totals: UsageSummary['finance_totals']
+  finance_complete: boolean
+}
+
+export interface UsageOverview {
+  summary: UsageSummary
+  trend: UsageTrendPoint[]
+  users: UserUsageSummary[]
+}
+
 export interface UsageEventsQuery {
   timeRange: UsageTimeRange
+  scope?: UsageScope
   filters?: {
     providerModels?: string[]
     providerModelQuery?: string
@@ -597,6 +620,10 @@ export class AICCModelStore implements AICCMgr {
 
   getUsageTrend(granularity = 'day'): UsageTrendPoint[] {
     return this.provider.getUsageTrend(granularity)
+  }
+
+  queryUsageOverview(scope: UsageScope): Promise<UsageOverview> {
+    return this.provider.queryUsageOverview(scope)
   }
 
   async addProvider(draft: WizardDraft): Promise<ProviderView> {
@@ -823,8 +850,46 @@ class MockAiccProvider implements AiccDataProvider {
     return this.store.getUsageTrend()
   }
 
+  private async scopedUsageEvents(scope: UsageScope): Promise<StoreSnapshot['usageEvents']> {
+    const { mockCurrentAccount } = await import('./control_panel_mock')
+    const account = mockCurrentAccount()
+    if (!account) throw new Error('usage query requires an account')
+    if (scope.zoneWide && account.user_type !== 'admin' && account.user_type !== 'root') {
+      throw new Error('only an administrator may query usage of the whole Zone')
+    }
+    return this.store.getSnapshot().usageEvents.filter((event) =>
+      (scope.zoneWide || event.tenant_id === account.user_id)
+      && (!scope.userId || (event.user_id ?? event.tenant_id) === scope.userId),
+    )
+  }
+
+  async queryUsageOverview(scope: UsageScope): Promise<UsageOverview> {
+    const scopedEvents = await this.scopedUsageEvents(scope)
+    const timeRange = localTrailingDaysRange(30)
+    const events = scopedEvents.filter((event) => usageEventMatchesQuery(event, { timeRange, limit: 0 }))
+    const summary = this.store.getUsageSummary(events)
+    const current = this.store.getUsageSummary(scopedEvents)
+    summary.today_tokens = current.today_tokens
+    summary.this_month_tokens = current.this_month_tokens
+    const users = new Map<string, StoreSnapshot['usageEvents']>()
+    for (const event of events) {
+      const userId = event.user_id ?? event.tenant_id
+      const userEvents = users.get(userId) ?? []
+      userEvents.push(event)
+      users.set(userId, userEvents)
+    }
+    return {
+      summary,
+      trend: this.store.getUsageTrend(events),
+      users: Array.from(users, ([user_id, userEvents]) => {
+        const usage = this.store.getUsageSummary(userEvents)
+        return { user_id, total_tokens: usage.total_tokens, total_requests: usage.total_requests, finance_totals: usage.finance_totals, finance_complete: usage.finance_complete }
+      }).sort((left, right) => right.total_tokens - left.total_tokens),
+    }
+  }
+
   async queryUsageEvents(params: UsageEventsQuery): Promise<UsageEventsPage> {
-    const events = this.store.getSnapshot().usageEvents
+    const events = await this.scopedUsageEvents(params.scope ?? {})
     const filtered = events
       .filter((event) => usageEventMatchesQuery(event, params))
       .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
@@ -1096,10 +1161,45 @@ class BuckyOSAiccProvider implements AiccDataProvider {
     return this.usageTrend
   }
 
+  async queryUsageOverview(scope: UsageScope): Promise<UsageOverview> {
+    const dashboardRange = localTrailingDaysRange(30)
+    const query = (timeRange: UsageTimeRange, extra: Record<string, unknown> = {}) => this.queryUsage({
+      time_range: toRawTimeRange(timeRange),
+      zone_wide: scope.zoneWide === true,
+      filters: scope.userId ? { user_ids: [scope.userId] } : {},
+      output_mode: 'summary',
+      ...extra,
+    })
+    const [byModel, byCapability, byApp, trend, today, thisMonth, byUser] = await Promise.all([
+      query(dashboardRange, { group_by: ['provider_model'] }),
+      query(dashboardRange, { group_by: ['capability'] }),
+      query(dashboardRange, { group_by: ['caller_app_id'] }),
+      query(dashboardRange, { time_bucket: 'day' }),
+      query(localTodayRange()),
+      query(localCurrentMonthRange()),
+      query(dashboardRange, { group_by: ['user_id'] }),
+    ])
+    return {
+      summary: toUsageSummary({ byModel, byCapability, byApp, today, thisMonth }),
+      trend: toUsageTrend(trend),
+      users: groupedRows(byUser).map((row) => ({
+        user_id: asNonEmptyString(row.group?.user_id, ''),
+        total_tokens: aggregateTokens(row.aggregate),
+        total_requests: asNumber(row.aggregate?.total_requests, 0),
+        finance_totals: normalizeFinanceTotals(row.aggregate?.finance_totals),
+        finance_complete: asBoolean(row.aggregate?.finance_complete, true),
+      })).sort((left, right) => right.total_tokens - left.total_tokens),
+    }
+  }
+
   async queryUsageEvents(params: UsageEventsQuery): Promise<UsageEventsPage> {
     const response = await this.queryUsage({
       time_range: toRawTimeRange(params.timeRange),
-      filters: toRawUsageFilters(params.filters),
+      zone_wide: params.scope?.zoneWide === true,
+      filters: {
+        ...toRawUsageFilters(params.filters),
+        ...(params.scope?.userId ? { user_ids: [params.scope.userId] } : {}),
+      },
       output_mode: 'events',
       limit: params.limit,
       cursor: params.cursor,
@@ -1485,6 +1585,7 @@ function toUsageEvents(raw: RawUsageQueryResponse): StoreSnapshot['usageEvents']
       requested_model: asNonEmptyString(event.request_model, providerModel || 'unknown-model'),
       api_type: capabilityToApiType(asNonEmptyString(event.capability, 'llm')),
       tenant_id: asNonEmptyString(event.tenant_id, 'default'),
+      user_id: asOptionalString(event.user_id),
       app_id: asOptionalString(event.caller_app_id),
       session_id: asOptionalString(event.task_id),
       tokens_in: tokensIn,
