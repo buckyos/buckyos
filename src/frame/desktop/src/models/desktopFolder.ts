@@ -162,6 +162,7 @@ export function desktopSeed(t: Translate): DesktopSeedItem[] {
       WIDGET_EXTENSION,
       widgetText({ widget: 'notepad', text: t('desktop.guide.text') }),
     ),
+    add('System Info', WIDGET_EXTENSION, widgetText({ widget: 'system-info' })),
     ...SEED_SHORTCUTS.map((shortcut) =>
       add(fileNameStem(t(shortcut.labelKey, shortcut.fallback), shortcut.fallback), SHORTCUT_EXTENSION, shortcutText(shortcut.app)),
     ),
@@ -251,6 +252,7 @@ export function defaultSlots(formFactor: FormFactor, present: readonly string[])
 const defaultWidgetSize: Record<string, { w: number; h: number }> = {
   clock: { w: 2, h: 1 },
   notepad: { w: 2, h: 2 },
+  'system-info': { w: 2, h: 3 },
 }
 
 // ---------------------------------------------------------------------------
