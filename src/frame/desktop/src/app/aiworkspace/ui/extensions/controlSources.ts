@@ -4,8 +4,8 @@
  * definition), until stopped or the page goes. */
 
 import {
-  AiwsSourceError, buildControl, controlSkeleton, createControlSource, ensureFolder, exportBundle, hasControlSource, homeControlDir, homeExportDir, pullControl, sourceStateKey, watchControl, writeHomeFile,
-  type AiwsExtRpc,
+  AiwsSourceError, buildControl, controlSkeleton, createControlSource, ensureFolder, exportBundle, hasControlSource, homeControlDir, homeExportDir, pullControl, sourceStateKey, unbuiltChanges, watchControl, writeHomeFile,
+  type AiwsExtRpc, type AiwsSkeletonOptions, type AiwsUploader,
 } from 'buckyos/aiws_ext'
 import type { NfspClient } from 'buckyos/nfsp'
 import { ensureSession, nfspClient } from '../../../filebrowser/data/nfsp/client'
@@ -15,7 +15,8 @@ import type { WorkspaceStore } from '../../state/store'
 
 export { homeControlDir, homeExportDir, sourceStateKey }
 
-/** The Zone file service with this Desktop's session. */
+/** The Zone file service with this Desktop's session: the page's own origin, the Desktop's or a Workspace's own host
+ * (`aiws-<id>.<zone>`) alike — the gateway gives `/nfs/v1` to the file service whatever the host (Q24). */
 export async function homeFiles(): Promise<NfspClient> {
   await ensureSession()
   return nfspClient().raw
@@ -45,10 +46,15 @@ export function buildFailure(error: unknown): BuildOutcome {
   return { ok: false, error: error instanceof Error ? error.message : String(error), diagnostics: [] }
 }
 
+/** Files too big to go inline go to the named store first (Q22): a staged asset of this Workspace, by reference. */
+export function assetUploader(store: WorkspaceStore): AiwsUploader {
+  return async (name, bytes) => (await store.session.uploadAsset(new Blob([bytes as BlobPart]), name.split('/').pop() ?? name)).object_id
+}
+
 /** Build the folder `dir` into this Workspace (`.aiws-build.json` there keeps the base). */
 export async function buildFromHome(store: WorkspaceStore, dir: string, opts: { force?: boolean; dryRun?: boolean } = {}): Promise<BuildOutcome> {
   try {
-    const result = await buildControl(extRpc(store), await homeFiles(), store.session.workspaceId, dir, opts)
+    const result = await buildControl(extRpc(store), await homeFiles(), store.session.workspaceId, dir, { ...opts, upload: assetUploader(store) })
     return { ok: true, result: result as unknown as ExtBuildResult }
   } catch (error) {
     return buildFailure(error)
@@ -70,9 +76,25 @@ export async function hasSource(dir: string): Promise<boolean> {
   }
 }
 
-/** A new control's folder from the skeleton (one optional `data` binding, a label property). */
-export async function createSource(dir: string, opts: { authorDid: string; name: string; title: string; kind: 'declarative' | 'html' }): Promise<void> {
+/** A new control's folder from the skeleton (one optional `data` binding, a label property; a composite: its slots). */
+export async function createSource(dir: string, opts: AiwsSkeletonOptions): Promise<void> {
   await createControlSource(await homeFiles(), dir, controlSkeleton(opts))
+}
+
+/** The definitions among `defIds` whose remembered home folder holds changes that were not built (P0 遗留 L3). */
+export async function unbuiltDefinitions(store: WorkspaceStore, defIds: string[]): Promise<string[]> {
+  const out: string[] = []
+  const nfsp = await homeFiles().catch(() => null)
+  if (!nfsp) return out
+  for (const id of defIds) {
+    const dir = store.userState.get<string>(sourceStateKey(id))
+    if (typeof dir !== 'string') continue
+    try {
+      const r = await unbuiltChanges(extRpc(store), nfsp, store.session.workspaceId, id, dir)
+      if (r?.changed) out.push(id)
+    } catch { /* a folder that cannot be read says nothing */ }
+  }
+  return out
 }
 
 /** The bundle of definitions written into the user's home (`AI Workspace/exports/<name>/`): manifest plus controls. */

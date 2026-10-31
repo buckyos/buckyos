@@ -191,7 +191,7 @@ pub fn check_contract_result(r: &Value) -> WsResult<()> {
         return Err(bad(format!("result {name}: target is only valid on table_columns")));
     }
     match o.get("kind") {
-        Some(k) if ty != "control" || !k.as_str().is_some_and(crate::types::is_control_kind) => {
+        Some(k) if ty != "control" || !k.as_str().is_some_and(|k| crate::types::is_control_kind(k) && k != crate::types::COMPOSITE) => {
             return Err(bad(format!("result {name}: kind names the control of a control result (catalog/controls.json)")));
         }
         _ => {}

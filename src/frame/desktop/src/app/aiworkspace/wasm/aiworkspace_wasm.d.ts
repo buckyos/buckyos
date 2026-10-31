@@ -84,6 +84,11 @@ export function canonical_json(json_text: string): string;
 
 export function chunk_id(data: Uint8Array): string;
 
+/**
+ * The id a `tree.clone` seeded with `seed` gives the copy of `old` (the same on the service and in a replica).
+ */
+export function clone_id(seed: string, old: string): string;
+
 export function core_version(): string;
 
 /**
@@ -161,6 +166,7 @@ export interface InitOutput {
     readonly __wbg_replica_free: (a: number, b: number) => void;
     readonly canonical_json: (a: number, b: number, c: number) => void;
     readonly chunk_id: (a: number, b: number, c: number) => void;
+    readonly clone_id: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly core_version: (a: number) => void;
     readonly file_object_id: (a: number, b: number, c: number) => void;
     readonly markdown_to_richtext: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;

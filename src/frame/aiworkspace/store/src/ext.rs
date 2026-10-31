@@ -10,7 +10,8 @@ use aiworkspace_core::materialize::ObjectSource;
 use aiworkspace_core::model::*;
 use aiworkspace_core::order_key::order_key_between;
 use aiworkspace_core::types::{
-    check_catalog, check_def_bindings, check_member_name, ident_string, is_renderer_id, HTML_API_VERSION, MANIFEST_VERSION, MAX_AGENT_BYTES, MAX_BLOCK_DEF_BYTES,
+    check_catalog, check_def_bindings, check_member_name, ident_string, is_renderer_id, is_slot_name, COMPOSITE, HTML_API_VERSION, MANIFEST_VERSION, MAX_AGENT_BYTES,
+    MAX_BLOCK_DEF_BYTES, MAX_DEF_DEPS, MAX_SLOTS,
 };
 use aiworkspace_core::{Code, WsError, WsResult};
 use serde_json::{json, Map, Value};
@@ -22,8 +23,10 @@ pub const BUILDER_VERSION: &str = "aiws-ext-build/1";
 pub const COMPONENT_FILE: &str = "component.json";
 /// The folder under `data` builds and imports default to.
 pub const EXTENSIONS_FOLDER: &str = "extensions";
-/// Files of one (flat) source directory.
+/// Files of one source directory (names may be relative paths, Q23).
 pub const MAX_SOURCE_FILES: usize = 64;
+/// The composition file of a composite control.
+pub const COMPOSITION_FILE: &str = "composition.json";
 /// Inline (`base64`) source bytes one build may carry.
 pub const MAX_INLINE_BYTES: usize = 4 * 1024 * 1024;
 /// The declarative interpreter's vocabulary version (`host_api` of a declarative control).
@@ -89,6 +92,10 @@ pub struct Composed {
     pub input_digest: String,
     /// `sha256:` over the files' contents (the AIWS manifest's control digest).
     pub digest: String,
+    /// The identities `component.json` `deps` names (resolved against the Workspace by the build).
+    pub deps: Vec<String>,
+    /// The identities a composite's slots accept as `cell:<ident>`.
+    pub slot_cells: Vec<String>,
     pub warnings: Vec<Value>,
 }
 
@@ -98,6 +105,9 @@ pub struct BuildInput {
     pub files: Vec<SourceFile>,
     /// `{ pkg_id, version, digest }` of an imported package.
     pub provenance: Option<Value>,
+    /// Brought along because another item depends on it (an import): a definition of that identity already in the
+    /// folder, whatever its source, satisfies it.
+    pub implicit: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -123,6 +133,9 @@ impl Diags {
     }
     fn warn(&mut self, file: &str, message: impl Into<String>) {
         self.0.push(json!({ "file": file, "severity": "warning", "message": message.into() }));
+    }
+    fn missing(&mut self, file: &str, message: impl Into<String>) {
+        self.0.push(json!({ "file": file, "severity": "error", "code": "DEP_MISSING", "message": message.into() }));
     }
     fn json_error(&mut self, file: &str, e: &serde_json::Error) {
         self.0.push(json!({ "file": file, "line": e.line(), "col": e.column(), "severity": "error", "message": e.to_string() }));
@@ -167,6 +180,10 @@ const COMPONENT_KEYS: &[&str] = &[
     "manifest_version", "ident", "kind", "title", "description", "host_api", "accepts", "allow_no_source", "default_size", "config_schema", "bindings", "entry", "assets",
     "catalog", "agent", "deps",
 ];
+/// What only `manifest_version` 2 may use (P1).
+const V2_HINT: &str = "needs manifest_version 2 (raise it in component.json)";
+/// Events and actions between controls (P2).
+const EVENTS_LATER: &str = "events are not supported yet (a later AI Workspace version adds them)";
 const SCHEMA_TYPES: &[&str] = &["object", "array", "string", "number", "integer", "boolean", "null"];
 
 /// The JSON Schema subset instance properties may use (A7): `type`, `enum`, `default`, `required`, `title`,
@@ -296,6 +313,203 @@ fn check_declarative(spec: &Value, bindings: &Map<String, Value>, file: &str, d:
     }
 }
 
+/// `{{config.<key>}}` placeholders in a string of a composition: each names a property of `config_schema`.
+fn check_placeholders(text: &str, at: &str, props: &Map<String, Value>, file: &str, d: &mut Diags) {
+    let mut rest = text;
+    while let Some(start) = rest.find("{{") {
+        let Some(len) = rest[start..].find("}}") else {
+            d.error(file, format!("{at}: unclosed {{{{"));
+            return;
+        };
+        let inner = rest[start + 2..start + len].trim();
+        match inner.strip_prefix("config.") {
+            Some(key) if props.contains_key(key) => {}
+            Some(key) => d.error(file, format!("{at}: {{{{config.{key}}}}} names no property of config_schema")),
+            None => d.error(file, format!("{at}: only {{{{config.<key>}}}} may be used here")),
+        }
+        rest = &rest[start + len + 2..];
+    }
+}
+
+/// A number of a composition (`spacing`, `padding`, `radius`): within [0, max], or a `{{config.<key>}}` string.
+fn check_dimension(v: &Value, at: &str, max: f64, props: &Map<String, Value>, file: &str, d: &mut Diags) {
+    match v {
+        Value::Number(n) if n.as_f64().is_some_and(|n| (0.0..=max).contains(&n)) => {}
+        Value::String(t) if t.trim().starts_with("{{") && t.trim().ends_with("}}") => check_placeholders(t, at, props, file, d),
+        _ => d.error(file, format!("{at}: a number in [0, {max}] or {{{{config.<key>}}}}")),
+    }
+}
+
+/// `composition.json` of a composite (K3, README “Composite controls”): `layout` (an algorithm the host ships:
+/// `stack` | `fixed`), `slots` (where user Blocks go: what they accept, how many, where), `chrome` (what the host draws
+/// around them). String values may say `{{config.<key>}}` for a property of `config_schema`. Answers the identities
+/// slots accept as `cell:<ident>`.
+fn check_composition(spec: &Value, config_schema: Option<&Value>, file: &str, d: &mut Diags) -> Vec<String> {
+    let mut cells = Vec::new();
+    let empty = Map::new();
+    let props = config_schema.and_then(|s| s.get("properties")).and_then(Value::as_object).unwrap_or(&empty);
+    let Some(o) = spec.as_object() else {
+        d.error(file, "a composition is a JSON object { layout, slots, chrome? }");
+        return cells;
+    };
+    for k in o.keys() {
+        match k.as_str() {
+            "layout" | "slots" | "chrome" => {}
+            "events" => d.error(file, EVENTS_LATER),
+            _ => d.error(file, format!("unknown key {k} (a composition says layout, slots and chrome)")),
+        }
+    }
+    let mut algorithm = "stack";
+    match o.get("layout").and_then(Value::as_object) {
+        None => d.error(file, "layout { algorithm: stack | fixed } required"),
+        Some(l) => {
+            match l.get("algorithm").and_then(Value::as_str) {
+                Some(a @ ("stack" | "fixed")) => algorithm = a,
+                a => d.error(file, format!("layout.algorithm {a:?}: stack or fixed (the algorithms the host ships)")),
+            }
+            for (k, v) in l {
+                match k.as_str() {
+                    "algorithm" => {}
+                    "direction" if algorithm == "stack" => {
+                        if !matches!(v.as_str(), Some("column" | "row")) {
+                            d.error(file, "layout.direction: column or row");
+                        }
+                    }
+                    "spacing" if algorithm == "stack" => check_dimension(v, "layout.spacing", 2000.0, props, file, d),
+                    "padding" => match v.as_object() {
+                        Some(sides) => {
+                            for (side, n) in sides {
+                                if !matches!(side.as_str(), "t" | "r" | "b" | "l") {
+                                    d.error(file, format!("layout.padding.{side}: t, r, b or l"));
+                                }
+                                check_dimension(n, &format!("layout.padding.{side}"), 2000.0, props, file, d);
+                            }
+                        }
+                        None => check_dimension(v, "layout.padding", 2000.0, props, file, d),
+                    },
+                    "direction" | "spacing" => d.error(file, format!("layout.{k} belongs to the stack layout")),
+                    _ => d.error(file, format!("layout: unknown key {k}")),
+                }
+            }
+        }
+    }
+    let slots = match o.get("slots").and_then(Value::as_object) {
+        Some(s) => s.clone(),
+        None => {
+            d.error(file, "slots { <name>: { accepts?, min?, max?, placement? } } required");
+            Map::new()
+        }
+    };
+    if slots.len() > MAX_SLOTS {
+        d.error(file, format!("at most {MAX_SLOTS} slots"));
+    }
+    for (name, slot) in &slots {
+        let at = format!("slots.{name}");
+        if !is_slot_name(name) {
+            d.error(file, format!("{at}: a slot name is [a-z][a-z0-9_]{{0,31}}"));
+        }
+        let Some(slot) = slot.as_object() else {
+            d.error(file, format!("{at} must be an object"));
+            continue;
+        };
+        for (k, v) in slot {
+            match k.as_str() {
+                "accepts" => match v.as_array().filter(|a| !a.is_empty() && a.len() <= 32) {
+                    None => d.error(file, format!("{at}.accepts: 1…32 entries (cell:<ident>, a view type, container)")),
+                    Some(list) => {
+                        for a in list {
+                            match a.as_str() {
+                                Some(c) if c.starts_with("cell:") => match c[5..].split_once('#').map(|(did, n)| ident_string(&json!({ "author_did": did, "name": n }))) {
+                                    Some(Ok(id)) => cells.push(id),
+                                    _ => d.error(file, format!("{at}.accepts {c:?}: cell:<author_did>#<name>")),
+                                },
+                                Some("container") => {}
+                                Some(view) if is_renderer_id(view) => {}
+                                _ => d.error(file, format!("{at}.accepts {a}: cell:<ident>, a view type or container")),
+                            }
+                        }
+                    }
+                },
+                "min" => {
+                    if !v.as_u64().is_some_and(|n| n <= 64) {
+                        d.error(file, format!("{at}.min: an integer in [0, 64]"));
+                    }
+                }
+                "max" => {
+                    if !v.as_u64().is_some_and(|n| (1..=1000).contains(&n)) {
+                        d.error(file, format!("{at}.max: an integer in [1, 1000]"));
+                    }
+                }
+                "placement" => match v.as_str() {
+                    Some("free") => {}
+                    Some("stack" | "top" | "bottom") if algorithm == "stack" => {}
+                    Some("stack" | "top" | "bottom") => d.error(file, format!("{at}.placement: a fixed layout keeps every child where it is (free)")),
+                    _ => d.error(file, format!("{at}.placement: stack, top, bottom or free")),
+                },
+                "title" => {
+                    if !v.as_str().is_some_and(|t| t.chars().count() <= 256) {
+                        d.error(file, format!("{at}.title: at most 256 characters"));
+                    }
+                }
+                _ => d.error(file, format!("{at}: unknown key {k}")),
+            }
+        }
+        if let (Some(min), Some(max)) = (slot.get("min").and_then(Value::as_u64), slot.get("max").and_then(Value::as_u64)) {
+            if min > max {
+                d.error(file, format!("{at}: min exceeds max"));
+            }
+        }
+    }
+    if let Some(c) = o.get("chrome") {
+        match c.as_object() {
+            None => d.error(file, "chrome must be an object"),
+            Some(c) => {
+                for (k, v) in c {
+                    let at = format!("chrome.{k}");
+                    match k.as_str() {
+                        "background" | "border" => match v.as_str() {
+                            Some(t) if t.chars().count() <= 64 => check_placeholders(t, &at, props, file, d),
+                            _ => d.error(file, format!("{at}: a colour (≤ 64 characters) or {{{{config.<key>}}}}")),
+                        },
+                        "radius" => check_dimension(v, &at, 200.0, props, file, d),
+                        "empty" => match v.as_str() {
+                            Some(t) if t.chars().count() <= 1000 => check_placeholders(t, &at, props, file, d),
+                            _ => d.error(file, format!("{at}: a text of at most 1000 characters")),
+                        },
+                        "title" => {
+                            let Some(t) = v.as_object() else {
+                                d.error(file, format!("{at}: {{ text, slot? }}"));
+                                continue;
+                            };
+                            for (tk, tv) in t {
+                                match tk.as_str() {
+                                    "text" => match tv.as_str() {
+                                        Some(x) if x.chars().count() <= 256 => check_placeholders(x, "chrome.title.text", props, file, d),
+                                        _ => d.error(file, "chrome.title.text: at most 256 characters"),
+                                    },
+                                    "slot" => {
+                                        if !tv.as_str().is_some_and(|s| slots.contains_key(s)) {
+                                            d.error(file, format!("chrome.title.slot {tv}: a slot of this composition"));
+                                        }
+                                    }
+                                    _ => d.error(file, format!("chrome.title: unknown key {tk}")),
+                                }
+                            }
+                            if !t.contains_key("text") {
+                                d.error(file, "chrome.title.text required");
+                            }
+                        }
+                        _ => d.error(file, format!("chrome: unknown key {k} (background, radius, border, title, empty)")),
+                    }
+                }
+            }
+        }
+    }
+    cells.sort();
+    cells.dedup();
+    cells
+}
+
 fn text_file<'a>(files: &'a BTreeMap<&str, &SourceFile>, name: &str, what: &str, d: &mut Diags) -> Option<&'a str> {
     match files.get(name) {
         None => {
@@ -321,8 +535,8 @@ pub fn compose(files: &[SourceFile]) -> Result<Composed, Vec<Value>> {
     }
     let mut by_name: BTreeMap<&str, &SourceFile> = BTreeMap::new();
     for f in files {
-        if check_member_name(&f.name).is_err() || f.name.starts_with('.') {
-            d.error(&f.name, "a file name of a (flat) source directory: no '/', not starting with '.'");
+        if check_member_name(&f.name).is_err() || f.name.split('/').any(|seg| seg.starts_with('.')) {
+            d.error(&f.name, "a file of a source directory: a relative path whose parts do not start with '.'");
         } else if by_name.insert(&f.name, f).is_some() {
             d.error(&f.name, "listed twice");
         }
@@ -344,7 +558,9 @@ pub fn compose(files: &[SourceFile]) -> Result<Composed, Vec<Value>> {
     };
     let f = COMPONENT_FILE;
     for k in c.keys() {
-        if !COMPONENT_KEYS.contains(&k.as_str()) {
+        if k == "events" {
+            d.error(f, EVENTS_LATER);
+        } else if !COMPONENT_KEYS.contains(&k.as_str()) {
             d.error(f, format!("unknown key {k} (manifest_version {MANIFEST_VERSION} knows {})", COMPONENT_KEYS.join(", ")));
         }
     }
@@ -355,7 +571,7 @@ pub fn compose(files: &[SourceFile]) -> Result<Composed, Vec<Value>> {
             return Err(d.0);
         }
         None => {
-            d.error(f, "manifest_version (1) required");
+            d.error(f, format!("manifest_version (1…{MANIFEST_VERSION}) required"));
             return Err(d.0);
         }
     };
@@ -372,8 +588,17 @@ pub fn compose(files: &[SourceFile]) -> Result<Composed, Vec<Value>> {
     };
     let name = c.get("ident").and_then(|i| i.get("name")).and_then(Value::as_str).unwrap_or("").to_string();
     let kind = c.get("kind").and_then(Value::as_str).unwrap_or("").to_string();
-    if !matches!(kind.as_str(), "declarative" | "html") {
-        d.error(f, "kind must be declarative or html");
+    match kind.as_str() {
+        "declarative" | "html" => {}
+        COMPOSITE if manifest_version < 2 => d.error(f, format!("kind composite {V2_HINT}")),
+        COMPOSITE => {
+            for k in ["accepts", "allow_no_source"] {
+                if c.contains_key(k) {
+                    d.error(f, format!("{k}: a composite is a container of Blocks, not a Cell showing data"));
+                }
+            }
+        }
+        _ => d.error(f, "kind must be declarative, html or composite"),
     }
     let mut payload = Map::new();
     payload.insert("def_id".into(), json!(name));
@@ -455,11 +680,24 @@ pub fn compose(files: &[SourceFile]) -> Result<Composed, Vec<Value>> {
             Err(e) => d.error(f, e.detail),
         }
     }
+    let mut deps: Vec<String> = Vec::new();
     match c.get("deps") {
         None => {}
         Some(v) if v.as_array().is_some_and(Vec::is_empty) => {}
-        Some(_) => d.error(f, "deps must be empty: dependencies between controls come in a later version"),
+        Some(_) if manifest_version < 2 => d.error(f, format!("deps {V2_HINT}")),
+        Some(Value::Array(list)) if list.len() <= MAX_DEF_DEPS => {
+            for dep in list {
+                match dep.as_str().and_then(|x| x.split_once('#')).map(|(did, n)| ident_string(&json!({ "author_did": did, "name": n }))) {
+                    Some(Ok(id)) if id == ident => d.error(f, "deps: a control cannot depend on itself"),
+                    Some(Ok(id)) if deps.contains(&id) => d.error(f, format!("deps lists {id} twice")),
+                    Some(Ok(id)) => deps.push(id),
+                    _ => d.error(f, format!("deps: {dep} is not an identity <author_did>#<name>")),
+                }
+            }
+        }
+        Some(_) => d.error(f, format!("deps: at most {MAX_DEF_DEPS} identities <author_did>#<name>")),
     }
+    let mut slot_cells = Vec::new();
     let mut named: BTreeSet<String> = BTreeSet::from([COMPONENT_FILE.to_string()]);
     match (kind.as_str(), c.get("entry")) {
         ("html", Some(Value::Object(e))) => {
@@ -499,8 +737,24 @@ pub fn compose(files: &[SourceFile]) -> Result<Composed, Vec<Value>> {
                 d.error(f, format!("host_api: the declarative interpreter is version {DECLARATIVE_API_VERSION}"));
             }
         }
+        (COMPOSITE, Some(Value::String(file))) => {
+            named.insert(file.clone());
+            if let Some(t) = text_file(&by_name, file, "entry", &mut d) {
+                match serde_json::from_str::<Value>(t) {
+                    Ok(spec) => {
+                        slot_cells = check_composition(&spec, c.get("config_schema"), file, &mut d);
+                        payload.insert("composition".into(), spec);
+                    }
+                    Err(e) => d.json_error(file, &e),
+                }
+            }
+            if host_api.is_some() {
+                d.error(f, "host_api: a composite runs no code of its own (its layout and chrome are the host's)");
+            }
+        }
         ("html", _) => d.error(f, "entry must be { html, css?, js? } for an html control"),
         ("declarative", _) => d.error(f, "entry must name the declarative JSON file"),
+        (COMPOSITE, _) => d.error(f, format!("entry must name the composition file ({COMPOSITION_FILE})")),
         _ => {}
     }
     for a in c.get("assets").and_then(Value::as_array).into_iter().flatten() {
@@ -553,8 +807,28 @@ pub fn compose(files: &[SourceFile]) -> Result<Composed, Vec<Value>> {
         members,
         input_digest: input_digest(&pairs, manifest_version),
         digest: content_digest(files.iter().map(|f| (f.name.as_str(), f.bytes.as_slice()))),
+        deps,
+        slot_cells,
         warnings: d.0,
     })
+}
+
+/// The controls of one build or import with what each builds on first (Kahn's order; a cycle keeps the given order
+/// and is the core's to refuse).
+fn dependency_order(mut items: Vec<(Composed, Option<Value>, bool)>) -> Vec<(Composed, Option<Value>, bool)> {
+    let mut out = Vec::with_capacity(items.len());
+    while !items.is_empty() {
+        let pending: BTreeSet<String> = items.iter().map(|(c, ..)| c.ident.clone()).collect();
+        let ready = items.iter().position(|(c, ..)| c.deps.iter().all(|d| !pending.contains(d) || *d == c.ident)).unwrap_or(0);
+        out.push(items.remove(ready));
+    }
+    out
+}
+
+/// The identities a composition's slots accept as `cell:<ident>`.
+pub fn slot_cells_of(composition: &Value) -> Vec<String> {
+    let mut d = Diags(Vec::new());
+    check_composition(composition, None, "", &mut d)
 }
 
 /// How a rebuild narrows the contract the instances rely on (README “Compatibility with instances”).
@@ -590,6 +864,25 @@ pub fn narrowing(old: &Map<String, Value>, new: &Map<String, Value>) -> Vec<Stri
     let (or, nr) = (req(old), req(new));
     for k in nr.difference(&or) {
         out.push(format!("config_schema requires {k}"));
+    }
+    // a composite's slots hold the instances' Blocks (P1): a slot that goes or accepts less strands them
+    let slots = |m: &Map<String, Value>| m.get("composition").and_then(|c| c.get("slots")).and_then(Value::as_object).cloned();
+    if let (Some(os), Some(ns)) = (slots(old), slots(new)) {
+        for (name, slot) in &os {
+            let Some(n) = ns.get(name) else {
+                out.push(format!("slot {name} is removed"));
+                continue;
+            };
+            match (slot.get("accepts").and_then(Value::as_array), n.get("accepts").and_then(Value::as_array)) {
+                (_, None) => {}
+                (None, Some(_)) => out.push(format!("slot {name} no longer accepts any Block")),
+                (Some(a), Some(b)) => {
+                    for t in a.iter().filter(|t| !b.contains(t)) {
+                        out.push(format!("slot {name} no longer accepts {t}"));
+                    }
+                }
+            }
+        }
     }
     out
 }
@@ -672,7 +965,24 @@ impl Workspace {
         Ok(None)
     }
 
-    /// Cells that use a definition (its instances).
+    /// The definitions that build on `def_id` (`def_dep`): `(identity, entity id)`.
+    pub fn ext_dependents(&self, def_id: &str) -> WsResult<Vec<(String, String)>> {
+        let now = self.now();
+        let ctx = self.ctx(&now);
+        let mut out = Vec::new();
+        for r in ctx.refs_to(def_id)? {
+            if r.kind == "def_dep" {
+                if let Some(d) = ctx.entity(&r.src_entity_id)?.filter(|d| d.alive()) {
+                    out.push((d.name.clone().unwrap_or_else(|| d.entity_id.clone()), d.entity_id));
+                }
+            }
+        }
+        out.sort();
+        out.dedup();
+        Ok(out)
+    }
+
+    /// Cells and composite containers that use a definition (its instances).
     pub fn ext_instances(&self, def_id: &str) -> WsResult<Vec<Value>> {
         let now = self.now();
         let ctx = self.ctx(&now);
@@ -681,7 +991,7 @@ impl Workspace {
             if r.kind != "def" {
                 continue;
             }
-            if let Some(c) = ctx.entity(&r.src_entity_id)?.filter(|c| c.alive() && c.type_id == TYPE_CELL) {
+            if let Some(c) = ctx.entity(&r.src_entity_id)?.filter(|c| c.alive() && (c.type_id == TYPE_CELL || c.type_id == TYPE_CONTAINER)) {
                 let parent = ctx.edge(&c.entity_id)?.map(|e| e.parent_id);
                 out.push(json!({ "entity_id": c.entity_id, "title": c.payload.get("title"), "parent_id": parent }));
             }
@@ -698,7 +1008,7 @@ impl Workspace {
         let mut composed = Vec::new();
         for input in &inputs {
             match compose(&input.files) {
-                Ok(c) => composed.push((c, input.provenance.clone())),
+                Ok(c) => composed.push((c, input.provenance.clone(), input.implicit)),
                 Err(d) => diagnostics.extend(d),
             }
         }
@@ -706,13 +1016,27 @@ impl Workspace {
             return Err(build_failed(diagnostics));
         }
         let mut seen = BTreeSet::new();
-        for (c, _) in &composed {
+        for (c, ..) in &composed {
             if !seen.insert(c.ident.clone()) {
                 return Err(WsError::invalid_op(format!("{} is listed twice", c.ident)));
             }
         }
+        // what a control builds on goes first (an import brings a package's dependencies in the same Commit)
+        let composed = dependency_order(composed);
         let now = self.now();
         let (folder, folder_op) = self.ext_folder(&now, opts.folder_id.as_deref())?;
+        // every identity this Commit leaves in the folder → (definition, kind): what deps and slots resolve against
+        let mut known: BTreeMap<String, (String, String)> = BTreeMap::new();
+        {
+            let ctx = self.ctx(&now);
+            for edge in ctx.children(&folder).unwrap_or_default() {
+                if let Some(e) = ctx.entity(&edge.child_id)?.filter(|e| e.alive() && e.type_id == TYPE_BLOCK_DEF) {
+                    if let Some(n) = e.name.clone() {
+                        known.insert(n, (e.entity_id.clone(), e.payload.get("kind").and_then(Value::as_str).unwrap_or("").to_string()));
+                    }
+                }
+            }
+        }
         let mut ops: Vec<Value> = folder_op.into_iter().collect();
         let mut preconditions = Vec::new();
         let mut controls = Vec::new();
@@ -726,12 +1050,32 @@ impl Workspace {
             Ok(k)
         };
         let built_at = now.clone();
-        for (c, provenance) in composed {
+        let mut failed = Diags(Vec::new());
+        for (c, provenance, implicit) in composed {
             let existing = self.ext_existing(&now, &folder, &c.ident)?;
             let record = json!({ "build": { "input_digest": c.input_digest, "builder_version": BUILDER_VERSION, "built_at": built_at } });
             let mut payload = c.payload.clone();
             if let Some(p) = &provenance {
                 payload.insert("provenance".into(), p.clone());
+            }
+            // deps → the definitions of this folder (Q16); `cell:<ident>` slots name render controls known here
+            let mut deps = Vec::new();
+            for dep in &c.deps {
+                match known.get(dep) {
+                    Some((id, _)) => deps.push(json!({ "ident": dep, "entity_id": id })),
+                    None => failed.missing(COMPONENT_FILE, format!("deps: {dep} is not in this Workspace (build or import it first)")),
+                }
+            }
+            for cell in &c.slot_cells {
+                match known.get(cell) {
+                    None if c.deps.contains(cell) => {}
+                    None => failed.missing(COMPOSITION_FILE, format!("a slot accepts cell:{cell}, which is neither in deps nor in this Workspace")),
+                    Some((_, kind)) if kind == COMPOSITE => failed.error(COMPOSITION_FILE, format!("a slot accepts cell:{cell}, but {cell} is a composite (a container, not a Cell)")),
+                    Some(_) => {}
+                }
+            }
+            if !deps.is_empty() {
+                payload.insert("deps".into(), Value::Array(deps));
             }
             let Some(def) = existing else {
                 // a new identity: its directory, its definition, its record
@@ -741,6 +1085,7 @@ impl Workspace {
                 payload.insert("source_dir".into(), json!({ "entity_id": dir_id }));
                 ops.push(json!({ "op": "entity.create", "entity_id": def_id, "type_id": TYPE_BLOCK_DEF, "parent_id": folder, "order_key": next_key()?, "name": c.ident, "payload": payload }));
                 ops.push(json!({ "op": "entity.set_derived", "entity_id": def_id, "derived": record }));
+                known.insert(c.ident.clone(), (def_id.clone(), c.kind.clone()));
                 controls.push(json!({ "ident": c.ident, "def_entity_id": def_id, "dir_entity_id": dir_id, "action": "created", "version": 1, "build": record["build"], "warnings": c.warnings }));
                 continue;
             };
@@ -753,8 +1098,9 @@ impl Workspace {
             if opts.import {
                 let old = def.payload.get("provenance").cloned().unwrap_or(Value::Null);
                 let same = provenance.as_ref().is_some_and(|p| p.get("pkg_id") == old.get("pkg_id") && p.get("digest") == old.get("digest"));
-                if !same {
-                    return Err(WsError::sub(Code::InvalidOperation, "EXT_IDENT_EXISTS", format!("{} is already in this Workspace from another source; P0 does not replace it", c.ident))
+                // a dependency brought along is met by whatever definition of that identity is here
+                if !same && !implicit {
+                    return Err(WsError::sub(Code::InvalidOperation, "EXT_IDENT_EXISTS", format!("{} is already in this Workspace from another source; it is not replaced", c.ident))
                         .with_data(json!({ "ident": c.ident, "def_entity_id": def.entity_id, "provenance": old })));
                 }
                 controls.push(json!({ "ident": c.ident, "def_entity_id": def.entity_id, "dir_entity_id": dir, "action": "satisfied" }));
@@ -783,12 +1129,26 @@ impl Workspace {
                                       "def_rev": def.content_rev, "dir_rev": dir_rev, "version": def.payload.get("version"), "build": record["build"], "warnings": c.warnings }));
                 continue;
             }
+            // the contract instances and dependent definitions rely on (Q16: dependents are judged with it)
             let narrowed = narrowing(&def.payload, &payload);
+            let dependents = self.ext_dependents(&def.entity_id)?;
             if !narrowed.is_empty() {
                 let instances = self.ext_instances(&def.entity_id)?;
-                if !instances.is_empty() {
-                    let diags: Vec<Value> = narrowed.iter().map(|m| json!({ "file": COMPONENT_FILE, "severity": "error", "message": format!("{m}: instances use the current contract"), "instances": instances })).collect();
-                    return Err(build_failed(diags));
+                for m in &narrowed {
+                    if !instances.is_empty() {
+                        failed.0.push(json!({ "file": COMPONENT_FILE, "severity": "error", "message": format!("{m}: instances use the current contract"), "instances": instances }));
+                    }
+                    for (ident, id) in &dependents {
+                        failed.0.push(json!({ "file": ident, "severity": "error", "message": format!("{m}: {ident} builds on the current contract"), "dependents": [{ "ident": ident, "def_entity_id": id }] }));
+                    }
+                }
+            }
+            if c.kind == COMPOSITE {
+                for (ident, id) in &dependents {
+                    let cells = self.ctx(&now).entity(id)?.and_then(|d| d.payload.get("composition").cloned()).map(|comp| slot_cells_of(&comp)).unwrap_or_default();
+                    if cells.contains(&c.ident) {
+                        failed.0.push(json!({ "file": ident, "severity": "error", "message": format!("{ident} slots accept cell:{}, which a composite cannot be", c.ident), "dependents": [{ "ident": ident, "def_entity_id": id }] }));
+                    }
                 }
             }
             // the snapshot: the same directory switched to the new members, or a first one for an inline definition
@@ -826,7 +1186,11 @@ impl Workspace {
                 ops.push(json!({ "op": "entity.set_keys", "entity_id": def.entity_id, "keys": set }));
             }
             ops.push(json!({ "op": "entity.set_derived", "entity_id": def.entity_id, "derived": record }));
+            known.insert(c.ident.clone(), (def.entity_id.clone(), c.kind.clone()));
             controls.push(json!({ "ident": c.ident, "def_entity_id": def.entity_id, "dir_entity_id": dir_id, "action": "rebuilt", "version": version, "build": record["build"], "warnings": c.warnings }));
+        }
+        if failed.has_errors() {
+            return Err(build_failed(failed.0));
         }
         let warnings: Vec<Value> = controls.iter().flat_map(|c| c["warnings"].as_array().cloned().unwrap_or_default()).collect();
         if ops.is_empty() || opts.dry_run {
@@ -897,7 +1261,7 @@ impl Workspace {
             }
             let def = match e.type_id.as_str() {
                 TYPE_BLOCK_DEF => e,
-                TYPE_CELL => {
+                TYPE_CELL | TYPE_CONTAINER => {
                     let d = e.payload.get("def_ref").and_then(|r| r.get("entity_id")).and_then(Value::as_str).ok_or_else(|| WsError::invalid_op(format!("{id} is not an instance of a control")))?;
                     ctx.entity(d)?.filter(|d| d.alive() && d.type_id == TYPE_BLOCK_DEF).ok_or_else(|| WsError::not_found(format!("the definition of {id} is gone")))?
                 }
@@ -908,6 +1272,24 @@ impl Workspace {
             }
             if !defs.iter().any(|d| d.entity_id == def.entity_id) {
                 defs.push(def);
+            }
+        }
+        // a package carries what its controls build on (def_dep, Q16), once; a pull is about the chosen ones only
+        if purpose == "package" {
+            let mut i = 0;
+            while i < defs.len() {
+                let deps: Vec<String> = defs[i].payload.get("deps").and_then(Value::as_array).into_iter().flatten().filter_map(|d| d.get("entity_id").and_then(Value::as_str).map(str::to_string)).collect();
+                for id in deps {
+                    if defs.iter().any(|d| d.entity_id == id) {
+                        continue;
+                    }
+                    let dep = ctx.entity(&id)?.filter(|d| d.alive() && d.type_id == TYPE_BLOCK_DEF).ok_or_else(|| WsError::new(Code::ReferenceBroken, format!("{} depends on {id}, which is gone", defs[i].entity_id)))?;
+                    if !access.can(&ctx, &id, cap)? {
+                        return Err(WsError::denied(format!("{} capability required on {id} (a dependency of {})", aiworkspace_core::access::cap_name(cap), defs[i].entity_id)));
+                    }
+                    defs.push(dep);
+                }
+                i += 1;
             }
         }
         let mut controls = Vec::new();
@@ -951,15 +1333,21 @@ impl Workspace {
             let kind = def.payload.get("kind").and_then(Value::as_str).unwrap_or("").to_string();
             match kind.as_str() {
                 "html" => html_api = html_api.max(def.payload.get("html").and_then(|h| h.get("api_version")).and_then(Value::as_u64).unwrap_or(HTML_API_VERSION)),
+                COMPOSITE => {}
                 _ => decl_api = decl_api.max(DECLARATIVE_API_VERSION),
             }
             let version = def.payload.get("version").and_then(Value::as_u64).unwrap_or(1);
             let mut mc = json!({ "ident": ident, "name": name, "kind": kind, "version": version, "digest": digest, "dir": dir_name });
+            let deps: Vec<Value> = def.payload.get("deps").and_then(Value::as_array).into_iter().flatten().filter_map(|d| d.get("ident").cloned()).collect();
+            if !deps.is_empty() {
+                mc["deps"] = json!(deps);
+            }
             for k in ["title", "description", "catalog"] {
                 if let Some(v) = def.payload.get(k) {
                     mc[k] = v.clone();
                 }
             }
+            let control_deps = mc["deps"].clone();
             manifest_controls.push(mc);
             for f in &files {
                 let mut flat = f.clone();
@@ -971,7 +1359,8 @@ impl Workspace {
             }
             controls.push(json!({ "entity_id": def.entity_id, "ident": ident, "kind": kind, "version": version, "def_rev": def.content_rev,
                                   "dir_rev": dir.as_ref().map_or(0, |d| d.content_rev), "built": dir.is_some(), "digest": digest, "dir": dir_name, "files": files,
-                                  "provenance": def.payload.get("provenance") }));
+                                  "provenance": def.payload.get("provenance"), "deps": control_deps,
+                                  "built_at": def.derived.as_ref().and_then(|d| d.pointer("/build/built_at")).cloned() }));
         }
         let mut host_api = Map::new();
         if html_api > 0 {
@@ -985,11 +1374,40 @@ impl Workspace {
     }
 }
 
+impl Workspace {
+    /// The bytes of a package export (`ext.export { purpose: package }`): the manifest, every file by bundle path
+    /// (`aiws-manifest.json` included) and the newest build time of its controls in Unix seconds (`ext.pack` stamps
+    /// the AppDoc with it, so the same bundle packs the same).
+    pub fn ext_bundle_files(&self, caller: &Caller, entity_ids: &[String]) -> WsResult<(Value, BTreeMap<String, Vec<u8>>, Option<u64>)> {
+        let bundle = self.ext_export(caller, entity_ids, "package")?;
+        let mut files = BTreeMap::new();
+        for f in bundle["files"].as_array().into_iter().flatten() {
+            let path = f["path"].as_str().unwrap_or("").to_string();
+            let bytes = match (f.get("obj_id").and_then(Value::as_str), f.get("text").and_then(Value::as_str)) {
+                (Some(oid), _) => self.objects.get_file(oid)?,
+                (None, Some(t)) => t.as_bytes().to_vec(),
+                _ => continue,
+            };
+            files.insert(path, bytes);
+        }
+        let manifest = bundle["manifest"].clone();
+        let mut text = serde_json::to_string_pretty(&manifest).map_err(|e| WsError::io(e.to_string()))?;
+        text.push('\n');
+        files.insert(crate::library::MANIFEST_FILE.to_string(), text.into_bytes());
+        let built = bundle["controls"].as_array().into_iter().flatten().filter_map(|c| c["built_at"].as_str().and_then(aiworkspace_core::value::parse_datetime_ms).map(|ms| (ms / 1000).max(0) as u64)).max();
+        Ok((manifest, files, built))
+    }
+}
+
 /// The source files of a definition that was never built (component.json plus its inline entry files).
 pub fn synthesize_sources(payload: &Map<String, Value>, ident: &str) -> Vec<(String, String)> {
     let (author, name) = ident.split_once('#').unwrap_or(("", ident));
     let mut c = json!({ "manifest_version": MANIFEST_VERSION, "ident": { "author_did": author, "name": name }, "kind": payload.get("kind"),
                         "title": payload.get("title").cloned().unwrap_or(json!(name)) });
+    let deps: Vec<Value> = payload.get("deps").and_then(Value::as_array).into_iter().flatten().filter_map(|d| d.get("ident").cloned()).collect();
+    if !deps.is_empty() {
+        c["deps"] = json!(deps);
+    }
     for k in ["description", "accepts", "allow_no_source", "default_size", "config_schema", "bindings", "catalog"] {
         if let Some(v) = payload.get(k) {
             c[k] = v.clone();
@@ -1010,6 +1428,10 @@ pub fn synthesize_sources(payload: &Map<String, Value>, ident: &str) -> Vec<(Str
                 c["host_api"] = api.clone();
             }
             c["entry"] = Value::Object(entry);
+        }
+        Some(COMPOSITE) => {
+            c["entry"] = json!(COMPOSITION_FILE);
+            out.push((COMPOSITION_FILE.into(), serde_json::to_string_pretty(payload.get("composition").unwrap_or(&json!({}))).unwrap_or_default()));
         }
         _ => {
             c["entry"] = json!("declarative.json");

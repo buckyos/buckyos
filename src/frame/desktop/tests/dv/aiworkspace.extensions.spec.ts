@@ -8,7 +8,7 @@
  * the library, imported elsewhere, and the same package installed through the App Installer (no App deployed). */
 
 import { execFileSync } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -211,3 +211,83 @@ test('[ext] the CLI alone: a local control built, exported, packed, installed an
   expect(JSON.stringify(cli(token, baseURL!, work, 'app', 'list'))).not.toContain(`cli-${tag}`)
   cli(token, baseURL!, work, 'aiws', 'library', 'remove', pkg)
 })
+
+// ---- P1 (notepads/aiworkspace-extension-p1-todo.md M6): composite controls on a Zone
+
+const HELLO = resolve('../../../doc/workspace/hello-controls/controls')
+
+/** A copy of a hello-controls control in `work`, its `check.svg` also in a sub-folder (Q23: names are relative paths). */
+function helloCopy(work: string, name: string): string {
+  const dir = join(work, name)
+  execFileSync('cp', ['-r', join(HELLO, name), dir])
+  if (name === 'hello-card') {
+    mkdirSync(join(dir, 'icons'))
+    execFileSync('cp', [join(dir, 'check.svg'), join(dir, 'icons', 'check.svg')])
+    const component = JSON.parse(execFileSync('cat', [join(dir, 'component.json')], { encoding: 'utf8' })) as Json
+    component.assets = ['check.svg', 'icons/check.svg']
+    writeFileSync(join(dir, 'component.json'), JSON.stringify(component, null, 2))
+  }
+  return dir
+}
+
+test('[ext p1] composites: the CLI builds hello-card + hello-board, packs them with their dependency, imports the board elsewhere; the Desktop draws an instance; the service packs a .pikg', async ({ owner, baseURL }, info) => {
+  test.setTimeout(480_000)
+  const token = (await owner.page.context().cookies()).find((c) => c.name === 'buckyos_session_token')!.value
+  const tag = randomBytes(4).toString('hex')
+  const work = mkdtempSync(join(tmpdir(), 'aiws-p1-dv-'))
+  const wsA = await owner.client.ok<WorkspaceSummary>('ws.create', { title: owner.client.prefix })
+  owner.client.owned.add(wsA.workspace_id)
+  const wsB = await workspaceWithTasks(owner)
+
+  // the card (with a sub-folder) and the board that builds on it, from local folders
+  const card = cli(token, baseURL!, work, 'aiws', 'build', helloCopy(work, 'hello-card'), '--workspace', wsA.workspace_id)
+  expect(card.ident).toBe('did:bns:alice#hello-card')
+  const board = cli(token, baseURL!, work, 'aiws', 'build', helloCopy(work, 'hello-board'), '--workspace', wsA.workspace_id)
+  expect(board.ident).toBe('did:bns:alice#hello-board')
+  const boardRead = await owner.client.ok<{ content: { payload: Json } }>('doc.read', { workspace_id: wsA.workspace_id, entity_id: board.def_entity_id })
+  expect(boardRead.content.payload.deps).toEqual([{ ident: 'did:bns:alice#hello-card', entity_id: card.def_entity_id }])
+  const snapshot = await owner.client.ok<{ controls: { files: { name: string }[] }[] }>('ext.export', { workspace_id: wsA.workspace_id, entity_ids: [card.def_entity_id], purpose: 'pull' })
+  expect(snapshot.controls[0].files.map((f) => f.name)).toContain('icons/check.svg')
+
+  // exported from the board alone: the package carries the card too; imported elsewhere, the card comes first
+  const pkgName = `hello-p1-${tag}`
+  const exported = cli(token, baseURL!, work, 'aiws', 'ext-export', String(board.def_entity_id), '--workspace', wsA.workspace_id, '--out', join(work, 'pack'), '--name', pkgName, '--version', '0.1.0', '--install')
+  expect((exported.controls as Json[]).map((c) => c.ident).sort()).toEqual(['did:bns:alice#hello-board', 'did:bns:alice#hello-card'])
+  const pkg = (exported.install as Json).pkg_id as string
+  const imported = cli(token, baseURL!, work, 'aiws', 'ext-import', `${pkg}#did:bns:alice#hello-board`, '--workspace', wsB.workspace_id)
+  expect((imported.controls as Json[]).map((c) => `${c.ident}:${c.action}`)).toEqual(['did:bns:alice#hello-card:created', 'did:bns:alice#hello-board:created'])
+  const defsB = (await outline(owner, wsB)).filter((e) => e.type_id === 'buckyos.block-def')
+  const boardB = defsB.find((d) => d.ident === 'did:bns:alice#hello-board')!
+  const cardB = defsB.find((d) => d.ident === 'did:bns:alice#hello-card')!
+
+  // an instance with two cards, drawn by the Desktop's composite host
+  const infoB = await owner.client.info(wsB)
+  const placed = await owner.client.commit({ workspace_id: wsB.workspace_id, epoch: infoB.epoch }, [
+    { op: 'entity.create', entity_id: 'board-1', type_id: 'buckyos.container', parent_id: 'sf-main', order_key: 'm', placement: { x: 60, y: 60, w: 'auto', h: 'auto' },
+      payload: { kind: 'composite', def_ref: { entity_id: boardB.entity_id }, config: { title: 'DV board', gap: 12 } } },
+    ...['c1', 'c2'].map((c, i) => ({ op: 'entity.create', entity_id: c, type_id: 'buckyos.cell', parent_id: 'board-1', order_key: ['a', 'b'][i], placement: { x: 'auto', y: 'auto', w: 240, h: 120 },
+      payload: { view: { type: 'html' }, def_ref: { entity_id: cardB.entity_id }, slot: 'cards' } })),
+  ] as Operation[])
+  expect(placed.status, JSON.stringify(placed)).toBe('accepted')
+  await openInDesktop(owner, wsB)
+  await expect(owner.page.getByTestId('aiws-composite-title-board-1')).toHaveText('DV board', { timeout: 30_000 })
+  const [a, b] = [await owner.page.getByTestId('aiws-canvas-block-c1').boundingBox(), await owner.page.getByTestId('aiws-canvas-block-c2').boundingBox()]
+  expect(b!.y).toBeGreaterThan(a!.y + a!.height)
+  await screenshot(owner.page, info, 'p1-composite-instance')
+
+  // the service packs the board (and the card) as a .pikg into the owner's exports bucket; installed from there
+  const packed = await owner.client.ok<Json>('ext.pack', { workspace_id: wsA.workspace_id, entity_ids: [board.def_entity_id], package: { name: `svc-${tag}`, version: '0.1.0' } })
+  expect(packed.pkg_id).toBe(`svc-${tag}.${owner.userId}.bns.did`)
+  const installed = await owner.client.ok<Json>('ext.install', { pikg: { bucket_id: packed.bucket_id, key: packed.key }, mode: 'dev' })
+  expect((installed.controls as Json[]).length).toBe(2)
+  // its tar is the CLI's: the same bundle in the same deterministic archive (the gzip layers differ, README)
+  const cliTar = execFileSync('gzip', ['-dc', join(work, 'pack', 'dapp_dist', 'aiws.tar.gz')])
+  expect(`sha256:${createHashHex(cliTar)}`).toBe(packed.tar_digest)
+
+  await owner.client.ok('ext.uninstall', { pkg_id: pkg })
+  await owner.client.ok('ext.uninstall', { pkg_id: packed.pkg_id })
+})
+
+function createHashHex(bytes: Buffer): string {
+  return createHash('sha256').update(bytes).digest('hex')
+}

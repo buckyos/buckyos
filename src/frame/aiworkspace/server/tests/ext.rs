@@ -274,3 +274,154 @@ fn install_a_pikg_and_refuse_a_tampered_one() {
         assert_eq!(r["error"]["code"], "PERMISSION_DENIED", "{r}");
     })
 }
+
+/// A composite board over `card` controls (P1): its component.json and composition.json.
+fn board_files(composition: Value, extra: Value) -> Vec<(&'static str, String)> {
+    let mut c = json!({ "manifest_version": 2, "ident": { "author_did": ALICE, "name": "board" }, "kind": "composite", "title": "Board",
+                        "config_schema": { "type": "object", "properties": { "title": { "type": "string", "default": "Today" }, "gap": { "type": "integer", "default": 8 } } },
+                        "entry": "composition.json", "deps": ["did:bns:alice#card"] });
+    for (k, v) in extra.as_object().unwrap() {
+        c[k] = v.clone();
+    }
+    vec![("component.json", c.to_string()), ("composition.json", composition.to_string())]
+}
+
+fn composition() -> Value {
+    json!({ "layout": { "algorithm": "stack", "direction": "column", "spacing": "{{config.gap}}", "padding": 12 },
+            "slots": { "header": { "max": 1, "accepts": ["richtext"], "placement": "top" }, "cards": { "accepts": ["cell:did:bns:alice#card", "shape"] } },
+            "chrome": { "background": "#f6f7fb", "radius": 12, "title": { "text": "{{config.title}}", "slot": "header" }, "empty": "Drop cards here" } })
+}
+
+fn diag_text(r: &Value) -> String {
+    r["error"]["data"]["diagnostics"].to_string()
+}
+
+#[test]
+fn composite_controls_with_dependencies() {
+    run_test(|| async move {
+        let mut srv = Srv::start(tempfile::tempdir().unwrap(), model()).await;
+        let ws1 = workspace(&mut srv, "Boards").await;
+        // the board needs the card first
+        let r = srv.rpc("ext.build", json!({ "files": upload(&srv, "board0", &board_files(composition(), json!({}))).await })).await;
+        assert_eq!(r["error"]["code"], "BUILD_FAILED", "{r}");
+        assert!(r["error"]["data"]["diagnostics"].as_array().unwrap().iter().any(|d| d["code"] == "DEP_MISSING"), "{r}");
+        let card = srv.rpc("ext.build", json!({ "files": upload(&srv, "card", &kpi_files(&component("card", json!({})), "Card")).await })).await;
+        let card_id = card["def_entity_id"].as_str().unwrap_or_else(|| panic!("{card}")).to_string();
+        // what composition.json may say
+        for (comp, extra, needle) in [
+            (json!({ "layout": { "algorithm": "stack" }, "slots": {}, "events": {} }), json!({}), "events"),
+            (json!({ "layout": { "algorithm": "grid" }, "slots": {} }), json!({}), "layout.algorithm"),
+            (json!({ "layout": { "algorithm": "fixed" }, "slots": { "a": { "placement": "stack" } } }), json!({}), "fixed"),
+            (json!({ "layout": { "algorithm": "stack", "spacing": "{{config.nope}}" }, "slots": {} }), json!({}), "config.nope"),
+            (json!({ "layout": { "algorithm": "stack" }, "slots": { "Bad": {} } }), json!({}), "slot name"),
+            (json!({ "layout": { "algorithm": "stack" }, "slots": { "a": { "accepts": ["cell:did:bns:bob#other"] } } }), json!({}), "cell:did:bns:bob#other"),
+            (composition(), json!({ "manifest_version": 1 }), "manifest_version 2"),
+            (composition(), json!({ "accepts": ["buckyos.record"] }), "container of Blocks"),
+            (composition(), json!({ "deps": ["did:bns:alice#board"] }), "itself"),
+        ] {
+            let r = srv.rpc("ext.build", json!({ "files": upload(&srv, "board-bad", &board_files(comp.clone(), extra.clone())).await })).await;
+            assert_eq!(r["error"]["code"], "BUILD_FAILED", "{comp} {extra}: {r}");
+            assert!(diag_text(&r).contains(needle), "{needle}: {r}");
+        }
+        let b = srv.rpc("ext.build", json!({ "files": upload(&srv, "board", &board_files(composition(), json!({}))).await })).await;
+        assert_eq!(b["status"], "accepted", "{b}");
+        let board_id = b["def_entity_id"].as_str().unwrap().to_string();
+        let payload = srv.rpc("doc.read", json!({ "entity_id": board_id })).await["content"]["payload"].clone();
+        assert_eq!((payload["kind"].as_str(), payload["manifest_version"].as_u64()), (Some("composite"), Some(2)));
+        assert_eq!(payload["deps"], json!([{ "ident": "did:bns:alice#card", "entity_id": card_id }]));
+        assert_eq!(payload["composition"]["slots"]["cards"]["accepts"][0], "cell:did:bns:alice#card");
+
+        // an instance: a composite container with a slotted card
+        srv.commit(json!([
+            { "op": "entity.create", "entity_id": "sf-content", "type_id": "buckyos.container", "parent_id": "canvas-content", "order_key": "a", "payload": { "kind": "folder", "system": "surface_content", "surface_id": "sf", "title": "s" } },
+            { "op": "entity.create", "entity_id": "sf", "type_id": "buckyos.container", "parent_id": "surfaces", "order_key": "a", "payload": { "kind": "surface", "layout": { "mode": "free" }, "title": "s", "content_folder_id": "sf-content" } },
+            { "op": "entity.create", "entity_id": "board-1", "type_id": "buckyos.container", "parent_id": "sf", "order_key": "a", "placement": { "x": 0, "y": 0, "w": "auto", "h": "auto" },
+              "payload": { "kind": "composite", "def_ref": { "entity_id": board_id }, "config": { "title": "Sprint", "gap": 4 } } },
+            { "op": "entity.create", "entity_id": "card-1", "type_id": "buckyos.cell", "parent_id": "board-1", "order_key": "a", "placement": { "x": "auto", "y": "auto", "w": 240, "h": 120 },
+              "payload": { "view": { "type": "declarative" }, "def_ref": { "entity_id": card_id }, "slot": "cards" } },
+        ])).await;
+        // narrowing the card names the board that builds on it, and the card's instance; nothing is committed
+        let mut narrow = component("card", json!({}));
+        narrow["bindings"]["sales"]["required"] = json!(true);
+        let base = json!({ "def_rev": card["def_rev"], "dir_rev": card["dir_rev"] });
+        let r = srv.rpc("ext.build", json!({ "files": upload(&srv, "card-n", &kpi_files(&narrow, "Card")).await, "expect": base })).await;
+        assert_eq!(r["error"]["code"], "BUILD_FAILED", "{r}");
+        let diags = r["error"]["data"]["diagnostics"].as_array().unwrap();
+        assert!(diags.iter().any(|d| d["file"] == "did:bns:alice#board" && d["dependents"][0]["def_entity_id"] == json!(board_id)), "{r}");
+        assert!(diags.iter().any(|d| d["instances"][0]["entity_id"] == "card-1"), "{r}");
+        // the board may change its layout and look freely, but not strand the Blocks of its instances
+        let bbase = json!({ "def_rev": b["def_rev"], "dir_rev": b["dir_rev"] });
+        let mut tighter = composition();
+        tighter["slots"].as_object_mut().unwrap().remove("cards");
+        let r = srv.rpc("ext.build", json!({ "files": upload(&srv, "board-n", &board_files(tighter, json!({}))).await, "expect": bbase })).await;
+        assert!(diag_text(&r).contains("slot cards is removed") && diag_text(&r).contains("board-1"), "{r}");
+        let mut row = composition();
+        row["layout"] = json!({ "algorithm": "stack", "direction": "row", "spacing": 24 });
+        let b2 = srv.rpc("ext.build", json!({ "files": upload(&srv, "board-row", &board_files(row, json!({}))).await, "expect": bbase })).await;
+        assert_eq!((b2["action"].as_str(), b2["version"].as_u64()), (Some("rebuilt"), Some(2)), "{b2}");
+        let kids = srv.rpc("doc.read", json!({ "entity_id": "card-1" })).await;
+        assert_eq!(kids["content"]["payload"]["slot"], "cards", "the instance's Blocks are untouched");
+        // the card cannot be deleted while the board builds on it
+        let life = srv.rpc("doc.read", json!({ "entity_id": card_id })).await["life_rev"].clone();
+        assert_eq!(srv.commit_raw(json!([{ "op": "entity.delete", "entity_id": card_id, "expect": { "rev": life } }])).await["code"], "REFERENCE_BROKEN");
+
+        // a package export carries the card once; a pull does not
+        let ex = srv.rpc("ext.export", json!({ "entity_ids": [board_id, card_id, "board-1"] })).await;
+        let idents: Vec<&str> = ex["manifest"]["controls"].as_array().unwrap().iter().map(|c| c["ident"].as_str().unwrap()).collect();
+        assert_eq!(idents.len(), 2, "{ex}");
+        let board_entry = ex["manifest"]["controls"].as_array().unwrap().iter().find(|c| c["kind"] == "composite").unwrap();
+        assert_eq!(board_entry["deps"], json!(["did:bns:alice#card"]));
+        assert_eq!(ex["manifest"]["manifest_version"], 2);
+        let only = srv.rpc("ext.export", json!({ "entity_ids": [board_id] })).await;
+        assert_eq!(only["manifest"]["controls"].as_array().unwrap().len(), 2, "the closure follows def_dep");
+        let pull = srv.rpc("ext.export", json!({ "entity_ids": [board_id], "purpose": "pull" })).await;
+        assert_eq!(pull["controls"].as_array().unwrap().len(), 1);
+
+        // into the library, then into a fresh Workspace: asking for the board brings the card, card first
+        let inst = srv.rpc("ext.install", json!({ "from": { "workspace_id": ws1, "entity_ids": [board_id] }, "package": { "name": "boards", "version": "1.0.0" } })).await;
+        assert_eq!(inst["action"], "installed", "{inst}");
+        let lib = srv.rpc("ext.list_library", json!({})).await;
+        let listed = lib["packages"][0]["controls"].as_array().unwrap().iter().find(|c| c["ident"] == "did:bns:alice#board").unwrap().clone();
+        assert_eq!(listed["deps"], json!(["did:bns:alice#card"]), "{lib}");
+        workspace(&mut srv, "Fresh").await;
+        let im = srv.rpc("ext.import", json!({ "items": [{ "pkg_id": "boards", "ident": "did:bns:alice#board" }] })).await;
+        assert_eq!(im["status"], "accepted", "{im}");
+        let order: Vec<&str> = im["controls"].as_array().unwrap().iter().map(|c| c["ident"].as_str().unwrap()).collect();
+        assert_eq!(order, ["did:bns:alice#card", "did:bns:alice#board"]);
+        let new_card = im["controls"][0]["def_entity_id"].as_str().unwrap().to_string();
+        let nb = srv.rpc("doc.read", json!({ "entity_id": im["controls"][1]["def_entity_id"] })).await["content"]["payload"].clone();
+        assert_eq!(nb["deps"][0]["entity_id"], json!(new_card));
+        // a Workspace that has its own card keeps it: the board builds on what is there
+        workspace(&mut srv, "Own card").await;
+        let own = srv.rpc("ext.build", json!({ "files": upload(&srv, "card-own", &kpi_files(&component("card", json!({})), "Mine")).await })).await;
+        let im = srv.rpc("ext.import", json!({ "items": [{ "pkg_id": "boards", "ident": "did:bns:alice#board" }] })).await;
+        assert_eq!((im["controls"][0]["action"].as_str(), im["controls"][1]["action"].as_str()), (Some("satisfied"), Some("created")), "{im}");
+        assert_eq!(im["controls"][0]["def_entity_id"], own["def_entity_id"]);
+
+        // ext.pack: the service writes the .pikg into alice's exports bucket; the same bundle packs the same bytes,
+        // and the package installs (read_pikg + verify_bundle) like one the CLI made
+        srv.ws = ws1.clone();
+        let p1 = srv.rpc("ext.pack", json!({ "entity_ids": [board_id], "package": { "name": "boards", "version": "2.0.0", "title": "Boards" } })).await;
+        assert_eq!((p1["key"].as_str(), p1["pkg_id"].as_str(), p1["app_did"].as_str()), (Some("boards-2.0.0.pikg"), Some("boards.alice.bns.did"), Some("did:bns:boards.alice")), "{p1}");
+        assert!(p1["app_doc_object_id"].as_str().unwrap().starts_with("appdoc:"), "{p1}");
+        let p2 = srv.rpc("ext.pack", json!({ "entity_ids": [board_id, card_id], "package": { "name": "boards", "version": "2.0.0", "title": "Boards" } })).await;
+        assert_eq!(p1["digest"], p2["digest"], "deterministic");
+        let r = srv.rpc("ext.install", json!({ "pikg": { "bucket_id": p2["bucket_id"], "key": p2["key"] }, "mode": "dev" })).await;
+        assert_eq!((r["action"].as_str(), r["pkg_id"].as_str(), r["version"].as_str()), (Some("installed"), Some("boards.alice.bns.did"), Some("2.0.0")), "{r}");
+        assert_eq!(r["controls"].as_array().unwrap().len(), 2);
+        let bad = srv.rpc("ext.pack", json!({ "entity_ids": [card_id], "package": { "name": "Bad Name" } })).await;
+        assert_eq!(bad["error"]["code"], "INVALID_OPERATION", "{bad}");
+        // a package that leaves out what a control builds on is refused
+        let files: Vec<(String, Vec<u8>)> = board_files(composition(), json!({})).into_iter().map(|(n, t)| (format!("controls/board/{n}"), t.into_bytes())).collect();
+        let digest = aiworkspace_store::ext::content_digest(files.iter().map(|(p, b)| (p.strip_prefix("controls/board/").unwrap(), b.as_slice())));
+        let manifest = json!({ "manifest_version": 2, "purpose": "aiws", "workspace_templates": [],
+                               "controls": [{ "ident": "did:bns:alice#board", "name": "board", "kind": "composite", "version": 1, "digest": digest, "dir": "controls/board/", "deps": ["did:bns:alice#card"] }] });
+        let mut refs: Vec<(&str, Vec<u8>)> = files.iter().map(|(p, b)| (p.as_str(), b.clone())).collect();
+        let m = manifest.to_string().into_bytes();
+        refs.push(("aiws-manifest.json", m));
+        let open = srv.nfs.put("alice", "exports", "open.pikg", pikg(&refs, false)).await;
+        let r = srv.rpc("ext.install", json!({ "pikg": { "obj_id": open["obj_id"] } })).await;
+        assert_eq!(r["error"]["code"], "LIBRARY_PACKAGE_INVALID", "{r}");
+        assert!(r["error"]["detail"].as_str().unwrap().contains("does not carry"), "{r}");
+    })
+}

@@ -1,0 +1,199 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "buckyos.ai-workspace/composition/1",
+ "title": "composition.json of a composite control (扩展控件 P1, K3)",
+ "description": "Three things only: the layout its children get (an algorithm the host ships: stack or fixed, K2), the slots user content lives in, and the Chrome drawn around them from config (R23). It never creates or deletes user Blocks: they stay real Blocks of the BlockTree, each carrying `slot`. `ext.build` checks it (store/src/ext.rs), the Desktop draws it (ui/controls/composite/); the core keeps only its shape (an object ≤ 64 KiB, ≤ 16 slots, no events). String values may be `{{config.<key>}}` with the key declared in config_schema.properties. `events` is P2 and fails the build.",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "layout",
+  "slots"
+ ],
+ "properties": {
+  "layout": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "algorithm"
+   ],
+   "properties": {
+    "algorithm": {
+     "enum": [
+      "stack",
+      "fixed"
+     ],
+     "description": "stack: the slots' children one after another (column or row); fixed: every child keeps its own x / y (none is \"auto\")"
+    },
+    "direction": {
+     "enum": [
+      "column",
+      "row"
+     ],
+     "default": "column",
+     "description": "stack only"
+    },
+    "spacing": {
+     "oneOf": [
+      {
+       "type": "number",
+       "minimum": 0,
+       "maximum": 2000
+      },
+      {
+       "$ref": "#/$defs/config_ref"
+      }
+     ],
+     "default": 8,
+     "description": "gap between stacked children, px"
+    },
+    "padding": {
+     "oneOf": [
+      {
+       "type": "number",
+       "minimum": 0,
+       "maximum": 2000
+      },
+      {
+       "type": "object",
+       "additionalProperties": false,
+       "properties": {
+        "t": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 2000
+        },
+        "r": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 2000
+        },
+        "b": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 2000
+        },
+        "l": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 2000
+        }
+       }
+      }
+     ],
+     "default": 12,
+     "description": "inner margin, px (all sides, or { t, r, b, l })"
+    }
+   }
+  },
+  "slots": {
+   "type": "object",
+   "maxProperties": 16,
+   "propertyNames": {
+    "pattern": "^[a-z][a-z0-9_]{0,31}$"
+   },
+   "additionalProperties": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "accepts": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+       "type": "string",
+       "maxLength": 160,
+       "pattern": "^(cell:did:[a-z0-9]+:[^/#\\s]+#[a-z0-9][a-z0-9._-]{0,63}|container|[a-z0-9][a-z0-9._-]{0,63})$"
+      },
+      "description": "what may fill it: `cell:<ident>` (an instance of that control: in deps or already in this Workspace), a view type (`richtext`, `shape`, `card`, …), or `container` (a group or a control); absent: any Block"
+     },
+     "min": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 64,
+      "description": "Blocks the Desktop creates when inserting an instance (empty Cells of the first accepted view)"
+     },
+     "max": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000,
+      "description": "the clients refuse more (the core does not count, Q15)"
+     },
+     "placement": {
+      "enum": [
+       "stack",
+       "top",
+       "bottom",
+       "free"
+      ],
+      "default": "stack",
+      "description": "where the slot sits in a stack: before (top) or after (bottom) the stacked slots, in order (stack); free: children keep their x / y (the only placement of a fixed layout)"
+     },
+     "title": {
+      "type": "string",
+      "maxLength": 256
+     }
+    }
+   }
+  },
+  "chrome": {
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "background": {
+     "type": "string",
+     "maxLength": 64,
+     "description": "a CSS colour, or {{config.<key>}}"
+    },
+    "radius": {
+     "oneOf": [
+      {
+       "type": "number",
+       "minimum": 0,
+       "maximum": 200
+      },
+      {
+       "$ref": "#/$defs/config_ref"
+      }
+     ]
+    },
+    "border": {
+     "type": "string",
+     "maxLength": 64,
+     "description": "a CSS colour, or {{config.<key>}}"
+    },
+    "title": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "text"
+     ],
+     "properties": {
+      "text": {
+       "type": "string",
+       "maxLength": 256,
+       "description": "text, may hold {{config.<key>}}"
+      },
+      "slot": {
+       "type": "string",
+       "pattern": "^[a-z][a-z0-9_]{0,31}$",
+       "description": "draw the title only while this slot is empty"
+      }
+     }
+    },
+    "empty": {
+     "type": "string",
+     "maxLength": 1000,
+     "description": "what an empty instance shows, may hold {{config.<key>}}"
+    }
+   }
+  }
+ },
+ "$defs": {
+  "config_ref": {
+   "type": "string",
+   "pattern": "^\\{\\{config\\.[A-Za-z0-9_]{1,64}\\}\\}$",
+   "description": "`{{config.<key>}}`: the instance's config value (its definition's default when unset); the key must be in config_schema.properties"
+  }
+ }
+}

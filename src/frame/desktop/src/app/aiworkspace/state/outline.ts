@@ -43,8 +43,10 @@ function extras(typeId: string, payload: Record<string, unknown>): Partial<Entit
     for (const key of ['system', 'surface_id', 'content_folder_id'] as const) if (payload[key] !== undefined) (out as Record<string, unknown>)[key] = payload[key]
     out.icon = (payload.icon as string | undefined) ?? null
     out.locked = payload.locked === true ? true : null
-    // a control's attributes drive its layout (脑图方案 §5.4)
+    // a control's attributes drive its layout (脑图方案 §5.4); a composite names its definition, a slotted container its role
     out.config = isControlKind(payload.kind as string) && payload.config && typeof payload.config === 'object' ? payload.config as Record<string, Json> : null
+    out.def_id = (payload.def_ref as { entity_id?: string } | undefined)?.entity_id ?? null
+    out.slot = typeof payload.slot === 'string' ? payload.slot : null
   } else if (typeId === 'buckyos.cell') {
     out.locked = payload.locked === true ? true : null
     const view = payload.view as { type?: string; version?: number } | undefined
@@ -87,6 +89,13 @@ function extras(typeId: string, payload: Record<string, unknown>): Partial<Entit
     out.def_version = typeof payload.version === 'number' ? payload.version : null
     out.provenance_pkg = (payload.provenance as { pkg_id?: string } | undefined)?.pkg_id ?? null
     out.source_dir_id = (payload.source_dir as { entity_id?: string } | undefined)?.entity_id ?? null
+    // what it builds on, and a composite's composition and config defaults (P1): instances lay out from the outline
+    out.deps = Array.isArray(payload.deps) ? (payload.deps as { ident?: string }[]).map((d) => String(d.ident ?? '')) : null
+    if (payload.kind === 'composite') {
+      out.composition = (payload.composition as EntityEnvelope['composition']) ?? null
+      const props = (payload.config_schema as { properties?: Record<string, { default?: Json }> } | undefined)?.properties ?? {}
+      out.config_defaults = Object.fromEntries(Object.entries(props).filter(([, p]) => p && p.default !== undefined).map(([k, p]) => [k, p.default as Json]))
+    }
   } else if (typeId === 'buckyos.annotation') {
     out.target_id = (payload.target as { entity_id?: string } | undefined)?.entity_id ?? null
     out.annotation_kind = (payload.kind as string) ?? null
@@ -335,13 +344,13 @@ export class OutlineModel {
             let touchedExtras = false
             for (const op of keyed) for (const key of (op.keys as { key: string; value?: unknown }[] | undefined) ?? []) {
               if (['title', 'source', 'view', 'source_ref', 'def_ref', 'kind', 'layout', 'executor', 'output_mode', 'target', 'media_type', 'def_id', 'icon', 'locked', 'start', 'end', 'presentation', 'config', 'slot',
-                'surface_ref', 'center', 'zoom', 'purpose', 'stage', 'steps', 'ident', 'manifest_version', 'version', 'provenance', 'source_dir', ...CONNECTOR_KEYS].includes(key.key)) touchedExtras = true
+                'surface_ref', 'center', 'zoom', 'purpose', 'stage', 'steps', 'ident', 'manifest_version', 'version', 'provenance', 'source_dir', 'deps', 'composition', 'config_schema', ...CONNECTOR_KEYS].includes(key.key)) touchedExtras = true
               if (op.op === 'entity.set_keys') payload[key.key] = key.value
             }
             if (touchedExtras) {
               // the ops carry only the changed keys: rebuild extras from the known envelope plus the change
               const known: Record<string, unknown> = {
-                title: current.title, source: current.source ?? undefined, kind: current.kind, layout: current.layout, system: current.system, surface_id: current.surface_id, content_folder_id: current.content_folder_id,
+                title: current.title, source: current.source ?? undefined, kind: current.type_id === 'buckyos.block-def' ? current.def_kind : current.kind, layout: current.layout, system: current.system, surface_id: current.surface_id, content_folder_id: current.content_folder_id,
                 icon: current.icon ?? undefined, locked: current.locked ?? undefined,
                 view: current.view_type ? { type: current.view_type, version: current.view_version ?? undefined } : undefined,
                 source_ref: current.source_id ? { entity_id: current.source_id } : undefined,
@@ -361,6 +370,9 @@ export class OutlineModel {
                 manifest_version: current.manifest_version ?? undefined, version: current.def_version ?? undefined,
                 provenance: current.provenance_pkg ? { pkg_id: current.provenance_pkg } : undefined,
                 source_dir: current.source_dir_id ? { entity_id: current.source_dir_id } : undefined,
+                deps: current.deps ? current.deps.map((ident) => ({ ident })) : undefined,
+                composition: current.composition ?? undefined,
+                config_schema: current.config_defaults ? { properties: Object.fromEntries(Object.entries(current.config_defaults).map(([k, v]) => [k, { default: v }])) } : undefined,
               }
               for (const op of keyed) if (op.op === 'entity.unset_keys') for (const key of (op.keys as { key: string }[] | undefined) ?? []) delete known[key.key]
               Object.assign(update, extras(current.type_id, { ...known, ...payload }))

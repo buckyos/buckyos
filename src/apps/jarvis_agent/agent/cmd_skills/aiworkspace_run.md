@@ -36,6 +36,17 @@ An `analyze` run has no program: read `stage.user`, inspect data with `run-tool 
 - The program reads inputs with `aiws.input(name)` and writes candidates with `aiws.result.*`, `aiws.facts`, `aiws.check` (the API reference is at the end of `stage.system`). `aiws.llm.map` is not available to a program run outside the service in this version; do per-item judgements yourself and write them as a result table.
 - A mind map (or another Block-control, `catalog/controls.json`) is one result: `aiws.result.control("plan", { kind: "mindmap", children: "- Launch\n  - Market\n  - Product\n" })` — a Markdown outline (or `[{ text, children }]`); the service lays it out, never give coordinates. To grow an existing branch, take the node as an input (it reads as a Markdown outline of its subtree) and add `under: "<that input's name>"`: the new nodes hang under it.
 - An HTML result (`aiws.result.html`) is a control of the workspace plus a Block: its `bindings` map names to `result:<name>` or `input:<name>`, and the page reads them with `aiws.input("<name>")`. Controls a user built or imported (`data/extensions`) are bound the same way, through the Cell's `bindings`; their self-description is the definition's `agent` text (`buckyos aiws read <def> --workspace <ws>`).
+- Outside a run you place controls with `doc.commit`. A composite control (a definition with `def_kind: composite`; its `composition.slots` say what each slot takes) is a container whose content are ordinary Blocks, each with the `slot` it fills; leave their positions to the composite (`"auto"`), except under a `fixed` layout, which keeps numbers:
+  ```json
+  [{ "op": "entity.create", "entity_id": "board-1", "type_id": "buckyos.container", "parent_id": "<surface>", "order_key": "m",
+     "placement": { "x": 40, "y": 40, "w": "auto", "h": "auto" },
+     "payload": { "kind": "composite", "def_ref": { "entity_id": "<composite def>" }, "config": { "title": "Today", "gap": 8 } } },
+   { "op": "entity.create", "entity_id": "card-1", "type_id": "buckyos.cell", "parent_id": "board-1", "order_key": "a",
+     "placement": { "x": "auto", "y": "auto", "w": 240, "h": 120 },
+     "payload": { "view": { "type": "html" }, "def_ref": { "entity_id": "<card def>" }, "slot": "cards", "bindings": { "task": { "entity_id": "<record>" } } } }]
+  ```
+  `def_ref` of an instance never changes; moving a Block in or out is `tree.move { …, slot: "<name>" | null }`.
+- To copy Blocks — a composite instance with its cards, a group, a single Block — use one `tree.clone { source_id, parent_id, placement?, slot?, id_seed }` instead of re-creating them: the copies share definitions and shared data, own data (a note's text) is cloned, inner connectors follow. Pick a fresh `id_seed` (≤ 64 bytes); the accepted Commit lists `cloned: [{ op_index, new_ids: { <old id>: <new id> } }]`, and the ids are `c` + the first 26 hex digits of `sha256("<id_seed>\n<old id>")`, so you know them before the answer comes.
 - Every `run-tool` answer is `{ status: "ok" | "error", text }`: `error` is what you must correct (a wrong handle, a result not in the contract, a check not run), not a failure of the run. `finish` is refused until the contract is met.
 - `run-report --finished` makes the service plan the candidate; the user confirms it. Give up with `run-report --error "<reason>"` only when the task cannot be done with the data there is (say what is missing).
 

@@ -665,6 +665,7 @@ pub const OPERATIONS: &[(&str, &str, &str, &str)] = &[
     ("entity.set_derived", "merge", "compensable", "update"),
     ("tree.move", "merge", "compensable", "structure"),
     ("tree.place", "merge", "compensable", "structure"),
+    ("tree.clone", "create", "compensable", "structure"),
     ("entity.clone", "create", "compensable", "structure"),
     ("data.pin", "merge", "compensable", "structure"),
     ("dir.set_member", "overwrite", "compensable", "update"),
@@ -994,6 +995,143 @@ fn entity_clone(p: &mut Planner, op: &Value) -> OpResult {
     Ok((norm, inverse))
 }
 
+/// The id a copy of `old` gets in a `tree.clone` seeded with `seed`: the same request plans the same ids everywhere.
+pub fn clone_id(seed: &str, old: &str) -> String {
+    format!("c{}", &sha256_hex(format!("{seed}\n{old}").as_bytes())[..26])
+}
+
+/// `tree.clone { source_id, parent_id, order_key?, placement?, slot?, content?: "private", id_seed? }` (扩展控件 P1,
+/// Q17): a deep copy of a Block subtree — a Cell, a group or a control with everything under it — under `parent_id`,
+/// in one operation the service, the WASM replica and an offline client plan alike. Every copy gets the id
+/// `clone_id(id_seed, old id)` (`id_seed` defaults to `<seq>.<op index>`; a client passes its own to know the ids
+/// beforehand); parents, order and placements carry over, `slot`s too, and the root takes `order_key` (default: last),
+/// `placement` and `slot` (`null` drops it) when given. `def_ref` is kept: instances share their definition. Data a
+/// copied Block owns (`owns`, `content: "private"`) is cloned with `entity.clone` into the target Surface's content
+/// folder and the copy's `source_ref` / `bindings` follow it (the copy owns the clone); data bound from elsewhere stays
+/// shared. A connector inside the subtree is copied when each bound end is in the subtree (rebound to the copies) and
+/// left out when one crosses its border. Rights: `structure` on the target, `read` on the source. The normalized
+/// operation records `id_seed` and `new_ids { <old>: <new> }` (data clones included); the Commit result lists them.
+fn tree_clone(p: &mut Planner, op: &Value) -> OpResult {
+    only_keys(op, &["source_id", "parent_id", "order_key", "placement", "slot", "content", "id_seed", "new_ids"])?;
+    let source_id = get_str(op, "source_id")?;
+    let parent_id = get_str(op, "parent_id")?;
+    if op.get("content").is_some_and(|c| c != "private") {
+        return Err(WsError::invalid_op("content must be \"private\" (owned data is cloned, shared data stays shared)"));
+    }
+    let seed = match op.get("id_seed") {
+        None | Some(Value::Null) => format!("{}.{}", p.env.seq, p.op_index),
+        Some(Value::String(s)) if !s.is_empty() && s.len() <= 64 => s.clone(),
+        Some(_) => return Err(WsError::invalid_schema("id_seed must be a string of 1…64 bytes").at("/id_seed")),
+    };
+    let src = p.entity_alive(source_id)?;
+    if !p.access.can_read(&p.ov, &src)? {
+        return Err(WsError::not_found(format!("entity {source_id} not found")));
+    }
+    if is_system_id(source_id) || !(src.type_id == TYPE_CELL || crate::types::is_block_container(&src)) {
+        return Err(WsError::invalid_op("tree.clone copies a Block, a group or a control with its subtree"));
+    }
+    // the subtree, parents first; another person's personal entities are not the caller's to copy
+    let mut rows = vec![src.clone()];
+    alive_descendants(p, source_id, &mut rows)?;
+    rows.retain(|r| p.access.sees_scope(r));
+    let inside: BTreeSet<String> = rows.iter().map(|r| r.entity_id.clone()).collect();
+    let crosses = |r: &EntityRow| {
+        crate::types::is_connector(&r.type_id, &r.payload)
+            && ["start", "end"].iter().any(|k| r.payload.get(*k).and_then(|b| b.get("entity_id")).and_then(Value::as_str).is_some_and(|id| !inside.contains(id)))
+    };
+    rows.retain(|r| !crosses(r));
+    let mut ids: BTreeMap<String, String> = rows.iter().map(|r| (r.entity_id.clone(), clone_id(&seed, &r.entity_id))).collect();
+    // own data of the copied Blocks: cloned next to the target Surface's other own data
+    let mut owned: Vec<String> = Vec::new();
+    for r in &rows {
+        for e in p.ov.refs_from(&r.entity_id)? {
+            if e.kind == "owns" && e.dst_workspace_id.is_empty() && !owned.contains(&e.dst_entity_id) && p.ov.entity(&e.dst_entity_id)?.is_some_and(|d| d.alive()) {
+                owned.push(e.dst_entity_id.clone());
+            }
+        }
+    }
+    let mut inverse_data = Vec::new();
+    if !owned.is_empty() {
+        let folder = match surface_of(&p.ov, parent_id)?.and_then(|s| s.payload.get("content_folder_id").and_then(Value::as_str).map(str::to_string)) {
+            Some(f) => f,
+            None => p.ov.edge(&owned[0])?.map(|e| e.parent_id).ok_or_else(|| WsError::invalid_op("owned data has no folder"))?,
+        };
+        let mut last = p.ov.children(&folder)?.last().map(|e| e.order_key.clone());
+        for data_id in &owned {
+            let new_id = clone_id(&seed, data_id);
+            let key = crate::order_key::order_key_between(last.as_deref(), None)?;
+            last = Some(key.clone());
+            let (_, inv) = entity_clone(p, &json!({ "op": "entity.clone", "entity_id": data_id, "new_entity_id": new_id, "parent_id": folder, "order_key": key }))?;
+            inverse_data.extend(inv.unwrap_or_default());
+            ids.insert(data_id.clone(), new_id);
+        }
+    }
+    let remap = |v: &mut Value, ids: &BTreeMap<String, String>| {
+        if let Some(n) = v.get("entity_id").and_then(Value::as_str).and_then(|id| ids.get(id)) {
+            v["entity_id"] = json!(n);
+        }
+    };
+    let mut inverse_blocks = Vec::new();
+    for (i, r) in rows.iter().enumerate() {
+        let edge = p.ov.edge(&r.entity_id)?.ok_or_else(|| WsError::invalid_op("entity has no tree edge"))?;
+        let mut payload = r.payload.clone();
+        for key in ["source_ref", "start", "end"] {
+            if let Some(v) = payload.get_mut(key).filter(|v| v.is_object()) {
+                remap(v, &ids);
+            }
+        }
+        if let Some(b) = payload.get_mut("bindings").and_then(Value::as_object_mut) {
+            for v in b.values_mut() {
+                remap(v, &ids);
+            }
+        }
+        let mut create = json!({ "op": "entity.create", "entity_id": ids[&r.entity_id], "type_id": r.type_id, "schema_version": r.schema_version });
+        if i == 0 {
+            create["parent_id"] = json!(parent_id);
+            create["order_key"] = match op.get("order_key").filter(|v| !v.is_null()) {
+                Some(k) => k.clone(),
+                None => json!(crate::order_key::order_key_between(p.ov.children(parent_id)?.last().map(|e| e.order_key.as_str()), None)?),
+            };
+            if let Some(pl) = op.get("placement").filter(|v| !v.is_null()).cloned().or(edge.placement.clone()) {
+                create["placement"] = pl;
+            }
+            match op.get("slot") {
+                Some(Value::Null) => {
+                    payload.remove("slot");
+                }
+                Some(s) => {
+                    payload.insert("slot".into(), s.clone());
+                }
+                None => {}
+            }
+            if let Some(n) = r.name.as_deref().filter(|n| r.scope == SCOPE_SHARED && !p.name_taken(parent_id, n, "").unwrap_or(true)) {
+                create["name"] = json!(n);
+            }
+        } else {
+            create["parent_id"] = json!(ids.get(&edge.parent_id).ok_or_else(|| WsError::invalid_op("subtree parent missing"))?);
+            create["order_key"] = json!(edge.order_key);
+            if let Some(pl) = &edge.placement {
+                create["placement"] = pl.clone();
+            }
+            if let Some(n) = &r.name {
+                create["name"] = json!(n);
+            }
+        }
+        if let Some(sid) = &r.schema_id {
+            create["schema_id"] = json!(sid);
+        }
+        create["payload"] = Value::Object(payload);
+        let (_, inv) = entity_create(p, &create)?;
+        inverse_blocks.extend(inv.unwrap_or_default());
+    }
+    inverse_blocks.reverse();
+    inverse_blocks.extend(inverse_data);
+    let mut norm = op.clone();
+    norm["id_seed"] = json!(seed);
+    norm["new_ids"] = json!(ids);
+    Ok((norm, Some(inverse_blocks)))
+}
+
 /// Plan a whole Commit. On success the returned overlay is the candidate state.
 pub fn plan_commit<'a>(
     base: &'a dyn ReadCtx,
@@ -1085,6 +1223,7 @@ fn dispatch(p: &mut Planner, name: &str, op: &Value) -> OpResult {
         "entity.set_derived" => entity_set_derived(p, op),
         "tree.move" => tree_move(p, op),
         "tree.place" => tree_place(p, op),
+        "tree.clone" => tree_clone(p, op),
         "entity.clone" => entity_clone(p, op),
         "entity.purge" => entity_purge(p, op),
         "data.pin" => data_pin(p, op),
@@ -1146,7 +1285,7 @@ pub fn child_allowed(parent: &EntityRow, in_control: bool, child_type: &str, chi
 
 /// `child_allowed` for a parent in the current state: whether a Cell parent sits inside a control is read from the tree.
 fn child_allowed_here(p: &Planner, parent: &EntityRow, child_type: &str, child_kind: Option<&str>, child_scope: &str) -> WsResult<bool> {
-    let in_control = parent.type_id == TYPE_CELL && crate::types::laid_out_by_control(&p.ov, &parent.entity_id)?;
+    let in_control = parent.type_id == TYPE_CELL && crate::types::in_tree_control(&p.ov, &parent.entity_id)?;
     Ok(child_allowed(parent, in_control, child_type, child_kind, child_scope))
 }
 
@@ -1167,7 +1306,13 @@ impl<'a> PlaceRules<'a> {
     /// The rules for `type_id` / `payload` placed under `parent_id`.
     fn new(p: &Planner, parent_id: &str, type_id: &str, payload: &'a JsonMap) -> WsResult<PlaceRules<'a>> {
         let connector = crate::types::is_connector(type_id, payload).then_some(payload);
-        let laid_out = crate::types::laid_out_by_control(&p.ov, parent_id)?;
+        // a `fixed` composite keeps its children where they are put: none of them is laid out
+        let host = crate::types::enclosing_container(&p.ov, parent_id)?;
+        let fixed = match &host {
+            Some(c) if container_kind(c) == crate::types::COMPOSITE => crate::types::composite_algorithm(&p.ov, c)?.as_deref() == Some("fixed"),
+            _ => false,
+        };
+        let laid_out = !fixed && host.as_ref().is_some_and(|c| crate::types::is_control_kind(container_kind(c)));
         let control = type_id == TYPE_CONTAINER && payload.get("kind").and_then(Value::as_str).is_some_and(crate::types::is_control_kind);
         let text = type_id == TYPE_CELL && payload.get("view").and_then(|v| v.get("type")).and_then(Value::as_str).is_some_and(crate::types::is_text_view);
         Ok(PlaceRules { connector, internal: p.env.internal, laid_out, auto_size: control || (laid_out && text) })
@@ -1732,8 +1877,10 @@ fn entity_set_derived(p: &mut Planner, op: &Value) -> OpResult {
     Ok((norm, Some(vec![inverse])))
 }
 
+/// `tree.move { entity_id, new_parent_id, order_key, placement?, slot?, expect? }`. `slot` (a name, or `null` to drop
+/// it) rewrites the Block's role together with its place: into a composite a Block needs one, out of it none.
 fn tree_move(p: &mut Planner, op: &Value) -> OpResult {
-    only_keys(op, &["entity_id", "new_parent_id", "order_key", "placement", "expect"])?;
+    only_keys(op, &["entity_id", "new_parent_id", "order_key", "placement", "slot", "expect"])?;
     let id = get_str(op, "entity_id")?;
     let new_parent_id = get_str(op, "new_parent_id")?;
     let order_key = get_str(op, "order_key")?;
@@ -1747,8 +1894,8 @@ fn tree_move(p: &mut Planner, op: &Value) -> OpResult {
     if !child_allowed_here(p, &new_parent, &e.type_id, kind, &e.scope)? {
         return Err(WsError::sub(Code::InvalidOperation, "CHILD_NOT_ALLOWED", format!("{} cannot be a child of {new_parent_id}", e.type_id)));
     }
-    // a node keeps its children only where a control lays Blocks out (R3): out of it, a Cell is a leaf again
-    if e.type_id == TYPE_CELL && !crate::types::laid_out_by_control(&p.ov, new_parent_id)? {
+    // a node keeps its children only where a tree control lays Blocks out (R3): elsewhere a Cell is a leaf again
+    if e.type_id == TYPE_CELL && !crate::types::in_tree_control(&p.ov, new_parent_id)? {
         let mut kids = Vec::new();
         alive_descendants(p, id, &mut kids)?;
         if !kids.is_empty() {
@@ -1793,13 +1940,34 @@ fn tree_move(p: &mut Planner, op: &Value) -> OpResult {
     // moved out of a control cannot keep an "auto" placement (R9: the Desktop never moves one out)
     let placement = connector_placement(op, PlaceRules::new(p, new_parent_id, &e.type_id, &e.payload)?)?;
     let seq = p.seq();
-    let inverse = json!({ "op": "tree.move", "entity_id": id, "new_parent_id": edge.parent_id, "order_key": edge.order_key,
-                          "placement": edge.placement, "expect": { "rev": seq } });
+    let mut inverse = json!({ "op": "tree.move", "entity_id": id, "new_parent_id": edge.parent_id, "order_key": edge.order_key,
+                              "placement": edge.placement, "expect": { "rev": seq } });
     edge.parent_id = new_parent_id.to_string();
     edge.order_key = order_key.to_string();
     edge.placement = placement;
     edge.struct_rev = seq;
     p.ov.put_edge(edge);
+    let mut e = e;
+    if let Some(slot) = op.get("slot") {
+        if !slot.is_null() && !slot.as_str().is_some_and(crate::types::is_slot) {
+            return Err(WsError::invalid_schema("slot must match ^[a-z0-9][a-z0-9_-]{0,31}$ or be null").at("/slot"));
+        }
+        if e.type_id != TYPE_CELL && !crate::types::is_block_container(&e) {
+            return Err(WsError::invalid_op("only a Block or a Block container carries a slot"));
+        }
+        let old = e.payload.get("slot").cloned().unwrap_or(Value::Null);
+        if &old != slot {
+            inverse["slot"] = old;
+            match slot {
+                Value::Null => e.payload.remove("slot"),
+                s => e.payload.insert("slot".into(), s.clone()),
+            };
+            e.key_revs.insert("slot".into(), seq);
+            p.bump_content(&mut e);
+            p.ov.put_entity(e.clone());
+            p.touch(id, sel(json!({ "kind": "doc_key", "key": "slot" })), crate::types::change_class(&e.type_id));
+        }
+    }
     crate::types::check_position(p, &e)?;
     p.touch(id, None, "moved");
     Ok((op.clone(), Some(vec![inverse])))

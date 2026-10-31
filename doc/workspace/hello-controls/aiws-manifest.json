@@ -1,5 +1,5 @@
 {
-  "manifest_version": 1,
+  "manifest_version": 2,
   "purpose": "aiws",
   "host_api": { "html": 2, "declarative": 1 },
   "controls": [
@@ -8,9 +8,13 @@
       "title": "Hello KPI", "description": "Counts the rows of a bound task table, sums the hours and shows the status mix.",
       "catalog": { "group": "hello", "description": "A counter card for any task table" } },
     { "ident": "did:bns:alice#hello-card", "name": "hello-card", "kind": "html", "version": 5,
-      "digest": "sha256:3ca978da8f8fc3b120b57bd1beb027e5a669b5d31fa3aff238612328b04508bf", "dir": "controls/hello-card/",
+      "digest": "sha256:7cb131ab8b7bba54d071b3dd42346598fe7a04be5454da3e2ed164210a3dd81a", "dir": "controls/hello-card/",
       "title": "Hello Card", "description": "Shows one task record as a card with a Done button.",
-      "catalog": { "group": "hello", "description": "One task as a card with a Done button" } }
+      "catalog": { "group": "hello", "description": "One task as a card with a Done button" } },
+    { "ident": "did:bns:alice#hello-board", "name": "hello-board", "kind": "composite", "version": 2,
+      "digest": "sha256:6d32210f463a18a2ac5d78b69ccecf76ce95b9c6a3cb16770ebe272fffb55932", "dir": "controls/hello-board/",
+      "title": "Hello Board", "description": "A titled panel that stacks task cards. The cards are real Blocks (hello-card instances or notes); the board owns their layout and the frame around them.",
+      "catalog": { "group": "hello", "description": "A panel of task cards" }, "deps": ["did:bns:alice#hello-card"] }
   ],
   "workspace_templates": []
 }

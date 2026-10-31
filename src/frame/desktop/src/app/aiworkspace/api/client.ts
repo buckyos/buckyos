@@ -6,7 +6,7 @@ import type {
   QueryPage, QueryParams, ReadResult, Result, RunView, Selector, WorkspaceInfo, WorkspaceSummary, Capability, Json, WishAiccMode,
   DerivedRecord, FreshnessInfo, Operation, RelationsInfo, Subject, VersionInfo, WishChoices, WishRunView,
   ShowCommand, ShowLockInfo, ShowNotes, ShowStart, ShowState, ShowWatch, ShareEntry, EntryJoin, WishClaim, WishToolAnswer, HostedExecConfig, Publication, Referrer,
-  ExtBuildResult, ExtExportResult, LibraryPackage,
+  ExtBuildResult, ExtExportResult, ExtPackResult, LibraryPackage,
 } from './types'
 import { parseAccessDenial, type AccessDenial } from 'buckyos'
 import type { Transport } from './transport'
@@ -52,6 +52,12 @@ export class AiwsClient {
     return this.call<Result<{ pkg_id: string; version: string; action: string }>>('ext.install', { from: { ...ws, entity_ids }, package: pkg, mode: 'dev' })
   }
   extListLibrary() { return this.call<Result<{ packages: LibraryPackage[] }>>('ext.list_library', {}) }
+  /** P1 (Q20): the service packs the definitions (and what they build on) as an `aiws` .pikg in the caller's `exports` bucket. */
+  extPack(ws: Ws, entity_ids: string[], pkg: { name: string; version: string; title?: string }) { return this.call<Result<ExtPackResult>>('ext.pack', { ...ws, entity_ids, package: pkg }) }
+  /** A .pikg bound in the caller's own `exports` bucket into its library (the binding is consumed, Q21). */
+  extInstallBound(binding: { bucket_id: string; key: string }) {
+    return this.call<Result<{ pkg_id: string; version: string; action: string; controls: Json[] }>>('ext.install', { pikg: binding, mode: 'dev' })
+  }
   // share entries (hybrid SSO contract §8.3): links that offer sign-in methods and grant a template
   wsCreateEntry(ws: Ws, params: { capabilities: Capability[]; methods: ShareEntry['methods']; scope_entity_id?: string; expires_at?: number }) {
     return this.call<Result<{ entry: ShareEntry }>>('ws.create_entry', { ...ws, ...params })

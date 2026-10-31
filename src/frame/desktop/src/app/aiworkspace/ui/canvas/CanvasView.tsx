@@ -51,6 +51,9 @@ import { controlCommands } from '../controls/commands'
 import { addNode } from '../controls/mindmap/definition'
 import { importOutline, outlineFileKind, richtextToMindmap } from '../controls/mindmap/convert'
 import { resetLayoutOps } from '../controls/mindmap/ops'
+import { CompositeInspector } from '../controls/composite/Inspector'
+import { DefineControlDialog } from '../extensions/DefineControlDialog'
+import { isComposite, isFixedComposite, slotForDrop } from '../controls/composite/model'
 import { controlRegistry, type ControlCommandContext } from '../controls/registry'
 import { anchorWorld, axisOf, boxOf, facingAnchor } from './connectors/geometry'
 import { formOf, hasBoundEnd, isConnector } from './connectors/layout'
@@ -171,6 +174,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const [typeAhead] = useState(() => new Map<'typed', { id: string; text: string }>())
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [picker, setPicker] = useState<{ kind: 'add-view' | 'move-surface' } | null>(null)
+  /** “定义为控件…” (扩展控件 P1): the Blocks the new composite is made of. */
+  const [defining, setDefining] = useState<string[] | null>(null)
   const [catalog, setCatalog] = useState<{ tab: CatalogTab; key?: string; world: { x: number; y: number } | null; parentId?: string; afterId?: string | null } | null>(null)
   const [tool, setTool] = useState<PointerTool>('select')
   const inkTool = tool === 'pen' || tool === 'eraser'
@@ -355,17 +360,27 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     const ops: Operation[] = []
     // several nodes dropped together keep their order, one after the other
     const last = new Map<string, string | undefined>()
+    const moving = new Set(moves.map((m) => m.id))
     for (const move of moves) {
       const siblings = store.outline.childrenOf(move.parentId).filter((c) => !moves.some((m) => m.id === c.entity_id))
       const i = move.beforeId ? siblings.findIndex((c) => c.entity_id === move.beforeId) : siblings.length
       const low = last.has(move.parentId) ? last.get(move.parentId) : siblings[i - 1]?.order_key ?? undefined
       const key = store.core.order_key_between(low, siblings[i]?.order_key ?? undefined)
       last.set(move.parentId, key)
-      const stored = store.outline.get(move.id)?.placement
-      const placement = { x: 'auto' as const, y: 'auto' as const, w: stored?.w ?? 'auto', h: stored?.h ?? 'auto' }
+      const entity = store.outline.get(move.id)
+      const stored = entity?.placement
+      // into a composite (扩展控件 P1): the slot of the Block it lands beside, else the first that takes it; a fixed
+      // composite keeps it where it is, laid out nowhere
+      let slot: string | null | undefined
+      if (isComposite(store.outline.get(move.parentId))) {
+        slot = entity ? slotForDrop(store, move.parentId, entity, siblings[i - 1]?.entity_id ?? siblings[i]?.entity_id ?? null, moving) : null
+        if (!slot) { store.notify('info', t('aiworkspace.ext.composite.slotRefuses')); return }
+      } else if (entity?.slot && isComposite(store.outline.get(entity.parent_id ?? ''))) slot = null
+      const fixed = isComposite(store.outline.get(move.parentId)) && isFixedComposite(store, move.parentId)
+      const placement = fixed && entity?.parent_id === move.parentId && stored ? stored : fixed ? { x: 12, y: 12, w: stored?.w ?? 160, h: stored?.h ?? 90 } : { x: 'auto' as const, y: 'auto' as const, w: stored?.w ?? 'auto', h: stored?.h ?? 'auto' }
       store.noteLayoutIntent(move.id, placement, key, move.parentId)
-      store.outline.patchLocal(move.id, { parent_id: move.parentId, order_key: key, placement })
-      ops.push({ op: 'tree.move', entity_id: move.id, new_parent_id: move.parentId, order_key: key, placement })
+      store.outline.patchLocal(move.id, { parent_id: move.parentId, order_key: key, placement, ...(slot !== undefined ? { slot } : {}) })
+      ops.push({ op: 'tree.move', entity_id: move.id, new_parent_id: move.parentId, order_key: key, placement, ...(slot !== undefined ? { slot } : {}) })
     }
     void store.submit({ editId: `layout:${surfaceId}:${randomId().slice(0, 8)}`, label: t('aiworkspace.mindmap.moveNodes', { count: moves.length }), operations: ops })
   }, [store, policy.layout, surfaceId, t])
@@ -975,8 +990,12 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     if (!current) return
     if (current.workspaceId !== store.session.workspaceId) { store.notify('info', t('aiworkspace.canvas.clipboard.crossWorkspace')); return }
     const c = camera.center
-    // with a node (or a control) selected the clip hangs under it (脑图方案 §7.2)
-    const into = selectionControl && !at ? { parentId: selectionControl.nodeId ?? selectionControl.containerId } : undefined
+    // with a node (or a control) selected the clip hangs under it (脑图方案 §7.2); in a composite it goes beside the
+    // selected Block, into a slot, and a selected composite itself is pasted beside on the canvas (扩展控件 P1)
+    const composite = selectionControl && isComposite(store.outline.get(selectionControl.containerId))
+    const into = !selectionControl || at ? undefined
+      : composite ? (selectionControl.nodeId ? { parentId: selectionControl.containerId, after: selectionControl.nodeId } : undefined)
+        : { parentId: selectionControl.nodeId ?? selectionControl.containerId }
     const { operations, newIds, label, refused } = pasteOperations(store, current, { surfaceId, isFree, at, center: camera.toWorld(c.x, c.y), into })
     if (refused) { store.notify('info', refused); return }
     if (operations.length === 0) { store.notify('info', t('aiworkspace.canvas.clipboard.cutGone')); canvasClipboard.set(null); return }
@@ -1189,7 +1208,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     // a pinned node of another view goes back to the control's layout (§5.5); a text node has the tool on its toolbar
     const pin = laid.get(single.entity_id)?.node?.pinned && single.view_type !== 'mindnode' ? single.entity_id : null
     if (pin && canLayout && !singleLocked) moreActions.push({ id: 'mindmap-auto', label: t('aiworkspace.mindmap.backToLayout'), run: () => { void store.submit({ editId: `layout:${pin}`, label: t('aiworkspace.mindmap.backToLayout'), operations: resetLayoutOps(store, [pin]) }) } })
-    if (definition?.Inspector || definition?.configFields || single.kind === 'group') moreActions.push({ id: 'inspector', label: t('aiworkspace.canvas.inspector.title'), key: 'F2', run: () => shell.setSide('inspector') })
+    if (definition?.Inspector || definition?.configFields || single.kind === 'group' || single.kind === 'composite') moreActions.push({ id: 'inspector', label: t('aiworkspace.canvas.inspector.title'), key: 'F2', run: () => shell.setSide('inspector') })
     if (policy.annotate && source && ui.annotate) commonItems.push({ kind: 'button', id: 'annotate', icon: MessageSquarePlus, label: t('aiworkspace.canvas.annotate.label'), run: annotateSelection })
     if (source) moreActions.push({ id: 'relations', label: t('aiworkspace.canvas.relations'), run: () => shell.setSide('relations') })
     // a rich text's lists as a mind map beside it (脑图方案 §8)
@@ -1199,6 +1218,10 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   }
   if (selection.size > 1 && canLayout && mode === 'edit') typeItems.push({ kind: 'button', id: 'group', icon: Group, label: t('aiworkspace.canvas.group'), key: 'Ctrl+G', run: group })
   if (selection.size > 1 && canLayout) moreActions.push({ id: 'group', label: t('aiworkspace.canvas.group'), key: 'Ctrl+G', run: group })
+  // the selection as a composite control: its definition in the user's home, built, and an instance in its place
+  if (selection.size > 0 && isFree && canLayout && mode === 'edit' && !phone && !nodesSelected && insertReason === null && store.session.status().kind === 'live') {
+    moreActions.push({ id: 'define-control', label: t('aiworkspace.ext.define.action'), run: () => setDefining(topLevel(laid, selection).filter((id) => !isConnector(laid.get(id)?.entity))) })
+  }
   if (lockable && mode === 'edit') commonItems.push(allLocked
     ? { kind: 'button', id: 'unlock', icon: LockOpen, label: t('aiworkspace.canvas.lock.unlock'), disabled: lockedHere ? false : t('aiworkspace.canvas.lock.groupLocked'), run: () => { void setLocked(topIds, false) } }
     : { kind: 'button', id: 'lock', icon: Lock, label: t('aiworkspace.canvas.lock.lock'), run: () => { void setLocked(topIds, true) } })
@@ -1369,6 +1392,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
             <input ref={tableInput} type="file" hidden aria-hidden="true" tabIndex={-1} accept={TABULAR_ACCEPT} data-testid="aiws-import-table-file"
               onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; const at = catalogSpot.current; catalogSpot.current = null; if (file) void file.arrayBuffer().then((buffer) => openTableImport({ kind: 'file', name: file.name, bytes: new Uint8Array(buffer) }, false, at)) }} />
             {menu && <ContextMenu at={menu.at} items={menuItems} onClose={() => setMenu(null)} />}
+            {defining && defining.length > 0 && <DefineControlDialog ids={defining} laid={laid} surfaceId={surfaceId} onClose={() => setDefining(null)} onDone={(ids) => { setDefining(null); setSelectionState(new Set(ids)) }} />}
             {picker && <Picker kind={picker.kind} selection={selectedEntities} surfaceId={surfaceId} onClose={() => setPicker(null)} onPick={(choice) => {
               if (picker.kind === 'move-surface') moveToSurface(choice)
               else if (picker.kind === 'add-view' && single?.source_id) {
@@ -1444,6 +1468,9 @@ function SelectionInspector({ cell, mode, context, resolved, registryVersion }: 
   const operable = cell.view_type !== 'frame' && cell.view_type !== 'connector' && cell.type_id === 'buckyos.cell'
   return (
     <BlockInspector cellId={cell.entity_id} mode={mode}>
+      {cell.type_id === 'buckyos.container' && cell.kind === 'composite' && (
+        <CompositeInspector container={cell} readOnly={mode === 'edit' && cell.capabilities.includes('update') ? null : t('aiworkspace.blocks.noPermission')} />
+      )}
       {operable && payload && (
         <label className="aiws-inline-form" title={t('aiworkspace.canvas.inspector.liveTip')}>
           <input type="checkbox" data-testid="aiws-inspector-live" checked={payload.presentation?.live === true} disabled={readOnly}

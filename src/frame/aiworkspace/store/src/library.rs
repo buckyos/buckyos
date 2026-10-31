@@ -100,7 +100,24 @@ pub fn verify_bundle(manifest: &Value, files: &BTreeMap<String, Vec<u8>>) -> WsR
         if !c.get("version").and_then(Value::as_u64).is_some_and(|v| v >= 1) {
             return Err(invalid(format!("{dir}: version must be a positive integer")));
         }
+        let listed: Vec<&str> = c.get("deps").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
+        let mut declared: Vec<&str> = composed.deps.iter().map(String::as_str).collect();
+        let mut sorted = listed.clone();
+        sorted.sort_unstable();
+        declared.sort_unstable();
+        if sorted != declared {
+            return Err(invalid(format!("{dir}: deps must match its component.json")));
+        }
         out.push((c.clone(), sources));
+    }
+    // what a control builds on travels with it (P1, Q16): every dependency is another control of this bundle
+    let idents: Vec<&str> = controls.iter().filter_map(|c| c.get("ident").and_then(Value::as_str)).collect();
+    for (c, _) in &out {
+        for dep in c.get("deps").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+            if !idents.contains(&dep) {
+                return Err(invalid(format!("{} depends on {dep}, which the package does not carry", c["ident"].as_str().unwrap_or(""))));
+            }
+        }
     }
     for path in files.keys() {
         if path != MANIFEST_FILE && !claimed.iter().any(|d| path.starts_with(d.as_str())) {
@@ -287,7 +304,7 @@ impl Library {
         )
         .map_err(db_err)?;
         for (c, files) in rows {
-            let info = json!({ "title": c.get("title"), "description": c.get("description"), "catalog": c.get("catalog") });
+            let info = json!({ "title": c.get("title"), "description": c.get("description"), "catalog": c.get("catalog"), "deps": c.get("deps") });
             tx.execute(
                 "INSERT INTO library_controls (owner, pkg_id, ident, name, kind, version, digest, dir, info_json, files_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![owner, pkg.pkg_id, c["ident"].as_str(), c["name"].as_str(), c["kind"].as_str(), c["version"].as_i64(), c["digest"].as_str(), c["dir"].as_str(),
@@ -360,18 +377,35 @@ impl Library {
     }
 
     /// The controls of a package with their files (objects in the named store) and the provenance an import records.
-    pub fn controls(&self, owner: &str, pkg_id: &str, idents: Option<&[String]>) -> WsResult<Vec<LibraryControl>> {
+    /// With `with_deps`, what the chosen controls build on comes along (marked `implicit`), each once.
+    pub fn controls(&self, owner: &str, pkg_id: &str, idents: Option<&[String]>, with_deps: bool) -> WsResult<Vec<LibraryControl>> {
         let conn = self.conn.lock().map_err(|_| WsError::io("library lock poisoned"))?;
         let version: Option<String> = conn.query_row("SELECT version FROM library_packages WHERE owner = ?1 AND pkg_id = ?2", params![owner, pkg_id], |r| r.get(0)).optional().map_err(db_err)?;
         let Some(version) = version else { return Err(WsError::not_found(format!("{pkg_id} is not in your library"))) };
         let rows = self.rows(&conn, owner, pkg_id)?;
-        let mut out = Vec::new();
-        for want in idents.map(<[String]>::to_vec).unwrap_or_else(|| rows.iter().map(|r| r.ident.clone()).collect()) {
+        let mut wanted: Vec<(String, bool)> = idents.map(<[String]>::to_vec).unwrap_or_else(|| rows.iter().map(|r| r.ident.clone()).collect()).into_iter().map(|i| (i, false)).collect();
+        let mut out: Vec<LibraryControl> = Vec::new();
+        let mut i = 0;
+        while i < wanted.len() {
+            let (want, implicit) = wanted[i].clone();
+            i += 1;
+            if out.iter().any(|c| c.summary["ident"] == want.as_str()) {
+                continue;
+            }
             let row = rows.iter().find(|r| r.ident == want).ok_or_else(|| WsError::not_found(format!("{pkg_id} has no control {want}")))?;
+            let summary = row.summary();
+            if with_deps {
+                for dep in summary["deps"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+                    if !wanted.iter().any(|(w, _)| w == dep) {
+                        wanted.push((dep.to_string(), true));
+                    }
+                }
+            }
             out.push(LibraryControl {
-                summary: row.summary(),
+                summary,
                 provenance: json!({ "pkg_id": pkg_id, "version": version, "digest": row.digest }),
                 files: row.files.iter().map(|f| (f["name"].as_str().unwrap_or("").to_string(), f["obj_id"].as_str().unwrap_or("").to_string())).collect(),
+                implicit,
             });
         }
         Ok(out)
@@ -382,7 +416,7 @@ impl Library {
     pub fn bundle(&self, owner: &str, pkg_id: &str, idents: Option<&[String]>) -> WsResult<Value> {
         use base64::Engine;
         let mut controls = Vec::new();
-        for c in self.controls(owner, pkg_id, idents)? {
+        for c in self.controls(owner, pkg_id, idents, true)? {
             let mut files = Vec::new();
             for (name, oid) in &c.files {
                 let bytes = self.objects.get_file(oid)?;
@@ -416,7 +450,8 @@ struct ControlRow {
 impl ControlRow {
     fn summary(&self) -> Value {
         json!({ "ident": self.ident, "name": self.name, "kind": self.kind, "version": self.version, "digest": self.digest, "dir": self.dir,
-                "title": self.info.get("title"), "description": self.info.get("description"), "catalog": self.info.get("catalog") })
+                "title": self.info.get("title"), "description": self.info.get("description"), "catalog": self.info.get("catalog"),
+                "deps": self.info.get("deps").filter(|d| d.is_array()).cloned().unwrap_or(json!([])) })
     }
 }
 
@@ -427,4 +462,6 @@ pub struct LibraryControl {
     pub provenance: Value,
     /// `(name, obj_id)` of its files.
     pub files: Vec<(String, String)>,
+    /// Brought along as a dependency of a chosen control.
+    pub implicit: bool,
 }

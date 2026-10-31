@@ -222,7 +222,8 @@ function ContainerFlow({ container, ...props }: ItemProps & { container: EntityE
       {shown.map((entity, index) => (
         entity.type_id === 'buckyos.cell'
           ? <FlowBlock key={entity.entity_id} cell={entity} siblings={shown} index={index} {...props} />
-          : entity.kind === 'group'
+          // a composite reads as a group on a page (扩展控件 P1): its Blocks in order, no layout of its own
+          : entity.kind === 'group' || entity.kind === 'composite'
             ? <FlowGroup key={entity.entity_id} group={entity} siblings={shown} index={index} {...props} />
             : <FlowControl key={entity.entity_id} control={entity} siblings={shown} index={index} {...props} />
       ))}
@@ -296,7 +297,8 @@ function FlowGroup({ group, siblings, index, ...props }: ItemProps & { group: En
   const { t } = useAiwsText()
   const { policy } = props
   const isSelected = props.selected.has(group.entity_id)
-  const canInsert = policy.insert && group.capabilities.includes('structure')
+  // a composite's Blocks fill its slots: they are added on the canvas, where the slots show
+  const canInsert = policy.insert && group.kind !== 'composite' && group.capabilities.includes('structure')
   const children = flowChildren(store, group.entity_id)
   return (
     <section className={`aiws-group aiws-fgroup${isSelected ? ' is-selected' : ''}${props.dragging === group.entity_id ? ' is-dragged' : ''}`} data-testid={`aiws-group-${group.entity_id}`}

@@ -63,7 +63,7 @@
    "class": "merge",
    "undo": "compensable",
    "capability": "structure",
-   "note": "Auto-merge: later arrival wins; cycles, deleted targets and name clashes are rejected. expect optional. A connector must keep a placement (see $defs.placement in commit-request.schema.json). A Block leaving a control cannot keep \"auto\" components, and a Cell holding Blocks cannot leave it (CHILD_NOT_ALLOWED)."
+   "note": "Auto-merge: later arrival wins; cycles, deleted targets and name clashes are rejected. expect optional. A connector must keep a placement (see $defs.placement in commit-request.schema.json). A Block leaving a control cannot keep \"auto\" components, and a Cell holding Blocks cannot leave it (CHILD_NOT_ALLOWED). `slot?` (a name, or null) rewrites the Block's slot in the same step (into a composite a Block needs one, out of a control none, 扩展控件 P1)."
   },
   {
    "op": "tree.place",
@@ -71,6 +71,13 @@
    "undo": "compensable",
    "capability": "structure",
    "note": "Order/placement within the same parent. expect optional. `placement: null` clears a Block's placement; it is refused for a connector. Writing \"auto\" back into a component resets it to the control's layout."
+  },
+  {
+   "op": "tree.clone",
+   "class": "create",
+   "undo": "compensable",
+   "capability": "structure",
+   "note": "扩展控件 P1 (Q17): a deep copy of a Block subtree (a Cell, a group or a control and all under it) under `parent_id`: `source_id`, `parent_id`, `order_key?` (default: last), `placement?`, `slot?` (null drops it), `content?: \"private\"`, `id_seed?`. Each copy gets id `c` + 26 hex of sha256(`<id_seed>\\n<old id>`) (id_seed defaults to `<seq>.<op index>`; pass one to know the ids beforehand); def_ref is kept, own data (owns) is cloned into the target Surface's content folder and rebound, shared data stays shared, connectors are copied when both bound ends are inside and dropped when one crosses. Normalized with `id_seed` and `new_ids { old: new }`; the Commit result lists them under `cloned`. `read` on the source."
   },
   {
    "op": "entity.clone",

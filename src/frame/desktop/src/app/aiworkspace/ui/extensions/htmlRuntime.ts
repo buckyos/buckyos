@@ -39,6 +39,8 @@ export interface HostBridge {
   batch?: (action: 'begin' | 'end' | 'abort', id: string | null, label?: string) => Promise<Json>
   /** v2: call `notify(name)` whenever the data bound as `name` changes; returns the unsubscribe. */
   watch?: (name: string, notify: () => void) => (() => void) | null
+  /** v2 (P1, additive): a file the definition lists in `assets`, from its source snapshot. */
+  asset?: (name: string) => Promise<{ bytes: Uint8Array; media_type: string }>
 }
 
 export interface HtmlSource { html: string; css?: string; js?: string; api_version?: number }
@@ -49,7 +51,7 @@ type Pending = { resolve: (value: Json) => void; reject: (error: Error) => void;
 function bootstrap(nonce: string, locale: string): string {
   return `
 (function(){
-  var seq = 0, waiting = {}, handlers = {}, watchers = {}, currentBatch = null;
+  var seq = 0, waiting = {}, handlers = {}, watchers = {}, currentBatch = null, assets = {};
   var nonce = ${JSON.stringify(nonce)};
   var noHandler = ${JSON.stringify(aiwsT('aiworkspace.extension.noHandler'))};
   function send(type, payload, id){ parent.postMessage({ aiws: nonce, type: type, id: id, payload: payload }, '*'); }
@@ -99,6 +101,11 @@ function bootstrap(nonce: string, locale: string): string {
       return call('upload', { bytes: Array.from(bytes), file_name: fileName || 'file', media_type: mediaType || null });
     },
     snapshot: function(dataUrl){ return call('snapshot', { data_url: dataUrl }); },
+    asset: function(name){
+      name = String(name);
+      if (!assets[name]) assets[name] = call('asset', { name: name }).then(function(r){ return URL.createObjectURL(new Blob([new Uint8Array(r.bytes)], { type: r.media_type || '' })); });
+      return assets[name];
+    },
     notify: function(text){ send('notify', { text: String(text) }); },
     on: function(name, handler){ handlers[name] = handler; },
     input: input,
@@ -127,6 +134,7 @@ function bootstrap(nonce: string, locale: string): string {
       });
     }
   };
+  window.addEventListener('pagehide', function(){ Object.keys(assets).forEach(function(k){ assets[k].then(function(u){ URL.revokeObjectURL(u); }, function(){}); }); });
   window.addEventListener('error', function(event){ send('crash', { message: String(event.message || 'error') }); });
   window.addEventListener('unhandledrejection', function(event){ send('crash', { message: String(event.reason && event.reason.message || event.reason || 'rejection') }); });
 })();`
@@ -244,7 +252,7 @@ export class HtmlRuntime {
       case 'notify':
         this.bridge.notify(String((message.payload as { text?: string } | undefined)?.text ?? ''))
         return
-      case 'read': case 'query': case 'submit': case 'upload': case 'snapshot': case 'input': case 'outline': case 'write': case 'batch': case 'watch': {
+      case 'read': case 'query': case 'submit': case 'upload': case 'snapshot': case 'input': case 'outline': case 'write': case 'batch': case 'watch': case 'asset': {
         const id = message.id ?? 0
         void this.handle(message.type, message.payload ?? null).then(
           (value) => this.post('result', id, value),
@@ -274,6 +282,10 @@ export class HtmlRuntime {
       case 'outline': return need(this.bridge.outline)(String(p.what ?? '') as 'resolve' | 'outline' | 'find', p.args ?? null)
       case 'write': return need(this.bridge.write)(String(p.kind ?? ''), String(p.name ?? ''), p.args ?? null, typeof p.batch === 'string' ? p.batch : null)
       case 'batch': return need(this.bridge.batch)(String(p.action ?? '') as 'begin' | 'end' | 'abort', typeof p.id === 'string' ? p.id : null, typeof p.label === 'string' ? p.label : undefined)
+      case 'asset': {
+        const got = await need(this.bridge.asset)(String(p.name ?? ''))
+        return { bytes: Array.from(got.bytes), media_type: got.media_type }
+      }
       case 'watch': {
         const name = String(p.name ?? '')
         const off = need(this.bridge.watch)(name, () => this.post('event', null, { name } as Json))

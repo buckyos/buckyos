@@ -1207,6 +1207,16 @@
 .aiws-overlay-html > .aiws-fold.is-folded { color: var(--cp-text); }
 .aiws-frame-block.is-control > .aiws-pin-mark { position: absolute; display: flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 8px;
   background: var(--cp-accent); color: #fff; pointer-events: auto; z-index: 1; }
+/* ---- composite controls (扩展控件 P1): the frame a definition's chrome describes, under the slots' Blocks */
+.aiws-frame-block.is-control > .aiws-composite-chrome { position: absolute; left: 0; top: 0; box-sizing: border-box; border: 1px solid var(--cp-border);
+  background: color-mix(in srgb, var(--cp-surface-2) 70%, transparent); pointer-events: none; }
+.aiws-composite-chrome.is-unknown { border-style: dashed; background: transparent; }
+.aiws-composite-title { position: absolute; display: flex; align-items: center; font-weight: 600; color: var(--cp-text); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.aiws-composite-empty { position: absolute; display: flex; align-items: center; justify-content: center; text-align: center; color: var(--cp-muted); font-size: 13px; }
+.aiws-define-slots { width: 100%; border-collapse: collapse; margin: 6px 0; }
+.aiws-define-slots th, .aiws-define-slots td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--cp-border); }
+.aiws-define-slots input { width: 100%; box-sizing: border-box; }
+.aiws-plain-fieldset { border: none; margin: 0; padding: 0; min-width: 0; }
 .aiws-mindnode { box-sizing: border-box; width: 100%; height: 100%; border-radius: 8px; border: 1px solid var(--cp-border); background: var(--cp-surface-opaque); color: var(--cp-text);
   white-space: pre; overflow: visible; }
 .aiws-mindnode.is-depth-0 { border: none; border-radius: 10px; background: var(--cp-text); color: var(--cp-surface-opaque); }

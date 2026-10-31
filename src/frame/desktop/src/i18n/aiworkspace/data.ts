@@ -498,6 +498,7 @@ export const en: Record<string, string> = {
   'aiworkspace.data.sources.resize': 'Adjust width',
   'aiworkspace.data.sources.empty': 'Select an item in the data tree on the left: its content and relations show in the middle, its properties on the right.',
   'aiworkspace.data.sources.emptyHint': 'Content created on a canvas is data too, kept in “Canvas content” (collapsed by default).',
+  'aiworkspace.data.relations.kind.defDep': 'Built on',
 }
 
 export const zh: Record<string, string> = {
@@ -977,4 +978,5 @@ export const zh: Record<string, string> = {
   'aiworkspace.data.sources.resize': '调整宽度',
   'aiworkspace.data.sources.empty': '在左侧数据树中选择一项数据：中间显示它的内容与引用关系，右侧显示属性。',
   'aiworkspace.data.sources.emptyHint': '画布上创建的内容默认也是数据，放在“画布内容区”里（默认折叠）。',
+  'aiworkspace.data.relations.kind.defDep': '依赖于',
 }

@@ -1,8 +1,8 @@
 {
  "$schema": "https://json-schema.org/draft/2020-12/schema",
- "$id": "buckyos.ai-workspace/block-def/1.1",
- "title": "Payload of a buckyos.block-def entity (phase two §10.3; 扩展控件 P0 keys)",
- "description": "Checked by core/src/types.rs validate_block_def (≤ 512 KiB in all). ident, manifest_version, source_dir, bindings, catalog, agent and provenance were added by the extension P0 without a protocol change (Q19); definitions without them keep working. The dependency record of a build is `derived.build { input_digest, builder_version, built_at }`.",
+ "$id": "buckyos.ai-workspace/block-def/1.2",
+ "title": "Payload of a buckyos.block-def entity (phase two §10.3; 扩展控件 P0 and P1 keys)",
+ "description": "Checked by core/src/types.rs block_def_primitive (deps, source_dir: replay semantics) and block_def_schema (the rest, admission only, Q15); ≤ 512 KiB in all. ident, manifest_version, source_dir, bindings, catalog, agent and provenance were added by the extension P0, deps and composition (with kind composite) by P1, without a protocol change (Q19); definitions without them keep working. The dependency record of a build is `derived.build { input_digest, builder_version, built_at }`.",
  "type": "object",
  "additionalProperties": false,
  "required": [
@@ -22,8 +22,10 @@
   "kind": {
    "enum": [
     "declarative",
-    "html"
-   ]
+    "html",
+    "composite"
+   ],
+   "description": "composite: a Block-control whose instances are buckyos.container { kind: composite, def_ref } (P1)"
   },
   "title": {
    "type": "string",
@@ -91,7 +93,7 @@
   "manifest_version": {
    "type": "integer",
    "minimum": 1,
-   "maximum": 1
+   "maximum": 2
   },
   "source_dir": {
    "type": "object",
@@ -134,6 +136,34 @@
      "pattern": "^sha256:[0-9a-f]{64}$"
     }
    }
+  },
+  "composition": {
+   "type": "object",
+   "description": "composite only: the checked composition.json (composition.schema.json), inline, ≤ 64 KiB. The core keeps its shape (≤ 16 slots named [a-z][a-z0-9_]{0,31}, no events); what it means is ext.build's and the clients' (Q15)."
+  },
+  "deps": {
+   "type": "array",
+   "maxItems": 32,
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "ident",
+     "entity_id"
+    ],
+    "properties": {
+     "ident": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^did:[a-z0-9]+:[^/#\\s]+#[a-z0-9][a-z0-9._-]{0,63}$"
+     },
+     "entity_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+     }
+    }
+   },
+   "description": "the definitions this one builds on, resolved by ext.build from component.json deps; only build and import Commits write it. Each is a strong def_dep reference (the target cannot be deleted while used; exports and forks carry it); a cycle is REFERENCE_CYCLE."
   }
  },
  "$defs": {

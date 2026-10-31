@@ -12,9 +12,14 @@ function render(props) {
   done.disabled = props.status === 'done'
 }
 
-// P1 (proposal, not in host API 2): assets listed in component.json reach the iframe as blob URLs;
-// today `check.svg` travels with the snapshot and the package but cannot be referenced from here.
-//   done.style.backgroundImage = 'url(' + aiws.asset('check.svg') + ')'
+// Files listed in component.json `assets` reach the iframe as blob URLs (host API 2, P1). A host without
+// aiws.asset shows the plain button.
+if (typeof aiws.asset === 'function') {
+  aiws.asset('check.svg').then(function (url) {
+    done.style.background = 'url(' + url + ') no-repeat 6px center / 14px 14px'
+    done.style.paddingLeft = '24px'
+  })
+}
 
 if (aiws.bindings.task) {
   aiws.input('task').props().then(render)

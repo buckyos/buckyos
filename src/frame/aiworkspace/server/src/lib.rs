@@ -506,6 +506,7 @@ pub const METHOD_LEVELS: &[(&str, &str)] = &[
     ("ext.uninstall", "experimental"),
     ("ext.library_bundle", "experimental"),
     ("ext.import", "experimental"),
+    ("ext.pack", "experimental"),
 ];
 
 /// Synchronous method dispatch. Every method authorizes against the grants of

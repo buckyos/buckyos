@@ -27,7 +27,7 @@ import {
   PROTOCOL_VERSION,
   type CollabState, type CommitEvent, type CommitOutcome, type CommitRequest, type CommitResult, type EntityEnvelope, type Json, type LockInfo,
   type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type Touched, type WorkspaceInfo, type WishChoices,
-  type AnnotationContent, type ListAnnotationsParams, type Capability, type ShowLockInfo, type WishAiccMode, type HostedExecConfig,
+  type AnnotationContent, type ListAnnotationsParams, type Capability, type ShowLockInfo, type WishAiccMode, type HostedExecConfig, type BucketBinding, type ExtPackResult,
 } from '../api/types'
 import { StorageFailure, describeStorageFailure, type ReplicaClient } from './client'
 import { forgetPrepared, noteTitle, type OpenedReplica, type ReplicaLock } from './holder'
@@ -569,6 +569,19 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
   async extListLibrary() {
     if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.ext.offline'))
     return this.direct.extListLibrary()
+  }
+  async extPack(entityIds: string[], pkg: { name: string; version: string; title?: string }) {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.ext.offline'))
+    return this.direct.extPack(entityIds, pkg)
+  }
+  async downloadPack(pack: ExtPackResult) { return this.direct.downloadPack(pack) }
+  async installPack(binding: BucketBinding) {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.ext.offline'))
+    return this.direct.installPack(binding)
+  }
+  async installPikgFile(file: File) {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.ext.offline'))
+    return this.direct.installPikgFile(file)
   }
 
   async getCollabState(entityId: string): Promise<CollabState> {

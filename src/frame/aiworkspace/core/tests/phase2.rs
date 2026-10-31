@@ -257,7 +257,10 @@ fn a_resource_directory_is_a_value_container_isomorphic_with_a_dir_object() {
     assert!(kinds.contains(&("asset".to_string(), fid.clone())) && kinds.contains(&("member".to_string(), "sub".to_string())), "{kinds:?}");
     // the member selector is a version cell; a bad name, a cycle and a missing child are refused
     assert_eq!(resolve_cell(&ws.store, &json!({ "entity_id": "d", "selector": { "kind": "folder_member", "name": "sub" } })).unwrap(), json!(seq));
-    assert_eq!(code(&ws.fail(json!([{ "op": "dir.set_member", "entity_id": "d", "name": "a/b", "member": { "kind": "file", "object_id": fid }, "expect": { "rev": 0 } }]))), "INVALID_SCHEMA");
+    // a name may be a relative path (扩展控件 P1, Q23); empty, `.` and `..` segments are not
+    for bad in ["/a", "a/", "a//b", "a/../b", "./a", ".."] {
+        assert_eq!(code(&ws.fail(json!([{ "op": "dir.set_member", "entity_id": "d", "name": bad, "member": { "kind": "file", "object_id": fid }, "expect": { "rev": 0 } }]))), "INVALID_SCHEMA", "{bad}");
+    }
     assert_eq!(sub(&ws.fail(json!([{ "op": "dir.set_member", "entity_id": "sub", "name": "up", "member": { "kind": "dir", "entity_id": "d" }, "expect": { "rev": 0 } }]))), "TREE_CYCLE");
     assert_eq!(code(&ws.fail(json!([{ "op": "dir.set_member", "entity_id": "d", "name": "ghost", "member": { "kind": "dir", "entity_id": "nope" }, "expect": { "rev": 0 } }]))), "REFERENCE_BROKEN");
     assert_eq!(code(&ws.fail(json!([{ "op": "entity.set_keys", "entity_id": "d", "keys": [{ "key": "members", "value": {}, "expect": { "rev": seq } }] }]))), "INVALID_OPERATION");

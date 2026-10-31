@@ -165,6 +165,22 @@ export function makeBridge(store: WorkspaceStore, target: BridgeTarget, onSnapsh
       onSnapshot?.(uploaded.object_id, uploaded.media_type)
     },
     notify: (text) => store.notify('info', text),
+    // a file of the definition's source snapshot that its component.json lists in `assets` (P1, additive to API 2)
+    asset: async (name) => {
+      const defId = (target.payload.def_ref as { entity_id?: string } | undefined)?.entity_id
+      if (!defId) throw new Error(aiwsT('aiworkspace.extension.assetNoDefinition'))
+      const def = await store.session.read<KeyedContent<{ source_dir?: { entity_id: string } }>>(defId)
+      const dirId = def.content.payload.source_dir?.entity_id
+      if (!dirId) throw new Error(aiwsT('aiworkspace.extension.assetNoSnapshot'))
+      const dir = await store.session.read<KeyedContent<{ members?: Record<string, { object_id?: string; media_type?: string }> }>>(dirId)
+      const members = dir.content.payload.members ?? {}
+      const component = members['component.json']?.object_id
+      const listed = component ? ((JSON.parse(await (await store.session.fetchAsset(component)).text()) as { assets?: unknown }).assets) : undefined
+      const member = members[name]
+      if (!Array.isArray(listed) || !listed.includes(name) || !member?.object_id) throw new Error(aiwsT('aiworkspace.extension.assetNotListed', { name }))
+      const blob = await store.session.fetchAsset(member.object_id)
+      return { bytes: new Uint8Array(await blob.arrayBuffer()), media_type: member.media_type ?? blob.type ?? '' }
+    },
 
     // ---- v2 reads
     input: async (name, what, args) => {

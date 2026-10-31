@@ -49,6 +49,8 @@ pub enum Code {
     BuildFailed,
     /// A control package (`.pikg` of type `aiws` or a bundle) is malformed, tampered or contradicts what the library holds.
     LibraryPackageInvalid,
+    /// A definition → definition dependency would close a cycle (扩展控件 P1, Q16).
+    ReferenceCycle,
 }
 
 impl Code {
@@ -88,6 +90,7 @@ impl Code {
         Code::RunRevoked,
         Code::BuildFailed,
         Code::LibraryPackageInvalid,
+        Code::ReferenceCycle,
     ];
 
     /// The code a wire string names (`ALL` in reverse).
@@ -132,6 +135,7 @@ impl Code {
             Code::RunRevoked => "RUN_REVOKED",
             Code::BuildFailed => "BUILD_FAILED",
             Code::LibraryPackageInvalid => "LIBRARY_PACKAGE_INVALID",
+            Code::ReferenceCycle => "REFERENCE_CYCLE",
         }
     }
 

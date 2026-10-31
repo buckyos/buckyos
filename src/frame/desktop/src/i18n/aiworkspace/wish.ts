@@ -459,6 +459,9 @@ export const en: Record<string, string> = {
   'aiworkspace.wish.mock.genericTitle': 'Simulated summary',
   'aiworkspace.wish.mock.genericWarning': 'The simulated executor did not recognize a specific task: it only generated a summary of the inputs',
   'aiworkspace.wish.mock.genericSummary': 'Input summary',
+  'aiworkspace.extension.assetNoDefinition': 'This Block has no control definition to take files from.',
+  'aiworkspace.extension.assetNoSnapshot': 'The control was not built from source: it has no files.',
+  'aiworkspace.extension.assetNotListed': '{{name}} is not one of the control’s assets.',
 }
 
 export const zh: Record<string, string> = {
@@ -897,4 +900,7 @@ export const zh: Record<string, string> = {
   'aiworkspace.wish.mock.genericTitle': '模拟摘要',
   'aiworkspace.wish.mock.genericWarning': '模拟执行器没有识别出专用任务：只生成了输入摘要',
   'aiworkspace.wish.mock.genericSummary': '输入摘要',
+  'aiworkspace.extension.assetNoDefinition': '这个 Block 没有可取文件的控件定义。',
+  'aiworkspace.extension.assetNoSnapshot': '这个控件不是从源码构建的，没有文件。',
+  'aiworkspace.extension.assetNotListed': '{{name}} 不在控件的 assets 里。',
 }

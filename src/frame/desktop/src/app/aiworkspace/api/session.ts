@@ -18,7 +18,7 @@ import {
   type LockInfo, type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type WorkspaceInfo,
   type AnnotationRead, type ListAnnotationsParams, type Capability, type DerivedRecord, type FreshnessInfo, type GrantList, type RelationsInfo,
   type Subject, type VersionInfo, type WishChoices, type WishRunView, type ShowLockInfo, type ServiceError, type WishAiccMode, type WishClaim, type WishToolAnswer, type HostedExecConfig, type Publication, type Referrer,
-  type BucketBinding, type StagedAsset, type ExtBuildResult, type ExtExportResult, type LibraryPackage,
+  type BucketBinding, type StagedAsset, type ExtBuildResult, type ExtExportResult, type ExtPackResult, type LibraryPackage,
 } from './types'
 
 export type SessionStatus =
@@ -68,13 +68,13 @@ export async function uploadWorkspaceAsset(client: AiwsClient, workspaceId: stri
 }
 
 /** A workspace package into the caller's own `exports` bucket, ready for `ws.import`. */
-export async function uploadWorkspacePackage(client: AiwsClient, file: File): Promise<BucketBinding> {
+export async function uploadWorkspacePackage(client: AiwsClient, file: File, key = `import/${randomId()}.bcanvas`): Promise<BucketBinding> {
   const own = await client.transport.ownBucket('exports')
   if (!own) throw new Error('A workspace package is imported by a signed-in account (it is uploaded into its own bucket).')
   const options = await client.transport.importOptions()
   const snapshot = await ndm.importFiles([file], { ...options, mode: 'single_file', autoStartUpload: false })
   try {
-    const status = await ndm.ensureUploaded(snapshot.sessionId, { ...options, bind: { bucketId: own, key: `import/${randomId()}.bcanvas` } })
+    const status = await ndm.ensureUploaded(snapshot.sessionId, { ...options, bind: { bucketId: own, key } })
     if (!status.binding) throw new Error('the upload was not bound')
     return { bucket_id: status.binding.bucket_id, key: status.binding.key }
   } finally { ndm.releaseImportSession(snapshot.sessionId) }
@@ -185,6 +185,12 @@ export interface WorkspaceSession {
   extImport(items: { pkg_id: string; ident: string }[]): Promise<ExtBuildResult>
   extInstallFrom(entityIds: string[], pkg: { name: string; version: string; title?: string }): Promise<{ pkg_id: string; version: string; action: string }>
   extListLibrary(): Promise<LibraryPackage[]>
+  /** P1: the service packs controls as a .pikg (Q20); `downloadPack` fetches it, `installPack` puts it into the
+   * caller's library (consuming the binding); a local .pikg file is uploaded into `exports` and installed (Q21). */
+  extPack(entityIds: string[], pkg: { name: string; version: string; title?: string }): Promise<ExtPackResult>
+  downloadPack(pack: ExtPackResult): Promise<Blob>
+  installPack(binding: BucketBinding): Promise<{ pkg_id: string; version: string; action: string }>
+  installPikgFile(file: File): Promise<{ pkg_id: string; version: string; action: string }>
 
   commit(operations: Operation[], options?: CommitOptions): Promise<CommitOutcome>
   /** Resend a submission whose result is still unknown: same key, same content. */
@@ -538,6 +544,13 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
   async extImport(items: { pkg_id: string; ident: string }[]) { try { return unwrap(await this.client.extImport(this.ws, items)) } catch (error) { return this.fail(error) } }
   async extInstallFrom(entityIds: string[], pkg: { name: string; version: string; title?: string }) { try { return unwrap(await this.client.extInstallFrom(this.ws, entityIds, pkg)) } catch (error) { return this.fail(error) } }
   async extListLibrary() { try { return unwrap(await this.client.extListLibrary()).packages } catch (error) { return this.fail(error) } }
+  async extPack(entityIds: string[], pkg: { name: string; version: string; title?: string }) { try { return unwrap(await this.client.extPack(this.ws, entityIds, pkg)) } catch (error) { return this.fail(error) } }
+  async downloadPack(pack: ExtPackResult) { return this.client.transport.fetchDownload(pack.download) }
+  async installPack(binding: BucketBinding) { try { return unwrap(await this.client.extInstallBound(binding)) } catch (error) { return this.fail(error) } }
+  async installPikgFile(file: File) {
+    const binding = await uploadWorkspacePackage(this.client, file, `aiws/${randomId()}.pikg`)
+    return this.installPack(binding)
+  }
 
   // ---- writes (design §2.6)
 

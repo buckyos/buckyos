@@ -182,6 +182,48 @@ fn view_source_type(view_type: &str) -> Option<&'static str> {
 
 const DATA_SOURCE_TYPES: &[&str] = &[TYPE_TABLE, TYPE_RICHTEXT, TYPE_RECORD, TYPE_ASSET, TYPE_WISH, TYPE_ANNOTATION, TYPE_BLOCK_DEF];
 
+/// Named data bindings of a Block or a composite (`{ <name>: { entity_id, selector? } }`, at most
+/// `MAX_BINDINGS`); the targets are judged (reference class) when `check`.
+fn normalize_bindings(p: &Planner, payload: &mut JsonMap, check: bool) -> WsResult<()> {
+    match payload.get("bindings").cloned() {
+        None => {}
+        Some(Value::Null) => {
+            payload.remove("bindings");
+        }
+        Some(Value::Object(b)) => {
+            if b.len() > MAX_BINDINGS {
+                return Err(WsError::limit(format!("at most {MAX_BINDINGS} bindings")));
+            }
+            let mut norm = Map::new();
+            for (name, target) in b {
+                if !crate::wish::is_input_name(&name) || name == "source" {
+                    return Err(bad(format!("binding name {name:?} must be an identifier other than source")));
+                }
+                let t = target.as_object().ok_or_else(|| bad("binding must be { entity_id, selector? }"))?;
+                if t.keys().any(|k| !matches!(k.as_str(), "entity_id" | "selector")) {
+                    return Err(bad("binding: unknown key"));
+                }
+                if t.get("selector").is_some_and(|s| !s.is_object() || s.get("kind").and_then(Value::as_str).is_none()) {
+                    return Err(bad("binding.selector must be an object with kind"));
+                }
+                let r = normalize_reference(&json!({ "entity_id": t.get("entity_id").cloned().unwrap_or(Value::Null) }))?;
+                if check {
+                    p.check_ref_target(&r, Some(DATA_SOURCE_TYPES))?;
+                }
+                let mut nt = Map::new();
+                nt.insert("entity_id".into(), r["entity_id"].clone());
+                if let Some(sel) = t.get("selector") {
+                    nt.insert("selector".into(), sel.clone());
+                }
+                norm.insert(name, Value::Object(nt));
+            }
+            payload.insert("bindings".into(), Value::Object(norm));
+        }
+        Some(_) => return Err(bad("bindings must be an object")),
+    }
+    Ok(())
+}
+
 /// Validator class: schema (view configuration); reference for `source_ref` / `bindings` / `def_ref`; primitive for `config.snapshot` (an AssetRef).
 fn validate_cell(p: &mut Planner, e: &mut EntityRow, changed: Option<&[String]>) -> WsResult<()> {
     if let Some(d) = e.payload.get("data_ownership") {
@@ -234,42 +276,7 @@ fn validate_cell(p: &mut Planner, e: &mut EntityRow, changed: Option<&[String]>)
             None => None,
         },
     };
-    match e.payload.get("bindings").cloned() {
-        None => {}
-        Some(Value::Null) => {
-            e.payload.remove("bindings");
-        }
-        Some(Value::Object(b)) => {
-            if b.len() > MAX_BINDINGS {
-                return Err(WsError::limit(format!("at most {MAX_BINDINGS} bindings")));
-            }
-            let mut norm = Map::new();
-            for (name, target) in b {
-                if !crate::wish::is_input_name(&name) || name == "source" {
-                    return Err(bad(format!("binding name {name:?} must be an identifier other than source")));
-                }
-                let t = target.as_object().ok_or_else(|| bad("binding must be { entity_id, selector? }"))?;
-                if t.keys().any(|k| !matches!(k.as_str(), "entity_id" | "selector")) {
-                    return Err(bad("binding: unknown key"));
-                }
-                if t.get("selector").is_some_and(|s| !s.is_object() || s.get("kind").and_then(Value::as_str).is_none()) {
-                    return Err(bad("binding.selector must be an object with kind"));
-                }
-                let r = normalize_reference(&json!({ "entity_id": t.get("entity_id").cloned().unwrap_or(Value::Null) }))?;
-                if importing || is_changed("bindings") {
-                    p.check_ref_target(&r, Some(DATA_SOURCE_TYPES))?;
-                }
-                let mut nt = Map::new();
-                nt.insert("entity_id".into(), r["entity_id"].clone());
-                if let Some(sel) = t.get("selector") {
-                    nt.insert("selector".into(), sel.clone());
-                }
-                norm.insert(name, Value::Object(nt));
-            }
-            e.payload.insert("bindings".into(), Value::Object(norm));
-        }
-        Some(_) => return Err(bad("bindings must be an object")),
-    }
+    normalize_bindings(p, &mut e.payload, importing || is_changed("bindings"))?;
     if let Some(d) = e.payload.get("def_ref").filter(|v| !v.is_null()) {
         let d = normalize_reference(d)?;
         if is_changed("def_ref") || importing {
@@ -381,9 +388,6 @@ fn validate_cell(p: &mut Planner, e: &mut EntityRow, changed: Option<&[String]>)
     }
     if view_type == "ink" && view.get("version").and_then(Value::as_u64).unwrap_or(1) == 1 && (importing || is_changed("config") || is_changed("view")) {
         validate_ink(&e.payload)?;
-    }
-    if is_changed("slot") {
-        check_slot(p, e)?;
     }
     // only a text view's size comes from its title (R17): another view inside a control keeps a numeric size
     if is_changed("view") && !is_text_view(&view_type) {
@@ -802,29 +806,30 @@ fn validate_connector(p: &Planner, e: &EntityRow, changed: Option<&[String]>) ->
 
 // ---- Container ----
 
-/// Validator class: primitive (tree node kinds, layout, system nodes); reference for `content_folder_id`; schema for icon / config / locked.
+const CONTAINER_KEYS: &[&str] = &["kind", "layout", "title", "content_folder_id", "system", "surface_id", "icon", "locked", "config", "def_ref", "bindings", "slot"];
+
+/// Validator class: primitive (tree node kinds, layout, system nodes); reference for `content_folder_id`, and for a
+/// composite's `def_ref` / `bindings` and a slotted container's `slot`.
 /// Container kinds (phase two §4.5): `folder` in the data tree, `surface` under `surfaces`, `group`
 /// in a BlockTree. `root` / `data` / `surfaces` exist only as system nodes. A Surface names its
 /// canvas content folder (`content_folder_id`, a folder under `canvas-content`); the folder may
-/// point back (`surface_id`, informative). A Surface may carry `icon`, the stable id of a preset
-/// icon chosen by the client (the client owns the preset list; an unknown id shows its default), and
-/// `config`, its page settings (background, page size; ≤ 64 KiB, checked by the client like a Cell's).
-/// A control kind (`mindmap`, 脑图方案 §6.2) is a BlockTree container too: its layout is implied by the kind and its
-/// `config` is the control's attributes (checked here, projected into the outline).
-fn validate_container(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>) -> WsResult<()> {
-    check_keys(&e.payload, &["kind", "layout", "title", "content_folder_id", "system", "surface_id", "icon", "locked", "config"], "container")?;
+/// point back (`surface_id`, informative). A control kind (`mindmap`, 脑图方案 §6.2; `composite`, 扩展控件 P1 K4) is a
+/// BlockTree container too: its layout is implied by the kind. A composite names its definition (`def_ref`, a
+/// `kind: composite` block definition, fixed for the instance's life) and may bind named data like a Cell.
+fn container_primitive(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>) -> WsResult<()> {
+    check_keys(&e.payload, CONTAINER_KEYS, "container")?;
     let kind = e.payload.get("kind").and_then(Value::as_str).ok_or_else(|| bad("container needs kind"))?.to_string();
     let control = is_control_kind(&kind);
     match (kind.as_str(), before) {
         ("folder" | "surface" | "group", None) => {}
         (k, None) if is_control_kind(k) => {}
         ("root" | "data" | "surfaces", None) if p.env.internal => {}
-        (_, None) => return Err(bad("container kind must be folder, surface, group or a control (mindmap)")),
+        (_, None) => return Err(bad("container kind must be folder, surface, group or a control (mindmap, composite)")),
         (k, Some(b)) if b.payload.get("kind").and_then(Value::as_str) == Some(k) => {}
         _ => return Err(WsError::invalid_op("container kind cannot be changed")),
     }
     let mode = match e.payload.get("layout") {
-        // a control's layout is its algorithm, implied by the kind (R2)
+        // a control's layout is its algorithm, implied by the kind (R2); a composite's comes from its definition
         None if control => control_layout(&kind).to_string(),
         Some(l) if control => {
             let m = control_layout(&kind);
@@ -843,7 +848,6 @@ fn validate_container(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>
         }
     };
     e.payload.insert("layout".into(), json!({ "mode": mode }));
-    opt_text(&e.payload, "title", 256)?;
     match e.payload.get("system") {
         None => {}
         Some(Value::String(s)) if kind == "folder" && matches!(s.as_str(), "canvas_content" | "surface_content" | "shows") => {}
@@ -853,23 +857,6 @@ fn validate_container(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>
         if kind != "folder" || !sid.as_str().is_some_and(is_valid_id) {
             return Err(bad("surface_id must be an entity id on a folder"));
         }
-    }
-    if e.payload.contains_key("locked") && kind != "group" && !control {
-        return Err(bad("locked is only valid on a group or a control"));
-    }
-    check_locked(&e.payload)?;
-    if let Some(icon) = e.payload.get("icon") {
-        let valid = icon.as_str().is_some_and(is_icon_id);
-        if kind != "surface" || !valid {
-            return Err(bad("icon must be a preset id ([a-z][a-z0-9-]{0,31}) on a surface"));
-        }
-    }
-    if let Some(c) = e.payload.get("config") {
-        let c = c.as_object().filter(|_| kind == "surface" || control).ok_or_else(|| bad("config must be an object on a surface or a control"))?;
-        if canonical_len(&Value::Object(c.clone())) > MAX_CONFIG_BYTES {
-            return Err(WsError::limit(format!("config is limited to {MAX_CONFIG_BYTES} bytes")));
-        }
-        check_control_config(&kind, c)?;
     }
     match e.payload.get("content_folder_id") {
         None if kind == "surface" => return Err(bad("a surface needs content_folder_id (its folder under canvas-content)")),
@@ -889,6 +876,73 @@ fn validate_container(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>
                 }
             }
         }
+    }
+    if kind == COMPOSITE {
+        composite_refs(p, e, before)?;
+    } else if let Some(k) = ["def_ref", "bindings"].into_iter().find(|k| e.payload.contains_key(*k)) {
+        return Err(bad(format!("{k} is only valid on a composite")));
+    }
+    let block = kind == "group" || control;
+    if e.payload.contains_key("slot") && !block {
+        return Err(bad("slot is only valid on a Block, a group or a control"));
+    }
+    if block && !p.env.import && before.is_none_or(|b| b.payload.get("slot") != e.payload.get("slot")) {
+        check_slot(p, e)?;
+    }
+    Ok(())
+}
+
+/// The definition and the data inputs of a composite instance (reference class): `def_ref` names a live
+/// `kind: composite` definition when written and never changes; `bindings` are checked as on a Cell.
+fn composite_refs(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>) -> WsResult<()> {
+    let d = e.payload.get("def_ref").filter(|v| !v.is_null()).ok_or_else(|| bad("a composite needs def_ref (its composite control definition)"))?;
+    let d = normalize_reference(d)?;
+    if !reference_is_local(&d) {
+        return Err(bad("a composite's def_ref names a definition of this Workspace"));
+    }
+    match before.and_then(|b| b.payload.get("def_ref")) {
+        Some(old) if reference_entity_id(old) != reference_entity_id(&d) => {
+            return Err(WsError::invalid_op("a composite's definition never changes: insert a new instance"));
+        }
+        Some(_) => {}
+        None => {
+            if let Some(def) = p.check_ref_target(&d, Some(&[TYPE_BLOCK_DEF]))? {
+                if def.payload.get("kind").and_then(Value::as_str) != Some(COMPOSITE) {
+                    return Err(bad(format!("def_ref {}: a composite instance needs a composite definition", def.entity_id)));
+                }
+            }
+        }
+    }
+    e.payload.insert("def_ref".into(), d);
+    let changed = before.is_none_or(|b| b.payload.get("bindings") != e.payload.get("bindings"));
+    normalize_bindings(p, &mut e.payload, p.env.import || changed)
+}
+
+/// Validator class: schema (title, icon, page / control config, `locked`).
+/// A Surface may carry `icon`, the stable id of a preset icon chosen by the client (the client owns the preset list;
+/// an unknown id shows its default), and `config`, its page settings (background, page size; ≤ 64 KiB, checked by
+/// the client like a Cell's). A control's `config` is its attributes: a mind map's are checked here, a composite's
+/// by its definition's `config_schema` in the clients (Q15).
+fn container_schema(e: &EntityRow) -> WsResult<()> {
+    let kind = e.payload.get("kind").and_then(Value::as_str).unwrap_or("");
+    let control = is_control_kind(kind);
+    opt_text(&e.payload, "title", 256)?;
+    if e.payload.contains_key("locked") && kind != "group" && !control {
+        return Err(bad("locked is only valid on a group or a control"));
+    }
+    check_locked(&e.payload)?;
+    if let Some(icon) = e.payload.get("icon") {
+        let valid = icon.as_str().is_some_and(is_icon_id);
+        if kind != "surface" || !valid {
+            return Err(bad("icon must be a preset id ([a-z][a-z0-9-]{0,31}) on a surface"));
+        }
+    }
+    if let Some(c) = e.payload.get("config") {
+        let c = c.as_object().filter(|_| kind == "surface" || control).ok_or_else(|| bad("config must be an object on a surface or a control"))?;
+        if canonical_len(&Value::Object(c.clone())) > MAX_CONFIG_BYTES {
+            return Err(WsError::limit(format!("config is limited to {MAX_CONFIG_BYTES} bytes")));
+        }
+        check_control_config(kind, c)?;
     }
     Ok(())
 }
@@ -923,12 +977,38 @@ pub fn is_block_container(e: &EntityRow) -> bool {
     e.type_id == TYPE_CONTAINER && e.payload.get("kind").and_then(Value::as_str).is_some_and(|k| k == "group" || is_control_kind(k))
 }
 
-/// The layout mode a control kind implies (stored in `layout`, never chosen by the writer).
+/// The host kind of every composite control instance (扩展控件 P1, K4): which control it is, is its `def_ref`.
+pub const COMPOSITE: &str = "composite";
+
+/// The layout mode a control kind implies (stored in `layout`, never chosen by the writer). A composite's layout is
+/// its definition's (`composition.layout`).
 fn control_layout(kind: &str) -> &'static str {
     match kind {
         "mindmap" => "tree",
+        COMPOSITE => "def",
         _ => "free",
     }
+}
+
+fn container_kind_of(e: &EntityRow) -> &str {
+    e.payload.get("kind").and_then(Value::as_str).unwrap_or("")
+}
+
+/// The definition a composite instance names, when it is alive.
+pub fn composite_def(ctx: &dyn ReadCtx, composite: &EntityRow) -> WsResult<Option<EntityRow>> {
+    let Some(id) = composite.payload.get("def_ref").and_then(reference_entity_id) else { return Ok(None) };
+    Ok(ctx.entity(id)?.filter(|d| d.alive() && d.type_id == TYPE_BLOCK_DEF))
+}
+
+/// The layout algorithm of a composite's definition (`stack` | `fixed`), when it can be read.
+pub fn composite_algorithm(ctx: &dyn ReadCtx, composite: &EntityRow) -> WsResult<Option<String>> {
+    Ok(composite_def(ctx, composite)?.and_then(|d| d.payload.get("composition")?.get("layout")?.get("algorithm")?.as_str().map(str::to_string)))
+}
+
+/// Is the nearest container at or above `id` (walking up through Cells) a tree control? Only there a Cell holds
+/// Blocks (a mind map node's children); a composite's children are its slots' content and stay leaves.
+pub fn in_tree_control(ctx: &dyn ReadCtx, id: &str) -> WsResult<bool> {
+    Ok(enclosing_container(ctx, id)?.is_some_and(|c| is_control_kind(container_kind_of(&c)) && control_layout(container_kind_of(&c)) == "tree"))
 }
 
 /// A slot (R22): a Block's role name inside its control, unique among its siblings; paths like `bkg.text` resolve
@@ -989,12 +1069,25 @@ pub fn laid_out_by_control(ctx: &dyn ReadCtx, parent_id: &str) -> WsResult<bool>
     Ok(enclosing_container(ctx, parent_id)?.is_some_and(|c| c.payload.get("kind").and_then(Value::as_str).is_some_and(is_control_kind)))
 }
 
-/// `slot` of a Block (R22): only inside a control, unique among the live siblings (those staged in this Commit
-/// included).
+/// Validator class: reference. `slot` of a Block or a Block container (R22): only inside a control. Inside a
+/// composite every child carries one, naming a slot of the definition's `composition.slots` (judged when written;
+/// later definition changes do not re-judge children, and several Blocks may fill one slot — its `accepts` / `max`
+/// are the clients' business rules, Q15). Inside another control it is unique among the live siblings (those
+/// staged in this Commit included).
 fn check_slot(p: &Planner, e: &EntityRow) -> WsResult<()> {
+    let Some(edge) = p.ov.edge(&e.entity_id)? else { return Ok(()) };
+    if let Some(host) = enclosing_container(&p.ov, &edge.parent_id)?.filter(|c| container_kind_of(c) == COMPOSITE) {
+        let slot = e.payload.get("slot").and_then(Value::as_str).ok_or_else(|| bad("a Block inside a composite needs slot (a slot of its definition)"))?;
+        if let Some(slots) = composite_def(&p.ov, &host)?.and_then(|d| d.payload.get("composition")?.get("slots")?.as_object().cloned()) {
+            if !slots.contains_key(slot) {
+                let names: Vec<&str> = slots.keys().map(String::as_str).collect();
+                return Err(bad(format!("slot {slot:?} is not a slot of the composite's definition ({})", names.join(", "))));
+            }
+        }
+        return Ok(());
+    }
     let Some(slot) = e.payload.get("slot") else { return Ok(()) };
     let slot = slot.as_str().filter(|s| is_slot(s)).ok_or_else(|| bad("slot must match ^[a-z0-9][a-z0-9_-]{0,31}$"))?;
-    let Some(edge) = p.ov.edge(&e.entity_id)? else { return Ok(()) };
     if !laid_out_by_control(&p.ov, &edge.parent_id)? {
         return Err(bad("slot is only valid on a Block inside a control"));
     }
@@ -1011,10 +1104,9 @@ fn check_slot(p: &Planner, e: &EntityRow) -> WsResult<()> {
     Ok(())
 }
 
-/// Re-judge what depends on where a Block sits (after `tree.move`): its slot, and the `"auto"` size a non-text view
-/// may not have.
+/// Re-judge what depends on where a Block sits (after `tree.move`): its slot (reference class).
 pub fn check_position(p: &Planner, e: &EntityRow) -> WsResult<()> {
-    if e.type_id == TYPE_CELL && p.env.schema_checks && !p.env.import {
+    if (e.type_id == TYPE_CELL || is_block_container(e)) && !p.env.import {
         check_slot(p, e)?;
     }
     Ok(())
@@ -1080,9 +1172,11 @@ const DIR_KEYS: &[&str] = &["members", "meta", "source"];
 pub const MAX_DIR_MEMBERS: usize = 10_000;
 pub const MAX_DIR_META_BYTES: usize = 64 * 1024;
 
-/// A member name: non-empty, at most 255 bytes, no `/`, not `.` or `..` (a DirObject key).
+/// A member name: a relative path of at most 255 bytes whose `/`-separated segments are non-empty and neither `.`
+/// nor `..` (no leading, trailing or doubled `/`, no NUL). A name with `/` encodes a file of a sub-folder of a flat
+/// member map (扩展控件 P1, Q23); a directory never nests through it.
 pub fn check_member_name(name: &str) -> WsResult<()> {
-    if name.is_empty() || name.len() > 255 || name.contains('/') || name == "." || name == ".." || name.contains('\0') {
+    if name.is_empty() || name.len() > 255 || name.contains('\0') || name.split('/').any(|seg| seg.is_empty() || seg == "." || seg == "..") {
         return Err(bad(format!("invalid directory member name {name:?}")));
     }
     Ok(())
@@ -1511,8 +1605,13 @@ fn validate_wish(p: &mut Planner, e: &mut EntityRow, changed: Option<&[String]>)
 
 // ---- Block definition (phase two §10.3; extension controls P0) ----
 
-/// The newest `component.json` / definition `manifest_version` this core reads (扩展控件 P0, Q19: older ones stay readable).
-pub const MANIFEST_VERSION: u64 = 1;
+/// The newest `component.json` / definition `manifest_version` this core reads (扩展控件 P0, Q19: older ones stay
+/// readable). 2 (P1) adds `kind: composite`, `composition` and non-empty `deps`.
+pub const MANIFEST_VERSION: u64 = 2;
+/// Definitions one definition may depend on (`deps`).
+pub const MAX_DEF_DEPS: usize = 32;
+/// Slots of a composite (`composition.slots`).
+pub const MAX_SLOTS: usize = 16;
 /// Self-description text of a control (`agent`).
 pub const MAX_AGENT_BYTES: usize = 64 * 1024;
 /// Named data inputs a control declares.
@@ -1601,12 +1700,99 @@ fn is_sha256_digest(s: &str) -> bool {
 /// The keys of a definition payload (`schemas/block-def.schema.json` lists the same).
 pub const BLOCK_DEF_KEYS: &[&str] = &[
     "def_id", "version", "kind", "title", "accepts", "allow_no_source", "default_size", "declarative", "html", "config_schema", "actions", "inspector", "description",
-    "ident", "manifest_version", "source_dir", "bindings", "catalog", "agent", "provenance",
+    "ident", "manifest_version", "source_dir", "bindings", "catalog", "agent", "provenance", "deps", "composition",
 ];
 
-/// Validator class: schema (the payload's keys and shapes); reference (`source_dir` names a live resource
-/// directory, judged when written).
-fn validate_block_def(p: &Planner, e: &mut EntityRow, changed: Option<&[String]>) -> WsResult<()> {
+/// A slot name of a composite (`composition.slots`): `[a-z][a-z0-9_]{0,31}`.
+pub fn is_slot_name(s: &str) -> bool {
+    is_binding_name(s)
+}
+
+/// Does the definition `from` reach `target` through `deps` (depth-limited)? The path is collected.
+fn deps_reach(ctx: &dyn ReadCtx, from: &str, target: &str, path: &mut Vec<String>, depth: usize) -> WsResult<bool> {
+    if depth > 64 {
+        return Ok(true);
+    }
+    let Some(e) = ctx.entity(from)?.filter(|e| e.alive()) else { return Ok(false) };
+    for d in e.payload.get("deps").and_then(Value::as_array).into_iter().flatten() {
+        let Some(id) = d.get("entity_id").and_then(Value::as_str) else { continue };
+        path.push(id.to_string());
+        if id == target || deps_reach(ctx, id, target, path, depth + 1)? {
+            return Ok(true);
+        }
+        path.pop();
+    }
+    Ok(false)
+}
+
+/// Validator class: primitive (`deps` shape; only builds and imports write it) and reference (`source_dir` names a
+/// live resource directory; each `deps` entry a live definition, without closing a cycle — `REFERENCE_CYCLE`;
+/// both judged when written).
+fn block_def_primitive(p: &Planner, e: &mut EntityRow, changed: Option<&[String]>) -> WsResult<()> {
+    let is_changed = |k: &str| changed.is_none_or(|c| c.iter().any(|x| x == k));
+    if let Some(d) = e.payload.get("source_dir") {
+        let o = d.as_object().filter(|o| o.len() == 1).ok_or_else(|| bad("source_dir must be { entity_id }"))?;
+        let id = o.get("entity_id").and_then(Value::as_str).filter(|s| is_valid_id(s)).ok_or_else(|| bad("source_dir.entity_id must be an entity id"))?;
+        if is_changed("source_dir") {
+            p.check_ref_target(&json!({ "entity_id": id }), Some(&[TYPE_DIR]))?;
+        }
+    }
+    let Some(deps) = e.payload.get("deps") else { return Ok(()) };
+    if is_changed("deps") && !(p.env.origin == "build" || p.env.import || p.env.internal || p.env.replay) {
+        return Err(WsError::invalid_op("deps are written by ext.build (component.json deps)"));
+    }
+    let list = deps.as_array().ok_or_else(|| bad("deps must be an array of { ident, entity_id }"))?;
+    if list.len() > MAX_DEF_DEPS {
+        return Err(WsError::limit(format!("a definition depends on at most {MAX_DEF_DEPS} others")));
+    }
+    let mut seen = BTreeSet::new();
+    for d in list {
+        let o = d.as_object().filter(|o| o.len() == 2).ok_or_else(|| bad("deps[] must be { ident, entity_id }"))?;
+        let ident = o.get("ident").and_then(Value::as_str).ok_or_else(|| bad("deps[].ident must be <author_did>#<name>"))?;
+        let (did, name) = ident.split_once('#').ok_or_else(|| bad("deps[].ident must be <author_did>#<name>"))?;
+        ident_string(&json!({ "author_did": did, "name": name }))?;
+        let id = o.get("entity_id").and_then(Value::as_str).filter(|s| is_valid_id(s)).ok_or_else(|| bad("deps[].entity_id must be an entity id"))?;
+        if !seen.insert(id) {
+            return Err(bad(format!("deps lists {id} twice")));
+        }
+        if !is_changed("deps") {
+            continue;
+        }
+        if id == e.entity_id {
+            return Err(WsError::new(Code::ReferenceCycle, "a definition cannot depend on itself").with_data(json!({ "entity_id": id, "cycle": [id] })));
+        }
+        p.check_ref_target(&json!({ "entity_id": id }), Some(&[TYPE_BLOCK_DEF]))?;
+        let mut path = vec![e.entity_id.clone(), id.to_string()];
+        if deps_reach(&p.ov, id, &e.entity_id, &mut path, 0)? {
+            return Err(WsError::new(Code::ReferenceCycle, format!("{} would depend on itself through {id}", e.entity_id)).with_data(json!({ "entity_id": e.entity_id, "cycle": path })));
+        }
+    }
+    Ok(())
+}
+
+/// The shape of a composite's `composition` the core keeps (Q15: what the slots, layout and chrome mean is judged
+/// by `ext.build` and the clients): an object of at most 64 KiB, at most `MAX_SLOTS` slots named
+/// `[a-z][a-z0-9_]{0,31}`, no `events` (P2).
+fn check_composition_shape(v: &Value) -> WsResult<()> {
+    let o = v.as_object().ok_or_else(|| bad("composition must be an object"))?;
+    if canonical_len(v) > MAX_CONFIG_BYTES {
+        return Err(WsError::limit(format!("composition is limited to {MAX_CONFIG_BYTES} bytes")));
+    }
+    if o.contains_key("events") {
+        return Err(bad("composition.events are not supported yet"));
+    }
+    let slots = o.get("slots").and_then(Value::as_object).ok_or_else(|| bad("composition.slots must be an object"))?;
+    if slots.len() > MAX_SLOTS {
+        return Err(WsError::limit(format!("a composite has at most {MAX_SLOTS} slots")));
+    }
+    if let Some(n) = slots.keys().find(|n| !is_slot_name(n)) {
+        return Err(bad(format!("slot name {n:?} must be [a-z][a-z0-9_]{{0,31}}")));
+    }
+    Ok(())
+}
+
+/// Validator class: schema (the payload's keys and shapes).
+fn block_def_schema(e: &mut EntityRow) -> WsResult<()> {
     check_keys(&e.payload, BLOCK_DEF_KEYS, "block_def")?;
     let def_id = e.payload.get("def_id").and_then(Value::as_str).ok_or_else(|| bad("block_def needs def_id"))?;
     if !is_renderer_id(def_id) {
@@ -1651,7 +1837,13 @@ fn validate_block_def(p: &Planner, e: &mut EntityRow, changed: Option<&[String]>
                 return Err(bad("html.api_version must be a positive integer"));
             }
         }
-        _ => return Err(bad("kind must be declarative or html")),
+        COMPOSITE => {
+            check_composition_shape(e.payload.get("composition").ok_or_else(|| bad("a composite definition needs `composition`"))?)?;
+        }
+        _ => return Err(bad("kind must be declarative, html or composite")),
+    }
+    if kind != COMPOSITE && e.payload.contains_key("composition") {
+        return Err(bad("composition is only valid on a composite definition"));
     }
     opt_text(&e.payload, "title", 256)?;
     opt_text(&e.payload, "description", 4000)?;
@@ -1696,13 +1888,6 @@ fn validate_block_def(p: &Planner, e: &mut EntityRow, changed: Option<&[String]>
             if !ok {
                 return Err(bad(format!("provenance: bad {k}")));
             }
-        }
-    }
-    if let Some(d) = e.payload.get("source_dir") {
-        let o = d.as_object().filter(|o| o.len() == 1).ok_or_else(|| bad("source_dir must be { entity_id }"))?;
-        let id = o.get("entity_id").and_then(Value::as_str).filter(|s| is_valid_id(s)).ok_or_else(|| bad("source_dir.entity_id must be an entity id"))?;
-        if changed.is_none_or(|c| c.iter().any(|k| k == "source_dir")) {
-            p.check_ref_target(&json!({ "entity_id": id }), Some(&[TYPE_DIR]))?;
         }
     }
     if canonical_len(&Value::Object(e.payload.clone())) > MAX_BLOCK_DEF_BYTES {
@@ -1993,7 +2178,108 @@ fn validate_table_meta(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow
 
 // ---- entry points used by the planner ----
 
-/// Validator class: dispatch — the `TYPE_TABLE` branch is primitive (field ids and names unique, order keys), the rest delegates to the typed validators.
+thread_local! {
+    static SCHEMA_RUNS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times this thread entered `validate_schema` (a test hook, Q15: replay must leave it unchanged).
+pub fn schema_validations() -> u64 {
+    SCHEMA_RUNS.with(|c| c.get())
+}
+
+/// The primitive entry (D01 方案 C, Q15): the storage primitives' own shape and the references they hold — the
+/// replay semantics. Runs on every path: admission, `ws.import`, a replica re-applying accepted operations. `before`
+/// and `changed` are `None` for a new entity.
+pub fn validate_primitive(p: &mut Planner, before: Option<&EntityRow>, e: &mut EntityRow, changed: Option<&[String]>) -> WsResult<()> {
+    if canonical_len(&Value::Object(e.payload.clone())) > MAX_PAYLOAD_BYTES {
+        return Err(WsError::limit(format!("payload of {} exceeds {MAX_PAYLOAD_BYTES} bytes", e.entity_id)));
+    }
+    let has = |k: &str| changed.is_none_or(|c| c.iter().any(|x| x == k));
+    match e.type_id.as_str() {
+        TYPE_CONTAINER => container_primitive(p, e, before),
+        TYPE_CELL => {
+            // a line and a box are different geometries over the same placement: one object never turns into the other
+            if let Some(b) = before {
+                let view_type = |r: &EntityRow| r.payload.get("view").and_then(|v| v.get("type")).cloned();
+                if view_type(b) != view_type(e) && (is_connector(&b.type_id, &b.payload) || is_connector(&e.type_id, &e.payload)) {
+                    return Err(WsError::invalid_op("view.type cannot change to or from connector"));
+                }
+            }
+            if !p.env.import && has("slot") {
+                check_slot(p, e)?;
+            }
+            Ok(())
+        }
+        TYPE_ASSET => {
+            // new content: the dimensions, poster and length of the old content do not describe it
+            if let (Some(b), Some(c)) = (before, changed) {
+                let has = |k: &str| c.iter().any(|x| x == k);
+                if has("object_id") && b.payload.get("object_id") != e.payload.get("object_id") {
+                    for key in ASSET_CONTENT_KEYS.iter().filter(|k| !has(k)) {
+                        e.payload.remove(*key);
+                    }
+                }
+            }
+            validate_asset(p, e)
+        }
+        TYPE_TABLE => {
+            // a URL table's query definition is local document state; its remote rows are not
+            if before.is_some() && has("source_ref") {
+                p.require(&e.entity_id, Cap::Structure)?;
+            }
+            validate_table_meta(p, e, before)
+        }
+        TYPE_RICHTEXT if before.is_some() => {
+            // a rich text's content is edited with richtext.* operations; its Source is a key
+            if changed.unwrap_or(&[]).iter().any(|k| k != "source") {
+                return Err(WsError::invalid_op("rich text content is edited with richtext.* operations"));
+            }
+            match e.payload.get("source") {
+                Some(s) => check_source(s),
+                None => Ok(()),
+            }
+        }
+        TYPE_DIR => {
+            if before.is_some() && has("members") {
+                return Err(WsError::invalid_op("directory members change through dir.set_member / dir.remove_member / dir.replace"));
+            }
+            validate_dir(p, e)
+        }
+        TYPE_BLOCK_DEF => block_def_primitive(p, e, changed),
+        TYPE_RECORD | TYPE_ANNOTATION | TYPE_WISH | TYPE_VIEWPORT | TYPE_SHOW_PATH | TYPE_RICHTEXT => Ok(()),
+        _ if before.is_some() => Err(WsError::invalid_op("this type has no keyed content")),
+        _ => Ok(()),
+    }
+}
+
+/// The business-Schema entry (D01 方案 C, Q15): value ranges, counts, configuration and placement rules of the
+/// built-in types. Admission only (`PlanEnv.schema_checks`); replay never calls it.
+pub fn validate_schema(p: &mut Planner, before: Option<&EntityRow>, e: &mut EntityRow, changed: Option<&[String]>) -> WsResult<()> {
+    SCHEMA_RUNS.with(|c| c.set(c.get() + 1));
+    match e.type_id.as_str() {
+        TYPE_CONTAINER => container_schema(e),
+        TYPE_RECORD => validate_record(p, e, changed),
+        TYPE_CELL => validate_cell(p, e, changed),
+        TYPE_ANNOTATION => validate_annotation(p, e, before, changed),
+        TYPE_WISH => validate_wish(p, e, changed),
+        TYPE_BLOCK_DEF => block_def_schema(e),
+        TYPE_VIEWPORT => validate_viewport(p, e, changed),
+        TYPE_SHOW_PATH => validate_show_path(p, e, before, changed),
+        _ => Ok(()),
+    }
+}
+
+/// Both classes, the second only at admission.
+fn validate_entity(p: &mut Planner, before: Option<&EntityRow>, e: &mut EntityRow, changed: Option<&[String]>) -> WsResult<()> {
+    validate_primitive(p, before, e, changed)?;
+    if p.env.schema_checks {
+        validate_schema(p, before, e, changed)?;
+    }
+    Ok(())
+}
+
+/// Validator class: dispatch — the `TYPE_TABLE` branch is primitive (field ids and names unique, order keys), the rest
+/// goes through `validate_primitive` / `validate_schema`.
 /// Initialize a newly created entity of a known type from the caller's
 /// payload. Returns the payload as recorded in history (replayable form).
 pub fn init_entity(p: &mut Planner, row: &mut EntityRow, mut payload: JsonMap) -> WsResult<Value> {
@@ -2001,14 +2287,7 @@ pub fn init_entity(p: &mut Planner, row: &mut EntityRow, mut payload: JsonMap) -
     if canonical_len(&Value::Object(payload.clone())) > MAX_PAYLOAD_BYTES {
         return Err(WsError::limit(format!("payload of {} exceeds {MAX_PAYLOAD_BYTES} bytes", row.entity_id)));
     }
-    let schema = p.env.schema_checks;
     match row.type_id.as_str() {
-        TYPE_CONTAINER => {
-            row.payload = payload;
-            if schema {
-                validate_container(p, row, None)?;
-            }
-        }
         TYPE_RECORD => {
             check_keys(&payload, &["schema", "props", "source"], "record")?;
             let mut stored = Map::new();
@@ -2023,20 +2302,8 @@ pub fn init_entity(p: &mut Planner, row: &mut EntityRow, mut payload: JsonMap) -
                 }
             }
             row.payload = stored;
-            if schema {
-                validate_record(p, row, None)?;
-            }
+            validate_entity(p, None, row, None)?;
             return Ok(record_nested(&row.payload));
-        }
-        TYPE_CELL => {
-            row.payload = payload;
-            if schema {
-                validate_cell(p, row, None)?;
-            }
-        }
-        TYPE_ASSET => {
-            row.payload = payload;
-            validate_asset(p, row)?;
         }
         TYPE_ANNOTATION => {
             if payload.contains_key("author") && !p.env.internal {
@@ -2044,9 +2311,7 @@ pub fn init_entity(p: &mut Planner, row: &mut EntityRow, mut payload: JsonMap) -
             }
             let author = payload.remove("author");
             row.payload = payload;
-            if schema {
-                validate_annotation(p, row, None, None)?;
-            }
+            validate_entity(p, None, row, None)?;
             if let (Some(a), true) = (author, p.env.internal) {
                 row.payload.insert("author".into(), a); // import keeps the original author
             }
@@ -2092,7 +2357,7 @@ pub fn init_entity(p: &mut Planner, row: &mut EntityRow, mut payload: JsonMap) -
             if let Some(t) = title {
                 row.payload.insert("title_field_id".into(), t);
             }
-            validate_table_meta(p, row, None)?;
+            validate_entity(p, None, row, None)?;
             row.key_revs.insert(MEMBERS_KEY.to_string(), 0);
             let mut out = row.payload.clone();
             if !recorded.is_empty() {
@@ -2101,37 +2366,17 @@ pub fn init_entity(p: &mut Planner, row: &mut EntityRow, mut payload: JsonMap) -
             return Ok(Value::Object(out));
         }
         TYPE_RICHTEXT => return crate::plan_richtext::create(p, row, payload),
-        TYPE_WISH => {
-            row.payload = payload;
-            if schema {
-                validate_wish(p, row, None)?;
-            }
-        }
-        TYPE_BLOCK_DEF => {
-            row.payload = payload;
-            if schema {
-                validate_block_def(p, row, None)?;
-            }
-        }
-        TYPE_VIEWPORT => {
-            row.payload = payload;
-            if schema {
-                validate_viewport(p, row, None)?;
-            }
-        }
-        TYPE_SHOW_PATH => {
-            row.payload = payload;
-            if schema {
-                validate_show_path(p, row, None, None)?;
-            }
-        }
         TYPE_DIR => {
             row.payload = payload;
-            validate_dir(p, row)?;
+            validate_entity(p, None, row, None)?;
             let seq = p.seq();
             for name in row.payload.get("members").and_then(Value::as_object).map(|m| m.keys().cloned().collect::<Vec<_>>()).unwrap_or_default() {
                 row.key_revs.insert(format!("m:{name}"), seq);
             }
+        }
+        TYPE_CONTAINER | TYPE_CELL | TYPE_ASSET | TYPE_WISH | TYPE_BLOCK_DEF | TYPE_VIEWPORT | TYPE_SHOW_PATH => {
+            row.payload = payload;
+            validate_entity(p, None, row, None)?;
         }
         _ => row.payload = payload,
     }
@@ -2141,71 +2386,10 @@ pub fn init_entity(p: &mut Planner, row: &mut EntityRow, mut payload: JsonMap) -
 /// A keyed payload never exceeds this many canonical bytes (a primitive constraint, D01).
 pub const MAX_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
 
-/// Validator class: dispatch to the typed validators (see README “Validator classes”).
+/// Validator class: dispatch to the two entries (see README “Validator classes”).
 /// Validate a keyed document after `set_keys`/`unset_keys` changed `changed`.
 pub fn validate_update(p: &mut Planner, before: &EntityRow, e: &mut EntityRow, changed: &[String]) -> WsResult<()> {
-    if canonical_len(&Value::Object(e.payload.clone())) > MAX_PAYLOAD_BYTES {
-        return Err(WsError::limit(format!("payload of {} exceeds {MAX_PAYLOAD_BYTES} bytes", e.entity_id)));
-    }
-    if !p.env.schema_checks {
-        // replay: the primitives' own structure is all that is judged; a Table's `source_ref` still
-        // needs `structure` (it is a tree-level right, not a Schema rule)
-        if e.type_id == TYPE_TABLE && changed.iter().any(|k| k == "source_ref") {
-            p.require(&e.entity_id, Cap::Structure)?;
-        }
-        return Ok(());
-    }
-    match e.type_id.as_str() {
-        TYPE_CONTAINER => validate_container(p, e, Some(before)),
-        TYPE_RECORD => validate_record(p, e, Some(changed)),
-        TYPE_CELL => {
-            // a line and a box are different geometries over the same placement: one object never turns into the other
-            let view_type = |r: &EntityRow| r.payload.get("view").and_then(|v| v.get("type")).cloned();
-            if view_type(before) != view_type(e) && (is_connector(&before.type_id, &before.payload) || is_connector(&e.type_id, &e.payload)) {
-                return Err(WsError::invalid_op("view.type cannot change to or from connector"));
-            }
-            validate_cell(p, e, Some(changed))
-        }
-        TYPE_ASSET => {
-            // new content: the dimensions, poster and length of the old content do not describe it
-            let has = |k: &str| changed.iter().any(|c| c == k);
-            if has("object_id") && before.payload.get("object_id") != e.payload.get("object_id") {
-                for key in ASSET_CONTENT_KEYS.iter().filter(|k| !has(k)) {
-                    e.payload.remove(*key);
-                }
-            }
-            validate_asset(p, e)
-        }
-        TYPE_ANNOTATION => validate_annotation(p, e, Some(before), Some(changed)),
-        TYPE_TABLE => {
-            // a URL table's query definition is local document state; its remote rows are not
-            if changed.iter().any(|k| k == "source_ref") {
-                p.require(&e.entity_id, Cap::Structure)?;
-            }
-            validate_table_meta(p, e, Some(before))
-        }
-        TYPE_RICHTEXT => {
-            // a rich text's content is edited with richtext.* operations; its Source is a key
-            if changed.iter().any(|k| k != "source") {
-                return Err(WsError::invalid_op("rich text content is edited with richtext.* operations"));
-            }
-            match e.payload.get("source") {
-                Some(s) => check_source(s),
-                None => Ok(()),
-            }
-        }
-        TYPE_WISH => validate_wish(p, e, Some(changed)),
-        TYPE_BLOCK_DEF => validate_block_def(p, e, Some(changed)),
-        TYPE_VIEWPORT => validate_viewport(p, e, Some(changed)),
-        TYPE_SHOW_PATH => validate_show_path(p, e, Some(before), Some(changed)),
-        TYPE_DIR => {
-            if changed.iter().any(|k| k == "members") {
-                return Err(WsError::invalid_op("directory members change through dir.set_member / dir.remove_member / dir.replace"));
-            }
-            validate_dir(p, e)
-        }
-        _ => Err(WsError::invalid_op("this type has no keyed content")),
-    }
+    validate_entity(p, Some(before), e, Some(changed))
 }
 
 fn ref_edge(src: &str, selector: &str, kind: &str, reference: &Value) -> RefEdge {
@@ -2305,10 +2489,27 @@ pub fn entity_refs(e: &EntityRow) -> WsResult<BTreeSet<RefEdge>> {
             }
         }
         TYPE_DIR => dir_refs(e, &mut out),
-        // the source snapshot a build produced: kept alive while the definition names it (扩展控件 P0)
+        // the source snapshot a build produced: kept alive while the definition names it (扩展控件 P0); the
+        // definitions a composite builds on (P1, Q16)
         TYPE_BLOCK_DEF => {
             if let Some(id) = e.payload.get("source_dir").and_then(|d| d.get("entity_id")).and_then(Value::as_str) {
                 out.insert(RefEdge::local(&e.entity_id, "", "def_source", id));
+            }
+            for (i, d) in e.payload.get("deps").and_then(Value::as_array).into_iter().flatten().enumerate() {
+                if let Some(id) = d.get("entity_id").and_then(Value::as_str) {
+                    let s = selector_string(&json!({ "kind": "doc_key", "key": format!("deps/{i}") }));
+                    out.insert(RefEdge::local(&e.entity_id, &s, "def_dep", id));
+                }
+            }
+        }
+        // a composite instance: its definition and its named data inputs, as on a Cell
+        TYPE_CONTAINER => {
+            if let Some(d) = e.payload.get("def_ref") {
+                out.insert(ref_edge(&e.entity_id, "", "def", d));
+            }
+            for (name, target) in e.payload.get("bindings").and_then(Value::as_object).into_iter().flatten() {
+                let s = selector_string(&json!({ "kind": "binding", "name": name }));
+                out.insert(ref_edge(&e.entity_id, &s, "bind", target));
             }
         }
         _ => {}

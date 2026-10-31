@@ -239,6 +239,7 @@ pub const REF_KINDS: &[(&str, &str, &str, &str)] = &[
     ("asset", "fixed", "strong", "an AssetRef or a directory member names this content object"),
     ("member", "live", "strong", "a resource directory holds this child directory"),
     ("def_source", "live", "strong", "a Block definition's build source snapshot (a resource directory; extension controls P0)"),
+    ("def_dep", "live", "strong", "a control definition builds on this definition (deps; extension controls P1)"),
     ("object_link", "live", "weak", "an inline link in a rich text (dead when the target goes)"),
     ("input", "live", "weak", "a wish reads this entity"),
     ("derived", "fixed", "weak", "a result was generated from this version of the entity"),

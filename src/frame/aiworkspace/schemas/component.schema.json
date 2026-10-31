@@ -1,8 +1,8 @@
 {
  "$schema": "https://json-schema.org/draft/2020-12/schema",
- "$id": "buckyos.ai-workspace/component/1",
- "title": "component.json of an AI Workspace control (扩展控件 P0, manifest_version 1)",
- "description": "The interface and file layout of one control's source directory (flat). `ext.build` checks it with the Rust validator (store/src/ext.rs), clients pre-check it with buckyos-websdk src/aiws_ext.ts. Newer manifest versions only add optional keys; older ones stay readable (Q19).",
+ "$id": "buckyos.ai-workspace/component/2",
+ "title": "component.json of an AI Workspace control (扩展控件 P0, P1: manifest_version 2)",
+ "description": "The interface and file layout of one control's source directory. `ext.build` checks it with the Rust validator (store/src/ext.rs), clients pre-check it with buckyos-websdk src/aiws_ext.ts. Version 2 (P1) adds `kind: composite` (entry composition.json, see composition.schema.json) and non-empty `deps`; a version-1 file using either fails the build with a hint to raise it. Newer manifest versions only add optional keys; older ones stay readable (Q19). `events` (P2) fails the build.",
  "type": "object",
  "additionalProperties": false,
  "required": [
@@ -16,7 +16,7 @@
   "manifest_version": {
    "type": "integer",
    "minimum": 1,
-   "maximum": 1
+   "maximum": 2
   },
   "ident": {
    "$ref": "#/$defs/ident"
@@ -24,9 +24,10 @@
   "kind": {
    "enum": [
     "declarative",
-    "html"
+    "html",
+    "composite"
    ],
-   "description": "composite is reserved for P1"
+   "description": "composite (manifest_version 2): a Block-control laying out the Blocks in its slots; no accepts / allow_no_source (it is a container, not a Cell)"
   },
   "title": {
    "type": "string",
@@ -61,7 +62,7 @@
    "oneOf": [
     {
      "$ref": "#/$defs/file",
-     "description": "declarative: a JSON file that becomes the definition's `declarative`"
+     "description": "declarative: a JSON file that becomes the definition's `declarative`; composite: the composition file (composition.json) that becomes its `composition`"
     },
     {
      "type": "object",
@@ -101,8 +102,14 @@
   },
   "deps": {
    "type": "array",
-   "maxItems": 0,
-   "description": "Reserved: definition → definition dependencies are P1."
+   "maxItems": 32,
+   "uniqueItems": true,
+   "items": {
+    "type": "string",
+    "maxLength": 128,
+    "pattern": "^did:[a-z0-9]+:[^/#\\s]+#[a-z0-9][a-z0-9._-]{0,63}$"
+   },
+   "description": "Identities `<author_did>#<name>` of the controls this one builds on (manifest_version 2; not itself). The build resolves each to a definition of the same Workspace folder (DEP_MISSING when absent) and writes a strong def_dep reference; exports carry them along."
   }
  },
  "$defs": {
@@ -113,8 +120,8 @@
   },
   "file": {
    "type": "string",
-   "pattern": "^[^/.\\u0000][^/\\u0000]{0,254}$",
-   "description": "A file of the flat source directory (no `/`, not starting with `.`)."
+   "pattern": "^(?!.*(^|/)\\.)(?!.*//)[^/\\u0000][^\\u0000]{0,254}(?<!/)$",
+   "description": "A file of the source directory: a relative path (P1, Q23) whose segments are non-empty and do not start with `.` (clients keep their own state in dot files)."
   },
   "data_types": {
    "type": "array",

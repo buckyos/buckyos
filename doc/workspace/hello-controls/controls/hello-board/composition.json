@@ -1,17 +1,13 @@
 {
-  "_comment": "P1 PROPOSAL. A composite describes: the named layout its children get, the slots user content lives in, the Chrome drawn from config (R23), and how public events bubble. It never generates or deletes user Blocks; they stay in the BlockTree.",
   "layout": { "algorithm": "stack", "direction": "column", "spacing": "{{config.gap}}", "padding": 12 },
   "slots": {
-    "header": { "max": 1, "accepts": ["richtext", "shape"], "placement": "top" },
-    "cards": { "accepts": ["cell:did:bns:alice#hello-card", "card", "richtext"], "min": 0, "placement": "stack" }
+    "header": { "max": 1, "accepts": ["richtext", "shape"], "placement": "top", "title": "Header" },
+    "cards": { "accepts": ["cell:did:bns:alice#hello-card", "richtext"], "min": 0, "placement": "stack", "title": "Cards" }
   },
   "chrome": {
     "background": "{{config.background}}",
     "radius": 12,
     "title": { "text": "{{config.title}}", "slot": "header" },
     "empty": "Drop task cards here"
-  },
-  "events": {
-    "card_completed": { "from": "cards", "when": "completed", "params": { "card": "$child.entity_id" } }
   }
 }

@@ -45,7 +45,7 @@
 
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import { Lock, RotateCw } from 'lucide-react'
-import { isTextView } from '@controls/contract'
+import { COMPOSITE, isTextView } from '@controls/contract'
 import { placeControl, type ControlSource } from '@controls/solve'
 import type { EntityEnvelope, StoredPlacement } from '../../../api/types'
 import { ConnectorFrame } from '../connectors/ConnectorFrame'
@@ -72,6 +72,7 @@ import { angleFrom, centerOf, containsPoint, corners, normalizeRotation, resizeR
 import { groupAt, movedPlacement, relativeTo, topLevel, type Laid } from '../layout'
 import { foldBook } from '../../controls/folds'
 import { nodeMeasurer } from '../../controls/measure'
+import { isFixedComposite } from '../../controls/composite/model'
 import { controlRegistry, type ControlChromeProps } from '../../controls/registry'
 import { Camera, intersects, type Rect } from './camera'
 import { SpatialIndex } from './spatialIndex'
@@ -455,7 +456,7 @@ export function RenderHost(props: RenderHostProps) {
     return out
   }, [laid])
   /** What a press on a Block moves: a control's root stands for the control (dragging the root moves the map). */
-  const pressTarget = (id: string): string => { const n = laid.get(id)?.node; return n && n.parent === null ? n.control : id }
+  const pressTarget = (id: string): string => { const n = laid.get(id)?.node; return n && n.parent === null && laid.get(n.control)?.control?.kind !== COMPOSITE ? n.control : id }
   /** Where nodes dragged to world point `w` would go (脑图方案 §7.2): on a node — its child, or beside it near an edge
    * across the growth; a group or a nested control as a node takes no children (beside only); on the map's blank
    * space — pinned; further out — nowhere (R9). */
@@ -477,15 +478,34 @@ export function RenderHost(props: RenderHostProps) {
     if (!node) return null
     const id = over.entity.entity_id
     const t = node.grow === 'down' ? (w.x - over.rect.x) / Math.max(1, over.rect.w) : (w.y - over.rect.y) / Math.max(1, over.rect.h)
+    // a composite's children are leaves in slots (扩展控件 P1): beside one, never under it
+    if (laid.get(node.control)?.control?.kind === COMPOSITE) return { kind: t < 0.5 ? 'before' : 'after', sibling: id, parent: over.parentId }
     const root = node.parent === null
     if (over.isGroup) return root ? null : { kind: t < 0.5 ? 'before' : 'after', sibling: id, parent: over.parentId }
     if (!root && t < 0.25) return { kind: 'before', sibling: id, parent: over.parentId }
     if (!root && t > 0.75) return { kind: 'after', sibling: id, parent: over.parentId }
     return { kind: 'child', parent: id }
   }
+  /** The top-most composite whose box holds world point `w` (not one of `moving`): Blocks dropped there join it. */
+  const compositeUnder = (w: Point, moving: ReadonlySet<string>): Laid | null => {
+    let over: Laid | null = null
+    for (const l of laid.values()) {
+      if (l.control?.kind !== COMPOSITE || moving.has(l.entity.entity_id) || l.locked) continue
+      const r = l.rect
+      if (w.x < r.x || w.x > r.x + r.w || w.y < r.y || w.y > r.y + r.h) continue
+      if (!over || l.paint > over.paint) over = l
+    }
+    return over
+  }
   const nodeDropAt = (drag: Extract<Drag, { kind: 'node' }>, w: Point): NodeDrop => {
     const over = nodeUnder(w, new Set(drag.affected), drag.control)
     if (over) return dropOnNode(over, w) ?? { kind: 'pin' }
+    // inside a stacking composite, blank space appends to it; a fixed one keeps the Block where it is dropped
+    const host = laid.get(drag.control)
+    if (host?.control?.kind === COMPOSITE && !isFixedComposite(store, drag.control)) {
+      const r = host.rect
+      if (w.x >= r.x && w.x <= r.x + r.w && w.y >= r.y && w.y <= r.y + r.h) return { kind: 'child', parent: drag.control }
+    }
     const box = laid.get(drag.control)?.rect
     const m = 40 / camera.zoom
     if (box && w.x >= box.x - m && w.x <= box.x + box.w + m && w.y >= box.y - m && w.y <= box.y + box.h + m) return { kind: 'pin' }
@@ -553,8 +573,9 @@ export function RenderHost(props: RenderHostProps) {
     const p = screenPoint(point)
     const w = camera.toWorld(p.x, p.y)
     const over = nodeUnder(w, drag.shifted)
-    const drop = over ? dropOnNode(over, w) : null
-    const control = over?.node?.control
+    const box = over ? null : compositeUnder(w, drag.shifted)
+    const drop: HangDrop | null = over ? dropOnNode(over, w) : box ? { kind: 'child', parent: box.entity.entity_id } : null
+    const control = over?.node?.control ?? box?.entity.entity_id
     if (drag.hang && (!drop || drag.hang.control !== control)) {
       setTransform(drag.hang.shown, 0, 0)
       setNodePreview(null)

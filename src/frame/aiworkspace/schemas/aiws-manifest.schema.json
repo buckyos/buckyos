@@ -1,8 +1,8 @@
 {
  "$schema": "https://json-schema.org/draft/2020-12/schema",
- "$id": "buckyos.ai-workspace/aiws-manifest/1",
+ "$id": "buckyos.ai-workspace/aiws-manifest/2",
  "title": "aiws-manifest.json: the controls of a bundle or of an `aiws` PIKG payload (Q13)",
- "description": "Root of an exported bundle and of the `aiws` sub-package of a .pikg: the manifest plus controls/<dir>/<file>. `digest` is `sha256:` over the canonical JSON [[file name, sha256 hex of its bytes], …] sorted by name, recomputed by every installer. `workspace_templates` is reserved and must be empty until templates exist.",
+ "description": "Root of an exported bundle and of the `aiws` sub-package of a .pikg: the manifest plus controls/<dir>/<file>. `digest` is `sha256:` over the canonical JSON [[file name, sha256 hex of its bytes], …] sorted by name, recomputed by every installer. `workspace_templates` is reserved and must be empty until templates exist. A package export carries the def_dep closure of the chosen controls (deduplicated, P1); every `deps` entry names a control of the same manifest.",
  "type": "object",
  "additionalProperties": false,
  "required": [
@@ -15,7 +15,7 @@
   "manifest_version": {
    "type": "integer",
    "minimum": 1,
-   "maximum": 1
+   "maximum": 2
   },
   "purpose": {
    "const": "aiws"
@@ -60,7 +60,8 @@
      "kind": {
       "enum": [
        "declarative",
-       "html"
+       "html",
+       "composite"
       ]
      },
      "version": {
@@ -86,6 +87,16 @@
      },
      "catalog": {
       "$ref": "#/$defs/catalog"
+     },
+     "deps": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+       "type": "string",
+       "maxLength": 128,
+       "pattern": "^did:[a-z0-9]+:[^/#\\s]+#[a-z0-9][a-z0-9._-]{0,63}$"
+      },
+      "description": "identities this control builds on; each must be another control of the same bundle (an installer refuses an open closure: LIBRARY_PACKAGE_INVALID)"
      }
     }
    }

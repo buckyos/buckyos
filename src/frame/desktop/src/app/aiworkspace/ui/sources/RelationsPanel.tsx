@@ -15,7 +15,7 @@ const KIND_LABEL: Readonly<Record<string, string>> = localizedLabels({
   body: 'aiworkspace.data.relations.kind.body', anchor: 'aiworkspace.data.relations.kind.anchor', input: 'aiworkspace.data.relations.kind.input',
   derived: 'aiworkspace.data.relations.kind.derived', produced: 'aiworkspace.data.relations.kind.produced', def: 'aiworkspace.data.relations.kind.def',
   asset: 'aiworkspace.data.relations.kind.asset', connector_endpoint: 'aiworkspace.data.relations.kind.connectorEndpoint',
-  show_target: 'aiworkspace.data.relations.kind.showTarget', show_surface: 'aiworkspace.data.relations.kind.showSurface',
+  show_target: 'aiworkspace.data.relations.kind.showTarget', show_surface: 'aiworkspace.data.relations.kind.showSurface', def_dep: 'aiworkspace.data.relations.kind.defDep',
 })
 
 export function RelationsPanel({ entityId }: { entityId: string }) {

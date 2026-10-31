@@ -25,7 +25,7 @@ standalone/StandalonePage.tsx
 links.ts                  the only definition of the addresses: `https://aiws-<id>.<zone>/<workspace slug>/<surface slug>?id=&block=`, the Zone origin
 launch.ts                 going to a workspace's origin signed in (Control Panel `auth.prepare_app_launch { service_id: 'aiworkspace' }`)
 ui/controls/              Block-controls (the mind map): registry, folds, node measuring — see "Block-controls" below
-ui/extensions/            HTML / declarative hosts, and extension controls (dialog, instance form, home sources) — see "Extension controls"
+ui/extensions/            HTML / declarative hosts, and extension controls (dialog, instance form, home sources, define as control) — see "Extension controls"
 i18n.ts, useAiwsText.ts   the app's text in the Desktop's language — see "Language" below
 api/
   transport.ts            the only module that knows how to reach the service (zone path / dev override)
@@ -471,29 +471,67 @@ follow Cell read permissions and travel through export/import and offline prepar
 normal asset-size limit). `aiws.snapshot()` reports failed saves and refuses writes in view mode. HTML
 startup timeouts, crashes and disposal reject waiting calls and release the iframe; retry creates a new runtime.
 
-## Extension controls (notepads/aiworkspace-extension-p0-todo.md; backend README “Extension controls”)
+## Extension controls (notepads/aiworkspace-extension-p0-todo.md, p1-todo.md; backend README “Extension controls”)
 
-A control is a `buckyos.block-def` built from a flat source folder in the user's home (`component.json` + entry
-files) by `ext.build`; the Desktop drives the same code as the CLI (buckyos-websdk `buckyos/aiws_ext`) over the Files
-app's NFSP client (`ui/extensions/controlSources.ts`) and this Workspace's session.
+A control is a `buckyos.block-def` built from a source folder in the user's home (`component.json` + entry files;
+sub-folders allowed, file names are relative paths) by `ext.build`; the Desktop drives the same code as the CLI
+(buckyos-websdk `buckyos/aiws_ext`) over the Files app's NFSP client (`ui/extensions/controlSources.ts`) and this
+Workspace's session. Files beyond the 4 MiB a build carries inline are uploaded first as assets of the Workspace and
+sent by reference (`assetUploader`, Q22).
 
 - **Workspace controls dialog** (`ui/extensions/ExtensionsDialog.tsx`; main menu Insert → Extension controls → “Workspace controls…” (not a top-level item: the main menu must fit a small window), the insert
-  catalog's extension tab, a definition's data-source detail): the definitions with identity, kind, build revision,
-  source (package, local build, inline) and instance count; per definition: edit source (pulls a working copy into
+  catalog's extension tab, a definition's data-source detail): the definitions with identity, kind (declarative, HTML,
+  composite), build revision, source (package, local build, inline), what it builds on (`deps`) and instance count
+  (Cells and composite containers); per definition: edit source (pulls a working copy into
   `/home/<user>/AI Workspace/<workspace>/controls/<name>` when there is none, then opens Files there), build, pull,
-  build on save (a watch per definition that outlives the dialog), last build and its diagnostics, instances,
-  insert an instance (the canvas opens its catalog at the definition, `ui/extensions/extEvents.ts`), remove (refused
-  while instances use it); new control (skeleton in home + build); add from my library (`ext.import`); export the
-  ticked controls to my library (`ext.install` from the Workspace) or as a bundle folder in my home. The folder each
-  person builds from is their `user_state` `aiws:src:<def>`; `.aiws-build.json` in it keeps the base of the next build.
-- On a Workspace's own host (`aiws-<id>.<zone>`) the home folder is out of reach: creating, editing, building and
-  writing bundles are off with an explanation; the library and “available to all my workspaces” still work. Phones
-  list only.
+  build on save (a watch per definition that outlives the dialog), last build and its diagnostics (instances and the
+  definitions that build on it, `dependents`), a note when the home folder holds changes that were not built (L3),
+  instances, insert an instance (the canvas opens its catalog at the definition, `ui/extensions/extEvents.ts`),
+  remove (refused while instances use it); new control (skeleton in home + build: declarative, HTML or composite); add
+  from my library (`ext.import`; what a control builds on comes along); import a `.pikg` file (uploaded into my own
+  `exports` bucket, then `ext.install`, Q21); export the ticked controls to my library (`ext.install` from the
+  Workspace), as a bundle folder in my home, or as a `.pikg` the service packs (`ext.pack`, Q20) — then download it or
+  put it straight into my library. Exports name the controls whose home folder has unbuilt changes and go on. The
+  folder each person builds from is their `user_state` `aiws:src:<def>`; `.aiws-build.json` in it keeps the base of
+  the next build.
+- The home folder is reached on a Workspace's own host (`aiws-<id>.<zone>`) as on the Desktop: the gateway gives
+  `/nfs/v1` to the file service whatever the host (Q24). Phones list only.
 - **Instance initialization** (`ui/extensions/InstanceForm.tsx`, `controls.ts`): the insert catalog shows a control's
   properties (`config_schema`, the A7 subset, validated with `z.fromJSONSchema`; only changed values are stored) and
-  its named bindings (required ones block insertion); the new Cell gets `config` overrides and `bindings`.
+  its named bindings (required ones block insertion); the new Cell (or composite container) gets `config` overrides
+  and `bindings`.
 - **Declarative named bindings** (Q18): an item's `bind: "<binding>.<expr>"` reads that binding's data (watched like
   the main source); other binds read the main source as before.
+- **HTML assets** (host API 2, additive): `aiws.asset(name)` answers a blob URL of a file the definition's
+  `component.json` lists in `assets`; the host reads it from the source snapshot (`bridge.ts`), the iframe makes the
+  URL in its own realm and revokes it when it unloads (`htmlRuntime.ts`).
+
+### Composite controls (P1)
+
+- **Host** (`ui/controls/composite/`): one `ContainerDefinition` for the container kind `composite` (registered beside
+  the mind map). Which control an instance is, is its `def_ref`; the layout is the shared solver
+  (`@controls/composite`, `solveComposite`: `stack` column / row with spacing and padding, slots in `top` → `stack` →
+  `bottom` order, or `fixed` where every child keeps its x / y), read from the outline (the core projects a composite
+  definition's `composition` and `config_defaults`, `state/outline.ts` mirrors it). `Chrome.tsx` draws the background,
+  radius, border, the title band (`{{config.<key>}}` from the instance over the defaults; hidden while the title's slot
+  holds something) and the `empty` text. The properties are the definition's form (`Inspector.tsx`, side panel).
+- **Insert**: composite definitions are extension entries of the catalogue (`ui/canvas/catalog.ts`); inserting one
+  creates the container and, for each slot with `min`, Blocks of the first kind it accepts (`model.ts`
+  `compositeCreate`). The bare host is never offered.
+- **Slots** (`model.ts`): what a slot accepts (`cell:<ident>`, a view type, `container`; none: anything) and `max` are
+  checked here (Q15: the core only checks that a child's `slot` names a slot). Dragging Blocks onto a composite's
+  Block puts them beside it in its slot, onto blank space of a stacking composite appends them, and a Block no slot
+  takes is refused with a note (`RenderHost.tsx`, `CanvasView.tsx` `moveNodes`; `tree.move` carries `slot`).
+- **Copy / paste / duplicate** (`ui/canvas/clipboard.ts`): a composite instance whose source is still here is pasted
+  with `tree.clone` (ids known beforehand through the WASM `clone_id`); a composite's Blocks pasted on the canvas stay
+  ordinary Blocks (only a tree control's nodes get a mind map around them); a Block pasted into a composite takes the
+  slot of the Block it follows, else the first that accepts it.
+- **Define as control…** (selection → more actions; `ui/extensions/DefineControlDialog.tsx`): one slot per selected
+  Block (accepting what it is), `fixed` or `stack`, component.json + composition.json + AGENT.md written into home and
+  built; optionally the selection is replaced by an instance in one Commit (container, `tree.clone` of each Block into
+  its slot, the originals deleted).
+- A flow page shows a composite as a group (its Blocks in order; Blocks are added on the canvas). Phones show
+  instances read-only and do not offer “Define as control…”.
 
 ## What is implemented
 

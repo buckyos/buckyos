@@ -4,6 +4,7 @@ export const memory: WebAssembly.Memory;
 export const __wbg_replica_free: (a: number, b: number) => void;
 export const canonical_json: (a: number, b: number, c: number) => void;
 export const chunk_id: (a: number, b: number, c: number) => void;
+export const clone_id: (a: number, b: number, c: number, d: number, e: number) => void;
 export const core_version: (a: number) => void;
 export const file_object_id: (a: number, b: number, c: number) => void;
 export const markdown_to_richtext: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;

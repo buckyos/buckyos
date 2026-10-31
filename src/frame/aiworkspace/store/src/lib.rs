@@ -6,6 +6,7 @@ pub mod export;
 pub mod ext;
 pub mod library;
 pub mod objects;
+pub mod pack;
 pub mod proc;
 pub mod reads;
 pub mod schema;

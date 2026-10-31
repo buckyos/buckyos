@@ -1,10 +1,9 @@
 {
-  "_comment": "P1 / P2 PROPOSAL — not accepted by ext.build today (manifest_version 2, kind composite, deps, events are all unimplemented). Shape to be frozen in the P1 task sheet.",
   "manifest_version": 2,
   "ident": { "author_did": "did:bns:alice", "name": "hello-board" },
   "kind": "composite",
   "title": "Hello Board",
-  "description": "A titled panel that stacks task cards. The cards are real Blocks (hello-card instances or anything else); the board owns their layout and the frame around them.",
+  "description": "A titled panel that stacks task cards. The cards are real Blocks (hello-card instances or notes); the board owns their layout and the frame around them.",
   "default_size": { "w": 320, "h": 420 },
   "config_schema": {
     "type": "object",
@@ -17,9 +16,6 @@
   "bindings": {},
   "entry": "composition.json",
   "deps": ["did:bns:alice#hello-card"],
-  "events": {
-    "card_completed": { "title": "A card was marked done", "params": { "card": "entity_id" } }
-  },
   "catalog": { "group": "hello", "description": "A panel of task cards" },
   "agent": "AGENT.md"
 }

@@ -57,7 +57,7 @@ pub async fn build(state: &Arc<AppState>, p: &Value, caller: &Caller, token: &st
         let max = st.limits.max_asset_bytes;
         st.with_ws(&workspace, |ws| {
             let sources = ws.ext_stage_files(&c, files, max, opts.dry_run)?;
-            ws.ext_build(&c, vec![BuildInput { files: sources, provenance }], &opts)
+            ws.ext_build(&c, vec![BuildInput { files: sources, provenance, implicit: false }], &opts)
         })
     })
     .await
@@ -149,6 +149,44 @@ pub async fn install(state: &Arc<AppState>, p: &Value, caller: &Caller, token: &
     .await
 }
 
+/// `ext.pack { workspace_id, entity_ids, package: { name, version?, title? } }` (P1, Q20): the controls (with what they
+/// build on) packed as an `aiws` PIKG by the service and bound into the caller's own `exports` bucket as
+/// `<name>-<version>.pikg`; the answer says how to fetch it (`download`, as `ws.export`) and how to install it
+/// (`ext.install { pikg: { bucket_id, key } }`). The owner is the caller's DID; the package is not signed.
+pub fn pack(state: &Arc<AppState>, p: &Value, caller: &Caller) -> WsResult<Value> {
+    require_may_own(caller)?;
+    let ids = strings(p, "entity_ids")?;
+    let package = p.get("package").cloned().unwrap_or(Value::Null);
+    let name = s(&package, "name")?.to_string();
+    let version = package.get("version").and_then(Value::as_str).unwrap_or("0.1.0").to_string();
+    let owner = match caller.did() {
+        Some(did) if did.starts_with("did:bns:") => did.to_string(),
+        _ => format!("did:bns:{}", caller.principal),
+    };
+    let (_, files, built) = state.with_ws(s(p, "workspace_id")?, |ws| ws.ext_bundle_files(caller, &ids))?;
+    let spec = aiworkspace_store::pack::PackSpec {
+        show_name: package.get("title").and_then(Value::as_str).unwrap_or(&name).to_string(),
+        name,
+        version,
+        owner,
+        timestamp: built.unwrap_or_else(|| ((state.svc.clock)() / 1000).max(0) as u64),
+    };
+    let packed = aiworkspace_store::pack::pack(&spec, &files)?;
+    let key = format!("{}-{}.pikg", spec.name, spec.version);
+    let tmp = aiworkspace_store::export::TempFile::new(&key)?;
+    std::fs::write(&tmp.0, &packed.bytes).map_err(|e| WsError::io(e.to_string()))?;
+    let objects = &state.svc.objects;
+    let obj_id = objects.store_file(&tmp.0, &key)?;
+    let bucket = aiworkspace_store::objects::bucket_id(&caller.principal, aiworkspace_store::objects::EXPORTS)?;
+    let version = objects.bind(&bucket, &key, &obj_id)?;
+    let token = objects.read_token(&bucket, &key, aiworkspace_store::export::DOWNLOAD_TOKEN_MS)?;
+    let download = json!({ "bucket_id": bucket, "key": key, "version": version, "obj_id": obj_id, "token": token });
+    Ok(json!({ "ok": true, "bucket_id": download["bucket_id"], "key": download["key"], "obj_id": download["obj_id"], "size": packed.bytes.len(),
+               "digest": format!("sha256:{}", aiworkspace_core::canonical::sha256_hex(&packed.bytes)), "app_doc_object_id": packed.app_doc_object_id,
+               "app_did": packed.app_did, "pkg_id": packed.pkg_id, "version": spec.version, "payload_digest": packed.payload_digest,
+               "tar_digest": packed.tar_digest, "download": download }))
+}
+
 /// A package name of a library entry made from a Workspace (`[a-z0-9][a-z0-9.-]{0,127}`; a PIKG's is its AppId).
 fn is_package_name(s: &str) -> bool {
     let b = s.as_bytes();
@@ -163,9 +201,10 @@ pub fn import(state: &Arc<AppState>, p: &Value, caller: &Caller) -> WsResult<Val
     for it in items {
         by_pkg.entry(s(it, "pkg_id")?.to_string()).or_default().push(s(it, "ident")?.to_string());
     }
+    // what the items build on comes from the same package, once (P1, Q16)
     let mut controls = Vec::new();
     for (pkg, idents) in by_pkg {
-        for c in state.library.controls(&caller.principal, &pkg, Some(&idents))? {
+        for c in state.library.controls(&caller.principal, &pkg, Some(&idents), true)? {
             let files = state.library.sources(&c)?;
             controls.push((c, files));
         }
@@ -179,7 +218,7 @@ pub fn import(state: &Arc<AppState>, p: &Value, caller: &Caller) -> WsResult<Val
             // the library's objects are in this service's store already: staging binds them into the Workspace
             let incoming = files.iter().map(|f| IncomingFile::Object { name: f.name.clone(), obj_id: f.obj_id.clone() }).collect();
             let staged: Vec<SourceFile> = ws.ext_stage_files(caller, incoming, max, opts.dry_run)?;
-            inputs.push(BuildInput { files: staged, provenance: Some(c.provenance) });
+            inputs.push(BuildInput { files: staged, provenance: Some(c.provenance), implicit: c.implicit });
         }
         ws.ext_build(caller, inputs, &opts)
     })
@@ -203,6 +242,7 @@ pub fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller)
             state.library.bundle(&caller.principal, s(p, "pkg_id")?, idents.as_deref())
         }
         "ext.import" => import(state, p, caller),
+        "ext.pack" => pack(state, p, caller),
         _ => Err(WsError::new(Code::InvalidOperation, crate::UNKNOWN_METHOD)),
     }
 }

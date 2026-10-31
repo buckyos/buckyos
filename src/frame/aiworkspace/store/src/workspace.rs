@@ -1305,7 +1305,8 @@ impl Workspace {
             now: now.clone(),
             internal: opts.internal,
             import: opts.import,
-            schema_checks: true,
+            // a package re-applies what another deployment admitted: primitives and references only (Q15)
+            schema_checks: !opts.import,
             replay: false,
             peer_id: self.peer_id,
             limits: self.limits.clone(),
@@ -1344,8 +1345,13 @@ impl Workspace {
             .filter(|(_, o)| o.op.get("server_update").is_some())
             .map(|(i, o)| json!({ "op_index": i, "entity_id": o.op["entity_id"], "lineage_id": o.op["lineage_id"], "update": o.op["server_update"] }))
             .collect();
+        // what a `tree.clone` created: the caller addresses the copies by these ids
+        let cloned: Vec<Value> = ops.iter().enumerate().filter(|(_, o)| o.op.get("new_ids").is_some()).map(|(i, o)| json!({ "op_index": i, "new_ids": o.op["new_ids"] })).collect();
         let mut result = json!({ "status": "accepted", "commit_id": commit_id, "seq": seq, "replayed": false,
                                  "touched": visible_touched, "server_ops": server_ops });
+        if !cloned.is_empty() {
+            result["cloned"] = json!(cloned);
+        }
         if !warnings.is_empty() {
             result["warnings"] = json!(warnings);
         }

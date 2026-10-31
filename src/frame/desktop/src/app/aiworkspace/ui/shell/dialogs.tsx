@@ -14,6 +14,7 @@ import { useAiwsText } from '../../useAiwsText'
 import { SURFACE_ICONS } from '../canvas/icons'
 import { accepted } from '../canvas/surfaceManage'
 import { createSurfaceOps, surfacesOf } from '../canvas/surfaceOps'
+import { saveBlob } from './download'
 import { MockRunPanel } from './panels'
 import { useOverlayMounted } from './popover'
 
@@ -29,16 +30,6 @@ export function Modal({ label, testId, onClose, children, className = '', modal 
   return <div className="aiws-modal-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) onClose() }}>{box}</div>
 }
 
-function saveBlob(blob: Blob, fileName: string) {
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = fileName
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
-  window.setTimeout(() => URL.revokeObjectURL(url), 10_000)
-}
 
 // ---- New
 

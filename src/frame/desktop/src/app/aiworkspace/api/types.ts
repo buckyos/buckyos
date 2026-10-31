@@ -2,6 +2,7 @@
  * Only what the Desktop app reads is typed; unknown keys are preserved as `unknown`. */
 
 import type { StoredPlacement } from '@controls/placement'
+import type { Composition } from '@controls/composite'
 
 export const PROTOCOL_VERSION = '1.1'
 
@@ -210,6 +211,10 @@ export interface EntityEnvelope {
   def_version?: number | null
   provenance_pkg?: string | null
   source_dir_id?: string | null
+  /** The identities a definition builds on, a composite's composition and its config defaults (扩展控件 P1). */
+  deps?: string[] | null
+  composition?: Composition | null
+  config_defaults?: Record<string, Json> | null
   target_id?: string | null
   annotation_kind?: string | null
   media_type?: string | null
@@ -522,7 +527,7 @@ export interface WishChoices { results?: Record<string, 'keep' | 'replace' | 'ne
 export interface BlockDefPayload {
   def_id: string
   version?: number
-  kind: 'declarative' | 'html'
+  kind: 'declarative' | 'html' | 'composite'
   title?: string
   description?: string
   accepts?: string[]
@@ -541,23 +546,41 @@ export interface BlockDefPayload {
   catalog?: { group?: string; icon?: string; description?: string }
   agent?: string
   provenance?: { pkg_id?: string; version?: string; digest?: string }
+  /** P1: the definitions it builds on, and a composite's checked composition.json. */
+  deps?: { ident: string; entity_id: string }[]
+  composition?: Composition
 }
 
 /** A named data input a control declares (its instances bind it in the Cell's `bindings`). */
 export interface ControlBinding { accepts?: string[]; required?: boolean; title?: string; description?: string }
 
 /** One problem of a control's source (`ext.build`'s `BUILD_FAILED.data.diagnostics`). */
-export interface BuildDiagnostic { file: string; line?: number; col?: number; severity: 'error' | 'warning'; message: string; instances?: { entity_id: string; title?: string | null }[] }
+export interface BuildDiagnostic { file: string; line?: number; col?: number; severity: 'error' | 'warning'; message: string; code?: string; instances?: { entity_id: string; title?: string | null }[]; dependents?: { ident: string; def_entity_id: string }[] }
 
 /** `ext.build` / `ext.import`: one entry per control. */
 export interface ExtControlResult { ident: string; def_entity_id: string; dir_entity_id?: string; action: 'created' | 'rebuilt' | 'unchanged' | 'satisfied'; version?: number; def_rev?: number; dir_rev?: number; build?: { input_digest: string; builder_version: string; built_at: string } }
 export interface ExtBuildResult extends Partial<ExtControlResult> { status: 'accepted' | 'unchanged' | 'checked'; commit_id?: string; seq?: number; unchanged?: boolean; controls: ExtControlResult[]; diagnostics: BuildDiagnostic[] }
 export interface ExtExportResult {
-  manifest: { manifest_version: number; purpose: 'aiws'; host_api?: Record<string, number>; controls: { ident: string; name: string; kind: string; version: number; digest: string; dir: string; title?: string }[]; workspace_templates: Json[] }
+  manifest: { manifest_version: number; purpose: 'aiws'; host_api?: Record<string, number>; controls: { ident: string; name: string; kind: string; version: number; digest: string; dir: string; title?: string; deps?: string[] }[]; workspace_templates: Json[] }
   controls: { entity_id: string; ident: string; kind: string; version: number; def_rev: number; dir_rev: number; built: boolean; digest: string; dir: string; files: { name: string; obj_id?: string; size: number; text?: string }[] }[]
   files: { path: string; obj_id?: string; size: number; text?: string }[]
 }
-export interface LibraryControl { ident: string; name: string; kind: string; version: number; digest: string; dir: string; title?: string | null; description?: string | null; catalog?: Record<string, Json> | null }
+export interface LibraryControl { ident: string; name: string; kind: string; version: number; digest: string; dir: string; title?: string | null; description?: string | null; catalog?: Record<string, Json> | null; deps?: string[] }
+/** `ext.pack` (扩展控件 P1): the unsigned .pikg the service wrote into the caller's `exports` bucket. */
+export interface ExtPackResult {
+  bucket_id: string
+  key: string
+  obj_id: string
+  size: number
+  digest: string
+  app_doc_object_id: string
+  app_did: string
+  pkg_id: string
+  version: string
+  payload_digest: string
+  tar_digest: string
+  download: { bucket_id: string; key: string; version: number; obj_id: string; token: string }
+}
 export interface LibraryPackage { pkg_id: string; version: string; title: string; author: string; mode: string; installed_at: string; controls: LibraryControl[] }
 
 export type FreshnessStatus = 'current' | 'stale' | 'upstream_stale' | 'unavailable' | 'unknown' | 'none'

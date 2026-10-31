@@ -78,6 +78,10 @@ cargo test -p aiworkspace           # V23 + crash recovery — against the real 
                                     # tests/wish.rs, tests/quality.rs: wish runs through the real xllm loop and Deno
                                     # with a scripted model (needs `deno` on PATH or AIWS_DENO)
 (cd frame/aiworkspace/aiws && deno test -A)   # the program host (temp dirs, a local test server)
+# extension controls: core tests/extension.rs, tests/composite.rs (composite definitions and instances, slots, deps,
+# REFERENCE_CYCLE, replay without the business schema), tests/clone.rs (tree.clone), tests/apply_log.rs;
+# store `cargo test -p aiworkspace-store --lib pack` (the ext.pack archive); server tests/ext.rs
+# (build, library, .pikg install, composite_controls_with_dependencies incl. ext.pack → ext.install)
 ```
 
 ## The two trees (phase two §4)
@@ -116,7 +120,10 @@ and gets an addressable version in `entity_versions` at every application. Fresh
 A result the user keeps against a later run ("保留人工修改") is re-recorded with that run's read set and `kept_manual: true`, so the wish is current again without regenerating it.
 those versions with the cells now: `current | stale | upstream_stale | unavailable | unknown`.
 
-Format version is `1.0` (内核架构改进 FORMAT 1.0: `schema_id`, the resource directory, the reference catalogue with `mode` / `integrity` and `owns`, the pure-application log, `$formula`, the `run` capability, delegation fields, the usage ledger, `user_state.revision`, `base_seq`; protocol `1.0`). Stores and packages of an older format are refused with `UNSUPPORTED_VERSION` (no migration). From 1.0 on, an incompatible change of the format needs an explicit conversion (D07); within 1.0 only additions an older implementation can ignore are allowed. Protocol 1.1 added Block-controls (container kind `mindmap`, `"auto"` placement components, Cells holding Cells inside a control, `slot`; see “Block-controls”); requests speaking 1.0 are still accepted. 1.1 also added the value type `currency` (表格数据导入 TODO §6, Q2: format and protocol versions unchanged): a field `{ type: "currency", currency: "<ISO 4217>", scale?: 0–18 (default 2) }` stores `{ "amount": "<decimal of that scale>", "currency": "<code>" }` — the code always written out (a bare amount or number takes the field's default; changing the default, `table.update_field { changes: { currency } }`, never changes stored values); symbols and names (`$12`, `USD 12`) are refused. Values order by (code, amount); `lt / lte / gt / gte` only meet amounts of the operand's currency; `eq` / `ne` / `in` need the same code; no `unique`, no grouping. Migrations: `number | decimal → currency` (the target's default), `currency → decimal` (drops the code), `currency → text` (`"USD 12.00"`), `currency → currency` (another scale).
+Format version is `1.0` (内核架构改进 FORMAT 1.0: `schema_id`, the resource directory, the reference catalogue with `mode` / `integrity` and `owns`, the pure-application log, `$formula`, the `run` capability, delegation fields, the usage ledger, `user_state.revision`, `base_seq`; protocol `1.0`). Stores and packages of an older format are refused with `UNSUPPORTED_VERSION` (no migration). From 1.0 on, an incompatible change of the format needs an explicit conversion (D07); within 1.0 only additions an older implementation can ignore are allowed. Protocol 1.1 added Block-controls (container kind `mindmap`, `"auto"` placement components, Cells holding Cells inside a control, `slot`; see “Block-controls”); requests speaking 1.0 are still accepted. Extension controls P1 added, within the same versions, the container kind
+`composite` (`def_ref`, `bindings`, `slot` on Block containers), the block-def keys `deps` / `composition`, the reference
+kind `def_dep` (live, strong), the error code `REFERENCE_CYCLE`, the operation `tree.clone`, `tree.move { slot }` and
+directory member names holding `/` (see “Extension controls”). 1.1 also added the value type `currency` (表格数据导入 TODO §6, Q2: format and protocol versions unchanged): a field `{ type: "currency", currency: "<ISO 4217>", scale?: 0–18 (default 2) }` stores `{ "amount": "<decimal of that scale>", "currency": "<code>" }` — the code always written out (a bare amount or number takes the field's default; changing the default, `table.update_field { changes: { currency } }`, never changes stored values); symbols and names (`$12`, `USD 12`) are refused. Values order by (code, amount); `lt / lte / gt / gte` only meet amounts of the operand's currency; `eq` / `ne` / `in` need the same code; no `unique`, no grouping. Migrations: `number | decimal → currency` (the target's default), `currency → decimal` (drops the code), `currency → text` (`"USD 12.00"`), `currency → currency` (another scale).
 
 ## Presentation (第三期规划 §4–§6, §8, §11)
 
@@ -205,35 +212,43 @@ It may carry `title` (the label text), `config` (appearance, ≤ 64 KiB, not ins
 ## Block-controls (脑图方案, `notepads/aiworkspace-mindmap-todo.md` M0)
 
 Design: [脑图对象方案讨论](<../../../doc/workspace/脑图对象方案讨论.md>) v0.4. A **control** is a BlockTree container
-whose `kind` is a control id (`mindmap` is the first; the list is `controls/core.json`, read by the core with
-`include_str!` and by the Desktop): it lays out the Blocks it holds with a named algorithm the clients run (the
-shared module `controls/`), the core only judges shapes. A mind map's nodes are ordinary Cells: `parent_id` is the
+whose `kind` is a control id (`mindmap`, and `composite` — the host of every composite extension control, see
+“Composite controls” below; the list is `controls/core.json`, read by the core with `include_str!` and by the
+Desktop): it lays out the Blocks it holds with a named algorithm the clients run (the shared module `controls/`), the
+core only judges shapes. A mind map's nodes are ordinary Cells: `parent_id` is the
 tree (a node's children are Cells under it), `order_key` the sibling order; edges are drawn, never stored.
 
 - **Container** (`types.rs` `validate_container`): `kind: "mindmap"`, `layout` implied (`{ mode: "tree" }`, any
   other value refused), `config` checked (`direction` right / left / both / down, `edge` curve / elbow / straight,
   `spacing { sibling?, level? }` in [0, 2000], `branch_colors` ≤ 64 colours; ≤ 64 KiB) and projected into the
   outline, `locked` as on a group. A control sits on a Surface, in a group, or inside another control (R24).
-- **Children** (`plan.rs` `child_allowed`): a control holds Cells, groups and controls; inside a control a Cell may
-  hold Cells and containers too (its nearest container, walking up through Cells, is a control —
-  `types::laid_out_by_control`). Anywhere else a Cell stays a leaf; `tree.move` of a Cell that holds Blocks out of
-  a control is `CHILD_NOT_ALLOWED`. Connectors are drawn on the canvas, never created inside a control.
+- **Children** (`plan.rs` `child_allowed`): a control holds Cells, groups and controls; inside a tree control (the
+  mind map) a Cell may hold Cells and containers too (its nearest container, walking up through Cells, is a control
+  laying out a tree — `types::in_tree_control`). Anywhere else, a composite included, a Cell stays a leaf; `tree.move`
+  of a Cell that holds Blocks out of a tree control is `CHILD_NOT_ALLOWED`. Connectors are drawn on the canvas, never
+  created inside a control.
 - **`"auto"` placement** (`plan.rs` `check_placement`, protocol 1.1): each of `x`, `y`, `w`, `h` is a number or the
   string `"auto"` — not stored, computed by the control when shown; a number pins it. `x` / `y` may be `"auto"` only
   on a Block laid out by a control; `w` / `h` only on a control (its box wraps its children) or on a text view laid
   out by one (`text_views` in `controls/core.json`: `mindnode`, `shape`, `richtext` — their size is their title's).
   A non-text view keeps a numeric size (also when its `view` changes). A control's own `x` / `y` name its origin
-  (the first root's top-left), not its box. `"auto"` cannot leave a control (`tree.move` judges the new place).
-- **Slots** (R22): a Cell inside a control may carry `slot` (`^[a-z0-9][a-z0-9_-]{0,31}$`), unique among its live
-  siblings including those staged in the same Commit (`SLOT_CONFLICT`); projected into the outline. Paths like
-  `bkg.text` resolve one level per segment. The mind map uses none; the schema is there for composite controls.
+  (the first root's top-left), not its box. `"auto"` cannot leave a control (`tree.move` judges the new place). The
+  children of a composite whose definition uses the `fixed` layout are not laid out: their `x` / `y` stay numbers.
+- **Slots** (R22, reference class — `types::check_slot`): a Block inside a control may carry `slot`
+  (`^[a-z0-9][a-z0-9_-]{0,31}$`); projected into the outline. Inside a mind map (any non-composite control) it is unique
+  among the live siblings including those staged in the same Commit (`SLOT_CONFLICT`); paths like `bkg.text` resolve
+  one level per segment. Inside a composite it is required on every child (Cells, groups, controls) and names a slot of
+  the definition; several children may share one (see “Composite controls”). `tree.move { slot }` rewrites it in the
+  same step (a name, or `null` to drop it).
 - **Outline**: a control's envelope carries `config`; a Cell's carries `slot`, and `side` / `branch_color` when its
-  `config` has valid ones (a node's layout hints: the layout runs on the outline alone).
+  `config` has valid ones (a node's layout hints: the layout runs on the outline alone); a composite's carries
+  `def_id`, a Block container's `slot`.
 - **Versions** (R12): new kinds and the `"auto"` literal are additions within FORMAT 1.0; PROTOCOL is 1.1
   (`model.rs` `supports_protocol`: requests of the same major and an older minor are accepted). A client that does
   not know a control kind draws it as a group.
 - Tests: `core/tests/mindmap.rs` over `fixtures/mindmap/commits.json` (a minimal map, the four directions, a pinned
-  node, a nested control, a non-text node, slots); the layout itself is tested in `controls/` (`deno test -A`).
+  node, a nested control, a non-text node, slots); `core/tests/composite.rs` for composite containers; the layout
+  itself is tested in `controls/` (`deno test -A`).
 
 The shared module `controls/` (TypeScript, no dependencies, browser and Deno, alias `@controls/*` in the Desktop):
 `tree.ts` (the `tree` layout: four directions, folded and pinned nodes), `measure.ts` (node text sizes),
@@ -244,16 +259,17 @@ generated into `aiws/controls.json` by `deno run -A tools/build_catalog.ts`). La
 `fixtures/mindmap/layout/*.json` (`MINDMAP_REGEN=1 deno test -A` after an intended change; the formula is not
 versioned, R18); outline cases shared with the service's parser: `fixtures/mindmap/outlines.json`.
 
-## Extension controls (扩展控件 P0, `notepads/aiworkspace-extension-p0-todo.md`)
+## Extension controls (扩展控件 P0 + P1, `notepads/aiworkspace-extension-p0-todo.md`, `notepads/aiworkspace-extension-p1-todo.md`)
 
-Design: [扩展实现思路](<../../../doc/workspace/BuckyOS AI Workspace 扩展实现思路.md>) v0.8 (D6 edit → build, A1–A7,
-Q18, Q19). A **control** of this section is a render Block definition (`buckyos.block-def`, `kind` `declarative` or
-`html`) whose source lives in its developer's home folder and is **built** into a Workspace; Block-controls (the
-previous section) are a different, code-registered thing. The flow: write a control in home → `ext.build` it into
-a Workspace (instances update) → export one or more controls as a bundle → install it into the caller's **library**
-(this service, per user) as a `.pikg` of type `aiws` → import it into another Workspace and instantiate it. Composite
-controls, HTML `parent`, events, source upgrades and Workspace templates are later phases; every contract below keeps
-room for them.
+Design: [扩展实现思路](<../../../doc/workspace/BuckyOS AI Workspace 扩展实现思路.md>) v0.9 (D6 edit → build, A1–A7,
+Q15–Q25). A **control** of this section is a Block definition (`buckyos.block-def`) whose source lives in its
+developer's home folder and is **built** into a Workspace: a render control (`kind` `declarative` or `html`, its
+instances are Cells) or, since P1, a **composite** (`kind: composite`, its instances are containers laying out real
+Blocks, see “Composite controls”). Block-controls (the previous section) are the code-registered hosts these run on.
+The flow: write a control in home → `ext.build` it into a Workspace (instances update) → export one or more controls
+(with what they build on) as a bundle or a `.pikg` → install it into the caller's **library** (this service, per user)
+→ import it into another Workspace and instantiate it. HTML `parent`, events, source upgrades and Workspace templates
+are later phases; every contract below keeps room for them.
 
 **Where things live.**
 
@@ -263,8 +279,10 @@ room for them.
 | Workspace snapshot | under a folder (default `data/extensions`, created by the first build): the definition entity (`name` = its identity) and its unnamed source directory (`buckyos.dir`, one member per file) | what a build accepted: instances, exports, forks and `pull` read it |
 | library | the caller's bucket `user/aiworkspace/<owner>/library` (key `<pkg_id>/<version>/<path>`) and `library.sqlite` in the service data folder | the controls this user may bring into any Workspace |
 
-A source directory is **flat** in P0: files only, no subfolders (`buckyos.dir` names cannot hold `/`), at most 64
-files, names not starting with `.` (clients keep their own state in dot files, e.g. `.aiws-build.json`).
+A source directory holds at most 64 files; sub-folders are allowed (Q23): a file's name is its relative path
+(`icons/check.svg`) and becomes one member of the flat `buckyos.dir` (member names may hold `/`, `check_member_name`:
+segments non-empty, neither `.` nor `..`, no leading, trailing or doubled `/`, ≤ 255 bytes). No segment starts with
+`.`: clients keep their own state in dot files and folders (e.g. `.aiws-build.json`).
 
 ### Identity
 
@@ -275,26 +293,27 @@ the core's “sibling names are unique” rule deduplicates concurrent builds an
 (one Workspace, one identity, one definition: Q1). The author is part of the identity, not the caller: whoever pulls
 and builds Alice's control keeps `author_did` Alice's. `def_id` stays the short host-local id.
 
-### `component.json` (`manifest_version: 1`, [schemas/component.schema.json](schemas/component.schema.json))
+### `component.json` (`manifest_version: 2`, [schemas/component.schema.json](schemas/component.schema.json))
 
 | Key | Shape |
 | --- | --- |
-| `manifest_version` | `1` (required). A build accepts every version up to its own and reads older ones as their newest form; newer versions only add optional keys (Q19) |
+| `manifest_version` | `1` or `2` (required). A build accepts every version up to its own and reads older ones as their newest form; newer versions only add optional keys (Q19). Version 2 adds `kind: composite` and non-empty `deps`: a version-1 file using either fails the build with a hint to raise it |
 | `ident` | `{ author_did, name }` (required) |
-| `kind` | `declarative` \| `html` (required; `composite` is reserved for P1) |
+| `kind` | `declarative` \| `html` \| `composite` (required). A composite has no `accepts` / `allow_no_source` (it is a container, not a Cell) and no `host_api` (it runs no code) |
 | `title` / `description` | ≤ 256 / ≤ 4000 characters (`title` required) |
 | `host_api` | positive integer, default 1: the host API the control was written for (`html.api_version` of an HTML control; the declarative interpreter is version 1) |
 | `accepts`, `allow_no_source`, `default_size` | as on the definition: data types the main source may have, whether a Cell may have no source, `{ w, h }` |
 | `config_schema` | instance properties, the JSON Schema subset `type` / `enum` / `default` / `required` / `title` / `description` / `minimum` / `maximum` / `minLength` / `maxLength` (+ `properties` / `items` to nest); other keywords fail the build (A7). The Desktop validates values with it (`z.fromJSONSchema`) and builds the instance form from it; the core never checks values (Q15) |
 | `bindings` | named data inputs `{ <name>: { accepts?: [data types], required?: bool, title?, description? } }`, names `[a-z][a-z0-9_]{0,31}`, at most 32. An instance binds them in its Cell `bindings` (`{ <name>: { entity_id } }`); declarative items read them as `<name>.<expr>` (Q18), HTML through `aiws.input(name)` |
-| `entry` | `html`: `{ html, css?, js? }`, file names in the directory, inlined into the definition's `html { html, css, js, api_version }`; `declarative`: one file name, a JSON document that becomes the definition's `declarative` |
+| `entry` | `html`: `{ html, css?, js? }`, file names in the directory, inlined into the definition's `html { html, css, js, api_version }`; `declarative`: one file name, a JSON document that becomes the definition's `declarative`; `composite`: the composition file (`composition.json`), checked and inlined as the definition's `composition` |
 | `assets` | file names carried with the source (pictures, data) — part of the snapshot and the package, not inlined |
 | `catalog` | `{ group?, icon?, description? }`: how the insert catalogue lists it |
 | `agent` | file name of a Markdown self-description (≤ 64 KiB) for Agents, inlined as the definition's `agent` |
-| `deps` | `[]` (anything else fails the build in P0; definition → definition dependencies are P1) |
+| `deps` | `["<author_did>#<name>", …]` (version 2; ≤ 32, no repeats, not itself): the controls this one builds on. The build resolves each to the definition of that identity in the same folder (a diagnostic with `code: DEP_MISSING` when there is none) and writes the definition's `deps` |
 
-Every file the directory holds is part of the snapshot whether or not `component.json` names it; a named file that is
-missing fails the build. The definition stays ≤ 512 KiB with everything inlined.
+`events` (in `component.json` or `composition.json`) fails the build: events between controls are P2. Every file the
+directory holds is part of the snapshot whether or not `component.json` names it; a named file that is missing fails the
+build. The definition stays ≤ 512 KiB with everything inlined.
 
 ### The definition entity (`buckyos.block-def`)
 
@@ -310,33 +329,87 @@ Besides the keys it always had (`def_id`, `version`, `kind`, `title`, `descripti
 | `bindings`, `catalog` | as in `component.json` |
 | `agent` | the self-description text, ≤ 64 KiB |
 | `provenance` | `{ pkg_id?, version?, digest? }`: the package an import came from (absent for a local build) |
+| `deps` | `[{ ident, entity_id }]` (≤ 32): the definitions it builds on, written by `ext.build` / `ext.import` only — any other Commit that changes it is `INVALID_OPERATION` (as the build record). Each entry is a strong `def_dep` reference: the target cannot be deleted while used (`REFERENCE_BROKEN`), exports and forks carry it, and a dependency that would close a cycle is `REFERENCE_CYCLE` (`data { entity_id, cycle }`) |
+| `composition` | a composite's checked `composition.json`, inline (≤ 64 KiB). The core keeps its shape only (an object, ≤ 16 slots named `[a-z][a-z0-9_]{0,31}`, no `events`); what it means is the build's and the clients' (Q15) |
 
 Definitions without these keys (wish results, templates, older Workspaces) read and work as before. A build writes
 `version` = the previous `version` + 1 (the build revision; a Cell's `view.version` is the host's, not this) and the
 dependency record `derived: { build: { input_digest, builder_version, built_at } }` in the same Commit
 (`entity.set_derived`; a `build` record is accepted from build and import Commits only, Q14). The Commit's origin is
-`build` and its message `build <ident>`. The outline projects `def_id`, `def_kind`, `ident` (string), `manifest_version`
-and `provenance_pkg`.
+`build` and its message `build <ident>`. The outline projects `def_id`, `def_kind`, `ident` (string), `manifest_version`,
+`provenance_pkg`, `deps` (the identities) and, for a composite, `composition` and `config_defaults` (each property's
+`default` of `config_schema`): its instances are laid out from the outline alone.
+
+### Composite controls (P1, [schemas/composition.schema.json](schemas/composition.schema.json))
+
+A composite lays out Blocks the user (or an Agent) puts into its slots and draws a frame around them (R23: the
+Chrome is drawn, the content is real Blocks — selectable, annotatable, connectable, addressable). Its
+`composition.json` says three things and nothing else; it never creates or deletes user Blocks:
+
+| Key | Shape |
+| --- | --- |
+| `layout` | `{ algorithm: "stack" \| "fixed", direction?: "column" \| "row", spacing?, padding? }`. `stack` puts the slots' children one after another (`direction`, `spacing` px; default column); `fixed` keeps every child at its own `x` / `y`. `padding` is a number or `{ t, r, b, l }`; numbers in [0, 2000]. The algorithms ship with the host (K2: `controls/`); none is loaded from a package |
+| `slots` | `{ <name>: { accepts?, min?, max?, placement?, title? } }`, ≤ 16 names `[a-z][a-z0-9_]{0,31}`. `accepts` lists `cell:<author_did>#<name>` (an instance of that render control: in `deps` or already in the Workspace, never a composite), a view type (`richtext`, `shape`, …) or `container` (a group or a control); absent: any Block. `min` (0…64) is what inserting an instance creates, `max` (1…1000) what the clients allow. `placement`: `stack` (default), `top` / `bottom` (before / after the stacked slots) or `free` (children keep their `x` / `y`; the only placement of a `fixed` layout) |
+| `chrome` | `{ background?, radius?, border?, title?: { text, slot? }, empty? }`: colours ≤ 64 characters, `radius` in [0, 200], `title.text` ≤ 256 (drawn while `slot`, when given, is empty), `empty` ≤ 1000 (what an empty instance shows) |
+
+String values may hold `{{config.<key>}}` (a whole `spacing` / `padding` / `radius` may be one); the key must be a
+property of `config_schema` (the instance's `config` value, its default when unset). The build checks all of it
+(`store/src/ext.rs` `check_composition`; clients pre-check with buckyos-websdk `checkComposition`).
+
+**Instances.** `buckyos.container { kind: "composite", def_ref: { entity_id }, config?, bindings?, layout?: { mode:
+"def" }, title?, locked? }` (`types.rs` `container_primitive` / `composite_refs`): `def_ref` names a live definition of
+`kind: composite` when the instance is created and never changes afterwards (`INVALID_OPERATION`: insert a new
+instance); `bindings` are checked as on a Cell; `config` is an object ≤ 64 KiB whose values the clients check against
+the definition's `config_schema` (the core never does, Q15); `layout` is implied (`{ mode: "def" }`). `def_ref` and
+`bindings` are `def` / `bind` references, so a definition with instances cannot be deleted. The container is a Block
+container like a group or a mind map: it sits on a Surface, in a group or in another control; its `w` / `h` may be
+`"auto"` (its box wraps its children).
+
+**Children.** Every child (a Cell, a group or a control) carries `slot` naming a slot of the definition, judged when
+it is written (creation, `slot` changed, `tree.move` in) — a later rebuild of the definition does not re-judge existing
+children. Several children may share a slot; `accepts` and `max` are the clients' to enforce, the core neither counts
+nor matches them (Q15). A Cell inside a composite stays a leaf. Under a `fixed` definition no child may have an `"auto"`
+`x` / `y`. The Desktop copies an instance with `tree.clone`.
+
+**Copying a subtree (`tree.clone`, Q17; `plan.rs` `tree_clone`).** One operation copies a Block subtree — a Cell, a group
+or a control with everything under it — so the service, the WASM replica and an offline client plan the same copy:
+`{ op: "tree.clone", source_id, parent_id, order_key?, placement?, slot?, content?: "private", id_seed? }` (`structure`
+on the target, `read` on the source). Every copy gets the id `c` + the first 26 hex digits of
+`sha256("<id_seed>\n<old id>")` (`plan::clone_id`; `id_seed` defaults to `<seq>.<op index>` — pass one to know the ids
+beforehand); parents, order keys, placements and `slot`s carry over, the root takes `order_key` (default: last under the
+parent), `placement` and `slot` (`null` drops it) when given. `def_ref` is kept (instances share their definition). Data
+a copied Block owns (`owns`) is cloned with `entity.clone` into the target Surface's content folder and the copy's
+`source_ref` / `bindings` follow it (the copy owns the clone; rich text as a new lineage); data bound from elsewhere stays
+shared. A connector inside the subtree is copied when each bound end is in the subtree (rebound to the copies) and left
+out when one crosses its border. The normalized operation records `id_seed` and `new_ids { <old>: <new> }` (data clones
+included); the Commit result lists them as `cloned: [{ op_index, new_ids }]`. Undo deletes the copies and their cloned
+data. `ws.import` keeps ids and does not use it.
 
 ### Methods
 
 | Method | Caller, rights | Params → result |
 | --- | --- | --- |
 | `ext.build` | `structure` on the folder (a new definition), `update` on the definition and its directory | `workspace_id`, `files: [{ name, obj_id } \| { name, base64 }]`, `folder_id?`, `expect?: { def_rev, dir_rev }`, `force?`, `provenance?`, `dry_run?`, `idempotency_key?` → `ok`, `status: accepted`, `commit_id`, `seq`, `def_entity_id`, `dir_entity_id`, `ident`, `version`, `def_rev`, `dir_rev`, `build`, `diagnostics` (warnings) — or `unchanged: true` (same input digest as the current build, nothing committed) |
-| `ext.export` | `export` on each definition (`purpose: "pull"`: `read`) | `workspace_id`, `entity_ids[]` (definitions, or Cells whose `def_ref` names one; deduplicated), `purpose?: package \| pull` → `manifest` (the AIWS manifest), `controls: [{ entity_id, ident, kind, version, def_rev, dir_rev, digest, dir, files: [{ name, obj_id?, size, text? }] }]`, `files: [{ path, obj_id?, size, text? }]` |
+| `ext.export` | `export` on each definition (`purpose: "pull"`: `read`) | `workspace_id`, `entity_ids[]` (definitions, or Cells / composite containers whose `def_ref` names one; deduplicated), `purpose?: package \| pull` → `manifest` (the AIWS manifest), `controls: [{ entity_id, ident, kind, version, def_rev, dir_rev, digest, dir, deps, built_at, files: [{ name, obj_id?, size, text? }] }]`, `files: [{ path, obj_id?, size, text? }]`. A package follows `def_dep`: what the chosen controls build on is added once (it needs `export` too); a pull names the chosen ones only |
 | `ext.install` | the caller's own library (`mode: dev`); the control panel installing for `owner` (`mode: installer`; a service caller is known by its session's `appid`) | `pikg: { bucket_id, key }` (a `.pikg` the caller bound into its own `user/aiworkspace/<user>/exports`, consumed once installed) or `pikg: { obj_id }` (a `.pikg` FileObject the caller may read, judged at the NDM gateway; the Installer passes its staged object) or `from: { workspace_id, entity_ids[] }` + `package: { name, version, title? }` (export straight into the library), `mode`, `owner?` → `pkg_id`, `version`, `action: installed \| satisfied \| replaced`, `controls` |
-| `ext.list_library` | any account: its own library | → `packages: [{ pkg_id, version, title, author, mode, installed_at, controls: [{ ident, name, kind, version, digest, title, description, catalog, dir }] }]` |
+| `ext.list_library` | any account: its own library | → `packages: [{ pkg_id, version, title, author, mode, installed_at, controls: [{ ident, name, kind, version, digest, title, description, catalog, dir, deps }] }]` |
 | `ext.uninstall` | its own library | `pkg_id` → `removed` (Workspaces keep what they imported, D4) |
 | `ext.library_bundle` | its own library | `pkg_id`, `idents?` → `manifest`, `controls: [{ ident, …, files: [{ name, size, obj_id, base64 }] }]` (the bytes, so a client can build them into a Workspace of another Zone) |
-| `ext.import` | as `ext.build` | `workspace_id`, `folder_id?`, `items: [{ pkg_id, ident }]` → one Commit for all items (`status`, `commit_id`, `controls: [{ ident, def_entity_id, action: created \| satisfied }]`) |
+| `ext.import` | as `ext.build` | `workspace_id`, `folder_id?`, `items: [{ pkg_id, ident }]` → one Commit for all items and what they build on (`status`, `commit_id`, `controls: [{ ident, def_entity_id, action: created \| satisfied }]`, dependencies first) |
+| `ext.pack` | an account (`export` on each definition, through `ext.export`); the package goes into its own `exports` bucket | `workspace_id`, `entity_ids[]` (definitions or instances; what they build on comes along), `package: { name, version?, title? }` (`name` `[a-z0-9-]`, ≤ 63; `version` default `0.1.0`) → `bucket_id`, `key` (`<name>-<version>.pikg`), `obj_id`, `size`, `digest` (`sha256:` of the file), `app_doc_object_id`, `app_did`, `pkg_id`, `version`, `payload_digest`, `tar_digest`, `download` (`{ bucket_id, key, version, obj_id, token }`, as `doc.export`) |
 
 - **Build.** The service never reads home paths: the client lists the directory over NFSP and passes each file either as
   an `obj_id` — only a named-store FileObject (`cyfile:…`, e.g. a file the file service holds as an object), which the
   service authorizes at the NDM gateway with the caller's token (as `asset.import_object`), stages and reads — or as
-  `base64` bytes the client read over NFSP with its own session (≤ 4 MiB per build). Files of a native home folder take
-  the second way: the `obj_id` NFSP reports for them, when it reports one, is a `sha256:` content hash, not an object
-  the service can fetch. Then: parse and check `component.json` and the entry files, compose
-  the definition, check compatibility with the instances (below), and commit once — folder (when missing), directory
+  `base64` bytes the client read over NFSP with its own session (≤ 4 MiB inline per build). Files of a native home
+  folder take the second way: the `obj_id` NFSP reports for them, when it reports one, is a `sha256:` content hash, not
+  an object the service can fetch. When the inline bytes would pass 4 MiB the client uploads the largest files first
+  as FileObjects it may read and names them by `obj_id` (Q22; buckyos-websdk `buildFiles` / `packBuildFiles` with an
+  uploader — the Desktop's asset upload, the CLI's PUT into the caller's own `exports` bucket); the parameters do not
+  change. Then: parse and check `component.json` and the entry files (a composite's `composition.json` included),
+  resolve `deps` and the slots' `cell:<ident>` against the folder (and the controls built in the same Commit, deps
+  first), compose the definition, check compatibility with the instances and the dependents (below), and commit once
+  — folder (when missing), directory
   (`entity.create` or `dir.replace`), definition (`entity.create` or `set_keys` / `unset_keys`), `entity.set_derived` —
   with read-set preconditions on the definition's and the directory's `content_rev` (`expect`). Nothing is committed
   on any failure. `dry_run` stops before staging and answers the diagnostics.
@@ -345,10 +418,16 @@ and `provenance_pkg`.
   `BUILD_BASE_REQUIRED`, with stale ones `REVISION_CONFLICT` / `BUILD_BASE_STALE` (`data: { def_entity_id, def_rev,
   dir_rev }`): pull, merge, build again.
 - **Diagnostics.** A failed build is `BUILD_FAILED` with `data.diagnostics: [{ file, line?, col?, severity: error |
-  warning, message, instances? }]` (JSON syntax errors carry line and column).
-- **Compatibility with instances.** Rebuilding an identity that Cells use fails when it narrows their contract:
-  `kind` changes, `accepts` loses a type, a binding disappears or becomes required, `config_schema.required` gains a
-  name; the diagnostic lists the Cells (`instances`). Migration is the user's (P2).
+  warning, message, code?, instances?, dependents? }]` (JSON syntax errors carry line and column). `code: DEP_MISSING`:
+  a `deps` entry, or a slot's `cell:<ident>` that is not in `deps`, names no definition of the folder. A slot's
+  `cell:<ident>` that names a composite fails too (a composite is a container, never a Cell).
+- **Compatibility with instances and dependents.** Rebuilding an identity fails when it narrows the contract what uses
+  it relies on: `kind` changes, `accepts` loses a type, a binding disappears or becomes required,
+  `config_schema.required` gains a name, and for a composite a slot disappears or accepts less. The diagnostics list
+  the instances (Cells and composite containers, `instances`) and the definitions that build on it (`def_dep`: one
+  diagnostic per dependent, `file` = its identity, `dependents: [{ ident, def_entity_id }]`). Rebuilding a definition
+  into a composite also fails while a dependent's slot accepts it as `cell:<ident>`. Layout and Chrome changes of a
+  composite are free: its instances are laid out anew and their Blocks stay as they are. Migration is the user's (P2).
 - **Input digest.** `sha256:` of the canonical JSON `{ files: [[name, obj_id], …] (sorted by name; inline files by the
   `obj_id` of their bytes), manifest_version, builder_version }`; `builder_version` is `aiws-ext-build/1`.
 - **Pull** is client-side: `ext.export { purpose: pull }` names the files (a definition that was never built from
@@ -356,10 +435,26 @@ and `provenance_pkg`.
   fetches `obj_id` files from `GET /kapi/aiworkspace/asset/<ws>/<obj_id>` and writes them into home over NFSP, and keeps
   `{ workspace_id, def_entity_id, def_rev, dir_rev }` in `.aiws-build.json` for its next build.
 - **Import.** `ext.import` builds each item from the library files (no gateway round trip: they are in the service's
-  store) with `provenance { pkg_id, version, digest }`. An identity already in the folder with the same provenance is
-  `satisfied` (no change); with other content it is `INVALID_OPERATION` / `EXT_IDENT_EXISTS` (P0 refuses other source
-  versions; local changes are never overwritten). Across Zones the client takes `ext.library_bundle` from its own
-  Zone and calls the target's `ext.build` with `base64` files and `provenance`.
+  store) with `provenance { pkg_id, version, digest }`, together with what the items build on (from the same package,
+  each once, dependencies first). An identity already in the folder with the same provenance is `satisfied` (no
+  change); with other content it is `INVALID_OPERATION` / `EXT_IDENT_EXISTS` (other source versions are refused until
+  upgrades exist; local changes are never overwritten) — except for a dependency brought along: whatever definition
+  of that identity the folder holds satisfies it, and the dependent builds on that one. Across Zones the client takes
+  `ext.library_bundle` from its own Zone (which carries the dependencies as well) and calls the target's `ext.build`
+  with `base64` files and `provenance`, dependencies first.
+- **Pack** (`ext.pack`, Q20; `store/src/pack.rs`): the package export of the chosen controls written as an `aiws`
+  PIKG by the service, with the CLI's rules (`cli/modules/pikg_archive.ts`, `pikg.ts`): a ustar archive of the bundle
+  (in each folder its entries sorted by name, a folder as `<path>/` before its content, files 0644, folders 0755,
+  owner 0, mtime 0, no links), gzip, and a stored ZIP of `APPDOC.json`, `PACKAGE_META.json` and `aiws.tar.gz`. The
+  AppDoc is `did:bns:<name>.<owner label>` (the owner is the caller's `did:bns` DID), `app_type: aiws`, one
+  sub-package `aiws` = package `all.aiws.<AppId>`, `create_time` the newest build time of the bundle's controls (the
+  same bundle packs the same bytes); it is not signed (the service holds no author key: signing stays with the author's PIKG tooling). The tar archive
+  is the one the CLI writes for the same bundle (`tar_digest`); the gzip bytes are not (flate2 level 6 here, Node zlib
+  `Z_RLE` there), so the payload digest, the package and AppDoc object ids derived from it and the `.pikg` file differ
+  from a CLI pack of the same controls, while the bundle, its manifest digests and every check an installer runs are
+  the same. The file is
+  bound under `<name>-<version>.pikg` in the caller's `exports` bucket: download it with `download.token`, or install
+  it with `ext.install { pikg: { bucket_id, key } }`.
 
 ### AIWS manifest and the `aiws` package
 
@@ -367,14 +462,18 @@ A bundle (and the `aiws` sub-package of a `.pikg`) is `aiws-manifest.json` plus 
 ([schemas/aiws-manifest.schema.json](schemas/aiws-manifest.schema.json)):
 
 ```json
-{ "manifest_version": 1, "purpose": "aiws", "host_api": { "html": 1, "declarative": 1 },
+{ "manifest_version": 2, "purpose": "aiws", "host_api": { "html": 2, "declarative": 1 },
   "controls": [{ "ident": "did:bns:alice#kpi-card", "name": "kpi-card", "kind": "declarative", "version": 3,
-                 "digest": "sha256:…", "dir": "controls/kpi-card/", "title": "KPI card" }],
+                 "digest": "sha256:…", "dir": "controls/kpi-card/", "title": "KPI card" },
+               { "ident": "did:bns:alice#kpi-board", "name": "kpi-board", "kind": "composite", "version": 1,
+                 "digest": "sha256:…", "dir": "controls/kpi-board/", "deps": ["did:bns:alice#kpi-card"] }],
   "workspace_templates": [] }
 ```
 
-`digest` is `sha256:` of the canonical JSON `[[file name, sha256 hex of its bytes], …]` sorted by name: an installer
-recomputes it from the files. `workspace_templates` is reserved (Q13); a manifest naming any is refused until
+`digest` is `sha256:` of the canonical JSON `[[file name, sha256 hex of its bytes], …]` sorted by name (a name in a
+sub-folder is its relative path): an installer recomputes it from the files. `deps` must equal the control's
+`component.json` `deps`, and every one must be another control of the same manifest: an open closure is
+`LIBRARY_PACKAGE_INVALID` (`library.rs` `verify_bundle`; the CLI's `pikg build` / `pack` / `info` check the same). `workspace_templates` is reserved (Q13); a manifest naming any is refused until
 templates exist. The PIKG side: AppDoc `app_type: "aiws"`, exactly one sub-package `pkg_list.aiws` (payload
 `aiws.tar.gz` = the bundle), no docker / web / native packages; the package id is the AppId of the AppDoc `did`, its
 version the AppDoc `version`. Installing one (`buckyos app install x.pikg` → control panel → `ext.install` with
@@ -385,13 +484,24 @@ library records it. The same package id at the same version with other content i
 CLI (`buckyos aiws`, buckyos-websdk `cli/modules/aiws.ts`; `aiws import` / `aiws export` stay the Block-control outline
 verbs): `build <dir> --workspace <ws> [--folder <id>] [--watch] [--dry-run] [--force] [--zone-path]` (`<dir>` is a local
 folder when one exists there — its files go inline — or a Zone path, e.g. `/home/alice/AI Workspace/Demo/controls/kpi-card`;
-`.aiws-build.json` there keeps the base; `--watch` follows a Zone folder), `pull <def> --workspace <ws> --out <dir>
+`.aiws-build.json` there keeps the base; `--watch` follows a Zone folder; sub-folders are part of the source; past 4 MiB
+inline the largest files go to your `exports` bucket and are sent by reference), `pull <def> --workspace <ws> --out <dir>
 [--local]`, `ext-export <def,…> --workspace <ws> --out <local dir> [--name <pkg>] [--version <v>] [--owner <did>]
 [--pikg] [--install]` (writes `<out>/aiws/`, then `pikg init/build/pack` in `<out>`; `--install` binds the `.pikg`
 into your `user/aiworkspace/<you>/exports` bucket and calls `ext.install`), `library list | install <file.pikg> | remove
-<pkg_id>`, `ext-import <pkg_id>#<ident>,… --workspace <ws> [--folder <id>]`; `pikg init --kind aiws-controls` writes a
-package skeleton with one declarative control, and `pikg build` / `pack` / `info` check an `aiws` bundle as the library
-does. The drivers are buckyos-websdk `src/aiws_ext.ts` (shared with the Desktop).
+<pkg_id>` (`list` shows each control's `deps`), `ext-import <pkg_id>#<ident>,… --workspace <ws> [--folder <id>]` (what
+the items build on comes along); `pikg init --kind aiws-controls [--composite]` writes a package skeleton with one
+declarative (or composite) control, and `pikg build` / `pack` / `info` check an `aiws` bundle as the library does. The
+drivers are buckyos-websdk `src/aiws_ext.ts` (shared with the Desktop: `checkComponent`, `checkComposition`,
+`collectSources`, `buildFiles` / `packBuildFiles`, `unbuiltChanges`, `controlSkeleton({ kind: 'composite' })`), the
+client call `AiWorkspaceClient.extPack`.
+
+### HTML host API additions (P1)
+
+Host API 2 (`window.aiws`, `html.api_version` 2) gains one member without a version change: `aiws.asset(name) →
+Promise<string>`, a blob URL of a file the definition lists in `assets` (read by the host from the source snapshot
+with the session, revoked when the Block unmounts; any other name is refused). A control checks
+`typeof aiws.asset === 'function'` and keeps working on hosts without it. Events and `parent` stay for host API 3.
 
 ## Ink (手写笔, `notepads/aiworkspace-handwriting-todo.md` D0)
 
@@ -613,9 +723,15 @@ Every built-in type is checked by a Rust validator in [core/src/types.rs](core/s
 three classes: **primitive** — the shape of a storage primitive itself (tree node, keyed object, Table, RichText, AssetRef);
 **reference** — a target exists, is readable and is of the admitted kind; **schema** — a business rule of the built-in type
 (value ranges, counts, which Surface a thing may sit on). Only primitive and reference checks are part of replay semantics; schema
-checks run at admission only. This is the contract M1 (T1-1) implements by splitting `init_entity` / `validate_update` into a
-primitive entry and a built-in-schema entry; today every class still runs on both paths. The doc comment of each validator starts
-with `Validator class:`.
+checks run at admission only (D01 方案 C, Q15). `init_entity` / `validate_update` go through two entries: `validate_primitive`
+(every path) and `validate_schema` (only when `PlanEnv.schema_checks`: admission of a Commit). Replay never enters the second: a
+replica re-applying accepted operations and `ws.import` (a package another deployment admitted) plan with `schema_checks` off, and
+the pure-application log applies row deltas without a planner at all. `types::schema_validations()` counts this thread's entries
+into `validate_schema` — `core/tests/composite.rs` `replay_runs_no_business_schema` proves replay leaves it unchanged, and
+`core/tests/apply_log.rs` that a log breaking a business rule but keeping the primitives replays. The reference checks of the
+schema-class validators below (a Cell's `source_ref` / `bindings` / `def_ref`, record `object_ref`s, wish inputs, annotation
+targets, Viewport and step targets) still sit inside their validators and so run at admission only; on a replica and on import
+they were judged where the Commit was admitted. The doc comment of each validator starts with `Validator class:`.
 
 | Type | Validator | Class | Checks |
 | --- | --- | --- | --- |
@@ -630,13 +746,16 @@ with `Validator class:`.
 | richtext | `entity_refs` (`richtext_ref_edge`) | reference | `object_embed` / `object_link` targets are indexed as references; existence judged by the planner's `check_ref_target` |
 | asset | `validate_asset` | primitive | `object_id` is a `type:hex` object id; `media_type` / `size` come from the verified content, never the client; `image { width, height }`; `poster` (an uploaded PNG / JPEG / WebP / GIF asset picturing the content: a video frame, a PDF's first page, a cover), `duration_ms`, `page_count` (positive integers); a new `object_id` without new values drops `image`, `poster`, `duration_ms`, `page_count` (`ASSET_CONTENT_KEYS`; doc/workspace/BuckyOS AI Workspace 多媒体对象.md) |
 | asset | `validate_asset` (object lookup) | reference | the object was uploaded and verified (`DEPENDENCY_UNAVAILABLE`); import tolerates a listed but missing object |
-| container | `validate_container` (kind, layout, system nodes) | primitive | tree node kinds `folder` / `surface` / `group`; `root` / `data` / `surfaces` only internal; kind never changes; `layout.mode` |
-| container | `validate_container` (`content_folder_id`) | reference | a Surface's content folder exists, is a folder and sits under `canvas-content` |
-| container | `validate_container` (`icon`, `config`, `locked`, `surface_id`, `system`) | schema | preset icon id and ≤ 64 KiB page config only on a Surface; `locked` only on a group; `system` only on a folder |
+| container | `container_primitive` (keys, kind, layout, system nodes) | primitive | tree node kinds `folder` / `surface` / `group` and the control kinds (`mindmap`, `composite`); `root` / `data` / `surfaces` only internal; kind never changes; `layout.mode` (implied by a control's kind; `def` for a composite); `system` only on a folder, `surface_id` only on a folder; `def_ref` / `bindings` only on a composite |
+| container | `container_primitive` (`content_folder_id`) | reference | a Surface's content folder exists, is a folder and sits under `canvas-content` |
+| container (composite) | `composite_refs` | reference | `def_ref` is required, local, names a live `kind: composite` definition when created and never changes; `bindings` targets are data entities |
+| container | `check_slot` (`slot` of a group or a control) | reference | only inside a control; inside a composite required and a slot of the definition; elsewhere unique among siblings |
+| container | `container_schema` (`title`, `icon`, `config`, `locked`) | schema | preset icon id only on a Surface; `config` ≤ 64 KiB only on a Surface or a control, a mind map's values checked (`check_control_config`), a composite's left to its `config_schema` in the clients; `locked` only on a group or a control |
 | record | `record_schema` / `validate_record` (values) | schema | `schema.properties` declare the keys; every `p:` value normalizes under its property type; required properties present |
 | record | `validate_record` (`object_ref` values) | reference | an `object_ref` property points at an existing entity of the declared target types |
 | cell | `validate_cell` (`view`, keys) | schema | known keys, `view.type` is a renderer id, `view.version`, title ≤ 256, `options` / `config` objects, config ≤ 64 KiB, `bindings` ≤ 32 identifiers |
 | cell | `validate_cell` (`source_ref`, `bindings`, `def_ref`) | reference | the bound data source exists and has the view's data type; bindings point at data types; `def_ref` is a block definition (judged when written; dangling configuration stays editable) |
+| cell | `check_slot` (from `validate_primitive`, `check_position`) | reference | `slot` only inside a control; inside a composite required and a slot of the definition (several Blocks may share one); elsewhere unique among the live siblings (`SLOT_CONFLICT`); re-judged by `tree.move`; a connector never turns into a box or back |
 | cell | `validate_cell` (table view configuration) | schema | `fields` / `filter` / `sorts` / `group` / `manual_order` only on table views, named fields live, ≤ 4 sorts, group field type |
 | cell | `validate_cell` (`config.snapshot`) | primitive | an embedded snapshot is an AssetRef (checked by `validate_asset`) |
 | cell (connector) | `validate_connector` (shapes) | schema | `flip`, `route`, ≤ 64 `controls`, `label.t` in [0, 1]; `start` / `end` are `{ entity_id, anchor { kind: named, id } }` |
@@ -655,10 +774,11 @@ with `Validator class:`.
 | wish | `validate_wish` (fields) | schema | prompt ≤ 20 000 chars, `executor`, `output_mode`, `output { container_id, surface_id, name, type }`, ≤ 200 inputs with unique names, size limits of `analysis` / `last_run` / `executor_config`, `knowledge` / `refinements` / `analysis` shapes (`wish.rs`) |
 | wish | `check_input` (selector shape) | schema | a wish input is `entity`, `table_view { cell_id }` or `table_query { filter?, sorts?, fields? }`; `version { mode: follow \| fixed }` |
 | wish | `check_input` (targets), `validate_wish` (`program`) | reference | the input entity exists and a `table_view` cell is a table view of it; the program source object was uploaded |
-| block-def | `validate_block_def` | schema | `def_id` renderer id, `version`, `kind` declarative / html with the matching body, `accepts` known data types, `default_size`, ≤ 512 KiB |
+| block-def | `block_def_primitive` (`source_dir`, `deps`) | primitive, reference | `deps` is `[{ ident, entity_id }]` (≤ 32, no repeats) and only build / import / internal / replay Commits change it; `source_dir` a live directory, each `deps` target a live definition, no cycle through `deps` (`REFERENCE_CYCLE`); judged when written |
+| block-def | `block_def_schema` | schema | known keys, `def_id` renderer id, `ident`, `version`, `manifest_version` ≤ 2, `kind` declarative / html / composite with the matching body (`composition`: an object ≤ 64 KiB, ≤ 16 slots named `[a-z][a-z0-9_]{0,31}`, no `events`), `accepts` known data types, `default_size`, bindings, catalog, agent, provenance, ≤ 512 KiB |
 | any (derived record) | `check_derived` | schema | the dependency record `{ wish_id, run_id, executor, inputs[], … }` of a generated result |
 | any (keyed object) | `check_keys` / `opt_text` / `check_locked` | schema | helper checks used by the validators above: known keys, bounded strings, `locked` boolean |
-| any (references) | `entity_refs`, `plan.rs` `check_ref_target` | reference | every indexed reference target is a live, readable entity of the admitted types (`REFERENCE_BROKEN`) |
+| any (references) | `entity_refs`, `plan.rs` `check_ref_target` | reference | every indexed reference target is a live, readable entity of the admitted types (`REFERENCE_BROKEN`); a composite's `def_ref` is a `def` edge and its `bindings` `bind` edges, a definition's `deps` are `def_dep` edges (strong) |
 
 ### Known limitations (13.2)
 
@@ -748,7 +868,7 @@ lands. The list is `server/src/lib.rs` `METHOD_LEVELS`; this table mirrors it.
 | `control.list`, `control.describe` | experimental | `kind` (describe) — the Block-control catalogue (`aiws/controls.json`: kind, summary, when, formats; describe adds the `agent` self-description) |
 | `control.import` | experimental | `parent_id`, `kind?` (`mindmap`), `format?` (`markdown` \| `opml`), `text`, `at? { x, y }`, `title?`, `config?`, `idempotency_key?` — a new control holding the outline, one Commit as the caller (its answer plus `container_id`, `nodes`) |
 | `control.export` | experimental | `entity_id`, `format?` — the control's Blocks as a Markdown outline or OPML (`text`), all expanded |
-| `ext.build`, `ext.export`, `ext.install`, `ext.list_library`, `ext.uninstall`, `ext.library_bundle`, `ext.import` | experimental | see “Extension controls” |
+| `ext.build`, `ext.export`, `ext.install`, `ext.list_library`, `ext.uninstall`, `ext.library_bundle`, `ext.import`, `ext.pack` | experimental | see “Extension controls” |
 | `lock.acquire` / `lock.renew` / `lock.release` / `lock.break` / `lock.list` | stable | `entity_ids[]`, `session_id`; `lock_ids[]`; `entity_id` |
 | `show.start` / `show.heartbeat` / `show.publish` / `show.command` / `show.watch` / `show.notes` / `show.end` | internal | see “Non-public shows” |
 | `diag.list_unretained`, `diag.verify_refs` | internal | |
