@@ -1,12 +1,13 @@
-/* UI improvement §16 (UI-M01…M02): the canvas on a phone. An emulated Pixel 7 (touch, small screen) opens a
- * workspace in its tab: view mode only, one toolbar with the canvas icon and switcher, and Miro-style touch
- * gestures driven through real multi-touch input (CDP), not synthetic DOM events. What the phone does to the
- * view is asserted on the camera transform; that it leaves the shared work state alone, through a desktop. */
+/* UI improvement §16 (UI-M01…M07): the canvas on a phone. An emulated Pixel 7 (touch, small screen) opens a
+ * workspace in its tab: a free canvas in view mode, one toolbar with the canvas icon and switcher, and Miro-style
+ * touch gestures driven through real multi-touch input (CDP), not synthetic DOM events; a flow page in edit mode
+ * (§16.5). What the phone does to the view is asserted on the camera transform; that it leaves the shared work
+ * state alone, through a desktop. */
 
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { devices, type CDPSession, type Page } from '@playwright/test'
-import { expect, openWorkspacePage, test, type Api } from './fixtures'
+import { expect, expectAllCommitted, openWorkspacePage, test, type Api } from './fixtures'
 
 const ALICE = 'tok-alice'
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the browser comes from the project, the rest is the phone
@@ -375,4 +376,107 @@ test('UI-M06 extension controls on a phone (扩展控件 M6): read-only — a ta
   await expect(page.getByTestId('aiws-composite-chrome-board')).toBeVisible()
   await expect(page.getByTestId('aiws-html-static-bc')).toBeVisible()
   expect((await api.rpc(ALICE, 'ws.get_info', { workspace_id: ws.workspace_id })).head_seq).toBe(seq)
+})
+
+test('UI-M07 a phone edits a flow page (§16.5): typing in place, ＋ inserts below, ⋮⋮ moves (menu or finger) and deletes, undo in the one toolbar; a free canvas stays view only', async ({ page, api }) => {
+  const ws = await api.sample(ALICE, `phone flow ${Date.now()}`)
+  // a free canvas after the page
+  expect((await api.commit(ALICE, ws, [
+    { op: 'entity.create', entity_id: 'free-content', type_id: 'buckyos.container', parent_id: 'canvas-content', order_key: 'z', payload: { kind: 'folder', system: 'surface_content', surface_id: 'free', title: 'Free' } },
+    { op: 'entity.create', entity_id: 'free', type_id: 'buckyos.container', parent_id: 'surfaces', order_key: 'z', payload: { kind: 'surface', layout: { mode: 'free' }, title: 'Free', content_folder_id: 'free-content' } },
+  ])).status).toBe('accepted')
+  const order = async () => ((await api.rpc(ALICE, 'doc.list_children', { workspace_id: ws.workspace_id, entity_id: 'surface-main' })).children as { entity_id: string; type_id: string }[])
+    .filter((child) => child.type_id === 'buckyos.cell').map((child) => child.entity_id)
+  const frame = (id: string) => page.getByTestId(`aiws-cell-frame-${id}`)
+  const viewport = page.viewportSize()!
+  await openWorkspacePage(page, ALICE, ws.workspace_id)
+  await expect(page.getByTestId('aiws-conn')).toHaveAttribute('data-status', 'live')
+
+  // the page opens in edit mode with the phone's one toolbar, now with undo / redo
+  await expect(page.getByTestId('aiws-workspace')).toHaveAttribute('data-phone', 'true')
+  await expect(page.getByTestId('aiws-flow')).toHaveAttribute('data-mode', 'edit')
+  await expect(page.getByTestId('aiws-main-toolbar')).toHaveCount(0)
+  await expect(page.getByTestId('aiws-object-toolbar')).toHaveCount(0)
+  const toolbar = page.getByTestId('aiws-view-toolbar')
+  await expect(toolbar.getByTestId('aiws-undo')).toBeDisabled()
+  await expect(toolbar.getByTestId('aiws-redo')).toBeDisabled()
+  for (const id of ['aiws-surface-switch', 'aiws-undo', 'aiws-redo', 'aiws-annotate-start', 'aiws-principal', 'aiws-share']) {
+    const b = (await toolbar.getByTestId(id).boundingBox())!
+    expect(b.x, id).toBeGreaterThanOrEqual(0)
+    expect(b.x + b.width, id).toBeLessThanOrEqual(viewport.width)
+  }
+  await expect(page.getByTestId('aiws-flow-continue')).toBeVisible()
+  // both handles sit in the left margin, on the screen
+  for (const id of ['aiws-flow-plus-cell-notes', 'aiws-flow-handle-cell-notes']) {
+    const b = (await page.getByTestId(id).boundingBox())!
+    expect(b.x, id).toBeGreaterThanOrEqual(0)
+    expect(b.x + b.width, id).toBeLessThanOrEqual((await frame('cell-notes').boundingBox())!.x + 1)
+  }
+  await page.screenshot({ path: 'test-results/aiworkspace-mobile/m07-page.png' })
+
+  // a tap puts the caret in the text; typing reaches the document
+  await page.getByTestId('aiws-richtext-notes').locator('[data-block-id="n-end"]').tap()
+  await page.keyboard.press('End')
+  await page.keyboard.press('Enter')
+  await page.keyboard.type('typed on a phone')
+  await expect.poll(async () => JSON.stringify(await api.ast(ALICE, ws.workspace_id, 'notes'))).toContain('typed on a phone')
+  await expect(toolbar.getByTestId('aiws-undo')).toBeEnabled()
+
+  // ＋ inserts below the Block; its menu stays on the screen
+  await page.getByTestId('aiws-flow-plus-cell-notes').tap()
+  const addMenu = page.getByTestId('aiws-flow-add-menu')
+  await expect(addMenu).toBeVisible()
+  const addBox = (await addMenu.boundingBox())!
+  expect(addBox.x).toBeGreaterThanOrEqual(0)
+  expect(addBox.x + addBox.width).toBeLessThanOrEqual(viewport.width)
+  await addMenu.getByTestId('aiws-flow-add-table').tap()
+  await expect.poll(async () => (await order()).length).toBe(6)
+  const added = (await order())[1]
+  expect(await order()).toEqual(['cell-notes', added, 'cell-all-tasks', 'cell-open-tasks', 'cell-info', 'cell-diagram'])
+  await expect(frame(added)).toBeVisible()
+
+  // ⋮⋮ opens the Block's menu: move down
+  await page.getByTestId(`aiws-flow-handle-${added}`).tap()
+  await page.getByTestId('aiws-flow-block-menu').getByTestId(`aiws-down-${added}`).tap()
+  await expect.poll(order).toEqual(['cell-notes', 'cell-all-tasks', added, 'cell-open-tasks', 'cell-info', 'cell-diagram'])
+
+  // a finger on ⋮⋮ drags the Block: dropped on the lower half of the table below, it goes after it
+  const fingers = await Fingers.of(page)
+  await page.getByTestId('aiws-flow-host').evaluate((host, id) => {
+    const grip = host.querySelector(`[data-testid="aiws-flow-handle-${id}"]`)!
+    host.scrollTop += grip.getBoundingClientRect().top - 160
+  }, added)
+  await page.waitForTimeout(200)
+  const grip = (await page.getByTestId(`aiws-flow-handle-${added}`).boundingBox())!
+  const below = (await frame('cell-open-tasks').boundingBox())!
+  const from = { x: grip.x + grip.width / 2, y: grip.y + grip.height / 2 }
+  const to = { x: from.x, y: Math.min(below.y + below.height * 0.75, viewport.height - 80) }
+  expect(to.y).toBeGreaterThan(below.y + below.height / 2)
+  await fingers.down(from)
+  for (let i = 1; i <= 12; i += 1) {
+    await fingers.move({ x: from.x, y: from.y + ((to.y - from.y) * i) / 12 })
+    await page.waitForTimeout(16)
+  }
+  await expect(page.getByTestId('aiws-flow-drop')).toBeVisible()
+  await fingers.up()
+  await expect.poll(order).toEqual(['cell-notes', 'cell-all-tasks', 'cell-open-tasks', added, 'cell-info', 'cell-diagram'])
+
+  // delete from the menu; undo in the toolbar brings it back
+  await page.getByTestId(`aiws-flow-handle-${added}`).tap()
+  await page.getByTestId('aiws-flow-block-menu').getByTestId(`aiws-delete-block-${added}`).tap()
+  await expect.poll(async () => (await order()).length).toBe(5)
+  await expectAllCommitted(page)
+  await toolbar.getByTestId('aiws-undo').tap()
+  await expect.poll(order).toEqual(['cell-notes', 'cell-all-tasks', 'cell-open-tasks', added, 'cell-info', 'cell-diagram'])
+  await expect(frame(added)).toBeVisible()
+  await expect(toolbar.getByTestId('aiws-redo')).toBeEnabled()
+
+  // the switcher says what a phone may edit; a free canvas is still view only, without undo / redo
+  await toolbar.getByTestId('aiws-surface-switch').tap()
+  const list = page.getByTestId('aiws-surface-list')
+  await expect(list.getByTestId('aiws-phone-note')).toContainText('流式页')
+  await list.getByTestId('aiws-surface-item-free').getByRole('menuitem').tap()
+  await expect(page.getByTestId('aiws-canvas')).toHaveAttribute('data-mode', 'view')
+  await expect(toolbar.getByTestId('aiws-undo')).toHaveCount(0)
+  await expect(toolbar.getByTestId('aiws-zoom-menu')).toBeVisible()
 })

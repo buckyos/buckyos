@@ -4,7 +4,7 @@
  * Interactions are not shown — there is no global interaction system yet — and online members only appear once
  * presence exists. The guide (§7.3) appears when the workspace has a guide path, the show button (§7.2) when it has a
  * presentation path. On a phone (§16) it is the only toolbar and starts with the canvas switcher (icon, name, the
- * workspace's canvases). */
+ * workspace's canvases); on a flow page, which a phone edits (§16.5), undo and redo follow it. */
 
 import { useEffect, useState } from 'react'
 import { Link2, LogIn, LogOut, MessageSquarePlus, Minus, Play, Plus, Signpost } from 'lucide-react'
@@ -16,10 +16,11 @@ import { useAiwsText } from '../../useAiwsText'
 import type { Camera } from '../canvas/render/camera'
 import { MAX_ZOOM, MIN_ZOOM } from '../canvas/render/camera'
 import type { RunMode } from '../../state/runMode'
+import { HistoryButtons } from '../canvas/ObjectToolbar'
 import { RunModeToggle } from '../canvas/tools'
 import { SurfaceSwitcher } from './MainToolbar'
 import { MenuList, PopoverPanel, usePopover, type MenuItem } from './popover'
-import { useShell, ZOOM_PRESETS } from './shellContext'
+import { useCanvasMode, useShell, ZOOM_PRESETS } from './shellContext'
 import { ObjectImage } from '../../../../presentation/ObjectIcon'
 import { useCurrentUser } from '../../../../presentation/currentUser'
 
@@ -36,11 +37,13 @@ export function ViewToolbar({ camera, hasSelection, onFitAll, onFitSelection, an
   runMode?: RunMode
 }) {
   const shell = useShell()
+  const mode = useCanvasMode()
   const { t } = useAiwsText()
   const compact = shell.size === 'narrow' || shell.phone
   return (
     <div className="aiws-panel aiws-view-toolbar" role="toolbar" aria-label={shell.phone ? t('aiworkspace.shell.view.canvasTools') : t('aiworkspace.shell.view.tools')} data-testid="aiws-view-toolbar">
       {shell.phone && <SurfaceSwitcher phone />}
+      {shell.phone && mode === 'edit' && <HistoryButtons size={18} />}
       <GuideButton compact={compact} />
       {!shell.phone && <ShowButton />}
       {annotate && <AnnotateButton annotate={annotate} compact={compact} />}

@@ -193,9 +193,10 @@
   .aiws-flow-gutter { opacity: 0.55; }
   .aiws-flow .aiws-fblock[data-view='table'] .aiws-table-bar .aiws-table-tool, .aiws-flow .aiws-table-foot .aiws-table-count, .aiws-root button.aiws-md-toggle, .aiws-root button.aiws-row-delete { opacity: 1; }
 }
-.aiws-workspace[data-phone='true'] .aiws-flow { padding-left: 30px; padding-right: 0; }
-.aiws-workspace[data-phone='true'] .aiws-flow-gutter { left: -30px; width: 28px; }
-.aiws-workspace[data-phone='true'] .aiws-flow-gutter .aiws-flow-handle:not(.aiws-flow-grip) { display: none; }
+/* a phone edits the page (UI improvement §16.5): a narrower margin that still holds ＋ and ⋮⋮ */
+.aiws-workspace[data-phone='true'] .aiws-flow { padding-left: 48px; padding-right: 0; }
+.aiws-workspace[data-phone='true'] .aiws-flow-gutter { left: -48px; width: 48px; }
+.aiws-workspace[data-phone='true'] button.aiws-flow-handle { height: 30px; }
 .aiws-workspace[data-phone='true'] .aiws-page-title { font-size: 24px; }
 /* a record on a page: Notion's property list */
 .aiws-flow .aiws-record { width: 100%; }
@@ -1019,8 +1020,8 @@
 .aiws-canvas { -webkit-touch-callout: none; }
 .aiws-canvas .aiws-frame-block.is-editing * { touch-action: auto; }
 
-/* phone (§16): one toolbar across the top (canvas switcher, annotation, zoom, identity, share), view only;
-   the page itself never pinch-zooms (iOS ignores user-scalable=no) */
+/* phone (§16): one toolbar across the top (canvas switcher, annotation, zoom, identity, share; undo / redo on a flow
+   page, which a phone edits); the page itself never pinch-zooms (iOS ignores user-scalable=no) */
 .aiws-workspace[data-phone='true'] { touch-action: pan-x pan-y; }
 .aiws-workspace[data-phone='true'] .aiws-chrome-top { top: calc(8px + env(safe-area-inset-top)); left: calc(8px + env(safe-area-inset-left)); right: calc(8px + env(safe-area-inset-right)); }
 .aiws-workspace[data-phone='true'] .aiws-view-toolbar { flex: 1 1 auto; min-width: 0; margin-left: 0; }

@@ -2,7 +2,8 @@
  * groups follow in sibling order with no frame of their own; in edit mode every editor is live, so clicking puts
  * the caret where it lands. Hovering a Block shows its handles in the left margin: ＋ inserts below, ⋮⋮ drags it
  * to another place (or into a group) and, clicked, selects it and opens its menu. Below the last Block a click
- * continues writing. Moves are auto-merge (`tree.place` / `tree.move`). */
+ * continues writing. Moves are auto-merge (`tree.place` / `tree.move`). A phone edits a page the same way (UI
+ * improvement §16.5): touch has no hover, so the handles stay faintly shown and a finger drags ⋮⋮. */
 
 import { useContext, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { GripVertical, Plus } from 'lucide-react'
@@ -20,6 +21,7 @@ import { richtextToMindmap } from '../controls/mindmap/convert'
 import { controlRegistry } from '../controls/registry'
 import { modePolicy, type CanvasMode } from '../blocks/registry'
 import { MenuList, useOverlayMounted, type MenuItem } from '../shell/popover'
+import { useShell } from '../shell/shellContext'
 import { registryEntries, type CatalogEntry } from './catalog'
 import { deleteOps, flowChildren, moveInFlow } from './flowOps'
 import { accepted, renameBase, renameSurface, surfaceWriteReason } from './surfaceManage'
@@ -339,10 +341,12 @@ function FlowBlock({ cell, siblings, index, ...props }: ItemProps & { cell: Enti
   const { policy, mode } = props
   const isSelected = props.selected.has(cell.entity_id)
   const ref = useRef<HTMLElement>(null)
-  // an HTML Block runs code: mounted after a click in run mode or "Run once", never just because the page is edited (Q27)
+  // an HTML Block runs code: mounted after a click in run mode or "Run once", never just because the page is edited (Q27);
+  // a phone never runs it
   const html = cell.view_type === 'html'
   const [running, setRunning] = useState(false)
   const runMode = useContext(RunModeContext)
+  const { phone } = useShell()
   // a selected Block takes the keyboard focus (arrows, Enter, Delete reach the page)
   useLayoutEffect(() => {
     const el = ref.current
@@ -376,7 +380,7 @@ function FlowBlock({ cell, siblings, index, ...props }: ItemProps & { cell: Enti
         <Gutter entity={cell} siblings={siblings} index={index} kind="block" {...props} />
         {showTitle && <BlockTitle cell={cell} title={title} canRename={policy.writes && mode === 'edit' && cell.capabilities.includes('update')} />}
         <div className="aiws-cell-body">
-          {html && !running && !runMode.interactive && policy.editContent && <button type="button" className="aiws-link" data-testid={`aiws-flow-run-${cell.entity_id}`} onClick={() => setRunning(true)}>{t('aiworkspace.extension.html.run')}</button>}
+          {html && !running && !runMode.interactive && policy.editContent && !phone && <button type="button" className="aiws-link" data-testid={`aiws-flow-run-${cell.entity_id}`} onClick={() => setRunning(true)}>{t('aiworkspace.extension.html.run')}</button>}
           {/* every other editor of a page in edit mode is live (phase two §8.1): no activation step */}
           <BlockHost cellId={cell.entity_id} mode={mode} view="canvas" selected={isSelected} editorActive={html ? running : policy.editContent}
             onActivate={html ? () => setRunning(true) : undefined} onDeactivate={html ? () => setRunning(false) : undefined} />

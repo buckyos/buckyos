@@ -4,9 +4,9 @@
  * left — with the right panel taking layout width (a drawer in narrow windows). This view owns the
  * selection, the pointer tool, one-shot placement, insertion, the object clipboard, grouping,
  * cross-Surface moves and the per-Surface viewport; the RenderHost owns rendering and gestures. Menus,
- * buttons, context menus and shortcuts call the same actions. A phone (§16) gets the canvas in view mode
+ * buttons, context menus and shortcuts call the same actions. A phone (§16) gets a free canvas in view mode
  * with one toolbar (canvas switcher, annotation, zoom, identity, share) and touch gestures, and keeps a
- * viewport of its own. */
+ * viewport of its own; a flow page it edits (§16.5), with undo / redo in that toolbar. */
 
 import { onInsertDefinition } from '../extensions/extEvents'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
@@ -143,7 +143,7 @@ function EmptyCanvas({ mode }: { mode: CanvasMode }) {
                 <button type="button" className="is-primary" data-testid="aiws-create-first-surface" onClick={() => { void create('free') }}>{t('aiworkspace.canvas.empty.newFree')}</button>
                 <button type="button" data-testid="aiws-create-first-flow" onClick={() => { void create('flow') }}>{t('aiworkspace.canvas.empty.newFlow')}</button>
               </div>
-            ) : <p className="aiws-muted">{t(shell.phone ? 'aiworkspace.canvas.empty.phoneViewOnly' : 'aiworkspace.canvas.empty.noPermission')}</p>}
+            ) : <p className="aiws-muted">{t(shell.phone ? 'aiworkspace.canvas.empty.phoneNoCreate' : 'aiworkspace.canvas.empty.noPermission')}</p>}
           </div>
           <div className="aiws-chrome-top">
             {shell.phone ? <ViewToolbar camera={null} hasSelection={false} onFitAll={() => undefined} onFitSelection={() => undefined} annotate={null} /> : <MainToolbar canvas={null} />}

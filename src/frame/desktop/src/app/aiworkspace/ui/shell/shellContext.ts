@@ -90,7 +90,8 @@ export interface ShellApi {
   setPref: (key: keyof LayoutPrefs, value: boolean) => void
   resetLayout: () => void
   size: SizeClass
-  /** A phone (§16): the canvas only, in view mode, with one toolbar; nothing about it is written to the shared work state. */
+  /** A phone (§16): the canvas only, with one toolbar — a free canvas in view mode, a flow page in edit mode (§16.5);
+   * nothing about it is written to the shared work state. */
   phone: boolean
   /** The Mock processing panel and other developer tools are shown (dev server or dev override). */
   devTools: boolean
@@ -116,11 +117,12 @@ export interface ShellApi {
 
 export const ShellContext = createContext<ShellApi | null>(null)
 
-/** The canvas sub-mode (user work state `canvas:mode`); a phone always views (§16) and leaves the stored mode alone. */
+/** The canvas sub-mode (user work state `canvas:mode`); a phone views a free canvas and edits a flow page (§16.5),
+ * and leaves the stored mode alone. */
 export function useCanvasMode(): CanvasMode {
-  const phone = useContext(ShellContext)?.phone ?? false
+  const shell = useContext(ShellContext)
   const state = useUserState<CanvasMode>('canvas:mode')
-  if (phone) return 'view'
+  if (shell?.phone) return shell.activeSurface && shell.activeSurface.layout?.mode !== 'free' ? 'edit' : 'view'
   return state && CANVAS_MODES.includes(state) ? state : 'edit'
 }
 
