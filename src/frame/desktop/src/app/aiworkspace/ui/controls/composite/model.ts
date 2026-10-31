@@ -2,7 +2,7 @@
  * definition's `composition` and config defaults are projected there), and the client-side business rules the core
  * leaves to clients (Q15): which slot a Block may fill, how many it holds, what a new instance starts with. */
 
-import { compositeOf, slotAccepts, slotFor, type Composition } from '@controls/composite'
+import { compositeOf, slotAccepts, slotFor, unknownAlgorithm, type Composition } from '@controls/composite'
 import { ALL_AUTO } from '@controls/placement'
 import { randomId } from '../../../api/ids'
 import type { EntityEnvelope, Json, Operation } from '../../../api/types'
@@ -20,9 +20,10 @@ export function isComposite(e: { type_id: string; kind?: string | null } | undef
   return !!e && e.type_id === 'buckyos.container' && e.kind === COMPOSITE
 }
 
-/** Does this composite keep every child where it is put (`fixed`)? */
+/** Does this composite keep every child where it is put (`fixed`, or a layout this host does not know, Q33)? */
 export function isFixedComposite(store: WorkspaceStore, containerId: string): boolean {
-  return compositionOf(store, containerId).composition?.layout.algorithm === 'fixed'
+  const composition = compositionOf(store, containerId).composition
+  return composition?.layout.algorithm === 'fixed' || unknownAlgorithm(composition) !== null
 }
 
 /** A definition's identity (`<author_did>#<name>`), for `cell:<ident>` slots. */

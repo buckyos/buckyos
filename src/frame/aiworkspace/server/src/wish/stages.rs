@@ -435,6 +435,7 @@ fn collector_for(stage: &Stage, program_only: bool) -> WsResult<Collector> {
         checks_def: a.get("checks").and_then(Value::as_array).cloned().unwrap_or_default(),
         prev_bindings: aiworkspace_core::wish::current_results(&stage.wish.payload).into_iter().collect(),
         inputs: stage.input_infos()?,
+        composites: stage.composite_defs()?,
         workdir: stage.workdir.clone(),
         program_only,
         ..Default::default()
@@ -787,9 +788,11 @@ fn mock_results(st: &Arc<StageState>, provided: &Value) -> WsResult<Vec<Value>> 
             }
             "control" => {
                 // checked like the model's: the tree and its bounds, `under` against this run's inputs
-                let collector = Collector { contract: json!({ "results": [], "dynamic": true }), inputs: st.stage.lock().unwrap().input_infos()?, ..Default::default() };
+                let stage = st.stage.lock().unwrap();
+                let collector = Collector { contract: json!({ "results": [], "dynamic": true }), inputs: stage.input_infos()?, composites: stage.composite_defs()?, ..Default::default() };
+                drop(stage);
                 let mut raw = json!({ "name": name, "type": "control", "title": v["title"] });
-                for k in ["kind", "config", "children", "under"] {
+                for k in ["kind", "config", "children", "under", "def", "slots"] {
                     if let Some(x) = c.get(k) {
                         raw[k] = x.clone();
                     }

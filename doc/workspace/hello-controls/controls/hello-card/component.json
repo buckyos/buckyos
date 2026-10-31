@@ -1,8 +1,8 @@
 {
-  "manifest_version": 1,
+  "manifest_version": 3,
   "ident": { "author_did": "did:bns:alice", "name": "hello-card" },
   "kind": "html",
-  "host_api": 2,
+  "host_api": 3,
   "title": "Hello Card",
   "description": "Shows one task record as a card with a Done button. Writes go through the host (aiws.record().set), never to the data directly.",
   "accepts": ["buckyos.record"],
@@ -17,6 +17,10 @@
   },
   "bindings": {
     "task": { "accepts": ["buckyos.record"], "required": true, "title": "Task", "description": "The task record this card shows" }
+  },
+  "events": {
+    "completed": { "title": "Task completed", "description": "Raised when someone clicks Done (after the record is marked done)",
+                   "params": { "title": { "type": "string", "description": "The task title" }, "task": { "type": "entity", "description": "The task record" } } }
   },
   "entry": { "html": "view.html", "css": "style.css", "js": "behavior.js" },
   "assets": ["check.svg"],

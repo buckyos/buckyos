@@ -1,4 +1,4 @@
-# AI Workspace 扩展控件（P0、P1）：实施记录与验收报告
+# AI Workspace 扩展控件（P0–P3）：实施记录与验收报告
 
 > 日期：2026-10-30。对应设计：[扩展实现思路](<BuckyOS AI Workspace 扩展实现思路.md>) v0.8（D1–D8、A1–A7、Q18 / Q19），任务单 [notepads/aiworkspace-extension-p0-todo.md](<../../notepads/aiworkspace-extension-p0-todo.md>)（M0–M6）。全部改动未提交（buckyos、buckyos-websdk 两仓）。
 >
@@ -195,3 +195,73 @@ DV 中发现并已修正的问题（都已重新部署后通过）：
 - `ext.pack` 产物与 CLI 打包不逐字节相同（§8.3 第 4 条）。
 - composite 的 `max` / `accepts` 只由客户端执行；内核与服务都不数实例里的子节点。
 - 跨 Zone 中转引入组合控件时，客户端须按依赖顺序逐个 `ext.build`（服务的 `ext.import` 只管本 Zone 库）。
+
+## 9. P2 + P3：事件、属性级写入、升级迁移、parent、组合结果、模板（2026-10-31）
+
+> 对应任务单 [notepads/aiworkspace-extension-p2p3-todo.md](<../../notepads/aiworkspace-extension-p2p3-todo.md>)（M0–M7，Q26–Q33 用户 2026-10-30 裁决全部按建议）。改动在 buckyos、buckyos-websdk 两仓，未提交。契约以 aiworkspace README “Extension controls P2 / P3” 为准。
+
+### 9.1 结论
+
+- **契约（M0）**：一次升版：`manifest_version` 3（`events`、declarative `button`、composite `events` / `grid`、非空 `workspace_templates`）、HTML host API 3（`aiws.emit`、`createBlock { parent, slot }`、`context.interactive`，宿主同时跑 2 / 3），block-def 新键 `events`，实例新键 `on`；`PROTOCOL_VERSION` 不变。新 schema `migration.schema.json`、`template.schema.json`；`component` / `composition` / `block-def` / `aiws-manifest` 升 3；`commit-request` 加选择器 `entity_prop` 与 `$defs.set_props`；`operations.json` 加 `entity.set_props`；错误码 `EXT_LOCAL_CHANGES`（`EXT_IDENT_EXISTS` 补进子码表）、诊断码 `EVENT_UNDECLARED`。hello-controls：`hello-card` v3（`events.completed`，`behavior.js` 真调 `aiws.emit`）、`hello-board` v3（`events.card_done` 冒泡）、`team-board.template.json` 改为清单项形态，`aiws-manifest.json` 升 3、摘要重算。
+- **内核（M1）**：`entity.set_props { entity_id, key: config | bindings | on, props, expect? }`（`plan.rs`）：每个属性一条修订 `p:<key>.<name>`，按属性 `expect` 与冲突（选择器 `entity_prop`），逆操作只还原自己写的属性且以本次 seq 守护；整键 `set_keys` / `unset_keys` 提升该键全部 `p:` 修订；`resolve_cell` 认 `entity_prop`。原语类：`on` 形状（Cell 与 composite 容器；≤ 16 事件、每个 ≤ 4 handler、`kind` 枚举、≤ 16 KiB；connector / ink / 非 composite 容器不可带）、block-def `events` 形状且只由 build / import / 内部 / 重放写、composition 的 `events` 形状。outline 投影 `def_events` / `on_events`。`MANIFEST_VERSION = 3`、`HTML_API_LATEST = 3`。
+- **服务（M2–M5）**：`store/src/ext.rs`：`check_events`、declarative `button`（`emit` 未声明 → `EVENT_UNDECLARED`）、composition `events`（slot 的 `cell:<ident>` 定义须声明该事件，build 时写定义的 `events` 并拷贝子事件参数）、`grid`；HTML `host_api` 2 / 3（3 需 v3，v2 带事件给警告）。实例兼容改为**按实例判断**（`instance_issues`：绑定、必填、accepts、必填属性、事件 / 事件参数、slot 与 accepts），`Migration`（`config` / `bindings` / `events` 的 rename / drop / fill，`slots` 的 rename / move）在同一 Commit 生成 `entity.set_props` / `tree.move { slot }`；`narrowing` 加事件删除 / 参数删除（依赖者检查用）。`ext.build` 收 `upgrade` / `migration`；新 RPC `ext.upgrade`（库里取包的当前版本、同包依赖一并、`unchanged` / `EXT_LOCAL_CHANGES` / `upgraded { from, to, migrated }`、`dry_run` 给 `plan`、消息 `upgrade <ident> <旧>→<新>`）；`ext.import` 的 `EXT_IDENT_EXISTS` 带 `library_version`。Agent 组合结果：`core/src/wish.rs` contract 允许 `def`，`store/src/wish/results.rs` `composite`、`wish/plan.rs` `plan_composite`（结果 Block 从网格挪进 slot、输入 Block `tree.clone`、输入数据新建 Cell、内联富文本新建；`under: { input, slot }`），工作区组合控件列进 `WORKSPACE.md`，`put_result` schema 与 `aiws.result.control({ def, slots })`。模板：新 `store/src/template.rs`（强引用闭包 + 系统节点 + 祖先的过滤 `materialize`，去讲者备注；`templates/<id>/{snapshot.json, objects/, chunks/}`；`verify_templates`；`template_finish` 一次 internal Commit 替换 `{{params.<k>}}` 并清 `reset.tables`），库表 `library_templates`，`ext.export_template`、`ext.create_from_template`（`Service::create_from_template` 走 `load_workspace`），`ext.pack` / `ext.install { from }` 带 `templates`，`ext.list_library` 带 `manifest_version` 与 `templates`。
+- **websdk / CLI**：`aiws_ext.ts` v3（`events`、`checkDeclarative` + `button`、composition `events` 与 `grid`、`verifyBundle` 模板、`aiwsTemplateDigest`、v3 HTML 骨架带示例事件）；`aiworkspace_client.ts` 加 `extUpgrade` / `extExportTemplate` / `extCreateFromTemplate`，`extPack` / `extInstall` 带 `templates`，`ext.build` 收 `upgrade` / `migration`；CLI `aiws ext-upgrade`、`aiws template list | create | export`、`aiws build --migration`、`aiws library bundle` + `ext-import --bundle [--upgrade]`（跨 Zone 两步）；`pikg info` 报模板。
+- **Desktop（M1–M6）**：配置 / 绑定 / `on` / HTML 快照写入改为只提交变化属性的 `entity.set_props`，实例写入带定义 `content_rev` 前置条件，定义被重建时提示并刷新表单（在线与离线重放）；host API 3、手势门、`ui/extensions/events.ts` 执行器（全部 write 一次 Commit、`evt/<实例>/<事件>/<event_id>`、wish 同键、冒泡）、设计 / 运行态（`state/runMode.ts`，视图工具栏 ▶ / ✎，回放 / guest / 手机锁设计态）、declarative `button`、实例 Inspector 的“事件”页、流式页不自动挂载；`createBlock { parent, slot }`；`grid` 与未知算法回退；宿主 API 过高显示快照 + “需要宿主 API n”；库中过新的包标记不可引入；升级对话框（接口差异、本地改动、受影响实例、最小迁移表单、先 dry_run）；新建对话框模板页、“导出 → 保存为模板…”、库对话框列模板。共享 `controls/composite.ts` 加 `grid` 与未知算法回退，composite 宿主自述补事件 / `on` / 组合结果并重生成 `aiws/controls.json`。
+- **手册与文档（M7）**：`aiworkspace_template_dev.md`（v3、事件 / `on`、`set_props`、迁移、升级、模板命令）、`aiworkspace_run.md`（组合结果、运行态写权限）；aiworkspace README（P2 / P3 节、P0 / P1 节过时说法、方法级别表、选择器表、Validator classes）、Desktop README P2 / P3 节、`aiws/README.md` 与 `prompts/execute.md`、设计文档 §1.5 / §7.2（Q1 / Q9 / Q10 / Q13）/ §8、hello-controls README 第 6 / 7 / 10 / 11 / 12 步与总表。
+
+### 9.2 与任务单的出入
+
+1. **属性名放宽**：Q28 写 `[a-z][a-z0-9_]{0,63}`，实现 `^[A-Za-z_][A-Za-z0-9_-]{0,63}$`（既有 `config` 键有大写与连字符，`.` 仍不允许以免和 `p:<key>.<name>` 混淆）；`expect` 写成 `{ <name>: <rev> }`（数字），缺省即合并。
+2. **按实例判断兼容**：P1 是“有收窄且有实例即失败”，现在只有被收窄触及的实例才算（未绑该绑定的实例不阻塞），build 与升级共用；依赖者（`def_dep`）仍按收窄列表整体判断。
+3. **事件收窄**：任务单写“事件被删 / 参数变必填”，实现为“事件被删 / 参数被删”（handler 读 `{{event.<p>}}`，参数变必填对 handler 不是收窄）。Migration 多一部分 `events { rename, drop }`（Q30 未列，事件被删时没有它无法迁移）。
+4. **升级的本地改动判定**：库每个包只留一个版本，判定用快照内容摘要对比 `provenance.digest`；`EXT_LOCAL_CHANGES.data.files` 是与**新版本**的增删改（旧版本文件已不在库里）；从未引入过的本地定义（无 provenance）也算本地改动，需 `force`。
+5. **grid 的 slot 放置只允许 `stack`**（与 websdk 一致）；HTML 带事件但 `host_api` 2 给警告不报错。
+6. **模板**：快照只跟随**强引用**（`bind` / `owns` / `def` / `def_source` / `def_dep` / `body` / `value` / `embed` 等）与子树，弱引用（许愿格输入、批注锚）不带；去讲者备注；系统节点与祖先容器一并收入；允许无控件的纯模板包；新工作区不记 `forked_from`。参数替换范围：标题、Cell / 容器 `config`、记录属性、表格文本值（不改富文本正文）。`ext.export_template` 文件以 base64 返回，规模受包上限（4096 个文件、256 MiB）约束。
+7. **`needs_newer`**：库安装时就拒绝高于服务的 `manifest_version`，所以服务不会持有过新包；`ext.list_library` 给每个包的 `manifest_version`，由较旧的客户端标记“需要新版本”。
+8. **组合结果**：`under` 是 `{ input, slot }`（输入须是 composite 容器）；覆盖重跑先删上次实例，`result:<n>` 若没有新 Block 可挪就新建一个指向该结果的 Cell。
+9. **既有缺陷修复**：`core/src/materialize.rs` `load_ops` 载入 `buckyos.dir` 时把物化用的 `dir_object` 带回 payload，导致含控件源码快照的 `ws.fork` / `ws.import` / 模板创建都会被拒（`dir: unknown key dir_object`）；现在载入时去掉它（DirObject 由成员重算）。
+10. **Desktop 自定的细节**：每一层冒泡的 composite 各自一次 Commit（键用该容器 id 与事件名，`event_id` 相同）；`emit` 遇写入被拒返回 `{ handled: false }` 并提示，只对未声明事件 reject；设计态 declarative 按钮画出但不可用；Inspector 文本 / 数字字段改为失焦或回车提交（逐键 `set_props` 会以同一读修订自冲突）；`setCellConfig`（所有内置 Block 共用）也改为按属性写；WASM 未暴露 `child_allowed_here`，`createBlock.parent` 在客户端按 composite 的 slots 预检，其余由服务拒绝。
+11. **工具链**：WASM 构建需要与锁文件一致的 `wasm-bindgen-cli 0.2.130`（本机原为 0.2.129，已装到 `/tmp/dev-cache-root/cargo/bin`）。
+
+### 9.3 测试（已运行）
+
+| 范围 | 命令 | 结果 |
+| --- | --- | --- |
+| 内核 | `cargo test -p aiworkspace-core` | 全部通过；新增 `tests/props.rs` 8（两人改两属性都保留、同属性按属性冲突、撤销只还原自己、`null` / 清空、整键写入提升 `p:`、定义修订前置条件、`on` / `events` 形状与 build 专写、重放不进业务 schema）；`composite.rs` / `schemas.rs` 随 v3 调整 |
+| 服务扩展 | `cargo test -p aiworkspace --test ext` | 7 通过；新增 `events_buttons_bubbling_and_migrations`（v2 写事件被拒、HTML v3 事件入定义与 outline、button 未声明 `EVENT_UNDECLARED`、composite 冒泡带参数、冒泡源未声明被拒、grid、实例 `set_props` 绑定 handler、卡片去掉事件参数时列出读它的实例与依赖者、改槽无迁移失败 / dry_run 计划 / 迁移后 config 改名与填充且子块换槽）、`upgrades_from_the_library`（unchanged、绑定改名无迁移失败、迁移计划与执行、`upgraded 1.0.0→2.0.0` 保留覆盖、本地改动 `EXT_LOCAL_CHANGES` 列 `removed`、force、`EXT_IDENT_EXISTS.library_version`）、`workspace_templates_from_snapshot_to_new_workspaces`（导出项与控件、reset 非模板表被拒、入库不建工作区、列表带模板与 `manifest_version`、两次创建独立、参数替换标题 / config / 表文本、reset 清行、未选内容不带、`ext.pack` 带模板 → 安装） |
+| 许愿格组合结果 | `cargo test -p aiworkspace --test wish_control` | 4 通过；新增 `a_composite_result_puts_other_results_into_its_slots`（脚本化模型：未知定义与非法 slot 在运行内报错，结果 Block 进 slot 且不再留在网格，内联富文本，config） |
+| 三包全量 | `cargo test --no-fail-fast -p aiworkspace-core -p aiworkspace-store -p aiworkspace` | 53 个测试二进制、260 例全部通过（中途一轮两处失败：README 方法级别表行格式、grid 用例的 top 放置，已修） |
+| 程序宿主 | `cd src/frame/aiworkspace/aiws && deno test -A` | 4 通过（`result.control({ def, slots })` 与缺 slots 报错） |
+| 控件共享模块 / 目录 | `cd controls && deno test -A`；`deno run -A controls/tools/build_catalog.ts` | 26 通过（grid、未知算法回退）；`aiws/controls.json` 重生成 |
+| WASM | `bash src/frame/aiworkspace/wasm/build.sh`（`wasm-bindgen-cli 0.2.130`） | 重建两次（`set_props` 后、`load_ops` 修复后） |
+| websdk | `npx jest tests/aiws_ext.test.ts`；全量 `npx jest` | 14 通过（含 hello-controls 三控件 v3 无诊断）；全量 617 通过 / 12 跳过 |
+| CLI | `cd cli && deno task test`；`pnpm run check:cli`；`pnpm run test:cli-conformance` | 134 通过；检查与一致性通过 |
+| 手册 | `cargo test -p libopendan --test xagent_cli skills_are` | 1 通过 |
+| Desktop 静态 | `pnpm check`；`pnpm exec eslint src/app/aiworkspace tests/aiworkspace tests/dv/aiworkspace.extensions.spec.ts`；`pnpm build`；i18n 守卫 | 通过；i18n 17 / 19，两项为 P0 起既有失败（未用键 `canvas.catalog.sample/extension`、`store/src/wish/outline.rs:383` 的“字”） |
+| Desktop e2e（新服务 + 新 WASM） | `AIWS_BIN=… playwright test … extensions collab offline wish session mobile` | 46 / 46 通过；新增用例：运行态点 Done 一次 Commit（`evt/…` 键）、改 behavior 后用新实现、刷新不重放；设计态只选中并出角标；view 只读者被拒、授予 `update` 后可写；hello-card → hello-board 冒泡通知；`createBlock` 进 slot / 缺 slot 被拒；升级 0.1.0 → 0.2.0 实例不变；保存为模板 → 从模板新建、KPI 绑定新且清空的表；未知布局与 API 4 回退；collab (g) 甲改颜色乙改文字；offline 离线期间定义重建、重放被拒并提示；session S-04 公共会话与回放不挂载 HTML；mobile UI-M06 手机上 HTML 只读 |
+| Desktop e2e 其余 spec | Desktop 线全量 | 169 通过、3 失败：CN17、`i18n.spec.ts:133` 最后一步（均为既有）、`handwriting.spec.ts` H03 负载下偶发（单跑 3 / 3） |
+
+### 9.4 验收对照（设计 §8 P2 / P3 行）
+
+| 验收项 | 结论 | 依据 |
+| --- | --- | --- |
+| 甲改颜色、乙改文字均保留 | 通过 | `core/tests/props.rs`、e2e collab (g)、DV `[ext p2p3]` |
+| 一次点击只执行一次，改行为文件并 build 后下一次点击用新实现，重载不重放旧动作 | 通过（e2e） | `extensions.spec.ts` 运行态用例 |
+| 包升级 / 迁移保留实例覆盖与内容 | 通过 | `upgrades_from_the_library`、`events_buttons_bubbling_and_migrations`、e2e 升级用例、DV（真实 Zone CLI `ext-upgrade` 0.1.0 → 0.2.0，绑定与 handler 保留） |
+| 旧客户端写入冲突可诊断 | 通过 | `props.rs` 前置条件用例、e2e offline 用例 |
+| Agent 通过手册发现 / 引入 / 实例化控件并产出组合结果 | 部分：服务端组合结果（脚本化模型）、程序 API、手册与 `WORKSPACE.md` 列表已有；真实 Agent / 真实模型凭手册跑通未做 | `wish_control.rs`、`aiws_test.js` |
+| 缺少宿主能力时可读回退且数据保留 | 通过（e2e） | 未知布局、API 4、库中过新包标记 |
+| 公共端 / 回放不执行现场业务动作 | 通过（e2e） | session S-04 |
+| 模板：安装不建工作区、两次创建内容独立、定义与实例引用正确 | 通过（快照式，同一快照内不重映射） | `workspace_templates_from_snapshot_to_new_workspaces`、e2e 模板用例、DV |
+
+### 9.5 真实 Zone DV（2026-10-31，本机 test.buckyos.io）
+
+`uv run buckyos-build.py -s aiworkspace -s jarvis_agent`、`-s desktop -s aiworkspace` 后 `uv run start.py`（更新安装文件并重启，未 `--all`），`BUCKYOS_UI_DV_BASE_URL=https://test.buckyos.io BUCKYOS_TEST_ADMIN_PASSWORD=bucky2025 pnpm exec playwright test --config=playwright.dv.config.ts tests/dv/aiworkspace.extensions.spec.ts`：4 例通过（41 s）。P0 两例与 `[ext p1]` 作回归通过；新例 `[ext p2p3]`：CLI build v3 的 hello-card / hello-board（定义 `events.card_done` 带 `from` 与参数）→ `ext-export --install` 0.1.0 → 另一工作区 `ext-import` → 实例（board + 绑定记录的 card + 两个 `on`），outline `def_events` / `on_events` → 两次基于同一读的 `set_props` 两属性都保留、同属性 `expect: 0` 冲突且选择器为 `entity_prop` → 改 `style.css` 重建并 `ext-export --install` 0.2.0 → `ext-upgrade --dry-run` 为 `checked`、正式升级 `upgraded 0.1.0→0.2.0`、card 的绑定与 handler 保留、再升级 `unchanged` → `template export --surfaces sf-main --data tasks --reset tasks … --install` → `template list` 可见 → `template create` 两次得到两个工作区，新工作区有 board 实例且 `def_id` 正确、`tasks` 为空。DV 中途修了测试本身两处（模板要 `--data tasks` 带上未被画布引用的表；清理要求工作区标题等于前缀）。
+
+### 9.6 未完成与已知限制
+
+- **未做的 DV**：P0 / P1 遗留 L1(1) 跨 Zone 中转引入（ssotest 三 Zone VM）、L1(2) Agent 只凭手册建 declarative + composite、L2 第三账号四控件、真实子域 `aiws-<id>.<zone>` 上 build / watch、真实 Zone 上 Desktop“定义为控件”；本单 Desktop 界面（运行态点击、升级对话框、模板对话框）只有 e2e，真实 Zone 只跑了 API / CLI；Agent 组合结果没有真实模型或真实 Agent 的运行，`wish.spec.ts` 也没有组合结果的 e2e。
+- “把模板添加到已有 Workspace”、依赖者（composite）的自动迁移、从包加载布局算法仍不在本期。
+- 模板快照不跟随弱引用（许愿格输入、批注），富文本正文里的 `{{params.<k>}}` 不替换。
+- `ext.export_template` 以 base64 返回整个快照，大模板受包上限约束；没有分块。
+- 跨 Zone 升级是两步 CLI（`library bundle` → `ext-import --bundle --upgrade`），没有单命令。

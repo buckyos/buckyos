@@ -2,7 +2,7 @@
 
 > 这是 [扩展实现思路](<../BuckyOS AI Workspace 扩展实现思路.md>) §6.10 的配套例子，2026-10-30 建立。目的只有一个：让人在 P3 全部做完之前，就能看到**开发者最终面对的“界面”**——先干什么、再干什么，每一步在 Desktop / CLI / 文件里看到的是什么，典型源码长什么样。
 >
-> 它**不需要跑起来**。但分两种成分：标 **[P0 可用]** / **[P1 可用]** 的文件是按已冻结的契约写的，`hello-kpi`、`hello-card`、`hello-board` 的 `component.json`（及 `hello-board` 的 `composition.json`）已用 websdk `aiws_ext.ts` 的 `checkComponent` / `checkComposition` 预检通过，`aiws-manifest.json`（`manifest_version: 2`）里的 `digest` 是用同一模块对这些文件算出的真值，真要用可以直接 `buckyos aiws build`（先 `hello-card` 再 `hello-board`）；标 **[P2] [P3]** 的部分是**提案**（事件、升级、模板），形态在相应阶段的任务单里冻结，可能改。`hello-board` 已按 [P1 任务单](<../../../notepads/aiworkspace-extension-p1-todo.md>) M0 冻结并于 2026-10-30 回写本目录。权威契约始终是 aiworkspace README “Extension controls” 与 `src/frame/aiworkspace/schemas/`。2026-10-30 用户裁决 Q20–Q25（扩展实现思路 §7.6）后已同步：`.pikg` 由服务端打包、独立域名上也能开发、自带资源的写法见第 6 步、作者 DID 不验真。
+> 它**不需要跑起来**。但分两种成分：标 **[P0 可用]** / **[P1 可用]** 的文件是按已冻结的契约写的，`hello-kpi`、`hello-card`、`hello-board` 的 `component.json`（及 `hello-board` 的 `composition.json`）已用 websdk `aiws_ext.ts` 的 `checkComponent` / `checkComposition` 预检通过，`aiws-manifest.json`（`manifest_version: 3`）里的 `digest` 是用同一模块对这些文件算出的真值，真要用可以直接 `buckyos aiws build`（先 `hello-card` 再 `hello-board`）；标 **[P2 可用] [P3 可用]** 的部分按 [P2+P3 任务单](<../../../notepads/aiworkspace-extension-p2p3-todo.md>) M0 冻结、2026-10-31 实施后回写（事件、属性级写入、升级迁移、组合结果、模板）。`hello-board` 已按 [P1 任务单](<../../../notepads/aiworkspace-extension-p1-todo.md>) M0 冻结并于 2026-10-30 回写本目录。权威契约始终是 aiworkspace README “Extension controls” 与 `src/frame/aiworkspace/schemas/`。2026-10-30 用户裁决 Q20–Q25（扩展实现思路 §7.6）后已同步：`.pikg` 由服务端打包、独立域名上也能开发、自带资源的写法见第 6 步、作者 DID 不验真。
 
 ## 0. 场景
 
@@ -107,7 +107,7 @@ buckyos aiws build ./hello-kpi --workspace $WS                        # 基线�
 
 如果 Alice 在他 pull 之后又 build 过一次，Bob 得到 `REVISION_CONFLICT / BUILD_BASE_STALE`，提示先 pull 再 build（git 式，不静默覆盖）。
 
-### 第 6 步 HTML 控件与事件 [P0 可用；事件 P2]
+### 第 6 步 HTML 控件与事件 [P0 可用；事件 P2 可用]
 
 `hello-card` 用 HTML 画一张任务卡（`controls/hello-card/`）。`component.json` 的差别只有 `kind: "html"`、`host_api: 2`、`entry: { html, css, js }`、`assets: ["check.svg"]`。`behavior.js` 只跟宿主对象 `aiws` 说话：
 
@@ -130,9 +130,9 @@ aiws.ready()
   ```
 - **目录**：允许子目录（Q23），文件名就是相对路径，如 `icons/check.svg`；快照仍是一个平的 `buckyos.dir`（成员名含 `/`），bundle 里是 `controls/<dir>/icons/check.svg`。以 `.` 开头的文件和目录是客户端私有的，不进快照。
 
-**[P2]** 事件：`component.json` 加 `events: { "completed": { "title": "…", "params": { … } } }`，`behavior.js` 里 `aiws.emit('completed', {...})`；实例侧多一个 `on: { "completed": { "run": "<wish 或 command>" } }`。设计态点击选中 / 移动，运行态点击才触发；一次点击只执行一次，rebuild 不重放（§6.7）。这些键今天都不存在（`component.json` / `composition.json` 里写 `events` 会让 build 失败），形态随 P2 冻结。
+**[P2 可用]** 事件：`component.json`（`manifest_version: 3`、`host_api: 3`）加 `events: { "completed": { "title": "…", "params": { "title": { "type": "string" }, "task": { "type": "entity" } } } }`，`behavior.js` 里写完记录后 `aiws.emit('completed', { title, task })`。实例侧是 `on`，每个事件一个或至多 4 个 handler：`{ "kind": "write", "target": "task", "what": "recordSet", "args": { "props": { "status": "done" } } }`、`{ "kind": "wish", "wish_id": "…" }`、`{ "kind": "open" }`、`{ "kind": "notify", "text": "{{event.title}} 完成" }`；Desktop 实例表单的“事件”页编辑它，写入走 `entity.set_props { key: "on" }`。画布有设计态 / 运行态（工具栏 ▶ / ✎）：设计态点击选中 / 移动，`emit` 只在 Block 角标提示“未执行”；运行态点击才执行，执行者是点的人，全部 `write` 合成一次 Commit（幂等键 `evt/<实例>/<事件>/<event_id>`）；rebuild、刷新、别的端收到同步都不重放（§6.7）。declarative 控件用 `{ "kind": "button", "label": "刷新", "emit": "<事件>" }`。
 
-### 第 7 步 组合控件 [P1 可用；事件 P2]
+### 第 7 步 组合控件 [P1 可用；事件 P2 可用；grid P3 可用]
 
 Alice 想把若干 `hello-card` 摆成一列并带个标题框。两种起点：画布上选中几张卡 → **定义为控件…**，Desktop 在 home 生成 `controls/hello-board/`；或者直接手写（CLI：`pikg init … --kind aiws-controls --composite` 给骨架）。`component.json` 多三样：`manifest_version: 2`、`kind: "composite"`、`entry: "composition.json"`，外加 `deps: ["did:bns:alice#hello-card"]`。`composition.json`（完整文件见 `controls/hello-board/composition.json`）只说三件事：
 
@@ -150,7 +150,7 @@ Alice 想把若干 `hello-card` 摆成一列并带个标题框。两种起点：
 
 实例是一个容器 `buckyos.container { kind: "composite", def_ref: { entity_id: <hello-board 定义> }, config: { title, gap } }`，卡片仍是 BlockTree 里的真实 Block（可选中、批注、连线、Agent 寻址），各自带 `slot: "cards"`；面板只负责排布与外框（R23）。build 同一条链路：`deps` 解析成同一工作区里的 `hello-card` 定义（没有就是 `DEP_MISSING`），写成强引用 `def_dep`——`hello-card` 在被依赖时删不掉，导出 / 打包时自动带上；改 `composition.json` 的布局或外观后既有面板实例重排，用户内容不重建；删掉实例在用的 slot、或让 `hello-card` 收窄接口，build 失败并列出受影响的实例与依赖它的定义。复制面板是一次 `tree.clone`（卡片一起复制、共享定义，自有数据克隆）。
 
-**[P2]** 面板冒泡卡片事件（例如 `card_completed`：某张卡被点“Done”时触发）属于事件 / 动作绑定，P1 的 `composition.json` 不认 `events` 键。
+**[P2 可用]** 面板冒泡卡片事件：`composition.json` 的 `events: { "card_done": { "from": { "slot": "cards", "event": "completed" } } }`——`cards` 槽收的 `cell:did:bns:alice#hello-card` 声明了 `completed`，否则 build 报 `EVENT_UNDECLARED`；定义里的 `events.card_done` 带上卡片事件的参数，面板实例在自己的 `on.card_done` 上绑 handler，卡片自己的 `on.completed` 先执行。**[P3 可用]** `layout.algorithm` 还可以是 `grid { columns, gap }`（宿主自带）；宿主不认识的算法按 group 排布并在外框标注。
 
 ### 第 8 步 导出 [P0 可用；Desktop 生成 .pikg P1 可用]
 
@@ -186,17 +186,23 @@ Desktop 上的对应动作 [P1 可用]：**导入 `.pikg` 文件…**（或把�
 
 跨 Zone 把库里的控件引进别人的工作区：客户端从自己 Zone `ext.library_bundle` 取字节（依赖一起给），依赖在前逐个向目标工作区 `ext.build`（内联 + `provenance`）。
 
-### 第 10 步 升级 [P2]
+### 第 10 步 升级 [P2 可用]
 
-Alice 发 0.2.0。Bob `app install` 新包后库里是新版本；他的工作区还是旧定义（D4）。工作区控件详情出现 **有新版本 0.2.0 → 升级…**：列出本地改动（如果他 build 过）、受影响实例、接口变化（收窄会要求迁移），确认后一次 Commit 替换定义与快照，实例覆盖与内容保留。今天同身份异来源只会报 `EXT_IDENT_EXISTS`。
+Alice 发 0.2.0。Bob `app install` 新包后库里是新版本；他的工作区还是旧定义（D4）。工作区控件详情出现 **有新版本 0.2.0 → 升级…**（CLI：`buckyos aiws ext-upgrade <def> --workspace $BOB_WS [--migration m.json] [--dry-run] [--force]`，服务 `ext.upgrade`）：
 
-### 第 11 步 模板 [P3]
+- 库里版本与 `provenance` 相同 → `unchanged`；Bob 引入后又在本地 build 过（快照摘要 ≠ `provenance.digest`）→ `EXT_LOCAL_CHANGES`，列出与新版本相比增删改的文件，`--force` 才覆盖。
+- 新版本收窄接口（例如把绑定 `tasks` 改名为 `items`）时，按实例判断兼容：受影响实例列进 `BUILD_FAILED` 诊断；给迁移 `{ "did:bns:alice#hello-kpi": { "bindings": { "rename": { "tasks": "items" } } } }`，服务在同一次 Commit 里对每个实例写 `entity.set_props`（以及改槽的 `tree.move { slot }`），迁移后复检，仍不兼容整次失败。`--dry-run` 给出每个实例要写的操作。
+- 同包里它依赖的定义一起升级，依赖在前；Commit 消息 `upgrade did:bns:alice#hello-kpi 0.1.0→0.2.0`，实例覆盖与内容保留。`ext-import` 遇到同身份异版本报 `EXT_IDENT_EXISTS`（带 `library_version`），Desktop 直接给“升级”按钮。
 
-Alice 把“一张 KPI + 一个面板 + 一张空 tasks 表”保存为模板：`aiws-manifest.json` 的 `workspace_templates` 多一项（提案见 `templates/team-board.template.json`），和控件一起进 `.pikg`。Bob 装包后，新建工作区对话框多出 **从模板创建 → Team task board**，填 `team_name`，得到一个独立工作区：定义先按闭包引入，再由一次内核级子图导入写结构、实例与初始数据（Q17 重映射）。安装模板包本身不建工作区；再建一次得到另一个独立工作区。
+属性级写入（同一节契约）：实例的 `config` / `bindings` / `on` 每个属性一条修订 `p:<key>.<name>`，甲改颜色、乙改文字两边都保留，同一属性才冲突；表单写入还带定义修订前置条件，定义被重建后旧表单的写入被拒并提示刷新。
 
-### 第 12 步 Agent 看到的 [P0 可用；组合结果 P3]
+### 第 11 步 模板 [P3 可用]
 
-Agent 没有 Desktop，只有手册和 CLI：`aiws library list` 找到控件 → `describe` 读 `AGENT.md` → `ext-import` 进工作区 → `doc.commit` 写 Cell（第 4 步的 JSON）。要改控件：`pull` 到本地目录 → 改 → `build <本地目录>`（文件内联，不需要能访问 nfs-server）。许愿格的 HTML 结果今天就是一个 `html` 定义（作者 `did:aiws:<workspace_id>`），`pull` 会合成出 `component.json` 让它走同一条路。
+Alice 在 Team Tasks 里 **导出 → 保存为模板…**（选 Board 画布、参数 `team_name`、重置表 `tasks`；CLI：`buckyos aiws template export --workspace $WS --surfaces <board> --id team-board --title "Team task board" --param team_name:string:Team --reset tasks --out ./tpl --name team-kit --pikg`）。模板是**快照**（Q32）：服务 `ext.export_template` 对选中画布、它们引用的数据、所用控件定义（含依赖与源码快照）和指定数据做一次 `materialize`，写成 `templates/team-board/{snapshot.json, objects/, chunks/}`，清单 `workspace_templates` 多一项（形态见 `templates/team-board.template.json`），控件随包。Bob 装包后（不建工作区），新建工作区对话框“模板”页多出 **Team task board**，填 `team_name` → `ext.create_from_template` 按 `ws.import new` 的路径载入快照（新 id、Bob 为 owner、富文本新 lineage），再一次 internal Commit 替换 `{{params.team_name}}`、清空 `tasks` 的行；id 不重映射（快照本身就是一个新工作区）。再建一次得到另一个独立工作区。“把模板加到已有工作区”不在本期。
+
+### 第 12 步 Agent 看到的 [P0 可用；组合结果 P3 可用]
+
+Agent 没有 Desktop，只有手册和 CLI：`aiws library list` 找到控件 → `describe` 读 `AGENT.md` → `ext-import` 进工作区 → `doc.commit` 写 Cell（第 4 步的 JSON）。要改控件：`pull` 到本地目录 → 改 → `build <本地目录>`（文件内联，不需要能访问 nfs-server）。许愿格的 HTML 结果今天就是一个 `html` 定义（作者 `did:aiws:<workspace_id>`），`pull` 会合成出 `component.json` 让它走同一条路。许愿格的结果还可以是工作区里某个组合控件的实例：`aiws.result.control('board', { def: 'did:bns:alice#hello-board', slots: { cards: ['result:summary', 'input:card'] } })`——其它结果的 Block 进槽、输入 Block 复制进槽，定义不在工作区时运行内报“先 ext-import”。
 
 ## 2. P3 做完后的“界面”总览
 
@@ -206,22 +212,22 @@ Agent 没有 Desktop，只有手册和 CLI：`aiws library list` 找到控件 �
 | 新建 / 编辑 | **新建控件…** 建骨架；**编辑控件源码…** 打开 home 目录（Text Editor / File Browser）；桌面与 `aiws-<id>.<zone>` 独立页都可（P1） | `pikg init --kind aiws-controls [--composite]`；任意编辑器；源码可有子目录 | 直接写本地目录 |
 | 生效 | **构建** / **保存即构建**；诊断面板 | `build [--watch \| --dry-run \| --force]` | `build <本地目录>` |
 | 协作 | **拉取**；基线冲突提示 | `pull` → 改 → `build` | 同 CLI |
-| 实例 | 初始化表单（属性 + 命名绑定 + 事件绑定 [P2]）；Inspector 改覆盖 | `doc.commit` 写 Cell | 同 CLI |
+| 实例 | 初始化表单（属性 + 命名绑定 + 事件绑定 [P2]）；Inspector 改覆盖（`entity.set_props`） | `doc.commit` 写 Cell | 同 CLI |
 | 组合 [P1] | **定义为控件…**；composite 宿主、slots、Chrome | 手写 `composition.json` + `build`；`deps` | 同 CLI；复制实例用 `tree.clone` |
 | 导出 | **导出控件…** → 全局可用 / bundle / `.pikg` [P1]（服务 `ext.pack` 打包，下载或直接入库）；依赖自动带上 | `ext-export [--pikg] [--install]` | 同 CLI 或 `ext.pack` |
 | 分发 | — | 签名 / 发布（PIKG 体系，命令待定） | — |
 | 安装 | **导入 `.pikg` 文件…** / 拖到桌面 [P1]（上传 `exports` 桶 → `ext.install`） | `app install x.pikg` / `library install`；`ext-import` 带上依赖 | 同 CLI |
-| 升级 [P2] | 详情 **升级…** | `ext-upgrade`（动词待定） | 同 CLI |
-| 模板 [P3] | **从模板创建工作区** | `aiws create --template` （动词待定） | 同 CLI |
+| 升级 [P2] | 详情 **升级…** | `ext-upgrade <def> [--migration] [--dry-run] [--force]` | 同 CLI |
+| 模板 [P3] | **导出 → 保存为模板…**；新建对话框“模板”页 | `template export \| list \| create` | 同 CLI；组合结果 `aiws.result.control({ def, slots })` |
 
 ## 3. 文件清单
 
 | 文件 | 阶段 | 说明 |
 | --- | --- | --- |
 | `controls/hello-kpi/{component.json, declarative.json, AGENT.md}` | P0 可用 | declarative render 控件；一个必填命名绑定、两个属性 |
-| `controls/hello-card/{component.json, view.html, style.css, behavior.js, check.svg, AGENT.md}` | P0 可用（`aiws.asset` 取图标 P1 可用；注释里的 `aiws.emit` 是 P2） | HTML render 控件；读记录、写经宿主、`assets` 一个（`aiws.asset('check.svg')` 取到 blob URL，见第 6 步） |
-| `aiws-manifest.json` | P1 可用（`manifest_version: 2`） | 导出 bundle / `.pikg` 子包的清单：三个控件，`hello-board` 带 `deps: ["did:bns:alice#hello-card"]`；`digest` 为真值，`version` 是假定的 build 修订 |
-| `controls/hello-board/{component.json, composition.json, AGENT.md}` | P1 可用（事件 P2） | composite 控件：`manifest_version: 2`、`kind: composite`、`deps`、`layout` / `slots` / `chrome` 三件事；没有 `events` |
-| `templates/team-board.template.json` | P3 提案 | `workspace_templates` 的一项；今天清单里该数组非空即拒绝 |
+| `controls/hello-card/{component.json, view.html, style.css, behavior.js, check.svg, AGENT.md}` | P0 可用（`aiws.asset` 取图标 P1 可用；`events` / `aiws.emit` P2 可用，`manifest_version: 3`、`host_api: 3`） | HTML render 控件；读记录、写经宿主、`assets` 一个（`aiws.asset('check.svg')` 取到 blob URL，见第 6 步） |
+| `aiws-manifest.json` | P3 可用（`manifest_version: 3`） | 导出 bundle / `.pikg` 子包的清单：三个控件，`hello-board` 带 `deps: ["did:bns:alice#hello-card"]`；`digest` 为真值（2026-10-31 按 v3 文件重算），`version` 是假定的 build 修订；`workspace_templates` 为空（模板快照见第 11 步） |
+| `controls/hello-board/{component.json, composition.json, AGENT.md}` | P1 可用（事件 P2 可用） | composite 控件：`manifest_version: 3`、`kind: composite`、`deps`、`layout` / `slots` / `chrome`，外加冒泡 `events.card_done` |
+| `templates/team-board.template.json` | P3 可用（形态） | `workspace_templates` 的一项（`schemas/template.schema.json`）；快照本身由 `ext.export_template` 从真实工作区生成，不放进本目录，所以 `digest` 是占位、清单的 `workspace_templates` 仍为空 |
 
 与 P0 / P1 冻结契约的对应关系、以及 P2–P3 各提案要在哪个任务单冻结，见设计文档 §6.10 与 §8。

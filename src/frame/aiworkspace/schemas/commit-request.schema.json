@@ -178,12 +178,14 @@
       "tree_edge",
       "richtext_block",
       "folder_member",
+      "entity_prop",
       "table_view",
       "table_query"
      ]
     },
     "key": {
-     "type": "string"
+     "type": "string",
+     "description": "doc_key: the payload key; entity_prop: the object key (config, bindings, on)"
     },
     "record_id": {
      "$ref": "#/$defs/id"
@@ -196,7 +198,7 @@
     },
     "name": {
      "type": "string",
-     "description": "folder_member: the member name"
+     "description": "folder_member: the member name; entity_prop: the property name"
     },
     "cell_id": {
      "$ref": "#/$defs/id",
@@ -553,6 +555,52 @@
     }
    },
    "description": "A formula in place of a value of the field's type (内核架构改进 D18): saved as given, evaluated by readers (the Desktop) and never by the backend; results to be read by others are materialized by an ordinary Commit with a derived record. Sorting, filtering and `unique` treat it as empty."
+  },
+  "set_props": {
+   "description": "entity.set_props (扩展控件 P2, Q28): per-property writes of one object key. Each property is the version cell p:<key>.<name> (selector entity_prop); null removes it.",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "op",
+    "entity_id",
+    "key",
+    "props"
+   ],
+   "properties": {
+    "op": {
+     "const": "entity.set_props"
+    },
+    "entity_id": {
+     "$ref": "#/$defs/id"
+    },
+    "key": {
+     "enum": [
+      "config",
+      "bindings",
+      "on"
+     ]
+    },
+    "props": {
+     "type": "object",
+     "minProperties": 1,
+     "maxProperties": 64,
+     "propertyNames": {
+      "pattern": "^[A-Za-z_][A-Za-z0-9_-]{0,63}$"
+     },
+     "description": "<name>: value (≤ 64 KiB canonical) | null"
+    },
+    "expect": {
+     "type": "object",
+     "propertyNames": {
+      "pattern": "^[A-Za-z_][A-Za-z0-9_-]{0,63}$"
+     },
+     "additionalProperties": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "description": "<name>: the rev of p:<key>.<name> this write is based on (0 = never written); absent names merge"
+    }
+   }
   }
  }
 }

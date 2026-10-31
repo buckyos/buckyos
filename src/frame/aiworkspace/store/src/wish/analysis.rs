@@ -333,7 +333,7 @@ impl Stage {
             let at = format!("output_contract.results[{i}]");
             let mut r = r.clone();
             if let Some(m) = r.as_object_mut() {
-                m.retain(|k, _| matches!(k.as_str(), "name" | "type" | "title" | "approach" | "key" | "target" | "views" | "description" | "fields" | "kind"));
+                m.retain(|k, _| matches!(k.as_str(), "name" | "type" | "title" | "approach" | "key" | "target" | "views" | "description" | "fields" | "kind" | "def"));
             }
             if let Err(e) = check_contract_result(&r) {
                 problems.push(format!("{at}: {}", e.detail));

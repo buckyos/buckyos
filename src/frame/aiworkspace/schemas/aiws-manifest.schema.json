@@ -1,8 +1,8 @@
 {
  "$schema": "https://json-schema.org/draft/2020-12/schema",
- "$id": "buckyos.ai-workspace/aiws-manifest/2",
+ "$id": "buckyos.ai-workspace/aiws-manifest/3",
  "title": "aiws-manifest.json: the controls of a bundle or of an `aiws` PIKG payload (Q13)",
- "description": "Root of an exported bundle and of the `aiws` sub-package of a .pikg: the manifest plus controls/<dir>/<file>. `digest` is `sha256:` over the canonical JSON [[file name, sha256 hex of its bytes], …] sorted by name, recomputed by every installer. `workspace_templates` is reserved and must be empty until templates exist. A package export carries the def_dep closure of the chosen controls (deduplicated, P1); every `deps` entry names a control of the same manifest.",
+ "description": "Root of an exported bundle and of the `aiws` sub-package of a .pikg: the manifest plus controls/<dir>/<file>. `digest` is `sha256:` over the canonical JSON [[file name, sha256 hex of its bytes], …] sorted by name, recomputed by every installer. `workspace_templates` (manifest_version 3, P3) lists Workspace templates carried as snapshots under templates/<id>/ (template.schema.json). A package export carries the def_dep closure of the chosen controls (deduplicated, P1); every `deps` entry names a control of the same manifest.",
  "type": "object",
  "additionalProperties": false,
  "required": [
@@ -15,7 +15,7 @@
   "manifest_version": {
    "type": "integer",
    "minimum": 1,
-   "maximum": 2
+   "maximum": 3
   },
   "purpose": {
    "const": "aiws"
@@ -103,7 +103,11 @@
   },
   "workspace_templates": {
    "type": "array",
-   "maxItems": 0
+   "maxItems": 32,
+   "items": {
+    "$ref": "template.schema.json"
+   },
+   "description": "Workspace templates (P3, Q32): snapshots under templates/<id>/; empty unless manifest_version is 3"
   }
  },
  "$defs": {

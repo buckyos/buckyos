@@ -18,7 +18,7 @@ import {
   type LockInfo, type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type WorkspaceInfo,
   type AnnotationRead, type ListAnnotationsParams, type Capability, type DerivedRecord, type FreshnessInfo, type GrantList, type RelationsInfo,
   type Subject, type VersionInfo, type WishChoices, type WishRunView, type ShowLockInfo, type ServiceError, type WishAiccMode, type WishClaim, type WishToolAnswer, type HostedExecConfig, type Publication, type Referrer,
-  type BucketBinding, type StagedAsset, type ExtBuildResult, type ExtExportResult, type ExtPackResult, type LibraryPackage,
+  type BucketBinding, type StagedAsset, type ExtBuildResult, type ExtExportResult, type ExtMigration, type ExtPackResult, type LibraryPackage, type TemplateSpec,
 } from './types'
 
 export type SessionStatus =
@@ -183,11 +183,16 @@ export interface WorkspaceSession {
   extBuild(params: Record<string, Json>): Promise<ExtBuildResult>
   extExport(entityIds: string[], purpose?: 'package' | 'pull'): Promise<ExtExportResult>
   extImport(items: { pkg_id: string; ident: string }[]): Promise<ExtBuildResult>
-  extInstallFrom(entityIds: string[], pkg: { name: string; version: string; title?: string }): Promise<{ pkg_id: string; version: string; action: string }>
+  extInstallFrom(entityIds: string[], pkg: { name: string; version: string; title?: string }, templates?: TemplateSpec[]): Promise<{ pkg_id: string; version: string; action: string }>
+  /** P2 (Q30): an upgrade from the library (a dry run answers the plan). */
+  extUpgrade(items: { def_entity_id: string; pkg_id?: string }[], opts: { migration?: Record<string, ExtMigration>; force?: boolean; dry_run?: boolean }): Promise<ExtBuildResult>
+  extLibraryBundle(pkgId: string, idents?: string[]): Promise<{ ident: string; files: { name: string; size: number; obj_id: string; base64: string }[] }[]>
+  /** P3 (Q32): a template of chosen Surfaces of this Workspace. */
+  extExportTemplate(spec: TemplateSpec): Promise<{ template: Json; controls: Json[]; files: { path: string; size: number; base64: string }[] }>
   extListLibrary(): Promise<LibraryPackage[]>
   /** P1: the service packs controls as a .pikg (Q20); `downloadPack` fetches it, `installPack` puts it into the
    * caller's library (consuming the binding); a local .pikg file is uploaded into `exports` and installed (Q21). */
-  extPack(entityIds: string[], pkg: { name: string; version: string; title?: string }): Promise<ExtPackResult>
+  extPack(entityIds: string[], pkg: { name: string; version: string; title?: string }, templates?: TemplateSpec[]): Promise<ExtPackResult>
   downloadPack(pack: ExtPackResult): Promise<Blob>
   installPack(binding: BucketBinding): Promise<{ pkg_id: string; version: string; action: string }>
   installPikgFile(file: File): Promise<{ pkg_id: string; version: string; action: string }>
@@ -218,7 +223,8 @@ export interface WorkspaceSession {
   procCancel(runId: string): Promise<{ state: string; already_applied: boolean; commit_id?: string }>
 
   /** Wish runs on the service (need the backend): start a stage, read it (with a preview for `choices`), apply a previewed plan, list. */
-  wishStart(program: 'wish.xllm@1' | 'wish.mock@1', params: Record<string, Json>): Promise<WishRunView>
+  /** `idempotencyKey`: an event's run (扩展控件 P2) is keyed like its writes, so a repeat starts nothing new. */
+  wishStart(program: 'wish.xllm@1' | 'wish.mock@1', params: Record<string, Json>, idempotencyKey?: string): Promise<WishRunView>
   wishGet(runId: string, choices?: WishChoices): Promise<WishRunView>
   wishApply(runId: string, planDigest: string): Promise<WishRunView>
   wishList(wishId: string, limit?: number): Promise<WishRunView[]>
@@ -544,9 +550,12 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
   async extBuild(params: Record<string, Json>) { try { return unwrap(await this.client.extBuild(this.ws, params)) } catch (error) { return this.fail(error) } }
   async extExport(entityIds: string[], purpose: 'package' | 'pull' = 'package') { try { return unwrap(await this.client.extExport(this.ws, entityIds, purpose)) } catch (error) { return this.fail(error) } }
   async extImport(items: { pkg_id: string; ident: string }[]) { try { return unwrap(await this.client.extImport(this.ws, items)) } catch (error) { return this.fail(error) } }
-  async extInstallFrom(entityIds: string[], pkg: { name: string; version: string; title?: string }) { try { return unwrap(await this.client.extInstallFrom(this.ws, entityIds, pkg)) } catch (error) { return this.fail(error) } }
+  async extInstallFrom(entityIds: string[], pkg: { name: string; version: string; title?: string }, templates?: TemplateSpec[]) { try { return unwrap(await this.client.extInstallFrom(this.ws, entityIds, pkg, templates)) } catch (error) { return this.fail(error) } }
   async extListLibrary() { try { return unwrap(await this.client.extListLibrary()).packages } catch (error) { return this.fail(error) } }
-  async extPack(entityIds: string[], pkg: { name: string; version: string; title?: string }) { try { return unwrap(await this.client.extPack(this.ws, entityIds, pkg)) } catch (error) { return this.fail(error) } }
+  async extPack(entityIds: string[], pkg: { name: string; version: string; title?: string }, templates?: TemplateSpec[]) { try { return unwrap(await this.client.extPack(this.ws, entityIds, pkg, templates)) } catch (error) { return this.fail(error) } }
+  async extUpgrade(items: { def_entity_id: string; pkg_id?: string }[], opts: { migration?: Record<string, ExtMigration>; force?: boolean; dry_run?: boolean }) { try { return unwrap(await this.client.extUpgrade(this.ws, items, opts)) } catch (error) { return this.fail(error) } }
+  async extLibraryBundle(pkgId: string, idents?: string[]) { try { return unwrap(await this.client.extLibraryBundle(pkgId, idents)).controls } catch (error) { return this.fail(error) } }
+  async extExportTemplate(spec: TemplateSpec) { try { return unwrap(await this.client.extExportTemplate(this.ws, spec)) } catch (error) { return this.fail(error) } }
   async downloadPack(pack: ExtPackResult) { return this.client.transport.fetchDownload(pack.download) }
   async installPack(binding: BucketBinding) { try { return unwrap(await this.client.extInstallBound(binding)) } catch (error) { return this.fail(error) } }
   async installPikgFile(file: File) {
@@ -725,8 +734,8 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
   }
   async procCancel(runId: string) { return unwrap(await this.client.procCancel(this.ws, runId)) }
 
-  async wishStart(program: 'wish.xllm@1' | 'wish.mock@1', params: Record<string, Json>) {
-    return unwrap(await this.client.wishStart(this.ws, program, params, `${this.sessionId}/wish/${randomId()}`))
+  async wishStart(program: 'wish.xllm@1' | 'wish.mock@1', params: Record<string, Json>, idempotencyKey?: string) {
+    return unwrap(await this.client.wishStart(this.ws, program, params, idempotencyKey ?? `${this.sessionId}/wish/${randomId()}`))
   }
   async wishGet(runId: string, choices?: WishChoices) { return unwrap(await this.client.wishGet(this.ws, runId, choices)) }
   async wishApply(runId: string, planDigest: string) {

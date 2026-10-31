@@ -37,6 +37,9 @@ function extras(typeId: string, payload: Record<string, unknown>): Partial<Entit
     ? { kind: source.kind as 'url' | 'workspace', mode: (source.mode as 'live' | 'fixed' | undefined) ?? 'live', url: (source.url as string | undefined) ?? null, workspace_id: (source.workspace_id as string | undefined) ?? null,
         entity_id: (source.entity_id as string | undefined) ?? null, zone: (source.zone as string | undefined) ?? null, refresh: (source.refresh as { interval_s: number } | undefined) ?? null, auth_mode: (source.auth_mode as 'none' | 'hosted' | undefined) ?? 'none' }
     : null
+  // the events an instance binds (扩展控件 P2): the canvas marks them, an Agent finds them without reading the Block
+  const on = payload.on
+  out.on_events = (typeId === 'buckyos.cell' || typeId === 'buckyos.container') && on && typeof on === 'object' && !Array.isArray(on) ? Object.keys(on) : null
   if (typeId === 'buckyos.container') {
     out.kind = payload.kind as string
     out.layout = (payload.layout as EntityEnvelope['layout']) ?? { mode: 'flow' }
@@ -89,6 +92,7 @@ function extras(typeId: string, payload: Record<string, unknown>): Partial<Entit
     out.def_version = typeof payload.version === 'number' ? payload.version : null
     out.provenance_pkg = (payload.provenance as { pkg_id?: string } | undefined)?.pkg_id ?? null
     out.source_dir_id = (payload.source_dir as { entity_id?: string } | undefined)?.entity_id ?? null
+    out.def_events = payload.events && typeof payload.events === 'object' && !Array.isArray(payload.events) ? Object.keys(payload.events) : null
     // what it builds on, and a composite's composition and config defaults (P1): instances lay out from the outline
     out.deps = Array.isArray(payload.deps) ? (payload.deps as { ident?: string }[]).map((d) => String(d.ident ?? '')) : null
     if (payload.kind === 'composite') {
@@ -338,14 +342,19 @@ export class OutlineModel {
           const current = this.entities.get(id)
           if (!current) break
           const update: Partial<EntityEnvelope> = { content_rev: Math.max(current.content_rev, item.rev) }
-          const keyed = opsFor(id).filter((candidate) => candidate.op === 'entity.set_keys' || candidate.op === 'entity.unset_keys')
+          const keyed = opsFor(id).filter((candidate) => candidate.op === 'entity.set_keys' || candidate.op === 'entity.unset_keys' || candidate.op === 'entity.set_props')
           if (keyed.length > 0) {
             const payload: Record<string, unknown> = {}
             let touchedExtras = false
-            for (const op of keyed) for (const key of (op.keys as { key: string; value?: unknown }[] | undefined) ?? []) {
-              if (['title', 'source', 'view', 'source_ref', 'def_ref', 'kind', 'layout', 'executor', 'output_mode', 'target', 'media_type', 'def_id', 'icon', 'locked', 'start', 'end', 'presentation', 'config', 'slot',
-                'surface_ref', 'center', 'zoom', 'purpose', 'stage', 'steps', 'ident', 'manifest_version', 'version', 'provenance', 'source_dir', 'deps', 'composition', 'config_schema', ...CONNECTOR_KEYS].includes(key.key)) touchedExtras = true
-              if (op.op === 'entity.set_keys') payload[key.key] = key.value
+            // per-property writes (扩展控件 P2, Q28) change the properties they name: merged over what is known below
+            const props: { key: string; props: Record<string, unknown> }[] = []
+            for (const op of keyed) {
+              if (op.op === 'entity.set_props') { touchedExtras = true; props.push({ key: op.key as string, props: (op.props as Record<string, unknown> | undefined) ?? {} }); continue }
+              for (const key of (op.keys as { key: string; value?: unknown }[] | undefined) ?? []) {
+                if (['title', 'source', 'view', 'source_ref', 'def_ref', 'kind', 'layout', 'executor', 'output_mode', 'target', 'media_type', 'def_id', 'icon', 'locked', 'start', 'end', 'presentation', 'config', 'slot',
+                  'surface_ref', 'center', 'zoom', 'purpose', 'stage', 'steps', 'ident', 'manifest_version', 'version', 'provenance', 'source_dir', 'deps', 'composition', 'config_schema', 'on', 'events', ...CONNECTOR_KEYS].includes(key.key)) touchedExtras = true
+                if (op.op === 'entity.set_keys') payload[key.key] = key.value
+              }
             }
             if (touchedExtras) {
               // the ops carry only the changed keys: rebuild extras from the known envelope plus the change
@@ -373,9 +382,17 @@ export class OutlineModel {
                 deps: current.deps ? current.deps.map((ident) => ({ ident })) : undefined,
                 composition: current.composition ?? undefined,
                 config_schema: current.config_defaults ? { properties: Object.fromEntries(Object.entries(current.config_defaults).map(([k, v]) => [k, { default: v }])) } : undefined,
+                on: current.on_events ? Object.fromEntries(current.on_events.map((name) => [name, true])) : undefined,
+                events: current.def_events ? Object.fromEntries(current.def_events.map((name) => [name, {}])) : undefined,
               }
               for (const op of keyed) if (op.op === 'entity.unset_keys') for (const key of (op.keys as { key: string }[] | undefined) ?? []) delete known[key.key]
-              Object.assign(update, extras(current.type_id, { ...known, ...payload }))
+              const merged: Record<string, unknown> = { ...known, ...payload }
+              for (const { key, props: changed } of props) {
+                const next: Record<string, unknown> = { ...((merged[key] as Record<string, unknown> | undefined) ?? {}) }
+                for (const [name, value] of Object.entries(changed)) { if (value === null) delete next[name]; else next[name] = value }
+                merged[key] = Object.keys(next).length > 0 ? next : undefined
+              }
+              Object.assign(update, extras(current.type_id, merged))
             }
           }
           this.patch(id, update)

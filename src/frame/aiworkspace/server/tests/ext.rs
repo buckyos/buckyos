@@ -354,7 +354,7 @@ fn composite_controls_with_dependencies() {
         let mut tighter = composition();
         tighter["slots"].as_object_mut().unwrap().remove("cards");
         let r = srv.rpc("ext.build", json!({ "files": upload(&srv, "board-n", &board_files(tighter, json!({}))).await, "expect": bbase })).await;
-        assert!(diag_text(&r).contains("slot cards is removed") && diag_text(&r).contains("board-1"), "{r}");
+        assert!(diag_text(&r).contains("slot cards, which the control no longer has") && diag_text(&r).contains("board-1"), "{r}");
         let mut row = composition();
         row["layout"] = json!({ "algorithm": "stack", "direction": "row", "spacing": 24 });
         let b2 = srv.rpc("ext.build", json!({ "files": upload(&srv, "board-row", &board_files(row, json!({}))).await, "expect": bbase })).await;
@@ -371,7 +371,7 @@ fn composite_controls_with_dependencies() {
         assert_eq!(idents.len(), 2, "{ex}");
         let board_entry = ex["manifest"]["controls"].as_array().unwrap().iter().find(|c| c["kind"] == "composite").unwrap();
         assert_eq!(board_entry["deps"], json!(["did:bns:alice#card"]));
-        assert_eq!(ex["manifest"]["manifest_version"], 2);
+        assert_eq!(ex["manifest"]["manifest_version"], 3);
         let only = srv.rpc("ext.export", json!({ "entity_ids": [board_id] })).await;
         assert_eq!(only["manifest"]["controls"].as_array().unwrap().len(), 2, "the closure follows def_dep");
         let pull = srv.rpc("ext.export", json!({ "entity_ids": [board_id], "purpose": "pull" })).await;
@@ -423,5 +423,250 @@ fn composite_controls_with_dependencies() {
         let r = srv.rpc("ext.install", json!({ "pikg": { "obj_id": open["obj_id"] } })).await;
         assert_eq!(r["error"]["code"], "LIBRARY_PACKAGE_INVALID", "{r}");
         assert!(r["error"]["detail"].as_str().unwrap().contains("does not carry"), "{r}");
+    })
+}
+
+fn card_v3(events: Value) -> Vec<(&'static str, String)> {
+    let c = json!({ "manifest_version": 3, "ident": { "author_did": ALICE, "name": "card" }, "kind": "html", "host_api": 3, "title": "Card", "accepts": ["buckyos.record"],
+                    "allow_no_source": true, "events": events, "entry": { "html": "view.html", "js": "behavior.js" } });
+    vec![("component.json", c.to_string()), ("view.html", "<button id=d>Done</button>".into()), ("behavior.js", "d.onclick=()=>aiws.emit('completed',{title:'x'});aiws.ready()".into())]
+}
+
+fn surface_ops() -> Value {
+    json!([
+        { "op": "entity.create", "entity_id": "sf-content", "type_id": "buckyos.container", "parent_id": "canvas-content", "order_key": "a", "payload": { "kind": "folder", "system": "surface_content", "surface_id": "sf", "title": "s" } },
+        { "op": "entity.create", "entity_id": "sf", "type_id": "buckyos.container", "parent_id": "surfaces", "order_key": "a", "payload": { "kind": "surface", "layout": { "mode": "free" }, "title": "s", "content_folder_id": "sf-content" } },
+    ])
+}
+
+#[test]
+fn events_buttons_bubbling_and_migrations() {
+    run_test(|| async move {
+        let mut srv = Srv::start(tempfile::tempdir().unwrap(), model()).await;
+        workspace(&mut srv, "Events").await;
+        let completed = json!({ "completed": { "title": "Done", "params": { "title": { "type": "string" }, "task": { "type": "entity" } } } });
+        // events need manifest_version 3, and so does host API 3
+        let mut v2 = card_v3(completed.clone());
+        v2[0].1 = v2[0].1.replace("\"manifest_version\":3", "\"manifest_version\":2");
+        let r = srv.rpc("ext.build", json!({ "files": upload(&srv, "card-v2", &v2).await })).await;
+        assert_eq!(r["error"]["code"], "BUILD_FAILED", "{r}");
+        assert!(diag_text(&r).contains("manifest_version 3"), "{r}");
+        let card = srv.rpc("ext.build", json!({ "files": upload(&srv, "card", &card_v3(completed.clone())).await })).await;
+        assert_eq!(card["action"], "created", "{card}");
+        let card_id = card["def_entity_id"].as_str().unwrap().to_string();
+        let payload = srv.rpc("doc.read", json!({ "entity_id": card_id })).await["content"]["payload"].clone();
+        assert_eq!((payload["html"]["api_version"].as_u64(), payload["events"]["completed"]["title"].as_str()), (Some(3), Some("Done")), "{payload}");
+        let outline = srv.rpc("doc.outline", json!({})).await;
+        let e = outline["entities"].as_array().unwrap().iter().find(|e| e["entity_id"] == json!(card_id)).unwrap().clone();
+        assert_eq!(e["def_events"], json!(["completed"]));
+
+        // a declarative button raises a declared event only
+        let mut kpi = component("kpi", json!({ "manifest_version": 3, "events": { "refresh": {} } }));
+        let button = |emit: &str| json!({ "items": [{ "kind": "button", "label": "Refresh", "emit": emit }] }).to_string();
+        let files = |c: &Value, emit: &str| vec![("component.json", c.to_string()), ("declarative.json", button(emit)), ("AGENT.md", "#".to_string())];
+        let r = srv.rpc("ext.build", json!({ "files": upload(&srv, "kpi-b1", &files(&kpi, "reload")).await, "dry_run": true })).await;
+        assert!(r["error"]["data"]["diagnostics"].as_array().unwrap().iter().any(|d| d["code"] == "EVENT_UNDECLARED"), "{r}");
+        assert_eq!(srv.rpc("ext.build", json!({ "files": upload(&srv, "kpi-b2", &files(&kpi, "refresh")).await, "dry_run": true })).await["status"], "checked");
+        kpi["manifest_version"] = json!(2);
+        let r = srv.rpc("ext.build", json!({ "files": upload(&srv, "kpi-b3", &files(&kpi, "refresh")).await, "dry_run": true })).await;
+        assert_eq!(r["error"]["code"], "BUILD_FAILED");
+
+        // a composite re-raises a child's event with its params; a slot whose controls do not raise it is refused
+        let mut comp = composition();
+        comp["events"] = json!({ "card_done": { "from": { "slot": "cards", "event": "completed" } } });
+        let board = srv.rpc("ext.build", json!({ "files": upload(&srv, "board", &board_files(comp.clone(), json!({ "manifest_version": 3 }))).await })).await;
+        assert_eq!(board["action"], "created", "{board}");
+        let board_id = board["def_entity_id"].as_str().unwrap().to_string();
+        let bp = srv.rpc("doc.read", json!({ "entity_id": board_id })).await["content"]["payload"].clone();
+        assert_eq!(bp["events"]["card_done"]["from"], json!({ "slot": "cards", "event": "completed" }));
+        assert_eq!(bp["events"]["card_done"]["params"]["title"]["type"], "string", "{bp}");
+        let mut bad = comp.clone();
+        bad["events"] = json!({ "x": { "from": { "slot": "header", "event": "completed" } } });
+        let r = srv.rpc("ext.build", json!({ "files": upload(&srv, "board-x", &board_files(bad, json!({ "manifest_version": 3 }))).await, "force": true })).await;
+        assert!(r["error"]["data"]["diagnostics"].as_array().unwrap().iter().any(|d| d["code"] == "EVENT_UNDECLARED"), "{r}");
+        // grid (P3): columns required
+        let mut grid = comp.clone();
+        grid["layout"] = json!({ "algorithm": "grid", "columns": 3, "gap": "{{config.gap}}" });
+        grid["slots"]["header"]["placement"] = json!("stack");
+        assert_eq!(srv.rpc("ext.build", json!({ "files": upload(&srv, "board-g", &board_files(grid.clone(), json!({ "manifest_version": 3 }))).await, "dry_run": true, "force": true })).await["status"], "checked");
+        grid["layout"] = json!({ "algorithm": "grid" });
+        assert_eq!(srv.rpc("ext.build", json!({ "files": upload(&srv, "board-g2", &board_files(grid, json!({ "manifest_version": 3 }))).await, "dry_run": true, "force": true })).await["error"]["code"], "BUILD_FAILED");
+
+        // instances: a board with a card that binds the event, both written per property
+        srv.commit(surface_ops()).await;
+        srv.commit(json!([
+            { "op": "entity.create", "entity_id": "board-1", "type_id": "buckyos.container", "parent_id": "sf", "order_key": "a", "placement": { "x": 0, "y": 0, "w": "auto", "h": "auto" },
+              "payload": { "kind": "composite", "def_ref": { "entity_id": board_id }, "config": { "title": "Sprint" } } },
+            { "op": "entity.create", "entity_id": "card-1", "type_id": "buckyos.cell", "parent_id": "board-1", "order_key": "a", "placement": { "x": "auto", "y": "auto", "w": 240, "h": 120 },
+              "payload": { "view": { "type": "html" }, "def_ref": { "entity_id": card_id }, "slot": "cards" } },
+            { "op": "entity.set_props", "entity_id": "card-1", "key": "on", "props": { "completed": { "kind": "notify", "text": "{{event.title}} done" } } },
+            { "op": "entity.set_props", "entity_id": "board-1", "key": "on", "props": { "card_done": { "kind": "notify", "text": "a card" } } },
+        ])).await;
+        let card_on = srv.rpc("doc.read", json!({ "entity_id": "card-1" })).await;
+        assert_eq!(card_on["content"]["payload"]["on"]["completed"]["kind"], "notify", "{card_on}");
+        // the card stops carrying `title`: the instance reading {{event.title}} is named, and so is the board building on it
+        let cbase = |r: &Value| json!({ "def_rev": r["def_rev"], "dir_rev": r["dir_rev"] });
+        let narrowed = json!({ "completed": { "title": "Done", "params": { "task": { "type": "entity" } } } });
+        let r = srv.rpc("ext.build", json!({ "files": upload(&srv, "card-n", &card_v3(narrowed)).await, "expect": cbase(&card) })).await;
+        assert_eq!(r["error"]["code"], "BUILD_FAILED", "{r}");
+        assert!(r["error"]["data"]["diagnostics"].as_array().unwrap().iter().any(|d| d["instances"][0]["entity_id"] == "card-1"), "{r}");
+        // the board moves its cards to a new slot: without a migration its instance strands them; with one they move
+        let mut moved = comp.clone();
+        moved["slots"] = json!({ "header": { "max": 1, "accepts": ["richtext"], "placement": "top" }, "items": { "accepts": ["cell:did:bns:alice#card"] } });
+        moved["events"] = json!({ "card_done": { "from": { "slot": "items", "event": "completed" } } });
+        let bfiles = upload(&srv, "board-m", &board_files(moved, json!({ "manifest_version": 3 }))).await;
+        let r = srv.rpc("ext.build", json!({ "files": bfiles, "expect": cbase(&board) })).await;
+        assert!(diag_text(&r).contains("card-1") && diag_text(&r).contains("slot cards"), "{r}");
+        let migration = json!({ "slots": { "rename": { "cards": "items" } }, "config": { "rename": { "title": "heading" }, "fill": { "gap": 4 } } });
+        let dry = srv.rpc("ext.build", json!({ "files": bfiles, "expect": cbase(&board), "migration": migration, "dry_run": true })).await;
+        let plan = dry["plan"].as_array().unwrap();
+        assert_eq!(plan.len(), 1, "{dry}");
+        assert_eq!(plan[0]["instance"], "board-1");
+        let ok = srv.rpc("ext.build", json!({ "files": bfiles, "expect": cbase(&board), "migration": migration })).await;
+        assert_eq!((ok["action"].as_str(), ok["migrated"].clone()), (Some("rebuilt"), json!(["board-1"])), "{ok}");
+        let b1 = srv.rpc("doc.read", json!({ "entity_id": "board-1" })).await["content"]["payload"].clone();
+        assert_eq!(b1["config"], json!({ "heading": "Sprint", "gap": 4 }), "{b1}");
+        assert_eq!(b1["on"]["card_done"]["kind"], "notify", "an instance keeps its own handlers");
+        assert_eq!(srv.rpc("doc.read", json!({ "entity_id": "card-1" })).await["content"]["payload"]["slot"], "items");
+        let r = srv.rpc("doc.read", json!({ "entity_id": "board-1" })).await;
+        assert!(r["content"]["key_revs"]["p:config.heading"].as_u64().is_some(), "{r}");
+    })
+}
+
+#[test]
+fn upgrades_from_the_library() {
+    run_test(|| async move {
+        let mut srv = Srv::start(tempfile::tempdir().unwrap(), model()).await;
+        let ws1 = workspace(&mut srv, "Dev").await;
+        let c = component("kpi", json!({}));
+        let b = srv.rpc("ext.build", json!({ "files": upload(&srv, "kpi", &kpi_files(&c, "Total")).await })).await;
+        let dev_def = b["def_entity_id"].as_str().unwrap().to_string();
+        let install = |v: &str| json!({ "from": { "workspace_id": ws1, "entity_ids": [dev_def] }, "package": { "name": "acme-kpi", "version": v } });
+        assert_eq!(srv.rpc("ext.install", install("1.0.0")).await["action"], "installed");
+
+        // in use elsewhere: an instance with its own override and binding
+        let _ws2 = workspace(&mut srv, "Use").await;
+        let im = srv.rpc("ext.import", json!({ "items": [{ "pkg_id": "acme-kpi", "ident": "did:bns:alice#kpi" }] })).await;
+        let def = im["controls"][0]["def_entity_id"].as_str().unwrap().to_string();
+        srv.commit(surface_ops()).await;
+        srv.commit(json!([
+            { "op": "entity.create", "entity_id": "sales", "type_id": "buckyos.table-source", "parent_id": "data", "order_key": "s", "payload": { "fields": [{ "field_id": "amount", "name": "amount", "type": "number" }] } },
+            { "op": "entity.create", "entity_id": "cell-1", "type_id": "buckyos.cell", "parent_id": "sf", "order_key": "a", "placement": { "x": 0, "y": 0, "w": 240, "h": 120 },
+              "payload": { "view": { "type": "declarative" }, "def_ref": { "entity_id": def }, "config": { "label": "Mine" }, "bindings": { "sales": { "entity_id": "sales" } } } },
+        ])).await;
+        let item = json!([{ "def_entity_id": def }]);
+        assert_eq!(srv.rpc("ext.upgrade", json!({ "items": item })).await["controls"][0]["action"], "unchanged");
+
+        // 2.0.0 renames the binding: refused without a migration, planned and applied with one
+        srv.ws = ws1.clone();
+        let mut c2 = component("kpi", json!({}));
+        c2["bindings"] = json!({ "orders": { "accepts": ["buckyos.table-source"] } });
+        let base = json!({ "def_rev": b["def_rev"], "dir_rev": b["dir_rev"] });
+        assert_eq!(srv.rpc("ext.build", json!({ "files": upload(&srv, "kpi2", &kpi_files(&c2, "Orders")).await, "expect": base })).await["action"], "rebuilt");
+        assert_eq!(srv.rpc("ext.install", install("2.0.0")).await["action"], "replaced");
+        srv.ws = _ws2.clone();
+        let r = srv.rpc("ext.upgrade", json!({ "items": item })).await;
+        assert_eq!(r["error"]["code"], "BUILD_FAILED", "{r}");
+        assert!(diag_text(&r).contains("binds sales"), "{r}");
+        let migration = json!({ "did:bns:alice#kpi": { "bindings": { "rename": { "sales": "orders" } } } });
+        let dry = srv.rpc("ext.upgrade", json!({ "items": item, "migration": migration, "dry_run": true })).await;
+        assert_eq!(dry["plan"][0]["ops"][0]["props"], json!({ "sales": null, "orders": { "entity_id": "sales" } }), "{dry}");
+        let up = srv.rpc("ext.upgrade", json!({ "items": item, "migration": migration })).await;
+        let ctl = &up["controls"][0];
+        assert_eq!((ctl["action"].as_str(), ctl["from"].as_str(), ctl["to"].as_str()), (Some("upgraded"), Some("1.0.0"), Some("2.0.0")), "{up}");
+        let cell = srv.rpc("doc.read", json!({ "entity_id": "cell-1" })).await["content"]["payload"].clone();
+        assert_eq!((cell["config"]["label"].as_str(), cell["bindings"]["orders"]["entity_id"].as_str()), (Some("Mine"), Some("sales")), "{cell}");
+        let p = srv.rpc("doc.read", json!({ "entity_id": def })).await["content"]["payload"].clone();
+        assert_eq!((p["provenance"]["version"].as_str(), p["declarative"]["items"][0]["label"].as_str()), (Some("2.0.0"), Some("Orders")));
+        assert_eq!(srv.rpc("ext.upgrade", json!({ "items": item })).await["controls"][0]["action"], "unchanged");
+
+        // a local build after the import: the next upgrade lists what would be replaced, force replaces it
+        let pulled = srv.rpc("ext.export", json!({ "entity_ids": [def], "purpose": "pull" })).await;
+        let lbase = json!({ "def_rev": pulled["controls"][0]["def_rev"], "dir_rev": pulled["controls"][0]["dir_rev"] });
+        let mut local = kpi_files(&c2, "Orders");
+        local.push(("notes.md", "mine".into()));
+        assert_eq!(srv.rpc("ext.build", json!({ "files": upload(&srv, "kpi-local", &local).await, "expect": lbase })).await["action"], "rebuilt");
+        srv.ws = ws1.clone();
+        srv.rpc("ext.build", json!({ "files": upload(&srv, "kpi3", &kpi_files(&c2, "Orders 3")).await, "force": true })).await;
+        assert_eq!(srv.rpc("ext.install", install("3.0.0")).await["action"], "replaced");
+        srv.ws = _ws2.clone();
+        let r = srv.rpc("ext.upgrade", json!({ "items": item })).await;
+        assert_eq!((r["error"]["code"].as_str(), r["error"]["sub_code"].as_str()), (Some("INVALID_OPERATION"), Some("EXT_LOCAL_CHANGES")), "{r}");
+        assert_eq!(r["error"]["data"]["files"]["removed"], json!(["notes.md"]), "{r}");
+        assert_eq!(srv.rpc("ext.upgrade", json!({ "items": item, "force": true })).await["controls"][0]["action"], "upgraded");
+        // a plain import of an identity held from another version answers the library's version
+        let _ws3 = workspace(&mut srv, "Third").await;
+        srv.rpc("ext.build", json!({ "files": upload(&srv, "kpi-own", &kpi_files(&c2, "Own")).await })).await;
+        let r = srv.rpc("ext.import", json!({ "items": [{ "pkg_id": "acme-kpi", "ident": "did:bns:alice#kpi" }] })).await;
+        assert_eq!((r["error"]["sub_code"].as_str(), r["error"]["data"]["library_version"].as_str()), (Some("EXT_IDENT_EXISTS"), Some("3.0.0")), "{r}");
+    })
+}
+
+#[test]
+fn workspace_templates_from_snapshot_to_new_workspaces() {
+    run_test(|| async move {
+        let mut srv = Srv::start(tempfile::tempdir().unwrap(), model()).await;
+        let ws1 = workspace(&mut srv, "Team Tasks").await;
+        let c = component("kpi", json!({}));
+        let kpi = srv.rpc("ext.build", json!({ "files": upload(&srv, "kpi", &kpi_files(&c, "Total")).await })).await;
+        let def = kpi["def_entity_id"].as_str().unwrap().to_string();
+        srv.commit(surface_ops()).await;
+        srv.commit(json!([
+            { "op": "entity.create", "entity_id": "tasks", "type_id": "buckyos.table-source", "parent_id": "data", "order_key": "t",
+              "payload": { "fields": [{ "field_id": "title", "name": "title", "type": "text" }] } },
+            { "op": "table.insert_records", "source_id": "tasks", "records": [{ "record_id": "r1", "values": { "title": "first" } }] },
+            { "op": "entity.create", "entity_id": "notes", "type_id": "buckyos.table-source", "parent_id": "data", "order_key": "u",
+              "payload": { "fields": [{ "field_id": "text", "name": "text", "type": "text" }] } },
+            { "op": "table.insert_records", "source_id": "notes", "records": [{ "record_id": "n1", "values": { "text": "Welcome, {{params.team_name}}" } }] },
+            { "op": "entity.create", "entity_id": "kpi-1", "type_id": "buckyos.cell", "parent_id": "sf", "order_key": "a", "placement": { "x": 0, "y": 0, "w": 240, "h": 120 },
+              "payload": { "view": { "type": "declarative" }, "def_ref": { "entity_id": def }, "title": "{{params.team_name}} board", "config": { "label": "{{params.team_name}} tasks" }, "bindings": { "sales": { "entity_id": "tasks" } } } },
+            { "op": "entity.create", "entity_id": "notes-1", "type_id": "buckyos.cell", "parent_id": "sf", "order_key": "b", "placement": { "x": 0, "y": 200, "w": 240, "h": 120 },
+              "payload": { "view": { "type": "table" }, "source_ref": { "entity_id": "notes" } } },
+            // not part of the template: another Surface's content
+            { "op": "entity.create", "entity_id": "other", "type_id": "buckyos.table-source", "parent_id": "data", "order_key": "v", "payload": { "fields": [{ "field_id": "x", "name": "x", "type": "text" }] } },
+        ])).await;
+        let spec = json!({ "id": "team-board", "title": "Team board", "params": { "team_name": { "type": "string", "title": "Team", "default": "Team" } }, "reset": { "tables": ["tasks"] } });
+        let ex = srv.rpc("ext.export_template", json!({ "surfaces": ["sf"], "template": spec })).await;
+        assert_eq!(ex["template"]["requires"]["controls"], json!(["did:bns:alice#kpi"]), "{ex}");
+        assert_eq!(ex["controls"], json!([def]));
+        let paths: Vec<&str> = ex["files"].as_array().unwrap().iter().map(|f| f["path"].as_str().unwrap()).collect();
+        assert!(paths.contains(&"templates/team-board/snapshot.json") && paths.iter().any(|p| p.starts_with("templates/team-board/objects/")), "{paths:?}");
+        let bad = srv.rpc("ext.export_template", json!({ "surfaces": ["sf"], "template": { "id": "x", "title": "X", "reset": { "tables": ["other"] } } })).await;
+        assert_eq!(bad["error"]["code"], "INVALID_OPERATION", "{bad}");
+
+        // into the library: no Workspace is created; the control it needs comes along
+        let count = |v: &Value| v["workspaces"].as_array().map_or(0, Vec::len);
+        let before = count(&srv.rpc("ws.list", json!({})).await);
+        let inst = srv.rpc("ext.install", json!({ "from": { "workspace_id": ws1, "templates": [{ "surfaces": ["sf"], "template": spec }] }, "package": { "name": "team-kit", "version": "1.0.0" } })).await;
+        assert_eq!((inst["action"].as_str(), inst["templates"].clone()), (Some("installed"), json!(["team-board"])), "{inst}");
+        assert_eq!(count(&srv.rpc("ws.list", json!({})).await), before, "installing creates no Workspace");
+        let lib = srv.rpc("ext.list_library", json!({})).await;
+        let pkg = lib["packages"].as_array().unwrap().iter().find(|p| p["pkg_id"] == "team-kit").unwrap().clone();
+        assert_eq!((pkg["templates"][0]["id"].as_str(), pkg["controls"][0]["ident"].as_str(), pkg["manifest_version"].as_i64()), (Some("team-board"), Some("did:bns:alice#kpi"), Some(3)), "{pkg}");
+
+        // two creations, two independent Workspaces; parameters replaced, the reset table empty, the instance bound
+        let a = srv.rpc("ext.create_from_template", json!({ "pkg_id": "team-kit", "template_id": "team-board", "params": { "team_name": "Red" } })).await;
+        let b = srv.rpc("ext.create_from_template", json!({ "pkg_id": "team-kit", "template_id": "team-board", "title": "Blue team" })).await;
+        let (wa, wb) = (a["workspace_id"].as_str().unwrap_or_else(|| panic!("{a}")).to_string(), b["workspace_id"].as_str().unwrap_or_else(|| panic!("{b}")).to_string());
+        assert_ne!(wa, wb, "{a} {b}");
+        assert_eq!(count(&srv.rpc("ws.list", json!({})).await), before + 2);
+        srv.ws = wa.clone();
+        let cell = srv.rpc("doc.read", json!({ "entity_id": "kpi-1" })).await["content"]["payload"].clone();
+        assert_eq!((cell["config"]["label"].as_str(), cell["title"].as_str()), (Some("Red tasks"), Some("Red board")), "{cell}");
+        assert_eq!(srv.rpc("doc.read", json!({ "entity_id": def })).await["content"]["payload"]["ident"]["name"], "kpi", "the definition came with the snapshot");
+        assert_eq!(srv.rpc("doc.query", json!({ "source_id": "tasks" })).await["rows"], json!([]), "reset");
+        assert_eq!(srv.rpc("doc.query", json!({ "source_id": "notes" })).await["rows"][0]["values"]["text"], "Welcome, Red");
+        assert_eq!(srv.rpc("doc.read", json!({ "entity_id": "other" })).await["error"]["code"], "NOT_FOUND", "only what the Surface needs");
+        srv.commit(json!([{ "op": "entity.set_props", "entity_id": "kpi-1", "key": "config", "props": { "label": "changed" } }])).await;
+        srv.ws = wb.clone();
+        assert_eq!(srv.rpc("ws.get_info", json!({})).await["title"], "Blue team");
+        assert_eq!(srv.rpc("doc.read", json!({ "entity_id": "kpi-1" })).await["content"]["payload"]["config"]["label"], "Team tasks", "defaults, and independent of the first");
+
+        // ext.pack carries the template too; the library checks it like a control
+        srv.ws = ws1.clone();
+        let packed = srv.rpc("ext.pack", json!({ "entity_ids": [def], "templates": [{ "surfaces": ["sf"], "template": spec }], "package": { "name": "team-kit-pikg", "version": "1.0.0" } })).await;
+        assert!(packed["key"].as_str().is_some(), "{packed}");
+        let r = srv.rpc("ext.install", json!({ "pikg": { "bucket_id": packed["bucket_id"], "key": packed["key"] } })).await;
+        assert_eq!(r["templates"], json!(["team-board"]), "{r}");
     })
 }

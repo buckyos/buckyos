@@ -268,3 +268,46 @@ test('S-03 the presenter\'s voice through the host, recorded on the time line (P
   expect(segments.every((s) => s.data.media_type === 'audio/ogg' && s.data.t_rel_end > s.data.t_rel_start)).toBe(true)
   await media.close()
 })
+
+test('S-04 a public session and its replay run no extension (扩展控件 M6, Q33): the HTML control shows its snapshot, the composite lays out', async ({ api, browser }) => {
+  test.setTimeout(180_000)
+  const ws = await courseware(api, `session-ext ${Date.now()}`)
+  const card = await api.build(ALICE, ws.workspace_id, 'hello-card')
+  const board = await api.build(ALICE, ws.workspace_id, 'hello-board')
+  const html = (id: string, { payload, ...where }: Json) => ({ op: 'entity.create', entity_id: id, type_id: 'buckyos.cell', ...where,
+    payload: { view: { type: 'html' }, def_ref: { entity_id: card.def_entity_id }, bindings: { task: { entity_id: 'ext-task' } }, ...(payload ?? {}) } })
+  const blocks = await api.commit(ALICE, ws, [
+    { op: 'entity.create', entity_id: 'ext-task', type_id: 'buckyos.record', parent_id: 'data', order_key: 'zt', name: 'task',
+      payload: { schema: { properties: [{ key: 'title', name: 'title', type: 'text' }, { key: 'status', name: 'status', type: 'text' }] }, props: { title: 'Ship it', status: 'open' } } },
+    html('hcard', { parent_id: 's-launch', order_key: 'zzc', placement: { x: 300, y: 80, w: 240, h: 120 }, payload: { presentation: { live: true } } }),
+    { op: 'entity.create', entity_id: 'hboard', type_id: 'buckyos.container', parent_id: 's-launch', order_key: 'zzb', placement: { x: 300, y: 300, w: 'auto', h: 'auto' },
+      payload: { kind: 'composite', def_ref: { entity_id: board.def_entity_id }, on: { card_done: { kind: 'notify', text: 'done' } } } },
+    html('hb-card', { parent_id: 'hboard', order_key: 'a', placement: { x: 'auto', y: 'auto', w: 240, h: 120 }, payload: { slot: 'cards' } }),
+  ], 'session-ext/blocks')
+  expect(blocks.status, JSON.stringify(blocks)).toBe('accepted')
+  const created = await api.rpc(ALICE, 'session.create', { workspace_id: ws.workspace_id, path_id: 'path-intro', title: '扩展' })
+  const sid = created.session.session_id as string
+  const presenter = await open(browser, ALICE, roomUrl(ws.workspace_id, sid))
+  await expect(presenter.getByTestId('aiws-session-start')).toBeVisible({ timeout: 30_000 })
+  await presenter.getByTestId('aiws-session-start').click()
+  await expect(presenter.getByTestId('aiws-session-presenter')).toHaveAttribute('data-state', 'live')
+  const check = async (page: Page) => {
+    await expect(page.getByTestId('aiws-html-static-hcard')).toBeVisible({ timeout: 30_000 })
+    await expect(page.getByTestId('aiws-html-start-hcard')).toHaveCount(0)
+    await expect(page.getByTestId('aiws-composite-chrome-hboard')).toBeVisible()
+    const outer = (await page.getByTestId('aiws-composite-chrome-hboard').boundingBox())!
+    const inner = (await page.getByTestId('aiws-html-static-hb-card').boundingBox())!
+    expect(inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.width <= outer.x + outer.width + 1 && inner.y + inner.height <= outer.y + outer.height + 1).toBe(true)
+    await page.getByTestId('aiws-html-static-hcard').click({ force: true })
+    await expect(page.locator('.aiws-html-frame')).toHaveCount(0)
+  }
+  await check(presenter)
+  presenter.once('dialog', (d) => { void d.accept() })
+  await presenter.getByTestId('aiws-session-end').click()
+  await expect(presenter.getByTestId('aiws-session-replay')).toBeVisible({ timeout: 30_000 })
+  await expect(presenter.getByTestId('aiws-session-timeline')).toBeVisible({ timeout: 30_000 })
+  await presenter.getByTestId('aiws-session-replay-scrub').fill('0')
+  await expect(presenter.getByTestId('aiws-session-stage')).toHaveAttribute('data-step', 's1', { timeout: 15_000 })
+  await check(presenter)
+  await presenter.context().close()
+})

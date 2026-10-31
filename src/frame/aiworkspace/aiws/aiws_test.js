@@ -138,4 +138,15 @@ export default async function main(aiws) {
   assert((await run(bad)).results.error.includes('under must name a control input'))
   const none = await workdir(`export default async function main(aiws) { aiws.result.control('x', { children: '- a' }) }`)
   assert((await run(none)).results.error.includes('kind is required'))
+  // a composite control of the Workspace: its slots take other results, inputs and new texts
+  const board = await workdir(`export default async function main(aiws) {
+  aiws.result.text('summary', '# Done')
+  aiws.result.control('board', { def: 'did:bns:alice#board', config: { title: 'W44' }, slots: { notes: ['result:summary', { view: 'richtext', markdown: 'more' }] } })
+}`)
+  const b = await run(board)
+  assertEquals(b.code, 0, b.stdout)
+  assertEquals(b.results.results[1], { name: 'board', type: 'control', def: 'did:bns:alice#board', config: { title: 'W44' }, slots: { notes: ['result:summary', { view: 'richtext', markdown: 'more' }] } })
+  assert(b.stdout.includes('control board: did:bns:alice#board (notes)'), b.stdout)
+  const noSlots = await workdir(`export default async function main(aiws) { aiws.result.control('x', { def: 'did:bns:alice#board' }) }`)
+  assert((await run(noSlots)).results.error.includes('slots is required'))
 })

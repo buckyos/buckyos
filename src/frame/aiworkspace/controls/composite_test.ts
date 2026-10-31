@@ -1,10 +1,11 @@
-/* Composite layouts (扩展控件 P1, K2): stack (column / row, slot order, title band, spacing from config), fixed,
- * pinned children, nested controls, the accept rule. Run: `deno test -A` in this folder. */
+/* Composite layouts (扩展控件 P1, K2; P3 Q33): stack (column / row, slot order, title band, spacing from config), grid,
+ * fixed, an unknown algorithm laid out as a group, pinned children, nested controls, the accept rule. Run: `deno test -A`
+ * in this folder. */
 
 import { assert, assertEquals } from './test_assert.ts'
 import { approxMetrics, NodeMeasurer } from './measure.ts'
 import { placeControl, solveAny, type ControlEntity, type ControlSource } from './solve.ts'
-import { slotAccepts, slotFor, templated, TITLE_BAND, type Composition } from './composite.ts'
+import { slotAccepts, slotFor, templated, TITLE_BAND, unknownAlgorithm, type Composition } from './composite.ts'
 
 const measurer = new NodeMeasurer(approxMetrics)
 
@@ -72,4 +73,27 @@ Deno.test('what a slot accepts', () => {
   assert(slotAccepts(board.slots.footer, { type_id: 'buckyos.container' }, ident), 'no accepts: any Block')
   assertEquals(slotFor(board, { type_id: 'buckyos.cell', view_type: 'richtext' }, ident), 'header')
   assertEquals(slotFor(board, { type_id: 'buckyos.cell', view_type: 'richtext' }, ident, (s) => (s === 'header' ? 1 : 0)), 'footer', 'a full slot is skipped')
+})
+
+Deno.test('a grid fills its cells row by row in slot order, columns and gap from config', () => {
+  const grid: Composition = { layout: { algorithm: 'grid', columns: '{{config.cols}}', gap: 6, padding: 10 }, slots: { cards: {} } }
+  const src = source([{ ...def(grid), config_defaults: { cols: 2 } }, { entity_id: 'b1', type_id: 'buckyos.container', kind: 'composite', def_id: 'd-board' },
+    card('c1', 'a', 'cards'), card('c2', 'b', 'cards', { placement: { x: 'auto', y: 'auto', w: 100, h: 90 } }), card('c3', 'c', 'cards')])
+  const s = solveAny(src, 'b1', { measurer })
+  const at = (id: string) => s.layout.nodes.get(id)!
+  assertEquals([at('c1').x, at('c1').y], [10, 10])
+  assertEquals([at('c2').x, at('c2').y], [10 + 200 + 6, 10], 'the second column starts after the widest of the first')
+  assertEquals([at('c3').x, at('c3').y], [10, 10 + 90 + 6], 'the second row starts below the tallest of the first')
+  assertEquals(s.layout.bounds.w, 10 + 200 + 6 + 100 + 10)
+  assertEquals(unknownAlgorithm(grid), null)
+})
+
+Deno.test('an algorithm this host does not know keeps every child where it is (a group), and is named', () => {
+  const later = { layout: { algorithm: 'radial' }, slots: { cards: {} } } as unknown as Composition
+  assertEquals(unknownAlgorithm(later), 'radial')
+  const src = source([def(later), { entity_id: 'b1', type_id: 'buckyos.container', kind: 'composite', def_id: 'd-board' },
+    card('p', 'a', 'cards', { placement: { x: 300, y: 40, w: 50, h: 50 } }), card('q', 'b', 'cards')])
+  const s = solveAny(src, 'b1', { measurer })
+  assertEquals([s.layout.nodes.get('p')!.x, s.layout.nodes.get('p')!.y], [300, 40])
+  assert(s.layout.nodes.get('q')!.y >= 90, 'an "auto" child falls below the placed ones')
 })

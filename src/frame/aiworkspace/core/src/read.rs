@@ -260,6 +260,10 @@ pub fn outline_extras(env: &mut Value, e: &EntityRow) {
             env["source"]["feed"] = f.clone();
         }
     }
+    // the events an instance binds (扩展控件 P2): the canvas marks them, an Agent finds them without reading the Block
+    if let Some(on) = e.payload.get("on").and_then(Value::as_object).filter(|_| matches!(e.type_id.as_str(), TYPE_CELL | TYPE_CONTAINER)) {
+        env["on_events"] = json!(on.keys().collect::<Vec<_>>());
+    }
     match e.type_id.as_str() {
         TYPE_CONTAINER => {
             env["kind"] = e.payload.get("kind").cloned().unwrap_or(Value::Null);
@@ -344,6 +348,9 @@ pub fn outline_extras(env: &mut Value, e: &EntityRow) {
             }
             if let Some(dir) = e.payload.get("source_dir").and_then(|d| d.get("entity_id")) {
                 env["source_dir_id"] = dir.clone();
+            }
+            if let Some(ev) = e.payload.get("events").and_then(Value::as_object) {
+                env["def_events"] = json!(ev.keys().collect::<Vec<_>>());
             }
             // what it builds on (P1, Q16): the identities, for the catalogue and exports
             if let Some(deps) = e.payload.get("deps").and_then(Value::as_array) {

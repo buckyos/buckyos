@@ -432,6 +432,9 @@ export const en: Record<string, string> = {
   'aiworkspace.shell.workspace.embedNotBlock': 'The embed target is not a block ({{id}})',
   'aiworkspace.shell.workspace.embedTitle': 'Embedded block (read-only): edit it where it lives',
   'aiworkspace.shell.workspace.loadError': 'Cannot read the workspace: {{error}}',
+  'aiworkspace.shell.menu.saveTemplate': 'Save as template…',
+  'aiworkspace.shell.menu.saveTemplateHint': 'Canvases as a workspace template in my library',
+  'aiworkspace.shell.new.template.fromLibrary': 'My library',
 }
 
 export const zh: Record<string, string> = {
@@ -857,4 +860,7 @@ export const zh: Record<string, string> = {
   'aiworkspace.shell.workspace.embedNotBlock': '嵌入目标不是 Block（{{id}}）',
   'aiworkspace.shell.workspace.embedTitle': '嵌入的 Block（只读）：到它所在的地方修改',
   'aiworkspace.shell.workspace.loadError': '无法读取工作区：{{error}}',
+  'aiworkspace.shell.menu.saveTemplate': '保存为模板…',
+  'aiworkspace.shell.menu.saveTemplateHint': '把画布作为工作区模板存入我的库',
+  'aiworkspace.shell.new.template.fromLibrary': '我的库',
 }

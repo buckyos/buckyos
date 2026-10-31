@@ -15,13 +15,15 @@ import { useOutlineVersion, useStore } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
 import type { Camera } from '../canvas/render/camera'
 import { MAX_ZOOM, MIN_ZOOM } from '../canvas/render/camera'
+import type { RunMode } from '../../state/runMode'
+import { RunModeToggle } from '../canvas/tools'
 import { SurfaceSwitcher } from './MainToolbar'
 import { MenuList, PopoverPanel, usePopover, type MenuItem } from './popover'
 import { useShell, ZOOM_PRESETS } from './shellContext'
 import { ObjectImage } from '../../../../presentation/ObjectIcon'
 import { useCurrentUser } from '../../../../presentation/currentUser'
 
-export function ViewToolbar({ camera, hasSelection, onFitAll, onFitSelection, annotate }: {
+export function ViewToolbar({ camera, hasSelection, onFitAll, onFitSelection, annotate, runMode }: {
   /** Free Surfaces only: flow pages have no camera, so no zoom. */
   camera: Camera | null
   hasSelection: boolean
@@ -30,6 +32,8 @@ export function ViewToolbar({ camera, hasSelection, onFitAll, onFitSelection, an
   /** Absent where there is nothing to annotate (a workspace without canvases). `note`: a free canvas also takes notes
    * from here (a note is an annotation), so the button opens a choice. */
   annotate: { reason: string | null; active: boolean; run: () => void; note?: { reason: string | null; run: () => void } | null } | null
+  /** The canvas's design / run switch (扩展控件 P2, Q27). */
+  runMode?: RunMode
 }) {
   const shell = useShell()
   const { t } = useAiwsText()
@@ -40,6 +44,7 @@ export function ViewToolbar({ camera, hasSelection, onFitAll, onFitSelection, an
       <GuideButton compact={compact} />
       {!shell.phone && <ShowButton />}
       {annotate && <AnnotateButton annotate={annotate} compact={compact} />}
+      {runMode && <RunModeToggle runMode={runMode} />}
       {camera && <ZoomControl camera={camera} hasSelection={hasSelection} onFitAll={onFitAll} onFitSelection={onFitSelection} />}
       <IdentityButton />
       <ShareButton />

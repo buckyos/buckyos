@@ -469,6 +469,37 @@ impl Service {
     }
 }
 
+impl Service {
+    /// `ext.create_from_template` (扩展控件 P3, Q32): the template's snapshot loaded as a new Workspace the caller owns
+    /// (the path of `ws.import new`: fresh id, rich texts as new lineages), then one internal Commit for its parameters
+    /// and the tables it starts empty. Two creations are two independent Workspaces.
+    pub fn create_from_template(&self, caller: &Caller, title: Option<&str>, tf: &crate::template::TemplateFiles, params: &serde_json::Map<String, Value>) -> WsResult<Value> {
+        require_may_own(caller)?;
+        let root = tf.content_root()?;
+        tf.load_into(&self.objects)?;
+        let id = random_id("ws_");
+        let title = title.filter(|t| !t.trim().is_empty()).or_else(|| tf.item["title"].as_str()).unwrap_or("Workspace").to_string();
+        let tmp = self.tmp_dir();
+        let spec = LoadSpec { workspace_id: &id, title: &title, content_root: &root, collab: Default::default(), personal: vec![], forked_from: None };
+        let mut ws = match load_workspace(&tmp, spec, caller, &caller.principal, self.objects.clone(), self.clock.clone()) {
+            Ok(ws) => ws,
+            Err(e) => {
+                self.discard(&tmp);
+                return Err(e);
+            }
+        };
+        if let Err(e) = ws.template_finish(caller, &tf.item, params) {
+            drop(ws);
+            self.discard(&tmp);
+            return Err(e);
+        }
+        let info = json!({ "ok": true, "workspace_id": id, "title": title, "epoch": ws.epoch, "head_seq": ws.head_seq, "template": tf.item["id"] });
+        drop(ws);
+        std::fs::rename(&tmp, self.ws_dir(&id)).map_err(io)?;
+        Ok(info)
+    }
+}
+
 /// Workspaces are created, imported and forked — and the Zone's principals listed — by unrestricted accounts and
 /// services only: a guest, an External DID or a restricted (Limited) account owns nothing (PRE-03).
 /// Write-then-rename so a crash never leaves a half-written file under its name.

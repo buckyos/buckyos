@@ -533,6 +533,47 @@ sent by reference (`assetUploader`, Q22).
 - A flow page shows a composite as a group (its Blocks in order; Blocks are added on the canvas). Phones show
   instances read-only and do not offer “Define as control…”.
 
+### P2 / P3 (notepads/aiworkspace-extension-p2p3-todo.md; backend README “Extension controls P2 / P3”)
+
+- **Per-property writes** (Q28/Q29, `ui/blocks/ops.ts` `submitProps` / `setCellConfig`): the instance Inspector
+  (`ui/controls/composite/Inspector.tsx` `InstanceInspector`, for composite containers and control Cells), the
+  declarative Inspector fields, Block tools and the HTML snapshot write only the changed properties of `config` /
+  `bindings` / `on` as `entity.set_props`, each with `expect` from `key_revs["p:<key>.<name>"]` (0 when absent); text
+  and number fields of the Inspector write when left (blur, Enter). Every write to an instance carries the Commit
+  precondition on its definition's `content_rev` (outline); a refusal naming the definition (online, or an offline
+  submission replayed) says “the control was updated…” and re-reads the form (`state/store.ts` `definitionChanged`).
+  The outline mirrors `set_props`, `def_events` and `on_events`.
+- **Design / run mode** (Q27, `state/runMode.ts`, `ui/canvas/tools.tsx` `RunModeToggle` on the view toolbar): a local
+  ▶ / ✎ switch per canvas sub-mode (edit designs, view runs; path editing, guests and phones off and locked), handed to
+  Blocks through `RunModeContext` → `RenderContext.interactive`. A non-public show runs the Blocks marked operable on
+  stage (`StageView`); a public session and its replay provide nothing, so nothing runs (HTML Blocks show their
+  snapshot). In run mode a click on an HTML Block mounts it (view mode too, within the `html` budget), a declarative
+  `button` is enabled, and writes of handlers and of `aiws.record().set` etc. pass in view mode with `update` on the
+  target (`bridge.ts` `writeAllowed`). The flow page no longer mounts HTML Blocks by itself (“Run once”, or run mode).
+- **Events** (Q26, `ui/extensions/events.ts`): `raiseEvent` checks the definition declares the event; in design mode
+  it leaves a corner note (`EventNote`), in run mode it runs the instance's `on` in order — every `write` (the typed
+  writes of `bridge.ts` `typedWriter`) as one undoable Commit keyed `evt/<instance>/<event>/<event_id>`, a `wish` with
+  the same key and `request.event`, `open` / `notify` here, `{{event.*}}` / `{{config.*}}` filled — then re-raises it
+  through the composites around the instance (`events.<name>.from`). Raised by `aiws.emit` (host API 3; refused before
+  the first trusted pointer / key gesture in the iframe; a disposed runtime's late call is dropped) and by the
+  declarative `button`. The instance Inspector's Events page (`EventsForm.tsx`) binds handlers per declared event.
+- **Host API 3** (`htmlRuntime.ts`): 2 and 3 run (`aiws.version` = the declared one), 3 adds `emit` and
+  `context.interactive`; `createBlock { parent: "self" | <id> | { binding }, slot }` is pre-checked here (a composite
+  needs one of its slots that takes the Block, `self` only inside a mind map) and laid out `"auto"` under a control. A
+  definition above this host shows its snapshot with “needs host API n”.
+- **Layouts** (`@controls/composite`): `grid { columns, gap }`; an unknown algorithm is laid out as a group and the
+  Chrome says “layout <name> needs a newer host”.
+- **Upgrades** (Q30, `ExtensionsDialog.tsx` `UpgradeControl`): a definition from a package whose library version
+  differs offers “Upgrade…”; the view compares the interfaces (the new files from `ext.library_bundle`), lists the
+  instances and unbuilt home changes, takes a minimal migration (rename / drop properties and bindings, values for new
+  required ones, slot moves, dropped events), dry-runs `ext.upgrade`, shows `EXT_LOCAL_CHANGES` files with “replace my
+  changes”, then upgrades in one Commit. “Add from my library” offers the upgrade for an identity already here (and
+  on `EXT_IDENT_EXISTS`), marks packages newer than this host (`needs_newer`, manifest > 3) and lists templates.
+- **Templates** (Q32): Export → “Save as template…” (`SaveTemplateDialog.tsx`: Surfaces, id, title, params, tables
+  that start empty) into the library (`ext.install { from: { templates } }`) or as a `.pikg` (`ext.pack { templates }`);
+  the New dialog's template tab lists the library's templates beside the built-in ones with a parameter form
+  (`ext.create_from_template`).
+
 ## What is implemented
 
 - Registration as a built-in app; workspace list with create, sample, open, import (semantics must be

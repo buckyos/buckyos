@@ -2,12 +2,12 @@
  * template), export, import, keyboard help, the developer Mock panel and the leave check. The New
  * dialog also serves the workspace list, where only the workspace and template tabs exist. */
 
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { unwrap, type AiwsClient } from '../../api/client'
 import { createDemoWorkspace, TemplateFailure } from '../../api/demos'
 import { createSampleWorkspace } from '../../api/sample'
 import { describeError, uploadWorkspacePackage } from '../../api/session'
-import type { ExportResult, WorkspaceSummary } from '../../api/types'
+import type { ExportResult, Json, LibraryTemplate, TemplateParam, WorkspaceSummary } from '../../api/types'
 import type { WorkspaceStore } from '../../state/store'
 import type { AiwsText } from '../../i18n'
 import { useAiwsText } from '../../useAiwsText'
@@ -133,19 +133,42 @@ function NewWorkspace({ client, onOpen }: { client: AiwsClient; onOpen: (workspa
   )
 }
 
+/** A template of the user's library (扩展控件 P3, Q32), offered beside the built-in ones. */
+type LibraryChoice = { pkgId: string; template: LibraryTemplate }
+const libraryKey = (c: LibraryChoice) => `lib:${c.pkgId}#${c.template.id}`
+
 function NewFromTemplate({ client, onOpen }: { client: AiwsClient; onOpen: (workspaceId: string) => void }) {
   const { t, tNode } = useAiwsText()
-  const [chosen, setChosen] = useState<(typeof TEMPLATES)[number]['id']>('sample')
+  const [chosen, setChosen] = useState<string>('sample')
   const [title, setTitle] = useState('')
   const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState<{ text: string; workspace: WorkspaceSummary | null } | null>(null)
+  const [library, setLibrary] = useState<LibraryChoice[]>([])
+  const [params, setParams] = useState<Record<string, string>>({})
+  useEffect(() => {
+    let live = true
+    void client.extListLibrary().then((r) => {
+      if (!live || !r.ok) return
+      setLibrary(r.packages.flatMap((pkg) => (pkg.templates ?? []).map((template) => ({ pkgId: pkg.pkg_id, template }))))
+    }, () => undefined)
+    return () => { live = false }
+  }, [client])
   const template = TEMPLATES.find((item) => item.id === chosen) ?? TEMPLATES[0]
+  const fromLibrary = library.find((c) => libraryKey(c) === chosen) ?? null
+  const paramValue = (key: string, p: TemplateParam): Json => {
+    const text = params[key] ?? (p.default === undefined ? '' : String(p.default))
+    if (p.type === 'number') { const n = Number(text); return Number.isFinite(n) ? n : text }
+    if (p.type === 'boolean') return text === 'true'
+    return text
+  }
   const create = async () => {
     setBusy(true)
     setFailure(null)
-    const name = title.trim() || t(template.title)
+    const name = title.trim() || (fromLibrary ? fromLibrary.template.title : t(template.title))
     try {
-      const created = template.id === 'sample' ? await createSampleWorkspace(client, name) : await createDemoWorkspace(client, template.id, name)
+      const created = fromLibrary
+        ? unwrap(await client.extCreateFromTemplate(fromLibrary.pkgId, fromLibrary.template.id, name, Object.fromEntries(Object.entries(fromLibrary.template.params ?? {}).map(([k, p]) => [k, paramValue(k, p)]))))
+        : template.id === 'sample' ? await createSampleWorkspace(client, name) : await createDemoWorkspace(client, template.id, name)
       onOpen(created.workspace_id)
     } catch (error) {
       setFailure(error instanceof TemplateFailure ? { text: t('aiworkspace.shell.new.template.incomplete', { error: error.message }), workspace: error.workspace } : { text: t('aiworkspace.shell.new.createFailed', { error: describeError(error) }), workspace: null })
@@ -168,8 +191,25 @@ function NewFromTemplate({ client, onOpen }: { client: AiwsClient; onOpen: (work
             </span>
           </label>
         ))}
+        {library.map((c) => (
+          <label key={libraryKey(c)} className={`aiws-template${chosen === libraryKey(c) ? ' is-active' : ''}`} data-testid={`aiws-template-lib-${c.pkgId}-${c.template.id}`}>
+            <input type="radio" name="aiws-template" checked={chosen === libraryKey(c)} onChange={() => { setChosen(libraryKey(c)); setParams({}) }} />
+            <span className="aiws-template-text">
+              <span className="aiws-template-title"><b>{c.template.title || c.template.id}</b><span className="aiws-chip" title={c.pkgId}>{t('aiworkspace.shell.new.template.fromLibrary')}</span></span>
+              {c.template.description && <span>{c.template.description}</span>}
+              <span className="aiws-muted">{c.pkgId}</span>
+            </span>
+          </label>
+        ))}
       </div>
-      <label className="aiws-field">{t('aiworkspace.shell.new.template.name')}<input aria-label={t('aiworkspace.shell.new.workspace.titleInput')} placeholder={t(template.title)} value={title} onChange={(event) => setTitle(event.target.value)} /></label>
+      {fromLibrary && Object.entries(fromLibrary.template.params ?? {}).map(([key, p]) => (
+        <label key={key} className="aiws-field">{p.title ?? key}
+          {p.type === 'boolean'
+            ? <input type="checkbox" data-testid={`aiws-template-param-${key}`} checked={(params[key] ?? String(p.default ?? false)) === 'true'} onChange={(event) => setParams((prev) => ({ ...prev, [key]: String(event.target.checked) }))} />
+            : <input type={p.type === 'number' ? 'number' : 'text'} data-testid={`aiws-template-param-${key}`} value={params[key] ?? (p.default === undefined ? '' : String(p.default))} onChange={(event) => setParams((prev) => ({ ...prev, [key]: event.target.value }))} />}
+        </label>
+      ))}
+      <label className="aiws-field">{t('aiworkspace.shell.new.template.name')}<input aria-label={t('aiworkspace.shell.new.workspace.titleInput')} data-testid="aiws-template-workspace-title" placeholder={fromLibrary ? fromLibrary.template.title : t(template.title)} value={title} onChange={(event) => setTitle(event.target.value)} /></label>
       <div className="aiws-muted">{tNode('aiworkspace.shell.new.template.note', { workspace: <b>{t('aiworkspace.shell.new.template.noteWorkspace')}</b> })}</div>
       {failure && (
         <div className="aiws-error" role="alert" data-testid="aiws-template-failure">

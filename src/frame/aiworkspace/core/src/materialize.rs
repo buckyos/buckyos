@@ -445,6 +445,10 @@ pub fn load_ops(src: &dyn ObjectSource, content_root: &str, collab: &dyn Fn(&str
                         }
                     }
                 }
+                // a directory's DirObject is its fixed version, computed from the members again
+                TYPE_DIR => {
+                    payload.remove("dir_object");
+                }
                 _ => {}
             }
         }

@@ -1,0 +1,108 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "migration.schema.json",
+ "title": "A migration of ext.upgrade / ext.build (扩展控件 P2, Q30)",
+ "description": "What the service rewrites on every instance of a definition whose new version narrows its contract, in the same Commit as the rebuild: entity.set_props per key and tree.move { slot } per child of a renamed or moved slot. Compatibility is judged per instance afterwards; an instance that still does not fit fails the whole upgrade.",
+ "type": "object",
+ "additionalProperties": false,
+ "properties": {
+  "config": {
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "rename": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "string"
+     },
+     "description": "old name → new name"
+    },
+    "drop": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "uniqueItems": true
+    },
+    "fill": {
+     "type": "object",
+     "description": "name → value set where the instance has none"
+    }
+   }
+  },
+  "bindings": {
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "rename": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "string"
+     },
+     "description": "old name → new name"
+    },
+    "drop": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "uniqueItems": true
+    },
+    "fill": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "object",
+      "required": [
+       "entity_id"
+      ],
+      "properties": {
+       "entity_id": {
+        "type": "string"
+       }
+      }
+     },
+     "description": "name → { entity_id } bound where the instance has none"
+    }
+   }
+  },
+  "slots": {
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "rename": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "string"
+     }
+    },
+    "move": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "string"
+     },
+     "description": "children of slot <old> move to slot <new>"
+    }
+   }
+  },
+  "events": {
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "rename": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "string"
+     },
+     "description": "old name → new name"
+    },
+    "drop": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "uniqueItems": true
+    }
+   }
+  }
+ }
+}

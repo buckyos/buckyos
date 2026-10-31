@@ -462,6 +462,16 @@ export const en: Record<string, string> = {
   'aiworkspace.extension.assetNoDefinition': 'This Block has no control definition to take files from.',
   'aiworkspace.extension.assetNoSnapshot': 'The control was not built from source: it has no files.',
   'aiworkspace.extension.assetNotListed': '{{name}} is not one of the control’s assets.',
+  'aiworkspace.extension.parentShape': 'parent is "self", an entity id or { binding }',
+  'aiworkspace.extension.parentMissing': 'The parent {{id}} does not exist',
+  'aiworkspace.extension.selfOutsideTree': 'parent "self" works only inside a tree control (a mind map)',
+  'aiworkspace.extension.slotRequired': 'A composite parent needs a slot',
+  'aiworkspace.extension.slotUnknown': '{{slot}} is not a slot of that control',
+  'aiworkspace.extension.slotFull': 'The slot {{slot}} is full',
+  'aiworkspace.extension.slotRefuses': 'The slot {{slot}} does not take that Block',
+  'aiworkspace.extension.parentNotContainer': '{{id}} cannot hold Blocks',
+  'aiworkspace.extension.emitBeforeGesture': 'Event {{name}} was not raised: it needs a click or a key in the Block first',
+  'aiworkspace.extension.html.start': 'Start {{name}}',
 }
 
 export const zh: Record<string, string> = {
@@ -903,4 +913,14 @@ export const zh: Record<string, string> = {
   'aiworkspace.extension.assetNoDefinition': '这个 Block 没有可取文件的控件定义。',
   'aiworkspace.extension.assetNoSnapshot': '这个控件不是从源码构建的，没有文件。',
   'aiworkspace.extension.assetNotListed': '{{name}} 不在控件的 assets 里。',
+  'aiworkspace.extension.parentShape': 'parent 应为 "self"、实体 id 或 { binding }',
+  'aiworkspace.extension.parentMissing': '父对象 {{id}} 不存在',
+  'aiworkspace.extension.selfOutsideTree': 'parent "self" 只能用在树形控件（脑图）内',
+  'aiworkspace.extension.slotRequired': '组合控件作为 parent 时必须给出 slot',
+  'aiworkspace.extension.slotUnknown': '{{slot}} 不是该控件的槽位',
+  'aiworkspace.extension.slotFull': '槽位 {{slot}} 已满',
+  'aiworkspace.extension.slotRefuses': '槽位 {{slot}} 不接受这种 Block',
+  'aiworkspace.extension.parentNotContainer': '{{id}} 不能容纳 Block',
+  'aiworkspace.extension.emitBeforeGesture': '事件 {{name}} 未触发：需要先在 Block 内点击或按键',
+  'aiworkspace.extension.html.start': '启动 {{name}}',
 }

@@ -7,9 +7,10 @@
  * nfs-server's `home` export (the Desktop reaches it through `/nfs/v1`, as through a Zone gateway). */
 
 import { NfspClient } from 'buckyos/nfsp'
-import { expect, fitAll, mainMenu, openCanvas, openWorkspacePage, test } from './fixtures'
+import { expect, fitAll, mainMenu, openCanvas, openSide, openWorkspacePage, test } from './fixtures'
 
 const ALICE = 'tok-alice'
+const BOB = 'tok-bob'
 const NAME = 'kpi-e2e'
 
 function home(): NfspClient {
@@ -305,4 +306,284 @@ test('aiws.asset: an HTML control takes a file of its assets as a blob URL (hell
     try { await (window as unknown as { aiws: { asset: (n: string) => Promise<string> } }).aiws.asset('behavior.js'); return 'served' } catch (e) { return String(e) }
   })
   expect(refused).toContain('behavior.js')
+})
+
+// ---- events, run mode, parent, upgrades, templates (notepads/aiworkspace-extension-p2p3-todo.md M2–M5)
+
+const TASK = (status = 'open') => ({ op: 'entity.create', entity_id: 'task', type_id: 'buckyos.record', parent_id: 'data', order_key: 't', name: 'task',
+  payload: { schema: { properties: [{ key: 'title', name: 'title', type: 'text' }, { key: 'status', name: 'status', type: 'text' }] }, props: { title: 'Write tests', status } } })
+const DONE_COMPONENT = {
+  manifest_version: 3, ident: { author_did: 'did:bns:alice', name: 'done-e2e' }, kind: 'html', host_api: 3, title: 'Done E2E', allow_no_source: true,
+  default_size: { w: 240, h: 120 }, bindings: { task: { accepts: ['buckyos.record'] } },
+  events: { completed: { title: 'Completed', params: { status: { type: 'string' } } } }, entry: { html: 'view.html', js: 'behavior.js' },
+}
+const doneBehavior = (status: string) => `document.getElementById('done').addEventListener('click', function () {
+  aiws.emit('completed', { status: '${status}' }).then(function (r) { document.getElementById('out').textContent = (r.handled ? 'handled ' : 'not handled ') + aiws.version })
+}); aiws.ready()`
+const DONE_FILES = (status: string) => ({ 'component.json': DONE_COMPONENT, 'view.html': '<button id="done" type="button">Done</button><div id="out"></div>', 'behavior.js': doneBehavior(status) })
+const WRITE_STATUS = { completed: { kind: 'write', target: 'task', what: 'recordSet', args: { props: { status: '{{event.status}}' } } } }
+const BUTTON_COMPONENT = {
+  manifest_version: 3, ident: { author_did: 'did:bns:alice', name: 'button-e2e' }, kind: 'declarative', title: 'Button E2E', allow_no_source: true,
+  default_size: { w: 220, h: 110 }, bindings: { task: { accepts: ['buckyos.record'] } },
+  events: { completed: { title: 'Completed', params: { status: { type: 'string' } } } }, entry: 'declarative.json',
+}
+const BUTTON_FILES = { 'component.json': BUTTON_COMPONENT, 'declarative.json': { layout: 'stack', items: [{ kind: 'text', text: 'Task' }, { kind: 'button', label: 'Done', emit: 'completed', params: { status: 'done' } }] } }
+
+const status = async (api: import('./fixtures').Api, ws: string) => (await api.read(ALICE, ws, 'task') as J & { content: { props: J } }).content.props.status
+
+async function runMode(page: import('@playwright/test').Page, on: boolean) {
+  const toggle = page.getByTestId('aiws-run-toggle')
+  if ((await toggle.getAttribute('data-interactive')) !== String(on)) await toggle.click()
+  await expect(toggle).toHaveAttribute('data-interactive', String(on))
+}
+
+test('P2 run mode: a click on Done raises the event once — one Commit; a rebuilt behavior.js runs next; a reload replays nothing', async ({ page, api }) => {
+  const ws = await api.freeCanvas(ALICE, `events-e2e ${Date.now()}`)
+  const built = await api.build(ALICE, ws.workspace_id, DONE_FILES('done'))
+  expect((await api.commit(ALICE, ws, [TASK(), { op: 'entity.create', entity_id: 'card', type_id: 'buckyos.cell', parent_id: 'free', order_key: 'a', placement: { x: 40, y: 40, w: 260, h: 200 },
+    payload: { view: { type: 'html' }, def_ref: { entity_id: built.def_entity_id }, bindings: { task: { entity_id: 'task' } }, on: WRITE_STATUS } }])).status).toBe('accepted')
+  await openCanvas(page, ALICE, ws.workspace_id)
+  // edit mode designs: the Block is its snapshot; ▶ runs the canvas, a click on the Block mounts it
+  await expect(page.getByTestId('aiws-html-start-card')).toHaveCount(0)
+  await runMode(page, true)
+  await page.getByTestId('aiws-html-start-card').click()
+  await expect(page.getByTestId('aiws-html-active-card')).toBeVisible()
+  const frame = page.frameLocator('.aiws-html-frame')
+  let head = await api.headSeq(ALICE, ws.workspace_id)
+  await frame.locator('#done').click()
+  await expect(frame.locator('#out')).toHaveText('handled 3')
+  await expect.poll(() => status(api, ws.workspace_id)).toBe('done')
+  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 1)
+  const changes = await api.rpc(ALICE, 'doc.get_changes', { workspace_id: ws.workspace_id, epoch: ws.epoch, after_seq: head })
+  expect((changes.changes as { idempotency_key: string }[]).map((c) => c.idempotency_key)[0]).toMatch(/^evt\/card\/completed\//)
+  // a changed behavior.js, built: the Block remounts with it and the next click runs the new code — still one Commit
+  await api.build(ALICE, ws.workspace_id, DONE_FILES('archived'), { expect: { def_rev: built.def_rev, dir_rev: built.dir_rev } })
+  await expect(frame.locator('#out')).toHaveText('')
+  head = await api.headSeq(ALICE, ws.workspace_id)
+  await frame.locator('#done').click()
+  await expect.poll(() => status(api, ws.workspace_id)).toBe('archived')
+  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 1)
+  // a reload mounts nothing by itself and raises nothing again
+  head = await api.headSeq(ALICE, ws.workspace_id)
+  await openCanvas(page, ALICE, ws.workspace_id)
+  await expect(page.getByTestId('aiws-html-static-card')).toBeVisible()
+  await page.waitForTimeout(1500)
+  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head)
+})
+
+test('P2 design mode: a click on a declarative button selects the Block and notes the event; in run mode it writes once', async ({ page, api }) => {
+  const ws = await api.freeCanvas(ALICE, `design-e2e ${Date.now()}`)
+  const built = await api.build(ALICE, ws.workspace_id, BUTTON_FILES)
+  expect((await api.commit(ALICE, ws, [TASK(), { op: 'entity.create', entity_id: 'btn', type_id: 'buckyos.cell', parent_id: 'free', order_key: 'a', placement: { x: 40, y: 40, w: 240, h: 140 },
+    payload: { view: { type: 'declarative' }, def_ref: { entity_id: built.def_entity_id }, bindings: { task: { entity_id: 'task' } }, on: WRITE_STATUS } }])).status).toBe('accepted')
+  await openCanvas(page, ALICE, ws.workspace_id)
+  await runMode(page, false)
+  const head = await api.headSeq(ALICE, ws.workspace_id)
+  // in design mode the button is drawn, not enabled: the press goes to the canvas
+  await expect(page.getByTestId('aiws-decl-button-completed')).toHaveAttribute('aria-disabled', 'true')
+  await page.getByTestId('aiws-decl-button-completed').click({ force: true })
+  await expect(page.getByTestId('aiws-canvas-block-btn')).toHaveClass(/is-selected/)
+  await expect(page.getByTestId('aiws-event-note-btn')).toHaveAttribute('data-event', 'completed')
+  await expect(page.getByTestId('aiws-event-note-btn')).toContainText('设计态，未执行')
+  await page.waitForTimeout(500)
+  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head)
+  expect(await status(api, ws.workspace_id)).toBe('open')
+  // the events page of the instance shows what it binds
+  await openSide(page, 'inspector')
+  await page.getByTestId('aiws-instance-page-events').click()
+  await expect(page.getByTestId('aiws-events-kind-completed-0')).toHaveValue('write')
+  await expect(page.getByTestId('aiws-events-target-completed-0')).toHaveValue('task')
+  await runMode(page, true)
+  await page.getByTestId('aiws-decl-button-completed').click()
+  await expect.poll(() => status(api, ws.workspace_id)).toBe('done')
+  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 1)
+})
+
+test('P2 view mode runs: a collaborator with update writes through a button, a reader is refused', async ({ browser, api }) => {
+  const ws = await api.freeCanvas(ALICE, `view-run-e2e ${Date.now()}`)
+  const built = await api.build(ALICE, ws.workspace_id, BUTTON_FILES)
+  expect((await api.commit(ALICE, ws, [TASK(), { op: 'entity.create', entity_id: 'btn', type_id: 'buckyos.cell', parent_id: 'free', order_key: 'a', placement: { x: 40, y: 40, w: 240, h: 140 },
+    payload: { view: { type: 'declarative' }, def_ref: { entity_id: built.def_entity_id }, bindings: { task: { entity_id: 'task' } }, on: WRITE_STATUS } }])).status).toBe('accepted')
+  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: ['read'] })
+  await api.rpc(BOB, 'ws.set_user_state', { workspace_id: ws.workspace_id, entries: { 'canvas:mode': 'view' } })
+  const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } })
+  const page = await context.newPage()
+  await openCanvas(page, BOB, ws.workspace_id)
+  await expect(page.getByTestId('aiws-canvas')).toHaveAttribute('data-mode', 'view')
+  await expect(page.getByTestId('aiws-run-toggle')).toHaveAttribute('data-interactive', 'true')
+  const head = await api.headSeq(ALICE, ws.workspace_id)
+  await page.getByTestId('aiws-decl-button-completed').click()
+  await expect(page.getByTestId('aiws-notice').filter({ hasText: '不能修改数据 task' }).last()).toBeVisible()
+  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head)
+  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: ['read', 'update'] })
+  await openCanvas(page, BOB, ws.workspace_id)
+  await page.getByTestId('aiws-decl-button-completed').click()
+  await expect.poll(() => status(api, ws.workspace_id)).toBe('done')
+  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 1)
+  await context.close()
+})
+
+test('P2 a composite re-raises its card\'s event: hello-card Done → hello-board card_done → the board\'s notice', async ({ page, api }) => {
+  const ws = await api.freeCanvas(ALICE, `bubble-e2e ${Date.now()}`)
+  const card = await api.build(ALICE, ws.workspace_id, 'hello-card')
+  const board = await api.build(ALICE, ws.workspace_id, 'hello-board')
+  expect((await api.commit(ALICE, ws, [TASK(),
+    { op: 'entity.create', entity_id: 'board', type_id: 'buckyos.container', parent_id: 'free', order_key: 'a', placement: { x: 40, y: 40, w: 'auto', h: 'auto' },
+      payload: { kind: 'composite', def_ref: { entity_id: board.def_entity_id }, on: { card_done: { kind: 'notify', text: 'Card {{event.title}} done' } } } },
+    { op: 'entity.create', entity_id: 'hc', type_id: 'buckyos.cell', parent_id: 'board', order_key: 'a', placement: { x: 'auto', y: 'auto', w: 260, h: 200 },
+      payload: { view: { type: 'html' }, def_ref: { entity_id: card.def_entity_id }, slot: 'cards', bindings: { task: { entity_id: 'task' } } } },
+  ])).status).toBe('accepted')
+  await openCanvas(page, ALICE, ws.workspace_id)
+  await runMode(page, true)
+  await page.getByTestId('aiws-html-start-hc').click()
+  const frame = page.frameLocator('.aiws-html-frame')
+  await expect(frame.locator('#title')).toHaveText('Write tests')
+  await frame.locator('#done').click()
+  await expect(page.getByTestId('aiws-notice').filter({ hasText: 'Card Write tests done' }).last()).toBeVisible()
+  await expect.poll(() => status(api, ws.workspace_id)).toBe('done')
+})
+
+test('P3 aiws.createBlock { parent, slot }: an HTML control puts a Block into a composite\'s slot; without the slot it is refused', async ({ page, api }) => {
+  const ws = await api.freeCanvas(ALICE, `parent-e2e ${Date.now()}`)
+  const holder = await api.build(ALICE, ws.workspace_id, {
+    'component.json': { manifest_version: 3, ident: { author_did: 'did:bns:alice', name: 'holder-e2e' }, kind: 'composite', title: 'Holder', entry: 'composition.json' },
+    'composition.json': { layout: { algorithm: 'grid', columns: 2, gap: 6, padding: 8 }, slots: { items: { accepts: ['shape'] } }, chrome: { empty: 'Nothing yet' } },
+  })
+  const maker = await api.build(ALICE, ws.workspace_id, {
+    'component.json': { manifest_version: 3, ident: { author_did: 'did:bns:alice', name: 'maker-e2e' }, kind: 'html', host_api: 3, title: 'Maker', allow_no_source: true,
+      config_schema: { type: 'object', properties: { parent: { type: 'string' } } }, entry: { html: 'view.html', js: 'behavior.js' } },
+    'view.html': '<button id="make" type="button">Make</button><button id="bad" type="button">Bad</button><div id="out"></div><div id="err"></div>',
+    'behavior.js': `var parentId = aiws.context.config.parent
+      document.getElementById('make').addEventListener('click', function () { aiws.createBlock({ renderer: 'shape', parent: parentId, slot: 'items', title: 'made', config: { shape: 'rect' }, placement: { w: 120, h: 60 } }).then(function (r) { document.getElementById('out').textContent = r.entity_id }) })
+      document.getElementById('bad').addEventListener('click', function () { aiws.createBlock({ renderer: 'shape', parent: parentId, title: 'bad' }).catch(function (e) { document.getElementById('err').textContent = String(e.message) }) })
+      aiws.ready()`,
+  })
+  expect((await api.commit(ALICE, ws, [
+    { op: 'entity.create', entity_id: 'holder', type_id: 'buckyos.container', parent_id: 'free', order_key: 'a', placement: { x: 400, y: 40, w: 'auto', h: 'auto' }, payload: { kind: 'composite', def_ref: { entity_id: holder.def_entity_id } } },
+    { op: 'entity.create', entity_id: 'maker', type_id: 'buckyos.cell', parent_id: 'free', order_key: 'b', placement: { x: 40, y: 40, w: 300, h: 200 },
+      payload: { view: { type: 'html' }, def_ref: { entity_id: maker.def_entity_id }, config: { parent: 'holder' } } },
+  ])).status).toBe('accepted')
+  await openCanvas(page, ALICE, ws.workspace_id)
+  await page.getByTestId('aiws-canvas-block-maker').click()
+  await page.getByTestId('aiws-near-run').click()
+  const frame = page.frameLocator('.aiws-html-frame')
+  await frame.locator('#make').click()
+  await expect(frame.locator('#out')).not.toHaveText('')
+  const made = await frame.locator('#out').textContent()
+  const child = (await api.outline(ALICE, ws.workspace_id)).find((e: J) => e.entity_id === made) as J
+  expect([child.parent_id, child.slot, child.title]).toEqual(['holder', 'items', 'made'])
+  expect((child.placement as J).x).toBe('auto')
+  await expect(page.getByTestId(`aiws-canvas-block-${made}`)).toBeVisible()
+  await frame.locator('#bad').click()
+  await expect(frame.locator('#err')).toContainText('必须给出 slot')
+})
+
+test('P2 upgrade: a control imported at 0.1.0 is upgraded to 0.2.0 from the library; the instance keeps its overrides', async ({ page, api }) => {
+  const src = await api.freeCanvas(ALICE, `upgrade-src ${Date.now()}`)
+  const UP = { manifest_version: 3, ident: { author_did: 'did:bns:alice', name: 'up-e2e' }, kind: 'declarative', title: 'Up E2E', allow_no_source: true,
+    config_schema: { type: 'object', properties: { label: { type: 'string', default: 'A' } } }, entry: 'declarative.json' }
+  const pkg = `up-e2e-${Date.now()}`
+  const v1 = await api.build(ALICE, src.workspace_id, { 'component.json': UP, 'declarative.json': { items: [{ kind: 'text', text: 'version one' }] } })
+  await api.rpc(ALICE, 'ext.install', { from: { workspace_id: src.workspace_id, entity_ids: [v1.def_entity_id] }, package: { name: pkg, version: '0.1.0' }, mode: 'dev' })
+  const ws = await api.freeCanvas(ALICE, `upgrade-e2e ${Date.now()}`)
+  const imported = await api.rpc(ALICE, 'ext.import', { workspace_id: ws.workspace_id, items: [{ pkg_id: pkg, ident: 'did:bns:alice#up-e2e' }] })
+  const defId = imported.controls[0].def_entity_id as string
+  expect((await api.commit(ALICE, ws, [{ op: 'entity.create', entity_id: 'inst', type_id: 'buckyos.cell', parent_id: 'free', order_key: 'a', placement: { x: 40, y: 40, w: 240, h: 120 },
+    payload: { view: { type: 'declarative' }, def_ref: { entity_id: defId }, config: { label: 'Mine' }, title: 'my card' } }])).status).toBe('accepted')
+  // a new version in the library
+  await api.build(ALICE, src.workspace_id, { 'component.json': UP, 'declarative.json': { items: [{ kind: 'text', text: 'version two' }] } }, { expect: { def_rev: v1.def_rev, dir_rev: v1.dir_rev } })
+  await api.rpc(ALICE, 'ext.install', { from: { workspace_id: src.workspace_id, entity_ids: [v1.def_entity_id] }, package: { name: pkg, version: '0.2.0' }, mode: 'dev' })
+  const before = await api.read(ALICE, ws.workspace_id, 'inst') as J & { content: { payload: J } }
+  await openCanvas(page, ALICE, ws.workspace_id)
+  await expect(page.getByTestId('aiws-decl-inst')).toContainText('version one')
+  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-insert-group-extension', 'aiws-menu-extensions')
+  const dialog = page.getByTestId('aiws-ext-dialog')
+  await dialog.getByTestId(`aiws-ext-row-${defId}`).click()
+  await expect(dialog.getByTestId('aiws-ext-new-version')).toHaveAttribute('data-version', '0.2.0')
+  await dialog.getByTestId('aiws-ext-upgrade').click()
+  const form = dialog.getByTestId('aiws-ext-upgrade-form')
+  await expect(form.getByTestId('aiws-ext-upgrade-versions')).toContainText('0.1.0 → 0.2.0')
+  await expect(form.getByTestId('aiws-ext-upgrade-compatible')).toBeVisible()
+  await expect(form.getByTestId('aiws-ext-upgrade-checked')).toBeVisible({ timeout: 30_000 })
+  await form.getByTestId('aiws-ext-upgrade-run').click()
+  await expect(dialog.getByTestId('aiws-ext-upgrade-form')).toBeHidden({ timeout: 30_000 })
+  await expect(page.getByTestId('aiws-decl-inst')).toContainText('version two')
+  const def = await api.read(ALICE, ws.workspace_id, defId) as J & { content: { payload: J } }
+  expect((def.content.payload.provenance as J).version).toBe('0.2.0')
+  const after = await api.read(ALICE, ws.workspace_id, 'inst') as J & { content: { payload: J } }
+  expect(after.content.payload).toEqual(before.content.payload)
+  // the library offers the upgrade for an identity that is here already, instead of a second definition
+  await dialog.getByTestId('aiws-ext-library').click()
+  await expect(dialog.getByTestId('aiws-ext-library-upgrade-up-e2e')).toBeVisible()
+})
+
+test('P3 templates: canvases saved as a template into the library, a new workspace made from it — the KPI binds the new table', async ({ page, api }) => {
+  const ws = await api.freeCanvas(ALICE, `template-src ${Date.now()}`)
+  const kpi = await api.build(ALICE, ws.workspace_id, {
+    'component.json': { manifest_version: 3, ident: { author_did: 'did:bns:alice', name: 'kpi-tpl-e2e' }, kind: 'declarative', title: 'KPI', entry: 'declarative.json',
+      accepts: ['buckyos.table-source'], allow_no_source: true, bindings: { data: { accepts: ['buckyos.table-source'], required: true } } },
+    'declarative.json': { items: [{ kind: 'metric', label: 'Tasks', bind: 'data.count', format: 'number' }] },
+  })
+  expect((await api.commit(ALICE, ws, [
+    { op: 'entity.create', entity_id: 'tasks', type_id: 'buckyos.table-source', parent_id: 'data', order_key: 't', name: 'tasks', payload: { fields: [{ field_id: 'title', name: 'title', type: 'text' }] } },
+    { op: 'table.insert_records', source_id: 'tasks', records: [{ record_id: 'r1', values: { title: 'one' } }, { record_id: 'r2', values: { title: 'two' } }] },
+    { op: 'entity.create', entity_id: 'kpi', type_id: 'buckyos.cell', parent_id: 'free', order_key: 'a', placement: { x: 40, y: 40, w: 240, h: 120 },
+      payload: { view: { type: 'declarative' }, def_ref: { entity_id: kpi.def_entity_id }, bindings: { data: { entity_id: 'tasks' } }, title: '{{params.team_name}} KPI' } },
+  ])).status).toBe('accepted')
+  await openCanvas(page, ALICE, ws.workspace_id)
+  await mainMenu(page, 'aiws-menu-export-menu', 'aiws-menu-save-template')
+  const save = page.getByTestId('aiws-save-template')
+  await expect(save.getByTestId('aiws-template-surface-free')).toBeChecked()
+  await save.getByTestId('aiws-template-title').fill('Team E2E')
+  await save.getByTestId('aiws-template-id').fill('team-e2e')
+  await save.getByTestId('aiws-template-param-add').click()
+  await save.getByTestId('aiws-template-param-key-0').fill('team_name')
+  await save.getByTestId('aiws-template-param-default-0').fill('Team')
+  await save.getByTestId('aiws-template-reset-tasks').check()
+  const pkg = `team-tpl-${Date.now()}`
+  await save.getByTestId('aiws-template-package').fill(pkg)
+  await save.getByTestId('aiws-template-to-library').click()
+  await expect(save.getByTestId('aiws-template-done')).toContainText(pkg, { timeout: 30_000 })
+  await save.getByTestId('aiws-save-template-close').click()
+  // installing created no workspace; the New dialog lists the template beside the built-in ones
+  const listed = (await api.rpc(ALICE, 'ws.list', {})).workspaces.length
+  await mainMenu(page, 'aiws-menu-new')
+  await page.getByTestId('aiws-new-tab-template').click()
+  await page.getByTestId(`aiws-template-lib-${pkg}-team-e2e`).click()
+  await page.getByTestId('aiws-template-param-team_name').fill('Alpha')
+  await page.getByTestId('aiws-template-workspace-title').fill(`from template ${Date.now()}`)
+  await page.getByTestId('aiws-create-template').click()
+  await expect.poll(async () => page.getByTestId('aiws-workspace').getAttribute('data-workspace-id'), { timeout: 30_000 }).not.toBe(ws.workspace_id)
+  const made = await page.getByTestId('aiws-workspace').getAttribute('data-workspace-id')
+  expect((await api.rpc(ALICE, 'ws.list', {})).workspaces.length).toBe(listed + 1)
+  const outline = await api.outline(ALICE, made!)
+  const cell = outline.find((e: J) => e.type_id === 'buckyos.cell' && e.def_id && outline.find((d: J) => d.entity_id === e.def_id)?.ident === 'did:bns:alice#kpi-tpl-e2e') as J
+  expect(cell.title).toBe('Alpha KPI')
+  const read = await api.read(ALICE, made!, String(cell.entity_id)) as J & { content: { payload: J } }
+  const table = ((read.content.payload.bindings as J).data as J).entity_id as string
+  expect(outline.find((e: J) => e.entity_id === table)?.type_id).toBe('buckyos.table-source')
+  expect((await api.rpc(ALICE, 'doc.query', { workspace_id: made, source_id: table, limit: 10 })).rows).toHaveLength(0)
+  // the source workspace still has its rows
+  expect((await api.rpc(ALICE, 'doc.query', { workspace_id: ws.workspace_id, source_id: 'tasks', limit: 10 })).rows).toHaveLength(2)
+})
+
+test('Q33 a host older than the definition: a layout it does not ship is a marked group, an HTML API above it shows the snapshot fallback', async ({ page, api }) => {
+  const ws = await api.freeCanvas(ALICE, `fallback-e2e ${Date.now()}`)
+  const made = await api.commit(ALICE, ws, [
+    { op: 'entity.create', entity_id: 'd-radial', type_id: 'buckyos.block-def', parent_id: 'data', order_key: 'd1',
+      payload: { def_id: 'radial-e2e', kind: 'composite', title: 'Radial', composition: { layout: { algorithm: 'radial' }, slots: { items: {} } } } },
+    { op: 'entity.create', entity_id: 'd-future', type_id: 'buckyos.block-def', parent_id: 'data', order_key: 'd2',
+      payload: { def_id: 'future-e2e', kind: 'html', title: 'Future', allow_no_source: true, html: { html: '<div/>', js: 'aiws.ready()', api_version: 4 } } },
+    { op: 'entity.create', entity_id: 'ring', type_id: 'buckyos.container', parent_id: 'free', order_key: 'a', placement: { x: 40, y: 40, w: 'auto', h: 'auto' }, payload: { kind: 'composite', def_ref: { entity_id: 'd-radial' } } },
+    { op: 'entity.create', entity_id: 'r1', type_id: 'buckyos.cell', parent_id: 'ring', order_key: 'a', placement: { x: 20, y: 30, w: 160, h: 80 }, payload: { view: { type: 'shape' }, slot: 'items', title: 'one', config: { shape: 'rect' } } },
+    { op: 'entity.create', entity_id: 'future', type_id: 'buckyos.cell', parent_id: 'free', order_key: 'b', placement: { x: 500, y: 40, w: 240, h: 140 }, payload: { view: { type: 'html' }, def_ref: { entity_id: 'd-future' } } },
+  ])
+  expect(made.status, JSON.stringify(made)).toBe('accepted')
+  await openCanvas(page, ALICE, ws.workspace_id)
+  await expect(page.getByTestId('aiws-composite-unknown-ring')).toContainText('radial')
+  await expect(page.getByTestId('aiws-canvas-block-r1')).toBeVisible()
+  await expect(page.getByTestId('aiws-block-fallback-future')).toHaveAttribute('data-reason', 'unsupported_api')
+  await expect(page.getByTestId('aiws-block-fallback-future')).toContainText('需要宿主 API 4')
+  await runMode(page, true)
+  await expect(page.locator('.aiws-html-frame')).toHaveCount(0)
 })

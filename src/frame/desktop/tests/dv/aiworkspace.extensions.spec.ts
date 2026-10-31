@@ -291,3 +291,91 @@ test('[ext p1] composites: the CLI builds hello-card + hello-board, packs them w
 function createHashHex(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex')
 }
+
+test('[ext p2p3] events, per-property writes, an upgrade from the library and a Workspace template on a real Zone', async ({ owner, baseURL }) => {
+  test.setTimeout(600_000)
+  const token = (await owner.page.context().cookies()).find((c) => c.name === 'buckyos_session_token')!.value
+  const tag = randomBytes(4).toString('hex')
+  const work = mkdtempSync(join(tmpdir(), 'aiws-p2-dv-'))
+  const wsA = await owner.client.ok<WorkspaceSummary>('ws.create', { title: owner.client.prefix })
+  owner.client.owned.add(wsA.workspace_id)
+  const wsB = await workspaceWithTasks(owner)
+
+  // version 3 controls: the card declares `completed`, the board re-raises it as `card_done` with its params
+  const cardDir = helloCopy(work, 'hello-card')
+  cli(token, baseURL!, work, 'aiws', 'build', cardDir, '--workspace', wsA.workspace_id)
+  const board = cli(token, baseURL!, work, 'aiws', 'build', helloCopy(work, 'hello-board'), '--workspace', wsA.workspace_id)
+  const boardDef = await owner.client.ok<{ content: { payload: Json } }>('doc.read', { workspace_id: wsA.workspace_id, entity_id: board.def_entity_id })
+  expect((boardDef.content.payload.events as Json).card_done).toMatchObject({ from: { slot: 'cards', event: 'completed' }, params: { title: { type: 'string' } } })
+  const pkgName = `hello-p2-${tag}`
+  const v1 = cli(token, baseURL!, work, 'aiws', 'ext-export', String(board.def_entity_id), '--workspace', wsA.workspace_id, '--out', join(work, 'v1'), '--name', pkgName, '--version', '0.1.0', '--install')
+  const pkg = (v1.install as Json).pkg_id as string
+  cli(token, baseURL!, work, 'aiws', 'ext-import', `${pkg}#did:bns:alice#hello-board`, '--workspace', wsB.workspace_id)
+  const defsB = (await outline(owner, wsB)).filter((e) => e.type_id === 'buckyos.block-def')
+  const cardB = defsB.find((d) => d.ident === 'did:bns:alice#hello-card')!
+  const boardB = defsB.find((d) => d.ident === 'did:bns:alice#hello-board')!
+  expect(cardB.def_events).toEqual(['completed'])
+
+  // an instance: the board, a card bound to a task record, handlers on both
+  let info = await owner.client.info(wsB)
+  const placed = await owner.client.commit({ workspace_id: wsB.workspace_id, epoch: info.epoch }, [
+    { op: 'entity.create', entity_id: 'task-1', type_id: 'buckyos.record', parent_id: 'data', order_key: 'r', payload: { schema: { properties: [{ key: 'title', name: 'title', type: 'text' }, { key: 'status', name: 'status', type: 'text' }] }, props: { title: 'Ship it', status: 'todo' } } },
+    { op: 'entity.create', entity_id: 'board-1', type_id: 'buckyos.container', parent_id: 'sf-main', order_key: 'm', placement: { x: 60, y: 60, w: 'auto', h: 'auto' },
+      payload: { kind: 'composite', def_ref: { entity_id: boardB.entity_id }, config: { title: 'Today' } } },
+    { op: 'entity.create', entity_id: 'card-1', type_id: 'buckyos.cell', parent_id: 'board-1', order_key: 'a', placement: { x: 'auto', y: 'auto', w: 240, h: 120 },
+      payload: { view: { type: 'html' }, def_ref: { entity_id: cardB.entity_id }, slot: 'cards', bindings: { task: { entity_id: 'task-1' } } } },
+    { op: 'entity.set_props', entity_id: 'card-1', key: 'on', props: { completed: { kind: 'notify', text: '{{event.title}} done' } } },
+    { op: 'entity.set_props', entity_id: 'board-1', key: 'on', props: { card_done: { kind: 'notify', text: 'a card is done' } } },
+  ] as Operation[])
+  expect(placed.status, JSON.stringify(placed)).toBe('accepted')
+  expect((await outline(owner, wsB)).find((e) => e.entity_id === 'card-1')?.on_events).toEqual(['completed'])
+
+  // two writers of two properties from the same read both keep theirs; the same property conflicts per property
+  info = await owner.client.info(wsB)
+  const ws = { workspace_id: wsB.workspace_id, epoch: info.epoch }
+  const colour = await owner.client.commit(ws, [{ op: 'entity.set_props', entity_id: 'board-1', key: 'config', props: { background: '#fee' }, expect: { background: 0 } }] as Operation[])
+  const text = await owner.client.commit(ws, [{ op: 'entity.set_props', entity_id: 'board-1', key: 'config', props: { title: 'Sprint' }, expect: { title: 0 } }] as Operation[])
+  expect([colour.status, text.status]).toEqual(['accepted', 'accepted'])
+  const stale = await owner.client.commit(ws, [{ op: 'entity.set_props', entity_id: 'board-1', key: 'config', props: { title: 'Again' }, expect: { title: 0 } }] as Operation[]) as unknown as Json
+  expect(stale.status).toBe('conflict')
+  expect(((stale.conflicts as Json[])[0].selector as Json)).toEqual({ kind: 'entity_prop', key: 'config', name: 'title' })
+  const boardRead = await owner.client.ok<{ content: { payload: Json } }>('doc.read', { workspace_id: wsB.workspace_id, entity_id: 'board-1' })
+  expect(boardRead.content.payload.config).toEqual({ title: 'Sprint', background: '#fee' })
+
+  // 0.2.0 of the card (a new look, same contract): upgraded in place, the instance keeps its binding and handlers
+  writeFileSync(join(cardDir, 'style.css'), `${execFileSync('cat', [join(cardDir, 'style.css')], { encoding: 'utf8' })}\n.card { border-width: 2px }\n`)
+  cli(token, baseURL!, work, 'aiws', 'build', cardDir, '--workspace', wsA.workspace_id)
+  cli(token, baseURL!, work, 'aiws', 'ext-export', String(board.def_entity_id), '--workspace', wsA.workspace_id, '--out', join(work, 'v2'), '--name', pkgName, '--version', '0.2.0', '--install')
+  const dry = cli(token, baseURL!, work, 'aiws', 'ext-upgrade', cardB.entity_id, '--workspace', wsB.workspace_id, '--dry-run')
+  expect(dry.status).toBe('checked')
+  const up = cli(token, baseURL!, work, 'aiws', 'ext-upgrade', cardB.entity_id, '--workspace', wsB.workspace_id)
+  const upgraded = (up.controls as Json[]).find((c) => c.ident === 'did:bns:alice#hello-card')!
+  expect([upgraded.action, upgraded.from, upgraded.to]).toEqual(['upgraded', '0.1.0', '0.2.0'])
+  const cardRead = await owner.client.ok<{ content: { payload: Json } }>('doc.read', { workspace_id: wsB.workspace_id, entity_id: 'card-1' })
+  expect(cardRead.content.payload.bindings).toEqual({ task: { entity_id: 'task-1' } })
+  expect(((cardRead.content.payload.on as Json).completed as Json).kind).toBe('notify')
+  const again = cli(token, baseURL!, work, 'aiws', 'ext-upgrade', cardB.entity_id, '--workspace', wsB.workspace_id)
+  expect((again.controls as Json[])[0].action).toBe('unchanged')
+
+  // the Main canvas as a template: installing it creates nothing; two creations are two independent Workspaces
+  const tplPkg = `tpl-${tag}`
+  const exported = cli(token, baseURL!, work, 'aiws', 'template', 'export', '--workspace', wsB.workspace_id, '--surfaces', 'sf-main', '--data', 'tasks', '--id', 'team-board', '--title', 'Team board',
+    '--param', 'team_name:string:Team', '--reset', 'tasks', '--out', join(work, 'tpl'), '--name', tplPkg, '--version', '0.1.0', '--install')
+  const tplId = (exported.install as Json).pkg_id as string
+  const listed = cli(token, baseURL!, work, 'aiws', 'template', 'list')
+  expect((listed.templates as Json[]).map((t) => t.ref)).toContain(`${tplId}#team-board`)
+  const created: string[] = []
+  for (const team of ['Red', 'Blue']) {
+    const r = cli(token, baseURL!, work, 'aiws', 'template', 'create', `${tplId}#team-board`, '--title', owner.client.prefix, '--param', `team_name=${team}`)
+    created.push(r.workspace_id as string)
+    owner.client.owned.add(r.workspace_id as string)
+  }
+  expect(created[0]).not.toBe(created[1])
+  const fresh = { workspace_id: created[0] } as Workspace
+  const entities = await outline(owner, fresh)
+  expect(entities.find((e) => e.entity_id === 'board-1')?.def_id).toBe(boardB.entity_id)
+  const rows = await owner.client.ok<{ rows: unknown[] }>('doc.query', { workspace_id: created[0], source_id: 'tasks' })
+  expect(rows.rows).toEqual([])
+
+  for (const p of [pkg, tplId]) await owner.client.ok('ext.uninstall', { pkg_id: p })
+})

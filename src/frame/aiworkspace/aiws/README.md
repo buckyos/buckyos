@@ -39,6 +39,8 @@ aiws.result.html('dashboard', { html, css, js, bindings: { orders: 'input:sales'
 // a Block-control of catalog/controls.json (a mind map…): the tree as a Markdown outline or [{ text, children }]
 aiws.result.control('plan', { kind: 'mindmap', children: '- Launch\n  - Market\n  - Product', config: { direction: 'right' }, title: 'Launch' })
 aiws.result.control('more', { kind: 'mindmap', children: [{ text: 'Pricing', children: [] }], under: 'branch' })   // below the node of input `branch`
+aiws.result.control('board', { def: 'did:bns:alice#hello-board', config: { title: 'Week 44' },          // a composite control of the Workspace (WORKSPACE.md lists them)
+  slots: { cards: ['result:summary', 'input:task_card'], header: [{ view: 'richtext', markdown: '# Week 44' }] } })   // other results' Blocks, copies of input Blocks, new texts
 ```
 
 A control result never carries coordinates or sizes: the control lays its nodes out. Each item becomes a text node (its inline Markdown is kept, at most 256 characters); at most 2000 nodes and 32 levels. Without `under` it is a new control in the result group (a re-run in overwrite mode replaces it in place); with `under` the items are appended below that node (a re-run replaces what the last run appended), and `config` / `title` do not apply.

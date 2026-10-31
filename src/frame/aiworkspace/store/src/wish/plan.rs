@@ -516,8 +516,14 @@ impl Workspace {
         let mut cells_to_place: Vec<Place> = Vec::new();
         let mut bindings_out: Map<String, Value> = Map::new();
         let mut produced: Vec<String> = Vec::new();
+        // composites go last: their slots take the Blocks of other results of this run
+        let mut composites: Vec<&Item> = Vec::new();
         for it in &items {
             let approach = it.r.get("approach").cloned().unwrap_or(Value::Null);
+            if it.ty == "control" && it.r["control"]["kind"] == json!(aiworkspace_core::types::COMPOSITE) {
+                composites.push(it);
+                continue;
+            }
             if it.ty == "control" {
                 let id_base = make_id(&[&wish_id, &slug(&it.name), req.run_id]);
                 let (binding, summary) = plan_control(&mut p, it, &approach, surface.is_some(), &id_base, &mut cells_to_place)?;
@@ -648,6 +654,17 @@ impl Workspace {
             binding["cells"] = json!(cells);
             p.results_summary.push(json!({ "name": it.name, "type": it.ty, "title": it.r.get("title"), "entity_id": it.entity_id, "action": action,
                                            "approach": approach, "blocks": binding["cells"].as_array().map_or(0, Vec::len), "reordered": reordered }));
+            bindings_out.insert(it.name.clone(), binding);
+        }
+        for it in composites {
+            let approach = it.r.get("approach").cloned().unwrap_or(Value::Null);
+            let id_base = make_id(&[&wish_id, &slug(&it.name), req.run_id]);
+            let (binding, summary) = plan_composite(&mut p, it, &approach, surface.is_some(), &id_base, &folder_id, &items, &mut bindings_out, &mut cells_to_place)?;
+            match binding.get("under") {
+                Some(_) => produced.extend(binding["nodes"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string)),
+                None => produced.push(it.entity_id.clone()),
+            }
+            p.results_summary.push(summary);
             bindings_out.insert(it.name.clone(), binding);
         }
         // results produced earlier and not this time: listed, never deleted (§10.2); a program re-run
@@ -1609,6 +1626,187 @@ fn plan_control(p: &mut Planner, it: &Item, approach: &Value, on_canvas: bool, i
     }
     let summary = json!({ "name": it.name(), "type": "control", "title": it.r().get("title"), "entity_id": it.entity_id(), "action": if replaced { "update" } else { "create" },
                           "approach": approach, "kind": kind, "nodes": n, "under": under, "blocks": if under.is_some() { 0 } else { 1 } });
+    Ok((binding, summary))
+}
+
+/// A composite result (扩展控件 P3): an instance of a composite definition of the Workspace whose slots hold Blocks — the
+/// Blocks of other results of this run (taken off the result grid), copies of input Blocks (`tree.clone`), new Blocks
+/// showing input data, and new rich texts — or (`under`) those Blocks added to a slot of a composite the wish read. Like
+/// a mind map result it has no data entity: an overwrite deletes the last instance (or what it added) and plans anew.
+#[allow(clippy::too_many_arguments)]
+fn plan_composite(p: &mut Planner, it: &Item, approach: &Value, on_canvas: bool, id_base: &str, folder: &str, items: &[Item], bindings: &mut Map<String, Value>, places: &mut Vec<Place>) -> WsResult<(Value, Value)> {
+    let c = &it.r()["control"];
+    let def_id = c["def_id"].as_str().unwrap_or("").to_string();
+    let under = c["under_id"].as_str().map(str::to_string);
+    let container = under.clone().unwrap_or_else(|| it.entity_id().to_string());
+    let def = p.alive(&def_id)?;
+    let algorithm = def.as_ref().and_then(|d| d.payload.get("composition")?.get("layout")?.get("algorithm")?.as_str().map(str::to_string)).unwrap_or_else(|| "stack".into());
+    let slots_def = def.as_ref().and_then(|d| d.payload.get("composition")?.get("slots")?.as_object().cloned()).unwrap_or_default();
+    if def.is_none() {
+        p.problems.push(format!("The composite control {} of result \"{}\" is no longer in this Workspace", c["def"].as_str().unwrap_or(""), it.name()));
+    }
+    let mut old_place: Option<TreeEdge> = None;
+    let mut replaced = false;
+    let mut doomed: BTreeSet<String> = BTreeSet::new();
+    if let Some(b) = it.binding().filter(|b| b["type"] == json!("control")) {
+        let was_under = b.get("under").is_some();
+        let owned: Vec<String> = if was_under { b["nodes"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect() } else { b["entity_id"].as_str().map(str::to_string).into_iter().collect() };
+        for id in owned {
+            if p.alive(&id)?.is_none() {
+                continue;
+            }
+            if !was_under {
+                old_place = p.ctx.edge(&id)?;
+            }
+            let mut stack = vec![id.clone()];
+            while let Some(cur) = stack.pop() {
+                doomed.insert(cur.clone());
+                for edge in p.ctx.children(&cur)? {
+                    stack.push(edge.child_id);
+                }
+            }
+            delete_subtree(p, &id)?;
+            replaced = true;
+        }
+    }
+    let mut ops = Vec::new();
+    let mut nodes: Vec<String> = Vec::new();
+    let mut n = 0;
+    let mut key: Option<String> = if under.is_some() { p.ctx.children(&container)?.last().map(|e| e.order_key.clone()) } else { None };
+    let next = |key: &mut Option<String>| -> WsResult<String> {
+        let k = order_key_between(key.as_deref(), None)?;
+        *key = Some(k.clone());
+        Ok(k)
+    };
+    for (slot, list) in c["slots"].as_object().into_iter().flatten() {
+        let free = algorithm == "fixed" || slots_def.get(slot).and_then(|s| s["placement"].as_str()) == Some("free");
+        for item in list.as_array().into_iter().flatten() {
+            let place = |w: f64, h: f64, i: usize| if free { json!({ "x": 16, "y": 16 + i as u64 * 24, "w": w, "h": h }) } else { json!({ "x": "auto", "y": "auto", "w": w, "h": h }) };
+            let cell_id = make_id(&[id_base, &format!("s{n}")]);
+            let i = n;
+            n += 1;
+            let cell = |payload: Value, size: (f64, f64), ops: &mut Vec<Value>, key: &mut Option<String>| -> WsResult<String> {
+                let mut payload = payload;
+                payload["slot"] = json!(slot);
+                ops.push(json!({ "op": "entity.create", "entity_id": cell_id, "type_id": TYPE_CELL, "parent_id": container, "order_key": next(key)?, "placement": place(size.0, size.1, i), "payload": payload }));
+                Ok(cell_id.clone())
+            };
+            let id = match item {
+                Value::String(s) if s.starts_with("result:") => {
+                    let r = &s[7..];
+                    let Some(src) = items.iter().find(|x| x.name == r && x.ty != "control") else {
+                        p.problems.push(format!("Control result \"{}\" puts {s} into {slot}: no result of this run is called {r}", it.name()));
+                        continue;
+                    };
+                    // the result's new Blocks leave the grid for the slot; Blocks of an earlier instance are replaced
+                    let mut kept: Vec<Value> = Vec::new();
+                    let mut moved = None;
+                    for cid in bindings.get(r).and_then(|b| b["cells"].as_array()).cloned().unwrap_or_default() {
+                        let Some(cid) = cid.as_str() else { continue };
+                        if let Some(pos) = places.iter().position(|pl| pl.id == cid) {
+                            let pl = places.remove(pos);
+                            let mut payload = pl.payload;
+                            payload["slot"] = json!(slot);
+                            ops.push(json!({ "op": "entity.create", "entity_id": pl.id, "type_id": TYPE_CELL, "parent_id": container, "order_key": next(&mut key)?, "placement": place(pl.size.0, pl.size.1, i), "payload": payload }));
+                            moved.get_or_insert(pl.id.clone());
+                            kept.push(json!(pl.id));
+                        } else if !doomed.contains(cid) {
+                            kept.push(json!(cid));
+                        }
+                    }
+                    let id = match moved {
+                        Some(id) => id,
+                        None => {
+                            let renderer = if src.ty == "html" { "html" } else { src.r.get("renderer").and_then(Value::as_str).unwrap_or(default_renderer(&src.ty)) };
+                            let mut payload = json!({ "view": { "type": renderer }, "title": src.r.get("title").cloned().unwrap_or(json!(src.name)) });
+                            if src.ty == "html" {
+                                payload["def_ref"] = json!({ "entity_id": src.entity_id });
+                            } else {
+                                payload["source_ref"] = json!({ "entity_id": src.entity_id });
+                            }
+                            let id = cell(payload, default_size(renderer, &src.ty), &mut ops, &mut key)?;
+                            kept.push(json!(id));
+                            id
+                        }
+                    };
+                    if let Some(b) = bindings.get_mut(r) {
+                        b["cells"] = json!(kept);
+                    }
+                    id
+                }
+                Value::String(s) if s.starts_with("input:") => {
+                    let Some(src_id) = p.inputs.get(&s[6..]).cloned() else { continue };
+                    let Some(src) = p.alive(&src_id)? else {
+                        p.problems.push(format!("Control result \"{}\": the input {} is gone", it.name(), &s[6..]));
+                        continue;
+                    };
+                    if src.type_id == TYPE_CELL || aiworkspace_core::types::is_block_container(&src) {
+                        let seed = make_id(&[id_base, &format!("c{i}")]);
+                        let pl = p.ctx.edge(&src_id)?.and_then(|e| e.placement).unwrap_or(json!({ "w": 360, "h": 240 }));
+                        let num = |k: &str, d: f64| pl[k].as_f64().unwrap_or(d);
+                        ops.push(json!({ "op": "tree.clone", "source_id": src_id, "parent_id": container, "order_key": next(&mut key)?, "slot": slot, "id_seed": seed,
+                                         "placement": place(num("w", 360.0), num("h", 240.0), i) }));
+                        aiworkspace_core::plan::clone_id(&seed, &src_id)
+                    } else {
+                        let ty = match src.type_id.as_str() {
+                            TYPE_TABLE => "table",
+                            TYPE_RICHTEXT => "richtext",
+                            TYPE_RECORD => "record",
+                            TYPE_ASSET => "asset",
+                            t => {
+                                p.problems.push(format!("Control result \"{}\": the input {} is a {t}, which no Block shows", it.name(), &s[6..]));
+                                continue;
+                            }
+                        };
+                        cell(json!({ "view": { "type": ty }, "source_ref": { "entity_id": src_id } }), default_size(ty, ty), &mut ops, &mut key)?
+                    }
+                }
+                Value::Object(o) => {
+                    let text_id = make_id(&[id_base, &format!("t{i}")]);
+                    let ast = {
+                        let resolve = link_resolver(p);
+                        aiworkspace_core::markdown::to_richtext(o.get("markdown").and_then(Value::as_str).unwrap_or(""), &block_prefix(&text_id), &resolve)?
+                    };
+                    let k = p.next_key(folder)?;
+                    p.ops.push(json!({ "op": "entity.create", "entity_id": text_id, "type_id": TYPE_RICHTEXT, "parent_id": folder, "order_key": k, "payload": { "content": ast } }));
+                    cell(json!({ "view": { "type": "richtext" }, "source_ref": { "entity_id": text_id } }), default_size("richtext", "richtext"), &mut ops, &mut key)?
+                }
+                _ => continue,
+            };
+            nodes.push(id);
+        }
+    }
+    if under.is_none() {
+        let mut payload = json!({ "kind": aiworkspace_core::types::COMPOSITE, "def_ref": { "entity_id": def_id } });
+        if c["config"].as_object().is_some_and(|o| !o.is_empty()) {
+            payload["config"] = c["config"].clone();
+        }
+        if let Some(t) = it.r()["title"].as_str() {
+            payload["title"] = json!(node_title(t));
+        }
+        match old_place {
+            Some(edge) => {
+                let mut op = json!({ "op": "entity.create", "entity_id": it.entity_id(), "type_id": TYPE_CONTAINER, "parent_id": edge.parent_id, "order_key": edge.order_key, "payload": payload });
+                if let Some(mut pl) = edge.placement {
+                    pl["w"] = json!("auto");
+                    pl["h"] = json!("auto");
+                    op["placement"] = pl;
+                }
+                p.ops.push(op);
+                p.ops.extend(ops);
+            }
+            None if on_canvas => places.push(Place { id: it.entity_id().to_string(), type_id: TYPE_CONTAINER, payload, size: CONTROL_SIZE, auto_size: true, then: ops }),
+            None => p.problems.push(format!("Control result \"{}\" is drawn on a canvas: set the wish block's output canvas", it.name())),
+        }
+    } else {
+        p.ops.extend(ops);
+    }
+    let mut binding = json!({ "type": "control", "entity_id": it.entity_id(), "approach": approach, "title": it.r().get("title"), "kind": aiworkspace_core::types::COMPOSITE, "def": c["def"], "nodes": nodes });
+    if let Some(u) = &under {
+        binding["under"] = json!(u);
+    }
+    let summary = json!({ "name": it.name(), "type": "control", "title": it.r().get("title"), "entity_id": it.entity_id(), "action": if replaced { "update" } else { "create" },
+                          "approach": approach, "kind": aiworkspace_core::types::COMPOSITE, "def": c["def"], "nodes": n, "under": under, "blocks": if under.is_some() { 0 } else { 1 } });
     Ok((binding, summary))
 }
 

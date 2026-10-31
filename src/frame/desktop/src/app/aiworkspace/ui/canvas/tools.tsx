@@ -5,7 +5,8 @@
  * common ones (annotate, lock, AI) — and "more"; what does not fit moves into "more". */
 
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
-import { ChevronDown, Ellipsis, Palette } from 'lucide-react'
+import { ChevronDown, Ellipsis, Palette, PencilRuler, Play } from 'lucide-react'
+import type { RunMode } from '../../state/runMode'
 import type { TextVars } from '../../i18n'
 import { useWorkspaceUi } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
@@ -195,6 +196,21 @@ export function InlineTools({ items, label }: { items: ToolbarItem[]; label: str
     <div className="aiws-inline-tools" role="toolbar" aria-label={label}>
       {items.map((item) => <NearItem key={item.id} item={item} />)}
     </div>
+  )
+}
+
+// ---- design / run mode (扩展控件 P2, Q27)
+
+/** ▶ runs the canvas's extensions (buttons, HTML Blocks on a click, event handlers); ✎ designs it (clicks select). */
+export function RunModeToggle({ runMode }: { runMode: RunMode }) {
+  const { t } = useAiwsText()
+  if (runMode.locked) return null
+  const label = t(runMode.interactive ? 'aiworkspace.canvas.runMode.design' : 'aiworkspace.canvas.runMode.run')
+  return (
+    <button type="button" className="aiws-tool" data-testid="aiws-run-toggle" data-interactive={runMode.interactive ? 'true' : 'false'}
+      aria-pressed={runMode.interactive} aria-label={label} title={label} onClick={() => runMode.set(!runMode.interactive)}>
+      {runMode.interactive ? <PencilRuler size={16} aria-hidden="true" /> : <Play size={16} aria-hidden="true" />}
+    </button>
   )
 }
 

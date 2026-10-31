@@ -45,6 +45,13 @@
    "note": "Remove top-level keys."
   },
   {
+   "op": "entity.set_props",
+   "class": "overwrite",
+   "undo": "compensable",
+   "capability": "update",
+   "note": "Per-property writes of an object key (config | bindings | on, 扩展控件 P2 Q28): props { <name>: value | null }, expect { <name>: rev } per property (absent = merge). Each property is the cell p:<key>.<name>; a whole-key set_keys / unset_keys moves every p: cell of that key. Inverse: the old values with expect = seq."
+  },
+  {
    "op": "entity.set_write_policy",
    "class": "overwrite",
    "undo": "compensable",

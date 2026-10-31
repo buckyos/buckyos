@@ -6,7 +6,7 @@ import type {
   QueryPage, QueryParams, ReadResult, Result, RunView, Selector, WorkspaceInfo, WorkspaceSummary, Capability, Json, WishAiccMode,
   DerivedRecord, FreshnessInfo, Operation, RelationsInfo, Subject, VersionInfo, WishChoices, WishRunView,
   ShowCommand, ShowLockInfo, ShowNotes, ShowStart, ShowState, ShowWatch, ShareEntry, EntryJoin, WishClaim, WishToolAnswer, HostedExecConfig, Publication, Referrer,
-  ExtBuildResult, ExtExportResult, ExtPackResult, LibraryPackage,
+  ExtBuildResult, ExtExportResult, ExtMigration, ExtPackResult, LibraryPackage, TemplateSpec,
 } from './types'
 import { parseAccessDenial, type AccessDenial } from 'buckyos'
 import type { Transport } from './transport'
@@ -48,12 +48,28 @@ export class AiwsClient {
   extBuild(ws: Ws, params: Record<string, unknown>) { return this.call<Result<ExtBuildResult>>('ext.build', { ...ws, ...params }) }
   extExport(ws: Ws, entity_ids: string[], purpose: 'package' | 'pull' = 'package') { return this.call<Result<ExtExportResult>>('ext.export', { ...ws, entity_ids, purpose }) }
   extImport(ws: Ws, items: { pkg_id: string; ident: string }[]) { return this.call<Result<ExtBuildResult>>('ext.import', { ...ws, items }) }
-  extInstallFrom(ws: Ws, entity_ids: string[], pkg: { name: string; version: string; title?: string }) {
-    return this.call<Result<{ pkg_id: string; version: string; action: string }>>('ext.install', { from: { ...ws, entity_ids }, package: pkg, mode: 'dev' })
+  extInstallFrom(ws: Ws, entity_ids: string[], pkg: { name: string; version: string; title?: string }, templates?: TemplateSpec[]) {
+    return this.call<Result<{ pkg_id: string; version: string; action: string }>>('ext.install', { from: { ...ws, entity_ids, ...(templates?.length ? { templates } : {}) }, package: pkg, mode: 'dev' })
+  }
+  /** P2 (Q30): rebuild definitions from the version of their package in the caller's library, with a migration. */
+  extUpgrade(ws: Ws, items: { def_entity_id: string; pkg_id?: string }[], opts: { migration?: Record<string, ExtMigration>; force?: boolean; dry_run?: boolean }) {
+    return this.call<Result<ExtBuildResult>>('ext.upgrade', { ...ws, items, ...opts })
+  }
+  /** The files of library controls (base64), e.g. to compare a newer version's interface. */
+  extLibraryBundle(pkg_id: string, idents?: string[]) {
+    return this.call<Result<{ manifest: Json; controls: { ident: string; files: { name: string; size: number; obj_id: string; base64: string }[] }[] }>>('ext.library_bundle', { pkg_id, ...(idents ? { idents } : {}) })
+  }
+  /** P3 (Q32): a template of chosen Surfaces (its manifest item, the definitions it needs, its files). */
+  extExportTemplate(ws: Ws, spec: TemplateSpec) {
+    return this.call<Result<{ template: Json; controls: Json[]; files: { path: string; size: number; base64: string }[] }>>('ext.export_template', { ...ws, ...spec })
+  }
+  /** A new Workspace from a template of the caller's library. */
+  extCreateFromTemplate(pkg_id: string, template_id: string, title?: string, params?: Record<string, Json>) {
+    return this.call<Result<{ workspace_id: string; title: string; epoch: string }>>('ext.create_from_template', { pkg_id, template_id, ...(title ? { title } : {}), ...(params ? { params } : {}) })
   }
   extListLibrary() { return this.call<Result<{ packages: LibraryPackage[] }>>('ext.list_library', {}) }
   /** P1 (Q20): the service packs the definitions (and what they build on) as an `aiws` .pikg in the caller's `exports` bucket. */
-  extPack(ws: Ws, entity_ids: string[], pkg: { name: string; version: string; title?: string }) { return this.call<Result<ExtPackResult>>('ext.pack', { ...ws, entity_ids, package: pkg }) }
+  extPack(ws: Ws, entity_ids: string[], pkg: { name: string; version: string; title?: string }, templates?: TemplateSpec[]) { return this.call<Result<ExtPackResult>>('ext.pack', { ...ws, entity_ids, package: pkg, ...(templates?.length ? { templates } : {}) }) }
   /** A .pikg bound in the caller's own `exports` bucket into its library (the binding is consumed, Q21). */
   extInstallBound(binding: { bucket_id: string; key: string }) {
     return this.call<Result<{ pkg_id: string; version: string; action: string; controls: Json[] }>>('ext.install', { pikg: binding, mode: 'dev' })

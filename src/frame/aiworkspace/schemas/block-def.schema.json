@@ -2,7 +2,7 @@
  "$schema": "https://json-schema.org/draft/2020-12/schema",
  "$id": "buckyos.ai-workspace/block-def/1.2",
  "title": "Payload of a buckyos.block-def entity (phase two §10.3; 扩展控件 P0 and P1 keys)",
- "description": "Checked by core/src/types.rs block_def_primitive (deps, source_dir: replay semantics) and block_def_schema (the rest, admission only, Q15); ≤ 512 KiB in all. ident, manifest_version, source_dir, bindings, catalog, agent and provenance were added by the extension P0, deps and composition (with kind composite) by P1, without a protocol change (Q19); definitions without them keep working. The dependency record of a build is `derived.build { input_digest, builder_version, built_at }`.",
+ "description": "Checked by core/src/types.rs block_def_primitive (deps, source_dir: replay semantics) and block_def_schema (the rest, admission only, Q15); ≤ 512 KiB in all. ident, manifest_version, source_dir, bindings, catalog, agent and provenance were added by the extension P0, deps and composition (with kind composite) by P1, events by P2, without a protocol change (Q19); definitions without them keep working. The dependency record of a build is `derived.build { input_digest, builder_version, built_at }`.",
  "type": "object",
  "additionalProperties": false,
  "required": [
@@ -93,7 +93,7 @@
   "manifest_version": {
    "type": "integer",
    "minimum": 1,
-   "maximum": 2
+   "maximum": 3
   },
   "source_dir": {
    "type": "object",
@@ -164,6 +164,77 @@
     }
    },
    "description": "the definitions this one builds on, resolved by ext.build from component.json deps; only build and import Commits write it. Each is a strong def_dep reference (the target cannot be deleted while used; exports and forks carry it); a cycle is REFERENCE_CYCLE."
+  },
+  "events": {
+   "type": "object",
+   "maxProperties": 16,
+   "propertyNames": {
+    "pattern": "^[a-z][a-z0-9_]{0,31}$"
+   },
+   "additionalProperties": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "title": {
+      "type": "string",
+      "maxLength": 256
+     },
+     "description": {
+      "type": "string",
+      "maxLength": 4000
+     },
+     "params": {
+      "type": "object",
+      "maxProperties": 16,
+      "propertyNames": {
+       "pattern": "^[a-z][a-z0-9_]{0,31}$"
+      },
+      "additionalProperties": {
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+        "type"
+       ],
+       "properties": {
+        "type": {
+         "enum": [
+          "string",
+          "number",
+          "boolean",
+          "object",
+          "entity"
+         ]
+        },
+        "required": {
+         "type": "boolean"
+        },
+        "description": {
+         "type": "string",
+         "maxLength": 1000
+        }
+       }
+      }
+     },
+     "from": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "slot",
+       "event"
+      ],
+      "properties": {
+       "slot": {
+        "type": "string"
+       },
+       "event": {
+        "type": "string"
+       }
+      },
+      "description": "a composite's bubbled event: which child event it re-raises"
+     }
+    }
+   },
+   "description": "Written by ext.build / ext.import only (P2, as deps): the control's events, from component.json (render controls) or composition.json (a composite, params copied from the child event). The core keeps the shape (≤ 16 names, ≤ 16 KiB)."
   }
  },
  "$defs": {

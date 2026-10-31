@@ -17,7 +17,7 @@ import type { BlockDefPayload, Capability, CellPayload, EntityEnvelope, Json, Op
 import type { WorkspaceStore } from '../../state/store'
 import type { AnchorDef, Shape } from '../canvas/connectors/anchors'
 import { aiwsT, aiwsText, localizedLabels } from '../../i18n'
-import { HTML_API_VERSION } from '../extensions/htmlRuntime'
+import { htmlApiOf } from '../extensions/htmlRuntime'
 
 /** `show` is not a sub-mode the user picks: it is the stage of a show (第三期规划 §10.1). */
 export type CanvasMode = 'edit' | 'view' | 'presentation_edit' | 'show'
@@ -51,6 +51,9 @@ export interface RenderContext {
   dataState: DataState
   size: { w: number; h: number }
   zoom: number
+  /** The canvas runs this Block (扩展控件 P2, Q27): a declarative `button` is enabled, a click on an HTML Block mounts it,
+   * events run their handlers. False in design mode, on replays, for guests and on phones. */
+  interactive: boolean
   /** Explicit activation ("edit content" / double-click in edit mode); the host mounts the Editor. */
   activateEditor: () => void
   deactivateEditor: () => void
@@ -282,7 +285,8 @@ export class BlockRegistry {
     if (definition.definitionKind) {
       if (!documentDefinition) return { ok: false, reason: 'definition_missing', detail: aiwsT('aiworkspace.blocks.resolve.definitionMissing') }
       if (documentDefinition.kind !== definition.definitionKind) return { ok: false, reason: 'invalid_definition', detail: aiwsT('aiworkspace.blocks.resolve.definitionKind', { kind: definition.definitionKind }) }
-      if (documentDefinition.kind === 'html' && (documentDefinition.html?.api_version ?? HTML_API_VERSION) !== HTML_API_VERSION) {
+      // a definition newer than this host is shown as its snapshot with what it needs (Q33), never run
+      if (documentDefinition.kind === 'html' && htmlApiOf(documentDefinition.html) === null) {
         return { ok: false, reason: 'unsupported_api', detail: aiwsT('aiworkspace.blocks.resolve.htmlApi', { version: String(documentDefinition.html?.api_version) }) }
       }
       definition = {
@@ -330,20 +334,23 @@ export interface ModePolicy {
   insert: boolean
   annotate: boolean
   readingInteraction: boolean
-  /** Document writes allowed at all (besides annotations in view mode). */
+  /** Document writes allowed at all (besides annotations in view mode, and run-mode writes with `update`, Q27). */
   writes: boolean
+  /** Design / run mode (扩展控件 P2, Q27): `design` / `run` are the defaults the ▶ / ✎ switch starts from, `live`
+   * runs only the Blocks marked operable on stage, `off` never runs (and cannot be switched). */
+  events: 'design' | 'run' | 'live' | 'off'
 }
 
 export function modePolicy(mode: CanvasMode): ModePolicy {
   switch (mode) {
     case 'edit':
-      return { select: true, layout: true, editContent: true, insert: true, annotate: true, readingInteraction: false, writes: true }
+      return { select: true, layout: true, editContent: true, insert: true, annotate: true, readingInteraction: false, writes: true, events: 'design' }
     case 'view':
-      return { select: true, layout: false, editContent: false, insert: false, annotate: true, readingInteraction: true, writes: false }
+      return { select: true, layout: false, editContent: false, insert: false, annotate: true, readingInteraction: true, writes: false, events: 'run' }
     case 'presentation_edit':
-      return { select: false, layout: false, editContent: false, insert: false, annotate: false, readingInteraction: false, writes: false }
+      return { select: false, layout: false, editContent: false, insert: false, annotate: false, readingInteraction: false, writes: false, events: 'off' }
     // only Blocks marked "operable on stage" take input (the host checks `presentation.live`, §10.2)
     case 'show':
-      return { select: false, layout: false, editContent: true, insert: false, annotate: false, readingInteraction: true, writes: true }
+      return { select: false, layout: false, editContent: true, insert: false, annotate: false, readingInteraction: true, writes: true, events: 'live' }
   }
 }

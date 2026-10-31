@@ -264,3 +264,59 @@ fn find(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
     }
     None
 }
+
+#[test]
+fn a_composite_result_puts_other_results_into_its_slots() {
+    run_test(|| async move {
+    let m = model();
+    let mut srv = Srv::start(tempfile::tempdir().unwrap(), m.clone()).await;
+    setup(&mut srv).await;
+    // a composite control of the Workspace (扩展控件 P3)
+    srv.commit(json!([{ "op": "entity.create", "entity_id": "d-board", "type_id": "buckyos.block-def", "parent_id": "data", "order_key": "z", "name": "did:bns:alice#board",
+                        "payload": { "def_id": "board", "kind": "composite", "title": "Board", "ident": { "author_did": "did:bns:alice", "name": "board" }, "manifest_version": 3,
+                                     "composition": { "layout": { "algorithm": "stack" }, "slots": { "notes": { "accepts": ["richtext"] }, "cards": {} } } } }])).await;
+    let contract = json!({ "results": [{ "name": "summary", "type": "richtext", "approach": "direct" },
+                                       { "name": "board", "type": "control", "def": "did:bns:alice#board", "title": "Review", "approach": "direct" }] });
+    *m.analyze.lock().unwrap() = Box::new(move |t: &Turn| match t.results.len() {
+        0 => call("submit_analysis", json!({ "analysis": { "schema_version": "wish.analysis.v2", "status": "ready", "context_prompt": "A review board.", "inputs": [],
+                                                            "output_contract": contract.clone(), "checks": [], "blockers": [], "warnings": [] } })),
+        _ => text("ok"),
+    });
+    let a = srv.run("wish.xllm@1", json!({ "wish_id": "wish-mm", "stage": "analyze", "location": loc("blk-wish") })).await;
+    assert_eq!(a["state"], "waiting_confirmation", "{a}");
+    assert_eq!(a["candidate"]["analysis"]["output_contract"]["results"][1]["def"], "did:bns:alice#board");
+    srv.apply(&a, json!({})).await;
+
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    *m.execute.lock().unwrap() = recording(&seen, vec![
+        step("put_result", json!({ "name": "summary", "type": "text", "markdown": "# Summary\n\nAll good." })),
+        step("put_result", json!({ "name": "board", "type": "control", "def": "did:bns:alice#nope", "slots": { "notes": ["result:summary"] } })),
+        step("put_result", json!({ "name": "board", "type": "control", "def": "did:bns:alice#board", "slots": { "notes": ["result:summary", { "view": "richtext", "markdown": "Extra note" }], "sides": [] } })),
+        step("put_result", json!({ "name": "board", "type": "control", "def": "did:bns:alice#board", "config": { "title": "Week 44" },
+                                   "slots": { "notes": ["result:summary", { "view": "richtext", "markdown": "Extra note" }] } })),
+        step("finish", json!({ "summary": "a board" })),
+    ]);
+    let e = srv.run("wish.xllm@1", json!({ "wish_id": "wish-mm", "stage": "execute", "location": loc("blk-wish") })).await;
+    assert_eq!(e["state"], "waiting_confirmation", "{e}");
+    let answers = seen.lock().unwrap().clone();
+    assert!(answers[1].contains("not in this Workspace"), "{answers:?}");
+    assert!(answers[2].contains("sides is not a slot"), "{answers:?}");
+    assert!(answers[3].contains("Received result \"board\""), "{answers:?}");
+    srv.apply(&e, json!({})).await;
+
+    let w = srv.wish_of("wish-mm").await;
+    let b = &w["last_run"]["result_bindings"]["results"];
+    let board = b["board"]["entity_id"].as_str().unwrap().to_string();
+    let c = entity(&srv, &board).await.expect("the composite");
+    assert_eq!((c["kind"].as_str(), c["def_id"].as_str()), (Some("composite"), Some("d-board")), "{c}");
+    let all = srv.rpc("doc.outline", json!({})).await["entities"].as_array().cloned().unwrap();
+    let kids: Vec<&Value> = all.iter().filter(|e| e["parent_id"] == json!(board) && e["deleted"] != json!(true)).collect();
+    assert_eq!(kids.len(), 2, "{kids:?}");
+    assert!(kids.iter().all(|k| k["slot"] == "notes" && k["placement"]["x"] == "auto"), "{kids:?}");
+    let summary = b["summary"]["entity_id"].as_str().unwrap();
+    assert!(kids.iter().any(|k| k["source_id"] == json!(summary)), "the summary's Block sits in the slot");
+    assert_eq!(b["summary"]["cells"].as_array().unwrap().len(), 1, "and nowhere else");
+    let cfg = srv.rpc("doc.read", json!({ "entity_id": board })).await["content"]["payload"]["config"].clone();
+    assert_eq!(cfg, json!({ "title": "Week 44" }));
+    });
+}

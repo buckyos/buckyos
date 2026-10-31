@@ -484,7 +484,7 @@ impl<'a> Planner<'a> {
 /// The selector kinds `resolve_cell` knows (D04, frozen; `schemas/commit-request.schema.json` lists the same).
 pub const SELECTOR_KINDS: &[&str] = &[
     "entity", "doc_key", "table_members", "table_field", "table_field_type", "table_field_values", "table_record", "table_cell",
-    "tree_children", "tree_edge", "richtext_block", "folder_member", "table_view", "table_query",
+    "tree_children", "tree_edge", "richtext_block", "folder_member", "entity_prop", "table_view", "table_query",
 ];
 
 pub fn resolve_cell(ctx: &dyn ReadCtx, target: &Value) -> WsResult<Value> {
@@ -564,6 +564,14 @@ pub fn resolve_cell(ctx: &dyn ReadCtx, target: &Value) -> WsResult<Value> {
                 return Err(WsError::deleted(format!("member {name} is not in {entity_id}")));
             }
             json!(e.key_rev(&format!("m:{name}")))
+        }
+        // one property of an object key of a Block or container (扩展控件 P2, Q28): its own cell, 0 when never written
+        "entity_prop" => {
+            let key = get_str(s, "key")?;
+            if !PROP_KEYS.contains(&key) {
+                return Err(WsError::invalid_op(format!("entity_prop key must be one of {}", PROP_KEYS.join(", "))));
+            }
+            json!(e.key_rev(&prop_cell(key, get_str(s, "name")?)))
         }
         // a saved table view (`entity_id` = the table, `cell_id` = the view Block): the view's configuration
         // keys plus the table's membership and every live field's type and values — the coarse token a wish
@@ -661,6 +669,7 @@ pub const OPERATIONS: &[(&str, &str, &str, &str)] = &[
     ("entity.rename", "overwrite", "compensable", "structure"),
     ("entity.set_keys", "overwrite", "compensable", "update"),
     ("entity.unset_keys", "overwrite", "compensable", "update"),
+    ("entity.set_props", "overwrite", "compensable", "update"),
     ("entity.set_write_policy", "overwrite", "compensable", "manage"),
     ("entity.set_derived", "merge", "compensable", "update"),
     ("tree.move", "merge", "compensable", "structure"),
@@ -1260,6 +1269,7 @@ fn dispatch(p: &mut Planner, name: &str, op: &Value) -> OpResult {
         "entity.rename" => entity_rename(p, op),
         "entity.set_keys" => entity_set_keys(p, op, false),
         "entity.unset_keys" => entity_set_keys(p, op, true),
+        "entity.set_props" => entity_set_props(p, op),
         "entity.set_write_policy" => entity_set_write_policy(p, op),
         "entity.set_derived" => entity_set_derived(p, op),
         "tree.move" => tree_move(p, op),
@@ -1878,6 +1888,12 @@ fn entity_set_keys(p: &mut Planner, op: &Value, unset: bool) -> OpResult {
     for k in derived {
         e.key_revs.insert(k, seq);
     }
+    // a whole object key replaces its properties: their own cells move with it (as `dir.replace` moves `m:`)
+    for k in changed.iter().filter(|k| PROP_KEYS.contains(&k.as_str())) {
+        for name in prop_names(before.payload.get(k)).into_iter().chain(prop_names(e.payload.get(k))) {
+            e.key_revs.insert(prop_cell(k, &name), seq);
+        }
+    }
     let new_refs = crate::types::entity_refs(&e)?;
     p.ov.set_refs(&old_refs, &new_refs);
     e.content_rev = seq;
@@ -1903,6 +1919,141 @@ fn entity_set_keys(p: &mut Planner, op: &Value, unset: bool) -> OpResult {
         inverse.push(json!({ "op": "entity.unset_keys", "entity_id": id, "keys": restore_unset }));
     }
     Ok((norm, Some(inverse)))
+}
+
+/// The object keys whose properties are version cells of their own (扩展控件 P2, Q28).
+pub const PROP_KEYS: &[&str] = &["config", "bindings", "on"];
+/// Properties one `entity.set_props` writes.
+pub const MAX_SET_PROPS: usize = 64;
+/// The largest canonical size of one property value.
+pub const MAX_PROP_BYTES: usize = 64 * 1024;
+
+/// The version cell of property `name` of the object key `key`.
+pub fn prop_cell(key: &str, name: &str) -> String {
+    format!("p:{key}.{name}")
+}
+
+/// A property name of `entity.set_props`: `^[A-Za-z_][A-Za-z0-9_-]{0,63}$`.
+pub fn is_prop_name(s: &str) -> bool {
+    let b = s.as_bytes();
+    !b.is_empty() && b.len() <= 64 && (b[0].is_ascii_alphabetic() || b[0] == b'_') && b.iter().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+}
+
+fn prop_names(v: Option<&Value>) -> Vec<String> {
+    v.and_then(Value::as_object).map(|o| o.keys().cloned().collect()).unwrap_or_default()
+}
+
+/// `entity.set_props { entity_id, key: config | bindings | on, props: { <name>: value | null }, expect?: { <name>: rev } }`
+/// (扩展控件 P2, Q28): per-property writes of one object key of a Block or a container. Each property is its own version
+/// cell `p:<key>.<name>`: two writers of two properties both keep theirs, the same property conflicts (one conflict per
+/// stale `expect`); a property without `expect` merges. `null` removes a property, an emptied object removes the key.
+/// The inverse puts back exactly the properties written, each guarded by this Commit's `seq`.
+fn entity_set_props(p: &mut Planner, op: &Value) -> OpResult {
+    only_keys(op, &["entity_id", "key", "props", "expect"])?;
+    let id = get_str(op, "entity_id")?;
+    let key = get_str(op, "key")?;
+    if !PROP_KEYS.contains(&key) {
+        return Err(WsError::invalid_op(format!("key must be one of {}", PROP_KEYS.join(", "))).at("/key"));
+    }
+    let props = op.get("props").and_then(Value::as_object).filter(|o| !o.is_empty()).ok_or_else(|| WsError::invalid_op("props must be a non-empty object").at("/props"))?;
+    if props.len() > MAX_SET_PROPS {
+        return Err(WsError::limit(format!("at most {MAX_SET_PROPS} properties per entity.set_props")));
+    }
+    let expect = match op.get("expect") {
+        None | Some(Value::Null) => Map::new(),
+        Some(Value::Object(o)) => o.clone(),
+        Some(_) => return Err(WsError::invalid_op("expect must be { <name>: rev }").at("/expect")),
+    };
+    for (name, v) in props {
+        if !is_prop_name(name) {
+            return Err(WsError::invalid_op(format!("property name {name:?} must match ^[A-Za-z_][A-Za-z0-9_-]{{0,63}}$")).at(format!("/props/{name}")));
+        }
+        if canonical_json(v).map_or(usize::MAX, |t| t.len()) > MAX_PROP_BYTES {
+            return Err(WsError::limit(format!("property {name} is limited to {MAX_PROP_BYTES} bytes")));
+        }
+    }
+    if let Some(name) = expect.keys().find(|n| !props.contains_key(*n)) {
+        return Err(WsError::invalid_op(format!("expect names {name}, which props does not write")).at("/expect"));
+    }
+    let mut e = p.entity_alive(id)?;
+    if e.type_id != TYPE_CELL && e.type_id != TYPE_CONTAINER {
+        return Err(WsError::invalid_op("entity.set_props writes config / bindings / on of a Block or a container"));
+    }
+    if let Some(d) = e.degraded() {
+        let code = if d == "MISSING_EXTENSION" { Code::MissingExtension } else { Code::UnsupportedVersion };
+        return Err(WsError::new(code, format!("content of {id} cannot be edited ({d})")));
+    }
+    let by_comment = p.by_comment(&e, id, Cap::Update, false)?;
+    if !by_comment {
+        p.require(id, Cap::Update)?;
+        p.need_lock(&e);
+    }
+    let current = match e.payload.get(key) {
+        None | Some(Value::Null) => Map::new(),
+        Some(Value::Object(o)) => o.clone(),
+        Some(_) => return Err(WsError::invalid_schema(format!("{key} of {id} is not an object"))),
+    };
+    let mut ok = true;
+    for (i, (name, want)) in expect.iter().enumerate() {
+        let want = want.as_u64().map(|n| json!({ "rev": n })).ok_or_else(|| WsError::invalid_op(format!("expect.{name} must be a rev")).at("/expect"))?;
+        let cell = prop_cell(key, name);
+        let old = current.get(name).cloned();
+        if !p.check_rev(Some(&want), e.key_rev(&cell), Some(i), id, sel(json!({ "kind": "entity_prop", "key": key, "name": name })), || old)? {
+            ok = false;
+        }
+    }
+    if !ok {
+        return Ok((op.clone(), None));
+    }
+    let seq = p.seq();
+    let before = e.clone();
+    let old_refs = crate::types::entity_refs(&e)?;
+    let mut next = current.clone();
+    let (mut restore, mut changed_names) = (Map::new(), Vec::new());
+    for (name, v) in props {
+        let old = current.get(name).cloned().unwrap_or(Value::Null);
+        if &old == v || (v.is_null() && !current.contains_key(name)) {
+            continue;
+        }
+        restore.insert(name.clone(), old);
+        changed_names.push(name.clone());
+        if v.is_null() {
+            next.remove(name);
+        } else {
+            next.insert(name.clone(), v.clone());
+        }
+    }
+    if changed_names.is_empty() {
+        return Ok((op.clone(), Some(vec![])));
+    }
+    if next.is_empty() {
+        e.payload.remove(key);
+    } else {
+        e.payload.insert(key.to_string(), Value::Object(next));
+    }
+    crate::types::validate_update(p, &before, &mut e, &[key.to_string()])?;
+    if by_comment && !own_note_block(&p.ov, &p.env.principal, &e)? {
+        return Err(WsError::denied("update capability required: the note Block would no longer show your own note"));
+    }
+    for name in &changed_names {
+        e.key_revs.insert(prop_cell(key, name), seq);
+    }
+    e.key_revs.insert(key.to_string(), seq);
+    e.content_rev = seq;
+    let new_refs = crate::types::entity_refs(&e)?;
+    p.ov.set_refs(&old_refs, &new_refs);
+    let class = crate::types::change_class(&e.type_id);
+    p.touch(id, sel(json!({ "kind": "doc_key", "key": key })), class);
+    // history records what was stored (bindings are normalized)
+    let mut norm = op.clone();
+    let stored = e.payload.get(key).and_then(Value::as_object).cloned().unwrap_or_default();
+    for name in &changed_names {
+        norm["props"][name] = stored.get(name).cloned().unwrap_or(Value::Null);
+    }
+    p.ov.put_entity(e);
+    let expect_back: Map<String, Value> = changed_names.iter().map(|n| (n.clone(), json!(seq))).collect();
+    let inverse = json!({ "op": "entity.set_props", "entity_id": id, "key": key, "props": restore, "expect": expect_back });
+    Ok((norm, Some(vec![inverse])))
 }
 
 /// `entity.set_derived`: record (or clear) the generation dependency of a result entity

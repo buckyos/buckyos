@@ -6,6 +6,7 @@
 use crate::docdb::db_err;
 use crate::ext::{compose, content_digest, file_object_id, SourceFile};
 use crate::objects::{bucket_id, ObjectStore, StoreSink};
+use crate::template::{verify_templates, TemplateFiles};
 use aiworkspace_core::canonical::sha256_hex;
 use aiworkspace_core::materialize::{ObjectSink, ObjectSource};
 use aiworkspace_core::types::MANIFEST_VERSION;
@@ -55,25 +56,27 @@ pub fn app_id_from_did(did: &str) -> WsResult<String> {
 }
 
 /// Check a bundle: the manifest (README “AIWS manifest”), every control's files, digest and `component.json` (the same
-/// composer a build uses), nothing outside the controls' directories. Answers each control with its files.
-pub fn verify_bundle(manifest: &Value, files: &BTreeMap<String, Vec<u8>>) -> WsResult<Vec<(Value, Vec<SourceFile>)>> {
+/// composer a build uses), its Workspace templates (P3), nothing outside the controls' and templates' directories.
+/// Answers each control with its files, and each template.
+pub fn verify_bundle(manifest: &Value, files: &BTreeMap<String, Vec<u8>>) -> WsResult<(Vec<(Value, Vec<SourceFile>)>, Vec<TemplateFiles>)> {
     let m = manifest.as_object().ok_or_else(|| invalid("aiws-manifest.json must be an object"))?;
     for k in m.keys() {
         if !matches!(k.as_str(), "manifest_version" | "purpose" | "host_api" | "controls" | "workspace_templates") {
             return Err(invalid(format!("aiws-manifest.json: unknown key {k}")));
         }
     }
-    match m.get("manifest_version").and_then(Value::as_u64) {
-        Some(v) if (1..=MANIFEST_VERSION).contains(&v) => {}
+    let version = match m.get("manifest_version").and_then(Value::as_u64) {
+        Some(v) if (1..=MANIFEST_VERSION).contains(&v) => v,
         v => return Err(WsError::new(Code::UnsupportedVersion, format!("aiws-manifest.json manifest_version {v:?}: this service reads 1…{MANIFEST_VERSION}"))),
-    }
+    };
     if m.get("purpose").and_then(Value::as_str) != Some("aiws") {
         return Err(invalid("aiws-manifest.json purpose must be aiws"));
     }
-    if !m.get("workspace_templates").and_then(Value::as_array).is_some_and(Vec::is_empty) {
-        return Err(WsError::new(Code::UnsupportedVersion, "Workspace templates are not supported yet: this package needs a newer AI Workspace"));
+    let templates = m.get("workspace_templates").and_then(Value::as_array).filter(|t| t.len() <= 32).ok_or_else(|| invalid("aiws-manifest.json: workspace_templates lists at most 32 templates"))?;
+    if !templates.is_empty() && version < 3 {
+        return Err(invalid("aiws-manifest.json: workspace_templates need manifest_version 3"));
     }
-    let controls = m.get("controls").and_then(Value::as_array).filter(|c| !c.is_empty() && c.len() <= 256).ok_or_else(|| invalid("aiws-manifest.json lists 1…256 controls"))?;
+    let controls = m.get("controls").and_then(Value::as_array).filter(|c| (!c.is_empty() || !templates.is_empty()) && c.len() <= 256).ok_or_else(|| invalid("aiws-manifest.json lists 1…256 controls (or none beside a template)"))?;
     let mut out = Vec::new();
     let mut claimed: Vec<String> = Vec::new();
     for c in controls {
@@ -119,12 +122,14 @@ pub fn verify_bundle(manifest: &Value, files: &BTreeMap<String, Vec<u8>>) -> WsR
             }
         }
     }
+    let checked = verify_templates(templates, files, &idents)?;
+    let template_dirs: Vec<String> = checked.iter().filter_map(|t| t.item["id"].as_str()).map(|id| format!("templates/{id}/")).collect();
     for path in files.keys() {
-        if path != MANIFEST_FILE && !claimed.iter().any(|d| path.starts_with(d.as_str())) {
-            return Err(invalid(format!("{path} belongs to no control of the manifest")));
+        if path != MANIFEST_FILE && !claimed.iter().chain(template_dirs.iter()).any(|d| path.starts_with(d.as_str())) {
+            return Err(invalid(format!("{path} belongs to no control or template of the manifest")));
         }
     }
-    Ok(out)
+    Ok((out, checked))
 }
 
 /// A bundle's files from a `tar.gz` (the `aiws` sub-package): regular files only, no links, nothing escaping the root.
@@ -246,6 +251,9 @@ CREATE TABLE IF NOT EXISTS library_packages (
   owner TEXT NOT NULL, pkg_id TEXT NOT NULL, version TEXT NOT NULL, title TEXT NOT NULL, author TEXT NOT NULL,
   mode TEXT NOT NULL, digest TEXT NOT NULL, manifest_json TEXT NOT NULL, installed_at INTEGER NOT NULL,
   PRIMARY KEY (owner, pkg_id));
+CREATE TABLE IF NOT EXISTS library_templates (
+  owner TEXT NOT NULL, pkg_id TEXT NOT NULL, template_id TEXT NOT NULL, title TEXT NOT NULL, info_json TEXT NOT NULL, files_json TEXT NOT NULL,
+  PRIMARY KEY (owner, pkg_id, template_id));
 CREATE TABLE IF NOT EXISTS library_controls (
   owner TEXT NOT NULL, pkg_id TEXT NOT NULL, ident TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, version INTEGER NOT NULL,
   digest TEXT NOT NULL, dir TEXT NOT NULL, info_json TEXT NOT NULL, files_json TEXT NOT NULL,
@@ -264,8 +272,8 @@ impl Library {
     /// Record a package for `owner` (`ext.install`): verify it, store its files, index it. The same id and version
     /// with the same content is `satisfied`, with other content refused; another version replaces the older one.
     pub fn install(&self, owner: &str, pkg: Package, mode: &str, now_ms: i64) -> WsResult<Value> {
-        let controls = verify_bundle(&pkg.manifest, &pkg.files)?;
-        let digests: Vec<&str> = controls.iter().filter_map(|(c, _)| c["digest"].as_str()).collect();
+        let (controls, templates) = verify_bundle(&pkg.manifest, &pkg.files)?;
+        let digests: Vec<&str> = controls.iter().filter_map(|(c, _)| c["digest"].as_str()).chain(templates.iter().filter_map(|t| t.item["digest"].as_str())).collect();
         let digest = format!("sha256:{}", sha256_hex(serde_json::to_string(&digests).unwrap_or_default().as_bytes()));
         let conn = self.conn.lock().map_err(|_| WsError::io("library lock poisoned"))?;
         let existing: Option<(String, String)> = conn
@@ -273,7 +281,8 @@ impl Library {
             .optional()
             .map_err(db_err)?;
         let summary = |action: &str| json!({ "ok": true, "pkg_id": pkg.pkg_id, "version": pkg.version, "action": action,
-            "controls": controls.iter().map(|(c, _)| json!({ "ident": c["ident"], "name": c["name"], "kind": c["kind"], "version": c["version"], "title": c["title"] })).collect::<Vec<_>>() });
+            "controls": controls.iter().map(|(c, _)| json!({ "ident": c["ident"], "name": c["name"], "kind": c["kind"], "version": c["version"], "title": c["title"] })).collect::<Vec<_>>(),
+            "templates": templates.iter().map(|t| t.item["id"].clone()).collect::<Vec<_>>() });
         let replaced = match &existing {
             Some((v, d)) if *v == pkg.version && *d == digest => return Ok(summary("satisfied")),
             Some((v, _)) if *v == pkg.version => return Err(invalid(format!("{} {} is already in the library with other content: give the package a new version", pkg.pkg_id, pkg.version))),
@@ -293,11 +302,33 @@ impl Library {
             }
             rows.push((c.clone(), listed));
         }
+        // a template's files are retained like a control's (FileObjects bound in the library), its objects and chunks
+        // verified into the store now and again when a Workspace is created from it
+        let mut template_rows = Vec::new();
+        for t in &templates {
+            t.load_into(&self.objects)?;
+            let id = t.item["id"].as_str().unwrap_or("");
+            let mut listed = Vec::new();
+            for (name, bytes) in &t.files {
+                let oid = sink.put_file(bytes)?;
+                self.objects.bind(&bucket, &format!("{}/{}/templates/{id}/{name}", pkg.pkg_id, pkg.version), &oid)?;
+                listed.push(json!({ "name": name, "obj_id": oid, "size": bytes.len() }));
+            }
+            template_rows.push((t.item.clone(), listed));
+        }
         let tx = conn.unchecked_transaction().map_err(db_err)?;
         if let Some(old) = &replaced {
             self.unbind_package(&tx, owner, &pkg.pkg_id, old)?;
         }
         tx.execute("DELETE FROM library_controls WHERE owner = ?1 AND pkg_id = ?2", params![owner, pkg.pkg_id]).map_err(db_err)?;
+        tx.execute("DELETE FROM library_templates WHERE owner = ?1 AND pkg_id = ?2", params![owner, pkg.pkg_id]).map_err(db_err)?;
+        for (item, files) in &template_rows {
+            tx.execute(
+                "INSERT INTO library_templates (owner, pkg_id, template_id, title, info_json, files_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![owner, pkg.pkg_id, item["id"].as_str(), item["title"].as_str(), item.to_string(), Value::Array(files.clone()).to_string()],
+            )
+            .map_err(db_err)?;
+        }
         tx.execute(
             "INSERT OR REPLACE INTO library_packages (owner, pkg_id, version, title, author, mode, digest, manifest_json, installed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![owner, pkg.pkg_id, pkg.version, pkg.title, pkg.author, mode, digest, pkg.manifest.to_string(), now_ms],
@@ -318,6 +349,12 @@ impl Library {
 
     fn unbind_package(&self, conn: &Connection, owner: &str, pkg_id: &str, version: &str) -> WsResult<()> {
         let bucket = bucket_id(owner, LIBRARY)?;
+        for (item, files) in self.template_rows(conn, owner, pkg_id)? {
+            let id = item["id"].as_str().unwrap_or("");
+            for f in files {
+                let _ = self.objects.unbind(&bucket, &format!("{pkg_id}/{version}/templates/{id}/{}", f["name"].as_str().unwrap_or("")));
+            }
+        }
         for (dir, files) in self.rows(conn, owner, pkg_id)?.into_iter().map(|r| (r.dir, r.files)) {
             for f in files {
                 let _ = self.objects.unbind(&bucket, &format!("{pkg_id}/{version}/{dir}{}", f["name"].as_str().unwrap_or("")));
@@ -347,6 +384,27 @@ impl Library {
         Ok(rows)
     }
 
+    fn template_rows(&self, conn: &Connection, owner: &str, pkg_id: &str) -> WsResult<Vec<(Value, Vec<Value>)>> {
+        let mut st = conn.prepare("SELECT info_json, files_json FROM library_templates WHERE owner = ?1 AND pkg_id = ?2 ORDER BY template_id").map_err(db_err)?;
+        let rows = st
+            .query_map(params![owner, pkg_id], |r| Ok((serde_json::from_str(&r.get::<_, String>(0)?).unwrap_or(Value::Null), serde_json::from_str::<Vec<Value>>(&r.get::<_, String>(1)?).unwrap_or_default())))
+            .map_err(db_err)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(db_err)?;
+        Ok(rows)
+    }
+
+    /// A template of a package with its files read back (`ext.create_from_template`).
+    pub fn template(&self, owner: &str, pkg_id: &str, template_id: &str) -> WsResult<TemplateFiles> {
+        let conn = self.conn.lock().map_err(|_| WsError::io("library lock poisoned"))?;
+        let (item, files) = self.template_rows(&conn, owner, pkg_id)?.into_iter().find(|(i, _)| i["id"] == json!(template_id)).ok_or_else(|| WsError::not_found(format!("{pkg_id} has no template {template_id} in your library")))?;
+        let mut bytes = BTreeMap::new();
+        for f in files {
+            bytes.insert(f["name"].as_str().unwrap_or("").to_string(), self.objects.get_file(f["obj_id"].as_str().unwrap_or(""))?);
+        }
+        Ok(TemplateFiles { item, files: bytes })
+    }
+
     /// `ext.list_library`: the owner's packages and their controls.
     pub fn list(&self, owner: &str) -> WsResult<Value> {
         let conn = self.conn.lock().map_err(|_| WsError::io("library lock poisoned"))?;
@@ -359,8 +417,13 @@ impl Library {
         let mut out = Vec::new();
         for (pkg_id, version, title, author, mode, installed_at) in pkgs {
             let controls: Vec<Value> = self.rows(&conn, owner, &pkg_id)?.into_iter().map(|r| r.summary()).collect();
-            out.push(json!({ "pkg_id": pkg_id, "version": version, "title": title, "author": author, "mode": mode,
-                             "installed_at": aiworkspace_core::value::format_utc_ms(installed_at), "controls": controls }));
+            let templates: Vec<Value> = self.template_rows(&conn, owner, &pkg_id)?.into_iter()
+                .map(|(t, _)| json!({ "id": t["id"], "title": t["title"], "description": t.get("description"), "params": t.get("params").cloned().unwrap_or(json!({})), "requires": t["requires"] }))
+                .collect();
+            let manifest_version: Option<i64> = conn.query_row("SELECT manifest_json FROM library_packages WHERE owner = ?1 AND pkg_id = ?2", params![owner, pkg_id], |r| r.get::<_, String>(0))
+                .ok().and_then(|m| serde_json::from_str::<Value>(&m).ok()).and_then(|m| m["manifest_version"].as_i64());
+            out.push(json!({ "pkg_id": pkg_id, "version": version, "title": title, "author": author, "mode": mode, "manifest_version": manifest_version,
+                             "installed_at": aiworkspace_core::value::format_utc_ms(installed_at), "controls": controls, "templates": templates }));
         }
         Ok(json!({ "ok": true, "packages": out }))
     }
@@ -372,6 +435,7 @@ impl Library {
         let Some(version) = version else { return Err(WsError::not_found(format!("{pkg_id} is not in your library"))) };
         self.unbind_package(&conn, owner, pkg_id, &version)?;
         conn.execute("DELETE FROM library_controls WHERE owner = ?1 AND pkg_id = ?2", params![owner, pkg_id]).map_err(db_err)?;
+        conn.execute("DELETE FROM library_templates WHERE owner = ?1 AND pkg_id = ?2", params![owner, pkg_id]).map_err(db_err)?;
         conn.execute("DELETE FROM library_packages WHERE owner = ?1 AND pkg_id = ?2", params![owner, pkg_id]).map_err(db_err)?;
         Ok(json!({ "ok": true, "removed": pkg_id, "version": version }))
     }

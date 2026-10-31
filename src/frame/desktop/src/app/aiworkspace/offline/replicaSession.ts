@@ -27,7 +27,7 @@ import {
   PROTOCOL_VERSION,
   type CollabState, type CommitEvent, type CommitOutcome, type CommitRequest, type CommitResult, type EntityEnvelope, type Json, type LockInfo,
   type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type Touched, type WorkspaceInfo, type WishChoices,
-  type AnnotationContent, type ListAnnotationsParams, type Capability, type ShowLockInfo, type WishAiccMode, type HostedExecConfig, type BucketBinding, type ExtPackResult,
+  type AnnotationContent, type ListAnnotationsParams, type Capability, type ShowLockInfo, type WishAiccMode, type HostedExecConfig, type BucketBinding, type ExtMigration, type ExtPackResult, type TemplateSpec,
 } from '../api/types'
 import { StorageFailure, describeStorageFailure, type ReplicaClient } from './client'
 import { forgetPrepared, noteTitle, type OpenedReplica, type ReplicaLock } from './holder'
@@ -562,17 +562,29 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
     if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.ext.offline'))
     return this.direct.extImport(items)
   }
-  async extInstallFrom(entityIds: string[], pkg: { name: string; version: string; title?: string }) {
+  async extInstallFrom(entityIds: string[], pkg: { name: string; version: string; title?: string }, templates?: TemplateSpec[]) {
     if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.ext.offline'))
-    return this.direct.extInstallFrom(entityIds, pkg)
+    return this.direct.extInstallFrom(entityIds, pkg, templates)
+  }
+  async extUpgrade(items: { def_entity_id: string; pkg_id?: string }[], opts: { migration?: Record<string, ExtMigration>; force?: boolean; dry_run?: boolean }) {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.ext.offline'))
+    return this.direct.extUpgrade(items, opts)
+  }
+  async extLibraryBundle(pkgId: string, idents?: string[]) {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.ext.offline'))
+    return this.direct.extLibraryBundle(pkgId, idents)
+  }
+  async extExportTemplate(spec: TemplateSpec) {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.ext.offline'))
+    return this.direct.extExportTemplate(spec)
   }
   async extListLibrary() {
     if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.ext.offline'))
     return this.direct.extListLibrary()
   }
-  async extPack(entityIds: string[], pkg: { name: string; version: string; title?: string }) {
+  async extPack(entityIds: string[], pkg: { name: string; version: string; title?: string }, templates?: TemplateSpec[]) {
     if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.ext.offline'))
-    return this.direct.extPack(entityIds, pkg)
+    return this.direct.extPack(entityIds, pkg, templates)
   }
   async downloadPack(pack: ExtPackResult) { return this.direct.downloadPack(pack) }
   async installPack(binding: BucketBinding) {
@@ -741,11 +753,11 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
   }
 
   // wish runs happen on the service: offline nothing is started, read or applied (许愿格 §14.2)
-  async wishStart(program: 'wish.xllm@1' | 'wish.mock@1', params: Record<string, Json>) {
+  async wishStart(program: 'wish.xllm@1' | 'wish.mock@1', params: Record<string, Json>, idempotencyKey?: string) {
     if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.wishStart'))
     // the service must see what this device saved first: a run never works from an older wish
     if (this.offline.pending().some((row) => row.state === 'queued' || row.state === 'sending' || row.state === 'unknown')) throw new ServiceFailure({ code: 'PENDING_LOCAL_EDITS', retryable: true, detail: aiwsT('aiworkspace.core.replica.pendingLocalEdits') })
-    return this.direct.wishStart(program, params)
+    return this.direct.wishStart(program, params, idempotencyKey)
   }
   async wishGet(runId: string, choices?: WishChoices) {
     if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.readRun'))

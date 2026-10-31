@@ -97,7 +97,9 @@ impl Kind {
                     "kind": { "type": "string", "description": "The control when type=control (catalog/controls.json), such as mindmap" },
                     "config": { "type": "object", "description": "The control's configuration when type=control (optional)" },
                     "children": { "description": "The tree when type=control: a Markdown outline (nested list) or [{ \"text\": …, \"children\": [...] }]; no coordinates", "anyOf": [{ "type": "string" }, { "type": "array", "items": { "type": "object" } }] },
-                    "under": { "type": "string", "description": "When type=control: the input name of a node of an existing control; the tree goes below that node instead of into a new control" },
+                    "under": { "description": "When type=control: the input name of a node of an existing control (the tree goes below that node instead of into a new control); with def: { \"input\": a composite input, \"slot\": one of its slots }", "anyOf": [{ "type": "string" }, { "type": "object" }] },
+                    "def": { "type": "string", "description": "When type=control: a composite control of this Workspace (<author_did>#<name>, listed in WORKSPACE.md) to instantiate instead of kind/children" },
+                    "slots": { "type": "object", "description": "With def: { slot: [\"result:result name\" | \"input:input name\" | { \"view\": \"richtext\", \"markdown\": … }] } — what goes into each slot" },
                     "title": { "type": "string" } }, "required": ["name", "type"] }),
             ),
             Kind::CheckResults => (

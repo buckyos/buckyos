@@ -4,13 +4,14 @@
  * to another place (or into a group) and, clicked, selects it and opens its menu. Below the last Block a click
  * continues writing. Moves are auto-merge (`tree.place` / `tree.move`). */
 
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useContext, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { GripVertical, Plus } from 'lucide-react'
 import { describeError } from '../../api/session'
 import type { EntityEnvelope } from '../../api/types'
 import { orderKeyBetween } from '../../api/wasm'
 import { aiwsT } from '../../i18n'
 import { useOutlineVersion, useReadOnlyReason, useStore } from '../../state/hooks'
+import { RunModeContext } from '../../state/runMode'
 import { useAiwsText } from '../../useAiwsText'
 import { BlockHost } from '../blocks/BlockHost'
 import { requestIntent } from '../blocks/editorToolbar'
@@ -334,9 +335,14 @@ function FlowControl({ control, siblings, index, ...props }: ItemProps & { contr
 
 function FlowBlock({ cell, siblings, index, ...props }: ItemProps & { cell: EntityEnvelope; siblings: EntityEnvelope[]; index: number }) {
   const store = useStore()
+  const { t } = useAiwsText()
   const { policy, mode } = props
   const isSelected = props.selected.has(cell.entity_id)
   const ref = useRef<HTMLElement>(null)
+  // an HTML Block runs code: mounted after a click in run mode or "Run once", never just because the page is edited (Q27)
+  const html = cell.view_type === 'html'
+  const [running, setRunning] = useState(false)
+  const runMode = useContext(RunModeContext)
   // a selected Block takes the keyboard focus (arrows, Enter, Delete reach the page)
   useLayoutEffect(() => {
     const el = ref.current
@@ -370,8 +376,10 @@ function FlowBlock({ cell, siblings, index, ...props }: ItemProps & { cell: Enti
         <Gutter entity={cell} siblings={siblings} index={index} kind="block" {...props} />
         {showTitle && <BlockTitle cell={cell} title={title} canRename={policy.writes && mode === 'edit' && cell.capabilities.includes('update')} />}
         <div className="aiws-cell-body">
-          {/* every editor of a page in edit mode is live (phase two §8.1): no activation step */}
-          <BlockHost cellId={cell.entity_id} mode={mode} view="canvas" selected={isSelected} editorActive={policy.editContent} />
+          {html && !running && !runMode.interactive && policy.editContent && <button type="button" className="aiws-link" data-testid={`aiws-flow-run-${cell.entity_id}`} onClick={() => setRunning(true)}>{t('aiworkspace.extension.html.run')}</button>}
+          {/* every other editor of a page in edit mode is live (phase two §8.1): no activation step */}
+          <BlockHost cellId={cell.entity_id} mode={mode} view="canvas" selected={isSelected} editorActive={html ? running : policy.editContent}
+            onActivate={html ? () => setRunning(true) : undefined} onDeactivate={html ? () => setRunning(false) : undefined} />
         </div>
       </section>
     </FlowBlockContext.Provider>

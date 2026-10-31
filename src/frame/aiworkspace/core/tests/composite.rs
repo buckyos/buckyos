@@ -90,10 +90,10 @@ fn composite_definitions_keep_their_shape() {
     assert_eq!(env["config_defaults"], json!({}));
     for (extra, expected) in [
         (json!({ "composition": { "slots": { "Bad": {} } } }), "INVALID_SCHEMA"),
-        (json!({ "composition": { "slots": {}, "events": {} } }), "INVALID_SCHEMA"),
+        (json!({ "composition": { "slots": {}, "events": { "Bad": {} } } }), "INVALID_SCHEMA"),
         (json!({ "composition": { "layout": {} } }), "INVALID_SCHEMA"),
         (json!({ "composition": { "slots": (0..17).map(|i| (format!("s{i}"), json!({}))).collect::<serde_json::Map<String, Value>>() } }), "LIMIT_EXCEEDED"),
-        (json!({ "manifest_version": 3 }), "UNSUPPORTED_VERSION"),
+        (json!({ "manifest_version": 4 }), "UNSUPPORTED_VERSION"),
     ] {
         let f = as_build(&mut ws, json!([def("d-x", "x", "c", "composite", extra.clone())])).unwrap_err();
         assert_eq!(code(&f), expected, "{extra}: {f}");

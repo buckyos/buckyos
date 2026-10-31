@@ -166,6 +166,8 @@ export function buildMainMenu({ store, shell, canvas, mode }: { store: Workspace
       id: 'export-menu', label: t('aiworkspace.common.export'), items: [
         { id: 'export', label: t('aiworkspace.shell.menu.exportPackage'), hint: t('aiworkspace.shell.menu.exportPackageHint'), disabled: !caps.includes('export'), reason: t('aiworkspace.shell.menu.noExportPermission'), run: () => shell.openDialog({ kind: 'export' }) },
         { id: 'export-drawio', testId: 'aiws-menu-export-drawio', label: t('aiworkspace.shell.menu.exportDrawio'), hint: t('aiworkspace.shell.menu.exportDrawioHint'), disabled: !canvas || canvas.exportDrawio.reason !== null, reason: canvas?.exportDrawio.reason ?? notOnCanvas, run: () => canvas?.exportDrawio.run() },
+        // a Workspace template of chosen Surfaces into the library (扩展控件 P3, Q32): online, with `export`
+        { id: 'save-template', testId: 'aiws-menu-save-template', label: t('aiworkspace.shell.menu.saveTemplate'), hint: t('aiworkspace.shell.menu.saveTemplateHint'), disabled: !caps.includes('export') || !live || shell.phone || shell.identity.restricted, reason: !caps.includes('export') ? t('aiworkspace.shell.menu.noExportPermission') : t('aiworkspace.shell.needsOnline'), run: () => shell.openDialog({ kind: 'save-template' }) },
       ],
     },
     {

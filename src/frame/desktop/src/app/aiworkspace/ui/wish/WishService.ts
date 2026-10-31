@@ -296,10 +296,10 @@ export class WishService {
     })
   }
 
-  private async start(wishId: string, program: 'wish.xllm@1' | 'wish.mock@1', stage: WishStage, extra: Record<string, Json>, cellId?: string): Promise<WishRunView> {
-    const params: Record<string, Json> = { wish_id: wishId, stage, location: this.location(wishId, cellId) as unknown as Json, request: this.request(), ...extra }
+  private async start(wishId: string, program: 'wish.xllm@1' | 'wish.mock@1', stage: WishStage, extra: Record<string, Json>, cellId?: string, raised?: { event: Json; key: string }): Promise<WishRunView> {
+    const params: Record<string, Json> = { wish_id: wishId, stage, location: this.location(wishId, cellId) as unknown as Json, request: { ...this.request(), ...(raised ? { event: raised.event } : {}) }, ...extra }
     if (program === 'wish.xllm@1' && this.executionModes().length) params.execution = { mode: this.executionMode(wishId) }
-    const started = await this.store.session.wishStart(program, params)
+    const started = await this.store.session.wishStart(program, params, raised?.key)
     this.setRun(started)
     if (started.claim_token) this.runLocally(started.run_id, started.claim_token, wishId)
     return this.poll(started.run_id, wishId)
@@ -384,14 +384,16 @@ export class WishService {
 
   // ---- execution
 
-  async execute(wishId: string, options: { cellId?: string; feedback?: string; parentRunId?: string } = {}): Promise<WishRunView> {
+  /** `event` / `idempotencyKey`: the run an event handler starts (扩展控件 P2): `request.event` names it, and it is keyed
+   * like the event's writes. */
+  async execute(wishId: string, options: { cellId?: string; feedback?: string; parentRunId?: string; event?: Json; idempotencyKey?: string } = {}): Promise<WishRunView> {
     return this.guard(wishId, 'executing', async () => {
       const read = await this.payload(wishId)
       if (read.payload.executor === 'mock') return this.executeMock(wishId, read.payload, options.cellId)
       const extra: Record<string, Json> = {}
       if (options.parentRunId) extra.parent_run_id = options.parentRunId
       if (options.feedback) extra.feedback = options.feedback
-      const run = await this.start(wishId, 'wish.xllm@1', 'execute', extra, options.cellId)
+      const run = await this.start(wishId, 'wish.xllm@1', 'execute', extra, options.cellId, options.event && options.idempotencyKey ? { event: options.event, key: options.idempotencyKey } : undefined)
       if (run.state === 'failed') throw new Error(runErrorText(run.error) ?? aiwsT('aiworkspace.wish.error.executeFailed'))
       return run
     })

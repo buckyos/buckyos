@@ -21,6 +21,7 @@ import type { CellPayload, EntityEnvelope, Json, KeyedContent, Operation, Placem
 import { aiwsT } from '../../i18n'
 import { useAiwsText } from '../../useAiwsText'
 import { useReadOnlyReason, useStore, useUserState, useWorkspaceUi } from '../../state/hooks'
+import { RunModeContext, useRunMode } from '../../state/runMode'
 import type { WorkspaceStore } from '../../state/store'
 import { BlockBoundary } from '../blocks/BlockHost'
 import { setCellConfig } from '../blocks/ops'
@@ -51,7 +52,7 @@ import { controlCommands } from '../controls/commands'
 import { addNode } from '../controls/mindmap/definition'
 import { importOutline, outlineFileKind, richtextToMindmap } from '../controls/mindmap/convert'
 import { resetLayoutOps } from '../controls/mindmap/ops'
-import { CompositeInspector } from '../controls/composite/Inspector'
+import { InstanceInspector } from '../controls/composite/Inspector'
 import { DefineControlDialog } from '../extensions/DefineControlDialog'
 import { isComposite, isFixedComposite, slotForDrop } from '../controls/composite/model'
 import { controlRegistry, type ControlCommandContext } from '../controls/registry'
@@ -189,6 +190,9 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const collapsed = collapsedChoice ?? shell.size === 'narrow'
   const [camera] = useState(() => new Camera())
   const [budget] = useState(() => createBudget(surface.layout?.mode === 'free' ? undefined : { editors: 200, html: 8 }))
+  // design / run mode (Q27): this window's switch; guests and phones never run extensions here
+  const runMode = useRunMode(store.runMode, mode, shell.phone || shell.identity.guest)
+  const runContext = useMemo(() => ({ interactive: runMode.interactive }), [runMode.interactive])
   const isFree = surface.layout?.mode === 'free'
   const { laid, index, shapeBook } = useSurfaceLayout(surfaceId)
   /** The page settings of the Surface (draw.io 导入 TODO §2.5): its background colour. */
@@ -1309,6 +1313,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const placingTitle = placing?.entry.title ?? ''
   return (
     <BudgetContext.Provider value={budget}>
+    <RunModeContext.Provider value={runContext}>
       <div className="aiws-canvas-view" data-testid="aiws-canvas-view" data-mode={mode}>
         <div className="aiws-canvas-body" ref={hostRef} data-testid="aiws-canvas-body">
           <div ref={mainRef} className={`aiws-canvas-main${shell.prefs.grid ? '' : ' no-grid'}${showObjectToolbar && !collapsed ? ' has-left-tools' : ''}`}
@@ -1363,7 +1368,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
             {shell.guide && <GuideOverlay key={shell.guide.pathId} camera={camera} surfaceId={surfaceId} />}
             <div className="aiws-chrome-top">
               {!phone && <MainToolbar canvas={commands} />}
-              {(shell.prefs.viewToolbar || phone) && <ViewToolbar camera={isFree ? camera : null} hasSelection={selection.size > 0} onFitAll={fitAll} onFitSelection={fitSelection} annotate={annotateCommand} />}
+              {(shell.prefs.viewToolbar || phone) && <ViewToolbar camera={isFree ? camera : null} hasSelection={selection.size > 0} onFitAll={fitAll} onFitSelection={fitSelection} annotate={annotateCommand} runMode={runMode} />}
             </div>
             {showObjectToolbar && (
               <div className="aiws-chrome-left">
@@ -1441,6 +1446,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
           <SidePanel tabs={sideTabs} render={sideContent} />
         </div>
       </div>
+    </RunModeContext.Provider>
     </BudgetContext.Provider>
   )
 }
@@ -1456,9 +1462,8 @@ function SelectionInspector({ cell, mode, context, resolved, registryVersion }: 
   const keyRevs = context?.keyRevs ?? {}
   const readOnly = !context || context.readOnlyReason !== null
   const setConfig = (key: string, value: Json) => {
-    if (!payload || readOnly) return
-    const config = { ...(payload.config ?? {}), [key]: value }
-    void store.submit({ editId: `config:${cell.entity_id}`, label: t('aiworkspace.canvas.inspector.configLabel', { key }), operations: [{ op: 'entity.set_keys', entity_id: cell.entity_id, keys: [{ key: 'config', value: config as Json, expect: { rev: keyRevs.config ?? 0 } }] }] })
+    if (!payload || readOnly || !context) return
+    setCellConfig(context, store, { [key]: value }, t('aiworkspace.canvas.inspector.configLabel', { key }))
   }
   const setTitle = (title: string) => {
     if (!payload || readOnly || title === (payload.title ?? '')) return
@@ -1468,8 +1473,8 @@ function SelectionInspector({ cell, mode, context, resolved, registryVersion }: 
   const operable = cell.view_type !== 'frame' && cell.view_type !== 'connector' && cell.type_id === 'buckyos.cell'
   return (
     <BlockInspector cellId={cell.entity_id} mode={mode}>
-      {cell.type_id === 'buckyos.container' && cell.kind === 'composite' && (
-        <CompositeInspector container={cell} readOnly={mode === 'edit' && cell.capabilities.includes('update') ? null : t('aiworkspace.blocks.noPermission')} />
+      {((cell.type_id === 'buckyos.container' && cell.kind === 'composite') || (cell.type_id === 'buckyos.cell' && cell.def_id && store.outline.get(cell.def_id)?.ident)) && (
+        <InstanceInspector entity={cell} readOnly={mode === 'edit' && cell.capabilities.includes('update') ? null : t('aiworkspace.blocks.noPermission')} />
       )}
       {operable && payload && (
         <label className="aiws-inline-form" title={t('aiworkspace.canvas.inspector.liveTip')}>

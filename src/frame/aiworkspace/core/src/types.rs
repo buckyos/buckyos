@@ -158,7 +158,7 @@ pub fn record_nested(payload: &JsonMap) -> Value {
 const CELL_KEYS: &[&str] = &[
     "source_ref", "view", "title", "fields", "filter", "sorts", "group", "manual_order", "options", "config", "def_ref", "bindings", "locked",
     "flip", "start", "end", "route", "controls", "label", "presentation",
-    "data_ownership", "slot",
+    "data_ownership", "slot", "on",
 ];
 /// Named data bindings of a Block (`aiws` v2): at most this many names.
 pub const MAX_BINDINGS: usize = 32;
@@ -167,6 +167,48 @@ pub const MAX_CONFIG_BYTES: usize = 64 * 1024;
 pub const MAX_BLOCK_DEF_BYTES: usize = 512 * 1024;
 /// Version of the `window.aiws` Block host API (`aiws` v2) the wish planner writes into html results.
 pub const HTML_API_VERSION: u64 = 2;
+/// The newest Block host API a control may be written for (扩展控件 P2: `emit`, `createBlock.parent`, `interactive`);
+/// hosts run every version from 2 on.
+pub const HTML_API_LATEST: u64 = 3;
+/// Events one control declares, handlers one event of an instance binds, and the size of an instance's `on` (Q26).
+pub const MAX_EVENTS: usize = 16;
+pub const MAX_EVENT_HANDLERS: usize = 4;
+pub const MAX_ON_BYTES: usize = 16 * 1024;
+const HANDLER_KINDS: &[&str] = &["write", "wish", "open", "notify"];
+
+/// An event name (`events`, `on`): `[a-z][a-z0-9_]{0,31}`.
+pub fn is_event_name(s: &str) -> bool {
+    is_binding_name(s)
+}
+
+/// Validator class: primitive. The shape of an instance's `on` (Q26): an object of at most `MAX_EVENTS` event names,
+/// each one handler or an array of at most `MAX_EVENT_HANDLERS`, each an object whose `kind` is one of the four, in
+/// all at most `MAX_ON_BYTES`. That the event is declared and the binding exists is the clients' and the build's.
+pub fn check_on_shape(v: &Value) -> WsResult<()> {
+    let o = v.as_object().ok_or_else(|| bad("on must be an object of event → handler(s)"))?;
+    if o.len() > MAX_EVENTS {
+        return Err(WsError::limit(format!("on binds at most {MAX_EVENTS} events")));
+    }
+    if canonical_len(v) > MAX_ON_BYTES {
+        return Err(WsError::limit(format!("on is limited to {MAX_ON_BYTES} bytes")));
+    }
+    for (name, h) in o {
+        if !is_event_name(name) {
+            return Err(bad(format!("on: event name {name:?} must be [a-z][a-z0-9_]{{0,31}}")));
+        }
+        let list: Vec<&Value> = match h {
+            Value::Array(a) if !a.is_empty() && a.len() <= MAX_EVENT_HANDLERS => a.iter().collect(),
+            Value::Array(_) => return Err(bad(format!("on.{name}: 1…{MAX_EVENT_HANDLERS} handlers"))),
+            h => vec![h],
+        };
+        for h in list {
+            if !h.get("kind").and_then(Value::as_str).is_some_and(|k| HANDLER_KINDS.contains(&k)) || !h.is_object() {
+                return Err(bad(format!("on.{name}: a handler is an object whose kind is {}", HANDLER_KINDS.join(", "))));
+            }
+        }
+    }
+    Ok(())
+}
 
 /// The four built-in views bind one fixed data type each; any other Renderer id is accepted with a
 /// known data type as source, or without a source (D6: the registry decides what it supports).
@@ -248,7 +290,7 @@ fn validate_cell(p: &mut Planner, e: &mut EntityRow, changed: Option<&[String]>)
     }
     if view_type == "connector" {
         // a line shows no data and runs no definition: what it binds are Blocks, through `start` / `end`
-        if let Some(k) = ["source_ref", "bindings", "def_ref"].into_iter().find(|k| e.payload.get(*k).is_some_and(|v| !v.is_null())) {
+        if let Some(k) = ["source_ref", "bindings", "def_ref", "on"].into_iter().find(|k| e.payload.get(*k).is_some_and(|v| !v.is_null())) {
             return Err(bad(format!("a connector cannot carry {k}")));
         }
     } else if let Some(k) = CONNECTOR_KEYS.iter().find(|k| e.payload.contains_key(**k)) {
@@ -421,7 +463,7 @@ pub fn ink_stroke(payload: &JsonMap) -> Option<&str> {
 /// width, pressure, frame { w, h }, points { x, y, t, p?, tilt_x?, tilt_y? } }`. Points are in the segment's own
 /// frame (`0..frame.w`, `0..frame.h`), which the placement box shows; `t` is ms since the stroke began.
 fn validate_ink(payload: &JsonMap) -> WsResult<()> {
-    if let Some(k) = ["source_ref", "bindings", "def_ref"].into_iter().find(|k| payload.get(*k).is_some_and(|v| !v.is_null())) {
+    if let Some(k) = ["source_ref", "bindings", "def_ref", "on"].into_iter().find(|k| payload.get(*k).is_some_and(|v| !v.is_null())) {
         return Err(bad(format!("an ink stroke cannot carry {k}")));
     }
     let c = payload.get("config").and_then(Value::as_object).ok_or_else(|| bad("ink needs config"))?;
@@ -806,7 +848,7 @@ fn validate_connector(p: &Planner, e: &EntityRow, changed: Option<&[String]>) ->
 
 // ---- Container ----
 
-const CONTAINER_KEYS: &[&str] = &["kind", "layout", "title", "content_folder_id", "system", "surface_id", "icon", "locked", "config", "def_ref", "bindings", "slot"];
+const CONTAINER_KEYS: &[&str] = &["kind", "layout", "title", "content_folder_id", "system", "surface_id", "icon", "locked", "config", "def_ref", "bindings", "slot", "on"];
 
 /// Validator class: primitive (tree node kinds, layout, system nodes); reference for `content_folder_id`, and for a
 /// composite's `def_ref` / `bindings` and a slotted container's `slot`.
@@ -879,7 +921,10 @@ fn container_primitive(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow
     }
     if kind == COMPOSITE {
         composite_refs(p, e, before)?;
-    } else if let Some(k) = ["def_ref", "bindings"].into_iter().find(|k| e.payload.contains_key(*k)) {
+        if let Some(on) = e.payload.get("on") {
+            check_on_shape(on)?;
+        }
+    } else if let Some(k) = ["def_ref", "bindings", "on"].into_iter().find(|k| e.payload.contains_key(*k)) {
         return Err(bad(format!("{k} is only valid on a composite")));
     }
     let block = kind == "group" || control;
@@ -1606,8 +1651,9 @@ fn validate_wish(p: &mut Planner, e: &mut EntityRow, changed: Option<&[String]>)
 // ---- Block definition (phase two §10.3; extension controls P0) ----
 
 /// The newest `component.json` / definition `manifest_version` this core reads (扩展控件 P0, Q19: older ones stay
-/// readable). 2 (P1) adds `kind: composite`, `composition` and non-empty `deps`.
-pub const MANIFEST_VERSION: u64 = 2;
+/// readable). 2 (P1) adds `kind: composite`, `composition` and non-empty `deps`; 3 (P2 / P3) `events`, the declarative
+/// `button`, composite `events`, HTML host API 3 and Workspace templates.
+pub const MANIFEST_VERSION: u64 = 3;
 /// Definitions one definition may depend on (`deps`).
 pub const MAX_DEF_DEPS: usize = 32;
 /// Slots of a composite (`composition.slots`).
@@ -1700,7 +1746,7 @@ fn is_sha256_digest(s: &str) -> bool {
 /// The keys of a definition payload (`schemas/block-def.schema.json` lists the same).
 pub const BLOCK_DEF_KEYS: &[&str] = &[
     "def_id", "version", "kind", "title", "accepts", "allow_no_source", "default_size", "declarative", "html", "config_schema", "actions", "inspector", "description",
-    "ident", "manifest_version", "source_dir", "bindings", "catalog", "agent", "provenance", "deps", "composition",
+    "ident", "manifest_version", "source_dir", "bindings", "catalog", "agent", "provenance", "deps", "composition", "events",
 ];
 
 /// A slot name of a composite (`composition.slots`): `[a-z][a-z0-9_]{0,31}`.
@@ -1737,6 +1783,12 @@ fn block_def_primitive(p: &Planner, e: &mut EntityRow, changed: Option<&[String]
             p.check_ref_target(&json!({ "entity_id": id }), Some(&[TYPE_DIR]))?;
         }
     }
+    if let Some(ev) = e.payload.get("events") {
+        if is_changed("events") && !(p.env.origin == "build" || p.env.import || p.env.internal || p.env.replay) {
+            return Err(WsError::invalid_op("events are written by ext.build (component.json / composition.json events)"));
+        }
+        check_events_shape(ev)?;
+    }
     let Some(deps) = e.payload.get("deps") else { return Ok(()) };
     if is_changed("deps") && !(p.env.origin == "build" || p.env.import || p.env.internal || p.env.replay) {
         return Err(WsError::invalid_op("deps are written by ext.build (component.json deps)"));
@@ -1770,16 +1822,32 @@ fn block_def_primitive(p: &Planner, e: &mut EntityRow, changed: Option<&[String]
     Ok(())
 }
 
-/// The shape of a composite's `composition` the core keeps (Q15: what the slots, layout and chrome mean is judged
-/// by `ext.build` and the clients): an object of at most 64 KiB, at most `MAX_SLOTS` slots named
-/// `[a-z][a-z0-9_]{0,31}`, no `events` (P2).
+/// Validator class: primitive. A definition's `events` (P2, written by builds): an object of at most `MAX_EVENTS`
+/// event names, each an object, at most `MAX_ON_BYTES`; what they declare is the build's (Q15).
+fn check_events_shape(v: &Value) -> WsResult<()> {
+    let o = v.as_object().ok_or_else(|| bad("events must be an object of name → declaration"))?;
+    if o.len() > MAX_EVENTS {
+        return Err(WsError::limit(format!("a control declares at most {MAX_EVENTS} events")));
+    }
+    if canonical_len(v) > MAX_ON_BYTES {
+        return Err(WsError::limit(format!("events are limited to {MAX_ON_BYTES} bytes")));
+    }
+    if let Some((n, _)) = o.iter().find(|(n, d)| !is_event_name(n) || !d.is_object()) {
+        return Err(bad(format!("event {n:?}: a name [a-z][a-z0-9_]{{0,31}} declared by an object")));
+    }
+    Ok(())
+}
+
+/// The shape of a composite's `composition` the core keeps (Q15: what the slots, layout, chrome and events mean is
+/// judged by `ext.build` and the clients): an object of at most 64 KiB, at most `MAX_SLOTS` slots named
+/// `[a-z][a-z0-9_]{0,31}`, its `events` shaped as a definition's.
 fn check_composition_shape(v: &Value) -> WsResult<()> {
     let o = v.as_object().ok_or_else(|| bad("composition must be an object"))?;
     if canonical_len(v) > MAX_CONFIG_BYTES {
         return Err(WsError::limit(format!("composition is limited to {MAX_CONFIG_BYTES} bytes")));
     }
-    if o.contains_key("events") {
-        return Err(bad("composition.events are not supported yet"));
+    if let Some(ev) = o.get("events") {
+        check_events_shape(ev)?;
     }
     let slots = o.get("slots").and_then(Value::as_object).ok_or_else(|| bad("composition.slots must be an object"))?;
     if slots.len() > MAX_SLOTS {
@@ -2232,6 +2300,9 @@ pub fn validate_primitive(p: &mut Planner, before: Option<&EntityRow>, e: &mut E
             }
             if !p.env.import && has("slot") {
                 check_slot(p, e)?;
+            }
+            if let Some(on) = e.payload.get("on") {
+                check_on_shape(on)?;
             }
             Ok(())
         }

@@ -4,6 +4,9 @@
     "header": { "max": 1, "accepts": ["richtext", "shape"], "placement": "top", "title": "Header" },
     "cards": { "accepts": ["cell:did:bns:alice#hello-card", "richtext"], "min": 0, "placement": "stack", "title": "Cards" }
   },
+  "events": {
+    "card_done": { "from": { "slot": "cards", "event": "completed" }, "title": "A card was completed" }
+  },
   "chrome": {
     "background": "{{config.background}}",
     "radius": 12,

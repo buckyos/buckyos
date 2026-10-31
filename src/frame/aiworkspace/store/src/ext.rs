@@ -10,8 +10,8 @@ use aiworkspace_core::materialize::ObjectSource;
 use aiworkspace_core::model::*;
 use aiworkspace_core::order_key::order_key_between;
 use aiworkspace_core::types::{
-    check_catalog, check_def_bindings, check_member_name, ident_string, is_renderer_id, is_slot_name, COMPOSITE, HTML_API_VERSION, MANIFEST_VERSION, MAX_AGENT_BYTES,
-    MAX_BLOCK_DEF_BYTES, MAX_DEF_DEPS, MAX_SLOTS,
+    check_catalog, check_def_bindings, check_member_name, ident_string, is_event_name, is_renderer_id, is_slot_name, COMPOSITE, HTML_API_LATEST, HTML_API_VERSION,
+    MANIFEST_VERSION, MAX_AGENT_BYTES, MAX_BLOCK_DEF_BYTES, MAX_DEF_DEPS, MAX_EVENTS, MAX_SLOTS,
 };
 use aiworkspace_core::{Code, WsError, WsResult};
 use serde_json::{json, Map, Value};
@@ -96,6 +96,8 @@ pub struct Composed {
     pub deps: Vec<String>,
     /// The identities a composite's slots accept as `cell:<ident>`.
     pub slot_cells: Vec<String>,
+    /// A composite's re-raised events: `(name, slot, child event)`, resolved against the slots' controls by the build.
+    pub bubbles: Vec<(String, String, String)>,
     pub warnings: Vec<Value>,
 }
 
@@ -120,6 +122,11 @@ pub struct BuildOpts {
     /// An import from the library: an existing identity is reused when it came from the same package content and
     /// refused otherwise; never rebuilt.
     pub import: bool,
+    /// A source upgrade (P2, Q30): an identity already here with another provenance is rebuilt from the given files
+    /// (no base `expect`), with the new provenance.
+    pub upgrade: bool,
+    /// `<ident>: Migration` applied to the instances of a definition whose rebuild narrows their contract.
+    pub migration: Map<String, Value>,
     pub idempotency_key: Option<String>,
 }
 
@@ -178,12 +185,66 @@ pub fn content_digest<'a>(files: impl IntoIterator<Item = (&'a str, &'a [u8])>) 
 
 const COMPONENT_KEYS: &[&str] = &[
     "manifest_version", "ident", "kind", "title", "description", "host_api", "accepts", "allow_no_source", "default_size", "config_schema", "bindings", "entry", "assets",
-    "catalog", "agent", "deps",
+    "catalog", "agent", "deps", "events",
 ];
 /// What only `manifest_version` 2 may use (P1).
 const V2_HINT: &str = "needs manifest_version 2 (raise it in component.json)";
-/// Events and actions between controls (P2).
-const EVENTS_LATER: &str = "events are not supported yet (a later AI Workspace version adds them)";
+/// What only `manifest_version` 3 may use (P2 / P3).
+const V3_HINT: &str = "needs manifest_version 3 (raise it in component.json)";
+const PARAM_TYPES: &[&str] = &["string", "number", "boolean", "object", "entity"];
+
+/// `events { <name>: { title?, description?, params?: { <p>: { type, required?, description? } } } }` of a render control
+/// (Q26): ≤ 16 names `[a-z][a-z0-9_]{0,31}`, ≤ 16 params each.
+fn check_events(v: &Value, file: &str, d: &mut Diags) -> Map<String, Value> {
+    let Some(o) = v.as_object() else {
+        d.error(file, "events must be an object of name → { title?, description?, params? }");
+        return Map::new();
+    };
+    if o.len() > MAX_EVENTS {
+        d.error(file, format!("at most {MAX_EVENTS} events"));
+    }
+    for (name, e) in o {
+        let at = format!("events.{name}");
+        if !is_event_name(name) {
+            d.error(file, format!("{at}: an event name is [a-z][a-z0-9_]{{0,31}}"));
+        }
+        let Some(e) = e.as_object() else {
+            d.error(file, format!("{at} must be an object"));
+            continue;
+        };
+        for (k, x) in e {
+            match k.as_str() {
+                "title" if x.as_str().is_some_and(|t| t.chars().count() <= 256) => {}
+                "description" if x.as_str().is_some_and(|t| t.chars().count() <= 4000) => {}
+                "params" => match x.as_object() {
+                    Some(ps) if ps.len() <= 16 => {
+                        for (pn, pd) in ps {
+                            if !is_event_name(pn) {
+                                d.error(file, format!("{at}.params.{pn}: a param name is [a-z][a-z0-9_]{{0,31}}"));
+                            }
+                            let ok = pd.as_object().is_some_and(|o| {
+                                o.get("type").and_then(Value::as_str).is_some_and(|t| PARAM_TYPES.contains(&t))
+                                    && o.iter().all(|(k, v)| match k.as_str() {
+                                        "type" => true,
+                                        "required" => v.is_boolean(),
+                                        "description" => v.as_str().is_some_and(|t| t.chars().count() <= 1000),
+                                        _ => false,
+                                    })
+                            });
+                            if !ok {
+                                d.error(file, format!("{at}.params.{pn}: {{ type: {}, required?, description? }}", PARAM_TYPES.join(" | ")));
+                            }
+                        }
+                    }
+                    _ => d.error(file, format!("{at}.params: an object of at most 16 params")),
+                },
+                "title" | "description" => d.error(file, format!("{at}.{k}: too long or not a text")),
+                _ => d.error(file, format!("{at}: unknown key {k} (title, description, params)")),
+            }
+        }
+    }
+    o.clone()
+}
 const SCHEMA_TYPES: &[&str] = &["object", "array", "string", "number", "integer", "boolean", "null"];
 
 /// The JSON Schema subset instance properties may use (A7): `type`, `enum`, `default`, `required`, `title`,
@@ -227,13 +288,13 @@ pub fn check_config_schema(v: &Value, path: &str, out: &mut Vec<String>) {
     }
 }
 
-const ITEM_KINDS: &[&str] = &["text", "value", "metric", "bar", "list", "badge"];
+const ITEM_KINDS: &[&str] = &["text", "value", "metric", "bar", "list", "badge", "button"];
 const ACTION_COMMANDS: &[&str] = &["open_source", "activate_editor", "open_definition"];
 const INSPECTOR_KINDS: &[&str] = &["text", "number", "select", "boolean", "color"];
 
 /// The declarative vocabulary (phase two §10.3): what the interpreter can draw. `bind` reads the main source, or a
 /// named binding with `<binding>.<expr>` (Q18).
-fn check_declarative(spec: &Value, bindings: &Map<String, Value>, file: &str, d: &mut Diags) {
+fn check_declarative(spec: &Value, bindings: &Map<String, Value>, events: &Map<String, Value>, manifest_version: u64, file: &str, d: &mut Diags) {
     let Some(o) = spec.as_object() else {
         d.error(file, "a declarative definition is a JSON object");
         return;
@@ -251,11 +312,25 @@ fn check_declarative(spec: &Value, bindings: &Map<String, Value>, file: &str, d:
                 continue;
             };
             match it.get("kind").and_then(Value::as_str) {
+                Some("button") if manifest_version < 3 => d.error(file, format!("{at}: a button {V3_HINT}")),
+                Some("button") => {
+                    if !it.get("label").and_then(Value::as_str).is_some_and(|l| !l.is_empty() && l.chars().count() <= 64) {
+                        d.error(file, format!("{at}.label: 1…64 characters"));
+                    }
+                    match it.get("emit").and_then(Value::as_str) {
+                        Some(e) if events.contains_key(e) => {}
+                        Some(e) => d.0.push(json!({ "file": file, "severity": "error", "code": "EVENT_UNDECLARED", "message": format!("{at}.emit {e:?} is not an event of component.json") })),
+                        None => d.error(file, format!("{at}.emit: the event the button raises")),
+                    }
+                    if it.get("params").is_some_and(|p| !p.is_object()) {
+                        d.error(file, format!("{at}.params must be an object"));
+                    }
+                }
                 Some(k) if ITEM_KINDS.contains(&k) => {}
                 k => d.error(file, format!("{at}.kind {k:?}: one of {}", ITEM_KINDS.join(", "))),
             }
             for k in it.keys() {
-                if !matches!(k.as_str(), "kind" | "text" | "label" | "bind" | "by" | "format" | "limit") {
+                if !matches!(k.as_str(), "kind" | "text" | "label" | "bind" | "by" | "format" | "limit" | "emit" | "params") {
                     d.warn(file, format!("{at}: key {k} is ignored by the interpreter"));
                 }
             }
@@ -344,28 +419,37 @@ fn check_dimension(v: &Value, at: &str, max: f64, props: &Map<String, Value>, fi
 /// `stack` | `fixed`), `slots` (where user Blocks go: what they accept, how many, where), `chrome` (what the host draws
 /// around them). String values may say `{{config.<key>}}` for a property of `config_schema`. Answers the identities
 /// slots accept as `cell:<ident>`.
-fn check_composition(spec: &Value, config_schema: Option<&Value>, file: &str, d: &mut Diags) -> Vec<String> {
+fn check_composition(spec: &Value, config_schema: Option<&Value>, manifest_version: u64, file: &str, d: &mut Diags) -> (Vec<String>, Vec<(String, String, String)>) {
     let mut cells = Vec::new();
+    let mut bubbles = Vec::new();
     let empty = Map::new();
     let props = config_schema.and_then(|s| s.get("properties")).and_then(Value::as_object).unwrap_or(&empty);
     let Some(o) = spec.as_object() else {
-        d.error(file, "a composition is a JSON object { layout, slots, chrome? }");
-        return cells;
+        d.error(file, "a composition is a JSON object { layout, slots, chrome?, events? }");
+        return (cells, bubbles);
     };
     for k in o.keys() {
         match k.as_str() {
             "layout" | "slots" | "chrome" => {}
-            "events" => d.error(file, EVENTS_LATER),
-            _ => d.error(file, format!("unknown key {k} (a composition says layout, slots and chrome)")),
+            "events" if manifest_version < 3 => d.error(file, format!("events {V3_HINT}")),
+            "events" => {}
+            _ => d.error(file, format!("unknown key {k} (a composition says layout, slots, chrome and events)")),
         }
     }
     let mut algorithm = "stack";
     match o.get("layout").and_then(Value::as_object) {
-        None => d.error(file, "layout { algorithm: stack | fixed } required"),
+        None => d.error(file, "layout { algorithm: stack | fixed | grid } required"),
         Some(l) => {
             match l.get("algorithm").and_then(Value::as_str) {
                 Some(a @ ("stack" | "fixed")) => algorithm = a,
-                a => d.error(file, format!("layout.algorithm {a:?}: stack or fixed (the algorithms the host ships)")),
+                Some("grid") if manifest_version < 3 => d.error(file, format!("layout.algorithm grid {V3_HINT}")),
+                Some("grid") => {
+                    algorithm = "grid";
+                    if !l.get("columns").and_then(Value::as_u64).is_some_and(|n| (1..=12).contains(&n)) {
+                        d.error(file, "layout.columns: an integer in [1, 12] (grid)");
+                    }
+                }
+                a => d.error(file, format!("layout.algorithm {a:?}: stack, fixed or grid (the algorithms the host ships)")),
             }
             for (k, v) in l {
                 match k.as_str() {
@@ -376,6 +460,9 @@ fn check_composition(spec: &Value, config_schema: Option<&Value>, file: &str, d:
                         }
                     }
                     "spacing" if algorithm == "stack" => check_dimension(v, "layout.spacing", 2000.0, props, file, d),
+                    "columns" if algorithm == "grid" => {}
+                    "gap" if algorithm == "grid" => check_dimension(v, "layout.gap", 2000.0, props, file, d),
+                    "columns" | "gap" => d.error(file, format!("layout.{k} belongs to the grid layout")),
                     "padding" => match v.as_object() {
                         Some(sides) => {
                             for (side, n) in sides {
@@ -441,6 +528,8 @@ fn check_composition(spec: &Value, config_schema: Option<&Value>, file: &str, d:
                     }
                 }
                 "placement" => match v.as_str() {
+                    Some("stack") if algorithm == "grid" => {}
+                    _ if algorithm == "grid" => d.error(file, format!("{at}.placement: a grid places every child in a cell (stack)")),
                     Some("free") => {}
                     Some("stack" | "top" | "bottom") if algorithm == "stack" => {}
                     Some("stack" | "top" | "bottom") => d.error(file, format!("{at}.placement: a fixed layout keeps every child where it is (free)")),
@@ -505,9 +594,37 @@ fn check_composition(spec: &Value, config_schema: Option<&Value>, file: &str, d:
             }
         }
     }
+    if let Some(ev) = o.get("events").filter(|_| manifest_version >= 3) {
+        match ev.as_object() {
+            None => d.error(file, "events must be an object of name → { from: { slot, event }, title?, description? }"),
+            Some(ev) => {
+                if ev.len() > MAX_EVENTS {
+                    d.error(file, format!("at most {MAX_EVENTS} events"));
+                }
+                for (name, e) in ev {
+                    let at = format!("events.{name}");
+                    if !is_event_name(name) {
+                        d.error(file, format!("{at}: an event name is [a-z][a-z0-9_]{{0,31}}"));
+                    }
+                    let from = e.get("from");
+                    let (slot, event) = (from.and_then(|f| f.get("slot")).and_then(Value::as_str), from.and_then(|f| f.get("event")).and_then(Value::as_str));
+                    match (slot, event) {
+                        (Some(sl), Some(ev)) if slots.contains_key(sl) && is_event_name(ev) => bubbles.push((name.clone(), sl.to_string(), ev.to_string())),
+                        (Some(sl), Some(_)) if !slots.contains_key(sl) => d.error(file, format!("{at}.from.slot {sl:?} is not a slot of this composition")),
+                        _ => d.error(file, format!("{at}.from: {{ slot, event }} (a slot of this composition and an event of its controls)")),
+                    }
+                    for k in e.as_object().into_iter().flatten().map(|(k, _)| k) {
+                        if !matches!(k.as_str(), "from" | "title" | "description") {
+                            d.error(file, format!("{at}: unknown key {k} (from, title, description)"));
+                        }
+                    }
+                }
+            }
+        }
+    }
     cells.sort();
     cells.dedup();
-    cells
+    (cells, bubbles)
 }
 
 fn text_file<'a>(files: &'a BTreeMap<&str, &SourceFile>, name: &str, what: &str, d: &mut Diags) -> Option<&'a str> {
@@ -558,9 +675,7 @@ pub fn compose(files: &[SourceFile]) -> Result<Composed, Vec<Value>> {
     };
     let f = COMPONENT_FILE;
     for k in c.keys() {
-        if k == "events" {
-            d.error(f, EVENTS_LATER);
-        } else if !COMPONENT_KEYS.contains(&k.as_str()) {
+        if !COMPONENT_KEYS.contains(&k.as_str()) {
             d.error(f, format!("unknown key {k} (manifest_version {MANIFEST_VERSION} knows {})", COMPONENT_KEYS.join(", ")));
         }
     }
@@ -697,7 +812,23 @@ pub fn compose(files: &[SourceFile]) -> Result<Composed, Vec<Value>> {
         }
         Some(_) => d.error(f, format!("deps: at most {MAX_DEF_DEPS} identities <author_did>#<name>")),
     }
+    let events = match c.get("events") {
+        None => Map::new(),
+        Some(_) if manifest_version < 3 => {
+            d.error(f, format!("events {V3_HINT}"));
+            Map::new()
+        }
+        Some(_) if kind == COMPOSITE => {
+            d.error(f, "events: a composite re-raises its children's events, declared in composition.json");
+            Map::new()
+        }
+        Some(v) => check_events(v, f, &mut d),
+    };
+    if !events.is_empty() {
+        payload.insert("events".into(), Value::Object(events.clone()));
+    }
     let mut slot_cells = Vec::new();
+    let mut bubbles = Vec::new();
     let mut named: BTreeSet<String> = BTreeSet::from([COMPONENT_FILE.to_string()]);
     match (kind.as_str(), c.get("entry")) {
         ("html", Some(Value::Object(e))) => {
@@ -716,8 +847,12 @@ pub fn compose(files: &[SourceFile]) -> Result<Composed, Vec<Value>> {
                 d.error(f, "entry.html (the markup file) required");
             }
             let api = host_api.unwrap_or(HTML_API_VERSION);
-            if api != HTML_API_VERSION {
-                d.error(f, format!("host_api {api}: this service's HTML Block host speaks API {HTML_API_VERSION}"));
+            if !(HTML_API_VERSION..=HTML_API_LATEST).contains(&api) {
+                d.error(f, format!("host_api {api}: the HTML Block host speaks API {HTML_API_VERSION}…{HTML_API_LATEST}"));
+            } else if api >= 3 && manifest_version < 3 {
+                d.error(f, format!("host_api {api} {V3_HINT}"));
+            } else if api < 3 && !events.is_empty() {
+                d.warn(f, "events: an HTML control raises them with aiws.emit, which needs host_api 3");
             }
             html.insert("api_version".into(), json!(api));
             payload.insert("html".into(), Value::Object(html));
@@ -727,7 +862,7 @@ pub fn compose(files: &[SourceFile]) -> Result<Composed, Vec<Value>> {
             if let Some(t) = text_file(&by_name, file, "entry", &mut d) {
                 match serde_json::from_str::<Value>(t) {
                     Ok(spec) => {
-                        check_declarative(&spec, &bindings, file, &mut d);
+                        check_declarative(&spec, &bindings, &events, manifest_version, file, &mut d);
                         payload.insert("declarative".into(), spec);
                     }
                     Err(e) => d.json_error(file, &e),
@@ -742,7 +877,7 @@ pub fn compose(files: &[SourceFile]) -> Result<Composed, Vec<Value>> {
             if let Some(t) = text_file(&by_name, file, "entry", &mut d) {
                 match serde_json::from_str::<Value>(t) {
                     Ok(spec) => {
-                        slot_cells = check_composition(&spec, c.get("config_schema"), file, &mut d);
+                        (slot_cells, bubbles) = check_composition(&spec, c.get("config_schema"), manifest_version, file, &mut d);
                         payload.insert("composition".into(), spec);
                     }
                     Err(e) => d.json_error(file, &e),
@@ -809,6 +944,7 @@ pub fn compose(files: &[SourceFile]) -> Result<Composed, Vec<Value>> {
         digest: content_digest(files.iter().map(|f| (f.name.as_str(), f.bytes.as_slice()))),
         deps,
         slot_cells,
+        bubbles,
         warnings: d.0,
     })
 }
@@ -828,7 +964,7 @@ fn dependency_order(mut items: Vec<(Composed, Option<Value>, bool)>) -> Vec<(Com
 /// The identities a composition's slots accept as `cell:<ident>`.
 pub fn slot_cells_of(composition: &Value) -> Vec<String> {
     let mut d = Diags(Vec::new());
-    check_composition(composition, None, "", &mut d)
+    check_composition(composition, None, MANIFEST_VERSION, "", &mut d).0
 }
 
 /// How a rebuild narrows the contract the instances rely on (README “Compatibility with instances”).
@@ -865,6 +1001,20 @@ pub fn narrowing(old: &Map<String, Value>, new: &Map<String, Value>) -> Vec<Stri
     for k in nr.difference(&or) {
         out.push(format!("config_schema requires {k}"));
     }
+    // an instance binds handlers to events (P2): an event that goes, or a param it no longer carries, leaves them dangling
+    let (oe, ne) = (object_of(old, "events"), object_of(new, "events"));
+    for (name, decl) in &oe {
+        match ne.get(name) {
+            None => out.push(format!("event {name} is removed")),
+            Some(n) => {
+                for p in decl.get("params").and_then(Value::as_object).into_iter().flatten().map(|(p, _)| p) {
+                    if !n.get("params").and_then(Value::as_object).is_some_and(|ps| ps.contains_key(p)) {
+                        out.push(format!("event {name} no longer carries {p}"));
+                    }
+                }
+            }
+        }
+    }
     // a composite's slots hold the instances' Blocks (P1): a slot that goes or accepts less strands them
     let slots = |m: &Map<String, Value>| m.get("composition").and_then(|c| c.get("slots")).and_then(Value::as_object).cloned();
     if let (Some(os), Some(ns)) = (slots(old), slots(new)) {
@@ -885,6 +1035,136 @@ pub fn narrowing(old: &Map<String, Value>, new: &Map<String, Value>) -> Vec<Stri
         }
     }
     out
+}
+
+/// The names of an object key of a payload.
+fn object_of(payload: &Map<String, Value>, key: &str) -> Map<String, Value> {
+    payload.get(key).and_then(Value::as_object).cloned().unwrap_or_default()
+}
+
+/// `{ rename?, drop?, fill? }` of a migration applied to one object key: the new object and the properties that changed
+/// (`null` = removed), as `entity.set_props` writes them.
+fn migrate_object(current: &Map<String, Value>, m: Option<&Value>) -> (Map<String, Value>, Map<String, Value>) {
+    let mut next = current.clone();
+    let Some(m) = m else { return (next, Map::new()) };
+    for (old, new) in m.get("rename").and_then(Value::as_object).into_iter().flatten() {
+        if let (Some(v), Some(new)) = (next.remove(old), new.as_str()) {
+            next.insert(new.to_string(), v);
+        }
+    }
+    for name in m.get("drop").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+        next.remove(name);
+    }
+    for (name, v) in m.get("fill").and_then(Value::as_object).into_iter().flatten() {
+        next.entry(name.clone()).or_insert_with(|| v.clone());
+    }
+    let mut changed = Map::new();
+    for k in current.keys().chain(next.keys()) {
+        if current.get(k) != next.get(k) {
+            changed.insert(k.clone(), next.get(k).cloned().unwrap_or(Value::Null));
+        }
+    }
+    (next, changed)
+}
+
+/// The `{{event.<p>}}` placeholders of a handler (what it reads from the event).
+fn event_params_used(v: &Value, out: &mut BTreeSet<String>) {
+    match v {
+        Value::String(t) => {
+            let mut rest = t.as_str();
+            while let Some(i) = rest.find("{{event.") {
+                let tail = &rest[i + 8..];
+                let end = tail.find("}}").unwrap_or(tail.len());
+                out.insert(tail[..end].trim().to_string());
+                rest = &tail[end..];
+            }
+        }
+        Value::Array(a) => a.iter().for_each(|x| event_params_used(x, out)),
+        Value::Object(o) => o.values().for_each(|x| event_params_used(x, out)),
+        _ => {}
+    }
+}
+
+/// Does a Block fit one `accepts` entry of a slot (`cell:<ident>`, a view type, `container`)?
+fn child_fits(ctx: &dyn ReadCtx, child: &EntityRow, accepts: &[Value]) -> WsResult<bool> {
+    for a in accepts.iter().filter_map(Value::as_str) {
+        let ok = match a.strip_prefix("cell:") {
+            Some(ident) => match child.payload.get("def_ref").and_then(|r| r.get("entity_id")).and_then(Value::as_str) {
+                Some(d) => ctx.entity(d)?.is_some_and(|d| d.name.as_deref() == Some(ident)),
+                None => false,
+            },
+            None if a == "container" => child.type_id == TYPE_CONTAINER,
+            None => child.payload.get("view").and_then(|v| v.get("type")).and_then(Value::as_str) == Some(a),
+        };
+        if ok {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// What keeps instance `inst` (its `config`, `bindings`, `on` and, for a composite, the slots of its children after a
+/// migration) from fitting the contract `new` of its definition (README “Compatibility per instance”).
+fn instance_issues(ctx: &dyn ReadCtx, old: &Map<String, Value>, new: &Map<String, Value>, inst: &EntityRow, state: &Map<String, Value>, slots: &[(EntityRow, Option<String>)]) -> WsResult<Vec<String>> {
+    let mut out = Vec::new();
+    if old.get("kind") != new.get("kind") {
+        out.push(format!("kind changes from {} to {}", old.get("kind").unwrap_or(&Value::Null), new.get("kind").unwrap_or(&Value::Null)));
+    }
+    let decl = object_of(new, "bindings");
+    let bound = object_of(state, "bindings");
+    for name in bound.keys().filter(|n| !decl.contains_key(*n)) {
+        out.push(format!("binds {name}, which the control no longer declares"));
+    }
+    for (name, d) in &decl {
+        if d.get("required") == Some(&json!(true)) && !bound.contains_key(name) {
+            out.push(format!("leaves the required binding {name} unbound"));
+        }
+    }
+    if let (Some(accepts), Some(src)) = (new.get("accepts").and_then(Value::as_array), inst.payload.get("source_ref").and_then(|r| r.get("entity_id")).and_then(Value::as_str)) {
+        if let Some(t) = ctx.entity(src)? {
+            if !accepts.iter().any(|a| a.as_str() == Some(t.type_id.as_str())) {
+                out.push(format!("shows a {} the control no longer accepts", t.type_id));
+            }
+        }
+    }
+    let config = object_of(state, "config");
+    let schema = new.get("config_schema");
+    for name in schema.and_then(|s| s.get("required")).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+        let has_default = schema.and_then(|s| s.get("properties")).and_then(|p| p.get(name)).is_some_and(|p| p.get("default").is_some());
+        if !config.contains_key(name) && !has_default {
+            out.push(format!("has no value for the required property {name}"));
+        }
+    }
+    let events = object_of(new, "events");
+    for (name, handlers) in object_of(state, "on") {
+        match events.get(&name) {
+            None => out.push(format!("binds the event {name}, which the control no longer raises")),
+            Some(ev) => {
+                let mut used = BTreeSet::new();
+                event_params_used(&handlers, &mut used);
+                let params = ev.get("params").and_then(Value::as_object);
+                for p in used.iter().filter(|p| !params.is_some_and(|ps| ps.contains_key(*p))) {
+                    out.push(format!("reads {{{{event.{p}}}}} of {name}, which the event no longer carries"));
+                }
+            }
+        }
+    }
+    if let Some(ns) = new.get("composition").and_then(|c| c.get("slots")).and_then(Value::as_object) {
+        for (child, slot) in slots {
+            let Some(slot) = slot else { continue };
+            match ns.get(slot) {
+                None => out.push(format!("holds {} in the slot {slot}, which the control no longer has", child.entity_id)),
+                Some(def) => {
+                    if let Some(accepts) = def.get("accepts").and_then(Value::as_array) {
+                        if !child_fits(ctx, child, accepts)? {
+                            out.push(format!("holds {} in the slot {slot}, which no longer accepts it", child.entity_id));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Keys a build owns on a definition (everything else of an older payload is removed by a rebuild).
@@ -982,6 +1262,12 @@ impl Workspace {
         Ok(out)
     }
 
+    /// A live control definition of this Workspace.
+    pub fn ext_definition(&self, id: &str) -> WsResult<EntityRow> {
+        let now = self.now();
+        self.ctx(&now).entity(id)?.filter(|d| d.alive() && d.type_id == TYPE_BLOCK_DEF).ok_or_else(|| WsError::not_found(format!("definition {id} not found")))
+    }
+
     /// Cells and composite containers that use a definition (its instances).
     pub fn ext_instances(&self, def_id: &str) -> WsResult<Vec<Value>> {
         let now = self.now();
@@ -997,6 +1283,76 @@ impl Workspace {
             }
         }
         Ok(out)
+    }
+
+    /// The instances of `def` under its new contract `new` (P2, Q30): the migration's writes — one `entity.set_props` per
+    /// key (`config`, `bindings`, `on` ← `events`), one `tree.move { slot }` per child of a renamed or moved slot — and,
+    /// for each instance that still does not fit, an error diagnostic naming it. Answers `(ops, plan, diagnostics)`.
+    fn ext_fit(&self, now: &str, def: &EntityRow, new: &Map<String, Value>, migration: Option<&Value>) -> WsResult<(Vec<Value>, Vec<Value>, Vec<Value>)> {
+        let ctx = self.ctx(now);
+        let (mut ops, mut plan, mut diags) = (Vec::new(), Vec::new(), Vec::new());
+        let mut seen = BTreeSet::new();
+        let moves: Map<String, Value> = ["rename", "move"].iter().filter_map(|k| migration.and_then(|m| m.get("slots")).and_then(|s| s.get(*k)).and_then(Value::as_object)).flat_map(|o| o.clone()).collect();
+        for r in ctx.refs_to(&def.entity_id)? {
+            if r.kind != "def" || !seen.insert(r.src_entity_id.clone()) {
+                continue;
+            }
+            let Some(inst) = ctx.entity(&r.src_entity_id)?.filter(|c| c.alive() && (c.type_id == TYPE_CELL || c.type_id == TYPE_CONTAINER)) else { continue };
+            let mut state = inst.payload.clone();
+            let mut inst_ops = Vec::new();
+            for (key, part) in [("config", "config"), ("bindings", "bindings"), ("on", "events")] {
+                let (next, changed) = migrate_object(&object_of(&inst.payload, key), migration.and_then(|m| m.get(part)));
+                if changed.is_empty() {
+                    continue;
+                }
+                inst_ops.push(json!({ "op": "entity.set_props", "entity_id": inst.entity_id, "key": key, "props": changed }));
+                if next.is_empty() {
+                    state.remove(key);
+                } else {
+                    state.insert(key.to_string(), Value::Object(next));
+                }
+            }
+            let mut slots = Vec::new();
+            if inst.type_id == TYPE_CONTAINER {
+                for edge in ctx.children(&inst.entity_id)? {
+                    let Some(child) = ctx.entity(&edge.child_id)?.filter(|c| c.alive()) else { continue };
+                    let slot = child.payload.get("slot").and_then(Value::as_str).map(str::to_string);
+                    let target = slot.as_ref().and_then(|s| moves.get(s)).and_then(Value::as_str).map(str::to_string);
+                    if let Some(t) = &target {
+                        let mut mv = json!({ "op": "tree.move", "entity_id": child.entity_id, "new_parent_id": inst.entity_id, "order_key": edge.order_key, "slot": t });
+                        if let Some(pl) = &edge.placement {
+                            mv["placement"] = pl.clone();
+                        }
+                        inst_ops.push(mv);
+                    }
+                    slots.push((child, target.or(slot)));
+                }
+            }
+            let issues = instance_issues(&ctx, &def.payload, new, &inst, &state, &slots)?;
+            if !issues.is_empty() {
+                let parent = ctx.edge(&inst.entity_id)?.map(|e| e.parent_id);
+                diags.push(json!({ "file": COMPONENT_FILE, "severity": "error", "message": format!("instance {}: {}", inst.entity_id, issues.join("; ")),
+                                   "instances": [{ "entity_id": inst.entity_id, "title": inst.payload.get("title"), "parent_id": parent }] }));
+            }
+            if !inst_ops.is_empty() {
+                plan.push(json!({ "instance": inst.entity_id, "ops": inst_ops }));
+                ops.extend(inst_ops);
+            }
+        }
+        Ok((ops, plan, diags))
+    }
+
+    /// The content digest of a definition's source snapshot (what `provenance.digest` records for an import), with
+    /// its members `name → object id`.
+    fn ext_snapshot(&self, dir: &EntityRow) -> WsResult<(String, BTreeMap<String, String>)> {
+        let mut files = Vec::new();
+        let mut ids = BTreeMap::new();
+        for (name, m) in dir.payload.get("members").and_then(Value::as_object).into_iter().flatten() {
+            let Some(oid) = m.get("object_id").and_then(Value::as_str) else { continue };
+            files.push((name.clone(), self.objects.get_file(oid)?));
+            ids.insert(name.clone(), oid.to_string());
+        }
+        Ok((content_digest(files.iter().map(|(n, b)| (n.as_str(), b.as_slice()))), ids))
     }
 
     /// `ext.build` / `ext.import` after staging: compose every control, plan one Commit, commit it (README
@@ -1051,6 +1407,10 @@ impl Workspace {
         };
         let built_at = now.clone();
         let mut failed = Diags(Vec::new());
+        // the events each identity declares, for composites re-raising them (this Commit's builds first)
+        let mut batch_events: BTreeMap<String, Map<String, Value>> = BTreeMap::new();
+        let mut plan = Vec::new();
+        let mut upgraded: Vec<String> = Vec::new();
         for (c, provenance, implicit) in composed {
             let existing = self.ext_existing(&now, &folder, &c.ident)?;
             let record = json!({ "build": { "input_digest": c.input_digest, "builder_version": BUILDER_VERSION, "built_at": built_at } });
@@ -1077,6 +1437,45 @@ impl Workspace {
             if !deps.is_empty() {
                 payload.insert("deps".into(), Value::Array(deps));
             }
+            // a composite's events re-raise those of the controls its slots accept (Q26): the child event's params
+            if !c.bubbles.is_empty() {
+                let comp = payload.get("composition").cloned().unwrap_or(Value::Null);
+                let mut evs = Map::new();
+                for (name, slot, child_event) in &c.bubbles {
+                    let accepted: Vec<String> = comp["slots"][slot]["accepts"].as_array().into_iter().flatten().filter_map(Value::as_str).filter_map(|a| a.strip_prefix("cell:")).map(str::to_string).collect();
+                    let mut found = None;
+                    for ident in &accepted {
+                        let declared = match batch_events.get(ident) {
+                            Some(e) => Some(e.clone()),
+                            None => match known.get(ident) {
+                                Some((id, _)) => self.ctx(&now).entity(id)?.map(|d| object_of(&d.payload, "events")),
+                                None => None,
+                            },
+                        };
+                        if let Some(decl) = declared.and_then(|e| e.get(child_event).cloned()) {
+                            found = Some(decl);
+                            break;
+                        }
+                    }
+                    let Some(decl) = found else {
+                        failed.0.push(json!({ "file": COMPOSITION_FILE, "severity": "error", "code": "EVENT_UNDECLARED",
+                                              "message": format!("events.{name}: no control the slot {slot} accepts (cell:<ident>) raises {child_event}") }));
+                        continue;
+                    };
+                    let mut e = json!({ "from": { "slot": slot, "event": child_event } });
+                    for k in ["title", "description"] {
+                        if let Some(v) = comp["events"][name].get(k).or_else(|| decl.get(k)) {
+                            e[k] = v.clone();
+                        }
+                    }
+                    if let Some(ps) = decl.get("params") {
+                        e["params"] = ps.clone();
+                    }
+                    evs.insert(name.clone(), e);
+                }
+                payload.insert("events".into(), Value::Object(evs));
+            }
+            batch_events.insert(c.ident.clone(), object_of(&payload, "events"));
             let Some(def) = existing else {
                 // a new identity: its directory, its definition, its record
                 let (dir_id, def_id) = (random_id("src"), random_id("def"));
@@ -1095,19 +1494,46 @@ impl Workspace {
                 None => None,
             };
             let current_digest = def.derived.as_ref().and_then(|d| d.get("build")).and_then(|b| b.get("input_digest")).and_then(Value::as_str);
-            if opts.import {
-                let old = def.payload.get("provenance").cloned().unwrap_or(Value::Null);
-                let same = provenance.as_ref().is_some_and(|p| p.get("pkg_id") == old.get("pkg_id") && p.get("digest") == old.get("digest"));
+            let old_prov = def.payload.get("provenance").cloned().unwrap_or(Value::Null);
+            let same_source = provenance.as_ref().is_some_and(|p| p.get("pkg_id") == old_prov.get("pkg_id") && p.get("digest") == old_prov.get("digest"));
+            if opts.import && !opts.upgrade {
                 // a dependency brought along is met by whatever definition of that identity is here
-                if !same && !implicit {
-                    return Err(WsError::sub(Code::InvalidOperation, "EXT_IDENT_EXISTS", format!("{} is already in this Workspace from another source; it is not replaced", c.ident))
-                        .with_data(json!({ "ident": c.ident, "def_entity_id": def.entity_id, "provenance": old })));
+                if !same_source && !implicit {
+                    return Err(WsError::sub(Code::InvalidOperation, "EXT_IDENT_EXISTS", format!("{} is already in this Workspace from another source; upgrade it with ext.upgrade", c.ident))
+                        .with_data(json!({ "ident": c.ident, "def_entity_id": def.entity_id, "provenance": old_prov,
+                                           "library_version": provenance.as_ref().and_then(|p| p.get("version")) })));
                 }
                 controls.push(json!({ "ident": c.ident, "def_entity_id": def.entity_id, "dir_entity_id": dir, "action": "satisfied" }));
                 continue;
             }
+            if opts.upgrade {
+                // the same package content, or a dependency held from another source: left as it is
+                if same_source || (implicit && provenance.as_ref().and_then(|p| p.get("pkg_id")) != old_prov.get("pkg_id")) {
+                    controls.push(json!({ "ident": c.ident, "def_entity_id": def.entity_id, "dir_entity_id": dir, "action": if same_source { "unchanged" } else { "satisfied" },
+                                          "version": def.payload.get("version") }));
+                    continue;
+                }
+                // local changes since the import are never overwritten silently
+                if !opts.force {
+                    let (snapshot_digest, old_files) = match &dir_row {
+                        Some(d) => self.ext_snapshot(d)?,
+                        None => (String::new(), BTreeMap::new()),
+                    };
+                    if old_prov.get("digest").and_then(Value::as_str) != Some(snapshot_digest.as_str()) {
+                        let new_files: BTreeMap<&String, &str> = c.members.iter().filter_map(|(n, m)| m.get("object_id").and_then(Value::as_str).map(|o| (n, o))).collect();
+                        let added: Vec<&String> = new_files.keys().filter(|n| !old_files.contains_key(**n)).copied().collect();
+                        let removed: Vec<&String> = old_files.keys().filter(|n| !new_files.contains_key(n)).collect();
+                        let changed: Vec<&String> = old_files.iter().filter(|(n, o)| new_files.get(n).is_some_and(|x| x != o)).map(|(n, _)| n).collect();
+                        return Err(WsError::sub(Code::InvalidOperation, "EXT_LOCAL_CHANGES", format!("{} was changed here since it was imported; upgrading would replace those changes (force to replace them)", c.ident))
+                            .with_data(json!({ "ident": c.ident, "def_entity_id": def.entity_id, "imported_digest": old_prov.get("digest"), "snapshot_digest": snapshot_digest,
+                                               "files": { "added": added, "removed": removed, "changed": changed } })));
+                    }
+                }
+                upgraded.push(format!("{} {}→{}", c.ident, old_prov.get("version").and_then(Value::as_str).unwrap_or("local"),
+                                      provenance.as_ref().and_then(|p| p.get("version")).and_then(Value::as_str).unwrap_or("?")));
+            }
             let dir_rev = dir_row.as_ref().map_or(0, |d| d.content_rev);
-            match (opts.expect, opts.force) {
+            match (opts.expect, opts.force || opts.upgrade) {
                 (_, true) => {}
                 (Some((def_rev, want_dir)), false) => {
                     if def_rev != def.content_rev || want_dir != dir_rev {
@@ -1124,25 +1550,25 @@ impl Workspace {
                         .with_data(json!({ "def_entity_id": def.entity_id, "def_rev": def.content_rev, "dir_rev": dir_rev })));
                 }
             }
-            if current_digest == Some(c.input_digest.as_str()) && dir_row.is_some() && !opts.force {
+            if current_digest == Some(c.input_digest.as_str()) && dir_row.is_some() && !opts.force && !(opts.upgrade && !same_source) {
                 controls.push(json!({ "ident": c.ident, "def_entity_id": def.entity_id, "dir_entity_id": dir, "action": "unchanged",
                                       "def_rev": def.content_rev, "dir_rev": dir_rev, "version": def.payload.get("version"), "build": record["build"], "warnings": c.warnings }));
                 continue;
             }
-            // the contract instances and dependent definitions rely on (Q16: dependents are judged with it)
+            // the contract instances and dependent definitions rely on (Q16: dependents are judged with it); instances
+            // are judged one by one after the migration (P2)
             let narrowed = narrowing(&def.payload, &payload);
             let dependents = self.ext_dependents(&def.entity_id)?;
-            if !narrowed.is_empty() {
-                let instances = self.ext_instances(&def.entity_id)?;
-                for m in &narrowed {
-                    if !instances.is_empty() {
-                        failed.0.push(json!({ "file": COMPONENT_FILE, "severity": "error", "message": format!("{m}: instances use the current contract"), "instances": instances }));
-                    }
-                    for (ident, id) in &dependents {
-                        failed.0.push(json!({ "file": ident, "severity": "error", "message": format!("{m}: {ident} builds on the current contract"), "dependents": [{ "ident": ident, "def_entity_id": id }] }));
-                    }
+            for m in &narrowed {
+                for (ident, id) in &dependents {
+                    failed.0.push(json!({ "file": ident, "severity": "error", "message": format!("{m}: {ident} builds on the current contract"), "dependents": [{ "ident": ident, "def_entity_id": id }] }));
                 }
             }
+            let migration = opts.migration.get(&c.ident).or_else(|| opts.migration.get("*"));
+            let (fit_ops, fit_plan, fit_diags) = self.ext_fit(&now, &def, &payload, migration)?;
+            failed.0.extend(fit_diags);
+            let migrated: Vec<Value> = fit_plan.iter().map(|p| p["instance"].clone()).collect();
+            plan.extend(fit_plan);
             if c.kind == COMPOSITE {
                 for (ident, id) in &dependents {
                     let cells = self.ctx(&now).entity(id)?.and_then(|d| d.payload.get("composition").cloned()).map(|comp| slot_cells_of(&comp)).unwrap_or_default();
@@ -1186,8 +1612,19 @@ impl Workspace {
                 ops.push(json!({ "op": "entity.set_keys", "entity_id": def.entity_id, "keys": set }));
             }
             ops.push(json!({ "op": "entity.set_derived", "entity_id": def.entity_id, "derived": record }));
+            // the instances follow the definition they now fit (its slots and keys are in place before them)
+            ops.extend(fit_ops);
             known.insert(c.ident.clone(), (def.entity_id.clone(), c.kind.clone()));
-            controls.push(json!({ "ident": c.ident, "def_entity_id": def.entity_id, "dir_entity_id": dir_id, "action": "rebuilt", "version": version, "build": record["build"], "warnings": c.warnings }));
+            let mut done = json!({ "ident": c.ident, "def_entity_id": def.entity_id, "dir_entity_id": dir_id, "action": "rebuilt", "version": version, "build": record["build"], "warnings": c.warnings });
+            if !migrated.is_empty() {
+                done["migrated"] = json!(migrated);
+            }
+            if opts.upgrade {
+                done["action"] = json!("upgraded");
+                done["from"] = old_prov.get("version").cloned().unwrap_or(Value::Null);
+                done["to"] = provenance.as_ref().and_then(|p| p.get("version")).cloned().unwrap_or(Value::Null);
+            }
+            controls.push(done);
         }
         if failed.has_errors() {
             return Err(build_failed(failed.0));
@@ -1198,10 +1635,11 @@ impl Workspace {
             let mut out = json!({ "ok": true, "status": if opts.dry_run { "checked" } else { "unchanged" }, "unchanged": !changed && !opts.dry_run, "controls": controls, "diagnostics": warnings });
             if opts.dry_run {
                 out["would_commit"] = json!(ops.len());
+                out["plan"] = json!(plan);
             }
             return Ok(self.ext_single(out, &inputs));
         }
-        let message = format!("build {}", controls.iter().filter_map(|c| c["ident"].as_str()).collect::<Vec<_>>().join(", "));
+        let message = if upgraded.is_empty() { format!("build {}", controls.iter().filter_map(|c| c["ident"].as_str()).collect::<Vec<_>>().join(", ")) } else { format!("upgrade {}", upgraded.join(", ")) };
         let key = opts.idempotency_key.clone().unwrap_or_else(|| random_id("ext-build/"));
         let req = json!({ "protocol_version": PROTOCOL_VERSION, "workspace_id": self.workspace_id, "epoch": self.epoch, "idempotency_key": key,
                           "message": message.chars().take(1000).collect::<String>(), "preconditions": preconditions, "operations": ops });
@@ -1211,7 +1649,7 @@ impl Workspace {
         }
         let seq = outcome["seq"].as_u64().unwrap_or(self.head_seq);
         for c in controls.iter_mut() {
-            if matches!(c["action"].as_str(), Some("created" | "rebuilt")) {
+            if matches!(c["action"].as_str(), Some("created" | "rebuilt" | "upgraded")) {
                 c["def_rev"] = json!(seq);
                 c["dir_rev"] = json!(seq);
             }
@@ -1227,7 +1665,7 @@ impl Workspace {
     fn ext_single(&self, mut out: Value, inputs: &[BuildInput]) -> Value {
         if inputs.len() == 1 {
             if let Some(c) = out["controls"].get(0).cloned() {
-                for k in ["ident", "def_entity_id", "dir_entity_id", "version", "def_rev", "dir_rev", "build", "action"] {
+                for k in ["ident", "def_entity_id", "dir_entity_id", "version", "def_rev", "dir_rev", "build", "action", "migrated", "from", "to"] {
                     if let Some(v) = c.get(k) {
                         out[k] = v.clone();
                     }
@@ -1378,8 +1816,31 @@ impl Workspace {
     /// The bytes of a package export (`ext.export { purpose: package }`): the manifest, every file by bundle path
     /// (`aiws-manifest.json` included) and the newest build time of its controls in Unix seconds (`ext.pack` stamps
     /// the AppDoc with it, so the same bundle packs the same).
-    pub fn ext_bundle_files(&self, caller: &Caller, entity_ids: &[String]) -> WsResult<(Value, BTreeMap<String, Vec<u8>>, Option<u64>)> {
-        let bundle = self.ext_export(caller, entity_ids, "package")?;
+    /// `templates` (P3) are `[{ surfaces, data?, template }]`: each one's snapshot goes under `templates/<id>/`, its item into
+    /// `workspace_templates`, and the controls it needs join the chosen ones.
+    pub fn ext_bundle_files(&self, caller: &Caller, entity_ids: &[String], templates: &[Value]) -> WsResult<(Value, BTreeMap<String, Vec<u8>>, Option<u64>)> {
+        let mut ids = entity_ids.to_vec();
+        let mut items = Vec::new();
+        let mut template_files = BTreeMap::new();
+        for t in templates {
+            let list = |k: &str| -> Vec<String> { t.get(k).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect() };
+            let (item, controls, files) = self.ext_export_template(caller, &list("surfaces"), &list("data"), t.get("template").unwrap_or(&Value::Null))?;
+            if items.iter().any(|i: &Value| i["id"] == item["id"]) {
+                return Err(WsError::invalid_op(format!("template {} is listed twice", item["id"])));
+            }
+            for c in controls {
+                if !ids.contains(&c) {
+                    ids.push(c);
+                }
+            }
+            items.push(item);
+            template_files.extend(files);
+        }
+        let bundle = if ids.is_empty() {
+            json!({ "manifest": { "manifest_version": MANIFEST_VERSION, "purpose": "aiws", "host_api": {}, "controls": [], "workspace_templates": [] }, "controls": [], "files": [] })
+        } else {
+            self.ext_export(caller, &ids, "package")?
+        };
         let mut files = BTreeMap::new();
         for f in bundle["files"].as_array().into_iter().flatten() {
             let path = f["path"].as_str().unwrap_or("").to_string();
@@ -1390,7 +1851,9 @@ impl Workspace {
             };
             files.insert(path, bytes);
         }
-        let manifest = bundle["manifest"].clone();
+        files.extend(template_files);
+        let mut manifest = bundle["manifest"].clone();
+        manifest["workspace_templates"] = json!(items);
         let mut text = serde_json::to_string_pretty(&manifest).map_err(|e| WsError::io(e.to_string()))?;
         text.push('\n');
         files.insert(crate::library::MANIFEST_FILE.to_string(), text.into_bytes());

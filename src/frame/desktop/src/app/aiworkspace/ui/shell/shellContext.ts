@@ -33,6 +33,8 @@ export type DialogRequest =
   | { kind: 'mock' }
   /** Workspace controls (扩展控件 P0): definitions, builds, library, export. */
   | { kind: 'extensions'; defId?: string }
+  /** Export → Save as template… (扩展控件 P3, Q32). */
+  | { kind: 'save-template' }
   | { kind: 'delete-surface'; surface: EntityEnvelope }
 
 /** Personal layout preferences (user work state, `ui:*`); "restore default layout" clears them. */

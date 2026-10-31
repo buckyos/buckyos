@@ -61,18 +61,58 @@ export function replaceAccept(payload: AssetContent['payload']): string | undefi
   }
 }
 
+/** The object keys whose properties are version cells of their own (扩展控件 P2, Q28). */
+export type PropKey = 'config' | 'bindings' | 'on'
+
+/** `entity.set_props` of the changed properties (`null` removes one), each guarded by its own version cell
+ * `p:<key>.<name>` as last read (0 when never written on its own). */
+export function setPropsOp(entityId: string, key: PropKey, props: Record<string, Json | null>, keyRevs: Record<string, number>): Operation {
+  return { op: 'entity.set_props', entity_id: entityId, key, props, expect: Object.fromEntries(Object.keys(props).map((name) => [name, keyRevs[`p:${key}.${name}`] ?? 0])) }
+}
+
+/** The properties that differ between two values of an object key (`null` for a removed one). */
+export function changedProps(before: Record<string, Json> | null | undefined, after: Record<string, Json> | null | undefined): Record<string, Json | null> {
+  const a = before ?? {}
+  const b = after ?? {}
+  const out: Record<string, Json | null> = {}
+  for (const name of new Set([...Object.keys(a), ...Object.keys(b)])) {
+    if (!(name in b)) out[name] = null
+    else if (!(name in a) || JSON.stringify(a[name]) !== JSON.stringify(b[name])) out[name] = b[name]
+  }
+  return out
+}
+
+/** The Commit-level precondition of a write to a control instance (Q29): the definition at the content revision this
+ * client's outline knows. A definition rebuilt meanwhile refuses the write (online and on an offline replay alike). */
+export function definitionPreconditions(store: WorkspaceStore, defId: string | null | undefined): unknown[] | undefined {
+  const def = defId ? store.outline.get(defId) : undefined
+  return def && def.type_id === 'buckyos.block-def' ? [{ target: { entity_id: def.entity_id }, expect: { rev: def.content_rev } }] : undefined
+}
+
+/** Write the changed properties of an instance's (or any Block's) object key: one undoable Commit of `entity.set_props`,
+ * with the definition precondition when the entity is a control instance. Nothing is written when nothing changed. */
+export async function submitProps(store: WorkspaceStore, args: { entityId: string; key: PropKey; props: Record<string, Json | null>; keyRevs: Record<string, number>; defId?: string | null; label: string; editId?: string; undoable?: boolean }) {
+  if (Object.keys(args.props).length === 0) return null
+  return store.submit({
+    editId: args.editId ?? `${args.key}:${args.entityId}`, label: args.label, undoable: args.undoable,
+    operations: [setPropsOp(args.entityId, args.key, args.props, args.keyRevs)],
+    preconditions: definitionPreconditions(store, args.defId),
+  })
+}
+
 const configChains = new Map<string, Promise<unknown>>()
 
-/** Merge `patch` into a Cell's `config` (null removes a key): one undoable write, guarded by the key's version.
- * Patches of one Cell run one after another, each on the configuration as it is then (quick successive tool clicks
- * would otherwise write against a version the previous click already replaced). */
+/** Write `patch` into a Cell's `config` (null removes a key): one undoable `entity.set_props`, each property guarded by
+ * its own version, so someone changing another property of the same Block keeps theirs (Q28). Patches of one Cell run
+ * one after another, each on the versions as they are then (quick successive tool clicks would otherwise write against a
+ * version the previous click already replaced). */
 export function setCellConfig(context: RenderContext, store: WorkspaceStore, patch: Record<string, Json | null>, label: string) {
   const id = context.cell.entity_id
   const run = async () => {
     const read = await store.session.read<KeyedContent<CellPayload>>(id)
-    const config: Record<string, Json> = { ...(read.content.payload.config ?? {}) }
-    for (const [key, value] of Object.entries(patch)) { if (value === null) delete config[key]; else config[key] = value }
-    await store.submit({ editId: `config:${id}`, label, operations: [{ op: 'entity.set_keys', entity_id: id, keys: [{ key: 'config', value: config, expect: { rev: read.content.key_revs.config ?? 0 } }] }] })
+    const current = read.content.payload.config ?? {}
+    const props = Object.fromEntries(Object.entries(patch).filter(([key, value]) => (value === null ? key in current : JSON.stringify(current[key]) !== JSON.stringify(value))))
+    await submitProps(store, { entityId: id, key: 'config', props, keyRevs: read.content.key_revs, defId: read.content.payload.def_ref?.entity_id, label, editId: `config:${id}` })
   }
   const next = (configChains.get(id) ?? Promise.resolve()).then(run, run)
   configChains.set(id, next)

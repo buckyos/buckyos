@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 import type {} from '../../src/app/aiworkspace/api/testHooks'
-import { expect, expectAllCommitted, openWorkspace, test, type Api, openMock } from './fixtures'
+import { expect, expectAllCommitted, openCanvas, openSide, openWorkspace, test, type Api, openMock } from './fixtures'
 
 const ALICE = 'tok-alice'
 const BOB = 'tok-bob'
@@ -314,4 +314,39 @@ test('(f) Mock run: candidate, apply, simulated labels, and undo of the whole ap
   await expect(page.getByTestId('aiws-mock-apply')).toHaveCount(0)
   await expect(page.getByTestId('aiws-mock-message')).toContainText('已取消')
   expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head)
+})
+
+test('(g) one control instance, two people: A changes the colour, B the text — both kept, each a write of its own property', async ({ browser, api }) => {
+  const ws = await api.freeCanvas(ALICE, `props ${Date.now()}`)
+  expect((await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: ['read', 'update', 'append', 'comment'] })).ok).toBe(true)
+  const built = await api.build(ALICE, ws.workspace_id, {
+    'component.json': { manifest_version: 3, ident: { author_did: 'did:bns:alice', name: 'props-e2e' }, kind: 'declarative', title: 'Props', allow_no_source: true, entry: 'declarative.json',
+      config_schema: { type: 'object', properties: { color: { type: 'string', default: '#000000' }, text: { type: 'string', default: 'a' } } } },
+    'declarative.json': { items: [{ kind: 'text', text: 'card' }] },
+  })
+  expect((await api.commit(ALICE, ws, [{ op: 'entity.create', entity_id: 'card', type_id: 'buckyos.cell', parent_id: 'free', order_key: 'a', placement: { x: 40, y: 40, w: 240, h: 120 },
+    payload: { view: { type: 'declarative' }, def_ref: { entity_id: built.def_entity_id }, config: { color: '#000000', text: 'a' } } }])).status).toBe('accepted')
+  const pages = await Promise.all([ALICE, BOB].map(async (who) => {
+    const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } })
+    const page = await context.newPage()
+    await openCanvas(page, who, ws.workspace_id)
+    await page.getByTestId('aiws-canvas-block-card').click()
+    await openSide(page, 'inspector')
+    await expect(page.getByTestId('aiws-instance-config-text')).toHaveValue('a')
+    return page
+  }))
+  const [alice, bob] = pages
+  const head = await api.headSeq(ALICE, ws.workspace_id)
+  // both forms were read before either writes
+  await alice.getByTestId('aiws-instance-config-color').fill('#ff0000')
+  await bob.getByTestId('aiws-instance-config-text').fill('hello')
+  await Promise.all([alice.getByTestId('aiws-instance-config-color').press('Enter'), bob.getByTestId('aiws-instance-config-text').press('Enter')])
+  for (const page of pages) await expectAllCommitted(page)
+  await expect.poll(async () => (await api.read(ALICE, ws.workspace_id, 'card')).content.payload.config).toEqual({ color: '#ff0000', text: 'hello' })
+  const changes = (await api.rpc(ALICE, 'doc.get_changes', { workspace_id: ws.workspace_id, epoch: ws.epoch, after_seq: head })).changes as { ops?: { op: string; props?: Record<string, unknown> }[] }[]
+  expect(changes).toHaveLength(2)
+  expect(changes.map((c) => Object.keys(c.ops?.[0]?.props ?? {}).join()).sort()).toEqual(['color', 'text'])
+  expect(changes.every((c) => c.ops?.[0]?.op === 'entity.set_props')).toBe(true)
+  for (const page of pages) await expect(page.getByTestId('aiws-instance-config-color')).toHaveValue('#ff0000')
+  for (const page of pages) await page.context().close()
 })

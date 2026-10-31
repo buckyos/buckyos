@@ -1,6 +1,7 @@
 /* Composite controls (扩展控件 P1, K2–K4): a `buckyos.container { kind: "composite", def_ref }` lays out the Blocks of
- * its slots with an algorithm the host ships — `stack` (one after another, column or row) or `fixed` (each keeps its
- * x / y) — from its definition's `composition` (projected into the outline with the definition's config defaults).
+ * its slots with an algorithm the host ships — `stack` (one after another, column or row), `grid` (P3: cells row by
+ * row) or `fixed` (each keeps its x / y) — from its definition's `composition` (projected into the outline with the
+ * definition's config defaults). An algorithm this host does not know lays the children out as a group (Q33).
  * Pure and single-direction like the tree: only `"auto"` components are filled, user Blocks are never created or
  * removed here. Shared by the canvas, the static exports and tests. */
 
@@ -23,8 +24,19 @@ export interface CompositionSlot {
 }
 
 /** A composite's `composition.json` (README “Composite controls”): layout, slots, chrome. */
+/** The layout algorithms this host ships (K2); a composition naming another one is laid out as a group. */
+export const KNOWN_ALGORITHMS: readonly string[] = ['stack', 'grid', 'fixed']
+
 export interface Composition {
-  layout: { algorithm: 'stack' | 'fixed'; direction?: 'column' | 'row'; spacing?: number | string; padding?: number | string | { t?: number | string; r?: number | string; b?: number | string; l?: number | string } }
+  layout: {
+    algorithm: 'stack' | 'grid' | 'fixed'
+    direction?: 'column' | 'row'
+    spacing?: number | string
+    padding?: number | string | { t?: number | string; r?: number | string; b?: number | string; l?: number | string }
+    /** `grid`: 1…12 columns, `gap` px between cells (default the spacing). */
+    columns?: number | string
+    gap?: number | string
+  }
   slots: Record<string, CompositionSlot>
   chrome?: { background?: string; radius?: number | string; border?: string; title?: { text: string; slot?: string }; empty?: string }
 }
@@ -45,6 +57,12 @@ export function compositeOf(src: ControlSource, containerId: string): { composit
   const defaults = def?.config_defaults && typeof def.config_defaults === 'object' ? def.config_defaults as Record<string, unknown> : {}
   const composition = def?.composition && typeof def.composition === 'object' ? def.composition as Composition : null
   return { composition, config: { ...defaults, ...own }, defId }
+}
+
+/** The algorithm of a composition when this host does not know it (null: known or no composition). */
+export function unknownAlgorithm(composition: Composition | null): string | null {
+  const algorithm = composition?.layout?.algorithm
+  return algorithm && !KNOWN_ALGORITHMS.includes(algorithm) ? String(algorithm) : null
 }
 
 const WHOLE = /^\s*\{\{\s*config\.([A-Za-z0-9_]+)\s*\}\}\s*$/
@@ -78,7 +96,7 @@ export function paddingOf(composition: Composition | null, config: Record<string
 /** The slots in the order a stack lays them out: `top` ones, then `stack` ones, then `bottom` ones (each group in
  * the composition's order); `free` slots are not stacked. */
 export function stackedSlots(composition: Composition): string[] {
-  const by = (p: SlotPlacement) => Object.entries(composition.slots ?? {}).filter(([, s]) => (s.placement ?? (composition.layout.algorithm === 'fixed' ? 'free' : 'stack')) === p).map(([n]) => n)
+  const by = (p: SlotPlacement) => Object.entries(composition.slots ?? {}).filter(([, s]) => (s.placement ?? (composition.layout.algorithm === 'fixed' || unknownAlgorithm(composition) ? 'free' : 'stack')) === p).map(([n]) => n)
   return [...by('top'), ...by('stack'), ...by('bottom')]
 }
 
@@ -122,9 +140,13 @@ export function solveComposite(src: ControlSource, containerId: string, opts: So
   const children = src.childrenOf(containerId).filter(isBlock)
   const pad = paddingOf(composition, config)
   const top = pad.t + (showsTitle(composition, children) ? TITLE_BAND : 0)
-  const fixed = composition?.layout.algorithm === 'fixed'
-  const row = !fixed && composition?.layout.direction === 'row'
+  // an algorithm this host does not know keeps every child where it is, as a group would (Q33)
+  const fixed = composition?.layout.algorithm === 'fixed' || unknownAlgorithm(composition) !== null
+  const grid = !fixed && composition?.layout.algorithm === 'grid'
+  const row = !fixed && !grid && composition?.layout.direction === 'row'
   const spacing = dimension(composition?.layout.spacing, config, DEFAULT_SPACING)
+  const columns = grid ? Math.max(1, Math.min(12, Math.round(dimension(composition?.layout.columns, config, 2)) || 1)) : 1
+  const gap = grid ? dimension(composition?.layout.gap, config, spacing) : spacing
   const size = (e: ControlEntity): { w: number; h: number } => {
     const p = e.placement ?? {}
     if (e.type_id === 'buckyos.container' && (e.kind === 'composite' || e.kind === 'mindmap')) {
@@ -149,15 +171,31 @@ export function solveComposite(src: ControlSource, containerId: string, opts: So
   const order = composition ? stackedSlots(composition) : []
   const stacked = fixed ? [] : order.flatMap((slot) => children.filter((c) => c.slot === slot))
   const rest = children.filter((c) => !stacked.includes(c))
-  let cursor = row ? pad.l : top
-  for (const e of stacked) {
-    const s = size(e)
-    const p = e.placement ?? {}
-    const px = num(p.x)
-    const py = num(p.y)
-    if (px !== undefined && py !== undefined) { place(e, px, py, s, true); continue }
-    if (row) { place(e, px ?? cursor, py ?? top, s, false); cursor += s.w + spacing }
-    else { place(e, px ?? pad.l, py ?? cursor, s, false); cursor += s.h + spacing }
+  if (grid) {
+    // cells row by row in slot order: a column is as wide as its widest Block, a row as tall as its tallest
+    const flowing = stacked.filter((e) => num(e.placement?.x) === undefined || num(e.placement?.y) === undefined)
+    for (const e of stacked.filter((c) => !flowing.includes(c))) place(e, num(e.placement?.x)!, num(e.placement?.y)!, size(e), true)
+    const sizes = flowing.map(size)
+    const widths = Array.from({ length: columns }, (_, c) => Math.max(0, ...sizes.filter((_, i) => i % columns === c).map((s) => s.w)))
+    const heights = Array.from({ length: Math.ceil(flowing.length / columns) }, (_, r) => Math.max(0, ...sizes.slice(r * columns, r * columns + columns).map((s) => s.h)))
+    flowing.forEach((e, i) => {
+      const c = i % columns
+      const r = Math.floor(i / columns)
+      const x = pad.l + widths.slice(0, c).reduce((a, w) => a + w + gap, 0)
+      const y = top + heights.slice(0, r).reduce((a, h) => a + h + gap, 0)
+      place(e, x, y, sizes[i], false)
+    })
+  } else {
+    let cursor = row ? pad.l : top
+    for (const e of stacked) {
+      const s = size(e)
+      const p = e.placement ?? {}
+      const px = num(p.x)
+      const py = num(p.y)
+      if (px !== undefined && py !== undefined) { place(e, px, py, s, true); continue }
+      if (row) { place(e, px ?? cursor, py ?? top, s, false); cursor += s.w + spacing }
+      else { place(e, px ?? pad.l, py ?? cursor, s, false); cursor += s.h + spacing }
+    }
   }
   // free children keep their place; one without a numeric x / y (e.g. written for a stack) drops into a column below
   const pinned = (e: ControlEntity) => num(e.placement?.x) !== undefined && num(e.placement?.y) !== undefined
@@ -181,7 +219,7 @@ export const COMPOSITE_CONTROL: ControlDescriptor = {
   kind: 'composite',
   title: 'Composite control',
   summary: 'The host of every composite extension control: a container whose definition (def_ref) lays out the Blocks of its slots and draws a frame around them.',
-  when: 'To place an instance of a composite control a Workspace defines (data/extensions, kind composite); it is never a wish result kind.',
+  when: 'To place an instance of a composite control a Workspace defines (data/extensions, kind composite); as a wish result it is a control result naming the definition (def) and filling its slots, never this kind.',
   formats: [],
   agent: [
     '# Composite controls',
@@ -199,5 +237,14 @@ export const COMPOSITE_CONTROL: ControlDescriptor = {
     'then `{ op: "entity.create", entity_id: "c1", type_id: "buckyos.cell", parent_id: "b1", order_key: "a", placement: { x: "auto", y: "auto", w: 240, h: 120 },',
     'payload: { view: { type: "html" }, def_ref: { entity_id: <card def> }, slot: "cards" } }`. Copy an instance with `tree.clone`',
     '(its children and own data come along, the definition is shared). Moving a Block in or out: `tree.move` with `slot`.',
+    '`layout.algorithm` `grid` (columns, gap) fills cells row by row: children get `{ x: "auto", y: "auto", w, h }` as in a stack.',
+    '',
+    'Events: the definition\'s `events` (outline `def_events`) re-raise events of the slots\' controls (`from: { slot, event }`). An instance binds',
+    'handlers in `on: { <event>: handler | [handlers] }` — `{ kind: "write", target: <binding>, what: recordSet | upsert | setMarkdown, args }`,',
+    '`{ kind: "wish", wish_id }`, `{ kind: "open", target? }`, `{ kind: "notify", text }`, strings with `{{event.<p>}}` / `{{config.<k>}}`;',
+    'they run when a person clicks in run mode. Change `config` / `bindings` / `on` one property at a time with `entity.set_props`.',
+    '',
+    'As a wish result: `aiws.result.control(name, { def: "<author_did>#<name>", config?, slots: { <slot>: ["result:<n>" | "input:<n>" |',
+    '{ view: "richtext", markdown }] }, under?: { input, slot } })` — the other results\' Blocks, copies of input Blocks and new texts fill the slots.',
   ].join('\n'),
 }

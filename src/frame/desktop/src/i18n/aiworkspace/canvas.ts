@@ -453,6 +453,8 @@ export const en: Record<string, string> = {
   'aiworkspace.canvas.ink.split': 'That stroke was very long: it was saved, and the line goes on as a new stroke.',
   'aiworkspace.canvas.ink.flowNotMoved': 'Handwriting goes on free canvases: pen strokes (and groups with them) were not moved.',
   'aiworkspace.canvas.ink.strokeUnknown': 'Whether the stroke was saved is not known yet: it stays on the canvas and is sent again (with the same key) when the connection is back.',
+  'aiworkspace.canvas.runMode.run': 'Run mode: buttons and extensions work (▶)',
+  'aiworkspace.canvas.runMode.design': 'Design mode: clicks select and move (✎)',
 }
 
 export const zh: Record<string, string> = {
@@ -889,4 +891,6 @@ export const zh: Record<string, string> = {
   'aiworkspace.canvas.ink.split': '这一笔很长：已经保存，接着写的部分作为新的一笔。',
   'aiworkspace.canvas.ink.flowNotMoved': '手写只在自由画布上：笔迹（及含笔迹的分组）没有移动。',
   'aiworkspace.canvas.ink.strokeUnknown': '这一笔是否已保存暂时未知：它留在画布上，连接恢复后会用同一标识重新发送。',
+  'aiworkspace.canvas.runMode.run': '运行态：按钮和扩展可用（▶）',
+  'aiworkspace.canvas.runMode.design': '设计态：点击即选择、移动（✎）',
 }

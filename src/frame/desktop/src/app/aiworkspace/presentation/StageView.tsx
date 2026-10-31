@@ -22,7 +22,10 @@ import { fitStage, playable, resolveSteps, type ResolvedStep } from './model'
 import { InkLayer, PointerLayer, type InkStroke, type MarkTool } from './overlays'
 import { clearActiveShow, prompterLink, saveActiveShow, ShowRelay } from './relay'
 import { StageCanvas } from './StageCanvas'
+import { RunModeContext } from '../state/runMode'
 import './presentation.css'
+
+const STAGE_RUNS = { interactive: true }
 
 /** What a show runs on. */
 export interface ShowSession {
@@ -258,11 +261,14 @@ function StageRunning({ session, client, onExit, controller, path }: { session: 
     <div ref={rootRef} className={`aiws-show${visibleControls ? '' : ' is-idle'}${tool !== 'none' ? ` has-tool-${tool}` : ''}`} data-testid="aiws-show" data-show-id={session.start?.show_id}
       data-step={current?.step.id} data-index={state.index} data-count={steps.length} data-black={state.black ? 'true' : undefined} data-free={state.free ? 'true' : undefined}
       data-live={live ? 'true' : undefined} onPointerMove={wake}>
+      {/* a non-public show runs the Blocks marked operable on stage (Q27); a public session and its replay run nothing */}
+      <RunModeContext.Provider value={STAGE_RUNS}>
       <StageCanvas stage={path.stage} background={path.background} current={current} next={next} pageBackground={target?.background}
         transition={state.transition} nonce={state.nonce} free={state.free} black={state.black} onFree={() => controller.setFree()}
         editing={editing} onEditingChange={onEditingChange} onCamera={(camera, surfaceId) => setOnStage((prev) => (prev?.camera === camera ? prev : { camera, surfaceId }))}
         underMask={<InkLayer camera={onStage?.camera ?? null} surfaceId={onStage?.surfaceId ?? null} tool={tool} color={inkColor} width={4} strokes={ink} onStrokes={setInk} />}
         overMask={<PointerLayer active={tool === 'pointer'} onMove={onPointer} />} />
+      </RunModeContext.Provider>
 
       {state.free && (
         <button type="button" className="aiws-show-back aiws-stage-ui" data-testid="aiws-show-back" onClick={() => controller.apply(command('back'))}>

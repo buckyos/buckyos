@@ -349,3 +349,30 @@ test('UI-M05 a mind map on a phone (脑图 R14): read and fold only — a tap se
   await expect(page.getByTestId('aiws-near-mindmap-add-child')).toHaveCount(0)
   expect((await api.rpc(ALICE, 'ws.get_info', { workspace_id: ws.workspace_id })).head_seq).toBe(seq)
 })
+
+test('UI-M06 extension controls on a phone (扩展控件 M6): read-only — a tap on an HTML control mounts nothing, a composite lays out, nothing is written', async ({ page, api }) => {
+  const ws = await api.freeCanvas(ALICE, `phone ext ${Date.now()}`)
+  const card = await api.build(ALICE, ws.workspace_id, 'hello-card')
+  const board = await api.build(ALICE, ws.workspace_id, 'hello-board')
+  const task = { op: 'entity.create', entity_id: 'task', type_id: 'buckyos.record', parent_id: 'data', order_key: 't', name: 'task',
+    payload: { schema: { properties: [{ key: 'title', name: 'title', type: 'text' }, { key: 'status', name: 'status', type: 'text' }] }, props: { title: 'Phone', status: 'open' } } }
+  const cell = (id: string, parent: string, placement: Record<string, unknown>, slot?: string) => ({ op: 'entity.create', entity_id: id, type_id: 'buckyos.cell', parent_id: parent, order_key: 'm', placement,
+    payload: { view: { type: 'html' }, def_ref: { entity_id: card.def_entity_id }, bindings: { task: { entity_id: 'task' } }, ...(slot ? { slot } : {}) } })
+  expect((await api.commit(ALICE, ws, [task, cell('hc', 'free', { x: 20, y: 20, w: 240, h: 120 }),
+    { op: 'entity.create', entity_id: 'board', type_id: 'buckyos.container', parent_id: 'free', order_key: 'b', placement: { x: 20, y: 200, w: 'auto', h: 'auto' }, payload: { kind: 'composite', def_ref: { entity_id: board.def_entity_id } } },
+    cell('bc', 'board', { x: 'auto', y: 'auto', w: 240, h: 120 }, 'cards')])).status).toBe('accepted')
+  await openOnPhone(page, ws.workspace_id)
+  await expect(page.getByTestId('aiws-canvas')).toHaveAttribute('data-mode', 'view')
+  const seq = (await api.rpc(ALICE, 'ws.get_info', { workspace_id: ws.workspace_id })).head_seq
+  await expect(page.getByTestId('aiws-html-static-hc')).toBeVisible()
+  await expect(page.getByTestId('aiws-run-toggle')).toHaveCount(0)
+  await expect(page.getByTestId('aiws-html-start-hc')).toHaveCount(0)
+  const fingers = await Fingers.of(page)
+  const box = (await page.getByTestId('aiws-html-static-hc').boundingBox())!
+  await fingers.tap({ x: box.x + box.width / 2, y: box.y + box.height / 2 })
+  await page.waitForTimeout(500)
+  await expect(page.locator('.aiws-html-frame')).toHaveCount(0)
+  await expect(page.getByTestId('aiws-composite-chrome-board')).toBeVisible()
+  await expect(page.getByTestId('aiws-html-static-bc')).toBeVisible()
+  expect((await api.rpc(ALICE, 'ws.get_info', { workspace_id: ws.workspace_id })).head_seq).toBe(seq)
+})
