@@ -260,6 +260,9 @@ impl Workspace {
         check_idempotency_key(idem_key)?;
         let access = self.require_ws_any(caller)?;
         let (_, source) = self.source_of(entity_id)?;
+        if source["kind"] == json!("session") {
+            return Err(WsError::invalid_op("a session feed is written by its session, not fetched"));
+        }
         let now = self.now();
         if !access.can(&self.ctx(&now), entity_id, Cap::Update)? {
             return Err(WsError::denied("refreshing a Source needs update on its entity"));
@@ -338,7 +341,7 @@ impl Workspace {
     }
 
     /// Operations that turn the current content into `fetched`.
-    fn source_ops(&mut self, caller: &Caller, entity_id: &str, fetched: &Fetched) -> WsResult<Vec<Value>> {
+    pub(crate) fn source_ops(&mut self, caller: &Caller, entity_id: &str, fetched: &Fetched) -> WsResult<Vec<Value>> {
         let now = self.now();
         let (e, fields, records, ast) = {
             let ctx = self.ctx(&now);

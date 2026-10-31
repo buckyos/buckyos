@@ -174,6 +174,87 @@ paths and Viewports and nothing else; neither type is allowed anywhere else (`pl
   on disk. A prompter authenticates with `params.prompter_token` instead of a session token, and only for
   `show.command`, `show.watch` and `show.notes` of its show.
 
+## Presentation sessions (第四期规划, `notepads/aiworkspace-phase4-todo.md`)
+
+A **session** is a public presentation room of one Workspace's presentation path: a row of the service's registry
+(`sessions.sqlite`: state, owner, presenter, policy, baseline, archive, links, participants, posts) and a **run
+Workspace** (`purpose = session`) the service keeps for it. `session.create { workspace_id, path_id, title?, presenter?,
+policy? }` (workspace-level `read` + `update` on the source; the caller becomes the owner) clones the source whole
+(`VACUUM INTO` in its writer) and, before anyone opens the clone: gives it a new epoch, cuts its history to the clone
+point (`base_seq`; earlier commits, versions and snapshots go; rich texts become shallow snapshots), resets its grants to
+the owner (all) and the presenter (all but `manage`), drops entries, publications, runs, locks, user state and uploads,
+binds every live asset under the run Workspace's own key in the owner's `assets` bucket, and moves every Frame
+`presentation.notes` and Viewport `notes` into a presenter-scoped table in the `session` folder (one Commit of origin
+`system`). Its full rows at that point are kept as `session/baseline.json` (the replay baseline) and checkpointed. Run
+Workspaces are not listed, not swept as show clones and not counted among them.
+
+`policy`: `guest_interact` (false: guests watch only), `voice` (true), `show_names` (true), `expected_audience` (50),
+`media_limit_mib` (2048). States: `prepared → live → ended → archived`, or `expired` (an ended, unsaved session past
+`session_retention_days`, 7 by default: the run Workspace goes, the row stays); `access` (`open | closed`: new audience)
+and `posts` (`open | closed`) are switches of their own, `session.delete` a third.
+
+**Roles and links (Q14).** The presenter controls the stage and runs tasks; the owner (when not the presenter) manages,
+saves, deletes and reads everything; participants joined through a link. `session.invite { kind, label?, config? }`
+(owner or presenter) makes a link independent of the Workspace's sharing: `at_…` (audience: `session.join { session_id,
+link, name? }` with the visitor's own token — an account, an External DID, or a `gt_` guest — writes a `read` grant on the
+run Workspace with `via_entry = <invite id>`), `dt_…` (a public display: the token itself is the session token, the
+caller is `link:<invite id>`, it reads under that subject; `config.voice`), `pt_…` (a prompter: the presenter's remote —
+commands and notes — and a reader like a display). `session.revoke_invite` deletes the link and every grant it gave.
+
+**Scopes.** Entities of a run Workspace may be `presenter` (read by Workspace-level writers and managers only:
+`Access::reviewer`) or `participant:<principal>` (that participant, reviewers, and the principals of its `readers`); both
+exist only in the `session` system folder, created on demand by the operation `system.ensure { id: "session" }` (origins
+`session` / `source` and internal paths only). Reads, change streams, replica bootstrap and replay all apply them.
+
+**The stage (Q01-C).** `session.command { command: { command_id, kind, args? }, rect?, terminal_id? }`: `next prev first
+last goto{step_id} black{on?} back free{on?} media{entity_id, action: play|pause|seek|rate|ended, media_pos_ms, rate} sync`;
+the service runs the step rules on the run Workspace's path (enabled steps with live targets), decides the transition
+(the step's own, else fly on the same Surface, fade across) and keeps the stage in `workspace_meta.session_stage`. One
+command id is one command. One presenter terminal controls (the first to connect; `session.takeover` moves it); a prompter
+link always commands. `session.sample { kind: pointer|camera|ink|buffer, data, t_rel_ms? }` records a continuous state
+(the presenter's pointer, camera, a stroke in progress; an audience member's own camera or buffering on its own track).
+
+**Tasks (Q07–Q09).** Types `buckyos.task`, `buckyos.response`, `buckyos.result` live in the `session` folder and are written
+only with origin `session` (`SESSION_ONLY` otherwise): `session.task { op: create|update|assign|revoke|close|reopen,
+task_id?, task?, principals?, command_id }` (presenter; `task.mode: open | assigned | claim`, `slots`, `pick`, `ext` are the
+extension's); `session.claim { task_id }` (the atomic slot: inside the run Workspace's single writer, `CLAIM_FULL` when
+taken; claiming again is the same claim); `session.respond { task_id, content, command_id }` (one response entity per task
+and participant, scope `participant:<p>`, a new `version` each time; `NOT_ASSIGNED`, `NOT_CLAIMED`, `ANSWER_REVOKED`,
+`TASK_CLOSED` — the late attempt is recorded); `session.review { response_id, review }` (private until `published`);
+`session.publish { task_id, title?, content, command_id }` (a result entity: what was made public, never the answers).
+Guests interact only with `policy.guest_interact` (`GUEST_NOT_ALLOWED`), and their responses say `level: guest`.
+`session.react { kind: feedback|danmaku, text?, target_id?, x?, y?, command_id? }` records a reaction.
+
+**Feeds (§5.3, Q19, Q20).** A Table with `source { kind: "session", feed, mode: "live" }` is a session feed: `participants`,
+`stage`, `tasks`, `my_responses`, `responses`, `results`, `reactions`, fields fixed in `store/src/session/feeds.rs`. Like
+every Source it is read-only for people and Blocks; the session writes it — in the same Commit as the task or answer it
+reflects (origin `session`), or on its own (presence and reactions at most once a second). `session.feed_sample {
+workspace_id, feed }` places a courseware's sample (one per feed; `participants` and `responses` in the presenter scope).
+In a session `my_responses` is one table per participant (`participant:` scope, id derived from the sample's), named in
+`session.join`'s `my_feeds: { <sample id>: <own id> }` for the client to redirect the binding.
+
+**Timeline (§6).** A run Workspace's `doc.sqlite` has `session_events` (`seq`, `t_rel_ms`, `received_at`, `actor`, `scope`
+`public | presenter | participant:<p> | diag`, `track`, `type`, `command_id`, `schema`, `data`, `commit_seq`); every Commit
+writes its `commit` event inside its own transaction (no "data written, event not" window). Demonstration time is the
+service's clock since `session.start`. `session.events { after, limit?, until_t_rel_ms? }` pages it as the caller may read
+it (a Commit only when it touched something readable); `session.watch { after, timeout_ms? }` is the long poll.
+
+**The channel (Q04).** `GET /kapi/aiworkspace/session/ws`: first `hello { session_id, token?, link?, terminal_id, purpose:
+presenter|audience|display|prompter, after?, name? }`, answered by `welcome { session, role, principal, level, controller,
+server_ms, t_rel_ms }`, the timeline after `after`, then live `event`s (reviewers get everything; others public events and
+their own; a Commit's details only to reviewers). The client sends `ping { c }` (→ `pong { c, server_ms, t_rel_ms }`; online
+= a heartbeat within 30 s), `follow { on }`, and `call { id, method, params }` for any `session.*` method (→ `result { id,
+result | error }`). Presence (`presence.join` / `presence.leave`, presenter track) follows the first and last connection.
+
+**After the class (§8).** `session.save` (owner, after `session.end`) writes the archive manifest
+(`buckyos.ai-workspace/session-archive/1`: baseline, final snapshot, event range, voice segments, gaps, missing objects,
+`complete`) and binds a `session` retention set (baseline, final content and every asset) under
+`<run ws>/session/<session id>` in the owner's `objects` bucket — no 30-day history rule applies; deleting the session
+releases it. `session.replay` returns the baseline rows as the caller may read them now; the client applies
+`doc.get_changes` rows of the run Workspace up to any `seq` (the WASM replica) and the timeline's samples on top.
+`session.post { kind: comment|rating|moment, body?, score?, t_rel_ms? }`, `session.list_posts` (ratings only to the
+presenter and their author), `session.delete_post`.
+
 ## Connector (连接线方案 C1)
 
 Design: [连接线实现方案讨论](<../../../doc/workspace/连接线实现方案讨论.md>) §4, §6, §8.3. A connector is a Cell with
@@ -871,6 +952,11 @@ lands. The list is `server/src/lib.rs` `METHOD_LEVELS`; this table mirrors it.
 | `ext.build`, `ext.export`, `ext.install`, `ext.list_library`, `ext.uninstall`, `ext.library_bundle`, `ext.import`, `ext.pack` | experimental | see “Extension controls” |
 | `lock.acquire` / `lock.renew` / `lock.release` / `lock.break` / `lock.list` | stable | `entity_ids[]`, `session_id`; `lock_ids[]`; `entity_id` |
 | `show.start` / `show.heartbeat` / `show.publish` / `show.command` / `show.watch` / `show.notes` / `show.end` | internal | see “Non-public shows” |
+| `session.create`, `session.list`, `session.get`, `session.join`, `session.start`, `session.end`, `session.save`, `session.delete`, `session.set_access` | experimental | see “Presentation sessions” |
+| `session.invite`, `session.list_invites`, `session.revoke_invite`, `session.takeover`, `session.command`, `session.sample`, `session.notes`, `session.rtc` | experimental | see “Presentation sessions” |
+| `session.task`, `session.claim`, `session.respond`, `session.review`, `session.publish`, `session.react`, `session.feed_sample` | experimental | see “Presentation sessions” |
+| `session.events`, `session.watch`, `session.replay`, `session.post`, `session.list_posts`, `session.delete_post` | experimental | see “Presentation sessions” |
+| `asset.stream_url` | experimental | `object_id` (read access as for the asset route) → `url` (`/kapi/aiworkspace/stream/<token>`, 6 h), `media_type`, `size` |
 | `diag.list_unretained`, `diag.verify_refs` | internal | |
 
 HTTP routes (same port, `Authorization: Bearer <session token>`):
@@ -878,6 +964,8 @@ HTTP routes (same port, `Authorization: Bearer <session token>`):
 | Route | Use |
 | --- | --- |
 | `GET /kapi/aiworkspace/asset/<workspace_id>/<object_id>` | asset bytes from the named store, authorized through an entity that references the asset — an AssetRef's poster too (collaborators, guests and run tokens have no rights on the owner's bucket); served with the sniffed type for pictures, PDF, plain text, audio and video, as `application/octet-stream` otherwise (SVG, HTML) |
+| `GET /kapi/aiworkspace/stream/<token>` | the bytes of one asset by `Range` (no bearer: the token from `asset.stream_url` is the credential), for `<video>` / `<audio>` |
+| `GET /kapi/aiworkspace/session/ws` | the session channel (WebSocket; the first message carries the session token or link) |
 
 Uploads go through NDM (above); export packages and replica databases are read from nfs-server's data plane,
 `GET /bucket/v1/<bucket_id>/<key>?token=<token>` with the `download` of `doc.export` / `replica.bootstrap`.

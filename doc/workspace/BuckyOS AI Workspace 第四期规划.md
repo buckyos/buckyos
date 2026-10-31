@@ -1,6 +1,6 @@
 # BuckyOS AI Workspace 第四期规划
 
-> 状态：阶段规划 v0.3，2026-10-30。v0.1.1（2026-10-08）在第三期之后写成；v0.2（2026-10-28）按内核架构改进 M0–M5、手写笔、多媒体对象、混合 SSO 之后的实现重新核对基线，吸收内核冻结决策 D03／D06／D16／D17／D21／D22／D26，新增 §11 现状核对与 §12 待决策设计问题；v0.3 按用户 2026-10-30 对 §12 的裁决回写正文：本场副本改为整体克隆（Q02）、课堂互动细则下沉到扩展层（Q08／Q09）、M1 直接 WebSocket（Q04）、语音只走 WebRTC 且不做 HTTP 兜底（Q11／Q22）、房间级 guest 开关与独立的邀请链接（Q03／Q14）。§12 Q01–Q24 全部已定（Q01 于同日按建议 C 定）。**下一步据本文推导实施 TODO**；本文不构成实施记录。
+> 状态：阶段规划 v0.3，2026-10-30。v0.1.1（2026-10-08）在第三期之后写成；v0.2（2026-10-28）按内核架构改进 M0–M5、手写笔、多媒体对象、混合 SSO 之后的实现重新核对基线，吸收内核冻结决策 D03／D06／D16／D17／D21／D22／D26，新增 §11 现状核对与 §12 待决策设计问题；v0.3 按用户 2026-10-30 对 §12 的裁决回写正文：本场副本改为整体克隆（Q02）、课堂互动细则下沉到扩展层（Q08／Q09）、M1 直接 WebSocket（Q04）、语音只走 WebRTC 且不做 HTTP 兜底（Q11／Q22）、房间级 guest 开关与独立的邀请链接（Q03／Q14）。§12 Q01–Q24 全部已定（Q01 于同日按建议 C 定）。2026-10-30 已按本文实施（未提交），单机 e2e 与本机 Zone DV 通过，出入见 §13，记录见[实施记录与验收报告](<BuckyOS AI Workspace 第四期实施记录与验收报告.md>)。
 >
 > 实现基线：仓库 HEAD `8f30ad030`（脑图）加当时工作区中尚未提交的改动（内核 M0–M5、ink、多媒体、PDF 导入、混合 SSO、用户类型）。第三期已实施（见[第三期实施记录与验收报告](<BuckyOS AI Workspace 第三期实施记录与验收报告.md>)），内核 M0–M5 已实施（见[内核架构改进 验收报告](<BuckyOS AiWorkspace 内核架构改进 验收报告.md>)）。
 >
@@ -459,3 +459,27 @@ Owner 可限制观看、关闭新评论或删除房间；这些操作分别生�
 这些裁决不改变“本场独立、按权限记录全部受支持行为、保存后原链接回放”的目标。下一步：据本文推导实施 TODO。
 
 本次只更新规划文档，未实现房间、协议或存储变更，也未执行本期功能测试。
+
+## 13. 实施出入（2026-10-30）
+
+本期已按本文实施（未提交），记录与验收见[第四期实施记录与验收报告](<BuckyOS AI Workspace 第四期实施记录与验收报告.md>)，实施裁决见 `notepads/aiworkspace-phase4-todo.md` §1。与正文不同或正文未写明的地方：
+
+| 编号 | 正文 | 实施 |
+| --- | --- | --- |
+| 13-1 | §5.3、Q20：`data/session` 系统文件夹“同 `shows` 的做法” | 不加入 seq 0 的系统节点（会改变所有 Workspace 的初始状态与 fixture 摘要）；内部操作 `system.ensure { id: "session" }` 在第一次需要时创建，固定 id、`system: "session"`，不可删除／移动／改名 |
+| 13-2 | §5.3：`stage` feed 是 Record | 七个 feed 都是 Table，`stage` 为单行表（表格视图可直接绑定） |
+| 13-3 | §5.3：feed 刷新是 origin `source` 的 Commit | 与任务／作答同提交的 feed 刷新用 origin `session`（同一事务、同一事件）；课件里的样例实体由 origin `source` 创建；`responses` 随作答同提交刷新，节流只用于出席与反馈 |
+| 13-4 | §6.3：outbox 由记录器消费 | 事件表本身在 Commit 事务内写入（本场 Workspace 的 `session_events`），无独立记录器；事件序号是该表的自增序号 |
+| 13-5 | §3.1：备注移入 `session/notes` 并按 step ID 索引 | 移入 Presenter 作用域的表，按目标实体（Frame／Viewport）索引；一个目标被多个步骤引用时只存一份 |
+| 13-6 | §4：参与者 scope＝参与者所有＋显式授权列表 | `participant:<p>` 对本人与 reviewer（本 Workspace 任一写能力或 manage）可见，`readers` 列表可再扩展；Presenter 作用域为 `presenter` |
+| 13-7 | §5.4、Q18：在线观众可设为公开，公开投影只含显示名与在线状态 | `participants` feed 可放公开版本（`session.feed_sample { public: true }`，共享作用域，刷新时去掉 principal、身份等级与最近心跳）；控件的“公开”即改绑公开版本 |
+| 13-8 | §1、§5.2：课堂互动扩展用 Block-control／组合控件 | 以 Desktop 内置 Block 渲染器 `classroom.choice`／`classroom.audience` 实现（正文允许的降级）；规则（题目标识、点名池、抢答）都在 `ui/classroom/` |
+| 13-9 | §6.1、Q15：板书按 ink 段上行 | 落笔结束时写成本场 Workspace 的 ink Block（ink Cell v1），迟到者与回放都从文档读到；书写中的笔段不实时上行，回放从提交时刻显示整笔 |
+| 13-10 | §5.4：点名池默认“在线 ∩ 在册，排除本任务已作答者” | 排除本 Block 历次任务中已被点或已作答的人（“连续点名不重复”）；guest 与离线者不进池 |
+| 13-11 | §7.3.1、Q22：媒体端口 UDP 优先、TCP 备用 | 只做 UDP（每个主机地址一个套接字、同一端口），无 ICE-TCP、无 TURN；端口 `AIWS_MEDIA_PORT`（默认 4122），地址 `AIWS_MEDIA_HOSTS` |
+| 13-12 | §7.3.3：丢包用 PLC 不填充、只记缺口 | 丢包只计 `lost_ms`；发送端 DTX 省掉的停顿补 20 ms 静音帧，使分段长度等于它在时间轴上的长度 |
+| 13-13 | §7.1：按关键快照与事件重建 | 开场基线行＋本场 Commit 的行增量在浏览器 WASM 副本中重建；没有中间关键快照，向回定位从基线重建 |
+| 13-14 | §7.3.2：资产 Range 与上限 | 新增短时地址 `asset.stream_url` → `/kapi/aiworkspace/stream/<token>`（Range，6 h）；音视频导入上限 2 GiB，其他资产仍 32 MiB |
+| 13-15 | §4：提示器沿用 `pt_` | 会话的提示器链接也在源 Workspace 的 Host 上（`?session=…#k=pt_…`），不再是 Zone 主机的 `/workspace/<id>/show/<show>` 路由 |
+| 13-16 | §3.2：结束停止现场任务 | 下课时关闭进行中的任务，并把本场 Workspace 标记为已结束：此后只接受 session 写入（如公布结果），其他提交 `SESSION_CLOSED`；本场的 URL Source 在场次进行时才刷新 |
+| 13-17 | §8：课程评分与建议 | 评分只对 Presenter／Owner 与作者本人可见；时间点感受为 `kind: moment` 的帖子 |

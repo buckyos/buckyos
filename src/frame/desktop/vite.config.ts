@@ -173,7 +173,7 @@ export default defineConfig(() => {
       port: 5174,
       proxy: {
         // listed first: more specific than the zone proxy's /kapi
-        ...(aiwsTarget ? { '/kapi/aiworkspace': { target: aiwsTarget, changeOrigin: true } } : {}),
+        ...(aiwsTarget ? { '/kapi/aiworkspace': { target: aiwsTarget, changeOrigin: true, ws: true } } : {}),
         ...hsProxy,
         ...(nfsTarget ? { '/nfs/v1': { target: nfsTarget, changeOrigin: true }, '/ndm': { target: nfsTarget, changeOrigin: true }, '/bucket/v1': { target: nfsTarget, changeOrigin: true } } : {}),
         ...zoneProxy,
@@ -183,7 +183,7 @@ export default defineConfig(() => {
     // suite uses it with the same backend forward as the dev server.
     preview: {
       proxy: {
-        ...(aiwsTarget ? { '/kapi/aiworkspace': { target: aiwsTarget, changeOrigin: true } } : {}),
+        ...(aiwsTarget ? { '/kapi/aiworkspace': { target: aiwsTarget, changeOrigin: true, ws: true } } : {}),
         ...(nfsTarget ? { '/nfs/v1': { target: nfsTarget, changeOrigin: true }, '/ndm': { target: nfsTarget, changeOrigin: true }, '/bucket/v1': { target: nfsTarget, changeOrigin: true } } : {}),
         ...hsProxy,
       },

@@ -3,7 +3,7 @@
 //! the structural path. No deny rules, no field/record-level grants.
 
 use crate::error::{WsError, WsResult};
-use crate::model::{EntityRow, JsonMap, ReadCtx, TYPE_ANNOTATION, TYPE_CELL};
+use crate::model::{EntityRow, JsonMap, ReadCtx, SCOPE_PRESENTER, TYPE_ANNOTATION, TYPE_CELL};
 use crate::types::annotation_author;
 use crate::value::{reference_entity_id, reference_is_local};
 use serde_json::Value;
@@ -125,12 +125,27 @@ impl Access {
         }
     }
 
-    /// Personal-scope entities exist only for their owner.
+    /// Presenters and managers of a session Workspace (第四期规划 §4, Q07): any Workspace-level write right. They read
+    /// the `presenter` scope and every participant's data.
+    pub fn reviewer(&self) -> bool {
+        self.ws_caps.any_write() || self.ws_caps.has(Cap::Manage)
+    }
+
+    /// Personal-scope entities exist only for their owner; `presenter` ones only for reviewers; a participant's
+    /// (`participant:<p>`) for that participant, reviewers and the principals its `readers` list names.
     pub fn sees_scope(&self, e: &EntityRow) -> bool {
-        match e.owner() {
-            Some(owner) => owner == self.principal,
-            None => true,
+        if let Some(owner) = e.owner() {
+            return owner == self.principal;
         }
+        if e.scope == SCOPE_PRESENTER {
+            return self.reviewer();
+        }
+        if let Some(p) = e.participant() {
+            return p == self.principal
+                || self.reviewer()
+                || e.payload.get("readers").and_then(Value::as_array).is_some_and(|r| r.iter().any(|x| x.as_str() == Some(self.principal.as_str())));
+        }
+        true
     }
 
     pub fn can_read(&self, ctx: &dyn ReadCtx, e: &EntityRow) -> WsResult<bool> {

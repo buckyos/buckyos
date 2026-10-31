@@ -206,6 +206,8 @@ export interface WorkspaceSession {
   lockBreak(entityId: string): Promise<void>
   lockList(): Promise<LockInfo[]>
 
+  /** A service method this interface does not wrap (a session's `session.*`, 第四期规划): raw kRPC, needs the backend. */
+  call<T>(method: string, params: Record<string, unknown>): Promise<T>
   uploadAsset(file: Blob, fileName?: string): Promise<StagedAsset>
   importAssets(files: File[], folder: boolean, signal?: AbortSignal): Promise<ImportedAsset[]>
   fetchAsset(objectId: string): Promise<Blob>
@@ -704,6 +706,10 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
 
   fetchAsset(objectId: string) {
     return this.client.transport.download(`asset/${this.workspaceId}/${objectId}`)
+  }
+
+  call<T>(method: string, params: Record<string, unknown>): Promise<T> {
+    return this.client.transport.call<T>(method, params)
   }
 
   // ---- controlled processing (design §7)

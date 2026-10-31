@@ -7,10 +7,13 @@ pub mod auth;
 pub mod buckets;
 pub mod control;
 pub mod ext;
+pub mod media;
 pub mod obj_provider;
 pub mod pages;
+pub mod session;
 pub mod show;
 pub mod source;
+pub mod stream;
 pub mod wish;
 
 use aiworkspace_core::{Code, Deny, WsError, WsResult};
@@ -77,6 +80,12 @@ pub struct AppState {
     pub ndm_gateway: std::sync::OnceLock<String>,
     /// Each user's control library (扩展控件 P0, A5): `library.sqlite` in the data folder, files in the `library` buckets.
     pub library: aiworkspace_store::library::Library,
+    /// The rooms of running presentation sessions (第四期规划 §5.1): connections, presence, the timeline's fan-out.
+    pub rooms: session::Rooms,
+    /// The voice of the sessions (§7.3.1).
+    pub media: media::Media,
+    /// Short-lived media addresses (§7.3.2).
+    pub streams: stream::Streams,
 }
 
 impl AppState {
@@ -113,7 +122,8 @@ impl AppState {
             }));
         }));
         let library = aiworkspace_store::library::Library::open(&svc.data_dir.join("library.sqlite"), svc.objects.clone()).expect("the control library database opens");
-        Arc::new(AppState { svc, auth, limits, wish: wish::WishRuntime::new(wish), shows: show::Shows::default(), heads, ndm_gateway: std::sync::OnceLock::new(), library })
+        Arc::new(AppState { svc, auth, limits, wish: wish::WishRuntime::new(wish), shows: show::Shows::default(), heads, ndm_gateway: std::sync::OnceLock::new(), library,
+                            rooms: session::Rooms::default(), media: media::Media::default(), streams: stream::Streams::default() })
     }
 
     pub fn with_ws<T>(&self, id: &str, f: impl FnOnce(&mut Workspace) -> WsResult<T>) -> WsResult<T> {
@@ -171,6 +181,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route(&format!("{HTTP_PATH}/"), post(krpc))
         .layer(DefaultBodyLimit::max(krpc_limit))
         .route(&format!("{HTTP_PATH}/asset/{{workspace_id}}/{{object_id}}"), get(asset))
+        // presentation sessions (第四期规划): the channel and media by Range
+        .route(&format!("{HTTP_PATH}/session/ws"), get(session::ws_route))
+        .route(&format!("{HTTP_PATH}/stream/{{token}}"), get(stream::serve))
         .route(&format!("{HTTP_PATH}/schemas/richtext.basic.v1.json"), get(schema))
         .route(&format!("{HTTP_PATH}/healthz"), get(|| async { "ok" }))
         .route(&format!("{HTTP_PATH}/wish-host/{{token}}/llm_map"), post(wish_llm_map))
@@ -303,8 +316,21 @@ pub(crate) async fn krpc(State(state): State<Arc<AppState>>, body: bytes::Bytes)
     }
     // a prompter link carries the show's token instead of a session (third phase §11.1)
     let prompter = if method.starts_with("show.") { show::prompter_token(&params) } else { None };
-    let mut caller = match (prompter.is_some(), req["sys"][1].as_str().filter(|t| !t.trim().is_empty())) {
+    // a session's links (第四期规划 Q14): `params.link` on session methods; a display or prompter link may also stand in
+    // for the session token, reading the run Workspace under its own subject
+    let mut link = if method.starts_with("session.") { session::link_of(&state, &params) } else { None };
+    let token = req["sys"][1].as_str().filter(|t| !t.trim().is_empty());
+    let link_session = match token.and_then(|t| session::link_caller(&state, t)) {
+        Some((c, invite)) => {
+            link = link.or(Some(invite));
+            Some(c)
+        }
+        None => None,
+    };
+    let mut caller = match (prompter.is_some(), token) {
         (true, _) => None,
+        (false, _) if link_session.is_some() => link_session,
+        (false, None) if link.as_ref().is_some_and(|l| l.kind != "at") => Some(Caller::link(&link.as_ref().unwrap().invite_id)),
         (false, None) => return rpc_error(seq, "session token required"),
         (false, Some(token)) if token.starts_with("rt_") => {
             // a run token (M3): the run's execution identity, for that run only
@@ -350,6 +376,8 @@ pub(crate) async fn krpc(State(state): State<Arc<AppState>>, body: bytes::Bytes)
         show::handle(&state, &method, &params, show::Auth::Token(token)).await
     } else if method.starts_with("show.") {
         show::handle(&state, &method, &params, show::Auth::Session(caller.clone().expect("authenticated above"))).await
+    } else if method.starts_with("session.") || method == "asset.stream_url" {
+        session::handle(&state, &method, &params, caller.clone().expect("authenticated above"), link).await
     } else if method == "proc.tool" {
         let ws = params.get("workspace_id").and_then(Value::as_str).map(str::to_string);
         match ws {
@@ -507,6 +535,37 @@ pub const METHOD_LEVELS: &[(&str, &str)] = &[
     ("ext.library_bundle", "experimental"),
     ("ext.import", "experimental"),
     ("ext.pack", "experimental"),
+    ("asset.stream_url", "experimental"),
+    ("session.create", "experimental"),
+    ("session.list", "experimental"),
+    ("session.get", "experimental"),
+    ("session.join", "experimental"),
+    ("session.start", "experimental"),
+    ("session.end", "experimental"),
+    ("session.save", "experimental"),
+    ("session.delete", "experimental"),
+    ("session.set_access", "experimental"),
+    ("session.invite", "experimental"),
+    ("session.list_invites", "experimental"),
+    ("session.revoke_invite", "experimental"),
+    ("session.takeover", "experimental"),
+    ("session.command", "experimental"),
+    ("session.sample", "experimental"),
+    ("session.task", "experimental"),
+    ("session.claim", "experimental"),
+    ("session.respond", "experimental"),
+    ("session.review", "experimental"),
+    ("session.publish", "experimental"),
+    ("session.react", "experimental"),
+    ("session.events", "experimental"),
+    ("session.watch", "experimental"),
+    ("session.replay", "experimental"),
+    ("session.notes", "experimental"),
+    ("session.feed_sample", "experimental"),
+    ("session.post", "experimental"),
+    ("session.list_posts", "experimental"),
+    ("session.delete_post", "experimental"),
+    ("session.rtc", "experimental"),
 ];
 
 /// Synchronous method dispatch. Every method authorizes against the grants of
@@ -939,6 +998,10 @@ async fn bearer(state: &Arc<AppState>, headers: &HeaderMap, route: &str, workspa
     if let Some(guest) = Caller::guest(token) {
         return Ok(guest);
     }
+    // a session's display or prompter link reads assets of the run Workspace under its own subject (第四期规划 Q14)
+    if let Some((link, _)) = session::link_caller(state, token) {
+        return Ok(link);
+    }
     let mut caller = state.auth.authenticate(token).await.map_err(|e| match e {
         AuthError::Invalid(e) => (StatusCode::UNAUTHORIZED, e).into_response(),
         AuthError::Denied(d) => {
@@ -1008,5 +1071,7 @@ pub async fn serve(state: Arc<AppState>, listen: &str) -> std::io::Result<()> {
     let host = if addr.ip().is_unspecified() { format!("127.0.0.1:{}", addr.port()) } else { addr.to_string() };
     *state.wish.host_base.lock().unwrap() = Some(format!("http://{host}{HTTP_PATH}"));
     show::spawn_sweeper(state.clone());
+    session::spawn_timers(state.clone());
+    media::start(&state);
     axum::serve(listener, build_router(state)).await
 }

@@ -37,7 +37,10 @@ pub fn envelope(ctx: &dyn ReadCtx, access: &Access, e: &EntityRow) -> WsResult<V
     if let Some(s) = &e.schema_id {
         m.insert("schema_id".into(), json!(s));
     }
-    m.insert("scope".into(), json!(if e.owner().is_some() { "personal" } else { "shared" }));
+    m.insert("scope".into(), json!(if e.owner().is_some() { "personal" } else if e.scope == SCOPE_PRESENTER { "presenter" } else if e.participant().is_some() { "participant" } else { "shared" }));
+    if let Some(p) = e.participant() {
+        m.insert("participant".into(), json!(p));
+    }
     m.insert("name".into(), json!(e.name));
     m.insert("write_policy".into(), json!(e.write_policy));
     m.insert("content_rev".into(), json!(e.content_rev));
@@ -252,6 +255,10 @@ pub fn outline_extras(env: &mut Value, e: &EntityRow) {
         env["source"] = json!({ "kind": s["kind"], "mode": s.get("mode").cloned().unwrap_or(json!("live")), "url": s.get("url").cloned().unwrap_or(Value::Null),
                                 "workspace_id": s.get("workspace_id").cloned().unwrap_or(Value::Null), "entity_id": s.get("entity_id").cloned().unwrap_or(Value::Null),
                                 "zone": s.get("zone").cloned().unwrap_or(Value::Null), "refresh": s.get("refresh").cloned().unwrap_or(Value::Null), "auth_mode": s.get("auth_mode").cloned().unwrap_or(json!("none")) });
+        // a session feed (第四期规划 §5.3): which one
+        if let Some(f) = s.get("feed") {
+            env["source"]["feed"] = f.clone();
+        }
     }
     match e.type_id.as_str() {
         TYPE_CONTAINER => {

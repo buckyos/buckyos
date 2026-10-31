@@ -3,17 +3,21 @@
 
 import { useCallback, useState } from 'react'
 import { describeError } from '../api/session'
+import type { Transport } from '../api/transport'
 import type { KeyedContent, ShowPathPayload } from '../api/types'
+import { StartSessionPanel } from '../session/StartSessionPanel'
 import { useLoad, useStore, useVersion } from '../state/hooks'
 import { useAiwsText } from '../useAiwsText'
 import { hasLiveBlocks, pathsOf, playable, resolveSteps, surfacesOfSteps } from './model'
 import { WRITE_CAPS } from './showSession'
 
-export function StartShowDialog({ initialPathId, initialStepId, onClose, onStart }: {
+export function StartShowDialog({ initialPathId, initialStepId, onClose, onStart, transport }: {
   initialPathId: string | null
   initialStepId: string | null
   onClose: () => void
   onStart: (pathId: string, stepId: string | null) => Promise<void>
+  /** Online: a public session can be opened instead (第四期规划 §3). */
+  transport?: Transport
 }) {
   const store = useStore()
   const { t, clauses } = useAiwsText()
@@ -23,6 +27,7 @@ export function StartShowDialog({ initialPathId, initialStepId, onClose, onStart
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [leaving, setLeaving] = useState<{ unsaved: number; attention: number; memoryOnly: number } | null>(null)
+  const [kind, setKind] = useState<'local' | 'session'>('local')
   const version = useVersion(`e:${pathId}`)
   const load = useCallback(() => (pathId ? store.session.read<KeyedContent<ShowPathPayload>>(pathId).then((r) => r.content.payload) : Promise.resolve(null)), [store, pathId])
   const path = useLoad(load, version).data ?? null
@@ -54,6 +59,12 @@ export function StartShowDialog({ initialPathId, initialStepId, onClose, onStart
     <div className="aiws-modal-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget && !busy) onClose() }}>
       <div className="aiws-dialog" role="dialog" aria-modal="true" aria-label={t('aiworkspace.presentation.show.start')} data-testid="aiws-start-show" onKeyDown={(event) => { if (event.key === 'Escape' && !busy) onClose() }}>
         <div className="aiws-dialog-head"><b>{t('aiworkspace.presentation.show.start')}</b></div>
+        {transport && store.session.status().kind === 'live' && paths.length > 0 && (
+          <div className="aiws-segmented" role="tablist" data-testid="aiws-start-kind">
+            <button type="button" role="tab" aria-selected={kind === 'local'} className={kind === 'local' ? 'is-on' : ''} onClick={() => setKind('local')}>{t('aiworkspace.session.create.local')}</button>
+            <button type="button" role="tab" aria-selected={kind === 'session'} className={kind === 'session' ? 'is-on' : ''} data-testid="aiws-start-kind-session" onClick={() => setKind('session')}>{t('aiworkspace.session.create.public')}</button>
+          </div>
+        )}
         {paths.length === 0 ? (
           <div className="aiws-muted">{t('aiworkspace.presentation.start.noPaths')}</div>
         ) : (
@@ -96,11 +107,14 @@ export function StartShowDialog({ initialPathId, initialStepId, onClose, onStart
             )}
           </>
         )}
+        {kind === 'session' && transport && pathId && (
+          <StartSessionPanel store={store} transport={transport} pathId={pathId} title={paths.find((p) => p.entity_id === pathId)?.title ?? store.session.info().title} disabled={steps.length === 0} onStarted={onClose} />
+        )}
         {error && <div className="aiws-error" role="alert">{t('aiworkspace.presentation.start.failed', { detail: error })}</div>}
-        <div className="aiws-dialog-actions">
+        {kind === 'local' && <div className="aiws-dialog-actions">
           <button type="button" className="is-primary" data-testid="aiws-start-show-go" disabled={!pathId || steps.length === 0 || busy !== null || leaving !== null} onClick={() => { void go(false) }}>{busy ?? t('aiworkspace.presentation.show.start')}</button>
           <button type="button" disabled={busy !== null} onClick={onClose}>{t('aiworkspace.common.cancel')}</button>
-        </div>
+        </div>}
       </div>
     </div>
   )

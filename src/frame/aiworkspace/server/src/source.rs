@@ -68,6 +68,13 @@ pub async fn refresh(state: Arc<AppState>, ws_id: String, run_id: String) {
 pub fn tick(state: &Arc<AppState>) {
     let Ok(ids) = state.svc.all_workspace_ids() else { return };
     for ws_id in ids {
+        // a session's run Workspace refreshes its Sources only while the session runs: afterwards it is a record
+        // (第四期规划 §7.1, P4-08: the replay never reads today's data as the class's)
+        if let Ok(Some(s)) = state.svc.session_of_run(&ws_id) {
+            if !s.is_live() {
+                continue;
+            }
+        }
         let due = state.with_ws(&ws_id, |ws| {
             let owner = ws.owner()?.unwrap_or_default();
             let mut out = Vec::new();

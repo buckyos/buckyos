@@ -15,6 +15,8 @@ import { useAiwsText } from '../../useAiwsText'
 import { consumeIntent, useIntent } from '../blocks/editorToolbar'
 import { assetMediaType, fileBadge, formatDuration, mediaKindOf, playsInPlace, type MediaKind } from './kinds'
 import { assetSource, surfaceMediaSession } from './source'
+import { useSession } from '../../session/context'
+import { SessionMediaPlayer } from '../../session/media'
 
 /** A stored picture (the asset itself or its poster) as a blob URL: the asset route needs the session token. */
 function usePictureUrl(store: WorkspaceStore, objectId: string | undefined, mediaType: string) {
@@ -52,7 +54,18 @@ export interface AssetMediaProps {
   onDone?: () => void
 }
 
-export function AssetMedia({ asset, cellId, fit, activated = false, onActivate, onDone }: AssetMediaProps) {
+export function AssetMedia(props: AssetMediaProps) {
+  const session = useSession()
+  const payload = props.asset.content.payload
+  const kind = mediaKindOf(assetMediaType(payload.media_type, payload.file_name))
+  // on a session's stage a video or sound plays from the run Workspace, kept to the presenter's playback (第四期规划 §7.3.2)
+  if (session && (kind === 'video' || kind === 'audio')) {
+    return <SessionMediaPlayer entityId={props.asset.entity_id} objectId={payload.object_id} kind={kind} name={payload.file_name ?? props.asset.name ?? props.asset.entity_id} />
+  }
+  return <PlainAssetMedia {...props} />
+}
+
+function PlainAssetMedia({ asset, cellId, fit, activated = false, onActivate, onDone }: AssetMediaProps) {
   const { t } = useAiwsText()
   const store = useStore()
   const payload = asset.content.payload

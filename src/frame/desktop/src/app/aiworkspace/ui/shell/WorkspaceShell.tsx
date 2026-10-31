@@ -315,7 +315,7 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
               ) : <CanvasView focus={focus} />}
             </div>
             {startRequest && !showSession && (
-              <StartShowDialog initialPathId={startRequest.pathId} initialStepId={startRequest.stepId} onClose={() => setStartRequest(null)}
+              <StartShowDialog initialPathId={startRequest.pathId} initialStepId={startRequest.stepId} onClose={() => setStartRequest(null)} transport={client.transport}
                 onStart={async (pathId, stepId) => {
                   const session = await openShow(client, store, pathId, stepId)
                   setGuideState(null)

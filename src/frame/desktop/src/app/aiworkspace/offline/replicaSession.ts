@@ -710,6 +710,10 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
     return this.direct.importAssets(files, folder, signal)
   }
 
+  call<T>(method: string, params: Record<string, unknown>): Promise<T> {
+    return this.direct.call<T>(method, params)
+  }
+
   async fetchAsset(objectId: string): Promise<Blob> {
     const cached = this.replica.dead === null ? await this.replica.call('getAsset', objectId).catch(() => null) : null
     if (cached) return new Blob([cached])

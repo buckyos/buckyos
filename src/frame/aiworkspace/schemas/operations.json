@@ -267,6 +267,13 @@
    "undo": "none",
    "capability": "manage",
    "note": "Maintenance channel (D19, ws.purge_deleted): a deleted entity gives up content and references for good; its resources are reclaimable at once and entity.restore answers RESOURCE_RECLAIMED."
+  },
+  {
+   "op": "system.ensure",
+   "class": "session",
+   "undo": "none",
+   "capability": "structure",
+   "note": "{ id: \"session\" }: create the session system folder under data if it is missing (第四期规划 §5.3). Only the session service (origins session and source) and internal paths submit it; an existing folder makes it a no-op."
   }
  ]
 }

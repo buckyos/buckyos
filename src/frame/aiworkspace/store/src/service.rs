@@ -34,6 +34,10 @@ pub struct Service {
     pub traffic_quota: Option<u64>,
     /// Retention of history-only resources (D06), in milliseconds.
     pub history_retention_ms: i64,
+    /// The presentation sessions of this deployment (第四期规划 §3): `sessions.sqlite` in the data folder.
+    pub sessions: crate::session::registry::Sessions,
+    /// How long an ended, unsaved session is kept (Q10).
+    pub session_retention_ms: i64,
     open: Mutex<HashMap<String, WsHandle>>,
 }
 
@@ -81,8 +85,12 @@ impl Service {
             quota: None,
             traffic_quota: None,
             history_retention_ms: crate::workspace::HISTORY_RETENTION_MS,
+            sessions: crate::session::registry::Sessions::open(&data_dir.join("sessions.sqlite"))?,
+            session_retention_ms: crate::session::DEFAULT_RETENTION_MS,
             open: Mutex::new(HashMap::new()),
         };
+        // no connection survived a restart
+        svc.sessions.all_offline()?;
         svc.drop_stale_clones()?;
         svc.mark_interrupted_runs()?;
         Ok(svc)

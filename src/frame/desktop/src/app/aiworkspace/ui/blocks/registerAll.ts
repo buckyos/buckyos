@@ -10,6 +10,7 @@ import { inkDefinition } from '../../ink/inkBlock'
 import { registerControls } from '../controls/registerControls'
 import { blockRegistry } from './registry'
 import { testHooks } from '../../api/testHooks'
+import { registerClassroomBlocks } from '../classroom/register'
 
 let registered = false
 export function registerDefaultBlocks() {
@@ -24,6 +25,7 @@ export function registerDefaultBlocks() {
   registerDeclarativeBlock()
   registerSampleBlocks()
   registerVideoBlock()
+  registerClassroomBlocks()
   const hooks = testHooks()
   if (hooks) hooks.blocks = blockRegistry
 }

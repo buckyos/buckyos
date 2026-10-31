@@ -49,6 +49,9 @@ export interface StageCanvasProps {
   overMask?: ReactNode
   /** The prompter's background picture: cuts only, no gestures, no editing. */
   passive?: boolean
+  /** A session's audience following the presenter's free camera (第四期规划 §5.1): show this world rect of the Surface on
+   * stage; a new `nonce` moves the camera there. */
+  follow?: { surfaceId: string; rect: Rect; nonce: number } | null
 }
 
 function frameIds(laid: Map<string, Laid>): string[] {
@@ -239,6 +242,15 @@ export function StageCanvas(props: StageCanvasProps) {
     raf.current = requestAnimationFrame(frame)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- one transition per navigation number
   }, [nonce])
+
+  // the presenter browses by hand and the audience follows: the camera goes where the presenter's went
+  const follow = props.follow
+  useLayoutEffect(() => {
+    if (!follow || follow.surfaceId !== live.current.displayed || running.current) return
+    const { view } = stageView(follow.rect, stageRect())
+    drive(follow.surfaceId, view)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one move per sample
+  }, [follow?.nonce])
 
   // a new window size: the same content, re-fitted at once (§9.5)
   useEffect(() => {

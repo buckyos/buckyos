@@ -120,6 +120,11 @@ impl Caller {
     pub fn is_guest(&self) -> bool {
         self.class == CallerClass::Guest
     }
+    /// The holder of a session's display or prompter link (第四期规划 Q14): no identity of its own, it reads the run
+    /// Workspace under the link's subject (`link:<invite id>`), granted when the link was made.
+    pub fn link(invite_id: &str) -> Caller {
+        Self::with_class(&format!("link:{invite_id}"), CallerClass::Guest)
+    }
     /// Limited accounts, External DIDs and guests: they never match `*`, own nothing, and a missing
     /// Workspace looks like one that was not shared with them.
     pub fn is_restricted(&self) -> bool {
@@ -257,6 +262,9 @@ pub struct CommitOpts {
     /// An extension build or import (扩展控件 P0): the Commit's origin is `build`, the only one that may write a
     /// definition's `derived.build` record.
     pub as_build: bool,
+    /// The session service (第四期规划 §5.2–§5.3): the Commit's origin is `session`, the only one that writes tasks,
+    /// responses and results (and, with them, the session feeds).
+    pub as_session: bool,
 }
 
 pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
@@ -298,6 +306,9 @@ pub struct Workspace {
     pub traffic_quota: Option<u64>,
     /// Retention period of history-only resources, in milliseconds (D06).
     pub history_retention_ms: i64,
+    /// A session's run Workspace (第四期规划 §6.3, TODO I7): every Commit writes its event into `session_events` in
+    /// the same transaction.
+    pub session_events: bool,
 }
 
 /// Default retention of resources only the history references: 30 days (D06).
@@ -325,6 +336,8 @@ pub fn derive_origin(caller: &Caller, opts: &CommitOpts, has_run: bool) -> &'sta
         "source"
     } else if opts.as_build {
         "build"
+    } else if opts.as_session {
+        "session"
     } else if has_run {
         "program"
     } else if caller.is_agent() {
@@ -335,7 +348,7 @@ pub fn derive_origin(caller: &Caller, opts: &CommitOpts, has_run: bool) -> &'sta
 }
 
 /// Keep only the rows of entities `can_read` admits (the replica bootstrap applies the same rule).
-fn filter_rows(rows: &mut Value, can_read: &mut dyn FnMut(&str) -> WsResult<bool>) -> WsResult<()> {
+pub(crate) fn filter_rows(rows: &mut Value, can_read: &mut dyn FnMut(&str) -> WsResult<bool>) -> WsResult<()> {
     let keep = |table: &str, key: &str, rows: &mut Value, can_read: &mut dyn FnMut(&str) -> WsResult<bool>| -> WsResult<()> {
         if let Some(a) = rows.get_mut(table).and_then(Value::as_array_mut) {
             let mut out = Vec::with_capacity(a.len());
@@ -476,7 +489,13 @@ impl Workspace {
         if get("format_version")? != FORMAT_VERSION {
             return Err(WsError::new(Code::UnsupportedVersion, "format_version is not supported"));
         }
+        let session_events: bool = doc
+            .query_row("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_events'", [], |_| Ok(true))
+            .optional()
+            .map_err(db_err)?
+            .unwrap_or(false);
         let ws = Workspace {
+            session_events,
             dir: dir.to_path_buf(),
             workspace_id: get("workspace_id")?,
             epoch: get("epoch")?,
@@ -631,7 +650,7 @@ impl Workspace {
         let ops: Vec<Value> = ids.iter().map(|id| json!({ "op": "entity.purge", "entity_id": id })).collect();
         let req = json!({ "protocol_version": PROTOCOL_VERSION, "workspace_id": self.workspace_id, "epoch": self.epoch,
                           "idempotency_key": format!("purge/{}", random_id("")), "session_id": session_id, "message": "purge deleted entities", "operations": ops });
-        let opts = CommitOpts { internal: true, import: false, undoes: None, as_principal: None, maintenance: true, as_source: false, as_build: false };
+        let opts = CommitOpts { internal: true, import: false, undoes: None, as_principal: None, maintenance: true, as_source: false, as_build: false, as_session: false };
         let r = self.commit(&req, caller, &opts);
         if r["status"] != json!("accepted") {
             return Err(WsError::new(Code::InvalidOperation, "purge was not accepted").with_data(r));
@@ -1278,6 +1297,10 @@ impl Workspace {
         if let Some(lock) = self.show_lock() {
             return Err(reject(Self::show_locked_error(&lock)));
         }
+        // an ended session's run Workspace is its record: only the session service still writes (a published result)
+        if self.session_events && !opts.internal && !opts.as_session && meta_get(&self.doc, "session_closed").ok().flatten().is_some() {
+            return Err(reject(WsError::sub(Code::PermissionDenied, "SESSION_CLOSED", "the session has ended: its workspace is a record now")));
+        }
         if let Some(run_id) = &req.run_id {
             let state: Option<String> = self
                 .local
@@ -1471,6 +1494,11 @@ impl Workspace {
         // the pure-application delta replicas apply (D20)
         let rows = aiworkspace_core::replica::changes_to_rows(changes)?;
         tx.execute("INSERT INTO commit_deltas (seq, rows_json) VALUES (?1, ?2)", params![seq, rows.to_string()]).map_err(db_err)?;
+        if self.session_events {
+            // the session's timeline learns of the Commit in the same transaction (第四期规划 §6.3)
+            let touched: BTreeSet<&str> = ops.iter().flat_map(|o| o.touched.iter().map(|t| t.entity_id.as_str())).collect();
+            crate::session::commit_event(&tx, (self.clock)(), writer, &req.origin, seq, commit_id, &touched)?;
+        }
         {
             let mut st = tx
                 .prepare_cached("INSERT INTO commit_ops (seq, op_index, op_json, inverse_json, touched_json) VALUES (?1,?2,?3,?4,?5)")
@@ -1627,7 +1655,7 @@ impl Workspace {
                     "idempotency_key": idem, "session_id": req.get("session_id").cloned().unwrap_or(Value::Null),
                     "origin": "human", "message": format!("undo {target}"), "operations": ops })
         };
-        let opts = CommitOpts { internal: true, import: false, undoes: Some(target.to_string()), as_principal: None, maintenance: false, as_source: false, as_build: false };
+        let opts = CommitOpts { internal: true, import: false, undoes: Some(target.to_string()), as_principal: None, maintenance: false, as_source: false, as_build: false, as_session: false };
         // applicability is the ordinary pipeline: every inverse carries `expect: { rev: S }`
         let dry = self.commit_inner(&build(&inverse), caller, &opts, true);
         let dry = match dry {

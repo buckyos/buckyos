@@ -2011,7 +2011,7 @@ fn check_build_record(p: &Planner, o: &Map<String, Value>, content_rev: u64) -> 
 pub fn check_source(v: &Value) -> WsResult<()> {
     let o = v.as_object().ok_or_else(|| bad("source must be an object"))?;
     for k in o.keys() {
-        if !matches!(k.as_str(), "kind" | "url" | "zone" | "workspace_id" | "entity_id" | "mode" | "version" | "query" | "refresh" | "auth_mode" | "name") {
+        if !matches!(k.as_str(), "kind" | "url" | "zone" | "workspace_id" | "entity_id" | "mode" | "version" | "query" | "refresh" | "auth_mode" | "name" | "feed") {
             return Err(bad(format!("source: unknown key {k}")));
         }
     }
@@ -2037,7 +2037,19 @@ pub fn check_source(v: &Value) -> WsResult<()> {
                 check_absolute_url(u.as_str().unwrap_or(""))?;
             }
         }
-        _ => return Err(bad("source.kind must be url or workspace")),
+        Some("session") => {
+            // a session feed (第四期规划 §5.3, Q19): live only, refreshed by the session service, never fetched
+            if !o.get("feed").and_then(Value::as_str).is_some_and(|f| SESSION_FEEDS.contains(&f)) {
+                return Err(bad(format!("source.feed must be one of {}", SESSION_FEEDS.join(", "))));
+            }
+            if o.keys().any(|k| !matches!(k.as_str(), "kind" | "feed" | "mode" | "name")) {
+                return Err(bad("a session source has kind, feed, mode and name only"));
+            }
+        }
+        _ => return Err(bad("source.kind must be url, workspace or session")),
+    }
+    if o.get("kind").and_then(Value::as_str) != Some("session") && o.contains_key("feed") {
+        return Err(bad("source.feed belongs to a session source"));
     }
     match (o.get("mode").and_then(Value::as_str), o.get("version")) {
         (None | Some("live"), None) => {}
@@ -2083,13 +2095,26 @@ fn check_absolute_url(url: &str) -> WsResult<()> {
     Ok(())
 }
 
+/// The fixed feed catalogue of a session (第四期规划 §5.3, Q19): it grows with the protocol, extensions only bind.
+pub const SESSION_FEEDS: &[&str] = &["participants", "stage", "tasks", "my_responses", "responses", "results", "reactions"];
+
+/// The feed a session-sourced entity shows, if it is one.
+pub fn session_feed(e: &EntityRow) -> Option<&str> {
+    let s = e.payload.get("source")?;
+    if s.get("kind").and_then(Value::as_str) != Some("session") {
+        return None;
+    }
+    s.get("feed").and_then(Value::as_str)
+}
+
 pub fn has_source(e: &EntityRow) -> bool {
     e.payload.get("source").is_some_and(Value::is_object)
 }
 
-/// Content of a sourced entity is written only by its refresh (origin `source`) or an internal path.
+/// Content of a sourced entity is written only by its refresh (origin `source`) or an internal path; a session feed
+/// also by the session service (origin `session`), in the same Commit as the task or answer it reflects.
 pub fn require_source_writable(p: &Planner, e: &EntityRow) -> WsResult<()> {
-    if has_source(e) && p.env.origin != "source" && !p.env.internal && !p.env.import {
+    if has_source(e) && p.env.origin != "source" && !p.env.internal && !p.env.import && !(p.env.origin == "session" && session_feed(e).is_some()) {
         return Err(WsError::sub(Code::InvalidOperation, "SOURCE_READ_ONLY", format!("{} comes from a Source: its content is refreshed, not edited", e.entity_id))
             .with_data(json!({ "entity_id": e.entity_id, "source": e.payload.get("source").cloned().unwrap_or(Value::Null) })));
     }
@@ -2246,7 +2271,7 @@ pub fn validate_primitive(p: &mut Planner, before: Option<&EntityRow>, e: &mut E
             validate_dir(p, e)
         }
         TYPE_BLOCK_DEF => block_def_primitive(p, e, changed),
-        TYPE_RECORD | TYPE_ANNOTATION | TYPE_WISH | TYPE_VIEWPORT | TYPE_SHOW_PATH | TYPE_RICHTEXT => Ok(()),
+        TYPE_RECORD | TYPE_ANNOTATION | TYPE_WISH | TYPE_VIEWPORT | TYPE_SHOW_PATH | TYPE_RICHTEXT | TYPE_TASK | TYPE_RESPONSE | TYPE_RESULT => Ok(()),
         _ if before.is_some() => Err(WsError::invalid_op("this type has no keyed content")),
         _ => Ok(()),
     }
@@ -2265,7 +2290,105 @@ pub fn validate_schema(p: &mut Planner, before: Option<&EntityRow>, e: &mut Enti
         TYPE_BLOCK_DEF => block_def_schema(e),
         TYPE_VIEWPORT => validate_viewport(p, e, changed),
         TYPE_SHOW_PATH => validate_show_path(p, e, before, changed),
+        TYPE_TASK | TYPE_RESPONSE | TYPE_RESULT => validate_session_entity(e),
         _ => Ok(()),
+    }
+}
+
+/// Validator class: schema. The session entities (第四期规划 §5.2, Q07): only the shape and bounds; what a task means —
+/// question identity, reuse, picking, claiming rules — belongs to the extension that wrote it (`ext`) and to the
+/// session service that admits answers.
+fn validate_session_entity(e: &EntityRow) -> WsResult<()> {
+    let p = &e.payload;
+    let principals = |key: &str, max: usize| -> WsResult<()> {
+        match p.get(key) {
+            None => Ok(()),
+            Some(Value::Array(a)) if a.len() <= max && a.iter().all(|x| x.as_str().is_some_and(|s| !s.is_empty() && s.len() <= 256)) => Ok(()),
+            Some(_) => Err(bad(format!("{key} must be a list of at most {max} principals"))),
+        }
+    };
+    let object = |key: &str, max: usize| -> WsResult<()> {
+        match p.get(key) {
+            None => Ok(()),
+            Some(v) if v.is_object() && canonical_len(v) <= max => Ok(()),
+            Some(_) => Err(bad(format!("{key} must be an object of at most {max} bytes"))),
+        }
+    };
+    let any = |key: &str, max: usize| -> WsResult<()> {
+        match p.get(key) {
+            Some(v) if canonical_len(v) > max => Err(WsError::limit(format!("{key} is limited to {max} bytes"))),
+            _ => Ok(()),
+        }
+    };
+    let one_of = |key: &str, values: &[&str], required: bool| -> WsResult<()> {
+        match p.get(key).and_then(Value::as_str) {
+            Some(v) if values.contains(&v) => Ok(()),
+            None if !required && p.get(key).is_none() => Ok(()),
+            _ => Err(bad(format!("{key} must be one of {}", values.join(", ")))),
+        }
+    };
+    let task_ref = || -> WsResult<()> {
+        if !p.get("task_id").and_then(Value::as_str).is_some_and(crate::id::is_valid_id) {
+            return Err(bad("task_id required"));
+        }
+        Ok(())
+    };
+    for k in ["created_at", "closed_at", "submitted_at", "claimed_at", "published_at", "reviewed_at"] {
+        opt_text(p, k, 64)?;
+    }
+    match e.type_id.as_str() {
+        TYPE_TASK => {
+            check_keys(p, &["title", "question", "block_id", "mode", "slots", "state", "assigned", "revoked", "pick", "ext", "show_names", "created_at", "closed_at"], "task")?;
+            opt_text(p, "title", 256)?;
+            object("question", 4096)?;
+            object("pick", 16 * 1024)?;
+            object("ext", 16 * 1024)?;
+            one_of("mode", &["open", "assigned", "claim"], true)?;
+            one_of("state", &["open", "closed"], true)?;
+            principals("assigned", 1000)?;
+            principals("revoked", 1000)?;
+            if let Some(b) = p.get("block_id") {
+                if !b.as_str().is_some_and(crate::id::is_valid_id) {
+                    return Err(bad("block_id must be an entity id"));
+                }
+            }
+            match p.get("slots") {
+                None => {}
+                Some(v) if v.as_u64().is_some_and(|n| (1..=10_000).contains(&n)) => {}
+                Some(_) => return Err(bad("slots is a count in 1…10000")),
+            }
+            if p.get("show_names").is_some_and(|v| !v.is_boolean()) {
+                return Err(bad("show_names must be a boolean"));
+            }
+            Ok(())
+        }
+        TYPE_RESPONSE => {
+            check_keys(p, &["task_id", "participant", "name", "level", "state", "content", "version", "submitted_at", "claimed_at", "late", "origin_session", "review", "reviewed_at", "readers"], "response")?;
+            task_ref()?;
+            if !p.get("participant").and_then(Value::as_str).is_some_and(|s| !s.is_empty() && s.len() <= 256) {
+                return Err(bad("participant required"));
+            }
+            opt_text(p, "name", 256)?;
+            opt_text(p, "origin_session", 64)?;
+            one_of("level", &["verified", "guest"], true)?;
+            one_of("state", &["assigned", "claimed", "submitted", "invalid"], true)?;
+            any("content", 64 * 1024)?;
+            object("review", 16 * 1024)?;
+            principals("readers", 32)?;
+            if p.get("version").is_some_and(|v| v.as_u64().is_none()) {
+                return Err(bad("version must be a count"));
+            }
+            if p.get("late").is_some_and(|v| !v.is_boolean()) {
+                return Err(bad("late must be a boolean"));
+            }
+            Ok(())
+        }
+        _ => {
+            check_keys(p, &["task_id", "title", "content", "published_at"], "result")?;
+            task_ref()?;
+            opt_text(p, "title", 256)?;
+            any("content", 64 * 1024)
+        }
     }
 }
 
@@ -2374,7 +2497,7 @@ pub fn init_entity(p: &mut Planner, row: &mut EntityRow, mut payload: JsonMap) -
                 row.key_revs.insert(format!("m:{name}"), seq);
             }
         }
-        TYPE_CONTAINER | TYPE_CELL | TYPE_ASSET | TYPE_WISH | TYPE_BLOCK_DEF | TYPE_VIEWPORT | TYPE_SHOW_PATH => {
+        TYPE_CONTAINER | TYPE_CELL | TYPE_ASSET | TYPE_WISH | TYPE_BLOCK_DEF | TYPE_VIEWPORT | TYPE_SHOW_PATH | TYPE_TASK | TYPE_RESPONSE | TYPE_RESULT => {
             row.payload = payload;
             validate_entity(p, None, row, None)?;
         }

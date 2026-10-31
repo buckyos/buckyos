@@ -1,0 +1,82 @@
+/* Presentation sessions (第四期规划): the room page, the replay and the classroom controls. Colours follow the Desktop
+ * theme (--cp-*) like the rest of the workspace; the stage is the presented picture (presentation.css). */
+
+.aiws-session-page { position: fixed; inset: 0; overflow: hidden; background: #111; color: var(--cp-text); }
+.aiws-session-center { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box; color: #ddd; }
+.aiws-session-gate { display: flex; flex-direction: column; gap: 10px; padding: 18px 20px; width: min(380px, 100%); box-sizing: border-box; color: var(--cp-text); }
+.aiws-session-gate-title { font-size: 18px; }
+.aiws-session-gate-signin { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 8px; border-top: 1px solid var(--cp-border); font-size: 13px; }
+
+.aiws-session-room { position: absolute; inset: 0; overflow: hidden; }
+.aiws-session-stage { position: absolute; inset: 0; }
+.aiws-session-room.is-replay { display: flex; flex-direction: column; background: var(--cp-bg); }
+.aiws-session-replay-stage { position: relative; flex: 1 1 auto; min-height: 200px; background: #111; }
+.aiws-session-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #ccc; }
+.aiws-session-overlay { position: absolute; inset: 0; z-index: 25; display: flex; align-items: center; justify-content: center; background: rgb(0 0 0 / 0.35); padding: 16px; box-sizing: border-box; }
+.aiws-session-overlay.is-passive { pointer-events: none; }
+.aiws-session-start { display: flex; flex-direction: column; align-items: stretch; gap: 10px; padding: 16px 20px; width: min(440px, 100%); box-sizing: border-box; }
+.aiws-root .aiws-session-start > button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.aiws-session-bar { max-width: calc(100% - 24px); }
+.aiws-session-danmaku-form { display: inline-flex; align-items: center; gap: 2px; }
+.aiws-session-danmaku-form > input { width: min(220px, 40vw); }
+.aiws-root .aiws-tool.is-on { background: var(--aiws-pressed-bg); }
+
+/* the presenter's marks on a follower's stage, reactions */
+.aiws-session-pointer-box { position: absolute; inset: 0; pointer-events: none; z-index: 6; }
+.aiws-session-pointer { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: rgba(239, 68, 68, 0.95); box-shadow: 0 0 12px rgba(239, 68, 68, 0.8); transition: left 90ms linear, top 90ms linear; }
+.aiws-session-pick { position: absolute; inset: 0; z-index: 7; cursor: crosshair; }
+.aiws-session-reactions { position: absolute; inset: 0; pointer-events: none; z-index: 8; overflow: hidden; }
+.aiws-session-danmaku { position: absolute; right: 0; white-space: nowrap; font-size: 18px; color: #fff; text-shadow: 0 1px 3px rgb(0 0 0 / 0.8); animation: aiws-danmaku 6s linear forwards; }
+.aiws-session-danmaku > b { margin-right: 6px; font-weight: 600; opacity: 0.8; }
+@keyframes aiws-danmaku { from { transform: translateX(100%); } to { transform: translateX(-100vw); } }
+.aiws-session-feedback { position: absolute; transform: translate(-50%, -50%); font-size: 26px; animation: aiws-feedback 6s ease-out forwards; }
+.aiws-session-feedback.is-corner { right: 16px; bottom: 90px; transform: none; font-size: 18px; color: #fff; text-shadow: 0 1px 3px rgb(0 0 0 / 0.8); }
+@keyframes aiws-feedback { 0% { opacity: 0; } 8% { opacity: 1; } 80% { opacity: 1; } 100% { opacity: 0; } }
+
+/* panels */
+.aiws-session-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.aiws-session-list > li { display: flex; align-items: center; gap: 6px; padding: 3px 4px; border-radius: 6px; }
+.aiws-session-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--cp-border); flex: none; }
+.aiws-session-dot.is-on { background: #16a34a; }
+.aiws-session-links .aiws-dialog-actions { flex-wrap: wrap; }
+
+/* media */
+.aiws-session-media { position: relative; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; background: #000; }
+.aiws-session-media > video { width: 100%; height: 100%; object-fit: contain; }
+.aiws-session-media > audio { width: 100%; }
+.aiws-root button.aiws-session-unmute { position: absolute; z-index: 2; }
+
+/* the replay */
+.aiws-session-replay-head { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 0; flex-wrap: wrap; }
+.aiws-session-timeline { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 0; flex-wrap: wrap; }
+.aiws-session-clock { font-variant-numeric: tabular-nums; font-size: 12px; white-space: nowrap; }
+.aiws-session-scrub { position: relative; flex: 1 1 200px; min-width: 120px; }
+.aiws-session-scrub > input { width: 100%; }
+.aiws-session-marks { position: absolute; left: 0; right: 0; top: -6px; height: 6px; }
+.aiws-root button.aiws-session-mark { position: absolute; width: 4px; height: 8px; min-width: 0; padding: 0; border: none; border-radius: 1px; background: var(--cp-accent); transform: translateX(-50%); }
+.aiws-session-posts { max-height: 32vh; overflow: auto; padding: 8px 12px; border-radius: 0; display: flex; flex-direction: column; gap: 6px; }
+.aiws-session-post-form { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.aiws-session-post-form > input { flex: 1 1 200px; min-width: 0; }
+.aiws-session-rating { display: inline-flex; }
+
+/* creating a session */
+.aiws-session-create { display: flex; flex-direction: column; gap: 8px; }
+.aiws-session-history { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+
+/* the classroom controls */
+.aiws-classroom { display: flex; flex-direction: column; gap: 8px; width: 100%; height: 100%; box-sizing: border-box; padding: 10px 12px; overflow: auto; background: var(--cp-surface); border: 1px solid var(--cp-border); border-radius: 10px; color: var(--cp-text); }
+.aiws-classroom-question { font-weight: 600; font-size: 15px; }
+.aiws-classroom-options { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.aiws-classroom-options > li { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 6px; background: var(--cp-bg); }
+.aiws-classroom-options > li.is-correct { box-shadow: inset 0 0 0 2px #16a34a; }
+.aiws-root .aiws-classroom-options button { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; }
+.aiws-root .aiws-classroom-options button.is-on { background: var(--aiws-selected-bg); box-shadow: inset 0 0 0 1px var(--aiws-selected-border); }
+.aiws-classroom-letter { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: var(--cp-accent); color: #fff; font-size: 12px; font-weight: 600; flex: none; }
+.aiws-classroom-count { font-variant-numeric: tabular-nums; font-weight: 600; }
+.aiws-classroom-result { font-weight: 600; color: #16a34a; }
+.aiws-classroom-meta { font-size: 12px; }
+.aiws-classroom-answer { display: flex; flex-direction: column; gap: 6px; }
+.aiws-classroom-called { font-weight: 600; color: var(--cp-accent); }
+.aiws-classroom-controls { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.aiws-classroom-groups { display: flex; flex-direction: column; gap: 6px; }
+.aiws-classroom-group { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }

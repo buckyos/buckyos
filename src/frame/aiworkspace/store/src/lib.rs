@@ -11,6 +11,7 @@ pub mod proc;
 pub mod reads;
 pub mod schema;
 pub mod service;
+pub mod session;
 pub mod show;
 pub mod source;
 pub mod urlsource;

@@ -694,11 +694,52 @@ pub const OPERATIONS: &[(&str, &str, &str, &str)] = &[
     ("table.restore_migration", "internal", "compensable", "structure"),
     ("data.restore_owns", "internal", "compensable", "structure"),
     ("entity.purge", "internal", "none", "manage"),
+    // the session service (第四期规划 §5.3): origins `session` / `source` and internal paths only
+    ("system.ensure", "session", "none", "structure"),
 ];
 
 /// Operations only the undo path / import may submit.
 fn is_internal_op(name: &str) -> bool {
     matches!(name, "table.restore_records" | "table.restore_field" | "table.restore_migration" | "data.restore_owns" | "entity.purge")
+}
+
+/// `system.ensure { id }`: the `session` system folder under `data`, created the first time a session needs it
+/// (第四期规划 §5.3, Q20). Only the session service submits it; an existing folder leaves nothing to do.
+fn system_ensure(p: &mut Planner, op: &Value) -> OpResult {
+    only_keys(op, &["id"])?;
+    let id = get_str(op, "id")?;
+    if id != SESSION_ID {
+        return Err(WsError::invalid_op("system.ensure creates the session folder only"));
+    }
+    if !(matches!(p.env.origin.as_str(), "session" | "source") || p.env.internal || p.env.import) {
+        return Err(WsError::invalid_op("system.ensure is submitted by the session service"));
+    }
+    if p.ov.entity(id)?.is_some() {
+        return Ok((op.clone(), Some(vec![])));
+    }
+    p.require(DATA_ID, Cap::Structure)?;
+    let seq = p.seq();
+    let mut row = system_container(SESSION_ID, "folder", Some("session"), Some("Session"));
+    row.created_seq = seq;
+    row.meta_rev = seq;
+    row.content_rev = seq;
+    row.life_rev = seq;
+    for v in row.key_revs.values_mut() {
+        *v = seq;
+    }
+    p.ov.put_edge(TreeEdge { child_id: id.to_string(), parent_id: DATA_ID.to_string(), order_key: "zx".to_string(), placement: None, struct_rev: seq });
+    p.ov.put_entity(row);
+    p.touch(id, None, "created");
+    Ok((op.clone(), Some(vec![])))
+}
+
+/// Tasks, responses and results change only through the session service (第四期规划 §5.2): `session.*` methods
+/// check who may answer, claim or publish, then write them with origin `session`.
+fn require_session_writer(p: &Planner, e: &EntityRow) -> WsResult<()> {
+    if is_session_type(&e.type_id) && !(p.env.origin == "session" || p.env.internal || p.env.import) {
+        return Err(WsError::sub(Code::InvalidOperation, "SESSION_ONLY", format!("{} is written by the session service", e.entity_id)));
+    }
+    Ok(())
 }
 
 /// Marker a purged entity keeps in its (otherwise emptied) payload.
@@ -1231,6 +1272,7 @@ fn dispatch(p: &mut Planner, name: &str, op: &Value) -> OpResult {
         "dir.set_member" => dir_set_member(p, op),
         "dir.remove_member" => dir_remove_member(p, op),
         "dir.replace" => dir_replace(p, op),
+        "system.ensure" => system_ensure(p, op),
         n if n.starts_with("table.") => crate::plan_table::dispatch(p, n, op),
         n if n.starts_with("richtext.") => crate::plan_richtext::dispatch(p, n, op),
         _ => Err(WsError::invalid_op(format!("unknown operation {name:?}"))),
@@ -1259,6 +1301,15 @@ fn container_kind(e: &EntityRow) -> &str {
 pub fn child_allowed(parent: &EntityRow, in_control: bool, child_type: &str, child_kind: Option<&str>, child_scope: &str) -> bool {
     if parent.entity_id == SHOWS_ID {
         return is_show_type(child_type) && child_scope == SCOPE_SHARED;
+    }
+    // the `session` folder (第四期规划 §5.3): feeds and session data, in any of the session scopes; the session types
+    // live nowhere else
+    if parent.entity_id == SESSION_ID {
+        let scoped = child_scope == SCOPE_SHARED || child_scope == SCOPE_PRESENTER || child_scope.starts_with(PARTICIPANT_PREFIX);
+        return scoped && (is_session_type(child_type) || matches!(child_type, TYPE_TABLE | TYPE_RECORD | TYPE_RICHTEXT | TYPE_ASSET));
+    }
+    if is_session_type(child_type) {
+        return false;
     }
     let block = |child_type: &str| match child_type {
         TYPE_CONTAINER => child_kind.is_some_and(|k| k == "group" || crate::types::is_control_kind(k)),
@@ -1451,11 +1502,18 @@ fn entity_create(p: &mut Planner, op: &Value) -> OpResult {
     if is_system_id(id) {
         return Err(WsError::invalid_op(format!("{id} is a system entity")));
     }
+    // the session service writes what only presenters or one participant may read (第四期规划 §4, Q07)
+    let session_writer = matches!(p.env.origin.as_str(), "session" | "source") || p.env.internal || p.env.import;
     let scope = match op.get("scope").and_then(Value::as_str) {
         None | Some("shared") => SCOPE_SHARED.to_string(),
         Some("personal") if type_id == TYPE_ANNOTATION => format!("user:{}", p.env.principal),
+        Some(SCOPE_PRESENTER) if session_writer => SCOPE_PRESENTER.to_string(),
+        Some(s) if session_writer && s.strip_prefix(PARTICIPANT_PREFIX).is_some_and(|x| !x.is_empty() && x.len() <= 256) => s.to_string(),
         Some(_) => return Err(WsError::invalid_op("scope must be shared, or personal for annotations")),
     };
+    if is_session_type(type_id) && !(p.env.origin == "session" || p.env.internal || p.env.import) {
+        return Err(WsError::sub(Code::InvalidOperation, "SESSION_ONLY", format!("{type_id} is written by the session service")));
+    }
     let known = supports_schema_version(type_id, schema_version);
     if !known && !p.env.internal {
         let code = if is_known_type(type_id) { Code::UnsupportedVersion } else { Code::MissingExtension };
@@ -1550,6 +1608,7 @@ fn entity_delete(p: &mut Planner, op: &Value) -> OpResult {
     if is_system_id(id) {
         return Err(WsError::invalid_op(format!("{id} is a system entity and cannot be deleted")));
     }
+    require_session_writer(p, &e)?;
     if e.type_id == TYPE_ANNOTATION {
         // own annotations need `comment`; other people's shared ones need `manage`
         let mine = crate::types::annotation_author(&e) == Some(p.env.principal.as_str());
@@ -1656,6 +1715,7 @@ fn entity_restore(p: &mut Planner, op: &Value) -> OpResult {
     if e.alive() {
         return Err(WsError::invalid_op(format!("entity {id} is not deleted")));
     }
+    require_session_writer(p, &e)?;
     if e.payload.contains_key(PURGED_KEY) {
         return Err(WsError::new(Code::ResourceReclaimed, format!("entity {id} was purged: its content is gone for good")));
     }
@@ -1696,6 +1756,7 @@ fn entity_rename(p: &mut Planner, op: &Value) -> OpResult {
     if is_system_id(id) {
         return Err(WsError::invalid_op(format!("{id} is a system entity and cannot be renamed")));
     }
+    require_session_writer(p, &e)?;
     p.require(id, Cap::Structure)?;
     p.need_parent_lock(id)?;
     let old = e.name.clone();
@@ -1754,6 +1815,7 @@ fn entity_set_keys(p: &mut Planner, op: &Value, unset: bool) -> OpResult {
         let code = if d == "MISSING_EXTENSION" { Code::MissingExtension } else { Code::UnsupportedVersion };
         return Err(WsError::new(code, format!("content of {id} cannot be edited ({d})")));
     }
+    require_session_writer(p, &e)?;
     if e.type_id == TYPE_RICHTEXT && get_array(op, "keys")?.iter().any(|k| k.get("key").and_then(Value::as_str) != Some("source")) {
         return Err(WsError::invalid_op("rich text content is edited with richtext.* operations"));
     }
@@ -1889,6 +1951,7 @@ fn tree_move(p: &mut Planner, op: &Value) -> OpResult {
     if is_system_id(id) {
         return Err(WsError::invalid_op(format!("{id} is a system entity and cannot be moved")));
     }
+    require_session_writer(p, &e)?;
     let new_parent = p.entity_alive(new_parent_id)?;
     let kind = e.payload.get("kind").and_then(Value::as_str);
     if !child_allowed_here(p, &new_parent, &e.type_id, kind, &e.scope)? {

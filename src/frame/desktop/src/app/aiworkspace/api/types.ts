@@ -56,8 +56,10 @@ export interface WorkspaceInfo extends WorkspaceSummary {
 
 /** Where a sourced entity's content comes from (内核架构改进 D12); such an entity is read-only for people and Blocks. */
 export interface EntitySource {
-  kind: 'url' | 'workspace'
+  kind: 'url' | 'workspace' | 'session'
   mode: 'live' | 'fixed'
+  /** A session feed (第四期规划 §5.3): which of the seven. */
+  feed?: SessionFeed | null
   url?: string | null
   workspace_id?: string | null
   entity_id?: string | null
@@ -65,6 +67,9 @@ export interface EntitySource {
   refresh?: { interval_s: number } | null
   auth_mode?: 'none' | 'hosted'
 }
+
+/** The feeds of a presentation session (第四期规划 §5.3, Q19): Tables a Block binds to, written by the session. */
+export type SessionFeed = 'participants' | 'stage' | 'tasks' | 'my_responses' | 'responses' | 'results' | 'reactions'
 
 /** A published data entity (D26): its link is the URL projection of the reference. */
 export interface Publication { entity_id: string; name: string; path: string; url?: string; reference: Reference; published_at: string; published_by: string; referrers: number; current?: boolean }

@@ -70,6 +70,10 @@ writeFileSync(wishConfig, JSON.stringify({ provider: { type: 'openai', base_url:
 const env = { ...process.env, AIWS_E2E_LLM_KEY: 'e2e' }
 // a local run whose browser went away is interrupted within seconds (the browser heartbeats at a third of the lease)
 env.AIWS_RUN_LEASE_MS ??= '6000'
+// a session's voice (第四期规划 §7.3.1): any free UDP port on loopback, short segments for the replay specs
+env.AIWS_MEDIA_PORT ??= '0'
+env.AIWS_MEDIA_HOSTS ??= '127.0.0.1'
+env.AIWS_VOICE_SEGMENT_MS ??= '1000'
 delete env.AIWS_FAILPOINT
 // workspace pages live on `aiws-<label>.localhost:<dev server port>` (T4-8): the dev server serves aiws.html there
 const publicBase = process.env.AIWS_E2E_PUBLIC_BASE ? ['--public-base', process.env.AIWS_E2E_PUBLIC_BASE] : []
