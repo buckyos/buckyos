@@ -697,6 +697,10 @@ async fn presence(state: &Arc<AppState>, room: &Arc<Room>, s: &SessionRow, actor
     let _ = blocking(move || {
         st.svc.sessions.set_presence(&row.session_id, &who, open, now)?;
         st.svc.with_run(&row, |ws| {
+            // after the end people come to watch the replay: that is not part of the session's record
+            if ws.session_closed() {
+                return Ok(());
+            }
             ws.append_event(aiworkspace_store::session::NewEvent { actor: &who, scope: "presenter", track: "diag", kind: if open { "presence.join" } else { "presence.leave" },
                                                                   command_id: None, data: json!({ "principal": who, "name": name }), t_rel_ms: None })?;
             Ok(())

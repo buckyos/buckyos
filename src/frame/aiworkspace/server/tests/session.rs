@@ -293,6 +293,16 @@ async fn a_room_from_a_workspace_runs_over_the_channel_and_survives_a_restart() 
     let replay = srv.ok("tok-bob", "session.replay", json!({ "session_id": sid })).await;
     assert!(!replay["baseline"].to_string().contains("开场"));
     assert!(replay["baseline"]["entities"].as_array().unwrap().len() > 5);
+    // opening the replay is not recorded: no one comes or goes after the end
+    drop((bob, stage));
+    let mut watcher = srv.channel(&sid, Some("tok-bob"), None, "audience", "bob-replay").await;
+    watcher.drain(200).await;
+    drop(watcher);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let events = srv.ok("tok-alice", "session.events", json!({ "session_id": sid, "after": 0 })).await;
+    let events = events["events"].as_array().unwrap();
+    let end = events.iter().position(|e| e["type"] == json!("session.end")).unwrap();
+    assert!(!events[end..].iter().any(|e| e["type"].as_str().unwrap().starts_with("presence.")), "{events:?}");
     let events = srv.ok("tok-bob", "session.events", json!({ "session_id": sid, "after": 0 })).await;
     assert!(events["events"].as_array().unwrap().iter().filter(|e| e["type"] == json!("stage")).count() >= 3);
     let posted = srv.ok("tok-bob", "session.post", json!({ "session_id": sid, "kind": "moment", "body": "这里没听懂", "t_rel_ms": 1200 })).await;

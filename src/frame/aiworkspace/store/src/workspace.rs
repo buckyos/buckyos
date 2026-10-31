@@ -1298,7 +1298,7 @@ impl Workspace {
             return Err(reject(Self::show_locked_error(&lock)));
         }
         // an ended session's run Workspace is its record: only the session service still writes (a published result)
-        if self.session_events && !opts.internal && !opts.as_session && meta_get(&self.doc, "session_closed").ok().flatten().is_some() {
+        if self.session_events && !opts.internal && !opts.as_session && self.session_closed() {
             return Err(reject(WsError::sub(Code::PermissionDenied, "SESSION_CLOSED", "the session has ended: its workspace is a record now")));
         }
         if let Some(run_id) = &req.run_id {

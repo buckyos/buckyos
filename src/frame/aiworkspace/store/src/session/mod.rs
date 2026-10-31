@@ -238,6 +238,11 @@ impl Workspace {
         meta_get(&self.doc, "session_t0").ok().flatten().and_then(|s| s.parse().ok())
     }
 
+    /// Has the session ended? Its run Workspace is the record from then on.
+    pub fn session_closed(&self) -> bool {
+        meta_get(&self.doc, "session_closed").ok().flatten().is_some()
+    }
+
     /// Append one event (its own transaction); a command id seen before from the same actor answers the first event.
     pub fn append_event(&self, ev: NewEvent) -> WsResult<(Value, bool)> {
         if !self.session_events {
