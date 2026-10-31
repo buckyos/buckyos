@@ -339,7 +339,24 @@
       "pdf_source": {
        "page": 1,
        "kind": "text",
-       "role": "H2"
+       "role": "H2",
+       "text_layout": {
+        "text": "1. Introduction",
+        "width": 313.8,
+        "height": 59.25,
+        "fontSize": 41,
+        "align": "left",
+        "lineHeight": null,
+        "spans": [
+         {
+          "text": "1. Introduction",
+          "x": 6,
+          "y": 43.83,
+          "width": 284.71,
+          "size": 41
+         }
+        ]
+       }
       }
      },
      "title": "1. Introduction"
@@ -370,7 +387,31 @@
       "pdf_source": {
        "page": 1,
        "kind": "text",
-       "role": "P"
+       "role": "P",
+       "text_layout": {
+        "text": "PDF import turns each page into editable objects. This paragraph is long enough to wrap onto at\nleast two or three lines in the printed document so that paragraph grouping can be tested properly.",
+        "width": 1143.82,
+        "height": 79.62,
+        "fontSize": 27.33,
+        "align": "left",
+        "lineHeight": 1.31,
+        "spans": [
+         {
+          "text": "PDF import turns each page into editable objects. This paragraph is long enough to wrap onto at",
+          "x": 6,
+          "y": 31.38,
+          "width": 1050.91,
+          "size": 27.33
+         },
+         {
+          "text": "least two or three lines in the printed document so that paragraph grouping can be tested properly.",
+          "x": 6,
+          "y": 67.25,
+          "width": 1067.75,
+          "size": 27.33
+         }
+        ]
+       }
       }
      },
      "title": "PDF import turns each page into editable objects. This paragraph is long enough to wrap onto at"
@@ -399,7 +440,24 @@
       "pdf_source": {
        "page": 1,
        "kind": "text",
-       "role": "P"
+       "role": "P",
+       "text_layout": {
+        "text": "中文段落：导入后每一页都是一个页面组，文字可以双击编辑，图片是独立对象。",
+        "width": 1055.1,
+        "height": 42.17,
+        "fontSize": 27.33,
+        "align": "left",
+        "lineHeight": null,
+        "spans": [
+         {
+          "text": "中文段落：导入后每一页都是一个页面组，文字可以双击编辑，图片是独立对象。",
+          "x": 6,
+          "y": 31.47,
+          "width": 984.05,
+          "size": 27.33
+         }
+        ]
+       }
       }
      },
      "title": "中文段落：导入后每一页都是一个页面组，文字可以双击编辑，图片是独立对象。"
@@ -429,7 +487,24 @@
       "pdf_source": {
        "page": 1,
        "kind": "text",
-       "role": "TD"
+       "role": "TD",
+       "text_layout": {
+        "text": "Name",
+        "width": 81.18,
+        "height": 42.17,
+        "fontSize": 27.33,
+        "align": "left",
+        "lineHeight": null,
+        "spans": [
+         {
+          "text": "Name",
+          "x": 6,
+          "y": 30.56,
+          "width": 65.27,
+          "size": 27.33
+         }
+        ]
+       }
       }
      },
      "title": "Name"
@@ -459,7 +534,24 @@
       "pdf_source": {
        "page": 1,
        "kind": "text",
-       "role": "TD"
+       "role": "TD",
+       "text_layout": {
+        "text": "Value",
+        "width": 77.97,
+        "height": 42.17,
+        "fontSize": 27.33,
+        "align": "left",
+        "lineHeight": null,
+        "spans": [
+         {
+          "text": "Value",
+          "x": 6,
+          "y": 30.56,
+          "width": 62.24,
+          "size": 27.33
+         }
+        ]
+       }
       }
      },
      "title": "Value"
@@ -489,7 +581,24 @@
       "pdf_source": {
        "page": 1,
        "kind": "text",
-       "role": "TD"
+       "role": "TD",
+       "text_layout": {
+        "text": "Pages",
+        "width": 79.6,
+        "height": 42.17,
+        "fontSize": 27.33,
+        "align": "left",
+        "lineHeight": null,
+        "spans": [
+         {
+          "text": "Pages",
+          "x": 6,
+          "y": 30.56,
+          "width": 63.77,
+          "size": 27.33
+         }
+        ]
+       }
       }
      },
      "title": "Pages"
@@ -519,7 +628,24 @@
       "pdf_source": {
        "page": 1,
        "kind": "text",
-       "role": "TD"
+       "role": "TD",
+       "text_layout": {
+        "text": "3",
+        "width": 26.49,
+        "height": 42.17,
+        "fontSize": 27.33,
+        "align": "left",
+        "lineHeight": null,
+        "spans": [
+         {
+          "text": "3",
+          "x": 6,
+          "y": 30.56,
+          "width": 13.67,
+          "size": 27.33
+         }
+        ]
+       }
       }
      },
      "title": "3"
@@ -549,7 +675,52 @@
       "pdf_source": {
        "page": 1,
        "kind": "text",
-       "role": "P"
+       "role": "P",
+       "text_layout": {
+        "text": "Inline code() and italic words.",
+        "width": 392.72,
+        "height": 42.17,
+        "fontSize": 27.33,
+        "align": "left",
+        "lineHeight": null,
+        "spans": [
+         {
+          "text": "Inline",
+          "x": 6,
+          "y": 30.56,
+          "width": 63.76,
+          "size": 27.33
+         },
+         {
+          "text": "code()",
+          "x": 76.61,
+          "y": 30.56,
+          "width": 98.74,
+          "size": 27.33
+         },
+         {
+          "text": "and",
+          "x": 182.18,
+          "y": 30.56,
+          "width": 39.47,
+          "size": 27.33
+         },
+         {
+          "text": "italic",
+          "x": 228.5,
+          "y": 30.56,
+          "width": 56.18,
+          "size": 27.33
+         },
+         {
+          "text": "words.",
+          "x": 291.52,
+          "y": 30.56,
+          "width": 73.65,
+          "size": 27.33
+         }
+        ]
+       }
       }
      },
      "title": "Inline code() and italic words."

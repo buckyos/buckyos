@@ -5,8 +5,8 @@
  * page. A dropped PDF first asks whether it is a file or pages. Screenshots go to test-results/aiworkspace-pdf/. */
 
 import type { Page } from '@playwright/test'
-import { mainMenu, openCanvas, test, expect, type Api } from './fixtures'
-import { deck } from './pdfFiles'
+import { mainMenu, openCanvas, openWorkspacePage, test, expect, type Api } from './fixtures'
+import { deck, spacedText } from './pdfFiles'
 
 const ALICE = 'tok-alice'
 const SHOTS = 'test-results/aiworkspace-pdf'
@@ -114,6 +114,7 @@ test('PI-01 a three-page PDF from the main menu: one canvas, page groups with ed
   await expect(page.getByTestId(`aiws-canvas-block-${groups[0].entity_id}`)).toBeVisible()
   await page.screenshot({ path: `${SHOTS}/pi01-canvas.png` })
   const titleBlock = page.getByTestId(`aiws-canvas-block-${title!.e.entity_id}`)
+  await expect(titleBlock.locator('svg.aiws-pdf-text text')).toContainText(['Quarterly Review'])
   await titleBlock.dblclick()
   const editor = page.getByTestId(`aiws-shape-edit-${title!.e.entity_id}`)
   if (!(await editor.isVisible())) await titleBlock.dblclick()
@@ -122,6 +123,8 @@ test('PI-01 a three-page PDF from the main menu: one canvas, page groups with ed
   await page.keyboard.type('Annual Review')
   await page.keyboard.press('Enter')
   await expect.poll(async () => (await api.read(ALICE, ws.workspace_id, title!.e.entity_id)).content.payload.config.text).toBe('Annual Review')
+  await expect(titleBlock.locator('svg.aiws-pdf-text')).toHaveCount(0)
+  await expect.poll(async () => (await api.read(ALICE, ws.workspace_id, title!.e.entity_id)).content.payload.config.pdf_source.text_layout).toBeUndefined()
   await page.keyboard.press('Escape')
 
   // the show: step 2 crops the stage to page 2 (a 16:9 page on a 16:9 stage fills it)
@@ -187,4 +190,53 @@ test('PI-02 a dropped PDF asks: inserted as a file, or cancelled without writing
   const fileRef = (await api.read(ALICE, ws.workspace_id, file.source_id)).content.payload.object_id
   const kept = children(after, surface.content_folder_id).find((e) => e.media_type === 'application/pdf')
   expect((await api.read(ALICE, ws.workspace_id, kept.entity_id)).content.payload.object_id).toBe(fileRef)
+})
+
+test('PI-03 editable PDF keeps fragment gaps and compressed advances after import and refresh', async ({ page, api }) => {
+  test.setTimeout(120_000)
+  const ws = await canvasWorkspace(api, `pi-03 ${Date.now()}`)
+  await openCanvas(page, ALICE, ws.workspace_id)
+  const chooser = page.waitForEvent('filechooser')
+  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-pdf')
+  await (await chooser).setFiles({ name: 'spaced.pdf', mimeType: 'application/pdf', buffer: spacedText() })
+  const dialog = page.getByTestId('aiws-pdf-dialog')
+  await expect(dialog.getByTestId('aiws-pdf-pages')).toContainText('共 1 页')
+  await dialog.getByTestId('aiws-pdf-start').click()
+  await expect(dialog).toHaveCount(0, { timeout: 60_000 })
+  const report = page.getByTestId('aiws-import-report')
+  await expect(report).toBeVisible()
+  await report.getByTestId('aiws-import-report-close').click()
+  const outline = await api.outline(ALICE, ws.workspace_id)
+  const configs = await Promise.all(outline.filter((e: Json) => e.view_type === 'shape' && !e.deleted).map(async (e: Json) => ({ id: e.entity_id, config: (await api.read(ALICE, ws.workspace_id, e.entity_id)).content.payload.config })))
+  const fragments = configs.flatMap(({ id, config }) => (config.pdf_source?.text_layout?.spans ?? []).map((span: Json) => ({ id, span })))
+  const hello = fragments.find(({ span }) => span.text === 'hello')!
+  const world = fragments.find(({ span }) => span.text === 'world')!
+  const compressed = fragments.find(({ span }) => span.text === 'MMMMMMMM')!
+  expect(hello).toBeTruthy()
+  expect(world).toBeTruthy()
+  expect(compressed).toBeTruthy()
+  expect(world.id).toBe(hello.id)
+  expect(world.span.x - hello.span.x - hello.span.width).toBeCloseTo(1.7 * 6.4, 1)
+  expect(compressed.span.width).toBeCloseTo(8 * 0.833 * 20 * 0.5 * 6.4, 1)
+  expect(compressed.span.size).toBe(128)
+  const check = async () => {
+    for (const { id, span } of [hello, world, compressed]) {
+      const rendered = page.getByTestId(`aiws-shape-${id}`).locator('svg.aiws-pdf-text text').filter({ hasText: new RegExp(`^${span.text}$`) })
+      await expect(rendered).toHaveCount(1)
+      const geometry = await rendered.evaluate((node) => {
+        const el = node as SVGTextElement
+        const first = el.getStartPositionOfChar(0), last = el.getEndPositionOfChar(el.getNumberOfChars() - 1)
+        return { x: first.x, y: first.y, advance: last.x - first.x }
+      })
+      expect(geometry.x).toBeCloseTo(span.x, 1)
+      expect(geometry.y).toBeCloseTo(span.y, 1)
+      expect(geometry.advance).toBeCloseTo(span.width, 1)
+    }
+  }
+  await check()
+  await page.screenshot({ path: `${SHOTS}/pi03-fragment-layout.png` })
+  const imported = outline.find((e: Json) => e.kind === 'surface' && e.entity_id !== 'sf-p' && !e.deleted)
+  await openWorkspacePage(page, ALICE, ws.workspace_id, imported.entity_id)
+  await page.reload()
+  await check()
 })

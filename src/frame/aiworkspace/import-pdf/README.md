@@ -34,3 +34,21 @@ cd ../fixtures/pdf/src && deno run -A make.ts && node print.mjs                 
 
 `extract_test.ts` needs `src/frame/desktop/node_modules` (pdfjs-dist 6.4.299) and is skipped without it. The Desktop
 e2e suite (`tests/aiworkspace/pdf-import.spec.ts`) drives the importer through the real app.
+
+## Editable text layout
+
+PDF text objects keep `config.pdf_source.text_layout`: the original text, paragraph box width/height,
+font size, alignment, line height, and `spans` with `text`, `x`, `y` (baseline), `width`, and `size`.
+Span coordinates are relative to the unrotated paragraph box; rotation stays on the native canvas object.
+The Desktop draws positioned SVG text with each source advance as `textLength`, so font substitution and
+inferred spaces do not move neighbouring fragments. The normal text/config remains editable.
+
+Changing the text removes this source layout. A text, font-size, alignment, line-height, wrapping, vertical-alignment, label-position, or label-background
+mismatch disables it, as does malformed metadata. Ordinary text objects use their normal renderer.
+PDF.js explicit line-end markers prevent adjacent lines from being joined again. Existing imports need
+reimporting to acquire the geometry; this does not reconstruct missing metadata from saved canvases.
+
+A paragraph is limited to 4096 spans and 60 KiB of serialized config. If any paragraph exceeds the limit,
+the page's text stays in the original raster and the report explains the fallback, preserving the source
+operators rather than writing an invalid config or silently dropping text. Mixed colours/weights still
+use the paragraph's main style. This does not embed the PDF's original fonts or infer semantic word boundaries.

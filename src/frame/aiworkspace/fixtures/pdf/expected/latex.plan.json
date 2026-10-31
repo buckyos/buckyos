@@ -75,7 +75,24 @@
       "font_family": "serif",
       "pdf_source": {
        "page": 1,
-       "kind": "text"
+       "kind": "text",
+       "text_layout": {
+        "text": "A Short Article on Import",
+        "width": 499.74,
+        "height": 59.52,
+        "fontSize": 41.21,
+        "align": "left",
+        "lineHeight": null,
+        "spans": [
+         {
+          "text": "A Short Article on Import",
+          "x": 6,
+          "y": 44.04,
+          "width": 460.13,
+          "size": 41.21
+         }
+        ]
+       }
       }
      },
      "title": "A Short Article on Import"
@@ -104,7 +121,24 @@
       "font_family": "serif",
       "pdf_source": {
        "page": 1,
-       "kind": "text"
+       "kind": "text",
+       "text_layout": {
+        "text": "A. N. Author",
+        "width": 174.72,
+        "height": 44.36,
+        "fontSize": 29.09,
+        "align": "left",
+        "lineHeight": null,
+        "spans": [
+         {
+          "text": "A. N. Author",
+          "x": 6,
+          "y": 32.26,
+          "width": 153.51,
+          "size": 29.09
+         }
+        ]
+       }
       }
      },
      "title": "A. N. Author"
@@ -134,7 +168,24 @@
       "font_family": "serif",
       "pdf_source": {
        "page": 1,
-       "kind": "text"
+       "kind": "text",
+       "text_layout": {
+        "text": "1 Introduction",
+        "width": 210.74,
+        "height": 44.36,
+        "fontSize": 29.09,
+        "align": "left",
+        "lineHeight": null,
+        "spans": [
+         {
+          "text": "1 Introduction",
+          "x": 6,
+          "y": 32.26,
+          "width": 187.49,
+          "size": 29.09
+         }
+        ]
+       }
       }
      },
      "title": "1 Introduction"
@@ -164,7 +215,45 @@
       "line_height": 1.2,
       "pdf_source": {
        "page": 1,
-       "kind": "text"
+       "kind": "text",
+       "text_layout": {
+        "text": "  This is the first paragraph of a short article, typeset the way LaTeX does it.\nEvery line is justified: the space between words varies from line to line, and kerning\nmoves single letters by a few thousandths of an em, as in Word and Type.\nThe last line of a paragraph is shorter.",
+        "width": 874.36,
+        "height": 124.36,
+        "fontSize": 24.24,
+        "align": "left",
+        "lineHeight": 1.2,
+        "spans": [
+         {
+          "text": "This is the first paragraph of a short article, typeset the way LaTeX does it.",
+          "x": 42.36,
+          "y": 26.95,
+          "width": 727.13,
+          "size": 24.24
+         },
+         {
+          "text": "Every line is justified: the space between words varies from line to line, and kerning",
+          "x": 6,
+          "y": 56.04,
+          "width": 813.55,
+          "size": 24.24
+         },
+         {
+          "text": "moves single letters by a few thousandths of an em, as in Word and Type.",
+          "x": 6,
+          "y": 85.13,
+          "width": 716.78,
+          "size": 24.24
+         },
+         {
+          "text": "The last line of a paragraph is shorter.",
+          "x": 6,
+          "y": 114.22,
+          "width": 367.59,
+          "size": 24.24
+         }
+        ]
+       }
       }
      },
      "title": "This is the first paragraph of a short article, typeset the way LaTeX does it."
@@ -194,7 +283,31 @@
       "line_height": 1.2,
       "pdf_source": {
        "page": 1,
-       "kind": "text"
+       "kind": "text",
+       "text_layout": {
+        "text": "  A second paragraph starts with the same indent and runs over two lines so that the\nimporter has to keep it apart from the first one.",
+        "width": 896.13,
+        "height": 66.18,
+        "fontSize": 24.24,
+        "align": "left",
+        "lineHeight": 1.2,
+        "spans": [
+         {
+          "text": "A second paragraph starts with the same indent and runs over two lines so that the",
+          "x": 42.36,
+          "y": 26.95,
+          "width": 797.72,
+          "size": 24.24
+         },
+         {
+          "text": "importer has to keep it apart from the first one.",
+          "x": 6,
+          "y": 56.04,
+          "width": 453.79,
+          "size": 24.24
+         }
+        ]
+       }
       }
      },
      "title": "A second paragraph starts with the same indent and runs over two lines so that the"
@@ -224,7 +337,24 @@
       "font_family": "serif",
       "pdf_source": {
        "page": 1,
-       "kind": "text"
+       "kind": "text",
+       "text_layout": {
+        "text": "E = mc",
+        "width": 87.86,
+        "height": 38.3,
+        "fontSize": 24.24,
+        "align": "left",
+        "lineHeight": null,
+        "spans": [
+         {
+          "text": "E = mc",
+          "x": 6,
+          "y": 27.55,
+          "width": 71.56,
+          "size": 24.24
+         }
+        ]
+       }
       }
      },
      "title": "E = mc"
@@ -253,7 +383,24 @@
       "font_family": "serif",
       "pdf_source": {
        "page": 1,
-       "kind": "text"
+       "kind": "text",
+       "text_layout": {
+        "text": "2",
+        "width": 20.99,
+        "height": 29.21,
+        "fontSize": 16.97,
+        "align": "left",
+        "lineHeight": null,
+        "spans": [
+         {
+          "text": "2",
+          "x": 6,
+          "y": 20.49,
+          "width": 8.48,
+          "size": 16.97
+         }
+        ]
+       }
       }
      },
      "title": "2"
@@ -371,7 +518,24 @@
       "font_family": "serif",
       "pdf_source": {
        "page": 1,
-       "kind": "text"
+       "kind": "text",
+       "text_layout": {
+        "text": "vertical axis",
+        "width": 124.4,
+        "height": 35.27,
+        "fontSize": 21.82,
+        "align": "left",
+        "lineHeight": null,
+        "spans": [
+         {
+          "text": "vertical axis",
+          "x": 6,
+          "y": 25.2,
+          "width": 106.04,
+          "size": 21.82
+         }
+        ]
+       }
       }
      },
      "title": "vertical axis"
@@ -401,7 +565,24 @@
       "font_family": "serif",
       "pdf_source": {
        "page": 1,
-       "kind": "text"
+       "kind": "text",
+       "text_layout": {
+        "text": "Figure 1: A box, a circle and a line.",
+        "width": 381.7,
+        "height": 38.3,
+        "fontSize": 24.24,
+        "align": "left",
+        "lineHeight": null,
+        "spans": [
+         {
+          "text": "Figure 1: A box, a circle and a line.",
+          "x": 6,
+          "y": 27.55,
+          "width": 348.78,
+          "size": 24.24
+         }
+        ]
+       }
       }
      },
      "title": "Figure 1: A box, a circle and a line."
@@ -430,7 +611,24 @@
       "font_family": "serif",
       "pdf_source": {
        "page": 1,
-       "kind": "text"
+       "kind": "text",
+       "text_layout": {
+        "text": "1 A footnote in a smaller size.",
+        "width": 259.23,
+        "height": 32.24,
+        "fontSize": 19.39,
+        "align": "left",
+        "lineHeight": null,
+        "spans": [
+         {
+          "text": "1 A footnote in a smaller size.",
+          "x": 6,
+          "y": 22.84,
+          "width": 233.23,
+          "size": 19.39
+         }
+        ]
+       }
       }
      },
      "title": "1 A footnote in a smaller size."
@@ -459,7 +657,24 @@
       "font_family": "serif",
       "pdf_source": {
        "page": 1,
-       "kind": "text"
+       "kind": "text",
+       "text_layout": {
+        "text": "1",
+        "width": 24.85,
+        "height": 38.3,
+        "fontSize": 24.24,
+        "align": "left",
+        "lineHeight": null,
+        "spans": [
+         {
+          "text": "1",
+          "x": 6,
+          "y": 27.55,
+          "width": 12.12,
+          "size": 24.24
+         }
+        ]
+       }
       }
      },
      "title": "1"
@@ -556,7 +771,24 @@
       "font_family": "serif",
       "pdf_source": {
        "page": 2,
-       "kind": "text"
+       "kind": "text",
+       "text_layout": {
+        "text": "2 Results",
+        "width": 138.77,
+        "height": 44.36,
+        "fontSize": 29.09,
+        "align": "left",
+        "lineHeight": null,
+        "spans": [
+         {
+          "text": "2 Results",
+          "x": 6,
+          "y": 32.26,
+          "width": 119.59,
+          "size": 29.09
+         }
+        ]
+       }
       }
      },
      "title": "2 Results"
@@ -586,7 +818,31 @@
       "line_height": 1.2,
       "pdf_source": {
        "page": 2,
-       "kind": "text"
+       "kind": "text",
+       "text_layout": {
+        "text": "  The second page has one more paragraph and a table drawn with rules.\nIts cells are separate lines of text.",
+        "width": 777.85,
+        "height": 66.18,
+        "fontSize": 24.24,
+        "align": "left",
+        "lineHeight": 1.2,
+        "spans": [
+         {
+          "text": "The second page has one more paragraph and a table drawn with rules.",
+          "x": 42.36,
+          "y": 26.95,
+          "width": 686.13,
+          "size": 24.24
+         },
+         {
+          "text": "Its cells are separate lines of text.",
+          "x": 6,
+          "y": 56.04,
+          "width": 322.47,
+          "size": 24.24
+         }
+        ]
+       }
       }
      },
      "title": "The second page has one more paragraph and a table drawn with rules."
@@ -682,7 +938,24 @@
       "font_family": "serif",
       "pdf_source": {
        "page": 2,
-       "kind": "text"
+       "kind": "text",
+       "text_layout": {
+        "text": "Name",
+        "width": 76.22,
+        "height": 38.3,
+        "fontSize": 24.24,
+        "align": "left",
+        "lineHeight": null,
+        "spans": [
+         {
+          "text": "Name",
+          "x": 6,
+          "y": 27.55,
+          "width": 60.58,
+          "size": 24.24
+         }
+        ]
+       }
       }
      },
      "title": "Name"
@@ -712,7 +985,24 @@
       "font_family": "serif",
       "pdf_source": {
        "page": 2,
-       "kind": "text"
+       "kind": "text",
+       "text_layout": {
+        "text": "Value",
+        "width": 76.24,
+        "height": 38.3,
+        "fontSize": 24.24,
+        "align": "left",
+        "lineHeight": null,
+        "spans": [
+         {
+          "text": "Value",
+          "x": 6,
+          "y": 27.55,
+          "width": 60.61,
+          "size": 24.24
+         }
+        ]
+       }
       }
      },
      "title": "Value"
@@ -741,7 +1031,24 @@
       "font_family": "serif",
       "pdf_source": {
        "page": 2,
-       "kind": "text"
+       "kind": "text",
+       "text_layout": {
+        "text": "Pages",
+        "width": 71.95,
+        "height": 38.3,
+        "fontSize": 24.24,
+        "align": "left",
+        "lineHeight": null,
+        "spans": [
+         {
+          "text": "Pages",
+          "x": 6,
+          "y": 27.55,
+          "width": 56.56,
+          "size": 24.24
+         }
+        ]
+       }
       }
      },
      "title": "Pages"
@@ -770,7 +1077,24 @@
       "font_family": "serif",
       "pdf_source": {
        "page": 2,
-       "kind": "text"
+       "kind": "text",
+       "text_layout": {
+        "text": "2",
+        "width": 24.85,
+        "height": 38.3,
+        "fontSize": 24.24,
+        "align": "left",
+        "lineHeight": null,
+        "spans": [
+         {
+          "text": "2",
+          "x": 6,
+          "y": 27.55,
+          "width": 12.12,
+          "size": 24.24
+         }
+        ]
+       }
       }
      },
      "title": "2"
@@ -799,7 +1123,24 @@
       "font_family": "serif",
       "pdf_source": {
        "page": 2,
-       "kind": "text"
+       "kind": "text",
+       "text_layout": {
+        "text": "2",
+        "width": 24.85,
+        "height": 38.3,
+        "fontSize": 24.24,
+        "align": "left",
+        "lineHeight": null,
+        "spans": [
+         {
+          "text": "2",
+          "x": 6,
+          "y": 27.55,
+          "width": 12.12,
+          "size": 24.24
+         }
+        ]
+       }
       }
      },
      "title": "2"
