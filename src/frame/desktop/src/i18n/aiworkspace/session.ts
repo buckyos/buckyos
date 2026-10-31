@@ -98,6 +98,8 @@ export const en: Record<string, string> = {
   'aiworkspace.session.voice.unavailable': 'Voice is not available: {{reason}}. The rest of the session works; the recording will have no voice.',
   'aiworkspace.session.voice.failed': 'The microphone could not be sent: {{detail}}',
   'aiworkspace.session.voice.listenFailed': 'The voice could not be received: {{detail}}',
+  'aiworkspace.session.voice.unreachable': 'The host’s voice port {{hosts}} (UDP) cannot be reached: open this UDP port in the host’s firewall. Until then the session has no voice and the recording has none either.',
+  'aiworkspace.session.voice.lost': 'The voice connection to the host was lost. Broadcast again to go on.',
 
   // media
   'aiworkspace.session.media.loading': 'Preparing the media…',
@@ -286,6 +288,8 @@ export const zh: Record<string, string> = {
   'aiworkspace.session.voice.unavailable': '语音不可用：{{reason}}。公开课的其他功能照常；记录里不会有语音。',
   'aiworkspace.session.voice.failed': '没能发送麦克风：{{detail}}',
   'aiworkspace.session.voice.listenFailed': '没能接收语音：{{detail}}',
+  'aiworkspace.session.voice.unreachable': '连不上主机的语音端口 {{hosts}}（UDP）：请在主机防火墙放行这个 UDP 端口。放行之前公开课没有语音，记录里也不会有。',
+  'aiworkspace.session.voice.lost': '与主机的语音连接断开了，请重新广播语音。',
 
   'aiworkspace.session.media.loading': '正在准备媒体…',
   'aiworkspace.session.media.tapToPlay': '点一下跟着播放',

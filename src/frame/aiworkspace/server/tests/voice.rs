@@ -165,7 +165,26 @@ async fn the_presenters_voice_reaches_the_audience_through_the_host_and_is_recor
         assert_eq!(s["data"]["media_type"], "audio/ogg", "{s}");
         assert!(s["data"]["t_rel_end"].as_i64().unwrap() > s["data"]["t_rel_start"].as_i64().unwrap());
     }
-    assert!(events["events"].as_array().unwrap().iter().any(|e| e["type"] == json!("voice.start")));
+    let kinds: Vec<&str> = events["events"].as_array().unwrap().iter().filter_map(|e| e["type"].as_str()).filter(|t| t.starts_with("voice.")).collect();
+    assert_eq!(kinds.first(), Some(&"voice.start"), "{kinds:?}");
+    assert!(kinds.contains(&"voice.stop"), "{kinds:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_offer_whose_packets_never_reach_the_port_puts_no_voice_on_the_time_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let srv = Server::start(dir.path(), "0").await;
+    let (sid, _) = srv.session().await;
+    srv.rpc("tok-alice", "session.start", json!({ "session_id": sid })).await;
+    // a firewall in front of the port: the answer comes back over the channel, no packet goes out
+    let (_alice, offer, _pending) = Peer::new(Direction::SendOnly);
+    let answer = srv.rpc("tok-alice", "session.rtc", json!({ "session_id": sid, "op": "offer", "sdp": offer })).await;
+    assert_eq!(answer["role"], "publish", "{answer}");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    srv.rpc("tok-alice", "session.rtc", json!({ "session_id": sid, "op": "close" })).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let events = srv.rpc("tok-bob", "session.events", json!({ "session_id": sid, "after": 0 })).await;
+    assert!(!events["events"].as_array().unwrap().iter().any(|e| e["type"].as_str().is_some_and(|t| t.starts_with("voice."))), "{events}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

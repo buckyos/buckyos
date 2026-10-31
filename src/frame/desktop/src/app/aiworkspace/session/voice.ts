@@ -1,11 +1,35 @@
 /* The voice of a session (第四期规划 §7.3.1): the presenter sends the microphone to the Workspace host over WebRTC, the
  * audience receives it from there. Signalling is `session.rtc` on the session channel; the host is ICE-lite, so the
- * offer needs no candidates of this side. A device change (Bluetooth headset in or out) replaces the track without a
- * new connection and is put on the time line. */
+ * offer needs no candidates of this side. The voice is on only once the connection to the host is up: a media port the
+ * packets cannot reach is said (Q22), not shown as a microphone that is on. A device change (Bluetooth headset in or
+ * out) replaces the track without a new connection and is put on the time line. */
 
 import type { SessionChannel } from './channel'
 
 const AUDIO: MediaTrackConstraints = { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+const CONNECT_MS = 10_000
+
+/** The host's media port did not answer (a firewall in between, usually). */
+export class VoiceUnreachable extends Error {
+  constructor() { super('the media port of the host could not be reached') }
+}
+
+function connected(pc: RTCPeerConnection): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let timer = 0
+    const check = () => {
+      const s = pc.connectionState
+      if (s !== 'connected' && s !== 'failed' && s !== 'closed') return
+      window.clearTimeout(timer)
+      pc.removeEventListener('connectionstatechange', check)
+      if (s === 'connected') resolve()
+      else reject(new VoiceUnreachable())
+    }
+    timer = window.setTimeout(() => { pc.removeEventListener('connectionstatechange', check); reject(new VoiceUnreachable()) }, CONNECT_MS)
+    pc.addEventListener('connectionstatechange', check)
+    check()
+  })
+}
 
 async function negotiate(channel: SessionChannel, pc: RTCPeerConnection, publish: boolean): Promise<void> {
   const offer = await pc.createOffer()
@@ -19,13 +43,16 @@ export class VoicePublisher {
   private stream: MediaStream | null = null
   private sender: RTCRtpSender | null = null
   private readonly channel: SessionChannel
+  private readonly onLost: () => void
   private readonly onDevice = () => { void this.switchDevice() }
   /** The level meter's analyser of the microphone. */
   analyser: AnalyserNode | null = null
   private audio: AudioContext | null = null
 
-  constructor(channel: SessionChannel) {
+  /** `onLost`: the connection went down after it was up. */
+  constructor(channel: SessionChannel, onLost: () => void) {
     this.channel = channel
+    this.onLost = onLost
   }
 
   async start(): Promise<void> {
@@ -40,7 +67,14 @@ export class VoicePublisher {
       params.encodings[0].maxBitrate = 40_000
       await this.sender.setParameters(params).catch(() => undefined)
     }
-    await negotiate(this.channel, pc, true)
+    try {
+      await negotiate(this.channel, pc, true)
+      await connected(pc)
+    } catch (error) {
+      await this.stop()
+      throw error
+    }
+    pc.addEventListener('connectionstatechange', () => { if (pc === this.pc && pc.connectionState === 'failed') this.onLost() })
     navigator.mediaDevices.addEventListener('devicechange', this.onDevice)
     try {
       this.audio = new AudioContext()
@@ -97,7 +131,13 @@ export class VoiceListener {
       this.element.srcObject = event.streams[0] ?? new MediaStream([event.track])
       void this.element.play().catch(() => undefined)
     }
-    await negotiate(this.channel, pc, false)
+    try {
+      await negotiate(this.channel, pc, false)
+      await connected(pc)
+    } catch (error) {
+      await this.stop()
+      throw error
+    }
   }
 
   get state(): RTCPeerConnectionState { return this.pc?.connectionState ?? 'closed' }

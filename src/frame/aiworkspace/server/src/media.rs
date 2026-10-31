@@ -6,7 +6,9 @@
 //! A host whose port cannot be bound says so in `session.get.voice_service` — there is no fallback (Q22).
 //!
 //! Recording: the Opus packets the presenter sends are written as they arrive into Ogg Opus segments of 10 s of
-//! demonstration time; each segment becomes an asset of the run Workspace and a `voice.segment` event. Silences the
+//! demonstration time; each segment becomes an asset of the run Workspace and a `voice.segment` event. `voice.start`
+//! is put on the time line when the presenter's connection is up, not at its offer: an offer whose packets never
+//! reach the port leaves no voice on the time line. Silences the
 //! sender left out (DTX) are written as 20 ms silence frames, so a segment's duration is its time on the line; lost
 //! packets are not concealed, only counted (`lost_ms`).
 
@@ -59,6 +61,8 @@ struct Recorder {
     started_ms: i64,
     seg: Option<Segment>,
     index: u64,
+    /// `voice.start` is on the time line.
+    on: bool,
 }
 
 struct Segment {
@@ -243,6 +247,14 @@ async fn run(state: Weak<AppState>, sockets: Vec<Arc<tokio::net::UdpSocket>>, mu
                     }
                     Ok(Output::Event(e)) => match e {
                         Event::IceConnectionStateChange(IceConnectionState::Disconnected) => peer.rtc.disconnect(),
+                        Event::Connected if peer.publish => {
+                            if let (Some(rec), Some(st)) = (recorders.get_mut(&peer.key.session), state.upgrade()) {
+                                if !rec.on {
+                                    rec.on = true;
+                                    event(&st, &peer.key.session, &peer.key.principal, "voice.start", json!({}));
+                                }
+                            }
+                        }
                         Event::MediaAdded(m) => {
                             if !peer.publish {
                                 peer.mid = Some(m.mid);
@@ -284,7 +296,9 @@ async fn run(state: Weak<AppState>, sockets: Vec<Arc<tokio::net::UdpSocket>>, mu
                     if let Some(done) = rec.close() {
                         finish(&st, &key.session, done);
                     }
-                    event(&st, &key.session, &key.principal, "voice.stop", json!({}));
+                    if rec.on {
+                        event(&st, &key.session, &key.principal, "voice.stop", json!({}));
+                    }
                 }
             }
         }
@@ -313,12 +327,8 @@ async fn run(state: Weak<AppState>, sockets: Vec<Arc<tokio::net::UdpSocket>>, mu
                         })();
                         match result {
                             Ok((rtc, answer)) => {
-                                if publish {
-                                    let st = state.upgrade();
-                                    if let (Some(st), Some(t0)) = (st, started_ms) {
-                                        recorders.entry(key.session.clone()).or_insert(Recorder { started_ms: t0, seg: None, index: 0 });
-                                        event(&st, &key.session, &key.principal, "voice.start", json!({}));
-                                    }
+                                if let (true, Some(t0)) = (publish, started_ms) {
+                                    recorders.entry(key.session.clone()).or_insert(Recorder { started_ms: t0, seg: None, index: 0, on: false });
                                 }
                                 peers.push(Peer { key, rtc, publish, mid: None });
                                 let _ = reply.send(Ok(answer));

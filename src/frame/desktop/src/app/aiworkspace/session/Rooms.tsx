@@ -16,10 +16,16 @@ import { LiveStage } from './LiveStage'
 import type { RoomModel, RoomSnapshot } from './room'
 import { stepOf, useSteps } from './steps'
 import type { Invite, SessionParticipant, SessionStage } from './types'
-import { VoiceListener, VoicePublisher } from './voice'
+import { VoiceListener, VoicePublisher, VoiceUnreachable } from './voice'
 import { CHANNEL_KEY, LINK_KEY, STATE_KEY } from './labels'
 
 const INK_COLORS = ['#ef4444', '#2563eb', '#16a34a', '#111827', '#f59e0b']
+
+/** The media addresses a browser elsewhere would use (the loopback one is for the host itself). */
+function mediaHosts(welcome: Welcome): string {
+  const service = welcome.session.voice_service
+  return (service?.hosts ?? []).filter((h) => !h.startsWith('127.') && !h.startsWith('[::1]')).join(', ') || `UDP ${service?.port ?? ''}`
+}
 const SYMBOLS = ['👍', '❓', '👏', '💡']
 
 function sessionLink(welcome: Welcome, token: string | null): string {
@@ -105,8 +111,11 @@ export function PresenterRoom({ store, path, channel, welcome, model, snap }: { 
   }
   const toggleVoice = async () => {
     if (voice) { await voice.stop(); setVoice(null); return }
-    const v = new VoicePublisher(channel)
-    try { await v.start(); setVoice(v); setMuted(false) } catch (error) { setProblem(t('aiworkspace.session.voice.failed', { detail: describeError(error) })) }
+    setProblem(null)
+    const v = new VoicePublisher(channel, () => { setVoice(null); setProblem(t('aiworkspace.session.voice.lost')) })
+    try { await v.start(); setVoice(v); setMuted(false) } catch (error) {
+      setProblem(error instanceof VoiceUnreachable ? t('aiworkspace.session.voice.unreachable', { hosts: mediaHosts(welcome) }) : t('aiworkspace.session.voice.failed', { detail: describeError(error) }))
+    }
   }
   const takeover = async () => {
     try { await channel.call('session.takeover', {}) } catch (error) { setProblem(describeError(error)) }
@@ -282,9 +291,11 @@ export function AudienceRoom({ store, path, channel, welcome, snap, following, s
     const l = new VoiceListener(channel)
     listener.current = l
     let alive = true
-    l.start().then(() => { if (alive) setVoiceOn(true) }, (e: unknown) => { if (alive && !display) setProblem(t('aiworkspace.session.voice.listenFailed', { detail: describeError(e) })) })
+    l.start().then(() => { if (alive) setVoiceOn(true) }, (e: unknown) => {
+      if (alive && !display) setProblem(e instanceof VoiceUnreachable ? t('aiworkspace.session.voice.unreachable', { hosts: mediaHosts(welcome) }) : t('aiworkspace.session.voice.listenFailed', { detail: describeError(e) }))
+    })
     return () => { alive = false; if (listener.current === l) listener.current = null; void l.stop() }
-  }, [wantsVoice, channel, display, t])
+  }, [wantsVoice, channel, display, welcome, t])
 
   const react = async (params: Record<string, unknown>) => {
     try { await channel.call('session.react', { command_id: randomId('re'), ...params }); setProblem(null) } catch (e) { setProblem(describeError(e)) }
