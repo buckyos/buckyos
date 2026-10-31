@@ -236,7 +236,7 @@ In a session `my_responses` is one table per participant (`participant:` scope, 
 **Timeline (§6).** A run Workspace's `doc.sqlite` has `session_events` (`seq`, `t_rel_ms`, `received_at`, `actor`, `scope`
 `public | presenter | participant:<p> | diag`, `track`, `type`, `command_id`, `schema`, `data`, `commit_seq`); every Commit
 writes its `commit` event inside its own transaction (no "data written, event not" window). Demonstration time is the
-service's clock since `session.start`. `session.events { after, limit?, until_t_rel_ms? }` pages it as the caller may read
+service's clock since `session.start`; it stops at `session.end` (the length of the replay and the archive's `duration_ms`). `session.events { after, limit?, until_t_rel_ms? }` pages it as the caller may read
 it (a Commit only when it touched something readable); `session.watch { after, timeout_ms? }` is the long poll.
 
 **The channel (Q04).** `GET /kapi/aiworkspace/session/ws`: first `hello { session_id, token?, link?, terminal_id, purpose:
@@ -244,7 +244,8 @@ presenter|audience|display|prompter, after?, name? }`, answered by `welcome { se
 server_ms, t_rel_ms }`, the timeline after `after`, then live `event`s (reviewers get everything; others public events and
 their own; a Commit's details only to reviewers). The client sends `ping { c }` (→ `pong { c, server_ms, t_rel_ms }`; online
 = a heartbeat within 30 s), `follow { on }`, and `call { id, method, params }` for any `session.*` method (→ `result { id,
-result | error }`). Presence (`presence.join` / `presence.leave`, presenter track) follows the first and last connection.
+result | error }`). Presence (`presence.join` / `presence.leave`, presenter track) follows the first and last connection
+while the session runs; after `session.end` people watching the replay are not recorded.
 
 **After the class (§8).** `session.save` (owner, after `session.end`) writes the archive manifest
 (`buckyos.ai-workspace/session-archive/1`: baseline, final snapshot, event range, voice segments, gaps, missing objects,
@@ -254,6 +255,12 @@ releases it. `session.replay` returns the baseline rows as the caller may read t
 `doc.get_changes` rows of the run Workspace up to any `seq` (the WASM replica) and the timeline's samples on top.
 `session.post { kind: comment|rating|moment, body?, score?, t_rel_ms? }`, `session.list_posts` (ratings only to the
 presenter and their author), `session.delete_post`.
+
+**Lists.** `session.list { workspace_id }` (历次演示): the sessions of one courseware the caller owns, presents or joined
+(all of them for its managers). `session.list_mine { limit? }` (我的公开课, 100 by default, at most 500): the sessions the
+caller owns, presents or joined across Workspaces, newest first, each with `my_role` (`presenter`, else `owner`, else
+`audience`) and, when the deployment knows its public base, `url` — the room on its courseware's origin
+(`<public_base>/<slug>?session=<id>`). Neither is a channel call.
 
 ## Connector (连接线方案 C1)
 
@@ -952,7 +959,7 @@ lands. The list is `server/src/lib.rs` `METHOD_LEVELS`; this table mirrors it.
 | `ext.build`, `ext.export`, `ext.install`, `ext.list_library`, `ext.uninstall`, `ext.library_bundle`, `ext.import`, `ext.pack` | experimental | see “Extension controls” |
 | `lock.acquire` / `lock.renew` / `lock.release` / `lock.break` / `lock.list` | stable | `entity_ids[]`, `session_id`; `lock_ids[]`; `entity_id` |
 | `show.start` / `show.heartbeat` / `show.publish` / `show.command` / `show.watch` / `show.notes` / `show.end` | internal | see “Non-public shows” |
-| `session.create`, `session.list`, `session.get`, `session.join`, `session.start`, `session.end`, `session.save`, `session.delete`, `session.set_access` | experimental | see “Presentation sessions” |
+| `session.create`, `session.list`, `session.list_mine`, `session.get`, `session.join`, `session.start`, `session.end`, `session.save`, `session.delete`, `session.set_access` | experimental | see “Presentation sessions” |
 | `session.invite`, `session.list_invites`, `session.revoke_invite`, `session.takeover`, `session.command`, `session.sample`, `session.notes`, `session.rtc` | experimental | see “Presentation sessions” |
 | `session.task`, `session.claim`, `session.respond`, `session.review`, `session.publish`, `session.react`, `session.feed_sample` | experimental | see “Presentation sessions” |
 | `session.events`, `session.watch`, `session.replay`, `session.post`, `session.list_posts`, `session.delete_post` | experimental | see “Presentation sessions” |

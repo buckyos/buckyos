@@ -538,6 +538,7 @@ pub const METHOD_LEVELS: &[(&str, &str)] = &[
     ("asset.stream_url", "experimental"),
     ("session.create", "experimental"),
     ("session.list", "experimental"),
+    ("session.list_mine", "experimental"),
     ("session.get", "experimental"),
     ("session.join", "experimental"),
     ("session.start", "experimental"),

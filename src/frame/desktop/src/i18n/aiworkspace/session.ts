@@ -43,6 +43,15 @@ export const en: Record<string, string> = {
   'aiworkspace.session.create.open': 'Open',
   'aiworkspace.session.create.replay': 'Replay',
 
+  // my sessions, on the workspace list
+  'aiworkspace.session.mine.title': 'My public classes',
+  'aiworkspace.session.mine.empty': 'Public classes you create, present or join appear here.',
+  'aiworkspace.session.mine.loadFailed': 'Your public classes could not be loaded: {{error}}',
+  'aiworkspace.session.mine.from': 'from {{workspace}}',
+  'aiworkspace.session.mine.role.presenter': 'Presenting',
+  'aiworkspace.session.mine.role.owner': 'Organized',
+  'aiworkspace.session.mine.role.audience': 'Attended',
+
   // the presenter
   'aiworkspace.session.presenter.controls': 'Session controls',
   'aiworkspace.session.presenter.prev': 'Previous',
@@ -226,6 +235,14 @@ export const zh: Record<string, string> = {
   'aiworkspace.session.create.history': '这个工作区的历次公开课',
   'aiworkspace.session.create.open': '打开',
   'aiworkspace.session.create.replay': '回放',
+
+  'aiworkspace.session.mine.title': '我的公开课',
+  'aiworkspace.session.mine.empty': '你发起、主讲或参加过的公开课会出现在这里。',
+  'aiworkspace.session.mine.loadFailed': '没能读取我的公开课：{{error}}',
+  'aiworkspace.session.mine.from': '来自 {{workspace}}',
+  'aiworkspace.session.mine.role.presenter': '我主讲',
+  'aiworkspace.session.mine.role.owner': '我发起',
+  'aiworkspace.session.mine.role.audience': '我参加',
 
   'aiworkspace.session.presenter.controls': '公开课控制',
   'aiworkspace.session.presenter.prev': '上一步',

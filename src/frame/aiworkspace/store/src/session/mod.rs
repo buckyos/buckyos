@@ -705,6 +705,19 @@ impl Service {
         Ok(json!({ "ok": true, "sessions": out }))
     }
 
+    /// `session.list_mine { limit? }` (我的公开课): the sessions the caller owns, presents or joined, across Workspaces,
+    /// newest first; `my_role` says which (`presenter` before `owner` before `audience`).
+    pub fn session_list_mine(&self, caller: &Caller, limit: usize) -> WsResult<Value> {
+        let mut out = Vec::new();
+        for s in self.sessions.list_for_principal(&caller.principal, limit)? {
+            let role = if s.presenter == caller.principal { Role::Presenter } else if s.owner == caller.principal { Role::Owner } else { Role::Participant };
+            let mut v = session_json(&s, Some(role));
+            v["my_role"] = json!(role.as_str());
+            out.push(v);
+        }
+        Ok(json!({ "ok": true, "sessions": out }))
+    }
+
     /// Run `f` on the session's run Workspace.
     pub fn with_run<T>(&self, s: &SessionRow, f: impl FnOnce(&mut Workspace) -> WsResult<T>) -> WsResult<T> {
         if !s.alive() {

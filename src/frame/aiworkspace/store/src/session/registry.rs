@@ -257,6 +257,18 @@ impl Sessions {
         })
     }
 
+    /// The sessions `principal` owns, presents or joined, across Workspaces, newest first.
+    pub fn list_for_principal(&self, principal: &str, limit: usize) -> WsResult<Vec<SessionRow>> {
+        self.with(|c| {
+            let mut st = c.prepare(&format!(
+                "SELECT {SESSION_COLS} FROM sessions s WHERE deleted_ms IS NULL AND (owner = ?1 OR presenter = ?1 OR EXISTS \
+                 (SELECT 1 FROM session_participants p WHERE p.session_id = s.session_id AND p.principal = ?1)) ORDER BY created_ms DESC LIMIT ?2"
+            ))?;
+            let rows = st.query_map(params![principal, limit as i64], session_row)?.collect::<rusqlite::Result<Vec<_>>>();
+            rows
+        })
+    }
+
     /// Sessions in one of `states` (the sweeper and the start-up recovery).
     pub fn in_states(&self, states: &[&str]) -> WsResult<Vec<SessionRow>> {
         let list = states.iter().map(|s| format!("'{s}'")).collect::<Vec<_>>().join(",");

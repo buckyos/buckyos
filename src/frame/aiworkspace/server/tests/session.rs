@@ -40,6 +40,7 @@ impl Server {
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let child = Command::new(env!("CARGO_BIN_EXE_aiworkspace"))
             .arg("--data-dir").arg(dir.join("data")).arg("--listen").arg(format!("127.0.0.1:{port}")).arg("--auth-file").arg(&auth)
+            .arg("--public-base").arg("http://aiws-{workspace_id}.localhost:4120")
             .arg("--log-level").arg("warn").env_remove("AIWS_FAILPOINT")
             .stdout(Stdio::null()).stderr(Stdio::null())
             .spawn()
@@ -316,4 +317,20 @@ async fn a_room_from_a_workspace_runs_over_the_channel_and_survives_a_restart() 
     // the sessions of the courseware (历次演示)
     let list = srv.ok("tok-alice", "session.list", json!({ "workspace_id": src })).await;
     assert_eq!(list["sessions"].as_array().unwrap().len(), 1);
+    // my sessions across Workspaces (我的公开课): the owner presenting, a participant; someone who never joined has none
+    let mine = srv.ok("tok-alice", "session.list_mine", json!({})).await;
+    let mine = mine["sessions"].as_array().unwrap();
+    assert_eq!(mine.len(), 1, "{mine:?}");
+    assert_eq!(mine[0]["session_id"], json!(sid));
+    assert_eq!(mine[0]["my_role"], "presenter");
+    let host = format!("http://aiws-{}.localhost:4120/", src.strip_prefix("ws_").unwrap());
+    let url = mine[0]["url"].as_str().unwrap();
+    assert!(url.starts_with(&host) && url.ends_with(&format!("?session={sid}")), "{url}");
+    let bobs = srv.ok("tok-bob", "session.list_mine", json!({})).await;
+    assert_eq!(bobs["sessions"][0]["my_role"], "audience", "{bobs}");
+    assert!(bobs["sessions"][0].get("baseline").is_none(), "{bobs}");
+    let other = srv.ok("tok-carol", "session.list_mine", json!({})).await;
+    assert_eq!(other["sessions"].as_array().unwrap().len(), 1, "carol joined by link: {other}");
+    let r = srv.rpc("tok-erin", "session.list_mine", json!({ "limit": 0 })).await;
+    assert_eq!(r["ok"], true, "{r}");
 }

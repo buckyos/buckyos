@@ -53,7 +53,7 @@ export interface SessionInfo {
   expires_at: string | null
   controller: string | null
   policy?: SessionPolicy
-  baseline?: { seq: number; epoch: string; snapshot_id: string; content_root: string; notes_entity_id?: string | null; source: { workspace_id: string; epoch: string; seq: number } }
+  baseline?: { seq: number; epoch: string; snapshot_id: string; content_root: string; notes_entity_id?: string | null; source: { workspace_id: string; epoch: string; seq: number; title?: string } }
   archive?: SessionArchive
   // session.get / join
   role?: SessionRole
@@ -68,6 +68,13 @@ export interface SessionInfo {
   online?: number
   my_feeds?: Record<string, string>
   participants?: SessionParticipant[]
+}
+
+/** `session.list_mine` (我的公开课): one of the caller's sessions, across Workspaces. */
+export interface MySession extends SessionInfo {
+  my_role: 'presenter' | 'owner' | 'audience'
+  /** The room on its courseware's origin (absent without a public base). */
+  url?: string
 }
 
 export interface SessionParticipant { principal: string; name: string; class: string; level: 'verified' | 'guest'; role: string; online: boolean; joined_at: string; last_seen: string }

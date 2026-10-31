@@ -7,7 +7,7 @@
 import type { Browser, Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { asUser, BACKEND_FIXTURE, test, expect, workspaceOrigin, type Api } from './fixtures'
+import { asUser, BACKEND_FIXTURE, openApp, test, expect, workspaceOrigin, type Api } from './fixtures'
 
 const ALICE = 'tok-alice'
 const BOB = 'tok-bob'
@@ -149,6 +149,19 @@ test('S-01 a public session: presenter, audience, guest and display in one room;
   // the sessions of the courseware (历次演示)
   const list = await api.rpc(ALICE, 'session.list', { workspace_id: ws.workspace_id })
   expect(list.sessions[0].state).toBe('archived')
+  // bob's public classes on the workspace list (我的公开课): attended, saved; its replay opens in a tab of its own
+  const desk = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+  await desk.addInitScript((token) => window.localStorage.setItem('aiworkspace.dev', JSON.stringify({ token })), BOB)
+  const home = await desk.newPage()
+  await openApp(home, BOB)
+  const mine = home.getByTestId(`aiws-my-session-${sid}`)
+  await expect(mine).toHaveAttribute('data-role', 'audience', { timeout: 15_000 })
+  await expect(mine).toHaveAttribute('data-state', 'archived')
+  await expect(mine).toContainText('第一讲')
+  const [tab] = await Promise.all([desk.waitForEvent('page'), mine.getByTestId('aiws-my-session-open').click()])
+  await expect(tab.getByTestId('aiws-session-replay')).toBeVisible({ timeout: 30_000 })
+  expect(new URL(tab.url()).host).toBe(new URL(workspaceOrigin(ws.workspace_id)).host)
+  await desk.close()
   for (const p of [presenter, bob, guest, wall]) await p.context().close()
 })
 

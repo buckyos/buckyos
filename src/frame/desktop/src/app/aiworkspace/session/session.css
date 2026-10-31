@@ -80,3 +80,7 @@
 .aiws-classroom-controls { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 .aiws-classroom-groups { display: flex; flex-direction: column; gap: 6px; }
 .aiws-classroom-group { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+
+/* my public classes, on the workspace list */
+.aiws-my-sessions { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px; }
+.aiws-my-sessions .aiws-session-list > li { flex-wrap: wrap; }

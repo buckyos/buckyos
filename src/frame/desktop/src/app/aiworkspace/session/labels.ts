@@ -1,7 +1,7 @@
 /* Text keys of the session's enumerations (keys are written out, never assembled: tests/datamodel/aiworkspace-i18n). */
 
 import type { ChannelStatus } from './channel'
-import type { LinkKind, SessionState } from './types'
+import type { LinkKind, MySession, SessionState } from './types'
 
 export const STATE_KEY: Readonly<Record<SessionState, string>> = {
   prepared: 'aiworkspace.session.state.prepared', live: 'aiworkspace.session.state.live', ended: 'aiworkspace.session.state.ended',
@@ -23,4 +23,8 @@ export const TASK_MODE_KEY: Readonly<Record<string, string>> = {
 
 export const TASK_STATE_KEY: Readonly<Record<string, string>> = {
   open: 'aiworkspace.session.choice.state.open', closed: 'aiworkspace.session.choice.state.closed',
+}
+
+export const MY_ROLE_KEY: Readonly<Record<MySession['my_role'], string>> = {
+  presenter: 'aiworkspace.session.mine.role.presenter', owner: 'aiworkspace.session.mine.role.owner', audience: 'aiworkspace.session.mine.role.audience',
 }
