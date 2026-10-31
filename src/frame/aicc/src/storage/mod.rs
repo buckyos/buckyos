@@ -302,8 +302,15 @@ impl AiccStorage {
         } else {
             8
         };
+        let sqlite = backend == RdbBackend::Sqlite;
         let pool = AnyPoolOptions::new()
             .max_connections(connections)
+            .after_connect(move |connection, _| Box::pin(async move {
+                if sqlite {
+                    sqlx::query("PRAGMA journal_mode=WAL").execute(connection).await?;
+                }
+                Ok(())
+            }))
             .connect(connection)
             .await?;
         let storage = Self { pool, backend };
@@ -2225,6 +2232,24 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(meta, None);
+    }
+
+    #[tokio::test]
+    async fn artifact_scope_write_does_not_wait_for_a_read_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let connection = format!("sqlite://{}?mode=rwc", dir.path().join("aicc.db").display());
+        let storage = AiccStorage::open(&connection, RdbBackend::Sqlite).await.unwrap();
+        storage.remember_artifact_scope("cyfile:existing", "tenant", "user", None, 0).await.unwrap();
+        let mut reader = storage.pool.begin().await.unwrap();
+        let _: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM aicc_artifact_scope")
+            .fetch_one(&mut *reader).await.unwrap();
+        let result = storage.remember_artifact_scope("cyfile:new", "tenant", "user", None, 1).await;
+        reader.rollback().await.unwrap();
+        result.unwrap();
+        assert_eq!(
+            storage.artifact_owner("cyfile:new").await.unwrap(),
+            Some(("tenant".to_string(), "user".to_string()))
+        );
     }
 
     #[tokio::test]

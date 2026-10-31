@@ -868,7 +868,8 @@ impl RuntimeProviderExecutionPort {
                     now_ms() as i64,
                 )
                 .await
-                .map_err(|_| {
+                .map_err(|error| {
+                    log::error!("inline artifact ownership registration failed: obj_id={obj_id} error={error}");
                     ProtocolError::invalid_configuration("inline artifact ownership write failed")
                 })?;
             replace_resource_ref_value(&mut output.value, &old_resource, &artifact.resource)?;
@@ -926,7 +927,8 @@ impl RuntimeProviderExecutionPort {
                     now_ms() as i64,
                 )
                 .await
-                .map_err(|_| {
+                .map_err(|error| {
+                    log::error!("inline artifact ownership registration failed: obj_id={obj_id} error={error}");
                     ProtocolError::invalid_configuration("inline artifact ownership write failed")
                 })?;
             replace_resource_ref_value(&mut output.value, &resource, &artifact.resource)?;

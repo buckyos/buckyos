@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "qwen",
-  "revision_seq": 8,
+  "revision_seq": 9,
   "required_features": [],
   "models": [
     {
@@ -44,9 +44,10 @@
           },
           "output": {
             "durations": {
-              "min": 1,
-              "integer": true
-            },
+              "min": 2,
+              "integer": true,
+  "max": 30
+},
             "aspect_ratios": [
               "16:9",
               "9:16"

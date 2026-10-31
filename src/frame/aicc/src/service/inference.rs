@@ -1241,7 +1241,9 @@ impl InferencePort for RuntimeInferencePort {
             let task_id = receipt.task_id.clone();
             let initial_poll_after = receipt.initial_poll_after;
             tokio::spawn(async move {
-                let _ = execution.drive_native_after(&task_id, initial_poll_after).await;
+                if let Err(error) = execution.drive_native_after(&task_id, initial_poll_after).await {
+                    log::error!("native task driver stopped: task_id={task_id} error={error}");
+                }
             });
         }
         self.storage

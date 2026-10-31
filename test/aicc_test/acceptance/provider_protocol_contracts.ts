@@ -44,6 +44,8 @@ const OFFICIAL_PROTOCOL_SOURCE_HOSTS: Record<string, Set<string>> = {
     "github.com",
     "openrouter.ai",
     "platform.kimi.com",
+    "platform.moonshot.cn",
+    "docs.x.ai",
     "docs.z.ai",
     "www.alibabacloud.com",
     "help.aliyun.com",
@@ -2555,6 +2557,17 @@ export function buildT15Manifest(
             model_selector: { kind: "exact", value: modelId },
             mock_scenario: "success",
           } as AcceptanceCase);
+          if (TASK_RESULT_ARTIFACT_API_TYPES.has(apiType)) {
+            cases.push({
+              ...common,
+              case_id: caseId(`t1.5.${provider.provider_driver}.${contract.id}.${apiType}.model.${modelId}.task-result-artifact`),
+              tags: [...common.tags!, "model_api_conformance", "task_result_artifact"],
+              model_selector: { kind: "exact", value: modelId },
+              mock_scenario: "success",
+              expected_wire_fixture: `${contract.id}.request.task-result-artifact`,
+              response_fixture: `${contract.id}.success`,
+            } as AcceptanceCase);
+          }
         }
         if (TASK_RESULT_ARTIFACT_API_TYPES.has(apiType)) {
           cases.push({
@@ -3075,6 +3088,14 @@ export function buildT15Manifest(
       response_fixture: `${contract.id}.success`,
       expected_provider_options: variant.expected_provider_options,
     });
+    if (TASK_RESULT_ARTIFACT_API_TYPES.has(variant.api_type)) {
+      const success = cases.at(-1)!;
+      cases.push({
+        ...success,
+        case_id: `${success.case_id}.task-result-artifact`,
+        tags: [...success.tags, "task_result_artifact"],
+      });
+    }
   }
   return cases;
 }

@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "glm",
-  "revision_seq": 7,
+  "revision_seq": 8,
   "required_features": [],
   "models": [
     {
@@ -436,9 +436,13 @@
       },
       "llm": {
         "spec": "glm-flash",
-        "effort": "high",
-        "default_effort": "high",
-        "supported_efforts": ["thinking", "max", "high", "medium", "low"],
+        "effort": "max",
+        "default_effort": "max",
+        "supported_efforts": [
+  "low",
+  "high",
+  "max"
+],
         "stability": "stable",
         "weight": 53
       }
@@ -757,6 +761,36 @@
         "supported_efforts": ["native"],
         "stability": "stable",
         "weight": 40
+      }
+    },
+    {
+      "id": "glm-5.3-flashx",
+      "parameter_scale": "flash",
+      "api_types": [
+        "llm",
+        "vision.ocr",
+        "vision.caption"
+      ],
+      "capabilities": {
+        "max_context_tokens": 1048576,
+        "max_output_tokens": 131072,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true,
+        "vision": true
+      },
+      "llm": {
+        "spec": "glm-flash",
+        "effort": "max",
+        "default_effort": "max",
+        "supported_efforts": [
+          "low",
+          "high",
+          "max"
+        ],
+        "stability": "stable",
+        "weight": 53
       }
     }
   ],

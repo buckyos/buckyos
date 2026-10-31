@@ -791,13 +791,6 @@ fn gpt_6_1_presets_match_provider_channels_and_reject_unsupported_efforts() {
         .unwrap();
         assert!(inventory.unmatched_models.is_empty(), "{provider}");
         assert!(inventory.unavailable_presets.is_empty(), "{provider}");
-        if provider == "sn" {
-            assert!(
-                inventory.models.is_empty(),
-                "unlisted SN models must remain excluded"
-            );
-            continue;
-        }
         assert_eq!(inventory.models.len(), 2, "{provider}");
         let registry =
             crate::service::builtin_registry_for_test(&catalog, &[inventory.as_model_inventory()]);
@@ -1539,7 +1532,7 @@ fn provider_pricing_contains_all_rebased_model_defaults() {
         ("glm", 101),
         ("kimi", 4),
         ("minimax", 23),
-        ("openai", 30),
+        ("openai", 32),
         ("qwen", 99),
     ] {
         assert_eq!(
@@ -1606,7 +1599,7 @@ fn every_builtin_provider_price_has_provenance() {
             );
         }
     }
-    assert_eq!(pricing_count, 328);
+    assert_eq!(pricing_count, 330);
 }
 
 #[test]

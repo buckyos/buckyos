@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": "official-provider-protocols-2026-10-26.1",
-  "checked_at": "2026-10-26",
+  "revision": "2026-10-30.1",
+  "checked_at": "2026-10-30",
   "providers": [
     {
       "provider_driver": "typesafe",
@@ -170,7 +170,9 @@
           "gpt-5.4-pro",
           "gpt-5.4-mini",
           "gpt-5.4-nano",
-          "gpt-image-2"
+          "gpt-image-2",
+          "gpt-image-2.5-flare",
+          "gpt-image-2.5-sunburst"
         ],
         "image.img2img": [
           "gpt-6.1-sol",
@@ -183,10 +185,14 @@
           "gpt-5.4",
           "gpt-5.4-mini",
           "gpt-5.4-nano",
-          "gpt-image-2"
+          "gpt-image-2",
+          "gpt-image-2.5-flare",
+          "gpt-image-2.5-sunburst"
         ],
         "image.inpaint": [
-          "gpt-image-2"
+          "gpt-image-2",
+          "gpt-image-2.5-flare",
+          "gpt-image-2.5-sunburst"
         ],
         "audio.tts": [
           "gpt-4o-mini-tts"
@@ -772,7 +778,13 @@
             "https://platform.openai.com/docs/api-reference/images/create",
             "https://platform.openai.com/docs/guides/error-codes/api-errors"
           ],
-          "evidence_summary": "Image generation uses POST /v1/images/generations with model/prompt and returns image data."
+          "evidence_summary": "Image generation uses POST /v1/images/generations with model/prompt and returns image data.",
+          "conformance_test_model_ids": {
+            "image.txt2img": [
+              "gpt-image-2.5-flare",
+              "gpt-image-2.5-sunburst"
+            ]
+          }
         },
         {
           "id": "openai.images.edits.v1",
@@ -840,7 +852,17 @@
             "https://platform.openai.com/docs/api-reference/images/createEdit",
             "https://platform.openai.com/docs/guides/error-codes/api-errors"
           ],
-          "evidence_summary": "Image editing uses multipart POST /v1/images/edits with model, image and prompt; mask is used for inpainting."
+          "evidence_summary": "Image editing uses multipart POST /v1/images/edits with model, image and prompt; mask is used for inpainting.",
+          "conformance_test_model_ids": {
+            "image.img2img": [
+              "gpt-image-2.5-flare",
+              "gpt-image-2.5-sunburst"
+            ],
+            "image.inpaint": [
+              "gpt-image-2.5-flare",
+              "gpt-image-2.5-sunburst"
+            ]
+          }
         },
         {
           "id": "openai.audio.speech.v1",
@@ -3313,7 +3335,8 @@
           "z-ai/glm-4.7",
           "z-ai/glm-5.2",
           "z-ai/glm-5.3",
-          "z-ai/glm-5.3-flash"
+          "z-ai/glm-5.3-flash",
+          "moonshotai/kimi-k3.1-pro"
         ],
         "embedding.text": [
           "openai/text-embedding-3-small"
@@ -3403,7 +3426,8 @@
           "openai/gpt-6-luna",
           "openai/gpt-6-sol",
           "qwen/qwen3.8-max-0902",
-          "z-ai/glm-5.3-flash"
+          "z-ai/glm-5.3-flash",
+          "moonshotai/kimi-k3.1-pro"
         ],
         "vision.caption": [
           "openai/gpt-6.1-sol",
@@ -3449,7 +3473,8 @@
           "openai/gpt-6-luna",
           "openai/gpt-6-sol",
           "qwen/qwen3.8-max-0902",
-          "z-ai/glm-5.3-flash"
+          "z-ai/glm-5.3-flash",
+          "moonshotai/kimi-k3.1-pro"
         ]
       },
       "official_variant_sources": [
@@ -3618,6 +3643,99 @@
               }
             }
           }
+        },
+        {
+          "model_ids": [
+            "z-ai/glm-5.3-flashx"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "x-ai/grok-4.7"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "z-ai/glm-5.3-flash"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "moonshotai/kimi-k3.1-pro"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
         }
       ],
       "test_model_ids": {
@@ -3656,13 +3774,22 @@
           ],
           "conformance_test_model_ids": {
             "llm": [
-              "google/gemini-4-argon"
+              "z-ai/glm-5.3-flash",
+              "z-ai/glm-5.3-flashx",
+              "x-ai/grok-4.7",
+              "moonshotai/kimi-k3.1-pro"
             ],
             "vision.ocr": [
-              "google/gemini-4-argon"
+              "z-ai/glm-5.3-flash",
+              "z-ai/glm-5.3-flashx",
+              "x-ai/grok-4.7",
+              "moonshotai/kimi-k3.1-pro"
             ],
             "vision.caption": [
-              "google/gemini-4-argon"
+              "z-ai/glm-5.3-flash",
+              "z-ai/glm-5.3-flashx",
+              "x-ai/grok-4.7",
+              "moonshotai/kimi-k3.1-pro"
             ]
           },
           "operation": "responses.create",
@@ -4518,7 +4645,27 @@
             "reference-images"
           ]
         }
-      ]
+      ],
+      "official_aggregated_model_ids": {
+        "llm": [
+          "z-ai/glm-5.3-flash",
+          "z-ai/glm-5.3-flashx",
+          "x-ai/grok-4.7",
+          "moonshotai/kimi-k3.1-pro"
+        ],
+        "vision.ocr": [
+          "z-ai/glm-5.3-flash",
+          "z-ai/glm-5.3-flashx",
+          "x-ai/grok-4.7",
+          "moonshotai/kimi-k3.1-pro"
+        ],
+        "vision.caption": [
+          "z-ai/glm-5.3-flash",
+          "z-ai/glm-5.3-flashx",
+          "x-ai/grok-4.7",
+          "moonshotai/kimi-k3.1-pro"
+        ]
+      }
     },
     {
       "provider_driver": "kimi",
@@ -4530,19 +4677,22 @@
           "kimi-k3",
           "kimi-k2.7-code",
           "kimi-k2.7-code-highspeed",
-          "kimi-k2.6"
+          "kimi-k2.6",
+          "kimi-k3.1-pro"
         ],
         "vision.ocr": [
           "kimi-k3",
           "kimi-k2.7-code",
           "kimi-k2.7-code-highspeed",
-          "kimi-k2.6"
+          "kimi-k2.6",
+          "kimi-k3.1-pro"
         ],
         "vision.caption": [
           "kimi-k3",
           "kimi-k2.7-code",
           "kimi-k2.7-code-highspeed",
-          "kimi-k2.6"
+          "kimi-k2.6",
+          "kimi-k3.1-pro"
         ]
       },
       "official_variant_sources": [
@@ -4595,6 +4745,22 @@
               "thinking": {
                 "type": "disabled"
               }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "kimi-k3.1-pro"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning_effort": "low"
+            },
+            "reasoning-high": {
+              "reasoning_effort": "high"
+            },
+            "reasoning-max": {
+              "reasoning_effort": "max"
             }
           }
         }
@@ -4701,7 +4867,18 @@
             "https://platform.kimi.com/docs/api/chat",
             "https://platform.kimi.com/docs/api/errors"
           ],
-          "evidence_summary": "Kimi Chat Completions uses POST /v1/chat/completions with Bearer authentication, JSON model/messages, OpenAI-style choices and data-only SSE terminated by [DONE]."
+          "evidence_summary": "Kimi Chat Completions uses POST /v1/chat/completions with Bearer authentication, JSON model/messages, OpenAI-style choices and data-only SSE terminated by [DONE].",
+          "conformance_test_model_ids": {
+            "llm": [
+              "kimi-k3.1-pro"
+            ],
+            "vision.ocr": [
+              "kimi-k3.1-pro"
+            ],
+            "vision.caption": [
+              "kimi-k3.1-pro"
+            ]
+          }
         }
       ]
     },
@@ -4734,21 +4911,24 @@
           "glm-4.5-airx",
           "glm-4.5-flash",
           "glm-4.5v",
-          "glm-4-32b-0414-128k"
+          "glm-4-32b-0414-128k",
+          "glm-5.3-flashx"
         ],
         "vision.ocr": [
           "glm-5.3-flash",
           "glm-4.6v",
           "glm-4.6v-flash",
           "glm-4.6v-flashx",
-          "glm-4.5v"
+          "glm-4.5v",
+          "glm-5.3-flashx"
         ],
         "vision.caption": [
           "glm-5.3-flash",
           "glm-4.6v",
           "glm-4.6v-flash",
           "glm-4.6v-flashx",
-          "glm-4.5v"
+          "glm-4.5v",
+          "glm-5.3-flashx"
         ],
         "embedding.text": [
           "embedding-3",
@@ -4786,7 +4966,6 @@
         {
           "model_ids": [
             "glm-5.3",
-            "glm-5.3-flash",
             "glm-5.2",
             "glm-5.1",
             "glm-5-turbo",
@@ -4852,6 +5031,29 @@
           "model_ids": [
             "glm-5.3",
             "glm-5.3-flash"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning_effort": "low"
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "glm-5.3-flashx"
+          ],
+          "variants": {
+            "reasoning-high": {
+              "reasoning_effort": "high"
+            },
+            "reasoning-max": {
+              "reasoning_effort": "max"
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "glm-5.3-flashx"
           ],
           "variants": {
             "reasoning-low": {
@@ -4952,7 +5154,21 @@
             "https://docs.z.ai/api-reference/llm/chat-completion",
             "https://docs.bigmodel.cn/cn/api/api-code"
           ],
-          "evidence_summary": "GLM Chat Completion uses POST /api/paas/v4/chat/completions with Bearer authentication and JSON model/messages; streaming is standard SSE terminated by [DONE]."
+          "evidence_summary": "GLM Chat Completion uses POST /api/paas/v4/chat/completions with Bearer authentication and JSON model/messages; streaming is standard SSE terminated by [DONE].",
+          "conformance_test_model_ids": {
+            "llm": [
+              "glm-5.3-flash",
+              "glm-5.3-flashx"
+            ],
+            "vision.ocr": [
+              "glm-5.3-flash",
+              "glm-5.3-flashx"
+            ],
+            "vision.caption": [
+              "glm-5.3-flash",
+              "glm-5.3-flashx"
+            ]
+          }
         },
         {
           "id": "glm.embeddings.v4",
@@ -5545,11 +5761,6 @@
             "reasoning-low": {
               "reasoning": {
                 "effort": "low"
-              }
-            },
-            "reasoning-medium": {
-              "reasoning": {
-                "effort": "high"
               }
             },
             "reasoning-high": {
@@ -6865,7 +7076,8 @@
           "qwen-image-3.0-pro"
         ],
         "video.generate": [
-          "wan2.6-t2v"
+          "wan2.6-t2v",
+          "wan3.0-video"
         ]
       },
       "official_aggregated_model_ids": {
@@ -7708,7 +7920,108 @@
               "video_count": 1,
               "duration": 5
             }
+          },
+          "model_ids_by_api_type": {
+            "video.generate": [
+              "wan2.6-t2v"
+            ]
           }
+        },
+        {
+          "id": "qwen.dashscope.wan3.video_synthesis.v1",
+          "protocol_adapter_id": "qwen-responses",
+          "api_version": "compatible-v1",
+          "api_types": [
+            "video.generate"
+          ],
+          "operation": "dashscope.video_synthesis",
+          "http_method": "POST",
+          "path": "/api/v1/services/aigc/video-generation/video-synthesis",
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
+          "content_type": "application/json",
+          "required_body_fields": [
+            "model",
+            "input"
+          ],
+          "allowed_body_fields": [
+            "model",
+            "input",
+            "parameters"
+          ],
+          "body_field_types": {
+            "model": [
+              "string"
+            ],
+            "input": [
+              "object"
+            ],
+            "parameters": [
+              "object"
+            ]
+          },
+          "official_sources": [
+            "https://help.aliyun.com/zh/model-studio/wan3-video-generation-api-reference"
+          ],
+          "evidence_summary": "Wan 3.0 uses the documented synthesis envelope with integer durations from 2 to 30; this minimal text cell verifies the lower bound independently of legacy Wan contracts.",
+          "required_headers": {
+            "x-dashscope-async": "enable"
+          },
+          "async_protocol": "qwen_media",
+          "async_steps": [
+            {
+              "name": "poll",
+              "http_method": "GET",
+              "path": "/api/v1/tasks/qwen_task_mock_1"
+            },
+            {
+              "name": "result",
+              "http_method": "GET",
+              "path": "/api/v1/tasks/qwen_task_mock_1"
+            }
+          ],
+          "success_fixture": {
+            "request_id": "qwen_request_mock_1",
+            "output": {
+              "task_id": "qwen_task_mock_1",
+              "task_status": "PENDING"
+            }
+          },
+          "async_result_fixture": {
+            "request_id": "qwen_request_mock_1",
+            "output": {
+              "task_id": "qwen_task_mock_1",
+              "task_status": "SUCCEEDED",
+              "video_url": "http://mock-artifact/artifacts/result.mp4"
+            },
+            "usage": {
+              "video_count": 1,
+              "duration": 2
+            }
+          },
+          "test_model_ids": {
+            "video.generate": "wan3.0-video"
+          },
+          "model_ids_by_api_type": {
+            "video.generate": [
+              "wan3.0-video"
+            ]
+          },
+          "canonical_request_overrides": {
+            "output": {
+              "duration_seconds": 2
+            }
+          },
+          "required_body_values": {
+            "/parameters/duration": 2
+          },
+          "forbidden_body_paths": [
+            "/input/img_url",
+            "/parameters/size"
+          ]
         }
       ]
     },
@@ -7739,7 +8052,29 @@
           "qwen3.7-plus",
           "qwen3.8-max-0902",
           "ui-tars-1.5-7b",
-          "voxtral-small-24b-2507"
+          "voxtral-small-24b-2507",
+          "gpt-6.1-sol",
+          "gpt-6.1-terra",
+          "gpt-6.1-terra-pro",
+          "gpt-6.1-sol-pro",
+          "claude-opus-5.5",
+          "claude-sonnet-5.5",
+          "claude-haiku-5.5",
+          "gemini-4-argon",
+          "gemini-3.8-flash",
+          "grok-4.7",
+          "qwen3.8-flash",
+          "qwen3.8-omni-flash",
+          "qwen3.8-max-prime",
+          "qwen3.8-27b",
+          "qwen3.8-2.4t-a95b",
+          "kimi-k3.1-pro",
+          "glm-5.3-flash",
+          "glm-5.3-flashx",
+          "glm-5.3-prime",
+          "minimax-m3.1-flash",
+          "deepseek-v4.1-flash-1017",
+          "deepseek-v4-pro-0813"
         ],
         "vision.ocr": [
           "gpt-6-astra",
@@ -7757,7 +8092,23 @@
           "gpt-5.3-codex",
           "kimi-k3",
           "qwen3.7-plus",
-          "ui-tars-1.5-7b"
+          "ui-tars-1.5-7b",
+          "gpt-6.1-sol",
+          "gpt-6.1-terra",
+          "gpt-6.1-terra-pro",
+          "gpt-6.1-sol-pro",
+          "claude-opus-5.5",
+          "claude-sonnet-5.5",
+          "claude-haiku-5.5",
+          "gemini-4-argon",
+          "gemini-3.8-flash",
+          "grok-4.7",
+          "qwen3.8-flash",
+          "kimi-k3.1-pro",
+          "glm-5.3-flash",
+          "glm-5.3-flashx",
+          "minimax-m3.1-flash",
+          "deepseek-v4.1-flash-1017"
         ],
         "vision.caption": [
           "gpt-6-astra",
@@ -7777,7 +8128,25 @@
           "qwen3.6-plus",
           "qwen3.7-plus",
           "qwen3.8-max-0902",
-          "ui-tars-1.5-7b"
+          "ui-tars-1.5-7b",
+          "gpt-6.1-sol",
+          "gpt-6.1-terra",
+          "gpt-6.1-terra-pro",
+          "gpt-6.1-sol-pro",
+          "claude-opus-5.5",
+          "claude-sonnet-5.5",
+          "claude-haiku-5.5",
+          "gemini-4-argon",
+          "gemini-3.8-flash",
+          "grok-4.7",
+          "qwen3.8-flash",
+          "qwen3.8-omni-flash",
+          "qwen3.8-max-prime",
+          "kimi-k3.1-pro",
+          "glm-5.3-flash",
+          "glm-5.3-flashx",
+          "minimax-m3.1-flash",
+          "deepseek-v4.1-flash-1017"
         ],
         "embedding.text": [
           "text-embedding-3-large",
@@ -7798,7 +8167,13 @@
           "gpt-5.4-mini",
           "gpt-5.4-nano",
           "gpt-image-2",
-          "qwen-image-3-pro"
+          "qwen-image-3-pro",
+          "gpt-6.1-sol",
+          "gpt-image-2.5-flare",
+          "gpt-image-2.5-sunburst",
+          "gpt-6.1-terra",
+          "gpt-6.1-terra-pro",
+          "gpt-6.1-sol-pro"
         ],
         "image.img2img": [
           "gpt-6-astra",
@@ -7812,10 +8187,18 @@
           "gpt-5.4-mini",
           "gpt-5.4-nano",
           "gpt-image-2",
-          "qwen-image-3-pro"
+          "qwen-image-3-pro",
+          "gpt-6.1-sol",
+          "gpt-image-2.5-flare",
+          "gpt-image-2.5-sunburst",
+          "gpt-6.1-terra",
+          "gpt-6.1-terra-pro",
+          "gpt-6.1-sol-pro"
         ],
         "image.inpaint": [
-          "gpt-image-2"
+          "gpt-image-2",
+          "gpt-image-2.5-flare",
+          "gpt-image-2.5-sunburst"
         ],
         "audio.tts": [
           "gpt-4o-mini-tts"
@@ -7823,7 +8206,9 @@
         "audio.asr": [
           "gpt-4o-mini-transcribe",
           "gpt-4o-transcribe-diarize",
-          "voxtral-small-24b-2507"
+          "voxtral-small-24b-2507",
+          "gemini-4-argon",
+          "gemini-3.8-flash"
         ],
         "video.generate": [
           "wan-3.0"
@@ -7834,7 +8219,11 @@
           "gpt-6-luna",
           "gpt-5.6-sol",
           "gpt-5.6-terra",
-          "gpt-5.6-luna"
+          "gpt-5.6-luna",
+          "gpt-6.1-sol",
+          "gpt-6.1-terra",
+          "gpt-6.1-terra-pro",
+          "gpt-6.1-sol-pro"
         ],
         "video.edit": [
           "wan-3.0"
@@ -7848,7 +8237,12 @@
         "https://openrouter.ai/z-ai/glm-5",
         "https://openrouter.ai/z-ai/glm-5.3",
         "https://platform.kimi.com/docs/guide/kimi-k3.html",
-        "https://openrouter.ai/qwen/qwen3.8-max-0902"
+        "https://openrouter.ai/qwen/qwen3.8-max-0902",
+        "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+        "https://developers.openai.com/api/docs/guides/reasoning",
+        "https://docs.z.ai/guides/vlm/glm-5.3-flash",
+        "https://platform.moonshot.cn/docs/intro",
+        "https://docs.x.ai/developers/models"
       ],
       "official_variant_rules": [
         {
@@ -8109,6 +8503,626 @@
               }
             }
           }
+        },
+        {
+          "model_ids": [
+            "gpt-6.1-sol"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "gpt-6.1-terra"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "effort": "none"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "gpt-6.1-terra-pro"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "effort": "none",
+                "mode": "pro"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low",
+                "mode": "pro"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium",
+                "mode": "pro"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high",
+                "mode": "pro"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh",
+                "mode": "pro"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max",
+                "mode": "pro"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "gpt-6.1-sol-pro"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low",
+                "mode": "pro"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium",
+                "mode": "pro"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high",
+                "mode": "pro"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh",
+                "mode": "pro"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max",
+                "mode": "pro"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "claude-opus-5.5"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "claude-sonnet-5.5"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "claude-haiku-5.5"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "gemini-4-argon"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "gemini-3.8-flash"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "grok-4.7"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "qwen3.8-flash"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "enabled": false
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "qwen3.8-omni-flash"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "enabled": false
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "qwen3.8-max-prime"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "enabled": false
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "qwen3.8-27b"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "enabled": false
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "qwen3.8-2.4t-a95b"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "kimi-k3.1-pro"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "glm-5.3-flash"
+          ],
+          "variants": {
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "glm-5.3-flashx"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "glm-5.3-prime"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "minimax-m3.1-flash"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "deepseek-v4.1-flash-1017"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "enabled": false
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "deepseek-v4-pro-0813"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "enabled": false
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
         }
       ],
       "test_model_ids": {
@@ -8144,7 +9158,19 @@
             "vision.ocr": [
               "kimi-k3",
               "qwen3.7-plus",
-              "ui-tars-1.5-7b"
+              "ui-tars-1.5-7b",
+              "claude-opus-5.5",
+              "claude-sonnet-5.5",
+              "claude-haiku-5.5",
+              "gemini-4-argon",
+              "gemini-3.8-flash",
+              "grok-4.7",
+              "qwen3.8-flash",
+              "kimi-k3.1-pro",
+              "glm-5.3-flash",
+              "glm-5.3-flashx",
+              "minimax-m3.1-flash",
+              "deepseek-v4.1-flash-1017"
             ]
           },
           "operation": "responses.create",
@@ -8258,7 +9284,117 @@
             "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs",
             "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/litellm/mod.rs"
           ],
-          "evidence_summary": "SN public source at main exposes POST /api/v1/ai/responses with Bearer authentication and forwards the Responses JSON/SSE wire to LiteLLM /v1/responses."
+          "evidence_summary": "SN public source at main exposes POST /api/v1/ai/responses with Bearer authentication and forwards the Responses JSON/SSE wire to LiteLLM /v1/responses.",
+          "conformance_test_model_ids": {
+            "llm": [
+              "gpt-6-astra",
+              "gpt-6-sol",
+              "gpt-6-luna",
+              "gpt-5.6-sol",
+              "gpt-5.6-terra",
+              "gpt-5.6-luna",
+              "gpt-5.5-pro",
+              "gpt-5.5",
+              "gpt-5.4",
+              "gpt-5.4-pro",
+              "gpt-5.4-mini",
+              "gpt-5.4-nano",
+              "gpt-5.3-codex",
+              "glm-5",
+              "glm-5.3",
+              "kimi-k3",
+              "qwen3.6-plus",
+              "qwen3.7-plus",
+              "qwen3.8-max-0902",
+              "ui-tars-1.5-7b",
+              "voxtral-small-24b-2507",
+              "gpt-6.1-sol",
+              "gpt-6.1-terra",
+              "gpt-6.1-terra-pro",
+              "gpt-6.1-sol-pro",
+              "claude-opus-5.5",
+              "claude-sonnet-5.5",
+              "claude-haiku-5.5",
+              "gemini-4-argon",
+              "gemini-3.8-flash",
+              "grok-4.7",
+              "qwen3.8-flash",
+              "qwen3.8-omni-flash",
+              "qwen3.8-max-prime",
+              "qwen3.8-27b",
+              "qwen3.8-2.4t-a95b",
+              "kimi-k3.1-pro",
+              "glm-5.3-flash",
+              "glm-5.3-flashx",
+              "glm-5.3-prime",
+              "minimax-m3.1-flash",
+              "deepseek-v4.1-flash-1017",
+              "deepseek-v4-pro-0813"
+            ],
+            "vision.ocr": [
+              "kimi-k3",
+              "qwen3.7-plus",
+              "ui-tars-1.5-7b",
+              "claude-opus-5.5",
+              "claude-sonnet-5.5",
+              "claude-haiku-5.5",
+              "gemini-4-argon",
+              "gemini-3.8-flash",
+              "grok-4.7",
+              "qwen3.8-flash",
+              "kimi-k3.1-pro",
+              "glm-5.3-flash",
+              "glm-5.3-flashx",
+              "minimax-m3.1-flash",
+              "deepseek-v4.1-flash-1017"
+            ],
+            "vision.caption": [
+              "gpt-6-astra",
+              "gpt-6-sol",
+              "gpt-6-luna",
+              "gpt-5.6-sol",
+              "gpt-5.6-terra",
+              "gpt-5.6-luna",
+              "gpt-5.5-pro",
+              "gpt-5.5",
+              "gpt-5.4",
+              "gpt-5.4-pro",
+              "gpt-5.4-mini",
+              "gpt-5.4-nano",
+              "gpt-5.3-codex",
+              "kimi-k3",
+              "qwen3.6-plus",
+              "qwen3.7-plus",
+              "qwen3.8-max-0902",
+              "ui-tars-1.5-7b",
+              "gpt-6.1-sol",
+              "gpt-6.1-terra",
+              "gpt-6.1-terra-pro",
+              "gpt-6.1-sol-pro",
+              "claude-opus-5.5",
+              "claude-sonnet-5.5",
+              "claude-haiku-5.5",
+              "gemini-4-argon",
+              "gemini-3.8-flash",
+              "grok-4.7",
+              "qwen3.8-flash",
+              "qwen3.8-omni-flash",
+              "qwen3.8-max-prime",
+              "kimi-k3.1-pro",
+              "glm-5.3-flash",
+              "glm-5.3-flashx",
+              "minimax-m3.1-flash",
+              "deepseek-v4.1-flash-1017"
+            ]
+          },
+          "required_body_values_by_model": {
+            "gpt-6.1-sol-pro": {
+              "/reasoning/mode": "pro"
+            },
+            "gpt-6.1-terra-pro": {
+              "/reasoning/mode": "pro"
+            }
+          }
         },
         {
           "id": "sn.openai-responses.background.v1",
@@ -8276,7 +9412,11 @@
               "gpt-5.4-pro",
               "gpt-5.4-mini",
               "gpt-5.4-nano",
-              "gpt-5.3-codex"
+              "gpt-5.3-codex",
+              "gpt-6.1-sol",
+              "gpt-6.1-terra",
+              "gpt-6.1-terra-pro",
+              "gpt-6.1-sol-pro"
             ],
             "image.txt2img": [
               "gpt-6-astra",
@@ -8290,7 +9430,11 @@
               "gpt-5.4",
               "gpt-5.4-pro",
               "gpt-5.4-mini",
-              "gpt-5.4-nano"
+              "gpt-5.4-nano",
+              "gpt-6.1-sol",
+              "gpt-6.1-terra",
+              "gpt-6.1-terra-pro",
+              "gpt-6.1-sol-pro"
             ],
             "image.img2img": [
               "gpt-6-astra",
@@ -8302,7 +9446,11 @@
               "gpt-5.5",
               "gpt-5.4",
               "gpt-5.4-mini",
-              "gpt-5.4-nano"
+              "gpt-5.4-nano",
+              "gpt-6.1-sol",
+              "gpt-6.1-terra",
+              "gpt-6.1-terra-pro",
+              "gpt-6.1-sol-pro"
             ]
           },
           "protocol_adapter_id": "sn-openai",
@@ -8468,6 +9616,69 @@
           "aicc_error_code_by_scenario": {
             "invalid_argument": "invalid_request",
             "timeout": "timeout"
+          },
+          "conformance_test_model_ids": {
+            "vision.ocr": [
+              "gpt-6-astra",
+              "gpt-6-sol",
+              "gpt-6-luna",
+              "gpt-5.6-sol",
+              "gpt-5.6-terra",
+              "gpt-5.6-luna",
+              "gpt-5.5-pro",
+              "gpt-5.5",
+              "gpt-5.4",
+              "gpt-5.4-pro",
+              "gpt-5.4-mini",
+              "gpt-5.4-nano",
+              "gpt-5.3-codex",
+              "gpt-6.1-sol",
+              "gpt-6.1-terra",
+              "gpt-6.1-terra-pro",
+              "gpt-6.1-sol-pro"
+            ],
+            "image.txt2img": [
+              "gpt-6-astra",
+              "gpt-6-sol",
+              "gpt-6-luna",
+              "gpt-5.6-sol",
+              "gpt-5.6-terra",
+              "gpt-5.6-luna",
+              "gpt-5.5-pro",
+              "gpt-5.5",
+              "gpt-5.4",
+              "gpt-5.4-pro",
+              "gpt-5.4-mini",
+              "gpt-5.4-nano",
+              "gpt-6.1-sol",
+              "gpt-6.1-terra",
+              "gpt-6.1-terra-pro",
+              "gpt-6.1-sol-pro"
+            ],
+            "image.img2img": [
+              "gpt-6-astra",
+              "gpt-6-sol",
+              "gpt-6-luna",
+              "gpt-5.6-sol",
+              "gpt-5.6-terra",
+              "gpt-5.6-luna",
+              "gpt-5.5",
+              "gpt-5.4",
+              "gpt-5.4-mini",
+              "gpt-5.4-nano",
+              "gpt-6.1-sol",
+              "gpt-6.1-terra",
+              "gpt-6.1-terra-pro",
+              "gpt-6.1-sol-pro"
+            ]
+          },
+          "required_body_values_by_model": {
+            "gpt-6.1-sol-pro": {
+              "/reasoning/mode": "pro"
+            },
+            "gpt-6.1-terra-pro": {
+              "/reasoning/mode": "pro"
+            }
           }
         },
         {
@@ -8546,7 +9757,29 @@
           "official_sources": [
             "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs"
           ],
-          "evidence_summary": "SN forwards the Responses computer tool request and computer_call action output unchanged through its public Responses route."
+          "evidence_summary": "SN forwards the Responses computer tool request and computer_call action output unchanged through its public Responses route.",
+          "conformance_test_model_ids": {
+            "agent.computer_use": [
+              "gpt-6-astra",
+              "gpt-6-sol",
+              "gpt-6-luna",
+              "gpt-5.6-sol",
+              "gpt-5.6-terra",
+              "gpt-5.6-luna",
+              "gpt-6.1-sol",
+              "gpt-6.1-terra",
+              "gpt-6.1-terra-pro",
+              "gpt-6.1-sol-pro"
+            ]
+          },
+          "required_body_values_by_model": {
+            "gpt-6.1-sol-pro": {
+              "/reasoning/mode": "pro"
+            },
+            "gpt-6.1-terra-pro": {
+              "/reasoning/mode": "pro"
+            }
+          }
         },
         {
           "id": "sn.openai-embeddings.v1",
@@ -8608,7 +9841,14 @@
             "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs",
             "https://openrouter.ai/docs/api-reference/embeddings"
           ],
-          "evidence_summary": "SN proxies POST /api/v1/ai/embeddings to LiteLLM's OpenAI-compatible embedding endpoint."
+          "evidence_summary": "SN proxies POST /api/v1/ai/embeddings to LiteLLM's OpenAI-compatible embedding endpoint.",
+          "conformance_test_model_ids": {
+            "embedding.text": [
+              "text-embedding-3-large",
+              "text-embedding-3-small",
+              "qwen3-embedding-8b"
+            ]
+          }
         },
         {
           "id": "sn.openai-images-generations.v1",
@@ -8673,7 +9913,16 @@
           "evidence_summary": "SN proxies OpenAI-compatible image generation to its configured Qwen Image 3 Pro OpenRouter route.",
           "model_ids_by_api_type": {
             "image.txt2img": [
-              "gpt-image-2"
+              "gpt-image-2",
+              "gpt-image-2.5-flare",
+              "gpt-image-2.5-sunburst"
+            ]
+          },
+          "conformance_test_model_ids": {
+            "image.txt2img": [
+              "gpt-image-2",
+              "gpt-image-2.5-flare",
+              "gpt-image-2.5-sunburst"
             ]
           }
         },
@@ -8747,10 +9996,26 @@
           "evidence_summary": "SN accepts and forwards multipart OpenAI-compatible image editing requests for Qwen Image 3 Pro and GPT Image 2.",
           "model_ids_by_api_type": {
             "image.img2img": [
-              "gpt-image-2"
+              "gpt-image-2",
+              "gpt-image-2.5-flare",
+              "gpt-image-2.5-sunburst"
             ],
             "image.inpaint": [
-              "gpt-image-2"
+              "gpt-image-2",
+              "gpt-image-2.5-flare",
+              "gpt-image-2.5-sunburst"
+            ]
+          },
+          "conformance_test_model_ids": {
+            "image.img2img": [
+              "gpt-image-2",
+              "gpt-image-2.5-flare",
+              "gpt-image-2.5-sunburst"
+            ],
+            "image.inpaint": [
+              "gpt-image-2",
+              "gpt-image-2.5-flare",
+              "gpt-image-2.5-sunburst"
             ]
           }
         },
@@ -8802,7 +10067,12 @@
           "official_sources": [
             "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs"
           ],
-          "evidence_summary": "SN proxies OpenAI-compatible speech creation and returns the generated audio bytes."
+          "evidence_summary": "SN proxies OpenAI-compatible speech creation and returns the generated audio bytes.",
+          "conformance_test_model_ids": {
+            "audio.tts": [
+              "gpt-4o-mini-tts"
+            ]
+          }
         },
         {
           "id": "sn.openai-audio-transcriptions.v1",
@@ -8865,7 +10135,13 @@
           "official_sources": [
             "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs"
           ],
-          "evidence_summary": "SN proxies multipart OpenAI-compatible audio transcription and returns transcript text with usage where supported."
+          "evidence_summary": "SN proxies multipart OpenAI-compatible audio transcription and returns transcript text with usage where supported.",
+          "conformance_test_model_ids": {
+            "audio.asr": [
+              "gpt-4o-mini-transcribe",
+              "gpt-4o-transcribe-diarize"
+            ]
+          }
         },
         {
           "id": "sn.audio-chat.v1",
@@ -8879,7 +10155,9 @@
           },
           "model_ids_by_api_type": {
             "audio.asr": [
-              "voxtral-small-24b-2507"
+              "voxtral-small-24b-2507",
+              "gemini-4-argon",
+              "gemini-3.8-flash"
             ]
           },
           "operation": "chat.completions.create",
@@ -8897,7 +10175,8 @@
           ],
           "allowed_body_fields": [
             "model",
-            "messages"
+            "messages",
+            "reasoning"
           ],
           "body_field_types": {
             "model": [
@@ -8905,6 +10184,9 @@
             ],
             "messages": [
               "array"
+            ],
+            "reasoning": [
+              "object"
             ]
           },
           "required_body_values": {
@@ -8940,9 +10222,17 @@
           "official_sources": [
             "https://openrouter.ai/docs/guides/overview/multimodal/audio",
             "https://openrouter.ai/mistralai/voxtral-small-24b-2507",
-            "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs"
+            "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs",
+            "https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"
           ],
-          "evidence_summary": "The Voxtral chat alias accepts base64 input_audio on Chat Completions. OpenRouter lists the dedicated transcription endpoint under a different -stt model ID; SN publishes the chat alias, so canonical ASR uses audio chat and returns the transcript text."
+          "evidence_summary": "The Voxtral chat alias accepts base64 input_audio on Chat Completions. OpenRouter lists the dedicated transcription endpoint under a different -stt model ID; SN publishes the chat alias, so canonical ASR uses audio chat and returns the transcript text. Gemini audio Chat Completions accepts the documented optional reasoning object; reasoning presets are forwarded unchanged.",
+          "conformance_test_model_ids": {
+            "audio.asr": [
+              "voxtral-small-24b-2507",
+              "gemini-4-argon",
+              "gemini-3.8-flash"
+            ]
+          }
         },
         {
           "id": "sn.openai-videos.v1",
@@ -8987,14 +10277,14 @@
             "output": {
               "duration_seconds": 2,
               "size": {
-                "width": 1080,
-                "height": 1920
+                "width": 854,
+                "height": 480
               }
             }
           },
           "required_body_values": {
             "/seconds": "2",
-            "/size": "1080x1920"
+            "/size": "854x480"
           },
           "async_protocol": "openai_video",
           "async_steps": [
@@ -9027,7 +10317,17 @@
           "base_contract_id": "openai.videos.v1",
           "video_generate_scenarios": [
             "keyframe"
-          ]
+          ],
+          "aicc_error_code_by_scenario": {
+            "invalid_argument": "invalid_request",
+            "timeout": "timeout",
+            "upstream_json_required": "invalid_request"
+          },
+          "conformance_test_model_ids": {
+            "video.generate": [
+              "wan-3.0"
+            ]
+          }
         },
         {
           "id": "sn.openai-video-edits.v1",
@@ -9098,9 +10398,10 @@
           "official_sources": [
             "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/service.rs",
             "https://github.com/BerriAI/litellm/blob/main/litellm/llms/openai/videos/transformation.py",
-            "https://help.aliyun.com/zh/model-studio/wan3-video-generation-api-reference"
+            "https://help.aliyun.com/zh/model-studio/wan3-video-generation-api-reference",
+            "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/request_policy.rs"
           ],
-          "evidence_summary": "SN forwards video edits/extensions to the matching LiteLLM OpenAI-compatible routes. Validate the advertised transport independently of current upstream model availability.",
+          "evidence_summary": "SN admission extracts the mandatory model from both JSON native-video references and multipart uploaded-video edit requests before routing to LiteLLM. The upload success cell must retain model, prompt and video; missing model is rejected independently of upstream model availability.",
           "test_model_ids": {
             "video.edit": "wan-3.0"
           },
@@ -9122,6 +10423,16 @@
             ],
             "same_provider_reuse": "required",
             "cross_provider_reuse": "forbidden"
+          },
+          "aicc_error_code_by_scenario": {
+            "invalid_argument": "invalid_request",
+            "timeout": "timeout",
+            "upstream_json_required": "invalid_request"
+          },
+          "conformance_test_model_ids": {
+            "video.edit": [
+              "wan-3.0"
+            ]
           }
         },
         {
@@ -9223,6 +10534,16 @@
           ],
           "required_body_values": {
             "/seconds": "2"
+          },
+          "aicc_error_code_by_scenario": {
+            "invalid_argument": "invalid_request",
+            "timeout": "timeout",
+            "upstream_json_required": "invalid_request"
+          },
+          "conformance_test_model_ids": {
+            "video.extend": [
+              "wan-3.0"
+            ]
           }
         },
         {
@@ -9294,6 +10615,11 @@
           },
           "test_model_ids": {
             "image.txt2img": "qwen-image-3-pro"
+          },
+          "conformance_test_model_ids": {
+            "image.txt2img": [
+              "qwen-image-3-pro"
+            ]
           }
         },
         {
@@ -9372,6 +10698,11 @@
           },
           "test_model_ids": {
             "image.img2img": "qwen-image-3-pro"
+          },
+          "conformance_test_model_ids": {
+            "image.img2img": [
+              "qwen-image-3-pro"
+            ]
           }
         }
       ],

@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 1,
   "model_driver_id": "openai",
-  "revision_seq": 7,
+  "revision_seq": 8,
   "specs": [
     {"id": "gpt-nano"},
     {"id": "gpt-mini"},
@@ -438,6 +438,8 @@
           }
         }
       }
-    }
+    },
+    {"id": "gpt-image-2.5-flare", "api_types": ["image.txt2img", "image.img2img", "image.inpaint"], "logical_mounts": ["image.txt2img", "image.txt2img.openai", "image.txt2img.{model}", "image.img2img", "image.img2img.openai", "image.img2img.{model}", "image.inpaint", "image.inpaint.openai", "image.inpaint.{model}", "image.txt2img.gpt_image", "image.img2img.gpt_image"], "capabilities": {"streaming": false, "vision": true, "image_generation": true}},
+    {"id": "gpt-image-2.5-sunburst", "api_types": ["image.txt2img", "image.img2img", "image.inpaint"], "logical_mounts": ["image.txt2img", "image.txt2img.openai", "image.txt2img.{model}", "image.img2img", "image.img2img.openai", "image.img2img.{model}", "image.inpaint", "image.inpaint.openai", "image.inpaint.{model}", "image.txt2img.gpt_image", "image.img2img.gpt_image"], "capabilities": {"streaming": false, "vision": true, "image_generation": true}}
   ]
 }

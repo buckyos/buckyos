@@ -108,6 +108,8 @@ T2 会为 OpenAI、Claude、Google Gemini、Fal、MiniMax、OpenRouter、Kimi、
 
 普通 `chat.completions.create` 用例显式关闭 AICC 默认附加的 `web_search`，避免把基础聊天错误地限定为必须支持联网搜索；联网搜索作为独立 capability 分支验证。Provider 凭据临时写入后，runner 会等待 system-config 与 AICC runtime settings 收敛，再验证 settings 字节恢复、运行时 inventory、Named Data 和消息资源清理。
 
+T2 的 Named Data 读取默认使用 NDM Proxy。运行环境只提供原生 NDN GET 时，可在 TOML `[fixtures]` 设置 `named_data_read_mode = "ndn"`；runner 使用现有 `cyfs-dir` 服务和测试期 Gateway 路由读取制品，并在结束时移除路由。此选项不改变 Provider 请求，也不补齐 NDM Proxy 删除接口；无法清理的对象仍会如实报告。
+
 T2 在提供用户名和密码时会提前续期 Gateway 登录，并在服务明确返回 token 过期时重新登录后重发同一请求，保留原 idempotency key；Provider 协议或推理错误不会触发此重发。RPC、任务查询和 NDN 下载使用同一份更新后的登录凭据。仅提供 session token 时无法自动重新登录，应确保其有效期覆盖整轮测试。计划调用数和费用包含按模型/源 API 去重的生成物前置调用。
 
 `agent.computer_use` 使用 `generate_fixtures.py` 生成的 1280×720 截图，其中只有一个蓝色按钮；请求要求单次左键点击，断言坐标位于按钮范围内且需要下一次观察。截图与 viewport 一致，不要求模型输出固定中心像素。该用例依据 [OpenAI computer-use 官方流程](https://developers.openai.com/api/docs/guides/tools-computer-use)：允许协议先请求截图，AICC 最多使用当前输入 observation 完成一次无副作用握手，业务动作白名单不放宽，也不在真实桌面执行点击。调用预算为每个 computer-use 单元最多两次上游请求，费用估算亦按两次预留；AICC usage.request_units 记录实际轮数。
@@ -142,7 +144,7 @@ Provider attempt、60 秒、USD 0.01。它临时将已有实例的 timeout 设�
 凭据读取忽略的 TOML `[auth]`，结果写入忽略的 `reports/openrouter-jev-smoke.json`。
 DV 自签名证书需按本地测试证书配置运行环境，不改变生产 HTTP transport。
 
-SN 真实测试需要区分账户权限：OpenAI 模型使用设备身份动态登录的 `sn-ai-provider-main`；受限测试 key 使用独立实例。不得把测试 key 注入动态登录实例。两类凭据分别读取各自的官方模型目录并形成 T2 矩阵；动态登录实例的目录 token 只用于目录校验，真实推理由 AICC 自行登录。
+SN 真实测试按凭据权限分别建立实例：`GLOBAL_OPEN` 与 `US_FULL` 各自读取官方模型目录并形成 T2 矩阵，只在临时测试实例注入对应 key，不修改设备身份动态登录的 `sn-ai-provider-main`。Realtime 仅提供 WebSocket 推理，仍按 `unsupported_canonical_protocol` 排除；旧的 OCR、图片和 Wan 禁用标记不能沿用，必须与当前官方依据及对应 T1.5/T2 用例一起复核。相同物理模型的 Pro/吞吐别名在 T1.5 验证参数，在 T2 按能力基线去重。
 
 Native task 的 TaskMgr 暂时进度上报失败由执行器保持原远端任务继续轮询，不能重新提交模型任务；故障注入单测覆盖可重试及不可重试路径。
 

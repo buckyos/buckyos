@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 5,
+  "revision_seq": 6,
   "provider_profile_id": "openai",
   "custom_provider_adapters": ["openai-responses", "openai-chat-completions"],
   "models": [
@@ -725,6 +725,8 @@
         "cache_input_token": 2e-8,
         "cache_write_input_token": 2.5e-7
       }
-    }
+    },
+    {"id": "gpt-image-2.5-flare", "pricing": {"source_url": "https://developers.openai.com/api/docs/models/gpt-image-2.5-flare", "verified_at": "2026-10-30", "currency": "USD", "input_token": 5e-06, "image_input_token": 8e-06, "image_output_token": 3e-05, "cache_input_token": 1.25e-06}},
+    {"id": "gpt-image-2.5-sunburst", "pricing": {"source_url": "https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst", "verified_at": "2026-10-30", "currency": "USD", "input_token": 5e-06, "image_input_token": 8e-06, "image_output_token": 3e-05, "cache_input_token": 1.25e-06}}
   ]
 }

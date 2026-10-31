@@ -143,3 +143,11 @@ Kimi 来源：[K2.6 快速开始](https://platform.kimi.com/docs/guide/kimi-k2-6
 首轮验证结果：`cargo test -p aicc` 当时的 515 个测试全部通过，`cargo check -p aicc --all-targets`、`cargo fmt -p aicc -- --check` 和 `git diff --check` 均通过。这些验证使用本地 fixtures，不产生真实模型调用；首轮未部署或重启运行中的 AICC。后续豆包 T2 补齐另行执行了构建、部署、真实调用与高保真 MockProvider 回归，以对应测试报告为准。
 
 2026-10-08 本轮复核新增了逐型号硬限制断言；`cargo test -p aicc --lib -- --test-threads=1` 的 605 个测试全部通过，`cargo check -p aicc --all-targets`、`cargo fmt -p aicc -- --check` 和 `git diff --check` 均通过。本轮同样未部署、未重启服务，也未发起真实模型调用。
+
+## SN 模型核对（2026-10-30）
+
+- [xAI 官方模型目录](https://docs.x.ai/developers/models)明确 Grok 4.7 的 500,000 上下文和 low/medium/high/xhigh 推理档位，默认 high；未明确独立输出硬上限，原厂文件保留 unknown。SN 与 OpenRouter 的 450,000 输出上限来自 [OpenRouter 官方目录](https://openrouter.ai/api/v1/models)，仅写入这两个渠道配置。
+- [GLM-5.3-Flash/FlashX](https://docs.z.ai/guides/vlm/glm-5.3-flash)的文本参数与 GLM-5.3 一致，推理档位为 low/high/max，默认 max。
+- [Wan 3.0 原厂 API](https://help.aliyun.com/zh/model-studio/wan3-video-generation-api-reference)无视频输入的生成时长为 2–30 秒整数；原厂模型与 SN/Qwen 渠道的时长约束同步核定。
+- [Kimi 模型参数](https://platform.moonshot.cn/docs/api/models-overview)说明 K3.1 Pro 与 K3 参数约束相同；OpenRouter 的 943,718 输出限制只保存在渠道配置。
+- SN/OpenRouter 代理的独立目录限制：Kimi K3/K3.1 Pro 输出 943,718，UI-TARS 输出 2,048，Qwen3.8-27B 上下文 262,144，GLM-5.3-Prime 上下文 1,000,000，Gemini 4 Argon 输出 943,718。这些渠道限制不写回原厂模型文件。

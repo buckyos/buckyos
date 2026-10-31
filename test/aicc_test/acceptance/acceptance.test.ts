@@ -74,6 +74,7 @@ import { refreshProviderInventoriesUntilSuccess } from "./inventory_refresh.ts";
 import {
   buildNdnGatewayConfig,
   gatewayRouterArgs,
+  readNdnFixtureObject,
 } from "./ndn_fixture_service.ts";
 import {
   buildCloudUpdateFiles,
@@ -389,6 +390,20 @@ function t15ProviderRequest(
     },
   };
 }
+
+test("T2 reads Named Data from the configured native NDN route and preserves HTTP failures", async () => {
+  const reader = await readNdnFixtureObject("http://gateway.test/aicc-test-ndn-run/", {
+    obj_id: "cyfile:4827",
+  }, async (url) => {
+    assert.equal(String(url), "http://gateway.test/aicc-test-ndn-run/cyfile:4827");
+    return new Response(new Uint8Array([1, 2, 3]), { headers: { "content-length": "3" } });
+  });
+  assert.equal(reader.totalSize, 3);
+  assert.deepEqual(new Uint8Array(await new Response(reader.body).arrayBuffer()), new Uint8Array([1, 2, 3]));
+  await assert.rejects(() => readNdnFixtureObject("http://gateway.test/ndn", {
+    obj_id: "cyfile:missing",
+  }, async () => new Response(null, { status: 404 })), /HTTP 404/);
+});
 
 test("T2 fixture NDN service is isolated and routed only for the run lifetime", () => {
   const config = buildNdnGatewayConfig({
@@ -3483,6 +3498,15 @@ test("T2 generated media requests use minimum-cost output settings", async () =>
     size: "1024x1024",
     quality: "low",
   });
+  const snVideoDefaults = defaults("sn-ai-provider", "wan-3.0", "video.generate");
+  assert.deepEqual(snVideoDefaults, {
+    output: { duration_seconds: 2, size: { width: 854, height: 480 } },
+  });
+  const snVideoInput = request("video.generate", snVideoDefaults).input_json;
+  assert.deepEqual(snVideoInput.output, snVideoDefaults?.output);
+  for (const field of ["duration_seconds", "resolution", "aspect_ratio"]) {
+    assert.equal(field in snVideoInput, false);
+  }
   assert.deepEqual(defaults("google-gemini", "gemini-omni-*", "video.generate"), {
     output: { duration_seconds: 4, size: { short_edge: 720 } },
   });
@@ -3837,13 +3861,15 @@ test("SN matrix uses its inventory and original-vendor capability evidence", asy
       }, {
         exact_model: "qwen-image-3-pro@sn-default",
         provider_model_id: "qwen-image-3-pro",
-        api_types: [],
+        api_types: ["image.txt2img", "image.img2img"],
         logical_mounts: [],
       }],
     }]),
   });
   assert.deepEqual([...new Set(cells.map((cell) => cell.api_type))].sort(), [
     "embedding.text",
+    "image.img2img",
+    "image.txt2img",
     "llm",
     "vision.caption",
   ]);
@@ -5023,6 +5049,14 @@ test("T1.5 Provider mock implements each machine discovery contract and rejects 
       assert.ok(Array.isArray(fixture.items));
     } else {
       assert.ok(Array.isArray(fixture.data));
+      if (provider.provider_driver === "openrouter") {
+        const models = fixture.data as Array<{id: string; architecture: {input_modalities: string[]; output_modalities: string[]}}>;
+        for (const id of ["z-ai/glm-5.3-flashx", "moonshotai/kimi-k3.1-pro", "x-ai/grok-4.7"]) {
+          const model = models.find((model) => model.id === id)!;
+          assert.ok(model.architecture.input_modalities.includes("image"), id);
+          assert.deepEqual(model.architecture.output_modalities, ["text"], id);
+        }
+      }
       if (provider.provider_driver === "doubao") {
         const models = fixture.data as Array<Record<string, unknown>>;
         assert.ok(models.every((model) => Array.isArray(model.task_type)));
@@ -5915,10 +5949,12 @@ test("report redaction removes secrets and totals statuses", () => {
   const safe = redact({
     api_key: "sk-secret-value-1234567890",
     nested: { authorization: "Bearer abc.def.ghi" },
+    case_id: "t1.5.sn.image.inpaint.task-result-artifact",
   });
   assert.deepEqual(safe, {
     api_key: "[REDACTED]",
     nested: { authorization: "[REDACTED]" },
+    case_id: "t1.5.sn.image.inpaint.task-result-artifact",
   });
   assert.doesNotThrow(() => assertNoSecrets(safe));
   const base = {
@@ -6554,6 +6590,48 @@ test("SN credentials create an isolated API-key instance and preserve activation
   assert.equal(original.providers.length, 1);
 });
 
+test("T1.5 derives TaskMgr artifact regressions for every image conformance model", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const cases = buildT15Manifest(catalog);
+  for (const provider of ["sn-ai-provider", "openai"]) {
+    for (const model of ["gpt-image-2.5-flare", "gpt-image-2.5-sunburst"]) {
+      for (const api of ["image.txt2img", "image.img2img", "image.inpaint"]) {
+        const selected = cases.filter((item) => item.provider_driver === provider && item.api_type === api && item.model_selector?.value === model);
+        assert.ok(selected.some((item) => item.tags.includes("model_api_conformance") && item.case_id.endsWith(".success")));
+        assert.ok(selected.some((item) => item.tags.includes("task_result_artifact")));
+      }
+    }
+  }
+});
+
+test("T1.5 image variants retain wire expectations in derived TaskMgr regressions", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const cases = buildT15Manifest(catalog, [{
+    provider_driver: "sn-ai-provider", contract_id: "sn.openai-responses.background.v1", api_type: "image.txt2img",
+    model: { exact_model: "gpt-6-sol:reasoning-low@mock", provider_model_id: "gpt-6-sol:reasoning-low", api_types: ["image.txt2img"], logical_mounts: [] },
+    expected_provider_options: { reasoning: { effort: "low" } },
+  }]);
+  const source = cases.find((item) => item.tags.includes("variant") && !item.tags.includes("task_result_artifact"))!;
+  const derived = cases.find((item) => item.case_id === `${source.case_id}.task-result-artifact`)!;
+  assert.ok(derived.tags.includes("task_result_artifact"));
+  assert.deepEqual(derived.expected_provider_options, source.expected_provider_options);
+  assert.deepEqual(derived.model_selector, source.model_selector);
+});
+
+test("SN uploaded video edits require the model used by gateway admission", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const contract = protocolContract(catalog, "sn-ai-provider", "sn.openai-video-edits.v1");
+  const body: Record<string, unknown> = {
+    model: "wan-3.0", prompt: "edit motion",
+    video: { filename: "source.mp4", content_type: "video/mp4", bytes: 5 },
+  };
+  const captured = { method: "POST", pathname: contract.path, query: new URLSearchParams(),
+    headers: new Headers({ authorization: "Bearer mock-token", "content-type": "multipart/form-data; boundary=fixture" }), body };
+  assert.deepEqual(validateProviderRequest(contract, captured, "video.edit"), []);
+  delete body.model;
+  assert.ok(validateProviderRequest(contract, captured, "video.edit").includes("missing body field model"));
+});
+
 test("SN audio chat wire rejects URL audio and uncorrelated content shapes", async () => {
   const catalog = await loadProviderProtocolCatalog();
   const contract = protocolContract(catalog, "sn-ai-provider", "sn.audio-chat.v1");
@@ -6561,6 +6639,12 @@ test("SN audio chat wire rejects URL audio and uncorrelated content shapes", asy
   const body = JSON.parse(request.init.body as string);
   const captured = {method: "POST", pathname: contract.path, query: new URLSearchParams(), headers: new Headers(request.init.headers), body};
   assert.deepEqual(validateProviderRequest(contract, captured, "audio.asr"), []);
+  body.model = "gemini-4-argon";
+  body.reasoning = { effort: "high" };
+  assert.deepEqual(validateProviderRequest(contract, captured, "audio.asr"), []);
+  body.reasoning = "high";
+  assert.ok(validateProviderRequest(contract, captured, "audio.asr").some((error) => error.includes("reasoning")));
+  delete body.reasoning;
   body.messages[0].content[0].input_audio.url = "https://example.invalid/audio.wav";
   assert.ok(validateProviderRequest(contract, captured, "audio.asr").some((error) => error.includes("inline input_audio")));
   delete body.messages[0].content[0].input_audio.url;
@@ -6584,7 +6668,8 @@ test("channel-disabled APIs retain vendor facts and reject leaked runtime capabi
   const source = await baseline();
   const rule = source.providers.find((provider) => provider.provider_driver === "sn-ai-provider")!.rules.find((rule) => rule.model_pattern === "qwen3.7-plus")!;
   assert.ok(rule.api_types.includes("vision.ocr"));
-  assert.ok(rule.disabled_api_types?.includes("vision.ocr"));
+  assert.equal(rule.disabled_api_types, undefined);
+  rule.disabled_api_types = ["vision.ocr"];
   const inventories = [{ provider_instance_name: "sn-disabled", provider_driver: "sn-ai-provider", models: [{ exact_model: "qwen3.7-plus@sn-disabled", provider_model_id: "qwen3.7-plus", api_types: ["llm", "vision.caption"], logical_mounts: [] }] }];
   const cells = buildProviderMatrix({ baseline: source, ...matrixInputs(inventories) });
   assert.equal(cells.length, 2);
@@ -6595,17 +6680,18 @@ test("channel-disabled APIs retain vendor facts and reject leaked runtime capabi
 });
 
 
-test("T1.5 skips only explicitly disabled channel cells and preserves working SN protocol coverage", async () => {
+test("T1.5 rechecks all reopened SN channel cells", async () => {
   const catalog = await loadProviderProtocolCatalog();
   const source = await baseline();
   const cases = buildT15Manifest(catalog).filter((item) => item.provider_driver === "sn-ai-provider");
-  const disabled = cases.filter((item) => channelDisablesCase(catalog, source, item));
-  assert.ok(disabled.length > 0);
-  assert.ok(disabled.some((item) => item.api_type === "video.generate"));
-  assert.ok(disabled.some((item) => item.api_type === "image.inpaint"));
-  assert.ok(disabled.some((item) => item.protocol_contract_id === "sn.qwen-images-generations.v1"));
-  assert.ok(!disabled.some((item) => item.api_type === "llm" || item.api_type === "audio.asr"));
-  assert.ok(cases.some((item) => item.api_type === "vision.ocr" && !channelDisablesCase(catalog, source, item)));
+  assert.equal(cases.filter((item) => channelDisablesCase(catalog, source, item)).length, 0);
+  for (const api of ["video.generate", "video.edit", "video.extend", "image.inpaint", "vision.ocr"]) {
+    assert.ok(cases.some((item) => item.api_type === api), api);
+  }
+  assert.ok(cases.some((item) => item.protocol_contract_id === "sn.qwen-images-generations.v1"));
+  const profile = source.providers.find((item) => item.provider_driver === "sn-ai-provider")!;
+  profile.rules.find((item) => item.model_pattern === "wan-3.0")!.disabled_api_types = ["video.generate"];
+  assert.ok(cases.some((item) => item.api_type === "video.generate" && channelDisablesCase(catalog, source, item)));
 });
 
 
@@ -6654,6 +6740,13 @@ test("SN background error expectations retain the detailed canonical task code",
     const item = cases.find((item) => item.case_id === `t1.5.sn-ai-provider.sn.openai-responses.background.v1.vision.ocr.error.${scenario}`)!;
     assert.equal(item.expected_aicc_error_code, code);
     assert.equal(item.expected_provider_error_code, scenario);
+  }
+  for (const contract of ["sn.openai-videos.v1", "sn.openai-video-edits.v1", "sn.openai-video-extensions.v1"]) {
+    const api = contract.includes("edits") ? "video.edit" : contract.includes("extensions") ? "video.extend" : "video.generate";
+    for (const [scenario, code] of [["invalid_argument", "invalid_request"], ["timeout", "timeout"], ["upstream_json_required", "invalid_request"]]) {
+      const item = cases.find((item) => item.case_id === `t1.5.sn-ai-provider.${contract}.${api}.error.${scenario}`)!;
+      assert.equal(item.expected_aicc_error_code, code);
+    }
   }
   const defaults = cases.find((item) => item.tags.includes("server_default_mode"))!;
   assert.equal(defaults.model_selector?.value, "qwen3.7-plus");

@@ -1019,7 +1019,7 @@ mod tests {
     fn metadata_source_manager_supplies_all_builtin_catalogs_to_registry() {
         let registry = registry();
         let files = load_builtin_metadata().unwrap();
-        assert_eq!(files.len(), 42);
+        assert_eq!(files.len(), 43);
         assert_eq!(
             files
                 .iter()
@@ -1039,7 +1039,7 @@ mod tests {
                 .iter()
                 .filter(|file| file.kind == CatalogKind::ModelDriver)
                 .count(),
-            14
+            15
         );
 
         let snapshot = MetadataSources {

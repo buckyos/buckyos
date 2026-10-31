@@ -8,6 +8,24 @@ type NdnFixtureServiceOptions = {
   startupTimeoutMs?: number;
 };
 
+export async function readNdnFixtureObject(
+  baseUrl: string,
+  request: { obj_id: string; inner_path?: string | null },
+  fetcher: typeof fetch = fetch,
+): Promise<{ body: ReadableStream<Uint8Array> | null; totalSize: number | null }> {
+  const objectPath = encodeURIComponent(request.obj_id).replaceAll("%3A", ":");
+  const innerPath = request.inner_path
+    ? `/${request.inner_path.split("/").filter(Boolean).map(encodeURIComponent).join("/")}`
+    : "";
+  const response = await fetcher(`${baseUrl.replace(/\/+$/, "")}/${objectPath}${innerPath}`);
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new Error(`NDN fixture read failed with HTTP ${response.status}`);
+  }
+  const size = response.headers.get("content-length");
+  return { body: response.body, totalSize: size === null ? null : Number(size) };
+}
+
 export type NdnFixtureService = {
   publicBaseUrl: string;
   stop: () => Promise<void>;

@@ -1919,187 +1919,187 @@ impl ExecutionEngine {
         if already_active {
             return self.current_receipt(task_id).await;
         }
-        let mut next_poll_after = initial_poll_after;
-        let mut current_state = record.state;
-        let active_poll_started = tokio::time::Instant::now();
-        let resume = binding
-            .resume
-            .as_ref()
-            .expect("validated native task resume descriptor");
-        let active_poll_elapsed_at_start_ms = resume.active_poll_elapsed_ms;
-        let remaining_poll_duration = resume.remaining_active_poll_duration();
-        let deadline = active_poll_started + remaining_poll_duration;
-        loop {
-            if tokio::time::Instant::now() >= deadline {
-                self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
-                    .await;
-                return self
-                    .finish_failure(
-                        task_id,
-                        aicc_error(
-                            AiccErrorCode::Timeout,
-                            "native Provider task exceeded its polling deadline",
-                            false,
-                        ),
-                    )
-                    .await;
-            }
-            if let Some(delay) = next_poll_after.take().filter(|delay| !delay.is_zero()) {
-                tokio::select! {
-                    _ = cancellation.cancelled() => {
-                        let elapsed = active_poll_started.elapsed();
-                        binding
-                            .resume
-                            .as_mut()
-                            .expect("validated native task resume descriptor")
-                            .record_active_poll_session(active_poll_elapsed_at_start_ms, elapsed);
-                        let _ = self.store.set_running(task_id, current_state, binding.clone()).await?;
-                        self.remove_active(task_id);
-                        return self.current_receipt(task_id).await;
-                    }
-                    _ = tokio::time::sleep_until((tokio::time::Instant::now() + delay).min(deadline)) => {}
-                }
-            }
-            if cancellation.is_cancelled() {
-                let elapsed = active_poll_started.elapsed();
-                binding
-                    .resume
-                    .as_mut()
-                    .expect("validated native task resume descriptor")
-                    .record_active_poll_session(active_poll_elapsed_at_start_ms, elapsed);
-                let _ = self
-                    .store
-                    .set_running(task_id, current_state, binding.clone())
-                    .await?;
-                self.remove_active(task_id);
-                return self.current_receipt(task_id).await;
-            }
-            let polled = tokio::time::timeout_at(
-                deadline,
-                self.providers.poll_native(&binding, cancellation.clone()),
-            )
-            .await;
-            let Ok(polled) = polled else {
-                self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
-                    .await;
-                return self
-                    .finish_failure(
-                        task_id,
-                        aicc_error(
-                            AiccErrorCode::Timeout,
-                            "native Provider task exceeded its polling deadline",
-                            false,
-                        ),
-                    )
-                    .await;
-            };
-            match polled {
-                Ok(NativeTaskPoll::Rebound(handle, resume)) => {
-                    if let Err(error) = resume.validate() {
-                        return self.finish_failure(task_id, error).await;
-                    }
-                    binding.remote_task_id = Some(handle.remote_task_id.clone());
-                    binding.result_artifacts = handle.result_artifacts.clone();
-                    binding.cancel_supported = handle.cancel_supported;
-                    binding.resume = Some(resume);
-                    let state = ExecutionState::from(handle.state);
-                    if !self
-                        .store
-                        .set_running(task_id, state, binding.clone())
-                        .await?
-                    {
-                        self.remove_active(task_id);
-                        return self.current_receipt(task_id).await;
-                    }
-                    if let Err(error) = self
-                        .tasks
-                        .report_state(
+        let result = async {
+            let mut next_poll_after = initial_poll_after;
+            let mut current_state = record.state;
+            let active_poll_started = tokio::time::Instant::now();
+            let resume = binding
+                .resume
+                .as_ref()
+                .expect("validated native task resume descriptor");
+            let active_poll_elapsed_at_start_ms = resume.active_poll_elapsed_ms;
+            let remaining_poll_duration = resume.remaining_active_poll_duration();
+            let deadline = active_poll_started + remaining_poll_duration;
+            loop {
+                if tokio::time::Instant::now() >= deadline {
+                    self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
+                        .await;
+                    return self
+                        .finish_failure(
                             task_id,
-                            state,
-                            json_state(
-                                "provider_task_rebound_after_url_fallback",
-                                None,
-                                record.trace_id.as_deref(),
+                            aicc_error(
+                                AiccErrorCode::Timeout,
+                                "native Provider task exceeded its polling deadline",
+                                false,
                             ),
                         )
-                        .await
-                    {
-                        if !error.retriable {
-                            return self.finish_failure(task_id, error).await;
-                        }
-                        log::warn!(
-                            "native task progress delivery deferred: task_id={} error={}",
-                            task_id,
-                            error
-                        );
-                    }
-                    next_poll_after = Some(handle.poll_after.unwrap_or(Duration::from_secs(3)));
+                        .await;
                 }
-                Ok(NativeTaskPoll::Pending(state, progress, retry_after)) => {
-                    if state.is_terminal() {
-                        self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
-                            .await;
-                        let error = aicc_error(
-                            AiccErrorCode::ProviderError,
-                            "terminal Provider task state did not include a final result",
-                            false,
-                        );
-                        return self.finish_failure(task_id, error).await;
+                if let Some(delay) = next_poll_after.take().filter(|delay| !delay.is_zero()) {
+                    tokio::select! {
+                        _ = cancellation.cancelled() => {
+                            let elapsed = active_poll_started.elapsed();
+                            binding
+                                .resume
+                                .as_mut()
+                                .expect("validated native task resume descriptor")
+                                .record_active_poll_session(active_poll_elapsed_at_start_ms, elapsed);
+                            let _ = self.store.set_running(task_id, current_state, binding.clone()).await?;
+                            return self.current_receipt(task_id).await;
+                        }
+                        _ = tokio::time::sleep_until((tokio::time::Instant::now() + delay).min(deadline)) => {}
                     }
-                    current_state = ExecutionState::from(state);
-                    let resume = binding
+                }
+                if cancellation.is_cancelled() {
+                    let elapsed = active_poll_started.elapsed();
+                    binding
                         .resume
                         .as_mut()
-                        .expect("validated native task resume descriptor");
-                    resume.record_active_poll_session(
-                        active_poll_elapsed_at_start_ms,
-                        active_poll_started.elapsed(),
-                    );
-                    if !self
+                        .expect("validated native task resume descriptor")
+                        .record_active_poll_session(active_poll_elapsed_at_start_ms, elapsed);
+                    let _ = self
                         .store
                         .set_running(task_id, current_state, binding.clone())
-                        .await?
-                    {
-                        self.remove_active(task_id);
-                        return self.current_receipt(task_id).await;
-                    }
-                    if let Err(error) = self
-                        .tasks
-                        .report_state(
+                        .await?;
+                    return self.current_receipt(task_id).await;
+                }
+                let polled = tokio::time::timeout_at(
+                    deadline,
+                    self.providers.poll_native(&binding, cancellation.clone()),
+                )
+                .await;
+                let Ok(polled) = polled else {
+                    self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
+                        .await;
+                    return self
+                        .finish_failure(
                             task_id,
-                            ExecutionState::from(state),
-                            json_state("provider_progress", progress, record.trace_id.as_deref()),
+                            aicc_error(
+                                AiccErrorCode::Timeout,
+                                "native Provider task exceeded its polling deadline",
+                                false,
+                            ),
                         )
-                        .await
-                    {
-                        if !error.retriable {
+                        .await;
+                };
+                match polled {
+                    Ok(NativeTaskPoll::Rebound(handle, resume)) => {
+                        if let Err(error) = resume.validate() {
                             return self.finish_failure(task_id, error).await;
                         }
-                        log::warn!(
-                            "native task progress delivery deferred: task_id={} error={}",
-                            task_id,
-                            error
-                        );
+                        binding.remote_task_id = Some(handle.remote_task_id.clone());
+                        binding.result_artifacts = handle.result_artifacts.clone();
+                        binding.cancel_supported = handle.cancel_supported;
+                        binding.resume = Some(resume);
+                        let state = ExecutionState::from(handle.state);
+                        if !self
+                            .store
+                            .set_running(task_id, state, binding.clone())
+                            .await?
+                        {
+                            return self.current_receipt(task_id).await;
+                        }
+                        if let Err(error) = self
+                            .tasks
+                            .report_state(
+                                task_id,
+                                state,
+                                json_state(
+                                    "provider_task_rebound_after_url_fallback",
+                                    None,
+                                    record.trace_id.as_deref(),
+                                ),
+                            )
+                            .await
+                        {
+                            if !error.retriable {
+                                return self.finish_failure(task_id, error).await;
+                            }
+                            log::warn!(
+                                "native task progress delivery deferred: task_id={} error={}",
+                                task_id,
+                                error
+                            );
+                        }
+                        next_poll_after = Some(handle.poll_after.unwrap_or(Duration::from_secs(3)));
                     }
-                    next_poll_after = Some(retry_after.unwrap_or(Duration::from_secs(3)));
-                }
-                Ok(NativeTaskPoll::Complete(output)) => {
-                    return self
-                        .finish_success(task_id, &record.scope, binding, output)
-                        .await;
-                }
-                Ok(NativeTaskPoll::Failed(error)) => {
-                    self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
-                        .await;
-                    return self.finish_failure(task_id, error.into()).await;
-                }
-                Err(error) => {
-                    self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
-                        .await;
-                    return self.finish_failure(task_id, error.into_aicc_error()).await;
+                    Ok(NativeTaskPoll::Pending(state, progress, retry_after)) => {
+                        if state.is_terminal() {
+                            self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
+                                .await;
+                            let error = aicc_error(
+                                AiccErrorCode::ProviderError,
+                                "terminal Provider task state did not include a final result",
+                                false,
+                            );
+                            return self.finish_failure(task_id, error).await;
+                        }
+                        current_state = ExecutionState::from(state);
+                        let resume = binding
+                            .resume
+                            .as_mut()
+                            .expect("validated native task resume descriptor");
+                        resume.record_active_poll_session(
+                            active_poll_elapsed_at_start_ms,
+                            active_poll_started.elapsed(),
+                        );
+                        if !self
+                            .store
+                            .set_running(task_id, current_state, binding.clone())
+                            .await?
+                        {
+                            return self.current_receipt(task_id).await;
+                        }
+                        if let Err(error) = self
+                            .tasks
+                            .report_state(
+                                task_id,
+                                ExecutionState::from(state),
+                                json_state("provider_progress", progress, record.trace_id.as_deref()),
+                            )
+                            .await
+                        {
+                            if !error.retriable {
+                                return self.finish_failure(task_id, error).await;
+                            }
+                            log::warn!(
+                                "native task progress delivery deferred: task_id={} error={}",
+                                task_id,
+                                error
+                            );
+                        }
+                        next_poll_after = Some(retry_after.unwrap_or(Duration::from_secs(3)));
+                    }
+                    Ok(NativeTaskPoll::Complete(output)) => {
+                        return self
+                            .finish_success(task_id, &record.scope, binding, output)
+                            .await;
+                    }
+                    Ok(NativeTaskPoll::Failed(error)) => {
+                        self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
+                            .await;
+                        return self.finish_failure(task_id, error.into()).await;
+                    }
+                    Err(error) => {
+                        self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
+                            .await;
+                        return self.finish_failure(task_id, error.into_aicc_error()).await;
+                    }
                 }
             }
-        }
+        }.await;
+        self.remove_active(task_id);
+        result
     }
 
     pub(crate) async fn recover(&self) -> Result<Vec<ExecutionReceipt>, AiccError> {
@@ -2692,6 +2692,7 @@ mod tests {
     struct MemoryStore {
         scopes: Mutex<BTreeMap<IdempotencyScope, ExecutionRecord>>,
         tasks: Mutex<BTreeMap<String, IdempotencyScope>>,
+        set_running_error: Mutex<Option<AiccError>>,
     }
 
     #[async_trait]
@@ -2727,6 +2728,9 @@ mod tests {
             state: ExecutionState,
             binding: PinnedProviderTask,
         ) -> Result<bool, AiccError> {
+            if let Some(error) = self.set_running_error.lock().unwrap().take() {
+                return Err(error);
+            }
             self.mutate(task_id, |record| {
                 if record.state.is_terminal() {
                     return false;
@@ -4883,6 +4887,35 @@ mod tests {
             tasks.completed.lock().unwrap().as_slice(),
             [(started.task_id, Some("trace-1".into()))]
         );
+    }
+
+    #[tokio::test]
+    async fn native_polling_can_recover_after_a_progress_storage_error() {
+        let providers = Arc::new(FakeProviders::default());
+        let mut handle = NativeTaskHandle::new("remote-storage-recovery").unwrap();
+        handle.state = NativeTaskState::Queued;
+        handle.poll_after = Some(Duration::ZERO);
+        providers.plans.lock().unwrap().push_back(StartPlan::Success(ProviderExecution::NativeTask {
+            handle,
+            resume: resume_descriptor(),
+        }));
+        providers.polls.lock().unwrap().extend([
+            NativeTaskPoll::Pending(NativeTaskState::Running, None, Some(Duration::ZERO)),
+            NativeTaskPoll::Complete(output("completed")),
+        ]);
+        let (engine, store, tasks, usage) = make_engine(providers.clone());
+        let started = engine.execute(request(call("primary"))).await.unwrap();
+        *store.set_running_error.lock().unwrap() = Some(aicc_error(
+            AiccErrorCode::InternalError, "database is locked", true,
+        ));
+        let error = engine.drive_native(&started.task_id).await.unwrap_err();
+        assert_eq!(error.message, "database is locked");
+        assert!(engine.active.lock().unwrap().is_empty());
+        let recovered = engine.recover().await.unwrap();
+        assert_eq!(recovered[0].state, ExecutionState::Succeeded);
+        assert_eq!(providers.starts.lock().unwrap().len(), 1);
+        assert_eq!(usage.writes.lock().unwrap().len(), 1);
+        assert_eq!(tasks.completed.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
