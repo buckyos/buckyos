@@ -53,6 +53,7 @@ const REPORT: Record<string, string> = {
   pdf_invisible_text: 'aiworkspace.pdf.report.invisibleText', pdf_vertical_text: 'aiworkspace.pdf.report.verticalText', pdf_complex_page: 'aiworkspace.pdf.report.complexPage',
   pdf_complex_whole: 'aiworkspace.pdf.report.complexWhole', pdf_effects: 'aiworkspace.pdf.report.effects', pdf_svg_too_large: 'aiworkspace.pdf.report.svgTooLarge',
   pdf_raster_parts: 'aiworkspace.pdf.report.rasterParts', pdf_raster_failed: 'aiworkspace.pdf.report.rasterFailed', pdf_page_failed: 'aiworkspace.pdf.report.pageFailed',
+  pdf_text_layout_limit: 'aiworkspace.pdf.report.textLayoutLimit',
   pdf_original_missing: 'aiworkspace.pdf.report.originalMissing', pdf_path_failed: 'aiworkspace.pdf.report.pathFailed',
   // table import (表格数据导入 TODO §7): the importer's codes
   table_empty_rows: 'aiworkspace.import.report.emptyRows', table_merged_header: 'aiworkspace.import.report.mergedHeader', table_merged_cells: 'aiworkspace.import.report.mergedCells',

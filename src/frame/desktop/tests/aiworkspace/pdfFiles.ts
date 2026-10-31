@@ -51,3 +51,19 @@ export function deck(): Buffer {
     '<< /Type /FontDescriptor /FontName /STSong-Light /Flags 6 /FontBBox [0 -200 1000 900] /ItalicAngle 0 /Ascent 880 /Descent -120 /CapHeight 880 /StemV 80 >>',
   ])
 }
+
+export function spacedText(): Buffer {
+  const contents = [
+    'BT /F1 12 Tf 1 0 0 1 30 160 Tm (hello) Tj /F2 12 Tf 1 0 0 1 57.044 160 Tm (world) Tj ET',
+    'BT /F1 20 Tf 50 Tz 1 0 0 1 30 100 Tm (MMMMMMMM) Tj ET',
+    'BT /F1 20 Tf 100 Tz 1 0 0 1 115 100 Tm (RIGHT) Tj ET',
+  ].join('\n')
+  return writePdf([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> >>',
+    stream('', contents),
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique >>',
+  ])
+}

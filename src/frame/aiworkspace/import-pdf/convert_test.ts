@@ -204,3 +204,17 @@ Deno.test('vector: an SVG over the size limit is not made', () => {
   assertEquals(svg.config.fill, '#ff0000')
   assert(String((svg.config.svg as { body: string }).body).includes('var(--aiws-shape-fill)'))
 })
+
+Deno.test('excessive text layout stays in the raster without skipping its source operators', async () => {
+  const [original] = await pages('slides')
+  const first = original.text.find((t) => t.str.trim())!
+  const page: PdfPage = { ...original, text: Array.from({ length: 1200 }, (_, i) => ({ ...first, str: 'x', transform: [12, 0, 0, 12, 10 + i * 0.1, 30], width: 0.12, hasEOL: false, mc: null })) }
+  const report = new ImportReport()
+  const rasters: RasterRequest[] = []
+  const plan = await convertPdfPage(page, report, options(rasters))
+  assert(report.notes.has('pdf_text_layout_limit'))
+  assertEquals(texts(plan).length, 0)
+  const operators = original.fnArray.flatMap((fn, i) => fn === 44 ? [i] : [])
+  assert(rasters.length > 0)
+  assert(operators.every((i) => !rasters[0].skip.has(i)))
+})

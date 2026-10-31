@@ -81,7 +81,13 @@ function textItem(p: Paragraph, key: string, parent: string, source: Record<stri
     shape: 'text', fill: 'none', stroke: 'none', text: p.text, font_size: r2(p.fontSize), font_color: p.style.color, align: p.align, valign: 'top', wrap: false,
     ...(p.style.bold ? { bold: true } : {}), ...(p.style.italic ? { italic: true } : {}), ...(p.style.family !== 'sans' ? { font_family: p.style.family } : {}),
     ...(p.lineHeight !== null ? { line_height: p.lineHeight } : {}), ...(p.style.alpha < 0.995 ? { opacity: r2(p.style.alpha) } : {}),
-    pdf_source: { ...source, kind: 'text', ...(p.role ? { role: p.role } : {}) },
+    pdf_source: {
+      ...source, kind: 'text', ...(p.role ? { role: p.role } : {}),
+      text_layout: {
+        ...p.layout, width: r2(p.layout.width), height: r2(p.layout.height), fontSize: r2(p.layout.fontSize),
+        spans: p.layout.spans.map((s) => ({ text: s.text, x: r2(s.x), y: r2(s.y), width: Math.max(0.01, r2(s.width)), size: Math.max(0.01, r2(s.size)) })),
+      },
+    },
   }
   return { key, parent, type: 'shape', rect: roundRect(p.rect), rotation: normalizeRotation(p.rotation), config, ...(firstLine(p.text) ? { title: firstLine(p.text) } : {}) }
 }
@@ -219,11 +225,15 @@ export async function convertPdfPage(page: PdfPage, report: ImportReport, option
     const a = apply(world, l.rect[0], l.rect[1]), b = apply(world, l.rect[2], l.rect[3])
     return { rect: { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) }, page: l.page, url: l.url }
   })
-  for (const [k, p] of text.paragraphs.entries()) {
+  const textItems = text.paragraphs.map((p, k) => {
     // the link covering most of the paragraph's text (boxes of neighbouring lines overlap a little)
     const area = (r: Rect | null) => (r ? r.w * r.h : 0)
     const link = links.map((l) => ({ l, a: area(intersect(l.rect, p.rect)) })).filter(({ l, a }) => a > 0.3 * Math.min(area(p.rect), area(l.rect))).sort((x, y) => y.a - x.a)[0]?.l
-    const item = textItem(p, `${groupKey}~t${k}`, groupKey, { ...source, ...(link ? { link: link.page ? { page: link.page } : { url: link.url } } : {}) })
+    return { paragraph: p, item: textItem(p, `${groupKey}~t${k}`, groupKey, { ...source, ...(link ? { link: link.page ? { page: link.page } : { url: link.url } } : {}) }) }
+  })
+  const textLayoutTooLarge = textItems.some(({ paragraph, item }) => paragraph.layout.spans.length > 4096 || new TextEncoder().encode(JSON.stringify(item.config)).length > 60 * 1024)
+  if (textLayoutTooLarge) report.add('pdf_text_layout_limit', 'Text with excessive layout metadata kept in the page raster', `p${n}`)
+  else for (const { paragraph: p, item } of textItems) {
     placed.push({ order: p.order, item, kind: 'text' })
     if (p.mixed) report.add('pdf_mixed_style', 'Paragraphs with several styles imported in their main style', firstLine(p.text).slice(0, 48))
     for (const r of p.runs) skip.add(r)
