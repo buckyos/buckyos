@@ -75,7 +75,7 @@ PIKG 负责分发与本机安装，AIWS 负责选择性引入与工作区内管�
 - **共同缺口**：模板包只预留（清单 `workspace_templates` 非空即拒绝）；签名 / 发布闭环未接；属性级协作与撤销、设计 / 运行态、公共端激活规则未做；Agent 凭手册建控件、跨 Zone 中转引入、旧 `manifest_version` 包三项 DV 未跑。
 - **开发闭环**：已跑通（build / pull / watch、诊断到行列、基线冲突、实例兼容检查、`unchanged` 不提交）。实现与设计假设的三处出入要在后续设计里承接：home 文件在 named store 里没有对象，build 由客户端读字节内联（≤ 4 MiB / 次，§7.6 Q22）；源码目录只能平铺（Q23，P1 放开成员名含 `/`）；工作区独立域名上 Desktop 关闭了构建类操作，但网关按路径转发 `/nfs/v1` 且子域会话是用户态 token，Q24 裁决 P1 放开并 DV。
 
-后续顺序：先清 P0 遗留（§8 “P0 遗留”），再做组合控件（P1），再事件 / 升级（P2）。
+后续顺序：先清 P0 遗留（§8 “P0 遗留”），再做组合控件（P1），再事件 / 升级（P2）。**P1 后（2026-10-30）**：P2 与 P3 合为一单推进，见 [P2 + P3 任务单](<../../notepads/aiworkspace-extension-p2p3-todo.md>)（M0 契约 → M1 属性级协作 → M2 事件 / 运行态 ∥ M3 升级 / 迁移 → M4 parent / Agent 组合结果 ∥ M5 模板包 → M6 验证与遗留 DV → M7 回写）；新裁决 Q26–Q33 列在其 §1.2，用户同日裁决全部按建议（Q32 模板包改为快照式，§6.9 / hello-controls 的声明式提案在 M0 改写）。
 
 ## 2. 现状：脑图实施留下的扩展机制
 
@@ -700,8 +700,8 @@ P0 的交付范围是 **PIKG 控件包的构建 / 读取 / 校验、本机库安
 | --- | --- | --- |
 | P0 | **2026-10-30 已实施（两仓未提交）**：render 定义（declarative / html）、`ext.build / export / install / list_library / uninstall / library_bundle / import`、本机库（`library.sqlite` + 每用户 `library` 桶）、`AppType::Aiws` + Installer 路由、websdk `aiws_ext` + CLI、Desktop 工作区控件对话框与实例初始化表单、手册。落点、测试与 DV 见 [扩展控件实施记录与验收报告](<BuckyOS AI Workspace 扩展控件实施记录与验收报告.md>)，出入见 [任务单 §12.1](<../../notepads/aiworkspace-extension-p0-todo.md>) | 已验收：build 后实例更新、失败不提交、基线冲突拒绝、收窄列实例、`unchanged` 不提交；两账号各自从库引入同一工作区，未装包一方可插实例；CLI 全链路与 `app install` 入库不建 AppSpec。未验收项见下方“P0 遗留” |
 | P1 | **2026-10-30 已实施**：内核（Q15 拆层、`kind: composite`、composite 容器与 slot、`def_dep` + `REFERENCE_CYCLE`、`tree.clone`、成员名含 `/`）、服务（`composition.json` 校验、`deps` 解析与 `DEP_MISSING`、依赖者重校验、导出 / 库 / 引入的依赖闭包、`ext.pack`）、websdk / CLI（`manifest_version: 2`、`checkComposition`、递归源码、超限上传、`pikg init --composite`）均已落地并测试通过；Desktop 通用 composite 宿主与各入口、DV 结果以 [扩展控件实施记录与验收报告](<BuckyOS AI Workspace 扩展控件实施记录与验收报告.md>) P1 节为准，与任务单的出入见 [P1 任务单 §13](<../../notepads/aiworkspace-extension-p1-todo.md>)。原计划：**任务单：[notepads/aiworkspace-extension-p1-todo.md](<../../notepads/aiworkspace-extension-p1-todo.md>)（2026-10-30，M0 契约冻结 → M1 遗留 → M2 内核 → M3 服务 → M4 websdk/CLI → M5 Desktop → M6 手册/DV/例子回写）。前段：P0 遗留**（下表 L1–L6）。**主体：组合控件**——Q15 拆 `types.rs` 校验层（先于放开 `kind`）→ `kind: composite` + `composition.json`（模板外观、slots、具名布局、属性映射）在 `store/src/ext.rs` 与 `aiws_ext.ts` 双实现校验 → 定义 → 定义依赖边与 `deps` 非空（Q16：依赖环拒绝、依赖者兼容检查扩到定义、导出闭包带依赖）→ 内核级子图重映射（Q17）→ Desktop 通用 composite 宿主、Chrome / slots、fixed 及按需 stack、“定义为控件”→ 源码子目录（Q23） | 两个客户卡片实例分别绑定数据，改 `composition.json` 并 build 后布局 / 外观更新，私有内容不串改或重建；复制子节点不变成脑图。混选 render 与组合定义导出，共享依赖去重，在新 Workspace 可分别实例化；被依赖控件收窄接口时 build 列出依赖定义并失败 |
-| P2 | 公共事件绑定与脚本行为（HTML host API 升 3、保留 2）、设计 / 运行边界、属性级协作与撤销、显式来源包升级与结构迁移（替换今天的 `EXT_IDENT_EXISTS` 拒绝：同身份异来源进入升级流程，列本地改动与受影响实例）、执行幂等、离线旧定义检查 | 甲改颜色、乙改文字均保留；一次点击只执行一次，改行为文件并 build 后下一次点击用新实现，重载不重放旧动作。包升级 / 迁移保留实例覆盖与内容；旧客户端写入冲突可诊断 |
-| P3 | HTML `parent`、更多布局、Agent 组合结果；移动端、工作区发布 / 回放和宿主能力不足的验证；Workspace 模板包（创建 / 实例化，复用 Q17 重映射与 P0 的 `workspace_templates` 预留） | Agent 通过手册发现 / 引入 / 实例化控件；缺少宿主能力时可读回退且数据保留；公共端 / 回放不执行现场业务动作；模板：安装不建工作区、两次创建内容独立、定义与实例引用正确重映射 |
+| P2 | **任务单（与 P3 合并，2026-10-30；Q26–Q33 用户同日裁决全部按建议，含 Q32 模板改快照式）：[notepads/aiworkspace-extension-p2p3-todo.md](<../../notepads/aiworkspace-extension-p2p3-todo.md>)。** 公共事件绑定与脚本行为（HTML host API 升 3、保留 2）、设计 / 运行边界、属性级协作与撤销、显式来源包升级与结构迁移（替换今天的 `EXT_IDENT_EXISTS` 拒绝：同身份异来源进入升级流程，列本地改动与受影响实例）、执行幂等、离线旧定义检查 | 甲改颜色、乙改文字均保留；一次点击只执行一次，改行为文件并 build 后下一次点击用新实现，重载不重放旧动作。包升级 / 迁移保留实例覆盖与内容；旧客户端写入冲突可诊断 |
+| P3 | **任务单同上（M4–M6；模板按 Q32 建议改为快照式）。** HTML `parent`、更多布局、Agent 组合结果；移动端、工作区发布 / 回放和宿主能力不足的验证；Workspace 模板包（创建 / 实例化，复用 Q17 重映射与 P0 的 `workspace_templates` 预留） | Agent 通过手册发现 / 引入 / 实例化控件；缺少宿主能力时可读回退且数据保留；公共端 / 回放不执行现场业务动作；模板：安装不建工作区、两次创建内容独立、定义与实例引用正确重映射 |
 
 Workspace 模板包的完整导出、目录与实例化已排入 P3；P0 的清单预留（`workspace_templates`，非空即拒绝）与 `ext.import` 的引入流程是它的基础，不另建打包格式。
 
