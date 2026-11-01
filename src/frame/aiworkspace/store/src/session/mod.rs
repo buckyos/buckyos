@@ -451,7 +451,8 @@ impl Service {
     /// dropped and every live asset bound under the run Workspace's own key (an edit or deletion at the source never
     /// takes a resource away from a session). Returns `(id, { workspace_id, epoch, seq })` of the clone point.
     pub fn clone_for_session(&self, source_id: &str, session_id: &str, owner: &str, presenter: &str, path_id: &str) -> WsResult<(String, Value)> {
-        let id = random_id("ws_");
+        let lease = self.allocate_workspace_id()?;
+        let id = lease.id.clone();
         let tmp = self.tmp_dir();
         let built = (|| -> WsResult<Value> {
             std::fs::create_dir_all(&tmp).map_err(io)?;

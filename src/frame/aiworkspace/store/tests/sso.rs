@@ -314,8 +314,8 @@ fn entry_ids_and_methods() {
     assert_eq!(parse_entry_methods(&json!({ "guest": true, "did_login": true })).unwrap(), ENTRY_GUEST | ENTRY_DID_LOGIN);
     assert!(parse_entry_methods(&json!({ "wallet": true })).is_err());
     assert!(parse_entry_methods(&json!({ "guest": "yes" })).is_err());
-    assert!(split_entry_id("ws_aaaaaaaaaaaaaaaaaaaaaaaaaa~se_bbbbbbbbbbbbbbbbbbbbbbbbbb").is_some());
-    for bad in ["ws_aaaaaaaaaaaaaaaaaaaaaaaaaa", "se_bbbbbbbbbbbbbbbbbbbbbbbbbb", "ws_x~se_y", "ws_aaaaaaaaaaaaaaaaaaaaaaaaaa~ws_bbbbbbbbbbbbbbbbbbbbbbbbbb"] {
+    assert!(split_entry_id("ws_2611a0b3~se_bbbbbbbbbbbbbbbbbbbbbbbbbb").is_some());
+    for bad in ["ws_2611a0b3", "se_bbbbbbbbbbbbbbbbbbbbbbbbbb", "ws_x~se_y", "ws_2611a0b3~ws_bbbbbbbbbbbbbbbbbbbbbbbbbb"] {
         assert!(split_entry_id(bad).is_none(), "{bad}");
     }
 }

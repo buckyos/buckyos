@@ -429,8 +429,8 @@ impl Workspace {
     /// Build a new Workspace folder at `dir` (a temporary name; the caller
     /// renames it into place once complete).
     pub fn create(dir: &Path, workspace_id: &str, title: &str, owner: &str, objects: Arc<ObjectStore>, clock: Clock) -> WsResult<Workspace> {
-        if !is_prefixed_id("ws_", workspace_id) {
-            return Err(WsError::invalid_op("workspace_id must be ws_ + 26 base32 chars"));
+        if !aiworkspace_core::id::is_workspace_id(workspace_id) {
+            return Err(WsError::invalid_op("workspace_id must be ws_ + YYMM + 4 base36 chars"));
         }
         std::fs::create_dir_all(dir).map_err(|e| WsError::io(e.to_string()))?;
         let doc = open_db(&dir.join("doc.sqlite"), true)?;

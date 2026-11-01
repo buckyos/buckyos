@@ -9,10 +9,10 @@ use crate::workspace::{random_id, system_clock, Caller, Clock, FailPoint, Worksp
 use aiworkspace_core::value::format_utc_ms;
 use rusqlite::Connection;
 use aiworkspace_core::access::Cap;
-use aiworkspace_core::id::is_prefixed_id;
+use aiworkspace_core::id::{is_prefixed_id, is_workspace_id, workspace_id, WORKSPACE_CODE_SPACE};
 use aiworkspace_core::{Code, Deny, WsError, WsResult};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -39,6 +39,21 @@ pub struct Service {
     /// How long an ended, unsaved session is kept (Q10).
     pub session_retention_ms: i64,
     open: Mutex<HashMap<String, WsHandle>>,
+    /// Workspace ids handed out by [`Service::allocate_workspace_id`] whose folder is not in place yet.
+    reserved: Mutex<HashSet<String>>,
+}
+
+/// A Workspace id this service will not hand out again until the lease is dropped — by then its folder exists
+/// (or the creation failed). Keep it alive across the rename into place.
+pub struct IdLease<'a> {
+    pub id: String,
+    svc: &'a Service,
+}
+
+impl Drop for IdLease<'_> {
+    fn drop(&mut self) {
+        self.svc.reserved.lock().unwrap().remove(&self.id);
+    }
 }
 
 /// A deleted Workspace stays in `trash/`, its bindings kept, this long before the sweep releases them (D06).
@@ -64,7 +79,7 @@ impl Service {
                 if let Some(intent) = intent {
                     let workspace = intent["workspace_id"].as_str().unwrap_or_default();
                     let backup = intent["backup"].as_str().unwrap_or_default();
-                    if is_prefixed_id("ws_", workspace) && is_prefixed_id("restore_", backup)
+                    if is_workspace_id(workspace) && is_prefixed_id("restore_", backup)
                         && !root.join(workspace).exists() && data_dir.join("trash").join(backup).is_dir() {
                         std::fs::rename(entry.path(), root.join(workspace)).map_err(io)?;
                         let _ = std::fs::remove_file(root.join(workspace).join("restore-intent.json"));
@@ -88,6 +103,7 @@ impl Service {
             sessions: crate::session::registry::Sessions::open(&data_dir.join("sessions.sqlite"))?,
             session_retention_ms: crate::session::DEFAULT_RETENTION_MS,
             open: Mutex::new(HashMap::new()),
+            reserved: Mutex::new(HashSet::new()),
         };
         // no connection survived a restart
         svc.sessions.all_offline()?;
@@ -181,6 +197,24 @@ impl Service {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A fresh Workspace id: `ws_<YYMM><code>` for the current month, the code drawn at random and advanced by one
+    /// (wrapping) past every code in use — the folder exists or another creation holds it. A month's 36⁴ codes
+    /// exhausted is `ID_CONFLICT`.
+    pub fn allocate_workspace_id(&self) -> WsResult<IdLease<'_>> {
+        let now = (self.clock)();
+        let mut reserved = self.reserved.lock().unwrap();
+        let start = rand::random::<u32>() % WORKSPACE_CODE_SPACE;
+        for step in 0..WORKSPACE_CODE_SPACE {
+            let id = workspace_id(now, (start + step) % WORKSPACE_CODE_SPACE);
+            if reserved.contains(&id) || self.ws_dir(&id).exists() {
+                continue;
+            }
+            reserved.insert(id.clone());
+            return Ok(IdLease { id, svc: self });
+        }
+        Err(WsError::sub(Code::InvalidOperation, "ID_CONFLICT", "no workspace id is free this month"))
+    }
+
     pub(crate) fn tmp_dir(&self) -> PathBuf {
         self.data_dir.join("workspaces").join(format!(".tmp-{}", random_id("")))
     }
@@ -206,7 +240,7 @@ impl Service {
 
     /// The single writer of a Workspace. Opens the folder on first use.
     pub fn workspace(&self, id: &str) -> WsResult<WsHandle> {
-        if !is_prefixed_id("ws_", id) {
+        if !is_workspace_id(id) {
             return Err(WsError::not_found("workspace not found"));
         }
         if let Some(h) = self.open.lock().unwrap().get(id) {
@@ -234,11 +268,12 @@ impl Service {
     /// `ws.create`: built under a temporary name, renamed into place when complete.
     pub fn create_workspace(&self, caller: &Caller, title: &str, workspace_id: Option<&str>) -> WsResult<Value> {
         require_may_own(caller)?;
-        let id = match workspace_id {
-            Some(id) if is_prefixed_id("ws_", id) => id.to_string(),
-            Some(_) => return Err(WsError::invalid_op("workspace_id must be ws_ + 26 base32 chars")),
-            None => random_id("ws_"),
+        let lease = match workspace_id {
+            Some(id) if is_workspace_id(id) => None,
+            Some(_) => return Err(WsError::invalid_op("workspace_id must be ws_ + YYMM + 4 base36 chars")),
+            None => Some(self.allocate_workspace_id()?),
         };
+        let id = lease.as_ref().map(|l| l.id.clone()).unwrap_or_else(|| workspace_id.unwrap().to_string());
         if title.chars().count() > 256 {
             return Err(WsError::invalid_op("title too long"));
         }
@@ -262,7 +297,7 @@ impl Service {
         let mut out = Vec::new();
         for entry in std::fs::read_dir(self.data_dir.join("workspaces")).map_err(io)? {
             let name = entry.map_err(io)?.file_name().to_string_lossy().to_string();
-            if is_prefixed_id("ws_", &name) {
+            if is_workspace_id(&name) {
                 out.push(name);
             }
         }
@@ -341,10 +376,14 @@ impl Service {
         let source_id = snap["workspace_id"].as_str().unwrap_or("").to_string();
         let title = m["title"].as_str().unwrap_or("");
         let personal_backup = m["export_mode"] == json!("personal_backup");
+        let mut lease = None;
         let (id, forked_from, existing) = match semantics {
-            "new" => (random_id("ws_"), Some(json!({ "workspace_id": source_id, "snapshot": snapshot })), false),
+            "new" => {
+                let id = lease.insert(self.allocate_workspace_id()?).id.clone();
+                (id, Some(json!({ "workspace_id": source_id, "snapshot": snapshot })), false)
+            }
             "restore" => {
-                if !is_prefixed_id("ws_", &source_id) {
+                if !is_workspace_id(&source_id) {
                     return Err(WsError::invalid_schema("package has no valid workspace_id"));
                 }
                 let exists = self.ws_dir(&source_id).exists();
@@ -444,7 +483,8 @@ impl Service {
             let access = ws.require_ws(caller, Cap::Export)?;
             (ws.materialize_for(&access, "fork_source", &caller.principal)?, ws.title())
         };
-        let id = random_id("ws_");
+        let lease = self.allocate_workspace_id()?;
+        let id = lease.id.clone();
         let tmp = self.tmp_dir();
         let spec = LoadSpec {
             workspace_id: &id,
@@ -477,7 +517,8 @@ impl Service {
         require_may_own(caller)?;
         let root = tf.content_root()?;
         tf.load_into(&self.objects)?;
-        let id = random_id("ws_");
+        let lease = self.allocate_workspace_id()?;
+        let id = lease.id.clone();
         let title = title.filter(|t| !t.trim().is_empty()).or_else(|| tf.item["title"].as_str()).unwrap_or("Workspace").to_string();
         let tmp = self.tmp_dir();
         let spec = LoadSpec { workspace_id: &id, title: &title, content_root: &root, collab: Default::default(), personal: vec![], forked_from: None };

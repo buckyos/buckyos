@@ -1,7 +1,8 @@
 /* Addresses of the AI Workspace (内核架构改进 D21 / T4-8, notepads/aiworkspace-subdomain-todo.md).
  *
- * A Workspace is a site of its own: `https://aiws-<id>.<zonehost>` (the id without its `ws_` prefix — a DNS label
- * carries no `_`), served by the aiworkspace service from the Desktop build's `aiws.html` entry. Its pages are
+ * A Workspace is a site of its own: `https://aiws-<label>.<zonehost>`, the label being the id `ws_<YYMM><4 base36>`
+ * without its `ws_` prefix (`aiws-2611a0b3.<zone>`; a DNS label carries no `_`), served by the aiworkspace service
+ * from the Desktop build's `aiws.html` entry. Its pages are
  * `/<workspace slug>/<surface slug>?id=<surface id>[&block=<block id>]`: the slugs are for people and crawlers, the
  * `id` decides (the service sends a Surface named without its id to this canonical form). The origin comes from
  * the service (`ws.get_info.public_base`); a deployment without a host (standalone backend, e2e) has none and the

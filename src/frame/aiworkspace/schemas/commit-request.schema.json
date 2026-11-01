@@ -21,7 +21,7 @@
   },
   "workspace_id": {
    "type": "string",
-   "pattern": "^ws_[a-z2-7]{26}$"
+   "pattern": "^ws_[0-9]{2}(0[1-9]|1[0-2])[0-9a-z]{4}$"
   },
   "epoch": {
    "type": "string",
