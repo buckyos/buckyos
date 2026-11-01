@@ -58,7 +58,7 @@ use log::*;
 use name_lib::*;
 
 use async_trait::async_trait;
-use buckyos_api::{ZoneConfig, ZONE_OWNER_USER_ID_KEY};
+use buckyos_api::{AgentId, AgentSpec, ZoneConfig, ZONE_OWNER_USER_ID_KEY};
 use buckyos_http_server::{
     server_err, HttpServer, ServerError, ServerErrorCode, ServerResult, StreamInfo,
 };
@@ -361,39 +361,65 @@ impl ZoneDidResolver {
 
     async fn load_agent_doc(
         &self,
-        key: &str,
-    ) -> Result<Option<(AgentDocument, EncodedDocument)>, String> {
-        let path = format!("agents/{}/doc", key);
-        let Some(doc_str) = self.store_get(path.as_str()).await? else {
-            return Ok(None);
-        };
-        let encoded = EncodedDocument::from_str(doc_str)
-            .map_err(|e| format!("parse {} failed: {}", path, e))?;
-        let agent_doc = AgentDocument::decode(&encoded, None)
-            .map_err(|e| format!("{} corrupt: {}", path, e))?;
-        Ok(Some((agent_doc, encoded)))
-    }
-
-    // agent 的真实 DID 与 store 短名键无关，按 id 扫描（zone 内 agent 数量很小）。
-    async fn find_agent_doc_by_did(
-        &self,
         did: &DID,
     ) -> Result<Option<(AgentDocument, EncodedDocument)>, String> {
-        let agent_ids = {
+        let agent_id = AgentId::from_agent_did(did)?;
+        let rows = {
             let store = SYS_STORE.lock().await;
-            store
-                .list_direct_children("agents".to_string())
-                .await
-                .map_err(|e| format!("list agents failed: {}", e))?
-        };
-        for agent_id in agent_ids {
-            if let Ok(Some((agent_doc, encoded))) = self.load_agent_doc(agent_id.as_str()).await {
-                if agent_doc.id == *did {
-                    return Ok(Some((agent_doc, encoded)));
-                }
+            let owners = store.list_direct_children("users".to_string()).await
+                .map_err(|e| format!("list users failed: {e}"))?;
+            let mut rows = Vec::new();
+            for owner in owners {
+                let path = buckyos_api::agent_spec_key(&owner, &agent_id);
+                let Some(spec) = store.get(path.clone()).await
+                    .map_err(|e| format!("read {path} failed: {e}"))? else { continue };
+                let owner_doc = store.get(format!("users/{owner}/doc")).await
+                    .map_err(|e| format!("read agent owner {owner} failed: {e}"))?;
+                rows.push((owner, spec, owner_doc));
             }
+            rows
+        };
+        Self::canonical_agent_doc(did, rows)
+    }
+
+    fn canonical_agent_doc(
+        did: &DID,
+        rows: Vec<(String, String, Option<String>)>,
+    ) -> Result<Option<(AgentDocument, EncodedDocument)>, String> {
+        let agent_id = AgentId::from_agent_did(did)?;
+        if rows.len() > 1 {
+            return Err(format!("Agent {agent_id} has multiple canonical owners"));
         }
-        Ok(None)
+        let Some((owner, raw_spec, raw_owner)) = rows.into_iter().next() else {
+            return Ok(None);
+        };
+        let path = buckyos_api::agent_spec_key(&owner, &agent_id);
+        let spec: AgentSpec = serde_json::from_str(&raw_spec)
+            .map_err(|e| format!("invalid AgentSpec at {path}: {e}"))?;
+        spec.validate().map_err(|e| format!("invalid AgentSpec at {path}: {e}"))?;
+        let raw_owner = raw_owner.ok_or_else(|| format!("Agent owner {owner} has no document"))?;
+        let encoded_owner = EncodedDocument::from_str(raw_owner)
+            .map_err(|e| format!("invalid Agent owner {owner}: {e}"))?;
+        let owner_doc = OwnerDocument::decode(&encoded_owner, None)
+            .map_err(|e| format!("invalid Agent owner {owner}: {e}"))?;
+        if spec.agent_id != agent_id || spec.agent_did != *did
+            || spec.agent_doc.owner != owner_doc.id
+            || spec.binding.target_app_instance_id.owner_user_id() != owner
+        {
+            return Err(format!("AgentSpec at {path} does not match its identity or owner"));
+        }
+        let encoded = EncodedDocument::JsonLd(serde_json::to_value(&spec.agent_doc)
+            .map_err(|e| format!("serialize AgentDocument at {path}: {e}"))?);
+        Ok(Some((spec.agent_doc, encoded)))
+    }
+
+    async fn load_in_zone_agent_doc(
+        &self,
+        zone: &ZoneIdentity,
+        short: &str,
+    ) -> Result<Option<(AgentDocument, EncodedDocument)>, String> {
+        let did = zone_child_did(&zone.zone_doc.id, short).map_err(|e| e.to_string())?;
+        self.load_agent_doc(&did).await
     }
 
     async fn load_device_info(&self, key: &str) -> Result<Option<Value>, String> {
@@ -841,7 +867,7 @@ impl ZoneDidResolver {
                 return self.resolve_in_zone_owner(zone, short, doc_type).await
             }
             DidDocType::Custom(ref t) if t == AGENT_DOC_TYPE => self
-                .load_agent_doc(short)
+                .load_in_zone_agent_doc(zone, short)
                 .await
                 .map(|doc| doc.map(|(_, encoded)| Self::active(encoded, doc_type, None, true))),
             // 默认 doc_type（zone）：typeless 老客户端把设备逻辑名当默认类型查
@@ -923,7 +949,7 @@ impl ZoneDidResolver {
         if let Some(encoded) = self.load_device_doc(short).await? {
             return Ok(Some(Self::active(encoded, &DidDocType::Device, None, true)));
         }
-        if let Some((_, encoded)) = self.load_agent_doc(short).await? {
+        if let Some((_, encoded)) = self.load_in_zone_agent_doc(zone, short).await? {
             return Ok(Some(Self::active(
                 encoded,
                 &DidDocType::Custom(AGENT_DOC_TYPE.to_string()),
@@ -980,37 +1006,23 @@ impl ZoneDidResolver {
                         Self::active(encoded, doc_type, Some(owner_doc.id), true)
                     })
             }
-            DidDocType::Custom(ref t) if t == AGENT_DOC_TYPE => {
-                let by_key = self
-                    .load_agent_doc(did.id.as_str())
-                    .await
-                    .ok()
-                    .flatten()
-                    .filter(|(agent_doc, _)| agent_doc.id == *did);
-                let found = match by_key {
-                    Some(found) => Some(found),
-                    None => self.find_agent_doc_by_did(did).await.ok().flatten(),
-                };
-                found.map(|(_, encoded)| Self::active(encoded, doc_type, None, true))
-            }
-            // 默认 doc_type：只保留 typeless 老客户端按真实 DID 找 agent doc 的行为。
-            // 不做 owner doc 兜底——把 (did, zone) 回答成 owner 文档是错误类型的独占
-            // 回答，会堵死客户端对该名字真正 zone 文档的外部解析；owner 文档走显式
-            // type=owner 查询。
-            DidDocType::Zone => {
-                self.find_agent_doc_by_did(did)
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(|(_, encoded)| {
-                        Self::active(
-                            encoded,
-                            &DidDocType::Custom(AGENT_DOC_TYPE.to_string()),
-                            None,
-                            true,
-                        )
-                    })
-            }
+            DidDocType::Custom(ref t) if t == AGENT_DOC_TYPE => self
+                .load_agent_doc(did)
+                .await
+                .ok()
+                .flatten()
+                .map(|(_, encoded)| Self::active(encoded, doc_type, None, true)),
+            DidDocType::Zone => self
+                .load_agent_doc(did)
+                .await
+                .ok()
+                .flatten()
+                .map(|(_, encoded)| Self::active(
+                    encoded,
+                    &DidDocType::Custom(AGENT_DOC_TYPE.to_string()),
+                    None,
+                    true,
+                )),
             _ => None,
         };
         match hit {
@@ -1591,6 +1603,132 @@ mod tests {
         doc.key_scope
             .insert("#main_key".to_string(), vec!["*".to_string()]);
         doc
+    }
+
+    fn canonical_agent_fixture(host: &str) -> (DID, String, String) {
+        let did = DID::new("web", host);
+        let owner_did = DID::new("web", "alice.test.buckyos.io");
+        let public_key: Jwk = serde_json::from_str(TEST_JWK).unwrap();
+        let mut agent = AgentDocument::new(did.clone(), owner_did.clone(), public_key.clone());
+        agent.iat = 1700000000;
+        agent.exp = 2000000000;
+        let agent_value = serde_json::to_value(&agent).unwrap();
+        let object_id = format!("agentdoc:{}", ZoneDidResolver::sha256_hex(&agent_value.to_string()));
+        let spec = json!({
+            "schema_version": 1,
+            "agent_id": AgentId::from_agent_did(&did).unwrap(),
+            "agent_did": did,
+            "agent_doc_object_id": object_id,
+            "agent_doc": agent_value,
+            "binding": {
+                "schema_version": 1,
+                "agent_did": did,
+                "agent_doc_object_id": object_id,
+                "target_app_instance_id": "shared-runtime.test.buckyos.io@alice",
+                "service_name": "www",
+                "generation": 1
+            },
+            "generation": 1
+        });
+        let mut owner = serde_json::to_value(OwnerDocument::new(owner_did, "alice".into(), "Alice".into(), public_key)).unwrap();
+        owner["binded_zone_list"] = json!(["did:web:test.buckyos.io"]);
+        (did, spec.to_string(), owner.to_string())
+    }
+
+    #[tokio::test]
+    async fn canonical_agent_preserves_document_and_same_zone_custody() {
+        let (did, spec, owner) = canonical_agent_fixture("writer.test.buckyos.io");
+        let (_, document) = ZoneDidResolver::canonical_agent_doc(&did,
+            vec![("alice".into(), spec.clone(), Some(owner.clone()))]).unwrap().unwrap();
+        assert_eq!(document.clone().to_json_value().unwrap(),
+            serde_json::from_str::<Value>(&spec).unwrap()["agent_doc"]);
+        let resolver = buckyos_api::StaticCustodyResolver::default()
+            .with_doc(&did, None, document.to_json_value().unwrap())
+            .with_doc(&DID::new("web", "alice.test.buckyos.io"), Some(DidDocType::Owner), serde_json::from_str(&owner).unwrap());
+        assert_eq!(buckyos_api::canonical_zone_of(&resolver, &did, None).await.unwrap(),
+            Some(DID::new("web", "test.buckyos.io")));
+        let device = DID::new("web", "ood1.test.buckyos.io");
+        let signer = buckyos_api::SignerKey {
+            did: device.clone(), kid: format!("{}#main_key", device.to_string()),
+            key: jsonwebtoken::DecodingKey::from_jwk(&serde_json::from_str::<Jwk>(TEST_JWK).unwrap()).unwrap(),
+            doc: Some(json!({"zone_did": "did:web:test.buckyos.io"})),
+        };
+        assert_eq!(buckyos_api::check_custody(&resolver, &signer, &did, None).await.unwrap(), buckyos_api::Custody::SameZone);
+        let other = buckyos_api::SignerKey { doc: Some(json!({"zone_did":"did:web:other.example"})), ..signer };
+        assert!(buckyos_api::check_custody(&resolver, &other, &did, None).await.is_err());
+    }
+
+    #[test]
+    fn canonical_agent_rejects_inconsistent_or_ambiguous_identity() {
+        let (did, raw, owner) = canonical_agent_fixture("writer.test.buckyos.io");
+        let original: Value = serde_json::from_str(&raw).unwrap();
+        for field in ["schema_version", "generation", "agent_id", "agent_did", "agent_doc_object_id"] {
+            let mut spec = original.clone();
+            spec[field] = match field {
+                "schema_version" | "generation" => json!(0),
+                "agent_id" => json!("impostor.test.buckyos.io"),
+                "agent_did" => json!("did:web:impostor.test.buckyos.io"),
+                _ => json!(format!("agentdoc:{}", "00".repeat(32))),
+            };
+            assert!(ZoneDidResolver::canonical_agent_doc(&did,
+                vec![("alice".into(), spec.to_string(), Some(owner.clone()))]).is_err(), "{field}");
+        }
+        let mut wrong_runtime = original.clone();
+        wrong_runtime["binding"]["target_app_instance_id"] = json!("shared-runtime.test.buckyos.io@bob");
+        assert!(ZoneDidResolver::canonical_agent_doc(&did,
+            vec![("alice".into(), wrong_runtime.to_string(), Some(owner.clone()))]).is_err());
+        let mut wrong_owner: Value = serde_json::from_str(&owner).unwrap();
+        wrong_owner["id"] = json!("did:web:bob.test.buckyos.io");
+        for invalid_owner in [None, Some("broken".into()), Some(wrong_owner.to_string())] {
+            assert!(ZoneDidResolver::canonical_agent_doc(&did,
+                vec![("alice".into(), raw.clone(), invalid_owner)]).is_err());
+        }
+        assert!(ZoneDidResolver::canonical_agent_doc(&did,
+            vec![("alice".into(), "broken".into(), Some(owner.clone()))]).is_err());
+        assert!(ZoneDidResolver::canonical_agent_doc(&did,
+            vec![("alice".into(), raw.clone(), Some(owner.clone())),
+                 ("bob".into(), raw.clone(), Some(owner.clone()))]).is_err());
+        for other in ["writer.foreign.example", "writer.nested.test.buckyos.io", "different.test.buckyos.io"] {
+            assert!(ZoneDidResolver::canonical_agent_doc(&DID::new("web", other),
+                vec![("alice".into(), raw.clone(), Some(owner.clone()))]).is_err(), "{other}");
+        }
+        assert!(ZoneDidResolver::canonical_agent_doc(&did, vec![]).unwrap().is_none());
+    }
+
+    #[test]
+    fn canonical_agent_foreign_and_default_responses_keep_identity() {
+        let (did, raw, owner) = canonical_agent_fixture("writer.foreign.example");
+        let (_, doc) = ZoneDidResolver::canonical_agent_doc(&did,
+            vec![("alice".into(), raw, Some(owner))]).unwrap().unwrap();
+        let resolver = ZoneDidResolver::new();
+        assert!(matches!(resolver.classify(&test_zone_identity(), &did.to_string()), Ok(Target::Foreign(_))));
+        let answer = ZoneDidResolver::active(doc, &DidDocType::Custom("agent".into()), None, true);
+        let ZoneAnswer::Published(answer) = answer else { panic!("expected published") };
+        let envelope = ZoneDidResolver::published_envelope(&answer);
+        assert_eq!(envelope["didDocument"]["id"], did.to_string());
+        assert_eq!(envelope["didDocumentMetadata"]["buckyos"]["docType"], "agent");
+        assert_eq!(envelope["didDocumentMetadata"]["buckyos"]["documentStatus"], "active");
+    }
+
+    #[test]
+    fn canonical_agents_from_private_snapshot_keep_all_document_ids() {
+        let Ok(path) = std::env::var("RESOLVER_AGENT_SNAPSHOT") else { return };
+        let facts: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let facts = facts.as_object().unwrap();
+        let mut count = 0;
+        for (path, fact) in facts {
+            let parts: Vec<_> = path.split('/').collect();
+            if parts.len() != 5 || parts[0] != "users" || parts[2] != "agents" || parts[4] != "spec" { continue }
+            let raw = fact["value"].as_str().unwrap();
+            let spec: AgentSpec = serde_json::from_str(raw).unwrap();
+            assert_eq!(spec.agent_id.as_str(), parts[3]);
+            let owner = facts[&format!("users/{}/doc", parts[1])]["value"].as_str().unwrap();
+            let (_, doc) = ZoneDidResolver::canonical_agent_doc(&spec.agent_did,
+                vec![(parts[1].into(), raw.into(), Some(owner.into()))]).unwrap().unwrap();
+            assert_eq!(doc.to_json_value().unwrap(), serde_json::from_str::<Value>(raw).unwrap()["agent_doc"]);
+            count += 1;
+        }
+        assert_eq!(count, 10);
     }
 
     #[test]

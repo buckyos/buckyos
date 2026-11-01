@@ -301,7 +301,10 @@ impl Station {
         };
         if home == self.home() {
             let entry = entry.to_string();
-            return self.db.call(move |c| crate::publish::get_head(c, &entry)).await;
+            return self.db.call(move |c| {
+                let row = crate::publish::get_entry_at_path(c, &entry)?;
+                crate::publish::get_head(c, row.as_ref().map(|r| r.entry.as_str()).unwrap_or(&entry))
+            }).await;
         }
         let origin = self.directory.origin_of_zone(&home.zone).await.map_err(dir_error)?;
         let response = self.remote_get(&home.zone, &origin, &home.path(&format!("{}/@/{}", namespace.as_str(), key))).await?;
@@ -314,11 +317,12 @@ impl Station {
         let restricted = response.headers().get(crate::delivery::HEADER_AUDIENCE).and_then(|v| v.to_str().ok()) == Some("restricted");
         let body = response.text().await.map_err(|e| HsError::Unavailable(e.to_string()))?;
         let verified = crate::objects::verify_jwt(self.directory.as_ref(), body.trim(), Some(OBJ_TYPE_HEAD)).await.map_err(HsError::from)?;
-        if verified.claims.get("entry").and_then(Value::as_str) != Some(entry) {
+        let received_entry = verified.claims.get("entry").and_then(Value::as_str).ok_or_else(|| bad("head has no entry"))?;
+        if EntryRef::parse(received_entry).map_err(bad)? != EntryRef::parse(entry).map_err(bad)? {
             return Err(bad("head is for another entry"));
         }
+        let entry = received_entry.to_string();
         self.ingest_head(verified, restricted).await?;
-        let entry = entry.to_string();
         self.db.call(move |c| crate::publish::get_head(c, &entry)).await
     }
 
