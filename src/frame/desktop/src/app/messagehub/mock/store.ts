@@ -8,7 +8,7 @@ import type { ConversationMessageReader } from '../conversation/history/types'
 import { getMessageStableId, messageNotify, messageVoice, notifySessionCategory, type MessageObject, type MessageDeliveryStatus } from '../protocol/msgobj'
 import { effectiveContent, foldMessageRelations, messageObjId, messageRelation, messageSummaryText } from '../conversation/history/relations'
 import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, isMessageActivity, sharedStateSchema, memberStateSchema, presentationSchema, selectDefaultSession, sessionAccess, sessionKey, sessionTitle, sortSessions, viewerSessionKey } from '../sessionModel'
-import { createGroupSchema, GROUP_INVITATION_INTENT, groupSessionId, groupSessionKey, participating, withinWindow } from '../groupModel'
+import { createGroupSchema, GROUP_INVITATION_INTENT, groupSessionId, groupSessionKey, inviteBlocked, participating, withinWindow } from '../groupModel'
 import { ensureDefaultSession } from '../store/defaultSession'
 import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupInfo, type GroupInvitation, type GroupMemberState, type GroupRole, type GroupSessionInfo, type GroupSessionParticipant, type GroupSessionParticipants, type MessageHubContext, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
 import { createOutgoingMockMessage, getMockEntityDid, MOCK_SELF_DID, mockEntities, mockEntityDetails, mockMessageReaders, mockMessageSeeds, mockSessions } from './data'
@@ -972,7 +972,7 @@ export class MessageHubMockStore implements MessageHubStore {
         if (!entity || (entity.type !== 'person' && entity.type !== 'agent')) { failed.push({ did, reason: 'member-must-be-single-entity' }); continue }
         if (entity.type === 'agent' && mockAgentGroupAllowed(did) === false) { failed.push({ did, reason: 'agent-group-disabled' }); continue }
         const current = group.members[did]
-        if (current && participating({ did, ...current })) { failed.push({ did, reason: 'member-already-participating' }); continue }
+        if (current && inviteBlocked({ did, ...current })) { failed.push({ did, reason: 'member-already-participating' }); continue }
         group.members[did] = { role: 'member', state: 'invited', inviteId: crypto.randomUUID(), expiresAt: this.now() + INVITE_TTL_MS, invitedBy: context.ownerDid }
         this.groupLog(next, group, 'entity.member_invited', context.ownerDid, did)
       }
@@ -984,10 +984,20 @@ export class MessageHubMockStore implements MessageHubStore {
       const group = this.requireGroup(next, context, groupDid)
       if (!this.groupInfo(group, context.ownerDid).can.remove) throw Error('capability-denied')
       const member = group.members[memberDid]
-      if (!member || !participating({ did: memberDid, ...member })) throw Error('not-found')
+      if (member?.state !== 'active') throw Error('not-found')
       if (member.role === 'owner' || memberDid === context.ownerDid) throw Error('role-not-allowed')
-      member.state = member.state === 'active' ? 'removed' : 'revoked'
-      this.groupLog(next, group, member.state === 'removed' ? 'entity.member_removed' : 'entity.invite_revoked', context.ownerDid, memberDid)
+      member.state = 'removed'
+      this.groupLog(next, group, 'entity.member_removed', context.ownerDid, memberDid)
+    })
+  }
+  revokeGroupInvite(context: MessageHubContext, groupDid: string, memberDid: string) {
+    return this.mutate(next => {
+      const group = this.requireGroup(next, context, groupDid)
+      if (!this.groupInfo(group, context.ownerDid).can.invite) throw Error('capability-denied')
+      const member = group.members[memberDid]
+      if (member?.state !== 'invited') throw Error('not-found')
+      member.state = 'revoked'
+      this.groupLog(next, group, 'entity.invite_revoked', context.ownerDid, memberDid)
     })
   }
   private decideMember(context: MessageHubContext, groupDid: string, memberDid: string, approve: boolean) {

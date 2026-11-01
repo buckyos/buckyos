@@ -19,7 +19,7 @@ import { InMemoryConversationMessageReader } from '../conversation/history/data-
 import { registerObjectAccess, rememberLocalObject, resetObjectCaches } from '../conversation/history/objectAccess'
 import type { ConversationMessageReader } from '../conversation/history/types'
 import {
-  acceptGroupInvitation, acceptGroupOwnerTransfer, acceptGroupSessionInvitation, applyGroupConfig, approveGroupMember, archiveGroupSession, archiveSession, cancelGroupOwnerTransfer, checkGroupAccess, createGroup, createGroupInviteLink, createGroupSession, createSession, deleteGroup, deleteGroupSession, deleteSession, fetchAccountUsername, fetchOwnerDid, getGroupConfig, getGroupDoc, getGroupMemberState, getGroupReadMarkers, getGroupSharedState, groupErrorReason, inviteGroupMember, inviteGroupSessionGuest, leaveGroup, leaveGroupSession, listContacts, listGroupMembers, listGroupMessages, listGroupsByMember, listGroupSessionMembers, listGroupSessions, listSessionMessages, listSessions, listUiSessionState, MessageHubApiError, moderateGroupMember, postSendMessage, rejectGroupMember, removeGroupMember, removeGroupSessionMember, requestGroupJoin, restoreSession, revokeGroupInviteLink, transferGroupOwner, updateGroupMemberRole, updateGroupMemberState, updateGroupReadMarker, updateGroupSession, updateGroupSharedState, updateRecordState, updateUiSessionState,
+  acceptGroupInvitation, acceptGroupOwnerTransfer, acceptGroupSessionInvitation, applyGroupConfig, approveGroupMember, archiveGroupSession, archiveSession, cancelGroupOwnerTransfer, checkGroupAccess, createGroup, createGroupInviteLink, createGroupSession, createSession, deleteGroup, deleteGroupSession, deleteSession, fetchAccountUsername, fetchOwnerDid, getGroupConfig, getGroupDoc, getGroupMemberState, getGroupReadMarkers, getGroupSharedState, groupErrorReason, inviteGroupMember, inviteGroupSessionGuest, leaveGroup, leaveGroupSession, listContacts, listGroupMembers, listGroupMessages, listGroupsByMember, listGroupSessionMembers, listGroupSessions, listSessionMessages, listSessions, listUiSessionState, MessageHubApiError, moderateGroupMember, postSendMessage, rejectGroupMember, removeGroupMember, removeGroupSessionMember, requestGroupJoin, restoreSession, revokeGroupInvite, revokeGroupInviteLink, transferGroupOwner, updateGroupMemberRole, updateGroupMemberState, updateGroupReadMarker, updateGroupSession, updateGroupSharedState, updateRecordState, updateUiSessionState,
   type Contact, type GroupDoc, type GroupDocEnvelope, type GroupSessionItem, type SessionMessageItem, type SessionSummary, type UiSessionStateEntry,
 } from '../datamodel/sessionApi'
 import { createGroupSchema, groupSessionId } from '../groupModel'
@@ -34,7 +34,7 @@ import { canStage, pendingBubble, pendingBubbleId } from '../store/outgoing'
 import { LocalStateStore } from './local'
 import { apiObjectAccess, setObjectViewer } from './objects'
 import { parseTunnelDid, projectOwner, shortDid, UNASSIGNED_ENTITY_ID, type ProjectedOwner, type ProjectionLabels } from './projection'
-import { emptyHistory, itemToMessage, messageId as messageIdOf, recordMeta, removeMessage, SessionApiReader, upsertMessages, type SessionHistory } from './reader'
+import { emptyHistory, itemToMessage, messageId as messageIdOf, newestRecord, recordMeta, removeMessage, SessionApiReader, upsertMessages, type SessionHistory } from './reader'
 import { releaseAttachmentUploads, uploadAttachments } from './upload'
 import { translate } from '../translate'
 
@@ -46,6 +46,8 @@ const CONTACT_POLL_MS = 60_000
 /** Older pages a message lookup may load before giving up. */
 const LOCATE_MAX_PAGES = 50
 const RUNTIME_POLL_MS = 5_000
+const TAIL_PAGE_SIZE = 32
+const TAIL_MAX_PAGES = 8
 const DELIVERY_FOLLOW_DELAYS_MS = [300, 700, 1_500, 3_000, 5_000, 8_000]
 const TYPING_TTL_MS = 30_000
 const STATUS_LINE_TTL_MS = 10 * 60_000
@@ -186,6 +188,7 @@ export class MessageHubApiStore implements MessageHubStore {
   private initializePromise?: Promise<void>
   private readonly local = new LocalStateStore()
   private readers = new Map<string, { revision: number; reader: ConversationMessageReader }>()
+  private tailReads = new Map<string, { again: boolean; done: Promise<void> }>()
   private pendingSendKeys = new Map<string, string>()
   private sendingLocalIds = new Set<string>()
   private deliveryFollowers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -437,6 +440,7 @@ export class MessageHubApiStore implements MessageHubStore {
     if (activeSessionId) {
       // (Re)selecting a session whose timeline failed to load retries it once.
       if (data.historyStatus.get(activeSessionId) === 'error') void this.loadLatest(context, activeSessionId)
+      else void this.reconcileTail(context, activeSessionId)
       void this.refreshRuntime(context, activeSessionId); void this.ensureSessionPrefs(context, activeSessionId)
     }
     let subscription: { close(): Promise<void> } | null = null
@@ -609,18 +613,48 @@ export class MessageHubApiStore implements MessageHubStore {
     this.notify()
   }
 
-  private async reconcileTail(context: MessageHubContext, sessionId: string) {
+  private reconcileTail(context: MessageHubContext, sessionId: string): Promise<void> {
+    const key = viewerSessionKey(context, sessionId)
+    const running = this.tailReads.get(key)
+    if (running) { running.again = true; return running.done }
+    const entry = { again: false, done: Promise.resolve() }
+    this.tailReads.set(key, entry)
+    entry.done = (async () => {
+      try {
+        do { entry.again = false; await this.readTail(context, sessionId) } while (entry.again)
+      } finally {
+        this.tailReads.delete(key)
+      }
+    })()
+    return entry.done
+  }
+
+  private async readTail(context: MessageHubContext, sessionId: string) {
     const data = this.owner(context.ownerDid)
     const key = viewerSessionKey(context, sessionId)
     const history = data.histories.get(key)
     if (!history?.loaded) return
     const epoch = data.epoch
+    const newest = newestRecord(history)
+    const reached = (item: SessionMessageItem) => newest !== undefined && (item.sort_key < newest.sortKey || (item.sort_key === newest.sortKey && item.record_id <= newest.recordId))
     try {
-      const page = await listSessionMessages({ owner: context.ownerDid, session_id: sessionId, limit: 32, descending: true, with_object: true })
-      if (data.epoch !== epoch) return
-      const messages = this.pageMessages(context, sessionId, page.items ?? [])
+      const items: SessionMessageItem[] = []
+      let cursor: { sortKey: number; recordId: string } | undefined
+      let joined = false
+      for (let page = 0; page < TAIL_MAX_PAGES; page++) {
+        const result = await listSessionMessages({ owner: context.ownerDid, session_id: sessionId, limit: TAIL_PAGE_SIZE, descending: true, with_object: true, cursor_sort_key: cursor?.sortKey, cursor_record_id: cursor?.recordId })
+        if (data.epoch !== epoch) return
+        const pageItems = result.items ?? []
+        items.push(...pageItems)
+        cursor = result.next_cursor_sort_key !== undefined && result.next_cursor_record_id !== undefined ? { sortKey: result.next_cursor_sort_key, recordId: result.next_cursor_record_id } : undefined
+        if (!cursor || pageItems.some(reached)) { joined = true; break }
+        if (!newest) break
+      }
+      const messages = this.pageMessages(context, sessionId, items)
       const current = data.histories.get(key) ?? history
-      const next = upsertMessages(current, messages)
+      const next = joined
+        ? upsertMessages(current, messages)
+        : upsertMessages({ ...current, messages: current.messages.filter(message => !recordMeta(message)) }, messages, { hasOlder: true, oldestCursor: cursor })
       if (next !== current) { data.histories.set(key, next); this.notify(); void this.refreshReceipts(context, sessionId) }
     } catch (error) {
       console.warn('MessageHub timeline reconcile failed.', error)
@@ -910,6 +944,7 @@ export class MessageHubApiStore implements MessageHubStore {
     if (action === 'delete') {
       data.summaries = data.summaries.filter(item => item.session_id !== sessionId)
       data.histories.delete(viewerSessionKey(context, sessionId))
+      this.readers.delete(viewerSessionKey(context, sessionId))
       data.historyStatus.delete(sessionId)
       data.runtime.delete(sessionId)
       delete data.prefs[sessionId]
@@ -1450,6 +1485,10 @@ export class MessageHubApiStore implements MessageHubStore {
 
   removeGroupMember(context: MessageHubContext, groupDid: string, memberDid: string) {
     return this.groupOperation(context, groupDid, () => removeGroupMember(groupDid, memberDid, crypto.randomUUID()))
+  }
+
+  revokeGroupInvite(context: MessageHubContext, groupDid: string, memberDid: string) {
+    return this.groupOperation(context, groupDid, () => revokeGroupInvite(groupDid, memberDid, crypto.randomUUID()))
   }
 
   approveGroupMember(context: MessageHubContext, groupDid: string, memberDid: string) {

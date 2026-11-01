@@ -15,6 +15,8 @@ export const createGroupSchema = z.object({
 /** Members that still occupy a slot: invited, waiting for approval or active. */
 export const participating = (member: GroupMember) => member.state === 'active' || member.state === 'invited' || member.state === 'pending_admin_approval'
 
+export const inviteBlocked = (member: GroupMember) => member.state === 'active' || member.state === 'pending_admin_approval'
+
 const roleRank: Record<GroupRole, number> = { owner: 0, admin: 1, member: 2 }
 const stateRank: Record<string, number> = { active: 0, pending_admin_approval: 1, invited: 2 }
 

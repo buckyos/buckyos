@@ -62,6 +62,7 @@ test('a group is created from picked contacts and opens on its own conversation'
   const aliceRow = invite.getByTestId('people-picker-row').filter({ hasText: 'Alice Chen' })
   await expect(aliceRow).toContainText('Member')
   await expect(aliceRow.getByRole('button', { name: 'Alice Chen', exact: true })).toHaveCount(0)
+  await expect(invite.getByTestId('people-picker-row').filter({ hasText: 'Bob Zhang' }).getByRole('button', { name: 'Bob Zhang', exact: true })).toHaveCount(1)
   await invite.getByRole('button', { name: 'Dave Li', exact: true }).click()
   await invite.getByRole('button', { name: 'Invite', exact: true }).click()
   await expect(invite).toHaveCount(0)
@@ -126,6 +127,13 @@ test('an invitation card joins the group and opens it; an admin manages the seed
   await page.getByRole('dialog', { name: 'Remove from group' }).getByRole('button', { name: 'Remove from group' }).click()
   await expect(panel.locator('li', { hasText: 'Dave Li' })).toHaveCount(0)
   expect(await page.evaluate(({ context, group }) => window.__messageHubMock.group(context, group)?.members?.find(member => member.did === 'did:buckyos:entity:person-dave')?.state, { context: OWN, group: TEAM })).toBe('removed')
+
+  await expect(panel.locator(`li[data-member-did="${ERIN}"]`)).toContainText('Waiting for approval')
+  await expect(panel.locator(`li[data-member-did="${ERIN}"]`).getByRole('button', { name: /^Cancel invitation/ })).toHaveCount(0)
+  await panel.getByRole('button', { name: 'Cancel invitation: DocWriter' }).click()
+  await page.getByRole('dialog', { name: 'Cancel invitation' }).getByRole('button', { name: 'Cancel invitation' }).click()
+  await expect(panel.locator('li', { hasText: 'DocWriter' })).toHaveCount(0)
+  expect(await page.evaluate(({ context, group }) => window.__messageHubMock.group(context, group)?.members?.find(member => member.did === 'did:buckyos:entity:agent-writer')?.state, { context: OWN, group: TEAM })).toBe('revoked')
 })
 
 test('group creation is a full-height sheet-friendly dialog on a phone', async ({ page }) => {
