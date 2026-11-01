@@ -5,7 +5,14 @@
 import { Emitter } from '../../state/emitter'
 import type { ImportOutcome } from './drawioImport'
 
-export interface PdfImportSource { name: string; bytes: Uint8Array; /** The PDF is already an asset (a PDF file Block): no upload of the original. */ asset?: { object_id: string } | null }
+export interface PdfImportSource {
+  name: string
+  bytes: Uint8Array
+  /** The PDF is already an asset (a PDF file Block): no upload of the original. */
+  asset?: { object_id: string } | null
+  /** The PDF was made from this Office file by LibreOffice (Office 导入 §5.2): the file Block keeps it, not the PDF. */
+  original?: { object_id: string; file_name: string } | null
+}
 
 export interface PdfImportRequest {
   source: PdfImportSource

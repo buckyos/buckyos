@@ -202,7 +202,7 @@ def _build_sdk_tool_distribution(env: dict[str, str]) -> int:
 
 # Shared TypeScript modules the buckyos-agent commands import from the source tree (`../../frame/…` in its
 # deno.json): copied beside them as `vendor/frame/…`, so the readable sources travel with the commands.
-AGENT_TOOL_SHARED_MODULES = ("frame/aiworkspace/import-table", "frame/aiworkspace/import-drawio")
+AGENT_TOOL_SHARED_MODULES = ("frame/aiworkspace/import-table", "frame/aiworkspace/import-drawio", "frame/aiworkspace/import-pdf", "frame/aiworkspace/import-office")
 
 
 def _prepare_agent_tools(source: Path | None = None, target: Path | None = None, src_root: Path | None = None) -> int:

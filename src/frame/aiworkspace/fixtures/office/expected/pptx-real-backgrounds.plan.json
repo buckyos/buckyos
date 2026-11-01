@@ -1,0 +1,865 @@
+{
+  "hidden": [],
+  "pages": [
+    {
+      "name": "Solid Fill",
+      "pageColor": "#ddd9c3",
+      "pageSize": {
+        "w": 1920,
+        "h": 1440
+      },
+      "counts": {
+        "text": 2,
+        "images": 0,
+        "shapes": 1,
+        "rasterized": 0,
+        "placeholders": 0
+      },
+      "items": [
+        {
+          "key": "s1",
+          "parent": null,
+          "type": "group",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1440
+          },
+          "rotation": 0,
+          "config": {}
+        },
+        {
+          "key": "s1~frame",
+          "parent": "s1",
+          "type": "frame",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1440
+          },
+          "rotation": 0,
+          "title": "Solid Fill",
+          "config": {
+            "color": "#9ca3af",
+            "fill": "#ddd9c3",
+            "stroke_width": 1,
+            "radius": 0,
+            "office_source": {
+              "file": "backgrounds.pptx",
+              "slide": 1
+            }
+          },
+          "payload": {
+            "presentation": {
+              "background": "#ddd9c3"
+            }
+          }
+        },
+        {
+          "key": "s1~0",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 163.2,
+            "y": 456.93,
+            "w": 1593.6,
+            "h": 289.47
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "none",
+            "stroke": "none",
+            "stroke_width": 0,
+            "text": "Solid Fill",
+            "font_size": 117.33,
+            "font_color": "#000000",
+            "align": "center",
+            "valign": "middle",
+            "office_source": {
+              "slide": 1,
+              "kind": "text"
+            },
+            "shape": "text"
+          },
+          "title": "Solid Fill"
+        },
+        {
+          "key": "s1~1",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 307.2,
+            "y": 825.6,
+            "w": 1305.6,
+            "h": 348.8
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "none",
+            "stroke": "none",
+            "stroke_width": 0,
+            "text": "Defined on the master slide:\nTan, darker 10%",
+            "font_size": 85.33,
+            "font_color": "#8c8c8c",
+            "align": "center",
+            "valign": "top",
+            "office_source": {
+              "slide": 1,
+              "kind": "text"
+            },
+            "shape": "text"
+          },
+          "title": "Defined on the master slide:"
+        },
+        {
+          "key": "s1~2",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 400,
+            "y": 96,
+            "w": 960,
+            "h": 320
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "none",
+            "stroke": "#1f497d",
+            "stroke_width": 26.67,
+            "office_source": {
+              "slide": 1,
+              "kind": "shape"
+            },
+            "shape": "rect"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Gradient Fill",
+      "pageColor": "#4f81bd",
+      "pageSize": {
+        "w": 1920,
+        "h": 1440
+      },
+      "counts": {
+        "text": 2,
+        "images": 0,
+        "shapes": 1,
+        "rasterized": 0,
+        "placeholders": 0
+      },
+      "items": [
+        {
+          "key": "s2",
+          "parent": null,
+          "type": "group",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1440
+          },
+          "rotation": 0,
+          "config": {}
+        },
+        {
+          "key": "s2~frame",
+          "parent": "s2",
+          "type": "frame",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1440
+          },
+          "rotation": 0,
+          "title": "Gradient Fill",
+          "config": {
+            "color": "#9ca3af",
+            "fill": "#4f81bd",
+            "stroke_width": 1,
+            "radius": 0,
+            "office_source": {
+              "file": "backgrounds.pptx",
+              "slide": 2
+            }
+          },
+          "payload": {
+            "presentation": {
+              "background": "#4f81bd"
+            }
+          }
+        },
+        {
+          "key": "s2~0",
+          "parent": "s2",
+          "type": "shape",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1440
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "svg",
+            "svg": {
+              "viewBox": "0 0 1920 1440",
+              "body": "<defs><linearGradient id=\"t2_g0\" x1=\"0.15\" y1=\"0.15\" x2=\"0.85\" y2=\"0.85\"><stop offset=\"0.23\" stop-color=\"#4f81bd\"/><stop offset=\"0.46\" stop-color=\"#e6b9b8\"/><stop offset=\"0.73\" stop-color=\"#77933c\"/><stop offset=\"1\" stop-color=\"#f2f2f2\"/></linearGradient></defs><path d=\"M0 0L1920 0L1920 1440L0 1440Z\" fill=\"url(#t2_g0)\"/>",
+              "aspect": "stretch"
+            },
+            "fill": "#4f81bd",
+            "stroke": "none",
+            "stroke_width": 0,
+            "office_source": {
+              "slide": 2,
+              "kind": "background"
+            }
+          }
+        },
+        {
+          "key": "s2~1",
+          "parent": "s2",
+          "type": "shape",
+          "rect": {
+            "x": 96,
+            "y": 57.67,
+            "w": 1728,
+            "h": 240
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "#ebf1de",
+            "stroke": "#9ab5e4",
+            "stroke_width": 2,
+            "text": "Gradient Fill",
+            "font_size": 117.33,
+            "font_color": "#000000",
+            "align": "center",
+            "valign": "middle",
+            "office_source": {
+              "slide": 2,
+              "kind": "text"
+            },
+            "shape": "rect"
+          },
+          "title": "Gradient Fill"
+        },
+        {
+          "key": "s2~2",
+          "parent": "s2",
+          "type": "shape",
+          "rect": {
+            "x": 96,
+            "y": 336,
+            "w": 1728,
+            "h": 950.33
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "#8064a2",
+            "stroke": "none",
+            "stroke_width": 0,
+            "text": "• Gradient stops",
+            "font_size": 85.33,
+            "font_color": "#000000",
+            "align": "left",
+            "valign": "top",
+            "office_source": {
+              "slide": 2,
+              "kind": "text"
+            },
+            "shape": "svg",
+            "svg": {
+              "viewBox": "0 0 1728 950.33",
+              "body": "<defs><linearGradient id=\"t2_g1\" x1=\"0.5\" y1=\"0\" x2=\"0.5\" y2=\"1\"><stop offset=\"0\" stop-color=\"#8064a2\"/><stop offset=\"1\" stop-color=\"#ffffff\" stop-opacity=\"0.21\"/></linearGradient></defs><path d=\"M0 0L1728 0L1728 950.33L0 950.33Z\" fill=\"url(#t2_g1)\"/>",
+              "aspect": "stretch"
+            }
+          },
+          "title": "• Gradient stops"
+        }
+      ]
+    },
+    {
+      "name": "Master Gradient Fill",
+      "pageColor": "#4f81bd",
+      "pageSize": {
+        "w": 1920,
+        "h": 1440
+      },
+      "counts": {
+        "text": 2,
+        "images": 3,
+        "shapes": 2,
+        "rasterized": 0,
+        "placeholders": 0
+      },
+      "items": [
+        {
+          "key": "s3",
+          "parent": null,
+          "type": "group",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1440
+          },
+          "rotation": 0,
+          "config": {}
+        },
+        {
+          "key": "s3~frame",
+          "parent": "s3",
+          "type": "frame",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1440
+          },
+          "rotation": 0,
+          "title": "Master Gradient Fill",
+          "config": {
+            "color": "#9ca3af",
+            "fill": "#4f81bd",
+            "stroke_width": 1,
+            "radius": 0,
+            "office_source": {
+              "file": "backgrounds.pptx",
+              "slide": 3
+            }
+          },
+          "payload": {
+            "presentation": {
+              "background": "#4f81bd"
+            }
+          }
+        },
+        {
+          "key": "s3~0",
+          "parent": "s3",
+          "type": "shape",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1440
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "svg",
+            "svg": {
+              "viewBox": "0 0 1920 1440",
+              "body": "<defs><linearGradient id=\"t3_g0\" x1=\"0.5\" y1=\"0\" x2=\"0.5\" y2=\"1\"><stop offset=\"0\" stop-color=\"#4f81bd\"/><stop offset=\"0.5\" stop-color=\"#c2d1ed\"/><stop offset=\"1\" stop-color=\"#e1e8f5\"/></linearGradient></defs><path d=\"M0 0L1920 0L1920 1440L0 1440Z\" fill=\"url(#t3_g0)\"/>",
+              "aspect": "stretch"
+            },
+            "fill": "#4f81bd",
+            "stroke": "none",
+            "stroke_width": 0,
+            "office_source": {
+              "slide": 3,
+              "kind": "background"
+            }
+          }
+        },
+        {
+          "key": "s3~1",
+          "parent": "s3",
+          "type": "shape",
+          "rect": {
+            "x": 96,
+            "y": 57.67,
+            "w": 1728,
+            "h": 240
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "#ebf1de",
+            "stroke": "none",
+            "stroke_width": 0,
+            "text": "Master Gradient Fill",
+            "font_size": 117.33,
+            "font_color": "#000000",
+            "align": "center",
+            "valign": "middle",
+            "office_source": {
+              "slide": 3,
+              "kind": "text"
+            },
+            "shape": "svg",
+            "svg": {
+              "viewBox": "0 0 1728 240",
+              "body": "<defs><linearGradient id=\"t3_g1\" x1=\"0.15\" y1=\"0.15\" x2=\"0.85\" y2=\"0.85\"><stop offset=\"0\" stop-color=\"#ebf1de\" stop-opacity=\"0.57\"/><stop offset=\"0.5\" stop-color=\"#6d8737\" stop-opacity=\"0.31\"/><stop offset=\"1\" stop-color=\"#4f6228\" stop-opacity=\"0.06\"/></linearGradient></defs><path d=\"M0 0L1728 0L1728 240L0 240Z\" fill=\"url(#t3_g1)\"/>",
+              "aspect": "stretch"
+            }
+          },
+          "title": "Master Gradient Fill"
+        },
+        {
+          "key": "s3~2",
+          "parent": "s3",
+          "type": "asset",
+          "rect": {
+            "x": 96,
+            "y": 336,
+            "w": 1728,
+            "h": 950.33
+          },
+          "rotation": 0,
+          "config": {
+            "office_source": {
+              "slide": 3,
+              "kind": "image"
+            }
+          },
+          "image": {
+            "key": "ts3i1",
+            "name": "backgrounds-s003-img1.jpg",
+            "mediaType": "image/jpeg",
+            "bytes": 3214
+          },
+          "fallback": {
+            "config": {
+              "shape": "rect",
+              "fill": "none",
+              "stroke": "#9ca3af",
+              "stroke_width": 1,
+              "dash": "dashed",
+              "text": "image\nimage1.jpeg",
+              "font_size": 32,
+              "font_color": "#6b7280",
+              "office_source": {
+                "slide": 3,
+                "kind": "placeholder"
+              }
+            }
+          }
+        },
+        {
+          "key": "s3~3",
+          "parent": "s3",
+          "type": "shape",
+          "rect": {
+            "x": 96,
+            "y": 336,
+            "w": 1728,
+            "h": 950.33
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "text",
+            "fill": "none",
+            "stroke": "none",
+            "text": "• hello",
+            "font_size": 85.33,
+            "font_color": "#000000",
+            "align": "left",
+            "valign": "top",
+            "office_source": {
+              "slide": 3,
+              "kind": "text"
+            }
+          },
+          "title": "• hello"
+        },
+        {
+          "key": "s3~4",
+          "parent": "s3",
+          "type": "asset",
+          "rect": {
+            "x": 640,
+            "y": 704,
+            "w": 400,
+            "h": 496
+          },
+          "rotation": 0,
+          "config": {
+            "office_source": {
+              "slide": 3,
+              "kind": "image"
+            }
+          },
+          "image": {
+            "key": "ts3i2",
+            "name": "backgrounds-s003-img2.jpg",
+            "mediaType": "image/jpeg",
+            "bytes": 3260
+          },
+          "fallback": {
+            "config": {
+              "shape": "rect",
+              "fill": "none",
+              "stroke": "#9ca3af",
+              "stroke_width": 1,
+              "dash": "dashed",
+              "text": "image\nimage2.jpeg",
+              "font_size": 32,
+              "font_color": "#6b7280",
+              "office_source": {
+                "slide": 3,
+                "kind": "placeholder"
+              }
+            }
+          }
+        },
+        {
+          "key": "s3~5",
+          "parent": "s3",
+          "type": "asset",
+          "rect": {
+            "x": 1248,
+            "y": 480,
+            "w": 512,
+            "h": 528
+          },
+          "rotation": 0,
+          "config": {
+            "office_source": {
+              "slide": 3,
+              "kind": "image"
+            }
+          },
+          "image": {
+            "key": "ts3i3",
+            "name": "backgrounds-s003-img3.jpg",
+            "mediaType": "image/jpeg",
+            "bytes": 3135
+          },
+          "fallback": {
+            "config": {
+              "shape": "rect",
+              "fill": "none",
+              "stroke": "#9ca3af",
+              "stroke_width": 1,
+              "dash": "dashed",
+              "text": "image\nimage3.jpeg",
+              "font_size": 32,
+              "font_color": "#6b7280",
+              "office_source": {
+                "slide": 3,
+                "kind": "placeholder"
+              }
+            }
+          }
+        },
+        {
+          "key": "s3~6",
+          "parent": "s3",
+          "type": "shape",
+          "rect": {
+            "x": 141.33,
+            "y": 557.33,
+            "w": 565.33,
+            "h": 517.33
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "#d99694",
+            "stroke": "#3a5f8c",
+            "stroke_width": 5.33,
+            "office_source": {
+              "slide": 3,
+              "kind": "shape"
+            },
+            "shape": "svg",
+            "svg": {
+              "viewBox": "0 0 565.33 517.33",
+              "body": "<g transform=\"translate(2.67 2.67)\"><path d=\"M560 256L447.01 292.74L447.01 219.26ZM477.97 74.97L426.5 174.01L369.68 122.06ZM280 0L320.18 103.31L239.82 103.31ZM82 74.97L190.32 122.06L133.5 174.01ZM0 256L112.99 219.26L112.99 292.74ZM82 437L133.5 337.99L190.32 389.94ZM280 512L239.82 408.69L320.18 408.69ZM477.97 437L369.68 389.94L426.5 337.99ZM140 256A140 128 0 0 1 420 256A140 128 0 0 1 140 256Z\" fill=\"var(--aiws-shape-fill)\" fill-opacity=\"0.49\" stroke=\"var(--aiws-shape-stroke)\" stroke-width=\"5.33\"/></g>",
+              "aspect": "stretch"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Texture: papirus",
+      "pageColor": "#ffffff",
+      "pageSize": {
+        "w": 1920,
+        "h": 1440
+      },
+      "counts": {
+        "text": 2,
+        "images": 2,
+        "shapes": 3,
+        "rasterized": 0,
+        "placeholders": 0
+      },
+      "items": [
+        {
+          "key": "s4",
+          "parent": null,
+          "type": "group",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1440
+          },
+          "rotation": 0,
+          "config": {}
+        },
+        {
+          "key": "s4~frame",
+          "parent": "s4",
+          "type": "frame",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1440
+          },
+          "rotation": 0,
+          "title": "Texture: papirus",
+          "config": {
+            "color": "#9ca3af",
+            "fill": "#ffffff",
+            "stroke_width": 1,
+            "radius": 0,
+            "office_source": {
+              "file": "backgrounds.pptx",
+              "slide": 4
+            }
+          },
+          "payload": {
+            "presentation": {
+              "background": "#ffffff"
+            }
+          }
+        },
+        {
+          "key": "s4~0",
+          "parent": "s4",
+          "type": "asset",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1440
+          },
+          "rotation": 0,
+          "config": {
+            "office_source": {
+              "slide": 4,
+              "kind": "image"
+            }
+          },
+          "image": {
+            "key": "ts4i1",
+            "name": "backgrounds-s004-img1.jpg",
+            "mediaType": "image/jpeg",
+            "bytes": 2905
+          },
+          "fallback": {
+            "config": {
+              "shape": "rect",
+              "fill": "none",
+              "stroke": "#9ca3af",
+              "stroke_width": 1,
+              "dash": "dashed",
+              "text": "image\nimage4.jpeg",
+              "font_size": 32,
+              "font_color": "#6b7280",
+              "office_source": {
+                "slide": 4,
+                "kind": "placeholder"
+              }
+            }
+          }
+        },
+        {
+          "key": "s4~1",
+          "parent": "s4",
+          "type": "shape",
+          "rect": {
+            "x": 115.2,
+            "y": 67.27,
+            "w": 1689.6,
+            "h": 220.8
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "none",
+            "stroke": "none",
+            "stroke_width": 0,
+            "text": "Texture: papirus",
+            "font_size": 117.33,
+            "font_color": "#000000",
+            "align": "center",
+            "valign": "middle",
+            "office_source": {
+              "slide": 4,
+              "kind": "text"
+            },
+            "shape": "text"
+          },
+          "title": "Texture: papirus"
+        },
+        {
+          "key": "s4~2",
+          "parent": "s4",
+          "type": "shape",
+          "rect": {
+            "x": 912,
+            "y": 352,
+            "w": 544,
+            "h": 426.52
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "#1f497d",
+            "stroke": "none",
+            "stroke_width": 0,
+            "text": "Gradient Fill\nA\nA\nA\nA\nAa\na",
+            "font_size": 48,
+            "font_color": "#000000",
+            "align": "left",
+            "valign": "top",
+            "office_source": {
+              "slide": 4,
+              "kind": "text"
+            },
+            "shape": "svg",
+            "svg": {
+              "viewBox": "0 0 544 426.52",
+              "body": "<defs><linearGradient id=\"t4_g0\" x1=\"0.5\" y1=\"0\" x2=\"0.5\" y2=\"1\"><stop offset=\"0\" stop-color=\"#1f497d\"/><stop offset=\"0.5\" stop-color=\"#c2d1ed\"/><stop offset=\"1\" stop-color=\"#ffffff\"/></linearGradient></defs><path d=\"M0 0L544 0L544 426.52L0 426.52Z\" fill=\"url(#t4_g0)\"/>",
+              "aspect": "stretch"
+            }
+          },
+          "title": "Gradient Fill"
+        },
+        {
+          "key": "s4~3",
+          "parent": "s4",
+          "type": "asset",
+          "rect": {
+            "x": 160,
+            "y": 544,
+            "w": 544,
+            "h": 229.76
+          },
+          "rotation": 0,
+          "config": {
+            "office_source": {
+              "slide": 4,
+              "kind": "image"
+            }
+          },
+          "image": {
+            "key": "ts4i2",
+            "name": "backgrounds-s004-img2.jpg",
+            "mediaType": "image/jpeg",
+            "bytes": 3935
+          },
+          "fallback": {
+            "config": {
+              "shape": "rect",
+              "fill": "none",
+              "stroke": "#9ca3af",
+              "stroke_width": 1,
+              "dash": "dashed",
+              "text": "image\nimage5.jpeg",
+              "font_size": 32,
+              "font_color": "#6b7280",
+              "office_source": {
+                "slide": 4,
+                "kind": "placeholder"
+              }
+            }
+          }
+        },
+        {
+          "key": "s4~4",
+          "parent": "s4",
+          "type": "shape",
+          "rect": {
+            "x": 160,
+            "y": 976,
+            "w": 528,
+            "h": 304
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "#a6a6a6",
+            "stroke": "#3a5f8c",
+            "stroke_width": 5.33,
+            "office_source": {
+              "slide": 4,
+              "kind": "shape"
+            },
+            "shape": "ellipse"
+          }
+        },
+        {
+          "key": "s4~5",
+          "parent": "s4",
+          "type": "shape",
+          "rect": {
+            "x": -2.67,
+            "y": -2.67,
+            "w": 1573.33,
+            "h": 261.33
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "#1f497d",
+            "stroke": "#3a5f8c",
+            "stroke_width": 5.33,
+            "office_source": {
+              "slide": 4,
+              "kind": "shape"
+            },
+            "shape": "svg",
+            "svg": {
+              "viewBox": "0 0 1573.33 261.33",
+              "body": "<g transform=\"translate(2.67 2.67)\"><defs><linearGradient id=\"t4_g1\" x1=\"0.5\" y1=\"0\" x2=\"0.5\" y2=\"1\"><stop offset=\"0\" stop-color=\"#1f497d\"/><stop offset=\"1\" stop-color=\"#ffffff\"/></linearGradient></defs><path d=\"M0 0L1568 0L1568 256L0 256Z\" fill=\"url(#t4_g1)\" stroke=\"var(--aiws-shape-stroke)\" stroke-width=\"5.33\"/></g>",
+              "aspect": "stretch"
+            }
+          }
+        },
+        {
+          "key": "s4~6",
+          "parent": "s4",
+          "type": "shape",
+          "rect": {
+            "x": 1101.33,
+            "y": 973.33,
+            "w": 821.33,
+            "h": 469.33
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "#1f497d",
+            "stroke": "#3a5f8c",
+            "stroke_width": 5.33,
+            "office_source": {
+              "slide": 4,
+              "kind": "shape"
+            },
+            "shape": "svg",
+            "svg": {
+              "viewBox": "0 0 821.33 469.33",
+              "body": "<g transform=\"translate(2.67 2.67)\"><defs><linearGradient id=\"t4_g2\" x1=\"0.5\" y1=\"0\" x2=\"0.5\" y2=\"1\"><stop offset=\"0\" stop-color=\"#1f497d\"/><stop offset=\"1\" stop-color=\"#ffffff\"/></linearGradient></defs><path d=\"M0 0L816 0L816 464L0 464Z\" fill=\"url(#t4_g2)\" stroke=\"var(--aiws-shape-stroke)\" stroke-width=\"5.33\"/></g>",
+              "aspect": "stretch"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "report": [
+    {
+      "kind": "pptx_picture_fill",
+      "count": 3,
+      "samples": [
+        "Isosceles Triangle 3",
+        "Oval 4",
+        "Right Arrow 3"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,232 @@
+{
+  "hidden": [],
+  "pages": [
+    {
+      "name": "Slide 1",
+      "pageColor": "#ffffff",
+      "pageSize": {
+        "w": 1920,
+        "h": 1151
+      },
+      "counts": {
+        "text": 4,
+        "images": 1,
+        "shapes": 0,
+        "rasterized": 0,
+        "placeholders": 0
+      },
+      "items": [
+        {
+          "key": "s1",
+          "parent": null,
+          "type": "group",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1151
+          },
+          "rotation": 0,
+          "config": {}
+        },
+        {
+          "key": "s1~frame",
+          "parent": "s1",
+          "type": "frame",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1151
+          },
+          "rotation": 0,
+          "title": "Slide 1",
+          "config": {
+            "color": "#9ca3af",
+            "fill": "#ffffff",
+            "stroke_width": 1,
+            "radius": 0,
+            "office_source": {
+              "file": "smartart-simple.pptx",
+              "slide": 1
+            }
+          },
+          "payload": {
+            "presentation": {
+              "background": "#ffffff"
+            }
+          }
+        },
+        {
+          "key": "s1~0",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 280.35,
+            "y": 84.52,
+            "w": 521.21,
+            "h": 521.21
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "#ffc000",
+            "stroke": "#ffffff",
+            "stroke_width": 13.54,
+            "text": "abc",
+            "font_size": 148.99,
+            "font_color": "#000000",
+            "align": "center",
+            "valign": "middle",
+            "line_height": 1.08,
+            "office_source": {
+              "slide": 1,
+              "kind": "text"
+            },
+            "shape": "ellipse"
+          },
+          "title": "abc"
+        },
+        {
+          "key": "s1~1",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 504.11,
+            "y": 308.29,
+            "w": 534.75,
+            "h": 534.75
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "#01c3cc",
+            "stroke": "#ffffff",
+            "stroke_width": 13.54,
+            "text": "def",
+            "font_size": 148.99,
+            "font_color": "#ffffff",
+            "align": "left",
+            "valign": "middle",
+            "bold": true,
+            "italic": true,
+            "line_height": 1.08,
+            "office_source": {
+              "slide": 1,
+              "kind": "text"
+            },
+            "shape": "svg",
+            "svg": {
+              "viewBox": "0 0 534.75 534.75",
+              "body": "<g transform=\"translate(6.77 6.77)\"><defs><linearGradient id=\"t1_g0\" x1=\"0.15\" y1=\"0.15\" x2=\"0.85\" y2=\"0.85\"><stop offset=\"0\" stop-color=\"#01c3cc\"/><stop offset=\"1\" stop-color=\"#7d2ae7\" stop-opacity=\"0.75\"/></linearGradient></defs><path d=\"M0 260.61A260.61 260.61 0 0 1 260.6 0A260.61 260.61 0 0 1 521.21 260.6A260.61 260.61 0 0 1 260.61 521.21A260.61 260.61 0 0 1 0 260.6Z\" fill=\"url(#t1_g0)\" stroke=\"var(--aiws-shape-stroke)\" stroke-width=\"13.54\"/></g>",
+              "aspect": "stretch"
+            }
+          },
+          "title": "def"
+        },
+        {
+          "key": "s1~2",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 280.35,
+            "y": 545.59,
+            "w": 521.21,
+            "h": 521.21
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "#3fe19b",
+            "stroke": "#ffffff",
+            "stroke_width": 13.54,
+            "text": "ghi",
+            "font_size": 148.99,
+            "font_color": "#000000",
+            "align": "right",
+            "valign": "middle",
+            "line_height": 1.08,
+            "office_source": {
+              "slide": 1,
+              "kind": "text"
+            },
+            "shape": "ellipse"
+          },
+          "title": "ghi"
+        },
+        {
+          "key": "s1~3",
+          "parent": "s1",
+          "type": "asset",
+          "rect": {
+            "x": 49.81,
+            "y": 315.06,
+            "w": 521.21,
+            "h": 521.21
+          },
+          "rotation": 0,
+          "config": {
+            "office_source": {
+              "slide": 1,
+              "kind": "image"
+            }
+          },
+          "image": {
+            "key": "ts1i1",
+            "name": "smartart-simple-s001-img1.jpg",
+            "mediaType": "image/jpeg",
+            "bytes": 22284
+          },
+          "fallback": {
+            "config": {
+              "shape": "rect",
+              "fill": "none",
+              "stroke": "#9ca3af",
+              "stroke_width": 1,
+              "dash": "dashed",
+              "text": "image\nimage1.jpeg",
+              "font_size": 162.54,
+              "font_color": "#6b7280",
+              "office_source": {
+                "slide": 1,
+                "kind": "placeholder"
+              }
+            }
+          }
+        },
+        {
+          "key": "s1~4",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 1110.01,
+            "y": 328.99,
+            "w": 678.6,
+            "h": 542.57
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "none",
+            "stroke": "none",
+            "stroke_width": 0,
+            "text": "This file contains a SmartArt diagram\n\nTesting:\nGradient fill on shape (with 25% transparency set)\nImage fill on shape\nText alignment inside text box\nText box positioning relative to shape (when text is centered it’s not in the center of the circles)\nShapes are styled with theme",
+            "font_size": 40.63,
+            "font_color": "#000000",
+            "align": "left",
+            "valign": "top",
+            "office_source": {
+              "slide": 1,
+              "kind": "text"
+            },
+            "shape": "text"
+          },
+          "title": "This file contains a SmartArt diagram"
+        }
+      ]
+    }
+  ],
+  "report": [
+    {
+      "kind": "pptx_picture_fill",
+      "count": 1,
+      "samples": []
+    }
+  ]
+}

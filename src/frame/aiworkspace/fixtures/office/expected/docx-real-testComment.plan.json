@@ -1,0 +1,41 @@
+{
+  "title": "Test Doc",
+  "counts": {
+    "paragraphs": 1,
+    "headings": 0,
+    "lists": 0,
+    "tables": 0,
+    "images": 0,
+    "rasterized": 0
+  },
+  "segments": [
+    {
+      "kind": "richtext",
+      "content": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b1"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "this is a comment paragraph!"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "images": [],
+  "report": [
+    {
+      "kind": "docx_comments",
+      "count": 1,
+      "samples": []
+    }
+  ]
+}

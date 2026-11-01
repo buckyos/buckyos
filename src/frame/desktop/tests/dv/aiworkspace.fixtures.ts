@@ -107,7 +107,8 @@ async function screenshot(page: Page, info: TestInfo, name: string) {
 
 /** A workspace's own origin on this Zone (T4-8): `https://aiws-<label>.<zone host>`. */
 export function workspaceOrigin(actor: Actor, ws: Workspace): string {
-  const zone = new URL(actor.page.url()).host
+  // the Zone host, also when the page is already on a workspace's own origin (a reload there)
+  const zone = new URL(actor.page.url()).host.replace(/^aiws-[a-z0-9]+\./, '')
   return `https://aiws-${ws.workspace_id.replace(/^ws_/, '')}.${zone}`
 }
 

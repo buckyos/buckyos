@@ -198,7 +198,7 @@ async function buildThumbnail(
 
   let pipelineError: unknown = null
   try {
-    const result = await pipelineThumbnail(resolved, request, signal)
+    const result = await pipelineThumbnail(resolved, classification.mediaType, request, signal)
     if (result) {
       return {
         url: urlOf(result.readRef, own),
@@ -241,6 +241,7 @@ function contentLabel(classification: MediaClassification): string {
 
 async function pipelineThumbnail(
   resolved: ResolvedPreviewSource,
+  mediaType: string,
   request: PreviewThumbnailRequest,
   signal: AbortSignal,
 ): Promise<PreviewResult | null> {
@@ -248,6 +249,7 @@ async function pipelineThumbnail(
   const runtime = await ensureRuntimeProfile()
   const ensured = await withTimeout(provider.ensurePreviewWork({
     source: resolved,
+    mediaType,
     runtimeProfile: { ...runtime, acceptTypes: ['image'] },
     targetProfile: {
       purpose: 'thumbnail',

@@ -1,0 +1,460 @@
+{
+  "hidden": [],
+  "pages": [
+    {
+      "name": "Slide 1",
+      "pageColor": "#ffffff",
+      "pageSize": {
+        "w": 1920,
+        "h": 1080
+      },
+      "counts": {
+        "text": 0,
+        "images": 0,
+        "shapes": 18,
+        "rasterized": 0,
+        "placeholders": 0
+      },
+      "items": [
+        {
+          "key": "s1",
+          "parent": null,
+          "type": "group",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1080
+          },
+          "rotation": 0,
+          "config": {}
+        },
+        {
+          "key": "s1~frame",
+          "parent": "s1",
+          "type": "frame",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1080
+          },
+          "rotation": 0,
+          "title": "Slide 1",
+          "config": {
+            "color": "#9ca3af",
+            "fill": "#ffffff",
+            "stroke_width": 1,
+            "radius": 0,
+            "office_source": {
+              "file": "table_test.pptx",
+              "slide": 1
+            }
+          },
+          "payload": {
+            "presentation": {
+              "background": "#ffffff"
+            }
+          }
+        },
+        {
+          "key": "s1~0",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 286.88,
+            "y": 191.09,
+            "w": 250.24,
+            "h": 58.4
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "#5b9bd5",
+            "stroke": "#ffffff",
+            "stroke_width": 6,
+            "office_source": {
+              "slide": 1,
+              "kind": "table"
+            }
+          }
+        },
+        {
+          "key": "s1~1",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 537.12,
+            "y": 191.09,
+            "w": 603.09,
+            "h": 58.4
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "#5b9bd5",
+            "stroke": "#ffffff",
+            "stroke_width": 6,
+            "office_source": {
+              "slide": 1,
+              "kind": "table"
+            }
+          }
+        },
+        {
+          "key": "s1~2",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 1140.21,
+            "y": 191.09,
+            "w": 426.67,
+            "h": 58.4
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "#5b9bd5",
+            "stroke": "#ffffff",
+            "stroke_width": 6,
+            "office_source": {
+              "slide": 1,
+              "kind": "table"
+            }
+          }
+        },
+        {
+          "key": "s1~3",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 286.88,
+            "y": 249.49,
+            "w": 250.24,
+            "h": 58.4
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "#d2deef",
+            "stroke": "#ffffff",
+            "stroke_width": 2,
+            "office_source": {
+              "slide": 1,
+              "kind": "table"
+            }
+          }
+        },
+        {
+          "key": "s1~4",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 537.12,
+            "y": 249.49,
+            "w": 603.09,
+            "h": 58.4
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "#d2deef",
+            "stroke": "#ffffff",
+            "stroke_width": 2,
+            "office_source": {
+              "slide": 1,
+              "kind": "table"
+            }
+          }
+        },
+        {
+          "key": "s1~5",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 1140.21,
+            "y": 249.49,
+            "w": 426.67,
+            "h": 58.4
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "#d2deef",
+            "stroke": "#ffffff",
+            "stroke_width": 2,
+            "office_source": {
+              "slide": 1,
+              "kind": "table"
+            }
+          }
+        },
+        {
+          "key": "s1~6",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 286.88,
+            "y": 307.89,
+            "w": 250.24,
+            "h": 58.4
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "#eaeff7",
+            "stroke": "#ffffff",
+            "stroke_width": 2,
+            "office_source": {
+              "slide": 1,
+              "kind": "table"
+            }
+          }
+        },
+        {
+          "key": "s1~7",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 537.12,
+            "y": 307.89,
+            "w": 603.09,
+            "h": 58.4
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "#eaeff7",
+            "stroke": "#ffffff",
+            "stroke_width": 2,
+            "office_source": {
+              "slide": 1,
+              "kind": "table"
+            }
+          }
+        },
+        {
+          "key": "s1~8",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 1140.21,
+            "y": 307.89,
+            "w": 426.67,
+            "h": 58.4
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "#eaeff7",
+            "stroke": "#ffffff",
+            "stroke_width": 2,
+            "office_source": {
+              "slide": 1,
+              "kind": "table"
+            }
+          }
+        },
+        {
+          "key": "s1~9",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 286.88,
+            "y": 366.29,
+            "w": 250.24,
+            "h": 165.07
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "#d2deef",
+            "stroke": "#ffffff",
+            "stroke_width": 2,
+            "office_source": {
+              "slide": 1,
+              "kind": "table"
+            }
+          }
+        },
+        {
+          "key": "s1~10",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 537.12,
+            "y": 366.29,
+            "w": 603.09,
+            "h": 165.07
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "#d2deef",
+            "stroke": "#ffffff",
+            "stroke_width": 2,
+            "office_source": {
+              "slide": 1,
+              "kind": "table"
+            }
+          }
+        },
+        {
+          "key": "s1~11",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 1140.21,
+            "y": 366.29,
+            "w": 426.67,
+            "h": 165.07
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "#d2deef",
+            "stroke": "#ffffff",
+            "stroke_width": 2,
+            "office_source": {
+              "slide": 1,
+              "kind": "table"
+            }
+          }
+        },
+        {
+          "key": "s1~12",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 286.88,
+            "y": 531.36,
+            "w": 250.24,
+            "h": 58.4
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "#eaeff7",
+            "stroke": "#ffffff",
+            "stroke_width": 2,
+            "office_source": {
+              "slide": 1,
+              "kind": "table"
+            }
+          }
+        },
+        {
+          "key": "s1~13",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 537.12,
+            "y": 531.36,
+            "w": 603.09,
+            "h": 58.4
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "#eaeff7",
+            "stroke": "#ffffff",
+            "stroke_width": 2,
+            "office_source": {
+              "slide": 1,
+              "kind": "table"
+            }
+          }
+        },
+        {
+          "key": "s1~14",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 1140.21,
+            "y": 531.36,
+            "w": 426.67,
+            "h": 58.4
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "#eaeff7",
+            "stroke": "#ffffff",
+            "stroke_width": 2,
+            "office_source": {
+              "slide": 1,
+              "kind": "table"
+            }
+          }
+        },
+        {
+          "key": "s1~15",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 286.88,
+            "y": 589.76,
+            "w": 250.24,
+            "h": 58.4
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "#d2deef",
+            "stroke": "#ffffff",
+            "stroke_width": 2,
+            "office_source": {
+              "slide": 1,
+              "kind": "table"
+            }
+          }
+        },
+        {
+          "key": "s1~16",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 537.12,
+            "y": 589.76,
+            "w": 603.09,
+            "h": 58.4
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "#d2deef",
+            "stroke": "#ffffff",
+            "stroke_width": 2,
+            "office_source": {
+              "slide": 1,
+              "kind": "table"
+            }
+          }
+        },
+        {
+          "key": "s1~17",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 1140.21,
+            "y": 589.76,
+            "w": 426.67,
+            "h": 58.4
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "#d2deef",
+            "stroke": "#ffffff",
+            "stroke_width": 2,
+            "office_source": {
+              "slide": 1,
+              "kind": "table"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "report": []
+}

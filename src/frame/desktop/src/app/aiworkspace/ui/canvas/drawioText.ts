@@ -63,8 +63,56 @@ const REPORT: Record<string, string> = {
 }
 
 /** What an import report note says, by its kind (`stencil:<instruction>` names the instruction). */
+/** Report kinds of the Office importer (Office 导入 TODO) and their words. */
+const OFFICE_REPORT: Record<string, string> = {
+  docx_alt_chunk: 'aiworkspace.office.report.docx_alt_chunk',
+  docx_heading_level: 'aiworkspace.office.report.docx_heading_level',
+  docx_revisions: 'aiworkspace.office.report.docx_revisions',
+  docx_comments: 'aiworkspace.office.report.docx_comments',
+  docx_floating_text: 'aiworkspace.office.report.docx_floating_text',
+  docx_rasterized: 'aiworkspace.office.report.docx_rasterized',
+  docx_external_image: 'aiworkspace.office.report.docx_external_image',
+  docx_unsupported_image: 'aiworkspace.office.report.docx_unsupported_image',
+  docx_chart: 'aiworkspace.office.report.docx_chart',
+  docx_smartart: 'aiworkspace.office.report.docx_smartart',
+  docx_shapes_dropped: 'aiworkspace.office.report.docx_shapes_dropped',
+  docx_ole: 'aiworkspace.office.report.docx_ole',
+  docx_formula: 'aiworkspace.office.report.docx_formula',
+  docx_merged_cells: 'aiworkspace.office.report.docx_merged_cells',
+  docx_nested_table: 'aiworkspace.office.report.docx_nested_table',
+  docx_list_depth: 'aiworkspace.office.report.docx_list_depth',
+  docx_split: 'aiworkspace.office.report.docx_split',
+  pptx_pattern_fill: 'aiworkspace.office.report.pptx_pattern_fill',
+  pptx_vertical_text: 'aiworkspace.office.report.pptx_vertical_text',
+  pptx_mixed_style: 'aiworkspace.office.report.pptx_mixed_style',
+  pptx_picture_fill: 'aiworkspace.office.report.pptx_picture_fill',
+  pptx_unknown_geometry: 'aiworkspace.office.report.pptx_unknown_geometry',
+  pptx_svg_too_large: 'aiworkspace.office.report.pptx_svg_too_large',
+  pptx_rasterized: 'aiworkspace.office.report.pptx_rasterized',
+  pptx_external_image: 'aiworkspace.office.report.pptx_external_image',
+  pptx_crop_kept: 'aiworkspace.office.report.pptx_crop_kept',
+  pptx_unsupported_image: 'aiworkspace.office.report.pptx_unsupported_image',
+  pptx_image_flip: 'aiworkspace.office.report.pptx_image_flip',
+  pptx_table_style: 'aiworkspace.office.report.pptx_table_style',
+  pptx_chart: 'aiworkspace.office.report.pptx_chart',
+  pptx_smartart: 'aiworkspace.office.report.pptx_smartart',
+  pptx_ole: 'aiworkspace.office.report.pptx_ole',
+  pptx_ole_missing: 'aiworkspace.office.report.pptx_ole_missing',
+  pptx_object: 'aiworkspace.office.report.pptx_object',
+  pptx_ink: 'aiworkspace.office.report.pptx_ink',
+  pptx_media: 'aiworkspace.office.report.pptx_media',
+  pptx_slide_raster: 'aiworkspace.office.report.pptx_slide_raster',
+  pptx_too_many: 'aiworkspace.office.report.pptx_too_many',
+  pptx_notes_dropped: 'aiworkspace.office.report.pptx_notes_dropped',
+  pptx_hidden_skipped: 'aiworkspace.office.report.pptx_hidden_skipped',
+  office_original_missing: 'aiworkspace.office.report.office_original_missing',
+  office_path_failed: 'aiworkspace.office.report.office_path_failed',
+}
+
 export function reportNoteText(note: ReportNote, t: Translate = aiwsT): string {
   if (note.kind.startsWith('stencil:')) return t('aiworkspace.drawio.report.stencilInstruction', { instruction: note.kind.slice('stencil:'.length) })
+  const office = own(OFFICE_REPORT, note.kind)
+  if (office) return t(office)
   const key = own(REPORT, note.kind)
   return key ? t(key) : note.message
 }

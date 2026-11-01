@@ -11,6 +11,7 @@ import * as demos from './demos'
 import * as ext from './ext'
 import * as imports from './import'
 import * as mindmap from './mindmap'
+import * as office from './office'
 import * as pdf from './pdf'
 import * as presentation from './presentation'
 import * as richtext from './richtext'
@@ -18,7 +19,7 @@ import * as session from './session'
 import * as shell from './shell'
 import * as wish from './wish'
 
-const parts = [common, shell, canvas, blocks, wish, data, presentation, richtext, core, demos, mindmap, pdf, ext, imports, session]
+const parts = [common, shell, canvas, blocks, wish, data, presentation, richtext, core, demos, mindmap, pdf, ext, imports, session, office]
 
 export const aiWorkspaceEn: Record<string, string> = Object.assign({}, ...parts.map((part) => part.en))
 export const aiWorkspaceZh: Record<string, string> = Object.assign({}, ...parts.map((part) => part.zh))

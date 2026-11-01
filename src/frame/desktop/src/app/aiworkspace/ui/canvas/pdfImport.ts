@@ -212,7 +212,7 @@ export async function inspectPdf(bytes: Uint8Array, signal?: AbortSignal): Promi
 export interface PdfImportProgress { stage: 'convert' | 'upload' | 'commit'; done: number; total: number }
 
 /** Upload pictures by content (each distinct content once, a few at a time). */
-class Uploader {
+export class Uploader {
   private readonly byContent = new Map<string, Promise<UploadedAsset | null>>()
   private running = 0
   private readonly queue: (() => void)[] = []
@@ -320,7 +320,7 @@ export async function importPdf(store: WorkspaceStore, source: PdfImportSource, 
   let contentAfter: string | null = null
   if (choices.keepOriginal) {
     progress({ stage: 'commit', done: 0, total: 1 })
-    let original: { object_id: string } | null = source.asset ?? null
+    let original: { object_id: string } | null = source.original ?? source.asset ?? null
     let posterId: string | null = null
     try {
       if (!original && source.bytes.length <= ASSET_LIMIT) original = await store.session.uploadAsset(new Blob([source.bytes as BlobPart], { type: 'application/pdf' }), source.name)
@@ -330,7 +330,10 @@ export async function importPdf(store: WorkspaceStore, source: PdfImportSource, 
     }
     if (original) {
       contentAfter = keysAfter(null, 1)[0]
-      const payload: Record<string, Json> = { object_id: original.object_id, file_name: source.name.slice(0, 255), page_count: pageCount, ...(posterId ? { poster: posterId } : {}) }
+      // a faithful Office import keeps the Office file, not the PDF LibreOffice made of it (Office 导入 Q12)
+      const payload: Record<string, Json> = source.original
+        ? { object_id: source.original.object_id, file_name: source.original.file_name.slice(0, 255), ...(posterId ? { poster: posterId } : {}) }
+        : { object_id: original.object_id, file_name: source.name.slice(0, 255), page_count: pageCount, ...(posterId ? { poster: posterId } : {}) }
       firstOps.push({ op: 'entity.create', entity_id: randomId('d'), type_id: 'buckyos.asset-ref', parent_id: folderId, order_key: contentAfter, payload })
     }
   }

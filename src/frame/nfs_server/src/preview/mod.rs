@@ -2,8 +2,10 @@
 //! viewer's Runtime cannot show directly (Preview PRD §23.6–23.7; preview
 //! iPhone media TODO D1–D10).
 //!
-//! - Converter: ffmpeg / ffprobe spawned in-process, "有则使用，没有就失败"
-//!   (`tools`); `hello` advertises `repr` only while both are found.
+//! - Converters: ffmpeg / ffprobe (media) and LibreOffice `soffice` (Office /
+//!   ODF / RTF documents → PDF, Office import TODO §5.1) spawned in-process,
+//!   each "有则使用，没有就失败" (`tools`); `hello` advertises `repr` while any one
+//!   is found and lists the profiles it can produce.
 //! - Records: filedb `preview_works`, one row per `work_key = sha256(input
 //!   ObjId, converter@version, params)`; `processing` → `completed` | `failed`,
 //!   a new attempt only by explicit Retry (CAS on `expected_attempt_id`),
@@ -13,10 +15,12 @@
 //!   `zone/nfs-server/_/preview-cache` (key = work_key), read through the
 //!   bucket data plane (Range) with a short-lived, read-only, key-scoped
 //!   `bkt_` token signed only after the source's own ACL passed.
-//! - Limits: 1–2 conversions at once (by CPU count), timeout max(60 s, 10×
-//!   duration), callers of one work_key share the running attempt, a caller
-//!   leaving never stops it; results unread for 30 days expire and the cache
-//!   keeps under `preview_cache_mib` by least recent use.
+//! - Limits: 1–2 ffmpeg conversions at once (by CPU count), timeout max(60 s,
+//!   10× duration); one soffice at a time in its own slot with a private
+//!   profile per attempt, timeout max(120 s, 10 s/MiB); callers of one work_key
+//!   share the running attempt, a caller leaving never stops it; results unread
+//!   for 30 days expire and the cache keeps under `preview_cache_mib` by least
+//!   recent use.
 
 pub mod convert;
 pub mod heif;
@@ -28,7 +32,7 @@ use crate::error::{internal, NfsResult};
 use crate::filedb::FileDb;
 use crate::state::{AppState, SharedState};
 use bucket_store::{Action, BucketError, BucketStore, Caller, PutRequest, TokenRequest};
-use convert::{ConvertError, Job, Profile};
+use convert::{ConvertError, Job, Output, Profile};
 use media::Kind;
 use ndn_lib::ObjId;
 use rusqlite::{params, OptionalExtension};
@@ -43,7 +47,7 @@ use tokio::io::AsyncReadExt;
 pub const FEATURE: &str = "repr";
 pub const PIPELINE_ID: &str = "nfs.preview";
 pub const PIPELINE_VERSION: u32 = 1;
-pub const PROFILES: &[&str] = &["preview-image", "preview-video", "preview-audio", "thumbnail"];
+pub const PROFILES: &[Profile] = &[Profile::PreviewImage, Profile::PreviewVideo, Profile::PreviewAudio, Profile::Thumbnail, Profile::PreviewDocument];
 pub const NEGATIVE_TTL_MS: i64 = 10 * 60 * 1000;
 pub const IDLE_EXPIRY_MS: i64 = 30 * 24 * 3600 * 1000;
 const TOKEN_TTL_MS: i64 = 6 * 3600 * 1000;
@@ -183,8 +187,11 @@ pub fn hex_sha256(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
-pub fn converter_id(tools: &tools::Toolchain) -> String {
-    format!("{PIPELINE_ID}/{PIPELINE_VERSION}@ffmpeg-{}", tools.ffmpeg.version)
+pub fn converter_id(converter: &tools::Converter) -> String {
+    match converter {
+        tools::Converter::Ffmpeg(t) => format!("{PIPELINE_ID}/{PIPELINE_VERSION}@ffmpeg-{}", t.ffmpeg.version),
+        tools::Converter::Soffice(t) => format!("{PIPELINE_ID}/{PIPELINE_VERSION}@soffice-{}", t.version),
+    }
 }
 
 /// `params` is canonical JSON (serde_json maps are sorted).
@@ -199,6 +206,8 @@ pub struct PreviewMgr {
     running: Mutex<HashSet<String>>,
     progress: Mutex<HashMap<String, f64>>,
     permits: Arc<tokio::sync::Semaphore>,
+    /// Q11: LibreOffice is memory-heavy, one at a time, apart from ffmpeg's slots.
+    office_permits: Arc<tokio::sync::Semaphore>,
     authorized: Mutex<HashMap<(String, String), Instant>>,
     tokens: Mutex<HashMap<String, (String, i64)>>,
 }
@@ -226,6 +235,7 @@ impl PreviewMgr {
             running: Default::default(),
             progress: Default::default(),
             permits: Arc::new(tokio::sync::Semaphore::new(concurrency())),
+            office_permits: Arc::new(tokio::sync::Semaphore::new(1)),
             authorized: Default::default(),
             tokens: Default::default(),
         }
@@ -233,7 +243,7 @@ impl PreviewMgr {
 
     /// Re-probes when the binaries found differ from the cached ones (blocking).
     pub fn refresh(&self) -> tools::Probe {
-        let found: Vec<PathBuf> = ["ffmpeg", "ffprobe"].iter().filter_map(|n| tools::find(n, &self.dirs)).collect();
+        let found: Vec<PathBuf> = tools::NAMES.iter().filter_map(|n| tools::find(n, &self.dirs)).collect();
         let identity = tools::identity(&found.iter().map(PathBuf::as_path).collect::<Vec<_>>());
         if let Some((id, probe)) = self.probe.lock().unwrap().as_ref() {
             if *id == identity {
@@ -241,16 +251,21 @@ impl PreviewMgr {
             }
         }
         let probe = tools::probe(&self.dirs);
-        match &probe {
-            tools::Probe::Ready(t) => log::info!("preview converter: ffmpeg {} ({}), ffprobe {}, tonemap={}, libx264={}, heif={}", t.ffmpeg.version, t.ffmpeg.path.display(), t.ffprobe.version, t.tonemap, t.libx264, t.heif),
-            tools::Probe::Missing { .. } => log::info!("preview converter unavailable: {}", probe.missing_detail().unwrap_or_default()),
+        if let Some(t) = &probe.media {
+            log::info!("preview converter: ffmpeg {} ({}), ffprobe {}, tonemap={}, libx264={}, heif={}", t.ffmpeg.version, t.ffmpeg.path.display(), t.ffprobe.version, t.tonemap, t.libx264, t.heif);
+        }
+        if let Some(t) = &probe.soffice {
+            log::info!("preview converter: soffice {} ({})", t.version, t.path.display());
+        }
+        if let Some(detail) = probe.missing_detail() {
+            log::info!("preview converter unavailable: {detail}");
         }
         *self.probe.lock().unwrap() = Some((identity, probe.clone()));
         probe
     }
 
     pub async fn refresh_async(&self) -> tools::Probe {
-        let found: Vec<PathBuf> = ["ffmpeg", "ffprobe"].iter().filter_map(|n| tools::find(n, &self.dirs)).collect();
+        let found: Vec<PathBuf> = tools::NAMES.iter().filter_map(|n| tools::find(n, &self.dirs)).collect();
         let identity = tools::identity(&found.iter().map(PathBuf::as_path).collect::<Vec<_>>());
         if let Some((id, probe)) = self.probe.lock().unwrap().as_ref() {
             if *id == identity {
@@ -258,7 +273,9 @@ impl PreviewMgr {
             }
         }
         let dirs = self.dirs.clone();
-        let probe = tokio::task::spawn_blocking(move || tools::probe(&dirs)).await.unwrap_or(tools::Probe::Missing { missing: vec!["ffmpeg"], searched: Vec::new() });
+        let probe = tokio::task::spawn_blocking(move || tools::probe(&dirs))
+            .await
+            .unwrap_or(tools::Probe { media: None, soffice: None, missing: tools::NAMES.to_vec(), searched: Vec::new() });
         *self.probe.lock().unwrap() = Some((identity, probe.clone()));
         probe
     }
@@ -358,9 +375,9 @@ fn new_attempt(plan: &Plan, key: &str, converter: &str, prev: Option<&Record>) -
 }
 
 /// Atomic get-or-create of the work for `plan` (PRD §23.6 state rules).
-pub async fn ensure(state: &SharedState, tools: &tools::Toolchain, plan: Plan, retry: bool, expected_attempt_id: Option<&str>) -> NfsResult<Record> {
-    let converter = converter_id(tools);
-    let key = work_key(&plan.input_obj_id, &converter, &plan.params());
+pub async fn ensure(state: &SharedState, converter: &tools::Converter, plan: Plan, retry: bool, expected_attempt_id: Option<&str>) -> NfsResult<Record> {
+    let converter_name = converter_id(converter);
+    let key = work_key(&plan.input_obj_id, &converter_name, &plan.params());
     let _gate = state.preview.gate.lock().await;
     let current = get_record(&state.db, &key)?;
     let now = now_ms();
@@ -382,21 +399,25 @@ pub async fn ensure(state: &SharedState, tools: &tools::Toolchain, plan: Plan, r
     if !start {
         return Ok(current.unwrap());
     }
-    let rec = new_attempt(&plan, &key, &converter, current.as_ref());
+    let rec = new_attempt(&plan, &key, &converter_name, current.as_ref());
     put_record(&state.db, &rec)?;
     state.preview.running.lock().unwrap().insert(key.clone());
     let task_state = state.clone();
-    let task_tools = tools.clone();
+    let task_converter = converter.clone();
     let task_rec = rec.clone();
-    tokio::spawn(async move { run_attempt(task_state, task_tools, task_rec, plan).await });
+    tokio::spawn(async move { run_attempt(task_state, task_converter, task_rec, plan).await });
     Ok(rec)
 }
 
-async fn run_attempt(state: SharedState, tools: tools::Toolchain, rec: Record, plan: Plan) {
-    let permit = state.preview.permits.clone().acquire_owned().await;
+async fn run_attempt(state: SharedState, converter: tools::Converter, rec: Record, plan: Plan) {
+    let permits = match &converter {
+        tools::Converter::Ffmpeg(_) => &state.preview.permits,
+        tools::Converter::Soffice(_) => &state.preview.office_permits,
+    };
+    let permit = permits.clone().acquire_owned().await;
     let dir = state.config.data_dir.join("preview-tmp").join(&rec.attempt_id);
     let started = Instant::now();
-    let outcome = attempt(&state, &tools, &rec, &plan, &dir).await;
+    let outcome = attempt(&state, &converter, &rec, &plan, &dir).await;
     drop(permit);
     let _ = tokio::fs::remove_dir_all(&dir).await;
     let key = &rec.work_key;
@@ -455,6 +476,19 @@ pub async fn read_head(state: &AppState, input: &Input) -> Result<Vec<u8>, Conve
     Ok(head)
 }
 
+/// The source's file name: a hint for formats its bytes leave open (OLE2 without
+/// its directory in the head), never the basis on its own.
+pub async fn name_of(state: &AppState, input: &Input) -> Option<String> {
+    match input {
+        Input::Path(p) => p.file_name().map(|n| n.to_string_lossy().into_owned()),
+        Input::Object(id) if id.is_file_object() => {
+            let ndm = state.share.store(&state.config).await.ok()?;
+            bucket_store::content::load_file(ndm, id).await.ok().map(|f| f.name.clone())
+        }
+        Input::Object(_) => None,
+    }
+}
+
 async fn materialize(state: &AppState, id: &ObjId, dest: &Path) -> Result<(), ConvertError> {
     let ndm = state.share.store(&state.config).await.map_err(|e| ConvertError::new("CONTENT_UNAVAILABLE", e.message))?;
     let content = content_of(ndm, id).await?;
@@ -464,8 +498,8 @@ async fn materialize(state: &AppState, id: &ObjId, dest: &Path) -> Result<(), Co
     Ok(())
 }
 
-async fn attempt(state: &SharedState, tools: &tools::Toolchain, rec: &Record, plan: &Plan, dir: &Path) -> Result<Value, ConvertError> {
-    tokio::fs::create_dir_all(dir).await.map_err(|e| convert_err("CONVERT_FAILED", true)(e.to_string()))?;
+/// ffprobe, then the planned ffmpeg run.
+async fn media_output(state: &SharedState, tools: &tools::Toolchain, rec: &Record, plan: &Plan, dir: &Path) -> Result<Output, ConvertError> {
     let input = match &plan.input {
         Input::Path(p) => p.clone(),
         Input::Object(id) => {
@@ -491,6 +525,34 @@ async fn attempt(state: &SharedState, tools: &tools::Toolchain, rec: &Record, pl
     let job = Job { tools, input: &input, dir, kind: plan.kind, profile: plan.profile, hevc_playable: plan.hevc_playable, heif, progress };
     let (args, output) = convert::plan(&job, &info)?;
     convert::run(&job, &info, args, &output).await?;
+    Ok(output)
+}
+
+/// LibreOffice on a copy named with the real extension (it picks the import
+/// filter by it), with a private profile removed afterwards.
+async fn document_output(state: &SharedState, soffice: &tools::Tool, rec: &Record, plan: &Plan, dir: &Path) -> Result<Output, ConvertError> {
+    let Kind::Document(ext) = plan.kind else {
+        return Err(ConvertError::new("CONTENT_UNSUPPORTED", "not a document"));
+    };
+    let input = dir.join(format!("input.{ext}"));
+    match &plan.input {
+        Input::Path(p) => {
+            tokio::fs::copy(p, &input).await.map_err(|e| ConvertError::new("CONTENT_UNAVAILABLE", e.to_string()))?;
+        }
+        Input::Object(id) => materialize(state, id, &input).await?,
+    }
+    let profile = dir.with_file_name(format!("profile-{}", rec.attempt_id));
+    let output = convert::document(soffice, &input, dir, &profile).await;
+    let _ = tokio::fs::remove_dir_all(&profile).await;
+    output
+}
+
+async fn attempt(state: &SharedState, converter: &tools::Converter, rec: &Record, plan: &Plan, dir: &Path) -> Result<Value, ConvertError> {
+    tokio::fs::create_dir_all(dir).await.map_err(|e| convert_err("CONVERT_FAILED", true)(e.to_string()))?;
+    let output = match converter {
+        tools::Converter::Ffmpeg(tools) => media_output(state, tools, rec, plan, dir).await?,
+        tools::Converter::Soffice(soffice) => document_output(state, soffice, rec, plan, dir).await?,
+    };
     let ext = output.path.extension().and_then(|e| e.to_str()).unwrap_or("bin");
     let name = format!("preview.{ext}");
     let ndm = state.share.store(&state.config).await.map_err(|e| ConvertError { code: "CONVERT_FAILED", message: e.message, retryable: true })?;
@@ -663,5 +725,7 @@ mod tests {
         assert_ne!(a, work_key("sha256:aa", "nfs.preview/1@ffmpeg-7.1", &json!({"profile": "thumbnail"})));
         let video = |hevc| Plan { input: Input::Path("/x".into()), input_obj_id: "x".into(), kind: Kind::Video, profile: Profile::PreviewVideo, hevc_playable: hevc };
         assert_ne!(video(true).params(), video(false).params());
+        let soffice = tools::Converter::Soffice(tools::Tool { path: "soffice".into(), version: "25.2.3.2".into() });
+        assert_eq!(converter_id(&soffice), "nfs.preview/1@soffice-25.2.3.2");
     }
 }

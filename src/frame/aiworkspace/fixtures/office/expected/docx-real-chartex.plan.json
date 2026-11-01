@@ -1,0 +1,145 @@
+{
+  "title": "chartex",
+  "counts": {
+    "paragraphs": 2,
+    "headings": 0,
+    "lists": 1,
+    "tables": 0,
+    "images": 2,
+    "rasterized": 0
+  },
+  "segments": [
+    {
+      "kind": "richtext",
+      "content": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "bullet_list",
+            "attrs": {
+              "block_id": "b2"
+            },
+            "content": [
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b3"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b4"
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b5"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b6"
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b7"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b8"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b9"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "I want more charts"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b10"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": " "
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "image",
+      "image": "ti1",
+      "size": {
+        "w": 432,
+        "h": 252
+      },
+      "pixels": {
+        "width": 576,
+        "height": 336
+      }
+    },
+    {
+      "kind": "image",
+      "image": "ti2",
+      "size": {
+        "w": 432,
+        "h": 252
+      },
+      "pixels": {
+        "width": 576,
+        "height": 336
+      }
+    }
+  ],
+  "images": [
+    {
+      "key": "ti1",
+      "name": "chartex-img1.png",
+      "mediaType": "image/png",
+      "bytes": 7593
+    },
+    {
+      "key": "ti2",
+      "name": "chartex-img2.png",
+      "mediaType": "image/png",
+      "bytes": 35159
+    }
+  ],
+  "report": [
+    {
+      "kind": "docx_chart",
+      "count": 4,
+      "samples": [
+        "Chart 5",
+        "Chart 1",
+        "Chart 2",
+        "Chart 4"
+      ]
+    }
+  ]
+}

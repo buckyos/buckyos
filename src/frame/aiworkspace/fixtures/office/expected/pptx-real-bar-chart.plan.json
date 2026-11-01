@@ -1,0 +1,126 @@
+{
+  "hidden": [],
+  "pages": [
+    {
+      "name": "My Bar Chart",
+      "pageColor": "#ffffff",
+      "pageSize": {
+        "w": 1920,
+        "h": 1440
+      },
+      "counts": {
+        "text": 1,
+        "images": 0,
+        "shapes": 0,
+        "rasterized": 0,
+        "placeholders": 1
+      },
+      "items": [
+        {
+          "key": "s1",
+          "parent": null,
+          "type": "group",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1440
+          },
+          "rotation": 0,
+          "config": {}
+        },
+        {
+          "key": "s1~frame",
+          "parent": "s1",
+          "type": "frame",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1440
+          },
+          "rotation": 0,
+          "title": "My Bar Chart",
+          "config": {
+            "color": "#9ca3af",
+            "fill": "#ffffff",
+            "stroke_width": 1,
+            "radius": 0,
+            "office_source": {
+              "file": "bar-chart.pptx",
+              "slide": 1
+            }
+          },
+          "payload": {
+            "presentation": {
+              "background": "#ffffff"
+            }
+          }
+        },
+        {
+          "key": "s1~0",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 115.2,
+            "y": 67.27,
+            "w": 1689.6,
+            "h": 220.8
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "none",
+            "stroke": "none",
+            "stroke_width": 0,
+            "text": "My Bar Chart",
+            "font_size": 117.33,
+            "font_color": "#000000",
+            "align": "center",
+            "valign": "middle",
+            "office_source": {
+              "slide": 1,
+              "kind": "text"
+            },
+            "shape": "text"
+          },
+          "title": "My Bar Chart"
+        },
+        {
+          "key": "s1~1",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 320,
+            "y": 293.33,
+            "w": 1280,
+            "h": 853.33
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "none",
+            "stroke": "#9ca3af",
+            "stroke_width": 1,
+            "dash": "dashed",
+            "text": "chart\nChart 1",
+            "font_size": 32,
+            "font_color": "#6b7280",
+            "office_source": {
+              "slide": 1,
+              "kind": "placeholder"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "report": [
+    {
+      "kind": "pptx_chart",
+      "count": 1,
+      "samples": [
+        "Chart 1"
+      ]
+    }
+  ]
+}

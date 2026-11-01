@@ -1,0 +1,55 @@
+{
+  "title": "WithGIF",
+  "counts": {
+    "paragraphs": 1,
+    "headings": 0,
+    "lists": 0,
+    "tables": 0,
+    "images": 1,
+    "rasterized": 0
+  },
+  "segments": [
+    {
+      "kind": "richtext",
+      "content": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b1"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Lorem ipsum dolor sit amet, consetetur sadipscing elitr, sed diam nonumy eirmod tempor invidunt ut labore et dolore magna aliquyam erat, sed diam voluptua. At vero eos et accusam et justo duo dolores et ea rebum. Stet clita kasd gubergren, no sea takimata sanctus est Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet, consetetur sadipscing elitr, sed diam nonumy eirmod tempor invidunt ut labore et dolore magna aliquyam erat, sed diam voluptua. At vero eos et accusam et justo duo dolores et ea rebum. Stet clita kasd gubergren, no sea takimata sanctus est Lorem ipsum dolor sit amet."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "image",
+      "image": "ti1",
+      "size": {
+        "w": 132.10433070866142,
+        "h": 132.10433070866142
+      },
+      "pixels": {
+        "width": 300,
+        "height": 300
+      },
+      "title": "K:\\_projects\\OfficeEC\\contribute\\GIF-Support\\Sample.gif"
+    }
+  ],
+  "images": [
+    {
+      "key": "ti1",
+      "name": "WithGIF-img1.gif",
+      "mediaType": "image/gif",
+      "bytes": 6554
+    }
+  ],
+  "report": []
+}

@@ -1,0 +1,362 @@
+{
+  "title": "features",
+  "counts": {
+    "paragraphs": 10,
+    "headings": 1,
+    "lists": 1,
+    "tables": 1,
+    "images": 0,
+    "rasterized": 0
+  },
+  "segments": [
+    {
+      "kind": "richtext",
+      "content": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "heading",
+            "attrs": {
+              "block_id": "b1",
+              "level": 1
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Features"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b2"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Kept inserted text."
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b3"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Commented words"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b4"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "With a footnote[1] and an endnote[2]."
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b5"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Page 1"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b6"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Visit "
+              },
+              {
+                "type": "text",
+                "text": "BuckyOS",
+                "marks": [
+                  {
+                    "type": "link",
+                    "attrs": {
+                      "href": "https://buckyos.ai/"
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "text",
+                "text": "."
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b7"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Inside a content control"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b8"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Anchor "
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b9"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Floating box text"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b10"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Energy: [Formula]"
+              }
+            ]
+          },
+          {
+            "type": "ordered_list",
+            "attrs": {
+              "block_id": "b11",
+              "start": 5
+            },
+            "content": [
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b12"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b13"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Five"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b14"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b15"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Six"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "table",
+            "attrs": {
+              "block_id": "b16"
+            },
+            "content": [
+              {
+                "type": "table_row",
+                "content": [
+                  {
+                    "type": "table_cell",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Tall"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "table_cell",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "a"
+                      },
+                      {
+                        "type": "hard_break"
+                      },
+                      {
+                        "type": "text",
+                        "text": "b"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "table_row",
+                "content": [
+                  {
+                    "type": "table_cell",
+                    "content": []
+                  },
+                  {
+                    "type": "table_cell",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "nested"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b17"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Visible end."
+              }
+            ]
+          },
+          {
+            "type": "horizontal_rule",
+            "attrs": {
+              "block_id": "b22"
+            }
+          },
+          {
+            "type": "ordered_list",
+            "attrs": {
+              "block_id": "b23"
+            },
+            "content": [
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b18"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b19"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "The footnote text."
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b20"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b21"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "The endnote text."
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "images": [],
+  "report": [
+    {
+      "kind": "docx_revisions",
+      "count": 2,
+      "samples": []
+    },
+    {
+      "kind": "docx_comments",
+      "count": 1,
+      "samples": []
+    },
+    {
+      "kind": "docx_floating_text",
+      "count": 1,
+      "samples": []
+    },
+    {
+      "kind": "docx_formula",
+      "count": 1,
+      "samples": []
+    },
+    {
+      "kind": "docx_merged_cells",
+      "count": 1,
+      "samples": []
+    },
+    {
+      "kind": "docx_nested_table",
+      "count": 1,
+      "samples": []
+    }
+  ]
+}

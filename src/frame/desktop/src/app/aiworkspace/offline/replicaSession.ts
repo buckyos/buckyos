@@ -717,6 +717,13 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
     return this.direct.uploadAsset(file, fileName)
   }
 
+  contentServer() { return this.direct.contentServer() }
+
+  async uploadTransient(file: Blob, fileName: string) {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.upload'))
+    return this.direct.uploadTransient(file, fileName)
+  }
+
   async importAssets(files: File[], folder: boolean, signal?: AbortSignal) {
     if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.upload'))
     return this.direct.importAssets(files, folder, signal)

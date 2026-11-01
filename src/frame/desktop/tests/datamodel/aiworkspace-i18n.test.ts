@@ -27,6 +27,7 @@ import * as ext from '../../src/i18n/aiworkspace/ext.ts'
 import * as imports from '../../src/i18n/aiworkspace/import.ts'
 import * as pdf from '../../src/i18n/aiworkspace/pdf.ts'
 import * as presentation from '../../src/i18n/aiworkspace/presentation.ts'
+import * as office from '../../src/i18n/aiworkspace/office.ts'
 import * as richtext from '../../src/i18n/aiworkspace/richtext.ts'
 import * as session from '../../src/i18n/aiworkspace/session.ts'
 import * as shell from '../../src/i18n/aiworkspace/shell.ts'
@@ -51,10 +52,11 @@ const PARTS: Part[] = [
   { name: 'demos', prefixes: ['demo'], ...demos },
   { name: 'ext', prefixes: ['ext'], ...ext },
   { name: 'import', prefixes: ['import'], ...imports },
+  { name: 'office', prefixes: ['office'], ...office },
 ]
 
 const ROOT = new URL('../../', import.meta.url).pathname
-const SOURCE_DIRS = ['src/app/aiworkspace', '../aiworkspace/import-drawio', '../aiworkspace/import-pdf', '../aiworkspace/import-table']
+const SOURCE_DIRS = ['src/app/aiworkspace', '../aiworkspace/import-drawio', '../aiworkspace/import-pdf', '../aiworkspace/import-table', '../aiworkspace/import-office']
 const SKIP_DIRS = new Set(['wasm', 'node_modules', 'tools', 'fixtures'])
 const CJK = /[\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uff00-\uffef]/
 const EXEMPT = 'i18n-exempt'

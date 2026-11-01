@@ -214,6 +214,12 @@ export interface WorkspaceSession {
   /** A service method this interface does not wrap (a session's `session.*`, 第四期规划): raw kRPC, needs the backend. */
   call<T>(method: string, params: Record<string, unknown>): Promise<T>
   uploadAsset(file: Blob, fileName?: string): Promise<StagedAsset>
+  /** A file into the content store only (not a Workspace asset, no bucket binding): the uploader holds it for a day,
+   * long enough for a conversion (`repr`) to read it by `object_id`; nothing references it afterwards (Office 导入 Q14). */
+  uploadTransient(file: Blob, fileName: string): Promise<{ object_id: string }>
+  /** The content server (nfs_server) the uploads go to, and the token they go with: conversions of an upload
+   * (`repr`) are asked of the same server as the same principal. */
+  contentServer(): Promise<{ endpoint: string; sessionToken: string | null }>
   importAssets(files: File[], folder: boolean, signal?: AbortSignal): Promise<ImportedAsset[]>
   fetchAsset(objectId: string): Promise<Blob>
 
@@ -689,6 +695,17 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
     if (file.size > 32 * 1024 * 1024) throw new Error('Workspace assets are limited to 32 MiB.')
     const source = file instanceof File ? file : new File([file], fileName ?? 'asset', { type: file.type })
     return uploadWorkspaceAsset(this.client, this.workspaceId, source)
+  }
+
+  contentServer() { return this.client.transport.importOptions() }
+
+  async uploadTransient(file: Blob, fileName: string) {
+    const options = await this.client.transport.importOptions()
+    const snapshot = await ndm.importFiles([file instanceof File ? file : new File([file], fileName, { type: file.type })], { ...options, mode: 'single_file', autoStartUpload: false })
+    try {
+      await ndm.ensureUploaded(snapshot.sessionId, options)
+      return { object_id: snapshot.selection.objectId }
+    } finally { ndm.releaseImportSession(snapshot.sessionId) }
   }
 
   async importAssets(files: File[], folder: boolean, signal?: AbortSignal): Promise<ImportedAsset[]> {

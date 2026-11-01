@@ -483,7 +483,7 @@ prepare_buckyos_agent_package() {
   mkdir -p "$output_dir"
   cp -R "$BUCKYOS_AGENT_TOOLS_SOURCE/." "$output_dir/"
   # shared modules the commands import from the source tree (deno.json `../../frame/…`), beside them as vendor/frame/…
-  for module in frame/aiworkspace/import-table frame/aiworkspace/import-drawio; do
+  for module in frame/aiworkspace/import-table frame/aiworkspace/import-drawio frame/aiworkspace/import-pdf frame/aiworkspace/import-office; do
     mkdir -p "$output_dir/vendor/$module"
     cp -R "$SRC_DIR/$module/." "$output_dir/vendor/$module/"
     find "$output_dir/vendor/$module" -name '*_test.ts' -delete

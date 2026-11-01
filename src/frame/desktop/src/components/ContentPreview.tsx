@@ -578,6 +578,7 @@ export function ContentPreview(props: ContentPreviewProps) {
           source: resolved,
           runtimeProfile: pipelineRuntime,
           targetProfile,
+          mediaType: classification.mediaType,
           options: { signal, retry: !!retry, expectedAttemptId: retry?.expectedAttemptId },
         })
         if (signal.aborted) return

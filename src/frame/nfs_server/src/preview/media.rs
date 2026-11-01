@@ -1,5 +1,10 @@
 //! What a source is, before (magic bytes: the planning decision) and after
 //! (`ffprobe` JSON: the execution facts) a conversion starts.
+//!
+//! Office documents (Office import TODO §5.1): OOXML and ODF are zips told
+//! apart by their entry names, the legacy binaries OLE2 compound files by their
+//! stream names, RTF by `{\rtf`; the file name only settles what the first
+//! MiB leaves open.
 
 use serde_json::Value;
 
@@ -11,16 +16,79 @@ pub enum Kind {
     Image,
     Video,
     Audio,
+    /// A document LibreOffice converts; the extension it picks the import filter by (`docx`, `odp`, `rtf`, …).
+    Document(&'static str),
 }
 
 fn ascii(b: &[u8], at: usize, len: usize) -> &[u8] {
     b.get(at..at + len).unwrap_or_default()
 }
 
-/// Planning by magic bytes; `None` = no converter for this content.
-pub fn sniff(head: &[u8]) -> Option<Kind> {
+fn u16_at(b: &[u8], at: usize) -> Option<usize> {
+    b.get(at..at + 2).map(|v| u16::from_le_bytes([v[0], v[1]]) as usize)
+}
+
+/// `(name, method, data…)` of each zip local header in `head`. Found by
+/// signature, not by hopping sizes: writers that stream (LibreOffice) put the
+/// sizes in a data descriptor after the data.
+fn zip_entries(head: &[u8]) -> Vec<(&[u8], usize, &[u8])> {
+    let mut entries = Vec::new();
+    let mut at = 0;
+    while let Some(i) = head.get(at..).and_then(|rest| rest.windows(4).position(|w| w == b"PK\x03\x04")) {
+        let h = at + i;
+        at = h + 4;
+        let (Some(method), Some(name_len), Some(extra_len)) = (u16_at(head, h + 8), u16_at(head, h + 26), u16_at(head, h + 28)) else { break };
+        let Some(name) = head.get(h + 30..h + 30 + name_len) else { break };
+        entries.push((name, method, head.get(h + 30 + name_len + extra_len..).unwrap_or_default()));
+    }
+    entries
+}
+
+/// Whether an OLE2 directory entry (128 bytes on a 128-byte boundary after the
+/// 512-byte header) names `stream`.
+fn ole_stream(head: &[u8], stream: &str) -> bool {
+    let name: Vec<u8> = stream.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    head.chunks_exact(128).skip(4).any(|e| e.starts_with(&name) && u16_at(e, 64) == Some(name.len() + 2))
+}
+
+/// The import extension of an Office / ODF / RTF document.
+fn document(head: &[u8], name: Option<&str>) -> Option<&'static str> {
+    let ext = name.and_then(|n| n.rsplit_once('.')).map(|(_, e)| e.to_ascii_lowercase());
+    let hinted = |allowed: &[&'static str]| ext.as_deref().and_then(|e| allowed.iter().copied().find(|a| *a == e));
+    if head.starts_with(b"{\\rtf") {
+        return Some("rtf");
+    }
+    if head.starts_with(&[0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]) {
+        let streams = [("WordDocument", "doc"), ("PowerPoint Document", "ppt"), ("Workbook", "xls"), ("Book", "xls")];
+        return streams.iter().find(|(s, _)| ole_stream(head, s)).map(|(_, e)| *e).or_else(|| hinted(&["doc", "ppt", "xls"]));
+    }
+    if !head.starts_with(b"PK\x03\x04") {
+        return None;
+    }
+    let entries = zip_entries(head);
+    if let Some(&(b"mimetype", 0, data)) = entries.first() {
+        let odf = data.strip_prefix(b"application/vnd.oasis.opendocument.").unwrap_or_default();
+        let kinds: [(&[u8], &'static str); 4] = [(b"text", "odt"), (b"presentation", "odp"), (b"spreadsheet", "ods"), (b"graphics", "odg")];
+        if let Some((_, e)) = kinds.iter().find(|(k, _)| odf.starts_with(k)) {
+            return Some(e);
+        }
+    }
+    let parts: [(&[u8], &'static str); 3] = [(b"word/document", "docx"), (b"ppt/presentation", "pptx"), (b"xl/workbook", "xlsx")];
+    for (entry, _, _) in &entries {
+        if let Some((_, e)) = parts.iter().find(|(p, _)| entry.starts_with(p) && entry.ends_with(b".xml")) {
+            return Some(e);
+        }
+    }
+    hinted(&["docx", "pptx", "xlsx", "odt", "odp", "ods", "odg"])
+}
+
+/// Planning by magic bytes (`name` only as a hint); `None` = no converter for this content.
+pub fn sniff(head: &[u8], name: Option<&str>) -> Option<Kind> {
     if head.len() < 12 {
         return None;
+    }
+    if let Some(ext) = document(head, name) {
+        return Some(Kind::Document(ext));
     }
     if ascii(head, 4, 4) == b"ftyp" {
         let brand = ascii(head, 8, 4);
@@ -205,14 +273,51 @@ mod tests {
 
     #[test]
     fn sniffing() {
-        assert_eq!(sniff(b"\0\0\0\x18ftypheic\0\0\0\0mif1"), Some(Kind::Heif));
-        assert_eq!(sniff(b"\0\0\0\x18ftypmif1\0\0\0\0heic"), Some(Kind::Heif));
-        assert_eq!(sniff(b"\0\0\0\x14ftypqt  \0\0\0\0qt  "), Some(Kind::Video));
-        assert_eq!(sniff(b"\0\0\0\x18ftypisom\0\0\x02\0isom"), Some(Kind::Video));
-        assert_eq!(sniff(b"\0\0\0\x18ftypM4A \0\0\0\0M4A "), Some(Kind::Audio));
-        assert_eq!(sniff(b"II*\0\x08\0\0\0\0\0\0\0"), Some(Kind::Image));
-        assert_eq!(sniff(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3"), None);
-        assert_eq!(sniff(b"PK\x03\x04\x14\0\0\0\0\0\0\0"), None);
+        assert_eq!(sniff(b"\0\0\0\x18ftypheic\0\0\0\0mif1", None), Some(Kind::Heif));
+        assert_eq!(sniff(b"\0\0\0\x18ftypmif1\0\0\0\0heic", None), Some(Kind::Heif));
+        assert_eq!(sniff(b"\0\0\0\x14ftypqt  \0\0\0\0qt  ", None), Some(Kind::Video));
+        assert_eq!(sniff(b"\0\0\0\x18ftypisom\0\0\x02\0isom", None), Some(Kind::Video));
+        assert_eq!(sniff(b"\0\0\0\x18ftypM4A \0\0\0\0M4A ", None), Some(Kind::Audio));
+        assert_eq!(sniff(b"II*\0\x08\0\0\0\0\0\0\0", None), Some(Kind::Image));
+        assert_eq!(sniff(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3", None), None);
+        assert_eq!(sniff(b"PK\x03\x04\x14\0\0\0\0\0\0\0", None), None);
+    }
+
+    fn zip_entry(name: &str, method: u16, data: &[u8]) -> Vec<u8> {
+        let mut h = b"PK\x03\x04\x14\0\x08\x08".to_vec();
+        h.extend(method.to_le_bytes());
+        h.extend([0u8; 16]);
+        h.extend((name.len() as u16).to_le_bytes());
+        h.extend([0u8; 2]);
+        h.extend(name.as_bytes());
+        h.extend(data);
+        h
+    }
+
+    #[test]
+    fn documents() {
+        let docx = [zip_entry("_rels/.rels", 8, &[0x9c; 40]), zip_entry("word/_rels/document.xml.rels", 8, &[1; 9]), zip_entry("word/document.xml", 8, &[2; 9])].concat();
+        assert_eq!(sniff(&docx, None), Some(Kind::Document("docx")));
+        let xlsx = [zip_entry("[Content_Types].xml", 8, &[3; 9]), zip_entry("xl/workbook.xml", 8, &[4; 9])].concat();
+        assert_eq!(sniff(&xlsx, Some("data.bin")), Some(Kind::Document("xlsx")));
+        let odp = zip_entry("mimetype", 0, b"application/vnd.oasis.opendocument.presentationPK");
+        assert_eq!(sniff(&odp, None), Some(Kind::Document("odp")));
+        let odb = zip_entry("mimetype", 0, b"application/vnd.oasis.opendocument.base");
+        assert_eq!(sniff(&odb, None), None);
+        let other = zip_entry("readme.txt", 0, b"hello world");
+        assert_eq!(sniff(&other, None), None);
+        assert_eq!(sniff(&other, Some("Q3 Report.DOCX")), Some(Kind::Document("docx")), "the name settles a zip the head leaves open");
+        assert_eq!(sniff(b"{\\rtf1\\ansi\\deff0 hello}", None), Some(Kind::Document("rtf")));
+
+        let mut ole = vec![0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
+        ole.resize(512 + 128 * 3, 0);
+        assert_eq!(sniff(&ole, None), None, "an OLE2 file is not necessarily a document (msi, msg)");
+        assert_eq!(sniff(&ole, Some("old.PPT")), Some(Kind::Document("ppt")));
+        assert_eq!(sniff(&ole, Some("setup.msi")), None);
+        let name: Vec<u8> = "PowerPoint Document".encode_utf16().flat_map(u16::to_le_bytes).collect();
+        ole[640..640 + name.len()].copy_from_slice(&name);
+        ole[640 + 64..640 + 66].copy_from_slice(&((name.len() + 2) as u16).to_le_bytes());
+        assert_eq!(sniff(&ole, Some("deck.doc")), Some(Kind::Document("ppt")), "streams beat the name");
     }
 
     #[test]

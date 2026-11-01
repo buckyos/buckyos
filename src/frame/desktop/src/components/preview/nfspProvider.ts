@@ -4,16 +4,18 @@
  * enumeration = `list`, read references = the data plane `/nfs/v1/read/*`.
  *
  * Pipeline calls map onto `repr` (ensure) / `get_repr` (query). nfs_server
- * advertises `repr` only while its converter (ffmpeg / ffprobe) is present;
- * without it every non-Direct format plans as Unsupported with the node's
- * reason — never a fake result. Results are read from the `preview-cache`
- * bucket through the URL (with a short-lived token) the node signs.
+ * advertises `repr` while any converter is present and lists in
+ * `hello.repr.profiles` what it can produce (ffmpeg: image / video / audio /
+ * thumbnail; LibreOffice: `preview-document`, a PDF). A format whose profile
+ * is absent plans as Unsupported with the node's reason — never a fake
+ * result. Results are read from the `preview-cache` bucket through the URL
+ * (with a short-lived token) the node signs.
  */
 
 import { bucket, getActiveSessionToken } from 'buckyos'
 import { NfspError, type NodeInfo, type ReprRecord, type ReprResult, type ReprSource, type WireRef } from '../../api/nfsp_client'
 import { effectiveListLimit, ensureSession, nfspBaseUrl, nfspClient } from '../../app/filebrowser/data/nfsp/client'
-import { extensionOf, mediaTypeFromExtension } from './mediaTypes'
+import { extensionOf, isPipelineDocument, mediaTypeFromExtension, rendererForMediaType } from './mediaTypes'
 import { asBucketObjectRef, bucketRefOf, resolveBucketSource } from './bucketSource'
 import { resolveNdmSource } from './ndmSource'
 import { cyfsPathToLocal, normalizeCyfsPath, parentCyfsPath } from './session'
@@ -23,6 +25,7 @@ import {
   isObjectIdRef,
   PreviewError,
   type ContentRef,
+  type EnsurePreviewWorkRequest,
   type PreviewProvider,
   type PreviewReadRef,
   type PreviewResult,
@@ -98,8 +101,10 @@ async function resolveNode(source: ContentRef, signal?: AbortSignal): Promise<No
 // ─── `repr` wire (frozen with nfs_server preview/rpc.rs and websdk nfsp.ts) ───
 
 function mapWireResult(result: ReprResult): PreviewResult {
+  // A document's result is a PDF (`result_type: "document"`).
+  const type: string = result.result_type
   return {
-    resultType: result.result_type,
+    resultType: type === 'document' ? 'pdf' : result.result_type,
     readRef: { kind: 'url', url: absoluteUrl(result.read_url) },
     mediaType: result.media_type,
     sourceVersion: result.source_version,
@@ -124,6 +129,22 @@ function mapWireRecord(record: Exclude<ReprRecord, { state: 'unsupported' }>): P
     }
   }
   return { workKey: record.work_key, state: 'processing', attemptId: record.attempt_id, progress: record.progress, retryAfterMs: record.retry_after_ms }
+}
+
+/** The nfs_server profile (preview/convert.rs) a request needs; null = only the node can tell. */
+function reprProfileOf(request: EnsurePreviewWorkRequest): string | null {
+  if (request.targetProfile.purpose === 'thumbnail') return 'thumbnail'
+  if (isPipelineDocument(request.mediaType)) return 'preview-document'
+  switch (rendererForMediaType(request.mediaType ?? '')) {
+    case 'image':
+      return 'preview-image'
+    case 'video':
+      return 'preview-video'
+    case 'audio':
+      return 'preview-audio'
+    default:
+      return null
+  }
 }
 
 /** Where the node finds the bytes: an NFSP ref, a bucket binding or a named object. */
@@ -221,9 +242,12 @@ export function createNfspPreviewProvider(): PreviewProvider {
     async ensurePreviewWork(request) {
       await ensureSession()
       const raw = nfspClient().raw
-      if (!raw.features.includes(REPR_FEATURE)) {
-        const capability = raw.reprCapability
-        const detail = capability && !capability.available ? capability.detail : undefined
+      const capability = raw.reprCapability
+      const profile = reprProfileOf(request)
+      const profiles = capability?.available ? capability.profiles : []
+      if (!raw.features.includes(REPR_FEATURE) || (profile && !profiles.includes(profile))) {
+        // `detail` names the missing converters, also next to `available: true`.
+        const detail = capability && 'detail' in capability ? capability.detail : undefined
         return { kind: 'unsupported', reason: 'no-pipeline', detail: detail ?? 'The content server has no Preview Pipeline' }
       }
       const { source, runtimeProfile, targetProfile, options } = request

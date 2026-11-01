@@ -8,6 +8,10 @@
  *
  * `detectRuntimeProfile()` answers "can this Runtime directly consume X?" —
  * the answer feeds both the Direct decision and the Pipeline Target Profile.
+ *
+ * Office / ODF / RTF documents have the `pdf` renderer but are never Direct:
+ * the renderer shows the PDF a Pipeline converts them to (nfs_server
+ * `preview-document`, Office import TODO §5.2).
  */
 
 import type { PreviewRendererType, PreviewRuntimeProfile } from './types'
@@ -43,6 +47,28 @@ const BASELINE_IMAGE_TYPES = [
 ]
 
 const GENERIC_CONTENT_TYPES = new Set(['', 'application/octet-stream', 'binary/octet-stream'])
+
+/** Documents shown as their Pipeline PDF, by extension (the SDK table lacks some of them). */
+const PIPELINE_DOCUMENT_TYPES: Record<string, string> = {
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  doc: 'application/msword',
+  ppt: 'application/vnd.ms-powerpoint',
+  xls: 'application/vnd.ms-excel',
+  odt: 'application/vnd.oasis.opendocument.text',
+  odp: 'application/vnd.oasis.opendocument.presentation',
+  ods: 'application/vnd.oasis.opendocument.spreadsheet',
+  odg: 'application/vnd.oasis.opendocument.graphics',
+  rtf: 'application/rtf',
+}
+
+const PIPELINE_DOCUMENT_MEDIA_TYPES = new Set([...Object.values(PIPELINE_DOCUMENT_TYPES), 'text/rtf'])
+
+/** An Office / ODF / RTF document: rendered only as the PDF a Pipeline converts it to. */
+export function isPipelineDocument(mediaType: string | undefined | null): boolean {
+  return PIPELINE_DOCUMENT_MEDIA_TYPES.has(stripMediaTypeParams(mediaType))
+}
 
 
 
@@ -164,6 +190,8 @@ export type MediaBasis = 'magic' | 'content-type' | 'extension' | 'text-heuristi
 export interface MediaClassification {
   mediaType: string
   rendererType: PreviewRendererType | null
+  /** The renderer takes the original bytes; false = only a Pipeline result (an Office document's PDF). */
+  direct: boolean
   basis: MediaBasis
   extension: string
   /** True when bytes or a trusted header confirmed the type (not extension only). */
@@ -176,8 +204,8 @@ export function rendererForMediaType(mediaType: string): PreviewRendererType | n
   if (type === 'image/svg+xml') return 'svg'
   if (type.startsWith('image/')) return 'image'
   if (type === 'text/html' || type === 'application/xhtml+xml') return 'html'
+  if (type === 'application/pdf' || isPipelineDocument(type)) return 'pdf'
   if (type.startsWith('text/') || TEXT_APPLICATION_TYPES.has(type)) return 'text'
-  if (type === 'application/pdf') return 'pdf'
   if (type.startsWith('audio/') || type === 'application/ogg') return 'audio'
   if (type.startsWith('video/')) return 'video'
   return null
@@ -195,7 +223,7 @@ export function classifyMedia(input: {
   const extension = extensionOf(input.name)
   const magicType = sniffMagic(input.magic)
   const headerType = stripMediaTypeParams(input.contentType)
-  const extType = extension ? mediaTypeFromExtension(extension) : undefined
+  const extType = extension ? (mediaTypeFromExtension(extension) ?? PIPELINE_DOCUMENT_TYPES[extension]) : undefined
   const hintType = input.hints?.map(stripMediaTypeParams).find((h) => h && !GENERIC_CONTENT_TYPES.has(h))
   const textLike = looksLikeText(input.magic)
 
@@ -205,7 +233,7 @@ export function classifyMedia(input: {
     if (renderer && SENSITIVE_TEXT_RENDERERS.has(renderer) && input.magic && !textLike) {
       renderer = null
     }
-    return { mediaType, rendererType: renderer, basis, extension, confirmed }
+    return { mediaType, rendererType: renderer, direct: renderer !== null && !isPipelineDocument(mediaType), basis, extension, confirmed }
   }
 
   if (magicType) {
@@ -231,7 +259,7 @@ export function classifyMedia(input: {
   if (textLike) {
     return finish('text/plain', 'text-heuristic', true)
   }
-  return { mediaType: 'application/octet-stream', rendererType: null, basis: 'unknown', extension, confirmed: false }
+  return { mediaType: 'application/octet-stream', rendererType: null, direct: false, basis: 'unknown', extension, confirmed: false }
 }
 
 /** "PNG · image/png" style label for the Unsupported / Info states. */
@@ -365,7 +393,7 @@ export function decideDirect(
   runtime: PreviewRuntimeProfile,
 ): DirectDecision {
   const renderer = classification.rendererType
-  if (!renderer) return { ok: false, reason: 'no-renderer' }
+  if (!renderer || !classification.direct) return { ok: false, reason: 'no-renderer' }
   const type = classification.mediaType
   if (renderer === 'image' && !runtime.imageMediaTypes.includes(type)) {
     return { ok: false, reason: 'runtime-unsupported' }

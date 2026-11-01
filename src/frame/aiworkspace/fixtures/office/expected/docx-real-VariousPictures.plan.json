@@ -1,0 +1,114 @@
+{
+  "title": "VariousPictures",
+  "counts": {
+    "paragraphs": 3,
+    "headings": 0,
+    "lists": 0,
+    "tables": 0,
+    "images": 2,
+    "rasterized": 0
+  },
+  "segments": [
+    {
+      "kind": "richtext",
+      "content": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b1"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Sheet with various pictures"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b2"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "(jpeg, png, wmf, emf and pict) "
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b3"
+            }
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b4"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": " "
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "image",
+      "image": "ti1",
+      "size": {
+        "w": 97.5,
+        "h": 69
+      },
+      "pixels": {
+        "width": 130,
+        "height": 92
+      },
+      "title": "tomcat.png"
+    },
+    {
+      "kind": "image",
+      "image": "ti2",
+      "size": {
+        "w": 144,
+        "h": 132
+      },
+      "pixels": {
+        "width": 192,
+        "height": 176
+      },
+      "title": "clock.jpg"
+    }
+  ],
+  "images": [
+    {
+      "key": "ti1",
+      "name": "VariousPictures-img1.png",
+      "mediaType": "image/png",
+      "bytes": 3043
+    },
+    {
+      "key": "ti2",
+      "name": "VariousPictures-img2.jpg",
+      "mediaType": "image/jpeg",
+      "bytes": 11988
+    }
+  ],
+  "report": [
+    {
+      "kind": "docx_unsupported_image",
+      "count": 3,
+      "samples": [
+        "image1.wmf",
+        "image3.emf",
+        "image4.emf"
+      ]
+    }
+  ]
+}

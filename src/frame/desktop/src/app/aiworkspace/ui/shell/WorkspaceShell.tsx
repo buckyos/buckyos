@@ -32,6 +32,7 @@ import { LAYOUT_KEYS, PREF_KEYS, ShellContext, SOURCES_SIDE_TABS, usePhone, type
 import { SidePanel } from './SidePanel'
 import { StatusDetail, StatusDock } from './StatusSummary'
 import { TableImportHost } from '../import/TableImportDialog'
+import { OfficeImportHost } from '../import/ImportOfficeDialog'
 
 export type { TopMode } from './shellContext'
 
@@ -334,6 +335,7 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
             {dialog?.kind === 'save-template' && <SaveTemplateDialog initialSurfaceId={activeSurface?.entity_id ?? null} onClose={() => setDialog(null)} />}
             {dialog?.kind === 'delete-surface' && <SurfaceDeleteDialog key={dialog.surface.entity_id} surface={dialog.surface} onClose={() => setDialog(null)} onDeleted={(next) => { if (next) selectSurface(next) }} />}
             <TableImportHost />
+            <OfficeImportHost />
           </WorkspaceUiContext.Provider>
         )}
       </ShellContext.Provider>

@@ -1,0 +1,732 @@
+{
+  "title": "delins",
+  "counts": {
+    "paragraphs": 5,
+    "headings": 0,
+    "lists": 4,
+    "tables": 0,
+    "images": 0,
+    "rasterized": 0
+  },
+  "segments": [
+    {
+      "kind": "richtext",
+      "content": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b1"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Tika",
+                "marks": [
+                  {
+                    "type": "strong"
+                  }
+                ]
+              },
+              {
+                "type": "text",
+                "text": " can be:"
+              }
+            ]
+          },
+          {
+            "type": "bullet_list",
+            "attrs": {
+              "block_id": "b2"
+            },
+            "content": [
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b3"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b4"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "A Nepalese name for "
+                      },
+                      {
+                        "type": "text",
+                        "text": "Tilaka",
+                        "marks": [
+                          {
+                            "type": "link",
+                            "attrs": {
+                              "href": "http://en.wikipedia.org/wiki/Tilaka"
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b5"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b6"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "A nickname for Petrika the Albanian variation of "
+                      },
+                      {
+                        "type": "text",
+                        "text": "Peter",
+                        "marks": [
+                          {
+                            "type": "link",
+                            "attrs": {
+                              "href": "http://en.wikipedia.org/wiki/Peter"
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b7"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b8"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "A title in certain Indian monarchies for a "
+                      },
+                      {
+                        "type": "text",
+                        "text": "Crown Prince",
+                        "marks": [
+                          {
+                            "type": "link",
+                            "attrs": {
+                              "href": "http://en.wikipedia.org/wiki/Crown_Prince"
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b9"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b10"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "A place in "
+                      },
+                      {
+                        "type": "text",
+                        "text": "Abkhazia",
+                        "marks": [
+                          {
+                            "type": "link",
+                            "attrs": {
+                              "href": "http://en.wikipedia.org/wiki/Abkhazia"
+                            }
+                          }
+                        ]
+                      },
+                      {
+                        "type": "text",
+                        "text": " "
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b11"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b12"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "A place on Saturn's satellite "
+                      },
+                      {
+                        "type": "text",
+                        "text": "Rhea",
+                        "marks": [
+                          {
+                            "type": "link",
+                            "attrs": {
+                              "href": "http://en.wikipedia.org/wiki/Rhea"
+                            }
+                          }
+                        ]
+                      },
+                      {
+                        "type": "text",
+                        "text": ", named after the last place"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b13"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b14"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "A name in various Indian languages (ṭīkā) for certain commentaries such as:"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "bullet_list",
+            "attrs": {
+              "block_id": "b15"
+            },
+            "content": [
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b16"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b17"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "the "
+                      },
+                      {
+                        "type": "text",
+                        "text": "subcommentaries",
+                        "marks": [
+                          {
+                            "type": "link",
+                            "attrs": {
+                              "href": "http://en.wikipedia.org/wiki/Subcommentaries,_Theravada"
+                            }
+                          }
+                        ]
+                      },
+                      {
+                        "type": "text",
+                        "text": " of the "
+                      },
+                      {
+                        "type": "text",
+                        "text": "Theravada",
+                        "marks": [
+                          {
+                            "type": "link",
+                            "attrs": {
+                              "href": "http://en.wikipedia.org/wiki/Theravada"
+                            }
+                          }
+                        ]
+                      },
+                      {
+                        "type": "text",
+                        "text": " tradition."
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "bullet_list",
+            "attrs": {
+              "block_id": "b18"
+            },
+            "content": [
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b19"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b20"
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b21"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b22"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b23"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "March 2009: Apache Tika Release"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b24"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Apache Tika 0.3 has been released. Please see the download page for more details."
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b25"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "February 2009: Lucene at ApacheCon Europe 2009 in Amsterdam"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b26"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Lucene will be extremely well represented at "
+              },
+              {
+                "type": "text",
+                "text": "ApacheCon EU 2009",
+                "marks": [
+                  {
+                    "type": "link",
+                    "attrs": {
+                      "href": "http://www.eu.apachecon.com/c/aceu2009/"
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "text",
+                "text": " in Amsterdam, Netherlands this March 23-27, 2009:"
+              }
+            ]
+          },
+          {
+            "type": "bullet_list",
+            "attrs": {
+              "block_id": "b27"
+            },
+            "content": [
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b28"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b29"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Lucene Boot Camp",
+                        "marks": [
+                          {
+                            "type": "link",
+                            "attrs": {
+                              "href": "http://eu.apachecon.com/c/aceu2009/sessions/197"
+                            }
+                          }
+                        ]
+                      },
+                      {
+                        "type": "text",
+                        "text": " - A two day training session, March 23 & 24th"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b30"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b31"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Solr Boot Camp",
+                        "marks": [
+                          {
+                            "type": "link",
+                            "attrs": {
+                              "href": "http://eu.apachecon.com/c/aceu2009/sessions/201"
+                            }
+                          }
+                        ]
+                      },
+                      {
+                        "type": "text",
+                        "text": " - A one day training session, March 24th"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b32"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b33"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Introducing Apache Mahout",
+                        "marks": [
+                          {
+                            "type": "link",
+                            "attrs": {
+                              "href": "http://eu.apachecon.com/c/aceu2009/sessions/136"
+                            }
+                          }
+                        ]
+                      },
+                      {
+                        "type": "text",
+                        "text": " - Grant Ingersoll. March 25th @ 10:30"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b34"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b35"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Lucene/Solr Case Studies",
+                        "marks": [
+                          {
+                            "type": "link",
+                            "attrs": {
+                              "href": "http://eu.apachecon.com/c/aceu2009/sessions/137"
+                            }
+                          }
+                        ]
+                      },
+                      {
+                        "type": "text",
+                        "text": " - Erik Hatcher. March 25th @ 11:30"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b36"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b37"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Advanced Indexing Techniques with Apache Lucene",
+                        "marks": [
+                          {
+                            "type": "link",
+                            "attrs": {
+                              "href": "http://eu.apachecon.com/c/aceu2009/sessions/138"
+                            }
+                          }
+                        ]
+                      },
+                      {
+                        "type": "text",
+                        "text": " - Michael Busch. March 25th @ 14:00"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b38"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b39"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Apache Solr - A Case Study",
+                        "marks": [
+                          {
+                            "type": "link",
+                            "attrs": {
+                              "href": "http://eu.apachecon.com/c/aceu2009/sessions/251"
+                            }
+                          }
+                        ]
+                      },
+                      {
+                        "type": "text",
+                        "text": " - Uri Boness. March 26th @ 17:30"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b40"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b41"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Best of breed - httpd, forrest, solr and droids",
+                        "marks": [
+                          {
+                            "type": "link",
+                            "attrs": {
+                              "href": "http://eu.apachecon.com/c/aceu2009/sessions/250"
+                            }
+                          }
+                        ]
+                      },
+                      {
+                        "type": "text",
+                        "text": " - Thorsten Scherler. March 27th @ 17:30"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b42"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b43"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Apache Droids - an intelligent standalone robot framework",
+                        "marks": [
+                          {
+                            "type": "link",
+                            "attrs": {
+                              "href": "http://eu.apachecon.com/c/aceu2009/sessions/165"
+                            }
+                          }
+                        ]
+                      },
+                      {
+                        "type": "text",
+                        "text": " - Thorsten Scherler. March 26th @ 15:00"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b44"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b45"
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b46"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b47"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "A software module for extracting text from binary files. "
+                      },
+                      {
+                        "type": "text",
+                        "text": "Apache Tika",
+                        "marks": [
+                          {
+                            "type": "link",
+                            "attrs": {
+                              "href": "http://lucene.apache.org/tika"
+                            }
+                          }
+                        ]
+                      },
+                      {
+                        "type": "text",
+                        "text": " is a subproject of the "
+                      },
+                      {
+                        "type": "text",
+                        "text": "Lucene",
+                        "marks": [
+                          {
+                            "type": "link",
+                            "attrs": {
+                              "href": "http://lucene.apache.org"
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "images": [],
+  "report": [
+    {
+      "kind": "docx_revisions",
+      "count": 15,
+      "samples": []
+    }
+  ]
+}

@@ -1,6 +1,6 @@
-// Real HEIC / HEVC samples (libheif / x265) shared with nfs_server's Pipeline tests.
+// Real HEIC / HEVC samples (libheif / x265) and Office documents shared with nfs_server's Pipeline tests.
 import { readFileSync } from 'node:fs'
-import { classifyMedia, decideDirect, heifImageSize, sniffMagic } from '../../src/components/preview/mediaTypes.ts'
+import { classifyMedia, decideDirect, heifImageSize, isPipelineDocument, rendererForMediaType, sniffMagic } from '../../src/components/preview/mediaTypes.ts'
 import type { PreviewRuntimeProfile } from '../../src/components/preview/types.ts'
 
 const FIXTURES = new URL('../../../nfs_server/tests/fixtures/preview/', import.meta.url)
@@ -47,5 +47,32 @@ const mov = classifyMedia({ name: 'IMG_0002.MOV', magic: bytes('h264_aac.mov') }
 equal(decideDirect(mov, 32970, chromium), { ok: true }, 'MOV is tried directly')
 const avi = classifyMedia({ name: 'clip.avi', contentType: 'video/x-msvideo' })
 equal(decideDirect(avi, 1, chromium), { ok: false, reason: 'runtime-unsupported' }, 'AVI is not a Direct container')
+
+// Office / ODF / RTF: the pdf renderer, but only for the Pipeline's PDF (nfs_server `preview-document`).
+const docx = classifyMedia({ name: 'Q3 Report.DOCX', hints: ['application/octet-stream'], magic: bytes('office.docx') })
+equal([docx.mediaType, docx.rendererType, docx.direct], ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'pdf', false], 'DOCX classification')
+equal(decideDirect(docx, 5656, chromium), { ok: false, reason: 'no-renderer' }, 'a DOCX never goes to the PDF viewer as is')
+const pptx = classifyMedia({ name: 'deck.pptx', magic: bytes('office.pptx') })
+equal([pptx.rendererType, pptx.direct, decideDirect(pptx, 10321, chromium).ok], ['pdf', false, false], 'PPTX goes to the Pipeline')
+const odt = classifyMedia({ name: 'notes.odt', magic: bytes('office.odt') })
+equal([odt.mediaType, odt.rendererType, odt.direct], ['application/vnd.oasis.opendocument.text', 'pdf', false], 'ODT classification')
+for (const [name, type] of [
+  ['old.doc', 'application/msword'],
+  ['old.ppt', 'application/vnd.ms-powerpoint'],
+  ['old.xls', 'application/vnd.ms-excel'],
+  ['book.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+  ['slides.odp', 'application/vnd.oasis.opendocument.presentation'],
+  ['sheet.ods', 'application/vnd.oasis.opendocument.spreadsheet'],
+  ['letter.rtf', 'application/rtf'],
+]) {
+  const doc = classifyMedia({ name })
+  equal([doc.mediaType, doc.rendererType, doc.direct], [type, 'pdf', false], `${name} by extension`)
+}
+equal(rendererForMediaType('text/rtf'), 'pdf', 'text/rtf is a document, not text')
+equal(classifyMedia({ name: 'memo', contentType: 'application/msword' }).rendererType, 'pdf', 'MIME type alone')
+equal([isPipelineDocument('application/pdf'), isPipelineDocument('application/zip')], [false, false], 'PDF and ZIP are not converted documents')
+const pdf = classifyMedia({ name: 'paper.pdf', magic: new TextEncoder().encode('%PDF-1.7\n') })
+equal([pdf.rendererType, pdf.direct, decideDirect(pdf, 9, chromium).ok], ['pdf', true, true], 'a PDF stays Direct')
+equal(classifyMedia({ name: 'bundle.zip', magic: bytes('office.docx') }).direct, false, 'a ZIP has no renderer')
 
 console.log('preview media types: ok')

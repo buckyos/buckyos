@@ -1,7 +1,8 @@
 {
   "imports": {
     "buckyos": "../../rootfs/libexec/buckyos-tool/dist/node.mjs",
-    "@table/": "../../frame/aiworkspace/import-table/"
+    "@table/": "../../frame/aiworkspace/import-table/",
+    "@office/": "../../frame/aiworkspace/import-office/"
   },
   "tasks": {
     "run": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts",
@@ -25,7 +26,8 @@
     "ai_provider": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts ai_provider",
     "ai_quota": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts ai_quota",
     "materialize_resource": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts materialize_resource",
-    "import_table": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts import_table"
+    "import_table": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts import_table",
+    "import_office": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts import_office"
   },
   "compilerOptions": {
     "lib": [
