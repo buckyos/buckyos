@@ -39,7 +39,7 @@ M-30—M-34 从本阶段约束设计；C 阶段的拒写与关闭召回测试只
 | [state/perception.rs](../src/frame/lib_opendan/src/state/perception.rs) | 按 Session 的感知流、seq 幂等、整理游标、backlog；每个文件只有持 Session lease 的 driver 一个写者 | 保留为唯一感知管线；扩展来源、cites、锚点、`idempotency_key` 等字段，提供库级适配、逐条处置；按 A.5 加文件级短锁，使正文清理与追加互斥 |
 | [state/cognition.rs](../src/frame/lib_opendan/src/state/cognition.rs) | Graph Hint 查询、Notebook 写入、整理审计与游标推进 | 后续将 Notebook 写入改为统一 Memory 路径，移除 Notebook 专属类型和统计；整理提交需核验实际认知更新 |
 | [tests/self_improve.rs](../src/frame/lib_opendan/tests/self_improve.rs) | 感知幂等、整理锁、游标及防自我回声测试 | 增加真实认知变化、通知、清理和失败恢复断言，不以模拟回答“已记住”作为成功依据 |
-| [agent_attention_signal.rs](../src/frame/agent_tool/src/agent_attention_signal.rs) | 独立 SQLite 管线、Stage1 扫描与待处理信号接口 | TD-20 要求并入或退役；可复用校验与提及过滤，不为新例子再建一个待整理池 |
+| `agent_attention_signal.rs`（2026-11-01 已删除） | 独立 SQLite 管线、Stage1 扫描与待处理信号接口 | TD-20 要求并入或退役；可复用校验与提及过滤，不为新例子再建一个待整理池。已退役，见 [attention-signal-retirement-todo](attention-signal-retirement-todo.md) |
 
 实现现状的完整核对与调整清单见 [Memory 需求附录 B](<../doc/opendan/Agent Memory 认知管理需求.md>)（TD-01—TD-26），接口目标见附录 A；本 TODO 的 T01—T04 是其中组件阶段的子集。
 
@@ -667,7 +667,7 @@ S24—S28 验证组件边界；Task 修订的真实送达、确定性订阅和 F
 - 运行中 Work 的修改由 Session 架构实现为 Task 修订（Memory 需求 §9.4）：修订数据与授权、Runtime 建立的确定性订阅、必达送达、Final Report 记录最后观察修订编号，以及按编号把未处理修订交给新 Work。Memory 只接收 UI 从修改中另写的长期感知。
 - Runtime 提供稳定来源事件、时区/区域及必要位置、Task/Goal、原始提及和补写标记；被待处理感知引用的事件不能提前清理。Q 阶段验证意图锚点优先与相对时间解读（TD-16、B-46）。
 - 将整理接到维护型 Goal：廉价变化闸门后再给模型运行机会，按 dispositions 与 deadline 选材料，清理单独重试。终局成功必须有实际 commit 结果，不再只推进游标；真实整理测试断言认知与材料变化（TD-03/19）。
-- 切换并退役 attention signal SQLite/CLI、旧 `self_improve_signals` 与 `self_improve_set_memory` behavior，只保留一条感知管线（TD-20）。事后回扫仍是待决补充来源，不在此默认实现；若采用，遵守原始历史、来源去重和成功后推进游标的规则。
+- 切换并退役 attention signal SQLite/CLI、旧 `self_improve_signals` 与 `self_improve_set_memory` behavior，只保留一条感知管线（TD-20；两份 behavior 2026-10-23 删除，SQLite/CLI 2026-11-01 退役）。事后回扫仍是待决补充来源，不在此默认实现；若采用，遵守原始历史、来源去重和成功后推进游标的规则。
 - 补齐远程 Runner/kRPC、真实授权和 DID Object 映射：逻辑 ID 读当前版，revision 对象固定，感知不默认对外暴露。组件 fixture 不代表已经完成生产鉴权与任务失效联动。
 - Q 阶段按需求 §10.3/§10.6 的标签集评估写入遗漏/噪声、召回回声、弱否定、同名归属、表达与行为分歧、窄范围综合及第三方主张；将预设计划替换为真实模型，保留“无内容值得记”和“不形成认知”的负例。
 - 定义显式遗忘覆盖的受控副本范围并实现清除；本阶段清理已整理感知，不宣称已经删除 Session 历史、外部源或所有派生副本。
@@ -747,7 +747,7 @@ cargo test -p libopendan --test memory_sessions --test memory_component
 ### 8.5 留给后续阶段
 
 - S（Session 接入）：`ctl perceive` 新参数与 Runtime 锚点、来源、`backfilled`；runner 每次推理前 `observe`、`ObservationState` 存入真实 Session、创建方建立基础范围；runner `<hints>` 改用组件输出并去掉 `.unwrap_or_default()`；`agent-memory commit --plan`、CLI 按调用者分派与只读 PATH、`--json` 与多别名；整理 Goal 与 Loader 接线（`pending_work` 作为调度闸门）、runner 字节游标退役；`self_improve` lease 改名。
-- S 的退役与清点（TD-09、TD-20）：调用方为 `lib_opendan/src/state/cognition.rs` 的 `notebook_append` 与 `Cognition` 方法、`NotebookNote`、`ConsolidationBatch.notebook_ops`，`state/krpc.rs` 的 `cognition.notebook_append`，`bin/xagent.rs` 的 `note`，`agent_tool/src/agent_notebook.rs` 与 `agent_tool_cli_dev` 的 agent-notebook CLI，`agent_tool/src/agent_attention_signal.rs` 及其 CLI，jarvis 的 `chat_route.toml`、`self_check.toml`、`self_improve_signals.toml`、`self_improve_set_memory.toml`；数据为 `<agent_root>/notebook/` 与 `<agent_root>/attention_signals/`，退役时单独清点，不自动删除。
+- S 的退役与清点（TD-09、TD-20）：调用方为 `lib_opendan/src/state/cognition.rs` 的 `notebook_append` 与 `Cognition` 方法、`NotebookNote`、`ConsolidationBatch.notebook_ops`，`state/krpc.rs` 的 `cognition.notebook_append`，`bin/xagent.rs` 的 `note`，`agent_tool/src/agent_notebook.rs` 与 `agent_tool_cli_dev` 的 agent-notebook CLI，`agent_tool/src/agent_attention_signal.rs` 及其 CLI，jarvis 的 `chat_route.toml`、`self_check.toml`、`self_improve_signals.toml`、`self_improve_set_memory.toml`；数据为 `<agent_root>/notebook/` 与 `<agent_root>/attention_signals/`，退役时单独清点，不自动删除。attention signal 部分已于 2026-11-01 清点并退役（[attention-signal-retirement-todo](attention-signal-retirement-todo.md)），剩 Notebook。
 - Q（模型质量）：把预设计划换成真实模型，按需求 §10.3/§10.6 评估。
 - P2：TD-22 增量物化与索引查询。
 - 已知风险：整理 lease 的 epoch 取自锁文件内容；锁文件被删除重建（违反锁协议）后 epoch 从 1 重新计数，提交会因 lease epoch 低于日志中已提交的最大值被拒（`StaleLease`），需要人工处理锁文件。

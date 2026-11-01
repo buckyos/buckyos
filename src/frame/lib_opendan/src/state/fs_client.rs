@@ -9,7 +9,7 @@
 //!   state/goals/<goal_id>/               goal, state, activations, schedule
 //!   state/workspaces/<wid>.json          workspace registrations
 //!   state/runtimes/<runtime_id>.json     runtime registrations
-//!   memory/ notebook/ attention_signals/ cognition (agent_tool)
+//!   memory/ notebook/ cognition (agent_tool)
 //!   .locks/memory_consolidation.lease  .locks/artifact/<aid>.lease
 //! ```
 

@@ -332,7 +332,7 @@ T01–T07 合在一起等于 Memory S 阶段加 Goal 发现加 workflow 加 deci
 - [x] 按 §4 增加宿主工具、批次上下文上限、receipt、提交/候选发布/清理恢复；游标已删除，report 不再推进任何整理状态。
 - [x] 整理 lease 按业务能力绑定，补跨 epoch 排除、自身感知禁写及丢锁拒绝（`StaleLease` → receipt `failed` + `last_error`，不自动修锁）。
 - [x] 在默认 Goal 完整接通后删除对应 `create_self_improve_session/perception_window/旧 cursor` 写链、SelfImprove 模板及 Jarvis 两个旧 behavior；同步协议/CLI/WebUI 中的引用。保留有效测试场景并迁到 Goal，不以兼容分支维持双写。**本次删除的明确清单**：`SessionKind::SelfImprove` 与 `si-` 前缀、`api.rs::create_self_improve_session`、`drive.rs` 的 `self_improve` kind lease 分支（改为 §4.1 的能力判定）、`outcome.rs` 的 `perception_window` 与游标提交、`state/cognition.rs::commit_consolidation`、`state/perception.rs` 的 `.cursor.json/backlog/commit_cursor` 与 kRPC `perception.cursor/perception.backlog`、`[loader.self_improve]`（opendan `config.rs` 的 deny_unknown_fields 结构与 Jarvis `agent.toml` 同时删）、`tests/self_improve.rs`（幂等/防回声/锁场景迁入 `goal_session.rs` 或 `memory_sessions.rs`）、Jarvis `self_improve_signals.toml` / `self_improve_set_memory.toml`、WebUI `SessionKind` 中的 `self_improve`、`CONSOLIDATION_LEASE` 改名。
-- [ ] **本次不删**：`SessionKind::SelfCheck`、`self_check.toml`、`[loader.self_check]`、`_self_check_timer`、Notebook（`cognition.notebook_append`、`agent_notebook.rs`、`agent-notebook` CLI）、`agent_attention_signal.rs`。它们属于 Goal TODO §9.3 与 Memory TD-09/TD-20 的退役项，目前没有独立 TODO；本文新增代码不得依赖它们，退役时再另立 TODO。
+- [ ] **本次不删**：`SessionKind::SelfCheck`、`self_check.toml`、`[loader.self_check]`、`_self_check_timer`、Notebook（`cognition.notebook_append`、`agent_notebook.rs`、`agent-notebook` CLI）、~~`agent_attention_signal.rs`~~（2026-11-01 已按 `notepads/attention-signal-retirement-todo.md` 退役，TD-20）。它们属于 Goal TODO §9.3 与 Memory TD-09 的退役项，目前没有独立 TODO；本文新增代码不得依赖它们，退役时再另立 TODO。
 
 ### T04 — 默认播种与自适应检查
 
@@ -461,7 +461,7 @@ Mock/虚拟时钟用于确定性和崩溃测试；集成验收另外验证真实
 
 - 真实可运行（单元 / 集成测试 + §11.6 的宿主侧 DV）：默认 Goal 的播种、gate、Activation 内的 `begin/commit`、receipt 恢复、`ctl perceive` 写入、`agent-memory` 写门、schema 4.0 字段与淡出、WebUI Goals 页。
 - **未验证**：容器形态（`./build_aios --local-test` 后的 aios 镜像里的 opendan / WebUI）——本次 DV 用 `debug_jarvis.sh` 宿主进程验证，容器仍是改动前镜像；WebUI 经 zone 网关登录后的 `goals.set_status/reopen/restart` 权限；`goals.activate` 以外的真实 30 分钟定时 Activation 只观察到 gate 决策（见 §11.6 步骤 4），未等到一次由定时 fire 触发的真实整理。
-- 仍 blocked / 未做：P1（候选发现、确认、`questions` 候选关联的运行逻辑；类型已冻结）、P2（workflow 幂等合同与落地、`opendan.command`、decision 预检 `auto`、`resume_gate`）；T02 第二条（recall/observe 接线）另立 TODO；TD-16 `backfilled`；Memory TODO §8.5 的 Notebook / attention signal 退役。
+- 仍 blocked / 未做：P1（候选发现、确认、`questions` 候选关联的运行逻辑；类型已冻结）、P2（workflow 幂等合同与落地、`opendan.command`、decision 预检 `auto`、`resume_gate`）；T02 第二条（recall/observe 接线）另立 TODO；TD-16 `backfilled`；Memory TODO §8.5 的 Notebook 退役（attention signal 已于 2026-11-01 退役，见 `notepads/attention-signal-retirement-todo.md`）。
 ### 11.6 DV 记录（2026-10-23，`xiaobai.test.buckyos.io`，`./debug_jarvis.sh devtest --agent xiaobai.test.buckyos.io`，kRPC `http://127.0.0.1:10048/kapi/opendan`）
 
 证据：`notepads/evidence/jarvis-default-goal-session/2026-10-23/`（schedule.json、goal_state.json、activations.jsonl、memory_occasions.jsonl、perception_ui_after_cleanup.jsonl、agent_memory_load.txt、goal_session_tool_calls.txt、webui_home.png、webui_goal.png）。

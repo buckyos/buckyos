@@ -177,15 +177,15 @@ Beta2.2 应作为后续覆盖升级的第一份正式数据基线。凡升级后
 
 已有 [Agent Session 协议与 JSON Schema/fixtures](../opendan/protocol/README.md)，可作为最完整的基线材料之一。需冻结所有相关格式的组合版本，尤其是 Session、Input、RunRecord 与 LLM snapshot，不能只冻结 `state.json`。依据：[AgentLayout](../../src/frame/lib_opendan/src/state/fs_client.rs)、[session/runs.rs](../../src/frame/lib_opendan/src/session/runs.rs)。
 
-### F13 Agent Memory、Notebook 与 Attention Signal
+### F13 Agent Memory 与 Notebook
 
-**内容：** `memory/` 的 meta、occasions JSONL 及 archive、canonical 内容文件、状态与图；`notebook/notebook.sqlite`；attention signal 数据、检查点与 extraction windows。
+**内容：** `memory/` 的 meta、occasions JSONL 及 archive、canonical 内容文件、状态与图；`notebook/notebook.sqlite`。旧 attention signal 管线已于 2026-11-01 退役（Memory 需求 TD-20），`attention_signals/` 不再被读写、不纳入兼容范围。
 
 **文档必须包括：** 哪份是重放真相、是否包含完整正文、删除/tombstone 语义、条目/对象/关系/证据 ID、笔记与阅读水位、事件序号、抽取覆盖范围和人工修改。
 
-**兼容策略：** Memory 的派生 SQLite/索引可以在保留并验证完整重建来源后重建；Notebook 条目、关系、备注不能当成索引删除。Attention Signal 需逐表说明可否重建，避免在原始感知历史已被清理时声称可以重新抽取。
+**兼容策略：** Memory 的派生 SQLite/索引可以在保留并验证完整重建来源后重建；Notebook 条目、关系、备注不能当成索引删除。
 
-已有 [Agent Memory v2](<../opendan/Agent元能力/Agent Memory v2.md>)、[Agent Notebook](<../opendan/Agent元能力/Agent Notebook.md>)、[Attention Signal](<../opendan/Agent元能力/Agent Memory Attention Singal Mgr.md>)。实现：[agent_memory.rs](../../src/frame/agent_tool/src/agent_memory.rs)、[agent_notebook.rs](../../src/frame/agent_tool/src/agent_notebook.rs)、[agent_attention_signal.rs](../../src/frame/agent_tool/src/agent_attention_signal.rs)。
+已有 [Agent Memory v2](<../opendan/Agent元能力/Agent Memory v2.md>)、[Agent Notebook](<../opendan/Agent元能力/Agent Notebook.md>)。实现：[agent_memory](../../src/frame/agent_tool/src/agent_memory/mod.rs)、[agent_notebook.rs](../../src/frame/agent_tool/src/agent_notebook.rs)。
 
 ### F14 AI Workspace 与便携文档包
 
@@ -248,7 +248,7 @@ Beta2.2 应作为后续覆盖升级的第一份正式数据基线。凡升级后
 | Repo | RDB spec `1` | 发布事实与可重建索引的边界 |
 | AICC | runtime storage `2`；inventory row `1` | runtime 文档仍写 `1`，对齐；区分 RDB spec 与服务内部 schema |
 | OpenDAN | session config/state `/5`，input `/3`，LLM snapshot `4` | 结合 RunRecord、binding、summary 等形成完整版本矩阵与 fixture |
-| Agent Memory / Notebook / Attention | `3.0` / `0.4` / `0.1` | 定义读写兼容范围及日志/索引/正文重建边界 |
+| Agent Memory / Notebook | `4.0` / `0.4` | 定义读写兼容范围及日志/索引/正文重建边界 |
 | AI Workspace | `STORAGE_SCHEMA_VERSION = 2` | 当前精确版本检查之外的旧库/旧包读取或迁移路径 |
 | BuckyOSApp vault / CLI profile | `2` / `1` | 加密与派生算法、旧钱包和 profile 样本 |
 | system-config、kmsg、Named Store、FileDB | 上述存储入口未见统一的全库格式版本门禁 | 建立可靠格式识别；无版本库也必须能判定是 Beta2.2 还是未知/损坏数据 |
