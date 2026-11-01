@@ -1,17 +1,14 @@
 /* What a mind map draws around its nodes (脑图方案 §6.1, R4, R23: template children, not entities): the implicit
- * edges — one SVG under the nodes, a path per branch colour and width — and the pin of a free topic. (The fold
- * handles are screen-sized controls: the canvas overlay draws them.) While a node is dragged the edges follow the
- * proposed layout and a dashed line shows where it would hang. */
+ * edges — one SVG under the nodes, a path per branch colour and width. (The fold handles are screen-sized controls:
+ * the canvas overlay draws them; a free topic's corner mark is on its own frame, above it.) While a node is dragged
+ * the edges follow the proposed layout and a dashed line shows where it would hang. */
 
 import { useMemo } from 'react'
-import { Pin } from 'lucide-react'
 import { edgePath, edgeStrokes, edgeWidth } from '@controls/edges'
 import type { LaidNode } from '@controls/tree'
-import { useAiwsText } from '../../../useAiwsText'
 import type { ControlChromeProps } from '../registry'
 
 export function MindmapChrome({ container, laid, preview }: ControlChromeProps) {
-  const { t } = useAiwsText()
   const id = container.entity.entity_id
   const box = container.rect
   const config = container.control!.placed.solved.config
@@ -43,11 +40,6 @@ export function MindmapChrome({ container, laid, preview }: ControlChromeProps) 
         {strokes.map((s) => <path key={`${s.color}|${s.width}`} d={s.d} stroke={s.color} strokeWidth={s.width} fill="none" strokeLinecap="round" />)}
         {hang && <path className="aiws-control-hang" d={hang.d} strokeWidth={hang.width} fill="none" data-testid="aiws-mindmap-hang" />}
       </svg>
-      {[...nodes.values()].filter((n) => n.pinned).map((n) => (
-        <span key={`pin:${n.id}`} className="aiws-pin-mark" style={{ left: n.x + n.w - 7, top: n.y - 9 }} title={t('aiworkspace.mindmap.pinned')} data-testid={`aiws-pin-${n.id}`}>
-          <Pin size={10} aria-hidden="true" />
-        </span>
-      ))}
     </>
   )
 }

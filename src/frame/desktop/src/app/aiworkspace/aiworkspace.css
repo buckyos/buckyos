@@ -1218,8 +1218,9 @@
   color: var(--cp-muted); font-size: 10px; line-height: 15px; font-weight: 600; text-align: center; cursor: pointer; pointer-events: auto; }
 .aiws-overlay-html > .aiws-fold:hover { color: var(--cp-text); box-shadow: 0 0 0 2px var(--cp-focus-ring, color-mix(in srgb, var(--cp-accent) 30%, transparent)); }
 .aiws-overlay-html > .aiws-fold.is-folded { color: var(--cp-text); }
-.aiws-frame-block.is-control > .aiws-pin-mark { position: absolute; display: flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 8px;
-  background: var(--cp-accent); color: #fff; pointer-events: auto; z-index: 1; }
+.aiws-frame-block.is-node > .aiws-pin-mark { position: absolute; right: 0; top: 0; width: 12px; height: 12px; border-top-right-radius: 8px;
+  background: color-mix(in srgb, var(--cp-accent) 55%, var(--cp-surface-opaque)); clip-path: polygon(0 0, 100% 0, 100% 100%); z-index: 1; }
+.aiws-frame-block.is-node.is-editing > .aiws-pin-mark { display: none; }
 /* ---- composite controls (扩展控件 P1): the frame a definition's chrome describes, under the slots' Blocks */
 .aiws-frame-block.is-control > .aiws-composite-chrome { position: absolute; left: 0; top: 0; box-sizing: border-box; border: 1px solid var(--cp-border);
   background: color-mix(in srgb, var(--cp-surface-2) 70%, transparent); pointer-events: none; }

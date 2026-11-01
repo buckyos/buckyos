@@ -1516,7 +1516,7 @@ export function RenderHost(props: RenderHostProps) {
   const zoom = camera.settledZoom
   // lines depend on the zoom only through screen-sized details (1 px minimum width, markers): steps of 25 % re-render them
   const lineZoom = Math.pow(1.25, Math.round(Math.log(zoom) / Math.log(1.25)))
-  /** What a control draws under its Blocks (its edges, fold handles, pins). */
+  /** What a control draws under its Blocks (its edges). */
   const chromeOf = (l: Laid): ReactNode => {
     const Chrome = controlRegistry.get(l.control?.kind)?.Chrome
     if (!Chrome) return null
@@ -1564,6 +1564,8 @@ export function RenderHost(props: RenderHostProps) {
           <BlockHost cellId={id} mode={mode} view="canvas" selected={selection.has(id)} hovered={hover === id} editorActive={editing === id}
             onActivate={handlersFor(id).onActivate} onDeactivate={handlersFor(id).onDeactivate} size={sizeFor(id, l.rect.w, l.rect.h)} zoom={zoom} lod={lod} />
         )}
+        {/* a free topic (placed by hand) is marked in its corner, over the node */}
+        {l.node?.pinned && <span className="aiws-pin-mark" title={t('aiworkspace.mindmap.pinned')} data-testid={`aiws-pin-${id}`} />}
       </div>,
     )
   }
