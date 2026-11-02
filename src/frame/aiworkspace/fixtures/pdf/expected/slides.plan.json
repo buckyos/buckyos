@@ -75,7 +75,31 @@
       "pdf_source": {
        "page": 1,
        "kind": "text",
-       "role": "H1"
+       "role": "H1",
+       "text_layout": {
+        "text": "季度回顾 Quarterly Review",
+        "width": 1173.17,
+        "height": 118,
+        "fontSize": 88,
+        "align": "left",
+        "lineHeight": null,
+        "spans": [
+         {
+          "text": "季度回顾",
+          "x": 6,
+          "y": 92.44,
+          "width": 352,
+          "size": 88
+         },
+         {
+          "text": "Quarterly Review",
+          "x": 382.45,
+          "y": 92.44,
+          "width": 719,
+          "size": 88
+         }
+        ]
+       }
       }
      },
      "title": "季度回顾 Quarterly Review"
@@ -153,7 +177,31 @@
       "pdf_source": {
        "page": 1,
        "kind": "text",
-       "role": "LI"
+       "role": "LI",
+       "text_layout": {
+        "text": "收入增长 23%",
+        "width": 331.5,
+        "height": 68,
+        "fontSize": 48,
+        "align": "left",
+        "lineHeight": null,
+        "spans": [
+         {
+          "text": "收入增长",
+          "x": 6,
+          "y": 52.24,
+          "width": 192,
+          "size": 48
+         },
+         {
+          "text": "23%",
+          "x": 211.34,
+          "y": 52.24,
+          "width": 96.07,
+          "size": 48
+         }
+        ]
+       }
       }
      },
      "title": "收入增长 23%"
@@ -209,7 +257,24 @@
       "pdf_source": {
        "page": 1,
        "kind": "text",
-       "role": "LI"
+       "role": "LI",
+       "text_layout": {
+        "text": "New customers: 1,204",
+        "width": 518.19,
+        "height": 68,
+        "fontSize": 48,
+        "align": "left",
+        "lineHeight": null,
+        "spans": [
+         {
+          "text": "New customers: 1,204",
+          "x": 6,
+          "y": 50.63,
+          "width": 477.54,
+          "size": 48
+         }
+        ]
+       }
       }
      },
      "title": "New customers: 1,204"
@@ -265,7 +330,24 @@
       "pdf_source": {
        "page": 1,
        "kind": "text",
-       "role": "LI"
+       "role": "LI",
+       "text_layout": {
+        "text": "Churn down to 2.1%",
+        "width": 473.03,
+        "height": 68,
+        "fontSize": 48,
+        "align": "left",
+        "lineHeight": null,
+        "spans": [
+         {
+          "text": "Churn down to 2.1%",
+          "x": 6,
+          "y": 50.63,
+          "width": 434.93,
+          "size": 48
+         }
+        ]
+       }
       }
      },
      "title": "Churn down to 2.1%"
@@ -383,7 +465,24 @@
       "pdf_source": {
        "page": 1,
        "kind": "text",
-       "role": "P"
+       "role": "P",
+       "text_layout": {
+        "text": "Confidential — internal use",
+        "width": 368.36,
+        "height": 43,
+        "fontSize": 28,
+        "align": "left",
+        "lineHeight": null,
+        "spans": [
+         {
+          "text": "Confidential — internal use",
+          "x": 6,
+          "y": 31.2,
+          "width": 336.19,
+          "size": 28
+         }
+        ]
+       }
       }
      },
      "title": "Confidential — internal use"
@@ -487,7 +586,24 @@
       "pdf_source": {
        "page": 2,
        "kind": "text",
-       "role": "H1"
+       "role": "H1",
+       "text_layout": {
+        "text": "Roadmap",
+        "width": 437,
+        "height": 118,
+        "fontSize": 88,
+        "align": "left",
+        "lineHeight": null,
+        "spans": [
+         {
+          "text": "Roadmap",
+          "x": 6,
+          "y": 89.49,
+          "width": 400.94,
+          "size": 88
+         }
+        ]
+       }
       }
      },
      "title": "Roadmap"
@@ -571,7 +687,38 @@
       "pdf_source": {
        "page": 2,
        "kind": "text",
-       "role": "P"
+       "role": "P",
+       "text_layout": {
+        "text": "This paragraph wraps over several\nlines so that the importer has to group\nthe lines into one text object.",
+        "width": 723.77,
+        "height": 176,
+        "fontSize": 40,
+        "align": "left",
+        "lineHeight": 1.4,
+        "spans": [
+         {
+          "text": "This paragraph wraps over several",
+          "x": 6,
+          "y": 45.86,
+          "width": 615.84,
+          "size": 40
+         },
+         {
+          "text": "lines so that the importer has to group",
+          "x": 6,
+          "y": 101.86,
+          "width": 671.48,
+          "size": 40
+         },
+         {
+          "text": "the lines into one text object.",
+          "x": 6,
+          "y": 157.86,
+          "width": 506.99,
+          "size": 40
+         }
+        ]
+       }
       }
      },
      "title": "This paragraph wraps over several"

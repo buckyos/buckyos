@@ -12,6 +12,7 @@
  *   unreadable   U+FFFD, private-use and control characters: a page with too many is drawn whole (§4.1 第 6 条) */
 
 import type { PdfFont, PdfPage, PdfStructNode } from './data.ts'
+import type { PdfTextLayout } from './text-layout.ts'
 import { apply, mul, scaleOf, type Mat, type TextRun } from './interpret.ts'
 import type { Point, Rect } from '../import-drawio/geometry.ts'
 
@@ -58,6 +59,7 @@ export interface TextStyle { color: string; alpha: number; bold: boolean; italic
 interface Piece {
   str: string
   order: number
+  hasEOL: boolean
   origin: Point
   dir: Point
   /** World length along the baseline and the font size. */
@@ -86,6 +88,7 @@ export interface Paragraph {
   order: number
   runs: number[]
   mixed: boolean
+  layout: PdfTextLayout
 }
 
 export interface TextResult {
@@ -229,6 +232,13 @@ function makeParagraph(lines: TextLine[]): Paragraph {
   const style = majority(styles, styleKey) ?? first.style
   return {
     lines, text, rect: { x: centre.x - boxW / 2, y: centre.y - boxH / 2, w: boxW, h: boxH }, rotation: first.angle, fontSize: fs, lineHeight, align, style,
+    layout: {
+      text, width: boxW, height: boxH, fontSize: fs, align, lineHeight,
+      spans: lines.flatMap((l) => l.pieces).filter((p) => !isSpace(p.str) && p.len > 0).map((p) => ({
+        text: p.str, x: p.origin.x * d.x + p.origin.y * d.y - u0,
+        y: -d.y * p.origin.x + d.x * p.origin.y - first.baseline - v0, width: p.len, size: p.size,
+      })),
+    },
     role: first.block?.role ?? null, order: runs.length ? Math.min(...runs) : Infinity, runs,
     mixed: new Set(styles.map((s) => styleKey(s.value))).size > 1 || lines.some((l) => Math.abs(l.size - fs) > 0.15 * fs),
   }
@@ -295,14 +305,17 @@ export interface TextOptions { unit: 'paragraph' | 'line' }
 export function groupText(page: PdfPage, world: Mat, runs: TextRun[], struct: StructInfo, options: TextOptions): TextResult {
   const result: TextResult = { paragraphs: [], converted: new Set(), unreadable: 0, total: 0, invisible: 0, vertical: 0 }
   const s = scaleOf(world)
-  const raw: { item: PdfPage['text'][number]; origin: Point; dir: Point; len: number; size: number; angle: number; order: number }[] = []
+  const raw: { item: PdfPage['text'][number]; origin: Point; dir: Point; len: number; size: number; angle: number; order: number; hasEOL: boolean }[] = []
   for (const [order, item] of page.text.entries()) {
-    if (!item.str) continue
+    if (!item.str) {
+      if (item.hasEOL && raw.length) raw[raw.length - 1].hasEOL = true
+      continue
+    }
     const m = mul(world, item.transform)
     const len0 = Math.hypot(m[0], m[1])
     if (len0 === 0) continue
     const dir = { x: m[0] / len0, y: m[1] / len0 }
-    raw.push({ item, origin: apply(m, 0, 0), dir, len: item.width * s, size: Math.hypot(m[2], m[3]), angle: Math.round((Math.atan2(m[1], m[0]) * 180) / Math.PI * 100) / 100, order })
+    raw.push({ item, origin: apply(m, 0, 0), dir, len: item.width * s, size: Math.hypot(m[2], m[3]), angle: Math.round((Math.atan2(m[1], m[0]) * 180) / Math.PI * 100) / 100, order, hasEOL: item.hasEOL })
   }
   const paired = pairRuns(raw, runs.filter((r) => r.complex === null || r.complex === 'text_clip'))
   const pieces: Piece[] = []
@@ -320,7 +333,7 @@ export function groupText(page: PdfPage, world: Mat, runs: TextRun[], struct: St
     if (chars && bad === chars.length) continue
     const color = run?.fill?.kind === 'color' ? run.fill.color : '#000000'
     pieces.push({
-      str: r.item.str.replace(BAD, ''), order: r.order, origin: r.origin, dir: r.dir, len: r.len, size: r.size, angle: r.angle,
+      str: r.item.str.replace(BAD, ''), order: r.order, hasEOL: r.hasEOL, origin: r.origin, dir: r.dir, len: r.len, size: r.size, angle: r.angle,
       block: r.item.mc ? struct.blocks.get(r.item.mc) ?? null : null,
       style: { color: /^#[0-9a-f]{6}$/.test(color) ? color : '#000000', alpha: run?.alpha ?? 1, bold: font?.bold ?? false, italic: font?.italic ?? false, family: familyOf(font) },
       runs: covering.map((c) => c.index),
@@ -332,7 +345,7 @@ export function groupText(page: PdfPage, world: Mat, runs: TextRun[], struct: St
   let curEnd = 0
   const fits = (p: Piece, line: Piece[], end: number) => {
     const ref = line.find((q) => !isSpace(q.str)) ?? line[0]
-    if (p.block?.id !== ref.block?.id || Math.abs(p.angle - ref.angle) > 0.5) return false
+    if (p.block?.id !== ref.block?.id || Math.abs(p.angle - ref.angle) > 0.5 || line.some((q) => q.hasEOL && q.order < p.order)) return false
     const size = Math.max(ref.size, p.size)
     const perp = Math.abs(-ref.dir.y * (p.origin.x - ref.origin.x) + ref.dir.x * (p.origin.y - ref.origin.y))
     const smaller = p.size < 0.8 * ref.size || ref.size < 0.8 * p.size
@@ -354,9 +367,13 @@ export function groupText(page: PdfPage, world: Mat, runs: TextRun[], struct: St
   if (cur.length) lines.push(makeLine(cur))
   const merged: TextLine[] = []
   const byBaseline = [...lines].sort((a, b) => (a.block?.id ?? '').localeCompare(b.block?.id ?? '') || a.angle - b.angle || a.baseline - b.baseline || a.x0 - b.x0)
+  const explicitBreak = (a: Piece[], b: Piece[]) => {
+    const maxA = Math.max(...a.map((p) => p.order)), maxB = Math.max(...b.map((p) => p.order))
+    return a.some((p) => p.hasEOL && p.order < maxB) || b.some((p) => p.hasEOL && p.order < maxA)
+  }
   for (const line of byBaseline) {
     const last = merged.at(-1)
-    if (last && last.block?.id === line.block?.id && Math.abs(last.angle - line.angle) <= 0.5 && Math.abs(last.baseline - line.baseline) < 0.2 * Math.max(last.size, line.size)
+    if (last && !explicitBreak(last.pieces, line.pieces) && last.block?.id === line.block?.id && Math.abs(last.angle - line.angle) <= 0.5 && Math.abs(last.baseline - line.baseline) < 0.2 * Math.max(last.size, line.size)
       && line.x0 - last.x1 > -0.5 * line.size && line.x0 - last.x1 < 1.6 * Math.max(last.size, line.size)) {
       merged[merged.length - 1] = makeLine([...last.pieces, ...line.pieces])
     } else merged.push(line)

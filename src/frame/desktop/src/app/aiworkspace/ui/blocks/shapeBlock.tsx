@@ -15,6 +15,7 @@ import { AlignCenter, AlignLeft, AlignRight, AlignVerticalJustifyCenter, AlignVe
 import { cleanAnchors, type AnchorDef } from '@drawio/anchors'
 import { DEFAULT_FILL, DEFAULT_STROKE, FONT_FAMILIES, KIND_GROUPS, SHAPE_KINDS, dashArray, inkOn, labelBox, readLook, shapeAnchors, shapeOutline, shapePaths, type FontFamily, type ShapeKind, type ShapeLook } from '@drawio/shapes'
 import { sanitizeSvgBody } from '@drawio/svg'
+import { readPdfTextLayout } from '@pdf/text-layout'
 import type { CellPayload, Json, Operation } from '../../api/types'
 import { aiwsT, type AiwsText } from '../../i18n'
 import { useAiwsText } from '../../useAiwsText'
@@ -100,12 +101,22 @@ function labelStyle(look: ShapeLook, w: number, h: number): CSSProperties {
 function ShapeFrame({ context, children }: { context: RenderContext; children?: ReactNode }) {
   const look = readLook(context.payload.config, context.payload.title)
   const { w, h } = context.size
+  const pdfLayout = !children && look.kind === 'text' ? readPdfTextLayout(context.payload.config, look) : null
   return (
     <div className={`aiws-shape is-${look.kind}`} style={{ opacity: look.opacity < 1 ? look.opacity : undefined }} data-kind={look.kind} data-testid={`aiws-shape-${context.cell.entity_id}`}>
       <ShapeArt look={look} w={w} h={h} />
-      <div className="aiws-shape-label" style={labelStyle(look, w, h)}>
-        {children ?? (look.text && <span className="aiws-shape-text" style={look.labelFill ? { background: paintOf(look.labelFill, 'fill') } : undefined}>{look.text}</span>)}
-      </div>
+      {pdfLayout ? (
+        <svg className="aiws-shape-text aiws-pdf-text" viewBox={`0 0 ${pdfLayout.width} ${pdfLayout.height}`} preserveAspectRatio="none" width="100%" height="100%"
+          style={{ position: 'absolute', inset: 0, overflow: 'visible', whiteSpace: 'pre', pointerEvents: 'none', fill: inkFor(look), fontFamily: look.fontFamily ? FONT_STACK[look.fontFamily] : undefined, fontWeight: look.bold ? 700 : undefined, fontStyle: look.italic ? 'italic' : undefined, textDecoration: look.underline ? 'underline' : undefined }}>
+          {pdfLayout.spans.map((span, i) => (
+            <text key={i} x={span.x} y={span.y} fontSize={span.size} textLength={span.width} lengthAdjust="spacingAndGlyphs" xmlSpace="preserve">{span.text}</text>
+          ))}
+        </svg>
+      ) : (
+        <div className="aiws-shape-label" style={labelStyle(look, w, h)}>
+          {children ?? (look.text && <span className="aiws-shape-text" style={look.labelFill ? { background: paintOf(look.labelFill, 'fill') } : undefined}>{look.text}</span>)}
+        </div>
+      )}
     </div>
   )
 }
@@ -125,6 +136,12 @@ function saveText(context: RenderContext, store: WorkspaceStore, next: string) {
   if (next === before) return
   if (next) config.text = next
   else delete config.text
+  const source = config.pdf_source
+  if (source && typeof source === 'object' && !Array.isArray(source)) {
+    const updated = { ...source }
+    delete updated.text_layout
+    config.pdf_source = updated
+  }
   const id = context.cell.entity_id
   const keys: { key: string; value: Json; expect: { rev: number } }[] = [{ key: 'config', value: config, expect: { rev: context.keyRevs.config ?? 0 } }]
   const operations: Operation[] = []
