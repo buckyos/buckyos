@@ -1,0 +1,93 @@
+{
+  "hidden": [],
+  "pages": [
+    {
+      "name": "CYAN TEXT",
+      "pageColor": "#000000",
+      "pageSize": {
+        "w": 1920,
+        "h": 1080
+      },
+      "counts": {
+        "text": 1,
+        "images": 0,
+        "shapes": 0,
+        "rasterized": 0,
+        "placeholders": 0
+      },
+      "items": [
+        {
+          "key": "s1",
+          "parent": null,
+          "type": "group",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1080
+          },
+          "rotation": 0,
+          "config": {}
+        },
+        {
+          "key": "s1~frame",
+          "parent": "s1",
+          "type": "frame",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1080
+          },
+          "rotation": 0,
+          "title": "CYAN TEXT",
+          "config": {
+            "color": "#9ca3af",
+            "fill": "#000000",
+            "stroke_width": 1,
+            "radius": 0,
+            "office_source": {
+              "file": "placeholder-layout-color.pptx",
+              "slide": 1
+            }
+          },
+          "payload": {
+            "presentation": {
+              "background": "#000000"
+            }
+          }
+        },
+        {
+          "key": "s1~0",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 530.89,
+            "y": 170.9,
+            "w": 852.38,
+            "h": 206.27
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "none",
+            "stroke": "none",
+            "stroke_width": 0,
+            "text": "CYAN TEXT",
+            "font_size": 93.33,
+            "font_color": "#00ffff",
+            "align": "center",
+            "valign": "middle",
+            "line_height": 1.2,
+            "office_source": {
+              "slide": 1,
+              "kind": "text"
+            },
+            "shape": "text"
+          },
+          "title": "CYAN TEXT"
+        }
+      ]
+    }
+  ],
+  "report": []
+}

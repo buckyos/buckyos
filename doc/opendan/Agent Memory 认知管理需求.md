@@ -1429,7 +1429,7 @@ Memory 一侧的边界场景见 [组件模拟 TODO §3.11](../../notepads/agent-
 | 感知层 | 未整理材料（§4） | 任何授权 Session（M-32）：Runtime 自动写运行摘要，模型经 `agent-session ctl perceive` 写观察 | lib_opendan `state/perception.rs`，按 Session 分文件 `<agent_root>/state/perception/<sid>.jsonl`；A.5 字段、幂等键、文件级短锁与清理已实现；库级写入口 `Memory::record_perception`（`ctl perceive` 经它写入，2026-10-23） |
 | 认知层（Memory Graph） | 整理后的认知：对象、别名、证据观察、认知条目、关系，以及 occasion 提交日志 | 只有 Memory 整理 Goal（M-32）：组件门面只给持整理 lease 的 `Consolidator` 提交；`agent-memory` CLI 的写命令在 Session shell 内拒绝（TD-02，2026-10-23） | agent_tool `agent_memory/` 与 `agent-memory` CLI，根目录 `<agent_root>/memory`，schema 4.0（`stability` / `last_evidence_at` / `review_at`，`created_at` 为 `first_occasion` 投影；旧主版本拒绝打开，不迁移） |
 | 召回 | 从两层取线索，按预算装配进上下文（§6） | — | 组件：`Memory::query_topic` / `query` / `read_*` / `changes_since`（两层、可见性、范围、纠正兜底、分池预算）；runner 仍经 `FsCognition::recall_hints` 只传 tag，以 `<hints>` 注入（S 阶段改接） |
-| 运行元数据 | 锁、整理游标与处置状态；topic、观察进度与已读认知归 Session（A.9） | 组件自身；观察状态由 Session 保存 | 处置写在提交日志里，待处理集合由处置计算；`ObservationState` 由 Session 持久化（组件阶段为模拟 Session 的目录）；runner 的字节游标与 attention signal 管线仍在，S 阶段退役（TD-03、TD-20） |
+| 运行元数据 | 锁、整理游标与处置状态；topic、观察进度与已读认知归 Session（A.9） | 组件自身；观察状态由 Session 保存 | 处置写在提交日志里，待处理集合由处置计算；`ObservationState` 由 Session 持久化（组件阶段为模拟 Session 的目录）；runner 的字节游标（2026-10-23）与 attention signal 管线（2026-11-01）均已退役（TD-19、TD-20） |
 
 v2.10 的术语与本文对照：
 
@@ -2001,6 +2001,7 @@ Session 侧的库函数（组件提供实现，状态由 Session 保存）：
 - 现状：`agent_tool/src/agent_attention_signal.rs`（SQLite，Stage1 扫描与 `ListPendingAttentionSignals` 等 CLI）与 `lo` 的感知流并行；`self_improve_signals.toml`、`self_improve_set_memory.toml` 走前者。
 - 改为：以 `lo` 的感知流为唯一入口；attention signal 中仍有价值的部分（事后回扫、合法性校验、泛指类型词过滤）按 M-11、§4.5 并入；退役旧管线与两份 behavior。
 - 进度（2026-10-10，组件阶段）：组件完成：新路径只用感知流。S 待办：迁移并退役 attention signal SQLite/CLI 与 `self_improve_signals`、`self_improve_set_memory` behavior；事后回扫是否采用仍待决。
+- 进度（2026-11-01，退役）：两份 self_improve behavior 已随 TD-19（2026-10-23）删除；`agent_attention_signal.rs`（SQLite、Stage1 扫描、`Discover*` 工具）与 `agent_tool_cli_dev` 的 8 个 CLI（`BeginAttentionSignalExtraction`、`CompleteAttentionSignalExtraction`、`Discover{Event,ObjectObservation,Relationship,SkillCoverageGap}`、`ListPendingAttentionSignals`、`MarkAttentionSignalConsumed`）已删除，感知流是唯一入口。“仍有价值的部分”不搬代码：泛指类型词过滤已是 §4.5 的提示词规则；合法性校验针对旧 signal 结构，新感知流有自己的来源校验，不并入；事后回扫仍是 M-11 待决。旧数据 `<agent_root>/attention_signals/` 不迁移、不自动删除，没有新路径读它（见 `notepads/attention-signal-retirement-todo.md`）。
 
 ### P2：性能与健壮性
 

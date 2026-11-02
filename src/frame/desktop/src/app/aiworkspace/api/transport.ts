@@ -95,6 +95,10 @@ export interface Transport {
   ownBucket(name: string): Promise<string | null>
   /** A file the service left in a bucket (an export, a replica), read with its token. */
   fetchDownload(download: BucketDownload): Promise<Blob>
+  /** What the session channel's `hello` carries (第四期规划 Q04): the session token, or this browser's guest token. */
+  channelToken(): Promise<string>
+  /** The service's base path on this origin (`/kapi/aiworkspace`): the session channel and stream routes are below it. */
+  basePath(): string
 }
 
 function userBucket(principal: string | null, name: string): string | null {
@@ -193,6 +197,9 @@ class DevOverrideTransport implements Transport {
   fetchDownload(download: BucketDownload): Promise<Blob> {
     return fetchBlob(`${bucket.bucketObjectPath(download.bucket_id, download.key)}?token=${encodeURIComponent(download.token)}`)
   }
+
+  async channelToken(): Promise<string> { return this.token }
+  basePath(): string { return this.base }
 }
 
 class ZoneTransport implements Transport {
@@ -281,6 +288,50 @@ class ZoneTransport implements Transport {
   fetchDownload(download: BucketDownload): Promise<Blob> {
     return fetchBlob(bucketObjectUrl({ bucketId: download.bucket_id, key: download.key }, { token: download.token }))
   }
+
+  channelToken(): Promise<string> { return this.bearer() }
+  basePath(): string { return new URL(this.base(), window.location.origin).pathname.replace(/\/+$/, '') }
+}
+
+/** A session's display or prompter link (第四期规划 Q14): the link token is the credential — no account, no guest
+ * identity; the service reads the run Workspace for it under the link's own subject. */
+export class LinkTransport implements Transport {
+  readonly mode = 'zone' as const
+  readonly principalHint: string | null = null
+  private seq = 1
+  private readonly base: string
+  private readonly token: string
+
+  constructor(token: string) {
+    this.token = token
+    this.base = (readDevOverride()?.baseUrl ?? `/kapi/${SERVICE_NAME}`).replace(/\/+$/, '')
+  }
+
+  get target(): string { return `${window.location.host}${this.base}` }
+  async principal(): Promise<string | null> { return null }
+  async isGuest(): Promise<boolean> { return true }
+  async restricted(): Promise<boolean> { return true }
+  learnPrincipal() { /* a link has no identity to learn */ }
+  async importOptions() { return { endpoint: new URL(this.base, window.location.origin).origin, sessionToken: this.token } }
+  call<T>(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
+    return guestCall<T>(this.base, method, params, this.token, this.seq++, signal)
+  }
+  async download(path: string): Promise<Blob> {
+    let response: Response
+    try {
+      response = await fetch(`${this.base}/${path}`, { headers: { Authorization: `Bearer ${this.token}` } })
+    } catch (error) {
+      throw new TransportError('network', error instanceof Error ? error.message : String(error))
+    }
+    if (!response.ok) throw await httpError(response)
+    return response.blob()
+  }
+  async ownBucket(): Promise<string | null> { return null }
+  fetchDownload(download: BucketDownload): Promise<Blob> {
+    return fetchBlob(bucketObjectUrl({ bucketId: download.bucket_id, key: download.key }, { token: download.token }))
+  }
+  async channelToken(): Promise<string> { return this.token }
+  basePath(): string { return this.base }
 }
 
 /** Plain kRPC with a guest token in the envelope (no SDK session). */

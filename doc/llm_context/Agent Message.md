@@ -476,7 +476,7 @@ pub enum SessionKind { Ui, Work, SelfCheck, SelfImprove }
 1. **群聊回复发错对象**：`post_outbound_message` 把回复发给 `meta.peer_did`，也就是最后一个发言者的影子 DID，并且 `kind = Chat`。这违反了 §6.1 “回复群写群 DID”的规则，群里的回复可能被当作私聊发给最后发言的人。
 2. **群内命令找不到群 session**：命令按 `tunnel_to_ui_session[from]` 查找 session，而群 class（`per_group`）从不写入这张绑定表。所以群里发 `/stop`、`/info` 等命令，只会作用于发送者自己绑定的私聊 session，或者直接报“未绑定”。
 3. **`from_user_did` 语义偏差**：在群聊里，它取的是批次中最后一条消息的发送者，不一定是实际触发请求的人。
-4. **`from_user_did` 可能导致工具调用失败**：`agent_tool` 里有若干参数结构带 `#[serde(deny_unknown_fields)]`，包括 `GrepArgs`、`GlobArgs`、`GetSessionArgs`、`BindExternalWorkspaceArgs`、`ListExternalWorkspacesArgs` 和 `agent_attention_signal` 的 Discover* 系列。当 session 有 `peer_did` 且这些工具以 function tool 方式调用时，注入的字段可能导致 `InvalidArgs`。
+4. **`from_user_did` 可能导致工具调用失败**：`agent_tool` 里有若干参数结构带 `#[serde(deny_unknown_fields)]`，包括 `GrepArgs`、`GlobArgs`、`GetSessionArgs`、`BindExternalWorkspaceArgs`、`ListExternalWorkspacesArgs`。当 session 有 `peer_did` 且这些工具以 function tool 方式调用时，注入的字段可能导致 `InvalidArgs`。
 5. **`inject_background_environment` 不生效**（§2.4）。
 6. **群聊 session 没有环境注入**：`groupchat_route` 没有配置 `on_wakeup`（§2.4）。
 7. **群聊 session 用的是 `[session.ui].driver`**，而不是 `[session.group].driver`（§5.1）。

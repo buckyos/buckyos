@@ -15,7 +15,7 @@ path = "src/main.rs"
 aiworkspace-core = { path = "../core" }
 aiworkspace-store = { path = "../store" }
 tokio = { workspace = true }
-axum = { workspace = true }
+axum = { workspace = true, features = ["ws"] }
 futures-util = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
@@ -39,9 +39,12 @@ reqwest = { workspace = true }
 percent-encoding = { workspace = true }
 url = { workspace = true }
 base64 = { workspace = true }
+# the audio SFU of presentation sessions (第四期规划 §7.3.1; confirmed 2026-10-30)
+str0m = { version = "0.24", default-features = false, features = ["aws-lc-rs"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio-tungstenite = { workspace = true }
 loro = "1.16"
 nfs_server = { path = "../../nfs_server" }
 zip = { workspace = true }

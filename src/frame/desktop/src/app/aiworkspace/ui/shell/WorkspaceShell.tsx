@@ -5,6 +5,7 @@
  * same main toolbar as a bar above it. */
 
 import { ExtensionsDialog } from '../extensions/ExtensionsDialog'
+import { SaveTemplateDialog } from '../extensions/SaveTemplateDialog'
 import { isCanvasContainer } from '../controls/registry'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CapturedAnchor } from '../../anchors/registry'
@@ -31,6 +32,7 @@ import { LAYOUT_KEYS, PREF_KEYS, ShellContext, SOURCES_SIDE_TABS, usePhone, type
 import { SidePanel } from './SidePanel'
 import { StatusDetail, StatusDock } from './StatusSummary'
 import { TableImportHost } from '../import/TableImportDialog'
+import { OfficeImportHost } from '../import/ImportOfficeDialog'
 
 export type { TopMode } from './shellContext'
 
@@ -315,7 +317,7 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
               ) : <CanvasView focus={focus} />}
             </div>
             {startRequest && !showSession && (
-              <StartShowDialog initialPathId={startRequest.pathId} initialStepId={startRequest.stepId} onClose={() => setStartRequest(null)}
+              <StartShowDialog initialPathId={startRequest.pathId} initialStepId={startRequest.stepId} onClose={() => setStartRequest(null)} transport={client.transport}
                 onStart={async (pathId, stepId) => {
                   const session = await openShow(client, store, pathId, stepId)
                   setGuideState(null)
@@ -330,8 +332,10 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
             {dialog?.kind === 'help' && <HelpDialog onClose={() => setDialog(null)} />}
             {dialog?.kind === 'mock' && <MockDialog onClose={() => setDialog(null)} />}
             {dialog?.kind === 'extensions' && <ExtensionsDialog initialDefId={dialog.defId} phone={phone} onClose={() => setDialog(null)} />}
+            {dialog?.kind === 'save-template' && <SaveTemplateDialog initialSurfaceId={activeSurface?.entity_id ?? null} onClose={() => setDialog(null)} />}
             {dialog?.kind === 'delete-surface' && <SurfaceDeleteDialog key={dialog.surface.entity_id} surface={dialog.surface} onClose={() => setDialog(null)} onDeleted={(next) => { if (next) selectSurface(next) }} />}
             <TableImportHost />
+            <OfficeImportHost />
           </WorkspaceUiContext.Provider>
         )}
       </ShellContext.Provider>

@@ -14,6 +14,10 @@
  *                  roots of a new mind map (Blocks never live loose with children); a whole control is placed by its
  *                  origin. A Block pasted under a node becomes a node, laid out by the control (a non-text one keeps its
  *                  size). Lines stay on the canvas.
+ *   composites     (扩展控件 P1) a copied instance is pasted with `tree.clone` while its source exists in this Workspace
+ *                  (the core copies the subtree and the own data, the definition stays shared); its Blocks pasted onto
+ *                  the canvas are ordinary Blocks (no mind map around them); a Block pasted into a composite takes the
+ *                  slot of the Block it follows, else the first slot that accepts it (none: refused).
  *
  * The clipboard is per window and in memory; it never touches the system clipboard, annotations, run
  * history or data snapshots. */
@@ -28,6 +32,7 @@ import { Emitter } from '../../state/emitter'
 import { boxOf } from './connectors/geometry'
 import { isConnector } from './connectors/layout'
 import type { Point } from './geometry'
+import { isComposite, slotForDrop } from '../controls/composite/model'
 import { isCanvasContainer } from '../controls/registry'
 import { boundsOf, topLevel, type Laid } from './layout'
 import type { Rect } from './render/camera'
@@ -35,6 +40,8 @@ import type { Rect } from './render/camera'
 /** `ends`: a line's two ends (world) when it was copied. `node`: it was laid out by a control (its placement keeps the
  * stored "auto" components; `controlConfig`: that control's config, for a new map around it). `kind`: a container's. */
 interface ClipItem { id: string; isGroup: boolean; kind?: string; placement: StoredPlacement; payload: Record<string, Json>; children: ClipItem[]; ends?: [Point, Point]; node?: boolean; controlConfig?: Record<string, Json>
+  /** The kind of the control laying it out (a tree control wraps pasted nodes in a new map; a composite does not). */
+  controlKind?: string
   /** A top-level item's placement as stored (its "auto" size components). */
   stored?: StoredPlacement }
 
@@ -86,7 +93,7 @@ async function snapshotItem(store: WorkspaceStore, laid: Map<string, Laid>, id: 
   const geom = l?.connector?.geom
   const control = l?.node ? store.outline.get(l.node.control) : undefined
   return { id, isGroup, ...(isGroup ? { kind: entity.kind } : {}), placement, payload, children, ...(geom ? { ends: [geom.start.point, geom.end.point] as [Point, Point] } : {}),
-    ...(l?.node ? { node: true, controlConfig: (control?.config ?? {}) as Record<string, Json> } : {}) }
+    ...(l?.node ? { node: true, controlKind: control?.kind ?? undefined, controlConfig: (control?.config ?? {}) as Record<string, Json> } : {}) }
 }
 
 const hasLines = (items: ClipItem[]): boolean => items.some((item) => item.ends !== undefined || hasLines(item.children))
@@ -120,7 +127,7 @@ export async function makeClip(store: WorkspaceStore, surfaceId: string, laid: M
       const lines = l && (isConnector(l.entity) || store.outline.descendants(id).some((d) => isConnector(d)))
       const control = l?.node ? store.outline.get(l.node.control) : undefined
       if (l) items.push({ id, isGroup: l.isGroup, ...(l.isGroup ? { kind: l.entity.kind } : {}), placement: worldPlacement(l), payload: {}, children: [], ...(lines ? { ends: [{ x: 0, y: 0 }, { x: 0, y: 0 }] as [Point, Point] } : {}),
-        ...(l.node ? { node: true, controlConfig: (control?.config ?? {}) as Record<string, Json> } : {}) })
+        ...(l.node ? { node: true, controlKind: control?.kind ?? undefined, controlConfig: (control?.config ?? {}) as Record<string, Json> } : {}) })
     }
   }
   return { workspaceId: store.session.workspaceId, surfaceId, kind, ids, items, bounds, pastes: 0 }
@@ -185,12 +192,25 @@ export function pasteOperations(store: WorkspaceStore, clip: Clip, target: Paste
     const high = siblings[at + 1]?.order_key ?? undefined
     for (let i = 0; i < clip.items.length; i++) { low = store.core.order_key_between(low, high); intoKeys.push(low) }
   }
-  // nodes pasted onto the canvas become the roots of a new mind map (a Block holding Blocks lives only in a control)
-  const wrap = !into && clip.items.some((item) => item.node)
+  // a Block pasted into a composite fills a slot: the one of the Block it follows, else the first that takes it
+  const slots: (string | null)[] = []
+  if (into && isComposite(store.outline.get(into.parentId))) {
+    const moving = new Set(clip.kind === 'cut' ? clip.items.map((item) => item.id) : [])
+    for (const item of clip.items) {
+      const view = (item.payload.view as { type?: string } | undefined)?.type ?? store.outline.get(item.id)?.view_type ?? null
+      const block = { type_id: item.isGroup ? 'buckyos.container' : 'buckyos.cell', view_type: view, def_id: (item.payload.def_ref as { entity_id?: string } | undefined)?.entity_id ?? store.outline.get(item.id)?.def_id ?? null }
+      const slot = slotForDrop(store, into.parentId, block, into.after ?? null, moving)
+      if (!slot) return { operations: [], newIds: [], label: '', refused: aiwsT('aiworkspace.ext.composite.slotRefuses') }
+      slots.push(slot)
+    }
+  }
+  // nodes of a tree control pasted onto the canvas become the roots of a new mind map (a Block holding Blocks lives
+  // only in such a control); a composite's Blocks are ordinary Blocks on their own
+  const wrap = !into && clip.items.some((item) => item.node && item.controlKind === 'mindmap')
   const mapId = wrap ? randomId('m') : null
   let mapKey: string | undefined
   if (wrap && mapId) {
-    const first = clip.items.find((item) => item.node)!
+    const first = clip.items.find((item) => item.node && item.controlKind === 'mindmap')!
     const origin = shifted(first.placement)
     operations.push({ op: 'entity.create', entity_id: mapId, type_id: 'buckyos.container', parent_id: target.surfaceId, order_key: nextKey(),
       ...(target.isFree ? { placement: { x: origin.x, y: origin.y, w: 'auto', h: 'auto' } } : {}),
@@ -199,7 +219,7 @@ export function pasteOperations(store: WorkspaceStore, clip: Clip, target: Paste
   /** Where a top-level item goes: under the node pasted into, into the new map, or onto the canvas. */
   const destination = (item: ClipItem, index: number, stored: StoredPlacement | undefined): { parent: string; key: string; placement: StoredPlacement | null } => {
     if (into) return { parent: into.parentId, key: intoKeys[index], placement: inControl(item, stored) }
-    if (mapId && item.node) { mapKey = store.core.order_key_between(mapKey, undefined); return { parent: mapId, key: mapKey, placement: inControl(item, stored) } }
+    if (mapId && item.node && item.controlKind === 'mindmap') { mapKey = store.core.order_key_between(mapKey, undefined); return { parent: mapId, key: mapKey, placement: inControl(item, stored) } }
     return { parent: target.surfaceId, key: nextKey(), placement: target.isFree ? shifted(item.placement) : null }
   }
   if (clip.kind === 'cut') {
@@ -209,9 +229,11 @@ export function pasteOperations(store: WorkspaceStore, clip: Clip, target: Paste
       const d = destination(item, index, entity.placement)
       const sameParent = entity.parent_id === d.parent
       if (target.isFree && d.placement) store.noteLayoutIntent(item.id, d.placement, sameParent ? undefined : d.key, sameParent ? undefined : d.parent)
-      operations.push(sameParent && !into
+      // into a composite a Block takes its slot; out of one into anything else it drops it
+      const slot = slots.length > 0 ? slots[index] : entity.slot && isComposite(store.outline.get(entity.parent_id ?? '')) && !into ? null : undefined
+      operations.push(sameParent && !into && slot === undefined
         ? { op: 'tree.place', entity_id: item.id, ...(d.placement ? { placement: d.placement } : {}) }
-        : { op: 'tree.move', entity_id: item.id, new_parent_id: d.parent, order_key: d.key, ...(d.placement ? { placement: d.placement } : {}) })
+        : { op: 'tree.move', entity_id: item.id, new_parent_id: d.parent, order_key: d.key, ...(d.placement ? { placement: d.placement } : {}), ...(slot !== undefined ? { slot } : {}) })
       newIds.push(item.id)
     })
     return { operations, newIds, label: aiwsT('aiworkspace.canvas.clipboard.moveLabel', { count: newIds.length }) }
@@ -275,9 +297,22 @@ export function pasteOperations(store: WorkspaceStore, clip: Clip, target: Paste
     }
     return id
   }
+  const seed = randomId('s')
   clip.items.forEach((item, index) => {
     const d = destination(item, index, item.stored)
-    newIds.push(create(item, d.parent, d.key, d.placement, { x: 0, y: 0 }, true))
+    // a composite instance whose source is still here: the core copies it (Q17), sharing its definition
+    const source = store.outline.get(item.id)
+    if (item.isGroup && item.kind === 'composite' && clip.workspaceId === store.session.workspaceId && source && !source.deleted) {
+      operations.push({ op: 'tree.clone', source_id: item.id, parent_id: d.parent, order_key: d.key, id_seed: seed, ...(d.placement ? { placement: d.placement } : {}), ...(slots.length > 0 ? { slot: slots[index] } : {}) })
+      newIds.push(store.core.clone_id(seed, item.id))
+      return
+    }
+    const id = create(item, d.parent, d.key, d.placement, { x: 0, y: 0 }, true)
+    if (slots.length > 0) {
+      const op = operations.find((o) => o.op === 'entity.create' && o.entity_id === id)
+      if (op) op.payload = { ...(op.payload as Record<string, Json>), slot: slots[index] }
+    }
+    newIds.push(id)
   })
   // lines after every object they may be bound to (§7: a binding needs its target to exist)
   operations.push(...lines)

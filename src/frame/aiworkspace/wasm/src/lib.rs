@@ -61,6 +61,12 @@ pub fn order_key_between(a: Option<String>, b: Option<String>) -> Result<String,
     aiworkspace_core::order_key::order_key_between(a.as_deref(), b.as_deref()).map_err(fail)
 }
 
+/// The id a `tree.clone` seeded with `seed` gives the copy of `old` (the same on the service and in a replica).
+#[wasm_bindgen]
+pub fn clone_id(seed: &str, old: &str) -> String {
+    aiworkspace_core::plan::clone_id(seed, old)
+}
+
 /// Normalize a value for a field definition (same rules as a write).
 #[wasm_bindgen]
 pub fn normalize_value(field_def_json: &str, value_json: &str) -> Result<String, JsError> {

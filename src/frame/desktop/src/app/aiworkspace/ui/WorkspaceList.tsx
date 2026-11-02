@@ -1,5 +1,5 @@
 /* Workspace list: new (blank or from a template, through the same "New" dialog as inside a workspace),
- * open, import (explicit semantics), export, fork, delete. */
+ * open, import (explicit semantics), export, fork, delete; below the cards, my public classes. */
 
 import { useCallback, useState } from 'react'
 import { Plus, RefreshCw } from 'lucide-react'
@@ -9,6 +9,7 @@ import type { WorkspaceSummary } from '../api/types'
 import { preparedIndex } from '../offline/holder'
 import { useLoad } from '../state/hooks'
 import { useAiwsText } from '../useAiwsText'
+import { MySessions } from '../session/MySessions'
 import { ExportForm, ImportForm, NewDialog, type NewTab } from './shell/dialogs'
 
 /** `restricted`: a Limited account or an External DID — it lists what was shared with it and creates, imports or
@@ -26,6 +27,8 @@ export function WorkspaceList({ client, onOpen, opening, restricted = false }: P
   const [busy, setBusy] = useState<CardAction | null>(null)
   const [message, setMessage] = useState<{ kind: 'info' | 'error'; text: string } | null>(null)
   const [creating, setCreating] = useState<NewTab | null>(null)
+  /** Bumped by the refresh button: my public classes reload with the list. */
+  const [refreshed, setRefreshed] = useState(0)
 
   const act = async (action: CardAction, work: () => Promise<string | void>) => {
     setBusy(action)
@@ -49,7 +52,7 @@ export function WorkspaceList({ client, onOpen, opening, restricted = false }: P
         <span className="aiws-grow" />
         {!restricted && <button type="button" className="is-primary" data-testid="aiws-new" onClick={() => setCreating('workspace')}><Plus size={16} /> {t('aiworkspace.core.list.new')}</button>}
         {!restricted && <button type="button" data-testid="aiws-new-template" onClick={() => setCreating('template')}>{t('aiworkspace.core.list.newFromTemplate')}</button>}
-        <button type="button" aria-label={t('aiworkspace.common.refresh')} title={t('aiworkspace.common.refresh')} onClick={list.reload}><RefreshCw size={16} /></button>
+        <button type="button" aria-label={t('aiworkspace.common.refresh')} title={t('aiworkspace.common.refresh')} onClick={() => { list.reload(); setRefreshed((n) => n + 1) }}><RefreshCw size={16} /></button>
       </header>
       {message && <div className={message.kind === 'error' ? 'aiws-error' : 'aiws-warning'} role={message.kind === 'error' ? 'alert' : 'status'} data-testid="aiws-list-message">{message.text}</div>}
       {list.error && <div className="aiws-error" role="alert" data-testid="aiws-list-error">{t('aiworkspace.core.list.loadFailed', { error: list.error })}</div>}
@@ -61,6 +64,7 @@ export function WorkspaceList({ client, onOpen, opening, restricted = false }: P
           <WorkspaceCard key={workspace.workspace_id} client={client} workspace={workspace} busy={busy !== null} opening={opening === workspace.workspace_id} onOpen={() => onOpen(workspace.workspace_id)} act={act} restricted={restricted} />
         ))}
       </div>
+      {list.data && <MySessions transport={client.transport} version={refreshed} />}
       {!restricted && <ImportForm client={client} onDone={(text) => { setMessage({ kind: 'info', text }); list.reload() }} />}
       {creating && <NewDialog client={client} store={null} initialTab={creating} onClose={() => setCreating(null)} onOpenWorkspace={onOpen} />}
     </div>

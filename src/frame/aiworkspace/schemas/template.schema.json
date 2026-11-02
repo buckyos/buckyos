@@ -1,0 +1,122 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "template.schema.json",
+ "title": "An entry of aiws-manifest.json workspace_templates (扩展控件 P3, Q32)",
+ "description": "A Workspace template is a snapshot: templates/<id>/snapshot.json { format: \"aiws-template/1\", content_root, entities } plus its content closure as templates/<id>/objects/<object id> (canonical JSON NamedObjects) and templates/<id>/chunks/<chunk id> (bytes). `digest` covers every file under templates/<id>/ like a control's digest. Creating a Workspace from it (ext.create_from_template) loads the snapshot as a new Workspace, then replaces {{params.<k>}} and clears the rows of reset.tables in one internal Commit. Installing never creates a Workspace.",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "id",
+  "title",
+  "snapshot",
+  "digest",
+  "requires"
+ ],
+ "properties": {
+  "id": {
+   "type": "string",
+   "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+  },
+  "title": {
+   "type": "string",
+   "minLength": 1,
+   "maxLength": 256
+  },
+  "description": {
+   "type": "string",
+   "maxLength": 4000
+  },
+  "snapshot": {
+   "type": "string",
+   "pattern": "^templates/[a-z0-9][a-z0-9-]{0,63}/snapshot\\.json$"
+  },
+  "digest": {
+   "type": "string",
+   "pattern": "^sha256:[0-9a-f]{64}$"
+  },
+  "requires": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "controls"
+   ],
+   "properties": {
+    "host_api": {
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "html": {
+       "type": "integer",
+       "minimum": 1
+      },
+      "declarative": {
+       "type": "integer",
+       "minimum": 1
+      }
+     }
+    },
+    "controls": {
+     "type": "array",
+     "maxItems": 256,
+     "uniqueItems": true,
+     "items": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^did:[a-z0-9]+:[^/#\\s]+#[a-z0-9][a-z0-9._-]{0,63}$"
+     },
+     "description": "controls of the same manifest the snapshot's definitions are"
+    }
+   }
+  },
+  "params": {
+   "type": "object",
+   "maxProperties": 32,
+   "propertyNames": {
+    "pattern": "^[a-z][a-z0-9_]{0,31}$"
+   },
+   "additionalProperties": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "type"
+    ],
+    "properties": {
+     "type": {
+      "enum": [
+       "string",
+       "number",
+       "boolean"
+      ]
+     },
+     "title": {
+      "type": "string",
+      "maxLength": 256
+     },
+     "default": {
+      "type": [
+       "string",
+       "number",
+       "boolean"
+      ]
+     }
+    }
+   }
+  },
+  "reset": {
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "tables": {
+     "type": "array",
+     "maxItems": 64,
+     "uniqueItems": true,
+     "items": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+     },
+     "description": "tables of the snapshot whose rows a new Workspace starts without"
+    }
+   }
+  }
+ }
+}

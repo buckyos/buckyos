@@ -36,8 +36,33 @@ fn opts(p: &Value) -> WsResult<BuildOpts> {
         dry_run: p.get("dry_run") == Some(&json!(true)),
         // a build that names its package is an import across Zones: same rules as `ext.import`
         import: p.get("provenance").is_some_and(Value::is_object),
+        upgrade: p.get("upgrade") == Some(&json!(true)),
+        migration: migration(p.get("migration"))?,
         idempotency_key: p.get("idempotency_key").and_then(Value::as_str).map(str::to_string),
     })
+}
+
+const MIGRATION_PARTS: &[&str] = &["config", "bindings", "slots", "events"];
+
+/// `migration`: `{ <ident>: Migration }`, or one bare Migration for every control of the call (kept under `*`).
+fn migration(v: Option<&Value>) -> WsResult<serde_json::Map<String, Value>> {
+    let Some(v) = v.filter(|v| !v.is_null()) else { return Ok(serde_json::Map::new()) };
+    let o = v.as_object().ok_or_else(|| WsError::invalid_op("migration must be { <ident>: Migration } or a Migration"))?;
+    let check = |m: &Value| -> WsResult<()> {
+        let o = m.as_object().ok_or_else(|| WsError::invalid_op("a Migration is an object"))?;
+        if let Some(k) = o.keys().find(|k| !MIGRATION_PARTS.contains(&k.as_str())) {
+            return Err(WsError::invalid_op(format!("migration: unknown key {k} ({})", MIGRATION_PARTS.join(", "))));
+        }
+        Ok(())
+    };
+    if o.keys().all(|k| MIGRATION_PARTS.contains(&k.as_str())) {
+        check(v)?;
+        return Ok(serde_json::Map::from_iter([("*".to_string(), v.clone())]));
+    }
+    for m in o.values() {
+        check(m)?;
+    }
+    Ok(o.clone())
 }
 
 /// `ext.build { workspace_id, files, folder_id?, expect?, force?, provenance?, dry_run?, idempotency_key? }`.
@@ -57,7 +82,7 @@ pub async fn build(state: &Arc<AppState>, p: &Value, caller: &Caller, token: &st
         let max = st.limits.max_asset_bytes;
         st.with_ws(&workspace, |ws| {
             let sources = ws.ext_stage_files(&c, files, max, opts.dry_run)?;
-            ws.ext_build(&c, vec![BuildInput { files: sources, provenance }], &opts)
+            ws.ext_build(&c, vec![BuildInput { files: sources, provenance, implicit: false }], &opts)
         })
     })
     .await
@@ -120,7 +145,8 @@ pub async fn install(state: &Arc<AppState>, p: &Value, caller: &Caller, token: &
     }
     let from = p.get("from").ok_or_else(|| WsError::invalid_op("pikg { obj_id } or from { workspace_id, entity_ids } required"))?;
     let workspace = s(from, "workspace_id")?.to_string();
-    let ids = strings(from, "entity_ids")?;
+    let ids = entity_ids(from)?;
+    let templates = templates(from)?;
     let package = p.get("package").cloned().unwrap_or(Value::Null);
     let pkg_id = package.get("name").and_then(Value::as_str).filter(|n| is_package_name(n)).ok_or_else(|| WsError::invalid_op("package.name: [a-z0-9][a-z0-9.-]{0,127}"))?.to_string();
     let version = package.get("version").and_then(Value::as_str).filter(|v| !v.is_empty() && v.len() <= 64).unwrap_or("0.1.0").to_string();
@@ -128,25 +154,93 @@ pub async fn install(state: &Arc<AppState>, p: &Value, caller: &Caller, token: &
     let (st, c) = (state.clone(), caller.clone());
     blocking(move || {
         // export straight into the library: the same bundle a .pikg carries, without packing it
-        let bundle = st.with_ws(&workspace, |ws| ws.ext_export(&c, &ids, "package"))?;
-        let mut files = BTreeMap::new();
-        for f in bundle["files"].as_array().into_iter().flatten() {
-            let path = f["path"].as_str().unwrap_or("").to_string();
-            let bytes = match (f.get("obj_id").and_then(Value::as_str), f.get("text").and_then(Value::as_str)) {
-                (Some(oid), _) => {
-                    use aiworkspace_core::materialize::ObjectSource;
-                    st.svc.objects.get_file(oid)?
-                }
-                (None, Some(t)) => t.as_bytes().to_vec(),
-                _ => continue,
-            };
-            files.insert(path, bytes);
-        }
+        let (manifest, mut files, _) = st.with_ws(&workspace, |ws| ws.ext_bundle_files(&c, &ids, &templates))?;
+        files.remove(aiworkspace_store::library::MANIFEST_FILE);
         let author = c.did().map(str::to_string).unwrap_or_else(|| c.principal.clone());
-        let pkg = Package { pkg_id, version, title, author, manifest: bundle["manifest"].clone(), files };
+        let pkg = Package { pkg_id, version, title, author, manifest, files };
         st.library.install(&owner, pkg, "dev", (st.svc.clock)())
     })
     .await
+}
+
+/// `ext.pack { workspace_id, entity_ids, package: { name, version?, title? } }` (P1, Q20): the controls (with what they
+/// build on) packed as an `aiws` PIKG by the service and bound into the caller's own `exports` bucket as
+/// `<name>-<version>.pikg`; the answer says how to fetch it (`download`, as `ws.export`) and how to install it
+/// (`ext.install { pikg: { bucket_id, key } }`). The owner is the caller's DID; the package is not signed.
+pub fn pack(state: &Arc<AppState>, p: &Value, caller: &Caller) -> WsResult<Value> {
+    require_may_own(caller)?;
+    let ids = entity_ids(p)?;
+    let package = p.get("package").cloned().unwrap_or(Value::Null);
+    let name = s(&package, "name")?.to_string();
+    let version = package.get("version").and_then(Value::as_str).unwrap_or("0.1.0").to_string();
+    let owner = match caller.did() {
+        Some(did) if did.starts_with("did:bns:") => did.to_string(),
+        _ => format!("did:bns:{}", caller.principal),
+    };
+    let (_, files, built) = state.with_ws(s(p, "workspace_id")?, |ws| ws.ext_bundle_files(caller, &ids, &templates(p)?))?;
+    let spec = aiworkspace_store::pack::PackSpec {
+        show_name: package.get("title").and_then(Value::as_str).unwrap_or(&name).to_string(),
+        name,
+        version,
+        owner,
+        timestamp: built.unwrap_or_else(|| ((state.svc.clock)() / 1000).max(0) as u64),
+    };
+    let packed = aiworkspace_store::pack::pack(&spec, &files)?;
+    let key = format!("{}-{}.pikg", spec.name, spec.version);
+    let tmp = aiworkspace_store::export::TempFile::new(&key)?;
+    std::fs::write(&tmp.0, &packed.bytes).map_err(|e| WsError::io(e.to_string()))?;
+    let objects = &state.svc.objects;
+    let obj_id = objects.store_file(&tmp.0, &key)?;
+    let bucket = aiworkspace_store::objects::bucket_id(&caller.principal, aiworkspace_store::objects::EXPORTS)?;
+    let version = objects.bind(&bucket, &key, &obj_id)?;
+    let token = objects.read_token(&bucket, &key, aiworkspace_store::export::DOWNLOAD_TOKEN_MS)?;
+    let download = json!({ "bucket_id": bucket, "key": key, "version": version, "obj_id": obj_id, "token": token });
+    Ok(json!({ "ok": true, "bucket_id": download["bucket_id"], "key": download["key"], "obj_id": download["obj_id"], "size": packed.bytes.len(),
+               "digest": format!("sha256:{}", aiworkspace_core::canonical::sha256_hex(&packed.bytes)), "app_doc_object_id": packed.app_doc_object_id,
+               "app_did": packed.app_did, "pkg_id": packed.pkg_id, "version": spec.version, "payload_digest": packed.payload_digest,
+               "tar_digest": packed.tar_digest, "download": download }))
+}
+
+/// `entity_ids` (definitions or instances); may be empty when templates are given.
+fn entity_ids(p: &Value) -> WsResult<Vec<String>> {
+    match p.get("entity_ids") {
+        None if p.get("templates").is_some() => Ok(Vec::new()),
+        _ => strings(p, "entity_ids"),
+    }
+}
+
+/// `templates: [{ surfaces, data?, template }]` of a pack or an install (P3).
+fn templates(p: &Value) -> WsResult<Vec<Value>> {
+    match p.get("templates") {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(a)) if a.len() <= 32 && a.iter().all(|t| t.get("surfaces").is_some_and(Value::is_array) && t.get("template").is_some_and(Value::is_object)) => Ok(a.clone()),
+        Some(_) => Err(WsError::invalid_op("templates: at most 32 { surfaces: [ids], data?: [ids], template: { id, title, … } }")),
+    }
+}
+
+/// `ext.export_template { workspace_id, surfaces, data?, template }` (P3, Q32): the template's manifest item, the
+/// definitions it needs and its files (`templates/<id>/…`, base64) for a client writing a bundle.
+pub fn export_template(state: &Arc<AppState>, p: &Value, caller: &Caller) -> WsResult<Value> {
+    use base64::Engine;
+    let data = p.get("data").map(|_| strings(p, "data")).transpose()?.unwrap_or_default();
+    let (item, controls, files) = state.with_ws(s(p, "workspace_id")?, |ws| ws.ext_export_template(caller, &strings(p, "surfaces")?, &data, p.get("template").unwrap_or(&Value::Null)))?;
+    let files: Vec<Value> = files.iter().map(|(path, b)| json!({ "path": path, "size": b.len(), "base64": base64::engine::general_purpose::STANDARD.encode(b) })).collect();
+    Ok(json!({ "ok": true, "template": item, "controls": controls, "files": files }))
+}
+
+/// `ext.create_from_template { pkg_id, template_id, title?, params? }` (P3): a new Workspace from a template of the
+/// caller's library; installing a template never creates one.
+pub fn create_from_template(state: &Arc<AppState>, p: &Value, caller: &Caller) -> WsResult<Value> {
+    require_may_own(caller)?;
+    let tf = state.library.template(&caller.principal, s(p, "pkg_id")?, s(p, "template_id")?)?;
+    let params = match p.get("params") {
+        None | Some(Value::Null) => serde_json::Map::new(),
+        Some(Value::Object(o)) => o.clone(),
+        Some(_) => return Err(WsError::invalid_op("params must be { <name>: value }")),
+    };
+    let mut out = state.svc.create_from_template(caller, p.get("title").and_then(Value::as_str), &tf, &params)?;
+    out["pkg_id"] = p["pkg_id"].clone();
+    Ok(out)
 }
 
 /// A package name of a library entry made from a Workspace (`[a-z0-9][a-z0-9.-]{0,127}`; a PIKG's is its AppId).
@@ -163,9 +257,10 @@ pub fn import(state: &Arc<AppState>, p: &Value, caller: &Caller) -> WsResult<Val
     for it in items {
         by_pkg.entry(s(it, "pkg_id")?.to_string()).or_default().push(s(it, "ident")?.to_string());
     }
+    // what the items build on comes from the same package, once (P1, Q16)
     let mut controls = Vec::new();
     for (pkg, idents) in by_pkg {
-        for c in state.library.controls(&caller.principal, &pkg, Some(&idents))? {
+        for c in state.library.controls(&caller.principal, &pkg, Some(&idents), true)? {
             let files = state.library.sources(&c)?;
             controls.push((c, files));
         }
@@ -179,7 +274,44 @@ pub fn import(state: &Arc<AppState>, p: &Value, caller: &Caller) -> WsResult<Val
             // the library's objects are in this service's store already: staging binds them into the Workspace
             let incoming = files.iter().map(|f| IncomingFile::Object { name: f.name.clone(), obj_id: f.obj_id.clone() }).collect();
             let staged: Vec<SourceFile> = ws.ext_stage_files(caller, incoming, max, opts.dry_run)?;
-            inputs.push(BuildInput { files: staged, provenance: Some(c.provenance) });
+            inputs.push(BuildInput { files: staged, provenance: Some(c.provenance), implicit: c.implicit });
+        }
+        ws.ext_build(caller, inputs, &opts)
+    })
+}
+
+/// `ext.upgrade { workspace_id, items: [{ def_entity_id, pkg_id? }], migration?, force?, dry_run?, idempotency_key? }` (P2,
+/// Q30): rebuild each definition from the version of its package in the caller's library (`pkg_id`, else its
+/// `provenance.pkg_id`), with the definitions of the same package it builds on, dependencies first.
+pub fn upgrade(state: &Arc<AppState>, p: &Value, caller: &Caller) -> WsResult<Value> {
+    require_may_own(caller)?;
+    let workspace = s(p, "workspace_id")?.to_string();
+    let items = p.get("items").and_then(Value::as_array).filter(|i| !i.is_empty() && i.len() <= 64).ok_or_else(|| WsError::invalid_op("items: 1…64 { def_entity_id, pkg_id? }"))?;
+    let mut opts = opts(p)?;
+    opts.import = true;
+    opts.upgrade = true;
+    let max = state.limits.max_asset_bytes;
+    state.with_ws(&workspace, |ws| {
+        let mut by_pkg: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for it in items {
+            let def = ws.ext_definition(s(it, "def_entity_id")?)?;
+            let id = def.entity_id.as_str();
+            let ident = def.name.clone().ok_or_else(|| WsError::invalid_op(format!("{id} has no control identity (never built)")))?;
+            let pkg = match it.get("pkg_id").and_then(Value::as_str) {
+                Some(p) => p.to_string(),
+                None => def.payload.get("provenance").and_then(|p| p.get("pkg_id")).and_then(Value::as_str).map(str::to_string)
+                    .ok_or_else(|| WsError::invalid_op(format!("{ident} was not imported from a package: name pkg_id")))?,
+            };
+            by_pkg.entry(pkg).or_default().push(ident);
+        }
+        let mut inputs = Vec::new();
+        for (pkg, idents) in by_pkg {
+            for c in state.library.controls(&caller.principal, &pkg, Some(&idents), true)? {
+                let files = state.library.sources(&c)?;
+                let incoming = files.iter().map(|f| IncomingFile::Object { name: f.name.clone(), obj_id: f.obj_id.clone() }).collect();
+                let staged: Vec<SourceFile> = ws.ext_stage_files(caller, incoming, max, opts.dry_run)?;
+                inputs.push(BuildInput { files: staged, provenance: Some(c.provenance), implicit: c.implicit });
+            }
         }
         ws.ext_build(caller, inputs, &opts)
     })
@@ -203,6 +335,10 @@ pub fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller)
             state.library.bundle(&caller.principal, s(p, "pkg_id")?, idents.as_deref())
         }
         "ext.import" => import(state, p, caller),
+        "ext.pack" => pack(state, p, caller),
+        "ext.upgrade" => upgrade(state, p, caller),
+        "ext.export_template" => export_template(state, p, caller),
+        "ext.create_from_template" => create_from_template(state, p, caller),
         _ => Err(WsError::new(Code::InvalidOperation, crate::UNKNOWN_METHOD)),
     }
 }

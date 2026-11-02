@@ -4,9 +4,9 @@
  * left — with the right panel taking layout width (a drawer in narrow windows). This view owns the
  * selection, the pointer tool, one-shot placement, insertion, the object clipboard, grouping,
  * cross-Surface moves and the per-Surface viewport; the RenderHost owns rendering and gestures. Menus,
- * buttons, context menus and shortcuts call the same actions. A phone (§16) gets the canvas in view mode
+ * buttons, context menus and shortcuts call the same actions. A phone (§16) gets a free canvas in view mode
  * with one toolbar (canvas switcher, annotation, zoom, identity, share) and touch gestures, and keeps a
- * viewport of its own. */
+ * viewport of its own; a flow page it edits (§16.5), with undo / redo in that toolbar. */
 
 import { onInsertDefinition } from '../extensions/extEvents'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
@@ -21,6 +21,7 @@ import type { CellPayload, EntityEnvelope, Json, KeyedContent, Operation, Placem
 import { aiwsT } from '../../i18n'
 import { useAiwsText } from '../../useAiwsText'
 import { useReadOnlyReason, useStore, useUserState, useWorkspaceUi } from '../../state/hooks'
+import { RunModeContext, useRunMode } from '../../state/runMode'
 import type { WorkspaceStore } from '../../state/store'
 import { BlockBoundary } from '../blocks/BlockHost'
 import { setCellConfig } from '../blocks/ops'
@@ -51,6 +52,9 @@ import { controlCommands } from '../controls/commands'
 import { addNode } from '../controls/mindmap/definition'
 import { importOutline, outlineFileKind, richtextToMindmap } from '../controls/mindmap/convert'
 import { resetLayoutOps } from '../controls/mindmap/ops'
+import { InstanceInspector } from '../controls/composite/Inspector'
+import { DefineControlDialog } from '../extensions/DefineControlDialog'
+import { isComposite, isFixedComposite, slotForDrop } from '../controls/composite/model'
 import { controlRegistry, type ControlCommandContext } from '../controls/registry'
 import { anchorWorld, axisOf, boxOf, facingAnchor } from './connectors/geometry'
 import { formOf, hasBoundEnd, isConnector } from './connectors/layout'
@@ -62,6 +66,8 @@ import { classifyFile, importDrawio, importReports, type ImportOutcome } from '.
 import { ImportReportDialog } from './ImportReportDialog'
 import { PdfImportHost } from './ImportPdfDialog'
 import { pdfImports } from './pdfImportRequest'
+import { officeImports } from '../import/officeImportRequest'
+import { OFFICE_ACCEPT, officeKind } from '@office/package'
 import { TABULAR_ACCEPT, tabularKind } from '@table/files'
 import { clipboardTable } from '../import/clipboardTable'
 import { tableImports, type TableImportSource } from '../import/tableImportRequest'
@@ -139,7 +145,7 @@ function EmptyCanvas({ mode }: { mode: CanvasMode }) {
                 <button type="button" className="is-primary" data-testid="aiws-create-first-surface" onClick={() => { void create('free') }}>{t('aiworkspace.canvas.empty.newFree')}</button>
                 <button type="button" data-testid="aiws-create-first-flow" onClick={() => { void create('flow') }}>{t('aiworkspace.canvas.empty.newFlow')}</button>
               </div>
-            ) : <p className="aiws-muted">{t(shell.phone ? 'aiworkspace.canvas.empty.phoneViewOnly' : 'aiworkspace.canvas.empty.noPermission')}</p>}
+            ) : <p className="aiws-muted">{t(shell.phone ? 'aiworkspace.canvas.empty.phoneNoCreate' : 'aiworkspace.canvas.empty.noPermission')}</p>}
           </div>
           <div className="aiws-chrome-top">
             {shell.phone ? <ViewToolbar camera={null} hasSelection={false} onFitAll={() => undefined} onFitSelection={() => undefined} annotate={null} /> : <MainToolbar canvas={null} />}
@@ -171,6 +177,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const [typeAhead] = useState(() => new Map<'typed', { id: string; text: string }>())
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [picker, setPicker] = useState<{ kind: 'add-view' | 'move-surface' } | null>(null)
+  /** “定义为控件…” (扩展控件 P1): the Blocks the new composite is made of. */
+  const [defining, setDefining] = useState<string[] | null>(null)
   const [catalog, setCatalog] = useState<{ tab: CatalogTab; key?: string; world: { x: number; y: number } | null; parentId?: string; afterId?: string | null } | null>(null)
   const [tool, setTool] = useState<PointerTool>('select')
   const inkTool = tool === 'pen' || tool === 'eraser'
@@ -184,6 +192,9 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const collapsed = collapsedChoice ?? shell.size === 'narrow'
   const [camera] = useState(() => new Camera())
   const [budget] = useState(() => createBudget(surface.layout?.mode === 'free' ? undefined : { editors: 200, html: 8 }))
+  // design / run mode (Q27): this window's switch; guests and phones never run extensions here
+  const runMode = useRunMode(store.runMode, mode, shell.phone || shell.identity.guest)
+  const runContext = useMemo(() => ({ interactive: runMode.interactive }), [runMode.interactive])
   const isFree = surface.layout?.mode === 'free'
   const { laid, index, shapeBook } = useSurfaceLayout(surfaceId)
   /** The page settings of the Surface (draw.io 导入 TODO §2.5): its background colour. */
@@ -355,17 +366,27 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     const ops: Operation[] = []
     // several nodes dropped together keep their order, one after the other
     const last = new Map<string, string | undefined>()
+    const moving = new Set(moves.map((m) => m.id))
     for (const move of moves) {
       const siblings = store.outline.childrenOf(move.parentId).filter((c) => !moves.some((m) => m.id === c.entity_id))
       const i = move.beforeId ? siblings.findIndex((c) => c.entity_id === move.beforeId) : siblings.length
       const low = last.has(move.parentId) ? last.get(move.parentId) : siblings[i - 1]?.order_key ?? undefined
       const key = store.core.order_key_between(low, siblings[i]?.order_key ?? undefined)
       last.set(move.parentId, key)
-      const stored = store.outline.get(move.id)?.placement
-      const placement = { x: 'auto' as const, y: 'auto' as const, w: stored?.w ?? 'auto', h: stored?.h ?? 'auto' }
+      const entity = store.outline.get(move.id)
+      const stored = entity?.placement
+      // into a composite (扩展控件 P1): the slot of the Block it lands beside, else the first that takes it; a fixed
+      // composite keeps it where it is, laid out nowhere
+      let slot: string | null | undefined
+      if (isComposite(store.outline.get(move.parentId))) {
+        slot = entity ? slotForDrop(store, move.parentId, entity, siblings[i - 1]?.entity_id ?? siblings[i]?.entity_id ?? null, moving) : null
+        if (!slot) { store.notify('info', t('aiworkspace.ext.composite.slotRefuses')); return }
+      } else if (entity?.slot && isComposite(store.outline.get(entity.parent_id ?? ''))) slot = null
+      const fixed = isComposite(store.outline.get(move.parentId)) && isFixedComposite(store, move.parentId)
+      const placement = fixed && entity?.parent_id === move.parentId && stored ? stored : fixed ? { x: 12, y: 12, w: stored?.w ?? 160, h: stored?.h ?? 90 } : { x: 'auto' as const, y: 'auto' as const, w: stored?.w ?? 'auto', h: stored?.h ?? 'auto' }
       store.noteLayoutIntent(move.id, placement, key, move.parentId)
-      store.outline.patchLocal(move.id, { parent_id: move.parentId, order_key: key, placement })
-      ops.push({ op: 'tree.move', entity_id: move.id, new_parent_id: move.parentId, order_key: key, placement })
+      store.outline.patchLocal(move.id, { parent_id: move.parentId, order_key: key, placement, ...(slot !== undefined ? { slot } : {}) })
+      ops.push({ op: 'tree.move', entity_id: move.id, new_parent_id: move.parentId, order_key: key, placement, ...(slot !== undefined ? { slot } : {}) })
     }
     void store.submit({ editId: `layout:${surfaceId}:${randomId().slice(0, 8)}`, label: t('aiworkspace.mindmap.moveNodes', { count: moves.length }), operations: ops })
   }, [store, policy.layout, surfaceId, t])
@@ -850,6 +871,33 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     pdfImports.open({ source: { name: file.name, bytes: bytes ?? new Uint8Array(await file.arrayBuffer()) }, step: ask ? 'ask' : 'options', insertAsFile: () => { void insertFile(file, at) }, finish: finishPdfImport })
   }
   const importPdfCommand: Command = { reason: pdfReason, run: () => pdfInput.current?.click() }
+  // ---- Office documents (Office 导入 TODO §6): a docx as a new flow page, a pptx as pages on a new canvas
+  const officeInput = useRef<HTMLInputElement>(null)
+  const finishOfficeImport = (outcome: ImportOutcome) => {
+    if (outcome.surfaceId) {
+      if (outcome.bounds) { const v = camera.fitted(outcome.bounds, 60); store.userState.set(`viewport:${outcome.surfaceId}`, { x: Math.round(v.x), y: Math.round(v.y), zoom: Number(v.zoom.toFixed(3)) }) }
+      shell.selectSurface(outcome.surfaceId)
+    }
+    const pathId = outcome.pathId ?? null
+    if (outcome.error || outcome.report.notes.size > 0) importReports.show(outcome)
+    if (!outcome.error) store.notify('info', t('aiworkspace.office.done', { name: outcome.name, summary: outcome.summary ?? '' }), pathId ? { label: t('aiworkspace.pdf.startShow'), run: () => shell.startShow({ pathId }) } : undefined)
+  }
+  /** Open the Office import for a file: `ask` first when it was dropped or pasted (insert as a file, or import). */
+  const openOfficeImport = async (file: File, bytes: Uint8Array | null, ask: boolean, at: { x: number; y: number } | null) => {
+    if (officeImports.busy || pdfImports.busy) { store.notify('info', t('aiworkspace.canvas.import.busy')); return }
+    const data = bytes ?? new Uint8Array(await file.arrayBuffer())
+    const kind = officeKind(file.name, data)
+    if (!kind) { void insertFile(file, at); return }
+    officeImports.open({ source: { name: file.name, bytes: data, kind }, step: ask ? 'ask' : 'options', insertAsFile: () => { void insertFile(file, at) }, finish: finishOfficeImport })
+  }
+  const importOfficeCommand: Command = { reason: pdfReason, run: () => officeInput.current?.click() }
+  const finishOfficeRef = useRef(finishOfficeImport)
+  useEffect(() => { finishOfficeRef.current = finishOfficeImport })
+  useEffect(() => {
+    const finisher = (outcome: ImportOutcome) => finishOfficeRef.current(outcome)
+    officeImports.finisher = finisher
+    return () => { if (officeImports.finisher === finisher) officeImports.finisher = null }
+  }, [])
   // an import started elsewhere (a PDF file Block's "expand into pages") ends on this canvas's terms
   const finishRef = useRef(finishPdfImport)
   useEffect(() => { finishRef.current = finishPdfImport })
@@ -925,6 +973,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       else if (kind === 'tabular' && files.length === 1 && !insertReason) openTableImport({ kind: 'file', name: file.name, bytes }, true, spot, file)
       // a single PDF asks: a file, or editable pages (Q7); several are inserted as files
       else if (kind === 'pdf' && files.length === 1 && pdfReason === null && !insertReason) await openPdfImport(file, bytes, true, spot)
+      // a single Office document asks the same: a file, or a document / editable pages (Office 导入 TODO §6)
+      else if (kind === 'office' && files.length === 1 && pdfReason === null && !insertReason) await openOfficeImport(file, bytes, true, spot)
       else if (insertReason) { store.notify('info', insertReason); return }
       else if (kind === 'svg' && text) insertSvg(text, spot, file)
       else {
@@ -975,8 +1025,12 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     if (!current) return
     if (current.workspaceId !== store.session.workspaceId) { store.notify('info', t('aiworkspace.canvas.clipboard.crossWorkspace')); return }
     const c = camera.center
-    // with a node (or a control) selected the clip hangs under it (脑图方案 §7.2)
-    const into = selectionControl && !at ? { parentId: selectionControl.nodeId ?? selectionControl.containerId } : undefined
+    // with a node (or a control) selected the clip hangs under it (脑图方案 §7.2); in a composite it goes beside the
+    // selected Block, into a slot, and a selected composite itself is pasted beside on the canvas (扩展控件 P1)
+    const composite = selectionControl && isComposite(store.outline.get(selectionControl.containerId))
+    const into = !selectionControl || at ? undefined
+      : composite ? (selectionControl.nodeId ? { parentId: selectionControl.containerId, after: selectionControl.nodeId } : undefined)
+        : { parentId: selectionControl.nodeId ?? selectionControl.containerId }
     const { operations, newIds, label, refused } = pasteOperations(store, current, { surfaceId, isFree, at, center: camera.toWorld(c.x, c.y), into })
     if (refused) { store.notify('info', refused); return }
     if (operations.length === 0) { store.notify('info', t('aiworkspace.canvas.clipboard.cutGone')); canvasClipboard.set(null); return }
@@ -1189,7 +1243,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     // a pinned node of another view goes back to the control's layout (§5.5); a text node has the tool on its toolbar
     const pin = laid.get(single.entity_id)?.node?.pinned && single.view_type !== 'mindnode' ? single.entity_id : null
     if (pin && canLayout && !singleLocked) moreActions.push({ id: 'mindmap-auto', label: t('aiworkspace.mindmap.backToLayout'), run: () => { void store.submit({ editId: `layout:${pin}`, label: t('aiworkspace.mindmap.backToLayout'), operations: resetLayoutOps(store, [pin]) }) } })
-    if (definition?.Inspector || definition?.configFields || single.kind === 'group') moreActions.push({ id: 'inspector', label: t('aiworkspace.canvas.inspector.title'), key: 'F2', run: () => shell.setSide('inspector') })
+    if (definition?.Inspector || definition?.configFields || single.kind === 'group' || single.kind === 'composite') moreActions.push({ id: 'inspector', label: t('aiworkspace.canvas.inspector.title'), key: 'F2', run: () => shell.setSide('inspector') })
     if (policy.annotate && source && ui.annotate) commonItems.push({ kind: 'button', id: 'annotate', icon: MessageSquarePlus, label: t('aiworkspace.canvas.annotate.label'), run: annotateSelection })
     if (source) moreActions.push({ id: 'relations', label: t('aiworkspace.canvas.relations'), run: () => shell.setSide('relations') })
     // a rich text's lists as a mind map beside it (脑图方案 §8)
@@ -1199,6 +1253,10 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   }
   if (selection.size > 1 && canLayout && mode === 'edit') typeItems.push({ kind: 'button', id: 'group', icon: Group, label: t('aiworkspace.canvas.group'), key: 'Ctrl+G', run: group })
   if (selection.size > 1 && canLayout) moreActions.push({ id: 'group', label: t('aiworkspace.canvas.group'), key: 'Ctrl+G', run: group })
+  // the selection as a composite control: its definition in the user's home, built, and an instance in its place
+  if (selection.size > 0 && isFree && canLayout && mode === 'edit' && !phone && !nodesSelected && insertReason === null && store.session.status().kind === 'live') {
+    moreActions.push({ id: 'define-control', label: t('aiworkspace.ext.define.action'), run: () => setDefining(topLevel(laid, selection).filter((id) => !isConnector(laid.get(id)?.entity))) })
+  }
   if (lockable && mode === 'edit') commonItems.push(allLocked
     ? { kind: 'button', id: 'unlock', icon: LockOpen, label: t('aiworkspace.canvas.lock.unlock'), disabled: lockedHere ? false : t('aiworkspace.canvas.lock.groupLocked'), run: () => { void setLocked(topIds, false) } }
     : { kind: 'button', id: 'lock', icon: Lock, label: t('aiworkspace.canvas.lock.lock'), run: () => { void setLocked(topIds, true) } })
@@ -1251,6 +1309,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     copy, cut, paste, remove,
     importDrawio: importCommand,
     importPdf: importPdfCommand,
+    importOffice: importOfficeCommand,
     importTable: importTableCommand,
     exportDrawio: exportCommand,
     view: isFree ? { camera, fitAll, fitSelection, hasSelection: selection.size > 0 } : null,
@@ -1286,6 +1345,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const placingTitle = placing?.entry.title ?? ''
   return (
     <BudgetContext.Provider value={budget}>
+    <RunModeContext.Provider value={runContext}>
       <div className="aiws-canvas-view" data-testid="aiws-canvas-view" data-mode={mode}>
         <div className="aiws-canvas-body" ref={hostRef} data-testid="aiws-canvas-body">
           <div ref={mainRef} className={`aiws-canvas-main${shell.prefs.grid ? '' : ' no-grid'}${showObjectToolbar && !collapsed ? ' has-left-tools' : ''}`}
@@ -1340,7 +1400,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
             {shell.guide && <GuideOverlay key={shell.guide.pathId} camera={camera} surfaceId={surfaceId} />}
             <div className="aiws-chrome-top">
               {!phone && <MainToolbar canvas={commands} />}
-              {(shell.prefs.viewToolbar || phone) && <ViewToolbar camera={isFree ? camera : null} hasSelection={selection.size > 0} onFitAll={fitAll} onFitSelection={fitSelection} annotate={annotateCommand} />}
+              {(shell.prefs.viewToolbar || phone) && <ViewToolbar camera={isFree ? camera : null} hasSelection={selection.size > 0} onFitAll={fitAll} onFitSelection={fitSelection} annotate={annotateCommand} runMode={runMode} />}
             </div>
             {showObjectToolbar && (
               <div className="aiws-chrome-left">
@@ -1366,9 +1426,12 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
               onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void file.arrayBuffer().then((buffer) => runImport({ name: file.name, bytes: new Uint8Array(buffer) }, null)) }} />
             <input ref={pdfInput} type="file" hidden aria-hidden="true" tabIndex={-1} accept=".pdf,application/pdf" data-testid="aiws-import-pdf-file"
               onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void openPdfImport(file, null, false, null) }} />
+            <input ref={officeInput} type="file" hidden aria-hidden="true" tabIndex={-1} accept={OFFICE_ACCEPT} data-testid="aiws-import-office-file"
+              onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void openOfficeImport(file, null, false, null) }} />
             <input ref={tableInput} type="file" hidden aria-hidden="true" tabIndex={-1} accept={TABULAR_ACCEPT} data-testid="aiws-import-table-file"
               onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; const at = catalogSpot.current; catalogSpot.current = null; if (file) void file.arrayBuffer().then((buffer) => openTableImport({ kind: 'file', name: file.name, bytes: new Uint8Array(buffer) }, false, at)) }} />
             {menu && <ContextMenu at={menu.at} items={menuItems} onClose={() => setMenu(null)} />}
+            {defining && defining.length > 0 && <DefineControlDialog ids={defining} laid={laid} surfaceId={surfaceId} onClose={() => setDefining(null)} onDone={(ids) => { setDefining(null); setSelectionState(new Set(ids)) }} />}
             {picker && <Picker kind={picker.kind} selection={selectedEntities} surfaceId={surfaceId} onClose={() => setPicker(null)} onPick={(choice) => {
               if (picker.kind === 'move-surface') moveToSurface(choice)
               else if (picker.kind === 'add-view' && single?.source_id) {
@@ -1417,6 +1480,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
           <SidePanel tabs={sideTabs} render={sideContent} />
         </div>
       </div>
+    </RunModeContext.Provider>
     </BudgetContext.Provider>
   )
 }
@@ -1432,9 +1496,8 @@ function SelectionInspector({ cell, mode, context, resolved, registryVersion }: 
   const keyRevs = context?.keyRevs ?? {}
   const readOnly = !context || context.readOnlyReason !== null
   const setConfig = (key: string, value: Json) => {
-    if (!payload || readOnly) return
-    const config = { ...(payload.config ?? {}), [key]: value }
-    void store.submit({ editId: `config:${cell.entity_id}`, label: t('aiworkspace.canvas.inspector.configLabel', { key }), operations: [{ op: 'entity.set_keys', entity_id: cell.entity_id, keys: [{ key: 'config', value: config as Json, expect: { rev: keyRevs.config ?? 0 } }] }] })
+    if (!payload || readOnly || !context) return
+    setCellConfig(context, store, { [key]: value }, t('aiworkspace.canvas.inspector.configLabel', { key }))
   }
   const setTitle = (title: string) => {
     if (!payload || readOnly || title === (payload.title ?? '')) return
@@ -1444,6 +1507,9 @@ function SelectionInspector({ cell, mode, context, resolved, registryVersion }: 
   const operable = cell.view_type !== 'frame' && cell.view_type !== 'connector' && cell.type_id === 'buckyos.cell'
   return (
     <BlockInspector cellId={cell.entity_id} mode={mode}>
+      {((cell.type_id === 'buckyos.container' && cell.kind === 'composite') || (cell.type_id === 'buckyos.cell' && cell.def_id && store.outline.get(cell.def_id)?.ident)) && (
+        <InstanceInspector entity={cell} readOnly={mode === 'edit' && cell.capabilities.includes('update') ? null : t('aiworkspace.blocks.noPermission')} />
+      )}
       {operable && payload && (
         <label className="aiws-inline-form" title={t('aiworkspace.canvas.inspector.liveTip')}>
           <input type="checkbox" data-testid="aiws-inspector-live" checked={payload.presentation?.live === true} disabled={readOnly}

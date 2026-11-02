@@ -19,7 +19,6 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{json, Value as Json};
 use tokio::time::{timeout, Duration};
 
-pub mod agent_attention_signal;
 pub mod agent_memory;
 pub mod agent_notebook;
 pub mod aicc_model_tools;
@@ -51,17 +50,6 @@ pub use tool::{
     ToolHost, TypedTool, TypedToolHandle,
 };
 
-pub use agent_attention_signal::{
-    AgentAttentionSignalStage1Runner, AgentAttentionSignalStore, AttentionSignal,
-    AttentionSignalConfig, AttentionSignalError, AttentionSignalExtractionInput,
-    AttentionSignalExtractor, AttentionSignalHistoryEntry, AttentionSignalHistoryReader,
-    AttentionSignalPayload, AttentionSignalSessionWindow, AttentionSignalStage1RunReport,
-    AttentionSignalStoreConfig, AttentionSignalTimeWindow, AttentionSignalToolRuntime,
-    AttentionSignalWriteResult, DiscoverEventTool, DiscoverObjectObservationTool,
-    DiscoverRelationshipTool, DiscoverSkillCoverageGapTool, ExtractionWindow, MarkScannedInput,
-    ScanCheckpoint, TOOL_DISCOVER_EVENT, TOOL_DISCOVER_OBJECT_OBSERVATION,
-    TOOL_DISCOVER_RELATIONSHIP, TOOL_DISCOVER_SKILL_COVERAGE_GAP,
-};
 pub use agent_memory::{
     AgentMemory, AgentMemoryConfig, AgentMemoryError, Envelope as AgentMemoryEnvelope, LoadItem,
     LoadOptions, VerifyReport,

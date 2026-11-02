@@ -44,6 +44,16 @@ function controlEntry(def: ContainerDefinition): BlockDefinition {
   return entry
 }
 
+/** A composite definition as an insertable entry (扩展控件 P1): the host creates the container and its slots' first
+ * Blocks; the container is selected, nothing is edited. */
+let composite: BlockDefinition | undefined
+function compositeEntry(): BlockDefinition | undefined {
+  const def = controlRegistry.get('composite')
+  if (!def) return undefined
+  composite ??= { ...controlEntry(def), type: 'composite', catalog: { group: 'extension', get description() { return def.agent.summary }, needs: 'none', editAfterInsert: false } }
+  return composite
+}
+
 /** An entry's id in test ids and menu ids: the type, or `type-variant`. */
 export const entryId = (entry: CatalogEntry) => (entry.variant ? `${entry.definition.type}-${entry.variant}` : entry.definition.type)
 /** The size an insertion of the entry takes. */
@@ -66,6 +76,8 @@ export function registryEntries(): CatalogEntry[] {
     }
   }
   for (const def of controlRegistry.list()) {
+    // composite instances are inserted from their definitions (the extension entries), never as a bare host
+    if (def.kind === 'composite') continue
     const definition = controlEntry(def)
     out.push({ key: `control:${def.kind}`, definition, catalog: definition.catalog!, title: definition.title, group: 'layout' })
   }
@@ -80,7 +92,7 @@ export function extensionEntries(store: WorkspaceStore): CatalogEntry[] {
   for (const entity of store.outline.all()) {
     // the Mock wish executor's definition drives wishes; it is not a view to place on a canvas
     if (entity.deleted || entity.type_id !== 'buckyos.block-def' || entity.entity_id === MOCK_WISH_DEF_ID) continue
-    const host = entity.def_kind ? blockRegistry.get(entity.def_kind) : undefined
+    const host = entity.def_kind === 'composite' ? compositeEntry() : entity.def_kind ? blockRegistry.get(entity.def_kind) : undefined
     if (!host?.catalog || !host.create) continue
     out.push({ key: `def:${entity.entity_id}`, definition: host, catalog: host.catalog, title: entity.title ?? entity.name ?? entity.entity_id, group: 'extension', defEntity: entity })
   }

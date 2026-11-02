@@ -297,8 +297,16 @@ export class ProgramHost {
         /**
          * A Block-control (catalog/controls.json): `kind`, `children` a Markdown outline or `[{ text, children }]`,
          * optional `config` and `title`; `under` (an input that is a control's node) puts the tree below that node.
+         * A composite control of the Workspace: `def` (`<author_did>#<name>`), `slots: { <slot>: ["result:<n>" |
+         * "input:<n>" | { view: 'richtext', markdown }] }`, optional `config`, `title`, `under: { input, slot }`.
          */
         control(name, spec = {}) {
+          if (typeof spec.def === 'string') {
+            if (!spec.slots || typeof spec.slots !== 'object') throw new Error(`result.control(${name}): slots is required with def`)
+            if (spec.under !== undefined && (typeof spec.under !== 'object' || input(spec.under.input).kind !== 'control')) throw new Error(`result.control(${name}): under must be { input, slot } of a composite input`)
+            host.#push({ name, type: 'control', def: spec.def, config: spec.config, slots: spec.slots, title: spec.title, under: spec.under })
+            return
+          }
           if (typeof spec.kind !== 'string') throw new Error(`result.control(${name}): kind is required (see catalog/controls.json)`)
           if (typeof spec.children !== 'string' && !Array.isArray(spec.children)) throw new Error(`result.control(${name}): children must be a Markdown outline or [{ text, children }]`)
           if (spec.under !== undefined && input(spec.under).kind !== 'control') throw new Error(`result.control(${name}): under must name a control input`)
@@ -372,6 +380,7 @@ export class ProgramHost {
         for (const row of r.rows.slice(0, 3)) lines.push('  ' + JSON.stringify(row))
       } else if (r.type === 'columns') lines.push(`columns ${r.name} on ${r.input}: ${Object.keys(r.values ?? {}).length} records`)
       else if (r.type === 'text') lines.push(`text ${r.name}: ${r.markdown.length} chars`)
+      else if (r.type === 'control' && r.def) lines.push(`control ${r.name}: ${r.def} (${Object.keys(r.slots || {}).join(', ')})`)
       else if (r.type === 'control') lines.push(`control ${r.name}: ${r.kind}${r.under ? ` under ${r.under}` : ''}`)
       else lines.push(`${r.type} ${r.name}`)
     }

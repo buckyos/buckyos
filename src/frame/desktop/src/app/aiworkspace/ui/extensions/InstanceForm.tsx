@@ -3,6 +3,7 @@
  * minLength / maxLength) and its named data bindings. Only what the user changes is stored as an override; a
  * default stays the definition's. The same subset is what `resolve` validates with `z.fromJSONSchema`. */
 
+import { useState, type InputHTMLAttributes } from 'react'
 import type { BlockDefPayload, Json } from '../../api/types'
 import { useStore } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
@@ -11,12 +12,24 @@ import { schemaProperties, type PropSchema } from './controls'
 
 const kindOf = (s: PropSchema) => (Array.isArray(s.type) ? s.type.find((t) => t !== 'null') : s.type) ?? 'string'
 
-export function InstanceForm({ def, config, bindings, onConfig, onBindings }: {
+/** A text or number field that hands its value over when it is left (blur, Enter): one write per change, not per key. */
+function DraftInput({ value, onCommit, ...rest }: Omit<InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange'> & { value: string; onCommit: (value: string) => void }) {
+  const [draft, setDraft] = useState<string | null>(null)
+  return (
+    <input {...rest} value={draft ?? value} onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => { if (draft !== null && draft !== value) onCommit(draft); setDraft(null) }}
+      onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); else if (e.key === 'Escape') setDraft(null) }} />
+  )
+}
+
+export function InstanceForm({ def, config, bindings, onConfig, onBindings, commitOnBlur = false }: {
   def: BlockDefPayload
   config: Record<string, Json>
   bindings: Record<string, string>
   onConfig: (config: Record<string, Json>) => void
   onBindings: (bindings: Record<string, string>) => void
+  /** Text and number fields write when left (an existing instance), not on every key (insertion). */
+  commitOnBlur?: boolean
 }) {
   const store = useStore()
   const { t } = useAiwsText()
@@ -46,8 +59,13 @@ export function InstanceForm({ def, config, bindings, onConfig, onBindings }: {
             ) : kind === 'boolean' ? (
               <input type="checkbox" checked={value === undefined ? schema.default === true : value === true} data-testid={`aiws-instance-config-${key}`} onChange={(e) => set(key, e.target.checked)} />
             ) : kind === 'number' || kind === 'integer' ? (
-              <input type="number" value={value === undefined ? '' : String(value)} placeholder={placeholder} min={schema.minimum} max={schema.maximum} step={kind === 'integer' ? 1 : 'any'} data-testid={`aiws-instance-config-${key}`}
-                onChange={(e) => set(key, e.target.value === '' ? undefined : Number(e.target.value))} />
+              commitOnBlur
+                ? <DraftInput type="number" value={value === undefined ? '' : String(value)} placeholder={placeholder} min={schema.minimum} max={schema.maximum} step={kind === 'integer' ? 1 : 'any'} data-testid={`aiws-instance-config-${key}`}
+                    onCommit={(v) => set(key, v === '' ? undefined : Number(v))} />
+                : <input type="number" value={value === undefined ? '' : String(value)} placeholder={placeholder} min={schema.minimum} max={schema.maximum} step={kind === 'integer' ? 1 : 'any'} data-testid={`aiws-instance-config-${key}`}
+                    onChange={(e) => set(key, e.target.value === '' ? undefined : Number(e.target.value))} />
+            ) : commitOnBlur ? (
+              <DraftInput value={value === undefined ? '' : String(value)} placeholder={placeholder} maxLength={schema.maxLength} data-testid={`aiws-instance-config-${key}`} onCommit={(v) => set(key, v)} />
             ) : (
               <input value={value === undefined ? '' : String(value)} placeholder={placeholder} maxLength={schema.maxLength} data-testid={`aiws-instance-config-${key}`} onChange={(e) => set(key, e.target.value)} />
             )}

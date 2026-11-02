@@ -389,11 +389,11 @@ impl Station {
         let entry = entry.to_string();
         self.db
             .call(move |c| {
-                let Some(row) = get_entry(c, &entry)? else { return Ok(None) };
+                let Some(row) = crate::publish::get_entry_at_path(c, &entry)? else { return Ok(None) };
                 if !allows(&row.audience, &reader, &rel) {
                     return Ok(None);
                 }
-                let Some(head) = get_head(c, &entry)? else { return Ok(None) };
+                let Some(head) = get_head(c, &row.entry)? else { return Ok(None) };
                 Ok(get_object(c, &head.head_obj_id)?.map(|o| (wire(&o), !row.audience.is_public())))
             })
             .await

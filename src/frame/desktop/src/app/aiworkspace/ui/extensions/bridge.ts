@@ -6,14 +6,17 @@
  * values (option labels, numbers) and typed writes; the host turns them into ordinary operations
  * with the right `expect`s. A batch collects typed writes into one commit and one undo step. */
 
+import { ALL_AUTO } from '@controls/placement'
 import { numericPlacement } from '../canvas/layout'
 import { randomId } from '../../api/ids'
 import type {
-  CellPayload, EntityEnvelope, FieldDef, Json, KeyedContent, Operation, QueryPage, QueryParams, QueryRow, RecordContent, RichTextContent, Selector, TableSourceContent,
+  CellPayload, EntityEnvelope, FieldDef, Json, KeyedContent, Operation, QueryPage, QueryParams, QueryRow, RecordContent, RichTextContent, Selector, StoredPlacement, TableSourceContent,
 } from '../../api/types'
 import { aiwsT, aiwsText } from '../../i18n'
 import type { WorkspaceStore } from '../../state/store'
 import { modePolicy, type CanvasMode } from '../blocks/registry'
+import { submitProps } from '../blocks/ops'
+import { isComposite, isFixedComposite, slotRefusal } from '../controls/composite/model'
 import type { HostBridge } from './htmlRuntime'
 
 export interface BridgeTarget {
@@ -22,17 +25,29 @@ export interface BridgeTarget {
   keyRevs: Record<string, number>
   source: EntityEnvelope | undefined
   mode: CanvasMode
+  /** The canvas is in run mode (扩展控件 P2, Q27): `aiws.context.interactive`, writes in view mode, `emit` runs. */
+  interactive?: boolean
+  /** `aiws.emit` (host API 3): the event executor of the Block, which checks the name and the mode. */
+  onEmit?: (name: string, params: Record<string, Json>) => Promise<{ handled: boolean; event_id: string | null }>
   /** Extra context handed to the extension (wish executors get the wish and its inputs). */
   extra?: Record<string, Json>
 }
 
-interface Binding { entity_id: string; selector?: Selector }
+export interface Binding { entity_id: string; selector?: Selector }
 
-function bindingsOf(target: BridgeTarget): Record<string, Binding> {
+/** The bindings of a Block or a control instance by name: `source` is its `source_ref`, the rest its `bindings`. */
+export function bindingsOf(payload: { source_ref?: { entity_id: string }; bindings?: Record<string, Binding> }): Record<string, Binding> {
   const out: Record<string, Binding> = {}
-  if (target.payload.source_ref) out.source = { entity_id: target.payload.source_ref.entity_id }
-  for (const [name, b] of Object.entries(target.payload.bindings ?? {})) out[name] = b
+  if (payload.source_ref) out.source = { entity_id: payload.source_ref.entity_id }
+  for (const [name, b] of Object.entries(payload.bindings ?? {})) out[name] = b
   return out
+}
+
+/** May `entityId` be written now: the mode allows writes, or the canvas runs in view mode and the caller may update it
+ * (Q27: view's `writes: false` no longer refuses every write). */
+export function writeAllowed(store: WorkspaceStore, mode: CanvasMode, interactive: boolean, entityId: string): boolean {
+  if (modePolicy(mode).writes) return true
+  return mode === 'view' && interactive && (store.outline.get(entityId)?.capabilities.includes('update') ?? false)
 }
 
 function plain(field: FieldDef, v: Json | undefined): Json | undefined {
@@ -71,10 +86,9 @@ function stored(field: FieldDef, v: Json | undefined): Json | undefined {
   }
 }
 
-export function makeBridge(store: WorkspaceStore, target: BridgeTarget, onSnapshot?: (objectId: string, mediaType: string) => void): HostBridge {
-  const policy = modePolicy(target.mode)
-  const bindings = bindingsOf(target)
-  const batches = new Map<string, { label: string; operations: Operation[] }>()
+/** The typed writes of host API 2 as operations (`upsert`, `setColumn`, `recordSet`, `setMarkdown`, `createBlock`) over
+ * the bindings of `anchor`: what `aiws.table / record / text / createBlock` and the `write` handlers of an event build. */
+export function typedWriter(store: WorkspaceStore, anchor: EntityEnvelope, bindings: Record<string, Binding>) {
   const binding = (name: string): Binding => {
     const b = bindings[name]
     if (!b) {
@@ -82,13 +96,6 @@ export function makeBridge(store: WorkspaceStore, target: BridgeTarget, onSnapsh
       throw new Error(aiwsT('aiworkspace.extension.unknownBinding', { name, bindings: names.length ? aiwsText().list(names) : aiwsT('aiworkspace.common.none') }))
     }
     return b
-  }
-  const requireWrites = () => { if (!policy.writes) throw new Error(aiwsT('aiworkspace.extension.writesNotAllowed', { mode: target.mode })) }
-  const submit = async (operations: Operation[], label: string): Promise<Json> => {
-    requireWrites()
-    if (!Array.isArray(operations) || operations.length === 0) throw new Error(aiwsT('aiworkspace.extension.emptyOperations'))
-    const outcome = await store.submit({ editId: `ext:${target.cell.entity_id}:${Date.now()}`, label: label || aiwsT('aiworkspace.extension.editLabel', { name: target.payload.view.type }), operations })
-    return outcome as unknown as Json
   }
   const tableOf = async (name: string) => {
     const b = binding(name)
@@ -109,6 +116,157 @@ export function makeBridge(store: WorkspaceStore, target: BridgeTarget, onSnapsh
       if (!cursor) break
     }
     return rows
+  }
+  /** The nearest container at or above `id`, walking up through Cells (a tree control's node holds Blocks). */
+  const enclosing = (id: string): EntityEnvelope | undefined => {
+    let e = store.outline.get(id)
+    for (let i = 0; e && e.type_id === 'buckyos.cell' && i < 256; i++) e = e.parent_id ? store.outline.get(e.parent_id) : undefined
+    return e
+  }
+  /** Where `createBlock` puts the new Block (host API 3, Q31): beside the Block, inside it (`self`, only in a tree
+   * control), or under an entity / the entity a binding names — a composite needs a slot of its definition. */
+  const parentOf = (a: Record<string, Json>, renderer: string): { parentId: string; slot?: string; laidOut: boolean } => {
+    const spec = a.parent
+    if (spec === undefined || spec === null) {
+      if (!anchor.parent_id) throw new Error(aiwsT('aiworkspace.extension.notOnCanvas'))
+      const host = enclosing(anchor.parent_id)
+      return { parentId: anchor.parent_id, slot: anchor.slot ?? undefined, laidOut: anchor.parent_id !== host?.entity_id || host?.kind === 'mindmap' || (isComposite(host) && !isFixedComposite(store, host.entity_id)) }
+    }
+    const id = spec === 'self' ? anchor.entity_id
+      : typeof spec === 'string' ? spec
+        : typeof spec === 'object' && !Array.isArray(spec) && typeof spec.binding === 'string' ? binding(spec.binding).entity_id : ''
+    if (!id) throw new Error(aiwsT('aiworkspace.extension.parentShape'))
+    const parent = store.outline.get(id)
+    if (!parent || parent.deleted) throw new Error(aiwsT('aiworkspace.extension.parentMissing', { id }))
+    const tree = enclosing(id)?.kind === 'mindmap'
+    if (spec === 'self' && !(parent.type_id === 'buckyos.cell' && tree)) throw new Error(aiwsT('aiworkspace.extension.selfOutsideTree'))
+    if (isComposite(parent)) {
+      const slot = typeof a.slot === 'string' ? a.slot : ''
+      if (!slot) throw new Error(aiwsT('aiworkspace.extension.slotRequired'))
+      const refused = slotRefusal(store, id, slot, { type_id: 'buckyos.cell', view_type: renderer, def_id: typeof a.def_id === 'string' ? a.def_id : null })
+      if (refused) throw new Error(aiwsT(refused === 'unknown' ? 'aiworkspace.extension.slotUnknown' : refused === 'full' ? 'aiworkspace.extension.slotFull' : 'aiworkspace.extension.slotRefuses', { slot }))
+      return { parentId: id, slot, laidOut: !isFixedComposite(store, id) }
+    }
+    if (parent.type_id === 'buckyos.cell' && !tree) throw new Error(aiwsT('aiworkspace.extension.parentNotContainer', { id }))
+    return { parentId: id, laidOut: tree || parent.kind === 'mindmap' }
+  }
+  const write = async (kind: string, name: string, args: Json | null): Promise<{ ops: Operation[]; entity_id?: string }> => {
+    const a = (args ?? {}) as Record<string, Json>
+    switch (kind) {
+      case 'upsert': {
+        const { b, meta } = await tableOf(name)
+        const rows = (a.rows as Record<string, Json>[] | null) ?? []
+        const key = (a.key as string[] | null) ?? []
+        const byName = new Map(meta.fields.map((f) => [f.name, f]))
+        for (const r of rows) for (const k of Object.keys(r)) if (k !== '_id' && !byName.has(k)) throw new Error(aiwsT('aiworkspace.extension.noTableField', { field: k }))
+        const current = await allRows({ entity_id: b.entity_id })
+        const keyOf = (values: Record<string, Json>, byField: boolean) => JSON.stringify(key.map((k) => {
+          const f = byName.get(k)
+          if (!f) throw new Error(aiwsT('aiworkspace.extension.noKeyField', { field: k }))
+          return byField ? plain(f, values[f.field_id]) ?? null : values[k] ?? null
+        }))
+        const index = new Map(current.map((r) => [key.length ? keyOf(r.values, true) : r.record_id, r]))
+        const inserts: { record_id: string; values: Record<string, Json> }[] = []
+        const sets: { record_id: string; field_id: string; value: Json; expect: { rev: number } }[] = []
+        for (const r of rows) {
+          const existing = typeof r._id === 'string' ? current.find((c) => c.record_id === r._id) : key.length ? index.get(keyOf(r, false)) : undefined
+          if (!existing) {
+            const values: Record<string, Json> = {}
+            for (const [k, v] of Object.entries(r)) { if (k === '_id') continue; const f = byName.get(k)!; const s = stored(f, v); if (s !== undefined) values[f.field_id] = s }
+            inserts.push({ record_id: `r${randomId().slice(0, 16)}`, values })
+            continue
+          }
+          for (const [k, v] of Object.entries(r)) {
+            if (k === '_id') continue
+            const f = byName.get(k)!
+            const s = stored(f, v)
+            if (s === undefined || JSON.stringify(existing.values[f.field_id]) === JSON.stringify(s)) continue
+            sets.push({ record_id: existing.record_id, field_id: f.field_id, value: s, expect: { rev: existing.revs[f.field_id] ?? 0 } })
+          }
+        }
+        const ops: Operation[] = []
+        if (inserts.length) ops.push({ op: 'table.insert_records', source_id: b.entity_id, records: inserts })
+        if (sets.length) ops.push({ op: 'table.set_values', source_id: b.entity_id, values: sets })
+        return { ops }
+      }
+      case 'setColumn': {
+        const { b, meta } = await tableOf(name)
+        const f = meta.fields.find((x) => x.name === a.field || x.field_id === a.field)
+        if (!f) throw new Error(aiwsT('aiworkspace.extension.noTableField', { field: String(a.field) }))
+        const current = new Map((await allRows({ entity_id: b.entity_id })).map((r) => [r.record_id, r]))
+        const values: { record_id: string; field_id: string; value: Json; expect: { rev: number } }[] = []
+        for (const [rid, v] of Object.entries((a.values ?? {}) as Record<string, Json>)) {
+          const r = current.get(rid)
+          if (!r) throw new Error(aiwsT('aiworkspace.extension.noRecord', { id: rid }))
+          const s = stored(f, v)
+          if (s === undefined || JSON.stringify(r.values[f.field_id]) === JSON.stringify(s)) continue
+          values.push({ record_id: rid, field_id: f.field_id, value: s, expect: { rev: r.revs[f.field_id] ?? 0 } })
+        }
+        return { ops: values.length ? [{ op: 'table.set_values', source_id: b.entity_id, values }] : [] }
+      }
+      case 'recordSet': {
+        const b = binding(name)
+        const rec = await store.session.read<RecordContent>(b.entity_id)
+        if (rec.type_id !== 'buckyos.record') throw new Error(aiwsT('aiworkspace.extension.notRecord', { name }))
+        const keys: { key: string; value: Json; expect: { rev: number } }[] = []
+        for (const [n, v] of Object.entries((a.props ?? {}) as Record<string, Json>)) {
+          const p = rec.content.schema.properties.find((x) => x.name === n || x.key === n)
+          if (!p) throw new Error(aiwsT('aiworkspace.extension.noProperty', { property: n }))
+          const s = stored({ ...p, field_id: p.key, def_rev: 0, type_rev: 0, values_rev: 0 } as FieldDef, v)
+          if (s === undefined || JSON.stringify(rec.content.props[p.key]) === JSON.stringify(s)) continue
+          keys.push({ key: `p:${p.key}`, value: s, expect: { rev: rec.content.key_revs[`p:${p.key}`] ?? 0 } })
+        }
+        return { ops: keys.length ? [{ op: 'entity.set_keys', entity_id: b.entity_id, keys }] : [] }
+      }
+      case 'setMarkdown': {
+        const b = binding(name)
+        const rt = await store.session.read<RichTextContent>(b.entity_id)
+        if (rt.type_id !== 'buckyos.richtext') throw new Error(aiwsT('aiworkspace.extension.notRichText', { name }))
+        const ast = store.core.markdown_to_richtext(String(a.markdown ?? ''), `x${randomId().slice(0, 6).toLowerCase()}`, undefined)
+        const ops = JSON.parse(store.core.richtext_diff(b.entity_id, JSON.stringify(rt.content.content), ast, JSON.stringify(rt.content.blocks))) as Operation[]
+        return { ops }
+      }
+      case 'createBlock': {
+        const data = typeof a.data === 'string' ? (bindings[a.data]?.entity_id ?? a.data) : null
+        const renderer = String(a.renderer ?? '')
+        if (!renderer) throw new Error(aiwsT('aiworkspace.extension.createBlockNeedsRenderer'))
+        const where = parentOf(a, renderer)
+        const p = (a.placement ?? {}) as { x?: number; y?: number; w?: number; h?: number }
+        const last = store.outline.childrenOf(where.parentId).at(-1)?.order_key ?? undefined
+        const id = `blk-${randomId().slice(0, 12).toLowerCase()}`
+        const placement: StoredPlacement = where.laidOut
+          ? { ...ALL_AUTO, w: p.w ?? 360, h: p.h ?? 240 }
+          : (() => { const here = numericPlacement(anchor.placement, { x: 0, y: 0, w: 320, h: 200 }); return { x: p.x ?? (where.parentId === anchor.parent_id ? here.x + here.w + 40 : 12), y: p.y ?? (where.parentId === anchor.parent_id ? here.y : 12), w: p.w ?? 360, h: p.h ?? 240 } })()
+        const op: Operation = {
+          op: 'entity.create', entity_id: id, type_id: 'buckyos.cell', parent_id: where.parentId, order_key: store.core.order_key_between(last, undefined), placement,
+          payload: { view: { type: renderer }, ...(data ? { source_ref: { entity_id: data } } : {}), ...(typeof a.title === 'string' ? { title: a.title } : {}), ...(a.config ? { config: a.config } : {}), ...(where.slot ? { slot: where.slot } : {}) },
+        }
+        return { ops: [op], entity_id: id }
+      }
+      default: throw new Error(aiwsT('aiworkspace.extension.unknownWrite', { kind }))
+    }
+  }
+  /** The entity a typed write changes (for the run-mode write rule). */
+  const subject = (kind: string, name: string, args: Json | null): string => {
+    if (kind !== 'createBlock') return binding(name).entity_id
+    const a = (args ?? {}) as Record<string, Json>
+    try { return parentOf(a, String(a.renderer ?? '')).parentId } catch { return anchor.parent_id ?? anchor.entity_id }
+  }
+  return { binding, tableOf, allRows, write, subject }
+}
+
+export function makeBridge(store: WorkspaceStore, target: BridgeTarget, onSnapshot?: (objectId: string, mediaType: string) => void): HostBridge {
+  const bindings = bindingsOf(target.payload)
+  const interactive = target.interactive === true
+  const writer = typedWriter(store, target.cell, bindings)
+  const { binding, tableOf, allRows } = writer
+  const batches = new Map<string, { label: string; operations: Operation[] }>()
+  const requireWrites = (entityId: string = target.cell.entity_id) => { if (!writeAllowed(store, target.mode, interactive, entityId)) throw new Error(aiwsT('aiworkspace.extension.writesNotAllowed', { mode: target.mode })) }
+  const submit = async (operations: Operation[], label: string): Promise<Json> => {
+    requireWrites()
+    if (!Array.isArray(operations) || operations.length === 0) throw new Error(aiwsT('aiworkspace.extension.emptyOperations'))
+    const outcome = await store.submit({ editId: `ext:${target.cell.entity_id}:${Date.now()}`, label: label || aiwsT('aiworkspace.extension.editLabel', { name: target.payload.view.type }), operations })
+    return outcome as unknown as Json
   }
   /** Collect into a batch, or submit now. */
   const emit = async (operations: Operation[], label: string, batch: string | null): Promise<Json> => {
@@ -132,6 +290,7 @@ export function makeBridge(store: WorkspaceStore, target: BridgeTarget, onSnapsh
         return [name, { entity_id: b.entity_id, type_id: e?.type_id ?? null, title: e?.title ?? e?.name ?? null, selector: (b.selector ?? null) as Json }]
       })),
       mode: target.mode,
+      interactive,
       principal: store.session.principal,
       workspace_id: store.session.workspaceId,
       ...(target.extra ?? {}),
@@ -155,16 +314,33 @@ export function makeBridge(store: WorkspaceStore, target: BridgeTarget, onSnapsh
       const bytes = match[2] ? Uint8Array.from(atob(match[3]), (c) => c.charCodeAt(0)) : new TextEncoder().encode(decodeURIComponent(match[3]))
       const uploaded = await store.session.uploadAsset(new Blob([bytes], { type: mediaType }), `snapshot.${mediaType.includes('svg') ? 'svg' : mediaType.includes('png') ? 'png' : 'bin'}`)
       const snapshot = { object_id: uploaded.object_id, media_type: uploaded.media_type, size: uploaded.size }
-      // the snapshot is bookkeeping of the Block, not a user edit: no undo entry; a concurrent config edit wins
+      // the snapshot is bookkeeping of the Block, not a user edit: no undo entry; it is one property of `config`, so
+      // a concurrent edit of another property stays (Q28)
       const current = await store.session.read<KeyedContent<CellPayload>>(target.cell.entity_id)
-      const outcome = await store.submit({
-        editId: `ext-snapshot:${target.cell.entity_id}`, label: aiwsT('aiworkspace.extension.snapshotLabel'), undoable: false,
-        operations: [{ op: 'entity.set_keys', entity_id: target.cell.entity_id, keys: [{ key: 'config', value: { ...(current.content.payload.config ?? {}), snapshot } as Json, expect: { rev: current.content.key_revs.config ?? 0 } }] }],
+      const outcome = await submitProps(store, {
+        entityId: target.cell.entity_id, key: 'config', props: { snapshot: snapshot as unknown as Json }, keyRevs: current.content.key_revs, defId: current.content.payload.def_ref?.entity_id,
+        label: aiwsT('aiworkspace.extension.snapshotLabel'), editId: `ext-snapshot:${target.cell.entity_id}`, undoable: false,
       })
-      if (outcome.status !== 'accepted' && outcome.status !== 'saved_locally') throw new Error(aiwsT('aiworkspace.extension.snapshotNotSaved'))
+      if (outcome && outcome.status !== 'accepted' && outcome.status !== 'saved_locally') throw new Error(aiwsT('aiworkspace.extension.snapshotNotSaved'))
       onSnapshot?.(uploaded.object_id, uploaded.media_type)
     },
     notify: (text) => store.notify('info', text),
+    // a file of the definition's source snapshot that its component.json lists in `assets` (P1, additive to API 2)
+    asset: async (name) => {
+      const defId = (target.payload.def_ref as { entity_id?: string } | undefined)?.entity_id
+      if (!defId) throw new Error(aiwsT('aiworkspace.extension.assetNoDefinition'))
+      const def = await store.session.read<KeyedContent<{ source_dir?: { entity_id: string } }>>(defId)
+      const dirId = def.content.payload.source_dir?.entity_id
+      if (!dirId) throw new Error(aiwsT('aiworkspace.extension.assetNoSnapshot'))
+      const dir = await store.session.read<KeyedContent<{ members?: Record<string, { object_id?: string; media_type?: string }> }>>(dirId)
+      const members = dir.content.payload.members ?? {}
+      const component = members['component.json']?.object_id
+      const listed = component ? ((JSON.parse(await (await store.session.fetchAsset(component)).text()) as { assets?: unknown }).assets) : undefined
+      const member = members[name]
+      if (!Array.isArray(listed) || !listed.includes(name) || !member?.object_id) throw new Error(aiwsT('aiworkspace.extension.assetNotListed', { name }))
+      const blob = await store.session.fetchAsset(member.object_id)
+      return { bytes: new Uint8Array(await blob.arrayBuffer()), media_type: member.media_type ?? blob.type ?? '' }
+    },
 
     // ---- v2 reads
     input: async (name, what, args) => {
@@ -248,103 +424,15 @@ export function makeBridge(store: WorkspaceStore, target: BridgeTarget, onSnapsh
 
     // ---- v2 typed writes
     write: async (kind, name, args, batch) => {
-      requireWrites()
-      const a = (args ?? {}) as Record<string, Json>
+      requireWrites(writer.subject(kind, name, args))
       const label = aiwsT('aiworkspace.extension.editLabel', { name: target.payload.title ?? target.payload.view.type })
-      switch (kind) {
-        case 'upsert': {
-          const { b, meta } = await tableOf(name)
-          const rows = (a.rows as Record<string, Json>[] | null) ?? []
-          const key = (a.key as string[] | null) ?? []
-          const byName = new Map(meta.fields.map((f) => [f.name, f]))
-          for (const r of rows) for (const k of Object.keys(r)) if (k !== '_id' && !byName.has(k)) throw new Error(aiwsT('aiworkspace.extension.noTableField', { field: k }))
-          const current = await allRows({ entity_id: b.entity_id })
-          const keyOf = (values: Record<string, Json>, byField: boolean) => JSON.stringify(key.map((k) => {
-            const f = byName.get(k)
-            if (!f) throw new Error(aiwsT('aiworkspace.extension.noKeyField', { field: k }))
-            return byField ? plain(f, values[f.field_id]) ?? null : values[k] ?? null
-          }))
-          const index = new Map(current.map((r) => [key.length ? keyOf(r.values, true) : r.record_id, r]))
-          const inserts: { record_id: string; values: Record<string, Json> }[] = []
-          const sets: { record_id: string; field_id: string; value: Json; expect: { rev: number } }[] = []
-          for (const r of rows) {
-            const existing = typeof r._id === 'string' ? current.find((c) => c.record_id === r._id) : key.length ? index.get(keyOf(r, false)) : undefined
-            if (!existing) {
-              const values: Record<string, Json> = {}
-              for (const [k, v] of Object.entries(r)) { if (k === '_id') continue; const f = byName.get(k)!; const s = stored(f, v); if (s !== undefined) values[f.field_id] = s }
-              inserts.push({ record_id: `r${randomId().slice(0, 16)}`, values })
-              continue
-            }
-            for (const [k, v] of Object.entries(r)) {
-              if (k === '_id') continue
-              const f = byName.get(k)!
-              const s = stored(f, v)
-              if (s === undefined || JSON.stringify(existing.values[f.field_id]) === JSON.stringify(s)) continue
-              sets.push({ record_id: existing.record_id, field_id: f.field_id, value: s, expect: { rev: existing.revs[f.field_id] ?? 0 } })
-            }
-          }
-          const ops: Operation[] = []
-          if (inserts.length) ops.push({ op: 'table.insert_records', source_id: b.entity_id, records: inserts })
-          if (sets.length) ops.push({ op: 'table.set_values', source_id: b.entity_id, values: sets })
-          return emit(ops, label, batch)
-        }
-        case 'setColumn': {
-          const { b, meta } = await tableOf(name)
-          const f = meta.fields.find((x) => x.name === a.field || x.field_id === a.field)
-          if (!f) throw new Error(aiwsT('aiworkspace.extension.noTableField', { field: String(a.field) }))
-          const current = new Map((await allRows({ entity_id: b.entity_id })).map((r) => [r.record_id, r]))
-          const values: { record_id: string; field_id: string; value: Json; expect: { rev: number } }[] = []
-          for (const [rid, v] of Object.entries((a.values ?? {}) as Record<string, Json>)) {
-            const r = current.get(rid)
-            if (!r) throw new Error(aiwsT('aiworkspace.extension.noRecord', { id: rid }))
-            const s = stored(f, v)
-            if (s === undefined || JSON.stringify(r.values[f.field_id]) === JSON.stringify(s)) continue
-            values.push({ record_id: rid, field_id: f.field_id, value: s, expect: { rev: r.revs[f.field_id] ?? 0 } })
-          }
-          return emit(values.length ? [{ op: 'table.set_values', source_id: b.entity_id, values }] : [], label, batch)
-        }
-        case 'recordSet': {
-          const b = binding(name)
-          const rec = await store.session.read<RecordContent>(b.entity_id)
-          if (rec.type_id !== 'buckyos.record') throw new Error(aiwsT('aiworkspace.extension.notRecord', { name }))
-          const keys: { key: string; value: Json; expect: { rev: number } }[] = []
-          for (const [n, v] of Object.entries((a.props ?? {}) as Record<string, Json>)) {
-            const p = rec.content.schema.properties.find((x) => x.name === n || x.key === n)
-            if (!p) throw new Error(aiwsT('aiworkspace.extension.noProperty', { property: n }))
-            const s = stored({ ...p, field_id: p.key, def_rev: 0, type_rev: 0, values_rev: 0 } as FieldDef, v)
-            if (s === undefined || JSON.stringify(rec.content.props[p.key]) === JSON.stringify(s)) continue
-            keys.push({ key: `p:${p.key}`, value: s, expect: { rev: rec.content.key_revs[`p:${p.key}`] ?? 0 } })
-          }
-          return emit(keys.length ? [{ op: 'entity.set_keys', entity_id: b.entity_id, keys }] : [], label, batch)
-        }
-        case 'setMarkdown': {
-          const b = binding(name)
-          const rt = await store.session.read<RichTextContent>(b.entity_id)
-          if (rt.type_id !== 'buckyos.richtext') throw new Error(aiwsT('aiworkspace.extension.notRichText', { name }))
-          const ast = store.core.markdown_to_richtext(String(a.markdown ?? ''), `x${randomId().slice(0, 6).toLowerCase()}`, undefined)
-          const ops = JSON.parse(store.core.richtext_diff(b.entity_id, JSON.stringify(rt.content.content), ast, JSON.stringify(rt.content.blocks))) as Operation[]
-          return emit(ops, label, batch)
-        }
-        case 'createBlock': {
-          const data = typeof a.data === 'string' ? (bindings[a.data]?.entity_id ?? a.data) : null
-          const renderer = String(a.renderer ?? '')
-          if (!renderer) throw new Error(aiwsT('aiworkspace.extension.createBlockNeedsRenderer'))
-          const parentId = target.cell.parent_id
-          if (!parentId) throw new Error(aiwsT('aiworkspace.extension.notOnCanvas'))
-          const here = numericPlacement(target.cell.placement, { x: 0, y: 0, w: 320, h: 200 })
-          const p = (a.placement ?? {}) as { x?: number; y?: number; w?: number; h?: number }
-          const last = store.outline.childrenOf(parentId).at(-1)?.order_key ?? undefined
-          const id = `blk-${randomId().slice(0, 12).toLowerCase()}`
-          const op: Operation = {
-            op: 'entity.create', entity_id: id, type_id: 'buckyos.cell', parent_id: parentId, order_key: store.core.order_key_between(last, undefined),
-            placement: { x: p.x ?? here.x + here.w + 40, y: p.y ?? here.y, w: p.w ?? 360, h: p.h ?? 240 },
-            payload: { view: { type: renderer }, ...(data ? { source_ref: { entity_id: data } } : {}), ...(typeof a.title === 'string' ? { title: a.title } : {}), ...(a.config ? { config: a.config } : {}) },
-          }
-          const r = await emit([op], label, batch)
-          return { ...(r as Record<string, Json>), entity_id: id }
-        }
-        default: throw new Error(aiwsT('aiworkspace.extension.unknownWrite', { kind }))
-      }
+      const made = await writer.write(kind, name, args)
+      const r = await emit(made.ops, label, batch)
+      return made.entity_id ? { ...(r as Record<string, Json>), entity_id: made.entity_id } : r
+    },
+    emit: (name, params) => {
+      if (!target.onEmit) return Promise.reject(new Error(aiwsT('aiworkspace.extension.notProvided', { type: 'emit' })))
+      return target.onEmit(name, params)
     },
     batch: async (action, id, label) => {
       if (action === 'begin') {

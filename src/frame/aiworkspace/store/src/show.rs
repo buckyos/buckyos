@@ -6,8 +6,7 @@
 
 use crate::docdb::{db_err, meta_get, meta_set};
 use crate::service::Service;
-use crate::workspace::{random_id, Workspace};
-use aiworkspace_core::id::is_prefixed_id;
+use crate::workspace::Workspace;
 use aiworkspace_core::{Code, WsError, WsResult};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::{json, Value};
@@ -115,7 +114,8 @@ impl Service {
     /// hard-linked), user state, locks and uploads are not. Objects are in the named store and the clone reads them
     /// through the source's bindings, sharing every asset, snapshot and program without copying a byte. Returns its id.
     pub fn clone_for_show(&self, source_id: &str, show_id: &str, expires_at: &str) -> WsResult<String> {
-        let id = random_id("ws_");
+        let lease = self.allocate_workspace_id()?;
+        let id = lease.id.clone();
         let tmp = self.tmp_dir();
         let built = (|| -> WsResult<()> {
             std::fs::create_dir_all(&tmp).map_err(io)?;
@@ -195,7 +195,7 @@ impl Service {
     fn live_clones(&self, ws: &Workspace) -> WsResult<Vec<String>> {
         let list: Option<String> = ws.local.query_row("SELECT value FROM local_meta WHERE key = 'show_clones'", [], |r| r.get(0)).optional().map_err(db_err)?;
         let ids: Vec<String> = list.and_then(|l| serde_json::from_str(&l).ok()).unwrap_or_default();
-        Ok(ids.into_iter().filter(|id| is_prefixed_id("ws_", id) && self.ws_dir(id).exists()).collect())
+        Ok(ids.into_iter().filter(|id| aiworkspace_core::id::is_workspace_id(id) && self.ws_dir(id).exists()).collect())
     }
 
     /// Clones a crashed or restarted service left behind (their shows ended with it).

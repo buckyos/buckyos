@@ -82,14 +82,19 @@ export class Replica {
  */
 export function canonical_json(json_text: string): string;
 
-export function chunk_id(data: Uint8Array): string;
+export function chunk_id(data: Uint8Array | number[]): string;
+
+/**
+ * The id a `tree.clone` seeded with `seed` gives the copy of `old` (the same on the service and in a replica).
+ */
+export function clone_id(seed: string, old: string): string;
 
 export function core_version(): string;
 
 /**
  * FileObject id of a single-chunk file with these bytes.
  */
-export function file_object_id(data: Uint8Array): string;
+export function file_object_id(data: Uint8Array | number[]): string;
 
 /**
  * Markdown → canonical rich text AST (the same conversion the service applies to written wish
@@ -124,7 +129,7 @@ export function richtext_canonicalize(ast_json: string): string;
 /**
  * Decode a Loro snapshot (optionally followed by updates) into the canonical AST.
  */
-export function richtext_decode(snapshot: Uint8Array): string;
+export function richtext_decode(snapshot: Uint8Array | number[]): string;
 
 /**
  * Block-level operations turning `base` into `target` (explicit draft commit).
@@ -161,6 +166,7 @@ export interface InitOutput {
     readonly __wbg_replica_free: (a: number, b: number) => void;
     readonly canonical_json: (a: number, b: number, c: number) => void;
     readonly chunk_id: (a: number, b: number, c: number) => void;
+    readonly clone_id: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly core_version: (a: number) => void;
     readonly file_object_id: (a: number, b: number, c: number) => void;
     readonly markdown_to_richtext: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
@@ -199,10 +205,14 @@ export interface InitOutput {
     readonly wish_config_digest: (a: number, b: number, c: number) => void;
     readonly wish_needs_analysis: (a: number, b: number, c: number) => void;
     readonly __wbindgen_export: (a: number) => void;
+    readonly __wbindgen_export2: () => number;
+    readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
-    readonly __wbindgen_export2: (a: number, b: number) => number;
-    readonly __wbindgen_export3: (a: number, b: number, c: number, d: number) => number;
-    readonly __wbindgen_export4: (a: number, b: number, c: number) => void;
+    readonly __wbindgen_export3: (a: number, b: number) => number;
+    readonly __wbindgen_export4: (a: number, b: number, c: number, d: number) => number;
+    readonly __wbindgen_export5: (a: number, b: number, c: number) => void;
+    readonly __wbindgen_export6: (a: number) => void;
+    readonly __wbindgen_start: () => void;
 }
 
 export type SyncInitInput = BufferSource | WebAssembly.Module;

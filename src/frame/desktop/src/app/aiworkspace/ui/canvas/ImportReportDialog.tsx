@@ -17,6 +17,7 @@ export function ImportReportDialog({ outcome, onClose, onStartShow }: { outcome:
     <div className="aiws-modal-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
       <div className="aiws-dialog aiws-import-report" role="dialog" aria-modal="true" aria-label={t('aiworkspace.drawio.report.title')} data-testid="aiws-import-report" onKeyDown={(event) => { if (event.key === 'Escape') onClose() }}>
         <b>{t(outcome.kind === 'pdf' ? (outcome.error ? 'aiworkspace.pdf.report.headingStopped' : 'aiworkspace.pdf.report.headingDone')
+          : outcome.kind === 'office' ? (outcome.error ? 'aiworkspace.office.report.headingStopped' : 'aiworkspace.office.report.headingDone')
           : outcome.kind === 'table' ? (outcome.error ? 'aiworkspace.import.report.headingStopped' : 'aiworkspace.import.report.headingDone')
             : outcome.error ? 'aiworkspace.drawio.report.headingStopped' : 'aiworkspace.drawio.report.headingDone', { name: outcome.name })}</b>
         {outcome.error && <div className="aiws-error" role="alert" data-testid="aiws-import-error">{outcome.error}</div>}
@@ -25,7 +26,7 @@ export function ImportReportDialog({ outcome, onClose, onStartShow }: { outcome:
         </div>
         {notes.length > 0 ? (
           <>
-            <div>{outcome.kind === 'pdf' ? t('aiworkspace.pdf.report.notKept') : outcome.kind === 'table' ? t('aiworkspace.import.report.notKept') : tNode('aiworkspace.drawio.report.notKept', { code: <code>config.drawio</code> })}</div>
+            <div>{outcome.kind === 'pdf' ? t('aiworkspace.pdf.report.notKept') : outcome.kind === 'office' ? t('aiworkspace.office.report.notKept') : outcome.kind === 'table' ? t('aiworkspace.import.report.notKept') : tNode('aiworkspace.drawio.report.notKept', { code: <code>config.drawio</code> })}</div>
             <ul className="aiws-import-notes" data-testid="aiws-import-notes">
               {notes.map((note) => (
                 <li key={note.kind} data-kind={note.kind}>
@@ -36,6 +37,7 @@ export function ImportReportDialog({ outcome, onClose, onStartShow }: { outcome:
             </ul>
           </>
         ) : !outcome.error && <div>{t('aiworkspace.drawio.report.allKept')}</div>}
+        {outcome.kind === 'office' && outcome.hint && <div className="aiws-muted" data-testid="aiws-import-hint">{outcome.hint}</div>}
         <div className="aiws-dialog-actions">
           {onStartShow && <button type="button" onClick={onStartShow} data-testid="aiws-import-report-show">{t('aiworkspace.pdf.startShow')}</button>}
           <button type="button" className="is-primary" autoFocus onClick={onClose} data-testid="aiws-import-report-close">{t('aiworkspace.drawio.report.gotIt')}</button>

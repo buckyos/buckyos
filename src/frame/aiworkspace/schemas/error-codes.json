@@ -23,7 +23,9 @@
     "TREE_CYCLE",
     "CHILD_NOT_ALLOWED",
     "SOURCE_READ_ONLY",
-    "SLOT_CONFLICT"
+    "SLOT_CONFLICT",
+    "EXT_IDENT_EXISTS",
+    "EXT_LOCAL_CHANGES"
    ]
   },
   {
@@ -216,13 +218,19 @@
    "code": "BUILD_FAILED",
    "retryable": false,
    "status": "rejected",
-   "meaning": "ext.build refused a control's source; data.diagnostics lists { file, line?, col?, severity, message, instances? }. Nothing was committed."
+   "meaning": "ext.build / ext.upgrade refused a control's source; data.diagnostics lists { file, line?, col?, severity, message, code?, instances?, dependents? } (code DEP_MISSING: a deps entry or a slot's cell:<ident> names no definition here; code EVENT_UNDECLARED: a composite bubbles an event no cell:<ident> of that slot declares, or a button emits an undeclared event). Nothing was committed."
   },
   {
    "code": "LIBRARY_PACKAGE_INVALID",
    "retryable": false,
    "status": "rejected",
-   "meaning": "A control package (.pikg of type aiws, or a bundle) is malformed or tampered, or the same package id and version already holds other content."
+   "meaning": "A control package (.pikg of type aiws, or a bundle) is malformed or tampered, misses a control another one depends on, or the same package id and version already holds other content."
+  },
+  {
+   "code": "REFERENCE_CYCLE",
+   "retryable": false,
+   "status": "rejected",
+   "meaning": "A control definition would depend on itself through def_dep references (deps); data { entity_id, cycle } names the path."
   }
  ]
 }

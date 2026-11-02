@@ -31,7 +31,7 @@ function ImportPdfDialog({ request, onClose }: { request: PdfImportRequest; onCl
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const abort = useRef<AbortController | null>(null)
   const { source } = request
-  const tooLarge = source.bytes.length > ASSET_LIMIT && !source.asset
+  const tooLarge = source.bytes.length > ASSET_LIMIT && !source.asset && !source.original
 
   useEffect(() => {
     if (step !== 'options' || inspection) return

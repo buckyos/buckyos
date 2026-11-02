@@ -1,5 +1,5 @@
 import { expect, editCell, grantPersistence, openCard, openDesktop, prepareOffline, saveSummary, serviceWorkerReady, test } from './offline-fixtures'
-import { closeWorkspace, openMock, openStatus, openWorkspacePage, backToList, workspacePage } from './fixtures'
+import { closeWorkspace, openMock, openSide, openStatus, openWorkspacePage, backToList, workspacePage } from './fixtures'
 
 const ALICE = 'tok-alice'
 
@@ -307,4 +307,34 @@ test('脑图 offline: the replica checks a mind map edit like the service (a nod
   const node = (await api.outline(ALICE, ws.workspace_id)).find((e: Record<string, unknown>) => e.title === '离线加的节点')
   expect(node?.parent_id).toBe('min-3')
   expect(node?.placement).toEqual({ x: 'auto', y: 'auto', w: 'auto', h: 'auto' })
+})
+
+test('扩展控件 Q29 offline: a property written offline while its control is rebuilt is refused on replay, with the notice', async ({ page, context, api, net }) => {
+  const ws = await api.freeCanvas(ALICE, `q29-offline ${Date.now()}`)
+  const component = (title: string) => ({ manifest_version: 3, ident: { author_did: 'did:bns:alice', name: 'q29-e2e' }, kind: 'declarative', title, allow_no_source: true, entry: 'declarative.json',
+    config_schema: { type: 'object', properties: { color: { type: 'string', default: '#000000' } } } })
+  const built = await api.build(ALICE, ws.workspace_id, { 'component.json': component('Q29'), 'declarative.json': { items: [{ kind: 'text', text: 'card' }] } })
+  expect((await api.commit(ALICE, ws, [{ op: 'entity.create', entity_id: 'card', type_id: 'buckyos.cell', parent_id: 'free', order_key: 'a', placement: { x: 40, y: 40, w: 240, h: 120 },
+    payload: { view: { type: 'declarative' }, def_ref: { entity_id: built.def_entity_id }, config: { color: '#000000' } } }])).status).toBe('accepted')
+  await api.rpc(ALICE, 'ws.set_user_state', { workspace_id: ws.workspace_id, entries: { 'surface:active': 'free', mode: 'canvas' } })
+  await prepareOffline(page, net, ALICE, ws.workspace_id)
+  await serviceWorkerReady(page)
+  await net.down()
+  await context.setOffline(true)
+  await expect(page.getByTestId('aiws-conn')).toHaveAttribute('data-status', 'offline', { timeout: 40_000 })
+  if (await page.getByTestId('aiws-top-canvas').isVisible()) await page.getByTestId('aiws-top-canvas').click()
+  await page.getByTestId('aiws-canvas-block-card').click()
+  await openSide(page, 'inspector')
+  await page.getByTestId('aiws-instance-config-color').fill('#ff0000')
+  await page.getByTestId('aiws-instance-config-color').press('Enter')
+  await openStatus(page)
+  await expect.poll(async () => (await saveSummary(page)).pending).toBe(1)
+  // meanwhile the control is rebuilt online: the form the write came from followed the old definition
+  await api.build(ALICE, ws.workspace_id, { 'component.json': component('Q29 v2'), 'declarative.json': { items: [{ kind: 'text', text: 'card v2' }] } }, { expect: { def_rev: built.def_rev, dir_rev: built.dir_rev } })
+  await context.setOffline(false)
+  await net.up()
+  await expect(page.getByTestId('aiws-conn')).toHaveAttribute('data-status', 'live', { timeout: 40_000 })
+  await expect(page.getByTestId('aiws-notice').filter({ hasText: '控件已更新' }).last()).toBeVisible({ timeout: 40_000 })
+  await expect.poll(async () => (await saveSummary(page)).attention, { timeout: 30_000 }).toBe(1)
+  expect((await api.read(ALICE, ws.workspace_id, 'card')).content.payload.config).toEqual({ color: '#000000' })
 })

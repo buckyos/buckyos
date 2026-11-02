@@ -1,0 +1,1519 @@
+{
+  "hidden": [
+    8
+  ],
+  "pages": [
+    {
+      "name": "Office Import Deck",
+      "pageColor": "#ffffff",
+      "pageSize": {
+        "w": 1920,
+        "h": 1080
+      },
+      "counts": {
+        "text": 2,
+        "images": 0,
+        "shapes": 0,
+        "rasterized": 0,
+        "placeholders": 0
+      },
+      "items": [
+        {
+          "key": "s1",
+          "parent": null,
+          "type": "group",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1080
+          },
+          "rotation": 0,
+          "config": {}
+        },
+        {
+          "key": "s1~frame",
+          "parent": "s1",
+          "type": "frame",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1080
+          },
+          "rotation": 0,
+          "title": "Office Import Deck",
+          "config": {
+            "color": "#9ca3af",
+            "fill": "#ffffff",
+            "stroke_width": 1,
+            "radius": 0,
+            "office_source": {
+              "file": "basic.lo.pptx",
+              "slide": 1
+            }
+          },
+          "payload": {
+            "presentation": {
+              "background": "#ffffff"
+            }
+          }
+        },
+        {
+          "key": "s1~0",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 122.4,
+            "y": 342.71,
+            "w": 1195.14,
+            "h": 217.02
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "none",
+            "stroke": "none",
+            "stroke_width": 0,
+            "text": "Office Import Deck",
+            "font_size": 88,
+            "font_color": "#000000",
+            "align": "center",
+            "valign": "middle",
+            "line_height": 1.2,
+            "office_source": {
+              "slide": 1,
+              "kind": "text"
+            },
+            "shape": "text"
+          },
+          "title": "Office Import Deck"
+        },
+        {
+          "key": "s1~1",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 230.4,
+            "y": 619.2,
+            "w": 979.14,
+            "h": 261.52
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "none",
+            "stroke": "none",
+            "stroke_width": 0,
+            "text": "生成的测试幻灯片",
+            "font_size": 64,
+            "font_color": "#8c8c8c",
+            "align": "center",
+            "valign": "top",
+            "line_height": 1.2,
+            "office_source": {
+              "slide": 1,
+              "kind": "text"
+            },
+            "shape": "text"
+          },
+          "title": "生成的测试幻灯片"
+        }
+      ]
+    },
+    {
+      "name": "Agenda",
+      "pageColor": "#ffffff",
+      "pageSize": {
+        "w": 1920,
+        "h": 1080
+      },
+      "counts": {
+        "text": 2,
+        "images": 0,
+        "shapes": 0,
+        "rasterized": 0,
+        "placeholders": 0
+      },
+      "items": [
+        {
+          "key": "s2",
+          "parent": null,
+          "type": "group",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1080
+          },
+          "rotation": 0,
+          "config": {}
+        },
+        {
+          "key": "s2~frame",
+          "parent": "s2",
+          "type": "frame",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1080
+          },
+          "rotation": 0,
+          "title": "Agenda",
+          "config": {
+            "color": "#9ca3af",
+            "fill": "#ffffff",
+            "stroke_width": 1,
+            "radius": 0,
+            "office_source": {
+              "file": "basic.lo.pptx",
+              "slide": 2
+            }
+          },
+          "payload": {
+            "presentation": {
+              "background": "#ffffff"
+            }
+          }
+        },
+        {
+          "key": "s2~0",
+          "parent": "s2",
+          "type": "shape",
+          "rect": {
+            "x": 86.4,
+            "y": 50.46,
+            "w": 1267.14,
+            "h": 165.54
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "none",
+            "stroke": "none",
+            "stroke_width": 0,
+            "text": "Agenda",
+            "font_size": 88,
+            "font_color": "#000000",
+            "align": "center",
+            "valign": "middle",
+            "line_height": 1.2,
+            "office_source": {
+              "slide": 2,
+              "kind": "text"
+            },
+            "shape": "text"
+          },
+          "title": "Agenda"
+        },
+        {
+          "key": "s2~1",
+          "parent": "s2",
+          "type": "shape",
+          "rect": {
+            "x": 86.4,
+            "y": 259.2,
+            "w": 1267.14,
+            "h": 698.29
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "none",
+            "stroke": "none",
+            "stroke_width": 0,
+            "text": "• Why import Office files\n  – Editable pages\n    • Pictures and shapes\n• High fidelity with LibreOffice",
+            "font_size": 64,
+            "font_color": "#000000",
+            "align": "left",
+            "valign": "top",
+            "line_height": 1.2,
+            "office_source": {
+              "slide": 2,
+              "kind": "text"
+            },
+            "shape": "text"
+          },
+          "title": "• Why import Office files"
+        }
+      ]
+    },
+    {
+      "name": "Shapes",
+      "pageColor": "#ffffff",
+      "pageSize": {
+        "w": 1920,
+        "h": 1080
+      },
+      "counts": {
+        "text": 4,
+        "images": 0,
+        "shapes": 7,
+        "rasterized": 0,
+        "placeholders": 0
+      },
+      "items": [
+        {
+          "key": "s3",
+          "parent": null,
+          "type": "group",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1080
+          },
+          "rotation": 0,
+          "config": {}
+        },
+        {
+          "key": "s3~frame",
+          "parent": "s3",
+          "type": "frame",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1080
+          },
+          "rotation": 0,
+          "title": "Shapes",
+          "config": {
+            "color": "#9ca3af",
+            "fill": "#ffffff",
+            "stroke_width": 1,
+            "radius": 0,
+            "office_source": {
+              "file": "basic.lo.pptx",
+              "slide": 3
+            }
+          },
+          "payload": {
+            "presentation": {
+              "background": "#ffffff"
+            }
+          }
+        },
+        {
+          "key": "s3~0",
+          "parent": "s3",
+          "type": "shape",
+          "rect": {
+            "x": 86.4,
+            "y": 50.46,
+            "w": 1267.14,
+            "h": 165.54
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "none",
+            "stroke": "none",
+            "stroke_width": 0,
+            "text": "Shapes",
+            "font_size": 88,
+            "font_color": "#000000",
+            "align": "center",
+            "valign": "middle",
+            "line_height": 1.2,
+            "office_source": {
+              "slide": 3,
+              "kind": "text"
+            },
+            "shape": "text"
+          },
+          "title": "Shapes"
+        },
+        {
+          "key": "s3~1",
+          "parent": "s3",
+          "type": "shape",
+          "rect": {
+            "x": 72,
+            "y": 230.4,
+            "w": 345.54,
+            "h": 201.54
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "#2563eb",
+            "stroke": "#1e3a8a",
+            "stroke_width": 4,
+            "text": "Blue box",
+            "font_size": 36,
+            "font_color": "#ffffff",
+            "align": "center",
+            "valign": "middle",
+            "line_height": 1.2,
+            "office_source": {
+              "slide": 3,
+              "kind": "text"
+            },
+            "shape": "rect"
+          },
+          "title": "Blue box"
+        },
+        {
+          "key": "s3~2",
+          "parent": "s3",
+          "type": "shape",
+          "rect": {
+            "x": 475.2,
+            "y": 230.4,
+            "w": 345.54,
+            "h": 201.54
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "#d99694",
+            "stroke": "#4a7ebb",
+            "stroke_width": 1.5,
+            "text": "Accent 2, lighter",
+            "font_size": 36,
+            "font_color": "#ffffff",
+            "align": "left",
+            "valign": "middle",
+            "line_height": 1.2,
+            "office_source": {
+              "slide": 3,
+              "kind": "text"
+            },
+            "shape": "rect",
+            "radius": 33.59
+          },
+          "title": "Accent 2, lighter"
+        },
+        {
+          "key": "s3~3",
+          "parent": "s3",
+          "type": "shape",
+          "rect": {
+            "x": 878.4,
+            "y": 230.4,
+            "w": 230.34,
+            "h": 201.54
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "#e46c0a",
+            "stroke": "#4a7ebb",
+            "stroke_width": 1.5,
+            "office_source": {
+              "slide": 3,
+              "kind": "shape"
+            },
+            "shape": "ellipse"
+          }
+        },
+        {
+          "key": "s3~4",
+          "parent": "s3",
+          "type": "shape",
+          "rect": {
+            "x": 1165.65,
+            "y": 229.65,
+            "w": 231.84,
+            "h": 203.04
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "#3e7fcc",
+            "stroke": "#4a7ebb",
+            "stroke_width": 1.5,
+            "office_source": {
+              "slide": 3,
+              "kind": "shape"
+            },
+            "shape": "svg",
+            "svg": {
+              "viewBox": "0 0 231.84 203.04",
+              "body": "<g transform=\"translate(0.75 0.75)\"><defs><linearGradient id=\"t3_g0\" x1=\"0.5\" y1=\"1\" x2=\"0.5\" y2=\"0\"><stop offset=\"0\" stop-color=\"#3e7fcc\"/><stop offset=\"1\" stop-color=\"#a4c1ff\"/></linearGradient></defs><path d=\"M0 201.54L115.17 0L230.34 201.54Z\" fill=\"url(#t3_g0)\" stroke=\"var(--aiws-shape-stroke)\" stroke-width=\"1.5\"/></g>",
+              "aspect": "stretch"
+            }
+          }
+        },
+        {
+          "key": "s3~5",
+          "parent": "s3",
+          "type": "shape",
+          "rect": {
+            "x": 1453.59,
+            "y": 229.59,
+            "w": 347.04,
+            "h": 174.24
+          },
+          "rotation": 30,
+          "config": {
+            "fill": "#3e7fcc",
+            "stroke": "#4a7ebb",
+            "stroke_width": 1.5,
+            "office_source": {
+              "slide": 3,
+              "kind": "shape"
+            },
+            "shape": "svg",
+            "svg": {
+              "viewBox": "0 0 347.04 174.24",
+              "body": "<g transform=\"translate(0.75 0.75)\"><defs><linearGradient id=\"t3_g1\" x1=\"0.25\" y1=\"0.93\" x2=\"0.75\" y2=\"0.07\"><stop offset=\"0\" stop-color=\"#3e7fcc\"/><stop offset=\"1\" stop-color=\"#a4c1ff\"/></linearGradient></defs><path d=\"M0 43.19L259.17 43.19L259.17 0L345.54 86.37L259.17 172.74L259.17 129.56L0 129.56Z\" fill=\"url(#t3_g1)\" stroke=\"var(--aiws-shape-stroke)\" stroke-width=\"1.5\"/></g>",
+              "aspect": "stretch"
+            }
+          }
+        },
+        {
+          "key": "s3~6",
+          "parent": "s3",
+          "type": "shape",
+          "rect": {
+            "x": 71.25,
+            "y": 517.65,
+            "w": 260.64,
+            "h": 260.64
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "#f59e0b",
+            "stroke": "#4a7ebb",
+            "stroke_width": 1.5,
+            "office_source": {
+              "slide": 3,
+              "kind": "shape"
+            },
+            "shape": "svg",
+            "svg": {
+              "viewBox": "0 0 260.64 260.64",
+              "body": "<g transform=\"translate(0.75 0.75)\"><defs><linearGradient id=\"t3_g2\" x1=\"0.15\" y1=\"0.85\" x2=\"0.85\" y2=\"0.15\"><stop offset=\"0\" stop-color=\"#f59e0b\"/><stop offset=\"1\" stop-color=\"#dc2626\"/></linearGradient></defs><path d=\"M0 98.98L98.98 98.98L129.57 0L160.16 98.98L259.14 98.98L179.06 160.16L209.65 259.14L129.57 197.96L49.49 259.14L80.08 160.16Z\" fill=\"url(#t3_g2)\" stroke=\"var(--aiws-shape-stroke)\" stroke-width=\"1.5\"/></g>",
+              "aspect": "stretch"
+            }
+          }
+        },
+        {
+          "key": "s3~7",
+          "parent": "s3",
+          "type": "shape",
+          "rect": {
+            "x": 402.34,
+            "y": 546.45,
+            "w": 289.44,
+            "h": 145.44
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "#3e7fcc",
+            "stroke": "#4a7ebb",
+            "stroke_width": 1.5,
+            "office_source": {
+              "slide": 3,
+              "kind": "shape"
+            },
+            "shape": "svg",
+            "svg": {
+              "viewBox": "0 0 289.44 145.44",
+              "body": "<g transform=\"translate(0.75 0.75)\"><defs><linearGradient id=\"t3_g3\" x1=\"0.5\" y1=\"1\" x2=\"0.5\" y2=\"0\"><stop offset=\"0\" stop-color=\"#3e7fcc\"/><stop offset=\"1\" stop-color=\"#a4c1ff\"/></linearGradient></defs><path d=\"M287.94 0L71.97 0L0 71.97L71.97 143.94L287.94 143.94Z\" fill=\"url(#t3_g3)\" stroke=\"var(--aiws-shape-stroke)\" stroke-width=\"1.5\"/></g>",
+              "aspect": "stretch"
+            }
+          }
+        },
+        {
+          "key": "s3~8",
+          "parent": "s3",
+          "type": "shape",
+          "rect": {
+            "x": 719.44,
+            "y": 642.03,
+            "w": 375.58,
+            "h": 12
+          },
+          "rotation": 32.47,
+          "config": {
+            "fill": "none",
+            "stroke": "#111827",
+            "stroke_width": 6,
+            "office_source": {
+              "slide": 3,
+              "kind": "shape"
+            },
+            "shape": "line"
+          }
+        },
+        {
+          "key": "s3~9",
+          "parent": "s3",
+          "type": "shape",
+          "rect": {
+            "x": 1137.37,
+            "y": 525.49,
+            "w": 662.8,
+            "h": 216.17
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "none",
+            "stroke": "none",
+            "stroke_width": 0,
+            "text": "Right aligned, 28 pt, red\nSecond paragraph",
+            "font_size": 56,
+            "font_color": "#dc2626",
+            "align": "right",
+            "valign": "middle",
+            "bold": true,
+            "line_height": 1.2,
+            "office_source": {
+              "slide": 3,
+              "kind": "text"
+            },
+            "shape": "text"
+          },
+          "title": "Right aligned, 28 pt, red"
+        },
+        {
+          "key": "s3~10",
+          "parent": "s3",
+          "type": "shape",
+          "rect": {
+            "x": 143.25,
+            "y": 863.25,
+            "w": 145.44,
+            "h": 145.44
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "#10b981",
+            "stroke": "#4a7ebb",
+            "stroke_width": 1.5,
+            "office_source": {
+              "slide": 3,
+              "kind": "shape"
+            },
+            "shape": "svg",
+            "svg": {
+              "viewBox": "0 0 145.44 145.44",
+              "body": "<g transform=\"translate(0.75 0.75)\"><path d=\"M0 0L143.94 0L143.94 143.94L143.94 143.94L0 143.94Z\" fill=\"var(--aiws-shape-fill)\" stroke=\"var(--aiws-shape-stroke)\" stroke-width=\"1.5\"/></g>",
+              "aspect": "stretch"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Pictures",
+      "pageColor": "#ffffff",
+      "pageSize": {
+        "w": 1920,
+        "h": 1080
+      },
+      "counts": {
+        "text": 1,
+        "images": 2,
+        "shapes": 0,
+        "rasterized": 0,
+        "placeholders": 0
+      },
+      "items": [
+        {
+          "key": "s4",
+          "parent": null,
+          "type": "group",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1080
+          },
+          "rotation": 0,
+          "config": {}
+        },
+        {
+          "key": "s4~frame",
+          "parent": "s4",
+          "type": "frame",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1080
+          },
+          "rotation": 0,
+          "title": "Pictures",
+          "config": {
+            "color": "#9ca3af",
+            "fill": "#ffffff",
+            "stroke_width": 1,
+            "radius": 0,
+            "office_source": {
+              "file": "basic.lo.pptx",
+              "slide": 4
+            }
+          },
+          "payload": {
+            "presentation": {
+              "background": "#ffffff"
+            }
+          }
+        },
+        {
+          "key": "s4~0",
+          "parent": "s4",
+          "type": "shape",
+          "rect": {
+            "x": 86.4,
+            "y": 50.46,
+            "w": 1267.14,
+            "h": 165.54
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "none",
+            "stroke": "none",
+            "stroke_width": 0,
+            "text": "Pictures",
+            "font_size": 88,
+            "font_color": "#000000",
+            "align": "center",
+            "valign": "middle",
+            "line_height": 1.2,
+            "office_source": {
+              "slide": 4,
+              "kind": "text"
+            },
+            "shape": "text"
+          },
+          "title": "Pictures"
+        },
+        {
+          "key": "s4~1",
+          "parent": "s4",
+          "type": "asset",
+          "rect": {
+            "x": 115.2,
+            "y": 259.2,
+            "w": 719.94,
+            "h": 359.94
+          },
+          "rotation": 0,
+          "config": {
+            "office_source": {
+              "slide": 4,
+              "kind": "image"
+            }
+          },
+          "image": {
+            "key": "ts4i1",
+            "name": "basic.lo-s004-img1.png",
+            "mediaType": "image/png",
+            "bytes": 3090
+          },
+          "title": "image.png",
+          "fallback": {
+            "config": {
+              "shape": "rect",
+              "fill": "none",
+              "stroke": "#9ca3af",
+              "stroke_width": 1,
+              "dash": "dashed",
+              "text": "image\nimage1.png",
+              "font_size": 24,
+              "font_color": "#6b7280",
+              "office_source": {
+                "slide": 4,
+                "kind": "placeholder"
+              }
+            }
+          }
+        },
+        {
+          "key": "s4~2",
+          "parent": "s4",
+          "type": "asset",
+          "rect": {
+            "x": 1008,
+            "y": 259.2,
+            "w": 575.94,
+            "h": 575.94
+          },
+          "rotation": 0,
+          "config": {
+            "office_source": {
+              "slide": 4,
+              "kind": "image"
+            }
+          },
+          "image": {
+            "key": "ts4i2",
+            "name": "basic.lo-s004-img2.png",
+            "mediaType": "image/png",
+            "bytes": 3623
+          },
+          "title": "image.png",
+          "fallback": {
+            "config": {
+              "shape": "rect",
+              "fill": "none",
+              "stroke": "#9ca3af",
+              "stroke_width": 1,
+              "dash": "dashed",
+              "text": "image\nimage2.png",
+              "font_size": 24,
+              "font_color": "#6b7280",
+              "office_source": {
+                "slide": 4,
+                "kind": "placeholder"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Table",
+      "pageColor": "#ffffff",
+      "pageSize": {
+        "w": 1920,
+        "h": 1080
+      },
+      "counts": {
+        "text": 9,
+        "images": 0,
+        "shapes": 0,
+        "rasterized": 0,
+        "placeholders": 0
+      },
+      "items": [
+        {
+          "key": "s5",
+          "parent": null,
+          "type": "group",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1080
+          },
+          "rotation": 0,
+          "config": {}
+        },
+        {
+          "key": "s5~frame",
+          "parent": "s5",
+          "type": "frame",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1080
+          },
+          "rotation": 0,
+          "title": "Table",
+          "config": {
+            "color": "#9ca3af",
+            "fill": "#ffffff",
+            "stroke_width": 1,
+            "radius": 0,
+            "office_source": {
+              "file": "basic.lo.pptx",
+              "slide": 5
+            }
+          },
+          "payload": {
+            "presentation": {
+              "background": "#ffffff"
+            }
+          }
+        },
+        {
+          "key": "s5~0",
+          "parent": "s5",
+          "type": "shape",
+          "rect": {
+            "x": 86.4,
+            "y": 50.46,
+            "w": 1267.14,
+            "h": 165.54
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "none",
+            "stroke": "none",
+            "stroke_width": 0,
+            "text": "Table",
+            "font_size": 88,
+            "font_color": "#000000",
+            "align": "center",
+            "valign": "middle",
+            "line_height": 1.2,
+            "office_source": {
+              "slide": 5,
+              "kind": "text"
+            },
+            "shape": "text"
+          },
+          "title": "Table"
+        },
+        {
+          "key": "s5~1",
+          "parent": "s5",
+          "type": "shape",
+          "rect": {
+            "x": 144,
+            "y": 259.2,
+            "w": 431.98,
+            "h": 115.2
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "#4f81bd",
+            "stroke": "#ffffff",
+            "stroke_width": 1.93,
+            "text": "Item",
+            "font_size": 36,
+            "font_color": "#ffffff",
+            "align": "left",
+            "valign": "top",
+            "line_height": 1.2,
+            "office_source": {
+              "slide": 5,
+              "kind": "table"
+            }
+          },
+          "title": "Item"
+        },
+        {
+          "key": "s5~2",
+          "parent": "s5",
+          "type": "shape",
+          "rect": {
+            "x": 575.98,
+            "y": 259.2,
+            "w": 431.98,
+            "h": 115.2
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "#4f81bd",
+            "stroke": "#ffffff",
+            "stroke_width": 1.93,
+            "text": "Count",
+            "font_size": 36,
+            "font_color": "#ffffff",
+            "align": "left",
+            "valign": "top",
+            "line_height": 1.2,
+            "office_source": {
+              "slide": 5,
+              "kind": "table"
+            }
+          },
+          "title": "Count"
+        },
+        {
+          "key": "s5~3",
+          "parent": "s5",
+          "type": "shape",
+          "rect": {
+            "x": 1007.96,
+            "y": 259.2,
+            "w": 431.98,
+            "h": 115.2
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "#4f81bd",
+            "stroke": "#ffffff",
+            "stroke_width": 1.93,
+            "text": "Note",
+            "font_size": 36,
+            "font_color": "#ffffff",
+            "align": "left",
+            "valign": "top",
+            "line_height": 1.2,
+            "office_source": {
+              "slide": 5,
+              "kind": "table"
+            }
+          },
+          "title": "Note"
+        },
+        {
+          "key": "s5~4",
+          "parent": "s5",
+          "type": "shape",
+          "rect": {
+            "x": 144,
+            "y": 374.4,
+            "w": 431.98,
+            "h": 115.2
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "#d0d8e7",
+            "stroke": "#ffffff",
+            "stroke_width": 1.93,
+            "text": "Apples",
+            "font_size": 36,
+            "font_color": "#000000",
+            "align": "left",
+            "valign": "top",
+            "line_height": 1.2,
+            "office_source": {
+              "slide": 5,
+              "kind": "table"
+            }
+          },
+          "title": "Apples"
+        },
+        {
+          "key": "s5~5",
+          "parent": "s5",
+          "type": "shape",
+          "rect": {
+            "x": 575.98,
+            "y": 374.4,
+            "w": 431.98,
+            "h": 115.2
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "#d0d8e7",
+            "stroke": "#ffffff",
+            "stroke_width": 1.93,
+            "text": "3",
+            "font_size": 36,
+            "font_color": "#000000",
+            "align": "left",
+            "valign": "top",
+            "line_height": 1.2,
+            "office_source": {
+              "slide": 5,
+              "kind": "table"
+            }
+          },
+          "title": "3"
+        },
+        {
+          "key": "s5~6",
+          "parent": "s5",
+          "type": "shape",
+          "rect": {
+            "x": 1007.96,
+            "y": 374.4,
+            "w": 431.98,
+            "h": 230.4
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "#d0d8e7",
+            "stroke": "#ffffff",
+            "stroke_width": 1.93,
+            "text": "fresh",
+            "font_size": 36,
+            "font_color": "#000000",
+            "align": "left",
+            "valign": "top",
+            "line_height": 1.2,
+            "office_source": {
+              "slide": 5,
+              "kind": "table"
+            }
+          },
+          "title": "fresh"
+        },
+        {
+          "key": "s5~7",
+          "parent": "s5",
+          "type": "shape",
+          "rect": {
+            "x": 144,
+            "y": 489.6,
+            "w": 431.98,
+            "h": 115.2
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "#e9ecf3",
+            "stroke": "#ffffff",
+            "stroke_width": 1.93,
+            "text": "Pears",
+            "font_size": 36,
+            "font_color": "#000000",
+            "align": "left",
+            "valign": "top",
+            "line_height": 1.2,
+            "office_source": {
+              "slide": 5,
+              "kind": "table"
+            }
+          },
+          "title": "Pears"
+        },
+        {
+          "key": "s5~8",
+          "parent": "s5",
+          "type": "shape",
+          "rect": {
+            "x": 575.98,
+            "y": 489.6,
+            "w": 431.98,
+            "h": 115.2
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "#e9ecf3",
+            "stroke": "#ffffff",
+            "stroke_width": 1.93,
+            "text": "5",
+            "font_size": 36,
+            "font_color": "#000000",
+            "align": "left",
+            "valign": "top",
+            "line_height": 1.2,
+            "office_source": {
+              "slide": 5,
+              "kind": "table"
+            }
+          },
+          "title": "5"
+        }
+      ]
+    },
+    {
+      "name": "Slide 6",
+      "pageColor": "#ffffff",
+      "pageSize": {
+        "w": 1920,
+        "h": 1080
+      },
+      "counts": {
+        "text": 1,
+        "images": 0,
+        "shapes": 1,
+        "rasterized": 0,
+        "placeholders": 0
+      },
+      "items": [
+        {
+          "key": "s6",
+          "parent": null,
+          "type": "group",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1080
+          },
+          "rotation": 0,
+          "config": {}
+        },
+        {
+          "key": "s6~frame",
+          "parent": "s6",
+          "type": "frame",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1080
+          },
+          "rotation": 0,
+          "title": "Slide 6",
+          "config": {
+            "color": "#9ca3af",
+            "fill": "#ffffff",
+            "stroke_width": 1,
+            "radius": 0,
+            "office_source": {
+              "file": "basic.lo.pptx",
+              "slide": 6
+            }
+          },
+          "payload": {
+            "presentation": {
+              "background": "#ffffff"
+            }
+          }
+        },
+        {
+          "key": "s6~0",
+          "parent": "s6",
+          "type": "shape",
+          "rect": {
+            "x": 287.25,
+            "y": 431.25,
+            "w": 577.44,
+            "h": 577.44
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "#3e7fcc",
+            "stroke": "#4a7ebb",
+            "stroke_width": 1.5,
+            "text": "In group",
+            "font_size": 36,
+            "font_color": "#ffffff",
+            "align": "left",
+            "valign": "middle",
+            "line_height": 1.2,
+            "office_source": {
+              "slide": 6,
+              "kind": "text"
+            },
+            "shape": "svg",
+            "svg": {
+              "viewBox": "0 0 577.44 577.44",
+              "body": "<g transform=\"translate(0.75 0.75)\"><defs><linearGradient id=\"t6_g0\" x1=\"0.5\" y1=\"1\" x2=\"0.5\" y2=\"0\"><stop offset=\"0\" stop-color=\"#3e7fcc\"/><stop offset=\"1\" stop-color=\"#a4c1ff\"/></linearGradient></defs><path d=\"M0 0L575.94 0L575.94 575.94L0 575.94Z\" fill=\"url(#t6_g0)\" stroke=\"var(--aiws-shape-stroke)\" stroke-width=\"1.5\"/></g>",
+              "aspect": "stretch"
+            }
+          },
+          "title": "In group"
+        },
+        {
+          "key": "s6~1",
+          "parent": "s6",
+          "type": "shape",
+          "rect": {
+            "x": 1007.25,
+            "y": 431.25,
+            "w": 577.44,
+            "h": 577.44
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "#3e7fcc",
+            "stroke": "#4a7ebb",
+            "stroke_width": 1.5,
+            "office_source": {
+              "slide": 6,
+              "kind": "shape"
+            },
+            "shape": "svg",
+            "svg": {
+              "viewBox": "0 0 577.44 577.44",
+              "body": "<g transform=\"translate(0.75 0.75)\"><defs><linearGradient id=\"t6_g1\" x1=\"0.5\" y1=\"1\" x2=\"0.5\" y2=\"0\"><stop offset=\"0\" stop-color=\"#3e7fcc\"/><stop offset=\"1\" stop-color=\"#a4c1ff\"/></linearGradient></defs><path d=\"M0 287.97A287.97 287.97 0 0 1 287.97 0A287.97 287.97 0 0 1 575.94 287.97A287.97 287.97 0 0 1 287.97 575.94A287.97 287.97 0 0 1 0 287.97Z\" fill=\"url(#t6_g1)\" stroke=\"var(--aiws-shape-stroke)\" stroke-width=\"1.5\"/></g>",
+              "aspect": "stretch"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Chart",
+      "pageColor": "#ffffff",
+      "pageSize": {
+        "w": 1920,
+        "h": 1080
+      },
+      "counts": {
+        "text": 1,
+        "images": 0,
+        "shapes": 0,
+        "rasterized": 0,
+        "placeholders": 1
+      },
+      "items": [
+        {
+          "key": "s7",
+          "parent": null,
+          "type": "group",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1080
+          },
+          "rotation": 0,
+          "config": {}
+        },
+        {
+          "key": "s7~frame",
+          "parent": "s7",
+          "type": "frame",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1080
+          },
+          "rotation": 0,
+          "title": "Chart",
+          "config": {
+            "color": "#9ca3af",
+            "fill": "#ffffff",
+            "stroke_width": 1,
+            "radius": 0,
+            "office_source": {
+              "file": "basic.lo.pptx",
+              "slide": 7
+            }
+          },
+          "payload": {
+            "presentation": {
+              "background": "#ffffff"
+            }
+          }
+        },
+        {
+          "key": "s7~0",
+          "parent": "s7",
+          "type": "shape",
+          "rect": {
+            "x": 86.4,
+            "y": 50.46,
+            "w": 1267.14,
+            "h": 165.54
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "none",
+            "stroke": "none",
+            "stroke_width": 0,
+            "text": "Chart",
+            "font_size": 88,
+            "font_color": "#000000",
+            "align": "center",
+            "valign": "middle",
+            "line_height": 1.2,
+            "office_source": {
+              "slide": 7,
+              "kind": "text"
+            },
+            "shape": "text"
+          },
+          "title": "Chart"
+        },
+        {
+          "key": "s7~1",
+          "parent": "s7",
+          "type": "shape",
+          "rect": {
+            "x": 288,
+            "y": 230.4,
+            "w": 1151.94,
+            "h": 719.94
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "none",
+            "stroke": "#9ca3af",
+            "stroke_width": 1,
+            "dash": "dashed",
+            "text": "chart\nChart 2",
+            "font_size": 24,
+            "font_color": "#6b7280",
+            "office_source": {
+              "slide": 7,
+              "kind": "placeholder"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Hidden slide",
+      "pageColor": "#ffffff",
+      "pageSize": {
+        "w": 1920,
+        "h": 1080
+      },
+      "counts": {
+        "text": 1,
+        "images": 0,
+        "shapes": 0,
+        "rasterized": 0,
+        "placeholders": 0
+      },
+      "items": [
+        {
+          "key": "s8",
+          "parent": null,
+          "type": "group",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1080
+          },
+          "rotation": 0,
+          "config": {}
+        },
+        {
+          "key": "s8~frame",
+          "parent": "s8",
+          "type": "frame",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1080
+          },
+          "rotation": 0,
+          "title": "Hidden slide",
+          "config": {
+            "color": "#9ca3af",
+            "fill": "#ffffff",
+            "stroke_width": 1,
+            "radius": 0,
+            "office_source": {
+              "file": "basic.lo.pptx",
+              "slide": 8
+            }
+          },
+          "payload": {
+            "presentation": {
+              "background": "#ffffff"
+            }
+          }
+        },
+        {
+          "key": "s8~0",
+          "parent": "s8",
+          "type": "shape",
+          "rect": {
+            "x": 86.4,
+            "y": 50.46,
+            "w": 1267.14,
+            "h": 165.54
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "none",
+            "stroke": "none",
+            "stroke_width": 0,
+            "text": "Hidden slide",
+            "font_size": 88,
+            "font_color": "#000000",
+            "align": "center",
+            "valign": "middle",
+            "line_height": 1.2,
+            "office_source": {
+              "slide": 8,
+              "kind": "text"
+            },
+            "shape": "text"
+          },
+          "title": "Hidden slide"
+        }
+      ]
+    },
+    {
+      "name": "Dark background",
+      "pageColor": "#0f172a",
+      "pageSize": {
+        "w": 1920,
+        "h": 1080
+      },
+      "counts": {
+        "text": 1,
+        "images": 0,
+        "shapes": 0,
+        "rasterized": 0,
+        "placeholders": 0
+      },
+      "items": [
+        {
+          "key": "s9",
+          "parent": null,
+          "type": "group",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1080
+          },
+          "rotation": 0,
+          "config": {}
+        },
+        {
+          "key": "s9~frame",
+          "parent": "s9",
+          "type": "frame",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1080
+          },
+          "rotation": 0,
+          "title": "Dark background",
+          "config": {
+            "color": "#9ca3af",
+            "fill": "#0f172a",
+            "stroke_width": 1,
+            "radius": 0,
+            "office_source": {
+              "file": "basic.lo.pptx",
+              "slide": 9
+            }
+          },
+          "payload": {
+            "presentation": {
+              "background": "#0f172a"
+            }
+          }
+        },
+        {
+          "key": "s9~0",
+          "parent": "s9",
+          "type": "shape",
+          "rect": {
+            "x": 86.4,
+            "y": 50.46,
+            "w": 1267.14,
+            "h": 165.54
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "none",
+            "stroke": "none",
+            "stroke_width": 0,
+            "text": "Dark background",
+            "font_size": 88,
+            "font_color": "#ffffff",
+            "align": "center",
+            "valign": "middle",
+            "line_height": 1.2,
+            "office_source": {
+              "slide": 9,
+              "kind": "text"
+            },
+            "shape": "text"
+          },
+          "title": "Dark background"
+        }
+      ]
+    }
+  ],
+  "report": [
+    {
+      "kind": "pptx_mixed_style",
+      "count": 2,
+      "samples": [
+        "• Why import Office files",
+        "Right aligned, 28 pt, red"
+      ]
+    },
+    {
+      "kind": "pptx_crop_kept",
+      "count": 1,
+      "samples": [
+        "image1.png"
+      ]
+    },
+    {
+      "kind": "pptx_chart",
+      "count": 1,
+      "samples": [
+        "Chart 2"
+      ]
+    },
+    {
+      "kind": "pptx_notes_dropped",
+      "count": 1,
+      "samples": [
+        "9"
+      ]
+    }
+  ]
+}

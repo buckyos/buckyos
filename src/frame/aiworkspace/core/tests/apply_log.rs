@@ -95,3 +95,28 @@ fn recorded_deltas_replay_without_the_planner() {
     assert_eq!(state_digest(&old).unwrap(), file["digest"], "the recorded deltas no longer reproduce their digest");
     assert_eq!(file["digest"], digest, "the planner now writes a different state for the same history; if intended, re-record with AIWS_REGEN=1");
 }
+
+#[test]
+fn a_log_that_breaks_a_business_rule_but_keeps_the_primitives_replays() {
+    // Q15: a Commit another deployment admitted under its Schema (here a Viewport zoom this one refuses) is
+    // primitive-valid; the replay path (deltas, and planning without the Schema) takes it as it is
+    let ops = json!([
+        { "op": "entity.create", "entity_id": "s1-content", "type_id": TYPE_CONTAINER, "parent_id": CANVAS_CONTENT_ID, "order_key": "a",
+          "payload": { "kind": "folder", "system": "surface_content", "surface_id": "s1" } },
+        { "op": "entity.create", "entity_id": "s1", "type_id": TYPE_CONTAINER, "parent_id": SURFACES_ID, "order_key": "a",
+          "payload": { "kind": "surface", "layout": { "mode": "free" }, "content_folder_id": "s1-content" } },
+        { "op": "entity.create", "entity_id": "vp", "type_id": TYPE_VIEWPORT, "parent_id": SHOWS_ID, "order_key": "a",
+          "payload": { "surface_ref": { "entity_id": "s1" }, "center": { "x": 0, "y": 0 }, "zoom": 40 } }
+    ]);
+    let req = CommitRequest::parse(&json!({ "protocol_version": PROTOCOL_VERSION, "workspace_id": "ws", "epoch": "ep", "idempotency_key": "k", "operations": ops })).unwrap();
+    let store = MemStore::with_root();
+    let access = Access::full("alice");
+    assert!(plan_commit(&store, &req, &env(1), &access).is_err(), "admission judges the Schema");
+    let replay = PlanEnv { schema_checks: false, ..env(1) };
+    let plan = plan_commit(&store, &req, &replay, &access).map_err(|f| f.to_json()).unwrap();
+    let rows = changes_to_rows(&plan.overlay.into_changes()).unwrap();
+    let mut applied = MemStore::with_root();
+    let c = rows_to_changes(&applied, &rows).unwrap();
+    applied.apply(c);
+    assert_eq!(applied.entities["vp"].payload["zoom"], 40);
+}

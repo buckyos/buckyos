@@ -79,6 +79,14 @@ export function itemToMessage(item: SessionMessageItem, ownerDid: string, sessio
   return base
 }
 
+export function newestRecord(history: SessionHistory): MessageRecordMeta | undefined {
+  for (let index = history.messages.length - 1; index >= 0; index--) {
+    const meta = recordMeta(history.messages[index])
+    if (meta) return meta
+  }
+  return undefined
+}
+
 export function messageId(message: MessageObject): string {
   return typeof message.ui_message_id === 'string' ? message.ui_message_id : `${message.from}:${message.created_at_ms}`
 }

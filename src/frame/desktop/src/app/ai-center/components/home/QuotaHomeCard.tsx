@@ -28,7 +28,7 @@ export function QuotaHomeCard({ onOpen }: { onOpen: () => void }) {
       <div className="flex items-center gap-2">
         <Gauge size={18} style={{ color: exhausted ? 'var(--cp-danger)' : 'var(--cp-warning)' }} />
         <div className="flex flex-col">
-          <span className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>{t('aiCenter.quota.homeTitle', 'Token quota')}</span>
+          <span className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>{t('aiCenter.home.ownQuota', 'My token quota')}</span>
           <span className="text-xs" style={{ color: 'var(--cp-muted)' }}>
             {t('aiCenter.quota.warningSummary', '{{near}} near the limit, {{exhausted}} exhausted', { near: String(quota.near_limit_count), exhausted: String(quota.exhausted_count) })}
           </span>

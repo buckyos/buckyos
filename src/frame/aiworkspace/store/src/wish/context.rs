@@ -1109,6 +1109,17 @@ impl Stage {
                 out.push_str(&format!("- `{}` {} — {} When: {}\n", c["kind"].as_str().unwrap_or(""), c["title"].as_str().unwrap_or(""), c["summary"].as_str().unwrap_or(""), c["when"].as_str().unwrap_or("")));
             }
         }
+        let composites = self.composite_defs()?;
+        if !composites.is_empty() {
+            out.push_str("\n## Composite controls of this Workspace (a `control` result with `def` and `slots` instantiates one)\n");
+            for (ident, (_, comp)) in &composites {
+                let slots: Vec<String> = comp["slots"].as_object().into_iter().flatten().map(|(n, s)| match s["accepts"].as_array() {
+                    Some(a) => format!("{n} ({})", a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")),
+                    None => n.clone(),
+                }).collect();
+                out.push_str(&format!("- `{ident}` slots: {}\n", slots.join("; ")));
+            }
+        }
         Ok(out)
     }
 
@@ -1542,6 +1553,19 @@ impl Stage {
             "epoch": self.snap.epoch, "head_seq": self.snap.head_seq, "location": self.location,
             "inputs": self.inputs.iter().map(|i| json!({ "name": i.name, "entity_id": i.entity_id, "type_id": i.type_id, "selector": i.selector, "appended": i.appended })).collect::<Vec<_>>(),
         }))
+    }
+
+    /// The composite control definitions a result may instantiate (扩展控件 P3): identity → `(entity id, composition)`.
+    pub fn composite_defs(&self) -> WsResult<BTreeMap<String, (String, Value)>> {
+        let mut out = BTreeMap::new();
+        for e in self.data_entities()? {
+            if e.type_id == TYPE_BLOCK_DEF && e.payload.get("kind").and_then(Value::as_str) == Some(aiworkspace_core::types::COMPOSITE) {
+                if let (Some(n), Some(c)) = (e.name.clone(), e.payload.get("composition")) {
+                    out.insert(n, (e.entity_id.clone(), c.clone()));
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// What the collector needs to know about the bound inputs (table record ids for derived columns).

@@ -106,6 +106,18 @@ pub fn get_entry(conn: &Conn, entry: &str) -> HsResult<Option<EntryRow>> {
         .optional()?)
 }
 
+pub(crate) fn get_entry_at_path(conn: &Conn, entry: &str) -> HsResult<Option<EntryRow>> {
+    if let Some(row) = get_entry(conn, entry)? {
+        return Ok(Some(row));
+    }
+    if let Some(path) = entry.strip_prefix("https://") {
+        if EntryRef::parse(entry).is_ok() {
+            return get_entry(conn, &format!("cyfs://{path}"));
+        }
+    }
+    Ok(None)
+}
+
 pub fn list_entries(conn: &Conn, order_by: &str) -> HsResult<Vec<EntryRow>> {
     let mut stmt = conn.prepare(&format!("SELECT {ENTRY_COLUMNS} FROM published WHERE owner=?1 {order_by}"))?;
     let rows = stmt.query_map([conn.owner], entry_row)?.collect::<Result<Vec<_>, _>>()?;

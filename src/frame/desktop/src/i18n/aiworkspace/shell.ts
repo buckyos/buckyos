@@ -318,7 +318,7 @@ export const en: Record<string, string> = {
   'aiworkspace.shell.name.input': 'Canvas name',
   'aiworkspace.shell.switcher.label': 'Switch canvas: {{name}}',
   'aiworkspace.shell.switcher.switchWorkspace': 'Switch workspace',
-  'aiworkspace.shell.switcher.phoneNote': 'On a phone you can only view; open it on a computer to edit.',
+  'aiworkspace.shell.switcher.phoneNote': 'On a phone, flow pages can be edited and free canvases only viewed; open it on a computer to edit a free canvas.',
   'aiworkspace.shell.switcher.search': 'Search canvases',
   'aiworkspace.shell.switcher.searchPlaceholder': 'Search canvases…',
   'aiworkspace.shell.switcher.list': 'Canvas list',
@@ -432,6 +432,9 @@ export const en: Record<string, string> = {
   'aiworkspace.shell.workspace.embedNotBlock': 'The embed target is not a block ({{id}})',
   'aiworkspace.shell.workspace.embedTitle': 'Embedded block (read-only): edit it where it lives',
   'aiworkspace.shell.workspace.loadError': 'Cannot read the workspace: {{error}}',
+  'aiworkspace.shell.menu.saveTemplate': 'Save as template…',
+  'aiworkspace.shell.menu.saveTemplateHint': 'Canvases as a workspace template in my library',
+  'aiworkspace.shell.new.template.fromLibrary': 'My library',
 }
 
 export const zh: Record<string, string> = {
@@ -747,7 +750,7 @@ export const zh: Record<string, string> = {
   'aiworkspace.shell.name.input': '画布名称',
   'aiworkspace.shell.switcher.label': '切换画布：{{name}}',
   'aiworkspace.shell.switcher.switchWorkspace': '切换工作区',
-  'aiworkspace.shell.switcher.phoneNote': '手机上只能查看；编辑请在电脑上打开。',
+  'aiworkspace.shell.switcher.phoneNote': '手机上可以编辑流式页，自由画布只能查看；编辑自由画布请在电脑上打开。',
   'aiworkspace.shell.switcher.search': '搜索画布',
   'aiworkspace.shell.switcher.searchPlaceholder': '搜索画布…',
   'aiworkspace.shell.switcher.list': '画布列表',
@@ -857,4 +860,7 @@ export const zh: Record<string, string> = {
   'aiworkspace.shell.workspace.embedNotBlock': '嵌入目标不是 Block（{{id}}）',
   'aiworkspace.shell.workspace.embedTitle': '嵌入的 Block（只读）：到它所在的地方修改',
   'aiworkspace.shell.workspace.loadError': '无法读取工作区：{{error}}',
+  'aiworkspace.shell.menu.saveTemplate': '保存为模板…',
+  'aiworkspace.shell.menu.saveTemplateHint': '把画布作为工作区模板存入我的库',
+  'aiworkspace.shell.new.template.fromLibrary': '我的库',
 }

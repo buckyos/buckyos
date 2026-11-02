@@ -10,6 +10,7 @@ import { isMockRuntime } from '../../../runtime'
 import { AIWorkspaceAppPanel, type TabHost } from '../AIWorkspaceAppPanel'
 import { openWorkspaceById } from '../launch'
 import { loginUrl, targetOf, workspaceIdOfHost, WORKSPACE_ROUTE, zoneOrigin } from '../links'
+import { SessionPage } from '../session/SessionPage'
 
 /** This origin's session is ended here (`/sso_logout` of this host), then the Zone host asks to sign in again. */
 async function signOut() {
@@ -36,6 +37,12 @@ export function StandalonePage() {
 
   if (!workspaceId) {
     return <main className="h-dvh w-full overflow-hidden bg-[color:var(--cp-bg)]"><div className="aiws-root"><div className="aiws-error" role="alert">{t('aiworkspace.core.app.notWorkspaceHost')}</div></div></main>
+  }
+
+  // a session of this workspace (第四期规划 §1: its rooms live on the workspace's own host)
+  const sessionId = new URLSearchParams(window.location.search).get('session')
+  if (sessionId) {
+    return <main className="h-dvh w-full overflow-hidden bg-[color:var(--cp-bg)]" data-testid="aiws-session-main"><SessionPage sessionId={sessionId} /></main>
   }
 
   const tab: TabHost = {

@@ -37,7 +37,10 @@ pub fn envelope(ctx: &dyn ReadCtx, access: &Access, e: &EntityRow) -> WsResult<V
     if let Some(s) = &e.schema_id {
         m.insert("schema_id".into(), json!(s));
     }
-    m.insert("scope".into(), json!(if e.owner().is_some() { "personal" } else { "shared" }));
+    m.insert("scope".into(), json!(if e.owner().is_some() { "personal" } else if e.scope == SCOPE_PRESENTER { "presenter" } else if e.participant().is_some() { "participant" } else { "shared" }));
+    if let Some(p) = e.participant() {
+        m.insert("participant".into(), json!(p));
+    }
     m.insert("name".into(), json!(e.name));
     m.insert("write_policy".into(), json!(e.write_policy));
     m.insert("content_rev".into(), json!(e.content_rev));
@@ -252,6 +255,14 @@ pub fn outline_extras(env: &mut Value, e: &EntityRow) {
         env["source"] = json!({ "kind": s["kind"], "mode": s.get("mode").cloned().unwrap_or(json!("live")), "url": s.get("url").cloned().unwrap_or(Value::Null),
                                 "workspace_id": s.get("workspace_id").cloned().unwrap_or(Value::Null), "entity_id": s.get("entity_id").cloned().unwrap_or(Value::Null),
                                 "zone": s.get("zone").cloned().unwrap_or(Value::Null), "refresh": s.get("refresh").cloned().unwrap_or(Value::Null), "auth_mode": s.get("auth_mode").cloned().unwrap_or(json!("none")) });
+        // a session feed (第四期规划 §5.3): which one
+        if let Some(f) = s.get("feed") {
+            env["source"]["feed"] = f.clone();
+        }
+    }
+    // the events an instance binds (扩展控件 P2): the canvas marks them, an Agent finds them without reading the Block
+    if let Some(on) = e.payload.get("on").and_then(Value::as_object).filter(|_| matches!(e.type_id.as_str(), TYPE_CELL | TYPE_CONTAINER)) {
+        env["on_events"] = json!(on.keys().collect::<Vec<_>>());
     }
     match e.type_id.as_str() {
         TYPE_CONTAINER => {
@@ -262,11 +273,18 @@ pub fn outline_extras(env: &mut Value, e: &EntityRow) {
                     env[k] = v.clone();
                 }
             }
-            // a control's attributes drive its layout, computed from the outline alone (脑图方案 §5.4)
+            // a control's attributes drive its layout, computed from the outline alone (脑图方案 §5.4); a composite
+            // names its definition, and a Block container inside one its slot (扩展控件 P1)
             if env["kind"].as_str().is_some_and(types::is_control_kind) {
                 if let Some(c) = e.payload.get("config") {
                     env["config"] = c.clone();
                 }
+            }
+            if let Some(d) = e.payload.get("def_ref").and_then(|r| r.get("entity_id")) {
+                env["def_id"] = d.clone();
+            }
+            if let Some(v) = e.payload.get("slot") {
+                env["slot"] = v.clone();
             }
         }
         TYPE_CELL => {
@@ -330,6 +348,23 @@ pub fn outline_extras(env: &mut Value, e: &EntityRow) {
             }
             if let Some(dir) = e.payload.get("source_dir").and_then(|d| d.get("entity_id")) {
                 env["source_dir_id"] = dir.clone();
+            }
+            if let Some(ev) = e.payload.get("events").and_then(Value::as_object) {
+                env["def_events"] = json!(ev.keys().collect::<Vec<_>>());
+            }
+            // what it builds on (P1, Q16): the identities, for the catalogue and exports
+            if let Some(deps) = e.payload.get("deps").and_then(Value::as_array) {
+                env["deps"] = json!(deps.iter().filter_map(|d| d.get("ident").cloned()).collect::<Vec<_>>());
+            }
+            // a composite's instances are laid out from the outline alone: its composition and the defaults its
+            // `{{config.<key>}}` placeholders fall back to
+            if e.payload.get("kind").and_then(Value::as_str) == Some(types::COMPOSITE) {
+                if let Some(c) = e.payload.get("composition") {
+                    env["composition"] = c.clone();
+                }
+                let defaults: Map<String, Value> = e.payload.get("config_schema").and_then(|s| s.get("properties")).and_then(Value::as_object).into_iter().flatten()
+                    .filter_map(|(k, p)| p.get("default").map(|d| (k.clone(), d.clone()))).collect();
+                env["config_defaults"] = Value::Object(defaults);
             }
         }
         TYPE_ANNOTATION => {

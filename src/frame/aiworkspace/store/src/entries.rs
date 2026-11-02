@@ -50,7 +50,7 @@ pub fn parse_entry_methods(v: &Value) -> WsResult<u8> {
 /// `<workspace_id>~se_…` → (workspace id, entry id within it).
 pub fn split_entry_id(entry_id: &str) -> Option<(&str, &str)> {
     let (ws, local) = entry_id.split_once(ENTRY_SEPARATOR)?;
-    (is_prefixed_id("ws_", ws) && is_prefixed_id("se_", local)).then_some((ws, local))
+    (aiworkspace_core::id::is_workspace_id(ws) && is_prefixed_id("se_", local)).then_some((ws, local))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

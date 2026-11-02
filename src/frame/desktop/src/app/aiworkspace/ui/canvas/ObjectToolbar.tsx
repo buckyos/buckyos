@@ -3,7 +3,7 @@
  * an object on a free Surface starts a one-shot placement; on a flow page it appends. */
 
 import { useRef, useSyncExternalStore, type ReactNode } from 'react'
-import { ChevronsLeft, ChevronsRight, Eraser, Frame, Hand, Image, LetterText, Library, MousePointer2, PenLine, Plus, Puzzle, Redo2, Shapes, Sparkles, Spline, StickyNote, Table, Type, Undo2, Network, type LucideIcon } from 'lucide-react'
+import { ChevronsDown, ChevronsUp, Eraser, Frame, Hand, Image, LetterText, Library, MousePointer2, PenLine, Plus, Puzzle, Redo2, Shapes, Sparkles, Spline, StickyNote, Table, Type, Undo2, Network, type LucideIcon } from 'lucide-react'
 import { useOutlineVersion, useStore, useUserState } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
 import { blockRegistry } from '../blocks/registry'
@@ -53,6 +53,27 @@ function ShapeTool({ entry, pressed, title, onPick, extra }: { entry: CatalogEnt
   )
 }
 
+/** Undo / redo of this window's edits (rich text included); also in the phone's one toolbar on a flow page (§16.5). */
+export function HistoryButtons({ size = 20 }: { size?: number }) {
+  const store = useStore()
+  const { t } = useAiwsText()
+  const undo = useSyncExternalStore(store.undo.subscribe, store.undo.snapshot)
+  const top = undo.undo.at(-1)
+  const undoLabel = top && (top.kind === 'commit' || top.kind === 'pending' || top.kind === 'resubmit') ? top.label : t('aiworkspace.canvas.tool.richTextEdit')
+  const undoTitle = !top ? t('aiworkspace.canvas.tool.nothingToUndo')
+    : t(top.kind === 'pending' ? 'aiworkspace.canvas.tool.undoPendingTip' : 'aiworkspace.canvas.tool.undoTip', { label: undoLabel })
+  return (
+    <>
+      <button type="button" className="aiws-tool" data-testid="aiws-undo" data-count={undo.undo.length} aria-label={t('aiworkspace.canvas.tool.undo')} title={undoTitle} disabled={undo.undo.length === 0 || undo.busy} onClick={() => { void store.undo.undo() }}>
+        <Undo2 size={size} /><span className="aiws-sr-only">{t('aiworkspace.canvas.tool.undoCount', { count: undo.undo.length })}</span>
+      </button>
+      <button type="button" className="aiws-tool" data-testid="aiws-redo" data-count={undo.redo.length} aria-label={t('aiworkspace.canvas.tool.redo')} title={t('aiworkspace.canvas.tool.redoTip')} disabled={undo.redo.length === 0 || undo.busy} onClick={() => { void store.undo.redo() }}>
+        <Redo2 size={size} /><span className="aiws-sr-only">{t('aiworkspace.canvas.tool.redoCount', { count: undo.redo.length })}</span>
+      </button>
+    </>
+  )
+}
+
 /** `connector`: press and drag draws a line (标准对象的交互改进 §6.1), one line at a time; `pen` writes and `eraser` erases
  * whole strokes until another tool is picked (手写笔 TODO). */
 export type PointerTool = 'select' | 'hand' | 'connector' | 'pen' | 'eraser'
@@ -77,7 +98,6 @@ export function ObjectToolbar({ isFree, tool, onTool, placingKey, insertReason, 
   const { t } = useAiwsText()
   useOutlineVersion()
   useSyncExternalStore(blockRegistry.subscribe, blockRegistry.snapshot)
-  const undo = useSyncExternalStore(store.undo.subscribe, store.undo.snapshot)
   const pinned = useUserState<string[]>('ui:pinned-defs') ?? []
   const fileRef = useRef<HTMLInputElement>(null)
   const fileEntry = useRef<CatalogEntry | null>(null)
@@ -85,10 +105,6 @@ export function ObjectToolbar({ isFree, tool, onTool, placingKey, insertReason, 
   const standard = registryEntries().filter((entry) => entry.catalog.standard && (isFree || entry.definition.type !== 'connector'))
   const extensions = extensionEntries(store)
   const pinnedEntries = extensions.filter((entry) => pinned.includes(entry.defEntity?.entity_id ?? ''))
-  const top = undo.undo.at(-1)
-  const undoLabel = top && (top.kind === 'commit' || top.kind === 'pending' || top.kind === 'resubmit') ? top.label : t('aiworkspace.canvas.tool.richTextEdit')
-  const undoTitle = !top ? t('aiworkspace.canvas.tool.nothingToUndo')
-    : t(top.kind === 'pending' ? 'aiworkspace.canvas.tool.undoPendingTip' : 'aiworkspace.canvas.tool.undoTip', { label: undoLabel })
   const pick = (entry: CatalogEntry) => {
     if (entry.catalog.needs === 'file') { fileEntry.current = entry; fileRef.current?.click(); return }
     if (entry.catalog.needs !== 'none') { onOpenCatalog(entry.group === 'extension' ? 'extension' : 'all', entry.key); return }
@@ -147,17 +163,12 @@ export function ObjectToolbar({ isFree, tool, onTool, placingKey, insertReason, 
             </div>
           ) : null}
           <div className="aiws-tool-group aiws-tool-group-history">
-            <button type="button" className="aiws-tool" data-testid="aiws-undo" data-count={undo.undo.length} aria-label={t('aiworkspace.canvas.tool.undo')} title={undoTitle} disabled={undo.undo.length === 0 || undo.busy} onClick={() => { void store.undo.undo() }}>
-              <Undo2 size={20} /><span className="aiws-sr-only">{t('aiworkspace.canvas.tool.undoCount', { count: undo.undo.length })}</span>
-            </button>
-            <button type="button" className="aiws-tool" data-testid="aiws-redo" data-count={undo.redo.length} aria-label={t('aiworkspace.canvas.tool.redo')} title={t('aiworkspace.canvas.tool.redoTip')} disabled={undo.redo.length === 0 || undo.busy} onClick={() => { void store.undo.redo() }}>
-              <Redo2 size={20} /><span className="aiws-sr-only">{t('aiworkspace.canvas.tool.redoCount', { count: undo.redo.length })}</span>
-            </button>
+            <HistoryButtons />
           </div>
         </>
       )}
       <button type="button" className="aiws-tool aiws-tool-collapse" aria-label={t(collapsed ? 'aiworkspace.canvas.tool.expand' : 'aiworkspace.canvas.tool.collapse')} title={t(collapsed ? 'aiworkspace.canvas.tool.expand' : 'aiworkspace.canvas.tool.collapse')} data-testid="aiws-tool-collapse" onClick={() => onCollapsed(!collapsed)}>
-        {collapsed ? <ChevronsRight size={16} /> : <ChevronsLeft size={16} />}
+        {collapsed ? <ChevronsDown size={16} /> : <ChevronsUp size={16} />}
       </button>
       <input ref={fileRef} type="file" hidden aria-hidden="true" tabIndex={-1} data-testid="aiws-tool-file" onChange={(event) => {
         const file = event.target.files?.[0]

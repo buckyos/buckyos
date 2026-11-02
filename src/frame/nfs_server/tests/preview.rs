@@ -1,7 +1,9 @@
 //! Preview Pipeline (`repr` / `get_repr`) with the real ffmpeg / ffprobe on
 //! real HEIC / HEVC samples (tests/fixtures/preview, encoded by libheif and
-//! x265). Conversion cases skip when ffmpeg / ffprobe are not installed; the
-//! "missing converter" case always runs. Tokens use the test key of tests/ndm.rs.
+//! x265) and the real LibreOffice on small Office / ODF documents (`office.*`,
+//! saved by LibreOffice). Conversion cases skip when their tool is not
+//! installed; the "missing converter" cases and document sniffing always run.
+//! Tokens use the test key of tests/ndm.rs.
 
 use buckyos_api::*;
 use jsonwebtoken::EncodingKey;
@@ -63,6 +65,33 @@ fn tools_present() -> bool {
     }
     eprintln!("skipped: ffmpeg/ffprobe not installed");
     false
+}
+
+fn soffice_present() -> bool {
+    if tool("soffice").is_some() {
+        return true;
+    }
+    eprintln!("skipped: soffice not installed");
+    false
+}
+
+/// A tool directory holding only `names` (links to the installed binaries that exist).
+fn only_tools(names: &[&str]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    for name in names {
+        let Some(found) = tool(name) else { continue };
+        let link = dir.path().join(nfs_server::preview::tools::exe_name(name));
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&found, &link).unwrap();
+        #[cfg(not(unix))]
+        std::fs::copy(&found, &link).unwrap();
+    }
+    dir
+}
+
+/// Page objects of a PDF (`/Type/Page`, not `/Type/Pages`).
+fn pdf_pages(pdf: &[u8]) -> usize {
+    pdf.windows(11).filter(|w| w.starts_with(b"/Type/Page") && w[10] != b's').count()
 }
 
 struct Server {
@@ -377,4 +406,146 @@ async fn bucket_sources_need_read_access_or_a_token() {
     let shared = bob.call("repr", json!({"args": {"source": {"bucket": {"bucket_id": lib, "key": "2026/IMG_0001.HEIC", "access_token": access}}}})).await;
     assert_eq!(shared["result"]["state"], "completed", "{shared}");
     assert_eq!(shared["result"]["work_key"], done["work_key"], "the cached result is shared once access is proven");
+}
+
+#[test]
+fn documents_are_sniffed_by_content() {
+    use nfs_server::preview::media::{sniff, Kind};
+    let read = |name: &str| std::fs::read(fixture(name)).unwrap();
+    assert_eq!(sniff(&read("office.docx"), None), Some(Kind::Document("docx")));
+    assert_eq!(sniff(&read("office.pptx"), None), Some(Kind::Document("pptx")));
+    assert_eq!(sniff(&read("office.odt"), None), Some(Kind::Document("odt")));
+    assert_eq!(sniff(&read("office.doc"), None), Some(Kind::Document("doc")));
+    // The bytes decide, a wrong or missing name does not.
+    assert_eq!(sniff(&read("office.pptx"), Some("deck.docx")), Some(Kind::Document("pptx")));
+    assert_eq!(sniff(&read("office.docx")[..2048], Some("attachment")), Some(Kind::Document("docx")), "the first entries are enough");
+    assert_eq!(sniff(b"{\\rtf1\\ansi\\deff0 {\\fonttbl}}", None), Some(Kind::Document("rtf")));
+    assert_eq!(sniff(&read("h264_aac.mov"), Some("clip.docx")), Some(Kind::Video));
+    assert_eq!(sniff(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3", Some("notes.docx")), None);
+}
+
+#[tokio::test]
+async fn office_documents_become_pdf() {
+    if !soffice_present() {
+        return;
+    }
+    let srv = start(None).await;
+    let alice = srv.client("alice").await;
+    let repr = &alice.hello["repr"];
+    assert!(repr["soffice"]["version"].is_string(), "{repr}");
+    assert!(repr["profiles"].as_array().unwrap().iter().any(|p| p == "preview-document"), "{repr}");
+
+    for (name, pages) in [("office.docx", 1), ("office.pptx", 2), ("office.odt", 1), ("office.doc", 1)] {
+        let path = format!("{DIR}/{name}");
+        let done = alice.converted(alice.repr_at(&path, json!({"purpose": "preview", "runtime": {"accept": ["image", "video", "pdf"]}})).await).await;
+        assert_eq!(done["state"], "completed", "{name}: {done}");
+        let result = &done["result"];
+        assert_eq!(result["media_type"], "application/pdf", "{name}: {result}");
+        assert_eq!(result["result_type"], "document");
+        assert!(result["fidelity"].as_str().unwrap().contains("LibreOffice"), "{result}");
+        let pdf = alice.fetch(result["read_url"].as_str().unwrap()).await;
+        assert!(pdf.starts_with(b"%PDF-"), "{name}");
+        assert_eq!(pdf_pages(&pdf), pages, "{name}");
+    }
+    let scratch = srv._tmp.path().join("fsdb/preview-tmp");
+    assert_eq!(std::fs::read_dir(&scratch).map(|d| d.count()).unwrap_or(0), 0, "attempt and profile directories are removed");
+
+    // Cached: the same work, completed at once, served as a PDF an iframe can embed.
+    let docx = format!("{DIR}/office.docx");
+    let again = alice.repr_at(&docx, json!({})).await;
+    assert_eq!(again["result"]["state"], "completed", "{again}");
+    let read_url = again["result"]["result"]["read_url"].as_str().unwrap();
+    let head = srv.http.get(format!("{}{}", srv.base, read_url)).send().await.unwrap();
+    assert_eq!(head.headers()["content-type"], "application/pdf");
+
+    // No document thumbnail yet; a Runtime that takes no PDF gets none.
+    let thumb = alice.repr_at(&docx, json!({"purpose": "thumbnail"})).await;
+    assert_eq!(thumb["result"]["reason"], "no-renderer", "{thumb}");
+    let no_pdf = alice.repr_at(&docx, json!({"runtime": {"accept": ["image", "video"]}})).await;
+    assert_eq!(no_pdf["result"]["reason"], "no-renderer", "{no_pdf}");
+
+    // Named content (a bucket binding): materialized under the real extension.
+    let lib = "user/photos/alice/library";
+    let put = srv
+        .http
+        .put(format!("{}/bucket/v1/{lib}/decks/Q3 计划", srv.base))
+        .bearer_auth(token("alice", "app:photos@alice"))
+        .body(std::fs::read(fixture("office.pptx")).unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert!(put.status().is_success(), "{}", put.status());
+    let deck = alice.converted(alice.call("repr", json!({"args": {"source": {"bucket": {"bucket_id": lib, "key": "decks/Q3 计划"}}}})).await).await;
+    assert_eq!(deck["state"], "completed", "{deck}");
+    assert_eq!(pdf_pages(&alice.fetch(deck["result"]["read_url"].as_str().unwrap()).await), 2);
+
+    // An uploaded named object (`source.obj_id`, what AI Workspace's Office import sends).
+    use ndn_lib::NamedObject;
+    let bytes = std::fs::read(fixture("office.docx")).unwrap();
+    let chunk = ndn_lib::ChunkHasher::new(None).unwrap().calc_mix_chunk_id_from_bytes(&bytes).unwrap();
+    let (file_id, file_body) = ndn_lib::FileObject::new("周报.docx".into(), bytes.len() as u64, chunk.to_string()).gen_obj_id();
+    let write = srv
+        .http
+        .put(format!("{}/ndm/proxy/v1/write/chunk/{}", srv.base, chunk.to_string()))
+        .bearer_auth(&alice.token)
+        .header("NDM-Chunk-Size", bytes.len().to_string())
+        .header("Content-Type", "application/octet-stream")
+        .body(bytes)
+        .send()
+        .await
+        .unwrap();
+    assert!(write.status().is_success(), "{}", write.status());
+    let manifest = json!({"objects": [{"obj_id": file_id.to_string(), "obj_data": file_body}], "roots": [file_id.to_string()]});
+    let finalized: Value = srv.http.post(format!("{}/ndm/v1/import/finalize", srv.base)).bearer_auth(&alice.token).json(&manifest).send().await.unwrap().json().await.unwrap();
+    assert_eq!(finalized["ready"], true, "{finalized}");
+    let asset = alice.converted(alice.call("repr", json!({"args": {"source": {"obj_id": file_id.to_string()}, "purpose": "preview"}})).await).await;
+    assert_eq!(asset["state"], "completed", "{asset}");
+    assert_eq!((&asset["result"]["media_type"], &asset["result"]["result_type"]), (&json!("application/pdf"), &json!("document")));
+    assert!(alice.fetch(asset["result"]["read_url"].as_str().unwrap()).await.starts_with(b"%PDF-"));
+    let bob = srv.client("bob").await;
+    let denied = bob.call("repr", json!({"args": {"source": {"obj_id": file_id.to_string()}}})).await;
+    assert_eq!(denied["error"]["code"], "PERMISSION_DENIED", "{denied}");
+}
+
+#[tokio::test]
+async fn missing_soffice_keeps_the_ffmpeg_profiles() {
+    let tools = only_tools(&["ffmpeg", "ffprobe"]);
+    let srv = start(Some(vec![tools.path().to_path_buf()])).await;
+    let alice = srv.client("alice").await;
+    let repr = &alice.hello["repr"];
+    assert!(!repr["profiles"].as_array().unwrap().iter().any(|p| p == "preview-document"), "{repr}");
+    assert!(repr["missing"].as_array().unwrap().iter().any(|m| m == "soffice"), "{repr}");
+    assert!(repr.get("soffice").is_none(), "{repr}");
+    let docx = alice.repr_at(&format!("{DIR}/office.docx"), json!({})).await;
+    assert_eq!(docx["result"]["state"], "unsupported", "{docx}");
+    assert_eq!(docx["result"]["reason"], "no-pipeline");
+    assert!(docx["result"]["detail"].as_str().unwrap().contains("soffice not found"), "{docx}");
+
+    if !tools_present() {
+        return;
+    }
+    assert!(alice.hello["features"].as_array().unwrap().iter().any(|f| f == "repr"));
+    assert_eq!(repr["profiles"], json!(["preview-image", "preview-video", "preview-audio", "thumbnail"]));
+    assert_eq!(repr["available"], true);
+    let heic = alice.converted(alice.repr_at(&format!("{DIR}/landscape_grid.heic"), json!({"purpose": "thumbnail"})).await).await;
+    assert_eq!(heic["state"], "completed", "{heic}");
+}
+
+#[tokio::test]
+async fn soffice_alone_advertises_repr() {
+    if !soffice_present() {
+        return;
+    }
+    let tools = only_tools(&["soffice"]);
+    let srv = start(Some(vec![tools.path().to_path_buf()])).await;
+    let alice = srv.client("alice").await;
+    assert!(alice.hello["features"].as_array().unwrap().iter().any(|f| f == "repr"), "{}", alice.hello);
+    let repr = &alice.hello["repr"];
+    assert_eq!(repr["profiles"], json!(["preview-document"]), "{repr}");
+    assert!(repr.get("ffmpeg").is_none(), "{repr}");
+    let heic = alice.repr_at(&format!("{DIR}/portrait_grid.heic"), json!({})).await;
+    assert_eq!(heic["result"]["reason"], "no-pipeline", "{heic}");
+    assert!(heic["result"]["detail"].as_str().unwrap().contains("ffmpeg and ffprobe not found"), "{heic}");
+    let odt = alice.converted(alice.repr_at(&format!("{DIR}/office.odt"), json!({})).await).await;
+    assert_eq!(odt["state"], "completed", "{odt}");
 }

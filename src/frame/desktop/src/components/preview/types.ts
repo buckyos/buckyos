@@ -263,6 +263,8 @@ export interface EnsurePreviewWorkRequest {
   source: ResolvedPreviewSource
   runtimeProfile: PreviewRuntimeProfile
   targetProfile: PreviewTargetProfile
+  /** The classified media type (bytes / header / extension): picks the provider's conversion profile. */
+  mediaType?: string
   options?: {
     retry?: boolean
     expectedAttemptId?: string

@@ -188,7 +188,7 @@ RecordObject、Cell、Container、AssetRef、Annotation 的 payload 都是“一
 
 | 标识 | 生成方 | 格式 | 说明 |
 | --- | --- | --- | --- |
-| `workspace_id` | 后台（创建/Fork/导入为新实例时） | `ws_` + 26 位小写 base32（130 bit 随机） | 恢复同一 Workspace 时沿用包内 ID |
+| `workspace_id` | 后台（创建/Fork/导入为新实例时） | `ws_` + `YYMM`（创建的 UTC 年月）+ 4 位 base36 `[0-9a-z]`（如 `ws_2611a0b3`；每月 36⁴ 个，随机起点、已占用则 +1，2026-11-01 由 26 位 base32 改短） | 恢复同一 Workspace 时沿用包内 ID；去掉 `ws_` 即子域标签 `aiws-2611a0b3.<zone>`。ID 不再是密钥：需要“持链接者可看”的保密语义时在链接后加长参数，不动域名 |
 | `entity_id`、`record_id`、`field_id`、`option_id`、`block_id` | **调用方**（客户端、Agent、Mock），以支持离线创建 | `^[a-z0-9][a-z0-9_-]{0,63}$` | 建议默认生成 20 位小写 base32（100 bit 随机）；fixtures 可用可读 ID 如 `tasks` |
 | `commit_id` | 后台 | `cm_` + 26 位 base32 | 与 `seq` 一一对应；对外引用用 `commit_id`，排序和追赶用 `seq` |
 | `idempotency_key` | 调用方 | 1–128 字节可见 ASCII | 作用域见 §2.6 |

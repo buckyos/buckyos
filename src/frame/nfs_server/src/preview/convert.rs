@@ -1,4 +1,4 @@
-//! The fixed Target Profiles (TODO D5) as ffmpeg invocations.
+//! The fixed Target Profiles (TODO D5) as ffmpeg / soffice invocations.
 //!
 //! - `preview-image`: JPEG q≈85, long edge ≤ 4096, BT.601 full range (what
 //!   JPEG decoders assume), HEIF `irot`/`imir` baked into pixels, alpha
@@ -7,12 +7,14 @@
 //!   rotation baked by ffmpeg's autorotate; a playable codec is only remuxed.
 //! - `preview-audio`: AAC in MP4 for a container with no picture.
 //! - `thumbnail`: JPEG, long edge ≤ 640 (a video's frame at min(1 s, 10 %)).
+//! - `preview-document`: PDF by LibreOffice (Office import TODO §5.1, Q11).
 //!
 //! HDR (PQ / HLG) is tone-mapped to SDR BT.709 and noted in the fidelity.
 
 use super::heif::{HeifInfo, Nclx, Transform};
 use super::media::{Kind, MediaInfo, Stream};
-use super::tools::Toolchain;
+use super::tools::{Tool, Toolchain};
+use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -25,6 +27,7 @@ pub enum Profile {
     PreviewVideo,
     PreviewAudio,
     Thumbnail,
+    PreviewDocument,
 }
 
 impl Profile {
@@ -34,6 +37,7 @@ impl Profile {
             Profile::PreviewVideo => "preview-video",
             Profile::PreviewAudio => "preview-audio",
             Profile::Thumbnail => "thumbnail",
+            Profile::PreviewDocument => "preview-document",
         }
     }
 }
@@ -47,6 +51,7 @@ const THUMBNAIL_QSCALE: &str = "5";
 pub const FIDELITY_HDR: &str = "HDR 已映射为 SDR";
 pub const FIDELITY_HDR_RAW: &str = "HDR 未能映射为 SDR（缺少 zscale/tonemap 滤镜），颜色可能失真";
 pub const FIDELITY_ALPHA: &str = "透明区域以白底显示";
+pub const FIDELITY_DOCUMENT: &str = "由 LibreOffice 转换，字体与版式可能与原件有差异";
 
 #[derive(Debug, Clone)]
 pub struct ConvertError {
@@ -460,6 +465,62 @@ pub async fn run(job: &Job<'_>, info: &MediaInfo, args: Vec<OsString>, output: &
     }
 }
 
+/// `file://` URL of a local path (`-env:UserInstallation`), Windows drive paths included.
+pub fn file_url(path: &Path) -> String {
+    const PATH: &AsciiSet = &NON_ALPHANUMERIC.remove(b'/').remove(b':').remove(b'-').remove(b'_').remove(b'.').remove(b'~');
+    let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let text = path.to_string_lossy().replace('\\', "/");
+    let text = text.strip_prefix("//?/").unwrap_or(&text);
+    let text = if text.starts_with('/') { text.to_string() } else { format!("/{text}") };
+    format!("file://{}", utf8_percent_encode(&text, PATH))
+}
+
+/// soffice arguments: a private profile per attempt (a second instance on a
+/// shared one exits silently and leaves a lock behind), PDF next to the input.
+pub fn document_args(profile: &Path, input: &Path, dir: &Path) -> Vec<OsString> {
+    let mut args = vec![OsString::from(format!("-env:UserInstallation={}", file_url(profile)))];
+    args.extend(os(&["--headless", "--norestore", "--nologo", "--nolockcheck", "--nodefault", "--convert-to", "pdf", "--outdir"]));
+    args.push(dir.into());
+    args.push(input.into());
+    args
+}
+
+/// Q11: max(120 s, 10 s per MiB of input).
+pub fn document_timeout(size: u64) -> Duration {
+    Duration::from_secs(size.div_ceil(1024 * 1024).saturating_mul(10).max(120))
+}
+
+/// `preview-document`: LibreOffice writes `<input stem>.pdf` into `dir`.
+pub async fn document(soffice: &Tool, input: &Path, dir: &Path, profile: &Path) -> Result<Output, ConvertError> {
+    let size = tokio::fs::metadata(input).await.map(|m| m.len()).unwrap_or(0);
+    let mut cmd = command(&soffice.path);
+    cmd.args(document_args(profile, input, dir));
+    log::debug!("preview soffice {:?}", cmd.as_std());
+    let limit = document_timeout(size);
+    // Dropping the timed-out future kills soffice (`kill_on_drop`).
+    let out = tokio::time::timeout(limit, cmd.output())
+        .await
+        .map_err(|_| ConvertError { code: "CONVERT_TIMEOUT", message: format!("the conversion took longer than {}s", limit.as_secs()), retryable: true })?
+        .map_err(|e| ConvertError { code: "CONVERTER_UNAVAILABLE", message: format!("cannot run soffice: {e}"), retryable: true })?;
+    let path = dir.join(input.with_extension("pdf").file_name().unwrap_or_default());
+    match tokio::fs::metadata(&path).await {
+        Ok(m) if m.len() > 0 => Ok(Output {
+            path,
+            media_type: "application/pdf",
+            result_type: "document",
+            plan: "soffice-pdf",
+            width: None,
+            height: None,
+            duration: None,
+            fidelity: vec![FIDELITY_DOCUMENT],
+        }),
+        _ => {
+            let tail = |b: &[u8]| String::from_utf8_lossy(&b[b.len().saturating_sub(2048)..]).trim().to_string();
+            Err(ConvertError::new("CONVERT_FAILED", format!("soffice exited with {} and produced no PDF: {} {}", out.status, tail(&out.stderr), tail(&out.stdout))))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,5 +572,40 @@ mod tests {
     fn timeouts() {
         assert_eq!(timeout_for(None).as_secs(), 60);
         assert_eq!(timeout_for(Some(30.0)).as_secs(), 300);
+        assert_eq!(document_timeout(0).as_secs(), 120);
+        assert_eq!(document_timeout(12 * 1024 * 1024).as_secs(), 120);
+        assert_eq!(document_timeout(30 * 1024 * 1024 + 1).as_secs(), 310);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn soffice_command() {
+        let dir = Path::new("/data/preview-tmp/att_1");
+        let args = document_args(Path::new("/data/preview-tmp/profile-att_1"), &dir.join("input.pptx"), dir);
+        let args: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(
+            args,
+            [
+                "-env:UserInstallation=file:///data/preview-tmp/profile-att_1",
+                "--headless",
+                "--norestore",
+                "--nologo",
+                "--nolockcheck",
+                "--nodefault",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                "/data/preview-tmp/att_1",
+                "/data/preview-tmp/att_1/input.pptx",
+            ]
+        );
+        assert_eq!(file_url(Path::new("/srv/数据 x/profile-1")), "file:///srv/%E6%95%B0%E6%8D%AE%20x/profile-1");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_file_urls() {
+        assert_eq!(file_url(Path::new(r"C:\buckyos\data\preview-tmp\profile-att_1")), "file:///C:/buckyos/data/preview-tmp/profile-att_1");
+        assert_eq!(file_url(Path::new(r"\\?\D:\数据\p")), "file:///D:/%E6%95%B0%E6%8D%AE/p");
     }
 }

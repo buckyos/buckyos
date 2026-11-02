@@ -4,7 +4,7 @@
  * Interactions are not shown — there is no global interaction system yet — and online members only appear once
  * presence exists. The guide (§7.3) appears when the workspace has a guide path, the show button (§7.2) when it has a
  * presentation path. On a phone (§16) it is the only toolbar and starts with the canvas switcher (icon, name, the
- * workspace's canvases). */
+ * workspace's canvases); on a flow page, which a phone edits (§16.5), undo and redo follow it. */
 
 import { useEffect, useState } from 'react'
 import { Link2, LogIn, LogOut, MessageSquarePlus, Minus, Play, Plus, Signpost } from 'lucide-react'
@@ -15,13 +15,16 @@ import { useOutlineVersion, useStore } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
 import type { Camera } from '../canvas/render/camera'
 import { MAX_ZOOM, MIN_ZOOM } from '../canvas/render/camera'
+import type { RunMode } from '../../state/runMode'
+import { HistoryButtons } from '../canvas/ObjectToolbar'
+import { RunModeToggle } from '../canvas/tools'
 import { SurfaceSwitcher } from './MainToolbar'
 import { MenuList, PopoverPanel, usePopover, type MenuItem } from './popover'
-import { useShell, ZOOM_PRESETS } from './shellContext'
+import { useCanvasMode, useShell, ZOOM_PRESETS } from './shellContext'
 import { ObjectImage } from '../../../../presentation/ObjectIcon'
 import { useCurrentUser } from '../../../../presentation/currentUser'
 
-export function ViewToolbar({ camera, hasSelection, onFitAll, onFitSelection, annotate }: {
+export function ViewToolbar({ camera, hasSelection, onFitAll, onFitSelection, annotate, runMode }: {
   /** Free Surfaces only: flow pages have no camera, so no zoom. */
   camera: Camera | null
   hasSelection: boolean
@@ -30,16 +33,21 @@ export function ViewToolbar({ camera, hasSelection, onFitAll, onFitSelection, an
   /** Absent where there is nothing to annotate (a workspace without canvases). `note`: a free canvas also takes notes
    * from here (a note is an annotation), so the button opens a choice. */
   annotate: { reason: string | null; active: boolean; run: () => void; note?: { reason: string | null; run: () => void } | null } | null
+  /** The canvas's design / run switch (扩展控件 P2, Q27). */
+  runMode?: RunMode
 }) {
   const shell = useShell()
+  const mode = useCanvasMode()
   const { t } = useAiwsText()
   const compact = shell.size === 'narrow' || shell.phone
   return (
     <div className="aiws-panel aiws-view-toolbar" role="toolbar" aria-label={shell.phone ? t('aiworkspace.shell.view.canvasTools') : t('aiworkspace.shell.view.tools')} data-testid="aiws-view-toolbar">
       {shell.phone && <SurfaceSwitcher phone />}
+      {shell.phone && mode === 'edit' && <HistoryButtons size={18} />}
       <GuideButton compact={compact} />
       {!shell.phone && <ShowButton />}
       {annotate && <AnnotateButton annotate={annotate} compact={compact} />}
+      {runMode && <RunModeToggle runMode={runMode} />}
       {camera && <ZoomControl camera={camera} hasSelection={hasSelection} onFitAll={onFitAll} onFitSelection={onFitSelection} />}
       <IdentityButton />
       <ShareButton />

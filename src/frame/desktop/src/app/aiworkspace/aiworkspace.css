@@ -193,9 +193,10 @@
   .aiws-flow-gutter { opacity: 0.55; }
   .aiws-flow .aiws-fblock[data-view='table'] .aiws-table-bar .aiws-table-tool, .aiws-flow .aiws-table-foot .aiws-table-count, .aiws-root button.aiws-md-toggle, .aiws-root button.aiws-row-delete { opacity: 1; }
 }
-.aiws-workspace[data-phone='true'] .aiws-flow { padding-left: 30px; padding-right: 0; }
-.aiws-workspace[data-phone='true'] .aiws-flow-gutter { left: -30px; width: 28px; }
-.aiws-workspace[data-phone='true'] .aiws-flow-gutter .aiws-flow-handle:not(.aiws-flow-grip) { display: none; }
+/* a phone edits the page (UI improvement §16.5): a narrower margin that still holds ＋ and ⋮⋮ */
+.aiws-workspace[data-phone='true'] .aiws-flow { padding-left: 48px; padding-right: 0; }
+.aiws-workspace[data-phone='true'] .aiws-flow-gutter { left: -48px; width: 48px; }
+.aiws-workspace[data-phone='true'] button.aiws-flow-handle { height: 30px; }
 .aiws-workspace[data-phone='true'] .aiws-page-title { font-size: 24px; }
 /* a record on a page: Notion's property list */
 .aiws-flow .aiws-record { width: 100%; }
@@ -610,6 +611,18 @@
 .aiws-html-active { display: flex; flex-direction: column; height: 100%; }
 .aiws-html-bar { display: flex; gap: 6px; font-size: 11px; }
 .aiws-html-placeholder { padding: 20px; text-align: center; border: 1px dashed var(--cp-border); border-radius: 6px; }
+/* design / run mode (扩展控件 P2, Q27): a running canvas mounts an HTML Block on a click; a design-mode event leaves a note */
+.aiws-block-body:has(> .aiws-html-start), .aiws-html-active, .aiws-decl { position: relative; }
+.aiws-root button.aiws-html-start { position: absolute; inset: 0; width: 100%; height: 100%; border: none; padding: 0; background: transparent; cursor: pointer; }
+.aiws-root button.aiws-html-start:hover { background: var(--aiws-pressed-bg); }
+.aiws-event-note { position: absolute; right: 4px; top: 4px; z-index: 2; max-width: calc(100% - 8px); padding: 2px 6px; border-radius: 4px; font-size: 11px;
+  background: var(--cp-surface); color: var(--cp-muted); border: 1px dashed var(--cp-border); pointer-events: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.aiws-decl-button { display: inline-flex; align-self: flex-start; align-items: center; padding: 4px 12px; border-radius: 6px; border: 1px solid var(--cp-border); font-size: 13px; }
+.aiws-decl-button.is-design { color: var(--cp-muted); border-style: dashed; cursor: default; }
+.aiws-events-form { display: flex; flex-direction: column; gap: 8px; }
+.aiws-events-row { border: 1px solid var(--cp-border); border-radius: 6px; padding: 6px 8px; min-width: 0; }
+.aiws-events-handler { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 4px 0; }
+.aiws-events-args { flex: 1 1 100%; min-width: 0; font-family: var(--cp-mono, monospace); font-size: 12px; }
 .aiws-video-caption { font-size: 12px; color: var(--cp-muted); }
 
 /* wishes (§7) */
@@ -1007,8 +1020,8 @@
 .aiws-canvas { -webkit-touch-callout: none; }
 .aiws-canvas .aiws-frame-block.is-editing * { touch-action: auto; }
 
-/* phone (§16): one toolbar across the top (canvas switcher, annotation, zoom, identity, share), view only;
-   the page itself never pinch-zooms (iOS ignores user-scalable=no) */
+/* phone (§16): one toolbar across the top (canvas switcher, annotation, zoom, identity, share; undo / redo on a flow
+   page, which a phone edits); the page itself never pinch-zooms (iOS ignores user-scalable=no) */
 .aiws-workspace[data-phone='true'] { touch-action: pan-x pan-y; }
 .aiws-workspace[data-phone='true'] .aiws-chrome-top { top: calc(8px + env(safe-area-inset-top)); left: calc(8px + env(safe-area-inset-left)); right: calc(8px + env(safe-area-inset-right)); }
 .aiws-workspace[data-phone='true'] .aiws-view-toolbar { flex: 1 1 auto; min-width: 0; margin-left: 0; }
@@ -1205,8 +1218,20 @@
   color: var(--cp-muted); font-size: 10px; line-height: 15px; font-weight: 600; text-align: center; cursor: pointer; pointer-events: auto; }
 .aiws-overlay-html > .aiws-fold:hover { color: var(--cp-text); box-shadow: 0 0 0 2px var(--cp-focus-ring, color-mix(in srgb, var(--cp-accent) 30%, transparent)); }
 .aiws-overlay-html > .aiws-fold.is-folded { color: var(--cp-text); }
-.aiws-frame-block.is-control > .aiws-pin-mark { position: absolute; display: flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 8px;
-  background: var(--cp-accent); color: #fff; pointer-events: auto; z-index: 1; }
+.aiws-frame-block.is-node > .aiws-pin-mark { position: absolute; right: 0; top: 0; width: 12px; height: 12px; border-top-right-radius: 8px;
+  background: color-mix(in srgb, var(--cp-accent) 55%, var(--cp-surface-opaque)); clip-path: polygon(0 0, 100% 0, 100% 100%); z-index: 1; }
+.aiws-frame-block.is-node.is-editing > .aiws-pin-mark { display: none; }
+/* ---- composite controls (扩展控件 P1): the frame a definition's chrome describes, under the slots' Blocks */
+.aiws-frame-block.is-control > .aiws-composite-chrome { position: absolute; left: 0; top: 0; box-sizing: border-box; border: 1px solid var(--cp-border);
+  background: color-mix(in srgb, var(--cp-surface-2) 70%, transparent); pointer-events: none; }
+.aiws-composite-chrome.is-unknown { border-style: dashed; background: transparent; }
+.aiws-composite-title { position: absolute; display: flex; align-items: center; font-weight: 600; color: var(--cp-text); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.aiws-composite-unknown { position: absolute; right: 6px; bottom: 4px; font-size: 11px; color: var(--cp-muted); }
+.aiws-composite-empty { position: absolute; display: flex; align-items: center; justify-content: center; text-align: center; color: var(--cp-muted); font-size: 13px; }
+.aiws-define-slots { width: 100%; border-collapse: collapse; margin: 6px 0; }
+.aiws-define-slots th, .aiws-define-slots td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--cp-border); }
+.aiws-define-slots input { width: 100%; box-sizing: border-box; }
+.aiws-plain-fieldset { border: none; margin: 0; padding: 0; min-width: 0; }
 .aiws-mindnode { box-sizing: border-box; width: 100%; height: 100%; border-radius: 8px; border: 1px solid var(--cp-border); background: var(--cp-surface-opaque); color: var(--cp-text);
   white-space: pre; overflow: visible; }
 .aiws-mindnode.is-depth-0 { border: none; border-radius: 10px; background: var(--cp-text); color: var(--cp-surface-opaque); }

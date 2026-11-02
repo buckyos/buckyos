@@ -5,7 +5,7 @@ import { useWindowDialog } from '../../desktop/windows/dialogs'
 import { confirmGroupAction } from './confirmDialog'
 import { friendlyDidName } from './api/projection'
 import { InviteFailures } from './GroupDialogs'
-import { formatInviteLink, GROUP_MEMBER_KINDS, GROUP_MEMBER_LIMIT, groupErrorText, participating, sortGroupMembers } from './groupModel'
+import { formatInviteLink, GROUP_MEMBER_KINDS, GROUP_MEMBER_LIMIT, groupErrorText, inviteBlocked, participating, sortGroupMembers } from './groupModel'
 import { useNetworkDialogs } from '../../components/network/dialogs'
 import { hubButtonClass, hubInputClass, hubPrimaryButtonClass } from './SessionDialogs'
 import { useMessageHubStore } from './store'
@@ -103,7 +103,7 @@ export function GroupPanel({ entity, context }: { entity: Entity; context: Messa
   const waitingCount = members.length - activeCount
   const openInvite = async () => {
     const trigger = document.activeElement
-    const exclude = (group.members ?? []).filter(participating).map(member => ({ did: member.did, reason: t(`messagehub.group.state.${member.state}`) }))
+    const exclude = (group.members ?? []).filter(inviteBlocked).map(member => ({ did: member.did, reason: t(`messagehub.group.state.${member.state}`) }))
     const result = await dialogs.pickPeople({ title: t('messagehub.group.inviteTitle', undefined, { name: group.name || entity.name }), confirmLabel: t('messagehub.group.invite'), limit: GROUP_MEMBER_LIMIT, filter: { kinds: GROUP_MEMBER_KINDS, exclude } })
     if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus()
     if (result.action !== 'selected') return
@@ -116,7 +116,7 @@ export function GroupPanel({ entity, context }: { entity: Entity; context: Messa
     const name = nameOf(member.did)
     const invited = member.state !== 'active'
     if (!await confirmGroupAction(dialog, t, { title: t(invited ? 'messagehub.group.cancelInvite' : 'messagehub.group.remove'), body: t(invited ? 'messagehub.group.cancelInviteConfirm' : 'messagehub.group.removeConfirm', undefined, { name }), confirm: t(invited ? 'messagehub.group.cancelInvite' : 'messagehub.group.remove') })) return
-    await run(() => store.removeGroupMember(context, group.did, member.did))
+    await run(() => invited ? store.revokeGroupInvite(context, group.did, member.did) : store.removeGroupMember(context, group.did, member.did))
   }
   const leave = async () => {
     if (!await confirmGroupAction(dialog, t, { title: t('messagehub.group.leave'), body: t('messagehub.group.leaveConfirm', undefined, { name: group.name || entity.name }), confirm: t('messagehub.group.leave') })) return
@@ -172,7 +172,7 @@ export function GroupPanel({ entity, context }: { entity: Entity; context: Messa
       : !group.members ? <p className="mt-2 text-[13px] text-[color:var(--cp-muted)]">{t('messagehub.group.membersHidden')}</p>
       : <ul className="mt-1 divide-y divide-[color:color-mix(in_srgb,var(--cp-border)_70%,transparent)]" data-testid="group-members">
         {members.map(member => {
-          const removable = group.can.remove && member.did !== context.ownerDid && member.role !== 'owner'
+          const removable = member.did !== context.ownerDid && member.role !== 'owner' && (member.state === 'active' ? group.can.remove : member.state === 'invited' && group.can.invite)
           return <li key={member.did} className="flex min-h-11 items-center gap-2.5 py-1" data-member-did={member.did} data-role={member.role} title={member.did}>
             <MemberAvatar store={store} context={context} did={member.did} name={nameOf(member.did)} />
             <span className="min-w-0 flex-1">

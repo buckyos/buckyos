@@ -94,6 +94,13 @@ pub fn export_snapshot(doc: &LoroDoc) -> WsResult<Vec<u8>> {
     doc.export(ExportMode::Snapshot).map_err(crdt_err)
 }
 
+/// A snapshot without the edit history before the document's current version (a session's run Workspace starts
+/// from the content, not from how it was written: 第四期规划 §3.1).
+pub fn export_shallow(doc: &LoroDoc) -> WsResult<Vec<u8>> {
+    doc.commit();
+    doc.export(ExportMode::shallow_snapshot(&doc.oplog_frontiers())).map_err(crdt_err)
+}
+
 pub fn export_updates(doc: &LoroDoc, since: &VersionVector) -> WsResult<Vec<u8>> {
     doc.commit();
     doc.export(ExportMode::updates(since)).map_err(crdt_err)

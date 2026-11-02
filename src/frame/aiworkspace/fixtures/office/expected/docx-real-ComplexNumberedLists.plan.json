@@ -1,0 +1,381 @@
+{
+  "title": "ComplexNumberedLists",
+  "counts": {
+    "paragraphs": 3,
+    "headings": 0,
+    "lists": 4,
+    "tables": 0,
+    "images": 0,
+    "rasterized": 0
+  },
+  "segments": [
+    {
+      "kind": "richtext",
+      "content": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b1"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "This is a document with numbered lists"
+              }
+            ]
+          },
+          {
+            "type": "ordered_list",
+            "attrs": {
+              "block_id": "b2"
+            },
+            "content": [
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b3"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b4"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Entry #1"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b5"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b6"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Entry #2, with children"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "ordered_list",
+                    "attrs": {
+                      "block_id": "b7"
+                    },
+                    "content": [
+                      {
+                        "type": "list_item",
+                        "attrs": {
+                          "block_id": "b8"
+                        },
+                        "content": [
+                          {
+                            "type": "paragraph",
+                            "attrs": {
+                              "block_id": "b9"
+                            },
+                            "content": [
+                              {
+                                "type": "text",
+                                "text": "2-a"
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "type": "list_item",
+                        "attrs": {
+                          "block_id": "b10"
+                        },
+                        "content": [
+                          {
+                            "type": "paragraph",
+                            "attrs": {
+                              "block_id": "b11"
+                            },
+                            "content": [
+                              {
+                                "type": "text",
+                                "text": "2-b"
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "type": "list_item",
+                        "attrs": {
+                          "block_id": "b12"
+                        },
+                        "content": [
+                          {
+                            "type": "paragraph",
+                            "attrs": {
+                              "block_id": "b13"
+                            },
+                            "content": [
+                              {
+                                "type": "text",
+                                "text": "2-c"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b14"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b15"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Entry #3"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b16"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b17"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Entry #4"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "ordered_list",
+            "attrs": {
+              "block_id": "b18"
+            },
+            "content": [
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b19"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b20"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Restarted to 1 from 5"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b21"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b22"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Restarted @ 2"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b23"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b24"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Restarted @ 3"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "ordered_list",
+            "attrs": {
+              "block_id": "b25",
+              "start": 10
+            },
+            "content": [
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b26"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b27"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Jump to new list at 10"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b28"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b29"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Now 11"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b30"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Normal text here"
+              }
+            ]
+          },
+          {
+            "type": "ordered_list",
+            "attrs": {
+              "block_id": "b31",
+              "start": 12
+            },
+            "content": [
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b32"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b33"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Carrying on @ 12"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b34"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b35"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Carrying on @ 13"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b36"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "All done!"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "images": [],
+  "report": []
+}

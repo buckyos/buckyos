@@ -45,6 +45,6 @@ export function portalShareUrl(feed: string, key?: string) {
 
 /** `https://<zone>/home/<user>/<ns>/@/<key>` → `{ user, key }` (feed namespace only). */
 export function parseEntry(entry: string | undefined): { user: string; key: string } | null {
-  const match = entry?.match(/^https:\/\/[^/]+\/home\/([^/]+)\/feed\/@\/([^/]+)$/)
+  const match = entry?.match(/^(?:https|cyfs):\/\/[^/]+\/home\/([^/]+)\/feed\/@\/([^/]+)$/)
   return match ? { user: decodeURIComponent(match[1]), key: decodeURIComponent(match[2]) } : null
 }

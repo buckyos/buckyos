@@ -146,6 +146,7 @@ export interface MessageHubStore {
   /** Invites each DID; resolves to the DIDs whose invitation failed, with the reason. */
   inviteGroupMembers(context: MessageHubContext, groupDid: string, memberDids: string[]): Promise<Array<{ did: string; reason: string }>>
   removeGroupMember(context: MessageHubContext, groupDid: string, memberDid: string): Promise<void>
+  revokeGroupInvite(context: MessageHubContext, groupDid: string, memberDid: string): Promise<void>
   approveGroupMember(context: MessageHubContext, groupDid: string, memberDid: string): Promise<void>
   rejectGroupMember(context: MessageHubContext, groupDid: string, memberDid: string): Promise<void>
   updateGroupMemberRole(context: MessageHubContext, groupDid: string, memberDid: string, role: 'admin' | 'member'): Promise<void>

@@ -13,6 +13,8 @@ import { AssetBlobImage } from './AssetBlobImage'
 import { blockRegistry, type BlockDefinition, type RenderContext } from '../blocks/registry'
 import { cellOp } from '../blocks/ops'
 import { makeBridge } from './bridge'
+import { EventNote } from './EventNote'
+import { raiseEvent } from './events'
 import { HtmlRuntime } from './htmlRuntime'
 
 function Snapshot(context: RenderContext & { label?: string }) {
@@ -29,7 +31,15 @@ function Snapshot(context: RenderContext & { label?: string }) {
 
 function HtmlStatic(context: RenderContext) {
   const { t } = useAiwsText()
-  return <Snapshot {...context} label={context.documentDefinition?.title ?? context.payload.title ?? t('aiworkspace.extension.html.title')} />
+  const name = context.documentDefinition?.title ?? context.payload.title ?? t('aiworkspace.extension.html.title')
+  return (
+    <>
+      <Snapshot {...context} label={name} />
+      {/* run mode (Q27): a click on the Block mounts it (within the `html` budget); design mode selects it */}
+      {context.interactive && context.depth === 0 && <button type="button" className="aiws-html-start" data-testid={`aiws-html-start-${context.cell.entity_id}`} aria-label={t('aiworkspace.extension.html.start', { name })} onClick={context.activateEditor} />}
+      <EventNote cellId={context.cell.entity_id} />
+    </>
+  )
 }
 
 /** Mounted after activation: the real runtime. */
@@ -44,6 +54,8 @@ function HtmlActive(context: RenderContext) {
   const htmlKey = html ? JSON.stringify(html) : ''
   const cellId = context.cell.entity_id
   const mode = context.mode
+  const interactive = context.interactive
+  const openEntity = context.openEntity
   const deactivate = context.deactivateEditor
   useEffect(() => {
     const host = hostRef.current
@@ -51,13 +63,15 @@ function HtmlActive(context: RenderContext) {
     const src = JSON.parse(htmlKey) as { html: string; css?: string; js?: string }
     const cell = store.outline.get(cellId)
     if (!cell) return
-    const runtime = new HtmlRuntime(src, makeBridge(store, { cell, payload: context.payload, keyRevs: context.keyRevs, source: context.source, mode }))
+    // `emit` of this runtime only: a rebuild remounts with the new `html`, the old runtime's late events are dropped
+    const onEmit = (name: string, params: Record<string, Json>) => (runtime.alive ? raiseEvent({ store, instanceId: cellId, event: name, params, mode, interactive, openEntity, alive: () => runtime.alive }) : Promise.resolve({ handled: false, event_id: null }))
+    const runtime = new HtmlRuntime(src, makeBridge(store, { cell, payload: context.payload, keyRevs: context.keyRevs, source: context.source, mode, interactive, onEmit }))
     let cancelled = false
     runtime.onCrash = (message) => { if (!cancelled) { runtime.dispose(); setFailure(message) } }
     runtime.mount(host).catch((error: unknown) => { if (!cancelled) setFailure(error instanceof Error ? error.message : String(error)) })
     return () => { cancelled = true; runtime.dispose() }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store, htmlKey, cellId, mode, attempt])
+  }, [store, htmlKey, cellId, mode, interactive, attempt])
   if (!html) return <div className="aiws-warning">{t('aiworkspace.extension.html.unavailable')}</div>
   if (failure) {
     return (
@@ -72,6 +86,7 @@ function HtmlActive(context: RenderContext) {
   return (
     <div className="aiws-html-active" data-testid={`aiws-html-active-${context.cell.entity_id}`}>
       <div ref={hostRef} className="aiws-html-host" />
+      <EventNote cellId={cellId} />
       <div className="aiws-html-bar"><span className="aiws-muted">{t('aiworkspace.extension.html.mounted', { name: source?.title ?? context.payload.def_ref?.entity_id ?? '' })}</span><button type="button" className="aiws-link" onClick={deactivate}>{t('aiworkspace.extension.html.stop')}</button></div>
     </div>
   )

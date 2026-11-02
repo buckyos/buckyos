@@ -19,6 +19,8 @@ import { authorLabel, readGuestName } from '../../state/guest'
 import { useEdit, useLoad, useStore, useVersion, useWorkspaceUi } from '../../state/hooks'
 import type { WorkspaceStore } from '../../state/store'
 import { pdfImports } from '../canvas/pdfImportRequest'
+import { officeImports } from '../import/officeImportRequest'
+import { officeKind } from '@office/package'
 import { TableViewCell } from '../TableViewCell'
 import { sourceLabel } from './affordances'
 import { requestIntent, useOnFreeCanvas } from './editorToolbar'
@@ -273,6 +275,32 @@ function pickReplacement(context: RenderContext, store: WorkspaceStore) {
   input.click()
 }
 
+/** Which Office document a file Block holds, by its name (Office 导入 TODO §6). */
+function officeKindOf(context: RenderContext) {
+  const name = context.source?.name ?? ''
+  const ext = /\.([a-z]+)$/i.exec(name)?.[1]?.toLowerCase() ?? ''
+  return ['docx', 'docm', 'pptx', 'pptm', 'ppsx', 'doc', 'ppt', 'odt', 'odp', 'rtf'].includes(ext) ? ext : null
+}
+
+/** An Office file Block as an editable document or pages (Office 导入 TODO §6): the stored file is the original. */
+async function expandOffice(context: RenderContext, store: WorkspaceStore) {
+  const sourceId = context.source?.entity_id
+  if (!sourceId) return
+  if (officeImports.busy || pdfImports.busy) { store.notify('info', aiwsT('aiworkspace.canvas.import.busy')); return }
+  try {
+    const read = await store.session.read<KeyedContent<{ object_id?: string; file_name?: string }>>(sourceId)
+    const objectId = read.content.payload.object_id
+    if (!objectId) return
+    const name = read.content.payload.file_name ?? context.source?.name ?? 'document'
+    const bytes = new Uint8Array(await (await store.session.fetchAsset(objectId)).arrayBuffer())
+    const kind = officeKind(name, bytes)
+    if (!kind) { store.notify('info', aiwsT('aiworkspace.office.error.unreadable', { reason: name })); return }
+    officeImports.open({ source: { name, bytes, kind, asset: { object_id: objectId } }, step: 'options' })
+  } catch (error) {
+    store.notify('error', aiwsT('aiworkspace.office.error.unreadable', { reason: error instanceof Error ? error.message : String(error) }))
+  }
+}
+
 /** A PDF file Block's pages as editable objects on a new canvas (PDF 导入方案 §5 入口): the stored file is the original. */
 async function expandPdf(context: RenderContext, store: WorkspaceStore) {
   const sourceId = context.source?.entity_id
@@ -316,6 +344,10 @@ const asset: BlockDefinition = {
       ...(kind === 'pdf' && context.mode === 'edit' ? [{ kind: 'button' as const, id: 'asset-expand-pdf', icon: LayoutGrid, label: aiwsT('aiworkspace.blocks.asset.expandPdf'),
         disabled: !store.session.info().capabilities.includes('structure') ? aiwsT('aiworkspace.pdf.reason.noStructure') : store.session.status().kind !== 'live' ? aiwsT('aiworkspace.pdf.reason.offline') : false as const,
         run: () => { void expandPdf(context, store) } }] : []),
+      ...(officeKindOf(context) && context.mode === 'edit' ? [{ kind: 'button' as const, id: 'asset-expand-office', icon: LayoutGrid,
+        label: aiwsT(/^(docx?|docm|odt|rtf)$/.test(officeKindOf(context) ?? '') ? 'aiworkspace.office.expandDoc' : 'aiworkspace.office.expandSlides'),
+        disabled: !store.session.info().capabilities.includes('structure') ? aiwsT('aiworkspace.pdf.reason.noStructure') : store.session.status().kind !== 'live' ? aiwsT('aiworkspace.pdf.reason.offline') : false as const,
+        run: () => { void expandOffice(context, store) } }] : []),
     ]
   },
   configFields: [{ key: 'fit', get label() { return aiwsT('aiworkspace.blocks.asset.fitField') }, kind: 'select', options: FIT_OPTIONS }],

@@ -23,6 +23,14 @@ buckyos-agent tools 是用 TypeScript 编写、运行在 Deno 环境下的 Bucky
 放在 `vendor/frame/aiworkspace/`，由 `buckyos-build.py` 的 `_prepare_agent_tools` 与 `build_aios` 复制）。先
 `import_table <file> --dry-run` 看计划（字段、类型、行数、报告），再去掉 `--dry-run` 带 `--workspace` 提交。
 
+## Office 文档导入 `import_office`
+
+`commands/import_office.ts`：把 .docx / .pptx 导入 AI Workspace 成为可编辑内容，转换器与 Desktop 的导入对话框相同
+（共享模块 `src/frame/aiworkspace/import-office/`，deno.json 里的 `@office/`；它还引用 import-drawio / import-pdf /
+import-table 的部件，四个模块一起由 `_prepare_agent_tools` 与 `build_aios` 复制到 `vendor/frame/aiworkspace/`）。docx →
+新的流式页（富文本 Block + 图片 Block，原文件放最后），pptx → 新的自由画布（每张幻灯片一页 + 放映路径）。Deno 没有
+canvas、不连 LibreOffice：裁剪保留整图、图表 / EMF 等成占位框或略去，都写进报告。先 `--dry-run` 看计划再提交。
+
 ## AICC Agent CLI Tools
 
 实现见 `aicc-tool.ts` + `commands/*.ts`，需求文档：[`doc/aicc/aicc_agent_cli_tools.md`](../../../doc/aicc/aicc_agent_cli_tools.md)。

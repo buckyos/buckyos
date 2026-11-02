@@ -848,7 +848,7 @@ def fenced(lease, write_fn):                            # 受 lease 保护的写
 | `session:<sid>` lease（驱动者身份） | `.opendan_agent_session/` 下除执行中的 run 目录之外的全部文件；`.runtime/`；产物；session 绑定的 workspace（按权限）；Agent State 中**本 session 的**登记条目 status（含 activity）与 `state/perception/<sid>.jsonl`；输入源确认（kmsg `commit_ack`） |
 | `run:<run_id>` 锁 | `runs/<run_id>/`（run.json、snapshots）。libopendan runner 执行 run 时同时持有 session lease 与 run 锁；接手的 xllm 只持有 run 锁 |
 | 投递（无需 lease） | session 的 kmsg 队列 |
-| `self_improve` | `state/perception/.cursor.json`、`memory/`、`attention_signals/`（`notebook/` 由自身锁串行） |
+| `self_improve` | `state/perception/.cursor.json`、`memory/`（`notebook/` 由自身锁串行） |
 | `artifact:<aid>`（修改 session 自己的版本时还须持 session lease） | `state/artifacts/<aid>/artifact.json`（head）及版本有效性变更；accept / discard 使用同一临界区 |
 
 ---
@@ -867,7 +867,7 @@ def fenced(lease, write_fn):                            # 受 lease 保护的写
     perception/.cursor.json                 # 认知整理游标
     artifacts/<aid>/artifact.json           # 产物列表：长期产物与 head
     artifacts/<aid>/versions/<ver>.json     #   各 work session 的贡献（每个 session 一个文件）
-  memory/  notebook/  attention_signals/    # 认知（沿用 agent_tool 实现与各自的内部锁）
+  memory/  notebook/                        # 认知（沿用 agent_tool 实现与各自的内部锁）
   workspace/<wid>/                          # Agent 内部 workspace（沿用 .workspace.json；管理方式见 §6.5）
   .locks/self_improve.lease  .locks/artifact/<aid>.lease
 ```
@@ -953,7 +953,7 @@ def backlog(cursor) -> Backlog:                              # 派生：只用 s
 
 ### 6.4 认知管理
 
-认知由三部分组成：Memory Graph（`memory/`）、Notebook（`notebook/`）、整理中间态（`attention_signals/`）。实现沿用 `agent_tool::{agent_memory, agent_notebook, agent_attention_signal}`，libopendan 只包一层门面：
+认知由两部分组成：Memory Graph（`memory/`）、Notebook（`notebook/`）。实现沿用 `agent_tool::{agent_memory, agent_notebook}`，libopendan 只包一层门面：
 
 ```rust
 pub trait Cognition {
@@ -1675,7 +1675,7 @@ V1 / V6：协议是**目录结构 + 提交顺序 + 锁语义 + 输入消息格�
   - discard 与其它 session 的 accept 并发，不覆盖新的 head、不回退到 discarded 版本；
   - 同一渲染器版本下 llm_context 的历史段字节级稳定。
 - **跨语言接手同一个 run 不是目标**：session 的驱动者身份固定，通常由同一语言推进；run 目录格式以 xllm（Rust）为准。TS 版 LM Context 需要接手 Rust 建的 run 时，再按 §8.7 X3 的版本规则对齐。
-- **不跨语言复刻**：Memory Graph / Notebook / attention signal 统一调用 `agent_tool` CLI。
+- **不跨语言复刻**：Memory Graph / Notebook 统一调用 `agent_tool` CLI。
 
 ---
 

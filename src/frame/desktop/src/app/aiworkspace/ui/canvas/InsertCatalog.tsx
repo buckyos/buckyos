@@ -163,7 +163,8 @@ function EntryDetail({ entry, canPlace, onInsert, onImportTable }: { entry: Cata
   const configIssues = entry.defEntity ? configProblems(def, instanceConfig) : []
   const unbound = entry.defEntity ? missingBindings(def, instanceBindings) : []
   const accepts = entry.defEntity ? (def?.accepts ?? entry.definition.accepts) : entry.definition.accepts
-  const needsData = entry.catalog.needs === 'data' || (entry.defEntity !== undefined && def !== undefined && def.allow_no_source !== true)
+  // a composite shows no data of its own: its Blocks do (扩展控件 P1)
+  const needsData = entry.catalog.needs === 'data' || (entry.defEntity !== undefined && def !== undefined && def.kind !== 'composite' && def.allow_no_source !== true)
   const optionalData = entry.defEntity !== undefined && def?.allow_no_source === true && accepts.length > 0
   const data = needsData || optionalData ? dataFor(store, accepts) : []
   const needsFile = entry.catalog.needs === 'file'

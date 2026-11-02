@@ -161,7 +161,7 @@ fn check_views(v: &Value) -> WsResult<()> {
 /// One result of an output contract (§7.2).
 pub fn check_contract_result(r: &Value) -> WsResult<()> {
     let o = r.as_object().ok_or_else(|| bad("contract result must be an object"))?;
-    only(o, &["name", "type", "title", "approach", "key", "target", "views", "description", "fields", "kind"], "contract result")?;
+    only(o, &["name", "type", "title", "approach", "key", "target", "views", "description", "fields", "kind", "def"], "contract result")?;
     let name = o.get("name").and_then(Value::as_str).filter(|s| is_result_name(s)).ok_or_else(|| bad("contract result needs a valid name"))?;
     let ty = o.get("type").and_then(Value::as_str).unwrap_or("");
     if !RESULT_TYPES.contains(&ty) {
@@ -195,6 +195,13 @@ pub fn check_contract_result(r: &Value) -> WsResult<()> {
             return Err(bad(format!("result {name}: kind names the control of a control result (catalog/controls.json)")));
         }
         _ => {}
+    }
+    // a composite result names its definition (扩展控件 P3): `<author_did>#<name>`
+    if let Some(d) = o.get("def") {
+        let ok = ty == "control" && o.get("kind").is_none_or(|k| k == crate::types::COMPOSITE) && d.as_str().and_then(|d| d.split_once('#')).is_some_and(|(a, n)| crate::types::is_author_did(a) && crate::types::is_renderer_id(n));
+        if !ok {
+            return Err(bad(format!("result {name}: def names a composite control of the Workspace (<author_did>#<name>) on a control result")));
+        }
     }
     if ty == "control" && o.contains_key("views") {
         return Err(bad(format!("result {name}: a control result is drawn by its control and has no views")));

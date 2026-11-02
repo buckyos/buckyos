@@ -151,10 +151,12 @@ buckyos system info                                 # BuckyOS version, build_ver
   `services/nfs-server/settings.named_store_gc_evict` (default `true`); unretained chunk bytes survive at least 24 h
   after their last write or read. Pool and bucket quotas: kRPC `bucket.get_pool_quota|set_pool_quota|get_quota|set_quota`
   (admin) and `bucket.usage_report`; no CLI verb, Desktop Settings › Storage lists per-App usage.
-  Preview conversion (HEIC/HEVC shown on browsers that cannot decode them) runs ffmpeg/ffprobe found in
-  `$BUCKYOS_ROOT/libexec/buckyos-tool/bin/` or `PATH`; nothing installs them. NFSP `hello` (`POST /nfs/v1/hello`)
-  reports the converter in `repr` (versions, or what is missing); results live in bucket `zone/nfs-server/_/preview-cache`,
-  capped by `services/nfs-server/settings.preview_cache_mib` (default 20480).
+  Preview conversion (HEIC/HEVC shown on browsers that cannot decode them; Office / ODF / RTF documents → PDF) runs
+  ffmpeg/ffprobe and LibreOffice `soffice`, each optional, found in `$BUCKYOS_ROOT/libexec/buckyos-tool/bin/`, `PATH`
+  or LibreOffice's install directory; nothing installs them, and document fidelity depends on the node's fonts (CJK
+  needs Noto CJK). NFSP `hello` (`POST /nfs/v1/hello`) reports the converters in `repr` (paths and versions, the
+  `profiles` it can produce — `preview-document` only with soffice — or what is missing); results live in bucket
+  `zone/nfs-server/_/preview-cache`, capped by `services/nfs-server/settings.preview_cache_mib` (default 20480).
 - System URLs (`obj://`, `cyfs://`, `file://<device_id>`, https; rules in `doc/key url.md`): `buckyos obj resolve <url>`
   normalizes a reference (also `//config/...`, `/abs/path`) and prints its canonical form, RBAC key, kevent pattern and
   Provider endpoint without checking access; `buckyos obj read <url> [--property a,b]` follows the DID Object Card

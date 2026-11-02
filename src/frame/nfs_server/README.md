@@ -76,12 +76,12 @@ cargo test -p nfs_server        # 单元与集成测试，不需要外部服务
 | 权限 | `get_acl` / `set_acl` / `list_acls` | ✅ 路径 ACL(实现扩展);继承/关闭继承、内置 owner 规则、owner 可列出全部记录 |
 | 分享(活子树) | `grant` / `revoke` | ⚠️ 需 `manage`;签发/撤销/落库完整,**数据面不凭活子树 cap 放行** |
 | 分享(快照) | `share.*`(实现扩展) | ✅ 快照进 named store,分享有效期间绑定在 zone 桶 `zone/nfs-server/_/shares`(key = share_id,停止/到期即解绑);`/s/{token}` 访客页/下载/密码/到期;审计、访问统计、Public 投影、MessageHub/HomeStation 交接;详见产品文档 §12 |
-| 派生 | `repr` / `get_repr`(实现扩展) | ✅ Preview Pipeline:ffmpeg/ffprobe 有则用、没有就 `unsupported`;产物进 zone 桶 `zone/nfs-server/_/preview-cache`;见下文「预览管线」 |
+| 派生 | `repr` / `get_repr`(实现扩展) | ✅ Preview Pipeline:ffmpeg/ffprobe(媒体)与 LibreOffice `soffice`(文档→PDF)各自有则用、没有就 `unsupported`;产物进 zone 桶 `zone/nfs-server/_/preview-cache`;见下文「预览管线」 |
 | 通知 | `watch`(SSE) | ✅ `container_changed`/`meta_changed`/`resync`;连接首事件恒为 `resync`(D11);watch_token 过滤 |
 | 数据面 | `GET /nfs/v1/read/{node_id}` | ✅ Range/ETag(弱)/If-None-Match/Content-Disposition;**不发 immutable**(link 语义,§4.2) |
 
 `hello` 广告的 features:`view` `collection` `reference-binding` `watch.sse` `search.name` `acl` `share`,
-找到 ffmpeg/ffprobe 时再加 `repr`;并返回 `identity {user_id, role}` 与 `repr`(转换器能力,见「预览管线」)。
+找到任一转换器(ffmpeg+ffprobe 或 soffice)时再加 `repr`;并返回 `identity {user_id, role}` 与 `repr`(转换器能力,见「预览管线」)。
 不广告(未实现):`frozen-subtree` `search.semantic` `get_tree` `publish_dir`。
 
 ## filedb(§3.2 最小持久集)
@@ -217,22 +217,28 @@ manifest 可带 `auto_bind: { bucket_id, key, content_type?, metadata?, tags?, e
 
 ## 预览管线(repr)
 
-`src/preview/`:Preview 组件不能直显的内容(Chromium 上的 HEIC/HEIF、HEVC,浏览器播放失败的 MOV 等)
-由 nfs_server 进程内 spawn ffmpeg/ffprobe 转成兼容副本,原文件字节、ObjId、下载原文件不变
-(`notepads/preview-iphone-media-compatibility-todo.md` D1–D10、Preview PRD §23.6–23.7)。
+`src/preview/`:Preview 组件不能直显的内容(Chromium 上的 HEIC/HEIF、HEVC,浏览器播放失败的 MOV 等;
+Office / ODF / RTF 文档)由 nfs_server 进程内 spawn ffmpeg/ffprobe 或 LibreOffice 转成兼容副本,原文件字节、
+ObjId、下载原文件不变(`notepads/preview-iphone-media-compatibility-todo.md` D1–D10、
+`notepads/aiworkspace-office-import-todo.md` §5.1、Preview PRD §23.6–23.7)。
 
-- **工具**(`tools.rs`):依次查 `$BUCKYOS_ROOT/libexec/buckyos-tool/bin/` → `PATH`(macOS 另查
-  `/opt/homebrew/bin`、`/usr/local/bin`),Windows 加 `.exe` 且子进程无控制台;**有则使用,没有就失败**,
-  不下载不安装。启动时、每次 `hello` 与 `repr` 前按 (路径, 大小, mtime) 复核(只 stat,变了才重新跑 `-version`);`hello.repr` 给出
-  `available`、两者路径与版本、`tonemap`(zscale+tonemap)、`h264_encoder`(libx264)、`heif`(≥7.1 才有 tile grid)、
-  `profiles`,缺失时给 `missing` 与 `detail`。HEIC 需要 ffmpeg ≥ 7.1。
+- **工具**(`tools.rs`):ffmpeg+ffprobe(两者都在才算)与 `soffice` 各自独立,依次查
+  `$BUCKYOS_ROOT/libexec/buckyos-tool/bin/` → `PATH` → 平台固定位置:macOS `/opt/homebrew/bin`、`/usr/local/bin`、
+  `/Applications/LibreOffice.app/Contents/MacOS`;Linux `/usr/bin`、`/usr/lib/libreoffice/program`、
+  `/opt/libreoffice*/program`;Windows `%ProgramFiles%\LibreOffice\program`、`%ProgramFiles(x86)%\LibreOffice\program`。
+  Windows 加 `.exe` 且子进程无控制台;**有则使用,没有就失败**,不下载不安装。启动时、每次 `hello` 与 `repr` 前按
+  (路径, 大小, mtime) 复核(只 stat,变了才重新跑 `-version` / `--version`)。`hello.repr`:`available`(任一转换器在)、
+  `profiles`(只列当前能产出的档位)、找到的 `ffmpeg`/`ffprobe`/`soffice` 各给 `{path, version}`、ffmpeg 在时另给
+  `tonemap`(zscale+tonemap)、`h264_encoder`(libx264)、`heif`(≥7.1 才有 tile grid),缺的工具进 `missing` 并给
+  `detail`。soffice 版本取 `soffice --version` 首行(`LibreOffice 25.2.3.2 …` → `25.2.3.2`;Windows 上 `soffice.exe`
+  不输出时改问同目录 `soffice.com`)。HEIC 需要 ffmpeg ≥ 7.1。
 - **协议**(`rpc.rs`,websdk `NfspClient.repr/getRepr` 同形):`repr` 的源是 `at`(NFSP 路径/ref,按路径 ACL
   判 read)或 `args.source`(`{bucket:{bucket_id,key,version?,access_token?}}` 按桶权限,`{obj_id}` 按 NDM 读权);
   `args.purpose` = `preview|thumbnail`,`args.runtime` 是能力提示(`video_codecs.hevc` 决定重封装还是转码),
   `retry` + `expected_attempt_id` 是显式重试的 CAS;未知参数拒绝。规划结果 `state:"unsupported"`
   (`reason` = `no-pipeline|no-renderer|not-content`,`detail` 说明);执行失败 `state:"failed"` + `error`。
   `get_repr {work_key}` 只查询,要求本主体一小时内 ensure 过。
-- **记录**(filedb `preview_works`):`work_key = sha256(输入 ObjId, nfs.preview/<版本>@ffmpeg-<版本>, params)`;
+- **记录**(filedb `preview_works`):`work_key = sha256(输入 ObjId, nfs.preview/<版本>@ffmpeg-<版本>|@soffice-<版本>, params)`;
   本地文件的输入 ObjId 是 `sha256:<内容>`,按 (路径, 大小, mtime) 缓存在 `preview_inputs`;桶/对象源用内容
   chunk/chunklist id。同一 work_key 合并等待,调用方离开不杀进程;失败负缓存 10 分钟,显式 Retry 立即新 attempt;
   重启把 `processing` 记为可重试的 `INTERRUPTED`。
@@ -240,12 +246,25 @@ manifest 可带 `auto_bind: { bucket_id, key, content_type?, metadata?, tags?, e
   `preview-video` H.264 High ≤1080p yuv420p + AAC 128k `+faststart`(H.264,或 Runtime 可播的 HEVC 只 `-c copy`
   重封装;旋转由 autorotate 烘进像素);`preview-audio` AAC/MP4;`thumbnail` JPEG 长边 ≤640(视频取 min(1s,10%) 帧)。
   PQ/HLG 一律 tonemap 到 SDR BT.709 并在 `fidelity` 注明。并发按 CPU 1–2,超时 max(60s, 时长×10)。
+- **文档**(`media.rs` `Kind::Document`、`convert.rs` `preview-document`):docx/pptx/xlsx 按 zip 条目名
+  (`word/document*.xml`、`ppt/presentation*.xml`、`xl/workbook*.xml`)认,ODF 按首条目 `mimetype`
+  (`application/vnd.oasis.opendocument.text|presentation|spreadsheet|graphics`),doc/ppt/xls 按 OLE2 目录里的流名
+  (`WordDocument`/`PowerPoint Document`/`Workbook`),RTF 按 `{\rtf`;只在头 1 MiB 不够判断时参考文件名。
+  `purpose:"preview"` 产出 PDF(`media_type: application/pdf`,`result_type: "document"`,`runtime.accept`
+  含 `pdf` 即可接受),`fidelity` 固定为「由 LibreOffice 转换，字体与版式可能与原件有差异」;文档缩略图暂无
+  (`no-renderer`)。命令:`soffice -env:UserInstallation=file:///<数据根>/preview-tmp/profile-<attempt_id>
+  --headless --norestore --nologo --nolockcheck --nodefault --convert-to pdf --outdir <attempt 目录>
+  <attempt 目录>/input.<真实扩展名>`——输入复制成带真实扩展名的文件(soffice 按扩展名选导入过滤器),每个
+  attempt 独立 profile(共用时第二个实例静默退出并留下锁),完成后删除;并发 1(与 ffmpeg 的槽分开),
+  超时 max(120s, 每 MiB 10s)。**保真度取决于节点字体,CJK 文档请安装 Noto CJK**(Debian:
+  `apt install libreoffice-nogui fonts-noto-cjk`);`hello` 不枚举字体。
 - **产物**:FileObject 绑定在 zone 桶 `zone/nfs-server/_/preview-cache`(`app_data`,key = work_key);结果的
   `read_url` 是 `/bucket/v1/...?token=bkt_…`(只读、单 key、6 小时),每次 `repr` 先判源权限再签,命中缓存也一样。
   30 天未被 `repr` 访问的结果过期,总量按 `services/nfs-server/settings.preview_cache_mib`(默认 20480)LRU 收缩;
   绑定内容丢失时下一次 `repr` 重新转换。
 - **验证**:`cargo test -p nfs_server --test preview`(真实 HEIC/HEVC 样本在 `tests/fixtures/preview/`,由 libheif /
-  x265 编码;没装 ffmpeg 时转换用例跳过,只跑"缺失即 unsupported")。
+  x265 编码;`office.*` 由 LibreOffice 保存;没装 ffmpeg / soffice 时对应转换用例跳过,文档嗅探、"缺失即
+  unsupported"、"缺 soffice 时 profiles 不含 `preview-document` 而 ffmpeg 档位照常"始终跑)。
 
 ## 编辑器取消写入
 

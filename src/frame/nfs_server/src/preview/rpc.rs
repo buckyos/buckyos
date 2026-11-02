@@ -7,14 +7,16 @@
 //! remux over transcode), `retry` + `expected_attempt_id` the CAS of an
 //! explicit Retry. Planning failures answer `state: "unsupported"` with a
 //! `reason` (`no-pipeline` | `no-renderer` | `not-content`) and a `detail`;
-//! execution failures are `state: "failed"` with an `error`.
+//! execution failures are `state: "failed"` with an `error`. A document's
+//! result is a PDF (`result_type: "document"`), accepted by a Runtime that
+//! accepts `pdf`.
 //!
 //! `get_repr`: `args.work_key` of a work this principal ensured (within an
 //! hour); it never creates an attempt.
 
 use super::convert::Profile;
 use super::media::Kind;
-use super::{Input, Plan, Record};
+use super::{tools, Input, Plan, Record};
 use crate::acl::{Actor, Level};
 use crate::auth::Credentials;
 use crate::error::*;
@@ -173,11 +175,12 @@ async fn resolve_source(state: &SharedState, actor: &Actor, env: &Envelope, args
 
 fn profile_for(kind: Kind, purpose: &str) -> Option<Profile> {
     match (purpose, kind) {
-        ("thumbnail", Kind::Audio) => None,
+        ("thumbnail", Kind::Audio | Kind::Document(_)) => None,
         ("thumbnail", _) => Some(Profile::Thumbnail),
         (_, Kind::Heif | Kind::Image) => Some(Profile::PreviewImage),
         (_, Kind::Video) => Some(Profile::PreviewVideo),
         (_, Kind::Audio) => Some(Profile::PreviewAudio),
+        (_, Kind::Document(_)) => Some(Profile::PreviewDocument),
     }
 }
 
@@ -186,6 +189,15 @@ fn result_type_of(profile: Profile) -> &'static str {
         Profile::PreviewImage | Profile::Thumbnail => "image",
         Profile::PreviewVideo => "video",
         Profile::PreviewAudio => "audio",
+        Profile::PreviewDocument => "document",
+    }
+}
+
+/// The Runtime renderer (`runtime.accept`) a result needs.
+fn renderer_of(profile: Profile) -> &'static str {
+    match profile {
+        Profile::PreviewDocument => "pdf",
+        other => result_type_of(other),
     }
 }
 
@@ -232,30 +244,40 @@ pub async fn op_repr(state: &SharedState, actor: &Actor, env: &Envelope, headers
         return Ok(unsupported("no-pipeline", "the named store is not configured"));
     }
     let probe = state.preview.refresh_async().await;
-    let Some(tools) = probe.toolchain() else {
+    if !probe.available() {
         return Ok(unsupported("no-pipeline", probe.missing_detail().unwrap_or_default()));
-    };
+    }
     let (input, input_obj_id) = match resolve_source(state, actor, env, &args, headers).await? {
         Ok(found) => found,
         Err(planned) => return Ok(planned),
     };
     let head = super::read_head(state, &input).await.map_err(|e| not_found(e.message))?;
-    let Some(kind) = super::media::sniff(&head) else {
+    let kind = match super::media::sniff(&head, None) {
+        Some(kind) => Some(kind),
+        None => super::media::sniff(&head, super::name_of(state, &input).await.as_deref()),
+    };
+    let Some(kind) = kind else {
         return Ok(unsupported("no-pipeline", "no converter for this content type"));
     };
-    if kind == Kind::Heif && !tools.heif {
-        return Ok(unsupported("no-pipeline", format!("HEIF needs ffmpeg 7.1 or newer (found {})", tools.ffmpeg.version)));
-    }
     let Some(profile) = profile_for(kind, purpose) else {
-        return Ok(unsupported("no-renderer", "audio has no thumbnail"));
+        let what = if kind == Kind::Audio { "audio has no thumbnail" } else { "documents have no thumbnail yet" };
+        return Ok(unsupported("no-renderer", what));
     };
+    let Some(converter) = probe.converter(profile) else {
+        return Ok(unsupported("no-pipeline", probe.detail_for(profile)));
+    };
+    if let (Kind::Heif, tools::Converter::Ffmpeg(t)) = (kind, &converter) {
+        if !t.heif {
+            return Ok(unsupported("no-pipeline", format!("HEIF needs ffmpeg 7.1 or newer (found {})", t.ffmpeg.version)));
+        }
+    }
     if let Some(accept) = &args.runtime.accept {
-        if !accept.iter().any(|a| a == result_type_of(profile)) {
-            return Ok(unsupported("no-renderer", format!("the Runtime does not accept {} results", result_type_of(profile))));
+        if !accept.iter().any(|a| a == renderer_of(profile)) {
+            return Ok(unsupported("no-renderer", format!("the Runtime does not accept {} results", renderer_of(profile))));
         }
     }
     let plan = Plan { input, input_obj_id, kind, profile, hevc_playable: args.runtime.video_codecs.hevc };
-    let rec = super::ensure(state, tools, plan, args.retry, args.expected_attempt_id.as_deref()).await?;
+    let rec = super::ensure(state, &converter, plan, args.retry, args.expected_attempt_id.as_deref()).await?;
     state.preview.authorize(&actor_key(actor), &rec.work_key);
     wire(state, &rec).await
 }

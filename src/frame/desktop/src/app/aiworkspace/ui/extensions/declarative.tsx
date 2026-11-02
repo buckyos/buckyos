@@ -11,10 +11,15 @@ import { aiwsT, aiwsText, type AiwsText } from '../../i18n'
 import { useLoad, useStore } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
 import { blockRegistry, type BlockAction, type BlockDefinition, type RenderContext } from '../blocks/registry'
-import { cellOp } from '../blocks/ops'
+import { cellOp, setCellConfig } from '../blocks/ops'
+import { EventNote } from './EventNote'
+import { fillTemplate, noteDesignEvent, raiseEvent } from './events'
 
 interface Item {
-  kind: 'text' | 'value' | 'metric' | 'bar' | 'list' | 'badge'
+  kind: 'text' | 'value' | 'metric' | 'bar' | 'list' | 'badge' | 'button'
+  /** `button` (manifest 3, Q26): the declared event it raises, and its params (`{{config.<key>}}` allowed). */
+  emit?: string
+  params?: Record<string, Json>
   text?: string
   label?: string
   /** `props.<key>` (record), `sum:<field>` / `avg:<field>` / `count` / `<field>` (table). */
@@ -123,6 +128,7 @@ function Items({ items, data: main, named, accent, context }: { items: Item[]; d
         const item = viaBinding ? { ...rawItem, bind: rawItem.bind!.slice(cut + 1) } : rawItem
         const byName = fieldLookup(data)
         if (item.kind === 'text') return <div key={index} className="aiws-decl-text">{item.text}</div>
+        if (item.kind === 'button') return <DeclarativeButton key={index} item={item} context={context} />
         if (item.kind === 'badge') return <span key={index} className="aiws-chip" style={{ borderColor: accent, color: accent }}>{item.text ?? item.label}</span>
         if (item.kind === 'value' || item.kind === 'metric') {
           const { value } = resolveBind(data, item.bind, byName)
@@ -161,6 +167,26 @@ function Items({ items, data: main, named, accent, context }: { items: Item[]; d
   )
 }
 
+/** A `button` item: enabled in run mode only (Q27), where a click raises its event; in design mode a press selects the
+ * Block as anywhere else and notes the event in the corner. */
+function DeclarativeButton({ item, context }: { item: Item; context: RenderContext }) {
+  const store = useStore()
+  const { t } = useAiwsText()
+  const event = item.emit ?? ''
+  const id = context.cell.entity_id
+  if (!context.interactive) {
+    return <span role="button" aria-disabled="true" className="aiws-decl-button is-design" data-testid={`aiws-decl-button-${event}`} title={t('aiworkspace.ext.event.designHint')}
+      onPointerDown={() => noteDesignEvent(id, event)}>{item.label ?? event}</span>
+  }
+  const raise = () => {
+    const defaults = Object.fromEntries(Object.entries((context.documentDefinition?.config_schema as { properties?: Record<string, { default?: Json }> } | undefined)?.properties ?? {}).filter(([, p]) => p?.default !== undefined).map(([k, p]) => [k, p.default as Json]))
+    const params = fillTemplate((item.params ?? {}) as Json, { event: {}, config: { ...defaults, ...(context.payload.config ?? {}) } }) as Record<string, Json>
+    raiseEvent({ store, instanceId: id, event, params, mode: context.mode, interactive: true, openEntity: context.openEntity })
+      .catch((error: unknown) => store.notify('error', t('aiworkspace.ext.event.failed', { label: item.label ?? event, error: error instanceof Error ? error.message : String(error) })))
+  }
+  return <button type="button" className="aiws-decl-button" data-testid={`aiws-decl-button-${event}`} onClick={raise}>{item.label ?? event}</button>
+}
+
 function useSpec(context: RenderContext): { spec: Spec | null; error: string | null; title: string } {
   const { t } = useAiwsText()
   const payload = context.documentDefinition
@@ -180,6 +206,7 @@ function DeclarativeBody(context: RenderContext & { variant: 'edit' | 'view' }) 
       <div className="aiws-decl-title">{title}</div>
       {dataError && <div className="aiws-warning">{dataError}</div>}
       <Items items={items} data={data} named={named} accent={accent} context={context} />
+      <EventNote cellId={context.cell.entity_id} />
     </div>
   )
 }
@@ -199,10 +226,7 @@ function DeclarativeInspector(context: RenderContext) {
     if (command === 'open_definition' && context.payload.def_ref) context.openEntity(context.payload.def_ref.entity_id)
     if (command === 'activate_editor' && context.mode === 'edit') context.activateEditor()
   }
-  const setConfig = (key: string, value: Json) => {
-    const config = { ...(context.payload.config ?? {}), [key]: value }
-    void store.submit({ editId: `config:${context.cell.entity_id}`, label: t('aiworkspace.extension.decl.propertyLabel', { key }), operations: [{ op: 'entity.set_keys', entity_id: context.cell.entity_id, keys: [{ key: 'config', value: config as Json, expect: { rev: context.keyRevs.config ?? 0 } }] }] })
-  }
+  const setConfig = (key: string, value: Json) => setCellConfig(context, store, { [key]: value }, t('aiworkspace.extension.decl.propertyLabel', { key }))
   return (
     <div className="aiws-decl-inspector" data-testid="aiws-decl-inspector" data-mode={context.mode}>
       {fields.map((f) => (

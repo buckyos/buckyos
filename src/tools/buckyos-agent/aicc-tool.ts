@@ -32,6 +32,7 @@ import * as ai_quota from "./commands/ai_quota.ts";
 import * as materialize_resource from "./commands/materialize_resource.ts";
 import * as resume_aicc_task from "./commands/resume_aicc_task.ts";
 import * as import_table from "./commands/import_table.ts";
+import * as import_office from "./commands/import_office.ts";
 
 interface Command {
   run: (argv: string[]) => Promise<never>;
@@ -61,6 +62,7 @@ const COMMANDS: Record<string, Command> = {
   materialize_resource,
   resume_aicc_task,
   import_table,
+  import_office,
 };
 
 function topLevelHelp(): string {

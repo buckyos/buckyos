@@ -442,7 +442,7 @@ impl EntryRef {
             }
             return Ok(Self::Did(entry.to_string()));
         }
-        let rest = entry.strip_prefix("https://").ok_or_else(|| format!("entry must be an https URL or DID: {entry:?}"))?;
+        let rest = entry.strip_prefix("https://").or_else(|| entry.strip_prefix("cyfs://")).ok_or_else(|| format!("entry must be an https URL or DID: {entry:?}"))?;
         let (zone, path) = rest.split_once('/').ok_or_else(|| format!("entry has no path: {entry:?}"))?;
         let zone = zone.to_ascii_lowercase();
         if zone.is_empty() || zone.contains(':') {
@@ -676,7 +676,13 @@ mod tests {
         assert_eq!(parsed.home(), Some(&home));
         assert!(EntryRef::parse("https://example.org/home/feed/@/garden").is_err());
         assert!(EntryRef::parse("https://example.org/home/alice/feed/garden").is_err());
-        assert!(EntryRef::parse("cyfs://example.org/home/alice/feed/@/x").is_err());
+        assert_eq!(EntryRef::parse("cyfs://example.org/home/alice/feed/@/x").unwrap(), EntryRef::parse("https://example.org/home/alice/feed/@/x").unwrap());
+        for other in ["https://other.org/home/alice/feed/@/x", "https://example.org/home/bob/feed/@/x", "https://example.org/home/alice/follows/@/x", "https://example.org/home/alice/feed/@/y"] {
+            assert_ne!(EntryRef::parse("cyfs://example.org/home/alice/feed/@/x").unwrap(), EntryRef::parse(other).unwrap());
+        }
+        assert!(EntryRef::parse("cyfs://example.org/home/alice/feed/@/a/b").is_err());
+        assert!(EntryRef::parse("cyfs://example.org:80/home/alice/feed/@/x").is_err());
+        assert!(EntryRef::parse("http://example.org/home/alice/feed/@/x").is_err());
         assert!(EntryRef::parse("obj://homestation/home/alice/feed/@/x").is_err());
         assert!(EntryRef::parse("https://example.org/home/alice/feed/@/a/b").is_err());
         assert!(EntryRef::parse("https://example.org/home/~zone/feed/@/x").is_err());

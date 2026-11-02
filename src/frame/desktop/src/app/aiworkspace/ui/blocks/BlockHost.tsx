@@ -11,6 +11,7 @@ import type { CellPayload, EntityEnvelope } from '../../api/types'
 import { INK_VIEW } from '../../ink/model'
 import { useStore } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
+import { AssetBlobImage } from '../extensions/AssetBlobImage'
 import { linkAffordance, shapeOf, sourceLabel } from './affordances'
 import { BudgetContext, type MountBudget } from './budget'
 import { BlockMetaContext } from './editorToolbar'
@@ -80,6 +81,7 @@ export function GenericFallback({ cell, payload, reason, detail, source }: { cel
       {payload && <div className="aiws-muted">{source
         ? t('aiworkspace.blocks.fallback.rendererData', { type: payload.view.type, version, name: source.name ?? source.entity_id, dataType: source.type_id })
         : t('aiworkspace.blocks.fallback.renderer', { type: payload.view.type, version })}</div>}
+      {reason === 'unsupported_api' && payload?.config?.snapshot?.object_id && <AssetBlobImage objectId={payload.config.snapshot.object_id} mediaType={payload.config.snapshot.media_type} alt={payload.title ?? t('aiworkspace.extension.snapshotAlt')} />}
       {payload?.config && <details><summary>{t('aiworkspace.blocks.fallback.rawConfig')}</summary><pre>{JSON.stringify(payload.config, null, 2)}</pre></details>}
     </div>
   )

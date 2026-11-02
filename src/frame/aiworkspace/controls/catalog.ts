@@ -3,6 +3,7 @@
  * (`deno run -A tools/build_catalog.ts`; catalog_test.ts checks it is current): the wish prompts carry it as
  * `catalog/controls.json`, the `aiws controls list / describe` verbs print it. */
 
+import { COMPOSITE_CONTROL } from './composite.ts'
 import { MINDMAP } from './mindmap.ts'
 
 export interface ControlDescriptor {
@@ -19,7 +20,7 @@ export interface ControlDescriptor {
   agent: string
 }
 
-export const CONTROLS: readonly ControlDescriptor[] = [MINDMAP]
+export const CONTROLS: readonly ControlDescriptor[] = [MINDMAP, COMPOSITE_CONTROL]
 
 export function controlDescriptor(kind: string): ControlDescriptor | undefined {
   return CONTROLS.find((c) => c.kind === kind)

@@ -16,6 +16,7 @@ import { FreshnessService } from './freshness'
 import { LockManager } from './locks'
 import { OutlineModel } from './outline'
 import { UndoCoordinator } from './undo'
+import { RunModeState } from './runMode'
 import { UserWorkState } from './userState'
 import { WishService } from '../ui/wish/WishService'
 
@@ -73,6 +74,8 @@ export class WorkspaceStore {
   readonly freshness: FreshnessService
   /** Wish passes and application (phase two §7). */
   readonly wish: WishService
+  /** Design / run mode of the canvas (扩展控件 P2, Q27): this window's choice, never persisted. */
+  readonly runMode = new RunModeState()
   /** Where the user works on the canvas: the task location a wish run starts from (许愿格 §5.2). The
    * selection is the last one that was not just a wish Block (clicking the wish must not lose it). */
   readonly canvasFocus: { surfaceId: string | null; selection: string[]; viewport: Placement | null } = { surfaceId: null, selection: [], viewport: null }
@@ -209,11 +212,21 @@ export class WorkspaceStore {
     })
   }
 
+  /** A write to a control instance refused because its definition was rebuilt since this client read it (Q29): the
+   * forms follow the new definition once it is read again. Returns whether it was one. */
+  private definitionChanged(conflicts: CommitConflict['conflicts'] | undefined): boolean {
+    const defs = (conflicts ?? []).filter((c) => c.detail === 'read-set precondition failed' && c.entity_id && this.outline.get(c.entity_id)?.type_id === 'buckyos.block-def').map((c) => c.entity_id as string)
+    if (defs.length === 0) return false
+    this.versions.bump(['outline', ...defs.map((id) => `e:${id}`)])
+    return true
+  }
+
   private refusalDetail(result: Json | null): { code: string; detail: string; theirs?: Json; hasTheirs: boolean; currentRev?: number } {
     const outcome = (result ?? {}) as { status?: string; code?: string; sub_code?: string; detail?: string; conflicts?: CommitConflict['conflicts']; errors?: CommitRejected['errors'] }
     const code = typeof outcome.code === 'string' ? outcome.code : 'UNKNOWN'
     if (outcome.status === 'conflict') {
       const first = outcome.conflicts?.[0]
+      if (this.definitionChanged(outcome.conflicts)) return { code, detail: aiwsT('aiworkspace.ext.definitionChanged'), hasTheirs: false }
       return {
         code, detail: aiwsT(code === 'TARGET_DELETED' ? 'aiworkspace.core.store.conflictDeleted' : 'aiworkspace.core.store.conflictChanged', { code }),
         theirs: first?.current_value, hasTheirs: first !== undefined && 'current_value' in first, currentRev: first?.current_rev,
@@ -255,6 +268,7 @@ export class WorkspaceStore {
     }
     if (event.state === 'conflict' || event.state === 'rejected') this.undo.resolvePending(event.key, null)
     this.showPending(event.key, event.state, event.result, event.meta, true)
+    if (event.state === 'conflict' && this.definitionChanged((event.result as { conflicts?: CommitConflict['conflicts'] } | null)?.conflicts)) this.notify('error', aiwsT('aiworkspace.ext.definitionChanged'))
   }
 
   /** Synchronisation stopped for good: what is still queued will not be sent, so it needs the user's attention. */
@@ -372,6 +386,9 @@ export class WorkspaceStore {
       this.edits.set({ id: editId, label, state: 'committed' })
       if (options.undoable !== false) this.undo.pushCommit(outcome.commit_id, label)
       await this.session.whenApplied(outcome.seq)
+    } else if (outcome.status === 'conflict' && this.definitionChanged(outcome.conflicts)) {
+      this.edits.set({ id: editId, label, state: 'needs_attention', code: outcome.code, mine, hasMine, detail: aiwsT('aiworkspace.ext.definitionChanged') })
+      this.notify('error', aiwsT('aiworkspace.ext.definitionChanged'))
     } else if (outcome.status === 'conflict') {
       const first = outcome.conflicts?.[0]
       this.edits.set({

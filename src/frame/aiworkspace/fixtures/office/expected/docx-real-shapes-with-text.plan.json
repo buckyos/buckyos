@@ -1,0 +1,98 @@
+{
+  "title": "shapes-with-text",
+  "counts": {
+    "paragraphs": 5,
+    "headings": 0,
+    "lists": 0,
+    "tables": 0,
+    "images": 0,
+    "rasterized": 0
+  },
+  "segments": [
+    {
+      "kind": "richtext",
+      "content": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b2"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Floating text box"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b3"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "A square shape with text inside"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b4"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "An ellipse with text inside"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b5"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "A group of shapes"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b6"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Where some contain text"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "images": [],
+  "report": [
+    {
+      "kind": "docx_shapes_dropped",
+      "count": 3,
+      "samples": [
+        "Straight Arrow Connector 5",
+        "Isosceles Triangle 6",
+        "Group 13"
+      ]
+    },
+    {
+      "kind": "docx_floating_text",
+      "count": 1,
+      "samples": []
+    }
+  ]
+}

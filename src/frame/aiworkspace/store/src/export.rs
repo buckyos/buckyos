@@ -314,6 +314,7 @@ impl Workspace {
     /// byte. `binding` names where the uploader bound it (`bucket.get` proves it); without one the server binds the
     /// object itself (the caller's right to read it was checked at the NDM gateway).
     pub fn stage_object(&mut self, caller: &Caller, object_id: &str, max_bytes: u64) -> WsResult<Value> {
+        const MAX_MEDIA_BYTES: u64 = 2 << 30;
         require_update(&self.require_ws_any(caller)?)?;
         if !object_id.starts_with("cyfile:") {
             return Err(WsError::invalid_op("an asset must be a FileObject; import folders as workspace containers"));
@@ -322,11 +323,13 @@ impl Workspace {
             return Err(WsError::new(Code::DependencyUnavailable, "the imported object is incomplete"));
         }
         let size = self.objects.file_size(object_id)?;
+        let media_type = sniff_prefix(&self.objects.file_head(object_id, 512)?);
+        // audio and video play by Range from the stream route (第四期规划 §7.3.2, §7.3.5): up to 2 GiB
+        let max_bytes = if media_type.starts_with("audio/") || media_type.starts_with("video/") { max_bytes.max(MAX_MEDIA_BYTES) } else { max_bytes };
         if size > max_bytes {
             return Err(WsError::limit(format!("workspace assets are limited to {max_bytes} bytes")));
         }
         self.check_quota(size, false)?;
-        let media_type = sniff_prefix(&self.objects.file_head(object_id, 512)?);
         self.stage_bound(caller, object_id, media_type, size)
     }
 
@@ -628,7 +631,7 @@ pub fn load_workspace(
         }
         let req = json!({ "protocol_version": PROTOCOL_VERSION, "workspace_id": ws.workspace_id, "epoch": ws.epoch,
                           "idempotency_key": key, "origin": "import", "operations": ops });
-        let r = ws.commit(&req, caller, &CommitOpts { internal: true, import: true, undoes: None, as_principal: None, maintenance: false, as_source: false, as_build: false });
+        let r = ws.commit(&req, caller, &CommitOpts { internal: true, import: true, undoes: None, as_principal: None, maintenance: false, as_source: false, as_build: false, as_session: false });
         if r["status"] != json!("accepted") {
             return Err(WsError::invalid_schema("package content was rejected").with_data(r));
         }

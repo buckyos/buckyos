@@ -7,6 +7,8 @@
  *   v2: bindings, input(name).rows/fields/markdown/props/bytes, resolve/outline/find, request,
  *       watch(name, cb), table(name).upsert/setColumn, record(name).set, text(name).setMarkdown,
  *       createBlock, batch(fn)
+ *   v3 (扩展控件 P2/P3): emit(name, params), context.interactive, createBlock({ parent, slot }); a
+ *       definition of version 2 runs as before (`aiws.version` is the version it declares)
  *   locale: the host's language when the iframe starts ('en', 'zh-CN', …; also the document's `lang`),
  *       so an extension can show its own text in it; a language the extension has no text for should
  *       read English, as the host does.
@@ -18,7 +20,16 @@
 import type { Json, Operation } from '../../api/types'
 import { aiwsT, currentAiwsLocale } from '../../i18n'
 
-export const HTML_API_VERSION = 2
+/** The host API versions this host runs (Q19: newer versions only add members); the newest is what it speaks. */
+export const HTML_API_VERSIONS = [2, 3] as const
+export const HTML_API_VERSION = 3
+/** A definition that names no version was written for API 2. */
+export const HTML_API_DEFAULT = 2
+/** The version an HTML definition runs on, or null when this host is older than it (Q33: shown as its snapshot). */
+export function htmlApiOf(source: { api_version?: number } | undefined): number | null {
+  const v = source?.api_version ?? HTML_API_DEFAULT
+  return (HTML_API_VERSIONS as readonly number[]).includes(v) ? v : null
+}
 const READY_TIMEOUT_MS = 8000
 const CALL_TIMEOUT_MS = 20_000
 
@@ -39,6 +50,10 @@ export interface HostBridge {
   batch?: (action: 'begin' | 'end' | 'abort', id: string | null, label?: string) => Promise<Json>
   /** v2: call `notify(name)` whenever the data bound as `name` changes; returns the unsubscribe. */
   watch?: (name: string, notify: () => void) => (() => void) | null
+  /** v2 (P1, additive): a file the definition lists in `assets`, from its source snapshot. */
+  asset?: (name: string) => Promise<{ bytes: Uint8Array; media_type: string }>
+  /** v3: raise a declared event (the host runs the instance's handlers in run mode). */
+  emit?: (name: string, params: Record<string, Json>) => Promise<{ handled: boolean; event_id: string | null }>
 }
 
 export interface HtmlSource { html: string; css?: string; js?: string; api_version?: number }
@@ -46,10 +61,10 @@ export interface HtmlSource { html: string; css?: string; js?: string; api_versi
 type Pending = { resolve: (value: Json) => void; reject: (error: Error) => void; timer: number }
 
 /** The script that becomes `window.aiws` inside the iframe. Kept in a string so a definition ships as data. */
-function bootstrap(nonce: string, locale: string): string {
+function bootstrap(nonce: string, locale: string, version: number): string {
   return `
 (function(){
-  var seq = 0, waiting = {}, handlers = {}, watchers = {}, currentBatch = null;
+  var seq = 0, waiting = {}, handlers = {}, watchers = {}, currentBatch = null, assets = {};
   var nonce = ${JSON.stringify(nonce)};
   var noHandler = ${JSON.stringify(aiwsT('aiworkspace.extension.noHandler'))};
   function send(type, payload, id){ parent.postMessage({ aiws: nonce, type: type, id: id, payload: payload }, '*'); }
@@ -84,7 +99,7 @@ function bootstrap(nonce: string, locale: string): string {
   function write(kind, name, args){ return call('write', { kind: kind, name: name, args: args || null, batch: currentBatch }); }
   var context = ${JSON.stringify('__CONTEXT__')};
   window.aiws = {
-    version: ${HTML_API_VERSION},
+    version: ${version},
     host: 'block',
     locale: ${JSON.stringify(locale)},
     context: context,
@@ -99,6 +114,11 @@ function bootstrap(nonce: string, locale: string): string {
       return call('upload', { bytes: Array.from(bytes), file_name: fileName || 'file', media_type: mediaType || null });
     },
     snapshot: function(dataUrl){ return call('snapshot', { data_url: dataUrl }); },
+    asset: function(name){
+      name = String(name);
+      if (!assets[name]) assets[name] = call('asset', { name: name }).then(function(r){ return URL.createObjectURL(new Blob([new Uint8Array(r.bytes)], { type: r.media_type || '' })); });
+      return assets[name];
+    },
     notify: function(text){ send('notify', { text: String(text) }); },
     on: function(name, handler){ handlers[name] = handler; },
     input: input,
@@ -118,6 +138,7 @@ function bootstrap(nonce: string, locale: string): string {
     record: function(name){ return { set: function(props){ return write('recordSet', name, { props: props }); } }; },
     text: function(name){ return { setMarkdown: function(md){ return write('setMarkdown', name, { markdown: String(md) }); } }; },
     createBlock: function(spec){ return write('createBlock', '', spec || {}); },
+    ${version >= 3 ? `emit: function(name, params){ return call('emit', { name: String(name), params: params || {} }); },` : ''}
     batch: function(fn, label){
       return call('batch', { action: 'begin', id: null, label: label || '' }).then(function(id){
         var prev = currentBatch; currentBatch = id;
@@ -127,6 +148,7 @@ function bootstrap(nonce: string, locale: string): string {
       });
     }
   };
+  window.addEventListener('pagehide', function(){ Object.keys(assets).forEach(function(k){ assets[k].then(function(u){ URL.revokeObjectURL(u); }, function(){}); }); });
   window.addEventListener('error', function(event){ send('crash', { message: String(event.message || 'error') }); });
   window.addEventListener('unhandledrejection', function(event){ send('crash', { message: String(event.reason && event.reason.message || event.reason || 'rejection') }); });
 })();`
@@ -146,11 +168,16 @@ export class HtmlRuntime {
   private readonly source: HtmlSource
   private readonly listener = (event: MessageEvent) => this.onMessage(event)
   private readonly unwatch: (() => void)[] = []
+  private readonly version: number
+  /** A pointer or key gesture happened inside the mounted Block: until then `emit` is refused (§6.7). */
+  private gestured = false
   /** Called when the extension reports an uncaught error. */
   onCrash: ((message: string) => void) | null = null
 
   constructor(source: HtmlSource, bridge: HostBridge) {
-    if ((source.api_version ?? HTML_API_VERSION) !== HTML_API_VERSION) throw new Error(aiwsT('aiworkspace.extension.unsupportedApi', { version: String(source.api_version) }))
+    const version = htmlApiOf(source)
+    if (version === null) throw new Error(aiwsT('aiworkspace.extension.unsupportedApi', { version: String(source.api_version) }))
+    this.version = version
     this.source = source
     this.bridge = bridge
     this.readyPromise = new Promise((resolve, reject) => { this.readyResolve = resolve; this.readyReject = reject })
@@ -161,7 +188,7 @@ export class HtmlRuntime {
   private document(): string {
     const locale = currentAiwsLocale().replace(/[^\w-]/g, '')
     const context = JSON.stringify(this.bridge.context()).replace(/<\//g, '<\\/')
-    const boot = bootstrap(this.nonce, locale).replace(JSON.stringify('__CONTEXT__'), context)
+    const boot = bootstrap(this.nonce, locale, this.version).replace(JSON.stringify('__CONTEXT__'), context)
     const css = this.source.css ? `<style>${this.source.css}</style>` : ''
     const js = this.source.js ? `<script>${this.source.js.replace(/<\/script/gi, '<\\/script')}</script>` : ''
     return `<!doctype html><html lang="${locale}"><head><meta charset="utf-8">${css}<script>${boot}</script></head><body>${this.source.html}${js}</body></html>`
@@ -176,6 +203,13 @@ export class HtmlRuntime {
     frame.setAttribute('title', aiwsT('aiworkspace.extension.html.title'))
     if (!container) { frame.style.position = 'fixed'; frame.style.width = '1px'; frame.style.height = '1px'; frame.style.opacity = '0'; frame.style.pointerEvents = 'none'; frame.setAttribute('aria-hidden', 'true') }
     window.addEventListener('message', this.listener)
+    // the host watches the same-origin document for a real gesture (an extension cannot fake a trusted event)
+    const gesture = (event: Event) => { if (event.isTrusted) this.gestured = true }
+    frame.addEventListener('load', () => {
+      const inner = frame.contentWindow
+      inner?.addEventListener('pointerdown', gesture, true)
+      inner?.addEventListener('keydown', gesture, true)
+    })
     frame.srcdoc = this.document()
     ;(container ?? document.body).appendChild(frame)
     this.frame = frame
@@ -184,6 +218,8 @@ export class HtmlRuntime {
   }
 
   get ready(): Promise<void> { return this.readyPromise }
+  /** False once disposed: a late call of an unloaded runtime (an old build's `emit`) is dropped. */
+  get alive(): boolean { return !this.disposed }
 
   private failAll(error: Error) {
     this.rejectWaiting(error)
@@ -244,7 +280,7 @@ export class HtmlRuntime {
       case 'notify':
         this.bridge.notify(String((message.payload as { text?: string } | undefined)?.text ?? ''))
         return
-      case 'read': case 'query': case 'submit': case 'upload': case 'snapshot': case 'input': case 'outline': case 'write': case 'batch': case 'watch': {
+      case 'read': case 'query': case 'submit': case 'upload': case 'snapshot': case 'input': case 'outline': case 'write': case 'batch': case 'watch': case 'asset': case 'emit': {
         const id = message.id ?? 0
         void this.handle(message.type, message.payload ?? null).then(
           (value) => this.post('result', id, value),
@@ -274,6 +310,18 @@ export class HtmlRuntime {
       case 'outline': return need(this.bridge.outline)(String(p.what ?? '') as 'resolve' | 'outline' | 'find', p.args ?? null)
       case 'write': return need(this.bridge.write)(String(p.kind ?? ''), String(p.name ?? ''), p.args ?? null, typeof p.batch === 'string' ? p.batch : null)
       case 'batch': return need(this.bridge.batch)(String(p.action ?? '') as 'begin' | 'end' | 'abort', typeof p.id === 'string' ? p.id : null, typeof p.label === 'string' ? p.label : undefined)
+      case 'emit': {
+        if (this.version < 3) throw new Error(aiwsT('aiworkspace.extension.unknownCall', { type }))
+        // mounting, a sync or a reload never raises an event: only what follows a person's gesture in this Block does
+        if (!this.gestured) { this.bridge.notify(aiwsT('aiworkspace.extension.emitBeforeGesture', { name: String(p.name ?? '') })); return { handled: false, event_id: null } }
+        const params = p.params && typeof p.params === 'object' && !Array.isArray(p.params) ? p.params as Record<string, Json> : {}
+        const result = await need(this.bridge.emit)(String(p.name ?? ''), params)
+        return result as unknown as Json
+      }
+      case 'asset': {
+        const got = await need(this.bridge.asset)(String(p.name ?? ''))
+        return { bytes: Array.from(got.bytes), media_type: got.media_type }
+      }
       case 'watch': {
         const name = String(p.name ?? '')
         const off = need(this.bridge.watch)(name, () => this.post('event', null, { name } as Json))

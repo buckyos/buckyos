@@ -237,7 +237,7 @@ fn op_hello(state: &SharedState, env: &Envelope, actor: Actor) -> NfsResult<Valu
         .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
     let repr = crate::share::ShareMgr::store_configured(&state.config).then(|| state.preview.refresh());
-    let repr_ready = repr.as_ref().is_some_and(|p| p.toolchain().is_some());
+    let repr_ready = repr.as_ref().is_some_and(|p| p.available());
     let features: Vec<&str> = SERVER_FEATURES
         .iter()
         .copied()

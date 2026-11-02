@@ -7,7 +7,7 @@ use crate::auth::Caller;
 use crate::error::{bad, HsError, HsResult};
 use crate::evaluation::{EvalRequest, EvalTarget};
 use crate::protocol::normalize_obj_id;
-use crate::publish::{get_entry, get_head, list_entries, PublishInput};
+use crate::publish::{get_head, list_entries, PublishInput};
 use crate::settings::{CollectorRef, FilterRule, MuteRule, Topic};
 use crate::sources::SourceResolution;
 use crate::Station;
@@ -458,7 +458,8 @@ impl Station {
         let ctx2 = ctx.clone();
         self.db
             .call(move |c| {
-                let Some(row) = get_entry(c, &entry)? else { return Ok(None) };
+                let Some(row) = crate::publish::get_entry_at_path(c, &entry)? else { return Ok(None) };
+                let entry = row.entry.clone();
                 if !crate::audience::allows(&row.audience, &ctx2.reader, &ctx2.rel) {
                     return Ok(None);
                 }

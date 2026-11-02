@@ -51,6 +51,8 @@ pub struct Collector {
     pub finished: Option<Value>,
     /// Program results stay; written results are kept as they are (program re-run).
     pub program_only: bool,
+    /// The composite control definitions of the Workspace by identity: `(entity id, composition)` (扩展控件 P3).
+    pub composites: BTreeMap<String, (String, Value)>,
 }
 
 fn contract_results(contract: &Value) -> Vec<Value> {
@@ -548,6 +550,9 @@ impl Collector {
     /// → `control: { kind, config, nodes: [{ text, children }], under?, under_id? }`. The tree is bounded and its
     /// titles fit the core; `under` names an input that is a control or one of its nodes.
     fn control(&self, name: &str, raw: &Value, contract: Option<&Value>, out: &mut Value, errs: &mut Vec<String>) {
+        if raw.get("def").is_some_and(|d| !d.is_null()) || contract.is_some_and(|c| c.get("def").is_some()) {
+            return self.composite(name, raw, contract, out, errs);
+        }
         let kind = raw["kind"].as_str().unwrap_or("");
         if !aiworkspace_core::types::is_control_kind(kind) {
             errs.push(format!("Control result \"{name}\" needs kind, a control of catalog/controls.json (not {kind:?})"));
@@ -592,6 +597,73 @@ impl Collector {
                 Some((n, _)) => errs.push(format!("under: input {n} of control result \"{name}\" is not a {kind} or one of its nodes")),
                 None => errs.push(format!("under: {u} of control result \"{name}\" is not an input name")),
             },
+        }
+        out["control"] = c;
+    }
+
+    /// A composite result (扩展控件 P3): `{ def: "<ident>", config?, slots: { <slot>: [ "result:<n>" | "input:<n>" |
+    /// { view: "richtext", markdown } ] }, under?: { input, slot } }` → `control: { kind: composite, def, def_id, config,
+    /// slots, under?, under_id?, under_slot? }`. The definition must be in the Workspace; the slots its composition's.
+    fn composite(&self, name: &str, raw: &Value, contract: Option<&Value>, out: &mut Value, errs: &mut Vec<String>) {
+        let ident = raw["def"].as_str().or_else(|| contract.and_then(|c| c["def"].as_str())).unwrap_or("");
+        if let Some(d) = contract.and_then(|c| c["def"].as_str()).filter(|d| *d != ident) {
+            errs.push(format!("Control result \"{name}\" is contracted as an instance of {d}, not {ident}"));
+        }
+        let Some((def_id, composition)) = self.composites.get(ident) else {
+            errs.push(format!("Control result \"{name}\" names the composite control {ident:?}, which is not in this Workspace: import it first (buckyos aiws ext-import)"));
+            return;
+        };
+        let slots_def = composition.get("slots").and_then(Value::as_object).cloned().unwrap_or_default();
+        let mut config = Map::new();
+        match raw.get("config") {
+            None | Some(Value::Null) => {}
+            Some(Value::Object(c)) if aiworkspace_core::canonical::canonical_json(&Value::Object(c.clone())).map_or(usize::MAX, |s| s.len()) <= aiworkspace_core::types::MAX_CONFIG_BYTES => config = c.clone(),
+            Some(_) => errs.push(format!("The config of control result \"{name}\" must be an object of at most {} KiB", aiworkspace_core::types::MAX_CONFIG_BYTES / 1024)),
+        }
+        let mut slots = Map::new();
+        let mut items = 0;
+        for (slot, list) in raw.get("slots").and_then(Value::as_object).into_iter().flatten() {
+            if !slots_def.contains_key(slot) {
+                errs.push(format!("Control result \"{name}\": {slot} is not a slot of {ident} ({})", slots_def.keys().cloned().collect::<Vec<_>>().join(", ")));
+                continue;
+            }
+            let Some(list) = list.as_array() else {
+                errs.push(format!("Control result \"{name}\": slots.{slot} must be a list"));
+                continue;
+            };
+            for it in list {
+                items += 1;
+                let ok = match it {
+                    Value::String(s) => match s.split_once(':') {
+                        Some(("result", r)) => is_result_name(r) && r != name,
+                        Some(("input", i)) => self.inputs.contains_key(i),
+                        _ => false,
+                    },
+                    Value::Object(o) => o.get("view").and_then(Value::as_str) == Some("richtext") && o.get("markdown").and_then(Value::as_str).is_some_and(|m| m.chars().count() <= MAX_DIRECT_CHARS),
+                    _ => false,
+                };
+                if !ok {
+                    errs.push(format!("Control result \"{name}\": slots.{slot} item {it} must be \"result:<another result>\", \"input:<an input>\" or {{ view: \"richtext\", markdown }}"));
+                }
+            }
+            slots.insert(slot.clone(), list.clone().into());
+        }
+        if items == 0 {
+            errs.push(format!("Control result \"{name}\" puts nothing into the slots of {ident}"));
+        }
+        if items > 64 {
+            errs.push(format!("Control result \"{name}\" puts more than 64 Blocks into {ident}"));
+        }
+        let mut c = json!({ "kind": aiworkspace_core::types::COMPOSITE, "def": ident, "def_id": def_id, "config": config, "slots": slots });
+        if let Some(u) = raw.get("under").filter(|u| !u.is_null()) {
+            match (u["input"].as_str().and_then(|n| self.inputs.get(n).map(|i| (n, i))), u["slot"].as_str()) {
+                (Some((n, i)), Some(slot)) if i.type_id == aiworkspace_core::model::TYPE_CONTAINER && i.control.as_deref() == Some(aiworkspace_core::types::COMPOSITE) => {
+                    c["under"] = json!(n);
+                    c["under_id"] = json!(i.entity_id);
+                    c["under_slot"] = json!(slot);
+                }
+                _ => errs.push(format!("under: control result \"{name}\" goes into {{ input, slot }}: an input that is a composite, and one of its slots")),
+            }
         }
         out["control"] = c;
     }
@@ -653,6 +725,11 @@ impl Collector {
             }
             "image" | "asset" => p["file"] = json!({ "media_type": r["file"]["media_type"], "size": r["file"]["size"], "image": r["file"].get("image") }),
             "html" => p["html"] = json!({ "bytes": r["html"]["html"].as_str().map_or(0, str::len), "bindings": r["html"]["bindings"] }),
+            "control" if r["control"]["kind"] == aiworkspace_core::types::COMPOSITE => {
+                let c = &r["control"];
+                p["control"] = json!({ "kind": c["kind"], "def": c["def"], "config": c["config"], "under": c.get("under"),
+                                       "slots": c["slots"].as_object().map(|o| o.iter().map(|(k, v)| (k.clone(), json!(v.as_array().map_or(0, Vec::len)))).collect::<Map<String, Value>>()) });
+            }
             "control" => {
                 let c = &r["control"];
                 let tree = super::outline::tree_of(&c["nodes"]);

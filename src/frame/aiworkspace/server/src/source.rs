@@ -68,6 +68,13 @@ pub async fn refresh(state: Arc<AppState>, ws_id: String, run_id: String) {
 pub fn tick(state: &Arc<AppState>) {
     let Ok(ids) = state.svc.all_workspace_ids() else { return };
     for ws_id in ids {
+        // a session's run Workspace refreshes its Sources only while the session runs: afterwards it is a record
+        // (第四期规划 §7.1, P4-08: the replay never reads today's data as the class's)
+        if let Ok(Some(s)) = state.svc.session_of_run(&ws_id) {
+            if !s.is_live() {
+                continue;
+            }
+        }
         let due = state.with_ws(&ws_id, |ws| {
             let owner = ws.owner()?.unwrap_or_default();
             let mut out = Vec::new();
@@ -164,7 +171,7 @@ fn own_publication(state: &Arc<AppState>, source: &Value) -> Option<Value> {
     let host = url.host_str()?;
     let segs: Vec<String> = url.path_segments()?.filter(|s| !s.is_empty()).map(|s| percent_encoding::percent_decode_str(s).decode_utf8_lossy().into_owned()).collect();
     let (src_ws, name) = match host.strip_suffix(&format!(".{zone}")).and_then(|h| h.strip_prefix("aiws-")) {
-        Some(label) if segs.len() == 2 => (format!("ws_{}", label.trim_start_matches("ws_")), segs[1].clone()),
+        Some(label) if segs.len() == 2 => (format!("ws_{label}"), segs[1].clone()),
         None if host == zone && segs.len() == 5 && segs[..3] == ["kapi", "aiworkspace", "pub"] => (segs[3].clone(), segs[4].clone()),
         _ => return None,
     };
@@ -316,15 +323,14 @@ fn parse_csv(text: &str) -> Vec<Vec<(String, Value)>> {
 
 // ---- the publication HTTP surface (T4-4, T4-9)
 
-/// `https://aiws-<id>.<zonehost>` when the deployment knows its host. The host label is the workspace id without
-/// its `ws_` prefix: a DNS label carries no `_`, and the gateway folds only `aiws-[a-z0-9]+` onto the service.
+/// `https://aiws-<label>.<zonehost>` when the deployment knows its host. The host label is the workspace id without
+/// its `ws_` prefix (`aiws-2611a0b3.<zone>`): a DNS label carries no `_`, and the gateway folds only
+/// `aiws-[a-z0-9]+` onto the service.
 pub fn public_base(state: &Arc<AppState>, ws_id: &str) -> Option<String> {
     state.limits.public_base.as_ref().map(|b| b.replace("{workspace_id}", host_label(ws_id)))
 }
 
-fn host_label(ws_id: &str) -> &str {
-    ws_id.strip_prefix("ws_").unwrap_or(ws_id)
-}
+use aiworkspace_core::id::workspace_host_label as host_label;
 
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
@@ -429,7 +435,7 @@ pub async fn pub_referrer(State(state): State<Arc<AppState>>, Path((ws_id, name)
 pub(crate) fn host_workspace(headers: &HeaderMap) -> Option<String> {
     let host = headers.get("x-forwarded-host").or_else(|| headers.get(header::HOST)).and_then(|v| v.to_str().ok())?;
     let host = host.split(':').next().unwrap_or("");
-    let rest = host.strip_prefix("aiws-")?;
-    let id = rest.split('.').next()?;
-    Some(format!("ws_{id}").replace("ws_ws_", "ws_"))
+    let label = host.strip_prefix("aiws-")?.split('.').next()?;
+    let id = format!("ws_{label}");
+    aiworkspace_core::id::is_workspace_id(&id).then_some(id)
 }

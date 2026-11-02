@@ -3,7 +3,10 @@
  * the two agree. */
 
 /** Container kinds that are controls (脑图方案 §6.2, R2): the kind is the control id. */
-export const CONTROL_KINDS: readonly string[] = ['mindmap']
+export const CONTROL_KINDS: readonly string[] = ['mindmap', 'composite']
+
+/** The host kind of composite extension controls (扩展控件 P1, K4): which control it is, is the container's `def_ref`. */
+export const COMPOSITE = 'composite'
 
 /** Views whose `w` / `h` may be `"auto"` inside a control (R17): their size comes from the title. */
 export const TEXT_VIEWS: readonly string[] = ['mindnode', 'shape', 'richtext']

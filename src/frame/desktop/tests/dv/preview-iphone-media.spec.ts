@@ -75,7 +75,7 @@ async function playsConverted(preview: Locator, portrait: boolean) {
 test.describe('iPhone media through HomeStation and the Preview Pipeline (real zone)', () => {
   test.use({ viewport: { width: 1440, height: 900 } })
 
-  test('without ffmpeg on the node: no repr, and HEIC reads as a format this browser lacks, not as damage', async ({ page }) => {
+  test('without ffmpeg on the node: no image profile, and HEIC reads as a format this browser lacks, not as damage', async ({ page }) => {
     test.skip(process.env.PREVIEW_DV_NO_FFMPEG !== '1', 'hide ffmpeg on the node first (e.g. mv /usr/bin/ffmpeg /usr/bin/ffmpeg.off), then set PREVIEW_DV_NO_FFMPEG=1')
     await loginThroughUi(page)
     await page.goto('/homestation')
@@ -83,8 +83,9 @@ test.describe('iPhone media through HomeStation and the Preview Pipeline (real z
     const photos = `HEIC without converter ${Date.now().toString(36)}`
     await publish(page, photos, [{ name: 'IMG_0101.HEIC', file: 'portrait_grid.heic', mimeType: '' }])
     const hello = (await (await page.request.post('/nfs/v1/hello', { data: { args: {} } })).json()).result
-    expect(hello.features).not.toContain('repr')
-    expect(hello.repr).toMatchObject({ available: false })
+    // Each converter is optional: LibreOffice alone still advertises `repr`, with `preview-document` only.
+    expect(hello.repr.profiles ?? []).not.toContain('preview-image')
+    expect(hello.repr.missing).toContain('ffmpeg')
     expect(hello.repr.detail).toContain('ffmpeg')
     await page.getByTestId('hs-nav-published').click()
     const card = page.getByTestId('hs-card').filter({ hasText: photos })

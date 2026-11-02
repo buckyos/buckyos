@@ -1,5 +1,5 @@
 import { expect, test as base, type Page } from '@playwright/test'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 const BACKEND_FIXTURE = resolve('../aiworkspace/fixtures/project-workspace/commits.json')
@@ -118,6 +118,27 @@ export class Api {
 
   async headSeq(token: string, workspaceId: string): Promise<number> {
     return (await this.rpc(token, 'ws.get_info', { workspace_id: workspaceId })).head_seq
+  }
+
+  /** `ext.build` of a control from files given as text or JSON (or a folder of `doc/workspace/hello-controls`). */
+  async build(token: string, workspaceId: string, files: Record<string, unknown> | string, extra: Json = {}): Promise<Json> {
+    const list = typeof files === 'string'
+      ? readdirSync(resolve('../../../doc/workspace/hello-controls/controls', files)).map((name) => ({ name, base64: readFileSync(resolve('../../../doc/workspace/hello-controls/controls', files, name)).toString('base64') }))
+      : Object.entries(files).map(([name, v]) => ({ name, base64: Buffer.from(typeof v === 'string' ? v : JSON.stringify(v), 'utf8').toString('base64') }))
+    const built = await this.rpc(token, 'ext.build', { workspace_id: workspaceId, files: list, ...extra })
+    expect(built.status, JSON.stringify(built)).toBe('accepted')
+    return built
+  }
+
+  /** A workspace with one free canvas `free` (its content folder `free-content`). */
+  async freeCanvas(token: string, title: string): Promise<{ workspace_id: string; epoch: string }> {
+    const ws = await this.rpc(token, 'ws.create', { title }) as { workspace_id: string; epoch: string }
+    const made = await this.commit(token, ws, [
+      { op: 'entity.create', entity_id: 'free-content', type_id: 'buckyos.container', parent_id: 'canvas-content', order_key: 'a', payload: { kind: 'folder', system: 'surface_content', surface_id: 'free', title: 'Free' } },
+      { op: 'entity.create', entity_id: 'free', type_id: 'buckyos.container', parent_id: 'surfaces', order_key: 'a', payload: { kind: 'surface', layout: { mode: 'free' }, title: 'Free', content_folder_id: 'free-content' } },
+    ])
+    expect(made.status, JSON.stringify(made)).toBe('accepted')
+    return ws
   }
 
   /** The runs of a wish, newest first (`proc.list`). */

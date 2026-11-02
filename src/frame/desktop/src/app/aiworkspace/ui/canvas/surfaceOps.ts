@@ -5,6 +5,7 @@ import { randomId } from '../../api/ids'
 import type { EntityEnvelope, Json, KeyedContent, Operation } from '../../api/types'
 import { aiwsT } from '../../i18n'
 import type { WorkspaceStore } from '../../state/store'
+import { uniqueName } from '@table/operations'
 
 export function surfacesOf(store: WorkspaceStore): EntityEnvelope[] {
   return store.outline.childrenOf('surfaces').filter((e) => e.kind === 'surface')
@@ -72,18 +73,22 @@ export async function duplicateSurfaceOps(store: WorkspaceStore, surfaceId: stri
   return { ops, surfaceId: created.surfaceId }
 }
 
-/** Create a Surface with its canvas content folder in one commit (§4.1), optionally with a preset icon. */
+/** Create a Surface with its canvas content folder in one commit (§4.1), optionally with a preset icon. Entity names
+ * are unique among siblings: a title already used (the same file imported twice) gets ` (2)`, ` (3)` … in its name. */
 export function createSurfaceOps(store: WorkspaceStore, title: string, mode: 'free' | 'flow', icon?: string | null): { ops: Operation[]; surfaceId: string } {
   const core = store.core
   const surfaceId = randomId('sf')
   const folderId = `${surfaceId}-content`
-  const lastSurface = store.outline.childrenOf('surfaces').at(-1)?.order_key
-  const lastFolder = store.outline.childrenOf('canvas-content').at(-1)?.order_key
+  const surfaces = store.outline.childrenOf('surfaces')
+  const folders = store.outline.childrenOf('canvas-content')
+  const lastSurface = surfaces.at(-1)?.order_key
+  const lastFolder = folders.at(-1)?.order_key
+  const name = uniqueName(title, new Set([...surfaces, ...folders].map((e) => e.name).filter((n): n is string => Boolean(n))))
   return {
     surfaceId,
     ops: [
-      { op: 'entity.create', entity_id: folderId, type_id: 'buckyos.container', parent_id: 'canvas-content', order_key: core.order_key_between(lastFolder, undefined), name: title, payload: { kind: 'folder', title, system: 'surface_content', surface_id: surfaceId } },
-      { op: 'entity.create', entity_id: surfaceId, type_id: 'buckyos.container', parent_id: 'surfaces', order_key: core.order_key_between(lastSurface, undefined), name: title, payload: { kind: 'surface', layout: { mode }, title, content_folder_id: folderId, ...(icon ? { icon } : {}) } },
+      { op: 'entity.create', entity_id: folderId, type_id: 'buckyos.container', parent_id: 'canvas-content', order_key: core.order_key_between(lastFolder, undefined), name, payload: { kind: 'folder', title, system: 'surface_content', surface_id: surfaceId } },
+      { op: 'entity.create', entity_id: surfaceId, type_id: 'buckyos.container', parent_id: 'surfaces', order_key: core.order_key_between(lastSurface, undefined), name, payload: { kind: 'surface', layout: { mode }, title, content_folder_id: folderId, ...(icon ? { icon } : {}) } },
     ],
   }
 }

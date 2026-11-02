@@ -2,6 +2,7 @@
  * Only what the Desktop app reads is typed; unknown keys are preserved as `unknown`. */
 
 import type { StoredPlacement } from '@controls/placement'
+import type { Composition } from '@controls/composite'
 
 export const PROTOCOL_VERSION = '1.1'
 
@@ -55,8 +56,10 @@ export interface WorkspaceInfo extends WorkspaceSummary {
 
 /** Where a sourced entity's content comes from (内核架构改进 D12); such an entity is read-only for people and Blocks. */
 export interface EntitySource {
-  kind: 'url' | 'workspace'
+  kind: 'url' | 'workspace' | 'session'
   mode: 'live' | 'fixed'
+  /** A session feed (第四期规划 §5.3): which of the seven. */
+  feed?: SessionFeed | null
   url?: string | null
   workspace_id?: string | null
   entity_id?: string | null
@@ -64,6 +67,9 @@ export interface EntitySource {
   refresh?: { interval_s: number } | null
   auth_mode?: 'none' | 'hosted'
 }
+
+/** The feeds of a presentation session (第四期规划 §5.3, Q19): Tables a Block binds to, written by the session. */
+export type SessionFeed = 'participants' | 'stage' | 'tasks' | 'my_responses' | 'responses' | 'results' | 'reactions'
 
 /** A published data entity (D26): its link is the URL projection of the reference. */
 export interface Publication { entity_id: string; name: string; path: string; url?: string; reference: Reference; published_at: string; published_by: string; referrers: number; current?: boolean }
@@ -210,6 +216,13 @@ export interface EntityEnvelope {
   def_version?: number | null
   provenance_pkg?: string | null
   source_dir_id?: string | null
+  /** The identities a definition builds on, a composite's composition and its config defaults (扩展控件 P1). */
+  deps?: string[] | null
+  composition?: Composition | null
+  config_defaults?: Record<string, Json> | null
+  /** The events a definition declares and the events an instance binds (扩展控件 P2; outline only). */
+  def_events?: string[] | null
+  on_events?: string[] | null
   target_id?: string | null
   annotation_kind?: string | null
   media_type?: string | null
@@ -326,6 +339,8 @@ export interface CellPayload {
   def_ref?: Reference
   /** Named data bindings (`aiws` v2): `source_ref` is the binding called `source`. */
   bindings?: Record<string, { entity_id: string; selector?: Selector }>
+  /** What a control instance does when its definition raises an event (扩展控件 P2, Q26). */
+  on?: EventBindings
   /** Connector keys (only with `view.type = connector`). */
   start?: ConnectorEnd | null
   end?: ConnectorEnd | null
@@ -522,7 +537,7 @@ export interface WishChoices { results?: Record<string, 'keep' | 'replace' | 'ne
 export interface BlockDefPayload {
   def_id: string
   version?: number
-  kind: 'declarative' | 'html'
+  kind: 'declarative' | 'html' | 'composite'
   title?: string
   description?: string
   accepts?: string[]
@@ -541,24 +556,86 @@ export interface BlockDefPayload {
   catalog?: { group?: string; icon?: string; description?: string }
   agent?: string
   provenance?: { pkg_id?: string; version?: string; digest?: string }
+  /** P1: the definitions it builds on, and a composite's checked composition.json. */
+  deps?: { ident: string; entity_id: string }[]
+  composition?: Composition
+  /** P2 (Q26): the events the control raises (a composite's re-raise a child's, `from`). */
+  events?: Record<string, ControlEvent>
 }
+
+/** An event a control declares (`component.json` `events`, a composite's `composition.json` `events`). */
+export interface ControlEvent {
+  title?: string
+  description?: string
+  params?: Record<string, { type: 'string' | 'number' | 'boolean' | 'object' | 'entity'; required?: boolean; description?: string }>
+  from?: { slot: string; event: string }
+}
+
+/** One handler of an instance's `on` (Q26). Strings may hold `{{event.<param>}}` / `{{config.<key>}}`. */
+export type EventHandler =
+  | { kind: 'write'; target: string; what: 'recordSet' | 'upsert' | 'setMarkdown'; args?: Record<string, Json> }
+  | { kind: 'wish'; wish_id: string; inputs?: Json }
+  | { kind: 'open'; target?: string }
+  | { kind: 'notify'; text: string }
+export type EventBindings = Record<string, EventHandler | EventHandler[]>
 
 /** A named data input a control declares (its instances bind it in the Cell's `bindings`). */
 export interface ControlBinding { accepts?: string[]; required?: boolean; title?: string; description?: string }
 
 /** One problem of a control's source (`ext.build`'s `BUILD_FAILED.data.diagnostics`). */
-export interface BuildDiagnostic { file: string; line?: number; col?: number; severity: 'error' | 'warning'; message: string; instances?: { entity_id: string; title?: string | null }[] }
+export interface BuildDiagnostic { file: string; line?: number; col?: number; severity: 'error' | 'warning'; message: string; code?: string; instances?: { entity_id: string; title?: string | null }[]; dependents?: { ident: string; def_entity_id: string }[] }
 
 /** `ext.build` / `ext.import`: one entry per control. */
-export interface ExtControlResult { ident: string; def_entity_id: string; dir_entity_id?: string; action: 'created' | 'rebuilt' | 'unchanged' | 'satisfied'; version?: number; def_rev?: number; dir_rev?: number; build?: { input_digest: string; builder_version: string; built_at: string } }
-export interface ExtBuildResult extends Partial<ExtControlResult> { status: 'accepted' | 'unchanged' | 'checked'; commit_id?: string; seq?: number; unchanged?: boolean; controls: ExtControlResult[]; diagnostics: BuildDiagnostic[] }
+export interface ExtControlResult {
+  ident: string; def_entity_id: string; dir_entity_id?: string; action: 'created' | 'rebuilt' | 'unchanged' | 'satisfied' | 'upgraded'; version?: number; def_rev?: number; dir_rev?: number
+  build?: { input_digest: string; builder_version: string; built_at: string }
+  /** `ext.upgrade` (扩展控件 P2, Q30): the package versions, and the instances a migration rewrote. */
+  from?: string | null; to?: string | null; migrated?: string[]
+}
+export interface ExtBuildResult extends Partial<ExtControlResult> {
+  status: 'accepted' | 'unchanged' | 'checked'; commit_id?: string; seq?: number; unchanged?: boolean; controls: ExtControlResult[]; diagnostics: BuildDiagnostic[]
+  /** A dry run: the operations a migration would write per instance. */
+  plan?: { instance: string; ops: Operation[] }[]
+}
+/** A migration of an upgrade that narrows the contract instances rely on (`schemas/migration.schema.json`). */
+export interface ExtMigration {
+  config?: { rename?: Record<string, string>; drop?: string[]; fill?: Record<string, Json> }
+  bindings?: { rename?: Record<string, string>; drop?: string[]; fill?: Record<string, { entity_id: string }> }
+  slots?: { rename?: Record<string, string>; move?: Record<string, string> }
+  events?: { rename?: Record<string, string>; drop?: string[] }
+}
+/** A Workspace template of a library package (P3, Q32). */
+export interface TemplateParam { type: 'string' | 'number' | 'boolean'; title?: string; default?: Json }
+export interface LibraryTemplate { id: string; title: string; description?: string | null; params?: Record<string, TemplateParam>; requires?: { host_api?: Record<string, number>; controls?: string[] } }
+/** What `ext.export_template` / `ext.pack { templates }` take for one template. */
+export interface TemplateSpec { surfaces: string[]; data?: string[]; template: { id: string; title: string; description?: string; params?: Record<string, TemplateParam>; reset?: { tables: string[] } } }
 export interface ExtExportResult {
-  manifest: { manifest_version: number; purpose: 'aiws'; host_api?: Record<string, number>; controls: { ident: string; name: string; kind: string; version: number; digest: string; dir: string; title?: string }[]; workspace_templates: Json[] }
+  manifest: { manifest_version: number; purpose: 'aiws'; host_api?: Record<string, number>; controls: { ident: string; name: string; kind: string; version: number; digest: string; dir: string; title?: string; deps?: string[] }[]; workspace_templates: Json[] }
   controls: { entity_id: string; ident: string; kind: string; version: number; def_rev: number; dir_rev: number; built: boolean; digest: string; dir: string; files: { name: string; obj_id?: string; size: number; text?: string }[] }[]
   files: { path: string; obj_id?: string; size: number; text?: string }[]
 }
-export interface LibraryControl { ident: string; name: string; kind: string; version: number; digest: string; dir: string; title?: string | null; description?: string | null; catalog?: Record<string, Json> | null }
-export interface LibraryPackage { pkg_id: string; version: string; title: string; author: string; mode: string; installed_at: string; controls: LibraryControl[] }
+export interface LibraryControl { ident: string; name: string; kind: string; version: number; digest: string; dir: string; title?: string | null; description?: string | null; catalog?: Record<string, Json> | null; deps?: string[]; needs_newer?: boolean }
+/** `ext.pack` (扩展控件 P1): the unsigned .pikg the service wrote into the caller's `exports` bucket. */
+export interface ExtPackResult {
+  bucket_id: string
+  key: string
+  obj_id: string
+  size: number
+  digest: string
+  app_doc_object_id: string
+  app_did: string
+  pkg_id: string
+  version: string
+  payload_digest: string
+  tar_digest: string
+  download: { bucket_id: string; key: string; version: number; obj_id: string; token: string }
+}
+export interface LibraryPackage {
+  pkg_id: string; version: string; title: string; author: string; mode: string; installed_at: string; controls: LibraryControl[]
+  /** Q33: a package newer than this service reads is listed, marked, and cannot be imported. */
+  manifest_version?: number | null; needs_newer?: boolean
+  templates?: LibraryTemplate[]
+}
 
 export type FreshnessStatus = 'current' | 'stale' | 'upstream_stale' | 'unavailable' | 'unknown' | 'none'
 export interface FreshnessInputLine {

@@ -285,13 +285,9 @@ CLI 前端在 `src/frame/agent_tool_cli_dev/src/lib.rs`：
 ```text
 Glob  Grep  dcrontab  read  xcall
 read_file  write_file  edit_file
-todo  get_session  create_workspace  bind_workspace
+get_session
 agent-memory / agent_memory  agent-notebook / agent_notebook
 check_task  cancel_task  finish_task
-read_session_history  commit_session_history_improved
-BeginAttentionSignalExtraction  CompleteAttentionSignalExtraction
-ListPendingAttentionSignals  MarkAttentionSignalConsumed
-DiscoverEvent  DiscoverObjectObservation  DiscoverRelationship  DiscoverSkillCoverageGap
 ```
 
 注意：

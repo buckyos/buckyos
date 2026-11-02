@@ -1,14 +1,16 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { Activity, Check, ChevronDown, ChevronUp, Copy, CreditCard, DollarSign, Filter, Gauge, HelpCircle, Route, Wallet } from 'lucide-react'
 import { useMediaQuery } from '@mui/material'
 import { useI18n } from '../../../../i18n/provider'
-import { useAICCStore, useAIStatus, useProviders, useUsageSummary, useUsageTrend } from '../../hooks/use-aicc-store'
+import { useAICCStore, useAIStatus, useProviders } from '../../hooks/use-aicc-store'
+import { useViewerIsAdmin } from '../../../settings/hooks/use-viewer-is-admin'
+import { fetchUserList } from '../../../../api/user_mgr'
 import { useDebouncedEffect } from '../../hooks/use-debounced-value'
 import { SummaryCard } from '../shared/SummaryCard'
 import { PagedListFooter } from '../shared/paged-list'
 import { LongField } from '../shared/LongField'
 import { RouteTraceAuditPanel } from '../usage/RouteTraceAuditPanel'
-import type { RouteTrace, UsageEvent, UsageEventsPage, UsageSummary, UsageTimeRange } from '../../../../api/aicc_mgr'
+import type { RouteTrace, UsageEvent, UsageEventsPage, UsageOverview, UsageScope, UsageSummary, UsageTimeRange, UserUsageSummary } from '../../../../api/aicc_mgr'
 import type { QuotaRuleDraft } from '../../datamodel/quota'
 
 function formatTokens(n: number): string {
@@ -206,13 +208,104 @@ function sameFilterText(left: FilterText, right: FilterText): boolean {
   return left.provider === right.provider && left.model === right.model && left.app === right.app
 }
 
-export function UsageDashboard({ mode = 'home', onSetQuota }: { mode?: 'home' | 'usage'; onSetQuota?: (draft: Partial<QuotaRuleDraft>) => void }) {
+interface UsageDashboardProps {
+  mode?: 'home' | 'usage'
+  onSetQuota?: (draft: Partial<QuotaRuleDraft>) => void
+}
+
+export function UsageDashboard({ mode = 'home', onSetQuota }: UsageDashboardProps) {
+  const { t } = useI18n()
+  const store = useAICCStore()
+  const version = useSyncExternalStore(store.subscribe, store.getSnapshotVersion)
+  const isAdmin = useViewerIsAdmin()
+  const [selection, setSelection] = useState('system')
+  const scopeKey = isAdmin ? selection : 'mine'
+  const scope = useMemo<UsageScope>(() => scopeKey === 'mine' ? {} : {
+    zoneWide: true,
+    userId: scopeKey.startsWith('user:') ? scopeKey.slice(5) : undefined,
+  }, [scopeKey])
+  const [users, setUsers] = useState<string[]>([])
+  const [result, setResult] = useState<{ key: string; overview: UsageOverview } | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [retry, setRetry] = useState(0)
+
+  useEffect(() => {
+    if (!isAdmin) return
+    let live = true
+    void fetchUserList().then(({ data }) => {
+      if (live && data) setUsers((current) => uniqueSorted([...current, ...data.users.map((user) => user.user_id)]))
+    }).catch(() => undefined)
+    return () => { live = false }
+  }, [isAdmin])
+
+  useEffect(() => {
+    if (isAdmin === null) return
+    let live = true
+    void store.queryUsageOverview(scope).then((overview) => {
+      if (!live) return
+      setError(null)
+      setResult({ key: scopeKey, overview })
+      if (isAdmin) setUsers((current) => uniqueSorted([...current, ...overview.users.map((user) => user.user_id)]))
+    }).catch(() => {
+      if (live) setError(t('aiCenter.home.overviewLoadFailed', 'Could not load usage statistics.'))
+    })
+    return () => { live = false }
+  }, [isAdmin, retry, scope, scopeKey, store, t, version])
+
+  const ready = isAdmin !== null && result?.key === scopeKey
+  return (
+    <div className="flex min-w-0 flex-col gap-4">
+      <section className="flex flex-wrap items-center justify-between gap-3 rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+        <div className="min-w-0">
+          <div className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>{t('aiCenter.home.usageScope', 'Usage scope')}</div>
+          <p className="mt-1 text-xs" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.home.usageOwnership', 'Usage includes the user’s apps and agents. System calls are attributed to their system account.')}</p>
+        </div>
+        {isAdmin ? (
+          <select
+            data-testid="usage-scope"
+            aria-label={t('aiCenter.home.usageScope', 'Usage scope')}
+            value={scopeKey}
+            onChange={(event) => { setError(null); setSelection(event.target.value) }}
+            className="min-h-10 max-w-full rounded-lg px-3 text-sm"
+            style={{ color: 'var(--cp-text)', background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}
+          >
+            <option value="system">{t('aiCenter.home.systemUsage', 'Entire system')}</option>
+            <option value="mine">{t('aiCenter.home.myUsage', 'My usage')}</option>
+            {users.map((user) => <option key={user} value={`user:${user}`}>{user}</option>)}
+          </select>
+        ) : <span className="text-sm" style={{ color: 'var(--cp-text)' }}>{isAdmin === null ? t('common.loading', 'Loading...') : t('aiCenter.home.myUsage', 'My usage')}</span>}
+      </section>
+      {error ? (
+        <div role="alert" className="rounded-xl p-4 text-sm" style={{ color: 'var(--cp-danger)', background: 'var(--cp-surface)' }}>
+          {error}
+          <button type="button" onClick={() => { setError(null); setResult(null); setRetry((value) => value + 1) }} className="ml-3 min-h-10 underline">{t('common.retry', 'Retry')}</button>
+        </div>
+      ) : ready ? (
+        <div data-testid="usage-scope-content" data-scope={scopeKey}>
+          <ScopedUsageDashboard
+            key={scopeKey}
+            mode={mode}
+            scope={scope}
+            overview={result.overview}
+            onSelectUser={isAdmin && scopeKey === 'system' ? (user) => setSelection(`user:${user}`) : undefined}
+            onSetQuota={scopeKey === 'mine' ? onSetQuota : undefined}
+          />
+        </div>
+      ) : <div role="status" className="p-4 text-sm" style={{ color: 'var(--cp-muted)' }}>{t('common.loading', 'Loading...')}</div>}
+    </div>
+  )
+}
+
+function ScopedUsageDashboard({ mode = 'home', onSetQuota, scope, overview, onSelectUser }: UsageDashboardProps & {
+  scope: UsageScope
+  overview: UsageOverview
+  onSelectUser?: (user: string) => void
+}) {
   const { t, locale } = useI18n()
   const store = useAICCStore()
   const status = useAIStatus()
   const providers = useProviders()
-  const summary = useUsageSummary()
-  const trend = useUsageTrend('day')
+  const { summary, trend } = overview
   const isMobile = useMediaQuery('(max-width: 767px)')
   const [timeRange, setTimeRange] = useState<TimeRangeFilter>('all')
   const [providerFilter, setProviderFilter] = useState<MultiFilter>(EMPTY_MULTI_FILTER)
@@ -315,6 +408,7 @@ export function UsageDashboard({ mode = 'home', onSetQuota }: { mode?: 'home' | 
       setUsageError(null)
       try {
         const page = await store.queryUsageEvents({
+          scope,
           timeRange: usageQueryRange,
           filters: usageQueryFilters,
           cursor: currentCursor,
@@ -352,7 +446,7 @@ export function UsageDashboard({ mode = 'home', onSetQuota }: { mode?: 'home' | 
     return () => {
       cancelled = true
     }
-  }, [currentCursor, detailPage, isMobile, isUsagePage, pageLimit, store, t, usageQueryFilters, usageQueryRange, usageRetryKey])
+  }, [currentCursor, detailPage, isMobile, isUsagePage, pageLimit, scope, store, t, usageQueryFilters, usageQueryRange, usageRetryKey])
 
   const resetUsagePaging = () => {
     setDetailPage(1)
@@ -525,7 +619,7 @@ export function UsageDashboard({ mode = 'home', onSetQuota }: { mode?: 'home' | 
             },
             {
               icon: <DollarSign size={18} />,
-              title: t('aiCenter.home.estimatedCost', 'Est. Cost'),
+              title: t('aiCenter.home.periodCost', 'Est. cost · 30 days'),
               value: costValue,
               subtitle: costSubtitle,
               onClick: hasMultipleCurrencies ? () => setCostExpanded((value) => !value) : undefined,
@@ -606,8 +700,8 @@ export function UsageDashboard({ mode = 'home', onSetQuota }: { mode?: 'home' | 
           <div className="grid grid-cols-2 gap-4 items-stretch">
             <Stat label={t('aiCenter.home.today', 'Today')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.today_tokens) })} />
             <Stat label={t('aiCenter.home.thisMonth', 'This Month')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.this_month_tokens) })} />
-            <Stat label={t('aiCenter.home.total', 'Total')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.total_tokens) })} />
-            <Stat label={t('aiCenter.home.totalCost', 'Total Est. Cost')} value={formatFinanceTotals(summary.finance_totals)} />
+            <Stat label={t('aiCenter.home.last30Days', 'Last 30 days')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.total_tokens) })} />
+            <Stat label={t('aiCenter.home.periodCost', 'Est. cost · 30 days')} value={formatFinanceTotals(summary.finance_totals)} />
           </div>
         </section>
       </div>}
@@ -624,6 +718,8 @@ export function UsageDashboard({ mode = 'home', onSetQuota }: { mode?: 'home' | 
           <Stat label={t('aiCenter.home.totalCost', 'Total Est. Cost')} value={formatFinanceTotals(summary.finance_totals)} />
         </div>
       </section>}
+
+      {!isUsagePage && onSelectUser && <UserUsageTable users={overview.users} onSelect={onSelectUser} />}
 
       {!isUsagePage && (
         <section className="rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
@@ -692,6 +788,8 @@ export function UsageDashboard({ mode = 'home', onSetQuota }: { mode?: 'home' | 
             </span>
           </div>
           <div className="grid grid-cols-1 gap-2">
+            {usageLoading && <div role="status" className="py-3 text-xs" style={{ color: 'var(--cp-muted)' }}>{t('common.loading', 'Loading...')}</div>}
+            {usageError && <div role="alert" className="py-3 text-xs" style={{ color: 'var(--cp-danger)' }}>{usageError} <button type="button" onClick={retryUsagePage} className="min-h-10 underline">{t('common.retry', 'Retry')}</button></div>}
             {recentUsageEvents.map((event) => (
               <RecentUsageRow
                 key={event.id}
@@ -699,7 +797,7 @@ export function UsageDashboard({ mode = 'home', onSetQuota }: { mode?: 'home' | 
                 providerNames={providerNames}
               />
             ))}
-            {!usageLoading && recentUsageEvents.length === 0 && (
+            {!usageLoading && !usageError && recentUsageEvents.length === 0 && (
               <div className="rounded-lg px-3 py-8 text-center text-xs" style={{ color: 'var(--cp-muted)', background: 'var(--cp-bg)' }}>
                 {t('aiCenter.home.noUsageEvents', 'No usage events match the current filters.')}
               </div>
@@ -843,7 +941,7 @@ export function UsageDashboard({ mode = 'home', onSetQuota }: { mode?: 'home' | 
                 const providerIdentifier = readableUsageProviderIdentifier(event)
                 const providerDisplayName = usageProviderDisplayName(event, providerNames)
                 return (
-                  <tr key={event.id} style={{ borderTop: '1px solid var(--cp-border)' }}>
+                  <tr key={event.id} data-testid="usage-event-row" data-user-id={event.user_id ?? event.tenant_id} style={{ borderTop: '1px solid var(--cp-border)' }}>
                     <td className="px-4 py-2 text-xs whitespace-nowrap" style={{ color: 'var(--cp-muted)' }}>{formatLocalTime(event.timestamp, locale)}</td>
                     <td className="px-4 py-2 text-xs" style={{ color: 'var(--cp-text)' }}>
                       <CopyableText
@@ -857,9 +955,10 @@ export function UsageDashboard({ mode = 'home', onSetQuota }: { mode?: 'home' | 
                     <td className="px-4 py-2 text-xs truncate" style={{ color: 'var(--cp-text)' }} title={event.api_type}>{event.api_type}</td>
                     <td className="px-4 py-2 text-xs" style={{ color: 'var(--cp-text)' }}>
                       <CopyableText value={`${event.app_id ?? 'system'}${event.agent_id ? ` / ${event.agent_id}` : ''}`} />
+                      <div className="mt-1" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.home.usageUser', 'User')}: {event.user_id ?? event.tenant_id}</div>
                     </td>
                     <td className="px-4 py-2 text-xs">
-                      {event.session_id ? (
+                      {event.session_id && !scope.zoneWide ? (
                         <button
                           type="button"
                           onClick={() => void loadLinkedTraces(event.session_id ?? '')}
@@ -870,7 +969,7 @@ export function UsageDashboard({ mode = 'home', onSetQuota }: { mode?: 'home' | 
                           {event.session_id}
                         </button>
                       ) : (
-                        <span style={{ color: 'var(--cp-muted)' }}>-</span>
+                        <CopyableText value={event.session_id ?? '-'} mono />
                       )}
                     </td>
                     <td className="px-4 py-2 text-xs" style={{ color: 'var(--cp-text)' }}>{formatTokens(tokens)}</td>
@@ -897,7 +996,7 @@ export function UsageDashboard({ mode = 'home', onSetQuota }: { mode?: 'home' | 
                 key={event.id}
                 event={event}
                 providerNames={providerNames}
-                onOpenTrace={(taskId) => void loadLinkedTraces(taskId)}
+                onOpenTrace={scope.zoneWide ? undefined : (taskId) => void loadLinkedTraces(taskId)}
               />
             ))}
             {usageLoading && pagedEvents.length === 0 && <UsageCardSkeletonRows />}
@@ -989,10 +1088,61 @@ export function UsageDashboard({ mode = 'home', onSetQuota }: { mode?: 'home' | 
       )}
 
       {isUsagePage && usageTab === 'trace' && (
-        <RouteTraceAuditPanel compact={isMobile} />
+        <div className="flex flex-col gap-3">
+          <p className="text-xs" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.home.ownTracesOnly', 'Route traces show your own requests.')}</p>
+          <RouteTraceAuditPanel compact={isMobile} />
+        </div>
       )}
 
     </div>
+  )
+}
+
+function UserUsageTable({ users, onSelect }: { users: UserUsageSummary[]; onSelect: (user: string) => void }) {
+  const { t } = useI18n()
+  const [page, setPage] = useState(0)
+  const sorted = useMemo(() => [...users].sort((left, right) => right.total_tokens - left.total_tokens || left.user_id.localeCompare(right.user_id)), [users])
+  const rows = sorted.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
+  return (
+    <section data-testid="usage-by-user" className="min-w-0 overflow-hidden rounded-xl" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+      <div className="flex flex-wrap items-center justify-between gap-2 p-4">
+        <h3 className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>{t('aiCenter.home.byUser', 'Usage by user')}</h3>
+        <span className="text-xs" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.home.last30Days', 'Last 30 days')}</span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-left text-xs" style={{ color: 'var(--cp-text)' }}>
+          <thead style={{ background: 'var(--cp-bg)', color: 'var(--cp-muted)' }}>
+            <tr>
+              {[t('aiCenter.home.usageUser', 'User'), t('aiCenter.home.requests', 'Requests'), 'Tokens', t('aiCenter.home.estimatedCost', 'Est. Cost')].map((label) => <th key={label} className="px-3 py-2 font-medium">{label}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((user) => (
+              <tr key={user.user_id} data-testid="user-usage-row" data-user-id={user.user_id} style={{ borderTop: '1px solid var(--cp-border)' }}>
+                <td className="max-w-48 px-3 py-1"><button type="button" onClick={() => onSelect(user.user_id)} className="min-h-11 max-w-full break-all text-left underline-offset-2 hover:underline" style={{ color: 'var(--cp-accent)' }}>{user.user_id}</button></td>
+                <td className="px-3 py-2 tabular-nums">{user.total_requests.toLocaleString()}</td>
+                <td className="px-3 py-2 tabular-nums" title={user.total_tokens.toLocaleString()}>{formatTokens(user.total_tokens)}</td>
+                <td className="px-3 py-2"><span className="whitespace-pre-line">{formatFinanceTotals(user.finance_totals, true)}</span>{!user.finance_complete && <div style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.home.partialFinance', 'Partial financial total')}</div>}</td>
+              </tr>
+            ))}
+            {users.length === 0 && <tr><td colSpan={4} className="px-3 py-8 text-center" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.home.noBreakdownData', 'No usage data yet.')}</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      {users.length > PAGE_SIZE && <PagedListFooter
+        mode="pagination"
+        loading={false}
+        hasMore={(page + 1) * PAGE_SIZE < users.length}
+        onLoadMore={() => setPage((value) => value + 1)}
+        onPreviousPage={() => setPage((value) => Math.max(0, value - 1))}
+        onNextPage={() => setPage((value) => value + 1)}
+        canGoPrevious={page > 0}
+        canGoNext={(page + 1) * PAGE_SIZE < users.length}
+        pageIndex={page}
+        totalCount={users.length}
+        labels={{ previous: t('common.previous', 'Previous'), next: t('common.next', 'Next'), page: t('aiCenter.home.pageNumber', 'Page {{page}}'), loading: t('common.loading', 'Loading...'), loadMore: t('common.loadMore', 'Load more'), retry: t('common.retry', 'Retry'), error: '' }}
+      />}
+    </section>
   )
 }
 
@@ -1152,7 +1302,7 @@ function UsageEventCard({
 }: {
   event: UsageEvent
   providerNames: Map<string, string>
-  onOpenTrace: (taskId: string) => void
+  onOpenTrace?: (taskId: string) => void
 }) {
   const { t, locale } = useI18n()
   const [copied, setCopied] = useState(false)
@@ -1161,6 +1311,7 @@ function UsageEventCard({
   const providerDisplayName = usageProviderDisplayName(event, providerNames)
   const appAgent = `${event.app_id ?? 'system'}${event.agent_id ? ` / ${event.agent_id}` : ''}`
   const copyValue = [
+    `user: ${event.user_id ?? event.tenant_id}`,
     `provider: ${providerDisplayName}`,
     `model: ${event.exact_model}`,
     `tokens: ${formatTokens(tokens)}`,
@@ -1182,6 +1333,8 @@ function UsageEventCard({
 
   return (
     <article
+      data-testid="usage-event-row"
+      data-user-id={event.user_id ?? event.tenant_id}
       role="button"
       tabIndex={0}
       onClick={() => void copyDetails()}
@@ -1208,10 +1361,12 @@ function UsageEventCard({
         </div>
       </div>
       <div className="mt-3 grid grid-cols-1 gap-2 text-xs">
+        <UsageCardRow label={t('aiCenter.home.usageUser', 'User')} value={event.user_id ?? event.tenant_id} />
         <UsageCardRow label={t('aiCenter.home.filterProvider', 'Provider')} value={providerDisplayName} title={providerDisplayName === providerIdentifier ? providerDisplayName : `${providerDisplayName} (${providerIdentifier})`} />
         <UsageCardRow label={t('aiCenter.home.filterModel', 'Model')} value={event.exact_model} mono allowWrap />
         <UsageCardRow label={t('aiCenter.home.filterAppAgent', 'App / Agent')} value={appAgent} />
-        {event.session_id && (
+        {event.session_id && !onOpenTrace && <UsageCardRow label={t('aiCenter.home.taskSession', 'Task / Session')} value={event.session_id} mono />}
+        {event.session_id && onOpenTrace && (
           <div className="flex min-w-0 items-center justify-between gap-2">
             <span className="shrink-0" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.home.taskSession', 'Task / Session')}</span>
             <button
@@ -1257,12 +1412,13 @@ function RecentUsageRow({
   const tokens = usageTokens(event)
   const providerDisplayName = usageProviderDisplayName(event, providerNames)
   return (
-    <div className="grid grid-cols-1 gap-2 rounded-lg px-3 py-2 text-xs md:grid-cols-[108px_minmax(120px,0.8fr)_minmax(180px,1.2fr)_80px_80px]" style={{ background: 'var(--cp-bg)' }}>
+    <div data-testid="recent-usage-row" data-user-id={event.user_id ?? event.tenant_id} className="grid grid-cols-1 gap-2 rounded-lg px-3 py-2 text-xs md:grid-cols-[108px_minmax(100px,0.8fr)_minmax(160px,1.2fr)_80px_80px]" style={{ background: 'var(--cp-bg)' }}>
       <span style={{ color: 'var(--cp-muted)' }}>{formatLocalTime(event.timestamp, locale)}</span>
       <span className="truncate" title={providerDisplayName} style={{ color: 'var(--cp-text)' }}>{providerDisplayName}</span>
       <span className="truncate font-mono" title={event.exact_model} style={{ color: 'var(--cp-text)' }}>{event.exact_model}</span>
       <span style={{ color: 'var(--cp-muted)' }}>{formatTokens(tokens)}</span>
       <span style={{ color: event.status === 'success' ? 'var(--cp-success)' : 'var(--cp-danger)' }}>{usageStatusLabel(event.status, t)}</span>
+      <span className="break-all md:col-span-5" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.home.usageUser', 'User')}: {event.user_id ?? event.tenant_id}</span>
     </div>
   )
 }

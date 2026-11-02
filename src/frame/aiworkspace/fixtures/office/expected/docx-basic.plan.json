@@ -1,0 +1,623 @@
+{
+  "title": "季度报告 Quarterly Report",
+  "counts": {
+    "paragraphs": 5,
+    "headings": 5,
+    "lists": 2,
+    "tables": 1,
+    "images": 1,
+    "rasterized": 0
+  },
+  "segments": [
+    {
+      "kind": "richtext",
+      "content": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "heading",
+            "attrs": {
+              "block_id": "b1",
+              "level": 1
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Quarterly Report"
+              }
+            ]
+          },
+          {
+            "type": "heading",
+            "attrs": {
+              "block_id": "b2",
+              "level": 1
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Overview"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b3"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Plain, "
+              },
+              {
+                "type": "text",
+                "text": "bold",
+                "marks": [
+                  {
+                    "type": "strong"
+                  }
+                ]
+              },
+              {
+                "type": "text",
+                "text": ", "
+              },
+              {
+                "type": "text",
+                "text": "italic",
+                "marks": [
+                  {
+                    "type": "em"
+                  }
+                ]
+              },
+              {
+                "type": "text",
+                "text": ", "
+              },
+              {
+                "type": "text",
+                "text": "struck",
+                "marks": [
+                  {
+                    "type": "strike"
+                  }
+                ]
+              },
+              {
+                "type": "text",
+                "text": ", "
+              },
+              {
+                "type": "text",
+                "text": "bold italic",
+                "marks": [
+                  {
+                    "type": "strong"
+                  },
+                  {
+                    "type": "em"
+                  }
+                ]
+              },
+              {
+                "type": "text",
+                "text": " and a link to "
+              },
+              {
+                "type": "text",
+                "text": "example.com",
+                "marks": [
+                  {
+                    "type": "link",
+                    "attrs": {
+                      "href": "https://example.com/report"
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "text",
+                "text": "."
+              }
+            ]
+          },
+          {
+            "type": "heading",
+            "attrs": {
+              "block_id": "b4",
+              "level": 2
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Details"
+              }
+            ]
+          },
+          {
+            "type": "heading",
+            "attrs": {
+              "block_id": "b5",
+              "level": 3
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Fine print"
+              }
+            ]
+          },
+          {
+            "type": "heading",
+            "attrs": {
+              "block_id": "b6",
+              "level": 3
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Finer print"
+              }
+            ]
+          },
+          {
+            "type": "bullet_list",
+            "attrs": {
+              "block_id": "b7"
+            },
+            "content": [
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b8"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b9"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "First point"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b10"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b11"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Second point"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "bullet_list",
+                    "attrs": {
+                      "block_id": "b12"
+                    },
+                    "content": [
+                      {
+                        "type": "list_item",
+                        "attrs": {
+                          "block_id": "b13"
+                        },
+                        "content": [
+                          {
+                            "type": "paragraph",
+                            "attrs": {
+                              "block_id": "b14"
+                            },
+                            "content": [
+                              {
+                                "type": "text",
+                                "text": "A sub-point"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b15"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b16"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Third point"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "ordered_list",
+            "attrs": {
+              "block_id": "b17"
+            },
+            "content": [
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b18"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b19"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Step one"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b20"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b21"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Step two"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b22"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b23"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Step three"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "blockquote",
+            "attrs": {
+              "block_id": "b24"
+            },
+            "content": [
+              {
+                "type": "paragraph",
+                "attrs": {
+                  "block_id": "b25"
+                },
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Simplicity is prerequisite for reliability."
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "code_block",
+            "attrs": {
+              "block_id": "b26"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "fn main() {\n    println!(\"hi\");\n}"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b27"
+            }
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b28"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Line one"
+              },
+              {
+                "type": "hard_break"
+              },
+              {
+                "type": "text",
+                "text": "line two\tafter a tab"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b29"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Figure 1:  (blue)"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "image",
+      "image": "ti1",
+      "size": {
+        "w": 226.77165354330708,
+        "h": 113.38582677165354
+      },
+      "pixels": {
+        "width": 400,
+        "height": 200
+      }
+    },
+    {
+      "kind": "richtext",
+      "content": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "table",
+            "attrs": {
+              "block_id": "b30"
+            },
+            "content": [
+              {
+                "type": "table_row",
+                "content": [
+                  {
+                    "type": "table_cell",
+                    "attrs": {
+                      "header": 1
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Region"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "table_cell",
+                    "attrs": {
+                      "header": 1
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Q1"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "table_cell",
+                    "attrs": {
+                      "header": 1
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Q2"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "table_row",
+                "content": [
+                  {
+                    "type": "table_cell",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "North and South"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "table_cell",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "12"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "table_cell",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "15"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "table_row",
+                "content": [
+                  {
+                    "type": "table_cell",
+                    "content": []
+                  },
+                  {
+                    "type": "table_cell",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "9"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "table_cell",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "11"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "table_row",
+                "content": [
+                  {
+                    "type": "table_cell",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Total"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "table_cell",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "21"
+                      },
+                      {
+                        "type": "hard_break"
+                      },
+                      {
+                        "type": "text",
+                        "text": "26"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "table_cell",
+                    "content": []
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b31"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Before the break"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b32"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "中文段落，包含"
+              },
+              {
+                "type": "text",
+                "text": "粗体",
+                "marks": [
+                  {
+                    "type": "strong"
+                  }
+                ]
+              },
+              {
+                "type": "text",
+                "text": "与普通文字。"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "images": [
+    {
+      "key": "ti1",
+      "name": "basic-img1.png",
+      "mediaType": "image/png",
+      "bytes": 1380
+    }
+  ],
+  "report": [
+    {
+      "kind": "docx_heading_level",
+      "count": 1,
+      "samples": [
+        "H4"
+      ]
+    },
+    {
+      "kind": "docx_merged_cells",
+      "count": 2,
+      "samples": []
+    }
+  ]
+}

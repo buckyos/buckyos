@@ -1,0 +1,360 @@
+{
+  "hidden": [],
+  "pages": [
+    {
+      "name": "Slide 1",
+      "pageColor": "#ffffff",
+      "pageSize": {
+        "w": 1920,
+        "h": 1440
+      },
+      "counts": {
+        "text": 9,
+        "images": 0,
+        "shapes": 1,
+        "rasterized": 0,
+        "placeholders": 0
+      },
+      "items": [
+        {
+          "key": "s1",
+          "parent": null,
+          "type": "group",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1440
+          },
+          "rotation": 0,
+          "config": {}
+        },
+        {
+          "key": "s1~frame",
+          "parent": "s1",
+          "type": "frame",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1440
+          },
+          "rotation": 0,
+          "title": "Slide 1",
+          "config": {
+            "color": "#9ca3af",
+            "fill": "#ffffff",
+            "stroke_width": 1,
+            "radius": 0,
+            "office_source": {
+              "file": "with_japanese.pptx",
+              "slide": 1
+            }
+          },
+          "payload": {
+            "presentation": {
+              "background": "#ffffff"
+            }
+          }
+        },
+        {
+          "key": "s1~0",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 321.6,
+            "y": 679.52,
+            "w": 425.6,
+            "h": 1
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "none",
+            "stroke": "#000000",
+            "stroke_width": 2.67,
+            "text": "Row 1 Col 1",
+            "font_size": 29.33,
+            "font_color": "#000000",
+            "align": "left",
+            "valign": "top",
+            "line_height": 1.38,
+            "office_source": {
+              "slide": 1,
+              "kind": "table"
+            }
+          },
+          "title": "Row 1 Col 1"
+        },
+        {
+          "key": "s1~1",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 747.2,
+            "y": 679.52,
+            "w": 425.6,
+            "h": 1
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "none",
+            "stroke": "#000000",
+            "stroke_width": 2.67,
+            "text": "Row 1 Col 2",
+            "font_size": 29.33,
+            "font_color": "#000000",
+            "align": "left",
+            "valign": "top",
+            "line_height": 1.38,
+            "office_source": {
+              "slide": 1,
+              "kind": "table"
+            }
+          },
+          "title": "Row 1 Col 2"
+        },
+        {
+          "key": "s1~2",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 1172.8,
+            "y": 679.52,
+            "w": 425.6,
+            "h": 1
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "none",
+            "stroke": "#000000",
+            "stroke_width": 2.67,
+            "text": "Row 1 Col 3",
+            "font_size": 29.33,
+            "font_color": "#000000",
+            "align": "left",
+            "valign": "top",
+            "line_height": 1.38,
+            "office_source": {
+              "slide": 1,
+              "kind": "table"
+            }
+          },
+          "title": "Row 1 Col 3"
+        },
+        {
+          "key": "s1~3",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 321.6,
+            "y": 679.52,
+            "w": 425.6,
+            "h": 1
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "none",
+            "stroke": "#000000",
+            "stroke_width": 2.67,
+            "text": "Row 2 Col 1",
+            "font_size": 29.33,
+            "font_color": "#000000",
+            "align": "left",
+            "valign": "top",
+            "line_height": 1.38,
+            "office_source": {
+              "slide": 1,
+              "kind": "table"
+            }
+          },
+          "title": "Row 2 Col 1"
+        },
+        {
+          "key": "s1~4",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 747.2,
+            "y": 679.52,
+            "w": 425.6,
+            "h": 1
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "none",
+            "stroke": "#000000",
+            "stroke_width": 2.67,
+            "text": "Row 2 Col 2",
+            "font_size": 29.33,
+            "font_color": "#000000",
+            "align": "left",
+            "valign": "top",
+            "line_height": 1.38,
+            "office_source": {
+              "slide": 1,
+              "kind": "table"
+            }
+          },
+          "title": "Row 2 Col 2"
+        },
+        {
+          "key": "s1~5",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 1172.8,
+            "y": 679.52,
+            "w": 425.6,
+            "h": 1
+          },
+          "rotation": 0,
+          "config": {
+            "shape": "rect",
+            "fill": "none",
+            "stroke": "#000000",
+            "stroke_width": 2.67,
+            "text": "Row 2 Col 3",
+            "font_size": 29.33,
+            "font_color": "#000000",
+            "align": "left",
+            "valign": "top",
+            "line_height": 1.38,
+            "office_source": {
+              "slide": 1,
+              "kind": "table"
+            }
+          },
+          "title": "Row 2 Col 3"
+        },
+        {
+          "key": "s1~6",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 648.67,
+            "y": 361.33,
+            "w": 612,
+            "h": 89.33
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "#ffffff",
+            "stroke": "#000000",
+            "stroke_width": 2,
+            "text": "Here is a text box",
+            "font_size": 29.33,
+            "font_color": "#000000",
+            "align": "left",
+            "valign": "top",
+            "line_height": 1.2,
+            "office_source": {
+              "slide": 1,
+              "kind": "text"
+            },
+            "shape": "rect"
+          },
+          "title": "Here is a text box"
+        },
+        {
+          "key": "s1~7",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 191.94,
+            "y": 287.94,
+            "w": 1536.12,
+            "h": 2.67
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "none",
+            "stroke": "none",
+            "stroke_width": 0,
+            "text": "\nFootnote appears here[1]\nBold italic underline superscript subscript\nHere is a list:\n• Bullet 1\n• Bullet 2\n• Bullet 3\nHere is a numbered list:\n• Number bullet 1\n• Number bullet 2\n• Number bullet 3\n Keyword1 Keyword2\nThis is a hyperlink\n Subject is here\nSuddenly some Japanese text:\nゾルゲと尾崎、淡々と最期\n（ＧＨＱ）\nAnd then some Gothic text:\n𐌲𐌿𐍄𐌹𐍃𐌺\nHere is a citation:\n(Kramer)\nFigure 1 This is a caption for Figure 1\n\n\nRow 1 column 1\nRow 2 column 1\nRow 1 column 2\nRow 2 column 2",
+            "font_size": 29.33,
+            "font_color": "#000000",
+            "align": "left",
+            "valign": "middle",
+            "underline": true,
+            "font_family": "serif",
+            "wrap": false,
+            "line_height": 1.2,
+            "office_source": {
+              "slide": 1,
+              "kind": "text"
+            },
+            "shape": "text"
+          },
+          "title": "Footnote appears here[1]"
+        },
+        {
+          "key": "s1~8",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 0,
+            "y": 96,
+            "w": 633.67,
+            "h": 1.67
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "#000000",
+            "stroke": "#000000",
+            "stroke_width": 2,
+            "office_source": {
+              "slide": 1,
+              "kind": "shape"
+            },
+            "shape": "rect"
+          }
+        },
+        {
+          "key": "s1~9",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 19.2,
+            "y": 107.27,
+            "w": 1881.6,
+            "h": 76.8
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "none",
+            "stroke": "none",
+            "stroke_width": 0,
+            "text": "[1] This is a footnote.",
+            "font_size": 26.67,
+            "font_color": "#000000",
+            "align": "left",
+            "valign": "middle",
+            "wrap": false,
+            "line_height": 1.2,
+            "office_source": {
+              "slide": 1,
+              "kind": "text"
+            },
+            "shape": "text"
+          },
+          "title": "[1] This is a footnote."
+        }
+      ]
+    }
+  ],
+  "report": [
+    {
+      "kind": "pptx_mixed_style",
+      "count": 2,
+      "samples": [
+        "Footnote appears here[1]",
+        "[1] This is a footnote."
+      ]
+    }
+  ]
+}

@@ -1,0 +1,174 @@
+{
+  "hidden": [],
+  "pages": [
+    {
+      "name": "Slide 1",
+      "pageColor": "#ffffff",
+      "pageSize": {
+        "w": 1920,
+        "h": 1080
+      },
+      "counts": {
+        "text": 0,
+        "images": 0,
+        "shapes": 5,
+        "rasterized": 0,
+        "placeholders": 0
+      },
+      "items": [
+        {
+          "key": "s1",
+          "parent": null,
+          "type": "group",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1080
+          },
+          "rotation": 0,
+          "config": {}
+        },
+        {
+          "key": "s1~frame",
+          "parent": "s1",
+          "type": "frame",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1080
+          },
+          "rotation": 0,
+          "title": "Slide 1",
+          "config": {
+            "color": "#9ca3af",
+            "fill": "#ffffff",
+            "stroke_width": 1,
+            "radius": 0,
+            "office_source": {
+              "file": "SmartArt.pptx",
+              "slide": 1
+            }
+          },
+          "payload": {
+            "presentation": {
+              "background": "#ffffff"
+            }
+          }
+        },
+        {
+          "key": "s1~0",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 512.44,
+            "y": 113.75,
+            "w": 426.25,
+            "h": 255.75
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "#4472c4",
+            "stroke": "#ffffff",
+            "stroke_width": 2,
+            "office_source": {
+              "slide": 1,
+              "kind": "shape"
+            },
+            "shape": "rect"
+          }
+        },
+        {
+          "key": "s1~1",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 981.31,
+            "y": 113.75,
+            "w": 426.25,
+            "h": 255.75
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "#4472c4",
+            "stroke": "#ffffff",
+            "stroke_width": 2,
+            "office_source": {
+              "slide": 1,
+              "kind": "shape"
+            },
+            "shape": "rect"
+          }
+        },
+        {
+          "key": "s1~2",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 512.44,
+            "y": 412.12,
+            "w": 426.25,
+            "h": 255.75
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "#4472c4",
+            "stroke": "#ffffff",
+            "stroke_width": 2,
+            "office_source": {
+              "slide": 1,
+              "kind": "shape"
+            },
+            "shape": "rect"
+          }
+        },
+        {
+          "key": "s1~3",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 981.31,
+            "y": 412.12,
+            "w": 426.25,
+            "h": 255.75
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "#4472c4",
+            "stroke": "#ffffff",
+            "stroke_width": 2,
+            "office_source": {
+              "slide": 1,
+              "kind": "shape"
+            },
+            "shape": "rect"
+          }
+        },
+        {
+          "key": "s1~4",
+          "parent": "s1",
+          "type": "shape",
+          "rect": {
+            "x": 746.87,
+            "y": 710.5,
+            "w": 426.25,
+            "h": 255.75
+          },
+          "rotation": 0,
+          "config": {
+            "fill": "#4472c4",
+            "stroke": "#ffffff",
+            "stroke_width": 2,
+            "office_source": {
+              "slide": 1,
+              "kind": "shape"
+            },
+            "shape": "rect"
+          }
+        }
+      ]
+    }
+  ],
+  "report": []
+}

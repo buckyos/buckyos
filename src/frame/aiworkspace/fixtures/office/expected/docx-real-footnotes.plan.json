@@ -1,0 +1,69 @@
+{
+  "title": "footnotes",
+  "counts": {
+    "paragraphs": 1,
+    "headings": 0,
+    "lists": 0,
+    "tables": 0,
+    "images": 0,
+    "rasterized": 0
+  },
+  "segments": [
+    {
+      "kind": "richtext",
+      "content": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "block_id": "b1"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Eto ochen prostoy[1] text so snoskoy"
+              }
+            ]
+          },
+          {
+            "type": "horizontal_rule",
+            "attrs": {
+              "block_id": "b4"
+            }
+          },
+          {
+            "type": "ordered_list",
+            "attrs": {
+              "block_id": "b5"
+            },
+            "content": [
+              {
+                "type": "list_item",
+                "attrs": {
+                  "block_id": "b2"
+                },
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "attrs": {
+                      "block_id": "b3"
+                    },
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "snoska"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "images": [],
+  "report": []
+}

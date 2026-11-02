@@ -484,7 +484,7 @@ impl<'a> Planner<'a> {
 /// The selector kinds `resolve_cell` knows (D04, frozen; `schemas/commit-request.schema.json` lists the same).
 pub const SELECTOR_KINDS: &[&str] = &[
     "entity", "doc_key", "table_members", "table_field", "table_field_type", "table_field_values", "table_record", "table_cell",
-    "tree_children", "tree_edge", "richtext_block", "folder_member", "table_view", "table_query",
+    "tree_children", "tree_edge", "richtext_block", "folder_member", "entity_prop", "table_view", "table_query",
 ];
 
 pub fn resolve_cell(ctx: &dyn ReadCtx, target: &Value) -> WsResult<Value> {
@@ -564,6 +564,14 @@ pub fn resolve_cell(ctx: &dyn ReadCtx, target: &Value) -> WsResult<Value> {
                 return Err(WsError::deleted(format!("member {name} is not in {entity_id}")));
             }
             json!(e.key_rev(&format!("m:{name}")))
+        }
+        // one property of an object key of a Block or container (扩展控件 P2, Q28): its own cell, 0 when never written
+        "entity_prop" => {
+            let key = get_str(s, "key")?;
+            if !PROP_KEYS.contains(&key) {
+                return Err(WsError::invalid_op(format!("entity_prop key must be one of {}", PROP_KEYS.join(", "))));
+            }
+            json!(e.key_rev(&prop_cell(key, get_str(s, "name")?)))
         }
         // a saved table view (`entity_id` = the table, `cell_id` = the view Block): the view's configuration
         // keys plus the table's membership and every live field's type and values — the coarse token a wish
@@ -661,10 +669,12 @@ pub const OPERATIONS: &[(&str, &str, &str, &str)] = &[
     ("entity.rename", "overwrite", "compensable", "structure"),
     ("entity.set_keys", "overwrite", "compensable", "update"),
     ("entity.unset_keys", "overwrite", "compensable", "update"),
+    ("entity.set_props", "overwrite", "compensable", "update"),
     ("entity.set_write_policy", "overwrite", "compensable", "manage"),
     ("entity.set_derived", "merge", "compensable", "update"),
     ("tree.move", "merge", "compensable", "structure"),
     ("tree.place", "merge", "compensable", "structure"),
+    ("tree.clone", "create", "compensable", "structure"),
     ("entity.clone", "create", "compensable", "structure"),
     ("data.pin", "merge", "compensable", "structure"),
     ("dir.set_member", "overwrite", "compensable", "update"),
@@ -693,11 +703,52 @@ pub const OPERATIONS: &[(&str, &str, &str, &str)] = &[
     ("table.restore_migration", "internal", "compensable", "structure"),
     ("data.restore_owns", "internal", "compensable", "structure"),
     ("entity.purge", "internal", "none", "manage"),
+    // the session service (第四期规划 §5.3): origins `session` / `source` and internal paths only
+    ("system.ensure", "session", "none", "structure"),
 ];
 
 /// Operations only the undo path / import may submit.
 fn is_internal_op(name: &str) -> bool {
     matches!(name, "table.restore_records" | "table.restore_field" | "table.restore_migration" | "data.restore_owns" | "entity.purge")
+}
+
+/// `system.ensure { id }`: the `session` system folder under `data`, created the first time a session needs it
+/// (第四期规划 §5.3, Q20). Only the session service submits it; an existing folder leaves nothing to do.
+fn system_ensure(p: &mut Planner, op: &Value) -> OpResult {
+    only_keys(op, &["id"])?;
+    let id = get_str(op, "id")?;
+    if id != SESSION_ID {
+        return Err(WsError::invalid_op("system.ensure creates the session folder only"));
+    }
+    if !(matches!(p.env.origin.as_str(), "session" | "source") || p.env.internal || p.env.import) {
+        return Err(WsError::invalid_op("system.ensure is submitted by the session service"));
+    }
+    if p.ov.entity(id)?.is_some() {
+        return Ok((op.clone(), Some(vec![])));
+    }
+    p.require(DATA_ID, Cap::Structure)?;
+    let seq = p.seq();
+    let mut row = system_container(SESSION_ID, "folder", Some("session"), Some("Session"));
+    row.created_seq = seq;
+    row.meta_rev = seq;
+    row.content_rev = seq;
+    row.life_rev = seq;
+    for v in row.key_revs.values_mut() {
+        *v = seq;
+    }
+    p.ov.put_edge(TreeEdge { child_id: id.to_string(), parent_id: DATA_ID.to_string(), order_key: "zx".to_string(), placement: None, struct_rev: seq });
+    p.ov.put_entity(row);
+    p.touch(id, None, "created");
+    Ok((op.clone(), Some(vec![])))
+}
+
+/// Tasks, responses and results change only through the session service (第四期规划 §5.2): `session.*` methods
+/// check who may answer, claim or publish, then write them with origin `session`.
+fn require_session_writer(p: &Planner, e: &EntityRow) -> WsResult<()> {
+    if is_session_type(&e.type_id) && !(p.env.origin == "session" || p.env.internal || p.env.import) {
+        return Err(WsError::sub(Code::InvalidOperation, "SESSION_ONLY", format!("{} is written by the session service", e.entity_id)));
+    }
+    Ok(())
 }
 
 /// Marker a purged entity keeps in its (otherwise emptied) payload.
@@ -994,6 +1045,143 @@ fn entity_clone(p: &mut Planner, op: &Value) -> OpResult {
     Ok((norm, inverse))
 }
 
+/// The id a copy of `old` gets in a `tree.clone` seeded with `seed`: the same request plans the same ids everywhere.
+pub fn clone_id(seed: &str, old: &str) -> String {
+    format!("c{}", &sha256_hex(format!("{seed}\n{old}").as_bytes())[..26])
+}
+
+/// `tree.clone { source_id, parent_id, order_key?, placement?, slot?, content?: "private", id_seed? }` (扩展控件 P1,
+/// Q17): a deep copy of a Block subtree — a Cell, a group or a control with everything under it — under `parent_id`,
+/// in one operation the service, the WASM replica and an offline client plan alike. Every copy gets the id
+/// `clone_id(id_seed, old id)` (`id_seed` defaults to `<seq>.<op index>`; a client passes its own to know the ids
+/// beforehand); parents, order and placements carry over, `slot`s too, and the root takes `order_key` (default: last),
+/// `placement` and `slot` (`null` drops it) when given. `def_ref` is kept: instances share their definition. Data a
+/// copied Block owns (`owns`, `content: "private"`) is cloned with `entity.clone` into the target Surface's content
+/// folder and the copy's `source_ref` / `bindings` follow it (the copy owns the clone); data bound from elsewhere stays
+/// shared. A connector inside the subtree is copied when each bound end is in the subtree (rebound to the copies) and
+/// left out when one crosses its border. Rights: `structure` on the target, `read` on the source. The normalized
+/// operation records `id_seed` and `new_ids { <old>: <new> }` (data clones included); the Commit result lists them.
+fn tree_clone(p: &mut Planner, op: &Value) -> OpResult {
+    only_keys(op, &["source_id", "parent_id", "order_key", "placement", "slot", "content", "id_seed", "new_ids"])?;
+    let source_id = get_str(op, "source_id")?;
+    let parent_id = get_str(op, "parent_id")?;
+    if op.get("content").is_some_and(|c| c != "private") {
+        return Err(WsError::invalid_op("content must be \"private\" (owned data is cloned, shared data stays shared)"));
+    }
+    let seed = match op.get("id_seed") {
+        None | Some(Value::Null) => format!("{}.{}", p.env.seq, p.op_index),
+        Some(Value::String(s)) if !s.is_empty() && s.len() <= 64 => s.clone(),
+        Some(_) => return Err(WsError::invalid_schema("id_seed must be a string of 1…64 bytes").at("/id_seed")),
+    };
+    let src = p.entity_alive(source_id)?;
+    if !p.access.can_read(&p.ov, &src)? {
+        return Err(WsError::not_found(format!("entity {source_id} not found")));
+    }
+    if is_system_id(source_id) || !(src.type_id == TYPE_CELL || crate::types::is_block_container(&src)) {
+        return Err(WsError::invalid_op("tree.clone copies a Block, a group or a control with its subtree"));
+    }
+    // the subtree, parents first; another person's personal entities are not the caller's to copy
+    let mut rows = vec![src.clone()];
+    alive_descendants(p, source_id, &mut rows)?;
+    rows.retain(|r| p.access.sees_scope(r));
+    let inside: BTreeSet<String> = rows.iter().map(|r| r.entity_id.clone()).collect();
+    let crosses = |r: &EntityRow| {
+        crate::types::is_connector(&r.type_id, &r.payload)
+            && ["start", "end"].iter().any(|k| r.payload.get(*k).and_then(|b| b.get("entity_id")).and_then(Value::as_str).is_some_and(|id| !inside.contains(id)))
+    };
+    rows.retain(|r| !crosses(r));
+    let mut ids: BTreeMap<String, String> = rows.iter().map(|r| (r.entity_id.clone(), clone_id(&seed, &r.entity_id))).collect();
+    // own data of the copied Blocks: cloned next to the target Surface's other own data
+    let mut owned: Vec<String> = Vec::new();
+    for r in &rows {
+        for e in p.ov.refs_from(&r.entity_id)? {
+            if e.kind == "owns" && e.dst_workspace_id.is_empty() && !owned.contains(&e.dst_entity_id) && p.ov.entity(&e.dst_entity_id)?.is_some_and(|d| d.alive()) {
+                owned.push(e.dst_entity_id.clone());
+            }
+        }
+    }
+    let mut inverse_data = Vec::new();
+    if !owned.is_empty() {
+        let folder = match surface_of(&p.ov, parent_id)?.and_then(|s| s.payload.get("content_folder_id").and_then(Value::as_str).map(str::to_string)) {
+            Some(f) => f,
+            None => p.ov.edge(&owned[0])?.map(|e| e.parent_id).ok_or_else(|| WsError::invalid_op("owned data has no folder"))?,
+        };
+        let mut last = p.ov.children(&folder)?.last().map(|e| e.order_key.clone());
+        for data_id in &owned {
+            let new_id = clone_id(&seed, data_id);
+            let key = crate::order_key::order_key_between(last.as_deref(), None)?;
+            last = Some(key.clone());
+            let (_, inv) = entity_clone(p, &json!({ "op": "entity.clone", "entity_id": data_id, "new_entity_id": new_id, "parent_id": folder, "order_key": key }))?;
+            inverse_data.extend(inv.unwrap_or_default());
+            ids.insert(data_id.clone(), new_id);
+        }
+    }
+    let remap = |v: &mut Value, ids: &BTreeMap<String, String>| {
+        if let Some(n) = v.get("entity_id").and_then(Value::as_str).and_then(|id| ids.get(id)) {
+            v["entity_id"] = json!(n);
+        }
+    };
+    let mut inverse_blocks = Vec::new();
+    for (i, r) in rows.iter().enumerate() {
+        let edge = p.ov.edge(&r.entity_id)?.ok_or_else(|| WsError::invalid_op("entity has no tree edge"))?;
+        let mut payload = r.payload.clone();
+        for key in ["source_ref", "start", "end"] {
+            if let Some(v) = payload.get_mut(key).filter(|v| v.is_object()) {
+                remap(v, &ids);
+            }
+        }
+        if let Some(b) = payload.get_mut("bindings").and_then(Value::as_object_mut) {
+            for v in b.values_mut() {
+                remap(v, &ids);
+            }
+        }
+        let mut create = json!({ "op": "entity.create", "entity_id": ids[&r.entity_id], "type_id": r.type_id, "schema_version": r.schema_version });
+        if i == 0 {
+            create["parent_id"] = json!(parent_id);
+            create["order_key"] = match op.get("order_key").filter(|v| !v.is_null()) {
+                Some(k) => k.clone(),
+                None => json!(crate::order_key::order_key_between(p.ov.children(parent_id)?.last().map(|e| e.order_key.as_str()), None)?),
+            };
+            if let Some(pl) = op.get("placement").filter(|v| !v.is_null()).cloned().or(edge.placement.clone()) {
+                create["placement"] = pl;
+            }
+            match op.get("slot") {
+                Some(Value::Null) => {
+                    payload.remove("slot");
+                }
+                Some(s) => {
+                    payload.insert("slot".into(), s.clone());
+                }
+                None => {}
+            }
+            if let Some(n) = r.name.as_deref().filter(|n| r.scope == SCOPE_SHARED && !p.name_taken(parent_id, n, "").unwrap_or(true)) {
+                create["name"] = json!(n);
+            }
+        } else {
+            create["parent_id"] = json!(ids.get(&edge.parent_id).ok_or_else(|| WsError::invalid_op("subtree parent missing"))?);
+            create["order_key"] = json!(edge.order_key);
+            if let Some(pl) = &edge.placement {
+                create["placement"] = pl.clone();
+            }
+            if let Some(n) = &r.name {
+                create["name"] = json!(n);
+            }
+        }
+        if let Some(sid) = &r.schema_id {
+            create["schema_id"] = json!(sid);
+        }
+        create["payload"] = Value::Object(payload);
+        let (_, inv) = entity_create(p, &create)?;
+        inverse_blocks.extend(inv.unwrap_or_default());
+    }
+    inverse_blocks.reverse();
+    inverse_blocks.extend(inverse_data);
+    let mut norm = op.clone();
+    norm["id_seed"] = json!(seed);
+    norm["new_ids"] = json!(ids);
+    Ok((norm, Some(inverse_blocks)))
+}
+
 /// Plan a whole Commit. On success the returned overlay is the candidate state.
 pub fn plan_commit<'a>(
     base: &'a dyn ReadCtx,
@@ -1081,10 +1269,12 @@ fn dispatch(p: &mut Planner, name: &str, op: &Value) -> OpResult {
         "entity.rename" => entity_rename(p, op),
         "entity.set_keys" => entity_set_keys(p, op, false),
         "entity.unset_keys" => entity_set_keys(p, op, true),
+        "entity.set_props" => entity_set_props(p, op),
         "entity.set_write_policy" => entity_set_write_policy(p, op),
         "entity.set_derived" => entity_set_derived(p, op),
         "tree.move" => tree_move(p, op),
         "tree.place" => tree_place(p, op),
+        "tree.clone" => tree_clone(p, op),
         "entity.clone" => entity_clone(p, op),
         "entity.purge" => entity_purge(p, op),
         "data.pin" => data_pin(p, op),
@@ -1092,6 +1282,7 @@ fn dispatch(p: &mut Planner, name: &str, op: &Value) -> OpResult {
         "dir.set_member" => dir_set_member(p, op),
         "dir.remove_member" => dir_remove_member(p, op),
         "dir.replace" => dir_replace(p, op),
+        "system.ensure" => system_ensure(p, op),
         n if n.starts_with("table.") => crate::plan_table::dispatch(p, n, op),
         n if n.starts_with("richtext.") => crate::plan_richtext::dispatch(p, n, op),
         _ => Err(WsError::invalid_op(format!("unknown operation {name:?}"))),
@@ -1121,6 +1312,15 @@ pub fn child_allowed(parent: &EntityRow, in_control: bool, child_type: &str, chi
     if parent.entity_id == SHOWS_ID {
         return is_show_type(child_type) && child_scope == SCOPE_SHARED;
     }
+    // the `session` folder (第四期规划 §5.3): feeds and session data, in any of the session scopes; the session types
+    // live nowhere else
+    if parent.entity_id == SESSION_ID {
+        let scoped = child_scope == SCOPE_SHARED || child_scope == SCOPE_PRESENTER || child_scope.starts_with(PARTICIPANT_PREFIX);
+        return scoped && (is_session_type(child_type) || matches!(child_type, TYPE_TABLE | TYPE_RECORD | TYPE_RICHTEXT | TYPE_ASSET));
+    }
+    if is_session_type(child_type) {
+        return false;
+    }
     let block = |child_type: &str| match child_type {
         TYPE_CONTAINER => child_kind.is_some_and(|k| k == "group" || crate::types::is_control_kind(k)),
         TYPE_CELL => child_scope == SCOPE_SHARED,
@@ -1146,7 +1346,7 @@ pub fn child_allowed(parent: &EntityRow, in_control: bool, child_type: &str, chi
 
 /// `child_allowed` for a parent in the current state: whether a Cell parent sits inside a control is read from the tree.
 fn child_allowed_here(p: &Planner, parent: &EntityRow, child_type: &str, child_kind: Option<&str>, child_scope: &str) -> WsResult<bool> {
-    let in_control = parent.type_id == TYPE_CELL && crate::types::laid_out_by_control(&p.ov, &parent.entity_id)?;
+    let in_control = parent.type_id == TYPE_CELL && crate::types::in_tree_control(&p.ov, &parent.entity_id)?;
     Ok(child_allowed(parent, in_control, child_type, child_kind, child_scope))
 }
 
@@ -1167,7 +1367,13 @@ impl<'a> PlaceRules<'a> {
     /// The rules for `type_id` / `payload` placed under `parent_id`.
     fn new(p: &Planner, parent_id: &str, type_id: &str, payload: &'a JsonMap) -> WsResult<PlaceRules<'a>> {
         let connector = crate::types::is_connector(type_id, payload).then_some(payload);
-        let laid_out = crate::types::laid_out_by_control(&p.ov, parent_id)?;
+        // a `fixed` composite keeps its children where they are put: none of them is laid out
+        let host = crate::types::enclosing_container(&p.ov, parent_id)?;
+        let fixed = match &host {
+            Some(c) if container_kind(c) == crate::types::COMPOSITE => crate::types::composite_algorithm(&p.ov, c)?.as_deref() == Some("fixed"),
+            _ => false,
+        };
+        let laid_out = !fixed && host.as_ref().is_some_and(|c| crate::types::is_control_kind(container_kind(c)));
         let control = type_id == TYPE_CONTAINER && payload.get("kind").and_then(Value::as_str).is_some_and(crate::types::is_control_kind);
         let text = type_id == TYPE_CELL && payload.get("view").and_then(|v| v.get("type")).and_then(Value::as_str).is_some_and(crate::types::is_text_view);
         Ok(PlaceRules { connector, internal: p.env.internal, laid_out, auto_size: control || (laid_out && text) })
@@ -1306,11 +1512,18 @@ fn entity_create(p: &mut Planner, op: &Value) -> OpResult {
     if is_system_id(id) {
         return Err(WsError::invalid_op(format!("{id} is a system entity")));
     }
+    // the session service writes what only presenters or one participant may read (第四期规划 §4, Q07)
+    let session_writer = matches!(p.env.origin.as_str(), "session" | "source") || p.env.internal || p.env.import;
     let scope = match op.get("scope").and_then(Value::as_str) {
         None | Some("shared") => SCOPE_SHARED.to_string(),
         Some("personal") if type_id == TYPE_ANNOTATION => format!("user:{}", p.env.principal),
+        Some(SCOPE_PRESENTER) if session_writer => SCOPE_PRESENTER.to_string(),
+        Some(s) if session_writer && s.strip_prefix(PARTICIPANT_PREFIX).is_some_and(|x| !x.is_empty() && x.len() <= 256) => s.to_string(),
         Some(_) => return Err(WsError::invalid_op("scope must be shared, or personal for annotations")),
     };
+    if is_session_type(type_id) && !(p.env.origin == "session" || p.env.internal || p.env.import) {
+        return Err(WsError::sub(Code::InvalidOperation, "SESSION_ONLY", format!("{type_id} is written by the session service")));
+    }
     let known = supports_schema_version(type_id, schema_version);
     if !known && !p.env.internal {
         let code = if is_known_type(type_id) { Code::UnsupportedVersion } else { Code::MissingExtension };
@@ -1405,6 +1618,7 @@ fn entity_delete(p: &mut Planner, op: &Value) -> OpResult {
     if is_system_id(id) {
         return Err(WsError::invalid_op(format!("{id} is a system entity and cannot be deleted")));
     }
+    require_session_writer(p, &e)?;
     if e.type_id == TYPE_ANNOTATION {
         // own annotations need `comment`; other people's shared ones need `manage`
         let mine = crate::types::annotation_author(&e) == Some(p.env.principal.as_str());
@@ -1511,6 +1725,7 @@ fn entity_restore(p: &mut Planner, op: &Value) -> OpResult {
     if e.alive() {
         return Err(WsError::invalid_op(format!("entity {id} is not deleted")));
     }
+    require_session_writer(p, &e)?;
     if e.payload.contains_key(PURGED_KEY) {
         return Err(WsError::new(Code::ResourceReclaimed, format!("entity {id} was purged: its content is gone for good")));
     }
@@ -1551,6 +1766,7 @@ fn entity_rename(p: &mut Planner, op: &Value) -> OpResult {
     if is_system_id(id) {
         return Err(WsError::invalid_op(format!("{id} is a system entity and cannot be renamed")));
     }
+    require_session_writer(p, &e)?;
     p.require(id, Cap::Structure)?;
     p.need_parent_lock(id)?;
     let old = e.name.clone();
@@ -1609,6 +1825,7 @@ fn entity_set_keys(p: &mut Planner, op: &Value, unset: bool) -> OpResult {
         let code = if d == "MISSING_EXTENSION" { Code::MissingExtension } else { Code::UnsupportedVersion };
         return Err(WsError::new(code, format!("content of {id} cannot be edited ({d})")));
     }
+    require_session_writer(p, &e)?;
     if e.type_id == TYPE_RICHTEXT && get_array(op, "keys")?.iter().any(|k| k.get("key").and_then(Value::as_str) != Some("source")) {
         return Err(WsError::invalid_op("rich text content is edited with richtext.* operations"));
     }
@@ -1671,6 +1888,12 @@ fn entity_set_keys(p: &mut Planner, op: &Value, unset: bool) -> OpResult {
     for k in derived {
         e.key_revs.insert(k, seq);
     }
+    // a whole object key replaces its properties: their own cells move with it (as `dir.replace` moves `m:`)
+    for k in changed.iter().filter(|k| PROP_KEYS.contains(&k.as_str())) {
+        for name in prop_names(before.payload.get(k)).into_iter().chain(prop_names(e.payload.get(k))) {
+            e.key_revs.insert(prop_cell(k, &name), seq);
+        }
+    }
     let new_refs = crate::types::entity_refs(&e)?;
     p.ov.set_refs(&old_refs, &new_refs);
     e.content_rev = seq;
@@ -1696,6 +1919,141 @@ fn entity_set_keys(p: &mut Planner, op: &Value, unset: bool) -> OpResult {
         inverse.push(json!({ "op": "entity.unset_keys", "entity_id": id, "keys": restore_unset }));
     }
     Ok((norm, Some(inverse)))
+}
+
+/// The object keys whose properties are version cells of their own (扩展控件 P2, Q28).
+pub const PROP_KEYS: &[&str] = &["config", "bindings", "on"];
+/// Properties one `entity.set_props` writes.
+pub const MAX_SET_PROPS: usize = 64;
+/// The largest canonical size of one property value.
+pub const MAX_PROP_BYTES: usize = 64 * 1024;
+
+/// The version cell of property `name` of the object key `key`.
+pub fn prop_cell(key: &str, name: &str) -> String {
+    format!("p:{key}.{name}")
+}
+
+/// A property name of `entity.set_props`: `^[A-Za-z_][A-Za-z0-9_-]{0,63}$`.
+pub fn is_prop_name(s: &str) -> bool {
+    let b = s.as_bytes();
+    !b.is_empty() && b.len() <= 64 && (b[0].is_ascii_alphabetic() || b[0] == b'_') && b.iter().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+}
+
+fn prop_names(v: Option<&Value>) -> Vec<String> {
+    v.and_then(Value::as_object).map(|o| o.keys().cloned().collect()).unwrap_or_default()
+}
+
+/// `entity.set_props { entity_id, key: config | bindings | on, props: { <name>: value | null }, expect?: { <name>: rev } }`
+/// (扩展控件 P2, Q28): per-property writes of one object key of a Block or a container. Each property is its own version
+/// cell `p:<key>.<name>`: two writers of two properties both keep theirs, the same property conflicts (one conflict per
+/// stale `expect`); a property without `expect` merges. `null` removes a property, an emptied object removes the key.
+/// The inverse puts back exactly the properties written, each guarded by this Commit's `seq`.
+fn entity_set_props(p: &mut Planner, op: &Value) -> OpResult {
+    only_keys(op, &["entity_id", "key", "props", "expect"])?;
+    let id = get_str(op, "entity_id")?;
+    let key = get_str(op, "key")?;
+    if !PROP_KEYS.contains(&key) {
+        return Err(WsError::invalid_op(format!("key must be one of {}", PROP_KEYS.join(", "))).at("/key"));
+    }
+    let props = op.get("props").and_then(Value::as_object).filter(|o| !o.is_empty()).ok_or_else(|| WsError::invalid_op("props must be a non-empty object").at("/props"))?;
+    if props.len() > MAX_SET_PROPS {
+        return Err(WsError::limit(format!("at most {MAX_SET_PROPS} properties per entity.set_props")));
+    }
+    let expect = match op.get("expect") {
+        None | Some(Value::Null) => Map::new(),
+        Some(Value::Object(o)) => o.clone(),
+        Some(_) => return Err(WsError::invalid_op("expect must be { <name>: rev }").at("/expect")),
+    };
+    for (name, v) in props {
+        if !is_prop_name(name) {
+            return Err(WsError::invalid_op(format!("property name {name:?} must match ^[A-Za-z_][A-Za-z0-9_-]{{0,63}}$")).at(format!("/props/{name}")));
+        }
+        if canonical_json(v).map_or(usize::MAX, |t| t.len()) > MAX_PROP_BYTES {
+            return Err(WsError::limit(format!("property {name} is limited to {MAX_PROP_BYTES} bytes")));
+        }
+    }
+    if let Some(name) = expect.keys().find(|n| !props.contains_key(*n)) {
+        return Err(WsError::invalid_op(format!("expect names {name}, which props does not write")).at("/expect"));
+    }
+    let mut e = p.entity_alive(id)?;
+    if e.type_id != TYPE_CELL && e.type_id != TYPE_CONTAINER {
+        return Err(WsError::invalid_op("entity.set_props writes config / bindings / on of a Block or a container"));
+    }
+    if let Some(d) = e.degraded() {
+        let code = if d == "MISSING_EXTENSION" { Code::MissingExtension } else { Code::UnsupportedVersion };
+        return Err(WsError::new(code, format!("content of {id} cannot be edited ({d})")));
+    }
+    let by_comment = p.by_comment(&e, id, Cap::Update, false)?;
+    if !by_comment {
+        p.require(id, Cap::Update)?;
+        p.need_lock(&e);
+    }
+    let current = match e.payload.get(key) {
+        None | Some(Value::Null) => Map::new(),
+        Some(Value::Object(o)) => o.clone(),
+        Some(_) => return Err(WsError::invalid_schema(format!("{key} of {id} is not an object"))),
+    };
+    let mut ok = true;
+    for (i, (name, want)) in expect.iter().enumerate() {
+        let want = want.as_u64().map(|n| json!({ "rev": n })).ok_or_else(|| WsError::invalid_op(format!("expect.{name} must be a rev")).at("/expect"))?;
+        let cell = prop_cell(key, name);
+        let old = current.get(name).cloned();
+        if !p.check_rev(Some(&want), e.key_rev(&cell), Some(i), id, sel(json!({ "kind": "entity_prop", "key": key, "name": name })), || old)? {
+            ok = false;
+        }
+    }
+    if !ok {
+        return Ok((op.clone(), None));
+    }
+    let seq = p.seq();
+    let before = e.clone();
+    let old_refs = crate::types::entity_refs(&e)?;
+    let mut next = current.clone();
+    let (mut restore, mut changed_names) = (Map::new(), Vec::new());
+    for (name, v) in props {
+        let old = current.get(name).cloned().unwrap_or(Value::Null);
+        if &old == v || (v.is_null() && !current.contains_key(name)) {
+            continue;
+        }
+        restore.insert(name.clone(), old);
+        changed_names.push(name.clone());
+        if v.is_null() {
+            next.remove(name);
+        } else {
+            next.insert(name.clone(), v.clone());
+        }
+    }
+    if changed_names.is_empty() {
+        return Ok((op.clone(), Some(vec![])));
+    }
+    if next.is_empty() {
+        e.payload.remove(key);
+    } else {
+        e.payload.insert(key.to_string(), Value::Object(next));
+    }
+    crate::types::validate_update(p, &before, &mut e, &[key.to_string()])?;
+    if by_comment && !own_note_block(&p.ov, &p.env.principal, &e)? {
+        return Err(WsError::denied("update capability required: the note Block would no longer show your own note"));
+    }
+    for name in &changed_names {
+        e.key_revs.insert(prop_cell(key, name), seq);
+    }
+    e.key_revs.insert(key.to_string(), seq);
+    e.content_rev = seq;
+    let new_refs = crate::types::entity_refs(&e)?;
+    p.ov.set_refs(&old_refs, &new_refs);
+    let class = crate::types::change_class(&e.type_id);
+    p.touch(id, sel(json!({ "kind": "doc_key", "key": key })), class);
+    // history records what was stored (bindings are normalized)
+    let mut norm = op.clone();
+    let stored = e.payload.get(key).and_then(Value::as_object).cloned().unwrap_or_default();
+    for name in &changed_names {
+        norm["props"][name] = stored.get(name).cloned().unwrap_or(Value::Null);
+    }
+    p.ov.put_entity(e);
+    let expect_back: Map<String, Value> = changed_names.iter().map(|n| (n.clone(), json!(seq))).collect();
+    let inverse = json!({ "op": "entity.set_props", "entity_id": id, "key": key, "props": restore, "expect": expect_back });
+    Ok((norm, Some(vec![inverse])))
 }
 
 /// `entity.set_derived`: record (or clear) the generation dependency of a result entity
@@ -1732,8 +2090,10 @@ fn entity_set_derived(p: &mut Planner, op: &Value) -> OpResult {
     Ok((norm, Some(vec![inverse])))
 }
 
+/// `tree.move { entity_id, new_parent_id, order_key, placement?, slot?, expect? }`. `slot` (a name, or `null` to drop
+/// it) rewrites the Block's role together with its place: into a composite a Block needs one, out of it none.
 fn tree_move(p: &mut Planner, op: &Value) -> OpResult {
-    only_keys(op, &["entity_id", "new_parent_id", "order_key", "placement", "expect"])?;
+    only_keys(op, &["entity_id", "new_parent_id", "order_key", "placement", "slot", "expect"])?;
     let id = get_str(op, "entity_id")?;
     let new_parent_id = get_str(op, "new_parent_id")?;
     let order_key = get_str(op, "order_key")?;
@@ -1742,13 +2102,14 @@ fn tree_move(p: &mut Planner, op: &Value) -> OpResult {
     if is_system_id(id) {
         return Err(WsError::invalid_op(format!("{id} is a system entity and cannot be moved")));
     }
+    require_session_writer(p, &e)?;
     let new_parent = p.entity_alive(new_parent_id)?;
     let kind = e.payload.get("kind").and_then(Value::as_str);
     if !child_allowed_here(p, &new_parent, &e.type_id, kind, &e.scope)? {
         return Err(WsError::sub(Code::InvalidOperation, "CHILD_NOT_ALLOWED", format!("{} cannot be a child of {new_parent_id}", e.type_id)));
     }
-    // a node keeps its children only where a control lays Blocks out (R3): out of it, a Cell is a leaf again
-    if e.type_id == TYPE_CELL && !crate::types::laid_out_by_control(&p.ov, new_parent_id)? {
+    // a node keeps its children only where a tree control lays Blocks out (R3): elsewhere a Cell is a leaf again
+    if e.type_id == TYPE_CELL && !crate::types::in_tree_control(&p.ov, new_parent_id)? {
         let mut kids = Vec::new();
         alive_descendants(p, id, &mut kids)?;
         if !kids.is_empty() {
@@ -1793,13 +2154,34 @@ fn tree_move(p: &mut Planner, op: &Value) -> OpResult {
     // moved out of a control cannot keep an "auto" placement (R9: the Desktop never moves one out)
     let placement = connector_placement(op, PlaceRules::new(p, new_parent_id, &e.type_id, &e.payload)?)?;
     let seq = p.seq();
-    let inverse = json!({ "op": "tree.move", "entity_id": id, "new_parent_id": edge.parent_id, "order_key": edge.order_key,
-                          "placement": edge.placement, "expect": { "rev": seq } });
+    let mut inverse = json!({ "op": "tree.move", "entity_id": id, "new_parent_id": edge.parent_id, "order_key": edge.order_key,
+                              "placement": edge.placement, "expect": { "rev": seq } });
     edge.parent_id = new_parent_id.to_string();
     edge.order_key = order_key.to_string();
     edge.placement = placement;
     edge.struct_rev = seq;
     p.ov.put_edge(edge);
+    let mut e = e;
+    if let Some(slot) = op.get("slot") {
+        if !slot.is_null() && !slot.as_str().is_some_and(crate::types::is_slot) {
+            return Err(WsError::invalid_schema("slot must match ^[a-z0-9][a-z0-9_-]{0,31}$ or be null").at("/slot"));
+        }
+        if e.type_id != TYPE_CELL && !crate::types::is_block_container(&e) {
+            return Err(WsError::invalid_op("only a Block or a Block container carries a slot"));
+        }
+        let old = e.payload.get("slot").cloned().unwrap_or(Value::Null);
+        if &old != slot {
+            inverse["slot"] = old;
+            match slot {
+                Value::Null => e.payload.remove("slot"),
+                s => e.payload.insert("slot".into(), s.clone()),
+            };
+            e.key_revs.insert("slot".into(), seq);
+            p.bump_content(&mut e);
+            p.ov.put_entity(e.clone());
+            p.touch(id, sel(json!({ "kind": "doc_key", "key": "slot" })), crate::types::change_class(&e.type_id));
+        }
+    }
     crate::types::check_position(p, &e)?;
     p.touch(id, None, "moved");
     Ok((op.clone(), Some(vec![inverse])))

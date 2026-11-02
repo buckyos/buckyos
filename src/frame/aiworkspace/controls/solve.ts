@@ -3,7 +3,8 @@
  * layout. Only the outline is read: kind, view, title, placement, side, branch colour, a control's config. Shared by
  * the canvas, the static SVG and the exports, so every reader sees the same map. */
 
-import { isControlKind, isTextView } from './contract.ts'
+import { solveComposite } from './composite.ts'
+import { COMPOSITE, isControlKind, isTextView } from './contract.ts'
 import { NODE_PAD, NodeMeasurer } from './measure.ts'
 import { num, type StoredPlacement } from './placement.ts'
 import { layoutTree, mindmapConfig, type LaidNode, type MindmapConfig, type Rect, type TreeLayout, type TreeNode } from './tree.ts'
@@ -19,6 +20,11 @@ export interface ControlEntity {
   side?: string | null
   branch_color?: string | null
   config?: unknown
+  /** A composite's definition, a Block's slot in it, and a composite definition's projection (扩展控件 P1). */
+  def_id?: string | null
+  slot?: string | null
+  composition?: unknown
+  config_defaults?: unknown
 }
 
 export interface ControlSource {
@@ -58,7 +64,7 @@ export function solveControl(src: ControlSource, containerId: string, opts: Solv
     if (e.type_id === 'buckyos.container') {
       if (isControlKind(e.kind)) {
         // a control inside a control (R24): its own box, already solved, is this node's size
-        const inner = solveControl(src, e.entity_id, opts)
+        const inner = solveAny(src, e.entity_id, opts)
         nested.set(e.entity_id, inner)
         const b = inner.layout.bounds
         return { id: e.entity_id, w: b.w, h: b.h, offset: { x: b.x, y: b.y }, ...pin, ...side, children: [] }
@@ -83,6 +89,11 @@ export function solveControl(src: ControlSource, containerId: string, opts: Solv
   }
   const roots = src.childrenOf(containerId).filter(isBlock).map((e) => node(e, 0))
   return { id: containerId, config, layout: layoutTree(roots, config), nested }
+}
+
+/** Solve any control by its kind: a composite from its definition's composition, a mind map as a tree. */
+export function solveAny(src: ControlSource, containerId: string, opts: SolveOptions): SolvedControl {
+  return src.get(containerId)?.kind === COMPOSITE ? solveComposite(src, containerId, opts) : solveControl(src, containerId, opts)
 }
 
 export interface PlacedNode extends LaidNode {
