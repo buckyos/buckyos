@@ -20,6 +20,12 @@ use ndn_lib::MsgObject;
 use serde_json::json;
 
 fn ui_spec() -> libopendan::api::SessionSpec {
+    ui_spec_waiting(200)
+}
+
+/// A UI session whose calls wait `task_wait_ms` before a command becomes a
+/// task (long enough for an `agent-session` command itself to answer).
+fn ui_spec_waiting(task_wait_ms: u64) -> libopendan::api::SessionSpec {
     let template = SessionTemplate::load("ui", None).unwrap();
     let mut spec = template.spec(template.objective_or_default(false));
     spec.route_key = Some(format!("{AGENT}/dm%3Adid%3Abns%3Abob"));
@@ -34,7 +40,7 @@ fn ui_spec() -> libopendan::api::SessionSpec {
             "enabled": true,
             "tools": [{ "groupname": "bash_core" }]
         },
-        "runtime": { "task_wait_ms": 200 },
+        "runtime": { "task_wait_ms": task_wait_ms },
         "json_schema": {
             "type": "object", "additionalProperties": false,
             "required": ["reply", "topic", "artifacts"],
@@ -369,9 +375,9 @@ async fn structured_reply_recovery_uses_the_same_delivery_rules() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_task_followed_through_the_cli_is_not_watched_after_the_turn() {
+async fn a_task_checked_through_the_cli_comes_back_once_as_input() {
     let env = Env::new();
-    let sd = env.create_work(ui_spec()).await;
+    let sd = env.create_work(ui_spec_waiting(1500)).await;
     post_blocking(&env.queue_dir, &queue_of(&sd), msg("run the slow job"));
     let llm = ScriptedLlm::new(move |req, n| match n {
         0 => {
@@ -386,21 +392,22 @@ async fn a_task_followed_through_the_cli_is_not_watched_after_the_turn() {
             tools.sort();
             assert_eq!(tools, ["edit_file", "read", "shell", "write_file"]);
             assert!(req.force_json && req.json_schema.is_some());
-            shell("c1", "sleep 1; echo slow-done")
+            shell("c1", "sleep 4; echo slow-done")
         }
         1 => {
             let r = has_tool_result(req, "c1").expect("c1 result");
             // The session follows it; the model may still look at it itself.
-            assert!(r.contains("comes back to you as input") && r.contains("agent-session task state local:shell:c1"), "{r}");
-            tool_call(
-                "c2",
-                "shell",
-                json!({ "command": "agent-session task wait local:shell:c1 --wait-ms 10000", "wait_ms": 20000 }),
-            )
+            assert!(r.contains("comes back to you as input") && r.contains("agent-session task state <task_id>"), "{r}");
+            tool_call("c2", "shell", json!({ "command": "agent-session task state local:shell:c1" }))
         }
         2 => {
             let r = has_tool_result(req, "c2").expect("c2 result");
-            assert!(r.contains("slow-done") && r.contains("exited with code 0"), "{r}");
+            assert!(r.contains("task local:shell:c1 is still running"), "{r}");
+            text(r#"{"reply": "the job is running", "topic": null, "artifacts": []}"#)
+        }
+        3 => {
+            let input = last_user_text(req);
+            assert!(input.contains("status=\"finished\"") && input.contains("slow-done"), "{input}");
             text(r#"{"reply": "the job printed slow-done", "topic": {"title": "slow job", "tags": ["job"]}, "artifacts": []}"#)
         }
         _ => panic!("unexpected call {n}: {}", last_user_text(req)),
@@ -408,109 +415,84 @@ async fn a_task_followed_through_the_cli_is_not_watched_after_the_turn() {
     let deps = env
         .deps(llm.clone())
         .with_session_cli(PathBuf::from(env!("CARGO_BIN_EXE_xagent")));
+    let started = std::time::Instant::now();
     drive(&sd, &deps, StopWhen::Idle).await;
+    while llm.count() < 4 && started.elapsed() < std::time::Duration::from_secs(15) {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        drive(&sd, &deps, StopWhen::Idle).await;
+    }
     let st = sd.state().unwrap();
     assert_eq!(st.turns_completed, 1);
     assert!(st.watched_tasks.is_empty(), "{:?}", st.watched_tasks);
     assert_eq!(st.topic.title, "slow job");
     assert_eq!(st.topic.tags, ["job"]);
-    // Nothing comes back for the task: no further Turn.
+    // Delivered once: no further Turn.
     drive(&sd, &deps, StopWhen::Idle).await;
-    assert_eq!(llm.count(), 3);
+    assert_eq!(llm.count(), 4);
     let report = read_worklog(&sd)
         .into_iter()
-        .find_map(|e| match e.body {
+        .filter_map(|e| match e.body {
             WorklogBody::Outcome { report, .. } => report,
             _ => None,
         })
+        .last()
         .unwrap();
     assert_eq!(report, "the job printed slow-done");
     // The background line of the runtime is not shown again.
     assert!(st.background_shown.contains_key("runtime"));
 }
 
-/// The id of the first TaskMgr task (`t-<32 hex>`) named in `text`.
-fn zone_task_id(text: &str) -> Option<String> {
-    let i = text.find("t-")?;
-    let id: String = text[i..].chars().take(34).collect();
-    (id.len() == 34 && id[2..].chars().all(|c| c.is_ascii_hexdigit())).then_some(id)
+/// A session host: `shell` commands that outlive their wait are tasks of
+/// the runner process (`local:shell:<call_id>`), followed by the session.
+fn session_host_deps(env: &Env, llm: std::sync::Arc<ScriptedLlm>) -> libopendan::runner::RunnerDeps {
+    env.deps(llm)
+        .with_session_cli(PathBuf::from(env!("CARGO_BIN_EXE_xagent")))
 }
 
-/// A zone host: `shell` commands that outlive their wait are tasks of the
-/// task service (`tool.shell/v1`), not of the runner process.
-fn zone_host_deps(
-    env: &Env,
-    llm: std::sync::Arc<ScriptedLlm>,
-) -> (
-    libopendan::runner::RunnerDeps,
-    std::sync::Arc<agent_tool::MemoryShellTaskBackend>,
-) {
-    use agent_tool::ShellTaskManager;
-    let backend = agent_tool::MemoryShellTaskBackend::new();
-    let mut deps = env
-        .deps(llm)
-        .with_session_cli(PathBuf::from(env!("CARGO_BIN_EXE_xagent")));
-    let shell_tasks = agent_tool::ZoneShellTasks::new(
-        backend.clone(),
-        AGENT,
-        Some("bob".into()),
-        deps.xllm.local_tasks.clone(),
-    );
-    deps.xllm.buckyos_tasks = shell_tasks.resolver(None);
-    deps.xllm.shell_tasks = Some(shell_tasks);
-    (deps, backend)
-}
-
+/// The session follows its tasks itself: there is nothing to wait on, the
+/// task's end comes back as input (simple Work Session TODO §3.10).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_zone_host_hands_long_commands_to_the_task_service() {
+async fn a_session_host_refuses_task_wait() {
     let env = Env::new();
-    let sd = env.create_work(ui_spec()).await;
+    let sd = env.create_work(ui_spec_waiting(1500)).await;
     post_blocking(&env.queue_dir, &queue_of(&sd), msg("run the slow job"));
-    let seen: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
-    let seen_in_llm = seen.clone();
     let llm = ScriptedLlm::new(move |req, n| match n {
-        0 => shell("c1", "sleep 1; echo slow-done"),
+        0 => shell("c1", "sleep 3; echo slow-done"),
         1 => {
             let r = has_tool_result(req, "c1").expect("c1 result");
-            let id = zone_task_id(&r).unwrap_or_else(|| panic!("no task id in {r}"));
-            assert!(r.contains(&format!("agent-session task state {id}")), "{r}");
-            *seen_in_llm.lock().unwrap() = Some(id.clone());
+            assert!(r.contains("it continues as task local:shell:c1"), "{r}");
+            assert!(r.contains("<runtime_hints>") && r.contains("agent-session task state <task_id>"), "{r}");
+            assert!(!r.contains("task wait") && !r.contains("wait_ms"), "{r}");
             tool_call(
                 "c2",
                 "shell",
-                json!({ "command": format!("agent-session task wait {id} --wait-ms 10000"), "wait_ms": 20000 }),
+                json!({ "command": "agent-session task wait local:shell:c1" }),
             )
         }
         2 => {
             let r = has_tool_result(req, "c2").expect("c2 result");
-            assert!(r.contains("slow-done") && r.contains("exited with code 0"), "{r}");
+            assert!(r.contains("there is no `task wait`") && r.contains("comes back to you as input"), "{r}");
+            text(r#"{"reply": "started; its result comes later", "topic": null, "artifacts": []}"#)
+        }
+        3 => {
+            let input = last_user_text(req);
+            assert!(input.contains("<<task_result task=\"local:shell:c1\" call_id=\"c1\" status=\"finished\">>"), "{input}");
+            assert!(input.contains("slow-done"), "{input}");
             text(r#"{"reply": "the job printed slow-done", "topic": null, "artifacts": []}"#)
         }
         _ => panic!("unexpected call {n}: {}", last_user_text(req)),
     });
-    let (deps, backend) = zone_host_deps(&env, llm.clone());
+    let deps = session_host_deps(&env, llm.clone());
+    let started = std::time::Instant::now();
     drive(&sd, &deps, StopWhen::Idle).await;
-    let id = seen.lock().unwrap().clone().expect("task id");
+    while llm.count() < 4 && started.elapsed() < std::time::Duration::from_secs(15) {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        drive(&sd, &deps, StopWhen::Idle).await;
+    }
+    assert_eq!(llm.count(), 4);
     let st = sd.state().unwrap();
     assert_eq!(st.turns_completed, 1);
     assert!(st.watched_tasks.is_empty(), "{:?}", st.watched_tasks);
-    // The task belongs to this session, under the task of its Turn.
-    let rec = backend.record(&id).expect("task in the task service");
-    assert_eq!(rec.input["session_id"], sd.sid());
-    assert_eq!(rec.input["call_id"], "c1");
-    assert_eq!(rec.input["agent"], AGENT);
-    for _ in 0..50 {
-        if backend.record(&id).unwrap().terminal {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    let rec = backend.record(&id).unwrap();
-    assert_eq!(rec.outcome.as_deref(), Some("succeeded"), "{rec:?}");
-    assert!(rec.result.unwrap()["output"].as_str().unwrap().contains("slow-done"));
-    // Read already: nothing comes back for it.
-    drive(&sd, &deps, StopWhen::Idle).await;
-    assert_eq!(llm.count(), 3);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -518,36 +500,33 @@ async fn a_reply_while_a_task_runs_keeps_the_turn_open_until_its_result() {
     let env = Env::new();
     let sd = env.create_work(ui_spec()).await;
     post_blocking(&env.queue_dir, &queue_of(&sd), msg("start the slow job"));
-    let seen: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
-    let seen_in_llm = seen.clone();
     let llm = ScriptedLlm::new(move |req, n| match n {
         0 => shell("c1", "sleep 3; echo later-done"),
         1 => {
             let r = has_tool_result(req, "c1").expect("c1 result");
-            *seen_in_llm.lock().unwrap() = Some(zone_task_id(&r).expect("task id"));
+            assert!(r.contains("local:shell:c1"), "{r}");
             text(r#"{"reply": "started; I will report when it ends", "topic": null, "artifacts": []}"#)
         }
         2 => {
             let input = last_user_text(req);
-            let id = seen_in_llm.lock().unwrap().clone().unwrap();
-            assert!(input.contains(&format!("<<task_result task=\"{id}\" call_id=\"c1\" status=\"finished\">>")), "{input}");
-            assert!(input.contains("later-done") && input.contains("exited with code 0"), "{input}");
+            assert!(input.contains("<<task_result task=\"local:shell:c1\" call_id=\"c1\" status=\"finished\">>"), "{input}");
+            assert!(input.contains("Call c1: shell `sleep 3; echo later-done`"), "{input}");
+            assert!(input.contains("later-done"), "{input}");
             assert!(!input.contains("state unknown"), "{input}");
             text(r#"{"reply": "the job printed later-done", "topic": null, "artifacts": []}"#)
         }
         _ => panic!("unexpected call {n}: {}", last_user_text(req)),
     });
-    let (deps, backend) = zone_host_deps(&env, llm.clone());
+    let deps = session_host_deps(&env, llm.clone());
     // The reply came while the command runs: the run and its Turn stay open
     // and follow the task.
     drive(&sd, &deps, StopWhen::Idle).await;
-    let id = seen.lock().unwrap().clone().expect("task id");
     let st = sd.state().unwrap();
     assert_eq!(st.turns_completed, 0);
-    assert_eq!(st.watched_tasks, [id.clone()]);
+    assert_eq!(st.watched_tasks, ["local:shell:c1".to_string()]);
     assert_eq!(llm.count(), 2, "its end is not delivered by the first drive");
-    // Later drives (new runner state each) answer for the task through the
-    // task service and deliver its end once.
+    // Later drives (new runner state each) answer for the task from the
+    // process's task manager and deliver its end once.
     let started = std::time::Instant::now();
     while llm.count() < 3 && started.elapsed() < std::time::Duration::from_secs(15) {
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -557,7 +536,6 @@ async fn a_reply_while_a_task_runs_keeps_the_turn_open_until_its_result() {
     let st = sd.state().unwrap();
     assert_eq!(st.turns_completed, 1);
     assert!(st.watched_tasks.is_empty(), "{:?}", st.watched_tasks);
-    assert_eq!(backend.record(&id).unwrap().outcome.as_deref(), Some("succeeded"));
     drive(&sd, &deps, StopWhen::Idle).await;
     assert_eq!(llm.count(), 3, "delivered once");
 }

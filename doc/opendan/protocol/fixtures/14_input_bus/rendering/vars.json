@@ -75,7 +75,11 @@
         ],
         "sent_at": "2026-10-02T00:00:00Z",
         "text": "@jarvis 帮我看一下这张截图里的报错 <build>，日志在附件里",
-        "title": null
+        "title": null,
+        "is_task_result": false,
+        "is_tick": false,
+        "is_nudge": false,
+        "is_other_event": false
       },
       {
         "data_ref": null,
@@ -90,7 +94,11 @@
         },
         "subscription_id": "watch-t1",
         "summary": "任务 t1 的状态发生变化",
-        "terminal": false
+        "terminal": false,
+        "is_task_result": false,
+        "is_tick": false,
+        "is_nudge": false,
+        "is_other_event": true
       }
     ],
     "messages": [

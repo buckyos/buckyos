@@ -1170,13 +1170,9 @@ async fn with_zone_tasks(mut deps: XllmDeps) -> XllmDeps {
         log::warn!("xllm: zone tasks unavailable, BuckyOS runtime not ready: {e}");
         return deps;
     }
-    let owner = std::env::var("BUCKYOS_APP_ID").unwrap_or_else(|_| "xllm".to_string());
-    deps.buckyos_tasks = Some(crate::tasks_zone::ZoneShellTasks::new(
-        Arc::new(crate::tasks_zone::ZoneShellTaskBackend),
-        &owner,
-        None,
-        deps.local_tasks.clone(),
-    ));
+    deps.buckyos_tasks = Some(crate::tasks_zone::ZoneTaskResolver::new(Arc::new(
+        crate::tasks_zone::ZoneTaskMgrBackend,
+    )));
     deps
 }
 

@@ -762,8 +762,56 @@ pub struct SessionState {
     /// most every [`BACKGROUND_TIME_STEP_MS`].
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub background_shown: BTreeMap<String, String>,
+    /// Multi-Turn Work Sessions: the timer that opens a Turn while the
+    /// session waits for the work it started (`timer:` subscriptions).
+    #[serde(default, skip_serializing_if = "TaskWatch::is_empty")]
+    pub task_watch: TaskWatch,
+    /// Corrections the runner gave the open Turn (a reply that neither
+    /// ends the session nor waits for anything): at most one per Turn.
+    #[serde(default, skip_serializing_if = "Nudge::is_empty")]
+    pub nudge: Nudge,
+    /// Result hints shown once per session (`once` keys of the hint
+    /// ledger, see `agent_tool::hints`).
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub hints_once: BTreeSet<String>,
     #[serde(default)]
     pub updated_at_ms: u64,
+}
+
+/// [`SessionState::task_watch`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TaskWatch {
+    /// When the last tick was taken in, or the session began waiting for
+    /// its work (epoch ms): the next tick is `tick_secs` after it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub last_tick_ms: u64,
+}
+
+impl TaskWatch {
+    pub fn is_empty(&self) -> bool {
+        self == &TaskWatch::default()
+    }
+}
+
+/// [`SessionState::nudge`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Nudge {
+    /// Corrections given in the open Turn.
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub count: u8,
+    /// A correction waits to be taken in (`system:runner`, `nudge`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pending: bool,
+}
+
+impl Nudge {
+    pub fn is_empty(&self) -> bool {
+        self == &Nudge::default()
+    }
+}
+
+fn is_zero_u8(n: &u8) -> bool {
+    *n == 0
 }
 
 /// The time line of the background context changes at most this often
@@ -815,6 +863,9 @@ impl SessionState {
             todo_view_rev: 0,
             goal: None,
             background_shown: BTreeMap::new(),
+            task_watch: TaskWatch::default(),
+            nudge: Nudge::default(),
+            hints_once: BTreeSet::new(),
             updated_at_ms: now_ms,
         }
     }

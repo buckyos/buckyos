@@ -999,6 +999,11 @@ pub struct HostMeta {
     /// are shown afresh.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub observed_epoch: u64,
+    /// `[input] background = "before_inference"`: per task the run follows,
+    /// how far its output (`[stdout, stderr]` bytes) was shown — a task line
+    /// shows only what came after. Committed like `observed`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub task_output: BTreeMap<String, [u64; 2]>,
 }
 
 pub const HOST_META_KEY: &str = "libopendan";

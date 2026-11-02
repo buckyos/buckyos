@@ -359,7 +359,15 @@ impl RunHandle {
     /// LLM saw its end and the note is dropped. The list is what the session
     /// keeps following when the run ends, also when that end is redone after
     /// a crash.
-    pub fn note_task(&self, task_id: &str, running: bool, call_id: &str) -> Result<()> {
+    /// `brief`: what the call was (`{tool, what, intent}`), kept for the
+    /// input that brings the task's end back (`host.extra.task_briefs`).
+    pub fn note_task(
+        &self,
+        task_id: &str,
+        running: bool,
+        call_id: &str,
+        brief: Option<serde_json::Value>,
+    ) -> Result<()> {
         let noted = self.noted_tasks();
         if noted.iter().any(|t| t == task_id) == running {
             return Ok(());
@@ -377,6 +385,12 @@ impl RunHandle {
                         h.extra["task_calls"] = serde_json::json!({});
                     }
                     h.extra["task_calls"][task_id] = serde_json::json!(call_id);
+                    if let Some(b) = &brief {
+                        if !h.extra["task_briefs"].is_object() {
+                            h.extra["task_briefs"] = serde_json::json!({});
+                        }
+                        h.extra["task_briefs"][task_id] = b.clone();
+                    }
                 }
                 h.extra["tasks"] = serde_json::json!(tasks);
             }

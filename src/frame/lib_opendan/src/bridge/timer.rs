@@ -24,6 +24,8 @@ fn timers_of(cfg: &SessionConfig) -> Vec<(String, String, u64)> {
     cfg.subscriptions
         .iter()
         .filter_map(|s| match &s.source {
+            // Ticked by the runner while the session waits for its work.
+            SubscriptionSource::Timer { name } if name == TASK_WATCH_TIMER => None,
             SubscriptionSource::Timer { name } => {
                 let every = cfg
                     .extensions

@@ -100,6 +100,8 @@ async fn xllm_deps_for(
     x.runtime_env = env.env.iter().cloned().collect();
     x.runtime_path_prefix = env.path_layers.clone();
     x.skip_workdir_lock = true;
+    // Hints shown once per session, dedup keys of this drive.
+    x.hint_ledger = Some(sh.hints.clone());
     if x.host_protocol == agent_tool::xllm::HostProtocolFlavor::OneShot {
         // A session is not a one-shot task: whether the agent may wait for
         // the user is the session's rule (`session.policy.wait_user_msg`).
@@ -128,21 +130,8 @@ async fn xllm_deps_for(
         x.shell_note = Some(UI_SHELL_NOTE.to_string());
     }
     // Sub sessions (`session:<sid>`) are answered from the registry; other
-    // task ids go to the host's resolver.
-    // A `shell` command handed over as a task belongs to this session and
-    // hangs under the task of its Turn.
-    // The Turn opens inside the run, after this: its task is looked up
-    // from the committed state when a command is handed over.
-    let dir = sh.dir.clone();
-    x.shell_task_context = agent_tool::ShellTaskContext {
-        session_id: Some(sh.dir.sid().to_string()),
-        parent_task: Some(Arc::new(move || {
-            dir.state()
-                .ok()
-                .and_then(|s| s.open_turn_task().map(|t| t.task_id.clone()))
-        })),
-        run: None,
-    };
+    // task ids (`t-`) go to the host's resolver. `shell` commands that
+    // outlive their wait stay tasks of this process (`local:`).
     x.buckyos_tasks = Some(host_task_resolver(sh));
     let mut functions = std::collections::BTreeSet::new();
     if let Some(tool) = BehaviorTool::any(&behaviors, depth, max_depth) {
@@ -177,17 +166,10 @@ async fn xllm_deps_for(
 }
 
 /// The resolver of the tasks a host answers for: sub sessions
-/// (`session:<sid>`), then the host's `shell` task manager scoped to this
-/// session (its `active()` lists this session's tasks), else whatever
-/// resolver the host injected.
+/// (`session:<sid>`), else the resolver the host injected (TaskMgr `t-`
+/// tasks of krpc tools).
 pub(super) fn host_task_resolver(sh: &Arc<Shared>) -> Arc<dyn RunningTaskResolver> {
-    let inner = sh
-        .deps
-        .xllm
-        .shell_tasks
-        .as_ref()
-        .and_then(|m| m.resolver(Some(sh.dir.sid())))
-        .or_else(|| sh.deps.xllm.buckyos_tasks.clone());
+    let inner = sh.deps.xllm.buckyos_tasks.clone();
     Arc::new(super::children::SessionTaskResolver::new(
         sh.deps.agent.clone(),
         inner,
@@ -262,6 +244,8 @@ pub(super) async fn new_run_context(
     binding: &Binding,
     env: &SessionEnv,
 ) -> Result<LiveCtx> {
+    // A new context: no result of an earlier one is in it.
+    sh.hints.clear_dedup();
     let (cfg, new) = {
         let s = sh.session.lock().await;
         let cfg = s.config.clone();
@@ -386,6 +370,7 @@ async fn fork_run_context(
         pid: std::process::id(),
         host_commit_pending: None,
         handover: None,
+        hints_once: Vec::new(),
         ..parent_record
     };
     if let Some(host) = record.host.as_mut() {
@@ -537,8 +522,8 @@ async fn own_run_context(
             intro.push_str(" Every function call of this context carries `intent` in its arguments: one short sentence saying why you make the call now and what you expect from it. A call without it is not executed.");
         }
     }
-    let background_after_tools = cfg.input_config(new.entry.as_ref()).1.background
-        == InputBackground::AfterTools;
+    let background =
+        super::observe::Background::extra(cfg.input_config(new.entry.as_ref()).1.background);
     let explicit_report = cfg.session.policy.completion == CompletionPolicy::ExplicitReport;
     let enabled = llm_ctx.pointer("/tools/enabled").and_then(Value::as_bool);
     if function_call && explicit_report && enabled == Some(false) {
@@ -656,8 +641,8 @@ async fn own_run_context(
                 if call_intent {
                     extra.insert(super::tools::EXTRA_CALL_INTENT.into(), json!(true));
                 }
-                if background_after_tools {
-                    extra.insert(super::observe::EXTRA_BACKGROUND.into(), json!("after_tools"));
+                if let Some(mode) = background {
+                    extra.insert(super::observe::EXTRA_BACKGROUND.into(), json!(mode));
                 }
                 if extra.is_empty() {
                     Value::Null
@@ -813,6 +798,19 @@ pub(super) async fn resume_live_run(
         manager.set_recovering(&call.call_id, reason);
     }
     let returned = sh.session.lock().await.state.process_result.clone();
+    {
+        // A multi-Turn Work Session's run reopened for its next Turn: every
+        // Turn has the run's whole tool budget (simple Work Session TODO
+        // Q11).
+        let s = sh.session.lock().await;
+        if s.state.open_turn.is_none()
+            && !snapshot.state.has_continuation()
+            && super::outcome::multi_turn_work(&s.config)
+        {
+            snapshot.state.tool_iterations_left =
+                snapshot.request.tool_policy.max_tool_iterations;
+        }
+    }
     if behavior {
         // Back from a sub context: continue its action / step numbering.
         if let Some(r) = &returned {
@@ -1042,6 +1040,8 @@ async fn rewrite_for_limit(
     summary_llm: &Arc<dyn LlmClient>,
     attempt: u32,
 ) -> Result<LLMContext> {
+    // Results shown before are no longer in the history.
+    sh.hints.clear_dedup();
     let started = Instant::now();
     let (reason, estimated_tokens) = match snapshot.state.suspended.as_ref() {
         Some(llm_context::Suspension {
@@ -1520,6 +1520,7 @@ pub(super) async fn commit_input_batch(
     confirm_inputs(&sh.sources, &s.state).await; // ⑤
     drop(s);
     *sh.current_tool.lock().expect("current tool") = None;
+    *sh.current_intent.lock().expect("current intent") = None;
     super::turn_task::ensure_turn_task(sh, title).await;
     Ok(())
 }

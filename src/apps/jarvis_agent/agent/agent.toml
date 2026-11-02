@@ -57,19 +57,23 @@ default_cmd_skills = ["ui_core"]
 max_process_depth = 4
 
 # A work session's command manuals are chosen when it is created
-# (`create-worksession --cmd-skill`); there is no default.
+# (`create-worksession --cmd-skill`); there is no default. It has many Turns:
+# every reply closes one (the progress its caller sees), the end of a task it
+# started — or a tick every `tick_secs` while its tasks run — opens the next;
+# only `report(is_end=true)` ends it.
 [session.work]
 default_behavior = "plan"
+completion = "explicit_report"
+tick_secs = 30
 max_process_depth = 8
 
 # A work session that plans with a TodoList and runs every Todo in a sub
-# session of its own, in one Turn, with native function calls; its result is
-# an explicit final report. Chosen explicitly:
+# session of its own, with native function calls; like every work session its
+# result is an explicit final report. Chosen explicitly:
 # `agent-session create-worksession --class plan_simple --objective "..."`.
 [session.plan_simple]
 base = "work"
 default_behavior = "plan_simple"
-completion = "explicit_report"
 max_process_depth = 8
 
 # Goal Sessions: every activation is one Turn; what a goal leaves out of its

@@ -455,13 +455,15 @@ async fn two_serial_todos_in_sub_sessions_in_one_turn() {
         st.last_error,
         sd.state().unwrap().one_line_status
     );
-    // One Turn for the whole plan.
+    // A work session has many Turns: a reply while its sub sessions run
+    // closes one, their ends open the next; every one completed.
     let log = read_worklog(&sd);
     let k = kinds(&log);
-    assert_eq!(k.iter().filter(|x| **x == "turn_started").count(), 1, "{k:?}");
-    assert_eq!(k.iter().filter(|x| **x == "turn_ended").count(), 1, "{k:?}");
+    let started = k.iter().filter(|x| **x == "turn_started").count();
+    assert_eq!(k.iter().filter(|x| **x == "turn_ended").count(), started, "{k:?}");
     assert!(!k.contains(&"step"), "no behavior steps / DO");
-    assert_eq!((st.turn_seq, st.turns_completed), (1, 1));
+    assert_eq!(st.turn_seq, started as u64);
+    assert_eq!(st.turns_completed, st.turn_seq);
     // Every call kept its intent in the record.
     let mut recorded = 0;
     for e in &log {
@@ -647,7 +649,7 @@ async fn parallel_explorations_a_retry_and_ends_heard_from_the_background() {
         out.result,
         st.last_error
     );
-    assert_eq!((st.turn_seq, st.turns_completed), (1, 1));
+    assert_eq!(st.turns_completed, st.turn_seq, "every Turn completed");
     let ex = ex.lock().unwrap();
     assert!(!ex.waited_t02, "B finished long before; its end came through the background");
     let start_b = ex.starts.iter().find(|(m, _)| m == "B").unwrap().1;
@@ -761,9 +763,13 @@ async fn the_observation_survives_a_crash_before_and_after_its_commit() {
             out.result,
             st.last_error
         );
-        assert_eq!((st.turn_seq, st.turns_completed), (1, 1), "{fault}: the same Turn");
+        assert_eq!(st.turns_completed, st.turn_seq, "{fault}: every Turn completed");
         let k = kinds(&read_worklog(&sd));
-        assert_eq!(k.iter().filter(|x| **x == "turn_started").count(), 1, "{fault}");
+        assert_eq!(
+            k.iter().filter(|x| **x == "turn_started").count() as u64,
+            st.turn_seq,
+            "{fault}"
+        );
         let children = env.agent().sessions().children_of(&[sd.sid().to_string()]).await.unwrap();
         assert_eq!(children.len(), 1, "{fault}");
         let ran = std::fs::read_to_string(Path::new(&children[0].location).join("ran.txt")).unwrap();

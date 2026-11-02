@@ -36,6 +36,20 @@ fn system_of(req: &LlmInferenceRequest) -> String {
         .join("\n")
 }
 
+/// The explicit final report that ends a work session.
+fn done(text_: &str) -> buckyos_api::AiResponse {
+    tool_call("done", "report", json!({ "report": text_, "is_end": true }))
+}
+
+/// Inputs that opened or joined a Turn with a sub session's state.
+fn child_batches(wl: &[WorklogEntry]) -> usize {
+    wl.iter()
+        .filter(|e| matches!(&e.body,
+            WorklogBody::TurnStarted { inputs, .. } | WorklogBody::InputBatch { inputs, .. }
+                if inputs.iter().any(|i| i.src == INTERNAL_CHILD_SRC)))
+        .count()
+}
+
 fn template_spec(class: &str, objective: &str) -> libopendan::api::SessionSpec {
     let mut spec = SessionTemplate::load(class, None).unwrap().spec(objective);
     spec.prompt.llm_context = json!({ "tools": { "enabled": true } });
@@ -59,11 +73,12 @@ fn write(path: &std::path::Path, text: &str) {
     std::fs::write(path, text).unwrap();
 }
 
-/// E13: the work template is one Turn without an input queue. Its first
-/// input is persisted with the configuration, consumed through the same
-/// receipts, and survives a restart between creation and the first drive.
+/// E13: the work template has no input queue and ends with its explicit
+/// final report. Its first input is persisted with the configuration,
+/// consumed through the same receipts, and survives a restart between
+/// creation and the first drive.
 #[tokio::test]
-async fn work_template_runs_one_turn_without_a_queue() {
+async fn work_template_runs_without_a_queue_until_its_final_report() {
     let env = Env::new();
     let mut spec = template_spec("work", "summarize the note");
     assert_eq!(spec.input_channel, Some(InputChannel::None));
@@ -84,7 +99,7 @@ async fn work_template_runs_one_turn_without_a_queue() {
         let u = last_user_text(req);
         assert!(u.contains("buy milk") && u.contains("and eggs"), "{u}");
         assert!(u.contains("hook=\"on_init\""), "{u}");
-        text("milk and eggs")
+        done("milk and eggs")
     });
     let r = drive(&sd, &env.deps(llm.clone()), StopWhen::TurnClosed).await;
     match &r {
@@ -111,10 +126,12 @@ async fn work_template_runs_one_turn_without_a_queue() {
 async fn bootstrap_inputs_are_consumed_one_by_one() {
     let env = Env::new();
     let mut spec = template_spec("work", "handle each input");
+    // Its own end: two Turns, each ended by a plain reply.
     spec.end_condition = EndCondition {
         kind: EndConditionType::MaxTurns,
         detail: json!({ "n": 2 }),
     };
+    spec.policy.completion = CompletionPolicy::Natural;
     spec.prompt.input.mode = InputMode::Single;
     spec.prompt.initial_inputs = vec![msg("first"), msg("second")];
     let sd = env.create_work(spec).await;
@@ -401,7 +418,7 @@ async fn agent_state_implementations_behave_alike() {
         let s2 = system.clone();
         let llm = ScriptedLlm::new(move |req, _| {
             *s2.lock().unwrap() = system_of(req);
-            text("hi")
+            done("hi")
         });
         let deps = frozen_deps(env, agent.clone(), llm);
         let r = drive(&sd, &deps, StopWhen::TurnClosed).await;
@@ -606,23 +623,26 @@ fn is_child(req: &LlmInferenceRequest) -> bool {
     system_of(req).contains("child work")
 }
 
-/// E21: a parent without a queue hands work to two sub sessions and ends
-/// its run. The session does not finish while it must hear from them: the
-/// Turn stays open, their ends arrive as input of that same Turn, and the
-/// parent concludes. Each sub session has its own lease, Turn and run; the
-/// same creating call never makes a second one.
+/// E21: a parent without a queue hands work to two sub sessions and
+/// replies: that closes its Turn, the session does not finish while it must
+/// hear from them, their ends open its next Turn and the parent concludes
+/// with its final report. Each sub session has its own lease, Turn and run;
+/// the same creating call never makes a second one.
 #[tokio::test]
 async fn a_parent_waits_for_its_reporting_sub_sessions() {
     let env = Env::new();
     let parent = env.create_work(parent_spec("delegate and summarize")).await;
     let llm = ScriptedLlm::new(|req, _| {
         if is_child(req) {
-            return text(&format!("child result of {}", if system_of(req).contains("child work A") { "A" } else { "B" }));
+            return done(&format!("child result of {}", if system_of(req).contains("child work A") { "A" } else { "B" }));
         }
-        let u = render(&req.messages);
-        if u.contains("event=\"finished\"") {
-            assert!(u.contains("child result of A") || u.contains("child result of B"), "{u}");
-            return text("summary of both");
+        let all = render(&req.messages);
+        let heard = ["child result of A", "child result of B"].iter().filter(|r| all.contains(*r)).count();
+        if heard == 2 {
+            return done("summary of both");
+        }
+        if heard == 1 {
+            return text("one child reported, waiting for the other");
         }
         if has_tool_result(req, "s2").is_some() {
             return text("delegated, done for now");
@@ -633,24 +653,20 @@ async fn a_parent_waits_for_its_reporting_sub_sessions() {
         tool_call("s1", "spawn", json!({ "objective": "child work A", "report": "final", "key": "a" }))
     });
     let host = spawn_host(&env, llm.clone(), &parent);
-    let out = run_session(&host, &parent, StopWhen::TurnClosed, StopSignal::default(), false).await;
-    match &out.result {
-        DriveResult::TurnClosed { turn, status, answer, .. } => {
-            assert_eq!((*turn, *status), (1, TurnStatus::Completed));
-            assert_eq!(answer.as_deref(), Some("summary of both"));
-        }
-        other => panic!("{other:?}"),
-    }
+    let out = run_session(&host, &parent, StopWhen::Finished, StopSignal::default(), false).await;
+    assert!(
+        matches!(&out.result, DriveResult::Finished { outcome: Some(Outcome::Succeeded), .. }),
+        "{:?}",
+        out.result
+    );
     assert!(out.children.is_empty(), "{:?}", out.children);
     let st = parent.state().unwrap();
     assert!(st.is_finished());
-    assert_eq!((st.turn_seq, st.turns_completed), (1, 1), "the Turn stayed open for the children");
+    assert_eq!(st.final_report.as_ref().unwrap().report, "summary of both");
+    assert!(st.turn_seq >= 2, "the reply closed the first Turn");
+    assert_eq!(st.turns_completed, st.turn_seq);
     let wl = read_worklog(&parent);
-    assert!(
-        wl.iter().any(|e| matches!(&e.body, WorklogBody::InputBatch { inputs, .. }
-            if inputs.iter().any(|i| i.src == INTERNAL_CHILD_SRC))),
-        "the children's end joined the open Turn"
-    );
+    assert!(child_batches(&wl) >= 1, "the children's end opened a Turn");
     let agent = env.agent();
     let children = agent.sessions().children_of(&[parent.sid().to_string()]).await.unwrap();
     assert_eq!(children.len(), 2);
@@ -686,20 +702,20 @@ async fn a_parent_waits_for_its_reporting_sub_sessions() {
 
 /// E21 (`--wait`): a session follows its sub sessions outside the loop:
 /// the creating call returns "still running" on `session:<sid>` at once,
-/// the reply keeps the run (F18), and the sub session's end is that same
-/// run's next input.
+/// the reply closes the Turn and keeps the run (F18), and the sub session's
+/// end opens the next Turn in that same run.
 #[tokio::test]
 async fn a_waited_sub_session_ends_into_the_kept_run() {
     let env = Env::new();
     let parent = env.create_work(parent_spec("delegate and wait")).await;
     let llm = ScriptedLlm::new(|req, _| {
         if is_child(req) {
-            return text("forty-two");
+            return done("forty-two");
         }
         let last = last_user_text(req);
         if last.contains("forty-two") {
             assert!(last.contains("event=\"finished\""), "{last}");
-            return text("the child said forty-two");
+            return done("the child said forty-two");
         }
         match has_tool_result(req, "s1") {
             Some(r) => {
@@ -710,24 +726,19 @@ async fn a_waited_sub_session_ends_into_the_kept_run() {
         }
     });
     let host = spawn_host(&env, llm.clone(), &parent);
-    let out = run_session(&host, &parent, StopWhen::TurnClosed, StopSignal::default(), false).await;
+    let out = run_session(&host, &parent, StopWhen::Finished, StopSignal::default(), false).await;
     assert!(
-        matches!(&out.result, DriveResult::TurnClosed { status: TurnStatus::Completed, answer, .. }
-            if answer.as_deref() == Some("the child said forty-two")),
+        matches!(&out.result, DriveResult::Finished { outcome: Some(Outcome::Succeeded), .. }),
         "{:?}",
         out.result
     );
     let st = parent.state().unwrap();
     assert!(st.is_finished());
+    assert_eq!(st.final_report.as_ref().unwrap().report, "the child said forty-two");
+    assert_eq!((st.turn_seq, st.turns_completed), (2, 2), "the reply closed Turn 1, the end opened Turn 2");
     assert_eq!(llm.count(), 4, "parent three times, child once");
     assert_eq!(parent.runs().list().unwrap().len(), 1, "one run throughout");
-    let wl = read_worklog(&parent);
-    let ends = wl
-        .iter()
-        .filter(|e| matches!(&e.body, WorklogBody::InputBatch { inputs, .. }
-            if inputs.iter().any(|i| i.src == INTERNAL_CHILD_SRC)))
-        .count();
-    assert_eq!(ends, 1, "the end came once, as input");
+    assert_eq!(child_batches(&read_worklog(&parent)), 1, "the end came once, as input");
 }
 
 /// §4.11: the number of unfinished sub sessions and their nesting are
@@ -767,7 +778,7 @@ async fn sub_session_limits_and_unreported_children() {
         "an unbound child uses its own SessionDir"
     );
     // The parent finishes without waiting for a child that does not report.
-    let llm = ScriptedLlm::new(|_, _| text("done alone"));
+    let llm = ScriptedLlm::new(|_, _| done("done alone"));
     let r = drive(&parent, &env.deps(llm), StopWhen::TurnClosed).await;
     assert!(matches!(r, DriveResult::TurnClosed { status: TurnStatus::Completed, .. }), "{r:?}");
     assert!(parent.state().unwrap().is_finished());
@@ -900,10 +911,10 @@ async fn semi_snapshot_precedes_a_context_switch_input() {
     assert_eq!(switched, vec!["doc:7".to_string()], "the snapshot is part of the hand-over receipt");
 }
 
-/// E22: an interactive sub session asks its parent. The parent hears
-/// `needs_input` as an input of its open Turn and answers through the
-/// child's queue; the child goes on with the answer and its end is then
-/// reported like any other.
+/// E22: an interactive sub session asks its parent. The parent's reply
+/// closed its Turn; it hears `needs_input` as the input of its next Turn and
+/// answers through the child's queue; the child goes on with the answer and
+/// its end is then reported like any other.
 #[tokio::test]
 async fn an_interactive_sub_session_asks_its_parent() {
     let env = Env::new();
@@ -921,7 +932,7 @@ async fn an_interactive_sub_session_asks_its_parent() {
         let u = last_user_text(req);
         if u.contains("event=\"finished\"") {
             assert!(u.contains("painted blue"), "{u}");
-            return text("the child painted it blue");
+            return done("the child painted it blue");
         }
         if has_tool_result(req, "a1").is_some() {
             return text("answered the child");
@@ -951,15 +962,17 @@ async fn an_interactive_sub_session_asks_its_parent() {
     host.assembler = Arc::new(BehaviorAssembler::default());
     host.options.max_wait = Duration::from_secs(30);
     let agent = env.agent();
-    let out = run_session(&host, &parent, StopWhen::TurnClosed, StopSignal::default(), false).await;
+    let out = run_session(&host, &parent, StopWhen::Finished, StopSignal::default(), false).await;
     assert!(
-        matches!(&out.result, DriveResult::TurnClosed { status: TurnStatus::Completed, answer, .. }
-            if answer.as_deref() == Some("the child painted it blue")),
-        "{:?}",
-        out.result
+        matches!(&out.result, DriveResult::Finished { outcome: Some(Outcome::Succeeded), .. }),
+        "{:?} {:?}",
+        out.result,
+        parent.state().unwrap().last_error
     );
     let st = parent.state().unwrap();
-    assert_eq!((st.turn_seq, st.turns_completed), (1, 1));
+    assert_eq!(st.final_report.as_ref().unwrap().report, "the child painted it blue");
+    assert_eq!(st.turns_completed, st.turn_seq);
+    assert!(st.turn_seq >= 2, "every reply closed a Turn: {}", st.turn_seq);
     let children = agent.sessions().children_of(&[parent.sid().to_string()]).await.unwrap();
     assert_eq!(children.len(), 1);
     let child = SessionDir::open(&children[0].location).unwrap();
@@ -973,8 +986,8 @@ async fn an_interactive_sub_session_asks_its_parent() {
 
 /// E21 (`--report progress`) / §4.15: progress of a sub session is kept as
 /// semi-subscription state and shown before the next controlled input; what
-/// needs attention is an input; and a parent that would finish while a
-/// reporting sub session is unsettled keeps its run and Turn waiting for it.
+/// needs attention is an input; and a parent replying while a reporting sub
+/// session is unsettled closes its Turn and keeps its run waiting for it.
 #[tokio::test]
 async fn progress_is_observed_and_the_parent_waits_for_children() {
     let env = Env::new();
@@ -1044,22 +1057,20 @@ async fn progress_is_observed_and_the_parent_waits_for_children() {
     let mut deps = env.deps(llm.clone());
     deps.options.max_wait = Duration::from_millis(300);
     let r = drive(&parent, &deps, StopWhen::TurnClosed).await;
-    match &r {
-        DriveResult::TurnOpen { turn, waiting_for, .. } => {
-            assert_eq!(*turn, 1);
-            let w = waiting_for.as_ref().unwrap();
-            assert_eq!(w.kind, WaitingKind::Children);
-            assert_eq!(w.refs, vec![child.sid().to_string()]);
-        }
-        other => panic!("{other:?}"),
-    }
+    assert!(
+        matches!(&r, DriveResult::TurnClosed { turn: 1, status: TurnStatus::Completed, .. }),
+        "{r:?}"
+    );
     let st = parent.state().unwrap();
-    assert!(!st.is_finished() && st.open_turn.is_some() && st.live_run.is_some());
+    assert!(!st.is_finished() && st.open_turn.is_none() && st.live_run.is_some());
     assert_eq!(st.run_state, RunState::Waiting);
+    let w = st.waiting_for.as_ref().unwrap();
+    assert_eq!(w.kind, WaitingKind::Children);
+    assert_eq!(w.refs, vec![child.sid().to_string()]);
     assert_eq!(llm.count(), 1);
     // The same state is not delivered twice.
     let r = drive(&parent, &deps, StopWhen::TurnClosed).await;
-    assert!(matches!(r, DriveResult::TurnOpen { .. }), "{r:?}");
+    assert!(matches!(r, DriveResult::Idle { .. }), "{r:?}");
     assert_eq!(llm.count(), 1);
 }
 
@@ -1116,7 +1127,7 @@ async fn a_waited_child_hands_the_workspace_back_to_its_parent() {
     let llm = ScriptedLlm::new(|req, _| {
         if is_child(req) {
             if has_tool_result(req, "child-write").is_some() {
-                return text("child updated the project");
+                return done("child updated the project");
             }
             return tool_call(
                 "child-write",
@@ -1125,7 +1136,7 @@ async fn a_waited_child_hands_the_workspace_back_to_its_parent() {
             );
         }
         if has_tool_result(req, "parent-write").is_some() {
-            return text("parent completed the project");
+            return done("parent completed the project");
         }
         // The child's end is the parent's input.
         if last_user_text(req).contains("child updated the project") {
@@ -1152,9 +1163,10 @@ async fn a_waited_child_hands_the_workspace_back_to_its_parent() {
     let mut host = spawn_host(&env, llm.clone(), &parent);
     host.options.max_wait = Duration::from_millis(100);
     let parent_deps = host.runner_deps(&parent, StopSignal::default()).await.unwrap();
+    // The reply closes Turn 1; the run waits for the child.
     let waiting = drive(&parent, &parent_deps, StopWhen::TurnClosed).await;
     assert!(
-        matches!(waiting, DriveResult::TurnOpen { .. }),
+        matches!(waiting, DriveResult::TurnClosed { turn: 1, .. }),
         "{waiting:?}"
     );
     let children = host
@@ -1246,7 +1258,7 @@ async fn the_host_completes_a_workspace_delegation_chain_without_wait_timeouts()
         let system = system_of(req);
         if system.contains("grandchild work") {
             return if has_tool_result(req, "write-c").is_some() {
-                text("grandchild finished")
+                done("grandchild finished")
             } else {
                 tool_call(
                     "write-c",
@@ -1275,7 +1287,7 @@ async fn the_host_completes_a_workspace_delegation_chain_without_wait_timeouts()
             )
         };
         if has_tool_result(req, write).is_some() {
-            return text(answer);
+            return done(answer);
         }
         // The sub session's end is this session's input.
         if last_user_text(req).contains(sub_answer) {
@@ -1299,7 +1311,7 @@ async fn the_host_completes_a_workspace_delegation_chain_without_wait_timeouts()
         run_session(
             &host,
             &parent,
-            StopWhen::TurnClosed,
+            StopWhen::Finished,
             StopSignal::default(),
             false,
         ),
@@ -1309,8 +1321,8 @@ async fn the_host_completes_a_workspace_delegation_chain_without_wait_timeouts()
     assert!(
         matches!(
             result.result,
-            DriveResult::TurnClosed {
-                status: TurnStatus::Completed,
+            DriveResult::Finished {
+                outcome: Some(Outcome::Succeeded),
                 ..
             }
         ),
@@ -1355,7 +1367,7 @@ async fn stopping_a_workspace_handoff_interrupts_the_child_and_parent() {
     let child_stop = stop.clone();
     let driven = parent.clone();
     let run = tokio::spawn(async move {
-        run_session(&host, &driven, StopWhen::TurnClosed, child_stop, false).await
+        run_session(&host, &driven, StopWhen::Finished, child_stop, false).await
     });
     for _ in 0..100 {
         if directory.join("child-started").exists() {
@@ -1369,13 +1381,13 @@ async fn stopping_a_workspace_handoff_interrupts_the_child_and_parent() {
         .await
         .expect("stop cannot wait for the handoff timeout")
         .unwrap();
+    // The reply closed the parent's Turn while the child worked: the stop
+    // finishes the waiting session.
     assert!(
         matches!(
             result.result,
-            DriveResult::TurnClosed {
-                status: TurnStatus::Stopped,
-                ..
-            }
+            DriveResult::Finished { outcome: Some(Outcome::Stopped), .. }
+                | DriveResult::TurnClosed { status: TurnStatus::Stopped, .. }
         ),
         "{result:?}"
     );

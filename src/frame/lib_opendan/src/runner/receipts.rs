@@ -143,6 +143,8 @@ pub fn apply_receipt(state: &mut SessionState, r: &InputReceipt) -> Result<bool>
         .collect();
     let has_msg = r.inputs.iter().any(|i| i.kind == "msg");
     if r.opens_turn {
+        // A new Turn starts without corrections.
+        state.nudge = Nudge::default();
         state.open_turn = Some(OpenTurn {
             index: r.turn,
             run_id: r.run_id.clone(),
@@ -170,6 +172,11 @@ pub fn apply_receipt(state: &mut SessionState, r: &InputReceipt) -> Result<bool>
             if let Some((sid, event)) = super::children::child_of_internal_key(&i.key) {
                 super::children::set_attention(state, sid, Some(event));
             }
+        } else if i.src == INTERNAL_TIMER_SRC {
+            // The next tick is counted from this one.
+            state.task_watch.last_tick_ms = state.task_watch.last_tick_ms.max(r.at_ms);
+        } else if i.src == INTERNAL_NUDGE_SRC {
+            state.nudge.pending = false;
         } else {
             state.source_mut(&i.src).mark(i.index);
         }

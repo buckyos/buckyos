@@ -380,6 +380,7 @@ impl AgentTool for ReadTool {
                 (self.object_cfg(text), url)
             }
         };
+        let window = read_args.get("range").map(|r| r.to_string()).unwrap_or_default();
         read_args.insert("path".into(), Json::String(path));
         let mut result = TypedToolHandle::with_null_host(ReadFileTool::new(cfg))
             .call(ctx, Json::Object(read_args))
@@ -387,7 +388,7 @@ impl AgentTool for ReadTool {
         if let (Some(object), Json::Object(details)) = (object, &mut result.details) {
             details.insert("object".into(), object);
         }
-        Ok(result)
+        Ok(with_read_dedup(result, &uri, &window))
     }
 }
 
@@ -398,6 +399,70 @@ impl ReadTool {
         cfg.dfs_root = None;
         cfg.allowed_read_roots.clear();
         cfg
+    }
+}
+
+/// The same window of `what` with the same content read again in this
+/// run: the tool manager answers with one line instead of the content
+/// (`dedup`, see [`crate::hints`]).
+pub fn with_read_dedup(result: AgentToolResult, what: &str, window: &str) -> AgentToolResult {
+    if result.status != crate::AgentToolStatus::Success {
+        return result;
+    }
+    let digest = blake3::hash(result.observation_text().as_bytes()).to_hex();
+    let key = format!("read:{what}#{window}:{}", &digest[..16]);
+    result.with_dedup(
+        key,
+        format!("`{what}` is unchanged since you read it earlier in this run; use that content."),
+    )
+}
+
+/// `read_file` of the `bash` group with `read`'s dedup key.
+pub struct DedupReadFile {
+    inner: Arc<dyn AgentTool>,
+}
+
+impl DedupReadFile {
+    pub fn new(inner: Arc<dyn AgentTool>) -> Self {
+        Self { inner }
+    }
+}
+
+#[async_trait]
+impl AgentTool for DedupReadFile {
+    fn spec(&self) -> ToolSpec {
+        self.inner.spec()
+    }
+
+    fn calling(&self) -> CallingConventions {
+        self.inner.calling()
+    }
+
+    fn cancellable(&self) -> bool {
+        self.inner.cancellable()
+    }
+
+    fn idempotent(&self) -> bool {
+        self.inner.idempotent()
+    }
+
+    async fn call(
+        &self,
+        ctx: &SessionRuntimeContext,
+        args: Json,
+    ) -> Result<AgentToolResult, AgentToolError> {
+        let what = args
+            .get("path")
+            .and_then(Json::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let mut window = args.clone();
+        if let Some(m) = window.as_object_mut() {
+            m.remove("path");
+        }
+        let result = self.inner.call(ctx, args).await?;
+        Ok(with_read_dedup(result, &what, &window.to_string()))
     }
 }
 
@@ -546,10 +611,14 @@ mod tests {
             .await
     }
 
+    /// The same result, apart from `read`'s dedup key.
     fn same(a: &AgentToolResult, b: &AgentToolResult) {
+        let (mut a, mut b) = (a.clone(), b.clone());
+        a.dedup = None;
+        b.dedup = None;
         assert_eq!(
-            serde_json::to_string(a).unwrap(),
-            serde_json::to_string(b).unwrap()
+            serde_json::to_string(&a).unwrap(),
+            serde_json::to_string(&b).unwrap()
         );
     }
 

@@ -560,6 +560,12 @@ pub const ENV_EXECUTOR_RUN_ID: &str = "EXECUTOR_RUN_ID";
 /// Identity and control-side variables never reach a worker.
 pub fn is_forbidden_env_name(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
+    // The run and tool call a command runs for: ids, not credentials (with
+    // each other an idempotency key of what the command creates, e.g. an
+    // `ask_user` question).
+    if matches!(upper.as_str(), "XLLM_RUN_ID" | "XLLM_CALL_ID") {
+        return false;
+    }
     upper.starts_with("BUCKYOS_")
         || upper.starts_with("OPENDAN_")
         || upper.starts_with("XLLM_")
@@ -569,6 +575,15 @@ pub fn is_forbidden_env_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_and_call_ids_pass_while_credentials_do_not() {
+        assert!(!is_forbidden_env_name("XLLM_RUN_ID"));
+        assert!(!is_forbidden_env_name("XLLM_CALL_ID"));
+        assert!(is_forbidden_env_name("XLLM_TASK_ENDPOINT"));
+        assert!(is_forbidden_env_name("BUCKYOS_APPCLIENT_SESSION_TOKEN"));
+        assert!(is_forbidden_env_name("session_token"));
+    }
 
     fn profile() -> ExecutorProfile {
         ExecutorProfile {

@@ -37,6 +37,9 @@ pub struct ActionEntry {
     /// `read_only | idempotent | side_effect | unknown`.
     #[serde(default = "unknown")]
     pub effect: String,
+    /// Why the call was made, as it stated (`intent` argument).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent: Option<String>,
 }
 
 fn unknown() -> String {
@@ -49,6 +52,12 @@ pub const INTERNAL_TASK_SRC: &str = "_task";
 /// Source id of the events a runner synthesizes from the registry state of
 /// the session's sub sessions (needs attention / finished).
 pub const INTERNAL_CHILD_SRC: &str = "_child";
+/// Source id of the ticks a runner produces for `timer:` subscriptions
+/// while the session waits for the work it started.
+pub const INTERNAL_TIMER_SRC: &str = "_timer";
+/// Source id of the correction a runner gives a Turn that neither ended
+/// the session nor waits for anything (`system:runner`, `nudge`).
+pub const INTERNAL_NUDGE_SRC: &str = "_nudge";
 
 /// Worklog entry bodies (format of `opendan.session_state/6` sessions).
 ///

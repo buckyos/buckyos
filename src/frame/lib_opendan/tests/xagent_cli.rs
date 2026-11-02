@@ -102,6 +102,11 @@ fn say(text: &str) -> Result<Value, u16> {
     Ok(json!({ "role": "assistant", "content": text }))
 }
 
+/// The final report that ends a work session.
+fn end_report(id: &str, report: &str) -> Result<Value, u16> {
+    call_report(id, json!({ "report": report, "is_end": true }))
+}
+
 fn call_shell(id: &str, command: &str) -> Result<Value, u16> {
     Ok(json!({ "role": "assistant", "content": null, "tool_calls": [{
         "id": id, "type": "function",
@@ -235,7 +240,7 @@ fn new_no_run_then_run_a_work_session_without_a_queue() {
         // G3: a session is not worded as a one-shot task.
         assert!(system_of(req).contains("You are running inside an Agent Session"));
         assert!(!system_of(req).contains("one-shot task runner"));
-        say("milk")
+        end_report("r1", "milk")
     });
     let lc = llm.llm_context(json!({}));
     let sd = cli.create(&["--objective", "summarize the note", "--llm-context", &lc, "--msg", "the note: buy milk"]);
@@ -374,17 +379,17 @@ fn ui_session_waits_for_input_and_control_is_separate() {
 /// E21 / E5: a sub session created by the layer ② tool through `shell`
 /// (`agent-session create-worksession --wait`). The call returns "still
 /// running" on `session:<sid>` (a session is followed outside the loop), the
-/// reply keeps the run, the same process drives the child, and its end is
-/// the kept run's next input.
+/// reply closes the parent's Turn and keeps the run, the same process drives
+/// the child, and its end opens the kept run's next Turn.
 #[test]
 fn a_sub_session_is_created_and_waited_for_through_the_shell_tool() {
     let cli = Cli::new();
     let llm = MockLlm::start(|req, _| {
         if system_of(req).contains("compute the answer") {
-            return say("forty-two");
+            return end_report("c1", "forty-two");
         }
         if last_user(req).contains("forty-two") {
-            return say("the child said forty-two");
+            return end_report("p1", "the child said forty-two");
         }
         match tool_result(req, "w1") {
             Some(r) => {
@@ -405,9 +410,14 @@ fn a_sub_session_is_created_and_waited_for_through_the_shell_tool() {
     ]);
     assert_eq!(code, 0, "{v}\n{err}");
     assert_eq!(v["kind"], "turn_closed");
-    assert_eq!(v["answer"], "the child said forty-two");
+    assert_eq!(v["answer"], "waiting for the child");
     assert!(v.get("children").is_none(), "{v}");
     let sd = SessionDir::open(v["path"].as_str().unwrap()).unwrap();
+    // The child's end opens the parent's next Turn.
+    let (code, v, err) = cli.run(&["run", sd.sid(), "--poll-ms", "50"]);
+    assert_eq!(code, 0, "{v}\n{err}");
+    assert_eq!((v["kind"].as_str(), v["turn"].as_u64()), (Some("turn_closed"), Some(2)), "{v}");
+    assert_eq!(v["answer"], "the child said forty-two");
     assert!(sd.runtime_bin_dir().join("agent-session").is_file());
 
     let (code, list, _) = cli.run(&["sessions", "--json", "--children", "--of", sd.sid()]);
@@ -508,11 +518,19 @@ fn xllm_takes_over_the_live_run_and_xagent_commits_its_end() {
     );
     assert!(sd.state().unwrap().live_run.is_some(), "the session has not committed it yet");
 
+    // A work session ends only with an explicit final report, which a run
+    // taken over by xllm cannot submit: its plain end fails the session —
+    // committed once, like any end.
     let (code, v, err) = cli.run(&["run", &sid, "--poll-ms", "50"]);
-    assert_eq!(code, 0, "{v} {err}");
-    assert_eq!((v["kind"].as_str(), v["answer"].as_str()), (Some("turn_closed"), Some("taken over")));
+    assert_eq!(code, 1, "{v} {err}");
+    assert_eq!(
+        (v["kind"].as_str(), v["status"].as_str(), v["answer"].as_str()),
+        (Some("turn_closed"), Some("failed"), Some("taken over")),
+        "{v}"
+    );
     let st = sd.state().unwrap();
-    assert_eq!((st.turn_seq, st.turns_completed), (1, 1));
+    assert_eq!(st.last_error.as_ref().unwrap()["kind"], "missing_end_report");
+    assert_eq!((st.turn_seq, st.turns_completed), (1, 0));
     let wl = worklog(&sd);
     assert_eq!(wl.iter().filter(|e| e.body.kind() == "turn_started").count(), 1);
     assert_eq!(wl.iter().filter(|e| e.body.kind() == "turn_ended").count(), 1);

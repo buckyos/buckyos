@@ -625,7 +625,7 @@ detail 常见字段：
 - 在本 run 的 runtime（native / remote_ssh / remote_node）中以 bash 语法执行命令
 - 执行方式由配置决定，不由模型选择
 
-调用内等多久是 runtime 的预算 `runtime.task_wait_ms`（默认 30000，上限 30 分钟，见 [AgentRuntime 设计](<../AgentRuntime 设计.md>) §7）。`.llm_context` 的 `tools.shell`（详见 [xllm Rust SDK §3](<../xllm_rust_sdk.md>)）只配超时：
+调用内等多久是 runtime 的预算 `runtime.task_wait_ms`（默认 25000，上限 30 分钟，见 [AgentRuntime 设计](<../AgentRuntime 设计.md>) §7）：25 秒内结束就是同步结果，否则转为 task 返回。`.llm_context` 的 `tools.shell`（详见 [xllm Rust SDK §3](<../xllm_rust_sdk.md>)）只配超时：
 
 | 键 | 默认 | 说明 |
 |---|---|---|
@@ -634,16 +634,19 @@ detail 常见字段：
 
 有 task 管理器且预算小于 `timeout_ms` 时，命令等满 `wait_ms` 仍未结束就转为 task 返回；否则等到结束或 `timeout_ms`，超时结束命令。
 
-输入（按上面两种情况二选一出现 `wait_ms` 或 `timeout_ms`）：
+输入（按上面两种情况二选一出现 `wait_ms` 或 `timeout_ms`；Session 宿主（`HostProtocolFlavor::Session`）不出现 `wait_ms`：等多久只是 runtime 的预算，模型给的 `wait_ms` 被忽略，说明改为“结束会作为输入带回”）：
 
 ```json
 {
   "command": "string",
   "cwd": "string",
-  "wait_ms": "number (转 task 时；缺省为预算，上限 30 分钟)",
-  "timeout_ms": "number (等到结束时)"
+  "wait_ms": "number (转 task 时；缺省为预算，上限 30 分钟；Session 宿主无此参数)",
+  "timeout_ms": "number (等到结束时)",
+  "intent": "string (可选：为什么现在调用、期望得到什么；不传给命令)"
 }
 ```
+
+`read` / `read_file` / `write_file` / `edit_file` / `shell` 这组标准工具都带可选 `intent`（`IntentPolicy::Optional`）：`XllmToolManager` 取出并记录（`intent_of(call_id)`），不传给工具；宿主 behavior 声明 `call_intent` 时由宿主对全部工具改为必填（`IntentPolicy::Required`）。
 
 `cwd` 在 `filesystem_policy = workspace`（默认）时限制在工作目录内。
 
@@ -651,7 +654,8 @@ detail 常见字段：
 
 - 命令结束：退出码 0 且未超时为 `success`，否则 `error`；`return_code` 是退出码，`output` 是 stdout + stderr 混合文本（过长时保留头 1/4、尾 3/4）
 - detail 关键字段：`command`、`cwd`、`exit_code`、`stdout`、`stderr`、`output`、`output_truncated`、`timed_out`、`duration_ms`、`engine`、`runtime`
-- 等满 `wait_ms` 仍在运行：`success` + `task_id`（进程内为 `local:shell:<call_id>`，宿主接了 Zone TaskMgr 时为 `t-<hex>`）+ `partial_output`，`output` 写明已运行时长、已有输出和跟进方式（xllm 为 `wait_task` / `get_task_state`，可取消时还有 `cancel_task`；Session 宿主写明结束会作为输入带回）；detail 为 `command`、`task_id`、`elapsed_ms`、`runtime`、`still_running`、`cancellable`
+- 等满 `wait_ms` 仍在运行：`success` + `task_id`（一律进程内 `local:shell:<call_id>`）+ `partial_output`，`output` 写明已运行时长、已有输出；跟进方式（xllm 为 `wait_task` / `get_task_state` / `cancel_task`，Session 宿主为“结束会作为输入带回”加 state / cancel）作为 `hints[{once: "shell.task_followup"}]` 每个 session 只说一次；detail 为 `command`、`task_id`、`elapsed_ms`、`runtime`、`still_running`、`cancellable`
+- task 结束后的结果与同步结束时逐字相同：`ShellTask` 用同一个 `shell_finished_result` 生成信封，`TaskResult::from_tool_result` 取它的 `observation_text` 与视图（取消时为 `shell_cancelled_result`，detail 带 `cancelled: true`）
 - 等到结束时超时：`error`，`timed_out = true`，命令已结束，`summary` 给出加大 `timeout_ms` 或改用 nohup / setsid 的提示
 - 命令是简单命令且 stdout 是合法 AgentToolResult 时转发该结果，规则见 [agent_tool_result_protocol.md](agent_tool_result_protocol.md#shell-约定)
 
@@ -668,20 +672,21 @@ detail 常见字段：
 
 调用返回后仍在运行的工作称为 task，id 前缀表示归属：`local:<kind>:<n>` 属于执行器进程内的 `InProcessTaskManager`（`shell` 为 `local:shell:<call_id>`）；其它 id 属于 buckyos task-mgr。
 
-`shell` 到期转 task 时把命令交给谁由宿主决定（`tasks::ShellTaskManager`，`XllmDeps.shell_tasks`）：
+`shell` 到期转出的命令一律留在执行器进程内的 task-mgr（`XllmDeps.local_tasks`，每进程一份，task 可跨 run 查询），不交给 Zone TaskMgr（简单 Work Session TODO Q1）：
 
-- 没有注入（xllm CLI、xagent 单跑）：进程内 task-mgr（`XllmDeps.local_tasks`，每进程一份，task 可跨 run 查询）。
-- 宿主注入 `tasks_zone::ZoneShellTasks`（OpenDAN Loader 的 zone 环境默认）：命令仍在本进程跑，但 task 建在 zone 的 buckyos task-mgr 里（schema `tool.shell/v1`，id `t-<hex>`，挂在所属 Session 当前 Turn 的 task 下，`input` 记录 command / session_id / run_id / call_id / exec_dir / agent）。每个 task 一个 watcher：每 5s 写进度（`message` 为最后一行输出，`progress.output_tail`）并读 `pending_control`，TaskMgr 里的 cancel 由它结束命令并 ack；命令结束时 `runner_complete`（exit 0）或 `runner_fail`（`exit_<n>`），`result` / `error.detail` 带 `exit_code`、`duration_ms`、`output`（尾部 8KB）。task-mgr 不可达时退回进程内 task-mgr（返回 `local:` id），命令不丢。
-- `ShellTaskContext`（`XllmDeps.shell_task_context`）由宿主按 run 填：`session_id`、`parent_task`（Turn task）、`run`（run 目录，算执行目录用）。
-- 进程重启：Loader 启动时 `recover()` 列出 zone 里未结束的 `tool.shell/v1` task（按 `input.agent` 过滤），执行目录还在的轮询其 `exit` 文件回填结果，不在的以 `executor_restarted` 失败。
+- 只有命令本身的实现就是 krpc、服务端返回任务 id 的工具（`ask_user` 的 `human.input/v1`、AICC 等）才产生进程外 task（`t-<hex>`），宿主用 `tasks_zone::ZoneTaskResolver`（`XllmDeps.buckyos_tasks`）只读地解析它们：状态、等待、请求取消。
+- 宿主退出前调用 `InProcessTaskManager::release_running`（OpenDAN Loader 的 shutdown、xllm 暂停时）：命令交给 OS 继续跑，执行目录记下它的结局。
+- 进程重启后 `local:shell:<call_id>` 由执行目录回答：有 `exit` → 结束（从 stdout / stderr 尾部组装结果）；目录在但没有 `exit` → unknown（“the executor restarted … the command may still be running, check <exec_dir>”），由模型决定。
 
 ### 6.1 LLM 工具：`wait_task` / `get_task_state` / `cancel_task`
 
-三个工具共用宿主的 `RunningTaskResolver`（`tasks::CompositeTaskResolver`）：`local:` id 由进程内 task 管理器回答，进程已不在时 `shell` task 从执行目录读回结果；其它 id 交给宿主注入的 buckyos task-mgr resolver（`XllmDeps.buckyos_tasks`；`ZoneShellTasks` 本身就是 `t-` id 的 resolver，本进程在跑的 task 直接读句柄，其它进程的从 task-mgr 读），没有注入时状态为 unknown。Zone TaskMgr 的解析器也读 `tool.shell/v1` 以外的 task：结果是 AgentToolResult 信封时用这个信封，否则把结果 JSON 作为正文（如 `human.input/v1` 的回答）。`result_seen` 标记模型已读过的结果，run 结束后不再作为事件重复投递；`active()` 列本 context 跟进的 task（xllm 据此判断回复时是否仍有 task 在运行），`ShellTaskManager::resolver(session_id)` 给出按 Session 过滤的 resolver。
+三个工具共用宿主的 `RunningTaskResolver`（`tasks::CompositeTaskResolver`）：`local:` id 由进程内 task 管理器回答，进程已不在时 `shell` task 从执行目录读回结果；其它 id 交给宿主注入的 resolver（`XllmDeps.buckyos_tasks`，Zone 下为 `ZoneTaskResolver`），没有注入时状态为 unknown。Zone 解析器的结果规则：结果是 AgentToolResult 信封时用这个信封，否则把结果 JSON 作为正文（如 `human.input/v1` 的回答）；别的 runner 建的 `tool.shell/v1` task 按 shell 的形状读。`result_seen` 标记模型已读过的结果，run 结束后不再作为事件重复投递；`active()` 列本 context 跟进的 task（xllm 据此判断回复时是否仍有 task 在运行）。
+
+Session 宿主（Agent Session）自己跟进 task、把结局作为输入带回，不注册 `wait_task`；`agent-session task` 也只有 `state | cancel`，task 桥对 Session 宿主的 `wait` 返回拒绝（`refused`）。
 
 | Tool | 输入 | 行为 |
 |---|---|---|
-| `wait_task` | `task_id`，`wait_ms`（默认 30000） | 等到 task 结束或 `wait_ms`，返回当时状态。工具内等待最长 30 分钟，更长的 `wait_ms` 按 30 分钟截断。打断只停止等待，task 继续 |
+| `wait_task` | `task_id`，`wait_ms`（默认 25000） | 等到 task 结束或 `wait_ms`，返回当时状态。工具内等待最长 30 分钟，更长的 `wait_ms` 按 30 分钟截断。打断只停止等待，task 继续 |
 | `get_task_state` | `task_id` | 立即返回当前状态 |
 | `cancel_task` | `task_id` | 停止可取消的 task；不可取消时返回 `error`，task 继续运行 |
 

@@ -2,7 +2,7 @@
 
 日期：2026-11-01
 
-状态：**待整理 / 待裁决。** 承接 [llm_context 冻结 TODO](./llm-context-freeze-todo.md)：冻结已落地（§8），libopendan 现在"能编译、测试全过"，但多处是为了跑通 B 方案做的临时取舍。用户 2026-11-01 裁决：agent-session 要基于"全异步 task 化"的假设重构一部分逻辑，和 agent-session 有关的修改与测试都放到这份 TODO；xllm 的 DV 已在冻结 TODO 里做完。
+状态：**已并入 [简单 Work Session 全异步化 TODO](./opendan-simple-worksession-async-todo.md)（2026-11-01 晚，用户确认那份是本单的超集），本文只留作历史索引，不再更新。** 去向：R1 → B15、R3 → Q5/B4、R4 → §3.3、R6-Work → Q9/B7、R8 → Q7、R9 → B16、R10 → Q1/A3/B5、T1 → 测试 13 + DV、T3 → 测试 2/3、T5 → 测试 8；R2 / R5 / T2 / T4 → 那边 §7 第二刀（plan_simple）；R6-UI / R7 → §7 第三刀（UI）。
 
 ## 1. 前提（冻结后已定，不再讨论）
 

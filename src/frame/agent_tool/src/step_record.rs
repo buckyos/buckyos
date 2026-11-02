@@ -220,6 +220,8 @@ struct RenderedActionResult {
     body: String,
     fence: &'static str,
     action_id: Option<String>,
+    /// `<runtime_hints>` of the result, rendered after its output.
+    hints: Vec<String>,
 }
 
 impl RenderedActionResult {
@@ -229,6 +231,7 @@ impl RenderedActionResult {
             body: body.into(),
             fence: "output",
             action_id: None,
+            hints: Vec::new(),
         }
     }
 }
@@ -245,6 +248,10 @@ fn render_step_action_results_wrapper(
             result_body.push_str(format!("- {}\n\n", part.title).as_str());
         }
         result_body.push_str(format!("```output\n{}\n```\n", part.body).as_str());
+        if !part.hints.is_empty() {
+            result_body.push_str(&crate::hints::render_hint_block(&part.hints));
+            result_body.push('\n');
+        }
     }
     format!(
         "<<last_step_action_results behavior=\"{}\" step=\"{}\">>\n{}\n<</last_step_action_results>>",
@@ -517,6 +524,7 @@ fn render_tool_result_full(
     let mut rendered =
         render_tool_result_full_placeholder(result, max_body_chars, fallback_truncated);
     rendered.title = tool_result_title(Some(action), result);
+    rendered.hints = result.hint_texts();
     rendered
 }
 
@@ -536,6 +544,7 @@ fn render_tool_result_full_placeholder(
         body: format_action_result_body(&body, fallback_truncated || clipped),
         fence,
         action_id: None,
+        hints: Vec::new(),
     }
 }
 

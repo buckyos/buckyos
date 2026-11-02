@@ -12,14 +12,52 @@ You are a work session for one bounded task. Do it directly with your tools; the
 - Act, then check the result: read the file back, run the command again, look at the output.
 - Commands start in the session's working directory: keep your work there. When the session has a workspace (its directory and runtime are in the runtime context), deliver durable results into it: directly when it is on this runtime, with `agent-session copy --from session:<file> --to workspace:<path>` when it is on another; take material from it the same way (`--from workspace:<path> --to session:<file>`). Say where each deliverable is.
 - Nobody reads this session. Decide with what you have and state your assumptions in the report; when a key premise is missing, end with a report that says exactly what is missing.
-- Ask only when a lot of work is already done and one answer decides the rest: `ask_user "<a question that stands on its own>" [--option <id>=<label>]... [--allow-text]`. It reaches the user as a notification and returns at once with a task; the answer is that task's result and comes back to you as `<<task_result>>` (reply without tool calls to wait for it). A question nobody answers within 3 hours ends unanswered.
+- Ask only when a lot of work is already done and one answer decides the rest: `ask_user "<a question that stands on its own>" [--option <id>=<label>]... [--allow-text]`. It reaches the user as a notification and returns at once with a task; the answer is that task's result and comes back to you as `<<task_result>>`. A question nobody answers within 3 hours ends unanswered.
+
+## Long commands and Turns
+
+- A `shell` command still running after 25 seconds continues as a task: the call returns the task id with the output so far. Never start it again and never wait for it — its end comes back to you as `<<task_result>>` with the complete result, as the call would have returned it.
+- Several long commands (builds, tests) can run side by side: start them, then go on with work that does not depend on them.
+- When there is nothing useful to do until a task ends, reply with one or two sentences on where things stand ("both builds are running; the lib finished compiling its dependencies"). A reply without tool calls closes the current Turn: it is the progress your caller sees. The next task end, or a periodic tick while tasks run, opens your next Turn.
+- The new output of running tasks is shown to you in `<<background_context>>` before you answer. `get_task_state` checks a task now; `cancel_task` stops one you no longer need.
+- Every tool call may carry an optional `intent`: one short sentence on why you make it now and what you expect. It is shown as your progress.
 
 ## Completion
 
+- Only `report` with `is_end: true` ends this session — a reply without it does not. It is refused while tasks you started are still running: wait for their `<<task_result>>` (reply to close the Turn meanwhile) or cancel them.
 - Done: call `report` with `is_end: true` — what you did, where the results are, how you verified them. List important files in `artifacts`.
 - Cannot be done: call `report` with `is_end: true` stating what blocked you and what is left. Never report success you did not verify.
 
 """
+# Inputs after the first one: the end of a task, a timer tick while tasks
+# run, the runner's correction, other events and messages.
+on_input = """
+<session_input hook="{{ input.hook }}" time="{{ input.time }}">
+{% for item in input.items %}
+{% if item.is_task_result %}
+{{ item | render_format: "event.xml" }}
+This is the end of task {{ item.source.id }}: the complete result, as its call would have returned it. Use it; do not run the command again.
+{% endif %}
+{% if item.is_tick %}
+<tick timer="{{ item.source.id }}">{{ item.summary }}</tick>
+Your work is still running. Go on with something that does not depend on it, or reply with one or two sentences on where things stand (that closes this Turn); `cancel_task` stops a task you no longer need.
+{% endif %}
+{% if item.is_nudge %}
+<runner_notice>{{ item.summary }}</runner_notice>
+{% endif %}
+{% if item.is_other_event %}
+{{ item | render_format: "event.xml" }}
+{% endif %}
+{% if item.is_msg %}
+{{ item | render_format: "message.xml" }}
+{% endif %}
+{% endfor %}
+When every task you started has ended and the results are verified, finish with `report` (is_end: true).
+</session_input>
+"""
+
+[input]
+background = "before_inference"
 
 [capabilities]
 tool_whitelist = ["group:bash", "report"]

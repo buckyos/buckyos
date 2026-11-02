@@ -46,6 +46,11 @@ pub struct Shared {
     pub turn_closed: Mutex<Option<ClosedTurn>>,
     /// Tool called last in this drive (the activity shown on the Turn's task).
     pub current_tool: Arc<Mutex<Option<String>>>,
+    /// The intent that call stated, if any (shown with it).
+    pub current_intent: Mutex<Option<String>>,
+    /// Result hints shown once per session and dedup keys of this drive
+    /// (the tool sets' `HintLedger`).
+    pub hints: Arc<super::hints::SessionHintLedger>,
     /// What the Turn's task was told last by this drive.
     pub task_status: Mutex<Option<(String, super::turn_task::TurnTaskStatus)>>,
     /// Serializes hand-overs of the outbox.
@@ -129,6 +134,7 @@ pub async fn report(sh: &Shared, status: SessionStatus) {
 }
 
 pub(super) async fn commit_and_report(sh: &Shared, s: &mut Session) -> Result<()> {
+    sh.hints.store(&mut s.state);
     s.commit_state(&sh.lease)?;
     let status = s.status(sh.lease.epoch());
     let rev = status.rev;

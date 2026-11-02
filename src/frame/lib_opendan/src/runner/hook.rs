@@ -58,8 +58,8 @@ pub struct SessionCheckpointHook {
     shared: Arc<Shared>,
     run: RunHandle,
     rounds: Arc<super::rounds::RoundCounter>,
-    /// The run is shown background after its tool results.
-    background: bool,
+    /// What the run is shown besides its inputs (`[input] background`).
+    background: Option<super::observe::Background>,
     behavior: bool,
 }
 
@@ -191,10 +191,10 @@ impl CheckpointHook for SessionCheckpointHook {
         snapshot: &LLMContextSnapshot,
     ) -> std::result::Result<Option<Injection>, String> {
         self.boundary(snapshot).await.map_err(|e| e.to_string())?;
-        if !self.background {
+        let Some(mode) = self.background else {
             return Ok(None);
-        }
-        super::observe::at_boundary(&self.shared, snapshot, self.behavior)
+        };
+        super::observe::at_boundary(&self.shared, &self.run, snapshot, self.behavior, mode)
             .await
             .map_err(|e| e.to_string())
     }

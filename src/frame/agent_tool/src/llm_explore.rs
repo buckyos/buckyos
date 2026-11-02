@@ -254,6 +254,8 @@ fn build_outcome_result(
             (
                 AgentToolResult {
                     agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
+                    hints: Vec::new(),
+                    dedup: None,
                     tool: Some(TOOL_NAME.to_string()),
                     cmd_name: None,
                     status: AgentToolStatus::Success,
@@ -291,6 +293,8 @@ fn build_outcome_result(
             (
                 AgentToolResult {
                     agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
+                    hints: Vec::new(),
+                    dedup: None,
                     tool: Some(TOOL_NAME.to_string()),
                     cmd_name: None,
                     status: AgentToolStatus::Error,
@@ -330,6 +334,8 @@ fn build_outcome_result(
             (
                 AgentToolResult {
                     agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
+                    hints: Vec::new(),
+                    dedup: None,
                     tool: Some(TOOL_NAME.to_string()),
                     cmd_name: None,
                     status: AgentToolStatus::Error,
@@ -373,6 +379,8 @@ fn build_error_result(work_dir: Option<&Path>, opts: &CliOpts, message: &str) ->
     details.insert("error".into(), Value::String(message.to_string()));
     AgentToolResult {
         agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
+        hints: Vec::new(),
+        dedup: None,
         tool: Some(TOOL_NAME.to_string()),
         cmd_name: None,
         status: AgentToolStatus::Error,

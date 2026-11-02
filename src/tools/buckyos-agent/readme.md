@@ -44,7 +44,7 @@ ask_user "<question>" [--option <id>=<label>]... [--allow-text] [--expires <seco
 - 发一条 System Notify 的 `input` 通知（msg-center `notify.send`，`level: timely`）。msg-center 为它建一个 Zone
   TaskMgr 任务（`human.input/v1`），回答就是任务结果。stdout 一行 AgentToolResult：`status: "pending"`、`task_id` =
   通知的任务（`t-…`）、`pending_reason: "user_input"`，`detail` 带 `notify_id`、`question`、`options`、
-  `expires_at_ms`、`url`。命令不等待；runtime 在预算内等该任务，模型用 `wait_task` / `get_task_state` 跟进。
+  `expires_at_ms`、`url`。命令不等待；runtime 在预算内等该任务，之后 Agent Session 自己跟进、回答以 `<<task_result>>` 输入回来（xllm 单跑时模型用 `wait_task` / `get_task_state` 跟进）。
 - 收件人：会话 token 的 `sub`。Agent 的工具拿到的是其 App 的 verify-hub 会话（`principal_kind: app`），`sub` 就是 App
   实例的 owner（verify-hub 只签发这样的 token，msg-center 也只允许它通知这个用户）；token 读不出用户（如 `agent`
   主体）时报错，不猜。

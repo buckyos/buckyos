@@ -99,6 +99,8 @@ pub struct Loader {
     pub ui: Option<Arc<UiModule>>,
     pub config: AgentConfig,
     tasks: Vec<tokio::task::JoinHandle<()>>,
+    /// `shell` commands of the sessions that outlived their wait.
+    local_tasks: Arc<agent_tool::InProcessTaskManager>,
 }
 
 /// Where workspaces are best placed in the agent's own environment: the
@@ -524,11 +526,6 @@ impl Loader {
             env.who.clone(),
             env.options.poll_interval.saturating_mul(6).max(Duration::from_secs(15)),
         )));
-        if let Some(shell_tasks) = env.xllm.shell_tasks.clone() {
-            // The `shell` tasks a previous process left open are taken
-            // back (or failed) before anything asks for them.
-            tasks.push(tokio::spawn(async move { shell_tasks.recover().await }));
-        }
         match &env.tasks {
             Some(service) => {
                 module("task_mgr", true, true, None);
@@ -580,6 +577,7 @@ impl Loader {
             ui,
             config,
             tasks,
+            local_tasks: env.xllm.local_tasks.clone(),
         })
     }
 
@@ -594,6 +592,10 @@ impl Loader {
             let _ = t.await;
         }
         self.supervisor.shutdown().await;
+        // Commands still running continue without this process: their
+        // execution directories record their ends, which the next start
+        // reads by call id.
+        self.local_tasks.release_running().await;
         unregister_in_process(self.agent.agent_did());
     }
 }

@@ -205,20 +205,48 @@ pub(super) async fn validate(sh: &Shared, run: &RunHandle, args: &ReportArgs) ->
         return Ok(());
     }
     let child = super::outcome::call_site_of(sh, run.run_id()).await.0;
+    // Sub sessions (`session:`) are settled by the check below. A task the
+    // run handed work to counts until it ended (its end may already have
+    // come back as input); one nobody can answer for, until that unknown
+    // end was delivered.
+    let resolver = sh.tasks.lock().expect("tasks").clone();
+    let recent = sh.session.lock().await.state.recent_keys.clone();
+    let mut running = Vec::new();
+    for t in run.noted_tasks() {
+        if t.starts_with(super::children::SESSION_TASK_PREFIX) {
+            continue;
+        }
+        let ended = match &resolver {
+            Some(r) => match r.state(&t).await {
+                agent_tool::TaskState::Finished(_) => true,
+                agent_tool::TaskState::Running { .. } => false,
+                agent_tool::TaskState::Unknown { .. } => {
+                    recent.contains(&super::receipts::internal_task_key(&t))
+                }
+            },
+            None => false,
+        };
+        if !ended {
+            running.push(t);
+        }
+    }
     let s = sh.session.lock().await;
     if s.state.stop_requested || sh.deps.stop.requested() || s.state.run_state == RunState::Finished
     {
         return Err(invalid("session stop or completion already requested"));
     }
-    // Sub sessions (`session:`) are settled by the check below.
-    let tasks_running = run
-        .noted_tasks()
-        .iter()
-        .any(|t| !t.starts_with(super::children::SESSION_TASK_PREFIX));
-    if tasks_running || (!child && !s.state.watched_tasks.is_empty()) {
-        return Err(invalid(
-            "cannot finish while tasks are still active; wait for their results",
-        ));
+    if !child {
+        for t in &s.state.watched_tasks {
+            if !running.contains(t) {
+                running.push(t.clone());
+            }
+        }
+    }
+    if !running.is_empty() {
+        return Err(invalid(format!(
+            "cannot finish while tasks you started are still active ({}): their ends come back to you as `<<task_result>>`; reply to close this Turn meanwhile, or cancel what you no longer need",
+            running.join(", ")
+        )));
     }
     let goal = super::goal::is_goal(&s.config);
     drop(s);

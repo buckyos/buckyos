@@ -279,6 +279,8 @@ async fn run_artifact(
             });
             let result = AgentToolResult {
                 agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
+                hints: Vec::new(),
+                dedup: None,
                 tool: Some(TOOL_NAME.to_string()),
                 cmd_name: req.command.clone(),
                 status: if exec.exit_code == 0 {
@@ -416,6 +418,8 @@ fn surface_fallthrough(
 
     let result = AgentToolResult {
         agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
+        hints: Vec::new(),
+        dedup: None,
         tool: Some(TOOL_NAME.to_string()),
         cmd_name: req.command.clone(),
         status,

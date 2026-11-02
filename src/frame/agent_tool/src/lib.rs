@@ -12,6 +12,11 @@ use std::sync::{Arc, RwLock as StdRwLock};
 use async_trait::async_trait;
 use buckyos_api::AiToolCall;
 pub use prompt_engine::{escape_xml_attr, escape_xml_text};
+pub use hints::{
+    apply_hints, render_hint_block, render_with_hints, HintLedger, MemoryHintLedger,
+    HINT_NS_DEDUP, HINT_NS_ONCE,
+};
+pub use intent::{intent_of, take_intent, with_intent, IntentPolicy, INTENT_ARG};
 pub use result_view::{ToolResultStatusView, ToolResultView};
 pub use step_record::XmlStepRenderer;
 pub use task_model::{
@@ -33,6 +38,8 @@ pub mod exec_tracking;
 pub mod file_tools;
 pub mod glob_tool;
 pub mod grep_tool;
+pub mod hints;
+pub mod intent;
 pub mod json_args;
 pub mod llm_bash;
 pub mod llm_compress;
@@ -85,17 +92,17 @@ pub use json_args::{
 pub use llm_bash::{
     kill_running_bash_process_groups, BashRunOutput, BashRunRequest, BashRunner, BashTarget,
     BashTargetSpec, BinOverlayConfig, CommandHandle, CommandProgress, LlmBashConfig,
-    LocalProcessBashRunner, RunBinding, RunBindingSlot, ShellRuntimeNote, ShellTool,
-    TOOL_SHELL,
+    LocalProcessBashRunner, RunBinding, RunBindingSlot, ShellResultShape, ShellRuntimeNote,
+    ShellTool, SHELL_TASK_FOLLOWUP_HINT, TOOL_SHELL,
 };
 pub use tasks::{
     exec_dir_state, task_tools, CancelTaskTool, CompositeTaskResolver, GetTaskStateTool,
-    InProcessTaskManager, LocalTask, ShellTask, ShellTaskContext, ShellTaskManager, WaitTaskTool,
-    TOOL_CANCEL_TASK, TOOL_GET_TASK_STATE, TOOL_WAIT_TASK,
+    InProcessTaskManager, LocalTask, ShellTask, WaitTaskTool, TOOL_CANCEL_TASK,
+    TOOL_GET_TASK_STATE, TOOL_WAIT_TASK,
 };
 pub use tasks_zone::{
-    MemoryShellTaskBackend, ShellTaskBackend, ShellTaskCreate, ShellTaskRecord,
-    ZoneShellTaskBackend, ZoneShellTasks, ZONE_TASK_PREFIX,
+    MemoryTaskBackend, ZoneTaskBackend, ZoneTaskMgrBackend, ZoneTaskRecord, ZoneTaskResolver,
+    ZONE_TASK_PREFIX,
 };
 pub use path_utils::{
     normalize_abs_path, normalize_root_path, resolve_path_from_root, resolve_path_under_root,
@@ -476,6 +483,32 @@ pub struct AgentToolResult {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
+
+    /// Guidance for the model rendered apart from the output
+    /// (`<runtime_hints>`), never mixed into it. A hint with `once` is shown
+    /// once per session under that key (`<tool>.<topic>[:<version>]`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hints: Vec<ResultHint>,
+    /// When a result with the same key was already shown in this run, the
+    /// output and detail are replaced by `hint` (e.g. a file read again
+    /// unchanged).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dedup: Option<ResultDedup>,
+}
+
+/// One entry of [`AgentToolResult::hints`].
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResultHint {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub once: Option<String>,
+}
+
+/// [`AgentToolResult::dedup`].
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResultDedup {
+    pub key: String,
+    pub hint: String,
 }
 
 /// Current `agent_tool_protocol` schema version emitted in the AgentToolResult JSON.
@@ -574,6 +607,61 @@ impl AgentToolResult {
             check_after: None,
             estimated_wait: None,
             output: None,
+            hints: Vec::new(),
+            dedup: None,
+        }
+    }
+
+    /// Add a hint (see [`AgentToolResult::hints`]).
+    pub fn with_hint(mut self, text: impl Into<String>, once: Option<&str>) -> Self {
+        let text = text.into();
+        if !text.trim().is_empty() {
+            self.hints.push(ResultHint {
+                text,
+                once: once.map(str::to_string),
+            });
+        }
+        self
+    }
+
+    pub fn with_dedup(mut self, key: impl Into<String>, hint: impl Into<String>) -> Self {
+        self.dedup = Some(ResultDedup {
+            key: key.into(),
+            hint: hint.into(),
+        });
+        self
+    }
+
+    /// The text the LLM sees for this result: the output (or summary) of a
+    /// success, the summary and output of an error. A finished task's
+    /// result reads the same as the call that ended synchronously.
+    pub fn observation_text(&self) -> String {
+        match self.status {
+            AgentToolStatus::Success | AgentToolStatus::Pending => self
+                .output
+                .clone()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| {
+                    if self.summary.trim().is_empty() {
+                        self.details.to_string()
+                    } else {
+                        self.summary.clone()
+                    }
+                }),
+            AgentToolStatus::Error => {
+                let summary = self.summary.trim();
+                let output = self
+                    .output
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                match (summary.is_empty(), output) {
+                    (false, Some(out)) => format!("{summary}\n{out}"),
+                    (false, None) => summary.to_string(),
+                    (true, Some(out)) => out.to_string(),
+                    (true, None) => "tool error".to_string(),
+                }
+            }
         }
     }
 
@@ -988,6 +1076,8 @@ pub fn cli_error_result(tool_name: Option<&str>, err: &AgentToolError) -> AgentT
     };
     AgentToolResult {
         agent_tool_protocol: default_agent_tool_protocol(),
+        hints: Vec::new(),
+        dedup: None,
         tool: tool_name.map(|value| value.to_string()),
         cmd_name: None,
         status: AgentToolStatus::Error,
@@ -1014,6 +1104,8 @@ pub fn cli_success_result(
 ) -> AgentToolResult {
     AgentToolResult {
         agent_tool_protocol: default_agent_tool_protocol(),
+        hints: Vec::new(),
+        dedup: None,
         tool,
         cmd_name: None,
         status: AgentToolStatus::Success,

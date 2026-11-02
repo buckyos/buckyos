@@ -101,8 +101,8 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
         <end> = session:<path> | workspace:<path> | <runtime_id>:<absolute path>; one regular file between the session's
         runtimes, verified by hash and committed by rename; an existing target only with --replace
         (exit 0 committed, 1 failed, 4 cancelled)
-  task state|wait|cancel <task_id> [--wait-ms <ms>]   (a shell command that continued as a task, in the run that started it;
-        wait: default 25s, max 30 min — give the shell call a larger wait_ms; exit 0 running/finished, 1 failed, 2 unknown)
+  task state|cancel <task_id>   (a task of the run this command runs in, e.g. a shell command that continued as a task;
+        its end comes back to the session as input on its own — nothing waits for it; exit 0 running/finished, 1 failed, 2 unknown)
   runtime list [--available] [--json] | get <id> | check <id> | baseline [--json] | workspace ...
         (workspace list, runtime list and sessions: readable text by default; --json for structured output)
   goal ... (ui sessions: create / show / post / pause / resume / archive / reopen / restart / activate;
@@ -796,21 +796,27 @@ async fn cmd_serve(mut a: Args) -> R<i32> {
     Ok(code)
 }
 
-/// `agent-session task state|wait|cancel <task_id>`: the task tools of the
-/// run this shell command belongs to, through its task bridge.
+/// `agent-session task state|cancel <task_id>`: the task tools of the run
+/// this shell command belongs to, through its task bridge. There is no
+/// `wait`: the session follows the task and brings its end back as input
+/// (simple Work Session TODO §3.10).
+fn task_op(word: &str) -> R<agent_tool::task_bridge::TaskOp> {
+    use agent_tool::task_bridge::TaskOp;
+    match word {
+        "state" => Ok(TaskOp::State),
+        "cancel" => Ok(TaskOp::Cancel),
+        "wait" => Err(bad(
+            "there is no `task wait`: the task's end comes back to you as input with its full result; reply or go on with other work meanwhile (`task state <task_id>` checks it now)",
+        )),
+        other => Err(bad(format!("task takes state | cancel, not `{other}`"))),
+    }
+}
+
 async fn cmd_task(mut a: Args) -> R<i32> {
-    use agent_tool::task_bridge::{call, TaskBridgeRequest, TaskOp, ENV_TASK_ENDPOINT};
-    let op = match a.next("state | wait | cancel")?.as_str() {
-        "state" => TaskOp::State,
-        "wait" => TaskOp::Wait,
-        "cancel" => TaskOp::Cancel,
-        other => return Err(bad(format!("task takes state | wait | cancel, not `{other}`"))),
-    };
+    use agent_tool::task_bridge::{call, TaskBridgeRequest, ENV_TASK_ENDPOINT};
+    let op = task_op(&a.next("state | cancel")?)?;
     let task_id = a.next("<task_id>")?;
-    let wait_ms = a
-        .get("wait-ms")
-        .map(|v| v.parse::<u64>().map_err(|_| bad("--wait-ms takes milliseconds")))
-        .transpose()?;
+    let wait_ms = None;
     let endpoint = std::env::var(ENV_TASK_ENDPOINT)
         .ok()
         .filter(|e| !e.is_empty())
@@ -2704,18 +2710,13 @@ fn inline_files(argv: Vec<String>) -> R<(Vec<String>, Option<String>)> {
 async fn remote_main(remote: crate::session_context::SessionClient, cmd: String, argv: Vec<String>) -> R<i32> {
     let sid = remote.ctx.session_id.clone();
     if cmd == "task" {
-        use agent_tool::task_bridge::{TaskBridgeRequest, TaskBridgeResponse, TaskOp};
+        use agent_tool::task_bridge::{TaskBridgeRequest, TaskBridgeResponse};
         let mut a = Args::parse(argv, &[]);
-        let op = match a.next("state | wait | cancel")?.as_str() {
-            "state" => TaskOp::State,
-            "wait" => TaskOp::Wait,
-            "cancel" => TaskOp::Cancel,
-            other => return Err(bad(format!("task takes state | wait | cancel, not `{other}`"))),
-        };
+        let op = task_op(&a.next("state | cancel")?)?;
         let request = TaskBridgeRequest {
             op,
             task_id: a.next("<task_id>")?,
-            wait_ms: a.num("wait-ms")?,
+            wait_ms: None,
         };
         let v = remote
             .call("session.task", json!({ "sid": sid, "request": request }))

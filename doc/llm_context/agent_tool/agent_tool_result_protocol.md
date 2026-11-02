@@ -499,11 +499,36 @@ Agent Tool 内部的完整返回。
 
 ### `check_after`
 
-秒，仅在 `status = pending` 时有意义：派发器把它当作这次调用内等待的上限（从返回时起算），取代 runtime 的等待预算。缺省时用预算 `RuntimeConfig.task_wait_ms`（默认 30 秒）。两种情况都受工具内等待上限（30 分钟）和 run 的 deadline 约束。
+秒，仅在 `status = pending` 时有意义：派发器把它当作这次调用内等待的上限（从返回时起算），取代 runtime 的等待预算。缺省时用预算 `RuntimeConfig.task_wait_ms`（默认 25 秒）。两种情况都受工具内等待上限（30 分钟）和 run 的 deadline 约束。
 
 ### `estimated_wait`
 
 可选，人读的预计等待时长文本（如 `check_task` 从 task 数据带出），仅在 `status = pending` 时有意义；宿主不读它。
+
+### `hints`
+
+可选，`[{ "text": "…", "once": "<tool>.<topic>[:<version>]" }]`：给模型的指引（渐进式披露），与 `output` 分开渲染，不得混进输出。带 `once` 的 hint 每个 session 只显示一次（键由工具定，版本号变了就再显示一次）；不带 `once` 的每次显示。
+
+处理全在 agent_tool 的派发器（`XllmToolManager::call_tool`，llm_context 看不见信封字段）：先按宿主的账本（`agent_tool::hints::HintLedger`）筛掉已显示过的 `once` hint，留下的写回信封并记账，然后渲染成固定结构，两种 loop 同形：
+
+```text
+<output>
+…输出…
+</output>
+<runtime_hints>
+- …
+</runtime_hints>
+```
+
+没有要显示的 hint 时结果文本不变（不加 `<output>` 包装）。function call 模式下这是 tool result 的文本；behavior 模式由 `XmlStepRenderer` 在 action 结果的 ```` ```output ```` 块之后输出同样的 `<runtime_hints>` 块（读信封里留下的 `hints`）。
+
+账本是宿主依赖（`XllmDeps.hint_ledger`，缺省每个工具集一份内存账本）：命名空间 `once` 按 session 存（xllm 写 run.json `hints_once`，libopendan 写 `SessionState.hints_once`），`dedup` 随 run，历史被重写（压缩、新 context）时清空。都不进 llm_context 快照。
+
+现有用法：`shell` 转 task 时的跟进说明（`once: "shell.task_followup"`）。
+
+### `dedup`
+
+可选，`{ "key": "…", "hint": "…" }`：同一个 run 里已经显示过同 `key` 的结果时，派发器把 `output` / `summary` 换成 `hint`、`detail` 换成 `{"dedup": key}`，模型只看到一句话。`key` 由工具定，应覆盖“内容相同”的全部条件。`read` / `read_file` 用 `read:<path>#<窗口参数>:<内容摘要>`：同一窗口内容未变时第二次只回“unchanged since you read it earlier in this run”。
 
 ## 单个 AgentToolResult 渲染规则
 
@@ -702,13 +727,16 @@ llm_context 不认识 task，循环里不等待，也没有让工具挂起 run �
 “仍在运行”之后由谁跟进是宿主决定的（`task_model::TaskFollowup`），跟进提示的措辞随之不同：
 
 - **xllm**：没有事件源，模型自己用 `wait_task` / `get_task_state` 跟进（每次调用内最多等 30 分钟），或在 `bash_core` 下用宿主的 task CLI（`XllmDeps.task_cli`，经 `XLLM_TASK_ENDPOINT` 连到同一个 resolver）。function_call 模式下模型回复时本 run 的 task 仍在运行，run 停为 paused（`last_error.kind = tasks_running`），之后 `xllm --resume [message]` 在同一个快照上接着跑。
-- **libopendan Session**（`HostProtocolFlavor::Session`）：提示写明 task 的结束会作为输入带回，不必等待。Session 在循环外跟进本 run 启动的 task，有未完成的 task 时 run 保活（Turn 不关闭）；task 结束后，结果作为输入块注入同一个 run，不伪装成工具结果：
+- **libopendan Session**（`HostProtocolFlavor::Session`）：提示写明 task 的结束会作为输入带回，不必等待（不注册 `wait_task`，task CLI 没有 `wait`）。Session 在循环外跟进本 run 启动的 task，有未完成的 task 时 run 保活（多 Turn 的 Work Session 由这次回复关闭 Turn）；task 结束后，结果作为输入块注入同一个 run，不伪装成工具结果：
 
   ```text
-  <<task_result task="<task_id>" call_id="<call_id>" status="…">>
-  task 的完整结果（与 wait_task 看到的文本相同，最多 16 KB）
+  <<task_result task="<task_id>" call_id="<call_id>" status="finished|failed|unknown">>
+  Call <call_id>: <tool> `<命令摘要>` — intent: <调用时的 intent>
+  task 的完整结果（与同步结束时这次调用的结果文本相同，最多 16 KB）
   <</task_result>>
   ```
+
+  task 的完整结果来自 `TaskResult.tool_result`：`shell` task 结束时用与同步路径同一个信封构造（`TaskResult::from_tool_result`），所以文本与 25 秒内结束时逐字一致。
 
 ### 打断与崩溃
 

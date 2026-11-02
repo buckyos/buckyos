@@ -164,7 +164,11 @@ fn arm_placeholder(sh: &Arc<Shared>) {
     });
 }
 
-fn status_of(s: &Session, tool: Option<String>) -> Option<(String, TurnTaskStatus)> {
+fn status_of(
+    s: &Session,
+    tool: Option<String>,
+    intent: Option<String>,
+) -> Option<(String, TurnTaskStatus)> {
     let binding = s.state.open_turn_task()?;
     let st = &s.state;
     let message = match (&st.waiting_for, st.run_state) {
@@ -175,7 +179,11 @@ fn status_of(s: &Session, tool: Option<String>) -> Option<(String, TurnTaskStatu
             WaitingKind::Input => "waiting for input".to_string(),
         },
         _ => match (&tool, &st.current_behavior) {
-            (Some(t), _) => format!("running {t}"),
+            // What the call is for, when it said so.
+            (Some(t), _) => match &intent {
+                Some(i) => format!("running {t}: {}", i.chars().take(160).collect::<String>()),
+                None => format!("running {t}"),
+            },
             (None, Some(b)) => format!("working ({b})"),
             (None, None) => "working".to_string(),
         },
@@ -199,7 +207,8 @@ pub(super) async fn sync_turn_task(sh: &Shared) {
         return;
     };
     let tool = sh.current_tool.lock().expect("current tool").clone();
-    let Some((task_id, status)) = status_of(&*sh.session.lock().await, tool) else {
+    let intent = sh.current_intent.lock().expect("current intent").clone();
+    let Some((task_id, status)) = status_of(&*sh.session.lock().await, tool, intent) else {
         return;
     };
     {

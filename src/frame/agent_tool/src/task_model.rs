@@ -23,8 +23,10 @@ use crate::result_view::{ToolResultStatusView, ToolResultView};
 /// waited for, the call returns to the LLM with the task's state by then.
 pub const MAX_IN_TOOL_WAIT_MS: u64 = 30 * 60_000;
 
-/// Default `wait_ms` of `wait_task` / of the `shell` auto mode.
-pub const DEFAULT_TASK_WAIT_MS: u64 = 30_000;
+/// Default in-call wait of a tool call for its task (`RuntimeConfig.task_wait_ms`,
+/// `wait_task`): a call that ends within it is synchronous, anything longer
+/// returns "still running, task X".
+pub const DEFAULT_TASK_WAIT_MS: u64 = 25_000;
 
 /// Terminal result of a task, in the shape of a tool result.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -34,6 +36,27 @@ pub struct TaskResult {
     pub output: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_result: Option<ToolResultView>,
+}
+
+impl TaskResult {
+    /// The end of a task whose work produced `result`: the text is what
+    /// the same result reads like when the call ends within its wait.
+    pub fn from_tool_result(result: &crate::AgentToolResult) -> Self {
+        Self {
+            success: result.status != crate::AgentToolStatus::Error,
+            output: result.observation_text(),
+            tool_result: ToolResultView::from_host(&Some(result.to_host())),
+        }
+    }
+
+    pub fn failed(&self) -> bool {
+        !self.success
+    }
+
+    /// Exit code of a command task, when it has one.
+    pub fn return_code(&self) -> Option<i32> {
+        self.tool_result.as_ref().and_then(|t| t.return_code)
+    }
 }
 
 /// State of a task as reported by its task manager.
@@ -190,6 +213,34 @@ impl TaskFollowup {
                             ));
                         }
                     }
+                }
+                s
+            }
+        }
+    }
+
+    /// How tasks are followed, for any task (`<task_id>` stands for its
+    /// id): the hint a result shows once per session.
+    pub fn general_hint(&self) -> String {
+        match self {
+            TaskFollowup::Tools => format!(
+                "A task is followed with `wait_task` (task_id, wait_ms up to {} min) to keep waiting, or `get_task_state` to check it later; `cancel_task` stops a cancellable task.",
+                MAX_IN_TOOL_WAIT_MS / 60_000
+            ),
+            TaskFollowup::Command(cli) => format!(
+                "A task is followed with `{cli} wait <task_id> --wait-ms <ms>` to keep waiting (give the shell call a larger wait_ms than that), or `{cli} state <task_id>` to check it later; `{cli} cancel <task_id>` stops a cancellable task."
+            ),
+            TaskFollowup::Input(cli) => {
+                let mut s = String::from(
+                    "A task's end comes back to you as input with its full result: there is no need to wait for it. Reply with where things stand, or go on with other work meanwhile.",
+                );
+                match cli {
+                    Some(cli) => s.push_str(&format!(
+                        " `{cli} state <task_id>` checks a task now; `{cli} cancel <task_id>` stops a cancellable one."
+                    )),
+                    None => s.push_str(
+                        " `get_task_state` checks a task now; `cancel_task` stops a cancellable one.",
+                    ),
                 }
                 s
             }

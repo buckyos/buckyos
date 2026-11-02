@@ -986,13 +986,15 @@ Agent 委派工作后，当前推理可以已经结束，而业务目标尚未�
 
 | 维度 | 模式一：调用内等待与 task 跟进 | 模式二：显式等待与主动订阅 | 模式三：环境弱订阅 / 半订阅 |
 |---|---|---|---|
-| 当前执行 | 调用在等待预算内返回；仍在运行时本次执行保活（不结束、不推理），等它的结果 | 本次执行可结束，等待新的运行机会 | 不负责挂起或延长执行 |
+| 当前执行 | 调用在等待预算内返回；仍在运行时本次执行保活（不结束、不推理），等它的结果；多 Turn 的 Work 以回复关闭本 Turn、run 停在原处 | 本次执行可结束，等待新的运行机会 | 不负责挂起或延长执行 |
 | 依赖如何表达 | 工具结果记录精确的 Task / call 依赖 | Agent 明确表达要关注的外部变化，由系统绑定订阅 | Topic、任务范围或显式配置决定相关背景 |
 | 推进来源 | Task 结束（按 Task 标识查询，通知只提前触发查询） | 匹配事件或业务超时事件，经 Runtime 调度 | 已有推理机会到来前检查，不自行唤醒 |
 | 模型可见载体 | 预算内是调用结果；之后是带调用标识的 task 结果输入 | 带来源的事件消息，可批量进入一次输入 | 与本次输入关联的环境块或可区分的观察材料 |
 | 主要用途 | 本次工具、构建、测试或明确子任务的有界等待 | 等人确认、跨 Agent 协作、Goal 持续跟踪 | 位置、时区、对象状态、相关感知与认知 |
 
 **模式一保留的是调用依赖。** Runtime 必须知道哪个 Task 属于哪个调用，结果交回时带上调用标识；事件通知只提示检查依赖，不能直接充当可信结果。调用内的等待预算到期时返回“仍在运行”或未知状态，不能伪造完成，也不意味着底层 Task 已取消。Task 的结束作为新输入回到同一次执行，不改写调用当初已经得到的结果。
+
+实现上模式一是“任务 + 隐式订阅”：工具结果一带 task id，会话就隐式订阅它——结局（完成 / 失败 / 未知）是 Active 事件，以 `<<task_result>>` 打开下一个 Turn；运行中的新输出是半订阅，只在每次推理前的 `<<background_context>>` 里呈现增量，自己不触发推理。模型不再调用等待类工具（Session 宿主不提供 `wait_task` / `task wait`），省掉那一次推理。
 
 这是一种由工具执行机制承接的等待，适合有界执行。它的主要风险是上下文陈旧：等待前读过的文件、对象或权限可能已经变化，回到同一次执行不会自动刷新这些已成功的读取。选择模式时要考虑信息有效期，不能只用固定的秒数或分钟数划线。
 
@@ -1026,7 +1028,11 @@ Agent 委派工作后，当前推理可以已经结束，而业务目标尚未�
 
 主动事件与普通 Message 可以共享输入调度、去重和批次提交机制，但必须保留各自身份。Work 的“无普通 Message input”不能被事件渲染后的模型角色绕过；针对执行中同一任务的用户反馈仍按 §6.3.1 写为 Task 修订，经半订阅送达。开放性的业务事件等待由 UI / Goal 承担。
 
-**超时需要区分三个层次。** 调用内的等待预算决定调用何时返回“仍在运行”；Runtime 的轮询或重新拉取用于检查是否已有状态变化；业务超时事件用于触发 Agent 的下一次判断。轮询一次不等于调用一次 LLM，等待状态也不会自动建立 Timer。业务需要防止漏通知时，应显式安排状态核对与超时兜底。
+**超时需要区分三个层次。** 调用内的等待预算决定调用何时返回“仍在运行”；Runtime 的轮询或重新拉取用于检查是否已有状态变化；业务超时事件用于触发 Agent 的下一次判断。轮询一次不等于调用一次 LLM。业务需要防止漏通知时，应显式安排状态核对与超时兜底。
+
+**Work 的 timer 是隐式订阅。** 内建 `work` 模板带 `_task_watch_timer`（`timer:task_watch`，Active）：会话在 Waiting 中等自己启动的工作（在跟的 task / 要听取的子 Session）且没有打开的 Turn 时，runner 每 `policy.tick_secs`（缺省 30 秒，`agent.toml [session.work] tick_secs` 可配，0 关闭）为它产生一条 `tick` 输入，打开一个 Turn 让模型说一句现状；不门控，省推理靠调大间隔。timer 由 runner 产生，不需要输入队列，也不经 Timer bridge。
+
+**背景统一为推理前注入。** behavior `[input] background = "before_inference"` 时，宿主在每次推理前（Turn 的第一次推理、每批工具结果之后）检查候选行：在跟 task 自上次呈现以来的新输出（每 task 一行，最多 2 KB，只给增量）、子 Session、TodoList；有变化就注入一条 `<<background_context>>`，没有就不注入。task 的运行中变化只走这条路，不进 `pending_events`。
 
 Session / behavior 的配置需要分别表达以下职责，具体字段不在本架构中冻结：
 
@@ -1150,6 +1156,8 @@ Memory 也可以通过 Topic 发现相关变化，但不必把它和外部对象
 建立映射时保留 Work / Turn / run、父任务、创建来源及幂等键，运行、等待和终局状态由有权推进该工作的执行方更新。任务服务的状态投影不反向改写任务书；最终交付仍由 Report 与产物说明。
 
 外部暂停或取消如果需要控制 Session，应转成经过授权的控制请求，由 Session 处理并报告实际结果；不能仅修改 TaskMgr 的显示状态就宣称执行已停止。没有接入任务服务的运行形态也应保留必要的本地执行记录与依赖，不影响 Session 的持久恢复合同。
+
+工具层的 task 一律在执行器进程内：转出的 `shell` 命令是 `local:shell:<call_id>`，由会话自己跟进，不写进 TaskMgr（MessageHub 的 Turn task 下因此看不到子命令）；Loader 退出前把在跑的命令交给 OS，重启后按执行目录的 `exit` 回填，没有则为 unknown 由模型决定。只有命令本身是 krpc、服务端返回任务 id 的工具（`ask_user` 的 `human.input/v1`、AICC）才产生 TaskMgr 任务（`t-`），Session 只读地解析它们。
 
 ## 13. Agent Homepage 与目标管理
 
@@ -1446,12 +1454,12 @@ Context Fork、Work 执行、Final Report、已有 Task 等待和 Agent Memory �
 
 | 能力 | 现有实现基础 | 面向新设计的迁移要求 |
 |---|---|---|
-| Session 分类与输入策略 | 内建模板仍为 `work / ui / self_improve / self_check`；默认 Work 单 Turn、无输入队列。 | 引入 Goal 职责与生命周期；保留 Work 无普通 Message input 的边界，补齐执行中观察。 |
-| task 跟进 | 调用在 runtime 的等待预算（`runtime.task_wait_ms`）内返回；仍在运行的 Task 记在 run 上，回复 / Yield 时 run 保活（`waiting_for = tool / children`），按 Task ID 查询，Finished 或 Unknown 时以 `<<task_result>>` 输入回到同一 run / Turn；崩溃时在途的调用由工具管理器按 call_id 找回，不盲目重放。 | 复用精确依赖与恢复机制；限制开放业务等待，明确到期仍运行和旧读取失效的处理。 |
+| Session 分类与输入策略 | 内建模板 `work / ui / self_check / goal`；Work 无输入队列、多 Turn（回复关闭 Turn，task 结局 / timer tick / 子 Session 打开下一个），只有 `report(is_end=true)` 结束（`completion = explicit_report`）。 | 引入 Goal 职责与生命周期；保留 Work 无普通 Message input 的边界，补齐执行中观察。 |
+| task 跟进 | 调用在 runtime 的等待预算（`runtime.task_wait_ms`，缺省 25 秒）内返回；仍在运行的 Task 记在 run 上，回复 / Yield 时 run 保活（`waiting_for = tool / children`；多 Turn Work 同时关闭 Turn，run 停在原处），按 Task ID 查询，结局（`finished / failed / unknown`）以 `<<task_result>>` 输入回到同一 run（多 Turn Work 打开下一个 Turn，每个 Turn 重置工具预算）；无事可等的回复先得到一次 `system:runner` 纠正（nudge）再失败；崩溃时在途的调用由工具管理器按 call_id 找回，不盲目重放。 | 复用精确依赖与恢复机制；限制开放业务等待，明确到期仍运行和旧读取失效的处理。 |
 | 订阅与事件身份 | `subscriptions` 支持 `active / semi`，来源为 `session / object_event / task / timer / system`；`subscribe / unsubscribe` 控制修改配置。总线区分 `msg / event / control`。 | 复用结构化事件与订阅；完善业务意图到订阅、失效、超时及恢复的合同，不把自然语言意图当作已登记。 |
 | 串行推进与批次 | Runner 持 Session lease；active 事件留在输入总线，支持 `single / batch`，默认 batch；semi 另存 `state.pending_events`。 | 保持单执行者与逻辑队列分工，补齐跨节点协调，按业务语义设定合并及消费策略。 |
 | Task 修订 | 尚无修订概念；订阅已支持 `task:<task_id>` 来源（`SubscriptionSource::Task`），可承载任务事件。 | 新增 Task 修订的数据与授权；Work 创建时由 Runtime 订阅自身 Task，子 Session 由父 Session 按子对象范围订阅；修订必达，不受 Memory 预算截断；Final Report 记录最后观察的修订编号。 |
-| 半订阅时机 | checkpoint 路由并保存 Observe，但不注入；目前在 `on_init / on_input / on_context_switch` 受控输入前展示。 | 扩展为默认每次推理前观察，包括工具返回后的继续推理；明确不同推理模式中的挂接位置与显式关闭方式。 |
+| 半订阅时机 | 总线 Semi 事件在受控输入前展示（`semi_subscription_snapshot`）；behavior 的 `[input] background = "before_inference"`（work_simple）在每次推理前注入 `<<background_context>>`（在跟 task 的新输出增量、子 Session、TodoList），`"after_tools"`（plan_simple）只在工具结果之后。 | 扩展为默认每次推理前观察，包括工具返回后的继续推理；明确不同推理模式中的挂接位置与显式关闭方式。 |
 | 半订阅载体 | `prompt.semi_subscription_snapshot` 渲染独立的 snapshot user message，与其后的受控输入同批提交。主动事件通过 `input.events / input.items` 等视图渲染。 | 保留来源可辨性与原子提交，收敛与当前输入关联的环境 block / 观察材料格式；当前独立消息不等于目标 UI 语义已完成。 |
 | 合并与观察进度 | semi 按 `(subscription_id, source)` 分组；`latest / terminal` 分槽，槽内比较版本，终态不被非终态覆盖。仅按 receipt 清理实际展示版本。active 没有同等状态合并，当前也没有通用语义 Override。 | 复用版本与精确确认机制；区分状态维度、独立要求及显式纠正关系，再实现适用事件的 Coalesce / Override。 |
 | Topic 与成本控制 | 有 Topic 字段、显式/隐式订阅和每批变化预算，已有默认用户时区半订阅；未形成旁路 LLM 维护 Topic、自动重订阅与统一相关 Memory 观察链路。 | 实现 §12.10 的范围选择、增量观察、变化幅度与间隔控制，保证相关新感知及时可见。 |

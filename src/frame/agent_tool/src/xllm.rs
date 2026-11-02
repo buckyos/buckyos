@@ -106,9 +106,9 @@ use crate::runtime::files::LocalFileBackend;
 use crate::runtime::{
     AgentRuntime, RuntimeConfig, RuntimeDescriptor, RuntimeInfo, RuntimeOpenCtx, Sandbox,
 };
-use crate::tasks::{
-    task_tools, CompositeTaskResolver, InProcessTaskManager, ShellTaskContext, ShellTaskManager,
-};
+use crate::tasks::{task_tools, CompositeTaskResolver, InProcessTaskManager};
+use crate::hints::{apply_hints, render_with_hints, HintLedger, MemoryHintLedger, HINT_NS_DEDUP};
+use crate::intent::{take_intent, with_intent, IntentPolicy};
 use crate::tool::TypedToolHandle;
 use crate::{
     AgentTool, AgentToolError, AgentToolResult, AgentToolStatus, BinOverlayConfig, EditFileTool,
@@ -3810,13 +3810,13 @@ pub struct XllmDeps {
     pub buckyos_tasks: Option<Arc<dyn RunningTaskResolver>>,
     /// The task manager of this process (`local:` tasks): one per process,
     /// so a task outlives the run (and the tool set) that handed it over.
+    /// Every `shell` command that outlives its wait becomes a task here; a
+    /// host hands them to the OS before it ends (`release_running`).
     pub local_tasks: Arc<InProcessTaskManager>,
-    /// Where `shell` hands a command that outlived its wait. `None`: the
-    /// process's own task manager (`local_tasks`). A host whose tasks live
-    /// in a task service (the zone's TaskMgr) sets its manager here.
-    pub shell_tasks: Option<Arc<dyn ShellTaskManager>>,
-    /// What a handed-over command belongs to (set by the host per run).
-    pub shell_task_context: ShellTaskContext,
+    /// What the model was already shown of results' hints and dedup keys
+    /// (`once` per session, `dedup` per run). `None`: one in memory per
+    /// tool set.
+    pub hint_ledger: Option<Arc<dyn HintLedger>>,
     pub runtime_env: BTreeMap<String, String>,
     pub runtime_path_prefix: Vec<PathBuf>,
     /// 为 true 时不获取工作目录互斥锁（宿主自行协调，例如 libOpenDAN 的
@@ -3885,8 +3885,7 @@ impl Default for XllmDeps {
             node_executor: None,
             buckyos_tasks: None,
             local_tasks: InProcessTaskManager::new(),
-            shell_tasks: None,
-            shell_task_context: ShellTaskContext::default(),
+            hint_ledger: None,
             runtime_env: BTreeMap::new(),
             runtime_path_prefix: Vec::new(),
             skip_workdir_lock: false,
@@ -3968,6 +3967,13 @@ pub struct XllmToolManager {
     /// [`XllmToolManager::set_recovering`]): its call id and the runtime's
     /// account of it.
     recovering: Mutex<Option<(String, String)>>,
+    /// Hints / dedup keys already shown (see [`crate::hints`]).
+    hints: Arc<dyn HintLedger>,
+    /// Whether a tool's schema offers `intent` (the runtime's standard
+    /// tools: optional); taken out before the tool runs.
+    intent: BTreeMap<String, IntentPolicy>,
+    /// The intent each call stated, by call id.
+    intents: Mutex<BTreeMap<String, String>>,
 }
 
 impl XllmToolManager {
@@ -4017,7 +4023,43 @@ impl XllmToolManager {
             task_bridge: None,
             task_wait_ms: AtomicU64::new(DEFAULT_TASK_WAIT_MS),
             recovering: Mutex::new(None),
+            hints: MemoryHintLedger::new(),
+            intent: BTreeMap::new(),
+            intents: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    /// The ledger hints and dedup keys are kept in.
+    pub fn set_hint_ledger(&mut self, ledger: Arc<dyn HintLedger>) {
+        self.hints = ledger;
+    }
+
+    pub fn hint_ledger(&self) -> Arc<dyn HintLedger> {
+        self.hints.clone()
+    }
+
+    /// The history was rewritten (compression, a derived context): results
+    /// shown before are no longer in it.
+    pub fn clear_dedup(&self) {
+        self.hints.clear(HINT_NS_DEDUP);
+    }
+
+    /// Whether `tool`'s schema offers `intent`.
+    pub fn set_intent_policy(&mut self, tool: &str, policy: IntentPolicy) {
+        if policy == IntentPolicy::Off {
+            self.intent.remove(tool);
+        } else {
+            self.intent.insert(tool.to_string(), policy);
+        }
+    }
+
+    pub fn intent_policy(&self, tool: &str) -> IntentPolicy {
+        self.intent.get(tool).copied().unwrap_or_default()
+    }
+
+    /// The intent call `call_id` stated, if any.
+    pub fn intent_of(&self, call_id: &str) -> Option<String> {
+        self.intents.lock().expect("intents").get(call_id).cloned()
     }
 
     /// The runtime's wait budget for a task inside one call.
@@ -4196,6 +4238,25 @@ impl ToolManager for XllmToolManager {
                 host: None,
             });
         };
+        // `intent` is host metadata: recorded, never passed to the tool.
+        let call = match take_intent(&call, self.intent_policy(&call.name)) {
+            Ok((exec, intent)) => {
+                if let Some(intent) = intent {
+                    self.intents
+                        .lock()
+                        .expect("intents")
+                        .insert(call_id.clone(), intent);
+                }
+                exec
+            }
+            Err(message) => {
+                return Ok(Observation::Error {
+                    call_id,
+                    message,
+                    host: None,
+                })
+            }
+        };
         if let Some(reason) = self.take_recovering(&call_id) {
             if let Some(obs) = self.recover_call(&call, tool.as_ref(), reason).await {
                 return Ok(obs);
@@ -4253,7 +4314,7 @@ impl ToolManager for XllmToolManager {
                 self.wait_in_tool(call_id, &task_id, wait_ms, &call_ctx)
                     .await
             }
-            Ok(res) => {
+            Ok(mut res) => {
                 if res.status == AgentToolStatus::Success
                     && matches!(call.name.as_str(), TOOL_WRITE_FILE | TOOL_EDIT_FILE)
                 {
@@ -4270,7 +4331,8 @@ impl ToolManager for XllmToolManager {
                         }
                     }
                 }
-                map_result_to_observation(call_id, res)
+                let shown = apply_hints(&mut res, self.hints.as_ref());
+                map_result_to_observation_with_hints(call_id, res, &shown)
             }
             Err(AgentToolError::Transport {
                 message,
@@ -4314,31 +4376,31 @@ impl ToolManager for XllmToolManager {
             .values()
             .map(|t| {
                 let spec = t.spec();
-                ToolSpecLite {
-                    name: spec.name,
-                    description: spec.description,
-                    args_schema: spec.args_schema,
-                }
+                let policy = self.intent_policy(&spec.name);
+                with_intent(
+                    ToolSpecLite {
+                        name: spec.name,
+                        description: spec.description,
+                        args_schema: spec.args_schema,
+                    },
+                    policy,
+                )
             })
             .collect()
     }
 }
 
-fn map_result_to_observation(call_id: String, result: AgentToolResult) -> Observation {
+/// The observation of `result`, with the hints shown after its text
+/// (`<output>` / `<runtime_hints>`).
+fn map_result_to_observation_with_hints(
+    call_id: String,
+    result: AgentToolResult,
+    hints: &[String],
+) -> Observation {
     let host = Some(result.to_host());
+    let text = render_with_hints(&result.observation_text(), hints);
     match result.status {
         AgentToolStatus::Success | AgentToolStatus::Pending => {
-            let text = result
-                .output
-                .clone()
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| {
-                    if result.summary.trim().is_empty() {
-                        result.details.to_string()
-                    } else {
-                        result.summary.clone()
-                    }
-                });
             let bytes = text.len();
             let truncated = result
                 .details
@@ -4353,25 +4415,11 @@ fn map_result_to_observation(call_id: String, result: AgentToolResult) -> Observ
                 host,
             }
         }
-        AgentToolStatus::Error => {
-            let summary = result.summary.trim();
-            let output = result
-                .output
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty());
-            let message = match (summary.is_empty(), output) {
-                (false, Some(out)) => format!("{summary}\n{out}"),
-                (false, None) => summary.to_string(),
-                (true, Some(out)) => out.to_string(),
-                (true, None) => "tool error".to_string(),
-            };
-            Observation::Error {
-                call_id,
-                message,
-                host,
-            }
-        }
+        AgentToolStatus::Error => Observation::Error {
+            call_id,
+            message: text,
+            host,
+        },
     }
 }
 
@@ -4590,7 +4638,9 @@ struct ShellExtras {
     followup: crate::task_model::TaskFollowup,
     endpoint: Option<String>,
     note: Option<String>,
-    context: ShellTaskContext,
+    run: Option<RunBindingSlot>,
+    /// A session host: the wait is the runtime's, not the model's.
+    expose_wait_ms: bool,
     urls: Option<Arc<dyn crate::read_tool::UrlReader>>,
 }
 
@@ -4604,7 +4654,7 @@ fn builtin_bash_group(
     files: Arc<dyn FileBackend>,
     shell: &ShellSettings,
     runtime: ShellRuntimeNote,
-    tasks: Arc<dyn ShellTaskManager>,
+    tasks: Arc<InProcessTaskManager>,
     core: bool,
     extras: ShellExtras,
 ) -> Vec<Arc<dyn AgentTool>> {
@@ -4630,15 +4680,16 @@ fn builtin_bash_group(
         .with_default_wait_ms(shell.wait_ms)
         .with_runtime_note(runtime)
         .with_tasks(tasks)
-        .with_task_context(extras.context)
+        .with_run(extras.run)
+        .with_expose_wait_ms(extras.expose_wait_ms)
         .with_task_followup(extras.followup)
         .with_task_endpoint(extras.endpoint)
         .with_note(extras.note);
     let reader: Arc<dyn AgentTool> = if core {
         Arc::new(crate::read_tool::ReadTool::new(cfg.clone()).with_urls(extras.urls.clone()))
     } else {
-        Arc::new(TypedToolHandle::with_null_host(ReadFileTool::new(
-            cfg.clone(),
+        Arc::new(crate::read_tool::DedupReadFile::new(Arc::new(
+            TypedToolHandle::with_null_host(ReadFileTool::new(cfg.clone())),
         )))
     };
     vec![
@@ -4685,13 +4736,12 @@ async fn expand_tool_sources(
                         "unknown builtin tool group `{groupname}` (available: {BUILTIN_TOOL_GROUP_BASH}, {BUILTIN_TOOL_GROUP_BASH_CORE}, executor)"
                     )));
                 }
+                let session = matches!(deps.host_protocol, HostProtocolFlavor::Session { .. });
                 let mut extras = ShellExtras {
                     note: deps.shell_note.clone(),
                     urls: deps.url_reader.clone(),
-                    context: ShellTaskContext {
-                        run: Some(manager.run_binding()),
-                        ..deps.shell_task_context.clone()
-                    },
+                    run: Some(manager.run_binding()),
+                    expose_wait_ms: !session,
                     ..Default::default()
                 };
                 // `bash_core` follows tasks with the host's command when a
@@ -4709,7 +4759,7 @@ async fn expand_tool_sources(
                 }
                 // A session host follows the tasks itself and brings their
                 // ends back as input: nothing for the model to wait on.
-                if matches!(deps.host_protocol, HostProtocolFlavor::Session { .. }) {
+                if session {
                     let cli = match &extras.followup {
                         crate::task_model::TaskFollowup::Command(cli) => Some(cli.clone()),
                         _ => None,
@@ -4717,12 +4767,8 @@ async fn expand_tool_sources(
                     extras.followup = crate::task_model::TaskFollowup::Input(cli);
                     manager.resolver.set_followup(extras.followup.clone());
                 }
-                // A host's task manager takes the handed-over commands;
-                // without one they stay in this process.
-                let tasks: Arc<dyn ShellTaskManager> = match &deps.shell_tasks {
-                    Some(host) => host.clone(),
-                    None => manager.tasks(),
-                };
+                // Handed-over commands stay tasks of this process.
+                let tasks = manager.tasks();
                 for t in builtin_bash_group(
                     workdir,
                     filesystem_policy,
@@ -4734,13 +4780,21 @@ async fn expand_tool_sources(
                     core,
                     extras,
                 ) {
-                    out.push(manager.register(t, &desc)?);
+                    // The runtime's standard tools take an optional intent.
+                    let name = t.spec().name;
+                    let r = manager.register(t, &desc)?;
+                    manager.set_intent_policy(&name, IntentPolicy::Optional);
+                    out.push(r);
                 }
                 if task_tools_needed {
                     // The model follows a command that became a task with
                     // these (§4); registered with the group that can create
-                    // tasks.
+                    // tasks. A session brings a task's end back as input:
+                    // there is nothing to wait for.
                     for t in task_tools(manager.resolver()) {
+                        if session && t.spec().name == crate::tasks::TOOL_WAIT_TASK {
+                            continue;
+                        }
                         out.push(manager.register(t, &desc)?);
                     }
                 }
@@ -4809,6 +4863,9 @@ pub(crate) async fn build_runtime_toolset(
         deps.buckyos_tasks.clone(),
     );
     manager.set_task_wait_ms(task_wait_ms);
+    if let Some(ledger) = &deps.hint_ledger {
+        manager.set_hint_ledger(ledger.clone());
+    }
     let mut eff = EffectiveTools {
         enabled,
         filesystem_policy,
@@ -5941,6 +5998,10 @@ pub struct RunRecord {
     /// 非空时任何执行者都不得推理或调用工具（xllm 拒绝接手）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_commit_pending: Option<u64>,
+    /// Hints of results shown once in this run (`once` keys of the hint
+    /// ledger): a resumed run does not show them again.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hints_once: Vec<String>,
     /// 宿主 Run 停在 behavior 交接点：模型声明了 `next_behavior`，转移由
     /// 宿主 Session 提交。非空时状态为 `paused`，任何执行者都不得继续推理；
     /// 宿主重新打开该 Run 执行时清除。
@@ -6092,6 +6153,7 @@ impl RunRecord {
             host: None,
             host_commit_pending: None,
             handover: None,
+            hints_once: Vec::new(),
         }
     }
 
@@ -7581,6 +7643,7 @@ impl HostedTask {
             host: Some(host),
             host_commit_pending: None,
             handover: None,
+            hints_once: Vec::new(),
         }
     }
 
@@ -8112,6 +8175,10 @@ impl XllmRun {
         f(&mut rec);
         rec.updated_at_ms = now_ms();
         rec.artifacts = self.manager.artifacts();
+        rec.hints_once = self
+            .manager
+            .hint_ledger()
+            .keys(crate::hints::HINT_NS_ONCE);
         self.store.write_record(&rec)
     }
 
@@ -8256,6 +8323,7 @@ impl XllmRun {
             host: None,
             host_commit_pending: None,
             handover: None,
+            hints_once: Vec::new(),
         };
         store.write_record(&record)?;
         let record = Arc::new(Mutex::new(record));
@@ -8447,7 +8515,7 @@ impl XllmRun {
         };
         let mut runtime_deps = deps.clone();
         runtime_deps.runtime = Some(runtime.clone());
-        let manager = rebuild_toolset(&record, &runtime_deps).await?;
+        let mut manager = rebuild_toolset(&record, &runtime_deps).await?;
 
         let mut record = record;
         if let Some(v) = limits.max_tokens {
@@ -8493,6 +8561,12 @@ impl XllmRun {
         record.pid = std::process::id();
         record.updated_at_ms = now_ms();
         store.write_record(&record)?;
+        if deps.hint_ledger.is_none() && !record.hints_once.is_empty() {
+            manager.set_hint_ledger(MemoryHintLedger::seeded(
+                crate::hints::HINT_NS_ONCE,
+                record.hints_once.iter().cloned(),
+            ));
+        }
         let record = Arc::new(Mutex::new(record));
         let manager = Arc::new(manager);
         let waist_deps = Self::build_waist_deps(
@@ -9252,6 +9326,8 @@ impl XllmRun {
         } else {
             ResumeFill::RewrittenHistory { history: rewritten }
         };
+        // Results shown before are no longer in the history.
+        self.manager.clear_dedup();
         let resumed = LLMContext::resume(snapshot, fill, self.waist_deps.clone())
             .map_err(|e| XllmError::Other(format!("resume after compaction failed: {e}")))?;
         let hook = SnapshotHook {
@@ -12699,14 +12775,12 @@ there]]></write_file>
             )
             .await
             .unwrap();
-        let Observation::Success { content, .. } = obs else {
+        let Observation::Success { content, host, .. } = obs else {
             panic!("{obs:?}")
         };
-        assert!(content.as_str().unwrap().contains("late"), "{content}");
-        assert!(
-            content.as_str().unwrap().contains("exited with code 0"),
-            "{content}"
-        );
+        // The task's end reads like the call had ended within its wait.
+        assert_eq!(content.as_str().unwrap(), "early\nlate\n", "{content}");
+        assert_eq!(ToolResultView::from_host(&host).unwrap().return_code, Some(0));
         let dir_obs = manager
             .call_tool(
                 AiToolCall {
@@ -12782,7 +12856,8 @@ there]]></write_file>
             .unwrap();
         let Observation::Success { content, host, .. } = obs else { panic!("{obs:?}") };
         let text = content.as_str().unwrap();
-        assert!(text.contains("agent-session task wait local:shell:c1"), "{text}");
+        assert!(text.contains("it continues as task local:shell:c1"), "{text}");
+        assert!(text.contains("<runtime_hints>\n- A task is followed with `agent-session task wait <task_id>"), "{text}");
         let task_id = ToolResultView::from_host(&host).unwrap().task_id.unwrap();
         let req = |op, wait_ms| crate::task_bridge::TaskBridgeRequest {
             op,
@@ -12807,7 +12882,7 @@ there]]></write_file>
             panic!()
         };
         assert_eq!(done.text, content.as_str().unwrap());
-        assert!(done.text.contains("late") && done.text.contains("exited with code 0"));
+        assert!(done.text.contains("late"), "{}", done.text);
         let unknown = crate::task_bridge::call(
             &endpoint,
             &crate::task_bridge::TaskBridgeRequest {
@@ -12826,6 +12901,102 @@ there]]></write_file>
         assert!(crate::task_bridge::call(&endpoint, &req(crate::task_bridge::TaskOp::State, None))
             .await
             .is_err());
+    }
+
+    /// A session host (simple Work Session TODO §3.1 / §3.6 / §3.8): the
+    /// wait is the runtime's (no `wait_ms`, no `wait_task`), the standard
+    /// tools take an optional intent, the task followup is said once and a
+    /// file read again unchanged is one line.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn session_host_shell_is_followed_by_input() {
+        let env = Env::new();
+        std::fs::write(env.workdir.join("notes.txt"), "alpha\nbeta\n").unwrap();
+        let cfg = json!({
+            "tools": { "enabled": true, "tools": [{"groupname": "bash"}] },
+            "runtime": {"task_wait_ms": 200}
+        });
+        let mut deps = env.deps(ScriptedLlm::new(vec![]));
+        deps.host_protocol = HostProtocolFlavor::Session {
+            intro: "intro".into(),
+        };
+        let hosted = XllmTask::prepare_hosted(&env.workdir, &cfg, "s.json", "", &deps)
+            .await
+            .unwrap();
+        let names: Vec<String> = hosted.config.tools.native.iter().map(|t| t.name.clone()).collect();
+        assert_eq!(
+            names,
+            ["read_file", "write_file", "edit_file", "shell", "get_task_state", "cancel_task"]
+        );
+        let manager = hosted.manager;
+        let specs = manager.list_tool_specs();
+        let shell = specs.iter().find(|t| t.name == TOOL_SHELL).unwrap();
+        assert!(shell.args_schema["properties"].get("wait_ms").is_none(), "{}", shell.args_schema);
+        assert!(!shell.description.contains("wait_ms"), "{}", shell.description);
+        assert!(shell.description.contains("comes back to you as input"), "{}", shell.description);
+        assert!(shell.args_schema["properties"]["intent"].is_object());
+        assert_eq!(shell.args_schema["required"], json!(["command"]));
+        let get = specs.iter().find(|t| t.name == "get_task_state").unwrap();
+        assert!(get.args_schema["properties"].get("intent").is_none());
+
+        let call = |command: &str, id: &str, intent: Option<&str>| {
+            let mut args = HashMap::from([("command".to_string(), Value::String(command.into()))]);
+            if let Some(i) = intent {
+                args.insert("intent".to_string(), Value::String(i.into()));
+            }
+            AiToolCall {
+                name: TOOL_SHELL.into(),
+                args,
+                call_id: id.into(),
+            }
+        };
+        // A model-given wait_ms is not the model's to choose here.
+        let mut long = call("sleep 1; echo built", "c1", Some("build it"));
+        long.args.insert("wait_ms".into(), json!(5000));
+        let obs = manager.call_tool(long, ToolCallCtx::noop()).await.unwrap();
+        let Observation::Success { content, host, .. } = obs else { panic!("{obs:?}") };
+        let text = content.as_str().unwrap();
+        assert!(text.contains("it continues as task local:shell:c1"), "{text}");
+        assert!(text.contains("<runtime_hints>") && text.contains("comes back to you as input"), "{text}");
+        assert!(!text.contains("wait_task") && !text.contains("task wait"), "{text}");
+        assert_eq!(manager.intent_of("c1").as_deref(), Some("build it"));
+        assert_eq!(
+            ToolResultView::from_host(&host).unwrap().hint_texts().len(),
+            1,
+            "the hint travels in the envelope too"
+        );
+        let obs = manager
+            .call_tool(call("sleep 1; echo again", "c2", None), ToolCallCtx::noop())
+            .await
+            .unwrap();
+        let Observation::Success { content, .. } = obs else { panic!("{obs:?}") };
+        let text = content.as_str().unwrap();
+        assert!(text.contains("local:shell:c2") && !text.contains("<runtime_hints>"), "said once: {text}");
+        assert!(manager.intent_of("c2").is_none());
+
+        let read = |id: &str| AiToolCall {
+            name: crate::TOOL_READ_FILE.into(),
+            args: HashMap::from([("path".to_string(), Value::String("notes.txt".into()))]),
+            call_id: id.into(),
+        };
+        let first = manager.call_tool(read("r1"), ToolCallCtx::noop()).await.unwrap();
+        let Observation::Success { content, .. } = first else { panic!("{first:?}") };
+        assert!(content.as_str().unwrap().contains("beta"), "{content}");
+        let again = manager.call_tool(read("r2"), ToolCallCtx::noop()).await.unwrap();
+        let Observation::Success { content, .. } = again else { panic!("{again:?}") };
+        assert_eq!(
+            content.as_str().unwrap(),
+            "`notes.txt` is unchanged since you read it earlier in this run; use that content."
+        );
+        std::fs::write(env.workdir.join("notes.txt"), "alpha\ngamma\n").unwrap();
+        let changed = manager.call_tool(read("r3"), ToolCallCtx::noop()).await.unwrap();
+        let Observation::Success { content, .. } = changed else { panic!("{changed:?}") };
+        assert!(content.as_str().unwrap().contains("gamma"), "{content}");
+        // A rewritten history no longer holds the earlier read.
+        manager.clear_dedup();
+        let after = manager.call_tool(read("r4"), ToolCallCtx::noop()).await.unwrap();
+        let Observation::Success { content, .. } = after else { panic!("{after:?}") };
+        assert!(content.as_str().unwrap().contains("gamma"), "{content}");
     }
 
     #[tokio::test]

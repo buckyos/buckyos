@@ -3,10 +3,13 @@
 //!
 //! - [`InProcessTaskManager`]: the task manager of this executor process.
 //!   Holds the commands the `shell` tool handed over in `auto` mode
-//!   (`local:shell:<call_id>`) and any other process-local task
-//!   (`local:<kind>:<n>`). Nothing here is persisted: a restarted executor
-//!   answers `Unknown` for a task it did not start, except a `shell` task
-//!   whose execution directory recorded an `exit`.
+//!   (`local:shell:<call_id>`) — every host keeps its shell tasks here — and
+//!   any other process-local task (`local:<kind>:<n>`). Nothing here is
+//!   persisted: a restarted executor answers for a `shell` task from its
+//!   execution directory (`exit` recorded → finished, otherwise unknown),
+//!   and `Unknown` for any other task it did not start. A host that ends
+//!   while tasks run hands them to the OS first
+//!   ([`InProcessTaskManager::release_running`]).
 //! - [`CompositeTaskResolver`]: the `RunningTaskResolver` handed to the
 //!   waist. Dispatches by task id: `local:` ids to the in-process manager,
 //!   anything else to the optional buckyos task-mgr resolver the host may
@@ -33,8 +36,8 @@ use crate::task_model::{
 use serde_json::{json, Value as Json};
 
 use crate::llm_bash::{
-    exec_dir_for, read_exit_file, read_file_tail, CommandHandle, RunBinding, RunBindingSlot,
-    OUTPUT_TAIL_BYTES,
+    exec_dir_for, read_exit_file, read_file_tail, shell_cancelled_result, shell_finished_result,
+    CommandHandle, RunBinding, RunBindingSlot, ShellResultShape, OUTPUT_TAIL_BYTES,
 };
 use crate::result_view::ToolResultView;
 use crate::tool::CallingConventions;
@@ -56,86 +59,6 @@ pub(crate) fn next_local_seq() -> u64 {
     LOCAL_SEQ.fetch_add(1, Ordering::SeqCst)
 }
 
-/// Where the task of the session's current Turn is read from at handover
-/// (the Turn opens inside the run, after its tools were assembled).
-pub type ParentTaskLookup = Arc<dyn Fn() -> Option<String> + Send + Sync>;
-
-/// What a `shell` command handed over as a task belongs to. Filled by the
-/// host per run; empty for a standalone executor.
-#[derive(Clone, Default)]
-pub struct ShellTaskContext {
-    /// The Agent Session the command runs for.
-    pub session_id: Option<String>,
-    /// The task the session's Turn is (the handed-over command hangs under
-    /// it in a task tree), looked up at handover.
-    pub parent_task: Option<ParentTaskLookup>,
-    /// The run (and its directory, for the execution directory of the
-    /// command): bound late, read at handover.
-    pub run: Option<RunBindingSlot>,
-}
-
-impl std::fmt::Debug for ShellTaskContext {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ShellTaskContext")
-            .field("session_id", &self.session_id)
-            .field("parent_task", &self.parent_task.is_some())
-            .field("run", &self.run_binding())
-            .finish()
-    }
-}
-
-impl ShellTaskContext {
-    /// The run binding at this moment.
-    pub fn run_binding(&self) -> Option<RunBinding> {
-        self.run.as_ref().and_then(|r| r.lock().ok()?.clone())
-    }
-
-    /// The task of the session's current Turn, now.
-    pub fn parent_task(&self) -> Option<String> {
-        self.parent_task.as_ref().and_then(|f| f())
-    }
-}
-
-/// Where `shell` hands a command that outlived its wait (`auto` mode): the
-/// task manager of this process ([`InProcessTaskManager`]), or one a host
-/// provides (e.g. the zone's TaskMgr, [`crate::tasks_zone::ZoneShellTasks`]).
-#[async_trait]
-pub trait ShellTaskManager: Send + Sync {
-    /// Take over `task` (its handle included); returns the id the model
-    /// follows the task with.
-    async fn take_over(
-        &self,
-        ctx: &ShellTaskContext,
-        call_id: Option<&str>,
-        task: ShellTask,
-    ) -> String;
-
-    /// The resolver of the tasks this manager creates, with `active()`
-    /// limited to `session_id` when given. `None`: they are `local:` tasks,
-    /// answered by the [`CompositeTaskResolver`] of the run.
-    fn resolver(&self, session_id: Option<&str>) -> Option<Arc<dyn RunningTaskResolver>>;
-
-    /// Take over the tasks a previous process of this host left behind
-    /// (called once at start). Nothing to do for a process-local manager.
-    async fn recover(&self) {}
-}
-
-#[async_trait]
-impl ShellTaskManager for InProcessTaskManager {
-    async fn take_over(
-        &self,
-        _ctx: &ShellTaskContext,
-        call_id: Option<&str>,
-        task: ShellTask,
-    ) -> String {
-        self.register_shell(call_id, task)
-    }
-
-    fn resolver(&self, _session_id: Option<&str>) -> Option<Arc<dyn RunningTaskResolver>> {
-        None
-    }
-}
-
 /// A task of this process.
 #[async_trait]
 pub trait LocalTask: Send + Sync {
@@ -155,7 +78,7 @@ pub trait LocalTask: Send + Sync {
 /// A `shell` command that outlived its call's `wait_ms`.
 pub struct ShellTask {
     command: String,
-    runtime: String,
+    shape: ShellResultShape,
     handle: tokio::sync::Mutex<Box<dyn CommandHandle>>,
     started_at_ms: u64,
     cancellable: bool,
@@ -164,10 +87,10 @@ pub struct ShellTask {
 }
 
 impl ShellTask {
-    pub fn new(command: &str, handle: Box<dyn CommandHandle>, runtime: &str) -> Self {
+    pub fn new(command: &str, handle: Box<dyn CommandHandle>, shape: ShellResultShape) -> Self {
         Self {
             command: command.to_string(),
-            runtime: runtime.to_string(),
+            shape,
             cancellable: handle.cancellable(),
             locator: handle.locator(),
             handle: tokio::sync::Mutex::new(handle),
@@ -176,44 +99,15 @@ impl ShellTask {
         }
     }
 
+    /// The command ended: its result is the one the call would have
+    /// returned had it ended within its wait.
     fn finish(&self, out: crate::llm_bash::BashRunOutput, cancelled: bool) -> TaskState {
-        let mut text = if cancelled {
-            format!(
-                "`{}` was cancelled after {}ms (runtime {}).",
-                self.command, out.duration_ms, self.runtime
-            )
+        let envelope = if cancelled {
+            shell_cancelled_result(&self.shape, &self.command, out)
         } else {
-            format!(
-                "`{}` exited with code {} after {}ms (runtime {}).",
-                self.command, out.exit_code, out.duration_ms, self.runtime
-            )
+            shell_finished_result(&self.shape, &self.command, out)
         };
-        if !out.output.trim().is_empty() {
-            text.push_str("\n--- output ---\n");
-            text.push_str(out.output.trim_end());
-        }
-        let result = TaskResult {
-            success: out.exit_code == 0 && !out.timed_out && !cancelled,
-            output: text,
-            tool_result: Some(crate::result_view::ToolResultView {
-                cmd_name: Some(crate::llm_bash::TOOL_SHELL.into()),
-                cmd_args: Some(self.command.clone()),
-                summary: if cancelled {
-                    "cancelled".into()
-                } else {
-                    format!("exit={} in {}ms", out.exit_code, out.duration_ms)
-                },
-                return_code: Some(out.exit_code),
-                detail: Some(json!({
-                    "exit_code": out.exit_code,
-                    "duration_ms": out.duration_ms,
-                    "output_truncated": out.output_truncated,
-                    "runtime": self.runtime,
-                    "cancelled": cancelled,
-                })),
-                ..Default::default()
-            }),
-        };
+        let result = TaskResult::from_tool_result(&envelope);
         *self.finished.lock().expect("shell task") = Some(result.clone());
         TaskState::Finished(result)
     }
@@ -223,7 +117,7 @@ impl ShellTask {
     }
 
     pub fn runtime(&self) -> &str {
-        &self.runtime
+        &self.shape.runtime.kind
     }
 
     pub fn locator(&self) -> &str {
@@ -513,7 +407,7 @@ pub fn exec_dir_state(task_id: &str, dir: &Path) -> TaskState {
         }
         None if dir.is_dir() => TaskState::Unknown {
             reason: format!(
-                "`{command}` was started by a previous executor and has not recorded an exit; it may still be running. Output files: {}",
+                "the executor restarted and `{command}` has not recorded an exit; the command may still be running, check {} (command, stdout, stderr, exit)",
                 dir.display()
             ),
         },
@@ -1024,6 +918,15 @@ mod tests {
         }
     }
 
+    fn shape() -> ShellResultShape {
+        ShellResultShape {
+            tool_name: crate::llm_bash::TOOL_SHELL.into(),
+            runtime: crate::llm_bash::ShellRuntimeNote::native(),
+            timeout_ms: 10_000,
+            max_timeout_ms: 0,
+        }
+    }
+
     fn req(command: &str, cwd: &Path, call_id: &str) -> BashRunRequest {
         BashRunRequest {
             command: command.into(),
@@ -1069,7 +972,7 @@ mod tests {
         let tasks = InProcessTaskManager::new();
         let id = tasks.register_shell(
             Some("c1"),
-            ShellTask::new("sleep 0.4; echo finished", handle, "native"),
+            ShellTask::new("sleep 0.4; echo finished", handle, shape()),
         );
         assert_eq!(id, "local:shell:c1");
         let resolver = CompositeTaskResolver::new(tasks.clone(), slot);
@@ -1114,7 +1017,7 @@ mod tests {
             .is_none());
         handle.detach();
         let tasks = InProcessTaskManager::new();
-        let id = tasks.register_shell(Some("c2"), ShellTask::new("sleep 30", handle, "native"));
+        let id = tasks.register_shell(Some("c2"), ShellTask::new("sleep 30", handle, shape()));
         let resolver = CompositeTaskResolver::new(tasks, new_run_binding_slot());
         let TaskState::Finished(r) = resolver.cancel(&id).await.unwrap() else {
             panic!("cancel")
@@ -1155,7 +1058,7 @@ mod tests {
         let tasks = InProcessTaskManager::new();
         let id = tasks.register_shell(
             Some("cancel-tree"),
-            ShellTask::new(command, handle, "native"),
+            ShellTask::new(command, handle, shape()),
         );
         let resolver = CompositeTaskResolver::new(tasks, new_run_binding_slot());
         assert!(matches!(
@@ -1187,7 +1090,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         let tasks = InProcessTaskManager::new();
-        tasks.register_shell(Some("release"), ShellTask::new(command, handle, "native"));
+        tasks.register_shell(Some("release"), ShellTask::new(command, handle, shape()));
         tasks.release_running().await;
         drop(tasks);
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);

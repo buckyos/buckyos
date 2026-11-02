@@ -50,6 +50,9 @@ pub struct SessionTemplate {
     /// manuals a session of this class takes when its creator chooses none
     /// (`cmd_skills/<name>.md`).
     pub default_cmd_skills: Vec<String>,
+    /// `agent.toml [session.<class>] tick_secs`: how often the session's
+    /// `timer:` subscriptions tick while it waits for its work (0: never).
+    pub tick_secs: u64,
 }
 
 /// Objective of a one-to-one UI session: what the conversation is for,
@@ -133,16 +136,33 @@ impl SessionTemplate {
             goal: None,
             objective: None,
             default_cmd_skills: Vec::new(),
+            tick_secs: policy.tick_secs,
         };
         Some(match class {
-            "work" => base(
-                SessionKind::Work,
-                Turns::One,
-                WaitPolicy::FinishFailed,
-                InputChannel::None,
-                ObserveScope::Events,
-                false,
-            ),
+            // A Work Session has many Turns: every reply closes one (the
+            // progress the caller sees), the end of a task it started or a
+            // timer tick while it waits opens the next; only an explicit
+            // final report ends it. Nobody answers it and it has no queue.
+            "work" => {
+                let mut t = base(
+                    SessionKind::Work,
+                    Turns::Unbounded,
+                    WaitPolicy::FinishFailed,
+                    InputChannel::None,
+                    ObserveScope::Events,
+                    false,
+                );
+                t.completion = CompletionPolicy::ExplicitReport;
+                t.implicit_subscriptions.push(Subscription {
+                    id: TASK_WATCH_SUBSCRIPTION.into(),
+                    mode: SubscriptionMode::Active,
+                    source: SubscriptionSource::Timer {
+                        name: TASK_WATCH_TIMER.into(),
+                    },
+                    watch: Vec::new(),
+                });
+                t
+            }
             // The long-lived dialogue entry: bound to one conversation by
             // its `route_key`, replies leave through the outbound sink. It
             // observes the notifications shown in its conversation.
@@ -308,6 +328,12 @@ impl SessionTemplate {
                 OpenDanError::InvalidArgument(format!("agent.toml [session.{class}] default_cmd_skills: {e}"))
             })?;
         }
+        if let Some(v) = over.get("tick_secs") {
+            t.tick_secs = v
+                .as_integer()
+                .and_then(|n| u64::try_from(n).ok())
+                .ok_or_else(|| bad("tick_secs"))?;
+        }
         for (key, slot) in [
             ("max_process_depth", &mut t.max_process_depth),
             ("max_sub_sessions", &mut t.max_sub_sessions),
@@ -382,6 +408,7 @@ impl SessionTemplate {
             max_process_depth: self.max_process_depth,
             max_sub_sessions: self.max_sub_sessions,
             max_session_depth: self.max_session_depth,
+            tick_secs: self.tick_secs,
         }
     }
 
@@ -412,12 +439,16 @@ impl SessionTemplate {
         spec
     }
 
-    /// Decide the input channel once the subscriptions are known.
+    /// Decide the input channel once the subscriptions are known. Session
+    /// state is pulled and timers are ticked by the runner: neither needs a
+    /// queue.
     pub fn settle_input(&self, spec: &mut SessionSpec) {
-        let external = spec
-            .subscriptions
-            .iter()
-            .any(|s| !matches!(s.source, SubscriptionSource::Session { .. }));
+        let external = spec.subscriptions.iter().any(|s| {
+            !matches!(
+                s.source,
+                SubscriptionSource::Session { .. } | SubscriptionSource::Timer { .. }
+            )
+        });
         spec.input_channel = Some(
             if external || spec.input_channel == Some(InputChannel::Queue) {
                 InputChannel::Queue

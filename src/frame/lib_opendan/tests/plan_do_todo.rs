@@ -397,7 +397,7 @@ async fn explorations_in_parallel_then_a_reviewed_serial_todo() {
 
     let st = sd.state().unwrap();
     assert_eq!(st.outcome, Some(Outcome::Succeeded));
-    assert_eq!((st.turn_seq, st.turns_completed), (1, 1), "one Turn throughout");
+    assert_eq!(st.turns_completed, st.turn_seq, "every Turn completed");
 
     // The list: two explorations and one serial Todo, all reviewed.
     let list = list_of(sd.path());
@@ -442,12 +442,17 @@ async fn explorations_in_parallel_then_a_reviewed_serial_todo() {
     // Real parallelism: both explorations ran before either ended.
     assert!(timeline.overlapped(), "starts {:?} ends {:?}", timeline.starts.lock().unwrap(), timeline.ends.lock().unwrap());
 
-    // The PLAN waited by not deciding: its run ended, the Turn stayed open
-    // waiting for the children, their ends joined that Turn.
+    // The PLAN waited by not deciding: its yield closed the Turn while the
+    // children ran (the run kept), their ends opened the next Turn.
     let wl = read_worklog(&sd);
     assert!(wl.iter().any(|e| matches!(&e.body, WorklogBody::Outcome { kind, .. } if kind == "wait")));
-    assert!(wl.iter().any(|e| matches!(&e.body, WorklogBody::InputBatch { inputs, .. }
-        if inputs.iter().any(|i| i.src == INTERNAL_CHILD_SRC))));
+    assert!(
+        wl.iter().any(|e| matches!(&e.body,
+            WorklogBody::TurnStarted { inputs, .. } | WorklogBody::InputBatch { inputs, .. }
+                if inputs.iter().any(|i| i.src == INTERNAL_CHILD_SRC))),
+        "{:?}",
+        kinds(&wl)
+    );
     assert!(!wl.iter().any(|e| matches!(&e.body, WorklogBody::TurnEnded { status, .. } if *status != TurnStatus::Completed)));
 
     // V12: the PLAN's context holds the view, never the children's tool
@@ -1095,5 +1100,5 @@ async fn a_host_killed_while_waiting_resumes_the_same_explorations() {
     let agent = env.agent();
     assert_eq!(agent.sessions().children_of(&[sd.sid().to_string()]).await.unwrap().len(), 2);
     let st = sd.state().unwrap();
-    assert_eq!((st.turn_seq, st.turns_completed), (1, 1), "the same Turn");
+    assert_eq!(st.turns_completed, st.turn_seq, "every Turn completed");
 }

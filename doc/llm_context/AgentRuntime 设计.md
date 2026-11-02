@@ -126,7 +126,7 @@ native 的 Windows 实现使用 PowerShell；不能将公共 Runtime 契约限�
 | `remote_ssh` | `host` 必填；可选 `user / port / identity_file`，其余遵循本机 OpenSSH 配置 |
 | `remote_node` | `node_did / profile_id` 必填；端点与 session token 来自宿主 connector |
 | `baseline` | 可选 `standard / extended`：登记者声明的环境基线，只传入 `RuntimeInfo.baseline` 供提示词使用，Runtime 层不探测、不据此改变行为 |
-| `task_wait_ms` | 一次工具调用在调用内等它交出的 task 的预算，缺省 30 秒，超过 30 分钟按 30 分钟计，0 被拒绝（§7）。是策略，不是身份：不参与 `runtime_id` 派生，也不进 descriptor |
+| `task_wait_ms` | 一次工具调用在调用内等它交出的 task 的预算，缺省 25 秒（25 秒内结束即同步结果），超过 30 分钟按 30 分钟计，0 被拒绝（§7）。是策略，不是身份：不参与 `runtime_id` 派生，也不进 descriptor |
 
 不存在 runtime 级的 `policy / fs_view / path_layers / limits` 字段；未知字段和与最终 kind 不匹配的连接块被拒绝。宿主内部使用的 `runtime_path_prefix` 不是公开的 RuntimeConfig 字段。
 
@@ -266,14 +266,16 @@ agent-runtime 是本层的概念；“session-runtime / workspace”是 libopend
 
 shell 通过 `BashRunner::start` 获得 `CommandHandle`，统一提供 `wait / progress / kill / detach`。这使等待一次调用结束、把命令转交 task，以及显式取消能够共用同一个执行对象。
 
-llm_context 不认识 task，循环里也不等待：任何等待都是 task。一次调用在调用内最多等 `RuntimeConfig.task_wait_ms`（默认 30 秒，上限 30 分钟），还没结束就作为普通结果返回“仍在运行”和 task id，task 继续执行。shell 的两种行为都由这个预算和 `tools.shell` 的超时推出，不是一个可选的模式：
+llm_context 不认识 task，循环里也不等待：任何等待都是 task。一次调用在调用内最多等 `RuntimeConfig.task_wait_ms`（默认 25 秒，上限 30 分钟），还没结束就作为普通结果返回“仍在运行”和 task id，task 继续执行。shell 的两种行为都由这个预算和 `tools.shell` 的超时推出，不是一个可选的模式：
 
 | 条件 | 当前行为 |
 | --- | --- |
-| 有 task manager，且预算小于 `timeout_ms` | 先等 `wait_ms`（调用参数，缺省为预算，上限 30 分钟）；超出后将命令移交 `ShellTaskManager`，返回 task ID 和已有输出，命令继续执行 |
+| 有 task manager，且预算小于 `timeout_ms` | 先等 `wait_ms`（调用参数，缺省为预算，上限 30 分钟；Session 宿主不暴露该参数，只用预算）；超出后将命令登记为进程内 task（`local:shell:<call_id>`），返回 task ID 和已有输出，命令继续执行 |
 | 没有 task manager，或预算不小于 `timeout_ms` | 等到完成或 timeout；默认 timeout 30 分钟、默认上限 60 分钟，超时请求终止命令 |
 
-`max_timeout_ms` 可配置，0 表示不设该上限；Node 仍受目标服务的最大执行时间约束。默认 task manager 是进程共享的 `InProcessTaskManager`，宿主也可注入 `ShellTaskManager`，因此不能假定所有宿主都返回 `local:` task ID。task 可以长于创建它的 Run；进程内任务本身不跨进程持久恢复。
+`max_timeout_ms` 可配置，0 表示不设该上限；Node 仍受目标服务的最大执行时间约束。转出的 shell 命令一律留在进程共享的 `InProcessTaskManager`（不交给 Zone TaskMgr；只有本身是 krpc、服务端返回任务 id 的工具产生 `t-` task，宿主用 `ZoneTaskResolver` 只读解析）。task 可以长于创建它的 Run；宿主退出前 `release_running` 把命令交给 OS，重启后 `local:shell:<call_id>` 由执行目录回答（有 `exit` 为结束，否则 unknown）。
+
+标准工具（`read` / `read_file` / `write_file` / `edit_file` / `shell`）带可选 `intent` 参数（`agent_tool::intent::IntentPolicy::Optional`）：派发器取出并记录，不传给工具；宿主可对全部工具改为必填（`Required`）。
 
 其它工具也按同一规则：工具返回 `pending` + `task_id` 时，派发器 `XllmToolManager` 经 resolver 在这次调用里等到 task 结束、工具给的 `check_after` 或预算到期，然后把 task 当时的状态作为结果交给模型；打断只停止等待，task 继续。`CompositeTaskResolver` 组合进程内任务、运行时恢复读取，以及可选 BuckyOS task 服务。
 

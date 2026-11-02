@@ -122,7 +122,7 @@ The Zone's `llm.chat` lands on an OpenAI strict route: every property listed in 
 - Nothing stops a tool run's shell from calling xllm again; leaving nesting out avoids stacked cost under
   separate budgets. Split the job yourself instead.
 - A call that outlives your shell call's wait continues as a task: give the shell call a larger `wait_ms`, or
-  follow it (`agent-session task wait <task_id>` or the `wait_task` tool) rather than starting a second copy.
+  let its end come back to your session as `<<task_result>>` rather than starting a second copy.
 
 #### When it fails
 Exit codes: 0 done · 1 failed, limit reached, or run not found · 2 usage/config/input error or busy (no model

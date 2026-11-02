@@ -511,6 +511,8 @@ fn build_outcome_result(
                     (
                         AgentToolResult {
                             agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
+                            hints: Vec::new(),
+                            dedup: None,
                             tool: Some(TOOL_LLM_UNDERSTAND_MEDIA.to_string()),
                             cmd_name: None,
                             status: AgentToolStatus::Success,
@@ -571,6 +573,8 @@ fn build_outcome_result(
                     (
                         AgentToolResult {
                             agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
+                            hints: Vec::new(),
+                            dedup: None,
                             tool: Some(TOOL_LLM_UNDERSTAND_MEDIA.to_string()),
                             cmd_name: None,
                             status: AgentToolStatus::Error,
@@ -616,6 +620,8 @@ fn build_outcome_result(
             (
                 AgentToolResult {
                     agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
+                    hints: Vec::new(),
+                    dedup: None,
                     tool: Some(TOOL_LLM_UNDERSTAND_MEDIA.to_string()),
                     cmd_name: None,
                     status: AgentToolStatus::Error,
@@ -662,6 +668,8 @@ fn build_outcome_result(
             (
                 AgentToolResult {
                     agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
+                    hints: Vec::new(),
+                    dedup: None,
                     tool: Some(TOOL_LLM_UNDERSTAND_MEDIA.to_string()),
                     cmd_name: None,
                     status: AgentToolStatus::Error,
@@ -1841,6 +1849,8 @@ fn build_error_result(opts: &RunOpts, message: impl Into<String>) -> AgentToolRe
     let message = message.into();
     AgentToolResult {
         agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
+        hints: Vec::new(),
+        dedup: None,
         tool: Some(TOOL_LLM_UNDERSTAND_MEDIA.to_string()),
         cmd_name: None,
         status: AgentToolStatus::Error,

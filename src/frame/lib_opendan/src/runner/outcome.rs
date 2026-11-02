@@ -102,6 +102,10 @@ pub(super) struct Next {
     /// Tasks this run started that are still running: the run is kept and
     /// their ends come back as its input.
     pub(super) wait_tasks: Vec<String>,
+    /// A multi-Turn Work Session's reply that neither ended it nor waits
+    /// for anything: the run is kept and gets this correction count's
+    /// nudge as its next input (once per Turn).
+    pub(super) nudge: u8,
     /// The Turn ended on a question nobody answers now
     /// (`wait_user_msg = end_turn`).
     pub(super) needs_input: bool,
@@ -260,6 +264,16 @@ pub(super) fn decide_end(cfg: &SessionConfig, next: &mut Next, completed: u64) {
             }
         }
     }
+}
+
+/// A multi-Turn Work Session (simple Work Session TODO §3.3): every reply
+/// closes a Turn, the work it started opens the next ones, and only an
+/// explicit final report ends it.
+pub(super) fn multi_turn_work(cfg: &SessionConfig) -> bool {
+    cfg.session.kind == SessionKind::Work
+        && cfg.session.policy.completion == CompletionPolicy::ExplicitReport
+        && cfg.session.end_condition.kind == EndConditionType::MaxTurns
+        && cfg.channels.inputs.is_empty()
 }
 
 /// The run produced a Self Report (`<report>`).
@@ -658,7 +672,7 @@ pub(super) async fn handle_context_outcome(
                     ..Default::default()
                 };
             } else {
-                keep_while_running(sh, lc, &mut next, yielded).await;
+                keep_while_running(sh, lc, &cfg, site.child, &mut next, yielded).await;
             }
             status = match next.kind {
                 // Suspended into process_stack, or kept for the work it
@@ -831,13 +845,21 @@ pub(super) async fn handle_context_outcome(
         return Ok(next);
     }
     commit_kept(sh, &lc.run, &snapshot, lc.behavior, &next).await?;
+    if next.turn_end.is_some() {
+        // The Turn this keep closed: its reply and its task.
+        super::outbound::flush_outbox(sh).await;
+        super::turn_task::flush_turn_tasks(sh).await;
+    }
     Ok(next)
 }
 
 /// State of a run that is kept: paused (an error the runtime retries), or
 /// waiting for the work it started — the session follows those tasks and
-/// brings their ends back as input of this same run (freeze TODO F18).
-/// Redone by recovery from the run's `kept` record.
+/// brings their ends back as input of this same run (freeze TODO F18). In a
+/// multi-Turn Work Session the reply that keeps the run closes the Turn
+/// (`next.turn_end`): the run stays, the next input opens a Turn in it
+/// (simple Work Session TODO Q12). Redone by recovery from the run's `kept`
+/// record.
 pub(super) async fn commit_kept(
     sh: &Arc<Shared>,
     run: &RunHandle,
@@ -848,10 +870,12 @@ pub(super) async fn commit_kept(
     let run_id = run.run_id().to_string();
     let mut s = sh.session.lock().await;
     // What the run did so far goes to the worklog, closed by the wait.
+    let turn = s.state.current_turn();
+    let mut bodies = Vec::new();
     if let Some(live) = s.state.live_run.clone().filter(|l| l.run_id == run_id) {
-        let turn = s.state.current_turn();
-        let (mut bodies, marks) =
+        let (history, marks) =
             run_history_entries(&run_id, snapshot, behavior, FlushMarks::of(&live), turn);
+        bodies = history;
         bodies.push(WorklogBody::Outcome {
             run_id: run_id.clone(),
             turn,
@@ -859,11 +883,22 @@ pub(super) async fn commit_kept(
             next_behavior: None,
             report: next.answer.clone(),
         });
-        s.append_worklog(&sh.lease, bodies)?;
         if let Some(l) = s.state.live_run.as_mut() {
             marks.apply(l);
         }
     }
+    if let Some(status) = next.turn_end {
+        if close_open_turn(sh, &mut s, &run_id, turn, status, next).await?.is_some() {
+            bodies.push(WorklogBody::TurnEnded {
+                run_id: run_id.clone(),
+                turn,
+                status,
+                at_ms: crate::now_ms(),
+            });
+            s.state.one_line_status = one_line(next);
+        }
+    }
+    s.append_worklog(&sh.lease, bodies)?;
     s.state.run_state = if next.waiting {
         RunState::Waiting
     } else {
@@ -888,6 +923,14 @@ pub(super) async fn commit_kept(
                 deadline_ms: None,
             }
         });
+        // Ticks are counted from the moment the session began waiting.
+        if !next.wait_tasks.is_empty() || !next.wait_children.is_empty() {
+            s.state.task_watch.last_tick_ms = crate::now_ms();
+        }
+    }
+    if next.nudge > 0 {
+        s.state.nudge.count = s.state.nudge.count.max(next.nudge);
+        s.state.nudge.pending = true;
     }
     s.state.last_error = next.error.clone();
     commit_and_report(sh, &mut s).await
@@ -896,12 +939,24 @@ pub(super) async fn commit_kept(
 /// The loop never waits (freeze TODO F17 / F18): a behavior step that
 /// yields, or a reply of the function call loop, while work this run started
 /// is still running (its tasks, the sub sessions the session must hear from)
-/// keeps the run — it is not ended, the Turn stays open, and the ends of
-/// that work come back as input of this same run. That work comes first: a
-/// reply that could not finish the session without a final report
-/// (`missing_end_report`) waits for it too. With nothing running the
-/// decision stands as it is (a yield's report is the reply).
-async fn keep_while_running(sh: &Arc<Shared>, lc: &LiveCtx, next: &mut Next, yielded: bool) {
+/// keeps the run — it is not ended, and the ends of that work come back as
+/// input of this same run. That work comes first: a reply that could not
+/// finish the session without a final report (`missing_end_report`) waits
+/// for it too. With nothing running the decision stands as it is (a yield's
+/// report is the reply).
+///
+/// A multi-Turn Work Session ([`multi_turn_work`], not inside a sub
+/// context): the reply that keeps the run closes the Turn — it is the
+/// progress its caller sees — and with nothing running a reply that did not
+/// end the session gets one correction (`nudge`) before it fails.
+async fn keep_while_running(
+    sh: &Arc<Shared>,
+    lc: &LiveCtx,
+    cfg: &SessionConfig,
+    child: bool,
+    next: &mut Next,
+    yielded: bool,
+) {
     let missing_end = next
         .error
         .as_ref()
@@ -918,24 +973,35 @@ async fn keep_while_running(sh: &Arc<Shared>, lc: &LiveCtx, next: &mut Next, yie
     if next.finished && next.outcome != Some(Outcome::Succeeded) && !missing_end {
         return;
     }
+    let multi_turn = !child && multi_turn_work(cfg);
     // Sub sessions report through the session's own channel
-    // (`poll_children`); other tasks are followed by id.
+    // (`poll_children`); other tasks are followed by id: those running, and
+    // those that ended without the model having their end yet (it comes
+    // back as input).
+    let recent = sh.session.lock().await.state.recent_keys.clone();
     let mut tasks = Vec::new();
     let mut own_children = Vec::new();
     for task_id in lc.run.noted_tasks() {
         if let Some(sid) = task_id.strip_prefix(super::children::SESSION_TASK_PREFIX) {
             own_children.push(sid.to_string());
-        } else if matches!(
+            continue;
+        }
+        let running = matches!(
             lc.resolver.state(&task_id).await,
             agent_tool::TaskState::Running { .. }
-        ) {
+        );
+        let undelivered = !lc.resolver.result_seen(&task_id)
+            && !recent.contains(&super::receipts::internal_task_key(&task_id));
+        if running || (multi_turn && undelivered) {
             tasks.push(task_id);
         }
     }
+    // A multi-Turn Work Session waits for every sub session it must hear
+    // from; otherwise for those this run started.
     let mut children = next.wait_children.clone();
-    if !own_children.is_empty() {
+    if multi_turn || !own_children.is_empty() {
         for sid in super::children::unsettled_children(sh).await.unwrap_or_default() {
-            if own_children.contains(&sid) && !children.contains(&sid) {
+            if (multi_turn || own_children.contains(&sid)) && !children.contains(&sid) {
                 children.push(sid);
             }
         }
@@ -944,9 +1010,22 @@ async fn keep_while_running(sh: &Arc<Shared>, lc: &LiveCtx, next: &mut Next, yie
         if next.kind == FinishKind::Wait && next.run_ended {
             next.wait_children.clear();
         }
+        if multi_turn && missing_end && sh.session.lock().await.state.nudge.count == 0 {
+            let usage = next.usage.take();
+            let answer = next.answer.take();
+            *next = Next {
+                kind: FinishKind::Wait,
+                waiting: true,
+                usage,
+                answer,
+                nudge: 1,
+                ..Default::default()
+            };
+        }
         return;
     }
     let usage = next.usage.take();
+    let answer = next.answer.take();
     *next = Next {
         kind: FinishKind::Wait,
         waiting: true,
@@ -955,6 +1034,12 @@ async fn keep_while_running(sh: &Arc<Shared>, lc: &LiveCtx, next: &mut Next, yie
         wait_tasks: tasks,
         ..Default::default()
     };
+    if multi_turn {
+        // The reply closes this Turn; the end of that work, or a tick while
+        // it runs, opens the next one in this same run.
+        next.turn_end = Some(TurnStatus::Completed);
+        next.answer = answer;
+    }
 }
 
 /// What the end-of-run commit leaves for the work after it.
@@ -1033,66 +1118,9 @@ async fn commit_run_end(
         s.state.topic = topic.clone();
     }
     // Close the Turn before the report renders the counters.
-    let turn_closed = match (next.turn_end, s.state.open_turn.take()) {
-        (Some(status), Some(open)) => {
-            // A delivered final report is the reply: its text, its artifacts
-            // as attachments.
-            let delivered = next.report.as_ref().filter(|_| next.kind != FinishKind::ProcessDone);
-            super::outbound::queue_reply(
-                sh,
-                s,
-                &run_id,
-                super::outbound::TurnReply {
-                    turn,
-                    status,
-                    answer: delivered.map(|r| r.report.clone()).or_else(|| next.answer.clone()),
-                    artifacts: delivered
-                        .map(|r| r.artifacts.clone())
-                        .unwrap_or_else(|| next.reply_artifacts.clone()),
-                    workdir: None,
-                    inputs: open.inputs,
-                    has_msg: open.has_msg,
-                    error: next.error.clone(),
-                    has_placeholder: false,
-                },
-            )
-            .await;
-            super::turn_task::close_turn_task(
-                s,
-                turn,
-                status,
-                next.answer.as_deref(),
-                next.error.as_ref(),
-            );
-            if status == TurnStatus::Completed {
-                s.state.turns_completed += 1;
-            }
-            s.state.turn_stop_requested = false;
-            // The Activation ends with its Turn, in the same commit.
-            Box::pin(super::goal::close_activation(
-                sh,
-                s,
-                super::goal::TurnEnd {
-                    status,
-                    needs_input: next.needs_input,
-                    answer: next.answer.as_deref(),
-                    report: next.report.as_ref(),
-                    error: next.goal_error.as_ref().or(next.error.as_ref()),
-                },
-            ))
-            .await?;
-            crate::fault::point("goal:after_activation_close");
-            *sh.turn_closed.lock().expect("turn closed") = Some(ClosedTurn {
-                turn,
-                status,
-                answer: next.answer.clone(),
-            });
-            Some(status)
-        }
-        (_, open) => {
-            s.state.open_turn = open;
-            None
-        }
+    let turn_closed = match next.turn_end {
+        Some(status) => close_open_turn(sh, s, &run_id, turn, status, next).await?,
+        None => None,
     };
     let mut artifact_ref = None;
     if next.finished {
@@ -1310,6 +1338,7 @@ async fn commit_run_end(
     if super::consolidation::caps(sh).records_perception {
         s.state.perception_seq = digest_seq + u64::from(next.finished);
     }
+    sh.hints.store(&mut s.state);
     s.commit_state(&sh.lease)?; // commit point
     crate::fault::point("finish_run:after_commit");
     Ok(RunEnded {
@@ -1320,6 +1349,70 @@ async fn commit_run_end(
         digest_seq,
         prev,
     })
+}
+
+/// Close the open Turn with `status` in the commit being prepared: its
+/// reply (outbox), its task, the counters and a Goal's Activation. `None`
+/// when no Turn is open.
+async fn close_open_turn(
+    sh: &Arc<Shared>,
+    s: &mut Session,
+    run_id: &str,
+    turn: u64,
+    status: TurnStatus,
+    next: &Next,
+) -> Result<Option<TurnStatus>> {
+    let Some(open) = s.state.open_turn.take() else {
+        return Ok(None);
+    };
+    // A delivered final report is the reply: its text, its artifacts as
+    // attachments.
+    let delivered = next.report.as_ref().filter(|_| next.kind != FinishKind::ProcessDone);
+    super::outbound::queue_reply(
+        sh,
+        s,
+        run_id,
+        super::outbound::TurnReply {
+            turn,
+            status,
+            answer: delivered.map(|r| r.report.clone()).or_else(|| next.answer.clone()),
+            artifacts: delivered
+                .map(|r| r.artifacts.clone())
+                .unwrap_or_else(|| next.reply_artifacts.clone()),
+            workdir: None,
+            inputs: open.inputs,
+            has_msg: open.has_msg,
+            error: next.error.clone(),
+            has_placeholder: false,
+        },
+    )
+    .await;
+    super::turn_task::close_turn_task(s, turn, status, next.answer.as_deref(), next.error.as_ref());
+    if status == TurnStatus::Completed {
+        s.state.turns_completed += 1;
+    }
+    s.state.turn_stop_requested = false;
+    s.state.nudge = Nudge::default();
+    // The Activation ends with its Turn, in the same commit.
+    Box::pin(super::goal::close_activation(
+        sh,
+        s,
+        super::goal::TurnEnd {
+            status,
+            needs_input: next.needs_input,
+            answer: next.answer.as_deref(),
+            report: next.report.as_ref(),
+            error: next.goal_error.as_ref().or(next.error.as_ref()),
+        },
+    ))
+    .await?;
+    crate::fault::point("goal:after_activation_close");
+    *sh.turn_closed.lock().expect("turn closed") = Some(ClosedTurn {
+        turn,
+        status,
+        answer: next.answer.clone(),
+    });
+    Ok(Some(status))
 }
 
 /// After the commit (none of this is redone by reconcile): cleanup of the

@@ -51,6 +51,18 @@ pub struct ToolResultView {
     pub pending_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check_after: Option<u64>,
+    /// Hints shown with the result (`<runtime_hints>`), after the ledger.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hints: Vec<HintView>,
+}
+
+/// One hint of the envelope (lenient view of `ResultHint`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct HintView {
+    #[serde(default)]
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub once: Option<String>,
 }
 
 impl ToolResultView {
@@ -73,6 +85,15 @@ impl ToolResultView {
             self.agent_tool_protocol = Some(crate::AGENT_TOOL_PROTOCOL_VERSION.to_string());
         }
         serde_json::to_value(self).unwrap_or(Value::Null)
+    }
+
+    /// The texts of the hints shown with the result.
+    pub fn hint_texts(&self) -> Vec<String> {
+        self.hints
+            .iter()
+            .map(|h| h.text.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect()
     }
 
     pub fn command_line_text(&self) -> Option<String> {

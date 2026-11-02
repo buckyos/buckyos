@@ -51,12 +51,6 @@ pub fn classify_effect(tool: &str) -> &'static str {
 /// the run so a resumed or rebuilt run keeps the same contract).
 pub(super) const EXTRA_CALL_INTENT: &str = "call_intent";
 
-/// The argument a call states its intent in (host metadata: kept with the
-/// call's record, never passed to the tool).
-pub const INTENT_ARG: &str = "intent";
-
-const INTENT_DESCRIPTION: &str = "Why you make this call now and what you expect it to give you, in one short sentence; name the Todo and the accepted evidence it rests on when there are. The purpose of the action, not a transcript of your reasoning.";
-
 /// Whether the run's record carries the host flag `key`.
 pub(super) fn run_flag(run: &RunHandle, key: &str) -> Option<Value> {
     run.record()
@@ -67,44 +61,19 @@ pub(super) fn run_flag(run: &RunHandle, key: &str) -> Option<Value> {
         .cloned()
 }
 
-/// `spec` with the required `intent` argument.
-pub fn with_intent(mut spec: ToolSpecLite) -> ToolSpecLite {
-    let schema = &mut spec.args_schema;
-    if !schema.is_object() {
-        *schema = json!({ "type": "object" });
-    }
-    if !schema.get("properties").is_some_and(Value::is_object) {
-        schema["properties"] = json!({});
-    }
-    schema["properties"][INTENT_ARG] =
-        json!({ "type": "string", "minLength": 1, "description": INTENT_DESCRIPTION });
-    match schema.get_mut("required").and_then(Value::as_array_mut) {
-        Some(r) if r.iter().any(|v| v == INTENT_ARG) => {}
-        Some(r) => r.insert(0, json!(INTENT_ARG)),
-        None => schema["required"] = json!([INTENT_ARG]),
-    }
-    spec
-}
-
-/// The call as its tool runs it: `intent` checked and taken out (the
-/// original call, with its intent, stays in the run's record). `Err`: the
-/// correction the call gets instead of running.
-pub fn without_intent(call: &AiToolCall) -> Result<AiToolCall, String> {
-    let missing = |what: &str| {
-        format!(
-            "{what}: this call was not executed. Every function call of this context carries `intent`, one short non-empty sentence saying why you make the call now and what you expect it to give you. Call it again with `intent`."
-        )
-    };
-    match call.args.get(INTENT_ARG) {
-        Some(Value::String(s)) if !s.trim().is_empty() => {
-            let mut exec = call.clone();
-            exec.args.remove(INTENT_ARG);
-            Ok(exec)
-        }
-        Some(Value::String(_)) => Err(missing("`intent` is blank")),
-        Some(_) => Err(missing("`intent` must be a string")),
-        None => Err(missing("`intent` is missing")),
-    }
+/// What a call that handed its work over as a task was: kept with the run
+/// for the input that brings the task's end back.
+fn call_brief(call: &AiToolCall) -> Value {
+    let what = ["command", "path", "uri", "task"]
+        .iter()
+        .find_map(|k| call.args.get(*k).and_then(Value::as_str))
+        .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
+        .map(|s| s.chars().take(200).collect::<String>());
+    json!({
+        "tool": call.name,
+        "what": what,
+        "intent": agent_tool::intent::intent_of(call),
+    })
 }
 
 /// Session-aware tool manager wrapping xllm's tool set.
@@ -235,10 +204,12 @@ impl ToolManager for SessionToolManager {
             return Err(ToolDispatchError::not_started(e.to_string()));
         }
         // `call` stays as the model made it (the snapshot keeps it); `exec`
-        // is what the tool runs.
+        // is what the tool runs. A context whose every call states its
+        // intent checks it here; otherwise the runtime's tools take an
+        // optional one themselves.
         let exec = if self.call_intent {
-            match without_intent(&call) {
-                Ok(exec) => exec,
+            match agent_tool::take_intent(&call, agent_tool::IntentPolicy::Required) {
+                Ok((exec, _)) => exec,
                 Err(message) => {
                     return Ok(Observation::Error {
                         call_id: call.call_id.clone(),
@@ -251,6 +222,9 @@ impl ToolManager for SessionToolManager {
             call.clone()
         };
         *self.current_tool.lock().expect("current tool") = Some(call.name.clone());
+        // Shown as the progress of the Turn.
+        *self.shared.current_intent.lock().expect("current intent") =
+            agent_tool::intent::intent_of(&call);
         if call.name == TOOL_REPORT && self.inner.has_tool(TOOL_REPORT) {
             return super::reports::call(&self.shared, &self.run, &exec)
                 .await
@@ -305,7 +279,10 @@ impl ToolManager for SessionToolManager {
                 let ok = matches!(&result, Ok(Observation::Success { .. }));
                 let running = t.summary.contains("still running")
                     || (first && ok && t.return_code.is_none());
-                if let Err(e) = self.run.note_task(task_id, running, &call.call_id) {
+                if let Err(e) =
+                    self.run
+                        .note_task(task_id, running, &call.call_id, Some(call_brief(&call)))
+                {
                     log::warn!("cannot note task {task_id} of run {}: {e}", self.run.run_id());
                 }
                 // A sub session whose end was this call's result is not
@@ -325,7 +302,10 @@ impl ToolManager for SessionToolManager {
         if !self.call_intent {
             return specs;
         }
-        specs.into_iter().map(with_intent).collect()
+        specs
+            .into_iter()
+            .map(|s| agent_tool::with_intent(s, agent_tool::IntentPolicy::Required))
+            .collect()
     }
 
     fn has_tool(&self, name: &str) -> bool {
@@ -575,24 +555,41 @@ mod tests {
 
     #[test]
     fn intent_is_required_in_the_schema_and_taken_out_of_the_call() {
-        let spec = with_intent(ToolSpecLite {
-            name: "report".into(),
-            description: String::new(),
-            args_schema: json!({"type":"object","additionalProperties":false,"properties":{"report":{"type":"string"}},"required":["report"]}),
-        });
+        use agent_tool::{take_intent, with_intent, IntentPolicy, INTENT_ARG};
+        let required = IntentPolicy::Required;
+        let spec = with_intent(
+            ToolSpecLite {
+                name: "report".into(),
+                description: String::new(),
+                args_schema: json!({"type":"object","additionalProperties":false,"properties":{"report":{"type":"string"}},"required":["report"]}),
+            },
+            required,
+        );
         assert_eq!(spec.args_schema["required"], json!(["intent", "report"]));
         assert_eq!(spec.args_schema["properties"]["intent"]["minLength"], 1);
         assert_eq!(spec.args_schema["additionalProperties"], false);
-        let bare = with_intent(ToolSpecLite { name: "x".into(), description: String::new(), args_schema: Value::Null });
+        let bare = with_intent(
+            ToolSpecLite { name: "x".into(), description: String::new(), args_schema: Value::Null },
+            required,
+        );
         assert_eq!(bare.args_schema["required"], json!(["intent"]));
 
         let original = call(json!({"intent": "list the files", "command": "ls"}));
-        let exec = without_intent(&original).unwrap();
+        let (exec, intent) = take_intent(&original, required).unwrap();
+        assert_eq!(intent.as_deref(), Some("list the files"));
         assert!(!exec.args.contains_key(INTENT_ARG));
         assert_eq!(exec.args.get("command"), Some(&json!("ls")));
         assert_eq!(original.args.get(INTENT_ARG), Some(&json!("list the files")), "the original keeps it");
         for bad in [json!({"command": "ls"}), json!({"intent": " ", "command": "ls"}), json!({"intent": 3, "command": "ls"})] {
-            assert!(without_intent(&call(bad)).unwrap_err().contains("not executed"));
+            assert!(take_intent(&call(bad), required).unwrap_err().contains("not executed"));
         }
+    }
+
+    #[test]
+    fn a_task_call_is_briefed_with_what_it_ran_and_why() {
+        let b = call_brief(&call(json!({"command": "cargo   build -p x", "intent": "build x"})));
+        assert_eq!(b, json!({"tool": "shell", "what": "cargo build -p x", "intent": "build x"}));
+        let b = call_brief(&call(json!({})));
+        assert_eq!(b, json!({"tool": "shell", "what": null, "intent": null}));
     }
 }

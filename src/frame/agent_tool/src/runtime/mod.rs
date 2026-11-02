@@ -47,7 +47,7 @@ pub struct RuntimeConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub baseline: Option<RuntimeBaseline>,
     /// How long a tool call waits for the task its work became before it
-    /// returns "still running, task X" (default 30 s, at most 30 min). A
+    /// returns "still running, task X" (default 25 s, at most 30 min). A
     /// budget at least the `shell` timeout makes `shell` wait for its
     /// command to finish. Policy, not identity: `runtime_id` ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]

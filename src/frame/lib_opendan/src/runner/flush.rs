@@ -103,6 +103,7 @@ fn action_entries(calls: &[buckyos_api::AiToolCall]) -> Vec<ActionEntry> {
             args: canonical_args(&c.args),
             call_id: c.call_id.clone(),
             tool: c.name.clone(),
+            intent: agent_tool::intent::intent_of(c),
         })
         .collect()
 }

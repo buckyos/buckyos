@@ -299,9 +299,9 @@ async fn zone_env(args: &Args) -> Result<LoaderEnv> {
             None
         }
     };
-    // Long `shell` commands become tasks of the zone's TaskMgr (under the
-    // Turn they belong to), not of this process.
-    let xllm = opendan::tasks::zone_xllm_deps(&spec.agent_did.to_string(), Some(owner.clone()));
+    // Long `shell` commands stay tasks of this process; TaskMgr tasks of
+    // krpc tools (`ask_user`) are read from the zone.
+    let xllm = opendan::tasks::zone_xllm_deps();
     let share: Arc<dyn libopendan::share::ShareHost> = Arc::new(libopendan::share::ZoneShare {
         switch: Arc::new(records::RecordsShareSwitch(records.clone())),
     });

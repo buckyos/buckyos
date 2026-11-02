@@ -186,6 +186,10 @@ pub struct SessionPolicy {
     /// Nesting depth of sub sessions below this session's root.
     #[serde(default = "default_session_depth")]
     pub max_session_depth: u8,
+    /// While the session waits for the work it started, its `timer:`
+    /// subscriptions tick this often (0: never).
+    #[serde(default = "default_tick_secs")]
+    pub tick_secs: u64,
 }
 
 impl Default for SessionPolicy {
@@ -198,8 +202,16 @@ impl Default for SessionPolicy {
             max_process_depth: default_process_depth(),
             max_sub_sessions: default_sub_sessions(),
             max_session_depth: default_session_depth(),
+            tick_secs: default_tick_secs(),
         }
     }
+}
+
+/// Default [`SessionPolicy::tick_secs`].
+pub const DEFAULT_TICK_SECS: u64 = 30;
+
+fn default_tick_secs() -> u64 {
+    DEFAULT_TICK_SECS
 }
 
 impl SessionPolicy {
@@ -590,6 +602,10 @@ pub enum InputBackground {
     /// changed since they were last shown, as a `<<background_context>>`
     /// message before the next inference.
     AfterTools,
+    /// Before every inference (the first of a Turn included): the lines
+    /// that changed since they were last shown — the new output of the
+    /// tasks the run follows, its sub sessions, its TodoList.
+    BeforeInference,
 }
 
 /// Input consumption policy of a context (separate from its templates).
@@ -905,6 +921,13 @@ pub const USER_TIMEZONE_SOURCE_ID: &str = "user_timezone";
 /// shown in their conversation (`source = system:notify:<notify_id>`; a
 /// `system:<id>` subscription also takes the sub ids `<id>:<sub>`).
 pub const NOTIFY_SUBSCRIPTION: &str = "_notify";
+
+/// Id of a Work Session's implicit timer subscription: while the session
+/// waits for the work it started, the runner ticks it every
+/// `policy.tick_secs` and the tick opens a Turn.
+pub const TASK_WATCH_SUBSCRIPTION: &str = "_task_watch_timer";
+/// Name of that timer (`timer:task_watch`).
+pub const TASK_WATCH_TIMER: &str = "task_watch";
 pub const NOTIFY_SOURCE_ID: &str = "notify";
 /// Event of a notification that reached the session's conversation.
 pub const NOTIFY_EVENT_DELIVERED: &str = "delivered";

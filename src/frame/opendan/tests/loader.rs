@@ -586,15 +586,22 @@ async fn registered_sessions_are_hosted_and_recovered() {
     let before = new_work(fs_agent(&w).as_ref(), &w, "left from an earlier process").await;
     assert_eq!(before.state().unwrap().run_state, RunState::Created);
 
-    let loader = w.start(Llm::new(|_, _| "done".into())).await;
+    // A work session ends with its explicit final report.
+    let loader = w.start(Llm::new(|_, _| r#"CALL:report {"report": "done", "is_end": true}"#.into())).await;
     until("recovered session finishes", || finished(&before)).await;
     let later = new_work(loader.agent.as_ref(), &w, "created while hosting").await;
     until("new session finishes", || finished(&later)).await;
     assert_eq!(later.state().unwrap().outcome, Some(Outcome::Succeeded));
-    let hosted = loader.supervisor.status();
+    // The drive that finished a session returns after its last commit.
     for sd in [&before, &later] {
-        let h = hosted.iter().find(|h| h.session_id == sd.sid()).unwrap();
-        assert!(h.drives >= 1, "{h:?}");
+        until("the finishing drive is counted", || {
+            loader
+                .supervisor
+                .status()
+                .iter()
+                .any(|h| h.session_id == sd.sid() && h.drives >= 1)
+        })
+        .await;
     }
     // Sessions of another driver are left alone.
     let mut spec = work_spec("someone else's", "go");
@@ -1194,7 +1201,7 @@ async fn a_sub_session_reports_through_its_ui_parent() {
         if u.contains("there are 3 files") {
             "the work session says: 3 files".to_string()
         } else if u.contains("count the files") {
-            "there are 3 files".to_string()
+            r#"CALL:report {"report": "there are 3 files", "is_end": true}"#.to_string()
         } else {
             "on it".to_string()
         }
@@ -1907,7 +1914,7 @@ async fn sub_sessions_are_child_tasks_of_the_turn_that_created_them() {
             }
             "two workers started".to_string()
         } else if u.contains("part ") {
-            "part done".to_string()
+            r#"CALL:report {"report": "part done", "is_end": true}"#.to_string()
         } else {
             "noted".to_string()
         }

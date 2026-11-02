@@ -125,6 +125,8 @@ impl AgentDIDObjectRuntime {
 
         Ok(AgentToolResult {
             agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
+            hints: Vec::new(),
+            dedup: None,
             tool: None,
             cmd_name: Some("xcall".to_string()),
             status: match response.status {
@@ -213,6 +215,8 @@ fn read_response_to_tool_result(
     if unchanged {
         return AgentToolResult {
             agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
+            hints: Vec::new(),
+            dedup: None,
             tool: None,
             cmd_name: Some("read".to_string()),
             status: AgentToolStatus::Success,
@@ -259,6 +263,8 @@ fn read_response_to_tool_result(
 
     AgentToolResult {
         agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
+        hints: Vec::new(),
+        dedup: None,
         tool: None,
         cmd_name: Some("read".to_string()),
         status: if response.errors.is_empty() {

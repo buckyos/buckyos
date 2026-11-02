@@ -166,6 +166,7 @@ async fn drive_locked(
             &session.config.prompt.initial_inputs,
         )));
     }
+    let hints = Arc::new(super::hints::SessionHintLedger::of(&session.state));
     let sh = Arc::new(Shared {
         deps: deps.clone(),
         lease: lease.clone(),
@@ -183,6 +184,8 @@ async fn drive_locked(
         tasks: Mutex::new(None),
         turn_closed: Mutex::new(None),
         current_tool: Arc::new(Mutex::new(None)),
+        current_intent: Mutex::new(None),
+        hints,
         task_status: Mutex::new(None),
         flush: tokio::sync::Mutex::new(()),
         external_stop_applied: AtomicBool::new(false),
@@ -1016,7 +1019,7 @@ fn task_summary(task_id: &str, state: &TaskState) -> (String, String) {
     };
     match state {
         TaskState::Finished(r) => (
-            "finished".into(),
+            if r.success { "finished" } else { "failed" }.into(),
             format!(
                 "task {task_id} {}: {}",
                 if r.success { "finished" } else { "failed" },
@@ -1060,8 +1063,9 @@ fn task_result_text(task_id: &str, state: &TaskState) -> String {
     cut
 }
 
-/// The call of the live (or last) run whose result handed `task_id` over.
-fn task_call_of(sh: &Shared, state: &SessionState, task_id: &str) -> Option<String> {
+/// The call of the live (or last) run whose result handed `task_id` over,
+/// and what that call was (`{tool, what, intent}`).
+fn task_call_of(sh: &Shared, state: &SessionState, task_id: &str) -> Option<(String, Value)> {
     state
         .live_run
         .as_ref()
@@ -1069,17 +1073,29 @@ fn task_call_of(sh: &Shared, state: &SessionState, task_id: &str) -> Option<Stri
         .into_iter()
         .chain(state.last_run.clone())
         .find_map(|run_id| {
-            sh.dir
-                .runs()
-                .record(&run_id)
-                .ok()?
-                .host?
-                .extra
-                .get("task_calls")?
-                .get(task_id)?
-                .as_str()
-                .map(str::to_string)
+            let extra = sh.dir.runs().record(&run_id).ok()?.host?.extra;
+            let call = extra.get("task_calls")?.get(task_id)?.as_str()?.to_string();
+            let brief = extra
+                .get("task_briefs")
+                .and_then(|b| b.get(task_id))
+                .cloned()
+                .unwrap_or(Value::Null);
+            Some((call, brief))
         })
+}
+
+/// One line naming the call a task's end answers: its tool, what it ran
+/// and why (simple Work Session TODO §3.5).
+fn call_line(call_id: &str, brief: &Value) -> Option<String> {
+    let tool = brief.get("tool").and_then(Value::as_str)?;
+    let mut line = format!("Call {call_id}: {tool}");
+    if let Some(what) = brief.get("what").and_then(Value::as_str) {
+        line.push_str(&format!(" `{what}`"));
+    }
+    if let Some(intent) = brief.get("intent").and_then(Value::as_str) {
+        line.push_str(&format!(" — intent: {intent}"));
+    }
+    Some(line)
 }
 
 /// Tasks the session follows (§6.2) — of a run kept for its work, or of
@@ -1145,8 +1161,13 @@ async fn poll_watched_tasks(sh: &Arc<Shared>) -> Result<Vec<FetchedInput>> {
             _ => inputs.push(FetchedInput {
                 // A task result: the whole result, named by its call.
                 input: Ok(SessionInput::Event({
-                    ev.summary = task_result_text(&task_id, &state);
-                    ev.call_id = task_call_of(sh, &session_state, &task_id);
+                    let text = task_result_text(&task_id, &state);
+                    let call = task_call_of(sh, &session_state, &task_id);
+                    ev.summary = match call.as_ref().and_then(|(id, b)| call_line(id, b)) {
+                        Some(line) => format!("{line}\n{text}"),
+                        None => text,
+                    };
+                    ev.call_id = call.map(|(id, _)| id);
                     ev
                 })),
                 src: INTERNAL_TASK_SRC.to_string(),
@@ -1600,6 +1621,12 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                 tasks.retain(|t| matches!(&t.input, Ok(SessionInput::Event(ev)) if own.contains(&ev.source.id)));
             }
             candidates.extend(tasks);
+            if !sub_context {
+                // A multi-Turn Work Session's own inputs: the correction of
+                // its open Turn, the ticks while it waits for its work.
+                candidates.extend(super::ticks::poll_nudge(sh).await);
+                candidates.extend(super::ticks::poll_ticks(sh).await?);
+            }
             // What the session's sub sessions need from it (xAgent §4.14).
             let children = if sub_context {
                 Vec::new()
@@ -1831,6 +1858,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
             let advancing = {
                 let s = sh.session.lock().await;
                 !s.state.watched_tasks.is_empty()
+                    || s.state.nudge.pending
                     || s.state
                         .waiting_for
                         .as_ref()
@@ -1967,7 +1995,9 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         let next = Box::pin(handle_context_outcome(sh, &mut lc, outcome?)).await?;
         Box::pin(super::goal::flush(sh)).await;
         outcomes_handled += 1;
-        if !next.run_ended && !next.suspended {
+        // A kept run whose Turn closed is opened again for the next Turn
+        // (from its checkpoint, with its tool budget refilled).
+        if !next.run_ended && !next.suspended && next.turn_end.is_none() {
             live = Some(lc);
         }
         let (rev, rs) = {
@@ -1991,6 +2021,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         if next.waiting
             && until == StopWhen::Idle
             && routed.candidates.is_empty()
+            && next.nudge == 0
             && poll_children(sh, &[]).await?.is_empty()
         {
             return Ok(DriveResult::Idle { rev, run_state: rs });

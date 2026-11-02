@@ -180,6 +180,20 @@ impl InputView {
             };
             v["is_msg"] = Value::Bool(is_msg);
             v["is_event"] = Value::Bool(!is_msg);
+            // What kind of event, for templates (they cannot compare):
+            // a task's end, a timer tick, the runner's correction, other.
+            let (task, tick, nudge) = match item {
+                InputItem::Event(e) => (
+                    e.source.kind == "task" && e.subscription_id.is_none(),
+                    e.source.kind == "timer",
+                    e.source.kind == "system" && e.source.id == "runner",
+                ),
+                InputItem::Msg(_) => (false, false, false),
+            };
+            v["is_task_result"] = Value::Bool(task);
+            v["is_tick"] = Value::Bool(tick);
+            v["is_nudge"] = Value::Bool(nudge);
+            v["is_other_event"] = Value::Bool(!is_msg && !(task || tick || nudge));
             mixed.push(v);
         }
         Self {
