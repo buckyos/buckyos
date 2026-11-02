@@ -37,7 +37,7 @@ pub struct ScriptedModel {
     /// Output limit of the last stage request (not `llm.map`).
     pub max_tokens: Mutex<Option<u32>>,
     /// Every call is refused by the AI service with this reason.
-    pub refuse: Mutex<Option<llm_context::RefusalKind>>,
+    pub refuse: Mutex<Option<&'static str>>,
     /// The provider of every model client the service asked for (stages and `llm.map`), in order.
     pub providers: Mutex<Vec<ProviderConfig>>,
 }
@@ -67,8 +67,8 @@ pub fn text(t: &str) -> AiResponse {
 impl LlmClient for ScriptedModel {
     async fn infer(&self, req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        if let Some(kind) = *self.refuse.lock().unwrap() {
-            return Err(LLMComputeError::provider(llm_context::ProviderFailure::Refused(kind), "refused by the AI service"));
+        if let Some(code) = *self.refuse.lock().unwrap() {
+            return Err(LLMComputeError::provider(llm_context::ProviderFailure::Refused { code: code.to_string() }, "refused by the AI service"));
         }
         let delay = self.delay_ms.load(Ordering::SeqCst);
         if delay > 0 {

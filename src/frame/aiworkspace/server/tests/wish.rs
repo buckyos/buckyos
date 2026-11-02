@@ -468,7 +468,7 @@ fn wish_runs_use_the_owners_or_the_starters_aicc() {
 
     // a quota refusal fails the run with its sub-code; a collaborator never sees the owner's rules
     srv.rpc("ws.set_wish_aicc", json!({ "mode": "workspace_owner" })).await;
-    *m.refuse.lock().unwrap() = Some(llm_context::RefusalKind::QuotaExhausted);
+    *m.refuse.lock().unwrap() = Some(agent_tool::xllm::REFUSED_QUOTA_EXHAUSTED);
     let start = srv.call_as("tok-bob", "proc.start", json!({ "program": "wish.xllm@1", "idempotency_key": "b3",
         "params": { "wish_id": "wish-q3", "stage": "analyze", "location": loc() } })).await["result"].clone();
     let failed = srv.wait_as("tok-bob", start["run_id"].as_str().unwrap()).await;

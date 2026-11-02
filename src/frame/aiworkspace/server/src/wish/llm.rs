@@ -51,6 +51,8 @@ pub fn llm_context(cfg: &WishConfig, model: &str, iterations: u32, runs_dir: &Pa
     if let Some(o) = on_behalf_of.filter(|_| provider["type"] == json!("buckyos")) {
         provider["on_behalf_of"] = json!(o);
     }
+    // a wait budget of the whole shell timeout: `shell` waits for the program instead of handing it to a task
+    let shell_timeout_ms = cfg.program_timeout_secs * 1000 + 30_000;
     let mut v = json!({
         "provider": provider,
         "model": model,
@@ -64,8 +66,9 @@ pub fn llm_context(cfg: &WishConfig, model: &str, iterations: u32, runs_dir: &Pa
             "enabled": true,
             "filesystem_policy": "workspace",
             "tools": list,
-            "shell": { "mode": "wait", "timeout_ms": cfg.program_timeout_secs * 1000 + 30_000, "max_timeout_ms": cfg.program_timeout_secs * 2000 + 60_000 },
+            "shell": { "timeout_ms": shell_timeout_ms, "max_timeout_ms": cfg.program_timeout_secs * 2000 + 60_000 },
         },
+        "runtime": { "task_wait_ms": shell_timeout_ms },
     });
     if let Some(w) = cfg.context_window {
         v["context_window"] = json!(w);
@@ -189,8 +192,8 @@ async fn ask(llm: &Arc<dyn LlmClient>, model: &str, system: &str, user: String) 
         abort: InferenceAbortToken::noop(),
     };
     let r = llm.infer(req).await.map_err(|e| match &e {
-        LLMComputeError::Provider { failure: ProviderFailure::Refused(kind), .. } => {
-            AskError::Refused(super::refusal_sub_code(agent_tool::xllm::refusal_kind_name(*kind)).unwrap_or("AI_QUOTA_EXHAUSTED"))
+        LLMComputeError::Provider { failure: ProviderFailure::Refused { code }, .. } => {
+            AskError::Refused(super::refusal_sub_code(code).unwrap_or("AI_QUOTA_EXHAUSTED"))
         }
         _ => AskError::Failed(format!("model call failed: {e:?}")),
     })?;

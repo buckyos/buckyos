@@ -8,7 +8,6 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use agent_tool::exec_tracking::InflightAction;
 use agent_tool::llm_bash::{BashRunRequest, BashTarget};
 use agent_tool::runtime::node::{NodeExecutorConnector, NodeIo};
 use agent_tool::runtime::{RemoteNodeConfig, RuntimeConfig, RuntimeOpenCtx, RuntimeRegistry, Sandbox};
@@ -244,15 +243,7 @@ async fn remote_node_tools_run_on_the_node_and_recover_by_query() {
         run_id: "run1".into(),
         run_dir: Some(run_dir.clone()),
     };
-    let inflight = |id: &str| InflightAction {
-        call_id: id.into(),
-        tool: "shell".into(),
-        args: json!({"command": "x"}),
-        effect: "unknown".into(),
-        idempotency_key: None,
-        step_index: None,
-        started_at_ms: node_executor::now_ms(),
-    };
+    let inflight = |id: &str| call(id, "shell", json!({"command": "x"}));
     let text = rt.describe_interrupted(&run, &inflight("c-shell")).await;
     assert!(text.contains("Succeeded") && text.contains("hello"), "{text}");
     let text = rt.describe_interrupted(&run, &inflight("never-sent")).await;
@@ -276,11 +267,11 @@ async fn remote_node_tools_run_on_the_node_and_recover_by_query() {
     let mut finished = None;
     for _ in 0..40 {
         match resolver.state("local:shell:c-long").await {
-            llm_context::tasks::TaskState::Finished(r) => {
+            agent_tool::TaskState::Finished(r) => {
                 finished = Some(r);
                 break;
             }
-            llm_context::tasks::TaskState::Running { .. } => {}
+            agent_tool::TaskState::Running { .. } => {}
             other => panic!("unexpected {other:?}"),
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
