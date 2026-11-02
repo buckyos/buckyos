@@ -1985,6 +1985,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                     (snapshot, None)
                 }
             };
+            let observed = super::observe::for_batch(sh, &lc.run, lc.ctx.host_meta()).await?;
             Box::pin(commit_input_batch(
                 sh,
                 &mut lc,
@@ -1993,6 +1994,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                     picked: &picked,
                     snapshot,
                     background,
+                    observed,
                     text,
                     media,
                     goal: goal_opening,

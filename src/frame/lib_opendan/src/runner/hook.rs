@@ -11,8 +11,9 @@
 //! the context. Saved semi-subscription state waits for the next controlled
 //! input (`on_init / on_input / on_context_switch`), which renders it as the
 //! snapshot message in front of its own. The one host observation placed
-//! here is the background before the inferences of a run that asks for it
-//! (`[input] background = "before_inference"`, see `observe.rs`).
+//! here is the background after tool results of a run that asks for it
+//! (`[input] background = "before_inference"`; an input batch carries its
+//! own, see `observe.rs`).
 
 use std::sync::Arc;
 

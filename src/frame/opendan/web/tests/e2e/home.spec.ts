@@ -25,7 +25,7 @@ test('home shows the agent card and the work overview', async ({ page }) => {
 
   const overview = page.getByTestId('work-overview')
   await expect(overview.getByTestId('stat-working')).toContainText('1')
-  await expect(overview.getByTestId('stat-pending')).toContainText('1')
+  await expect(overview.getByTestId('stat-pending')).toContainText('0')
   await expect(overview.getByTestId('stat-total')).toContainText('5')
   const models = overview.getByTestId('model-row')
   await expect(models).toHaveCount(3)
@@ -130,7 +130,7 @@ test('sessions open in MessageHub when they are conversations, else on their det
   await ui.getByRole('button', { name: /Show sub sessions \(2\)/ }).click()
   const running = list.getByTestId(`home-session-${WORK_RUNNING}`)
   await expect(running).toContainText('Working')
-  await expect(list.getByTestId(`home-session-${WORK_PENDING}`)).toContainText('Needs review')
+  await expect(list.getByTestId(`home-session-${WORK_PENDING}`)).toContainText('Done')
   await expect(list.getByTestId(`home-session-${WORK_FAILED}`)).toHaveCount(0)
   await running.getByRole('button', { name: /Show sub sessions \(1\)/ }).click()
   await expect(list.getByTestId(`home-session-${WORK_FAILED}`)).toContainText('Failed')

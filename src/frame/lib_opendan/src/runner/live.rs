@@ -1322,6 +1322,9 @@ pub(super) struct InputBatch<'a> {
     /// Chat format (UI sessions): `background_shown` after this batch and
     /// the state versions its background lines show (no snapshot message).
     pub background: Option<(std::collections::BTreeMap<String, String>, Vec<EventReceipt>)>,
+    /// A run shown background lines before its inferences: the lines that
+    /// changed, placed in front of the input message and recorded with it.
+    pub observed: Option<super::observe::BatchBackground>,
     /// The controlled input message: template output and media blocks.
     pub text: String,
     pub media: Vec<AiContent>,
@@ -1451,10 +1454,14 @@ pub(super) async fn commit_input_batch(
         part_texts.push((PART_SNAPSHOT, text));
         events = shown;
     }
-    let mut input_msg = AiMessage::text(AiRole::User, batch.text.clone());
+    let text = match &batch.observed {
+        Some(bg) => format!("{}{}", bg.block, batch.text),
+        None => batch.text,
+    };
+    let mut input_msg = AiMessage::text(AiRole::User, text.clone());
     input_msg.content.extend(batch.media);
     messages.push(input_msg);
-    part_texts.push((PART_INPUT, batch.text));
+    part_texts.push((PART_INPUT, text));
     let count = messages.len();
     let pos = lc.ctx.inject(Injection {
         messages,
@@ -1496,6 +1503,9 @@ pub(super) async fn commit_input_batch(
     };
     let mut meta = host_meta_of(lc.ctx.host_meta());
     meta.input_receipts.push(receipt.clone());
+    if let Some(bg) = &batch.observed {
+        bg.record(&mut meta);
+    }
     let host = with_host_meta(lc.ctx.host_meta(), &meta);
     lc.ctx.set_host_meta(Some(host));
     let snap = lc.ctx.snapshot();

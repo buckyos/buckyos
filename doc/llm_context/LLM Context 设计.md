@@ -922,7 +922,7 @@ pub enum InjectionPosition { RequestInput(usize), Accumulated(usize), Step(u32),
 ```
 
 - `before_tool_call` 的现状：libopendan 的 `SessionCheckpointHook` 在这里检查 lease 与工作区准入、存快照、同步报告；xllm 的 `SnapshotHook` 在这里写 `snapshots/NNNN.json`。两者都以它为"哪个调用可能正在跑"的唯一依据（§9.2），`run.json` 不另记在途调用。
-- **注入是唯一的上下文原语**：宿主放进运行中上下文的内容都走 `Injection`，注入的消息进历史、进快照，恢复后模型看到的与崩溃前一致；没有只进本次请求的临时注入（每轮变化的内容会破坏前缀缓存）。现状：libopendan 在 run 之间用 `inject` 提交输入批次（新消息、`<<task_result>>`、子 session 事件）及其回执，在 `before_inference` 注入 after_tools 的 `<<background_context>>`（Todo / 子会话变化行）；xllm `--resume <message>` 用 `inject` 把新消息接在快照停下的边界（§11.4）。
+- **注入是唯一的上下文原语**：宿主放进运行中上下文的内容都走 `Injection`，注入的消息进历史、进快照，恢复后模型看到的与崩溃前一致；没有只进本次请求的临时注入（每轮变化的内容会破坏前缀缓存）。现状：libopendan 在 run 之间用 `inject` 提交输入批次（新消息、`<<task_result>>`、子 session 事件）及其回执，`[input] background = "before_inference"` 的 run 把 `<<background_context>>`（子会话变化行、在跟任务的新输出）放进输入批次的输入消息，工具结果之后才在 `before_inference` 单独注入；xllm `--resume <message>` 用 `inject` 把新消息接在快照停下的边界（§11.4）。
 - `LLMContext::inject(injection) -> InjectionPosition`：function call 追加到 `accumulated`；behavior 模式并入热 step（或 `Done` 之后当前 behavior 的最后一个 step）的 `next_user_message`（接在默认的动作结果渲染之后），否则追加到 `request.input`。宿主用同一规则预测位置，把位置写进 receipt。
 - `LLMContextState.host: Option<Value>`：宿主元数据（如 libOpenDAN 的输入 receipt，键为宿主名），随每个快照、resume 和其它执行者的续跑原样保留，waist 不解释。
 - `LLMContextState.snapshot_version`：当前为 6（§9.5）；`resume` 只接受等于 `SNAPSHOT_FORMAT_VERSION` 的版本，更旧或更新的都返回 `SnapshotCorrupted`，调用方据此保留现场而不是新建上下文。

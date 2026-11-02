@@ -127,7 +127,7 @@ plan session 是多 Turn 的 Work Session，每个输入打开一个 Turn：
 | tick（工作在跑时每 `tick_secs`；`[session.plan_simple]` 为 600） | `timer:task_watch` |
 | 纠正（回复既没结束也不等任何东西） | runner |
 
-背景（`[input] background = "before_inference"`）：每次推理前（Turn 的第一次也算），宿主同步列表（并调度），把自上次展示以来变化的行作为一条 `<<background_context>>` 消息追加：每个 Todo 一行（`<todo id mode status after blocked_by attempt child_sid started paused report_ref runtime baseline workspace retry updates>标题 — 结果 / 派发失败原因 / 取消原因</todo>`）、未绑定 Todo 的子 session、run 在跟的任务的新输出。已展示的行记在快照宿主元数据 `HostMeta.observed`，随快照发布：发布前崩溃会重新展示，发布后不会重复。
+背景（`[input] background = "before_inference"`）：每次推理前（Turn 的第一次也算），宿主同步列表（并调度），把自上次展示以来变化的行放进 `<<background_context>>`：未绑定 Todo 的子 session、run 在跟的任务的新输出。输入批次把这个块放在自己的输入消息最前面（与 UI Session 的 chat 格式一致），只有工具结果之后的推理才单独注入一条。Todo 没有背景行，也没有自己的事件：它只是创建 work session 的辅助，状态变化要么来自 work session 的结束 / 需要输入事件（事件正文带 Todo、attempt 和后续 Todo 的去向），要么来自 plan 自己的命令（命令输出说明变化）。已展示的行记在快照宿主元数据 `HostMeta.observed`，随承载它的消息发布：发布前崩溃会重新展示，发布后不会重复。
 
 细节按需：`agent-session todo show <id> --report`（最新 attempt 的 work session `final_report`）；`agent-session read-session <child_sid> --report --worklog <n>`；`agent-session todo list`（`<todo_list rev>` 紧凑视图）。
 

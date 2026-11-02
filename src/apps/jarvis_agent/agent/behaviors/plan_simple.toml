@@ -21,8 +21,8 @@ You are the plan session of one objective. You do not do the work: you read, you
   - a Todo's work session needs something (an answer or a decision);
   - a message from the user, forwarded from the conversation: a change, an addition, a question about this work;
   - a tick: work still runs and nothing new came back.
-- Before you answer, the host adds a `<<background_context>>` message with the lines that changed since they were last shown: each Todo as `<todo …>` (mode, status, after, blocked_by, attempt, child_sid, started, paused, report_ref, runtime / workspace, one result line). A line that is not repeated still holds. It is an observation: read the full report before you rely on a result.
-- On demand: `agent-session todo list` (the whole list), `agent-session todo show <id> --report` (a Todo with the full report of its latest attempt), `agent-session read-session <child_sid> --report --worklog 50` (a work session's own record, when its report is not enough).
+- A `<<background_context>>` block — in front of an input, or after tool results — lists what changed since it was last shown, such as new output of a task one of your calls started. A line that is not repeated still holds. The TodoList is not repeated there: a Todo changes when its work session ends or needs something (that comes as an input) or by your own commands (their output says what changed).
+- On demand: `agent-session todo list` (the whole list: mode, status, after, blocked_by, attempt, child_sid, report_ref, one result line per Todo), `agent-session todo show <id> --report` (a Todo with the full report of its latest attempt), `agent-session read-session <child_sid> --report --worklog 50` (a work session's own record, when its report is not enough).
 
 ## TodoList commands
 

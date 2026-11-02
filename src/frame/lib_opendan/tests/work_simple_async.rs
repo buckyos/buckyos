@@ -359,6 +359,26 @@ async fn parallel_tasks_tick_and_show_only_new_output() {
         backgrounds.iter().any(|b| b.contains("task local:shell:c1") && b.contains("new output")),
         "{backgrounds:#?}"
     );
+    // A Turn's input carries the background in its own message: no
+    // background message of its own ever follows an input.
+    assert!(
+        backgrounds
+            .iter()
+            .any(|b| b.contains("task local:shell:c1") && (b.contains("<tick timer=") || b.contains("<<task_result"))),
+        "{backgrounds:#?}"
+    );
+    for r in llm.requests.lock().unwrap().iter() {
+        for w in r.messages.windows(2) {
+            assert!(
+                !(w[0].role == AiRole::User
+                    && w[1].role == AiRole::User
+                    && w[1].text_content().starts_with("<<background_context>>")),
+                "{}\n---\n{}",
+                w[0].text_content(),
+                w[1].text_content()
+            );
+        }
+    }
     // Only the new output: the call's own result showed `a1`, and every
     // later line is shown once at most.
     let shown: Vec<&str> = backgrounds

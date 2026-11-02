@@ -131,11 +131,16 @@ fn crash_script(path: PathBuf) -> Arc<ScriptedLlm> {
             if has_tool_result(req, "q2").is_none() {
                 return shell("q2", "Look at the list once T01 ended.", "agent-session todo list");
             }
-            let blocks: Vec<String> = user_texts(req)
-                .into_iter()
-                .filter(|t| t.starts_with("<<background_context>>") && t.contains("status=\"completed\""))
+            let texts = user_texts(req);
+            let ends: Vec<&String> = texts
+                .iter()
+                .filter(|t| t.contains("of todo T01 (attempt 1) finished"))
                 .collect();
-            assert_eq!(blocks.len(), 1, "the completed attempt is shown once: {blocks:?}");
+            assert_eq!(ends.len(), 1, "the end of T01's work session comes in once: {texts:?}");
+            assert!(
+                !texts.iter().any(|t| t.contains("<todo id=")),
+                "a Todo has no background line of its own: {texts:?}"
+            );
             tool_call("q3", "report", json!({ "intent": "Deliver.", "report": "ran once", "is_end": true }))
         }
     })
@@ -158,13 +163,14 @@ async fn plan_crash_child() {
     panic!("the crash child was expected to die, it ended with {:?}", out.result);
 }
 
-/// V-background recovery: the host dies right before the observation of
-/// the completed Todo is placed, or right after it was published. A new
-/// host shows it exactly once, runs no call again and creates no second
-/// work session.
+/// V-end recovery: the host dies right after the batch that carries
+/// the end of the Todo's work session was published, or right after it was
+/// committed to the session state (batches in the host process: the plan's
+/// first, the work session's first, then this one). A new host delivers the
+/// end exactly once, runs no call again and creates no second work session.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_observation_survives_a_crash_before_and_after_its_commit() {
-    for fault in ["observe:before_inject#3", "observe:after_inject_commit#3"] {
+async fn the_end_of_a_todo_survives_a_crash_around_its_batch() {
+    for fault in ["input_batch:after_input_checkpoint#3", "input_batch:after_state_commit#3"] {
         let env = Env::new();
         install_jarvis(&env);
         let sd = env.create_work(plan_spec(&env, "run once")).await;

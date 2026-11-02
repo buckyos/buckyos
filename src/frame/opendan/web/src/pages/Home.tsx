@@ -227,17 +227,17 @@ function AgentCard({ profile }: { profile: AgentProfile }) {
   )
 }
 
-// Working: a Turn is open or about to be. Pending: something waits for the
-// owner (a result to accept) or has not started.
+// Working: a Turn is open or about to be. Pending: not started yet. The label
+// follows the session's own state: a finished session is done, whatever its
+// acceptance.
 const isWorking = (e: RegistryEntry) =>
   e.status.run_state === 'running' ||
   e.status.run_state === 'ready' ||
   Boolean(e.status.turn_open) ||
   (e.status.run_state === 'waiting' && !e.status.needs_input)
-const isPending = (e: RegistryEntry) => e.status.acceptance === 'pending' || e.status.run_state === 'created'
+const isPending = (e: RegistryEntry) => e.status.run_state === 'created'
 
 const sessionStatus = (e: RegistryEntry): { key: TextKey; tone: string } => {
-  if (e.status.acceptance === 'pending') return { key: 'stPendingAcceptance', tone: 'text-warn' }
   if (e.status.run_state === 'finished') {
     if (e.status.outcome === 'failed') return { key: 'stFailed', tone: 'text-bad' }
     if (e.status.outcome === 'stopped') return { key: 'stStopped', tone: 'text-mute' }

@@ -3,13 +3,20 @@
 //! inference, the first of a Turn included.
 //!
 //! The host brings the TodoList up to its sub sessions' committed state
-//! (and dispatches what became ready) and appends, as one `<<background_context>>` message, the lines that changed
-//! since they were last shown: each Todo (its compact view line), the sub
-//! sessions no Todo binds and the tasks the run follows that printed
-//! something new — only the new output, at most
-//! [`TASK_OUTPUT_MAX`] bytes of it. The session's runtime and workspace are
-//! frozen for its life and told by its first input. Never a sub session's
-//! transcript or report: those are read on demand (`todo show --report`).
+//! (and dispatches what became ready) and shows, as one
+//! `<<background_context>>` block, the lines that changed since they were
+//! last shown: the sub sessions no Todo binds and the tasks the run follows
+//! that printed something new — only the new output, at most
+//! [`TASK_OUTPUT_MAX`] bytes of it. A Todo has no line: it is the helper
+//! that creates a work session, whose end or need comes as that session's
+//! event, and what the plan's own commands change their output says. The
+//! session's runtime and workspace are frozen for its life and told by its
+//! first input. Never a sub session's transcript or report: those are read
+//! on demand (`todo show --report`).
+//!
+//! An input batch carries the block in front of its own message
+//! ([`for_batch`], as a UI session's chat format does); only an inference
+//! after tool results gets it as a message of its own ([`at_boundary`]).
 //!
 //! What was shown is `HostMeta.observed` (line key → digest), committed with
 //! the snapshot that carries the message: a crash before that commit shows
@@ -30,7 +37,7 @@ use crate::protocol::*;
 use crate::session::runs::RunHandle;
 
 use super::background::{child_line, digest, render, BackgroundLine};
-use super::receipts::{snapshot_host_meta, with_host_meta};
+use super::receipts::{host_meta_of, snapshot_host_meta, with_host_meta};
 use super::shared::{commit_and_report, Shared};
 
 /// run.json `host.extra` key: what the run is shown besides its inputs
@@ -174,64 +181,34 @@ async fn task_lines(
     (lines, next)
 }
 
-fn todo_key(todo_id: &str) -> String {
-    format!("todo:{todo_id}")
-}
-
 async fn observe(sh: &Shared) -> Result<Observed> {
     let sid = sh.dir.sid().to_string();
-    let list = super::todos::load(sh);
-    let mut lines = Vec::new();
-    for t in &list.todos {
-        lines.push(BackgroundLine::new(todo_key(&t.todo_id), t.view_line(&list)));
-    }
-    let bound: BTreeMap<String, (String, u32)> = list
-        .todos
-        .iter()
-        .flat_map(|t| {
-            t.attempts.iter().filter_map(|a| {
-                a.child_sid
-                    .clone()
-                    .map(|c| (c, (t.todo_id.clone(), a.attempt)))
-            })
-        })
+    // A Todo's work session is told by its own events (`of todo T01`).
+    let bound: std::collections::BTreeSet<String> = super::todos::bound_children(sh)
+        .into_iter()
+        .map(|b| b.child_sid)
         .collect();
+    let mut lines = Vec::new();
     let mut ends = Vec::new();
     for e in sh.agent().sessions().children_of(&[sid]).await? {
+        if bound.contains(&e.session_id) {
+            continue;
+        }
         let st = &e.status;
         let finished = st.run_state == RunState::Finished;
-        match bound.get(&e.session_id) {
-            // Its Todo's line tells it, once the attempt ended there.
-            Some((todo, attempt)) => {
-                if finished
-                    && list
-                        .get(todo)
-                        .and_then(|t| t.attempt(*attempt))
-                        .is_some_and(|a| a.ended())
-                {
-                    ends.push((e.session_id.clone(), todo_key(todo)));
-                }
-            }
-            None => {
-                let line = if finished
-                    || st.pending_decision.is_some()
-                    || st.needs_input
-                {
-                    child_line(&e)
-                } else {
-                    // A running session's activity is not a change to
-                    // decide on.
-                    BackgroundLine::new(
-                        format!("work:{}", e.session_id),
-                        format!("work {}: {}", e.session_id, st.run_state.as_str()),
-                    )
-                };
-                if finished {
-                    ends.push((e.session_id.clone(), line.key.clone()));
-                }
-                lines.push(line);
-            }
+        let line = if finished || st.pending_decision.is_some() || st.needs_input {
+            child_line(&e)
+        } else {
+            // A running session's activity is not a change to decide on.
+            BackgroundLine::new(
+                format!("work:{}", e.session_id),
+                format!("work {}: {}", e.session_id, st.run_state.as_str()),
+            )
+        };
+        if finished {
+            ends.push((e.session_id.clone(), line.key.clone()));
         }
+        lines.push(line);
     }
     Ok(Observed { lines, ends })
 }
@@ -284,21 +261,14 @@ async fn mark_delivered(
     Ok(())
 }
 
-/// The checkpoint hook's observation at an inference boundary (after the
-/// snapshot was published): the TodoList is synchronized (and what became
-/// ready dispatched), ends already shown are marked heard, and the changed
-/// lines are returned as the injection (with the `observed` map in the host
-/// metadata; after a history rewrite an unchanged state is recorded anew
-/// without a message).
-pub(super) async fn at_boundary(
+/// The lines that changed since `meta` recorded them as shown, and `meta`
+/// after showing them; `None` when there is nothing to record. Ends already
+/// shown are marked heard first.
+async fn changes(
     sh: &Shared,
     run: &RunHandle,
-    snapshot: &LLMContextSnapshot,
-) -> Result<Option<Injection>> {
-    if let Err(e) = super::todos::sync(sh).await {
-        log::warn!("todo sync of {}: {e}", sh.dir.sid());
-    }
-    let mut meta = snapshot_host_meta(snapshot);
+    mut meta: HostMeta,
+) -> Result<Option<(Vec<BackgroundLine>, HostMeta)>> {
     let current_epoch = meta.observed_epoch == meta.history_epoch;
     let observed = if current_epoch {
         meta.observed.clone()
@@ -314,17 +284,6 @@ pub(super) async fn at_boundary(
     };
     let (tasks, task_output) = task_lines(sh, run, &shown_output).await;
     now.lines.extend(tasks);
-    if snapshot
-        .state
-        .accumulated
-        .last()
-        .is_some_and(|m| m.role == AiRole::User && m.text_content().starts_with(BLOCK_START))
-    {
-        // Just injected at this boundary (the waist asks again after an
-        // injection): published with the snapshot.
-        crate::fault::point("observe:after_inject_commit");
-        return Ok(None);
-    }
     let (shown, next) = select(&now.lines, &observed);
     if shown.is_empty() && next == observed && task_output == meta.task_output && current_epoch {
         return Ok(None);
@@ -332,6 +291,87 @@ pub(super) async fn at_boundary(
     meta.observed = next;
     meta.task_output = task_output;
     meta.observed_epoch = meta.history_epoch;
+    Ok(Some((shown, meta)))
+}
+
+/// The background an input batch carries in front of its message.
+pub(super) struct BatchBackground {
+    /// The `<<background_context>>` block (empty: nothing to show, only
+    /// the record moves).
+    pub block: String,
+    meta: HostMeta,
+}
+
+impl BatchBackground {
+    /// Record the lines as shown in the host metadata committed with the
+    /// batch.
+    pub(super) fn record(&self, meta: &mut HostMeta) {
+        meta.observed = self.meta.observed.clone();
+        meta.task_output = self.meta.task_output.clone();
+        meta.observed_epoch = self.meta.observed_epoch;
+    }
+}
+
+/// The background of an input batch of a run that is shown one: computed
+/// right before the batch is committed, its record committed with it, so
+/// the inference that answers the batch gets no message of its own.
+pub(super) async fn for_batch(
+    sh: &Shared,
+    run: &RunHandle,
+    host: Option<&Value>,
+) -> Result<Option<BatchBackground>> {
+    if !enabled(run) {
+        return Ok(None);
+    }
+    Ok(changes(sh, run, host_meta_of(host))
+        .await?
+        .map(|(shown, meta)| BatchBackground {
+            block: render(&shown),
+            meta,
+        }))
+}
+
+/// The checkpoint hook's observation at an inference boundary (after the
+/// snapshot was published): the TodoList is synchronized (and what became
+/// ready dispatched), ends already shown are marked heard, and the changed
+/// lines are returned as the injection (with the `observed` map in the host
+/// metadata; after a history rewrite an unchanged state is recorded anew
+/// without a message). Nothing right after an input batch: the batch
+/// showed the background in its own message.
+pub(super) async fn at_boundary(
+    sh: &Shared,
+    run: &RunHandle,
+    snapshot: &LLMContextSnapshot,
+) -> Result<Option<Injection>> {
+    if let Err(e) = super::todos::sync(sh).await {
+        log::warn!("todo sync of {}: {e}", sh.dir.sid());
+    }
+    let meta = snapshot_host_meta(snapshot);
+    if let Some(last) = snapshot
+        .state
+        .accumulated
+        .last()
+        .filter(|m| m.role == AiRole::User)
+        .map(|m| m.text_content())
+    {
+        let batch = meta
+            .input_receipts
+            .last()
+            .and_then(|r| r.parts.iter().rfind(|p| p.part == PART_INPUT))
+            .is_some_and(|p| p.text == last);
+        if batch {
+            return Ok(None);
+        }
+        if last.starts_with(BLOCK_START) {
+            // Just injected at this boundary (the waist asks again after an
+            // injection): published with the snapshot.
+            crate::fault::point("observe:after_inject_commit");
+            return Ok(None);
+        }
+    }
+    let Some((shown, meta)) = changes(sh, run, meta).await? else {
+        return Ok(None);
+    };
     crate::fault::point("observe:before_inject");
     let messages = if shown.is_empty() {
         Vec::new()

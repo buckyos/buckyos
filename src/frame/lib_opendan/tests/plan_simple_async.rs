@@ -212,8 +212,8 @@ async fn a_whole_list_at_once_runs_in_its_order() {
     assert_eq!(st.turns_completed, st.turn_seq);
 }
 
-/// 3 / 8: T01 fails, T02 after it is blocked (`blocked_by="T01:failed"` in
-/// the background) until the plan retries T01; its success starts T02. The
+/// 3 / 8: T01 fails, T02 after it is blocked (the end of T01's work session
+/// says so) until the plan retries T01; its success starts T02. The
 /// plan ends while T03 still runs: the end is accepted, T03's attempt ends
 /// stopped and its work session is stopped.
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
@@ -244,16 +244,18 @@ async fn a_failed_prerequisite_blocks_until_retried_and_the_end_stops_what_runs(
         Role::Explore => panic!("no explorations"),
         Role::Plan => Ok({
             let list = list_of(&path_c);
-            let t01 = list.get("T01").map(|t| t.status);
+            let t01_failed = user_texts(req)
+                .iter()
+                .any(|u| u.contains("todo T01 (attempt 1) finished (failed)"));
             if has_tool_result(req, "p1").is_none() {
                 shell(
                     "p1",
                     "Plan a, b after it, c on the side.",
                     "agent-session todo add \"a\" --content \"Do a.\" && agent-session todo add \"b\" --content \"Do b.\" && agent-session todo add \"c\" --after none --content \"Do c, slowly.\"",
                 )
-            } else if t01 == Some(TodoStatus::Failed) && has_tool_result(req, "p2").is_none() {
-                let bg = user_texts(req).into_iter().filter(|t| t.starts_with("<<background_context>>")).collect::<Vec<_>>().join("\n");
-                assert!(bg.contains("id=\"T02\"") && bg.contains("status=\"blocked\"") && bg.contains("blocked_by=\"T01:failed\""), "{bg}");
+            } else if t01_failed && has_tool_result(req, "p2").is_none() {
+                assert_eq!(list.get("T01").unwrap().status, TodoStatus::Failed);
+                assert!(!user_texts(req).iter().any(|u| u.contains("<todo id=")), "{:?}", user_texts(req));
                 b2.store(true, Ordering::SeqCst);
                 assert!(
                     user_texts(req).iter().any(|u| u.contains("todo T01 (attempt 1) finished (failed)") && u.contains("Todos after it: T02 blocked")),
