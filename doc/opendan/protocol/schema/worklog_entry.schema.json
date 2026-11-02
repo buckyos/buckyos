@@ -14,6 +14,13 @@
           "description": "`read_only | idempotent | side_effect | unknown`.",
           "type": "string"
         },
+        "intent": {
+          "description": "Why the call was made, as it stated (`intent` argument).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "tool": {
           "type": "string"
         }

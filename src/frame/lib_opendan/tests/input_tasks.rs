@@ -238,8 +238,7 @@ async fn a_reply_while_its_task_runs_keeps_the_run_until_the_task_result() {
     assert_eq!(llm.count(), 2);
     let st = sd.state().unwrap();
     let run_id = st.live_run.clone().unwrap().run_id;
-    let wf = st.waiting_for.clone().unwrap();
-    assert_eq!((wf.kind, wf.refs.clone()), (WaitingKind::Tool, vec!["bucky:1".to_string()]));
+    assert!(st.follows_work() && st.wait_children.is_empty());
     assert_eq!(st.watched_tasks, vec!["bucky:1".to_string()]);
     // A notification for the task only triggers the query.
     let agent = env.agent();
@@ -706,7 +705,6 @@ async fn a_kept_run_can_wait_for_another_task() {
     assert!(matches!(r, DriveResult::Idle { run_state: RunState::Waiting, .. }), "{r:?}");
     assert_eq!(llm.count(), 4);
     let st = sd.state().unwrap();
-    assert_eq!(st.waiting_for.unwrap().refs, vec!["bucky:2".to_string()]);
     assert_eq!(st.watched_tasks, vec!["bucky:2".to_string()]);
     tasks.finish("bucky:2", "second ok");
     assert!(drive(&sd, &deps, StopWhen::Finished).await.is_finished());

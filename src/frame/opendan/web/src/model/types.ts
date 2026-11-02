@@ -2,7 +2,6 @@ export type SessionKind = 'ui' | 'work' | 'self_check' | 'goal'
 export type RunState = 'created' | 'ready' | 'running' | 'waiting' | 'finished'
 export type Outcome = 'succeeded' | 'failed' | 'stopped'
 export type Acceptance = 'n/a' | 'pending' | 'accepted' | 'discarded'
-export type WaitingKind = 'input' | 'tool' | 'event' | 'children'
 export type TurnStatus = 'completed' | 'failed' | 'budget_exhausted' | 'stopped'
 export type OutboxStatus = 'pending' | 'sent' | 'failed'
 export type Decision = 'accept' | 'discard'
@@ -28,7 +27,8 @@ export interface SessionStatus {
   one_line_status: string
   report_brief: string
   pending_decision?: unknown
-  waiting_for?: WaitingKind
+  /** Waiting, and only someone's input can move it. */
+  needs_input?: boolean
   turn_open?: boolean
   activity: Activity
   last_runner?: { runner_id: string; host?: string; pid: number; lock_epoch: number; at_ms: number }
@@ -64,12 +64,6 @@ export interface RegistryEntry {
   status: SessionStatus
   unreachable?: boolean
   location_rev: number
-}
-
-export interface WaitingFor {
-  kind: WaitingKind
-  refs?: string[]
-  deadline_ms?: number
 }
 
 export interface OpenTurn {
@@ -131,7 +125,8 @@ export interface SessionState {
   rev: number
   writer?: { runner_id: string; principal: string; host?: string; pid: number; lock_epoch: number }
   run_state: RunState
-  waiting_for?: WaitingFor
+  /** Sub sessions a waiting session must hear from. */
+  wait_children?: string[]
   outcome?: Outcome
   acceptance: Acceptance
   result?: unknown

@@ -36,10 +36,10 @@ pub struct SessionStatus {
     pub report_brief: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_decision: Option<Value>,
-    /// What a waiting session waits for (a parent tells "needs input" from
-    /// "waits for a tool / its own sub sessions").
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub waiting_for: Option<super::state::WaitingKind>,
+    /// It waits and only someone's input can move it (a parent tells "asks
+    /// for an answer" from "waits for its own tasks / sub sessions").
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub needs_input: bool,
     /// A Turn is open (work in progress, or waiting inside it).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub turn_open: bool,
@@ -74,7 +74,7 @@ impl SessionStatus {
             one_line_status: String::new(),
             report_brief: String::new(),
             pending_decision: None,
-            waiting_for: None,
+            needs_input: false,
             turn_open: false,
             activity: Activity::default(),
             last_runner: None,

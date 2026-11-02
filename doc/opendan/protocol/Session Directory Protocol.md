@@ -147,7 +147,7 @@ Schema：`schema/session_state.schema.json`。
   "rev": 17,                                   // 每次提交 +1
   "writer": { "runner_id": "rn-…", "principal": "app:app2@alice", "host": "host:…", "pid": 1234, "lock_epoch": 42 },
   "run_state": "created | ready | running | waiting | finished",
-  "waiting_for": null | { "kind": "input | tool | event | children", "refs": ["<task_id>"], "deadline_ms": null },   // input：等下一条输入（WAIT_USER_MSG，或没有可推进的工作）；tool / children：run 为它启动、尚未结束的 task / 子 Session 保活（refs 为 task id / sid，§4 保活）；event：Goal Session 在两次 Activation 之间
+  "wait_children": ["<sid>"],   // 等待中的 Session 还要听取的子 Session（run 为它们保活，或结束被它们挡住）；在跟的 task 在 watched_tasks。不再有 waiting_for：等什么由这两者与 run_state 表达，登记表只给一位 needs_input
   "outcome": null | "succeeded | failed | stopped",
   "acceptance": "n/a | pending | accepted | discarded",
   "latest_report": null,  // 最近顶层 context 的 ReportSubmission；子报告仅保留在子 run
@@ -231,9 +231,9 @@ Schema：`schema/session_state.schema.json`。
 | 关闭 | 只由 session 决定（run 结束时的 `finish_run`，或 stop），与 `open_turn = null`、worklog `turn_ended` 同一次提交；run 启动的工作仍在运行时 run 保活、不关闭。`Done` 交付结果 → `completed`（再按 `end_condition` 判定是否 finished）；`WAIT_USER_MSG` 只在本 run 已交付答复（快照 `last_report` 非空）时 `completed`，否则 Turn 保持打开，下一条输入加入它；不可重试错误 → `failed`；预算耗尽 → `budget_exhausted`（这两种情况下，`wait_user_msg = finish_failed` 的 Session 没有下一条输入可以补救，同一次提交里 `finished + failed`，`one_line_status` 带错误信息，父 Session 按结束事件得知）；`control(stop)` → `stopped`。fork 子 process 结束（`process_done`）不关闭 Turn |
 
 - 条目归属的 Turn：有 `open_turn` 时为其 `index`，否则为 `turn_seq`。`turns_completed` 只计 `completed`。
-- Goal Session：一个 Activation 就是一个 Turn（`seq = turn index`）。打开它的批次第一条消息是 Goal 头（receipt part `goal_activation`），头里的外部读取（Goal 定义、Goal State、Work 的登记表状态、预算）在批次提交前完成并冻结在消息里，恢复时不重复装配。Session 只在有输入时推进（bootstrap 也要等一个运行机会），Goal 暂停时不打开新 Turn（输入留在队列，已打开的 Turn 跑到自然结束）。任何结束 Turn 的情况（最终 report、`WAIT_USER_MSG`、预算耗尽、不可恢复错误、stop）都只关闭 Turn：`run_state = waiting`、`waiting_for = event`，Session 不结束、`last_error` 不保留（错误进 Activation 记录与 Goal State）。最终 report 可以在 Goal 派生的 Work 未结束时提交。每次新建或续跑 run 之前检查 Activation 预算（tokens 取 `usage.jsonl` 中 `usage_offset` 之后的记录，runs 为其中不同的 run_id）：用尽则以 `budget_exhausted` 关闭 Turn；新 run 的 `max_total_tokens` 不超过剩余额度。
-- Sub AgentSession 是另一个 session，有自己的 Turn；父子 session 的 Turn 不合并计数。父 Session 将要成功结束、而仍有 `origin.report` 不为 `none` 的子 Session 未结束（或其结束尚未交付给父）时不结束：run 保活，Turn 保持打开，`waiting_for = {kind: children, refs: [sid…]}`；子的结束作为受控输入注入同一个 run、并入同一个 Turn。创建、汇报与等待见 [Session Input Protocol](<Session Input Protocol.md>) §10。
-- **保活**：loop 里不等待。behavior 的 Yield（Step 没有 actions、不是结束报告、没有 next_behavior；阶段 `<report>` 可有可无）立即结束本段；function call 的回复（`Done`）同样如此。这时本 run 启动的工作若还没结束——它交出的 task（run.json `host.extra.tasks`，`session:` 之外）仍在运行，或它在等的子 Session 未收齐（它 `wait` 过的 `session:<sid>`；顶层 context 的 Yield、或 Session 将要成功结束时，是所有需要汇报而未收齐的子 Session）——宿主不结束 run：`live_run` 保留，run.json `status = paused` 并在同一次写入记 `host.extra.kept`；本 run 已产生的历史写入 worklog，末尾 `outcome.kind = wait`；state 提交 `run_state = waiting`、`waiting_for = {kind: tool, refs: [task_id…]}`（这些 task 同时记入 `watched_tasks`）或 `{kind: children, refs: [sid…]}`，Turn 保持打开。之后到达的输入（task 结果、子 Session 的结束、新消息）以输入批次注入同一个 run 的快照，Step 编号接续。正在运行的工作优先：因缺少结束报告本会失败（`missing_end_report`）的回复也先等它。交接到 Todo 执行器而没有就绪 Todo、但有未收齐子 Session 时同样按保活等待。
+- Goal Session：一个 Activation 就是一个 Turn（`seq = turn index`）。打开它的批次第一条消息是 Goal 头（receipt part `goal_activation`），头里的外部读取（Goal 定义、Goal State、Work 的登记表状态、预算）在批次提交前完成并冻结在消息里，恢复时不重复装配。Session 只在有输入时推进（bootstrap 也要等一个运行机会），Goal 暂停时不打开新 Turn（输入留在队列，已打开的 Turn 跑到自然结束）。任何结束 Turn 的情况（最终 report、`WAIT_USER_MSG`、预算耗尽、不可恢复错误、stop）都只关闭 Turn：`run_state = waiting`（等下一个运行机会，`needs_input = false`），Session 不结束、`last_error` 不保留（错误进 Activation 记录与 Goal State）。最终 report 可以在 Goal 派生的 Work 未结束时提交。每次新建或续跑 run 之前检查 Activation 预算（tokens 取 `usage.jsonl` 中 `usage_offset` 之后的记录，runs 为其中不同的 run_id）：用尽则以 `budget_exhausted` 关闭 Turn；新 run 的 `max_total_tokens` 不超过剩余额度。
+- Sub AgentSession 是另一个 session，有自己的 Turn；父子 session 的 Turn 不合并计数。父 Session 将要成功结束、而仍有 `origin.report` 不为 `none` 的子 Session 未结束（或其结束尚未交付给父）时不结束：run 保活，Turn 保持打开，`wait_children = [sid…]`；子的结束作为受控输入注入同一个 run、并入同一个 Turn（多 Turn 的 Work Session 由回复关闭 Turn，子的结束打开下一个）。创建、汇报与等待见 [Session Input Protocol](<Session Input Protocol.md>) §10。
+- **保活**：loop 里不等待。behavior 的 Yield（Step 没有 actions、不是结束报告、没有 next_behavior；阶段 `<report>` 可有可无）立即结束本段；function call 的回复（`Done`）同样如此。这时本 run 启动的工作若还没结束——它交出的 task（run.json `host.extra.tasks`，`session:` 之外）仍在运行，或它在等的子 Session 未收齐（它 `wait` 过的 `session:<sid>`；顶层 context 的 Yield、或 Session 将要成功结束时，是所有需要汇报而未收齐的子 Session）——宿主不结束 run：`live_run` 保留，run.json `status = paused` 并在同一次写入记 `host.extra.kept`；本 run 已产生的历史写入 worklog，末尾 `outcome.kind = wait`；state 提交 `run_state = waiting`，task 记入 `watched_tasks`、子 Session 记入 `wait_children`，Turn 保持打开（多 Turn 的 Work Session 这次回复关闭 Turn，run 仍保留）。之后到达的输入（task 结果、子 Session 的结束、新消息）以输入批次注入同一个 run 的快照，Step 编号接续。正在运行的工作优先：因缺少结束报告本会失败（`missing_end_report`）的回复也先等它。交接到 Todo 执行器而没有就绪 Todo、但有未收齐子 Session 时同样按保活等待。
 - 没有在运行的工作时按原规则裁决：结束报告与普通 `Done` 关闭 Turn 并按完成策略处理；Yield 结束 run，阶段报告就是回复，一个只有阶段报告、会使 Session 就此结束的 Yield 以 `missing_end_report` 失败。
 - **结束报告与 TodoList**：顶层结束报告在 `todos.json` 未收敛（有 Todo 在执行、pending、最新结果未 Review 或为 need_evidence）时被拒绝，可修正。
 
@@ -327,7 +327,7 @@ run.json `host.extra` 中由宿主冻结、恢复与重建工具时沿用的键�
          不在 Step 内层推理前）；快照 fsync → run.json 发布指针。派发前的检查点是“正在派发什么”
          的唯一记录，run.json 不另记在途调用
 保活：   ① 快照 + run.json（status paused 与 host.extra.kept 同一次写入）→ ② 追加该 run 已产生的
-         历史与 outcome(wait) → ③ state.json（run_state = waiting、waiting_for、watched_tasks；
+         历史与 outcome(wait) → ③ state.json（run_state = waiting、wait_children、watched_tasks；
          live_run 与 open_turn 不变）。之后的输入批次照常注入同一个 run
 结束：   ① 结果快照 + run.json（终态 status 与 host.extra.finish 同一次写入）
          → ② 生成 worklog 条目追加（fsync；关闭 Turn 时末尾为 turn_ended）→ ③ state.json（live_run=null、

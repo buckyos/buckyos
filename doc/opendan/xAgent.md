@@ -482,13 +482,13 @@ pub enum StopWhen { Idle, Finished, MaxOutcomes { n: u64 }, TurnClosed }
 pub enum DriveResult {
     /* 现有变体 … */
     TurnClosed { rev: u64, turn: u64, status: TurnStatus, answer: Option<String> },
-    TurnOpen   { rev: u64, turn: u64, waiting_for: Option<WaitingFor> },   // 真实 open_turn；可能等 input / tool / children
+    TurnOpen   { rev: u64, turn: u64, needs_input: bool },   // 真实 open_turn；needs_input = 只有别人的输入能推动它（否则在等自己的 task / 子 Session）
 }
 ```
 
 Turn 规则沿用 readme：没有打开的 Turn 时提交的输入批次开启新 Turn；SWITCH_CONTEXT、子 context（create-sub-context / fork）的进入与返回（§3.3）、挂起、为启动的工作保活（§4.9.1）、重写、重启都延续，半订阅快照随受控输入同批提交；只有 `finish_run` / `stop_session` 关闭。模板的 `wait_user_msg` 决定 `WAIT_USER_MSG` 在该 session 里是"保持打开"还是"结束"。
 
-`TurnClosed` 是 C6 的新增返回条件，不改变持久化的结束规则。`--until turn` 在本次推进或 reconcile 关闭 Turn 后立即返回该 Turn 的结果，即使同时将 Session 标为 finished；没有打开且没有本次关闭的 Turn 时返回 Idle，不伪造 `TurnOpen {turn: 0}`。停止关闭的 Turn 仍映射退出码 4。task 等待到 `max_wait` 时，work 模板也可以返回 `TurnOpen {waiting_for: tool}`；`FinishFailed` 只解释 `WAIT_USER_MSG`，不禁止工具等待。
+`TurnClosed` 是 C6 的新增返回条件，不改变持久化的结束规则。`--until turn` 在本次推进或 reconcile 关闭 Turn 后立即返回该 Turn 的结果，即使同时将 Session 标为 finished；没有打开且没有本次关闭的 Turn 时返回 Idle，不伪造 `TurnOpen {turn: 0}`。停止关闭的 Turn 仍映射退出码 4。task 等待到 `max_wait` 时，work 模板也可以返回 `TurnOpen {needs_input: false}`；`FinishFailed` 只解释 `WAIT_USER_MSG`，不禁止工具等待。
 
 ### 4.9.1 已实现的 task 跟进
 
@@ -498,7 +498,7 @@ loop 里不等待，任何等待都是 task（[Session Input Protocol](<protocol
 |---|---|
 | 工具的工作在等待预算内完成 | 调用直接得到结果；预算是 `.llm_context` 的 `runtime.task_wait_ms`（缺省 30 秒，上限 30 分钟） |
 | 到期仍在运行 | 调用得到一条普通结果“task X 仍在运行”，提示它的结束会作为输入回来、不必等待；task 记入 run.json `host.extra.tasks`，交出它的调用记入 `host.extra.task_calls` |
-| 模型回复 / Yield 时本 run 的 task 仍在运行 | run 保活：`live_run` 保留，run.json `status = paused` + `host.extra.kept`；`run_state = waiting`、`waiting_for = tool{task ids}`，task 记入 `watched_tasks`，Turn 保持打开，worklog `outcome(wait)`；不推理 |
+| 模型回复 / Yield 时本 run 的 task 仍在运行 | run 保活：`live_run` 保留，run.json `status = paused` + `host.extra.kept`；`run_state = waiting`、`watched_tasks = [task ids]`，task 记入 `watched_tasks`，Turn 保持打开，worklog `outcome(wait)`；不推理 |
 | task 结束或状态查不到 | 每轮路由后按保存的 task id 查询（通知只提前触发查询，空 inbox 也查询）；合成 `_task` 输入，渲染为 `<<task_result task call_id status>>` 块，注入同一个 run 的快照，Step 编号接续；不重建、不重放任务 |
 | 保活期间到达的 msg / Input event | 照常组批注入同一个 run：等待期间 session 可以继续推理 |
 | run 已结束而 task 仍在运行 | run 结束且 Session 未 finished 时记入 `watched_tasks`，结束时同样合成 task 结果，显式 semi 订阅优先，否则按隐式 active 输入 |
@@ -612,15 +612,15 @@ impl ChildDriver {
 - **等一个子 session（`--wait`，或对已有子 session 调 `agent-session wait <sid>`）**：工具返回 task `session:<sid>` 的 pending 结果。`task_id` 对 llm_context 是不透明值，没有 `wait.source` / `class` 词汇，也不按前缀归一；它与子 session 的对应关系只由宿主 Session 的 resolver 解析。等待不在 loop 里：resolver 只读登记表，对这个 task 的查询与等待都立即回答：
   - 子结束 → `{session_id, status: finished, outcome, acceptance, one_line_status, report_brief, answer_ref, artifact_id}`；
   - 子在等输入或等决定 → `{status: needs_input | needs_decision, question, …}`，父用 `post` 回答后再 `wait`；
-  - 其它情况 → “仍在运行”结果。父这时结束回复，run 为需要汇报的子保活（`waiting_for = Children{sids}`），ChildDriver 同时在推进子；子的结束以 `_child` 的 `finished` 事件注入同一个 run；
+  - 其它情况 → “仍在运行”结果。父这时结束回复，run 为需要汇报的子保活（`wait_children = [sids]`），ChildDriver 同时在推进子；子的结束以 `_child` 的 `finished` 事件注入同一个 run；
   - 调用结果已经是子的结束（或需要关注的状态）时，这个状态记为已交付，不再作为事件重复注入。委托了 Workspace 的子 session 在父的调用进行期间不能写，所以 resolver 从不在调用里等它。
 - **多个子**：不需要“等全部”的工具。父对每个子各 `wait` 一次后结束回复（顶层 behavior 的 Yield、或父将要成功结束时，不必 `wait`：所有需要汇报而未收齐的子都算），run 为这些子保活，每个子的结束各是一条输入，回来一个处理一个。
 - **与 T4 的区别**：T4 的子 run 在父 session 内串行，父入栈为 `caller`；子 session 在自己的 lease 下推进，可以与其它子并行；持久恢复相互独立，进程存活范围见 §4.12。
 - **接手**：这个 resolver 只依赖 Agent State，不依赖 Runner 内存；但 v1 只有 xagent 提供它，xllm 中 `session:` task 的 `can_resolve = false`。
 
-**父结束规则（汇总）**：父将要成功结束、而还有未结束且 `report != none` 的子 session 时，不结束 session：run 保活，Turn 保持打开，`waiting_for = Children{sids}`；子的结束事件作为受控输入注入同一个 run，父 LLM 汇总后再提交结束报告。这样 work 父也能“先并行派出几个子 session，再汇总”。不想等的子，要么创建时选 `--report none`，要么先 `ctl <child> stop`。
+**父结束规则（汇总）**：父将要成功结束、而还有未结束且 `report != none` 的子 session 时，不结束 session：run 保活，Turn 保持打开，`wait_children = [sids]`；子的结束事件作为受控输入注入同一个 run，父 LLM 汇总后再提交结束报告。这样 work 父也能“先并行派出几个子 session，再汇总”。不想等的子，要么创建时选 `--report none`，要么先 `ctl <child> stop`。
 
-**无决策即等待**：behavior loop 里没有 actions、不是结束报告、没有 next_behavior 的 Step（可以带阶段 `<report>`）是 Yield，llm_context 让本段立即以 `Done` 结束，等什么由宿主决定（`CheckpointHook::review_decision` 对 Yield 不表态）：本 run 启动的工作还在运行（task 未结束，或顶层 context 有未收齐的子 Session）时，run 保活，Turn 以 `waiting_for = Tool{task ids}` / `Children{sids}` 保持打开，这些工作的结束作为输入注入同一个 run；没有可等的就按普通回复裁决，阶段报告就是回复，只有阶段报告、会使 Session 就此结束的 Yield 以 `missing_end_report` 失败。function call 的回复同理：本 run 的 task 或子 Session 未结束时 run 保活，正在运行的工作优先于缺少结束报告的失败。异步派出、无决策等待、逐个 Review，是 TodoList 并行探索的执行方式（§4.17）。
+**无决策即等待**：behavior loop 里没有 actions、不是结束报告、没有 next_behavior 的 Step（可以带阶段 `<report>`）是 Yield，llm_context 让本段立即以 `Done` 结束，等什么由宿主决定（`CheckpointHook::review_decision` 对 Yield 不表态）：本 run 启动的工作还在运行（task 未结束，或顶层 context 有未收齐的子 Session）时，run 保活，Turn 保持打开（task 记 `watched_tasks`、子 Session 记 `wait_children`；多 Turn 的 Work Session 由这次回复关闭 Turn），这些工作的结束作为输入注入同一个 run；没有可等的就按普通回复裁决，阶段报告就是回复，只有阶段报告、会使 Session 就此结束的 Yield 以 `missing_end_report` 失败。function call 的回复同理：本 run 的 task 或子 Session 未结束时 run 保活，正在运行的工作优先于缺少结束报告的失败。异步派出、无决策等待、逐个 Review，是 TodoList 并行探索的执行方式（§4.17）。
 
 ### 4.16 生命周期与限制
 
@@ -1035,7 +1035,7 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
 | 5 | Busy：session lease 或 run 锁被他人持有；Goal 冲突（修订号不符、状态迁移不合法） |
 | 6 | 阻塞：NotDriver / Unregistered / BindFailed / RuntimeMismatch / RecoveryBlocked / session_readonly；Goal 操作越权（forbidden） |
 
-驱动命令 `--format json` 时 stdout 是带 kind 的 `DriveResult` JSON，各变体仅包含自己的字段；新增 TurnClosed / TurnOpen 带 §4.9 的字段。日志与诊断走 stderr，不能混入 JSON。现有 Idle 的详细等待信息可由 `status` 读取 state.waiting_for；不把本地推测补写回 state。
+驱动命令 `--format json` 时 stdout 是带 kind 的 `DriveResult` JSON，各变体仅包含自己的字段；新增 TurnClosed / TurnOpen 带 §4.9 的字段。日志与诊断走 stderr，不能混入 JSON。现有 Idle 的等待信息可由 `status` 读取 state 的 `watched_tasks` / `wait_children` 与登记表的 `needs_input`；不把本地推测补写回 state。
 
 ---
 
@@ -1050,12 +1050,12 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
 | 推进权、目录提交点、登记表回报 | `SessionDir`、`Session`、lease、`runner/shared.rs::Shared` |
 | 输入通道与唤醒 | `InputChannelFactory`、`InputSource`、`Waker`；外部 sources 可为空；C4 初始 source 另从配置构造，通知与持久输入分别处理 |
 | 可续跑的 context | `LiveCtx`：`ready` 表示无新输入也可继续；`filled` 表示恢复到工具批次 / Step 中途，先把它跑完 |
-| 保活的 run | 仍是 `LiveCtx`（本次 drive 内保留，或由 `state.live_run` 重新打开），没有运行中的推理；state 记 `waiting_for`，run.json 记 `host.extra.kept` |
+| 保活的 run | 仍是 `LiveCtx`（本次 drive 内保留，或由 `state.live_run` 重新打开），没有运行中的推理；state 记 `watched_tasks` / `wait_children`，run.json 记 `host.extra.kept` |
 | 在跟的 task | `state.watched_tasks` 保存要查询的 task id（保活 run 等的，以及已结束 run 留下的）；结束时合成 task 结果输入，不改写已有的工具结果 |
 | 输入视图与装配 | `InputMaterial / InputView`、`InputTemplates`、`DefaultAssembler`；C7 的 BehaviorAssembler 接入冻结材料，复用格式与媒体逻辑 |
 | CLI 宿主 | 长生命周期的 `RunnerDeps / XllmDeps`、bridge、C15 ChildDriver 与 session resolver；均不写别的 Session 的 state |
 
-一个 Session 同时最多有一个 live run（可以是保活等待中的）；parked / caller 帧由 `process_stack` 保存。保活等的 task 来自 run.json `host.extra.tasks`，子 session 来自登记表，`waiting_for` 是提交给状态视图的摘要，不新增另一套 pending-task 协议。恢复必须先校验 Session / run 版本、锁、绑定和提交门槛。
+一个 Session 同时最多有一个 live run（可以是保活等待中的）；parked / caller 帧由 `process_stack` 保存。保活等的 task 来自 run.json `host.extra.tasks`，子 session 来自登记表（state 记 `wait_children`），登记表只给一位 `needs_input`，不新增另一套 pending-task 协议。恢复必须先校验 Session / run 版本、锁、绑定和提交门槛。
 
 ### 9.2 xagent 入口
 
@@ -1201,11 +1201,11 @@ Outcome 提交沿用 `outcome.rs` 与 `reconcile.rs`：
 |---|---|
 | SWITCH_CONTEXT | 记录 handover、flush 当前增量、park 当前 run 并选择目标 run；同一 Turn，配置不在 run 中途改变 |
 | 子 context 进入 / 返回 | caller 帧与 live_run / process_result 一起提交；两种触发都经交接批次返回（工具触发带 call_id）；子 transcript 不重复进入 session history |
-| 保活（回复 / Yield 时本 run 的 task 或子 session 未结束） | `checkpoint_kept`（快照 + `host.extra.kept`）→ flush 历史 + `outcome(wait)` → `commit_kept`（waiting_for、watched_tasks）；保持 live_run 与 open_turn；不 finish_run |
+| 保活（回复 / Yield 时本 run 的 task 或子 session 未结束） | `checkpoint_kept`（快照 + `host.extra.kept`）→ flush 历史 + `outcome(wait)` → `commit_kept`（wait_children、watched_tasks）；保持 live_run 与 open_turn；不 finish_run |
 | WAIT_USER_MSG | C5 按模板解释；允许等待且尚未交付回复时 Turn 保持打开；work 的 FinishFailed 产生 needs_user_input |
 | run 正常结束 | checkpoint_finish → flush → `commit_run_end`；Turn 关闭与 run_state、结果、watch 接管同一次 state 提交；`after_run_end` 做后续清理 |
 | Session finished | 清 process_stack、pending_events、watched_tasks；写报告 / 产物与结果；不因迟到输入或 task 完成重开 |
-| C15 父等待子 | 尚有需汇报的子时不关闭 Turn，run 保活，保存 waiting_for(children)（`outcome.rs::{hold_for_children,keep_while_running}`；reconcile 按 `kept` 记录重做） |
+| C15 父等待子 | 尚有需汇报的子时不关闭 Turn，run 保活，保存 wait_children（`outcome.rs::{hold_for_children,keep_while_running}`；reconcile 按 `kept` 记录重做） |
 
 正常 run 结束从 resolver.active() 接管后台 task；reconcile 重做结束时从 run.json `host.extra.tasks` 重建（C16，已实施并有崩溃用例）。
 
@@ -1232,7 +1232,7 @@ Outcome 提交沿用 `outcome.rs` 与 `reconcile.rs`：
 退出时回收 bridge / ChildDriver 的本进程资源，并释放 lease / run 锁
 ```
 
-C4 默认无队列 work 用 `run`；如果由父的 ChildDriver 调度，无输入队列仍可通过 resolver / 登记表推进。`run` 在 max_wait 到达而任务尚未结束时可以按 §8 返回等待结果；CLI 必须显示 waiting_for，不承诺本进程退出后进程内 task 继续。对可持久查询的外部 task，下次 run 按 task_id 查询恢复。`--detach-children` 立即返回时只保证子已持久登记，输出仍需托管的 sid，后续由 serve / Supervisor 接管；不承诺本进程中的子协程或 task 继续运行。
+C4 默认无队列 work 用 `run`；如果由父的 ChildDriver 调度，无输入队列仍可通过 resolver / 登记表推进。`run` 在 max_wait 到达而任务尚未结束时可以按 §8 返回等待结果；CLI 必须显示在等的 task / 子 Session（或 needs_input），不承诺本进程退出后进程内 task 继续。对可持久查询的外部 task，下次 run 按 task_id 查询恢复。`--detach-children` 立即返回时只保证子已持久登记，输出仍需托管的 sid，后续由 serve / Supervisor 接管；不承诺本进程中的子协程或 task 继续运行。
 
 ---
 

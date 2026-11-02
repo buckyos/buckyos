@@ -128,7 +128,7 @@ Jarvis 的 `plan_simple`（`agent-session create-worksession --class plan_simple
 
 PLAN 没有要做的事、只等探索返回时，这一步**不做决策**：没有 actions、不是结束报告、没有 next_behavior，可以带一个阶段 `<report>`（Yield）。Yield 立即结束这一段推理，宿主的判断：
 
-- 顶层 context 且有未收齐的子 Session → run 保活：不结束，Turn 保持打开，`waiting_for = {kind: children, refs: [sid…]}`（worklog `outcome.kind = wait`）。任一子 Session 结束，其结束事件作为 `_child` 内部输入注入同一个 run，PLAN 在同一份上下文里带着更新后的视图继续（Step 编号接续）——一个回来就可以 Review 一个。
+- 顶层 context 且有未收齐的子 Session → run 保活：不结束，Turn 保持打开，`wait_children = [sid…]`（worklog `outcome.kind = wait`）。任一子 Session 结束，其结束事件作为 `_child` 内部输入注入同一个 run，PLAN 在同一份上下文里带着更新后的视图继续（Step 编号接续）——一个回来就可以 Review 一个。
 - 没有可等的 → Yield 照样结束 run，阶段报告就是回复；它会使 Work Session 就此结束时以 `missing_end_report` 失败（只有阶段报告不能完成 Session）。
 - `next_behavior = do` 而没有就绪 Todo、但有探索在跑 → 同样按等待处理。
 

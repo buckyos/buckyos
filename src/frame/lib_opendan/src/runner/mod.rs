@@ -119,11 +119,12 @@ pub enum DriveResult {
         answer: Option<String>,
     },
     /// `StopWhen::TurnClosed`: the open Turn could not be closed by this
-    /// drive (it waits for input, a tool or sub sessions).
+    /// drive (it waits for input, its tasks or sub sessions).
     TurnOpen {
         rev: u64,
         turn: u64,
-        waiting_for: Option<WaitingFor>,
+        /// Only someone's input can move it.
+        needs_input: bool,
     },
     /// Another holder advances the session (display info).
     Busy {

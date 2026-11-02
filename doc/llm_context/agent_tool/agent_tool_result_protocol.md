@@ -727,7 +727,7 @@ llm_context 不认识 task，循环里不等待，也没有让工具挂起 run �
 “仍在运行”之后由谁跟进是宿主决定的（`task_model::TaskFollowup`），跟进提示的措辞随之不同：
 
 - **xllm**：没有事件源，模型自己用 `wait_task` / `get_task_state` 跟进（每次调用内最多等 30 分钟），或在 `bash_core` 下用宿主的 task CLI（`XllmDeps.task_cli`，经 `XLLM_TASK_ENDPOINT` 连到同一个 resolver）。function_call 模式下模型回复时本 run 的 task 仍在运行，run 停为 paused（`last_error.kind = tasks_running`），之后 `xllm --resume [message]` 在同一个快照上接着跑。
-- **libopendan Session**（`HostProtocolFlavor::Session`）：提示写明 task 的结束会作为输入带回，不必等待（不注册 `wait_task`，task CLI 没有 `wait`）。Session 在循环外跟进本 run 启动的 task，有未完成的 task 时 run 保活（多 Turn 的 Work Session 由这次回复关闭 Turn）；task 结束后，结果作为输入块注入同一个 run，不伪装成工具结果：
+- **libopendan Session**（`HostProtocolFlavor::Session`）：提示写明 task 的结束会作为输入带回、不要等也不要反复查看（不注册 `wait_task` / `get_task_state`，task CLI 没有 `wait`）。Session 在循环外跟进本 run 启动的 task，有未完成的 task 时 run 保活（多 Turn 的 Work Session 由这次回复关闭 Turn）；task 结束后，结果作为输入块注入同一个 run，不伪装成工具结果：
 
   ```text
   <<task_result task="<task_id>" call_id="<call_id>" status="finished|failed|unknown">>

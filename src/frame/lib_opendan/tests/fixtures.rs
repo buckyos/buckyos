@@ -531,7 +531,8 @@ async fn f16_goal_session() {
     let after = sd.state().unwrap();
     assert!(!after.goal.as_ref().unwrap().needs_flush());
     assert_eq!(after.run_state, RunState::Waiting);
-    assert_eq!(after.waiting_for.map(|w| w.kind), Some(WaitingKind::Event));
+    // Waiting for its next run opportunity, not for anyone's input.
+    assert!(!after.follows_work() && !after.needs_input(true));
     // Again: nothing more to write.
     drive(&sd, &deps, StopWhen::Idle).await;
     assert_eq!(agent.goals().activations(&goal_id, &Default::default()).await.unwrap().len(), 1);

@@ -343,7 +343,7 @@ pub fn observe(entry: &RegistryEntry, state: Option<&SessionState>) -> ChildObse
         };
     }
     let blocked = st.pending_decision.is_some()
-        || (st.run_state == RunState::Waiting && st.waiting_for == Some(WaitingKind::Input));
+        || st.needs_input;
     ChildObservation {
         status: if blocked { TodoStatus::Blocked } else { TodoStatus::Running },
         summary: None,

@@ -314,8 +314,8 @@ runtime 的 4 个标准工具（`read`、`write_file`、`edit_file`、`shell`）
 
 ### 9.3 未做
 
-- **B15**（`waiting_for` 由 `watched_tasks` / 子 Session / `run_state` 推导，清理 run.json `host.extra` 重复项）：涉及 SessionStatus、TaskMgr 映射与大量用例，本单未动，`waiting_for` 仍在 `commit_kept` / `commit_run_end` 写（tick 的“有在跟工作”判断兼看两者）。
-- **§6 DV** 未跑（本机 DV Zone 的并行 cargo build、kill Loader 重启、MessageHub 观察）。
+- ~~**B15**~~ 2026-11-01 晚已做，形状按用户裁决改为**删除**而不是推导（见 §9.5）。
+- ~~**§6 DV**~~ 2026-11-02 用真实模型在本机跑（xagent + 正式 Jarvis 包，见 §9.6）；Zone 侧（Loader 托管、MessageHub 的 Turn task 卡片）未跑：本机 Zone 当前没有 Agent，Turn task 行为由 `work_simple_async` 的 TurnTaskSink 用例覆盖。
 - 测试 13 的 `ask_user` 以 `cat` 打印 pending 信封 + `MemoryTaskBackend` 模拟 krpc 工具，没走真实 msg-center。
 
 ### 9.4 测试
@@ -323,4 +323,33 @@ runtime 的 4 个标准工具（`read`、`write_file`、`edit_file`、`shell`）
 - `cargo test -p agent_tool --lib -- --test-threads=4`：新增 `hints::*`、`intent::*`、`tasks_zone::zone_tasks_are_read_until_they_end`、`xllm::tests::session_host_shell_is_followed_by_input`（无 `wait_ms`、无 `wait_task`、Optional intent、once hint、read dedup 与压缩后清空）；改 `auto_mode_turns_a_long_command_into_a_task` / `bash_core_follows_tasks_through_the_cli_bridge`（task 结果与同步逐字一致）。
 - `cargo test -p libopendan --test work_simple_async -- --test-threads=1`（新建，10 项）：短命令同步；长命令关闭 Turn 1、结局打开 Turn 2、同一 run、推理 3 次、Turn task 两个且第一个带回复、进度文案含 intent、worklog intent；两条并发任务 + 1 s tick + 背景只含增量；失败任务 `status="failed"`；nudge 一次后 `missing_end_report`；任务未完时 report 被拒、`cancel_task` 后通过；同进程新 drive 续接；重启后从执行目录读结局；once hint 与 read dedup；`ask_user` 的 `t-` 任务答案打开新 Turn。
 - 回归：`cargo test -p libopendan -- --test-threads=1` 全部、`cargo test -p opendan`、`cargo test -p buckyos-api --lib node_executor`；随语义改动更新的用例：`xagent_lib`（11 项：子 Session 与父会话以 `report` 结束、等待中的回复关闭 Turn、跑到 `Finished`）、`xagent_cli`（3 项）、`plan_simple` / `plan_do_todo`（“一个 Turn”断言改为“每个 Turn 都完成”）、`ui_chat`（3 项）、`opendan --test loader`（3 项 work 会话改用 `CALL:report` 结束；`ui_core.md` 不得含 `<<`）、fixtures `14_input_bus/rendering/vars.json`（items 新增四个标记）。Jarvis 手册中 `agent-session task wait` 的说法（`ui_core` / `aigc_*` / `xllm` / `opendan_agent_dev`）与 `tools/buckyos-agent/readme.md` 同步改掉。
+
+### 9.5 B15：删除 `waiting_for`（2026-11-01 晚，用户裁决）
+
+用户：`waiting_for` 已经没有推导价值，除非 agent session 的某个 wait 函数显式说明（那其实是输入过滤，另立项）。裁决：删 state 字段，status 只留一位。
+
+- `SessionState.waiting_for`、`WaitingFor`、`WaitingKind` 删除；等什么由事实表达：`watched_tasks`（在跟的 task）、新字段 `wait_children`（要听取的子 Session，原来只存在 `waiting_for.refs` 里）、`nudge.pending`。辅助：`SessionState::follows_work()`、`needs_input(goal)`（Waiting、不是 Goal Session、没有在跟的工作）。
+- 登记表 `SessionStatus.waiting_for: Option<WaitingKind>` → `needs_input: bool`；读方（`children.rs` 的 attention、`todos.rs` 的 Blocked、背景行、`observe.rs`、宿主是否继续托管）都改读它；宿主轮询判断改为 `follows_work()`。
+- `DriveResult::TurnOpen.waiting_for` → `needs_input`；`xagent` 的 `sessions` / `status` 输出 `needs_input`。
+- Turn task（`TurnTaskStatus`）带事实：`tasks`、`children`、`needs_input`；opendan 的 TaskMgr 等待原因由它投影（子 Session → ChildTask，task → Dependency 且 `related_task_id` = 第一个 task，例如提问的人工任务，needs_input → input，否则 event）。
+- WebUI：`SessionStatus.needs_input`、`SessionState.wait_children`，详情页列出在等的子 Session 与 task。
+- run.json `host.extra`：`tasks` 保留——它不是 state 的副本，是本 run 自己未了结的 task 集合（run 进行中 state 还没跟进时报告校验、保活判断、子 context 的任务过滤都靠它；`note_task(running=false)` 会从中移除），`task_calls` / `task_briefs` / `kept` / `sub_call` 各有用途，不删。
+- schema（`doc/opendan/protocol/schema/*.json`，`xagent schema` 重生成）、fixtures `16_goal_session`、协议文档（Agent State / Session Directory / Session Input Protocol、README 变更记录）、xAgent.md 等同步。
+
+### 9.6 真实模型 DV（2026-11-02）
+
+驱动 `test/work_simple_dv/main.py`（README 同目录）：正式 Jarvis 包（模型别名换成 `gpt-6-sol`，本机 CLIProxyAPI）+ `xagent new --class work --behavior work_simple` + `xagent run`；夹具是两个构建脚本分别跑 60 s / 100 s 的 crate，目标要求“两条 shell 并行构建，报告结果与耗时”。证据在 `/home/lzc/project/work_simple_dv_runs/<case>/`（`verify.json`、`evidence.json`、会话目录）。
+
+| 用例 | 结果 | Turn / tick / task_result | 推理 / token |
+| --- | --- | --- | --- |
+| `20261102T000221-normal`（改动前） | 6/10：会话成功，但只有 1 个 Turn——模型对还在跑的 beta 连续调 `get_task_state` 19 次轮询 | 1 / 0 / 0 | 21 / 201 282 |
+| `20261102T000711-normal` | 10/10 | 4 / 1 / 2 | 7 / 33 627 |
+| `20261102T001000-restart` | 12/12 | 3 / 1 / 2（含 1 条 `unknown`） | 6 / 39 269 |
+
+- **DV 发现并已修**：Session 宿主提供的 `get_task_state` 被真实模型当忙等用（每次一轮推理，离 24 次工具预算只差一点），抵消了“订阅代替等待”。改为 Session 宿主的 `bash` 组只注册 `cancel_task`（不注册 `wait_task` / `get_task_state`）；跟进提示改为“结局会作为输入回来、新输出在推理前给你，不要等也不要反复查看；没事可做就回复现状——这会结束本 Turn”；work_simple 提示词加“Never check on a task in a loop”。UI 会话（`bash_core` + `agent-session task state`）没有推理前的任务背景，`state` 保留并提示只看一次。改后推理次数 21 → 7、token 20 万 → 3.4 万。
+- normal（改后）：Turn 1 派发两条构建（各带 intent）并回复现状 → alpha 的 `<<task_result status="finished">>` 开 Turn 2 → 30 s tick 开 Turn 3（回复“beta 还在跑”）→ beta 结局开 Turn 4 → `report(is_end=true)`。模型把 cargo 输出重定向进日志文件，所以没有可显示的背景增量（第一例里背景增量正常出现 8 次）。
+- restart：Turn 1 关闭后 SIGKILL 驱动进程（命令在自己的进程组里继续跑），新 `xagent run` 的任务管理器不认识它们：两条构建按 Q1 以 `status="unknown"` 交回；模型读执行目录与进程确认 alpha 已结束，另起一条命令等原 beta 构建的 `exit` 文件出现（没有重跑构建），这条命令的结局 `finished` 打开 Turn 3，最终报告两条耗时（60.139 s / 100.143 s）正确。
+- **建议（待议，未改）**：重启后执行目录在、没有 `exit` 的 `local:shell` 任务，runtime 可以继续按执行目录跟进（视为仍在运行，`exit` 出现即结束），而不是直接报 unknown 让模型自己写轮询——restart 例里模型正是这样做的。这与 Q1 的裁决（直接 unknown、模型决定）不同，需要用户定。
+- **plan_simple 回归**（`PLAN_DO_DV=1 python3 test/plan_do_todo_dv/main.py all --mode plan_simple --variant normal`，`/home/lzc/project/plan_do_todo_dv_runs/20261102T001306-plan_simple-normal/`）：309 s、534 134 tokens（10-25 为 600 522），父会话 5 个 Turn（回复在子会话运行时关闭 Turn、子会话结束打开下一个）、全部开闭配对；原 `turn.single` 检查按新规则改为 `turn.all_closed` 后不调模型重新 verify 40/40（其余 39 项首次即过：intent、并行探索、串行 Todo、workspace 继承、交付物、背景、无 403）。
+- 小瑕疵（未改）：同一段 run 里有多条带文本的助手消息时，关闭 Turn 的回复（`Outcome.report` / Turn task 结果）把它们直接拼接、没有分隔（来自 llm_context 的输出文本）。
 

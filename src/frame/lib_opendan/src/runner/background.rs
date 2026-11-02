@@ -107,7 +107,7 @@ pub(super) fn child_line(e: &RegistryEntry) -> BackgroundLine {
         t
     } else if st.pending_decision.is_some() {
         format!("work {sid}: waits for a decision")
-    } else if st.waiting_for == Some(WaitingKind::Input) {
+    } else if st.needs_input {
         format!("work {sid}: waits for input — answer with agent-session post {sid} --msg <text>")
     } else {
         let mut t = format!("work {sid}: {}", st.run_state.as_str());

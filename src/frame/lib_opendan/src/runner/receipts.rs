@@ -193,7 +193,7 @@ pub fn apply_receipt(state: &mut SessionState, r: &InputReceipt) -> Result<bool>
         state.bootstrap_done = true;
     }
     state.run_state = RunState::Running;
-    state.waiting_for = None;
+    state.wait_children.clear();
     if r.extra.contains_key("continuation") {
         // The hand-over turn (behavior switch / fork result) was delivered.
         state.internal_continuation = None;

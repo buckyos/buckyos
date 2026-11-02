@@ -35,7 +35,12 @@ pub struct TurnTaskOpen {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TurnTaskStatus {
     pub run_state: RunState,
-    pub waiting_for: Option<WaitingFor>,
+    /// Waiting: the tasks it follows (`t-…` of a question included) and the
+    /// sub sessions it must hear from.
+    pub tasks: Vec<String>,
+    pub children: Vec<String>,
+    /// Waiting, and only someone's input can move it.
+    pub needs_input: bool,
     /// One line: the current activity.
     pub message: String,
     pub behavior: Option<String>,
@@ -171,13 +176,16 @@ fn status_of(
 ) -> Option<(String, TurnTaskStatus)> {
     let binding = s.state.open_turn_task()?;
     let st = &s.state;
-    let message = match (&st.waiting_for, st.run_state) {
-        (Some(w), RunState::Waiting) => match w.kind {
-            WaitingKind::Children => format!("waiting for {} sub session(s)", w.refs.len().max(1)),
-            WaitingKind::Tool => "waiting for a tool".to_string(),
-            WaitingKind::Event => "waiting for an event".to_string(),
-            WaitingKind::Input => "waiting for input".to_string(),
-        },
+    let goal = super::goal::is_goal(&s.config);
+    let message = match st.run_state {
+        RunState::Waiting if !st.wait_children.is_empty() => {
+            format!("waiting for {} sub session(s)", st.wait_children.len())
+        }
+        RunState::Waiting if !st.watched_tasks.is_empty() => {
+            format!("waiting for {} task(s)", st.watched_tasks.len())
+        }
+        RunState::Waiting if st.needs_input(goal) => "waiting for input".to_string(),
+        RunState::Waiting => "waiting".to_string(),
         _ => match (&tool, &st.current_behavior) {
             // What the call is for, when it said so.
             (Some(t), _) => match &intent {
@@ -192,7 +200,9 @@ fn status_of(
         binding.task_id.clone(),
         TurnTaskStatus {
             run_state: st.run_state,
-            waiting_for: st.waiting_for.clone(),
+            tasks: st.watched_tasks.clone(),
+            children: st.wait_children.clone(),
+            needs_input: st.needs_input(goal),
             message,
             behavior: st.current_behavior.clone(),
             tool,

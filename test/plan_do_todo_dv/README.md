@@ -58,7 +58,7 @@ Watching a run from a second terminal (same environment):
 
 ## plan_simple mode
 
-`--mode plan_simple` runs the same review with the Jarvis `plan_simple` behavior ([notepads/opendan-plan-simple-todo.md](../../notepads/opendan-plan-simple-todo.md) §8.2): native function calls with an `intent` on every call, one Turn, every Todo in a sub session of its own, waits as `agent-session wait` calls, the background after tool results. The task is `task_simple.md`; it names the deliverables' place (the session's workspace) but not how Todos get their runtime / workspace, so the plan's own assignment is checked.
+`--mode plan_simple` runs the same review with the Jarvis `plan_simple` behavior ([notepads/opendan-plan-simple-todo.md](../../notepads/opendan-plan-simple-todo.md) §8.2): native function calls with an `intent` on every call, many Turns (a reply while sub sessions run closes one, their ends open the next; every Turn must close), every Todo in a sub session of its own, waits as `agent-session wait` calls, the background after tool results. The task is `task_simple.md`; it names the deliverables' place (the session's workspace) but not how Todos get their runtime / workspace, so the plan's own assignment is checked.
 
 ```bash
 PLAN_DO_DV=1 python3 test/plan_do_todo_dv/main.py all --mode plan_simple --variant normal

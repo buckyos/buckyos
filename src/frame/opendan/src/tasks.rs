@@ -301,21 +301,28 @@ pub struct TurnTasks {
     pub owner: Option<String>,
 }
 
-fn wait_reason(w: &WaitingFor, message: &str) -> TaskWaitReason {
-    let (kind, code) = match w.kind {
-        WaitingKind::Children => (TaskWaitReasonKind::ChildTask, "sub_sessions"),
-        WaitingKind::Tool => (TaskWaitReasonKind::Dependency, "tool"),
-        WaitingKind::Event => (TaskWaitReasonKind::External, "event"),
-        WaitingKind::Input => (TaskWaitReasonKind::Other, "input"),
+/// Why a waiting Turn waits, in TaskMgr's terms, from what the session
+/// follows.
+fn wait_reason(status: &TurnTaskStatus) -> TaskWaitReason {
+    let (kind, code) = if !status.children.is_empty() {
+        (TaskWaitReasonKind::ChildTask, "sub_sessions")
+    } else if !status.tasks.is_empty() {
+        (TaskWaitReasonKind::Dependency, "tool")
+    } else if status.needs_input {
+        (TaskWaitReasonKind::Other, "input")
+    } else {
+        (TaskWaitReasonKind::External, "event")
     };
     TaskWaitReason {
         kind,
         code: Some(code.to_string()),
         // The task the Turn waits for (a question's human task included).
-        related_task_id: (w.kind == WaitingKind::Tool)
-            .then(|| w.refs.first().cloned())
-            .flatten(),
-        message: Some(message.to_string()),
+        related_task_id: status
+            .tasks
+            .first()
+            .filter(|_| status.children.is_empty())
+            .cloned(),
+        message: Some(status.message.clone()),
     }
 }
 
@@ -347,12 +354,8 @@ impl TurnTaskSink for TurnTasks {
     }
 
     async fn update(&self, task_id: &str, status: &TurnTaskStatus) -> Result<(), String> {
-        match (&status.waiting_for, status.run_state) {
-            (Some(w), RunState::Waiting) => {
-                self.tasks
-                    .waiting(task_id, wait_reason(w, &status.message))
-                    .await
-            }
+        match status.run_state {
+            RunState::Waiting => self.tasks.waiting(task_id, wait_reason(status)).await,
             _ => {
                 self.tasks
                     .running(

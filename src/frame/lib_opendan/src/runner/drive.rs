@@ -301,7 +301,7 @@ async fn fail_workspace(
         session.state.last_error = Some(detail.clone());
         session.state.one_line_status =
             "workspace binding invalid; create a new session after resolving the workspace".into();
-        session.state.waiting_for = None;
+        session.state.wait_children.clear();
         session.state.activity = Activity::default();
         let mut bodies = vec![WorklogBody::Outcome {
             run_id: session
@@ -874,15 +874,7 @@ async fn end_open_work(
                     answer: None,
                 });
                 s.state.run_state = RunState::Waiting;
-                s.state.waiting_for = Some(WaitingFor {
-                    kind: if super::goal::is_goal(&s.config) {
-                        WaitingKind::Event
-                    } else {
-                        WaitingKind::Input
-                    },
-                    refs: Vec::new(),
-                    deadline_ms: None,
-                });
+                s.state.wait_children.clear();
                 s.state.one_line_status = format!(
                     "turn {turn} {}",
                     if status == TurnStatus::BudgetExhausted {
@@ -1292,7 +1284,7 @@ async fn turn_open_result(sh: &Arc<Shared>) -> DriveResult {
         Some(t) => DriveResult::TurnOpen {
             rev: s.state.rev,
             turn: t.index,
-            waiting_for: s.state.waiting_for.clone(),
+            needs_input: s.state.needs_input(super::goal::is_goal(&s.config)),
         },
         None if s.state.is_finished() => finished_result(&s),
         None => DriveResult::Idle {
@@ -1834,16 +1826,9 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                     && s.state.run_state != RunState::Waiting
                     && s.state.last_error.is_none()
                 {
+                    // Waiting for input (a Goal Session: for its next run
+                    // opportunity), derived at the commit.
                     s.state.run_state = RunState::Waiting;
-                    s.state.waiting_for = Some(WaitingFor {
-                        kind: if is_goal {
-                            WaitingKind::Event
-                        } else {
-                            WaitingKind::Input
-                        },
-                        refs: Vec::new(),
-                        deadline_ms: None,
-                    });
                     commit_and_report(sh, &mut s).await?;
                 }
             }
@@ -1859,10 +1844,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                 let s = sh.session.lock().await;
                 !s.state.watched_tasks.is_empty()
                     || s.state.nudge.pending
-                    || s.state
-                        .waiting_for
-                        .as_ref()
-                        .is_some_and(|w| w.kind == WaitingKind::Children)
+                    || !s.state.wait_children.is_empty()
             };
             match until {
                 StopWhen::Idle => return Ok(DriveResult::Idle { rev, run_state: rs }),

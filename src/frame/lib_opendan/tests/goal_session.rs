@@ -306,7 +306,8 @@ async fn a_scheduled_slot_runs_one_activation_and_no_action_is_valid() {
     h.until("waiting", |h| {
         let s = h.session(&g.goal_id).state().unwrap();
         s.run_state == RunState::Waiting
-            && s.waiting_for.as_ref().map(|w| w.kind) == Some(WaitingKind::Event)
+            && !s.follows_work()
+            && !s.needs_input(true)
             && s.goal.as_ref().is_some_and(|g| !g.needs_flush())
     })
     .await;

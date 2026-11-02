@@ -313,6 +313,10 @@
             }
           ]
         },
+        "needs_input": {
+          "description": "It waits and only someone's input can move it (a parent tells \"asks for an answer\" from \"waits for its own tasks / sub sessions\").",
+          "type": "boolean"
+        },
         "one_line_status": {
           "default": "",
           "type": "string"
@@ -362,17 +366,6 @@
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
-        },
-        "waiting_for": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/WaitingKind"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "What a waiting session waits for (a parent tells \"needs input\" from \"waits for a tool / its own sub sessions\")."
         }
       },
       "required": [
@@ -422,16 +415,6 @@
         "ref"
       ],
       "type": "object"
-    },
-    "WaitingKind": {
-      "description": "What a waiting session waits for (`waiting_for.kind`).",
-      "enum": [
-        "input",
-        "tool",
-        "event",
-        "children"
-      ],
-      "type": "string"
     },
     "WorkspaceAccess": {
       "enum": [

@@ -78,25 +78,6 @@ pub struct WriterInfo {
     pub lock_epoch: u64,
 }
 
-/// What a waiting session waits for (`waiting_for.kind`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum WaitingKind {
-    Input,
-    Tool,
-    Event,
-    Children,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct WaitingFor {
-    pub kind: WaitingKind,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub refs: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deadline_ms: Option<u64>,
-}
-
 /// Inputs of one logical Turn that entered a run. The input batch that
 /// opens the Turn (or the first batch of an already open Turn in this run)
 /// starts an entry; later batches of the same Turn (hand-over, observation,
@@ -654,8 +635,10 @@ pub struct SessionState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub writer: Option<WriterInfo>,
     pub run_state: RunState,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub waiting_for: Option<WaitingFor>,
+    /// Sub sessions a waiting session must hear from before it goes on (its
+    /// run kept for them, or its end held for them).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wait_children: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<Outcome>,
     #[serde(default)]
@@ -827,7 +810,7 @@ impl SessionState {
             rev: 1,
             writer: None,
             run_state: RunState::Created,
-            waiting_for: None,
+            wait_children: Vec::new(),
             outcome: None,
             acceptance: Acceptance::NotApplicable,
             result: None,
@@ -916,6 +899,18 @@ impl SessionState {
         let p = self.source(src);
         let above = p.consumed_above.iter().filter(|i| **i <= last_index).count() as u64;
         last_index.saturating_sub(p.acked_index).saturating_sub(above) as usize
+    }
+
+    /// Whether the session waits for work it started: tasks it follows,
+    /// sub sessions it must hear from, the runner's own correction.
+    pub fn follows_work(&self) -> bool {
+        !self.watched_tasks.is_empty() || !self.wait_children.is_empty() || self.nudge.pending
+    }
+
+    /// The session waits and only someone's input can move it (`goal`: a
+    /// Goal Session, which waits for its next run opportunity instead).
+    pub fn needs_input(&self, goal: bool) -> bool {
+        self.run_state == RunState::Waiting && !goal && !self.follows_work()
     }
 
     pub fn source_mut(&mut self, id: &str) -> &mut SourceProgress {

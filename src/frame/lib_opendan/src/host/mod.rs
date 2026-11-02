@@ -209,7 +209,7 @@ impl ChildDriver {
             // looked at again every `recheck`.
             _ => {
                 if !(e.status.run_state == RunState::Waiting
-                    && e.status.waiting_for == Some(WaitingKind::Input)
+                    && e.status.needs_input
                     && e.input_queue.is_none())
                 {
                     return true;
@@ -500,10 +500,7 @@ fn has_pending_work(sd: &SessionDir) -> bool {
     !state.watched_tasks.is_empty()
         || crate::runner::has_pending_outbound(&state)
         || crate::runner::has_pending_turn_tasks(&state)
-        || state
-            .waiting_for
-            .as_ref()
-            .is_some_and(|w| matches!(w.kind, WaitingKind::Tool | WaitingKind::Children))
+        || state.follows_work()
         || cfg
             .subscriptions
             .iter()
@@ -922,7 +919,7 @@ impl Supervisor {
                     // deadline): looked at again every `recheck`.
                     Some(_)
                         if e.input_queue.is_none()
-                            && e.status.waiting_for != Some(WaitingKind::Input) =>
+                            && !e.status.needs_input =>
                     {
                         continue
                     }

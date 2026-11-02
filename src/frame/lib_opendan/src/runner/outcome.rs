@@ -519,7 +519,7 @@ pub(super) async fn hand_over(
 
 /// A session that would finish successfully while sub sessions it must hear
 /// from are not settled does not finish: the run ends, the Turn stays open
-/// (`waiting_for = children`); their end arrives as input of the same Turn
+/// (`wait_children`); their end arrives as input of the same Turn
 /// and the agent concludes then (xAgent §4.15).
 pub(super) async fn hold_for_children(sh: &Shared, next: &mut Next) -> Result<()> {
     if next.report.is_some()
@@ -910,19 +910,7 @@ pub(super) async fn commit_kept(
                 s.state.watched_tasks.push(task.clone());
             }
         }
-        s.state.waiting_for = Some(if next.wait_children.is_empty() {
-            WaitingFor {
-                kind: WaitingKind::Tool,
-                refs: next.wait_tasks.clone(),
-                deadline_ms: None,
-            }
-        } else {
-            WaitingFor {
-                kind: WaitingKind::Children,
-                refs: next.wait_children.clone(),
-                deadline_ms: None,
-            }
-        });
+        s.state.wait_children = next.wait_children.clone();
         // Ticks are counted from the moment the session began waiting.
         if !next.wait_tasks.is_empty() || !next.wait_children.is_empty() {
             s.state.task_watch.last_tick_ms = crate::now_ms();
@@ -1206,7 +1194,7 @@ async fn commit_run_end(
     s.state.last_run = Some(run_id.clone());
     s.state.one_line_status = one_line(next);
     s.state.last_error = next.error.clone();
-    s.state.waiting_for = None;
+    s.state.wait_children.clear();
     s.state.activity.touching.clear();
     if next.finished {
         s.state.run_state = RunState::Finished;
@@ -1237,26 +1225,10 @@ async fn commit_run_end(
         }
         s.state.result = Some(result);
     } else if next.waiting {
+        // What it waits for follows from these (between Activations a Goal
+        // Session waits for its next run opportunity, not for a person).
         s.state.run_state = RunState::Waiting;
-        s.state.waiting_for = Some(if next.wait_children.is_empty() {
-            WaitingFor {
-                // Between Activations a Goal Session waits for its next
-                // run opportunity, not for a person.
-                kind: if super::goal::is_goal(&s.config) {
-                    WaitingKind::Event
-                } else {
-                    WaitingKind::Input
-                },
-                refs: Vec::new(),
-                deadline_ms: None,
-            }
-        } else {
-            WaitingFor {
-                kind: WaitingKind::Children,
-                refs: next.wait_children.clone(),
-                deadline_ms: None,
-            }
-        });
+        s.state.wait_children = next.wait_children.clone();
     } else {
         s.state.run_state = RunState::Ready;
     }

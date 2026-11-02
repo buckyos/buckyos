@@ -233,7 +233,7 @@ const isWorking = (e: RegistryEntry) =>
   e.status.run_state === 'running' ||
   e.status.run_state === 'ready' ||
   Boolean(e.status.turn_open) ||
-  (e.status.run_state === 'waiting' && e.status.waiting_for !== 'input')
+  (e.status.run_state === 'waiting' && !e.status.needs_input)
 const isPending = (e: RegistryEntry) => e.status.acceptance === 'pending' || e.status.run_state === 'created'
 
 const sessionStatus = (e: RegistryEntry): { key: TextKey; tone: string } => {

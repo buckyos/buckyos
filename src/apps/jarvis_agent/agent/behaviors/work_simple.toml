@@ -18,8 +18,8 @@ You are a work session for one bounded task. Do it directly with your tools; the
 
 - A `shell` command still running after 25 seconds continues as a task: the call returns the task id with the output so far. Never start it again and never wait for it — its end comes back to you as `<<task_result>>` with the complete result, as the call would have returned it.
 - Several long commands (builds, tests) can run side by side: start them, then go on with work that does not depend on them.
-- When there is nothing useful to do until a task ends, reply with one or two sentences on where things stand ("both builds are running; the lib finished compiling its dependencies"). A reply without tool calls closes the current Turn: it is the progress your caller sees. The next task end, or a periodic tick while tasks run, opens your next Turn.
-- The new output of running tasks is shown to you in `<<background_context>>` before you answer. `get_task_state` checks a task now; `cancel_task` stops one you no longer need.
+- When there is nothing useful to do until a task ends, reply with one or two sentences on where things stand ("both builds are running; alpha is at step 4 of 6"). A reply without tool calls closes the current Turn: it is the progress your caller sees. The next task end, or a periodic tick while tasks run, opens your next Turn. Never check on a task in a loop: every check is another round for nothing.
+- The new output of running tasks is shown to you in `<<background_context>>` before you answer. `cancel_task` stops a task you no longer need.
 - Every tool call may carry an optional `intent`: one short sentence on why you make it now and what you expect. It is shown as your progress.
 
 ## Completion

@@ -1131,7 +1131,7 @@ Memory 也可以通过 Topic 发现相关变化，但不必把它和外部对象
 |---|---|
 | 就绪 / 空闲 | 有已提交任务或有效运行机会时推进；没有实际工作时不空转推理。 |
 | 正在运行 | 一个执行者推进模型、工具与上下文切换，遵守检查点和提交规则。 |
-| 等待本次执行启动的工作 | 保存 Task 与调用身份，run 保活（`waiting_for = tool / children`），以结果或未知状态作为输入交回当前执行，不能转成普通聊天等待。Work 经 `ask_user` 向用户提问也属于这一类：问题是一个 Task，没有队列也能按 Task 标识查询，回答或过期都是它的结果。 |
+| 等待本次执行启动的工作 | 保存 Task 与调用身份，run 保活（`watched_tasks` / `wait_children`），以结果或未知状态作为输入交回当前执行，不能转成普通聊天等待。Work 经 `ask_user` 向用户提问也属于这一类：问题是一个 Task，没有队列也能按 Task 标识查询，回答或过期都是它的结果。 |
 | 等待新运行机会 | UI 等交互，Goal 等调度或订阅事件；不为 Work 保留开放的需求确认等待。 |
 | 暂停 / 预算不足 | 保存原因及未完成事项；是否恢复由授权控制和预算策略决定，不伪报完成。 |
 | 错误 / 恢复阻塞 | 保留证据，区分可恢复执行错误、未知副作用和不可满足的任务前提，再选择恢复或失败。 |
@@ -1455,7 +1455,7 @@ Context Fork、Work 执行、Final Report、已有 Task 等待和 Agent Memory �
 | 能力 | 现有实现基础 | 面向新设计的迁移要求 |
 |---|---|---|
 | Session 分类与输入策略 | 内建模板 `work / ui / self_check / goal`；Work 无输入队列、多 Turn（回复关闭 Turn，task 结局 / timer tick / 子 Session 打开下一个），只有 `report(is_end=true)` 结束（`completion = explicit_report`）。 | 引入 Goal 职责与生命周期；保留 Work 无普通 Message input 的边界，补齐执行中观察。 |
-| task 跟进 | 调用在 runtime 的等待预算（`runtime.task_wait_ms`，缺省 25 秒）内返回；仍在运行的 Task 记在 run 上，回复 / Yield 时 run 保活（`waiting_for = tool / children`；多 Turn Work 同时关闭 Turn，run 停在原处），按 Task ID 查询，结局（`finished / failed / unknown`）以 `<<task_result>>` 输入回到同一 run（多 Turn Work 打开下一个 Turn，每个 Turn 重置工具预算）；无事可等的回复先得到一次 `system:runner` 纠正（nudge）再失败；崩溃时在途的调用由工具管理器按 call_id 找回，不盲目重放。 | 复用精确依赖与恢复机制；限制开放业务等待，明确到期仍运行和旧读取失效的处理。 |
+| task 跟进 | 调用在 runtime 的等待预算（`runtime.task_wait_ms`，缺省 25 秒）内返回；仍在运行的 Task 记在 run 上，回复 / Yield 时 run 保活（task 记 `watched_tasks`、子 Session 记 `wait_children`，登记表只给一位 `needs_input`；多 Turn Work 同时关闭 Turn，run 停在原处），按 Task ID 查询，结局（`finished / failed / unknown`）以 `<<task_result>>` 输入回到同一 run（多 Turn Work 打开下一个 Turn，每个 Turn 重置工具预算）；无事可等的回复先得到一次 `system:runner` 纠正（nudge）再失败；崩溃时在途的调用由工具管理器按 call_id 找回，不盲目重放。 | 复用精确依赖与恢复机制；限制开放业务等待，明确到期仍运行和旧读取失效的处理。 |
 | 订阅与事件身份 | `subscriptions` 支持 `active / semi`，来源为 `session / object_event / task / timer / system`；`subscribe / unsubscribe` 控制修改配置。总线区分 `msg / event / control`。 | 复用结构化事件与订阅；完善业务意图到订阅、失效、超时及恢复的合同，不把自然语言意图当作已登记。 |
 | 串行推进与批次 | Runner 持 Session lease；active 事件留在输入总线，支持 `single / batch`，默认 batch；semi 另存 `state.pending_events`。 | 保持单执行者与逻辑队列分工，补齐跨节点协调，按业务语义设定合并及消费策略。 |
 | Task 修订 | 尚无修订概念；订阅已支持 `task:<task_id>` 来源（`SubscriptionSource::Task`），可承载任务事件。 | 新增 Task 修订的数据与授权；Work 创建时由 Runtime 订阅自身 Task，子 Session 由父 Session 按子对象范围订阅；修订必达，不受 Memory 预算截断；Final Report 记录最后观察的修订编号。 |

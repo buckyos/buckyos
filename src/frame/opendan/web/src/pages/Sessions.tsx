@@ -163,7 +163,7 @@ export default function SessionsPage() {
                   </td>
                   <td className="whitespace-nowrap">
                     <Badge value={entry.status.run_state} />
-                    {entry.status.waiting_for && <span className="ml-1 text-xs text-mute">for {entry.status.waiting_for}</span>}
+                    {entry.status.needs_input && <span className="ml-1 text-xs text-mute">needs input</span>}
                     {entry.status.turn_open && <span className="ml-1"><Badge value="turn open" tone="running" /></span>}
                   </td>
                   <td className="whitespace-nowrap">

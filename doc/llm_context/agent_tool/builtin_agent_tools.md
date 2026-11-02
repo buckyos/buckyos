@@ -682,7 +682,7 @@ detail 常见字段：
 
 三个工具共用宿主的 `RunningTaskResolver`（`tasks::CompositeTaskResolver`）：`local:` id 由进程内 task 管理器回答，进程已不在时 `shell` task 从执行目录读回结果；其它 id 交给宿主注入的 resolver（`XllmDeps.buckyos_tasks`，Zone 下为 `ZoneTaskResolver`），没有注入时状态为 unknown。Zone 解析器的结果规则：结果是 AgentToolResult 信封时用这个信封，否则把结果 JSON 作为正文（如 `human.input/v1` 的回答）；别的 runner 建的 `tool.shell/v1` task 按 shell 的形状读。`result_seen` 标记模型已读过的结果，run 结束后不再作为事件重复投递；`active()` 列本 context 跟进的 task（xllm 据此判断回复时是否仍有 task 在运行）。
 
-Session 宿主（Agent Session）自己跟进 task、把结局作为输入带回，不注册 `wait_task`；`agent-session task` 也只有 `state | cancel`，task 桥对 Session 宿主的 `wait` 返回拒绝（`refused`）。
+Session 宿主（Agent Session）自己跟进 task、把结局作为输入带回，并在每次推理前给出新输出，所以 `bash` 组只注册 `cancel_task`（不注册 `wait_task` / `get_task_state`：2026-11-02 真实模型 DV 中模型拿 `get_task_state` 连续轮询 19 次，抵消了“订阅代替等待”）；`agent-session task` 只有 `state | cancel`（UI 会话没有推理前的任务背景，保留 `state` 看一次输出），task 桥对 Session 宿主的 `wait` 返回拒绝（`refused`）。
 
 | Tool | 输入 | 行为 |
 |---|---|---|

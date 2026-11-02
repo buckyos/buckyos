@@ -194,19 +194,15 @@ impl TaskFollowup {
             }
             TaskFollowup::Input(cli) => {
                 let mut s = String::from(
-                    "Its end comes back to you as input: reply or go on with other work meanwhile, there is no need to wait for it.",
+                    "Its end comes back to you as input: do not check on it again. Reply with where things stand (that ends your turn), or go on with other work meanwhile.",
                 );
                 match cli {
                     Some(cli) => {
-                        s.push_str(&format!(" `{cli} state {task_id}` checks it now."));
                         if cancellable {
                             s.push_str(&format!(" `{cli} cancel {task_id}` stops it."));
                         }
                     }
                     None => {
-                        s.push_str(&format!(
-                            " `get_task_state` with task_id=\"{task_id}\" checks it now."
-                        ));
                         if cancellable {
                             s.push_str(&format!(
                                 " `cancel_task` with task_id=\"{task_id}\" stops it."
@@ -232,15 +228,13 @@ impl TaskFollowup {
             ),
             TaskFollowup::Input(cli) => {
                 let mut s = String::from(
-                    "A task's end comes back to you as input with its full result: there is no need to wait for it. Reply with where things stand, or go on with other work meanwhile.",
+                    "A task's end comes back to you as input with its full result, and its new output is shown to you before you answer: do not wait for it or check on it in a loop. When nothing else is to be done now, reply with where things stand — that ends your turn; the task's end starts the next one.",
                 );
                 match cli {
                     Some(cli) => s.push_str(&format!(
-                        " `{cli} state <task_id>` checks a task now; `{cli} cancel <task_id>` stops a cancellable one."
+                        " `{cli} state <task_id>` shows a task's output once when you need it; `{cli} cancel <task_id>` stops a cancellable one."
                     )),
-                    None => s.push_str(
-                        " `get_task_state` checks a task now; `cancel_task` stops a cancellable one.",
-                    ),
+                    None => s.push_str(" `cancel_task` stops a cancellable one."),
                 }
                 s
             }

@@ -196,7 +196,7 @@ fn end(report: &str, artifacts: &[&str]) -> AiResponse {
 /// What a failed scenario left, for the test log.
 fn dump(sd: &SessionDir, llm: &ScriptedLlm) {
     let st = sd.state().unwrap();
-    eprintln!("state: run_state={:?} waiting_for={:?} last_error={:?} one_line={}", st.run_state, st.waiting_for, st.last_error, st.one_line_status);
+    eprintln!("state: run_state={:?} wait_children={:?} watched_tasks={:?} last_error={:?} one_line={}", st.run_state, st.wait_children, st.watched_tasks, st.last_error, st.one_line_status);
     for e in read_worklog(sd) {
         eprintln!("  wl {}", serde_json::to_string(&e.body).unwrap().chars().take(600).collect::<String>());
     }
@@ -897,7 +897,7 @@ async fn end_needs_a_converged_list_and_stop_cascades() {
             let deadline = Instant::now() + Duration::from_secs(20);
             while Instant::now() < deadline {
                 let st = SessionDir::open(&path).unwrap().state().unwrap();
-                if st.waiting_for.as_ref().is_some_and(|w| w.kind == WaitingKind::Children) {
+                if !st.wait_children.is_empty() {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1072,7 +1072,7 @@ async fn a_host_killed_while_waiting_resumes_the_same_explorations() {
     loop {
         let st = sd.state().unwrap();
         let both_started = list_of(sd.path()).explorations_in_flight().len() == 2;
-        if both_started && st.waiting_for.as_ref().is_some_and(|w| w.kind == WaitingKind::Children) {
+        if both_started && !st.wait_children.is_empty() {
             break;
         }
         assert!(Instant::now() < deadline, "the parent never waited: {st:?}");

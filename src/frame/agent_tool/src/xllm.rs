@@ -4789,10 +4789,16 @@ async fn expand_tool_sources(
                 if task_tools_needed {
                     // The model follows a command that became a task with
                     // these (§4); registered with the group that can create
-                    // tasks. A session brings a task's end back as input:
-                    // there is nothing to wait for.
+                    // tasks. A session brings a task's end back as input and
+                    // shows its new output before every inference: there is
+                    // nothing to wait for or check on (a model offered a
+                    // state tool polls it), only a cancel.
                     for t in task_tools(manager.resolver()) {
-                        if session && t.spec().name == crate::tasks::TOOL_WAIT_TASK {
+                        let name = t.spec().name;
+                        if session
+                            && (name == crate::tasks::TOOL_WAIT_TASK
+                                || name == crate::tasks::TOOL_GET_TASK_STATE)
+                        {
                             continue;
                         }
                         out.push(manager.register(t, &desc)?);
@@ -12926,7 +12932,7 @@ there]]></write_file>
         let names: Vec<String> = hosted.config.tools.native.iter().map(|t| t.name.clone()).collect();
         assert_eq!(
             names,
-            ["read_file", "write_file", "edit_file", "shell", "get_task_state", "cancel_task"]
+            ["read_file", "write_file", "edit_file", "shell", "cancel_task"]
         );
         let manager = hosted.manager;
         let specs = manager.list_tool_specs();
@@ -12936,8 +12942,8 @@ there]]></write_file>
         assert!(shell.description.contains("comes back to you as input"), "{}", shell.description);
         assert!(shell.args_schema["properties"]["intent"].is_object());
         assert_eq!(shell.args_schema["required"], json!(["command"]));
-        let get = specs.iter().find(|t| t.name == "get_task_state").unwrap();
-        assert!(get.args_schema["properties"].get("intent").is_none());
+        let cancel = specs.iter().find(|t| t.name == "cancel_task").unwrap();
+        assert!(cancel.args_schema["properties"].get("intent").is_none());
 
         let call = |command: &str, id: &str, intent: Option<&str>| {
             let mut args = HashMap::from([("command".to_string(), Value::String(command.into()))]);

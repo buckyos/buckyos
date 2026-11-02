@@ -658,7 +658,7 @@ def tool_calls(entries: list[dict]) -> list[tuple[dict, dict]]:
 
 
 def verify_simple(case: Path) -> int:
-    """plan_simple: one Turn of native calls with intents; every Todo in a
+    """plan_simple: Turns of native calls with intents; every Todo in a
     sub session of its own; waits as calls; reviews before building on a
     result; the background after tool results; the deliverables in the
     workspace through the Todo that inherited it."""
@@ -677,7 +677,10 @@ def verify_simple(case: Path) -> int:
     c.check("parent.finished", state.get("run_state") == "finished", state.get("one_line_status"))
     c.check("parent.class", cfg.get("session", {}).get("class") == "plan_simple" and cfg.get("session", {}).get("policy", {}).get("completion") == "explicit_report", cfg.get("session", {}).get("class"))
     kinds = [e.get("t") for e in wl]
-    c.check("turn.single", kinds.count("turn_started") == 1 and kinds.count("turn_ended") == 1 and state.get("turn_seq") == 1, {"started": kinds.count("turn_started"), "ended": kinds.count("turn_ended"), "turn_seq": state.get("turn_seq")})
+    # A work session has many Turns (a reply while its sub sessions run
+    # closes one, their ends open the next): every one opened and closed.
+    started, ended = kinds.count("turn_started"), kinds.count("turn_ended")
+    c.check("turn.all_closed", started >= 1 and started == ended == state.get("turn_seq") == state.get("turns_completed"), {"started": started, "ended": ended, "turn_seq": state.get("turn_seq"), "turns_completed": state.get("turns_completed")})
     c.check("protocol.no_behavior_steps", "step" not in kinds, kinds.count("step"))
     behaviors = (cfg.get("extensions", {}).get("opendan", {}) or {}).get("behaviors", {}) or {}
     c.check("protocol.no_do", "do" not in behaviors and behaviors.get("plan_simple", {}).get("call_intent") is True, sorted(behaviors))

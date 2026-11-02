@@ -1278,7 +1278,7 @@ pub(super) async fn suspend_run(
     s.state.current_behavior = Some(next_behavior.to_string());
     s.state.internal_continuation = Some(next_behavior.to_string());
     s.state.run_state = RunState::Ready;
-    s.state.waiting_for = None;
+    s.state.wait_children.clear();
     s.state.last_error = None;
     // SWITCH_CONTEXT: re-enter the target's own parked run when it exists.
     if switch {
@@ -1498,7 +1498,7 @@ pub(super) async fn commit_input_batch(
         s.state.process_result = None;
     }
     s.state.run_state = RunState::Running;
-    s.state.waiting_for = None;
+    s.state.wait_children.clear();
     s.state.last_error = None;
     if s.state.current_behavior.is_none() {
         s.state.current_behavior = s.config.prompt.behavior.clone();

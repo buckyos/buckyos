@@ -400,6 +400,20 @@
     },
     "session_id": {
       "type": "string"
+    },
+    "task_output": {
+      "additionalProperties": {
+        "items": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "maxItems": 2,
+        "minItems": 2,
+        "type": "array"
+      },
+      "description": "`[input] background = \"before_inference\"`: per task the run follows, how far its output (`[stdout, stderr]` bytes) was shown — a task line shows only what came after. Committed like `observed`.",
+      "type": "object"
     }
   },
   "required": [

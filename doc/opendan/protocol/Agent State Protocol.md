@@ -44,7 +44,7 @@
   "goal_id": "g-…",                          // Goal Session 的 Goal，或创建 Work 的 Goal（session.goal / origin.goal）
   "status": { "rev": 17, "run_state": "…", "outcome": null, "acceptance": "…", "one_line_status": "…",
               "report_brief": "≤500 字", "pending_decision": null,
-              "waiting_for": "input | tool | event | children",   // 仅 run_state = waiting 时；父据此区分“子在等输入”
+              "needs_input": false,   // run_state = waiting 且只有别人的输入能推动它（没有在跟的 task / 子 Session，不是 Goal Session）；父据此区分“子在等回答”
               "turn_open": false,
               "activity": { "summary": "…", "touching": [], "heartbeat_ms": 0 },
               "last_runner": { "runner_id": "…", "host": "…", "pid": 0, "lock_epoch": 0, "at_ms": 0 },

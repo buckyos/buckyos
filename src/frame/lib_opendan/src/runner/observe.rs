@@ -245,7 +245,7 @@ async fn observe(sh: &Shared) -> Result<Observed> {
             None => {
                 let line = if finished
                     || st.pending_decision.is_some()
-                    || st.waiting_for == Some(WaitingKind::Input)
+                    || st.needs_input
                 {
                     child_line(&e)
                 } else {

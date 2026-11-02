@@ -115,7 +115,7 @@ AgentSession.drive():
             report_end     -> AgentSession.finish_run()       # run 历史 flush 进 worklog；Turn completed；按 end_condition 结束 Session 或等待
             WAIT_USER_MSG  -> AgentSession.finish_run()       # 已交付答复则 Turn completed，否则 Turn 保持打开；等下一条输入
             switch(B)      -> 见“behavior 切换”，Turn 继续
-            本 run 的工作未结束 -> run 保留（paused，waiting_for Tool{task ids} / Children{sids}），Turn 保持打开；
+            本 run 的工作未结束 -> run 保留（paused，task 记 watched_tasks、子 session 记 wait_children），Turn 保持打开；
                               # 让出，或回复时本 run 启动的任务 / 子 session 还在跑；它们的结局
                               # （<<task_result …>> / <event … source="session:<sid>">）作为输入注入同一快照
             挂起 / 可重试错误 -> run 保留，Turn 保持打开，恢复后继续同一 run   # ContextLimitReached / Interrupted

@@ -198,9 +198,9 @@ async fn turn_closed_reports_the_open_turn_and_then_its_result() {
         .unwrap();
     let r = drive(&sd, &deps, StopWhen::TurnClosed).await;
     match &r {
-        DriveResult::TurnOpen { turn, waiting_for, .. } => {
+        DriveResult::TurnOpen { turn, needs_input, .. } => {
             assert_eq!(*turn, 1);
-            assert_eq!(waiting_for.as_ref().unwrap().kind, WaitingKind::Input);
+            assert!(*needs_input);
         }
         other => panic!("{other:?}"),
     }
@@ -1036,7 +1036,7 @@ async fn progress_is_observed_and_the_parent_waits_for_children() {
         "{r:?}"
     );
     let entry = agent.sessions().lookup(child.sid()).await.unwrap().unwrap();
-    assert_eq!(entry.status.waiting_for, Some(WaitingKind::Input));
+    assert!(entry.status.needs_input);
     assert!(entry.status.turn_open);
 
     let csid = child.sid().to_string();
@@ -1064,9 +1064,7 @@ async fn progress_is_observed_and_the_parent_waits_for_children() {
     let st = parent.state().unwrap();
     assert!(!st.is_finished() && st.open_turn.is_none() && st.live_run.is_some());
     assert_eq!(st.run_state, RunState::Waiting);
-    let w = st.waiting_for.as_ref().unwrap();
-    assert_eq!(w.kind, WaitingKind::Children);
-    assert_eq!(w.refs, vec![child.sid().to_string()]);
+    assert_eq!(st.wait_children, vec![child.sid().to_string()]);
     assert_eq!(llm.count(), 1);
     // The same state is not delivered twice.
     let r = drive(&parent, &deps, StopWhen::TurnClosed).await;

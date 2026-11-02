@@ -36,11 +36,7 @@ pub(super) const NUDGE_TEXT: &str = "Nothing you started is running and this ses
 /// Whether the session waits for work it started: tasks it follows, sub
 /// sessions it must hear from.
 pub(super) fn waits_for_work(state: &SessionState) -> bool {
-    !state.watched_tasks.is_empty()
-        || state
-            .waiting_for
-            .as_ref()
-            .is_some_and(|w| matches!(w.kind, WaitingKind::Tool | WaitingKind::Children) && !w.refs.is_empty())
+    !state.watched_tasks.is_empty() || !state.wait_children.is_empty()
 }
 
 fn fmt_secs(ms: u64) -> String {
@@ -86,12 +82,7 @@ pub(super) async fn poll_ticks(sh: &Arc<Shared>) -> Result<Vec<FetchedInput>> {
         return Ok(Vec::new());
     }
     let tasks = state.watched_tasks.len();
-    let children = state
-        .waiting_for
-        .as_ref()
-        .filter(|w| w.kind == WaitingKind::Children)
-        .map(|w| w.refs.len())
-        .unwrap_or(0);
+    let children = state.wait_children.len();
     let mut running = Vec::new();
     if tasks > 0 {
         running.push(format!("{tasks} task(s)"));

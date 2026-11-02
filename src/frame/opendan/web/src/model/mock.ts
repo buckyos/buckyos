@@ -116,7 +116,7 @@ const config = (sid: string, behavior: string, behaviors: string[]) => ({
 
 const buildFixtures = () => {
   const ui = entry(UI, 'ui', 'ui.direct', 'Talk with devtest', {
-    waiting_for: 'input',
+    needs_input: true,
     one_line_status: 'Waiting for the next message',
     updated_at_ms: ago(45),
   }, {
@@ -183,7 +183,7 @@ const buildFixtures = () => {
     hosted(UI, 'ui.direct', { reason: 'ui' }),
     hosted(WORK_RUNNING, 'work.default', {
       drives: 3,
-      last_result: { kind: 'turn_open', rev: 30, turn: 2, waiting_for: { kind: 'tool', refs: ['task-55'] } },
+      last_result: { kind: 'turn_open', rev: 30, turn: 2, needs_input: false },
       last_result_at_ms: ago(60),
       reason: 'input',
     }),
@@ -231,7 +231,6 @@ const buildFixtures = () => {
   const details: Record<string, Omit<SessionDetail, 'entry' | 'worklog' | 'children' | 'hosted'>> = {
     [UI]: {
       state: state(ui, {
-        waiting_for: { kind: 'input' },
         current_behavior: 'ui_chat',
         reply: { tunnel: 'msg_center', to: 'did:bns:devtest' },
         outbox: [
@@ -252,7 +251,6 @@ const buildFixtures = () => {
         turn_seq: 2,
         turns_completed: 1,
         open_turn: { index: 2, run_id: 'run-0002', input_seq: 3, inputs: ['queue#3'], at_ms: ago(120) },
-        waiting_for: { kind: 'tool', refs: ['task-55'], deadline_ms: now + 600000 },
         current_behavior: 'work_do',
         process_entry: 'work_do',
         process_stack: [
@@ -568,7 +566,6 @@ export const createMockDataModel = (): OpenDanDataModel => {
       entry(ep.sid, 'goal', 'goal', g.def.title, {
         run_state: ep.end ? 'finished' : 'waiting',
         outcome: ep.end ? 'succeeded' : undefined,
-        waiting_for: ep.end ? undefined : 'event',
         one_line_status: ep.end ? `Epoch ${ep.epoch} ended: ${ep.end}` : `Epoch ${ep.epoch}: waiting for the next activation`,
         updated_at_ms: g.def.updated_at_ms,
       }, { created_by: { principal: g.def.created_by.principal, via: g.def.created_by.via }, input_queue: `opendan/${ep.sid}/input` }),
@@ -599,7 +596,7 @@ export const createMockDataModel = (): OpenDanDataModel => {
     g.state.updated_at_ms = Date.now()
     if (keep === 'facts') Object.assign(g.state, { distance: undefined, pending: undefined, questions: undefined, last_activation: undefined })
     if (g.schedule.gate) g.schedule.gate.status = 'unknown'
-    goalEntries.push(entry(sid, 'goal', 'goal', g.def.title, { run_state: 'waiting', waiting_for: 'event', one_line_status: `Epoch ${epoch}: waiting for the next activation` }, { input_queue: `opendan/${sid}/input` }))
+    goalEntries.push(entry(sid, 'goal', 'goal', g.def.title, { run_state: 'waiting', one_line_status: `Epoch ${epoch}: waiting for the next activation` }, { input_queue: `opendan/${sid}/input` }))
     goalChange(g, start, { epoch, reason })
     return structuredClone(g.def)
   }
@@ -936,9 +933,9 @@ export const createMockDataModel = (): OpenDanDataModel => {
       inputIndex += 1
       log(sid, { t: 'control_applied', input: { src: 'queue', index: inputIndex, kind: 'control' }, command: 'stop', detail: reason ? { reason } : undefined })
       if (e.status.run_state !== 'finished') {
-        commit(e, { run_state: 'finished', outcome: 'stopped', waiting_for: undefined, turn_open: false, one_line_status: reason ? `Stopped: ${reason}` : 'Stopped' })
+        commit(e, { run_state: 'finished', outcome: 'stopped', needs_input: false, turn_open: false, one_line_status: reason ? `Stopped: ${reason}` : 'Stopped' })
         const st = fx.details[sid]?.state
-        if (st) Object.assign(st, { open_turn: undefined, waiting_for: undefined, stop_requested: true })
+        if (st) Object.assign(st, { open_turn: undefined, wait_children: undefined, stop_requested: true })
       }
       return { index: inputIndex }
     },

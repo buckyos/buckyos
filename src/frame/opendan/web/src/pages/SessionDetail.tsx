@@ -297,12 +297,12 @@ export default function SessionDetailPage({ sid }: { sid: string }) {
                   {state.open_turn.inputs?.length ? <Mono> [{state.open_turn.inputs.join(', ')}]</Mono> : null} <Time ms={state.open_turn.at_ms} />
                 </span>
               ) : null],
-              ['waiting for', state?.waiting_for ? (
+              ['waiting for', state?.run_state === 'waiting' && (state.wait_children?.length || state.watched_tasks?.length) ? (
                 <span>
-                  <Badge value={state.waiting_for.kind} tone="waiting" /> <Mono>{(state.waiting_for.refs ?? []).join(', ')}</Mono>
-                  {state.waiting_for.deadline_ms ? <span className="ml-1 text-xs text-mute">deadline <Time ms={state.waiting_for.deadline_ms} /></span> : null}
+                  {state.wait_children?.length ? <><Badge value="sub sessions" tone="waiting" /> <Mono>{state.wait_children.join(', ')}</Mono> </> : null}
+                  {state.watched_tasks?.length ? <><Badge value="tasks" tone="waiting" /> <Mono>{state.watched_tasks.join(', ')}</Mono></> : null}
                 </span>
-              ) : status.waiting_for ? <Badge value={status.waiting_for} tone="waiting" /> : null],
+              ) : status.needs_input ? <Badge value="input" tone="waiting" /> : null],
               ['turns', state ? `${state.turns_completed} completed · seq ${state.turn_seq}` : null],
               ['behavior', state?.current_behavior ? <Mono>{state.current_behavior}</Mono> : null],
               ['process entry', state?.process_entry ? <Mono>{state.process_entry}</Mono> : null],

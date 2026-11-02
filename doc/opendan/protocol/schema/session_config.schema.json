@@ -1102,6 +1102,13 @@
             "after_tools"
           ],
           "type": "string"
+        },
+        {
+          "description": "Before every inference (the first of a Turn included): the lines that changed since they were last shown — the new output of the tasks the run follows, its sub sessions, its TodoList.",
+          "enum": [
+            "before_inference"
+          ],
+          "type": "string"
         }
       ]
     },
@@ -1861,6 +1868,13 @@
             }
           ],
           "default": "events_and_active"
+        },
+        "tick_secs": {
+          "default": 30,
+          "description": "While the session waits for the work it started, its `timer:` subscriptions tick this often (0: never).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
         },
         "wait_user_msg": {
           "allOf": [

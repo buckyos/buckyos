@@ -319,7 +319,7 @@ fn ui_session_waits_for_input_and_control_is_separate() {
     // Nothing to do yet: no Turn is made up.
     let (code, v, _) = cli.run(&["run", &sid, "--poll-ms", "50"]);
     assert_eq!((code, v["kind"].as_str()), (3, Some("turn_open")), "{v}");
-    assert_eq!(v["waiting_for"]["kind"], "input", "the bootstrap Turn waits for input: {v}");
+    assert_eq!(v["needs_input"], true, "the bootstrap Turn waits for input: {v}");
 
     let (code, v, err) = cli.run(&["run", &sid, "--msg", "pick a color for me", "--poll-ms", "50"]);
     assert_eq!((code, v["kind"].as_str()), (3, Some("turn_open")), "{v} {err}");
@@ -427,7 +427,7 @@ fn a_sub_session_is_created_and_waited_for_through_the_shell_tool() {
     assert_eq!(children[0]["run_state"], "finished");
     let child = children[0]["session_id"].as_str().unwrap();
     assert_eq!(children[0]["parent"], sd.sid());
-    assert!(children[0].get("waiting_for").is_some());
+    assert!(children[0].get("needs_input").is_some());
     assert!(children[0].get("pending_decision").is_some());
     let text = cli.text(&["sessions", "--children", "--of", sd.sid()]);
     assert!(text.starts_with("Sessions (1):\n"), "{text}");

@@ -924,7 +924,7 @@ async fn gen(out: &Path) -> R<()> {
         let st = gsd.state()?;
         let shadow = st.goal.clone().unwrap();
         assert!(shadow.needs_flush() && shadow.unwritten.len() == 1);
-        assert_eq!(st.waiting_for.as_ref().map(|w| w.kind), Some(WaitingKind::Event));
+        assert!(!st.follows_work() && !st.needs_input(true));
         let mut observed = observe(&gsd);
         observed["goal"] = json!({
             "goal_id": goal.goal_id,
@@ -933,7 +933,7 @@ async fn gen(out: &Path) -> R<()> {
             "published_rev": shadow.published_rev,
             "unwritten": shadow.unwritten.iter().map(|a| json!([a.epoch, a.seq])).collect::<Vec<_>>(),
             "activation_open": shadow.activation.is_some(),
-            "waiting_for": st.waiting_for.as_ref().map(|w| w.kind),
+            "needs_input": st.needs_input(true),
         });
         write_expected(&d, "goal_session",
             "Goal g (agent_root/state/goals/<goal_id>/) with its epoch-1 Goal Session between Activations (waiting for an event). Activation 1 consumed a scheduled run opportunity and the end of the Goal's Work, its Turn close is committed in state.json (state.goal), but the Goal State and the Activation record are not written back to the Goal yet.",
@@ -955,7 +955,7 @@ async fn gen(out: &Path) -> R<()> {
                     "distance": "TODO.md has no finished items left",
                     "activations": 1
                 },
-                "session": { "run_state": "waiting", "waiting_for": "event", "finished": false }
+                "session": { "run_state": "waiting", "needs_input": false, "finished": false }
             }));
         relativize(&d);
     }

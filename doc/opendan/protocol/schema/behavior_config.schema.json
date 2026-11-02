@@ -333,6 +333,13 @@
             "after_tools"
           ],
           "type": "string"
+        },
+        {
+          "description": "Before every inference (the first of a Turn included): the lines that changed since they were last shown — the new output of the tasks the run follows, its sub sessions, its TodoList.",
+          "enum": [
+            "before_inference"
+          ],
+          "type": "string"
         }
       ]
     },

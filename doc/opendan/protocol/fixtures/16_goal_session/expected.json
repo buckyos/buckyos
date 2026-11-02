@@ -27,8 +27,8 @@
     "llm_calls": 0,
     "session": {
       "finished": false,
-      "run_state": "waiting",
-      "waiting_for": "event"
+      "needs_input": false,
+      "run_state": "waiting"
     }
   },
   "scenario": "goal_session",
@@ -46,7 +46,7 @@
             1
           ]
         ],
-        "waiting_for": "event"
+        "needs_input": false
       },
       "live_run": null,
       "runs_on_disk": [

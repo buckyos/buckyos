@@ -1134,7 +1134,7 @@ fn brief(e: &RegistryEntry) -> Value {
         "session_id": e.session_id, "class": e.class, "objective": e.objective,
         "run_state": e.status.run_state, "outcome": e.status.outcome,
         "acceptance": e.status.acceptance, "one_line_status": e.status.one_line_status,
-        "waiting_for": e.status.waiting_for, "pending_decision": e.status.pending_decision,
+        "needs_input": e.status.needs_input, "pending_decision": e.status.pending_decision,
         "parent": e.origin.as_ref().and_then(|o| o.parent_session.clone()),
     });
     // A UI session's objective is its design intent: whose conversation it
@@ -1177,8 +1177,8 @@ async fn cmd_sessions(a: Args) -> R<i32> {
             if let Some(topic) = &e.status.topic {
                 println!("  Topic: {}", inline_text(&topic.title));
             }
-            if let Some(waiting) = e.status.waiting_for {
-                println!("  Waiting for: {}", list_label(waiting));
+            if e.status.needs_input {
+                println!("  Needs input: agent-session post {} --msg <text>", e.session_id);
             }
             if e.status.acceptance != Acceptance::NotApplicable {
                 println!("  Acceptance: {}", list_label(e.status.acceptance));
@@ -2134,7 +2134,7 @@ async fn goal_show(c: &Ctx, a: &Args, id: &str) -> R<Value> {
     let session = c.agent.sessions().lookup(&goal.session.sid).await?;
     v["session"] = json!(session.map(|e| json!({
         "session_id": e.session_id, "run_state": e.status.run_state, "outcome": e.status.outcome,
-        "waiting_for": e.status.waiting_for, "turn_open": e.status.turn_open,
+        "needs_input": e.status.needs_input, "turn_open": e.status.turn_open,
         "one_line_status": e.status.one_line_status,
     })));
     if a.has("state") {

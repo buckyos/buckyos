@@ -169,9 +169,6 @@
   "turn_seq": 1,
   "turns_completed": 1,
   "updated_at_ms": 1793591512183,
-  "waiting_for": {
-    "kind": "event"
-  },
   "worklog": {
     "committed_bytes": 4759,
     "committed_seq": 9

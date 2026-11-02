@@ -252,18 +252,14 @@ pub(crate) async fn workspace_waiting_children(
     let Some(workspace) = &cfg.workspace else {
         return Ok(Vec::new());
     };
-    let Some(waiting) = &state.waiting_for else {
-        return Ok(Vec::new());
-    };
     if state.run_state != RunState::Waiting
-        || !matches!(waiting.kind, WaitingKind::Tool | WaitingKind::Children)
         || !state.watched_tasks.is_empty()
-        || waiting.refs.is_empty()
+        || state.wait_children.is_empty()
     {
         return Ok(Vec::new());
     }
     let mut children = Vec::new();
-    for reference in &waiting.refs {
+    for reference in &state.wait_children {
         let sid = reference.strip_prefix("session:").unwrap_or(reference);
         let Some(child) = agent.sessions().lookup(sid).await? else {
             return Ok(Vec::new());

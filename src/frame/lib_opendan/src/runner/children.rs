@@ -81,9 +81,7 @@ fn attention_now(e: &RegistryEntry) -> Option<&'static str> {
         Some(ATTENTION_FINISHED)
     } else if e.status.pending_decision.is_some() {
         Some(ATTENTION_DECISION)
-    } else if e.status.run_state == RunState::Waiting
-        && e.status.waiting_for == Some(WaitingKind::Input)
-    {
+    } else if e.status.needs_input {
         Some(ATTENTION_INPUT)
     } else {
         None
