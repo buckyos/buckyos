@@ -49,7 +49,7 @@ Workspace 改造新增稳定 ID、Agent State 登记和不可变执行快照；�
 | 06_killed_during_exec | 在途 c1 + 执行标识：先确认旧执行已停止，再把 c1 物化为“结果未知”续跑，不重放工具 |
 | 07_receipt_ahead_of_state | 续用 run 的快照领先 state 一批：按 receipt 补交，不重复注入 |
 | 08_finished_with_decide | 应用 decide(accept) 移动产物 head，拒绝迟到的 msg 并记 worklog |
-| 09_semi_subscription | 半订阅按登记表 rev 拉取变化并入 `pending_events`，在下一次受控输入之前作为半订阅快照消息注入，不额外推理 |
+| 09_semi_subscription | 半订阅按登记表 rev 拉取变化并入 `pending_events`，作为下一次受控输入的背景行（输入消息最前面），不额外推理 |
 | 10_active_overlap | 同一 Workspace：activity 能看到重叠，旧执行未核实时新写入者返回 Busy |
 | 11_worklog_with_summary | 反向读 worklog 在 summary 起点停止 |
 | 12_fork_child_live | fork 子 context 的 run 在跑、调用方的 run 作为 `caller` 帧挂起在 process_stack；两个 run 同属仍打开的 Turn 1 |

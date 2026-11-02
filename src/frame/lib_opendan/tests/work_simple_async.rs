@@ -310,8 +310,8 @@ async fn a_long_command_closes_the_turn_and_its_end_opens_the_next() {
 }
 
 // 3 + 4 + 11. Two commands side by side: ticks open Turns while they run,
-//    the new output of a task is shown before the inference (only what is
-//    new), each end opens a Turn in the order the tasks ended.
+//    the new output of a task heads the next input (only what is new), each
+//    end opens a Turn in the order the tasks ended.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn parallel_tasks_tick_and_show_only_new_output() {
     let s = setup();
@@ -359,26 +359,17 @@ async fn parallel_tasks_tick_and_show_only_new_output() {
         backgrounds.iter().any(|b| b.contains("task local:shell:c1") && b.contains("new output")),
         "{backgrounds:#?}"
     );
-    // A Turn's input carries the background in its own message: no
-    // background message of its own ever follows an input.
+    // The background is never a message of its own (after an input or
+    // after tool results): it heads the input that places it.
+    for b in &backgrounds {
+        assert!(b.contains("<session_input"), "{b}");
+    }
     assert!(
         backgrounds
             .iter()
             .any(|b| b.contains("task local:shell:c1") && (b.contains("<tick timer=") || b.contains("<<task_result"))),
         "{backgrounds:#?}"
     );
-    for r in llm.requests.lock().unwrap().iter() {
-        for w in r.messages.windows(2) {
-            assert!(
-                !(w[0].role == AiRole::User
-                    && w[1].role == AiRole::User
-                    && w[1].text_content().starts_with("<<background_context>>")),
-                "{}\n---\n{}",
-                w[0].text_content(),
-                w[1].text_content()
-            );
-        }
-    }
     // Only the new output: the call's own result showed `a1`, and every
     // later line is shown once at most.
     let shown: Vec<&str> = backgrounds

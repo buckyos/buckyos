@@ -154,7 +154,7 @@
           ]
         },
         "part": {
-          "description": "`goal_activation | semi_subscription_snapshot | input`.",
+          "description": "`goal_activation | input`.",
           "type": "string"
         },
         "pos": {

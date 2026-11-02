@@ -1,0 +1,3 @@
+<<background_context>>
+- object:doc-1 changed: doc-1 was edited by Bob
+<</background_context>>

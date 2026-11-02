@@ -169,7 +169,7 @@ old prompt.rs 是「behavior 层的 LLM 请求装配」。它干的事拆成两�
 ### 宿主侧（不进引擎）
 libopendan 的 `SessionAssembler`（`runner/assembler.rs`）决定 system 段和每个输入批次的内容：
 
-- behavior 配置了 system 模板或输入模板（`on_init` / `on_context_switch` / `on_input`，以及半订阅快照模板）时，用 `render_template` 经本引擎渲染：`__EXEC__` 关闭，模板变量是宿主预先算好的 JSON（`input` / `handover` / `todos_text` / `background_text` / `builtin` 等），命名格式由 `input_formats()` 注册。
+- behavior 配置了 system 模板或输入模板（`on_init` / `on_context_switch` / `on_input`）时，用 `render_template` 经本引擎渲染：`__EXEC__` 关闭，模板变量是宿主预先算好的 JSON（`input` / `handover` / `todos_text` / `background_text` / `builtin` 等），命名格式由 `input_formats()` 注册。
 - 没配模板时由 `DefaultAssembler` 直接拼接，不经过引擎。
 
 xllm 的 system 文本由 `PromptPlan` 按段拼接（宿主 / 组文本 + capabilities + cmd_manual + runtime_protocol），见 [LLM Context 设计](<LLM Context 设计.md>) §11.2。

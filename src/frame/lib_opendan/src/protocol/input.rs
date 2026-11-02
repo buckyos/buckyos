@@ -844,7 +844,6 @@ pub enum MessagePos {
     Step { index: u64 },
 }
 
-pub const PART_SNAPSHOT: &str = "semi_subscription_snapshot";
 pub const PART_INPUT: &str = "input";
 
 pub const HOOK_ON_INIT: &str = "on_init";
@@ -854,7 +853,7 @@ pub const HOOK_ON_CONTEXT_SWITCH: &str = "on_context_switch";
 /// One message injected by a batch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ReceiptPart {
-    /// `goal_activation | semi_subscription_snapshot | input`.
+    /// `goal_activation | input`.
     pub part: String,
     pub pos: MessagePos,
     /// The message's text block (evidence, worklog `user_message`). Image /
@@ -967,8 +966,8 @@ pub struct InputReceipt {
     pub at_ms: u64,
 }
 
-/// `InputReceipt.extra` key: the `background_shown` map after a chat
-/// format batch (UI sessions), applied to the state with the receipt.
+/// `InputReceipt.extra` key: the `background_shown` map after a batch,
+/// applied to the state with the receipt.
 pub const RECEIPT_BACKGROUND: &str = "background";
 
 /// libopendan host metadata stored in `LLMContextState.host["libopendan"]`.
@@ -1006,21 +1005,6 @@ pub struct HostMeta {
     /// it is not tried again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub media_degraded: bool,
-    /// Background lines shown after tool results (`[input] background =
-    /// "after_tools"`): line key → digest of the text last shown. Committed
-    /// with the message that showed them, so a crash before that commit
-    /// shows them again and one after it never twice.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub observed: BTreeMap<String, String>,
-    /// The history epoch `observed` belongs to: after a rewrite the lines
-    /// are shown afresh.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub observed_epoch: u64,
-    /// `[input] background = "before_inference"`: per task the run follows,
-    /// how far its output (`[stdout, stderr]` bytes) was shown — a task line
-    /// shows only what came after. Committed like `observed`.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub task_output: BTreeMap<String, [u64; 2]>,
 }
 
 pub const HOST_META_KEY: &str = "libopendan";

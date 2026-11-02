@@ -41,7 +41,7 @@
     },
     {
       "file": "04_event_semi_object.json",
-      "handling": "Observe: merged into state.pending_events and consumed; never triggers inference; shown as the semi_subscription_snapshot message before the next controlled input",
+      "handling": "Observe: merged into state.pending_events and consumed; never triggers inference; shown as a background line of the next controlled input whose template places `background_context`",
       "needs_subscription": "watch-obj",
       "type": "event"
     },
@@ -90,6 +90,10 @@
       "inline": "rendering/ai_message_inline.json",
       "reference": "rendering/ai_message_reference.json"
     },
+    "background_context": {
+      "of": "04_event_semi_object.json",
+      "text": "rendering/background_context.txt"
+    },
     "batch": [
       "02_msg_group_attachments.json",
       "03_event_active_task.json"
@@ -132,10 +136,6 @@
       "a template's output is trimmed of leading / trailing whitespace",
       "the text block is the same for input.media = reference and inline"
     ],
-    "semi_subscription_snapshot": {
-      "of": "04_event_semi_object.json",
-      "text": "rendering/semi_subscription_snapshot.txt"
-    },
     "templates": [
       {
         "output": "rendering/templates/example_1_builtin_equivalent.out",

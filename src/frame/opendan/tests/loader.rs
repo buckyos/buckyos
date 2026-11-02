@@ -1324,12 +1324,12 @@ async fn the_jarvis_package_loads_and_answers() {
         assert!(loader.agent.behaviors().get(gone).await.unwrap().is_none(), "no behavior loop `{gone}`");
     }
     // plan_simple: native function calls with an intent on every call and
-    // the background before every inference; it only reads its workspace.
+    // inputs that place the background; it only reads its workspace.
     let plan_simple = loader.agent.behaviors().get("plan_simple").await.unwrap().unwrap();
     assert_eq!(plan_simple.capabilities.workspace, Some(libopendan::protocol::WorkspaceAccess::ReadOnly));
     let entry = plan_simple.to_entry("plan_simple", &loader.config.llm_context, true).unwrap();
     assert!(entry.call_intent);
-    assert_eq!(entry.input.unwrap().background, libopendan::protocol::InputBackground::BeforeInference);
+    assert!(entry.prompt.on_input.as_deref().unwrap().contains("{{ background_context }}"));
     assert!(loader.agent.behaviors().get("task_route").await.unwrap().is_none());
     // Intent analysis: a fork of the UI context offered as a named function.
     let analyze = loader.agent.behaviors().get("analyze_intent").await.unwrap().unwrap();

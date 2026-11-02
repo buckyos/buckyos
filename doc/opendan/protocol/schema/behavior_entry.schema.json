@@ -30,12 +30,6 @@
             "null"
           ]
         },
-        "semi_subscription_snapshot": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "system": {
           "description": "Application system prompt of the context (replaces `prompt.system`).",
           "type": [
@@ -146,25 +140,6 @@
         }
       ]
     },
-    "InputBackground": {
-      "description": "What the host shows a context besides its inputs.",
-      "oneOf": [
-        {
-          "description": "Only what an input batch carries (the chat format's background).",
-          "enum": [
-            "batch"
-          ],
-          "type": "string"
-        },
-        {
-          "description": "Before every inference (the first of a Turn included): the lines that changed since they were last shown — the new output of the tasks the run follows, its sub sessions, its TodoList.",
-          "enum": [
-            "before_inference"
-          ],
-          "type": "string"
-        }
-      ]
-    },
     "InputMedia": {
       "description": "Whether attachments also enter the context as image / document blocks.",
       "oneOf": [
@@ -207,14 +182,6 @@
       "additionalProperties": false,
       "description": "Input consumption policy of a context (separate from its templates).",
       "properties": {
-        "background": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/InputBackground"
-            }
-          ],
-          "default": "batch"
-        },
         "media": {
           "allOf": [
             {

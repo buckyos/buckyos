@@ -82,8 +82,8 @@ fn camera_event(key: &str, seq: u64, summary: &str) -> PostedInput {
 }
 
 /// Observe events received during a run are merged and saved, never
-/// injected by themselves; the next controlled input shows them as the
-/// semi-subscription snapshot, in front of its own message, as one batch.
+/// injected by themselves; the next controlled input shows them as
+/// background lines at the head of its own message.
 #[tokio::test]
 async fn semi_events_wait_for_the_next_controlled_input() {
     let env = Env::new();
@@ -114,11 +114,12 @@ async fn semi_events_wait_for_the_next_controlled_input() {
         }
         _ => {
             let users = user_texts(req);
-            let n = users.len();
-            assert!(users[n - 2].starts_with("<semi_subscription_snapshot>"), "{users:?}");
-            assert!(users[n - 2].contains("motion at door (v2)"), "{users:?}");
-            assert!(!users[n - 2].contains("(v1)"), "replaced versions are not replayed");
-            assert!(users[n - 1].contains("what happened?"), "{users:?}");
+            let input = &users[users.len() - 1];
+            assert!(input.starts_with("<<background_context>>\n"), "{users:?}");
+            assert!(input.contains("motion at door (v2)"), "{users:?}");
+            assert!(!input.contains("(v1)"), "replaced versions are not replayed");
+            assert!(input.contains("what happened?"), "{users:?}");
+            assert!(!users[users.len() - 2].contains("motion at door"), "no message of its own: {users:?}");
             text("the door moved")
         }
     });
@@ -151,9 +152,8 @@ async fn semi_events_wait_for_the_next_controlled_input() {
             _ => None,
         })
         .collect();
-    assert_eq!(users.len(), 3, "{users:#?}");
-    assert!(users[1].starts_with("<semi_subscription_snapshot>"));
-    // The snapshot is part of the second Turn's batch, not a Turn of its own.
+    assert_eq!(users.len(), 2, "{users:#?}");
+    assert!(users[1].starts_with("<<background_context>>"));
     assert_eq!(count(&kinds(&wl), "turn_started"), 2);
     let started: Vec<&WorklogBody> = wl
         .iter()
@@ -162,6 +162,56 @@ async fn semi_events_wait_for_the_next_controlled_input() {
         .collect();
     assert!(
         matches!(started[1], WorklogBody::TurnStarted { events, inputs, .. } if events == &vec!["cam:2".to_string()] && inputs.len() == 1)
+    );
+}
+
+/// A template that does not place `background_context` leaves the session
+/// blind to its semi-subscription state: nothing of it reaches the context
+/// and the version stays pending.
+#[tokio::test]
+async fn semi_state_is_invisible_to_a_template_without_background() {
+    let env = Env::new();
+    let mut spec = work_spec("watch the camera");
+    spec.end_condition = EndCondition {
+        kind: EndConditionType::MaxTurns,
+        detail: json!({ "n": 2 }),
+    };
+    spec.subscriptions.push(camera_subscription(SubscriptionMode::Semi));
+    spec.prompt.templates.on_input =
+        Some("<session_input>{{ input | render_format: \"input.xml\" }}</session_input>".into());
+    let sd = env.create_work(spec).await;
+    let (qd, q) = (env.queue_dir.clone(), queue_of(&sd));
+    let llm = ScriptedLlm::new(move |req, n| match n {
+        0 => {
+            post_blocking(&qd, &q, camera_event("cam:1", 1, "motion at door"));
+            text("noted")
+        }
+        _ => {
+            let all = render(&req.messages);
+            assert!(!all.contains("motion at door") && !all.contains("<<background_context>>"), "{all}");
+            text("nothing seen")
+        }
+    });
+    let deps = env.deps(llm.clone());
+    drive(&sd, &deps, StopWhen::Idle).await;
+    libopendan::post_input(env.agent().as_ref(), sd.sid(), &msg("what happened?"))
+        .await
+        .unwrap();
+    assert!(drive(&sd, &deps, StopWhen::Finished).await.is_finished());
+    assert_eq!(llm.count(), 2);
+    let st = sd.state().unwrap();
+    assert!(!st.background_shown.keys().any(|k| k.starts_with("event:")), "{:?}", st.background_shown);
+    // The batch did not take the version in (a finished session drops it).
+    let wl = read_worklog(&sd);
+    let started: Vec<&WorklogBody> = wl
+        .iter()
+        .map(|e| &e.body)
+        .filter(|b| matches!(b, WorklogBody::TurnStarted { .. }))
+        .collect();
+    assert!(
+        matches!(started[1], WorklogBody::TurnStarted { events, inputs, .. } if events.is_empty() && inputs.len() == 1),
+        "{:?}",
+        started[1]
     );
 }
 
@@ -292,10 +342,11 @@ async fn semi_subscribed_session_change_is_pulled_by_rev() {
     let b = env.create_work(spec).await;
     let a_sid = a.sid().to_string();
     let llm = ScriptedLlm::new(move |req, _| {
-        // A's state arrives as the snapshot message in front of `on_init`.
+        // A's state arrives as a background line of `on_init`.
         let users = user_texts(req);
-        assert_eq!(users.len(), 2, "{users:?}");
+        assert_eq!(users.len(), 1, "{users:?}");
         let u = &users[0];
+        assert!(u.starts_with("<<background_context>>"), "{u}");
         assert!(u.contains(&a_sid) && u.contains("finished"), "{u}");
         text("B done")
     });

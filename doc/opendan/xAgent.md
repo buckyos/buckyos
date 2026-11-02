@@ -789,8 +789,7 @@ pub struct BehaviorConfig {
         system: String,                  // system 段模板；原 prompt.on_init 改名
         on_init: Option<String>,         // Session bootstrap 的启动 user message
         on_input: Option<String>,        // 选中的外部 message / Input event
-        on_context_switch: Option<String>, // 目标 context 的交接 user message
-        semi_subscription_snapshot: Option<String>, // 受控输入之前的半订阅快照材料，不是触发入口
+        on_context_switch: Option<String>, // 目标 context 的交接 user message（三类模板都可用 background_context 放置半订阅）
         parser, parser_strict, output,
     },
     pub input: InputConsumption { mode: Single | Batch,   // 消费策略；单条 / 组批，与正文模板分开；默认 Batch
@@ -818,7 +817,7 @@ pub struct BehaviorConfig {
 
 `input.mode` 默认 Batch；Single 在按 source / index 排序的可处理 message / Input event 中总共选一条，Batch 最多取 `options.input_batch_max` 条，未选输入保留，后台 task 合成候选排在总线候选之后。首次进入目标 behavior 时先完成必要的冻结与校验，再读取策略和模板。模板缺省使用内建渲染；已有选中的外部输入却渲染为空必须报错并保留现场。没有外部输入时的 bootstrap / continuation 处理见 §9.3。
 
-`semi_subscription_snapshot`（半订阅快照）是三类入口共用的前置材料，装配函数为 `render_semi_subscription_snapshot`。不设置 `on_observation` 或第四类输入 hook；旧 `on_behavior_step_ob` 不作为半订阅入口沿用，工具结果渲染仍属于 LLM Context 的执行协议。旧输入入口 `on_wakeup / on_behavior_switch` 对应新名 `on_input / on_context_switch`；旧 behavior cfg 中用作 system 的 `prompt.on_init` 对应 `prompt.system`。libopendan 宿主自 `session_config/4` 起按新名实施（当前为 `/7`），不提供旧名兼容；C7 的 behavior 素材按新结构编写，现有 OpenDAN 配置改造仍按 §1.2 后移。附件块由 `input.media` 决定，模板不决定是否内联。
+半订阅永远不成为一条独立的输入：它是三类入口共用的素材，模板变量 `background` / `background_context`（Session Input Protocol §6.6），模板不放置就不可见。不设置 `on_observation` 或第四类输入 hook；旧 `on_behavior_step_ob` 不作为半订阅入口沿用，工具结果渲染仍属于 LLM Context 的执行协议。旧输入入口 `on_wakeup / on_behavior_switch` 对应新名 `on_input / on_context_switch`；旧 behavior cfg 中用作 system 的 `prompt.on_init` 对应 `prompt.system`。libopendan 宿主自 `session_config/4` 起按新名实施（当前为 `/7`），不提供旧名兼容；C7 的 behavior 素材按新结构编写，现有 OpenDAN 配置改造仍按 §1.2 后移。附件块由 `input.media` 决定，模板不决定是否内联。
 
 进入模式放在目标 behavior 上，正好回答 readme 里的 TODO（“切换模式由 target behavior 的配置决定，而不是由当前 session 决定？”）：是。校验规则：`fork` 目标不能声明自己的 system 与模型（要换就用 `create_sub_context`），也不接受 `inherit`；`switch_context` 目标不接受 `inherit = steps`；入口 behavior 未声明时按 `switch_context`；其它 behavior 没有进入模式是配置错误，不回退成任何默认模式。进入模式为 `create_sub_context` / `fork` 的 behavior 就是 `call_behavior` 可调用的目标（§3.6）；要让模型看到一个具名函数，再加 `[tool]` 声明（§3.6）。`fork` 目标的 `[budget]` 不进 `llm_context`，由宿主作用于分支的 run（工具迭代、token、时长、连续错误），不改变请求的渲染内容。`SessionAssembler::behavior_entry(cfg, behavior)` 读冻结的 `behaviors[target].entry`；Session 级的 `extensions.opendan.process_modes` 已废弃并被拒绝。libopendan 的 Session 宿主以 `extensions.opendan.behaviors.<name> = {mode, prompt{system?, on_init?, on_input?, on_context_switch?, semi_subscription_snapshot?}, input{mode, media}?, llm_context?, inherit?}` 承载同一份进入配置，冻结（C7）时由 BehaviorConfig 生成它。
 
@@ -840,7 +839,6 @@ pub struct BehaviorConfig {
   "system": "…", "context": [], "mechanical_compress": { … },
   "initial_inputs": [],                 // C4 新增：无队列创建时的只读 MsgObject 逻辑记录
   "on_init": "…", "on_input": "…", "on_context_switch": "…",
-  "semi_subscription_snapshot": "…",
   "input": { "mode": "batch", "media": "reference" }
 }
 ```
@@ -865,8 +863,6 @@ impl SessionAssembler for BehaviorAssembler {
     async fn system_text(&self, cfg: &SessionConfig, agent_root: Option<&Path>) -> Result<String>;
     /// 当前受控输入：按 on_init / on_input / on_context_switch 渲染；缺省使用内建模板。
     async fn render_input(&self, cfg: &SessionConfig, state: &SessionState, templates: &InputTemplates, m: &InputMaterial) -> Result<Option<String>>;
-    /// 输入前的半订阅快照：无待注入状态时返回 None；选取和渲染均不修改消费状态。
-    async fn render_semi_subscription_snapshot(&self, templates: &InputTemplates, events: &[EventView]) -> Result<Option<String>>;
     /// 目标 behavior 的进入配置。没有声明进入模式 → Err（配置错误，不回退）；入口 behavior 未声明时是 switch_context。
     fn behavior_entry(&self, cfg: &SessionConfig, target: &str) -> Result<BehaviorEntry> {
         frozen_behavior_entry(cfg, target) // 将冻结材料转换为现有 BehaviorEntry（含 prompt / input / llm_context / inherit）
@@ -890,7 +886,7 @@ impl BehaviorConfig {
 
 上述签名沿用现有 `SessionAssembler`，`frozen_behavior_entry` 是目标装配步骤的示意。复用 `DefaultAssembler` 的视图、模板渲染与内建格式；冻结只改变材料来源。新 run 装配时先把目标 behavior 的冻结覆盖叠到有效 cfg，再渲染 system，不能用入口 behavior 的模板覆盖所有目标。
 
-输入注入顺序固定为：确定受控输入 → 选取并渲染 `semi_subscription_snapshot` → 快照 user message（没有则省略）→ 受控输入 user message（文本加可选媒体）→ 两条消息一次 inject，与 receipt 同快照提交 → 继续推理。受控输入文本可先渲染，必须保证实际注入时快照在前。快照没有独立 hook 或 Turn；未提交时不清状态，已发布快照的批次按 receipt 补交，见 §9.5。
+输入注入顺序固定为：确定受控输入 → 算出变化的背景行 → 渲染受控输入 user message（文本加可选媒体，模板放置背景）→ 只有实际出现的背景行记为已显示 → 一次 inject，与 receipt 同快照提交 → 继续推理。背景没有独立 hook、消息或 Turn。
 
 这就是 §3 表“配置来源”一格的变化：`prepare_hosted(workdir, behavior.overlay_llm_context(&cfg.prompt.llm_context), …)`。叠加结果进 run.json `config`，xllm 接手时不需要理解 behavior。`budget.max_wallclock_ms` / `max_total_tokens` 直接进 `hosted_request` 的 `BudgetSpec`（需要 `hosted_request` 接受 budget 覆盖，见 §11）。
 
@@ -1091,7 +1087,7 @@ serve
       构造 InputView、hints、active、runtime、UTC 时间；渲染受控输入文本和媒体块。
       无受控输入、无 ready run 时，按下表返回或有界等待后重新路由（保活的 run 在这里等它的输入）。
    e. 取 context：本次 drive 保留的 live（含保活的）→ 打开 state.live_run → 新建 run（§9.4）。
-   f. 有受控输入时，选取并渲染半订阅快照；两部分消息与 receipt 同批提交（§9.5）；注入保活的 run 时 Step 编号接续。
+   f. 有受控输入时，半订阅状态作为该输入的背景行随模板渲染；消息与 receipt 同批提交（§9.5）；注入保活的 run 时 Step 编号接续。
    g. 清 ready / filled，启动 StopMonitor，执行 run_compacting。
       停止监视任务；若它发现 stop，由驱动者消费控制并提交，再解释 Outcome。
    h. handle_context_outcome：调度 Context（含 sub_call 的交接）/ 保活 / 关闭 Turn，outcomes += 1。
@@ -1143,8 +1139,7 @@ serve
 有序 picked(msg / Input event)
   → InputView（说话人来自 msg.from，保留 ObjId / 回复 / 附件）
   → 选定模板渲染文本；input.media 独立生成媒体块
-  → [可选 semi_subscription_snapshot user message,
-     controlled user message(text + media)]
+  → controlled user message(text + media；背景行由模板经 background_context 放置)
   → 一次 ctx.inject → positions_of → InputReceipt
   → 同一快照中的消息 + state.host.libopendan.input_receipts
 ```
@@ -1161,7 +1156,6 @@ receipt 已是当前协议，不再是待定示意：
   "events": [{"subscription_id": "watch", "source": {"kind": "object", "id": "doc"}, "seq": 8, "key": "doc:8"}],
   "reply": {"route": "message", "to": "did:bns:alice", "to_session": null, "kind": "chat", "reply_to": "cymsg:…", "tunnel": null},
   "parts": [
-    {"part": "semi_subscription_snapshot", "pos": {"kind": "accumulated", "index": 6}, "text": "…"},
     {"part": "input", "pos": {"kind": "accumulated", "index": 7}, "text": "…"}
   ],
   "bootstrap": false, "after_step": 0, "extra": {}, "at_ms": 0

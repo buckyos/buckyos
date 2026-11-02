@@ -6,14 +6,13 @@
 //! (controls are applied, Observe events are merged into `pending_events`
 //! and saved) and refreshes the activity heartbeat.
 //!
-//! Inputs are never injected here: reaching a checkpoint, finishing a tool
-//! call or receiving an Observe event never puts a message or an event into
-//! the context. Saved semi-subscription state waits for the next controlled
-//! input (`on_init / on_input / on_context_switch`), which renders it as the
-//! snapshot message in front of its own. The one host observation placed
-//! here is the background after tool results of a run that asks for it
-//! (`[input] background = "before_inference"`; an input batch carries its
-//! own, see `observe.rs`).
+//! Nothing is injected here: reaching a checkpoint, finishing a tool call
+//! or receiving an Observe event never puts a message or an event into the
+//! context. Semi-subscription state (and the new output of followed tasks)
+//! is never an input of its own: it waits for the next controlled input
+//! (`on_init / on_input / on_context_switch`), whose template may place it
+//! as background (`background.rs`). The tasks the run's calls just started
+//! are only recorded where their output stands (`observe.rs`).
 
 use std::sync::Arc;
 
@@ -59,9 +58,6 @@ pub struct SessionCheckpointHook {
     shared: Arc<Shared>,
     run: RunHandle,
     rounds: Arc<super::rounds::RoundCounter>,
-    /// The run is shown background lines before its inferences
-    /// (`[input] background`).
-    background: bool,
 }
 
 impl SessionCheckpointHook {
@@ -70,12 +66,10 @@ impl SessionCheckpointHook {
         run: RunHandle,
         rounds: Arc<super::rounds::RoundCounter>,
     ) -> Self {
-        let background = super::observe::enabled(&run);
         Self {
             shared,
             run,
             rounds,
-            background,
         }
     }
 
@@ -196,12 +190,14 @@ impl CheckpointHook for SessionCheckpointHook {
         snapshot: &LLMContextSnapshot,
     ) -> std::result::Result<Option<Injection>, String> {
         self.boundary(snapshot).await.map_err(|e| e.to_string())?;
-        if !self.background {
-            return Ok(None);
+        // The TodoList follows its work sessions (what became ready starts).
+        if let Err(e) = super::todos::sync(&self.shared).await {
+            log::warn!("todo sync of {}: {e}", self.shared.dir.sid());
         }
-        super::observe::at_boundary(&self.shared, &self.run, snapshot)
+        super::observe::note_started(&self.shared, &self.run)
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        Ok(None)
     }
 }
 

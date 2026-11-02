@@ -85,7 +85,7 @@ Schema：`schema/session_config.schema.json`。要点：
                 "identity": { "role": "…", "self": "…", "i18n": {} },
                 "behaviors": { "plan": { /* BehaviorConfig */ } } },
     "initial_inputs": [ /* 无输入队列的 Session：创建时给出的 msg 逻辑记录（≤ 64），发布后不变 */ ],
-    "on_init": null, "on_input": null, "on_context_switch": null, "semi_subscription_snapshot": null,   // 输入模板；缺省内建
+    "on_init": null, "on_input": null, "on_context_switch": null,   // 输入模板；缺省内建
     "input": { "mode": "batch | single", "media": "reference | inline" },
     "mechanical_compress": { "recent_full_responses": 2, "summary_chars": 280, "max_result_chars": 4096,
                              "drop_kinds": ["created","decide","compaction","input_rejected","event_dropped","turn_ended"] },
@@ -120,7 +120,7 @@ Schema：`schema/session_config.schema.json`。要点：
 - `extensions.opendan.behaviors.<name>`：目标 behavior 的进入配置（§8，schema `behavior_entry`）。进入模式由**目标**决定，没有缺省模式，也没有“同一 run 换 behavior”的普通切换：
   - `mode`（必填）：`switch_context | create_sub_context | fork`。
   - `prompt.system`：该 context 的应用 system prompt（替换会话的 `prompt.system`）；`llm_context`：按顶层键替换 `prompt.llm_context`（模型、工具、限额）。`fork` 不允许声明这两项（fork 保持调用方的 system 与配置）。
-  - `prompt.on_init / on_input / on_context_switch / semi_subscription_snapshot`：该 context 的输入模板，按字段覆盖会话的同名模板；`input{mode, media}`：该 context 的消费策略（缺省用会话的）。见 [Session Input Protocol](<Session Input Protocol.md>) §6。
+  - `prompt.on_init / on_input / on_context_switch`：该 context 的输入模板，按字段覆盖会话的同名模板；`input{mode, media}`：该 context 的消费策略（缺省用会话的）。见 [Session Input Protocol](<Session Input Protocol.md>) §6。
   - `inherit`：新 context 的历史来源，`none`（缺省）| `recent_dialogue`（宿主装配的会话历史，context 切换时为 `<session_history>`：摘要 + 近期 worklog 记录；未压缩 UI 跨 Turn 续聊见 §6）| `steps`（调用方已完成的 Step，按结构化记录继承，含各 Step 的 `<report>`；仅 `create_sub_context`，且双方都是 behavior loop）。`fork` 总是继承分叉点的完整有效历史，不接受 `inherit`。
   - 会话的初始 behavior（`prompt.behavior`）没有自己的条目时，视为使用会话基础配置的 `switch_context` 目标。交接到其它没有条目的 behavior 是配置错误：当前 Turn 以 `failed` 结束（`last_error.kind = behavior_config`）；发生在子 context 内时作为失败结果交回调用方。
   - 表在每次推进开始时校验，非法（未知 mode、fork 带 system 等）则不做任何推理。旧的 `extensions.opendan.process_modes` 不再接受。
@@ -310,9 +310,9 @@ runs/<run_id>/exec/<call_id>/     shell 命令的执行目录：command、stdout
 | `handover` | run 停在 behavior 交接点：`{next_behavior, at_ms}`，与让出时的快照、`status = paused` 在**同一次** run.json 写入中记录。非空时任何执行者都不得在该 run 上继续推理：xllm 遇到宿主 run 的 `Done{next_behavior=B}` 只记录它（不记 `completed`），`xllm --resume` 拒绝接手；由会话读取 B 的进入模式并提交转移。会话重新打开该 run 执行（status 回到 `running`）时清除 |
 | `usage.llm_requests` | 本 run 的推理尝试数：libopendan 在每个 outcome 后加上本段经 run 的 `LlmClient::infer` 发起的 Round 数（含失败 / 中断），xllm 接手后在其上继续累加；任何执行者都不重置或覆盖 |
 
-快照 `state.host["libopendan"]`（HostMeta）：`{session_id, base_input_len, process_entry, inherited_below, input_receipts[], history_epoch?, epoch_turn?, epoch_input_seq?, observed?, task_output?, observed_epoch?}`，各执行者必须原样保留。`history_epoch` 三项在第一次中途重写后出现（为 0 时省略）：`history_epoch` 是本 run 已发生的中途重写次数，`epoch_turn` 是当前 epoch 开始时所在的 Turn（新 epoch 中先于任何 receipt 的条目归属于它），`input_seq ≤ epoch_input_seq` 的 receipt 属于更早的 epoch（身份仍有效，位置不再适用）。`observed`（行键 → 文本摘要）、`task_output` 与 `observed_epoch` 只出现在 `[input] background = "before_inference"` 的 run：已展示的背景行，随展示它们的消息一起发布——输入批次的背景在输入消息最前面，随该批次的 receipt 发布；工具结果之后的背景是单独一条 `<<background_context>>` 消息，没有 receipt，不是输入，按普通用户消息写入 worklog。`observed_epoch ≠ history_epoch` 时视为空（重写后重新展示）。
+快照 `state.host["libopendan"]`（HostMeta）：`{session_id, base_input_len, process_entry, inherited_below, input_receipts[], history_epoch?, epoch_turn?, epoch_input_seq?}`，各执行者必须原样保留。`history_epoch` 三项在第一次中途重写后出现（为 0 时省略）：`history_epoch` 是本 run 已发生的中途重写次数，`epoch_turn` 是当前 epoch 开始时所在的 Turn（新 epoch 中先于任何 receipt 的条目归属于它），`input_seq ≤ epoch_input_seq` 的 receipt 属于更早的 epoch（身份仍有效，位置不再适用）。背景行只出现在输入消息里，显示记录是 `state.background_shown`，随 receipt 提交（[Session Input Protocol](<Session Input Protocol.md>) §6.6、§7）。
 
-run.json `host.extra` 中由宿主冻结、恢复与重建工具时沿用的键：`call_intent: true`（该 run 的 behavior 声明 `[capabilities] call_intent`：每个原生函数的 schema 带 required 的 `intent`，执行前校验，交给工具前去掉，in-flight 记录与快照保留原始参数）、`background: "after_tools"`。
+run.json `host.extra` 中由宿主冻结、恢复与重建工具时沿用的键：`call_intent: true`（该 run 的 behavior 声明 `[capabilities] call_intent`：每个原生函数的 schema 带 required 的 `intent`，执行前校验，交给工具前去掉，in-flight 记录与快照保留原始参数）。
 
 **run 生命周期**：
 

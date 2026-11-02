@@ -1,0 +1,40 @@
+{
+  "session_id": "goal-20261102-1",
+  "kind": "goal",
+  "class": "goal",
+  "created_by": {
+    "principal": "app:app2@alice",
+    "via": "opendan"
+  },
+  "idempotency_key": "goal:g-k9ed545152f8cdfcc3d3f30bc:1",
+  "driver": {
+    "principal": "app:app2@alice"
+  },
+  "location": "${FIXTURE_ROOT}/app/goal-20261102-1",
+  "input_queue": "app2::alice::opendan.session.76a0e17faf1be7ccd4dd1a073b7a5656920cd744a9bb8303d15b1717f8d34143",
+  "wake_event": "/opendan/jarvis.alice/session/goal-20261102-1/input",
+  "agent_access": "full",
+  "objective": "Pursue goal g-k9ed545152f8cdfcc3d3f30bc. Its current definition, state, open work and budget are given at the start of every activation (<goal_activation>); each activation observes, judges and acts within its budget, then ends with a final report.",
+  "goal_id": "g-k9ed545152f8cdfcc3d3f30bc",
+  "status": {
+    "rev": 4,
+    "run_state": "running",
+    "acceptance": "n/a",
+    "one_line_status": "",
+    "report_brief": "",
+    "turn_open": true,
+    "activity": {
+      "summary": "Pursue goal g-k9ed545152f8cdfcc3d3f30bc. Its current definition, state, open work and budget are given at the start of every activation (<goal_activation>); eac",
+      "heartbeat_ms": 1793646334391
+    },
+    "last_runner": {
+      "runner_id": "rn-ed4ca7e82a0d4892",
+      "host": "${FIXTURE_HOST}",
+      "pid": 259358,
+      "lock_epoch": 1,
+      "at_ms": 1793646334393
+    },
+    "updated_at_ms": 1793646334391
+  },
+  "location_rev": 0
+}

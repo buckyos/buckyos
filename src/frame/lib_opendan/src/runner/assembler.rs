@@ -74,16 +74,6 @@ pub trait SessionAssembler: Send + Sync {
         templates: &InputTemplates,
         m: &InputMaterial,
     ) -> Result<Option<String>>;
-    /// The semi-subscription snapshot message placed before a controlled
-    /// input (`prompt.semi_subscription_snapshot`), for the pending state
-    /// versions selected for this batch. `None` when there are none.
-    async fn render_semi_subscription_snapshot(
-        &self,
-        templates: &InputTemplates,
-        events: &[EventView],
-    ) -> Result<Option<String>> {
-        default_snapshot(templates, events).await
-    }
     /// A path the agent can read in this session's runtime for the data
     /// object `obj_id`, when the host has one. Not a download: only an
     /// existing mapping.
@@ -168,35 +158,6 @@ fn strip_block_tag_lines(template: &str) -> String {
     out
 }
 
-/// Built-in snapshot body: one `<event>` element per state version.
-pub fn render_snapshot_events(events: &[EventView]) -> String {
-    events
-        .iter()
-        .map(render_event_xml)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-async fn default_snapshot(
-    templates: &InputTemplates,
-    events: &[EventView],
-) -> Result<Option<String>> {
-    if events.is_empty() {
-        return Ok(None);
-    }
-    let text = render_snapshot_events(events);
-    let rendered = match &templates.semi_subscription_snapshot {
-        Some(tpl) => {
-            render_template(
-                tpl,
-                json!({ "snapshot": { "events": events, "text": text } }),
-            )
-            .await?
-        }
-        None => format!("<semi_subscription_snapshot>\n{text}\n</semi_subscription_snapshot>"),
-    };
-    Ok(Some(rendered).filter(|t| !t.trim().is_empty()))
-}
 
 pub const AVOIDANCE_RULE: &str = "Other sessions of this agent may be running at the same time. Before modifying a file, object or artifact, check <active_sessions>: do not modify what another active session is writing. Wait for it (its state is visible), work on another part first, or explain the conflict in your report.";
 
@@ -473,7 +434,7 @@ impl SessionAssembler for DefaultAssembler {
             "active_sessions_text": blocks.active,
             "runtime_text": blocks.runtime,
             "background": m.background,
-            "background_text": super::background::render(&m.background),
+            "background_context": super::background::render(&m.background),
             "builtin": builtin,
         });
         let text = render_template(template, vars).await?;
@@ -612,15 +573,17 @@ impl Blocks {
         s.trim_end().to_string()
     }
 
-    /// The built-in template of every hook: the `<session_input>` element
-    /// with the hand-over state, the bootstrap task, the selected inputs and
-    /// the material computed for this batch.
+    /// The built-in template of every hook: the background lines that
+    /// changed, then the `<session_input>` element with the hand-over state,
+    /// the bootstrap task, the selected inputs and the material computed for
+    /// this batch.
     fn builtin(&self, m: &InputMaterial) -> String {
-        let mut s = format!(
+        let mut s = super::background::render(&m.background);
+        s.push_str(&format!(
             "<session_input hook=\"{}\" time=\"{}\">\n",
             escape_xml_attr(&m.hook),
             m.input.time
-        );
+        ));
         s.push_str(&self.handover);
         s.push_str(&self.task);
         if !m.input.text.is_empty() {

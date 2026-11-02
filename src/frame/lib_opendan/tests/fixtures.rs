@@ -370,10 +370,10 @@ async fn f09_semi_subscription() {
     let (_t, env, _) = load("09_semi_subscription");
     let b = session(&env, "work-fixture-sub-b");
     let llm = ScriptedLlm::new(|req, _| {
-        // The snapshot message comes first, the controlled input after it.
+        // The semi state is a background line of the controlled input.
         let users = user_texts(req);
-        assert_eq!(users.len(), 2, "{users:?}");
-        assert!(users[0].starts_with("<semi_subscription_snapshot>"), "{users:?}");
+        assert_eq!(users.len(), 1, "{users:?}");
+        assert!(users[0].starts_with("<<background_context>>"), "{users:?}");
         assert!(users[0].contains("work-fixture-sub-a is finished"), "{users:?}");
         text("seen")
     });

@@ -134,7 +134,7 @@ pub fn expectations() -> Value {
         { "file": "03_event_active_task.json", "type": "event", "needs_subscription": "watch-t1",
           "handling": "Input: candidate of a controlled input batch; without the subscription it is dropped (event_dropped: unsubscribed)" },
         { "file": "04_event_semi_object.json", "type": "event", "needs_subscription": "watch-obj",
-          "handling": "Observe: merged into state.pending_events and consumed; never triggers inference; shown as the semi_subscription_snapshot message before the next controlled input" },
+          "handling": "Observe: merged into state.pending_events and consumed; never triggers inference; shown as a background line of the next controlled input whose template places `background_context`" },
         { "file": "05_control_stop.json", "type": "control",
           "handling": "applied by the driver (stop_requested); never enters the context, no receipt" }
     ])
@@ -260,7 +260,6 @@ pub fn chat_background(records: &[(String, Value)]) -> Vec<libopendan::runner::b
         timezone: Some(CHAT_TIMEZONE),
         runtime_status: &runtime,
         active: &[],
-        children: &[],
         events: &events,
         hints: &[],
         tunnel: None,

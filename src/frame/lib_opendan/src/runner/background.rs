@@ -1,8 +1,18 @@
-//! The background context of the chat input format (UI sessions): one line
-//! per fact the conversation runs against — the time, the runtime, the
-//! work this session started, other conversations' topics, notifications
-//! shown, hints — and only the lines that changed since they were last
-//! shown (`SessionState.background_shown`, committed with the batch).
+//! The background context of an input batch: the semi-subscription state
+//! the session runs against, one line per fact, and only the lines that
+//! changed since they were last shown (`SessionState.background_shown`,
+//! committed with the batch).
+//!
+//! It is never an input of its own: it is material of the batch's input
+//! message (`background` / `background_context` of the input templates),
+//! and a line counts as shown only when the rendered message contains it.
+//! A template that does not place it leaves the session blind to it.
+//!
+//! A UI session's chat format has the time, the runtime, the work it
+//! started, other conversations' topics, state versions (notifications),
+//! hints; every session has its state versions and the new output of the
+//! tasks it follows. The end or need of a sub session is its event, never
+//! a line.
 //!
 //! ```text
 //! <<background_context>>
@@ -26,6 +36,10 @@ use super::input_view::EventView;
 pub struct BackgroundLine {
     pub key: String,
     pub text: String,
+    /// What is recorded once the line is shown (default: its text's
+    /// digest). A line without text only records it.
+    #[serde(skip)]
+    pub mark: Option<String>,
 }
 
 impl BackgroundLine {
@@ -33,6 +47,14 @@ impl BackgroundLine {
         Self {
             key: key.into(),
             text: text.into(),
+            mark: None,
+        }
+    }
+
+    pub(super) fn marked(key: impl Into<String>, text: impl Into<String>, mark: String) -> Self {
+        Self {
+            mark: Some(mark),
+            ..Self::new(key, text)
         }
     }
 }
@@ -40,7 +62,7 @@ impl BackgroundLine {
 /// Key of the time line (its digest is `<epoch ms>|<time zone>`).
 pub const KEY_TIME: &str = "time";
 
-/// What one batch's background is made of.
+/// What one UI batch's background is made of.
 pub struct BackgroundInput<'a> {
     pub sid: &'a str,
     pub now_ms: u64,
@@ -48,8 +70,6 @@ pub struct BackgroundInput<'a> {
     pub timezone: Option<&'a str>,
     pub runtime_status: &'a Value,
     pub active: &'a [ActiveSession],
-    /// Sub sessions whose end (or need) this batch delivers, as registered.
-    pub children: &'a [RegistryEntry],
     /// Semi-subscription state versions shown with this batch.
     pub events: &'a [EventView],
     pub hints: &'a [Hint],
@@ -84,42 +104,7 @@ pub fn local_time(ms: u64, tz: Option<&str>) -> (String, String) {
     }
 }
 
-fn outcome_name(o: Option<Outcome>) -> String {
-    o.map(|o| format!("{o:?}").to_lowercase())
-        .unwrap_or_else(|| "no outcome".into())
-}
-
-pub(super) fn child_line(e: &RegistryEntry) -> BackgroundLine {
-    let st = &e.status;
-    let sid = &e.session_id;
-    let status = one_line(&st.one_line_status, 200);
-    let text = if st.run_state == RunState::Finished {
-        let mut t = format!("work {sid}: finished ({})", outcome_name(st.outcome));
-        let status = status
-            .strip_prefix("finished:")
-            .unwrap_or(&status)
-            .trim()
-            .trim_end_matches(['.', '。', '!', '！', ';', '；']);
-        if !status.is_empty() {
-            t.push_str(&format!(" — {status}"));
-        }
-        t.push_str(&format!(". Read: agent-session read-session {sid} --report"));
-        t
-    } else if st.pending_decision.is_some() {
-        format!("work {sid}: waits for a decision")
-    } else if st.needs_input {
-        format!("work {sid}: waits for input — answer with agent-session post {sid} --msg <text>")
-    } else {
-        let mut t = format!("work {sid}: {}", st.run_state.as_str());
-        if !status.is_empty() {
-            t.push_str(&format!(" — {status}"));
-        }
-        t
-    };
-    BackgroundLine::new(format!("work:{sid}"), text)
-}
-
-/// Every candidate line of a batch, unfiltered.
+/// Every candidate line of a UI batch, unfiltered.
 pub fn lines(i: &BackgroundInput) -> Vec<BackgroundLine> {
     let mut out = Vec::new();
     let (time, zone) = local_time(i.now_ms, i.timezone);
@@ -168,9 +153,8 @@ pub fn lines(i: &BackgroundInput) -> Vec<BackgroundLine> {
     if let Some(t) = i.tunnel.filter(|t| !t.is_empty()) {
         out.push(BackgroundLine::new("channel", format!("channel: the user writes through {t}")));
     }
-    // The work this session started: what the registry says now; an end
-    // delivered in this batch wins over the active list.
-    let mut work: BTreeMap<String, BackgroundLine> = BTreeMap::new();
+    // The work this session started and that still runs (its end or need
+    // is its event).
     for a in i.active {
         if a.parent.as_deref() == Some(i.sid) {
             let summary = if a.activity.summary.is_empty() {
@@ -183,16 +167,9 @@ pub fn lines(i: &BackgroundInput) -> Vec<BackgroundLine> {
             if !summary.is_empty() {
                 t.push_str(&format!(" — {summary}"));
             }
-            work.insert(
-                a.session_id.clone(),
-                BackgroundLine::new(format!("work:{}", a.session_id), t),
-            );
+            out.push(BackgroundLine::new(format!("work:{}", a.session_id), t));
         }
     }
-    for e in i.children {
-        work.insert(e.session_id.clone(), child_line(e));
-    }
-    out.extend(work.into_values());
     for a in i.active {
         if a.parent.as_deref() == Some(i.sid) {
             continue;
@@ -228,27 +205,12 @@ pub fn lines(i: &BackgroundInput) -> Vec<BackgroundLine> {
             out.push(BackgroundLine::new(format!("session:{}", a.session_id), t));
         }
     }
-    for e in i.events {
-        // The time line carries the user's time zone.
-        if e.source.kind == "system" && e.source.id == USER_TIMEZONE_SOURCE_ID {
-            continue;
-        }
-        let notify = e.source.kind == "system"
-            && (e.source.id == NOTIFY_SOURCE_ID
-                || e.source.id.starts_with(&format!("{NOTIFY_SOURCE_ID}:")));
-        let text = if notify {
-            one_line(&e.summary, 600)
-        } else {
-            format!(
-                "{}:{} {}: {}",
-                e.source.kind,
-                e.source.id,
-                e.event,
-                one_line(&e.summary, 400)
-            )
-        };
-        out.push(BackgroundLine::new(format!("event:{}", e.key), text));
-    }
+    // The time line carries the user's time zone.
+    out.extend(event_lines(
+        i.events
+            .iter()
+            .filter(|e| !(e.source.kind == "system" && e.source.id == USER_TIMEZONE_SOURCE_ID)),
+    ));
     for h in i.hints {
         out.push(BackgroundLine::new(
             format!("hint:{}", h.id),
@@ -259,6 +221,31 @@ pub fn lines(i: &BackgroundInput) -> Vec<BackgroundLine> {
         ));
     }
     out
+}
+
+/// One line per semi-subscription state version (`event:<key>`): a
+/// notification as it is, anything else `<source> <event>: <summary>`.
+pub fn event_lines<'a>(events: impl IntoIterator<Item = &'a EventView>) -> Vec<BackgroundLine> {
+    events
+        .into_iter()
+        .map(|e| {
+            let notify = e.source.kind == "system"
+                && (e.source.id == NOTIFY_SOURCE_ID
+                    || e.source.id.starts_with(&format!("{NOTIFY_SOURCE_ID}:")));
+            let text = if notify {
+                one_line(&e.summary, 600)
+            } else {
+                format!(
+                    "{}:{} {}: {}",
+                    e.source.kind,
+                    e.source.id,
+                    e.event,
+                    one_line(&e.summary, 400)
+                )
+            };
+            BackgroundLine::new(format!("event:{}", e.key), text)
+        })
+        .collect()
 }
 
 pub(super) fn digest(text: &str) -> String {
@@ -300,13 +287,36 @@ pub fn select(
             }
             continue;
         }
-        let d = digest(&line.text);
-        if shown.get(&line.key) != Some(&d) {
+        let d = line.mark.clone().unwrap_or_else(|| digest(&line.text));
+        if !line.text.is_empty() && shown.get(&line.key) != Some(&d) {
             out.push(line.clone());
         }
         next.insert(line.key, d);
     }
     (out, next)
+}
+
+/// After the input is rendered: the keys of the selected lines its text
+/// really shows. The others are recorded as they were before (`next` from
+/// [`select`]), so a later input that places them shows them.
+pub fn settle(
+    next: &mut BTreeMap<String, String>,
+    before: &BTreeMap<String, String>,
+    selected: &[BackgroundLine],
+    text: &str,
+) -> Vec<String> {
+    let mut shown = Vec::new();
+    for l in selected {
+        if text.contains(&l.text) {
+            shown.push(l.key.clone());
+            continue;
+        }
+        match before.get(&l.key) {
+            Some(v) => next.insert(l.key.clone(), v.clone()),
+            None => next.remove(&l.key),
+        };
+    }
+    shown
 }
 
 /// The `<<background_context>>` block (empty without lines).
@@ -335,7 +345,6 @@ mod tests {
             timezone: Some("America/Los_Angeles"),
             runtime_status: Box::leak(Box::new(serde_json::json!({"kind": "native", "hostname": "pve", "cwd": "/s"}))),
             active: &[],
-            children: &[],
             events: &[],
             hints,
             tunnel: None,
@@ -381,5 +390,28 @@ mod tests {
         assert!(!map4.contains_key("hint:h1"));
         let (shown, _) = select(lines(&input(t0 + 8_000, &hints)), &map4, t0 + 8_000);
         assert_eq!(shown.iter().map(|l| l.key.as_str()).collect::<Vec<_>>(), ["hint:h1"]);
+    }
+
+    #[test]
+    fn a_line_counts_as_shown_only_when_the_input_contains_it() {
+        let before = BTreeMap::from([("task:t1".to_string(), "3,0".to_string())]);
+        let candidates = vec![
+            BackgroundLine::new("hint:h1", "hint: a"),
+            BackgroundLine::marked("task:t1", "task t1 · new output:\nb", "5,0".into()),
+            // Recorded, never shown.
+            BackgroundLine::marked("task:t2", "", "7,0".into()),
+        ];
+        let (selected, mut next) = select(candidates, &before, 0);
+        assert_eq!(selected.iter().map(|l| l.key.as_str()).collect::<Vec<_>>(), ["hint:h1", "task:t1"]);
+        assert_eq!(next["task:t2"], "7,0");
+        // A template that places only the hint.
+        let shown = settle(&mut next, &before, &selected, "- hint: a\nhello");
+        assert_eq!(shown, ["hint:h1"]);
+        assert_eq!(next["task:t1"], "3,0", "the new output comes again");
+        assert_eq!(next["hint:h1"], digest("hint: a"));
+        // A template that places none of it.
+        let (selected, mut next) = select(vec![BackgroundLine::new("hint:h2", "hint: b")], &BTreeMap::new(), 0);
+        assert!(settle(&mut next, &BTreeMap::new(), &selected, "hello").is_empty());
+        assert!(next.is_empty());
     }
 }

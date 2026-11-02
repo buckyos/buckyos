@@ -710,7 +710,6 @@ async fn gen(out: &Path) -> R<()> {
     }
     // 14. the input bus: records, rejections, renderings (no session state)
     {
-        use libopendan::runner::assembler::render_snapshot_events;
         use libopendan::runner::input_view::{event_view, EventView};
         use libopendan::runner::render_template;
         let d = scen("14_input_bus");
@@ -762,20 +761,17 @@ async fn gen(out: &Path) -> R<()> {
             let text = input_fixture::chat_text(&records, batch, *group);
             write(&format!("rendering/{file}"), text.as_bytes());
         }
-        // The semi event as the snapshot message of the next controlled input.
+        // The semi event as a background line of the next controlled input
+        // (`background_context`).
         let semi = &records[3].1;
         let SessionInput::Event(ev) = parse_logical_record(semi).map_err(|e| e.to_string())? else {
             return Err("fixture record 04 is not an event".into());
         };
         let views: Vec<EventView> = vec![event_view(semi["key"].as_str().unwrap(), &ev)];
-        let snapshot = format!(
-            "<semi_subscription_snapshot>\n{}\n</semi_subscription_snapshot>",
-            render_snapshot_events(&views)
+        let background = libopendan::runner::background::render(
+            &libopendan::runner::background::event_lines(&views),
         );
-        write(
-            "rendering/semi_subscription_snapshot.txt",
-            snapshot.as_bytes(),
-        );
+        write("rendering/background_context.txt", background.as_bytes());
         let v = json!({
             "scenario": "input_bus",
             "description": "Hand-written Session Input Bus records (opendan.session_input/3): what a consumer does with each, why the rejected ones are rejected, and the byte-exact text of the built-in formats and the example templates for one batch.",
@@ -795,7 +791,7 @@ async fn gen(out: &Path) -> R<()> {
                 "vars": "rendering/vars.json",
                 "input_text": "rendering/input_text.xml",
                 "on_input_builtin": "rendering/on_input_builtin.txt",
-                "semi_subscription_snapshot": { "of": "04_event_semi_object.json", "text": "rendering/semi_subscription_snapshot.txt" },
+                "background_context": { "of": "04_event_semi_object.json", "text": "rendering/background_context.txt" },
                 "templates": input_fixture::TEMPLATES.iter().map(|(n, _)| json!({
                     "template": format!("rendering/templates/{n}.tpl"),
                     "output": format!("rendering/templates/{n}.out"),

@@ -117,7 +117,7 @@ payload 中的未知字段忽略（producer 可以比 consumer 新）；未知 c
 | `control` | 由驱动者按投递顺序应用并提交 | 不是 Agent 输入 |
 | `msg` | 留在队列，作为受控输入的候选 | 开启新 Turn 或并入未关闭的 Turn |
 | `event`，匹配 active 订阅 | 记入 `inputs[src].accepted`，留在队列作候选 | 同 msg |
-| `event`，匹配 semi 订阅 | 合并进 `state.pending_events`，消费 | 不触发推理；在下一次受控输入之前渲染为半订阅快照 |
+| `event`，匹配 semi 订阅 | 合并进 `state.pending_events`，消费 | 不触发推理；作为下一次受控输入的背景行（§6.6），模板不放置就不可见 |
 | `event`，`source = task:<id>` 且该 task 在 `state.watched_tasks` 中 | 消费，`event_dropped{reason: watched_task}` | 只提前触发一次查询；task 的结束按 §9 作为 task 结果输入交回 |
 | `event`，没有匹配的有效订阅 | 消费，`event_dropped{reason: unsubscribed}` | 无；timer、系统事件没有兜底例外 |
 
@@ -156,7 +156,7 @@ payload 中的未知字段忽略（producer 可以比 consumer 新）；未知 c
 
 - 合并键 `(subscription_id, source)`。两侧都有 `seq` 时，较旧的版本不能覆盖仍保留的较新版本；没有 `seq` 时按消费顺序更新，用 `key` 区分版本。同一 `key` 再次到达不改变状态。
 - 空闲时保留。只在被注入（由 receipt 精确清理）、取消订阅或被新版本覆盖时清除；Session finished 时清空。
-- “已接收保存”不等于“已注入上下文”：保存与消费同一次提交，receipt 只记录实际注入的版本。
+- “已接收保存”不等于“已注入上下文”：保存与消费同一次提交，receipt 只记录输入消息里实际出现的版本。
 - 拉模式（订阅其它 session）：内置 bridge 比较登记表 `status.rev` 与 `subscription_cursors[sub].rev`，被 watch 的字段变化时合成 `AgentEvent{source: session:<sid>, seq: rev}`（key `session:<sid>@<rev>`）并入 `pending_events`；拉模式订阅总是 Observe。
 
 ## 6. Input 链路：从记录到 user 消息
@@ -169,7 +169,7 @@ InputView (input.*)
    │ 渲染      behavior 的 on_init / on_input / on_context_switch 模板（缺省内建）；纯函数
    ▼
 文本 + 媒体块
-   │ 落盘      1–2 条 user AiMessage 与 receipt 写进同一份快照
+   │ 落盘      一条 user AiMessage 与 receipt 写进同一份快照
    ▼
 AiMessage{role: user}              恢复、接手、压缩都从快照与 worklog 读取，不回到总线重新渲染
 ```
@@ -221,13 +221,13 @@ AiMessage{role: user}              恢复、接手、压缩都从快照与 workl
 
 属性值转义 `& < > "`。只有一条纯文本消息时也使用 `<msg>`。`machine` 与 `ServiceDid` 引用不在内建渲染中出现。
 
-内建模板（UI Session 除外，见 §6.5）：`<session_input hook="…" time="<批次时间>">` 元素，依次包含交接状态（`<context_switch to>`、`<process_result>`、`<sub_task>`）、bootstrap 的 `<task>` / `<scope>`、`input.text`、`<perceptions>`、`<hints>`、活动 session 列表、`<runtime>`。半订阅快照的内建形式：`<semi_subscription_snapshot>` 内每个状态版本一个 `<event>` 元素（终结版本在前）。
+内建模板（UI Session 除外，见 §6.5）：`<session_input hook="…" time="<批次时间>">` 元素，依次包含交接状态（`<context_switch to>`、`<process_result>`、`<sub_task>`）、bootstrap 的 `<task>` / `<scope>`、`input.text`、`<perceptions>`、`<hints>`、活动 session 列表、`<runtime>`；有变化的背景行时，`<<background_context>>` 块放在 `<session_input>` 之前（§6.6）。
 
-协议时间与内建渲染一律 UTC。用户时区与 Session 绑定（`session.timezone`，IANA 名），其初始值与后续变化经隐式 semi 订阅进入半订阅快照，不取 Runner 所在机器的时区，变化本身不唤醒推理。
+协议时间与内建渲染一律 UTC。用户时区与 Session 绑定（`session.timezone`，IANA 名），其初始值与后续变化经隐式 semi 订阅进入半订阅状态，不取 Runner 所在机器的时区，变化本身不唤醒推理。
 
 ### 6.3 自定义模板
 
-模板引擎是 `agent_tool::prompt_engine`（upon，`__EXEC__` 关闭）。只含块标签（`{% for %}`、`{% if %}`、`{% endfor %}` …）的行不产生输出行；输出去掉首尾空白。可用变量：`input.{hook, time, messages[], events[], items[], text, count}`（视图字段见 `runner/input_view.rs`；条件用布尔字段 `msg.is_group`、`msg.mentions.me`、`msg.context`、`ev.terminal`、`item.is_msg`）、`session.*`、`runtime.*`、`handover`、各内建块（`task_text`、`handover_text`、`perceptions_text`、`hints_text`、`active_sessions_text`、`runtime_text`、`builtin`）。
+模板引擎是 `agent_tool::prompt_engine`（upon，`__EXEC__` 关闭）。只含块标签（`{% for %}`、`{% if %}`、`{% endfor %}` …）的行不产生输出行；输出去掉首尾空白。可用变量：`input.{hook, time, messages[], events[], items[], text, count}`（视图字段见 `runner/input_view.rs`；条件用布尔字段 `msg.is_group`、`msg.mentions.me`、`msg.context`、`ev.terminal`、`item.is_msg`）、`session.*`、`runtime.*`、`handover`、各内建块（`task_text`、`handover_text`、`perceptions_text`、`hints_text`、`active_sessions_text`、`runtime_text`、`builtin`）、背景 `background` / `background_context`（§6.6）。
 
 命名格式 `{{ value | render_format: "名称" }}`（未知格式或对象形状不符是模板错误；声明支持空值的格式对空值输出空串）：
 
@@ -250,7 +250,7 @@ AiMessage{role: user}              恢复、接手、压缩都从快照与 workl
 
 ### 6.5 UI Session 的 chat 格式
 
-`session.kind = ui`（一对一与群聊的会话 Session）的内建模板是 chat 格式：只有变化了的背景行，然后是输入本身。没有 `<session_input>` 包装、`<task>`、`<runtime>` JSON、`<active_sessions>`，半订阅状态也不单独成一条快照消息（并入背景行）。
+`session.kind = ui`（一对一与群聊的会话 Session）的内建模板是 chat 格式：只有变化了的背景行，然后是输入本身。没有 `<session_input>` 包装、`<task>`、`<runtime>` JSON、`<active_sessions>`。
 
 ```text
 <<background_context>>
@@ -266,11 +266,8 @@ AiMessage{role: user}              恢复、接手、压缩都从快照与 workl
 事件批次（没有消息）：
 
 ```text
-<<background_context>>
-- work work-12481d…: finished (succeeded) — 1 P2 issue found. Read: agent-session read-session work-12481d… --report
-<</background_context>>
 <<inputs>>
-<event key="child:work-12481d…:finished@26" source="session:work-12481d…" event="finished" seq="26" terminal="true">sub session work-12481d… finished (succeeded): 1 P2 issue found</event>
+<event key="child:work-12481d…:finished@26" source="session:work-12481d…" event="finished" seq="26" terminal="true">sub session work-12481d… finished (succeeded): 1 P2 issue found — read: agent-session read-session work-12481d… --report</event>
 <</inputs>>
 ```
 
@@ -281,21 +278,31 @@ AiMessage{role: user}              恢复、接手、压缩都从快照与 workl
 | `time` | `current_time <用户时区的本地时间> (<IANA 名>)`；没有 `session.timezone` 时 UTC | 批次时间 + `session.timezone` |
 | `runtime` | `runtime <kind> on <hostname>, cwd <cwd>` | 运行时状态 |
 | `channel` | 本批最后一条消息经过的隧道 DID | `delivery.tunnel` |
-| `work:<sid>` | 本 Session 创建的子 Session：运行中 → 状态与活动摘要；本批送达其结束 → `finished (<outcome>) — <一行状态>. Read: agent-session read-session <sid> --report`；等输入 / 等决定 | 活动视图（`parent = 本 sid`）、本批的子 Session 事件 |
+| `work:<sid>` | 本 Session 创建、仍在运行的子 Session：状态与活动摘要。它的结束、等输入、等决定是它的事件，不成行 | 活动视图（`parent = 本 sid`） |
 | `ui:<sid>` | 其它 UI Session 的 topic 标题 | 活动视图（登记表 `status.topic`） |
 | `session:<sid>` | 与本 Session 目标相同或范围重叠的其它活动 Session（避让规则） | 活动视图 |
 | `event:<key>` | 半订阅状态版本：`_notify` 的通知行原样（`[notify <id>] …`）；其它为 `<source> <event>: <summary>`。用户时区事件不单列（由 `time` 行承载） | `pending_events`（同 §5 的选择与预算） |
 | `hint:<id>` | `hint: <sentence> (noticed <time>)` | 按 `state.topic.tags` 召回的 hints |
 
 - **只显示变化的行**：`state.background_shown` 记录每个 key 上次显示时的内容摘要；摘要变了才显示。`time` 行另按 5 秒粒度：距上次显示不足 `BACKGROUND_TIME_STEP_MS = 5000` 且时区未变时不显示。本批候选里没有的 key 从记录中删除（再出现时重新显示）。所有行都没有变化时整个 `<<background_context>>` 块省略。
-- 新记录随批次 receipt 提交（`extra.background`，见 §7），恢复时与 receipt 一起应用；显示了哪些半订阅版本仍记在 receipt 的 `events` 里。
+- 新记录随批次 receipt 提交（`extra.background`，见 §7），恢复时与 receipt 一起应用；显示了哪些半订阅版本仍记在 receipt 的 `events` 里。只有输入消息里实际出现的行才记为已显示（§6.6）。
 - **消息**：一对一时只写原文，不写 key / from / time；附件每个一行 `[attachment <media> "<name>" -> <path 或 ObjId>]`；回复 / 编辑等关系有才写一行（`(replying to <ObjId>)`）。一个批次有多条消息时每条前加一行 `[<发言人> <本地时间 HH:MM:SS>]`。**群聊**保留 §6.2 的 `<msg>` 元素（发言人与 `context="true"` 是群聊语义的根本），与事件一起放在 `<<inputs>>` 里。
-- **事件**：保留 `<event>` 元素（属性是用 CLI 回查的依据），放在 `<<inputs>> … <</inputs>>` 中、消息原文之前；子 Session 事件的摘要对 UI 父 Session 只有一行，不附 `report:`。
-- 交接块（`<context_switch>` 等）与 TodoList 视图有时照旧放在最前。自定义模板可用 `background`（行数组）与 `background_text`（整块文本）。
+- **事件**：保留 `<event>` 元素（属性是用 CLI 回查的依据），放在 `<<inputs>> … <</inputs>>` 中、消息原文之前；子 Session 事件的摘要对 UI 父 Session 只有一行，不附 `report:`，结束时末尾附 `— read: agent-session read-session <sid> --report`。
+- 交接块（`<context_switch>` 等）与 TodoList 视图有时照旧放在最前。自定义模板可用 `background`（行数组）与 `background_context`（整块文本）。
+
+### 6.6 背景是输入的素材
+
+半订阅永远不是一条独立的输入，只能在输入里被使用：每个受控输入批次算出自上次显示以来变化的背景行，作为模板变量 `background`（行数组，`{key, text}`）与 `background_context`（整块 `<<background_context>>` 文本，无变化时为空串）交给该批次的模板。模板不引用它，半订阅对这个 Session 就不可见。没有单独的快照消息，工具结果之后也不注入背景。
+
+- 候选行：UI Session 为 §6.5 的各行；其它 Session 为半订阅状态版本（`event:<key>`，格式同 §6.5，用户时区事件也成行）；所有 Session 另有在跟的运行中 task 的新输出（`task:<id>`：`task <id> · <命令摘要> · running <时长> · new output:` 加自上次显示以来的新输出，最多 2 KB，超出只留末尾）。
+- 子 Session 的结束、等输入、等决定，task 的结束，Todo 的状态都不成行：它们是事件（或调用结果、命令输出）。
+- 已显示的判定：渲染后的输入文本包含该行文本才算显示。未出现的行保持原记录（下次放置它的输入照样显示），未出现的状态版本不进 receipt 的 `events`，留在 `pending_events`。
+- `task:<id>` 的记录值是已显示到的输出位置 `<stdout 字节>,<stderr 字节>`；调用转为 task 后的第一个推理边界记下当时位置（调用结果已显示到这里），不产生消息。
+- 内建模板（§6.2、§6.5）都放置背景；Jarvis 的 `plan_simple` / `work_simple` 在 `on_input` 首行写 `{{ background_context }}`。
 
 ## 7. 输入 receipt 与提交
 
-每个批次由有序的 1–2 条 user 消息组成：有待注入的半订阅状态时先是快照消息，再是受控输入消息，一次注入，中间不推理、不发布快照。receipt 与消息写在**同一份**快照的 `state.host.libopendan.input_receipts[]`：
+每个批次是一条 user 消息（Goal Session 开启 Activation 的批次前面另有一条 Goal 头部），一次注入，中间不推理、不发布快照。receipt 与消息写在**同一份**快照的 `state.host.libopendan.input_receipts[]`：
 
 ```jsonc
 { "run_id": "…", "input_seq": 2, "turn": 5, "opens_turn": true,
@@ -303,17 +310,16 @@ AiMessage{role: user}              恢复、接手、压缩都从快照与 workl
   "inputs": [ { "src": "q", "index": 121, "key": "cymsg:…", "kind": "msg" } ],
   "events": [ { "subscription_id": "watch-obj", "source": { "kind": "object", "id": "doc-1" }, "seq": 8, "key": "obj:doc-1:8" } ],
   "reply":  { "route": "message", "to": "did:bns:dev-team", "to_session": null, "kind": "group_msg", "reply_to": "cymsg:…", "tunnel": null },
-  "parts": [ { "part": "semi_subscription_snapshot", "pos": { "kind": "accumulated", "index": 6 }, "text": "<semi_subscription_snapshot>…" },
-             { "part": "input",                      "pos": { "kind": "accumulated", "index": 7 }, "text": "<session_input hook=\"on_input\" …" } ],
+  "parts": [ { "part": "input", "pos": { "kind": "accumulated", "index": 7 }, "text": "<<background_context>>\n- object:doc-1 changed: …\n<</background_context>>\n<session_input hook=\"on_input\" …" } ],
   "bootstrap": false, "after_step": 7, "extra": { "continuation": true }, "at_ms": 0 }
 ```
 
-- `extra.background`（chat 格式）：本批之后的 `state.background_shown`，应用 receipt 时整体替换。
-- 批次 ID = `(run_id, input_seq)`，每个 run 从 1 开始连续。`opens_turn` 只看提交时有没有打开的 Turn；半订阅快照不独立计 Turn。
+- `extra.background`：本批之后的 `state.background_shown`，应用 receipt 时整体替换。
+- 批次 ID = `(run_id, input_seq)`，每个 run 从 1 开始连续。`opens_turn` 只看提交时有没有打开的 Turn。
 - `inputs`：本批消费的 msg 与 Input event。Runner 自己合成的输入（Session 在跟的 task 结束，§9）用 `src = "_task"`、`key = task:<task_id>:terminal`，没有消费位置。
-- `events`：快照消息实际注入的状态版本；应用时按 `(subscription_id, source, key)`（有 `seq` 时一并核对）从 `pending_events` 精确清除。处理 v7 期间收到 v8，提交 v7 不删除 v8。
-- `reply`：本批提交后的默认回复路径（`state.reply`）：本批按消费顺序最后一条 msg 的来路（一对一 → 原发送者；群消息 → 原群；带 `to_session`、`tunnel`、`reply_to`）；本批没有 msg 时沿用原值；从未有过 msg 而有父 Session 时为 `{"route": "parent_session", "session_id": …}`。event、control、快照、交接本身不改变它。
-- `parts[].pos`：function call → `accumulated`（两条相邻）；behavior 首个 Step 之前 → `request_input`；已有 Step → 两个 part 都是 `step{index}`（并入该 Step 的 `next_user_message`）。`text` 是该消息的文本块；媒体块按 `pos` 在同一份快照中读取。
+- `events`：输入消息里实际出现（作为背景行）的状态版本；应用时按 `(subscription_id, source, key)`（有 `seq` 时一并核对）从 `pending_events` 精确清除。处理 v7 期间收到 v8，提交 v7 不删除 v8。
+- `reply`：本批提交后的默认回复路径（`state.reply`）：本批按消费顺序最后一条 msg 的来路（一对一 → 原发送者；群消息 → 原群；带 `to_session`、`tunnel`、`reply_to`）；本批没有 msg 时沿用原值；从未有过 msg 而有父 Session 时为 `{"route": "parent_session", "session_id": …}`。event、control、背景、交接本身不改变它。
+- `parts[].pos`：function call → `accumulated`（Goal 头部与输入相邻）；behavior 首个 Step 之前 → `request_input`；已有 Step → 各 part 都是 `step{index}`（并入该 Step 的 `next_user_message`）。`text` 是该消息的文本块；媒体块按 `pos` 在同一份快照中读取。
 - 应用 receipt（幂等：`input_seq ≤ live_run.applied_input_seq` 忽略；必须恰好是下一批；`opens_turn = false` 时 `turn` 必须等于 `open_turn.index`）：更新 `live_run.turns` 与 `open_turn`，标记 `inputs` 已消费并记入 `recent_keys`，清理 `events`，还原 `reply`，置 `bootstrap_done`，`extra.continuation` 清除 `internal_continuation` / `process_result`，`run_state = running`。
 - **提交顺序**：① 快照 fsync ② run.json 发布快照指针与 `host_commit_pending = input_seq` ③ state.json 应用 receipt ④ 清门槛 ⑤ 确认输入源。④ 之前不得推理或调用工具；可恢复提交之前不出队。
 - **恢复**：先按快照中的 receipt 补齐 state（不重新渲染、不重新注入、不读总线），再取新输入；state 已应用而快照缺失的批次 → RecoveryBlocked。

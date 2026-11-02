@@ -1003,7 +1003,7 @@ Agent 委派工作后，当前推理可以已经结束，而业务目标尚未�
 
 **模式一保留的是调用依赖。** Runtime 必须知道哪个 Task 属于哪个调用，结果交回时带上调用标识；事件通知只提示检查依赖，不能直接充当可信结果。调用内的等待预算到期时返回“仍在运行”或未知状态，不能伪造完成，也不意味着底层 Task 已取消。Task 的结束作为新输入回到同一次执行，不改写调用当初已经得到的结果。
 
-实现上模式一是“任务 + 隐式订阅”：工具结果一带 task id，会话就隐式订阅它——结局（完成 / 失败 / 未知）是 Active 事件，以 `<<task_result>>` 打开下一个 Turn；运行中的新输出是半订阅，只在每次推理前的 `<<background_context>>` 里呈现增量，自己不触发推理。模型不再调用等待类工具（Session 宿主不提供 `wait_task` / `task wait`），省掉那一次推理。
+实现上模式一是“任务 + 隐式订阅”：工具结果一带 task id，会话就隐式订阅它——结局（完成 / 失败 / 未知）是 Active 事件，以 `<<task_result>>` 打开下一个 Turn；运行中的新输出是半订阅，只在下一个输入的 `<<background_context>>` 里呈现增量，自己不触发推理。模型不再调用等待类工具（Session 宿主不提供 `wait_task` / `task wait`），省掉那一次推理。
 
 这是一种由工具执行机制承接的等待，适合有界执行。它的主要风险是上下文陈旧：等待前读过的文件、对象或权限可能已经变化，回到同一次执行不会自动刷新这些已成功的读取。选择模式时要考虑信息有效期，不能只用固定的秒数或分钟数划线。
 
@@ -1041,7 +1041,7 @@ Agent 委派工作后，当前推理可以已经结束，而业务目标尚未�
 
 **Work 的 timer 是隐式订阅。** 内建 `work` 模板带 `_task_watch_timer`（`timer:task_watch`，Active）：会话在 Waiting 中等自己启动的工作（在跟的 task / 要听取的子 Session）且没有打开的 Turn 时，runner 每 `policy.tick_secs`（缺省 30 秒，`agent.toml [session.work] tick_secs` 可配，0 关闭）为它产生一条 `tick` 输入，打开一个 Turn 让模型说一句现状；不门控，省推理靠调大间隔。timer 由 runner 产生，不需要输入队列，也不经 Timer bridge。
 
-**背景统一为推理前注入。** behavior `[input] background = "before_inference"` 时，宿主在每次推理前（Turn 的第一次推理、每批工具结果之后）检查候选行：在跟 task 自上次呈现以来的新输出（每 task 一行，最多 2 KB，只给增量）、未绑定 Todo 的子 Session；有变化就给出 `<<background_context>>`，没有就不给。有输入批次时这个块放在输入消息最前面，与输入同一条消息；只有工具结果之后才单独注入一条。Todo 没有背景行：它绑定的 work session 的结束 / 需要输入以子 Session 事件到达，不再以 Todo 状态重复一遍。task 的运行中变化只走这条路，不进 `pending_events`。
+**半订阅只在输入里被使用。** 半订阅永远不成为一条独立的输入：每个受控输入批次算出自上次显示以来变化的背景行（半订阅状态版本、在跟 task 的新输出——每 task 一行，最多 2 KB，只给增量；UI Session 另有时间、runtime、运行中的子 Session、hints 等），作为模板变量 `background_context` 交给该批次的模板；模板不引用，半订阅对这个 Session 就不可见，只有实际渲染进输入消息的行才记为已显示。没有单独的快照消息，工具结果之后也不注入。子 Session 的结束 / 需要输入、task 的结束是事件，不成背景行；Todo 只是创建 work session 的辅助，没有自己的事件或背景行。task 的运行中变化只走这条路，不进 `pending_events`。
 
 Session / behavior 的配置需要分别表达以下职责，具体字段不在本架构中冻结：
 
@@ -1468,8 +1468,8 @@ Context Fork、Work 执行、Final Report、已有 Task 等待和 Agent Memory �
 | 订阅与事件身份 | `subscriptions` 支持 `active / semi`，来源为 `session / object_event / task / timer / system`；`subscribe / unsubscribe` 控制修改配置。总线区分 `msg / event / control`。 | 复用结构化事件与订阅；完善业务意图到订阅、失效、超时及恢复的合同，不把自然语言意图当作已登记。 |
 | 串行推进与批次 | Runner 持 Session lease；active 事件留在输入总线，支持 `single / batch`，默认 batch；semi 另存 `state.pending_events`。 | 保持单执行者与逻辑队列分工，补齐跨节点协调，按业务语义设定合并及消费策略。 |
 | Task 修订 | 尚无修订概念；订阅已支持 `task:<task_id>` 来源（`SubscriptionSource::Task`），可承载任务事件。 | 新增 Task 修订的数据与授权；Work 创建时由 Runtime 订阅自身 Task，子 Session 由父 Session 按子对象范围订阅；修订必达，不受 Memory 预算截断；Final Report 记录最后观察的修订编号。 |
-| 半订阅时机 | 总线 Semi 事件在受控输入前展示（`semi_subscription_snapshot`）；behavior 的 `[input] background = "before_inference"`（work_simple、plan_simple）在每次推理前给出 `<<background_context>>`（在跟 task 的新输出增量、未绑定 Todo 的子 Session）：有输入批次时并入输入消息，工具结果之后单独注入。 | 扩展为默认每次推理前观察，包括工具返回后的继续推理；明确不同推理模式中的挂接位置与显式关闭方式。 |
-| 半订阅载体 | `prompt.semi_subscription_snapshot` 渲染独立的 snapshot user message，与其后的受控输入同批提交。主动事件通过 `input.events / input.items` 等视图渲染。 | 保留来源可辨性与原子提交，收敛与当前输入关联的环境 block / 观察材料格式；当前独立消息不等于目标 UI 语义已完成。 |
+| 半订阅时机 | 每个受控输入批次计算变化的背景行（半订阅状态版本、在跟 task 的新输出；UI Session 另有时间、runtime、运行中的子 Session、hints 等）；工具结果之后不观察、不注入。 | 原则：半订阅永远不成为一条独立的输入，只在输入里被使用。工具返回后继续推理时的观察（§6.3.1“可随 function call result 一起装配”）待定，当前不做。 |
+| 半订阅载体 | 输入模板变量 `background_context`（`<<background_context>>` 块，内建模板都放在输入消息最前面），与受控输入同一条消息、同一 receipt；模板不引用即不可见，只有实际渲染出的行记为已显示。主动事件通过 `input.events / input.items` 等视图渲染。 | 保留来源可辨性（`event:<key>` 行）与原子提交。 |
 | 合并与观察进度 | semi 按 `(subscription_id, source)` 分组；`latest / terminal` 分槽，槽内比较版本，终态不被非终态覆盖。仅按 receipt 清理实际展示版本。active 没有同等状态合并，当前也没有通用语义 Override。 | 复用版本与精确确认机制；区分状态维度、独立要求及显式纠正关系，再实现适用事件的 Coalesce / Override。 |
 | Topic 与成本控制 | 有 Topic 字段、显式/隐式订阅和每批变化预算，已有默认用户时区半订阅；未形成旁路 LLM 维护 Topic、自动重订阅与统一相关 Memory 观察链路。 | 实现 §12.10 的范围选择、增量观察、变化幅度与间隔控制，保证相关新感知及时可见。 |
 | 事件桥接与超时 | 已有 Timer / KEvent bridge；Timer 按 `every_secs` 生成事件，再由订阅决定路由。Session 状态拉取目前进入半订阅；在跟的 Task 也支持无通知时轮询查询。 | 补齐需要主动响应的状态来源与超时核对；不能将定时轮询或所有 Session 订阅描述成已经保证主动唤醒。 |

@@ -107,7 +107,6 @@ pub fn parse_behavior(name: &str, path: &Path) -> Result<BehaviorConfig> {
         &mut cfg.prompt.on_init,
         &mut cfg.prompt.on_input,
         &mut cfg.prompt.on_context_switch,
-        &mut cfg.prompt.semi_subscription_snapshot,
     ] {
         if let Some(text) = t {
             *text = expand_includes(text, base, 0)?;

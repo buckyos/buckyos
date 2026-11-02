@@ -736,10 +736,11 @@ pub struct SessionState {
     /// progress.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal: Option<super::goal::GoalSessionState>,
-    /// Chat input format (UI sessions): the background context lines last
-    /// shown, `key → digest` (`time` → the epoch ms it was shown at). A
-    /// line is shown again only when its digest changes; the time line at
-    /// most every [`BACKGROUND_TIME_STEP_MS`].
+    /// The background context lines last shown in an input, `key →
+    /// digest` (`time` → `<epoch ms>|<zone>`; `task:<id>` → how far its
+    /// output was shown, `<stdout bytes>,<stderr bytes>`). A line is shown
+    /// again only when its digest changes; the time line at most every
+    /// [`BACKGROUND_TIME_STEP_MS`].
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub background_shown: BTreeMap<String, String>,
     /// Multi-Turn Work Sessions: the timer that opens a Turn while the

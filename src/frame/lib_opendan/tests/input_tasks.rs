@@ -643,11 +643,13 @@ async fn user_timezone_is_a_default_semi_subscription() {
     let llm = ScriptedLlm::new(|req, n| {
         let users = user_texts(req);
         let k = users.len();
+        // The zone is a background line of the input itself.
+        assert!(users[k - 1].starts_with("<<background_context>>"), "{users:?}");
         if n == 0 {
             assert!(users[0].contains("Asia/Shanghai"), "{users:?}");
-            assert!(users[1].contains("Z\">"), "UTC with a Z suffix: {users:?}");
+            assert!(users[0].contains("Z\">"), "UTC with a Z suffix: {users:?}");
         } else {
-            assert!(users[k - 2].contains("America/Los_Angeles"), "{users:?}");
+            assert!(users[k - 1].contains("America/Los_Angeles"), "{users:?}");
         }
         text("ok")
     });

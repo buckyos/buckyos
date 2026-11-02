@@ -853,10 +853,11 @@ async fn the_drivers_own_stop_signal_stops_the_session() {
 }
 
 /// E14: semi-subscription state that arrives while a run executes is shown
-/// right before the hand-over input of the context being entered — one
-/// receipt, the snapshot first — and only that version is cleared.
+/// as a background line at the head of the hand-over input of the context
+/// being entered — one message, one receipt — and only that version is
+/// cleared.
 #[tokio::test]
-async fn semi_snapshot_precedes_a_context_switch_input() {
+async fn semi_state_heads_a_context_switch_input() {
     let env = Env::new();
     let mut spec = work_spec("plan, then review");
     spec.prompt.llm_context = behavior_llm_context();
@@ -883,10 +884,10 @@ async fn semi_snapshot_precedes_a_context_switch_input() {
         }
         _ => {
             let users = user_texts(req);
-            let (snapshot, input) = (&users[users.len() - 2], &users[users.len() - 1]);
+            let input = &users[users.len() - 1];
             assert!(
-                snapshot.starts_with("<semi_subscription_snapshot>") && snapshot.contains("doc is at v7"),
-                "{snapshot}"
+                input.starts_with("<<background_context>>") && input.contains("doc is at v7"),
+                "{input}"
             );
             assert!(input.contains("hook=\"on_context_switch\""), "{input}");
             text("<response><report end=\"true\"><![CDATA[reviewed]]></report></response>")
@@ -1042,11 +1043,11 @@ async fn progress_is_observed_and_the_parent_waits_for_children() {
     let csid = child.sid().to_string();
     let llm = ScriptedLlm::new(move |req, _| {
         let users = user_texts(req);
-        let (snapshot, input) = (&users[users.len() - 2], &users[users.len() - 1]);
+        let input = &users[users.len() - 1];
         assert!(
-            snapshot.contains("<semi_subscription_snapshot>")
-                && snapshot.contains(&format!("sub session {csid} is waiting")),
-            "{snapshot}"
+            input.starts_with("<<background_context>>")
+                && input.contains(&format!("sub session {csid} is waiting")),
+            "{input}"
         );
         assert!(
             input.contains("event=\"needs_input\"") && input.contains(&format!("source=\"session:{csid}\"")),

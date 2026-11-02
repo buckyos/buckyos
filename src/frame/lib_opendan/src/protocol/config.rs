@@ -497,9 +497,6 @@ pub struct InputTemplates {
     /// Hand-over into the target context (switch, sub context, its return).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_context_switch: Option<String>,
-    /// The snapshot message placed before a controlled input.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub semi_subscription_snapshot: Option<String>,
     /// Goal Sessions: the Goal header placed before the first batch of an
     /// Activation (variable `goal`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -516,10 +513,6 @@ impl InputTemplates {
                 .on_context_switch
                 .clone()
                 .or_else(|| base.on_context_switch.clone()),
-            semi_subscription_snapshot: self
-                .semi_subscription_snapshot
-                .clone()
-                .or_else(|| base.semi_subscription_snapshot.clone()),
             goal_activation: self
                 .goal_activation
                 .clone()
@@ -542,8 +535,6 @@ pub struct BehaviorPrompt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_context_switch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub semi_subscription_snapshot: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal_activation: Option<String>,
 }
 
@@ -557,7 +548,6 @@ impl BehaviorPrompt {
             on_init: self.on_init.clone(),
             on_input: self.on_input.clone(),
             on_context_switch: self.on_context_switch.clone(),
-            semi_subscription_snapshot: self.semi_subscription_snapshot.clone(),
             goal_activation: self.goal_activation.clone(),
         }
     }
@@ -590,19 +580,6 @@ pub enum InputMedia {
 /// Image / document blocks one batch may carry (`input.media = inline`).
 pub const MAX_INLINE_MEDIA: usize = 8;
 
-/// What the host shows a context besides its inputs.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum InputBackground {
-    /// Only what an input batch carries (the chat format's background).
-    #[default]
-    Batch,
-    /// Before every inference (the first of a Turn included): the lines
-    /// that changed since they were last shown — the new output of the
-    /// tasks the run follows, its sub sessions, its TodoList.
-    BeforeInference,
-}
-
 /// Input consumption policy of a context (separate from its templates).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -611,8 +588,6 @@ pub struct InputSection {
     pub mode: InputMode,
     #[serde(default)]
     pub media: InputMedia,
-    #[serde(default)]
-    pub background: InputBackground,
 }
 
 impl InputSection {

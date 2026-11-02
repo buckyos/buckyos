@@ -25,8 +25,8 @@ use serde_json::json;
 
 /// V-config: the real package's classes and behavior. A Work is a plan
 /// session by default; the conversation's plan (`plan_simple`) has a queue
-/// and a rare tick; the plan reads its workspace only and is shown the
-/// background before every inference; the model receives `intent` as a
+/// and a rare tick; the plan reads its workspace only and its inputs place
+/// the background; the model receives `intent` as a
 /// required argument of every function (the strict report included) and no
 /// XML action protocol; there is no behavior loop in the package any more.
 #[tokio::test]
@@ -49,7 +49,7 @@ async fn the_plan_simple_class_and_its_function_contract() {
     assert_eq!(b.capabilities.workspace, Some(WorkspaceAccess::ReadOnly));
     let entry = b.to_entry("plan_simple", &json!({}), true).unwrap();
     assert!(entry.call_intent);
-    assert_eq!(entry.input.unwrap().background, InputBackground::BeforeInference);
+    assert!(entry.prompt.on_input.as_deref().unwrap().contains("{{ background_context }}"));
     for child in ["work_simple", "explore"] {
         let c = env.agent().behaviors().get(child).await.unwrap().unwrap();
         assert!(!c.capabilities.call_intent, "{child} keeps its own contract");

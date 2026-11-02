@@ -321,13 +321,23 @@ pause 语义（Q7，用户：llm_context 语义的停止，就是不再推理；
 - Goal 建的 plan（class `work`）没有队列、tick 30 s；只有对话建的 `--class plan_simple` 才能收转发与 600 s tick。
 - 只读 plan 的 shell 仍能写 workspace（只靠提示词）；文件工具与 `copy` 已被宿主拒。
 
-### 8.6 Zone DV 反馈修正（2026-11-02，未提交）
+### 8.6 Zone DV 反馈修正：半订阅只在输入里使用（2026-11-02，未提交）
 
-用户在重建的 DV 上用 Jarvis 跑“练练看”（plan `work-20261102-3`）发现两处：
+用户在重建的 DV 上用 Jarvis 跑“练练看”（plan `work-20261102-3`、UI `ui-20261102-2`）发现：
 
-1. **输入后又插一条背景。** 子 session 结束的事件批次（`<session_input>`）提交后，推理前钩子 `observe::at_boundary` 再注入一条独立的 `<<background_context>>` user 消息。按设计背景要并入输入消息。改为：`[input] background = "before_inference"` 的 run 在提交输入批次前算背景（`observe::for_batch`），块放在输入消息最前面（与 UI chat 格式一致），`HostMeta.observed / task_output / observed_epoch` 随该批次的快照一起发布；紧随批次的推理不再注入（钩子判断“最后一条 user 消息就是最新 receipt 的 input 部分”）。工具结果之后的推理仍单独注入一条。
-2. **session finish 与 todo complete 语义重复。** 同一个结局既有子 session 的 `finished` 事件（带 `of todo T01`、后续 Todo 去向），又有背景里变成 `completed` 的 `<todo>` 行。Todo 只是创建 work session 的辅助，不需要自己的事件：背景去掉 Todo 行，也不再展示 Todo 绑定的子 session（它们由事件告知）；plan 自己命令造成的变化看命令输出，全表用 `todo list`。
+1. 输入（子 session 结束事件）之后又插一条独立的 `<<background_context>>` user 消息（`observe::at_boundary` 推理前注入）。
+2. 同一结局两遍：子 session 的 `finished` 事件 + 背景里 `<todo status="completed">` 行；UI 里同样是 `work:<sid>: finished …` 背景行 + 同批 `finished` 事件（根源：UI 背景把本批的子 session 事件当成 `work:<sid>` 行的来源）。
 
-落点：`runner/observe.rs`（`changes` / `for_batch` / `at_boundary` 守卫）、`runner/live.rs`（`InputBatch.observed`）、`runner/drive.rs`、`runner/hook.rs` 注释；`plan_simple.toml` “What you see”；`cmd_skills/opendan_agent_dev.md`；文档 `Agent TodoList.md`、`OpenDAN Agent Session架构设计.md`、`Agent State Protocol.md`、`Session Directory Protocol.md`、`LLM Context 设计.md`。测试：`plan_simple` 崩溃用例改为在承载 T01 结束的批次前后崩溃（`input_batch:after_input_checkpoint#3` / `after_state_commit#3`），断言结束只送达一次、没有 `<todo` 背景行；`plan_simple_async` 失败用例按结束事件（而不是列表文件）判断 T01 已失败；`work_simple_async` 第 3 例断言 tick / task_result 输入自带背景、背景消息从不紧跟在输入之后。
+用户给出的核心原则：**半订阅永远不能成为一条独立的 input，只能在 input 中被使用；input 的渲染模板不引用 background_context，半订阅对这个 session 就不可见。** Todo 只是创建 work session 的 helper，可以没有事件。
 
-未做：Zone DV（要 `./build_aios --local-test` + `start.py --skip-update`）。UI Session 的 chat 格式同类重复（`work:<sid>` 背景行 + 同批 `finished` 事件）、非 UI 批次的半订阅快照仍是输入前单独一条，均未动。
+实施：
+- 每个受控输入批次（所有 Session）算背景候选行：UI 为 chat 各行；其它 Session 为半订阅状态版本（`event:<key>`，用户时区事件也成行）；另有在跟的运行中 task 的新输出（`task:<id>`）。作为模板变量 `background` / `background_context`（原 `background_text` 改名）交给模板；内建模板（chat、`<session_input>`）都放在最前；`plan_simple` / `work_simple` 的 `on_input` 首行 `{{ background_context }}`。
+- 渲染后只有输入文本里实际出现的行记为已显示（`background::settle`），未出现的状态版本不进 receipt `events`、留在 `pending_events`。记录统一在 `state.background_shown`（随 receipt），task 行记录值为 `<stdout>,<stderr>` 输出位置；调用转 task 后的推理边界只记位置（`observe::note_started`），不出消息。
+- 删除：`<semi_subscription_snapshot>` 消息、`[prompt] semi_subscription_snapshot` 模板、`PART_SNAPSHOT`、`[input] background` 配置（`InputBackground`）、run.json `host.extra.background`、`HostMeta.observed / observed_epoch / task_output`、`observe::at_boundary`（工具结果之后不再注入背景）。推理前钩子只保留路由、TodoList 同步、记 task 位置。
+- 子 session 的结束 / 需要输入 / 等决定只走事件：UI 背景不再从本批事件取 `work:<sid>` 行（只留活动视图里运行中的子 session），读报告提示挪进 UI 的一行事件摘要（`— read: agent-session read-session <sid> --report`）；Todo 绑定的子 session 与 Todo 本身都没有背景行。`chat_route` / `groupchat_route` / `plan_simple` / `work_simple` 提示词、`ui_core` / `opendan_agent_dev` 手册随之改。
+
+文档：Session Input Protocol §4/§5/§6（新增 §6.6“背景是输入的素材”）/§7、Agent State Protocol、Session Directory Protocol、protocol README、Session 架构设计（实现状态段与 §15.5 表）、事件订阅、Agent TodoList、xAgent、LLM Context 设计、prompt_render_engine。
+
+测试：新增 `background::a_line_counts_as_shown_only_when_the_input_contains_it`、`runner_more::semi_state_is_invisible_to_a_template_without_background`；`plan_simple` 崩溃用例改在承载 T01 结束的批次前后崩溃（`input_batch:after_input_checkpoint#3` / `after_state_commit#3`）；`plan_simple_async` 失败用例按结束事件判断；`work_simple_async` 第 3 例断言背景从不独立成消息；`runner_more` / `xagent_lib` / `fixtures` / `crash` / `input_tasks` 的快照断言改为单消息形状。
+
+待定（用户架构 §6.3.1 原目标“工具返回后继续推理也观察，可随 function call result 一起装配”）：现在工具结果之后不观察；是否把背景装进 tool result 由用户定。子 session 的 `progress` 半订阅（report = progress）在它等输入时仍会与 `needs_input` 事件同批出现，未动。未做：Zone DV。

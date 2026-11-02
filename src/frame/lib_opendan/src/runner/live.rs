@@ -522,8 +522,6 @@ async fn own_run_context(
             intro.push_str(" Every function call of this context carries `intent` in its arguments: one short sentence saying why you make the call now and what you expect from it. A call without it is not executed.");
         }
     }
-    let background =
-        super::observe::extra(cfg.input_config(new.entry.as_ref()).1.background);
     let explicit_report = cfg.session.policy.completion == CompletionPolicy::ExplicitReport;
     let enabled = llm_ctx.pointer("/tools/enabled").and_then(Value::as_bool);
     if function_call && explicit_report && enabled == Some(false) {
@@ -640,9 +638,6 @@ async fn own_run_context(
                 }
                 if call_intent {
                     extra.insert(super::tools::EXTRA_CALL_INTENT.into(), json!(true));
-                }
-                if let Some(mode) = background {
-                    extra.insert(super::observe::EXTRA_BACKGROUND.into(), json!(mode));
                 }
                 if extra.is_empty() {
                     Value::Null
@@ -1316,15 +1311,9 @@ pub(super) struct InputBatch<'a> {
     pub hook: &'a str,
     /// msg / Input events this batch consumes, in consumption order.
     pub picked: &'a [FetchedInput],
-    /// The semi-subscription snapshot message and the state versions it
-    /// shows (injected before the controlled input).
-    pub snapshot: Option<(String, Vec<EventReceipt>)>,
-    /// Chat format (UI sessions): `background_shown` after this batch and
-    /// the state versions its background lines show (no snapshot message).
+    /// `background_shown` after this batch and the semi-subscription
+    /// versions its input message shows (as background lines).
     pub background: Option<(std::collections::BTreeMap<String, String>, Vec<EventReceipt>)>,
-    /// A run shown background lines before its inferences: the lines that
-    /// changed, placed in front of the input message and recorded with it.
-    pub observed: Option<super::observe::BatchBackground>,
     /// The controlled input message: template output and media blocks.
     pub text: String,
     pub media: Vec<AiContent>,
@@ -1335,13 +1324,13 @@ pub(super) struct InputBatch<'a> {
     pub todo_rev: Option<u64>,
 }
 
-/// Commit one input batch (§8.3): its 1–2 messages + receipt in one
-/// snapshot → run.json gate → state.json → clear gate → confirm inputs. No
-/// inference before the gate is clear, nothing dequeued before the commit.
-/// The batch opens a new logical Turn when none is open (D1); otherwise it
-/// joins the open one (hand-over, supplementary input); the snapshot
-/// message never counts as a Turn by itself. Committing a batch never
-/// completes a Turn.
+/// Commit one input batch (§8.3): its input message (after a Goal
+/// Activation's header) + receipt in one snapshot → run.json gate →
+/// state.json → clear gate → confirm inputs. No inference before the gate
+/// is clear, nothing dequeued before the commit. The batch opens a new
+/// logical Turn when none is open (D1); otherwise it joins the open one
+/// (hand-over, supplementary input). Committing a batch never completes a
+/// Turn.
 pub(super) async fn commit_input_batch(
     sh: &Arc<Shared>,
     lc: &mut LiveCtx,
@@ -1449,19 +1438,10 @@ pub(super) async fn commit_input_batch(
         messages.push(AiMessage::text(AiRole::User, g.text.clone()));
         part_texts.push((PART_GOAL, g.text.clone()));
     }
-    if let Some((text, shown)) = batch.snapshot {
-        messages.push(AiMessage::text(AiRole::User, text.clone()));
-        part_texts.push((PART_SNAPSHOT, text));
-        events = shown;
-    }
-    let text = match &batch.observed {
-        Some(bg) => format!("{}{}", bg.block, batch.text),
-        None => batch.text,
-    };
-    let mut input_msg = AiMessage::text(AiRole::User, text.clone());
+    let mut input_msg = AiMessage::text(AiRole::User, batch.text.clone());
     input_msg.content.extend(batch.media);
     messages.push(input_msg);
-    part_texts.push((PART_INPUT, text));
+    part_texts.push((PART_INPUT, batch.text));
     let count = messages.len();
     let pos = lc.ctx.inject(Injection {
         messages,
@@ -1503,9 +1483,6 @@ pub(super) async fn commit_input_batch(
     };
     let mut meta = host_meta_of(lc.ctx.host_meta());
     meta.input_receipts.push(receipt.clone());
-    if let Some(bg) = &batch.observed {
-        bg.record(&mut meta);
-    }
     let host = with_host_meta(lc.ctx.host_meta(), &meta);
     lc.ctx.set_host_meta(Some(host));
     let snap = lc.ctx.snapshot();

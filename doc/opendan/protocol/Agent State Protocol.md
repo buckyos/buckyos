@@ -128,15 +128,13 @@ next = ["do", "review"]            # 可切换 / 可调用的目标：冻结闭�
 [prompt]
 mode = "behavior"                  # function_call | behavior；缺省用会话的 loop_model
 system = "… {{ session.id }} …"    # system 模板；变量：identity.* behavior.{name,objective,mode} session.{id,kind,objective,driver,scope,parent} workspace.id
-on_init = "…"                      # 三类受控输入与半订阅快照的模板（缺省内建）
+on_init = "…"                      # 三类受控输入的模板（缺省内建）；变量 background_context 是本批变化的背景行，不引用则半订阅不可见
 on_input = "…"
 on_context_switch = "…"
-semi_subscription_snapshot = "…"
 
 [input]                            # 消费策略（缺省用会话的）
 mode = "batch"                     # single | batch
 media = "reference"                # reference | inline
-background = "batch"               # batch | before_inference：每次推理前宿主给出变化的子 Session 行与在跟任务的新输出（<<background_context>>，输入批次时放在输入消息最前面）
 
 [capabilities]
 tool_whitelist = ["group:bash", "behavior:analyze_intent", "report"]   # → tools.tools；`group:<内置工具组>` → {groupname}，其余 → {name}（运行环境提供的工具）；`behavior:<name>` 是该 behavior 的 [tool] 函数

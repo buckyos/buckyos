@@ -58,12 +58,6 @@ fn attention_of(state: &SessionState, sid: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The end of sub session `sid` reached this session (delivered as an
-/// input, as a waited call's result, or shown after tool results).
-pub(super) fn end_delivered(state: &SessionState, sid: &str) -> bool {
-    attention_of(state, sid).as_deref() == Some(ATTENTION_FINISHED)
-}
-
 pub(super) fn set_attention(state: &mut SessionState, sid: &str, attention: Option<&str>) {
     let c = state
         .subscription_cursors
@@ -119,8 +113,8 @@ fn cut(mut text: String) -> String {
     text
 }
 
-/// `brief`: one line only — a UI parent shows the end in its background
-/// context and reads the report on demand (`agent-session read-session`).
+/// `brief`: one line only — a UI parent reads the report on demand
+/// (`agent-session read-session`).
 fn summary_of(
     e: &RegistryEntry,
     attention: Option<&str>,
@@ -174,6 +168,12 @@ fn summary_of(
         let mut line = text.split_whitespace().collect::<Vec<_>>().join(" ");
         if line.chars().count() > 300 {
             line = format!("{}…", line.chars().take(299).collect::<String>());
+        }
+        if attention == Some(ATTENTION_FINISHED) {
+            line.push_str(&format!(
+                " — read: agent-session read-session {} --report",
+                e.session_id
+            ));
         }
         return line;
     }

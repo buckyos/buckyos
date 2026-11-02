@@ -1112,17 +1112,11 @@ fn call_line(call_id: &str, brief: &Value) -> Option<String> {
 /// state is always queried by the saved task id, so a lost notification, a
 /// restart or an empty inbox change nothing; a task nobody can answer for
 /// is reported as unknown, never re-created.
-async fn poll_watched_tasks(sh: &Arc<Shared>) -> Result<Vec<FetchedInput>> {
-    let (watched, cfg, session_state) = {
-        let s = sh.session.lock().await;
-        (s.state.watched_tasks.clone(), s.config.clone(), s.state.clone())
-    };
-    if watched.is_empty() {
-        return Ok(Vec::new());
-    }
-    // Between runs (a new drive) no run holds a resolver: the tasks of this
-    // process (`local:`) and of the host are still answered for.
-    let resolver: Arc<dyn RunningTaskResolver> = match sh.tasks.lock().expect("tasks").clone() {
+/// The resolver of the tasks the session follows. Between runs (a new
+/// drive) no run holds one: the tasks of this process (`local:`) and of the
+/// host are still answered for.
+pub(super) fn task_resolver(sh: &Arc<Shared>) -> Arc<dyn RunningTaskResolver> {
+    match sh.tasks.lock().expect("tasks").clone() {
         Some(r) => r,
         None => Arc::new(
             agent_tool::CompositeTaskResolver::new(
@@ -1131,7 +1125,18 @@ async fn poll_watched_tasks(sh: &Arc<Shared>) -> Result<Vec<FetchedInput>> {
             )
             .with_buckyos(super::live::host_task_resolver(sh)),
         ),
+    }
+}
+
+async fn poll_watched_tasks(sh: &Arc<Shared>) -> Result<Vec<FetchedInput>> {
+    let (watched, cfg, session_state) = {
+        let s = sh.session.lock().await;
+        (s.state.watched_tasks.clone(), s.config.clone(), s.state.clone())
     };
+    if watched.is_empty() {
+        return Ok(Vec::new());
+    }
+    let resolver = task_resolver(sh);
     let mut inputs = Vec::new();
     let mut observed = Vec::new();
     for task_id in watched {
@@ -1678,9 +1683,9 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         let mut msg = None;
         let mut media = Vec::new();
         let mut todo_rev = None;
-        // UI sessions: the background map after this batch and the
-        // semi-subscription versions its background lines show.
-        let mut chat_background: Option<(std::collections::BTreeMap<String, String>, Vec<EventReceipt>)> =
+        // The background map after this batch and the semi-subscription
+        // versions the input shows.
+        let mut background: Option<(std::collections::BTreeMap<String, String>, Vec<EventReceipt>)> =
             None;
         if triggered {
             let me = sh.agent().sessions().lookup(sh.dir.sid()).await?;
@@ -1761,48 +1766,51 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                 material.todos = Some(view);
                 todo_rev = Some(rev);
             }
-            if cfg.session.kind == SessionKind::Ui {
-                let budget = match cfg.session.policy.observe {
-                    ObserveScope::Off => 0,
-                    _ => sh.deps.options.change_budget,
-                };
-                let (views, shown) = select_snapshot(&state, budget);
-                let mut children = Vec::new();
-                for m in &picked {
-                    if let Ok(SessionInput::Event(ev)) = &m.input {
-                        if ev.source.kind == "session" {
-                            if let Ok(Some(e)) = sh.agent().sessions().lookup(&ev.source.id).await {
-                                children.push(e);
-                            }
-                        }
-                    }
-                }
+            // The background: material of this input only, seen where its
+            // template places it.
+            let budget = match cfg.session.policy.observe {
+                ObserveScope::Off => 0,
+                _ => sh.deps.options.change_budget,
+            };
+            let (views, mut shown) = select_snapshot(&state, budget);
+            let mut candidates = if cfg.session.kind == SessionKind::Ui {
                 let tunnel = picked.iter().rev().find_map(|m| match &m.input {
                     Ok(SessionInput::Msg(sm)) => sm.delivery.tunnel.clone(),
                     _ => None,
                 });
-                let candidates = super::background::lines(&super::background::BackgroundInput {
+                super::background::lines(&super::background::BackgroundInput {
                     sid: sh.dir.sid(),
                     now_ms,
                     timezone: cfg.session.timezone.as_deref(),
                     runtime_status: &material.runtime_status,
                     active: &material.active,
-                    children: &children,
                     events: &views,
                     hints: &material.hints,
                     tunnel: tunnel.as_deref(),
-                });
-                let (lines, map) =
-                    super::background::select(candidates, &state.background_shown, now_ms);
-                material.background = lines;
-                chat_background = Some((map, shown));
-            }
+                })
+            } else {
+                super::background::event_lines(&views)
+            };
+            candidates.extend(super::observe::task_lines(sh, &state).await);
+            let (lines, mut map) =
+                super::background::select(candidates, &state.background_shown, now_ms);
+            material.background = lines;
             msg = sh
                 .deps
                 .assembler
                 .render_input(&cfg, &state, &templates, &material)
                 .await?
                 .filter(|t| !t.trim().is_empty());
+            if let Some(text) = &msg {
+                let placed = super::background::settle(
+                    &mut map,
+                    &state.background_shown,
+                    &material.background,
+                    text,
+                );
+                shown.retain(|e| placed.contains(&format!("event:{}", e.key)));
+                background = Some((map, shown));
+            }
             match &msg {
                 Some(text) => {
                     // Text stays self-contained without the media blocks.
@@ -1965,36 +1973,13 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
             commit_and_report(sh, &mut s).await?;
         }
         if let Some(text) = msg {
-            // The semi-subscription snapshot is assembled right before the
-            // controlled input and committed with it as one batch (a UI
-            // session shows it as background lines of the input itself).
-            let (snapshot, background) = match chat_background.take() {
-                Some((map, shown)) => (None, Some((map, shown))),
-                None => {
-                    let budget = match cfg.session.policy.observe {
-                        ObserveScope::Off => 0,
-                        _ => sh.deps.options.change_budget,
-                    };
-                    let (views, shown) = select_snapshot(&state, budget);
-                    let snapshot = sh
-                        .deps
-                        .assembler
-                        .render_semi_subscription_snapshot(&templates, &views)
-                        .await?
-                        .map(|t| (t, shown));
-                    (snapshot, None)
-                }
-            };
-            let observed = super::observe::for_batch(sh, &lc.run, lc.ctx.host_meta()).await?;
             Box::pin(commit_input_batch(
                 sh,
                 &mut lc,
                 InputBatch {
                     hook,
                     picked: &picked,
-                    snapshot,
-                    background,
-                    observed,
+                    background: background.take(),
                     text,
                     media,
                     goal: goal_opening,

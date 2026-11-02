@@ -534,13 +534,13 @@ async fn xllm_refuses_run_with_pending_host_commit() {
     assert!(err.to_string().contains("not committed"), "{err}");
 }
 
-/// A batch of two messages (semi-subscription snapshot + controlled
-/// input) committed into the snapshot, crash before state.json: recovery
-/// completes state from the receipt — both messages stay once, exactly the
-/// injected state version is cleared, the reply path is restored — without
+/// A batch whose input carries a semi-subscription version as a background
+/// line, committed into the snapshot, crash before state.json: recovery
+/// completes state from the receipt — the message stays once, exactly the
+/// shown state version is cleared, the reply path is restored — without
 /// rendering again or reading the bus.
 #[tokio::test]
-async fn crash_after_snapshot_batch_checkpoint_does_not_reinject() {
+async fn crash_after_background_batch_checkpoint_does_not_reinject() {
     let env = Env::new();
     let mut spec = work_spec("watch");
     spec.subscriptions.push(Subscription {
@@ -612,7 +612,7 @@ async fn crash_after_snapshot_batch_checkpoint_does_not_reinject() {
         .into_iter()
         .filter(|e| matches!(e.body, WorklogBody::UserMessage { .. }))
         .count();
-    assert_eq!(users, 3, "on_init, snapshot, on_input");
+    assert_eq!(users, 2, "on_init, on_input with its background");
     assert_eq!(count_kind(&sd, "turn_started"), 1);
     assert_eq!(count_kind(&sd, "input_batch"), 1);
     assert_worklog_contiguous(&sd);
