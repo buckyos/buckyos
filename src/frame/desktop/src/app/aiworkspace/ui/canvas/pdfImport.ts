@@ -134,7 +134,7 @@ async function renderRaster(page: PDFPageProxy, opCount: number, world: { w: num
   const canvas = await renderPage(page, edge, {
     transparent: true,
     // the indices are those of the operator list the converter read: never filter another one
-    filter: (index, list) => { if (list.fnArray.length !== opCount) { mismatch = true; return false } return !request.skip.has(index) },
+    ...(request.skip.size ? { filter: (index: number, list: { fnArray: number[] }) => { if (list.fnArray.length !== opCount) { mismatch = true; return false } return !request.skip.has(index) } } : {}),
   })
   if (mismatch) { report.add('pdf_raster_failed', 'Page rasters that could not be made', `p${page.pageNumber}`); return null }
   const ctx = canvas.getContext('2d')!
