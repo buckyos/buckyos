@@ -1,27 +1,14 @@
 //! The session's TodoList on the runner side (`doc/opendan/Agent TodoList.md`
-//! §2): which Todo `next_behavior = <todo executor>` executes, waiting
-//! instead of deciding, the serial attempt's result, the explorations'
-//! state written back at batch boundaries, the PLAN's compact view and the
-//! end check.
-
-use llm_context::state::LLMContextSnapshot;
-use llm_context::DecisionVerdict;
-use serde_json::{json, Value};
+//! §2): the work sessions' committed state written back and the ready Todos
+//! dispatched at every batch boundary (the scheduling point of the host:
+//! the plan never asks for a dispatch), the compact view and the end of a
+//! plan.
 
 use crate::error::Result;
 use crate::protocol::*;
-use crate::session::Session;
-use crate::todos::{
-    needs_own_session, one_line, save_submission, store_of, todo_error, CallRef,
-    ChildObservation, ExploreOptions, SerialPick, TodoList, TodoStatus, TodoStore,
-};
+use crate::todos::{store_of, DispatchOptions, Scheduled, TodoList, TodoStore};
 
-use super::outcome::{refuse_handover, CallSite, FinishKind, Next};
 use super::shared::Shared;
-
-/// Answer of a sub context that ran out of budget (`outcome.rs`): a serial
-/// attempt ending with it timed out.
-pub(super) const SUB_CONTEXT_BUDGET: &str = "the sub context ran out of budget";
 
 pub(super) fn store(sh: &Shared) -> TodoStore {
     store_of(&sh.dir)
@@ -34,343 +21,65 @@ pub(super) fn load(sh: &Shared) -> TodoList {
     })
 }
 
-/// The step of a behavior run whose decision is being carried out.
-pub(super) fn decision_step(snapshot: &LLMContextSnapshot) -> Option<u32> {
-    let st = &snapshot.state;
-    st.last_step
-        .as_ref()
-        .or(st.steps.last())
-        .map(|s| s.meta.step_index)
-}
-
-fn caller_of(run_id: &str, step: Option<u32>) -> CallRef {
-    CallRef {
-        run_id: run_id.to_string(),
-        call_id: format!("step:{}", step.unwrap_or(0)),
+/// Bring the list up to its work sessions' committed state (see
+/// [`crate::todos::sync`]), then dispatch what became ready: a prerequisite
+/// that completed starts the Todos after it before the plan infers again,
+/// a work session that ended makes room for one held back. `true`: the
+/// list changed.
+pub(super) async fn sync(sh: &Shared) -> Result<bool> {
+    if load(sh).todos.is_empty() {
+        return Ok(false);
     }
+    let changed = crate::todos::sync(sh.agent(), &sh.dir).await?;
+    let scheduled = schedule(sh).await?;
+    Ok(changed || scheduled.iter().any(|s| !matches!(s, Scheduled::Held { .. })))
 }
 
-async fn is_todo_executor(sh: &Shared, behavior: &str) -> bool {
-    let cfg = sh.session.lock().await.config.clone();
-    sh.deps
-        .assembler
-        .behavior_entry(&cfg, behavior)
-        .is_ok_and(|e| e.todo)
-}
-
-/// What the session is waiting for besides a decision: sub sessions it
-/// must hear from.
-async fn waiting_children(sh: &Shared) -> Vec<String> {
-    super::children::unsettled_children(sh)
-        .await
-        .unwrap_or_default()
-}
-
-fn with_view(message: String, list: &TodoList) -> String {
-    if list.todos.is_empty() {
-        message
-    } else {
-        format!("{message}\n{}", list.render_view())
-    }
-}
-
-fn not_ready(target: &str, pick: &SerialPick, list: &TodoList) -> String {
-    let detail = match pick {
-        SerialPick::Waiting(w) => format!(
-            " Pending serial todos wait for results that are not accepted yet: {}.",
-            w.iter()
-                .map(|(id, deps)| format!("{id} after {}", deps.join(",")))
-                .collect::<Vec<_>>()
-                .join("; ")
-        ),
-        _ => String::new(),
-    };
-    with_view(
-        format!(
-            "Decision refused: `{target}` executes the next serial Todo, and none is ready.{detail} \
-Add one with `agent-session todo add \"<title>\" --content <what, scope, evidence> [--accept <criterion>]...`, \
-dispatch explorations with `agent-session todo explore …`, or finish with <report end=\"true\">."
-        ),
-        list,
+/// One scheduling point of the host (`crate::todos::schedule`).
+pub(super) async fn schedule(sh: &Shared) -> Result<Vec<Scheduled>> {
+    let out = crate::todos::schedule(
+        sh.agent(),
+        &sh.deps.who,
+        sh.deps.inputs.as_ref(),
+        &sh.dir,
+        &DispatchOptions::from_env(),
     )
+    .await?;
+    for s in &out {
+        match s {
+            Scheduled::Dispatched(d) => log::info!(
+                "session {}: todo {} attempt {} dispatched to {}",
+                sh.dir.sid(),
+                d.todo_id,
+                d.attempt,
+                d.child_sid
+            ),
+            Scheduled::Blocked { todo_id, reason } => log::info!(
+                "session {}: todo {todo_id} blocked: {reason}",
+                sh.dir.sid()
+            ),
+            Scheduled::Held { .. } => {}
+        }
+    }
+    Ok(out)
 }
 
-fn review_first(ids: &[String], list: &TodoList) -> String {
-    with_view(
-        format!(
-            "Decision refused: results came back and are not reviewed yet: {}. \
-Read each with `agent-session todo show <id> --report`, then record your judgement with \
-`agent-session todo review <id> --accept|--reject|--need-evidence --reason <why>` before the next Todo runs.",
+/// The plan ended: what still runs of its list ends as stopped (the work
+/// sessions are stopped with the plan).
+pub(super) fn stop_open(sh: &Shared, outcome: Option<Outcome>) {
+    let reason = match outcome {
+        Some(Outcome::Stopped) => "the plan session was stopped",
+        _ => "the plan session ended",
+    };
+    match crate::todos::stop_open(&sh.dir, reason) {
+        Ok(ids) if !ids.is_empty() => log::info!(
+            "session {}: todos {} stopped: {reason}",
+            sh.dir.sid(),
             ids.join(", ")
         ),
-        list,
-    )
-}
-
-/// The checkpoint hook's verdict on a hand-over to a Todo executor (top
-/// level only): a ready serial Todo or explorations to wait for accept it;
-/// unreviewed results or nothing to execute refuse it, correctably.
-pub(super) async fn review_handover(sh: &Shared, run_id: &str, target: &str) -> Option<DecisionVerdict> {
-    if super::outcome::call_site_of(sh, run_id).await.0 || !is_todo_executor(sh, target).await {
-        return None;
+        Ok(_) => {}
+        Err(e) => log::warn!("session {}: todo list not settled at its end: {e}", sh.dir.sid()),
     }
-    let list = match store(sh).load() {
-        Ok(l) => l,
-        Err(e) => return Some(DecisionVerdict::Refuse(format!("the todo list cannot be read: {e}"))),
-    };
-    match list.serial_pick() {
-        SerialPick::Ready(_) => Some(DecisionVerdict::Accept),
-        SerialPick::Unreviewed(ids) => Some(DecisionVerdict::Refuse(review_first(&ids, &list))),
-        pick => {
-            if waiting_children(sh).await.is_empty() {
-                Some(DecisionVerdict::Refuse(not_ready(target, &pick, &list)))
-            } else {
-                // Nothing to execute while explorations run: waiting.
-                Some(DecisionVerdict::Accept)
-            }
-        }
-    }
-}
-
-fn wait_for(next: &mut Next, children: Vec<String>) {
-    next.kind = FinishKind::Wait;
-    next.run_ended = true;
-    next.suspended = false;
-    next.finished = false;
-    next.outcome = None;
-    next.waiting = true;
-    next.turn_end = None;
-    next.next_behavior = None;
-    next.call = None;
-    next.error = None;
-    next.wait_children = children;
-}
-
-/// Session-side meaning of a decision after `classify_done` (also when a
-/// decision is redone after a crash): a yield waits for the sub sessions
-/// the session must hear from; a hand-over to a Todo executor executes the
-/// ready serial Todo (bound in [`bind_serial`]) or, with none ready while
-/// explorations run, waits too. What the checkpoint hook would have refused
-/// and still arrives here (an executor without the hook) ends the Turn as
-/// failed.
-pub(super) async fn settle(
-    sh: &Shared,
-    next: &mut Next,
-    site: &CallSite<'_>,
-    yielded: bool,
-    run_id: &str,
-    snapshot: &LLMContextSnapshot,
-) -> Result<()> {
-    if site.child {
-        return Ok(());
-    }
-    if yielded {
-        let children = waiting_children(sh).await;
-        if !children.is_empty() {
-            wait_for(next, children);
-        } else if next.finished && next.outcome == Some(Outcome::Succeeded) {
-            next.kind = FinishKind::Error;
-            next.outcome = Some(Outcome::Failed);
-            next.turn_end = Some(TurnStatus::Failed);
-            next.error = Some(json!({
-                "kind": "missing_end_report",
-                "message": "a progress report alone does not finish the session; nothing it started is running",
-                "recoverable": false,
-            }));
-        }
-        return Ok(());
-    }
-    let Some(call) = next.call.as_ref().filter(|c| c.trigger == CallTrigger::Behavior && c.todo.is_none()) else {
-        return Ok(());
-    };
-    if next.kind != FinishKind::Switch || !is_todo_executor(sh, &call.behavior).await {
-        return Ok(());
-    }
-    let target = call.behavior.clone();
-    let list = load(sh);
-    // A hand-over redone after a crash finds the attempt it bound.
-    let caller = caller_of(run_id, decision_step(snapshot));
-    if list
-        .todos
-        .iter()
-        .any(|t| t.attempts.iter().any(|a| a.caller.as_ref() == Some(&caller)))
-    {
-        return Ok(());
-    }
-    match list.serial_pick() {
-        SerialPick::Ready(id) => {
-            // A serial Todo on another runtime or workspace executes in a
-            // work session of its own; this session waits for it, in order.
-            let cfg = sh.session.lock().await.config.clone();
-            if list.get(&id).is_some_and(|t| needs_own_session(t, &cfg)) {
-                let opts = ExploreOptions::from_env();
-                match crate::todos::dispatch_serial(
-                    sh.agent(),
-                    &sh.deps.who,
-                    sh.deps.inputs.as_ref(),
-                    &sh.dir,
-                    &id,
-                    &opts,
-                )
-                .await
-                {
-                    Ok(d) => {
-                        let mut children = waiting_children(sh).await;
-                        if !children.contains(&d.child_sid) {
-                            children.push(d.child_sid);
-                        }
-                        wait_for(next, children);
-                    }
-                    Err(e) => refuse_handover(
-                        next,
-                        site,
-                        with_view(
-                            format!(
-                                "Decision refused: Todo {id} could not start in its own work session: {e}. Fix the Todo's runtime / workspace (`agent-session todo cancel` and add it again) or choose another Todo."
-                            ),
-                            &list,
-                        ),
-                    ),
-                }
-            }
-        }
-        SerialPick::Unreviewed(ids) => refuse_handover(next, site, review_first(&ids, &list)),
-        pick => {
-            let children = waiting_children(sh).await;
-            if children.is_empty() {
-                refuse_handover(next, site, not_ready(&target, &pick, &list));
-            } else {
-                wait_for(next, children);
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Bind the hand-over to a Todo executor to the ready serial Todo (before
-/// the suspension commits): its attempt starts, its body becomes the sub
-/// task. Idempotent for the same caller step, so a hand-over redone after
-/// a crash gets the same attempt.
-pub(super) async fn bind_serial(
-    sh: &Shared,
-    next: &mut Next,
-    run_id: &str,
-    snapshot: &LLMContextSnapshot,
-) -> Result<()> {
-    let Some(call) = next.call.as_ref() else {
-        return Ok(());
-    };
-    if call.trigger != CallTrigger::Behavior || call.todo.is_some() || !is_todo_executor(sh, &call.behavior).await {
-        return Ok(());
-    }
-    let caller = caller_of(run_id, decision_step(snapshot));
-    let now = crate::now_ms();
-    let cfg = sh.session.lock().await.config.clone();
-    let bound = store(sh)
-        .update(|l| {
-            let existing = l.todos.iter().find_map(|t| {
-                t.attempts
-                    .iter()
-                    .find(|a| a.caller.as_ref() == Some(&caller))
-                    .map(|a| (t.todo_id.clone(), a.attempt))
-            });
-            let (id, n) = match existing {
-                Some(found) => found,
-                None => match l.serial_pick() {
-                    // Another runtime / workspace: not a sub context of this
-                    // session (`settle` dispatches it as its own session).
-                    SerialPick::Ready(id) if l.get(&id).is_some_and(|t| needs_own_session(t, &cfg)) => {
-                        return Ok(None)
-                    }
-                    SerialPick::Ready(id) => {
-                        let n = l.begin_serial(&id, caller.clone(), now)?;
-                        (id, n)
-                    }
-                    _ => {
-                        return Err(agent_tool::AgentToolError::InvalidArgs(
-                            "no serial todo is ready to bind".into(),
-                        ))
-                    }
-                },
-            };
-            let task = l.get(&id).map(|t| t.task_text(l, n)).unwrap_or_default();
-            Ok(Some((id, n, task)))
-        })
-        .map_err(todo_error)?;
-    let Some((todo_id, attempt, task)) = bound else {
-        return Ok(());
-    };
-    crate::fault::point("todo:after_serial_bind");
-    if let Some(call) = next.call.as_mut() {
-        call.task = Some(task);
-        call.todo = Some(TodoBinding { todo_id, attempt });
-    }
-    Ok(())
-}
-
-/// The serial attempt a returning sub context executed, written back before
-/// the return commits (idempotent). Returns the brief the caller gets in
-/// place of the full report (it reads that with `todo show --report`).
-pub(super) fn serial_returned(
-    sh: &Shared,
-    s: &Session,
-    binding: &TodoBinding,
-    run_id: &str,
-    child_status: Option<&str>,
-    report: Option<&ReportSubmission>,
-    answer: Option<&str>,
-) -> Result<String> {
-    let status = match child_status.unwrap_or("ok") {
-        "ok" => TodoStatus::Completed,
-        _ if answer.is_some_and(|a| a.starts_with(SUB_CONTEXT_BUDGET)) => TodoStatus::Timeout,
-        _ => TodoStatus::Failed,
-    };
-    if let Some(r) = report {
-        save_submission(&sh.dir, &sh.lease, r)?;
-    }
-    let summary = report
-        .map(|r| one_line(&r.report))
-        .or_else(|| answer.map(one_line))
-        .filter(|t| !t.is_empty());
-    let error = match (status, child_status) {
-        (TodoStatus::Completed, _) => None,
-        (_, Some("needs_user_input")) => Some(format!(
-            "the executor needs user input: {}",
-            answer.unwrap_or_default()
-        )),
-        _ => answer.map(str::to_string),
-    };
-    let seen = ChildObservation {
-        status,
-        summary: summary.clone(),
-        report: report.map(|r| crate::todos::ReportRef {
-            session_id: s.sid().to_string(),
-            run_id: Some(run_id.to_string()),
-            report_id: r.id.clone(),
-        }),
-        artifacts: report.map(crate::todos::artifact_refs).unwrap_or_default(),
-        error,
-    };
-    store(sh)
-        .update(|l| l.end_serial(&binding.todo_id, binding.attempt, run_id, seen, crate::now_ms()))
-        .map_err(todo_error)?;
-    crate::fault::point("todo:after_serial_writeback");
-    Ok(format!(
-        "Todo {} attempt {} {}: {}\nRead the full report with `agent-session todo show {} --report`, then review it.",
-        binding.todo_id,
-        binding.attempt,
-        status.as_str(),
-        summary.unwrap_or_else(|| "(no report)".into()),
-        binding.todo_id
-    ))
-}
-
-/// Write the explorations' committed state back into the list at a batch
-/// boundary (and at the drive's start, after recovery). See
-/// [`crate::todos::sync`].
-pub(super) async fn sync(sh: &Shared) -> Result<bool> {
-    let state = sh.session.lock().await.state.clone();
-    crate::todos::sync(sh.agent(), &sh.dir, &state).await
 }
 
 /// The compact view for an input batch of the top-level context, when the
@@ -386,34 +95,40 @@ pub(super) fn view_for_batch(sh: &Shared, state: &SessionState) -> Option<(Strin
     Some((list.render_view(), list.rev))
 }
 
-/// The serial Todo a hand-over would execute now, for templates
-/// (`session.current_todo`).
-pub(super) fn current(sh: &Shared) -> Value {
+/// The Todo a work session executes, as the list binds it.
+pub(super) struct BoundChild {
+    pub child_sid: String,
+    pub todo_id: String,
+    pub attempt: u32,
+    pub summary: Option<String>,
+    /// The Todos that run after it and what became of them (`T02 running`,
+    /// `T03 blocked`).
+    pub dependents: Vec<String>,
+}
+
+/// `todo:<id>:<attempt>` work sessions the list binds.
+pub(super) fn bound_children(sh: &Shared) -> Vec<BoundChild> {
     let list = load(sh);
-    match list.serial_pick() {
-        SerialPick::Ready(id) => list
-            .get(&id)
-            .and_then(|t| serde_json::to_value(t).ok())
-            .unwrap_or(Value::Null),
-        _ => Value::Null,
-    }
-}
-
-/// Why the session may not finish yet (TodoList §2.4).
-pub(super) fn unconverged(sh: &Shared) -> Vec<String> {
-    load(sh).unconverged()
-}
-
-/// `todo:<id>:<attempt>` sub sessions the list binds: child sid → (todo, attempt).
-pub(super) fn bound_children(sh: &Shared) -> Vec<(String, String, u32, Option<String>)> {
-    load(sh)
-        .todos
+    list.todos
         .iter()
         .flat_map(|t| {
-            t.attempts.iter().filter_map(|a| {
-                a.child_sid
-                    .clone()
-                    .map(|c| (c, t.todo_id.clone(), a.attempt, a.summary.clone()))
+            let dependents: Vec<String> = list
+                .todos
+                .iter()
+                .filter(|d| d.after.contains(&t.todo_id))
+                .map(|d| match d.latest().filter(|a| !a.ended()).and_then(|a| a.child_sid.clone()) {
+                    Some(c) => format!("{} {} ({c})", d.todo_id, d.status.as_str()),
+                    None => format!("{} {}", d.todo_id, d.status.as_str()),
+                })
+                .collect();
+            t.attempts.iter().filter_map(move |a| {
+                a.child_sid.clone().map(|c| BoundChild {
+                    child_sid: c,
+                    todo_id: t.todo_id.clone(),
+                    attempt: a.attempt,
+                    summary: a.summary.clone(),
+                    dependents: dependents.clone(),
+                })
             })
         })
         .collect()

@@ -197,7 +197,11 @@ pub async fn verify_workspace(
     match (&cfg.workspace, &cfg.workspace_binding) {
         (None, None) => Ok(()),
         (Some(reference), Some(binding)) => {
-            if reference.workspace_id != binding.workspace_id || reference.access != binding.access
+            // The binding may be narrower than the grant (a read-only plan).
+            let narrowed = reference.access == WorkspaceAccess::ReadWrite
+                && binding.access == WorkspaceAccess::ReadOnly;
+            if reference.workspace_id != binding.workspace_id
+                || (reference.access != binding.access && !narrowed)
             {
                 return Err(invalid(
                     "the workspace reference differs from its frozen binding".into(),

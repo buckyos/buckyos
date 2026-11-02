@@ -74,6 +74,17 @@
             "array",
             "null"
           ]
+        },
+        "workspace": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WorkspaceAccess"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The access a session entered with this behavior takes to its workspace (`None`: what its creator asked). A plan reads the workspace; the work sessions of its Todos write it."
         }
       },
       "type": "object"
@@ -101,10 +112,6 @@
               "type": "null"
             }
           ]
-        },
-        "todo": {
-          "description": "A hand-over to this behavior (`next_behavior`) executes the session's next serial Todo: the host admits it and hands its body over as the sub task (`create_sub_context` only).",
-          "type": "boolean"
         }
       },
       "type": "object"
@@ -328,13 +335,6 @@
           "type": "string"
         },
         {
-          "description": "Also after every batch of tool results (behavior loop: every step with action results): the TodoList and sub session lines that changed since they were last shown, as a `<<background_context>>` message before the next inference.",
-          "enum": [
-            "after_tools"
-          ],
-          "type": "string"
-        },
-        {
           "description": "Before every inference (the first of a Turn included): the lines that changed since they were last shown — the new output of the tasks the run follows, its sub sessions, its TodoList.",
           "enum": [
             "before_inference"
@@ -411,6 +411,13 @@
         }
       },
       "type": "object"
+    },
+    "WorkspaceAccess": {
+      "enum": [
+        "read_only",
+        "read_write"
+      ],
+      "type": "string"
     }
   },
   "description": "One behavior of the agent, includes expanded.",

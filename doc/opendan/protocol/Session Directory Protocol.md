@@ -1,6 +1,6 @@
 # Session Directory Protocol
 
-版本 6 · 2026-10-10（2026-10-16 补 TodoList：`todos.json`、`todo_view_rev`、`call.todo`、`entry.todo`、无决策即等待）· 由 `libopendan` 反写（`src/protocol/{config,behavior,report,state,summary,worklog,misc,input}.rs`）。Round / Step / Turn 的定义见 [LLM Context readme](../../llm_context/readme.md)；本文的 Turn 规则均为当前实现。
+版本 6 · 2026-10-10（2026-10-16 补 TodoList：`todos.json`、`todo_view_rev`；2026-11-02 删 Todo 执行器的 `call.todo` / `entry.todo`，补 `paused` / `resume_run`）· 由 `libopendan` 反写（`src/protocol/{config,behavior,report,state,summary,worklog,misc,input}.rs`）。Round / Step / Turn 的定义见 [LLM Context readme](../../llm_context/readme.md)；本文的 Turn 规则均为当前实现。
 
 ## 1. 目录结构
 
@@ -122,7 +122,6 @@ Schema：`schema/session_config.schema.json`。要点：
   - `prompt.system`：该 context 的应用 system prompt（替换会话的 `prompt.system`）；`llm_context`：按顶层键替换 `prompt.llm_context`（模型、工具、限额）。`fork` 不允许声明这两项（fork 保持调用方的 system 与配置）。
   - `prompt.on_init / on_input / on_context_switch / semi_subscription_snapshot`：该 context 的输入模板，按字段覆盖会话的同名模板；`input{mode, media}`：该 context 的消费策略（缺省用会话的）。见 [Session Input Protocol](<Session Input Protocol.md>) §6。
   - `inherit`：新 context 的历史来源，`none`（缺省）| `recent_dialogue`（宿主装配的会话历史，context 切换时为 `<session_history>`：摘要 + 近期 worklog 记录；未压缩 UI 跨 Turn 续聊见 §6）| `steps`（调用方已完成的 Step，按结构化记录继承，含各 Step 的 `<report>`；仅 `create_sub_context`，且双方都是 behavior loop）。`fork` 总是继承分叉点的完整有效历史，不接受 `inherit`。
-  - `todo`（缺省 false，只允许 `create_sub_context`；behavior 的 `[entry] todo = true`）：Todo 执行器。`next_behavior` 交接到它时执行 Session 的下一个就绪串行 Todo（§4 `todos.json`，[Agent TodoList](<../Agent TodoList.md>) §4）：交接提交前宿主绑定 attempt（`call.todo`）并把 Todo 正文写入 `call.task`；没有就绪 Todo 时交接在 Step 生效前被可修正地拒绝，或在有未收齐的子 Session 时按等待处理。
   - 会话的初始 behavior（`prompt.behavior`）没有自己的条目时，视为使用会话基础配置的 `switch_context` 目标。交接到其它没有条目的 behavior 是配置错误：当前 Turn 以 `failed` 结束（`last_error.kind = behavior_config`）；发生在子 context 内时作为失败结果交回调用方。
   - 表在每次推进开始时校验，非法（未知 mode、fork 带 system 等）则不做任何推理。旧的 `extensions.opendan.process_modes` 不再接受。
 - 工具 `call_behavior({behavior, task})`：在 `prompt.llm_context.tools.tools` 中以 `{"name": "call_behavior"}` 显式装配后，context 可以用工具调用（或 behavior action）发起子 context（目标必须是 `create_sub_context` / `fork`）。调用只登记，交接在调用方的 run 段结束时发生（§8）。只由会话自己的 runner 提供；xllm 不具备该工具，拒绝接手装配了它的 run。
@@ -162,8 +161,7 @@ Schema：`schema/session_state.schema.json`。
                        // role = caller 时：它等待的子 context
                        "call": { "mode": "create_sub_context | fork", "behavior": "research",
                                  "trigger": { "kind": "behavior" } | { "kind": "tool", "call_id": "…", "task_id": "subctx:…" },
-                                 "task": "…",
-                                 "todo": { "todo_id": "T03", "attempt": 1 } },   // 子 context 执行的串行 Todo attempt（可缺省）
+                                 "task": "…" },
                        "turns": [...], "flushed_message_count": 0, "flushed_step_index": 3,
                        "flushed_input_seq": 1, "flushed_epoch": 0, "applied_input_seq": 1,
                        "handover_at_ms": 0 } ],
@@ -192,6 +190,8 @@ Schema：`schema/session_state.schema.json`。
   "one_line_status": "…", "last_error": null,
   "pending_decision": null, "stop_requested": false,
   "turn_stop_requested": false,                // 只停当前 Turn（control(stop, scope = turn)，或 Goal Session 收到的任何 stop），false 时省略
+  "paused": { "at_ms": 0, "reason": "…", "by": "…", "in_run": true },   // control(pause)：不再推理，直到 resume（缺省省略）；in_run：暂停打断了 Turn 内的 run
+  "resume_run": false,                         // resume 之后，被暂停在 Turn 内的 run 从检查点接着推理（运行时清除；false 时省略）
   "goal": null | {                             // Goal Session：它拥有的 Goal State 与进行中的 Activation，见下
     "goal_id": "g-…", "epoch": 1,
     "state": { /* opendan.goal_state/1，与本次提交一起落盘 */ },
@@ -213,7 +213,7 @@ Schema：`schema/session_state.schema.json`。
 - `worklog.committed_*` 总是等于提交时 worklog 的末尾；其后的内容是未提交尾部。
 - `process_stack`：`parked` 帧是经 SWITCH_CONTEXT 离开、等待再次进入的 context；`caller` 帧是子 context 的调用方，子 context 返回时出栈。子 context 不做 SWITCH_CONTEXT，所以栈的形状总是若干 `parked` 帧之后跟调用链上的 `caller` 帧；最后一帧是 `caller` 时，`live_run`（或即将新建的 run）就是它的子 context。`caller` 帧最多 4 层。
 - `process_result`：子 context 交回调用方的结果 `{behavior, result, status: ok | failed | needs_user_input, next_action_id, next_step_index}`；工具触发的调用另带 `call_id`（§8）。执行串行 Todo 的调用带 `todo = {todo_id, attempt}`，`result` 只是一句话结果与 `todo show` 指引，不带 `submission`（报告按需读取）。
-- `todos.json`（TodoList，[Agent TodoList](<../Agent TodoList.md>)）：写者是本 Session 的驱动者及其 run 的工具进程（`agent-session todo …`），以 `todos.lock` 排序，整文件原子替换；子 Session 不写父列表。串行 attempt 的绑定在交接提交（state.json）之前写入、按调用方 Step 幂等；返回结果在子 context 返回的提交之前写入、幂等。探索 attempt 由宿主在 drive 开头与每个输入批次边界按登记表回写（同一批次交付某个子 Session 的结束之前再对账一次）。`todo_view_rev` 随批次 receipt（`extra.todo_rev`）提交。
+- `todos.json`（TodoList，[Agent TodoList](<../Agent TodoList.md>)）：写者是本 Session 的驱动者及其 run 的工具进程（`agent-session todo …`），以 `todos.lock` 排序，整文件原子替换；子 Session 不写父列表。attempt 由宿主在 drive 开头、每个输入批次边界与推理前的背景观察里按登记表回写（同一批次交付某个子 Session 的结束之前再对账一次），回写之后立即调度就绪的 Todo。`todo_view_rev` 随批次 receipt（`extra.todo_rev`）提交。
 - `handover_at_ms`：本 state 已提交的交接记录（run.json `handover.at_ms`）的时间戳；带相同时间戳的记录不是待办的转移（§7、§8）。
 - `live_run` = 未结束的 run；`last_run` = 最后一次结束的 run（保留其 llm context 状态）；`process_stack[].run_id` = 挂起的 process 的 run。三者之外的 run 目录可以删除（§7）。
 - `outbox`（出站，驱动者配置了出站 sink 时才产生）：Turn 关闭的那次提交里，由 `reply` 给出信封、sink 填内容，生成完整的 MsgObject 连同幂等键写入，`status = pending`；`created_at_ms` 在这里定死。提交之后驱动者把 `pending` 条目按序交给 sink：成功 → `sent`（记 `msg_id` / `deliveries`）；被拒 → `failed`（记 `error`，不重试）；没送到 → 保持 `pending`，`attempts + 1`，退避后由之后的 drive 原样重发（同一个键、同一个 MsgObject，ObjId 不变）。发送失败不让 Turn 失败，也不阻塞后续输入；排在它后面的条目等它。`channels.outbound` 存在而 `reply` 的 `to / to_session / kind` 与它不一致时，条目直接记为 `failed`（`route_mismatch`），不发送。有父 Session 的 Session、以及回复对象是 Agent 自己时不产生条目。已结束（`sent` / `failed`）的条目保留最近 16 条供展示。

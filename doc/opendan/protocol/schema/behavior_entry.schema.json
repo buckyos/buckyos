@@ -157,13 +157,6 @@
           "type": "string"
         },
         {
-          "description": "Also after every batch of tool results (behavior loop: every step with action results): the TodoList and sub session lines that changed since they were last shown, as a `<<background_context>>` message before the next inference.",
-          "enum": [
-            "after_tools"
-          ],
-          "type": "string"
-        },
-        {
           "description": "Before every inference (the first of a Turn included): the lines that changed since they were last shown — the new output of the tasks the run follows, its sub sessions, its TodoList.",
           "enum": [
             "before_inference"
@@ -291,10 +284,6 @@
         }
       ],
       "description": "`[reply]`: the context's final reply is a JSON value of this contract (function call loop only). A fork may declare its own."
-    },
-    "todo": {
-      "description": "The behavior executes the session's serial Todos: a `next_behavior` hand-over to it admits the next one (TodoList, `[entry] todo`).",
-      "type": "boolean"
     },
     "tool": {
       "anyOf": [

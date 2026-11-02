@@ -1,8 +1,8 @@
-# plan_do_todo_dv — TodoList-driven PLAN / DO and plan_simple, real model
+# plan_do_todo_dv — the plan session (plan_simple), real model
 
-Real-model DV of [notepads/opendan-plan-do-todo-list-todo.md](../../notepads/opendan-plan-do-todo-list-todo.md) §4–§6: the Jarvis PLAN reviews a small Python inventory-reservation service through a TodoList — two explorations in parallel as their own sub sessions, a wait that is no decision, a review of each report, then a serial verification Todo in DO and the final `review.md` / `decisions.md`. The model is real; files, tools, Todo scheduling and reports go through the real `xagent`.
+Real-model DV of [notepads/opendan-plan-simple-async-todo.md](../../notepads/opendan-plan-simple-async-todo.md) §6: the Jarvis plan session reviews a small Python inventory-reservation service through a TodoList — it adds the whole list in its first Turn (two read-only investigations in parallel, a verification Todo after them, a Todo that writes `review.md` / `decisions.md` into the workspace after it), the host starts every Todo in a work session of its own as soon as its prerequisites completed, and the plan only steers with what comes back until it judges the review done. The model is real; files, tools, Todo scheduling and reports go through the real `xagent`.
 
-The mock-model counterpart (state machine, recovery, concurrency, CLI) is `cargo test -p libopendan --test plan_do_todo` in `src/`.
+The mock-model counterpart is `cargo test -p libopendan --test plan_simple_async` (and `--test plan_simple`) in `src/`. The former PLAN / DO mode (`next_behavior = do`) and its task are gone with the behavior loop.
 
 ## Prerequisites
 
@@ -24,48 +24,27 @@ A missing credential, an unreachable endpoint or a model the endpoint does not o
 
 ```bash
 cd buckyos
-PLAN_DO_DV=1 python3 test/plan_do_todo_dv/main.py all --variant normal      # prepare + run + verify
-PLAN_DO_DV=1 python3 test/plan_do_todo_dv/main.py all --variant failure     # idempotency.py is missing from the fixture
+PLAN_DO_DV=1 python3 test/plan_do_todo_dv/main.py all --variant normal        # prepare + run + verify
+PLAN_DO_DV=1 python3 test/plan_do_todo_dv/main.py all --variant user-update   # the user changes investigation B while it runs
+PLAN_DO_DV=1 python3 test/plan_do_todo_dv/main.py all --variant failure       # idempotency.py is missing from the fixture
 # or phase by phase on one case directory:
-python3 test/plan_do_todo_dv/main.py prepare --case /tmp/pd/case1 [--variant failure]
+python3 test/plan_do_todo_dv/main.py prepare --case /tmp/pd/case1 [--variant …]
 python3 test/plan_do_todo_dv/main.py run --case /tmp/pd/case1
 python3 test/plan_do_todo_dv/main.py verify --case /tmp/pd/case1
 ```
 
-`prepare` creates a fresh case directory: an isolated AgentRoot (the Jarvis package of this checkout, with the model aliases mapped to the provider's ids — the mapping and both copies are recorded), an empty session parent and file queue, a read-only fixture copy with its hashes, `task.txt` (this directory's `task.md` with the fixture path), and `llm-context.json` (provider, `tools.enabled`, time limits).
+`prepare` creates a fresh case directory: an isolated AgentRoot (the Jarvis package of this checkout, with the model aliases mapped to the provider's ids — the mapping and both copies are recorded), an empty session parent and file queue, a read-only fixture copy with its hashes, `task.txt` (`task_simple.md` with the fixture path), and `llm-context.json` (provider, `tools.enabled`, time limits).
 
-`run` executes exactly:
-
-```bash
-export OPENDAN_AGENT_ROOT="$CASE/agent" OPENDAN_AGENT_DID="did:bns:jarvis.todo-test" \
-       LIBOPENDAN_WHO="app:xagent-test@local" LIBOPENDAN_QUEUE_DIR="$CASE/kmsg" PLAN_DO_API_KEY=…
-"$XAGENT" new --class work --behavior plan --objective "$(cat "$CASE/task.txt")" \
-  --parent "$CASE/sessions" --llm-context "@$CASE/llm-context.json" --no-run > "$CASE/create.json"
-"$XAGENT" run "$SID" --until finished --max-children 4 --max-wait 3600 \
-  > "$CASE/drive.json" 2> "$CASE/drive.stderr.log"
-```
-
-then collects the evidence (also when the run failed). `$XAGENT` is the binary `prepare` built (path and sha256 in `config/case.json`).
+`run` registers `$CASE/workspace` (`xagent workspace import --runtime container`), creates the plan with `xagent new --class plan_simple --workspace <id> --no-run` and drives it with `xagent run <sid> --until finished --max-children 4`, then collects the evidence (also when the run failed). In the `user-update` variant it watches the plan's `todos.json` and, as soon as investigation B (the Todo whose body names `ACCEPT-B-5M8`) runs, posts the user's change to the plan's queue (`xagent post <sid> --msg …`, what the conversation does when it forwards a message): B's reproduction must also print `ACCEPT-B-EXTRA-9Z1 <tenant count>`.
 
 Watching a run from a second terminal (same environment):
 
 ```bash
 "$XAGENT" list --active
 "$XAGENT" status "$SID" --worklog 200 --events
-"$XAGENT" todo list "$SID"            # the PLAN's view; --json: Todo → attempt → child_sid | run_id → report_ref
+"$XAGENT" todo list "$SID"            # the plan's view; --json: Todo → attempt → child_sid → report_ref
 "$XAGENT" status "$CHILD_SID" --report --worklog 200 --run
 ```
-
-## plan_simple mode
-
-`--mode plan_simple` runs the same review with the Jarvis `plan_simple` behavior ([notepads/opendan-plan-simple-todo.md](../../notepads/opendan-plan-simple-todo.md) §8.2): native function calls with an `intent` on every call, many Turns (a reply while sub sessions run closes one, their ends open the next; every Turn must close), every Todo in a sub session of its own, waits as `agent-session wait` calls, the background after tool results. The task is `task_simple.md`; it names the deliverables' place (the session's workspace) but not how Todos get their runtime / workspace, so the plan's own assignment is checked.
-
-```bash
-PLAN_DO_DV=1 python3 test/plan_do_todo_dv/main.py all --mode plan_simple --variant normal
-PLAN_DO_DV=1 python3 test/plan_do_todo_dv/main.py all --mode plan_simple --variant failure
-```
-
-`run` registers `$CASE/workspace` (`xagent workspace import --runtime container`) and creates the session with `xagent new --class plan_simple --workspace <id>`. `verify` then checks (`verify_simple`): the `plan_simple` class with `explicit_report`; one `turn_started` / `turn_ended`; no behavior steps and no DO; every tool call with a non-empty intent (calls refused for a missing one are counted), intents recorded in `parent/intents.json`; waits as standalone `agent-session wait <sid>` calls, no polling; ≥ 2 explorations with overlapping windows; ≥ 2 serial Todos each in its own `work_simple` sub session, one at a time, after their prerequisites were accepted; explorations without a workspace and the deliverable writer with the inherited one; `review.md` / `decisions.md` in the workspace, tracing findings to Todo ids and sub session ids; every latest result reviewed after a report read; ≥ 2 background blocks (`parent/backgrounds.json`) without child output; markers A / B / C; provider refusals / 403s recorded (`provider.refusals_recorded`, informational).
 
 ## Exit codes
 
@@ -74,15 +53,14 @@ PLAN_DO_DV=1 python3 test/plan_do_todo_dv/main.py all --mode plan_simple --varia
 ## Evidence (`$CASE/`)
 
 ```text
-create.json / drive.json / drive.stderr.log / run.json
+create.json / drive.json / drive.stderr.log / run.json / user_update.json (user-update)
 config/case.json             variant, provider (no key), model map, fixture hashes, xagent path + sha256, behavior hashes
 config/behaviors.package/    the package's behaviors;  config/behaviors.case/  the ones the run froze
-parent/session/              the parent session directory (todos.json, worklog, runs, reports, review.md, …)
-parent/todos.json / todo_view.xml / status.json / views.json (the TodoList view of every decision boundary)
+parent/session/              the plan session directory (todos.json, worklog, runs, …)
+parent/todos.json / todo_view.xml / status.json / intents.json / backgrounds.json
 children/<child_sid>/        session/, status.json, binding.json (its Todo and attempt)
-serial/<run_id>/             sub_task.json (DO's input), process_done.json, report.json, binding.json
-timeline.json                dispatches, child windows (start / first round / first tool / end), waits, reviews
-review.md / decisions.md     the parent's final deliverables
+timeline.json                attempts started / ended, updates, child windows (start / first round / first tool / end), the plan's batches and rounds
+review.md / decisions.md     the deliverables (from the workspace)
 verification.json            every check with its detail, token usage
 ```
 
@@ -90,15 +68,14 @@ verification.json            every check with its detail, token usage
 
 From the committed Todo list, sessions, worklogs and reports — never from words in the final report alone:
 
-- two or more explorations with distinct sub sessions, each with real model rounds and tool calls; their execution windows overlap (the second had begun tool execution before the first ended);
-- each exploration's first input carries its Todo-only acceptance marker (`ACCEPT-A-7Q2`, `ACCEPT-B-5M8`) and its tool output prints it; the serial Todo's `<sub_task>` carries `ACCEPT-C-3K9`, reviewed-result references, and the output prints it;
-- the parent waited by not deciding (`outcome.kind = wait`), was woken by `_child` inputs, never polled (`sleep`, `agent-session wait`);
-- every exploration was reviewed; the serial Todo started after the reviews; the list converged; the session succeeded;
-- the PLAN's context never held a child's tool output, and a child report's body appeared first as the result of `todo show … --report` / `read-session`; the views hold only the compact fields;
-- `review.md` names `inventory.py` and `idempotency.py` (tenant) and traces every accepted result to its Todo and execution; `decisions.md` exists.
-
-The failure variant instead checks that the branch without its input was rejected / needs evidence or followed up, and that the outcome says so.
+- the plan session: class `plan_simple`, `explicit_report`, an input queue, its workspace binding read-only; every Turn closed; no behavior steps; every call with a non-empty intent (`parent/intents.json`); no `todo dispatch`, `todo review`, `agent-session wait`, no `sleep`, no writing commands;
+- the whole list in the first Turn (≥ 4 Todos, ≥ 3 in the failure variant); ≥ 2 explorations with distinct work sessions whose windows overlap; work Todos in `work_simple`; explorations without a workspace;
+- every Todo with prerequisites started before the plan's next input batch after the last of them completed (the host schedules, the plan does not); a verification Todo after the investigations;
+- normal / user-update: the deliverables in the workspace written by a Todo that inherited it, naming `inventory.py` and `idempotency.py` (tenant), tracing the investigations' Todo ids; the markers A / B / C in the work sessions' output; the plan succeeded;
+- user-update: the message was posted, B was updated (`updates`), the update reached its work session (an `#updated@` input) or B was retried, and `ACCEPT-B-EXTRA-9Z1` is in B's output or report;
+- failure: the final report or `review.md` says what is missing; a verification Todo exists;
+- Turns ≤ work sessions + user messages + ticks + 3; the list summary recorded at the end (`control_applied{todo_summary}`); ≥ 2 background blocks; provider refusals / 403s recorded (informational).
 
 ## Runs
 
-Recorded runs, with the manual review, are listed in the TODOs' implementation records: PLAN / DO in [opendan-plan-do-todo-list-todo.md](../../notepads/opendan-plan-do-todo-list-todo.md) §8, plan_simple in [opendan-plan-simple-todo.md](../../notepads/opendan-plan-simple-todo.md) §10.4.
+Recorded runs, with the manual review, are in the TODO's implementation record: [opendan-plan-simple-async-todo.md](../../notepads/opendan-plan-simple-async-todo.md) §8.

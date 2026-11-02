@@ -60,20 +60,25 @@ max_process_depth = 4
 # (`create-worksession --cmd-skill`); there is no default. It has many Turns:
 # every reply closes one (the progress its caller sees), the end of a task it
 # started — or a tick every `tick_secs` while its tasks run — opens the next;
-# only `report(is_end=true)` ends it.
+# only `report(is_end=true)` ends it. By default it is a plan session
+# (`plan_simple`): it keeps a TodoList whose Todos run in work sessions of
+# their own (`work_simple`, `explore`); `--behavior work_simple` makes it one
+# bounded task.
 [session.work]
-default_behavior = "plan"
+default_behavior = "plan_simple"
 completion = "explicit_report"
 tick_secs = 30
 max_process_depth = 8
 
-# A work session that plans with a TodoList and runs every Todo in a sub
-# session of its own, with native function calls; like every work session its
-# result is an explicit final report. Chosen explicitly:
-# `agent-session create-worksession --class plan_simple --objective "..."`.
+# The plan session of a conversation (`--class plan_simple`): its queue
+# brings it the user's messages forwarded from the conversation (it never
+# waits for an answer); it only steers what runs, so its tick is rare (a
+# Todo's end is its input).
 [session.plan_simple]
 base = "work"
 default_behavior = "plan_simple"
+input = "queue"
+tick_secs = 600
 max_process_depth = 8
 
 # Goal Sessions: every activation is one Turn; what a goal leaves out of its

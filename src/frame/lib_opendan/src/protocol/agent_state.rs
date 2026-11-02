@@ -43,6 +43,9 @@ pub struct SessionStatus {
     /// A Turn is open (work in progress, or waiting inside it).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub turn_open: bool,
+    /// Paused (`control(pause)`): it infers no more until resumed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub paused: bool,
     #[serde(default)]
     pub activity: Activity,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -76,6 +79,7 @@ impl SessionStatus {
             pending_decision: None,
             needs_input: false,
             turn_open: false,
+            paused: false,
             activity: Activity::default(),
             last_runner: None,
             last_error: None,

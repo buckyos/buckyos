@@ -178,6 +178,10 @@ fn status_of(
     let st = &s.state;
     let goal = super::goal::is_goal(&s.config);
     let message = match st.run_state {
+        _ if st.paused.is_some() => match st.paused.as_ref().and_then(|p| p.reason.as_deref()) {
+            Some(r) => format!("paused: {}", r.chars().take(160).collect::<String>()),
+            None => "paused".to_string(),
+        },
         RunState::Waiting if !st.wait_children.is_empty() => {
             format!("waiting for {} sub session(s)", st.wait_children.len())
         }

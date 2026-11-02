@@ -71,7 +71,7 @@ For the request below, decide what it needs:
 ## Shape of a work session
 
 - simple, `--behavior work_simple`: one clear action, no plan needed, about a dozen tool calls, no changes across many files, no separate verification work.
-- plan and do (the default, no `--behavior`): everything else — several steps, a plan, verification, several deliverables, continued work in a workspace.
+- plan, `--class plan_simple`: everything else — several steps, verification, several deliverables, continued work in a workspace. A plan session keeps a TodoList whose Todos run in work sessions of their own; the user's later messages about this work can be forwarded to it while it runs.
 - Open-ended waiting or watching is never a work session: that is a goal.
 
 ## Workspace and runtime
@@ -85,8 +85,8 @@ For the request below, decide what it needs:
 
 ## Creating
 
-- Work: `agent-session create-worksession --objective "<complete, self-contained objective>" --msg "<the answers, evidence, constraints and how to check that it is done>" [--behavior work_simple] [--cmd-skill <name>]... --runtime <runtime_id> --workspace <workspace_id>|none --context recent:6 --report final`
-  The work session does not see this conversation: its objective and message are all it has. Never add `--wait`.
+- Work: `agent-session create-worksession --objective "<complete, self-contained objective>" --msg "<the answers, evidence, constraints and how to check that it is done>" (--class plan_simple | --behavior work_simple) [--cmd-skill <name>]... --runtime <runtime_id> --workspace <workspace_id>|none --context recent:6 --report final`
+  The work session does not see this conversation: its objective and message are all it has. Its end comes back to the conversation by itself.
   `--cmd-skill`: the manuals from `skill list` that fit the task (at most 8). Each one goes into the work session's prompt for its whole life, so give the ones it will use and none when none fits; they are shortcuts, not rules it must follow.
 - Goal: `agent-session goal create --objective "<the state to reach or keep>" --title <short title> --lifecycle achieve|maintain [--achieved-when <t>] [--healthy-state <t>] [--constraint <t>]... [--workspace <id>] [--every <secs>] --start --key <unique operation id>`
   A request that belongs to an existing goal goes to it: `agent-session goal post <goal_id> --msg "<text>"`.
@@ -94,7 +94,7 @@ For the request below, decide what it needs:
 ## Rules
 
 - Change nothing besides creating the workspace, work session or goal the request needs: no edits, no commands with side effects.
-- Do not widen the request, do not decide permissions for the user, do not create work or a goal that already exists, do not do the work yourself.
+- Do not widen the request, do not decide permissions for the user, do not create work or a goal that already exists, do not do the work yourself. A change or addition to a plan that is still running is not a new request: the conversation forwards it to that plan (`agent-session post <sid> --msg …`); finish with `direct` and say so when such a request reaches you.
 - Ask the user only with `ask_user`; never with `WAIT_USER_MSG`.
 
 ## Finishing
@@ -109,7 +109,7 @@ Your final reply is one JSON object, the result, with every field below (no tool
   Not your exploration.
 - `clarifications`: `[{"question", "answer"}]`, every question you asked with `ask_user` and its answer, exactly as in the report — the conversation does not see them otherwise.
 - `assumptions`, `evidence` (`<fact and where it came from>`), `gaps` (`<what is missing and why>`): lists, `[]` when empty. `reason`: why declined / unsupported, otherwise `null`.
-- `work`: for `work_created` `{"session_id", "shape": "plan_do | simple", "objective", "workspace_id" ("none" without one), "runtime_id", "cmd_skills": ["<name given with --cmd-skill>"], "report": "final"}`, otherwise `null`; `goal`: for `goal_created` `{"goal_id", "objective", "lifecycle": "achieve | maintain"}`, otherwise `null`; `proposal`: for `needs_confirmation` `{"summary", "options", "why_confirm"}`, otherwise `null`.
+- `work`: for `work_created` `{"session_id", "shape": "plan | simple", "objective", "workspace_id" ("none" without one), "runtime_id", "cmd_skills": ["<name given with --cmd-skill>"], "report": "final"}`, otherwise `null`; `goal`: for `goal_created` `{"goal_id", "objective", "lifecycle": "achieve | maintain"}`, otherwise `null`; `proposal`: for `needs_confirmation` `{"summary", "options", "why_confirm"}`, otherwise `null`.
 
 Request: {{handover.sub_task.task}}
 </intent_analysis>
@@ -148,7 +148,7 @@ schema = '''
       "required": ["session_id", "shape", "objective", "workspace_id", "runtime_id", "cmd_skills", "report"],
       "properties": {
         "session_id": {"type": "string"},
-        "shape": {"type": "string", "enum": ["plan_do", "simple"]},
+        "shape": {"type": "string", "enum": ["plan", "simple"]},
         "objective": {"type": "string"},
         "workspace_id": {"type": "string"},
         "runtime_id": {"type": "string"},

@@ -1,16 +1,12 @@
-//! What a context is shown besides its inputs (`[input] background`):
+//! What a context is shown besides its inputs (`[input] background =
+//! "before_inference"`, simple Work Session TODO §3.9, Q14): before every
+//! inference, the first of a Turn included.
 //!
-//! - `"after_tools"` (plan_simple TODO §4.4): after its tool results — the
-//!   action → observation → next decision of the behavior loop, for a
-//!   function call loop;
-//! - `"before_inference"` (simple Work Session TODO §3.9, Q14): before
-//!   every inference, the first of a Turn included.
-//!
-//! The host brings the TodoList up to its sub sessions' committed state and
-//! appends, as one `<<background_context>>` message, the lines that changed
+//! The host brings the TodoList up to its sub sessions' committed state
+//! (and dispatches what became ready) and appends, as one `<<background_context>>` message, the lines that changed
 //! since they were last shown: each Todo (its compact view line), the sub
-//! sessions no Todo binds and (`before_inference`) the tasks the run
-//! follows that printed something new — only the new output, at most
+//! sessions no Todo binds and the tasks the run follows that printed
+//! something new — only the new output, at most
 //! [`TASK_OUTPUT_MAX`] bytes of it. The session's runtime and workspace are
 //! frozen for its life and told by its first input. Never a sub session's
 //! transcript or report: those are read on demand (`todo show --report`).
@@ -38,7 +34,7 @@ use super::receipts::{snapshot_host_meta, with_host_meta};
 use super::shared::{commit_and_report, Shared};
 
 /// run.json `host.extra` key: what the run is shown besides its inputs
-/// (`"after_tools"` | `"before_inference"`), frozen with the run.
+/// (`"before_inference"`), frozen with the run.
 pub(super) const EXTRA_BACKGROUND: &str = "background";
 
 const BLOCK_START: &str = "<<background_context>>";
@@ -46,46 +42,20 @@ const BLOCK_START: &str = "<<background_context>>";
 /// Most new output of one task a line shows (its end is kept).
 pub(super) const TASK_OUTPUT_MAX: usize = 2048;
 
-/// When the run is shown background lines.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Background {
-    AfterTools,
-    BeforeInference,
-}
-
-impl Background {
-    /// The run.json value of `mode`, `None` for the default (inputs only).
-    pub(super) fn extra(mode: InputBackground) -> Option<&'static str> {
-        match mode {
-            InputBackground::Batch => None,
-            InputBackground::AfterTools => Some("after_tools"),
-            InputBackground::BeforeInference => Some("before_inference"),
-        }
+/// The run.json value of `mode`, `None` for the default (inputs only).
+pub(super) fn extra(mode: InputBackground) -> Option<&'static str> {
+    match mode {
+        InputBackground::Batch => None,
+        InputBackground::BeforeInference => Some("before_inference"),
     }
 }
 
-pub(super) fn enabled(run: &RunHandle) -> Option<Background> {
-    match super::tools::run_flag(run, EXTRA_BACKGROUND)
+/// Whether the run is shown background lines before its inferences.
+pub(super) fn enabled(run: &RunHandle) -> bool {
+    super::tools::run_flag(run, EXTRA_BACKGROUND)
         .as_ref()
         .and_then(Value::as_str)
-    {
-        Some("after_tools") => Some(Background::AfterTools),
-        Some("before_inference") => Some(Background::BeforeInference),
-        _ => None,
-    }
-}
-
-/// Whether the snapshot stands right after a batch of tool results (a
-/// behavior step with action results).
-fn after_tool_results(snapshot: &LLMContextSnapshot, behavior: bool) -> bool {
-    let st = &snapshot.state;
-    if behavior {
-        return st
-            .last_step
-            .as_ref()
-            .is_some_and(|s| !s.action_results.is_empty());
-    }
-    st.accumulated.last().is_some_and(|m| m.role == AiRole::Tool)
+        == Some("before_inference")
 }
 
 /// The candidate lines now, and the finished sub sessions with the key of
@@ -213,7 +183,7 @@ async fn observe(sh: &Shared) -> Result<Observed> {
     let list = super::todos::load(sh);
     let mut lines = Vec::new();
     for t in &list.todos {
-        lines.push(BackgroundLine::new(todo_key(&t.todo_id), t.view_line()));
+        lines.push(BackgroundLine::new(todo_key(&t.todo_id), t.view_line(&list)));
     }
     let bound: BTreeMap<String, (String, u32)> = list
         .todos
@@ -315,17 +285,15 @@ async fn mark_delivered(
 }
 
 /// The checkpoint hook's observation at an inference boundary (after the
-/// snapshot was published): the TodoList is synchronized, ends already
-/// shown are marked heard, and right after tool results the changed lines
-/// are returned as the injection (with the `observed` map in the host
+/// snapshot was published): the TodoList is synchronized (and what became
+/// ready dispatched), ends already shown are marked heard, and the changed
+/// lines are returned as the injection (with the `observed` map in the host
 /// metadata; after a history rewrite an unchanged state is recorded anew
 /// without a message).
 pub(super) async fn at_boundary(
     sh: &Shared,
     run: &RunHandle,
     snapshot: &LLMContextSnapshot,
-    behavior: bool,
-    mode: Background,
 ) -> Result<Option<Injection>> {
     if let Err(e) = super::todos::sync(sh).await {
         log::warn!("todo sync of {}: {e}", sh.dir.sid());
@@ -344,24 +312,8 @@ pub(super) async fn at_boundary(
     } else {
         BTreeMap::new()
     };
-    let (tasks, task_output) = if mode == Background::BeforeInference {
-        task_lines(sh, run, &shown_output).await
-    } else {
-        (Vec::new(), BTreeMap::new())
-    };
+    let (tasks, task_output) = task_lines(sh, run, &shown_output).await;
     now.lines.extend(tasks);
-    if mode == Background::AfterTools && !after_tool_results(snapshot, behavior) {
-        if snapshot
-            .state
-            .accumulated
-            .last()
-            .is_some_and(|m| m.role == AiRole::User && m.text_content().starts_with(BLOCK_START))
-        {
-            // The injection is published with the snapshot.
-            crate::fault::point("observe:after_inject_commit");
-        }
-        return Ok(None);
-    }
     if snapshot
         .state
         .accumulated

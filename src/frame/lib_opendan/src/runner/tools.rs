@@ -537,7 +537,6 @@ pub(super) fn sub_call_of(
             task_id: format!("{SUB_CONTEXT_TASK_PREFIX}{}", call.call_id),
         },
         task,
-        todo: None,
     })
 }
 

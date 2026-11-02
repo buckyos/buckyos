@@ -82,6 +82,11 @@ pub struct BehaviorCapabilities {
     /// why the call is made now and what it should yield.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub call_intent: bool,
+    /// The access a session entered with this behavior takes to its
+    /// workspace (`None`: what its creator asked). A plan reads the
+    /// workspace; the work sessions of its Todos write it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<super::config::WorkspaceAccess>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -119,11 +124,6 @@ pub struct BehaviorEntryConfig {
     pub mode: Option<ContextMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inherit: Option<InheritMode>,
-    /// A hand-over to this behavior (`next_behavior`) executes the session's
-    /// next serial Todo: the host admits it and hands its body over as the
-    /// sub task (`create_sub_context` only).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub todo: bool,
 }
 
 /// `[tool]`: a sub context behavior offered to its callers as a named
@@ -615,7 +615,6 @@ impl BehaviorConfig {
                 _ => InheritMode::None,
             }),
             tool: self.tool.clone(),
-            todo: self.entry.todo,
             reply: self.reply.clone(),
             call_intent: self.capabilities.call_intent,
         };

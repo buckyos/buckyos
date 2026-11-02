@@ -267,22 +267,11 @@
           "description": "`create_sub_context | fork` (how the child was constructed)."
         },
         "task": {
-          "description": "Task given to the child (tool trigger: the call's `task` argument; a Todo executor: the admitted Todo's body).",
+          "description": "Task given to the child (tool trigger: the call's `task` argument).",
           "type": [
             "string",
             "null"
           ]
-        },
-        "todo": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/TodoBinding"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "The serial Todo attempt this call executes."
         },
         "trigger": {
           "$ref": "#/definitions/CallTrigger"
@@ -1587,6 +1576,35 @@
       ],
       "type": "string"
     },
+    "Paused": {
+      "description": "[`SessionState::paused`].",
+      "properties": {
+        "at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "by": {
+          "default": "",
+          "description": "Who asked (the poster of the control).",
+          "type": "string"
+        },
+        "in_run": {
+          "description": "The pause stopped a run inside its open Turn.",
+          "type": "boolean"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "at_ms"
+      ],
+      "type": "object"
+    },
     "PendingEvent": {
       "description": "Semi-subscription state waiting to be injected: the newest version of one `(subscription_id, source)`, its terminal event kept separately. Saved when received (the delivery is then consumed); cleared only by the receipt of the batch that injected exactly these versions, by `unsubscribe`, or replaced by a newer version.",
       "properties": {
@@ -2097,24 +2115,6 @@
       },
       "type": "object"
     },
-    "TodoBinding": {
-      "description": "A sub context call bound to a serial Todo attempt (TodoList §2.1): its result is written back to that attempt when the call returns.",
-      "properties": {
-        "attempt": {
-          "format": "uint32",
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "todo_id": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "attempt",
-        "todo_id"
-      ],
-      "type": "object"
-    },
     "Topic": {
       "properties": {
         "tags": {
@@ -2497,6 +2497,17 @@
         }
       ]
     },
+    "paused": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Paused"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "`control(pause)`: the session infers no more — no Turn opens, a run in progress stops at its next inference boundary (its checkpoint) — until `control(resume)`. Tasks it follows run on."
+    },
     "pending_decision": {
       "description": "Decisions seen in the queue but not applied yet (UI display)."
     },
@@ -2554,6 +2565,10 @@
       "type": "integer"
     },
     "result": true,
+    "resume_run": {
+      "description": "A run a pause stopped inside its Turn goes on from its checkpoint (set by `resume`, cleared when it runs again).",
+      "type": "boolean"
+    },
     "rev": {
       "format": "uint64",
       "minimum": 0.0,

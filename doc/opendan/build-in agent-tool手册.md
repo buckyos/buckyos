@@ -593,21 +593,21 @@ Grep 'panic!' output_mode=content head_limit=50 offset=50
 
 ## 8. `agent-session todo`
 
-Work Session 的 TodoList（[Agent TodoList](<Agent TodoList.md>)）。不是 prompt-visible 工具：PLAN 在 shell 里调用 Session Bin 的 `agent-session`（= `xagent`），Session 由 `$OPENDAN_SESSION_ID` 给出。执行者（DO、探索子 Session）不调用它写父列表；结果由宿主依据已提交状态回写。
+plan session 的 TodoList（[Agent TodoList](<Agent TodoList.md>)）。不是 prompt-visible 工具：plan 在 shell 里调用 Session Bin 的 `agent-session`（= `xagent`），Session 由 `$OPENDAN_SESSION_ID` 给出。执行者（Todo 的 work session）不写 plan 的列表；结果由宿主依据已提交状态回写，就绪的 Todo 由宿主自动派发。
 
 ```text
-todo add <title> --content <t> [--accept <criterion>]... [--scope <t>] [--evidence <t>]... [--skill <s>]... [--after <todo_id>]...
-todo explore <title> --content <t> [同上] [--behavior <b>] [--class <c>]   # 建 Todo 并派发为探索子 Session
-todo dispatch <todo_id>                                                  # 派发已有的 pending Todo
+todo add <title> --content <t> [--accept <criterion>]... [--scope <t>] [--evidence <t>]... [--skill <s>]... [--after <todo_id>|none]...
+todo explore <title> --content <t> [同上]                                 # 只读调查，缺省无依赖
+todo update <todo_id> --reason <t> [--content <t>] [--accept <c>]... [--clear-accept] [--scope <t>] [--evidence <t>]... [--after <id>|none]...
+todo pause|resume|stop <todo_id> --reason <t>
 todo list [--json] | todo show <todo_id> [--report]
-todo review <todo_id> (--accept | --reject | --need-evidence) --reason <t> [--followup <todo_id>]...
 todo cancel <todo_id> --reason <t> | todo clean --reason <t> | todo retry <todo_id> --reason <t>
 ```
 
-- 串行 Todo 由 `next_behavior = do`（Todo 执行器）执行：宿主选第一个就绪的串行 Todo，把正文作为 `<sub_task>` 交给 DO。
-- `explore` / `dispatch` 的结果：`{todo_id, attempt, child_sid, dispatched: true}`；被并发上限拒绝时 `{dispatched: false, reason}`、退出码 3，Todo 保持 pending。
-- `list` 默认输出 PLAN 视图 `<todo_list rev>`；`show --report` 输出最新 attempt 的完整报告。
-- `review` 对探索 attempt 同时写子 Session 的 acceptance（accept → accepted，reject → discarded）；退出码 5 = Review 已记录、acceptance 未写入，重跑同一 Review。
+- `add` 不带 `--after` 时依赖上一个 Todo；前置都 `completed` 时宿主立刻派发。改列表的命令输出带 `scheduled: [{result: dispatched | held | blocked, …}]`。
+- `update` 改运行中的 Todo 时，它的 work session 以 `todo:<id>` / `updated` 事件收到完整的新任务；`after / runtime / workspace / skill` 只在没有 attempt 在跑时可改。
+- `list` 默认输出视图 `<todo_list rev>`；`show --report` 输出最新 attempt 的完整报告。
+- 没有 `dispatch` / `review` / `wait`：验证用一条 `todo explore … --after <id>`。
 - owner 侧只读：`xagent todo list <sid> [--json]`、`xagent todo show <todo_id> --session <sid> [--report]`。
 - 环境：`OPENDAN_SESSION_ID`、`OPENDAN_AGENT_DID`、`OPENDAN_AGENT_ROOT`、`LIBOPENDAN_WHO`、`LIBOPENDAN_MAX_CHILDREN`（宿主的并发上限）。
 - 列表在 `<SessionDir>/.opendan_agent_session/todos.json`（`opendan.todo_list/1`）。旧的 `todo current / done / finish` 与 `delegateTask` 已删除。

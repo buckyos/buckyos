@@ -169,7 +169,6 @@ async fn redo_transfer(
             false,
         );
         next.usage = record.usage.main.clone();
-        super::todos::settle(sh, &mut next, &site, false, &record.run_id, snapshot).await?;
         hold_for_children(sh, &mut next).await?;
         // A hand-over to the sub context a call of this run asked for.
         if let Some(call) = run.sub_call().filter(|c| c.behavior == h.next_behavior) {

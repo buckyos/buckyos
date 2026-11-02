@@ -52,9 +52,17 @@
           "id": "bob.bns.did",
           "name": "Bob"
         },
+        "is_child_end": false,
+        "is_child_needs_input": false,
         "is_event": false,
         "is_group": true,
         "is_msg": true,
+        "is_nudge": false,
+        "is_other_event": false,
+        "is_task_result": false,
+        "is_tick": false,
+        "is_todo_update": false,
+        "is_user_msg": true,
         "key": "cymsg:177ee9099ca6521860194947bb82640487fbbe0a3e3f6f3a23451c3e1b62a92a",
         "kind": "group_msg",
         "machine": null,
@@ -75,17 +83,21 @@
         ],
         "sent_at": "2026-10-02T00:00:00Z",
         "text": "@jarvis 帮我看一下这张截图里的报错 <build>，日志在附件里",
-        "title": null,
-        "is_task_result": false,
-        "is_tick": false,
-        "is_nudge": false,
-        "is_other_event": false
+        "title": null
       },
       {
         "data_ref": null,
         "event": "updated",
+        "is_child_end": false,
+        "is_child_needs_input": false,
         "is_event": true,
         "is_msg": false,
+        "is_nudge": false,
+        "is_other_event": true,
+        "is_task_result": false,
+        "is_tick": false,
+        "is_todo_update": false,
+        "is_user_msg": false,
         "key": "task:t1:revision:7",
         "seq": 7,
         "source": {
@@ -94,11 +106,7 @@
         },
         "subscription_id": "watch-t1",
         "summary": "任务 t1 的状态发生变化",
-        "terminal": false,
-        "is_task_result": false,
-        "is_tick": false,
-        "is_nudge": false,
-        "is_other_event": true
+        "terminal": false
       }
     ],
     "messages": [

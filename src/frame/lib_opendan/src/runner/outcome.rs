@@ -25,6 +25,41 @@ use super::shared::{commit_and_report, report, ClosedTurn, LiveCtx, Shared};
 
 const WAIT_USER_MSG: &str = "WAIT_USER_MSG";
 
+/// Interrupt reason of a run stopped by `control(pause)`.
+pub(super) const PAUSE_REASON: &str = "session paused";
+
+/// A yield waits for the sub sessions the session must hear from; with
+/// none, a progress report alone does not finish the session.
+async fn settle_yield(sh: &Shared, next: &mut Next, site: &CallSite<'_>, yielded: bool) -> Result<()> {
+    if site.child || !yielded {
+        return Ok(());
+    }
+    let children = super::children::unsettled_children(sh).await?;
+    if !children.is_empty() {
+        next.kind = FinishKind::Wait;
+        next.run_ended = true;
+        next.suspended = false;
+        next.finished = false;
+        next.outcome = None;
+        next.waiting = true;
+        next.turn_end = None;
+        next.next_behavior = None;
+        next.call = None;
+        next.error = None;
+        next.wait_children = children;
+    } else if next.finished && next.outcome == Some(Outcome::Succeeded) {
+        next.kind = FinishKind::Error;
+        next.outcome = Some(Outcome::Failed);
+        next.turn_end = Some(TurnStatus::Failed);
+        next.error = Some(json!({
+            "kind": "missing_end_report",
+            "message": "a progress report alone does not finish the session; nothing it started is running",
+            "recoverable": false,
+        }));
+    }
+    Ok(())
+}
+
 /// How a run segment ended: the `kind` of a [`Next`], persisted in
 /// run.json (`host.extra.finish`) and written as the worklog `outcome`
 /// entry's kind. Serialized in snake_case (`process_done`, `wait`,
@@ -50,6 +85,9 @@ pub(super) enum FinishKind {
     Interrupted,
     /// Paused at the context limit (compactions exhausted).
     ContextLimit,
+    /// `control(pause)` stopped the run at an inference boundary: kept at
+    /// its checkpoint, the Turn stays open, `resume` runs it on.
+    Paused,
 }
 
 impl FinishKind {
@@ -65,6 +103,7 @@ impl FinishKind {
             FinishKind::Stopped => "stopped",
             FinishKind::Interrupted => "interrupted",
             FinishKind::ContextLimit => "context_limit",
+            FinishKind::Paused => "paused",
         }
     }
 }
@@ -266,6 +305,13 @@ pub(super) fn decide_end(cfg: &SessionConfig, next: &mut Next, completed: u64) {
     }
 }
 
+/// Nobody answers the session: it has no queue, or its queue only brings it
+/// events, never an answer it waits for (a plan's forwarded user messages,
+/// a Todo's updates).
+fn nobody_answers(cfg: &SessionConfig) -> bool {
+    cfg.channels.inputs.is_empty() || cfg.session.policy.wait_user_msg != WaitPolicy::Allowed
+}
+
 /// A multi-Turn Work Session (simple Work Session TODO §3.3): every reply
 /// closes a Turn, the work it started opens the next ones, and only an
 /// explicit final report ends it.
@@ -273,7 +319,7 @@ pub(super) fn multi_turn_work(cfg: &SessionConfig) -> bool {
     cfg.session.kind == SessionKind::Work
         && cfg.session.policy.completion == CompletionPolicy::ExplicitReport
         && cfg.session.end_condition.kind == EndConditionType::MaxTurns
-        && cfg.channels.inputs.is_empty()
+        && nobody_answers(cfg)
 }
 
 /// The run produced a Self Report (`<report>`).
@@ -449,7 +495,6 @@ pub(super) fn classify_done(
                         behavior: b.to_string(),
                         trigger: CallTrigger::Behavior,
                         task: None,
-                        todo: None,
                     });
                 }
             }
@@ -468,7 +513,7 @@ pub(super) fn classify_done(
         }
         _ if explicit_end => decide_end(cfg, &mut next, completed + 1),
         _ if cfg.session.policy.completion == CompletionPolicy::ExplicitReport => {
-            if cfg.channels.inputs.is_empty() {
+            if nobody_answers(cfg) {
                 next.finished = true;
                 next.kind = FinishKind::Error;
                 next.outcome = Some(Outcome::Failed);
@@ -507,7 +552,6 @@ pub(super) async fn hand_over(
     next: &mut Next,
 ) -> Result<()> {
     let target = next.next_behavior.clone().unwrap_or_default();
-    super::todos::bind_serial(sh, next, run.run_id(), snapshot).await?;
     suspend_run(sh, run, behavior, snapshot, &target, next.call.clone()).await?;
     if run.sub_call().is_some() {
         // Handed over: the call is with the caller's frame now.
@@ -658,7 +702,7 @@ pub(super) async fn handle_context_outcome(
             }
             let yielded = behavior_result.as_ref().and_then(|b| b.decision())
                 == Some(llm_context::StepDecision::Yield);
-            super::todos::settle(sh, &mut next, &site, yielded, lc.run.run_id(), &snapshot).await?;
+            settle_yield(sh, &mut next, &site, yielded).await?;
             hold_for_children(sh, &mut next).await?;
             if let Some(call) = lc.run.sub_call() {
                 // A sub context a call of this run asked for: the session
@@ -692,7 +736,7 @@ pub(super) async fn handle_context_outcome(
                 returns(
                     &mut next,
                     "failed",
-                    Some(format!("{} ({which:?})", super::todos::SUB_CONTEXT_BUDGET)),
+                    Some(format!("the sub context ran out of budget ({which:?})")),
                 );
             } else {
                 next.kind = FinishKind::Budget;
@@ -780,6 +824,10 @@ pub(super) async fn handle_context_outcome(
                 next.turn_end = Some(TurnStatus::Stopped);
                 next.error = Some(json!({ "kind": "stopped", "message": reason, "recoverable": false }));
                 status = RunStatus::Interrupted;
+            } else if reason == PAUSE_REASON {
+                // Kept at its checkpoint, the Turn open: `resume` runs it on.
+                next.kind = FinishKind::Paused;
+                status = RunStatus::Paused;
             } else {
                 next.kind = FinishKind::Interrupted;
                 next.error = Some(json!({ "kind": "interrupted", "message": reason }));
@@ -919,6 +967,13 @@ pub(super) async fn commit_kept(
     if next.nudge > 0 {
         s.state.nudge.count = s.state.nudge.count.max(next.nudge);
         s.state.nudge.pending = true;
+    }
+    if next.kind == FinishKind::Paused {
+        // A resume that arrived meanwhile runs it on at once.
+        match s.state.paused.as_mut() {
+            Some(p) => p.in_run = true,
+            None => s.state.resume_run = true,
+        }
     }
     s.state.last_error = next.error.clone();
     commit_and_report(sh, &mut s).await
@@ -1105,6 +1160,25 @@ async fn commit_run_end(
     if let Some(topic) = &next.topic {
         s.state.topic = topic.clone();
     }
+    // A plan that ends: what still runs of its TodoList ends stopped, and
+    // where every Todo stands is recorded with the end (never a gate).
+    if next.finished && !super::goal::is_goal(&s.config) {
+        super::todos::stop_open(sh, next.outcome);
+        let list = super::todos::load(sh);
+        if !list.todos.is_empty() {
+            let summary = list.summary();
+            bodies.push(WorklogBody::ControlApplied {
+                input: InputRef {
+                    src: "_runner".into(),
+                    index: 0,
+                    key: format!("todo_summary@{run_id}"),
+                    kind: INPUT_TYPE_CONTROL.into(),
+                },
+                command: "todo_summary".into(),
+                detail: json!({ "summary": summary.line(), "todos": summary }),
+            });
+        }
+    }
     // Close the Turn before the report renders the counters.
     let turn_closed = match next.turn_end {
         Some(status) => close_open_turn(sh, s, &run_id, turn, status, next).await?,
@@ -1137,28 +1211,6 @@ async fn commit_run_end(
             &render_report(s, next.answer.as_deref().unwrap_or_default(), next),
         )?;
     }
-    // A returning sub context that executed a serial Todo: the attempt's
-    // result is written back before this commit (idempotent); its caller
-    // and the history get a brief, the report is read on demand.
-    let todo_brief = match s
-        .state
-        .process_stack
-        .last()
-        .filter(|f| next.kind == FinishKind::ProcessDone && f.role == FrameRole::Caller)
-        .and_then(|f| f.call.as_ref())
-        .and_then(|c| c.todo.clone())
-    {
-        Some(b) => Some(super::todos::serial_returned(
-            sh,
-            s,
-            &b,
-            &run_id,
-            next.child_status.as_deref(),
-            next.report.as_ref(),
-            next.answer.as_deref(),
-        )?),
-        None => None,
-    };
     // Flush the run's unwritten history into the worklog.
     bodies.push(WorklogBody::Outcome {
         run_id: run_id.clone(),
@@ -1168,9 +1220,8 @@ async fn commit_run_end(
         report: if next.report.is_some() && next.kind != FinishKind::ProcessDone {
             None
         } else {
-            todo_brief
+            next.answer
                 .clone()
-                .or_else(|| next.answer.clone())
                 .map(|a| match &next.reply_error {
                     Some(e) => format!("[reply not in the required format: {e}] {a}"),
                     None => a,
@@ -1243,22 +1294,19 @@ async fn commit_run_end(
         {
             let entry = f.entry.clone();
             let trigger = f.call.as_ref().map(|c| c.trigger.clone());
-            let bound = f.call.as_ref().and_then(|c| c.todo.clone());
             s.state.live_run = Some(live_from_frame(f));
             let named = Some(entry.clone()).filter(|e| !e.is_empty());
             s.state.process_entry = named.clone();
             s.state.current_behavior = named;
             let mut result = json!({
                 "behavior": child_behavior.unwrap_or_default(),
-                "result": todo_brief.clone().or_else(|| next.answer.clone()).unwrap_or_default(),
+                "result": next.answer.clone().unwrap_or_default(),
                 "status": next.child_status.clone().unwrap_or_else(|| "ok".into()),
                 // Keep action / step ids unique after the return.
                 "next_action_id": snapshot.state.next_action_id,
                 "next_step_index": snapshot.state.next_step_index,
             });
-            if let Some(todo) = &bound {
-                result["todo"] = json!({ "todo_id": todo.todo_id, "attempt": todo.attempt });
-            } else if let Some(report) = &next.report {
+            if let Some(report) = &next.report {
                 result["submission"] = serde_json::to_value(report).unwrap_or(Value::Null);
             }
             // Whatever triggered it, the result reaches the caller as its
@@ -1359,7 +1407,17 @@ async fn close_open_turn(
         },
     )
     .await;
-    super::turn_task::close_turn_task(s, turn, status, next.answer.as_deref(), next.error.as_ref());
+    // The Turn that ends a plan tells where its Todos stand.
+    let todos = next
+        .finished
+        .then(|| super::todos::load(sh))
+        .filter(|l| !l.todos.is_empty())
+        .map(|l| l.summary().line());
+    let task_summary = match (todos, next.answer.as_deref()) {
+        (Some(t), Some(a)) => Some(format!("{t}\n{a}")),
+        (t, a) => t.or(a.map(str::to_string)),
+    };
+    super::turn_task::close_turn_task(s, turn, status, task_summary.as_deref(), next.error.as_ref());
     if status == TurnStatus::Completed {
         s.state.turns_completed += 1;
     }
@@ -1501,6 +1559,11 @@ async fn after_run_end(
     let status = s.status(sh.lease.epoch());
     drop(s);
     report(sh, status).await;
+    if next.finished && !super::goal::is_goal(&cfg) {
+        // Nothing hears the sub sessions of a finished session any more:
+        // they are stopped with it (its TodoList says so already).
+        super::drive::stop_children(sh, next.outcome).await;
+    }
     super::share::after_finish(sh, run, next, super::share::Finished { config: cfg, turns });
     super::outbound::flush_outbox(sh).await;
     super::turn_task::flush_turn_tasks(sh).await;

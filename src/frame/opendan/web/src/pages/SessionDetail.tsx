@@ -303,6 +303,7 @@ export default function SessionDetailPage({ sid }: { sid: string }) {
                   {state.watched_tasks?.length ? <><Badge value="tasks" tone="waiting" /> <Mono>{state.watched_tasks.join(', ')}</Mono></> : null}
                 </span>
               ) : status.needs_input ? <Badge value="input" tone="waiting" /> : null],
+              ['paused', status.paused ? <Badge value="paused" tone="waiting" /> : null],
               ['turns', state ? `${state.turns_completed} completed · seq ${state.turn_seq}` : null],
               ['behavior', state?.current_behavior ? <Mono>{state.current_behavior}</Mono> : null],
               ['process entry', state?.process_entry ? <Mono>{state.process_entry}</Mono> : null],

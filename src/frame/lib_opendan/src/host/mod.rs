@@ -114,8 +114,10 @@ struct Child {
 }
 
 /// Whether a session that is not finished is stopped from above: a sub
-/// session with its stopped parent; a Goal's Work with its Goal (archived),
-/// never with the epoch that created it (a restart keeps it running).
+/// session with its stopped parent, a reporting one with its finished
+/// parent (nobody hears it any more); a Goal's Work with its Goal
+/// (archived), never with the epoch that created it (a restart keeps it
+/// running).
 pub async fn stopped_from_above(
     agent: &dyn AgentStateClient,
     e: &RegistryEntry,
@@ -129,12 +131,16 @@ pub async fn stopped_from_above(
             None => true,
         });
     }
+    let reports = e
+        .origin
+        .as_ref()
+        .and_then(|o| o.report)
+        .is_some_and(|r| r != ReportMode::None);
     match e.origin.as_ref().and_then(|o| o.parent_session.clone()) {
-        Some(p) => Ok(agent
-            .sessions()
-            .lookup(&p)
-            .await?
-            .is_some_and(|p| p.status.outcome == Some(Outcome::Stopped))),
+        Some(p) => Ok(agent.sessions().lookup(&p).await?.is_some_and(|p| {
+            p.status.outcome == Some(Outcome::Stopped)
+                || (reports && p.status.run_state == RunState::Finished)
+        })),
         None => Ok(false),
     }
 }

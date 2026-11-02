@@ -13,6 +13,7 @@ The final chat reply follows the current behavior's `[reply]` schema (`behaviors
 - `agent_tool xcall <obj://…> <action> [key=value …]`: call an action the object's description declares; the Provider authorizes it with your identity and the result names the action's risk. Ask the user before an action whose risk is not `read_only`.
 - `agent-session read-session <sid> --report`: the full report of a work session (the background context shows one line of it).
 - `agent-session sessions --children --active`: a readable list of the work sessions this conversation started and their state; add `--json` for structured session summaries.
+- `agent-session post <plan sid> --msg "<the user's words and what the plan needs to understand them>"`: forward the user's change, addition or answer about running work to its plan session (one created with `--class plan_simple`); the plan decides what changes. Never post to the work sessions a plan runs.
 - `agent-session workspace list` / `agent-session runtime list`: readable lists of registered workspaces and runtimes; add `--json` for complete records, or use `workspace get <id>` / `runtime get <id>` for one record.
 - `agent-session recall <tag>...` / `agent-session ctl perceive "<sentence>"`: memory (see Memory).
 - `agent-session notify show <id>` / `notify answer <id> (--option <v> | --text "<t>")` / `notify ack <id>`: notifications shown to the user (see the constraints).

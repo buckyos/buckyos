@@ -331,6 +331,10 @@
             }
           ]
         },
+        "paused": {
+          "description": "Paused (`control(pause)`): it infers no more until resumed.",
+          "type": "boolean"
+        },
         "pending_decision": true,
         "report_brief": {
           "default": "",

@@ -399,6 +399,11 @@ async fn acquire_workspace_writer(sh: &Arc<Shared>) -> Result<()> {
         return Ok(());
     };
     if binding.access == WorkspaceAccess::ReadOnly {
+        // Its behavior narrowed a writable grant (a plan reads what the
+        // sessions it hands the work to write): it holds nothing.
+        if cfg.workspace.as_ref().is_some_and(|w| w.access == WorkspaceAccess::ReadWrite) {
+            return Ok(());
+        }
         return Err(OpenDanError::WorkspaceBindingInvalid(
             "read-only workspace execution needs runtime isolation; the local shell cannot enforce it".into(),
         ));
@@ -437,10 +442,9 @@ async fn acquire_workspace_writer(sh: &Arc<Shared>) -> Result<()> {
     }
     for entry in &entries {
         if entry.session_id == sh.dir.sid()
-            || !entry
-                .workspace
-                .as_ref()
-                .is_some_and(|w| w.workspace_id == binding.workspace_id)
+            || !entry.workspace.as_ref().is_some_and(|w| {
+                w.workspace_id == binding.workspace_id && w.access == WorkspaceAccess::ReadWrite
+            })
         {
             continue;
         }
@@ -775,7 +779,7 @@ async fn end_open_work(
         }
     }
     if whole && stop_sub_sessions {
-        stop_children(sh).await;
+        stop_children(sh, Some(Outcome::Stopped)).await;
     }
     match live {
         Some(mut lc) => {
@@ -980,23 +984,33 @@ async fn clear_turn_stop(sh: &Arc<Shared>) -> Result<()> {
     Ok(())
 }
 
-/// A stopped parent stops its sub sessions that are not finished: those with
-/// a queue get a `stop`; one without a queue is stopped by whoever drives it
-/// (the host of this process stops the sub sessions it drives when their
-/// parent finished as stopped).
-async fn stop_children(sh: &Arc<Shared>) {
+/// A parent that was stopped stops its sub sessions that are not finished;
+/// one that ended stops those that report to it (nobody hears them any
+/// more). Those with a queue get a `stop`; one without a queue is stopped
+/// by whoever drives it (`host::stopped_from_above`).
+pub(super) async fn stop_children(sh: &Shared, outcome: Option<Outcome>) {
     let me = sh.dir.sid().to_string();
     let Ok(children) = sh.agent().sessions().children_of(&[me.clone()]).await else {
         return;
     };
+    let why = match outcome {
+        Some(Outcome::Stopped) => format!("parent session {me} was stopped"),
+        _ => format!("parent session {me} ended"),
+    };
+    let stopped = outcome == Some(Outcome::Stopped);
     for e in children {
         if e.status.run_state == RunState::Finished || e.input_queue.is_none() {
+            continue;
+        }
+        // An ended parent leaves the sub sessions nobody waits for running.
+        let reports = e.origin.as_ref().and_then(|o| o.report).is_some_and(|r| r != ReportMode::None);
+        if !stopped && !reports {
             continue;
         }
         let input = PostedInput::control(
             &sh.deps.who,
             format!("stop:parent:{me}"),
-            ControlCommand::stop(Some(format!("parent session {me} was stopped"))),
+            ControlCommand::stop(Some(why.clone())),
         );
         if let Err(err) = sh.agent().sessions().post_input(&e.session_id, &input).await {
             log::warn!("cannot stop sub session {}: {err}", e.session_id);
@@ -1564,7 +1578,10 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         // Neither does a run resumed in the middle of a tool batch / step:
         // that batch continues first.
         let sub_context = state.child_call().is_some();
+        // A paused session infers no more: its inputs wait for `resume`.
+        let paused = state.paused.is_some();
         let hold_inputs = live.as_ref().is_some_and(|l| l.filled)
+            || paused
             // A paused Goal opens no Activation; its inputs wait.
             || (goal_paused && state.open_turn.is_none());
         let is_goal = super::goal::is_goal(&cfg);
@@ -1654,9 +1671,10 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         // a conversation (`channels.outbound`): it speaks when spoken to — a
         // notification it only observes is no reason to say anything.
         let waits_for_input = is_goal || cfg.channels.outbound.is_some();
-        let triggered = !picked.is_empty()
-            || (!state.bootstrap_done && !waits_for_input)
-            || state.internal_continuation.is_some();
+        let triggered = !paused
+            && (!picked.is_empty()
+                || (!state.bootstrap_done && !waits_for_input)
+                || state.internal_continuation.is_some());
         let mut msg = None;
         let mut media = Vec::new();
         let mut todo_rev = None;
@@ -1706,6 +1724,19 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                     _ => None,
                 })
                 .collect();
+            // A Todo update comes with the Todo's whole task as it is now.
+            let mut items = items;
+            for item in items.iter_mut() {
+                if let InputItem::Event(v) = item {
+                    if v.source.kind == crate::todos::TODO_EVENT_SOURCE {
+                        if let Some(Ok(SessionInput::Event(ev))) =
+                            picked.iter().find(|m| m.key == v.key).map(|m| &m.input)
+                        {
+                            v.summary = crate::todos::expand_update(sh.agent(), ev).await.summary;
+                        }
+                    }
+                }
+            }
             let material = InputMaterial {
                 hook: hook.to_string(),
                 input: InputView::new(hook, now_ms, items),
@@ -1723,7 +1754,6 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                 },
                 now_ms,
                 todos: None,
-                current_todo: super::todos::current(sh),
                 background: Vec::new(),
             };
             let mut material = material;
@@ -1797,13 +1827,15 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                 None => {}
             }
         }
-        if msg.is_none() && state.internal_continuation.is_some() {
+        if msg.is_none() && state.internal_continuation.is_some() && !paused {
             msg = Some(format!(
                 "<session_input hook=\"{HOOK_ON_CONTEXT_SWITCH}\">Continue with behavior `{}`.</session_input>",
                 state.internal_continuation.clone().unwrap_or_default()
             ));
         }
-        let resumable = live.as_ref().map(|l| l.ready).unwrap_or(false);
+        // A run a pause stopped inside its Turn goes on once resumed.
+        let resumable = !paused
+            && (live.as_ref().map(|l| l.ready).unwrap_or(false) || state.resume_run);
         if msg.is_none() && !resumable {
             if !crate::runtime::workspace_waiting_children(sh.agent(), &cfg, &state)
                 .await?
@@ -1927,6 +1959,11 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
             None if state.live_run.is_some() => Box::pin(open_state_live_run(sh, &env)).await?,
             None => Box::pin(new_run_context(sh, &binding, &env)).await?,
         };
+        if state.resume_run {
+            let mut s = sh.session.lock().await;
+            s.state.resume_run = false;
+            commit_and_report(sh, &mut s).await?;
+        }
         if let Some(text) = msg {
             // The semi-subscription snapshot is assembled right before the
             // controlled input and committed with it as one batch (a UI
@@ -1978,8 +2015,13 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         Box::pin(super::goal::flush(sh)).await;
         outcomes_handled += 1;
         // A kept run whose Turn closed is opened again for the next Turn
-        // (from its checkpoint, with its tool budget refilled).
-        if !next.run_ended && !next.suspended && next.turn_end.is_none() {
+        // (from its checkpoint, with its tool budget refilled); so is one a
+        // pause stopped, once resumed.
+        if !next.run_ended
+            && !next.suspended
+            && next.turn_end.is_none()
+            && next.kind != FinishKind::Paused
+        {
             live = Some(lc);
         }
         let (rev, rs) = {

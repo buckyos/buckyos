@@ -377,12 +377,12 @@ fn ui_session_waits_for_input_and_control_is_separate() {
 }
 
 /// E21 / E5: a sub session created by the layer ② tool through `shell`
-/// (`agent-session create-worksession --wait`). The call returns "still
-/// running" on `session:<sid>` (a session is followed outside the loop), the
-/// reply closes the parent's Turn and keeps the run, the same process drives
-/// the child, and its end opens the kept run's next Turn.
+/// (`agent-session create-worksession`; there is no `--wait`). A session is
+/// followed outside the loop: the reply closes the parent's Turn and keeps
+/// the run, the same process drives the child, and its end opens the kept
+/// run's next Turn.
 #[test]
-fn a_sub_session_is_created_and_waited_for_through_the_shell_tool() {
+fn a_sub_session_is_created_and_followed_through_the_shell_tool() {
     let cli = Cli::new();
     let llm = MockLlm::start(|req, _| {
         if system_of(req).contains("compute the answer") {
@@ -391,15 +391,22 @@ fn a_sub_session_is_created_and_waited_for_through_the_shell_tool() {
         if last_user(req).contains("forty-two") {
             return end_report("p1", "the child said forty-two");
         }
-        match tool_result(req, "w1") {
-            Some(r) => {
-                assert!(r.contains("still running") && r.contains("comes back to you as input"), "{r}");
-                say("waiting for the child")
-            }
-            None => call_shell(
-                "w1",
+        match (tool_result(req, "w0"), tool_result(req, "w1")) {
+            (None, _) => call_shell(
+                "w0",
                 "agent-session create-worksession --objective 'compute the answer' --msg 'be brief' --wait",
             ),
+            (Some(r), None) => {
+                assert!(r.contains("there is no --wait") && r.contains("comes back to you as input"), "{r}");
+                call_shell(
+                    "w1",
+                    "agent-session create-worksession --objective 'compute the answer' --msg 'be brief'",
+                )
+            }
+            (_, Some(r)) => {
+                assert!(r.contains("\"status\": \"created\""), "{r}");
+                say("waiting for the child")
+            }
         }
     });
     let lc = llm.llm_context(json!({}));
@@ -450,7 +457,7 @@ fn a_sub_session_is_created_and_waited_for_through_the_shell_tool() {
         .collect();
     assert_eq!(results.len(), 1);
     assert!(sd.state().unwrap().is_finished());
-    assert_eq!(llm.count(), 4);
+    assert_eq!(llm.count(), 5);
 }
 
 /// E1: a run stopped by xagent is finished by xllm from the run directory

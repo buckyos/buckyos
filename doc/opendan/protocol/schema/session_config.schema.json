@@ -161,6 +161,17 @@
             "array",
             "null"
           ]
+        },
+        "workspace": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WorkspaceAccess"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The access a session entered with this behavior takes to its workspace (`None`: what its creator asked). A plan reads the workspace; the work sessions of its Todos write it."
         }
       },
       "type": "object"
@@ -280,10 +291,6 @@
               "type": "null"
             }
           ]
-        },
-        "todo": {
-          "description": "A hand-over to this behavior (`next_behavior`) executes the session's next serial Todo: the host admits it and hands its body over as the sub task (`create_sub_context` only).",
-          "type": "boolean"
         }
       },
       "type": "object"
@@ -557,6 +564,48 @@
                 }
               ],
               "description": "`session` (default): the session finishes as stopped. `turn`: only the open Turn closes as stopped and the session goes on waiting. A Goal Session only ever stops its open Turn (it ends with its Goal)."
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The session infers no more until `resume`: no Turn opens, a run in progress stops at its next inference boundary; tasks it follows run on. Its sub sessions are paused too.",
+          "properties": {
+            "command": {
+              "enum": [
+                "pause"
+              ],
+              "type": "string"
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Undo `pause`: a run it stopped goes on from its checkpoint, inputs that arrived meanwhile open the next Turn.",
+          "properties": {
+            "command": {
+              "enum": [
+                "resume"
+              ],
+              "type": "string"
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
@@ -1093,13 +1142,6 @@
           "description": "Only what an input batch carries (the chat format's background).",
           "enum": [
             "batch"
-          ],
-          "type": "string"
-        },
-        {
-          "description": "Also after every batch of tool results (behavior loop: every step with action results): the TodoList and sub session lines that changed since they were last shown, as a `<<background_context>>` message before the next inference.",
-          "enum": [
-            "after_tools"
           ],
           "type": "string"
         },

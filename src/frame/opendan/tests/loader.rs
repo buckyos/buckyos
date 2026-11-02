@@ -1316,17 +1316,20 @@ async fn the_jarvis_package_loads_and_answers() {
     let loader = Loader::start(env).await.unwrap();
     assert_eq!(loader.config.language, "zh");
     assert_eq!(loader.config.llm_context["provider"]["type"], "buckyos");
-    for name in ["chat_route", "plan", "do", "work_simple", "goal", "plan_simple"] {
+    for name in ["chat_route", "work_simple", "explore", "goal", "plan_simple"] {
         let b = loader.agent.behaviors().get(name).await.unwrap().unwrap();
         assert!(b.prompt.system.is_some(), "{name}");
     }
+    for gone in ["plan", "do"] {
+        assert!(loader.agent.behaviors().get(gone).await.unwrap().is_none(), "no behavior loop `{gone}`");
+    }
     // plan_simple: native function calls with an intent on every call and
-    // the background after tool results; its session class ends with an
-    // explicit report.
+    // the background before every inference; it only reads its workspace.
     let plan_simple = loader.agent.behaviors().get("plan_simple").await.unwrap().unwrap();
+    assert_eq!(plan_simple.capabilities.workspace, Some(libopendan::protocol::WorkspaceAccess::ReadOnly));
     let entry = plan_simple.to_entry("plan_simple", &loader.config.llm_context, true).unwrap();
     assert!(entry.call_intent);
-    assert_eq!(entry.input.unwrap().background, libopendan::protocol::InputBackground::AfterTools);
+    assert_eq!(entry.input.unwrap().background, libopendan::protocol::InputBackground::BeforeInference);
     assert!(loader.agent.behaviors().get("task_route").await.unwrap().is_none());
     // Intent analysis: a fork of the UI context offered as a named function.
     let analyze = loader.agent.behaviors().get("analyze_intent").await.unwrap().unwrap();
@@ -1402,9 +1405,9 @@ async fn the_jarvis_package_loads_and_answers() {
     assert_eq!(frozen.cmd_skills.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), vec!["ui_core"]);
     assert_eq!(cfg.session.owner.as_deref(), Some(BOB));
     assert!(cfg.session.objective.starts_with("The long-lived conversation of this agent"), "{}", cfg.session.objective);
-    // A work session of the package starts in plan and can hand over to do.
+    // A work session of the package is a plan session by default.
     let template = SessionTemplate::load("work", loader.agent.agent_root()).unwrap();
-    assert_eq!(template.default_behavior.as_deref(), Some("plan"));
+    assert_eq!(template.default_behavior.as_deref(), Some("plan_simple"));
     loader.shutdown().await;
 }
 

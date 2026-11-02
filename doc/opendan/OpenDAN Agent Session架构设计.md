@@ -436,6 +436,15 @@ Work 失败不代表已经产生的外部影响消失。Context Fork、Session �
 
 取消、超时和预算终止可作为工程层扩展状态，但都需要留下明确原因和结果材料。状态枚举以及它们与 Failed 的映射，留待接口设计确定。
 
+### 6.8 Plan Session：TodoList、运行中工作的控制（2026-11-02 实现）
+
+复杂的 Work 以 plan session 进行（Jarvis：`[session.work] default_behavior = "plan_simple"`；对话创建时用 `--class plan_simple`，带输入队列、`tick_secs = 600`）。它只读（behavior 的 `[capabilities] workspace = "read_only"`：Workspace 绑定只读、不取写者租约），只维护 TodoList；每个 Todo 的执行是一个独立的 work session（`work_simple` / `explore`，读写继承的 Workspace），宿主在 Todo 的前置都完成时立刻创建它，不需要 plan 派发（[Agent TodoList](Agent%20TodoList.md)）。
+
+- **输入种类**：首条（目标与 runtime 上下文）；work session 结束或需要回答（`poll_children`）；用户消息（对话 `agent-session post <plan sid> --msg …` 转发，只发给 plan，不发给它的 work session）；tick；runner 的纠正。每个输入打开一个 Turn，plan 在其中决定列表与运行中的工作要不要改。
+- **控制命令**：除 `stop` / `decide` / `subscribe` / … 外，Session 接受 `pause` / `resume`（`xagent ctl <sid> pause|resume [--reason]`）。pause = 不再推理：不打开新 Turn（输入积压在队列与在跟任务里，不产生 tick），运行中的 run 在下一个推理边界停在检查点，Turn 保持打开；在跟的任务按 OS 进程语义继续。resume = 从检查点续推理，或由积压的输入打开下一个 Turn。暂停沿子 Session 级联（只恢复因级联而暂停的）。登记表 `status.paused`，Turn task 显示 `paused: <原因>`。
+- **plan 对运行中工作的影响只经 Todo**：`todo update`（work session 以 `todo:<id>` / `updated` 事件收到完整的新任务，这是它唯一能收到的外部变化，它的队列不是 inbox）、`todo pause|resume|stop`（宿主转成对该 work session 的控制命令）。
+- **结束**：只有 `report(is_end=true)`；宿主不检查 TodoList 是否收敛，验证由验证 Todo 承担。结束时仍在跑的 work session 被停止，attempt 记为 `stopped`。
+
 ## 7. Goal Session：目标模型、运行循环与持续认知
 
 ### 7.1 Goal 首先是对象

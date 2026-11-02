@@ -172,6 +172,19 @@ pub enum ControlCommand {
         #[serde(default, skip_serializing_if = "StopScope::is_session")]
         scope: StopScope,
     },
+    /// The session infers no more until `resume`: no Turn opens, a run in
+    /// progress stops at its next inference boundary; tasks it follows run
+    /// on. Its sub sessions are paused too.
+    Pause {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    /// Undo `pause`: a run it stopped goes on from its checkpoint, inputs
+    /// that arrived meanwhile open the next Turn.
+    Resume {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
     /// The only input a finished session still accepts.
     Decide {
         /// `accept | discard`.
@@ -261,6 +274,8 @@ fn default_perceive_kind() -> String {
 
 const CONTROL_COMMANDS: &[&str] = &[
     "stop",
+    "pause",
+    "resume",
     "decide",
     "subscribe",
     "unsubscribe",
@@ -273,6 +288,8 @@ impl ControlCommand {
     pub fn name(&self) -> &'static str {
         match self {
             ControlCommand::Stop { .. } => "stop",
+            ControlCommand::Pause { .. } => "pause",
+            ControlCommand::Resume { .. } => "resume",
             ControlCommand::Decide { .. } => "decide",
             ControlCommand::Subscribe { .. } => "subscribe",
             ControlCommand::Unsubscribe { .. } => "unsubscribe",

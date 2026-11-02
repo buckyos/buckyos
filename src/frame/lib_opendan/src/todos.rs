@@ -1,20 +1,23 @@
-//! The TodoList of a Work Session (`doc/opendan/Agent TodoList.md`): where it
-//! is stored, how an exploration Todo becomes a sub session, how a sub
-//! session's committed state maps to its attempt, and where an attempt's
-//! report is read. The records and their rules are `agent_tool::todo_tools`;
-//! the runner side (serial admission, write-back at batch boundaries, the
-//! PLAN's view, the end check) is `runner::todos`.
+//! The TodoList of a plan session (`doc/opendan/Agent TodoList.md`): where it
+//! is stored, how a ready Todo becomes a work session of its own (the host
+//! dispatches every Todo whose prerequisites completed, nobody asks for it),
+//! how a work session's committed state maps to its attempt, how an update
+//! or a control reaches the work session of a running Todo, and where an
+//! attempt's report is read. The records and their rules are
+//! `agent_tool::todo_tools`; the runner side (write-back and scheduling at
+//! batch boundaries, the end) is `runner::todos`.
 //!
 //! One writer per list: the session's host and the tool processes of its
 //! runs (`agent-session todo …`), under the session's lease. A sub session
 //! never writes its parent's list.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 pub use agent_tool::todo_tools::{
-    one_line, AttemptTarget, CallRef, ChildObservation, DispatchState, NewTodo, ReportRef,
-    ReviewState, ReviewVerdict, SerialPick, TodoAttempt, TodoList, TodoMode, TodoRecord,
-    TodoStatus, TodoStore, TODO_LIST_FILE, TODO_LIST_SCHEMA,
+    one_line, AttemptTarget, ChildObservation, DispatchState, NewTodo, ReportRef, TodoAttempt,
+    TodoList, TodoMode, TodoPatch, TodoRecord, TodoStatus, TodoStore, TodoSummary,
+    UpdateOutcome, TODO_LIST_FILE, TODO_LIST_SCHEMA,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -26,18 +29,19 @@ use crate::protocol::*;
 use crate::session::SessionDir;
 use crate::state::AgentStateClient;
 
-/// Behavior an exploration sub session starts with, unless told otherwise.
+/// Behavior an exploration's work session starts with, unless told otherwise.
 pub const EXPLORE_BEHAVIOR: &str = "explore";
-/// Behavior a serial Todo's own work session starts with (one bounded task
-/// on another runtime or workspace), unless told otherwise.
-pub const SERIAL_SESSION_BEHAVIOR: &str = "work_simple";
+/// Behavior a serial Todo's work session starts with, unless told otherwise.
+pub const WORK_BEHAVIOR: &str = "work_simple";
 /// Sub sessions the host drives at the same time (`xagent --max-children`),
-/// exported to the session's tool processes so a dispatch beyond it is
-/// refused instead of silently queued.
+/// exported to the session's tool processes: a ready Todo beyond it waits
+/// for the next scheduling point.
 pub const ENV_MAX_CHILDREN: &str = "LIBOPENDAN_MAX_CHILDREN";
-/// Directory (in the state directory) of report submissions kept beyond
-/// the run that made them: a serial attempt's report outlives its run.
-pub const REPORTS_DIR: &str = "reports";
+/// `source.kind` of the events a plan sends the work session of a running
+/// Todo (`todo:<todo_id>`).
+pub const TODO_EVENT_SOURCE: &str = "todo";
+/// The Todo the work session executes was updated.
+pub const TODO_UPDATED: &str = "updated";
 
 pub fn store_of(sd: &SessionDir) -> TodoStore {
     TodoStore::in_dir(sd.state_dir())
@@ -52,18 +56,16 @@ pub fn todo_error(e: agent_tool::AgentToolError) -> OpenDanError {
     }
 }
 
-/// How an exploration is dispatched.
+/// How Todos are dispatched.
 #[derive(Debug, Clone, Default)]
-pub struct ExploreOptions {
-    /// Entry behavior of the sub session (default [`EXPLORE_BEHAVIOR`]).
-    pub behavior: Option<String>,
-    /// Session class (default `work`).
+pub struct DispatchOptions {
+    /// Session class of the work sessions (default `work`).
     pub class: Option<String>,
     /// The host's limit of sub sessions driven at once (`None`: unknown).
     pub max_children: Option<usize>,
 }
 
-impl ExploreOptions {
+impl DispatchOptions {
     /// The host's limit from the tool process's environment.
     pub fn from_env() -> Self {
         Self {
@@ -83,72 +85,63 @@ pub struct Dispatched {
     pub path: PathBuf,
 }
 
-/// The idempotency key of an exploration attempt's sub session:
-/// `(parent, todo, attempt)` — two Todos of one shell batch never share a
-/// sub session, a retried dispatch of the same attempt finds it again.
-pub fn explore_key(todo_id: &str, attempt: u32) -> String {
+/// What scheduling did with a ready Todo.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum Scheduled {
+    /// Its work session runs.
+    Dispatched(Dispatched),
+    /// Held back by the limit of sub sessions running at once: it stays
+    /// pending and starts at a later scheduling point.
+    Held { todo_id: String, reason: String },
+    /// Its work session could not be created as the Todo asks: blocked
+    /// until the plan changes it.
+    Blocked { todo_id: String, reason: String },
+}
+
+/// The idempotency key of an attempt's work session: `(parent, todo,
+/// attempt)` — two Todos never share one, a dispatch redone for the same
+/// attempt finds it again.
+pub fn attempt_key(todo_id: &str, attempt: u32) -> String {
     format!("todo:{todo_id}:{attempt}")
 }
 
-/// The workspace a Todo's sub session takes: what the Todo says, else none
-/// for an exploration and the session's own for a serial Todo.
-fn todo_workspace(t: &TodoRecord, mode: TodoMode) -> SubWorkspace {
+/// The workspace a Todo's work session takes: what the Todo says, else
+/// none for an exploration and the plan's own for a serial Todo.
+fn todo_workspace(t: &TodoRecord) -> SubWorkspace {
     match t.workspace.as_deref() {
         Some("inherit") => SubWorkspace::Inherit,
         Some("none") => SubWorkspace::None,
         Some(id) => SubWorkspace::Id(id.to_string()),
-        None if mode == TodoMode::Serial => SubWorkspace::Inherit,
+        None if t.mode == TodoMode::Serial => SubWorkspace::Inherit,
         None => SubWorkspace::None,
     }
 }
 
-/// Whether a serial Todo executes in a work session of its own instead of
-/// a sub context of this session: it names another session-runtime, or
-/// another workspace than the session's. The two are independent (primary
-/// runtime TODO §3): the work session takes both as named.
-pub fn needs_own_session(t: &TodoRecord, cfg: &SessionConfig) -> bool {
-    if t.mode != TodoMode::Serial {
-        return false;
-    }
-    let other_runtime = t
-        .runtime_id
-        .as_deref()
-        .is_some_and(|r| canonical_runtime(r) != cfg.runtime.runtime_id());
-    let parent_workspace = cfg.workspace.as_ref().map(|w| w.workspace_id.as_str());
-    let other_workspace = match t.workspace.as_deref() {
-        None | Some("inherit") => false,
-        Some("none") => parent_workspace.is_some(),
-        Some(id) => parent_workspace != Some(id),
-    };
-    other_runtime || other_workspace
+/// The behavior a Todo's work session starts with: the Todo's own, else
+/// the mode's default.
+fn todo_behavior(t: &TodoRecord) -> String {
+    t.behavior.clone().unwrap_or_else(|| match t.mode {
+        TodoMode::Explore => EXPLORE_BEHAVIOR.to_string(),
+        TodoMode::Serial => WORK_BEHAVIOR.to_string(),
+    })
 }
 
-/// The behavior a Todo's sub session starts with: the dispatch's choice,
-/// else the Todo's own (set when it was first dispatched), else the mode's
-/// default.
-fn todo_behavior(t: &TodoRecord, opts: &ExploreOptions, mode: TodoMode) -> String {
-    opts.behavior
-        .clone()
-        .or_else(|| t.behavior.clone())
-        .unwrap_or_else(|| match mode {
-            TodoMode::Explore => EXPLORE_BEHAVIOR.to_string(),
-            TodoMode::Serial => SERIAL_SESSION_BEHAVIOR.to_string(),
-        })
-}
-
-fn child_spec(list: &TodoList, t: &TodoRecord, attempt: u32, opts: &ExploreOptions, mode: TodoMode) -> SubSessionSpec {
+fn child_spec(list: &TodoList, t: &TodoRecord, attempt: u32, opts: &DispatchOptions) -> SubSessionSpec {
     let mut task = t.task_text(list, attempt);
-    let note = match mode {
+    let note = match t.mode {
         TodoMode::Explore => {
-            "\nYou are an exploration sub session of a parent work session: do exactly this Todo, within its scope. \
-Leads outside the scope go into your report for the parent, not into more work. \
-Finish with a final report (is_end) that the parent's PLAN can review.\n"
+            "\nYou are an exploration of a plan session: do exactly this Todo, within its scope. \
+Leads outside the scope go into your report for the plan, not into more work. \
+Your Todo may be updated while you work: the update comes to you as input. \
+Finish with a final report (is_end) the plan can decide on.\n"
         }
         TodoMode::Serial => {
-            "\nYou are a work session executing exactly this serial Todo of a parent session's plan, on your own session-runtime and in your own working directory. \
+            "\nYou are the work session of exactly this Todo of a plan session, on your own session-runtime and in your own working directory. \
 When you have a workspace, the project files are there: change them there and say what you changed; other results go into your report's artifacts. \
 Do only this Todo, within its scope; leads outside it go into your report. \
-Finish with a final report (is_end) with the evidence for each acceptance criterion; the parent's PLAN reviews it before the next Todo runs.\n"
+Your Todo may be updated while you work: the update comes to you as input. \
+Finish with a final report (is_end) with the evidence for each acceptance criterion; the plan decides on it.\n"
         }
     };
     task.push_str(note);
@@ -156,71 +149,54 @@ Finish with a final report (is_end) with the evidence for each acceptance criter
         objective: t.task_text(list, attempt),
         msgs: vec![task],
         class: opts.class.clone(),
-        behavior: Some(todo_behavior(t, opts, mode)),
-        // The Todo's cmd_skills; without any the parent Work's are inherited.
+        behavior: Some(todo_behavior(t)),
+        // The Todo's cmd_skills; without any the plan's are inherited.
         cmd_skills: (!t.skills.is_empty()).then(|| t.skills.clone()),
-        workspace: todo_workspace(t, mode),
+        workspace: todo_workspace(t),
         runtime_id: t.runtime_id.clone(),
         report: ReportMode::Final,
-        key: Some(explore_key(&t.todo_id, attempt)),
+        queued: true,
+        key: Some(attempt_key(&t.todo_id, attempt)),
         ..Default::default()
     }
 }
 
-/// Dispatch the pending Todo `todo_id` of `parent` as an exploration sub
-/// session: record the attempt (`dispatching`) → create the sub session →
-/// bind it (`running`). The list stays locked meanwhile, so the host never
-/// sees a dispatch half done; after a crash the attempt is found again by
-/// its sub session id (bound if the session exists, withdrawn if not). A
-/// limit (`max_sub_sessions`, the host's `--max-children`) refuses the
-/// dispatch: the Todo stays pending with the refusal recorded.
+/// Sub sessions `parent` may still start: the host's limit and the plan's
+/// `max_sub_sessions`, less those running.
+async fn room(agent: &dyn AgentStateClient, parent: &SessionDir, opts: &DispatchOptions) -> Result<Option<String>> {
+    let policy = parent.config()?.session.policy;
+    let max = opts
+        .max_children
+        .unwrap_or(usize::MAX)
+        .min(policy.max_sub_sessions as usize)
+        .max(1);
+    let running = agent
+        .sessions()
+        .children_of(&[parent.sid().to_string()])
+        .await?
+        .into_iter()
+        .filter(|e| e.status.run_state != RunState::Finished)
+        .count();
+    Ok((running >= max).then(|| {
+        format!("{running} work sessions run already, at most {max} at once; it starts when one ends")
+    }))
+}
+
+/// Dispatch the pending Todo `todo_id` of `parent` as a work session of its
+/// own: record the attempt (`dispatching`) → create the work session → bind
+/// it (`running`). The list stays locked meanwhile, so nobody sees a
+/// dispatch half done; after a crash the attempt is found again by its work
+/// session's id (bound if the session exists, withdrawn if not). The limit
+/// of sub sessions holds it back without a record; a work session that
+/// cannot be created as the Todo asks blocks it.
 pub async fn dispatch(
     agent: &dyn AgentStateClient,
     who: &str,
     channels: &dyn InputChannelFactory,
     parent: &SessionDir,
     todo_id: &str,
-    opts: &ExploreOptions,
-) -> Result<Dispatched> {
-    dispatch_as(agent, who, channels, parent, todo_id, opts, TodoMode::Explore).await
-}
-
-/// Dispatch a serial Todo that executes in a work session of its own (see
-/// [`needs_own_session`]): the attempt stays serial, the session waits for
-/// the sub session and reviews its report. A running attempt of the Todo
-/// is returned as it is (a hand-over redone after a crash).
-pub async fn dispatch_serial(
-    agent: &dyn AgentStateClient,
-    who: &str,
-    channels: &dyn InputChannelFactory,
-    parent: &SessionDir,
-    todo_id: &str,
-    opts: &ExploreOptions,
-) -> Result<Dispatched> {
-    let store = store_of(parent);
-    let list = store.load().map_err(todo_error)?;
-    if let Some(a) = list.get(todo_id).and_then(|t| t.latest()) {
-        if let (Some(sid), false, Some(DispatchState::Dispatched)) = (&a.child_sid, a.ended(), a.dispatch) {
-            return Ok(Dispatched {
-                todo_id: todo_id.to_string(),
-                attempt: a.attempt,
-                child_sid: sid.clone(),
-                path: PathBuf::new(),
-            });
-        }
-    }
-    dispatch_as(agent, who, channels, parent, todo_id, opts, TodoMode::Serial).await
-}
-
-async fn dispatch_as(
-    agent: &dyn AgentStateClient,
-    who: &str,
-    channels: &dyn InputChannelFactory,
-    parent: &SessionDir,
-    todo_id: &str,
-    opts: &ExploreOptions,
-    mode: TodoMode,
-) -> Result<Dispatched> {
+    opts: &DispatchOptions,
+) -> Result<Scheduled> {
     let parent_sid = parent.sid().to_string();
     let store = store_of(parent);
     let lock = store.lock().map_err(todo_error)?;
@@ -231,57 +207,41 @@ async fn dispatch_as(
     let attempt = match t.latest() {
         Some(a) if a.dispatch == Some(DispatchState::Dispatching) => a.attempt,
         _ => {
-            // A serial Todo starts only in order: checked and recorded
-            // under the same lock.
-            if mode == TodoMode::Serial {
-                list.admit_serial(todo_id).map_err(todo_error)?;
-            }
+            list.admit(todo_id).map_err(todo_error)?;
             t.next_attempt()
         }
     };
-    let behavior = todo_behavior(t, opts, mode);
-    let sub = child_spec(&list, t, attempt, opts, mode);
+    let behavior = todo_behavior(t);
+    let sub = child_spec(&list, t, attempt, opts);
     let child_sid = sub_session_id(agent, who, &parent_sid, &sub).await?;
-    let now = crate::now_ms();
-    let n = lock
-        .update(|l| match mode {
-            TodoMode::Explore => l.begin_explore(todo_id, &child_sid, now),
-            TodoMode::Serial => l.begin_serial_session(todo_id, &child_sid, now),
-        })
-        .map_err(todo_error)?;
-    crate::fault::point("todo:after_dispatch_record");
-    let refuse = |reason: String| -> Result<Dispatched> {
-        lock.update(|l| l.withdraw_dispatch(todo_id, n, &reason, crate::now_ms()))
-            .map_err(todo_error)?;
-        Err(OpenDanError::InvalidArgument(reason))
-    };
     if agent.sessions().lookup(&child_sid).await?.is_none() {
-        if let Some(max) = opts.max_children {
-            let running = agent
-                .sessions()
-                .children_of(&[parent_sid.clone()])
-                .await?
-                .into_iter()
-                .filter(|e| e.status.run_state != RunState::Finished)
-                .count();
-            if running >= max.max(1) {
-                return refuse(format!(
-                    "the host drives at most {max} sub sessions at once (--max-children) and {running} are running: \
-wait for one of them to finish, then dispatch {todo_id} again (`agent-session todo dispatch {todo_id}`)"
-                ));
-            }
+        if let Some(reason) = room(agent, parent, opts).await? {
+            return Ok(Scheduled::Held {
+                todo_id: todo_id.to_string(),
+                reason,
+            });
         }
     }
+    let now = crate::now_ms();
+    let n = lock
+        .update(|l| l.begin_dispatch(todo_id, &child_sid, now))
+        .map_err(todo_error)?;
+    crate::fault::point("todo:after_dispatch_record");
     let created = match create_sub_session(agent, who, &parent_sid, sub, channels).await {
         Ok(sd) => sd,
         Err(OpenDanError::InvalidArgument(reason)) => {
-            return refuse(format!("{reason}; {todo_id} stays pending (`agent-session todo dispatch {todo_id}` again later)"))
+            lock.update(|l| l.withdraw_dispatch(todo_id, n, Some(&reason), crate::now_ms()))
+                .map_err(todo_error)?;
+            return Ok(Scheduled::Blocked {
+                todo_id: todo_id.to_string(),
+                reason,
+            });
         }
         Err(e) => {
             // Whether the session came to exist decides: bound if it did,
-            // withdrawn if not (a retry creates it then).
+            // withdrawn if not (the next scheduling point creates it then).
             if agent.sessions().lookup(&child_sid).await.ok().flatten().is_none() {
-                let _ = lock.update(|l| l.withdraw_dispatch(todo_id, n, &e.to_string(), crate::now_ms()));
+                let _ = lock.update(|l| l.withdraw_dispatch(todo_id, n, None, crate::now_ms()));
             }
             return Err(e);
         }
@@ -296,18 +256,56 @@ wait for one of them to finish, then dispatch {todo_id} again (`agent-session to
             behavior: Some(behavior.clone()),
         })
         .unwrap_or_default();
-    lock.update(|l| l.bind_explore(todo_id, n, crate::now_ms(), target))
+    lock.update(|l| l.bind_dispatch(todo_id, n, crate::now_ms(), target))
         .map_err(todo_error)?;
     crate::fault::point("todo:after_bind");
-    Ok(Dispatched {
+    Ok(Scheduled::Dispatched(Dispatched {
         todo_id: todo_id.to_string(),
         attempt: n,
         child_sid,
         path: created.path().to_path_buf(),
-    })
+    }))
 }
 
-/// What an exploration attempt is, from its sub session's committed state.
+/// One scheduling point: every ready Todo of `parent` is dispatched, in
+/// creation order, until the limit of sub sessions holds one back. Nothing
+/// is dispatched for a plan that is paused, stopping or finished.
+pub async fn schedule(
+    agent: &dyn AgentStateClient,
+    who: &str,
+    channels: &dyn InputChannelFactory,
+    parent: &SessionDir,
+    opts: &DispatchOptions,
+) -> Result<Vec<Scheduled>> {
+    let state = parent.state()?;
+    if state.is_finished() || state.paused.is_some() || state.stop_requested {
+        return Ok(Vec::new());
+    }
+    let store = store_of(parent);
+    let mut out = Vec::new();
+    let mut tried = BTreeSet::new();
+    loop {
+        let list = store.load().map_err(todo_error)?;
+        let Some(id) = list.ready().into_iter().find(|id| !tried.contains(id)) else {
+            break;
+        };
+        tried.insert(id.clone());
+        let s = match dispatch(agent, who, channels, parent, &id, opts).await {
+            Ok(s) => s,
+            // Changed meanwhile (another writer dispatched it): next one.
+            Err(OpenDanError::InvalidArgument(_)) => continue,
+            Err(e) => return Err(e),
+        };
+        let held = matches!(s, Scheduled::Held { .. });
+        out.push(s);
+        if held {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// What an attempt is, from its work session's committed state.
 pub fn observe(entry: &RegistryEntry, state: Option<&SessionState>) -> ChildObservation {
     let st = &entry.status;
     let report = state.and_then(|s| s.final_report.as_ref());
@@ -335,17 +333,14 @@ pub fn observe(entry: &RegistryEntry, state: Option<&SessionState>) -> ChildObse
             summary,
             report: report.map(|r| ReportRef {
                 session_id: entry.session_id.clone(),
-                run_id: None,
                 report_id: r.id.clone(),
             }),
             artifacts: report.map(artifact_refs).unwrap_or_default(),
             error: (status != TodoStatus::Completed).then_some(error).flatten(),
         };
     }
-    let blocked = st.pending_decision.is_some()
-        || st.needs_input;
     ChildObservation {
-        status: if blocked { TodoStatus::Blocked } else { TodoStatus::Running },
+        status: TodoStatus::Running,
         summary: None,
         report: None,
         artifacts: Vec::new(),
@@ -362,13 +357,7 @@ pub fn artifact_refs(r: &ReportSubmission) -> Vec<String> {
         .collect()
 }
 
-/// Keep a report submission beyond its run (`<state>/reports/<id>/submission.json`).
-pub fn save_submission(sd: &SessionDir, lease: &crate::lock::Lease, r: &ReportSubmission) -> Result<()> {
-    let path = sd.state_dir().join(REPORTS_DIR).join(&r.id).join("submission.json");
-    lease.fenced(|| crate::fsutil::atomic_replace_json(&path, r))
-}
-
-/// A report as the PLAN reads it (`todo show <id> --report`).
+/// A report as the plan reads it (`todo show <id> --report`).
 #[derive(Debug, Clone, Serialize)]
 pub struct ReportView {
     pub report_ref: ReportRef,
@@ -377,99 +366,49 @@ pub struct ReportView {
     pub artifacts: Vec<ReportArtifact>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
-    /// Where the full sub session can be read (explorations).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_dir: Option<PathBuf>,
+    /// Where the whole work session can be read.
+    pub session_dir: PathBuf,
 }
 
-/// The report an attempt points to, read from where it is kept.
-pub async fn read_report(
-    agent: &dyn AgentStateClient,
-    sd: &SessionDir,
-    attempt: &TodoAttempt,
-) -> Result<Option<ReportView>> {
+/// The report an attempt points to: the final report of its work session.
+pub async fn read_report(agent: &dyn AgentStateClient, attempt: &TodoAttempt) -> Result<Option<ReportView>> {
     let Some(r) = attempt.report.clone() else {
         return Ok(None);
     };
-    if r.session_id != sd.sid() {
-        let Some(e) = agent.sessions().lookup(&r.session_id).await? else {
-            return Ok(None);
-        };
-        let child = SessionDir::open(&e.location)?;
-        let st = child.state()?;
-        return Ok(st.final_report.filter(|s| s.id == r.report_id).map(|s| ReportView {
-            report_ref: r,
-            report: s.report,
-            artifacts: s.artifacts,
-            result: s.result,
-            session_dir: Some(child.path().to_path_buf()),
-        }));
-    }
-    let path = sd.state_dir().join(REPORTS_DIR).join(&r.report_id).join("submission.json");
-    let Some(s) = crate::fsutil::read_json_opt::<ReportSubmission>(&path)? else {
+    let Some(e) = agent.sessions().lookup(&r.session_id).await? else {
         return Ok(None);
     };
-    Ok(Some(ReportView {
+    let child = SessionDir::open(&e.location)?;
+    let st = child.state()?;
+    Ok(st.final_report.filter(|s| s.id == r.report_id).map(|s| ReportView {
         report_ref: r,
         report: s.report,
         artifacts: s.artifacts,
         result: s.result,
-        session_dir: None,
+        session_dir: child.path().to_path_buf(),
     }))
 }
 
-/// Write what the list's executions committed back into it (TodoList §2.1):
-/// an exploration's attempt follows its sub session's registry state — never
-/// the sub session's own word —, a dispatch that died before its sub session
+/// Write what the work sessions committed back into the list (TodoList
+/// §2.1): an attempt follows its work session's registry state — never the
+/// session's own word —, and a dispatch that died before its work session
 /// existed is withdrawn (the list lock is free, so no dispatch is in
-/// progress), and a serial attempt whose call is no longer on the session's
-/// `process_stack` (the session or Turn was stopped) ended stopped.
-/// `state`: the session's committed state. `true`: the list changed.
-pub async fn sync(agent: &dyn AgentStateClient, sd: &SessionDir, state: &SessionState) -> Result<bool> {
+/// progress; the Todo is pending again). `true`: the list changed.
+pub async fn sync(agent: &dyn AgentStateClient, sd: &SessionDir) -> Result<bool> {
     let store = store_of(sd);
     let list = store.load().map_err(todo_error)?;
-    let open: Vec<(String, u32, Option<String>, TodoMode)> = list
-        .todos
-        .iter()
-        .filter_map(|t| {
-            let a = t.latest().filter(|a| !a.ended())?;
-            Some((t.todo_id.clone(), a.attempt, a.child_sid.clone(), a.mode))
-        })
-        .collect();
+    let open = list.in_flight();
     if open.is_empty() {
         return Ok(false);
     }
-    let bound: Vec<TodoBinding> = state
-        .process_stack
-        .iter()
-        .filter_map(|f| f.call.as_ref().and_then(|c| c.todo.clone()))
-        .collect();
     let mut seen = Vec::new();
-    for (todo_id, attempt, child, mode) in &open {
-        match (mode, child) {
-            (_, Some(sid)) => {
-                let entry = agent.sessions().lookup(sid).await?;
-                let child_state = entry
-                    .as_ref()
-                    .and_then(|e| SessionDir::open(&e.location).ok())
-                    .and_then(|d| d.state().ok());
-                seen.push((todo_id.clone(), *attempt, entry.map(|e| observe(&e, child_state.as_ref()))));
-            }
-            _ if bound.iter().any(|b| &b.todo_id == todo_id && b.attempt == *attempt) => {}
-            _ => seen.push((
-                todo_id.clone(),
-                *attempt,
-                Some(ChildObservation {
-                    status: TodoStatus::Stopped,
-                    summary: None,
-                    report: None,
-                    artifacts: Vec::new(),
-                    error: Some(
-                        "the sub context ended without returning a result (the session or its Turn was stopped)".into(),
-                    ),
-                }),
-            )),
-        }
+    for (todo_id, attempt, sid) in &open {
+        let entry = agent.sessions().lookup(sid).await?;
+        let child_state = entry
+            .as_ref()
+            .and_then(|e| SessionDir::open(&e.location).ok())
+            .and_then(|d| d.state().ok());
+        seen.push((todo_id.clone(), *attempt, entry.map(|e| observe(&e, child_state.as_ref()))));
     }
     let now = crate::now_ms();
     store
@@ -480,18 +419,9 @@ pub async fn sync(agent: &dyn AgentStateClient, sd: &SessionDir, state: &Session
                     continue;
                 };
                 match obs {
-                    // A serial sub context (no sub session of its own).
-                    Some(o) if a.mode == TodoMode::Serial && a.child_sid.is_none() => {
-                        changed |= l.end_serial(&todo_id, attempt, "", o, now)?;
-                    }
                     Some(o) => changed |= l.observe_child(&todo_id, attempt, o, now)?,
                     None if a.dispatch == Some(DispatchState::Dispatching) => {
-                        l.withdraw_dispatch(
-                            &todo_id,
-                            attempt,
-                            "the dispatch was interrupted before its sub session existed",
-                            now,
-                        )?;
+                        l.withdraw_dispatch(&todo_id, attempt, None, now)?;
                         changed = true;
                     }
                     None => {
@@ -503,7 +433,7 @@ pub async fn sync(agent: &dyn AgentStateClient, sd: &SessionDir, state: &Session
                                 summary: None,
                                 report: None,
                                 artifacts: Vec::new(),
-                                error: Some("its sub session is not registered".into()),
+                                error: Some("its work session is not registered".into()),
                             },
                             now,
                         )?;
@@ -513,4 +443,123 @@ pub async fn sync(agent: &dyn AgentStateClient, sd: &SessionDir, state: &Session
             Ok(changed)
         })
         .map_err(todo_error)
+}
+
+/// The plan ended: attempts still running end as stopped (their work
+/// sessions are stopped with it).
+pub fn stop_open(sd: &SessionDir, reason: &str) -> Result<Vec<String>> {
+    let now = crate::now_ms();
+    store_of(sd)
+        .update(|l| {
+            let mut stopped = Vec::new();
+            for (todo_id, attempt, _) in l.in_flight() {
+                l.observe_child(
+                    &todo_id,
+                    attempt,
+                    ChildObservation {
+                        status: TodoStatus::Stopped,
+                        summary: None,
+                        report: None,
+                        artifacts: Vec::new(),
+                        error: Some(reason.to_string()),
+                    },
+                    now,
+                )?;
+                stopped.push(todo_id);
+            }
+            Ok(stopped)
+        })
+        .map_err(todo_error)
+}
+
+/// Tell the work session of a running Todo that the Todo was updated: an
+/// Input event in its queue (`todo:<id>`, `updated`) that opens its next
+/// Turn. The summary names the change; the work session's host puts the
+/// Todo's whole new task next to it ([`expand_update`]). Idempotent per
+/// revision of the Todo.
+pub async fn post_update(
+    agent: &dyn AgentStateClient,
+    who: &str,
+    parent: &SessionDir,
+    t: &TodoRecord,
+    child_sid: &str,
+    attempt: u32,
+    out: &UpdateOutcome,
+    reason: &str,
+) -> Result<u64> {
+    let mut summary = format!(
+        "Todo {} was updated ({}): {}",
+        t.todo_id,
+        out.changed.join(", "),
+        reason.trim()
+    );
+    if summary.len() > MAX_EVENT_SUMMARY_BYTES {
+        let mut end = MAX_EVENT_SUMMARY_BYTES - 3;
+        while !summary.is_char_boundary(end) {
+            end -= 1;
+        }
+        summary.truncate(end);
+        summary.push('…');
+    }
+    let ev = AgentEvent {
+        subscription_id: None,
+        source: EventSource::new(TODO_EVENT_SOURCE, t.todo_id.clone()),
+        event: TODO_UPDATED.into(),
+        seq: Some(t.rev),
+        summary,
+        data_ref: Some(format!("{}#{}@{attempt}", parent.sid(), t.todo_id)),
+        terminal: false,
+        call_id: None,
+    };
+    let key = format!("{}:{}:{attempt}#updated@{}", parent.sid(), t.todo_id, t.rev);
+    agent
+        .sessions()
+        .post_input(child_sid, &PostedInput::event(who, key, ev))
+        .await
+}
+
+/// The update event a work session takes in, with the whole task of its
+/// Todo as the plan's list holds it now (`data_ref` =
+/// `<plan sid>#<todo id>@<attempt>`). Unchanged when the list cannot be
+/// read.
+pub async fn expand_update(agent: &dyn AgentStateClient, ev: &AgentEvent) -> AgentEvent {
+    let mut out = ev.clone();
+    if ev.source.kind != TODO_EVENT_SOURCE {
+        return out;
+    }
+    let Some((plan, attempt)) = ev
+        .data_ref
+        .as_deref()
+        .and_then(|r| r.split_once('#'))
+        .and_then(|(plan, rest)| Some((plan, rest.split_once('@')?.1.parse::<u32>().ok()?)))
+    else {
+        return out;
+    };
+    let Ok(Some(e)) = agent.sessions().lookup(plan).await else {
+        return out;
+    };
+    let Ok(sd) = SessionDir::open(&e.location) else {
+        return out;
+    };
+    let Ok(list) = store_of(&sd).load() else {
+        return out;
+    };
+    if let Some(t) = list.get(&ev.source.id) {
+        out.summary = format!("{}\n\nYour task now:\n{}", ev.summary, t.task_text(&list, attempt));
+    }
+    out
+}
+
+/// Send `pause` / `resume` / `stop` to the work session of a running Todo.
+pub async fn control_child(
+    agent: &dyn AgentStateClient,
+    who: &str,
+    child_sid: &str,
+    key: String,
+    command: ControlCommand,
+) -> Result<u64> {
+    agent
+        .sessions()
+        .post_input(child_sid, &PostedInput::control(who, key, command))
+        .await
 }

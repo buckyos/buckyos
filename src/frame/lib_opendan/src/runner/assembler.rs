@@ -54,8 +54,6 @@ pub struct InputMaterial {
     /// The session's TodoList in its compact view, when it changed since
     /// the top-level context last saw it.
     pub todos: Option<String>,
-    /// The serial Todo a hand-over to the Todo executor would run now.
-    pub current_todo: Value,
     /// Chat format (UI sessions): the background context lines this batch
     /// shows (already reduced to what changed).
     pub background: Vec<super::background::BackgroundLine>,
@@ -458,8 +456,6 @@ impl SessionAssembler for DefaultAssembler {
                 "objective": cfg.session.objective,
                 "timezone": cfg.session.timezone,
                 "is_bootstrap": first,
-                // The serial Todo the Todo executor would run now.
-                "current_todo": m.current_todo,
                 "todos": m.todos,
                 "background_hint_changed": false,
                 "default_changed_background_hint_text": "",

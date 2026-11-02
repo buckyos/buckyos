@@ -1,12 +1,12 @@
 //! Session TodoList — the records and their rules (`doc/opendan/Agent TodoList.md`).
 //!
-//! The TodoList of a Work Session is the PLAN's persistent decision basis:
-//! what is to be done, how each attempt ran — serially, as a sub context of
-//! the session (`serial`), or as an exploration sub session (`explore`) —
-//! what it reported and how the PLAN reviewed it. This module only holds the
+//! The TodoList of a plan session is its persistent decision basis: what is
+//! to be done, in which order (`after`), how each attempt ran in a work
+//! session of its own and what it reported. This module only holds the
 //! records, their state rules and the file store. When they change is
-//! decided by the session host (libopendan) and its `agent-session todo`
-//! commands; there is no prompt-visible tool here.
+//! decided by the session host (libopendan): it dispatches every Todo that
+//! is ready, writes the attempts' ends back and runs the plan's
+//! `agent-session todo` commands; there is no prompt-visible tool here.
 //!
 //! One writer: the session's host and the tool processes of its runs, under
 //! the session's lease. The file lock only orders their writes; every
@@ -42,8 +42,9 @@ pub const SUMMARY_CHARS: usize = 160;
 pub enum TodoStatus {
     Pending,
     Running,
-    /// Not terminal, but never picked as the serial current Todo: the PLAN
-    /// handles it explicitly (an exploration that waits for an answer).
+    /// Not dispatched and not dispatchable until the plan decides: a Todo
+    /// it runs after ended without success (`blocked_by`), or its dispatch
+    /// failed (`block_reason`).
     Blocked,
     Completed,
     Failed,
@@ -78,15 +79,15 @@ impl TodoStatus {
     }
 }
 
-/// How an attempt runs.
+/// How an attempt runs. Both run in a work session of their own.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TodoMode {
-    /// A sub context of the session (`next_behavior = do`): the caller's run
-    /// is suspended until it returns.
+    /// Work (behavior `work_simple`, the plan's workspace), in the order of
+    /// its `after` chain.
     #[default]
     Serial,
-    /// An independent sub session; several run in parallel.
+    /// A read-only investigation (behavior `explore`, no workspace).
     Explore,
 }
 
@@ -99,8 +100,8 @@ impl TodoMode {
     }
 }
 
-/// Dispatch of an exploration attempt (crash recovery: a `dispatching`
-/// attempt is reconciled against the registry by its sub session id).
+/// Dispatch of an attempt (crash recovery: a `dispatching` attempt is
+/// reconciled against the registry by its sub session id).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DispatchState {
@@ -108,51 +109,16 @@ pub enum DispatchState {
     Dispatched,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ReviewVerdict {
-    Accept,
-    Reject,
-    NeedEvidence,
-}
-
-impl ReviewVerdict {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ReviewVerdict::Accept => "accepted",
-            ReviewVerdict::Reject => "rejected",
-            ReviewVerdict::NeedEvidence => "need_evidence",
-        }
-    }
-}
-
-/// The run and call a serial attempt was admitted for (the hand-over step
-/// of the caller): its idempotency key.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct CallRef {
-    pub run_id: String,
-    pub call_id: String,
-}
-
-/// Where the report of an attempt is: an exploration's final report in its
-/// sub session, a serial attempt's report in the session's report store.
+/// Where the report of an attempt is: the final report of its sub session.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ReportRef {
-    /// The session holding the report (the sub session of an exploration,
-    /// the session itself for a serial attempt).
     pub session_id: String,
-    /// The run that submitted it (serial attempts).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_id: Option<String>,
     pub report_id: String,
 }
 
 impl ReportRef {
     pub fn display(&self) -> String {
-        match &self.run_id {
-            Some(run) => format!("{}/{run}#{}", self.session_id, self.report_id),
-            None => format!("{}#{}", self.session_id, self.report_id),
-        }
+        format!("{}#{}", self.session_id, self.report_id)
     }
 }
 
@@ -160,14 +126,7 @@ impl ReportRef {
 pub struct TodoAttempt {
     pub attempt: u32,
     pub mode: TodoMode,
-    /// Serial: the caller's hand-over the attempt was admitted for.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub caller: Option<CallRef>,
-    /// Serial: the sub context's run (known once it returned).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_id: Option<String>,
-    /// Explore, or a serial Todo on another runtime / workspace: the sub
-    /// session.
+    /// The work session executing the attempt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_sid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -184,11 +143,16 @@ pub struct TodoAttempt {
     /// The behavior its sub session started with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub behavior: Option<String>,
-    /// `running | blocked | completed | failed | timeout | stopped`.
+    /// `running | completed | failed | timeout | stopped`.
     pub status: TodoStatus,
     pub started_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended_at_ms: Option<u64>,
+    /// The plan paused its work session (it infers no more until resumed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resumed_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     /// One line about the result.
@@ -207,32 +171,28 @@ impl TodoAttempt {
     pub fn ended(&self) -> bool {
         self.status.is_terminal()
     }
+
+    /// Paused by the plan and not resumed since.
+    pub fn paused(&self) -> bool {
+        !self.ended()
+            && self
+                .paused_at_ms
+                .is_some_and(|p| self.resumed_at_ms.is_none_or(|r| r < p))
+    }
 }
 
-/// The PLAN's judgement of one attempt's result. Execution success and
-/// acceptance are recorded apart.
+/// One change of a Todo after it was added (`todo update`).
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
-pub struct TodoReview {
-    pub attempt: u32,
-    /// The report version that was read.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub report_id: Option<String>,
-    pub verdict: ReviewVerdict,
+pub struct TodoUpdate {
+    pub at_ms: u64,
     pub reason: String,
-    /// Todos created because of this review.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub followups: Vec<String>,
+    /// The fields it changed.
+    pub fields: Vec<String>,
+    /// The attempt that was running and was told (`None`: none ran).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<String>,
-    pub at_ms: u64,
-}
-
-/// A dispatch the concurrency limits refused (observable; the Todo stays
-/// pending and can be dispatched again).
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
-pub struct DispatchRefusal {
-    pub at_ms: u64,
-    pub reason: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -257,9 +217,16 @@ pub struct TodoRecord {
     pub evidence: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<String>,
-    /// Todos whose result must be accepted before this one may run.
+    /// Todos that must have completed before this one runs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub after: Vec<String>,
+    /// Todos of `after` that ended without success: this one waits for the
+    /// plan (retry them, change `after`, or cancel it).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_by: Vec<String>,
+    /// Why the last dispatch failed (cleared by `update` / `retry`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_reason: Option<String>,
     /// Dispatch batch (explorations sent out together).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub batch: Option<String>,
@@ -280,9 +247,7 @@ pub struct TodoRecord {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attempts: Vec<TodoAttempt>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub reviews: Vec<TodoReview>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub refusals: Vec<DispatchRefusal>,
+    pub updates: Vec<TodoUpdate>,
     /// Pending retry: the reason for the next attempt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry: Option<String>,
@@ -290,31 +255,6 @@ pub struct TodoRecord {
     pub cancel_reason: Option<String>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
-}
-
-/// Where the PLAN's judgement of a Todo stands.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReviewState {
-    /// No attempt ended yet.
-    None,
-    /// The latest attempt ended and was not reviewed.
-    Pending,
-    Accepted,
-    Rejected,
-    NeedEvidence,
-}
-
-impl ReviewState {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ReviewState::None => "none",
-            ReviewState::Pending => "pending",
-            ReviewState::Accepted => "accepted",
-            ReviewState::Rejected => "rejected",
-            ReviewState::NeedEvidence => "need_evidence",
-        }
-    }
 }
 
 impl TodoRecord {
@@ -334,40 +274,38 @@ impl TodoRecord {
         self.attempts.iter().map(|a| a.attempt).max().unwrap_or(0) + 1
     }
 
-    pub fn review_of(&self, attempt: u32) -> Option<&TodoReview> {
-        self.reviews.iter().rev().find(|r| r.attempt == attempt)
-    }
-
-    pub fn review_state(&self) -> ReviewState {
-        match self.latest().filter(|a| a.ended()) {
-            None => ReviewState::None,
-            Some(a) => match self.review_of(a.attempt).map(|r| r.verdict) {
-                None => ReviewState::Pending,
-                Some(ReviewVerdict::Accept) => ReviewState::Accepted,
-                Some(ReviewVerdict::Reject) => ReviewState::Rejected,
-                Some(ReviewVerdict::NeedEvidence) => ReviewState::NeedEvidence,
-            },
-        }
-    }
-
-    /// The result of the latest attempt was accepted (the basis for the
-    /// work that depends on it).
-    pub fn accepted(&self) -> bool {
-        self.retry.is_none() && self.review_state() == ReviewState::Accepted
-    }
-
     /// An attempt is executing, or being dispatched.
     pub fn in_flight(&self) -> bool {
         self.latest().is_some_and(|a| !a.ended())
     }
 
-    /// The status follows the records: cancelled, a pending retry or no
-    /// attempt yet → pending, otherwise the latest attempt's status.
+    /// The attempt executing now, if any.
+    pub fn running(&self) -> Option<&TodoAttempt> {
+        self.latest().filter(|a| !a.ended())
+    }
+
+    /// Waiting for a (new) attempt: none was made yet, or a retry was asked.
+    fn awaits_attempt(&self) -> bool {
+        self.cancel_reason.is_none()
+            && !self.in_flight()
+            && (self.attempts.is_empty() || self.retry.is_some())
+    }
+
+    /// The status follows the records: cancelled; an attempt in flight →
+    /// its status; waiting for an attempt → blocked (dependencies that
+    /// failed, a failed dispatch) or pending; otherwise the latest
+    /// attempt's status.
     fn refresh(&mut self) {
         self.status = if self.cancel_reason.is_some() {
             TodoStatus::Cancelled
-        } else if self.retry.is_some() && !self.in_flight() {
-            TodoStatus::Pending
+        } else if let Some(a) = self.running() {
+            a.status
+        } else if self.awaits_attempt() {
+            if self.blocked_by.is_empty() && self.block_reason.is_none() {
+                TodoStatus::Pending
+            } else {
+                TodoStatus::Blocked
+            }
         } else {
             match self.latest() {
                 None => TodoStatus::Pending,
@@ -382,39 +320,9 @@ impl TodoRecord {
         self.updated_at_ms = now_ms;
     }
 
-    /// Whether the Todo still needs the PLAN before the session may end:
-    /// `None` when it converged (cancelled, or its latest result was
-    /// reviewed), else why not.
-    pub fn unconverged(&self) -> Option<String> {
-        if self.status == TodoStatus::Cancelled {
-            return None;
-        }
-        if self.in_flight() {
-            return Some(format!("{} is {}", self.todo_id, self.status.as_str()));
-        }
-        if self.retry.is_some() || self.attempts.is_empty() {
-            return Some(format!(
-                "{} is pending (execute it, or cancel it with a reason)",
-                self.todo_id
-            ));
-        }
-        match self.review_state() {
-            ReviewState::Pending => Some(format!(
-                "the result of {} (attempt {}) is not reviewed",
-                self.todo_id,
-                self.latest().map(|a| a.attempt).unwrap_or(0)
-            )),
-            ReviewState::NeedEvidence => Some(format!(
-                "{} needs more evidence (retry it, or review it again after a follow-up)",
-                self.todo_id
-            )),
-            _ => None,
-        }
-    }
-
-    /// The complete task of the Todo as an executor receives it: body,
-    /// acceptance criteria, scope, evidence, skills and the accepted results
-    /// it builds on.
+    /// The complete task of the Todo as its work session receives it: body,
+    /// acceptance criteria, scope, evidence, skills and the results of the
+    /// Todos it runs after.
     pub fn task_text(&self, list: &TodoList, attempt: u32) -> String {
         let mut s = format!(
             "Todo {} (attempt {attempt}, {}): {}\n\n{}\n",
@@ -450,7 +358,7 @@ impl TodoRecord {
         }
         let deps: Vec<&TodoRecord> = self.after.iter().filter_map(|id| list.get(id)).collect();
         if !deps.is_empty() {
-            s.push_str("\nBuilds on these reviewed results:\n");
+            s.push_str("\nBuilds on the results of:\n");
             for d in deps {
                 let a = d.latest();
                 s.push_str(&format!(
@@ -459,14 +367,11 @@ impl TodoRecord {
                     d.title,
                     a.and_then(|a| a.summary.clone()).unwrap_or_default(),
                     a.and_then(|a| a.report.as_ref())
-                        .map(|r| match &r.run_id {
-                            Some(_) => format!(" (report {})", r.display()),
-                            None => format!(
-                                " (report {}; read it with `agent-session read-session {} --report`)",
-                                r.display(),
-                                r.session_id
-                            ),
-                        })
+                        .map(|r| format!(
+                            " (report {}; read it with `agent-session read-session {} --report`)",
+                            r.display(),
+                            r.session_id
+                        ))
                         .unwrap_or_default()
                 ));
                 if let Some(a) = a.filter(|a| !a.artifacts.is_empty()) {
@@ -480,10 +385,10 @@ impl TodoRecord {
         s
     }
 
-    /// The Todo as one element of the compact view: its state, the latest
-    /// attempt's place and result line, the review state — no execution
+    /// The Todo as one element of the compact view: its state, order,
+    /// where its latest attempt runs and its result line — no execution
     /// detail.
-    pub fn view_line(&self) -> String {
+    pub fn view_line(&self, list: &TodoList) -> String {
         let a = self.latest();
         let mut attrs = format!(
             "id=\"{}\" mode=\"{}\" status=\"{}\"",
@@ -491,10 +396,28 @@ impl TodoRecord {
             self.mode.as_str(),
             self.status.as_str()
         );
+        if !self.after.is_empty() {
+            attrs.push_str(&format!(" after=\"{}\"", self.after.join(",")));
+        }
+        if !self.blocked_by.is_empty() {
+            let why: Vec<String> = self
+                .blocked_by
+                .iter()
+                .map(|d| match list.get(d) {
+                    Some(dep) => format!("{d}:{}", dep.status.as_str()),
+                    None => d.clone(),
+                })
+                .collect();
+            attrs.push_str(&format!(" blocked_by=\"{}\"", why.join(",")));
+        }
         if let Some(a) = a {
             attrs.push_str(&format!(" attempt=\"{}\"", a.attempt));
             if let Some(c) = &a.child_sid {
                 attrs.push_str(&format!(" child_sid=\"{}\"", crate::escape_xml_attr(c)));
+            }
+            attrs.push_str(&format!(" started=\"{}\"", utc(a.started_at_ms)));
+            if a.paused() {
+                attrs.push_str(" paused=\"true\"");
             }
             if let Some(r) = &a.report {
                 attrs.push_str(&format!(
@@ -503,7 +426,6 @@ impl TodoRecord {
                 ));
             }
         }
-        attrs.push_str(&format!(" review=\"{}\"", self.review_state().as_str()));
         if let Some(r) = a.and_then(|a| a.runtime_id.as_deref()).or(self.runtime_id.as_deref()) {
             attrs.push_str(&format!(" runtime=\"{}\"", crate::escape_xml_attr(r)));
         }
@@ -513,14 +435,17 @@ impl TodoRecord {
         if let Some(w) = a.and_then(|a| a.workspace_id.as_deref()).or(self.workspace.as_deref()) {
             attrs.push_str(&format!(" workspace=\"{}\"", crate::escape_xml_attr(w)));
         }
-        if !self.after.is_empty() {
-            attrs.push_str(&format!(" after=\"{}\"", self.after.join(",")));
-        }
         if self.retry.is_some() {
             attrs.push_str(" retry=\"pending\"");
         }
+        if !self.updates.is_empty() {
+            attrs.push_str(&format!(" updates=\"{}\"", self.updates.len()));
+        }
         let mut body = crate::escape_xml_text(&self.title);
-        if let Some(summary) = a.and_then(|a| a.summary.as_deref()).filter(|s| !s.is_empty()) {
+        if let Some(why) = &self.block_reason {
+            body.push_str(" — dispatch failed: ");
+            body.push_str(&crate::escape_xml_text(&one_line(why)));
+        } else if let Some(summary) = a.and_then(|a| a.summary.as_deref()).filter(|s| !s.is_empty()) {
             body.push_str(" — ");
             body.push_str(&crate::escape_xml_text(summary));
         } else if let Some(err) = a.and_then(|a| a.error.as_deref()) {
@@ -533,6 +458,13 @@ impl TodoRecord {
         }
         format!("<todo {attrs}>{body}</todo>")
     }
+}
+
+/// `2026-11-02T08:15:03Z`.
+fn utc(ms: u64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms as i64)
+        .map(|t| t.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        .unwrap_or_default()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -567,11 +499,41 @@ pub struct NewTodo {
     pub scope: Option<String>,
     pub evidence: Vec<String>,
     pub skills: Vec<String>,
-    pub after: Vec<String>,
+    /// `None`: after the latest Todo that is not cancelled (a chain);
+    /// `Some(vec![])`: no prerequisite.
+    pub after: Option<Vec<String>>,
     pub batch: Option<String>,
     pub runtime_id: Option<String>,
     pub workspace: Option<String>,
     pub behavior: Option<String>,
+}
+
+/// Changes of a Todo (`todo update`); `None` leaves a field as it is.
+#[derive(Clone, Debug, Default)]
+pub struct TodoPatch {
+    pub title: Option<String>,
+    pub content: Option<String>,
+    /// Criteria to add (after `clear_accept`).
+    pub accept: Vec<String>,
+    pub clear_accept: bool,
+    pub scope: Option<String>,
+    /// Evidence to add.
+    pub evidence: Vec<String>,
+    /// Replaces `after` (`Some(vec![])`: no prerequisite).
+    pub after: Option<Vec<String>>,
+    pub runtime_id: Option<String>,
+    pub workspace: Option<String>,
+    /// Replaces the cmd_skills.
+    pub skills: Option<Vec<String>>,
+}
+
+/// What `update` changed, and the attempt that runs it now (its work
+/// session is told).
+#[derive(Clone, Debug, PartialEq)]
+pub struct UpdateOutcome {
+    pub changed: Vec<String>,
+    /// `(attempt, child_sid)` of the attempt in flight.
+    pub running: Option<(u32, String)>,
 }
 
 /// Where an attempt was resolved to execute.
@@ -583,20 +545,7 @@ pub struct AttemptTarget {
     pub behavior: Option<String>,
 }
 
-/// Which Todo `next_behavior = do` would execute now.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SerialPick {
-    /// The first pending serial Todo whose prerequisites are accepted.
-    Ready(String),
-    /// Results that came back and were not reviewed: review them first.
-    Unreviewed(Vec<String>),
-    /// Pending serial Todos wait for prerequisites not accepted yet.
-    Waiting(Vec<(String, Vec<String>)>),
-    /// Nothing serial to execute.
-    None,
-}
-
-/// What the session host observed of an exploration's sub session.
+/// What the session host observed of an attempt's sub session.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChildObservation {
     pub status: TodoStatus,
@@ -604,6 +553,49 @@ pub struct ChildObservation {
     pub report: Option<ReportRef>,
     pub artifacts: Vec<String>,
     pub error: Option<String>,
+}
+
+/// The list at a glance (the plan's final report and the worklog, never a
+/// gate): how many Todos are in each state, and which are open.
+#[derive(Clone, Debug, Default, Serialize, PartialEq)]
+pub struct TodoSummary {
+    pub total: usize,
+    pub counts: std::collections::BTreeMap<String, usize>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub running: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub paused: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pending: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub blocked: Vec<String>,
+}
+
+impl TodoSummary {
+    /// `5 todos: 3 completed, 1 failed, 1 running (T05)`.
+    pub fn line(&self) -> String {
+        if self.total == 0 {
+            return "no todos".into();
+        }
+        let parts: Vec<String> = self
+            .counts
+            .iter()
+            .map(|(status, n)| {
+                let ids = match status.as_str() {
+                    "running" => &self.running,
+                    "pending" => &self.pending,
+                    "blocked" => &self.blocked,
+                    _ => return format!("{n} {status}"),
+                };
+                format!("{n} {status} ({})", ids.join(", "))
+            })
+            .collect();
+        let mut s = format!("{} todos: {}", self.total, parts.join(", "));
+        if !self.paused.is_empty() {
+            s.push_str(&format!("; paused: {}", self.paused.join(", ")));
+        }
+        s
+    }
 }
 
 fn invalid(msg: impl Into<String>) -> AgentToolError {
@@ -637,8 +629,39 @@ impl TodoList {
             .ok_or_else(|| AgentToolError::NotFound(format!("todo `{id}` not found")))
     }
 
-    fn bump(&mut self) {
+    /// A change of the list: the dependents' blocks follow it, the
+    /// revision moves.
+    fn changed(&mut self, now_ms: u64) {
+        self.settle_dependents(now_ms);
         self.rev += 1;
+    }
+
+    /// The Todos `after` may name for `todo_id` (`None`: a new one): known
+    /// ids, never itself, never a chain that leads back to it.
+    fn check_after(&self, todo_id: Option<&str>, after: &[String]) -> Result<(), AgentToolError> {
+        for dep in after {
+            if self.get(dep).is_none() {
+                return Err(invalid(format!("--after {dep}: no such todo")));
+            }
+            let Some(me) = todo_id else {
+                continue;
+            };
+            let mut stack = vec![dep.clone()];
+            let mut seen = std::collections::BTreeSet::new();
+            while let Some(id) = stack.pop() {
+                if id == me {
+                    return Err(invalid(format!(
+                        "--after {dep}: {me} would run after itself (through {dep})"
+                    )));
+                }
+                if seen.insert(id.clone()) {
+                    if let Some(t) = self.get(&id) {
+                        stack.extend(t.after.iter().cloned());
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn add(&mut self, new: NewTodo, now_ms: u64) -> Result<String, AgentToolError> {
@@ -658,23 +681,20 @@ impl TodoList {
                 new.skills.len()
             )));
         }
-        for dep in &new.after {
-            if self.get(dep).is_none() {
-                return Err(invalid(format!("--after {dep}: no such todo")));
-            }
-        }
-        let runtime_id = new
-            .runtime_id
-            .map(|r| r.trim().to_string())
-            .filter(|r| !r.is_empty() && r != "inherit");
-        let workspace = new.workspace.map(|w| w.trim().to_string()).filter(|w| !w.is_empty());
-        if let Some(w) = &workspace {
-            if w != "inherit" && w != "none" && !w.starts_with("ws-") {
-                return Err(invalid(format!(
-                    "--workspace {w}: takes inherit | none | <workspace id>"
-                )));
-            }
-        }
+        let after = match new.after {
+            Some(after) => clean(after),
+            // A chain: after the latest Todo that is not cancelled.
+            None => self
+                .todos
+                .iter()
+                .filter(|t| t.status != TodoStatus::Cancelled)
+                .max_by_key(|t| t.seq)
+                .map(|t| vec![t.todo_id.clone()])
+                .unwrap_or_default(),
+        };
+        self.check_after(None, &after)?;
+        let runtime_id = runtime_arg(new.runtime_id);
+        let workspace = workspace_arg(new.workspace)?;
         let seq = self.next_seq;
         self.next_seq += 1;
         let todo_id = format!("T{seq:02}");
@@ -690,14 +710,15 @@ impl TodoList {
             scope: new.scope.filter(|s| !s.trim().is_empty()),
             evidence: clean(new.evidence),
             skills: clean(new.skills),
-            after: new.after,
+            after,
+            blocked_by: Vec::new(),
+            block_reason: None,
             batch: new.batch,
             runtime_id,
             workspace,
             behavior: new.behavior.map(|b| b.trim().to_string()).filter(|b| !b.is_empty()),
             attempts: Vec::new(),
-            reviews: Vec::new(),
-            refusals: Vec::new(),
+            updates: Vec::new(),
             retry: None,
             cancel_reason: None,
             created_at_ms: now_ms,
@@ -705,220 +726,110 @@ impl TodoList {
         };
         record.touch(now_ms);
         self.todos.push(record);
-        self.bump();
+        self.changed(now_ms);
         Ok(todo_id)
     }
 
-    /// Ended attempts nobody reviewed yet (the latest attempt of each Todo;
-    /// a pending retry is a judgement of its own).
-    pub fn unreviewed(&self) -> Vec<String> {
-        self.todos
-            .iter()
-            .filter(|t| {
-                t.status != TodoStatus::Cancelled
-                    && t.retry.is_none()
-                    && t.review_state() == ReviewState::Pending
-            })
-            .map(|t| t.todo_id.clone())
-            .collect()
-    }
-
-    /// The serial Todo `next_behavior = do` executes: unreviewed results
-    /// come first; then the first pending serial Todo (never one bound to
-    /// an exploration, never a blocked one) whose prerequisites are accepted.
-    pub fn serial_pick(&self) -> SerialPick {
-        let unreviewed = self.unreviewed();
-        if !unreviewed.is_empty() {
-            return SerialPick::Unreviewed(unreviewed);
-        }
-        let mut waiting = Vec::new();
-        for t in &self.todos {
-            if t.mode != TodoMode::Serial || t.status != TodoStatus::Pending {
-                continue;
+    /// Whether every Todo `t` runs after completed (`Ok`), is still on its
+    /// way (`Err(None)`), or ended without success (`Err(Some(ids))`).
+    fn deps_of(&self, t: &TodoRecord) -> Result<(), Option<Vec<String>>> {
+        let mut failed = Vec::new();
+        let mut waiting = false;
+        for dep in &t.after {
+            match self.get(dep).map(|d| d.status) {
+                Some(TodoStatus::Completed) => {}
+                Some(
+                    TodoStatus::Failed
+                    | TodoStatus::Timeout
+                    | TodoStatus::Stopped
+                    | TodoStatus::Cancelled,
+                )
+                | None => failed.push(dep.clone()),
+                Some(_) => waiting = true,
             }
-            let missing: Vec<String> = t
-                .after
-                .iter()
-                .filter(|d| !self.get(d).is_some_and(TodoRecord::accepted))
-                .cloned()
-                .collect();
-            if missing.is_empty() {
-                return SerialPick::Ready(t.todo_id.clone());
-            }
-            waiting.push((t.todo_id.clone(), missing));
         }
-        if waiting.is_empty() {
-            SerialPick::None
+        if !failed.is_empty() {
+            Err(Some(failed))
+        } else if waiting {
+            Err(None)
         } else {
-            SerialPick::Waiting(waiting)
+            Ok(())
         }
     }
 
-    /// Whether the serial Todo `todo_id` may start now as a sub session of
-    /// its own (`todo dispatch`): it is pending, no other serial Todo is
-    /// executing (serial Todos run one at a time), every ended result was
-    /// reviewed and the Todos it runs after are accepted. `Err`: why not.
-    pub fn admit_serial(&self, todo_id: &str) -> Result<(), AgentToolError> {
+    /// A Todo waiting for an attempt whose prerequisite ended without
+    /// success is blocked by it; once that is retried, changed or the
+    /// prerequisite completes, it is pending again.
+    pub fn settle_dependents(&mut self, now_ms: u64) {
+        let blocks: Vec<(usize, Vec<String>)> = self
+            .todos
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let by = if t.awaits_attempt() {
+                    match self.deps_of(t) {
+                        Err(Some(failed)) => failed,
+                        _ => Vec::new(),
+                    }
+                } else {
+                    Vec::new()
+                };
+                (i, by)
+            })
+            .collect();
+        for (i, by) in blocks {
+            let t = &mut self.todos[i];
+            if t.blocked_by != by {
+                t.blocked_by = by;
+                t.touch(now_ms);
+            }
+        }
+    }
+
+    /// Todos that start now: pending, every Todo they run after completed;
+    /// in creation order.
+    pub fn ready(&self) -> Vec<String> {
+        let mut out: Vec<&TodoRecord> = self
+            .todos
+            .iter()
+            .filter(|t| t.status == TodoStatus::Pending && self.deps_of(t).is_ok())
+            .collect();
+        out.sort_by_key(|t| t.seq);
+        out.into_iter().map(|t| t.todo_id.clone()).collect()
+    }
+
+    /// Whether `todo_id` may start now: pending and every Todo it runs
+    /// after completed. `Err`: why not.
+    pub fn admit(&self, todo_id: &str) -> Result<(), AgentToolError> {
         let t = self
             .get(todo_id)
             .ok_or_else(|| AgentToolError::NotFound(format!("todo `{todo_id}` not found")))?;
-        if t.mode != TodoMode::Serial {
-            return Err(invalid(format!("todo {todo_id} is an exploration")));
-        }
         if t.status != TodoStatus::Pending {
             return Err(invalid(format!(
-                "todo {todo_id} is {}; only a pending todo is dispatched (retry it first)",
+                "todo {todo_id} is {}; only a pending todo is dispatched",
                 t.status.as_str()
             )));
         }
-        if let Some(other) = self
-            .todos
-            .iter()
-            .find(|o| o.todo_id != todo_id && o.in_flight() && o.latest().is_some_and(|a| a.mode == TodoMode::Serial))
-        {
-            return Err(invalid(format!(
-                "serial todo {} is {}: serial todos run one at a time; wait for it, review its result, then dispatch {todo_id}",
-                other.todo_id,
-                other.status.as_str()
-            )));
+        match self.deps_of(t) {
+            Ok(()) => Ok(()),
+            Err(Some(ids)) => Err(invalid(format!(
+                "todo {todo_id} runs after {}, which ended without success",
+                ids.join(", ")
+            ))),
+            Err(None) => Err(invalid(format!(
+                "todo {todo_id} runs after {}, which did not complete yet",
+                t.after.join(", ")
+            ))),
         }
-        let unreviewed = self.unreviewed();
-        if !unreviewed.is_empty() {
-            return Err(invalid(format!(
-                "results came back and are not reviewed yet: {}; read each with `todo show <id> --report` and record `todo review` before {todo_id} runs",
-                unreviewed.join(", ")
-            )));
-        }
-        let missing: Vec<&str> = t
-            .after
-            .iter()
-            .filter(|d| !self.get(d).is_some_and(TodoRecord::accepted))
-            .map(String::as_str)
-            .collect();
-        if !missing.is_empty() {
-            return Err(invalid(format!(
-                "todo {todo_id} runs after {}, whose result is not accepted yet",
-                missing.join(", ")
-            )));
-        }
-        Ok(())
     }
 
-    /// Exploration attempts in flight (dispatched or being dispatched).
-    pub fn explorations_in_flight(&self) -> Vec<(String, String)> {
-        self.todos
-            .iter()
-            .filter_map(|t| {
-                let a = t.latest()?;
-                (a.mode == TodoMode::Explore && !a.ended())
-                    .then(|| (t.todo_id.clone(), a.child_sid.clone().unwrap_or_default()))
-            })
-            .collect()
-    }
-
-    /// Admit `todo_id` as the serial attempt of `caller` (idempotent: the
-    /// same caller gets the same attempt). Returns the attempt number.
-    pub fn begin_serial(
-        &mut self,
-        todo_id: &str,
-        caller: CallRef,
-        now_ms: u64,
-    ) -> Result<u32, AgentToolError> {
-        let t = self.get_mut(todo_id)?;
-        if let Some(a) = t.attempts.iter().find(|a| a.caller.as_ref() == Some(&caller)) {
-            return Ok(a.attempt);
-        }
-        if t.status != TodoStatus::Pending || t.mode != TodoMode::Serial {
-            return Err(invalid(format!(
-                "todo {todo_id} is {} ({}); only a pending serial todo is executed",
-                t.status.as_str(),
-                t.mode.as_str()
-            )));
-        }
-        let attempt = t.next_attempt();
-        t.attempts.push(TodoAttempt {
-            attempt,
-            mode: TodoMode::Serial,
-            caller: Some(caller),
-            run_id: None,
-            child_sid: None,
-            dispatch: None,
-            runtime_id: None,
-            workspace_id: None,
-            baseline: None,
-            behavior: None,
-            status: TodoStatus::Running,
-            started_at_ms: now_ms,
-            ended_at_ms: None,
-            error: None,
-            summary: None,
-            report: None,
-            artifacts: Vec::new(),
-            reason: t.retry.take(),
-        });
-        t.touch(now_ms);
-        self.bump();
-        Ok(attempt)
-    }
-
-    /// The end of a serial attempt (idempotent; an attempt that ended keeps
-    /// its first result).
-    pub fn end_serial(
-        &mut self,
-        todo_id: &str,
-        attempt: u32,
-        run_id: &str,
-        result: ChildObservation,
-        now_ms: u64,
-    ) -> Result<bool, AgentToolError> {
-        let t = self.get_mut(todo_id)?;
-        let Some(a) = t.attempt_mut(attempt) else {
-            return Err(AgentToolError::NotFound(format!(
-                "todo {todo_id} has no attempt {attempt}"
-            )));
-        };
-        if a.ended() {
-            return Ok(false);
-        }
-        if !run_id.is_empty() {
-            a.run_id = Some(run_id.to_string());
-        }
-        apply_observation(a, result, now_ms);
-        t.touch(now_ms);
-        self.bump();
-        Ok(true)
-    }
-
-    /// Record the dispatch of an exploration attempt before its sub session
-    /// is created. A `dispatching` attempt of the same sub session is reused
-    /// (a retried dispatch after a crash).
-    pub fn begin_explore(
+    /// Record the dispatch of an attempt before its sub session is created.
+    /// A `dispatching` attempt of the same sub session is reused (a
+    /// dispatch redone after a crash).
+    pub fn begin_dispatch(
         &mut self,
         todo_id: &str,
         child_sid: &str,
-        now_ms: u64,
-    ) -> Result<u32, AgentToolError> {
-        self.begin_child(todo_id, child_sid, TodoMode::Explore, now_ms)
-    }
-
-    /// Record the dispatch of a serial Todo that executes in its own work
-    /// session (another runtime or workspace than the session's): the Todo
-    /// stays serial — the session waits for it and reviews it like a sub
-    /// context's result.
-    pub fn begin_serial_session(
-        &mut self,
-        todo_id: &str,
-        child_sid: &str,
-        now_ms: u64,
-    ) -> Result<u32, AgentToolError> {
-        self.begin_child(todo_id, child_sid, TodoMode::Serial, now_ms)
-    }
-
-    fn begin_child(
-        &mut self,
-        todo_id: &str,
-        child_sid: &str,
-        mode: TodoMode,
         now_ms: u64,
     ) -> Result<u32, AgentToolError> {
         let t = self.get_mut(todo_id)?;
@@ -931,22 +842,15 @@ impl TodoList {
         }
         if t.status != TodoStatus::Pending {
             return Err(invalid(format!(
-                "todo {todo_id} is {}; only a pending todo is dispatched (retry it first)",
+                "todo {todo_id} is {}; only a pending todo is dispatched",
                 t.status.as_str()
             )));
         }
-        if mode == TodoMode::Serial && t.mode != TodoMode::Serial {
-            return Err(invalid(format!(
-                "todo {todo_id} is an exploration; dispatch it with `todo dispatch`"
-            )));
-        }
-        t.mode = mode;
         let attempt = t.next_attempt();
+        let mode = t.mode;
         t.attempts.push(TodoAttempt {
             attempt,
             mode,
-            caller: None,
-            run_id: None,
             child_sid: Some(child_sid.to_string()),
             dispatch: Some(DispatchState::Dispatching),
             runtime_id: t.runtime_id.clone(),
@@ -956,6 +860,8 @@ impl TodoList {
             status: TodoStatus::Running,
             started_at_ms: now_ms,
             ended_at_ms: None,
+            paused_at_ms: None,
+            resumed_at_ms: None,
             error: None,
             summary: None,
             report: None,
@@ -963,13 +869,13 @@ impl TodoList {
             reason: t.retry.take(),
         });
         t.touch(now_ms);
-        self.bump();
+        self.changed(now_ms);
         Ok(attempt)
     }
 
     /// The sub session of a dispatched attempt exists: bound, with where it
     /// was resolved to execute.
-    pub fn bind_explore(
+    pub fn bind_dispatch(
         &mut self,
         todo_id: &str,
         attempt: u32,
@@ -998,18 +904,19 @@ impl TodoList {
             t.behavior = target.behavior;
         }
         t.touch(now_ms);
-        self.bump();
+        self.changed(now_ms);
         Ok(true)
     }
 
-    /// A dispatch that did not create its sub session (refused by a limit,
-    /// or interrupted before the creation): the attempt is withdrawn, the
-    /// Todo is pending again with the refusal recorded.
+    /// A dispatch that did not create its sub session: the attempt is
+    /// withdrawn. `failure`: why it cannot be dispatched as it is — the
+    /// Todo is blocked until the plan changes it; `None` (held back by a
+    /// limit, interrupted): pending, the next scheduling point tries again.
     pub fn withdraw_dispatch(
         &mut self,
         todo_id: &str,
         attempt: u32,
-        reason: &str,
+        failure: Option<&str>,
         now_ms: u64,
     ) -> Result<(), AgentToolError> {
         let t = self.get_mut(todo_id)?;
@@ -1023,18 +930,17 @@ impl TodoList {
                 t.retry = a.reason;
             }
         }
-        t.refusals.push(DispatchRefusal {
-            at_ms: now_ms,
-            reason: reason.to_string(),
-        });
+        if let Some(why) = failure {
+            t.block_reason = Some(why.to_string());
+        }
         t.touch(now_ms);
-        self.bump();
+        self.changed(now_ms);
         Ok(())
     }
 
-    /// What the host observed of an exploration's sub session (idempotent;
-    /// an ended attempt keeps its result, and only its own attempt changes —
-    /// a late result never reaches a newer attempt).
+    /// What the host observed of an attempt's sub session (idempotent; an
+    /// ended attempt keeps its result, and only its own attempt changes — a
+    /// late result never reaches a newer attempt).
     pub fn observe_child(
         &mut self,
         todo_id: &str,
@@ -1061,85 +967,198 @@ impl TodoList {
             apply_observation(a, seen, now_ms);
         }
         t.touch(now_ms);
-        self.bump();
+        self.changed(now_ms);
         Ok(true)
     }
 
-    /// The PLAN's review of the latest attempt. Replaying the same review is
-    /// a no-op; a different one for an attempt already reviewed is refused.
-    pub fn review(
+    /// Change a Todo (`todo update`). Its body, criteria, scope and evidence
+    /// change in any state but cancelled — a running attempt is told
+    /// (`UpdateOutcome.running`); where and in which order it runs
+    /// (`after`, runtime, workspace, cmd_skills) only while no attempt
+    /// runs. The change and its reason are kept in `updates`.
+    pub fn update(
         &mut self,
         todo_id: &str,
-        verdict: ReviewVerdict,
+        patch: TodoPatch,
         reason: &str,
-        followups: Vec<String>,
         by: Option<String>,
         now_ms: u64,
-    ) -> Result<(u32, bool), AgentToolError> {
+    ) -> Result<UpdateOutcome, AgentToolError> {
         if reason.trim().is_empty() {
-            return Err(invalid("a review needs --reason: what the report shows and why"));
+            return Err(invalid("update needs --reason: why the todo changes"));
         }
-        for f in &followups {
-            if self.get(f).is_none() {
-                return Err(invalid(format!("--followup {f}: no such todo")));
-            }
+        if let Some(after) = &patch.after {
+            self.check_after(Some(todo_id), after)?;
         }
+        let workspace = workspace_arg(patch.workspace.clone())?;
         let t = self.get_mut(todo_id)?;
-        let Some(a) = t.latest().filter(|a| a.ended()).cloned() else {
+        if t.status == TodoStatus::Cancelled {
+            return Err(invalid(format!("todo {todo_id} is cancelled; add a new one")));
+        }
+        let running = t
+            .running()
+            .and_then(|a| a.child_sid.clone().map(|c| (a.attempt, c)));
+        let placement = [
+            ("after", patch.after.is_some()),
+            ("runtime", patch.runtime_id.is_some()),
+            ("workspace", workspace.is_some()),
+            ("skills", patch.skills.is_some()),
+        ];
+        let fixed: Vec<&str> = placement.iter().filter(|(_, set)| *set).map(|(f, _)| *f).collect();
+        if t.in_flight() && !fixed.is_empty() {
             return Err(invalid(format!(
-                "todo {todo_id} has no result to review yet ({})",
-                t.status.as_str()
-            )));
-        };
-        if let Some(old) = t.review_of(a.attempt) {
-            if old.verdict == verdict && old.reason == reason.trim() {
-                return Ok((a.attempt, false));
-            }
-            return Err(invalid(format!(
-                "attempt {} of {todo_id} was already reviewed ({}); retry it or add a follow-up todo",
-                a.attempt,
-                old.verdict.as_str()
+                "todo {todo_id} is running (attempt {}): its {} cannot change now; change only its body (--content, --accept, --scope, --evidence), or stop it and update it before the retry",
+                t.latest().map(|a| a.attempt).unwrap_or(0),
+                fixed.join(", ")
             )));
         }
-        t.reviews.push(TodoReview {
-            attempt: a.attempt,
-            report_id: a.report.as_ref().map(|r| r.report_id.clone()),
-            verdict,
-            reason: reason.trim().to_string(),
-            followups,
-            by,
+        if let Some(skills) = &patch.skills {
+            if skills.len() > MAX_SKILLS_PER_TODO {
+                return Err(invalid(format!(
+                    "at most {MAX_SKILLS_PER_TODO} cmd_skills per todo (got {})",
+                    skills.len()
+                )));
+            }
+        }
+        let mut changed = Vec::new();
+        if let Some(title) = patch.title.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+            if title != t.title {
+                t.title = title;
+                changed.push("title");
+            }
+        }
+        if let Some(content) = patch.content.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+            if content != t.content {
+                t.content = content;
+                changed.push("content");
+            }
+        }
+        if patch.clear_accept || !patch.accept.is_empty() {
+            let mut accept = if patch.clear_accept { Vec::new() } else { t.accept.clone() };
+            accept.extend(clean(patch.accept));
+            if accept != t.accept {
+                t.accept = accept;
+                changed.push("accept");
+            }
+        }
+        if let Some(scope) = patch.scope {
+            let scope = Some(scope.trim().to_string()).filter(|s| !s.is_empty());
+            if scope != t.scope {
+                t.scope = scope;
+                changed.push("scope");
+            }
+        }
+        let evidence = clean(patch.evidence);
+        if !evidence.is_empty() {
+            t.evidence.extend(evidence);
+            changed.push("evidence");
+        }
+        if let Some(after) = patch.after {
+            let after = clean(after);
+            if after != t.after {
+                t.after = after;
+                changed.push("after");
+            }
+        }
+        if let Some(runtime) = patch.runtime_id {
+            let runtime = runtime_arg(Some(runtime));
+            if runtime != t.runtime_id {
+                t.runtime_id = runtime;
+                changed.push("runtime");
+            }
+        }
+        if workspace.is_some() && workspace != t.workspace {
+            t.workspace = workspace;
+            changed.push("workspace");
+        }
+        if let Some(skills) = patch.skills {
+            let skills = clean(skills);
+            if skills != t.skills {
+                t.skills = skills;
+                changed.push("skills");
+            }
+        }
+        if changed.is_empty() {
+            return Err(invalid(format!("todo {todo_id}: nothing to change")));
+        }
+        // A failed dispatch is tried again with the changed Todo.
+        t.block_reason = None;
+        t.updates.push(TodoUpdate {
             at_ms: now_ms,
+            reason: reason.trim().to_string(),
+            fields: changed.iter().map(|f| f.to_string()).collect(),
+            attempt: running.as_ref().map(|(n, _)| *n),
+            by,
         });
         t.touch(now_ms);
-        self.bump();
-        Ok((a.attempt, true))
+        self.changed(now_ms);
+        Ok(UpdateOutcome {
+            changed: changed.into_iter().map(str::to_string).collect(),
+            running,
+        })
     }
 
-    /// Cancel a Todo that is not executing; its history stays.
+    /// The attempt of `todo_id` the plan pauses / resumes: in flight, with
+    /// its work session. `Ok(None)`: already in that state.
+    pub fn mark_paused(
+        &mut self,
+        todo_id: &str,
+        paused: bool,
+        now_ms: u64,
+    ) -> Result<Option<(u32, String)>, AgentToolError> {
+        let t = self.get_mut(todo_id)?;
+        let Some(a) = t.attempts.last_mut().filter(|a| !a.ended()) else {
+            return Err(invalid(format!(
+                "todo {todo_id} is {}: only a running todo is {}",
+                t.status.as_str(),
+                if paused { "paused" } else { "resumed" }
+            )));
+        };
+        let Some(child) = a.child_sid.clone() else {
+            return Err(invalid(format!("todo {todo_id} has no work session yet")));
+        };
+        if a.paused() == paused {
+            return Ok(None);
+        }
+        if paused {
+            a.paused_at_ms = Some(now_ms);
+        } else {
+            a.resumed_at_ms = Some(now_ms);
+        }
+        let n = a.attempt;
+        t.touch(now_ms);
+        self.changed(now_ms);
+        Ok(Some((n, child)))
+    }
+
+    /// Cancel a Todo that is not running and did not complete; its history
+    /// stays.
     pub fn cancel(&mut self, todo_id: &str, reason: &str, now_ms: u64) -> Result<(), AgentToolError> {
         if reason.trim().is_empty() {
             return Err(invalid("cancel needs --reason"));
         }
         let t = self.get_mut(todo_id)?;
-        if t.status != TodoStatus::Pending {
+        if t.in_flight() || matches!(t.status, TodoStatus::Completed | TodoStatus::Cancelled) {
             return Err(invalid(format!(
-                "todo {todo_id} is {}: only a todo that is not dispatched can be cancelled",
-                t.status.as_str()
+                "todo {todo_id} is {}: only a todo that is not running and did not complete can be cancelled{}",
+                t.status.as_str(),
+                if t.in_flight() { " (stop it first: `todo stop`)" } else { "" }
             )));
         }
         t.cancel_reason = Some(reason.trim().to_string());
         t.retry = None;
         t.touch(now_ms);
-        self.bump();
+        self.changed(now_ms);
         Ok(())
     }
 
-    /// Cancel every pending Todo (nothing is deleted, no id is reused).
+    /// Cancel every Todo that waits for an attempt (nothing is deleted, no
+    /// id is reused).
     pub fn clean(&mut self, reason: &str, now_ms: u64) -> Result<Vec<String>, AgentToolError> {
         let ids: Vec<String> = self
             .todos
             .iter()
-            .filter(|t| t.status == TodoStatus::Pending)
+            .filter(|t| matches!(t.status, TodoStatus::Pending | TodoStatus::Blocked))
             .map(|t| t.todo_id.clone())
             .collect();
         for id in &ids {
@@ -1148,13 +1167,22 @@ impl TodoList {
         Ok(ids)
     }
 
-    /// Ask for a new attempt of a Todo whose latest attempt ended; the old
-    /// attempts and their reports stay.
+    /// Ask for a new attempt of a Todo whose latest attempt ended, or whose
+    /// dispatch failed; the old attempts and their reports stay.
     pub fn retry(&mut self, todo_id: &str, reason: &str, now_ms: u64) -> Result<(), AgentToolError> {
         if reason.trim().is_empty() {
             return Err(invalid("retry needs --reason: what the new attempt must do differently"));
         }
         let t = self.get_mut(todo_id)?;
+        if t.block_reason.is_some() && !t.in_flight() {
+            t.block_reason = None;
+            if !t.attempts.is_empty() {
+                t.retry = Some(reason.trim().to_string());
+            }
+            t.touch(now_ms);
+            self.changed(now_ms);
+            return Ok(());
+        }
         if t.attempts.is_empty() || t.in_flight() || t.status == TodoStatus::Cancelled {
             return Err(invalid(format!(
                 "todo {todo_id} is {}: only a todo whose attempt ended can be retried",
@@ -1166,20 +1194,47 @@ impl TodoList {
         }
         t.retry = Some(reason.trim().to_string());
         t.touch(now_ms);
-        self.bump();
+        self.changed(now_ms);
         Ok(())
     }
 
-    /// Why the session may not finish yet (empty: every Todo converged).
-    pub fn unconverged(&self) -> Vec<String> {
-        self.todos.iter().filter_map(TodoRecord::unconverged).collect()
+    /// Attempts in flight with their work sessions.
+    pub fn in_flight(&self) -> Vec<(String, u32, String)> {
+        self.todos
+            .iter()
+            .filter_map(|t| {
+                let a = t.running()?;
+                Some((t.todo_id.clone(), a.attempt, a.child_sid.clone().unwrap_or_default()))
+            })
+            .collect()
     }
 
-    /// The compact view the PLAN decides on (§2.0): no execution detail.
+    pub fn summary(&self) -> TodoSummary {
+        let mut s = TodoSummary {
+            total: self.todos.len(),
+            ..Default::default()
+        };
+        for t in &self.todos {
+            *s.counts.entry(t.status.as_str().to_string()).or_default() += 1;
+            let id = t.todo_id.clone();
+            match t.status {
+                TodoStatus::Running => s.running.push(id.clone()),
+                TodoStatus::Pending => s.pending.push(id.clone()),
+                TodoStatus::Blocked => s.blocked.push(id.clone()),
+                _ => {}
+            }
+            if t.latest().is_some_and(TodoAttempt::paused) {
+                s.paused.push(id);
+            }
+        }
+        s
+    }
+
+    /// The compact view the plan decides on: no execution detail.
     pub fn render_view(&self) -> String {
         let mut s = format!("<todo_list rev=\"{}\">\n", self.rev);
         for t in &self.todos {
-            s.push_str(&t.view_line());
+            s.push_str(&t.view_line(self));
             s.push('\n');
         }
         s.push_str("</todo_list>");
@@ -1193,6 +1248,24 @@ fn clean(items: Vec<String>) -> Vec<String> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect()
+}
+
+fn runtime_arg(runtime: Option<String>) -> Option<String> {
+    runtime
+        .map(|r| r.trim().to_string())
+        .filter(|r| !r.is_empty() && r != "inherit")
+}
+
+fn workspace_arg(workspace: Option<String>) -> Result<Option<String>, AgentToolError> {
+    let workspace = workspace.map(|w| w.trim().to_string()).filter(|w| !w.is_empty());
+    if let Some(w) = &workspace {
+        if w != "inherit" && w != "none" && !w.starts_with("ws-") {
+            return Err(invalid(format!(
+                "--workspace {w}: takes inherit | none | <workspace id>"
+            )));
+        }
+    }
+    Ok(workspace)
 }
 
 fn apply_observation(a: &mut TodoAttempt, seen: ChildObservation, now_ms: u64) {
@@ -1373,10 +1446,10 @@ mod tests {
         }
     }
 
-    fn caller(n: u32) -> CallRef {
-        CallRef {
-            run_id: "run-1".into(),
-            call_id: format!("step:{n}"),
+    fn free(title: &str) -> NewTodo {
+        NewTodo {
+            after: Some(Vec::new()),
+            ..todo(title)
         }
     }
 
@@ -1386,12 +1459,18 @@ mod tests {
             summary: Some(summary.into()),
             report: Some(ReportRef {
                 session_id: "work-s".into(),
-                run_id: None,
                 report_id: format!("r-{summary}"),
             }),
             artifacts: Vec::new(),
             error: None,
         }
+    }
+
+    /// Dispatch `id` as `child` and bind it.
+    fn start(l: &mut TodoList, id: &str, child: &str, now: u64) -> u32 {
+        let n = l.begin_dispatch(id, child, now).unwrap();
+        l.bind_dispatch(id, n, now, AttemptTarget::default()).unwrap();
+        n
     }
 
     /// Ids come from a persisted counter: cancelling never frees one.
@@ -1410,120 +1489,193 @@ mod tests {
         assert_eq!(list.todos.len(), 3, "cancel keeps the records");
         assert_eq!(list.todos[0].status, TodoStatus::Cancelled);
         assert_eq!(list.todos[0].cancel_reason.as_deref(), Some("replan"));
+        assert!(list.todos[2].after.is_empty(), "cancelled todos are no default prerequisite");
         assert_eq!(list.next_seq, 4);
     }
 
-    /// The serial pick skips explorations and blocked Todos, waits for
-    /// prerequisites and asks for reviews first.
+    /// Without `--after` a Todo runs after the latest one; `--after none`
+    /// runs at once; what else runs never holds a ready Todo back.
     #[test]
-    fn serial_pick_rules() {
-        let mut l = TodoList::default();
-        let a = l.add(NewTodo { mode: TodoMode::Explore, ..todo("explore a") }, 1).unwrap();
-        let b = l.add(NewTodo { mode: TodoMode::Explore, ..todo("explore b") }, 1).unwrap();
-        let c = l
-            .add(NewTodo { after: vec![a.clone(), b.clone()], ..todo("verify") }, 1)
-            .unwrap();
-        assert_eq!(l.serial_pick(), SerialPick::Waiting(vec![(c.clone(), vec![a.clone(), b.clone()])]));
-        let n = l.begin_explore(&a, "work-a", 2).unwrap();
-        l.bind_explore(&a, n, 2, AttemptTarget::default()).unwrap();
-        let m = l.begin_explore(&b, "work-b", 2).unwrap();
-        assert_eq!(l.explorations_in_flight().len(), 2);
-        l.observe_child(&a, n, ChildObservation { status: TodoStatus::Blocked, summary: None, report: None, artifacts: vec![], error: None }, 3).unwrap();
-        assert_eq!(l.get(&a).unwrap().status, TodoStatus::Blocked);
-        l.observe_child(&a, n, done(TodoStatus::Completed, "a found it"), 4).unwrap();
-        assert_eq!(l.serial_pick(), SerialPick::Unreviewed(vec![a.clone()]));
-        l.review(&a, ReviewVerdict::Accept, "repro holds", vec![], None, 5).unwrap();
-        l.observe_child(&b, m, done(TodoStatus::Completed, "b found it"), 6).unwrap();
-        l.review(&b, ReviewVerdict::Accept, "repro holds", vec![], None, 7).unwrap();
-        assert_eq!(l.serial_pick(), SerialPick::Ready(c.clone()));
-        let k = l.begin_serial(&c, caller(9), 8).unwrap();
-        assert_eq!(k, 1);
-        assert_eq!(l.begin_serial(&c, caller(9), 8).unwrap(), 1, "same caller, same attempt");
-        assert!(l.begin_serial(&c, caller(10), 8).is_err(), "a running todo is not admitted again");
-        assert_eq!(l.serial_pick(), SerialPick::None);
-        let text = l.get(&c).unwrap().task_text(&l, k);
-        assert!(
-            text.contains("T01 explore a: a found it (report work-s#r-a found it; read it with `agent-session read-session work-s --report`)"),
-            "{text}"
-        );
-    }
-
-    /// A late result of an old attempt never reaches the new one; a retry
-    /// keeps the old attempt and its report.
-    #[test]
-    fn retries_keep_history_and_late_results_stay_with_their_attempt() {
+    fn a_chain_by_default_and_ready_todos() {
         let mut l = TodoList::default();
         let a = l.add(todo("a"), 1).unwrap();
-        let first = l.begin_serial(&a, caller(1), 1).unwrap();
-        assert!(l.end_serial(&a, first, "run-do-1", done(TodoStatus::Failed, "no evidence"), 2).unwrap());
-        assert!(!l.end_serial(&a, first, "run-do-1", done(TodoStatus::Completed, "late"), 3).unwrap());
+        let b = l.add(todo("b"), 1).unwrap();
+        let c = l.add(free("c"), 1).unwrap();
+        let d = l.add(todo("d"), 1).unwrap();
+        let e = l
+            .add(NewTodo { after: Some(vec![a.clone(), c.clone()]), mode: TodoMode::Explore, ..todo("e") }, 1)
+            .unwrap();
+        assert!(l.get(&a).unwrap().after.is_empty());
+        assert_eq!(l.get(&b).unwrap().after, vec![a.clone()]);
+        assert!(l.get(&c).unwrap().after.is_empty());
+        assert_eq!(l.get(&d).unwrap().after, vec![c.clone()]);
+        assert_eq!(l.ready(), vec![a.clone(), c.clone()]);
+        let n = start(&mut l, &a, "work-a", 2);
+        assert_eq!(l.ready(), vec![c.clone()], "a running todo is not ready again; c is not held back");
+        assert!(l.admit(&b).unwrap_err().to_string().contains("did not complete yet"));
+        l.observe_child(&a, n, done(TodoStatus::Completed, "a done"), 3).unwrap();
+        assert_eq!(l.ready(), vec![b.clone(), c.clone()], "completed is enough: no review");
+        start(&mut l, &c, "work-c", 4);
+        l.observe_child(&c, 1, done(TodoStatus::Completed, "c done"), 5).unwrap();
+        assert_eq!(l.ready(), vec![b.clone(), d.clone(), e.clone()]);
+        let text = l.get(&e).unwrap().task_text(&l, 1);
+        assert!(
+            text.contains("- T01 a: a done (report work-s#r-a done; read it with `agent-session read-session work-s --report`)"),
+            "{text}"
+        );
+        assert!(l.add(NewTodo { after: Some(vec!["T99".into()]), ..todo("x") }, 6).is_err());
+    }
+
+    /// A prerequisite that ends without success blocks the Todos after it
+    /// until the plan retries it; its success unblocks them.
+    #[test]
+    fn a_failed_prerequisite_blocks_until_it_is_retried() {
+        let mut l = TodoList::default();
+        let a = l.add(todo("a"), 1).unwrap();
+        let b = l.add(todo("b"), 1).unwrap();
+        let c = l.add(todo("c"), 1).unwrap();
+        let first = start(&mut l, &a, "work-a1", 2);
+        l.observe_child(&a, first, done(TodoStatus::Failed, "no evidence"), 3).unwrap();
+        assert!(!l.observe_child(&a, first, done(TodoStatus::Completed, "late"), 3).unwrap());
+        let tb = l.get(&b).unwrap();
+        assert_eq!(tb.status, TodoStatus::Blocked);
+        assert_eq!(tb.blocked_by, vec![a.clone()]);
+        assert!(tb.view_line(&l).contains("blocked_by=\"T01:failed\""), "{}", tb.view_line(&l));
+        assert_eq!(l.get(&c).unwrap().status, TodoStatus::Pending, "only the direct dependents are blocked");
+        assert!(l.ready().is_empty());
         assert!(l.retry(&a, "", 3).is_err());
-        assert_eq!(l.unconverged(), vec!["the result of T01 (attempt 1) is not reviewed".to_string()]);
-        l.review(&a, ReviewVerdict::Reject, "no repro", vec![], None, 3).unwrap();
-        assert!(l.review(&a, ReviewVerdict::Accept, "changed my mind", vec![], None, 3).is_err());
-        let (_, again) = l.review(&a, ReviewVerdict::Reject, "no repro", vec![], None, 3).unwrap();
-        assert!(!again, "the same review again is a no-op");
         l.retry(&a, "use the public entry", 4).unwrap();
         assert_eq!(l.get(&a).unwrap().status, TodoStatus::Pending);
-        assert_eq!(l.serial_pick(), SerialPick::Ready(a.clone()));
-        let second = l.begin_serial(&a, caller(5), 5).unwrap();
+        assert_eq!(l.get(&b).unwrap().status, TodoStatus::Pending, "unblocked by the retry");
+        assert_eq!(l.ready(), vec![a.clone()]);
+        let second = start(&mut l, &a, "work-a2", 5);
         assert_eq!(second, 2);
         let t = l.get(&a).unwrap();
         assert_eq!(t.attempt(2).unwrap().reason.as_deref(), Some("use the public entry"));
         assert_eq!(t.attempt(1).unwrap().summary.as_deref(), Some("no evidence"));
-        assert!(l.cancel(&a, "running", 6).is_err(), "cancel only applies before dispatch");
-        l.end_serial(&a, second, "run-do-2", done(TodoStatus::Completed, "verified"), 7).unwrap();
-        assert_eq!(l.get(&a).unwrap().review_state(), ReviewState::Pending);
-        l.review(&a, ReviewVerdict::Accept, "verified", vec![], None, 8).unwrap();
-        assert!(l.unconverged().is_empty());
+        assert!(l.cancel(&a, "running", 6).unwrap_err().to_string().contains("todo stop"));
+        l.observe_child(&a, second, done(TodoStatus::Completed, "verified"), 7).unwrap();
+        assert_eq!(l.ready(), vec![b.clone()]);
+        // A cancelled prerequisite blocks too; changing `after` frees it.
+        let d = l.add(todo("d"), 8).unwrap();
+        assert_eq!(l.get(&d).unwrap().after, vec![c.clone()]);
+        l.cancel(&c, "not needed", 9).unwrap();
+        assert_eq!(l.get(&d).unwrap().status, TodoStatus::Blocked);
+        assert_eq!(l.get(&d).unwrap().blocked_by, vec![c.clone()]);
+        l.update(&d, TodoPatch { after: Some(vec![]), ..Default::default() }, "c is gone", None, 11)
+            .unwrap();
+        assert!(l.ready().contains(&d));
     }
 
-    /// A withdrawn dispatch leaves the Todo pending with the refusal.
+    /// A dispatch held back by a limit leaves the Todo pending; one that
+    /// fails blocks it with the reason until it is changed or retried.
     #[test]
-    fn a_refused_dispatch_is_observable_and_retriable() {
+    fn withdrawn_dispatches() {
         let mut l = TodoList::default();
-        let a = l.add(NewTodo { mode: TodoMode::Explore, ..todo("a") }, 1).unwrap();
-        let n = l.begin_explore(&a, "work-a1", 2).unwrap();
-        l.withdraw_dispatch(&a, n, "max_sub_sessions", 3).unwrap();
+        let a = l.add(NewTodo { mode: TodoMode::Explore, ..free("a") }, 1).unwrap();
+        let n = l.begin_dispatch(&a, "work-a1", 2).unwrap();
+        l.withdraw_dispatch(&a, n, None, 3).unwrap();
         let t = l.get(&a).unwrap();
         assert_eq!(t.status, TodoStatus::Pending);
         assert!(t.attempts.is_empty());
-        assert_eq!(t.refusals[0].reason, "max_sub_sessions");
-        let again = l.begin_explore(&a, "work-a1", 4).unwrap();
-        assert_eq!(again, 1);
-        let view = l.render_view();
-        assert!(view.contains("id=\"T01\" mode=\"explore\" status=\"running\" attempt=\"1\" child_sid=\"work-a1\""), "{view}");
+        assert_eq!(l.begin_dispatch(&a, "work-a1", 4).unwrap(), 1);
+        l.withdraw_dispatch(&a, 1, Some("runtime r9 is not registered"), 5).unwrap();
+        let t = l.get(&a).unwrap();
+        assert_eq!(t.status, TodoStatus::Blocked);
+        assert!(t.view_line(&l).contains("dispatch failed: runtime r9 is not registered"));
+        assert!(l.ready().is_empty());
+        l.update(&a, TodoPatch { runtime_id: Some("inherit".into()), content: Some("look again".into()), ..Default::default() }, "the session's runtime", None, 6)
+            .unwrap();
+        assert_eq!(l.get(&a).unwrap().status, TodoStatus::Pending);
+        assert_eq!(l.ready(), vec![a.clone()]);
+        let n = l.begin_dispatch(&a, "work-a2", 7).unwrap();
+        l.withdraw_dispatch(&a, n, Some("no such workspace"), 8).unwrap();
+        l.retry(&a, "workspace registered now", 9).unwrap();
+        assert_eq!(l.get(&a).unwrap().status, TodoStatus::Pending);
+        let view = {
+            start(&mut l, &a, "work-a3", 10);
+            l.render_view()
+        };
+        assert!(view.contains("id=\"T01\" mode=\"explore\" status=\"running\" attempt=\"1\" child_sid=\"work-a3\""), "{view}");
     }
 
-    /// A serial Todo dispatched as its own sub session starts only in
-    /// order: one at a time, after every result was reviewed and its
-    /// prerequisites were accepted; a retry keeps its behavior.
+    /// The body of a running Todo changes (its work session is told);
+    /// where and in which order it runs does not; every change is kept.
     #[test]
-    fn serial_admission_and_a_kept_behavior() {
+    fn updates_and_their_history() {
         let mut l = TodoList::default();
         let a = l.add(todo("a"), 1).unwrap();
-        let b = l.add(NewTodo { after: vec![a.clone()], ..todo("b") }, 1).unwrap();
-        let x = l.add(NewTodo { mode: TodoMode::Explore, ..todo("x") }, 1).unwrap();
-        let err = |r: Result<(), AgentToolError>| r.unwrap_err().to_string();
-        assert!(err(l.admit_serial(&b)).contains("runs after T01"));
-        assert!(err(l.admit_serial(&x)).contains("exploration"));
-        l.admit_serial(&a).unwrap();
-        let n = l.begin_serial_session(&a, "work-a1", 2).unwrap();
-        l.bind_explore(&a, n, 2, AttemptTarget { behavior: Some("work_simple".into()), ..Default::default() })
+        let b = l.add(todo("b"), 1).unwrap();
+        start(&mut l, &a, "work-a", 2);
+        let err = l
+            .update(&a, TodoPatch { after: Some(vec![]), ..Default::default() }, "x", None, 3)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("is running") && err.contains("after"), "{err}");
+        assert!(l.update(&a, TodoPatch { content: Some("x".into()), ..Default::default() }, " ", None, 3).is_err());
+        let out = l
+            .update(
+                &a,
+                TodoPatch {
+                    content: Some("do a, in Rust".into()),
+                    accept: vec!["tests pass".into()],
+                    ..Default::default()
+                },
+                "the user wants Rust",
+                Some("did:user".into()),
+                4,
+            )
             .unwrap();
-        assert!(err(l.admit_serial(&b)).contains("serial todo T01 is running"), "one at a time");
-        let e = l.begin_explore(&x, "work-x1", 2).unwrap();
-        l.observe_child(&x, e, done(TodoStatus::Completed, "x seen"), 3).unwrap();
-        l.end_serial(&a, n, "", done(TodoStatus::Completed, "a done"), 3).unwrap();
-        assert!(err(l.admit_serial(&b)).contains("not reviewed yet: T01, T03"));
-        l.review(&x, ReviewVerdict::Accept, "fine", vec![], None, 4).unwrap();
-        l.review(&a, ReviewVerdict::Reject, "no evidence", vec![], None, 4).unwrap();
-        assert!(err(l.admit_serial(&b)).contains("not accepted"));
-        l.retry(&a, "show the evidence", 5).unwrap();
-        l.admit_serial(&a).unwrap();
+        assert_eq!(out.changed, vec!["content", "accept"]);
+        assert_eq!(out.running, Some((1, "work-a".to_string())));
         let t = l.get(&a).unwrap();
-        assert_eq!(t.behavior.as_deref(), Some("work_simple"), "kept for the next attempt");
-        assert_eq!(t.attempts[0].behavior.as_deref(), Some("work_simple"));
+        assert_eq!(t.updates.len(), 1);
+        assert_eq!(t.updates[0].attempt, Some(1));
+        assert!(t.task_text(&l, 1).contains("do a, in Rust\n\nAcceptance criteria:\n- tests pass"));
+        let out = l
+            .update(&a, TodoPatch { accept: vec!["documented".into()], clear_accept: true, ..Default::default() }, "only docs", None, 5)
+            .unwrap();
+        assert_eq!(out.changed, vec!["accept"]);
+        assert_eq!(l.get(&a).unwrap().accept, vec!["documented"]);
+        assert!(l.update(&a, TodoPatch { title: Some("a".into()), ..Default::default() }, "same", None, 6).is_err(), "nothing changed");
+        // A cycle through `after` is refused.
+        let err = l
+            .update(&a, TodoPatch { content: Some("y".into()), ..Default::default() }, "y", None, 7)
+            .and_then(|_| l.update(&b, TodoPatch { after: Some(vec![b.clone()]), ..Default::default() }, "z", None, 8))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("after itself"), "{err}");
+        let pending = l
+            .update(&b, TodoPatch { workspace: Some("none".into()), ..Default::default() }, "read only", None, 9)
+            .unwrap();
+        assert_eq!(pending.running, None);
+        assert_eq!(l.get(&b).unwrap().workspace.as_deref(), Some("none"));
+        assert!(l.update(&b, TodoPatch { workspace: Some("bad".into()), ..Default::default() }, "x", None, 9).is_err());
+    }
+
+    /// Pause / resume mark the running attempt; a Todo without one is
+    /// refused; the summary counts states without judging them.
+    #[test]
+    fn pause_marks_and_summary() {
+        let mut l = TodoList::default();
+        let a = l.add(todo("a"), 1).unwrap();
+        let b = l.add(todo("b"), 1).unwrap();
+        let c = l.add(free("c"), 1).unwrap();
+        assert!(l.mark_paused(&b, true, 2).is_err());
+        start(&mut l, &a, "work-a", 2);
+        assert_eq!(l.mark_paused(&a, true, 3).unwrap(), Some((1, "work-a".to_string())));
+        assert_eq!(l.mark_paused(&a, true, 4).unwrap(), None, "already paused");
+        assert!(l.get(&a).unwrap().view_line(&l).contains("paused=\"true\""));
+        let s = l.summary();
+        assert_eq!(s.paused, vec![a.clone()]);
+        assert_eq!(s.line(), "3 todos: 2 pending (T02, T03), 1 running (T01); paused: T01");
+        assert_eq!(l.mark_paused(&a, false, 5).unwrap(), Some((1, "work-a".to_string())));
+        assert!(!l.get(&a).unwrap().latest().unwrap().paused());
+        l.observe_child(&a, 1, done(TodoStatus::Stopped, "stopped"), 6).unwrap();
+        l.cancel(&c, "dropped", 7).unwrap();
+        let s = l.summary();
+        assert_eq!(s.blocked, vec![b.clone()]);
+        assert_eq!(s.line(), "3 todos: 1 blocked (T02), 1 cancelled, 1 stopped");
     }
 
     #[test]

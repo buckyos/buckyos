@@ -119,27 +119,20 @@ fn cut(mut text: String) -> String {
     text
 }
 
-/// The Todo attempt a sub session executes, as the parent's list binds it.
-struct TodoOf {
-    todo_id: String,
-    attempt: u32,
-    summary: Option<String>,
-}
-
 /// `brief`: one line only — a UI parent shows the end in its background
 /// context and reads the report on demand (`agent-session read-session`).
 fn summary_of(
     e: &RegistryEntry,
     attention: Option<&str>,
-    todo: Option<&TodoOf>,
+    todo: Option<&super::todos::BoundChild>,
     brief: bool,
 ) -> String {
     let st = &e.status;
-    // An exploration's end is told through its Todo: a line, and where the
-    // report is; the report itself is read on demand.
+    // A Todo's work session ends as its attempt: a line, what became of the
+    // Todos after it, and where the report is (read on demand).
     if let (Some(t), Some(ATTENTION_FINISHED)) = (todo, attention) {
-        return cut(format!(
-            "sub session {} of todo {} (attempt {}) finished ({}): {}\nRead the report with `agent-session todo show {} --report`, then review it.",
+        let mut text = format!(
+            "work session {} of todo {} (attempt {}) finished ({}): {}",
             e.session_id,
             t.todo_id,
             t.attempt,
@@ -147,8 +140,15 @@ fn summary_of(
                 .map(|o| format!("{o:?}").to_lowercase())
                 .unwrap_or_else(|| "no outcome".into()),
             t.summary.clone().unwrap_or_else(|| st.one_line_status.clone()),
+        );
+        if !t.dependents.is_empty() {
+            text.push_str(&format!("\nTodos after it: {}.", t.dependents.join(", ")));
+        }
+        text.push_str(&format!(
+            "\nRead the report with `agent-session todo show {} --report` when you need more than this line.",
             t.todo_id
         ));
+        return cut(text);
     }
     let mut text = match attention {
         Some(ATTENTION_FINISHED) => format!(
@@ -248,10 +248,7 @@ pub(super) async fn poll_children(
         return Ok(Vec::new());
     }
     let mut inputs = Vec::new();
-    let todos: Vec<(String, TodoOf)> = super::todos::bound_children(sh)
-        .into_iter()
-        .map(|(sid, todo_id, attempt, summary)| (sid, TodoOf { todo_id, attempt, summary }))
-        .collect();
+    let todos = super::todos::bound_children(sh);
     let mut s = sh.session.lock().await;
     if s.state.is_finished() {
         return Ok(inputs);
@@ -278,7 +275,7 @@ pub(super) async fn poll_children(
                     summary: summary_of(
                         e,
                         Some(a),
-                        todos.iter().find(|(c, _)| c == sid).map(|(_, t)| t),
+                        todos.iter().find(|t| t.child_sid == sid),
                         brief,
                     ),
                     data_ref: None,

@@ -245,6 +245,48 @@
       "type": "object"
     },
     {
+      "description": "The session infers no more until `resume`: no Turn opens, a run in progress stops at its next inference boundary; tasks it follows run on. Its sub sessions are paused too.",
+      "properties": {
+        "command": {
+          "enum": [
+            "pause"
+          ],
+          "type": "string"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "Undo `pause`: a run it stopped goes on from its checkpoint, inputs that arrived meanwhile open the next Turn.",
+      "properties": {
+        "command": {
+          "enum": [
+            "resume"
+          ],
+          "type": "string"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "type": "object"
+    },
+    {
       "description": "The only input a finished session still accepts.",
       "properties": {
         "by": {

@@ -46,6 +46,7 @@
               "report_brief": "≤500 字", "pending_decision": null,
               "needs_input": false,   // run_state = waiting 且只有别人的输入能推动它（没有在跟的 task / 子 Session，不是 Goal Session）；父据此区分“子在等回答”
               "turn_open": false,
+              "paused": false,        // control(pause) 之后、resume 之前：不再推理（缺省省略）
               "activity": { "summary": "…", "touching": [], "heartbeat_ms": 0 },
               "last_runner": { "runner_id": "…", "host": "…", "pid": 0, "lock_epoch": 0, "at_ms": 0 },
               "last_error": null, "updated_at_ms": 0 } }
@@ -135,12 +136,13 @@ semi_subscription_snapshot = "…"
 [input]                            # 消费策略（缺省用会话的）
 mode = "batch"                     # single | batch
 media = "reference"                # reference | inline
-background = "batch"               # batch | after_tools：after_tools 时每批工具结果后宿主追加变化的 TodoList / 子 Session 行（<<background_context>>）
+background = "batch"               # batch | before_inference：每次推理前宿主追加变化的 TodoList / 子 Session 行与在跟任务的新输出（<<background_context>>）
 
 [capabilities]
 tool_whitelist = ["group:bash", "behavior:analyze_intent", "report"]   # → tools.tools；`group:<内置工具组>` → {groupname}，其余 → {name}（运行环境提供的工具）；`behavior:<name>` 是该 behavior 的 [tool] 函数
 action_whitelist = ["shell"]       # → tools.actions
 call_intent = false                # true（只用于 function_call）：每个原生调用必须带非空 `intent`，宿主加入 schema、执行前校验、交给工具前去掉
+workspace = "read_only"            # 以它为入口的 Session 对 Workspace 的访问（缺省：创建者给的）；只读的 Session 不取写者租约、不阻挡写它的子 Session
 
 [budget]
 max_tool_iterations = 16           # → max_tool_iterations
@@ -169,7 +171,7 @@ task = "{{args.request}}"          # 子 context 的 task 模板，只能引用 
 
 `[model] / [capabilities] / [budget] / prompt.mode` 叠加为该 behavior 的 run 的有效 `.llm_context`（只产生 `model / loop_model / max_tool_iterations / max_tokens / tools` 这几个键），结果进 run.json `config`，xllm 接手时不需要理解 behavior。`prompt.llm_context` 里的 `prompt / groups / runs_dir` 在宿主装配下无效，冻结时拒绝。
 
-Session 模板的覆盖在 `agent.toml`：`[session.<class>]` 的 `turns = "one" | "unbounded" | <n>`、`wait_user_msg`（`allowed | finish_failed | finish_completed | end_turn`）、`input = "none" | "queue"`、`observe`、`load_hints`、`default_behavior`、`max_process_depth`、`max_sub_sessions`、`max_session_depth`；内建 class 为 `work / ui / self_check / goal`，其它 class 必须在这里声明。`goal` 类另有 `min_interval_secs`、`[session.goal.budget.activation|period]`（§9.4）与 `[session.goal.maintenance] enabled / decision / behavior`（§9.7）。
+Session 模板的覆盖在 `agent.toml`：`[session.<class>]` 的 `turns = "one" | "unbounded" | <n>`、`wait_user_msg`（`allowed | finish_failed | finish_completed | end_turn`）、`input = "none" | "queue"`、`tick_secs`、`observe`、`load_hints`、`default_behavior`、`max_process_depth`、`max_sub_sessions`、`max_session_depth`；内建 class 为 `work / ui / self_check / goal`，其它 class 必须在这里声明。`goal` 类另有 `min_interval_secs`、`[session.goal.budget.activation|period]`（§9.4）与 `[session.goal.maintenance] enabled / decision / behavior`（§9.7）。
 
 定位（不是协议）：`connect(agent_did, who)` 依次取进程内注册的实现、`$OPENDAN_AGENT_ROOT` 或 `~/.opendan/agents.toml`（`"<did>" = "<agent_root>"`）指向的 AgentRoot、`$OPENDAN_AGENT_STATE_URL` 的 kRPC 服务（服务端随 OpenDAN 改造提供）。
 

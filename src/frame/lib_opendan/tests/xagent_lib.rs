@@ -1512,7 +1512,7 @@ async fn work_sessions_take_the_cmd_skills_chosen_at_creation() {
         scope: None,
         evidence: Vec::new(),
         skills,
-        after: Vec::new(),
+        after: Some(Vec::new()),
         batch: None,
         runtime_id: None,
         workspace: None,
@@ -1520,11 +1520,15 @@ async fn work_sessions_take_the_cmd_skills_chosen_at_creation() {
     };
     let t1 = store.update(|l| l.add(todo("with", vec!["image".into()]), 1)).unwrap();
     let t2 = store.update(|l| l.add(todo("without", Vec::new()), 1)).unwrap();
-    let opts = libopendan::todos::ExploreOptions::default();
-    let d1 = libopendan::todos::dispatch(agent.as_ref(), APP, ch.as_ref(), &w1, &t1, &opts).await.unwrap();
-    let d2 = libopendan::todos::dispatch(agent.as_ref(), APP, ch.as_ref(), &w1, &t2, &opts).await.unwrap();
-    assert_eq!(skill_names(&SessionDir::open(&d1.path).unwrap()), ["image"]);
-    assert_eq!(skill_names(&SessionDir::open(&d2.path).unwrap()), ["admin", "image"]);
+    let opts = libopendan::todos::DispatchOptions::default();
+    let dispatched = |s: libopendan::todos::Scheduled| match s {
+        libopendan::todos::Scheduled::Dispatched(d) => d.path,
+        other => panic!("not dispatched: {other:?}"),
+    };
+    let d1 = dispatched(libopendan::todos::dispatch(agent.as_ref(), APP, ch.as_ref(), &w1, &t1, &opts).await.unwrap());
+    let d2 = dispatched(libopendan::todos::dispatch(agent.as_ref(), APP, ch.as_ref(), &w1, &t2, &opts).await.unwrap());
+    assert_eq!(skill_names(&SessionDir::open(&d1).unwrap()), ["image"]);
+    assert_eq!(skill_names(&SessionDir::open(&d2).unwrap()), ["admin", "image"]);
 
     // Changing a manual: the running Work keeps its frozen text.
     write(&env.agent_root.join("cmd_skills/admin.md"), "ADMIN-V2 manual");

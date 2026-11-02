@@ -523,7 +523,7 @@ async fn own_run_context(
         }
     }
     let background =
-        super::observe::Background::extra(cfg.input_config(new.entry.as_ref()).1.background);
+        super::observe::extra(cfg.input_config(new.entry.as_ref()).1.background);
     let explicit_report = cfg.session.policy.completion == CompletionPolicy::ExplicitReport;
     let enabled = llm_ctx.pointer("/tools/enabled").and_then(Value::as_bool);
     if function_call && explicit_report && enabled == Some(false) {
@@ -1362,11 +1362,20 @@ pub(super) async fn commit_input_batch(
         }
     }
     let opens_turn = s.state.open_turn.is_none();
-    // What the Turn is about, for its task: the first message of the batch.
+    // What the Turn is about, for its task: the first message of the batch,
+    // else the update of the Todo this session executes.
     let mut title = batch
         .picked
         .iter()
-        .find_map(|m| m.msg().map(|msg| msg.msg.content.content.clone()));
+        .find_map(|m| m.msg().map(|msg| msg.msg.content.content.clone()))
+        .or_else(|| {
+            batch.picked.iter().find_map(|m| match &m.input {
+                Ok(SessionInput::Event(ev)) if ev.source.kind == crate::todos::TODO_EVENT_SOURCE => {
+                    Some(ev.summary.clone())
+                }
+                _ => None,
+            })
+        });
     let goal = batch.goal.filter(|_| opens_turn);
     if let Some(g) = &goal {
         let reasons: Vec<&str> = g

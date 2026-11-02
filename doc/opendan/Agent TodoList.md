@@ -1,75 +1,68 @@
 # Agent Work Session TodoList
 
-版本 3 · 2026-10-25 · 当前实现：`agent_tool::todo_tools`（数据模型与存储）、`libopendan::todos` 与 `runner::todos`（派发、回写、准入、视图）、`runner::observe`（工具结果后的背景）、`xagent` 的 `todo` 命令（`agent-session todo …`）、Jarvis `plan` / `do` / `explore` / `plan_simple` / `work_simple` behavior。实施记录见 [notepads/opendan-plan-do-todo-list-todo.md](../../notepads/opendan-plan-do-todo-list-todo.md)（PLAN/DO）与 [notepads/opendan-plan-simple-todo.md](../../notepads/opendan-plan-simple-todo.md)（plan_simple，§10）。
+版本 4 · 2026-11-02 · 当前实现：`agent_tool::todo_tools`（数据模型、规则与存储）、`libopendan::todos` 与 `runner::todos`（调度、派发、回写、更新与控制的投递）、`runner::observe`（推理前的背景）、`xagent` 的 `todo` 命令（`agent-session todo …`）、Jarvis `plan_simple` / `work_simple` / `explore` behavior。实施记录见 [notepads/opendan-plan-simple-async-todo.md](../../notepads/opendan-plan-simple-async-todo.md) §8；之前的 PLAN/DO 执行器（`next_behavior = do`、Review、串行准入）已删除。
 
 ## 1. 定位
 
-TodoList 是 Work Session 的 PLAN 的**持久决策依据**。PLAN 把目标拆成 Todo，为每个 Todo 选择执行形态，收回每次执行的结果，Review 后再决定下一步。TodoList 不是通用任务系统，也不是依赖图调度器：它是 PLAN 的计划与记忆，执行由 Session 已有的机制承担（子 context、Sub Session）。
+TodoList 是 plan session 的**持久决策依据**：要做什么、按什么顺序（`after`）、每个 Todo 的每次执行（attempt）在哪个 work session 里跑、它报告了什么。TodoList 不是通用任务系统：plan 管列表，宿主按列表调度，执行由独立的 work session 承担。
 
 设计要点：
 
-1. **树形 Plan-Do**：执行者只负责把自己领到的那一件事做完并报告；下一步做什么只由 PLAN 决定。执行者不选 Todo、不改列表、不决定状态机去向。
-2. **全局视角**：PLAN 在每个决策边界看到一份紧凑的 TodoList 视图（每个 Todo 的目标、形态、状态、一句话结果、报告引用、Review 状态），不含执行细节；细节按需读取（§7）。
-3. **两种执行形态**：串行执行（PLAN/DO 中是本 Session 的子 context，PLAN 的 run 挂起等它返回；plan_simple 中与 Todo 指向别处时是一个独立 Work Session，仍一次一个）与探索执行（独立的 Sub Session，可并行）。Review 的入口统一在 Todo 记录上。
-4. **执行成功 ≠ 结果被接受**：每次执行的结果都要 PLAN Review；Session 只有在列表收敛后才能成功结束。
-5. **身份可追溯**：Todo → attempt → (`child_sid` | `(run_id, call_id)`) → 报告，全部持久化，不靠模型记忆或从自然语言里猜。
-
-与 Task、Sub Session 的关系：
+1. **plan 只读、只管列表**：plan session 读材料、增删改 Todo、干预运行中的 Todo、最后 `report(is_end=true)`；它不改文件、不跑构建、不产出交付物——干活一律是 Todo。
+2. **满足条件立刻执行**：Todo 的前置都 `completed` 时，宿主立刻为它建 work session，不需要 plan 派发。调度点是列表的每次修改（plan 的 `todo` 命令）与每次子 session 结束的回写（批次边界、推理前），所以上游结束后下游在 plan 下一次推理之前就已开始。
+3. **依赖缺省串行**：`todo add` 不带 `--after` 时依赖“上一个”（seq 最大的未取消 Todo）；`--after none` 无依赖、立刻可执行。串行是依赖链，不是全局锁：没有依赖关系的 Todo 并行，并发由宿主上限兜底。
+4. **没有 Review**：执行成功即满足依赖；验证是一条 Todo（通常 `todo explore "verify …" --after <id>`），它的报告就是证据。plan 认为目标达成（或不可达成）就可以结束，宿主不按列表收敛拒绝结束。
+5. **身份可追溯**：Todo → attempt → `child_sid` → 报告，全部持久化，不靠模型记忆或从自然语言里猜。
 
 | 概念 | 归属 | 用途 |
 | --- | --- | --- |
-| Todo | 一个 Work Session（`todos.json`） | PLAN 的工作项与决策记录 |
-| 串行 attempt | 本 Session 的一次子 context 调用 | Todo 由本 Session 的 Todo 执行器（DO）完成 |
-| 探索 attempt | 本 Session 的一个 Sub Session | Todo 由独立 Work Session 完成，可并行 |
+| Todo | plan session（`todos.json`） | plan 的工作项与决策记录 |
+| attempt | plan 的一个 Sub Session（work session） | 一次执行：`work_simple`（`todo add`）或 `explore`（`todo explore`） |
 | 系统级 Task | task-mgr | Turn 的 task、后台命令等；不是 Todo 的执行通道 |
-
-旧设计中的 `addTodo / currentTodo / finishTodo / delegateTask` 工具、workspace 级 `tasks.json` 与“执行者自己 `todo done`”均已删除：执行者不写列表，结果由宿主依据已提交状态回写。
 
 ## 2. 存储与写者
 
 ```text
 <SessionDir>/.opendan_agent_session/
-  todos.json                       TodoList（schema opendan.todo_list/1，整文件原子替换）
-  todos.lock                       列表锁（flock；只用于排序写者，进程退出即释放）
-  reports/<report_id>/submission.json   串行 attempt 的报告副本（不随 run 目录清理而消失）
+  todos.json      TodoList（schema opendan.todo_list/1，整文件原子替换）
+  todos.lock      列表锁（flock；只用于排序写者，进程退出即释放）
 ```
 
-- **单写者**：父 Session 的宿主（runner）及其 run 的工具进程（`agent-session todo …`，同一 lease 下）。Sub Session 永远不写父列表；owner 侧（`xagent todo list/show`）只读。
-- 每次修改都是“加锁 → 读整个列表 → 修改 → 原子替换”。派发探索时锁一直持有到绑定写回，宿主因此不会看到半完成的派发。
-- 没有 `todos.json` 等同于空列表。旧格式（数组）不兼容、不迁移。
+- **单写者**：plan session 的宿主（runner）及其 run 的工具进程（`agent-session todo …`，同一 lease 下）。work session 永远不写 plan 的列表；owner 侧（`xagent todo list/show`）只读。
+- 每次修改都是“加锁 → 读整个列表 → 修改 → 原子替换”。派发时锁一直持有到绑定写回，别人不会看到半完成的派发。
+- 没有 `todos.json` 等同于空列表。
 
 ## 3. 数据模型
 
 ```jsonc
 {
   "schema": "opendan.todo_list/1",
-  "next_seq": 4,              // ID 计数器：单调、持久，cancel 后也不复用
-  "rev": 17,                  // 列表修订号：每次修改 +1（PLAN 视图按它去重）
+  "next_seq": 6,              // ID 计数器：单调、持久，cancel 后也不复用
+  "rev": 17,                  // 列表修订号：每次修改 +1
   "todos": [{
     "todo_id": "T03", "seq": 3, "rev": 5,
     "status": "pending | running | blocked | completed | failed | timeout | stopped | cancelled",
     "mode": "serial | explore",
-    "title": "…", "content": "…",          // 任务正文
-    "accept": ["验收标准"], "scope": "作用范围", "evidence": ["已知证据"], "skills": ["≤3"],
-    "after": ["T01", "T02"],                // 这些 Todo 的结果被接受后才可执行（串行准入）
-    "batch": null,                          // 一起派发的探索批次（可选）
+    "title": "…", "content": "…",          // 任务正文（可 update）
+    "accept": ["验收标准"], "scope": "作用范围", "evidence": ["已知证据"], "skills": ["≤8"],
+    "after": ["T01", "T02"],                // 这些 Todo completed 后才执行
+    "blocked_by": ["T01"],                  // after 中失败 / 超时 / 停止 / 取消的 Todo：等 plan 决定
+    "block_reason": "…",                    // 派发失败的原因（update / retry 清除）
+    "batch": null,
     "runtime_id": null, "workspace": null,  // 执行位置：session-runtime 与 inherit | none | <id>，相互独立
-    "behavior": null,                       // 子 Session 的入口 behavior：首次派发时写入，重试沿用
+    "behavior": null,                       // work session 的入口 behavior：首次派发时写入，重试沿用
     "attempts": [{
       "attempt": 1, "mode": "serial | explore",
-      "caller": { "run_id": "…", "call_id": "step:7" },   // 串行：被哪个 PLAN Step 的交接准入
-      "run_id": "…",                                      // 串行：执行它的子 context run
-      "child_sid": "work-…", "dispatch": "dispatching | dispatched",   // 探索 / 独立 Work Session 的串行
+      "child_sid": "work-…", "dispatch": "dispatching | dispatched",
       "runtime_id": "…", "workspace_id": "…", "baseline": "standard | extended", "behavior": "work_simple | explore | …",
-      "status": "running | blocked | completed | failed | timeout | stopped",
-      "started_at_ms": 0, "ended_at_ms": 0, "error": "…",
-      "summary": "一句话结果", "artifacts": ["cyfile:… | 路径 (稳定副本)"],
-      "report": { "session_id": "…", "run_id": "…(串行)", "report_id": "…" },
+      "status": "running | completed | failed | timeout | stopped",
+      "started_at_ms": 0, "ended_at_ms": 0,
+      "paused_at_ms": 0, "resumed_at_ms": 0,  // todo pause / resume
+      "error": "…", "summary": "一句话结果", "artifacts": ["cyfile:… | 路径 (稳定副本)"],
+      "report": { "session_id": "work-…", "report_id": "…" },
       "reason": "这次 attempt 的原因（重试理由）"
     }],
-    "reviews": [{ "attempt": 1, "report_id": "…", "verdict": "accept | reject | need_evidence",
-                  "reason": "…", "followups": ["T05"], "by": "…", "at_ms": 0 }],
-    "refusals": [{ "at_ms": 0, "reason": "并发上限命中等" }],
+    "updates": [{ "at_ms": 0, "reason": "…", "fields": ["content", "accept"], "attempt": 1, "by": "…" }],
     "retry": null,            // 待重试：下一次 attempt 的理由
     "cancel_reason": null,
     "created_at_ms": 0, "updated_at_ms": 0
@@ -77,121 +70,103 @@ TodoList 是 Work Session 的 PLAN 的**持久决策依据**。PLAN 把目标拆
 }
 ```
 
-- `status` 由记录推导：有 `cancel_reason` → `cancelled`；有待重试或尚无 attempt → `pending`；否则等于最新 attempt 的状态。
-- 终态：`completed | failed | timeout | stopped | cancelled`。`blocked` 非终态，但不参与串行选择，需 PLAN 显式处理。
-- Review 状态（视图中的 `review`）：`none`（无已结束 attempt）| `pending`（最新 attempt 已结束、未 Review）| `accepted | rejected | need_evidence`。
-- 重试保留旧 attempt、旧报告与旧 Review；迟到的结果只写回它自己的 attempt，永远不覆盖新 attempt。
+- `status` 由记录推导：有 `cancel_reason` → `cancelled`；有 attempt 在跑 → 它的状态；等待 attempt（尚无 attempt 或待重试）→ 有 `blocked_by` / `block_reason` 时 `blocked`，否则 `pending`；否则等于最新 attempt 的状态。
+- 依赖满足 = `after` 中每个 Todo 的 `status == completed`（待重试的上游是 `pending`，下游继续等）。上游终态非成功 → 下游 `blocked`（`blocked_by`）；上游被 retry 或下游被改 `after` → 下游回到 `pending`。
+- 重试保留旧 attempt 与旧报告；迟到的结果只写回它自己的 attempt，永远不覆盖新 attempt。
+- 列表摘要（`TodoList::summary()`，如 `5 todos: 3 completed, 1 failed, 1 running (T05)`）在 plan 结束时写进 worklog（`control_applied{todo_summary}`）与结束 Turn 的 task 结果，不作门。
 
-## 4. 串行执行（`next_behavior = do`）
+## 4. 调度
 
-Todo 执行器是声明了 `[entry] todo = true` 的 behavior（只能是 `create_sub_context`；Jarvis 的 `do`）。
+`todos::schedule` 是宿主的一个调度点：按创建顺序取所有就绪的 Todo（`TodoList::ready()`：`pending` 且依赖满足）依次派发，直到并发上限挡住一个为止。plan session 已暂停、正在停止或已结束时不派发。
 
-1. **准入**（PLAN 的 Step 设 `next_behavior` 指向 Todo 执行器时，由宿主判断）：
-   - 有已结束但未 Review 的结果 → 拒绝，要求先 Review（可修正）；
-   - 有“就绪”的串行 Todo（第一个 `pending`、`mode = serial`、`after` 中的 Todo 全部被接受）→ 接受；
-   - 没有就绪的串行 Todo、但有正在运行的探索（未收齐的子 Session）→ 视为等待（§6）；
-   - 都没有 → 拒绝（可修正）。
-   拒绝发生在 Step 生效之前：该 Step 成为纠错 Step，同一个 run 继续推理（计入连续错误），Turn 不失败，不产生 DO context。机制见 [llm_context 决策钩子](../../notepads/llm-context-plan-do-yield-todo.md)。
-1b. **执行载体**（2026-10-23，集成 TODO §3.5；2026-10-25 按 primary-runtime TODO 改）：Todo 可带 `runtime_id`（子 Work Session 的 session-runtime）与 `workspace`（`inherit | none | <id>`），两者独立指定，不再有“Workspace 决定 runtime、冲突拒绝”；Workspace 在另一 runtime 上时子 Session 用 `agent-session copy` 取材料与交付。Todo 指定的 cmd_skills 若不满足该 runtime 声明的基线 / 平台，派发被拒绝并留在 pending（原因记入 attempt）。紧凑视图对派出的 attempt 显示 `runtime`、`baseline`、`workspace`。就绪的串行 Todo 指向本 Session 之外的 runtime 或 Workspace（`todos::needs_own_session`）时不绑定子 context：宿主在同一处把它派发为**自己的 Work Session**（入口 behavior 默认 `work_simple`，幂等 key 仍是 `todo:<id>:<attempt>`，attempt 记 `child_sid` 与解析出的 `runtime_id / workspace_id`），PLAN 的这次交接变成等待（§6）；子 Session 结束后在批次边界回写为该 attempt 的结果（`end_serial`），之后照常 Review。串行顺序、Review 与并发上限都不变，不把任务改成可并行的探索。
-2. **绑定**：交接提交之前，就绪 Todo 开始一个 attempt，绑定 `(PLAN run_id, step:<step_index>)`，Todo 正文（任务、验收标准、范围、证据、所依据的已接受结果及其报告引用、重试理由）写入 `ChildCall.task`，绑定写入 `ChildCall.todo = {todo_id, attempt}`。同一 Step 的交接重做时得到同一个 attempt。
-3. **执行**：DO 的 `<sub_task>` 就是这份正文（Todo 正文是显式输入，不依赖历史渲染）。DO 以 `<report end="true">` 结束。
-4. **回写**：子 context 返回的同一次提交之前，attempt 写入结果：`ok → completed`、预算耗尽 → `timeout`、其它 → `failed`（`needs_user_input` 记为失败并写明问题）；summary 取报告首行，报告副本存入 `reports/<id>/submission.json`，`report_ref = (session, run_id, report_id)`。
-5. **PLAN 收到的返回**：`process_result` 只有一句话结果与“用 `todo show <id> --report` 读全文”，不含报告全文；worklog 的 `outcome(process_done)` 同样只记这句话。
+调度点：
 
-用 `call_behavior` 显式带 `task` 调用 DO 不经过 Todo 准入。
+- 工具进程：`todo add / explore / update / retry / cancel` 完成后在同一进程里调度，命令输出带 `scheduled: [{result: dispatched | held | blocked, …}]`——一口气建 5 个 Todo 时，无依赖的那些在命令返回前就已开始。
+- runner：每次把子 session 的已提交状态写回列表（drive 开头、每个输入批次边界、推理前的背景观察）之后——上游 `completed` 立刻派下游，并发闸释放时补派。
 
-## 4a. 函数调用计划（plan_simple）
+派发结果：
 
-Jarvis 的 `plan_simple`（`agent-session create-worksession --class plan_simple`，类 `[session.plan_simple]`：`base = "work"`、`completion = "explicit_report"`）用原生 function call 走同一个 TodoList，**整个计划是一个 Turn**，每个 Todo attempt 都在自己的 Sub Session 里执行，不经过 `next_behavior` / DO 子 context：
+| 结果 | 情形 | 列表 |
+| --- | --- | --- |
+| `dispatched` | work session 已建好并绑定 | attempt `running` |
+| `held` | 未结束的子 session 数达到宿主 `--max-children`（工具进程从 `LIBOPENDAN_MAX_CHILDREN` 读）或 `session.policy.max_sub_sessions` | 不记录，Todo 保持 `pending`，下一个调度点再试 |
+| `blocked` | work session 不能按 Todo 的要求建立（runtime 不满足 cmd_skill、Workspace 不存在、嵌套过深等 `InvalidArgument`） | attempt 撤回，Todo `blocked` 并记 `block_reason`；plan `todo update` / `todo retry` 后重新可派 |
 
-1. **派发保留形态**：`todo add` 建串行 Todo，`todo dispatch <id>` 把它派发为独立 Work Session（`libopendan::todos::dispatch_serial`，入口 behavior 默认 `work_simple`，Workspace 缺省继承本 Session 的）；`todo explore` 建探索并立即派发（缺省 `explore`、无 Workspace）。串行准入在列表锁内检查并记录（`TodoList::admit_serial`）：Todo 为 `pending`、没有其它串行 Todo 在执行、所有已返回结果都已 Review、`after` 中的 Todo 都已接受；不满足 → 返回 `dispatched: false` 与原因（退出码 3），Todo 保持 `pending`，不记 `refusals`。同一 attempt 重复派发返回同一个子 Session。派发时用的 behavior 写入 Todo 与 attempt，重试沿用，同时沿用 Todo 的 runtime / workspace / skills。
-2. **等待**：PLAN 不在调用里等。`agent-session wait <child_sid>` 立即返回子 Session 的当前状态：已结束 → 它的结果；需要输入 / 决定 → `needs_input` / `needs_decision`；仍在运行 → “仍在运行”的结果。子还在运行时 PLAN 结束这次回复即可：run 为它保活、Turn 保持打开，期间不推理；子的结束作为 `_child` 输入注入同一个 run。放进批次之前，宿主先把子 Session 的已提交状态写回列表（批次边界的 `todos::sync`），因此 `todo show --report` 与 `todo review` 立即可用。
-3. **背景**（`[input] background = "after_tools"`）：每批工具结果配对完整后、下一次推理之前，宿主同步列表，并把自上次展示以来变化的行作为一条 `<<background_context>>` 用户消息追加：每个 Todo 一行（与视图中的 `<todo …>` 元素相同）、未绑定 Todo 的子 Session（运行中只报状态变化，不报其活动）。Session 自己的 runtime 与 workspace 在其生命期内冻结、首条输入已给出，不进背景。已展示的行（键 → 摘要）记在快照宿主元数据 `HostMeta.observed`，与这条消息一起随快照发布：发布前崩溃会重新展示，发布后不会重复；历史重写后重新展示。已展示结束状态的子 Session 计为“已收到”（与被 wait 的子 Session 一样），结束检查不再等它。
-4. **调用意图**（`[capabilities] call_intent = true`）：每个原生调用的参数都要有非空 `intent`（宿主加到每个函数 schema 的 required 中；缺失、空白、非字符串时该调用不执行，返回可修正错误）；原始调用（含 intent）留在快照与 worklog，交给工具的参数去掉 intent。`report` 的宿主分支走同一检查。
-5. **结束**：只有 `report(is_end=true)` 结束 Session；§8 的结束检查不变（另要求子 Session 都已收到）。普通文本回复不算完成（`explicit_report` 下 Session 失败）。
+## 5. 派发
 
-## 5. 探索执行（`todo explore` / `todo dispatch`）
+一次派发：
 
-派发一步完成“建 Todo（或取已有的 pending Todo）+ 创建子 Session + 写回绑定”：
+1. 加锁；attempt 号 = 下一个（或沿用一个未完成的 `dispatching` attempt）；work session 的幂等 key = `todo:<todo_id>:<attempt>`（再经 `create_sub_session` 与父 sid 组合），其 sid 在创建前即可算出（`api::sub_session_id`）。
+2. 并发闸（只对尚不存在的 work session）：挡住 → `held`，不写任何东西。
+3. 写 attempt：`dispatching`、`child_sid`（提交点之前先落盘）。
+4. `create_sub_session`：`class = work`、入口 behavior `work_simple`（`todo add`）或 `explore`（`todo explore`，或 Todo 记录的 behavior）、Workspace 按 Todo 的 `workspace`（缺省：`todo add` 继承 plan 的，读写；`todo explore` 无）、runtime 按 Todo 的 `runtime_id`（缺省继承 plan 冻结的 runtime）、`report = final`、**带输入队列**（`SubSessionSpec.queued`：只接收 plan 的 Todo 事件与控制，不是 inbox，等待策略仍是 `finish_failed`）；objective 与首条消息都是 Todo 正文（含所依据的上游结果、报告引用与 artifacts）。
+5. 写回 `dispatched`（解析出的 runtime / workspace / baseline / behavior），解锁。
 
-1. 加锁；attempt 号 = 下一个（或沿用一个未完成的 `dispatching` attempt）；子 Session 的幂等 key = `todo:<todo_id>:<attempt>`（再经 `create_sub_session` 与父 sid 组合），其 sid 在创建前即可算出（`api::sub_session_id`）。
-2. 写 attempt：`dispatching`、`child_sid`（提交点之前先落盘）。
-3. 并发闸：父 Session 未结束的子 Session 数达到宿主 `--max-children`（工具进程从 `LIBOPENDAN_MAX_CHILDREN` 读）或 `session.policy.max_sub_sessions` → 撤回 attempt、记 `refusals`，Todo 保持 `pending`，命令返回 `dispatched: false` 与原因（退出码 3）。不静默排队。
-4. `create_sub_session`：`class = work`、入口 behavior `explore`（`--behavior` 改，或沿用 Todo 已记录的 behavior）、Workspace 按 Todo 的 `workspace`（缺省 `none`）、runtime 按 Todo 的 `runtime_id`（缺省继承父 Session 冻结的 runtime）、`report = final`；objective 与首条消息都是 Todo 正文。
-5. 写回 `dispatched`，解锁。
+崩溃恢复：drive 开头与每个批次边界对账——有 sid 对应的 work session → 绑定；没有 → 撤回为 `pending`，下一个调度点用同一个 key 重派，不重复建。
 
-同一 shell 批次中的多次派发因 key 不同得到不同的 sid。崩溃恢复（宿主在 drive 开头与每个批次边界对账，也可重跑 `todo dispatch`）：有 sid 对应的子 Session → 绑定；没有 → 撤回（`refusals` 记“派发被中断”）。不重复派发。
+work session 是独立的 Work Session：自己的 sid、目录、历史、预算、报告；不读不写 plan 的列表。它的结果由 plan 的宿主依据登记表的已提交状态回写：`succeeded → completed`；`failed → failed`（Turn 预算耗尽时 `timeout`）；`stopped → stopped`。它需要回答时 attempt 仍是 `running`，plan 从输入里得知。
 
-探索子 Session 是独立的 Work Session：自己的 sid、目录、历史、预算、报告；深度 1（`max_session_depth = 2`），不读父列表、不写父列表。它的结果由父宿主在**批次边界**依据登记表的已提交状态回写（`outcome = succeeded → completed`；`failed → failed`，Turn 预算耗尽时 `timeout`；`stopped → stopped`；等输入 / 等决定 → `blocked`）。子 Session 的结束事件交给父 Session 时，回写已经发生（同一批次之前再对账一次）。
+## 6. 运行中的 Todo：update / pause / resume / stop
 
-## 6. 等待 = 不做决策
+plan **只从 Todo 的角度**影响运行中的工作，宿主把它传导到该 attempt 的 work session：
 
-PLAN 没有要做的事、只等探索返回时，这一步**不做决策**：没有 actions、不是结束报告、没有 next_behavior，可以带一个阶段 `<report>`（Yield）。Yield 立即结束这一段推理，宿主的判断：
+- `todo update <id> --reason <why> …`：正文类字段（title / content / accept / scope / evidence）在任何状态（cancelled 除外）都可改；`after / runtime / workspace / skills` 只在没有 attempt 在跑时可改。改动与原因记进 `updates`。有 attempt 在跑时，工具进程向它的 work session 队列投一条 Active 事件：`source = todo:<id>`、`event = updated`、`summary = "Todo Tx was updated (<字段>): <原因>"`、`data_ref = <plan sid>#<id>@<attempt>`、key `<plan sid>:<id>:<attempt>#updated@<rev>`（同一修订只投一次）。work session 取入时，宿主把 Todo 当前的完整任务正文接在 summary 后（`todos::expand_update`）；`work_simple` 的 `on_input` 有 `is_todo_update` 分支。work session 在更新取入之前不能以 `report(is_end=true)` 结束（被拒绝并说明更新在等它）。更新事件打开 work session 的下一个 Turn（Turn 已开着时并入该 Turn），这个 Turn 的 task 以更新为标题。
+- `todo pause <id> --reason` / `todo resume <id> --reason`：attempt 记 `paused_at_ms / resumed_at_ms`，向 work session 发 `control(pause)` / `control(resume)`（语义见 [OpenDAN Agent Session架构设计](OpenDAN%20Agent%20Session架构设计.md)：暂停 = 不再推理，在飞行的调用返回、写入检查点后停住，Turn 保持打开；恢复 = 从检查点续推理）。对没有 attempt 在跑的 Todo 被拒绝。
+- `todo stop <id> --reason`：向 work session 发 `control(stop)`；attempt 由回写记为 `stopped`，Todo 要 `todo retry` 才再派（不自动回 pending）。
 
-- 顶层 context 且有未收齐的子 Session → run 保活：不结束，Turn 保持打开，`wait_children = [sid…]`（worklog `outcome.kind = wait`）。任一子 Session 结束，其结束事件作为 `_child` 内部输入注入同一个 run，PLAN 在同一份上下文里带着更新后的视图继续（Step 编号接续）——一个回来就可以 Review 一个。
-- 没有可等的 → Yield 照样结束 run，阶段报告就是回复；它会使 Work Session 就此结束时以 `missing_end_report` 失败（只有阶段报告不能完成 Session）。
-- `next_behavior = do` 而没有就绪 Todo、但有探索在跑 → 同样按等待处理。
+## 7. plan 的输入与视图
 
-不提供批量等待工具，PLAN 也不选“等哪一个”。父 Session 停止时停止级联到探索子 Session，等待中的 Turn 随之关闭；之后的对账把这些 attempt 记为 `stopped`。
+plan session 是多 Turn 的 Work Session，每个输入打开一个 Turn：
 
-## 7. PLAN 的视图与按需细节
+| 输入 | 来源 |
+| --- | --- |
+| 首条：目标 + runtime 上下文 | 创建者 |
+| work session 结束：`work session … of todo Tx (attempt n) finished (<outcome>): <一句话>` + 它之后的 Todo 的去向（已开始 / blocked）+ 读报告的方法 | `poll_children`（`is_child_end`） |
+| work session 需要回答 / 决定 | `poll_children`（`is_child_needs_input`） |
+| 用户消息（对话转发：`agent-session post <plan sid> --msg …`，只有 `--class plan_simple` 的 plan 有队列） | 队列（`is_user_msg`） |
+| tick（工作在跑时每 `tick_secs`；`[session.plan_simple]` 为 600） | `timer:task_watch` |
+| 纠正（回复既没结束也不等任何东西） | runner |
 
-每个顶层 context 的输入批次（开始、等待返回、子 context 返回）在列表修订号变化时自动附上视图（内建模板放在输入之后；自定义模板变量 `todos_text`、`session.todos`、`session.current_todo`）：
+背景（`[input] background = "before_inference"`）：每次推理前（Turn 的第一次也算），宿主同步列表（并调度），把自上次展示以来变化的行作为一条 `<<background_context>>` 消息追加：每个 Todo 一行（`<todo id mode status after blocked_by attempt child_sid started paused report_ref runtime baseline workspace retry updates>标题 — 结果 / 派发失败原因 / 取消原因</todo>`）、未绑定 Todo 的子 session、run 在跟的任务的新输出。已展示的行记在快照宿主元数据 `HostMeta.observed`，随快照发布：发布前崩溃会重新展示，发布后不会重复。
 
-```xml
-<todo_list rev="9">
-<todo id="T01" mode="explore" status="completed" attempt="1" child_sid="work-…" report_ref="work-…#3f2…" review="pending">库存一致性 — 库存不足时扣减未回滚</todo>
-<todo id="T03" mode="serial" status="pending" review="none" after="T01,T02">公开入口复核</todo>
-</todo_list>
-```
+细节按需：`agent-session todo show <id> --report`（最新 attempt 的 work session `final_report`）；`agent-session read-session <child_sid> --report --worklog <n>`；`agent-session todo list`（`<todo_list rev>` 紧凑视图）。
 
-视图只含上述字段，不含 worklog、工具输出或推理过程。已展示的修订号记在 `state.todo_view_rev`（随批次 receipt 提交），同一修订不重复展示，历史消息稳定追加。子 Session 的结束事件也只说“Todo Tx attempt n 结束：一句话结果；用 `todo show Tx --report` 读报告”。
+## 8. 结束由 plan 判断
 
-细节按需进入：`agent-session todo show <id> --report` 读最新 attempt 的完整报告（探索：子 Session 的 `final_report`；串行：`reports/<id>/submission.json`）；更深的证据 `agent-session read-session <child_sid> --report --worklog <n>`。
-
-## 8. Review 与收敛
-
-- `agent-session todo review <id> --accept|--reject|--need-evidence --reason <t> [--followup <id>]...`：Review 最新已结束的 attempt，记录读过的报告版本。同一 Review 重放是空操作；对已 Review 的 attempt 给出不同结论被拒绝（应重试或建后续 Todo）。
-- 探索 attempt 的 Review 同时写子 Session 的 acceptance：accept → `accepted`，reject → `discarded`，need-evidence 不变。子 Session 没有输入队列也没有 artifact 时，由父的工具进程以驱动者身份持子 Session 的锁直接写（`api::decide_unqueued`，与 `ctl decide` 无队列路径相同）。
-- 补充探索与重试落成新的 Todo 或新的 attempt（`todo retry <id> --reason`），并记录原因。
-- **结束检查**：顶层的结束报告（`<report end="true">` / `report(is_end)`）在列表未收敛时被拒绝（可修正）。收敛 = 每个 Todo 要么 `cancelled`（带理由），要么最新 attempt 已结束且已 Review 为 accept / reject；`pending`、执行中、未 Review、`need_evidence` 都不算收敛。`cancel` 只用于未在执行的 Todo，不删除记录。
+- 只有 `report(is_end=true)` 结束 plan session；宿主不检查列表是否收敛，也不要求“听取”每个子 session——它们的结束本来就是输入。
+- plan 结束时仍在跑的 attempt 记为 `stopped`（原因“the plan session ended / was stopped”），它们的 work session 被停掉（有队列的收到 `stop`；结束的父 session 的报告子 session 由宿主的 ChildDriver 停止）。
+- `report(is_end=false)` 只记进度。
 
 ## 9. 命令
 
 在 Session 的 shell 里（`agent-session` = `xagent`，Session 来自 `$OPENDAN_SESSION_ID`）：
 
 ```text
-todo add <title> --content <t> [--accept <criterion>]... [--scope <t>] [--evidence <t>]... [--skill <s>]...
-         [--after <todo_id>]... [--batch <b>] [--runtime <id>] [--workspace inherit|none|<id>] [--behavior <b>]
-                                                                      # 串行 Todo：PLAN/DO 由 DO 执行（指到别处时在自己的 Work Session 里）；plan_simple 用 todo dispatch
-todo explore <title> --content <t> [同上选项] [--class <c>]           # 建 Todo 并派发探索
-todo dispatch <todo_id> [--behavior <b>] [--class <c>]               # 派发 pending Todo，保留形态：串行按 §4a 准入，探索立即派发
-wait <child_sid>                                                      # 立即返回该子 Session 的状态；仍在运行时结束回复，它的结束是下一条输入
-todo list [--json]                                                    # 紧凑视图 / 完整 JSON
-todo show <todo_id> [--report]
-todo review <todo_id> (--accept | --reject | --need-evidence) --reason <t> [--followup <todo_id>]...
-todo cancel <todo_id> --reason <t> | todo clean --reason <t> | todo retry <todo_id> --reason <t>
+todo add <title> (--content <t> | --content - | --content-file <p>) [--accept <c>]... [--scope <t>] [--evidence <t>]... [--skill <s>]...
+         [--after <todo_id>|none]... [--batch <b>] [--runtime <id>] [--workspace inherit|none|<id>] [--behavior <b>]
+                                                   # 工作（work_simple）；缺省依赖上一个；就绪即自动开始
+todo explore <title> --content <t> [同上选项]       # 只读调查（explore，无 workspace）；缺省无依赖
+todo update <todo_id> --reason <t> [--title] [--content] [--accept <c>]... [--clear-accept] [--scope] [--evidence <t>]...
+         [--after <id>|none]... [--runtime] [--workspace] [--skill <s>]...
+todo pause|resume|stop <todo_id> --reason <t>
+todo retry <todo_id> --reason <t> | todo cancel <todo_id> --reason <t> | todo clean --reason <t>
+todo list [--json] | todo show <todo_id> [--report]
 ```
 
-owner 侧只读：`xagent todo list <sid> [--json]`、`xagent todo show <todo_id> --session <sid> [--report]`。写命令只能在该 Session 自己的 run 里执行（退出码 2）。
-
-退出码：0 成功；2 参数 / 规则错误（不存在、状态不允许、在 Session 外写）；3 派发被并发闸或串行准入拒绝（Todo 保持 pending）；5 Review 已记录但子 Session 的 acceptance 未写入（重跑同一 Review）。
+`todo dispatch`、`todo review`、`agent-session wait`、`create-worksession --wait` 都不存在（调用时返回说明）。owner 侧只读：`xagent todo list <sid> [--json]`、`xagent todo show <todo_id> --session <sid> [--report]`。写命令只能在该 Session 自己的 run 里执行（退出码 2）。
 
 环境（由 Session 运行时注入或继承宿主进程）：`OPENDAN_SESSION_ID`、`OPENDAN_AGENT_DID`、`OPENDAN_AGENT_ROOT`（或 `OPENDAN_AGENT_STATE_URL`）、`LIBOPENDAN_WHO`（驱动者身份）、`LIBOPENDAN_QUEUE_DIR`（开发用文件队列）、`LIBOPENDAN_MAX_CHILDREN`（宿主的并发上限）。
 
 ## 10. 不支持的能力
 
-- 不修改 Todo 正文（计划变化就建新 Todo 或重试）。
 - 不删除 Todo（`cancel` / `clean` 只改状态并记理由）。
-- 不做任意依赖图：只有 `--after`（“这些结果被接受后才执行”），足以表达“探索完成并 Review 后再串行验证或汇总”。
-- 调度方式只有串行与探索；执行载体是本 Session 的子 context，或（Todo 指向别的 runtime/Workspace 时、plan_simple 中总是）独立 Work Session——不能把串行 Todo 改成并行探索来换机器，`todo dispatch` 不改变 Todo 的形态。
-- 不提供 wait-any 命令：`wait A` 只回答 A 的状态；等待由 run 保活承担，任一子 Session 的结束都是下一条输入。
-- 已运行的 attempt 不接受改 runtime；换机器 = 新 attempt（`todo retry`）或新 Todo。
+- 不做任意依赖图：只有 `after`（“这些 Todo completed 后才执行”）；成环的 `after` 被拒绝。
+- 已运行的 attempt 不接受改 runtime / workspace / skills / after；换机器 = `todo stop` + `todo update` + `todo retry`，或新 Todo。
+- work session 的队列不是 inbox：不向它转发用户消息或任意文本（转给 plan）。
 - 执行者与 owner 侧不写列表。
 
 ## 11. 验证
 
-- 组件：`cargo test -p agent_tool --lib todo_tools`（ID、状态、重试、锁）。
-- Runner / CLI：`cargo test -p libopendan --test plan_do_todo -- --test-threads=1`（并行探索、等待、Review、串行 DO、可修正拒绝、并发闸、失败重试、重放、工具进程与 runner 崩溃窗口、停止级联、结束检查）。
-- plan_simple：`cargo test -p libopendan --test plan_simple -- --test-threads=1`（真实 Jarvis 包：类与函数契约、intent 正反例、两个串行 Todo 各自的子 Session 与继承 Workspace（等待期间 run 保活）、准入拒绝、子 Session 的结束作为输入回来后报告可读、背景去重与批次边界、并行探索与重试、背景展示即收到、对运行中子 Session 的 wait 与子 Session 失败、注入前后崩溃恢复）；组件 `cargo test -p agent_tool --lib todo_tools`、`cargo test -p libopendan --lib runner::`。
+- 组件：`cargo test -p agent_tool --lib todo_tools`（缺省依赖链、`--after none`、就绪规则、上游失败 → blocked → retry 解锁、派发撤回 / 失败、update 字段规则与历史、pause 标记、摘要、锁）。
+- plan session：`cargo test -p libopendan --test plan_simple_async -- --test-threads=1`（一口气建列表与依赖顺序、上游结束先于 plan 推理派下游、验证 Todo、只读 plan 与读写的 work session、上游失败 → blocked → retry、结束时停止在跑的工作、并发闸挡住与补派、用户消息 → `todo update` → work session 取入更新、`todo pause/resume/stop`、plan 暂停时输入积压与级联）；`--test plan_simple`（类与函数契约、注入前后崩溃恢复）。
 - 真实模型：`test/plan_do_todo_dv/`（README）。

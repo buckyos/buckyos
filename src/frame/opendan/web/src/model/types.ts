@@ -30,6 +30,8 @@ export interface SessionStatus {
   /** Waiting, and only someone's input can move it. */
   needs_input?: boolean
   turn_open?: boolean
+  /** Paused (`control(pause)`): it infers no more until resumed. */
+  paused?: boolean
   activity: Activity
   last_runner?: { runner_id: string; host?: string; pid: number; lock_epoch: number; at_ms: number }
   last_error?: unknown

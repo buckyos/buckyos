@@ -174,21 +174,9 @@ pub struct ChildCall {
     pub mode: ContextMode,
     pub behavior: String,
     pub trigger: CallTrigger,
-    /// Task given to the child (tool trigger: the call's `task` argument;
-    /// a Todo executor: the admitted Todo's body).
+    /// Task given to the child (tool trigger: the call's `task` argument).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
-    /// The serial Todo attempt this call executes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub todo: Option<TodoBinding>,
-}
-
-/// A sub context call bound to a serial Todo attempt (TodoList §2.1):
-/// its result is written back to that attempt when the call returns.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct TodoBinding {
-    pub todo_id: String,
-    pub attempt: u32,
 }
 
 /// Suspended behavior process (its run is kept, §4.4).
@@ -735,6 +723,15 @@ pub struct SessionState {
     /// again only when the list changed since (0: never shown).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub todo_view_rev: u64,
+    /// `control(pause)`: the session infers no more — no Turn opens, a run
+    /// in progress stops at its next inference boundary (its checkpoint)
+    /// — until `control(resume)`. Tasks it follows run on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused: Option<Paused>,
+    /// A run a pause stopped inside its Turn goes on from its checkpoint
+    /// (set by `resume`, cleared when it runs again).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub resume_run: bool,
     /// Goal Sessions: the Goal State it owns and the Activation in
     /// progress.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -759,6 +756,20 @@ pub struct SessionState {
     pub hints_once: BTreeSet<String>,
     #[serde(default)]
     pub updated_at_ms: u64,
+}
+
+/// [`SessionState::paused`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Paused {
+    pub at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Who asked (the poster of the control).
+    #[serde(default)]
+    pub by: String,
+    /// The pause stopped a run inside its open Turn.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub in_run: bool,
 }
 
 /// [`SessionState::task_watch`].
@@ -844,6 +855,8 @@ impl SessionState {
             internal_continuation: None,
             process_result: None,
             todo_view_rev: 0,
+            paused: None,
+            resume_run: false,
             goal: None,
             background_shown: BTreeMap::new(),
             task_watch: TaskWatch::default(),
@@ -910,7 +923,10 @@ impl SessionState {
     /// The session waits and only someone's input can move it (`goal`: a
     /// Goal Session, which waits for its next run opportunity instead).
     pub fn needs_input(&self, goal: bool) -> bool {
-        self.run_state == RunState::Waiting && !goal && !self.follows_work()
+        self.run_state == RunState::Waiting
+            && !goal
+            && !self.follows_work()
+            && self.paused.is_none()
     }
 
     pub fn source_mut(&mut self, id: &str) -> &mut SourceProgress {

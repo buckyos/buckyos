@@ -17,7 +17,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agent_tool::xllm::XllmDeps;
-use agent_tool::{AgentToolResult, AgentToolStatus};
 use buckyos_api::msg_queue::MsgQueueClient;
 use crate::api::{create_session, create_sub_session, SubSessionSpec, SubWorkspace};
 use crate::bridge::{EventBridge, KEventBridge, TimerBridge};
@@ -26,7 +25,7 @@ use crate::host::goals::{GoalHost, GoalHostOptions};
 use crate::host::{run_session, serve, HostDeps, Supervisor};
 use crate::protocol::*;
 use crate::runner::{
-    BehaviorAssembler, DriveResult, RunnerOptions, StopSignal, StopWhen, SESSION_TASK_PREFIX,
+    BehaviorAssembler, DriveResult, RunnerOptions, StopSignal, StopWhen,
 };
 use crate::state::{
     connect, ActivationQuery, AgentStateClient, ConnectOptions, GoalCaller, GoalCreate,
@@ -47,7 +46,7 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
                 [--no-bridge] [--detach-children]
   xagent serve  <session_dir|sid>... [--idle-unload <secs>] [--no-bridge]
   xagent post   <sid> (--msg <text> [--from <did>] [--attach <obj_id>[=<name>]]... [--reply-to <obj_id>] | --json <file | ->)
-  xagent ctl    <sid> (stop | decide accept|discard [--note <t>] | subscribe <spec> | unsubscribe <id>
+  xagent ctl    <sid> (stop | pause | resume [--reason <t>] | decide accept|discard [--note <t>] | subscribe <spec> | unsubscribe <id>
                        | activity [--summary <t>] [--touch <ref>]... [--clear] | perceive <text>)
   xagent status <sid> [--worklog <n>] [--report] [--run] [--events]
   xagent list   --agent <did> [--active]
@@ -82,20 +81,22 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   read-session <sid> [--report] [--worklog <n>] | artifact head <aid> | artifact list
   create-worksession --objective <t> [--msg <t>]... [--attach <obj_id>[=<name>]]... [--context recent:<n>|none]
         [--class <c>] [--behavior <b>] [--cmd-skill <name>]... [--workspace inherit|none|<id>] [--runtime inherit|<id>]
-        [--report final|progress|none] [--interactive] [--wait]
+        [--report final|progress|none] [--interactive]
         (--cmd-skill: up to 8 manuals from `skill list`, fixed for the session's life; none given: a work
-         session inherits its parent work's, a conversation's or a goal's are not inherited)
+         session inherits its parent work's, a conversation's or a goal's are not inherited; its end comes back as input)
   skill list [--kind cmd|goal] [--json] | skill install <x.pikg | dir> [--replace] | skill remove <name> [--kind cmd|goal]
-  wait <sid> | post <sid> --msg <t>
+  post <sid> --msg <t>
   todo add <title> (--content <t> | --content - | --content-file <path>) [--accept <criterion>]... [--scope <t>] [--evidence <t>]... [--skill <cmd_skill>]...
-           [--after <todo_id>]... [--batch <b>] [--runtime <id>] [--workspace inherit|none|<id>] [--behavior <b>]
-           (a serial Todo: PLAN/DO's next_behavior = do runs it, in its own work session when it names another runtime or
-            workspace; `todo dispatch` starts it as a work session of its own (default behavior work_simple), in order)
-  todo explore <title> --content <t> [same options] [--class <c>]  (add + dispatch at once as an exploration sub session)
-  todo dispatch <todo_id> [--behavior <b>] [--class <c>]  (keeps the Todo's mode: a serial Todo starts only when no other
-           serial Todo runs, every result is reviewed and its --after Todos are accepted; an exploration starts at once;
-           the behavior is kept for later attempts) | todo list [--json] | todo show <todo_id> [--report]
-  todo review <todo_id> (--accept | --reject | --need-evidence) --reason <t> [--followup <todo_id>]...
+           [--after <todo_id>|none]... [--batch <b>] [--runtime <id>] [--workspace inherit|none|<id>] [--behavior <b>]
+           (work in a work session of its own, default behavior work_simple; without --after it runs after the latest
+            Todo that is not cancelled; it starts by itself as soon as every Todo it runs after completed)
+  todo explore <title> --content <t> [same options]  (a read-only investigation, behavior explore; no prerequisite unless --after)
+  todo update <todo_id> --reason <t> [--title <t>] [--content <t> | --content -] [--accept <c>]... [--clear-accept] [--scope <t>]
+           [--evidence <t>]... [--after <todo_id>|none]... [--runtime <id>] [--workspace inherit|none|<id>] [--skill <s>]...
+           (a running Todo's work session gets the update as its next input; --after / --runtime / --workspace / --skill
+            only while no attempt runs)
+  todo pause|resume|stop <todo_id> --reason <t>   (its work session: no more inference / on from its checkpoint / stopped)
+  todo list [--json] | todo show <todo_id> [--report]
   todo cancel <todo_id> --reason <t> | todo clean --reason <t> | todo retry <todo_id> --reason <t>
   copy --from <end> --to <end> [--replace] | copy status|cancel <transfer_id> | copy list
         <end> = session:<path> | workspace:<path> | <runtime_id>:<absolute path>; one regular file between the session's
@@ -858,7 +859,9 @@ async fn cmd_post(mut a: Args) -> R<i32> {
     Ok(0)
 }
 
-const CTL_COMMANDS: &[&str] = &["stop", "decide", "subscribe", "unsubscribe", "activity", "perceive"];
+const CTL_COMMANDS: &[&str] = &[
+    "stop", "pause", "resume", "decide", "subscribe", "unsubscribe", "activity", "perceive",
+];
 
 async fn cmd_ctl(mut a: Args) -> R<i32> {
     let first = a.next("<sid> | <command>")?;
@@ -868,7 +871,7 @@ async fn cmd_ctl(mut a: Args) -> R<i32> {
             first,
         )
     } else {
-        (first, a.next("stop | decide | subscribe | unsubscribe | activity | perceive")?)
+        (first, a.next("stop | pause | resume | decide | subscribe | unsubscribe | activity | perceive")?)
     };
     let c = ctx(&a, None, true).await?;
     let given_key = a.get("key");
@@ -879,6 +882,8 @@ async fn cmd_ctl(mut a: Args) -> R<i32> {
     };
     let (key, command) = match cmd.as_str() {
         "stop" => (key("stop"), ControlCommand::stop(a.get("reason"))),
+        "pause" => (key("pause"), ControlCommand::Pause { reason: a.get("reason") }),
+        "resume" => (key("resume"), ControlCommand::Resume { reason: a.get("reason") }),
         "decide" => {
             let decision = a.next("accept|discard")?;
             if !matches!(decision.as_str(), "accept" | "discard") {
@@ -1134,7 +1139,8 @@ fn brief(e: &RegistryEntry) -> Value {
         "session_id": e.session_id, "class": e.class, "objective": e.objective,
         "run_state": e.status.run_state, "outcome": e.status.outcome,
         "acceptance": e.status.acceptance, "one_line_status": e.status.one_line_status,
-        "needs_input": e.status.needs_input, "pending_decision": e.status.pending_decision,
+        "needs_input": e.status.needs_input, "paused": e.status.paused,
+        "pending_decision": e.status.pending_decision,
         "parent": e.origin.as_ref().and_then(|o| o.parent_session.clone()),
     });
     // A UI session's objective is its design intent: whose conversation it
@@ -1180,6 +1186,9 @@ async fn cmd_sessions(a: Args) -> R<i32> {
             if e.status.needs_input {
                 println!("  Needs input: agent-session post {} --msg <text>", e.session_id);
             }
+            if e.status.paused {
+                println!("  Paused");
+            }
             if e.status.acceptance != Acceptance::NotApplicable {
                 println!("  Acceptance: {}", list_label(e.status.acceptance));
             }
@@ -1213,20 +1222,6 @@ async fn cmd_artifact(mut a: Args) -> R<i32> {
         other => return Err(bad(format!("artifact {other}: only `head <aid>` and `list` are available"))),
     }
     Ok(0)
-}
-
-/// A tool result the `shell` tool forwards as the call's own result:
-/// `Pending` with the task id of the sub session being waited for. The
-/// session answers it with that sub session's state at once; while it runs,
-/// the session follows it outside the loop.
-fn pending_on_session(tool: &str, sid: &str) -> AgentToolResult {
-    let details = json!({ "session_id": sid, "status": "waiting" });
-    let mut r = AgentToolResult::from_details(details)
-        .with_tool(tool)
-        .with_status(AgentToolStatus::Pending);
-    r.task_id = Some(format!("{SESSION_TASK_PREFIX}{sid}"));
-    r.summary = format!("waiting for sub session {sid}");
-    r
 }
 
 async fn cmd_create_worksession(a: Args) -> R<i32> {
@@ -1263,10 +1258,10 @@ async fn cmd_create_worksession(a: Args) -> R<i32> {
         Some("none") => ReportMode::None,
         Some(s) => return Err(bad(format!("bad --report {s} (final | progress | none)"))),
     };
-    let wait = a.has("wait");
-    if wait && report == ReportMode::None {
-        // Waiting is hearing the end.
-        return Err(bad("--wait waits for the sub session's end; it cannot be combined with --report none"));
+    if a.has("wait") {
+        return Err(bad(
+            "there is no --wait: the sub session's end (or what it needs) comes back to you as input; reply without tool calls to end this Turn meanwhile",
+        ));
     }
     let sub = SubSessionSpec {
         objective: a.get("objective").ok_or_else(|| bad("missing --objective"))?,
@@ -1291,15 +1286,12 @@ async fn cmd_create_worksession(a: Args) -> R<i32> {
         runtime_id: a.get("runtime").filter(|r| r != "inherit"),
         report,
         interactive: a.has("interactive"),
+        queued: false,
         call,
         key: a.get("key"),
     };
     let sd = create_sub_session(c.agent.as_ref(), &c.who, &parent, sub, c.channels.as_ref()).await?;
-    if wait {
-        print(&pending_on_session("create-worksession", sd.sid()));
-    } else {
-        print(&json!({ "session_id": sd.sid(), "status": "created", "path": sd.path() }));
-    }
+    print(&json!({ "session_id": sd.sid(), "status": "created", "path": sd.path() }));
     Ok(0)
 }
 
@@ -1458,7 +1450,35 @@ fn todo_content(a: &Args) -> R<String> {
     }
 }
 
+fn comma_list(a: &Args, name: &str) -> Vec<String> {
+    a.all(name)
+        .iter()
+        .flat_map(|v| v.split(',').map(|x| x.trim().to_string()))
+        .filter(|x| !x.is_empty())
+        .collect()
+}
+
+/// `--after <id>...`: `None` when not given, `Some(vec![])` for `--after none`.
+fn after_arg(a: &Args) -> R<Option<Vec<String>>> {
+    let ids = comma_list(a, "after");
+    if ids.is_empty() {
+        return Ok(None);
+    }
+    if ids.iter().any(|i| i == "none") {
+        if ids.len() > 1 {
+            return Err(bad("--after none means no prerequisite; it is not combined with todo ids"));
+        }
+        return Ok(Some(Vec::new()));
+    }
+    Ok(Some(ids))
+}
+
 fn new_todo(a: &mut Args, mode: crate::todos::TodoMode) -> R<crate::todos::NewTodo> {
+    let after = match (after_arg(a)?, mode) {
+        // An exploration runs at once unless told otherwise.
+        (None, crate::todos::TodoMode::Explore) => Some(Vec::new()),
+        (after, _) => after,
+    };
     Ok(crate::todos::NewTodo {
         title: a.next("<title>")?,
         content: todo_content(a)?,
@@ -1466,18 +1486,8 @@ fn new_todo(a: &mut Args, mode: crate::todos::TodoMode) -> R<crate::todos::NewTo
         accept: a.all("accept"),
         scope: a.get("scope"),
         evidence: a.all("evidence"),
-        skills: a
-            .all("skill")
-            .iter()
-            .flat_map(|v| v.split(',').map(|x| x.trim().to_string()))
-            .filter(|x| !x.is_empty())
-            .collect(),
-        after: a
-            .all("after")
-            .iter()
-            .flat_map(|v| v.split(',').map(|x| x.trim().to_string()))
-            .filter(|x| !x.is_empty())
-            .collect(),
+        skills: comma_list(a, "skill"),
+        after,
         batch: a.get("batch"),
         runtime_id: a.get("runtime"),
         workspace: a.get("workspace"),
@@ -1485,29 +1495,7 @@ fn new_todo(a: &mut Args, mode: crate::todos::TodoMode) -> R<crate::todos::NewTo
     })
 }
 
-/// The Todo executor the session's current context hands serial Todos
-/// over to (`next_behavior`): a behavior loop with an `[entry] todo`
-/// behavior. `None`: Todos are dispatched as sub sessions of their own and
-/// waited for with `agent-session wait` (function call loop).
-fn todo_executor(sd: &SessionDir) -> Option<String> {
-    let cfg = sd.config().ok()?;
-    let current = sd
-        .state()
-        .ok()
-        .and_then(|s| s.current_behavior)
-        .or_else(|| cfg.prompt.behavior.clone())?;
-    let behaviors = cfg.behaviors().ok()?;
-    let loop_model = behaviors
-        .get(&current)
-        .and_then(|e| e.llm_context.get("loop_model").cloned())
-        .or_else(|| cfg.prompt.llm_context.get("loop_model").cloned());
-    if loop_model.as_ref().and_then(Value::as_str) != Some("behavior") {
-        return None;
-    }
-    behaviors.into_iter().find(|(_, e)| e.todo).map(|(name, _)| name)
-}
-
-/// A Todo's `--skill` names are cmd_skills the agent has: the sub session
+/// A Todo's `--skill` names are cmd_skills the agent has: the work session
 /// that executes it takes them.
 async fn check_todo_skills(c: &Ctx, names: &[String]) -> R<()> {
     if names.is_empty() {
@@ -1533,64 +1521,67 @@ async fn check_todo_skills(c: &Ctx, names: &[String]) -> R<()> {
     Ok(())
 }
 
-fn explore_options(a: &Args) -> crate::todos::ExploreOptions {
-    let mut o = crate::todos::ExploreOptions::from_env();
-    o.behavior = a.get("behavior");
-    o.class = a.get("class");
-    o
+/// A scheduling point of a command that changed the list: every Todo that
+/// is ready now starts. What happened, for the command's output.
+async fn todo_schedule(c: &Ctx, sd: &SessionDir) -> R<Value> {
+    let mut opts = crate::todos::DispatchOptions::from_env();
+    opts.class = None;
+    let out = crate::todos::schedule(c.agent.as_ref(), &c.who, c.channels.as_ref(), sd, &opts).await?;
+    Ok(json!(out))
 }
 
-/// Dispatch with an observable result: a refusal leaves the Todo pending
-/// and says why (exit 3, the caller may wait and dispatch again).
-/// A serial Todo keeps its mode: it starts in order as a work session of
-/// its own (`dispatch_serial`); an exploration starts as one at once.
-async fn todo_dispatch(c: &Ctx, sd: &SessionDir, todo_id: &str, a: &Args) -> R<i32> {
-    use crate::todos::{store_of, TodoMode};
-    let mode = store_of(sd)
-        .load()
-        .map_err(todo_fail)?
-        .get(todo_id)
-        .map(|t| t.mode)
-        .ok_or_else(|| bad(format!("todo {todo_id}: no such todo")))?;
-    let opts = explore_options(a);
-    let dispatched = match mode {
-        TodoMode::Serial => {
-            crate::todos::dispatch_serial(c.agent.as_ref(), &c.who, c.channels.as_ref(), sd, todo_id, &opts).await
-        }
-        TodoMode::Explore => {
-            crate::todos::dispatch(c.agent.as_ref(), &c.who, c.channels.as_ref(), sd, todo_id, &opts).await
-        }
-    };
-    match dispatched {
-        Ok(d) => {
-            let note = match todo_executor(sd) {
-                Some(_) => "the sub session reports back when it finishes; end your step with a progress report to wait for it".to_string(),
-                None => format!(
-                    "wait for it with `agent-session wait {}` as a shell call of its own and, while it runs, end your reply: its end comes back as your next input; then read its report with `agent-session todo show {} --report` and review it",
-                    d.child_sid, d.todo_id
-                ),
-            };
-            print(&json!({
-                "todo_id": d.todo_id, "attempt": d.attempt, "child_sid": d.child_sid,
-                "mode": mode.as_str(), "status": "running", "dispatched": true, "note": note,
-            }));
-            Ok(0)
-        }
-        Err(OpenDanError::InvalidArgument(reason)) => {
-            print(&json!({ "todo_id": todo_id, "status": "pending", "dispatched": false, "reason": reason }));
-            Ok(3)
-        }
-        Err(e) => Err(e.into()),
+/// The Todo as the command leaves it, with what this scheduling point did.
+fn todo_brief(sd: &SessionDir, id: &str, scheduled: Value) -> R<Value> {
+    let list = crate::todos::store_of(sd).load().map_err(todo_fail)?;
+    let t = list.get(id).ok_or_else(|| bad(format!("todo {id}: no such todo")))?;
+    let mut v = json!({
+        "todo_id": id, "status": t.status.as_str(), "mode": t.mode.as_str(), "after": t.after,
+        "rev": list.rev, "scheduled": scheduled,
+    });
+    if let Some(a) = t.running() {
+        v["attempt"] = json!(a.attempt);
+        v["child_sid"] = json!(a.child_sid);
     }
+    if !t.blocked_by.is_empty() {
+        v["blocked_by"] = json!(t.blocked_by);
+    }
+    if let Some(r) = &t.block_reason {
+        v["block_reason"] = json!(r);
+    }
+    Ok(v)
 }
 
-const TODO_COMMANDS: &str = "add | explore | dispatch | list | show | review | cancel | clean | retry";
+fn todo_patch(a: &Args) -> R<crate::todos::TodoPatch> {
+    let content = if a.get("content").is_some() || a.get("content-file").is_some() {
+        Some(todo_content(a)?)
+    } else {
+        None
+    };
+    let skills = comma_list(a, "skill");
+    Ok(crate::todos::TodoPatch {
+        title: a.get("title"),
+        content,
+        accept: a.all("accept"),
+        clear_accept: a.has("clear-accept"),
+        scope: a.get("scope"),
+        evidence: a.all("evidence"),
+        after: after_arg(a)?,
+        runtime_id: a.get("runtime"),
+        workspace: a.get("workspace"),
+        skills: (!skills.is_empty()).then_some(skills),
+    })
+}
+
+const TODO_COMMANDS: &str =
+    "add | explore | update | list | show | retry | cancel | clean | pause | resume | stop";
 
 /// `todo …`. Inside a session (`agent-session todo …`, $OPENDAN_SESSION_ID)
 /// every command works on that session's list — the session's tool layer is
-/// the list's writer. From outside only `list` and `show` read a list.
+/// the list's writer, and every change is a scheduling point: what is ready
+/// starts before the command returns. From outside only `list` and `show`
+/// read a list.
 async fn cmd_todo(mut a: Args) -> R<i32> {
-    use crate::todos::{store_of, ReviewVerdict, TodoMode};
+    use crate::todos::{store_of, TodoMode};
     let sub = a.next(TODO_COMMANDS)?;
     let inside = env_sid();
     let target = match (sub.as_str(), a.get("session")) {
@@ -1606,34 +1597,22 @@ async fn cmd_todo(mut a: Args) -> R<i32> {
             "todo {sub} changes a session's list: only its own runs can (inside session {target})"
         )));
     }
-    let (c, sd) = locate(&a, &target, sub == "explore" || sub == "dispatch" || sub == "retry").await?;
+    let (c, sd) = locate(&a, &target, writes).await?;
     let store = store_of(&sd);
     let now = crate::now_ms();
     match sub.as_str() {
-        "add" => {
-            let new = new_todo(&mut a, TodoMode::Serial)?;
+        "add" | "explore" => {
+            let mode = if sub == "add" { TodoMode::Serial } else { TodoMode::Explore };
+            let new = new_todo(&mut a, mode)?;
             check_todo_skills(&c, &new.skills).await?;
             let id = store.update(|l| l.add(new, now)).map_err(todo_fail)?;
-            let list = store.load().map_err(todo_fail)?;
-            let note = match todo_executor(&sd) {
-                Some(executor) => format!("next_behavior = {executor} executes the next ready serial todo"),
-                None => format!(
-                    "start it with `agent-session todo dispatch {id}` once it is ready: a work session of its own; serial todos run one at a time, after the todos they run after are accepted"
-                ),
-            };
-            print(&json!({ "todo_id": id, "status": "pending", "mode": "serial", "rev": list.rev, "note": note }));
+            let scheduled = todo_schedule(&c, &sd).await?;
+            print(&todo_brief(&sd, &id, scheduled)?);
             Ok(0)
         }
-        "explore" => {
-            let new = new_todo(&mut a, TodoMode::Explore)?;
-            check_todo_skills(&c, &new.skills).await?;
-            let id = store.update(|l| l.add(new, now)).map_err(todo_fail)?;
-            todo_dispatch(&c, &sd, &id, &a).await
-        }
-        "dispatch" => {
-            let id = a.next("<todo_id>")?;
-            todo_dispatch(&c, &sd, &id, &a).await
-        }
+        "dispatch" | "review" => Err(bad(format!(
+            "there is no `todo {sub}`: a Todo starts by itself as soon as the Todos it runs after completed, and a result is judged by a Todo of its own (`todo explore \"verify …\" --after <id>`)"
+        ))),
         "list" => {
             let list = store.load().map_err(todo_fail)?;
             if a.has("json") {
@@ -1647,11 +1626,11 @@ async fn cmd_todo(mut a: Args) -> R<i32> {
             let id = a.next("<todo_id>")?;
             let list = store.load().map_err(todo_fail)?;
             let t = list.get(&id).ok_or_else(|| bad(format!("todo {id}: no such todo")))?;
-            let mut v = json!({ "todo": t, "review": t.review_state() });
+            let mut v = json!({ "todo": t });
             if a.has("report") {
                 v["report"] = match t.latest() {
                     Some(attempt) => serde_json::to_value(
-                        crate::todos::read_report(c.agent.as_ref(), &sd, attempt).await?,
+                        crate::todos::read_report(c.agent.as_ref(), attempt).await?,
                     )?,
                     None => Value::Null,
                 };
@@ -1659,52 +1638,38 @@ async fn cmd_todo(mut a: Args) -> R<i32> {
             print(&v);
             Ok(0)
         }
-        "review" => {
+        "update" => {
             let id = a.next("<todo_id>")?;
-            let verdict = match (a.has("accept"), a.has("reject"), a.has("need-evidence")) {
-                (true, false, false) => ReviewVerdict::Accept,
-                (false, true, false) => ReviewVerdict::Reject,
-                (false, false, true) => ReviewVerdict::NeedEvidence,
-                _ => return Err(bad("todo review takes exactly one of --accept | --reject | --need-evidence")),
-            };
-            let reason = a.get("reason").ok_or_else(|| bad("missing --reason <what the report shows and why>"))?;
-            let (attempt, recorded) = store
-                .update(|l| l.review(&id, verdict, &reason, a.all("followup"), Some(c.who.clone()), now))
+            let reason = a.get("reason").ok_or_else(|| bad("missing --reason <why the todo changes>"))?;
+            let patch = todo_patch(&a)?;
+            let out = store
+                .update(|l| l.update(&id, patch, &reason, Some(c.who.clone()), now))
                 .map_err(todo_fail)?;
-            let list = store.load().map_err(todo_fail)?;
-            let child = list
-                .get(&id)
-                .and_then(|t| t.attempt(attempt))
-                .and_then(|x| x.child_sid.clone());
-            // An exploration's acceptance is its sub session's too.
-            let mut out = json!({ "todo_id": id, "attempt": attempt, "verdict": verdict, "recorded": recorded });
-            if let Some(child) = child {
-                let decision = match verdict {
-                    ReviewVerdict::Accept => Some("accept"),
-                    ReviewVerdict::Reject => Some("discard"),
-                    ReviewVerdict::NeedEvidence => None,
-                };
-                if let Some(decision) = decision {
-                    match crate::api::decide_unqueued(c.agent.as_ref(), &c.who, &child, decision, Some(&reason)).await {
-                        Ok(acc) => out["acceptance"] = json!({ "session_id": child, "acceptance": acc }),
-                        Err(e) => {
-                            out["acceptance_error"] = json!(format!(
-                                "the review is recorded; the acceptance of {child} was not written ({e}): run the same review again"
-                            ));
-                            print(&out);
-                            return Ok(5);
-                        }
-                    }
+            let mut told = Value::Null;
+            if let Some((attempt, child)) = &out.running {
+                let list = store.load().map_err(todo_fail)?;
+                if let Some(t) = list.get(&id) {
+                    crate::todos::post_update(c.agent.as_ref(), &c.who, &sd, t, child, *attempt, &out, &reason)
+                        .await?;
+                    told = json!(child);
                 }
             }
-            print(&out);
+            let scheduled = todo_schedule(&c, &sd).await?;
+            let mut v = todo_brief(&sd, &id, scheduled)?;
+            v["changed"] = json!(out.changed);
+            if !told.is_null() {
+                v["told"] = told;
+                v["note"] = json!("its work session takes the update in as its next input");
+            }
+            print(&v);
             Ok(0)
         }
         "cancel" => {
             let id = a.next("<todo_id>")?;
             let reason = a.get("reason").ok_or_else(|| bad("missing --reason"))?;
             store.update(|l| l.cancel(&id, &reason, now)).map_err(todo_fail)?;
-            print(&json!({ "todo_id": id, "status": "cancelled" }));
+            let scheduled = todo_schedule(&c, &sd).await?;
+            print(&todo_brief(&sd, &id, scheduled)?);
             Ok(0)
         }
         "clean" => {
@@ -1717,29 +1682,57 @@ async fn cmd_todo(mut a: Args) -> R<i32> {
             let id = a.next("<todo_id>")?;
             let reason = a.get("reason").ok_or_else(|| bad("missing --reason <what the new attempt must do differently>"))?;
             store.update(|l| l.retry(&id, &reason, now)).map_err(todo_fail)?;
-            let mode = store.load().map_err(todo_fail)?.get(&id).map(|t| t.mode);
-            if mode == Some(TodoMode::Explore) {
-                return todo_dispatch(&c, &sd, &id, &a).await;
-            }
-            let note = match todo_executor(&sd) {
-                Some(executor) => format!("next_behavior = {executor} runs it again as a new attempt"),
-                None => format!("start the new attempt with `agent-session todo dispatch {id}`"),
+            let scheduled = todo_schedule(&c, &sd).await?;
+            print(&todo_brief(&sd, &id, scheduled)?);
+            Ok(0)
+        }
+        "pause" | "resume" | "stop" => {
+            let id = a.next("<todo_id>")?;
+            let reason = a.get("reason").ok_or_else(|| bad(format!("missing --reason <why {sub}>")))?;
+            let (attempt, child) = match sub.as_str() {
+                "stop" => {
+                    let list = store.load().map_err(todo_fail)?;
+                    let t = list.get(&id).ok_or_else(|| bad(format!("todo {id}: no such todo")))?;
+                    let a = t.running().filter(|a| a.child_sid.is_some()).ok_or_else(|| {
+                        bad(format!("todo {id} is {}: only a running todo is stopped", t.status.as_str()))
+                    })?;
+                    (a.attempt, a.child_sid.clone().unwrap_or_default())
+                }
+                _ => match store
+                    .update(|l| l.mark_paused(&id, sub == "pause", now))
+                    .map_err(todo_fail)?
+                {
+                    Some(found) => found,
+                    None => {
+                        print(&json!({ "todo_id": id, "unchanged": format!("already {sub}d") }));
+                        return Ok(0);
+                    }
+                },
             };
-            print(&json!({ "todo_id": id, "status": "pending", "note": note }));
+            let command = match sub.as_str() {
+                "pause" => ControlCommand::Pause { reason: Some(reason.clone()) },
+                "resume" => ControlCommand::Resume { reason: Some(reason.clone()) },
+                _ => ControlCommand::stop(Some(reason.clone())),
+            };
+            let key = format!("todo-{sub}:{}:{id}:{attempt}:{now}", sd.sid());
+            crate::todos::control_child(c.agent.as_ref(), &c.who, &child, key, command).await?;
+            let note = match sub.as_str() {
+                "pause" => "its work session infers no more after the call in flight; its tasks run on",
+                "resume" => "its work session goes on where it stopped",
+                _ => "its work session stops; the attempt ends as stopped (`todo retry` starts a new one)",
+            };
+            print(&json!({ "todo_id": id, "attempt": attempt, "child_sid": child, "sent": sub, "note": note }));
             Ok(0)
         }
         other => Err(bad(format!("unknown todo command `{other}` ({TODO_COMMANDS})"))),
     }
 }
 
-async fn cmd_wait(mut a: Args) -> R<i32> {
-    let sid = a.next("<sid>")?;
-    let c = ctx(&a, None, false).await?;
-    if c.agent.sessions().lookup(&sid).await?.is_none() {
-        return Err(bad(format!("session {sid} is not registered")));
-    }
-    print(&pending_on_session("wait", &sid));
-    Ok(0)
+/// There is no waiting for a sub session: its end comes back as input.
+async fn cmd_wait(_a: Args) -> R<i32> {
+    Err(bad(
+        "there is no `wait`: the end of a sub session (or what it needs) comes back to you as input; reply without tool calls to end this Turn meanwhile",
+    ))
 }
 
 async fn cmd_workspace(mut a: Args) -> R<i32> {
@@ -2766,12 +2759,10 @@ async fn real_main() -> R<i32> {
             }
         }
     }
-    // `--run` is a flag of `status` and takes a run id for `xllm`;
-    // `--accept` is a verdict of `todo review` and a criterion elsewhere.
+    // `--run` is a flag of `status` and takes a run id for `xllm`.
     let extra: &[&str] = match (cmd.as_str(), argv.first().map(String::as_str)) {
         ("status", _) => &["run"],
-        ("todo", Some("review")) => &["accept", "reject", "need-evidence", "json"],
-        ("todo", _) => &["json"],
+        ("todo", _) => &["json", "clear-accept"],
         ("skill", _) => &["json", "replace"],
         ("runtime", Some("baseline")) => &["json", "check", "overlay"],
         ("workspace" | "runtime", Some("list")) | ("sessions", _) => &["json"],

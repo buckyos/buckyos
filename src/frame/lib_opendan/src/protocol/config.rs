@@ -597,11 +597,6 @@ pub enum InputBackground {
     /// Only what an input batch carries (the chat format's background).
     #[default]
     Batch,
-    /// Also after every batch of tool results (behavior loop: every step
-    /// with action results): the TodoList and sub session lines that
-    /// changed since they were last shown, as a `<<background_context>>`
-    /// message before the next inference.
-    AfterTools,
     /// Before every inference (the first of a Turn included): the lines
     /// that changed since they were last shown — the new output of the
     /// tasks the run follows, its sub sessions, its TodoList.
@@ -648,10 +643,6 @@ pub struct BehaviorEntry {
     /// `behavior:<name>` as a named function running this sub context.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<super::behavior::BehaviorToolConfig>,
-    /// The behavior executes the session's serial Todos: a `next_behavior`
-    /// hand-over to it admits the next one (TodoList, `[entry] todo`).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub todo: bool,
     /// `[reply]`: the context's final reply is a JSON value of this
     /// contract (function call loop only). A fork may declare its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -680,11 +671,6 @@ impl BehaviorEntry {
     }
 
     pub fn validate(&self, name: &str) -> std::result::Result<(), String> {
-        if self.todo && self.mode != ContextMode::CreateSubContext {
-            return Err(format!(
-                "behavior `{name}`: a Todo executor (`[entry] todo = true`) is entered as create_sub_context"
-            ));
-        }
         if let Some(t) = &self.tool {
             if !self.mode.is_sub_context() {
                 return Err(format!(
@@ -1137,7 +1123,6 @@ impl SessionConfig {
                 llm_context: Value::Null,
                 inherit: InheritMode::RecentDialogue,
                 tool: None,
-                todo: false,
                 reply: None,
                 call_intent: false,
             });

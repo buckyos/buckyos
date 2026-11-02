@@ -304,6 +304,19 @@ pub async fn create_session(
     }
     let agent_did = agent.agent_did().to_string();
     freeze_runtime(agent, &mut spec).await?;
+    // The entry behavior may only read the workspace (a plan): its binding
+    // is narrowed, the grant it hands on to its sub sessions is not.
+    let read_only = match (&spec.workspace, spec.prompt.behavior.as_deref()) {
+        (Some(_), Some(b)) => agent
+            .behaviors()
+            .get(b)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|b| b.capabilities.workspace)
+            == Some(WorkspaceAccess::ReadOnly),
+        _ => false,
+    };
     let sid = match &spec.session_id {
         Some(s) => {
             ids::validate_session_id(s)?;
@@ -408,7 +421,11 @@ pub async fn create_session(
         runtime: spec.runtime.clone(),
         workspace: spec.workspace.clone(),
         workspace_binding: crate::runtime::resolve_workspace(agent, spec.workspace.as_ref())
-            .await?,
+            .await?
+            .map(|b| WorkspaceBinding {
+                access: if read_only { WorkspaceAccess::ReadOnly } else { b.access },
+                ..b
+            }),
         artifact_id: spec.artifact_id.clone(),
         subscriptions: spec.subscriptions.clone(),
         channels: Channels {
@@ -481,7 +498,15 @@ pub async fn create_session(
         wake_event: existing.channels.wake_event.clone(),
         agent_access: existing.session.acl.agent_access,
         origin: existing.session.origin.clone(),
-        workspace: existing.workspace.clone(),
+        // What the session may do with its workspace: its binding's access.
+        workspace: existing.workspace.clone().map(|w| WorkspaceRef {
+            access: existing
+                .workspace_binding
+                .as_ref()
+                .map(|b| b.access)
+                .unwrap_or(w.access),
+            ..w
+        }),
         artifact_id: existing.artifact_id.clone(),
         objective: existing.session.objective.clone(),
         scope: existing.session.scope.clone(),
@@ -624,6 +649,10 @@ pub struct SubSessionSpec {
     /// The sub session gets an input queue and may wait for input.
     #[serde(default)]
     pub interactive: bool,
+    /// The sub session gets an input queue for its parent's events (a
+    /// Todo's updates and controls); it still never waits for input.
+    #[serde(default)]
+    pub queued: bool,
     /// `(run_id, call_id)` of the creating tool call: the idempotency key.
     #[serde(default)]
     pub call: Option<(String, String)>,
@@ -986,7 +1015,9 @@ pub async fn create_sub_session(
         || !spec.prompt.cmd_skills.is_empty();
     // The workspace: inherited, none, or another registered workspace the
     // agent may use (its own exclusive lease and access checks apply at
-    // creation); the parent's binding never changes.
+    // creation); the parent's binding never changes. The grant is inherited,
+    // not the parent's own narrowing (a plan reads the workspace its Todos'
+    // work sessions write).
     spec.workspace = match &sub.workspace {
         SubWorkspace::Inherit => pcfg.workspace.clone(),
         SubWorkspace::None => None,
@@ -1011,6 +1042,9 @@ pub async fn create_sub_session(
     if sub.interactive {
         spec.input_channel = Some(InputChannel::Queue);
         spec.policy.wait_user_msg = WaitPolicy::Allowed;
+    }
+    if sub.queued {
+        spec.input_channel = Some(InputChannel::Queue);
     }
     // First inputs: messages of the agent itself.
     let me = parse_did(agent.agent_did())?;

@@ -248,23 +248,13 @@ pub(super) async fn validate(sh: &Shared, run: &RunHandle, args: &ReportArgs) ->
             running.join(", ")
         )));
     }
-    let goal = super::goal::is_goal(&s.config);
     drop(s);
-    // A Goal Activation ends while its Work runs on: the Work's end is a
-    // later Activation's input.
-    if !child && !goal && !super::children::unsettled_children(sh).await?.is_empty() {
-        return Err(invalid("cannot finish while child sessions are unsettled"));
-    }
-    // The session's result rests on its TodoList: every Todo converged
-    // (executed and reviewed, or cancelled with a reason).
-    if !child && !goal {
-        let open = super::todos::unconverged(sh);
-        if !open.is_empty() {
-            return Err(invalid(format!(
-                "cannot finish while the todo list has not converged: {}. Review results with `agent-session todo review`, cancel what will not be done with `agent-session todo cancel <id> --reason <why>`.",
-                open.join("; ")
-            )));
-        }
+    // The Todo this work session executes changed while it worked: the
+    // change comes first (its event opens the next Turn).
+    if !child && super::inputs::todo_update_queued(sh).await {
+        return Err(invalid(
+            "your Todo was updated while you worked and the update waits as your next input: do not finish yet. Reply with one sentence on where things stand (no final report); that ends this Turn and the update opens the next one",
+        ));
     }
     Ok(())
 }

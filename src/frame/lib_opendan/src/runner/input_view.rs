@@ -181,19 +181,41 @@ impl InputView {
             v["is_msg"] = Value::Bool(is_msg);
             v["is_event"] = Value::Bool(!is_msg);
             // What kind of event, for templates (they cannot compare):
-            // a task's end, a timer tick, the runner's correction, other.
-            let (task, tick, nudge) = match item {
-                InputItem::Event(e) => (
-                    e.source.kind == "task" && e.subscription_id.is_none(),
-                    e.source.kind == "timer",
-                    e.source.kind == "system" && e.source.id == "runner",
-                ),
-                InputItem::Msg(_) => (false, false, false),
+            // a task's end, a timer tick, the runner's correction, a sub
+            // session that ended or asks something, an update of the Todo
+            // this session executes, other.
+            let (task, tick, nudge, child_end, child_asks, todo_update) = match item {
+                InputItem::Event(e) => {
+                    let child = e.source.kind == "session";
+                    (
+                        e.source.kind == "task" && e.subscription_id.is_none(),
+                        e.source.kind == "timer",
+                        e.source.kind == "system" && e.source.id == "runner",
+                        child && e.event == "finished",
+                        child && matches!(e.event.as_str(), "needs_input" | "needs_decision"),
+                        e.source.kind == "todo" && e.event == "updated",
+                    )
+                }
+                InputItem::Msg(_) => (false, false, false, false, false, false),
             };
             v["is_task_result"] = Value::Bool(task);
             v["is_tick"] = Value::Bool(tick);
             v["is_nudge"] = Value::Bool(nudge);
-            v["is_other_event"] = Value::Bool(!is_msg && !(task || tick || nudge));
+            v["is_child_end"] = Value::Bool(child_end);
+            v["is_child_needs_input"] = Value::Bool(child_asks);
+            v["is_todo_update"] = Value::Bool(todo_update);
+            v["is_user_msg"] = Value::Bool(is_msg);
+            if let InputItem::Event(e) = item {
+                if child_end || child_asks {
+                    v["child_sid"] = Value::String(e.source.id.clone());
+                }
+                if todo_update {
+                    v["todo_id"] = Value::String(e.source.id.clone());
+                }
+            }
+            v["is_other_event"] = Value::Bool(
+                !is_msg && !(task || tick || nudge || child_end || child_asks || todo_update),
+            );
             mixed.push(v);
         }
         Self {

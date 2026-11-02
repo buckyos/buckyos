@@ -176,6 +176,20 @@ pub async fn stop_queued(sh: &Shared) -> bool {
     })
 }
 
+/// An update of the Todo this work session executes is queued and not
+/// taken in yet.
+pub(super) async fn todo_update_queued(sh: &Shared) -> bool {
+    let Ok(fetched) = fetch_inputs(sh).await else {
+        return false;
+    };
+    let s = sh.session.lock().await;
+    fetched.iter().any(|m| {
+        !s.state.source(&m.src).is_consumed(m.index)
+            && !s.state.recent_keys.contains(&m.key)
+            && matches!(&m.input, Ok(SessionInput::Event(ev)) if ev.source.kind == crate::todos::TODO_EVENT_SOURCE)
+    })
+}
+
 /// Changes of subscribed sessions (pull mode: compare the registry rev, not
 /// event delivery), merged into `pending_events` like any Observe event.
 async fn poll_session_subscriptions(sh: &Shared, s: &mut Session) -> Result<bool> {
@@ -304,6 +318,20 @@ async fn route_inputs_inner(sh: &Shared, in_run: bool) -> Result<Routed> {
                     routed.candidates.push(m);
                     continue;
                 }
+                // What the plan tells the work session of its Todo (an
+                // update) is its input: the queue exists for it.
+                if ev.source.kind == crate::todos::TODO_EVENT_SOURCE
+                    && s.config
+                        .session
+                        .origin
+                        .as_ref()
+                        .is_some_and(|o| o.parent_session.is_some())
+                {
+                    s.state.source_mut(&m.src).accepted.insert(m.index);
+                    routed.candidates.push(m);
+                    changed = true;
+                    continue;
+                }
                 // A task the session follows is matched by task id,
                 // separately from ordinary subscriptions: the notification
                 // only triggers a query; its end comes in as a task result.
@@ -376,6 +404,43 @@ async fn route_inputs_inner(sh: &Shared, in_run: bool) -> Result<Routed> {
     Ok(routed)
 }
 
+/// Reason of the pause a session hands down to its sub sessions.
+fn parent_pause_reason(sid: &str) -> String {
+    format!("parent session {sid} was paused")
+}
+
+/// A pause reaches the sub sessions that are not finished (those with a
+/// queue); a resume only those this session's pause paused.
+async fn cascade_pause(sh: &Shared, sid: &str, key: &str, pause: bool) {
+    let Ok(children) = sh.agent().sessions().children_of(&[sid.to_string()]).await else {
+        return;
+    };
+    let reason = parent_pause_reason(sid);
+    for e in children {
+        if e.status.run_state == RunState::Finished || e.input_queue.is_none() {
+            continue;
+        }
+        let command = if pause {
+            ControlCommand::Pause { reason: Some(reason.clone()) }
+        } else {
+            let by_parent = e.status.paused
+                && crate::session::SessionDir::open(&e.location)
+                    .and_then(|d| d.state())
+                    .ok()
+                    .and_then(|st| st.paused)
+                    .is_some_and(|p| p.reason.as_deref() == Some(reason.as_str()));
+            if !by_parent {
+                continue;
+            }
+            ControlCommand::Resume { reason: Some(format!("parent session {sid} was resumed")) }
+        };
+        let input = PostedInput::control(&sh.deps.who, format!("{}:parent:{key}", command.name()), command);
+        if let Err(err) = sh.agent().sessions().post_input(&e.session_id, &input).await {
+            log::warn!("cannot {} sub session {}: {err}", input.input.type_name(), e.session_id);
+        }
+    }
+}
+
 /// Apply one control command. `true`: consumed; `false`: it stays queued
 /// (a `decide` that cannot be applied yet).
 async fn apply_control(
@@ -412,6 +477,41 @@ async fn apply_control(
                     "applied": applied,
                 }),
             });
+        }
+        ControlCommand::Pause { reason } => {
+            let applied = !finished && s.state.paused.is_none();
+            if applied {
+                s.state.paused = Some(Paused {
+                    at_ms: crate::now_ms(),
+                    reason: reason.clone(),
+                    by: m.from.clone(),
+                    in_run: false,
+                });
+                s.state.resume_run = false;
+            }
+            bodies.push(WorklogBody::ControlApplied {
+                input: m.input_ref(),
+                command: "pause".into(),
+                detail: json!({ "reason": reason, "from": m.from, "applied": applied }),
+            });
+            if applied {
+                cascade_pause(sh, s.sid(), &m.key, true).await;
+            }
+        }
+        ControlCommand::Resume { reason } => {
+            let paused = s.state.paused.take();
+            let applied = paused.is_some();
+            if paused.is_some_and(|p| p.in_run) {
+                s.state.resume_run = true;
+            }
+            bodies.push(WorklogBody::ControlApplied {
+                input: m.input_ref(),
+                command: "resume".into(),
+                detail: json!({ "reason": reason, "from": m.from, "applied": applied }),
+            });
+            if applied {
+                cascade_pause(sh, s.sid(), &m.key, false).await;
+            }
         }
         ControlCommand::GoalSkills { add, remove } => {
             match super::goal::apply_skills_control(&mut s.state, add, remove) {

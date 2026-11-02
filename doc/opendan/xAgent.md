@@ -541,7 +541,6 @@ agent-session create-worksession --objective <text>
     [--runtime inherit|<id>]                        默认 inherit：继承父的 runtime 配置，子首次推进时自己绑定（§5.2.1）
     [--report final|progress|none]                  父怎么收到汇报（§4.14），默认 final
     [--interactive]                                 子 session 建输入队列，父之后可以继续 post（默认不建，§4.7）
-    [--wait]                                        返回 task session:<sid> 的 pending 结果，Session 立即回答子的状态（§4.15）
 ```
 
 工具内部（都在 exec 子进程里，经 `AgentStateClient::connect`）：
@@ -550,7 +549,7 @@ agent-session create-worksession --objective <text>
 2. 幂等键 = `(父 sid, run_id, call_id)`：同一次调用被重放时，`create_session` 返回已有目录（计划 §4.8 `same_session_identity`），不会建出第二个。
 3. 校验 `session.policy.max_sub_sessions`（父同时未结束的子数）与 `max_session_depth`（RFC §13.4 防无限递归的工程边界），超限返回错误。
 4. 按模板创建（§4.7）；工具进程能读 behavior 目录就当场冻结（§6.3）；登记；把首批输入写成 bootstrap 批次。
-5. 不推进子 session（推进见 §4.12）。默认立刻返回 `{session_id, status: "created"}`；`--wait` 时返回带 `task_id = "session:<sid>"` 的结构化 pending 结果，exec 原样转发（`agent_tool/src/llm_bash.rs::try_forward_inner_agent_tool_result`），runtime 的工具管理器在等待预算内向 Session 的 resolver 查询，它立即回答（§4.15）。
+5. 不推进子 session（推进见 §4.12）。立刻返回 `{session_id, status: "created"}`；子的结束作为父的输入回来（§4.15）。
 
 **已实施**（`api::create_sub_session`、`xagent create-worksession`）：`create_session` 不再向父的队列投 `subscribe`。父对子的关注**隐式成立**：父的内置 session bridge 按 `origin.parent_session = 自己` 查登记表（§4.14），`origin.report` 记录创建时选的汇报方式。
 
@@ -609,12 +608,7 @@ impl ChildDriver {
 ### 4.15 等待：异步与等一个子 session
 
 - **异步（默认）**：创建工具立即返回，父继续推进；结果按 §4.14 以事件到达，可能落在父后续的 run 甚至后续的 Turn。
-- **等一个子 session（`--wait`，或对已有子 session 调 `agent-session wait <sid>`）**：工具返回 task `session:<sid>` 的 pending 结果。`task_id` 对 llm_context 是不透明值，没有 `wait.source` / `class` 词汇，也不按前缀归一；它与子 session 的对应关系只由宿主 Session 的 resolver 解析。等待不在 loop 里：resolver 只读登记表，对这个 task 的查询与等待都立即回答：
-  - 子结束 → `{session_id, status: finished, outcome, acceptance, one_line_status, report_brief, answer_ref, artifact_id}`；
-  - 子在等输入或等决定 → `{status: needs_input | needs_decision, question, …}`，父用 `post` 回答后再 `wait`；
-  - 其它情况 → “仍在运行”结果。父这时结束回复，run 为需要汇报的子保活（`wait_children = [sids]`），ChildDriver 同时在推进子；子的结束以 `_child` 的 `finished` 事件注入同一个 run；
-  - 调用结果已经是子的结束（或需要关注的状态）时，这个状态记为已交付，不再作为事件重复注入。委托了 Workspace 的子 session 在父的调用进行期间不能写，所以 resolver 从不在调用里等它。
-- **多个子**：不需要“等全部”的工具。父对每个子各 `wait` 一次后结束回复（顶层 behavior 的 Yield、或父将要成功结束时，不必 `wait`：所有需要汇报而未收齐的子都算），run 为这些子保活，每个子的结束各是一条输入，回来一个处理一个。
+- **不等子 session**（2026-11-02 起 `--wait` 与 `agent-session wait` 已删除）：父结束回复即可，多 Turn Work 的 run 为需要汇报的子保活（`wait_children = [sids]`），ChildDriver 同时在推进子；子的结束（或它需要回答）以 `_child` 事件作为下一条输入。不需要“等全部”的工具。
 - **与 T4 的区别**：T4 的子 run 在父 session 内串行，父入栈为 `caller`；子 session 在自己的 lease 下推进，可以与其它子并行；持久恢复相互独立，进程存活范围见 §4.12。
 - **接手**：这个 resolver 只依赖 Agent State，不依赖 Runner 内存；但 v1 只有 xagent 提供它，xllm 中 `session:` task 的 `can_resolve = false`。
 
@@ -625,23 +619,14 @@ impl ChildDriver {
 ### 4.16 生命周期与限制
 
 - **stop 级联**：父 stop → 对未结束的子投 `stop`（子有队列时），或由 ChildDriver 直接中断（子无队列；驱动者是同一个 principal）。子被 stop 只在父那里产生 `finished{stopped}` 事件，不影响父。
-- **验收**：work 子 session 结束后 `acceptance = pending`，默认由父（创建者）决定：父 LLM 读报告后 `ctl decide <child> accept|discard`。子没有输入队列时（默认），不经队列：父的工具进程以驱动者身份持子 Session 的锁直接写 acceptance（`api::decide_unqueued`；有 artifact 时先决定 artifact 版本）。探索 Todo 的 `todo review` 同时写它（§4.17）。
+- **验收**：work 子 session 结束后 `acceptance = pending`，默认由父（创建者）决定：父 LLM 读报告后 `ctl decide <child> accept|discard`。子没有输入队列时（默认），不经队列：父的工具进程以驱动者身份持子 Session 的锁直接写 acceptance（`api::decide_unqueued`；有 artifact 时先决定 artifact 版本）。Todo 的 work session 不经验收（plan 用验证 Todo 检查结果，§4.17）。
 - **数量与深度**：`session.policy.max_sub_sessions`（同时未结束的子，默认 4）与 `max_session_depth`（默认 2）。
 - **Turn 与预算不合并**：子有自己的 Turn（计划 §8.3），父的 Turn、Round、预算都不含子；子按自己的 budget。
 - **归档与清理**：子目录的归档与清理沿用顶层 session 的规则（后移）；登记表条目保留，供审计与 `sessions` 查询。
 
-### 4.17 TodoList：PLAN 的计划与两种执行形态
+### 4.17 TodoList：plan session 的计划
 
-Work Session 的 TodoList（`.opendan_agent_session/todos.json`，[Agent TodoList](<./Agent TodoList.md>)）把 §4.10 的两种交出方式组合成 PLAN 的决策循环。它不是新的调度器：
-
-| | 串行 Todo | 探索 Todo |
-|---|---|---|
-| 执行 | `next_behavior = <Todo 执行器>`（behavior 声明 `[entry] todo = true`，`create_sub_context`；Jarvis `do`）：T2 子 context，父 run 挂起 | `agent-session todo explore` / `todo dispatch`：Sub Session（`--workspace none`、`--report final`、入口 behavior `explore`），可并行 |
-| 准入 / 派发 | 宿主在交接时选第一个就绪的串行 Todo（`after` 中的结果已被接受），正文写入 `ChildCall.task`（`<sub_task>`），绑定 `ChildCall.todo = {todo_id, attempt}` 与 `(run_id, step:<n>)`；没有就绪 Todo 时可修正地拒绝，或在有探索时按等待处理 | 工具进程加锁：记 `dispatching` → `create_sub_session`（key `todo:<id>:<attempt>`）→ 记 `dispatched`；`max_sub_sessions` 与宿主 `--max-children`（`LIBOPENDAN_MAX_CHILDREN`）超限可观察地拒绝 |
-| 结果回流 | 子 context 返回的同一次提交前写回 attempt；`process_result` 只给一句话与 `todo show` 指引；报告副本存 `reports/<id>/` | 父宿主在批次边界按登记表状态回写；结束事件说 Todo、attempt、一句话与 `todo show` 指引 |
-| Review | `todo review` 写 Todo | `todo review` 写 Todo，同时写子 Session acceptance |
-
-PLAN 在每个顶层输入批次（列表修订变化时）得到紧凑视图 `<todo_list rev>`；报告全文只在 `todo show <id> --report` 时进入上下文。顶层结束报告在列表未收敛（有 Todo 在执行 / pending / 未 Review）时被拒绝。恢复：派发按登记表对账（有 sid 就绑定、没有就撤回），串行绑定按调用方 Step 幂等，回写幂等且只写自己的 attempt。
+plan session 的 TodoList（`.opendan_agent_session/todos.json`，[Agent TodoList](<./Agent TodoList.md>)）：plan 只读、只改列表；每个 Todo 的每个 attempt 是一个 Sub Session（`todo add` → `work_simple`，继承 Workspace 读写；`todo explore` → `explore`，无 Workspace），宿主在前置都 `completed` 时自动创建（调度点：plan 的 `todo` 命令、批次边界的回写），并发上限挡住的留待下一个调度点。plan 经 `todo update`（work session 的队列收到 `todo:<id>` / `updated`）与 `todo pause|resume|stop`（控制命令）影响运行中的工作。没有 Review 与收敛检查：验证是一条 Todo，plan 自己判断何时 `report(is_end=true)`，仍在跑的 work session 随之停止。之前的串行 Todo 执行器（`next_behavior = do`、`[entry] todo`、`ChildCall.todo`）已删除。
 
 ---
 
@@ -1005,7 +990,7 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   在 exec 子进程内（PATH 上的 agent-session 即 xagent）：
   xagent ctl activity [--summary <t>] [--touch <ref>]... | ctl perceive <text>
   xagent recall <query> | note <text> | sessions [--active] [--children] | read-session <sid> | artifact ...
-  xagent create-worksession --objective <t> [--report final|progress|none] [--wait] [...]   （§4.11）
+  xagent create-worksession --objective <t> [--report final|progress|none] [...]   （§4.11）
   xagent wait <sid> | post <sid> --msg <t>                                                  （§4.13、§4.15）
   xagent goal ...    调用方 = $OPENDAN_SESSION_ID 所在的 Session：UI Session 可 create / show / post / pause / resume /
                      archive / reopen / restart / activate；Goal Session 可 show（省略 <id> 即自己的 Goal）/ skills add|remove /
@@ -1271,7 +1256,7 @@ C4 默认无队列 work 用 `run`；如果由父的 ChildDriver 调度，无输�
 | E18 | 后移：policy | guard 拒绝、审批 task / approve、grant 到期撤销；随 ActionGuard / RuntimeGrant 实施，本轮不提供这些 CLI 子命令 |
 | E19 | 验收：SWITCH_CONTEXT | do / check 使用不同模型与工具，往返后只有各自两个 run，配置、历史、编号、预算不串；xllm 到 handover 停为 paused，再次 resume 拒绝，xagent 提交转移一次；转移前后崩溃同样成立；未声明进入模式失败，无同 run 换 system 回退 |
 | E20 | 验收：工具子 context | function_call / behavior 父分别调用 create_sub_context（none/recent_dialogue/steps）与 fork；与 read 同批，进入 / 返回前后崩溃。调用登记为 subctx:<call_id>，同批其余调用照常派发，父本段结束时交接，fork 前缀是父交接时的全部历史；子结果以 `<process_result call_id>` 恰好交回一次，已执行的调用不重放。继承记录不重复 flush，子 transcript 不进重建历史，子 WAIT_USER_MSG / Error 交回 needs_user_input / failed，不关闭父 Turn；嵌套超限及 fork 自带配置被拒，xllm 不接手装配了 call_behavior 的 run |
-| E21 | 验收：Sub Session | 无队列父派出 final / progress / --wait 三种子；各有 lease / Turn，progress 半订阅，wait 立即回答子的状态、子的结束以输入回到保活的 run；父普通 Done 时仍有需汇报子则 run 保活、Turn 保持打开；显式结束报告在依赖未收齐时拒绝，结束事件 Input 后汇总。kill 宿主后登记与提交点可恢复、子不重复创建；同进程子协程也会停止，不宣称进程独立存活 |
+| E21 | 验收：Sub Session | 无队列父派出 final / progress 两种子；各有 lease / Turn，progress 半订阅，子的结束以输入回到保活的 run；父普通 Done 时仍有需汇报子则 run 保活、Turn 保持打开；结束事件 Input 后汇总（2026-11-02 起 `--wait` 删除、显式结束报告不再等子）。kill 宿主后登记与提交点可恢复、子不重复创建；同进程子协程也会停止，不宣称进程独立存活 |
 | E22 | 回归：父子对话 / stop | interactive 子提问，父收到 needs_input 后 post，子续同一 Turn；子主动 post 要求父有队列。父 stop 级联未结束子，各自驱动者提交 stopped |
 | E23 | 回归：模板 | 三入口分别渲染，Single / Batch 仅消费选中输入；启动 / 交接可合并外部输入；恢复、压缩、续完工具批次不重复触发入口；六个示例模板输出与 fixtures 一致 |
 | E24 | 验收：task 跟进 | 预算内完成直接得到结果；仍在运行时回复使 run 保活，无通知 / 空 inbox 时查询终态，`<<task_result>>` 注入同一 run / Turn 且带 call_id；查不到的 task 以 unknown 交回；保活中到达的 msg 注入同一 run，保活的 run 可再等另一个 task；stop 取消可取消的 task 且不重放 |

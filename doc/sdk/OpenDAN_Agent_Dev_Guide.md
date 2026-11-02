@@ -71,7 +71,7 @@ cmd_skill 是一类事的命令手册（`cmd_skills/<name>.md`，front matter �
 - 适用环境：`baseline: standard | extended`（缺省 standard）说明手册在哪种 session-runtime 上有效——standard 只用标准环境的命令（清单见 `xagent runtime baseline`：`agent-session`、`llm_understand_media`、`agent_tool xllm`、`xagent`、`buckyos`、`aicc-tool` 及其媒体命令），用到 ffmpeg、ImageMagick、构建工具链等第三方工具的写 `extended`；`platforms: linux, macos, windows`（逗号分隔，缺省全部）。`requires` 仍是给人读的说明，具体工具名写在正文，由 Agent 运行时自查。这两个字段不是这几个固定词时安装被拒。
 - 生效：Session 创建冻结 cmd_skills 时按其 session-runtime 声明的基线与平台过滤（Workspace 的 runtime 不参与）；不满足的手册不注入，在 `## Commands` 末尾列出原因。Work / Todo 显式点名的手册不满足时直接拒绝创建（Todo 留在 pending 并记下原因）；继承来的在子 Session 的 runtime 上重新解析。容器声明为 extended，节点 runtime 由 owner 在 Agent 设置里声明（缺省 standard）。
 
-- 选择：Work 在创建时选定，最多 8 个（`agent-session create-worksession --cmd-skill <name>`，可重复），由意图分析、Goal、PLAN/DO 从 `agent-session skill list` 中挑选；未指定时子 Work 继承父 Work 的选择，UI 的 `ui_core` 与 Goal 的 goal_skills 不会自动注入 Work。UI Session 用 `agent.toml [session.<class>] default_cmd_skills`。
+- 选择：Work 在创建时选定，最多 8 个（`agent-session create-worksession --cmd-skill <name>`，可重复），由意图分析、Goal、plan session（Todo 的 `--skill`）从 `agent-session skill list` 中挑选；未指定时子 Work 继承父 Work 的选择，UI 的 `ui_core` 与 Goal 的 goal_skills 不会自动注入 Work。UI Session 用 `agent.toml [session.<class>] default_cmd_skills`。
 - 装配：选中的手册按顺序整篇进入系统段末尾的 `## Commands`，随 Session 冻结；运行中不切换、不追加，安装 / 更新 / 删除只影响之后创建的 Session。
 - 安装：skill 包是 `app_type = agent_skills` 的 PIKG（`buckyos pikg init --kind agent-skills`），`agent_skills` 子包内分 `cmd_skills/`、`goal_skills/`、`tools/`。用户用 `buckyos skill install <x.pikg> --agent <agent_id>`（opendan kRPC `skills.install`），Agent 用 `agent-session skill install <x.pikg | dir>`；安装记录在 `.meta/skills.json`，Agent 模板升级不覆盖、不删除已安装的 skill。Agent 模板也可以在自己的 PIKG 里带 `agent_skills` 子包，随模板同步。
 - 维护：手册是对应功能的交付物，改 CLI / 协议 / 运行路径时同步更新，见仓库根 `AGENTS.md` 的“cmd_skills 联动维护”。
@@ -139,7 +139,7 @@ SessionRunner 可以为这个基础层增加宿主任务解析、在 loop 之外
 
 控制请求还需定义幂等、checkpoint、恢复和同一批次中后续调用的处理。本文不新增控制命令名称，也不要求立即撤掉现有稳定控制协议。
 
-已有可复用的例子是 `agent-session create-worksession --wait` 和 `agent-session wait <sid>`：CLI 返回 task `session:<sid>` 的 pending 结果，shell 转发，宿主的 resolver 立即回答子 Session 的状态；子还在运行时它的结束作为下一条输入回来。向用户提问也是这样：websdk 的 `ask_user`（`src/tools/buckyos-agent/commands/ask_user.ts`）发一条 `input` 通知，返回该通知任务的 pending 结果，回答就是任务结果。因此，“需要等待”本身也不构成 CLI 化障碍：等待就是一个 task。见 [xagent 实现](../../src/frame/lib_opendan/src/bin/xagent.rs)。
+子 Session 不需要等：它的结束（或需要回答）作为下一条输入回来（`agent-session wait` 与 `create-worksession --wait` 已删除）。向用户提问是可复用的例子：websdk 的 `ask_user`（`src/tools/buckyos-agent/commands/ask_user.ts`）发一条 `input` 通知，返回该通知任务的 pending 结果，回答就是任务结果。因此，“需要等待”本身也不构成 CLI 化障碍：等待就是一个 task。见 [xagent 实现](../../src/frame/lib_opendan/src/bin/xagent.rs)。
 
 ## 5. 当前配置：用于理解存量实现
 
@@ -156,7 +156,7 @@ tool_whitelist = []
 action_whitelist = ["group:bash"]
 ```
 
-当前 Jarvis 的 plan / do 使用这类配置，且在 Agent 的基础 `[llm_context.tools]` 中设置 `enabled = true`。
+Jarvis 已不再有 behavior loop 的 Session（2026-11-02 删除 `plan` / `do`）：Work 的缺省 behavior 是 `plan_simple`（原生 function call，`tool_whitelist = ["group:bash", "report"]`、`call_intent = true`、`workspace = "read_only"`），其 Todo 由 `work_simple` / `explore` 的 work session 执行；Agent 的基础 `[llm_context.tools]` 设置 `enabled = true`。上面的 `mode = "behavior"` 写法仍被支持，用于理解 behavior loop 的配置。
 
 | 字段或写法 | 当前含义 |
 |---|---|
@@ -167,6 +167,7 @@ action_whitelist = ["group:bash"]
 | `group:bash` | 唯一内置组：`shell`、`read_file`、`write_file`、`edit_file`；等待预算小于命令超时时另加三个 task 工具 |
 | 普通名称 | 查询宿主注册的具名工具，不是在内置组中挑选同名成员 |
 | `call_intent = true` | 只用于 function_call：宿主给每个原生函数的 schema 加 required 的 `intent`，执行前校验（缺失 / 空白 / 非字符串 → 可修正错误，调用不执行），交给工具前去掉，原始参数保留在快照与 worklog；Jarvis `plan_simple` 使用 |
+| `workspace = "read_only"` | 以它为入口的 Session 只读 Workspace：绑定为只读、不取写者租约、不阻挡写它的子 Session；文件工具本来只写工作目录，shell 不受限（提示词约束）；Jarvis `plan_simple` 使用 |
 
 因此，上述配置的实际效果是无原生 tools，整个 bash 组作为 actions 提供，包含 task 工具。**这是当前实现与 CLI 优先目标之间的差距，不能据此继续把所有新能力展开成 action。**
 

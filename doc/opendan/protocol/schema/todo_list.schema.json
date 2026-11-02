@@ -1,42 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
-    "CallRef": {
-      "description": "The run and call a serial attempt was admitted for (the hand-over step of the caller): its idempotency key.",
-      "properties": {
-        "call_id": {
-          "type": "string"
-        },
-        "run_id": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "call_id",
-        "run_id"
-      ],
-      "type": "object"
-    },
-    "DispatchRefusal": {
-      "description": "A dispatch the concurrency limits refused (observable; the Todo stays pending and can be dispatched again).",
-      "properties": {
-        "at_ms": {
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "reason": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "at_ms",
-        "reason"
-      ],
-      "type": "object"
-    },
     "DispatchState": {
-      "description": "Dispatch of an exploration attempt (crash recovery: a `dispatching` attempt is reconciled against the registry by its sub session id).",
+      "description": "Dispatch of an attempt (crash recovery: a `dispatching` attempt is reconciled against the registry by its sub session id).",
       "enum": [
         "dispatching",
         "dispatched"
@@ -44,20 +10,12 @@
       "type": "string"
     },
     "ReportRef": {
-      "description": "Where the report of an attempt is: an exploration's final report in its sub session, a serial attempt's report in the session's report store.",
+      "description": "Where the report of an attempt is: the final report of its sub session.",
       "properties": {
         "report_id": {
           "type": "string"
         },
-        "run_id": {
-          "description": "The run that submitted it (serial attempts).",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "session_id": {
-          "description": "The session holding the report (the sub session of an exploration, the session itself for a serial attempt).",
           "type": "string"
         }
       },
@@ -66,14 +24,6 @@
         "session_id"
       ],
       "type": "object"
-    },
-    "ReviewVerdict": {
-      "enum": [
-        "accept",
-        "reject",
-        "need_evidence"
-      ],
-      "type": "string"
     },
     "TodoAttempt": {
       "properties": {
@@ -102,19 +52,8 @@
             "null"
           ]
         },
-        "caller": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/CallRef"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Serial: the caller's hand-over the attempt was admitted for."
-        },
         "child_sid": {
-          "description": "Explore, or a serial Todo on another runtime / workspace: the sub session.",
+          "description": "The work session executing the attempt.",
           "type": [
             "string",
             "null"
@@ -147,6 +86,15 @@
         "mode": {
           "$ref": "#/definitions/TodoMode"
         },
+        "paused_at_ms": {
+          "description": "The plan paused its work session (it infers no more until resumed).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "reason": {
           "description": "Why this attempt was made (a retry's reason).",
           "type": [
@@ -164,10 +112,11 @@
             }
           ]
         },
-        "run_id": {
-          "description": "Serial: the sub context's run (known once it returned).",
+        "resumed_at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
           "type": [
-            "string",
+            "integer",
             "null"
           ]
         },
@@ -189,7 +138,7 @@
               "$ref": "#/definitions/TodoStatus"
             }
           ],
-          "description": "`running | blocked | completed | failed | timeout | stopped`."
+          "description": "`running | completed | failed | timeout | stopped`."
         },
         "summary": {
           "description": "One line about the result.",
@@ -214,17 +163,17 @@
       "type": "object"
     },
     "TodoMode": {
-      "description": "How an attempt runs.",
+      "description": "How an attempt runs. Both run in a work session of their own.",
       "oneOf": [
         {
-          "description": "A sub context of the session (`next_behavior = do`): the caller's run is suspended until it returns.",
+          "description": "Work (behavior `work_simple`, the plan's workspace), in the order of its `after` chain.",
           "enum": [
             "serial"
           ],
           "type": "string"
         },
         {
-          "description": "An independent sub session; several run in parallel.",
+          "description": "A read-only investigation (behavior `explore`, no workspace).",
           "enum": [
             "explore"
           ],
@@ -242,7 +191,7 @@
           "type": "array"
         },
         "after": {
-          "description": "Todos whose result must be accepted before this one may run.",
+          "description": "Todos that must have completed before this one runs.",
           "items": {
             "type": "string"
           },
@@ -268,6 +217,20 @@
             "null"
           ]
         },
+        "block_reason": {
+          "description": "Why the last dispatch failed (cleared by `update` / `retry`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "blocked_by": {
+          "description": "Todos of `after` that ended without success: this one waits for the plan (retry them, change `after`, or cancel it).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "cancel_reason": {
           "type": [
             "string",
@@ -292,12 +255,6 @@
         "mode": {
           "$ref": "#/definitions/TodoMode"
         },
-        "refusals": {
-          "items": {
-            "$ref": "#/definitions/DispatchRefusal"
-          },
-          "type": "array"
-        },
         "retry": {
           "description": "Pending retry: the reason for the next attempt.",
           "type": [
@@ -310,12 +267,6 @@
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
-        },
-        "reviews": {
-          "items": {
-            "$ref": "#/definitions/TodoReview"
-          },
-          "type": "array"
         },
         "runtime_id": {
           "description": "Where the Todo must execute: a session-runtime id (`None`: the session's own), and `inherit | none | <workspace id>` (`None`: a serial Todo inherits the session's workspace, an exploration takes none). The two are chosen independently: a workspace on another runtime than the work's is reached by copying files.",
@@ -357,6 +308,12 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "updates": {
+          "items": {
+            "$ref": "#/definitions/TodoUpdate"
+          },
+          "type": "array"
+        },
         "workspace": {
           "type": [
             "string",
@@ -377,54 +334,6 @@
       ],
       "type": "object"
     },
-    "TodoReview": {
-      "description": "The PLAN's judgement of one attempt's result. Execution success and acceptance are recorded apart.",
-      "properties": {
-        "at_ms": {
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "attempt": {
-          "format": "uint32",
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "by": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "followups": {
-          "description": "Todos created because of this review.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "reason": {
-          "type": "string"
-        },
-        "report_id": {
-          "description": "The report version that was read.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "verdict": {
-          "$ref": "#/definitions/ReviewVerdict"
-        }
-      },
-      "required": [
-        "at_ms",
-        "attempt",
-        "reason",
-        "verdict"
-      ],
-      "type": "object"
-    },
     "TodoStatus": {
       "oneOf": [
         {
@@ -440,13 +349,54 @@
           "type": "string"
         },
         {
-          "description": "Not terminal, but never picked as the serial current Todo: the PLAN handles it explicitly (an exploration that waits for an answer).",
+          "description": "Not dispatched and not dispatchable until the plan decides: a Todo it runs after ended without success (`blocked_by`), or its dispatch failed (`block_reason`).",
           "enum": [
             "blocked"
           ],
           "type": "string"
         }
       ]
+    },
+    "TodoUpdate": {
+      "description": "One change of a Todo after it was added (`todo update`).",
+      "properties": {
+        "at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "attempt": {
+          "description": "The attempt that was running and was told (`None`: none ran).",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "by": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fields": {
+          "description": "The fields it changed.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "at_ms",
+        "fields",
+        "reason"
+      ],
+      "type": "object"
     }
   },
   "properties": {

@@ -8,7 +8,7 @@ baseline: standard
 - One-off work on material you already have: classify, summarize, compare, rewrite, translate, pull fields
   into JSON, get a second opinion. The answer comes back on stdout (or a file) in seconds to minutes.
 - A bounded helper with tools: a model inspects or transforms files in a scratch directory under a small budget.
-- Durable work, PLAN/DO, or anything that needs the user fits a Work session better: xllm has no conversation
+- Durable work, a plan, or anything that needs the user fits a Work session better: xllm has no conversation
   and cannot ask anyone. Nor does it drive or take over a session: session runs
   (`.opendan_agent_session/runs`) are driven by their host, and xllm refuses them while the host runs them
   or still has to validate/commit their result.
