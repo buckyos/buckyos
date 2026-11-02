@@ -22,6 +22,13 @@
   },
   "description": "`type = \"event\"` payload: something this session cares about happened. The poster only describes the event; whether it is an Input or an Observe is decided by the receiving session's subscriptions.",
   "properties": {
+    "call_id": {
+      "description": "A task's end: the tool call whose result handed the work over as that task (the input is a task result of that call).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "data_ref": {
       "description": "ObjId or a path relative to the session directory.",
       "type": [

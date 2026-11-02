@@ -508,7 +508,7 @@ impl FsWorkspaces {
             for run_id in runs.list()? {
                 let run = runs.record(&run_id)?;
                 unresolved |= run.status == agent_tool::xllm::RunStatus::Running
-                    || !run.inflight.is_empty()
+                    || runs.in_flight(&run_id)?.is_some()
                     || run
                         .host
                         .as_ref()

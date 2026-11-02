@@ -1,6 +1,6 @@
-//! Input protocol 3 and long task scenarios: waiting for a task outside the
-//! context (串行等待), following a background task after its run (并行等待),
-//! stop while a tool runs, the pending input limit, consumption policy,
+//! Input protocol 3 and long task scenarios: a run kept while its tasks run
+//! (串行等待 / 并行等待, F18) and their results coming back as
+//! `<<task_result>>` inputs, stop while a tool runs, the pending input limit, consumption policy,
 //! media blocks, dedup / reply path, read-only old sessions.
 
 mod common;
@@ -20,7 +20,7 @@ use libopendan::protocol::*;
 use libopendan::runner::{drive, DriveResult, RunnerDeps, SessionTaskResolver, StopWhen};
 use libopendan::{OpenDanError, SessionDir};
 use llm_context::deps::LlmClient;
-use llm_context::tasks::{
+use agent_tool::task_model::{
     CancelUnsupported, RunningTaskResolver, TaskBrief, TaskResult, TaskState,
 };
 use serde_json::{json, Value};
@@ -179,43 +179,70 @@ fn results_of(sd: &SessionDir, call: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+fn task_result_head(task: &str, call: &str, status: &str) -> String {
+    format!("<<task_result task=\"{task}\" call_id=\"{call}\" status=\"{status}\">>")
+}
+
+/// `t1` waits for task `bucky:1`, which outlives the call's budget; the
+/// model then replies and the run waits.
 fn waiting_script() -> Arc<ScriptedLlm> {
     ScriptedLlm::new(|req, n| match n {
         0 => tool_call("t1", "start_task", json!({ "id": "1", "mode": "wait" })),
+        1 => {
+            let r = has_tool_result(req, "t1").expect("the call returned");
+            assert!(r.contains("bucky:1"), "{r}");
+            text("the build is running")
+        }
         _ => {
-            let r = has_tool_result(req, "t1").expect("the suspended call was answered");
-            text(&format!("task said: {r}"))
+            let u = last_user_text(req);
+            assert!(u.contains(&task_result_head("bucky:1", "t1", "unknown")), "{u}");
+            assert!(u.contains("state unknown"), "{u}");
+            text("the task manager lost the build")
         }
     })
 }
 
-/// 串行等待: the run is suspended on the call, the session waits for the
-/// task outside the context (no inference while polling), messages are held,
-/// and the result resumes the same run and Turn.
+/// 串行等待 (F18): the call returns "still running"; the reply keeps the
+/// run, which waits for the task outside the context (no inference while
+/// polling). A message is injected into the same run; the task's end comes
+/// back as a `<<task_result>>` input of the same run and Turn.
 #[tokio::test]
-async fn a_suspended_call_is_filled_when_its_task_ends() {
+async fn a_reply_while_its_task_runs_keeps_the_run_until_the_task_result() {
     let env = Env::new();
     let sd = env.create_work(task_spec("build")).await;
     let tasks = Arc::new(FakeTasks::default());
-    let llm = waiting_script();
+    let llm = ScriptedLlm::new(|req, n| match n {
+        0 => tool_call("t1", "start_task", json!({ "id": "1", "mode": "wait" })),
+        1 => {
+            let r = has_tool_result(req, "t1").expect("the call returned");
+            assert!(r.contains("bucky:1"), "{r}");
+            text("the build is running")
+        }
+        2 => {
+            assert!(last_user_text(req).contains("are you there?"));
+            text("still building")
+        }
+        _ => {
+            let u = last_user_text(req);
+            assert!(u.contains(&task_result_head("bucky:1", "t1", "finished")), "{u}");
+            assert!(u.contains("built ok"), "{u}");
+            text("task said: built ok")
+        }
+    });
     let deps = task_deps(&env, llm.clone(), Some(tasks.clone()));
     let r = drive(&sd, &deps, StopWhen::Idle).await;
     assert!(
         matches!(r, DriveResult::Idle { run_state: RunState::Waiting, .. }),
         "{r:?}"
     );
-    assert_eq!(llm.count(), 1);
+    assert_eq!(llm.count(), 2);
     let st = sd.state().unwrap();
     let run_id = st.live_run.clone().unwrap().run_id;
     let wf = st.waiting_for.clone().unwrap();
     assert_eq!((wf.kind, wf.refs.clone()), (WaitingKind::Tool, vec!["bucky:1".to_string()]));
-    // A message and a notification for the task arrive while it runs: the
-    // message stays queued (it is no tool result), the notification is
-    // consumed and only triggers the query.
+    assert_eq!(st.watched_tasks, vec!["bucky:1".to_string()]);
+    // A notification for the task only triggers the query.
     let agent = env.agent();
-    libopendan::post_input(agent.as_ref(), sd.sid(), &msg("are you there?"))
-        .await
-        .unwrap();
     libopendan::post_input(
         agent.as_ref(),
         sd.sid(),
@@ -225,44 +252,42 @@ async fn a_suspended_call_is_filled_when_its_task_ends() {
     .unwrap();
     let r = drive(&sd, &deps, StopWhen::Idle).await;
     assert!(matches!(r, DriveResult::Idle { run_state: RunState::Waiting, .. }), "{r:?}");
-    assert_eq!(llm.count(), 1, "polling a running task needs no inference");
-    let st = sd.state().unwrap();
-    assert!(st.source("q").consumed_above.contains(&2), "the notification was consumed");
-    assert_eq!(st.source("q").acked_index, 0, "the message is still queued");
+    assert_eq!(llm.count(), 2, "polling a running task needs no inference");
     assert!(read_worklog(&sd).iter().any(
-        |e| matches!(&e.body, WorklogBody::EventDropped { reason, .. } if reason == "pending_call")
+        |e| matches!(&e.body, WorklogBody::EventDropped { reason, .. } if reason == "watched_task")
     ));
-    // The task ends while nobody drives: no notification is needed, the
-    // empty-or-not inbox does not matter.
+    // A message goes into the same run, which keeps waiting afterwards.
+    libopendan::post_input(agent.as_ref(), sd.sid(), &msg("are you there?"))
+        .await
+        .unwrap();
+    let r = drive(&sd, &deps, StopWhen::Idle).await;
+    assert!(matches!(r, DriveResult::Idle { run_state: RunState::Waiting, .. }), "{r:?}");
+    assert_eq!(llm.count(), 3);
+    assert_eq!(sd.state().unwrap().live_run.unwrap().run_id, run_id);
+    // The task ends while nobody drives: no notification is needed.
     tasks.finish("bucky:1", "built ok");
     let r = drive(&sd, &deps, StopWhen::Finished).await;
     assert!(r.is_finished(), "{r:?}");
-    assert_eq!(llm.count(), 2);
+    assert_eq!(llm.count(), 4);
     assert!(sd.report().unwrap().contains("built ok"));
     let st = sd.state().unwrap();
     assert_eq!(st.last_run.as_deref(), Some(run_id.as_str()), "the same run continued");
     assert_eq!((st.turn_seq, st.turns_completed), (1, 1));
-    let res = results_of(&sd, "t1");
-    assert_eq!(res.len(), 1, "one result for the call: {res:?}");
-    assert_eq!(res[0].0, "ok");
+    assert!(st.watched_tasks.is_empty());
+    assert_eq!(results_of(&sd, "t1").len(), 1, "one result for the call");
 }
 
-/// A runner that cannot reach the task manager does not take the run over;
-/// one that can but gets "unknown" fills that and lets the LLM decide.
+/// A task no task manager of the runner knows (or one that answers
+/// "unknown", e.g. after a restart) comes back as an `unknown` task result;
+/// the model decides.
 #[tokio::test]
-async fn a_waiting_run_needs_a_resolver_and_unknown_is_filled() {
+async fn an_unknown_task_comes_back_as_its_result() {
     let env = Env::new();
     let sd = env.create_work(task_spec("build")).await;
     let tasks = Arc::new(FakeTasks::default());
     let llm = waiting_script();
     drive(&sd, &task_deps(&env, llm.clone(), Some(tasks.clone())), StopWhen::Idle).await;
-    let before = sd.state().unwrap();
-    let r = drive(&sd, &task_deps(&env, llm.clone(), None), StopWhen::Idle).await;
-    assert!(matches!(r, DriveResult::RecoveryBlocked(_)), "{r:?}");
-    let after = sd.state().unwrap();
-    assert_eq!(after.live_run, before.live_run, "the scene is kept");
-    assert_eq!(llm.count(), 1);
-    // The task manager answers "unknown" (e.g. it restarted).
+    assert_eq!(llm.count(), 2);
     tasks.states.lock().unwrap().insert(
         "bucky:1".into(),
         TaskState::Unknown {
@@ -271,10 +296,8 @@ async fn a_waiting_run_needs_a_resolver_and_unknown_is_filled() {
     );
     let r = drive(&sd, &task_deps(&env, llm.clone(), Some(tasks)), StopWhen::Finished).await;
     assert!(r.is_finished(), "{r:?}");
-    assert_eq!(llm.count(), 2);
-    let res = results_of(&sd, "t1");
-    assert_eq!(res.len(), 1);
-    assert!(res[0].1.contains("state unknown"), "{res:?}");
+    assert_eq!(llm.count(), 3);
+    assert!(sd.report().unwrap().contains("lost the build"));
 }
 
 /// A bare session id given as a task id does not reach the task manager:
@@ -305,8 +328,8 @@ async fn a_session_id_is_not_a_task_id() {
     assert!(reason.contains("no task manager"), "{reason}");
 }
 
-/// Stop while the run waits: the wait is cancelled, the call is answered,
-/// the run ends `Stopped` with every call paired.
+/// Stop while the run waits for its task: the task is cancelled and the run
+/// ends `Stopped` with every call paired.
 #[tokio::test]
 async fn stop_while_waiting_for_a_task() {
     let env = Env::new();
@@ -327,43 +350,38 @@ async fn stop_while_waiting_for_a_task() {
         matches!(r, DriveResult::Finished { outcome: Some(Outcome::Stopped), .. }),
         "{r:?}"
     );
-    assert_eq!(llm.count(), 1);
+    assert_eq!(llm.count(), 2);
     assert_eq!(*tasks.cancelled.lock().unwrap(), vec!["bucky:1".to_string()]);
     assert_eq!(results_of(&sd, "t1").len(), 1);
     let st = sd.state().unwrap();
     assert!(st.live_run.is_none() && st.open_turn.is_none());
 }
 
-/// 并行等待: the call returned, the task keeps running after the run. Its
-/// completion is found by asking with the saved task id — no queue, no
-/// notification — and handled like a subscribed event.
+/// 并行等待: the call returned at once with its task id; the reply keeps the
+/// run while the task runs (F18). Its completion is found by asking with the
+/// task id — no queue, no notification — and comes back into the same run.
 #[tokio::test]
-async fn a_background_task_completion_is_an_input_event() {
+async fn a_background_task_completion_comes_back_into_its_run() {
     let env = Env::new();
-    let mut spec = task_spec("start the build and wait for news");
-    spec.end_condition = EndCondition {
-        kind: EndConditionType::MaxTurns,
-        detail: json!({ "n": 2 }),
-    };
-    let sd = env.create_work(spec).await;
+    let sd = env.create_work(task_spec("start the build and wait for news")).await;
     let tasks = Arc::new(FakeTasks::default());
     let llm = ScriptedLlm::new(|req, n| match n {
         0 => tool_call("b1", "start_task", json!({ "id": "2", "mode": "background" })),
         1 => text("started; I will report when it ends"),
         _ => {
             let u = last_user_text(req);
-            assert!(
-                u.contains("<event key=\"task:bucky:2:terminal\" source=\"task:bucky:2\" event=\"finished\" terminal=\"true\">task bucky:2 finished: all green</event>"),
-                "{u}"
-            );
+            assert!(u.contains(&task_result_head("bucky:2", "b1", "finished")), "{u}");
+            assert!(u.contains("all green"), "{u}");
             text("the build is green")
         }
     });
     let deps = task_deps(&env, llm.clone(), Some(tasks.clone()));
     let r = drive(&sd, &deps, StopWhen::Idle).await;
-    assert!(matches!(r, DriveResult::Idle { .. }), "{r:?}");
+    assert!(matches!(r, DriveResult::Idle { run_state: RunState::Waiting, .. }), "{r:?}");
     assert_eq!(llm.count(), 2);
-    assert_eq!(sd.state().unwrap().watched_tasks, vec!["bucky:2".to_string()]);
+    let st = sd.state().unwrap();
+    let run_id = st.live_run.clone().unwrap().run_id;
+    assert_eq!(st.watched_tasks, vec!["bucky:2".to_string()]);
     // Still running: nothing to infer on.
     drive(&sd, &deps, StopWhen::Idle).await;
     assert_eq!(llm.count(), 2);
@@ -372,8 +390,9 @@ async fn a_background_task_completion_is_an_input_event() {
     assert!(r.is_finished(), "{r:?}");
     assert_eq!(llm.count(), 3);
     let st = sd.state().unwrap();
+    assert_eq!(st.last_run.as_deref(), Some(run_id.as_str()));
     assert!(st.watched_tasks.is_empty());
-    assert_eq!((st.turn_seq, st.turns_completed), (2, 2));
+    assert_eq!((st.turn_seq, st.turns_completed), (1, 1));
     assert!(st.inputs.get("_task").is_none(), "no consumption progress for synthesized inputs");
 }
 
@@ -648,6 +667,7 @@ async fn user_timezone_is_a_default_semi_subscription() {
             summary: "The user's time zone is America/Los_Angeles.".into(),
             data_ref: None,
             terminal: false,
+            call_id: None,
         },
     );
     libopendan::post_input(agent.as_ref(), sd.sid(), &tz).await.unwrap();
@@ -661,18 +681,21 @@ async fn user_timezone_is_a_default_semi_subscription() {
 /// A run filled once may suspend again on another task: the new wait is
 /// kept, the old result is not filled a second time.
 #[tokio::test]
-async fn a_filled_run_can_wait_for_another_task() {
+async fn a_kept_run_can_wait_for_another_task() {
     let env = Env::new();
     let sd = env.create_work(task_spec("two builds")).await;
     let tasks = Arc::new(FakeTasks::default());
     let llm = ScriptedLlm::new(|req, n| match n {
         0 => tool_call("t1", "start_task", json!({ "id": "1", "mode": "wait" })),
-        1 => {
-            assert_eq!(has_tool_result(req, "t1").as_deref(), Some("first ok"));
+        1 | 3 => text("waiting"),
+        2 => {
+            let u = last_user_text(req);
+            assert!(u.contains(&task_result_head("bucky:1", "t1", "finished")) && u.contains("first ok"), "{u}");
             tool_call("t2", "start_task", json!({ "id": "2", "mode": "wait" }))
         }
         _ => {
-            assert_eq!(has_tool_result(req, "t2").as_deref(), Some("second ok"));
+            let u = last_user_text(req);
+            assert!(u.contains(&task_result_head("bucky:2", "t2", "finished")) && u.contains("second ok"), "{u}");
             text("both done")
         }
     });
@@ -681,14 +704,13 @@ async fn a_filled_run_can_wait_for_another_task() {
     tasks.finish("bucky:1", "first ok");
     let r = drive(&sd, &deps, StopWhen::Idle).await;
     assert!(matches!(r, DriveResult::Idle { run_state: RunState::Waiting, .. }), "{r:?}");
-    assert_eq!(llm.count(), 2);
-    assert_eq!(
-        sd.state().unwrap().waiting_for.unwrap().refs,
-        vec!["bucky:2".to_string()]
-    );
+    assert_eq!(llm.count(), 4);
+    let st = sd.state().unwrap();
+    assert_eq!(st.waiting_for.unwrap().refs, vec!["bucky:2".to_string()]);
+    assert_eq!(st.watched_tasks, vec!["bucky:2".to_string()]);
     tasks.finish("bucky:2", "second ok");
     assert!(drive(&sd, &deps, StopWhen::Finished).await.is_finished());
-    assert_eq!(llm.count(), 3);
+    assert_eq!(llm.count(), 5);
     assert_eq!(results_of(&sd, "t1").len(), 1);
     assert_eq!(results_of(&sd, "t2").len(), 1);
     assert_eq!(sd.state().unwrap().turns_completed, 1);
@@ -745,8 +767,8 @@ const ENV_C16_SESSION: &str = "LIBOPENDAN_TEST_C16_SESSION";
 fn c16_script() -> Arc<ScriptedLlm> {
     ScriptedLlm::new(|req, _| {
         let u = last_user_text(req);
-        if u.contains("source=\"task:bucky:2\"") {
-            assert!(u.contains("task bucky:2 finished: all green"), "{u}");
+        if u.contains("task=\"bucky:2\"") {
+            assert!(u.contains("all green"), "{u}");
             text("the build is green")
         } else if has_tool_result(req, "b1").is_some() {
             text("started; I will report when it ends")
@@ -769,20 +791,15 @@ async fn c16_child_driver() {
     eprintln!("child drive result: {r:?}");
 }
 
-/// C16 / E27: the run that started a background task ends, its terminal
-/// record is on disk, and the process dies before the session state took
-/// the task over. The redone finish finds the task in the run's own record
-/// (no resolver of this process ever saw the run) and its completion is
-/// delivered once.
+/// C16 / E27: the reply keeps the run while its background task runs; the
+/// kept run is checkpointed and the process dies before the session state
+/// took the wait over. The redone keep finds the task in the run's own
+/// record (no resolver of this process ever saw the run) and its completion
+/// is delivered once.
 #[tokio::test]
-async fn a_background_task_survives_a_crash_before_the_run_end_commit() {
+async fn a_background_task_survives_a_crash_before_the_keep_commit() {
     let env = Env::new();
-    let mut spec = task_spec("start the build and wait for news");
-    spec.end_condition = EndCondition {
-        kind: EndConditionType::MaxTurns,
-        detail: json!({ "n": 2 }),
-    };
-    let sd = env.create_work(spec).await;
+    let sd = env.create_work(task_spec("start the build and wait for news")).await;
     let mut child = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "c16_child_driver", "--nocapture", "--test-threads=1"])
         .env(ENV_C16_ROOT, &env.root)
@@ -800,19 +817,19 @@ async fn a_background_task_survives_a_crash_before_the_run_end_commit() {
         assert!(start.elapsed() < Duration::from_secs(60), "child did not exit");
         std::thread::sleep(Duration::from_millis(20));
     };
-    assert!(!status.success(), "the child must die after the run's terminal checkpoint");
+    assert!(!status.success(), "the child must die after the kept run's checkpoint");
     let before = sd.state().unwrap();
-    assert!(before.live_run.is_some() && before.watched_tasks.is_empty(), "state never saw the run end");
+    assert!(before.live_run.is_some() && before.watched_tasks.is_empty(), "state never saw the keep");
 
     let tasks = Arc::new(FakeTasks::default());
     let llm = c16_script();
     let deps = task_deps(&env, llm.clone(), Some(tasks.clone()));
     let r = drive(&sd, &deps, StopWhen::Idle).await;
-    assert!(matches!(r, DriveResult::Idle { .. }), "{r:?}");
-    assert_eq!(llm.count(), 0, "the finish is redone, nothing is inferred again");
+    assert!(matches!(r, DriveResult::Idle { run_state: RunState::Waiting, .. }), "{r:?}");
+    assert_eq!(llm.count(), 0, "the keep is redone, nothing is inferred again");
     let st = sd.state().unwrap();
     assert_eq!(st.watched_tasks, vec!["bucky:2".to_string()], "found in the run's record");
-    assert_eq!(st.turns_completed, 1);
+    assert_eq!(st.turns_completed, 0);
     // Still running: nothing to infer on.
     drive(&sd, &deps, StopWhen::Idle).await;
     assert_eq!(llm.count(), 0);
@@ -822,7 +839,7 @@ async fn a_background_task_survives_a_crash_before_the_run_end_commit() {
     assert_eq!(llm.count(), 1, "delivered exactly once");
     let st = sd.state().unwrap();
     assert!(st.watched_tasks.is_empty());
-    assert_eq!((st.turn_seq, st.turns_completed), (2, 2));
+    assert_eq!((st.turn_seq, st.turns_completed), (1, 1));
     assert_eq!(drive(&sd, &deps, StopWhen::Idle).await.is_finished(), true);
     assert_eq!(llm.count(), 1);
 }

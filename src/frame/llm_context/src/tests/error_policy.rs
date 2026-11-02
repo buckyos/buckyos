@@ -9,13 +9,15 @@ use buckyos_api::{AiContent, AiMessage, AiResponse, AiRole, AiToolCall, AiUsage}
 use serde_json::json;
 
 use crate::deps::{
-    ToolCallCtx,InferenceHook, LLMContextDeps, ToolDispatchError, ToolManager};
+    CheckpointHook, Injection, LLMContextDeps, ToolCallCtx, ToolDispatchError, ToolManager,
+};
 use crate::error::{CheckpointStage, LLMComputeError, ProviderFailure};
 use crate::observation::{Observation, ToolExecStatus};
 use crate::outcome::{ContextOutput, LLMContextOutcome, ResumeFill};
 use crate::request::{LLMContextRequest, OutputSpec};
 use crate::state::{LLMContextSnapshot, LLMContextState};
-use crate::{LLMContext, XmlBehaviorParser, XmlStepRenderer};
+use crate::tests::protocol::{XmlBehaviorParser, XmlStepRenderer};
+use crate::LLMContext;
 
 use super::mocks::*;
 
@@ -469,16 +471,20 @@ async fn behavior_action_dispatch_failure_ends_run_with_sedimented_partial_step(
 }
 
 #[tokio::test]
-async fn inference_hook_failure_blocks_inference_and_keeps_snapshot_resumable() {
+async fn checkpoint_failure_blocks_inference_and_keeps_snapshot_resumable() {
     struct FailingHook;
-    impl InferenceHook for FailingHook {
-        fn before_inference(&self, _snapshot: &LLMContextSnapshot) -> Result<(), String> {
+    #[async_trait]
+    impl CheckpointHook for FailingHook {
+        async fn before_inference(
+            &self,
+            _snapshot: &LLMContextSnapshot,
+        ) -> Result<Option<Injection>, String> {
             Err("disk full".to_string())
         }
     }
     let llm = Arc::new(ScriptedRecordingLlm::new(vec![text_response("hello")]));
     let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools))
-        .with_inference_hook(Arc::new(FailingHook));
+        .with_checkpoint_hook(Arc::new(FailingHook));
     let mut ctx = LLMContext::new(base_request(), deps);
     let before = ctx.snapshot();
 
@@ -499,11 +505,11 @@ async fn inference_hook_failure_blocks_inference_and_keeps_snapshot_resumable() 
 
     // Once the store is healthy again, only the checkpoint is redone.
     let count = Arc::new(Mutex::new(0));
-    let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools)).with_inference_hook(Arc::new(
-        CountingHook {
+    let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools)).with_checkpoint_hook(
+        Arc::new(CountingHook {
             count: count.clone(),
-        },
-    ));
+        }),
+    );
     let mut resumed = LLMContext::resume(after, ResumeFill::ResumeFromMidRun, deps)
         .expect("checkpoint failure leaves a resumable snapshot");
     assert!(matches!(resumed.run().await, LLMContextOutcome::Done { .. }));
@@ -512,10 +518,14 @@ async fn inference_hook_failure_blocks_inference_and_keeps_snapshot_resumable() 
 }
 
 #[tokio::test]
-async fn inference_hook_failure_in_behavior_mode_surfaces_as_checkpoint_error() {
+async fn checkpoint_failure_in_behavior_mode_surfaces_as_checkpoint_error() {
     struct FailingHook;
-    impl InferenceHook for FailingHook {
-        fn before_inference(&self, _snapshot: &LLMContextSnapshot) -> Result<(), String> {
+    #[async_trait]
+    impl CheckpointHook for FailingHook {
+        async fn before_inference(
+            &self,
+            _snapshot: &LLMContextSnapshot,
+        ) -> Result<Option<Injection>, String> {
             Err("disk full".to_string())
         }
     }
@@ -523,7 +533,7 @@ async fn inference_hook_failure_in_behavior_mode_surfaces_as_checkpoint_error() 
     let mut req = base_request();
     req.behavior_name = "do".into();
     let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools))
-        .with_inference_hook(Arc::new(FailingHook))
+        .with_checkpoint_hook(Arc::new(FailingHook))
         .with_result_parser(Arc::new(XmlBehaviorParser::new()))
         .with_step_renderer(Arc::new(XmlStepRenderer::new()));
     let mut ctx = LLMContext::new(req, deps);

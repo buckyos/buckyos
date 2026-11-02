@@ -16,10 +16,10 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use agent_tool::xllm::RunStatus;
-use llm_context::tasks::{RunningTaskResolver, TaskState};
+use agent_tool::task_model::{RunningTaskResolver, TaskState};
 use llm_context::{LLMContext, ResumeFill};
 use serde_json::Value;
 
@@ -41,13 +41,13 @@ use super::inputs::{
 };
 use super::live::{
     commit_input_batch, new_run_context, open_state_live_run, resume_live_run, run_compacting,
-    try_fill, InputBatch,
+    InputBatch,
 };
 use super::goal::Gate;
 use super::outcome::{finish_run, handle_context_outcome, FinishKind, Next};
 use super::receipts::internal_task_key;
 use super::reconcile::{reconcile_runs, Reconciled};
-use super::shared::{commit_and_report, report, ClosedTurn, LiveCtx, Opened, Shared, WaitingRun};
+use super::shared::{commit_and_report, report, ClosedTurn, LiveCtx, Shared};
 use super::{DriveResult, RunnerDeps, StopWhen};
 
 /// Advance a session until `until` (§8.2).
@@ -266,9 +266,11 @@ async fn fail_workspace(
                     {
                         unresolved_tasks.extend(tasks.iter().filter_map(Value::as_str).map(str::to_string));
                     }
-                    unresolved_calls.extend(record.inflight.iter().map(|call| serde_json::json!({
-                        "run_id": id, "call_id": call.call_id,
-                    })));
+                    if let Ok(Some(call)) = session.dir.runs().in_flight(&id) {
+                        unresolved_calls.push(serde_json::json!({
+                            "run_id": id, "call_id": call.call_id,
+                        }));
+                    }
                 }
                 Err(_) => unverified_runs.push(id),
             }
@@ -452,70 +454,64 @@ async fn acquire_workspace_writer(sh: &Arc<Shared>) -> Result<()> {
                 None
             };
             let state = dir.state()?;
-            if !state.watched_tasks.is_empty() {
+            // A parent that only waits for the sub sessions it delegated
+            // this workspace to (the one asking among them) hands it over.
+            let delegated = |tasks: &[String]| {
+                !tasks.is_empty()
+                    && delegated_child.is_some_and(|child| {
+                        tasks
+                            .iter()
+                            .any(|t| *t == format!("{}{child}", super::children::SESSION_TASK_PREFIX))
+                    })
+                    && tasks.iter().all(|t| {
+                        t.strip_prefix(super::children::SESSION_TASK_PREFIX)
+                            .is_some_and(|sid| {
+                                entries.iter().any(|child| {
+                                    child.session_id == sid
+                                        && child
+                                            .origin
+                                            .as_ref()
+                                            .and_then(|origin| origin.parent_session.as_deref())
+                                            == Some(entry.session_id.as_str())
+                                        && child.workspace.as_ref().is_some_and(|workspace| {
+                                            workspace.workspace_id == binding.workspace_id
+                                        })
+                                })
+                            })
+                    })
+            };
+            // A finished sub session holds nothing any more.
+            let open = |tasks: Vec<String>| -> Vec<String> {
+                tasks
+                    .into_iter()
+                    .filter(|t| {
+                        !t.strip_prefix(super::children::SESSION_TASK_PREFIX).is_some_and(|sid| {
+                            entries
+                                .iter()
+                                .any(|e| e.session_id == sid && e.status.run_state == RunState::Finished)
+                        })
+                    })
+                    .collect()
+            };
+            let watched = open(state.watched_tasks.clone());
+            if !watched.is_empty() && !delegated(&watched) {
                 return Ok(true);
             }
             for id in dir.runs().list()? {
                 let record = dir.runs().record(&id)?;
-                let background = record
-                    .host
-                    .as_ref()
-                    .and_then(|h| h.extra.get("tasks"))
-                    .and_then(Value::as_array)
-                    .is_some_and(|tasks| !tasks.is_empty());
-                if background || record.status == RunStatus::Running {
+                let background: Vec<String> = open(
+                    record
+                        .host
+                        .as_ref()
+                        .and_then(|h| h.extra.get("tasks"))
+                        .and_then(|t| serde_json::from_value(t.clone()).ok())
+                        .unwrap_or_default(),
+                );
+                if (!background.is_empty() && !delegated(&background))
+                    || record.status == RunStatus::Running
+                    || dir.runs().in_flight(&id)?.is_some()
+                {
                     return Ok(true);
-                }
-                if !record.inflight.is_empty() {
-                    if !is_parent
-                        || state.run_state != RunState::Waiting
-                        || state.live_run.as_ref().is_none_or(|run| run.run_id != id)
-                        || record.status != RunStatus::Paused
-                        || record.host_commit_pending.is_some()
-                    {
-                        return Ok(true);
-                    }
-                    let Some(_run_lock) = dir.runs().try_lock(&id)? else {
-                        return Ok(true);
-                    };
-                    let (_, snapshot) = dir.runs().load_checked(&id)?;
-                    let Some(snapshot) = snapshot else {
-                        return Ok(true);
-                    };
-                    let pending = snapshot.state.pending_calls();
-                    let delegates_here = delegated_child.is_some_and(|child| {
-                        pending
-                            .iter()
-                            .any(|call| call.task_id == format!("session:{child}"))
-                    });
-                    let only_registered_children = !pending.is_empty()
-                        && pending.iter().all(|call| {
-                            call.task_id
-                                .strip_prefix(super::children::SESSION_TASK_PREFIX)
-                                .is_some_and(|sid| {
-                                    entries.iter().any(|child| {
-                                        child.session_id == sid
-                                            && child
-                                                .origin
-                                                .as_ref()
-                                                .and_then(|origin| origin.parent_session.as_deref())
-                                                == Some(entry.session_id.as_str())
-                                            && child.workspace.as_ref().is_some_and(|workspace| {
-                                                workspace.workspace_id == binding.workspace_id
-                                            })
-                                    })
-                                })
-                        });
-                    let only_deferred_calls = record.inflight.iter().all(|action| {
-                        pending.iter().any(|call| {
-                            call.call.call_id == action.call_id
-                                && call.call.name == action.tool
-                                && super::flush::canonical_args(&call.call.args) == action.args
-                        })
-                    });
-                    if !delegates_here || !only_registered_children || !only_deferred_calls {
-                        return Ok(true);
-                    }
                 }
             }
             Ok(false)
@@ -654,14 +650,11 @@ fn finished_result(s: &Session) -> DriveResult {
 }
 
 /// Stop the session (`control(stop)`): the live run ends through the
-/// normal finish path with a `Stopped` Turn. A run waiting for tasks is
-/// answered now — cancellable tasks of the Turn are cancelled, every
-/// suspended call gets the state of its task — so the snapshot keeps every
-/// call paired with a result.
+/// normal finish path with a `Stopped` Turn; cancellable tasks of the Turn
+/// are cancelled.
 async fn stop_session(
     sh: &Arc<Shared>,
     live: Option<LiveCtx>,
-    waiting: Option<WaitingRun>,
     env: &SessionEnv,
 ) -> Result<()> {
     // A Goal Session ends with its Goal: the outcome (stopped, or
@@ -678,7 +671,7 @@ async fn stop_session(
         }),
         ..Default::default()
     };
-    Box::pin(end_open_work(sh, live, waiting, env, next, ending.is_none_or(|e| e.cascade))).await
+    Box::pin(end_open_work(sh, live, env, next, ending.is_none_or(|e| e.cascade))).await
 }
 
 /// End the open Turn only (`control(stop, scope = turn)`, any stop of a Goal
@@ -687,7 +680,6 @@ async fn stop_session(
 async fn end_turn(
     sh: &Arc<Shared>,
     live: Option<LiveCtx>,
-    waiting: Option<WaitingRun>,
     env: &SessionEnv,
     status: TurnStatus,
     reason: &str,
@@ -712,17 +704,16 @@ async fn end_turn(
     if super::goal::is_goal(&sh.session.lock().await.config) {
         next.goal_error = next.error.take();
     }
-    Box::pin(end_open_work(sh, live, waiting, env, next, false)).await
+    Box::pin(end_open_work(sh, live, env, next, false)).await
 }
 
-/// The common end of the work in progress: a waiting run is answered (its
-/// cancellable tasks cancelled), an accepted final report still completes,
-/// then the live run ends with `next` — or, without one, the open Turn is
-/// closed directly. `next.finished`: the session ends too.
+/// The common end of the work in progress: an accepted final report still
+/// completes, then the live run (its cancellable tasks cancelled) ends with
+/// `next` — or, without one, the open Turn is closed directly.
+/// `next.finished`: the session ends too.
 async fn end_open_work(
     sh: &Arc<Shared>,
     live: Option<LiveCtx>,
-    waiting: Option<WaitingRun>,
     env: &SessionEnv,
     next: Next,
     stop_sub_sessions: bool,
@@ -730,24 +721,11 @@ async fn end_open_work(
     let whole = next.finished;
     let open_turn = sh.session.lock().await.state.open_turn.as_ref().map(|t| t.index);
     let mut live = live;
-    let mut waiting = waiting;
-    // A run state still references (e.g. a caller just resumed after its sub
-    // context) ends through the normal finish path.
-    if live.is_none() && waiting.is_none() && sh.session.lock().await.state.live_run.is_some() {
-        match open_state_live_run(sh, env).await? {
-            Opened::Ctx(l) => live = Some(l),
-            Opened::Waiting(w) => waiting = Some(w),
-        }
-    }
-    if let Some(w) = waiting {
-        live = match try_fill(sh, w, true).await? {
-            Ok(l) => Some(l),
-            Err(_) => {
-                return Err(OpenDanError::Other(
-                    "the waiting run could not be answered for the stop".into(),
-                ))
-            }
-        };
+    // A run state still references (a run kept for the work it started, a
+    // caller just resumed after its sub context) ends through the normal
+    // finish path.
+    if live.is_none() && sh.session.lock().await.state.live_run.is_some() {
+        live = Some(open_state_live_run(sh, env).await?);
     }
     while let Some(mut lc) = live.take() {
         let Some(report) = super::reports::final_report(&lc.run)? else {
@@ -767,7 +745,7 @@ async fn end_open_work(
         })?;
         let handle = lc.ctx.interrupt_handle();
         if let ReportSource::Tool { call_id } = &report.source {
-            if agent_tool::exec_tracking::persisted_outcome_ids(&lc.ctx.snapshot()).contains(call_id) {
+            if super::reports::has_result(&lc.ctx.snapshot(), call_id) {
                 handle.finish("complete accepted report before stop");
             }
         }
@@ -790,17 +768,7 @@ async fn end_open_work(
         }
         drop(lc);
         if sh.session.lock().await.state.live_run.is_some() {
-            live = match Box::pin(open_state_live_run(sh, env)).await? {
-                Opened::Ctx(lc) => Some(lc),
-                Opened::Waiting(w) => match try_fill(sh, w, true).await? {
-                    Ok(lc) => Some(lc),
-                    Err(_) => {
-                        return Err(OpenDanError::Other(
-                            "the caller could not be answered after its final report".into(),
-                        ))
-                    }
-                },
-            };
+            live = Some(Box::pin(open_state_live_run(sh, env)).await?);
         }
     }
     if whole && stop_sub_sessions {
@@ -808,10 +776,26 @@ async fn end_open_work(
     }
     match live {
         Some(mut lc) => {
-            // Background tasks of the Turn being stopped.
+            // Background tasks of the Turn being stopped: those the resolver
+            // lists, and those the run is kept for.
+            let mut cancelled = Vec::new();
             for t in lc.resolver.active().await {
                 if t.status == "running" && t.cancellable {
                     let _ = lc.resolver.cancel(&t.task_id).await;
+                    cancelled.push(t.task_id);
+                }
+            }
+            for task_id in lc.run.noted_tasks() {
+                if task_id.starts_with(super::children::SESSION_TASK_PREFIX)
+                    || cancelled.contains(&task_id)
+                {
+                    continue;
+                }
+                if matches!(
+                    lc.resolver.state(&task_id).await,
+                    TaskState::Running { cancellable: true, .. }
+                ) {
+                    let _ = lc.resolver.cancel(&task_id).await;
                 }
             }
             lc.ctx = LLMContext::resume(
@@ -895,7 +879,6 @@ async fn end_open_work(
                     },
                     refs: Vec::new(),
                     deadline_ms: None,
-                    human_tasks: Vec::new(),
                 });
                 s.state.one_line_status = format!(
                     "turn {turn} {}",
@@ -1026,17 +1009,6 @@ async fn stop_children(sh: &Arc<Shared>) {
     }
 }
 
-/// Task ids the suspended calls of the run state references wait for
-/// (matching task notifications to them at the first routing pass).
-fn pending_task_ids(snapshot: &llm_context::state::LLMContextSnapshot) -> Vec<String> {
-    snapshot
-        .state
-        .pending_calls()
-        .iter()
-        .map(|p| p.task_id.clone())
-        .collect()
-}
-
 fn task_summary(task_id: &str, state: &TaskState) -> (String, String) {
     let cut = |text: &str| {
         let one: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -1065,17 +1037,63 @@ fn task_summary(task_id: &str, state: &TaskState) -> (String, String) {
     }
 }
 
-/// Background tasks the session follows after their run ended (§6.2): a
-/// task that ended is handled like a subscribed event of `task:<id>` — by
+/// Longest task result text an input carries (the rest stays with the task).
+const TASK_RESULT_MAX_CHARS: usize = 16 * 1024;
+
+/// The text a task's end is given to the model as: the result as the call
+/// would have returned it (`task_state_observation`), at most
+/// [`TASK_RESULT_MAX_CHARS`].
+fn task_result_text(task_id: &str, state: &TaskState) -> String {
+    let text = match agent_tool::task_state_observation("", task_id, state) {
+        llm_context::observation::Observation::Success { content, .. } => content
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| content.to_string()),
+        llm_context::observation::Observation::Error { message, .. } => message,
+        other => format!("{other:?}"),
+    };
+    if text.chars().count() <= TASK_RESULT_MAX_CHARS {
+        return text;
+    }
+    let mut cut: String = text.chars().take(TASK_RESULT_MAX_CHARS).collect();
+    cut.push_str(&format!("\n[truncated; read the whole result with the task id {task_id}]"));
+    cut
+}
+
+/// The call of the live (or last) run whose result handed `task_id` over.
+fn task_call_of(sh: &Shared, state: &SessionState, task_id: &str) -> Option<String> {
+    state
+        .live_run
+        .as_ref()
+        .map(|l| l.run_id.clone())
+        .into_iter()
+        .chain(state.last_run.clone())
+        .find_map(|run_id| {
+            sh.dir
+                .runs()
+                .record(&run_id)
+                .ok()?
+                .host?
+                .extra
+                .get("task_calls")?
+                .get(task_id)?
+                .as_str()
+                .map(str::to_string)
+        })
+}
+
+/// Tasks the session follows (§6.2) — of a run kept for its work, or of
+/// runs that ended: a task that ended is handled like a subscribed event of
+/// `task:<id>` — by
 /// its explicit subscription when there is one, else as an Input event (the
 /// runner's implicit active subscription). No input queue is involved: the
 /// state is always queried by the saved task id, so a lost notification, a
 /// restart or an empty inbox change nothing; a task nobody can answer for
 /// is reported as unknown, never re-created.
 async fn poll_watched_tasks(sh: &Arc<Shared>) -> Result<Vec<FetchedInput>> {
-    let (watched, cfg) = {
+    let (watched, cfg, session_state) = {
         let s = sh.session.lock().await;
-        (s.state.watched_tasks.clone(), s.config.clone())
+        (s.state.watched_tasks.clone(), s.config.clone(), s.state.clone())
     };
     if watched.is_empty() {
         return Ok(Vec::new());
@@ -1109,7 +1127,7 @@ async fn poll_watched_tasks(sh: &Arc<Shared>) -> Result<Vec<FetchedInput>> {
             sh.dir.runs().settle_background_task(&sh.lease, &task_id)?;
         }
         let (event, summary) = task_summary(&task_id, &state);
-        let ev = AgentEvent {
+        let mut ev = AgentEvent {
             subscription_id: None,
             source: EventSource::task(task_id.clone()),
             event,
@@ -1117,6 +1135,7 @@ async fn poll_watched_tasks(sh: &Arc<Shared>) -> Result<Vec<FetchedInput>> {
             summary,
             data_ref: None,
             terminal: true,
+            call_id: None,
         };
         let key = internal_task_key(&task_id);
         match cfg.subscription_for(None, "task", &task_id, &ev.event) {
@@ -1124,13 +1143,18 @@ async fn poll_watched_tasks(sh: &Arc<Shared>) -> Result<Vec<FetchedInput>> {
                 observed.push((task_id, sub.id, ev, key))
             }
             _ => inputs.push(FetchedInput {
+                // A task result: the whole result, named by its call.
+                input: Ok(SessionInput::Event({
+                    ev.summary = task_result_text(&task_id, &state);
+                    ev.call_id = task_call_of(sh, &session_state, &task_id);
+                    ev
+                })),
                 src: INTERNAL_TASK_SRC.to_string(),
                 index: 0,
                 kind: INPUT_TYPE_EVENT.to_string(),
                 key,
                 from: "runner".to_string(),
                 at_ms: crate::now_ms(),
-                input: Ok(SessionInput::Event(ev)),
             }),
         }
     }
@@ -1297,30 +1321,6 @@ async fn external_stop(sh: &Arc<Shared>) -> Result<()> {
     commit_and_report(sh, &mut s).await
 }
 
-/// State waits for what the suspended run waits for; a question to the
-/// user it did not wait for yet is queued in the same commit and sent.
-async fn commit_waiting(sh: &Arc<Shared>, w: &WaitingRun) -> Result<(u64, RunState)> {
-    let mut asked = false;
-    super::ask::send_notify_questions(sh, &w.run, &w.snapshot).await;
-    crate::fault::point("user_input:after_notify_send");
-    let r = {
-        let mut s = sh.session.lock().await;
-        let wf = super::ask::waiting_for(&w.snapshot, &w.run);
-        if s.state.run_state != RunState::Waiting || s.state.waiting_for.as_ref() != Some(&wf) {
-            asked = super::ask::queue_questions(sh, &mut s, &w.run, &w.snapshot).await;
-            s.state.run_state = RunState::Waiting;
-            s.state.waiting_for = Some(wf);
-            commit_and_report(sh, &mut s).await?;
-        }
-        (s.state.rev, s.state.run_state)
-    };
-    if asked {
-        crate::fault::point("user_input:after_question_commit");
-        Box::pin(super::outbound::flush_outbox(sh)).await;
-    }
-    Ok(r)
-}
-
 async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
     {
         let session = sh.session.lock().await;
@@ -1435,7 +1435,6 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
     // aligned first; a task that already ended is collected, only a task
     // still running is waited for. None of it depends on the inbox.
     let mut live: Option<LiveCtx> = None;
-    let mut waiting: Option<WaitingRun> = None;
     let reconciled = Box::pin(reconcile_runs(sh)).await?;
     // A queue lost by its service is created again before it is read.
     restore_sources(sh).await?;
@@ -1471,23 +1470,22 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
     super::turn_task::ensure_turn_task(sh, None).await;
     super::turn_task::flush_turn_tasks(sh).await;
     super::outbound::maybe_placeholder(sh, false).await;
-    let pending_now = match &reconciled {
-        Reconciled::Resume(_, snapshot) => pending_task_ids(snapshot),
-        Reconciled::None => Vec::new(),
-    };
     // A Turn closed by the recovery itself is this drive's result.
     if let Some(r) = turn_closed_result(sh, until).await {
         return Ok(r);
     }
-    let mut routed = route_inputs(sh, false, &pending_now).await?;
+    let mut routed = route_inputs(sh, false).await?;
     if sh.session.lock().await.state.is_finished() {
         return Ok(finished_result(&*sh.session.lock().await));
     }
     if let Reconciled::Resume(run, snapshot) = reconciled {
-        match Box::pin(resume_live_run(sh, run, snapshot, &env)).await? {
-            Opened::Ctx(l) => live = Some(l),
-            Opened::Waiting(w) => waiting = Some(w),
+        let mut l = Box::pin(resume_live_run(sh, run, snapshot, &env)).await?;
+        // A run kept for the work it started goes on with that work's
+        // result (or another input), not by itself.
+        if sh.session.lock().await.state.run_state == RunState::Waiting {
+            l.ready = l.filled;
         }
+        live = Some(l);
     }
     let started = Instant::now();
     let mut outcomes_handled = 0u64;
@@ -1497,7 +1495,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         super::turn_task::sync_turn_task(sh).await;
         external_stop(sh).await?;
         if sh.session.lock().await.state.stop_requested {
-            Box::pin(stop_session(sh, live.take(), waiting.take(), &env)).await?;
+            Box::pin(stop_session(sh, live.take(), &env)).await?;
             Box::pin(super::goal::flush(sh)).await;
             if let Some(r) = turn_closed_result(sh, until).await {
                 return Ok(r);
@@ -1518,7 +1516,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         };
         if sh.session.lock().await.state.turn_stop_requested {
             let reason = "the activation was stopped".to_string();
-            Box::pin(end_turn(sh, live.take(), waiting.take(), &env, TurnStatus::Stopped, &reason))
+            Box::pin(end_turn(sh, live.take(), &env, TurnStatus::Stopped, &reason))
                 .await?;
             Box::pin(super::goal::flush(sh)).await;
             if let Some(r) = turn_closed_result(sh, until).await {
@@ -1531,7 +1529,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                     run_state: s.state.run_state,
                 });
             }
-            routed = route_inputs(sh, false, &[]).await?;
+            routed = route_inputs(sh, false).await?;
             continue;
         }
         if let StopWhen::MaxOutcomes { n } = until {
@@ -1543,99 +1541,17 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                 });
             }
         }
-        // 串行等待: a run suspended on tool calls. Its tasks are queried
-        // (the same path for a notification, the fallback poll and the
-        // drive entry); once every wait is over the results are filled and
-        // the same run / Turn continues. Meanwhile msg / Input events stay
-        // queued — they never stand in for a missing tool result — while
-        // controls keep being applied.
-        // A run waiting for the user's answer takes the next message of the
-        // queue as that answer (one message; the rest stays queued) — only
-        // once its question is committed to go out.
-        if let Some(w) = waiting.take() {
-            let user = super::ask::waits_for_user(&w.snapshot);
-            if user {
-                Box::pin(commit_waiting(sh, &w)).await?;
-            }
-            let attempt = match user
-                .then(|| super::ask::take_answer(&mut routed.candidates))
-                .flatten()
-            {
-                Some(m) => Box::pin(super::live::fill_answer(sh, w, m)).await?,
-                None => Box::pin(try_fill(sh, w, false)).await?,
-            };
-            match attempt {
-                Ok(lc) => live = Some(lc),
-                Err(w) => {
-                    let (rev, rs) = Box::pin(commit_waiting(sh, &w)).await?;
-                    if matches!(until, StopWhen::MaxOutcomes { .. }) {
-                        return Ok(DriveResult::OutcomesHandled { rev, run_state: rs });
-                    }
-                    // Nothing advances without the user: the session is idle
-                    // until a message comes in.
-                    if user && until == StopWhen::Idle {
-                        return Ok(DriveResult::Idle { rev, run_state: rs });
-                    }
-                    if user && until == StopWhen::TurnClosed {
-                        return Ok(turn_open_result(sh).await);
-                    }
-                    let (cfg, state) = {
-                        let session = sh.session.lock().await;
-                        (session.config.clone(), session.state.clone())
-                    };
-                    let handoff =
-                        !crate::runtime::workspace_waiting_children(sh.agent(), &cfg, &state)
-                            .await?
-                            .is_empty();
-                    if handoff || started.elapsed() >= sh.deps.options.max_wait {
-                        if until == StopWhen::TurnClosed {
-                            return Ok(turn_open_result(sh).await);
-                        }
-                        return Ok(DriveResult::Idle { rev, run_state: rs });
-                    }
-                    if !routed.task_notified {
-                        let mut pause = sh.deps.options.poll_interval;
-                        if let Some(d) = w.deadline_ms() {
-                            let left = d.saturating_sub(crate::now_ms()).max(10);
-                            pause = pause.min(Duration::from_millis(left));
-                        }
-                        let wake = sh.session.lock().await.config.channels.wake_event.clone();
-                        tokio::select! {
-                            _ = sh.deps.waker.wait(wake.as_deref(), pause) => {}
-                            _ = sh.deps.stop.wait() => {}
-                        }
-                    }
-                    routed = route_inputs(sh, false, &w.task_ids()).await?;
-                    waiting = Some(w);
-                    continue;
-                }
-            }
-        }
         let (cfg, state) = {
             let s = sh.session.lock().await;
             (s.config.clone(), s.state.clone())
         };
-        // A caller whose tool-triggered sub context returned: the result is
-        // filled as that call's tool result and the run continues its batch
-        // by itself. No input batch can be placed before the batch is done,
-        // so inputs wait for the next boundary.
-        let returning = live.is_none() && state.tool_return_pending();
-        if returning {
-            match Box::pin(open_state_live_run(sh, &env)).await? {
-                Opened::Ctx(l) => live = Some(l),
-                Opened::Waiting(w) => {
-                    waiting = Some(w);
-                    continue;
-                }
-            }
-        }
         // A sub context never consumes its caller's input queue: while one is
-        // in progress, msg / event stay queued for the caller.
-        // Neither does a run whose suspended calls were just answered: its
-        // batch continues first.
-        let hold_inputs = returning
-            || state.child_call().is_some()
-            || live.as_ref().is_some_and(|l| l.filled)
+        // in progress, msg / event stay queued for the caller — except the
+        // results of tasks it started itself.
+        // Neither does a run resumed in the middle of a tool batch / step:
+        // that batch continues first.
+        let sub_context = state.child_call().is_some();
+        let hold_inputs = live.as_ref().is_some_and(|l| l.filled)
             // A paused Goal opens no Activation; its inputs wait.
             || (goal_paused && state.open_turn.is_none());
         let is_goal = super::goal::is_goal(&cfg);
@@ -1666,10 +1582,30 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
             if let Err(e) = super::todos::sync(sh).await {
                 log::warn!("todo sync of {}: {e}", sh.dir.sid());
             }
-            let mut candidates = std::mem::take(&mut routed.candidates);
-            candidates.extend(poll_watched_tasks(sh).await?);
+            let mut candidates = if sub_context {
+                Vec::new()
+            } else {
+                std::mem::take(&mut routed.candidates)
+            };
+            let mut tasks = poll_watched_tasks(sh).await?;
+            if sub_context {
+                // Only the results of the tasks the sub context started.
+                let own: Vec<String> = state
+                    .live_run
+                    .as_ref()
+                    .and_then(|l| sh.dir.runs().record(&l.run_id).ok())
+                    .and_then(|r| r.host)
+                    .and_then(|h| serde_json::from_value(h.extra["tasks"].clone()).ok())
+                    .unwrap_or_default();
+                tasks.retain(|t| matches!(&t.input, Ok(SessionInput::Event(ev)) if own.contains(&ev.source.id)));
+            }
+            candidates.extend(tasks);
             // What the session's sub sessions need from it (xAgent §4.14).
-            let children = poll_children(sh, &[]).await?;
+            let children = if sub_context {
+                Vec::new()
+            } else {
+                poll_children(sh, &[]).await?
+            };
             // An end delivered in this batch is in the TodoList of this
             // batch too (it may have finished after the sync above).
             if !children.is_empty() {
@@ -1880,7 +1816,6 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                         },
                         refs: Vec::new(),
                         deadline_ms: None,
-                        human_tasks: Vec::new(),
                     });
                     commit_and_report(sh, &mut s).await?;
                 }
@@ -1917,7 +1852,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                         _ = sh.deps.waker.wait(wake.as_deref(), sh.deps.options.poll_interval) => {}
                         _ = sh.deps.stop.wait() => {}
                     }
-                    routed = route_inputs(sh, false, &[]).await?;
+                    routed = route_inputs(sh, false).await?;
                     continue;
                 }
                 StopWhen::Finished => {
@@ -1939,7 +1874,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                         _ = sh.deps.waker.wait(wake.as_deref(), sh.deps.options.poll_interval) => {}
                         _ = sh.deps.stop.wait() => {}
                     }
-                    routed = route_inputs(sh, false, &[]).await?;
+                    routed = route_inputs(sh, false).await?;
                     if sh.session.lock().await.state.is_finished() {
                         return Ok(finished_result(&*sh.session.lock().await));
                     }
@@ -1955,7 +1890,6 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                 Box::pin(end_turn(
                     sh,
                     live.take(),
-                    waiting.take(),
                     &env,
                     TurnStatus::BudgetExhausted,
                     &why,
@@ -1965,7 +1899,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                 if let Some(r) = turn_closed_result(sh, until).await {
                     return Ok(r);
                 }
-                routed = route_inputs(sh, false, &[]).await?;
+                routed = route_inputs(sh, false).await?;
                 continue;
             }
         }
@@ -1980,16 +1914,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         };
         let mut lc = match live.take() {
             Some(l) => l,
-            None if state.live_run.is_some() => {
-                match Box::pin(open_state_live_run(sh, &env)).await? {
-                    Opened::Ctx(l) => l,
-                    Opened::Waiting(w) => {
-                        waiting = Some(w);
-                        routed = route_inputs(sh, false, &[]).await?;
-                        continue;
-                    }
-                }
-            },
+            None if state.live_run.is_some() => Box::pin(open_state_live_run(sh, &env)).await?,
             None => Box::pin(new_run_context(sh, &binding, &env)).await?,
         };
         if let Some(text) = msg {
@@ -2036,18 +1961,13 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         if monitor.finish().await {
             // The stop is consumed and committed by the driver before the
             // interrupted outcome is interpreted.
-            route_inputs(sh, true, &[]).await?;
+            route_inputs(sh, true).await?;
             external_stop(sh).await?;
         }
         let next = Box::pin(handle_context_outcome(sh, &mut lc, outcome?)).await?;
         Box::pin(super::goal::flush(sh)).await;
         outcomes_handled += 1;
-        let mut pending_now = Vec::new();
-        if next.kind == FinishKind::PendingTool {
-            let w = WaitingRun::of(lc);
-            pending_now = w.task_ids();
-            waiting = Some(w);
-        } else if !next.run_ended && !next.suspended {
+        if !next.run_ended && !next.suspended {
             live = Some(lc);
         }
         let (rev, rs) = {
@@ -2065,14 +1985,13 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         if let Some(err) = next.error.clone() {
             return Ok(DriveResult::Error { rev, error: err });
         }
-        routed = route_inputs(sh, false, &pending_now).await?;
-        // Idle = nothing to do: a Turn that ended waiting for input returns,
-        // unless inputs are already queued for the next one.
+        routed = route_inputs(sh, false).await?;
+        // Idle = nothing to do: a Turn that ended (or a run kept) waiting for
+        // input returns, unless inputs are already queued for the next one.
         if next.waiting
             && until == StopWhen::Idle
-            && next.kind != FinishKind::PendingTool
             && routed.candidates.is_empty()
-            && poll_children(sh, &pending_now).await?.is_empty()
+            && poll_children(sh, &[]).await?.is_empty()
         {
             return Ok(DriveResult::Idle { rev, run_state: rs });
         }

@@ -1,6 +1,5 @@
 //! Interrupt, graceful finish and deadline while a tool runs (long-tool TODO
-//! §3.1), the inline `Cancelled` / `Pending` contracts and the background
-//! env slot.
+//! §3.1) and the inline `Cancelled` contract.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -13,8 +12,8 @@ use crate::deps::{LLMContextDeps, ToolCallCtx, ToolDispatchError, ToolManager, T
 use crate::error::LLMComputeError;
 use crate::observation::{Observation, ToolExecStatus};
 use crate::outcome::{BudgetKind, LLMContextOutcome, ResumeFill};
-use crate::tasks::{CancelUnsupported, RunningTaskResolver, TaskBrief, TaskState};
-use crate::{LLMContext, XmlBehaviorParser, XmlStepRenderer};
+use crate::tests::protocol::{XmlBehaviorParser, XmlStepRenderer};
+use crate::LLMContext;
 
 use super::mocks::*;
 
@@ -25,7 +24,6 @@ use super::mocks::*;
 ///   on interrupt / deadline with `Cancelled { effect_unknown: true }`;
 /// - `brief`: cannot cancel, finishes on its own after 300 ms;
 /// - `bad_cancel`: returns `Cancelled` although nothing fired;
-/// - `no_task`: returns `Pending` without a task id;
 /// - anything else: success at once.
 struct CancelTools {
     calls: Mutex<Vec<String>>,
@@ -74,7 +72,7 @@ impl ToolManager for CancelTools {
                     content: json!("brief done"),
                     bytes: 10,
                     truncated: false,
-                    tool_result: None,
+                    host: None,
                 })
             }
             "bad_cancel" => Ok(Observation::Cancelled {
@@ -82,18 +80,12 @@ impl ToolManager for CancelTools {
                 reason: "nope".into(),
                 effect_unknown: false,
             }),
-            "no_task" => Ok(Observation::Pending {
-                call_id: call.call_id,
-                task_id: String::new(),
-                until_ms: None,
-                tool_result: None,
-            }),
             _ => Ok(Observation::Success {
                 call_id: call.call_id,
                 content: json!("ok"),
                 bytes: 2,
                 truncated: false,
-                tool_result: None,
+                host: None,
             }),
         }
     }
@@ -104,7 +96,6 @@ impl ToolManager for CancelTools {
             "stubborn",
             "brief",
             "bad_cancel",
-            "no_task",
             "a",
             "shell",
         ]
@@ -278,22 +269,6 @@ async fn inline_cancelled_without_a_cause_is_a_contract_violation() {
 }
 
 #[tokio::test]
-async fn pending_without_task_id_is_a_contract_violation() {
-    let llm = Arc::new(ScriptedRecordingLlm::new(vec![tool_response(
-        None,
-        vec![call("no_task", "c1")],
-    )]));
-    let tools = CancelTools::new();
-    let mut req = base_request();
-    req.tool_policy.allow_deferred = true;
-    let mut ctx = LLMContext::new(req, fc_deps(llm, tools));
-    let LLMContextOutcome::Error { error, .. } = ctx.run().await else {
-        panic!("expected Error")
-    };
-    assert!(matches!(error, LLMComputeError::Internal(ref m) if m.contains("without a task_id")));
-}
-
-#[tokio::test]
 async fn finish_during_inference_pairs_the_tool_calls_as_cancelled_and_settles() {
     let llm = Arc::new(ScriptedRecordingLlm::new(vec![
         tool_response(None, vec![call("a", "c1"), call("a", "c2")]),
@@ -392,7 +367,7 @@ async fn recovered_finish_pairs_native_receipts_before_an_expired_wallclock_budg
                 content: json!({ "accepted": true }),
                 bytes: 0,
                 truncated: false,
-                tool_result: None,
+                host: None,
             })
         }
     }
@@ -655,105 +630,4 @@ async fn behavior_finish_during_a_step_pairs_the_rest_and_settles() {
             ..
         }
     ));
-}
-
-// ===================================================================
-// Background env
-// ===================================================================
-
-struct FakeTasks {
-    watched: Mutex<Vec<String>>,
-}
-
-#[async_trait]
-impl RunningTaskResolver for FakeTasks {
-    async fn state(&self, _task_id: &str) -> TaskState {
-        TaskState::Unknown {
-            reason: "fake".into(),
-        }
-    }
-    async fn wait(&self, task_id: &str, _until_ms: Option<u64>) -> TaskState {
-        self.state(task_id).await
-    }
-    async fn cancel(&self, task_id: &str) -> Result<TaskState, CancelUnsupported> {
-        Err(CancelUnsupported {
-            task_id: task_id.into(),
-        })
-    }
-    fn watch(&self, task_id: &str) {
-        self.watched.lock().unwrap().push(task_id.to_string());
-    }
-    async fn active(&self) -> Vec<TaskBrief> {
-        self.watched
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|id| TaskBrief {
-                task_id: id.clone(),
-                brief: "sleep 100".into(),
-                status: "running".into(),
-                elapsed_ms: 1000,
-                last_line: String::new(),
-                cancellable: true,
-            })
-            .collect()
-    }
-}
-
-struct TaskTools;
-#[async_trait]
-impl ToolManager for TaskTools {
-    async fn call_tool(
-        &self,
-        call: AiToolCall,
-        _ctx: ToolCallCtx,
-    ) -> Result<Observation, ToolDispatchError> {
-        Ok(Observation::Success {
-            call_id: call.call_id,
-            content: json!("started"),
-            bytes: 7,
-            truncated: false,
-            tool_result: Some(crate::observation::ToolResultView {
-                task_id: Some("local:shell:1".into()),
-                ..Default::default()
-            }),
-        })
-    }
-}
-
-#[tokio::test]
-async fn background_env_is_appended_to_the_request_not_to_the_history() {
-    let llm = Arc::new(ScriptedRecordingLlm::new(vec![
-        tool_response(None, vec![call("shell", "c1")]),
-        text_response("done"),
-    ]));
-    let tasks = Arc::new(FakeTasks {
-        watched: Mutex::new(Vec::new()),
-    });
-    let deps = LLMContextDeps::new(llm.clone(), Arc::new(TaskTools)).with_tasks(tasks.clone());
-    let mut ctx = LLMContext::new(base_request(), deps);
-    let LLMContextOutcome::Done { .. } = ctx.run().await else {
-        panic!("expected Done")
-    };
-    assert_eq!(tasks.watched.lock().unwrap().as_slice(), ["local:shell:1"]);
-    let seen = llm.seen();
-    assert!(
-        !seen[0]
-            .iter()
-            .any(|m| m.text_content().contains("<background_tasks>")),
-        "no tasks before the first call"
-    );
-    let last = seen[1].last().unwrap();
-    assert_eq!(last.role, AiRole::User);
-    assert!(last
-        .text_content()
-        .contains("local:shell:1 [running] sleep 100 (1s)"));
-    assert!(
-        !ctx.snapshot()
-            .state
-            .accumulated
-            .iter()
-            .any(|m| m.text_content().contains("<background_tasks>")),
-        "the env is not part of the history"
-    );
 }

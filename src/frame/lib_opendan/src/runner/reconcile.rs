@@ -22,7 +22,6 @@ use super::outcome::{
 };
 use super::receipts::{apply_receipt, receipts_after, snapshot_host_meta, validate_receipts};
 use super::shared::Shared;
-use super::tools::pending_sub_call;
 
 pub(super) enum Reconciled {
     None,
@@ -104,14 +103,25 @@ pub(super) async fn reconcile_runs(sh: &Arc<Shared>) -> Result<Reconciled> {
     if redo_transfer(sh, &run, &record, &snapshot).await? {
         return Ok(Reconciled::None);
     }
+    // Kept for its work before a crash, and state did not take that over.
+    if let Some(next) = run
+        .kept()
+        .and_then(|k| serde_json::from_value::<Next>(k).ok())
+    {
+        if sh.session.lock().await.state.run_state != RunState::Waiting {
+            let behavior = record.config.loop_model == LoopModel::Behavior;
+            super::outcome::commit_kept(sh, &run, &snapshot, behavior, &next).await?;
+        }
+    }
     Ok(Reconciled::Resume(run, snapshot))
 }
 
 /// The live run stopped at a transfer that state has not committed yet: a
 /// `next_behavior` hand-over recorded in run.json (ours before a crash, or
-/// xllm's, which never commits one), or a `call_behavior` suspension. The
-/// transfer is committed here, exactly once: after the commit the run is no
-/// longer the live run. `true` = the run was set aside or ended.
+/// xllm's, which never commits one) — to the sub context a call of the run
+/// asked for when there is one. The transfer is committed here, exactly
+/// once: after the commit the run is no longer the live run. `true` = the
+/// run was set aside or ended.
 async fn redo_transfer(
     sh: &Arc<Shared>,
     run: &RunHandle,
@@ -119,18 +129,14 @@ async fn redo_transfer(
     snapshot: &LLMContextSnapshot,
 ) -> Result<bool> {
     let behavior = record.config.loop_model == LoopModel::Behavior;
-    let (cfg, completed, returned, committed) = {
+    let (completed, returned, committed) = {
         let s = sh.session.lock().await;
         (
-            s.config.clone(),
             s.state.turns_completed,
-            s.state.tool_return_pending(),
+            s.state.process_result.is_some(),
             s.state.live_run.as_ref().map(|l| l.handover_at_ms).unwrap_or(0),
         )
     };
-    let assembler = sh.deps.assembler.clone();
-    let entry_cfg = cfg.clone();
-    let entry = move |b: &str| assembler.behavior_entry(&entry_cfg, b);
     // A record this state already committed (the run was suspended by it
     // and is live again) is history, not a transfer left to do.
     if let Some(h) = record.handover.as_ref().filter(|h| h.at_ms != committed) {
@@ -151,8 +157,7 @@ async fn redo_transfer(
             .last_report
             .clone()
             .or_else(|| last_step.and_then(|s| s.self_report.clone()));
-        let replied =
-            has_report(snapshot) || last_step.is_some_and(|s| !s.messages_sent.is_empty());
+        let replied = has_report(snapshot);
         let mut next = classify_done(
             &cfg,
             behavior,
@@ -166,6 +171,17 @@ async fn redo_transfer(
         next.usage = record.usage.main.clone();
         super::todos::settle(sh, &mut next, &site, false, &record.run_id, snapshot).await?;
         hold_for_children(sh, &mut next).await?;
+        // A hand-over to the sub context a call of this run asked for.
+        if let Some(call) = run.sub_call().filter(|c| c.behavior == h.next_behavior) {
+            let usage = next.usage.take();
+            next = Next {
+                kind: FinishKind::Switch,
+                next_behavior: Some(call.behavior.clone()),
+                call: Some(call),
+                usage,
+                ..Default::default()
+            };
+        }
         if next.kind == FinishKind::Switch {
             hand_over(sh, run, behavior, snapshot, &mut next).await?;
         } else {
@@ -173,18 +189,9 @@ async fn redo_transfer(
         }
         return Ok(true);
     }
-    if !returned {
-        let behaviors = cfg.behaviors().map_err(OpenDanError::InvalidArgument)?;
-        if let Some(call) = pending_sub_call(snapshot, &behaviors, &entry)? {
-            let mut next = Next {
-                kind: FinishKind::Switch,
-                next_behavior: Some(call.behavior.clone()),
-                call: Some(call),
-                ..Default::default()
-            };
-            hand_over(sh, run, behavior, snapshot, &mut next).await?;
-            return Ok(true);
-        }
+    // Back from the sub context it called: that call is done.
+    if returned && run.sub_call().is_some() {
+        run.set_sub_call(None)?;
     }
     Ok(false)
 }
@@ -230,8 +237,7 @@ async fn derive_next(
         RunStatus::Completed => {
             let st = &snapshot.state;
             let last_step = st.last_step.as_ref().or(st.steps.last());
-            let replied =
-                has_report(snapshot) || last_step.is_some_and(|s| !s.messages_sent.is_empty());
+            let replied = has_report(snapshot);
             let (nb, answer) = if behavior {
                 (
                     last_step.and_then(|s| s.next_behavior.clone()),

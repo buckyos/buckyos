@@ -10,7 +10,7 @@
     "principal": "app:app2@alice"
   },
   "location": "${FIXTURE_ROOT}/app/work-fixture-active-a",
-  "input_queue": "app2::alice::opendan.session.work-fixture-active-a",
+  "input_queue": "app2::alice::opendan.session.ce796eb43c9cd148ea1fa3eb041e9d981c28904373cfb73b2b15c4e3c784dabf",
   "wake_event": "/opendan/jarvis.alice/session/work-fixture-active-a/input",
   "agent_access": "full",
   "workspace": {
@@ -37,19 +37,19 @@
           "kind": "path",
           "ref": "ws:snake/src/",
           "mode": "write",
-          "since_ms": 1792976021515
+          "since_ms": 1793591511210
         }
       ],
-      "heartbeat_ms": 1792976021515
+      "heartbeat_ms": 1793591511210
     },
     "last_runner": {
-      "runner_id": "rn-29b08d1b93c1488f",
+      "runner_id": "rn-dda1c212af8c466d",
       "host": "${FIXTURE_HOST}",
-      "pid": 3021108,
+      "pid": 2811544,
       "lock_epoch": 1,
-      "at_ms": 1792976021517
+      "at_ms": 1793591511212
     },
-    "updated_at_ms": 1792976021515
+    "updated_at_ms": 1793591511210
   },
   "location_rev": 0
 }

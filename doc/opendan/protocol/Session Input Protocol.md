@@ -81,11 +81,12 @@ CLI：`post <sid> --json <file | ->` 接受逻辑记录（`schema`、`from`、`a
   "seq": 7,                                      // 可选：来源内的版本号
   "summary": "任务 t1 的状态发生变化",              // ≤ 1 KB，超出拒绝；给 LLM 看，不用于机械判断
   "data_ref": null,                              // 可选：ObjId 或相对 session 目录的路径
-  "terminal": false
+  "terminal": false,
+  "call_id": null                                // 可选：task 的结束，交出这个 task 的那次工具调用（§9）
 }
 ```
 
-`source.id` ≤ 256 字节，`system` 之外必填。未知的 `source.kind` 不因格式拒绝（没有订阅匹配时丢弃）。`source.kind = task` 的 `id` 就是挂起调用记录与 task 工具使用的 `task_id`。
+`source.id` ≤ 256 字节，`system` 之外必填。未知的 `source.kind` 不因格式拒绝（没有订阅匹配时丢弃）。`source.kind = task` 的 `id` 就是工具结果（AgentToolResult 的 `task_id`）与 task 工具 / 命令使用的 task id。
 
 ### 2.3 校验与拒绝
 
@@ -107,7 +108,7 @@ payload 中的未知字段忽略（producer 可以比 consumer 新）；未知 c
 
 ## 3. 路由：记录到达后发生什么
 
-每次路由（drive 入口、主循环每一轮、每个检查点）按“输入源声明顺序、源内 `index`”依次处理未消费的记录，不按 `at_ms` / `created_at_ms` 排序。模板只改变正文，不改变这里的任何一行。
+每次路由（drive 入口、主循环每一轮、每个推理前检查点）按“输入源声明顺序、源内 `index`”依次处理未消费的记录，不按 `at_ms` / `created_at_ms` 排序。模板只改变正文，不改变这里的任何一行。
 
 | 记录 / 情况 | 机械处理 | 对 LLM / Turn 的影响 |
 |---|---|---|
@@ -115,9 +116,9 @@ payload 中的未知字段忽略（producer 可以比 consumer 新）；未知 c
 | `key` 在 `recent_keys` 中，或同一轮已出现过 | 静默消费 | 无（不会第二次进入上下文） |
 | `control` | 由驱动者按投递顺序应用并提交 | 不是 Agent 输入 |
 | `msg` | 留在队列，作为受控输入的候选 | 开启新 Turn 或并入未关闭的 Turn |
-| `event`，匹配 active 订阅 | 记入 `inputs[src].accepted`，留在队列作候选 | 同 msg；挂起工具期间暂存 |
+| `event`，匹配 active 订阅 | 记入 `inputs[src].accepted`，留在队列作候选 | 同 msg |
 | `event`，匹配 semi 订阅 | 合并进 `state.pending_events`，消费 | 不触发推理；在下一次受控输入之前渲染为半订阅快照 |
-| `event`，`source = task:<id>` 且有挂起调用在等该 task | 消费，`event_dropped{reason: pending_call}` | 只触发一次 resolver 查询；结果以 ToolResult 回填原 run / Turn |
+| `event`，`source = task:<id>` 且该 task 在 `state.watched_tasks` 中 | 消费，`event_dropped{reason: watched_task}` | 只提前触发一次查询；task 的结束按 §9 作为 task 结果输入交回 |
 | `event`，没有匹配的有效订阅 | 消费，`event_dropped{reason: unsubscribed}` | 无；timer、系统事件没有兜底例外 |
 
 - 订阅匹配：给出 `subscription_id` 时必须存在且来源相符；未给出时取第一个来源相符的显式或隐式订阅。每个 Session 都有一个隐式 semi 订阅：用户时区（`_user_timezone`，`source = system:user_timezone`）。Goal Session（模板 `goal`）另有隐式 active 订阅 `_goal_activation`（`source = system:goal`）。UI Session（模板 `ui`，`group` 经 `base` 继承）另有隐式 semi 订阅 `_notify`（`source = system:notify`）。`system:<id>` 的订阅也匹配子 id `system:<id>:<sub>`。
@@ -125,7 +126,7 @@ payload 中的未知字段忽略（producer 可以比 consumer 新）；未知 c
 - **Goal 问题的回答**：Goal 的 `questions` 由驱动者在 Activation 关闭前发成 `input` 通知（幂等键 `goal:<goal_id>:q:<sha256(text) 前 16 位>`）；通知结束后宿主投递 `AgentEvent{subscription_id: "_goal_activation", source: system:goal, event: "answer", summary}`（key `goal:<goal_id>:answer:<notify_id>`），成为 Activation 原因 `answer`（`ref` = notify_id）；该 Activation 关闭时问题记下 `status` 与 `answer`，Goal 头的 `<open_questions>` 带上它们。
 - **Goal 的运行机会**：运行时（宿主或 CLI）向 Goal 当前 epoch 的 Goal Session 投递 `AgentEvent{subscription_id: "_goal_activation", source: system:goal, event, summary}`：`event = created | reopened | restarted`（epoch 开始，key `goal:<goal_id>:start:<epoch>`，每个 epoch 只投一次）、`scheduled`（定时，key `goal:<goal_id>:scheduled:<slot>:<missed>`，`missed` = 自上次以来经过的槽数，>1 表示停机期间错过的槽已合并为这一次）、`activate`（手动，key `goal:<goal_id>:activate:<request_id>`）。UI 转交的反馈是 Agent 自己发给自己的 `msg`（`delivery.from_name = "feedback from <来源>"`、`conversation_name = "goal <goal_id>"`）。积压的多个运行机会、Work 的结束（`_child`，Goal Session 按 `goal_id` 收取，跨 epoch 只收一次）与反馈合成一个 Activation 的输入批次，各自成为该 Activation 的 `reasons[]`。Goal 暂停时这些输入留在队列。
 - subscribe / unsubscribe 与事件按投递 index 生效：`event A → unsubscribe → event B` 中 A 按当时有效的订阅处理，unsubscribe 清理该订阅尚未注入的状态，B 丢弃。已被 active 订阅接受的事件不因之后的 unsubscribe 改判。
-- 挂起工具（PendingTool）或子 context 进行期间，msg / Input event 留在队列，不能填补缺失的 ToolResult；control 继续处理。唯一的例外是等用户回答的调用（`userinput:`，§9）：它取一条 msg 作为结果。
+- 子 context 进行期间，msg / Input event 留给调用方、留在队列（子 context 只收它自己启动的 task 的结果）；恢复到工具批次 / Step 中途的 run 先把这批跑完，再放输入批次；control 始终处理。run 为它启动的工作保活期间（§9）没有这个限制：新到的 msg / event 照常注入同一个 run。
 - 先提交 state.json（消费位置、`pending_events`、worklog），再确认输入源。
 
 ## 4. 消费进度（state.json）
@@ -181,7 +182,7 @@ AiMessage{role: user}              恢复、接手、压缩都从快照与 workl
 |---|---|---|
 | `on_init` | Session 首次启动 | 不要求有外部输入；只在 bootstrap 使用 |
 | `on_input` | 选中的 msg / Input event | control、Observe 事件、队列通知本身不构成此入口 |
-| `on_context_switch` | 交接：切换 behavior、进入子 context、经交接批次返回的子结果 | 延续当前 Turn；工具触发的子调用返回仍是 ToolResult |
+| `on_context_switch` | 交接：切换 behavior、进入子 context、经交接批次返回的子结果（behavior 触发与工具触发相同） | 延续当前 Turn |
 
 一次装配只选一个入口（`on_init` → `on_context_switch` → `on_input`），允许消费的外部输入并入该批。`input.mode`：`batch`（默认，批次预算内取多条）或 `single`（总共取一条），未选的留在队列。`delivery.context` 的消息不计入预算，随其后第一条被选中的输入一起进入批次；其后还没有输入时整组留在队列，不单独触发。模板与策略取自接收批次的 context（`prompt.*` / `input.*`，behavior 条目按字段覆盖 Session 的）。模板报错、或已有选中的输入却渲染出空文本：报错并保留现场，不消费、不确认。
 
@@ -216,6 +217,7 @@ AiMessage{role: user}              恢复、接手、压缩都从快照与 workl
 | 正文 | `content.content`（trim） | 转义 `& < >`；非空时独占一行。正文只是 `[attachment]` 等占位词且有附件时置空 |
 | `<attachment index media name mime obj_id path role/>` | `content.refs` 的 `DataObj` | 每个一行，按数组顺序编号；`media` / `mime` 由 label、uri_hint、消息 format 推断；`path` 仅在宿主已有可读映射时输出；`role` 仅非 `input` 时 |
 | `<event key subscription source event seq data_ref terminal>` | AgentEvent | `source` 为 `kind:id`；正文是转义后的 `summary`；可选属性缺省不输出 |
+| `<<task_result task call_id status>>` … `<</task_result>>` | Runner 合成的 task 结束（`source.kind = task` 且没有 `subscription_id`，§9） | 不用 `<event>`：独立块，块标签各占一行；`task` 为 task id，`call_id` 有值才输出，`status` 为事件名（`finished`，含失败，成败看正文；状态查不到时 `unknown`）；正文是 task 的结果，原样输出（不转义） |
 
 属性值转义 `& < > "`。只有一条纯文本消息时也使用 `<msg>`。`machine` 与 `ServiceDid` 引用不在内建渲染中出现。
 
@@ -225,7 +227,7 @@ AiMessage{role: user}              恢复、接手、压缩都从快照与 workl
 
 ### 6.3 自定义模板
 
-模板引擎是 `llm_context::prompt_engine`（upon，`__EXEC__` 关闭）。只含块标签（`{% for %}`、`{% if %}`、`{% endfor %}` …）的行不产生输出行；输出去掉首尾空白。可用变量：`input.{hook, time, messages[], events[], items[], text, count}`（视图字段见 `runner/input_view.rs`；条件用布尔字段 `msg.is_group`、`msg.mentions.me`、`msg.context`、`ev.terminal`、`item.is_msg`）、`session.*`、`runtime.*`、`handover`、各内建块（`task_text`、`handover_text`、`perceptions_text`、`hints_text`、`active_sessions_text`、`runtime_text`、`builtin`）。
+模板引擎是 `agent_tool::prompt_engine`（upon，`__EXEC__` 关闭）。只含块标签（`{% for %}`、`{% if %}`、`{% endfor %}` …）的行不产生输出行；输出去掉首尾空白。可用变量：`input.{hook, time, messages[], events[], items[], text, count}`（视图字段见 `runner/input_view.rs`；条件用布尔字段 `msg.is_group`、`msg.mentions.me`、`msg.context`、`ev.terminal`、`item.is_msg`）、`session.*`、`runtime.*`、`handover`、各内建块（`task_text`、`handover_text`、`perceptions_text`、`hints_text`、`active_sessions_text`、`runtime_text`、`builtin`）。
 
 命名格式 `{{ value | render_format: "名称" }}`（未知格式或对象形状不符是模板错误；声明支持空值的格式对空值输出空串）：
 
@@ -238,7 +240,7 @@ AiMessage{role: user}              恢复、接手、压缩都从快照与 workl
 | `attachments.xml` / `attachments.list` | `msg.attachments` | 每个附件一行 XML / 一行文本清单（有路径用路径，否则 ObjId） |
 | `todo.summary_xml` | 宿主装配的 `{id, status, summary \| title}` | `<current_todo …>`；空值输出空串 |
 
-底层通用 filter（llm_context 注册，system 模板同样可用）：`xml`、`attr`、`json`、`truncate: n`、`oneline`、`default: v`、`join: sep`、`quote`、`time: fmt`（UTC）。XML 格式自己转义，模板直接插入；直接拼装 XML 的模板自行用 `xml` / `attr`。渲染后 Session 逐个检查附件：文本中既没有其 ObjId 也没有可读路径时记 warning（显示名不算定位信息）。
+底层通用 filter（`agent_tool::prompt_engine` 注册，system 模板同样可用）：`xml`、`attr`、`json`、`truncate: n`、`oneline`、`default: v`、`join: sep`、`quote`、`time: fmt`（UTC）。XML 格式自己转义，模板直接插入；直接拼装 XML 的模板自行用 `xml` / `attr`。渲染后 Session 逐个检查附件：文本中既没有其 ObjId 也没有可读路径时记 warning（显示名不算定位信息）。
 
 ### 6.4 媒体块（`input.media`）
 
@@ -308,14 +310,14 @@ AiMessage{role: user}              恢复、接手、压缩都从快照与 workl
 
 - `extra.background`（chat 格式）：本批之后的 `state.background_shown`，应用 receipt 时整体替换。
 - 批次 ID = `(run_id, input_seq)`，每个 run 从 1 开始连续。`opens_turn` 只看提交时有没有打开的 Turn；半订阅快照不独立计 Turn。
-- `inputs`：本批消费的 msg 与 Input event。Runner 自己合成的输入（被跟踪的后台 task 完成）用 `src = "_task"`、`key = task:<task_id>:terminal`，没有消费位置。
+- `inputs`：本批消费的 msg 与 Input event。Runner 自己合成的输入（Session 在跟的 task 结束，§9）用 `src = "_task"`、`key = task:<task_id>:terminal`，没有消费位置。
 - `events`：快照消息实际注入的状态版本；应用时按 `(subscription_id, source, key)`（有 `seq` 时一并核对）从 `pending_events` 精确清除。处理 v7 期间收到 v8，提交 v7 不删除 v8。
 - `reply`：本批提交后的默认回复路径（`state.reply`）：本批按消费顺序最后一条 msg 的来路（一对一 → 原发送者；群消息 → 原群；带 `to_session`、`tunnel`、`reply_to`）；本批没有 msg 时沿用原值；从未有过 msg 而有父 Session 时为 `{"route": "parent_session", "session_id": …}`。event、control、快照、交接本身不改变它。
 - `parts[].pos`：function call → `accumulated`（两条相邻）；behavior 首个 Step 之前 → `request_input`；已有 Step → 两个 part 都是 `step{index}`（并入该 Step 的 `next_user_message`）。`text` 是该消息的文本块；媒体块按 `pos` 在同一份快照中读取。
 - 应用 receipt（幂等：`input_seq ≤ live_run.applied_input_seq` 忽略；必须恰好是下一批；`opens_turn = false` 时 `turn` 必须等于 `open_turn.index`）：更新 `live_run.turns` 与 `open_turn`，标记 `inputs` 已消费并记入 `recent_keys`，清理 `events`，还原 `reply`，置 `bootstrap_done`，`extra.continuation` 清除 `internal_continuation` / `process_result`，`run_state = running`。
 - **提交顺序**：① 快照 fsync ② run.json 发布快照指针与 `host_commit_pending = input_seq` ③ state.json 应用 receipt ④ 清门槛 ⑤ 确认输入源。④ 之前不得推理或调用工具；可恢复提交之前不出队。
 - **恢复**：先按快照中的 receipt 补齐 state（不重新渲染、不重新注入、不读总线），再取新输入；state 已应用而快照缺失的批次 → RecoveryBlocked。
-- 检查点（function call：每次推理前；behavior：每个 Step 的 do-action 之后）只发布工具结果、做一次路由并刷新心跳：到达检查点、工具完成或收到 Observe 事件都不独立注入消息。
+- 检查点（每个工具调用 / action 派发之前；以及推理之前：function call 每次推理前，behavior 只在 Step 边界）发布快照；推理前的检查点另做一次路由并刷新心跳：到达检查点、工具完成或收到 Observe 事件都不独立注入消息。
 - 推理 / 装配预算不足按 AICC 服务不可用的失败与重试路径处理：未提交的批次不消费，已提交的批次保留 receipt，恢复时不重复注入。
 
 ## 8. bridge
@@ -328,20 +330,28 @@ bridge 只转换来源并可靠投递（先 `post`，成功后再确认上游；
 
 **反向链路**：assistant 消息按 `state.reply` 转成 MsgObject（`bridge::outbound_base` 给出信封，`llm_context::ai_message_to_msg_object_with_base_validated_async` 填内容），出站记录 `{key: "<sid>:<turn>:<run_id>:<n>", msg}` 幂等。记录在 Turn 关闭的提交里写入 `state.outbox`，提交后交给驱动者的出站 sink（OpenDAN：msg-center `post_send(msg, idempotency_key = key)`），重启后原样重发；`channels.outbound` 是创建时固定的回复坐标，出站时核对（[Session Directory Protocol](<Session Directory Protocol.md>) §4 `outbox`）。耗时较长的 Turn 先发占位、结束时以一条 edit 替换，并在锚点消息上携带 `agent_task`（同节 `outbox[].purpose` / `turn_tasks`）。
 
-## 9. 长任务：挂起调用与后台 task
+## 9. 长任务：调用内等待、保活与 task 结果
 
-- **串行等待**：工具返回 `Pending{task_id, until_ms}` 时 run 挂起（PendingTool），Session 在上下文之外等待：`waiting_for = {kind: tool, refs: [task_id…], deadline_ms}`（由快照的挂起记录生成，不另存协议）。每次路由后用宿主的 `RunningTaskResolver` 查询；每个挂起调用的 task 结束、状态未知或到达 `until_ms` 后，用当时的状态以 `ResumeFill::ToolResults` 回填，恢复同一个 run 与 Turn。轮询不调用 LLM，等待与 inbox 是否为空无关。
-- 接手：`can_resolve(task_id) = false` → RecoveryBlocked，保留现场；能解析而查不到（进程内 task 换了进程）→ 按 `Unknown` 回填，由 LLM 判断，不重建、不重放任务。
-- stop：可取消的 task 被取消，每个挂起调用按当时状态回填，run 以 Stopped 结束。工具执行期间由监视任务查看队列中的 stop 并打断运行（只查看，不消费、不写 state）。
-- **并行等待**：调用已返回、task 继续运行。run 结束而 Session 未 finished 时，仍在运行的 task 记入 `state.watched_tasks`；之后每轮用保存的 task id 查询，结束时合成 `AgentEvent{source: task:<id>, terminal: true}`：有显式订阅按其 active / semi 处理，否则作为 Input 事件。不依赖输入队列或通知；finished 的 Session 不因 task 完成而重开。
-- 经外部服务创建任务的工具用在途记录里的 `idempotency_key`（由 run 与 call 的稳定身份导出）作为幂等键。
-- 崩溃恢复：run 的终态已落盘而 state 尚未提交时，重做的结束从 run.json 的 `host.extra.tasks` 取回仍需跟踪的 task（[Session Directory Protocol](<Session Directory Protocol.md>) §7），其完成只交付一次。
-- **向用户提问（`userinput:`）**：`agent-session ask-user "<问题>" [--option <id>=<label>]... [--allow-text]` 返回 `Pending{task_id: "userinput:<call_id>", detail: {question, input: {kind: text | choice, options: [{id, label}], allow_text}}}`（schema `user_input_request`）。只有 Session 解析这个前缀：
-  - 允许条件：有输入队列、`wait_user_msg = allowed`、不是子 Session；否则该调用直接得到错误结果，run 不挂起。task id 必须是本次调用的 `call_id`（命令放在管道或脚本里无效）。问题在快照挂起之前记入 run.json `host.extra.asks[<call_id>]`。
-  - 等待：`waiting_for = {kind: input, refs: ["userinput:<call_id>"]}`，Turn 保持打开；问题以 `question` 出站（[Session Directory Protocol](<Session Directory Protocol.md>) §5 `outbox`），与写入这个等待状态是同一次提交——提交之前没有任何消息会被当作答案。
-  - 回填：此后路由出的第一条 msg（`delivery.context` 的除外）就是答案，只取一条，其余留在队列；它以 `ResumeFill::ToolResults` 填为该调用的结果 `{text, attachments: [{obj_id, name}], option, in_reply_to_question, msg_id, from, at_ms}`（schema `user_input_answer`），同一快照里追加一张输入 receipt（`inputs = [该 msg]`、`parts = []`、`extra.user_input = <call_id>`，加入打开的 Turn），按 §7 提交与确认。`in_reply_to_question`：该消息 `relates_to = {rel: thread}` 的目标是本 Turn 占位或问题的 ObjId；`option`：`content.machine = {intent: "agent_ask.answer", data: {call_id, option}}` 且 `call_id` 匹配时的选项 id。关系与 machine 只是线索，任何下一条消息都是答案。
-  - 事件、`_child` 与半订阅观察照旧留给调用方，不进提问的 run；同批有其它挂起调用时，它们的等待都结束才回填。stop：按“用户未回答”回填（`Cancelled`）。独立 xllm 不能解析 `userinput:`，拒绝接手。主 context 自己的 `WAIT_USER_MSG` 与子 context 的哨兵语义不变。
-  - **经通知提问**：没有输入队列的 Work（模板 `work`，`session.policy.ask_user_timeout_secs > 0`，缺省 10800）在宿主有通知服务时同样允许 `ask-user`。登记时 run.json `host.extra.asks[<call_id>].notify = {deadline_ms}`；在写入等待状态之前发出 `input` 通知（等级 `timely`，幂等键 `<sid>:<turn>:ask:<call_id>`，`expires_at_ms = deadline_ms`，来源含 session / turn / call 与所属会话），拿到的 `notify_id`、`task_id` 记入同一处；`waiting_for = {kind: input, refs: ["userinput:<call_id>"], deadline_ms, human_tasks: [task_id]}`。每次 drive 查询通知：`answered` → 结果为 `user_input_answer`，另带 `via: "notification"`、`notify_id`，`msg_id` 为空，`text` 取文字回答，没有时取选项 label；`dismissed / expired / canceled` 或到达截止时间（先以 `ask_timeout` 撤销）→ 结果为 `{"answered": false, "reason": "timeout | dismissed | canceled", "note": …}`。这是普通的工具结果（不是错误），不经输入 receipt。stop：撤销通知（`turn_stopped`）并按“用户未回答”回填。Goal 内调用得到错误结果，提示把问题写进 `questions`。
+loop 里不等待，任何等待都是 task。
+
+- **调用内等待**：工具的工作在 runtime 的等待预算内完成时，调用直接得到结果。预算是 `.llm_context` 的 `runtime.task_wait_ms`（缺省 30 秒、上限 30 分钟；工具结果给出 `check_after` 时用它）。到期仍未完成的工作是一个 task，调用返回一条普通结果“task X 仍在运行”（AgentToolResult 信封 `status = pending`，带 `task_id` 与说明用的 `pending_reason`）。Session 中这条结果的提示说它的结束会作为输入回来、不必等待，并给出随时查看的方法（`get_task_state`；UI Session 的 function call run 是 `agent-session task state <id>`）。
+- **本 run 启动的工作**：结果首次引用、仍在运行的 task 记入 run.json `host.extra.tasks`，交出它的调用记入 `host.extra.task_calls`（[Session Directory Protocol](<Session Directory Protocol.md>) §7）。
+- **保活**：模型回复（function call 的 `Done`）或 Yield 时这些 task 仍在运行，run 保活：不结束、Turn 保持打开、不推理，`waiting_for = {kind: tool, refs: [task_id…]}`，task 记入 `state.watched_tasks`（Session Directory Protocol §4）。之后的输入都注入这个 run。
+- **task 结果是输入**：每轮路由后用宿主的 `RunningTaskResolver` 按保存的 task id 查询 `watched_tasks`，与通知、inbox 是否为空无关；task 的通知只提前触发查询（§3 `watched_task`）。task 结束（或状态查不到）时合成 `AgentEvent{source: task:<id>, event: finished | unknown, terminal: true, call_id}`（内部源 `_task`）：有显式订阅时按其 active / semi 处理，否则是 Input，进入下一个受控输入批次（run 保活时注入这个 run）。内建渲染是独立块（§6.2）：
+
+  ```text
+  <<task_result task="local:shell:c7" call_id="c7" status="finished">>
+  …task 的结果，与调用当场完成时得到的相同…
+  <</task_result>>
+  ```
+
+  正文最多 16 KB（16×1024 字符），更长的截断并注明用 task id 读全文。它不伪装成工具结果：调用当初已经有了“仍在运行”的结果，模型凭 `call_id` 与 task id 把两者对上。
+- 查不到的 task（进程内 task 换了进程、没有 task 管理器认识它）按 `unknown` 交回，由 LLM 判断，不重建、不重放任务。
+- **run 结束后的 task**：run 结束而 Session 未 finished 时，仍在运行的 task（`host.extra.tasks` 与 resolver 报告的）记入 `state.watched_tasks`，之后同样以 task 结果输入交回，可能开启新 Turn。finished 的 Session 清空 `watched_tasks`，不因 task 完成而重开。
+- stop：本 Turn 可取消的 task（resolver 报告在运行的，以及 run 记录的）被取消，run 以 Stopped 结束。工具执行期间由监视任务查看队列中的 stop 并打断运行（只查看，不消费、不写 state）。
+- 经外部服务创建任务的工具以 run 与 call 的稳定身份导出幂等键（如 shell 交给 Zone TaskMgr 的 `shell:<run_id>:<call_id>`）；shell 命令的环境里有 `XLLM_RUN_ID` / `XLLM_CALL_ID`。
+- 崩溃恢复：调用中途崩溃时，恢复从派发前的检查点再派发它，由 runtime 的工具管理器按 `call_id` 找回（Session Directory Protocol §10）；run 的终态已落盘而 state 尚未提交时，重做的结束从 run.json 的 `host.extra.tasks` 取回仍需跟踪的 task；保活决定（`host.extra.kept`）同样按记录重做。task 结果只交付一次。
+- **向用户提问**：提问是一个普通的 task。websdk 命令 `ask_user <question> [--option <id>=<label>]... [--allow-text] [--expires <secs>]`（`src/tools/buckyos-agent`）发出一条 `input` 系统通知，即 Zone TaskMgr 上的 `human.input/v1` 任务（幂等键 `ask:<run_id>:<call_id>`，取自 `XLLM_RUN_ID` / `XLLM_CALL_ID`，所以它必须是一条独立的 shell 命令），返回该 task 的 pending 结果（`pending_reason = user_input`）；回答是 task 的结果，按上面的规则以 `<<task_result>>` 交回，过期 / 撤销也是它的终态。Session 不解析问题，也不把下一条消息当作答案：提问期间用户发来的消息照常是新输入。Goal 不用它提问，问题写进 Goal 结果的 `questions`（§3）。
 
 ## 10. Sub Session：创建、汇报与等待
 
@@ -351,7 +361,7 @@ Sub Session 是 `origin.parent_session` 指向父的普通 Session：自己的�
 - **隐式关注**：父的 Runner 按 `origin.parent_session = 自己` 查登记表（每次选批之前、以及等待期间的每次轮询），不需要订阅，父也不需要输入队列。`origin.report` 为 `none` 或缺省的子不产生任何事件。
   - 进度（仅 `report = progress`，子未结束）：`status.rev` 前进且 `{run_state, one_line_status, activity.summary}` 变化时，合成 `AgentEvent{subscription_id: "_child:<sid>", source: session:<sid>, event: "progress", seq: rev}` 并入 `pending_events`（Observe），游标存 `state.subscription_cursors["_child:<sid>"] = {rev, view}`。
   - 需要关注与结束：子 `finished` → `event = finished`（`terminal = true`，summary 含 `report_brief`）；有 `pending_decision` → `needs_decision`；`run_state = waiting` 且 `status.waiting_for = input` → `needs_input`。它们是 **Input**：作为内部输入源 `_child` 的候选（`key = child:<sid>:<event>@<rev>`，index 0）进入受控输入批次，可开启或并入 Turn。候选在每次选批时重新合成，直到消费它的批次的 receipt 提交：应用 receipt 时把 `subscription_cursors["_child:<sid>"].attention` 置为该事件名，同一状态不再交付；子离开该状态后清空，下次进入是新的事件。`_child` 与 `_task` 一样没有总线消费位置。
-- **同步等待**：工具返回 `Pending{task_id: "session:<sid>"}`（`create-worksession --wait`、`wait <sid>`）时父 run 以 PendingTool 挂起，按 §9 的串行等待处理；该 task id 由宿主 Session 的 resolver 只读登记表解析：结束 → 结果 `{session_id, status: finished, outcome, acceptance, one_line_status, report_brief, answer_ref, artifact_id}`；等输入 / 等决定 → `{status: needs_input | needs_decision, question}`；其它继续等。被挂起调用等待的子不产生 `_child` 候选；回填时把当时的状态记为已交付，结束不再作为事件重复注入。等待不拥有该 Session：`cancel` 不支持，stop 是显式的控制命令。不具备这个 resolver 的执行方（独立 xllm）`can_resolve = false`，拒绝接手。
-- **父结束规则**：见 [Session Directory Protocol](<Session Directory Protocol.md>) §4 的 `waiting_for = children`。`run`、`serve` 与等待循环在 `waiting_for.kind = children` 或 `watched_tasks` 非空时轮询登记表 / resolver，不以“没有输入队列”为返回依据。
+- **等一个子 Session**：`create-worksession --wait` 与 `wait <sid>` 返回 task `session:<sid>` 的 pending 结果；宿主 Session 的 resolver 只读登记表，对这个 task 的等待立即回答：结束 → 结果 `{session_id, status: finished, outcome, acceptance, one_line_status, report_brief, answer_ref, artifact_id}`；等输入 / 等决定 → `{session_id, status: needs_input | needs_decision, question, pending_decision, note}`；仍在运行 → “仍在运行”结果。等待不在 loop 里：Session 在 loop 之外跟进子 Session，模型这时结束回复即可，run 为需要汇报的子保活（`waiting_for = children`），子的结束以 `_child` 的 `finished` 事件注入同一个 run。调用结果已经是子的结束（或需要关注的状态）时，这个状态记为已交付，不再作为事件重复注入。委托了 Workspace 的子 Session 在父的调用进行期间不能写，所以 resolver 从不在调用里等它。等待不拥有该 Session：`cancel` 不支持，stop 是显式的控制命令。不具备这个 resolver 的执行方（独立 xllm）`can_resolve = false`，拒绝接手。
+- **父结束规则**：见 [Session Directory Protocol](<Session Directory Protocol.md>) §4 的 `waiting_for = children` 与保活。`run`、`serve` 与等待循环在 `waiting_for.kind = children` 或 `watched_tasks` 非空时轮询登记表 / resolver，不以“没有输入队列”为返回依据。
 - **stop 级联**：父被 stop 时，对未结束且有输入队列的子投递 `stop`；没有队列的子由驱动它的宿主以驱动者自己的停止请求结束（见 [Session Control Protocol](<Session Control Protocol.md>)）。子被 stop 只在父那里表现为一次 `finished`（outcome stopped）。
 - **推进**：子由其驱动者身份的托管进程推进（参考实现 `host::ChildDriver`：轮询登记表，为每个未结束、未被驱动的子按其自己的配置装配 runtime 后 `drive(Idle)`，各持自己的 lease）。宿主进程退出只停止这些任务，不改变已提交状态；重启后从登记表重新接管。

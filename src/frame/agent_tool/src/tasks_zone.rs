@@ -20,8 +20,8 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use llm_context::observation::ToolResultView;
-use llm_context::tasks::{
+use crate::result_view::ToolResultView;
+use crate::task_model::{
     CancelUnsupported, RunningTaskResolver, TaskBrief, TaskResult, TaskState,
     MAX_IN_TOOL_WAIT_MS,
 };
@@ -46,10 +46,13 @@ const RESULT_TAIL_BYTES: usize = 8 * 1024;
 const RECOVER_POLL: Duration = Duration::from_secs(5);
 const WRITE_RETRIES: usize = 3;
 
-/// A `tool.shell` task as this module reads it.
+/// A TaskMgr task as this module reads it: a `tool.shell` task, or any
+/// other task a tool's result refers to (read only).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ShellTaskRecord {
     pub task_id: String,
+    /// `None`: a `tool.shell` task created here.
+    pub schema_id: Option<String>,
     pub name: String,
     pub input: Json,
     pub terminal: bool,
@@ -530,8 +533,13 @@ impl ZoneShellTasks {
                     .get("started_at_ms")
                     .and_then(Json::as_u64)
                     .unwrap_or_else(crate::now_ms);
+                let brief = if rec.is_shell() {
+                    format!("shell: {}", compact(command_of(&rec), 80))
+                } else {
+                    compact(rec.message.as_deref().unwrap_or(&rec.name), 80)
+                };
                 TaskState::Running {
-                    brief: format!("shell: {}", compact(command_of(&rec), 80)),
+                    brief,
                     elapsed_ms: crate::now_ms().saturating_sub(started),
                     output_tail: rec
                         .progress
@@ -770,8 +778,22 @@ fn tail(text: &str, max: usize) -> String {
     format!("…{}", &text[start..])
 }
 
-/// The result of a terminal task, from what TaskMgr holds.
+impl ShellTaskRecord {
+    fn is_shell(&self) -> bool {
+        self.schema_id
+            .as_deref()
+            .map_or(true, |s| s == buckyos_api::TOOL_SHELL_TASK_SCHEMA_ID)
+    }
+}
+
+/// The result of a terminal task, from what TaskMgr holds: a `shell` task
+/// in its own terms; any other task by one rule (freeze TODO F7) — a result
+/// that is an AgentToolResult envelope is that envelope, anything else is
+/// its JSON as the text.
 fn result_of(rec: &ShellTaskRecord) -> TaskResult {
+    if !rec.is_shell() {
+        return generic_result_of(rec);
+    }
     let command = command_of(rec).to_string();
     let detail = rec
         .result
@@ -818,6 +840,57 @@ fn result_of(rec: &ShellTaskRecord) -> TaskResult {
     }
 }
 
+fn generic_result_of(rec: &ShellTaskRecord) -> TaskResult {
+    let outcome = rec.outcome.as_deref().unwrap_or("failed");
+    let success = outcome == "succeeded";
+    let payload = rec
+        .result
+        .clone()
+        .or_else(|| rec.error.clone())
+        .unwrap_or(Json::Null);
+    if let Some(envelope) = payload
+        .get("agent_tool_protocol")
+        .and_then(|_| ToolResultView::from_host(&Some(payload.clone())))
+    {
+        let output = envelope
+            .output
+            .clone()
+            .filter(|o| !o.trim().is_empty())
+            .or_else(|| envelope.detail.as_ref().map(|d| {
+                serde_json::to_string_pretty(d).unwrap_or_else(|_| d.to_string())
+            }))
+            .unwrap_or_else(|| envelope.summary.clone());
+        return TaskResult {
+            success: success && envelope.status != crate::result_view::ToolResultStatusView::Error,
+            output,
+            tool_result: Some(envelope),
+        };
+    }
+    let body = match &payload {
+        Json::Null => String::new(),
+        Json::String(s) => s.clone(),
+        other => serde_json::to_string_pretty(other).unwrap_or_else(|_| other.to_string()),
+    };
+    let head = match outcome {
+        "canceled" => format!("task {} ({}) was cancelled.", rec.task_id, rec.name),
+        "succeeded" => format!("task {} ({}) completed.", rec.task_id, rec.name),
+        _ => format!("task {} ({}) failed.", rec.task_id, rec.name),
+    };
+    TaskResult {
+        success,
+        output: if body.trim().is_empty() {
+            head
+        } else {
+            format!("{head}\n{body}")
+        },
+        tool_result: Some(ToolResultView {
+            summary: outcome.to_string(),
+            detail: (!payload.is_null()).then_some(payload),
+            ..Default::default()
+        }),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // TaskMgr of the zone
 // ---------------------------------------------------------------------------
@@ -847,6 +920,7 @@ mod zone {
     fn record(task: &Task) -> ShellTaskRecord {
         ShellTaskRecord {
             task_id: task.task_id.clone(),
+            schema_id: Some(task.schema_id.clone()),
             name: task.name.clone(),
             input: task.input.clone(),
             terminal: task.phase.is_terminal(),
@@ -1494,5 +1568,37 @@ mod tests {
             panic!()
         };
         assert!(r.output.contains("earlier"));
+    }
+
+    /// A task of another service (F7): its result is an AgentToolResult
+    /// envelope, or JSON shown as the text — never read as a shell task.
+    #[test]
+    fn other_tasks_render_by_the_generic_rule() {
+        let envelope = ShellTaskRecord {
+            task_id: "t-1".into(),
+            schema_id: Some("human.input/v1".into()),
+            name: "ask".into(),
+            terminal: true,
+            outcome: Some("succeeded".into()),
+            result: Some(json!({
+                "agent_tool_protocol": "1",
+                "status": "success",
+                "summary": "answered",
+                "output": "use the blue one",
+                "detail": {}
+            })),
+            ..Default::default()
+        };
+        let r = result_of(&envelope);
+        assert!(r.success);
+        assert_eq!(r.output, "use the blue one");
+        assert_eq!(r.tool_result.unwrap().summary, "answered");
+        let plain = ShellTaskRecord {
+            result: Some(json!({"obj_id": "cyfile:1"})),
+            ..envelope
+        };
+        let r = result_of(&plain);
+        assert!(r.success);
+        assert!(r.output.contains("completed") && r.output.contains("cyfile:1"), "{}", r.output);
     }
 }

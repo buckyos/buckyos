@@ -8,7 +8,8 @@ use buckyos_api::{AiMessage, AiResponse, AiRole, AiToolCall, AiUsage};
 use crate::deps::{LLMContextDeps, ToolManager};
 use crate::observation::Observation;
 use crate::outcome::{BudgetKind, ContextOutput, LLMContextOutcome};
-use crate::{LLMContext, XmlBehaviorParser, XmlStepRenderer};
+use crate::tests::protocol::{XmlBehaviorParser, XmlStepRenderer};
+use crate::LLMContext;
 
 use super::mocks::*;
 

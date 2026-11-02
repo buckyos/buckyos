@@ -6,7 +6,7 @@
     "agent_did": "did:bns:jarvis.alice",
     "kind": "work",
     "class": "work",
-    "created_at_ms": 1792976022040,
+    "created_at_ms": 1793591511790,
     "created_by": {
       "principal": "app:app2@alice",
       "via": "app"
@@ -29,8 +29,7 @@
       "load_hints": true,
       "max_process_depth": 4,
       "max_sub_sessions": 4,
-      "max_session_depth": 2,
-      "ask_user_timeout_secs": 10800
+      "max_session_depth": 2
     }
   },
   "prompt": {
@@ -82,8 +81,8 @@
       {
         "kind": "kmsg",
         "id": "q",
-        "queue": "app2::alice::opendan.session.work-fixture-report",
-        "subscriber": "opendan.jarvis.alice.work-fixture-report"
+        "queue": "app2::alice::opendan.session.4aee1f38c33a4a03a646daf33e28ad3d022baa0eb867b6d9517640f979093e46",
+        "subscriber": "opendan.4aee1f38c33a4a03a646daf33e28ad3d022baa0eb867b6d9517640f979093e46"
       }
     ],
     "wake_event": "/opendan/jarvis.alice/session/work-fixture-report/input"

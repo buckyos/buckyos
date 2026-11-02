@@ -345,21 +345,6 @@ impl OutboundSink for MsgCenterSink {
         }
     }
 
-    async fn question(&self, _cfg: &SessionConfig, mut msg: MsgObject) -> MsgObject {
-        // Only the owner's requests reach a group session: the question is
-        // theirs to answer, and MessageHub turns answer mode on for the
-        // members a question mentions.
-        if msg.kind == MsgObjKind::GroupMsg && msg.mentions.is_none() {
-            if let Some(owner) = &self.owner {
-                msg.mentions = Some(ndn_lib::MsgMentions {
-                    dids: vec![owner.clone()],
-                    all: false,
-                });
-            }
-        }
-        msg
-    }
-
     async fn send(&self, _sid: &str, record: &OutboundRecord) -> SendResult {
         match self.mail.post_send(record.msg.clone(), &record.key).await {
             Ok(r) if r.ok => SendResult::Sent {

@@ -79,7 +79,6 @@ pub fn observation_view(o: &Observation) -> (String, String) {
             },
         ),
         Observation::Error { message, .. } => ("error".into(), message.clone()),
-        Observation::Pending { .. } => ("pending".into(), String::new()),
         Observation::Cancelled { reason, .. } => ("cancelled".into(), reason.clone()),
         Observation::Unresolved {
             reason,

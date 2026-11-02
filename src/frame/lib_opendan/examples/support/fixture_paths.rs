@@ -2,7 +2,22 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+/// Longest path a fixture file may have inside its scenario, and inside the
+/// repository (`doc/opendan/protocol/fixtures/<scenario>/…`), for a Windows
+/// checkout.
+const MAX_SCENARIO_PATH: usize = 160;
+const MAX_REPOSITORY_PATH: usize = 210;
+const REPOSITORY_PREFIX: &str = "doc/opendan/protocol/fixtures/";
+
+/// Files whose path is too long for a Windows checkout go to `_files/<n>`,
+/// listed in `_paths.json` ([`expand`] puts them back).
 pub fn compact(root: &Path) {
+    let scenario = root
+        .file_name()
+        .map(|n| n.to_string_lossy().encode_utf16().count())
+        .unwrap_or(0);
+    let limit = MAX_SCENARIO_PATH
+        .min(MAX_REPOSITORY_PATH.saturating_sub(REPOSITORY_PREFIX.len() + scenario + 1));
     let mut stack = vec![root.to_path_buf()];
     let mut paths = Vec::new();
     while let Some(dir) = stack.pop() {
@@ -17,7 +32,7 @@ pub fn compact(root: &Path) {
                     .to_str()
                     .unwrap()
                     .replace('\\', "/");
-                if relative.encode_utf16().count() > 160 {
+                if relative.encode_utf16().count() > limit {
                     paths.push(relative);
                 }
             }

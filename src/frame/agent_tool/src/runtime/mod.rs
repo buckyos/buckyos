@@ -3,7 +3,8 @@ pub mod executor;
 pub mod node;
 pub mod ssh;
 
-use crate::exec_tracking::{unresolved_reason, InflightAction};
+use crate::exec_tracking::unresolved_reason;
+use buckyos_api::AiToolCall;
 use crate::llm_bash::{
     exec_dir_for, new_run_binding_slot, read_exit_file, read_file_tail, BashRunOutput,
     BashRunRequest, BashRunner, BashTarget, LocalProcessBashRunner, RunBinding, RunBindingSlot,
@@ -14,7 +15,7 @@ use crate::{AgentToolError, SessionRuntimeContext};
 use async_trait::async_trait;
 use files::{FileBackend, LocalFileBackend};
 use llm_context::deps::{ToolCallCtx, ToolManager};
-use llm_context::prompt_engine::{
+use crate::prompt_engine::{
     PromptExec, PromptExecOutput, PromptExecRequest, RenderError, ValueLoader,
 };
 use schemars::JsonSchema;
@@ -45,6 +46,12 @@ pub struct RuntimeConfig {
     /// `RuntimeInfo.baseline` for prompts, never probed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub baseline: Option<RuntimeBaseline>,
+    /// How long a tool call waits for the task its work became before it
+    /// returns "still running, task X" (default 30 s, at most 30 min). A
+    /// budget at least the `shell` timeout makes `shell` wait for its
+    /// command to finish. Policy, not identity: `runtime_id` ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_wait_ms: Option<u64>,
 }
 
 pub use buckyos_api::RuntimeBaseline;
@@ -75,6 +82,13 @@ pub struct SshConfig {
 impl RuntimeConfig {
     pub fn kind(&self) -> &str {
         self.kind.as_deref().unwrap_or("native")
+    }
+
+    /// The in-call wait budget for tasks (see `task_wait_ms`).
+    pub fn task_wait_ms(&self) -> u64 {
+        self.task_wait_ms
+            .unwrap_or(crate::task_model::DEFAULT_TASK_WAIT_MS)
+            .clamp(1, crate::task_model::MAX_IN_TOOL_WAIT_MS)
     }
     pub fn validate(&self, complete: bool) -> Result<()> {
         let bad = |reason: String| XllmError::Config {
@@ -109,6 +123,9 @@ impl RuntimeConfig {
         }
         if self.id.as_ref().is_some_and(|id| id.trim().is_empty()) {
             return Err(bad("id cannot be empty".into()));
+        }
+        if self.task_wait_ms == Some(0) {
+            return Err(bad("task_wait_ms must be positive".into()));
         }
         if complete {
             if self.remote_ssh.is_some() && self.kind() != "remote_ssh"
@@ -202,6 +219,9 @@ impl RuntimeConfig {
         }
         if other.baseline.is_some() {
             self.baseline = other.baseline;
+        }
+        if other.task_wait_ms.is_some() {
+            self.task_wait_ms = other.task_wait_ms;
         }
         self.env.extend(other.env.clone());
         if let Some(n) = &other.remote_node {
@@ -361,12 +381,13 @@ pub trait AgentRuntime: Send + Sync {
         deps: &XllmDeps,
     ) -> Result<(EffectiveTools, XllmToolManager)>;
 
-    /// The text a previous executor's in-flight `action` is answered with
-    /// after a crash (long-tool TODO §3.2): no process is verified or
-    /// stopped. For `shell` the runtime reads the execution directory of
+    /// The account of a call a previous executor may have started, given
+    /// to the model when the call's result cannot be found and the tool is
+    /// not idempotent (freeze TODO F12): no process is verified or stopped.
+    /// For `shell` the runtime reads the execution directory of
     /// `(run, call_id)` — exit code and output tail when the command ended,
     /// "may still be running" and where to look otherwise.
-    async fn describe_interrupted(&self, run: &RunBinding, action: &InflightAction) -> String;
+    async fn describe_interrupted(&self, run: &RunBinding, call: &AiToolCall) -> String;
 }
 
 #[async_trait]
@@ -402,6 +423,8 @@ pub(crate) struct ExecDirFacts {
     pub stdout_tail: String,
     pub stderr_tail: String,
     pub exists: bool,
+    /// When the command was written there (local directories only).
+    pub started_at_ms: Option<u64>,
 }
 
 pub(crate) fn read_exec_dir(dir: &Path) -> ExecDirFacts {
@@ -410,12 +433,16 @@ pub(crate) fn read_exec_dir(dir: &Path) -> ExecDirFacts {
         stdout_tail: read_file_tail(&dir.join("stdout"), OUTPUT_TAIL_BYTES),
         stderr_tail: read_file_tail(&dir.join("stderr"), OUTPUT_TAIL_BYTES),
         exists: dir.is_dir(),
+        started_at_ms: std::fs::metadata(dir.join("command"))
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64),
     }
 }
 
-fn shell_command_of(action: &InflightAction) -> String {
-    action
-        .args
+fn shell_command_of(call: &AiToolCall) -> String {
+    call.args
         .get("command")
         .and_then(Value::as_str)
         .map(|c| {
@@ -442,25 +469,30 @@ fn tails(facts: &ExecDirFacts) -> String {
     s
 }
 
-fn started_text(action: &InflightAction) -> String {
-    let elapsed = crate::now_ms().saturating_sub(action.started_at_ms);
-    format!(
-        "started {} ago (at {} ms since epoch)",
-        crate::llm_bash::fmt_elapsed(elapsed),
-        action.started_at_ms
-    )
+fn started_text(facts: Option<&ExecDirFacts>) -> String {
+    match facts.and_then(|f| f.started_at_ms) {
+        Some(at) => {
+            let elapsed = crate::now_ms().saturating_sub(at);
+            format!(
+                "started {} ago (at {} ms since epoch)",
+                crate::llm_bash::fmt_elapsed(elapsed),
+                at
+            )
+        }
+        None => "start time unknown".to_string(),
+    }
 }
 
 /// Text for an interrupted `shell` call, by runtime kind (§3.2).
 pub(crate) fn interrupted_shell_text(
     kind: &str,
     target: &str,
-    action: &InflightAction,
+    call: &AiToolCall,
     facts: Option<&ExecDirFacts>,
     location: &str,
 ) -> String {
-    let command = shell_command_of(action);
-    let started = started_text(action);
+    let command = shell_command_of(call);
+    let started = started_text(facts);
     if let Some(f) = facts {
         if let Some(code) = f.exit_code {
             return format!(
@@ -705,6 +737,7 @@ impl AgentRuntime for Runtime {
             s.files.clone(),
             &s.descriptor,
             ctx.run.clone(),
+            self.config.task_wait_ms(),
         )
         .await?;
         let mut info = self.info().await?;
@@ -715,9 +748,9 @@ impl AgentRuntime for Runtime {
         manager.set_runtime(runner, s.descriptor.clone(), info);
         Ok((effective, manager))
     }
-    async fn describe_interrupted(&self, run: &RunBinding, action: &InflightAction) -> String {
-        if action.tool != TOOL_SHELL {
-            return unresolved_reason(&action.tool);
+    async fn describe_interrupted(&self, run: &RunBinding, call: &AiToolCall) -> String {
+        if call.name != TOOL_SHELL {
+            return unresolved_reason(&call.name);
         }
         let kind = self.descriptor().kind.clone();
         let opened = self.opened.get();
@@ -729,18 +762,18 @@ impl AgentRuntime for Runtime {
                 .and_then(|s| s.host.clone())
                 .unwrap_or_default();
             let Some(ssh) = opened.and_then(|o| o.ssh.clone()) else {
-                return interrupted_shell_text(&kind, &target, action, None, "(remote, not opened)");
+                return interrupted_shell_text(&kind, &target, call, None, "(remote, not opened)");
             };
-            let dir = ssh.remote_exec_dir(&run.run_id, &action.call_id);
+            let dir = ssh.remote_exec_dir(&run.run_id, &call.call_id);
             let facts = ssh.read_exec_dir(&dir).await;
-            return interrupted_shell_text(&kind, &target, action, facts.as_ref(), &dir);
+            return interrupted_shell_text(&kind, &target, call, facts.as_ref(), &dir);
         }
-        match exec_dir_for(run.run_dir.as_deref(), Some(&action.call_id)) {
+        match exec_dir_for(run.run_dir.as_deref(), Some(&call.call_id)) {
             Some(dir) => {
                 let facts = read_exec_dir(&dir);
-                interrupted_shell_text(&kind, "", action, Some(&facts), &dir.display().to_string())
+                interrupted_shell_text(&kind, "", call, Some(&facts), &dir.display().to_string())
             }
-            None => interrupted_shell_text(&kind, "", action, None, "(no execution directory)"),
+            None => interrupted_shell_text(&kind, "", call, None, "(no execution directory)"),
         }
     }
 }

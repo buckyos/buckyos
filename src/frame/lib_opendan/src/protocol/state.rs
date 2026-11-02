@@ -95,10 +95,6 @@ pub struct WaitingFor {
     pub refs: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deadline_ms: Option<u64>,
-    /// TaskMgr human tasks the wait depends on: questions asked through a
-    /// notification (`ask-user` of a Work).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub human_tasks: Vec<String>,
 }
 
 /// Inputs of one logical Turn that entered a run. The input batch that
@@ -183,8 +179,10 @@ pub enum CallTrigger {
     /// `next_behavior` of a complete Step: the result returns as
     /// `process_result` in the caller's hand-over batch.
     Behavior,
-    /// A tool call / behavior action: the caller is suspended on
-    /// `PendingTool`, the result is filled as the tool result of `call_id`.
+    /// A tool call / behavior action (`call_behavior` or a behavior's named
+    /// function): the call returned at once, the session handed over when
+    /// the caller's run segment ended; the result returns as
+    /// `process_result` (naming `call_id`) in the caller's hand-over batch.
     Tool { call_id: String, task_id: String },
 }
 
@@ -310,9 +308,6 @@ pub enum OutboxPurpose {
     Placeholder,
     /// The reply of a Turn as an edit of its placeholder.
     FinalEdit,
-    /// A question to the user while the Turn is open (`ask-user`): a
-    /// `thread` message on the placeholder, carrying `agent_ask`.
-    Question,
 }
 
 impl OutboxPurpose {
@@ -748,9 +743,8 @@ pub struct SessionState {
     pub internal_continuation: Option<String>,
     /// Result of a sub context, handed to its caller: `{behavior, result,
     /// status: ok | failed | needs_user_input, next_action_id,
-    /// next_step_index}`. Behavior trigger: rendered into the caller's
-    /// hand-over batch. Tool trigger: carries `call_id` and is filled as that
-    /// call's tool result when the caller's run is opened.
+    /// next_step_index}`, rendered into the caller's hand-over batch (a tool
+    /// trigger carries its `call_id`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub process_result: Option<Value>,
     /// Revision of the TodoList (`todos.json`) last shown to the session's
@@ -852,6 +846,7 @@ impl SessionState {
                 summary: format!("The user's time zone is {tz}. Times in inputs are UTC."),
                 data_ref: None,
                 terminal: false,
+                call_id: None,
             };
             merge_pending_event(
                 &mut state.pending_events,
@@ -908,16 +903,6 @@ impl SessionState {
             .and_then(|f| f.call.as_ref())
     }
 
-    /// The live run is a caller whose tool-triggered sub context returned:
-    /// its result waits to be filled as the call's tool result.
-    pub fn tool_return_pending(&self) -> bool {
-        self.live_run.is_some()
-            && self
-                .process_result
-                .as_ref()
-                .is_some_and(|r| r.get("call_id").is_some())
-    }
-
     /// Sub contexts in progress (nesting depth of the live run).
     pub fn call_depth(&self) -> usize {
         self.process_stack
@@ -972,6 +957,7 @@ mod tests {
             summary: summary.into(),
             data_ref: None,
             terminal,
+            call_id: None,
         }
     }
 

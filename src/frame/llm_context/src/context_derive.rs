@@ -1,8 +1,8 @@
 //! Deriving a child context from a parent snapshot.
 //!
 //! Two constructions, both pure (the parent snapshot is only read) and both
-//! valid whatever the parent is doing — running, suspended on a tool
-//! (`PendingTool`), or in the middle of a tool batch / behavior step:
+//! valid whatever the parent is doing — running, suspended on the context
+//! limit, or in the middle of a tool batch / behavior step:
 //!
 //! - [`derive_child`] — *create-sub-context*: the child has its own request
 //!   (system, model, tools, budget) and takes from the parent only what the
@@ -16,15 +16,16 @@
 //! of its own. What it inherited is reported as an [`InheritBoundary`] so
 //! the host records only what the child adds.
 //!
-//! Nothing here relaxes [`crate::LLMContext::inject`] or
-//! [`crate::snapshot_overrides::rebuild_with_inherit`]: the parent still has
+//! Nothing here relaxes [`crate::LLMContext::inject`]: the parent still has
 //! to be resumed through its own fill.
 
 use buckyos_api::{AiMessage, AiRole};
 use serde::{Deserialize, Serialize};
 
 use crate::behavior_loop::StepRecord;
-use crate::request::{BudgetSpec, ContextOwnerRef, LLMContextRequest, OutputSpec, ToolPolicy};
+use serde_json::Value;
+
+use crate::request::{BudgetSpec, LLMContextRequest, OutputSpec, ToolPolicy};
 use crate::state::{LLMContextSnapshot, LLMContextState};
 use crate::suspension::{check_paired, strip_step_thinking, strip_thinking, unanswered_tool_calls};
 
@@ -173,7 +174,7 @@ pub fn derive_child(
 /// loop mode are the parent's and cannot be changed here.
 #[derive(Debug, Clone, Default)]
 pub struct ForkOptions {
-    pub owner: Option<ContextOwnerRef>,
+    pub owner: Option<Value>,
     pub trace: Option<String>,
     pub objective: Option<String>,
     /// Tool set of the branch. A different tool definition is allowed but
@@ -202,8 +203,7 @@ pub struct ForkOptions {
 /// The request keeps `behavior_name`, model and output so the inherited
 /// history renders exactly as it did for the parent. In function call mode
 /// the inherited history becomes the branch's `request.input`; in behavior
-/// mode `request.input`, steps, hot step and history inputs are kept as they
-/// are.
+/// mode `request.input`, steps and hot step are kept as they are.
 pub fn fork_snapshot(
     parent: &LLMContextSnapshot,
     options: ForkOptions,
@@ -218,7 +218,7 @@ pub fn fork_snapshot(
             ));
         }
     }
-    let open_batch = pstate.has_continuation() || !pstate.pending_calls().is_empty();
+    let open_batch = pstate.has_continuation();
     let behavior = !request.behavior_name.is_empty();
     let prefix = request.input.len();
     let extends_input =
@@ -286,7 +286,6 @@ pub fn fork_snapshot(
     state.steps = pstate.steps.clone();
     state.last_step = pstate.last_step.clone();
     state.history_summaries = pstate.history_summaries.clone();
-    state.history_inputs = pstate.history_inputs.clone();
     state.last_report = None;
     state.report_end = false;
     state.next_step_index = pstate.next_step_index;
@@ -311,8 +310,8 @@ pub fn fork_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::observation::PendingToolCall;
-    use crate::request::{ErrorPolicy, HumanPolicy, ModelPolicy};
+    use crate::outcome::ContextLimitKind;
+    use crate::request::{ErrorPolicy, ModelPolicy};
     use crate::state::{ActionStep, Suspension, ToolBatch};
     use buckyos_api::{AiContent, AiResponse, AiToolCall};
     use serde_json::json;
@@ -356,9 +355,7 @@ mod tests {
 
     fn request(behavior: &str, input: Vec<AiMessage>) -> LLMContextRequest {
         LLMContextRequest {
-            owner: ContextOwnerRef::Agent {
-                session_id: "s".into(),
-            },
+            owner: json!({"session_id": "s"}),
             trace: None,
             objective: String::new(),
             behavior_name: behavior.into(),
@@ -367,7 +364,6 @@ mod tests {
             tool_policy: ToolPolicy::default(),
             output: OutputSpec::default(),
             budget: BudgetSpec::default(),
-            human_policy: HumanPolicy::default(),
             error_policy: ErrorPolicy::default(),
             forbid_next_behavior: false,
         }
@@ -432,16 +428,8 @@ mod tests {
         p.state.accumulated.push(tool_use(&["first", "fork", "other"]));
         p.state.accumulated.push(tool_result("first", "done"));
         p.state.tool_batch = Some(ToolBatch {
-            remaining: vec![call("other")],
+            remaining: vec![call("fork"), call("other")],
             batch_error: None,
-        });
-        p.state.suspended = Some(Suspension::PendingTool {
-            pending: vec![PendingToolCall {
-                call: call("fork"),
-                task_id: "t1".into(),
-                until_ms: None,
-            }],
-            at_ms: 5,
         });
         let d = fork_snapshot(&p, ForkOptions::default()).unwrap();
         // H = history before the triggering batch; nothing of the batch.
@@ -478,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn fork_of_a_behavior_parent_keeps_steps_hot_step_and_inputs() {
+    fn fork_of_a_behavior_parent_keeps_steps_and_hot_step() {
         let mut p = snap(
             "plan",
             vec![msg(AiRole::System, "S"), msg(AiRole::User, "task")],
@@ -486,11 +474,6 @@ mod tests {
         );
         p.state.steps = vec![step("plan", 0, "s0")];
         p.state.last_step = Some(step("plan", 1, "hot"));
-        p.state.history_inputs = vec![crate::behavior_loop::HistoryInputRecord {
-            source: "x".into(),
-            text: "in".into(),
-            at_ms: 1,
-        }];
         p.state.next_step_index = 3;
         p.state.next_action_id = 7;
         p.state.action_step = Some(ActionStep {
@@ -502,7 +485,6 @@ mod tests {
         assert_eq!(d.snapshot.request.behavior_name, "plan");
         assert_eq!(s.steps.len(), 1);
         assert_eq!(s.last_step.as_ref().unwrap().assistant_text, "hot");
-        assert_eq!(s.history_inputs.len(), 1);
         assert!(s.action_step.is_none(), "the step in progress is not inherited");
         assert_eq!(s.accumulated, p.request.input, "inner transcript dropped");
         assert_eq!((s.next_step_index, s.next_action_id), (3, 7));
@@ -569,12 +551,9 @@ mod tests {
             step: step("plan", 2, "in progress"),
             response: AiResponse::default(),
         });
-        p.state.suspended = Some(Suspension::PendingTool {
-            pending: vec![PendingToolCall {
-                call: call("c"),
-                task_id: "t".into(),
-                until_ms: None,
-            }],
+        p.state.suspended = Some(Suspension {
+            which: ContextLimitKind::ApproachingWindow,
+            estimated_tokens: Some(10),
             at_ms: 1,
         });
         let child = request("do", vec![msg(AiRole::System, "DO")]);

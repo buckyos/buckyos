@@ -5,7 +5,6 @@
 
 pub mod assembler;
 pub mod background;
-mod ask;
 mod children;
 mod consolidation;
 mod drive;

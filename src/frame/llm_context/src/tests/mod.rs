@@ -8,6 +8,7 @@ mod cancel;
 mod error_policy;
 mod function_call_loop;
 mod mocks;
+mod protocol;
 mod reply_contract;
 mod suspension;
 mod thinking;

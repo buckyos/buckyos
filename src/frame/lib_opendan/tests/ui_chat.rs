@@ -32,9 +32,9 @@ fn ui_spec() -> libopendan::api::SessionSpec {
     spec.prompt.llm_context = json!({
         "tools": {
             "enabled": true,
-            "tools": [{ "groupname": "bash_core" }],
-            "shell": { "mode": "auto", "wait_ms": 200 }
+            "tools": [{ "groupname": "bash_core" }]
         },
+        "runtime": { "task_wait_ms": 200 },
         "json_schema": {
             "type": "object", "additionalProperties": false,
             "required": ["reply", "topic", "artifacts"],
@@ -175,14 +175,19 @@ async fn uncompressed_chat_keeps_fork_results_without_the_child_transcript() {
     let sd = env.create_work(spec).await;
     let llm = ScriptedLlm::new(|req, n| match n {
         0 => tool_call("fork-call", "call_behavior", json!({"behavior": "research", "task": "find the answer"})),
-        1 => shell("child-call", "echo CHILD-ONLY-TRANSCRIPT"),
-        2 => text(r#"{"reply":"child result","topic":null,"artifacts":[]}"#),
-        3 | 4 => {
+        // The call is registered; the branch starts once the caller stops acting.
+        1 => text(r#"{"reply":"looking into it","topic":null,"artifacts":[]}"#),
+        2 => shell("child-call", "echo CHILD-ONLY-TRANSCRIPT"),
+        3 => text(r#"{"reply":"child result","topic":null,"artifacts":[]}"#),
+        4 | 5 => {
             let all = render(&req.messages);
             assert!(!all.contains("<session_history>"), "{all}");
             assert!(!all.contains("CHILD-ONLY-TRANSCRIPT"), "{all}");
             assert!(has_tool_result(req, "child-call").is_none());
-            assert!(has_tool_result(req, "fork-call").unwrap().contains("child result"));
+            assert!(has_tool_result(req, "fork-call").unwrap().contains("registered"));
+            // The branch result comes back as the caller's input, naming the call.
+            assert!(all.contains("<process_result") && all.contains("call_id=\"fork-call\""), "{all}");
+            assert!(all.contains("child result"), "{all}");
             let uses: Vec<_> = req.messages.iter().filter(|m| {
                 m.role == AiRole::Assistant
                     && m.tool_calls().iter().any(|call| call.call_id == "fork-call")
@@ -202,7 +207,7 @@ async fn uncompressed_chat_keeps_fork_results_without_the_child_transcript() {
         let result = drive(&sd, &env.deps(llm.clone()), StopWhen::TurnClosed).await;
         assert!(matches!(result, DriveResult::TurnClosed { status: TurnStatus::Completed, .. }), "{result:?}");
     }
-    assert_eq!(llm.count(), 5);
+    assert_eq!(llm.count(), 6);
     assert!(sd.summary_opt().unwrap().is_none());
     assert!(read_worklog(&sd).iter().any(|e| {
         matches!(&e.body, WorklogBody::ActionResult { call_id, .. } if call_id == "child-call")
@@ -385,7 +390,8 @@ async fn a_task_followed_through_the_cli_is_not_watched_after_the_turn() {
         }
         1 => {
             let r = has_tool_result(req, "c1").expect("c1 result");
-            assert!(r.contains("agent-session task wait local:shell:c1"), "{r}");
+            // The session follows it; the model may still look at it itself.
+            assert!(r.contains("comes back to you as input") && r.contains("agent-session task state local:shell:c1"), "{r}");
             tool_call(
                 "c2",
                 "shell",
@@ -467,7 +473,7 @@ async fn a_zone_host_hands_long_commands_to_the_task_service() {
         1 => {
             let r = has_tool_result(req, "c1").expect("c1 result");
             let id = zone_task_id(&r).unwrap_or_else(|| panic!("no task id in {r}"));
-            assert!(r.contains(&format!("agent-session task wait {id}")), "{r}");
+            assert!(r.contains(&format!("agent-session task state {id}")), "{r}");
             *seen_in_llm.lock().unwrap() = Some(id.clone());
             tool_call(
                 "c2",
@@ -508,7 +514,7 @@ async fn a_zone_host_hands_long_commands_to_the_task_service() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_task_still_running_after_the_turn_is_followed_by_the_next_drive() {
+async fn a_reply_while_a_task_runs_keeps_the_turn_open_until_its_result() {
     let env = Env::new();
     let sd = env.create_work(ui_spec()).await;
     post_blocking(&env.queue_dir, &queue_of(&sd), msg("start the slow job"));
@@ -524,7 +530,7 @@ async fn a_task_still_running_after_the_turn_is_followed_by_the_next_drive() {
         2 => {
             let input = last_user_text(req);
             let id = seen_in_llm.lock().unwrap().clone().unwrap();
-            assert!(input.contains(&format!("task:{id}:terminal")), "{input}");
+            assert!(input.contains(&format!("<<task_result task=\"{id}\" call_id=\"c1\" status=\"finished\">>")), "{input}");
             assert!(input.contains("later-done") && input.contains("exited with code 0"), "{input}");
             assert!(!input.contains("state unknown"), "{input}");
             text(r#"{"reply": "the job printed later-done", "topic": null, "artifacts": []}"#)
@@ -532,13 +538,14 @@ async fn a_task_still_running_after_the_turn_is_followed_by_the_next_drive() {
         _ => panic!("unexpected call {n}: {}", last_user_text(req)),
     });
     let (deps, backend) = zone_host_deps(&env, llm.clone());
-    // The Turn ends while the command runs: the session keeps following it.
+    // The reply came while the command runs: the run and its Turn stay open
+    // and follow the task.
     drive(&sd, &deps, StopWhen::Idle).await;
     let id = seen.lock().unwrap().clone().expect("task id");
     let st = sd.state().unwrap();
-    assert_eq!(st.turns_completed, 1);
+    assert_eq!(st.turns_completed, 0);
     assert_eq!(st.watched_tasks, [id.clone()]);
-    assert_eq!(llm.count(), 2, "its end is not delivered by the Turn's drive");
+    assert_eq!(llm.count(), 2, "its end is not delivered by the first drive");
     // Later drives (new runner state each) answer for the task through the
     // task service and deliver its end once.
     let started = std::time::Instant::now();
@@ -548,7 +555,7 @@ async fn a_task_still_running_after_the_turn_is_followed_by_the_next_drive() {
     }
     assert_eq!(llm.count(), 3);
     let st = sd.state().unwrap();
-    assert_eq!(st.turns_completed, 2);
+    assert_eq!(st.turns_completed, 1);
     assert!(st.watched_tasks.is_empty(), "{:?}", st.watched_tasks);
     assert_eq!(backend.record(&id).unwrap().outcome.as_deref(), Some("succeeded"));
     drive(&sd, &deps, StopWhen::Idle).await;

@@ -110,6 +110,10 @@ pub struct GrepOutput {
 
 #[async_trait]
 impl TypedTool for GrepTool {
+    fn idempotent(&self) -> bool {
+        true
+    }
+
     type Args = GrepArgs;
     type Output = GrepOutput;
 

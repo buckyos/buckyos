@@ -44,7 +44,7 @@ async fn a01_work_session_completes_with_tool_call() {
     let last = st.last_run.clone().expect("last run kept");
     assert!(sd.runs().exists(&last), "last run directory kept");
     let rec = sd.runs().record(&last).unwrap();
-    assert!(rec.inflight.is_empty(), "inflight cleared: {:?}", rec.inflight);
+    assert!(sd.runs().in_flight(&last).unwrap().is_none(), "no call left in flight");
     assert!(rec.host_commit_pending.is_none());
     assert_eq!(rec.host.as_ref().unwrap().assembled_by, "libopendan");
     assert!(sd.report().unwrap().contains("hello.txt contains hi"));

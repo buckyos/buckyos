@@ -1,5 +1,5 @@
 //! Thinking blocks are replayed verbatim while the prefix is untouched, and
-//! dropped as a whole when an override rewrites it.
+//! dropped as a whole when the prefix is rewritten.
 
 use std::sync::Arc;
 
@@ -8,10 +8,9 @@ use serde_json::json;
 
 use crate::deps::LLMContextDeps;
 use crate::outcome::LLMContextOutcome;
-use crate::request::{ModelPolicy, ToolMode, ToolPolicy};
-use crate::snapshot_overrides::{apply_overrides_to_snapshot, RequestOverrides};
 use crate::state::LLMContextSnapshot;
-use crate::{is_thinking, LLMContext, StepRenderer, XmlBehaviorParser, XmlStepRenderer};
+use crate::tests::protocol::{XmlBehaviorParser, XmlStepRenderer};
+use crate::{is_thinking, strip_snapshot_thinking, LLMContext, StepRenderer};
 
 use super::mocks::*;
 
@@ -184,97 +183,14 @@ fn snapshot_with_thinking() -> LLMContextSnapshot {
 }
 
 #[test]
-fn overrides_that_change_the_prefix_drop_all_thinking() {
-    let base = snapshot_with_thinking();
-    assert_eq!(snapshot_thinking(&base), 6);
-
-    let changing = vec![
-        RequestOverrides {
-            system_messages: Some(vec![AiMessage::text(AiRole::System, "other sys")]),
-            ..Default::default()
-        },
-        RequestOverrides {
-            user_messages: Some(vec![
-                AiMessage::text(AiRole::User, "parent"),
-                AiMessage::new(AiRole::Assistant, vec![thinking("p", "s"), AiContent::text("a")]),
-            ]),
-            ..Default::default()
-        },
-        RequestOverrides {
-            tool_policy: Some(ToolPolicy {
-                mode: ToolMode::Whitelist,
-                whitelist: vec!["a".into()],
-                ..base.request.tool_policy.clone()
-            }),
-            ..Default::default()
-        },
-        RequestOverrides {
-            model_policy: Some(ModelPolicy {
-                preferred: "other-model".into(),
-                ..base.request.model_policy.clone()
-            }),
-            ..Default::default()
-        },
-        RequestOverrides {
-            behavior_name: Some("execute".into()),
-            ..Default::default()
-        },
-    ];
-    for ov in changing {
-        let label = format!("{ov:?}");
-        let out = apply_overrides_to_snapshot(base.clone(), ov);
-        assert_eq!(snapshot_thinking(&out), 0, "{label}");
-        // Text of the stripped messages survives.
-        assert!(out
-            .state
-            .accumulated
-            .iter()
-            .any(|m| m.role == AiRole::Assistant));
-    }
-}
-
-#[test]
-fn overrides_that_keep_the_prefix_keep_thinking() {
-    let base = snapshot_with_thinking();
-    let keeping = vec![
-        RequestOverrides {
-            system_messages: Some(vec![AiMessage::text(AiRole::System, "sys")]),
-            ..Default::default()
-        },
-        RequestOverrides {
-            tool_policy: Some(ToolPolicy {
-                max_tool_iterations: 99,
-                ..base.request.tool_policy.clone()
-            }),
-            reset_tool_iterations: true,
-            ..Default::default()
-        },
-        RequestOverrides {
-            model_policy: Some(ModelPolicy {
-                temperature: Some(0.3),
-                ..base.request.model_policy.clone()
-            }),
-            ..Default::default()
-        },
-        RequestOverrides {
-            behavior_name: Some(base.request.behavior_name.clone()),
-            ..Default::default()
-        },
-        RequestOverrides {
-            objective: Some("other".into()),
-            trace: Some(Some("t::fork".into())),
-            budget: Some(Default::default()),
-            human_policy: Some(Default::default()),
-            error_policy: Some(Default::default()),
-            output: Some(Default::default()),
-            reset_errors: true,
-            reset_behavior_hot_tail: true,
-            ..Default::default()
-        },
-    ];
-    for ov in keeping {
-        let label = format!("{ov:?}");
-        let out = apply_overrides_to_snapshot(base.clone(), ov);
-        assert_eq!(snapshot_thinking(&out), 6, "{label}");
-    }
+fn stripping_a_snapshot_drops_every_thinking_block_and_keeps_the_text() {
+    let mut snapshot = snapshot_with_thinking();
+    assert_eq!(snapshot_thinking(&snapshot), 6);
+    strip_snapshot_thinking(&mut snapshot);
+    assert_eq!(snapshot_thinking(&snapshot), 0);
+    assert!(snapshot
+        .state
+        .accumulated
+        .iter()
+        .any(|m| m.role == AiRole::Assistant && m.text_content() == "answer"));
 }

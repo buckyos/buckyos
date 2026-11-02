@@ -1,16 +1,15 @@
 //! Behavior Loop — the outer slim-waist scheduler that sits on top of
 //! `run_inner` (traditional Agent Loop).
 //!
-//! See `notepads/llm_context_behavior_loop.md` for the design rationale.
 //! This module only ships the **types and trait signatures**. The wiring
-//! into the loop driver lives in `context_loop.rs::run_behavior`.
+//! into the loop driver lives in `context_loop.rs::run_behavior`; the
+//! concrete response protocol (parser) and step rendering belong to the
+//! host.
 
-use async_trait::async_trait;
 use buckyos_api::{AiMessage, AiResponse, AiToolCall};
 use serde::{Deserialize, Serialize};
 
 use crate::observation::Observation;
-use crate::state::LLMContextSnapshot;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -50,14 +49,6 @@ pub struct HistorySummaryRecord {
     pub summary: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct HistoryInputRecord {
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub source: String,
-    pub text: String,
-    pub at_ms: u64,
-}
-
 /// One Behavior step. Carries both the LLM-emitted intent (`assistant_text`
 /// + the parsed slots) and the dispatcher-side echo (`action_results`).
 ///
@@ -65,9 +56,8 @@ pub struct HistoryInputRecord {
 /// (still-hot) step lives in `LLMContextState::last_step` and is rendered
 /// verbatim into the next inference.
 ///
-/// v2 of the Behavior protocol (`doc/opendan/Agent Actions.md`) allows
-/// multiple actions per step via the `<actions>` container. `actions` is
-/// `Vec<_>` and `action_results` is index-aligned with it.
+/// A step carries zero or more actions; `action_results` is index-aligned
+/// with `actions`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StepRecord {
     #[serde(default)]
@@ -101,20 +91,14 @@ pub struct StepRecord {
     pub self_report: Option<String>,
     #[serde(default)]
     pub report_end: bool,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub report_artifacts: Vec<String>,
+    /// Structured payload of the report; its shape (including any
+    /// attachments) is the host's convention.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         deserialize_with = "deserialize_report_result"
     )]
     pub report_result: Option<serde_json::Value>,
-    /// SendMessage actions (`<sendmsg target=...>`) emitted in this step.
-    /// Stub in v2 first cut: parser captures them, executor only emits a
-    /// worklog event. Real delivery moves to a standard `send_message`
-    /// agent_tool in a later phase.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub messages_sent: Vec<SendMessageRecord>,
 
     // —— Filled by executor (after action dispatch) ——
     /// Per-action observation, index-aligned with `actions`. Empty on
@@ -126,14 +110,6 @@ pub struct StepRecord {
     /// action-result observation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_user_message: Option<AiMessage>,
-}
-
-/// One `<sendmsg target=...>` emit. v2 stub: recorded on
-/// the step for transcript / audit; not actually delivered yet.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SendMessageRecord {
-    pub target: String,
-    pub body: String,
 }
 
 impl StepRecord {
@@ -148,9 +124,7 @@ impl StepRecord {
             next_behavior,
             self_report,
             report_end,
-            report_artifacts,
             report_result,
-            messages_to_send,
         } = result;
         Self {
             meta: StepMeta::default(),
@@ -163,9 +137,7 @@ impl StepRecord {
             next_behavior,
             self_report,
             report_end,
-            report_artifacts,
             report_result,
-            messages_sent: messages_to_send,
             action_results: Vec::new(),
             next_user_message: None,
         }
@@ -210,13 +182,11 @@ impl StepRecord {
             next_behavior: None,
             self_report: None,
             report_end: false,
-            report_artifacts: Vec::new(),
             report_result: None,
-            messages_sent: Vec::new(),
             action_results: vec![Observation::Error {
                 call_id: String::new(),
                 message,
-                tool_result: None,
+                host: None,
             }],
             next_user_message: None,
         }
@@ -228,8 +198,7 @@ impl StepRecord {
 /// and by `StepRecord::from_result`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LLMBehaviorResult {
-    /// Dispatchable actions extracted from the `<actions>` container,
-    /// excluding parser-side tags like `<sendmsg>` and `<report>`.
+    /// Dispatchable actions of the step (the report is not an action).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub do_actions: Vec<AiToolCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -247,18 +216,13 @@ pub struct LLMBehaviorResult {
     pub self_report: Option<String>,
     #[serde(default)]
     pub report_end: bool,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub report_artifacts: Vec<String>,
+    /// Structured payload of the report (host convention).
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         deserialize_with = "deserialize_report_result"
     )]
     pub report_result: Option<serde_json::Value>,
-    /// SendMessage actions (`<sendmsg target=...>`); recorded in order of
-    /// appearance. Stub-delivered in v2 first cut.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub messages_to_send: Vec<SendMessageRecord>,
 }
 
 fn deserialize_report_result<'de, D: serde::Deserializer<'de>>(
@@ -276,10 +240,8 @@ impl LLMBehaviorResult {
                 "next_behavior END/done is invalid; submit <report end=\"true\"> to finish".into(),
             );
         }
-        if self.self_report.is_none()
-            && (!self.report_artifacts.is_empty() || self.report_result.is_some())
-        {
-            return Err("artifacts/result require a report in the same response".into());
+        if self.self_report.is_none() && self.report_result.is_some() {
+            return Err("a report result requires a report in the same response".into());
         }
         if self.report_end {
             if self
@@ -289,10 +251,8 @@ impl LLMBehaviorResult {
             {
                 return Err("an ending report must contain non-empty text".into());
             }
-            if !self.do_actions.is_empty() || !self.messages_to_send.is_empty() {
-                return Err(
-                    "an ending report cannot contain actions, sendmsg, or native tool_calls".into(),
-                );
+            if !self.do_actions.is_empty() {
+                return Err("an ending report cannot contain actions or native tool_calls".into());
             }
             if self
                 .next_behavior
@@ -302,26 +262,17 @@ impl LLMBehaviorResult {
                 return Err("an ending report cannot contain next_behavior".into());
             }
         }
-        if self.self_report.is_none()
-            && self.do_actions.is_empty()
-            && self.messages_to_send.is_empty()
-            && self
-                .next_behavior
-                .as_deref()
-                .is_none_or(|next| next.trim().is_empty())
-        {
-            return Err("response requires actions, report, or next_behavior; submit <report end=\"true\"> to finish".into());
-        }
         Ok(())
     }
 
     /// What this result decides about the control of its context, when it
-    /// decides something the host may want to review: a hand-over
-    /// (`next_behavior` without actions or sendmsg — with them the
-    /// hand-over is ignored anyway) or a yield (a progress report and
-    /// nothing else). Pure shape check; the meaning is the host's.
+    /// ends the run: a hand-over (`next_behavior` without actions — with
+    /// them the hand-over is ignored anyway) or a yield (no action, not an
+    /// end, no hand-over; a progress report is optional). Pure shape check;
+    /// the meaning is the host's. `None` for a step with actions or an
+    /// ending report.
     pub fn decision(&self) -> Option<StepDecision> {
-        if !self.do_actions.is_empty() || !self.messages_to_send.is_empty() {
+        if !self.do_actions.is_empty() || self.report_end {
             return None;
         }
         if self
@@ -331,15 +282,7 @@ impl LLMBehaviorResult {
         {
             return Some(StepDecision::Handover);
         }
-        if !self.report_end
-            && self
-                .self_report
-                .as_deref()
-                .is_some_and(|report| !report.trim().is_empty())
-        {
-            return Some(StepDecision::Yield);
-        }
-        None
+        Some(StepDecision::Yield)
     }
 
     /// Reconstruct a behavior result from a finished step. Used at terminal
@@ -354,9 +297,7 @@ impl LLMBehaviorResult {
             thought: step.thought.clone(),
             self_report: step.self_report.clone(),
             report_end: step.report_end,
-            report_artifacts: step.report_artifacts.clone(),
             report_result: step.report_result.clone(),
-            messages_to_send: step.messages_sent.clone(),
         }
     }
 }
@@ -409,20 +350,10 @@ pub trait StepRenderer: Send + Sync {
         steps: Vec<StepRecord>,
         current_behavior: &str,
         summaries: Vec<HistorySummaryRecord>,
-        inputs: Vec<HistoryInputRecord>,
     ) -> Vec<AiMessage> {
         let mut out = Vec::with_capacity(steps.len() * 2 + summaries.len());
         for summary in &summaries {
             out.push(self.render_summary(summary));
-        }
-        for input in inputs {
-            out.push(AiMessage::text(
-                buckyos_api::AiRole::User,
-                format!(
-                    "history input:\nsource: {}\nat_ms: {}\n{}",
-                    input.source, input.at_ms, input.text
-                ),
-            ));
         }
         for step in &steps {
             if !current_behavior.is_empty() && step.meta.behavior_name != current_behavior {
@@ -441,19 +372,19 @@ pub trait StepRenderer: Send + Sync {
 /// review ([`crate::deps::CheckpointHook::review_decision`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StepDecision {
-    /// `next_behavior` names another behavior (or WAIT_USER_MSG).
+    /// `next_behavior` names another behavior (or a host sentinel).
     Handover,
-    /// Only a progress report: no actions, no sendmsg, no next_behavior.
-    /// Accepted, it ends the loop with `Done` and the host decides what
-    /// follows; without a verdict the loop continues as before.
+    /// No action, not an end, no hand-over (a progress report is
+    /// optional): the context stops inferring until the host gives it new
+    /// input. Ends the run with `Done`; the waist does not judge whether
+    /// there is anything to wait for.
     Yield,
 }
 
 /// The host's verdict on a [`StepDecision`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecisionVerdict {
-    /// The decision stands: a hand-over ends the loop with `Done` as usual,
-    /// a yield ends it with `Done` carrying the progress report.
+    /// The decision stands: the run ends with `Done`.
     Accept,
     /// The decision is refused: the step becomes a correction step whose
     /// text is this message, and the same run infers again (counts as a
@@ -461,27 +392,3 @@ pub enum DecisionVerdict {
     Refuse(String),
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct StepResultHookOutput {
-    /// Override the user message rendered immediately after this step on the
-    /// next behavior inference. `None` keeps the renderer default.
-    pub user_message: Option<AiMessage>,
-    /// Extra history inputs to append before the next behavior inference.
-    pub history_inputs: Vec<HistoryInputRecord>,
-    /// Stop the behavior loop instead of starting the next inference.
-    pub skip_next_inference: bool,
-}
-
-/// Post-step extension point. Failure contract: an `Err` is always treated
-/// as a degradable failure — the loop logs it and renders the default
-/// observation. Implementations therefore must not commit state (consume
-/// inputs, advance cursors) before they can return `Ok`; anything that must
-/// block progress on failure belongs in `InferenceHook::before_inference`.
-#[async_trait]
-pub trait StepResultHook: Send + Sync {
-    async fn on_behavior_step_ob(
-        &self,
-        snapshot: &LLMContextSnapshot,
-        step: &StepRecord,
-    ) -> Result<StepResultHookOutput, String>;
-}

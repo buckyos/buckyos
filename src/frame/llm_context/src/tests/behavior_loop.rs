@@ -9,7 +9,8 @@ use crate::error::{LLMComputeError, ProviderFailure};
 use crate::observation::Observation;
 use crate::outcome::{LLMContextOutcome, ResumeFill};
 use crate::state::{LLMContextSnapshot, LLMContextState};
-use crate::{LLMContext, XmlBehaviorParser, XmlStepRenderer};
+use crate::tests::protocol::{XmlBehaviorParser, XmlStepRenderer};
+use crate::LLMContext;
 
 use super::mocks::*;
 
@@ -293,110 +294,6 @@ async fn behavior_loop_still_defers_jump_target_declared_with_actions() {
 }
 
 #[tokio::test]
-async fn behavior_loop_on_behavior_step_ob_overrides_next_user_message() {
-    let llm = Arc::new(RecordingLlm::new(text_response(
-        r#"<response>
-<observation>custom observed</observation>
-<intent>now switch</intent>
-<report end="true">finished</report>
-</response>"#,
-    )));
-    let scripted = Arc::new(ScriptedLlm::new(vec![text_response(
-        r#"<response>
-<intent>run action</intent>
-<actions><shell>echo done</shell></actions>
-</response>"#,
-    )]));
-    let mut req = base_request();
-    req.behavior_name = "plan".into();
-    let deps = LLMContextDeps::new(scripted, Arc::new(EchoTools))
-        .with_result_parser(Arc::new(XmlBehaviorParser::new()))
-        .with_step_renderer(Arc::new(XmlStepRenderer::new()))
-        .with_step_result_hook(Arc::new(CustomStepResultHook));
-    let mut ctx = LLMContext::new(req, deps);
-
-    let first = ctx.run().await;
-    assert!(matches!(first, LLMContextOutcome::Error { .. }));
-
-    let snapshot = ctx.snapshot();
-    assert_eq!(
-        snapshot
-            .state
-            .last_step
-            .as_ref()
-            .and_then(|step| step.next_user_message.as_ref())
-            .map(|msg| msg.text_content())
-            .as_deref(),
-        Some("custom step result 0")
-    );
-
-    let req = snapshot.request.clone();
-    let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools))
-        .with_result_parser(Arc::new(XmlBehaviorParser::new()))
-        .with_step_renderer(Arc::new(XmlStepRenderer::new()));
-    let mut resumed = LLMContext::resume(snapshot, ResumeFill::ResumeFromMidRun, deps)
-        .expect("resume behavior snapshot");
-    let outcome = resumed.run().await;
-    assert!(matches!(outcome, LLMContextOutcome::Done { .. }));
-    assert_eq!(req.behavior_name, "plan");
-    let seen = llm.seen();
-    assert_eq!(seen.len(), 1);
-    assert!(
-        seen[0]
-            .iter()
-            .any(|m| m.role == AiRole::User && m.text_content() == "custom step result 0"),
-        "custom on_behavior_step_ob user message should be rendered into the next inference"
-    );
-}
-
-#[tokio::test]
-async fn behavior_loop_on_behavior_step_ob_can_skip_next_inference() {
-    let llm = Arc::new(RecordingLlm::new(text_response(
-        r#"<response>
-<intent>run action</intent>
-<actions><shell>echo done</shell></actions>
-</response>"#,
-    )));
-    let mut req = base_request();
-    req.behavior_name = "plan".into();
-    let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools))
-        .with_result_parser(Arc::new(XmlBehaviorParser::new()))
-        .with_step_renderer(Arc::new(XmlStepRenderer::new()))
-        .with_step_result_hook(Arc::new(SkipStepResultHook));
-    let mut ctx = LLMContext::new(req, deps);
-
-    let outcome = ctx.run().await;
-    assert!(matches!(outcome, LLMContextOutcome::Done { .. }));
-    assert_eq!(llm.seen().len(), 1);
-    let snapshot = ctx.snapshot();
-    assert_eq!(snapshot.state.steps.len(), 1);
-    assert_eq!(snapshot.state.steps[0].action_results.len(), 1);
-    assert!(snapshot.state.steps[0].next_user_message.is_none());
-}
-
-#[tokio::test]
-async fn behavior_loop_rejects_ending_report_with_sendmsg_before_emit() {
-    let llm = Arc::new(ScriptedLlm::new(vec![
-        text_response(
-            r#"<actions><sendmsg target="user">must not send</sendmsg></actions><report end="true">invalid</report>"#,
-        ),
-        text_response(r#"<report end="true">corrected</report>"#),
-    ]));
-    let deps = LLMContextDeps::new(llm, Arc::new(EchoTools))
-        .with_result_parser(Arc::new(XmlBehaviorParser::new()))
-        .with_step_renderer(Arc::new(XmlStepRenderer::new()));
-    let mut ctx = LLMContext::new(base_request(), deps);
-    assert!(matches!(ctx.run().await, LLMContextOutcome::Done { .. }));
-    assert!(ctx
-        .snapshot()
-        .state
-        .steps
-        .iter()
-        .all(|step| step.messages_sent.is_empty()));
-    assert!(ctx.snapshot().state.steps[0].is_correction());
-}
-
-#[tokio::test]
 async fn behavior_loop_observes_failed_action_before_final_report() {
     let llm = Arc::new(ScriptedLlm::new(vec![
         text_response(
@@ -481,24 +378,23 @@ async fn native_ending_report_conflict_pairs_calls_without_dispatch() {
 
 #[tokio::test]
 async fn progress_report_resumes_and_final_snapshot_returns_without_inference() {
-    let llm = Arc::new(ScriptedLlm::new(vec![
-        text_response("<report>progress one</report>"),
-        text_response(r#"<report end="false">progress two</report>"#),
-    ]));
+    let llm = Arc::new(ScriptedLlm::new(vec![text_response(
+        "<report>progress one</report>",
+    )]));
     let make_deps = |llm: Arc<dyn crate::deps::LlmClient>| {
         LLMContextDeps::new(llm, Arc::new(EchoTools))
             .with_result_parser(Arc::new(XmlBehaviorParser::new()))
             .with_step_renderer(Arc::new(XmlStepRenderer::new()))
     };
     let mut ctx = LLMContext::new(base_request(), make_deps(llm));
-    assert!(matches!(ctx.run().await, LLMContextOutcome::Error { .. }));
+    assert!(matches!(ctx.run().await, LLMContextOutcome::Done { .. }));
     let snapshot = ctx.snapshot();
-    assert_eq!(snapshot.state.last_report.as_deref(), Some("progress two"));
+    assert_eq!(snapshot.state.last_report.as_deref(), Some("progress one"));
     assert!(!snapshot.state.report_end);
     let snapshot: LLMContextSnapshot =
         serde_json::from_str(&serde_json::to_string(&snapshot).unwrap()).unwrap();
     let mut resumed = LLMContext::resume(snapshot, ResumeFill::ResumeFromMidRun, make_deps(Arc::new(ScriptedLlm::new(vec![
-        text_response(r#"<report end="true">final report</report><artifacts>["result.txt"]</artifacts><result>{"ok":true}</result>"#),
+        text_response(r#"<response><report end="true">final report</report><result>{"ok":true}</result></response>"#),
     ])))).unwrap();
     assert!(matches!(
         resumed.run().await,
@@ -522,24 +418,30 @@ async fn progress_report_resumes_and_final_snapshot_returns_without_inference() 
     assert_eq!(result.self_report.as_deref(), Some("final report"));
     assert!(result.report_end);
     assert!(result.next_behavior.is_none());
-    assert_eq!(result.report_artifacts, vec!["result.txt"]);
     assert_eq!(result.report_result, Some(serde_json::json!({"ok":true})));
-    assert_eq!(recovered.snapshot().state.steps.len(), 3);
+    assert_eq!(recovered.snapshot().state.steps.len(), 2);
 }
 
 #[tokio::test]
-async fn thought_only_output_is_corrected_without_implicit_completion() {
-    let llm = Arc::new(ScriptedRecordingLlm::new(vec![
-        text_response("<intent>finished</intent>"),
-        text_response(r#"<report end="true">explicit final</report>"#),
-    ]));
+async fn thought_only_output_is_a_yield() {
+    let llm = Arc::new(ScriptedRecordingLlm::new(vec![text_response(
+        "<intent>finished</intent>",
+    )]));
     let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools))
         .with_result_parser(Arc::new(XmlBehaviorParser::new()))
         .with_step_renderer(Arc::new(XmlStepRenderer::new()));
     let mut ctx = LLMContext::new(base_request(), deps);
-    assert!(matches!(ctx.run().await, LLMContextOutcome::Done { .. }));
-    assert_eq!(llm.seen().len(), 2);
-    assert!(ctx.snapshot().state.steps[0].is_correction());
+    let LLMContextOutcome::Done {
+        behavior_result, ..
+    } = ctx.run().await
+    else {
+        panic!("expected Done");
+    };
+    let result = behavior_result.unwrap();
+    assert!(!result.report_end);
+    assert_eq!(result.decision(), Some(crate::StepDecision::Yield));
+    assert_eq!(llm.seen().len(), 1, "the loop never waits");
+    assert!(!ctx.snapshot().state.steps[0].is_correction());
 }
 
 #[derive(Default)]
@@ -739,10 +641,9 @@ async fn tool_checkpoint_failure_resumes_only_unexecuted_calls_on_all_surfaces()
 #[tokio::test]
 async fn final_report_recovery_rechecks_host_acceptance_and_allows_correction() {
     let deps = LLMContextDeps::new(
-        Arc::new(ScriptedLlm::new(vec![
-            text_response("<report>accepted progress</report>"),
-            text_response(r#"<report end="true">invalid</report>"#),
-        ])),
+        Arc::new(ScriptedLlm::new(vec![text_response(
+            r#"<report end="true">invalid</report>"#,
+        )])),
         Arc::new(EchoTools),
     )
     .with_result_parser(Arc::new(XmlBehaviorParser::new()))
@@ -846,23 +747,24 @@ fn behavior_ctx(
     (LLMContext::new(req, deps), llm)
 }
 
-/// Without a verdict a progress report alone keeps the loop going, as it
-/// always did; a hand-over ends it.
+/// Without a verdict a yield (a progress report and nothing else) ends the
+/// run: the loop never waits, the host decides what follows.
 #[tokio::test]
-async fn without_a_verdict_a_progress_report_continues() {
+async fn without_a_verdict_a_yield_ends_the_run() {
     for hook in [None, Some(DecisionHook::new(None, None))] {
         let (mut ctx, llm) = behavior_ctx(
-            vec![
-                text_response("<response><report>still thinking</report></response>"),
-                text_response(r#"<response><report end="true">finished</report></response>"#),
-            ],
+            vec![text_response(
+                "<response><report>still thinking</report></response>",
+            )],
             hook.clone(),
         );
         let LLMContextOutcome::Done { behavior_result, .. } = ctx.run().await else {
             panic!("expected Done");
         };
-        assert!(behavior_result.unwrap().report_end);
-        assert_eq!(llm.seen().len(), 2);
+        let result = behavior_result.unwrap();
+        assert!(!result.report_end);
+        assert_eq!(result.self_report.as_deref(), Some("still thinking"));
+        assert_eq!(llm.seen().len(), 1);
         if let Some(h) = hook {
             assert_eq!(h.asked(), vec![(crate::StepDecision::Yield, Some("still thinking".into()))]);
         }

@@ -206,6 +206,15 @@ fn children_of(list: &TodoList, id: &str) -> Vec<String> {
         .collect()
 }
 
+/// The end of sub session `sid` came in as this session's input (a session
+/// follows its sub sessions outside the loop: `agent-session wait` on a
+/// running one says so, the reply keeps the run, the end is the next input).
+fn ended(req: &LlmInferenceRequest, sid: &str) -> bool {
+    user_texts(req).iter().any(|u| {
+        u.contains(&format!("source=\"session:{sid}\"")) && u.contains("event=\"finished\"")
+    })
+}
+
 #[derive(Default)]
 struct Seen {
     /// Plan requests: (step, background block after its latest results).
@@ -225,7 +234,6 @@ async fn the_plan_simple_class_and_its_function_contract() {
     assert_eq!(t.kind, SessionKind::Work);
     assert_eq!(t.completion, CompletionPolicy::ExplicitReport);
     assert_eq!(t.default_behavior.as_deref(), Some("plan_simple"));
-    assert_eq!(t.ask_user_timeout_secs, 10800);
     let work = SessionTemplate::load("work", Some(&env.agent_root)).unwrap();
     assert_eq!(work.default_behavior.as_deref(), Some("plan"), "the work class is unchanged");
     let b = env.agent().behaviors().get("plan_simple").await.unwrap().unwrap();
@@ -271,8 +279,8 @@ async fn the_plan_simple_class_and_its_function_contract() {
 /// plan corrects calls without intent (nothing executed), adds two serial
 /// Todos, is refused the second before the first is accepted, runs each in
 /// a work session of its own that changes the inherited workspace while
-/// the plan waits (no deadlock over the workspace), reads each report right
-/// after the wait, reviews it, is refused an early end and finishes with a
+/// the plan waits (its run kept, no deadlock over the workspace), reads each report once
+/// its end came back, reviews it, is refused an early end and finishes with a
 /// report — all in one Turn.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_serial_todos_in_sub_sessions_in_one_turn() {
@@ -387,7 +395,10 @@ async fn two_serial_todos_in_sub_sessions_in_one_turn() {
                 return shell("p7", "Wait for T01's report.", &format!("agent-session wait {}", a()));
             }
             if step("p8").is_none() {
-                assert!(step("p7").unwrap().contains("finished"), "{:?}", step("p7"));
+                if !ended(req, &a()) {
+                    assert!(step("p7").unwrap().contains("still running"), "{:?}", step("p7"));
+                    return text("Waiting for T01.");
+                }
                 return shell("p8", "Read T01's full report.", "agent-session todo show T01 --report");
             }
             if step("p9").is_none() {
@@ -418,6 +429,9 @@ async fn two_serial_todos_in_sub_sessions_in_one_turn() {
                 return shell("p13", "Wait for T02's verification.", &format!("agent-session wait {}", b()));
             }
             if step("p14").is_none() {
+                if !ended(req, &b()) {
+                    return text("Waiting for T02.");
+                }
                 // Two calls in one batch: the background follows both.
                 return calls(&[
                     ("p14", "shell", json!({ "intent": "Read T02's report.", "command": "agent-session todo show T02 --report" })),
@@ -490,8 +504,9 @@ async fn two_serial_todos_in_sub_sessions_in_one_turn() {
     assert!(seen.notes[0].contains("todo dispatch T01"), "{:?}", seen.notes);
     // Background: T01 appears when added; nothing is repeated when nothing
     // changed (a repeated dispatch, the early end's refusal is shown with
-    // no line); after the wait the completed attempt with its pending
-    // review; after the batch of two calls one block, after both results.
+    // no line); after the wait ended, with the report read, the completed
+    // attempt with its pending review; after the batch of two calls one
+    // block, after both results.
     let bg = |after: &str| {
         seen.backgrounds
             .iter()
@@ -502,7 +517,7 @@ async fn two_serial_todos_in_sub_sessions_in_one_turn() {
     };
     assert!(bg("p2").unwrap().contains("id=\"T01\""), "{:?}", bg("p2"));
     assert!(bg("p0").is_none(), "nothing changed: {:?}", bg("p0"));
-    let after_wait = bg("p7").expect("a background after the wait");
+    let after_wait = bg("p8").expect("a background after the wait");
     assert!(after_wait.contains("id=\"T01\"") && after_wait.contains("status=\"completed\"") && after_wait.contains("review=\"pending\""), "{after_wait}");
     assert!(bg("p6").is_none(), "a repeated dispatch changes nothing: {:?}", bg("p6"));
     let last = llm.requests.lock().unwrap().iter().filter(|r| role(r) == Role::Plan).last().cloned().unwrap();
@@ -569,6 +584,10 @@ async fn parallel_explorations_a_retry_and_ends_heard_from_the_background() {
                 ]);
             }
             let child = |res: &Value| res["child_sid"].as_str().unwrap().to_string();
+            // `wait` answered with the end, or the end came back as input.
+            let waited = |call: &str, sid: &str| {
+                has_tool_result(req, call).is_some_and(|t| !t.contains("still running")) || ended(req, sid)
+            };
             if has_tool_result(req, "e2").is_none() {
                 let (a, b) = (r("e1").unwrap(), r("e1b").unwrap());
                 assert_eq!((a["todo_id"].as_str(), b["todo_id"].as_str()), (Some("T01"), Some("T02")), "{a} {b}");
@@ -576,6 +595,9 @@ async fn parallel_explorations_a_retry_and_ends_heard_from_the_background() {
                 return shell("e2", "Wait for lead A, the one the plan depends on.", &format!("agent-session wait {}", child(&a)));
             }
             if has_tool_result(req, "e3").is_none() {
+                if !waited("e2", &child(&r("e1").unwrap())) {
+                    return text("Waiting for lead A.");
+                }
                 return shell("e3", "Read lead A's report.", "agent-session todo show T01 --report");
             }
             if has_tool_result(req, "e4").is_none() {
@@ -591,6 +613,9 @@ async fn parallel_explorations_a_retry_and_ends_heard_from_the_background() {
                 return shell("e6", "Wait for A's second attempt.", &format!("agent-session wait {}", child(&retried)));
             }
             if has_tool_result(req, "e7").is_none() {
+                if !waited("e6", &child(&r("e5").unwrap())) {
+                    return text("Waiting for A's second attempt.");
+                }
                 return calls(&[
                     ("e7", "shell", json!({ "intent": "Read A's new report.", "command": "agent-session todo show T01 --report" })),
                     ("e7b", "shell", json!({ "intent": "Accept A's reproduction.", "command": "agent-session todo review T01 --accept --reason \"REPRO-A shown\"" })),
@@ -645,8 +670,8 @@ async fn parallel_explorations_a_retry_and_ends_heard_from_the_background() {
 const ENV_ROOT: &str = "PLAN_SIMPLE_CRASH_ROOT";
 const ENV_SESSION: &str = "PLAN_SIMPLE_CRASH_SESSION";
 
-/// A small plan: one serial Todo, waited for, reviewed, delivered. The
-/// child appends one line per execution.
+/// A small plan: one serial Todo, waited for (its end comes back as input),
+/// reviewed, delivered. The child appends one line per execution.
 fn crash_script(path: PathBuf) -> Arc<ScriptedLlm> {
     ScriptedLlm::new(move |req, _| match role(req) {
         Role::Explore => panic!("no explorations"),
@@ -665,18 +690,22 @@ fn crash_script(path: PathBuf) -> Arc<ScriptedLlm> {
             if has_tool_result(req, "q2").is_none() {
                 return shell("q2", "Start T01.", "agent-session todo dispatch T01");
             }
+            let sid = || r("q2").unwrap()["child_sid"].as_str().unwrap().to_string();
             if has_tool_result(req, "q3").is_none() {
-                let sid = r("q2").unwrap()["child_sid"].as_str().unwrap().to_string();
-                return shell("q3", "Wait for T01.", &format!("agent-session wait {sid}"));
+                return shell("q3", "Wait for T01.", &format!("agent-session wait {}", sid()));
             }
             if has_tool_result(req, "q4").is_none() {
-                let blocks: Vec<String> = after_results(req).into_iter().filter(|t| t.starts_with("<<background_context>>")).collect();
-                assert_eq!(blocks.len(), 1, "one observation after the wait: {blocks:?}");
-                assert!(blocks[0].contains("status=\"completed\""), "{blocks:?}");
-                let all = user_texts(req).into_iter().filter(|t| t.contains("status=\\\"completed\\\"") || t.contains("status=\"completed\"")).count();
-                assert_eq!(all, 1, "the completed attempt is shown once");
+                let waited = !has_tool_result(req, "q3").unwrap().contains("still running");
+                if !waited && !ended(req, &sid()) {
+                    return text("Waiting for T01.");
+                }
                 return shell("q4", "Accept T01.", "agent-session todo review T01 --accept --reason \"it ran\"");
             }
+            let blocks: Vec<String> = after_results(req).into_iter().filter(|t| t.starts_with("<<background_context>>")).collect();
+            assert_eq!(blocks.len(), 1, "one observation after the review: {blocks:?}");
+            assert!(blocks[0].contains("status=\"completed\"") && blocks[0].contains("review=\"accepted\""), "{blocks:?}");
+            let all = user_texts(req).into_iter().filter(|t| t.contains("review=\"accepted\"")).count();
+            assert_eq!(all, 1, "the accepted attempt is shown once");
             let _ = &path;
             tool_call("q5", "report", json!({ "intent": "Deliver.", "report": "ran once", "is_end": true }))
         }
@@ -701,7 +730,7 @@ async fn plan_crash_child() {
 }
 
 /// V-background recovery: the host dies right before the observation after
-/// a wait is placed, or right after it was published. A new host shows it
+/// the review of a waited Todo is placed, or right after it was published. A new host shows it
 /// exactly once, opens no second Turn, runs no call again and creates no
 /// second sub session.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -745,12 +774,13 @@ async fn the_observation_survives_a_crash_before_and_after_its_commit() {
     }
 }
 
-/// V-wait states: a wait with a deadline returns while the sub session
-/// still runs (not its success); the next wait returns its failure; the
-/// failed attempt is in the list right away, reviewed as a failure, and the
-/// plan ends with a report that says so.
+/// V-wait states: a wait on a sub session that still runs answers with its
+/// running state at once (a session follows its sub sessions outside the
+/// loop); the reply keeps the run, the failure comes back as the next input
+/// and is in the list right away, reviewed as a failure, and the plan ends
+/// with a report that says so.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_wait_deadline_and_a_failed_sub_session() {
+async fn a_wait_on_a_running_sub_session_and_its_failure() {
     let env = Env::new();
     install_jarvis(&env);
     tool_env(&env);
@@ -759,7 +789,7 @@ async fn a_wait_deadline_and_a_failed_sub_session() {
     let llm = ScriptedLlm::fallible(move |req, _| match role(req) {
         Role::Explore => panic!("no explorations"),
         Role::Work if has_tool_result(req, "w1").is_none() => {
-            Ok(tool_call("w1", "shell", json!({ "command": "sleep 3" })))
+            Ok(tool_call("w1", "shell", json!({ "command": "sleep 1" })))
         }
         Role::Work => {
             Err(llm_context::error::LLMComputeError::Provider {
@@ -770,30 +800,27 @@ async fn a_wait_deadline_and_a_failed_sub_session() {
         Role::Plan => Ok({
             let r = |id: &str| plan_result(req, id);
             let list = list_of(&path);
+            let sid = || r("f2").unwrap()["child_sid"].as_str().unwrap().to_string();
             if has_tool_result(req, "f1").is_none() {
                 shell("f1", "Record the task.", "agent-session todo add \"impossible\" --content \"Do what cannot be done.\"")
             } else if has_tool_result(req, "f2").is_none() {
                 shell("f2", "Start T01.", "agent-session todo dispatch T01")
             } else if has_tool_result(req, "f3").is_none() {
-                let sid = r("f2").unwrap()["child_sid"].as_str().unwrap().to_string();
-                shell("f3", "Look whether T01 ends within half a second.", &format!("agent-session wait {sid} --wait-ms 500"))
-            } else if has_tool_result(req, "f4").is_none() {
+                shell("f3", "Wait for T01.", &format!("agent-session wait {}", sid()))
+            } else if !user_texts(req).iter().any(|u| u.contains(&format!("source=\"session:{}\"", sid()))) {
                 let res = has_tool_result(req, "f3").unwrap();
-                assert!(!res.contains("finished") && res.contains("running"), "the deadline answers with the running state: {res}");
+                assert!(res.contains("still running"), "a running sub session answers at once: {res}");
                 assert_eq!(list.get("T01").unwrap().status, TodoStatus::Running);
-                let sid = r("f2").unwrap()["child_sid"].as_str().unwrap().to_string();
-                shell("f4", "Wait for T01 to end.", &format!("agent-session wait {sid}"))
-            } else if has_tool_result(req, "f5").is_none() {
-                let res = has_tool_result(req, "f4").unwrap();
-                assert!(res.contains("finished") && res.contains("failed"), "{res}");
+                text("Waiting for T01.")
+            } else if has_tool_result(req, "f4").is_none() {
+                let end = user_texts(req).into_iter().last().unwrap_or_default();
+                assert!(end.contains("failed"), "{end}");
                 let t = list.get("T01").unwrap().clone();
                 assert_eq!(t.status, TodoStatus::Failed, "in the list before the next inference");
                 assert!(t.latest().unwrap().error.as_deref().unwrap_or_default().contains("missing"), "{t:?}");
-                let bg = background(req).expect("the failure is shown");
-                assert!(bg.contains("status=\"failed\"") && bg.contains("review=\"pending\""), "{bg}");
-                shell("f5", "Record that T01 failed.", "agent-session todo review T01 --reject --reason \"the task input is missing\"")
+                shell("f4", "Record that T01 failed.", "agent-session todo review T01 --reject --reason \"the task input is missing\"")
             } else {
-                tool_call("f6", "report", json!({ "intent": "Report the blocker.", "report": "Not done: T01 failed because its input is missing.", "is_end": true }))
+                tool_call("f5", "report", json!({ "intent": "Report the blocker.", "report": "Not done: T01 failed because its input is missing.", "is_end": true }))
             }
         }),
     });

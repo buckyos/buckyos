@@ -19,7 +19,7 @@
 use std::sync::Arc;
 
 use llm_context::observation::Observation;
-use llm_context::tasks::{
+use crate::task_model::{
     task_state_observation_via, RunningTaskResolver, TaskFollowup, TaskState, MAX_IN_TOOL_WAIT_MS,
 };
 use serde::{Deserialize, Serialize};

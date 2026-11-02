@@ -5,7 +5,7 @@
 本目录：
 
 - [OpenDAN AgentTool 开发指南](<OpenDAN AgentTool 开发指南.md>)：分层、派发、取消与 task、CLI、环境变量，新增工具的步骤
-- [agent_tool_result_protocol.md](agent_tool_result_protocol.md)：`AgentToolResult` 字段定义、StepRecord 渲染、到 `Observation` 的映射与 Pending 处理
+- [agent_tool_result_protocol.md](agent_tool_result_protocol.md)：`AgentToolResult` 字段定义、StepRecord 渲染、到 `Observation` 的映射、调用内等待与 task 的跟进
 - [builtin_agent_tools.md](builtin_agent_tools.md)：当前 builtin tools 与 task 工具的输入 / 输出约定
 - [agent-tool实例分析.md](agent-tool实例分析.md)：以 `read_file` / `write_file` 为例讲 `TypedTool` 的写法
 - [无需返回的agent-tool.md](无需返回的agent-tool.md)：结果不需要进入后续输入的工具
@@ -114,7 +114,7 @@ Bash 环境下只能依赖 stdout / stderr 获取结果，格式不统一。自�
 - 顶层协议对象统一为 `AgentToolResult`
 - builtin tool 的固定字段是 `agent_tool_protocol / cmd_name / status / summary / detail`
 - `detail` 是内置工具结构化数据；`output` 只在明确需要 bash 主文本输出时使用
-- 调用返回后仍在运行的工作用 `task_id` 表示；`pending` 只在这次调用的结果必须等 task 结束才有时使用，且必须带 `task_id`
+- 调用返回后仍在运行的工作用 `task_id` 表示；工具也可以返回 `pending` + `task_id`，把等待交给派发器（在 runtime 的等待预算内等），`pending` 必须带 `task_id`
 
 ### 设计要点
 
@@ -130,25 +130,25 @@ Bash 环境下只能依赖 stdout / stderr 获取结果，格式不统一。自�
 
 ### 方案：配置决定执行方式，task 承接未完成的工作
 
-- **执行方式由配置决定，不由 LLM 选择。** `shell` 的 `tools.shell.mode` 默认 `auto`：在调用内等 `wait_ms`（默认 30s），到期仍在运行的命令转为进程内 task，调用立即返回“仍在运行”、`task_id`、已有输出和跟进方式；`wait` 模式则等到结束或超时。
-- **task 工具跟进。** 模型用 `wait_task` / `get_task_state` / `cancel_task` 跟进 task；`cancel_task` 只对声明了可取消的 task 有效。buckyos task 也可以在 shell 里用 CLI `check_task` / `cancel_task` / `finish_task`。
-- **后台状态半自动呈现。** 每次推理前，本 context 启动的 task 以 `<background_tasks>` 简介追加在请求末尾，不进历史；完整输出由模型按需取。
-- **调用内等待有上限。** 任何工具内等待最长 30 分钟后必须把控制权还给 LLM，task 继续运行，由 LLM 决定是否继续等或取消。更长的等待只能由能挂起 run 的宿主（Session 层）在进程外进行。
-- **llm_context 只做两种机械判断。** 结果交给 LLM；或者工具返回 `pending` + `task_id`，run 挂起等 task 后按 `call_id` 回填。
+- **执行方式由配置决定，不由 LLM 选择。** `shell` 在调用内最多等 runtime 的等待预算 `task_wait_ms`（默认 30s），到期仍在运行的命令转为 task，调用立即返回“仍在运行”、`task_id`、已有输出和跟进方式；预算不小于 shell 的超时则等到结束或超时。
+- **llm_context 循环里不等待。** 它不认识 task，每次调用都当场得到结果：任何等待都是 task，由 Runtime 在调用内等一段有上限的时间，或由宿主在循环外跟进。
+- **调用内等待有上限。** 任何工具内等待最长 30 分钟后必须把控制权还给 LLM，task 继续运行，由 LLM 决定是否继续等或取消。
+- **task 的跟进由宿主决定。** xllm 中模型用 `wait_task` / `get_task_state` / `cancel_task` 跟进；`cancel_task` 只对声明了可取消的 task 有效。libopendan Session 在循环外跟进本 run 的 task，结束后以 `<<task_result>>` 输入带回同一个 run，模型不必等。buckyos task 也可以在 shell 里用 CLI `check_task` / `cancel_task` / `finish_task`。
 
 ```
 LLM 调用 shell（cargo test）
-    ↓ 30s 后仍在运行
-返回 { status: "success", task_id: "local:shell:<call_id>"（宿主接了 zone task-mgr 时为 "t-<hex>"）, output: "still running ... Call wait_task ..." }
+    ↓ 等待预算（默认 30s）到期仍在运行
+返回 { status: "success", task_id: "local:shell:<call_id>"（宿主接了 zone task-mgr 时为 "t-<hex>"）, output: "still running ..." }
     ↓
-LLM 继续做别的；每次推理前看到 <background_tasks>
+LLM 继续做别的
     ↓
-LLM 调用 wait_task / get_task_state
+xllm：LLM 调用 wait_task / get_task_state
+Session：task 结束后以 <<task_result>> 输入带回同一个 run
     ↓
 拿到最终结果
 ```
 
-用户审批将走同一模型：审批是一个 task，批准后再开始执行，Agent 的跟进方式不变。
+用户审批将走同一模型：审批是一个 task，批准后再开始执行，Agent 的跟进方式不变。向用户提问已经是这样：websdk 的 `ask_user` 发一条 `input` 通知，返回 `pending` + 通知的 task，用户的回答就是 task 的结果。
 
 ### 并发层次总览
 
@@ -156,8 +156,8 @@ LLM 调用 wait_task / get_task_state
 |------|------|----------|
 | Session 级 | 同一 Agent 跑多个 Session（不共享 Workspace 即可并发） | ✅ 已支持 |
 | SubAgent 级 | 通过 SubAgent 实现子任务并发 | ✅ 已支持 |
-| 工具调用级 | 单个 run 内的 task：`shell` auto 模式 + task 工具 + `<background_tasks>` | ✅ 已支持（进程内 task） |
-| Session 挂起等待 | `allow_deferred`：run 以 `PendingTool` 挂起，宿主在进程外等 task 后回填 | ⬜ llm_context 已支持，xllm / libopendan 未开启 |
+| 工具调用级 | 单个 run 内的 task：`shell` 超出等待预算转 task + task 工具 | ✅ 已支持（进程内 task / Zone TaskMgr） |
+| Session 跟进 | libopendan 在循环外跟进本 run 的 task 与子 Session，run 保活，结束后作为输入带回同一个 run | ✅ 已支持 |
 
 ### 统一模型带来的额外好处
 

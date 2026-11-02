@@ -22,13 +22,12 @@ use super::history::maybe_compact;
 use super::inputs::side_effects_from_worklog;
 use super::live::{live_from_frame, remove_if_safe, suspend_run};
 use super::shared::{commit_and_report, report, ClosedTurn, LiveCtx, Shared};
-use super::tools::pending_sub_call;
 
 const WAIT_USER_MSG: &str = "WAIT_USER_MSG";
 
 /// How a run segment ended: the `kind` of a [`Next`], persisted in
 /// run.json (`host.extra.finish`) and written as the worklog `outcome`
-/// entry's kind. Serialized in snake_case (`process_done`, `pending_tool`,
+/// entry's kind. Serialized in snake_case (`process_done`, `wait`,
 /// `context_limit`, ...).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -39,7 +38,8 @@ pub(super) enum FinishKind {
     /// A sub context (create-sub-context / fork child) returned to its
     /// caller.
     ProcessDone,
-    /// `WAIT_USER_MSG`: the run ended waiting for input.
+    /// `WAIT_USER_MSG`: the run ended waiting for input; or the run is kept
+    /// waiting for the work it started (`run_ended = false`).
     Wait,
     /// Hand-over to another behavior: the run is suspended into
     /// `process_stack` (parked, or as the caller of a sub context).
@@ -48,8 +48,6 @@ pub(super) enum FinishKind {
     Error,
     Stopped,
     Interrupted,
-    /// Paused on a deferred tool result.
-    PendingTool,
     /// Paused at the context limit (compactions exhausted).
     ContextLimit,
 }
@@ -66,7 +64,6 @@ impl FinishKind {
             FinishKind::Error => "error",
             FinishKind::Stopped => "stopped",
             FinishKind::Interrupted => "interrupted",
-            FinishKind::PendingTool => "pending_tool",
             FinishKind::ContextLimit => "context_limit",
         }
     }
@@ -100,8 +97,11 @@ pub(super) struct Next {
     /// with the result.
     pub(super) child_status: Option<String>,
     /// The session would finish, but sub sessions it must hear from are not
-    /// settled: the run ends, the Turn stays open waiting for them.
+    /// settled: the run is kept, the Turn stays open waiting for them.
     pub(super) wait_children: Vec<String>,
+    /// Tasks this run started that are still running: the run is kept and
+    /// their ends come back as its input.
+    pub(super) wait_tasks: Vec<String>,
     /// The Turn ended on a question nobody answers now
     /// (`wait_user_msg = end_turn`).
     pub(super) needs_input: bool,
@@ -495,6 +495,10 @@ pub(super) async fn hand_over(
     let target = next.next_behavior.clone().unwrap_or_default();
     super::todos::bind_serial(sh, next, run.run_id(), snapshot).await?;
     suspend_run(sh, run, behavior, snapshot, &target, next.call.clone()).await?;
+    if run.sub_call().is_some() {
+        // Handed over: the call is with the caller's frame now.
+        run.set_sub_call(None)?;
+    }
     next.suspended = true;
     Ok(())
 }
@@ -612,10 +616,7 @@ pub(super) async fn handle_context_outcome(
                     text
                 }
             }));
-            let replied = has_report(&snapshot)
-                || behavior_result
-                    .as_ref()
-                    .is_some_and(|b| !b.messages_to_send.is_empty());
+            let replied = has_report(&snapshot);
             lc.run.checkpoint_with_results(&snapshot, None)?;
             super::rounds::flush_counts(sh, &lc.run, &lc.rounds).await?;
             super::reports::sync_xml(sh, &lc.run, &snapshot).await?;
@@ -645,9 +646,25 @@ pub(super) async fn handle_context_outcome(
                 == Some(llm_context::StepDecision::Yield);
             super::todos::settle(sh, &mut next, &site, yielded, lc.run.run_id(), &snapshot).await?;
             hold_for_children(sh, &mut next).await?;
+            if let Some(call) = lc.run.sub_call() {
+                // A sub context a call of this run asked for: the session
+                // hands over to it now; its result comes back as input.
+                let usage = next.usage.take();
+                next = Next {
+                    kind: FinishKind::Switch,
+                    next_behavior: Some(call.behavior.clone()),
+                    call: Some(call),
+                    usage,
+                    ..Default::default()
+                };
+            } else {
+                keep_while_running(sh, lc, &mut next, yielded).await;
+            }
             status = match next.kind {
-                // Suspended into process_stack: never terminal.
+                // Suspended into process_stack, or kept for the work it
+                // started: never terminal.
                 FinishKind::Switch => RunStatus::Paused,
+                _ if !next.run_ended => RunStatus::Paused,
                 FinishKind::Error => RunStatus::Failed,
                 _ => RunStatus::Completed,
             };
@@ -679,11 +696,11 @@ pub(super) async fn handle_context_outcome(
                 // AI Center Quota PRD §9.6: the session learns only that the
                 // Agent is limited; the rules and balances stay with its owner.
                 LLMComputeError::Provider {
-                    failure: ProviderFailure::Refused(refusal),
+                    failure: ProviderFailure::Refused { code },
                     ..
                 } => json!({
                     "kind": AI_QUOTA_ERROR_KIND,
-                    "refusal": refusal,
+                    "refusal": code,
                     "message": "the AI service refused the call under the quota or resource policy of the Agent's owner",
                     "recoverable": false,
                 }),
@@ -755,24 +772,6 @@ pub(super) async fn handle_context_outcome(
                 status = RunStatus::Interrupted;
             }
         }
-        LLMContextOutcome::PendingTool { snapshot: s, .. } => {
-            snapshot = s;
-            status = RunStatus::Paused;
-            let behaviors = cfg.behaviors().map_err(crate::error::OpenDanError::InvalidArgument)?;
-            match pending_sub_call(&snapshot, &behaviors, &entry)? {
-                // Suspended on `call_behavior`: the run becomes the caller
-                // of that sub context; its batch / step stays with it.
-                Some(call) => {
-                    next.kind = FinishKind::Switch;
-                    next.next_behavior = Some(call.behavior.clone());
-                    next.call = Some(call);
-                }
-                None => {
-                    next.kind = FinishKind::PendingTool;
-                    next.waiting = true;
-                }
-            }
-        }
         LLMContextOutcome::ContextLimitReached {
             usage, snapshot: s, ..
         } => {
@@ -792,8 +791,8 @@ pub(super) async fn handle_context_outcome(
         super::rounds::flush_counts(sh, &lc.run, &lc.rounds).await?;
         crate::fault::point("report:after_paired_checkpoint");
     }
-    // 1. results and snapshot first; only covered in-flight markers clear. A
-    //    run that ends records the decision in the same run.json write.
+    // 1. results and snapshot first. A run that ends records the decision in
+    //    the same run.json write.
     if next.run_ended {
         let finish = serde_json::to_value(&next).unwrap_or(Value::Null);
         lc.run.checkpoint_finish(&snapshot, status, finish)?;
@@ -802,6 +801,9 @@ pub(super) async fn handle_context_outcome(
         // commits the transfer instead of inferring again.
         let target = next.next_behavior.clone().unwrap_or_default();
         lc.run.checkpoint_handover(&snapshot, &target)?;
+    } else if next.waiting && next.kind == FinishKind::Wait {
+        let kept = serde_json::to_value(&next).unwrap_or(Value::Null);
+        lc.run.checkpoint_kept(&snapshot, kept)?;
     } else {
         lc.run.checkpoint_with_results(&snapshot, Some(status))?;
     }
@@ -828,34 +830,131 @@ pub(super) async fn handle_context_outcome(
         finish_run(sh, &lc.run, &snapshot, lc.behavior, next.clone()).await?;
         return Ok(next);
     }
-    // Run kept (paused / waiting on a tool): state only. Questions asked
-    // through a notification leave before the wait is committed.
-    if next.waiting {
-        Box::pin(super::ask::send_notify_questions(sh, &lc.run, &snapshot)).await;
-        crate::fault::point("user_input:after_notify_send");
-    }
+    commit_kept(sh, &lc.run, &snapshot, lc.behavior, &next).await?;
+    Ok(next)
+}
+
+/// State of a run that is kept: paused (an error the runtime retries), or
+/// waiting for the work it started — the session follows those tasks and
+/// brings their ends back as input of this same run (freeze TODO F18).
+/// Redone by recovery from the run's `kept` record.
+pub(super) async fn commit_kept(
+    sh: &Arc<Shared>,
+    run: &RunHandle,
+    snapshot: &LLMContextSnapshot,
+    behavior: bool,
+    next: &Next,
+) -> Result<()> {
+    let run_id = run.run_id().to_string();
     let mut s = sh.session.lock().await;
+    // What the run did so far goes to the worklog, closed by the wait.
+    if let Some(live) = s.state.live_run.clone().filter(|l| l.run_id == run_id) {
+        let turn = s.state.current_turn();
+        let (mut bodies, marks) =
+            run_history_entries(&run_id, snapshot, behavior, FlushMarks::of(&live), turn);
+        bodies.push(WorklogBody::Outcome {
+            run_id: run_id.clone(),
+            turn,
+            kind: next.kind.as_str().into(),
+            next_behavior: None,
+            report: next.answer.clone(),
+        });
+        s.append_worklog(&sh.lease, bodies)?;
+        if let Some(l) = s.state.live_run.as_mut() {
+            marks.apply(l);
+        }
+    }
     s.state.run_state = if next.waiting {
         RunState::Waiting
     } else {
         RunState::Ready
     };
-    let mut asked = false;
     if next.waiting {
-        // Generated from the snapshot's suspended calls (status display and
-        // event matching); the calls and their deadlines live in the
-        // snapshot only. A question to the user leaves with this commit.
-        asked = Box::pin(super::ask::queue_questions(sh, &mut s, &lc.run, &snapshot)).await;
-        s.state.waiting_for = Some(super::ask::waiting_for(&snapshot, &lc.run));
+        for task in &next.wait_tasks {
+            if !s.state.watched_tasks.contains(task) {
+                s.state.watched_tasks.push(task.clone());
+            }
+        }
+        s.state.waiting_for = Some(if next.wait_children.is_empty() {
+            WaitingFor {
+                kind: WaitingKind::Tool,
+                refs: next.wait_tasks.clone(),
+                deadline_ms: None,
+            }
+        } else {
+            WaitingFor {
+                kind: WaitingKind::Children,
+                refs: next.wait_children.clone(),
+                deadline_ms: None,
+            }
+        });
     }
     s.state.last_error = next.error.clone();
-    commit_and_report(sh, &mut s).await?;
-    drop(s);
-    if asked {
-        crate::fault::point("user_input:after_question_commit");
-        Box::pin(super::outbound::flush_outbox(sh)).await;
+    commit_and_report(sh, &mut s).await
+}
+
+/// The loop never waits (freeze TODO F17 / F18): a behavior step that
+/// yields, or a reply of the function call loop, while work this run started
+/// is still running (its tasks, the sub sessions the session must hear from)
+/// keeps the run — it is not ended, the Turn stays open, and the ends of
+/// that work come back as input of this same run. That work comes first: a
+/// reply that could not finish the session without a final report
+/// (`missing_end_report`) waits for it too. With nothing running the
+/// decision stands as it is (a yield's report is the reply).
+async fn keep_while_running(sh: &Arc<Shared>, lc: &LiveCtx, next: &mut Next, yielded: bool) {
+    let missing_end = next
+        .error
+        .as_ref()
+        .and_then(|e| e.get("kind"))
+        .and_then(Value::as_str)
+        == Some("missing_end_report");
+    let plain_reply = !lc.behavior
+        && (next.kind == FinishKind::Done || missing_end)
+        && next.report.is_none()
+        && next.next_behavior.is_none();
+    if !(yielded || plain_reply || next.kind == FinishKind::Wait && !next.wait_children.is_empty()) {
+        return;
     }
-    Ok(next)
+    if next.finished && next.outcome != Some(Outcome::Succeeded) && !missing_end {
+        return;
+    }
+    // Sub sessions report through the session's own channel
+    // (`poll_children`); other tasks are followed by id.
+    let mut tasks = Vec::new();
+    let mut own_children = Vec::new();
+    for task_id in lc.run.noted_tasks() {
+        if let Some(sid) = task_id.strip_prefix(super::children::SESSION_TASK_PREFIX) {
+            own_children.push(sid.to_string());
+        } else if matches!(
+            lc.resolver.state(&task_id).await,
+            agent_tool::TaskState::Running { .. }
+        ) {
+            tasks.push(task_id);
+        }
+    }
+    let mut children = next.wait_children.clone();
+    if !own_children.is_empty() {
+        for sid in super::children::unsettled_children(sh).await.unwrap_or_default() {
+            if own_children.contains(&sid) && !children.contains(&sid) {
+                children.push(sid);
+            }
+        }
+    }
+    if tasks.is_empty() && children.is_empty() {
+        if next.kind == FinishKind::Wait && next.run_ended {
+            next.wait_children.clear();
+        }
+        return;
+    }
+    let usage = next.usage.take();
+    *next = Next {
+        kind: FinishKind::Wait,
+        waiting: true,
+        usage,
+        wait_children: children,
+        wait_tasks: tasks,
+        ..Default::default()
+    };
 }
 
 /// What the end-of-run commit leaves for the work after it.
@@ -1122,14 +1221,12 @@ async fn commit_run_end(
                 },
                 refs: Vec::new(),
                 deadline_ms: None,
-                human_tasks: Vec::new(),
             }
         } else {
             WaitingFor {
                 kind: WaitingKind::Children,
                 refs: next.wait_children.clone(),
                 deadline_ms: None,
-                human_tasks: Vec::new(),
             }
         });
     } else {
@@ -1137,9 +1234,8 @@ async fn commit_run_end(
     }
     if next.kind == FinishKind::ProcessDone {
         // A sub context ended: its caller becomes live again in this same
-        // commit (same Turn), with the child's result — rendered into the
-        // caller's hand-over batch (behavior trigger) or filled as the tool
-        // result of the call when the caller's run is opened (tool trigger).
+        // commit (same Turn), with the child's result rendered into the
+        // caller's hand-over batch.
         if let Some(f) = s
             .state
             .process_stack
@@ -1165,13 +1261,12 @@ async fn commit_run_end(
             } else if let Some(report) = &next.report {
                 result["submission"] = serde_json::to_value(report).unwrap_or(Value::Null);
             }
-            match trigger {
-                Some(CallTrigger::Tool { call_id, .. }) => {
-                    result["call_id"] = json!(call_id);
-                    s.state.internal_continuation = None;
-                }
-                _ => s.state.internal_continuation = Some(entry),
+            // Whatever triggered it, the result reaches the caller as its
+            // hand-over batch (a tool trigger names its call).
+            if let Some(CallTrigger::Tool { call_id, .. }) = trigger {
+                result["call_id"] = json!(call_id);
             }
+            s.state.internal_continuation = Some(entry);
             s.state.process_result = Some(result);
         }
     }
@@ -1198,7 +1293,10 @@ async fn commit_run_end(
         // which no tool result records).
         let seen = sh.tasks.lock().expect("tasks").clone();
         for task_id in run.noted_tasks() {
-            if seen.as_ref().is_some_and(|r| r.result_seen(&task_id)) {
+            // Sub sessions report through `poll_children`.
+            if task_id.starts_with(super::children::SESSION_TASK_PREFIX)
+                || seen.as_ref().is_some_and(|r| r.result_seen(&task_id))
+            {
                 continue;
             }
             if !s.state.watched_tasks.contains(&task_id) {

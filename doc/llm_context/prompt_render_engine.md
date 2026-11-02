@@ -1,12 +1,12 @@
 # Prompt Render Engine — 重构需求
 
-> 目标：把 `src/frame/opendan/src/prompt_render_engine.rs` 从「agent_environment 大杂烩」**改造成一个纯粹的、可复用的、基于模板的文本渲染引擎**，并把整个渲染 + 预算 + 装配栈下沉到 `llm_context` crate。
+> 目标：把 `src/frame/opendan/src/prompt_render_engine.rs` 从「agent_environment 大杂烩」**改造成一个纯粹的、可复用的、基于模板的文本渲染引擎**，放在 Runtime 层的 `agent_tool` crate（`agent_tool::prompt_engine`）。
 >
 > 同时把 `old/opendan/src/behavior/prompt.rs` 里**与模板渲染相关**的合并进来；**所有与 session / workspace / todo / msg-queue / contact 相关的逻辑都不属于引擎**，要么由调用方预渲染成字符串塞进 KV，要么通过 `ValueLoader` trait 注入。
 >
-> **实现状态**：阶段 A（§8）已落地：`llm_context` 的 `prompt_engine` / `prompt_budget` / `prompt_compose`。阶段 B 没有按本文落地：旧 opendan Runtime 的数据源在 `src/frame/opendan/src/prompt_env.rs` 的 `AgentSessionValueLoader`（没有 `prompt_sources.rs` / `OpenDanValueLoader`），只用 `PromptRenderEngine` 渲染 behavior hook 模板（`on_init` / `on_wakeup` / `on_behavior_switch` / `on_behavior_step_ob`），没有接 `prompt_compose`，待下一阶段 opendan 重构接入。libopendan 不经过本引擎（见 §4 末尾）。下文 §4–§8 的 opendan 部分是重构计划，不是当前接口。
+> **实现状态**：引擎已落地为 `src/frame/agent_tool/src/prompt_engine.rs`（§2 / §3）。没有通用的 token 预算 / 装配层：各宿主自己把渲染结果拼成 `Vec<AiMessage>`。当前使用方：libopendan 的 behavior system 模板与自定义输入模板（`runner/assembler.rs::render_template`，`__EXEC__` 关闭，命名格式由 `runner/input_view.rs::input_formats()` 注册；没配模板的输入由 `SessionAssembler` 直接拼接，见 §4 末尾），`agent_tool::runtime` 的 `RuntimeValueLoader` / `SandboxPromptExec`（§2 末尾）。
 >
-> **为什么放进 `llm_context`**：未来还有别的 LLM 上层（workflow DSL、oneshot 类调度、文档生成 / 报告渲染……）也要构造 prompt 文本。把「模板 → 预算 → 装配成 `Vec<AiMessage>`」这条流水线放在 `llm_context` 里，与已有的 `Tokenizer` / `LLMResultParser` / `StepRenderer` / `prompt_budget` 同住，能让 opendan 与 workflow 共用同一套工具盒，opendan 只剩下「填 ValueLoader + 配 SectionSpec」一层很薄的胶水。
+> **为什么放进 `agent_tool`，不放进 `llm_context`**：`llm_context` 只跑 loop，进 waist 时 `request.input` 已经是展开好的消息，模板、提示词段落、输入格式都是宿主的事。引擎要接 Runtime 的执行体（`__EXEC__` 走同一 Sandbox）和执行环境信息（`$runtime.*`），和这些能力同住在 Runtime 层；别的 LLM 上层（workflow DSL、oneshot 类调度、文档生成 / 报告渲染……）也可以直接依赖它，只需「填 ValueLoader + 自己装配消息」一层很薄的胶水。
 
 ## 1. 设计原则
 
@@ -19,9 +19,7 @@
 ## 2. 新的 API 形状
 
 ```rust
-//! src/frame/llm_context/src/prompt_engine.rs
-//! 重命名建议：`prompt_render_engine` → `prompt_engine`（与 crate 内
-//! 其它模块 `prompt_budget` / `prompt_compose` 对齐；下文使用新名）。
+//! src/frame/agent_tool/src/prompt_engine.rs（原 `prompt_render_engine` 改名为 `prompt_engine`）
 
 pub struct PromptRenderEngine {
     config: EngineConfig,
@@ -38,15 +36,21 @@ pub struct EngineConfig {
     /// 是否允许 __EXEC__ 指令。默认 false（沙箱友好）。
     pub allow_exec: bool,
     pub executor: Option<Arc<dyn PromptExec>>,
+    /// 以 `/` 开头的 __INCLUDE__ 路径的虚拟根。
+    pub include_root: Option<PathBuf>,
+    /// 根模板所在目录：相对 __INCLUDE__ 路径以它为基准，嵌套包含以被包含文件的目录为基准。
+    pub template_dir: Option<PathBuf>,
     /// __INCLUDE__ 的根目录白名单；空则禁用文件包含。
     pub include_roots: Vec<PathBuf>,
     /// 单次渲染的总递归深度（防止 __INCLUDE__ 循环引用）。默认 8。
     pub max_recursion_depth: u8,
+    /// 宿主注册的命名格式（`render_format`）与额外 filter，引擎自己不带宿主词汇。
+    pub extensions: RenderExtensions,
 }
 
 #[async_trait]
 pub trait PromptExec: Send + Sync + std::fmt::Debug {
-    async fn execute(&self, request: PromptExecRequest) -> Result<PromptExecOutput, String>;
+    async fn exec(&self, request: PromptExecRequest) -> Result<PromptExecOutput, String>;
 }
 // PromptExecRequest: command, timeout: Duration, max_output_bytes
 // PromptExecOutput: exit_code, stdout, stderr, timed_out
@@ -63,10 +67,10 @@ impl PromptRenderEngine {
         &self,
         template: &str,
         vars: &RenderVars,
-        loader: L,
+        loader: &L,
     ) -> Result<RenderResult, RenderError>
     where
-        L: ValueLoader;
+        L: ValueLoader + ?Sized;
 }
 
 /// 调用方提供的"按需取值"回调。所有 agent / session 相关的 KV
@@ -126,7 +130,7 @@ pub enum RenderError {
 - `ValueLoader` 是异步 trait，能接外面任意能算字符串的东西（数据库、session 状态、远程 API…）。引擎对调用方一无所知。
 - `EngineConfig` 把所有沙箱开关收敛在一处，方便不安全路径单测。
 
-`executor` 默认 `None`。启用 `__EXEC__` 但未注入执行器时返回 `RenderError::Loader`，模板引擎不自行启动本地 shell。`llm_context` 只定义执行接口，`agent_tool::runtime::SandboxPromptExec` 把请求交给同一 Sandbox，沿用启动握手、记录与目标侧终止；适配器记录命令与耗时。调用方应在执行前装好 registrar。
+`executor` 默认 `None`。启用 `__EXEC__` 但未注入执行器时返回 `RenderError::Loader`，模板引擎不自行启动本地 shell。`prompt_engine` 只定义执行接口，`agent_tool::runtime::SandboxPromptExec` 把请求交给同一 Sandbox，沿用启动握手、记录与目标侧终止；适配器记录命令与耗时。调用方应在执行前装好 registrar。
 
 `RuntimeValueLoader` 为 `__ENV($runtime.*)__` 提供执行体信息。核心键包括 id、kind、os、arch、hostname、shell、cwd、tools、current_time、timezone；SSH 时在远端探测。Session system 使用稳定字段，新鲜时间放输入批次；xllm 一次性任务可在 system 使用打开时的时间。`__INCLUDE__` 的来源与 include_roots 仍是控制侧模板素材。
 
@@ -150,68 +154,50 @@ pub enum RenderError {
 
 ## 4. 与 old/opendan/src/behavior/prompt.rs 的合并
 
-old prompt.rs 是「behavior 层的 LLM 请求装配」。它干的事可以拆成 3 段，每段都能通用化：
+old prompt.rs 是「behavior 层的 LLM 请求装配」。它干的事拆成两类：
 
 ```
-①  渲染各 section 的模板（include / env / var）   ← prompt_engine
-②  按 token 预算把多段截断 / 丢弃                  ← prompt_budget
-③  把渲染 + 预算编排起来，输出 Vec<AiMessage>       ← prompt_compose
+①  渲染各段模板（include / env / var / exec）          ← agent_tool::prompt_engine（通用）
+②  决定有哪些段、怎么控制长度、怎么装成 Vec<AiMessage>  ← 宿主自己（libopendan SessionAssembler / xllm PromptPlan）
 ```
 
-**3 段全部住进 `llm_context` crate**。剩下的 opendan / behavior 私有部分（哪些 bucket 存在、history 怎么从 SQLite 拿、DID 怎么提取人名……）通过 `ValueLoader` 接入。
+**只有 ① 通用化**，住在 `agent_tool`。② 不做通用层：各宿主的段落结构、长度口径和历史来源都不同；请求装不下时 `llm_context` 只报出 `ContextLimitReached` 这个事实，由宿主重写历史。宿主私有的数据（session 历史、Todo、记忆、DID 怎么提取人名……）由宿主预渲染成字符串放进 `RenderVars`，或通过 `ValueLoader` 接入。
 
-### ① `llm_context::prompt_engine`
-模板渲染本身。设计已在 §2 / §3 描述。无 agent 词汇、无 buckyos_api / name_lib 依赖。
+### ① `agent_tool::prompt_engine`
+模板渲染本身。设计已在 §2 / §3 描述。无 agent 词汇、无 buckyos_api / name_lib 依赖，也不依赖 `llm_context`。
 
-### ② `llm_context::prompt_budget`
-token 预算装配的纯算法。详细 API 见 §6.1 / §6.2 / §6.3。无 agent 词汇，依赖现有 `llm_context::Tokenizer` trait。
+### 宿主侧（不进引擎）
+libopendan 的 `SessionAssembler`（`runner/assembler.rs`）决定 system 段和每个输入批次的内容：
 
-### ③ `llm_context::prompt_compose`
-渲染 + 预算的编排器。把"section 配置 + 模板 + 数据源"翻译成 `Vec<AiMessage>`。详细 API 见 §6.4。
+- behavior 配置了 system 模板或输入模板（`on_init` / `on_context_switch` / `on_input`，以及半订阅快照模板）时，用 `render_template` 经本引擎渲染：`__EXEC__` 关闭，模板变量是宿主预先算好的 JSON（`input` / `handover` / `todos_text` / `background_text` / `builtin` 等），命名格式由 `input_formats()` 注册。
+- 没配模板时由 `DefaultAssembler` 直接拼接，不经过引擎。
 
-输入是一组 `SectionSpec { key, role, template, priority, min_tokens, trunc }`，输出是 `Vec<AiMessage>`。它内部按顺序：
-1. 对每个 section 用 `prompt_engine::render` 渲染模板拿到字符串
-2. 把所有渲染后的字符串作为 `BudgetedSection` 喂给 `prompt_budget::PromptBudgeter::fit`
-3. 把保留的 section 按原顺序 wrap 成 `AiMessage`（role 来自 SectionSpec）
-
-这一层**没有任何 agent / workflow 词汇**：它只知道「模板字符串 + 数据回调 + 预算 → 一组消息」。
-opendan / workflow 各自实现自己的 `ValueLoader` + 写一份 `SectionSpec` 列表即可复用整条流水线。
-
-### 完全不进 `llm_context` 的（仍归 opendan）
-opendan 私有的「数据源」逻辑独立成 `src/frame/opendan/src/prompt_sources.rs`（新文件，命名建议）：
-- 时间线渲染（`render_memory_timeline_text` / `format_history_*`）
-- 历史消息加载与格式化（`load_history_messages_with_limit` / `render_history_msg_line` / `render_history_sender` / `extract_name_from_did` / `normalize_history_multiline_text`）
-- session step records / agent memory 加载（`load_session_step_records_with_limit` / `load_agent_memory_with_limit`）
-- bucket 名字常量、`contains_any_marker` 等 opendan 私有 heuristic
-- 顶层 `OpenDanValueLoader: ValueLoader`：把上面这些拼起来响应 `loader.load("history.messages.recent")` 一类查询；agent_session 里调用 `prompt_compose::compose(...)` 时把它作为 loader 传入。
-
-opendan 不再有"composition" 模块——composition 已经下沉。
+xllm 的 system 文本由 `PromptPlan` 按段拼接（宿主 / 组文本 + capabilities + cmd_manual + runtime_protocol），见 [LLM Context 设计](<LLM Context 设计.md>) §11.2。
 
 #### History、Step、动作回响和输入批次的实际来源（当前实现）
 
 这些都不是本引擎的模板变量，Round / Turn 编号也没有作为模板变量暴露：
 
-- **Step 历史与动作回响**：由 llm_context 的 `StepRenderer`（默认 `XmlStepRenderer`）在每次推理前从 `LLMContextState.steps` / `last_step` 渲染：其它 behavior 的 Step 进 `<<step_history>>`，当前 behavior 的 Step 渲染成 assistant 决策 + `<<last_step_action_results>>` 动作回响。旧 opendan Runtime 可以用 behavior 的 `on_behavior_step_ob` 模板经 `StepResultHook` 替换某个 Step 的动作回响，模板里的 `current_context.last_step` / `current_context.step_history` 是从 LLMContext 快照取出的 `StepRecord`（见 [Agent Enviroment.md](../opendan/Agent%20Enviroment.md)）。libopendan / xllm 不挂 `StepResultHook`，动作回响总是默认渲染。
-- **Session 历史**：libopendan Runner 从 worklog 渲染成一条 `<session_history>` user message（`runner/history.rs`，`MechanicalCompress`）；旧 Runtime 的历史加载与格式化见上面的 opendan 私有数据源。
-- **每个输入批次的 user message**：libopendan 由 `SessionAssembler::render_input(cfg, state, &InputMaterial)` 渲染成 `<session_input hook=… time=…>`（默认 `DefaultAssembler`，不经过 `PromptRenderEngine`）；system 段由 `SessionAssembler::system_text` 生成。旧 Runtime 用 `on_wakeup` 等 hook 模板经本引擎渲染。
+- **Step 历史与动作回响**：由宿主装配的 `StepRenderer`（`agent_tool::XmlStepRenderer`）在每次推理前从 `LLMContextState.steps` / `last_step` 渲染：其它 behavior 的 Step 进 `<<step_history>>`，当前 behavior 的 Step 渲染成 assistant 决策 + `<<last_step_action_results>>` 动作回响。动作回响总是默认渲染；宿主要补充的内容经 `LLMContext::inject` 并入该 Step 的 user 消息（接在动作回响之后）。
+- **Session 历史**：libopendan Runner 从 worklog 渲染成一条 `<session_history>` user message（`runner/history.rs`，`MechanicalCompress`）。
+- **每个输入批次的 user message**：libopendan 由 `SessionAssembler::render_input(cfg, state, templates, &InputMaterial)` 渲染成 `<session_input hook=… time=…>`（规则同上：有输入模板走本引擎，否则 `DefaultAssembler` 直接拼接）；system 段由 `SessionAssembler::system_text` 生成。
 
 ### workflow DSL 的复用面
 workflow 那边只需要：
 - 自己实现一个 `WorkflowValueLoader: ValueLoader`，把 job inputs / 上游 node 输出包装成 `loader.load(...)` 的响应。
-- 自己定义一组 workflow 风味的 `SectionSpec`（DSL 里可能直接长成这样）。
-- 调用 `prompt_compose::compose(...)`，输出直接是 `Vec<AiMessage>`，可以直接喂进 `LLMContextRequest.input`。
+- 用 `PromptRenderEngine::render` 渲染自己的各段模板，自己装成 `Vec<AiMessage>` 喂进 `LLMContextRequest.input`。
 
-→ workflow 完全不依赖 opendan；与 opendan 共享同一条 LLM 入口装配流水线。
+→ workflow 完全不依赖 opendan；与 opendan 共享同一个模板引擎。
 
 ## 5. 要从原 prompt_render_engine.rs（即 agent_environment.rs）删掉的
 
-以下条目全部移除（要么搬到 composition layer，要么搬到调用 site）：
+以下条目全部移除（要么搬到宿主的装配层，要么搬到调用 site）：
 
 | 类别 | 删除清单（in `prompt_render_engine.rs`） |
 |------|----------------------------------------|
 | 结构体 | `AgentEnvironment` / `PromptTemplateContext` / `AgentTemplateRenderResult` / `TemplateRenderMode` |
 | Workshop / Session 入口 | `register_workshop_tools*` / `agent_env_root` / `local_workspace_manager` |
-| 大型分发函数 | `load_value_from_session`（~470 行的"特殊 key 巨型 match"）→ 这些 key 全部下沉到 composition layer 的 ValueLoader 实现 |
+| 大型分发函数 | `load_value_from_session`（~470 行的"特殊 key 巨型 match"）→ 这些 key 由宿主预渲染进 `RenderVars` 或由宿主的 ValueLoader 实现 |
 | 包装层 | `render_prompt` / `render_prompt_template` / `render_input_block_template` / `build_prompt_template_context` |
 | 业务渲染 | `render_new_events_from_kmsgqueue` / `render_human_readable_msg_line` / `build_session_skill_roots` / `resolve_todo_db_path` / `resolve_session_workspace_id` / `load_owner_value_for_prompt` |
 | 路径解析 | `non_empty_path` / `resolve_bound_workspace_id` 等——这些已经在 `workspace_path.rs`，保持原位即可 |
@@ -225,217 +211,39 @@ workflow 那边只需要：
 ## 6. 文件布局
 
 ```
-src/frame/llm_context/src/
-├── prompt_engine.rs       # 新建：纯模板引擎（详 §2 / §3），预计 <700 行
-├── prompt_budget.rs       # 新建：通用 token 预算装配（详 §6.1 / §6.2）
-└── prompt_compose.rs      # 新建：渲染 + 预算编排器（详 §6.4）
+src/frame/agent_tool/src/
+├── prompt_engine.rs       # 纯模板引擎（详 §2 / §3）：PromptRenderEngine / EngineConfig / RenderVars /
+│                          #   ValueLoader / PromptExec / RenderExtensions；escape_xml_text / escape_xml_attr
+└── runtime/mod.rs         # SandboxPromptExec（__EXEC__ 走同一 Sandbox）、RuntimeValueLoader（$runtime.*）
 
-src/frame/opendan/src/
-├── prompt_sources.rs      # 新建：opendan 私有的数据源 + OpenDanValueLoader
-└── agent_environment.rs   # 删除（功能拆散到 prompt_sources + agent + workspace 三处）
-                           #   原 prompt_render_engine.rs 整体删除（内容已下沉）
+src/frame/lib_opendan/src/runner/
+├── assembler.rs           # SessionAssembler / DefaultAssembler / BehaviorAssembler；render_template
+└── input_view.rs          # input_formats()：输入批次用的命名格式
 ```
 
 调用关系：
 ```
-opendan::agent_session
-      │
-      │  compose_llm_input(behavior_cfg, session_state)
-      ▼
-opendan::prompt_sources::build_section_specs(...)  ──→  Vec<SectionSpec>
-      │                                                       │
-      │   OpenDanValueLoader { session, workshop, … }          │
-      │                                                       ▼
-      └──────────────────────────────────────────►  llm_context::prompt_compose::compose
-                                                              │
-                                                              │  对每个 section：
-                                                              ▼
-                                                  llm_context::prompt_engine::render
-                                                              │
-                                                              ▼
-                                                  llm_context::prompt_budget::PromptBudgeter::fit
-                                                              │
-                                                              ▼
-                                                          Vec<AiMessage>
+libopendan::runner::SessionAssembler
+      │  behavior 配了 system / 输入模板？
+      ├── 是 ──► render_template(template, vars)
+      │              │  EngineConfig { extensions: input_formats(), ..default }（__EXEC__ 关闭）
+      │              ▼
+      │          agent_tool::prompt_engine::PromptRenderEngine::render(template, &RenderVars, &NullValueLoader)
+      │              ▼
+      │          String ──► system 段 / <session_input> 正文
+      └── 否 ──► DefaultAssembler 直接拼接
+
+宿主自己把各段装成 Vec<AiMessage> ──► LLMContextRequest.input
 ```
 
 依赖单向、闭包清晰：
-- `prompt_engine` ← 无依赖（在 llm_context 内）
-- `prompt_budget` ← 依赖 `llm_context::Tokenizer`
-- `prompt_compose` ← 依赖前两者 + `Tokenizer` + `AiMessage` / `AiRole`
-- opendan 只依赖以上 3 个模块的公共 API，**反向无依赖**
-- workflow 同样只依赖以上 3 个模块（不依赖 opendan）
-
-### 6.1 `llm_context::prompt_budget` API 草案
-
-```rust
-//! src/frame/llm_context/src/prompt_budget.rs
-//!
-//! Token 预算装配。纯算法层 + 配置驱动；调用方提供 sections + tokenizer，
-//! 返回按预算 fit 后的最终内容。与 PromptRenderEngine 正交：engine 产
-//! 字符串，budgeter 决定如何拼。
-
-use crate::deps::Tokenizer;
-
-/// 一段待装配文本。
-#[derive(Debug, Clone)]
-pub struct BudgetedSection {
-    /// 用于调试 / 返回结果回查；budgeter 不关心其含义。
-    pub key: String,
-    pub content: String,
-    /// 优先级越高越保留。预算先按 priority 桶分配，再在桶内 round-robin。
-    pub priority: u8,
-    /// 即使整个 section 装不下，仍要保留这么多 **token**；
-    /// 若连这都装不下，整段丢弃，调用方在 `dropped` 里能看到。
-    pub min_tokens: u32,
-    /// 超出预算时从哪头截。
-    pub trunc: TruncFrom,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TruncFrom {
-    /// 从开头截（保留尾部，适合"最新消息"）
-    Head,
-    /// 从结尾截（保留头部，适合"目录大纲"）
-    Tail,
-    /// 中间打 `…` 省略号（保留首尾，适合"长文档摘要"）
-    Middle,
-}
-
-pub struct PromptBudgeter<'a> {
-    pub tokenizer: &'a dyn Tokenizer,
-    pub total_budget_tokens: u32,
-}
-
-#[derive(Debug, Clone)]
-pub struct FitOutcome {
-    /// 最终保留的 section（按输入顺序），content 已经按预算截好。
-    pub kept: Vec<FittedSection>,
-    /// 完全丢弃的 section key（连 min_tokens 都装不下）。
-    pub dropped: Vec<String>,
-    pub tokens_used: u32,
-    pub tokens_remaining: u32,
-}
-
-#[derive(Debug, Clone)]
-pub struct FittedSection {
-    pub key: String,
-    pub content: String,
-    pub tokens: u32,
-    /// 是否被截断（true 表示 content < 原 section.content）
-    pub truncated: bool,
-}
-
-impl<'a> PromptBudgeter<'a> {
-    pub fn new(tokenizer: &'a dyn Tokenizer, total_budget_tokens: u32) -> Self;
-
-    /// 多段装配。算法见 §6.2。
-    pub fn fit(&self, sections: Vec<BudgetedSection>) -> FitOutcome;
-
-    /// 单段截断到指定预算。供 composition 层做"只压一段"的简单调用。
-    pub fn fit_single(&self, text: &str, budget_tokens: u32, trunc: TruncFrom) -> String;
-}
-```
-
-### 6.2 多 section 装配算法
-
-1. 先用 tokenizer 算每个 section 的 raw token 数；总和 ≤ 预算 ⇒ 全部直接保留，结束。
-2. 否则按 priority 分桶（高 → 低），每桶内按输入顺序：
-   - 先给每个 section 分 `min_tokens`；若桶内 min 之和已超剩余预算 ⇒ 这个桶按入桶顺序逐个 drop，直到能塞下。
-   - 剩余预算按 raw 大小做 round-robin 加配额，直到该 section 拿到的额度 ≥ 自身 raw token 数（即"全保留"）或预算耗尽。
-3. 桶处理顺序：高优先级先吃饱，再喂下一桶。
-4. 每个 section 用二分查找把 content 截到分配到的额度（按 `TruncFrom` 决定截哪头），保留至少 `min_tokens`。
-5. 返回 `FitOutcome`：`kept` 维持输入顺序（不按 priority 重排），`dropped` 记录被踢掉的 key。
-
-### 6.3 prompt_budget 测试要求
-
-`prompt_budget.rs` 独立单测（mock Tokenizer 即可，不依赖 agent）：
-1. 全部装得下 ⇒ 全部原样保留，`truncated=false`。
-2. 单段超出 ⇒ 按 `TruncFrom::{Head|Tail|Middle}` 各跑一次，验证保留区域正确。
-3. 多段不同优先级 ⇒ 高优先级先吃满；低优先级被截或被 drop 到 `dropped`。
-4. 一个 section 的 `min_tokens` 大于全部预算 ⇒ 整段进 `dropped`，剩余预算让给其它。
-5. 边界：空 section 列表 / 预算为 0 / Tokenizer 返回 0。
-
-### 6.4 `llm_context::prompt_compose` API 草案
-
-```rust
-//! src/frame/llm_context/src/prompt_compose.rs
-//!
-//! Render-then-budget 编排器。把一组 SectionSpec 翻译成 Vec<AiMessage>，
-//! 内部依次走 prompt_engine::render → prompt_budget::PromptBudgeter::fit。
-//! 完全通用：opendan / workflow / 其它任意 LLM 上层都能用同一个入口。
-
-use buckyos_api::{AiMessage, AiRole};
-use crate::deps::Tokenizer;
-use crate::prompt_budget::{BudgetedSection, PromptBudgeter, TruncFrom};
-use crate::prompt_engine::{
-    EngineConfig, PromptRenderEngine, RenderError, RenderStats, RenderVars, ValueLoader,
-};
-
-/// 一段待装配的 prompt 内容。模板由 `prompt_engine` 渲染、字符串由
-/// `prompt_budget` 装配，最终 wrap 成 1 条 `AiMessage`。
-#[derive(Debug, Clone)]
-pub struct SectionSpec {
-    /// 调试 / 统计回查用，budgeter 也用它作 `key`。
-    pub key: String,
-    pub role: AiRole,
-    pub template: String,
-    pub priority: u8,
-    pub min_tokens: u32,
-    pub trunc: TruncFrom,
-    /// section 自己的渲染变量（在全局 vars 之外叠加，**会覆盖**同名全局 var）。
-    pub local_vars: Option<RenderVars>,
-}
-
-pub struct CompositionRequest<'a> {
-    pub sections: Vec<SectionSpec>,
-    pub total_budget_tokens: u32,
-    /// 全局共享渲染变量。每个 section 渲染时与 `local_vars` 合并。
-    pub vars: &'a RenderVars,
-    pub engine: &'a PromptRenderEngine,
-    pub tokenizer: &'a dyn Tokenizer,
-}
-
-#[derive(Debug)]
-pub struct CompositionOutcome {
-    /// 保留下来的 AiMessage，按 `sections` 输入顺序排列。
-    pub messages: Vec<AiMessage>,
-    /// 渲染期间被 drop 的 section key（min_tokens 装不下）。
-    pub dropped: Vec<String>,
-    /// 每个 section 的渲染统计（即使被 drop 也保留，便于排查）。
-    pub render_stats: std::collections::HashMap<String, RenderStats>,
-    pub tokens_used: u32,
-    pub tokens_remaining: u32,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum CompositionError {
-    #[error("render section `{key}`: {source}")]
-    Render { key: String, #[source] source: RenderError },
-}
-
-pub async fn compose<L>(
-    request: CompositionRequest<'_>,
-    loader: &L,
-) -> Result<CompositionOutcome, CompositionError>
-where
-    L: ValueLoader;
-```
-
-### 6.5 prompt_compose 测试要求
-
-`prompt_compose.rs` 独立单测（用 in-memory ValueLoader / mock Tokenizer，不依赖 opendan）：
-1. 单段模板渲染 + 预算装得下 ⇒ 输出 1 条 AiMessage，role 正确，内容原样。
-2. 多段 + 预算够 ⇒ 输出按输入顺序，role / 内容一一对应。
-3. 多段 + 预算不够 ⇒ 低优先级 section 被截，验证截断方向。
-4. 某 section min_tokens 超预算 ⇒ 进 `dropped`，其它 section 拿到更多预算。
-5. `local_vars` 覆盖 `vars` 同名 key。
-6. ValueLoader 在某 section 渲染时返回错误 ⇒ `CompositionError::Render { key, .. }`，且 key 正确。
-7. 同一 role 的连续 section ⇒ 输出仍是多条 AiMessage（不强行合并；调用方按需后处理）。
+- `prompt_engine` ← 无依赖（不依赖 `llm_context`，`escape_xml_*` 在 crate 根重导出，`XmlStepRenderer` 也用它们）
+- `agent_tool::runtime` 实现 `PromptExec` / `ValueLoader`，把执行体接进引擎
+- libopendan / workflow 只依赖引擎的公共 API，**反向无依赖**
 
 ## 7. 测试要求
 
-`prompt_render_engine.rs` 必须有的覆盖（不依赖 agent / session）：
+`prompt_engine.rs` 必须有的覆盖（不依赖 agent / session）：
 1. 纯 `{var}` 替换 + 转义 `{{` `}}`
 2. `__ENV(simple)__` + `__ENV(dotted.path)__` 命中 & 未命中
 3. `__INCLUDE(path)__` 命中 / 路径不在白名单 / 文件太大被截断 / 嵌套包含触发递归限制
@@ -447,34 +255,29 @@ where
 
 ## 8. 实施 checklist（给 CodeAgent）
 
-按编译可独立通过的顺序。每个阶段独立 `cargo test -p llm_context` 全绿后再进下一阶段；llm_context crate 不依赖 opendan，所以前 8 步完全可以脱离 opendan 跑通。
+按编译可独立通过的顺序。每个阶段独立 `cargo test -p agent_tool` 全绿后再进下一阶段；引擎不依赖 opendan / libopendan，阶段 A 完全可以脱离宿主跑通。
 
-### 阶段 A — llm_context 内部建栈
+### 阶段 A — agent_tool 内建引擎
 
-1. **`llm_context::prompt_engine` 框架**：定义新 API 类型（`PromptRenderEngine` / `EngineConfig` / `RenderVars` / `RenderResult` / `RenderStats` / `RenderError` / `ValueLoader` trait），`render` 暂返回 `todo!()`，跑通编译。
+1. **`agent_tool::prompt_engine` 框架**：定义 API 类型（`PromptRenderEngine` / `EngineConfig` / `RenderVars` / `RenderResult` / `RenderStats` / `RenderError` / `ValueLoader` / `PromptExec` / `RenderExtensions`），`render` 暂返回 `todo!()`，跑通编译。
 2. **搬运 escape/unescape/truncate/path-env 工具函数**：从老 `prompt_render_engine.rs`（即 agent_environment.rs）挑纯字符串 helper 进来，加单测。
 3. **实现 `{var}` + `__ENV__` + `__VAR__` 三个指令**：占模板能力 80%，覆盖 §7 的 1/2/5/6/7/8。
 4. **实现 `__INCLUDE__`**：含 root 白名单、递归限制、字节上限。
-5. **实现 `__EXEC__`（默认关闭）**：含 `allow_exec` gate 和超时。
-6. **`llm_context::prompt_budget`**：按 §6.1 / §6.2 实现 `PromptBudgeter` + 单元测试（§6.3）。
-7. **`llm_context::prompt_compose`**：按 §6.4 实现 `compose(...)` + 单元测试（§6.5）。用 in-memory `ValueLoader` 跑全套，不依赖 opendan。
-8. **lib.rs 导出**：把 `PromptRenderEngine` / `PromptBudgeter` / `prompt_compose::compose` 一系列公共类型公开到 crate 根。
+5. **实现 `__EXEC__`（默认关闭）**：含 `allow_exec` gate 和超时；执行经注入的 `PromptExec`。
+6. **lib.rs 导出**：`pub mod prompt_engine`，`escape_xml_text` / `escape_xml_attr` 重导出到 crate 根。
 
-### 阶段 B — opendan 接入
+### 阶段 B — 宿主接入
 
-9. **新建 `src/frame/opendan/src/prompt_sources.rs`**：搬 `old/opendan/src/behavior/prompt.rs` 里 memory / timeline / history / step_record / agent_memory 加载 + 格式化的所有逻辑；同时实现 `OpenDanValueLoader: ValueLoader`，把当前 `load_value_from_session` 那个巨大 match 翻译过来。
-10. **新建 opendan-private 的 SectionSpec 配置翻译**：把 behavior_cfg 里的 "system / output_protocol / memory / input" 等 prompt 段翻译成 `Vec<SectionSpec>`；这一层是 opendan 私有，不进 llm_context。
-11. **`agent_session::compose_llm_input` 入口**：调用 `prompt_sources::build_section_specs` → `prompt_compose::compose` → 返回 `Vec<AiMessage>` 给 `LLMContextRequest.input`。
-12. **删 `agent_environment.rs`**：旧的 `AgentEnvironment` / `PromptTemplateContext` / `register_workshop_tools*` 全部消失。
-13. **回归**：opendan crate `cargo build` + `cargo test` 全绿；UI session 跑一遍最小回路确认 prompt 渲染输出与旧版字节大致一致（允许 diff 由命名空间 rename 带来的差异）。
+7. **Runtime 适配**：`agent_tool::runtime` 实现 `SandboxPromptExec`（`PromptExec`）与 `RuntimeValueLoader`（`ValueLoader`，`$runtime.*`）。
+8. **libopendan**：`runner/assembler.rs::render_template` 渲染 behavior 的 system 模板与输入模板，命名格式在 `runner/input_view.rs::input_formats()` 注册；没配模板时 `DefaultAssembler` 直接拼接。
+9. **回归**：`cargo test -p agent_tool`、`cargo test -p libopendan`；UI session 跑一遍最小回路确认 prompt 渲染输出符合预期。
 
 ### 阶段 C — workflow DSL（后续，不在本次重构范围）
 
-workflow 那边只需复用阶段 A 的 3 个模块 + 自己写 `WorkflowValueLoader` 和 DSL → `SectionSpec` 的翻译；不涉及 llm_context 内部改动。
+workflow 那边只需复用阶段 A 的引擎 + 自己写 `WorkflowValueLoader` 和 DSL → 各段模板 → `Vec<AiMessage>` 的装配；不涉及 `llm_context` 或引擎内部改动。
 
 ## 9. 后续可选
 
-- `prompt_engine` 内部除 `AiMessage` / `AiRole`（已在 `buckyos_api`）外，理论上能完全独立于 llm_context 的其它部分。如果将来 buckyos 其它子系统（docs / report）想用这套，可以把 `prompt_engine` + `prompt_budget` + `prompt_compose` 整体上移到一个更通用的位置（例如新 crate `text_template` 或 `prompt_kit`）——但本次重构**不**做，留好这个迁移空间即可。
+- `prompt_engine` 只依赖 `upon`、`serde_json`、`tokio` 等通用库，不依赖 `llm_context` 和 agent_tool 的其它部分。如果将来 buckyos 其它子系统（docs / report）想用这套，可以把它整体上移到一个更通用的位置（例如新 crate `text_template` 或 `prompt_kit`）——但本次重构**不**做，留好这个迁移空间即可。
 - 给 `ValueLoader` 提供一个 `CompositeLoader { loaders: Vec<Arc<dyn ValueLoader>> }` 默认实现，方便多源拼接（session loader + workspace loader + 全局静态 loader）。
 - 给 `prompt_engine` 加一个可选的 `RenderTracer` hook，emit 每个指令的命中事件，方便排查模板问题。
-- `prompt_compose` 提供一个可选的"同 role 连续 section 合并成一条 AiMessage"后处理 helper（默认不开，避免破坏 caller 的语义假设）。

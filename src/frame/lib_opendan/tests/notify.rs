@@ -1,27 +1,27 @@
 //! System Notify on the agent side (notepads/opendan-agent-notify-todo.md
-//! §3.5–§3.10): a Work asks through a notification and waits for it, the
-//! `_notify` observation of UI sessions, and `agent-session notify`.
+//! §3.5–§3.10): the `_notify` observation of UI sessions and `agent-session
+//! notify`. Asking the user is a standard asynchronous call (`ask_user`, a
+//! `human.input/v1` task): see `input_tasks.rs`.
 //! Acceptance ids (V07…) refer to §5 of the TODO.
 
 mod common;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use async_trait::async_trait;
 use common::*;
 use libopendan::notify::{
-    notify_event, LocalNotify, NotifyAnswer, NotifyHost, NotifyKind, NotifyLevel,
+    notify_event, LocalNotify, NotifyHost, NotifyKind, NotifyLevel,
     NotifyListReq, NotifyStatus, NotifyView,
 };
 use libopendan::protocol::*;
 use libopendan::runner::{
-    drive, DriveResult, RunnerDeps, StopWhen, TurnTaskEnd, TurnTaskOpen, TurnTaskSink,
+    drive, RunnerDeps, StopWhen, TurnTaskEnd, TurnTaskOpen, TurnTaskSink,
     TurnTaskStatus,
 };
 use libopendan::SessionTemplate;
-use serde_json::{json, Value};
+use serde_json::json;
 
 #[derive(Default)]
 struct Tasks {
@@ -42,25 +42,20 @@ impl TurnTaskSink for Tasks {
     }
 }
 
-fn ask(call_id: &str, args: &str) -> buckyos_api::AiResponse {
-    tool_call(
-        call_id,
-        "shell",
-        json!({ "command": format!("agent-session ask-user {args}") }),
-    )
-}
-
 fn shell(call_id: &str, command: &str) -> buckyos_api::AiResponse {
     tool_call(call_id, "shell", json!({ "command": command }))
 }
 
-fn work(objective: &str, timeout: Option<u64>) -> libopendan::api::SessionSpec {
+fn work(objective: &str) -> libopendan::api::SessionSpec {
     let mut spec = SessionTemplate::load("work", None).unwrap().spec(objective);
     spec.prompt.llm_context = json!({ "tools": { "enabled": true } });
-    if let Some(t) = timeout {
-        spec.policy.ask_user_timeout_secs = t;
-    }
     spec
+}
+
+async fn only_notify(local: &LocalNotify) -> NotifyView {
+    let all = local.list(NotifyListReq::default()).await.unwrap();
+    assert_eq!(all.len(), 1, "{all:#?}");
+    all[0].clone()
 }
 
 fn notify_deps(env: &Env, llm: Arc<ScriptedLlm>, tasks: &Arc<Tasks>) -> (RunnerDeps, Arc<LocalNotify>) {
@@ -71,192 +66,6 @@ fn notify_deps(env: &Env, llm: Arc<ScriptedLlm>, tasks: &Arc<Tasks>) -> (RunnerD
     deps.notify = Some(local.clone());
     deps.turn_tasks = Some(tasks.clone());
     (deps, local)
-}
-
-async fn only_notify(local: &LocalNotify) -> NotifyView {
-    let all = local.list(NotifyListReq::default()).await.unwrap();
-    assert_eq!(all.len(), 1, "{all:#?}");
-    all[0].clone()
-}
-
-fn result_of(req: &llm_context::deps::LlmInferenceRequest, call_id: &str) -> Value {
-    let r = has_tool_result(req, call_id).unwrap_or_else(|| panic!("no result for {call_id}"));
-    serde_json::from_str(&r).unwrap_or_else(|e| panic!("{e}: {r}"))
-}
-
-/// V07 / V08: a Work's `ask-user` becomes an `input` notification (source
-/// session / turn / call, level timely, deadline 3h by default); the Work
-/// waits for it (HumanInput on its Turn task) and the answer given on the
-/// card is the call's result.
-#[tokio::test]
-async fn a_work_asks_through_a_notification_and_continues_with_the_answer() {
-    let env = Env::new();
-    let sd = env.create_work(work("migrate the notes app", None)).await;
-    assert!(sd.config().unwrap().channels.kmsg().is_none());
-    let llm = ScriptedLlm::new(move |req, n| match n {
-        0 => ask("q1", "'Which database?' --option pg=Postgres --option sqlite=SQLite"),
-        1 => {
-            let r = result_of(req, "q1");
-            assert_eq!(r["option"], "pg", "{r}");
-            assert_eq!(r["text"], "Postgres", "{r}");
-            assert_eq!(r["via"], "notification", "{r}");
-            assert_eq!(r["in_reply_to_question"], true, "{r}");
-            text("migrated to Postgres")
-        }
-        _ => panic!("unexpected call {n}"),
-    });
-    let tasks = Arc::new(Tasks::default());
-    let (deps, local) = notify_deps(&env, llm.clone(), &tasks);
-    let before = libopendan::now_ms();
-    let r = drive(&sd, &deps, StopWhen::Idle).await;
-    assert!(matches!(r, DriveResult::Idle { .. }), "{r:?}");
-    let v = only_notify(&local).await;
-    assert_eq!(v.kind, NotifyKind::Input);
-    assert_eq!(v.level, NotifyLevel::Timely);
-    assert_eq!(v.status, NotifyStatus::Open);
-    assert_eq!(v.prompt.title.as_deref(), Some("Which database?"));
-    assert_eq!(libopendan::notify::prompt_options(&v.prompt).len(), 2);
-    assert_eq!(v.source.session_id.as_deref(), Some(sd.sid()));
-    assert_eq!(v.source.call_id.as_deref(), Some("q1"));
-    assert_eq!(v.source.turn, Some(1));
-    assert_eq!(v.source.operation.as_deref(), Some("migrate the notes app"));
-    let st = sd.state().unwrap();
-    let w = st.waiting_for.clone().unwrap();
-    assert_eq!(w.kind, WaitingKind::Input);
-    assert_eq!(w.refs, vec!["userinput:q1".to_string()]);
-    let deadline = w.deadline_ms.unwrap();
-    assert!(deadline >= before + 10_800_000 && deadline <= libopendan::now_ms() + 10_800_000);
-    assert_eq!(v.expires_at_ms, Some(deadline));
-    assert_eq!(w.human_tasks, vec![v.task_id.clone().unwrap()]);
-    let last = tasks.updates.lock().unwrap().last().cloned().unwrap();
-    assert_eq!(last.message, "waiting for the user's answer (notification)");
-    assert_eq!(last.waiting_for.unwrap().human_tasks, vec![v.task_id.clone().unwrap()]);
-    // Driving again changes nothing: the same notification, still waiting.
-    drive(&sd, &deps, StopWhen::Idle).await;
-    assert_eq!(only_notify(&local).await.notify_id, v.notify_id);
-    assert_eq!(llm.count(), 1);
-    // The user answers on the card.
-    local
-        .answer(&v.notify_id, NotifyAnswer::option("pg"), None)
-        .await
-        .unwrap();
-    let r = drive(&sd, &deps, StopWhen::Finished).await;
-    assert!(r.is_finished(), "{r:?}");
-    assert_eq!(llm.count(), 2);
-    assert!(sd.report().unwrap().contains("migrated to Postgres"));
-}
-
-/// V09 / V10: no answer before the deadline, a dismissed and a canceled
-/// notification: the call's result says the question was not answered
-/// (a result, not an error) and the Work goes on.
-#[tokio::test]
-async fn unanswered_questions_are_results() {
-    for case in ["timeout", "dismissed", "canceled"] {
-        let env = Env::new();
-        let timeout = (case == "timeout").then_some(1);
-        let sd = env.create_work(work("decide the layout", timeout)).await;
-        let expect = case.to_string();
-        let llm = ScriptedLlm::new(move |req, n| match n {
-            0 => ask("q1", "'Grid or list?'"),
-            1 => {
-                let r = result_of(req, "q1");
-                assert_eq!(r["answered"], false, "{r}");
-                assert_eq!(r["reason"], expect.as_str(), "{r}");
-                text("went with a grid")
-            }
-            _ => panic!("unexpected call {n}"),
-        });
-        let tasks = Arc::new(Tasks::default());
-        let (deps, local) = notify_deps(&env, llm.clone(), &tasks);
-        drive(&sd, &deps, StopWhen::Idle).await;
-        let v = only_notify(&local).await;
-        match case {
-            "timeout" => tokio::time::sleep(Duration::from_millis(1200)).await,
-            "dismissed" => {
-                local.answer(&v.notify_id, NotifyAnswer::dismiss(), None).await.unwrap();
-            }
-            _ => {
-                local.cancel(&v.notify_id, "no_longer_needed").await.unwrap();
-            }
-        }
-        let r = drive(&sd, &deps, StopWhen::Finished).await;
-        assert!(r.is_finished(), "{case}: {r:?}");
-        assert_eq!(llm.count(), 2, "{case}");
-        assert!(local.state(&v.notify_id).await.unwrap().status.is_closed(), "{case}");
-    }
-}
-
-/// V11: a Work stopped while it waits: its notification is canceled
-/// (`turn_stopped`) and the Turn ends stopped.
-#[tokio::test]
-async fn a_stop_while_waiting_cancels_the_notification() {
-    let env = Env::new();
-    let sd = env.create_work(work("wait for the user", None)).await;
-    let llm = ScriptedLlm::new(move |_, n| match n {
-        0 => ask("q1", "'Proceed?'"),
-        _ => panic!("unexpected call {n}"),
-    });
-    let tasks = Arc::new(Tasks::default());
-    let (deps, local) = notify_deps(&env, llm.clone(), &tasks);
-    drive(&sd, &deps, StopWhen::Idle).await;
-    let v = only_notify(&local).await;
-    deps.stop.request();
-    let r = drive(&sd, &deps, StopWhen::Finished).await;
-    assert!(r.is_finished(), "{r:?}");
-    let after = local.state(&v.notify_id).await.unwrap();
-    assert_eq!(after.status, NotifyStatus::Canceled);
-    assert_eq!(after.closed_reason.as_deref(), Some("turn_stopped"));
-    assert_eq!(sd.state().unwrap().outcome, Some(Outcome::Stopped));
-}
-
-/// V12 (in-process part): answered while nothing drove the session — a new
-/// driver fills the answer once; V15: without a notification service a
-/// Work still cannot ask, and a Goal is told to use `questions`.
-#[tokio::test]
-async fn answered_while_unloaded_and_without_a_service() {
-    let env = Env::new();
-    let sd = env.create_work(work("pick a name", None)).await;
-    let llm = ScriptedLlm::new(move |req, n| match n {
-        0 => ask("q1", "'Name?'"),
-        1 => {
-            assert_eq!(result_of(req, "q1")["text"], "Notes2");
-            text("named Notes2")
-        }
-        _ => panic!("unexpected call {n}"),
-    });
-    let tasks = Arc::new(Tasks::default());
-    let (deps, local) = notify_deps(&env, llm.clone(), &tasks);
-    drive(&sd, &deps, StopWhen::Idle).await;
-    drop(deps);
-    let v = only_notify(&local).await;
-    local.answer(&v.notify_id, NotifyAnswer::text("Notes2"), None).await.unwrap();
-    let (deps, _) = notify_deps(&env, llm.clone(), &tasks);
-    assert!(drive(&sd, &deps, StopWhen::Finished).await.is_finished());
-    assert_eq!(llm.count(), 2);
-    let results: Vec<String> = read_worklog(&sd)
-        .into_iter()
-        .filter_map(|e| match e.body {
-            WorklogBody::ActionResult { call_id, .. } => Some(call_id),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(results, vec!["q1".to_string()]);
-
-    // No service: today's behaviour.
-    let env = Env::new();
-    let sd = env.create_work(work("decide alone", None)).await;
-    let llm = ScriptedLlm::new(move |req, n| match n {
-        0 => ask("q1", "'Which one?'"),
-        1 => {
-            assert!(has_tool_result(req, "q1").unwrap().contains("cannot ask the user"));
-            text("decided by myself")
-        }
-        _ => panic!("unexpected call {n}"),
-    });
-    let deps = env
-        .deps(llm.clone())
-        .with_session_cli(PathBuf::from(env!("CARGO_BIN_EXE_xagent")));
-    assert!(drive(&sd, &deps, StopWhen::Finished).await.is_finished());
 }
 
 /// V16: a notification shown in the conversation of a UI session is a
@@ -336,7 +145,7 @@ async fn ui_sessions_observe_notifications_of_their_conversation() {
 async fn the_notify_cli_sends_lists_answers_and_cancels() {
     let env = Env::new();
     let local = LocalNotify::enable(&env.agent_root, AGENT).unwrap();
-    let sd = env.create_work(work("remind the user", None)).await;
+    let sd = env.create_work(work("remind the user")).await;
     let outputs: Arc<Mutex<Vec<String>>> = Arc::default();
     let out = outputs.clone();
     let root = env.agent_root.clone();
@@ -446,78 +255,3 @@ fn first_notify_id(agent_root: &std::path::Path) -> String {
         .unwrap()
 }
 
-/// V13: a waiting Work unloaded by its host is loaded again by the
-/// recheck once the user answered (and would be at its deadline).
-#[tokio::test]
-async fn an_unloaded_waiting_work_is_rechecked() {
-    use libopendan::host::{HostDeps, Supervisor};
-    let env = Env::new();
-    let sd = env.create_work(work("ask then finish", None)).await;
-    let llm = ScriptedLlm::new(move |req, n| match n {
-        0 => ask("q1", "'Go?'"),
-        1 => {
-            assert_eq!(result_of(req, "q1")["text"], "go");
-            text("went")
-        }
-        _ => panic!("unexpected call {n}"),
-    });
-    let tasks = Arc::new(Tasks::default());
-    let (deps, local) = notify_deps(&env, llm.clone(), &tasks);
-    let host = HostDeps {
-        who: APP.into(),
-        agent: deps.agent.clone(),
-        inputs: deps.inputs.clone(),
-        waker: deps.waker.clone(),
-        xllm: deps.xllm.clone(),
-        assembler: Arc::new(libopendan::runner::DefaultAssembler::default()),
-        session_cli: deps.session_cli.clone(),
-        session_helpers: Vec::new(),
-        app_tools: Vec::new(),
-        options: deps.options.clone(),
-        max_child_concurrency: 4,
-        bridges: Vec::new(),
-        outbound: None,
-        objects: None,
-        turn_tasks: None,
-        notify: Some(local.clone()),
-        share: None,
-        runtime_id: None,
-        notifier: None,
-    };
-    let sup = Supervisor::new(host, Some(Duration::from_millis(100)))
-        .with_recheck(Duration::from_millis(300));
-    let wait_for = |what: &'static str, f: Box<dyn Fn() -> bool>| {
-        let sup = sup.clone();
-        async move {
-            for _ in 0..200 {
-                sup.tick().await.unwrap();
-                if f() {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
-            panic!("timed out waiting for {what}");
-        }
-    };
-    let sid = sd.sid().to_string();
-    let s1 = sd.clone();
-    wait_for(
-        "the question",
-        Box::new(move || {
-            s1.state()
-                .ok()
-                .and_then(|s| s.waiting_for)
-                .is_some_and(|w| !w.human_tasks.is_empty())
-        }),
-    )
-    .await;
-    let s2 = sup.clone();
-    let id = sid.clone();
-    wait_for("unload", Box::new(move || !s2.is_loaded(&id))).await;
-    let v = only_notify(&local).await;
-    local.answer(&v.notify_id, NotifyAnswer::text("go"), None).await.unwrap();
-    let s3 = sd.clone();
-    wait_for("finish", Box::new(move || s3.state().is_ok_and(|s| s.is_finished()))).await;
-    assert_eq!(llm.count(), 2);
-    sup.shutdown().await;
-}

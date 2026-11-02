@@ -224,10 +224,9 @@ export type Profile = "balanced" | "cheap" | "fast" | "quality";
 
 export type AgentToolStatus = "success" | "error" | "pending";
 
-export type AgentToolPendingReason =
-  | "long_running"
-  | "user_approval"
-  | "wait_for_install";
+// A free string for the model; well-known values: long_running,
+// user_approval, wait_for_install, user_input.
+export type AgentToolPendingReason = string;
 
 export const AGENT_TOOL_PROTOCOL_VERSION = "1";
 

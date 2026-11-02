@@ -30,11 +30,14 @@
 //!   immediately, keep the results already obtained, and hand the run back
 //!   to the runtime with the in-memory snapshot intact.
 //!
+//! No waiting inside the loop: every tool call returns a terminal
+//! observation (work that outlives the call is the runtime's task and the
+//! call says so). The calls of one response are dispatched in order, one
+//! after the other, each preceded by a checkpoint; a resumed snapshot
+//! dispatches the calls without a result again, and the runtime's tool
+//! manager decides by call id whether that finds the earlier work.
+//!
 //! Cooperative yields (see `suspension.rs` for the resume side):
-//! - `PendingTool`: with `tool_policy.allow_deferred`, a call returning
-//!   `Observation::Pending { task_id }` stops dispatch; the rest of its
-//!   batch / step is kept in the state and runs after
-//!   `ResumeFill::ToolResults`.
 //! - `Interrupted` / `Settled`: the interrupt handle stops the run — at
 //!   once (an inference is dropped, a running tool is cancelled or
 //!   abandoned) or gracefully (nothing new starts, a cancellable tool is
@@ -56,7 +59,7 @@ use buckyos_api::{
 use serde_json::Value;
 
 use crate::behavior_loop::{
-    DecisionVerdict, LLMBehaviorResult, LLMResultParser, StepDecision, StepMeta, StepRecord,
+    DecisionVerdict, LLMBehaviorResult, LLMResultParser, StepMeta, StepRecord,
 };
 use crate::context_window::{estimate_request, ContextLimits};
 use crate::deps::{
@@ -67,7 +70,7 @@ use crate::error::{CheckpointStage, LLMComputeError, ProviderFailure};
 use crate::interrupt::{
     InferenceAbortState, InferenceAbortToken, InferenceAbortTrace, LLMContextInterruptHandle,
 };
-use crate::observation::{Observation, PendingToolCall, ToolExecRecord, ToolExecStatus};
+use crate::observation::{Observation, ToolExecRecord, ToolExecStatus};
 use crate::outcome::{
     BudgetKind, ContextLimitKind, ContextOutput, ContextRunTrace, LLMContextOutcome, ResumeFill,
 };
@@ -76,7 +79,6 @@ use crate::state::{
     ActionStep, LLMContextSnapshot, LLMContextState, Suspension, ToolBatch, SNAPSHOT_FORMAT_VERSION,
 };
 use crate::suspension::{apply_fill, inner_transcript_of};
-use crate::tasks::render_background_env_via;
 
 pub struct LLMContext {
     request: LLMContextRequest,
@@ -90,9 +92,6 @@ pub struct LLMContext {
     /// Shared abort state (§3.13). `interrupt_handle()` clones it for the
     /// scheduler side; the waist clones a token into every `LlmInferenceRequest`.
     abort: Arc<InferenceAbortState>,
-    /// Background env rendered for the next inference (not part of the
-    /// history).
-    background_env: Option<String>,
     native_result_parser: Option<Arc<dyn LLMResultParser>>,
     tool_checkpoint_hook: Option<Arc<dyn crate::deps::CheckpointHook>>,
     inner_parent: Option<(LLMContextSnapshot, usize)>,
@@ -117,7 +116,6 @@ impl LLMContext {
             tool_trace: Vec::new(),
             last_response: AiResponse::default(),
             abort: InferenceAbortState::new(),
-            background_env: None,
             native_result_parser: None,
             tool_checkpoint_hook: None,
             inner_parent: None,
@@ -143,17 +141,16 @@ impl LLMContext {
     }
 
     /// Resume a context from a snapshot. `fill` must match the snapshot's
-    /// suspension (`ToolResults` ↔ `PendingTool`, `RewrittenHistory` /
-    /// `RewrittenSteps` ↔ `ContextLimitReached` in function call / behavior
-    /// mode, `ResumeFromMidRun` ↔ not suspended); see `ResumeFill`.
+    /// suspension (`RewrittenHistory` / `RewrittenSteps` ↔
+    /// `ContextLimitReached` in function call / behavior mode,
+    /// `ResumeFromMidRun` ↔ not suspended); see `ResumeFill`.
     ///
     /// Everything is validated before the context exists: a mismatched or
     /// malformed fill, an unsupported snapshot version, or a history with
     /// provider tool calls left unanswered (other than the not yet dispatched
     /// rest of a batch) yields `SnapshotCorrupted`. Time spent suspended is
-    /// not charged to the wallclock budget. After a fill the scheduler should
-    /// checkpoint `snapshot()` before `run()`: a batch / step continuation
-    /// dispatches the remaining calls first.
+    /// not charged to the wallclock budget. A batch / step continuation
+    /// dispatches its calls without a result first.
     pub fn resume(
         snapshot: LLMContextSnapshot,
         fill: ResumeFill,
@@ -171,20 +168,19 @@ impl LLMContext {
             )));
         }
         let behavior = deps.result_parser.is_some();
-        let tool_trace = apply_fill(&mut request, &mut state, fill, behavior, now_ms())?;
+        apply_fill(&mut request, &mut state, fill, behavior, now_ms())?;
 
         Ok(Self {
             request,
             state,
             deps,
-            tool_trace,
+            tool_trace: Vec::new(),
             last_response: AiResponse::default(),
             // Fresh abort state on resume: the previous handle is no longer
             // associated with this instance; the scheduler is expected to
             // request a new `interrupt_handle()` from the resumed context if
             // it wants to preempt the next inference.
             abort: InferenceAbortState::new(),
-            background_env: None,
             native_result_parser: None,
             tool_checkpoint_hook: None,
             inner_parent: None,
@@ -205,7 +201,7 @@ impl LLMContext {
         self.is_behavior_mode()
     }
 
-    /// The cooperative yield this context is suspended by, if any.
+    /// The context-limit yield this context is suspended by, if any.
     pub fn suspension(&self) -> Option<&Suspension> {
         self.state.suspended.as_ref()
     }
@@ -353,15 +349,12 @@ impl LLMContext {
             })
             .await;
 
-        let outcome = if let Some(suspended) = &self.state.suspended {
-            // A suspension only ends through `resume` with the matching fill.
-            let kind = match suspended {
-                Suspension::PendingTool { .. } => "PendingTool",
-                Suspension::ContextLimit { .. } => "ContextLimitReached",
-            };
-            self.refuse(format!(
-                "run() on a context suspended by {kind}; resume it with the matching ResumeFill"
-            ))
+        let outcome = if self.state.suspended.is_some() {
+            // A suspension only ends through `resume` with a rewritten history.
+            self.refuse(
+                "run() on a context suspended by ContextLimitReached; resume it with a rewritten history"
+                    .to_string(),
+            )
         } else if let Err(message) = ContextLimits::of(&self.request) {
             self.refuse(format!("invalid context limits: {message}"))
         } else if self.is_behavior_mode() {
@@ -383,8 +376,8 @@ impl LLMContext {
 
     async fn run_inner(&mut self) -> LLMContextOutcome {
         loop {
-            // A provider tool batch (just returned, or cut by a deferred
-            // call and filled on resume) is dispatched before anything else.
+            // A provider tool batch (just returned, or resumed with calls
+            // still without a result) is dispatched before anything else.
             if self.state.tool_batch.is_some() {
                 if let Some(outcome) = self.run_tool_batch().await {
                     return outcome;
@@ -408,30 +401,9 @@ impl LLMContext {
                 return outcome;
             }
 
-            // 1. Pre-inference snapshot (s0). It is the critical checkpoint
-            // handed to the InferenceHook (§3.12) and the state returned
-            // verbatim when the inference is preempted (§3.13). Cheap to
-            // construct.
+            // 1. Pre-inference snapshot (s0): the state returned verbatim
+            // when the inference is preempted (§3.13). Cheap to construct.
             let snapshot_before_inference = self.snapshot();
-            if let Some(hook) = &self.deps.inference_hook {
-                if let Err(message) = hook.before_inference(&snapshot_before_inference) {
-                    self.deps
-                        .worklog
-                        .emit(WorkEvent::CheckpointFailed {
-                            trace_id: self.request.trace.clone(),
-                            stage: CheckpointStage::BeforeInference,
-                            error: message.clone(),
-                        })
-                        .await;
-                    // Nothing was paid for and nothing executed: the state
-                    // is still s0, so the runtime may retry the checkpoint
-                    // and resume from here.
-                    return self.finish_error(LLMComputeError::Checkpoint {
-                        stage: CheckpointStage::BeforeInference,
-                        message,
-                    });
-                }
-            }
             let abort_requested_at_ms = if self.abort.is_aborted() {
                 Some(now_ms())
             } else {
@@ -449,7 +421,6 @@ impl LLMContext {
                 );
             }
 
-            self.render_background_env().await;
             let infer_req = self.build_inference_request();
 
             // A request known not to fit is never sent. Checked after the
@@ -538,12 +509,6 @@ impl LLMContext {
 
             self.account_response(&response);
             self.last_response = response.clone();
-
-            if let Some(provider_task) = &response.provider_task_ref {
-                if !provider_task.trim().is_empty() {
-                    self.state.llm_task_ids.push(provider_task.clone());
-                }
-            }
 
             if let Some(budget_outcome) = self.check_token_budget(&response) {
                 return budget_outcome;
@@ -662,7 +627,6 @@ impl LLMContext {
                 .await?;
         }
         result.do_actions.clear();
-        result.messages_to_send.clear();
         result.next_behavior = None;
         let mut step = StepRecord::from_result(result);
         step.meta = StepMeta {
@@ -710,10 +674,6 @@ impl LLMContext {
                 outer.state.consecutive_errors = self.state.consecutive_errors;
                 outer.state.tool_iterations_left = self.state.tool_iterations_left;
                 outer
-                    .state
-                    .llm_task_ids
-                    .extend(self.state.llm_task_ids.clone());
-                outer
             }
             None => self.snapshot(),
         }
@@ -734,14 +694,13 @@ impl LLMContext {
         }
     }
 
-    /// Dispatch `state.tool_batch` (serial). Business errors do not stop the
-    /// batch — the LLM sees every result and corrects the batch as a whole.
-    /// Infrastructure failures stop dispatch immediately; the calls that
-    /// never ran are answered as `Unresolved` so the transcript and the trace
-    /// both show what happened. A deferred call (`Pending`, with
-    /// `allow_deferred`) suspends the run; the calls after it stay in the
-    /// batch. `None` once the batch completed and its tool iteration was
-    /// charged.
+    /// Dispatch `state.tool_batch` serially, in the order the provider
+    /// returned the calls, each after a checkpoint. Business errors do not
+    /// stop the batch — the LLM sees every result and corrects the batch as
+    /// a whole. Infrastructure failures stop dispatch immediately; the calls
+    /// that never ran are answered as `Unresolved` so the transcript and the
+    /// trace both show what happened. `None` once the batch completed and
+    /// its tool iteration was charged.
     async fn run_tool_batch(&mut self) -> Option<LLMContextOutcome> {
         loop {
             // Finishing: the calls not started yet are paired as cancelled
@@ -822,7 +781,6 @@ impl LLMContext {
                 }
             };
 
-            self.watch_task_of(&observation);
             match &observation {
                 Observation::Success { .. } => {
                     self.state
@@ -869,26 +827,6 @@ impl LLMContext {
                         }
                     }
                 }
-                Observation::Pending {
-                    task_id, until_ms, ..
-                } => {
-                    if let Err(message) = self.pending_allowed(task_id) {
-                        // The call started but broke the contract: its
-                        // effect is unknown.
-                        let rest = self.take_batch_rest();
-                        self.abort_started_call(&call, &rest, message, duration_ms);
-                        return Some(
-                            self.finish_error(LLMComputeError::Internal(message.to_string())),
-                        );
-                    }
-                    self.record_tool(&call, ToolExecStatus::Pending, duration_ms, None);
-                    let pending = PendingToolCall {
-                        call,
-                        task_id: task_id.clone(),
-                        until_ms: *until_ms,
-                    };
-                    return Some(self.suspend_pending(pending));
-                }
                 Observation::Cancelled { reason, .. } => {
                     let Some(cause) = ctx.cause() else {
                         let message =
@@ -916,13 +854,23 @@ impl LLMContext {
                         _ => this.abort_tool_batch(&rest, INTERRUPTED_SKIP_REASON),
                     }));
                 }
-                Observation::Unresolved { .. } => {
-                    // Produced by the waist itself, never by a `ToolManager`.
-                    let message =
-                        "tool returned Unresolved inline; only valid via ResumeFill::ToolResults";
-                    let rest = self.take_batch_rest();
-                    self.abort_started_call(&call, &rest, message, duration_ms);
-                    return Some(self.finish_error(LLMComputeError::Internal(message.to_string())));
+                Observation::Unresolved {
+                    reason,
+                    effect_unknown,
+                    ..
+                } => {
+                    // The manager could not tell what became of an earlier
+                    // dispatch of this call (resume) and did not run it
+                    // again. Not an error the model has to correct.
+                    self.state
+                        .accumulated
+                        .push(tool_observation_message(&call.call_id, &observation));
+                    let status = if *effect_unknown {
+                        ToolExecStatus::Unknown
+                    } else {
+                        ToolExecStatus::NotExecuted
+                    };
+                    self.record_tool(&call, status, duration_ms, Some(reason.clone()));
                 }
             }
         }
@@ -951,33 +899,6 @@ impl LLMContext {
             .unwrap_or_default()
     }
 
-    /// Suspend with `PendingTool`. The trace of this run segment goes with
-    /// the outcome; the snapshot carries the continuation.
-    fn suspend_pending(&mut self, pending: PendingToolCall) -> LLMContextOutcome {
-        let pending = vec![pending];
-        self.state.suspended = Some(Suspension::PendingTool {
-            pending: pending.clone(),
-            at_ms: now_ms(),
-        });
-        let trace = self.take_trace();
-        LLMContextOutcome::PendingTool {
-            pending,
-            snapshot: self.snapshot(),
-            trace,
-        }
-    }
-
-    /// `Err(message)` when a `Pending` observation breaks the contract.
-    fn pending_allowed(&self, task_id: &str) -> Result<(), &'static str> {
-        if task_id.trim().is_empty() {
-            return Err("tool returned Pending without a task_id");
-        }
-        if !self.request.tool_policy.allow_deferred {
-            return Err("tool returned Pending but allow_deferred=false");
-        }
-        Ok(())
-    }
-
     /// Context handed to every tool call: the shared interrupt / finish
     /// state and the absolute wallclock deadline of this run.
     fn tool_call_ctx(&self) -> ToolCallCtx {
@@ -988,7 +909,6 @@ impl LLMContext {
                 .budget
                 .max_wallclock_ms
                 .map(|m| self.state.started_at_ms.saturating_add(m)),
-            allow_deferred: self.request.tool_policy.allow_deferred,
         }
     }
 
@@ -1017,24 +937,6 @@ impl LLMContext {
         tokio::select! {
             result = tools.call_tool(call, ctx) => result,
             _ = escalate => unreachable!("escalation never completes"),
-        }
-    }
-
-    /// Register the task a result refers to (`tool_result.task_id`) with
-    /// the host's resolver so it shows up in the background env.
-    fn watch_task_of(&self, observation: &Observation) {
-        let Some(tasks) = &self.deps.tasks else {
-            return;
-        };
-        let task_id = match observation {
-            Observation::Success { tool_result, .. } | Observation::Error { tool_result, .. } => {
-                tool_result.as_ref().and_then(|t| t.task_id.as_deref())
-            }
-            Observation::Pending { task_id, .. } => Some(task_id.as_str()),
-            _ => None,
-        };
-        if let Some(id) = task_id.filter(|s| !s.trim().is_empty()) {
-            tasks.watch(id);
         }
     }
 
@@ -1142,7 +1044,7 @@ impl LLMContext {
                 })
             );
         }
-        self.state.suspended = Some(Suspension::ContextLimit {
+        self.state.suspended = Some(Suspension {
             which,
             estimated_tokens,
             at_ms: now_ms(),
@@ -1250,7 +1152,7 @@ impl LLMContext {
             let rejected = Observation::Error {
                 call_id: call.call_id.clone(),
                 message: reason.to_string(),
-                tool_result: None,
+                host: None,
             };
             self.state
                 .accumulated
@@ -1268,14 +1170,9 @@ impl LLMContext {
             OutputSpec::Json { schema, .. } => (true, schema.clone()),
         };
 
-        let mut messages = self.state.accumulated.clone();
-        if let Some(env) = &self.background_env {
-            messages.push(AiMessage::text(AiRole::User, env.clone()));
-        }
-
         LlmInferenceRequest {
             trace_id: self.request.trace.clone(),
-            messages,
+            messages: self.state.accumulated.clone(),
             model_alias: self.request.model_policy.preferred.clone(),
             fallbacks: self.request.model_policy.fallbacks.clone(),
             temperature: self.request.model_policy.temperature,
@@ -1288,16 +1185,6 @@ impl LLMContext {
             allow_tool_calls,
             abort: self.abort_token(),
         }
-    }
-
-    /// Background env (§4 of the long-tool TODO): the tasks this context
-    /// follows, rendered fresh before every inference and appended to the
-    /// request only — never to the history, so the prefix stays cacheable.
-    async fn render_background_env(&mut self) {
-        self.background_env = match &self.deps.tasks {
-            Some(tasks) => render_background_env_via(&tasks.active().await, &tasks.followup()),
-            None => None,
-        };
     }
 
     fn account_response(&mut self, response: &AiResponse) {
@@ -1370,7 +1257,6 @@ impl LLMContext {
             trace_id: self.request.trace.clone().unwrap_or_default(),
             latency_ms: now_ms().saturating_sub(self.state.started_at_ms),
             tool_trace: std::mem::take(&mut self.tool_trace),
-            llm_task_ids: std::mem::take(&mut self.state.llm_task_ids),
         }
     }
 
@@ -1589,8 +1475,8 @@ impl LLMContext {
             }
         }
         loop {
-            // A step whose actions were just parsed (or were cut by a
-            // deferred action and filled on resume) is dispatched first.
+            // A step whose actions were just parsed (or resumed with actions
+            // still without a result) is dispatched first.
             if self.state.action_step.is_some() {
                 if let Some(outcome) = self.run_step_actions().await {
                     return outcome;
@@ -1613,9 +1499,9 @@ impl LLMContext {
 
             // Step boundary: the previous step (if any) has been sedimented
             // with its action results. The host checkpoints the OUTER
-            // snapshot here and may inject observations. A step whose inner
-            // tool batch was cut by a deferred call is not at a boundary:
-            // its inner loop continues first.
+            // snapshot here and may inject observations. A step resumed with
+            // an inner tool batch in progress is not at a boundary: its inner
+            // loop continues first.
             if self.state.tool_batch.is_none() {
                 if let Some(outcome) = self.run_checkpoint_hook().await {
                     return outcome;
@@ -1655,7 +1541,6 @@ impl LLMContext {
             };
             // A hand-over or a yield is reviewed by the host before it takes
             // effect: refused, it is corrected in this same run.
-            let mut yielded = false;
             let parsed = match (parsed, &self.deps.checkpoint_hook) {
                 (Ok(result), Some(hook)) => match result.decision() {
                     Some(decision) => match hook
@@ -1667,12 +1552,8 @@ impl LLMContext {
                         )
                         .await
                     {
-                        None => Ok(result),
-                        Some(DecisionVerdict::Accept) => {
-                            yielded = decision == StepDecision::Yield;
-                            Ok(result)
-                        }
                         Some(DecisionVerdict::Refuse(message)) => Err(message),
+                        None | Some(DecisionVerdict::Accept) => Ok(result),
                     },
                     None => Ok(result),
                 },
@@ -1738,12 +1619,9 @@ impl LLMContext {
                 }
             }
 
-            // 4. Apply `<report>` side-effects BEFORE actions. self_report
+            // 4. Apply report side-effects BEFORE actions. self_report
             //    updates LLMContextState.last_report unconditionally (the
-            //    snapshot/fork-and-collect contract — see
-            //    doc/opendan/Agent Actions.md §3.3). `<sendmsg>` records
-            //    are stub-emitted via worklog in v2 first cut; real delivery
-            //    moves to a standard `send_message` agent_tool later.
+            //    snapshot / fork-and-collect contract).
             if let Some(report) = new_step.self_report.clone() {
                 let chars = report.chars().count();
                 self.state.last_report = Some(report);
@@ -1756,19 +1634,12 @@ impl LLMContext {
                     })
                     .await;
             }
-            for msg in &new_step.messages_sent {
-                self.deps
-                    .worklog
-                    .emit(WorkEvent::MessageSent {
-                        trace_id: self.request.trace.clone(),
-                        target: msg.target.clone(),
-                        chars: msg.body.chars().count(),
-                    })
-                    .await;
-            }
-            // 4a. An accepted yield (a progress report and nothing else) ends
-            //     the loop: the host decides what follows.
-            if yielded {
+            // 4a. A yield (no action, not an end, no hand-over) ends the run:
+            //     the loop never waits; the host decides what follows.
+            if new_step.actions.is_empty()
+                && !new_step.report_end
+                && new_step.next_behavior.is_none()
+            {
                 return self.finish_done_behavior(new_step, response).await;
             }
 
@@ -1776,8 +1647,7 @@ impl LLMContext {
             //    the traditional loop's provider-tool policy gate while
             //    preserving the surface that produced the invocation.
             //    A rejection is folded back as a recoverable error step.
-            let had_action_side_effects_before_gate =
-                !new_step.actions.is_empty() || !new_step.messages_sent.is_empty();
+            let had_action_side_effects_before_gate = !new_step.actions.is_empty();
             let actions = match self
                 .deps
                 .policy
@@ -1829,12 +1699,10 @@ impl LLMContext {
     /// allows multiple actions per step via the `<actions>` container. On the
     /// first business error we stop dispatching (later actions are often
     /// conditional on earlier ones succeeding) and feed the full result list
-    /// — including the skipped actions — back to the LLM; a cancelled or
-    /// unresolved result filled on resume stops the step the same way. An
-    /// infrastructure failure also stops dispatch, but the step is sedimented
-    /// as-is and the run ends for the runtime to handle. A deferred action
-    /// (`Pending`, with `allow_deferred`) suspends the run with the step in
-    /// the state. `None` once the step was completed and the loop continues.
+    /// — including the skipped actions — back to the LLM. An infrastructure
+    /// failure also stops dispatch, but the step is sedimented as-is and the
+    /// run ends for the runtime to handle. `None` once the step was completed
+    /// and the loop continues.
     async fn run_step_actions(&mut self) -> Option<LLMContextOutcome> {
         loop {
             let action = {
@@ -1908,7 +1776,6 @@ impl LLMContext {
                 }
             };
 
-            self.watch_task_of(&observation);
             match &observation {
                 Observation::Success { .. } => {
                     self.record_tool(&action, ToolExecStatus::Succeeded, duration_ms, None);
@@ -1940,26 +1807,6 @@ impl LLMContext {
                         })
                         .await;
                 }
-                Observation::Pending {
-                    task_id, until_ms, ..
-                } => {
-                    match self.pending_allowed(task_id) {
-                        Ok(()) => {
-                            self.record_tool(&action, ToolExecStatus::Pending, duration_ms, None);
-                            let pending = PendingToolCall {
-                                call: action,
-                                task_id: task_id.clone(),
-                                until_ms: *until_ms,
-                            };
-                            return Some(self.suspend_pending(pending));
-                        }
-                        Err(message) => {
-                            // The call did start, so its effect is unknown.
-                            let message = format!("behavior loop: {message}");
-                            return Some(self.abort_started_action(&action, &message, duration_ms));
-                        }
-                    }
-                }
                 Observation::Cancelled { reason, .. } => {
                     let Some(cause) = ctx.cause() else {
                         let message =
@@ -1974,11 +1821,18 @@ impl LLMContext {
                     );
                     return Some(self.settle_step(Some(observation), cause));
                 }
-                Observation::Unresolved { .. } => {
-                    // Produced by the waist itself, never by a ToolManager.
-                    let message =
-                        "behavior loop: tool returned Unresolved inline; only valid via ResumeFill::ToolResults";
-                    return Some(self.abort_started_action(&action, message, duration_ms));
+                Observation::Unresolved {
+                    reason,
+                    effect_unknown,
+                    ..
+                } => {
+                    // See the function call batch; the step stops here.
+                    let status = if *effect_unknown {
+                        ToolExecStatus::Unknown
+                    } else {
+                        ToolExecStatus::NotExecuted
+                    };
+                    self.record_tool(&action, status, duration_ms, Some(reason.clone()));
                 }
             }
             if let Some(a) = self.state.action_step.as_mut() {
@@ -2092,8 +1946,8 @@ impl LLMContext {
         self.stop_after_cancel(cause, |_| {})
     }
 
-    /// Terminal checks, the step-result hook and sedimentation of a step
-    /// whose actions were all dispatched or skipped.
+    /// Terminal checks and sedimentation of a step whose actions were all
+    /// dispatched or skipped.
     async fn complete_step(
         &mut self,
         mut new_step: StepRecord,
@@ -2122,9 +1976,6 @@ impl LLMContext {
         //    failed action_result on the next inference) and bump the
         //    consecutive-error counter.
         self.finish_step(&mut new_step);
-        if self.apply_step_result_hook(&mut new_step).await {
-            return Some(self.finish_done_behavior(new_step, response).await);
-        }
         self.sediment(new_step);
         if let Some(err) = error_to_bump {
             if let Some(outcome) = self.bump_consecutive_errors(err) {
@@ -2160,7 +2011,7 @@ impl LLMContext {
     /// to propagate when the inner ended in a non-Done state.
     ///
     /// The inner instance is seeded with the outer usage, start time,
-    /// consecutive-error count and a tool batch cut by a deferred call, and
+    /// consecutive-error count and a tool batch still in progress, and
     /// hands them back afterwards, so recreating the inner context per step
     /// cannot bypass the budget or the self-correction cap, and a resumed
     /// step never re-runs the native tools it already ran.
@@ -2197,9 +2048,6 @@ impl LLMContext {
         // Always take back whatever the inner spent and recorded, even on
         // error — we paid for those tokens and ran those tools.
         self.tool_trace.append(&mut inner.tool_trace);
-        self.state
-            .llm_task_ids
-            .append(&mut inner.state.llm_task_ids);
         self.state.consecutive_errors = inner.state.consecutive_errors;
         self.state.tool_iterations_left = inner.state.tool_iterations_left;
         self.state.usage = inner.state.usage.clone();
@@ -2231,16 +2079,6 @@ impl LLMContext {
                 native_messages.pop();
                 self.clear_inner_transcript();
                 Ok((response, native_messages))
-            }
-            LLMContextOutcome::PendingTool { pending, trace, .. } => {
-                self.absorb_trace(trace);
-                self.state.suspended = inner.state.suspended.take();
-                let trace = self.take_trace();
-                Err(LLMContextOutcome::PendingTool {
-                    pending,
-                    snapshot: self.snapshot(),
-                    trace,
-                })
             }
             // Graceful finish inside the step: the inner transcript (with
             // the cancelled calls paired) is kept; the outer snapshot is the
@@ -2306,7 +2144,6 @@ impl LLMContext {
 
     fn absorb_trace(&mut self, trace: ContextRunTrace) {
         self.tool_trace.extend(trace.tool_trace);
-        self.state.llm_task_ids.extend(trace.llm_task_ids);
     }
 
     /// Assemble the inner request: system + user_init from the outer request,
@@ -2352,7 +2189,6 @@ impl LLMContext {
     }
 
     fn clear_inner_transcript(&mut self) {
-        self.state.history_inputs.clear();
         if !inner_transcript_of(&self.request, &self.state).is_empty() {
             self.state.accumulated.truncate(self.request.input.len());
         }
@@ -2385,38 +2221,6 @@ impl LLMContext {
 
     fn finish_step(&self, step: &mut StepRecord) {
         step.meta.ended_at_ms = Some(now_ms());
-    }
-
-    /// Hook failures are always degradable (see `StepResultHook`): the
-    /// default rendering is used and the loop continues.
-    async fn apply_step_result_hook(&mut self, step: &mut StepRecord) -> bool {
-        if step.action_results.is_empty() && step.messages_sent.is_empty() {
-            return false;
-        }
-        let Some(hook) = self.deps.step_result_hook.clone() else {
-            return false;
-        };
-        let snapshot = self.snapshot();
-        match hook.on_behavior_step_ob(&snapshot, step).await {
-            Ok(output) => {
-                if output.skip_next_inference {
-                    return true;
-                }
-                if let Some(message) = output.user_message {
-                    step.next_user_message = Some(normalize_user_message(message));
-                }
-                self.state.history_inputs.extend(output.history_inputs);
-            }
-            Err(err) => {
-                log::warn!(
-                    "behavior_loop: on_behavior_step_ob hook failed for behavior `{}` step {}; using default observation: {}",
-                    step.meta.behavior_name,
-                    step.meta.step_index,
-                    err
-                );
-            }
-        }
-        false
     }
 
     /// Count one failed iteration (tool batch, behavior step or output
@@ -2470,7 +2274,6 @@ fn materialize_history(
         state.steps.clone(),
         request.behavior_name.as_str(),
         state.history_summaries.clone(),
-        state.history_inputs.clone(),
     ));
     if let Some(last) = &state.last_step {
         let (assistant_msg, user_msg) = renderer.render(last);
@@ -2480,12 +2283,6 @@ fn materialize_history(
     messages
 }
 
-fn normalize_user_message(message: AiMessage) -> AiMessage {
-    if matches!(message.role, AiRole::User) {
-        return message;
-    }
-    AiMessage::text(AiRole::User, message.text_content())
-}
 
 fn merge_usage(left: &AiUsage, right: &AiUsage) -> AiUsage {
     fn add_u64(a: Option<u64>, b: Option<u64>) -> Option<u64> {
@@ -2557,7 +2354,6 @@ pub(crate) fn tool_observation_message(call_id: &str, observation: &Observation)
             (text, false)
         }
         Observation::Error { message, .. } => (message.clone(), true),
-        Observation::Pending { call_id: cid, .. } => (format!("pending:{cid}"), true),
         Observation::Cancelled {
             reason,
             effect_unknown,

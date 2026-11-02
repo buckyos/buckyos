@@ -13,7 +13,8 @@
 //! message text.
 
 use buckyos_api::{AiContent, ResourceRef};
-use llm_context::{escape_xml_attr, escape_xml_text, RenderExtensions};
+use agent_tool::prompt_engine::RenderExtensions;
+use agent_tool::{escape_xml_attr, escape_xml_text};
 use ndn_lib::{MsgObjKind, MsgRelType, ObjId, RefRole, RefTarget};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -132,6 +133,9 @@ pub struct EventView {
     pub data_ref: Option<String>,
     #[serde(default)]
     pub terminal: bool,
+    /// A task's end: the call whose result handed the work over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
 }
 
 /// One selected input, in consumption order.
@@ -248,9 +252,9 @@ pub fn message_view(key: &str, at_ms: u64, m: &SessionMsg, agent_did: &str) -> M
         let label = item.label.as_deref().map(str::trim).filter(|s| !s.is_empty());
         attachments.push(AttachmentView {
             index: attachments.len(),
-            media: llm_context::attachment_kind(format, label, uri_hint.as_deref()).to_string(),
+            media: crate::msg_parser::attachment_kind(format, label, uri_hint.as_deref()).to_string(),
             name: label.map(str::to_string),
-            mime: llm_context::attachment_mime(format, label, uri_hint.as_deref()),
+            mime: crate::msg_parser::attachment_mime(format, label, uri_hint.as_deref()),
             obj_id: obj_id.to_string(),
             path: None,
             role: ref_role_name(item.role),
@@ -334,6 +338,7 @@ pub fn event_view(key: &str, ev: &AgentEvent) -> EventView {
         summary: ev.summary.clone(),
         data_ref: ev.data_ref.clone(),
         terminal: ev.terminal,
+        call_id: ev.call_id.clone(),
     }
 }
 
@@ -351,6 +356,7 @@ pub fn pending_event_view(p: &PendingEvent, v: &PendingEventVersion, terminal: b
         summary: v.summary.clone(),
         data_ref: v.data_ref.clone(),
         terminal,
+        call_id: None,
     }
 }
 
@@ -469,8 +475,24 @@ pub fn render_msg_xml(m: &MessageView) -> String {
     s
 }
 
-/// `event.xml`: the built-in `<event ...>summary</event>` element.
+/// `event.xml`: the built-in `<event ...>summary</event>` element. The end of
+/// a task the session followed is its own block — the task's result as the
+/// model would have got it from the call, never disguised as a tool result
+/// (freeze TODO §3.2.1):
+/// `<<task_result task="…" call_id="…" status="…">>…<</task_result>>`.
 pub fn render_event_xml(e: &EventView) -> String {
+    if e.source.kind == "task" && e.subscription_id.is_none() {
+        let mut s = String::from("<<task_result");
+        attr(&mut s, "task", &e.source.id);
+        if let Some(call) = e.call_id.as_deref().filter(|c| !c.is_empty()) {
+            attr(&mut s, "call_id", call);
+        }
+        attr(&mut s, "status", &e.event);
+        s.push_str(">>\n");
+        s.push_str(e.summary.trim_end());
+        s.push_str("\n<</task_result>>");
+        return s;
+    }
     let mut s = String::from("<event");
     attr(&mut s, "key", &e.key);
     if let Some(sub) = &e.subscription_id {

@@ -86,7 +86,7 @@ traditional loop 的主线比较简单，和目标一致：
 - traditional `build_inference_request` 直接把 `state.accumulated.clone()` 交给 provider。
 - provider 返回 tool call 时，loop 先 append assistant message，再 append tool result message。
 - provider 返回 final answer 时，`finish_done` append final assistant message。
-- `InferenceHook` 只拿 `&LLMContextSnapshot`，按接口约束不能直接修改 waist 状态；`CheckpointHook` 的注入只在推理边界（behavior 模式为 Step 边界）追加消息，不改旧 prefix。
+- `CheckpointHook` 只拿 `&LLMContextSnapshot`，不能直接修改 waist 状态；它唯一能放进上下文的是注入（`Injection`），只在推理边界（behavior 模式为 Step 边界）追加消息，进历史也进快照，不改旧 prefix。
 
 这些路径可以作为目标模型：`llm_context` 不理解 session 历史，只维护一次推理过程的输入、输出和恢复点。
 
@@ -94,9 +94,9 @@ traditional loop 的主线比较简单，和目标一致：
 
 behavior mode 当前把较多 session/agent 语义带进了 `LLMContextSnapshot`：
 
-- `LLMContextState` 里有 `steps`、`history_summaries`、`history_inputs`、`last_step`、`last_report`、`next_step_index`、`next_action_id`。
+- `LLMContextState` 里有 `steps`、`history_summaries`、`last_step`、`last_report`、`next_step_index`、`next_action_id`。
 - `build_inner_request` 在每个 Step 开始内层推理时调用 `renderer.render_history(state.steps, ...)`，再渲染 `last_step` 并接上 inner transcript，说明 behavior history 仍在 `llm_context` 内物化成 prompt。
-- `snapshot_overrides` 位于 `llm_context` crate 内，可以替换 system/user message、清空 step/history state、移动 hot tail。它现在只定位为“从同一个 run 自己的快照改 request 侧参数重建”；context 之间的交接不在已有历史上替换 system，改由 `context_derive`（`derive_child` / `fork_snapshot`）派生子快照。`RequestOverrides.system_messages` / `user_messages` 只为旧 opendan Runtime 保留。
+- context 之间的交接不在已有历史上替换 system，由 `context_derive`（`derive_child` / `fork_snapshot`）在 waist 内派生子快照；继承边界、分叉点、编号延续这些规则也在 waist 内。
 - message-level rewrite 与 behavior-step history 的双轨语义已由 `ResumeFill::RewrittenSteps` 收口：behavior 模式的 `ContextLimitReached` 只接受 `RewrittenSteps`（同时替换 `request.input` / `history_summaries` / `steps` / `last_step`），`RewrittenHistory` 只用于 function call 模式。
 
 这些不是马上必须删除的 bug，但它们是复杂度来源。按“LLMContext 越简单越可靠”的目标，后续应逐步把这些上移到 session 层。
@@ -156,7 +156,7 @@ behavior mode 当前把较多 session/agent 语义带进了 `LLMContextSnapshot`
 
 1. `LLMContextRequest.input` 是本次推理的完整输入前缀。
 2. `LLMContextState.accumulated` 是 append-only 的运行中 transcript。
-3. `LLMContextSnapshot` 只保存恢复执行必要的 request、accumulated、挂起与续派状态（`suspended` / `tool_batch` / `action_step`）、工具迭代额度等预算计数、usage、abort/task id 等机器状态。
+3. `LLMContextSnapshot` 只保存恢复执行必要的 request、accumulated、挂起与续派状态（`suspended` / `tool_batch` / `action_step`）、工具迭代额度等预算计数、usage 等机器状态；任务 id 不进 waist 状态，调用变成了哪个任务由 Runtime 按 call_id 找回。
 4. behavior 的 `StepRecord`、report、behavior switch、process stack、Session worklog 的增量 flush 都由 Session 层管理。
 5. session 层在启动或恢复一次 LLMContext 前，把自己维护的 history/step/summary 明确物化成 `AiMessage`，作为新的稳定 input。
 
@@ -166,7 +166,7 @@ behavior mode 当前把较多 session/agent 语义带进了 `LLMContextSnapshot`
 
 - behavior mode 现在仍由 `llm_context::build_inner_request` 调 `render_history`，所以 StepRecord prompt 物化还没有完全上移到 session 层。
 - libopendan 的上下文上限重写把 steps 整体折叠进 input，不做 StepRecord 维度的细粒度压缩；旧 opendan Runtime 的 `llm_message_compress` 主要压缩 `state.accumulated`，behavior prompt 的 token 主要来自 `steps/last_step` 时仍可能压不下来（待下一阶段 opendan 重构接入）。
-- `snapshot_overrides` 仍在 `llm_context` crate 内，其中替换 system / user message 的部分只有旧 opendan Runtime 在用；libopendan 的交接不使用它，子 context 由 `context_derive` 的 `derive_child` / `fork_snapshot` 构造。派生规则（继承边界、分叉点、编号延续）目前也在 waist 内，长期看应评估哪些可以迁到 Session 层，减少 waist 对 agent 语义的认知。
+- 子 context 由 `context_derive` 的 `derive_child` / `fork_snapshot` 构造，派生规则（继承边界、分叉点、编号延续）目前在 waist 内，长期看应评估哪些可以迁到 Session 层，减少 waist 对 agent 语义的认知。
 
 ## 判断标准
 

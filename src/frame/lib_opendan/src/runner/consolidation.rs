@@ -880,17 +880,17 @@ pub(super) async fn call(sh: &Arc<Shared>, _run: &RunHandle, call: &AiToolCall) 
             bytes: content.to_string().len(),
             content,
             truncated: false,
-            tool_result: None,
+            host: None,
         }),
         Err(OpenDanError::InvalidArgument(message)) => Ok(Observation::Error {
             call_id: call.call_id.clone(),
             message,
-            tool_result: None,
+            host: None,
         }),
         Err(OpenDanError::Other(message)) => Ok(Observation::Error {
             call_id: call.call_id.clone(),
             message,
-            tool_result: None,
+            host: None,
         }),
         Err(e) => Err(e),
     }
@@ -1007,7 +1007,7 @@ pub(super) async fn header_block(sh: &Shared) -> String {
     let m = maintenance(sh).await;
     let memory = match memory(sh) {
         Ok(m) => m,
-        Err(e) => return format!("<memory_maintenance error=\"{}\"/>\n", llm_context::escape_xml_attr(&e.to_string())),
+        Err(e) => return format!("<memory_maintenance error=\"{}\"/>\n", agent_tool::escape_xml_attr(&e.to_string())),
     };
     let probe = blocking(move || Ok((memory.pending_work()?, memory.due_reviews()?))).await;
     let mut s = String::new();
@@ -1021,21 +1021,21 @@ pub(super) async fn header_block(sh: &Shared) -> String {
                 p.retry_cleanup,
                 reviews.len(),
                 p.oldest_at_ms.map(|t| format!(" oldest=\"{}\"", iso_ms(t))).unwrap_or_default(),
-                p.next_deadline.as_ref().map(|d| format!(" next_deadline=\"{}\"", llm_context::escape_xml_attr(d))).unwrap_or_default(),
-                next.map(|n| format!(" next_review=\"{}\"", llm_context::escape_xml_attr(&n))).unwrap_or_default(),
+                p.next_deadline.as_ref().map(|d| format!(" next_deadline=\"{}\"", agent_tool::escape_xml_attr(d))).unwrap_or_default(),
+                next.map(|n| format!(" next_review=\"{}\"", agent_tool::escape_xml_attr(&n))).unwrap_or_default(),
             ));
             for r in reviews.iter().take(16) {
                 s.push_str(&format!(
                     "<review_due ref=\"{}\" review_at=\"{}\">{}</review_due>\n",
-                    llm_context::escape_xml_attr(&r.reference),
-                    llm_context::escape_xml_attr(&r.review_at),
-                    llm_context::escape_xml_text(&r.statement)
+                    agent_tool::escape_xml_attr(&r.reference),
+                    agent_tool::escape_xml_attr(&r.review_at),
+                    agent_tool::escape_xml_text(&r.statement)
                 ));
             }
         }
         Err(e) => s.push_str(&format!(
             "<memory_maintenance error=\"{}\">\n",
-            llm_context::escape_xml_attr(&e.to_string())
+            agent_tool::escape_xml_attr(&e.to_string())
         )),
     }
     s.push_str(&format!(
@@ -1050,7 +1050,7 @@ pub(super) async fn header_block(sh: &Shared) -> String {
             .unwrap_or_default(),
         m.last_error
             .as_ref()
-            .map(|e| format!(" last_error=\"{}\"", llm_context::escape_xml_attr(e)))
+            .map(|e| format!(" last_error=\"{}\"", agent_tool::escape_xml_attr(e)))
             .unwrap_or_default(),
     ));
     s.push_str("</memory_maintenance>\n");

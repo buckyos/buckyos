@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use llm_context::msg_parser::{
+use crate::msg_parser::{
     ai_message_to_msg_object_with_base_validated_async, AttachmentValidator, LocalFileResolver,
     MsgEgressOptions,
 };
@@ -101,14 +101,6 @@ pub trait OutboundSink: Send + Sync {
     ) -> Option<MsgObject> {
         let _ = (cfg, base, turn);
         None
-    }
-
-    /// A question to the user (`agent_ask`) about to be queued, on the
-    /// reply envelope with its relation and meta set; the host may add
-    /// what its channel needs (e.g. who is addressed in a group).
-    async fn question(&self, cfg: &SessionConfig, msg: MsgObject) -> MsgObject {
-        let _ = cfg;
-        msg
     }
 
     async fn send(&self, sid: &str, record: &OutboundRecord) -> SendResult;
@@ -228,112 +220,6 @@ async fn push_placeholder(sh: &Shared, s: &mut Session, force: bool) -> bool {
     true
 }
 
-fn question_key(sid: &str, turn: u64, call_id: &str) -> String {
-    format!("{sid}:{turn}:ask:{call_id}")
-}
-
-/// Called inside the commit that makes the session wait for the user's
-/// answer to `call_id`: the open Turn's placeholder is made sure of first
-/// (the anchor of the questions, sent now whatever its delay), then the
-/// question joins the outbox as a `thread` message on it. Without a
-/// placeholder (a channel that cannot edit) the question is a message of
-/// its own. Nothing is queued without a reply path.
-pub(super) async fn queue_question(
-    sh: &Shared,
-    s: &mut Session,
-    call_id: &str,
-    ask: &UserInputRequest,
-) {
-    let Some(sink) = sh.deps.outbound.clone() else {
-        return;
-    };
-    let turn = s.state.current_turn();
-    let key = question_key(s.sid(), turn, call_id);
-    if s.state.outbox.iter().any(|e| e.key == key) {
-        return;
-    }
-    push_placeholder(sh, s, true).await;
-    let Some((route, mut msg)) = reply_base(s) else {
-        return;
-    };
-    let anchor = s
-        .state
-        .turn_tasks
-        .iter()
-        .find(|b| b.turn == turn && b.closed.is_none())
-        .and_then(|b| b.placeholder.clone());
-    msg.content.content = ask.text();
-    msg.meta.insert(
-        AGENT_ASK_META.to_string(),
-        json!({
-            "anchor": anchor.clone().unwrap_or_default(),
-            "call_id": call_id,
-            "turn": turn,
-            "input": ask.input,
-        }),
-    );
-    if let Some(target) = anchor.as_deref().and_then(|a| ObjId::new(a).ok()) {
-        msg.relates_to = Some(MsgRelation::new(MsgRelType::Thread, target));
-    }
-    let msg = sink.question(&s.config, msg).await;
-    let mismatch = binding_mismatch(s, &route);
-    if let Some(m) = &mismatch {
-        log::error!("session {}: {m}", s.sid());
-    }
-    s.state.outbox.push(OutboxEntry {
-        key,
-        msg,
-        turn,
-        purpose: OutboxPurpose::Question,
-        status: if mismatch.is_some() {
-            OutboxStatus::Failed
-        } else {
-            OutboxStatus::Pending
-        },
-        msg_id: None,
-        deliveries: Vec::new(),
-        error: mismatch,
-        attempts: 0,
-        updated_at_ms: crate::now_ms(),
-    });
-    trim(&mut s.state.outbox);
-}
-
-/// Ids the questions of `turn` were sent as (and their anchor): a message
-/// replying to one of them answers a question.
-pub(super) fn question_targets(state: &SessionState, turn: u64) -> Vec<String> {
-    let mut ids: Vec<String> = state
-        .turn_tasks
-        .iter()
-        .filter(|b| b.turn == turn)
-        .filter_map(|b| b.placeholder.clone())
-        .collect();
-    for e in state
-        .outbox
-        .iter()
-        .filter(|e| e.turn == turn && e.purpose == OutboxPurpose::Question)
-    {
-        ids.push(e.msg_id.clone().unwrap_or_else(|| msg_key(&e.msg)));
-    }
-    ids
-}
-
-/// Questions of `turn` not sent yet follow their anchor: the id the
-/// placeholder was sent as, or none (they become messages of their own).
-fn retarget_questions(state: &mut SessionState, turn: u64, anchor: Option<&str>) {
-    let target = anchor.and_then(|id| ObjId::new(id).ok());
-    for e in state.outbox.iter_mut().filter(|e| {
-        e.turn == turn && e.purpose == OutboxPurpose::Question && e.status == OutboxStatus::Pending
-    }) {
-        e.msg.relates_to = target
-            .clone()
-            .map(|t| MsgRelation::new(MsgRelType::Thread, t));
-        if let Some(ask) = e.msg.meta.get_mut(AGENT_ASK_META) {
-            ask["anchor"] = json!(anchor.unwrap_or_default());
-        }
-    }
-}
-
 /// The placeholder of `turn` the reply has to replace. A placeholder that
 /// was never handed to the sink is withdrawn instead: the reply then leaves
 /// as a message of its own.
@@ -360,7 +246,6 @@ fn take_placeholder(s: &mut Session, turn: u64) -> Option<ObjId> {
         if let Some(b) = s.state.turn_tasks.iter_mut().find(|b| b.turn == turn) {
             b.placeholder = None;
         }
-        retarget_questions(&mut s.state, turn, None);
         return None;
     }
     ObjId::new(&anchor).ok()
@@ -596,7 +481,6 @@ fn placeholder_settled(state: &mut SessionState, turn: u64, sent_as: Option<&str
     if let Some(b) = state.turn_tasks.iter_mut().find(|b| b.turn == turn) {
         b.placeholder = sent_as.map(str::to_string);
     }
-    retarget_questions(state, turn, sent_as);
     let Some(edit) = state.outbox.iter_mut().find(|e| {
         e.turn == turn && e.purpose == OutboxPurpose::FinalEdit && e.status == OutboxStatus::Pending
     }) else {

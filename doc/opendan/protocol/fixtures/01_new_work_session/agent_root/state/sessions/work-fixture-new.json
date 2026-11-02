@@ -10,7 +10,7 @@
     "principal": "app:app2@alice"
   },
   "location": "${FIXTURE_ROOT}/app/work-fixture-new",
-  "input_queue": "app2::alice::opendan.session.work-fixture-new",
+  "input_queue": "app2::alice::opendan.session.3610ce0b86bd9a00b73a99d4ed9711db467f204ba51991a14101c4885bf95961",
   "wake_event": "/opendan/jarvis.alice/session/work-fixture-new/input",
   "agent_access": "full",
   "objective": "write notes.txt",
@@ -29,7 +29,7 @@
       "summary": "",
       "heartbeat_ms": 0
     },
-    "updated_at_ms": 1792976020024
+    "updated_at_ms": 1793591509866
   },
   "location_rev": 0
 }

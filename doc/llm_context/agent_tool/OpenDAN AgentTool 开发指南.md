@@ -20,7 +20,7 @@
   ▼
 llm_context（waist）
   │  ToolManager::call_tool(call, ToolCallCtx) -> Observation
-  │  ToolPolicy：工具迭代额度、allow_deferred、finish_grace_ms
+  │  ToolPolicy：工具迭代额度、finish_grace_ms；CheckpointHook：每次工具调用前提交快照
   ▼
 agent_tool::runtime   AgentRuntime(native | remote_ssh | remote_node).open(...) -> XllmToolManager（Sandbox）
   ├─ 内置 bash 组：shell / read_file / write_file / edit_file（+ wait_task / get_task_state / cancel_task）
@@ -33,19 +33,19 @@ agent_tool::runtime   AgentRuntime(native | remote_ssh | remote_node).open(...) 
 
 要点：
 
-- llm_context 只认识 `ToolManager` 和 `Observation`，不认识 `AgentToolResult`。`AgentToolResult` 到 `Observation` 的映射在派发器里完成，映射表见 [agent_tool_result_protocol.md](agent_tool_result_protocol.md#结果到-observation-的映射)。
+- llm_context 只认识 `ToolManager` 和 `Observation`，不认识 `AgentToolResult`，也不认识 task。`AgentToolResult` 到 `Observation` 的映射在派发器里完成，信封原样放进 `Observation.host`（llm_context 不读，渲染器经 `agent_tool::result_view::ToolResultView` 读），映射表见 [agent_tool_result_protocol.md](agent_tool_result_protocol.md#结果到-observation-的映射)。
 - Runtime 是执行环境，也是 sandbox：内置工具和模板执行（`PromptExec`）都在 runtime 里执行；MCP 与宿主工具保留各自的执行位置，但都经同一个派发器。policy / grant / approval 之后在这一层加。
 - `agent_tool::xllm::XllmToolManager` 是 xllm 与 libopendan 共用的派发器。
 - 配置字段、RuntimeInfo、恢复检查等细节以 [xllm Rust SDK](<../xllm_rust_sdk.md>) §2、§3、§10 为准，本文只写工具开发者需要知道的部分。
 
 ### 1.1 Runtime
 
-- `RuntimeConfig`（`.llm_context` 的 `runtime` 键）：`kind`（缺省 `native`，另有 `remote_ssh`、`remote_node`）、`id`、`workdir`、`env`、`remote_ssh`、`remote_node`。`RuntimeRegistry::from_config` 构造（`remote_node` 经 `from_config_with`，需要 `XllmDeps.node_executor`）；宿主注入的 runtime 必须与有效配置一致。
+- `RuntimeConfig`（`.llm_context` 的 `runtime` 键）：`kind`（缺省 `native`，另有 `remote_ssh`、`remote_node`）、`id`、`workdir`、`env`、`remote_ssh`、`remote_node`、`baseline`，以及调用内等待预算 `task_wait_ms`（4.3）。`RuntimeRegistry::from_config` 构造（`remote_node` 经 `from_config_with`，需要 `XllmDeps.node_executor`）；宿主注入的 runtime 必须与有效配置一致。
 - `AgentRuntime`：
   - `descriptor()`：runtime id、kind、实际 target、workdir、能力
   - `info()` → `RuntimeInfo`：id、kind、os、arch、hostname、shell、cwd、tools、current_time、timezone，供提示词模板 `{{runtime.*}}` 引用
   - `open(ctx, tools, deps)` → `(EffectiveTools, XllmToolManager)`：按工具配置装配本 run 的工具
-  - `describe_interrupted(run, action)`：崩溃后为没有结果的调用生成“被打断”的说明
+  - `describe_interrupted(run, call)`：恢复时为可能已在执行、又找不回结果的调用生成说明（4.4）
 - 执行体：native 用本地进程（独立进程组）；remote_ssh 用系统 ssh / sftp；remote_node 经目标节点的 Node Executor 执行。内置文件工具经 `runtime::files::FileBackend`（本地、SFTP 或 Node 操作）读写，命令经 `BashRunner` 执行，所以同一份实现可以跑在三种 runtime 上。
 - `Sandbox`：`ToolManager` 加 `workdir()`、`env_check()`、`exec(BashRunRequest)`；`SandboxPromptExec` 用它执行模板里的命令。
 - native 不提供 OS 隔离。`filesystem_policy: workspace`（缺省）只限制内置文件工具的路径和 `shell` 的 `cwd`，不隔离 shell 命令自身的文件访问。
@@ -67,11 +67,10 @@ tools:
       command: todo
       usage: "todo add <title> | todo ls"
   shell:
-    mode: auto                 # auto | wait
-    wait_ms: 30000
+    timeout_ms: 1800000        # 等到命令结束时的超时；调用内等多久由 runtime.task_wait_ms 决定（4.3）
 ```
 
-- `groupname`：目前只有 `bash` 组：`shell`、`read_file`、`write_file`、`edit_file`；`shell` 处于 auto 模式时另加 `wait_task`、`get_task_state`、`cancel_task`。启用工具但不配置列表时默认使用它，显式空列表则不提供原生工具。
+- `groupname`：内置组。`bash`：`shell`、`read_file`、`write_file`、`edit_file`，`shell` 会把长命令转成 task 时另加 `wait_task`、`get_task_state`、`cancel_task`；`bash_core`：以 `read` 取代 `read_file`，宿主提供 task CLI（`XllmDeps.task_cli`）时不带 task 工具；`executor`：`executor_list`、`executor_call`。启用工具但不配置列表时默认使用 `bash` 组，显式空列表则不提供原生工具。
 - `mcp`：展开为该 MCP 服务的全部工具（HTTP JSON-RPC `tools/call`），在服务端执行。
 - `name`：宿主用 `XllmDeps::with_host_tool` 注册的进程内工具，在宿主进程执行。具名宿主工具缺失时拒绝运行或接管。
 - `bash_tools` 不注册工具，只让模型从命令手册里知道 shell 里有哪些命令可用。
@@ -83,12 +82,13 @@ tools:
 ```text
 LLM tool call / behavior action
   ▼
-llm_context：ToolManager::call_tool(call, ToolCallCtx { abort, deadline_ms, allow_deferred })
+llm_context：before_tool_call 快照 → ToolManager::call_tool(call, ToolCallCtx { abort, deadline_ms })
   ▼
 XllmToolManager::call_tool
-  ├─ 宿主有 run 记录时，登记 in-flight
+  ├─ 恢复时这个 call_id 可能已在执行：先按 call_id 找回（4.4）
   ├─ 在 task-local CURRENT_TOOL_CTX / CURRENT_TOOL_CALL 作用域内调用 AgentTool::call(&SessionRuntimeContext, args)
   ├─ 工具不可取消时，与 ToolCallCtx 的打断 / deadline 竞争
+  ├─ pending + task_id：在调用内等 task，最多到 runtime 的等待预算（4.3）
   └─ AgentToolResult / AgentToolError → Observation
 ```
 
@@ -113,6 +113,7 @@ pub trait TypedTool: Send + Sync + 'static {
     fn description(&self) -> &str { "" }
     fn calling(&self) -> CallingConventions { CallingConventions::ALL }
     fn cancellable(&self) -> bool { false }
+    fn idempotent(&self) -> bool { false }
     fn args_schema(&self) -> Json { ... }
     fn output_schema(&self) -> Json { ... }
     fn usage(&self) -> Option<String> { None }
@@ -139,6 +140,7 @@ pub trait AgentTool: Send + Sync {
     fn spec(&self) -> ToolSpec;
     fn calling(&self) -> CallingConventions;
     fn cancellable(&self) -> bool { false }
+    fn idempotent(&self) -> bool { false }
 
     async fn call(
         &self,
@@ -232,13 +234,13 @@ pub trait ToolHost: Send + Sync {
 |------|------|
 | `abort` | 与推理共用的打断 / 平滑结束信号 |
 | `deadline_ms` | run 的 wallclock 截止时间（epoch ms） |
-| `allow_deferred` | 宿主能否在 `pending` 上挂起 run（`ToolPolicy.allow_deferred`） |
 | `cancelled().await -> CancelCause` | 打断、平滑结束或到期时返回原因 |
 | `cancelled_hard().await` | 只在打断或到期时返回，平滑结束不触发 |
 | `cause()` | 当前是否已有取消原因 |
-| `wait_until_ms(wait_ms)` | 调用内等待的截止时间：run deadline、30 分钟上限、`wait_ms` 三者取最早 |
 
 `CancelCause`：`Interrupted`（立即停；不能取消的工作放弃等待）、`Finishing`（能取消就取消，不能取消就继续，派发器等 `ToolPolicy.finish_grace_ms`，默认 30s，之后升级为打断）、`Deadline`。
+
+调用内等待的截止时间用 `agent_tool::task_model::wait_until_ms(ctx, wait_ms)` 计算：run deadline、30 分钟上限、`wait_ms` 三者取最早。
 
 ### 4.2 声明可取消
 
@@ -252,20 +254,22 @@ pub trait ToolHost: Send + Sync {
 
 ### 4.3 长工作交给 task
 
-调用内等待受工具内上限（`llm_context::tasks::MAX_IN_TOOL_WAIT_MS`，30 分钟）和 run deadline 约束。工作可能超过这个时长时，交给 task 并立即返回 `task_id`，由模型决定是否等待：
+llm_context 不认识 task，循环里不等待：任何等待都是 task。一次调用在调用内最多等 runtime 的预算 `RuntimeConfig.task_wait_ms`（默认 30 秒），任何情况下不超过 `agent_tool::task_model::MAX_IN_TOOL_WAIT_MS`（30 分钟）和 run deadline。工作可能超出预算时交给 task，不要在工具里一直等：
 
-- 进程内的工作：实现 `agent_tool::tasks::LocalTask`（`brief`、`started_at_ms`、`cancellable`、`state`、`wait`、`cancel`），用 `InProcessTaskManager::register(kind, task)` 登记，得到 `local:<kind>:<n>`；宿主经 `XllmToolManager::tasks()` 取得管理器。参考 `ShellTool` 在 auto 模式下的 `detach_into_task`。
+- 进程内的工作：实现 `agent_tool::tasks::LocalTask`（`brief`、`started_at_ms`、`cancellable`、`state`、`wait`、`cancel`），用 `InProcessTaskManager::register(kind, task)` 登记，得到 `local:<kind>:<n>`；宿主经 `XllmToolManager::tasks()` 取得管理器。参考 `ShellTool` 的 `detach_into_task`：等满预算仍未结束，就返回 `success` + `task_id`。
 - 进程内 task 不持久化，执行器重启后状态为 unknown。需要崩溃后能读回结果的，工具自己落盘（`shell` 用执行目录）。
-- 服务接口本身返回 buckyos task id 时直接返回它，不要为了用 task-mgr 把本地工作改造成远程任务。宿主注入 `XllmDeps.buckyos_tasks` 后，LLM 的 task 工具能跟进这类 task；没有注入时，模型在 `shell` 中用 CLI `check_task` / `cancel_task` / `finish_task`（见 [builtin_agent_tools.md](builtin_agent_tools.md#6-task-工具)）。
-- 返回文本里的下一步提示用 `llm_context::tasks::next_step_hint(task_id, cancellable)` 生成，与 task 工具保持一致；只有可取消的 task 才提示 `cancel_task`。
-- 执行方式（等多久、是否转 task）由配置决定，不给模型加调用前要选择的参数（如 `background`）。
-- `pending` 只在调用语义就是“等待”时返回，必须带 `task_id`。规则见 [agent_tool_result_protocol.md](agent_tool_result_protocol.md#长任务与-pending-结果)。
+- 服务接口本身返回 buckyos task id 时直接返回它，不要为了用 task-mgr 把本地工作改造成远程任务。宿主注入 `XllmDeps.buckyos_tasks` 后（OpenDAN Loader 注入 Zone TaskMgr 的解析器），派发器和 LLM 的 task 工具都能跟进这类 task；没有注入时状态为 unknown，模型在 `shell` 中用 CLI `check_task` / `cancel_task` / `finish_task`（见 [builtin_agent_tools.md](builtin_agent_tools.md#6-task-工具)）。
+- 返回文本里的下一步提示用 `agent_tool::task_model::next_step_hint(task_id, cancellable)` 生成（宿主的跟进方式不是 task 工具时用 `TaskFollowup::hint`），与 task 工具保持一致；只有可取消的 task 才提示 `cancel_task`。
+- 等多久由 runtime 的预算决定，不给模型加调用前要选择的参数（如 `background`）。
+- 工具也可以不自己等，返回 `pending` + `task_id`，由派发器在预算内等，到期仍在运行就以普通结果返回“仍在运行”。规则见 [agent_tool_result_protocol.md](agent_tool_result_protocol.md#长任务与-pending-结果)。
+- “仍在运行”之后由谁跟进是宿主的事：xllm 的模型用 task 工具，libopendan Session 在循环外跟进并把结束作为 `<<task_result>>` 输入带回。工具不需要知道是哪一种。
 
 ### 4.4 进程语义
 
 - 执行器只管理正在执行的命令：native 在 Unix 上让命令在独立进程组中运行，打断或超时时整组结束。
 - 命令返回后留下的进程（`&`、nohup、setsid、守护进程）在打断、超时、run 结束、恢复时都不停止、不追杀。用 nohup 起服务本身可能就是这次调用的目的。
-- 恢复时不核验、不停止进程，不重放调用。没有结果的调用由 `AgentRuntime::describe_interrupted` 生成说明，交给模型判断。新增执行型工具时要想清楚：执行记录写在哪里，恢复时怎么描述。
+- 恢复时不核验、不停止进程。可能已在执行的调用以原 call_id 再次派发，派发器先按 call_id 找再决定做不做：`shell` 读回已结束命令的结果；`idempotent()` 为真的工具（读类工具、`wait_task`、`get_task_state`）重新执行；其它不重做，结果为“结果未知”（`Unresolved`），说明由 `AgentRuntime::describe_interrupted` 生成，交给模型判断。
+- `idempotent()` 默认 `false`。只有重做一次无害时才声明 `true`（`write_file` 有追加模式，不是幂等的）。新增执行型工具时要想清楚：重做是否无害，执行记录写在哪里，恢复时怎么描述。
 
 ---
 
@@ -380,7 +384,7 @@ CLI 工具把工作交给 buckyos task-mgr 时，可以返回带 `task_id` 的 `
 }
 ```
 
-`shell` 转发它之后，派发器按 `allow_deferred` 处理：不能挂起时在调用内等 task（需要宿主注入 buckyos resolver 才能查到状态），能挂起时 run 以 `PendingTool` 挂起。如果工作不需要调用方等待，返回 `success` 加 `task_id` 更合适。CLI 里的 `check_task` / `cancel_task` / `finish_task` 通过 `TaskManagerClient` 查询、取消、结束 buckyos task。
+`shell` 转发它之后，派发器在调用内等 task，最多到 `check_after` 或 runtime 的等待预算，到期仍在运行就以普通结果返回“仍在运行”；查 task 需要宿主注入能解析它的 resolver（`XllmDeps.buckyos_tasks`）。Zone TaskMgr 的解析器（`tasks_zone`）对 `tool.shell/v1` 以外的 task 通用：task 的结果是 AgentToolResult 信封时就用这个信封，否则把结果 JSON 作为正文，所以和工具相关的 task 建议直接把信封写成结果。websdk 的 `ask_user` 就是这样一个工具：发一条 `input` 通知，返回 `pending` + 通知的 task（`t-…`）+ `pending_reason: "user_input"`，用户的回答就是 task 的结果。如果工作不需要调用方等待，返回 `success` 加 `task_id` 更合适。CLI 里的 `check_task` / `cancel_task` / `finish_task` 通过 `TaskManagerClient` 查询、取消、结束 buckyos task。
 
 ### 5.7 纯文本例外
 
@@ -517,7 +521,7 @@ Agent RootFS 布局以 [Agent RootFS](<../../opendan/Agent RootFS.md>) 为准。
    - 定义 `Args: Deserialize + JsonSchema`、`Output: Serialize + JsonSchema`
    - 实现 `name()` / `description()` / `calling()` / `execute()`
    - 必要时实现 `usage()` / `build_cmd_line()` / `build_summary()` / `parse_bash_args()` / `parse_cli_args()`
-2. 按第 4 节决定 `cancellable()`，以及工作是否可能超过调用内等待上限、需要交给 task。
+2. 按第 4 节决定 `cancellable()`、`idempotent()`，以及工作是否可能超出调用内等待预算、需要交给 task。
 3. 需要 backend 能力时优先复用现有 backend trait 或 `ToolHost` slot。
 4. 宿主用 `XllmDeps::with_host_tool` 注册，`.llm_context` 的 `tools.tools` / `tools.actions` 里以 `- name: <tool>` 引用。
 5. 宿主工具在宿主进程执行，读写的是宿主所在机器。工具要跟随 runtime 操作目标机器时，改为在 shell 中调用的 CLI 命令（7.2），或者经 runtime 的 `FileBackend` / `Sandbox::exec`。
@@ -567,7 +571,7 @@ cargo test -p libopendan -- --test-threads=1
 
 ### 8.2 在真实 run 中验证
 
-用 `agent_tool xllm` 在工作目录的 `.llm_context` 配置下跑一个 run，可以检查工具装配、shell 的 auto / wait 行为和 run 目录（`runs/<run_id>/`，含执行目录 `exec/<call_id>/`）。CLI 参数与退出码见 [xllm Rust SDK](<../xllm_rust_sdk.md>) §7。
+用 `agent_tool xllm` 在工作目录的 `.llm_context` 配置下跑一个 run，可以检查工具装配、shell 转 task / 等到结束的行为和 run 目录（`runs/<run_id>/`，含执行目录 `exec/<call_id>/`）。CLI 参数与退出码见 [xllm Rust SDK](<../xllm_rust_sdk.md>) §7。
 
 ### 8.3 CLI 直接调试
 
@@ -586,7 +590,7 @@ write_file ./demo.txt --mode write --content "hello"
 ## 9. 反模式速查
 
 - 给模型加调用前要选择执行方式的参数（如 `background`），而不是由配置决定。
-- 工作可能超过 30 分钟，却在调用里一直等；或者因为“耗时长”就返回 `pending`，而不是返回 `task_id`。
+- 工作可能超出调用内等待预算，却在工具里一直等，而不是交给 task。
 - 返回 `pending` 但不带 `task_id`。
 - 工具自己维护取消监听或 deadline，而不是读 `ToolCallCtx`。
 - 声明 `cancellable() == true` 却不响应取消；或在没有取消原因时返回 `Cancelled`；或把取消包装成业务 `error`。
@@ -615,8 +619,9 @@ write_file ./demo.txt --mode write --content "hello"
 - `src/frame/agent_tool/src/tool.rs`：`TypedTool`、`CallingConventions`、`ToolHost`
 - `src/frame/agent_tool/src/runtime/`：`RuntimeConfig`、`AgentRuntime`、`Sandbox`、native / SSH / Node 与文件后端、`CURRENT_TOOL_CTX`
 - `src/frame/agent_tool/src/llm_bash.rs`：`shell`、`BashRunner`、执行目录
+- `src/frame/agent_tool/src/task_model.rs`：`RunningTaskResolver`、`TaskState`、`TaskFollowup`、`wait_until_ms`、等待上限
 - `src/frame/agent_tool/src/tasks.rs`：`InProcessTaskManager`、`CompositeTaskResolver`、task 工具
 - `src/frame/agent_tool/src/xllm.rs`：`ToolsConfig`、`XllmToolManager`、工具装配
-- `src/frame/llm_context/src/deps.rs`、`tasks.rs`：`ToolCallCtx`、`CancelCause`、`RunningTaskResolver`
+- `src/frame/llm_context/src/deps.rs`：`ToolCallCtx`、`CancelCause`、`CheckpointHook`
 - `src/frame/agent_tool_cli_dev/src/lib.rs`：CLI 分发、`CliRuntimeEnv`、pseudo-tool
 - `src/frame/lib_opendan/src/runtime/`：Session 的 runtime 绑定、Session Bin、环境注入

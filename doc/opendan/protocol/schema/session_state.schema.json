@@ -207,7 +207,7 @@
           "type": "object"
         },
         {
-          "description": "A tool call / behavior action: the caller is suspended on `PendingTool`, the result is filled as the tool result of `call_id`.",
+          "description": "A tool call / behavior action (`call_behavior` or a behavior's named function): the call returned at once, the session handed over when the caller's run segment ended; the result returns as `process_result` (naming `call_id`) in the caller's hand-over batch.",
           "properties": {
             "call_id": {
               "type": "string"
@@ -1536,13 +1536,6 @@
             "final_edit"
           ],
           "type": "string"
-        },
-        {
-          "description": "A question to the user while the Turn is open (`ask-user`): a `thread` message on the placeholder, carrying `agent_ask`.",
-          "enum": [
-            "question"
-          ],
-          "type": "string"
         }
       ]
     },
@@ -2283,13 +2276,6 @@
             "null"
           ]
         },
-        "human_tasks": {
-          "description": "TaskMgr human tasks the wait depends on: questions asked through a notification (`ask-user` of a Work).",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
         "kind": {
           "$ref": "#/definitions/WaitingKind"
         },
@@ -2525,7 +2511,7 @@
       ]
     },
     "process_result": {
-      "description": "Result of a sub context, handed to its caller: `{behavior, result, status: ok | failed | needs_user_input, next_action_id, next_step_index}`. Behavior trigger: rendered into the caller's hand-over batch. Tool trigger: carries `call_id` and is filled as that call's tool result when the caller's run is opened."
+      "description": "Result of a sub context, handed to its caller: `{behavior, result, status: ok | failed | needs_user_input, next_action_id, next_step_index}`, rendered into the caller's hand-over batch (a tool trigger carries its `call_id`)."
     },
     "process_stack": {
       "items": {

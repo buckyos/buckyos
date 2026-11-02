@@ -77,6 +77,7 @@ pub fn records() -> Vec<(&'static str, Value)> {
             summary: "任务 t1 的状态发生变化".into(),
             data_ref: None,
             terminal: false,
+            call_id: None,
         },
     );
     task.at_ms = T0;
@@ -92,6 +93,7 @@ pub fn records() -> Vec<(&'static str, Value)> {
             summary: "doc-1 was edited by Bob".into(),
             data_ref: None,
             terminal: false,
+            call_id: None,
         },
     );
     object.at_ms = T0;

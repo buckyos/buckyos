@@ -268,7 +268,7 @@ pub fn outbound_key(sid: &str, turn: u64, run_id: &str, n: u32) -> String {
 
 /// Envelope of a reply along the session's default reply path
 /// (`state.reply`): hand it with the assistant message to
-/// `llm_context::ai_message_to_msg_object_with_base_validated_async`, which
+/// `crate::msg_parser::ai_message_to_msg_object_with_base_validated_async`, which
 /// fills the content (text, `<attachment>` tags and named objects as refs).
 /// `None`: the session has no message route (headless sub session: its
 /// result goes to the parent session instead).

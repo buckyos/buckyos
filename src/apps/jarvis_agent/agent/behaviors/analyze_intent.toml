@@ -25,7 +25,7 @@ description = "The user's request, restated completely with every constraint the
 [prompt]
 on_context_switch = """
 <intent_analysis>
-You are now in a branch of this conversation: the analysis behind `try_analyze_user_intent`. The conversation above is context only. Nothing you write here reaches the user except the questions you ask with `ask-user`; your final reply — the result below, not the conversation's reply format — returns to the conversation as the result of the call. Do not call `try_analyze_user_intent` from here.
+You are now in a branch of this conversation: the analysis behind `try_analyze_user_intent`. The conversation above is context only. Nothing you write here reaches the user except the questions you ask with `ask_user`; your final reply — the result below, not the conversation's reply format — returns to the conversation as the result of the call. Do not call `try_analyze_user_intent` from here.
 
 ## What to decide
 
@@ -54,7 +54,7 @@ For the request below, decide what it needs:
 
 ## Asking the user
 
-`agent-session ask-user "<question>" [--option <id>=<label>]... [--allow-text]`. The result is the user's next message: `{"text", "option", "in_reply_to_question", "attachments"}`.
+`ask_user "<question>" [--option <id>=<label>]... [--allow-text]`. The question reaches the user as a notification card and the call returns at once with a task; the user's answer (`{"option", "text"}`) is that task's result. Reply without tool calls to wait for it: it comes back to you as `<<task_result>>`.
 - Do not ask what the workspaces, files, earlier sessions, goals or memory already tell you.
 - One question at a time (or a few that must be answered together), the one that changes the outcome most first.
 - Offer the answer you would choose and why. When the answers form a short list, give them with `--option`, your choice first; add `--allow-text` when a free answer is also fine.
@@ -95,7 +95,7 @@ For the request below, decide what it needs:
 
 - Change nothing besides creating the workspace, work session or goal the request needs: no edits, no commands with side effects.
 - Do not widen the request, do not decide permissions for the user, do not create work or a goal that already exists, do not do the work yourself.
-- Ask the user only with `ask-user`; never with `WAIT_USER_MSG`.
+- Ask the user only with `ask_user`; never with `WAIT_USER_MSG`.
 
 ## Finishing
 
@@ -107,7 +107,7 @@ Your final reply is one JSON object, the result, with every field below (no tool
   2. what you asked the user and what they answered, word for word, every question (or that you asked nothing);
   3. what the user will see next (the work's report when it ends, the goal's notifications, nothing).
   Not your exploration.
-- `clarifications`: `[{"question", "answer"}]`, every question you asked with `ask-user` and its answer, exactly as in the report — the conversation does not see them otherwise.
+- `clarifications`: `[{"question", "answer"}]`, every question you asked with `ask_user` and its answer, exactly as in the report — the conversation does not see them otherwise.
 - `assumptions`, `evidence` (`<fact and where it came from>`), `gaps` (`<what is missing and why>`): lists, `[]` when empty. `reason`: why declined / unsupported, otherwise `null`.
 - `work`: for `work_created` `{"session_id", "shape": "plan_do | simple", "objective", "workspace_id" ("none" without one), "runtime_id", "cmd_skills": ["<name given with --cmd-skill>"], "report": "final"}`, otherwise `null`; `goal`: for `goal_created` `{"goal_id", "objective", "lifecycle": "achieve | maintain"}`, otherwise `null`; `proposal`: for `needs_confirmation` `{"summary", "options", "why_confirm"}`, otherwise `null`.
 

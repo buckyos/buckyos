@@ -11,7 +11,7 @@
     "principal": "app:app2@alice"
   },
   "location": "${FIXTURE_ROOT}/app/ui-notify",
-  "input_queue": "app2::alice::opendan.session.ui-notify",
+  "input_queue": "app2::alice::opendan.session.d259f588ce00fc2763d2d8ea497e12dd3be1cf0a8d416d4695621b7e1444d0df",
   "wake_event": "/opendan/jarvis.alice/session/ui-notify/input",
   "agent_access": "full",
   "objective": "chat with alice",
@@ -26,13 +26,13 @@
       "heartbeat_ms": 0
     },
     "last_runner": {
-      "runner_id": "rn-d9c198d565194caa",
+      "runner_id": "rn-dbc306792e844143",
       "host": "${FIXTURE_HOST}",
-      "pid": 3019369,
+      "pid": 2810648,
       "lock_epoch": 1,
-      "at_ms": 1792976022588
+      "at_ms": 1793591512269
     },
-    "updated_at_ms": 1792976022586
+    "updated_at_ms": 1793591512267
   },
   "location_rev": 0
 }

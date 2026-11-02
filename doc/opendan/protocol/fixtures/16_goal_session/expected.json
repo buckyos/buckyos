@@ -13,12 +13,12 @@
       ],
       "seq": 1,
       "works_absorbed": [
-        "work-d5ddc95c475156fc69cd7a79a12e5ed34fe891f89833e68ca71a1164e6f750ea"
+        "work-20261101-2"
       ]
     },
     "goal_state": {
       "absorbed": [
-        "work-d5ddc95c475156fc69cd7a79a12e5ed34fe891f89833e68ca71a1164e6f750ea"
+        "work-20261101-2"
       ],
       "activations": 1,
       "distance": "TODO.md has no finished items left"
@@ -50,9 +50,9 @@
       },
       "live_run": null,
       "runs_on_disk": [
-        "20261025-175342-20be71"
+        "20261101-195152-18401e"
       ],
-      "session_id": "goal-89354dfc2794f4b85a309968d2304f7c15bc90a0741e4bca5967d5998168ff0f",
+      "session_id": "goal-20261101-1",
       "state": {
         "acceptance": "n/a",
         "inputs": {
@@ -60,7 +60,7 @@
             "acked_index": 1
           }
         },
-        "last_run": "20261025-175342-20be71",
+        "last_run": "20261101-195152-18401e",
         "open_turn": null,
         "outcome": null,
         "process_stack": [],
@@ -70,18 +70,18 @@
         "turns_completed": 1
       },
       "worklog": {
-        "committed_bytes": 5245,
+        "committed_bytes": 4759,
         "committed_seq": 9,
-        "file_bytes": 5245,
+        "file_bytes": 4759,
         "uncommitted_tail": false
       }
     },
     {
       "live_run": null,
       "runs_on_disk": [
-        "20261025-175342-41ce41"
+        "20261101-195152-082abe"
       ],
-      "session_id": "work-d5ddc95c475156fc69cd7a79a12e5ed34fe891f89833e68ca71a1164e6f750ea",
+      "session_id": "work-20261101-2",
       "state": {
         "acceptance": "pending",
         "inputs": {
@@ -89,7 +89,7 @@
             "acked_index": 1
           }
         },
-        "last_run": "20261025-175342-41ce41",
+        "last_run": "20261101-195152-082abe",
         "open_turn": null,
         "outcome": "succeeded",
         "process_stack": [],
@@ -99,9 +99,9 @@
         "turns_completed": 1
       },
       "worklog": {
-        "committed_bytes": 1745,
+        "committed_bytes": 1637,
         "committed_seq": 6,
-        "file_bytes": 1745,
+        "file_bytes": 1637,
         "uncommitted_tail": false
       }
     }

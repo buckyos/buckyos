@@ -684,22 +684,27 @@ async fn a_parent_waits_for_its_reporting_sub_sessions() {
     );
 }
 
-/// E21 (`--wait`): the creating call is suspended on `session:<sid>` and
-/// answered from the registry when the sub session ends — as that call's
-/// tool result, not as an event as well.
+/// E21 (`--wait`): a session follows its sub sessions outside the loop:
+/// the creating call returns "still running" on `session:<sid>` at once,
+/// the reply keeps the run (F18), and the sub session's end is that same
+/// run's next input.
 #[tokio::test]
-async fn a_waited_sub_session_answers_the_suspended_call() {
+async fn a_waited_sub_session_ends_into_the_kept_run() {
     let env = Env::new();
     let parent = env.create_work(parent_spec("delegate and wait")).await;
     let llm = ScriptedLlm::new(|req, _| {
         if is_child(req) {
             return text("forty-two");
         }
+        let last = last_user_text(req);
+        if last.contains("forty-two") {
+            assert!(last.contains("event=\"finished\""), "{last}");
+            return text("the child said forty-two");
+        }
         match has_tool_result(req, "s1") {
             Some(r) => {
-                assert!(r.contains("forty-two") && r.contains("\"status\":\"finished\""), "{r}");
-                assert!(!render(&req.messages).contains("event=\"finished\""));
-                text("the child said forty-two")
+                assert!(r.contains("still running"), "{r}");
+                text("waiting for the child")
             }
             None => tool_call("s1", "spawn", json!({ "objective": "child work", "report": "final", "wait": true, "key": "w" })),
         }
@@ -714,13 +719,15 @@ async fn a_waited_sub_session_answers_the_suspended_call() {
     );
     let st = parent.state().unwrap();
     assert!(st.is_finished());
-    assert_eq!(llm.count(), 3, "parent twice, child once");
+    assert_eq!(llm.count(), 4, "parent three times, child once");
+    assert_eq!(parent.runs().list().unwrap().len(), 1, "one run throughout");
     let wl = read_worklog(&parent);
-    assert!(
-        !wl.iter().any(|e| matches!(&e.body, WorklogBody::InputBatch { inputs, .. } | WorklogBody::TurnStarted { inputs, .. }
-            if inputs.iter().any(|i| i.src == INTERNAL_CHILD_SRC))),
-        "the end was consumed as the tool result"
-    );
+    let ends = wl
+        .iter()
+        .filter(|e| matches!(&e.body, WorklogBody::InputBatch { inputs, .. }
+            if inputs.iter().any(|i| i.src == INTERNAL_CHILD_SRC)))
+        .count();
+    assert_eq!(ends, 1, "the end came once, as input");
 }
 
 /// §4.11: the number of unfinished sub sessions and their nesting are
@@ -967,7 +974,7 @@ async fn an_interactive_sub_session_asks_its_parent() {
 /// E21 (`--report progress`) / §4.15: progress of a sub session is kept as
 /// semi-subscription state and shown before the next controlled input; what
 /// needs attention is an input; and a parent that would finish while a
-/// reporting sub session is unsettled keeps its Turn open waiting for it.
+/// reporting sub session is unsettled keeps its run and Turn waiting for it.
 #[tokio::test]
 async fn progress_is_observed_and_the_parent_waits_for_children() {
     let env = Env::new();
@@ -1047,7 +1054,8 @@ async fn progress_is_observed_and_the_parent_waits_for_children() {
         other => panic!("{other:?}"),
     }
     let st = parent.state().unwrap();
-    assert!(!st.is_finished() && st.open_turn.is_some() && st.live_run.is_none());
+    assert!(!st.is_finished() && st.open_turn.is_some() && st.live_run.is_some());
+    assert_eq!(st.run_state, RunState::Waiting);
     assert_eq!(llm.count(), 1);
     // The same state is not delivered twice.
     let r = drive(&parent, &deps, StopWhen::TurnClosed).await;
@@ -1119,14 +1127,18 @@ async fn a_waited_child_hands_the_workspace_back_to_its_parent() {
         if has_tool_result(req, "parent-write").is_some() {
             return text("parent completed the project");
         }
+        // The child's end is the parent's input.
+        if last_user_text(req).contains("child updated the project") {
+            return tool_call(
+                "parent-write",
+                "shell",
+                json!({"command":"echo parent >> \"$OPENDAN_WORKSPACE_DIR/handover.txt\""}),
+            );
+        }
         match has_tool_result(req, "delegate") {
             Some(result) => {
-                assert!(result.contains("child updated the project"), "{result}");
-                tool_call(
-                    "parent-write",
-                    "shell",
-                    json!({"command":"echo parent >> \"$OPENDAN_WORKSPACE_DIR/handover.txt\""}),
-                )
+                assert!(result.contains("still running"), "{result}");
+                text("waiting for the child")
             }
             None => tool_call(
                 "delegate",
@@ -1169,12 +1181,11 @@ async fn a_waited_child_hands_the_workspace_back_to_its_parent() {
     ));
     let run_id = parent.state().unwrap().live_run.unwrap().run_id;
     let original = parent.runs().record(&run_id).unwrap();
+    // A background command of the parent's run (not a sub session it
+    // delegated to): the hand-over is not safe.
     let mut unsafe_record = original.clone();
-    let mut unresolved = unsafe_record.inflight[0].clone();
-    unresolved.call_id = "unresolved-background-write".into();
-    unresolved.tool = "shell".into();
-    unresolved.args = "{}".into();
-    unsafe_record.inflight.push(unresolved);
+    unsafe_record.host.as_mut().unwrap().extra["tasks"] =
+        serde_json::json!(["local:shell:unresolved-background-write"]);
     {
         let _run_lock = parent.runs().try_lock(&run_id).unwrap().unwrap();
         parent.runs().store().write_record(&unsafe_record).unwrap();
@@ -1184,7 +1195,7 @@ async fn a_waited_child_hands_the_workspace_back_to_its_parent() {
         drive(&child, &child_deps, StopWhen::Finished).await,
         DriveResult::Busy { .. }
     ));
-    assert_eq!(llm.count(), 1);
+    assert_eq!(llm.count(), 2);
     {
         let _lease = parent
             .acquire(parent_deps.holder())
@@ -1220,7 +1231,7 @@ async fn a_waited_child_hands_the_workspace_back_to_its_parent() {
         std::fs::read_to_string(directory.join("handover.txt")).unwrap(),
         "child\nparent\n"
     );
-    assert_eq!(llm.count(), 5);
+    assert_eq!(llm.count(), 6);
 }
 
 #[tokio::test]
@@ -1244,13 +1255,14 @@ async fn the_host_completes_a_workspace_delegation_chain_without_wait_timeouts()
                 )
             };
         }
-        let (delegate, write, objective, command, answer) = if system.contains("child work") {
+        let (delegate, write, objective, command, answer, sub_answer) = if system.contains("child work") {
             (
                 "delegate-c",
                 "write-b",
                 "grandchild work",
                 "echo child >> \"$OPENDAN_WORKSPACE_DIR/handover.txt\"",
                 "child finished",
+                "grandchild finished",
             )
         } else {
             (
@@ -1259,13 +1271,18 @@ async fn the_host_completes_a_workspace_delegation_chain_without_wait_timeouts()
                 "child work",
                 "echo parent >> \"$OPENDAN_WORKSPACE_DIR/handover.txt\"",
                 "parent finished",
+                "child finished",
             )
         };
         if has_tool_result(req, write).is_some() {
             return text(answer);
         }
-        if has_tool_result(req, delegate).is_some() {
+        // The sub session's end is this session's input.
+        if last_user_text(req).contains(sub_answer) {
             return tool_call(write, "shell", json!({"command":command}));
+        }
+        if has_tool_result(req, delegate).is_some() {
+            return text("waiting for the sub session");
         }
         tool_call(
             delegate,
@@ -1304,7 +1321,7 @@ async fn the_host_completes_a_workspace_delegation_chain_without_wait_timeouts()
         std::fs::read_to_string(directory.join("handover.txt")).unwrap(),
         "grandchild\nchild\nparent\n"
     );
-    assert_eq!(llm.count(), 8);
+    assert_eq!(llm.count(), 10);
 }
 
 #[tokio::test]
@@ -1322,6 +1339,9 @@ async fn stopping_a_workspace_handoff_interrupts_the_child_and_parent() {
                 "shell",
                 json!({"command":"touch \"$OPENDAN_WORKSPACE_DIR/child-started\"; sleep 30"}),
             );
+        }
+        if has_tool_result(req, "delegate").is_some() {
+            return text("waiting for the child");
         }
         tool_call(
             "delegate",

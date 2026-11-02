@@ -30,6 +30,7 @@ pub mod host;
 pub mod ids;
 pub mod lock;
 pub mod memory;
+pub mod msg_parser;
 pub mod notify;
 pub mod protocol;
 pub mod runner;

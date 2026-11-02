@@ -10,7 +10,7 @@
 //! | `msg` | candidate of a controlled input batch |
 //! | `event`, active subscription | candidate (accepted: its routing is kept) |
 //! | `event`, semi subscription | merged into `pending_events`, consumed |
-//! | `event` of a suspended call's task | consumed; only wakes the wait |
+//! | `event` of a task the session follows | consumed; its end is queried |
 //! | `event` without a valid subscription | consumed, `event_dropped` |
 //!
 //! Everything consumed here is committed to state.json before the input
@@ -135,8 +135,8 @@ pub(super) fn reject(
 pub struct Routed {
     /// msg and accepted Input events, in consumption order; still queued.
     pub candidates: Vec<FetchedInput>,
-    /// A notification for a task a suspended call waits for arrived: query
-    /// the task now instead of at the next poll.
+    /// A notification for a task the session follows arrived: query the
+    /// task now instead of at the next poll.
     pub task_notified: bool,
 }
 
@@ -226,6 +226,7 @@ async fn poll_session_subscriptions(sh: &Shared, s: &mut Session) -> Result<bool
             summary: text,
             data_ref: None,
             terminal,
+            call_id: None,
         };
         let key = format!("session:{session_ref}@{}", e.status.rev);
         merge_pending_event(
@@ -245,18 +246,13 @@ async fn poll_session_subscriptions(sh: &Shared, s: &mut Session) -> Result<bool
 }
 
 /// One routing pass (drive start, every loop iteration, every checkpoint
-/// boundary). `in_run`: a run is executing. `pending_tasks`: task ids the
-/// suspended calls of the live run wait for.
-pub async fn route_inputs(sh: &Shared, in_run: bool, pending_tasks: &[String]) -> Result<Routed> {
+/// boundary). `in_run`: a run is executing.
+pub async fn route_inputs(sh: &Shared, in_run: bool) -> Result<Routed> {
     // A large future (controls, decide, perception): kept off the stack.
-    Box::pin(route_inputs_inner(sh, in_run, pending_tasks)).await
+    Box::pin(route_inputs_inner(sh, in_run)).await
 }
 
-async fn route_inputs_inner(
-    sh: &Shared,
-    in_run: bool,
-    pending_tasks: &[String],
-) -> Result<Routed> {
+async fn route_inputs_inner(sh: &Shared, in_run: bool) -> Result<Routed> {
     let fetched = fetch_inputs(sh).await?;
     let mut routed = Routed::default();
     let mut s = sh.session.lock().await;
@@ -308,16 +304,15 @@ async fn route_inputs_inner(
                     routed.candidates.push(m);
                     continue;
                 }
-                // The result dependency of a suspended call is matched by
-                // task id, separately from ordinary subscriptions: the
-                // notification only triggers a query, the result is filled
-                // as the call's tool result.
-                if ev.source.kind == "task" && pending_tasks.contains(&ev.source.id) {
+                // A task the session follows is matched by task id,
+                // separately from ordinary subscriptions: the notification
+                // only triggers a query; its end comes in as a task result.
+                if ev.source.kind == "task" && s.state.watched_tasks.contains(&ev.source.id) {
                     s.state.source_mut(&m.src).mark(m.index);
                     s.state.recent_keys.push(&m.key);
                     bodies.push(WorklogBody::EventDropped {
                         input: m.input_ref(),
-                        reason: "pending_call".into(),
+                        reason: "watched_task".into(),
                     });
                     routed.task_notified = true;
                     changed = true;

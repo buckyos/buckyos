@@ -295,6 +295,7 @@ pub fn event(
             summary: summary.into(),
             data_ref: None,
             terminal: false,
+            call_id: None,
         },
     )
 }

@@ -33,29 +33,7 @@ export const VIDEO_OUTPUT_HELP = `Output:
   --audio <auto|generate|none>    audio track; none is refused by models that always add one
   --format <mp4|webm|mov>`;
 
-// Removes every `--<name> <value>` of `names` from argv, keeping the order
-// the values were given in; the ordinary parser keeps only the last one.
-export function takeRepeatedFlags(
-  argv: string[],
-  names: readonly string[],
-): { rest: string[]; values: Map<string, string[]> } {
-  const values = new Map<string, string[]>(names.map((name) => [name, []]));
-  const rest: string[] = [];
-  for (let index = 0; index < argv.length; index += 1) {
-    const name = argv[index].startsWith("--") ? argv[index].slice(2) : "";
-    if (!values.has(name)) {
-      rest.push(argv[index]);
-      continue;
-    }
-    const value = argv[index + 1];
-    if (value === undefined || value.startsWith("--")) {
-      throw new ArgError(`--${name} requires a value`);
-    }
-    values.get(name)!.push(value);
-    index += 1;
-  }
-  return { rest, values };
-}
+export { takeRepeatedFlags } from "./cli.ts";
 
 function splitAssignment(flag: string, value: string): [string, string] {
   const at = value.indexOf("=");

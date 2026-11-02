@@ -7,7 +7,7 @@
 //! API stays the authority, and a lost notification is recovered by asking
 //! again.
 
-use llm_context::tasks::TaskState;
+use agent_tool::task_model::TaskState;
 
 use crate::protocol::*;
 
@@ -26,8 +26,8 @@ fn one_line(text: &str, max: usize) -> String {
 }
 
 /// The event describing `state` of `task_id`. `source = task:<task_id>`:
-/// the same id the suspended call record and the task tools use, so a
-/// waiting call and the event match by equality.
+/// the same id the task tools and the session's followed tasks use, so they
+/// match by equality.
 pub fn task_event(
     task_id: &str,
     state: &TaskState,
@@ -63,14 +63,15 @@ pub fn task_event(
         summary,
         data_ref: None,
         terminal,
+        call_id: None,
     }
 }
 
 /// Stable identity of one task dispatch: the idempotency key a tool hands
-/// to an external task service, derived from the session / run / call. It
-/// is persisted with the in-flight record before the tool runs, so a crash
-/// between creating the task and recording its binding finds the same task
-/// again instead of creating a second one. In-process tasks do not need it:
+/// to an external task service, derived from the run / call (both in the
+/// checkpoint taken before the call), so a crash between creating the task
+/// and recording its binding finds the same task again instead of creating
+/// a second one. In-process tasks do not need it:
 /// their `task_id` is in the call result.
 pub fn dispatch_idempotency_key(run_id: &str, call_id: &str) -> String {
     crate::ids::h(&[run_id, call_id])

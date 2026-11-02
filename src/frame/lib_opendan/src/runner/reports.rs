@@ -210,7 +210,12 @@ pub(super) async fn validate(sh: &Shared, run: &RunHandle, args: &ReportArgs) ->
     {
         return Err(invalid("session stop or completion already requested"));
     }
-    if !run.noted_tasks().is_empty() || (!child && !s.state.watched_tasks.is_empty()) {
+    // Sub sessions (`session:`) are settled by the check below.
+    let tasks_running = run
+        .noted_tasks()
+        .iter()
+        .any(|t| !t.starts_with(super::children::SESSION_TASK_PREFIX));
+    if tasks_running || (!child && !s.state.watched_tasks.is_empty()) {
         return Err(invalid(
             "cannot finish while tasks are still active; wait for their results",
         ));
@@ -452,15 +457,15 @@ impl llm_context::OutputValidator for ReplyValidator {
             .and_then(|r| r.get("asks_field"))
             .and_then(Value::as_str)
         {
-            let asked = extra
-                .and_then(|x| x.get("asks"))
-                .and_then(Value::as_object)
-                .map(|a| a.len())
-                .unwrap_or(0);
+            let asked = self
+                .run
+                .latest_snapshot()
+                .map_err(|e| e.to_string())?
+                .map_or(0, |snapshot| questions_asked(&snapshot));
             let listed = reply.get(field).and_then(Value::as_array).map_or(0, Vec::len);
             if listed != asked {
                 return Err(format!(
-                    "`{field}` must list every question you asked the user with ask-user in this context, one entry each with the user's answer: you asked {asked}, it lists {listed}"
+                    "`{field}` must list every question you asked the user with ask_user in this context, one entry each with the user's answer: you asked {asked}, it lists {listed}"
                 ));
             }
         }
@@ -520,16 +525,66 @@ pub(super) async fn call(
                 bytes: content.to_string().len(),
                 content,
                 truncated: false,
-                tool_result: None,
+                host: None,
             })
         }
         Err(OpenDanError::InvalidArgument(message) | OpenDanError::Artifact(message)) => Ok(Observation::Error {
             call_id: call.call_id.clone(),
             message,
-            tool_result: None,
+            host: None,
         }),
         Err(e) => Err(e),
     }
+}
+
+/// The questions this context asked the user: its `ask_user` commands
+/// (native `shell` calls and `shell` actions).
+fn questions_asked(snapshot: &LLMContextSnapshot) -> usize {
+    let asks = |args: &std::collections::HashMap<String, Value>| {
+        args.get("command")
+            .and_then(Value::as_str)
+            .is_some_and(|c| c.trim_start().starts_with("ask_user "))
+    };
+    let st = &snapshot.state;
+    let native = st
+        .accumulated
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .filter(|c| {
+            matches!(c, buckyos_api::AiContent::ToolUse { name, args, .. }
+                if name == agent_tool::TOOL_SHELL && asks(args))
+        })
+        .count();
+    let actions = st
+        .steps
+        .iter()
+        .chain(st.last_step.iter())
+        .chain(st.action_step.iter().map(|a| &a.step))
+        .flat_map(|s| s.actions.iter())
+        .filter(|a| a.name == agent_tool::TOOL_SHELL && asks(&a.args))
+        .count();
+    native + actions
+}
+
+/// Whether `snapshot` holds a result for the call `call_id` (a native tool
+/// result or an action result of a behavior step).
+pub(super) fn has_result(snapshot: &LLMContextSnapshot, call_id: &str) -> bool {
+    let st = &snapshot.state;
+    st.accumulated.iter().any(|m| {
+        m.content.iter().any(|c| {
+            matches!(c, buckyos_api::AiContent::ToolResult { call_id: id, .. } if id == call_id)
+        })
+    }) || st
+        .steps
+        .iter()
+        .chain(st.last_step.iter())
+        .chain(st.action_step.iter().map(|a| &a.step))
+        .any(|step| {
+            step.actions
+                .iter()
+                .take(step.action_results.len())
+                .any(|a| a.call_id == call_id)
+        })
 }
 
 pub(super) async fn sync_xml(
@@ -560,6 +615,8 @@ pub(super) async fn sync_xml(
             continue;
         }
         if let Some(report) = &step.self_report {
+            let (artifacts, result) =
+                agent_tool::xllm::split_report_result(step.report_result.as_ref());
             submit(
                 sh,
                 run,
@@ -568,8 +625,8 @@ pub(super) async fn sync_xml(
                 },
                 ReportArgs {
                     report: report.clone(),
-                    artifacts: step.report_artifacts.clone(),
-                    result: step.report_result.clone(),
+                    artifacts,
+                    result,
                     is_end: step.report_end,
                 },
             )

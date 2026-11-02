@@ -39,14 +39,6 @@ fn tool_calls(calls: &[(&str, &str, Value)]) -> AiResponse {
     ))
 }
 
-fn has_tool_use(req: &LlmInferenceRequest, call_id: &str) -> bool {
-    req.messages.iter().any(|m| {
-        m.content
-            .iter()
-            .any(|c| matches!(c, AiContent::ToolUse { call_id: id, .. } if id == call_id))
-    })
-}
-
 /// A function call session whose tool set has `call_behavior`.
 fn fc_spec(obj: &str, behaviors: Value) -> libopendan::api::SessionSpec {
     let mut spec = work_spec(obj);
@@ -78,10 +70,11 @@ fn result_ids(sd: &libopendan::SessionDir) -> Vec<String> {
         .collect()
 }
 
-/// V4 / V5: a fork called from a tool batch. The branch gets the caller's
-/// system and complete paired history before the batch; the batch stays
-/// with the caller, which gets the result for that call id and then
-/// dispatches the rest of the batch — nothing runs twice.
+/// V4 / V5: a fork called from a tool batch. The call returns at once
+/// ("registered"), the rest of the batch runs, and the branch starts when
+/// the caller's segment ends: it gets the caller's system and complete
+/// paired history. Its result comes back to the caller as the input of its
+/// hand-over batch, naming the call — nothing runs twice.
 #[tokio::test]
 async fn tool_triggered_fork_keeps_full_history_and_returns_to_the_call() {
     let env = Env::new();
@@ -103,28 +96,34 @@ async fn tool_triggered_fork_keeps_full_history_and_returns_to_the_call() {
             ("c2", "shell", json!({ "command": "echo after-fork >> marks.log; echo after-fork" })),
         ]),
         2 => {
-            // The branch: same system, the history before the batch.
+            // The caller: the call was registered, the batch ran on.
+            assert!(has_tool_result(req, "f1").unwrap().contains("registered"));
+            assert!(has_tool_result(req, "c2").unwrap().contains("after-fork"));
+            text("waiting for the research")
+        }
+        3 => {
+            // The branch: same system, the caller's complete history.
             assert_eq!(system_of(req), *ps.lock().unwrap());
             assert!(has_tool_result(req, "c1").unwrap().contains("pre-fork"));
-            assert!(!has_tool_use(req, "f1"), "the open batch is not inherited");
+            assert!(has_tool_result(req, "c2").unwrap().contains("after-fork"));
             let last = last_user_text(req);
             assert!(last.contains("<sub_task mode=\"fork\"") && last.contains("find X"), "{last}");
             tool_call("r1", "shell", json!({ "command": "echo in-fork" }))
         }
-        3 => text("X is 42"),
-        4 => {
-            // The caller: its batch, the result paired with the call.
-            assert_eq!(has_tool_result(req, "f1").as_deref(), Some("X is 42"));
-            assert!(has_tool_result(req, "c2").unwrap().contains("after-fork"));
+        4 => text("X is 42"),
+        5 => {
+            // The caller again: the result as its input, naming the call.
+            let last = last_user_text(req);
+            assert!(last.contains("<process_result") && last.contains("call_id=\"f1\""), "{last}");
+            assert!(last.contains("X is 42"), "{last}");
             assert!(has_tool_result(req, "r1").is_none(), "branch history stays in the branch");
-            assert!(!render(&req.messages).contains("sub_task"), "no input batch for a tool return");
             text("final answer")
         }
         _ => panic!("unexpected call {n}"),
     });
     let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
     assert!(r.is_finished(), "{r:?}");
-    assert_eq!(llm.count(), 5);
+    assert_eq!(llm.count(), 6);
     assert!(sd.report().unwrap().contains("final answer"));
     assert_eq!(outcomes(&sd), vec!["suspended", "process_done", "done"]);
     // Every call has exactly one result in the worklog; inherited history
@@ -139,13 +138,13 @@ async fn tool_triggered_fork_keeps_full_history_and_returns_to_the_call() {
     assert_eq!((st.turn_seq, st.turns_completed), (1, 1));
     let k = kinds(&read_worklog(&sd));
     assert_eq!(k.iter().filter(|x| **x == "turn_started").count(), 1);
-    assert_eq!(k.iter().filter(|x| **x == "input_batch").count(), 1, "the call's hand-over batch");
     let stats = sd.statistics().unwrap();
-    assert_eq!((stats.rounds, stats.runs, stats.turns), (5, 2, 1));
+    assert_eq!((stats.rounds, stats.runs, stats.turns), (6, 2, 1));
 }
 
 /// V3 / V5: create_sub_context through the tool — its own system, no caller
-/// history; a failing sub context comes back as the call's error result.
+/// history; it starts when the caller stops acting and its result is the
+/// caller's next input. A bad call is the model's error to correct.
 #[tokio::test]
 async fn tool_triggered_sub_context_has_its_own_system() {
     let env = Env::new();
@@ -160,6 +159,10 @@ async fn tool_triggered_sub_context_has_its_own_system() {
         0 => tool_call("c1", "shell", json!({ "command": "echo parent-fact" })),
         1 => tool_call("d1", "call_behavior", json!({ "behavior": "do", "task": "build it" })),
         2 => {
+            assert!(has_tool_result(req, "d1").unwrap().contains("registered"));
+            text("waiting for the build")
+        }
+        3 => {
             assert!(system_of(req).contains("SYSTEM-DO"));
             assert!(has_tool_result(req, "c1").is_none(), "no caller history");
             assert!(last_user_text(req).contains("build it"));
@@ -167,12 +170,13 @@ async fn tool_triggered_sub_context_has_its_own_system() {
             assert!(!req.tool_specs.iter().any(|t| t.name == "call_behavior"));
             text("built")
         }
-        3 => {
-            assert_eq!(has_tool_result(req, "d1").as_deref(), Some("built"));
+        4 => {
+            let last = last_user_text(req);
+            assert!(last.contains("call_id=\"d1\"") && last.contains("built"), "{last}");
             // An unknown target is the model's error to correct.
             tool_call("d2", "call_behavior", json!({ "behavior": "nope", "task": "x" }))
         }
-        4 => {
+        5 => {
             assert!(has_tool_result(req, "d2").unwrap().contains("cannot be called"));
             text("done")
         }
@@ -180,12 +184,12 @@ async fn tool_triggered_sub_context_has_its_own_system() {
     });
     let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
     assert!(r.is_finished(), "{r:?}");
-    assert_eq!(llm.count(), 5);
+    assert_eq!(llm.count(), 6);
     assert_eq!(outcomes(&sd), vec!["suspended", "process_done", "done"]);
 }
 
-/// Behavior loop: `call_behavior` as an action of a step. The step stays
-/// in progress with the caller; the fork sees the completed steps only.
+/// Behavior loop: `call_behavior` as an action of a step. The step runs
+/// on; the fork starts when the caller yields and sees its completed steps.
 #[tokio::test]
 async fn action_triggered_fork_returns_into_the_step() {
     let env = Env::new();
@@ -207,13 +211,17 @@ async fn action_triggered_fork_returns_into_the_step() {
             0 => text("<response><actions><shell><![CDATA[echo s0-out]]></shell></actions></response>"),
             1 => text("<response><actions><call_behavior behavior=\"research\" task=\"find Y\"/><shell><![CDATA[echo after-call]]></shell></actions></response>"),
             2 => {
-                assert!(all.contains("s0-out"), "completed steps are inherited:\n{all}");
-                assert!(!all.contains("after-call"), "the step in progress is not:\n{all}");
+                // The call registered the fork; the step ran on. Yield.
+                assert!(all.contains("registered") && all.contains("after-call"), "{all}");
+                text("<response><report>waiting for the research</report></response>")
+            }
+            3 => {
+                assert!(all.contains("s0-out") && all.contains("after-call"), "completed steps are inherited:\n{all}");
                 assert!(all.contains("find Y"), "{all}");
                 text("<response><report end=\"true\"><![CDATA[Y is 7]]></report></response>")
             }
-            3 => {
-                assert!(all.contains("Y is 7") && all.contains("after-call"), "{all}");
+            4 => {
+                assert!(all.contains("Y is 7"), "{all}");
                 text("<response><report end=\"true\"><![CDATA[final]]></report></response>")
             }
             _ => panic!("unexpected call {n}"),
@@ -221,7 +229,7 @@ async fn action_triggered_fork_returns_into_the_step() {
     });
     let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
     assert!(r.is_finished(), "{r:?}");
-    assert_eq!(llm.count(), 4);
+    assert_eq!(llm.count(), 5);
     assert_eq!(outcomes(&sd), vec!["suspended", "process_done", "done"]);
     // Step identity stays unique across caller and branch.
     let mut ids: Vec<(String, u32)> = read_worklog(&sd)
@@ -255,9 +263,10 @@ async fn returned_sub_context_transcript_stays_out_of_rebuilt_history() {
     let sd = env.create_work(spec).await;
     let llm = ScriptedLlm::new(|req, n| match n {
         0 => tool_call("f1", "call_behavior", json!({ "behavior": "research", "task": "dig" })),
-        1 => tool_call("r1", "shell", json!({ "command": "echo CHILD-ONLY-OUTPUT" })),
-        2 => text("child result R"),
-        3 => text("turn one answer"),
+        1 => text("waiting for the research"),
+        2 => tool_call("r1", "shell", json!({ "command": "echo CHILD-ONLY-OUTPUT" })),
+        3 => text("child result R"),
+        4 => text("turn one answer"),
         _ => {
             // A new run of the next Turn, built from the session history.
             let all = render(&req.messages);
@@ -275,7 +284,7 @@ async fn returned_sub_context_transcript_stays_out_of_rebuilt_history() {
         .await
         .unwrap();
     assert!(drive(&sd, &deps, StopWhen::Finished).await.is_finished());
-    assert_eq!(llm.count(), 5);
+    assert_eq!(llm.count(), 6);
     // The audit record keeps the whole child transcript.
     assert!(result_ids(&sd).contains(&"r1".to_string()));
 }

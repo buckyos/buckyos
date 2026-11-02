@@ -7,11 +7,13 @@
 //! progress is managed; whatever the command leaves behind (`&`, nohup,
 //! setsid, daemons) is not tracked and never killed.
 //!
-//! Two execution modes, chosen by configuration, never by the model (§5):
-//! - `wait`: run to completion or `timeout_ms` (the command is stopped);
-//! - `auto` (default): wait `wait_ms`, then hand the still-running command
-//!   to the in-process task manager and return "still running" with a
-//!   `task_id` the model follows up with `wait_task` / `get_task_state`.
+//! How long the call waits is the runtime's budget (`task_wait_ms`), never
+//! the tool's mode: the command runs until it finishes, `timeout_ms` passes
+//! (it is stopped) or the budget passes — then, with a task manager, the
+//! still-running command is handed to it and the call returns "still
+//! running" with a `task_id` the model follows up with `wait_task` /
+//! `get_task_state`. A budget of at least the timeout, or no task manager,
+//! means the call waits for the command (the former `wait` mode).
 //!
 //! Every runner writes `command`, `stdout`, `stderr` and `exit` into an
 //! execution directory derived from `(run, call_id)`, so a command survives
@@ -25,8 +27,6 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use llm_context::deps::CancelCause;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap, Value as Json};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::time::{timeout as tokio_timeout, Duration};
@@ -41,14 +41,14 @@ use crate::{
 
 pub const TOOL_SHELL: &str = "shell";
 
-/// `wait` mode: default `timeout_ms`.
+/// Default `timeout_ms`.
 pub const DEFAULT_TIMEOUT_MS: u64 = 30 * 60_000;
-/// `wait` mode: default upper bound of `timeout_ms` (0 = unlimited).
+/// Default upper bound of `timeout_ms` (0 = unlimited).
 pub const DEFAULT_MAX_TIMEOUT_MS: u64 = 60 * 60_000;
-/// `auto` mode: default in-call wait before the command becomes a task.
-pub const DEFAULT_AUTO_WAIT_MS: u64 = llm_context::tasks::DEFAULT_TASK_WAIT_MS;
-/// `auto` mode: upper bound of `wait_ms`.
-pub const MAX_AUTO_WAIT_MS: u64 = llm_context::tasks::MAX_IN_TOOL_WAIT_MS;
+/// Default in-call wait before the command becomes a task.
+pub const DEFAULT_AUTO_WAIT_MS: u64 = crate::task_model::DEFAULT_TASK_WAIT_MS;
+/// Upper bound of `wait_ms`.
+pub const MAX_AUTO_WAIT_MS: u64 = crate::task_model::MAX_IN_TOOL_WAIT_MS;
 const DEFAULT_MAX_OUTPUT_BYTES: usize = 256 * 1024;
 /// Bytes of output kept in a progress / cancel text.
 pub const OUTPUT_TAIL_BYTES: usize = 2048;
@@ -56,15 +56,13 @@ pub(crate) const LOCAL_ENGINE: &str = "native";
 pub const TIMEOUT_EXIT_CODE: i32 = 124;
 const UNLIMITED_TIMEOUT: Duration = Duration::from_secs(365 * 24 * 3600);
 
-/// How long `shell` waits inside the call.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ShellMode {
-    /// Hard wait: to completion or `timeout_ms` (then the command is
-    /// stopped). Not bound by the 30 minute in-tool wait rule.
+/// How `shell` ends a call (derived from the wait budget, see the module
+/// doc).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShellMode {
+    /// To completion or `timeout_ms` (then the command is stopped).
     Wait,
     /// Wait `wait_ms`, then turn the command into a task and return.
-    #[default]
     Auto,
 }
 
@@ -87,6 +85,9 @@ pub fn new_run_binding_slot() -> RunBindingSlot {
 /// Environment variable carrying the id of the tool call a `shell` command
 /// runs for.
 pub const ENV_CALL_ID: &str = "XLLM_CALL_ID";
+/// Environment variable carrying the id of the run the call belongs to
+/// (with `XLLM_CALL_ID`, an idempotency key of what the command creates).
+pub const ENV_RUN_ID: &str = "XLLM_RUN_ID";
 
 /// `<run_dir>/exec/<call_id>`, the execution directory of one call (native
 /// runtime). `None` without a persistent run directory or call id.
@@ -263,8 +264,7 @@ pub struct LlmBashConfig {
     pub target: BashTargetSpec,
     pub overlay: BinOverlayConfig,
     pub tool_name: String,
-    pub mode: ShellMode,
-    /// `auto` mode: default `wait_ms`.
+    /// The runtime's in-call wait budget (default `wait_ms`).
     pub default_wait_ms: u64,
     pub runtime: ShellRuntimeNote,
     /// `auto` mode: where a command that outlives `wait_ms` goes. Without
@@ -273,7 +273,7 @@ pub struct LlmBashConfig {
     /// What a handed-over command belongs to (session, Turn task, run).
     pub task_context: ShellTaskContext,
     /// How the model follows a command that became a task.
-    pub task_followup: llm_context::tasks::TaskFollowup,
+    pub task_followup: crate::task_model::TaskFollowup,
     /// The run's task bridge (`XLLM_TASK_ENDPOINT` of every command).
     pub task_endpoint: Option<String>,
     /// Host facts appended to the description (e.g. what PATH provides).
@@ -292,7 +292,6 @@ impl std::fmt::Debug for LlmBashConfig {
             .field("target", &self.target)
             .field("overlay", &self.overlay)
             .field("tool_name", &self.tool_name)
-            .field("mode", &self.mode)
             .field("default_wait_ms", &self.default_wait_ms)
             .field("runtime", &self.runtime)
             .field("tasks", &self.tasks.is_some())
@@ -315,12 +314,11 @@ impl LlmBashConfig {
             target: BashTargetSpec::Local,
             overlay: BinOverlayConfig::disabled(),
             tool_name: TOOL_SHELL.to_string(),
-            mode: ShellMode::Wait,
             default_wait_ms: DEFAULT_AUTO_WAIT_MS,
             runtime: ShellRuntimeNote::native(),
             tasks: None,
             task_context: ShellTaskContext::default(),
-            task_followup: llm_context::tasks::TaskFollowup::Tools,
+            task_followup: crate::task_model::TaskFollowup::Tools,
             task_endpoint: None,
             note: None,
         }
@@ -362,11 +360,6 @@ impl LlmBashConfig {
         self
     }
 
-    pub fn with_mode(mut self, mode: ShellMode) -> Self {
-        self.mode = mode;
-        self
-    }
-
     pub fn with_default_wait_ms(mut self, ms: u64) -> Self {
         self.default_wait_ms = ms.clamp(1, MAX_AUTO_WAIT_MS);
         self
@@ -387,7 +380,7 @@ impl LlmBashConfig {
         self
     }
 
-    pub fn with_task_followup(mut self, followup: llm_context::tasks::TaskFollowup) -> Self {
+    pub fn with_task_followup(mut self, followup: crate::task_model::TaskFollowup) -> Self {
         self.task_followup = followup;
         self
     }
@@ -403,9 +396,10 @@ impl LlmBashConfig {
     }
 
     fn effective_mode(&self) -> ShellMode {
-        match self.mode {
-            ShellMode::Auto if self.tasks.is_some() => ShellMode::Auto,
-            _ => ShellMode::Wait,
+        if self.tasks.is_some() && self.default_wait_ms < self.default_timeout_ms {
+            ShellMode::Auto
+        } else {
+            ShellMode::Wait
         }
     }
 }
@@ -1792,10 +1786,12 @@ impl AgentTool for ShellTool {
                 default_wait_ms / 1000,
                 MAX_AUTO_WAIT_MS / 60_000,
                 match &self.config.task_followup {
-                    llm_context::tasks::TaskFollowup::Tools =>
+                    crate::task_model::TaskFollowup::Tools =>
                         "`wait_task` / `get_task_state`".to_string(),
-                    llm_context::tasks::TaskFollowup::Command(cli) =>
+                    crate::task_model::TaskFollowup::Command(cli) =>
                         format!("`{cli} wait <task_id>` / `{cli} state <task_id>`"),
+                    crate::task_model::TaskFollowup::Input(_) =>
+                        "nothing: its end comes back to you as input".to_string(),
                 }
             )),
         }
@@ -1939,6 +1935,15 @@ impl AgentTool for ShellTool {
         let mut env = env;
         if let Some(id) = call_id.as_ref().filter(|id| !id.is_empty()) {
             env.push((ENV_CALL_ID.to_string(), id.clone()));
+        }
+        if let Some(run) = self
+            .config
+            .task_context
+            .run
+            .as_ref()
+            .and_then(|slot| slot.lock().expect("run binding").clone())
+        {
+            env.push((ENV_RUN_ID.to_string(), run.run_id));
         }
         // Commands following this run's tasks reach its resolver here.
         if let Some(endpoint) = &self.config.task_endpoint {
@@ -2191,8 +2196,8 @@ mod tests {
         assert_eq!(result.status, AgentToolStatus::Pending);
         assert_eq!(result.task_id.as_deref(), Some("42"));
         assert_eq!(
-            result.pending_reason,
-            Some(AgentToolPendingReason::LongRunning)
+            result.pending_reason.as_deref(),
+            Some(AgentToolPendingReason::LongRunning.as_str())
         );
         assert_eq!(result.check_after, Some(3));
         assert_eq!(result.details["queued"], true);

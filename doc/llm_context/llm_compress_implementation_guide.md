@@ -16,12 +16,12 @@
 | 资产 | 位置 | 作用 |
 | --- | --- | --- |
 | `AgentToolResult` envelope | [src/frame/agent_tool/src/lib.rs:356](../src/frame/agent_tool/src/lib.rs) | 协议字段全集：`agent_tool_protocol/status/cmd_name/cmd_args/title/summary/output/detail/...` |
-| `AgentToolResult::to_tool_result_view()` | [src/frame/agent_tool/src/lib.rs:651](../src/frame/agent_tool/src/lib.rs) | envelope → 渲染层视图的现成转换器 |
-| `ToolResultView` | [src/frame/llm_context/src/observation.rs:27](../src/frame/llm_context/src/observation.rs) | StepRecord 消费的结构化视图 |
-| `Observation::Success { tool_result: Option<ToolResultView>, ... }` | [src/frame/llm_context/src/observation.rs:76](../src/frame/llm_context/src/observation.rs) | Behavior 模式下每个 action 的结果中已经挂了结构化视图 |
+| `AgentToolResult::to_host()` + `ToolResultView::from_host` | [src/frame/agent_tool/src/lib.rs](../../src/frame/agent_tool/src/lib.rs)、[result_view.rs](../../src/frame/agent_tool/src/result_view.rs) | envelope → `Observation.host` → 渲染层视图的现成转换 |
+| `ToolResultView` | [src/frame/agent_tool/src/result_view.rs](../../src/frame/agent_tool/src/result_view.rs) | StepRecord 渲染消费的结构化视图（Runtime 层，waist 不认识它） |
+| `Observation::Success { host: Option<Value>, ... }` | [src/frame/llm_context/src/observation.rs](../../src/frame/llm_context/src/observation.rs) | 每个调用的结果都原样带着 AgentToolResult 信封（waist 不读，渲染器用 `from_host` 取回视图） |
 | `StepRecord { actions, action_results, ... }` | [src/frame/llm_context/src/behavior_loop.rs:72](../src/frame/llm_context/src/behavior_loop.rs) | Behavior 一步的内存结构 |
-| Full / Medium / Min / Mini 分级渲染 | [src/frame/llm_context/src/step_record.rs](../src/frame/llm_context/src/step_record.rs)（`XmlStepRenderer`）+ `AgentToolResult::render_for_level()` ([lib.rs:629](../src/frame/agent_tool/src/lib.rs)) | "越老越狠"的协议侧实现已经存在 |
-| `<<last_step_action_results>>` / `<<step_history>>` 包装 | [step_record.rs](../src/frame/llm_context/src/step_record.rs) | Behavior 模式的 "History 块" 渲染基线 |
+| Full / Medium / Min / Mini 分级渲染 | [src/frame/agent_tool/src/step_record.rs](../../src/frame/agent_tool/src/step_record.rs)（`XmlStepRenderer`）+ `AgentToolResult::render_for_level()` ([lib.rs](../../src/frame/agent_tool/src/lib.rs)) | "越老越狠"的协议侧实现已经存在 |
+| `<<last_step_action_results>>` / `<<step_history>>` 包装 | [step_record.rs](../../src/frame/agent_tool/src/step_record.rs) | Behavior 模式的 "History 块" 渲染基线 |
 | Session 持久化（当前实现）：libopendan `worklog` + `summary.json` | [src/frame/lib_opendan/src/runner/flush.rs](../../src/frame/lib_opendan/src/runner/flush.rs)、[history.rs](../../src/frame/lib_opendan/src/runner/history.rs) | run 的消息 / Step 按 flush 游标写成 worklog 记录（`assistant_message` / `step` / `action_result` …，每条带 `turn`）；`read_window` 从提交末尾反向读到 `summary.start_offset`，`compact` 摘要 `[start_offset, cut_offset)` |
 | 旧 Runtime 持久化：`round_history/round_<N>.jsonl`、`SessionHistoryReader::read_round / read_range` | [src/frame/opendan/src/round_history.rs](../../src/frame/opendan/src/round_history.rs) | 旧 opendan Runtime 私有落库格式，`round_index` 是旧 Runtime 的会话推进编号（不是推理 Round，也不是 Session Turn）；不作为新抽象的宿主协议，待下一阶段 opendan 重构接入 |
 | LLM 压缩主体（当前实现） | [src/frame/agent_tool/src/llm_compress.rs](../src/frame/agent_tool/src/llm_compress.rs) | 已能跑：System+Head Keep+Hot Tail 选 Compress Block，LLM summary，marker 标 stable boundary |
@@ -31,7 +31,7 @@
 按重要性排序：
 
 1. **机械压缩接 AgentToolResult Protocol（路径 A）**
-   当前 [`mechanically_compress_tool_result`](../src/frame/agent_tool/src/llm_compress.rs:457) 用 `text.len() > 2048` 这种自定义阈值 + 硬编码模板，**绕开了**已有的 `to_tool_result_view()` + `render_for_level()` 分级。要改成：解析 envelope → 选 level → 用协议侧渲染。
+   当前 [`mechanically_compress_tool_result`](../src/frame/agent_tool/src/llm_compress.rs:457) 用 `text.len() > 2048` 这种自定义阈值 + 硬编码模板，**绕开了**已有的 `ToolResultView` + `render_for_level()` 分级。要改成：解析 envelope → 选 level → 用协议侧渲染。
 2. **多 pair 合并产物（路径 B）**
    把若干完整 message pair 合成一对 `[user:压缩范围说明, assistant:History 块]`。Behavior 模式可复用 `<<step_history>>` 形态；Agent Loop 没有现成对应物，需要新增。
 3. **结构化机械压缩元数据**
@@ -87,7 +87,7 @@ fn try_extract_tool_view(text: &str) -> Option<ToolResultView> {
     if !trimmed.starts_with('{') { return None; }
     let env: AgentToolResult = serde_json::from_str(trimmed).ok()?;
     if env.agent_tool_protocol != AGENT_TOOL_PROTOCOL_VERSION { return None; }
-    Some(env.to_tool_result_view())
+    ToolResultView::from_host(&Some(env.to_host()))
 }
 ```
 
@@ -95,11 +95,11 @@ fn try_extract_tool_view(text: &str) -> Option<ToolResultView> {
 
 ### 2.2 Behavior 模式额外渠道：StepRecord
 
-Behavior 模式下 ToolManager 已经把 `Observation::Success { tool_result: Some(view), ... }` 喂回 context_loop。但等到 message 落到 `accumulated`（即 `AiMessage::Tool`）时，view 没有跟着挂在 AiMessage 上。
+Behavior 模式下 ToolManager 已经把信封放在 `Observation::Success { host: Some(envelope), ... }` 里喂回 context_loop，它跟着 `StepRecord.action_results` 进快照。但等到 message 落到 `accumulated`（即 `AiMessage::Tool`）时，waist 只写 content 文本，信封没有跟着挂在 AiMessage 上。
 
 两种选择：
 
-- **(A) 复用 in-memory 路径 2.1**：tool_result 序列化成 envelope JSON 写进 ToolResult text，再在 llm_compress 里反解。优点：和 Chat 模式同构。缺点：序列化/反序列化双向都要做对，且 LLM prompt 里多了一层 JSON。
+- **(A) 复用 in-memory 路径 2.1**：信封序列化成 envelope JSON 写进 ToolResult text，再在 llm_compress 里反解。优点：和 Chat 模式同构。缺点：序列化/反序列化双向都要做对，且 LLM prompt 里多了一层 JSON。
 - **(B) 给 `AiMessage` / `AiContent::ToolResult` 加结构化字段**：直接挂 `Option<ToolResultView>`。优点：零序列化损耗，llm_compress 拿到就是结构化。缺点：`AiMessage` 在 beta2.2 已经重设计过一次（见 [project_aimessage_redesign_beta2_2](../.claude/projects/-Users-liuzhicong-project-buckyos/memory/project_aimessage_redesign_beta2_2.md)），再加一个字段属于 breaking change —— 但 beta2.2 阶段允许 breaking。
 
 **推荐路线**：第一期走 (A)，因为不动 AiMessage 形状、向前兼容、Chat/Behavior 走同一条解析路径。后续若需要在 prompt 里压掉冗余 JSON 再考虑 (B)。

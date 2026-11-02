@@ -31,6 +31,30 @@ import-table 的部件，四个模块一起由 `_prepare_agent_tools` 与 `build
 新的流式页（富文本 Block + 图片 Block，原文件放最后），pptx → 新的自由画布（每张幻灯片一页 + 放映路径）。Deno 没有
 canvas、不连 LibreOffice：裁剪保留整图、图表 / EMF 等成占位框或略去，都写进报告。先 `--dry-run` 看计划再提交。
 
+## 向用户提问 `ask_user`
+
+`commands/ask_user.ts`（逻辑在 `lib/ask.ts`）：向 Agent 所服务的用户提一个问题，是一次标准的异步工具调用。
+
+```bash
+ask_user "<question>" [--option <id>=<label>]... [--allow-text] [--expires <seconds>]
+```
+
+- 不带 `--option` 是文字问题；带 `--option` 是选择题（至少两个，id 与 label 各自不重复、非空），`--allow-text`
+  只能和 `--option` 一起用（也可以用文字回答）。`--expires` 默认 10800 秒（3 小时）。
+- 发一条 System Notify 的 `input` 通知（msg-center `notify.send`，`level: timely`）。msg-center 为它建一个 Zone
+  TaskMgr 任务（`human.input/v1`），回答就是任务结果。stdout 一行 AgentToolResult：`status: "pending"`、`task_id` =
+  通知的任务（`t-…`）、`pending_reason: "user_input"`，`detail` 带 `notify_id`、`question`、`options`、
+  `expires_at_ms`、`url`。命令不等待；runtime 在预算内等该任务，模型用 `wait_task` / `get_task_state` 跟进。
+- 收件人：会话 token 的 `sub`。Agent 的工具拿到的是其 App 的 verify-hub 会话（`principal_kind: app`），`sub` 就是 App
+  实例的 owner（verify-hub 只签发这样的 token，msg-center 也只允许它通知这个用户）；token 读不出用户（如 `agent`
+  主体）时报错，不猜。
+- 幂等：`idempotency_key = ask:$XLLM_RUN_ID:$XLLM_CALL_ID`（两者由 `shell` 工具注入，缺一个就报错：要作为单独一条
+  shell 命令运行）。msg-center 按“调用方 + 键”去重，崩溃后重跑同一调用找回的是已发出的那条通知；它已关闭时直接返回
+  终态：已回答为 success（`output` 是选项的 label 和/或文字，`detail.answer` 带 `option/label/text`），
+  dismissed / canceled / expired 为 error。
+- 退出码：0 已提问（pending）或已回答；1 参数错误或不在 run 的工具调用里；2 发送失败、找不到收件人、被拒绝或撤销；
+  4 已过期。
+
 ## AICC Agent CLI Tools
 
 实现见 `aicc-tool.ts` + `commands/*.ts`，需求文档：[`doc/aicc/aicc_agent_cli_tools.md`](../../../doc/aicc/aicc_agent_cli_tools.md)。
@@ -61,7 +85,8 @@ Agent 应当能直接读 `commands/*.ts` 学到怎么调 AICC，然后自己写�
 | `lib/aicc.ts` | `callAicc()` canonical 路由与 typed inference + task-manager 轮询；`textToImage()`、`commonPolicyOptions()`、`describeFailure()` |
 | `lib/io.ts` | `resolveInputResource()` 把字符串映射成 ResourceRef；`pickArtifact()`；`deliverArtifact()` 把产物交到 artifacts 桶（可选另存本地）；`saveResourceToPath()` / `saveBucketObjectToPath()` 落盘；`suffixPathByMime()` |
 | `lib/bucket.ts` | 本 Agent 的桶：`uploadNamed()`（字节直传 `artifacts` 或 `scratch`，≤32 MiB 走 `PUT /bucket/v1`，更大走 NDM 上传 + `bind`）、`copyToArtifacts()`（`bucket.copy`）、`readBucketObject()`、`obj://bucket/...` 解析 |
-| `lib/cli.ts` | `parseArgvOrExit()`、`requireString/flagInt/flagFloat/flagBool`、`COMMON_OPTIONS_HELP`、`bailArgError()` |
+| `lib/cli.ts` | `parseArgvOrExit()`、`requireString/flagInt/flagFloat/flagBool`、`takeRepeatedFlags()`（可重复的 `--x v`）、`COMMON_OPTIONS_HELP`、`bailArgError()` |
+| `lib/ask.ts` | `ask_user` 的部件：`askUser()` 发 `input` 通知并把通知状态映射成 AgentToolResult；`askRecipient()` 从会话 token 取收件人 |
 | `lib/result.ts` | AgentToolResult builders + `emit/emitAndExit`、各种 `bail*` 错误收敛、退出码常量 |
 | `lib/types.ts` | Agent 输出类型，以及从发布版 `buckyos` SDK 派生的 AICC response / `ResourceRef` 视图 |
 

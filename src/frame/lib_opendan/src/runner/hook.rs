@@ -1,8 +1,8 @@
 //! The checkpoint hook (§8.3 / §8.5).
 //!
-//! The hook runs before every inference with the outer snapshot: it
-//! publishes the snapshot with the tool results it now contains (clears the
-//! in-flight markers it covers), routes what the bus delivered meanwhile
+//! The hook runs before every tool call and every inference with the outer
+//! snapshot: it publishes the snapshot (before a tool call: the record of
+//! what is about to be dispatched), routes what the bus delivered meanwhile
 //! (controls are applied, Observe events are merged into `pending_events`
 //! and saved) and refreshes the activity heartbeat.
 //!
@@ -84,13 +84,13 @@ impl SessionCheckpointHook {
         let sh = &self.shared;
         sh.lease.check()?;
         super::drive::verify_workspace_admission(sh).await?;
-        // Tool results first: publish and clear covered in-flight actions.
+        // Tool results first.
         self.run.checkpoint_with_results(snapshot, None)?;
         super::rounds::flush_counts(sh, &self.run, &self.rounds).await?;
         super::reports::sync_xml(sh, &self.run, snapshot).await?;
         // Controls, rejected records, Observe events. msg / Input events
         // stay queued for the next controlled input.
-        route_inputs(sh, true, &[]).await?;
+        route_inputs(sh, true).await?;
         let (stop, turn_stop) = {
             let s = sh.session.lock().await;
             (s.state.stop_requested, s.state.turn_stop_requested)
@@ -164,10 +164,12 @@ impl CheckpointHook for SessionCheckpointHook {
         result: &llm_context::behavior_loop::LLMBehaviorResult,
         step_index: u32,
     ) -> std::result::Result<(), String> {
+        let (artifacts, report_result) =
+            agent_tool::xllm::split_report_result(result.report_result.as_ref());
         let args = super::reports::ReportArgs {
             report: result.self_report.clone().unwrap_or_default(),
-            artifacts: result.report_artifacts.clone(),
-            result: result.report_result.clone(),
+            artifacts,
+            result: report_result,
             is_end: result.report_end,
         };
         if self
@@ -197,27 +199,25 @@ impl CheckpointHook for SessionCheckpointHook {
             .map_err(|e| e.to_string())
     }
 
-    /// Hand-overs to a Todo executor and yields are the session's to judge
-    /// (TodoList §2.2): refused, they are corrected in the same run.
+    /// Hand-overs to a Todo executor are the session's to judge (TodoList
+    /// §2.2): refused, they are corrected in the same run. A yield always
+    /// ends the run; what it waits for is the session's (freeze TODO F17).
     async fn review_decision(
         &self,
-        snapshot: &LLMContextSnapshot,
+        _snapshot: &LLMContextSnapshot,
         result: &llm_context::LLMBehaviorResult,
         _step_index: u32,
         decision: llm_context::StepDecision,
     ) -> Option<llm_context::DecisionVerdict> {
-        let run_id = self.run.run_id();
         match decision {
             llm_context::StepDecision::Handover => {
                 let target = result.next_behavior.as_deref()?.trim();
                 if !agent_tool::xllm::is_handover_target(target) {
                     return None;
                 }
-                super::todos::review_handover(&self.shared, run_id, target).await
+                super::todos::review_handover(&self.shared, self.run.run_id(), target).await
             }
-            llm_context::StepDecision::Yield => {
-                super::todos::review_yield(&self.shared, run_id, snapshot).await
-            }
+            llm_context::StepDecision::Yield => None,
         }
     }
 }

@@ -218,8 +218,7 @@ on_behavior_step_ob = """
 tool_whitelist = []
 action_whitelist = [
   "read",
-  "shell",
-  "sendmsg"
+  "shell"
 ]
 
 [budget]

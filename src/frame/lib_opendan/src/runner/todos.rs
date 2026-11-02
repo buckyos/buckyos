@@ -132,53 +132,6 @@ pub(super) async fn review_handover(sh: &Shared, run_id: &str, target: &str) -> 
     }
 }
 
-/// Report-only steps in a row at the end of the run (corrections between
-/// them do not break the row).
-fn trailing_yields(snapshot: &LLMContextSnapshot) -> usize {
-    let st = &snapshot.state;
-    st.steps
-        .iter()
-        .chain(st.last_step.iter())
-        .rev()
-        .filter(|s| !s.is_correction())
-        .take_while(|s| {
-            llm_context::LLMBehaviorResult::from_step(s).decision()
-                == Some(llm_context::StepDecision::Yield)
-        })
-        .count()
-}
-
-/// Report-only steps accepted in a row while nothing runs, before the next
-/// one is refused (a context that only reports would re-infer forever).
-const MAX_IDLE_YIELDS: usize = 2;
-
-/// The checkpoint hook's verdict on a yield (a progress report and nothing
-/// else): it ends the run while the top-level context waits for sub
-/// sessions the session must hear from ("no decision" is waiting). With
-/// nothing to wait for no verdict is given — the report stays a progress
-/// report and the context continues, as it always did — until it happened
-/// [`MAX_IDLE_YIELDS`] times in a row: then it is refused with the reason.
-pub(super) async fn review_yield(
-    sh: &Shared,
-    run_id: &str,
-    snapshot: &LLMContextSnapshot,
-) -> Option<DecisionVerdict> {
-    let child = super::outcome::call_site_of(sh, run_id).await.0;
-    if !child && !waiting_children(sh).await.is_empty() {
-        return Some(DecisionVerdict::Accept);
-    }
-    if trailing_yields(snapshot) < MAX_IDLE_YIELDS {
-        return None;
-    }
-    let list = load(sh);
-    Some(DecisionVerdict::Refuse(with_view(
-        "Decision refused: this is another reply with only a progress report, and nothing this session started is running, so there is nothing to wait for. \
-Act with actions, hand over with next_behavior, or finish with <report end=\"true\">."
-            .into(),
-        &list,
-    )))
-}
-
 fn wait_for(next: &mut Next, children: Vec<String>) {
     next.kind = FinishKind::Wait;
     next.run_ended = true;

@@ -140,14 +140,21 @@ extraction or JSON check failed (raw reply saved).
   Check `buckyos_admin` and the gateway/AICC logs; increasing only `--llm-timeout` cannot extend a gateway limit.
   HTTP 408/504 keeps the upstream error text and pauses the run; it does not automatically replay the request.
 - Exit 4 (Ctrl-C/SIGINT): resumable. The interrupted tool call is not replayed, but the model may run it
-  again; mind commands that are not idempotent.
+  again; mind commands that are not idempotent. A run killed while a tool ran resumes from the checkpoint taken
+  before that call: a `shell` command that recorded its exit gives that result, anything else that may have run
+  comes back as "result unknown" for the model to check (only reads run again).
+- Exit 3 with last error `yield` (behavior loop: a progress report and no actions) or `tasks_running` (the reply
+  came while commands it started still run): the run stopped to wait, it is not done. Resume it with what it
+  waits for: `agent_tool xllm --resume --run <id> --runs-dir <dir> "<message>"` gives the message to the run as
+  new input in the same context.
 - Last error kind `quota_exhausted` / `quota_budget_exceeded` / `resource_not_permitted` (exit 1,
   `status --run <id>`): AICC refused the call under the AI quota or model permissions of the user it is
   charged to. Retrying does not help until the quota resets or the user changes the model; report it
   (`buckyos ai quota` shows the rules and `reset_at_ms`). A lower `--max-tokens` can fit `quota_budget_exceeded`.
 - Exit 1 runs are final: `--resume` on them shows the saved record (with limit flags: exit 1 `is terminal`).
 - Exit 5/6: `agent_tool xllm result --run <id> --result-format raw [--output f]`.
-- `--resume` with a new question, or on a run another process is executing: exit 2.
+- `--resume` with `--system`/`--select`/files, or on a run another process is executing: exit 2. A question
+  given to `--resume` is a new input of the saved run, not a new task.
 
 #### Check the result
 - Exit 0 means the run completed, not that the answer is right. A schema can force invented values

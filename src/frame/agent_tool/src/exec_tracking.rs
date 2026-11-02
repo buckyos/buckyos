@@ -1,43 +1,20 @@
-//! In-flight tool actions shared by xllm and libOpenDAN (Agent Session SDK
-//! plan §8.7 X6, long-tool TODO §3.2).
+//! What a run dispatched, read back after the executor stopped (long-tool
+//! TODO §3.2, freeze TODO §3.2.1 / F12).
 //!
-//! A run lock only protects the run directory. A runner that is killed
-//! (`kill -9`) leaves the actions it had dispatched without a persisted
-//! result. The next executor does **not** verify or stop processes: it
-//! turns every such action into an explicit "interrupted, result unknown"
-//! observation — for a `shell` command with the facts its runtime can read
-//! (exit code and output tail from the execution directory, or "may still
-//! be running" with where to look) — and lets the model decide. Nothing is
-//! replayed.
+//! The waist checkpoints the outer snapshot before every tool call and
+//! dispatches the calls of a batch / step one after the other, so a snapshot
+//! tells exactly which call may have been running when an executor was
+//! killed: the first call without a result ([`in_flight_call`]). On resume
+//! the waist dispatches it again with the same `call_id`; the runtime's tool
+//! manager first looks for the work it became (a `shell` command's execution
+//! directory, a task keyed by the call id), runs it again only when the tool
+//! is idempotent, and otherwise answers "result unknown" with the facts the
+//! runtime can read. No process is verified or stopped.
 
-use std::collections::HashMap;
-
+use buckyos_api::AiToolCall;
+use llm_context::state::LLMContextSnapshot;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-
-/// A tool action that was dispatched but whose result is not persisted yet.
-/// Written (fsync) before the tool starts; cleared only after a checkpoint
-/// that contains its result (or an explicit `Unresolved`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct InflightAction {
-    pub call_id: String,
-    pub tool: String,
-    #[serde(default)]
-    pub args: Value,
-    /// `read_only | idempotent | side_effect | unknown`.
-    #[serde(default = "unknown_effect")]
-    pub effect: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub idempotency_key: Option<String>,
-    /// Behavior step index the action belongs to (behavior loop only).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub step_index: Option<u32>,
-    pub started_at_ms: u64,
-}
-
-fn unknown_effect() -> String {
-    "unknown".to_string()
-}
 
 /// Marks a run assembled by a host (e.g. libOpenDAN) rather than by xllm's
 /// own `.llm_context` preparation.
@@ -64,198 +41,45 @@ pub fn now_ms() -> u64 {
     crate::now_ms()
 }
 
-// -------------------------------------------------------------------------
-// Unresolved in-flight actions
-// -------------------------------------------------------------------------
-
-use buckyos_api::{AiContent, AiMessage, AiRole, AiToolCall};
-use llm_context::behavior_loop::{StepMeta, StepRecord};
-use llm_context::observation::Observation;
-use llm_context::state::LLMContextSnapshot;
-
-/// Text shown to the model for an action (other than `shell`) whose effect
-/// is unknown.
+/// Text shown to the model for a call (other than `shell`) a previous
+/// executor may have started.
 pub fn unresolved_reason(tool: &str) -> String {
     format!(
         "the `{tool}` call was dispatched before the previous executor stopped; its effect is unknown. Do not assume it succeeded or failed — check the actual state before repeating it."
     )
 }
 
-fn args_map(v: &Value) -> HashMap<String, Value> {
-    match v {
-        Value::Object(m) => m.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-        _ => HashMap::new(),
+/// The call a resumed `snapshot` dispatches first and that may already have
+/// been started by the executor that wrote it: the next call of the tool
+/// batch in progress (function call loop, or the inner loop of a behavior
+/// step), or else the next action of the behavior step in progress.
+pub fn in_flight_call(snapshot: &LLMContextSnapshot) -> Option<AiToolCall> {
+    let state = &snapshot.state;
+    if state.suspended.is_some() {
+        return None;
     }
-}
-
-fn fc_has_result(snapshot: &LLMContextSnapshot, call_id: &str) -> bool {
-    snapshot.state.accumulated.iter().any(|m| {
-        m.content
-            .iter()
-            .any(|c| matches!(c, AiContent::ToolResult { call_id: id, .. } if id == call_id))
-    })
-}
-
-fn fc_has_call(snapshot: &LLMContextSnapshot, call_id: &str) -> bool {
-    snapshot.state.accumulated.iter().any(|m| {
-        m.content
-            .iter()
-            .any(|c| matches!(c, AiContent::ToolUse { call_id: id, .. } if id == call_id))
-    })
-}
-
-/// Inject an explicit "result unknown" for every in-flight action that has
-/// no persisted outcome in `snapshot`. `reasons` gives the text per call id
-/// (see `AgentRuntime::describe_interrupted`); an action without one gets
-/// [`unresolved_reason`]. Actions that already have a result are left alone.
-/// Returns the call ids injected.
-///
-/// Function call mode: appends the assistant tool call (if missing) and a
-/// tool result. Behavior mode: completes a partial step, or appends a
-/// synthetic step carrying the action and an `Unresolved` observation.
-pub fn materialize_unresolved(
-    snapshot: &mut LLMContextSnapshot,
-    inflight: &[InflightAction],
-    behavior: bool,
-    reasons: &HashMap<String, String>,
-) -> Vec<String> {
-    let mut injected = Vec::new();
-    for a in inflight {
-        let reason = reasons
-            .get(&a.call_id)
-            .cloned()
-            .unwrap_or_else(|| unresolved_reason(&a.tool));
-        if !behavior || fc_has_call(snapshot, &a.call_id) {
-            if let Some(batch) = snapshot.state.tool_batch.as_mut() {
-                batch.remaining.retain(|call| call.call_id != a.call_id);
-            }
-            if fc_has_result(snapshot, &a.call_id) {
-                continue;
-            }
-            if !fc_has_call(snapshot, &a.call_id) {
-                snapshot.state.accumulated.push(AiMessage::new(
-                    AiRole::Assistant,
-                    vec![AiContent::tool_use(
-                        a.call_id.clone(),
-                        a.tool.clone(),
-                        args_map(&a.args),
-                    )],
-                ));
-            }
-            snapshot.state.accumulated.push(AiMessage::new(
-                AiRole::Tool,
-                vec![AiContent::tool_result_text(
-                    a.call_id.clone(),
-                    format!("[unresolved: result unknown] {reason}"),
-                    true,
-                )],
-            ));
-            injected.push(a.call_id.clone());
-            continue;
-        }
-        // Behavior mode.
-        let state = &mut snapshot.state;
-        let mut handled = false;
-        for step in state
-            .steps
-            .iter_mut()
-            .chain(state.last_step.iter_mut())
-            .chain(state.action_step.iter_mut().map(|active| &mut active.step))
-        {
-            if let Some(pos) = step.actions.iter().position(|x| x.call_id == a.call_id) {
-                if step.action_results.len() > pos {
-                    handled = true; // already has an outcome
-                } else {
-                    while step.action_results.len() < pos {
-                        let missing = step.actions[step.action_results.len()].call_id.clone();
-                        step.action_results.push(Observation::Unresolved {
-                            call_id: missing,
-                            reason: "not executed".into(),
-                            effect_unknown: false,
-                        });
-                    }
-                    step.action_results.push(Observation::Unresolved {
-                        call_id: a.call_id.clone(),
-                        reason: reason.clone(),
-                        effect_unknown: true,
-                    });
-                    injected.push(a.call_id.clone());
-                    handled = true;
-                }
-                break;
-            }
-        }
-        if handled {
-            continue;
-        }
-        let step_index = state.next_step_index;
-        state.next_step_index = state.next_step_index.saturating_add(1);
-        if let Ok(n) = a.call_id.parse::<u32>() {
-            state.next_action_id = state.next_action_id.max(n);
-        }
-        let step = StepRecord {
-            meta: StepMeta {
-                behavior_name: snapshot.request.behavior_name.clone(),
-                step_index,
-                started_at_ms: a.started_at_ms,
-                ended_at_ms: Some(a.started_at_ms),
-                compression_level: Default::default(),
-            },
-            assistant_text: format!(
-                "(recovered) dispatched `{}` before the previous runner stopped",
-                a.tool
-            ),
-            actions: vec![AiToolCall {
-                name: a.tool.clone(),
-                args: args_map(&a.args),
-                call_id: a.call_id.clone(),
-            }],
-            action_results: vec![Observation::Unresolved {
-                call_id: a.call_id.clone(),
-                reason,
-                effect_unknown: true,
-            }],
-            ..Default::default()
-        };
-        if let Some(prev) = state.last_step.replace(step) {
-            state.steps.push(prev);
-        }
-        injected.push(a.call_id.clone());
+    if let Some(call) = state.tool_batch.as_ref().and_then(|b| b.remaining.first()) {
+        return Some(call.clone());
     }
-    injected
-}
-
-/// Call ids that have a persisted outcome in `snapshot`.
-pub fn persisted_outcome_ids(snapshot: &LLMContextSnapshot) -> Vec<String> {
-    let mut out = Vec::new();
-    for m in &snapshot.state.accumulated {
-        for c in &m.content {
-            if let AiContent::ToolResult { call_id, .. } = c {
-                out.push(call_id.clone());
-            }
-        }
-    }
-    let st = &snapshot.state;
-    for step in st
-        .steps
-        .iter()
-        .chain(st.last_step.iter())
-        .chain(st.action_step.iter().map(|active| &active.step))
+    let step = &state.action_step.as_ref()?.step;
+    if step
+        .action_results
+        .last()
+        .is_some_and(|o| !matches!(o, llm_context::observation::Observation::Success { .. }))
     {
-        for (i, a) in step.actions.iter().enumerate() {
-            if i < step.action_results.len() {
-                out.push(a.call_id.clone());
-            }
-        }
+        return None;
     }
-    out
+    step.actions.get(step.action_results.len()).cloned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use llm_context::behavior_loop::StepRecord;
+    use llm_context::observation::Observation;
     use llm_context::state::{ActionStep, LLMContextState, ToolBatch};
     use serde_json::json;
+    use std::collections::HashMap;
 
     fn snapshot() -> LLMContextSnapshot {
         let request = serde_json::from_value(json!({
@@ -276,96 +100,41 @@ mod tests {
         }
     }
 
-    fn inflight(id: &str) -> InflightAction {
-        InflightAction {
-            call_id: id.into(),
-            tool: "shell".into(),
-            args: json!({}),
-            effect: "side_effect".into(),
-            idempotency_key: None,
-            step_index: None,
-            started_at_ms: 1,
-        }
+    #[test]
+    fn the_next_call_of_a_batch_is_in_flight() {
+        let mut snapshot = snapshot();
+        assert!(in_flight_call(&snapshot).is_none());
+        snapshot.state.tool_batch = Some(ToolBatch {
+            remaining: vec![call("started"), call("not-started")],
+            batch_error: None,
+        });
+        assert_eq!(in_flight_call(&snapshot).unwrap().call_id, "started");
     }
 
     #[test]
-    fn recovered_native_calls_leave_only_unexecuted_siblings_in_the_batch() {
-        for behavior in [false, true] {
-            let mut snapshot = snapshot();
-            snapshot
-                .state
-                .accumulated
-                .push(buckyos_api::AiResponse::message_from_parts(
-                    None,
-                    vec![call("started"), call("not-started")],
-                    vec![],
-                ));
-            snapshot.state.tool_batch = Some(ToolBatch {
-                remaining: vec![call("started"), call("not-started")],
-                batch_error: None,
-            });
-            assert_eq!(
-                materialize_unresolved(
-                    &mut snapshot,
-                    &[inflight("started")],
-                    behavior,
-                    &HashMap::new()
-                ),
-                vec!["started"]
-            );
-            assert!(fc_has_result(&snapshot, "started"));
-            assert_eq!(
-                snapshot
-                    .state
-                    .tool_batch
-                    .as_ref()
-                    .unwrap()
-                    .remaining
-                    .iter()
-                    .map(|call| call.call_id.as_str())
-                    .collect::<Vec<_>>(),
-                vec!["not-started"]
-            );
-            assert!(snapshot.state.steps.is_empty());
-            assert!(materialize_unresolved(
-                &mut snapshot,
-                &[inflight("started")],
-                behavior,
-                &HashMap::new()
-            )
-            .is_empty());
-            assert_eq!(snapshot.state.accumulated.len(), 2);
-        }
-    }
-
-    #[test]
-    fn recovered_action_stays_in_its_original_step_and_is_not_dispatched_twice() {
+    fn the_next_action_of_a_step_is_in_flight_until_one_failed() {
         let mut snapshot = snapshot();
         snapshot.state.action_step = Some(ActionStep {
             step: StepRecord {
-                actions: vec![call("started"), call("not-started")],
+                actions: vec![call("1"), call("2")],
+                action_results: vec![Observation::Success {
+                    call_id: "1".into(),
+                    content: json!("ok"),
+                    bytes: 2,
+                    truncated: false,
+                    host: None,
+                }],
                 ..Default::default()
             },
             response: Default::default(),
         });
-        assert_eq!(
-            materialize_unresolved(&mut snapshot, &[inflight("started")], true, &HashMap::new()),
-            vec!["started"]
-        );
-        let step = &snapshot.state.action_step.as_ref().unwrap().step;
-        assert_eq!(step.action_results.len(), 1);
-        assert!(
-            matches!(&step.action_results[0], Observation::Unresolved { call_id, effect_unknown: true, .. } if call_id == "started")
-        );
-        assert_eq!(persisted_outcome_ids(&snapshot), vec!["started"]);
-        assert!(snapshot.state.steps.is_empty());
-        assert!(snapshot.state.last_step.is_none());
-        assert!(materialize_unresolved(
-            &mut snapshot,
-            &[inflight("started")],
-            true,
-            &HashMap::new()
-        )
-        .is_empty());
+        assert_eq!(in_flight_call(&snapshot).unwrap().call_id, "2");
+        let step = &mut snapshot.state.action_step.as_mut().unwrap().step;
+        step.action_results[0] = Observation::Error {
+            call_id: "1".into(),
+            message: "boom".into(),
+            host: None,
+        };
+        assert!(in_flight_call(&snapshot).is_none(), "the step stops after an error");
     }
 }

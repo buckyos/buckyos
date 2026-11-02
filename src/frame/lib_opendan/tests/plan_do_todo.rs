@@ -1097,28 +1097,3 @@ async fn a_host_killed_while_waiting_resumes_the_same_explorations() {
     let st = sd.state().unwrap();
     assert_eq!((st.turn_seq, st.turns_completed), (1, 1), "the same Turn");
 }
-
-/// A context that only reports while nothing runs keeps its first reports
-/// (the old behavior), and the third in a row is refused instead of
-/// re-inferring without end.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn idle_progress_reports_are_bounded() {
-    let env = Env::new();
-    write_catalog(&env);
-    tool_env(&env, None);
-    let sd = env.create_work(plan_spec("idle reports")).await;
-    let llm = ScriptedLlm::new(move |req, n| match (role(req), n) {
-        (Role::Plan, 0..=2) => stage(&format!("thinking {n}")),
-        (Role::Plan, _) => {
-            assert!(render(&req.messages).contains("another reply with only a progress report"));
-            end("done thinking", &[])
-        }
-        _ => panic!("no sub work"),
-    });
-    let out = drive_to_end(&env, gate(&llm, 1), &sd).await;
-    finished(&out, &sd, &llm);
-    assert_eq!(llm.count(), 4);
-    let fixes = corrections(&sd);
-    assert_eq!(fixes.len(), 1, "{fixes:?}");
-    assert!(fixes[0].contains("thinking 2"), "{fixes:?}");
-}

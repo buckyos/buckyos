@@ -1,6 +1,6 @@
 # AgentRuntime 设计
 
-> 核对日期：2026-10-23。本文按当前工作区实现整理，代码基线为 `8232b392f`。
+> 核对日期：2026-11-01。本文按当前工作区实现整理，代码基线为 `2bbabf6aa` 之上的工作区。
 > 本文描述 `agent_tool::runtime::AgentRuntime` 及其与 xllm、llm_context、libopendan 的接口。已实现能力与后续规划分开列出；历史 TODO 中的接口和实施顺序不作为当前契约。
 
 ## 1. 定位与依赖边界
@@ -11,10 +11,10 @@ AgentRuntime 是 Agent 工具执行环境的统一入口：根据配置选择执
 
 | 组件 | 职责 |
 | --- | --- |
-| `llm_context` | 推理循环、工具调用协议、Observation、快照与挂起；定义 `ToolManager`、`PromptExec` 等小接口，不依赖具体 Runtime、SSH 或 Session |
-| `agent_tool::runtime` | Runtime 配置、构造、目标识别、shell/文件后端、环境信息与中断结果查询 |
-| `agent_tool::xllm` | 配置合并、工具集装配、提示词、Run 持久化、Runtime 与 LLMContext 的连接 |
-| `libopendan` | Session 的输入、Turn、状态提交、Runtime requirement/binding、helper/PATH、租约和工具调用纪律 |
+| `llm_context` | 推理循环、工具调用协议、Observation、快照与 checkpoint 时机；定义 `ToolManager`、`CheckpointHook` 等小接口，不认识 task，循环里不等待，不依赖具体 Runtime、SSH 或 Session |
+| `agent_tool::runtime` | Runtime 配置（含调用内等待预算）、构造、目标识别、shell/文件后端、环境信息与中断结果查询 |
+| `agent_tool::xllm` | 配置合并、工具集装配与派发（调用内等 task、按 call_id 恢复）、提示词、Run 持久化、Runtime 与 LLMContext 的连接 |
+| `libopendan` | Session 的输入、Turn、状态提交、Runtime requirement/binding、helper/PATH、租约和工具调用纪律；在循环外跟进 task 与子 Session，把结束作为输入带回 |
 | `opendan` | 常驻 Agent Loader，装配服务依赖并托管 Session |
 
 ```mermaid
@@ -54,11 +54,7 @@ pub trait AgentRuntime: Send + Sync {
         tools: &ToolsConfig,
         deps: &XllmDeps,
     ) -> XllmResult<(EffectiveTools, XllmToolManager)>;
-    async fn describe_interrupted(
-        &self,
-        run: &RunBinding,
-        action: &InflightAction,
-    ) -> String;
+    async fn describe_interrupted(&self, run: &RunBinding, call: &AiToolCall) -> String;
 }
 
 #[async_trait]
@@ -81,7 +77,7 @@ pub trait Sandbox: ToolManager {
 
 | 类型 | 内容与用途 |
 | --- | --- |
-| `RuntimeConfig` | 用户声明的执行机制与连接配置；打开后可得到归一化配置 |
+| `RuntimeConfig` | 用户声明的执行机制与连接配置，以及调用内等待预算 `task_wait_ms`；打开后可得到归一化配置 |
 | `RuntimeDescriptor` | `runtime_id / kind / host / target / workdir / capabilities`；用于记录实际执行目标和恢复核验 |
 | `RuntimeInfo` | `id / kind / os / arch / hostname / shell / cwd / tools / current_time / timezone / target / platform / shell_kind / baseline`；供提示词与状态展示使用（后三项见 §6.2） |
 | `RuntimeOpenCtx` | 控制侧 `workdir`、`run_id`、`loop_model`、工具 `sources`、宿主 `env`、`path_prefix`、共享 `run` 绑定槽 |
@@ -130,6 +126,7 @@ native 的 Windows 实现使用 PowerShell；不能将公共 Runtime 契约限�
 | `remote_ssh` | `host` 必填；可选 `user / port / identity_file`，其余遵循本机 OpenSSH 配置 |
 | `remote_node` | `node_did / profile_id` 必填；端点与 session token 来自宿主 connector |
 | `baseline` | 可选 `standard / extended`：登记者声明的环境基线，只传入 `RuntimeInfo.baseline` 供提示词使用，Runtime 层不探测、不据此改变行为 |
+| `task_wait_ms` | 一次工具调用在调用内等它交出的 task 的预算，缺省 30 秒，超过 30 分钟按 30 分钟计，0 被拒绝（§7）。是策略，不是身份：不参与 `runtime_id` 派生，也不进 descriptor |
 
 不存在 runtime 级的 `policy / fs_view / path_layers / limits` 字段；未知字段和与最终 kind 不匹配的连接块被拒绝。宿主内部使用的 `runtime_path_prefix` 不是公开的 RuntimeConfig 字段。
 
@@ -246,13 +243,13 @@ xllm 用 RuntimeInfo 构造 `{{runtime.*}}`。hosted prepare 会移除初始环�
 
 ### 6.3 模板执行的明确边界
 
-`llm_context` 定义 `PromptExec`，`agent_tool` 提供 `SandboxPromptExec` 适配器，由同一 Sandbox 执行模板 `__EXEC__`，避免反向依赖。`RuntimeValueLoader` 可为 `__ENV($runtime.*)__` 提供同一份 RuntimeInfo。
+`agent_tool::prompt_engine` 定义 `PromptExec`，`agent_tool::runtime` 提供 `SandboxPromptExec` 适配器，由同一 Sandbox 执行模板 `__EXEC__`。`RuntimeValueLoader` 可为 `__ENV($runtime.*)__` 提供同一份 RuntimeInfo。
 
 这两者是**宿主可显式注入的能力**。当前生产 xllm/Session 装配没有自动给 PromptRenderEngine 接通这些适配器；模板引擎默认 `allow_exec=false`，启用却未提供 executor 时失败。现有 Runtime 测试覆盖了显式注入的路径，不能据此描述成默认 Session 模板已经开启命令执行。
 
 Node 后端要求持久 Run 与真实 tool call ID，当前 PromptExec 请求没有该调用身份，因此 `remote_node` 不支持模板 `__EXEC__`。`__INCLUDE__` 始终读取控制侧素材，不随 runtime.workdir 迁移。
 
-实现：[prompt_engine.rs](../../src/frame/llm_context/src/prompt_engine.rs)、[SandboxPromptExec / RuntimeValueLoader](../../src/frame/agent_tool/src/runtime/mod.rs)、[Session assembler](../../src/frame/lib_opendan/src/runner/assembler.rs)。
+实现：[prompt_engine.rs](../../src/frame/agent_tool/src/prompt_engine.rs)、[SandboxPromptExec / RuntimeValueLoader](../../src/frame/agent_tool/src/runtime/mod.rs)、[Session assembler](../../src/frame/lib_opendan/src/runner/assembler.rs)。
 
 ### 6.4 libopendan Session 的 session-runtime 与 workspace
 
@@ -261,7 +258,7 @@ agent-runtime 是本层的概念；“session-runtime / workspace”是 libopend
 - **选择**：Session 创建时在 `api::freeze_runtime` 一处解析 session-runtime：显式 `--runtime` > 子 Session 继承父 Session 冻结的 runtime > Agent 登记中 `default` 的 runtime（owner 的 `default_runtime_id`）。Workspace 不参与：它自带 runtime 与目录，与 session-runtime 相同或不同都合法。结果写入 `session_config.runtime.frozen = {runtime_id, kind, exec, revision, selected_by: explicit | inherited | default, computer, baseline, platform}`；`runtime_for_session` 只按冻结的 `exec` 构造 `remote_node`。登记不可用或模板声明的 kind 与之矛盾在创建时拒绝，不静默回退 container；同一 Session 不换 runtime。
 - **工作目录**：默认 cwd 固定为 Session 工作目录——container 是 Session 目录，节点是首次驱动时在 roots[0] 下创建的 `.opendan/<agent>/sessions/<sid>`。选了 Workspace 不改变默认位置；Workspace 的 `runtime_id / directory / same_runtime` 写进 runtime 状态（提示词），本机 runtime 另有 `OPENDAN_WORKSPACE_ID / _RUNTIME / _DIR` 环境变量。`binding.json` 为 `opendan.binding/5`：`workdir` 是 Session 工作目录，`workspace` 另记。
 - **基线**：`RuntimeConfig.baseline` 由 libopendan 按冻结的 `baseline` 设置（声明值，Q5），`RuntimeInfo.baseline` 只读展示，本层不探测。工具清单与检查见 libopendan `baseline.rs`（`xagent runtime baseline`）。
-- **Session 进程**：节点 Executor 不传 `OPENDAN_* / BUCKYOS_* / XLLM_*` 环境；libopendan 在每次绑定时经本层 `RuntimeFiles` 把 `.opendan/session.json` 与 Session 范围 token 写进节点上的 Session 工作目录，helper 据此经 kRPC 找 AgentService。Executor 为每个 exec 设 `EXECUTOR_CALL_ID / EXECUTOR_RUN_ID`（操作自身的身份），`ask-user` 等以此对应自己的调用。
+- **Session 进程**：节点 Executor 不传 `OPENDAN_* / BUCKYOS_* / XLLM_*` 环境；libopendan 在每次绑定时经本层 `RuntimeFiles` 把 `.opendan/session.json` 与 Session 范围 token 写进节点上的 Session 工作目录，helper 据此经 kRPC 找 AgentService。Executor 为每个 exec 设 `EXECUTOR_CALL_ID / EXECUTOR_RUN_ID`（操作自身的身份），`agent-session` 等 helper 以此对应自己的调用（本机 runtime 上是 `shell` 注入的 `XLLM_CALL_ID`）。
 - **探测命令**：`requirement.tools` 与基线检查经 `Sandbox::exec` 执行，节点要求真实调用身份与持久 run 目录：libopendan 的 `run_probe` 给每次探测一个 `probe-<uuid>` 调用 ID 并绑定 `runtime_ops` 目录。
 - **跨 runtime 复制**：由 libopendan 在控制侧组合两端 `RuntimeFiles`（§6.1）完成，见 [primary-runtime TODO §4](../../notepads/opendan-primary-runtime-tools-todo.md)。
 
@@ -269,14 +266,21 @@ agent-runtime 是本层的概念；“session-runtime / workspace”是 libopend
 
 shell 通过 `BashRunner::start` 获得 `CommandHandle`，统一提供 `wait / progress / kill / detach`。这使等待一次调用结束、把命令转交 task，以及显式取消能够共用同一个执行对象。
 
-| 模式 | 当前行为 |
+llm_context 不认识 task，循环里也不等待：任何等待都是 task。一次调用在调用内最多等 `RuntimeConfig.task_wait_ms`（默认 30 秒，上限 30 分钟），还没结束就作为普通结果返回“仍在运行”和 task id，task 继续执行。shell 的两种行为都由这个预算和 `tools.shell` 的超时推出，不是一个可选的模式：
+
+| 条件 | 当前行为 |
 | --- | --- |
-| `auto`（xllm 默认） | 先等 `wait_ms`，默认 30 秒、上限 30 分钟；超出后将命令移交 ShellTaskManager，返回 task ID 和已有输出，命令继续执行 |
-| `wait` | 等到完成或 timeout；默认 timeout 30 分钟、默认上限 60 分钟，超时请求终止命令 |
+| 有 task manager，且预算小于 `timeout_ms` | 先等 `wait_ms`（调用参数，缺省为预算，上限 30 分钟）；超出后将命令移交 `ShellTaskManager`，返回 task ID 和已有输出，命令继续执行 |
+| 没有 task manager，或预算不小于 `timeout_ms` | 等到完成或 timeout；默认 timeout 30 分钟、默认上限 60 分钟，超时请求终止命令 |
 
-auto 没有 task manager 时退化为 wait。wait 的 `max_timeout_ms` 可配置，0 表示不设该上限；Node 仍受目标服务的最大执行时间约束。默认 task manager 是进程共享的 `InProcessTaskManager`，宿主也可注入 `ShellTaskManager`，因此不能假定所有宿主都返回 `local:` task ID。task 可以长于创建它的 Run；进程内任务本身不跨进程持久恢复。
+`max_timeout_ms` 可配置，0 表示不设该上限；Node 仍受目标服务的最大执行时间约束。默认 task manager 是进程共享的 `InProcessTaskManager`，宿主也可注入 `ShellTaskManager`，因此不能假定所有宿主都返回 `local:` task ID。task 可以长于创建它的 Run；进程内任务本身不跨进程持久恢复。
 
-模型通过 `wait_task / get_task_state / cancel_task` 跟进，或由宿主提供对应 task CLI。`CompositeTaskResolver` 组合进程内任务、运行时恢复读取，以及可选 BuckyOS task 服务。shell 转 task 不等于 LLMContext 必须返回 `PendingTool`；libopendan 当前只允许 `call_behavior` 做 deferred，其它工具按现有工具协议等待或返回状态。
+其它工具也按同一规则：工具返回 `pending` + `task_id` 时，派发器 `XllmToolManager` 经 resolver 在这次调用里等到 task 结束、工具给的 `check_after` 或预算到期，然后把 task 当时的状态作为结果交给模型；打断只停止等待，task 继续。`CompositeTaskResolver` 组合进程内任务、运行时恢复读取，以及可选 BuckyOS task 服务。
+
+“仍在运行”之后由谁跟进是宿主的事（`task_model::TaskFollowup`），提示文本随之不同：
+
+- xllm：模型自己用 `wait_task / get_task_state / cancel_task` 跟进，或由宿主提供对应 task CLI（`bash_core` + `XllmDeps.task_cli`）。
+- libopendan Session（`HostProtocolFlavor::Session`）：Session 在循环外跟进本 run 的 task，task 结束后以 `<<task_result>>` 输入带回同一个 run，提示里说明不必等待。
 
 取消必须区分触发来源：
 
@@ -286,7 +290,7 @@ auto 没有 task manager 时退化为 wait。wait 的 `max_timeout_ms` 可配置
 
 恢复旧 Run 不属于上述实时取消路径，不能从磁盘读到一个 PID 就继续 kill。
 
-实现：[llm_bash.rs](../../src/frame/agent_tool/src/llm_bash.rs)、[tasks.rs](../../src/frame/agent_tool/src/tasks.rs)。
+实现：[llm_bash.rs](../../src/frame/agent_tool/src/llm_bash.rs)、[task_model.rs](../../src/frame/agent_tool/src/task_model.rs)、[tasks.rs](../../src/frame/agent_tool/src/tasks.rs)。
 
 ## 8. 持久化与恢复
 
@@ -294,7 +298,13 @@ auto 没有 task manager 时退化为 wait。wait 的 `max_timeout_ms` 可配置
 
 恢复首先验证**执行环境是否仍是原来的环境**：使用保存配置重新打开 Runtime，比较 descriptor、工作目录、宿主环境以及必要 helper/工具。身份不匹配、格式不支持、宿主工具缺失等必须拒绝接管。显式 id 相同不能绕过 SSH 目标变更或 Node store 改变的检查。
 
-随后处理**已经派发但没有持久结果的调用**。当前使用 `InflightAction` 和 `materialize_unresolved`：按调用 ID 保留已有结果，对缺失结果的调用使用 `AgentRuntime::describe_interrupted` 生成说明并物化到快照，随后持久提交。恢复不重放这些工具，不核验或停止旧进程，也不等待证明旧进程已经消失。
+随后处理**可能已经派发、却没有持久结果的调用**。waist 在每次工具调用前经 `CheckpointHook::before_tool_call` 提交快照，同一批调用（或同一 Step 的 action）逐个派发，所以快照能确定哪一个调用可能在执行：`exec_tracking::in_flight_call(snapshot)` 给出第一个没有结果的调用。恢复时（xllm 与 libopendan 相同）用 `AgentRuntime::describe_interrupted(run, call)` 生成说明，经 `XllmToolManager::set_recovering(call_id, reason)` 交给派发器；waist 从快照续跑时以同一个 call_id 再次派发它，派发器按 call_id 先找再做：
+
+1. `shell`：查 task `local:shell:<call_id>`，命令已结束（执行目录有退出码）就用它的结果作为这次调用的结果。
+2. 工具声明 `AgentTool::idempotent()`（`read` / `read_file` / `glob` / `grep` / `wait_task` / `get_task_state` 等）时重新执行。
+3. 其它情况返回 `Observation::Unresolved { effect_unknown: true, reason }`，`reason` 就是上面的说明。
+
+恢复不核验或停止旧进程，也不等待证明旧进程已经消失；非幂等工具不会被再次执行。
 
 | 执行体 | 中断说明的依据 |
 | --- | --- |
@@ -302,7 +312,7 @@ auto 没有 task manager 时退化为 wait。wait 的 `max_timeout_ms` 可配置
 | SSH | 只读远端执行目录；不可达或无结果时说明未知，不能推断失败或未执行 |
 | Node | 读取持久 locator 并查询原操作、结果和输出；无 locator 时按发送前退出说明，store 变化或不可达时分别表达账本变化或结果未知 |
 
-即使恢复时已经读到退出码，该调用仍是“上次执行器未交回结果”的调用，需要把观察事实提供给 LLM，而不是再次执行副作用。
+说明只描述执行事实，是否重做由 LLM 判断。
 
 ### 8.2 Node 的操作身份
 
@@ -310,7 +320,7 @@ Node 客户端在提交前把操作身份、目标约束与请求摘要写入当
 
 当前 `NodeRecovery` 的 `read_locator` 将文件缺失、读取失败和解析失败都视为无 locator，并给出“发送前退出、未在节点运行”的说明。这依赖 locator 完整保留的前提，不是对损坏或丢失记录的强校验保证；`executor_call` 路线另使用严格读取检查，不能混为同一恢复契约。
 
-正常派发期间，Node Command Stream 断线后的有限重试使用相同操作 ID，由节点持久去重；这与恢复时“不重新派发工具”是不同阶段。`executor_call` 对在线 Agent Daemon 目标采取更严格的未知结果不重发规则，不能把 Node 的重试策略直接套给它。两条路线均不承诺外部副作用 exactly-once。
+正常派发期间，Node Command Stream 断线后的有限重试使用相同操作 ID，由节点持久去重；这与恢复时“按 call_id 先找、不重做非幂等调用”是不同阶段。`executor_call` 对在线 Agent Daemon 目标采取更严格的未知结果不重发规则，不能把 Node 的重试策略直接套给它。两条路线均不承诺外部副作用 exactly-once。
 
 task 恢复同样优先读当时状态或执行事实。没有可达 resolver 的外部 task 不能假装恢复成功，进程内 task 丢失也不能自动创建一个同名任务重跑。
 
@@ -330,7 +340,7 @@ Session 的 `prompt.llm_context.runtime` 是构造配置，`session_config.runti
 
 requirement 包含 `runtime_id / tools / app_tools`，分别约束执行体身份、PATH 命令和宿主进程工具；binding 保存 `runtime_id / kind / target / workdir / workspace`。这些要求在推理前核验。
 
-libopendan 负责把 Agent/Session helper、命令和环境装入本机运行视图；`SessionToolManager` 在共享工具管理器外维护租约、提交门槛、inflight 和 touching 纪律。AgentRuntime 不接管 Session 状态机，也不负责结束 Turn。
+libopendan 负责把 Agent/Session helper、命令和环境装入本机运行视图；`SessionToolManager` 在共享工具管理器外维护租约、提交门槛和 touching 纪律，并登记本 run 结果引用的 task 与子 context 调用。AgentRuntime 不接管 Session 状态机，也不负责结束 Turn。
 
 当前完整 Session 运行支持 native，以及创建时冻结到节点 runtime 的 `remote_node`（§6.4）。节点 Session 不再把控制侧的 Session bin、cmd_skill 命令目录放进 PATH，`agent-session` 等 helper 只有在节点上已安装时才可用；helper 的安装与经 kRPC 访问控制面属于 TODO §6.1 / T3。未冻结到节点 runtime 的 Session 由 behavior 声明 `remote_node` 会被拒绝；SSH 在绑定阶段被拒绝（远端 Session helper 未部署），需要 SSH 远端单次操作时，可以使用独立 xllm 或已装配的 executor 工具组。
 
@@ -383,4 +393,4 @@ Node 集成测试有平台与 root 条件；SSH 用例需专用 runner。运行�
 - [本地任务、Run 目录与命令行协议](local_llm_context_protocol.md)：控制侧持久化与配置协议。
 - [AgentTool 开发指南](<agent_tool/OpenDAN AgentTool 开发指南.md>)：工具注册、派发与结果协议。
 - [Node Executor 设计](../arch/node_exector.md)：远端服务、Command Stream 与节点授权。
-- [AgentRuntime 下移 TODO](../../notepads/llm-context-agent-runtime-todo.md)、[长命令 TODO](../../notepads/llm-context-long-tool-todo.md)：历史决策来源；旧 registrar、恢复时检查/停止进程、remote_node 尚未实现等描述不作为当前契约。
+- [AgentRuntime 下移 TODO](../../notepads/llm-context-agent-runtime-todo.md)、[长命令 TODO](../../notepads/llm-context-long-tool-todo.md)、[llm_context 简化与冻结 TODO](../../notepads/llm-context-freeze-todo.md)：决策来源；其中的 registrar、恢复时检查/停止进程、挂起回填、remote_node 尚未实现等描述不作为当前契约。

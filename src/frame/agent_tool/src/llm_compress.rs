@@ -588,7 +588,6 @@ fn mechanically_compress_tool_result_text(
         ) {
             return None;
         }
-        let _view = result.to_tool_result_view();
         let level_name = match desired_level {
             AgentHistoryShowLevel::Min => "min",
             AgentHistoryShowLevel::Mini | AgentHistoryShowLevel::Medium => "medium",
@@ -1162,7 +1161,7 @@ mod tests {
             Ok(llm_context::observation::Observation::Error {
                 call_id: call.call_id,
                 message: "stub".to_string(),
-                tool_result: None,
+                host: None,
             })
         }
     }

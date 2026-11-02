@@ -1,10 +1,9 @@
 use super::*;
-use crate::exec_tracking::InflightAction;
 use crate::llm_bash::TOOL_SHELL;
 use buckyos_api::AiToolCall;
 use llm_context::deps::{ToolCallCtx, ToolManager};
 use std::time::Duration;
-use llm_context::prompt_engine::{EngineConfig, PromptRenderEngine, RenderVars};
+use crate::prompt_engine::{EngineConfig, PromptRenderEngine, RenderVars};
 use serde_json::json;
 
 fn context() -> SessionRuntimeContext {
@@ -29,15 +28,11 @@ fn request(cwd: &str, command: &str) -> BashRunRequest {
         call_id: None,
     }
 }
-fn inflight(call_id: &str, command: &str) -> InflightAction {
-    InflightAction {
+fn inflight(call_id: &str, command: &str) -> AiToolCall {
+    AiToolCall {
         call_id: call_id.into(),
-        tool: TOOL_SHELL.into(),
-        args: json!({ "command": command }),
-        effect: "unknown".into(),
-        idempotency_key: None,
-        step_index: None,
-        started_at_ms: crate::now_ms(),
+        name: TOOL_SHELL.into(),
+        args: [("command".to_string(), json!(command))].into_iter().collect(),
     }
 }
 trait CallT {

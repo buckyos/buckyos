@@ -1920,7 +1920,7 @@ impl ToolManager for NoopToolManager {
         Ok(llm_context::Observation::Error {
             call_id: call.call_id,
             message: "tools are disabled in llm_understand_media".to_string(),
-            tool_result: None,
+            host: None,
         })
     }
 }

@@ -11,13 +11,12 @@ use async_trait::async_trait;
 use buckyos_api::{AiMessage, AiResponse, AiToolCall};
 use serde_json::Value;
 
-use crate::behavior_loop::{LLMResultParser, StepRenderer, StepResultHook};
+use crate::behavior_loop::{LLMResultParser, StepRenderer};
 use crate::error::{CheckpointStage, LLMComputeError};
 use crate::interrupt::InferenceAbortToken;
 use crate::observation::Observation;
 use crate::request::{LLMContextRequest, ToolPolicy};
 use crate::state::LLMContextSnapshot;
-use crate::tasks::RunningTaskResolver;
 
 /// One inference request sent down to the provider adapter.
 #[derive(Debug, Clone)]
@@ -106,16 +105,13 @@ pub enum CancelCause {
 /// Per-call context handed to [`ToolManager::call_tool`]: the interrupt /
 /// finish signals shared with the inference and the absolute deadline of
 /// the run. Tool managers do not keep their own cancel watch or deadline.
+/// How long a call may wait for its work is the runtime's budget, not the
+/// waist's.
 #[derive(Debug, Clone)]
 pub struct ToolCallCtx {
     pub abort: InferenceAbortToken,
     /// Epoch ms by which the run's wallclock budget ends, if any.
     pub deadline_ms: Option<u64>,
-    /// Whether the host can suspend the run on `Observation::Pending`
-    /// (`ToolPolicy.allow_deferred`). When `false`, a tool that only has a
-    /// task id must wait for the task inside the call (at most
-    /// [`crate::tasks::MAX_IN_TOOL_WAIT_MS`]) and return its state.
-    pub allow_deferred: bool,
 }
 
 impl ToolCallCtx {
@@ -124,26 +120,7 @@ impl ToolCallCtx {
         Self {
             abort: InferenceAbortToken::noop(),
             deadline_ms: None,
-            allow_deferred: false,
         }
-    }
-
-    pub fn with_allow_deferred(mut self, allow: bool) -> Self {
-        self.allow_deferred = allow;
-        self
-    }
-
-    /// Epoch ms by which a wait inside this call must end: the run deadline
-    /// capped by [`crate::tasks::MAX_IN_TOOL_WAIT_MS`] from now, further
-    /// capped by `wait_ms` when given.
-    pub fn wait_until_ms(&self, wait_ms: Option<u64>) -> u64 {
-        let now = crate::now_ms();
-        let mut until = now.saturating_add(wait_ms.unwrap_or(crate::tasks::MAX_IN_TOOL_WAIT_MS));
-        until = until.min(now.saturating_add(crate::tasks::MAX_IN_TOOL_WAIT_MS));
-        if let Some(d) = self.deadline_ms {
-            until = until.min(d);
-        }
-        until
     }
 
     /// The cause currently in force, if any (`Deadline` only once it passed).
@@ -214,8 +191,16 @@ pub trait ToolManager: Send + Sync {
     /// `Ok(Observation::Cancelled)` is valid only after one of them fired
     /// (`ctx.cause().is_some()`): a tool that could cancel its work reports
     /// `effect_unknown: false`, one whose work was abandoned while running
-    /// reports `effect_unknown: true`. `Ok(Observation::Pending)` requires a
-    /// `task_id`.
+    /// reports `effect_unknown: true`.
+    ///
+    /// Every observation is final. Work that outlives the call is the
+    /// runtime's task: the call returns "still running" within the
+    /// runtime's wait budget. On resume, a call of an unfinished batch is
+    /// dispatched again with the same `call_id`: the manager first looks up
+    /// the work it may already have started under that id; when it finds
+    /// nothing and the tool is not idempotent, it answers that the result is
+    /// unknown instead of running it again (the waist never replays on its
+    /// own).
     async fn call_tool(
         &self,
         call: AiToolCall,
@@ -234,9 +219,8 @@ pub trait ToolManager: Send + Sync {
     }
 }
 
-/// Policy gate. Filters tool calls before dispatch. Implementations can
-/// also raise approval requirements; the waist treats a rejection as a
-/// Recoverable error and routes through `ErrorPolicy`.
+/// Policy gate. Filters tool calls before dispatch; the waist treats a
+/// rejection as a Recoverable error and routes through `ErrorPolicy`.
 #[async_trait]
 pub trait PolicyEngine: Send + Sync {
     async fn gate_tool_calls(
@@ -326,14 +310,6 @@ pub enum WorkEvent {
         trace_id: Option<String>,
         chars: usize,
     },
-    /// SendMessage action (`<sendmsg target="...">`) emitted by the LLM.
-    /// v2 first cut is stub-only: this event records intent, but no real
-    /// delivery happens until the `send_message` agent_tool lands.
-    MessageSent {
-        trace_id: Option<String>,
-        target: String,
-        chars: usize,
-    },
 }
 
 /// Cheap token estimator. Implementations can wrap a tokeniser library or
@@ -343,34 +319,12 @@ pub trait Tokenizer: Send + Sync {
     fn count_tokens(&self, text: &str) -> u32;
 }
 
-/// Synchronous hook invoked **before** every LLM inference, i.e. before every
-/// Round (§3.12 of the design doc) — not at an AgentSession Turn boundary.
-/// The hook receives a read-only view of the current snapshot, so an L4
-/// persistence layer can flush it to disk before the next inference is paid
-/// for. In behavior mode it runs inside the step's inner function call loop
-/// and sees that loop's flattened snapshot; hosts that need the outer
-/// (step-level) snapshot use [`CheckpointHook`].
-///
-/// Constraints:
-/// - Hook implementations should be fast — the waist blocks the inference
-///   until the hook returns, so any I/O lengthens end-to-end latency.
-/// - Hooks must not panic. A failed critical checkpoint is reported through
-///   `Err(reason)`: the waist then does **not** start the inference and ends
-///   the run with `LLMComputeError::Checkpoint { stage: BeforeInference }`.
-///   The snapshot handed to the hook is exactly the state the run stopped
-///   at, so the runtime can retry the checkpoint and resume with
-///   `ResumeFill::ResumeFromMidRun` without replaying any side effect.
-/// - Hooks receive `&LLMContextSnapshot` and must not mutate waist state.
-/// - Runs without a hook are legal; best-effort observers that must never
-///   block progress should log and return `Ok(())`.
-pub trait InferenceHook: Send + Sync {
-    fn before_inference(&self, snapshot: &LLMContextSnapshot) -> Result<(), String>;
-}
-
-/// Content injected at an observation boundary (§8.7 X5 of the Agent Session
-/// SDK plan): user messages appended before the next inference, and an
-/// optional replacement of the host metadata carried in the snapshot (e.g.
-/// the input receipts that describe the injected messages).
+/// Content injected at an inference boundary: user messages appended before
+/// the next inference, and an optional replacement of the host metadata
+/// carried in the snapshot (e.g. the input receipts that describe the
+/// injected messages). The only way a host puts context into a running
+/// loop: injected messages enter the history and every later snapshot, so
+/// a resumed run sees exactly what the model saw.
 #[derive(Debug, Clone, Default)]
 pub struct Injection {
     pub messages: Vec<AiMessage>,
@@ -392,13 +346,24 @@ pub enum InjectionPosition {
     None,
 }
 
-/// Async checkpoint / observation hook (§8.7 X4 + X5).
+/// The host's checkpoint / observation hook — the only hook of the loop.
 ///
-/// Called with the *outer* snapshot: in function call mode before every
-/// inference (after each batch of tool results), in behavior mode only at
-/// step boundaries (after each do-action), not before the inferences inside
-/// a step. It is never handed to the inner per-step contexts of the behavior
-/// loop, so it never sees a flattened snapshot.
+/// Always called with the *outer* snapshot:
+///
+/// - `before_tool_call`: before every tool call / action is dispatched (the
+///   call is still in `tool_batch.remaining` / not yet in
+///   `action_step.step.action_results`, so resuming this snapshot
+///   dispatches it again). A failure ends the run with `Checkpoint {
+///   BeforeToolCall }` without dispatching.
+/// - `before_inference`: in function call mode before every inference
+///   (after each batch of tool results), in behavior mode only at step
+///   boundaries, not before the inferences inside a step (a crash inside a
+///   step resumes from the step boundary or the last before-tool-call
+///   checkpoint and pays at most one inference again).
+/// - `validate_report` / `review_decision`: behavior mode only, when a step
+///   carries a report / makes a decision.
+///
+/// `before_inference` results:
 ///
 /// - `Ok(None)`: the snapshot is durably checkpointed; inference may start.
 /// - `Ok(Some(injection))`: the waist applies the injection and calls the
@@ -424,8 +389,8 @@ pub trait CheckpointHook: Send + Sync {
 
     /// Review a behavior step that hands over or yields, after it parsed
     /// and its report (if any) was validated, before it takes effect.
-    /// `None`: no verdict — a hand-over ends the loop as usual, a yield
-    /// continues it (the behavior of a host without this method).
+    /// `None` / `Accept`: the decision stands and the run ends with `Done`;
+    /// `Refuse`: the step is corrected in this same run.
     async fn review_decision(
         &self,
         _snapshot: &LLMContextSnapshot,
@@ -484,9 +449,6 @@ pub struct LLMContextDeps {
     pub policy: Arc<dyn PolicyEngine>,
     pub worklog: Arc<dyn WorklogSink>,
     pub tokenizer: Arc<dyn Tokenizer>,
-    /// Optional per-inference hook (§3.12). Default `None` — schedulers that
-    /// do not need pre-inference snapshots are unaffected.
-    pub inference_hook: Option<Arc<dyn InferenceHook>>,
     /// Behavior Loop: structured parser for LLM responses. `Some` ⇒ Behavior
     /// mode; `None` ⇒ traditional Agent Loop. The two modes are picked at
     /// construction time and never mix at runtime.
@@ -495,14 +457,8 @@ pub struct LLMContextDeps {
     /// AiMessages for the next inner-run. Required whenever `result_parser`
     /// is set.
     pub step_renderer: Option<Arc<dyn StepRenderer>>,
-    /// Behavior Loop: optional hook invoked after a behavior step has action
-    /// results. It may override the next rendered user message.
-    pub step_result_hook: Option<Arc<dyn StepResultHook>>,
-    /// Optional async checkpoint / observation hook with outer snapshots.
+    /// Optional checkpoint / observation hook with outer snapshots.
     pub checkpoint_hook: Option<Arc<dyn CheckpointHook>>,
-    /// Running tasks this context may follow (background env before every
-    /// inference) — host assembled; `None` when the host has no tasks.
-    pub tasks: Option<Arc<dyn RunningTaskResolver>>,
     /// Host check of a reply that met the reply contract's schema
     /// (`OutputSpec::Json { max_repairs: Some(_) }`): what the schema cannot
     /// say (a file that must exist, a count that must match). A rejection
@@ -526,12 +482,9 @@ impl LLMContextDeps {
             policy: Arc::new(AllowAllPolicy),
             worklog: Arc::new(NoopWorklogSink),
             tokenizer: Arc::new(ByteHeuristicTokenizer),
-            inference_hook: None,
             result_parser: None,
             step_renderer: None,
-            step_result_hook: None,
             checkpoint_hook: None,
-            tasks: None,
             output_validator: None,
         }
     }
@@ -551,11 +504,6 @@ impl LLMContextDeps {
         self
     }
 
-    pub fn with_inference_hook(mut self, hook: Arc<dyn InferenceHook>) -> Self {
-        self.inference_hook = Some(hook);
-        self
-    }
-
     pub fn with_result_parser(mut self, parser: Arc<dyn LLMResultParser>) -> Self {
         self.result_parser = Some(parser);
         self
@@ -566,18 +514,8 @@ impl LLMContextDeps {
         self
     }
 
-    pub fn with_step_result_hook(mut self, hook: Arc<dyn StepResultHook>) -> Self {
-        self.step_result_hook = Some(hook);
-        self
-    }
-
     pub fn with_checkpoint_hook(mut self, hook: Arc<dyn CheckpointHook>) -> Self {
         self.checkpoint_hook = Some(hook);
-        self
-    }
-
-    pub fn with_tasks(mut self, tasks: Arc<dyn RunningTaskResolver>) -> Self {
-        self.tasks = Some(tasks);
         self
     }
 
@@ -592,7 +530,6 @@ impl LLMContextDeps {
     pub fn into_traditional(mut self) -> Self {
         self.result_parser = None;
         self.step_renderer = None;
-        self.step_result_hook = None;
         // The outer behavior loop owns checkpoints; inner per-step contexts
         // must never hand their flattened snapshot to the host.
         self.checkpoint_hook = None;

@@ -696,6 +696,10 @@ pub struct ReadFileOutput {
 
 #[async_trait]
 impl TypedTool for ReadFileTool {
+    fn idempotent(&self) -> bool {
+        true
+    }
+
     type Args = ReadFileArgs;
     type Output = ReadFileOutput;
 

@@ -35,7 +35,7 @@ You are in DO mode of a durable work session. The session bound one Todo to this
 ## Asking the User
 
 - Nobody reads this session. When a key premise is missing, prefer ending with a failure report that says exactly what is missing.
-- Ask only when a lot of work is already done and one answer decides the rest: `agent-session ask-user "<a question that stands on its own>" [--option <id>=<label>]... [--allow-text]`. It reaches the user as a notification. Its result is the answer, or `{"answered": false, "reason": ...}` when the user does not answer in time (at most 3 hours); then decide with what you have or end with a failure report.
+- Ask only when a lot of work is already done and one answer decides the rest: `ask_user "<a question that stands on its own>" [--option <id>=<label>]... [--allow-text]`. It reaches the user as a notification and returns at once with a task: the answer is that task's result. Stop acting (reply with a progress report and no actions) to wait for it — it comes back to you as `<<task_result>>` — or go on with what does not depend on it. A question nobody answers within 3 hours ends unanswered; then decide with what you have or end with a failure report.
 
 ## Hard Rules
 

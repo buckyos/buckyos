@@ -161,7 +161,7 @@ pub struct BehaviorReply {
     /// JSON Schema of the reply (an object schema).
     pub schema: Value,
     /// An array field of the reply that must list every question the
-    /// context asked the user (`agent-session ask-user`), one entry each.
+    /// context asked the user (`ask_user`), one entry each.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asks_field: Option<String>,
 }

@@ -1,0 +1,50 @@
+{
+  "session_id": "work-20261101-2",
+  "kind": "work",
+  "class": "work",
+  "created_by": {
+    "principal": "app:app2@alice",
+    "via": "session:goal-20261101-1"
+  },
+  "idempotency_key": "sub:24e93c3e78b53372c1c8783a26d233f455c15b764a393186662004480fd1a0af",
+  "driver": {
+    "principal": "app:app2@alice"
+  },
+  "location": "${FIXTURE_ROOT}/app/work-20261101-2",
+  "wake_event": "/opendan/jarvis.alice/session/work-20261101-2/input",
+  "agent_access": "full",
+  "origin": {
+    "parent_session": "goal-20261101-1",
+    "report": "final",
+    "goal": {
+      "goal_id": "g-k9ed545152f8cdfcc3d3f30bc",
+      "revision": 1,
+      "epoch": 1,
+      "activation_seq": 0,
+      "at_ms": 1793591511953
+    }
+  },
+  "objective": "Tick item 1 of TODO.md",
+  "goal_id": "g-k9ed545152f8cdfcc3d3f30bc",
+  "status": {
+    "rev": 3,
+    "run_state": "finished",
+    "outcome": "succeeded",
+    "acceptance": "pending",
+    "one_line_status": "finished: answer",
+    "report_brief": "# Report — Tick item 1 of TODO.md\n\n- session: `work-20261101-2`\n- goal: `g-k9ed545152f8cdfcc3d3f30bc` (revision 1, epoch 1 activation 0)\n- outcome: succeeded\n- turns: 1\n\nanswer\n",
+    "activity": {
+      "summary": "",
+      "heartbeat_ms": 0
+    },
+    "last_runner": {
+      "runner_id": "rn-ca9ea909a134495b",
+      "host": "${FIXTURE_HOST}",
+      "pid": 2810648,
+      "lock_epoch": 1,
+      "at_ms": 1793591512059
+    },
+    "updated_at_ms": 1793591512053
+  },
+  "location_rev": 0
+}

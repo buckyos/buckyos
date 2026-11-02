@@ -350,6 +350,7 @@ pub fn notify_event(data: &NotifyDeliveredData, session: &str) -> (String, Agent
             summary,
             data_ref: None,
             terminal: false,
+            call_id: None,
         },
     )
 }

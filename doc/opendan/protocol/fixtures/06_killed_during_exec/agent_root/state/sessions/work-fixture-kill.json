@@ -10,7 +10,7 @@
     "principal": "app:app2@alice"
   },
   "location": "${FIXTURE_ROOT}/app/work-fixture-kill",
-  "input_queue": "app2::alice::opendan.session.work-fixture-kill",
+  "input_queue": "app2::alice::opendan.session.16f1eb6114bf12c60c0cad2ba1f97185d78cd3b0fbc27717bb909e81068b5d26",
   "wake_event": "/opendan/jarvis.alice/session/work-fixture-kill/input",
   "agent_access": "full",
   "objective": "long command",
@@ -23,16 +23,16 @@
     "turn_open": true,
     "activity": {
       "summary": "long command",
-      "heartbeat_ms": 1792976020775
+      "heartbeat_ms": 1793591510509
     },
     "last_runner": {
-      "runner_id": "rn-28358350b2c842b0",
+      "runner_id": "rn-22617382fd0345cb",
       "host": "${FIXTURE_HOST}",
-      "pid": 3020351,
+      "pid": 2811113,
       "lock_epoch": 1,
-      "at_ms": 1792976020777
+      "at_ms": 1793591510510
     },
-    "updated_at_ms": 1792976020775
+    "updated_at_ms": 1793591510509
   },
   "location_rev": 0
 }

@@ -55,11 +55,18 @@ impl log::Log for ContextTestLogger {
     fn flush(&self) {}
 }
 
-fn init_context_logger() {
+/// Tests of this file share the process logger and, with a fresh root
+/// each, the same session ids: one at a time, each with its own capture.
+static CONTEXT_TEST_SERIAL: Mutex<()> = Mutex::new(());
+
+fn init_context_logger() -> std::sync::MutexGuard<'static, ()> {
+    let guard = CONTEXT_TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     INIT_CONTEXT_TEST_LOGGER.call_once(|| {
         log::set_logger(&CONTEXT_TEST_LOGGER).unwrap();
         log::set_max_level(log::LevelFilter::Info);
     });
+    CONTEXT_TEST_LOGGER.0.lock().unwrap().clear();
+    guard
 }
 
 fn context_log_events(session_id: &str) -> Vec<ContextLogEvent> {
@@ -118,7 +125,7 @@ fn rewrites(sd: &libopendan::SessionDir) -> usize {
 
 #[tokio::test]
 async fn function_call_run_continues_after_a_mid_run_rewrite() {
-    init_context_logger();
+    let _serial = init_context_logger();
     let env = Env::new();
     let sd = env.create_work(work_spec("two tool steps")).await;
     let llm = ScriptedLlm::fallible(|req, _| {
@@ -214,7 +221,7 @@ async fn function_call_run_continues_after_a_mid_run_rewrite() {
 
 #[tokio::test]
 async fn behavior_run_compacts_the_session_history_and_keeps_step_numbering() {
-    init_context_logger();
+    let _serial = init_context_logger();
     let env = Env::new();
     let mut spec = work_spec("behavior with a tight history budget");
     spec.prompt.llm_context = json!({
@@ -296,7 +303,7 @@ async fn behavior_run_compacts_the_session_history_and_keeps_step_numbering() {
 
 #[tokio::test]
 async fn a_run_that_never_fits_is_paused_with_the_limit_and_retried_later() {
-    init_context_logger();
+    let _serial = init_context_logger();
     let env = Env::new();
     let sd = env.create_work(work_spec("never fits")).await;
     let fits = Arc::new(AtomicBool::new(false));
@@ -331,7 +338,7 @@ async fn a_run_that_never_fits_is_paused_with_the_limit_and_retried_later() {
     assert_eq!(rec.status, agent_tool::xllm::RunStatus::Paused);
     assert!(matches!(
         snap.unwrap().state.suspended,
-        Some(llm_context::Suspension::ContextLimit { .. })
+        Some(llm_context::Suspension { .. })
     ));
 
     let events = context_log_events(sd.sid());
@@ -392,7 +399,7 @@ impl Summarizer for FailingSummarizer {
 
 #[tokio::test]
 async fn failed_compaction_logs_the_failure_and_preserves_the_error() {
-    init_context_logger();
+    let _serial = init_context_logger();
     let env = Env::new();
     let mut spec = work_spec("summary failure");
     spec.prompt.history_budget_tokens = Some(80);

@@ -25,7 +25,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use llm_context::{escape_xml_attr, EngineConfig, NullValueLoader, PromptRenderEngine, RenderVars};
+use agent_tool::escape_xml_attr;
+use agent_tool::prompt_engine::{EngineConfig, NullValueLoader, PromptRenderEngine, RenderVars};
 use serde_json::{json, Value};
 
 use crate::error::{OpenDanError, Result};
@@ -485,7 +486,7 @@ impl SessionAssembler for DefaultAssembler {
 }
 
 fn esc(s: &str) -> String {
-    llm_context::escape_xml_text(s)
+    agent_tool::escape_xml_text(s)
 }
 
 /// The per-batch material of the built-in templates, block by block (each
@@ -505,8 +506,14 @@ impl Blocks {
         if let Some(b) = &state.internal_continuation {
             handover.push_str(&format!("<context_switch to=\"{}\"/>\n", escape_xml_attr(b)));
             if let Some(r) = &state.process_result {
+                // The call that asked for the sub context, when one did.
+                let call = r
+                    .get("call_id")
+                    .and_then(Value::as_str)
+                    .map(|c| format!(" call_id=\"{}\"", escape_xml_attr(c)))
+                    .unwrap_or_default();
                 handover.push_str(&format!(
-                    "<process_result behavior=\"{}\" status=\"{}\">{}</process_result>\n",
+                    "<process_result behavior=\"{}\" status=\"{}\"{call}>{}</process_result>\n",
                     escape_xml_attr(r.get("behavior").and_then(Value::as_str).unwrap_or_default()),
                     escape_xml_attr(r.get("status").and_then(Value::as_str).unwrap_or("ok")),
                     r.get("submission")
@@ -519,12 +526,10 @@ impl Blocks {
             }
             // A sub context being entered: its task, and what it returns to.
             if let Some(call) = state.child_call().filter(|c| &c.behavior == b) {
-                let asking = if super::ask::allowed(cfg) {
-                    "To ask the user, run `agent-session ask-user`; its result is the user's answer."
-                } else if super::ask::via_notify(cfg, true) {
-                    "Ask the user only when one answer decides the rest: `agent-session ask-user` reaches the user as a notification, and the user may answer late or not at all."
-                } else {
+                let asking = if cfg.session.kind == SessionKind::Goal {
                     "Do not ask the user."
+                } else {
+                    "Ask the user only when one answer decides the rest: `ask_user` reaches the user as a notification and its answer comes back to you as `<<task_result>>`; the user may answer late or not at all."
                 };
                 handover.push_str(&format!(
                     "<sub_task mode=\"{}\">{}\nYour result returns to the caller: finish with your report. {asking}</sub_task>\n",

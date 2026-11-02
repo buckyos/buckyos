@@ -21,7 +21,7 @@ OpenDAN 将 Agent 的主要 Session 工作模式划分为 **UI Session、Work Se
 
 能力资产同时分层：**Goal 使用偏方法论、判断与工作流组织的 Skills；Work 使用偏具体操作与 SOP 的 Manuals；XLLM 是配置化的单次 LLM 推理工具，不属于 Agent Session。**
 
-事件处理区分三种语义：**PendingTool 恢复当前执行，主动订阅触发新的运行机会，半订阅为已有推理补充相关环境。** 半订阅默认在每次推理前提供观察机会，不依赖用户新消息，也不自行唤醒 Session；三种机制共同遵守同一 Session 串行推进、输入有来源、观察与执行结果分开的约束。
+事件处理区分三种语义：**本次执行启动的 task 以结果输入回到这次执行，主动订阅触发新的运行机会，半订阅为已有推理补充相关环境。** 半订阅默认在每次推理前提供观察机会，不依赖用户新消息，也不自行唤醒 Session；三种机制共同遵守同一 Session 串行推进、输入有来源、观察与执行结果分开的约束。
 
 ---
 
@@ -301,26 +301,14 @@ Goal 的明确性不等于一次性完成所有未来行动的规划。它需要
 **为什么是 fork 而不是 create_sub_context。** 分析需要完整理解当前对话，又要尽量便宜。`fork` 保留 UI 的 system、工具集、模型和分叉点前的完整历史，子 run 的第一个请求就是父请求的前缀加一条引导 user message，父恢复后的请求也是同一前缀加调用与结果，都能命中 provider 的前缀缓存。代价是 fork 不能换 system、模型或工具集，所以：
 
 - `analyze_intent` 没有 system，只有 `on_context_switch` 引导文字和 `[budget]`；它的预算作用于分支的 run（工具迭代、token、连续错误），不改变请求的渲染内容。
-- 分析用的“新工具”全是层 ② CLI（`agent-session workspace / runtime / sessions / goal / ask-user / create-worksession`），经 UI 本来就有的 `shell` 调用，由引导文字说明。
+- 分析用的“新工具”全是层 ② CLI（`agent-session workspace / runtime / sessions / goal / create-worksession` 与 websdk 的 `ask_user`），经 UI 本来就有的 `shell` 调用，由引导文字说明。
 - 分析用 UI 的模型（`llm.chat`）。
 - 分支结束以 `report({report, result, is_end: true})` 返回；UI 收到 `{status, behavior, submission: {report, result}}`，`result.outcome` 为 `work_created / goal_created / direct / declined / needs_confirmation / unsupported`。`report` 因此必须在 UI 的工具列表里（fork 继承工具集），UI 自己不用它作答。
 - 分支的 transcript 不进入 UI 之后重建的历史，UI 只留下一次函数调用与它的结果；用户在澄清里说的话靠 `result.clarifications` 回到 UI。
 
-**反问用户：`ask-user` 是挂起的工具调用。** `agent-session ask-user "<问题>" [--option id=label]... [--allow-text]` 打印 `Pending{task_id: "userinput:<call_id>"}`，run 以 PendingTool 挂起在这次调用上。只有 Session 解析 `userinput:`：它把问题发出去，状态写 `waiting_for = {kind: input, refs: ["userinput:<call_id>"]}`，Turn 保持打开；输入队列里下一条 msg（只取一条，context 消息除外）就是这次调用的工具结果 `{text, attachments, option, in_reply_to_question, msg_id, from, at_ms}`，以一张不注入消息的输入回执消费，与结果同一快照提交。事件、子 Session 状态和半订阅观察照旧留给调用方。只有“有输入队列、`wait_user_msg = allowed`、不是子 Session”的 Session 原地问。2026-10-11 起（[通知人 TODO](../../notepads/opendan-agent-notify-todo.md)）没有队列的 Work 在宿主有通知服务时改走 System Notify：同一个 `ask-user`，由 runner 把问题作为 `input` 通知发给用户（等级 `timely`，截止 `[session.work] ask_user_timeout_secs`，缺省 3 小时），run 照旧挂在 `userinput:<call_id>` 上，`waiting_for` 带截止时间与通知的人工任务；回答（含 `via: "notification"`）、忽略、过期、撤销、超时都作为这次调用的工具结果，未回答用 `{"answered": false, "reason"}` 而不是错误。Goal 内调用得到“把问题写进 `questions`”的错误结果；Goal 的 `questions` 由驱动者在 Activation 关闭前发成通知，回答以原因 `answer` 的 Activation 回来。交互式子 Session 与 self_* 仍得到错误结果。这条路径与主 context 的 `WAIT_USER_MSG`、子 context 的哨兵路径（交回调用方）互不相干，D2 规则（xAgent §11.5 第 1 条：等待前已交付回复即完成该 Turn）不变：提问不是交付，不关 Turn，也不计入 `turns_completed`。xllm 不能解析 `userinput:`，拒绝接手这样的 run。stop 时挂起的提问以“用户未回答”结束。
+**反问用户：`ask_user` 是一个普通的异步工具调用。** websdk 命令 `ask_user "<问题>" [--option id=label]... [--allow-text] [--expires <secs>]`（`src/tools/buckyos-agent`）发一条 System Notify 的 `input` 通知：msg-center 为它在 Zone TaskMgr 上建一个 `human.input/v1` 任务（幂等键 `ask:<run_id>:<call_id>`，同一次调用重跑找回同一个问题，缺省 3 小时过期），命令立即返回该任务的 pending 结果（`pending_reason = user_input`）。Session 不解析问题，像跟进任何 task 一样跟进它：调用的等待预算内答了就是调用结果；没答则得到“仍在运行”，回答（或过期、撤销）到达时以 `<<task_result>>` 输入交回——问它的 run 为它保活时回到那个 run，否则进入 Session 的下一个输入批次。用户在对话里发的消息总是新输入，不被当作答案；等待期间 Session 是否继续推理由 Session 自己决定。Goal 不用它：Goal 的 `questions` 由驱动者在 Activation 关闭前发成通知，回答以原因 `answer` 的 Activation 回来。这条路径与主 context 的 `WAIT_USER_MSG`、子 context 的哨兵路径（交回调用方）互不相干，D2 规则（xAgent §11.5 第 1 条：等待前已交付回复即完成该 Turn）不变：提问不是交付，不关 Turn，也不计入 `turns_completed`。独立 xllm 用同一个命令：模型用 `wait_task` / `get_task_state` 在预算内等回答。
 
-**问答消息流（P / Q / A / R）。** 在能编辑消息的频道上：
-
-```text
-[用户]  帮我把这个项目的文档整理一下
-[Agent] P：占位（agent_task）            ← ask-user 登记时立即发出，不等 placeholder_delay
-          └ Q：问题（thread → P，agent_ask{anchor: P, call_id, turn, input}）
-          └ A：回答（thread → P；选项回答带 machine{intent: "agent_ask.answer", data{call_id, option}}）
-[Agent] R：结果（P 的 edit）              ← Turn 结束
-```
-
-Q 在 outbox 中排在 P 之后，P 发出后按它实际的 `msg_id` 重定目标；P 没发出就被撤回时 Q 变成独立消息。问题在“写入等待状态”的同一次提交里入 outbox，提交之前不会把任何消息当作答案。MessageHub 只看时间线：最后一条是别人发来的 `agent_ask` 时进入回答态（文本问题锁定为对锚点的回复，选项问题把输入框换成选项，`/stop` 仍可发）；问答折叠在锚点下，R 到达后收起。群聊里问题会 `mentions` 主人，MessageHub 只对被提到的成员锁定输入框。
-
-**不可编辑频道的退化。** 没有 P：Q 是独立消息（`agent_ask.anchor` 为空），A 是普通消息或对 Q 的回复，R 是独立消息。Agent 侧不要求 A 一定带关系或 machine：任何下一条消息都是答案，`in_reply_to_question` 与 `option` 只是线索，分析自己判断“回答不是回答”。
+**问答的呈现。** 问题不经 Session 的出站消息，而是一条通知：用户在通知上作答（选项或文字），答案提交为任务结果。UI Session 以隐式半订阅 `_notify` 观察在本会话呈现过的通知（[Session Input Protocol](<protocol/Session Input Protocol.md>) §3），可经 `agent-session notify answer / ack` 代用户处理在对话里给出的回答（本 Session 发起的除外）。
 
 **Runtime。** 选择 Workspace 需要知道有哪些 Runtime：Agent State 有 Runtime 登记 `state/runtimes/<id>.json`，Loader 启动时幂等补建 `container`（Agent 自己所在环境，可用）与 `host`（宿主机，登记可见但在宿主机执行器落地前 `runtime_unavailable`）。Workspace 位置的 `runtime_id` 按登记判断（`local` 是 `container` 的旧名，仍可读），`create-worksession --runtime` 只接受已登记且可用的 Runtime。
 
@@ -389,7 +377,7 @@ Work 结束后，用户再提出修改，由 UI 基于有效产物创建新 Task
 
 判断不能停留在“技术上它在等一个 Task”。如果被等待的 Task 本质上没有可控结束条件，仍然是在绕过 Work 的有界约束。
 
-PendingTool 适用于保留当前调用依赖的有界等待；跨人、跨 Agent 的长期协作由 UI / Goal 显式订阅相关变化，并结束本次执行后等待新的运行机会。两者的恢复语义见 §12.7。把等待改成事件订阅也不能让一个原本不符合就绪条件的 Work 变得合理。
+run 为它启动的 task 保活适用于本次执行依赖的有界等待；跨人、跨 Agent 的长期协作由 UI / Goal 显式订阅相关变化，并结束本次执行后等待新的运行机会。两者的恢复语义见 §12.7。把等待改成事件订阅也不能让一个原本不符合就绪条件的 Work 变得合理。
 
 Work 倾向相对短的生命周期，以减少分析时的环境与实际执行环境之间的变化。具体时长需要按任务类型设置，本文不规定统一的分钟数或小时数。
 
@@ -871,7 +859,7 @@ Session 的权威运行状态必须可持久恢复；worker 是可替换的执�
 | 身份与绑定 | Session / Agent 身份、创建方、Task 或 Goal 引用及版本、Runtime、Workspace、交互和结果回送路由。 |
 | 配置与能力 | 当前配置版本、上下文入口、使用的 behavior / 模板 / 能力版本，以及运行时应执行的权限与预算策略。 |
 | 输入与观察 | 输入来源和稳定身份、接收与提交进度、订阅、待观察版本、Task 修订的独立观察进度。 |
-| 执行与调用 | 当前逻辑 Turn、run 引用、上下文栈、快照、待回填调用、外部 Task 标识、等待原因与期限。 |
+| 执行与调用 | 当前逻辑 Turn、run 引用、上下文栈、快照（含待派发的调用）、本次执行启动的外部 Task 标识及交出它的调用、等待原因与期限。 |
 | 审计与恢复 | 工作日志的已提交边界、输入 receipt、配置变更、工具执行与结果证据、恢复阻塞原因。 |
 | 输出与交付 | 最终状态、Report 与产物引用、待发回复、投递进度、预算和未完成事项。 |
 
@@ -886,7 +874,7 @@ Session 的权威运行状态必须可持久恢复；worker 是可替换的执�
 1. **接收**：验证目标、权限与输入策略，按稳定输入身份写入可靠存储，成功后才确认上游投递。此时仅证明 Session 已接收，不证明模型已经看到。唤醒只是提示，有效载荷不能只存在于唤醒信号中。
 2. **选择与渲染**：在允许的边界选择输入，冻结本次环境并渲染。失败时不提交本批输入，未选中的输入继续保留。
 3. **提交上下文**：将模型可见材料、输入身份、观察版本及相应 receipt 与可恢复快照关联，完成 Session 消费进度的持久提交。跨文件或跨组件提交需要可恢复的提交标记，在提交完成前不能启动依赖该批输入的工具副作用。
-4. **推进与记录**：继续推理或回填调用，持久保存执行结果。已提交输入不因后续推理失败重新变成一条新输入；失败仍须有可查询的状态和证据，不能描述为输入无痕丢失。
+4. **推进与记录**：继续推理、派发调用或注入 task 结果，持久保存执行结果。已提交输入不因后续推理失败重新变成一条新输入；失败仍须有可查询的状态和证据，不能描述为输入无痕丢失。
 5. **完成与交付**：按 Session 语义关闭 Turn、结束 Work 或结束本次 Activation，将结果与待投递记录提交，再执行对外发送与必要重试。
 
 上游消息服务的接收确认与 Session 输入总线的消费确认属于不同边界。落盘失败不能提前确认；确认失败导致重投时，应识别同一输入，避免重复追加上下文。输入提交不需要等待整轮推理成功，但必须留下足以核对它去向的证据。
@@ -897,7 +885,7 @@ Session 的权威运行状态必须可持久恢复；worker 是可替换的执�
 |---|---|
 | 输入尚未提交到上下文 | 仍按待处理输入推进；重投按稳定身份去重。 |
 | 上下文已提交，模型或工具步骤尚未结束 | 从合法检查点恢复，保留同一逻辑工作的身份，不重新从头执行输入。 |
-| PendingTool 已登记外部 Task | 按既有 Task 与调用标识查询、回填；不因为通知丢失重新创建外部任务。 |
+| 调用已交出外部 Task | 按既有 Task 与调用标识查询，结束时以 task 结果输入交回；调用中途中断时按调用标识找回它的 Task；不因为通知丢失重新创建外部任务。 |
 | 工具可能已产生副作用，但没有可靠结果 | 保留现场，查询可验证状态或标记未知 / 阻塞；不能把“无结果”当作“没执行”而自动重试。 |
 | 版本、绑定、快照或依赖无法核验 | 明确阻止推进并报告原因，不能靠丢弃快照或猜测字段修复。 |
 
@@ -996,17 +984,17 @@ Agent 委派工作后，当前推理可以已经结束，而业务目标尚未�
 
 这类情况需要区分三种机制。它们与 UI / Work / Goal 的职责分类正交，可以在同一个 Session 中配合使用，但不能绕过各类 Session 的生命周期边界。
 
-| 维度 | 模式一：PendingTool / 调用内等待 | 模式二：显式等待与主动订阅 | 模式三：环境弱订阅 / 半订阅 |
+| 维度 | 模式一：调用内等待与 task 跟进 | 模式二：显式等待与主动订阅 | 模式三：环境弱订阅 / 半订阅 |
 |---|---|---|---|
-| 当前执行 | 挂起在尚未得到结果的调用处 | 本次执行可结束，等待新的运行机会 | 不负责挂起或延长执行 |
-| 依赖如何表达 | 工具调用记录精确的 Task / call 依赖 | Agent 明确表达要关注的外部变化，由系统绑定订阅 | Topic、任务范围或显式配置决定相关背景 |
-| 推进来源 | 依赖结果可回填，或调用的等待期限到达 | 匹配事件或业务超时事件，经 Runtime 调度 | 已有推理机会到来前检查，不自行唤醒 |
-| 模型可见载体 | 对应调用的 ToolResult / Resume | 带来源的事件消息，可批量进入一次输入 | 与本次输入关联的环境块或可区分的观察材料 |
+| 当前执行 | 调用在等待预算内返回；仍在运行时本次执行保活（不结束、不推理），等它的结果 | 本次执行可结束，等待新的运行机会 | 不负责挂起或延长执行 |
+| 依赖如何表达 | 工具结果记录精确的 Task / call 依赖 | Agent 明确表达要关注的外部变化，由系统绑定订阅 | Topic、任务范围或显式配置决定相关背景 |
+| 推进来源 | Task 结束（按 Task 标识查询，通知只提前触发查询） | 匹配事件或业务超时事件，经 Runtime 调度 | 已有推理机会到来前检查，不自行唤醒 |
+| 模型可见载体 | 预算内是调用结果；之后是带调用标识的 task 结果输入 | 带来源的事件消息，可批量进入一次输入 | 与本次输入关联的环境块或可区分的观察材料 |
 | 主要用途 | 本次工具、构建、测试或明确子任务的有界等待 | 等人确认、跨 Agent 协作、Goal 持续跟踪 | 位置、时区、对象状态、相关感知与认知 |
 
-**模式一保留的是调用依赖。** Runtime 必须知道恢复哪个调用、回填哪个结果；事件通知只提示检查依赖，不能直接充当可信结果。等待期限到达时，可以返回“仍在运行”或未知状态，但不能伪造完成，也不意味着底层 Task 已取消。多个挂起调用应按恢复协议完整、准确地回填。
+**模式一保留的是调用依赖。** Runtime 必须知道哪个 Task 属于哪个调用，结果交回时带上调用标识；事件通知只提示检查依赖，不能直接充当可信结果。调用内的等待预算到期时返回“仍在运行”或未知状态，不能伪造完成，也不意味着底层 Task 已取消。Task 的结束作为新输入回到同一次执行，不改写调用当初已经得到的结果。
 
-这是一种由工具执行机制承接的等待，适合有界执行。它的主要风险是上下文陈旧：等待前读过的文件、对象或权限可能已经变化，恢复同一次执行不会自动刷新这些已成功的读取。选择模式时要考虑信息有效期，不能只用固定的秒数或分钟数划线。
+这是一种由工具执行机制承接的等待，适合有界执行。它的主要风险是上下文陈旧：等待前读过的文件、对象或权限可能已经变化，回到同一次执行不会自动刷新这些已成功的读取。选择模式时要考虑信息有效期，不能只用固定的秒数或分钟数划线。
 
 **模式二表达的是下一次需要响应什么。** Agent 可以说“等审批结果再继续”，但必须由工具或 Runtime 把该意图落实成可检查的订阅与超时条件；一句自然语言本身不构成订阅成功。完成委派与订阅后，本次执行可以结束，事件到达后由调度侧启动下一次处理。
 
@@ -1029,7 +1017,7 @@ Agent 委派工作后，当前推理可以已经结束，而业务目标尚未�
                  │
           事件桥接与订阅匹配
                  │
-                 ├── 当前 PendingTool 依赖 → 查询实际结果 → 精确回填调用
+                 ├── 本次执行的 Task 依赖 → 查询实际结果 → 带调用标识的 task 结果输入
                  │
                  ├── 主动订阅 → 待处理输入 → Runtime 调度 → 事件批次
                  │
@@ -1038,7 +1026,7 @@ Agent 委派工作后，当前推理可以已经结束，而业务目标尚未�
 
 主动事件与普通 Message 可以共享输入调度、去重和批次提交机制，但必须保留各自身份。Work 的“无普通 Message input”不能被事件渲染后的模型角色绕过；针对执行中同一任务的用户反馈仍按 §6.3.1 写为 Task 修订，经半订阅送达。开放性的业务事件等待由 UI / Goal 承担。
 
-**超时需要区分三个层次。** PendingTool 的等待期限决定何时回填当前调用；Runtime 的轮询或重新拉取用于检查是否已有状态变化；业务超时事件用于触发 Agent 的下一次判断。轮询一次不等于调用一次 LLM，等待状态也不会自动建立 Timer。业务需要防止漏通知时，应显式安排状态核对与超时兜底。
+**超时需要区分三个层次。** 调用内的等待预算决定调用何时返回“仍在运行”；Runtime 的轮询或重新拉取用于检查是否已有状态变化；业务超时事件用于触发 Agent 的下一次判断。轮询一次不等于调用一次 LLM，等待状态也不会自动建立 Timer。业务需要防止漏通知时，应显式安排状态核对与超时兜底。
 
 Session / behavior 的配置需要分别表达以下职责，具体字段不在本架构中冻结：
 
@@ -1058,7 +1046,7 @@ Session / behavior 的配置需要分别表达以下职责，具体字段不在�
 
 同一 Session 遵守 §12.5 的单执行者约束。推理或工具执行期间到达的普通事件先保存，不直接调用 LLM，也不抢占当前执行。主动事件等待下一次允许消费外部输入的边界，半订阅等待下一次推理前观察；明确的 stop / cancel 控制走独立的中断语义。
 
-“待处理事件”是逻辑职责，不要求主动输入、半订阅快照和 PendingTool 依赖共用一个物理队列。三者分别保存待处理输入、尚未展示的状态变化和待回填依赖，不能把主动事件的出队等同于工具完成。
+“待处理事件”是逻辑职责，不要求主动输入、半订阅快照和本次执行的 Task 依赖共用一个物理队列。三者分别保存待处理输入、尚未展示的状态变化和在跟的 Task，不能把主动事件的出队等同于 Task 完成。
 
 Session 已结束后不因迟到事件自动恢复。Work 的迟到反馈由 UI / Goal 判断是否创建新 Work；订阅解除、终止与队列中已有输入的处置应可追踪。
 
@@ -1110,10 +1098,10 @@ Memory 也可以通过 Topic 发现相关变化，但不必把它和外部对象
 
 | 误用 | 后果 | 合适的处理 |
 |---|---|---|
-| 用 PendingTool 等待数小时或数天后的用户审批 | 长期保留执行依赖，审批前的文件读取等结果可能已经失效。 | UI / Goal 发出审批请求并建立主动订阅与必要超时检查，本次执行结束；恢复业务时重读必要状态，条件成熟后创建 Work。 |
+| 让 run 为数小时或数天后才有的用户审批保活 | 长期保留执行依赖，审批前的文件读取等结果可能已经失效。 | UI / Goal 发出审批请求并建立主动订阅与必要超时检查，本次执行结束；恢复业务时重读必要状态，条件成熟后创建 Work。 |
 | 每次位置变化都主动唤醒 Agent | 高频推理成本增加，主上下文堆积大量低价值消息。 | 位置走半订阅，在订票等已有推理前按相关性、变化阈值和预算提供环境。 |
-| 委派任务后只靠半订阅获知完成 | 没有新的推理机会就不会处理结果，无法保证通知、催办或继续执行。 | 需要主动后续动作时建立主动完成事件或业务超时订阅；当前有界调用的返回依赖也可以由 PendingTool 承接。 |
-| Work 为一个必须的前提无限期等用户 | Work 失去“有界”，占着名额与执行资源。 | Work 的 `ask-user` 走通知，有界等待（缺省 3 小时），超时作为工具结果交还模型；它与“长时间 PendingTool 等审批”不同：等的是当前调用的一个答案，截止时间写在 run 里，到期即回填，不保留开放的业务等待。 |
+| 委派任务后只靠半订阅获知完成 | 没有新的推理机会就不会处理结果，无法保证通知、催办或继续执行。 | 需要主动后续动作时建立主动完成事件或业务超时订阅；当前有界调用的返回依赖也可以由 task 跟进承接。 |
+| Work 为一个必须的前提无限期等用户 | Work 失去“有界”，占着名额与执行资源。 | Work 用 `ask_user` 发通知提问：问题是一个有过期时间（缺省 3 小时）的 task，回答或过期都作为 task 结果交还模型；它与“长时间保活等审批”不同：等的是本次执行的一个答案，期限写在问题上，到期即有结果，不保留开放的业务等待。 |
 
 选择顺序是：先判断这是当前调用必须返回的结果，还是跨运行的业务变化；再判断是否需要主动响应；最后按等待期间的信息有效性、事件频率和上下文成本设置消费策略。三种模式应并存，不能用“所有变化都转主动消息”或“所有等待都变长 Tool”统一替代。
 
@@ -1123,7 +1111,7 @@ Memory 也可以通过 Topic 发现相关变化，但不必把它和外部对象
 
 宿主维护消息路由、有效订阅和调度依据；Session worker / runner 可以按需装载、空闲卸载。投递输入不应假设目标协程已经存在：先可靠接收，再请求调度；即使唤醒提示丢失，也能通过持久输入或依赖检查继续推进。
 
-有效运行机会包括首次 bootstrap、主动输入、Goal Activation、挂起调用的结果以及未完成提交的恢复，不能限定为“只有新 Message 到达才能装载”。启动时核对登记和持久状态，按这些条件与资源策略恢复执行，不要求所有长期 Session 常驻内存，也不能让待恢复工作无限等待新消息。
+有效运行机会包括首次 bootstrap、主动输入、Goal Activation、在跟的 Task 的结果以及未完成提交的恢复，不能限定为“只有新 Message 到达才能装载”。启动时核对登记和持久状态，按这些条件与资源策略恢复执行，不要求所有长期 Session 常驻内存，也不能让待恢复工作无限等待新消息。
 
 空闲卸载只释放执行资源，不删除 Session、订阅、待处理输入、调用依赖或结果；`keep_alive` 一类策略即使保留，也只表达资源驻留偏好，不决定逻辑生命周期。卸载前需确保提交完成且已发出的任务仍可查询或接管，不能把丢失工具句柄当作成功休眠。
 
@@ -1137,7 +1125,7 @@ Memory 也可以通过 Topic 发现相关变化，但不必把它和外部对象
 |---|---|
 | 就绪 / 空闲 | 有已提交任务或有效运行机会时推进；没有实际工作时不空转推理。 |
 | 正在运行 | 一个执行者推进模型、工具与上下文切换，遵守检查点和提交规则。 |
-| 等待调用依赖 | 保存调用身份与期限，以结果或到期状态回填当前执行，不能转成普通聊天等待。Work 经通知向用户提问也属于这一类（`waiting_for = input`，带截止时间与人工任务 id，Turn task 的等待原因为 `HumanInput`）：没有队列，卸载后由宿主按 recheck 与通知任务的 kevent 重新装载，到期以“未回答”回填。 |
+| 等待本次执行启动的工作 | 保存 Task 与调用身份，run 保活（`waiting_for = tool / children`），以结果或未知状态作为输入交回当前执行，不能转成普通聊天等待。Work 经 `ask_user` 向用户提问也属于这一类：问题是一个 Task，没有队列也能按 Task 标识查询，回答或过期都是它的结果。 |
 | 等待新运行机会 | UI 等交互，Goal 等调度或订阅事件；不为 Work 保留开放的需求确认等待。 |
 | 暂停 / 预算不足 | 保存原因及未完成事项；是否恢复由授权控制和预算策略决定，不伪报完成。 |
 | 错误 / 恢复阻塞 | 保留证据，区分可恢复执行错误、未知副作用和不可满足的任务前提，再选择恢复或失败。 |
@@ -1210,7 +1198,7 @@ Goal 的某次运行可能只有几个 Turn，也可能创建多个 Work。页�
 | 对象 | 建议包含的核心信息 |
 |---|---|
 | Session Record | `session_id`、`agent_id`、类型、状态、Context 引用，以及对应 Task 或 Goal 的关联。 |
-| Session Execution Record | 配置版本、当前 Turn / run、上下文栈、快照与日志提交边界、初始化进度、待回填调用、等待与中断原因。 |
+| Session Execution Record | 配置版本、当前 Turn / run、上下文栈、快照与日志提交边界、初始化进度、待派发调用与在跟的 Task、等待与中断原因。 |
 | Input / Observation Commit | 输入稳定身份、接收与消费进度、提交 receipt、订阅版本，以及 Task 修订和辅助观察各自的进度。 |
 | Runtime / Workspace Binding | 运行身份、实际执行目标、工作目录、工具环境与持久配置的对应关系。 |
 | Delivery Record | 回复或 Report 身份、阶段与版本、接收方、原消息引用、发送结果与重试进度。 |
@@ -1388,7 +1376,7 @@ Work 结束要能使创建方获得结果；Goal 调整要能使后续运行使�
 
 结果处理至少要能识别“哪个 Work、为哪个版本目标、在什么任务条件下产生”。旧 Work 的成功或失败不能不加判断地覆盖已经调整过的 Goal 状态。
 
-三种机制应按调用关系选择：父 Session 挂起在本次子调用上时，结果回填对应调用；需要在本轮结束后主动处理结果时，建立主动订阅；只需为后续已有推理补充背景时，使用半订阅。通知可以共用事件基础设施，但不能同时被无条件当成新指令、工具结果和已处理回执。
+三种机制应按调用关系选择：父 Session 的本次执行在等它启动的子调用（子 Session、Task）时，结果作为带调用标识的输入回到这次执行；需要在本轮结束后主动处理结果时，建立主动订阅；只需为后续已有推理补充背景时，使用半订阅。通知可以共用事件基础设施，但不能同时被无条件当成新指令、工具结果和已处理回执。
 
 事件摘要不替代 Final Report。创建方收到完成或超时提示后，仍需核对正式状态与产物，再决定是否通知用户、继续等待或创建新 Work。
 
@@ -1459,7 +1447,7 @@ Context Fork、Work 执行、Final Report、已有 Task 等待和 Agent Memory �
 | 能力 | 现有实现基础 | 面向新设计的迁移要求 |
 |---|---|---|
 | Session 分类与输入策略 | 内建模板仍为 `work / ui / self_improve / self_check`；默认 Work 单 Turn、无输入队列。 | 引入 Goal 职责与生命周期；保留 Work 无普通 Message input 的边界，补齐执行中观察。 |
-| PendingTool | 按 Task ID 查询；所有挂起调用可回答后以 `ResumeFill::ToolResults` 恢复同一 run / Turn。Task Finished、Unknown 或各调用 `until_ms` 到期均可能使等待可回答。 | 复用精确依赖与恢复机制；限制开放业务等待，明确到期仍运行和旧读取失效的处理。 |
+| task 跟进 | 调用在 runtime 的等待预算（`runtime.task_wait_ms`）内返回；仍在运行的 Task 记在 run 上，回复 / Yield 时 run 保活（`waiting_for = tool / children`），按 Task ID 查询，Finished 或 Unknown 时以 `<<task_result>>` 输入回到同一 run / Turn；崩溃时在途的调用由工具管理器按 call_id 找回，不盲目重放。 | 复用精确依赖与恢复机制；限制开放业务等待，明确到期仍运行和旧读取失效的处理。 |
 | 订阅与事件身份 | `subscriptions` 支持 `active / semi`，来源为 `session / object_event / task / timer / system`；`subscribe / unsubscribe` 控制修改配置。总线区分 `msg / event / control`。 | 复用结构化事件与订阅；完善业务意图到订阅、失效、超时及恢复的合同，不把自然语言意图当作已登记。 |
 | 串行推进与批次 | Runner 持 Session lease；active 事件留在输入总线，支持 `single / batch`，默认 batch；semi 另存 `state.pending_events`。 | 保持单执行者与逻辑队列分工，补齐跨节点协调，按业务语义设定合并及消费策略。 |
 | Task 修订 | 尚无修订概念；订阅已支持 `task:<task_id>` 来源（`SubscriptionSource::Task`），可承载任务事件。 | 新增 Task 修订的数据与授权；Work 创建时由 Runtime 订阅自身 Task，子 Session 由父 Session 按子对象范围订阅；修订必达，不受 Memory 预算截断；Final Report 记录最后观察的修订编号。 |
@@ -1467,9 +1455,9 @@ Context Fork、Work 执行、Final Report、已有 Task 等待和 Agent Memory �
 | 半订阅载体 | `prompt.semi_subscription_snapshot` 渲染独立的 snapshot user message，与其后的受控输入同批提交。主动事件通过 `input.events / input.items` 等视图渲染。 | 保留来源可辨性与原子提交，收敛与当前输入关联的环境 block / 观察材料格式；当前独立消息不等于目标 UI 语义已完成。 |
 | 合并与观察进度 | semi 按 `(subscription_id, source)` 分组；`latest / terminal` 分槽，槽内比较版本，终态不被非终态覆盖。仅按 receipt 清理实际展示版本。active 没有同等状态合并，当前也没有通用语义 Override。 | 复用版本与精确确认机制；区分状态维度、独立要求及显式纠正关系，再实现适用事件的 Coalesce / Override。 |
 | Topic 与成本控制 | 有 Topic 字段、显式/隐式订阅和每批变化预算，已有默认用户时区半订阅；未形成旁路 LLM 维护 Topic、自动重订阅与统一相关 Memory 观察链路。 | 实现 §12.10 的范围选择、增量观察、变化幅度与间隔控制，保证相关新感知及时可见。 |
-| 事件桥接与超时 | 已有 Timer / KEvent bridge；Timer 按 `every_secs` 生成事件，再由订阅决定路由。Session 状态拉取目前进入半订阅；PendingTool 也支持无通知时轮询查询。 | 补齐需要主动响应的状态来源与超时核对；不能将定时轮询或所有 Session 订阅描述成已经保证主动唤醒。 |
-| 意图分析 | 2026-10-11 起（[意图分析 TODO](../../notepads/opendan-analyze-user-intent-todo.md)）：behavior `[tool]` 声明生成 `try_analyze_user_intent`；`analyze_intent` 为 fork 子 context；`ask-user` 以 PendingTool `userinput:` 挂起，下一条消息回填为工具结果；问答以 `thread → 占位` + `agent_ask` 出站；Work 有 `plan` 与 `work_simple` 两种形态；Runtime 登记 `container` / `host`。见 §5.6。 | 计划任务（未来执行的 Work）；宿主机执行器；Task 修订；Anthropic `cache_control` 断点（前缀缓存命中依赖 provider 链路）。 |
-| System Notify | 2026-10-11 起（[通知人 TODO](../../notepads/opendan-agent-notify-todo.md) 第一段）：通知是 msg-center 的 `kind = notify` 消息（`buckyos.notify`），`input` 另挂 TaskMgr HumanSet 任务；libopendan `NotifyHost`（zone：Loader 的 `ZoneNotify`；`--dev` / 测试：`LocalNotify` 文件实现）；Work 的 `ask-user` 经通知有界等待；Goal `questions` 发成通知、回答以 `answer` Activation 回流；UI Session 以隐式半订阅 `_notify`（`system:notify:<id>`）观察在本会话呈现过的通知，并可经 `agent-session notify answer / ack` 代用户处理（审批除外、本 Session 发起的除外）。 | 第二段：`post-message` 与回复关联、机械审批、触达设置与升级、状态变化的观察事件。 |
+| 事件桥接与超时 | 已有 Timer / KEvent bridge；Timer 按 `every_secs` 生成事件，再由订阅决定路由。Session 状态拉取目前进入半订阅；在跟的 Task 也支持无通知时轮询查询。 | 补齐需要主动响应的状态来源与超时核对；不能将定时轮询或所有 Session 订阅描述成已经保证主动唤醒。 |
+| 意图分析 | 2026-10-11 起（[意图分析 TODO](../../notepads/opendan-analyze-user-intent-todo.md)）：behavior `[tool]` 声明生成 `try_analyze_user_intent`；`analyze_intent` 为 fork 子 context；提问用 websdk 的 `ask_user`（通知 Task，回答以 `<<task_result>>` 交回）；Work 有 `plan` 与 `work_simple` 两种形态；Runtime 登记 `container` / `host`。见 §5.6。 | 计划任务（未来执行的 Work）；宿主机执行器；Task 修订；Anthropic `cache_control` 断点（前缀缓存命中依赖 provider 链路）。 |
+| System Notify | 2026-10-11 起（[通知人 TODO](../../notepads/opendan-agent-notify-todo.md) 第一段）：通知是 msg-center 的 `kind = notify` 消息（`buckyos.notify`），`input` 另挂 TaskMgr HumanSet 任务；libopendan `NotifyHost`（zone：Loader 的 `ZoneNotify`；`--dev` / 测试：`LocalNotify` 文件实现）；`ask_user` 的问题是 `input` 通知，回答是它的任务结果；Goal `questions` 发成通知、回答以 `answer` Activation 回流；UI Session 以隐式半订阅 `_notify`（`system:notify:<id>`）观察在本会话呈现过的通知，并可经 `agent-session notify answer / ack` 代用户处理（审批除外、本 Session 发起的除外）。 | 第二段：`post-message` 与回复关联、机械审批、触达设置与升级、状态变化的观察事件。 |
 | Goal 的现有实现 | 2026-10-11 起（[Goal Session TODO](../../notepads/opendan-goal-session-todo.md) 第一段）：Goal 对象在 Agent State（`state/goals/`，定义 / 修订 / Goal State / Activation 记录 / epoch / 计划进度），模板 `goal`；宿主按 Goal 列表补建 Goal Session，运行机会为 epoch 开始、本地定时（`every_secs`，可替换的 `ScheduleBackend`）、手动、Work 结束、UI 转交的消息；一个 Activation = 一个 Turn，Goal 头在批次提交前冻结；结束只关闭 Turn，结果按 Goal 格式写回；Work 带 `origin.goal`，按 `goal_id` 吸收。 | 第二段：workflow 计划任务接入（cron、时区、一次性）、Memory 整理 Goal 与删除 self_improve、self_check 退役、WebUI Goals 视图、follow_up 与对象订阅驱动、通知人。 |
 
 实现核对入口：
@@ -1529,7 +1517,7 @@ Context Fork、Work 执行、Final Report、已有 Task 等待和 Agent Memory �
 | 修复 Work 已提交 PR，但 Issue 仍未关闭 | Work 按自身约定结束；Goal 继续跟踪，不强制延长 Work。 |
 | 原 Work 已结束后，Issue 出现新的有效修改意见 | Goal 重新收敛具体变更，条件成熟后创建新的 Work；仍在执行的同任务反馈按 §6.3.1 处理。 |
 | 用“等待子 Task”包装无限业务等待 | 能识别其真实边界问题，不能据此绕过 Work 约束。 |
-| PendingTool 等待通知丢失或达到等待期限 | 查询正式 Task 状态，按调用身份恢复；到期仍运行不伪造完成，不因一次轮询调用 LLM。 |
+| 在跟的 Task 通知丢失或调用内等待到期 | 查询正式 Task 状态，以带调用身份的 task 结果交回；到期仍运行不伪造完成，不因一次轮询调用 LLM。 |
 | Goal 委派任务后结束本轮，之后收到完成或业务超时事件 | 经主动订阅与 Runtime 调度重新判断，不依赖用户再发消息，必要时重读状态和 Report。 |
 | Session 推理中连续收到主动事件 | 普通事件排队，不启动并发推理；在允许的消费边界按预算批量处理，控制中断另行处理。 |
 | 高频环境变化且没有新的运行机会 | 合并适用的状态变化，不由半订阅自行唤醒；下次已有推理前按相关性和预算观察。 |
@@ -1595,9 +1583,9 @@ Context Fork、Work 执行、Final Report、已有 Task 等待和 Agent Memory �
 
 | 事项 | 当前方向 | 尚需确定 |
 |---|---|---|
-| Agent 主动通知人 | **第一段已采用**（[通知人 TODO](../../notepads/opendan-agent-notify-todo.md)）：System Notify 在 msg-center（App 稳定接口 `notify.*`）；Work `ask-user` 经通知有界等待（缺省 3 小时）；Goal `questions` 发成通知；UI 观察 `_notify` 与代理回答 | `post-message` 与回复关联、机械审批（先单列 llm_context TODO）、触达设置、状态变化的观察事件。 |
+| Agent 主动通知人 | **第一段已采用**（[通知人 TODO](../../notepads/opendan-agent-notify-todo.md)）：System Notify 在 msg-center（App 稳定接口 `notify.*`）；`ask_user` 以通知提问，问题是有过期时间（缺省 3 小时）的 Task；Goal `questions` 发成通知；UI 观察 `_notify` 与代理回答 | `post-message` 与回复关联、机械审批（先单列 llm_context TODO）、触达设置、状态变化的观察事件。 |
 | 意图分析接口名称 | **已采用**（§5.6）：`try_analyze_user_intent(request)`，由 behavior `analyze_intent` 的 `[tool]` 声明；旧 `task_route` 已删除；返回 `{status, behavior, submission: {report, result}}`，`result.outcome` 六种；创建在分析内部完成，不拆分创建调用 | `result` 字段目前只由引导文字约定，宿主不校验。 |
-| 自动创建与二次确认 | **已采用**：条件齐备时在分析内自动创建；需要用户拍板的单个选择作为 `ask-user` 问题问完仍自动创建；无法用一个问题问清的整体方案返回 `needs_confirmation`，UI 讲清后再调一次 | 哪些权限条件必须二次确认（目前只靠引导文字约束，按“先能力后安全”记为已知风险）。 |
+| 自动创建与二次确认 | **已采用**：条件齐备时在分析内自动创建；需要用户拍板的单个选择作为 `ask_user` 问题问完仍自动创建；无法用一个问题问清的整体方案返回 `needs_confirmation`，UI 讲清后再调一次 | 哪些权限条件必须二次确认（目前只靠引导文字约束，按“先能力后安全”记为已知风险）。 |
 | Goal 与 Goal Session 的绑定 | 倾向同一 Goal 保持主要逻辑 Context 连续。**当前实现（2026-10-11，Goal Session TODO 第一段）**：同一时刻一个 Goal 一个 Goal Session，按 `(goal_id, epoch)` 确定性派生；reopen / restart 开新 epoch（旧 Session 结束、Goal State 存档），Work 按 `goal_id` 归属、跨 epoch 由新 Session 接管 | 多 Session 协作、跨节点所有权。 |
 | Goal 压缩策略 | 比 UI 更重视目标历史与当前 Skills | 阈值、摘要结构和恢复算法。 |
 | Work 时限与资源 | 相对短期且有界 | 不同任务类别的超时、轮次和失败判定。 |

@@ -105,9 +105,9 @@ Todo 执行器是声明了 `[entry] todo = true` 的 behavior（只能是 `creat
 Jarvis 的 `plan_simple`（`agent-session create-worksession --class plan_simple`，类 `[session.plan_simple]`：`base = "work"`、`completion = "explicit_report"`）用原生 function call 走同一个 TodoList，**整个计划是一个 Turn**，每个 Todo attempt 都在自己的 Sub Session 里执行，不经过 `next_behavior` / DO 子 context：
 
 1. **派发保留形态**：`todo add` 建串行 Todo，`todo dispatch <id>` 把它派发为独立 Work Session（`libopendan::todos::dispatch_serial`，入口 behavior 默认 `work_simple`，Workspace 缺省继承本 Session 的）；`todo explore` 建探索并立即派发（缺省 `explore`、无 Workspace）。串行准入在列表锁内检查并记录（`TodoList::admit_serial`）：Todo 为 `pending`、没有其它串行 Todo 在执行、所有已返回结果都已 Review、`after` 中的 Todo 都已接受；不满足 → 返回 `dispatched: false` 与原因（退出码 3），Todo 保持 `pending`，不记 `refusals`。同一 attempt 重复派发返回同一个子 Session。派发时用的 behavior 写入 Todo 与 attempt，重试沿用，同时沿用 Todo 的 runtime / workspace / skills。
-2. **等待**：PLAN 单独发一个 shell 调用 `agent-session wait <child_sid>`：结果 `Pending(session:<sid>)`，run 挂起、Turn 保持打开，期间不推理。回填后、下一次推理之前，宿主先把子 Session 的已提交状态写回列表（`fill` 中 `todos::sync`），因此 `todo show --report` 与 `todo review` 立即可用。`--wait-ms` 给等待一个截止时间（按秒取整），到时以“仍在运行”的状态作为结果返回。子 Session 需要输入 / 决定时同样返回（`needs_input` / `needs_decision`）。
+2. **等待**：PLAN 不在调用里等。`agent-session wait <child_sid>` 立即返回子 Session 的当前状态：已结束 → 它的结果；需要输入 / 决定 → `needs_input` / `needs_decision`；仍在运行 → “仍在运行”的结果。子还在运行时 PLAN 结束这次回复即可：run 为它保活、Turn 保持打开，期间不推理；子的结束作为 `_child` 输入注入同一个 run。放进批次之前，宿主先把子 Session 的已提交状态写回列表（批次边界的 `todos::sync`），因此 `todo show --report` 与 `todo review` 立即可用。
 3. **背景**（`[input] background = "after_tools"`）：每批工具结果配对完整后、下一次推理之前，宿主同步列表，并把自上次展示以来变化的行作为一条 `<<background_context>>` 用户消息追加：每个 Todo 一行（与视图中的 `<todo …>` 元素相同）、未绑定 Todo 的子 Session（运行中只报状态变化，不报其活动）。Session 自己的 runtime 与 workspace 在其生命期内冻结、首条输入已给出，不进背景。已展示的行（键 → 摘要）记在快照宿主元数据 `HostMeta.observed`，与这条消息一起随快照发布：发布前崩溃会重新展示，发布后不会重复；历史重写后重新展示。已展示结束状态的子 Session 计为“已收到”（与被 wait 的子 Session 一样），结束检查不再等它。
-4. **调用意图**（`[capabilities] call_intent = true`）：每个原生调用的参数都要有非空 `intent`（宿主加到每个函数 schema 的 required 中；缺失、空白、非字符串时该调用不执行，返回可修正错误）；原始调用（含 intent）留在快照、in-flight 记录与 worklog，交给工具的参数去掉 intent。`report` 的宿主分支走同一检查。
+4. **调用意图**（`[capabilities] call_intent = true`）：每个原生调用的参数都要有非空 `intent`（宿主加到每个函数 schema 的 required 中；缺失、空白、非字符串时该调用不执行，返回可修正错误）；原始调用（含 intent）留在快照与 worklog，交给工具的参数去掉 intent。`report` 的宿主分支走同一检查。
 5. **结束**：只有 `report(is_end=true)` 结束 Session；§8 的结束检查不变（另要求子 Session 都已收到）。普通文本回复不算完成（`explicit_report` 下 Session 失败）。
 
 ## 5. 探索执行（`todo explore` / `todo dispatch`）
@@ -126,10 +126,10 @@ Jarvis 的 `plan_simple`（`agent-session create-worksession --class plan_simple
 
 ## 6. 等待 = 不做决策
 
-PLAN 没有要做的事、只等探索返回时，回复**只有一个阶段 `<report>`**（无 actions、无 sendmsg、无 next_behavior）。宿主的判断：
+PLAN 没有要做的事、只等探索返回时，这一步**不做决策**：没有 actions、不是结束报告、没有 next_behavior，可以带一个阶段 `<report>`（Yield）。Yield 立即结束这一段推理，宿主的判断：
 
-- 顶层 context 且有未收齐的子 Session → 接受：run 结束，Turn 保持打开，`waiting_for = {kind: children, refs: [sid…]}`（worklog `outcome.kind = wait`）。任一子 Session 结束，其结束事件作为 `_child` 内部输入并入同一个 Turn 的下一个批次，PLAN（新 run，`inherit = recent_dialogue` 带着会话历史）带着更新后的视图继续——一个回来就可以 Review 一个。
-- 没有可等的 → 不表态：阶段报告照常记录，context 继续推理（原有语义）；连续第三个只有阶段报告的回复被拒绝并说明原因（防空转）。
+- 顶层 context 且有未收齐的子 Session → run 保活：不结束，Turn 保持打开，`waiting_for = {kind: children, refs: [sid…]}`（worklog `outcome.kind = wait`）。任一子 Session 结束，其结束事件作为 `_child` 内部输入注入同一个 run，PLAN 在同一份上下文里带着更新后的视图继续（Step 编号接续）——一个回来就可以 Review 一个。
+- 没有可等的 → Yield 照样结束 run，阶段报告就是回复；它会使 Work Session 就此结束时以 `missing_end_report` 失败（只有阶段报告不能完成 Session）。
 - `next_behavior = do` 而没有就绪 Todo、但有探索在跑 → 同样按等待处理。
 
 不提供批量等待工具，PLAN 也不选“等哪一个”。父 Session 停止时停止级联到探索子 Session，等待中的 Turn 随之关闭；之后的对账把这些 attempt 记为 `stopped`。
@@ -166,7 +166,7 @@ todo add <title> --content <t> [--accept <criterion>]... [--scope <t>] [--eviden
                                                                       # 串行 Todo：PLAN/DO 由 DO 执行（指到别处时在自己的 Work Session 里）；plan_simple 用 todo dispatch
 todo explore <title> --content <t> [同上选项] [--class <c>]           # 建 Todo 并派发探索
 todo dispatch <todo_id> [--behavior <b>] [--class <c>]               # 派发 pending Todo，保留形态：串行按 §4a 准入，探索立即派发
-wait <child_sid> [--wait-ms <ms>]                                     # 挂起当前调用，等该子 Session 结束或需要输入/决定
+wait <child_sid>                                                      # 立即返回该子 Session 的状态；仍在运行时结束回复，它的结束是下一条输入
 todo list [--json]                                                    # 紧凑视图 / 完整 JSON
 todo show <todo_id> [--report]
 todo review <todo_id> (--accept | --reject | --need-evidence) --reason <t> [--followup <todo_id>]...
@@ -185,13 +185,13 @@ owner 侧只读：`xagent todo list <sid> [--json]`、`xagent todo show <todo_id
 - 不删除 Todo（`cancel` / `clean` 只改状态并记理由）。
 - 不做任意依赖图：只有 `--after`（“这些结果被接受后才执行”），足以表达“探索完成并 Review 后再串行验证或汇总”。
 - 调度方式只有串行与探索；执行载体是本 Session 的子 context，或（Todo 指向别的 runtime/Workspace 时、plan_simple 中总是）独立 Work Session——不能把串行 Todo 改成并行探索来换机器，`todo dispatch` 不改变 Todo 的形态。
-- 不提供 wait-any：`wait A` 只等 A。
+- 不提供 wait-any 命令：`wait A` 只回答 A 的状态；等待由 run 保活承担，任一子 Session 的结束都是下一条输入。
 - 已运行的 attempt 不接受改 runtime；换机器 = 新 attempt（`todo retry`）或新 Todo。
 - 执行者与 owner 侧不写列表。
 
 ## 11. 验证
 
 - 组件：`cargo test -p agent_tool --lib todo_tools`（ID、状态、重试、锁）。
-- Runner / CLI：`cargo test -p libopendan --test plan_do_todo -- --test-threads=1`（并行探索、等待、Review、串行 DO、可修正拒绝、并发闸、失败重试、重放、工具进程与 runner 崩溃窗口、停止级联、结束检查、空转上限）。
-- plan_simple：`cargo test -p libopendan --test plan_simple -- --test-threads=1`（真实 Jarvis 包：类与函数契约、intent 正反例、两个串行 Todo 各自的子 Session 与继承 Workspace、准入拒绝、wait 回填后报告可读、背景去重与批次边界、并行探索与重试、背景展示即收到、等待截止与子 Session 失败、注入前后崩溃恢复）；组件 `cargo test -p agent_tool --lib todo_tools`、`cargo test -p libopendan --lib runner::`。
+- Runner / CLI：`cargo test -p libopendan --test plan_do_todo -- --test-threads=1`（并行探索、等待、Review、串行 DO、可修正拒绝、并发闸、失败重试、重放、工具进程与 runner 崩溃窗口、停止级联、结束检查）。
+- plan_simple：`cargo test -p libopendan --test plan_simple -- --test-threads=1`（真实 Jarvis 包：类与函数契约、intent 正反例、两个串行 Todo 各自的子 Session 与继承 Workspace（等待期间 run 保活）、准入拒绝、子 Session 的结束作为输入回来后报告可读、背景去重与批次边界、并行探索与重试、背景展示即收到、对运行中子 Session 的 wait 与子 Session 失败、注入前后崩溃恢复）；组件 `cargo test -p agent_tool --lib todo_tools`、`cargo test -p libopendan --lib runner::`。
 - 真实模型：`test/plan_do_todo_dv/`（README）。

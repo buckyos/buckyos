@@ -237,6 +237,11 @@ pub trait TypedTool: Send + Sync + 'static {
         false
     }
 
+    /// See `AgentTool::idempotent`.
+    fn idempotent(&self) -> bool {
+        false
+    }
+
     /// Default impl derives the schema from `Self::Args` via `schemars`.
     /// Tools whose args are a runtime-defined `serde_json::Value` (MCP,
     /// Worklog) override this to supply a richer hand-written schema.
@@ -435,6 +440,10 @@ impl<T: TypedTool> AgentTool for TypedToolHandle<T> {
 
     fn cancellable(&self) -> bool {
         self.inner.cancellable()
+    }
+
+    fn idempotent(&self) -> bool {
+        self.inner.idempotent()
     }
 
     async fn call(

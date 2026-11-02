@@ -43,21 +43,19 @@ async fn report_stop_crash_driver() {
     let session = SessionDir::open(session).unwrap();
     let nested = std::env::var(NESTED).unwrap() == "true";
     let llm = ScriptedLlm::new(move |_, n| {
+        // Nested: the call registers the sub context, which starts once the
+        // parent stops acting.
         if nested && n == 0 {
-            return batch(&[
-                (
-                    "delegate",
-                    "call_behavior",
-                    json!({"behavior":"research", "task":"report your result"}),
-                ),
-                (
-                    "parent-after",
-                    "shell",
-                    json!({"command":"echo forbidden > parent-after.marker"}),
-                ),
-            ]);
+            return batch(&[(
+                "delegate",
+                "call_behavior",
+                json!({"behavior":"research", "task":"report your result"}),
+            )]);
         }
-        assert_eq!(n, usize::from(nested));
+        if nested && n == 1 {
+            return text("waiting for the research");
+        }
+        assert_eq!(n, if nested { 2 } else { 0 });
         batch(&[
             (
                 "before",
@@ -156,7 +154,6 @@ async fn accepted_final_report_is_delivered_and_paired_before_recovered_stop() {
                 "once\n"
             );
             assert!(!session.path().join("after.marker").exists());
-            assert!(!session.path().join("parent-after.marker").exists());
             let state = session.state().unwrap();
             assert_eq!(
                 state.outcome,
@@ -195,11 +192,7 @@ async fn accepted_final_report_is_delivered_and_paired_before_recovered_stop() {
             if nested {
                 assert!(results.iter().any(|(id, status, result)| *id == "delegate"
                     && *status == "ok"
-                    && result.contains("accepted before stop")
-                    && result.contains(accepted_id)));
-                assert!(results
-                    .iter()
-                    .any(|(id, status, _)| *id == "parent-after" && *status == "cancelled"));
+                    && result.contains("registered")));
                 assert!(state.final_report.is_none());
             } else {
                 assert_eq!(

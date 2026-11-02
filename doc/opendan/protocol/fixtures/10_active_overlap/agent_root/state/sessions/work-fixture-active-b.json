@@ -10,7 +10,7 @@
     "principal": "app:app2@alice"
   },
   "location": "${FIXTURE_ROOT}/app/work-fixture-active-b",
-  "input_queue": "app2::alice::opendan.session.work-fixture-active-b",
+  "input_queue": "app2::alice::opendan.session.bcaa9ecb802414dd44c8b26eb958b30718735868efa34dc51567b5b465f15c29",
   "wake_event": "/opendan/jarvis.alice/session/work-fixture-active-b/input",
   "agent_access": "full",
   "workspace": {
@@ -33,7 +33,7 @@
       "summary": "",
       "heartbeat_ms": 0
     },
-    "updated_at_ms": 1792976021538
+    "updated_at_ms": 1793591511237
   },
   "location_rev": 0
 }

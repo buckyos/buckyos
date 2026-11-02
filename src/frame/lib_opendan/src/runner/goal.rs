@@ -21,7 +21,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use llm_context::{escape_xml_attr, escape_xml_text};
+use agent_tool::{escape_xml_attr, escape_xml_text};
 use serde::Serialize;
 use serde_json::{json, Value};
 

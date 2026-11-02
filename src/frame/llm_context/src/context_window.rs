@@ -156,11 +156,11 @@ pub fn estimate_request(tokenizer: &dyn Tokenizer, req: &LlmInferenceRequest) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::request::{BudgetSpec, ContextOwnerRef};
+    use crate::request::BudgetSpec;
 
     fn request(budget: BudgetSpec, max_completion: Option<u32>) -> LLMContextRequest {
         let mut r = LLMContextRequest {
-            owner: ContextOwnerRef::OneShot { id: "t".into() },
+            owner: serde_json::json!({"id": "t"}),
             trace: None,
             objective: String::new(),
             behavior_name: String::new(),
@@ -169,7 +169,6 @@ mod tests {
             tool_policy: Default::default(),
             output: Default::default(),
             budget,
-            human_policy: Default::default(),
             error_policy: Default::default(),
             forbid_next_behavior: false,
         };

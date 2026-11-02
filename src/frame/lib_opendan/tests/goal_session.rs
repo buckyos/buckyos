@@ -1537,7 +1537,7 @@ async fn a_run_opportunity_joining_an_open_activation_is_one_of_its_reasons() {
 /// V14 (notify TODO): the questions of an Activation reach the user as
 /// notifications — one per question text, a question that is no longer
 /// asked is canceled; the answer comes back as an `answer` Activation and
-/// the question records it. In a Goal `ask-user` points to `questions`.
+/// the question records it.
 #[tokio::test]
 async fn goal_questions_reach_the_user_and_answers_come_back() {
     use libopendan::notify::{LocalNotify, NotifyAnswer, NotifyHost, NotifyListReq, NotifyStatus};
@@ -1548,17 +1548,8 @@ async fn goal_questions_reach_the_user_and_answers_come_back() {
             return text("not a goal");
         }
         match act(req) {
-            1 if has_tool_result(req, "a1").is_none() => tool_call(
-                "a1",
-                "shell",
-                json!({ "command": "agent-session ask-user 'Which repository?'" }),
-            ),
-            1 => {
-                let r = has_tool_result(req, "a1").unwrap();
-                assert!(r.contains("put the question in `questions`"), "{r}");
-                report(json!({ "decision": "needs_info",
-                               "questions": ["Which repository should I watch?", "How often?"] }))
-            }
+            1 => report(json!({ "decision": "needs_info",
+                                "questions": ["Which repository should I watch?", "How often?"] })),
             2 => report(json!({ "decision": "needs_info",
                                 "questions": ["Which repository should I watch?"] })),
             _ => report(json!({ "decision": "acted", "distance": "watching" })),
@@ -1566,7 +1557,6 @@ async fn goal_questions_reach_the_user_and_answers_come_back() {
     });
     let mut deps = host_deps(&env, llm.clone());
     deps.notify = Some(local.clone());
-    deps.session_cli = Some(std::path::PathBuf::from(env!("CARGO_BIN_EXE_xagent")));
     let clock = ManualClock::at(libopendan::now_ms());
     let mut opts = GoalHostOptions::new(
         env.agent_root.join("sessions"),

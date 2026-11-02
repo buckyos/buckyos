@@ -16,7 +16,7 @@ use buckyos_api::{
 };
 use serde_json::json;
 
-use crate::deps::{InferenceHook, LLMContextDeps, LlmClient, LlmInferenceRequest};
+use crate::deps::{CheckpointHook, LLMContextDeps, LlmClient, LlmInferenceRequest};
 use crate::error::{LLMComputeError};
 use crate::outcome::{ContextOutput, LLMContextOutcome, ResumeFill};
 use crate::state::{LLMContextSnapshot, LLMContextState};
@@ -198,13 +198,13 @@ async fn invalid_response_role_is_rejected_before_accumulation() {
 }
 
 #[tokio::test]
-async fn inference_hook_fires_before_each_inference() {
+async fn checkpoint_hook_fires_before_each_inference() {
     let llm = Arc::new(ScriptedLlm::new(vec![text_response("hello back")]));
     let count = Arc::new(Mutex::new(0));
-    let hook: Arc<dyn InferenceHook> = Arc::new(CountingHook {
+    let hook: Arc<dyn CheckpointHook> = Arc::new(CountingHook {
         count: count.clone(),
     });
-    let deps = LLMContextDeps::new(llm, Arc::new(EchoTools)).with_inference_hook(hook);
+    let deps = LLMContextDeps::new(llm, Arc::new(EchoTools)).with_checkpoint_hook(hook);
     let mut ctx = LLMContext::new(base_request(), deps);
 
     let _ = ctx.run().await;

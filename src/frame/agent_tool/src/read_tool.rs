@@ -240,6 +240,10 @@ impl ReadTool {
 
 #[async_trait]
 impl AgentTool for ReadTool {
+    fn idempotent(&self) -> bool {
+        true
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_READ.to_string(),

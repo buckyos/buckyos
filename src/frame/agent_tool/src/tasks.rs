@@ -12,9 +12,9 @@
 //!   anything else to the optional buckyos task-mgr resolver the host may
 //!   supply.
 //! - `wait_task` / `get_task_state` / `cancel_task`: the tools the model
-//!   uses to follow a task. Their result text is the waist's
-//!   `task_state_observation`, so an inline wait and the fill of a
-//!   suspended call read the same.
+//!   uses to follow a task. Their result text is
+//!   `task_model::task_state_observation`, so a task tool and the wait of a
+//!   pending call within its budget read the same.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -25,7 +25,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use llm_context::deps::ToolCallCtx;
 use llm_context::observation::Observation;
-use llm_context::tasks::{
+use crate::task_model::{
     task_state_observation, CancelUnsupported, RunningTaskResolver, TaskBrief, TaskFollowup,
     TaskResult,
     TaskState, DEFAULT_TASK_WAIT_MS, MAX_IN_TOOL_WAIT_MS,
@@ -36,6 +36,7 @@ use crate::llm_bash::{
     exec_dir_for, read_exit_file, read_file_tail, CommandHandle, RunBinding, RunBindingSlot,
     OUTPUT_TAIL_BYTES,
 };
+use crate::result_view::ToolResultView;
 use crate::tool::CallingConventions;
 use crate::{
     build_builtin_tool_result, AgentTool, AgentToolError, AgentToolResult, AgentToolStatus,
@@ -191,7 +192,7 @@ impl ShellTask {
         let result = TaskResult {
             success: out.exit_code == 0 && !out.timed_out && !cancelled,
             output: text,
-            tool_result: Some(llm_context::observation::ToolResultView {
+            tool_result: Some(crate::result_view::ToolResultView {
                 cmd_name: Some(crate::llm_bash::TOOL_SHELL.into()),
                 cmd_args: Some(self.command.clone()),
                 summary: if cancelled {
@@ -481,7 +482,7 @@ pub fn exec_dir_state(task_id: &str, dir: &Path) -> TaskState {
             TaskState::Finished(TaskResult {
                 success: code == 0,
                 output: text,
-                tool_result: Some(llm_context::observation::ToolResultView {
+                tool_result: Some(crate::result_view::ToolResultView {
                     cmd_name: Some(crate::llm_bash::TOOL_SHELL.into()),
                     cmd_args: Some(command),
                     return_code: Some(code),
@@ -683,20 +684,16 @@ impl RunningTaskResolver for CompositeTaskResolver {
 /// `AgentToolResult` carrying exactly the text of `task_state_observation`.
 fn result_from_observation(tool: &str, task_id: &str, obs: Observation) -> AgentToolResult {
     let (status, text, view) = match obs {
-        Observation::Success {
-            content,
-            tool_result,
-            ..
-        } => (
+        Observation::Success { content, host, .. } => (
             AgentToolStatus::Success,
             content.as_str().unwrap_or_default().to_string(),
-            tool_result,
+            ToolResultView::from_host(&host),
         ),
-        Observation::Error {
+        Observation::Error { message, host, .. } => (
+            AgentToolStatus::Error,
             message,
-            tool_result,
-            ..
-        } => (AgentToolStatus::Error, message, tool_result),
+            ToolResultView::from_host(&host),
+        ),
         other => (AgentToolStatus::Error, format!("{other:?}"), None),
     };
     let summary = view
@@ -764,11 +761,15 @@ impl WaitTaskTool {
 
 #[async_trait]
 impl AgentTool for WaitTaskTool {
+    fn idempotent(&self) -> bool {
+        true
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_WAIT_TASK.into(),
             description: format!(
-                "Wait for a task to finish and return its result, or its current state and new output when wait_ms (default {}s) passes first. A wait longer than {} minutes is only possible when the session can suspend; otherwise it is capped. Waiting never affects the task.",
+                "Wait for a task to finish and return its result, or its current state and new output when wait_ms (default {}s) passes first. A wait is capped at {} minutes. Waiting never affects the task.",
                 DEFAULT_TASK_WAIT_MS / 1000,
                 MAX_IN_TOOL_WAIT_MS / 60_000
             ),
@@ -806,22 +807,8 @@ impl AgentTool for WaitTaskTool {
         };
         let call_ctx = current_ctx();
         let now = crate::now_ms();
-        if wait_ms > MAX_IN_TOOL_WAIT_MS && call_ctx.as_ref().is_some_and(|c| c.allow_deferred) {
-            // Longer than the in-tool limit: the host waits outside the
-            // process (§4, second decision).
-            return Ok(build_builtin_tool_result(
-                json!({ "task_id": task_id, "until_ms": now + wait_ms }),
-                format!("{TOOL_WAIT_TASK} {task_id}"),
-                format!("waiting for task {task_id} outside the run"),
-            )
-            .with_tool(TOOL_WAIT_TASK)
-            .with_status(AgentToolStatus::Pending)
-            .with_task_id(task_id.clone())
-            .with_check_after(wait_ms / 1000)
-            .refresh_default_title());
-        }
         let until = match &call_ctx {
-            Some(c) => c.wait_until_ms(Some(wait_ms)),
+            Some(c) => crate::task_model::wait_until_ms(c, Some(wait_ms)),
             None => now + wait_ms.min(MAX_IN_TOOL_WAIT_MS),
         };
         let state = tokio::select! {
@@ -860,6 +847,10 @@ impl GetTaskStateTool {
 
 #[async_trait]
 impl AgentTool for GetTaskStateTool {
+    fn idempotent(&self) -> bool {
+        true
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_GET_TASK_STATE.into(),

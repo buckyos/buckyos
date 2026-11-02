@@ -19,7 +19,6 @@ use crate::deps::{
 use crate::error::{LLMComputeError};
 use crate::observation::{Observation};
 use crate::request::{
-    ContextOwnerRef,
     ContextThreshold,
     LLMContextRequest,
     ModelPolicy,
@@ -28,7 +27,8 @@ use crate::request::{
     ToolPolicy,
 };
 use crate::state::{LLMContextSnapshot};
-use crate::{LLMContext, XmlBehaviorParser, XmlStepRenderer};
+use crate::tests::protocol::{XmlBehaviorParser, XmlStepRenderer};
+use crate::LLMContext;
 
 /// One token per char: estimates are exact in tests.
 pub(super) struct CharTokenizer;
@@ -78,8 +78,8 @@ impl LlmClient for Llm {
     }
 }
 
-/// A call whose name or arguments mention `defer` is deferred, `fail` is a
-/// business error, `big` returns a large result; everything else succeeds.
+/// A call whose name or arguments mention `fail` is a business error, `big`
+/// returns a large result; everything else succeeds.
 /// Records every dispatched call id.
 pub(super) struct Tools {
     calls: Mutex<Vec<String>>,
@@ -106,19 +106,11 @@ impl ToolManager for Tools {
             call.name,
             serde_json::to_string(&call.args).unwrap_or_default()
         );
-        if text.contains("defer") {
-            return Ok(Observation::Pending {
-                task_id: format!("task:{}", call.call_id),
-                call_id: call.call_id,
-                until_ms: None,
-                tool_result: None,
-            });
-        }
         if text.contains("fail") {
             return Ok(Observation::Error {
                 call_id: call.call_id,
                 message: "bad args".into(),
-                tool_result: None,
+                host: None,
             });
         }
         let content = if text.contains("big") {
@@ -131,14 +123,14 @@ impl ToolManager for Tools {
             content,
             bytes: 0,
             truncated: false,
-            tool_result: None,
+            host: None,
         })
     }
 }
 
 pub(super) fn request() -> LLMContextRequest {
     LLMContextRequest {
-        owner: ContextOwnerRef::OneShot { id: "x7".into() },
+        owner: serde_json::json!({"id": "x7"}),
         trace: Some("x7".into()),
         objective: "x7".into(),
         behavior_name: String::new(),
@@ -151,12 +143,10 @@ pub(super) fn request() -> LLMContextRequest {
             mode: ToolMode::All,
             max_tool_iterations: 6,
             max_calls_per_round: 6,
-            allow_deferred: true,
             ..ToolPolicy::default()
         },
         output: OutputSpec::Text,
         budget: Default::default(),
-        human_policy: Default::default(),
         error_policy: Default::default(),
         forbid_next_behavior: false,
     }
@@ -201,19 +191,6 @@ pub(super) fn with_usage(mut r: AiResponse, total: u64) -> AiResponse {
 /// Snapshots cross processes as JSON.
 pub(super) fn round_trip(s: &LLMContextSnapshot) -> LLMContextSnapshot {
     serde_json::from_str(&serde_json::to_string(s).unwrap()).unwrap()
-}
-
-pub(super) fn success(id: &str, text: &str) -> (String, Observation) {
-    (
-        id.to_string(),
-        Observation::Success {
-            call_id: id.into(),
-            content: json!(text),
-            bytes: 0,
-            truncated: false,
-            tool_result: None,
-        },
-    )
 }
 
 pub(super) fn tool_result_ids(messages: &[AiMessage]) -> Vec<String> {

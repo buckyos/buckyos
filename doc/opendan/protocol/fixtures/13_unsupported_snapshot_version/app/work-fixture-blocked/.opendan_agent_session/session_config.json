@@ -6,7 +6,7 @@
     "agent_did": "did:bns:jarvis.alice",
     "kind": "work",
     "class": "work",
-    "created_at_ms": 1792976021930,
+    "created_at_ms": 1793591511666,
     "created_by": {
       "principal": "app:app2@alice",
       "via": "app"
@@ -67,8 +67,8 @@
       {
         "kind": "kmsg",
         "id": "q",
-        "queue": "app2::alice::opendan.session.work-fixture-blocked",
-        "subscriber": "opendan.jarvis.alice.work-fixture-blocked"
+        "queue": "app2::alice::opendan.session.b180220d8f3da86c7dfb3acd3bbb98cc46e5cea02d9850cbc72f4945f49bf96b",
+        "subscriber": "opendan.b180220d8f3da86c7dfb3acd3bbb98cc46e5cea02d9850cbc72f4945f49bf96b"
       }
     ],
     "wake_event": "/opendan/jarvis.alice/session/work-fixture-blocked/input"

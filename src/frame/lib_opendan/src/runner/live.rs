@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use agent_tool::exec_tracking::{materialize_unresolved, HostRunInfo};
+use agent_tool::exec_tracking::{in_flight_call, HostRunInfo};
 use agent_tool::llm_bash::RunBinding;
 use agent_tool::xllm::{
     create_run_llm, hosted_waist_deps, rebuild_toolset, EffectiveConfig, LoopModel, RunRecord,
@@ -16,11 +16,9 @@ use agent_tool::xllm::{
 use buckyos_api::{AiContent, AiMessage, AiRole};
 use llm_context::deps::{Injection, LLMContextDeps, LlmClient};
 use llm_context::error::{LLMComputeError, ProviderFailure};
-use llm_context::observation::Observation;
 use llm_context::outcome::{LLMContextOutcome, ResumeFill};
-use llm_context::request::ContextOwnerRef;
-use llm_context::state::{LLMContextSnapshot, Suspension};
-use llm_context::tasks::{task_state_observation, RunningTaskResolver, TaskState};
+use llm_context::state::LLMContextSnapshot;
+use agent_tool::task_model::RunningTaskResolver;
 use llm_context::LLMContext;
 use serde_json::{json, Value};
 
@@ -36,8 +34,8 @@ use super::inputs::confirm_inputs;
 use super::receipts::{
     apply_receipt, host_meta_of, positions_of, snapshot_host_meta, with_host_meta,
 };
-use super::shared::{commit_and_report, counted, LiveCtx, Opened, Shared, WaitingRun};
-use super::tools::{BehaviorTool, SessionToolManager, SUB_CONTEXT_TASK_PREFIX};
+use super::shared::{commit_and_report, counted, LiveCtx, Shared};
+use super::tools::{BehaviorTool, SessionToolManager};
 
 /// Mid-run compactions in a row before a context-limit run is paused.
 const MAX_LIMIT_COMPACTIONS: u32 = 3;
@@ -129,8 +127,8 @@ async fn xllm_deps_for(
         x.task_cli = Some(UI_TASK_CLI.to_string());
         x.shell_note = Some(UI_SHELL_NOTE.to_string());
     }
-    // Suspended calls waiting for a sub session (`session:<sid>`) are
-    // answered from the registry; other task ids go to the host's resolver.
+    // Sub sessions (`session:<sid>`) are answered from the registry; other
+    // task ids go to the host's resolver.
     // A `shell` command handed over as a task belongs to this session and
     // hangs under the task of its Turn.
     // The Turn opens inside the run, after this: its task is looked up
@@ -227,7 +225,6 @@ fn checkpoint_deps(
     *sh.tasks.lock().expect("tasks") = Some(resolver.clone());
     hosted_waist_deps(cfg, llm, Arc::new(tools))
         .with_checkpoint_hook(hook)
-        .with_tasks(resolver.clone())
         // Only consulted for a run with a reply contract (`[reply]`).
         .with_output_validator(Arc::new(super::reports::ReplyValidator {
             sh: sh.clone(),
@@ -388,7 +385,6 @@ async fn fork_run_context(
         compactions: 0,
         pid: std::process::id(),
         host_commit_pending: None,
-        inflight: Vec::new(),
         handover: None,
         ..parent_record
     };
@@ -692,18 +688,12 @@ async fn own_run_context(
     let behavior_name = new.behavior.clone();
     let mut request = agent_tool::xllm::hosted_request(
         &config,
-        ContextOwnerRef::Agent {
-            session_id: sid.clone(),
-        },
+        json!({ "kind": "agent", "session_id": sid }),
         &run_id,
         &cfg.session.objective,
         &behavior_name,
         input.clone(),
     );
-    // A call may suspend the run (`PendingTool`): on a sub context, or on
-    // a task this session waits for outside the context and fills in on
-    // resume (串行等待).
-    request.tool_policy.allow_deferred = true;
     // The frozen behavior's budget for the whole run (the limits xllm reads
     // from `.llm_context` were laid over the config already).
     if let Some((budget, model)) = frozen_budget {
@@ -782,260 +772,13 @@ async fn own_run_context(
     })
 }
 
-/// Whether a suspended call's wait is over: the task ended (or its state is
-/// unknown), or `until_ms` passed — the call is then answered with the
-/// task's state at this moment.
-fn wait_over(state: &TaskState, until_ms: Option<u64>) -> bool {
-    !matches!(state, TaskState::Running { .. }) || until_ms.is_some_and(|t| crate::now_ms() >= t)
-}
-
-/// Results for every suspended call of `snapshot`, or `None` while a task
-/// is still being waited for. One query path for notifications, the
-/// fallback poll, the drive entry and a take-over. `force`: answer with the
-/// current state whatever it is (stop). `answer`: the user's answer to the
-/// call that asked (the first one; a call waiting for the user is never
-/// over without it).
-async fn pending_results(
-    snapshot: &LLMContextSnapshot,
-    resolver: &dyn RunningTaskResolver,
-    returned: Option<&Value>,
-    force: bool,
-    answer: Option<&(String, Observation)>,
-    notified: &[(String, Observation)],
-) -> Option<Vec<(String, Observation)>> {
-    let returned_call = returned
-        .and_then(|r| r.get("call_id"))
-        .and_then(Value::as_str);
-    let mut results = Vec::new();
-    for p in snapshot.state.pending_calls() {
-        let call_id = p.call.call_id.as_str();
-        if returned_call == Some(call_id) {
-            results.push((
-                call_id.to_string(),
-                sub_result_observation(call_id, returned.unwrap_or(&Value::Null)),
-            ));
-            continue;
-        }
-        if super::ask::is_user_input(&p.task_id) {
-            if let Some((_, o)) = notified.iter().find(|(c, _)| c == call_id) {
-                results.push((call_id.to_string(), o.clone()));
-                continue;
-            }
-            match answer {
-                Some((asked, o)) if asked == call_id => results.push((call_id.to_string(), o.clone())),
-                Some(_) => results.push((
-                    call_id.to_string(),
-                    super::ask::unanswered(call_id, "another question of this batch took the user's answer; ask one question at a time"),
-                )),
-                None if force => results.push((
-                    call_id.to_string(),
-                    super::ask::unanswered(call_id, "the user did not answer: the turn was stopped"),
-                )),
-                None => return None,
-            }
-            continue;
-        }
-        let state = if p.task_id.starts_with(SUB_CONTEXT_TASK_PREFIX) {
-            // A sub context call that never ran (it was not the only
-            // suspended call of its batch).
-            TaskState::Unknown {
-                reason: "the sub context was not started; call it again by itself".into(),
-            }
-        } else {
-            resolver.state(&p.task_id).await
-        };
-        if !force && !wait_over(&state, p.until_ms) {
-            return None;
-        }
-        results.push((
-            call_id.to_string(),
-            task_state_observation(call_id, &p.task_id, &state),
-        ));
-    }
-    Some(results)
-}
-
-/// Fill the suspended calls of a waiting run when their wait is over and
-/// resume the same run (the open Turn continues); polling a task that still
-/// runs needs no inference. `force` (stop): cancellable tasks are cancelled
-/// and every call is answered now.
-pub(super) async fn try_fill(
-    sh: &Arc<Shared>,
-    w: WaitingRun,
-    force: bool,
-) -> Result<std::result::Result<LiveCtx, WaitingRun>> {
-    Box::pin(fill(sh, w, force, None)).await
-}
-
-/// The user's message `m` answers the question the run waits for: it is
-/// that call's tool result, consumed by an input receipt of its own (no
-/// message enters the context besides the result). `Err(w)`: the run still
-/// waits for another task of its batch; `m` stays queued.
-pub(super) async fn fill_answer(
-    sh: &Arc<Shared>,
-    w: WaitingRun,
-    m: FetchedInput,
-) -> Result<std::result::Result<LiveCtx, WaitingRun>> {
-    Box::pin(fill(sh, w, false, Some(m))).await
-}
-
-async fn fill(
-    sh: &Arc<Shared>,
-    w: WaitingRun,
-    force: bool,
-    answer: Option<FetchedInput>,
-) -> Result<std::result::Result<LiveCtx, WaitingRun>> {
-    if force {
-        for p in w.snapshot.state.pending_calls() {
-            if !p.task_id.starts_with(SUB_CONTEXT_TASK_PREFIX)
-                && !super::ask::is_user_input(&p.task_id)
-            {
-                let _ = w.resolver.cancel(&p.task_id).await;
-            }
-        }
-    }
-    let (returned, answered) = {
-        let s = sh.session.lock().await;
-        let answered = answer.as_ref().and_then(|m| {
-            let call_id = super::ask::user_calls(&w.snapshot).into_iter().next()?;
-            let a = super::ask::answer_of(&s.state, &call_id, m);
-            Some((call_id.clone(), super::ask::answer_observation(&call_id, &a)))
-        });
-        (s.state.process_result.clone(), answered)
-    };
-    let notified = super::ask::notify_answers(sh, &w.run, &w.snapshot, force).await;
-    let Some(results) = pending_results(
-        &w.snapshot,
-        w.resolver.as_ref(),
-        returned.as_ref(),
-        force,
-        answered.as_ref(),
-        &notified,
-    )
-    .await
-    else {
-        return Ok(Err(w));
-    };
-    let run_id = w.run.run_id().to_string();
-    let waited = w.task_ids();
-    let ctx = LLMContext::resume(
-        w.snapshot,
-        ResumeFill::ToolResults { results },
-        w.deps.clone(),
-    )
-    .map_err(|e| {
-        OpenDanError::blocked(format!("snapshot cannot be resumed: {e}"), Some(&run_id))
-    })?;
-    let mut ctx = ctx;
-    match (answer, answered) {
-        (Some(m), Some((call_id, _))) => {
-            Box::pin(commit_answer(sh, &mut ctx, &w.run, &m, &call_id)).await?;
-        }
-        _ => {
-            // The results are in the run before anything runs on.
-            w.run
-                .checkpoint_with_results(&ctx.snapshot(), Some(RunStatus::Running))?;
-            crate::fault::point("pending_tool:after_fill");
-            let marked = super::children::mark_waited(sh, &waited).await?;
-            {
-                let mut s = sh.session.lock().await;
-                if s.state.run_state == RunState::Waiting || marked {
-                    if s.state.run_state == RunState::Waiting {
-                        s.state.run_state = RunState::Running;
-                        s.state.waiting_for = None;
-                    }
-                    s.commit_state(&sh.lease)?;
-                }
-            }
-            // A sub session's state that answered a call is in the TodoList
-            // before the run infers again (`todo show --report`, `todo
-            // review` work right away); after a crash here the drive's
-            // start synchronizes it.
-            if waited
-                .iter()
-                .any(|t| t.starts_with(super::children::SESSION_TASK_PREFIX))
-            {
-                if let Err(e) = super::todos::sync(sh).await {
-                    log::warn!("todo sync of {}: {e}", sh.dir.sid());
-                }
-            }
-        }
-    }
-    *sh.interrupt.lock().expect("interrupt") = Some(ctx.interrupt_handle());
-    Ok(Ok(LiveCtx {
-        behavior: w.behavior,
-        ctx,
-        run: w.run,
-        ready: true,
-        filled: true,
-        deps: w.deps,
-        rounds: w.rounds,
-        summary_llm: w.summary_llm,
-        resolver: w.resolver,
-    }))
-}
-
-/// The answer's result and the receipt consuming its message, in one
-/// published snapshot; then state, the gate and the input source (§8.3).
-/// The receipt joins the open Turn and injects nothing.
-async fn commit_answer(
-    sh: &Arc<Shared>,
-    ctx: &mut LLMContext,
-    run: &RunHandle,
-    m: &FetchedInput,
-    call_id: &str,
-) -> Result<()> {
-    let mut s = sh.session.lock().await;
-    let run_id = run.run_id().to_string();
-    let applied = s
-        .state
-        .live_run
-        .as_ref()
-        .filter(|l| l.run_id == run_id)
-        .map(|l| l.applied_input_seq)
-        .unwrap_or(0);
-    let mut extra = std::collections::BTreeMap::new();
-    extra.insert("user_input".to_string(), json!(call_id));
-    let receipt = InputReceipt {
-        run_id: run_id.clone(),
-        input_seq: applied + 1,
-        turn: match &s.state.open_turn {
-            Some(t) => t.index,
-            None => s.state.turn_seq + 1,
-        },
-        opens_turn: s.state.open_turn.is_none(),
-        hook: HOOK_ON_INPUT.to_string(),
-        inputs: vec![m.input_ref()],
-        events: Vec::new(),
-        reply: None,
-        parts: Vec::new(),
-        bootstrap: false,
-        after_step: ctx.snapshot().state.next_step_index,
-        extra,
-        at_ms: crate::now_ms(),
-    };
-    let mut meta = host_meta_of(ctx.host_meta());
-    meta.input_receipts.push(receipt.clone());
-    let host = with_host_meta(ctx.host_meta(), &meta);
-    ctx.set_host_meta(Some(host));
-    run.publish_input_checkpoint(&ctx.snapshot(), receipt.input_seq)?;
-    crate::fault::point("user_input:after_input_checkpoint");
-    apply_receipt(&mut s.state, &receipt)?;
-    s.state.activity.heartbeat_ms = crate::now_ms();
-    commit_and_report(sh, &mut s).await?;
-    crate::fault::point("user_input:after_state_commit");
-    run.complete_host_commit()?;
-    confirm_inputs(&sh.sources, &s.state).await;
-    Ok(())
-}
-
 /// Resume the live run (§8.6): receipts reconciled by `reconcile_runs`.
 pub(super) async fn resume_live_run(
     sh: &Arc<Shared>,
     run: RunHandle,
     snapshot: LLMContextSnapshot,
     env: &SessionEnv,
-) -> Result<Opened> {
+) -> Result<LiveCtx> {
     let record = run.record();
     let run_id = record.run_id.clone();
     let depth = sh.session.lock().await.state.call_depth();
@@ -1056,72 +799,20 @@ pub(super) async fn resume_live_run(
         .map_err(|e| blocked(format!("cannot create the run's provider: {e}")))?;
     let behavior = record.config.loop_model == LoopModel::Behavior;
     let mut snapshot = snapshot;
-    // In-flight actions without a persisted result → explicit "interrupted,
-    // result unknown", worded by the runtime from what it can read (long-tool
-    // TODO §3.2); persisted before any further inference. No process is
-    // verified or stopped.
-    // A call the snapshot is suspended on is not interrupted: it waits for
-    // its task and is answered by the fill below.
-    let suspended_calls: Vec<String> = snapshot
-        .state
-        .pending_calls()
-        .iter()
-        .map(|p| p.call.call_id.clone())
-        .collect();
-    let interrupted: Vec<_> = record
-        .inflight
-        .iter()
-        .filter(|a| !suspended_calls.contains(&a.call_id))
-        .cloned()
-        .collect();
-    if !interrupted.is_empty() {
+    // The first call without a result may have been started by the
+    // previous executor: the runtime's tool manager answers it by its call
+    // id when the waist dispatches it again — the task it became, or "result
+    // unknown" with what the runtime can read — never a blind replay (freeze
+    // TODO F12). No process is verified or stopped.
+    if let Some(call) = in_flight_call(&snapshot) {
         let binding = RunBinding {
             run_id: run_id.clone(),
             run_dir: Some(sh.dir.runs().dir().join(&run_id)),
         };
-        let mut reasons = std::collections::HashMap::new();
-        for action in &interrupted {
-            reasons.insert(
-                action.call_id.clone(),
-                sh.deps.runtime.describe_interrupted(&binding, action).await,
-            );
-        }
-        materialize_unresolved(&mut snapshot, &interrupted, behavior, &reasons);
-        run.checkpoint_with_results(&snapshot, None)?;
+        let reason = sh.deps.runtime.describe_interrupted(&binding, &call).await;
+        manager.set_recovering(&call.call_id, reason);
     }
-    // Suspended on tool calls (`PendingTool`). A sub context call gets the
-    // child's hand-back; any other call waits for a task this runner must
-    // be able to ask about — a task of a task manager it cannot reach is
-    // not taken over (the run is kept as it is). A task it can ask about
-    // but that is gone (an in-process task of a previous process) is
-    // answered `Unknown` by the resolver and filled as such: never
-    // `RecoveryBlocked`, never silently re-created.
     let returned = sh.session.lock().await.state.process_result.clone();
-    let returned_call = returned
-        .as_ref()
-        .and_then(|r| r.get("call_id"))
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let suspended_on_tools = matches!(
-        snapshot.state.suspended,
-        Some(Suspension::PendingTool { .. })
-    );
-    if suspended_on_tools {
-        for p in snapshot.state.pending_calls() {
-            if returned_call.as_deref() == Some(p.call.call_id.as_str())
-                || p.task_id.starts_with(SUB_CONTEXT_TASK_PREFIX)
-                || super::ask::is_user_input(&p.task_id)
-            {
-                continue;
-            }
-            if !resolver.can_resolve(&p.task_id) {
-                return Err(blocked(format!(
-                    "the run waits for task {} of call {}, which this runner cannot resolve",
-                    p.task_id, p.call.call_id
-                )));
-            }
-        }
-    }
     if behavior {
         // Back from a sub context: continue its action / step numbering.
         if let Some(r) = &returned {
@@ -1153,38 +844,8 @@ pub(super) async fn resume_live_run(
         rounds.clone(),
         &resolver,
     );
-    if suspended_on_tools {
-        let w = WaitingRun {
-            run,
-            snapshot,
-            behavior,
-            deps,
-            rounds,
-            summary_llm: llm,
-            resolver,
-        };
-        let opened = match try_fill(sh, w, false).await? {
-            Ok(lc) => {
-                crate::fault::point("sub_return:after_fill");
-                Opened::Ctx(lc)
-            }
-            Err(w) => Opened::Waiting(w),
-        };
-        if returned_call.is_some() && matches!(opened, Opened::Ctx(_)) {
-            // Delivered (now, or before a crash): the hand-back is consumed.
-            let mut s = sh.session.lock().await;
-            s.state.process_result = None;
-            s.commit_state(&sh.lease)?;
-        }
-        if let Opened::Ctx(lc) = &opened {
-            lc.run.set_status(RunStatus::Running, None)?;
-        }
-        return Ok(opened);
-    }
-    let ctx = if matches!(
-        snapshot.state.suspended,
-        Some(Suspension::ContextLimit { .. })
-    ) {
+    let in_progress = snapshot.state.has_continuation();
+    let ctx = if snapshot.state.suspended.is_some() {
         // Paused at the context limit (compactions exhausted, or the
         // rewrite did not complete): compact again before running on.
         rewrite_for_limit(sh, &run, snapshot, behavior, &deps, &llm, 1).await?
@@ -1192,36 +853,29 @@ pub(super) async fn resume_live_run(
         LLMContext::resume(snapshot, ResumeFill::ResumeFromMidRun, deps.clone())
             .map_err(|e| blocked(format!("snapshot cannot be resumed: {e}")))?
     };
-    if returned_call.is_some() {
-        // Delivered before a crash: the hand-back is consumed.
-        let mut s = sh.session.lock().await;
-        s.state.process_result = None;
-        s.commit_state(&sh.lease)?;
-    }
     *sh.interrupt.lock().expect("interrupt") = Some(ctx.interrupt_handle());
     if let Some(report) = super::reports::final_report(&run)? {
         if let ReportSource::Tool { call_id } = &report.source {
-            if agent_tool::exec_tracking::persisted_outcome_ids(&ctx.snapshot()).contains(call_id) {
+            if super::reports::has_result(&ctx.snapshot(), call_id) {
                 ctx.interrupt_handle()
                     .finish("resume accepted final report");
             }
         }
     }
     run.set_status(RunStatus::Running, None)?;
-    Ok(Opened::Ctx(LiveCtx {
+    Ok(LiveCtx {
         behavior,
         ctx,
         run,
         ready: true,
-        // In-flight calls answered as interrupted leave the run in the
-        // middle of its tool batch: that batch continues before any input
-        // batch can be placed (like answered suspended calls).
-        filled: !interrupted.is_empty(),
+        // A tool batch / step in progress continues before any input batch
+        // can be placed.
+        filled: in_progress,
         deps,
         rounds,
         summary_llm: llm,
         resolver,
-    }))
+    })
 }
 
 /// Run the live context: one run segment of the drive loop, ending in one
@@ -1390,7 +1044,7 @@ async fn rewrite_for_limit(
 ) -> Result<LLMContext> {
     let started = Instant::now();
     let (reason, estimated_tokens) = match snapshot.state.suspended.as_ref() {
-        Some(Suspension::ContextLimit {
+        Some(llm_context::Suspension {
             which,
             estimated_tokens,
             ..
@@ -1533,16 +1187,14 @@ async fn rewrite_for_limit_inner(
 
 /// Open the run `state.live_run` points to (a caller resumed after its sub
 /// context returned, or a parked context re-entered).
-pub(super) async fn open_state_live_run(sh: &Arc<Shared>, env: &SessionEnv) -> Result<Opened> {
-    let (run_id, tool_return) = {
+pub(super) async fn open_state_live_run(sh: &Arc<Shared>, env: &SessionEnv) -> Result<LiveCtx> {
+    let run_id = {
         let s = sh.session.lock().await;
-        let run_id = s
-            .state
+        s.state
             .live_run
             .as_ref()
             .map(|l| l.run_id.clone())
-            .ok_or_else(|| OpenDanError::Other("no live run to open".into()))?;
-        (run_id, s.state.tool_return_pending())
+            .ok_or_else(|| OpenDanError::Other("no live run to open".into()))?
     };
     let runs = sh.dir.runs();
     let lock = runs
@@ -1555,12 +1207,9 @@ pub(super) async fn open_state_live_run(sh: &Arc<Shared>, env: &SessionEnv) -> R
         .ok_or_else(|| OpenDanError::blocked("suspended run has no snapshot", Some(&run_id)))?;
     let run = RunHandle::new(runs.store().clone(), record, lock);
     let mut opened = resume_live_run(sh, run, snapshot, env).await?;
-    // Resumed on purpose: the hand-over batch brings the input. A caller
-    // back from a tool-triggered sub context got its tool result instead
-    // and runs on by itself.
-    if let Opened::Ctx(lc) = &mut opened {
-        lc.ready = tool_return;
-    }
+    // Resumed on purpose: the next input batch (a hand-over batch, a task
+    // result, a message) brings the input; a batch in progress runs on.
+    opened.ready = opened.filled;
     Ok(opened)
 }
 
@@ -1644,51 +1293,6 @@ pub(super) async fn suspend_run(
         }
     }
     commit_and_report(sh, &mut s).await
-}
-
-/// Tool result a caller gets for its `call_behavior` call from the sub
-/// context's hand-back (`state.process_result`).
-fn sub_result_observation(call_id: &str, r: &Value) -> Observation {
-    let text = |k: &str| {
-        r.get(k)
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string()
-    };
-    match r.get("status").and_then(Value::as_str).unwrap_or("ok") {
-        "failed" => Observation::Error {
-            call_id: call_id.to_string(),
-            message: format!(
-                "sub context `{}` failed: {}",
-                text("behavior"),
-                text("result")
-            ),
-            tool_result: None,
-        },
-        status => {
-            let content = if status == "needs_user_input" {
-                json!({
-                    "status": "needs_user_input",
-                    "behavior": text("behavior"),
-                    "question": text("result"),
-                    "note": "the sub context cannot ask the user; ask the user yourself and call it again with the answer",
-                })
-                .to_string()
-            } else if let Some(submission) = r.get("submission") {
-                json!({"status": status, "behavior": text("behavior"), "submission": submission})
-                    .to_string()
-            } else {
-                text("result")
-            };
-            Observation::Success {
-                call_id: call_id.to_string(),
-                bytes: content.len(),
-                content: Value::String(content),
-                truncated: false,
-                tool_result: None,
-            }
-        }
-    }
 }
 
 /// A suspended process becomes the live run again.

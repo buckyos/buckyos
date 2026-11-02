@@ -62,6 +62,10 @@ pub struct GlobOutput {
 
 #[async_trait]
 impl TypedTool for GlobTool {
+    fn idempotent(&self) -> bool {
+        true
+    }
+
     type Args = GlobArgs;
     type Output = GlobOutput;
 

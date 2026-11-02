@@ -2,18 +2,17 @@
 //!
 //! Outcomes split into two structural classes (see `LLM Context 设计.md` §3.10):
 //! - **Terminal**: `Done` / `Error` / `BudgetExhausted` — object is consumed.
-//! - **Suspended**: `PendingTool` / `ContextLimitReached` / `Interrupted` /
-//!   `Settled` — a `LLMContextSnapshot` is produced and the run is resumable.
+//! - **Suspended**: `ContextLimitReached` / `Interrupted` / `Settled` — a
+//!   `LLMContextSnapshot` is produced and the run is resumable.
 //!
 //! An outcome ends one `run()` call, not a Round (one inference), a Step or
 //! an AgentSession Turn: one run may contain many Rounds and Steps, and the
 //! session decides whether an outcome completes its logical Turn.
 //!
-//! "Waiting for the next human message" is **not** a waist concept — it is a
-//! session-layer state. The behavior loop signals it via
-//! `Done.behavior_result.next_behavior == "WAIT_USER_MSG"` (sentinel
-//! interpreted by opendan/session, not by the waist); the waist only sees a
-//! Done outcome and is done with it.
+//! Waiting is never a waist concept: the loop does not wait for a task, a
+//! human or another context. A behavior step that yields (no action, not an
+//! end, no hand-over) ends the run with `Done`; what the session waits for
+//! next and how it continues is the session's business.
 
 use buckyos_api::{AiMessage, AiResponse, AiUsage};
 use serde::{Deserialize, Serialize};
@@ -22,7 +21,7 @@ use serde_json::Value;
 use crate::behavior_loop::{HistorySummaryRecord, LLMBehaviorResult, StepRecord};
 use crate::error::LLMComputeError;
 use crate::interrupt::InferenceAbortTrace;
-use crate::observation::{Observation, PendingToolCall, ToolExecRecord};
+use crate::observation::ToolExecRecord;
 use crate::state::LLMContextSnapshot;
 
 /// What the scheduler feeds back when resuming. The variant must match the
@@ -35,14 +34,6 @@ use crate::state::LLMContextSnapshot;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ResumeFill {
-    /// Paired with `PendingTool`. Every pending call is answered exactly once
-    /// with a terminal observation (`Success` / `Error` / `Cancelled` /
-    /// `Unresolved`, never `Pending`) whose own call id matches; order is
-    /// free, results are written back in the original call order. Calls of
-    /// the same batch / step that were never dispatched may additionally be
-    /// answered with `Cancelled`: they are then recorded as not executed
-    /// and never dispatched. Missing, duplicate or unknown ids are rejected.
-    ToolResults { results: Vec<(String, Observation)> },
     /// Paired with `ContextLimitReached` in function call mode. The history
     /// becomes the new stable base: it replaces both `request.input` and
     /// `accumulated`. It must keep every tool call paired with its result;
@@ -53,9 +44,9 @@ pub enum ResumeFill {
     /// materialized from `request.input`, the step history and the hot step.
     /// Replaces `request.input`, `history_summaries`, `steps` and `last_step`;
     /// `steps` / `last_step` may only keep (possibly compacted) steps of the
-    /// snapshot, identified by `step_index`. Step / action numbering,
-    /// `history_inputs` and the inner transcript of the step in progress
-    /// (messages after `request.input` in `accumulated`) are kept. Thinking blocks are
+    /// snapshot, identified by `step_index`. Step / action numbering and the
+    /// inner transcript of the step in progress (messages after
+    /// `request.input` in `accumulated`) are kept. Thinking blocks are
     /// dropped as for `RewrittenHistory`. Folding the whole materialized
     /// history into `input` (empty steps, no hot step) is valid.
     RewrittenSteps {
@@ -68,9 +59,11 @@ pub enum ResumeFill {
         last_step: Option<StepRecord>,
     },
     /// Recovery of a snapshot that is *not* suspended: persisted at an
-    /// outcome boundary, by a checkpoint hook before an inference, after an
-    /// `Interrupted` outcome, or after a fill was applied (a tool batch /
-    /// behavior step may still be in progress and continues first).
+    /// outcome boundary, by a checkpoint hook before an inference or a tool
+    /// call, or after an `Interrupted` outcome. A tool batch / behavior step
+    /// in progress continues first: its calls without a result are
+    /// dispatched again, and the runtime's tool manager decides by call id
+    /// whether that finds the earlier work or runs it.
     ResumeFromMidRun,
 }
 
@@ -102,8 +95,6 @@ pub struct ContextRunTrace {
     pub latency_ms: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_trace: Vec<ToolExecRecord>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub llm_task_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -143,21 +134,6 @@ pub enum LLMContextOutcome {
         /// Behavior Loop payload. `None` for traditional Agent Loop runs.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         behavior_result: Option<LLMBehaviorResult>,
-    },
-
-    /// Suspended: a tool / action returned `Observation::Pending { task_id }`
-    /// (only with `tool_policy.allow_deferred`). Dispatch stopped at that
-    /// call; the calls after it stay in `snapshot.state.tool_batch` /
-    /// `action_step` and run after the fill. The host persists the snapshot,
-    /// waits for the task outside the process (until `pending[i].until_ms`
-    /// at most), then resumes with `ResumeFill::ToolResults` carrying the
-    /// task's state rendered as an observation. `trace` audits this run
-    /// segment.
-    PendingTool {
-        pending: Vec<PendingToolCall>,
-        snapshot: LLMContextSnapshot,
-        #[serde(default)]
-        trace: ContextRunTrace,
     },
 
     BudgetExhausted {

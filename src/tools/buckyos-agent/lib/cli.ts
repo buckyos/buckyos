@@ -205,6 +205,30 @@ export function flagBool(
   return flags.get(name) === true;
 }
 
+// Removes every `--<name> <value>` of `names` from argv, keeping the order
+// the values were given in; the ordinary parser keeps only the last one.
+export function takeRepeatedFlags(
+  argv: string[],
+  names: readonly string[],
+): { rest: string[]; values: Map<string, string[]> } {
+  const values = new Map<string, string[]>(names.map((name) => [name, []]));
+  const rest: string[] = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    const name = argv[index].startsWith("--") ? argv[index].slice(2) : "";
+    if (!values.has(name)) {
+      rest.push(argv[index]);
+      continue;
+    }
+    const value = argv[index + 1];
+    if (value === undefined || value.startsWith("--")) {
+      throw new ArgError(`--${name} requires a value`);
+    }
+    values.get(name)!.push(value);
+    index += 1;
+  }
+  return { rest, values };
+}
+
 // Drop the known-common flags from the map so commands can detect leftovers.
 export function consumeCommon(
   flags: Map<string, string | true>,

@@ -85,6 +85,7 @@ impl EventBridge for TimerBridge {
                         summary: format!("timer {name} fired (every {every}s)"),
                         data_ref: None,
                         terminal: false,
+                        call_id: None,
                     },
                 );
                 match self.agent.sessions().post_input(&sid, &input).await {

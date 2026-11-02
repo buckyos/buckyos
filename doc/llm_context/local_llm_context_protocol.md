@@ -2,9 +2,9 @@
 
 本文描述当前 Rust xllm 的已实现行为，供 CLI 使用者、SDK 调用方及需要读写 Run 目录的宿主参考。
 
-- 核对日期：2026-10-01；仓库 HEAD `93eafea5` 之上的工作区（Round / Step / Turn 术语统一之后）。
+- 核对日期：2026-11-01；仓库 HEAD `2bbabf6aa` 之上的工作区。
 - CLI 入口：`agent_tool xllm ...`。源码模块仍名为 `run_local_llm.rs`，旧的 `agent_tool run_local_llm` 命令已移除。
-- 当前版本：`RunRecord.version = 6`、`prompt.protocol_version = "xllm/2"`、快照 `state.snapshot_version = 5`。三个版本分别管理 Run 记录、提示词运行协议和底层上下文快照；恢复只接受当前版本，见 §7.2。
+- 当前版本：`RunRecord.version = 7`、`prompt.protocol_version = "xllm/2"`、快照 `state.snapshot_version = 6`。三个版本分别管理 Run 记录、提示词运行协议和底层上下文快照；恢复只接受当前版本，见 §7.2。
 - 术语：Round = 一次推理（一次宿主 `LlmClient::infer`），Step = behavior 的一次决策记录（`StepRecord`），定义见 [LLM Context readme](readme.md)。本文的工具预算单位是“工具迭代”（§9.2），不是 Round。
 - 本文替换原 2026-09-17 的旧工具基线，不再把旧目录格式、请求哈希或 TS SDK 设计建议描述为现行协议。产品目标见 [xllm PRD](../../product/xllm/PRD.md)，SDK 概览见 [xllm Rust SDK 参考](xllm_rust_sdk.md)；实现细节以本文列出的源码为准。
 
@@ -17,11 +17,11 @@ xllm 执行一次独立任务（Run）：准备配置和输入，调用模型，
 | 配置 | `discover_config_files` / `load_config_layers` / `merge_config_layers` | 查找、解析、合并 `.llm_context`，记录字段来源 |
 | 准备 | `XllmTask::prepare(workdir, TaskInput, TaskOverrides, &XllmDeps)` | 展开工具、读取附件、组装提示词，返回 `PreparedTask`；不建立 Run |
 | 执行 | `XllmRun::start(prepared, deps)` → `execute()` | 分配 run_id、加锁、建立记录，驱动到底层上下文停止点 |
-| 恢复 | `XllmRun::resume(store, run_id?, workdir_filter?, ResumeLimits, deps)` | 返回 `ResumeStart::Terminal(record)` 或可执行的 `ResumeStart::Run` |
+| 恢复 | `XllmRun::resume(store, run_id?, workdir_filter?, ResumeLimits, deps)` | 返回 `ResumeStart::Terminal(record)` 或可执行的 `ResumeStart::Run`；后者可先用 `inject_input` 注入一条新输入 |
 | 查询 / 导出 | `list_runs` / `latest_run` / `load_run` / `export_result` / `build_result_view` | 读取记录、提取已保存结果，不调用模型 |
 | 宿主装配 | `XllmTask::prepare_hosted` / `HostedTask` | 接收宿主配置和 system 文本，供宿主直接驱动底层 `LLMContext` |
 
-`XllmDeps` 注入 `LlmClientFactory`、`host_tools`、`RunObserver`、锁目录及可选 `BashRunner`。SDK 可用 `with_llm` 注入模型客户端，不必经过 CLI 初始化。`skip_workdir_lock` 供自行协调共享工作目录的宿主使用。
+`XllmDeps` 注入 `LlmClientFactory`、`host_tools`、`RunObserver`、锁目录，以及可选的执行体（`runtime`）、task 解析器（`buckyos_tasks`）和 shell 的 task 管理器（`shell_tasks`）。SDK 可用 `with_llm` 注入模型客户端，不必经过 CLI 初始化。`skip_workdir_lock` 供自行协调共享工作目录的宿主使用。
 
 `RunOutcome` 包含 `Completed`、`Paused`、`Interrupted`、`Failed`、`LimitReached`，每个分支携带 `RunRecord`。配置、输入、存储或恢复错误也可能通过 `Result::Err(XllmError)` 返回；调用方必须同时处理两层结果。
 
@@ -32,7 +32,7 @@ xllm 执行一次独立任务（Run）：准备配置和输入，调用模型，
 - [agent_tool_cli_dev/src/lib.rs](../../src/frame/agent_tool_cli_dev/src/lib.rs)：`agent_tool xllm` 子命令分发。
 - [request.rs](../../src/frame/llm_context/src/request.rs)、[state.rs](../../src/frame/llm_context/src/state.rs)、[outcome.rs](../../src/frame/llm_context/src/outcome.rs)：底层请求、快照、outcome 与恢复输入。
 - [context_loop.rs](../../src/frame/llm_context/src/context_loop.rs)、[context_window.rs](../../src/frame/llm_context/src/context_window.rs)、[suspension.rs](../../src/frame/llm_context/src/suspension.rs)：循环、容量检查、挂起和续跑校验。
-- [exec_tracking.rs](../../src/frame/agent_tool/src/exec_tracking.rs)：宿主执行跟踪与未确认工具结果处理。
+- [exec_tracking.rs](../../src/frame/agent_tool/src/exec_tracking.rs)：宿主 Run 元数据（`HostRunInfo`），以及恢复时找出可能在执行的调用（`in_flight_call`）。
 - [aicc_client.rs](../../src/kernel/buckyos-api/src/aicc_client.rs)：`AiMessage`、资源和 AICC 请求类型。
 
 ## 2. `.llm_context` 配置协议
@@ -66,6 +66,7 @@ xllm 执行一次独立任务（Run）：准备配置和输入，调用模型，
 | `result_format` | `raw` | 原文或 `result.<path>` 提取路径 |
 | `tools` | 默认关闭 | 布尔开关或工具配置对象 |
 | `prompt` | standard 模式 | `mode`、`select`、`groups`、`sections`、`tools`、`system` |
+| `runtime` | `kind: native` | 执行体，以及调用内等待预算 `task_wait_ms`（§9.1），见 [AgentRuntime 设计](<AgentRuntime 设计.md>) §4 |
 
 `context_window` 当前没有 CLI flag，也不是 `TaskOverrides` 字段。`--json` 属于本次任务覆盖项，不能写成顶层 YAML `json`。SDK 另可设置 `json_schema` 和 `disable_capabilities`；CLI 没有对应参数。
 
@@ -86,6 +87,7 @@ custom 模式和结构化输入不选组，因此不应用组内工具配置。�
 | `tools2actions` | behavior 模式把原生 tools 转为 actions，默认 false |
 | `tools` / `actions` | 来源列表，每项恰好包含 `groupname`、`mcp`、`name` 中的一个 |
 | `bash_tools` | 命令手册条目，含 `name`、`description`、`command`、可选 `usage` |
+| `shell` | `timeout_ms`、`max_timeout_ms`，见 §9.1 |
 
 来源例子：`{groupname: bash}`、`{mcp: "http://localhost:8080/mcp"}`、`{name: host_tool}`。具名工具必须由 SDK 宿主注入；普通 CLI 默认没有宿主工具。MCP 当前通过 HTTP JSON-RPC `tools/list` 和 `tools/call` 接入，发现超时参数为 30 秒、调用为 120 秒。工具名称冲突、未知组或发现失败在准备阶段报错。
 
@@ -148,7 +150,7 @@ standard 模式按“系统默认 → 选中组 section → `prompt.sections`”
 | `role` | 10 | 无 |
 | `contexts` / `env` | 20 | 未在模板中引用的时间、时区、OS、工作目录 |
 | `rules` | 30 | 实际可用 tools / actions，或无工具说明 |
-| `cmd_manual` | 40 | exec 和 `bash_tools` 手册；exec 未启用时整段省略 |
+| `cmd_manual` | 40 | `shell` 和 `bash_tools` 手册；`shell` 未启用时整段省略 |
 | `output_format` | 100 | 无 |
 
 section 可用字符串或 `{name, text}` 对象；`text: ""` 清空用户文本，不移除必要的系统说明。同层同一行号不能同时使用数字键和别名；`name` 不能冒用其它固定行号的别名。
@@ -210,7 +212,7 @@ Run 锁和工作目录锁均为非阻塞 OS 排他锁，句柄释放后解锁。
 
 ### 5.3 提交边界
 
-`start` 在首次模型调用前写 `run.json`，其中 `pending_input` 保存完整初始输入与文件模型计划。进入主模型阶段后先提交初始快照，再清除 `pending_input`。每次推理（Round）前（xllm 的 `InferenceHook`；behavior 模式包括 Step 内层的推理）、outcome 边界和压缩续跑前也提交快照。
+`start` 在首次模型调用前写 `run.json`，其中 `pending_input` 保存完整初始输入与文件模型计划。进入主模型阶段后先提交初始快照，再清除 `pending_input`。之后由 xllm 的 `SnapshotHook`（实现 llm_context 的 `CheckpointHook`）在每次工具调用前（`before_tool_call`）和推理前（`before_inference`：function_call 每次推理前，behavior 只在 Step 边界，不在 Step 内层的推理前）提交快照；outcome 边界、注入新输入后和压缩续跑前也提交。
 
 快照提交顺序为：写新的 `snapshots/NNNN.json` → 更新 `run.json.latest_snapshot_idx`；终态结果随后写入 `run.json.result` 和状态。单个文件使用临时文件、fsync、rename，并同步目录；多个文件之间不构成一个事务。恢复读取记录指向的编号，不扫描更大编号来代替它；未被记录引用的快照不代表已提交结果。
 
@@ -239,11 +241,11 @@ Run 锁和工作目录锁均为非阻塞 OS 排他锁，句柄释放后解锁。
 | `usage` | main、file_model、compaction、llm_requests；各阶段 usage 可缺省。`llm_requests` 是本 Run 经宿主 `LlmClient::infer` 发起的推理尝试数：主循环 Round（含失败的尝试）加文件模型阶段；xllm 自己执行时，上下文压缩的摘要请求经同一模型客户端发出，也计入。每个执行段（xllm，或 libOpenDAN 等宿主）只在已有值上累加，从不重置或覆盖。它不是工具迭代数，也不是 `run()` 调用次数 |
 | `limit_reason` / `interrupt_reason` | 停止原因，可省略 |
 | `compactions` / `pid` | 已完成压缩次数 / 最近执行者 PID |
-| `host` / `host_commit_pending` / `inflight` / `executions` | 宿主装配、输入提交门槛及执行跟踪，见 §11 |
+| `host` / `host_commit_pending` / `handover` | 宿主装配、输入提交门槛及 behavior 交接点，见 §11 |
 
 `EffectiveConfig` 中的 `limits`（`RunLimits`）使用 `max_tokens`、`max_tool_iterations`、`timeout_secs`、`llm_timeout_secs`、`context_window_tokens`；后三项不同于 YAML 的 `timeout`、`llm_timeout`、`context_window`。Provider 的已解析类型字段为 `kind`，不同于 YAML `type`。`result_format` 在记录里是 `{"kind":"raw"}` 或 `{"kind":"path","segments":[...]}`，在 CLI 视图中才是字符串。
 
-`config.tools` 保存 `enabled`、`filesystem_policy`、`tools2actions`、原始来源列表 `tool_sources` / `action_sources`、展开的 `native` / `actions`、`bash_tools`、`exec_enabled` 和来源信息。恢复按保存的来源重新构建工具，MCP 仍需可连接；记录不保存工具进程或模型连接。
+`config.tools` 保存 `enabled`、`filesystem_policy`、`tools2actions`、原始来源列表 `tool_sources` / `action_sources`、展开的 `native` / `actions`、`bash_tools`、shell 的生效设置 `shell`（`wait_ms` 取自 `runtime.task_wait_ms`，以及 `timeout_ms` / `max_timeout_ms`）、`exec_enabled` 和来源信息。恢复按保存的来源重新构建工具，MCP 仍需可连接；记录不保存工具进程或模型连接。
 
 ### 6.2 查询选择
 
@@ -253,40 +255,38 @@ Run 锁和工作目录锁均为非阻塞 OS 排他锁，句柄释放后解锁。
 
 查询的 `resumable` 只根据状态与活跃锁推导，不代表版本、宿主提交、工具依赖和快照检查已经通过。
 
-## 7. 快照 v5 与底层恢复
+## 7. 快照 v6 与底层恢复
 
 ### 7.1 快照字段
 
-快照顶层只有 `request` 和 `state`。request 为 `LLMContextRequest`，包括 owner、trace、objective、behavior_name、input、model_policy、tool_policy、output、budget、human_policy、error_policy、forbid_next_behavior；这是已编译的底层请求，不是 `.llm_context` 或旧 `OneShotRequest`。
+快照顶层只有 `request` 和 `state`。request 为 `LLMContextRequest`，包括 owner（不透明 JSON）、trace、objective、behavior_name、input、model_policy、tool_policy、output、budget、error_policy、forbid_next_behavior；这是已编译的底层请求，不是 `.llm_context` 或旧 `OneShotRequest`。
 
 | `state` 字段 | 含义 |
 | --- | --- |
-| `snapshot_version` | 当前为 5，缺省读取为 0；恢复只接受 5 |
+| `snapshot_version` | 当前为 6，缺省读取为 0；恢复只接受 6 |
 | `accumulated` | 当前消息历史；behavior 模式下 `request.input` 之后的部分是进行中 Step 的 inner transcript（内层原生工具循环消息，尚未折入 StepRecord） |
 | `usage` / `tool_iterations_left` | 累积模型用量 / 剩余工具迭代额度 |
-| `started_at_ms` / `cost_units` / `consecutive_errors` | 计时起点、成本计数、连续可纠正错误计数 |
-| `suspended` | 挂起原因：`pending_tool` 或 `context_limit`；无挂起时省略 |
-| `tool_batch` | 尚未派发的原生工具调用 `remaining` 及本批 `batch_error`（批次完成时只计一次失败） |
+| `started_at_ms` / `cost_units` / `consecutive_errors` / `output_repairs` | 计时起点、成本计数、连续可纠正错误计数、回复契约的纠正次数 |
+| `suspended` | 上下文上限挂起（`which`、`estimated_tokens`、`at_ms`）；这是唯一的挂起，无挂起时省略 |
+| `tool_batch` | 本批尚未得到结果的原生工具调用 `remaining`（按序逐个派发）及本批 `batch_error`（批次完成时只计一次失败） |
 | `action_step` | 尚未完成的 behavior Step 及其模型 response |
-| `llm_task_ids` | Provider 任务追踪 ID |
-| `steps` / `history_summaries` / `history_inputs` / `last_step` / `last_report` | behavior 历史、最新 step 与 report |
+| `steps` / `history_summaries` / `last_step` / `last_report` / `report_end` | behavior 历史、最新 step 与 report，以及最新 report 是否结束 run |
 | `next_step_index` / `next_action_id` | 后续编号 |
 | `host` | 不透明宿主 JSON；底层循环原样携带 |
 
-v2 起用 `suspended` / `tool_batch` / `action_step` 取代旧 `pending_tool_calls`，不得只保存一个 pending call 列表后猜测如何续跑；v3 把工具预算字段改为 `tool_iterations_left` / `tool_batch.batch_error`。
+进行中的工具调用只记在 `tool_batch` / `action_step` 里：`tool_batch.remaining` 的第一个、`action_step` 中 `action_results` 之后的第一个 action，是快照提交后可能已经开始执行的调用。恢复时它们以原 call_id 再次派发，是否重做由 ToolManager 决定（§8.3）。
 
 ### 7.2 `ResumeFill` 匹配规则
 
 | 快照状态 | 底层允许的恢复输入 | xllm 行为 |
 | --- | --- | --- |
-| 未挂起 | `ResumeFromMidRun` | 从提交点续跑 |
-| `suspended.kind = context_limit`，function_call | `RewrittenHistory` | 先压缩消息，再恢复 |
-| `suspended.kind = context_limit`，behavior | `RewrittenSteps` | 物化历史折入 input，再恢复；底层保留进行中 Step 的 inner transcript、挂起状态及编号 |
-| `suspended.kind = pending_tool` | `ToolResults` | 底层支持回填；xllm 无回填入口，拒绝接手 |
+| 未挂起 | `ResumeFromMidRun` | 从提交点续跑；没有结果的调用按原 call_id 再次派发 |
+| `suspended`（上下文上限），function_call | `RewrittenHistory` | 先压缩消息，再恢复 |
+| `suspended`（上下文上限），behavior | `RewrittenSteps` | 物化历史折入 input，再恢复；底层保留进行中 Step 的 inner transcript、挂起状态及编号 |
 
-挂起时间不计入底层 wallclock。恢复会校验 fill 与挂起态匹配、工具调用 / 回执配对和 continuation 状态；不合法的组合返回 `SnapshotCorrupted`。宿主自行回填后，应先持久化新的快照再继续，因为 continuation 可能先执行尚未派发的工具。
+挂起时间不计入底层 wallclock。恢复会校验 fill 与挂起态匹配、工具调用 / 回执配对和 continuation 状态；不合法的组合返回 `SnapshotCorrupted`。宿主改写历史后，应先持久化新的快照再继续，因为 continuation 可能先派发尚未得到结果的调用。
 
-当前 Rust 对非终态的恢复检查要求 `RunRecord.version` 精确等于 6、运行协议精确等于 `xllm/2`；`LLMContext::resume` 只接受 `state.snapshot_version = 5`，更旧（含缺省的 0）或更新的版本都以 `SnapshotCorrupted` 拒绝。不做旧版本迁移，也不提供旧字段别名：`version = 1` / 快照 v2 的 Run（`config.limits.max_rounds`、`rounds_left`）不能恢复，其 run.json 按当前结构也无法解析（列表跳过，按 ID 读取报错）。`LLMContext::snapshot()` 写出时使用当前快照版本。
+当前 Rust 对非终态的恢复检查要求 `RunRecord.version` 精确等于 7、运行协议精确等于 `xllm/2`；`LLMContext::resume` 只接受 `state.snapshot_version = 6`，更旧（含缺省的 0）或更新的版本都以 `SnapshotCorrupted` 拒绝。不做旧版本迁移，也不提供旧字段别名；按当前结构无法解析的 run.json 在列表中跳过，按 ID 读取报错。`LLMContext::snapshot()` 写出时使用当前快照版本。
 
 ## 8. 生命周期、中断与恢复
 
@@ -296,24 +296,26 @@ v2 起用 `suspended` / `tool_batch` / `action_step` 取代旧 `pending_tool_cal
 | --- | --- | --- |
 | `running` | 否 | 持锁执行中；遗留 running 的展示规则见 §6.2 |
 | `interrupted` | 否 | 用户中断，或查询发现执行进程已退出 |
-| `paused` | 否 | Provider 超时 / transient / 可识别的凭据错误、checkpoint 失败、工具基础设施失败 |
+| `paused` | 否 | Provider 超时 / transient / 可识别的凭据错误、checkpoint 失败、工具基础设施失败；behavior Step yield（`last_error.kind = yield`）；function_call 回复时本 Run 交出的 task 仍在运行（`tasks_running`）；宿主装配的 Run 停在交接点或最终报告（§11） |
 | `completed` | 是 | 底层 `Done`，最终原文已保存；提取或 JSON 校验可能仍失败 |
 | `failed` | 是 | 不可恢复 Provider / 内部错误、连续可纠正错误超限、压缩失败或重复超限等 |
 | `limit_reached` | 是 | 工具迭代、wallclock 等底层预算耗尽；工具预算的 `limit_reason` 为 `tool iteration limit (N) reached`（底层 `BudgetKind::ToolIterations`，序列化为 `tool_iterations`） |
 
 Provider Permanent 错误中包含 token、401、403、auth、expired、permission 等线索时，当前实现将其归为可恢复的 `credentials`；其它 Permanent 和 Unknown 为失败。此处是错误文本分类，不是自动刷新任意凭据的保证。可恢复故障停止为 paused，由调用方显式 resume；不在同一次 CLI 中无限重试。
 
+`yield` 与 `tasks_running` 不是故障：循环里不等待，模型停下来等新输入，或者回复时本 Run 交出的 task 还没结束（task 由 `XllmToolManager` 的 resolver 列出）。快照停在推理之后的边界上，`last_error.message` 是模型这一步的报告或回复文本。`--resume [message]` 把消息作为新的 user 输入注入同一个快照（`XllmRun::inject_input`，注入后先提交快照），在同一个 Run 里接着推理，Step 编号连续；不带消息时直接续跑。快照停在一批工具调用中间时不能注入消息，先不带消息 resume。
+
 ### 8.2 恢复流程
 
 1. 按显式 ID 或当前工作目录最新非终态记录选择 Run。若指定终态，返回保存的记录，不再次执行；同时给执行额度参数会报 `RunTerminal`。
-2. 非终态检查运行锁、记录版本、`host_commit_pending`、宿主 runtime_kind、运行协议及原工作目录。
-3. 取得 Run / 工作目录锁后重读记录，确认宿主输入已提交；核对旧受管执行并处理 inflight，见 §11。
-4. 使用保存的配置与工具来源重建工具 / Provider，重新读取凭据引用；不重新合并 `.llm_context`、重选组或重渲染提示词。
-5. 使用 `latest_snapshot_idx` 指向的快照恢复；尚未有快照时使用 `pending_input`。两者都没有则拒绝恢复。
+2. 非终态检查运行锁、记录版本、宿主状态（`host_commit_pending`、`handover`、待校验的最终报告、受管 workspace，见 §11）、运行协议及原工作目录。
+3. 取得 Run / 工作目录锁后重读记录，再次确认宿主输入已提交、没有待宿主处理的交接点或最终报告，见 §11。
+4. 使用保存的配置与工具来源重建工具 / Provider，重新读取凭据引用，核对重建出的 runtime descriptor；不重新合并 `.llm_context`、重选组或重渲染提示词。
+5. 使用 `latest_snapshot_idx` 指向的快照恢复；尚未有快照时使用 `pending_input`。两者都没有则拒绝恢复。快照里可能在执行的调用交给派发器按 call_id 处理，见 §8.3。
 6. 重置本次 wallclock 起点；保留用量、`usage.llm_requests` 和已消费的工具迭代。`ResumeLimits` 可覆盖 `max_tokens`、`max_tool_iterations`、`timeout_secs`、`llm_timeout_secs`；调整 `max_tool_iterations` 时以新总额度减去已消费额度（原总额度 − `tool_iterations_left`）计算剩余值，已消费的额度不退还。
-7. 未挂起快照直接续跑；上下文上限快照先压缩；等待 deferred 工具结果的快照拒绝接手。
+7. 未挂起快照直接续跑；上下文上限快照先压缩。CLI 带了消息时先注入快照（§8.1）再续跑。
 
-CLI resume 只将四种额度参数传入 `ResumeLimits`。模型、Provider、工具、loop 等使用原记录；不要用 `--resume --model ...` 期望切换模型。`--run-logs` 和交付格式可影响本次展示，`--result-format` 可影响导出，不改变原任务语义。
+CLI resume 只将四种额度参数传入 `ResumeLimits`，另可带一条消息作为新输入。模型、Provider、工具、loop 等使用原记录；不要用 `--resume --model ...` 期望切换模型。`--run-logs` 和交付格式可影响本次展示，`--result-format` 可影响导出，不改变原任务语义。
 
 没有请求语义哈希、自动匹配相同输入或 `--append`。新任务使用新的上下文和 run_id；要把前次输出作为新材料，可使用管道或结构化消息。
 
@@ -321,7 +323,13 @@ CLI resume 只将四种额度参数传入 `ResumeLimits`。模型、Provider、�
 
 CLI 第一次 Ctrl-C 请求协作中断并保存进度；第二次 Ctrl-C 杀掉仍受管理的本地 bash 进程组并立即以 4 退出，不等待新的提交。SDK 使用 `XllmInterrupter::interrupt(reason)`。
 
-保存点之间仍可能发生模型重试或工具副作用重放。普通 xllm 默认不自动填充宿主的 inflight / executions，也没有 exactly-once 执行保证。宿主提供的执行跟踪可以将已登记而结果未提交的动作变成“结果未知”，但不能恢复丢失的外部结果。强制杀进程不等价于完成一次 checkpoint。
+每次工具调用前都提交快照，同一批调用（或同一 Step 的 action）逐个派发，所以快照能确定哪个调用可能已经开始执行：`exec_tracking::in_flight_call` 取第一个没有结果的调用。恢复时 xllm 用 `AgentRuntime::describe_interrupted` 为它生成说明，交给 `XllmToolManager::set_recovering`；续跑时该调用以原 call_id 再次派发，派发器先按 call_id 找：
+
+- `shell`：task `local:shell:<call_id>` 已结束（执行目录里有退出码）时，用它的结果作为这次调用的结果。
+- 声明 `AgentTool::idempotent()` 的工具（`read_file`、`read`、`glob`、`grep`、`wait_task`、`get_task_state` 等）重新执行。
+- 其它工具不重做，结果为 `Unresolved`（效果未知），正文是上面的说明：`shell` 给执行目录里的事实（退出码与输出尾部，或“可能仍在运行”与查看位置），其它工具给通用的“结果未知、先核实再重做”。
+
+恢复不核验或停止任何进程。保存点之间的模型推理可能重做一次；没有 exactly-once 外部副作用保证，强制杀进程不等价于完成一次 checkpoint。
 
 若 outcome 已算出但提交失败，xllm 尝试记录 paused/storage；磁盘完全不可写时，这条暂停记录也可能无法落盘。恢复基于最后成功提交的记录，不能把内存里的 outcome 当成已经持久化。
 
@@ -334,19 +342,20 @@ CLI 第一次 Ctrl-C 请求协作中断并保存进度；第二次 Ctrl-C 杀掉
 | `read_file` | `path`，可选 `range`、`first_chunk` | 读取文件内容 / 指定范围，具体选择规则由文件工具定义 |
 | `write_file` | `path`、`content`，可选 `mode` | 写 UTF-8 文本；默认覆盖，支持 create/new、append 等模式 |
 | `edit_file` | `path`、`old_string`、`new_string` | old_string 非空且精确匹配一次，执行文本替换 |
-| `exec` | `command`，可选 `target`、`timeout_ms`、`cwd`、`env` | 本地 `/bin/bash -c`；env 由执行器接受，当前 schema 未展示该字段 |
+| `shell` | `command`，可选 `cwd`、`env`，以及 `wait_ms`（转 task 时）或 `timeout_ms`（等到结束时） | 在本 Run 的 runtime 中执行；env 由执行器接受，当前 schema 未展示该字段 |
+| `wait_task` / `get_task_state` / `cancel_task` | `task_id`，`wait_task` 另有可选 `wait_ms` | 跟进 `shell` 转成的 task；只在 shell 会转 task 时提供 |
 
-这里的工具名是 `exec`，不是旧目录工具的 `shell`。默认 cwd 为 workdir；相对 cwd 和文件路径基于 workdir。exec 只支持本地 target，继承进程环境，可覆盖 env；stdin 为 EOF，每次调用启动新的 shell，不保留上次 shell 的 cwd / 变量。`bash_tools` 只生成命令手册，不安装程序、不注册函数、不修改 PATH。
+默认 cwd 为 workdir；相对 cwd 和文件路径基于 workdir。native 在 Unix 上用 bash、在 Windows 上用 PowerShell，remote_ssh / remote_node 见 [AgentRuntime 设计](<AgentRuntime 设计.md>)；命令继承执行环境，可覆盖 env；stdin 为 EOF，每次调用启动新的 shell，不保留上次 shell 的 cwd / 变量。`bash_tools` 只生成命令手册，不安装程序、不注册函数、不修改 PATH。
 
-exec 默认超时 1,800,000 ms（30 分钟），最大 3,600,000 ms（1 小时），过大的有效值 clamp 到上限。输出限制为 64 KiB，保留头部 1/4 和尾部 3/4。命令在独立进程组中运行，超时、取消或总时长限制触发时杀掉受管理的进程组；超时 Error 含已有输出、`timed_out` 和重试提示。非零退出的错误 observation 同时包含摘要及输出。
+shell 在调用内最多等 `runtime.task_wait_ms`（默认 30 秒，上限 30 分钟；调用参数 `wait_ms` 可另给，同样以 30 分钟为上限）。到期仍在运行的命令转为进程内 task（`local:shell:<call_id>`），调用返回“仍在运行”、task_id、已有输出和跟进方式，命令继续执行，模型用 `wait_task` / `get_task_state` / `cancel_task` 跟进。预算不小于 `tools.shell.timeout_ms` 时 shell 等到命令结束或超时，参数为 `timeout_ms`，不提供 task 工具。`timeout_ms` 默认 1,800,000 ms（30 分钟），上限 `tools.shell.max_timeout_ms` 默认 3,600,000 ms（1 小时，0 为不限），过大的有效值 clamp 到上限。输出限制为 64 KiB，保留头部 1/4 和尾部 3/4。命令在独立进程组中运行，超时、取消或总时长限制触发时杀掉受管理的进程组；超时 Error 含已有输出、`timed_out` 和重试提示。非零退出的错误 observation 同时包含摘要及输出。
 
-`filesystem_policy: workspace` 限制内置文件工具的路径和 exec 的初始 cwd；`unrestricted` 清空文件读写 root 白名单，允许 cwd 指向其它目录，相对路径基准不变。策略随 Run 保存并在恢复时复用，仅作用于内置组。workspace 的路径约束不是 OS 沙箱，不能隔离 shell 命令自身的绝对路径、cd 或符号链接访问；MCP / 宿主工具自行决定执行策略。
+`filesystem_policy: workspace` 限制内置文件工具的路径和 shell 的初始 cwd；`unrestricted` 清空文件读写 root 白名单，允许 cwd 指向其它目录，相对路径基准不变。策略随 Run 保存并在恢复时复用，仅作用于内置组。workspace 的路径约束不是 OS 沙箱，不能隔离 shell 命令自身的绝对路径、cd 或符号链接访问；MCP / 宿主工具自行决定执行策略。
 
-Success observation 优先取非空 output，其次 summary，最后 details JSON；Error observation 包含 summary 和可用的 output。普通工具业务错误供模型纠正；连续可纠正错误上限为 3。`artifacts` 只追踪已观察到成功的 write_file / edit_file 路径，exec 产生的文件不会自动枚举登记。
+Success observation 优先取非空 output，其次 summary，最后 details JSON；Error observation 包含 summary 和可用的 output。普通工具业务错误供模型纠正；连续可纠正错误上限为 3。`artifacts` 只追踪已观察到成功的 write_file / edit_file 路径，shell 产生的文件不会自动枚举登记。
 
-### 9.2 工具迭代、时间与 deferred
+### 9.2 工具迭代、时间与 task
 
-xllm 设置串行工具策略（`parallel: false`）和 `max_calls_per_round = 16`：一次模型 response（一个 Round）最多 16 个原生工具调用；它不限制一个 behavior Step 的 action 数。
+同一批调用总是逐个派发，每个调用前提交一次快照。xllm 设置 `max_calls_per_round = 16`：一次模型 response（一个 Round）最多 16 个原生工具调用；它不限制一个 behavior Step 的 action 数。
 
 `max_tool_iterations` 是工具预算（底层 `ToolPolicy.max_tool_iterations`，剩余值为快照的 `tool_iterations_left`）。一次工具迭代 = 一批实际派发的原生工具调用（同一 response 的全部调用），或一个派发 action 的 behavior Step（同一 Step 的多个 action 只计一次）；业务失败也消耗额度，behavior Step 内层的原生工具批次与外层 action 共用同一额度。额度为零时仍允许模型给出无工具的最终答案；再次要求工具或 action 则进入 `limit_reached`，不执行超额调用。behavior actions 按顺序执行，首个业务失败后本 Step 的后续动作跳过并反馈给模型。
 
@@ -356,7 +365,7 @@ xllm 设置串行工具策略（`parallel: false`）和 `max_calls_per_round = 1
 
 `max_tokens` 传入模型输出上限；xllm 构造的普通请求没有 `max_total_tokens` / `max_cost_units` 总额度。底层支持的预算种类不能都当成现行 CLI 开关。
 
-底层（自快照 v2 起）已能产出 `PendingTool` 并接受 `ToolResults`，但 xllm 配置 `allow_deferred: false`。工具返回 Pending 会按违约 / 未知副作用处理，不应把它当作可继续轮询的 CLI pending 状态；如果执行路径收到 `PendingTool` outcome，xllm 将其记为 `failed` / `deferred_tool`。没有 `--fill` 或通用异步工具回填命令。
+底层不认识 task，循环里不等待，也没有让工具挂起 run 的原语：每次调用都当场得到结果。工具返回 `pending` + `task_id` 时（例如 shell 转发的 CLI 结果），派发器在调用内经 resolver 等到 task 结束、工具给的 `check_after` 或 `runtime.task_wait_ms`，再把 task 当时的状态交给模型；仍在运行时是一条普通的成功结果，写明 task 仍在运行和跟进方式。`pending` 但没有 `task_id` 的结果按错误处理。xllm 没有事件源，模型自己用 `wait_task` / `get_task_state` 跟进，每次调用内最多等 30 分钟。function_call 模式下模型回复时本 Run 的 task 仍在运行，Run 停为 paused（`tasks_running`，§8.1）。
 
 ### 9.3 上下文容量与压缩
 
@@ -377,7 +386,7 @@ xllm 使用本次主模型和 `LlmSummarizeCompressor`，目标 token 参数为 
 ```text
 agent_tool xllm "任务要求" [options]
 agent_tool xllm --select <group> ["任务要求"]
-agent_tool xllm --resume [--run <id>] [limits/output options]
+agent_tool xllm --resume [--run <id>] [message] [limits/output options]
 agent_tool xllm list [--limit N]
 agent_tool xllm status [--run <id>]
 agent_tool xllm result [--run <id>]
@@ -392,9 +401,9 @@ agent_tool xllm result [--run <id>]
 | 交付 | `--result-format raw\|result.<path>`、`--json`、`--format text\|json`、`--output` |
 | 查询 / 日志 | `--run`、`--limit`、`--run-logs debug\|info\|warn\|result`、`--help`、`--version` |
 
-未知 flag、缺值、无效数字或互斥输入返回 2；大多数单值参数重复也报错，附件按出现顺序保留。`--resume` 不接受新问题、system、select、structured input 或附件。`--run` 不能用于创建新任务。旧 `--objective`、`--new`、`--append`、`--input-stdin` 等不属于当前入口。
+未知 flag、缺值、无效数字或互斥输入返回 2；大多数单值参数重复也报错，附件按出现顺序保留。`--resume` 可带一条消息（位置参数或 `--user`），作为新输入交给原 Run（§8.1）；不接受 system、select、structured input 或附件。`--run` 不能用于创建新任务。旧 `--objective`、`--new`、`--append`、`--input-stdin` 等不属于当前入口。
 
-CLI 帮助、状态标签、进度和诊断使用英文；用户输入、模型输出和工具正文按原文保留。info/debug 在 stderr 列出参与合并的配置文件；resume 列出原 Run 保存的来源。exec 日志显示实际 command，控制字符转义为单行；warn/result 隐藏常规进度。stdout 应按所选交付格式读取，stderr 不是结构化 API。
+CLI 帮助、状态标签、进度和诊断使用英文；用户输入、模型输出和工具正文按原文保留。info/debug 在 stderr 列出参与合并的配置文件；resume 列出原 Run 保存的来源。shell 日志显示实际 command，控制字符转义为单行；warn/result 隐藏常规进度。stdout 应按所选交付格式读取，stderr 不是结构化 API。
 
 ### 10.2 三种结果控制
 
@@ -408,7 +417,7 @@ CLI 帮助、状态标签、进度和诊断使用英文；用户输入、模型�
 
 JSON 字符串和 XML 文本叶节点导出为 Text；JSON 对象、数组、数值等导出为 Json；含子元素的 XML 节点导出其内部 XML。路径缺失、重复 XML 匹配或格式不符报提取错误，不自动回退 raw。`ExtractedValue` 的保存形状分别为 `{"kind":"text","text":...}`、`{"kind":"json","value":...}`、`{"kind":"xml","xml":...}`。
 
-function_call 的 `--json` 会向模型提出 JSON 输出要求；本地仍对提取结果做 JSON 语法校验。SDK `json_schema` 转发给 Provider，不进行本地 schema 校验。behavior 的原始响应是 XML，因此 `behavior + raw + --json` 在准备阶段拒绝，通常应配置 `result.report`。behavior 完成要求无动作的非空 `<report end="true">`；普通 report-only 继续，END / done 拒绝；默认 `raw` 仍交付完整最终 XML，不自动只交付 report。
+function_call 的 `--json` 会向模型提出 JSON 输出要求；本地仍对提取结果做 JSON 语法校验。SDK `json_schema` 转发给 Provider，不进行本地 schema 校验。behavior 的原始响应是 XML，因此 `behavior + raw + --json` 在准备阶段拒绝，通常应配置 `result.report`。behavior 完成要求无动作的非空 `<report end="true">`；没有动作、不结束也不交接的 Step（可带普通 report）是 yield，Run 停为 paused（§8.1），END / done 拒绝；默认 `raw` 仍交付完整最终 XML，不自动只交付 report。
 
 `completed` 表示模型阶段完成且原文已保存。即使提取 / JSON 校验失败，记录仍为 completed，CLI 返回 6；之后用 `result` 重新导出，不需要再次调用模型，也不改写原结果记录。
 
@@ -452,18 +461,15 @@ libOpenDAN 的 Agent Session 直接使用 xllm Run 目录。目录关系及宿�
 
 | Run 字段 | 协议意义 |
 | --- | --- |
-| `host` | `assembled_by`、session_id、runtime_kind、runtime_id、env_check、extra |
+| `host` | `assembled_by`、session_id、runtime_kind、runtime_id、env_check、extra（宿主自己的数据，如 libOpenDAN 的报告、保活与子 context 调用记录） |
 | `host_commit_pending` | 已写入快照但宿主尚未提交消费状态的输入批次序号；非空时 xllm 拒绝执行 |
-| `inflight[]` | 已派发但结果尚未持久化的动作：call_id、tool、args、effect、idempotency_key、execution_ids、step_index、started_at_ms |
-| `executions[]` | 待确认停止的受管执行：execution_id、kind、call_id、runtime_id、host、boot_id、pgid、leader_start_ticks、command、started_at_ms |
+| `handover` | 宿主 Run 停在 behavior 交接点：`next_behavior`、`at_ms`；转移由宿主 Session 提交，非空时 xllm 拒绝执行 |
 
-宿主字段不是普通 CLI 自动生成的执行审计。`TrackedBashRunner` 可通过 `XllmDeps.bash_runner` 注入：执行标识先由 `ExecutionRegistrar` 持久化，再放行命令，子进程继承 `OPENDAN_EXECUTION_ID`。探测 / 停止通过环境标记等执行事实核对，不能仅信任可复用的 PID。
+接手时按保存的 runtime 配置重建执行体，并核对完整 descriptor。`host.assembled_by = libopendan` 的 Run 还核对保存的 `env_check`：Session runtime、非凭据环境、凭据变量名、PATH 层、bin manifest 与 helper 内容哈希和可执行位，凭据值重新从环境读取，不符时报 `RecoveryBlocked`。以下 Run 拒绝接手（`NotResumable`），须由宿主 Session Runner 推进：`host_commit_pending` 或 `handover` 非空；`host.extra.reports` 中已有 `is_end=true` 的报告；behavior 快照的 `state.report_end` 为真（最终报告待宿主校验）；`host.extra.workspace_binding` 非空（受管 workspace）。具名宿主工具缺失时重建工具集即报错。可能在执行的调用按 §8.3 处理，不重放。
 
-接手时仅允许 `runtime_kind` 缺省或为 `native`。取得 Run 锁后，先通过 `stop_execution` 确认 executions 中的旧执行已停止，无法确认则拒绝；再把 inflight 中没有持久结果的动作经 `materialize_unresolved` 写入快照为“结果未知”，提交新索引后清除 inflight，不自动重放这些已登记动作。
+宿主装配的 Run 使用同一记录与快照版本（`version = 7`、快照 v6）；libOpenDAN 读到其它 `RunRecord.version` 或不支持的快照版本时进入 RecoveryBlocked，同样不迁移。两边用同一个 `CheckpointHook` 契约提交快照：每次工具调用前，function_call 每次推理前，behavior 在 Step 边界（libOpenDAN 的 `SessionCheckpointHook`，xllm 的 `SnapshotHook`）。`usage.llm_requests` 由每个执行段累加：libOpenDAN 在每个 outcome 后加上本段经其 `LlmClient::infer` 发起的 Round 数，xllm 接手后加上自己的请求数，任何一方都不覆盖已有值；xllm 接手后的推理只出现在 run.json 中，不进入 session 的 `static.json`。
 
-宿主装配的 Run 使用同一记录与快照版本（`version = 6`、快照 v5）；libOpenDAN 读到其它 `RunRecord.version` 或不支持的快照版本时进入 RecoveryBlocked，同样不迁移。宿主驱动时的快照边界由宿主决定（libOpenDAN 用 `CheckpointHook`：function_call 在每次推理前，behavior 只在外层 Step 边界），xllm 接手后用自己的 `InferenceHook` 在每次推理前提交。`usage.llm_requests` 由每个执行段累加：libOpenDAN 在每个 outcome 后加上本段经其 `LlmClient::infer` 发起的 Round 数，xllm 接手后加上自己的请求数，任何一方都不覆盖已有值；xllm 接手后的推理只出现在 run.json 中，不进入 session 的 `static.json`。
-
-快照的 `state.host` 与 Run 的 `host` 是不同层的元数据，续跑必须保留。`host.env_check` 当前只是保存的数据，`XllmRun::resume` 没有通用 PATH / 环境检查器；不能把声明的环境要求描述为已经自动验证。工作目录并发协调、输入消费提交以及其它宿主恢复条件仍由宿主负责。
+快照的 `state.host` 与 Run 的 `host` 是不同层的元数据，续跑必须保留。只有 libOpenDAN 装配的 Run 的 `host.env_check` 会被核对，其它宿主的 env_check 只是保存的数据。工作目录并发协调、输入消费提交以及其它宿主恢复条件仍由宿主负责。
 
 ## 12. 使用示例
 
@@ -581,6 +587,6 @@ cargo test -p agent_tool --lib run_local_llm -- --test-threads=1
 cargo test -p llm_context --lib suspension -- --test-threads=1
 ```
 
-这些测试覆盖配置继承、组与模板、工具优先级、输入顺序、Run 落盘、Provider 分类、暂停 / 中断 / 恢复、工具迭代额度与 `llm_requests` 累加、工具取消、文件模型、结果提取、上下文压缩及快照挂起回填。它们使用脚本化模型或本地 mock，不替代真实 AICC / MCP 环境的联调。
+这些测试覆盖配置继承、组与模板、工具优先级、输入顺序、Run 落盘、Provider 分类、暂停 / 中断 / 恢复（含 yield 后带消息续跑、按 call_id 恢复调用）、工具迭代额度与 `llm_requests` 累加、工具取消、文件模型、结果提取、上下文压缩及上下文上限挂起与续跑。它们使用脚本化模型或本地 mock，不替代真实 AICC / MCP 环境的联调。
 
-跨语言或宿主实现接手 Run 时，应对齐已支持的记录版本、运行协议、快照语义和锁 / 提交边界，并保留宿主元数据。当前没有旧 run_local_llm 目录自动迁移、跨 Run 记忆 / append、通用 deferred 回填、MCP 完整会话管理或 exactly-once 外部副作用保证；不得从共享类型中存在某个字段推导出 CLI 已实现对应能力。
+跨语言或宿主实现接手 Run 时，应对齐已支持的记录版本、运行协议、快照语义和锁 / 提交边界，并保留宿主元数据。当前没有旧 run_local_llm 目录自动迁移、跨 Run 记忆 / append、MCP 完整会话管理或 exactly-once 外部副作用保证；不得从共享类型中存在某个字段推导出 CLI 已实现对应能力。

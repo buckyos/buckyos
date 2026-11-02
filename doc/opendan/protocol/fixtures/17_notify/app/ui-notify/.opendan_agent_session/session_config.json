@@ -6,7 +6,7 @@
     "agent_did": "did:bns:jarvis.alice",
     "kind": "ui",
     "class": "ui",
-    "created_at_ms": 1792976022547,
+    "created_at_ms": 1793591512224,
     "created_by": {
       "principal": "app:app2@alice",
       "via": "app"
@@ -81,8 +81,8 @@
       {
         "kind": "kmsg",
         "id": "q",
-        "queue": "app2::alice::opendan.session.ui-notify",
-        "subscriber": "opendan.jarvis.alice.ui-notify"
+        "queue": "app2::alice::opendan.session.d259f588ce00fc2763d2d8ea497e12dd3be1cf0a8d416d4695621b7e1444d0df",
+        "subscriber": "opendan.d259f588ce00fc2763d2d8ea497e12dd3be1cf0a8d416d4695621b7e1444d0df"
       }
     ],
     "outbound": {

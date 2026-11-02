@@ -372,9 +372,10 @@ fn ui_session_waits_for_input_and_control_is_separate() {
 }
 
 /// E21 / E5: a sub session created by the layer ② tool through `shell`
-/// (`agent-session create-worksession --wait`). The parent run is suspended
-/// on `session:<sid>`, the same process drives the child, and its end is
-/// the call's tool result.
+/// (`agent-session create-worksession --wait`). The call returns "still
+/// running" on `session:<sid>` (a session is followed outside the loop), the
+/// reply keeps the run, the same process drives the child, and its end is
+/// the kept run's next input.
 #[test]
 fn a_sub_session_is_created_and_waited_for_through_the_shell_tool() {
     let cli = Cli::new();
@@ -382,10 +383,13 @@ fn a_sub_session_is_created_and_waited_for_through_the_shell_tool() {
         if system_of(req).contains("compute the answer") {
             return say("forty-two");
         }
+        if last_user(req).contains("forty-two") {
+            return say("the child said forty-two");
+        }
         match tool_result(req, "w1") {
             Some(r) => {
-                assert!(r.contains("forty-two"), "{r}");
-                say("the child said forty-two")
+                assert!(r.contains("still running") && r.contains("comes back to you as input"), "{r}");
+                say("waiting for the child")
             }
             None => call_shell(
                 "w1",
@@ -429,14 +433,14 @@ fn a_sub_session_is_created_and_waited_for_through_the_shell_tool() {
     assert_eq!(origin["report"], "final");
     assert!(origin["created_by_call"].as_str().unwrap().ends_with("/w1"), "{origin}");
     assert!(st["report"].as_str().unwrap().contains("forty-two"));
-    // One call, one result, no event for the same end.
+    // One call, one result; the end came as one input event.
     let results: Vec<_> = worklog(&sd)
         .into_iter()
         .filter(|e| matches!(&e.body, WorklogBody::ActionResult { call_id, .. } if call_id == "w1"))
         .collect();
     assert_eq!(results.len(), 1);
     assert!(sd.state().unwrap().is_finished());
-    assert_eq!(llm.count(), 3);
+    assert_eq!(llm.count(), 4);
 }
 
 /// E1: a run stopped by xagent is finished by xllm from the run directory
@@ -834,42 +838,6 @@ fn goals_from_the_command_line() {
 
 /// `ask-user` prints the pending result the `shell` tool forwards; it only
 /// runs as a call of a session's run and checks its options.
-#[test]
-fn ask_user_prints_a_pending_question() {
-    let cli = Cli::new();
-    let ask = |args: &[&str], env: bool| {
-        let mut c = cli.command(&[&["ask-user"], args].concat());
-        if env {
-            c.env("OPENDAN_SESSION_ID", "ui-1").env(agent_tool::llm_bash::ENV_CALL_ID, "c9");
-        }
-        parse(c.output().unwrap())
-    };
-    let (code, _, err) = ask(&["which one?"], false);
-    assert_eq!(code, 2, "{err}");
-    let (code, v, err) = ask(&["which one?", "--option", "a=docs/", "--option", "b=everything", "--allow-text"], true);
-    assert_eq!(code, 0, "{err}");
-    assert_eq!(v["status"], "pending");
-    assert_eq!(v["task_id"], "userinput:c9");
-    assert_eq!(v["tool"], "ask-user");
-    let request: UserInputRequest = serde_json::from_value(v["detail"].clone()).unwrap();
-    assert_eq!(request.question, "which one?");
-    assert_eq!(request.input.kind, UserInputKind::Choice);
-    assert_eq!(request.input.options[1].label, "everything");
-    assert!(request.input.allow_text);
-    let (code, v, _) = ask(&["free text?"], true);
-    assert_eq!((code, v["detail"]["input"]["kind"].as_str()), (0, Some("text")));
-    for bad in [
-        vec!["q", "--option", "a=only one"],
-        vec!["q", "--option", "a=x", "--option", "a=y"],
-        vec!["q", "--option", "no-label"],
-        vec!["q", "--allow-text"],
-        vec!["  "],
-    ] {
-        let (code, _, err) = ask(&bad, true);
-        assert_eq!(code, 2, "{bad:?}: {err}");
-    }
-}
-
 /// A skill PIKG as `buckyos pikg pack` writes it: APPDOC.json (app_type
 /// `agent_skills`), PACKAGE_META.json and the `agent_skills.tar.gz` payload.
 fn skill_pikg(path: &Path, files: &[(&str, &str, u32)]) {

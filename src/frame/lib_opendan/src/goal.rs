@@ -189,6 +189,7 @@ pub async fn post_activation(
         summary: note.chars().take(800).collect(),
         data_ref: None,
         terminal: false,
+        call_id: None,
     };
     agent
         .sessions()

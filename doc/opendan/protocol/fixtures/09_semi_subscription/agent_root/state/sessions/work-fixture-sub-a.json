@@ -10,7 +10,7 @@
     "principal": "app:app2@alice"
   },
   "location": "${FIXTURE_ROOT}/app/work-fixture-sub-a",
-  "input_queue": "app2::alice::opendan.session.work-fixture-sub-a",
+  "input_queue": "app2::alice::opendan.session.d83ce0c7e5cd9b247fe6da98ba5c74086ad6d8d1c660732f5201668a1eb83b6d",
   "wake_event": "/opendan/jarvis.alice/session/work-fixture-sub-a/input",
   "agent_access": "full",
   "objective": "A",
@@ -26,13 +26,13 @@
       "heartbeat_ms": 0
     },
     "last_runner": {
-      "runner_id": "rn-faf5d86a75f448e3",
+      "runner_id": "rn-c4ff4ba969c647a0",
       "host": "${FIXTURE_HOST}",
-      "pid": 3019369,
+      "pid": 2810648,
       "lock_epoch": 1,
-      "at_ms": 1792976021375
+      "at_ms": 1793591511067
     },
-    "updated_at_ms": 1792976021370
+    "updated_at_ms": 1793591511062
   },
   "location_rev": 0
 }

@@ -36,6 +36,13 @@
     "AgentEvent": {
       "description": "`type = \"event\"` payload: something this session cares about happened. The poster only describes the event; whether it is an Input or an Observe is decided by the receiving session's subscriptions.",
       "properties": {
+        "call_id": {
+          "description": "A task's end: the tool call whose result handed the work over as that task (the input is a task result of that call).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "data_ref": {
           "description": "ObjId or a path relative to the session directory.",
           "type": [
@@ -394,7 +401,7 @@
       "description": "`[reply]`: the reply contract of a behavior's context. The final reply (an assistant text without tool calls) is one JSON value matching `schema`: the provider enforces it natively where it can, the host checks it and asks for one correction (`OutputSpec::Json { max_repairs: Some(1) }`). Function call loop only.",
       "properties": {
         "asks_field": {
-          "description": "An array field of the reply that must list every question the context asked the user (`agent-session ask-user`), one entry each.",
+          "description": "An array field of the reply that must list every question the context asked the user (`ask_user`), one entry each.",
           "type": [
             "string",
             "null"
@@ -1090,7 +1097,7 @@
           "type": "string"
         },
         {
-          "description": "Also after every batch of tool results (behavior loop: every step with action results): the TodoList, sub session and runtime / workspace lines that changed since they were last shown, as a `<<background_context>>` message before the next inference.",
+          "description": "Also after every batch of tool results (behavior loop: every step with action results): the TodoList and sub session lines that changed since they were last shown, as a `<<background_context>>` message before the next inference.",
           "enum": [
             "after_tools"
           ],
@@ -1814,13 +1821,6 @@
     "SessionPolicy": {
       "description": "`session.policy`: the session template resolved at creation (xAgent §4.7) and frozen with the session.",
       "properties": {
-        "ask_user_timeout_secs": {
-          "default": 10800,
-          "description": "A session without a user reading it (a Work) asks through a notification and waits at most this long for the answer.",
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
-        },
         "completion": {
           "allOf": [
             {

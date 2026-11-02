@@ -10,7 +10,7 @@
     "principal": "app:app2@alice"
   },
   "location": "${FIXTURE_ROOT}/app/work-fixture-finished",
-  "input_queue": "app2::alice::opendan.session.work-fixture-finished",
+  "input_queue": "app2::alice::opendan.session.4d643fed69c8efbd67c7e9f4aebff32c931c34f3903be214f7bb3416e1e78338",
   "wake_event": "/opendan/jarvis.alice/session/work-fixture-finished/input",
   "agent_access": "full",
   "objective": "write notes.txt",
@@ -26,13 +26,13 @@
       "heartbeat_ms": 0
     },
     "last_runner": {
-      "runner_id": "rn-bab0cc02120a4a92",
+      "runner_id": "rn-6cd1f48775094f42",
       "host": "${FIXTURE_HOST}",
-      "pid": 3019369,
+      "pid": 2810648,
       "lock_epoch": 1,
-      "at_ms": 1792976020228
+      "at_ms": 1793591510027
     },
-    "updated_at_ms": 1792976020221
+    "updated_at_ms": 1793591510021
   },
   "location_rev": 0
 }

@@ -82,11 +82,11 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   read-session <sid> [--report] [--worklog <n>] | artifact head <aid> | artifact list
   create-worksession --objective <t> [--msg <t>]... [--attach <obj_id>[=<name>]]... [--context recent:<n>|none]
         [--class <c>] [--behavior <b>] [--cmd-skill <name>]... [--workspace inherit|none|<id>] [--runtime inherit|<id>]
-        [--report final|progress|none] [--interactive] [--wait [--wait-ms <ms>]]
+        [--report final|progress|none] [--interactive] [--wait]
         (--cmd-skill: up to 8 manuals from `skill list`, fixed for the session's life; none given: a work
          session inherits its parent work's, a conversation's or a goal's are not inherited)
   skill list [--kind cmd|goal] [--json] | skill install <x.pikg | dir> [--replace] | skill remove <name> [--kind cmd|goal]
-  wait <sid> [--wait-ms <ms>] | post <sid> --msg <t>
+  wait <sid> | post <sid> --msg <t>
   todo add <title> (--content <t> | --content - | --content-file <path>) [--accept <criterion>]... [--scope <t>] [--evidence <t>]... [--skill <cmd_skill>]...
            [--after <todo_id>]... [--batch <b>] [--runtime <id>] [--workspace inherit|none|<id>] [--behavior <b>]
            (a serial Todo: PLAN/DO's next_behavior = do runs it, in its own work session when it names another runtime or
@@ -97,7 +97,6 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
            the behavior is kept for later attempts) | todo list [--json] | todo show <todo_id> [--report]
   todo review <todo_id> (--accept | --reject | --need-evidence) --reason <t> [--followup <todo_id>]...
   todo cancel <todo_id> --reason <t> | todo clean --reason <t> | todo retry <todo_id> --reason <t>
-  ask-user <question> [--option <id>=<label>]... [--allow-text]   (ui sessions: the result is the user's next message)
   copy --from <end> --to <end> [--replace] | copy status|cancel <transfer_id> | copy list
         <end> = session:<path> | workspace:<path> | <runtime_id>:<absolute path>; one regular file between the session's
         runtimes, verified by hash and committed by rename; an existing target only with --replace
@@ -986,7 +985,8 @@ async fn cmd_status(mut a: Args) -> R<i32> {
                 .map(|r| json!({
                     "run_id": r.run_id, "status": r.status, "handover": r.handover,
                     "host_commit_pending": r.host_commit_pending, "usage": r.usage,
-                    "inflight": r.inflight.len(), "live": state.live_run.is_some(),
+                    "in_flight": sd.runs().in_flight(&id).ok().flatten().map(|c| c.call_id),
+                    "live": state.live_run.is_some(),
                 }))
                 .unwrap_or(Value::Null),
             None => Value::Null,
@@ -1210,63 +1210,17 @@ async fn cmd_artifact(mut a: Args) -> R<i32> {
 }
 
 /// A tool result the `shell` tool forwards as the call's own result:
-/// `Pending` with the task id of the sub session being waited for.
-fn pending_on_session(tool: &str, sid: &str, wait_ms: Option<u64>) -> AgentToolResult {
-    let mut details = json!({ "session_id": sid, "status": "waiting" });
-    if let Some(ms) = wait_ms {
-        details["until_ms"] = json!(crate::now_ms() + ms);
-    }
+/// `Pending` with the task id of the sub session being waited for. The
+/// session answers it with that sub session's state at once; while it runs,
+/// the session follows it outside the loop.
+fn pending_on_session(tool: &str, sid: &str) -> AgentToolResult {
+    let details = json!({ "session_id": sid, "status": "waiting" });
     let mut r = AgentToolResult::from_details(details)
         .with_tool(tool)
         .with_status(AgentToolStatus::Pending);
-    // The deadline the session's run waits until (whole seconds).
-    r.check_after = wait_ms.map(|ms| ms.div_ceil(1000).max(1));
     r.task_id = Some(format!("{SESSION_TASK_PREFIX}{sid}"));
     r.summary = format!("waiting for sub session {sid}");
     r
-}
-
-/// `ask-user`: a question to the user. The result is `Pending` on
-/// `userinput:<call_id>`; the session sends the question and fills the
-/// call with the user's next message.
-fn cmd_ask_user(mut a: Args) -> R<i32> {
-    if env_sid().is_none() {
-        return Err(bad("ask-user runs inside a session ($OPENDAN_SESSION_ID)"));
-    }
-    let call_id = env_call_id()
-        .ok_or_else(|| bad("ask-user is a tool call of the session's run ($XLLM_CALL_ID); run it as a shell command of the run"))?;
-    let question = a.next("the question")?;
-    let options = a
-        .all("option")
-        .into_iter()
-        .map(|o| match o.split_once('=') {
-            Some((id, label)) => Ok(UserInputOption {
-                id: id.trim().to_string(),
-                label: label.trim().to_string(),
-            }),
-            None => Err(bad(format!("bad --option {o} (<id>=<label>)"))),
-        })
-        .collect::<R<Vec<_>>>()?;
-    let request = UserInputRequest {
-        question,
-        input: UserInputSpec {
-            kind: if options.is_empty() {
-                UserInputKind::Text
-            } else {
-                UserInputKind::Choice
-            },
-            options,
-            allow_text: a.has("allow-text"),
-        },
-    };
-    request.validate().map_err(bad)?;
-    let mut r = AgentToolResult::from_details(serde_json::to_value(&request)?)
-        .with_tool("ask-user")
-        .with_status(AgentToolStatus::Pending);
-    r.task_id = Some(format!("{USER_INPUT_TASK_PREFIX}{call_id}"));
-    r.summary = "waiting for the user's answer".into();
-    print(&r);
-    Ok(0)
 }
 
 async fn cmd_create_worksession(a: Args) -> R<i32> {
@@ -1336,7 +1290,7 @@ async fn cmd_create_worksession(a: Args) -> R<i32> {
     };
     let sd = create_sub_session(c.agent.as_ref(), &c.who, &parent, sub, c.channels.as_ref()).await?;
     if wait {
-        print(&pending_on_session("create-worksession", sd.sid(), a.num("wait-ms")?));
+        print(&pending_on_session("create-worksession", sd.sid()));
     } else {
         print(&json!({ "session_id": sd.sid(), "status": "created", "path": sd.path() }));
     }
@@ -1606,7 +1560,7 @@ async fn todo_dispatch(c: &Ctx, sd: &SessionDir, todo_id: &str, a: &Args) -> R<i
             let note = match todo_executor(sd) {
                 Some(_) => "the sub session reports back when it finishes; end your step with a progress report to wait for it".to_string(),
                 None => format!(
-                    "wait for it with `agent-session wait {}` as a shell call of its own, then read its report with `agent-session todo show {} --report` and review it",
+                    "wait for it with `agent-session wait {}` as a shell call of its own and, while it runs, end your reply: its end comes back as your next input; then read its report with `agent-session todo show {} --report` and review it",
                     d.child_sid, d.todo_id
                 ),
             };
@@ -1778,7 +1732,7 @@ async fn cmd_wait(mut a: Args) -> R<i32> {
     if c.agent.sessions().lookup(&sid).await?.is_none() {
         return Err(bad(format!("session {sid} is not registered")));
     }
-    print(&pending_on_session("wait", &sid, a.num("wait-ms")?));
+    print(&pending_on_session("wait", &sid));
     Ok(0)
 }
 
@@ -2804,7 +2758,6 @@ async fn real_main() -> R<i32> {
         // What only reads this machine runs here; the rest is the session's
         // business on the control side.
         match (cmd.as_str(), argv.first().map(String::as_str)) {
-            ("ask-user", _) => std::env::set_var("OPENDAN_SESSION_ID", &sc.session_id),
             ("runtime", Some("baseline")) => {}
             _ => {
                 let client = crate::session_context::SessionClient { path, ctx: sc };
@@ -2848,7 +2801,6 @@ async fn real_main() -> R<i32> {
         "read-session" => cmd_read_session(a).await,
         "artifact" => cmd_artifact(a).await,
         "create-worksession" => cmd_create_worksession(a).await,
-        "ask-user" => cmd_ask_user(a),
         "wait" => cmd_wait(a).await,
         "goal" => cmd_goal(a).await,
         "notify" => cmd_notify(a).await,

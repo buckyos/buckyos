@@ -452,6 +452,7 @@ impl SshTransport {
                 stdout_tail: String::new(),
                 stderr_tail: String::new(),
                 exists: false,
+                started_at_ms: None,
             });
         }
         let rest = text.strip_prefix("DIR\n").unwrap_or(&text);
@@ -466,6 +467,7 @@ impl SshTransport {
             stdout_tail,
             stderr_tail,
             exists: true,
+            started_at_ms: None,
         })
     }
 }

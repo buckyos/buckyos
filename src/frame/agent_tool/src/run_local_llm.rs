@@ -53,7 +53,8 @@ Usage:
   xllm list [--limit N]                   recent runs of the working directory
   xllm status [--run <id>]                run status, effective config, resumability
   xllm result [--run <id>]                re-export a saved result (no model call)
-  xllm --resume [--run <id>]              continue an interrupted / paused run
+  xllm --resume [--run <id>] [message]    continue an interrupted / paused run
+                                          (a message is given to it as new input)
 
 Input:
   "question" | --user <text>   task request (one of them, once)
@@ -438,15 +439,13 @@ impl CliOpts {
                 }
             }
             Command::Resume => {
-                if o.question.is_some()
-                    || o.user.is_some()
-                    || o.system.is_some()
+                if o.system.is_some()
                     || o.select.is_some()
                     || !o.attachments.is_empty()
                     || o.input_file.is_some()
                 {
                     return Err(ParseError::Bad(
-                        "--resume continues the original task; it does not accept a question, --user, --system, --select, --input-file or attachments".into(),
+                        "--resume continues the original task; a question or --user is given to it as a new message, --system, --select, --input-file and attachments are not accepted".into(),
                     ));
                 }
             }
@@ -803,9 +802,12 @@ async fn run_new(mut opts: CliOpts) -> i32 {
         && input.attachments.is_empty();
 
     let observer = Arc::new(StderrObserver::new(level));
-    let deps = XllmDeps::default()
-        .with_observer(observer.clone())
-        .with_node_executor(Arc::new(crate::runtime::node::BuckyosNodeConnector));
+    let deps = with_zone_tasks(
+        XllmDeps::default()
+            .with_observer(observer.clone())
+            .with_node_executor(Arc::new(crate::runtime::node::BuckyosNodeConnector)),
+    )
+    .await;
     let prepared = match XllmTask::prepare(&workdir, input, opts.overrides(), &deps).await {
         Ok(p) => p,
         Err(err) => {
@@ -1153,6 +1155,31 @@ fn fmt_time(ms: u64) -> String {
         .to_string()
 }
 
+/// The zone's TaskMgr as this run's task backend when a BuckyOS session is
+/// given (`BUCKYOS_APPCLIENT_SESSION_TOKEN`, how OpenDAN hands tools a
+/// session): the run then follows TaskMgr tasks (`t-…`, e.g. an `ask_user`
+/// question) with the task tools. Without one, such tasks are unknown to
+/// the run; its own long commands stay tasks of this process either way.
+async fn with_zone_tasks(mut deps: XllmDeps) -> XllmDeps {
+    let has_session = std::env::var("BUCKYOS_APPCLIENT_SESSION_TOKEN")
+        .is_ok_and(|t| !t.trim().is_empty());
+    if !has_session {
+        return deps;
+    }
+    if let Err(e) = crate::xllm::ensure_buckyos_runtime().await {
+        log::warn!("xllm: zone tasks unavailable, BuckyOS runtime not ready: {e}");
+        return deps;
+    }
+    let owner = std::env::var("BUCKYOS_APP_ID").unwrap_or_else(|_| "xllm".to_string());
+    deps.buckyos_tasks = Some(crate::tasks_zone::ZoneShellTasks::new(
+        Arc::new(crate::tasks_zone::ZoneShellTaskBackend),
+        &owner,
+        None,
+        deps.local_tasks.clone(),
+    ));
+    deps
+}
+
 async fn run_resume(mut opts: CliOpts) -> i32 {
     let level = opts.log_level();
     let workdir = match opts.workdir() {
@@ -1164,9 +1191,12 @@ async fn run_resume(mut opts: CliOpts) -> i32 {
     };
     let store = store_for(&opts, &workdir);
     let observer = Arc::new(StderrObserver::new(level));
-    let deps = XllmDeps::default()
-        .with_observer(observer.clone())
-        .with_node_executor(Arc::new(crate::runtime::node::BuckyosNodeConnector));
+    let deps = with_zone_tasks(
+        XllmDeps::default()
+            .with_observer(observer.clone())
+            .with_node_executor(Arc::new(crate::runtime::node::BuckyosNodeConnector)),
+    )
+    .await;
     let start = XllmRun::resume(
         &store,
         opts.run.as_deref(),
@@ -1199,6 +1229,12 @@ async fn run_resume(mut opts: CliOpts) -> i32 {
             }
         }
         Ok(ResumeStart::Run(mut run)) => {
+            if let Some(message) = opts.question.clone().or_else(|| opts.user.clone()) {
+                if let Err(err) = run.inject_input(&message) {
+                    eprintln!("xllm: error: {err}");
+                    return EXIT_USAGE;
+                }
+            }
             let rec = run.record();
             let level = opts.run_logs.unwrap_or(rec.config.run_logs);
             opts.run_logs = Some(level);
@@ -1546,7 +1582,10 @@ mod tests {
             parse(&["status", "--run", "abc"]).unwrap().command,
             Command::Status
         );
-        assert!(parse(&["--resume", "question"]).is_err());
+        let resumed = parse(&["--resume", "go on"]).unwrap();
+        assert_eq!(resumed.command, Command::Resume);
+        assert_eq!(resumed.question.as_deref(), Some("go on"));
+        assert!(parse(&["--resume", "--select", "a"]).is_err());
         assert!(parse(&["--run", "abc", "question"]).is_err());
         assert!(parse(&["--tools", "--no-tools"]).is_err());
         assert!(parse(&["--select", "a", "--system", "b"]).is_err());

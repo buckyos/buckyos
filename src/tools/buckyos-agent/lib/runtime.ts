@@ -10,6 +10,8 @@ export interface AiccRuntime {
   ownerUserId: string;
   zoneHost: string;
   appId: string;
+  // The verify-hub session token the calls carry.
+  sessionToken: string;
 }
 
 let cached: AiccRuntime | null = null;
@@ -74,6 +76,7 @@ export async function initRuntime(): Promise<AiccRuntime> {
     ownerUserId: runtimeOwnerUserId,
     zoneHost,
     appId,
+    sessionToken: account.session_token,
   };
   return cached;
 }

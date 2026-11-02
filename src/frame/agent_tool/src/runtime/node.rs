@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use base64::Engine;
 use buckyos_api::{
-    encode_executor_control, encode_executor_data, executor_content_hash, is_forbidden_env_name,
+    AiToolCall, encode_executor_control, encode_executor_data, executor_content_hash, is_forbidden_env_name,
     read_executor_frame, ExecutorChannel, ExecutorClientInfo, ExecutorClientMessage,
     ExecutorDataFrame, ExecutorDescribeOk, ExecutorDescribeRequest, ExecutorEdit,
     ExecutorEditRequest, ExecutorError, ExecutorErrorCode, ExecutorExecRequest, ExecutorFrame,
@@ -37,14 +37,14 @@ use super::{
     AgentRuntime, Capabilities, RuntimeConfig, RuntimeDescriptor, RuntimeInfo,
     RuntimeOpenCtx, CURRENT_TOOL_CALL,
 };
-use crate::exec_tracking::{unresolved_reason, InflightAction};
+use crate::exec_tracking::unresolved_reason;
 use crate::llm_bash::{
     sanitize_call_id, BashRunOutput, BashRunRequest, BashRunner, CommandHandle, CommandProgress,
     RunBinding, RunBindingSlot, OUTPUT_TAIL_BYTES, TOOL_SHELL,
 };
 use crate::xllm::{EffectiveTools, ToolsConfig, XllmDeps, XllmError, XllmToolManager};
 use crate::{AgentToolError, SessionRuntimeContext};
-use llm_context::tasks::{TaskResult, TaskState};
+use crate::task_model::{TaskResult, TaskState};
 
 pub const REMOTE_NODE_KIND: &str = "remote_node";
 const LOCATOR_VERSION: u32 = 1;
@@ -1600,10 +1600,10 @@ impl NodeRecovery {
         s
     }
 
-    pub(crate) async fn describe(&self, run: &RunBinding, action: &InflightAction) -> String {
+    pub(crate) async fn describe(&self, run: &RunBinding, call: &AiToolCall) -> String {
         let node = &self.node_did;
-        let tool = &action.tool;
-        match self.lookup(run, &action.call_id).await {
+        let tool = &call.name;
+        match self.lookup(run, &call.call_id).await {
             Recovered::NoLocator => format!(
                 "{tool} (remote_node {node}): the previous executor exited before this call was sent to the node (no operation locator), so it did not run there."
             ),
@@ -1671,7 +1671,7 @@ impl crate::tasks::RuntimeRecoveryReader for NodeRecovery {
                             code.map(|c| format!(" with exit code {c}")).unwrap_or_default(),
                             Self::tails(&out, &err)
                         ),
-                        tool_result: Some(llm_context::observation::ToolResultView {
+                        tool_result: Some(crate::result_view::ToolResultView {
                             cmd_name: Some(TOOL_SHELL.into()),
                             return_code: code,
                             summary: format!("{state:?}"),
@@ -1881,6 +1881,7 @@ impl AgentRuntime for RemoteNodeRuntime {
             files,
             &s.descriptor,
             ctx.run.clone(),
+            self.config().task_wait_ms(),
         )
         .await?;
         let mut info = self.info().await?;
@@ -1896,12 +1897,12 @@ impl AgentRuntime for RemoteNodeRuntime {
         Ok((effective, manager))
     }
 
-    async fn describe_interrupted(&self, run: &RunBinding, action: &InflightAction) -> String {
+    async fn describe_interrupted(&self, run: &RunBinding, call: &AiToolCall) -> String {
         if !matches!(
-            action.tool.as_str(),
+            call.name.as_str(),
             TOOL_SHELL | crate::TOOL_READ_FILE | crate::TOOL_WRITE_FILE | crate::TOOL_EDIT_FILE | crate::TOOL_READ
         ) {
-            return unresolved_reason(&action.tool);
+            return unresolved_reason(&call.name);
         }
         let (node, profile) = self.target();
         NodeRecovery {
@@ -1909,7 +1910,7 @@ impl AgentRuntime for RemoteNodeRuntime {
             node_did: node,
             profile_id: profile,
         }
-        .describe(run, action)
+        .describe(run, call)
         .await
     }
 }

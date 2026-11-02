@@ -100,6 +100,7 @@ impl EventBridge for KEventBridge {
                         summary,
                         data_ref: text("data_ref"),
                         terminal: false,
+                        call_id: None,
                     },
                 );
                 match self.agent.sessions().post_input(&sid, &input).await {

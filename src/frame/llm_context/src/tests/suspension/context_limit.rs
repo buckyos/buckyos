@@ -46,7 +46,7 @@ async fn threshold_below_at_and_above_the_first_request() {
             );
             assert!(matches!(
                 snapshot.state.suspended,
-                Some(Suspension::ContextLimit {
+                Some(Suspension {
                     estimated_tokens: Some(9),
                     ..
                 })

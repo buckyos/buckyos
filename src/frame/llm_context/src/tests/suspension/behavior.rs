@@ -1,20 +1,20 @@
-//! Suspensions in behavior mode: pending actions, inner native pending,
-//! context limit on the materialized prompt, interrupted steps.
+//! Resuming in behavior mode: from the checkpoint before an action or an
+//! inner native call, context limit on the materialized prompt, interrupted
+//! steps.
 
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use buckyos_api::{AiMessage, AiResponse, AiRole};
-use serde_json::json;
 
 use crate::behavior_loop::StepRecord;
 use crate::context_window::estimate_messages;
-use crate::deps::{LLMContextDeps, LlmClient, LlmInferenceRequest};
+use crate::deps::{CheckpointHook, Injection, LLMContextDeps, LlmClient, LlmInferenceRequest};
 use crate::error::{LLMComputeError};
-use crate::observation::{Observation};
 use crate::outcome::{ContextLimitKind, LLMContextOutcome, ResumeFill};
-use crate::state::{Suspension};
-use crate::{LLMContext, XmlBehaviorParser, XmlStepRenderer};
+use crate::state::{LLMContextSnapshot, Suspension};
+use crate::tests::protocol::{XmlBehaviorParser, XmlStepRenderer};
+use crate::LLMContext;
 
 use super::mocks::*;
 
@@ -22,48 +22,63 @@ fn xml(body: &str) -> AiResponse {
     AiResponse::text(format!("<response>{body}</response>"))
 }
 
+/// Records the outer snapshot handed to `before_tool_call`.
+#[derive(Default)]
+struct ToolCheckpoints {
+    snapshots: Mutex<Vec<LLMContextSnapshot>>,
+}
+
+#[async_trait]
+impl CheckpointHook for ToolCheckpoints {
+    async fn before_tool_call(&self, snapshot: &LLMContextSnapshot) -> Result<(), String> {
+        self.snapshots.lock().unwrap().push(snapshot.clone());
+        Ok(())
+    }
+
+    async fn before_inference(
+        &self,
+        _snapshot: &LLMContextSnapshot,
+    ) -> Result<Option<Injection>, String> {
+        Ok(None)
+    }
+}
+
+/// A crash while action 2 runs: the checkpoint taken before it is resumed,
+/// action 2 is dispatched again (the tool manager decides by call id what
+/// that means) and the step continues; nothing before it runs twice.
 #[tokio::test]
-async fn behavior_action_pending_keeps_the_step_and_resumes_after_it() {
-    let llm = Llm::new(vec![
-        xml("<intent>go</intent><actions><shell>echo a</shell><shell>defer b</shell><shell>echo c</shell></actions>"),
-        xml("<intent>saw all</intent><actions><shell>echo d</shell></actions>"),
-        xml("<report end=\"true\">finished</report>"),
-    ]);
-    let tools = Tools::new();
+async fn behavior_crash_during_an_action_resumes_from_its_checkpoint() {
+    let script = || {
+        vec![
+            xml("<intent>go</intent><actions><shell>echo a</shell><shell>echo b</shell><shell>echo c</shell></actions>"),
+            xml("<intent>saw all</intent><actions><shell>echo d</shell></actions>"),
+            xml("<report end=\"true\">finished</report>"),
+        ]
+    };
+    let hook = Arc::new(ToolCheckpoints::default());
     let mut ctx = LLMContext::new(
         behavior_request(),
-        behavior_deps(llm.clone(), tools.clone()),
+        behavior_deps(Llm::new(script()), Tools::new()).with_checkpoint_hook(hook.clone()),
     );
-
-    let outcome = ctx.run().await;
-    let LLMContextOutcome::PendingTool {
-        pending, snapshot, ..
-    } = outcome
-    else {
-        panic!("expected PendingTool, got {outcome:?}");
-    };
-    assert_eq!(pending[0].call.call_id, "2");
-    assert_eq!(tools.calls(), vec!["1", "2"]);
-    assert!(snapshot.state.steps.is_empty() && snapshot.state.last_step.is_none());
+    assert!(matches!(ctx.run().await, LLMContextOutcome::Done { .. }));
+    let snapshot = round_trip(&hook.snapshots.lock().unwrap()[1]);
     let step = &snapshot
         .state
         .action_step
         .as_ref()
         .expect("step in progress")
         .step;
-    assert_eq!(step.actions.len(), 3);
-    assert_eq!(step.action_results.len(), 1);
+    assert_eq!(step.action_results.len(), 1, "action 2 has no result yet");
     assert_eq!(
         snapshot.state.tool_iterations_left, 5,
         "the step's tool iteration is already charged"
     );
 
-    let snapshot = round_trip(&snapshot);
+    let llm = Llm::new(script().split_off(1));
+    let tools = Tools::new();
     let mut ctx = LLMContext::resume(
         snapshot,
-        ResumeFill::ToolResults {
-            results: vec![success("2", "b done")],
-        },
+        ResumeFill::ResumeFromMidRun,
         behavior_deps(llm.clone(), tools.clone()),
     )
     .unwrap();
@@ -72,58 +87,46 @@ async fn behavior_action_pending_keeps_the_step_and_resumes_after_it() {
         matches!(outcome, LLMContextOutcome::Done { .. }),
         "{outcome:?}"
     );
-    assert_eq!(
-        tools.calls(),
-        vec!["1", "2", "3", "4"],
-        "no action runs twice"
-    );
+    assert_eq!(tools.calls(), vec!["2", "3", "4"]);
     let state = ctx.snapshot().state;
-    assert_eq!(state.steps.len(), 3);
     let indices: Vec<u32> = state.steps.iter().map(|s| s.meta.step_index).collect();
     assert_eq!(indices, vec![0, 1, 2]);
     assert_eq!(state.steps[0].action_results.len(), 3);
-    assert!(matches!(
-        &state.steps[0].action_results[1],
-        Observation::Success { content, .. } if content == &json!("b done")
-    ));
     assert_eq!(state.next_action_id, 4);
-    assert_eq!(llm.calls(), 3, "the pending step is not re-inferred");
+    assert_eq!(llm.calls(), 2, "the step in progress is not re-inferred");
 }
 
+/// The same for a native call inside a step: the inner transcript before it
+/// is kept, the call is dispatched again, the step's inference is not paid
+/// twice.
 #[tokio::test]
-async fn behavior_inner_native_pending_resumes_the_inner_loop_without_rerunning_tools() {
-    let llm = Llm::new(vec![
-        xml("<intent>step 0</intent><actions><shell>echo a</shell></actions>"),
-        tools_response(vec![call("echo", "n1"), call("defer", "n2")]),
-        xml("<report end=\"true\">finished</report>"),
-    ]);
-    let tools = Tools::new();
+async fn behavior_crash_during_an_inner_native_call_resumes_the_inner_loop() {
+    let script = || {
+        vec![
+            xml("<intent>step 0</intent><actions><shell>echo a</shell></actions>"),
+            tools_response(vec![call("echo", "n1"), call("echo", "n2")]),
+            xml("<report end=\"true\">finished</report>"),
+        ]
+    };
+    let hook = Arc::new(ToolCheckpoints::default());
     let mut ctx = LLMContext::new(
         behavior_request(),
-        behavior_deps(llm.clone(), tools.clone()),
+        behavior_deps(Llm::new(script()), Tools::new()).with_checkpoint_hook(hook.clone()),
     );
-
-    let outcome = ctx.run().await;
-    let LLMContextOutcome::PendingTool { snapshot, .. } = outcome else {
-        panic!("expected PendingTool, got {outcome:?}");
-    };
-    assert_eq!(tools.calls(), vec!["1", "n1", "n2"]);
+    assert!(matches!(ctx.run().await, LLMContextOutcome::Done { .. }));
+    let snapshot = round_trip(&hook.snapshots.lock().unwrap()[2]);
     assert_eq!(
         snapshot.state.last_step.as_ref().map(|s| s.meta.step_index),
         Some(0)
     );
     let tail = &snapshot.state.accumulated[snapshot.request.input.len()..];
-    assert_eq!(
-        tool_result_ids(tail),
-        vec!["n1"],
-        "the inner transcript is kept"
-    );
+    assert_eq!(tool_result_ids(tail), vec!["n1"], "the inner transcript is kept");
 
+    let llm = Llm::new(script().split_off(2));
+    let tools = Tools::new();
     let mut ctx = LLMContext::resume(
-        round_trip(&snapshot),
-        ResumeFill::ToolResults {
-            results: vec![success("n2", "deferred")],
-        },
+        snapshot,
+        ResumeFill::ResumeFromMidRun,
         behavior_deps(llm.clone(), tools.clone()),
     )
     .unwrap();
@@ -132,14 +135,10 @@ async fn behavior_inner_native_pending_resumes_the_inner_loop_without_rerunning_
         matches!(outcome, LLMContextOutcome::Done { .. }),
         "{outcome:?}"
     );
-    assert_eq!(
-        tools.calls(),
-        vec!["1", "n1", "n2"],
-        "native tools do not re-run"
-    );
+    assert_eq!(tools.calls(), vec!["n2"], "only the call without a result runs");
     let seen = llm.seen();
-    assert_eq!(seen.len(), 3);
-    assert_eq!(tool_result_ids(&seen[2]), vec!["n1", "n2"]);
+    assert_eq!(seen.len(), 1);
+    assert_eq!(tool_result_ids(&seen[0]), vec!["n1", "n2"]);
     let state = ctx.snapshot().state;
     assert_eq!(
         state.accumulated.len(),
@@ -206,7 +205,7 @@ async fn behavior_context_limit_measures_the_prompt_and_rewrites_steps() {
     );
     assert!(matches!(
         snapshot.state.suspended,
-        Some(Suspension::ContextLimit { estimated_tokens: Some(t), .. }) if t == third
+        Some(Suspension { estimated_tokens: Some(t), .. }) if t == third
     ));
     assert_eq!(snapshot.state.steps.len(), 1);
     assert!(snapshot.state.last_step.is_some());

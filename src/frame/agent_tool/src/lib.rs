@@ -11,7 +11,13 @@ use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
 use buckyos_api::AiToolCall;
-use llm_context::{ToolResultStatusView, ToolResultView};
+pub use prompt_engine::{escape_xml_attr, escape_xml_text};
+pub use result_view::{ToolResultStatusView, ToolResultView};
+pub use step_record::XmlStepRenderer;
+pub use task_model::{
+    task_state_observation, task_state_observation_via, CancelUnsupported, RunningTaskResolver,
+    TaskBrief, TaskFollowup, TaskResult, TaskState, DEFAULT_TASK_WAIT_MS, MAX_IN_TOOL_WAIT_MS,
+};
 use log::{info, warn};
 use schemars::JsonSchema;
 use serde::ser::SerializeSeq;
@@ -34,16 +40,21 @@ pub mod llm_explore;
 pub mod llm_tool_carft;
 pub mod llm_understand_media;
 pub mod path_utils;
+pub mod prompt_engine;
 pub mod read_tool;
+pub mod result_view;
 pub mod run_local_llm;
 pub mod runtime;
 pub mod runtime_context;
+pub mod step_record;
 pub mod task_bridge;
+pub mod task_model;
 pub mod tasks;
 pub mod tasks_zone;
 pub mod todo_tools;
 pub mod tool;
 pub mod xllm;
+pub mod xml_util;
 
 pub use tool::{
     BasicToolHost, CallingConventions, CliInvocation, ContentInput, NullToolHost, ToolCtx,
@@ -74,7 +85,7 @@ pub use json_args::{
 pub use llm_bash::{
     kill_running_bash_process_groups, BashRunOutput, BashRunRequest, BashRunner, BashTarget,
     BashTargetSpec, BinOverlayConfig, CommandHandle, CommandProgress, LlmBashConfig,
-    LocalProcessBashRunner, RunBinding, RunBindingSlot, ShellMode, ShellRuntimeNote, ShellTool,
+    LocalProcessBashRunner, RunBinding, RunBindingSlot, ShellRuntimeNote, ShellTool,
     TOOL_SHELL,
 };
 pub use tasks::{
@@ -399,12 +410,30 @@ pub enum AgentToolStatus {
     Pending,
 }
 
+/// Well-known values of `AgentToolResult.pending_reason`. The field is a
+/// free string: a reader must accept values it does not know.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentToolPendingReason {
     LongRunning,
     UserApproval,
     WaitForInstall,
+}
+
+impl AgentToolPendingReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AgentToolPendingReason::LongRunning => "long_running",
+            AgentToolPendingReason::UserApproval => "user_approval",
+            AgentToolPendingReason::WaitForInstall => "wait_for_install",
+        }
+    }
+}
+
+impl From<AgentToolPendingReason> for String {
+    fn from(reason: AgentToolPendingReason) -> Self {
+        reason.as_str().to_string()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -422,8 +451,10 @@ pub struct AgentToolResult {
     pub status: AgentToolStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
+    /// Why the result is pending, for the model (see
+    /// [`AgentToolPendingReason`] for well-known values).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pending_reason: Option<AgentToolPendingReason>,
+    pub pending_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check_after: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -592,8 +623,9 @@ impl AgentToolResult {
         self
     }
 
-    pub fn with_pending_reason(mut self, pending_reason: AgentToolPendingReason) -> Self {
-        self.pending_reason = Some(pending_reason);
+    pub fn with_pending_reason(mut self, pending_reason: impl Into<String>) -> Self {
+        let pending_reason = pending_reason.into();
+        self.pending_reason = (!pending_reason.trim().is_empty()).then_some(pending_reason);
         self
     }
 
@@ -702,33 +734,10 @@ impl AgentToolResult {
         })
     }
 
-    pub fn to_tool_result_view(&self) -> ToolResultView {
-        ToolResultView {
-            agent_tool_protocol: Some(self.agent_tool_protocol.clone()),
-            status: match self.status {
-                AgentToolStatus::Success => ToolResultStatusView::Success,
-                AgentToolStatus::Error => ToolResultStatusView::Error,
-                AgentToolStatus::Pending => ToolResultStatusView::Pending,
-            },
-            cmd_name: self.cmd_name.clone(),
-            cmd_args: self.cmd_args.clone(),
-            title: self.title.clone(),
-            summary: self.summary.clone(),
-            output: self.output.clone(),
-            detail: match &self.details {
-                Json::Null => None,
-                Json::Object(map) if map.is_empty() => None,
-                value => Some(value.clone()),
-            },
-            return_code: self.return_code,
-            task_id: self.task_id.clone(),
-            partial_output: self.partial_output.clone(),
-            pending_reason: self
-                .pending_reason
-                .map(history_pending_reason_label)
-                .map(str::to_string),
-            check_after: self.check_after,
-        }
+    /// The envelope as carried in `Observation.host` (read back with
+    /// [`ToolResultView::from_host`]).
+    pub fn to_host(&self) -> Json {
+        serde_json::to_value(self).unwrap_or(Json::Null)
     }
 
     pub fn refresh_default_title(mut self) -> Self {
@@ -836,9 +845,7 @@ impl AgentToolResult {
     }
 
     fn history_pending_reason_text(&self) -> Option<String> {
-        self.pending_reason
-            .map(history_pending_reason_label)
-            .map(str::to_string)
+        self.pending_reason.clone()
     }
 
     fn history_error_reason_text(&self) -> Option<String> {
@@ -916,20 +923,12 @@ pub(crate) fn derive_default_title(result: &AgentToolResult) -> String {
     let status_text = match result.status {
         AgentToolStatus::Success => "success".to_string(),
         AgentToolStatus::Error => "error".to_string(),
-        AgentToolStatus::Pending => match result.pending_reason {
-            Some(reason) => format!("pending ({})", history_pending_reason_label(reason)),
+        AgentToolStatus::Pending => match &result.pending_reason {
+            Some(reason) => format!("pending ({reason})"),
             None => "pending".to_string(),
         },
     };
     format!("{cmd} => {status_text}")
-}
-
-fn history_pending_reason_label(reason: AgentToolPendingReason) -> &'static str {
-    match reason {
-        AgentToolPendingReason::LongRunning => "long_running",
-        AgentToolPendingReason::UserApproval => "user_approval",
-        AgentToolPendingReason::WaitForInstall => "wait_for_install",
-    }
 }
 
 fn collapse_inline_whitespace(input: &str, max_chars: usize) -> String {
@@ -1079,6 +1078,14 @@ pub trait AgentTool: Send + Sync {
     /// dispatcher cannot cancel the work and abandons the call on an
     /// interrupt (effect unknown); a graceful finish waits for it.
     fn cancellable(&self) -> bool {
+        false
+    }
+
+    /// Whether running the same call again is harmless (reads, a write of
+    /// the same content). On resume, a call a previous executor may have
+    /// started is run again only when it is idempotent; otherwise its
+    /// result is reported unknown. Default `false`.
+    fn idempotent(&self) -> bool {
         false
     }
 
@@ -2443,7 +2450,8 @@ mod tests {
             .with_pending_reason(AgentToolPendingReason::LongRunning)
             .with_check_after(5000)
             .with_partial_output("partial")
-            .to_tool_result_view();
+            .to_host();
+        let view = ToolResultView::from_host(&Some(view)).expect("envelope");
 
         assert_eq!(view.status, ToolResultStatusView::Pending);
         assert_eq!(view.cmd_name.as_deref(), Some("read"));

@@ -10,7 +10,7 @@
     "principal": "app:app2@alice"
   },
   "location": "${FIXTURE_ROOT}/app/work-fixture-blocked",
-  "input_queue": "app2::alice::opendan.session.work-fixture-blocked",
+  "input_queue": "app2::alice::opendan.session.b180220d8f3da86c7dfb3acd3bbb98cc46e5cea02d9850cbc72f4945f49bf96b",
   "wake_event": "/opendan/jarvis.alice/session/work-fixture-blocked/input",
   "agent_access": "full",
   "objective": "x",
@@ -23,16 +23,16 @@
     "turn_open": true,
     "activity": {
       "summary": "x",
-      "heartbeat_ms": 1792976021999
+      "heartbeat_ms": 1793591511735
     },
     "last_runner": {
-      "runner_id": "rn-8fdb32e2cea54148",
+      "runner_id": "rn-edd42be59e374e4b",
       "host": "${FIXTURE_HOST}",
-      "pid": 3021352,
+      "pid": 2811727,
       "lock_epoch": 1,
-      "at_ms": 1792976022001
+      "at_ms": 1793591511737
     },
-    "updated_at_ms": 1792976021999
+    "updated_at_ms": 1793591511735
   },
   "location_rev": 0
 }

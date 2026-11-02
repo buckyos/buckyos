@@ -15,12 +15,12 @@
       "live_run": {
         "applied_input_seq": 1,
         "host_commit_pending": 2,
-        "inflight": [],
-        "run_id": "20261025-175340-840b4e",
+        "in_flight": null,
+        "run_id": "20261101-195150-ce6983",
         "run_status": "running"
       },
       "runs_on_disk": [
-        "20261025-175340-840b4e"
+        "20261101-195150-ce6983"
       ],
       "session_id": "work-fixture-receipt",
       "state": {
@@ -36,9 +36,9 @@
         "turns_completed": 0
       },
       "worklog": {
-        "committed_bytes": 151,
-        "committed_seq": 1,
-        "file_bytes": 151,
+        "committed_bytes": 1094,
+        "committed_seq": 4,
+        "file_bytes": 1094,
         "uncommitted_tail": false
       }
     }

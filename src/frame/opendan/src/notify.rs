@@ -13,8 +13,9 @@ pub use libopendan::notify::ZoneNotify;
 use libopendan::notify::{NotifyHost, NotifyKind, NotifyListReq, NotifyStatus};
 
 /// Wakes what waits for a notification of this agent once it is closed:
-/// the session that asked (a Work's `ask-user`) is hosted again, the Goals
-/// look at their questions at once. Notifications are listed every
+/// the session that asked (an `ask_user` question, `source.session_id`) is
+/// hosted again and its kept run reads the task's result, the Goals look at
+/// their questions at once. Notifications are listed every
 /// `every`; the kevent of their tasks shortens the wait.
 pub async fn watch_answers(
     notify: Arc<dyn NotifyHost>,

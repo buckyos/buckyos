@@ -6,14 +6,15 @@
 //! - `publish_input_checkpoint`: snapshot fsync → run.json with
 //!   `host_commit_pending` (inputs not committed to state.json yet);
 //! - `complete_host_commit`: clear the gate after state.json was committed;
-//! - `register_inflight`: persisted before a tool runs;
 //! - `checkpoint_with_results`: snapshot fsync → run.json publishing the new
-//!   snapshot pointer and clearing only the in-flight actions it covers.
+//!   snapshot pointer.
+//!
+//! What a run dispatched is read from its snapshots only: the waist
+//! checkpoints before every tool call.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use agent_tool::exec_tracking::{persisted_outcome_ids, InflightAction};
 use agent_tool::xllm::{FileLock as RunLockFile, RunRecord, RunStatus, RunStore};
 use llm_context::state::LLMContextSnapshot;
 
@@ -150,6 +151,23 @@ impl SessionRuns {
 
     /// Remove a run directory. The caller holds the run lock and verified
     /// that no execution of it is still unconfirmed.
+    /// The call a run that stopped unfinished may have left running: the
+    /// first call without a result in its latest snapshot (no snapshot or a
+    /// terminal run: none).
+    pub fn in_flight(&self, run_id: &str) -> Result<Option<buckyos_api::AiToolCall>> {
+        let record = self.record(run_id)?;
+        if record.status.is_terminal() {
+            return Ok(None);
+        }
+        let Some(idx) = record.latest_snapshot_idx else {
+            return Ok(None);
+        };
+        let snapshot = self.store.get_snapshot(run_id, idx).map_err(|e| {
+            OpenDanError::Other(format!("snapshot {idx} of run {run_id}: {e}"))
+        })?;
+        Ok(agent_tool::exec_tracking::in_flight_call(&snapshot))
+    }
+
     pub fn remove_locked(&self, run_id: &str, _lock: &RunLockFile) -> Result<()> {
         Ok(self.store.remove_run(run_id)?)
     }
@@ -227,15 +245,49 @@ impl RunHandle {
         input_seq: u64,
     ) -> Result<u32> {
         let idx = self.store.put_snapshot(&self.run_id, snapshot)?;
-        let covered = persisted_outcome_ids(snapshot);
         self.update(|r| {
             r.latest_snapshot_idx = Some(idx);
             r.host_commit_pending = Some(input_seq);
             r.status = RunStatus::Running;
             r.handover = None;
-            r.inflight.retain(|a| !covered.contains(&a.call_id));
+            // A run kept for its work goes on with this input.
+            if let Some(o) = r.host.as_mut().and_then(|h| h.extra.as_object_mut()) {
+                o.remove("kept");
+            }
         })?;
         Ok(idx)
+    }
+
+    /// The run is kept for the work it started (paused, not ended): the
+    /// decision is recorded with the snapshot (`host.extra.kept`), so a
+    /// crash before state took it over redoes it instead of inferring again.
+    pub fn checkpoint_kept(
+        &self,
+        snapshot: &LLMContextSnapshot,
+        kept: serde_json::Value,
+    ) -> Result<u32> {
+        let idx = self.store.put_snapshot(&self.run_id, snapshot)?;
+        self.update(|r| {
+            r.latest_snapshot_idx = Some(idx);
+            r.status = RunStatus::Paused;
+            if let Some(h) = r.host.as_mut() {
+                if !h.extra.is_object() {
+                    h.extra = serde_json::json!({});
+                }
+                h.extra["kept"] = kept;
+            }
+        })?;
+        Ok(idx)
+    }
+
+    /// The keep decision recorded with the latest snapshot, if any.
+    pub fn kept(&self) -> Option<serde_json::Value> {
+        self.record()
+            .host
+            .as_ref()
+            .and_then(|h| h.extra.get("kept"))
+            .filter(|v| !v.is_null())
+            .cloned()
     }
 
     /// § 8.3 ④: clear the gate after state.json committed the batch.
@@ -261,34 +313,20 @@ impl RunHandle {
         }
     }
 
-    /// § 8.5: persisted (fsync) before the tool starts.
-    pub fn register_inflight(&self, action: InflightAction) -> Result<()> {
-        self.update(|r| {
-            r.inflight.retain(|a| a.call_id != action.call_id);
-            r.inflight.push(action);
-        })
-    }
-
-    pub fn inflight(&self) -> Vec<InflightAction> {
-        self.record.lock().expect("run record lock").inflight.clone()
-    }
-
     /// § 8.5: results and snapshot first, then one atomic run.json write
-    /// publishing the pointer, the status and clearing covered in-flight
-    /// actions. Failure stops progress (the caller propagates it).
+    /// publishing the pointer and the status. Failure stops progress (the
+    /// caller propagates it).
     pub fn checkpoint_with_results(
         &self,
         snapshot: &LLMContextSnapshot,
         status: Option<RunStatus>,
     ) -> Result<u32> {
         let idx = self.store.put_snapshot(&self.run_id, snapshot)?;
-        let covered = persisted_outcome_ids(snapshot);
         self.update(|r| {
             r.latest_snapshot_idx = Some(idx);
             if let Some(s) = status {
                 r.status = s;
             }
-            r.inflight.retain(|a| !covered.contains(&a.call_id));
         })?;
         Ok(idx)
     }
@@ -303,11 +341,9 @@ impl RunHandle {
         finish: serde_json::Value,
     ) -> Result<u32> {
         let idx = self.store.put_snapshot(&self.run_id, snapshot)?;
-        let covered = persisted_outcome_ids(snapshot);
         self.update(|r| {
             r.latest_snapshot_idx = Some(idx);
             r.status = status;
-            r.inflight.retain(|a| !covered.contains(&a.call_id));
             if let Some(h) = r.host.as_mut() {
                 if !h.extra.is_object() {
                     h.extra = serde_json::json!({});
@@ -323,7 +359,7 @@ impl RunHandle {
     /// LLM saw its end and the note is dropped. The list is what the session
     /// keeps following when the run ends, also when that end is redone after
     /// a crash.
-    pub fn note_task(&self, task_id: &str, running: bool) -> Result<()> {
+    pub fn note_task(&self, task_id: &str, running: bool, call_id: &str) -> Result<()> {
         let noted = self.noted_tasks();
         if noted.iter().any(|t| t == task_id) == running {
             return Ok(());
@@ -337,10 +373,68 @@ impl RunHandle {
                 tasks.retain(|t| t != task_id);
                 if running {
                     tasks.push(task_id.to_string());
+                    if !h.extra["task_calls"].is_object() {
+                        h.extra["task_calls"] = serde_json::json!({});
+                    }
+                    h.extra["task_calls"][task_id] = serde_json::json!(call_id);
                 }
                 h.extra["tasks"] = serde_json::json!(tasks);
             }
         })
+    }
+
+    /// The call whose result handed `task_id` over (`host.extra.task_calls`).
+    pub fn task_call(&self, task_id: &str) -> Option<String> {
+        self.record()
+            .host
+            .as_ref()
+            .and_then(|h| h.extra.get("task_calls"))
+            .and_then(|m| m.get(task_id))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    }
+
+    /// A sub context call this run made (`call_behavior` or a behavior's
+    /// named function): the session hands over to it when the run's segment
+    /// ends (`host.extra.sub_call`). `None` clears it.
+    pub fn set_sub_call(&self, call: Option<&crate::protocol::ChildCall>) -> Result<()> {
+        let value = match call {
+            Some(c) => serde_json::to_value(c).map_err(|e| OpenDanError::Other(e.to_string()))?,
+            None => serde_json::Value::Null,
+        };
+        self.update(|r| {
+            if let Some(h) = r.host.as_mut() {
+                if !h.extra.is_object() {
+                    h.extra = serde_json::json!({});
+                }
+                if value.is_null() {
+                    if let Some(o) = h.extra.as_object_mut() {
+                        o.remove("sub_call");
+                    }
+                } else {
+                    h.extra["sub_call"] = value;
+                }
+            }
+        })
+    }
+
+    pub fn sub_call(&self) -> Option<crate::protocol::ChildCall> {
+        self.record()
+            .host
+            .as_ref()
+            .and_then(|h| h.extra.get("sub_call"))
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+    }
+
+    /// The run's latest published snapshot.
+    pub fn latest_snapshot(&self) -> Result<Option<LLMContextSnapshot>> {
+        let Some(idx) = self.record().latest_snapshot_idx else {
+            return Ok(None);
+        };
+        self.store
+            .get_snapshot(&self.run_id, idx)
+            .map(Some)
+            .map_err(|e| OpenDanError::Other(format!("snapshot {idx} of run {}: {e}", self.run_id)))
     }
 
     /// Background tasks of the run whose end the LLM has not seen.
@@ -351,60 +445,6 @@ impl RunHandle {
             .and_then(|h| h.extra.get("tasks"))
             .and_then(|t| serde_json::from_value(t.clone()).ok())
             .unwrap_or_default()
-    }
-
-    /// Record the question a call asks the user (`ask-user`), before the
-    /// snapshot suspended on it is checkpointed: the session queues the
-    /// question from here, also after a crash.
-    pub fn save_ask(&self, call_id: &str, ask: &crate::protocol::UserInputRequest) -> Result<()> {
-        let value = serde_json::to_value(ask).map_err(|e| OpenDanError::Other(e.to_string()))?;
-        self.update(|r| {
-            if let Some(h) = r.host.as_mut() {
-                if !h.extra.is_object() {
-                    h.extra = serde_json::json!({});
-                }
-                if !h.extra["asks"].is_object() {
-                    h.extra["asks"] = serde_json::json!({});
-                }
-                h.extra["asks"][call_id] = value;
-            }
-        })
-    }
-
-    /// How a question goes out when it is asked through a notification
-    /// (`asks[<call_id>].notify`).
-    pub fn save_ask_notify(&self, call_id: &str, notify: &crate::protocol::AskNotify) -> Result<()> {
-        let value = serde_json::to_value(notify).map_err(|e| OpenDanError::Other(e.to_string()))?;
-        self.update(|r| {
-            if let Some(ask) = r
-                .host
-                .as_mut()
-                .and_then(|h| h.extra.get_mut("asks"))
-                .and_then(|a| a.get_mut(call_id))
-                .filter(|a| a.is_object())
-            {
-                ask["notify"] = value;
-            }
-        })
-    }
-
-    pub fn ask_notify(&self, call_id: &str) -> Option<crate::protocol::AskNotify> {
-        self.record()
-            .host
-            .as_ref()
-            .and_then(|h| h.extra.get("asks"))
-            .and_then(|a| a.get(call_id))
-            .and_then(|a| a.get("notify"))
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-    }
-
-    pub fn ask(&self, call_id: &str) -> Option<crate::protocol::UserInputRequest> {
-        self.record()
-            .host
-            .as_ref()
-            .and_then(|h| h.extra.get("asks"))
-            .and_then(|a| a.get(call_id))
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
     }
 
     /// The finished user task was shared (or decided not to be) as the
@@ -485,11 +525,9 @@ impl RunHandle {
     /// once from it; no executor infers on the run meanwhile.
     pub fn checkpoint_handover(&self, snapshot: &LLMContextSnapshot, target: &str) -> Result<u32> {
         let idx = self.store.put_snapshot(&self.run_id, snapshot)?;
-        let covered = persisted_outcome_ids(snapshot);
         self.update(|r| {
             r.latest_snapshot_idx = Some(idx);
             r.status = RunStatus::Paused;
-            r.inflight.retain(|a| !covered.contains(&a.call_id));
             r.handover = Some(agent_tool::xllm::RunHandover {
                 next_behavior: target.to_string(),
                 at_ms: crate::now_ms(),

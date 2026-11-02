@@ -1,18 +1,19 @@
 //! Resuming a context: matching the fill with `state.suspended`, applying
 //! it, and the pairing invariants a resumable state keeps.
 //!
+//! The only suspension is the context-limit yield; every other resumable
+//! snapshot is resumed with `ResumeFromMidRun`.
+//!
 //! Every check here runs inside `LLMContext::resume`, before any inference or
 //! tool call; a rejected fill leaves nothing half-applied.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
-use buckyos_api::{AiContent, AiMessage, AiToolCall};
+use buckyos_api::{AiContent, AiMessage};
 use serde_json::Value;
 
 use crate::behavior_loop::{HistorySummaryRecord, StepRecord};
-use crate::context_loop::tool_observation_message;
 use crate::error::LLMComputeError;
-use crate::observation::{Observation, PendingToolCall, ToolExecRecord, ToolExecStatus};
 use crate::outcome::ResumeFill;
 use crate::request::LLMContextRequest;
 use crate::state::{LLMContextSnapshot, LLMContextState, Suspension};
@@ -21,15 +22,14 @@ fn corrupted(message: impl Into<String>) -> LLMComputeError {
     LLMComputeError::SnapshotCorrupted(message.into())
 }
 
-/// Apply `fill` to a snapshot's request / state. Returns the audit records of
-/// the calls the fill resolved.
+/// Apply `fill` to a snapshot's request / state.
 pub(crate) fn apply_fill(
     request: &mut LLMContextRequest,
     state: &mut LLMContextState,
     fill: ResumeFill,
     behavior: bool,
     now_ms: u64,
-) -> Result<Vec<ToolExecRecord>, LLMComputeError> {
+) -> Result<(), LLMComputeError> {
     if state.tool_batch.is_some() && state.action_step.is_some() {
         return Err(corrupted(
             "snapshot has both a tool batch and a behavior step in progress",
@@ -40,21 +40,13 @@ pub(crate) fn apply_fill(
             "snapshot has a behavior step in progress but the context is not in behavior mode",
         ));
     }
-    let mut records = Vec::new();
     match (state.suspended.take(), fill) {
-        (Some(Suspension::PendingTool { pending, at_ms }), ResumeFill::ToolResults { results }) => {
-            records = fill_tool_results(state, &pending, results)?;
-            resume_clock(state, at_ms, now_ms);
-        }
-        (
-            Some(Suspension::ContextLimit { at_ms, .. }),
-            ResumeFill::RewrittenHistory { history },
-        ) if !behavior => {
+        (Some(Suspension { at_ms, .. }), ResumeFill::RewrittenHistory { history }) if !behavior => {
             rewrite_history(request, state, history)?;
             resume_clock(state, at_ms, now_ms);
         }
         (
-            Some(Suspension::ContextLimit { at_ms, .. }),
+            Some(Suspension { at_ms, .. }),
             ResumeFill::RewrittenSteps {
                 input,
                 history_summaries,
@@ -89,7 +81,7 @@ pub(crate) fn apply_fill(
             unanswered.join(", ")
         )));
     }
-    Ok(records)
+    Ok(())
 }
 
 fn resume_clock(state: &mut LLMContextState, at_ms: u64, now_ms: u64) {
@@ -101,7 +93,6 @@ fn resume_clock(state: &mut LLMContextState, at_ms: u64, now_ms: u64) {
 
 fn fill_name(fill: &ResumeFill) -> &'static str {
     match fill {
-        ResumeFill::ToolResults { .. } => "tool_results",
         ResumeFill::RewrittenHistory { .. } => "rewritten_history",
         ResumeFill::RewrittenSteps { .. } => "rewritten_steps",
         ResumeFill::ResumeFromMidRun => "resume_from_mid_run",
@@ -111,141 +102,9 @@ fn fill_name(fill: &ResumeFill) -> &'static str {
 fn suspension_name(suspended: Option<&Suspension>, behavior: bool) -> &'static str {
     match (suspended, behavior) {
         (None, _) => "a running (not suspended)",
-        (Some(Suspension::PendingTool { .. }), _) => "a pending_tool",
-        (Some(Suspension::ContextLimit { .. }), false) => "a function call context_limit",
-        (Some(Suspension::ContextLimit { .. }), true) => "a behavior context_limit",
+        (Some(_), false) => "a function call context_limit",
+        (Some(_), true) => "a behavior context_limit",
     }
-}
-
-fn exec_record(call: &AiToolCall, obs: &Observation) -> ToolExecRecord {
-    let (status, error) = match obs {
-        Observation::Success { .. } => (ToolExecStatus::Succeeded, None),
-        Observation::Error { message, .. } => (ToolExecStatus::Failed, Some(message.clone())),
-        Observation::Cancelled { reason, .. } => (ToolExecStatus::Cancelled, Some(reason.clone())),
-        Observation::Unresolved {
-            reason,
-            effect_unknown,
-            ..
-        } => (
-            if *effect_unknown {
-                ToolExecStatus::Unknown
-            } else {
-                ToolExecStatus::NotExecuted
-            },
-            Some(reason.clone()),
-        ),
-        Observation::Pending { .. } => (ToolExecStatus::Pending, None),
-    };
-    ToolExecRecord {
-        tool_name: call.name.clone(),
-        call_id: call.call_id.clone(),
-        status,
-        duration_ms: 0,
-        error,
-    }
-}
-
-fn fill_tool_results(
-    state: &mut LLMContextState,
-    pending: &[PendingToolCall],
-    results: Vec<(String, Observation)>,
-) -> Result<Vec<ToolExecRecord>, LLMComputeError> {
-    if pending.is_empty() {
-        return Err(corrupted("pending_tool snapshot without pending calls"));
-    }
-    let mut by_id: HashMap<String, Observation> = HashMap::new();
-    for (id, obs) in results {
-        if matches!(obs, Observation::Pending { .. }) {
-            return Err(corrupted(format!(
-                "result for `{id}` is still pending; fill terminal results only"
-            )));
-        }
-        if obs.call_id() != id {
-            return Err(corrupted(format!(
-                "result keyed `{id}` carries call id `{}`",
-                obs.call_id()
-            )));
-        }
-        if by_id.insert(id.clone(), obs).is_some() {
-            return Err(corrupted(format!("duplicate result for `{id}`")));
-        }
-    }
-    let mut filled = Vec::with_capacity(pending.len());
-    for p in pending {
-        let obs = by_id.remove(&p.call.call_id).ok_or_else(|| {
-            corrupted(format!(
-                "missing result for pending call `{}`",
-                p.call.call_id
-            ))
-        })?;
-        filled.push((p.call.clone(), obs));
-    }
-    if !by_id.is_empty() {
-        let mut extra: Vec<String> = by_id.into_keys().collect();
-        extra.sort();
-        return Err(corrupted(format!(
-            "results for calls that are not pending: {}",
-            extra.join(", ")
-        )));
-    }
-    let mut records: Vec<ToolExecRecord> = filled.iter().map(|(c, o)| exec_record(c, o)).collect();
-
-    if let Some(step) = state.action_step.as_mut() {
-        // Behavior: the deferred action is the next one of the step; the
-        // continuation stops after any result that is not a success.
-        for (call, obs) in filled {
-            let idx = step.step.action_results.len();
-            match step.step.actions.get(idx) {
-                Some(a) if a.call_id == call.call_id => step.step.action_results.push(obs),
-                _ => {
-                    return Err(corrupted(format!(
-                        "pending action `{}` is not the next action of the step",
-                        call.call_id
-                    )))
-                }
-            }
-        }
-        return Ok(records);
-    }
-
-    let batch = state
-        .tool_batch
-        .as_mut()
-        .ok_or_else(|| corrupted("pending tool calls without a tool batch in progress"))?;
-    let cancelled = filled
-        .iter()
-        .any(|(_, o)| matches!(o, Observation::Cancelled { .. }));
-    for (call, obs) in filled {
-        if let Observation::Error { message, .. } = &obs {
-            if batch.batch_error.is_none() {
-                batch.batch_error = Some(LLMComputeError::ToolFailed {
-                    tool: call.name.clone(),
-                    call_id: call.call_id.clone(),
-                    message: message.clone(),
-                });
-            }
-        }
-        state
-            .accumulated
-            .push(tool_observation_message(&call.call_id, &obs));
-    }
-    if cancelled {
-        // A cancelled deferred call winds the batch down: the calls after it
-        // never start.
-        let reason = "not executed: an earlier call of this batch was cancelled";
-        for call in std::mem::take(&mut batch.remaining) {
-            let obs = Observation::Unresolved {
-                call_id: call.call_id.clone(),
-                reason: reason.to_string(),
-                effect_unknown: false,
-            };
-            records.push(exec_record(&call, &obs));
-            state
-                .accumulated
-                .push(tool_observation_message(&call.call_id, &obs));
-        }
-    }
-    Ok(records)
 }
 
 fn rewrite_history(

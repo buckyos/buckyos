@@ -494,24 +494,24 @@ impl TodoRecord {
         if let Some(a) = a {
             attrs.push_str(&format!(" attempt=\"{}\"", a.attempt));
             if let Some(c) = &a.child_sid {
-                attrs.push_str(&format!(" child_sid=\"{}\"", llm_context::escape_xml_attr(c)));
+                attrs.push_str(&format!(" child_sid=\"{}\"", crate::escape_xml_attr(c)));
             }
             if let Some(r) = &a.report {
                 attrs.push_str(&format!(
                     " report_ref=\"{}\"",
-                    llm_context::escape_xml_attr(&r.display())
+                    crate::escape_xml_attr(&r.display())
                 ));
             }
         }
         attrs.push_str(&format!(" review=\"{}\"", self.review_state().as_str()));
         if let Some(r) = a.and_then(|a| a.runtime_id.as_deref()).or(self.runtime_id.as_deref()) {
-            attrs.push_str(&format!(" runtime=\"{}\"", llm_context::escape_xml_attr(r)));
+            attrs.push_str(&format!(" runtime=\"{}\"", crate::escape_xml_attr(r)));
         }
         if let Some(b) = a.and_then(|a| a.baseline.as_deref()) {
-            attrs.push_str(&format!(" baseline=\"{}\"", llm_context::escape_xml_attr(b)));
+            attrs.push_str(&format!(" baseline=\"{}\"", crate::escape_xml_attr(b)));
         }
         if let Some(w) = a.and_then(|a| a.workspace_id.as_deref()).or(self.workspace.as_deref()) {
-            attrs.push_str(&format!(" workspace=\"{}\"", llm_context::escape_xml_attr(w)));
+            attrs.push_str(&format!(" workspace=\"{}\"", crate::escape_xml_attr(w)));
         }
         if !self.after.is_empty() {
             attrs.push_str(&format!(" after=\"{}\"", self.after.join(",")));
@@ -519,17 +519,17 @@ impl TodoRecord {
         if self.retry.is_some() {
             attrs.push_str(" retry=\"pending\"");
         }
-        let mut body = llm_context::escape_xml_text(&self.title);
+        let mut body = crate::escape_xml_text(&self.title);
         if let Some(summary) = a.and_then(|a| a.summary.as_deref()).filter(|s| !s.is_empty()) {
             body.push_str(" — ");
-            body.push_str(&llm_context::escape_xml_text(summary));
+            body.push_str(&crate::escape_xml_text(summary));
         } else if let Some(err) = a.and_then(|a| a.error.as_deref()) {
             body.push_str(" — error: ");
-            body.push_str(&llm_context::escape_xml_text(&one_line(err)));
+            body.push_str(&crate::escape_xml_text(&one_line(err)));
         }
         if let Some(why) = &self.cancel_reason {
             body.push_str(" — cancelled: ");
-            body.push_str(&llm_context::escape_xml_text(&one_line(why)));
+            body.push_str(&crate::escape_xml_text(&one_line(why)));
         }
         format!("<todo {attrs}>{body}</todo>")
     }

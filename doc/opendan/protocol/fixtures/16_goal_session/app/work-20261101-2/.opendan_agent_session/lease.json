@@ -1,0 +1,13 @@
+{
+  "resource": "session:work-20261101-2",
+  "epoch": 1,
+  "holder": {
+    "runner_id": "rn-ca9ea909a134495b",
+    "principal": "app:app2@alice",
+    "host": "${FIXTURE_HOST}",
+    "pid": 2810648,
+    "runtime_id": "rt-fixture-native"
+  },
+  "acquired_at_ms": 1793591511964,
+  "released_at_ms": 1793591512061
+}

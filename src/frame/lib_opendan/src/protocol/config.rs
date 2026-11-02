@@ -165,15 +165,6 @@ fn default_sub_sessions() -> u8 {
 fn default_session_depth() -> u8 {
     2
 }
-fn default_ask_user_timeout() -> u64 {
-    DEFAULT_ASK_USER_TIMEOUT_SECS
-}
-
-/// How long a Work waits for the answer to a question it asked through a
-/// notification (`[session.work] ask_user_timeout_secs`; 0: Works do not
-/// ask).
-pub const DEFAULT_ASK_USER_TIMEOUT_SECS: u64 = 10_800;
-
 /// `session.policy`: the session template resolved at creation (xAgent
 /// §4.7) and frozen with the session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -195,10 +186,6 @@ pub struct SessionPolicy {
     /// Nesting depth of sub sessions below this session's root.
     #[serde(default = "default_session_depth")]
     pub max_session_depth: u8,
-    /// A session without a user reading it (a Work) asks through a
-    /// notification and waits at most this long for the answer.
-    #[serde(default = "default_ask_user_timeout")]
-    pub ask_user_timeout_secs: u64,
 }
 
 impl Default for SessionPolicy {
@@ -211,7 +198,6 @@ impl Default for SessionPolicy {
             max_process_depth: default_process_depth(),
             max_sub_sessions: default_sub_sessions(),
             max_session_depth: default_session_depth(),
-            ask_user_timeout_secs: default_ask_user_timeout(),
         }
     }
 }
