@@ -146,6 +146,37 @@ test('MM03 a map is built with the keyboard: insert, Tab for a child, Enter for 
   await shot(page, 'mm03-keyboard')
 })
 
+test('MM11 a node being typed grows with its text and wraps only at the layout width', async ({ page, api }) => {
+  const ws = await mindWorkspace(api, `mm-grow ${Date.now()}`)
+  await openCanvas(page, ALICE, ws.workspace_id)
+  await page.getByTestId('aiws-tool-insert-mindmap').click()
+  const view = await page.getByTestId('aiws-canvas').boundingBox()
+  await page.mouse.click(view!.x + view!.width - 300, view!.y + 200)
+  const edit = page.locator('[data-testid^="aiws-mindnode-edit-"]')
+  await expect(edit).toBeVisible()
+  await page.keyboard.press('Control+a')
+  await page.keyboard.type('Root')
+  await page.keyboard.press('Tab')
+  await expect(edit).toBeVisible()
+  // the fresh child is the minimum width; a sentence typed into it stays on one line while it fits the wrap width
+  const node = edit.locator('xpath=..')
+  const empty = (await node.boundingBox())!
+  await page.keyboard.type('if it is a rather long sentence')
+  const lineHeight = await edit.evaluate((el) => parseFloat(getComputedStyle(el).lineHeight))
+  const typed = (await node.boundingBox())!
+  expect(typed.width).toBeGreaterThan(empty.width + 100)
+  expect(typed.height).toBeLessThan(lineHeight * 2)
+  // past the wrap width (300px of text) it wraps instead of growing further
+  await page.keyboard.type(' that goes on and on until the node must break the line somewhere')
+  const long = (await node.boundingBox())!
+  const zoom = Number(await page.getByTestId('aiws-canvas-view').getAttribute('data-zoom')) || 1
+  expect(long.width / zoom).toBeLessThanOrEqual(300 + 28 + 4)
+  expect(long.height).toBeGreaterThan(typed.height)
+  await page.keyboard.press('Enter')
+  await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).filter((e: Json) => (e.title as string | undefined)?.startsWith('if it is a rather')).length).toBe(1)
+  await shot(page, 'mm11-grow')
+})
+
 test('MM04 dragging a node: onto another node re-hangs it, onto blank space pins it, outside the map is refused', async ({ page, api }) => {
   const ws = await mindWorkspace(api, `mm-drag ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)

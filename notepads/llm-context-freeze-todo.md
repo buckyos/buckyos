@@ -2,7 +2,7 @@
 
 日期：2026-11-01
 
-状态：**§6 第 1–4 步已实施（2026-11-01，未提交、未做 DV），第 5 步（F11、F6）按计划留作后续；实施记录与偏差见 §8。** F1–F24 全部已定。历史：2026-11-01 第二轮讨论补了 §2.4、§3.6–§3.8 和 F9–F11（用户描述意图，Claude 按方案回写，待用户 review）。2026-11-01 第三轮：**F2 裁决为 B（删掉挂起原语）**，补了原则 8、§3.2 的 B 方案细节和 F12；同日用户提出 runtime 预设想法，写成 §3.9 + F13（Claude 按用户口述回写，待 review）。2026-11-01 第四轮：Claude 对照源码 review，修正了三处事实（§2.4 两个钩子并非重复、§3.2.1 `subctx:` 不是子 session、opendan 的等待预算），补了"再删清单"（§3.10）、F9–F11 的陷阱、实施顺序（§6），新增 F14–F16 待裁决。2026-11-01 第六轮：用户倾向 **ask-user 一般化为标准异步 function call**（§3.2.1，F20）：问题是 Zone TaskMgr 上的 `human.input/v1` 任务，xllm 这种在调用内等的 CLI 也经 notify 系统拿到答案；F14 并入 F18，F7 提前为前置。2026-11-01 第七轮：F20 裁决一般化；按双中立扫描 waist 公开面写成 §3.11，**F21–F24 用户全部按建议裁决**（删无使用方模块、`Observation.host` 不透明、msg_parser / prompt_engine / xml_util 搬出、RefusalKind / ContextOwnerRef / report_artifacts 改型）。待裁决只剩 F15、F16。2026-11-01 第五轮：两种 loop 的结束状态与续接（原则 9、§3.2.2、F17–F19、§3.10 增补、原则 10 串行派发；Claude 按用户口述回写，待 review）。
+状态：**§6 第 1–4 步已实施（2026-11-01，未提交），xllm 已在本机 DV Zone 的 AICC 上验收（§8.4）；agent-session 的重构与 DV 移到 [Agent Session 全异步 task 化 TODO](./opendan-agent-session-async-task-todo.md)（用户 11-01 裁决）；第 5 步（F11、F6）按计划留作后续。** F1–F24 全部已定。历史：2026-11-01 第二轮讨论补了 §2.4、§3.6–§3.8 和 F9–F11（用户描述意图，Claude 按方案回写，待用户 review）。2026-11-01 第三轮：**F2 裁决为 B（删掉挂起原语）**，补了原则 8、§3.2 的 B 方案细节和 F12；同日用户提出 runtime 预设想法，写成 §3.9 + F13（Claude 按用户口述回写，待 review）。2026-11-01 第四轮：Claude 对照源码 review，修正了三处事实（§2.4 两个钩子并非重复、§3.2.1 `subctx:` 不是子 session、opendan 的等待预算），补了"再删清单"（§3.10）、F9–F11 的陷阱、实施顺序（§6），新增 F14–F16 待裁决。2026-11-01 第六轮：用户倾向 **ask-user 一般化为标准异步 function call**（§3.2.1，F20）：问题是 Zone TaskMgr 上的 `human.input/v1` 任务，xllm 这种在调用内等的 CLI 也经 notify 系统拿到答案；F14 并入 F18，F7 提前为前置。2026-11-01 第七轮：F20 裁决一般化；按双中立扫描 waist 公开面写成 §3.11，**F21–F24 用户全部按建议裁决**（删无使用方模块、`Observation.host` 不透明、msg_parser / prompt_engine / xml_util 搬出、RefusalKind / ContextOwnerRef / report_artifacts 改型）。待裁决只剩 F15、F16。2026-11-01 第五轮：两种 loop 的结束状态与续接（原则 9、§3.2.2、F17–F19、§3.10 增补、原则 10 串行派发；Claude 按用户口述回写，待 review）。
 
 背景：LLM Context 的设计准备冻结，并用另一种语言（TypeScript，见 [xllm TS 运行时 TODO](./xllm-ts-runtime-todo.md)）再实现一遍。冻结之前先把 llm_context 这一层削薄：冻结的东西越少，第二份实现越容易对齐，以后的改动也越少碰到破坏性变更。
 
@@ -413,7 +413,7 @@ B 之后还能顺手拿掉的，全部是净删除：
 
 ## 8. 实施记录（2026-11-01，未提交）
 
-验证：`cargo test --no-fail-fast -p llm_context -p libopendan -p agent_tool -- --test-threads=1` 与 `cargo test -p opendan`；websdk `ask_user` 跑了 Deno 单测。**没有**在真实 Zone / 单 OOD 上跑 §6 要求的 DV（ask-user、call_behavior、shell 长命令、崩溃恢复）。
+验证：`cargo test --no-fail-fast -p llm_context -p libopendan -p agent_tool -- --test-threads=1` 与 `cargo test -p opendan` 全过；websdk `ask_user` 跑了 Deno 单测；xllm 的 DV 见 §8.4。agent-session 的 DV（ask-user、call_behavior、shell 长命令、崩溃恢复）移到 [Agent Session TODO](./opendan-agent-session-async-task-todo.md) §3。
 
 ### 8.1 各步落点
 
@@ -434,14 +434,27 @@ B 之后还能顺手拿掉的，全部是净删除：
 7. **"已回话"**（reconcile）只看 `has_report`（F21 删了 `messages_sent`，没有另做 send_message 工具结果判断）。
 8. 测试与工具：context_limit 测试共用进程 logger、各测试的 session id 相同，加了文件级串行锁并在每例开始清空；fixtures 的 compact 阈值改为同时满足"场景内 160 / 仓库相对 210"（`002630be0` 把 kmsg 队列名改成哈希后，旧阈值放过了 214 字符的路径）；fixture 17 只保留 UI 会话观察通知的部分（Work 经 libopendan 提问的那一半随 ask-user 删除）；fixture 06 的生成器原来 `pkill` 的模式匹配不到命令行，被杀的 runner 留下的 `sleep 60` 事后把 `exit = 0` 写进 fixture，按 F12 恢复会读到这个结果，改成按命令文本 kill，期望改为"按 call_id 重新派发，执行目录无 exit → Unresolved"。opendan `loader.rs` 删了三条只测旧提问流程的用例（UI Turn 内问答、群聊提问 @owner、Work 提问走通知），提问改由 `ask_user`（`input` 通知 + TaskMgr 任务）承担，对话内的投递由 msg-center 的通知投递决定，本次没验证 MessageHub 侧的呈现。
 
-### 8.3 没做 / 待验证
+### 8.3 没做 / 待验证（agent-session 相关的已并入 [Agent Session TODO](./opendan-agent-session-async-task-todo.md) §2）
 
-- 同一对话来普通消息时撤销开放提问任务（superseded）没做。
-- 保活中的 UI Turn：中间那条回复（"已启动，完成后汇报"）不单独投递，Turn 关闭时只投最终回复。
-- `WaitingKind::Children` 没有进一步泛化（保活用 Tool / Children 两种 `waiting_for`）。
+- 移到 [Agent Session TODO](./opendan-agent-session-async-task-todo.md)：提问撤销（R7）、保活中 UI Turn 的中间回复（R6）、`waiting_for` 的形状（R1）、`<<task_result>>` 的 `failed` 状态（R8）、`remote_node` 滤掉 `XLLM_*`（R9）、agent-session 的 DV 与 `ask_user` 端到端（§3）。
 - F11（hints / dedup）、F6（spec 对账）未做（§6 第 5 步）。
 - 偏历史 / 方案性质的文档没改：`doc/opendan` 的 Agent Session SDK 实现计划、NewOpenDANRuntime、Agent配置改进，`doc/llm_context` 的 why behavior loop、LLM Context Switch 样例、improve-behavior-report，以及 behavior loop 文档 §10"实施顺序（历史记录）"。
-- `<<task_result>>` 的 `status` 目前只有 `finished` / `unknown`（`drive.rs::task_summary`），失败写在正文里；要不要给失败单独一个 `failed`，牵涉 task 事件的订阅匹配，没动。
-- `remote_node` runtime 会滤掉 `XLLM_*` 环境变量，`ask_user` 在那里拿不到 `XLLM_RUN_ID / XLLM_CALL_ID`（幂等键），未处理。
-- DV 全部未做；`ask_user` 没在真实 Zone（msg-center 通知 + TaskMgr）上跑过。
+
+### 8.4 xllm DV（2026-11-01，本机 DV Zone，buckyos provider → AICC `llm.chat`）
+
+二进制 `cargo build -p agent_tool_cli_dev` → `/tmp/dev-cache-root/cargo-target/debug/agent_tool xllm …`（`</dev/null`），每个场景一个工作目录，函数调用场景用本地 `.llm_context` 关掉全局的 `tools2actions`。
+
+| 场景 | 结果 |
+| --- | --- |
+| T1 问答（behavior loop，全局配置） | completed，RunRecord v7 |
+| T2 function call 写文件 + shell | 工具调用前有 checkpoint（快照 v6，`tool_batch.remaining` 含该调用）；全局 `result_format: result.report` 对纯文本回答报 exit 6，与本单无关 |
+| T3 `task_wait_ms: 2000` + `sleep 8` | 2 秒转任务 → 模型 `wait_task` → completed（模型若自己传 `wait_ms` 会改成在调用内等，这是 shell 的设计） |
+| T4 任务未完时回复 | `paused (tasks_running)`，exit 3，给出 resume 提示；`--resume --run <id> "<message>"` 注入同一快照继续 |
+| T4b 暂停后任务自己结束再 resume | **发现缺陷并已修**：暂停后 CLI 退出时进程内任务被进程组守卫杀掉，"resume once they ended" 永远等不到。修法：xllm 因任务暂停时 `InProcessTaskManager::release_running()` 把任务交给 OS（`LocalTask::release`，shell 任务解除进程组守卫），执行目录记下结局；新单测 `released_shell_tasks_outlive_their_task_manager`（去掉 release 会失败）。修后 resume 经 `get_task_state` 读到结果 → completed |
+| T5 behavior loop：shell 动作转任务 → 只带 report 的 Yield | `paused (yield)`；任务结束后 `--resume "<message>"` → 读到结果 → `report end="true"` completed；XML 动作的 call_id 跨 step 唯一 |
+| T6 shell 执行中 SIGKILL xllm，命令跑完后 `--resume` | 按 call_id 从执行目录读到 exit 0 的结局，不重跑（`ran.log` 一行）→ completed |
+| T6b SIGKILL 后立即 `--resume` | `[unresolved: result unknown]`，不重跑，模型如实说明 → completed |
+| T7 `ask_user` | 未测：需要用户的 App 会话 token（OpenDAN 注入），本机 AppClient 私钥登录被拒；并入 Agent Session TODO T1 |
+
+附带：`xllm --help` 的 `--tools` 说明里工具名 `exec` 改为 `shell`。一次性 xllm 的协议开场白仍写"没有后续对话、不要向用户提问"，所以 behavior Yield 在 xllm 里只用于等自己启动的任务（T5），不用于提问。
 

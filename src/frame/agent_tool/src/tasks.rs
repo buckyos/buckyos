@@ -147,6 +147,9 @@ pub trait LocalTask: Send + Sync {
     /// Wait until the task ends or `until_ms` (epoch ms) passes.
     async fn wait(&self, until_ms: Option<u64>) -> TaskState;
     async fn cancel(&self) -> Result<TaskState, CancelUnsupported>;
+    /// Let the task outlive this process (its run paused on it): ending the
+    /// process no longer ends the task. Default: nothing to release.
+    async fn release(&self) {}
 }
 
 /// A `shell` command that outlived its call's `wait_ms`.
@@ -297,6 +300,11 @@ impl LocalTask for ShellTask {
             }),
         }
     }
+    async fn release(&self) {
+        if self.finished().is_none() {
+            self.handle.lock().await.detach();
+        }
+    }
 }
 
 pub(crate) fn compact(s: &str, max: usize) -> String {
@@ -334,6 +342,18 @@ impl std::fmt::Debug for InProcessTaskManager {
 impl InProcessTaskManager {
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+
+    /// Hand every task still running over to the OS before this process
+    /// ends (an xllm run paused on them): a `shell` command keeps running
+    /// and its execution directory records its end, which a later executor
+    /// reads by call_id.
+    pub async fn release_running(&self) {
+        let tasks: Vec<Arc<dyn LocalTask>> =
+            self.inner.lock().expect("tasks").tasks.values().cloned().collect();
+        for task in tasks {
+            task.release().await;
+        }
     }
 
     /// Register a `shell` command handed over by call `call_id`; the id
@@ -1147,6 +1167,34 @@ mod tests {
             !dir.path().join("survived").exists(),
             "cancelled script kept running"
         );
+    }
+
+    /// A run paused on its task hands it to the OS: dropping the task
+    /// manager (the process ending) no longer ends the command.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn released_shell_tasks_outlive_their_task_manager() {
+        let dir = tempfile::tempdir().unwrap();
+        let runner = LocalProcessBashRunner::new();
+        let command = "touch started; sleep 1; touch survived";
+        let handle = runner
+            .start(&sctx(), req(command, dir.path(), "release"))
+            .await
+            .unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while !dir.path().join("started").exists() {
+            assert!(tokio::time::Instant::now() < deadline, "script did not start");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let tasks = InProcessTaskManager::new();
+        tasks.register_shell(Some("release"), ShellTask::new(command, handle, "native"));
+        tasks.release_running().await;
+        drop(tasks);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while !dir.path().join("survived").exists() {
+            assert!(tokio::time::Instant::now() < deadline, "the released command was ended");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     #[tokio::test]

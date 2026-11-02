@@ -49,7 +49,7 @@ Usage:
   xllm --select <group> ["question"]      run a prompt group's default task
   xllm "task one" | xllm "task two"       chain: stdin becomes material / request
   xllm --image ./photo.png "what is it?"  images (repeatable), --file for text
-  xllm --tools "index the docs dir"       enable tools (read/write/edit/exec)
+  xllm --tools "index the docs dir"       enable tools (read/write/edit/shell)
   xllm list [--limit N]                   recent runs of the working directory
   xllm status [--run <id>]                run status, effective config, resumability
   xllm result [--run <id>]                re-export a saved result (no model call)

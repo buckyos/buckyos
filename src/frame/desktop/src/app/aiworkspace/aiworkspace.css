@@ -1243,7 +1243,7 @@
 .aiws-mindnode-edit { outline: none; white-space: pre-wrap; min-width: 1em; cursor: text; user-select: text; -webkit-user-select: text; }
 .aiws-mindnode-edit:empty::before { content: attr(data-placeholder); color: var(--cp-muted); }
 .aiws-frame-block.is-node.is-editing { overflow: visible; }
-.aiws-frame-block.is-node.is-editing .aiws-mindnode { width: auto; min-width: 100%; height: auto; min-height: 100%; }
+.aiws-frame-block.is-node.is-editing .aiws-mindnode { flex: none; width: max-content; min-width: 100%; max-width: var(--aiws-node-max-w, none); height: auto; min-height: 100%; }
 .aiws-drop-target { fill: none; stroke: var(--cp-accent); stroke-width: 2; }
 .aiws-drop-line { stroke: var(--cp-accent); stroke-width: 3; stroke-linecap: round; }
 .aiws-drop-refused { fill: color-mix(in srgb, var(--cp-danger) 6%, transparent); stroke: var(--cp-danger); stroke-width: 1.5; stroke-dasharray: 6 4; }

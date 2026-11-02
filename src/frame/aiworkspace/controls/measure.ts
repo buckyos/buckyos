@@ -17,8 +17,8 @@ export const NODE_CODE_FAMILY = 'ui-monospace, SFMono-Regular, Menlo, Consolas, 
 const SIZES = [18, 15, 14]
 const WEIGHTS = [700, 600, 400]
 export const LINE_HEIGHT = 1.4
-/** Widest a line of text may get before it wraps. */
-export const MAX_TEXT_WIDTH = 260
+/** Widest a line of text may get before it wraps: about twenty CJK characters at the depth-1 size. */
+export const MAX_TEXT_WIDTH = 300
 export const NODE_PAD = { x: 14, y: 8 }
 export const MIN_NODE_WIDTH = 48
 

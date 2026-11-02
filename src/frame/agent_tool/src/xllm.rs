@@ -9056,6 +9056,8 @@ impl XllmRun {
                         Vec::new()
                     };
                     if yielded || !running.is_empty() {
+                        // The run waits for them: they outlive this process.
+                        self.manager.tasks().release_running().await;
                         self.ctx = Some(ctx);
                         let calls = self.llm.calls();
                         let (kind, message, condition) = if yielded {

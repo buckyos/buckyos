@@ -5,7 +5,7 @@
  * Run: `deno test -A` in this folder. */
 
 import { assert, assertEquals } from './test_assert.ts'
-import { approxMetrics, NodeMeasurer } from './measure.ts'
+import { approxMetrics, MAX_TEXT_WIDTH, NODE_PAD, NodeMeasurer } from './measure.ts'
 import { placeControl, solveControl, type ControlSource, type SolvedControl } from './solve.ts'
 import { branchColors, edgeStrokes } from './edges.ts'
 import { layoutTree, mindmapConfig, type LaidNode, type TreeNode } from './tree.ts'
@@ -134,7 +134,7 @@ Deno.test('a pinned width makes the title wrap and the height follow', () => {
   const narrow = measurer.measure(long, 2, 120)
   assert(narrow.lines.length > free.lines.length && narrow.h > free.h, 'wraps')
   const cjk = measurer.measure('中文标题按字符换行'.repeat(4), 2)
-  assert(cjk.lines.length > 1 && cjk.w <= 260 + 28, 'CJK wraps by characters')
+  assert(cjk.lines.length > 1 && cjk.w <= MAX_TEXT_WIDTH + NODE_PAD.x * 2, 'CJK wraps by characters')
 })
 
 Deno.test('a thousand nodes lay out quickly', () => {

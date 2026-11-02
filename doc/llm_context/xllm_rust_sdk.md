@@ -73,7 +73,7 @@ behavior 协议（`XllmActionParser`）：`<response><thinking/><actions>…</ac
 
 resume：终态只返回记录（附带限制参数则报 `RunTerminal`）；非终态重置 wallclock 起点，工具迭代沿用已消耗值（`ResumeLimits.max_tool_iterations` 显式调高时剩余 = 新总额 − 已消耗，只增加差额），`usage.llm_requests` 继续累加。`RunRecord.version` 不是 7 或快照版本不是 6（`SNAPSHOT_FORMAT_VERSION`）的 Run 不能恢复（不迁移旧格式）。记录了 `handover` 的宿主 Run 报 `NotResumable`（转移由宿主 Session 提交）。保存于上下文上限挂起态的快照先压缩再续跑；快照里可能在执行的调用按 call_id 处理（§10）。
 
-循环里不等待：yield 和 `tasks_running` 是模型停下来等新输入或等 task 结束，不是故障。`xllm --resume [--run <id>] [message]` 带消息时把它作为新的 user 输入注入同一快照（`XllmRun::inject_input`，先提交快照），在同一个 run 里接着推理，Step 编号连续；不带消息时直接续跑。快照停在一批工具调用中间时不能注入消息。
+循环里不等待：yield 和 `tasks_running` 是模型停下来等新输入或等 task 结束，不是故障。暂停时进程内仍在运行的 task 交给操作系统（`InProcessTaskManager::release_running`），xllm 进程退出后命令照跑，执行目录记下结局，resume 后按 task id 从执行目录读到。`xllm --resume [--run <id>] [message]` 带消息时把它作为新的 user 输入注入同一快照（`XllmRun::inject_input`，先提交快照），在同一个 run 里接着推理，Step 编号连续；不带消息时直接续跑。快照停在一批工具调用中间时不能注入消息。
 
 ## 7. CLI（`agent_tool xllm`）
 

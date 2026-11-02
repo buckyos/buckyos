@@ -31,7 +31,8 @@ function useNodeLook(context: RenderContext) {
 function NodeFrame({ context, children }: { context: RenderContext; children?: ReactNode }) {
   const { info, depth, maxText } = useNodeLook(context)
   const t = typography(depth)
-  const style = { '--aiws-branch': info?.color ?? undefined, padding: `${NODE_PAD.y}px ${NODE_PAD.x}px`, lineHeight: `${t.lineHeight}px`, fontSize: t.size, fontWeight: t.weight } as CSSProperties
+  // while editing the node grows with its text up to the width the layout wraps at, so typing does not wrap early
+  const style = { '--aiws-branch': info?.color ?? undefined, '--aiws-node-max-w': `${maxText + NODE_PAD.x * 2}px`, padding: `${NODE_PAD.y}px ${NODE_PAD.x}px`, lineHeight: `${t.lineHeight}px`, fontSize: t.size, fontWeight: t.weight } as CSSProperties
   return (
     <div className={`aiws-mindnode is-depth-${Math.min(depth, 2)}`} style={style} data-testid={`aiws-mindnode-${context.cell.entity_id}`} data-depth={depth}>
       {children ?? <NodeLines title={context.payload.title ?? ''} depth={depth} maxText={maxText} />}

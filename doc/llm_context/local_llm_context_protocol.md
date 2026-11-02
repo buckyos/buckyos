@@ -303,7 +303,7 @@ Run 锁和工作目录锁均为非阻塞 OS 排他锁，句柄释放后解锁。
 
 Provider Permanent 错误中包含 token、401、403、auth、expired、permission 等线索时，当前实现将其归为可恢复的 `credentials`；其它 Permanent 和 Unknown 为失败。此处是错误文本分类，不是自动刷新任意凭据的保证。可恢复故障停止为 paused，由调用方显式 resume；不在同一次 CLI 中无限重试。
 
-`yield` 与 `tasks_running` 不是故障：循环里不等待，模型停下来等新输入，或者回复时本 Run 交出的 task 还没结束（task 由 `XllmToolManager` 的 resolver 列出）。快照停在推理之后的边界上，`last_error.message` 是模型这一步的报告或回复文本。`--resume [message]` 把消息作为新的 user 输入注入同一个快照（`XllmRun::inject_input`，注入后先提交快照），在同一个 Run 里接着推理，Step 编号连续；不带消息时直接续跑。快照停在一批工具调用中间时不能注入消息，先不带消息 resume。
+`yield` 与 `tasks_running` 不是故障：循环里不等待，模型停下来等新输入，或者回复时本 Run 交出的 task 还没结束（task 由 `XllmToolManager` 的 resolver 列出）。暂停时进程内仍在运行的 task 交给操作系统（`InProcessTaskManager::release_running`，shell 任务解除进程组守卫），进程退出后命令照跑，执行目录记下 `exit`；resume 后 `local:shell:<call_id>` 从执行目录读出结局（还没结束时是"状态未知，可能仍在运行"）。快照停在推理之后的边界上，`last_error.message` 是模型这一步的报告或回复文本。`--resume [message]` 把消息作为新的 user 输入注入同一个快照（`XllmRun::inject_input`，注入后先提交快照），在同一个 Run 里接着推理，Step 编号连续；不带消息时直接续跑。快照停在一批工具调用中间时不能注入消息，先不带消息 resume。
 
 ### 8.2 恢复流程
 
