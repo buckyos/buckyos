@@ -6,7 +6,7 @@
 
 import type { Page } from '@playwright/test'
 import { mainMenu, openCanvas, openWorkspacePage, test, expect, type Api } from './fixtures'
-import { deck, spacedText } from './pdfFiles'
+import { deck, spacedText, overflowText } from './pdfFiles'
 
 const ALICE = 'tok-alice'
 const SHOTS = 'test-results/aiworkspace-pdf'
@@ -239,4 +239,51 @@ test('PI-03 editable PDF keeps fragment gaps and compressed advances after impor
   await openWorkspacePage(page, ALICE, ws.workspace_id, imported.entity_id)
   await page.reload()
   await check()
+})
+
+test('PI-04 layout overflow preserves the opaque background and all text in one page raster', async ({ page, api }) => {
+  test.setTimeout(120_000)
+  const ws = await canvasWorkspace(api, `pi-04 ${Date.now()}`)
+  await openCanvas(page, ALICE, ws.workspace_id)
+  const chooser = page.waitForEvent('filechooser')
+  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-pdf')
+  await (await chooser).setFiles({ name: 'overflow.pdf', mimeType: 'application/pdf', buffer: overflowText() })
+  const dialog = page.getByTestId('aiws-pdf-dialog')
+  await expect(dialog.getByTestId('aiws-pdf-pages')).toContainText('共 1 页')
+  await dialog.getByTestId('aiws-pdf-start').click()
+  await expect(dialog).toHaveCount(0, { timeout: 60_000 })
+  const report = page.getByTestId('aiws-import-report')
+  await expect(report.locator('[data-kind="pdf_text_layout_limit"]')).toBeVisible()
+  await report.getByTestId('aiws-import-report-close').click()
+  const outline = await api.outline(ALICE, ws.workspace_id)
+  const surface = outline.find((e: Json) => e.kind === 'surface' && e.entity_id !== 'sf-p' && !e.deleted)
+  const group = children(outline, surface.entity_id)[0]
+  const objects = children(outline, group.entity_id)
+  expect(objects.map((e: Json) => e.view_type)).toEqual(['frame', 'asset'])
+  const raster = objects[1]
+  const config = (await api.read(ALICE, ws.workspace_id, raster.entity_id)).content.payload.config
+  expect(config.pdf_source.kind).toBe('raster')
+  const block = page.getByTestId(`aiws-canvas-block-${raster.entity_id}`)
+  const image = block.locator('img')
+  await expect(image).toBeVisible()
+  const pixels = await image.evaluate(async (node) => {
+    const image = node as HTMLImageElement
+    await image.decode()
+    const canvas = document.createElement('canvas')
+    canvas.width = image.naturalWidth
+    canvas.height = image.naturalHeight
+    const ctx = canvas.getContext('2d')!
+    ctx.drawImage(image, 0, 0)
+    const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height)
+    let dark = 0, gray = 0
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i + 3] < 240) continue
+      if (data[i] < 80 && data[i + 1] < 80 && data[i + 2] < 80) dark++
+      if (data[i] > 120 && data[i] < 190 && Math.abs(data[i] - data[i + 1]) < 3 && Math.abs(data[i] - data[i + 2]) < 3) gray++
+    }
+    return { dark, gray }
+  })
+  expect(pixels.dark).toBeGreaterThan(1000)
+  expect(pixels.gray).toBeGreaterThan(10000)
+  await page.screenshot({ path: `${SHOTS}/pi04-overflow-background.png` })
 })

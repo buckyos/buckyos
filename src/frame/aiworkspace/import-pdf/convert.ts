@@ -171,6 +171,22 @@ export async function convertPdfPage(page: PdfPage, report: ImportReport, option
     return result(await rasterItem({ skip: new Set(), whole: true }))
   }
 
+  const links = page.links.map((l) => {
+    const a = apply(world, l.rect[0], l.rect[1]), b = apply(world, l.rect[2], l.rect[3])
+    return { rect: { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) }, page: l.page, url: l.url }
+  })
+  const textItems = text.paragraphs.map((p, k) => {
+    // the link covering most of the paragraph's text (boxes of neighbouring lines overlap a little)
+    const area = (r: Rect | null) => (r ? r.w * r.h : 0)
+    const link = links.map((l) => ({ l, a: area(intersect(l.rect, p.rect)) })).filter(({ l, a }) => a > 0.3 * Math.min(area(p.rect), area(l.rect))).sort((x, y) => y.a - x.a)[0]?.l
+    return { paragraph: p, item: textItem(p, `${groupKey}~t${k}`, groupKey, { ...source, ...(link ? { link: link.page ? { page: link.page } : { url: link.url } } : {}) }) }
+  })
+  const textLayoutTooLarge = textItems.some(({ paragraph, item }) => paragraph.layout.spans.length > 4096 || new TextEncoder().encode(JSON.stringify(item.config)).length > 60 * 1024)
+  if (textLayoutTooLarge) {
+    report.add('pdf_text_layout_limit', 'Page with excessive text layout metadata kept as one picture', `p${n}`)
+    return result(await rasterItem({ skip: new Set(), whole: true }))
+  }
+
   // pictures (§4.2)
   const placed: Placed[] = []
   const imageCache = new Map<string, PlanImage | null>()
@@ -221,19 +237,7 @@ export async function convertPdfPage(page: PdfPage, report: ImportReport, option
   }
 
   // text (§4.1)
-  const links = page.links.map((l) => {
-    const a = apply(world, l.rect[0], l.rect[1]), b = apply(world, l.rect[2], l.rect[3])
-    return { rect: { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) }, page: l.page, url: l.url }
-  })
-  const textItems = text.paragraphs.map((p, k) => {
-    // the link covering most of the paragraph's text (boxes of neighbouring lines overlap a little)
-    const area = (r: Rect | null) => (r ? r.w * r.h : 0)
-    const link = links.map((l) => ({ l, a: area(intersect(l.rect, p.rect)) })).filter(({ l, a }) => a > 0.3 * Math.min(area(p.rect), area(l.rect))).sort((x, y) => y.a - x.a)[0]?.l
-    return { paragraph: p, item: textItem(p, `${groupKey}~t${k}`, groupKey, { ...source, ...(link ? { link: link.page ? { page: link.page } : { url: link.url } } : {}) }) }
-  })
-  const textLayoutTooLarge = textItems.some(({ paragraph, item }) => paragraph.layout.spans.length > 4096 || new TextEncoder().encode(JSON.stringify(item.config)).length > 60 * 1024)
-  if (textLayoutTooLarge) report.add('pdf_text_layout_limit', 'Text with excessive layout metadata kept in the page raster', `p${n}`)
-  else for (const { paragraph: p, item } of textItems) {
+  for (const { paragraph: p, item } of textItems) {
     placed.push({ order: p.order, item, kind: 'text' })
     if (p.mixed) report.add('pdf_mixed_style', 'Paragraphs with several styles imported in their main style', firstLine(p.text).slice(0, 48))
     for (const r of p.runs) skip.add(r)

@@ -49,6 +49,7 @@ PDF.js explicit line-end markers prevent adjacent lines from being joined again.
 reimporting to acquire the geometry; this does not reconstruct missing metadata from saved canvases.
 
 A paragraph is limited to 4096 spans and 60 KiB of serialized config. If any paragraph exceeds the limit,
-the page's text stays in the original raster and the report explains the fallback, preserving the source
-operators rather than writing an invalid config or silently dropping text. Mixed colours/weights still
+the whole page stays in one original raster and the report explains the fallback. No pictures or background
+paths are extracted in this case: all source operators retain their paint order, so a separately extracted
+background cannot cover the fallback text. Mixed colours/weights still
 use the paragraph's main style. This does not embed the PDF's original fonts or infer semantic word boundaries.

@@ -1,5 +1,7 @@
 /* PDFs the PDF import tests make (tests/aiworkspace/pdf-import.spec.ts, tests/dv/aiworkspace.pdf.spec.ts). */
 
+import { overflowTextPdf } from '../../../aiworkspace/fixtures/pdf/src/overflow'
+
 /** A PDF from object bodies (Latin-1; stream lengths computed). */
 function writePdf(objects: string[]): Buffer {
   let text = '%PDF-1.5\n'
@@ -67,3 +69,5 @@ export function spacedText(): Buffer {
     '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique >>',
   ])
 }
+
+export function overflowText(): Buffer { return Buffer.from(overflowTextPdf()) }
