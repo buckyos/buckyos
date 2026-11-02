@@ -36,6 +36,11 @@
 //   resolver/cache/{escaped_did}/{doc_type}/state   状态 JSON（见 ResolverCacheState 注释）
 //   resolver/cache/{escaped_did}/{doc_type}/doc     EncodedDocument 字符串（JWT 或 JSON）
 //   resolver/cache/{escaped_did}/{doc_type}/metadata  管理侧自由字段，resolver 不消费
+// did.json（默认 doc_type）登记在 `did` 槽位，发布方优先登记它：只有一种文档的
+// DID（群等 zone 子名字）只写 `did` 槽位，state.doc_type 声明文档的实际类型，按该
+// 类型的显式查询在本类型槽位缺失时也由它回答；有多种类型时各类型分槽登记，`did`
+// 槽位只写 state（doc_type 指向默认类型，不带 doc），did.json 跟随该类型槽位。
+// zone 自身不读 `did` 槽位（§6.3）。
 // escaped_did/doc_type 段的转义规则：'%' -> "%25"，'/' -> "%2F"（合法 DID 本身
 // 不含 '/'，did:web 的端口写法含 '%'，如 did:web:example.com%3A3000）。
 // zone 内短名的 cache 键用规范 DID：did:web:{short}.{zone_host}。
@@ -79,6 +84,7 @@ const CONTENT_TYPE_JSON: &str = "application/json";
 const CONTENT_TYPE_DID_JWT: &str = "application/did+jwt";
 const CONTENT_TYPE_DID_JSON: &str = "application/did+ld+json";
 const RESOLVER_CACHE_PREFIX: &str = "resolver/cache";
+const DEFAULT_CACHE_SLOT: &str = "did";
 
 #[derive(Clone)]
 pub struct ZoneDidResolver {}
@@ -191,6 +197,15 @@ struct PublishedAnswer {
     // Info 这类实时数据没有"已发布 body"语义，不带 docHash 锚点
     with_hash: bool,
     migration_target: Option<DID>,
+}
+
+// `did` 槽位对一次查询的裁决。
+enum DefaultSlot {
+    Answer(ZoneAnswer),
+    // 多类型 DID：did.json 跟随该类型槽位
+    Follow(DidDocType),
+    // 与本次查询无关，继续结构化查询
+    Pass,
 }
 
 // 一次解析的回答，与文件头的状态码纪律一一对应。
@@ -462,12 +477,20 @@ impl ZoneDidResolver {
         raw.replace('%', "%25").replace('/', "%2F")
     }
 
+    fn cache_slot(doc_type: &DidDocType) -> &str {
+        if *doc_type == DEFAULT_DID_DOC_TYPE {
+            DEFAULT_CACHE_SLOT
+        } else {
+            doc_type.as_str()
+        }
+    }
+
     fn cache_key_base(did: &DID, doc_type: &DidDocType) -> String {
         format!(
             "{}/{}/{}",
             RESOLVER_CACHE_PREFIX,
             Self::escape_cache_segment(did.to_string().as_str()),
-            Self::escape_cache_segment(doc_type.as_str())
+            Self::escape_cache_segment(Self::cache_slot(doc_type))
         )
     }
 
@@ -555,21 +578,100 @@ impl ZoneDidResolver {
         }))
     }
 
-    // 查 cache 登记。Ok(None) = 没有登记，继续结构化查询；Err = 登记存在但坏了
-    //（显式 override 损坏必须大声失败成 500，而不是静默绕过——那可能是一条吊销）。
-    async fn cache_lookup(
+    // `did` 槽位（state + 可选 doc）对一次查询的裁决。纯函数便于单测。
+    // state.doc_type 是 did.json 文档的实际类型，缺省为默认类型；active 且不带
+    // doc 时是多类型 DID 的指针。显式类型查询只认声明了同一类型且自带文档的登记。
+    fn default_slot_answer(
+        state_str: &str,
+        doc_str: Option<String>,
+        requested: &DidDocType,
+    ) -> Result<DefaultSlot, String> {
+        let state: Value = serde_json::from_str(state_str)
+            .map_err(|e| format!("state is not valid json: {}", e))?;
+        let declared = match state.get("doc_type") {
+            None | Some(Value::Null) => DEFAULT_DID_DOC_TYPE,
+            Some(Value::String(t)) => parse_doc_type(Some(t.clone())),
+            Some(_) => return Err("doc_type must be a string".to_string()),
+        };
+        let is_default = *requested == DEFAULT_DID_DOC_TYPE;
+        let active = state.get("document_status").and_then(Value::as_str) == Some("active");
+        if active && doc_str.is_none() && declared != DEFAULT_DID_DOC_TYPE {
+            return Ok(if is_default {
+                DefaultSlot::Follow(declared)
+            } else {
+                DefaultSlot::Pass
+            });
+        }
+        if !is_default && declared != *requested {
+            return Ok(DefaultSlot::Pass);
+        }
+        Self::cache_answer(state_str, doc_str, &declared).map(DefaultSlot::Answer)
+    }
+
+    async fn cache_entry(
         &self,
         did: &DID,
         doc_type: &DidDocType,
-    ) -> Result<Option<ZoneAnswer>, String> {
+    ) -> Result<Option<(String, Option<String>)>, String> {
         let base = Self::cache_key_base(did, doc_type);
         let Some(state_str) = self.store_get(format!("{}/state", base).as_str()).await? else {
             return Ok(None);
         };
         let doc_str = self.store_get(format!("{}/doc", base).as_str()).await?;
+        Ok(Some((state_str, doc_str)))
+    }
+
+    // 只查该类型自己的槽位。Ok(None) = 没有登记，继续结构化查询；Err = 登记存在
+    // 但坏了（显式 override 损坏必须大声失败成 500，而不是静默绕过——那可能是一条吊销）。
+    async fn typed_cache_lookup(
+        &self,
+        did: &DID,
+        doc_type: &DidDocType,
+    ) -> Result<Option<ZoneAnswer>, String> {
+        let Some((state_str, doc_str)) = self.cache_entry(did, doc_type).await? else {
+            return Ok(None);
+        };
         Self::cache_answer(state_str.as_str(), doc_str, doc_type)
             .map(Some)
-            .map_err(|e| format!("resolver cache {} corrupt: {}", base, e))
+            .map_err(|e| {
+                format!(
+                    "resolver cache {} corrupt: {}",
+                    Self::cache_key_base(did, doc_type),
+                    e
+                )
+            })
+    }
+
+    // did.json 优先：显式类型先查本类型槽位，缺失时由声明同一类型的 did.json
+    // 回答；默认查询读 `did` 槽位或它指向的类型槽位。
+    async fn cache_lookup(
+        &self,
+        did: &DID,
+        doc_type: &DidDocType,
+    ) -> Result<Option<ZoneAnswer>, String> {
+        if *doc_type != DEFAULT_DID_DOC_TYPE {
+            if let Some(answer) = self.typed_cache_lookup(did, doc_type).await? {
+                return Ok(Some(answer));
+            }
+        }
+        let Some((state_str, doc_str)) = self.cache_entry(did, &DEFAULT_DID_DOC_TYPE).await?
+        else {
+            return Ok(None);
+        };
+        let base = Self::cache_key_base(did, &DEFAULT_DID_DOC_TYPE);
+        match Self::default_slot_answer(state_str.as_str(), doc_str, doc_type)
+            .map_err(|e| format!("resolver cache {} corrupt: {}", base, e))?
+        {
+            DefaultSlot::Answer(answer) => Ok(Some(answer)),
+            DefaultSlot::Pass => Ok(None),
+            DefaultSlot::Follow(target) => match self.typed_cache_lookup(did, &target).await? {
+                Some(answer) => Ok(Some(answer)),
+                None => Err(format!(
+                    "resolver cache {} points at unpublished doc_type {}",
+                    base, target
+                )),
+            },
+        }
     }
 
     // ---------------- zone owner 的 Root Trust 保护（需求 §6.2） ----------------
@@ -669,18 +771,14 @@ impl ZoneDidResolver {
     // cache 命中同样不能成为替换 Root Trust 的通道：owner/user 类 active 命中若
     // 载荷是当前 zone owner 的 OwnerDocument，key material 一致才原样放行，
     // 否则换成合并文档（state 钉的 doc_hash 随 body 一起失效，改为现算）。
-    fn guard_cache_hit(
-        zone: &ZoneIdentity,
-        answer: ZoneAnswer,
-        doc_type: &DidDocType,
-    ) -> ZoneAnswer {
-        if !matches!(doc_type, DidDocType::Owner | DidDocType::User) {
-            return answer;
-        }
+    // 按回答的实际类型判断：did.json 登记也可能承载 owner 文档。
+    fn guard_cache_hit(zone: &ZoneIdentity, answer: ZoneAnswer) -> ZoneAnswer {
         let ZoneAnswer::Published(mut published) = answer else {
             return answer;
         };
-        if published.status != PublishedStatus::Active {
+        if !matches!(published.doc_type, DidDocType::Owner | DidDocType::User)
+            || published.status != PublishedStatus::Active
+        {
             return ZoneAnswer::Published(published);
         }
         let Some(document) = published.document.as_ref() else {
@@ -756,8 +854,8 @@ impl ZoneDidResolver {
                 // §6.3：zone/boot 只来自 boot 状态机已接受的 boot/config，
                 // cache override 不得绕过 LKGS / smooth upgrade。
                 DidDocType::Zone | DidDocType::Boot => self.resolve_zone_itself(&zone, doc_type),
-                _ => match self.cache_lookup(&zone.zone_doc.id, doc_type).await {
-                    Ok(Some(answer)) => Self::guard_cache_hit(&zone, answer, doc_type),
+                _ => match self.typed_cache_lookup(&zone.zone_doc.id, doc_type).await {
+                    Ok(Some(answer)) => Self::guard_cache_hit(&zone, answer),
                     // owner DID 即 zone DID 时，zone 的 owner doc 就是这个 DID 的 owner doc
                     Ok(None) if zone.self_owned_owner_query(doc_type) => {
                         self.resolve_zone_owner(&zone, &zone.zone_doc.id, doc_type)
@@ -784,7 +882,7 @@ impl ZoneDidResolver {
                     }
                 };
                 match self.cache_lookup(&canonical, doc_type).await {
-                    Ok(Some(answer)) => Self::guard_cache_hit(&zone, answer, doc_type),
+                    Ok(Some(answer)) => Self::guard_cache_hit(&zone, answer),
                     Ok(None) => self.resolve_in_zone(&zone, short.as_str(), doc_type).await,
                     Err(e) => {
                         error!("ZoneDidResolver cache lookup for {} failed: {}", short, e);
@@ -793,7 +891,7 @@ impl ZoneDidResolver {
                 }
             }
             Ok(Target::Foreign(did)) => match self.cache_lookup(&did, doc_type).await {
-                Ok(Some(answer)) => Self::guard_cache_hit(&zone, answer, doc_type),
+                Ok(Some(answer)) => Self::guard_cache_hit(&zone, answer),
                 Ok(None) => self.resolve_foreign(&zone, &did, doc_type).await,
                 Err(e) => {
                     error!(
@@ -2098,6 +2196,85 @@ mod tests {
         assert!(ZoneDidResolver::cache_answer(state.as_str(), None, &DidDocType::Zone).is_err());
     }
 
+    #[test]
+    fn did_json_slot_is_the_default_entry() {
+        assert_eq!(
+            ZoneDidResolver::cache_key_base(&DID::new("bns", "g1.alice"), &DEFAULT_DID_DOC_TYPE),
+            "resolver/cache/did:bns:g1.alice/did"
+        );
+    }
+
+    #[test]
+    fn did_json_answers_default_and_its_declared_type() {
+        let group = DidDocType::custom("group");
+        let state = json!({"document_status": "active", "doc_type": "group"}).to_string();
+        let doc = json!({"id": "did:bns:g1.alice", "entity_type": "group", "iat": 7}).to_string();
+        for requested in [DEFAULT_DID_DOC_TYPE, group.clone()] {
+            let DefaultSlot::Answer(ZoneAnswer::Published(published)) =
+                ZoneDidResolver::default_slot_answer(&state, Some(doc.clone()), &requested).unwrap()
+            else {
+                panic!("did.json should answer {}", requested);
+            };
+            assert_eq!(published.doc_type, group);
+            let envelope = ZoneDidResolver::published_envelope(&published);
+            assert_eq!(envelope["didDocumentMetadata"]["buckyos"]["docType"], "group");
+        }
+        assert!(matches!(
+            ZoneDidResolver::default_slot_answer(&state, Some(doc), &DidDocType::Owner).unwrap(),
+            DefaultSlot::Pass
+        ));
+    }
+
+    #[test]
+    fn did_json_of_a_multi_type_did_follows_the_default_type() {
+        let state = json!({"document_status": "active", "doc_type": "group"}).to_string();
+        assert!(matches!(
+            ZoneDidResolver::default_slot_answer(&state, None, &DEFAULT_DID_DOC_TYPE).unwrap(),
+            DefaultSlot::Follow(t) if t == DidDocType::custom("group")
+        ));
+        assert!(matches!(
+            ZoneDidResolver::default_slot_answer(&state, None, &DidDocType::custom("group")).unwrap(),
+            DefaultSlot::Pass
+        ));
+        let untyped = json!({"document_status": "active"}).to_string();
+        assert!(ZoneDidResolver::default_slot_answer(&untyped, None, &DEFAULT_DID_DOC_TYPE).is_err());
+    }
+
+    #[test]
+    fn did_json_tombstone_covers_its_declared_type() {
+        let state = json!({"document_status": "tombstoned", "doc_type": "group"}).to_string();
+        for requested in [DEFAULT_DID_DOC_TYPE, DidDocType::custom("group")] {
+            let DefaultSlot::Answer(ZoneAnswer::Published(published)) =
+                ZoneDidResolver::default_slot_answer(&state, None, &requested).unwrap()
+            else {
+                panic!("tombstone should answer {}", requested);
+            };
+            assert_eq!(published.status, PublishedStatus::Tombstoned);
+        }
+    }
+
+    #[test]
+    fn did_json_owner_doc_is_guarded_by_its_actual_type() {
+        let zone = test_zone_identity();
+        let rotated = owner_doc_with_key(OTHER_JWK);
+        let state = json!({"document_status": "active", "doc_type": "owner"}).to_string();
+        let doc = serde_json::to_string(&serde_json::to_value(&rotated).unwrap()).unwrap();
+        let DefaultSlot::Answer(answer) =
+            ZoneDidResolver::default_slot_answer(&state, Some(doc), &DEFAULT_DID_DOC_TYPE).unwrap()
+        else {
+            panic!("did.json should answer");
+        };
+        let ZoneAnswer::Published(published) = ZoneDidResolver::guard_cache_hit(&zone, answer)
+        else {
+            panic!("expected published answer");
+        };
+        let Some(EncodedDocument::JsonLd(merged)) = &published.document else {
+            panic!("expected merged json document");
+        };
+        let expected_jwk: Value = serde_json::from_str(TEST_JWK).unwrap();
+        assert_eq!(merged["verificationMethod"][0]["publicKeyJwk"], expected_jwk);
+    }
+
     // ---------------- zone owner 的 Root Trust 锚定 ----------------
 
     #[test]
@@ -2189,7 +2366,7 @@ mod tests {
         let answer =
             ZoneDidResolver::cache_answer(state.as_str(), Some(doc_str), &DidDocType::Owner)
                 .unwrap();
-        let guarded = ZoneDidResolver::guard_cache_hit(&zone, answer, &DidDocType::Owner);
+        let guarded = ZoneDidResolver::guard_cache_hit(&zone, answer);
         let ZoneAnswer::Published(published) = guarded else {
             panic!("expected published answer");
         };
@@ -2223,7 +2400,7 @@ mod tests {
             &DidDocType::Owner,
         )
         .unwrap();
-        let untouched = ZoneDidResolver::guard_cache_hit(&zone, answer, &DidDocType::Owner);
+        let untouched = ZoneDidResolver::guard_cache_hit(&zone, answer);
         let ZoneAnswer::Published(published) = untouched else {
             panic!("expected published answer");
         };

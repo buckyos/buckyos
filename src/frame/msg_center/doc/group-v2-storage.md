@@ -168,7 +168,7 @@ MsgObject 以 ObjectId 索引的独立 `group_objects` 行保存，不复制正�
 | document_status | TEXT | 否 | 无 | active 或 tombstoned |
 | document_json | TEXT | 是 | NULL | 公开 GroupDoc；删除为 NULL |
 
-与群状态同事务更新，仅公开 Doc 改变时推进 generation。后台一次 system-config `exec_tx` 更新 `resolver/cache/<转义DID>/group/doc` 与 `/state`，成功后仅确认匹配代数。崩溃、网络失败或服务权限不足时保留待办；重试幂等。system-config 数据是可由该行重建的发布投影，遵循现有 Zone resolver 的版本、控制者和墓碑格式，不是另一份群规则来源。
+与群状态同事务更新，仅公开 Doc 改变时推进 generation。后台一次 system-config `exec_tx` 更新 did.json 槽位 `resolver/cache/<转义DID>/did/doc` 与 `/state`（state 的 `doc_type` 为 `group`；群只有这一种文档，按 group 类型查询也由它回答）。doc 是本 Zone OOD 设备 key 签名的 JWT（Zone 托管签名，`exp` 为 iat 加默认有效期），设备 key 未加载时不发布，成功后仅确认匹配代数。崩溃、网络失败或服务权限不足时保留待办；重试幂等。system-config 数据是可由该行重建的发布投影，遵循现有 Zone resolver 的版本、控制者和墓碑格式，不是另一份群规则来源。
 
 ### 复用表与对象类型
 

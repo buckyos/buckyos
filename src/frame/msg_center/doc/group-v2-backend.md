@@ -93,7 +93,7 @@ inbox GET 使用 after_seq/limit，返回 seq、obj_id、redacted；默认实现
 
 read_markers 的标准 body 为 `{ "session": "群的规范 MailboxAddress", "last_read_seq": 42 }`。默认实现也接受原始 session_id/null。附件必须携带 `context_path=<规范群 Session 地址>/<消息 ObjectId>`；host 校验该消息可读、实际引用了目标对象，且该消息在 `zone/msg-center/_/attachments` 的绑定（`<session>/<msg_id>/<n>`）持有它，再从 NamedStore 读取。
 
-公开资料有额外 GET `/<group_did>/doc`（ObjectId+Doc）和 `/<group_did>/did.json`（Doc 内容）入口。GroupDoc 来源于配置，包含 group DID context 和 iat，不作为规则来源。创建、公开配置/Owner 改变、归档和删除均在本地事务中登记发布待办；后台通过 system-config 原子发布 Zone resolver 的 group 类型文档或 tombstoned 状态，失败后重试。
+公开资料有额外 GET `/<group_did>/doc`（ObjectId+Doc）和 `/<group_did>/did.json`（Doc 内容）入口。GroupDoc 来源于配置，包含 group DID context 和 iat，不作为规则来源。创建、公开配置/Owner 改变、归档和删除均在本地事务中登记发布待办；后台通过 system-config 原子发布 Zone resolver 的 did.json 文档（实际类型 group，由本 Zone OOD 设备 key 签成 JWT）或 tombstoned 状态，失败后重试。did:bns 下普通来源要求签名，远端按 owner → OOD 设备文档 → 群文档的 Zone 托管链验证。
 
 ## Joined Group 配置与运行
 
@@ -126,7 +126,7 @@ Hook 使用 JSON HTTP POST，body 仅有 operation、actor、group_did、group_h
 
 ## 部署边界与验证
 
-本实现通过现有 Zone resolver 的控制面 cache 发布 group 文档，不修改内核 resolver。自动群请求经现有 Gateway 的 `/kapi/msg-center/*` 路由；根路径仍用于显式配置或自定义路由。msg-center 需要既有 kernel 服务身份的 resolver/cache 写权限；自备一级 DID 必须已经发布授权本 host 的文档。自动跨 Zone 接受与同步需要本 Zone OOD signer 以及可解析的群、成员和签名设备 DID 文档，沿用原生消息的 Zone custody 信任模型；无需新增登录委托权限或持久用户凭据。远端主动申请加入、邀请链接和其它群管理操作的自动路由不在本次范围内。
+本实现通过 Zone resolver 控制面 cache 的 did.json 槽位发布 group 文档；查找方对 Zone 子名字先读 did.json，通常一次查询即得到群文档。自动群请求经现有 Gateway 的 `/kapi/msg-center/*` 路由；根路径仍用于显式配置或自定义路由。msg-center 需要既有 kernel 服务身份的 resolver/cache 写权限；自备一级 DID 必须已经发布授权本 host 的文档。自动跨 Zone 接受与同步需要本 Zone OOD signer 以及可解析的群、成员和签名设备 DID 文档，沿用原生消息的 Zone custody 信任模型；无需新增登录委托权限或持久用户凭据。远端主动申请加入、邀请链接和其它群管理操作的自动路由不在本次范围内。
 
 RBAC 默认策略已把 `obj://msg-center/group` 的 `create` 授予 `users` 和 `admin`，并把 `users` / `admin` 对 `obj://msg-center/group_inbox/*` 收窄为只读。默认策略编译进各服务（system-config 的 `system/rbac/policy` 只保存尾部追加规则），因此 msg-center 和 sys_config_service 必须重新构建并重新部署才能生效。
 

@@ -1577,17 +1577,34 @@ async fn group_did_publication_is_atomic_retryable_and_survives_restart() {
     let (c, _tmp, path) = center().await;
     create(&c, json!({})).await;
     assert!(c.publish_group_documents_with(&client).await.is_err());
-    let base = format!("resolver/cache/{}/group", group().to_string());
+    assert!(attempts.lock().unwrap().is_empty(), "nothing is published unsigned");
+    let zone = &crate::test_cross_zone::ZONE_A;
+    c.zone_signer.set(zone.signer());
+    assert!(c.publish_group_documents_with(&client).await.is_err());
+    let base = format!("resolver/cache/{}/did", group().to_string());
     let first = attempts.lock().unwrap()[0].clone();
     let actions = &first["params"]["actions"];
     assert_eq!(actions[format!("{base}/state")]["action"], "update");
-    let published: Value =
-        serde_json::from_str(actions[format!("{base}/doc")]["value"].as_str().unwrap()).unwrap();
+    let state: Value =
+        serde_json::from_str(actions[format!("{base}/state")]["value"].as_str().unwrap()).unwrap();
+    assert_eq!(state["doc_type"], "group");
+    let jwt = actions[format!("{base}/doc")]["value"].as_str().unwrap();
+    let header = jsonwebtoken::decode_header(jwt).unwrap();
+    assert_eq!(header.kid, Some(format!("{}#main_key", zone.device().to_string())));
+    let published = name_lib::decode_json_from_jwt_with_pk(
+        jwt,
+        &jsonwebtoken::DecodingKey::from_ed_components(zone.x).unwrap(),
+    )
+    .unwrap();
     assert_eq!(published["entity_type"], "group");
     assert_eq!(published["controller"], json!(owner()));
-    assert!(published["iat"].as_u64().unwrap() > 0);
+    let iat = published["iat"].as_u64().unwrap();
+    assert!(iat > 0);
+    assert_eq!(state["document_version"], json!(iat));
+    assert!(published["exp"].as_u64().unwrap() > iat);
     drop(c);
     let c = opened(&path).await;
+    c.zone_signer.set(zone.signer());
     available.store(true, Ordering::SeqCst);
     c.publish_group_documents_with(&client).await.unwrap();
     c.publish_group_documents_with(&client).await.unwrap();

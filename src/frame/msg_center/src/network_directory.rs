@@ -177,6 +177,16 @@ impl NameServiceDirectory {
                 .map_err(|error| DirectoryError::NotFound(error.to_string()))?;
             Ok(profile_from_document(did, &doc))
         };
+        // A child name (`g1.alice`) usually publishes one document type: its did.json
+        // answers in one query. A Zone answer still asks for the owner it may host.
+        let mut default = None;
+        if did.upper_did().is_some() {
+            match resolve(None).await.and_then(profile) {
+                Ok(found) if found.kind != LookupKind::Zone => return Ok(found),
+                Err(DirectoryError::Timeout) => return Err(DirectoryError::Timeout),
+                answer => default = Some(answer),
+            }
+        }
         for doc_type in [name_lib::DidDocType::Owner, name_lib::DidDocType::Device] {
             match resolve(Some(doc_type)).await {
                 Ok(doc) => return profile(doc),
@@ -184,8 +194,12 @@ impl NameServiceDirectory {
                 Err(_) => {}
             }
         }
-        let default_error = match resolve(None).await {
-            Ok(doc) => return profile(doc),
+        let default = match default {
+            Some(answer) => answer,
+            None => resolve(None).await.and_then(profile),
+        };
+        let default_error = match default {
+            Ok(found) => return Ok(found),
             Err(DirectoryError::Timeout) => return Err(DirectoryError::Timeout),
             Err(error) => error,
         };
@@ -362,19 +376,42 @@ mod tests {
     use name_lib::{DidDocType, EncodedDocument};
     use serde_json::json;
 
+    fn group_doc(did: &DID) -> EncodedDocument {
+        EncodedDocument::JsonLd(json!({
+            "id": did,
+            "entity_type": "group",
+            "host": "did:web:host.example",
+            "profile": {"name": "Club", "avatar": "https://host.example/club.png"}
+        }))
+    }
+
     #[tokio::test]
-    async fn discovers_a_group_published_only_under_its_document_type() {
+    async fn a_child_did_is_answered_by_its_did_json_in_one_query() {
+        let did = DID::new("web", "club.host.example");
+        let mut requested = Vec::new();
+        let profile = NameServiceDirectory::fetch_with_resolver(&did, |doc_type| {
+            requested.push(doc_type.clone());
+            std::future::ready(if doc_type.is_none() {
+                Ok(group_doc(&did))
+            } else {
+                Err(DirectoryError::Timeout)
+            })
+        })
+        .await
+        .unwrap();
+        assert_eq!(requested, vec![None]);
+        assert_eq!(profile.kind, LookupKind::Group);
+        assert_eq!(profile.zone.as_deref(), Some("host.example"));
+    }
+
+    #[tokio::test]
+    async fn a_child_without_did_json_still_discovers_its_typed_document() {
         let did = DID::new("web", "club.host.example");
         let mut requested = Vec::new();
         let profile = NameServiceDirectory::fetch_with_resolver(&did, |doc_type| {
             requested.push(doc_type.clone());
             std::future::ready(if doc_type == Some(DidDocType::custom("group")) {
-                Ok(EncodedDocument::JsonLd(json!({
-                    "id": did,
-                    "entity_type": "group",
-                    "host": "did:web:host.example",
-                    "profile": {"name": "Club", "avatar": "https://host.example/club.png"}
-                })))
+                Ok(group_doc(&did))
             } else {
                 Err(DirectoryError::NotFound("not published".into()))
             })
@@ -384,9 +421,9 @@ mod tests {
         assert_eq!(
             requested,
             vec![
+                None,
                 Some(DidDocType::Owner),
                 Some(DidDocType::Device),
-                None,
                 Some(DidDocType::custom("group")),
             ]
         );
