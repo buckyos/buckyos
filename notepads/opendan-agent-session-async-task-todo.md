@@ -26,7 +26,7 @@
 
 ## 3. 测试与 DV（单 OOD，test.buckyos.io）
 
-- **T1 ask_user**：Agent 在对话 / Work 里 `ask_user` → 通知到用户（MessageHub 呈现）→ 作答 → `<<task_result>>` 回到同一 run；过期与撤销；xllm 在注入了 `BUCKYOS_APPCLIENT_SESSION_TOKEN` 的环境里同样经 Zone TaskMgr 拿到答案（`run_local_llm::with_zone_tasks`，冻结 DV 时没有可用会话 token，未测）。
+- **T1 ask_user**：Agent 在对话 / Work 里 `ask_user` → 通知到用户（MessageHub 呈现）→ 作答 → `<<task_result>>` 回到同一 run；过期与撤销；xllm 侧已在 11-01 用 devtest 用户会话测通（冻结 TODO §8.4 T7）；这里补 OpenDAN 注入 App 会话的情形。答案目前以 `human.input` 任务的原始 JSON（`{action, values, submitted_by}`）回来，要不要渲染成更简短的答案文本待定。
 - **T2 call_behavior**：段结束后切换到子 context，结果以带 `call_id` 的 `<process_result>` 回到调用方；崩溃在各阶段。
 - **T3 shell 长命令**：超出预算转任务 → 回复保活 → `<<task_result>>` 注入同一 run；期间来新消息注入同一 run；stop 取消在跟的任务。
 - **T4 子 session**：委托工作区、等待、结局回到父 run；plan_simple 用真实模型跑一遍。

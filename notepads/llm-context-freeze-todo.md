@@ -454,7 +454,7 @@ B 之后还能顺手拿掉的，全部是净删除：
 | T5 behavior loop：shell 动作转任务 → 只带 report 的 Yield | `paused (yield)`；任务结束后 `--resume "<message>"` → 读到结果 → `report end="true"` completed；XML 动作的 call_id 跨 step 唯一 |
 | T6 shell 执行中 SIGKILL xllm，命令跑完后 `--resume` | 按 call_id 从执行目录读到 exit 0 的结局，不重跑（`ran.log` 一行）→ completed |
 | T6b SIGKILL 后立即 `--resume` | `[unresolved: result unknown]`，不重跑，模型如实说明 → completed |
-| T7 `ask_user` | 未测：需要用户的 App 会话 token（OpenDAN 注入），本机 AppClient 私钥登录被拒；并入 Agent Session TODO T1 |
+| T7 `ask_user`（用户在 DV 上点卡片） | 通过：用 devtest 密码向 verify-hub 换用户会话（appid `control-panel`）作 `BUCKYOS_APPCLIENT_SESSION_TOKEN`，websdk `ask_user` 经包装脚本放进 PATH。shell 调用返回 pending（`t-…`、`nt-…`、`pending_reason: user_input`）→ CLI 以 Zone TaskMgr 作任务后端，预算内读到"仍在运行" → 模型 `wait_task(600000)` → 用户在 MessageHub 选"能用" → `human.input` 任务完成，结果 `{action: answer, values: {option: yes}, submitted_by: devtest}` 原样作为 JSON 正文回来（F7 通用规则）→ completed。OpenDAN 注入的 App 会话（收件人是 App owner）这条路仍在 Agent Session TODO T1 |
 
 附带：`xllm --help` 的 `--tools` 说明里工具名 `exec` 改为 `shell`。一次性 xllm 的协议开场白仍写"没有后续对话、不要向用户提问"，所以 behavior Yield 在 xllm 里只用于等自己启动的任务（T5），不用于提问。
 
