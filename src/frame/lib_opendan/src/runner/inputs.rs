@@ -488,6 +488,7 @@ async fn apply_control(
                     in_run: false,
                 });
                 s.state.resume_run = false;
+                super::turn_task::note_live_line(s, None, None);
             }
             bodies.push(WorklogBody::ControlApplied {
                 input: m.input_ref(),
@@ -510,6 +511,7 @@ async fn apply_control(
                 detail: json!({ "reason": reason, "from": m.from, "applied": applied }),
             });
             if applied {
+                super::turn_task::note_live_line(s, None, None);
                 cascade_pause(sh, s.sid(), &m.key, false).await;
             }
         }

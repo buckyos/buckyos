@@ -2,12 +2,12 @@
   "resource": "session:work-20261102-2",
   "epoch": 1,
   "holder": {
-    "runner_id": "rn-82a9fa1f41dd45c4",
+    "runner_id": "rn-104eedd3f3684d31",
     "principal": "app:app2@alice",
     "host": "${FIXTURE_HOST}",
-    "pid": 257990,
+    "pid": 408102,
     "runtime_id": "rt-fixture-native"
   },
-  "acquired_at_ms": 1793646334184,
-  "released_at_ms": 1793646334320
+  "acquired_at_ms": 1793650333076,
+  "released_at_ms": 1793650333210
 }

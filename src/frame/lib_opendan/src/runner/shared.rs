@@ -48,6 +48,9 @@ pub struct Shared {
     pub current_tool: Arc<Mutex<Option<String>>>,
     /// The intent that call stated, if any (shown with it).
     pub current_intent: Mutex<Option<String>>,
+    /// `one_line_status` changed after the last commit (the next boundary
+    /// commits it).
+    pub line_pending: std::sync::atomic::AtomicBool,
     /// Result hints shown once per session and dedup keys of this drive
     /// (the tool sets' `HintLedger`).
     pub hints: Arc<super::hints::SessionHintLedger>,

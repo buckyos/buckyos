@@ -1,5 +1,6 @@
 import type { TaskWatchDetail, TaskWatchEvent, TaskWatchNode, TaskWatchSource } from '../../../api/task_mgr'
 import { MOCK_AGENT_TASKS as MOCK_TASKS, MOCK_SELF_DID } from './data'
+import { MOCK_WORK_UI_SESSION } from './worksessions'
 
 interface MockTask extends TaskWatchDetail {
   /** Who TaskMgr lets read the task: the Agent's owner (D6). */
@@ -11,6 +12,12 @@ type TaskSeed = Partial<MockTask> & Pick<MockTask, 'taskId' | 'name' | 'phase'>
 function seedTasks(now: number): MockTask[] {
   const task = (seed: TaskSeed, ageMs: number): MockTask => ({ rootId: seed.parentId ? '' : seed.taskId, revision: 1, createdAt: now - ageMs, updatedAt: now - ageMs, schemaId: 'opendan.agent_turn/v1', input: { agent_did: 'did:buckyos:agent:codeassistant', session_id: seed.parentId ? 'work-tests' : 'ui-session-1', turn: seed.taskId === MOCK_TASKS.running ? 16 : seed.taskId === MOCK_TASKS.done ? 12 : 1 }, grantedTo: [MOCK_SELF_DID], ...seed })
   const minutes = (value: number) => value * 60_000
+  const workInput = (sessionId: string, turn: number) => ({ agent_did: 'did:buckyos:agent:codeassistant', session_id: sessionId, session_kind: sessionId === MOCK_WORK_UI_SESSION ? 'ui' : 'work', turn, inputs: [] })
+  /** A finished UI Turn and, under it, one Turn task per work session it created (`[session, title, finished]`). */
+  const workTurn = (taskId: string, turn: number, name: string, ageMs: number, sessions: Array<[string, string, boolean]>) => [
+    task({ taskId, name, phase: 'Terminal', outcome: 'Succeeded', input: workInput(MOCK_WORK_UI_SESSION, turn), completedAt: now - ageMs + 20_000, updatedAt: now - ageMs + 20_000 }, ageMs),
+    ...sessions.map(([sessionId, title, finished], index) => task({ taskId: `${taskId}.${sessionId}`, parentId: taskId, name: title, input: workInput(sessionId, 1), ...(finished ? { phase: 'Terminal' as const, outcome: 'Succeeded' as const, completedAt: now - ageMs + 60_000, updatedAt: now - ageMs + 60_000 } : { phase: 'Running' as const, message: 'running shell', updatedAt: now - 10_000 }) }, ageMs - 10_000 - index * 1000)),
+  ]
   const tasks = [
     task({ taskId: MOCK_TASKS.done, name: 'Summarize yesterday\'s build failures', phase: 'Terminal', outcome: 'Succeeded', message: 'Report ready', revision: 9, completedAt: now - minutes(45), updatedAt: now - minutes(45), result: { summary: '3 failures, 2 flaky', artifacts: ['build-failures.md'] }, originRef: { kind: 'opendan.session', id: 'ui-session-1/turn-12' } }, minutes(49)),
     task({ taskId: `${MOCK_TASKS.done}.logs`, parentId: MOCK_TASKS.done, name: 'Explorer: collect CI logs', phase: 'Terminal', outcome: 'Succeeded', message: 'Collected 3 failing jobs', completedAt: now - minutes(47), updatedAt: now - minutes(47) }, minutes(48)),
@@ -25,6 +32,11 @@ function seedTasks(now: number): MockTask[] {
     task({ taskId: `${MOCK_TASKS.running}.tests`, parentId: MOCK_TASKS.running, name: 'Work session: run UI tests', phase: 'Running', message: 'Running 42 Playwright specs', updatedAt: now - 15_000 }, 120_000),
     task({ taskId: `${MOCK_TASKS.running}.tests.shard`, parentId: `${MOCK_TASKS.running}.tests`, name: 'exec_bash: playwright test', phase: 'Running', message: 'messagehub.spec.ts', schemaId: 'tool.exec_bash/v1', updatedAt: now - 10_000 }, 60_000),
     task({ taskId: `${MOCK_TASKS.running}.docs`, parentId: MOCK_TASKS.running, name: 'Work session: update the protocol doc', phase: 'Waiting', waitReason: { kind: 'External', message: 'Waiting for the doc lock' }, message: 'Queued behind another edit', updatedAt: now - 40_000 }, 110_000),
+    // `session-coder-work`: UI Turns whose sub-tasks are the Turn tasks of the work sessions they created (`mock/worksessions.ts`).
+    ...workTurn(MOCK_TASKS.workDone, 2, 'Audit the 2.3 release notes', minutes(70), [['plan-notes', 'Audit the 2.3 release notes', true]]),
+    ...workTurn(MOCK_TASKS.workPlan, 4, 'Rewrite the llm_context design doc', minutes(6.4), [['plan-docs', 'Rewrite the llm_context design doc', false], ['work-docs-t01', 'Survey the current state', true], ['work-docs-t02', 'Rewrite §3', false]]),
+    ...workTurn(MOCK_TASKS.workSimple, 6, 'Run both slow builds', minutes(4.3), [['work-builds', 'Run both slow builds', false]]),
+    task({ taskId: MOCK_TASKS.workAnalyze, name: 'Clean up the deploy scripts', phase: 'Running', message: 'running shell', input: workInput(MOCK_WORK_UI_SESSION, 8), updatedAt: now - 20_000 }, minutes(1)),
   ]
   const byId = new Map(tasks.map(item => [item.taskId, item]))
   for (const item of tasks) {
@@ -119,6 +131,16 @@ export class MockTaskSource implements TaskWatchSource {
     Object.assign(task, patch, { revision: task.revision + 1, updatedAt: now })
     if (task.phase === 'Terminal') task.completedAt ??= now
     this.events.push({ eventId: `${taskId}:${task.revision}`, taskId, type: task.phase === 'Terminal' ? (task.outcome === 'Failed' ? 'TaskFailed' : task.outcome === 'Canceled' ? 'TaskCanceled' : 'ResultCommitted') : patch.pendingControl ? 'ControlRequested' : patch.phase ? 'PhaseChanged' : 'ProgressReported', revision: task.revision, at: now })
+    if (!silent) this.emit(task)
+  }
+
+  /** The runner creates a task (a sub-task: `parentId`, the root taken from the parent). `silent` drops the hints. */
+  add(seed: Pick<MockTask, 'taskId' | 'name' | 'phase'> & Partial<MockTask>, silent = false) {
+    const now = Date.now()
+    const parent = seed.parentId ? this.tasks.get(seed.parentId) : undefined
+    const task: MockTask = { rootId: parent?.rootId ?? seed.taskId, revision: 1, createdAt: now, updatedAt: now, schemaId: 'opendan.agent_turn/v1', grantedTo: [MOCK_SELF_DID], ...seed }
+    this.tasks.set(task.taskId, task)
+    this.events.push({ eventId: `${task.taskId}:1`, taskId: task.taskId, type: 'TaskCreated', revision: 1, at: now })
     if (!silent) this.emit(task)
   }
 

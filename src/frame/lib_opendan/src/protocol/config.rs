@@ -284,6 +284,23 @@ pub struct Acl {
     pub agent_access: AgentAccess,
 }
 
+/// Longest session title (chars).
+pub const TITLE_MAX_CHARS: usize = 60;
+
+/// A title on one line, cut to [`TITLE_MAX_CHARS`]; `None` when empty.
+pub fn clip_title(title: &str) -> Option<String> {
+    let one = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one.is_empty() {
+        return None;
+    }
+    if one.chars().count() <= TITLE_MAX_CHARS {
+        return Some(one);
+    }
+    let mut out: String = one.chars().take(TITLE_MAX_CHARS - 1).collect();
+    out.push('…');
+    Some(out)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SessionSection {
     pub session_id: String,
@@ -304,6 +321,9 @@ pub struct SessionSection {
     pub origin: Option<Origin>,
     #[serde(default)]
     pub objective: String,
+    /// A short name of the work (Work sessions created by another session).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     #[serde(default)]
     pub end_condition: EndCondition,
     #[serde(default, skip_serializing_if = "Option::is_none")]

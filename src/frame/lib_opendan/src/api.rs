@@ -36,6 +36,10 @@ pub struct SessionSpec {
     pub origin: Option<Origin>,
     #[serde(default)]
     pub objective: String,
+    /// A short name of the work, shown where sessions are listed (cut to
+    /// [`TITLE_MAX_CHARS`]).
+    #[serde(default)]
+    pub title: Option<String>,
     #[serde(default)]
     pub end_condition: EndCondition,
     #[serde(default)]
@@ -119,6 +123,7 @@ impl SessionSpec {
             route_key: None,
             origin: None,
             objective: objective.into(),
+            title: None,
             end_condition: EndCondition::default(),
             scope: None,
             input_policy: InputPolicy::Any,
@@ -407,6 +412,7 @@ pub async fn create_session(
             route_key: spec.route_key.clone(),
             origin: spec.origin.clone(),
             objective: spec.objective.clone(),
+            title: spec.title.as_deref().and_then(clip_title),
             end_condition: spec.end_condition.clone(),
             scope: spec.scope.clone(),
             input_policy: spec.input_policy,
@@ -509,6 +515,7 @@ pub async fn create_session(
         }),
         artifact_id: existing.artifact_id.clone(),
         objective: existing.session.objective.clone(),
+        title: existing.session.title.clone(),
         scope: existing.session.scope.clone(),
         goal_id: existing
             .session
@@ -620,6 +627,9 @@ pub enum SubWorkspace {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SubSessionSpec {
     pub objective: String,
+    /// A short name of the work (cut to [`TITLE_MAX_CHARS`]).
+    #[serde(default)]
+    pub title: Option<String>,
     /// First inputs (text messages from the agent itself).
     #[serde(default)]
     pub msgs: Vec<String>,
@@ -943,6 +953,7 @@ pub async fn create_sub_session(
         )));
     }
     let mut spec = template.spec(sub.objective.clone());
+    spec.title = sub.title.clone();
     spec.idempotency_key = Some(key);
     spec.driver = Some(parent.driver.principal.clone());
     spec.via = format!("session:{parent_sid}");

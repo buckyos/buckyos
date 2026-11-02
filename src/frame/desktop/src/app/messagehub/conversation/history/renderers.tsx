@@ -50,7 +50,7 @@ import { ConversationMessageActionsContext } from './actions'
 import { MessageMarkdown } from './MessageMarkdown'
 import { getObjectAccess } from './objectAccess'
 import { displayedContent, effectiveContent, mentionsViewer, messageObjId, messageRelations, messageSummaryText, ownReactionId } from './relations'
-import { MessageTaskArea } from '../tasks/MessageTask'
+import { MessageAgentWork } from '../worksessions/WorkSessionCards'
 import { AgentQuestions } from './AgentQuestions'
 import { NotifyCard } from '../../notify/NotifyCard'
 import type { ConversationListItem } from './types'
@@ -555,7 +555,7 @@ function MessageFooter({ message, isSelf, deliveryStatus, selfDid, frameless = f
   return (
     <>
       <MessageHoverBar message={message} isSelf={isSelf} selfDid={selfDid} mode={relations?.redacted ? 'redacted' : mode} />
-      {mode === 'message' && !relations?.redacted ? <MessageTaskArea message={message} /> : null}
+      {mode === 'message' && !relations?.redacted ? <MessageAgentWork message={message} selfDid={selfDid} /> : null}
       {mode === 'message' && !relations?.redacted && relations?.thread ? <AgentQuestions message={message} selfDid={selfDid} /> : null}
       <ReactionChips message={message} isSelf={selfTone} selfDid={selfDid} />
       <div className="mt-1 flex items-center justify-end gap-1">

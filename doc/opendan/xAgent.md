@@ -533,7 +533,8 @@ Sub Session 不是新的协议对象：它就是 `origin.parent_session` 指向�
 创建 Sub Session 是一个层 ② 工具（§5.5），由 `agent-session create-worksession` 实现，同时在 `bash_tools` 里声明 schema。LLM 看到的是一个普通 function / action，执行经 exec 进 Runtime，所以 xllm 接手的 run 也能用。
 
 ```text
-agent-session create-worksession --objective <text>
+agent-session create-worksession --title <text> --objective <text>
+                                                    title 必填：工作的短名（截到 60 chars），Turn task 名与 MessageHub 卡片用它
     [--msg <text>]... [--attach <obj_id>[=<name>]]...   首批输入：MsgObject；附件只给已存在的 ObjId
     [--context recent:<n>|none]                     把父 run 最近 n 条对话摘录附进首批输入（默认 none；不继承 steps）
     [--class work|…] [--behavior <name>]            模板与入口 behavior（默认 work 模板）
@@ -986,7 +987,7 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   在 exec 子进程内（PATH 上的 agent-session 即 xagent）：
   xagent ctl activity [--summary <t>] [--touch <ref>]... | ctl perceive <text>
   xagent recall <query> | note <text> | sessions [--active] [--children] | read-session <sid> | artifact ...
-  xagent create-worksession --objective <t> [--report final|progress|none] [...]   （§4.11）
+  xagent create-worksession --title <t> --objective <t> [--report final|progress|none] [...]   （§4.11）
   xagent wait <sid> | post <sid> --msg <t>                                                  （§4.13、§4.15）
   xagent goal ...    调用方 = $OPENDAN_SESSION_ID 所在的 Session：UI Session 可 create / show / post / pause / resume /
                      archive / reopen / restart / activate；Goal Session 可 show（省略 <id> 即自己的 Goal）/ skills add|remove /

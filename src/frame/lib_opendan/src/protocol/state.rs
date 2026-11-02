@@ -755,6 +755,9 @@ pub struct SessionState {
     /// ledger, see `agent_tool::hints`).
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub hints_once: BTreeSet<String>,
+    /// When the commit that finished the session was made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at_ms: Option<u64>,
     #[serde(default)]
     pub updated_at_ms: u64,
 }
@@ -863,6 +866,7 @@ impl SessionState {
             task_watch: TaskWatch::default(),
             nudge: Nudge::default(),
             hints_once: BTreeSet::new(),
+            finished_at_ms: None,
             updated_at_ms: now_ms,
         }
     }

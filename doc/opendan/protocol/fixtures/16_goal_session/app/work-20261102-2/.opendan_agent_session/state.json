@@ -5,6 +5,7 @@
     "summary": ""
   },
   "bootstrap_done": true,
+  "finished_at_ms": 1793650333202,
   "inputs": {
     "_bootstrap": {
       "acked_index": 1
@@ -15,18 +16,18 @@
     "message": "an explicit final report is required; this session has no input queue",
     "recoverable": false
   },
-  "last_run": "20261102-110534-56fd4b",
+  "last_run": "20261102-121213-a7305c",
   "live_run": null,
   "one_line_status": "finished: answer",
   "outcome": "failed",
   "perception_seq": 2,
   "recent_keys": [
-    "cymsg:b37623499f413b42e8fa6b6c1485ce00680481b2d83022c4cb3ef076b6bcc31d",
+    "cymsg:e7be36977556a49a6abd95ae0912d692204486cb974b5b6521c6a27d0d16280c",
     "nudge:1:1"
   ],
   "reply": {
     "kind": "chat",
-    "reply_to": "cymsg:b37623499f413b42e8fa6b6c1485ce00680481b2d83022c4cb3ef076b6bcc31d",
+    "reply_to": "cymsg:e7be36977556a49a6abd95ae0912d692204486cb974b5b6521c6a27d0d16280c",
     "route": "message",
     "to": "did:bns:jarvis.alice",
     "to_session": null,
@@ -38,7 +39,7 @@
     "answer_ref": "report.md",
     "goal": {
       "activation_seq": 0,
-      "at_ms": 1793646334173,
+      "at_ms": 1793650333065,
       "epoch": 1,
       "goal_id": "g-k9ed545152f8cdfcc3d3f30bc",
       "revision": 1
@@ -53,7 +54,7 @@
   },
   "turn_seq": 1,
   "turns_completed": 0,
-  "updated_at_ms": 1793646334313,
+  "updated_at_ms": 1793650333202,
   "worklog": {
     "committed_bytes": 2980,
     "committed_seq": 10
@@ -61,8 +62,8 @@
   "writer": {
     "host": "${FIXTURE_HOST}",
     "lock_epoch": 1,
-    "pid": 257990,
+    "pid": 408102,
     "principal": "app:app2@alice",
-    "runner_id": "rn-82a9fa1f41dd45c4"
+    "runner_id": "rn-104eedd3f3684d31"
   }
 }

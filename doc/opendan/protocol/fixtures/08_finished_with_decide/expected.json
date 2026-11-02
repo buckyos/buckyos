@@ -14,17 +14,17 @@
     {
       "live_run": null,
       "runs_on_disk": [
-        "20261101-195150-9831cf"
+        "20261102-121212-cb6c1b"
       ],
       "session_id": "work-fixture-decide",
       "state": {
         "acceptance": "pending",
         "inputs": {},
-        "last_run": "20261101-195150-9831cf",
+        "last_run": "20261102-121212-cb6c1b",
         "open_turn": null,
         "outcome": "succeeded",
         "process_stack": [],
-        "rev": 3,
+        "rev": 4,
         "run_state": "finished",
         "turn_seq": 1,
         "turns_completed": 1

@@ -288,7 +288,7 @@ async fn a_long_command_closes_the_turn_and_its_end_opens_the_next() {
     assert!(closed[0].1.summary.as_deref().unwrap_or("").contains("still running"), "{closed:?}");
     let updates = s.tasks.updates.lock().unwrap().clone();
     assert!(
-        updates.iter().any(|(_, u)| u.message == "running shell: build the crate"),
+        updates.iter().any(|(_, u)| u.message == "build the crate"),
         "{:?}",
         updates.iter().map(|(_, u)| u.message.clone()).collect::<Vec<_>>()
     );

@@ -6,6 +6,7 @@ import { expect, test, type Page } from '@playwright/test'
  * message ids that script prints:
  *
  *   AGENT_TASK_TREE_MSG    a placeholder replaced by its edit, whose Turn started a work session
+ *                          (shown as work session cards; WORK_CARDS_SHOTS=<dir> saves light / dark / phone shots)
  *   AGENT_TASK_FAST_MSG    a fast reply (no placeholder)
  *   AGENT_TASK_CANCEL_MSG  a placeholder closed by a cancel
  *   AGENT_ASK_MSG          a placeholder whose Turn asked the user (`agent_ask`) before its edit
@@ -23,6 +24,7 @@ const cancelMsg = process.env.AGENT_TASK_CANCEL_MSG || ''
 const askMsg = process.env.AGENT_ASK_MSG || ''
 const askPrompt = process.env.AGENT_ASK_PROMPT || '帮我整理一下这个项目的文档。范围和放在哪里你不确定的话先问我，问清楚再开始。'
 const askAnswer = process.env.AGENT_ASK_ANSWER || '只整理 docs/ 目录，放在原位置。'
+const shots = process.env.WORK_CARDS_SHOTS || 'test-results-real'
 
 test.use({
   baseURL,
@@ -49,13 +51,26 @@ test('the Turn task of an agent reply is shown on its anchor bubble and in messa
   await expect(tree).toBeVisible({ timeout: 30_000 })
   await expect(tree.getByTestId('edited-marker')).toBeVisible()
   await expect(tree).not.toContainText('收到，开始处理')
-  const task = tree.getByTestId('message-task')
-  await expect(task).toHaveAttribute('data-state', 'succeeded', { timeout: 30_000 })
-  await tree.screenshot({ path: 'test-results-real/agent-task-bubble.png' })
-  await task.getByTestId('task-expand').click()
-  await expect(task.getByTestId('task-node')).toHaveCount(1)
-  await expect(task.getByTestId('task-node').first()).toHaveAttribute('data-state', 'succeeded')
-  await tree.screenshot({ path: 'test-results-real/agent-task-tree.png' })
+  // The Turn started work: its cards replace the task area once they are read.
+  const cards = tree.getByTestId('work-cards')
+  await expect(cards).toBeVisible({ timeout: 30_000 })
+  await expect(tree.getByTestId('message-task')).toHaveCount(0)
+  await expect(cards).toHaveAttribute('data-complete', 'true', { timeout: 15 * 60_000 })
+  const card = cards.getByTestId('work-card').first()
+  await expect(card).toHaveAttribute('data-state', 'succeeded')
+  await expect(card.getByTestId('work-card-title')).not.toHaveText('')
+  await expect(card.getByTestId('work-card-tokens')).toBeVisible()
+  await expect(card.getByTestId('work-card-model')).not.toHaveText(/^llm\.|@/)
+  await tree.screenshot({ path: `${shots}/agent-work-cards.png` })
+  // A card opens its session's whole log, with what the work is about.
+  await card.click()
+  const sessionLog = page.getByTestId('message-details-pane').getByTestId('turn-worklog')
+  await expect(sessionLog).toHaveAttribute('data-scope', 'session')
+  await expect(page.getByTestId('work-info-objective')).toBeVisible({ timeout: 30_000 })
+  await expect(sessionLog.getByTestId('worklog-row').first()).toBeVisible({ timeout: 30_000 })
+  // Turns follow each other in one log, their starts and ends between them.
+  await expect.poll(() => sessionLog.locator('[data-testid="worklog-row"][data-kind="event"]').count(), { timeout: 30_000 }).toBeGreaterThanOrEqual(4)
+  await page.screenshot({ path: `${shots}/agent-work-session-log.png` })
 
   if (fastMsg) {
     await expect(bubble(fastMsg)).toBeVisible()
@@ -66,11 +81,11 @@ test('the Turn task of an agent reply is shown on its anchor bubble and in messa
     await expect(bubble(cancelMsg).getByTestId('message-task')).toHaveAttribute('data-state', 'canceled')
   }
 
-  await tree.hover()
-  await tree.getByTestId('message-details').first().click()
+  // Back to the log of the Turn itself.
+  await page.getByTestId('worklog-back').click()
   const details = page.getByTestId('message-details-pane')
   await expect(details).toBeVisible()
-  await expect(details.getByTestId('turn-worklog')).toBeVisible()
+  await expect(details.getByTestId('turn-worklog')).toHaveAttribute('data-scope', 'turn')
   await expect(details.getByTestId('worklog-row').first()).toBeVisible({ timeout: 30_000 })
   await page.screenshot({ path: 'test-results-real/agent-turn-worklog.png' })
   await details.getByTestId('detail-tab-message').click()
@@ -80,6 +95,29 @@ test('the Turn task of an agent reply is shown on its anchor bubble and in messa
   await page.screenshot({ path: 'test-results-real/agent-task-details.png' })
   expect(errors).toEqual([])
 })
+
+for (const theme of ['light', 'dark'] as const) {
+  test(`work session cards of a real Turn in the ${theme} theme, desktop and phone`, async ({ page }) => {
+    test.skip(process.env.MESSAGEHUB_REAL_E2E !== '1' || !treeMsg, 'Requires a running development zone and the AGENT_TASK_TREE_MSG anchor.')
+    await page.addInitScript(value => { try { localStorage.setItem('buckyos.prototype.theme.v1', value) } catch { /* ignored */ } }, theme)
+    const history = await signIn(page)
+    const tree = history.locator(`[data-message-id="${treeMsg}"]`)
+    await expect(tree.getByTestId('work-cards')).toBeVisible({ timeout: 60_000 })
+    // A finished plan folds its TodoList: open it for the picture (the choice is remembered).
+    const todos = tree.getByTestId('todo-list')
+    if (await todos.count() && await todos.getAttribute('data-expanded') === 'false') await tree.getByTestId('todo-list-toggle').click()
+    await tree.scrollIntoViewIfNeeded()
+    await page.screenshot({ path: `${shots}/real-cards-desktop-${theme}.png` })
+    // On a phone the conversation is its own page.
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.goto(`/messagehub?entityId=${encodeURIComponent(agentDid)}`)
+    await expect(tree.getByTestId('work-cards')).toBeVisible({ timeout: 60_000 })
+    await tree.getByTestId('work-cards').evaluate(el => el.scrollIntoView({ block: 'center' }))
+    await page.waitForTimeout(500)
+    await page.screenshot({ path: `${shots}/real-cards-phone-${theme}.png` })
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  })
+}
 
 async function signIn(page: Page) {
   await page.goto(`/messagehub?entityId=${encodeURIComponent(agentDid)}`)

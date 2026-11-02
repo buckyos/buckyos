@@ -92,8 +92,14 @@ pub(super) async fn ensure_turn_task(sh: &Arc<Shared>, title: Option<String>) {
         if s.state.turn_tasks.iter().any(|b| b.turn == t.index) {
             return;
         }
-        let title = title
-            .filter(|t| !t.trim().is_empty())
+        // A titled session's Turns carry its title (the first message of a
+        // Work is its long brief).
+        let title = s
+            .config
+            .session
+            .title
+            .clone()
+            .or_else(|| title.filter(|t| !t.trim().is_empty()))
             .unwrap_or_else(|| s.config.session.objective.clone());
         (
             TurnTaskOpen {
@@ -169,15 +175,13 @@ fn arm_placeholder(sh: &Arc<Shared>) {
     });
 }
 
-fn status_of(
-    s: &Session,
-    tool: Option<String>,
-    intent: Option<String>,
-) -> Option<(String, TurnTaskStatus)> {
-    let binding = s.state.open_turn_task()?;
+/// The one line of what the session does right now: the Turn's task shows
+/// it and `one_line_status` keeps it while a Turn is open. A tool call that
+/// stated its intent is described by that intent.
+pub(crate) fn live_line(s: &Session, tool: Option<&str>, intent: Option<&str>) -> String {
     let st = &s.state;
     let goal = super::goal::is_goal(&s.config);
-    let message = match st.run_state {
+    match st.run_state {
         _ if st.paused.is_some() => match st.paused.as_ref().and_then(|p| p.reason.as_deref()) {
             Some(r) => format!("paused: {}", r.chars().take(160).collect::<String>()),
             None => "paused".to_string(),
@@ -190,16 +194,67 @@ fn status_of(
         }
         RunState::Waiting if st.needs_input(goal) => "waiting for input".to_string(),
         RunState::Waiting => "waiting".to_string(),
-        _ => match (&tool, &st.current_behavior) {
-            // What the call is for, when it said so.
-            (Some(t), _) => match &intent {
-                Some(i) => format!("running {t}: {}", i.chars().take(160).collect::<String>()),
-                None => format!("running {t}"),
-            },
+        _ => match (tool, &st.current_behavior) {
+            (Some(_), _) if intent.is_some_and(|i| !i.trim().is_empty()) => {
+                intent.unwrap_or_default().trim().chars().take(LIVE_LINE_MAX).collect()
+            }
+            (Some(t), _) => format!("running {t}"),
             (None, Some(b)) => format!("working ({b})"),
             (None, None) => "working".to_string(),
         },
-    };
+    }
+}
+
+/// Longest live line kept in `one_line_status` (chars).
+pub const LIVE_LINE_MAX: usize = 160;
+
+/// While a Turn is open `one_line_status` follows the live line. `true`:
+/// it changed (the caller commits).
+pub(super) fn note_live_line(s: &mut Session, tool: Option<&str>, intent: Option<&str>) -> bool {
+    if s.state.open_turn.is_none() || s.state.is_finished() {
+        return false;
+    }
+    let line = live_line(s, tool, intent);
+    if s.state.one_line_status == line {
+        return false;
+    }
+    s.state.one_line_status = line;
+    true
+}
+
+/// A tool call was dispatched: `one_line_status` takes its live line. A
+/// commit less than a second after the last one waits for the next
+/// boundary (the hook's heartbeat commits it).
+pub(super) async fn live_line_changed(sh: &Shared) {
+    let tool = sh.current_tool.lock().expect("current tool").clone();
+    let intent = sh.current_intent.lock().expect("current intent").clone();
+    let mut s = sh.session.lock().await;
+    if !note_live_line(&mut s, tool.as_deref(), intent.as_deref()) {
+        return;
+    }
+    if crate::now_ms().saturating_sub(s.state.updated_at_ms) < LIVE_LINE_COMMIT_MS {
+        sh.line_pending.store(true, std::sync::atomic::Ordering::SeqCst);
+        return;
+    }
+    sh.line_pending.store(false, std::sync::atomic::Ordering::SeqCst);
+    if let Err(e) = super::shared::commit_and_report(sh, &mut s).await {
+        log::warn!("session {}: live line not committed: {e}", sh.dir.sid());
+        sh.line_pending.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Least time between two commits made for the live line alone (ms).
+const LIVE_LINE_COMMIT_MS: u64 = 1000;
+
+fn status_of(
+    s: &Session,
+    tool: Option<String>,
+    intent: Option<String>,
+) -> Option<(String, TurnTaskStatus)> {
+    let binding = s.state.open_turn_task()?;
+    let st = &s.state;
+    let goal = super::goal::is_goal(&s.config);
+    let message = live_line(s, tool.as_deref(), intent.as_deref());
     Some((
         binding.task_id.clone(),
         TurnTaskStatus {

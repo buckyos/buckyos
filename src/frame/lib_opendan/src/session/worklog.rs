@@ -87,7 +87,7 @@ impl Worklog {
     pub fn page(
         &self,
         committed: u64,
-        turn: u64,
+        turn: Option<u64>,
         before: Option<u64>,
         after: Option<u64>,
         limit: usize,
@@ -123,7 +123,7 @@ impl Worklog {
                 offset += len as u64;
                 let entry: WorklogEntry = serde_json::from_slice(&line)
                     .map_err(|e| OpenDanError::json(&self.path, e))?;
-                if entry.body.turn() == Some(turn) { entries.push(entry); }
+                if turn.is_none_or(|t| entry.body.turn() == Some(t)) { entries.push(entry); }
                 if entries.len() == limit { break; }
             }
             return Ok(WorklogPage { entries, next_before: None, next_after: offset });
@@ -136,11 +136,11 @@ impl Worklog {
                 break;
             };
             offset = start;
-            if entry.body.turn().is_some_and(|t| t < turn) {
+            if turn.is_some_and(|turn| entry.body.turn().is_some_and(|t| t < turn)) {
                 offset = 0;
                 break;
             }
-            if entry.body.turn() == Some(turn) { entries.push(entry); }
+            if turn.is_none_or(|t| entry.body.turn() == Some(t)) { entries.push(entry); }
             if entries.len() == limit { break; }
         }
         entries.reverse();

@@ -125,7 +125,8 @@ impl SessionCheckpointHook {
         let changed = s.state.activity.touching != before;
         let due = now.saturating_sub(s.state.activity.heartbeat_ms)
             >= sh.deps.options.heartbeat_interval.as_millis() as u64;
-        if changed || due {
+        let line = sh.line_pending.swap(false, std::sync::atomic::Ordering::SeqCst);
+        if changed || due || line {
             s.state.activity.heartbeat_ms = now;
             s.commit_state(&sh.lease)?;
             let status = s.status(sh.lease.epoch());

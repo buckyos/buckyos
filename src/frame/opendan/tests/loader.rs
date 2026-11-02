@@ -627,6 +627,86 @@ async fn rpc(port: u16, method: &str, params: Value) -> libopendan::Result<Value
         .await
 }
 
+/// `session.work_cards` over kRPC (TODO messagehub-worksession-ui §3.5):
+/// only the work the given Turn created, a plan with its TodoList and the
+/// card of a bound Todo; `session.worklog` without a Turn is the whole
+/// session in commit order (§3.8).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn work_cards_and_the_continuous_worklog_over_krpc() {
+    let w = World::new();
+    let port = free_port();
+    let loader = Loader::start(w.env(Llm::new(|_, _| "done".into()), port).await).await.unwrap();
+    let parent = new_work(loader.agent.as_ref(), &w, "the conversation").await;
+    until("the parent finishes", || finished(&parent)).await;
+    until("service answers", || std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()).await;
+    // Work of other drivers: left alone by this loader, still shown.
+    let child = |parent: &str, task: &str, title: &str, class: &str| {
+        let mut spec = work_spec(&format!("objective of {title}"), "go");
+        spec.driver = Some("app:other@alice".into());
+        spec.title = Some(title.into());
+        spec.class = class.into();
+        spec.origin = Some(Origin {
+            parent_session: Some(parent.to_string()),
+            parent_task: Some(task.into()),
+            ..Default::default()
+        });
+        spec
+    };
+    let mut created = Vec::new();
+    for (task, title, class) in [("t-ui-1", "Simple", "work"), ("t-ui-2", "Elsewhere", "work"), ("t-ui-1", "Plan", "plan_simple")] {
+        created.push(
+            create_session(&w.root.join("sessions"), child(parent.sid(), task, title, class), loader.agent.as_ref(), WHO, w.channels().as_ref())
+                .await
+                .unwrap(),
+        );
+    }
+    let plan = &created[2];
+    let todo = create_session(&w.root.join("sessions"), child(plan.sid(), "t-plan-1", "Survey", "work"), loader.agent.as_ref(), WHO, w.channels().as_ref())
+        .await
+        .unwrap();
+    let list = json!({
+        "schema": "opendan.todo_list/1", "next_seq": 3, "rev": 2,
+        "todos": [
+            { "todo_id": "T01", "seq": 1, "rev": 1, "status": "running", "mode": "serial", "title": "Survey",
+              "content": "x", "created_at_ms": 1, "updated_at_ms": 1,
+              "attempts": [{ "attempt": 1, "mode": "serial", "child_sid": todo.sid(), "status": "running", "started_at_ms": 1 }] },
+            { "todo_id": "T02", "seq": 2, "rev": 1, "status": "pending", "mode": "serial", "title": "Verify",
+              "content": "x", "created_at_ms": 1, "updated_at_ms": 1 }
+        ]
+    });
+    std::fs::write(plan.state_dir().join("todos.json"), list.to_string()).unwrap();
+
+    let cards = rpc(port, "session.work_cards", json!({ "sid": parent.sid(), "task_id": "t-ui-1" })).await.unwrap();
+    assert_eq!((cards["agent_did"].as_str(), cards["task_id"].as_str()), (Some(AGENT), Some("t-ui-1")));
+    let sessions = cards["sessions"].as_array().unwrap();
+    let titles: Vec<&str> = sessions.iter().map(|c| c["title"].as_str().unwrap()).collect();
+    assert_eq!(titles, ["Simple", "Plan"]);
+    assert_eq!((sessions[0]["shape"].as_str(), sessions[0]["state"].as_str()), (Some("simple"), Some("queued")));
+    assert_eq!(sessions[1]["shape"], "plan");
+    let todos = &sessions[1]["todos"];
+    assert_eq!((todos["total"].as_u64(), todos["done"].as_u64()), (Some(2), Some(0)));
+    assert_eq!(todos["items"][0]["card"]["session_id"], todo.sid());
+    assert_eq!(todos["items"][0]["card"]["title"], "Survey");
+    assert!(todos["items"][1]["card"].is_null());
+    assert_eq!(cards["complete"], false);
+    let err = rpc(port, "session.work_cards", json!({ "sid": parent.sid() })).await.unwrap_err();
+    assert!(matches!(err, OpenDanError::InvalidArgument(_)), "{err:?}");
+
+    // The whole worklog of a finished session: across Turns, records
+    // without a Turn included, no Turn task.
+    let log = rpc(port, "session.worklog", json!({ "sid": parent.sid() })).await.unwrap();
+    assert!(log["turn"].is_null() && log["task_id"].is_null(), "{log}");
+    assert_eq!(log["complete"], true);
+    let entries = log["entries"].as_array().unwrap();
+    assert_eq!(entries[0]["t"], "created");
+    assert!(entries.iter().any(|e| e["t"] == "turn_ended"));
+    let seqs: Vec<u64> = entries.iter().map(|e| e["seq"].as_u64().unwrap()).collect();
+    assert!(seqs.windows(2).all(|w| w[0] + 1 == w[1]), "{seqs:?}");
+    let running = rpc(port, "session.worklog", json!({ "sid": created[0].sid() })).await.unwrap();
+    assert_eq!(running["complete"], false);
+    loader.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn web_api_routes_metadata_and_rpc_with_the_same_access_policy() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -668,6 +748,11 @@ async fn web_api_routes_metadata_and_rpc_with_the_same_access_policy() {
                 assert!(result.unwrap_err().to_string().contains("a session token is required"));
             } else {
                 assert_eq!(result.unwrap()["agent_did"], AGENT);
+            }
+            if app_id.is_some() {
+                let cards = KrpcTransport::new(&format!("http://127.0.0.1:{port}{path}"), None)
+                    .call("session.work_cards", json!({ "sid": "s", "task_id": "t" })).await;
+                assert!(cards.unwrap_err().to_string().contains("a session token is required"));
             }
         }
         loader.shutdown().await;

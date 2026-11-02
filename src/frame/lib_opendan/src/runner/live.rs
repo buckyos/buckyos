@@ -1509,6 +1509,7 @@ pub(super) async fn commit_input_batch(
         }
     }
     s.state.activity.heartbeat_ms = crate::now_ms();
+    super::turn_task::note_live_line(&mut s, None, None);
     commit_and_report(sh, &mut s).await?; // ③
     crate::fault::point("input_batch:after_state_commit");
     lc.run.complete_host_commit()?; // ④

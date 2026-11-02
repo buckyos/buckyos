@@ -976,6 +976,7 @@ pub(super) async fn commit_kept(
         }
     }
     s.state.last_error = next.error.clone();
+    super::turn_task::note_live_line(&mut s, None, None);
     commit_and_report(sh, &mut s).await
 }
 
@@ -1249,6 +1250,7 @@ async fn commit_run_end(
     s.state.activity.touching.clear();
     if next.finished {
         s.state.run_state = RunState::Finished;
+        s.state.finished_at_ms = Some(crate::now_ms());
         s.state.process_stack.clear();
         s.state.outcome = next.outcome;
         s.state.stop_requested = false;

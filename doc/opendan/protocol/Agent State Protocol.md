@@ -40,7 +40,8 @@
   "location": "/abs/path/<sid>", "location_rev": 0,
   "input_queue": "app2::alice::opendan.session.<H(agent_did,sid)>", "wake_event": "/opendan/<agent_id>/session/<sid>/input",
   "agent_access": "full | status_only", "origin": null, "workspace": null, "artifact_id": null,
-  "objective": "…", "scope": { "paths": [], "objects": [] },
+  "objective": "…", "title": "…",          // title 可缺省：session_config 的 session.title
+  "scope": { "paths": [], "objects": [] },
   "goal_id": "g-…",                          // Goal Session 的 Goal，或创建 Work 的 Goal（session.goal / origin.goal）
   "status": { "rev": 17, "run_state": "…", "outcome": null, "acceptance": "…", "one_line_status": "…",
               "report_brief": "≤500 字", "pending_decision": null,

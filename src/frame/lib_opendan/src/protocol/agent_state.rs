@@ -120,6 +120,8 @@ pub struct RegistryEntry {
     pub artifact_id: Option<String>,
     #[serde(default)]
     pub objective: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// Initial activity declaration copied from the session scope.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<super::config::Scope>,

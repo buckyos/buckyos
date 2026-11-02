@@ -225,6 +225,8 @@ impl ToolManager for SessionToolManager {
         // Shown as the progress of the Turn.
         *self.shared.current_intent.lock().expect("current intent") =
             agent_tool::intent::intent_of(&call);
+        super::turn_task::live_line_changed(&self.shared).await;
+        super::turn_task::sync_turn_task(&self.shared).await;
         if call.name == TOOL_REPORT && self.inner.has_tool(TOOL_REPORT) {
             return super::reports::call(&self.shared, &self.run, &exec)
                 .await

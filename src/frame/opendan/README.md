@@ -168,7 +168,7 @@ WebUI 通过同源 `/api/opendan` 访问托管本页面的 Agent，由 zone 网�
 
 没有任何对 Session 目录的写接口。
 
-`session.worklog {sid, turn, before?: number, after?: number, limit?: number = 50}` 按指定 turn 读取已提交的执行记录：
+`session.worklog {sid, turn?: number, before?: number, after?: number, limit?: number = 50}` 读取已提交的执行记录：给 `turn` 时只读这个 turn，不给时按提交顺序读整个 session（MessageHub 点 work session 卡看到的连续日志）：
 
 ```jsonc
 {
@@ -180,9 +180,37 @@ WebUI 通过同源 `/api/opendan` 访问托管本页面的 Agent，由 zone 网�
 }
 ```
 
-`entries` 按 seq 从旧到新排列，仅含这个 turn。首次读最近一页；`before` 反向翻页，`after` 从上一响应的 `next_after` 向前补读。游标是 worklog 的字节边界，不允许同时传入或越过 `state.worklog.committed_bytes`；`limit` 范围 1–200。单次最多检查 2000 条记录，因此空页仍可能有 `next_before`，实时补读的 `next_after` 也可能小于 `committed`，客户端需继续读取。`next_before = null` 表示该 turn 的更早记录已读尽。翻页期间日志继续追加不会改变既有游标。
+`entries` 按 seq 从旧到新排列：给了 `turn` 时仅含这个 turn；不给时含全部记录，没有 turn 的记录（`created`、控制、拒收等）也在内，`turn_started` / `turn_ended` 就是 Turn 之间的分隔，响应里 `turn`、`task_id` 为 null。首次读最近一页；`before` 反向翻页，`after` 从上一响应的 `next_after` 向前补读。游标是 worklog 的字节边界，不允许同时传入或越过 `state.worklog.committed_bytes`；`limit` 范围 1–200。单次最多检查 2000 条记录，因此空页仍可能有 `next_before`，实时补读的 `next_after` 也可能小于 `committed`，客户端需继续读取。`next_before = null` 表示该 turn（不给 turn 时为整个 session）的更早记录已读尽。翻页期间日志继续追加不会改变既有游标。
 
-`complete` 根据 `turn_seq / open_turn` 判断，包括失败、停止等终态；不使用只统计成功轮次的 `turns_completed`。`task_id` 来自仍保留的 `turn_tasks` 绑定，历史绑定被清理时可为 null，日志仍可读。`children` 来自 session 登记表的 `origin.created_by_call`，按 run/call 精确挂在创建调用上；子 session 的首个 turn 是其 work task 的入口。此接口沿用整个 OpenDAN 的 owner/root 读权限，单有 TaskMgr grant 不授予 worklog 权限。
+给了 `turn` 时 `complete` 根据 `turn_seq / open_turn` 判断，包括失败、停止等终态；不使用只统计成功轮次的 `turns_completed`。不给 `turn` 时 `complete` = session 已 Finished 且这一页读到了已提交的末尾（`next_after == committed`）。`task_id` 来自仍保留的 `turn_tasks` 绑定，历史绑定被清理时可为 null，日志仍可读。`children` 来自 session 登记表的 `origin.created_by_call`，按 run/call 精确挂在创建调用上；子 session 的首个 turn 是其 work task 的入口。此接口沿用整个 OpenDAN 的 owner/root 读权限，单有 TaskMgr grant 不授予 worklog 权限。
+
+`session.work_cards {sid, task_id}` 返回一个 UI Turn 建出的 work session 卡片（MessageHub 回复气泡下的附属 UI，`notepads/messagehub-worksession-ui-todo.md` §3）：
+
+```jsonc
+{
+  "agent_did": "…", "session_id": "<ui sid>", "task_id": "<ui turn task>",
+  "complete": false,              // Turn 已关闭，且每张卡（含 Todo 卡）都已终态
+  "sessions": [{
+    "session_id": "…", "shape": "simple | plan | explore",
+    "title": "…",                 // ≤60 chars：create-worksession --title；没有时取 objective 首个非空行
+    "created_at_ms": 0, "finished_at_ms": null,
+    "state": "queued | running | needs_input | paused | succeeded | failed | stopped",
+    "line": "…",                  // ≤160 chars，见下
+    "usage": { "input_tokens": 0, "output_tokens": 0, "rounds": 0,
+               "models": [{ "model": "gpt-6.1-sol@cliproxy", "input_tokens": 0, "output_tokens": 0 }] },
+    "model": "gpt-6.1-sol@cliproxy" | null,   // 最近一个成功 Round 的实际模型
+    "subtree_usage": null,        // plan：自身 + 全部子 session（Todo）的 usage 之和
+    "todos": null                 // plan：{rev, total（不含 cancelled）, done, items: [{todo_id, seq, title, status, mode,
+                                  //   attempt（最新一次，0 = 还没有）, blocked_by, block_reason, card: <该 attempt 的 work session 卡> | null}]}
+  }]
+}
+```
+
+- 筛选：`sessions.children_of([sid])` 中 `origin.parent_task == task_id` 的 session，按 `created_at_ms` 排序；plan 再读 `children_of([plan])` 与 `todos.json`，Todo 卡不再嵌 `todos`。
+- `state` 自上而下取第一条：Finished 按 outcome（无 outcome 视为 stopped）→ `paused` → 等输入（`needs_input`）→ 还没开过 Turn 的 Created / Ready（`queued`）→ 其余 `running`（包括在等自己的任务、子 session 或 timer）。
+- `line`：succeeded / stopped 取结局的首个非空行（`state.result.answer`，其次提交的 report，最后是 report.md 去掉 `# Report — …` 与 `- session:` 等头部之后的正文）；failed 取 `last_error.message`，没有再取结局；paused 取暂停原因；running 时 Turn 开着取 `one_line_status`（实时：调用带 `intent` 时就是 intent），Turn 之间取最后一个已关闭 Turn 绑定的 `summary`（该 Turn 的回复）。needs_input、queued 以及没有原因的 paused / stopped 为空串，由 UI 用本地化文案。
+- `usage` 每次调用全量读该 session 的 `usage.jsonl`，不读 `static.json`（多 Turn Work 运行中为 0）；xllm 接手的 run 的推理只记在 run.json，这部分不计入。
+- 鉴权同 `session.read`（只读白名单 `is_read`，owner/root 读权限）；被拒或 Agent 不认识这个方法时 Desktop 退回原来的任务区。
 
 ### 操作（都只是向 Session 的输入总线投一条记录）
 

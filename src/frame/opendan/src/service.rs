@@ -215,10 +215,18 @@ impl StateService {
         Ok(out)
     }
 
+    async fn work_cards(&self, params: &Value) -> Result<Value, OpenDanError> {
+        let sid: String = param(params, "sid")?;
+        let task_id: String = param(params, "task_id")?;
+        let cards = libopendan::work_card::work_cards(self.agent.as_ref(), &sid, &task_id).await?;
+        serde_json::to_value(&cards).map_err(|e| OpenDanError::Other(format!("encode work cards: {e}")))
+    }
+
+    /// One Turn's records (`turn`), or the whole session in commit order.
     async fn read_worklog(&self, params: &Value) -> Result<Value, OpenDanError> {
         let sid: String = param(params, "sid")?;
-        let turn: u64 = param(params, "turn")?;
-        if turn == 0 {
+        let turn: Option<u64> = param(params, "turn")?;
+        if turn == Some(0) {
             return Err(OpenDanError::InvalidArgument("turn must be positive".into()));
         }
         let entry = self.agent.sessions().lookup(&sid).await?
@@ -232,6 +240,10 @@ impl StateService {
             param(params, "after")?,
             param::<Option<usize>>(params, "limit")?.unwrap_or(50),
         )?;
+        let complete = match turn {
+            Some(turn) => state.turn_seq >= turn && state.open_turn.as_ref().is_none_or(|open| open.index != turn),
+            None => state.is_finished() && page.next_after == state.worklog.committed_bytes,
+        };
         let children = self.agent.sessions().children_of(&[sid.clone()]).await?;
         let links: Vec<Value> = children.iter().filter_map(|child| {
             let origin = child.origin.as_ref()?;
@@ -249,8 +261,8 @@ impl StateService {
             "next_before": page.next_before,
             "next_after": page.next_after,
             "committed": state.worklog.committed_bytes,
-            "complete": state.turn_seq >= turn && state.open_turn.as_ref().is_none_or(|open| open.index != turn),
-            "task_id": state.turn_tasks.iter().find(|t| t.turn == turn).map(|t| &t.task_id),
+            "complete": complete,
+            "task_id": turn.and_then(|turn| state.turn_tasks.iter().find(|t| t.turn == turn)).map(|t| &t.task_id),
             "children": links,
         }))
     }
@@ -303,6 +315,7 @@ impl StateService {
         match method {
             "session.read" => self.read_session(params).await,
             "session.worklog" => self.read_worklog(params).await,
+            "session.work_cards" => self.work_cards(params).await,
             "session.stop" => {
                 let sid: String = param(params, "sid")?;
                 let reason = param::<Option<String>>(params, "reason")?;
@@ -465,6 +478,7 @@ fn is_read(method: &str) -> bool {
             | "notify.list"
             | "session.read"
             | "session.worklog"
+            | "session.work_cards"
             | "agent.profile"
             | "usage.models"
             | "ui.bindings"
@@ -622,7 +636,7 @@ mod permission_tests {
             "behaviors.identity", "behaviors.get", "behaviors.list", "behaviors.revision",
             "behaviors.cmd_skill", "skills.list", "goals.list", "goals.get", "goals.revision",
             "goals.changes", "goals.state", "goals.epoch_state", "goals.activations",
-            "goals.schedule", "notify.state", "notify.list", "session.read", "session.worklog",
+            "goals.schedule", "notify.state", "notify.list", "session.read", "session.worklog", "session.work_cards",
             "agent.profile", "usage.models", "ui.bindings", "home.workspaces", "loader.status",
         ] {
             for target in [OWN_APP, OTHER_APP] {

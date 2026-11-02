@@ -2394,6 +2394,15 @@
         }
       ]
     },
+    "finished_at_ms": {
+      "description": "When the commit that finished the session was made.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
     "goal": {
       "anyOf": [
         {

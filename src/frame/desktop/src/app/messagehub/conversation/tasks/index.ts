@@ -70,32 +70,49 @@ export function useTaskExpanded(anchorId: string): [boolean, (value: boolean) =>
   }]
 }
 
-const QA_EXPANDED_KEY = 'buckyos.messagehub.qaExpanded.v1'
-/** Hand-set Q/A lists remembered per viewer; the oldest are forgotten first. */
-const QA_EXPANDED_LIMIT = 200
-let qaChoices: Record<string, Record<string, boolean>> | null = null
+/** Open / closed choices made by hand, remembered per viewer in this browser under one localStorage key; the oldest are forgotten first. */
+export class ChoiceMemory {
+  private choices: Record<string, Record<string, boolean>> | null = null
+  private readonly storageKey: string
+  private readonly limit: number
+  constructor(storageKey: string, limit = 200) { this.storageKey = storageKey; this.limit = limit }
 
-function readQaChoices(): Record<string, Record<string, boolean>> {
-  if (qaChoices) return qaChoices
-  try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(QA_EXPANDED_KEY) ?? '{}')
-    qaChoices = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, Record<string, boolean>> : {}
-  } catch {
-    qaChoices = {}
+  read(viewerDid: string, key: string): boolean | undefined {
+    if (!this.choices) {
+      try {
+        const parsed: unknown = JSON.parse(localStorage.getItem(this.storageKey) ?? '{}')
+        this.choices = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, Record<string, boolean>> : {}
+      } catch {
+        this.choices = {}
+      }
+    }
+    const stored = this.choices[viewerDid]?.[key]
+    return typeof stored === 'boolean' ? stored : undefined
   }
-  return qaChoices
+
+  store(viewerDid: string, key: string, expanded: boolean) {
+    this.read(viewerDid, key)
+    const all = this.choices ?? {}
+    const own = { ...(typeof all[viewerDid] === 'object' ? all[viewerDid] : {}) }
+    delete own[key]
+    own[key] = expanded
+    const keys = Object.keys(own)
+    for (const old of keys.slice(0, Math.max(0, keys.length - this.limit))) delete own[old]
+    this.choices = { ...all, [viewerDid]: own }
+    try { localStorage.setItem(this.storageKey, JSON.stringify(this.choices)) } catch { /* kept for this page only */ }
+  }
 }
 
-function storeQaChoice(viewerDid: string, anchorId: string, expanded: boolean) {
-  const all = readQaChoices()
-  const own = { ...(typeof all[viewerDid] === 'object' ? all[viewerDid] : {}) }
-  delete own[anchorId]
-  own[anchorId] = expanded
-  const keys = Object.keys(own)
-  for (const key of keys.slice(0, Math.max(0, keys.length - QA_EXPANDED_LIMIT))) delete own[key]
-  qaChoices = { ...all, [viewerDid]: own }
-  try { localStorage.setItem(QA_EXPANDED_KEY, JSON.stringify(qaChoices)) } catch { /* kept for this page only */ }
+/** `fallback` until the viewer sets the choice by hand. */
+export function useRememberedChoice(memory: ChoiceMemory, viewerDid: string, key: string, fallback: boolean): [boolean, (value: boolean) => void] {
+  const [choice, setChoice] = useState<boolean | undefined>(() => memory.read(viewerDid, key))
+  return [choice ?? fallback, value => {
+    memory.store(viewerDid, key, value)
+    setChoice(value)
+  }]
 }
+
+const qaExpanded = new ChoiceMemory('buckyos.messagehub.qaExpanded.v1')
 
 /**
  * Whether the Q/A list under an Agent bubble is open: `fallback` (open while
@@ -103,12 +120,5 @@ function storeQaChoice(viewerDid: string, anchorId: string, expanded: boolean) {
  * closes it by hand, which is remembered per viewer in this browser.
  */
 export function useQaExpanded(viewerDid: string, anchorId: string, fallback: boolean): [boolean, (value: boolean) => void] {
-  const [choice, setChoice] = useState<boolean | undefined>(() => {
-    const stored = readQaChoices()[viewerDid]?.[anchorId]
-    return typeof stored === 'boolean' ? stored : undefined
-  })
-  return [choice ?? fallback, value => {
-    storeQaChoice(viewerDid, anchorId, value)
-    setChoice(value)
-  }]
+  return useRememberedChoice(qaExpanded, viewerDid, anchorId, fallback)
 }

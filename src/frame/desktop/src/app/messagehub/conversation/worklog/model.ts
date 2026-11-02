@@ -1,11 +1,16 @@
 import type { TaskWatchDetail } from '../../../../api/task_mgr'
+import type { WorkCard } from '../worksessions/model'
 
-export interface WorklogTarget { agentDid: string; sessionId: string; turn: number }
+/** A session's work log: one Turn of it, or (`turn` absent) the whole session in commit order. */
+export interface WorklogTarget { agentDid: string; sessionId: string; turn?: number }
+/** A session's work log opened from a work session card: the card also gives the head its usage by model. */
+export interface WorklogDestination { target: WorklogTarget; title: string; card?: WorkCard }
 export interface WorklogAction { call_id: string; tool: string; args?: unknown }
 export interface WorklogEntry {
   seq: number
   t: string
-  turn: number
+  /** Records outside a Turn (controls, refused inputs) have none. */
+  turn?: number | null
   run_id?: string
   at_ms?: number
   content?: string
@@ -22,7 +27,7 @@ export interface WorklogChild { created_by_call: string; session_id: string; nam
 export interface WorklogPage {
   agent_did: string
   session_id: string
-  turn: number
+  turn: number | null
   entries: WorklogEntry[]
   next_before: number | null
   next_after: number
@@ -30,6 +35,18 @@ export interface WorklogPage {
   complete: boolean
   task_id?: string | null
   children: WorklogChild[]
+}
+/** The part of `session.read` the head of a session's work log shows. */
+export interface WorkSessionInfo {
+  entry: { session_id: string; objective?: string; title?: string | null; status?: { run_state?: string; outcome?: string | null } }
+  state?: { finished_at_ms?: number | null }
+  report?: string | null
+  config?: {
+    session?: { objective?: string; title?: string | null; created_at_ms?: number; class?: string }
+    runtime?: { frozen?: { runtime_id?: string; kind?: string } | null } | null
+    workspace?: { workspace_id?: string; access?: string } | null
+    behavior?: string | null
+  }
 }
 export interface WorklogRow {
   id: string
@@ -68,8 +85,9 @@ function resultTaskId(result?: string): string | undefined {
   } catch { return undefined }
 }
 
-export function worklogRows(entries: WorklogEntry[], children: WorklogChild[], turn: number): WorklogRow[] {
-  const ordered = [...new Map(entries.filter(e => e.turn === turn).map(e => [e.seq, e])).values()].sort((a, b) => a.seq - b.seq)
+/** Rows of one Turn, or of every record when `turn` is absent (the `turn_started` / `turn_ended` rows separate the Turns). */
+export function worklogRows(entries: WorklogEntry[], children: WorklogChild[], turn?: number): WorklogRow[] {
+  const ordered = [...new Map(entries.filter(e => turn === undefined || e.turn === turn).map(e => [e.seq, e])).values()].sort((a, b) => a.seq - b.seq)
   const results = new Map<string, WorklogEntry>()
   const calls = new Set<string>()
   const callKey = (run: string | undefined, call: string | undefined) => `${run ?? ''}/${call ?? ''}`

@@ -206,7 +206,15 @@ async fn a_whole_list_at_once_runs_in_its_order() {
     let cmds = plan_commands(&sd).join("\n");
     assert!(!cmds.contains("dispatch") && !cmds.contains("agent-session wait") && !cmds.contains("review"), "{cmds}");
     assert_eq!(todo_summary(&sd).as_deref(), Some("5 todos: 5 completed"));
-    assert_eq!(env.agent().sessions().children_of(&[sd.sid().to_string()]).await.unwrap().len(), 5);
+    let children = env.agent().sessions().children_of(&[sd.sid().to_string()]).await.unwrap();
+    assert_eq!(children.len(), 5);
+    // A Todo's work session is titled by the Todo.
+    for id in ["T01", "T05"] {
+        let t = list.get(id).unwrap();
+        let sid = t.attempts[0].child_sid.as_deref().unwrap();
+        let entry = children.iter().find(|c| c.session_id == sid).unwrap();
+        assert_eq!(entry.title.as_deref(), Some(t.title.as_str()), "{id}");
+    }
     // One Turn for the list, one per end it heard at most, one to deliver.
     assert!(st.turn_seq <= 7, "{} Turns", st.turn_seq);
     assert_eq!(st.turns_completed, st.turn_seq);

@@ -85,8 +85,9 @@ For the request below, decide what it needs:
 
 ## Creating
 
-- Work: `agent-session create-worksession --objective "<complete, self-contained objective>" --msg "<the answers, evidence, constraints and how to check that it is done>" (--class plan_simple | --behavior work_simple) [--cmd-skill <name>]... --runtime <runtime_id> --workspace <workspace_id>|none --context recent:6 --report final`
+- Work: `agent-session create-worksession --title "<short title>" --objective "<complete, self-contained objective>" --msg "<the answers, evidence, constraints and how to check that it is done>" (--class plan_simple | --behavior work_simple) [--cmd-skill <name>]... --runtime <runtime_id> --workspace <workspace_id>|none --context recent:6 --report final`
   The work session does not see this conversation: its objective and message are all it has. Its end comes back to the conversation by itself.
+  `--title`: the name the user sees the work under, in the user's language: what is done, at most 20 Chinese characters or 40 Latin characters (for example `重写 llm_context 设计文档`, `Build and test the crate`). Required.
   `--cmd-skill`: the manuals from `skill list` that fit the task (at most 8). Each one goes into the work session's prompt for its whole life, so give the ones it will use and none when none fits; they are shortcuts, not rules it must follow.
 - Goal: `agent-session goal create --objective "<the state to reach or keep>" --title <short title> --lifecycle achieve|maintain [--achieved-when <t>] [--healthy-state <t>] [--constraint <t>]... [--workspace <id>] [--every <secs>] --start --key <unique operation id>`
   A request that belongs to an existing goal goes to it: `agent-session goal post <goal_id> --msg "<text>"`.
@@ -109,7 +110,7 @@ Your final reply is one JSON object, the result, with every field below (no tool
   Not your exploration.
 - `clarifications`: `[{"question", "answer"}]`, every question you asked with `ask_user` and its answer, exactly as in the report — the conversation does not see them otherwise.
 - `assumptions`, `evidence` (`<fact and where it came from>`), `gaps` (`<what is missing and why>`): lists, `[]` when empty. `reason`: why declined / unsupported, otherwise `null`.
-- `work`: for `work_created` `{"session_id", "shape": "plan | simple", "objective", "workspace_id" ("none" without one), "runtime_id", "cmd_skills": ["<name given with --cmd-skill>"], "report": "final"}`, otherwise `null`; `goal`: for `goal_created` `{"goal_id", "objective", "lifecycle": "achieve | maintain"}`, otherwise `null`; `proposal`: for `needs_confirmation` `{"summary", "options", "why_confirm"}`, otherwise `null`.
+- `work`: for `work_created` `{"session_id", "shape": "plan | simple", "title", "objective", "workspace_id" ("none" without one), "runtime_id", "cmd_skills": ["<name given with --cmd-skill>"], "report": "final"}`, otherwise `null`; `goal`: for `goal_created` `{"goal_id", "objective", "lifecycle": "achieve | maintain"}`, otherwise `null`; `proposal`: for `needs_confirmation` `{"summary", "options", "why_confirm"}`, otherwise `null`.
 
 Request: {{handover.sub_task.task}}
 </intent_analysis>
@@ -145,10 +146,11 @@ schema = '''
     "work": {
       "type": ["object", "null"],
       "additionalProperties": false,
-      "required": ["session_id", "shape", "objective", "workspace_id", "runtime_id", "cmd_skills", "report"],
+      "required": ["session_id", "shape", "title", "objective", "workspace_id", "runtime_id", "cmd_skills", "report"],
       "properties": {
         "session_id": {"type": "string"},
         "shape": {"type": "string", "enum": ["plan", "simple"]},
+        "title": {"type": "string"},
         "objective": {"type": "string"},
         "workspace_id": {"type": "string"},
         "runtime_id": {"type": "string"},

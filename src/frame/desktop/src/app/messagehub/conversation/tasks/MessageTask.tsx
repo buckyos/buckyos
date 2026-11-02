@@ -7,22 +7,13 @@ import { relativeActivity } from '../../sessionModel'
 import { useMessageHubClock } from '../../store'
 import { messageObjId, messageRelations } from '../history/relations'
 import { getTaskWatch, useTaskChildren, useTaskEvents, useTaskExpanded, useTaskSummary, useTaskTree } from './index'
-import { taskAreaView, taskNodeState, type TaskText, type TaskTone } from './taskView'
+import { taskAreaView, taskNodeState, toneColor, type TaskText, type TaskTone } from './taskView'
 
-const toneColor: Record<TaskTone, string> = {
-  active: 'var(--cp-accent)',
-  waiting: 'var(--cp-warning)',
-  paused: 'var(--cp-muted)',
-  success: 'var(--cp-success)',
-  failed: 'var(--cp-danger)',
-  canceled: 'var(--cp-muted)',
-  unavailable: 'var(--cp-muted)',
-}
-
-function ToneIcon({ tone, size = 15 }: { tone: TaskTone; size?: number }) {
+/** `spin: false` stills the active spinner (a state that may be outdated). */
+export function ToneIcon({ tone, size = 15, spin = true }: { tone: TaskTone; size?: number; spin?: boolean }) {
   const props = { size, 'aria-hidden': true, style: { color: toneColor[tone] }, className: 'mt-0.5 shrink-0' }
   switch (tone) {
-    case 'active': return <LoaderCircle {...props} className={`${props.className} mh-task-spin`} />
+    case 'active': return <LoaderCircle {...props} className={spin ? `${props.className} mh-task-spin` : props.className} />
     case 'waiting': return <Clock {...props} />
     case 'paused': return <CirclePause {...props} />
     case 'success': return <CircleCheck {...props} />

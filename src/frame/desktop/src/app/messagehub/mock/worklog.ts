@@ -1,20 +1,65 @@
 import type { WorklogEntry, WorklogTarget } from '../conversation/worklog/model'
 import type { WorklogSource } from '../conversation/worklog/source'
+import { mockWorkSessionFinished } from './worksessions'
 
 const sessions = new Map<string, { entries: WorklogEntry[]; complete: boolean }>()
 export const mockWorklogs = {
   offline: false,
   reads: 0,
-  append(sessionId: string, turn: number, entry: Omit<WorklogEntry, 'seq' | 'turn'>, complete = false) {
-    const session = sessions.get(`${sessionId}/${turn}`)
+  /** `turn: null` appends to the whole-session log (the entry names its own Turn, if any). */
+  append(sessionId: string, turn: number | null, entry: Omit<WorklogEntry, 'seq'>, complete = false) {
+    const session = sessions.get(`${sessionId}/${turn ?? ''}`)
     if (!session) throw Error('Mock worklog not open')
-    session.entries.push({ ...entry, seq: session.entries.length + 1, turn })
+    session.entries.push({ ...entry, seq: session.entries.length + 1, ...(turn === null ? {} : { turn }) })
     session.complete = complete
   },
 }
 if (import.meta.env.DEV && typeof window !== 'undefined') Object.assign(window, { __messageHubMockWorklogs: mockWorklogs })
 
+/** A work session's whole log: its Turns in order, a control record between them that belongs to none. */
+function sessionEntries(sessionId: string, finished: boolean): WorklogEntry[] {
+  const at = Date.now() - 300_000
+  const entries: WorklogEntry[] = [
+    { seq: 1, t: 'turn_started', turn: 1, run_id: 'run-1', at_ms: at },
+    { seq: 2, t: 'user_message', turn: 1, run_id: 'run-1', content: `Objective of ${sessionId}: do the work and report the result.` },
+    { seq: 3, t: 'assistant_message', turn: 1, run_id: 'run-1', assistant: 'Starting both builds in the background.', tool_calls: [{ call_id: 'call-1', tool: 'shell', args: { command: 'cargo build -p slow_a & cargo build -p slow_b', description: 'Start the two builds' } }] },
+    { seq: 4, t: 'action_result', turn: 1, run_id: 'run-1', call_id: 'call-1', status: 'ok', result: 'still running as task t-1' },
+    { seq: 5, t: 'assistant_message', turn: 1, run_id: 'run-1', assistant: 'Two builds are still running; I will report when they finish.' },
+    { seq: 6, t: 'turn_ended', turn: 1, run_id: 'run-1', status: 'completed', at_ms: at + 30_000 },
+    { seq: 7, t: 'control_applied', kind: 'input_source_reset' },
+    { seq: 8, t: 'turn_started', turn: 2, run_id: 'run-1', at_ms: at + 90_000 },
+    { seq: 9, t: 'user_message', turn: 2, run_id: 'run-1', content: 'Task t-1 finished.' },
+    { seq: 10, t: 'assistant_message', turn: 2, run_id: 'run-1', assistant: 'Both builds finished without errors.' },
+  ]
+  if (finished) entries.push({ seq: 11, t: 'turn_ended', turn: 2, run_id: 'run-1', status: 'completed', at_ms: at + 120_000 })
+  return entries
+}
+
+function mockSessionWorklogSource(target: WorklogTarget): WorklogSource {
+  const key = `${target.sessionId}/`
+  if (!sessions.has(key)) {
+    const finished = mockWorkSessionFinished(target.sessionId)
+    sessions.set(key, { entries: sessionEntries(target.sessionId, finished), complete: finished })
+  }
+  return async (cursor = {}) => {
+    mockWorklogs.reads++
+    await new Promise(resolve => setTimeout(resolve, 30))
+    if (mockWorklogs.offline) throw Error('Mock worklog offline')
+    const { entries, complete } = sessions.get(key)!
+    const end = cursor.before ?? entries.length
+    const start = cursor.after ?? Math.max(0, end - 50)
+    const slice = entries.slice(start, cursor.after == null ? end : start + 50)
+    return {
+      agent_did: target.agentDid, session_id: target.sessionId, turn: null,
+      entries: slice, next_before: cursor.after == null && start > 0 ? start : null,
+      next_after: cursor.after == null ? entries.length : start + slice.length,
+      committed: entries.length, complete, task_id: null, children: [],
+    }
+  }
+}
+
 export function mockWorklogSource(target: WorklogTarget): WorklogSource {
+  if (target.turn === undefined) return mockSessionWorklogSource(target)
   const turn = target.turn
   const run_id = `run-${turn}`
   const child = target.sessionId.startsWith('work-')

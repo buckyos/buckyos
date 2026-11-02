@@ -357,7 +357,7 @@ export class MessageHubMockStore implements MessageHubStore {
       Object.assign(stored.sessions, seeded.sessions, stored.sessions)
     }
     // Demo sessions added after a browser stored its snapshot.
-    for (const id of ['session-coder-task', 'session-coder-ask', 'session-coder-qa', ...mockNotifySessions(this.now()).map(session => session.id)]) {
+    for (const id of ['session-coder-task', 'session-coder-ask', 'session-coder-qa', 'session-coder-work', ...mockNotifySessions(this.now()).map(session => session.id)]) {
       const demoKey = sessionKey(MOCK_SELF_DID, id)
       if (stored && !stored.sessions[demoKey] && !stored.deleted[demoKey]) {
         stored.sessions[demoKey] = this.snapshot.sessions[demoKey]

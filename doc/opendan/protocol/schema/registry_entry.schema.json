@@ -546,6 +546,12 @@
     "status": {
       "$ref": "#/definitions/SessionStatus"
     },
+    "title": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "unreachable": {
       "description": "`verify` marks entries whose location disappeared (never deleted).",
       "type": "boolean"

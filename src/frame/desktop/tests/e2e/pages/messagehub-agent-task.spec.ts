@@ -11,6 +11,8 @@ declare global {
     __messageHubMock: import('../../../src/app/messagehub/mock/store').MessageHubMockStore
     __messageHubMockTasks: import('../../../src/app/messagehub/mock/tasks').MockTaskSource
     __messageHubTaskWatch: import('../../../src/app/messagehub/conversation/tasks/taskWatch').TaskWatch
+    __messageHubMockWorkCards: typeof import('../../../src/app/messagehub/mock/worksessions').mockWorkCards
+    __messageHubWorkCards: import('../../../src/app/messagehub/conversation/worksessions/watch').WorkCardsWatch
   }
 }
 
@@ -64,9 +66,10 @@ test('a placeholder and its final edit are one bubble at the anchor; quick repli
   await expect(live).not.toContainText('%')
   await page.screenshot({ path: 'test-results/messagehub-agent-task-bubbles.png' })
 
-  // Only tasks that are still open are subscribed, and nothing below the first level was read.
+  // Only tasks that are still open are subscribed, and nothing below the first level was read. The
+  // running Turn has sub-tasks but no work session (yet): its tree is followed for the work cards.
   const state = await page.evaluate(() => ({ subscriptions: window.__messageHubMockTasks.subscriptions(), events: window.__messageHubMockTasks.reads.listEvents }))
-  expect(state).toEqual({ subscriptions: [`task:${RUNNING}`], events: 0 })
+  expect(state).toEqual({ subscriptions: [`task:${RUNNING}`, `tree:${RUNNING}`], events: 0 })
 })
 
 test('progress only refreshes the task area; the final edit replaces the body in place and is not a second unread message', async ({ page }) => {
@@ -144,7 +147,7 @@ test('expanding a bubble shows the Turn task tree level by level and releases it
 
   await live.getByTestId('task-expand').click()
   await expect(live.getByTestId('task-tree')).toHaveCount(0)
-  expect(await page.evaluate(() => window.__messageHubMockTasks.subscriptions())).toEqual([`task:${RUNNING}`])
+  expect(await page.evaluate(() => window.__messageHubMockTasks.subscriptions())).toEqual([`task:${RUNNING}`, `tree:${RUNNING}`])
 })
 
 test('click and keyboard reveal the toolbar, whose Details action opens the live task', async ({ page }) => {
@@ -169,7 +172,7 @@ test('click and keyboard reveal the toolbar, whose Details action opens the live
   await expect(details.getByTestId('detail-task-events')).toContainText('PhaseChanged')
   await details.getByRole('button', { name: 'Close' }).click()
   await expect(details).toHaveCount(0)
-  await expect.poll(() => page.evaluate(() => window.__messageHubMockTasks.subscriptions())).toEqual([`task:${RUNNING}`])
+  await expect.poll(() => page.evaluate(() => window.__messageHubMockTasks.subscriptions())).toEqual([`task:${RUNNING}`, `tree:${RUNNING}`])
 
   // The explicit action; the edited message keeps its original, its edit record and the anchor's task.
   const report = bubble(page, 'msg-ct-2')
@@ -482,5 +485,188 @@ for (const theme of ['light', 'dark'] as const) {
     await bubble(page, 'msg-qd-2').getByTestId('agent-qa-toggle').click()
     await expect(bubble(page, 'msg-qd-2').getByTestId('agent-qa-item')).toHaveCount(4)
     await page.screenshot({ path: `test-results/messagehub-agent-ask-qa-${theme}.png` })
+  })
+}
+
+const WORK_SESSION = 'session-coder-work'
+const WORK = { simple: 'task-turn-work-builds', plan: 'task-turn-work-docs', done: 'task-turn-work-notes', analyze: 'task-turn-work-deploy' }
+const SHOTS = '/home/lzc/project/messagehub_work_ui_dv_runs/mock'
+const workReads = (page: Page, taskId: string) => page.evaluate(id => window.__messageHubMockWorkCards.reads[id] ?? 0, taskId)
+const workCard = (page: Page, bubbleId: string, sessionId: string) => bubble(page, bubbleId).locator(`[data-session-id="${sessionId}"]`).first()
+
+test('a Turn that created work sessions shows their two-line cards instead of the task area; analysis still shows the task area', async ({ page }) => {
+  await openSession(page, WORK_SESSION, 'msg-cw-8')
+  const simple = bubble(page, 'msg-cw-6')
+  await expect(simple.getByTestId('work-cards')).toBeVisible()
+  await expect(simple.getByTestId('message-task')).toHaveCount(0)
+  const builds = workCard(page, 'msg-cw-6', 'work-builds')
+  await expect(builds).toHaveAttribute('data-state', 'running')
+  await expect(builds.getByTestId('work-card-title')).toHaveText('Run both slow builds')
+  await expect(builds.getByTestId('work-card-time')).toHaveText(/^4m\d\ds$/)
+  await expect(builds.getByTestId('work-card-tokens')).toHaveText('in 86.4k · out 9.1k')
+  await expect(builds.getByTestId('work-card-line')).toHaveText('Watching the two cargo builds')
+  await expect(builds.getByTestId('work-card-model')).toHaveText('gpt-6.1-sol')
+  // The time runs to the second while a card runs.
+  const first = await builds.getByTestId('work-card-time').textContent()
+  await expect(builds.getByTestId('work-card-time')).not.toHaveText(first ?? '', { timeout: 3_000 })
+
+  // Intent analysis (no sub-task yet): the task area, and no card read at all.
+  const analyze = bubble(page, 'msg-cw-8')
+  await expect(analyze.getByTestId('message-task')).toHaveAttribute('data-state', 'running')
+  await expect(analyze.getByTestId('work-cards')).toHaveCount(0)
+  expect(await workReads(page, WORK.analyze)).toBe(0)
+
+  // The analysis created a work session: the bubble turns into its card.
+  await page.evaluate(({ id, ui }) => {
+    const cards = window.__messageHubMockWorkCards
+    cards.set(id, { agent_did: 'did:buckyos:agent:codeassistant', session_id: ui, task_id: id, complete: false, sessions: [{ session_id: 'work-deploy', shape: 'simple', title: 'Clean up the deploy scripts', created_at_ms: Date.now() - 5_000, finished_at_ms: null, state: 'queued', line: '', usage: { input_tokens: 0, output_tokens: 0, rounds: 0, models: [] }, model: 'llm.chat', subtree_usage: null, todos: null }] })
+    window.__messageHubMockTasks.add({ taskId: `${id}.work-deploy`, parentId: id, name: 'Clean up the deploy scripts', phase: 'Accepted', input: { agent_did: 'did:buckyos:agent:codeassistant', session_id: 'work-deploy', turn: 1 } }, true)
+    window.__messageHubMockTasks.update(id, { phase: 'Terminal', outcome: 'Succeeded', message: 'created a work session' })
+  }, { id: WORK.analyze, ui: 'ui-session-work' })
+  const deploy = workCard(page, 'msg-cw-8', 'work-deploy')
+  await expect(deploy).toHaveAttribute('data-state', 'queued')
+  await expect(deploy.getByTestId('work-card-line')).toHaveText('Queued')
+  await expect(deploy.getByTestId('work-card-tokens')).toHaveCount(0)
+  await expect(deploy.getByTestId('work-card-model')).toHaveCount(0)
+  await expect(analyze.getByTestId('message-task')).toHaveCount(0)
+})
+
+test('a plan card sums its Todos; the TodoList folds, remembers a hand-set state, lists unbound Todos as one line and long lists as "N more"', async ({ page }) => {
+  await openSession(page, WORK_SESSION, 'msg-cw-8')
+  const plan = workCard(page, 'msg-cw-4', 'plan-docs')
+  await expect(plan).toHaveAttribute('data-shape', 'plan')
+  await expect(plan.getByTestId('work-card-tokens')).toHaveText('in 86k · out 9.1k')
+  await expect(plan.getByTestId('work-card-tokens')).toHaveAttribute('title', /Plan itself: 25,000 input · 1,800 output tokens · 4 round\(s\)\nTodos in total: 61,000 input · 7,300 output tokens · 14 round\(s\)/)
+  await expect(plan.getByTestId('work-card-line')).toHaveText('Waiting for 1 sub-work session(s)')
+  const list = bubble(page, 'msg-cw-4').getByTestId('todo-list')
+  await expect(list).toHaveAttribute('data-expanded', 'true')
+  await expect(list.getByTestId('todo-list-toggle')).toHaveText('TodoList · 1/4')
+  await expect(list.getByTestId('todo-card')).toHaveCount(2)
+  await expect(list.getByTestId('todo-card').nth(0).getByTestId('work-card-title')).toHaveText('T01 Survey the current state')
+  await expect(list.getByTestId('todo-card').nth(0)).toHaveAttribute('data-state', 'succeeded')
+  await expect(list.getByTestId('todo-card').nth(1).getByTestId('work-card-line')).toHaveText('Editing doc/llm_context/LLM Context Design.md')
+  const rows = list.getByTestId('todo-row')
+  await expect(rows).toHaveCount(3)
+  await expect(rows.nth(0)).toHaveText(/T03 Add the tests/)
+  await expect(rows.nth(1)).toHaveAttribute('title', 'Waits for T03\nruns after T03')
+  await expect(rows.nth(2).locator('.line-through')).toHaveText('T05 Translate the doc')
+  for (const index of [0, 1, 2]) expect((await rows.nth(index).boundingBox())!.height).toBeLessThan(30)
+
+  await list.getByTestId('todo-list-toggle').click()
+  await expect(list.getByTestId('todo-items')).toHaveCount(0)
+  await page.reload()
+  await expect(bubble(page, 'msg-cw-4').getByTestId('todo-list')).toHaveAttribute('data-expanded', 'false')
+
+  // A finished plan starts folded; above 12 Todos only the last three that ended are listed.
+  const done = bubble(page, 'msg-cw-2')
+  await expect(workCard(page, 'msg-cw-2', 'plan-notes')).toHaveAttribute('data-state', 'succeeded')
+  await expect(workCard(page, 'msg-cw-2', 'plan-notes').getByTestId('work-card-model')).toHaveCount(0)
+  const doneList = done.getByTestId('todo-list')
+  await expect(doneList).toHaveAttribute('data-expanded', 'false')
+  await expect(doneList.getByTestId('todo-list-toggle')).toHaveText('TodoList · 14/14')
+  await doneList.getByTestId('todo-list-toggle').click()
+  await expect(doneList.getByTestId('todo-card')).toHaveCount(3)
+  await expect(doneList.getByTestId('todo-card').first().getByTestId('work-card-title')).toHaveText('T12 Check section 12')
+  await doneList.getByTestId('todo-more').click()
+  await expect(doneList.getByTestId('todo-card')).toHaveCount(14)
+  await expect(doneList.getByTestId('todo-card').nth(2).getByTestId('work-card-title')).toHaveText('T03 Check section 3 #2')
+})
+
+test('clicking a card opens that session\'s continuous work log with its work content; back returns to the Turn', async ({ page }) => {
+  await openSession(page, WORK_SESSION, 'msg-cw-8')
+  await workCard(page, 'msg-cw-6', 'work-builds').click()
+  const details = page.getByTestId('message-details-pane')
+  await expect(details.getByTestId('detail-tab-worklog')).toHaveAttribute('aria-selected', 'true')
+  const log = details.getByTestId('turn-worklog')
+  await expect(log).toHaveAttribute('data-scope', 'session')
+  await expect(log).toHaveAttribute('data-session-id', 'work-builds')
+  await expect(log.getByRole('heading', { name: 'Run both slow builds' })).toBeVisible()
+  await expect(log).toContainText('Whole session')
+  await expect(log.getByText('Turn started', { exact: true })).toHaveCount(2)
+  await expect(log.getByText('Turn ended', { exact: true })).toHaveCount(1)
+  await expect(log.getByText('Starting both builds in the background.')).toBeAttached()
+  await expect(log.getByText('Both builds finished without errors.')).toBeVisible()
+  const info = log.getByTestId('work-info')
+  await expect(info.getByTestId('work-info-objective')).toContainText('Run both slow builds.')
+  await expect(info.getByTestId('work-info-runtime')).toHaveText('container')
+  await expect(info.getByTestId('work-info-workspace')).toHaveText('ws-buckyos · read_write')
+  await expect(info.getByTestId('work-info-tokens')).toHaveText('gpt-6.1-sol · in 86.4k · out 9.1k')
+  await expect(info.getByTestId('work-info-report')).toHaveCount(0)
+  await page.screenshot({ path: `${SHOTS}/worklog-session-desktop.png` })
+  await info.getByTestId('work-info-toggle').click()
+  await expect(info.getByTestId('work-info-objective')).toHaveCount(0)
+  await details.getByTestId('worklog-back').click()
+  await expect(log).toHaveAttribute('data-scope', 'turn')
+  await expect(log).toHaveAttribute('data-turn', '6')
+
+  // A Todo card of another bubble opens its own session; a finished one shows its report.
+  await details.getByRole('button', { name: 'Close', exact: true }).click()
+  await bubble(page, 'msg-cw-4').locator('[data-session-id="work-docs-t01"]').click()
+  await expect(log).toHaveAttribute('data-session-id', 'work-docs-t01')
+  await expect(log.getByRole('heading', { name: 'T01 Survey the current state' })).toBeVisible()
+  await expect(log.getByTestId('work-info-report')).toContainText('Found 3 places that disagree with the source')
+  await expect(log.getByTestId('work-info-finished')).toBeVisible()
+})
+
+test('finished cards stop all reads; a refused read keeps the task area', async ({ page }) => {
+  await openSession(page, WORK_SESSION, 'msg-cw-8')
+  await expect(workCard(page, 'msg-cw-2', 'plan-notes')).toBeVisible()
+  await expect(workCard(page, 'msg-cw-6', 'work-builds')).toBeVisible()
+  expect(await page.evaluate(id => window.__messageHubWorkCards.isLive({ agentDid: 'did:buckyos:agent:codeassistant', sessionId: 'ui-session-work', taskId: id }), WORK.done)).toBe(false)
+
+  // The running card finishes: one more read on the tree hint, then nothing.
+  await page.evaluate(id => {
+    window.__messageHubMockWorkCards.update(id, 'work-builds', { state: 'succeeded', finished_at_ms: Date.now(), line: 'Both builds passed' })
+    window.__messageHubMockWorkCards.complete(id)
+    window.__messageHubMockTasks.update(`${id}.work-builds`, { phase: 'Terminal', outcome: 'Succeeded', message: 'Both builds passed' })
+  }, WORK.simple)
+  const builds = workCard(page, 'msg-cw-6', 'work-builds')
+  await expect(builds).toHaveAttribute('data-state', 'succeeded')
+  await expect(builds.getByTestId('work-card-line')).toHaveText('Both builds passed')
+  const time = await builds.getByTestId('work-card-time').textContent()
+  const reads = { simple: await workReads(page, WORK.simple), done: await workReads(page, WORK.done) }
+  expect(reads.done).toBe(1)
+  await page.evaluate(id => window.__messageHubMockTasks.update(`${id}.work-builds`, { message: 'late hint' }), WORK.simple)
+  await page.waitForTimeout(3_000)
+  expect({ simple: await workReads(page, WORK.simple), done: await workReads(page, WORK.done) }).toEqual(reads)
+  await expect(builds.getByTestId('work-card-time')).toHaveText(time ?? '')
+
+  // An observer (or an Agent without `session.work_cards`): the old task area.
+  await page.addInitScript(() => { try { localStorage.setItem('buckyos.messagehub.mock.workCardsDenied', '1') } catch { /* ignored */ } })
+  await openSession(page, WORK_SESSION, 'msg-cw-8')
+  await expect(bubble(page, 'msg-cw-6').getByTestId('message-task')).toBeVisible()
+  await expect(bubble(page, 'msg-cw-6').getByTestId('work-cards')).toHaveCount(0)
+  await expect(bubble(page, 'msg-cw-4').getByTestId('message-task')).toBeVisible()
+})
+
+test('a narrow card keeps only the output tokens and the time', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await openSession(page, WORK_SESSION, 'msg-cw-8')
+  const builds = workCard(page, 'msg-cw-6', 'work-builds')
+  await expect(builds).toBeVisible()
+  expect((await bubble(page, 'msg-cw-6').getByTestId('work-cards').boundingBox())!.width).toBeLessThan(360)
+  await expect(builds.locator('.mh-work-in')).toBeHidden()
+  await expect(builds.getByText('out 9.1k')).toBeVisible()
+  await expect(builds.getByTestId('work-card-time')).toBeVisible()
+  await expect(builds.getByTestId('work-card-model')).toBeHidden()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+})
+
+for (const theme of ['light', 'dark'] as const) {
+  test(`work session cards read well in the ${theme} theme on desktop and phone`, async ({ page }) => {
+    await page.addInitScript(value => { try { localStorage.setItem('buckyos.prototype.theme.v1', value) } catch { /* ignored */ } }, theme)
+    await openSession(page, WORK_SESSION, 'msg-cw-8')
+    await expect(workCard(page, 'msg-cw-4', 'plan-docs')).toBeVisible()
+    await workCard(page, 'msg-cw-6', 'work-builds').hover()
+    await bubble(page, 'msg-cw-4').scrollIntoViewIfNeeded()
+    await page.screenshot({ path: `${SHOTS}/cards-desktop-${theme}.png` })
+    await workCard(page, 'msg-cw-6', 'work-builds').click()
+    await expect(page.getByTestId('work-info').getByTestId('work-info-tokens')).toBeVisible()
+    await expect(page.getByTestId('turn-worklog').getByText('Both builds finished without errors.')).toBeVisible()
+    await page.screenshot({ path: `${SHOTS}/worklog-desktop-${theme}.png` })
+    await page.setViewportSize({ width: 390, height: 844 })
+    await openSession(page, WORK_SESSION, 'msg-cw-8')
+    await bubble(page, 'msg-cw-4').scrollIntoViewIfNeeded()
+    await page.screenshot({ path: `${SHOTS}/cards-phone-${theme}.png` })
   })
 }

@@ -2009,6 +2009,13 @@
             "string",
             "null"
           ]
+        },
+        "title": {
+          "description": "A short name of the work (Work sessions created by another session).",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

@@ -185,6 +185,7 @@ async fn drive_locked(
         turn_closed: Mutex::new(None),
         current_tool: Arc::new(Mutex::new(None)),
         current_intent: Mutex::new(None),
+        line_pending: std::sync::atomic::AtomicBool::new(false),
         hints,
         task_status: Mutex::new(None),
         flush: tokio::sync::Mutex::new(()),
@@ -297,6 +298,7 @@ async fn fail_workspace(
         );
         session.write_report(lease, &failure_report)?;
         session.state.run_state = RunState::Finished;
+        session.state.finished_at_ms = Some(crate::now_ms());
         session.state.outcome = Some(Outcome::Failed);
         session.state.last_error = Some(detail.clone());
         session.state.one_line_status =
@@ -899,6 +901,7 @@ async fn end_open_work(
         None => {
             let mut s = sh.session.lock().await;
             s.state.run_state = RunState::Finished;
+            s.state.finished_at_ms = Some(crate::now_ms());
             s.state.outcome = next.outcome.or(Some(Outcome::Stopped));
             s.state.stop_requested = false;
             s.state.turn_stop_requested = false;
@@ -1869,6 +1872,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                     // Waiting for input (a Goal Session: for its next run
                     // opportunity), derived at the commit.
                     s.state.run_state = RunState::Waiting;
+                    super::turn_task::note_live_line(&mut s, None, None);
                     commit_and_report(sh, &mut s).await?;
                 }
             }

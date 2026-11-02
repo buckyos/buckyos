@@ -791,13 +791,25 @@ Action Log 是已确认变化的历史记录，按普通持久消息进入 Sessi
 
 展开按钮显示本 Turn 的 task tree（节点状态、名称、简短活动、等待原因，逐层展开、分页加载）。task_id 不出现在气泡里。
 
+**work session 卡片（`conversation/worksessions/`，2026-11-02，`notepads/messagehub-worksession-ui-todo.md`）**
+
+UI Turn 建出 work session 后，气泡附属 UI 以 work session 为主：`renderers.tsx` 的任务区位置渲染 `MessageAgentWork`，有卡片时显示卡片树，否则仍是上面的 `MessageTaskArea`。Q/A 列表位置不变。
+
+- 什么时候调：气泡有 `agent_task`，task 读成 `opendan.agent_turn/v1`（`input.agent_did / session_id`），且直接子任务第一页非空，才调 Agent 服务的 `session.work_cards {sid, task_id}`（DID → AgentId 与 worklog 共用一次 `agent.list` 解析，按 DID 缓存）。快速回复、纯问答、意图分析进行中（还没有子任务）都不调。这是“不为气泡提前读取日志”的有界例外：只多一次只读调用，且只发生在真的建了子任务的 Turn 上。应答的 `agent_did / session_id / task_id` 必须与请求一致。
+- 展示：至少一张卡 → 卡片树替代两行任务区和展开树（task tree 留在消息详情的 task 页）；0 张卡、从未读成功、被拒（无权限、旧 Agent 不认识这个方法）→ 原任务区，不报错。
+- 卡片：第 1 行 `状态图标 | 标题 | 运行时间 | 入 · 出 token`，第 2 行 `一句话 | 模型名`。运行时间 `(finished_at_ms ?? now) − created_at_ms`，有运行中的卡时才挂 1 s 计时器；token 还没有 Round 时不显示，plan 卡显示 `subtree_usage`（tooltip 拆 plan 自身 / Todo 合计）；模型名去掉 `@provider` 与 `:variant` 后缀，`llm.` 别名不显示，tooltip 给原始名（多个模型时列出全部）；一句话里老逻辑的英文机器文案（`running <tool>`、`working (…)`、`waiting for N task(s)` / `sub session(s)`、`waiting for input`）本地化，空串按状态给“排队中 / 等待你的回答 / 已暂停 / 已停止”。卡片容器 30rem（不超过气泡），宽度 < 360px（容器查询）时隐藏输入 token 与模型名。
+- TodoList（plan）：`▾ TodoList · 已完成/总数`，plan 未结束默认展开、结束后收起；手动选择记在 localStorage `buckyos.messagehub.todoExpanded.v1`（viewer + 锚点 + plan sid，最多 200 条）。绑定了 work session 的 Todo 是缩进一级的 2 行卡（`T02 <标题>`，retry 过加 `#n`），没有绑定的只一行（pending `Circle`、blocked `CircleSlash` + tooltip、cancelled `Ban` + 删除线）。超过 12 条时只显示未结束的和最近结束的 3 条，其余折叠成“还有 N 项”。
+- 缓存与刷新：(agentDid, sid, taskId) 一份缓存，挂载中的气泡共享（单例 + `useSyncExternalStore`，最多 200 条）。订阅 `tree:<UI Turn task>`，提示防抖 1 s、两次读至少隔 2 s；至少有一张卡且 `complete = false` 时 15 s 兜底轮询；`complete = true` 后停掉订阅和轮询，之后挂载直接用缓存。0 张卡时只在 tree 提示时重读，UI Turn task 终态后停止。`online` / 页面重新可见立即重读。单次读 10 s 超时。
+- 失败：从未成功过 → 原任务区，按 3 s、6 s、12 s 退避自己重试（已结束的 Turn 不会再有 tree 提示），提示也会触发重读，连续 4 次失败后放弃；成功过之后失败 → 沿用上次结果并标 stale（图标停转，第 2 行加“状态可能已过期”），连续 6 次失败后停轮询，提示仍会重读。
+- 点击：整张卡 `role=button`（Enter / Space）。`openDetails(message, {target: {agentDid, sessionId}, title, card})` 打开详情的「工作日志」页签，显示该 session 的连续日志（`session.worklog` 不带 `turn`），返回回到 Turn 日志；头部「工作内容」折叠块读 `session.read {sid, worklog: 0, report: true}`：objective、创建时间、runtime / workspace、按模型分列的 token（来自卡片的 `usage.models`）、结束后的报告。
+
 **通用消息详情与 Turn 工作日志（`MessageDetails.tsx`、`conversation/worklog/`）**
 
 - 入口：点击气泡（链接、附件、按钮、展开按钮和选中文本各自照常工作）、悬停栏 / 触屏菜单的「详情」图标（testid `message-details`）、聚焦气泡后按 Enter。观察模式同样可用（只读）。
 - Agent 消息默认打开「工作日志」页签：`agent_task.task_id` → `get_task.input.{agent_did,session_id,turn}` → `session.worklog`，严格定位此消息对应的 turn。只解释 `opendan.agent_turn/v1`，没有绑定或读不到 task 时给出说明；普通消息仍直接展示消息详情。
 - 日志以 seq 从旧到新排列，底部是最新进展；`step.actions` / `assistant_message.tool_calls` 和 `action_result` 按 `(run_id,call_id)` 合成 IN/OUT 卡片。跨页结果暂时独立展示，补齐输入后合并；同一 call 的后续结果覆盖 pending 结果。文本只来自已记录的 assistant/user 内容，不合成推理内容。长输入输出可展开。
 - 首次加载 50 条，滚动到顶部或点击按钮向前分页；打开中的视图每 2.5 秒按字节游标补读，终态且追平 committed 后停止。停留底部时跟随新增记录；读旧记录时保持位置并提供「最新进展」。切换消息、关闭详情时丢弃在途响应与计时器。请求失败显示说明并可重试，已有记录保留。
-- `children[].created_by_call` 把登记表中的子 session 关联到创建工具调用。点击进入同一 Agent 的子 session 首轮日志，可查看它关联的 task 详情并逐层返回；工具结果顶层的结构化 `task_id` 也可进入 task 详情。不从普通输出文本猜测 ID。
+- `children[].created_by_call` 把登记表中的子 session 关联到创建工具调用。点击进入同一 Agent 的子 session 的连续日志（整个 session，不带 turn），可查看它关联的 task 详情并逐层返回；工具结果顶层的结构化 `task_id` 也可进入 task 详情。不从普通输出文本猜测 ID。
 - 同源路由：打开一个 worklog 时查询一次 `agent.list` 解析 DID → AgentId，再调用 `/kapi/<agent_id>`；不为气泡提前读取日志，不逐条查询 TaskMgr。`TaskWatchDetail.input` 保留真实 task 输入。TaskMgr 与 OpenDAN 都使用当前登录者权限。
 - 「消息详情」页签保留发送者与时间、可复制的消息 ID 与链接、当前有效内容、原消息、编辑记录、投递状态，以及实时任务摘要、task tree、可读事件、结果、产物引用、`origin_ref`、可复制的 task_id。task 不可读 / 已清理 / 读取失败时显示对应说明。Desktop 消息详情宽 640px，小屏使用现有全屏详情布局。
 - 寻址：详情以原锚点 ObjId 为键。`?sessionId=…&messageId=…`（launch payload 同名字段，`messageHubMessagePath()` 生成）进入时在桌面布局打开详情并把该行滚入视口；消息不在已加载历史里时 `store.locateMessage` 逐页向前加载（真实后端最多 50 页），仍找不到显示“找不到这条消息”。

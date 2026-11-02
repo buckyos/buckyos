@@ -147,6 +147,7 @@ Finish with a final report (is_end) with the evidence for each acceptance criter
     task.push_str(note);
     SubSessionSpec {
         objective: t.task_text(list, attempt),
+        title: Some(t.title.clone()),
         msgs: vec![task],
         class: opts.class.clone(),
         behavior: Some(todo_behavior(t)),

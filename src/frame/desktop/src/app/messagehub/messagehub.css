@@ -306,6 +306,34 @@
   animation: mh-task-spin 1.4s linear infinite;
 }
 
+/* Work session cards under an Agent bubble: narrow (phone) cards keep the output tokens and the time. */
+.mh-work {
+  container-type: inline-size;
+  width: 30rem;
+  max-width: 100%;
+  background: color-mix(in srgb, currentColor 7%, transparent);
+}
+
+.mh-work-card {
+  cursor: pointer;
+}
+
+.mh-work-card:hover,
+.mh-work-toggle:hover {
+  background: color-mix(in srgb, var(--cp-text) 6%, transparent);
+}
+
+.mh-work-card:active {
+  background: color-mix(in srgb, var(--cp-text) 10%, transparent);
+}
+
+@container (max-width: 359px) {
+  .mh-work-in,
+  .mh-work-model {
+    display: none;
+  }
+}
+
 /* Questions an Agent asked during a Turn and their answers, under its bubble. */
 .mh-qa {
   background: color-mix(in srgb, currentColor 5%, transparent);

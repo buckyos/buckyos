@@ -3,6 +3,16 @@ import type { TaskChildren, TaskSnapshot } from './taskWatch'
 
 export type TaskTone = 'active' | 'waiting' | 'paused' | 'success' | 'failed' | 'canceled' | 'unavailable'
 
+export const toneColor: Record<TaskTone, string> = {
+  active: 'var(--cp-accent)',
+  waiting: 'var(--cp-warning)',
+  paused: 'var(--cp-muted)',
+  success: 'var(--cp-success)',
+  failed: 'var(--cp-danger)',
+  canceled: 'var(--cp-muted)',
+  unavailable: 'var(--cp-muted)',
+}
+
 /** An i18n key with its variables; the component resolves it. */
 export interface TaskText {
   key: string

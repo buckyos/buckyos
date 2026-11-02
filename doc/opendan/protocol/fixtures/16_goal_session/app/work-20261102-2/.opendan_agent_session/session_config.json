@@ -6,7 +6,7 @@
     "agent_did": "did:bns:jarvis.alice",
     "kind": "work",
     "class": "work",
-    "created_at_ms": 1793646334174,
+    "created_at_ms": 1793650333066,
     "created_by": {
       "principal": "app:app2@alice",
       "via": "session:goal-20261102-1"
@@ -23,7 +23,7 @@
         "revision": 1,
         "epoch": 1,
         "activation_seq": 0,
-        "at_ms": 1793646334173
+        "at_ms": 1793650333065
       }
     },
     "objective": "Tick item 1 of TODO.md",
@@ -57,9 +57,9 @@
     "initial_inputs": [
       {
         "schema": "opendan.session_input/3",
-        "key": "cymsg:b37623499f413b42e8fa6b6c1485ce00680481b2d83022c4cb3ef076b6bcc31d",
+        "key": "cymsg:e7be36977556a49a6abd95ae0912d692204486cb974b5b6521c6a27d0d16280c",
         "from": "app:app2@alice",
-        "at_ms": 1793646334174,
+        "at_ms": 1793650333065,
         "type": "msg",
         "payload": {
           "msg": {
@@ -68,8 +68,8 @@
               "did:bns:jarvis.alice"
             ],
             "kind": "chat",
-            "created_at_ms": 1793646334174,
-            "nonce": 1382089156,
+            "created_at_ms": 1793650333065,
+            "nonce": 2779864924,
             "content": {
               "content": "tick item 1 of TODO.md"
             }

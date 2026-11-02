@@ -79,10 +79,11 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   inside a session's shell (as `agent-session`; the session comes from the environment):
   ctl activity ... | ctl perceive <text> | recall <tag>... | note <text> | sessions [--active] [--children] [--json]
   read-session <sid> [--report] [--worklog <n>] | artifact head <aid> | artifact list
-  create-worksession --objective <t> [--msg <t>]... [--attach <obj_id>[=<name>]]... [--context recent:<n>|none]
+  create-worksession --title <t> --objective <t> [--msg <t>]... [--attach <obj_id>[=<name>]]... [--context recent:<n>|none]
         [--class <c>] [--behavior <b>] [--cmd-skill <name>]... [--workspace inherit|none|<id>] [--runtime inherit|<id>]
         [--report final|progress|none] [--interactive]
-        (--cmd-skill: up to 8 manuals from `skill list`, fixed for the session's life; none given: a work
+        (--title: a short name of the work, at most 60 chars, shown where the work is listed;
+         --cmd-skill: up to 8 manuals from `skill list`, fixed for the session's life; none given: a work
          session inherits its parent work's, a conversation's or a goal's are not inherited; its end comes back as input)
   skill list [--kind cmd|goal] [--json] | skill install <x.pikg | dir> [--replace] | skill remove <name> [--kind cmd|goal]
   post <sid> --msg <t>
@@ -1263,8 +1264,13 @@ async fn cmd_create_worksession(a: Args) -> R<i32> {
             "there is no --wait: the sub session's end (or what it needs) comes back to you as input; reply without tool calls to end this Turn meanwhile",
         ));
     }
+    let title = a
+        .get("title")
+        .filter(|t| !t.trim().is_empty())
+        .ok_or_else(|| bad("missing --title (a short name of the work)"))?;
     let sub = SubSessionSpec {
         objective: a.get("objective").ok_or_else(|| bad("missing --objective"))?,
+        title: Some(title),
         msgs: a.all("msg"),
         attachments: a
             .all("attach")

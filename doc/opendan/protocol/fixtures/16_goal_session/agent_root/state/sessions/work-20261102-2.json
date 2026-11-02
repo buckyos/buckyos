@@ -21,7 +21,7 @@
       "revision": 1,
       "epoch": 1,
       "activation_seq": 0,
-      "at_ms": 1793646334173
+      "at_ms": 1793650333065
     }
   },
   "objective": "Tick item 1 of TODO.md",
@@ -38,18 +38,18 @@
       "heartbeat_ms": 0
     },
     "last_runner": {
-      "runner_id": "rn-82a9fa1f41dd45c4",
+      "runner_id": "rn-104eedd3f3684d31",
       "host": "${FIXTURE_HOST}",
-      "pid": 257990,
+      "pid": 408102,
       "lock_epoch": 1,
-      "at_ms": 1793646334318
+      "at_ms": 1793650333208
     },
     "last_error": {
       "kind": "missing_end_report",
       "message": "an explicit final report is required; this session has no input queue",
       "recoverable": false
     },
-    "updated_at_ms": 1793646334313
+    "updated_at_ms": 1793650333202
   },
   "location_rev": 0
 }

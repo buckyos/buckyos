@@ -43,6 +43,7 @@ pub mod state;
 pub mod template;
 pub mod todos;
 pub mod transfer;
+pub mod work_card;
 pub mod xagent_cli;
 
 pub use api::{

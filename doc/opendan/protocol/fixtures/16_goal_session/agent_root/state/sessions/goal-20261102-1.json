@@ -20,21 +20,21 @@
     "rev": 4,
     "run_state": "running",
     "acceptance": "n/a",
-    "one_line_status": "",
+    "one_line_status": "working",
     "report_brief": "",
     "turn_open": true,
     "activity": {
       "summary": "Pursue goal g-k9ed545152f8cdfcc3d3f30bc. Its current definition, state, open work and budget are given at the start of every activation (<goal_activation>); eac",
-      "heartbeat_ms": 1793646334391
+      "heartbeat_ms": 1793650333281
     },
     "last_runner": {
-      "runner_id": "rn-ed4ca7e82a0d4892",
+      "runner_id": "rn-e776fe56de2943b2",
       "host": "${FIXTURE_HOST}",
-      "pid": 259358,
+      "pid": 412496,
       "lock_epoch": 1,
-      "at_ms": 1793646334393
+      "at_ms": 1793650333283
     },
-    "updated_at_ms": 1793646334391
+    "updated_at_ms": 1793650333281
   },
   "location_rev": 0
 }

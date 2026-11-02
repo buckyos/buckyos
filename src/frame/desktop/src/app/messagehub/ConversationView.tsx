@@ -30,6 +30,7 @@ import { SessionPanel } from './conversation/SessionPanel'
 import { isTransferWithFiles, type ComposerAttachmentInput } from './conversation/input/attachmentDraft'
 import { ConversationMediaScopeContext } from './conversation/media/context'
 import { notifySessionCategory, type DID, type MessageObject } from './protocol/msgobj'
+import type { WorklogDestination } from './conversation/worklog/model'
 import { useNotifyFilteredReader } from './notify'
 import { NOTIFY_FILTERS, type NotifyFilter } from './notify/model'
 import type { Entity, Session, SessionAccess, MessageHubContext } from './types'
@@ -77,8 +78,8 @@ interface ConversationViewProps {
   onForward?: (message: MessageObject) => void
   /** Extra content of the session panel, shown when it is expanded (host-defined). */
   sessionPanelDetails?: ReactNode
-  /** Opens the details of a message. */
-  onOpenMessage?: (message: MessageObject) => void
+  /** Opens the details of a message; `worklog`: on that session's work log (a work session card). */
+  onOpenMessage?: (message: MessageObject, worklog?: WorklogDestination) => void
   /** ObjId of a message to bring into view (a deep link, or the message whose details are open). */
   focusMessageId?: string | null
 }

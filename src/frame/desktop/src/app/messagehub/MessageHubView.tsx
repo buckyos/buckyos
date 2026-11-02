@@ -11,6 +11,7 @@ import { MessageMediaHost } from './conversation/media/MessageMediaHost'
 import type { ConversationComposerSubmitPayload } from './conversation/input/ConversationComposer'
 import { EntityDetails } from './EntityDetails'
 import { MessageDetails } from './MessageDetails'
+import type { WorklogDestination } from './conversation/worklog/model'
 import { messageObjId } from './conversation/history/relations'
 import { friendlyDidName } from './api/projection'
 import { EntityList, type EntityPreferencePatch } from './EntityList'
@@ -201,6 +202,7 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
   const [linkedMessageId] = useState(() => initialMessageId && findRequestedSession(resolvedInitialEntityId) ? initialMessageId : null)
   const [detailsTarget, setDetailsTarget] = useState<'entity' | 'session' | 'message' | null>(() => linkedMessageId && isDesktop && linkedMessageDetails ? 'message' : null)
   const [detailMessageId, setDetailMessageId] = useState<string | null>(linkedMessageId)
+  const [detailWorklog, setDetailWorklog] = useState<(WorklogDestination & { request: number }) | null>(null)
   const showDetails = detailsTarget !== null
   const [entityListDrilldownPath, setEntityListDrilldownPath] = useState<string[]>([])
   const [entityListWidth, setEntityListWidth] = useState(ENTITY_LIST_DEFAULT_WIDTH)
@@ -411,10 +413,11 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
   const openForward = (message: import('./protocol/msgobj').MessageObject) => {
     void dialog.open({ title: t('messagehub.forward.title'), size: 'sm', dismissible: false, renderBody: controls => <ForwardMessageForm context={context} message={message} confirmationFor={sessionId => writeConfirmations[sessionId]} onCancel={() => controls.close()} onDone={() => controls.close()} /> })
   }
-  const openMessageDetails = (message: import('./protocol/msgobj').MessageObject) => {
+  const openMessageDetails = (message: import('./protocol/msgobj').MessageObject, worklog?: WorklogDestination) => {
     const id = messageObjId(message)
     if (!id) return
     setDetailMessageId(id)
+    setDetailWorklog(worklog ? { ...worklog, request: Date.now() } : null)
     setDetailsTarget('message')
     if (!isDesktop) setMobileView('details')
   }
@@ -437,7 +440,7 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
     onDraftChange: (value: string) => { if (activeSession) return store.saveDraft(context, activeSession.id, value) },
     showActions: activeSession ? store.preferences(context, activeSession.id).showActions : true,
   }
-  const detailsPane = detailsTarget === 'message' && activeSession && selectedEntity && detailMessageId ? <MessageDetails key={`${viewerSessionKey(context, activeSession.id)}:${detailMessageId}`} context={context} entityId={selectedEntity.id} sessionId={activeSession.id} messageId={detailMessageId} reader={messageReader} displayName={did => did === context.ownerDid ? t('messagehub.you') : store.findEntity(context, did)?.name ?? friendlyDidName(did, false)} onClose={handleCloseDetails} /> : detailsTarget === 'session' && activeSession && selectedEntity && access ? <SessionDetails key={viewerSessionKey(context, activeSession.id)} session={activeSession} entity={selectedEntity} context={context} access={access} showActions={conversationProps.showActions} onShowActions={async showActions => { await store.updatePreferences(context, activeSession.id, { showActions }) }} onClose={handleCloseDetails} onManage={() => openManage(activeSession)} onWrite={enabled => setWriteConfirmations(previous => ({ ...previous, [activeSession.id]: enabled ? JSON.stringify(activeSession.binding) : '' }))} /> : detailsTarget === 'entity' && entityDetail ? <EntityDetails entity={entityDetail} context={context} onClose={handleCloseDetails} onCreateGroup={canManage ? openCreateGroup : undefined} /> : null
+  const detailsPane = detailsTarget === 'message' && activeSession && selectedEntity && detailMessageId ? <MessageDetails key={`${viewerSessionKey(context, activeSession.id)}:${detailMessageId}`} context={context} entityId={selectedEntity.id} sessionId={activeSession.id} messageId={detailMessageId} initialWorklog={detailWorklog ?? undefined} reader={messageReader} displayName={did => did === context.ownerDid ? t('messagehub.you') : store.findEntity(context, did)?.name ?? friendlyDidName(did, false)} onClose={handleCloseDetails} /> : detailsTarget === 'session' && activeSession && selectedEntity && access ? <SessionDetails key={viewerSessionKey(context, activeSession.id)} session={activeSession} entity={selectedEntity} context={context} access={access} showActions={conversationProps.showActions} onShowActions={async showActions => { await store.updatePreferences(context, activeSession.id, { showActions }) }} onClose={handleCloseDetails} onManage={() => openManage(activeSession)} onWrite={enabled => setWriteConfirmations(previous => ({ ...previous, [activeSession.id]: enabled ? JSON.stringify(activeSession.binding) : '' }))} /> : detailsTarget === 'entity' && entityDetail ? <EntityDetails entity={entityDetail} context={context} onClose={handleCloseDetails} onCreateGroup={canManage ? openCreateGroup : undefined} /> : null
   const entityListExtras = { hasMore: store.hasMoreEntities(context), onLoadMore: () => store.loadMoreEntities(context), onCreateGroup: canManage ? () => openCreateGroup() : undefined }
   const newSessionLabel = t('messagehub.newSession')
   const newGroupLabel = t('messagehub.group.create')

@@ -394,13 +394,13 @@ fn a_sub_session_is_created_and_followed_through_the_shell_tool() {
         match (tool_result(req, "w0"), tool_result(req, "w1")) {
             (None, _) => call_shell(
                 "w0",
-                "agent-session create-worksession --objective 'compute the answer' --msg 'be brief' --wait",
+                "agent-session create-worksession --title 'The answer' --objective 'compute the answer' --msg 'be brief' --wait",
             ),
             (Some(r), None) => {
                 assert!(r.contains("there is no --wait") && r.contains("comes back to you as input"), "{r}");
                 call_shell(
                     "w1",
-                    "agent-session create-worksession --objective 'compute the answer' --msg 'be brief'",
+                    "agent-session create-worksession --title 'The answer' --objective 'compute the answer' --msg 'be brief'",
                 )
             }
             (_, Some(r)) => {
@@ -445,6 +445,7 @@ fn a_sub_session_is_created_and_followed_through_the_shell_tool() {
     assert_eq!(code, 0, "{err}");
     assert_eq!(active, json!([]));
     let (_, st, _) = cli.run(&["status", child, "--report"]);
+    assert_eq!(st["entry"]["title"], "The answer");
     let origin = &st["entry"]["origin"];
     assert_eq!(origin["parent_session"], sd.sid());
     assert_eq!(origin["report"], "final");
@@ -954,7 +955,7 @@ fn skills_are_installed_listed_chosen_and_removed() {
 
     let parent = cli.create(&["--objective", "parent work"]);
     let create = |extra: &[&str]| {
-        let mut args = vec!["create-worksession", "--objective", "child", "--report", "none"];
+        let mut args = vec!["create-worksession", "--title", "child", "--objective", "child", "--report", "none"];
         args.extend_from_slice(extra);
         let out = cli.command(&args).env("OPENDAN_SESSION_ID", parent.sid()).output().unwrap();
         parse(out)
@@ -983,4 +984,31 @@ fn skills_are_installed_listed_chosen_and_removed() {
     std::fs::write(cli.root.join("bad.pikg"), "not a zip").unwrap();
     let (code, _, err) = cli.run(&["skill", "install", cli.root.join("bad.pikg").to_str().unwrap()]);
     assert_eq!(code, 2, "{err}");
+}
+
+/// `create-worksession --title` is required like `--objective`, and kept
+/// on one line within 60 chars (TODO messagehub-worksession-ui §3.7).
+#[test]
+fn create_worksession_requires_a_title_and_cuts_it() {
+    let cli = Cli::new();
+    let parent = cli.create(&["--objective", "parent work"]);
+    let create = |args: &[&str]| {
+        let mut all = vec!["create-worksession", "--objective", "child", "--report", "none"];
+        all.extend_from_slice(args);
+        parse(cli.command(&all).env("OPENDAN_SESSION_ID", parent.sid()).output().unwrap())
+    };
+    let (code, _, err) = create(&["--key", "k1"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("missing --title"), "{err}");
+    let (code, _, err) = create(&["--title", "  ", "--key", "k2"]);
+    assert_eq!(code, 2, "{err}");
+    let long = format!("Build\n {}", "x".repeat(80));
+    let (code, v, err) = create(&["--title", &long, "--key", "k3"]);
+    assert_eq!(code, 0, "{v} {err}");
+    let child = SessionDir::open(v["path"].as_str().unwrap()).unwrap();
+    let title = child.config().unwrap().session.title.unwrap();
+    assert_eq!(title.chars().count(), 60, "{title}");
+    assert!(title.starts_with("Build xxx") && title.ends_with('…'), "{title}");
+    let (_, st, _) = cli.run(&["status", child.sid()]);
+    assert_eq!(st["entry"]["title"], title.as_str());
 }

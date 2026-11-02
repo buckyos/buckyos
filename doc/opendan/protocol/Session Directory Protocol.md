@@ -67,6 +67,7 @@ Schema：`schema/session_config.schema.json`。要点：
                 "parent_task": "<创建它的那个 Turn 的 task id，可缺省>",
                 "goal": { "goal_id": "g-…", "revision": 2, "epoch": 1, "activation_seq": 3, "at_ms": 0 } },   // Sub Session：父怎么收到汇报、创建它的调用；Goal 派生的 Work 带 goal
     "objective": "...",
+    "title": "重写 llm_context 设计文档",            // 可缺省：工作的短名（≤60 chars），create-worksession --title 或 Todo 标题；有 title 时 Turn task 名用它
     "end_condition": { "type": "llm_declares_done | output_schema | max_turns", "detail": {"n": 3} },
     "scope": { "objects": [], "paths": ["ws:snake/src/"] },     // 活动视图的初始声明
     "input_policy": "any | supplement_only | none",
@@ -187,7 +188,7 @@ Schema：`schema/session_state.schema.json`。
   "watched_tasks": ["<task_id>"],              // Session 在跟的后台 task：保活 run 等的，以及已结束 run 留下的；结束时作为 task 结果输入交回
   "perception_seq": 88, "reported_rev": 17,
   "activity": { "summary": "…", "touching": [ { "kind": "path", "ref": "ws:…", "mode": "write", "since_ms": 0 } ], "heartbeat_ms": 0 },
-  "one_line_status": "…", "last_error": null,
+  "one_line_status": "…", "last_error": null,   // Turn 开着时是实时一句话（调用带 intent 就是 intent，否则 running <tool> / waiting for N task(s) …），Turn 关闭、结束时写结局句
   "pending_decision": null, "stop_requested": false,
   "turn_stop_requested": false,                // 只停当前 Turn（control(stop, scope = turn)，或 Goal Session 收到的任何 stop），false 时省略
   "paused": { "at_ms": 0, "reason": "…", "by": "…", "in_run": true },   // control(pause)：不再推理，直到 resume（缺省省略）；in_run：暂停打断了 Turn 内的 run
@@ -203,6 +204,7 @@ Schema：`schema/session_state.schema.json`。
     "ending": null | { "end": "archived | achieved | restarted", "outcome": "stopped | succeeded", "reason": "…", "cascade": true } },
   "internal_continuation": null, "process_result": null,
   "todo_view_rev": 7,                          // 顶层 context 最近一次在输入批次里看到的 TodoList 修订号（0 时省略）
+  "finished_at_ms": 0,                         // 置 finished 的那次提交的时刻（未结束时省略）；updated_at_ms 之后还会被提交覆盖
   "updated_at_ms": 0
 }
 ```

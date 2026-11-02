@@ -424,6 +424,14 @@ const seedSessions: Record<string, Pick<Session, 'id' | 'entityId' | 'title' | '
       lastActiveAt: Date.now() - 3 * 3600_000,
       unreadCount: 0,
     },
+    {
+      id: 'session-coder-work',
+      entityId: 'agent-coder',
+      title: 'Work Sessions',
+      type: 'chat',
+      lastActiveAt: Date.now() - 2 * 60_000,
+      unreadCount: 0,
+    },
   ],
   'person-alice': [
     {
@@ -617,6 +625,12 @@ export const MOCK_AGENT_TASKS = {
   answered: 'task-turn-notes',
   /** Only ever carried by an edit, so it must never be read. */
   hijack: 'task-turn-hijack',
+  /** UI Turns of `session-coder-work` that created work sessions (`mock/worksessions.ts`). */
+  workSimple: 'task-turn-work-builds',
+  workPlan: 'task-turn-work-docs',
+  workDone: 'task-turn-work-notes',
+  /** Still analysing the request: no sub-task, no work session yet. */
+  workAnalyze: 'task-turn-work-deploy',
 } as const
 
 /**
@@ -645,6 +659,26 @@ function agentTaskSeeds(sessionId: string): MessageObject[] {
     agent('msg-ct-8', { format: 'text/plain', content: 'It was approved in another workspace.' }, 20, { agent_task: { task_id: MOCK_AGENT_TASKS.foreign } }),
     you('msg-ct-9', 'Check the MessageHub release checklist.', 4),
     agent('msg-ct-10', placeholder, 3, { agent_task: { task_id: MOCK_AGENT_TASKS.running } }),
+  ]
+}
+
+/**
+ * Agent Turns that created work sessions: the bubble shows their cards
+ * (`mock/worksessions.ts`) instead of the Turn's task area. The last Turn is
+ * still analysing the request and keeps the task area.
+ */
+function agentWorkSeeds(sessionId: string): MessageObject[] {
+  const you = (id: string, content: string, minutesAgo: number) => createChatMessage({ id, from: participantDids.you, to: [participantDids.codeAssistant], senderName: 'You', content, createdAtMs: Date.now() - minutesAgo * 60_000, deliveryStatus: 'read', sessionId })
+  const agent = (id: string, content: string, minutesAgo: number, taskId: string): MessageObject => ({ ...createChatMessage({ id, from: participantDids.codeAssistant, to: [participantDids.you], senderName: 'CodeAssistant', content, createdAtMs: Date.now() - minutesAgo * 60_000, sessionId }), agent_task: { task_id: taskId } })
+  return [
+    you('msg-cw-1', 'Audit the 2.3 release notes section by section.', 71),
+    agent('msg-cw-2', 'I planned the audit as one Todo per section.', 70, MOCK_AGENT_TASKS.workDone),
+    you('msg-cw-3', 'Rewrite the llm_context design doc against the current source.', 7),
+    agent('msg-cw-4', 'I made a plan for the rewrite; the Todos run one after another.', 6.4, MOCK_AGENT_TASKS.workPlan),
+    you('msg-cw-5', 'Run both slow builds in parallel and tell me when they finish.', 4.5),
+    agent('msg-cw-6', 'I started a work session for the two builds.', 4.3, MOCK_AGENT_TASKS.workSimple),
+    you('msg-cw-7', 'Clean up the deploy scripts.', 1),
+    agent('msg-cw-8', 'Got it, working on it…', 1, MOCK_AGENT_TASKS.workAnalyze),
   ]
 }
 
@@ -689,6 +723,7 @@ export const mockMessageSeeds: Record<string, readonly MessageObject[]> = {
   'session-coder-task': agentTaskSeeds('session-coder-task'),
   'session-coder-ask': agentAskSeeds('session-coder-ask', false),
   'session-coder-qa': agentAskSeeds('session-coder-qa', true),
+  'session-coder-work': agentWorkSeeds('session-coder-work'),
   'session-coder-1': [
     createChatMessage({
       id: 'msg-c1-1',

@@ -16,7 +16,7 @@
   "artifact_id": "demo",
   "objective": "x",
   "status": {
-    "rev": 3,
+    "rev": 4,
     "run_state": "finished",
     "outcome": "succeeded",
     "acceptance": "pending",
@@ -27,13 +27,13 @@
       "heartbeat_ms": 0
     },
     "last_runner": {
-      "runner_id": "rn-98e249f4123d4948",
+      "runner_id": "rn-f341e9b458ce486e",
       "host": "${FIXTURE_HOST}",
-      "pid": 2810648,
+      "pid": 408102,
       "lock_epoch": 1,
-      "at_ms": 1793591510920
+      "at_ms": 1793650332102
     },
-    "updated_at_ms": 1793591510914
+    "updated_at_ms": 1793650332097
   },
   "location_rev": 0
 }

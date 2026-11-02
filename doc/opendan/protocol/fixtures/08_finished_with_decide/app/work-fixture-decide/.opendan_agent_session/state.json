@@ -5,14 +5,15 @@
     "summary": ""
   },
   "bootstrap_done": true,
+  "finished_at_ms": 1793650332097,
   "inputs": {},
-  "last_run": "20261101-195150-9831cf",
+  "last_run": "20261102-121212-cb6c1b",
   "live_run": null,
   "one_line_status": "finished: done: notes.txt written",
   "outcome": "succeeded",
   "perception_seq": 2,
   "recent_keys": [],
-  "reported_rev": 2,
+  "reported_rev": 3,
   "result": {
     "answer": "done: notes.txt written",
     "answer_ref": "report.md",
@@ -21,7 +22,7 @@
       "ver": "v-work-fixture-decide"
     }
   },
-  "rev": 3,
+  "rev": 4,
   "run_state": "finished",
   "schema": "opendan.session_state/6",
   "stop_requested": false,
@@ -30,7 +31,7 @@
   },
   "turn_seq": 1,
   "turns_completed": 1,
-  "updated_at_ms": 1793591510914,
+  "updated_at_ms": 1793650332097,
   "worklog": {
     "committed_bytes": 1665,
     "committed_seq": 8
@@ -38,8 +39,8 @@
   "writer": {
     "host": "${FIXTURE_HOST}",
     "lock_epoch": 1,
-    "pid": 2810648,
+    "pid": 408102,
     "principal": "app:app2@alice",
-    "runner_id": "rn-98e249f4123d4948"
+    "runner_id": "rn-f341e9b458ce486e"
   }
 }

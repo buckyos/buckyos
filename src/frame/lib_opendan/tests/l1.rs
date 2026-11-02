@@ -184,7 +184,7 @@ async fn worklog_turn_pages_preserve_boundaries_and_live_catchup() {
     let mut cursor = None;
     let mut seen = Vec::new();
     loop {
-        let page = log.page(end, 1, cursor, None, 50).unwrap();
+        let page = log.page(end, Some(1), cursor, None, 50).unwrap();
         assert!(page.entries.iter().all(|e| e.body.turn() == Some(1)));
         assert!(page.entries.windows(2).all(|w| w[0].seq < w[1].seq));
         seen.extend(page.entries.into_iter().map(|e| e.seq));
@@ -197,18 +197,68 @@ async fn worklog_turn_pages_preserve_boundaries_and_live_catchup() {
     let mut after = first_end;
     let mut count = 0;
     while after < end {
-        let page = log.page(end, 2, None, Some(after), 50).unwrap();
+        let page = log.page(end, Some(2), None, Some(after), 50).unwrap();
         assert!(page.next_after > after);
         assert!(page.entries.iter().all(|e| e.body.turn() == Some(2)));
         count += page.entries.len();
         after = page.next_after;
     }
     assert_eq!(count, 2100);
-    assert!(log.page(end, 3, None, None, 50).unwrap().entries.is_empty());
-    assert!(log.page(end, 1, Some(end + 1), None, 50).is_err());
-    assert!(log.page(end, 1, Some(first_end - 1), None, 50).is_err());
-    assert!(log.page(end, 1, Some(end), Some(0), 50).is_err());
-    assert!(log.page(end, 1, None, None, 0).is_err());
+    assert!(log.page(end, Some(3), None, None, 50).unwrap().entries.is_empty());
+    assert!(log.page(end, Some(1), Some(end + 1), None, 50).is_err());
+    assert!(log.page(end, Some(1), Some(first_end - 1), None, 50).is_err());
+    assert!(log.page(end, Some(1), Some(end), Some(0), 50).is_err());
+    assert!(log.page(end, Some(1), None, None, 0).is_err());
+}
+
+/// Without a Turn the pages are the whole session in commit order: across
+/// Turns, records without a Turn included (TODO messagehub-worksession-ui
+/// §3.8).
+#[tokio::test]
+async fn worklog_pages_without_a_turn_are_the_whole_session() {
+    let env = Env::new();
+    let sd = env.create_work(work_spec("continuous history")).await;
+    let Acquire::Acquired(lease) = sd.acquire(holder("pages")).unwrap() else { panic!() };
+    let mut session = sd.load(&lease).unwrap();
+    let body = |turn, i| WorklogBody::UserMessage {
+        run_id: format!("r-{turn}"), turn, content: format!("message-{i}"), brief: None,
+    };
+    let control = || WorklogBody::ControlApplied {
+        input: InputRef { src: "ctl".into(), index: 1, key: String::new(), kind: "control".into() },
+        command: "pause".into(), detail: serde_json::json!({ "applied": true }),
+    };
+    let mut bodies: Vec<WorklogBody> = (0..30).map(|i| body(1, i)).collect();
+    bodies.push(control());
+    bodies.extend((0..40).map(|i| body(2, i)));
+    bodies.push(control());
+    bodies.extend((0..30).map(|i| body(3, i)));
+    session.append_worklog(&lease, bodies).unwrap();
+    session.commit_state(&lease).unwrap();
+    let end = session.worklog_end();
+    let total = sd.worklog().read_range(0, end).unwrap().len();
+    let log = sd.worklog();
+    let mut cursor = None;
+    let mut seen = Vec::new();
+    loop {
+        let page = log.page(end, None, cursor, None, 25).unwrap();
+        assert_eq!(page.next_after, end);
+        seen.splice(0..0, page.entries.into_iter().map(|e| (e.seq, e.body.turn())));
+        cursor = page.next_before;
+        if cursor.is_none() { break; }
+    }
+    assert_eq!(seen.len(), total);
+    assert!(seen.windows(2).all(|w| w[0].0 + 1 == w[1].0), "contiguous across Turns");
+    assert_eq!(seen.iter().filter(|(_, t)| t.is_none()).count(), total - 100);
+    assert!(seen.iter().any(|(_, t)| *t == Some(1)) && seen.iter().any(|(_, t)| *t == Some(3)));
+    // Forward from the start: the same records.
+    let mut after = 0;
+    let mut count = 0;
+    while after < end {
+        let page = log.page(end, None, None, Some(after), 40).unwrap();
+        count += page.entries.len();
+        after = page.next_after;
+    }
+    assert_eq!(count, total);
 }
 
 #[tokio::test]

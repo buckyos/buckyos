@@ -1,8 +1,8 @@
-{"seq":1,"t":"created","session_id":"work-fixture-decide","kind":"work","by":"app:app2@alice","objective":"x","at_ms":1793591510787}
-{"seq":2,"t":"turn_started","run_id":"20261101-195150-9831cf","turn":1,"input_seq":1,"inputs":[],"events":[],"hook":"on_init","at_ms":1793591510849}
-{"seq":3,"t":"user_message","run_id":"20261101-195150-9831cf","turn":1,"content":"<session_input hook=\"on_init\" time=\"2026-11-02T03:51:50Z\">\n<task>Start working on the objective of this session.</task>\n<runtime>{\"arch\":\"x86_64\",\"baseline\":\"extended\",\"current_time\":\"2026-11-01T19:51:50-0800\",\"cwd\":\"${FIXTURE_ROOT}/app/work-fixture-decide\",\"hostname\":\"${FIXTURE_HOSTNAME}\",\"id\":\"rt-fixture-native\",\"kind\":\"native\",\"os\":\"linux\",\"platform\":\"linux\",\"shell\":\"/usr/bin/bash\",\"shell_kind\":\"bash\",\"target\":{\"host\":\"${FIXTURE_HOST}\",\"uid\":\"${FIXTURE_UID}\"},\"timezone\":\"PST-0800\",\"tools\":[\"bash\",\"realpath\",\"base64\"]}</runtime>\n</session_input>"}
-{"seq":4,"t":"assistant_message","run_id":"20261101-195150-9831cf","turn":1,"assistant":"","tool_calls":[{"call_id":"c1","tool":"shell","args":{"command":"echo note > notes.txt"},"effect":"unknown"}]}
-{"seq":5,"t":"action_result","run_id":"20261101-195150-9831cf","turn":1,"call_id":"c1","status":"ok","result":"exit=0 in 4ms"}
-{"seq":6,"t":"assistant_message","run_id":"20261101-195150-9831cf","turn":1,"assistant":"done: notes.txt written"}
-{"seq":7,"t":"outcome","run_id":"20261101-195150-9831cf","turn":1,"kind":"done","report":"done: notes.txt written"}
-{"seq":8,"t":"turn_ended","run_id":"20261101-195150-9831cf","turn":1,"status":"completed","at_ms":1793591510913}
+{"seq":1,"t":"created","session_id":"work-fixture-decide","kind":"work","by":"app:app2@alice","objective":"x","at_ms":1793650331955}
+{"seq":2,"t":"turn_started","run_id":"20261102-121212-cb6c1b","turn":1,"input_seq":1,"inputs":[],"events":[],"hook":"on_init","at_ms":1793650332033}
+{"seq":3,"t":"user_message","run_id":"20261102-121212-cb6c1b","turn":1,"content":"<session_input hook=\"on_init\" time=\"2026-11-02T20:12:12Z\">\n<task>Start working on the objective of this session.</task>\n<runtime>{\"arch\":\"x86_64\",\"baseline\":\"extended\",\"current_time\":\"2026-11-02T12:12:12-0800\",\"cwd\":\"${FIXTURE_ROOT}/app/work-fixture-decide\",\"hostname\":\"${FIXTURE_HOSTNAME}\",\"id\":\"rt-fixture-native\",\"kind\":\"native\",\"os\":\"linux\",\"platform\":\"linux\",\"shell\":\"/usr/bin/bash\",\"shell_kind\":\"bash\",\"target\":{\"host\":\"${FIXTURE_HOST}\",\"uid\":\"${FIXTURE_UID}\"},\"timezone\":\"PST-0800\",\"tools\":[\"bash\",\"realpath\",\"base64\"]}</runtime>\n</session_input>"}
+{"seq":4,"t":"assistant_message","run_id":"20261102-121212-cb6c1b","turn":1,"assistant":"","tool_calls":[{"call_id":"c1","tool":"shell","args":{"command":"echo note > notes.txt"},"effect":"unknown"}]}
+{"seq":5,"t":"action_result","run_id":"20261102-121212-cb6c1b","turn":1,"call_id":"c1","status":"ok","result":"exit=0 in 5ms"}
+{"seq":6,"t":"assistant_message","run_id":"20261102-121212-cb6c1b","turn":1,"assistant":"done: notes.txt written"}
+{"seq":7,"t":"outcome","run_id":"20261102-121212-cb6c1b","turn":1,"kind":"done","report":"done: notes.txt written"}
+{"seq":8,"t":"turn_ended","run_id":"20261102-121212-cb6c1b","turn":1,"status":"completed","at_ms":1793650332096}
