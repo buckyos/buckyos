@@ -25,21 +25,12 @@ pub struct ExecutorTarget {
 }
 
 pub struct ExecutorDirectory {
-    endpoint: Option<String>,
     token: Arc<dyn Fn() -> TokenFuture + Send + Sync>,
 }
 
 impl ExecutorDirectory {
-    pub fn new(endpoint: String, token: Arc<dyn Fn() -> TokenFuture + Send + Sync>) -> Arc<Self> {
-        Arc::new(Self {
-            endpoint: Some(endpoint),
-            token,
-        })
-    }
-
     pub fn from_buckyos_runtime() -> Arc<Self> {
         Arc::new(Self {
-            endpoint: None,
             token: Arc::new(|| {
                 Box::pin(async {
                     let runtime =
@@ -51,14 +42,11 @@ impl ExecutorDirectory {
     }
 
     async fn call(&self, method: &str, params: Value, token: String) -> Result<Value, String> {
-        let endpoint = match &self.endpoint {
-            Some(endpoint) => endpoint.clone(),
-            None => buckyos_api::get_buckyos_api_runtime()
-                .map_err(|e| e.to_string())?
-                .get_zone_service_url("control-panel", false)
-                .await
-                .map_err(|e| e.to_string())?,
-        };
+        let endpoint = buckyos_api::get_buckyos_api_runtime()
+            .map_err(|e| e.to_string())?
+            .get_zone_service_url("control-panel", false)
+            .await
+            .map_err(|e| e.to_string())?;
         let rpc = kRPC::kRPC::new_with_timeout_secs(&endpoint, Some(token), 15);
         rpc.call(method, params).await.map_err(|e| e.to_string())
     }
@@ -382,10 +370,10 @@ impl TypedTool for ExecutorCallTool {
 pub fn executor_tools(run: RunBindingSlot) -> Vec<Arc<dyn AgentTool>> {
     let directory = ExecutorDirectory::from_buckyos_runtime();
     vec![
-        Arc::new(TypedToolHandle::with_null_host(ExecutorListTool {
+        Arc::new(TypedToolHandle::new(ExecutorListTool {
             directory: directory.clone(),
         })),
-        Arc::new(TypedToolHandle::with_null_host(ExecutorCallTool {
+        Arc::new(TypedToolHandle::new(ExecutorCallTool {
             directory,
             run,
         })),

@@ -627,7 +627,6 @@ async fn the_period_limit_skips_fires_and_refuses_work_but_absorbs_results() {
         if !is_goal_req(req) {
             return work_reply(req, &rel);
         }
-        let header = header_of(req);
         if act(req) == 1 && this_result(req, "r1").is_none() {
             create_work(&root, &session_id_of(req), "check item 1", "w1").unwrap();
             return report(json!({ "decision": "created_work" }));

@@ -147,7 +147,7 @@ behavior mode 当前把较多 session/agent 语义带进了 `LLMContextSnapshot`
 1. 移除 `XmlStepRenderer` 的 recency-based compact 逻辑。（已完成）
 2. 移除 `LLMContextDeps.history_compressor` 及 behavior loop 内部自动 compressor 入口。（已完成）
 3. 保持 `llm_context` 推理期间 append-only，不在内部修改旧 message / old step。
-4. 宿主 Session 层负责 context-limit 重写、历史压缩和手动压缩，并在压缩后持久化 snapshot：当前实现是 libopendan `SessionRunner`；旧 opendan Runtime 的 `llm_message_compress` 等待下一阶段 opendan 重构接入。
+4. 宿主 Session 层负责 context-limit 重写、历史压缩和手动压缩，并在压缩后持久化 snapshot：当前实现是 libopendan `runner::drive`；旧 opendan Runtime 的 `llm_message_compress` 等待下一阶段 opendan 重构接入。
 5. 后续如果要压缩 `StepRecord` 维度历史，应在 session 层实现为显式状态改写（`RewrittenSteps`），而不是在 renderer 或 loop 内自动发生。
 
 ## 后续简化路线

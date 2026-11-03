@@ -1618,7 +1618,6 @@ pub(crate) fn parse_write_or_edit_cli(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::NullToolHost;
     use tempfile::tempdir;
 
     fn test_session() -> SessionRuntimeContext {
@@ -1718,8 +1717,7 @@ mod tests {
             Arc::new(NoopFileWriteAudit::default()),
         );
         let session = test_session();
-        let host = NullToolHost;
-        let ctx = ToolCtx::new(&session, &host);
+        let ctx = ToolCtx::new(&session);
 
         let output = tool
             .execute(
@@ -1752,8 +1750,7 @@ mod tests {
             Arc::new(NoopFileWriteAudit::default()),
         );
         let session = test_session();
-        let host = NullToolHost;
-        let ctx = ToolCtx::new(&session, &host);
+        let ctx = ToolCtx::new(&session);
 
         let err = tool
             .execute(
@@ -1781,8 +1778,7 @@ mod tests {
             Arc::new(NoopFileWriteAudit::default()),
         );
         let session = test_session();
-        let host = NullToolHost;
-        let ctx = ToolCtx::new(&session, &host);
+        let ctx = ToolCtx::new(&session);
 
         let err = tool
             .execute(

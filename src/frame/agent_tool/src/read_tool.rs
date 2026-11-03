@@ -25,7 +25,7 @@ use serde_json::{json, Value as Json};
 
 use crate::file_tools::{FileToolConfig, ReadFileTool};
 use crate::path_utils::expand_home;
-use crate::runtime::files::{FileBackend, PathType};
+use crate::runtime::files::FileBackend;
 use crate::tool::{CallingConventions, TypedToolHandle};
 use crate::{AgentTool, AgentToolError, AgentToolResult, SessionRuntimeContext, ToolSpec};
 
@@ -197,15 +197,6 @@ impl FileBackend for ObjectBackend {
     async fn write(&self, path: &Path, _bytes: &[u8]) -> Result<(), AgentToolError> {
         Err(AgentToolError::InvalidArgs(format!(
             "{} is an object and cannot be written",
-            path.display()
-        )))
-    }
-    async fn path_type(&self, _path: &Path) -> Result<PathType, AgentToolError> {
-        Ok(PathType::File)
-    }
-    async fn mkdir(&self, path: &Path) -> Result<(), AgentToolError> {
-        Err(AgentToolError::InvalidArgs(format!(
-            "{} is an object store path, not a directory",
             path.display()
         )))
     }
@@ -382,7 +373,7 @@ impl AgentTool for ReadTool {
         };
         let window = read_args.get("range").map(|r| r.to_string()).unwrap_or_default();
         read_args.insert("path".into(), Json::String(path));
-        let mut result = TypedToolHandle::with_null_host(ReadFileTool::new(cfg))
+        let mut result = TypedToolHandle::new(ReadFileTool::new(cfg))
             .call(ctx, Json::Object(read_args))
             .await?;
         if let (Some(object), Json::Object(details)) = (object, &mut result.details) {
@@ -599,7 +590,7 @@ mod tests {
     const TEXT: &str = "alpha\nbeta\ngamma\ndelta\nepsilon\n";
 
     async fn read_file(ws: &Path, args: Json) -> AgentToolResult {
-        TypedToolHandle::with_null_host(ReadFileTool::new(FileToolConfig::new(ws.to_path_buf())))
+        TypedToolHandle::new(ReadFileTool::new(FileToolConfig::new(ws.to_path_buf())))
             .call(&ctx(), args)
             .await
             .unwrap()
@@ -780,7 +771,7 @@ mod tests {
         let read = ReadTool::new(cfg.clone()).call(&ctx(), json!({"uri": "a.txt"})).await.unwrap();
         assert_eq!(read.details["cyfs_url"], "cyfs:///home/u/ws/a.txt");
         let audit = Arc::new(crate::file_tools::NoopFileWriteAudit);
-        let written = TypedToolHandle::with_null_host(crate::file_tools::WriteFileTool::new(cfg.clone(), audit))
+        let written = TypedToolHandle::new(crate::file_tools::WriteFileTool::new(cfg.clone(), audit))
             .call(&ctx(), json!({"path": "b c.md", "content": "y"}))
             .await
             .unwrap();

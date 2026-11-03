@@ -920,14 +920,6 @@ pub enum InputSourceConfig {
     },
 }
 
-impl InputSourceConfig {
-    pub fn id(&self) -> &str {
-        match self {
-            InputSourceConfig::Kmsg { id, .. } => id,
-        }
-    }
-}
-
 /// Reply coordinates of a session bound to one conversation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct OutboundBinding {

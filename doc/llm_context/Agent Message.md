@@ -2,7 +2,7 @@
 
 > **文档定位**：描述 OpenDAN Agent 与 MessageCenter 之间消息协议的**当前实际设计**。每一节先写现在代码怎么做，再列出与早期规划的差异。尚未落地的规划和已知缺口统一放在 §7。
 >
-> **实现范围**：`msg_parser` 属于 libopendan（`libopendan::msg_parser`），是共享的协议边界；llm_context 只认 `AiMessage`，不认识 `MsgObject`。OpenDAN 一侧（pump、分发、session 输入组装、出站信封）描述的是旧 opendan Runtime 的代码，待按 libopendan 的 Session / Turn 抽象重写；libopendan 的输入批次与 Turn 规则见 [readme.md](readme.md)。出站附件（§3.3–§3.6）已按当前 libopendan 与 OpenDAN Loader 改写（2026-10-11）。
+> **实现范围**：`msg_parser` 属于 libopendan（`libopendan::msg_parser`），是共享的协议边界；llm_context 只认 `AiMessage`，不认识 `MsgObject`。OpenDAN 一侧（pump、分发、session 输入组装、出站信封）描述的是旧 opendan Runtime 的代码，待按 libopendan 的 Session / Turn 抽象重写；libopendan 的输入批次与 Turn 规则见 [readme.md](readme.md)。出站附件（§3.3–§3.6）已按当前 libopendan 与 OpenDAN Loader 改写（2026-10-11）。入站转换与命令识别（§2.2、§4.1）的 `msg_parser` 函数已随旧 Runtime 删除（2026-11-03）：`msg_parser` 现在只有出站转换 `ai_message_to_msg_object_with_base_validated_async` 和附件类型推断 `attachment_kind` / `attachment_mime`；入站消息由 libopendan `runner::input_view::message_view` 渲染进输入批次。
 >
 > **名词说明**：“Agent Message”不是一种独立的消息类型。系统里只有两个消息模型：`MsgObject`（投递与存储）和 `AiMessage`（推理，LLMContext 直接使用）。本文描述的是二者之间的转换规则，以及 OpenDAN 在转换两侧附加的路由、命令和附件策略。
 >
@@ -107,9 +107,9 @@ Telegram update
 - **`group_id`**：当 `record.msg_kind == GroupMsg` 时，取 `msg.to[0]`；退路是 tag `group:<gid>`。
 - **群消息来源**：Agent 实际是从**自己的 INBOX** 收到群消息的，因为 msg-center 已经把群消息扇出到各成员的 INBOX。`GROUP_INBOX` 记录的 owner 是群 DID。
 
-### 2.2 形态转换：`parse_msg_object_structured`
+### 2.2 形态转换：`parse_msg_object_structured`（旧 Runtime，已删除）
 
-pump 使用的是 `*_structured` 版本：
+旧 pump 使用的是 `*_structured` 版本：
 
 - 先做命令识别（§4）。
 - 未命中命令时，调用 `msg_object_to_ai_message_structured`，生成一条 `role = User` 的 `AiMessage`。
@@ -279,7 +279,7 @@ OpenDAN Loader 的对象库是 `objects::NamedStoreObjects`，用 `cacl_file_obj
 
 | 概念 | 是什么 | 谁产生 / 谁判定 |
 |---|---|---|
-| 消息 | 入站 `MsgObject` 转成的 user `AiMessage`；出站的是 Session 交付的回复（assistant 文本或报告正文） | `msg_parser` 转换；投递由 Session / msg-center 负责 |
+| 消息 | 入站 `MsgObject` 渲染成的输入；出站的是 Session 交付的回复（assistant 文本或报告正文） | 入站由 `runner::input_view` 渲染，出站由 `msg_parser` 转换；投递由 Session / msg-center 负责 |
 | 决策（Step） | Behavior Loop 中一次 LLM 决策连同动作结果，记为一个 `StepRecord`；内部可以有多个 Round。function_call Loop 没有 Step | llm_context |
 | 动作批次 | 一个 Step 的 `<actions>`，按序派发，带 action 的 Step 扣一次工具迭代额度。Action 都经 ToolManager 派发，没有由模型指定收件方的消息 Action | llm_context |
 | `<report>` | 更新 `LLMContextState.last_report`；缺省 / false 不投递、不结束，end=true 由宿主接受完成提交 | llm_context 写入；Session 决定如何上交 |
@@ -298,7 +298,7 @@ OpenDAN Loader 的对象库是 `objects::NamedStoreObjects`，用 `cacl_file_obj
 
 ### 4.1 识别规则
 
-识别由 `msg_parser::msg_object_control_command` 完成。一条消息同时满足以下条件，才会被识别为命令：
+旧 Runtime 由 `msg_parser::msg_object_control_command` 识别（该函数已于 2026-11-03 随旧 Runtime 删除）。一条消息同时满足以下条件，才会被识别为命令：
 
 - `content.format` 为空或属于纯文本类：plain / markdown / html / css / xml。
 - 没有 `refs`，也没有 `machine`。
@@ -521,8 +521,8 @@ pub enum SessionKind { Ui, Work, SelfCheck, SelfImprove }
 | 功能 | 入口 |
 |---|---|
 | 入站拉取 | `msg_center_pump::{run, drain_box, deliver_record, lower_inbound_message}` |
-| MsgObject → AiMessage | `msg_parser::{parse_msg_object_structured, msg_object_to_ai_message_structured}` |
-| 命令识别 | `msg_parser::msg_object_control_command` |
+| MsgObject → 输入批次 | `libopendan::runner::input_view::message_view`（旧 `msg_parser::{parse_msg_object_structured, msg_object_to_ai_message_structured}` 已删除） |
+| 命令识别 | 旧 `msg_parser::msg_object_control_command`（已删除） |
 | 命令执行与回复 | `command_dispatcher::run_command`、`AIAgent::dispatch_command_reply` |
 | 分发与 session 解析 | `AIAgent::{dispatch_inbound, route_msg, resolve_msg_session_id, get_or_create_session}` |
 | 队列与上限 | `AgentSession::enqueue_pending`、`enforce_pending_queue_limit` |

@@ -94,7 +94,7 @@ Session 层可以拦截每次 LLMContext run 返回的 Outcome，并根据自己
    - WorkSession 顶层 context 的 report 才默认向创建它的 UI Session 上行。
    - UI Session 顶层 context 的 report 是否继续展示给用户，是 UI Session / UI 层自己的策略。
 3. **Session 层是当前实现的统一承接点**
-   - 目前父 context 的"处理机会"还没有独立 runtime hook，所有 handoff 都在 `AgentSession`（libopendan 是 `SessionRunner`）里完成。
+   - 目前父 context 的"处理机会"还没有独立 runtime hook，所有 handoff 都在 `AgentSession`（libopendan 是 `runner::drive`）里完成。
    - 因此文档里的"父 context 处理"是语义定义；实现上由 Session 层读取调用栈（`process_stack` 的 `Caller` 帧）和目标 behavior 的进入模式来完成这个 handoff。
 
 ### 4. 目标 behavior 的进入模式决定 report 来源和归属

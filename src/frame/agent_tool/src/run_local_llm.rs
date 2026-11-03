@@ -21,9 +21,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
-use buckyos_api::{LlmResponseFormat, TaskError};
-use serde_json::Value;
-
 use crate::xllm::{
     build_result_view, export_result, list_runs, load_run, ExtractedValue, LoopModel, ProviderKind,
     ResultFormat, ResumeLimits, ResumeStart, RunEvent, RunLogLevel, RunObserver, RunOutcome,
@@ -1073,77 +1070,6 @@ fn deliver_completed(
     }
 }
 
-async fn load_task_error(
-    runtime: &buckyos_api::BuckyOSRuntime,
-    task_id: &str,
-) -> Option<TaskError> {
-    let client = match runtime.get_task_mgr_client().await {
-        Ok(client) => client,
-        Err(error) => {
-            log::warn!(
-                "aicc helper.llm_chat failed: load task error skipped; get task-manager client failed; task_id={task_id}; error={error}"
-            );
-            return None;
-        }
-    };
-
-    let task = match client.get_task(task_id).await {
-        Ok(task) => task,
-        Err(error) => {
-            log::warn!(
-                "aicc helper.llm_chat failed: get task failed; task_id={task_id}; error={error}"
-            );
-            return None;
-        }
-    };
-
-    if task.error.is_none() {
-        log::warn!(
-            "aicc helper.llm_chat failed: task has no error; task_id={task_id}; phase={:?}",
-            task.phase
-        );
-    }
-
-    task.error
-}
-
-fn format_aicc_failed_message(
-    task_id: &str,
-    event_ref: Option<&str>,
-    task_error: Option<&TaskError>,
-) -> String {
-    let mut message = format!(
-        "aicc helper.llm_chat failed: task_id={}, event_ref={}",
-        task_id,
-        event_ref.unwrap_or("")
-    );
-    if let Some(error) = task_error {
-        message.push_str(", error=");
-        message.push_str(&format_task_error(error));
-    }
-    message
-}
-
-fn format_task_error(error: &TaskError) -> String {
-    let mut message = format!("{}: {}", error.code, error.message);
-    if let Some(detail) = error.detail.as_ref() {
-        if let Ok(detail_json) = serde_json::to_string(detail) {
-            message.push_str(", detail=");
-            message.push_str(&detail_json);
-        }
-    }
-    message
-}
-
-fn aicc_response_format(force_json: bool, json_schema: Option<Value>) -> Option<LlmResponseFormat> {
-    force_json.then(|| match json_schema {
-        Some(schema) => {
-            LlmResponseFormat::json_schema(Some("llm_response".to_string()), schema, None)
-        }
-        None => LlmResponseFormat::json_object(),
-    })
-}
-
 // =========================================================================
 // resume / list / status / result
 // =========================================================================
@@ -1551,7 +1477,6 @@ async fn run_result(opts: &CliOpts) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     fn parse(args: &[&str]) -> Result<CliOpts, String> {
         CliOpts::parse(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>()).map_err(|e| match e
@@ -1652,25 +1577,5 @@ mod tests {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
-    }
-
-    #[test]
-    fn aicc_failed_message_includes_task_error_detail() {
-        let error = TaskError {
-            code: "provider_error".to_string(),
-            message: "Gemini http_error: model unavailable".to_string(),
-            detail: Some(json!({
-                "provider_code": "404",
-                "message": "use models/gemini-3.1-pro-preview"
-            })),
-        };
-
-        let message = format_aicc_failed_message("t-1", Some("/obj/taskmgr/t-1/changed"), Some(&error));
-
-        assert!(message.contains("task_id=t-1"));
-        assert!(message.contains("provider_error"));
-        assert!(message.contains("Gemini http_error: model unavailable"));
-        assert!(message.contains("gemini-3.1-pro-preview"));
-        assert!(message.contains("\"provider_code\":\"404\""));
     }
 }

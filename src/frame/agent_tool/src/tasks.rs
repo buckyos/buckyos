@@ -82,7 +82,6 @@ pub struct ShellTask {
     handle: tokio::sync::Mutex<Box<dyn CommandHandle>>,
     started_at_ms: u64,
     cancellable: bool,
-    locator: String,
     finished: Mutex<Option<TaskResult>>,
 }
 
@@ -92,7 +91,6 @@ impl ShellTask {
             command: command.to_string(),
             shape,
             cancellable: handle.cancellable(),
-            locator: handle.locator(),
             handle: tokio::sync::Mutex::new(handle),
             started_at_ms: crate::now_ms(),
             finished: Mutex::new(None),
@@ -110,18 +108,6 @@ impl ShellTask {
         let result = TaskResult::from_tool_result(&envelope);
         *self.finished.lock().expect("shell task") = Some(result.clone());
         TaskState::Finished(result)
-    }
-
-    pub fn command(&self) -> &str {
-        &self.command
-    }
-
-    pub fn runtime(&self) -> &str {
-        &self.shape.runtime.kind
-    }
-
-    pub fn locator(&self) -> &str {
-        &self.locator
     }
 
     /// The result, once the command ended and was observed.
@@ -280,10 +266,6 @@ impl InProcessTaskManager {
 
     pub fn get(&self, id: &str) -> Option<Arc<dyn LocalTask>> {
         self.inner.lock().expect("tasks").tasks.get(id).cloned()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.inner.lock().expect("tasks").tasks.is_empty()
     }
 
     /// Whether a finished task's result was read once.

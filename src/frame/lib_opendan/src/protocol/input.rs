@@ -306,14 +306,6 @@ impl ControlCommand {
             scope: StopScope::Session,
         }
     }
-
-    /// `stop` of the open Turn only.
-    pub fn stop_turn(reason: Option<String>) -> Self {
-        ControlCommand::Stop {
-            reason,
-            scope: StopScope::Turn,
-        }
-    }
 }
 
 /// What a bus record carries.

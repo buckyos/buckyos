@@ -53,7 +53,7 @@ pub use observation::{
 };
 pub use perception::{PerceptionInput, PerceptionReceipt, ReceiptStatus};
 pub use read::{
-    BasisEntry, CognitionView, PerceptionView, ProvenanceView, ReadView, RevisionEntry,
+    BasisEntry, CognitionView, PerceptionView, ProvenanceView, RevisionEntry,
     SourceAvailability,
 };
 pub use recall::{MemoryQuery, QueryResult, RecallStatus, TopicQuery, TopicResult, TopicScope};

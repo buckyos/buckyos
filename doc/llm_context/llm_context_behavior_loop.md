@@ -401,10 +401,10 @@ behavior 模式的快照总是**外层**快照。恢复点有两类:Step 之间�
 
 ## 8. worksession 侧的心智模型
 
-当前实现的 worksession 是 libopendan 的 `SessionRunner`(完整伪代码见 [readme](readme.md)):
+当前实现的 worksession 是 libopendan 的 `runner::drive`(完整伪代码见 [readme](readme.md)):
 
 ```
-SessionRunner 推进 live run(behavior 模式的 LLMContext,deps 含 action 视图的 ToolManager、parser、renderer、checkpoint_hook)
+runner::drive 推进 live run(behavior 模式的 LLMContext,deps 含 action 视图的 ToolManager、parser、renderer、checkpoint_hook)
 └─ loop:
    match ctx.run().await {                     # 走 run_behavior 分支;一次 run() 调用 → 一个 Outcome
        Done { behavior_result: Some(r), .. } => match r.next_behavior.as_deref() {

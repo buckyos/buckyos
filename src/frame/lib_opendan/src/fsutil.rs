@@ -219,11 +219,6 @@ impl ReverseLines {
         })
     }
 
-    pub fn with_block(mut self, block: u64) -> Self {
-        self.block = block.max(1);
-        self
-    }
-
     fn fill(&mut self) -> Result<bool> {
         let Some(file) = self.file.as_mut() else {
             return Ok(false);
@@ -414,13 +409,4 @@ pub fn publish_dir(tmp: &Path, dst: &Path) -> Result<bool> {
     std::fs::rename(tmp, dst).map_err(|e| OpenDanError::io(dst, e))?;
     fsync_dir(parent_of(dst))?;
     Ok(true)
-}
-
-/// Relative path check for attachment references (§4.1 rule 6).
-pub fn is_safe_relative(p: &str) -> bool {
-    let path = Path::new(p);
-    !path.is_absolute()
-        && !path
-            .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir))
 }

@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use fs2::FileExt;
-use serde_json::Value;
 
 use crate::error::{OpenDanError, Result};
 use crate::protocol::{HolderInfo, LockInfo};
@@ -321,9 +320,5 @@ impl Lease {
             let _ = self.lock.rewrite(&data);
         }
         drop(self);
-    }
-
-    pub fn holder_json(&self) -> Value {
-        serde_json::to_value(&self.info).unwrap_or(Value::Null)
     }
 }

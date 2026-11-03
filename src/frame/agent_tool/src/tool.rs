@@ -5,13 +5,10 @@
 //!   interface used by the manager.
 //! - [`CallingConventions`] is a bitflag value that replaces the three
 //!   `support_bash`/`support_action`/`support_llm_tool_call` booleans.
-//! - [`ToolHost`] collapses the per-feature backend traits into one
-//!   accessor surface so a tool only holds `Arc<dyn ToolHost>`.
 //! - [`ToolCtx`] is the runtime context passed at execution time
-//!   (session info + host + shell cwd).
+//!   (session info).
 
 use std::path::Path;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use schemars::{schema_for, JsonSchema};
@@ -19,11 +16,9 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value as Json;
 
-use crate::file_tools::FileWriteAuditBackend;
 use crate::{
     build_builtin_tool_result, AgentTool, AgentToolError, AgentToolResult,
-    SessionRuntimeContext, SessionViewBackend, ToolSpec,
-    WorklogActionBackend,
+    SessionRuntimeContext, ToolSpec,
 };
 
 /// Bitflag summary of how a tool may be invoked.
@@ -89,71 +84,6 @@ impl std::ops::BitOrAssign for CallingConventions {
     }
 }
 
-/// Unified accessor surface for runtime services that tools depend on.
-///
-/// Each method returns `None` by default so concrete hosts only override
-/// the slots they actually wire up. Tools call `ctx.host().memory_load()`
-/// and degrade gracefully when the slot is empty.
-pub trait ToolHost: Send + Sync {
-    fn session_view(&self) -> Option<&dyn SessionViewBackend> {
-        None
-    }
-    fn worklog_action(&self) -> Option<&dyn WorklogActionBackend> {
-        None
-    }
-    fn file_write_audit(&self) -> Option<&dyn FileWriteAuditBackend> {
-        None
-    }
-}
-
-/// Empty host. Used as the default when nobody has set a host on the
-/// tool manager.
-pub struct NullToolHost;
-impl ToolHost for NullToolHost {}
-
-fn null_host() -> Arc<dyn ToolHost> {
-    Arc::new(NullToolHost)
-}
-
-/// Composes individual backend Arcs into a single `ToolHost`.
-#[derive(Default, Clone)]
-pub struct BasicToolHost {
-    pub session_view: Option<Arc<dyn SessionViewBackend>>,
-    pub worklog_action: Option<Arc<dyn WorklogActionBackend>>,
-    pub file_write_audit: Option<Arc<dyn FileWriteAuditBackend>>,
-}
-
-impl BasicToolHost {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn with_session_view(mut self, backend: Arc<dyn SessionViewBackend>) -> Self {
-        self.session_view = Some(backend);
-        self
-    }
-    pub fn with_worklog_action(mut self, backend: Arc<dyn WorklogActionBackend>) -> Self {
-        self.worklog_action = Some(backend);
-        self
-    }
-    pub fn with_file_write_audit(mut self, backend: Arc<dyn FileWriteAuditBackend>) -> Self {
-        self.file_write_audit = Some(backend);
-        self
-    }
-}
-
-impl ToolHost for BasicToolHost {
-    fn session_view(&self) -> Option<&dyn SessionViewBackend> {
-        self.session_view.as_deref()
-    }
-    fn worklog_action(&self) -> Option<&dyn WorklogActionBackend> {
-        self.worklog_action.as_deref()
-    }
-    fn file_write_audit(&self) -> Option<&dyn FileWriteAuditBackend> {
-        self.file_write_audit.as_deref()
-    }
-}
-
 /// Where the value for a CLI content field comes from. `Inline` is the
 /// raw flag value; `Stdin` defers reading until dispatch.
 #[derive(Clone, Debug)]
@@ -179,34 +109,15 @@ pub enum CliInvocation {
 /// Runtime context passed to typed tools.
 pub struct ToolCtx<'a> {
     session: &'a SessionRuntimeContext,
-    host: &'a dyn ToolHost,
-    shell_cwd: Option<&'a Path>,
 }
 
 impl<'a> ToolCtx<'a> {
-    pub fn new(session: &'a SessionRuntimeContext, host: &'a dyn ToolHost) -> Self {
-        Self {
-            session,
-            host,
-            shell_cwd: None,
-        }
-    }
-
-    pub fn with_shell_cwd(mut self, cwd: Option<&'a Path>) -> Self {
-        self.shell_cwd = cwd;
-        self
+    pub fn new(session: &'a SessionRuntimeContext) -> Self {
+        Self { session }
     }
 
     pub fn session(&self) -> &SessionRuntimeContext {
         self.session
-    }
-
-    pub fn host(&self) -> &dyn ToolHost {
-        self.host
-    }
-
-    pub fn shell_cwd(&self) -> Option<&Path> {
-        self.shell_cwd
     }
 }
 
@@ -402,23 +313,11 @@ fn strip_top_level_args_schema_keys(mut schema: Json) -> Json {
 /// trait used for type-erased dispatch by the manager.
 pub struct TypedToolHandle<T: TypedTool> {
     inner: T,
-    host: Arc<dyn ToolHost>,
 }
 
 impl<T: TypedTool> TypedToolHandle<T> {
-    pub fn new(inner: T, host: Arc<dyn ToolHost>) -> Self {
-        Self { inner, host }
-    }
-
-    pub fn with_null_host(inner: T) -> Self {
-        Self {
-            inner,
-            host: null_host(),
-        }
-    }
-
-    pub fn inner(&self) -> &T {
-        &self.inner
+    pub fn new(inner: T) -> Self {
+        Self { inner }
     }
 }
 
@@ -458,7 +357,7 @@ impl<T: TypedTool> AgentTool for TypedToolHandle<T> {
             .inner
             .build_cmd_line(&typed)
             .unwrap_or_else(|| self.inner.name().to_string());
-        let tool_ctx = ToolCtx::new(ctx, self.host.as_ref());
+        let tool_ctx = ToolCtx::new(ctx);
         let output = self.inner.execute(&tool_ctx, typed).await?;
         finalize_typed_result(&self.inner, output, cmd_line)
     }
@@ -483,7 +382,7 @@ impl<T: TypedTool> AgentTool for TypedToolHandle<T> {
             .inner
             .build_cmd_line(&typed)
             .unwrap_or_else(|| line.trim().to_string());
-        let tool_ctx = ToolCtx::new(ctx, self.host.as_ref()).with_shell_cwd(shell_cwd);
+        let tool_ctx = ToolCtx::new(ctx);
         let output = self.inner.execute(&tool_ctx, typed).await?;
         finalize_typed_result(&self.inner, output, cmd_line)
     }
@@ -603,7 +502,7 @@ mod tests {
 
     #[tokio::test]
     async fn typed_tool_handle_bridges_to_agent_tool() {
-        let handle = TypedToolHandle::with_null_host(EchoTypedTool);
+        let handle = TypedToolHandle::new(EchoTypedTool);
         let result = AgentTool::call(&handle, &ctx(), json!({ "message": "hi" }))
             .await
             .expect("call");
@@ -614,7 +513,7 @@ mod tests {
 
     #[test]
     fn typed_tool_default_args_schema_omits_top_level_metadata() {
-        let handle = TypedToolHandle::with_null_host(EchoTypedTool);
+        let handle = TypedToolHandle::new(EchoTypedTool);
         let schema = handle.spec().args_schema;
         assert!(schema.get("$schema").is_none());
         assert!(schema.get("description").is_none());
@@ -639,7 +538,7 @@ mod tests {
 
     #[test]
     fn typed_tool_numeric_bounds_normalize_to_integers() {
-        let handle = TypedToolHandle::with_null_host(EchoTypedTool);
+        let handle = TypedToolHandle::new(EchoTypedTool);
         let schema = handle.spec().args_schema;
         // schemars 0.8 emits `range(min = 1)` as the float `1.0`; the
         // normalized schema must expose the integer form (strict `==` on
@@ -650,7 +549,7 @@ mod tests {
 
     #[tokio::test]
     async fn typed_tool_handle_invalid_args() {
-        let handle = TypedToolHandle::with_null_host(EchoTypedTool);
+        let handle = TypedToolHandle::new(EchoTypedTool);
         let err = AgentTool::call(&handle, &ctx(), json!({}))
             .await
             .expect_err("must fail");

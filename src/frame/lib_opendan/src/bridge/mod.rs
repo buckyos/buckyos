@@ -11,7 +11,7 @@ pub use msg::{
     context_msg_record, outbound_base, outbound_key, record_sender, route_msg_record,
     MsgBridgeCtx, MsgBridgeOutput, MsgRecord, OutboundRecord, SlashCommand,
 };
-pub use task::{dispatch_idempotency_key, task_event, task_event_key};
+pub use task::task_event;
 
 pub mod kevent;
 pub mod timer;

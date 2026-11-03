@@ -1415,7 +1415,7 @@ LLMContext 起点是把 OpenDAN 既有 agent 主循环里的"一次智能执行"
 
 Agent scheduler 承接旧 `BehaviorEngine`：根据 `Done.behavior_result.next_behavior` 推进状态机，根据 `do_actions` 调度外部动作，根据 `WAIT_USER_MSG` 等 sentinel 管理 session 等待态。
 
-当前实现中，这个 scheduler 是 libopendan 的 `SessionRunner`：它解释 Outcome、决定 Session Turn 的开始 / 继续 / 结束，并把 run 历史写入 Session worklog（见 [readme](readme.md)、[Session Directory Protocol](../opendan/protocol/Session%20Directory%20Protocol.md)）。`src/frame/opendan` 的旧 Runtime（`AgentSession`、round history 等）只做了共享 API 的编译适配，按新抽象重构待下一阶段 opendan 重构接入。
+当前实现中，这个 scheduler 是 libopendan 的 `runner::drive`：它解释 Outcome、决定 Session Turn 的开始 / 继续 / 结束，并把 run 历史写入 Session worklog（见 [readme](readme.md)、[Session Directory Protocol](../opendan/protocol/Session%20Directory%20Protocol.md)）。`src/frame/opendan` 的旧 Runtime（`AgentSession`、round history 等）只做了共享 API 的编译适配，按新抽象重构待下一阶段 opendan 重构接入。
 
 ### H4 报告校验与恢复边界（2026-10-10）
 

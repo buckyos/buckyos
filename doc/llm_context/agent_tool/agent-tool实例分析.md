@@ -83,7 +83,7 @@ pub struct WriteFileTool {
 - `Clone + Send + Sync + 'static`（`TypedTool: Send + Sync + 'static`）。
 - 重的依赖（数据库、tracing sink 等）必须以 `Arc<dyn Backend>` 形式注入，不要在 tool 内部 new。
 - 配置（`FileToolConfig`）和后端（`FileWriteAuditBackend`）分开持有：前者是值，后者是 trait object。这样测试时可以塞 `NoopFileWriteAudit`。
-- 凡是涉及"在 host 端拿点东西"，**优先**走 `ToolCtx::host()` 的访问器（`host().memory_load()` 等），只有当一个 backend 不属于 `ToolHost` 公共面（比如 file write audit 里现在仍然双轨）时才直接构造时注入。
+- 凡是涉及"在 host 端拿点东西"，都以 backend trait 的 `Arc` 在构造时注入；`ToolCtx` 只带会话信息。
 
 ---
 

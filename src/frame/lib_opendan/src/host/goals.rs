@@ -440,13 +440,6 @@ impl GoalHost {
         self.answers_checked.lock().expect("answers checked").clear();
     }
 
-    /// Another link at the end of the admission chain (phase 2: cheap
-    /// gates such as Memory's pending work).
-    pub fn with_check(mut self, check: Arc<dyn AdmissionCheck>) -> Self {
-        self.checks.push(check);
-        self
-    }
-
     pub fn status(&self) -> GoalHostStatus {
         self.status.lock().expect("goal status").clone()
     }

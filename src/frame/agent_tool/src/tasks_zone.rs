@@ -417,15 +417,6 @@ impl MemoryTaskBackend {
             r.result = Some(result);
         })
     }
-
-    /// The runner fails the task.
-    pub fn fail(&self, task_id: &str, code: &str, message: &str) -> Result<(), String> {
-        self.update(task_id, |r| {
-            r.terminal = true;
-            r.outcome = Some("failed".into());
-            r.error = Some(json!({ "code": code, "message": message }));
-        })
-    }
 }
 
 #[async_trait]

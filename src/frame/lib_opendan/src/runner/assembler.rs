@@ -600,11 +600,6 @@ impl Blocks {
 }
 
 impl DefaultAssembler {
-    pub fn with_attachment_paths(mut self, f: AttachmentPathFn) -> Self {
-        self.attachment_paths = Some(f);
-        self
-    }
-
     /// The sections of a UI session after its identity: constraints,
     /// objective, the application prompt (its own headings), initial
     /// context, and the frozen cmd_skill.

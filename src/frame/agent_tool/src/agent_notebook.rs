@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{SecondsFormat, Utc};
 use rusqlite::{
     params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
 };
@@ -1943,176 +1943,6 @@ impl AgentNotebook {
         })
     }
 
-    pub fn build_notebook_list_text(&self) -> Result<String> {
-        let conn = self.lock_conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT id, title, description, active_entry_count, updated_at
-             FROM notebooks
-             WHERE status = 'active'
-             ORDER BY id ASC",
-        )?;
-        let rows = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, i64>(3)?,
-                r.get::<_, String>(4)?,
-            ))
-        })?;
-
-        let mut notebooks = Vec::new();
-        for row in rows {
-            notebooks.push(row?);
-        }
-
-        if notebooks.is_empty() {
-            return Ok("Available notebooks: 0 total.\n".to_string());
-        }
-
-        let mut text = format!("Available notebooks: {} total.\n", notebooks.len());
-        for (id, title, description, active_entry_count, updated_at) in notebooks {
-            let label = if description.is_empty() {
-                title.as_str()
-            } else {
-                description.as_str()
-            };
-            text.push_str(&format!(
-                "- {}: {}, {} records, last modified {}\n",
-                id, label, active_entry_count, updated_at
-            ));
-        }
-        Ok(text)
-    }
-
-    pub fn build_recent_items_text(
-        &self,
-        max_items: usize,
-        since_access_at_secs: u64,
-    ) -> Result<String> {
-        self.build_recent_items_text_inner(max_items, since_access_at_secs, false)
-    }
-
-    pub fn build_recent_items_text_for_self_check(
-        &self,
-        max_items: usize,
-        since_access_at_secs: u64,
-    ) -> Result<String> {
-        self.build_recent_items_text_inner(max_items, since_access_at_secs, true)
-    }
-
-    /// Max `updated_at` (unix seconds) across all active items in active
-    /// notebooks, or 0 when there are none. Cheap single-row query used by the
-    /// Self-Check wakeup gate to detect "the Notebook changed" without
-    /// rendering the full prompt or invoking the LLM. Note that appending a
-    /// remark *does* bump the item's `updated_at`, so the gate compares against
-    /// a watermark it advances after each round (see agent_session.rs) rather
-    /// than treating any nonzero value as a change.
-    pub fn latest_active_item_update_secs(&self) -> Result<u64> {
-        let conn = self.lock_conn()?;
-        let max_updated_at: Option<String> = conn.query_row(
-            "SELECT MAX(i.updated_at)
-             FROM notebook_items i
-             JOIN notebooks n
-               ON n.id = i.notebook_id
-             WHERE i.status = 'active'
-               AND n.status = 'active'",
-            [],
-            |r| r.get::<_, Option<String>>(0),
-        )?;
-        let secs = max_updated_at
-            .as_deref()
-            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            .map(|dt| dt.timestamp().max(0) as u64)
-            .unwrap_or(0);
-        Ok(secs)
-    }
-
-    fn build_recent_items_text_inner(
-        &self,
-        max_items: usize,
-        since_access_at_secs: u64,
-        include_unreviewed: bool,
-    ) -> Result<String> {
-        let max_items = max_items.max(1);
-        let conn = self.lock_conn()?;
-        let now = now_iso8601();
-        let since = since_access_at_secs_to_iso8601(since_access_at_secs);
-        let mut stmt = conn.prepare(
-            "SELECT i.item_id, i.status, i.updated_at, i.source_session_id, i.content
-             FROM notebook_items i
-             JOIN notebooks n
-               ON n.id = i.notebook_id
-             WHERE i.status = 'active'
-               AND n.status = 'active'
-               AND (i.valid_until IS NULL OR i.valid_until >= ?)
-               AND (
-                    ? = ''
-                    OR i.updated_at >= ?
-                    OR EXISTS (
-                        SELECT 1
-                        FROM notebook_item_remarks r
-                        WHERE r.item_id = i.item_id
-                          AND r.status = 'active'
-                          AND r.remark_type = 'self_check'
-                          AND r.content LIKE '%keep_observing%'
-                    )
-                    OR (
-                        ? != 0
-                        AND NOT EXISTS (
-                            SELECT 1
-                            FROM notebook_item_remarks r
-                            WHERE r.item_id = i.item_id
-                              AND r.status = 'active'
-                              AND r.remark_type = 'self_check'
-                        )
-                    )
-               )
-             ORDER BY i.updated_at DESC, i.created_at DESC, i.item_id ASC
-             LIMIT ?",
-        )?;
-        let rows = stmt.query_map(
-            params![
-                now,
-                since,
-                since,
-                if include_unreviewed { 1_i64 } else { 0_i64 },
-                max_items as i64
-            ],
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, Option<String>>(3)?,
-                    r.get::<_, String>(4)?,
-                ))
-            },
-        )?;
-
-        let mut items = Vec::new();
-        for row in rows {
-            items.push(row?);
-        }
-
-        if items.is_empty() {
-            return Ok("Recent notebook items: none.\n".to_string());
-        }
-
-        let mut text = format!("Recent notebook items: latest {}.\n", items.len());
-        for (item_id, status, updated_at, source_session_id, content) in items {
-            text.push_str(&format!(
-                "{} {} {} {}\n{}\n",
-                item_id,
-                status,
-                updated_at,
-                source_session_id.as_deref().unwrap_or("-"),
-                content
-            ));
-        }
-        Ok(text)
-    }
-
     // ----------------------------- build_system_notebook_context (§5.8)
 
     pub fn build_system_notebook_context(
@@ -2682,15 +2512,6 @@ fn collapse_whitespace(s: &str) -> String {
 
 fn now_iso8601() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
-}
-
-fn since_access_at_secs_to_iso8601(secs: u64) -> String {
-    if secs == 0 {
-        return String::new();
-    }
-    DateTime::<Utc>::from_timestamp(secs.min(i64::MAX as u64) as i64, 0)
-        .map(|dt| dt.to_rfc3339_opts(SecondsFormat::Secs, true))
-        .unwrap_or_else(|| "9999-12-31T23:59:59Z".to_string())
 }
 
 fn blake3_hex(bytes: &[u8]) -> String {
@@ -3746,34 +3567,6 @@ mod tests {
     }
 
     #[test]
-    fn latest_active_item_update_secs_tracks_items_and_remark_bumps() {
-        let (_t, n) = open_tmp();
-        // Empty notebook → 0.
-        assert_eq!(n.latest_active_item_update_secs().unwrap(), 0);
-
-        // Appending an item yields a positive watermark.
-        let item_id = append(&n, "user/plans", "drink water", "every 30m", &["health"]);
-        let after_item = n.latest_active_item_update_secs().unwrap();
-        assert!(after_item > 0, "watermark should be set after first item");
-
-        // A self_check remark bumps the item's updated_at, so the watermark is
-        // >= the item's — this is exactly why the gate compares against a
-        // post-round watermark instead of any nonzero value.
-        n.append_item_remark(AppendItemRemarkInput {
-            session_id: Some("sess-A".into()),
-            item_id: item_id.clone(),
-            remark_type: "self_check".into(),
-            content: "decision=keep_observing".into(),
-        })
-        .unwrap();
-        let after_remark = n.latest_active_item_update_secs().unwrap();
-        assert!(
-            after_remark >= after_item,
-            "remark append must not lower the watermark"
-        );
-    }
-
-    #[test]
     fn tag_normalization_rejects_bad_chars_and_collapses_whitespace() {
         let ok = normalize_tags(&[
             "  Phone   Case ".to_string(),
@@ -4362,103 +4155,6 @@ mod tests {
             .unwrap();
         assert!(!ctx.text.contains("DO NOT LEAK"));
         assert!(ctx.text.contains("user/preferences"));
-    }
-
-    #[test]
-    fn prompt_notebook_texts_include_registry_and_recent_item_content() {
-        let (_t, n) = open_tmp();
-        append(
-            &n,
-            "user/preferences",
-            "tone",
-            "direct content A",
-            &["tone"],
-        );
-        append(&n, "projects/demo", "scope", "direct content B", &["scope"]);
-
-        let list_text = n.build_notebook_list_text().unwrap();
-        assert!(list_text.contains("Available notebooks: 2 total."));
-        assert!(list_text.contains("user/preferences"));
-        assert!(list_text.contains("projects/demo"));
-        assert!(list_text.contains("1 records"));
-        assert!(list_text.contains("last modified"));
-        assert!(!list_text.contains("direct content A"));
-
-        let recent_text = n.build_recent_items_text(2, 0).unwrap();
-        assert!(recent_text.contains("Recent notebook items: latest 2."));
-        assert!(recent_text.contains("active"));
-        assert!(recent_text.contains("sess-A"));
-        assert!(recent_text.contains("direct content A"));
-        assert!(recent_text.contains("direct content B"));
-        assert!(!recent_text.contains("tone"));
-        assert!(!recent_text.contains("scope"));
-    }
-
-    #[test]
-    fn recent_items_text_respects_since_window_except_keep_observing() {
-        let (_t, n) = open_tmp();
-        let old_id = append(&n, "user/preferences", "old action", "content", &["action"]);
-        let observing_id = append(
-            &n,
-            "user/preferences",
-            "observing action",
-            "content",
-            &["action"],
-        );
-        n.append_item_remark(AppendItemRemarkInput {
-            session_id: Some("sess-A".into()),
-            item_id: observing_id.clone(),
-            remark_type: "self_check".into(),
-            content: "decision=keep_observing reason=missing context".into(),
-        })
-        .unwrap();
-
-        let future_since = 4_102_444_800;
-        let recent_text = n.build_recent_items_text(8, future_since).unwrap();
-        assert!(recent_text.contains(&observing_id));
-        assert!(recent_text.contains("content"));
-        assert!(!recent_text.contains(&old_id));
-        assert!(!recent_text.contains("observing action"));
-        assert!(!recent_text.contains("old action"));
-    }
-
-    #[test]
-    fn self_check_recent_items_include_unreviewed_outside_since_window() {
-        let (_t, n) = open_tmp();
-        let pending_id = append(
-            &n,
-            "user/preferences",
-            "pending exercise reminder",
-            "content",
-            &["action"],
-        );
-        let reviewed_id = append(
-            &n,
-            "user/preferences",
-            "finished email note",
-            "content",
-            &["action"],
-        );
-        n.append_item_remark(AppendItemRemarkInput {
-            session_id: Some("sess-A".into()),
-            item_id: reviewed_id,
-            remark_type: "self_check".into(),
-            content: "decision=mark_no_action reason=reviewed".into(),
-        })
-        .unwrap();
-
-        let future_since = 4_102_444_800;
-        let recent_text = n
-            .build_recent_items_text_for_self_check(8, future_since)
-            .unwrap();
-        assert!(recent_text.contains(&pending_id));
-        assert!(recent_text.contains("content"));
-        assert!(!recent_text.contains("pending exercise reminder"));
-        assert!(!recent_text.contains("finished email note"));
-
-        let normal_recent_text = n.build_recent_items_text(8, future_since).unwrap();
-        assert!(!normal_recent_text.contains(&pending_id));
-        assert!(!normal_recent_text.contains("pending exercise reminder"));
     }
 
     #[test]

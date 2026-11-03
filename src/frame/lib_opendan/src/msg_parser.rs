@@ -1,4 +1,4 @@
-//! CYFS MessageHub <-> LLMContext message bridge.
+//! LLMContext -> CYFS MessageHub message bridge (egress).
 //!
 //! This module is the explicit protocol boundary between two different
 //! object models:
@@ -13,19 +13,13 @@
 //!   `AiContent` blocks such as text, image, document, tool calls and
 //!   provider state.
 //!
-//! The bridge keeps these rules deliberately narrow:
+//! [`ai_message_to_msg_object_with_base_validated_async`] turns a reply into
+//! a `MsgObject`, keeping these rules deliberately narrow:
 //!
-//! 1. Text stays text. `MsgContent.content` becomes an `AiContent::Text`
-//!    block, preserving its position before attachment blocks. Multiple text
-//!    blocks from an LLM response are joined with blank lines when producing
-//!    a `MsgObject`.
-//! 2. CYFS data-object references become non-text LLM content. A `DataObj`
-//!    ref is lowered to `AiContent::Image` when its MIME/label/URI looks like
-//!    an image; otherwise it becomes `AiContent::Document`. The CYFS object id
-//!    is preserved as `ResourceRef::NamedObject`, because that is the stable
-//!    cross-zone identity.
-//! 3. LLM non-text content is mapped back to MessageHub attachments whenever
-//!    it can be represented by `MsgContent.refs`. `ResourceRef::NamedObject`
+//! 1. Text stays text. Multiple text blocks from an LLM response are joined
+//!    with blank lines.
+//! 2. LLM non-text content is mapped to MessageHub attachments whenever it
+//!    can be represented by `MsgContent.refs`. `ResourceRef::NamedObject`
 //!    becomes a `RefItem::DataObj`. Provider-only sources such as URL or
 //!    base64 cannot be losslessly represented as a CYFS ref, so they are
 //!    serialized into a small textual marker:
@@ -33,57 +27,30 @@
 //!    `<attachment kind="image" source="url" url="https://..." mime="image/png"/>`
 //!
 //!    The same marker is accepted inside `AiContent::Text`, allowing an LLM
-//!    that can only emit text to request an outgoing attachment by object id:
+//!    that can only emit text to request an outgoing attachment by object id
+//!    or local path:
 //!
 //!    `<attachment kind="document" obj_id="file:0123abcd" title="report.pdf"/>`
 //!
-//! 4. System-control commands are recognized before normal lowering through
-//!    `parse_msg_object`. The rule is intentionally strict: a pure text
-//!    message matching `^/(<registered-command>)(\s+<args>)?$`, with no refs
-//!    and no machine payload, is returned as `MsgParseOutput::ControlCommand`.
-//!    Slash-prefixed text whose command name is not in the caller-supplied
-//!    registry falls through as a normal `AiMessage`. Callers that do not want
-//!    control semantics can use `msg_object_to_ai_message` directly.
+//! Inbound messages are rendered by `runner::input_view`; it only borrows
+//! [`attachment_kind`] / [`attachment_mime`] from here.
 //!
 //! This file should remain free of OpenDAN session policy. It only translates
-//! protocol shapes; routing, authorization, command execution and reply policy
-//! belong to the caller.
-//!
-//! Only the structured ingress (`parse_msg_object_structured`,
-//! `msg_object_to_ai_message_structured`) and the validated async egress
-//! (`ai_message_to_msg_object_with_base_validated_async`) are re-exported at
-//! the crate root; the plain-text and synchronous variants below have no
-//! caller outside this module.
+//! protocol shapes; routing, authorization and reply policy belong to the
+//! caller ([`AttachmentValidator`], [`LocalFileResolver`]).
 
 use std::collections::BTreeMap;
 
 use buckyos_api::{AiContent, AiMessage, AiRole, ResourceRef};
-use name_lib::DID;
 use ndn_lib::{
-    MachineContent, MsgContent, MsgContentFormat, MsgObjKind, MsgObject, ObjId, RefItem, RefRole,
-    RefTarget,
+    MachineContent, MsgContent, MsgContentFormat, MsgObject, ObjId, RefItem, RefRole, RefTarget,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use agent_tool::xml_util::{parse_attrs, xml_escape};
 
 const PROVIDER_MSG_MACHINE: &str = "buckyos.msg.machine";
-const PROVIDER_MSG_SERVICE_REF: &str = "buckyos.msg.ref.service_did";
-pub const PROVIDER_MSG_METADATA: &str = "buckyos.msg.metadata";
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SystemControlCommand {
-    pub raw: String,
-    pub command: String,
-    pub args: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum MsgParseOutput {
-    ControlCommand(SystemControlCommand),
-    Message(AiMessage),
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AttachmentTag {
@@ -114,8 +81,8 @@ pub struct MsgEgressOptions {
 
 /// Out-of-band ACL / path policy injected at the egress conversion site.
 /// `msg_parser` itself is policy-free — opendan supplies a real
-/// implementation (workspace whitelist, ACL lookups, …); tests use the
-/// permissive default.
+/// implementation (workspace whitelist, ACL lookups, …); the default
+/// methods approve everything.
 pub trait AttachmentValidator: Send + Sync {
     fn validate_obj_id(&self, _obj_id: &ObjId) -> AttachmentValidation {
         Ok(())
@@ -127,11 +94,6 @@ pub trait AttachmentValidator: Send + Sync {
         Ok(())
     }
 }
-
-/// Default validator that approves every attachment. Used by the
-/// non-validated wrappers and in tests where no security boundary exists.
-pub struct PermissiveAttachmentValidator;
-impl AttachmentValidator for PermissiveAttachmentValidator {}
 
 /// Materializes an LLM-emitted local file path into a CYFS `ObjId` so the
 /// attachment can travel as a content-addressed `RefItem::DataObj` (the
@@ -147,216 +109,11 @@ pub trait LocalFileResolver: Send + Sync {
     async fn resolve(&self, path: &str) -> std::result::Result<ObjId, String>;
 }
 
-/// Parse a `MsgObject` into either a registered system-control command or a
-/// normal `AiMessage`. Use this at MessageHub ingress points where
-/// slash-commands should be intercepted before they reach the LLM.
-pub fn parse_msg_object(msg: &MsgObject, registered_commands: &[&str]) -> MsgParseOutput {
-    if let Some(command) = msg_object_control_command(msg, registered_commands) {
-        MsgParseOutput::ControlCommand(command)
-    } else {
-        MsgParseOutput::Message(msg_object_to_ai_message(msg))
-    }
-}
-
-/// Parse a message for text-only agent ingress while preserving one explicit
-/// envelope per source message. Body text, attachments, and message references
-/// remain separate even if a later stage concatenates adjacent text blocks.
-pub fn parse_msg_object_structured(
-    msg: &MsgObject,
-    registered_commands: &[&str],
-) -> MsgParseOutput {
-    if let Some(command) = msg_object_control_command(msg, registered_commands) {
-        MsgParseOutput::ControlCommand(command)
-    } else {
-        MsgParseOutput::Message(msg_object_to_ai_message_structured(msg))
-    }
-}
-
-/// Lower a `MsgObject` into a provider-neutral `AiMessage` using `User` role.
-/// This function does not interpret `/` commands; callers that need control
-/// semantics should use `parse_msg_object`.
-pub fn msg_object_to_ai_message(msg: &MsgObject) -> AiMessage {
-    msg_object_to_ai_message_with_role(msg, AiRole::User)
-}
-
-pub fn msg_object_to_ai_message_structured(msg: &MsgObject) -> AiMessage {
-    msg_object_to_ai_message_with_role_structured(msg, AiRole::User)
-}
-
-pub(crate) fn msg_object_to_ai_message_with_role(msg: &MsgObject, role: AiRole) -> AiMessage {
-    let mut blocks = Vec::new();
-    let text = msg.content.content.trim();
-    if !text.is_empty() {
-        blocks.push(AiContent::text(text.to_string()));
-    }
-
-    for item in &msg.content.refs {
-        if let Some(block) = ref_item_to_ai_content(item, msg.content.format.as_ref()) {
-            blocks.push(block);
-        }
-    }
-
-    if let Some(machine) = &msg.content.machine {
-        if let Ok(value) = serde_json::to_value(machine) {
-            blocks.push(AiContent::ProviderState {
-                source: buckyos_api::ProviderStateCoordinate::unbound(),
-                provider: PROVIDER_MSG_MACHINE.to_string(),
-                value,
-            });
-        }
-    }
-
-    if blocks.is_empty() {
-        blocks.push(AiContent::text(String::new()));
-    }
-    AiMessage::new(role, blocks)
-}
-
-pub(crate) fn msg_object_to_ai_message_with_role_structured(msg: &MsgObject, role: AiRole) -> AiMessage {
-    let mut message = msg_object_to_ai_message_with_role(msg, role);
-    let text = msg.content.content.trim();
-    let generic_attachment_text = matches!(
-        text,
-        "[attachment]" | "[image]" | "[document]" | "[audio]" | "[video]" | "[file]"
-    );
-    if generic_attachment_text && !msg.content.refs.is_empty() {
-        message.content.retain(
-            |block| !matches!(block, AiContent::Text { text: value } if value.trim() == text),
-        );
-    }
-    let attachments = msg
-        .content
-        .refs
-        .iter()
-        .enumerate()
-        .filter_map(|(index, item)| {
-            ref_item_to_structured_attachment(index, item, msg.content.format.as_ref())
-        })
-        .collect::<Vec<_>>();
-    let message_references = msg
-        .thread
-        .reply_to
-        .as_ref()
-        .map(|obj_id| {
-            vec![json!({
-                "relation": "reply_to",
-                "obj_id": obj_id.to_string(),
-            })]
-        })
-        .unwrap_or_default();
-    message.content.push(AiContent::ProviderState {
-        source: buckyos_api::ProviderStateCoordinate::unbound(),
-        provider: PROVIDER_MSG_METADATA.to_string(),
-        value: json!({
-            "attachments": attachments,
-            "message_references": message_references,
-        }),
-    });
-    message
-}
-
-/// Convert an inferred LLM output message back into a `MsgObject`.
-///
-/// `from`, `to`, and `kind` are required because `AiMessage` intentionally has
-/// no MessageHub envelope. Use `ai_message_to_msg_object_with_base` when the
-/// caller already has a partially-filled `MsgObject` envelope.
-pub fn ai_message_to_msg_object(
-    message: &AiMessage,
-    from: DID,
-    to: Vec<DID>,
-    kind: MsgObjKind,
-) -> Result<MsgObject, MsgParserError> {
-    let base = MsgObject::new(from, to, kind, MsgContent::default());
-    ai_message_to_msg_object_with_base(message, base)
-}
-
 /// Convert an `AiMessage` into a `MsgObject`, preserving the caller-provided
-/// envelope fields in `base` and replacing only `base.content`. Uses the
-/// permissive validator — call `ai_message_to_msg_object_with_base_validated`
-/// from policy-bearing surfaces (e.g. opendan egress) to enforce the §2.2.2
-/// path / ACL whitelist.
-pub fn ai_message_to_msg_object_with_base(
-    message: &AiMessage,
-    base: MsgObject,
-) -> Result<MsgObject, MsgParserError> {
-    ai_message_to_msg_object_with_base_validated(message, base, &PermissiveAttachmentValidator)
-}
-
-/// Same as [`ai_message_to_msg_object_with_base`], but every `<attachment>`
-/// reference produced by the LLM (obj_id / path / url) is filtered through
-/// `validator`. Rejected attachments are left inline as text so the model's
-/// intent is preserved verbatim and the failure surfaces in audit logs,
-/// rather than silently dropping a half-converted ref.
-pub fn ai_message_to_msg_object_with_base_validated(
-    message: &AiMessage,
-    base: MsgObject,
-    validator: &dyn AttachmentValidator,
-) -> Result<MsgObject, MsgParserError> {
-    ai_message_to_msg_object_with_base_validated_with_options(
-        message,
-        base,
-        validator,
-        MsgEgressOptions::default(),
-    )
-}
-
-pub fn ai_message_to_msg_object_with_base_validated_with_options(
-    message: &AiMessage,
-    base: MsgObject,
-    validator: &dyn AttachmentValidator,
-    options: MsgEgressOptions,
-) -> Result<MsgObject, MsgParserError> {
-    let mut text_parts: Vec<String> = Vec::new();
-    let mut refs: Vec<RefItem> = Vec::new();
-    let mut machine_payloads: Vec<Value> = Vec::new();
-
-    for block in &message.content {
-        match block {
-            AiContent::Text { text } => {
-                collect_text_and_attachment_tags(
-                    text,
-                    &mut text_parts,
-                    &mut refs,
-                    validator,
-                    options,
-                )?;
-            }
-            AiContent::Image { source } => {
-                collect_resource_ref("image", source, None, &mut text_parts, &mut refs, validator);
-            }
-            AiContent::Document { source, title } => {
-                collect_resource_ref(
-                    "document",
-                    source,
-                    title.as_deref(),
-                    &mut text_parts,
-                    &mut refs,
-                    validator,
-                );
-            }
-            AiContent::ProviderState {
-                provider, value, ..
-            } if provider == PROVIDER_MSG_MACHINE => {
-                machine_payloads.push(value.clone());
-            }
-            AiContent::ToolUse { .. }
-            | AiContent::ToolResult { .. }
-            | AiContent::Thinking { .. }
-            | AiContent::ProviderState { .. } => {}
-        }
-    }
-
-    Ok(assemble_msg_object(
-        base,
-        message.role,
-        text_parts,
-        refs,
-        machine_payloads,
-    ))
-}
-
-/// Async counterpart of
-/// [`ai_message_to_msg_object_with_base_validated_with_options`]. Routes
+/// envelope fields in `base` and replacing only `base.content`. Every
+/// `<attachment>` reference produced by the LLM (obj_id / path / url) is
+/// filtered through `validator`; rejected attachments are left inline as text
+/// so the model's intent is preserved verbatim. Routes
 /// validated `<attachment>BODY</attachment>` local paths through `resolver`
 /// (typically NamedStore LocalLink registration) so they leave as
 /// content-addressed `RefItem::DataObj` and are uploadable by tunnels
@@ -449,102 +206,6 @@ fn assemble_msg_object(
         Value::String(role.as_str().to_string()),
     );
     base
-}
-
-pub(crate) fn msg_object_control_command(
-    msg: &MsgObject,
-    registered_commands: &[&str],
-) -> Option<SystemControlCommand> {
-    if registered_commands.is_empty() {
-        return None;
-    }
-    if !is_plain_text_format(msg.content.format.as_ref()) {
-        return None;
-    }
-    if !msg.content.refs.is_empty() || msg.content.machine.is_some() {
-        return None;
-    }
-    let raw = msg.content.content.as_str();
-    if raw.is_empty() || !raw.starts_with('/') {
-        return None;
-    }
-    let mut parts = raw[1..].splitn(2, char::is_whitespace);
-    let command = parts.next().unwrap_or_default().trim().to_string();
-    if command.is_empty() {
-        return None;
-    }
-    let registered = registered_commands
-        .iter()
-        .map(|name| name.trim())
-        .find(|name| !name.is_empty() && name.eq_ignore_ascii_case(&command))?;
-    let args = parts.next().unwrap_or_default().trim().to_string();
-    Some(SystemControlCommand {
-        raw: raw.to_string(),
-        command: registered.to_ascii_lowercase(),
-        args,
-    })
-}
-
-fn ref_item_to_ai_content(
-    item: &RefItem,
-    msg_format: Option<&MsgContentFormat>,
-) -> Option<AiContent> {
-    match &item.target {
-        RefTarget::DataObj { obj_id, uri_hint } => {
-            let source = ResourceRef::named_object(obj_id.clone());
-            if attachment_kind(msg_format, item.label.as_deref(), uri_hint.as_deref()) == "image" {
-                Some(AiContent::Image { source })
-            } else {
-                Some(AiContent::Document {
-                    source,
-                    title: item.label.clone(),
-                })
-            }
-        }
-        RefTarget::ServiceDid { did } => Some(AiContent::ProviderState {
-            source: buckyos_api::ProviderStateCoordinate::unbound(),
-            provider: PROVIDER_MSG_SERVICE_REF.to_string(),
-            value: json!({
-                "did": did.to_string(),
-                "role": ref_role_name(item.role),
-                "label": item.label,
-            }),
-        }),
-    }
-}
-
-fn ref_item_to_structured_attachment(
-    index: usize,
-    item: &RefItem,
-    msg_format: Option<&MsgContentFormat>,
-) -> Option<Value> {
-    let RefTarget::DataObj { obj_id, uri_hint } = &item.target else {
-        return None;
-    };
-    let kind = attachment_kind(msg_format, item.label.as_deref(), uri_hint.as_deref());
-    let mime = attachment_mime(msg_format, item.label.as_deref(), uri_hint.as_deref());
-    let display_obj_id = attachment_display_obj_id(obj_id, uri_hint.as_deref());
-    let label = item
-        .label
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let text_marker = label
-        .map(|label| format!("[{kind}: {label}]"))
-        .unwrap_or_else(|| format!("[{kind}]"));
-    Some(json!({
-        "index": index,
-        "kind": kind,
-        "role": ref_role_name(item.role),
-        "source": {
-            "type": "named_object",
-            "obj_id": display_obj_id,
-        },
-        "mime": mime,
-        "title": label,
-        "label": label,
-        "text_marker": text_marker,
-    }))
 }
 
 /// `image | audio | video | document | file` of a data object reference,
@@ -696,15 +357,6 @@ fn msg_content_format_mime(format: &MsgContentFormat) -> Option<String> {
         .and_then(|value| value.as_str().map(str::to_string))
 }
 
-fn attachment_display_obj_id(obj_id: &ObjId, uri_hint: Option<&str>) -> String {
-    uri_hint
-        .map(str::trim)
-        .and_then(|value| value.strip_prefix("cyfs://"))
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| obj_id.to_string())
-}
-
 fn collect_resource_ref(
     kind: &str,
     source: &ResourceRef,
@@ -779,22 +431,7 @@ fn collect_resource_ref(
     }
 }
 
-fn collect_text_and_attachment_tags(
-    text: &str,
-    text_parts: &mut Vec<String>,
-    refs: &mut Vec<RefItem>,
-    validator: &dyn AttachmentValidator,
-    options: MsgEgressOptions,
-) -> Result<(), MsgParserError> {
-    let mut items = collect_egress_line_items(text, validator)?;
-    // Sync path: no resolver wired. `PendingPath` collapses to the legacy
-    // advisory-text rendering inside `finalize_egress_items_into`.
-    resolve_pending_attachments_sync(&mut items);
-    finalize_egress_items_into(items, text_parts, refs, options);
-    Ok(())
-}
-
-/// Async variant of [`collect_text_and_attachment_tags`]. Pending local-file
+/// Text blocks with `<attachment>` markers. Pending local-file
 /// references are handed to `resolver` and materialized into
 /// `RefItem::DataObj` entries — typically the resolver registers the file
 /// with NamedStore in LocalLink mode so identical content yields identical
@@ -836,16 +473,6 @@ fn collect_egress_line_items(
         }
     }
     Ok(out)
-}
-
-fn resolve_pending_attachments_sync(items: &mut [EgressLineItem]) {
-    for item in items.iter_mut() {
-        if let EgressLineItem::Tag { lowering, .. } = item {
-            if matches!(lowering, AttachmentLowering::PendingPath(_)) {
-                *lowering = AttachmentLowering::Keep;
-            }
-        }
-    }
 }
 
 async fn resolve_pending_attachments_async(
@@ -929,8 +556,7 @@ fn attachment_tag_to_ref_item(
         // Validator owns the path-policy decision (workspace fence / `..`
         // traversal / symlink-escape). The actual file → ObjId
         // materialization is deferred to a `LocalFileResolver` so the
-        // parser crate stays free of FS / NDN dependencies; without a
-        // resolver wired in, `PendingPath` collapses to `Keep`.
+        // parser crate stays free of FS / NDN dependencies.
         if let Err(reason) = validator.validate_path(raw_path) {
             return Ok(AttachmentLowering::Rejected(reason));
         }
@@ -1101,319 +727,72 @@ fn json_to_canon(value: Value) -> ndn_lib::CanonValue {
     }
 }
 
-fn is_plain_text_format(format: Option<&MsgContentFormat>) -> bool {
-    matches!(
-        format,
-        None | Some(MsgContentFormat::TextPlain)
-            | Some(MsgContentFormat::TextMarkdown)
-            | Some(MsgContentFormat::TextHtml)
-            | Some(MsgContentFormat::TextCss)
-            | Some(MsgContentFormat::TextXml)
-    )
-}
-
-fn ref_role_name(role: RefRole) -> &'static str {
-    match role {
-        RefRole::Context => "context",
-        RefRole::Input => "input",
-        RefRole::Output => "output",
-        RefRole::Evidence => "evidence",
-        RefRole::Control => "control",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use name_lib::DID;
+    use ndn_lib::MsgObjKind;
+
+    struct Allow;
+    impl AttachmentValidator for Allow {}
+
+    struct NoFiles;
+    #[async_trait::async_trait]
+    impl LocalFileResolver for NoFiles {
+        async fn resolve(&self, path: &str) -> std::result::Result<ObjId, String> {
+            Err(format!("no file {path}"))
+        }
+    }
 
     fn obj_id() -> ObjId {
         ObjId::new("file:010203").unwrap()
     }
 
-    #[test]
-    fn msg_object_lowers_text_and_image_ref() {
-        let msg = MsgObject {
-            content: MsgContent {
-                format: Some(MsgContentFormat::TextPlain),
-                content: "look".to_string(),
-                refs: vec![RefItem {
-                    role: RefRole::Input,
-                    target: RefTarget::DataObj {
-                        obj_id: obj_id(),
-                        uri_hint: Some("photo.png".to_string()),
-                    },
-                    label: Some("photo.png".to_string()),
-                }],
-                ..MsgContent::default()
-            },
-            ..MsgObject::default()
-        };
-
-        let out = msg_object_to_ai_message(&msg);
-        assert_eq!(out.role, AiRole::User);
-        assert!(matches!(out.content[0], AiContent::Text { .. }));
-        assert!(matches!(out.content[1], AiContent::Image { .. }));
+    async fn egress(msg: &AiMessage, options: MsgEgressOptions) -> MsgObject {
+        let base = MsgObject::new(
+            DID::undefined(),
+            vec![DID::undefined()],
+            MsgObjKind::Chat,
+            MsgContent::default(),
+        );
+        ai_message_to_msg_object_with_base_validated_async(msg, base, &Allow, options, &NoFiles)
+            .await
+            .unwrap()
     }
 
     #[test]
-    fn structured_attachment_prefers_ref_type_over_message_format() {
-        let msg = MsgObject {
-            content: MsgContent {
-                format: Some(MsgContentFormat::TextPlain),
-                content: "look".to_string(),
-                refs: vec![RefItem {
-                    role: RefRole::Input,
-                    target: RefTarget::DataObj {
-                        obj_id: obj_id(),
-                        uri_hint: None,
-                    },
-                    label: Some("image/png".to_string()),
-                }],
-                ..MsgContent::default()
-            },
-            ..MsgObject::default()
-        };
-
-        let out = msg_object_to_ai_message_structured(&msg);
-        assert!(out
-            .content
-            .iter()
-            .any(|block| matches!(block, AiContent::Image { .. })));
-        let metadata = structured_message_metadata(&out);
-        assert_eq!(metadata["attachments"][0]["kind"], "image");
-        assert_eq!(metadata["attachments"][0]["mime"], "image/png");
-    }
-
-    #[test]
-    fn structured_message_infers_each_ref_type_independently() {
-        let refs = ["image/png", "audio/mpeg", "clip.mp4", "archive.zip"]
+    fn attachment_kind_follows_label_then_format() {
+        let inferred = ["image/png", "audio/mpeg", "clip.mp4", "archive.zip"]
             .into_iter()
-            .map(|label| RefItem {
-                role: RefRole::Input,
-                target: RefTarget::DataObj {
-                    obj_id: obj_id(),
-                    uri_hint: None,
-                },
-                label: Some(label.to_string()),
-            })
-            .collect();
-        let msg = MsgObject {
-            content: MsgContent {
-                format: Some(MsgContentFormat::TextPlain),
-                content: "use these files".to_string(),
-                refs,
-                ..MsgContent::default()
-            },
-            ..MsgObject::default()
-        };
-
-        let out = msg_object_to_ai_message_structured(&msg);
-        let metadata = structured_message_metadata(&out);
-        let attachments = metadata["attachments"].as_array().unwrap();
-        let inferred = attachments
-            .iter()
-            .map(|attachment| {
+            .map(|label| {
+                let format = Some(&MsgContentFormat::TextPlain);
                 (
-                    attachment["kind"].as_str().unwrap(),
-                    attachment["mime"].as_str().unwrap(),
+                    attachment_kind(format, Some(label), None),
+                    attachment_mime(format, Some(label), None).unwrap(),
                 )
             })
             .collect::<Vec<_>>();
         assert_eq!(
             inferred,
             vec![
-                ("image", "image/png"),
-                ("audio", "audio/mpeg"),
-                ("video", "video/mp4"),
-                ("file", "application/zip"),
+                ("image", "image/png".to_string()),
+                ("audio", "audio/mpeg".to_string()),
+                ("video", "video/mp4".to_string()),
+                ("file", "application/zip".to_string()),
             ]
         );
-    }
-
-    #[test]
-    fn msg_object_structured_keeps_body_and_attachment_separate() {
-        let msg = MsgObject {
-            content: MsgContent {
-                format: Some(MsgContentFormat::ImagePng),
-                content: "[attachment]".to_string(),
-                refs: vec![RefItem {
-                    role: RefRole::Input,
-                    target: RefTarget::DataObj {
-                        obj_id: obj_id(),
-                        uri_hint: Some("photo.png".to_string()),
-                    },
-                    label: Some("photo.png".to_string()),
-                }],
-                ..MsgContent::default()
-            },
-            ..MsgObject::default()
-        };
-
-        let out = msg_object_to_ai_message_structured(&msg);
-        assert_eq!(out.role, AiRole::User);
-        assert_eq!(out.text_content(), "");
-        assert!(out
-            .content
-            .iter()
-            .any(|block| matches!(block, AiContent::Image { .. })));
-        let metadata = structured_message_metadata(&out);
-        assert_eq!(metadata["attachments"][0]["index"], 0);
-        assert_eq!(metadata["attachments"][0]["kind"], "image");
-        assert_eq!(metadata["attachments"][0]["role"], "input");
-        assert_eq!(metadata["attachments"][0]["label"], "photo.png");
-        assert_eq!(metadata["message_references"], json!([]));
-    }
-
-    #[test]
-    fn structured_attachment_uses_cyfs_uri_hint_as_display_obj_id() {
-        let msg = MsgObject {
-            content: MsgContent {
-                format: Some(MsgContentFormat::ImageJpeg),
-                content: "San Jose能参加活动么".to_string(),
-                refs: vec![RefItem {
-                    role: RefRole::Input,
-                    target: RefTarget::DataObj {
-                        obj_id: obj_id(),
-                        uri_hint: Some("cyfs://cyfile:20ace92837ced8d14805d63cb5305ca5d7f2df5a56d9d8cd288ed8118d098cc3".to_string()),
-                    },
-                    label: Some("image/jpeg".to_string()),
-                }],
-                ..MsgContent::default()
-            },
-            ..MsgObject::default()
-        };
-
-        let out = msg_object_to_ai_message_structured(&msg);
-        let metadata = structured_message_metadata(&out);
-        assert_eq!(out.text_content(), "San Jose能参加活动么");
-        assert_eq!(
-            metadata["attachments"][0]["source"]["obj_id"],
-            "cyfile:20ace92837ced8d14805d63cb5305ca5d7f2df5a56d9d8cd288ed8118d098cc3"
-        );
-    }
-
-    #[test]
-    fn structured_message_keeps_media_kinds_and_reply_reference() {
         for (format, expected) in [
             (MsgContentFormat::AudioMpeg, "audio"),
             (MsgContentFormat::VideoMp4, "video"),
             (MsgContentFormat::ApplicationOctetStream, "file"),
             (MsgContentFormat::ApplicationPdf, "document"),
         ] {
-            let msg = MsgObject {
-                thread: ndn_lib::TopicThread {
-                    reply_to: Some(ObjId::new("cymsg:010203040506").unwrap()),
-                    ..Default::default()
-                },
-                content: MsgContent {
-                    format: Some(format),
-                    refs: vec![RefItem {
-                        role: RefRole::Context,
-                        target: RefTarget::DataObj {
-                            obj_id: obj_id(),
-                            uri_hint: None,
-                        },
-                        label: None,
-                    }],
-                    ..MsgContent::default()
-                },
-                ..MsgObject::default()
-            };
-            let out = msg_object_to_ai_message_structured(&msg);
-            let metadata = structured_message_metadata(&out);
-            assert_eq!(metadata["attachments"][0]["kind"], expected);
-            assert_eq!(metadata["attachments"][0]["role"], "context");
-            assert_eq!(
-                metadata["message_references"][0],
-                json!({"relation": "reply_to", "obj_id": "cymsg:010203040506"})
-            );
+            assert_eq!(attachment_kind(Some(&format), None, None), expected);
         }
     }
 
-    #[test]
-    fn parse_structured_mode_keeps_registered_commands() {
-        let msg = MsgObject {
-            content: MsgContent {
-                format: Some(MsgContentFormat::TextPlain),
-                content: "/help".to_string(),
-                ..MsgContent::default()
-            },
-            ..MsgObject::default()
-        };
-
-        match parse_msg_object_structured(&msg, &["help"]) {
-            MsgParseOutput::ControlCommand(cmd) => assert_eq!(cmd.command, "help"),
-            other => panic!("expected control command, got {other:?}"),
-        }
-    }
-
-    fn structured_message_metadata(message: &AiMessage) -> &Value {
-        message
-            .content
-            .iter()
-            .find_map(|block| match block {
-                AiContent::ProviderState {
-                    provider, value, ..
-                } if provider == PROVIDER_MSG_METADATA => Some(value),
-                _ => None,
-            })
-            .expect("structured message metadata")
-    }
-
-    #[test]
-    fn slash_text_matching_registered_name_is_control_command() {
-        let msg = MsgObject {
-            content: MsgContent {
-                format: Some(MsgContentFormat::TextPlain),
-                content: "/switch coding".to_string(),
-                ..MsgContent::default()
-            },
-            ..MsgObject::default()
-        };
-
-        match parse_msg_object(
-            &msg,
-            &[
-                "new", "clean", "stop", "cancel", "info", "list", "switch", "help",
-            ],
-        ) {
-            MsgParseOutput::ControlCommand(cmd) => {
-                assert_eq!(cmd.command, "switch");
-                assert_eq!(cmd.args, "coding");
-            }
-            other => panic!("expected control command, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn slash_text_not_in_registry_lowers_as_message() {
-        let msg = MsgObject {
-            content: MsgContent {
-                format: Some(MsgContentFormat::TextPlain),
-                content: "/etc/nginx/conf 帮我看下".to_string(),
-                ..MsgContent::default()
-            },
-            ..MsgObject::default()
-        };
-
-        match parse_msg_object(
-            &msg,
-            &[
-                "new", "clean", "stop", "cancel", "info", "list", "switch", "help",
-            ],
-        ) {
-            MsgParseOutput::Message(ai) => match &ai.content[0] {
-                AiContent::Text { text } => {
-                    assert_eq!(text, "/etc/nginx/conf 帮我看下");
-                }
-                other => panic!("expected text message, got {other:?}"),
-            },
-            other => panic!("expected normal message, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn ai_message_named_object_content_becomes_msg_ref() {
+    #[tokio::test]
+    async fn ai_message_named_object_content_becomes_msg_ref() {
         let msg = AiMessage::new(
             AiRole::Assistant,
             vec![
@@ -1425,13 +804,7 @@ mod tests {
             ],
         );
 
-        let out = ai_message_to_msg_object(
-            &msg,
-            DID::undefined(),
-            vec![DID::undefined()],
-            MsgObjKind::Chat,
-        )
-        .unwrap();
+        let out = egress(&msg, MsgEgressOptions::default()).await;
         assert_eq!(out.content.content, "done");
         assert_eq!(out.content.refs.len(), 1);
         assert_eq!(out.content.refs[0].label.as_deref(), Some("report.pdf"));
@@ -1441,20 +814,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn text_attachment_marker_becomes_msg_ref() {
+    #[tokio::test]
+    async fn text_attachment_marker_becomes_msg_ref() {
         let msg = AiMessage::text(
             AiRole::Assistant,
             "see this\n<attachment kind=\"image\" obj_id=\"file:010203\" title=\"x.png\" />",
         );
 
-        let out = ai_message_to_msg_object(
-            &msg,
-            DID::undefined(),
-            vec![DID::undefined()],
-            MsgObjKind::Chat,
-        )
-        .unwrap();
+        let out = egress(&msg, MsgEgressOptions::default()).await;
         assert_eq!(out.content.content, "see this");
         assert_eq!(out.content.refs.len(), 1);
         assert_eq!(out.content.refs[0].label.as_deref(), Some("x.png"));
@@ -1472,28 +839,20 @@ mod tests {
         assert_eq!(tag.obj_id, None);
     }
 
-    #[test]
-    fn text_attachment_marker_can_be_preserved_by_option() {
+    #[tokio::test]
+    async fn text_attachment_marker_can_be_preserved_by_option() {
         let msg = AiMessage::text(
             AiRole::Assistant,
             "see this\n<attachment kind=\"image\" obj_id=\"file:010203\" title=\"x.png\" />",
         );
-        let base = MsgObject::new(
-            DID::undefined(),
-            vec![DID::undefined()],
-            MsgObjKind::Chat,
-            MsgContent::default(),
-        );
 
-        let out = ai_message_to_msg_object_with_base_validated_with_options(
+        let out = egress(
             &msg,
-            base,
-            &PermissiveAttachmentValidator,
             MsgEgressOptions {
                 preserve_attachment_tag_in_egress: true,
             },
         )
-        .unwrap();
+        .await;
 
         assert!(out.content.content.contains("<attachment"));
         assert_eq!(out.content.refs.len(), 1);

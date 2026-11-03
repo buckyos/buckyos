@@ -33,7 +33,7 @@ AgentTool 基于 tool_calls 机制提供 Agent 的工具能力。每个 tool 支
 ## 分层
 
 ```text
-宿主：xllm CLI / libopendan SessionRunner / xagent
+宿主：xllm CLI / libopendan Session（`runner::drive`）/ xagent
   ▼
 llm_context（waist）：ToolManager::call_tool(call, ToolCallCtx) -> Observation
   ▼

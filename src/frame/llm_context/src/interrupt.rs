@@ -173,14 +173,6 @@ impl LLMContextInterruptHandle {
         self.inner.set_finishing(reason.into())
     }
 
-    pub fn is_interrupted(&self) -> bool {
-        self.inner.is_aborted()
-    }
-
-    pub fn is_finishing(&self) -> bool {
-        self.inner.is_finishing()
-    }
-
     pub fn reason(&self) -> Option<String> {
         self.inner.reason()
     }
@@ -240,10 +232,6 @@ impl InferenceAbortToken {
     /// was requested.
     pub async fn stopping(&self) {
         self.inner.stopping().await
-    }
-
-    pub fn reason(&self) -> Option<String> {
-        self.inner.reason()
     }
 }
 

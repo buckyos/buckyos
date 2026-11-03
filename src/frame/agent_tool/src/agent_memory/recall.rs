@@ -4,7 +4,7 @@
 //! candidates from object / pair / directed relation hops, scope objects,
 //! tags and full text; the complete score is kept for the caller.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashSet};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -621,17 +621,3 @@ struct RecallItemDraft<'a> {
     matched: Vec<String>,
 }
 
-/// Group recall items by semantic kind for subject views (§6.3.3).
-pub fn group_by_semantic_kind(items: &[RecallItem]) -> BTreeMap<String, Vec<RecallItem>> {
-    let mut out: BTreeMap<String, Vec<RecallItem>> = BTreeMap::new();
-    for i in items {
-        out.entry(
-            i.semantic_kind
-                .clone()
-                .unwrap_or_else(|| i.kind.to_string()),
-        )
-        .or_default()
-        .push(i.clone());
-    }
-    out
-}

@@ -33,24 +33,8 @@ impl RenderVars {
         Self::default()
     }
 
-    pub fn with_env(mut self, key: impl Into<String>, value: impl Into<Json>) -> Self {
-        self.env.insert(key.into(), value.into());
-        self
-    }
-
     pub fn with_var(mut self, key: impl Into<String>, value: impl Into<Json>) -> Self {
         self.vars.insert(key.into(), value.into());
-        self
-    }
-
-    /// Merge `other` on top of `self`. `other` wins on collision.
-    pub fn merged(mut self, other: &RenderVars) -> Self {
-        for (k, v) in &other.env {
-            self.env.insert(k.clone(), v.clone());
-        }
-        for (k, v) in &other.vars {
-            self.vars.insert(k.clone(), v.clone());
-        }
         self
     }
 }

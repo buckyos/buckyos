@@ -280,7 +280,6 @@ impl Loader {
             Arc::new(MsgCenterSink {
                 mail,
                 texts: OutboundTexts::load(&env.agent_root, &config.language),
-                owner: env.owner_did.clone(),
             }) as Arc<dyn OutboundSink>
         });
         if env.session_cli.is_none() {

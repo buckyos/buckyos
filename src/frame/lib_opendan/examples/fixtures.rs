@@ -11,6 +11,7 @@
 //! scenario directory); a consumer substitutes its own copy location.
 
 #[path = "support/fixture_paths.rs"]
+#[allow(dead_code)] // `expand` is used by tests/fixtures.rs
 mod fixture_paths;
 #[path = "support/input_fixture.rs"]
 mod input_fixture;

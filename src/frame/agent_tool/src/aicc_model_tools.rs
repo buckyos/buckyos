@@ -195,7 +195,7 @@ mod tests {
 
     #[tokio::test]
     async fn make_exact_model_requires_provider_instance_name() {
-        let tool = TypedToolHandle::with_null_host(MakeExactModelTool::new());
+        let tool = TypedToolHandle::new(MakeExactModelTool::new());
         let err = crate::AgentTool::call(
             &tool,
             &ctx(),
@@ -211,7 +211,7 @@ mod tests {
 
     #[tokio::test]
     async fn make_and_parse_exact_model_with_variant() {
-        let make = TypedToolHandle::with_null_host(MakeExactModelTool::new());
+        let make = TypedToolHandle::new(MakeExactModelTool::new());
         let made = crate::AgentTool::call(
             &make,
             &ctx(),
@@ -228,7 +228,7 @@ mod tests {
             "gemini-3.1-pro-preview:reasoning-high@google-gemini-main"
         );
 
-        let parse = TypedToolHandle::with_null_host(ParseExactModelTool::new());
+        let parse = TypedToolHandle::new(ParseExactModelTool::new());
         let parsed = crate::AgentTool::call(
             &parse,
             &ctx(),

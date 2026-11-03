@@ -15,7 +15,7 @@
 ## 1. 分层
 
 ```text
-宿主：xllm CLI（agent_tool xllm）/ libopendan SessionRunner / xagent
+宿主：xllm CLI（agent_tool xllm）/ libopendan Session（`runner::drive`）/ xagent
   │  合并 .llm_context 配置，选择 runtime，注入宿主工具、task resolver、env 与 PATH 前缀
   ▼
 llm_context（waist）
@@ -201,24 +201,9 @@ CallingConventions::ALL
 
 如果工具 CLI 只是 bash 风格的位置参数，通常不用覆写 `parse_cli_args()`；如果要支持 `--flag value`、`--content-stdin` 这类 CLI 语法，在工具自身实现里覆写，而不是在 CLI dispatcher 里新增分支。
 
-### 3.5 `ToolHost`：backend 注入
+### 3.5 backend 注入
 
-`ToolHost` 把多个 backend 能力收敛成一个访问面：
-
-```rust
-pub trait ToolHost: Send + Sync {
-    fn session_view(&self) -> Option<&dyn SessionViewBackend> { None }
-    fn workspace_runtime(&self) -> Option<&dyn WorkspaceRuntimeBackend> { None }
-    fn workspace_tool(&self) -> Option<&dyn WorkspaceToolBackend> { None }
-    fn external_workspace(&self) -> Option<&dyn ExternalWorkspaceBackend> { None }
-    fn memory_load(&self) -> Option<&dyn MemoryLoadBackend> { None }
-    fn memory_mutation(&self) -> Option<&dyn MemoryMutationBackend> { None }
-    fn worklog_action(&self) -> Option<&dyn WorklogActionBackend> { None }
-    fn file_write_audit(&self) -> Option<&dyn FileWriteAuditBackend> { None }
-}
-```
-
-`AgentToolManager::with_host()` / `set_host()` 配置 host，`register_typed_tool()` 会把当前 host 捕获进 `TypedToolHandle`。多数现有工具仍直接持有 backend `Arc`；新代码沿用所在模块的模式即可。
+工具需要的宿主能力以 backend trait 的 `Arc` 在构造时注入，例如 `GetSessionTool::new(Arc<dyn SessionViewBackend>)`、`WriteFileTool::new(cfg, Arc<dyn FileWriteAuditBackend>)`。`ToolCtx` 只带会话信息（`ctx.session()`）。
 
 ---
 
@@ -259,7 +244,7 @@ llm_context 不认识 task，循环里不等待：任何等待都是 task。一�
 - 进程内的工作：实现 `agent_tool::tasks::LocalTask`（`brief`、`started_at_ms`、`cancellable`、`state`、`wait`、`cancel`），用 `InProcessTaskManager::register(kind, task)` 登记，得到 `local:<kind>:<n>`；宿主经 `XllmToolManager::tasks()` 取得管理器。参考 `ShellTool` 的 `detach_into_task`：等满预算仍未结束，就返回 `success` + `task_id`。
 - 进程内 task 不持久化，执行器重启后状态为 unknown。需要崩溃后能读回结果的，工具自己落盘（`shell` 用执行目录）。
 - 服务接口本身返回 buckyos task id 时直接返回它，不要为了用 task-mgr 把本地工作改造成远程任务。宿主注入 `XllmDeps.buckyos_tasks` 后（OpenDAN Loader 注入 Zone TaskMgr 的解析器），派发器和 LLM 的 task 工具都能跟进这类 task；没有注入时状态为 unknown，模型在 `shell` 中用 CLI `check_task` / `cancel_task` / `finish_task`（见 [builtin_agent_tools.md](builtin_agent_tools.md#6-task-工具)）。
-- 返回文本里的下一步提示用 `agent_tool::task_model::next_step_hint(task_id, cancellable)` 生成（宿主的跟进方式不是 task 工具时用 `TaskFollowup::hint`），与 task 工具保持一致；只有可取消的 task 才提示 `cancel_task`。
+- 返回文本里的下一步提示用 `agent_tool::task_model::TaskFollowup::hint(task_id, cancellable)` 生成（跟进方式是 task 工具时用 `TaskFollowup::Tools`），与 task 工具保持一致；只有可取消的 task 才提示 `cancel_task`。
 - 等多久由 runtime 的预算决定，不给模型加调用前要选择的参数（如 `background`）。
 - 工具也可以不自己等，返回 `pending` + `task_id`，由派发器在预算内等，到期仍在运行就以普通结果返回“仍在运行”。规则见 [agent_tool_result_protocol.md](agent_tool_result_protocol.md#长任务与-pending-结果)。
 - “仍在运行”之后由谁跟进是宿主的事：xllm 的模型用 task 工具，libopendan Session 在循环外跟进并把结束作为 `<<task_result>>` 输入带回。工具不需要知道是哪一种。
@@ -522,7 +507,7 @@ Agent RootFS 布局以 [Agent RootFS](<../../opendan/Agent RootFS.md>) 为准。
    - 实现 `name()` / `description()` / `calling()` / `execute()`
    - 必要时实现 `usage()` / `build_cmd_line()` / `build_summary()` / `parse_bash_args()` / `parse_cli_args()`
 2. 按第 4 节决定 `cancellable()`、`idempotent()`，以及工作是否可能超出调用内等待预算、需要交给 task。
-3. 需要 backend 能力时优先复用现有 backend trait 或 `ToolHost` slot。
+3. 需要 backend 能力时优先复用现有 backend trait，在构造时注入。
 4. 宿主用 `XllmDeps::with_host_tool` 注册，`.llm_context` 的 `tools.tools` / `tools.actions` 里以 `- name: <tool>` 引用。
 5. 宿主工具在宿主进程执行，读写的是宿主所在机器。工具要跟随 runtime 操作目标机器时，改为在 shell 中调用的 CLI 命令（7.2），或者经 runtime 的 `FileBackend` / `Sandbox::exec`。
 
@@ -616,7 +601,7 @@ write_file ./demo.txt --mode write --content "hello"
 - [Agent RootFS](<../../opendan/Agent RootFS.md>)：Agent root 目录布局与 4 层 Bin
 - [Agent Session SDK 实现计划](<../../opendan/Agent Session SDK 实现计划.md>) §7：libopendan 的 runtime 绑定与环境契约
 - `src/frame/agent_tool/src/lib.rs`：`AgentToolResult`、`AgentTool`、`AgentToolManager`、`AgentToolError`
-- `src/frame/agent_tool/src/tool.rs`：`TypedTool`、`CallingConventions`、`ToolHost`
+- `src/frame/agent_tool/src/tool.rs`：`TypedTool`、`CallingConventions`、`ToolCtx`
 - `src/frame/agent_tool/src/runtime/`：`RuntimeConfig`、`AgentRuntime`、`Sandbox`、native / SSH / Node 与文件后端、`CURRENT_TOOL_CTX`
 - `src/frame/agent_tool/src/llm_bash.rs`：`shell`、`BashRunner`、执行目录
 - `src/frame/agent_tool/src/task_model.rs`：`RunningTaskResolver`、`TaskState`、`TaskFollowup`、`wait_until_ms`、等待上限

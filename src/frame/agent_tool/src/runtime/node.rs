@@ -1216,17 +1216,6 @@ impl FileBackend for RemoteNodeFiles {
         .await;
         Some(outcome)
     }
-
-    async fn path_type(&self, path: &Path) -> Result<PathType, AgentToolError> {
-        let path = path.to_string_lossy().to_string();
-        let status = self.run("stat", RemoteOp::Stat { path: &path, hash: false }).await?;
-        Ok(path_type_of(&status))
-    }
-
-    async fn mkdir(&self, path: &Path) -> Result<(), AgentToolError> {
-        let path = path.to_string_lossy().to_string();
-        self.run("mkdir", RemoteOp::Mkdir { path: &path }).await.map(|_| ())
-    }
 }
 
 fn path_type_of(status: &ExecutorOpStatus) -> PathType {

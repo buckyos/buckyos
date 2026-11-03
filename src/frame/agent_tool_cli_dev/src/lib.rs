@@ -3858,17 +3858,6 @@ fn required_token(
         .ok_or_else(|| with_tool_usage(format!("missing value for `{flag}`"), tool_name))
 }
 
-fn parse_object_bool(raw: &str, name: &str, tool_name: &str) -> Result<bool, AgentToolError> {
-    match raw.trim() {
-        "true" | "1" | "yes" => Ok(true),
-        "false" | "0" | "no" => Ok(false),
-        _ => Err(with_tool_usage(
-            format!("invalid `{name}` value `{raw}`, expected bool"),
-            tool_name,
-        )),
-    }
-}
-
 fn parse_json_arg(raw: &str, name: &str, tool_name: &str) -> Result<Json, AgentToolError> {
     serde_json::from_str(raw).map_err(|err| {
         with_tool_usage(

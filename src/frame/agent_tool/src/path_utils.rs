@@ -65,10 +65,6 @@ pub fn to_abs_path(path: &Path) -> Result<PathBuf, AgentToolError> {
     }
 }
 
-pub fn normalize_root_path(root: &Path) -> Result<PathBuf, AgentToolError> {
-    to_abs_path(root)
-}
-
 pub fn resolve_path_from_root(root: &Path, raw_path: &str) -> Result<PathBuf, AgentToolError> {
     if raw_path.trim().is_empty() {
         return Err(AgentToolError::InvalidArgs(
@@ -82,16 +78,6 @@ pub fn resolve_path_from_root(root: &Path, raw_path: &str) -> Result<PathBuf, Ag
         root.join(user_path)
     };
     Ok(normalize_abs_path(&candidate))
-}
-
-pub fn resolve_path_under_root(root: &Path, raw_path: &str) -> Result<PathBuf, AgentToolError> {
-    let normalized = resolve_path_from_root(root, raw_path)?;
-    if !normalized.starts_with(root) {
-        return Err(AgentToolError::InvalidArgs(format!(
-            "path out of workspace scope: {raw_path}"
-        )));
-    }
-    Ok(normalized)
 }
 
 pub fn sanitize_session_id_for_path(session_id: &str) -> Result<String, AgentToolError> {

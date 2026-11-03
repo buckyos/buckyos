@@ -134,10 +134,6 @@ pub fn parse_app_principal(p: &str) -> Option<(String, String)> {
     Some((app.to_string(), owner.to_string()))
 }
 
-pub fn app_principal(appid: &str, owner: &str) -> String {
-    format!("app:{appid}@{owner}")
-}
-
 /// kmsg queue name, scoped to the agent as well as the driving app.
 pub fn queue_name(agent_did: &str, sid: &str) -> String {
     format!("opendan.session.{}", h(&[agent_did, sid]))

@@ -28,7 +28,6 @@ use std::time::Instant;
 use async_trait::async_trait;
 use llm_context::deps::CancelCause;
 use serde_json::{json, Map as JsonMap, Value as Json};
-use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::time::{timeout as tokio_timeout, Duration};
 
 use crate::path_utils::to_abs_path;
@@ -199,15 +198,6 @@ impl BashTargetSpec {
 pub enum BashTarget {
     Local,
     Unsupported(String),
-}
-
-impl BashTarget {
-    pub fn label(&self) -> &str {
-        match self {
-            BashTarget::Local => "local",
-            BashTarget::Unsupported(value) => value.as_str(),
-        }
-    }
 }
 
 /// PATH overlay: an ordered list of bin directories prepended to `PATH`.
@@ -567,14 +557,6 @@ pub(crate) fn wait_duration(ms: u64) -> Duration {
     }
 }
 
-/// Build the env list applied to the spawned shell (overlay layers first).
-pub fn prepare_overlay_env(
-    overlay: &BinOverlayConfig,
-    user_env: &[(String, String)],
-) -> Vec<(String, String)> {
-    prepare_shell_env(overlay, user_env, cfg!(windows))
-}
-
 fn prepare_shell_env(
     overlay: &BinOverlayConfig,
     user_env: &[(String, String)],
@@ -713,19 +695,6 @@ impl OutputCollector {
             format!("{head}\n…[{omitted} bytes omitted]…\n{tail}")
         } else {
             format!("{head}{tail}")
-        }
-    }
-}
-
-pub(crate) async fn drain_pipe<R: AsyncRead + Unpin>(
-    mut reader: R,
-    collector: Arc<Mutex<OutputCollector>>,
-) {
-    let mut buf = [0u8; 8192];
-    loop {
-        match reader.read(&mut buf).await {
-            Ok(0) | Err(_) => break,
-            Ok(n) => collector.lock().expect("bash output lock").push(&buf[..n]),
         }
     }
 }
@@ -1414,10 +1383,6 @@ impl ShellTool {
 
     pub fn local_workspace(workspace: impl Into<PathBuf>) -> Self {
         Self::new(LlmBashConfig::local_workspace(workspace))
-    }
-
-    pub fn config(&self) -> &LlmBashConfig {
-        &self.config
     }
 
     fn tool_name(&self) -> &str {
@@ -2733,7 +2698,7 @@ mod tests {
 
     #[test]
     fn overlay_env_adds_system_bins_when_path_missing() {
-        let env = prepare_overlay_env(&BinOverlayConfig::disabled(), &[]);
+        let env = prepare_shell_env(&BinOverlayConfig::disabled(), &[], cfg!(windows));
         let path = env
             .iter()
             .find(|(k, _)| k == "PATH")

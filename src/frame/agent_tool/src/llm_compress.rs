@@ -127,11 +127,6 @@ impl CompressOptions {
         }
     }
 
-    pub fn with_focus(mut self, focus: impl Into<String>) -> Self {
-        self.extra_focus_prompt = Some(focus.into());
-        self
-    }
-
     pub fn with_note(mut self, note: impl Into<String>) -> Self {
         self.note = Some(note.into());
         self

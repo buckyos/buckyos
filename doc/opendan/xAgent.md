@@ -70,7 +70,7 @@ xagent : AgentSession ──InputBus──► 输入批次 ──commit──►
 | InputView、命名格式、三类模板、媒体块、receipt 与回复来路 | `runner/{input_view,assembler,live,receipts,flush}.rs`；黄金结果在 `protocol/fixtures/14_input_bus/` |
 | task 跟进（调用内等待预算、run 保活、task 结果输入）、长工具 stop | `agent_tool::task_model`、`runner/outcome.rs::{keep_while_running,commit_kept}`、`drive.rs::{poll_watched_tasks,StopMonitor}` |
 | Context 调度、子 context 工具调用、崩溃恢复、Runtime 绑定 | `runner/{live,outcome,reconcile,tools}.rs`、共享 `agent_tool::runtime` |
-| CLI 可用基础 | `api::{create_session,post_input,read_session}`、`RunnerDeps`、`SessionRunner`、`examples/session.rs` |
+| CLI 可用基础 | `api::{create_session,post_input,read_session}`、`RunnerDeps`、`runner::drive`、`examples/session.rs` |
 
 本轮新增（session_config `/5`）：`BehaviorCatalog` 与冻结（`state/behaviors.rs`、`protocol/behavior.rs`、`runner/assembler.rs::BehaviorAssembler`）、SessionTemplate（`template.rs`）、`StopWhen::TurnClosed` 与 `StopSignal`（`runner/{mod,drive}.rs`）、无队列输入源（`channel::BootstrapSource`）、父子桥与 `session` resolver（`runner/children.rs`）、`api::create_sub_session`、宿主（`host.rs`：`HostDeps` / `ChildDriver` / `run_session` / `serve`）、Session runtime 工厂（`runtime::{runtime_for_session, session_runtime}`）、`state::connect`、`bridge::{timer,kevent}`、`bin/xagent.rs`。本文中的 `AgentSession` / `ContextFactory` / `InputBus` 是职责示意，不要求创建同名包装层；现有 `Session`、`Shared`、`InputChannelFactory` 等能承载时直接扩展。§12 有默认选择的条目按该选择实施；明确未定且后移的能力不进入本轮命令面。
 
@@ -1026,7 +1026,7 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
 
 ## 9. CLI 接线与 Turn Loop 实施参考
 
-本节描述目标阶段与必须保留的提交边界；伪代码中的阶段函数不是新增 API 清单。实际入口是 `SessionRunner::new(deps).drive(&sd, until)` 与现有 `runner/` 模块。输入协议、receipt、普通 task 等待与 Context 调度复用基线；标为 C4–C16 的扩展在库内完成，CLI 负责参数、宿主生命周期和结果展示。不要照旧草案重新实现一套循环。
+本节描述目标阶段与必须保留的提交边界；伪代码中的阶段函数不是新增 API 清单。实际入口是 `runner::drive(&sd, &deps, until)` 与现有 `runner/` 模块。输入协议、receipt、普通 task 等待与 Context 调度复用基线；标为 C4–C16 的扩展在库内完成，CLI 负责参数、宿主生命周期和结果展示。不要照旧草案重新实现一套循环。
 
 ### 9.1 组件与状态
 

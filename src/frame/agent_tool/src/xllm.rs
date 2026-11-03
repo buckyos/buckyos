@@ -132,8 +132,6 @@ pub const DEFAULT_LLM_TIMEOUT_SECS: u64 = 600;
 pub const DEFAULT_RUNS_DIR: &str = "~/.xllm/runs";
 /// 默认锁目录：启用工具的任务按工作目录互斥，与 Runs 目录无关（F05）。
 pub const DEFAULT_LOCK_DIR: &str = "~/.xllm/locks";
-/// 内置工具组 `bash` 提供的命令执行工具名（`shell`）。
-pub const TOOL_EXEC: &str = TOOL_SHELL;
 pub const BUILTIN_TOOL_GROUP_BASH: &str = "bash";
 /// 内置工具组 `bash_core`：`read`（`read_file` 的超集）/ `write_file` /
 /// `edit_file` / `shell`，不含 task 工具——长命令由 `XllmDeps.task_cli`
@@ -2041,11 +2039,6 @@ impl TaskInput {
         self.attachments.push(Attachment::Image {
             source: source.into(),
         });
-        self
-    }
-
-    pub fn with_stdin(mut self, text: impl Into<String>) -> Self {
-        self.stdin = Some(text.into());
         self
     }
 }
@@ -4776,16 +4769,16 @@ fn builtin_bash_group(
         Arc::new(crate::read_tool::ReadTool::new(cfg.clone()).with_urls(extras.urls.clone()))
     } else {
         Arc::new(crate::read_tool::DedupReadFile::new(Arc::new(
-            TypedToolHandle::with_null_host(ReadFileTool::new(cfg.clone())),
+            TypedToolHandle::new(ReadFileTool::new(cfg.clone())),
         )))
     };
     vec![
         reader,
-        Arc::new(TypedToolHandle::with_null_host(WriteFileTool::new(
+        Arc::new(TypedToolHandle::new(WriteFileTool::new(
             cfg.clone(),
             audit.clone(),
         ))),
-        Arc::new(TypedToolHandle::with_null_host(EditFileTool::new(
+        Arc::new(TypedToolHandle::new(EditFileTool::new(
             cfg, audit,
         ))),
         match bash_runner {
@@ -9455,11 +9448,6 @@ impl XllmRun {
 }
 
 impl XllmToolManager {
-    /// Bind the manager to a run id (trace / session context of tool calls).
-    pub fn set_run_id(&mut self, run_id: &str) {
-        self.bind_run_dir(run_id, None);
-    }
-
     /// Bind the manager to a run: trace / session context of tool calls and
     /// the run directory the `shell` execution directories live under.
     pub fn bind_run_dir(&mut self, run_id: &str, run_dir: Option<PathBuf>) {
@@ -10345,7 +10333,7 @@ tools:
         // exec 启用：命令手册出现；rules 列出工具。
         assert!(sys.contains("rg -n <pattern>"));
         assert!(sys.contains("Native tools available"));
-        assert!(sys.contains(TOOL_EXEC));
+        assert!(sys.contains(TOOL_SHELL));
         // 组默认任务进入 user。
         let user = user_text(&llm.seen()[0]);
         assert!(user.contains(&format!("Review the code in {}", record.workdir)));
@@ -12604,11 +12592,11 @@ there]]></write_file>
                         json!({"path": "../fixture.txt", "old_string": "outside-original", "new_string": "outside-edited"}),
                     ),
                     (
-                        TOOL_EXEC,
+                        TOOL_SHELL,
                         json!({"command": if cfg!(windows) { "[Console]::Write((Get-Location).ProviderPath)" } else { "pwd" }, "cwd": outside}),
                     ),
                     (
-                        TOOL_EXEC,
+                        TOOL_SHELL,
                         json!({"command": if cfg!(windows) { "[Console]::Write((Get-Location).ProviderPath)" } else { "pwd" }, "cwd": ".."}),
                     ),
                 ];
@@ -12629,7 +12617,7 @@ there]]></write_file>
                         if name == "read_file" {
                             assert!(content.contains("outside-original"), "{content}");
                         }
-                        if name == TOOL_EXEC {
+                        if name == TOOL_SHELL {
                             assert!(
                                 content
                                     .replace('\\', "/")
@@ -12767,7 +12755,7 @@ there]]></write_file>
                 "edit",
             ),
             tool_call(
-                TOOL_EXEC,
+                TOOL_SHELL,
                 json!({"command": if cfg!(windows) { "[IO.File]::WriteAllText((Join-Path (Get-Location).ProviderPath 'resumed-cwd.txt'), (Get-Location).ProviderPath)" } else { "pwd > resumed-cwd.txt" }, "cwd": ".."}),
                 "exec",
             ),
@@ -12836,7 +12824,7 @@ there]]></write_file>
 
     fn exec_call(command: &str) -> AiToolCall {
         AiToolCall {
-            name: TOOL_EXEC.to_string(),
+            name: TOOL_SHELL.to_string(),
             args: HashMap::from([("command".to_string(), Value::String(command.to_string()))]),
             call_id: "c1".to_string(),
         }

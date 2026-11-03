@@ -201,11 +201,6 @@ impl LLMContext {
         }
     }
 
-    /// `true` when the context runs the Behavior Loop.
-    pub fn behavior_mode(&self) -> bool {
-        self.is_behavior_mode()
-    }
-
     /// The context-limit yield this context is suspended by, if any.
     pub fn suspension(&self) -> Option<&Suspension> {
         self.state.suspended.as_ref()

@@ -315,14 +315,6 @@ impl MemBehaviorCatalog {
             .insert(name.to_string(), cfg);
         *self.rev.lock().expect("rev") += 1;
     }
-
-    pub fn put_cmd_skill(&self, name: &str, text: &str) {
-        self.cmd_skills
-            .lock()
-            .expect("cmd skills")
-            .insert(name.to_string(), text.to_string());
-        *self.rev.lock().expect("rev") += 1;
-    }
 }
 
 #[async_trait]

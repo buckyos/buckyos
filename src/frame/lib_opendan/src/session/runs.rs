@@ -397,17 +397,6 @@ impl RunHandle {
         })
     }
 
-    /// The call whose result handed `task_id` over (`host.extra.task_calls`).
-    pub fn task_call(&self, task_id: &str) -> Option<String> {
-        self.record()
-            .host
-            .as_ref()
-            .and_then(|h| h.extra.get("task_calls"))
-            .and_then(|m| m.get(task_id))
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-    }
-
     /// A sub context call this run made (`call_behavior` or a behavior's
     /// named function): the session hands over to it when the run's segment
     /// ends (`host.extra.sub_call`). `None` clears it.

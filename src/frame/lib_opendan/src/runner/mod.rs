@@ -47,7 +47,6 @@ use crate::channel::{InputChannelFactory, NoopNotifier, Notifier, PollWaker, Wak
 use crate::error::RecoveryBlocked;
 use crate::protocol::*;
 use crate::runtime::AgentRuntime;
-use crate::session::SessionDir;
 use crate::state::AgentStateClient;
 
 pub use assembler::{
@@ -361,11 +360,6 @@ impl RunnerDeps {
         self
     }
 
-    pub fn with_notifier(mut self, n: Arc<dyn Notifier>) -> Self {
-        self.notifier = n;
-        self
-    }
-
     pub fn with_session_cli(mut self, p: PathBuf) -> Self {
         self.session_cli = Some(p);
         self
@@ -387,17 +381,3 @@ impl RunnerDeps {
     }
 }
 
-/// Convenience wrapper.
-pub struct SessionRunner {
-    pub deps: RunnerDeps,
-}
-
-impl SessionRunner {
-    pub fn new(deps: RunnerDeps) -> Self {
-        Self { deps }
-    }
-
-    pub async fn drive(&self, sd: &SessionDir, until: StopWhen) -> DriveResult {
-        drive(sd, &self.deps, until).await
-    }
-}

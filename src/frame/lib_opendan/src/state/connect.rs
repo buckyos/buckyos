@@ -116,22 +116,11 @@ async fn krpc(agent_did: &str, endpoint: &str) -> Result<Arc<dyn AgentStateClien
 /// like a remote client.
 pub struct ForwardingStateClient {
     inner: Arc<dyn AgentStateClient>,
-    /// Whether callers may see the AgentRoot path (a remote client cannot).
-    expose_root: bool,
 }
 
 impl ForwardingStateClient {
     pub fn new(inner: Arc<dyn AgentStateClient>) -> Self {
-        Self {
-            inner,
-            expose_root: false,
-        }
-    }
-
-    /// Same machine: tools of the session still find the AgentRoot.
-    pub fn with_root(mut self) -> Self {
-        self.expose_root = true;
-        self
+        Self { inner }
     }
 }
 
@@ -292,11 +281,7 @@ impl AgentStateClient for ForwardingStateClient {
         self.inner.agent_id()
     }
     fn agent_root(&self) -> Option<&Path> {
-        if self.expose_root {
-            self.inner.agent_root()
-        } else {
-            None
-        }
+        None
     }
     fn sessions(&self) -> &dyn SessionRegistry {
         self

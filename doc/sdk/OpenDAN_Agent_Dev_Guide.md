@@ -87,7 +87,7 @@ cmd_skill 是一类事的命令手册（`cmd_skills/<name>.md`，front matter �
 - 查询、等待和取消当前 runtime 管理的 task。
 - 按需发现执行环境中的命令和用法。
 
-这些能力不应以 `agent-session`、SessionRunner 或在线 BuckyOS task-mgr 为前提。需要上层状态的 CLI 可以依赖对应宿主，但通用 runtime task 的 CLI 入口应由 xllm/runtime 层提供。
+这些能力不应以 `agent-session`、libopendan 的 Session runner（`runner::drive`）或在线 BuckyOS task-mgr 为前提。需要上层状态的 CLI 可以依赖对应宿主，但通用 runtime task 的 CLI 入口应由 xllm/runtime 层提供。
 
 ### 3.2 当前 wait_task 的语义
 
@@ -119,7 +119,7 @@ cmd_skill 是一类事的命令手册（`cmd_skills/<name>.md`，front matter �
 
 命令必须连接当前 xllm/runtime 的同一个 task resolver，复用状态、输出、等待和取消语义。不能简单把 `get_task_state` 别名到现有 `check_task`：后者查询 BuckyOS task-mgr，不覆盖当前 runtime 的 `local:` task；现有同名 CLI `cancel_task` 也有这一差别。
 
-SessionRunner 可以为这个基础层增加宿主任务解析、在 loop 之外跟进 task（结束作为输入交回）和持久恢复。桥接入口不应反向要求独立 xllm 先创建 Session。
+libopendan 的 Session runner 可以为这个基础层增加宿主任务解析、在 loop 之外跟进 task（结束作为输入交回）和持久恢复。桥接入口不应反向要求独立 xllm 先创建 Session。
 
 实现 CLI 入口并验证等价性之后，再安排模型工具/action 集合的一次性收敛；不能先移除 task 工具而让长命令失去跟进入口。
 

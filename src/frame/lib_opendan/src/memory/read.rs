@@ -12,14 +12,6 @@ use super::hint::{Hint, HintState};
 use super::recall::{corrections_for, is_pending, overlay_corrections, record_visible};
 use super::{Caller, Disposition, Memory, MemoryError, MemoryResult, ProducedBy};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReadView {
-    Cognition,
-    Provenance,
-    Perception,
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CognitionView {
     /// The requested revision (fixed content) or the current one.

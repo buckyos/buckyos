@@ -787,11 +787,6 @@ impl Supervisor {
         self
     }
 
-    pub fn with_recheck(mut self: Arc<Self>, recheck: Duration) -> Arc<Self> {
-        Arc::get_mut(&mut self).expect("configured before use").recheck = recheck;
-        self
-    }
-
     pub fn host(&self) -> &HostDeps {
         &self.host
     }
@@ -992,14 +987,6 @@ impl Supervisor {
             .collect();
         out.sort_by(|a, b| a.session_id.cmp(&b.session_id));
         out
-    }
-
-    pub fn is_loaded(&self, sid: &str) -> bool {
-        self.slots
-            .lock()
-            .expect("slots")
-            .get(sid)
-            .is_some_and(Slot::running)
     }
 
     /// End hosting: no new loops, the running ones are cancelled and waited

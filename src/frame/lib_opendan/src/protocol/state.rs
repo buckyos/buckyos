@@ -20,8 +20,6 @@ pub const SESSION_STATE_SCHEMA: &str = "opendan.session_state/6";
 
 /// Upper bound on `inputs.recent_keys` (bounded dedup cache).
 pub const RECENT_KEYS_LIMIT: usize = 256;
-/// Upper bound on `consumed_above` per source before we warn.
-pub const CONSUMED_ABOVE_WARN: usize = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -374,21 +372,6 @@ impl SourceProgress {
             return;
         }
         self.consumed_above.insert(index);
-        while self.consumed_above.remove(&(self.acked_index + 1)) {
-            self.acked_index += 1;
-        }
-    }
-
-    /// Mark every index `< first_available` consumed: the queue no longer
-    /// holds anything below it (deleted / retention), so the contiguous
-    /// prefix may advance past the hole.
-    pub fn skip_below(&mut self, first_available: u64) {
-        if first_available == 0 || first_available <= self.acked_index + 1 {
-            return;
-        }
-        self.acked_index = first_available - 1;
-        self.consumed_above.retain(|i| *i > first_available - 1);
-        self.accepted.retain(|i| *i > first_available - 1);
         while self.consumed_above.remove(&(self.acked_index + 1)) {
             self.acked_index += 1;
         }

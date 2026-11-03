@@ -48,15 +48,6 @@ impl TaskResult {
             tool_result: ToolResultView::from_host(&Some(result.to_host())),
         }
     }
-
-    pub fn failed(&self) -> bool {
-        !self.success
-    }
-
-    /// Exit code of a command task, when it has one.
-    pub fn return_code(&self) -> Option<i32> {
-        self.tool_result.as_ref().and_then(|t| t.return_code)
-    }
 }
 
 /// State of a task as reported by its task manager.
@@ -240,21 +231,6 @@ impl TaskFollowup {
             }
         }
     }
-
-    /// How to get a task's full output, in a few words.
-    pub fn short(&self) -> String {
-        match self {
-            TaskFollowup::Tools => "use get_task_state / wait_task".to_string(),
-            TaskFollowup::Command(cli) => format!("use `{cli} state <id>` / `{cli} wait <id>`"),
-            TaskFollowup::Input(Some(cli)) => format!("use `{cli} state <id>`"),
-            TaskFollowup::Input(None) => "use get_task_state".to_string(),
-        }
-    }
-}
-
-/// Hint appended to a still-running task's result (task tools).
-pub fn next_step_hint(task_id: &str, cancellable: bool) -> String {
-    TaskFollowup::Tools.hint(task_id, cancellable)
 }
 
 fn fmt_elapsed(ms: u64) -> String {

@@ -224,8 +224,6 @@ impl OutboundTexts {
 pub struct MsgCenterSink {
     pub mail: Arc<dyn MailService>,
     pub texts: OutboundTexts,
-    /// The agent's owner: the one a question in a group is addressed to.
-    pub owner: Option<DID>,
 }
 
 impl MsgCenterSink {

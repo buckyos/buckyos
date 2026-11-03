@@ -89,7 +89,7 @@ Sub AgentSession 按访问规则通过 AgentStateClient/工具读取 Parent Agen
 
 ## Agent Loop的几种典型伪代码和history 消息结构
 
-伪代码只保留主干，省略错误、预算、快照提交和崩溃恢复。`组件.函数` 对应实现：AgentSession 是 libopendan 的 `SessionRunner`（`runner/drive.rs`），LLMContext 在 `llm_context/context_loop.rs`，其余是 LLMContext 的依赖（`deps.rs`）。消息结构里 `@` 标出消息所属的 Round / Step。
+伪代码只保留主干，省略错误、预算、快照提交和崩溃恢复。`组件.函数` 对应实现：AgentSession 是 libopendan 的 `runner::drive`（`runner/drive.rs`），LLMContext 在 `llm_context/context_loop.rs`，其余是 LLMContext 的依赖（`deps.rs`）。消息结构里 `@` 标出消息所属的 Round / Step。
 
 ```text
 AgentSession                  Turn：取输入批次、推进 run、解释 Outcome、决定 Turn 是否结束

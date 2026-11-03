@@ -35,7 +35,7 @@ let agent = Arc::new(FsAgentStateClient::open(agent_root, agent_did, Some(channe
 let sd = libopendan::create_session(&app_dir, SessionSpec::work("…"), agent.as_ref(), "app:app2@alice", channels.as_ref()).await?;
 let deps = RunnerDeps::new("app:app2@alice", agent, channels,
                            Arc::new(NativeRuntime::local("rt-app2", "app:app2")), XllmDeps::default());
-let result = SessionRunner::new(deps).drive(&sd, StopWhen::Finished).await;
+let result = libopendan::runner::drive(&sd, &deps, StopWhen::Finished).await;
 ```
 
 LLM Provider 由 `session_config.prompt.llm_context`（xllm `.llm_context` 的 JSON 形式）决定，工具预算键为 `max_tool_iterations`。`StopWhen::MaxOutcomes { n }` 让 drive 处理 n 个 `LLMContext` outcome（每个启动或恢复的 run 段一个，任何种类）后返回 `DriveResult::OutcomesHandled`；它不是 Round（推理）数、`run()` 调用数，也不是 Turn 数。Session 的结束条件另由 `end_condition`（如 `max_turns`）按已完成的 Turn 计。Round / Step / Turn 的定义见 [LLM Context readme](../../../doc/llm_context/readme.md)。

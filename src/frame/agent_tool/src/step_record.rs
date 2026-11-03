@@ -72,16 +72,6 @@ impl XmlStepRenderer {
         self
     }
 
-    pub fn with_summary_chars(mut self, n: usize) -> Self {
-        self.summary_chars = n;
-        self
-    }
-
-    pub fn with_max_result_chars(mut self, n: usize) -> Self {
-        self.max_result_chars = n;
-        self
-    }
-
     fn render_full(&self, step: &StepRecord) -> (AiMessage, AiMessage) {
         let assistant = step.assistant_message.clone().unwrap_or_else(|| {
             AiMessage::text(

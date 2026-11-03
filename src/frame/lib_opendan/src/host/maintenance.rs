@@ -15,7 +15,6 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use serde_json::Value;
 
 use crate::error::Result;
 use crate::goal::{current_usage, period_exhausted, window_secs};
@@ -286,9 +285,4 @@ pub async fn decide(
 /// The Memory component of the agent at `agent_root`.
 pub fn memory_of(agent_root: &std::path::Path) -> Arc<Memory> {
     Arc::new(Memory::open(agent_root, MemoryConfig::default()))
-}
-
-/// `schedule.json.gate` as JSON (status summaries).
-pub fn gate_value(gate: &MaintenanceGate) -> Value {
-    serde_json::to_value(gate).unwrap_or(Value::Null)
 }
