@@ -64,7 +64,7 @@ use crate::behavior_loop::{
 use crate::context_window::{estimate_request, ContextLimits};
 use crate::deps::{
     resolve_tool_specs, CancelCause, Injection, InjectionPosition, LLMContextDeps,
-    LlmInferenceRequest, ToolCallCtx, WorkEvent, MAX_INJECTIONS_PER_BOUNDARY,
+    LlmInferenceRequest, ToolCallCtx, ToolSpecLite, WorkEvent, MAX_INJECTIONS_PER_BOUNDARY,
 };
 use crate::error::{CheckpointStage, LLMComputeError, ProviderFailure};
 use crate::interrupt::{
@@ -95,6 +95,9 @@ pub struct LLMContext {
     native_result_parser: Option<Arc<dyn LLMResultParser>>,
     tool_checkpoint_hook: Option<Arc<dyn crate::deps::CheckpointHook>>,
     inner_parent: Option<(LLMContextSnapshot, usize)>,
+    /// Wrap-up tools the policy does not offer were reported (once per
+    /// instance).
+    wrap_up_warned: bool,
 }
 
 impl LLMContext {
@@ -119,6 +122,7 @@ impl LLMContext {
             native_result_parser: None,
             tool_checkpoint_hook: None,
             inner_parent: None,
+            wrap_up_warned: false,
         }
     }
 
@@ -184,6 +188,7 @@ impl LLMContext {
             native_result_parser: None,
             tool_checkpoint_hook: None,
             inner_parent: None,
+            wrap_up_warned: false,
         })
     }
 
@@ -554,8 +559,11 @@ impl LLMContext {
                 }
             }
 
-            // 3. Tool loop bookkeeping: this batch needs a tool iteration.
-            if self.state.tool_iterations_left == 0 {
+            // 3. Tool loop bookkeeping: this batch needs a tool iteration,
+            //    unless it is a wrap-up batch (see `admits_wrap_up`).
+            if self.state.tool_iterations_left == 0
+                && !self.admits_wrap_up(tool_calls.iter().map(|call| call.name.as_str()))
+            {
                 return LLMContextOutcome::BudgetExhausted {
                     which: BudgetKind::ToolIterations,
                     partial: Some(ContextOutput::Text {
@@ -608,7 +616,11 @@ impl LLMContext {
 
             // 5. Push the provider's assistant message into history exactly
             // as returned so content block order and non-text blocks survive,
-            // then dispatch the batch at the top of the loop.
+            // then dispatch the batch at the top of the loop. A wrap-up batch
+            // is counted here; its completion charges no iteration.
+            if self.state.tool_iterations_left == 0 {
+                self.state.wrap_up_rounds_used += 1;
+            }
             self.state.accumulated.push(response.message.clone());
             self.state.tool_batch = Some(ToolBatch {
                 remaining: gated,
@@ -673,6 +685,7 @@ impl LLMContext {
                 outer.state.usage = self.state.usage.clone();
                 outer.state.consecutive_errors = self.state.consecutive_errors;
                 outer.state.tool_iterations_left = self.state.tool_iterations_left;
+                outer.state.wrap_up_rounds_used = self.state.wrap_up_rounds_used;
                 outer
             }
             None => self.snapshot(),
@@ -875,8 +888,9 @@ impl LLMContext {
             }
         }
 
-        // The batch is complete: one tool iteration, one error count at
-        // most, whatever the number of failed calls.
+        // The batch is complete: one tool iteration (none for a wrap-up
+        // batch, dispatched at 0), one error count at most, whatever the
+        // number of failed calls.
         let batch = self.state.tool_batch.take().unwrap_or_default();
         match batch.batch_error {
             Some(err) => {
@@ -1160,10 +1174,18 @@ impl LLMContext {
         }
     }
 
-    fn build_inference_request(&self) -> LlmInferenceRequest {
-        let tool_specs = resolve_tool_specs(&self.request.tool_policy, self.deps.tools.as_ref());
-        let allow_tool_calls =
-            self.request.tool_policy.mode != ToolMode::None && self.state.tool_iterations_left > 0;
+    fn build_inference_request(&mut self) -> LlmInferenceRequest {
+        let mut tool_specs =
+            resolve_tool_specs(&self.request.tool_policy, self.deps.tools.as_ref());
+        let native = self.request.tool_policy.mode != ToolMode::None;
+        let allow_tool_calls = if self.in_wrap_up() {
+            let wrap_up = &self.request.tool_policy.wrap_up_tools;
+            tool_specs.retain(|spec| wrap_up.contains(&spec.name));
+            self.note_wrap_up(&tool_specs);
+            native && !tool_specs.is_empty()
+        } else {
+            native && self.state.tool_iterations_left > 0
+        };
 
         let (force_json, json_schema) = match &self.request.output {
             OutputSpec::Text => (false, None),
@@ -1184,6 +1206,64 @@ impl LLMContext {
             tool_specs,
             allow_tool_calls,
             abort: self.abort_token(),
+        }
+    }
+
+    /// Wrap-up mode (`ToolPolicy.wrap_up_tools`): the tool iterations are
+    /// used up, but wrap-up batches are left.
+    fn in_wrap_up(&self) -> bool {
+        let policy = &self.request.tool_policy;
+        self.state.tool_iterations_left == 0
+            && !policy.wrap_up_tools.is_empty()
+            && self.state.wrap_up_rounds_used < policy.wrap_up_rounds
+    }
+
+    /// A batch (native calls or behavior actions) named `names` may run
+    /// without a tool iteration: wrap-up mode, wrap-up tools only. The
+    /// policy gate still applies.
+    fn admits_wrap_up<'a>(&self, mut names: impl Iterator<Item = &'a str>) -> bool {
+        let wrap_up = &self.request.tool_policy.wrap_up_tools;
+        self.in_wrap_up() && names.all(|name| wrap_up.iter().any(|w| w == name))
+    }
+
+    /// Log a wrap-up inference (`offered`: the native specs it advertises);
+    /// wrap-up tools the policy offers neither as a native tool nor as a
+    /// behavior action are reported once.
+    fn note_wrap_up(&mut self, offered: &[ToolSpecLite]) {
+        let policy = &self.request.tool_policy;
+        log::info!(
+            "llm_context.budget.wrap_up {}",
+            serde_json::json!({
+                "owner": self.request.owner,
+                "trace_id": self.request.trace,
+                "wrap_up_tools": policy.wrap_up_tools,
+                "offered": offered.iter().map(|spec| spec.name.as_str()).collect::<Vec<_>>(),
+                "left_rounds": policy.wrap_up_rounds.saturating_sub(self.state.wrap_up_rounds_used),
+            })
+        );
+        if self.wrap_up_warned {
+            return;
+        }
+        self.wrap_up_warned = true;
+        let behavior = self.native_result_parser.is_some() || self.is_behavior_mode();
+        let as_action = |name: &String| {
+            behavior
+                && match policy.action_mode {
+                    ToolMode::All => true,
+                    ToolMode::Whitelist => policy.action_whitelist.contains(name),
+                    ToolMode::None => false,
+                }
+        };
+        let ignored: Vec<&String> = policy
+            .wrap_up_tools
+            .iter()
+            .filter(|name| !offered.iter().any(|spec| &spec.name == *name) && !as_action(name))
+            .collect();
+        if !ignored.is_empty() {
+            log::warn!(
+                "llm_context.budget.wrap_up: {ignored:?} not offered by the tool policy, ignored (trace {:?})",
+                self.request.trace
+            );
         }
     }
 
@@ -1592,7 +1672,10 @@ impl LLMContext {
             new_step.assistant_message = Some(response.message.clone());
             new_step.native_messages = native_messages;
 
-            if !new_step.actions.is_empty() && self.state.tool_iterations_left == 0 {
+            if !new_step.actions.is_empty()
+                && self.state.tool_iterations_left == 0
+                && !self.admits_wrap_up(new_step.actions.iter().map(|a| a.name.as_str()))
+            {
                 self.set_inner_transcript(new_step.native_messages);
                 return LLMContextOutcome::BudgetExhausted {
                     which: BudgetKind::ToolIterations,
@@ -1684,9 +1767,14 @@ impl LLMContext {
             }
 
             // 6. Dispatch the actions at the top of the loop. A step with
-            //    actions is one tool iteration, charged before dispatch.
+            //    actions is one tool iteration, charged before dispatch (a
+            //    wrap-up step, at 0, counts a wrap-up round instead).
             if !actions.is_empty() {
-                self.state.tool_iterations_left = self.state.tool_iterations_left.saturating_sub(1);
+                if self.state.tool_iterations_left == 0 {
+                    self.state.wrap_up_rounds_used += 1;
+                } else {
+                    self.state.tool_iterations_left -= 1;
+                }
             }
             self.state.action_step = Some(ActionStep {
                 step: new_step,
@@ -2035,6 +2123,7 @@ impl LLMContext {
         inner.state.started_at_ms = self.state.started_at_ms;
         inner.state.consecutive_errors = self.state.consecutive_errors;
         inner.state.tool_iterations_left = self.state.tool_iterations_left;
+        inner.state.wrap_up_rounds_used = self.state.wrap_up_rounds_used;
         inner.state.tool_batch = self.state.tool_batch.take();
         let outcome = inner.run_inner().await;
         if let Some((parent, _)) = inner.inner_parent.take() {
@@ -2050,6 +2139,7 @@ impl LLMContext {
         self.tool_trace.append(&mut inner.tool_trace);
         self.state.consecutive_errors = inner.state.consecutive_errors;
         self.state.tool_iterations_left = inner.state.tool_iterations_left;
+        self.state.wrap_up_rounds_used = inner.state.wrap_up_rounds_used;
         self.state.usage = inner.state.usage.clone();
         if !matches!(outcome, LLMContextOutcome::Done { .. }) {
             // The step's inner transcript so far (native tool calls and

@@ -44,7 +44,7 @@ pub use outcome::{
 };
 pub use request::{
     BudgetAction, BudgetSpec, ContextThreshold, ErrorClass, ErrorPolicy, LLMContextRequest,
-    ModelPolicy, OutputSpec, ToolMode, ToolPolicy,
+    ModelPolicy, OutputSpec, ToolMode, ToolPolicy, DEFAULT_WRAP_UP_ROUNDS,
 };
 pub use state::{
     ActionStep, LLMContextSnapshot, LLMContextState, Suspension, ToolBatch, SNAPSHOT_FORMAT_VERSION,

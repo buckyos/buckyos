@@ -187,10 +187,12 @@ pub(super) fn tool_response(text: Option<&str>, calls: Vec<AiToolCall>) -> AiRes
     AiResponse::from_parts(text.map(str::to_string), calls, vec![])
 }
 
-/// Scripted responses / errors, recording every request like `RecordingLlm`.
+/// Scripted responses / errors, recording every request like `RecordingLlm`
+/// (and the tools it offered).
 pub(super) struct ScriptedRecordingLlm {
     script: Mutex<Vec<Result<AiResponse, LLMComputeError>>>,
     seen: Mutex<Vec<Vec<AiMessage>>>,
+    offers: Mutex<Vec<Option<Vec<String>>>>,
 }
 
 impl ScriptedRecordingLlm {
@@ -202,17 +204,28 @@ impl ScriptedRecordingLlm {
         Self {
             script: Mutex::new(script),
             seen: Mutex::new(Vec::new()),
+            offers: Mutex::new(Vec::new()),
         }
     }
 
     pub(super) fn seen(&self) -> Vec<Vec<AiMessage>> {
         self.seen.lock().unwrap().clone()
     }
+
+    /// Per request: the tool names advertised, `None` when tool calls were
+    /// not allowed.
+    pub(super) fn offers(&self) -> Vec<Option<Vec<String>>> {
+        self.offers.lock().unwrap().clone()
+    }
 }
 
 #[async_trait]
 impl LlmClient for ScriptedRecordingLlm {
     async fn infer(&self, req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError> {
+        self.offers.lock().unwrap().push(
+            req.allow_tool_calls
+                .then(|| req.tool_specs.iter().map(|spec| spec.name.clone()).collect()),
+        );
         self.seen.lock().unwrap().push(req.messages);
         let mut guard = self.script.lock().unwrap();
         if guard.is_empty() {

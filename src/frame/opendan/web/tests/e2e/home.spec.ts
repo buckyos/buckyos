@@ -25,7 +25,8 @@ test('home shows the agent card and the work overview', async ({ page }) => {
 
   const overview = page.getByTestId('work-overview')
   await expect(overview.getByTestId('stat-working')).toContainText('1')
-  await expect(overview.getByTestId('stat-pending')).toContainText('0')
+  await expect(overview.getByTestId('stat-waiting')).toContainText('1')
+  await expect(overview.getByTestId('stat-failed')).toContainText('1')
   await expect(overview.getByTestId('stat-total')).toContainText('5')
   const models = overview.getByTestId('model-row')
   await expect(models).toHaveCount(3)
@@ -33,10 +34,6 @@ test('home shows the agent card and the work overview', async ({ page }) => {
   await expect(models.first()).toContainText('45k')
   await expect(models.first()).toContainText('660k')
   await expect(models.first()).toContainText('4.1M')
-  const recent = overview.getByTestId('recent-items').getByRole('listitem')
-  await expect(recent).toHaveCount(2)
-  await expect(recent.first()).toContainText('art-weekly-report')
-  await expect(overview.getByTestId('recent-items')).toContainText('art-weekly-report')
   expect(errors).toEqual([])
 })
 

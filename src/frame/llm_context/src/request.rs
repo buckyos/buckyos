@@ -82,6 +82,26 @@ pub struct ToolPolicy {
     /// wait for a running tool that cannot cancel its work before the
     /// finish falls back to an interrupt.
     pub finish_grace_ms: u64,
+    /// Tools still offered once `max_tool_iterations` is used up: the model
+    /// can only end (report) or hand over (ask the user). A batch of only
+    /// these tools (the native calls of one response, or the actions of one
+    /// behavior step) is dispatched without consuming an iteration, at most
+    /// `wrap_up_rounds` times per run; a batch with any other tool still
+    /// ends the run with `BudgetExhausted`. Names are tool spec / action
+    /// names. Empty (default) keeps the old behavior: no tools.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub wrap_up_tools: Vec<String>,
+    /// How many tool batches may run in wrap-up mode before the context
+    /// gives up with `BudgetExhausted` (`LLMContextState.wrap_up_rounds_used`).
+    #[serde(skip_serializing_if = "is_default_wrap_up_rounds")]
+    pub wrap_up_rounds: u32,
+}
+
+/// Default `ToolPolicy.wrap_up_rounds`.
+pub const DEFAULT_WRAP_UP_ROUNDS: u32 = 2;
+
+fn is_default_wrap_up_rounds(n: &u32) -> bool {
+    *n == DEFAULT_WRAP_UP_ROUNDS
 }
 
 impl Default for ToolPolicy {
@@ -95,6 +115,8 @@ impl Default for ToolPolicy {
             max_calls_per_round: 8,
             disable_capabilities: Vec::new(),
             finish_grace_ms: 30_000,
+            wrap_up_tools: Vec::new(),
+            wrap_up_rounds: DEFAULT_WRAP_UP_ROUNDS,
         }
     }
 }

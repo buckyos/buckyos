@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type ReactNode } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import clsx from 'clsx'
 import {
   Check,
@@ -7,7 +7,6 @@ import {
   ImagePlus,
   MessageCircle,
   Minus,
-  Package,
   Pencil,
   Plus,
   Settings,
@@ -19,7 +18,6 @@ import { didName, fmtTokens, messageHubHref, sessionHref, useQuery } from '../li
 import {
   dataModel,
   type AgentProfile,
-  type ArtifactHead,
   type ModelUsage,
   type RegistryEntry,
   type UiBinding,
@@ -32,7 +30,6 @@ const AVATAR_SIZE = 192
 const NAME_MAX = 64
 const BIO_MAX = 500
 const TOP_MODELS = 3
-const RECENT_ITEMS = 5
 
 // Inside the desktop's app window the page is framed: a link to MessageHub
 // leaves the frame.
@@ -227,15 +224,16 @@ function AgentCard({ profile }: { profile: AgentProfile }) {
   )
 }
 
-// Working: a Turn is open or about to be. Pending: not started yet. The label
-// follows the session's own state: a finished session is done, whatever its
-// acceptance.
+// Working: a Turn is open or about to be. Waiting: unfinished and idle, until
+// someone starts it or answers it. The label follows the session's own state:
+// a finished session is done, whatever its acceptance.
 const isWorking = (e: RegistryEntry) =>
   e.status.run_state === 'running' ||
   e.status.run_state === 'ready' ||
   Boolean(e.status.turn_open) ||
   (e.status.run_state === 'waiting' && !e.status.needs_input)
-const isPending = (e: RegistryEntry) => e.status.run_state === 'created'
+const isWaiting = (e: RegistryEntry) => e.status.run_state !== 'finished' && !isWorking(e)
+const isFailed = (e: RegistryEntry) => e.status.run_state === 'finished' && e.status.outcome === 'failed'
 
 const sessionStatus = (e: RegistryEntry): { key: TextKey; tone: string } => {
   if (e.status.run_state === 'finished') {
@@ -279,45 +277,16 @@ function ModelRow({ usage, max }: { usage: ModelUsage; max: number }) {
   )
 }
 
-interface RecentItem {
-  key: string
-  title: string
-  sub: string
-  at: number
-  href: string
-}
-
-const recentItems = (artifacts: ArtifactHead[], entries: RegistryEntry[]): RecentItem[] => {
-  const latest = (pick: (e: RegistryEntry) => boolean) =>
-    entries.filter(pick).sort((a, b) => b.status.updated_at_ms - a.status.updated_at_ms)[0]
-  const items: RecentItem[] = artifacts.map((a) => {
-    const session = latest((e) => e.artifact_id === a.aid)
-    return {
-      key: `artifact:${a.aid}`,
-      title: a.aid,
-      sub: a.head ? t('acceptedVersion', { ver: a.head }) : t('notAccepted'),
-      at: a.updated_at_ms,
-      href: session ? sessionHref(session.session_id) : '#/agent',
-    }
-  })
-  return items.sort((a, b) => b.at - a.at).slice(0, RECENT_ITEMS)
-}
-
-function SubHeading({ children }: { children: ReactNode }) {
-  return <h3 className="mb-1 mt-4 text-xs font-medium uppercase tracking-wide text-mute">{children}</h3>
-}
-
 function Overview({ entries }: { entries?: RegistryEntry[] }) {
   const usage = useQuery(['usage.models'], () => dataModel.usageModels())
-  const artifacts = useQuery(['artifacts.list'], () => dataModel.artifacts())
   const models = usage.data?.models.slice(0, TOP_MODELS) ?? []
-  const recent = useMemo(() => recentItems(artifacts.data ?? [], entries ?? []), [artifacts.data, entries])
   return (
     <section className="card p-4" data-testid="work-overview">
       <h2 className="mb-3 text-base font-semibold">{t('overview')}</h2>
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-4 gap-2">
         <Stat testId="stat-working" label={t('working')} value={entries?.filter(isWorking).length} tone="text-accent" />
-        <Stat testId="stat-pending" label={t('pending')} value={entries?.filter(isPending).length} tone="text-warn" />
+        <Stat testId="stat-waiting" label={t('waiting')} value={entries?.filter(isWaiting).length} tone="text-warn" />
+        <Stat testId="stat-failed" label={t('failed')} value={entries?.filter(isFailed).length} tone="text-bad" />
         <Stat testId="stat-total" label={t('total')} value={entries?.length} />
       </div>
 
@@ -346,31 +315,6 @@ function Overview({ entries }: { entries?: RegistryEntry[] }) {
           </p>
         )}
       </div>
-
-      <SubHeading>{t('recent')}</SubHeading>
-      <ErrorBox error={artifacts.error} />
-      {recent.length ? (
-        <ul className="-mx-2" data-testid="recent-items">
-          {recent.map((item) => (
-            <li key={item.key}>
-              <a href={item.href} className="flex min-h-12 items-center gap-3 rounded-xl px-2 py-1.5 active:bg-soft">
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-soft text-accent" title={t('artifact')}>
-                  <Package size={18} />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium">{item.title}</span>
-                  <span className="block truncate text-xs text-mute">
-                    {t('artifact')} · {item.sub}
-                  </span>
-                </span>
-                <span className="shrink-0 text-xs text-mute">{ago(item.at)}</span>
-              </a>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="py-2 text-sm text-mute">{artifacts.isLoading ? t('loading') : t('noRecent')}</p>
-      )}
     </section>
   )
 }

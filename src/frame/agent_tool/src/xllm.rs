@@ -82,7 +82,7 @@ use llm_context::observation::Observation;
 use llm_context::outcome::{BudgetKind, ContextOutput, LLMContextOutcome, ResumeFill};
 use llm_context::request::{
     BudgetSpec, ContextThreshold, ErrorPolicy, LLMContextRequest, ModelPolicy,
-    OutputSpec, ToolMode, ToolPolicy,
+    OutputSpec, ToolMode, ToolPolicy, DEFAULT_WRAP_UP_ROUNDS,
 };
 use llm_context::state::LLMContextSnapshot;
 use crate::result_view::ToolResultView;
@@ -143,8 +143,9 @@ pub const BUILTIN_TOOL_GROUP_BASH_CORE: &str = "bash_core";
 pub const RUNTIME_PROTOCOL_VERSION: &str = "xllm/2";
 /// 7：删除 `inflight[]`——派发了什么只看工具调用前的快照；`runtime.task_wait_ms`。
 pub const RUN_RECORD_VERSION: u32 = 7;
-/// 默认 context 压缩阈值（token window 的 75%）。
-pub const DEFAULT_CONTEXT_YIELD_RATIO: f32 = 0.75;
+/// 默认 context 压缩阈值（token window 的 80%，`.llm_context` 的
+/// `context_yield_ratio` 可调）。
+pub const DEFAULT_CONTEXT_YIELD_RATIO: f32 = 0.80;
 
 /// The early compaction threshold needs the window; without it only the
 /// provider's structured refusal triggers compaction.
@@ -152,13 +153,49 @@ fn context_yield_threshold(limits: &RunLimits) -> Option<ContextThreshold> {
     limits
         .context_window_tokens
         .map(|_| ContextThreshold::Ratio {
-            value: DEFAULT_CONTEXT_YIELD_RATIO,
+            value: limits
+                .context_yield_ratio
+                .unwrap_or(DEFAULT_CONTEXT_YIELD_RATIO),
         })
+}
+
+/// A `context_yield_ratio` without a `context_window` has no effect; the
+/// warning names the file that set it.
+fn unused_context_yield_ratio(cfg: &EffectiveConfig) -> Option<String> {
+    if cfg.limits.context_yield_ratio.is_none() || cfg.limits.context_window_tokens.is_some() {
+        return None;
+    }
+    let origin = cfg
+        .sources
+        .get("context_yield_ratio")
+        .map(String::as_str)
+        .unwrap_or("config");
+    Some(format!(
+        "context_yield_ratio (from {origin}) has no effect without context_window; only the provider's refusal triggers compaction"
+    ))
 }
 /// 默认连续可纠正错误上限。
 pub const DEFAULT_MAX_CONSECUTIVE_ERRORS: u32 = 3;
 /// 自动压缩目标 token 数兜底。
 pub const DEFAULT_AUTO_COMPRESS_TARGET_TOKENS: u32 = 32_768;
+/// 已知窗口时压回窗口的 30%（与 OpenDAN 架构设计 §4.2 的 80% → 30% 一致）。
+pub const DEFAULT_CONTEXT_TARGET_RATIO: f32 = 0.30;
+
+/// Compaction target of a run: 30% of the window, at most
+/// `DEFAULT_AUTO_COMPRESS_TARGET_TOKENS` and at most half the yield
+/// threshold, so a compaction always lands well below the line that
+/// triggered it (a target above the history makes compaction a no-op).
+fn compaction_target_tokens(limits: &RunLimits) -> u32 {
+    let Some(window) = limits.context_window_tokens else {
+        return DEFAULT_AUTO_COMPRESS_TARGET_TOKENS;
+    };
+    let ratio = limits
+        .context_yield_ratio
+        .unwrap_or(DEFAULT_CONTEXT_YIELD_RATIO);
+    let share = DEFAULT_CONTEXT_TARGET_RATIO.min(ratio / 2.0);
+    ((window as f64 * f64::from(share)).floor() as u32)
+        .clamp(1, DEFAULT_AUTO_COMPRESS_TARGET_TOKENS)
+}
 /// 单个 `--file` 文本材料上限（字节）。
 pub const MAX_TEXT_ATTACHMENT_BYTES: usize = 8 * 1024 * 1024;
 /// 单张图片上限（字节）。
@@ -767,6 +804,10 @@ pub struct LlmContextFile {
     pub llm_timeout: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u32>,
+    /// Share of `context_window` at which the run yields for compaction,
+    /// in `(0, 1]` (default `DEFAULT_CONTEXT_YIELD_RATIO`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_yield_ratio: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -935,6 +976,26 @@ impl<'a> YamlCtx<'a> {
             Some(v) => u32::try_from(v)
                 .map(Some)
                 .map_err(|_| self.err(&join_field(field, key), "value too large")),
+        }
+    }
+
+    fn get_f32(
+        &self,
+        field: &str,
+        m: &serde_yaml::Mapping,
+        key: &str,
+    ) -> Result<Option<f32>, XllmError> {
+        match m.get(key) {
+            None | Some(Yaml::Null) => Ok(None),
+            Some(Yaml::Number(n)) => n
+                .as_f64()
+                .filter(|v| v.is_finite())
+                .map(|v| Some(v as f32))
+                .ok_or_else(|| self.err(&join_field(field, key), "expected a finite number")),
+            Some(other) => Err(self.err(
+                &join_field(field, key),
+                format!("expected a number, got {}", yaml_kind(other)),
+            )),
         }
     }
 }
@@ -1427,6 +1488,7 @@ pub fn parse_llm_context_file(path: &Path, raw: &str) -> Result<LlmContextFile, 
             "max_tool_iterations",
             "llm_timeout",
             "context_window",
+            "context_yield_ratio",
             "timeout",
             "runs_dir",
             "loop_model",
@@ -1477,6 +1539,10 @@ pub fn parse_llm_context_file(path: &Path, raw: &str) -> Result<LlmContextFile, 
     let max_tool_iterations = ctx.get_u32("", m, "max_tool_iterations")?;
     let llm_timeout = ctx.get_u64("", m, "llm_timeout")?;
     let context_window = ctx.get_u32("", m, "context_window")?;
+    let context_yield_ratio = ctx.get_f32("", m, "context_yield_ratio")?;
+    if context_yield_ratio.is_some_and(|r| !(r > 0.0 && r <= 1.0)) {
+        return Err(ctx.err("context_yield_ratio", "must be in (0, 1]"));
+    }
     let timeout = ctx.get_u64("", m, "timeout")?;
     let runs_dir = match m.get("runs_dir") {
         None => None,
@@ -1624,6 +1690,7 @@ pub fn parse_llm_context_file(path: &Path, raw: &str) -> Result<LlmContextFile, 
         max_tool_iterations,
         llm_timeout,
         context_window,
+        context_yield_ratio,
         timeout,
         runs_dir,
         loop_model,
@@ -1686,6 +1753,10 @@ pub struct MergedConfig {
     pub llm_timeout: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u32>,
+    /// Share of `context_window` at which the run yields for compaction,
+    /// in `(0, 1]` (default `DEFAULT_CONTEXT_YIELD_RATIO`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_yield_ratio: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1783,6 +1854,7 @@ pub fn merge_config_layers(layers: &[ConfigLayer]) -> Result<MergedConfig, XllmE
         scalar!(max_tool_iterations, "max_tool_iterations");
         scalar!(llm_timeout, "llm_timeout");
         scalar!(context_window, "context_window");
+        scalar!(context_yield_ratio, "context_yield_ratio");
         scalar!(timeout, "timeout");
         scalar!(runs_dir, "runs_dir");
         scalar!(loop_model, "loop_model");
@@ -2157,7 +2229,7 @@ pub fn load_attachments(
 // =========================================================================
 
 /// 执行限制（F08）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunLimits {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
@@ -2165,11 +2237,15 @@ pub struct RunLimits {
     pub timeout_secs: u64,
     pub llm_timeout_secs: u64,
     /// Model context window in tokens (`context_window`). When set, the run
-    /// yields for compaction at `DEFAULT_CONTEXT_YIELD_RATIO` of it and never
-    /// sends a request that cannot fit; unknown windows only rely on the
+    /// yields for compaction at `context_yield_ratio` of it and never sends
+    /// a request that cannot fit; unknown windows only rely on the
     /// provider's structured refusal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window_tokens: Option<u32>,
+    /// `context_yield_ratio`; absent means `DEFAULT_CONTEXT_YIELD_RATIO`
+    /// (records written before the key existed included).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_yield_ratio: Option<f32>,
 }
 
 /// 展开后的单个工具。
@@ -6120,6 +6196,7 @@ impl RunRecord {
                     timeout_secs: DEFAULT_TIMEOUT_SECS,
                     llm_timeout_secs: DEFAULT_LLM_TIMEOUT_SECS,
                     context_window_tokens: None,
+                    context_yield_ratio: None,
                 },
                 run_logs: RunLogLevel::Info,
                 result_format: ResultFormat::Raw,
@@ -7102,6 +7179,7 @@ impl XllmTask {
                 "llm_timeout"
             ),
             context_window_tokens: merged.context_window,
+            context_yield_ratio: merged.context_yield_ratio,
         };
         let store = match (&overrides.runs_dir, &merged.runs_dir) {
             (Some(p), _) => {
@@ -7503,6 +7581,7 @@ impl XllmTask {
             timeout_secs: merged.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS),
             llm_timeout_secs: merged.llm_timeout.unwrap_or(DEFAULT_LLM_TIMEOUT_SECS),
             context_window_tokens: merged.context_window,
+            context_yield_ratio: merged.context_yield_ratio,
         };
         let group = merged
             .prompt
@@ -7591,6 +7670,9 @@ impl XllmTask {
             config_files: vec![origin.to_string()],
             sources,
         };
+        if let Some(warning) = unused_context_yield_ratio(&config) {
+            log::warn!("{warning}");
+        }
         Ok(HostedTask {
             workdir,
             config,
@@ -7912,6 +7994,9 @@ pub fn hosted_request(
         max_calls_per_round: 16,
         disable_capabilities: cfg.disable_capabilities.clone(),
         finish_grace_ms: 30_000,
+        // Wrap-up tools are the host's (libopendan: `report` / `ask_user`).
+        wrap_up_tools: Vec::new(),
+        wrap_up_rounds: DEFAULT_WRAP_UP_ROUNDS,
     };
     LLMContextRequest {
         owner,
@@ -8863,6 +8948,9 @@ impl XllmRun {
 
     fn build_initial_context(&mut self) -> Result<(), XllmError> {
         let rec = self.record();
+        if let Some(warning) = unused_context_yield_ratio(&rec.config) {
+            self.emit(RunEvent::Warning(warning));
+        }
         let mut messages = self.initial_messages.clone();
         if let Some(stage) = &rec.file_model_stage {
             // 主模型收到带来源的分析结果，不再直接收到图片。
@@ -8901,6 +8989,8 @@ impl XllmRun {
             max_calls_per_round: 16,
             disable_capabilities: cfg.disable_capabilities.clone(),
             finish_grace_ms: 30_000,
+            wrap_up_tools: Vec::new(),
+            wrap_up_rounds: DEFAULT_WRAP_UP_ROUNDS,
         };
         let output = if cfg.json && cfg.loop_model == LoopModel::FunctionCall {
             OutputSpec::Json {
@@ -9305,7 +9395,7 @@ impl XllmRun {
         let compressor = LlmSummarizeCompressor::new(
             self.waist_deps.clone().into_traditional(),
             model,
-            DEFAULT_AUTO_COMPRESS_TARGET_TOKENS,
+            compaction_target_tokens(&self.record().config.limits),
         );
         let rewritten = match compressor
             .compress(history, Path::new(&self.record().workdir))
@@ -13127,6 +13217,130 @@ there]]></write_file>
     }
 
     #[tokio::test]
+    async fn context_yield_ratio_sets_the_compaction_threshold() {
+        for (config, ratio, recorded) in [
+            ("context_window: 100000\ncontext_yield_ratio: 0.5\n", 0.5, Some(0.5)),
+            ("context_window: 100000\n", DEFAULT_CONTEXT_YIELD_RATIO, None),
+        ] {
+            let env = Env::new();
+            env.write("project/.llm_context", config);
+            let llm = ScriptedLlm::new(vec![text("done")]);
+            let o = env
+                .run(TaskInput::question("hello"), env.overrides(), llm)
+                .await
+                .unwrap();
+            assert!(matches!(o, RunOutcome::Completed(_)), "{:?}", o.record().last_error);
+            // Read back from run.json.
+            let rec = env.store().read_record(&o.record().run_id).unwrap();
+            assert_eq!(rec.config.limits.context_yield_ratio, recorded, "{config}");
+            let snap = env
+                .store()
+                .get_snapshot(&rec.run_id, rec.latest_snapshot_idx.unwrap())
+                .unwrap();
+            assert_eq!(
+                snap.request.budget.context_yield_threshold,
+                Some(ContextThreshold::Ratio { value: ratio }),
+                "{config}"
+            );
+        }
+        assert_eq!(DEFAULT_CONTEXT_YIELD_RATIO, 0.8);
+        // A record written before the key existed: the default ratio.
+        let old: RunLimits = serde_json::from_value(json!({
+            "max_tool_iterations": 4, "timeout_secs": 60, "llm_timeout_secs": 60,
+            "context_window_tokens": 1000
+        }))
+        .unwrap();
+        assert_eq!(old.context_yield_ratio, None);
+        assert_eq!(
+            context_yield_threshold(&old),
+            Some(ContextThreshold::Ratio { value: 0.8 })
+        );
+        assert!(!serde_json::to_value(&old)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("context_yield_ratio"));
+    }
+
+    #[test]
+    fn compaction_lands_below_the_yield_threshold() {
+        let limits = |window: Option<u32>, ratio: Option<f32>| RunLimits {
+            max_tokens: None,
+            max_tool_iterations: 4,
+            timeout_secs: 60,
+            llm_timeout_secs: 60,
+            context_window_tokens: window,
+            context_yield_ratio: ratio,
+        };
+        assert_eq!(compaction_target_tokens(&limits(None, None)), 32_768);
+        // 30% of the window, the default cap above it.
+        assert_eq!(compaction_target_tokens(&limits(Some(20_000), None)), 6_000);
+        assert_eq!(compaction_target_tokens(&limits(Some(400_000), None)), 32_768);
+        // Never above half a low yield line.
+        assert_eq!(compaction_target_tokens(&limits(Some(20_000), Some(0.5))), 5_000);
+        assert_eq!(compaction_target_tokens(&limits(Some(20_000), Some(0.4))), 4_000);
+    }
+
+    #[test]
+    fn context_yield_ratio_must_be_in_zero_one() {
+        let path = Path::new(".llm_context");
+        for raw in [
+            "context_yield_ratio: 1.5\n",
+            "context_yield_ratio: 0\n",
+            "context_yield_ratio: -0.2\n",
+            "context_yield_ratio: high\n",
+        ] {
+            let err = parse_llm_context_file(path, raw).unwrap_err();
+            assert!(matches!(err, XllmError::Config { .. }), "{raw}: {err}");
+            assert!(err.to_string().contains("context_yield_ratio"), "{err}");
+        }
+        for (raw, ratio) in [("context_yield_ratio: 1\n", 1.0), ("context_yield_ratio: 0.25\n", 0.25)] {
+            let file = parse_llm_context_file(path, raw).unwrap();
+            assert_eq!(file.context_yield_ratio, Some(ratio));
+        }
+    }
+
+    #[tokio::test]
+    async fn context_yield_ratio_without_a_window_only_warns() {
+        struct Warnings(StdMutex<Vec<String>>);
+        impl RunObserver for Warnings {
+            fn on_event(&self, _run_id: &str, event: RunEvent) {
+                if let RunEvent::Warning(w) = event {
+                    self.0.lock().unwrap().push(w);
+                }
+            }
+        }
+        let env = Env::new();
+        env.write("project/.llm_context", "context_yield_ratio: 0.5\n");
+        let warnings = Arc::new(Warnings(StdMutex::new(Vec::new())));
+        let deps = env
+            .deps(ScriptedLlm::new(vec![text("done")]))
+            .with_observer(warnings.clone());
+        let prepared = XllmTask::prepare(
+            &env.workdir,
+            TaskInput::question("hello"),
+            env.overrides(),
+            &deps,
+        )
+        .await
+        .unwrap();
+        let mut run = XllmRun::start(prepared, deps).await.unwrap();
+        let o = run.execute().await.unwrap();
+        assert!(matches!(o, RunOutcome::Completed(_)), "{:?}", o.record().last_error);
+        let warnings = warnings.0.lock().unwrap().clone();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("context_yield_ratio"), "{}", warnings[0]);
+        assert!(warnings[0].contains("project/.llm_context"), "{}", warnings[0]);
+        let rec = o.record();
+        let snap = env
+            .store()
+            .get_snapshot(&rec.run_id, rec.latest_snapshot_idx.unwrap())
+            .unwrap();
+        assert_eq!(snap.request.budget.context_yield_threshold, None);
+        assert_eq!(snap.request.budget.context_window_tokens, None);
+    }
+
+    #[tokio::test]
     async fn behavior_context_refusal_rewrites_the_materialized_steps() {
         let env = Env::new();
         env.write(
@@ -13216,6 +13430,92 @@ there]]></write_file>
         );
         assert_eq!(o.record().compactions, 1);
         assert_eq!(llm.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn host_wrap_up_tools_round_trip_through_the_run_snapshot() {
+        // A host-assembled run whose host set wrap-up tools: the persisted
+        // request carries them and xllm, resuming the run, honors them.
+        let env = Env::new();
+        let deps = env.deps(ScriptedLlm::new(vec![]));
+        let hosted = XllmTask::prepare_hosted(
+            &env.workdir,
+            &json!({"tools": {"enabled": true}}),
+            "s.json",
+            "HOST",
+            &deps,
+        )
+        .await
+        .unwrap();
+        let mut req = hosted.build_request(
+            json!({"kind": "one_shot", "id": "t"}),
+            "trace",
+            "objective",
+            "",
+            vec![
+                AiMessage::text(AiRole::System, hosted.prompt.system_prompt.clone()),
+                AiMessage::text(AiRole::User, "finish up"),
+            ],
+        );
+        assert!(req.tool_policy.wrap_up_tools.is_empty(), "the host's to set");
+        req.tool_policy.wrap_up_tools = vec![TOOL_SHELL.into()];
+        let mut snap = LLMContextSnapshot {
+            state: llm_context::state::LLMContextState::from_request(&req, now_ms()),
+            request: req,
+        };
+        snap.state.tool_iterations_left = 0;
+
+        let store = env.store();
+        store.ensure_writable().unwrap();
+        let run_id = store.create_run().unwrap();
+        let mut rec = hosted.new_record(
+            &run_id,
+            Some(&env.runs_dir),
+            "finish up",
+            HostRunInfo {
+                assembled_by: "test-host".into(),
+                session_id: None,
+                runtime_kind: None,
+                runtime_id: None,
+                env_check: Value::Null,
+                extra: Value::Null,
+            },
+        );
+        rec.status = RunStatus::Paused;
+        rec.latest_snapshot_idx = Some(store.put_snapshot(&run_id, &snap).unwrap());
+        store.write_record(&rec).unwrap();
+        let saved = store.get_snapshot(&run_id, rec.latest_snapshot_idx.unwrap()).unwrap();
+        assert_eq!(saved.request.tool_policy.wrap_up_tools, [TOOL_SHELL]);
+        assert_eq!(saved.request.tool_policy, snap.request.tool_policy);
+
+        let llm = ScriptedLlm::new(vec![
+            tool_call(TOOL_SHELL, json!({"command": "echo wrapped"}), "c1"),
+            text("done"),
+        ]);
+        let start = XllmRun::resume(
+            &store,
+            Some(&run_id),
+            None,
+            ResumeLimits::default(),
+            env.deps(llm.clone()),
+        )
+        .await
+        .unwrap();
+        let ResumeStart::Run(mut run) = start else {
+            panic!("expected run")
+        };
+        let o = run.execute().await.unwrap();
+        assert!(matches!(o, RunOutcome::Completed(_)), "{:?}", o.record().last_error);
+        let seen = llm.seen();
+        assert_eq!(seen.len(), 2);
+        for req in &seen {
+            assert!(req.allow_tool_calls);
+            assert_eq!(req.tool_names, [TOOL_SHELL], "only the wrap-up tool");
+        }
+        let rec = o.record();
+        let last = store.get_snapshot(&run_id, rec.latest_snapshot_idx.unwrap()).unwrap();
+        assert_eq!(last.state.tool_iterations_left, 0);
+        assert_eq!(last.state.wrap_up_rounds_used, 1);
     }
 
     /// One-shot HTTP server answering every request with `status` + `body`.

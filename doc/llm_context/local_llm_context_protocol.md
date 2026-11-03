@@ -59,7 +59,8 @@ xllm 执行一次独立任务（Run）：准备配置和输入，调用模型，
 | `max_tool_iterations` | `8` | 工具迭代上限：原生工具批次与派发 action 的 behavior Step 共用的工具预算，不是推理次数，见 §9.2；旧键 `max_rounds` 已移除，按未知键报错 |
 | `timeout` | `3600`，秒 | 执行时长额度；恢复时重新计时，具体边界见 §9 |
 | `llm_timeout` | `600`，秒 | 单次模型请求超时；客户端实际至少使用 1 秒 |
-| `context_window` | 未设置 | 模型上下文窗口 token 数；启用本地容量检查与 75% 提前压缩阈值 |
+| `context_window` | 未设置 | 模型上下文窗口 token 数；启用本地容量检查与提前压缩阈值 |
+| `context_yield_ratio` | `0.80` | 提前压缩阈值占窗口的比例，`(0, 1]`，越界报配置错误；没有 `context_window` 时无效，只发一条警告 |
 | `runs_dir` | `~/.xllm/runs` | Run 存储目录；YAML `none` 或 `null` 表示内存模式 |
 | `loop_model` | `function_call` | 另一值为 `behavior` |
 | `run_logs` | `info` | `debug` / `info` / `warn` / `result` |
@@ -68,7 +69,7 @@ xllm 执行一次独立任务（Run）：准备配置和输入，调用模型，
 | `prompt` | standard 模式 | `mode`、`select`、`groups`、`sections`、`tools`、`system` |
 | `runtime` | `kind: native` | 执行体，以及调用内等待预算 `task_wait_ms`（§9.1），见 [AgentRuntime 设计](<AgentRuntime 设计.md>) §4 |
 
-`context_window` 当前没有 CLI flag，也不是 `TaskOverrides` 字段。`--json` 属于本次任务覆盖项，不能写成顶层 YAML `json`。SDK 另可设置 `json_schema` 和 `disable_capabilities`；CLI 没有对应参数。
+`context_window` / `context_yield_ratio` 当前没有 CLI flag，也不是 `TaskOverrides` 字段。`--json` 属于本次任务覆盖项，不能写成顶层 YAML `json`。SDK 另可设置 `json_schema` 和 `disable_capabilities`；CLI 没有对应参数。
 
 ### 2.3 工具配置优先级
 
@@ -243,7 +244,7 @@ Run 锁和工作目录锁均为非阻塞 OS 排他锁，句柄释放后解锁。
 | `compactions` / `pid` | 已完成压缩次数 / 最近执行者 PID |
 | `host` / `host_commit_pending` / `handover` | 宿主装配、输入提交门槛及 behavior 交接点，见 §11 |
 
-`EffectiveConfig` 中的 `limits`（`RunLimits`）使用 `max_tokens`、`max_tool_iterations`、`timeout_secs`、`llm_timeout_secs`、`context_window_tokens`；后三项不同于 YAML 的 `timeout`、`llm_timeout`、`context_window`。Provider 的已解析类型字段为 `kind`，不同于 YAML `type`。`result_format` 在记录里是 `{"kind":"raw"}` 或 `{"kind":"path","segments":[...]}`，在 CLI 视图中才是字符串。
+`EffectiveConfig` 中的 `limits`（`RunLimits`）使用 `max_tokens`、`max_tool_iterations`、`timeout_secs`、`llm_timeout_secs`、`context_window_tokens`、`context_yield_ratio`（未配置时不写，按 0.80）；`timeout_secs`、`llm_timeout_secs`、`context_window_tokens` 不同于 YAML 的 `timeout`、`llm_timeout`、`context_window`。Provider 的已解析类型字段为 `kind`，不同于 YAML `type`。`result_format` 在记录里是 `{"kind":"raw"}` 或 `{"kind":"path","segments":[...]}`，在 CLI 视图中才是字符串。
 
 `config.tools` 保存 `enabled`、`filesystem_policy`、`tools2actions`、原始来源列表 `tool_sources` / `action_sources`、展开的 `native` / `actions`、`bash_tools`、shell 的生效设置 `shell`（`wait_ms` 取自 `runtime.task_wait_ms`，以及 `timeout_ms` / `max_timeout_ms`）、`exec_enabled` 和来源信息。恢复按保存的来源重新构建工具，MCP 仍需可连接；记录不保存工具进程或模型连接。
 
@@ -357,7 +358,7 @@ Success observation 优先取非空 output，其次 summary，最后 details JSO
 
 同一批调用总是逐个派发，每个调用前提交一次快照。xllm 设置 `max_calls_per_round = 16`：一次模型 response（一个 Round）最多 16 个原生工具调用；它不限制一个 behavior Step 的 action 数。
 
-`max_tool_iterations` 是工具预算（底层 `ToolPolicy.max_tool_iterations`，剩余值为快照的 `tool_iterations_left`）。一次工具迭代 = 一批实际派发的原生工具调用（同一 response 的全部调用），或一个派发 action 的 behavior Step（同一 Step 的多个 action 只计一次）；业务失败也消耗额度，behavior Step 内层的原生工具批次与外层 action 共用同一额度。额度为零时仍允许模型给出无工具的最终答案；再次要求工具或 action 则进入 `limit_reached`，不执行超额调用。behavior actions 按顺序执行，首个业务失败后本 Step 的后续动作跳过并反馈给模型。
+`max_tool_iterations` 是工具预算（底层 `ToolPolicy.max_tool_iterations`，剩余值为快照的 `tool_iterations_left`）。一次工具迭代 = 一批实际派发的原生工具调用（同一 response 的全部调用），或一个派发 action 的 behavior Step（同一 Step 的多个 action 只计一次）；业务失败也消耗额度，behavior Step 内层的原生工具批次与外层 action 共用同一额度。额度为零时仍允许模型给出无工具的最终答案；再次要求工具或 action 则进入 `limit_reached`，不执行超额调用（底层的收尾模式 `ToolPolicy.wrap_up_tools` 只由宿主装配的 Run 使用，xllm 不设）。behavior actions 按顺序执行，首个业务失败后本 Step 的后续动作跳过并反馈给模型。
 
 推理次数与工具预算分别计算：无工具的最终回答、解析纠错后的重试同样是 Round，却不消耗工具迭代，所以不能用剩余额度推算推理次数。xllm 没有推理次数上限，实际推理尝试数只记在 `usage.llm_requests`（§6.1）。
 
@@ -369,15 +370,15 @@ Success observation 优先取非空 output，其次 summary，最后 details JSO
 
 ### 9.3 上下文容量与压缩
 
-设置 `context_window` 后，xllm 设置 `context_yield_threshold = Ratio(0.75)`。底层估算将要发送的消息、工具声明和输出 schema：
+设置 `context_window` 后，xllm 设置 `context_yield_threshold = Ratio(context_yield_ratio)`（缺省 0.80）。底层估算将要发送的消息、工具声明和输出 schema：
 
-- 估算输入达到窗口的 75% 时，产出 `ContextLimitReached`（`approaching_window`）。
+- 估算输入达到该比例的窗口时，产出 `ContextLimitReached`（`approaching_window`）。
 - 估算输入加 `max_tokens` 的输出预留超过窗口时，产出 `hard_limit`，该请求不发送。
 - 未配置窗口时，不自动查询模型窗口；依赖 Provider 的结构化 `ContextLimit` 拒绝。OpenAI 兼容 adapter 识别 `/error/code = context_length_exceeded`。
 
 Ratio 必须有窗口；窗口必须大于零，输出预留必须小于窗口。估算是本地近似值，媒体使用固定费用，并非 Provider 精确 tokenizer 的容量保证；不是按累计 usage 触发压缩。
 
-xllm 使用本次主模型和 `LlmSummarizeCompressor`，目标 token 参数为 32768。function_call 使用 `RewrittenHistory`，behavior 使用 `RewrittenSteps` 把物化历史折入 input；压缩后的上下文先提交快照再继续。`compactions` 随 Run 保存，最多完成 3 次；再次超限进入 failed/context_capacity，压缩调用失败进入 failed/context_compaction。
+xllm 使用本次主模型和 `LlmSummarizeCompressor`，目标 token 数为窗口的 30%（`DEFAULT_CONTEXT_TARGET_RATIO`），且不超过触发线的一半和 32768；没有窗口时为 32768（`compaction_target_tokens`）。压缩器按 user 消息切段并保留进行中的一段，所以只有一条 user 输入、全靠工具往返增长的 function_call run 没有可压缩的段，压缩原样返回，3 次后 failed/context_capacity；behavior run 的物化历史按 Step 成段，可以压缩。function_call 使用 `RewrittenHistory`，behavior 使用 `RewrittenSteps` 把物化历史折入 input；压缩后的上下文先提交快照再继续。`compactions` 随 Run 保存，最多完成 3 次；再次超限进入 failed/context_capacity，压缩调用失败进入 failed/context_compaction。
 
 ## 10. CLI、结果与退出码
 

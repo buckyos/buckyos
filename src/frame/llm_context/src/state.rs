@@ -30,6 +30,12 @@ pub struct LLMContextState {
     /// with actions, never again on resume.
     pub tool_iterations_left: u32,
 
+    /// Wrap-up batches dispatched while `tool_iterations_left` is 0 (see
+    /// `ToolPolicy.wrap_up_tools`). The waist never resets it: a host that
+    /// refills `tool_iterations_left` resets this too.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub wrap_up_rounds_used: u32,
+
     /// Wallclock at which `run()` first started, in ms since epoch.
     pub started_at_ms: u64,
 
@@ -157,6 +163,7 @@ impl LLMContextState {
             accumulated: req.input.clone(),
             usage: AiUsage::default(),
             tool_iterations_left: req.tool_policy.max_tool_iterations,
+            wrap_up_rounds_used: 0,
             started_at_ms,
             cost_units: 0,
             consecutive_errors: 0,

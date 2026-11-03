@@ -282,6 +282,10 @@ pub struct ToolPolicy {
     /// 透传给 adapter 的能力禁用列表（如 thinking / web_search），waist 不解释
     pub disable_capabilities: Vec<String>,
     pub finish_grace_ms: u64,            // 平滑结束时等待不可取消工具的时长（默认 30s）
+    /// 收尾模式：额度用完后仍提供的工具（宿主指定，典型为 report / ask_user）；
+    /// 只含它们的批次不扣额度。空（默认）= 额度用完即无工具
+    pub wrap_up_tools: Vec<String>,
+    pub wrap_up_rounds: u32,             // 收尾模式最多派发的批次数（默认 2）
 }
 
 /// 每个 observation 都是终态：waist 从不等任何东西。工作在 Runtime 的等待预算内没做完的
@@ -332,11 +336,13 @@ pub struct ToolDispatchError { message: String, effect_unknown: bool }
 
 工具执行委托给 `ToolManager` trait，policy gate 委托给 `PolicyEngine` trait（`gate_tool_calls` / `gate_action_calls` 在派发前过滤整批调用，拒绝走 ErrorPolicy）。waist 不知道实现细节。
 
-宿主实际使用的值（xllm `hosted_request` / `build_initial_context`，libopendan 沿用）：`mode = Whitelist`（工具集为空则 `None`），`max_calls_per_round = 16`，`finish_grace_ms = 30_000`。观察的大小上限由工具 / Runtime 自己截断（`Observation.truncated`），waist 不设。
+宿主实际使用的值（xllm `hosted_request` / `build_initial_context`，libopendan 沿用）：`mode = Whitelist`（工具集为空则 `None`），`max_calls_per_round = 16`，`finish_grace_ms = 30_000`；xllm 不设 `wrap_up_tools`，收尾工具集由宿主在 `hosted_request` 之后写。观察的大小上限由工具 / Runtime 自己截断（`Observation.truncated`），waist 不设。
 
 **派发**：一个批次的调用按 provider 返回的顺序**串行**派发，每个调用派发前先打一次工具调用前 checkpoint（§9.2）。原生 function call 批次派发全部调用（业务错误不中断，模型一次看到整批结果）；behavior Step 的 action 遇到第一个非成功结果即停，其余记为未执行（§6.4）。
 
 **工具迭代额度**（`max_tool_iterations` → `LLMContextState.tool_iterations_left`）：原生工具批次在整批派发完成后扣一次（恢复后续派的批次在续派完成时才扣），带 action 的 behavior Step 在派发前扣一次；Step 内层的原生批次与外层 action 共享同一额度。无工具的最终回答、纯 report / 决策 Step、解析纠错都不扣，所以剩余额度不能用来推算推理次数。额度为 0 时推理请求的 `allow_tool_calls = false`；模型仍返回 tool call（或带 action 的 Step）⇒ `BudgetExhausted{ToolIterations}`。恢复不重复扣减。
+
+**收尾模式**（`wrap_up_tools` 非空）：额度为 0 且 `wrap_up_rounds_used < wrap_up_rounds` 时，请求只广告 `wrap_up_tools ∩ resolve_tool_specs` 的工具（`allow_tool_calls` 随之为真；策略里没有的收尾工具忽略，每个实例 warn 一次，并记一条 `llm_context.budget.wrap_up { left_rounds }` 日志）。一个批次的调用（或 Step 的 action）全在 `wrap_up_tools` 里才派发，派发时 `wrap_up_rounds_used += 1`、不扣额度；否则照旧 `BudgetExhausted{ToolIterations}`。被拒的批次（`max_calls_per_round`、policy gate）不计批数。`wrap_up_rounds_used` 随快照保存、与 `tool_iterations_left` 一起在 inner context 间同步；waist 不清零，宿主补满额度时自己清零。
 
 **任务不是 waist 概念**：waist 对工具结果只做一种处理——配对回历史、交给下一次推理。工作比一次调用活得久的，是 Runtime 的任务（`agent_tool::task_model`）：
 
@@ -803,6 +809,7 @@ pub struct LLMContextState {
     pub usage:       AiUsage,
     /// 剩余工具迭代（ToolPolicy.max_tool_iterations，§3.3），不是剩余推理次数
     pub tool_iterations_left: u32,
+    pub wrap_up_rounds_used: u32,        // 收尾模式已派发的批次（§3.3），宿主补满额度时清零
     pub started_at_ms: u64,
     pub cost_units:    u32,
     pub consecutive_errors: u32,
@@ -935,7 +942,7 @@ pub enum InjectionPosition { RequestInput(usize), Accumulated(usize), Step(u32),
 - **快照版本 6**：`resume` 只接受版本 6，更旧或更新的版本都以 `SnapshotCorrupted` 拒绝，不做迁移；格式变化直接升版本。
 - **只有上下文上限会挂起**：`Suspension { which: ContextLimitKind, estimated_tokens, at_ms }`。工具从不挂起 loop：每个 observation 都是终态，工作没做完就是一个"仍在运行"的结果（§3.3）。快照里的调用分三类：已执行（结果已在 transcript / step 中）、可能已开始（工具调用前快照里第一个没有结果的调用）、尚未执行（其后的 `tool_batch.remaining` 或 step 其后的 action）。恢复后余下调用继续派发（§9.3），整批完成时才扣一次工具迭代、最多计一次错误；带 action 的 Step 在派发前已扣过，恢复后不再扣。usage、tool_iterations_left、错误计数、step / action / call 编号都不重置。behavior action 在第一个非成功结果（业务错误、Cancelled / Unresolved）后停止其余 action。
 - **ContextLimitReached**：只在推理边界检查（首次推理、工具结果追加后、checkpoint hook 注入后、behavior 内层物化 prompt 后），顺序在 hook 与 abort 检查之后，因此 checkpoint 失败与主动 interrupt 优先于挂起；token / wallclock 预算终态也优先。估算：每条消息 4 token 开销 + 各文本部分（文本、tool_use 参数、tool_result、thinking、provider state）经 `Tokenizer` 计数，图片 / 文档等非文本部分每个按 1024 计，另计工具描述（允许调用工具时）与输出 schema；多模态 prompt 可能被低估。估算值只用于检查，不与 Provider usage 混用。重写后仍装不下时再次让出、不推理，压缩次数与失败策略由宿主决定。
-- **宿主接入**（2026-09-30）：xllm 以 `.llm_context` 的 `context_window` 提供窗口（设置后阈值为 0.75），压缩后以 `RewrittenHistory` / `RewrittenSteps` 续跑、每个 run 最多 3 次，接手上下文上限挂起的快照时先压缩（§11.4）；OpenAI 兼容 adapter 把 `context_length_exceeded` 归一化为 `ProviderFailure::ContextLimit`。libOpenDAN（当前实现）的中途重写见 [Session Directory Protocol](../opendan/protocol/Session%20Directory%20Protocol.md) §7：先把 run 尚未写入的历史 flush 进 Session worklog，再以 system + 重建的会话历史作为新 input 恢复（behavior 把 steps 全部折叠进 input，编号继续，进行中 Step 的 inner transcript 由 waist 保留），开始新的 history epoch；重写不改变当前 Turn，细节见 [append-only history](llm_context_append_only_history.md)。
+- **宿主接入**（2026-09-30）：xllm 以 `.llm_context` 的 `context_window` 提供窗口（设置后阈值为 `context_yield_ratio`，缺省 0.80），压缩后以 `RewrittenHistory` / `RewrittenSteps` 续跑、每个 run 最多 3 次，接手上下文上限挂起的快照时先压缩（§11.4）；OpenAI 兼容 adapter 把 `context_length_exceeded` 归一化为 `ProviderFailure::ContextLimit`。libOpenDAN（当前实现）的中途重写见 [Session Directory Protocol](../opendan/protocol/Session%20Directory%20Protocol.md) §7：先把 run 尚未写入的历史 flush 进 Session worklog，再以 system + 重建的会话历史作为新 input 恢复（behavior 把 steps 全部折叠进 input，编号继续，进行中 Step 的 inner transcript 由 waist 保留），开始新的 history epoch；重写不改变当前 Turn，细节见 [append-only history](llm_context_append_only_history.md)。
 - **等待在宿主**（2026-11-01 核对）：libOpenDAN 在 loop 外跟进任务与子 session。一个让出、或本 run 启动的工作（它的任务、还没听到结局的子 session）未结束时的回复，**保留 run**：run 状态 paused，Session `run_state = waiting`，任务记 `watched_tasks`、子 session 记 `wait_children`，Turn 保持打开（多 Turn 的 Work Session 由这次回复关闭 Turn）；保留记在 run.json `host.extra.kept`，崩溃后由 reconcile 重做。它们的结局以输入（`<<task_result task=… call_id=… status=…>>`、`<event … source="session:<sid>" …>`）注入同一快照再 `run()`，step 编号继续。`call_behavior` 只登记子 context，这一段 run 结束时 Session 交接给它，结果以带 `call_id` 的 `<process_result>` 输入回到调用方。提问用户也是任务：websdk `ask_user` 发 `input` 通知（Zone TaskMgr 的 `human.input/v1` 任务），答案是该任务的结果。xllm 由模型在调用内等待预算之外用 `wait_task` / `get_task_state` 跟进；让出、或回复时 resolver 还列着运行中任务，run 停为 `paused`（`last_error.kind` 为 `yield` / `tasks_running`），`xllm --resume [message]` 继续同一快照（§11.2 / §11.4）。
 
 ---
@@ -977,9 +984,10 @@ run_inner():                              // function call 模式；也是 behav
     │       ⇒ push reply + correction user msg, output_repairs += 1, next inference; n used up ⇒ Done{Invalid}
     │     native `report` tool (hosted)? → tool_checkpoint_hook.validate_report, written to the OUTER state
     │     → Done; strict JSON parse failure ⇒ push output + diagnostic, bump, next inference
-    ├─> tool_iterations_left == 0 → BudgetExhausted(ToolIterations)
+    ├─> tool_iterations_left == 0 and not a wrap-up batch (§3.3) → BudgetExhausted(ToolIterations)
     ├─> too many calls (> max_calls_per_round) / policy reject
     │     ⇒ push assistant msg + error tool_result per call, bump, next inference
+    ├─> tool_iterations_left == 0 ⇒ wrap_up_rounds_used += 1
     ├─> push assistant_tool_call message; tool_batch = { remaining: calls, batch_error: None }
     ├─> dispatch tool_batch serially, for each call:
     │     finishing? → answer rest as Cancelled{effect_unknown:false}, Settled
@@ -998,7 +1006,7 @@ run_inner():                              // function call 模式；也是 behav
     │           Deadline    ⇒ rest Unresolved, BudgetExhausted{Wallclock}
     │           Finishing   ⇒ rest Cancelled, Settled(snapshot)
     ├─> batch complete: batch_error? bump once per batch : reset consecutive_errors
-    ├─> tool_iterations_left -= 1
+    ├─> tool_iterations_left -= 1 (saturating: a wrap-up batch charges nothing)
     └─> next inference (Round)
 
 run_behavior():
@@ -1008,7 +1016,7 @@ run_behavior():
     ├─> no inner tool_batch? → checkpoint_hook (outer snapshot, Step boundary, may inject)
     ├─> run_inner_for_step():
     │     inner = LLMContext(materialized prompt + inner transcript, deps.into_traditional())
-    │     seeded with usage / errors / tool_iterations_left / tool_batch, shares abort state
+    │     seeded with usage / errors / tool_iterations_left / wrap_up_rounds_used / tool_batch, shares abort state
     │     inner.run_inner()                                // 一个或多个 Round
     │       Done → clear inner transcript, take response
     │       ContextLimitReached / Interrupted / Settled
@@ -1020,11 +1028,11 @@ run_behavior():
     ├─> report? → checkpoint_hook.validate_report; handover / yield? → checkpoint_hook.review_decision
     │     Refuse ⇒ correction step, bump, continue
     ├─> step = prepare_step(result)                        // allocates step_index / action call_ids
-    ├─> step has actions && tool_iterations_left == 0 → BudgetExhausted(ToolIterations)
+    ├─> step has actions && tool_iterations_left == 0 && not wrap-up actions only → BudgetExhausted(ToolIterations)
     ├─> report → last_report / report_end
     ├─> yield (no action, not an end, no hand-over) → Done now        // the loop never waits
     ├─> action policy gate (reject ⇒ correction step, continue); actions present → next_behavior dropped
-    ├─> actions? → tool_iterations_left -= 1               // charged before dispatch
+    ├─> actions? → tool_iterations_left -= 1 (at 0: wrap_up_rounds_used += 1)   // charged before dispatch
     ├─> action_step = { step, response }
     ├─> dispatch actions serially (each: finishing? → settle step; checkpoint_hook.before_tool_call(outer snapshot));
     │     first non-success stops the rest (Unresolved / NotExecuted)
@@ -1101,10 +1109,11 @@ xllm "question" [--file …] [--select <group> | --system …] [--json] [--loop-
                  input: initial_messages                         // 有 file stage 时换成 system + user(文本 + <image_analysis>)
                  model_policy  { preferred: model, max_completion_tokens: limits.max_tokens },
                  tool_policy   { Whitelist(native) / Whitelist(actions)（空则 None）, max_tool_iterations（工具关闭则 0）,
-                                 max_calls_per_round: 16, disable_capabilities, finish_grace_ms: 30_000 },
+                                 max_calls_per_round: 16, disable_capabilities, finish_grace_ms: 30_000,
+                                 wrap_up_tools: []（宿主装配的 run 由宿主写） },
                  output: json && function_call ? Json { schema, strict: false, max_repairs: None } : Text,
                  budget        { max_wallclock_ms: timeout_secs, context_window_tokens: .llm_context.context_window,
-                                 context_yield_threshold: Ratio(0.75)（有窗口时） },
+                                 context_yield_threshold: Ratio(context_yield_ratio，缺省 0.80)（有窗口时） },
                  error_policy: default(3), forbid_next_behavior: false }
              ctx = LLMContext::new(request, waist_deps); interrupter.handle = ctx.interrupt_handle()
              SnapshotHook.commit(ctx.snapshot())                         // 首次推理前的快照

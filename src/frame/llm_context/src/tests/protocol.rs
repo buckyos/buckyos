@@ -5,7 +5,7 @@
 //! ```xml
 //! <response>
 //!   <observation>…</observation><intent>…</intent>
-//!   <actions><shell>cmd</shell></actions>
+//!   <actions><shell>cmd</shell><ask_user>question</ask_user></actions>
 //!   <report end="true">…</report><result>{"k":1}</result>
 //!   <next_behavior>…</next_behavior>
 //! </response>
@@ -107,17 +107,26 @@ impl LLMResultParser for XmlBehaviorParser {
         if !native.is_empty() {
             result.do_actions = native;
         } else if let Some((_, mut body)) = element(&text, "actions") {
-            while let Some((_, cmd)) = element(body, "shell") {
+            // `<shell>command</shell>` / `<ask_user>question</ask_user>`, in
+            // document order.
+            loop {
+                let next = [("shell", "command"), ("ask_user", "question")]
+                    .into_iter()
+                    .filter_map(|(tag, key)| body.find(&format!("<{tag}")).map(|at| (at, tag, key)))
+                    .min();
+                let Some((at, tag, key)) = next else { break };
+                body = &body[at..];
+                let Some((_, inner)) = element(body, tag) else { break };
                 let mut args = HashMap::new();
-                args.insert("command".to_string(), Value::String(unwrap_cdata(cmd)));
+                args.insert(key.to_string(), Value::String(unwrap_cdata(inner)));
                 result.do_actions.push(AiToolCall {
-                    name: "shell".into(),
+                    name: tag.into(),
                     args,
                     call_id: String::new(),
                 });
-                let close = body.find("</shell>").map(|i| i + "</shell>".len());
-                match close {
-                    Some(i) => body = &body[i..],
+                let close = format!("</{tag}>");
+                match body.find(&close) {
+                    Some(i) => body = &body[i + close.len()..],
                     None => break,
                 }
             }
