@@ -342,6 +342,16 @@
       "minimum": 0.0,
       "type": "integer"
     },
+    "budget_warned": {
+      "description": "The model was told that the tool budget is running out (`<<budget>>` line); cleared when a Turn refills the budget.",
+      "type": "boolean"
+    },
+    "budget_wrap_up_turn": {
+      "description": "Turn in which the run, out of time / tokens, was given its wrap-up (once per Turn).",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
     "epoch_input_seq": {
       "description": "Receipts with `input_seq ≤` this belong to earlier epochs: their message positions no longer apply (their identity still does).",
       "format": "uint64",

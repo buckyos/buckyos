@@ -204,6 +204,15 @@ impl ChildDriver {
         if parent_stopped {
             return true;
         }
+        // Backing off after retryable errors: driven again when its retry is
+        // due, not every tick (and it takes no slot meanwhile).
+        if e
+            .status
+            .retry_not_before_ms
+            .is_some_and(|t| crate::now_ms() < t)
+        {
+            return false;
+        }
         match self.results.lock().expect("results").get(&e.session_id) {
             // Blocked for a reason another drive cannot remove.
             Some(

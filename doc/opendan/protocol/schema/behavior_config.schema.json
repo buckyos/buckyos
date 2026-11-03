@@ -44,6 +44,16 @@
             "integer",
             "null"
           ]
+        },
+        "wrap_up_tools": {
+          "description": "Functions still offered once `max_tool_iterations` is used up (`None`: `report` / `ask_user` of an explicit-report session; `[]`: none). Calling them costs no iteration, at most 2 batches.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
         }
       },
       "type": "object"

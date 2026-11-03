@@ -1,7 +1,8 @@
 //! The context window a run is given (work context budget TODO §3.1): the
 //! session's explicit `context_window`, else the window of the model its
 //! alias routes to (AICC `capabilities.max_context_tokens`), else
-//! `RunnerOptions.default_context_window`. xllm derives the compaction
+//! `RunnerOptions.default_context_window`; a looked-up or default window is
+//! at most `RunnerOptions.max_context_window`. xllm derives the compaction
 //! trigger from it; the mid-run rewrite derives its target line.
 
 use std::collections::HashMap;

@@ -1084,6 +1084,8 @@ serve
 3. 循环：
    a. 检查 lease / stop / MaxOutcomes；stop 走 §9.5 的提交路径。
    b. hold_inputs = live.filled（恢复到批次 / Step 中途：先跑完，不放输入批次）。
+      run 在可重试错误的退避期（state.retry.not_before_ms 未到，且错误之后 run 没有再收输入批次）：
+      不推理、不取输入（同 paused），返回 Error（last_error + retry_not_before_ms）；候选里有用户消息（is_user_msg）时越过退避立即重试。
    c. 校验 / 补冻结当前目标 behavior，取得 InputTemplates 与 InputSection。
       不 hold 时，从已路由候选 + poll_watched_tasks 的 task 结果 + C15 poll_children 的子状态候选中按 Single / Batch 选批；
       子 context 进行中只取它自己启动的 task 的结果。未选中的候选保持未消费。
@@ -1096,6 +1098,9 @@ serve
       停止监视任务；若它发现 stop，由驱动者消费控制并提交，再解释 Outcome。
    h. handle_context_outcome：调度 Context（含 sub_call 的交接）/ 保活 / 关闭 Turn，outcomes += 1。
       run 未结束也未交接（保活、可重试错误、上下文上限）时保留 LiveCtx；在内存里等过输入的 LiveCtx 下一段重新计墙钟。
+      可重试错误（Timeout / Cancelled / Transient / Runtime 来源）：连续第 n 次排 retry，退避 base × 2^(n−1) 封顶 cap
+      （RunnerOptions 缺省 30 s / 10 min）；已重试 max_retry_attempts 次（6）或距第一次超过 max_retry_duration（30 min）后
+      再遇到 → 按不可恢复处理，last_error.kind = provider_unavailable、retries_exhausted。本段有过成功推理或任何其它 outcome 都清零。
       run_compacting 内：上下文上限 → 中途重写后继续；顶层 run 的 Wallclock / Tokens 触顶 → 收尾（每 Turn 一次）后继续。
    i. 本次 Turn 已关闭且 until = TurnClosed → 返回 TurnClosed（优先于 Finished）。
       否则 finished / error → 返回；进入等待（保活或等输入）且 until = Idle、没有候选 → 返回 Idle；其余重新 route_inputs 后回到 a。
@@ -1108,7 +1113,7 @@ serve
 | `Idle` | 返回 Idle；进入此分支前已查看候选，不能仅凭上个 Outcome 是等待输入就返回 |
 | `MaxOutcomes` | 返回 OutcomesHandled；保留等待状态 |
 | `TurnClosed`（新增 C6） | 本次已关闭则 TurnClosed；确有 open_turn 则 TurnOpen；否则 Idle |
-| `Finished` | 可重试错误按已有错误路径返回；否则有界等待并轮询，最多 max_wait |
+| `Finished` | 可重试错误按已有错误路径返回（退避期同样返回 Error）；否则有界等待并轮询，最多 max_wait |
 | 无队列且没有 task / children / 其它可推进来源 | 可以直接返回等待结果；有 task / children 时不能以“无队列”为退出依据 |
 
 装配失败时，未提交输入留在队列；已有选中 msg / Input event 却渲染为空必须报错。无选中外部输入时沿用当前 bootstrap / continuation 规则，交接空文本使用现有继续执行消息。仅保存 Observe 更新、工具完成或到达检查点不形成受控输入。输入装配 / 推理预算不足沿用 AICC 不可用的失败与重试路径；已提交批次以 receipt 恢复，不重新消费。
@@ -1209,6 +1214,8 @@ Outcome 提交沿用 `outcome.rs` 与 `reconcile.rs`：
   NotDriver / Unregistered / BindFailed / RecoveryBlocked → 报告并退出该 Session
   Busy / RunBusy / LeaseLost → 有界退避后重试
   Error → 输出诊断；仅按已有可重试分类退避，不因返回 Error 就忙循环
+         （run 自己的重试节奏在 runner：退避期内 drive 不推理、只返回 Error；ChildDriver 不驱动登记表
+          retry_not_before_ms 未到的子 Session，它也不占并发名额）
   Idle → 重新检查持久候选与待推进状态：
     已有候选输入 → 立即再次 drive
     waiting(tool/children) / watched_tasks / 拉取订阅 → 保留宿主，有界轮询或通知后 drive

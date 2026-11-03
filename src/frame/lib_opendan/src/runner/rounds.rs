@@ -5,7 +5,7 @@
 //! Round; history summarization uses its own client and is not counted.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -33,6 +33,8 @@ pub struct RoundCounter {
     attempts: AtomicU64,
     failed: AtomicU64,
     interrupted: AtomicU64,
+    /// A call succeeded since the last [`RoundCounter::take_progress`].
+    progressed: AtomicBool,
 }
 
 impl RoundCounter {
@@ -43,6 +45,12 @@ impl RoundCounter {
             failed: self.failed.swap(0, Ordering::SeqCst),
             interrupted: self.interrupted.swap(0, Ordering::SeqCst),
         }
+    }
+
+    /// Whether a call succeeded since the previous call; resets it. Kept
+    /// apart from [`RoundCounter::take`], which checkpoints call mid-run.
+    pub fn take_progress(&self) -> bool {
+        self.progressed.swap(false, Ordering::SeqCst)
     }
 }
 
@@ -154,6 +162,9 @@ impl LlmClient for CountingLlm {
         guard.done = true;
         if let (Some(log), Some(alias), Ok(response)) = (&self.usage, &alias, &result) {
             log.append(alias, response);
+        }
+        if result.is_ok() {
+            self.counter.progressed.store(true, Ordering::SeqCst);
         }
         if let Err(e) = &result {
             if matches!(e, LLMComputeError::Cancelled) || aborted.is_aborted() {

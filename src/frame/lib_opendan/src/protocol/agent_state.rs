@@ -46,6 +46,10 @@ pub struct SessionStatus {
     /// Paused (`control(pause)`): it infers no more until resumed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub paused: bool,
+    /// Backing off after retryable errors: it infers again from then on
+    /// (epoch ms; [`super::state::SessionState::retry`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_not_before_ms: Option<u64>,
     #[serde(default)]
     pub activity: Activity,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -80,6 +84,7 @@ impl SessionStatus {
             needs_input: false,
             turn_open: false,
             paused: false,
+            retry_not_before_ms: None,
             activity: Activity::default(),
             last_runner: None,
             last_error: None,

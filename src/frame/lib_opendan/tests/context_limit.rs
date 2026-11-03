@@ -449,7 +449,7 @@ async fn failed_compaction_logs_the_failure_and_preserves_the_error() {
 // ---------------------------------------------------------------------
 
 use libopendan::runner::history::LimitLine;
-use libopendan::runner::{CachedContextWindows, ContextWindowSource};
+use libopendan::runner::{CachedContextWindows, ContextWindowSource, RunnerOptions};
 use llm_context::context_window::estimate_request;
 use llm_context::deps::ByteHeuristicTokenizer;
 
@@ -501,6 +501,16 @@ async fn run_window(
     source: Option<Arc<dyn ContextWindowSource>>,
     default: Option<u32>,
 ) -> (Option<u32>, Option<llm_context::ContextThreshold>) {
+    run_window_capped(llm_context, source, default, None).await
+}
+
+/// [`run_window`] under `RunnerOptions.max_context_window = max`.
+async fn run_window_capped(
+    llm_context: Value,
+    source: Option<Arc<dyn ContextWindowSource>>,
+    default: Option<u32>,
+    max: Option<u32>,
+) -> (Option<u32>, Option<llm_context::ContextThreshold>) {
     let env = Env::new();
     let mut spec = work_spec("which window");
     spec.prompt.llm_context = llm_context;
@@ -508,6 +518,7 @@ async fn run_window(
     let mut deps = env.deps(ScriptedLlm::new(|_, _| text("done")));
     deps.context_windows = source;
     deps.options.default_context_window = default;
+    deps.options.max_context_window = max;
     let r = drive(&sd, &deps, StopWhen::Finished).await;
     assert!(r.is_finished(), "{r:?}");
     let run_id = sd.state().unwrap().last_run.unwrap();
@@ -563,7 +574,32 @@ async fn a_run_gets_the_window_of_its_model() {
     // No source: the default; no default either: no window, no early
     // yield (only the provider's refusal rewrites).
     assert_eq!(run_window(tools.clone(), None, Some(128_000)).await.0, Some(128_000));
-    assert_eq!(run_window(tools, None, None).await, (None, None));
+    assert_eq!(run_window(tools.clone(), None, None).await, (None, None));
+
+    // The upper bound (DV follow-up TODO H2, 256k by default): a larger
+    // model window is bounded, a smaller one and the default stay, an
+    // explicit `context_window` is not bounded.
+    assert_eq!(RunnerOptions::default().max_context_window, Some(256_000));
+    let cap = Some(256_000);
+    let got =
+        run_window_capped(tools.clone(), Some(Windows::new(Ok(Some(1_050_000)))), Some(128_000), cap)
+            .await;
+    assert_eq!(got, (Some(256_000), ratio.clone()));
+    let got =
+        run_window_capped(tools.clone(), Some(Windows::new(Ok(Some(200_000)))), Some(128_000), cap)
+            .await;
+    assert_eq!(got.0, Some(200_000));
+    assert_eq!(run_window_capped(tools.clone(), None, Some(400_000), cap).await.0, Some(256_000));
+    let windows = Windows::new(Ok(Some(1_050_000)));
+    let got = run_window_capped(
+        json!({ "context_window": 500_000, "tools": { "enabled": true } }),
+        Some(windows.clone()),
+        Some(128_000),
+        cap,
+    )
+    .await;
+    assert_eq!(got.0, Some(500_000));
+    assert!(windows.asked.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

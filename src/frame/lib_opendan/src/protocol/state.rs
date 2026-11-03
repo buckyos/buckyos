@@ -751,6 +751,10 @@ pub struct SessionState {
     /// ends the session nor waits for anything): at most one per Turn.
     #[serde(default, skip_serializing_if = "Nudge::is_empty")]
     pub nudge: Nudge,
+    /// The live run stopped on retryable errors in a row and infers again
+    /// once their backoff passed; any other outcome clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<RetryState>,
     /// Result hints shown once per session (`once` keys of the hint
     /// ledger, see `agent_tool::hints`).
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
@@ -812,6 +816,33 @@ fn is_zero_u8(n: &u8) -> bool {
     *n == 0
 }
 
+/// [`SessionState::retry`]: the host's retries of a run that stopped on a
+/// retryable error (a provider that is unavailable for a while). Not the
+/// run's own error policy (llm_context `error_policy.max_consecutive_errors`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RetryState {
+    /// Retries scheduled in a row.
+    pub attempts: u32,
+    /// When the first of these errors happened (epoch ms; time the host was
+    /// down counts).
+    pub since_ms: u64,
+    /// The run infers again from then on (epoch ms); a user message in an
+    /// input batch retries earlier.
+    pub not_before_ms: u64,
+    /// `live_run.applied_input_seq` when the error happened: a batch the run
+    /// took in since (a user message's) is retried at once, also after a
+    /// crash before that inference.
+    #[serde(default)]
+    pub applied_input_seq: u64,
+}
+
+impl RetryState {
+    /// The live run waits for this retry at `now_ms`.
+    pub fn backing_off(&self, now_ms: u64, applied_input_seq: u64) -> bool {
+        now_ms < self.not_before_ms && applied_input_seq <= self.applied_input_seq
+    }
+}
+
 /// The time line of the background context changes at most this often
 /// (an LLM is a high-latency system: the design assumes 5 s).
 pub const BACKGROUND_TIME_STEP_MS: u64 = 5_000;
@@ -865,6 +896,7 @@ impl SessionState {
             background_shown: BTreeMap::new(),
             task_watch: TaskWatch::default(),
             nudge: Nudge::default(),
+            retry: None,
             hints_once: BTreeSet::new(),
             finished_at_ms: None,
             updated_at_ms: now_ms,

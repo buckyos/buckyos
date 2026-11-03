@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 const DIRECTORY_CACHE_TTL: Duration = Duration::from_secs(600);
 /// A name service that does not answer is asked again only after this.
 const DIRECTORY_UNAVAILABLE_TTL: Duration = Duration::from_secs(30);
-const DIRECTORY_TIMEOUT: Duration = Duration::from_secs(3);
+const DIRECTORY_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DirectoryError {

@@ -1,6 +1,6 @@
 # Session Directory Protocol
 
-版本 6 · 2026-10-10（2026-10-16 补 TodoList：`todos.json`、`todo_view_rev`；2026-11-02 删 Todo 执行器的 `call.todo` / `entry.todo`，补 `paused` / `resume_run`）· 由 `libopendan` 反写（`src/protocol/{config,behavior,report,state,summary,worklog,misc,input}.rs`）。Round / Step / Turn 的定义见 [LLM Context readme](../../llm_context/readme.md)；本文的 Turn 规则均为当前实现。
+版本 6 · 2026-10-10（2026-10-16 补 TodoList：`todos.json`、`todo_view_rev`；2026-11-02 删 Todo 执行器的 `call.todo` / `entry.todo`，补 `paused` / `resume_run`；同日补 `retry`（可重试错误的退避与上限）与窗口上限）· 由 `libopendan` 反写（`src/protocol/{config,behavior,report,state,summary,worklog,misc,input}.rs`）。Round / Step / Turn 的定义见 [LLM Context readme](../../llm_context/readme.md)；本文的 Turn 规则均为当前实现。
 
 ## 1. 目录结构
 
@@ -194,6 +194,7 @@ Schema：`schema/session_state.schema.json`。
   "turn_stop_requested": false,                // 只停当前 Turn（control(stop, scope = turn)，或 Goal Session 收到的任何 stop），false 时省略
   "paused": { "at_ms": 0, "reason": "…", "by": "…", "in_run": true },   // control(pause)：不再推理，直到 resume（缺省省略）；in_run：暂停打断了 Turn 内的 run
   "resume_run": false,                         // resume 之后，被暂停在 Turn 内的 run 从检查点接着推理（运行时清除；false 时省略）
+  "retry": { "attempts": 2, "since_ms": 0, "not_before_ms": 0, "applied_input_seq": 3 },   // live run 连续停在可重试错误：已排的重试次数、第一次的时刻、下次推理不早于、当时 run 收到的批次数（缺省省略），见 §7“run 的预算”
   "goal": null | {                             // Goal Session：它拥有的 Goal State 与进行中的 Activation，见下
     "goal_id": "g-…", "epoch": 1,
     "state": { /* opendan.goal_state/1，与本次提交一起落盘 */ },
@@ -230,7 +231,7 @@ Schema：`schema/session_state.schema.json`。
 | 规则 | 行为 |
 |---|---|
 | 打开 | 没有打开的 Turn 时提交的输入批次打开新 Turn（`turn_seq + 1`，receipt `opens_turn = true`）：bootstrap 的 `on_init`、msg / Input event 的 `on_input` |
-| 继续 | SWITCH_CONTEXT、子 context 的调用与返回（交接是 `on_context_switch` 输入批次；子结果以 `<process_result>` 进入调用方的交接批次，behavior 触发与工具触发相同）、半订阅快照（它是受控输入批次的一部分，不独立计 Turn）、可恢复挂起（未要求 stop 的 Interrupted、可重试的 Runtime / 暂时性错误使 run paused、ContextLimitReached）、run 为它启动的工作保活（见下）、上下文上限的 history epoch 重写、重启与崩溃恢复都不改变 `open_turn`；Turn 打开期间消费的 msg / event 加入它（`open_turn.inputs` 追加） |
+| 继续 | SWITCH_CONTEXT、子 context 的调用与返回（交接是 `on_context_switch` 输入批次；子结果以 `<process_result>` 进入调用方的交接批次，behavior 触发与工具触发相同）、半订阅快照（它是受控输入批次的一部分，不独立计 Turn）、可恢复挂起（未要求 stop 的 Interrupted、可重试的 Runtime / 暂时性错误使 run paused 并按退避重试、ContextLimitReached）、run 为它启动的工作保活（见下）、上下文上限的 history epoch 重写、重启与崩溃恢复都不改变 `open_turn`；Turn 打开期间消费的 msg / event 加入它（`open_turn.inputs` 追加） |
 | 关闭 | 只由 session 决定（run 结束时的 `finish_run`，或 stop），与 `open_turn = null`、worklog `turn_ended` 同一次提交；run 启动的工作仍在运行时 run 保活、不关闭。`Done` 交付结果 → `completed`（再按 `end_condition` 判定是否 finished）；`WAIT_USER_MSG` 只在本 run 已交付答复（快照 `last_report` 非空）时 `completed`，否则 Turn 保持打开，下一条输入加入它；不可重试错误 → `failed`；预算耗尽 → `budget_exhausted`（这两种情况下，`wait_user_msg = finish_failed` 的 Session 没有下一条输入可以补救，同一次提交里 `finished + failed`，`one_line_status` 带错误信息，父 Session 按结束事件得知）；`control(stop)` → `stopped`。fork 子 process 结束（`process_done`）不关闭 Turn |
 
 - 条目归属的 Turn：有 `open_turn` 时为其 `index`，否则为 `turn_seq`。`turns_completed` 只计 `completed`。
@@ -352,7 +353,7 @@ run.json `host.extra` 中由宿主冻结、恢复与重建工具时沿用的键�
 2. 压缩 session 历史：历史预算 `history_budget = max(⌈窗口 × context_target_ratio⌉ − system 前缀, history_budget_tokens)`（窗口取快照 `request.budget.context_window_tokens`，`context_target_ratio` 取 `prompt.context_target_ratio`，缺省 0.30；system 前缀 = 输入开头的 system 消息与工具 schema，用 llm_context 的估算器；窗口未知时就是 `history_budget_tokens`）。起点前移到只剩约 `history_budget >> 第几次` token 的原始记录（写 summary.json 与 `compaction` 条目），再按 §6 在 `history_budget` 内重建历史消息。日志 `opendan.context.compaction.triggered` 带 `window_tokens` / `target_tokens` / `prefix_tokens`；run.json `compactions` 加 1。
 3. 以 `system + 历史消息` 作为新的输入恢复上下文（function call：`RewrittenHistory`；behavior：`RewrittenSteps`，step 全部折叠进输入，编号继续），HostMeta 进入新的 epoch，先发布快照（run.json `status=running`）再继续推理。
 
-窗口与触发线：新 run 的 `llm_context.context_window` 显式值优先，否则宿主按 run 的模型别名查 AICC 路由选中模型的 `capabilities.max_context_tokens`（按别名缓存 10 分钟，查不到只记 warn），再否则 runner 缺省 128k；xllm 据此设 `context_window_tokens` 与触发线（`context_yield_ratio`，缺省 0.80）。窗口在 run 中途不变。
+窗口与触发线：新 run 的 `llm_context.context_window` 显式值优先，否则宿主按 run 的模型别名查 AICC 路由选中模型的 `capabilities.max_context_tokens`（按别名缓存 10 分钟，查不到只记 warn），再否则 runner 缺省 128k；查到的值与缺省值都不超过窗口上限 `max_context_window`（runner 缺省 256k，显式值不受限：要放开就在 agent.toml / session / behavior 的 `llm_context` 里写 `context_window`）。xllm 据此设 `context_window_tokens` 与触发线（`context_yield_ratio`，缺省 0.80；256k 时约 205k）。窗口在 run 中途不变。
 
 一次推进内连续最多 3 次；仍装不下时 run 以 `paused` + `last_error.kind=context_limit` 保留挂起快照，下一次推进先重写再继续。① 之后、③ 之前崩溃：恢复用旧 epoch 最后发布的快照，再次让出、重写，已写入的部分由 flush 标记跳过；③ 之后崩溃：新 epoch 的计数从 0 开始。receipt 的 `input_seq`、消费位置与打开的 Turn 都不随重写改变。
 
@@ -361,6 +362,7 @@ run.json `host.extra` 中由宿主冻结、恢复与重建工具时沿用的键�
 - `max_tool_iterations` 计工具批次；多 Turn Work 每个新 Turn 补满（同时清零 `wrap_up_rounds_used` 与告警标记）。剩余 ≤ 20% 时 checkpoint hook 在下一次推理前注入一行 `<<budget>>` 提示（每次补满一次，标记 `HostMeta.budget_warned` 随快照提交；flush 不把它写进 worklog）。用完后 explicit report 的 function call run 只剩收尾工具（`ToolPolicy.wrap_up_tools`，缺省 `report` / `ask_user` 中 run 以函数提供的；behavior `[budget] wrap_up_tools` 可改），不计次、最多 2 个批次；其它工具 → `BudgetExhausted{ToolIterations}` → `budget_exhausted` 失败。
 - 墙钟（`max_wallclock_ms`，来自 `.llm_context` 的 `timeout` 或 behavior `[budget] max_wallclock_ms`）只量一段连续运行：宿主每次从快照恢复 run（`resume_live_run`，含崩溃恢复与新 Turn）以及 run 在内存中等过输入后，都把 `state.started_at_ms` 置为现在；同一段内的批次续跑不重置。工具 deadline 同样由它推导。多 Turn Work 的会话没有墙钟寿命上限。
 - `max_total_tokens` 按整个 run 累计，不按 Turn 重置，是可选的会话级成本上限（Jarvis 不设）。
+- 可重试错误的退避与上限（宿主层，与 llm_context 的 `error_policy.max_consecutive_errors` 是两回事：后者管 run 内部连续错误，前者管 run 以可重试错误停下之后宿主隔多久、重试几次）：run 段以可重试错误（Timeout / Cancelled、Provider `Transient`、Runtime 来源）结束时 run 保留 `paused`、Turn 不关，同一次提交写 `state.retry`：连续第 n 次排重试，`not_before_ms = now + min(base × 2^(n−1), cap)`（runner 缺省 base 30 s、cap 10 min），登记表 `status.retry_not_before_ms` 是它的投影。退避期内 drive 不推理、不取输入（控制照常处理），返回 `Error`（`last_error` 带 `retry_not_before_ms`）；输入里有用户消息时越过退避立即重试（消息进入同一批次），错误之后 run 已收下的批次（用户消息的那一批，含它提交后崩溃的情况）同样立即重试；定时器、task 结束、子 Session 回报等自动输入等到退避结束。已重试 `max_retry_attempts` 次（缺省 6，累计退避约 25.5 分钟）或距第一次超过 `max_retry_duration`（缺省 30 分钟）后再遇到可重试错误，按不可恢复处理：Turn `failed`（`finish_failed` 的 Session 随之结束），`last_error = {kind: "provider_unavailable", retries_exhausted: true, attempts, since_ms, at_ms, message: 最后一次错误}`；Todo 观察据此给出 `provider_unavailable: … gave up after N retries over M min`。计数只累计连续的可重试错误：本段有过成功推理、或任何其它 outcome（Done、保活、交接、上下文上限、中断、Turn 结束、不可恢复失败）都清空 `retry`。它随 state 持久化，宿主重启不清零，停机时间计入 `since_ms`；退避不计入墙钟（恢复 run 时重置 `started_at_ms`）。宿主不读 provider 给的重试间隔。日志 `opendan.run.retry_scheduled` / `opendan.run.retries_exhausted`。
 - 顶层 run 出 `BudgetExhausted{Wallclock | Tokens}` 时先进收尾（每个 Turn 一次，`HostMeta.budget_wrap_up_turn`）：flush 本 run 历史并写 `control_applied{budget_wrap_up}`（detail 带 `which`），快照 `started_at_ms = now`、`tool_iterations_left = 0`、`wrap_up_rounds_used = 0`（`Tokens` 再把 `max_total_tokens` 抬到当前用量 + 2 次收尾推理的估算），注入一行 `<<budget>>` 要求立即结束，发布快照后继续；收尾里 `report` 成功即按真实结局结束，收尾后再触顶照旧失败。子 context 不收尾，失败返回调用方。`ToolIterations` 不走这条（它已有收尾工具）。
 
 **保留**：`live_run`、`last_run`、`process_stack[].run_id` 引用的 run 保留；其它 run 在确认没有未核对执行后删除；旧快照按需裁剪（保留最新几份与已发布指针）。

@@ -131,6 +131,16 @@
             "integer",
             "null"
           ]
+        },
+        "wrap_up_tools": {
+          "description": "Functions still offered once `max_tool_iterations` is used up (`None`: `report` / `ask_user` of an explicit-report session; `[]`: none). Calling them costs no iteration, at most 2 batches.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -1514,6 +1524,14 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "context_target_ratio": {
+          "description": "A mid-run rewrite at the context limit brings the request back to this share of the model's window (system prefix included; `history_budget_tokens` is the floor of its history). `None` → runner default (0.30).",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
         },
         "frozen": {
           "anyOf": [

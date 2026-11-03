@@ -2060,6 +2060,42 @@
       ],
       "type": "object"
     },
+    "RetryState": {
+      "description": "[`SessionState::retry`]: the host's retries of a run that stopped on a retryable error (a provider that is unavailable for a while). Not the run's own error policy (llm_context `error_policy.max_consecutive_errors`).",
+      "properties": {
+        "applied_input_seq": {
+          "default": 0,
+          "description": "`live_run.applied_input_seq` when the error happened: a batch the run took in since (a user message's) is retried at once, also after a crash before that inference.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "attempts": {
+          "description": "Retries scheduled in a row.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "not_before_ms": {
+          "description": "The run infers again from then on (epoch ms); a user message in an input batch retries earlier.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "since_ms": {
+          "description": "When the first of these errors happened (epoch ms; time the host was down counts).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "attempts",
+        "not_before_ms",
+        "since_ms"
+      ],
+      "type": "object"
+    },
     "RunState": {
       "enum": [
         "created",
@@ -2577,6 +2613,17 @@
     "resume_run": {
       "description": "A run a pause stopped inside its Turn goes on from its checkpoint (set by `resume`, cleared when it runs again).",
       "type": "boolean"
+    },
+    "retry": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/RetryState"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The live run stopped on retryable errors in a row and infers again once their backoff passed; any other outcome clears it."
     },
     "rev": {
       "format": "uint64",

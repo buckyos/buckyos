@@ -301,6 +301,7 @@ async fn fail_workspace(
         session.state.finished_at_ms = Some(crate::now_ms());
         session.state.outcome = Some(Outcome::Failed);
         session.state.last_error = Some(detail.clone());
+        session.state.retry = None;
         session.state.one_line_status =
             "workspace binding invalid; create a new session after resolving the workspace".into();
         session.state.wait_children.clear();
@@ -891,6 +892,7 @@ async fn end_open_work(
                 );
             }
             s.state.turn_stop_requested = false;
+            s.state.retry = None;
             s.append_worklog(&sh.lease, bodies)?;
             commit_and_report(sh, &mut s).await?;
             drop(s);
@@ -909,6 +911,7 @@ async fn end_open_work(
             s.state.internal_continuation = None;
             s.state.watched_tasks.clear();
             s.state.activity = Activity::default();
+            s.state.retry = None;
             if s.config.session.kind == SessionKind::Work {
                 s.state.acceptance = Acceptance::Pending;
             }
@@ -1588,8 +1591,14 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         let sub_context = state.child_call().is_some();
         // A paused session infers no more: its inputs wait for `resume`.
         let paused = state.paused.is_some();
+        // A run kept after a retryable error infers again once its backoff
+        // passed; meanwhile its inputs wait — unless a user message is among
+        // them: then it is retried at once.
+        let backing_off = super::retry::backing_off(&state, crate::now_ms())
+            && !super::retry::has_user_msg(&routed.candidates);
         let hold_inputs = live.as_ref().is_some_and(|l| l.filled)
             || paused
+            || backing_off
             // A paused Goal opens no Activation; its inputs wait.
             || (goal_paused && state.open_turn.is_none());
         let is_goal = super::goal::is_goal(&cfg);
@@ -1680,6 +1689,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         // notification it only observes is no reason to say anything.
         let waits_for_input = is_goal || cfg.channels.outbound.is_some();
         let triggered = !paused
+            && !backing_off
             && (!picked.is_empty()
                 || (!state.bootstrap_done && !waits_for_input)
                 || state.internal_continuation.is_some());
@@ -1838,7 +1848,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                 None => {}
             }
         }
-        if msg.is_none() && state.internal_continuation.is_some() && !paused {
+        if msg.is_none() && state.internal_continuation.is_some() && !paused && !backing_off {
             msg = Some(format!(
                 "<session_input hook=\"{HOOK_ON_CONTEXT_SWITCH}\">Continue with behavior `{}`.</session_input>",
                 state.internal_continuation.clone().unwrap_or_default()
@@ -1846,8 +1856,16 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         }
         // A run a pause stopped inside its Turn goes on once resumed.
         let resumable = !paused
+            && !backing_off
             && (live.as_ref().map(|l| l.ready).unwrap_or(false) || state.resume_run);
         if msg.is_none() && !resumable {
+            // Still the retryable error, until its retry.
+            if backing_off {
+                return Ok(DriveResult::Error {
+                    rev: state.rev,
+                    error: super::retry::backoff_error(&state),
+                });
+            }
             if !crate::runtime::workspace_waiting_children(sh.agent(), &cfg, &state)
                 .await?
                 .is_empty()

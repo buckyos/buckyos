@@ -481,8 +481,10 @@ const WINDOW_LOOKUP_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 /// `context_window` of a new run (work context budget TODO §3.1): an
 /// explicit value (agent / session / behavior `llm_context`) stays;
 /// otherwise the window of the model its alias routes to
-/// (`RunnerDeps.context_windows`), else `options.default_context_window`.
-/// A failed lookup only warns. xllm derives the compaction trigger from it.
+/// (`RunnerDeps.context_windows`), else `options.default_context_window`,
+/// at most `options.max_context_window` (DV follow-up TODO H2: a 1M window
+/// would only compact at 800k tokens resent every Round). A failed lookup
+/// only warns. xllm derives the compaction trigger from it.
 async fn resolve_context_window(sh: &Shared, llm_ctx: &mut Value) {
     if llm_ctx.get("context_window").is_some_and(|v| !v.is_null()) {
         return;
@@ -506,9 +508,12 @@ async fn resolve_context_window(sh: &Shared, llm_ctx: &mut Value) {
             ),
         }
     }
-    let Some(window) = window.or(sh.deps.options.default_context_window) else {
+    let Some(mut window) = window.or(sh.deps.options.default_context_window) else {
         return;
     };
+    if let Some(max) = sh.deps.options.max_context_window {
+        window = window.min(max);
+    }
     // The completion reserve must fit in the window (llm_context refuses
     // the request otherwise).
     let reserve = llm_ctx
@@ -1419,6 +1424,7 @@ pub(super) async fn suspend_run(
     s.state.run_state = RunState::Ready;
     s.state.wait_children.clear();
     s.state.last_error = None;
+    s.state.retry = None;
     // SWITCH_CONTEXT: re-enter the target's own parked run when it exists.
     if switch {
         if let Some(pos) = s

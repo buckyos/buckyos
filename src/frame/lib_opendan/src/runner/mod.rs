@@ -24,6 +24,7 @@ mod outcome;
 mod receipts;
 mod reports;
 mod reconcile;
+mod retry;
 mod rounds;
 mod share;
 mod shared;
@@ -55,6 +56,8 @@ pub use children::{SessionTaskResolver, SESSION_TASK_PREFIX};
 pub use drive::drive;
 pub use live_tasks::answer_session_task;
 pub use outcome::AI_QUOTA_ERROR_KIND;
+pub use retry::PROVIDER_UNAVAILABLE;
+pub(crate) use retry::exhausted_line;
 pub use outbound::{
     compose_reply, has_pending_outbound, OutboundSink, SendResult, TurnReply, AGENT_TASK_META,
 };
@@ -174,9 +177,24 @@ pub struct RunnerOptions {
     /// sets none); `None`: such a run has no window (only the provider's
     /// refusal triggers a rewrite).
     pub default_context_window: Option<u32>,
+    /// Upper bound of the window looked up for a run's model (or the
+    /// default one); an explicit `context_window` is not bounded. `None`:
+    /// the model's window as it is.
+    pub max_context_window: Option<u32>,
     /// A mid-run rewrite brings the request back to this share of the
     /// window when `prompt.context_target_ratio` is unset.
     pub context_target_ratio: f32,
+    /// Backoff of the host's retries of a run that stopped on a retryable
+    /// error: `base × 2^(n−1)` before the n-th retry, at most `cap`. Not
+    /// the run's own error policy (llm_context
+    /// `error_policy.max_consecutive_errors`).
+    pub retry_backoff_base: Duration,
+    pub retry_backoff_cap: Duration,
+    /// The run fails (`provider_unavailable`) when the next retryable error
+    /// comes after this many retries in a row, or this long after the first
+    /// of them, whichever comes first.
+    pub max_retry_attempts: u32,
+    pub max_retry_duration: Duration,
     /// Throttle of activity heartbeat commits during a run.
     pub heartbeat_interval: Duration,
     /// Active sessions rendered into a turn.
@@ -233,7 +251,12 @@ impl Default for RunnerOptions {
             history_budget_tokens: 24_000,
             compact_ratio: 0.75,
             default_context_window: Some(128_000),
+            max_context_window: Some(256_000),
             context_target_ratio: 0.30,
+            retry_backoff_base: Duration::from_secs(30),
+            retry_backoff_cap: Duration::from_secs(600),
+            max_retry_attempts: 6,
+            max_retry_duration: Duration::from_secs(1800),
             heartbeat_interval: Duration::from_secs(60),
             active_sessions_limit: 8,
             change_budget: 16,

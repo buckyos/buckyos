@@ -32,6 +32,8 @@ export interface SessionStatus {
   turn_open?: boolean
   /** Paused (`control(pause)`): it infers no more until resumed. */
   paused?: boolean
+  /** Backing off after retryable errors: it infers again from then on (epoch ms). */
+  retry_not_before_ms?: number
   activity: Activity
   last_runner?: { runner_id: string; host?: string; pid: number; lock_epoch: number; at_ms: number }
   last_error?: unknown

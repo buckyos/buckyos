@@ -310,9 +310,16 @@ pub async fn schedule(
 pub fn observe(entry: &RegistryEntry, state: Option<&SessionState>) -> ChildObservation {
     let st = &entry.status;
     let report = state.and_then(|s| s.final_report.as_ref());
-    let error = state
+    // Retries used up: the plan learns the provider was unavailable, not
+    // only the last error's text.
+    let exhausted = state
         .and_then(|s| s.last_error.as_ref())
-        .and_then(|e| e.get("message").and_then(Value::as_str).map(str::to_string));
+        .and_then(crate::runner::exhausted_line);
+    let error = exhausted.clone().or_else(|| {
+        state
+            .and_then(|s| s.last_error.as_ref())
+            .and_then(|e| e.get("message").and_then(Value::as_str).map(str::to_string))
+    });
     if st.run_state == RunState::Finished {
         let status = match st.outcome {
             Some(Outcome::Succeeded) => TodoStatus::Completed,
@@ -328,6 +335,7 @@ pub fn observe(entry: &RegistryEntry, state: Option<&SessionState>) -> ChildObse
         let summary = report
             .map(|r| one_line(&r.report))
             .filter(|s| !s.is_empty())
+            .or_else(|| exhausted.as_deref().map(one_line))
             .or_else(|| Some(one_line(&st.one_line_status)).filter(|s| !s.is_empty()));
         return ChildObservation {
             status,

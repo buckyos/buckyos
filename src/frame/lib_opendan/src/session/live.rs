@@ -193,6 +193,7 @@ impl Session {
             ),
             turn_open: self.state.open_turn.is_some(),
             paused: self.state.paused.is_some(),
+            retry_not_before_ms: self.state.retry.as_ref().map(|r| r.not_before_ms),
             activity: self.state.activity.clone(),
             last_runner: self.writer.as_ref().map(|w| crate::protocol::LastRunner {
                 runner_id: w.runner_id.clone(),

@@ -157,6 +157,9 @@ pub(super) struct Next {
     /// Structured reply: what the conversation is about now.
     pub(super) topic: Option<Topic>,
     pub(super) reply_error: Option<String>,
+    /// A retryable error kept the run: when it infers again
+    /// (`state.retry`; every other outcome clears it).
+    pub(super) retry: Option<RetryState>,
 }
 
 /// A UI session's structured reply `{reply, topic, artifacts}` (`topic` may be
@@ -623,6 +626,9 @@ pub(super) async fn handle_context_outcome(
     };
     let mut next = Next::default();
     let mut snapshot = lc.ctx.snapshot();
+    // An inference of this segment succeeded: a retryable error now starts
+    // a new series of retries.
+    let progressed = lc.rounds.take_progress();
     let (child, depth) = call_site_of(sh, lc.run.run_id()).await;
     let entry_cfg = cfg.clone();
     let assembler = sh.deps.assembler.clone();
@@ -749,7 +755,7 @@ pub(super) async fn handle_context_outcome(
         LLMContextOutcome::Error { error, usage, .. } => {
             next.usage = Some(usage);
             next.kind = FinishKind::Error;
-            let retry = is_retryable_error(&error);
+            let mut retry = is_retryable_error(&error);
             next.error = Some(match &error {
                 // AI Center Quota PRD §9.6: the session learns only that the
                 // Agent is limited; the rules and balances stay with its owner.
@@ -768,6 +774,45 @@ pub(super) async fn handle_context_outcome(
                     "recoverable": retry,
                 }),
             });
+            if retry {
+                let (prev, applied) = {
+                    let s = sh.session.lock().await;
+                    let applied = s
+                        .state
+                        .live_run
+                        .as_ref()
+                        .filter(|l| l.run_id == lc.run.run_id())
+                        .map(|l| l.applied_input_seq)
+                        .unwrap_or(0);
+                    (s.state.retry.clone().filter(|_| !progressed), applied)
+                };
+                let mut event = json!({
+                    "session_id": sh.dir.sid(),
+                    "run_id": lc.run.run_id(),
+                    "error_kind": format!("{:?}", error.source()).to_lowercase(),
+                });
+                match super::retry::on_retryable(
+                    prev.as_ref(),
+                    &sh.deps.options,
+                    crate::now_ms(),
+                    applied,
+                    &error.to_string(),
+                ) {
+                    super::retry::Retry::Scheduled(r) => {
+                        event["attempts"] = json!(r.attempts);
+                        event["not_before_ms"] = json!(r.not_before_ms);
+                        log::warn!("opendan.run.retry_scheduled {event}");
+                        next.retry = Some(r);
+                    }
+                    super::retry::Retry::Exhausted(e) => {
+                        event["attempts"] = e["attempts"].clone();
+                        event["since_ms"] = e["since_ms"].clone();
+                        log::error!("opendan.run.retries_exhausted {event}");
+                        next.error = Some(e);
+                        retry = false;
+                    }
+                }
+            }
             if retry {
                 // Retryable: the run is kept and the Turn stays open.
                 status = RunStatus::Paused;
@@ -976,6 +1021,7 @@ pub(super) async fn commit_kept(
         }
     }
     s.state.last_error = next.error.clone();
+    s.state.retry = next.retry.clone();
     super::turn_task::note_live_line(&mut s, None, None);
     commit_and_report(sh, &mut s).await
 }
@@ -1246,6 +1292,7 @@ async fn commit_run_end(
     s.state.last_run = Some(run_id.clone());
     s.state.one_line_status = one_line(next);
     s.state.last_error = next.error.clone();
+    s.state.retry = None;
     s.state.wait_children.clear();
     s.state.activity.touching.clear();
     if next.finished {

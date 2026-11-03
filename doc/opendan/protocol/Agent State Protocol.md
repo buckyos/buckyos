@@ -4,6 +4,8 @@
 
 2026-10-11：增加 Goals（§9，`state/goals/`）、登记表 `goal_id`、查询 `goal_id`、kRPC `goals.*`。只是加法。
 
+2026-11-02：登记表 `status.retry_not_before_ms`（可重试错误的退避期，Session Directory Protocol §7“run 的预算”）。只是加法。
+
 2026-10-11：增加 Runtime 登记（§10，`state/runtimes/`，kRPC `runtimes.*`）；behavior 增加 `[tool]`（§7）。只是加法；Workspace 位置的 `runtime_id` 由 `local` 改称 `container`，旧记录照常读。
 
 ## 1. AgentRoot 布局
@@ -48,6 +50,7 @@
               "needs_input": false,   // run_state = waiting 且只有别人的输入能推动它（没有在跟的 task / 子 Session，不是 Goal Session）；父据此区分“子在等回答”
               "turn_open": false,
               "paused": false,        // control(pause) 之后、resume 之前：不再推理（缺省省略）
+              "retry_not_before_ms": 0,   // 可重试错误的退避期：此刻之前不推理（state.json `retry.not_before_ms` 的投影，缺省省略）；宿主据此不去驱动退避中的子 Session
               "activity": { "summary": "…", "touching": [], "heartbeat_ms": 0 },
               "last_runner": { "runner_id": "…", "host": "…", "pid": 0, "lock_epoch": 0, "at_ms": 0 },
               "last_error": null, "updated_at_ms": 0 } }

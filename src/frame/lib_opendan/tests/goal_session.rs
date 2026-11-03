@@ -33,7 +33,10 @@ struct Hosted {
 }
 
 fn host_deps(env: &Env, llm: Arc<ScriptedLlm>) -> HostDeps {
-    let deps = env.deps(llm);
+    let mut deps = env.deps(llm);
+    // A retryable error is retried almost at once here (the backoff:
+    // tests/retry.rs).
+    deps.options.retry_backoff_base = Duration::from_millis(50);
     HostDeps {
         who: APP.into(),
         agent: deps.agent.clone(),
