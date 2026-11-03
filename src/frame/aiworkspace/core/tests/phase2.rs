@@ -192,7 +192,7 @@ fn an_inline_link_never_blocks_deleting_its_target() {
 #[test]
 fn opaque_entities_and_formulas_are_kept_verbatim_and_schema_checks_run_only_at_admission() {
     use aiworkspace_core::access::Access;
-    use aiworkspace_core::plan::{plan_commit, PlanEnv};
+    use aiworkspace_core::plan::plan_commit;
     use aiworkspace_core::testkit::MemWorkspace as W;
     let mut ws = W::new();
     ws.ok(json!([table("t", DATA_ID)]));

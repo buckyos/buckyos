@@ -4,8 +4,6 @@ mod runtime;
 
 #[cfg(test)]
 pub(crate) use crate::protocol::{claude_messages_adapter, register_sn_openai_adapter};
-#[cfg(test)]
-pub(crate) use builtin::openai_catalog_files;
 pub(crate) use builtin::{
     builtin_provider_codecs, builtin_provider_registry, resolve_sn_provider_instance_with_config,
     BuiltinProviderRequest, SnCredentialBroker, SnProviderInstanceInput,
@@ -16,8 +14,10 @@ pub(crate) use inventory::{
     ProviderConnectionContract, ProviderConnectionInput, ProviderDiscovery,
     ProviderDiscoverySnapshot, ProviderFieldMode, ProviderFieldSchema, ProviderHealthState,
     ProviderInstanceConfig, ProviderInventorySnapshot, ProviderQuotaObservation,
-    ProviderQuotaObservationState, ResolvedProviderConnection, StaticCredentialResolver,
+    ProviderQuotaObservationState, StaticCredentialResolver,
 };
+#[cfg(test)]
+pub(crate) use inventory::ResolvedProviderConnection;
 use runtime::ProviderRuntime;
 pub(crate) use runtime::ProviderRuntimeManager;
 
@@ -468,11 +468,7 @@ impl fmt::Debug for ProviderDraftConfig {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ProviderDraftNegotiation {
-    pub provider_profile_id: String,
     pub protocol_adapter_id: String,
-    pub auth_mode: ProviderAuthMode,
-    pub connection: ResolvedProviderConnection,
-    pub catalog_revision_seq: u64,
     pub inventory: Arc<ProviderInventorySnapshot>,
 }
 

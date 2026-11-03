@@ -609,7 +609,6 @@ fn rewrite_execution_namespace(
                 })),
             })
         }
-        ProtocolExecution::NativeTask(task) => ProtocolExecution::NativeTask(task),
     }
 }
 

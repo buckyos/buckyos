@@ -14,7 +14,6 @@ use reqwest::{Method, Url};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::time::Duration;
 
 pub(crate) const OPENROUTER_MUSIC_OPERATION_ID: &str = "chat.completions.create";
 pub(crate) const OPENROUTER_IMAGES_OPERATION_ID: &str = "images.generate";
@@ -692,6 +691,7 @@ mod tests {
     use bytes::Bytes;
     use reqwest::header::HeaderMap;
     use reqwest::StatusCode;
+    use std::time::Duration;
 
     #[test]
     fn server_error_is_retriable_transport_failure() {

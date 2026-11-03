@@ -332,10 +332,12 @@ pub(crate) trait MetadataOverrideLoader: Send + Sync {
     async fn load(&self) -> Result<MetadataOverrideSnapshot, SettingsError>;
 }
 
+#[cfg(test)]
 pub(crate) struct StaticMetadataOverrideLoader {
     snapshot: MetadataOverrideSnapshot,
 }
 
+#[cfg(test)]
 impl StaticMetadataOverrideLoader {
     pub(crate) fn new(local: Vec<MetadataFile>, system_config: Vec<MetadataFile>) -> Self {
         Self {
@@ -348,6 +350,7 @@ impl StaticMetadataOverrideLoader {
     }
 }
 
+#[cfg(test)]
 #[async_trait]
 impl MetadataOverrideLoader for StaticMetadataOverrideLoader {
     async fn load(&self) -> Result<MetadataOverrideSnapshot, SettingsError> {
@@ -371,6 +374,7 @@ impl ProductionMetadataOverrideLoader {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn local_root(&self) -> &Path {
         &self.local_root
     }

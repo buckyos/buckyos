@@ -14,7 +14,7 @@ use reqwest::header::CONTENT_TYPE;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::fmt;
 use std::io::{Cursor, Read};
 use std::net::IpAddr;
@@ -341,11 +341,6 @@ pub(crate) enum ResourceInputForm {
 }
 
 impl ResourceInputForm {
-    /// `BytesOnly` protocols must download a `ResourceRef::Url` payload.
-    pub(crate) fn downloads_url_bytes(self) -> bool {
-        matches!(self, Self::BytesOnly)
-    }
-
     /// `UrlOrBytes` / `UrlOnly` protocols can be handed a URL string.
     pub(crate) fn accepts_url(self) -> bool {
         !matches!(self, Self::BytesOnly)
@@ -446,6 +441,7 @@ pub(crate) struct MaterializedResource {
 }
 
 impl MaterializedResource {
+    #[cfg(test)]
     pub fn key(&self) -> &ResourceKey {
         &self.key
     }
@@ -455,6 +451,7 @@ impl MaterializedResource {
     }
 
     /// The URL form of this resource, when the protocol takes one.
+    #[cfg(test)]
     pub fn url(&self) -> Option<&str> {
         self.url.as_deref()
     }
@@ -484,18 +481,6 @@ impl MaterializedResource {
         })
     }
 
-    pub fn multipart_part(&self) -> Result<reqwest::multipart::Part, ResourceError> {
-        let mut part = reqwest::multipart::Part::bytes(self.bytes.clone());
-        if let Some(mime) = &self.metadata.mime {
-            part = part.mime_str(mime).map_err(|_| {
-                ResourceError::new(ResourceFailure::MimeInvalid, "invalid multipart MIME")
-            })?;
-        }
-        if let Some(file_name) = &self.metadata.file_name {
-            part = part.file_name(file_name.clone());
-        }
-        Ok(part)
-    }
 }
 
 impl fmt::Debug for MaterializedResource {
@@ -531,35 +516,6 @@ impl fmt::Debug for CodecResourceParts {
             .field("has_url", &self.url.is_some())
             .finish()
     }
-}
-
-pub(crate) fn require_materialized<'a, T>(
-    resources: &'a BTreeMap<String, T>,
-    resource: &ResourceRef,
-) -> Result<&'a T, ResourceError> {
-    let key = ResourceKey::from_ref(resource);
-    resources.get(key.as_str()).ok_or_else(|| {
-        ResourceError::new(
-            ResourceFailure::PhaseViolation,
-            "resource was not materialized before protocol encoding",
-        )
-    })
-}
-
-pub(crate) fn multipart_form(
-    fields: impl IntoIterator<Item = (String, MaterializedResource)>,
-) -> Result<reqwest::multipart::Form, ResourceError> {
-    let mut form = reqwest::multipart::Form::new();
-    for (field_name, resource) in fields {
-        if field_name.trim().is_empty() || field_name.contains(['\r', '\n']) {
-            return Err(ResourceError::new(
-                ResourceFailure::InvalidReference,
-                "invalid multipart field name",
-            ));
-        }
-        form = form.part(field_name, resource.multipart_part()?);
-    }
-    Ok(form)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -2084,6 +2040,7 @@ mod bucket_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use std::io::Write;
     use std::sync::Mutex;
     use zip::write::SimpleFileOptions;
@@ -2739,8 +2696,7 @@ mod tests {
     }
 
     #[test]
-    fn stable_keys_cover_all_refs_and_missing_resources_fail_closed_without_secrets() {
-        let credential = "credential-super-secret";
+    fn stable_keys_cover_all_refs_without_secrets() {
         let base64_content = "YmFzZTY0LXN1cGVyLXNlY3JldA==";
         let refs = [
             ResourceRef::url(
@@ -2769,12 +2725,6 @@ mod tests {
             assert_eq!(key, ResourceKey::from_ref(resource));
             assert!(!key.as_str().contains(base64_content));
             assert!(!key.as_str().contains("private-name"));
-            let error =
-                require_materialized::<CodecResourceParts>(&BTreeMap::new(), resource).unwrap_err();
-            let rendered = format!("{error:?} {error}");
-            assert_eq!(error.failure, ResourceFailure::PhaseViolation);
-            assert!(!rendered.contains(base64_content));
-            assert!(!rendered.contains(credential));
         }
         assert_ne!(
             ResourceKey::from_ref(&refs[0]),
@@ -3091,7 +3041,7 @@ mod tests {
     }
 
     #[test]
-    fn multipart_and_debug_never_expose_content() {
+    fn debug_never_exposes_content() {
         let source = ResourceRef::base64("text/plain".to_string(), "c3VwZXItc2VjcmV0".to_string());
         let resource = MaterializedResource {
             key: ResourceKey::from_ref(&source),
@@ -3110,7 +3060,6 @@ mod tests {
         let debug = format!("{resource:?}");
         assert!(!debug.contains("super-secret"));
         assert!(!debug.contains("secret-digest"));
-        multipart_form([("file".to_string(), resource)]).unwrap();
     }
 
     fn zip_bytes(entries: &[(&str, &[u8])]) -> Vec<u8> {

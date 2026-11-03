@@ -27,9 +27,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub(crate) const DEEPSEEK_PROFILE_ID: &str = "deepseek";
+#[cfg(test)]
 pub(crate) const DOUBAO_PROFILE_ID: &str = "doubao";
+#[cfg(test)]
 pub(crate) const DOUBAO_AGENT_PLAN_PROFILE_ID: &str = "doubao-agent-plan";
+#[cfg(test)]
 pub(crate) const DOUBAO_SPEECH_PROFILE_ID: &str = "doubao-speech";
+#[cfg(test)]
 pub(crate) const QWEN_PROFILE_ID: &str = "qwen";
 
 #[cfg(test)]

@@ -34,6 +34,7 @@ pub(crate) struct ProtocolOutput {
 }
 
 impl ProtocolOutput {
+    #[cfg(test)]
     pub(crate) fn new(value: Value) -> Self {
         Self {
             value,
@@ -223,17 +224,6 @@ impl NativeTaskHandle {
 pub(crate) enum ProtocolExecution {
     Immediate(ProtocolOutput),
     Stream(ProtocolStream),
-    NativeTask(NativeTaskHandle),
-}
-
-impl ProtocolExecution {
-    pub(crate) fn mode(&self) -> super::ExecutionMode {
-        match self {
-            Self::Immediate(_) => super::ExecutionMode::Immediate,
-            Self::Stream(_) => super::ExecutionMode::Stream,
-            Self::NativeTask(_) => super::ExecutionMode::NativeTask,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -241,18 +231,6 @@ mod tests {
     use super::*;
     use buckyos_api::ResourceRef;
     use serde_json::json;
-
-    #[test]
-    fn unifies_immediate_and_native_task_modes() {
-        assert_eq!(
-            ProtocolExecution::Immediate(ProtocolOutput::new(json!({"ok": true}))).mode(),
-            super::super::ExecutionMode::Immediate
-        );
-        assert_eq!(
-            ProtocolExecution::NativeTask(NativeTaskHandle::new("remote-1").unwrap()).mode(),
-            super::super::ExecutionMode::NativeTask
-        );
-    }
 
     #[test]
     fn provider_artifact_ids_bind_by_artifact_name_and_are_consumed() {

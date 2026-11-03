@@ -180,6 +180,7 @@ fn embedded_value<T: DeserializeOwned>(known: &KnownProvider, key: &str, label: 
     .unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SnDialectContract {
     pub base_adapter_id: &'static str,
@@ -453,14 +454,6 @@ impl SnCredentialBroker {
             .await
             .insert(reference, instance);
         Ok(())
-    }
-
-    pub(crate) async fn unregister_dynamic_instance(&self, provider_instance_name: &str) {
-        let reference = format!("sn-dynamic-login://{provider_instance_name}");
-        self.dynamic_instances.write().await.remove(&reference);
-        self.dynamic_resolver
-            .invalidate(provider_instance_name)
-            .await;
     }
 
     pub(crate) async fn resolve(
@@ -1082,8 +1075,6 @@ mod tests {
             "credential resolution failed: SN dynamic login failed (fatal)"
         );
         assert!(!error.to_string().contains("secret"));
-        broker.unregister_dynamic_instance("sn-main").await;
-        assert!(broker.dynamic_instances.read().await.is_empty());
     }
 
     #[test]

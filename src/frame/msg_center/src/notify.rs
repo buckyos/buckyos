@@ -423,6 +423,7 @@ impl NotifyCaller {
 
 impl MessageCenter {
     /// The sender of home records and the zone host of notification links.
+    #[cfg(test)]
     pub fn set_notify_identity(&self, sender: DID, zone_host: Option<String>) {
         *self.notify_identity.write().unwrap() = Some((sender, zone_host));
     }

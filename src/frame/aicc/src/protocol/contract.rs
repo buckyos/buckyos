@@ -15,7 +15,6 @@ const REDACTED: &str = "[REDACTED]";
 pub(crate) enum GoldenBody {
     Empty,
     Json(Value),
-    Bytes(Vec<u8>),
     Multipart(Vec<GoldenMultipartPart>),
 }
 
@@ -86,7 +85,6 @@ impl ProtocolContractHarness {
         let body = match &request.body {
             HttpBody::Empty => GoldenBody::Empty,
             HttpBody::Json(value) => GoldenBody::Json(value.clone()),
-            HttpBody::Bytes { bytes, .. } => GoldenBody::Bytes(bytes.to_vec()),
             HttpBody::Multipart(body) => GoldenBody::Multipart(
                 body.parts()
                     .iter()

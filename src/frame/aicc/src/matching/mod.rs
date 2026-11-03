@@ -16,11 +16,7 @@ pub(crate) enum MatchRule {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DimensionType {
     String,
-    #[cfg(test)]
-    Number,
     Version,
-    #[cfg(test)]
-    Boolean,
     JsonScalar,
 }
 
@@ -39,6 +35,7 @@ pub(crate) struct MatchSchema {
     pub allow_json_pointer_dimensions: bool,
 }
 
+#[cfg(test)]
 const MODEL_DRIVER_DIMENSIONS: &[DimensionSpec] = &[string_dimension("origin_model_id")];
 
 const PROVIDER_RULE_DIMENSIONS: &[DimensionSpec] = &[
@@ -90,6 +87,7 @@ const fn string_dimension(name: &'static str) -> DimensionSpec {
     }
 }
 
+#[cfg(test)]
 pub(crate) const MODEL_DRIVER_MATCH_SCHEMA: MatchSchema = MatchSchema {
     name: "model_driver",
     primary_dimension: Some("origin_model_id"),
@@ -349,10 +347,6 @@ fn compile_scalar(
         (DimensionType::String | DimensionType::Version, Value::String(value)) => {
             Ok(CompiledScalar::String(CompiledGlob::compile(value)?))
         }
-        #[cfg(test)]
-        (DimensionType::Number, Value::Number(value)) => Ok(CompiledScalar::Number(value.clone())),
-        #[cfg(test)]
-        (DimensionType::Boolean, Value::Bool(value)) => Ok(CompiledScalar::Boolean(*value)),
         (DimensionType::JsonScalar, Value::String(value)) => {
             Ok(CompiledScalar::String(CompiledGlob::compile(value)?))
         }
@@ -434,8 +428,6 @@ fn compile_range(
 
     let range_type = match value_type {
         DimensionType::Version => RangeType::Version,
-        #[cfg(test)]
-        DimensionType::Number => RangeType::Number,
         DimensionType::JsonScalar => RangeType::Number,
         _ => return Err(MatchCompileErrorKind::RangeNotAllowed),
     };

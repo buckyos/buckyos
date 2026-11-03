@@ -129,6 +129,7 @@ impl RuntimeProviderRegistry {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ConvergenceTrigger {
+    #[cfg(test)]
     Inference,
     ProviderRefresh {
         provider_instance_name: String,
@@ -485,6 +486,7 @@ impl RuntimeState {
         })
     }
 
+    #[cfg(test)]
     pub(crate) async fn before_inference(&self) -> Result<Arc<RuntimeSnapshot>, RuntimeError> {
         self.converge(ConvergenceTrigger::Inference).await
     }

@@ -295,7 +295,6 @@ fn rewrite_execution_namespace(execution: ProtocolExecution) -> ProtocolExecutio
             ProtocolExecution::Immediate(output)
         }
         ProtocolExecution::Stream(stream) => ProtocolExecution::Stream(stream),
-        ProtocolExecution::NativeTask(task) => ProtocolExecution::NativeTask(task),
     }
 }
 

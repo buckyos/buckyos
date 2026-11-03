@@ -56,10 +56,7 @@ pub(crate) struct CandidateRuntimeState {
     pub trust: Option<ProviderTrustView>,
     pub credential_scope: CredentialScope,
     pub estimated_cost: Option<Money>,
-    pub p50_latency_ms: Option<f64>,
     pub p95_latency_ms: Option<f64>,
-    pub error_rate_5m: Option<f64>,
-    pub recent_failures: u32,
     pub cache_hit_probability: Option<f64>,
 }
 
@@ -1522,8 +1519,8 @@ mod tests {
         RoutePolicyProfile,
     };
     use policy::{
-        EffectiveRoutingPolicy, PolicyError, ProviderTrustLevel, ProviderTypeSource, QuotaLookup,
-        QuotaSnapshot, QuotaSourceError, RoutingPolicyLayers, RoutingPolicyPatch,
+        EffectiveRoutingPolicy, PolicyError, PolicyScope, ProviderTrustLevel, QuotaLookup,
+        QuotaSnapshot, QuotaSourceError, RoutingPolicyPatch,
     };
     use serde_json::json;
 
@@ -1735,7 +1732,6 @@ mod tests {
     fn trust(provider_type: ProviderType) -> ProviderTrustView {
         ProviderTrustView {
             provider_type,
-            provider_type_source: ProviderTypeSource::SystemConfig,
             provider_type_revision: "rev-1".into(),
             asserted_at_ms: 1,
             trust_level: ProviderTrustLevel::Verified,
@@ -1762,10 +1758,7 @@ mod tests {
                 tenant_id: "tenant".into(),
             },
             estimated_cost: Some(Money::new(cost, "USD")),
-            p50_latency_ms: Some(latency),
             p95_latency_ms: Some(latency),
-            error_rate_5m: Some(0.0),
-            recent_failures: 0,
             cache_hit_probability: None,
         }
     }
@@ -1793,14 +1786,8 @@ mod tests {
     }
 
     fn engine(patch: &RoutingPolicyPatch) -> PolicyEngine<OpenQuota> {
-        let effective = EffectiveRoutingPolicy::merge(RoutingPolicyLayers {
-            system: Some(patch),
-            user: None,
-            app: None,
-            session: None,
-            request: None,
-        })
-        .unwrap();
+        let effective =
+            EffectiveRoutingPolicy::merge_ordered([(PolicyScope::Directory, patch)]).unwrap();
         PolicyEngine::new(effective, OpenQuota).unwrap()
     }
 
@@ -2141,10 +2128,7 @@ mod tests {
         assert_eq!(selected(&runtime), "cheap@cloud-a");
         let cheap = runtime.get_mut("cheap@cloud-a").unwrap();
         cheap.health = ProviderHealthStatus::Degraded;
-        cheap.p50_latency_ms = Some(9_000.0);
         cheap.p95_latency_ms = Some(9_000.0);
-        cheap.error_rate_5m = Some(0.9);
-        cheap.recent_failures = 9;
         assert_eq!(selected(&runtime), "cheap@cloud-a");
     }
 

@@ -724,7 +724,7 @@ async fn group_http_keeps_the_real_client_of_a_restricted_account() {
     call(&c, &cust, "group.accept_session_invitation", json!({"session_id":"ticket-1"}))
         .await
         .unwrap();
-    let sessions = |ctx: &RPCContext, did: &DID| {
+    let sessions = |ctx: &RPCContext| {
         let mut req: Request<TestBody> = Request::builder()
             .uri(format!("/{}/sessions", group().to_string()))
             .header("host", ZONE)
@@ -734,14 +734,14 @@ async fn group_http_keeps_the_real_client_of_a_restricted_account() {
         let c = c.clone();
         async move { crate::group_http::serve(&c, &mut req).await.unwrap().status() }
     };
-    assert_eq!(sessions(&cust, &cust_did).await, StatusCode::OK);
+    assert_eq!(sessions(&cust).await, StatusCode::OK);
     // Only the Message Hub client may read; a Limited session issued to
     // another client does not pass as an unverified remote.
     let mut tx = c.groups.begin(&group()).await.unwrap();
     tx.state.configuration["access"] =
         json!({"allowed_clients":{"only":["messagehub"]},"allow_unverified_remote":true});
     tx.commit().await.unwrap();
-    assert_eq!(sessions(&cust, &cust_did).await, StatusCode::FORBIDDEN);
+    assert_eq!(sessions(&cust).await, StatusCode::FORBIDDEN);
     assert!(call(&c, &cust, "group.list_sessions", json!({})).await.is_err());
 }
 

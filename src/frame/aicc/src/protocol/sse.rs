@@ -16,7 +16,6 @@ pub(crate) struct SseEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SseStreamEnd {
     EndOfStream,
-    Disconnected,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -439,11 +438,11 @@ mod tests {
     }
 
     #[test]
-    fn emits_buffered_event_and_disconnect_reason_at_stream_end() {
+    fn emits_buffered_event_and_end_reason_at_stream_end() {
         let mut framer = SseFramer::new(SseConfig::default()).unwrap();
         framer.push(b"data: partial").unwrap();
         assert_eq!(
-            framer.finish(SseStreamEnd::Disconnected).unwrap(),
+            framer.finish(SseStreamEnd::EndOfStream).unwrap(),
             vec![
                 SseFrame::Event(SseEvent {
                     event: None,
@@ -451,7 +450,7 @@ mod tests {
                     id: None,
                     retry_millis: None,
                 }),
-                SseFrame::StreamEnd(SseStreamEnd::Disconnected)
+                SseFrame::StreamEnd(SseStreamEnd::EndOfStream)
             ]
         );
     }

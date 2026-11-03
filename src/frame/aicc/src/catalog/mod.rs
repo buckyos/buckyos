@@ -671,6 +671,7 @@ impl CatalogSnapshot {
         unique_identity(matches)
     }
 
+    #[cfg(test)]
     pub(crate) fn find_by_normalized_id(
         &self,
         normalized: &str,

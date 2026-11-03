@@ -159,6 +159,7 @@ impl MultipartBody {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn parts(&self) -> &[MultipartPart] {
         &self.parts
     }
@@ -189,10 +190,6 @@ impl MultipartBody {
 pub(crate) enum HttpBody {
     Empty,
     Json(Value),
-    Bytes {
-        bytes: Bytes,
-        content_type: Option<HeaderValue>,
-    },
     Multipart(MultipartBody),
 }
 
@@ -201,14 +198,6 @@ impl std::fmt::Debug for HttpBody {
         match self {
             Self::Empty => formatter.write_str("HttpBody::Empty"),
             Self::Json(_) => formatter.write_str("HttpBody::Json { value: [REDACTED] }"),
-            Self::Bytes {
-                bytes,
-                content_type,
-            } => formatter
-                .debug_struct("HttpBody::Bytes")
-                .field("byte_len", &bytes.len())
-                .field("content_type_configured", &content_type.is_some())
-                .finish(),
             Self::Multipart(body) => std::fmt::Debug::fmt(body, formatter),
         }
     }
@@ -520,24 +509,6 @@ impl HttpTransport {
                     builder.header(CONTENT_TYPE, "application/json").body(body)
                 }
             }
-            HttpBody::Bytes {
-                bytes,
-                content_type,
-            } => {
-                if bytes.len() > request_limit {
-                    return Err(ProtocolError::invalid_request(
-                        "HTTP request exceeds configured byte limit",
-                    ));
-                }
-                let builder = builder.body(bytes);
-                match content_type {
-                    Some(content_type) if !has_content_type => {
-                        builder.header(CONTENT_TYPE, content_type)
-                    }
-                    None => builder,
-                    Some(_) => builder,
-                }
-            }
             HttpBody::Multipart(form) => {
                 if form.total_bytes() > request_limit {
                     return Err(ProtocolError::invalid_request(
@@ -842,10 +813,7 @@ mod tests {
         let transport = HttpTransport::new(HttpTransportConfig::default()).unwrap();
         let mut request = HttpRequest::new(Method::POST, "http://127.0.0.1:1/unreachable");
         request.max_request_bytes = Some(3);
-        request.body = HttpBody::Bytes {
-            bytes: Bytes::from_static(b"1234"),
-            content_type: None,
-        };
+        request.body = HttpBody::Json(serde_json::json!("1234"));
         assert_eq!(
             transport.send(request).await.unwrap_err().kind,
             ProtocolErrorKind::InvalidRequest

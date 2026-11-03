@@ -3537,6 +3537,7 @@ mod tests {
         assert!(!with_usage.retry_same_model);
     }
 
+    #[test]
     fn pinned_pricing_uses_cached_input_rate_and_provider_reported_cost_wins() {
         let pricing = PinnedPricingSnapshot {
             currency: "USD".into(),

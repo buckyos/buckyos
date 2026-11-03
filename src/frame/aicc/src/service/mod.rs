@@ -131,7 +131,6 @@ use crate::resource::{
 };
 use crate::routing::policy::{
     CredentialScope, ProviderPrivacy, ProviderTrustLevel, ProviderTrustView, ProviderType,
-    ProviderTypeSource,
 };
 use crate::routing::{
     policy_engine_for_route, CallerIdentity, CandidateRuntimeState, ProviderHealthStatus,

@@ -1059,7 +1059,7 @@ async fn stale_handle_after_bypass_replace() {
 
 #[tokio::test]
 async fn watch_resync_and_container_changed() {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncWriteExt;
     let s = start_server().await;
     std::fs::create_dir(s.home.join("observed")).unwrap();
     let listing = s.ok("list", json!({"at": {"realm": "dfs", "path": "/home/observed"}})).await;

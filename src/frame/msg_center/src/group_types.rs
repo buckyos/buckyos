@@ -183,12 +183,6 @@ pub struct DisplayFile {
     pub obj_id: ObjId,
 }
 impl DisplayConfig {
-    pub fn is_empty(&self) -> bool {
-        self.announcement.is_none()
-            && self.links.is_empty()
-            && self.files.is_empty()
-            && self.featured_members.is_empty()
-    }
     pub fn validate(&self) -> Result<()> {
         if self
             .announcement

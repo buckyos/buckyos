@@ -20,7 +20,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub(crate) const GEMINI_PROVIDER_PROFILE_ID: &str = "gemini";
-pub(crate) const GEMINI_CREDENTIAL_HEADER: &str = "x-goog-api-key";
 
 const MODELS_RESPONSE_LIMIT: usize = 8 * 1024 * 1024;
 const DISCOVERY_PAGE_SIZE: usize = 1000;
@@ -539,7 +538,7 @@ mod tests {
         assert!(requests[1]
             .url
             .ends_with("pageSize=1000&pageToken=next+token"));
-        assert_eq!(requests[0].headers[GEMINI_CREDENTIAL_HEADER], "secret");
+        assert_eq!(requests[0].headers["x-goog-api-key"], "secret");
         assert!(matches!(requests[0].body, HttpBody::Empty));
         assert!(!format!("{:?}", requests[0]).contains("secret"));
         assert!(snapshot.models[0].remote_methods.is_none());

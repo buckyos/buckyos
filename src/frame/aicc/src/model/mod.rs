@@ -178,7 +178,6 @@ pub(crate) struct ProviderInventory {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum MountMode {
     Manual,
-    Auto,
     #[default]
     Hybrid,
 }
@@ -1427,7 +1426,7 @@ impl ModelRegistry {
             .filter_map(|node| node.definition.clone())
             .filter(|definition| {
                 definition.api_type != ApiType::Llm
-                    && matches!(definition.mount_mode, MountMode::Auto | MountMode::Hybrid)
+                    && definition.mount_mode == MountMode::Hybrid
             })
             .collect::<Vec<_>>();
         let models = self.models.values().cloned().collect::<Vec<_>>();
@@ -2687,7 +2686,7 @@ mod tests {
                     inventory_model("basic", false),
                 ],
             )],
-            vec![definition("image.plan", true, MountMode::Auto)],
+            vec![definition("image.plan", true, MountMode::Hybrid)],
             RegistryLayers::default(),
         )
         .unwrap();
@@ -3212,7 +3211,7 @@ mod tests {
                     mode: AiccFallbackMode::Parent,
                     target: None,
                 }),
-                ..definition("image.code", true, MountMode::Auto)
+                ..definition("image.code", true, MountMode::Hybrid)
             }],
             RegistryLayers {
                 factory: Some(&factory),
@@ -3316,7 +3315,7 @@ mod tests {
                 "arbitrary_instance",
                 vec![inventory_model("unrecognizable-model", true)],
             )],
-            vec![definition("image.chat", true, MountMode::Auto)],
+            vec![definition("image.chat", true, MountMode::Hybrid)],
             RegistryLayers::default(),
         )
         .unwrap();

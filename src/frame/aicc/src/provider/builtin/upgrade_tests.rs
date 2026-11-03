@@ -630,7 +630,6 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
                         provider_privacy: ProviderPrivacy::PublicCloud,
                         trust: Some(ProviderTrustView {
                             provider_type: ProviderType::CloudApi,
-                            provider_type_source: ProviderTypeSource::SystemConfig,
                             provider_type_revision: "test".into(),
                             asserted_at_ms: 1,
                             trust_level: ProviderTrustLevel::Verified,
@@ -639,24 +638,14 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
                             tenant_id: "tenant".into(),
                         },
                         estimated_cost: None,
-                        p50_latency_ms: None,
                         p95_latency_ms: None,
-                        error_rate_5m: None,
-                        recent_failures: 0,
                         cache_hit_probability: None,
                     },
                 )
             })
             .collect();
         let policy = PolicyEngine::new(
-            EffectiveRoutingPolicy::merge(RoutingPolicyLayers {
-                system: None,
-                user: None,
-                app: None,
-                session: None,
-                request: None,
-            })
-            .unwrap(),
+            EffectiveRoutingPolicy::merge_ordered([]).unwrap(),
             Quota,
         )
         .unwrap();

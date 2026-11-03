@@ -8,7 +8,7 @@ use super::{
     HttpResponse, NativeTaskCodec, NativeTaskHandle, NativeTaskInput, NativeTaskOperation,
     NativeTaskOutput, NativeTaskState, OperationBinding, OperationCodec, OperationDescriptor,
     ProtocolError, ProtocolErrorKind, ProtocolEvent, ProtocolExecution, ProtocolOutput,
-    ProtocolResultValue, ProtocolStream, ProviderArtifactRef, ResolvedCredential, SseConfig,
+    ProtocolResultValue, ProtocolStream, ProviderArtifactRef, SseConfig,
     SseFrame, StreamingHttpResponse,
 };
 use crate::video::VideoScenario;
@@ -23,11 +23,9 @@ use buckyos_api::{
     VideoEditRequest, VideoExtendRequest, VisionCaptionRequest, VisionDetectRequest,
     VisionOcrRequest, VisionSegmentRequest,
 };
-use bytes::Bytes;
 use futures_util::{stream, StreamExt};
-use reqwest::header::{HeaderName, HeaderValue, CONTENT_TYPE};
+use reqwest::header::{HeaderValue, CONTENT_TYPE};
 use reqwest::{Method, StatusCode, Url};
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -52,11 +50,12 @@ const GEMINI_PROVIDER_NAMESPACE: &str = "gemini";
 const DEFAULT_MAX_REQUEST_BYTES: usize = 100 * 1024 * 1024;
 const DEFAULT_MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
+#[cfg(test)]
 pub(crate) fn gemini_api_key(
     reference: &str,
     secret: impl Into<String>,
-) -> ProtocolResultValue<ResolvedCredential> {
-    ResolvedCredential::named_header(reference, "x-goog-api-key", secret)
+) -> ProtocolResultValue<super::ResolvedCredential> {
+    super::ResolvedCredential::named_header(reference, "x-goog-api-key", secret)
 }
 
 pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistration) {
@@ -3132,13 +3131,6 @@ fn api_endpoint(base_url: &str, path: &str) -> ProtocolResultValue<String> {
     Ok(url.to_string())
 }
 
-fn upload_endpoint(base_url: &str) -> ProtocolResultValue<String> {
-    let mut url = Url::parse(base_url)
-        .map_err(|_| ProtocolError::invalid_configuration("Gemini base URL is invalid"))?;
-    url.set_path("/upload/v1beta/files");
-    Ok(url.to_string())
-}
-
 fn json_request(
     context: &CodecContext,
     method: Method,
@@ -3223,191 +3215,6 @@ fn is_sse(value: Option<&HeaderValue>) -> bool {
         .is_some_and(|value| value.to_ascii_lowercase().starts_with("text/event-stream"))
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct GeminiFile {
-    pub name: String,
-    #[serde(default)]
-    pub display_name: Option<String>,
-    #[serde(default)]
-    pub mime_type: Option<String>,
-    #[serde(default)]
-    pub size_bytes: Option<String>,
-    #[serde(default)]
-    pub uri: Option<String>,
-    #[serde(default)]
-    pub download_uri: Option<String>,
-    #[serde(default)]
-    pub state: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct GeminiUploadSession {
-    pub upload_url: String,
-    pub content_length: usize,
-    pub mime_type: String,
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct GeminiFilesCodec;
-
-impl GeminiFilesCodec {
-    pub(crate) fn start_upload(
-        &self,
-        context: &CodecContext,
-        display_name: &str,
-        mime_type: &str,
-        content_length: usize,
-    ) -> ProtocolResultValue<HttpRequest> {
-        if display_name.is_empty()
-            || display_name.len() > 512
-            || mime_type.trim().is_empty()
-            || content_length == 0
-            || content_length > context.limits.max_request_bytes
-        {
-            return Err(ProtocolError::invalid_request(
-                "Gemini file upload metadata is invalid",
-            ));
-        }
-        let mut request = HttpRequest::new(Method::POST, upload_endpoint(&context.base_url)?);
-        request.body = HttpBody::Json(json!({"file":{"display_name":display_name}}));
-        request.headers.insert(
-            HeaderName::from_static("x-goog-upload-protocol"),
-            HeaderValue::from_static("resumable"),
-        );
-        request.headers.insert(
-            HeaderName::from_static("x-goog-upload-command"),
-            HeaderValue::from_static("start"),
-        );
-        request.headers.insert(
-            HeaderName::from_static("x-goog-upload-header-content-length"),
-            HeaderValue::from_str(&content_length.to_string()).map_err(|_| {
-                ProtocolError::invalid_request("Gemini upload content length is invalid")
-            })?,
-        );
-        request.headers.insert(
-            HeaderName::from_static("x-goog-upload-header-content-type"),
-            HeaderValue::from_str(mime_type).map_err(|_| {
-                ProtocolError::invalid_request("Gemini upload MIME type is invalid")
-            })?,
-        );
-        finish_request(&mut request, context)
-    }
-
-    pub(crate) fn decode_start_upload(
-        &self,
-        response: HttpResponse,
-        content_length: usize,
-        mime_type: &str,
-    ) -> ProtocolResultValue<GeminiUploadSession> {
-        ensure_success(&response)?;
-        let upload_url = response
-            .headers
-            .get("x-goog-upload-url")
-            .and_then(|value| value.to_str().ok())
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| {
-                ProtocolError::invalid_response(
-                    "Gemini upload start response is missing x-goog-upload-url",
-                )
-            })?
-            .to_string();
-        let parsed = Url::parse(&upload_url)
-            .map_err(|_| ProtocolError::invalid_response("Gemini upload URL is invalid"))?;
-        if !matches!(parsed.scheme(), "http" | "https") {
-            return Err(ProtocolError::invalid_response(
-                "Gemini upload URL must use HTTP or HTTPS",
-            ));
-        }
-        Ok(GeminiUploadSession {
-            upload_url,
-            content_length,
-            mime_type: mime_type.to_string(),
-        })
-    }
-
-    pub(crate) fn upload(
-        &self,
-        context: &CodecContext,
-        session: &GeminiUploadSession,
-        bytes: Bytes,
-    ) -> ProtocolResultValue<HttpRequest> {
-        if bytes.len() != session.content_length {
-            return Err(ProtocolError::invalid_request(
-                "Gemini upload bytes do not match declared content length",
-            ));
-        }
-        let mut request = HttpRequest::new(Method::POST, session.upload_url.clone());
-        request.body = HttpBody::Bytes {
-            bytes,
-            content_type: Some(HeaderValue::from_str(&session.mime_type).map_err(|_| {
-                ProtocolError::invalid_request("Gemini upload MIME type is invalid")
-            })?),
-        };
-        request.headers.insert(
-            HeaderName::from_static("x-goog-upload-offset"),
-            HeaderValue::from_static("0"),
-        );
-        request.headers.insert(
-            HeaderName::from_static("x-goog-upload-command"),
-            HeaderValue::from_static("upload, finalize"),
-        );
-        finish_request(&mut request, context)
-    }
-
-    #[expect(dead_code, reason = "shared decoder for upload and lookup responses")]
-    pub(crate) fn decode_file(&self, response: HttpResponse) -> ProtocolResultValue<GeminiFile> {
-        ensure_success(&response)?;
-        let value: Value = response.json(DEFAULT_MAX_RESPONSE_BYTES)?;
-        let file = value.get("file").unwrap_or(&value);
-        let file: GeminiFile = serde_json::from_value(file.clone()).map_err(|error| {
-            ProtocolError::invalid_response(format!("Gemini file response is invalid: {error}"))
-        })?;
-        validate_file_name(&file.name)?;
-        Ok(file)
-    }
-
-    pub(crate) fn get(
-        &self,
-        context: &CodecContext,
-        name: &str,
-    ) -> ProtocolResultValue<HttpRequest> {
-        json_request(
-            context,
-            Method::GET,
-            &validate_file_name(name)?,
-            Value::Null,
-        )
-    }
-
-    pub(crate) fn delete(
-        &self,
-        context: &CodecContext,
-        name: &str,
-    ) -> ProtocolResultValue<HttpRequest> {
-        json_request(
-            context,
-            Method::DELETE,
-            &validate_file_name(name)?,
-            Value::Null,
-        )
-    }
-}
-
-fn validate_file_name(value: &str) -> ProtocolResultValue<String> {
-    if !value.starts_with("files/")
-        || value.len() > 128
-        || !value.bytes().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'/' | b'-')
-        })
-    {
-        return Err(ProtocolError::invalid_request(
-            "Gemini file name is invalid",
-        ));
-    }
-    Ok(value.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3418,8 +3225,9 @@ mod tests {
         AiMessage, EmbeddingMultimodalItem, VideoCondition, VideoGenerateRequest, VideoOutputSpec,
         VideoSize,
     };
+    use bytes::Bytes;
     use futures_util::{stream, StreamExt};
-    use reqwest::header::HeaderMap;
+    use reqwest::header::{HeaderMap, HeaderName};
 
     fn context() -> CodecContext {
         CodecContext {
@@ -4728,56 +4536,6 @@ mod tests {
         assert_eq!(body["response_format"]["type"], "video");
     }
 
-    #[test]
-    fn files_support_resumable_upload_get_and_delete() {
-        let files = GeminiFilesCodec;
-        let ctx = context();
-        let start = files
-            .start_upload(&ctx, "clip.mp3", "audio/mpeg", 3)
-            .unwrap();
-        assert_eq!(
-            start.url,
-            "https://generativelanguage.googleapis.com/upload/v1beta/files"
-        );
-        assert_eq!(start.headers["x-goog-upload-command"], "start");
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "x-goog-upload-url",
-            HeaderValue::from_static("https://upload.example/session-1"),
-        );
-        let session = files
-            .decode_start_upload(
-                HttpResponse {
-                    status: StatusCode::OK,
-                    headers,
-                    body: Bytes::new(),
-                    request_id: "request-1".to_string(),
-                    retry_after: None,
-                },
-                3,
-                "audio/mpeg",
-            )
-            .unwrap();
-        let upload = files
-            .upload(&ctx, &session, Bytes::from_static(b"mp3"))
-            .unwrap();
-        assert_eq!(upload.headers["x-goog-upload-command"], "upload, finalize");
-        assert!(files
-            .get(&ctx, "files/abc-123")
-            .unwrap()
-            .url
-            .ends_with("/v1beta/files/abc-123"));
-        assert_eq!(
-            files.delete(&ctx, "files/abc-123").unwrap().method,
-            Method::DELETE
-        );
-    }
-}
-
-#[cfg(test)]
-mod billing_usage_tests {
-    use super::*;
-    use serde_json::json;
     #[test]
     fn normalized_usage_settles_with_cache_and_thinking_dimensions() {
         let wire = json!({"total_input_tokens":150,"total_output_tokens":30,"total_thought_tokens":10,"total_cached_tokens":20,"total_tokens":190});

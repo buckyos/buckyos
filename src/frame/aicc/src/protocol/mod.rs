@@ -42,7 +42,7 @@ pub(crate) use crate::error::{
 };
 #[allow(unused_imports)]
 pub(crate) use adapter::{
-    normalize_provider_base_url, AdapterCredentialContract, AdapterDescriptor, AdapterStatus,
+    AdapterCredentialContract, AdapterDescriptor, AdapterStatus,
     ArtifactDownloadProtocol, ArtifactUrlReader, CodecCall, CodecContext, CodecInput, CodecLimits,
     CodecRegistration, CodecRegistry, ExecutionMode, MaterializedResource, NativeTaskCodec,
     NativeTaskInput, NativeTaskOperation, NativeTaskOutput, OperationBinding, OperationCodec,
@@ -92,6 +92,7 @@ pub(crate) use openai_chat_completions::{
     OPENAI_CHAT_COMPLETIONS_ADAPTER_ID, OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
     OPENAI_PROTOCOL_FAMILY_ID,
 };
+#[cfg(test)]
 pub(crate) use openai_responses::OPENAI_VIDEOS_OPERATION_ID;
 pub(crate) use openai_responses::{
     openai_responses_adapter, OPENAI_AUDIO_SPEECH_OPERATION_ID,
@@ -115,8 +116,6 @@ pub(crate) use sse::{
     sse_frame_stream, SseConfig, SseFrame, SseFrameStream, SseFramer, SseStreamEnd,
 };
 pub(crate) use task::{cancellation_pair, CancelHandle, Cancellation};
-#[cfg(test)]
-pub(crate) use task::{poll_until_terminal, PollOutcome, PollPolicy};
 #[cfg(test)]
 pub(crate) use transport::parse_retry_after;
 pub(crate) use transport::{

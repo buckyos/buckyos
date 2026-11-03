@@ -6,7 +6,7 @@
 
 Service：`aicc`
 
-本文定义 AICC 运行时中必须跨进程重启保留的 execution 幂等/恢复记录、route trace、session exact-model 历史、AICC 生成 artifact 的租户归属、Provider artifact URL/原生 ID 来源和 audit 事件。公共请求契约见 [aicc_api设计.md](aicc_api设计.md)，路由语义见 [aicc_router.md](aicc_router.md)。Provider inventory LKGS 由 [provider_architecture_durable_data_schema.md](provider_architecture_durable_data_schema.md) 定义，usage event 由 [aicc_usage_log_db_requirements.md](aicc_usage_log_db_requirements.md) 定义。
+本文定义 AICC 运行时中必须跨进程重启保留的 execution 幂等/恢复记录、route trace、session exact-model 历史、AICC 生成 artifact 的租户归属、Provider artifact URL/原生 ID 来源。公共请求契约见 [aicc_api设计.md](aicc_api设计.md)，路由语义见 [aicc_router.md](aicc_router.md)。Provider inventory LKGS 由 [provider_architecture_durable_data_schema.md](provider_architecture_durable_data_schema.md) 定义，usage event 由 [aicc_usage_log_db_requirements.md](aicc_usage_log_db_requirements.md) 定义。
 
 ## 2. Data Classification
 
@@ -20,7 +20,6 @@ Service：`aicc`
 | `aicc_artifact_scope` | AICC 平台 RDB instance | 记录 AICC 生成 Named Object 的租户归属，防止跨租户引用 |
 | `aicc_artifact_url_source` | AICC 平台 RDB instance | 记录 Provider 返回 URL 的来源实例和租户/用户归属，供直传判定与鉴权下载；配置通过来源实例读取，不另存 endpoint 快照 |
 | `aicc_provider_artifact` | AICC 平台 RDB instance | 按内容摘要**或**对象 ID、ProviderInstance、模型原厂和 tenant 保存图片、视频、音频等 artifact 的原生 ID；纯缓存 |
-| `aicc_audit_event` | AICC 平台 RDB instance | 持久安全与管理事件 |
 | Provider inventory LKGS | AICC 平台 RDB instance | 见 Provider 持久 schema |
 | usage event | AICC 平台 RDB instance | 见 usage log schema |
 | Provider/settings | system-config | Zone 配置真相源，不复制到本 RDB |
@@ -189,23 +188,6 @@ Constraints：查找必须提供完整主键（键 + ProviderInstance + `origin_
 
 两种键的取用顺序：对象形态（`ResourceRef::NamedObject`）的入参优先查 `obj_id` 键；未命中时**不回退** `content_digest` 键——回退等于读完整份内容，正是这条路径要避免的成本——直接改用对象 URL。字节形态的入参本来就有内容，直接查 `content_digest` 键。
 
-### 4.7 Table: `aicc_audit_event`
-
-Description：脱敏审计事件。
-
-| Column | Type | Nullable | Description |
-|---|---|---:|---|
-| `audit_id` | TEXT PK | NO | 稳定事件 ID |
-| `tenant_id` | TEXT | NO | tenant |
-| `caller_app_id` | TEXT | YES | app |
-| `event_type` | TEXT | NO | 可枚举事件类型 |
-| `trace_id` / `request_id` / `task_id` / `route_id` / `provider_trace_id` | TEXT | YES | 关联 ID |
-| `provider_instance_name` / `exact_model` | TEXT | YES | 脱敏执行定位 |
-| `data_json` | TEXT | NO | 脱敏结构化数据，禁止 credential 和请求内容 |
-| `created_at_ms` | BIGINT | NO | Unix ms |
-
-Indexes：`created_at_ms`、`(tenant_id, created_at_ms)`、`(trace_id, created_at_ms)`、`(task_id, created_at_ms)`。
-
 ## 5. Schema Version
 
 `aicc_schema_meta.schema_version` 当前为 `3`，对应 `storage/mod.rs` 的 `SCHEMA` 与 `storage/quota.rs` 的 `QUOTA_SCHEMA` 组成的完整表集（含 route trace 过滤列 `fallback_applied` / `warning_count`、usage 归属列 `operator_id` / `attribution_json` 和 quota 表）。
@@ -228,14 +210,13 @@ Indexes：`created_at_ms`、`(tenant_id, created_at_ms)`、`(trace_id, created_a
 | `aicc_artifact_scope` | No-compat；不得从对象内容推测 tenant 重建 |
 | `aicc_artifact_url_source` | No-compat；不得根据 URL host 猜测 Provider 或 owner 重建 |
 | `aicc_provider_artifact` | No-compat；纯缓存，清空只损失加速；只有再次获得 Provider 明确返回的 ID 后才能重建 |
-| `aicc_audit_event` | No-compat；不可伪造重建 |
 
 schema 版本或结构不受支持时必须 error-and-stop，不得带着部分新 schema 继续接受请求。
 
 ## 7. Extensibility Rules
 
 - Frozen：各表主键、tenant 隔离语义、idempotency fingerprint 语义、`session_id` 作用域、artifact owner 首次写入语义、URL 必须精确匹配已登记来源的语义。
-- Extensible：`record_json`、`route_trace_json`、`data_json` 可增加有默认值的脱敏字段；关键查询/授权字段必须升格为 typed column，不能只藏在 JSON。
+- Extensible：`record_json`、`route_trace_json` 可增加有默认值的脱敏字段；关键查询/授权字段必须升格为 typed column，不能只藏在 JSON。
 - 禁止用通用 `extra` 改变租户授权、执行恢复或 session 路由语义。
 - 新列必须有明确缺省值或 migration；不允许重解释旧列。
 
@@ -252,7 +233,7 @@ schema 版本或结构不受支持时必须 error-and-stop，不得带着部分�
 | 按 URL 打开 Provider artifact | artifact URL hash PK，再精确比较 URL | 每次读取 URL artifact，高 |
 | 按 tenant/provider/time 维护 URL 来源 | artifact URL tenant/provider index | retention 与诊断，低 |
 | 按内容摘要、ProviderInstance、origin provider 查询未过期 opaque ID | provider artifact PK | 媒体输入物化，高；三元组必须完整，到期记录同步删除 |
-| 按 trace/task/tenant/time 查 route/audit | 对应组合索引 | 诊断，中 |
+| 按 trace/task/tenant/time 查 route trace | 对应组合索引 | 诊断，中 |
 | 按 expiry 清理幂等记录 | execution expiry index | 维护，低 |
 
 `aicc_session_route_history` 的 updated index 当前不触发自动 TTL；如果后续引入 retention，必须先在 API/路由设计中固定语义。

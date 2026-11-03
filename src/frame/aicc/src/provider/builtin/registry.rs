@@ -9,9 +9,10 @@ use crate::provider::{
     catalog_only_inventory, validate_discovery, CatalogOnlyDiscovery, CredentialDescriptor,
     DiscoveryMode, DynamicLoginCredentialResolver, FallbackDiscovery, ProviderAuthMode,
     ProviderConnectionContract, ProviderDiscovery, ProviderDiscoverySnapshot, ProviderError,
-    ProviderFieldMode, ProviderFieldSchema, ProviderInstanceConfig, ProviderProfile,
-    ProviderResult, RefreshPolicy,
+    ProviderFieldMode, ProviderFieldSchema, ProviderProfile, ProviderResult, RefreshPolicy,
 };
+#[cfg(test)]
+use crate::provider::ProviderInstanceConfig;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -180,6 +181,7 @@ impl BuiltinProviderRegistry {
         self.codecs.clone()
     }
 
+    #[cfg(test)]
     pub(crate) fn custom_provider_adapter_ids(&self) -> &BTreeSet<String> {
         &self.custom_provider_adapter_ids
     }
@@ -267,6 +269,7 @@ impl BuiltinProviderRegistry {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn resolve_instance(
         &self,
         instance: &ProviderInstanceConfig,

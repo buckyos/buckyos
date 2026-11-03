@@ -857,12 +857,6 @@ impl VideoPlan {
         self.inputs.iter().filter(move |input| input.kind == kind)
     }
 
-    pub(crate) fn keyframe(&self, position: KeyframePosition) -> Option<&PlannedInput> {
-        self.inputs
-            .iter()
-            .find(|input| input.position == Some(position))
-    }
-
     /// Dimensions price rules can match on (`/video/...`).
     pub(crate) fn pricing_dimensions(&self) -> BTreeMap<String, Value> {
         let mut dimensions = BTreeMap::from([
@@ -1207,11 +1201,6 @@ pub(crate) fn short_edge_of_resolution(name: &str) -> Option<u32> {
         "4k" => Some(2160),
         _ => None,
     }
-}
-
-pub(crate) fn ratio_label(width: u32, height: u32) -> String {
-    let (w, h) = reduce_ratio(width, height);
-    format!("{w}:{h}")
 }
 
 #[cfg(test)]

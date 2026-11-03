@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use buckyos_api::{AiccCall, ApiType, Capability, ProviderStateCoordinate, ResourceRef};
 use bytes::Bytes;
 use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE};
-use reqwest::{Method, StatusCode};
+use reqwest::Method;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::IpAddr;
@@ -575,32 +575,6 @@ impl std::fmt::Debug for CodecContext {
     }
 }
 
-pub(crate) fn normalize_provider_base_url(value: &str) -> ProtocolResultValue<String> {
-    let mut url = reqwest::Url::parse(value)
-        .map_err(|_| ProtocolError::invalid_configuration("provider base URL is invalid"))?;
-    if !matches!(url.scheme(), "http" | "https")
-        || url.cannot_be_a_base()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        return Err(ProtocolError::invalid_configuration(
-            "provider base URL must be an absolute HTTP URL without credentials, query, or fragment",
-        ));
-    }
-    if (url.scheme() == "http" && url.port() == Some(80))
-        || (url.scheme() == "https" && url.port() == Some(443))
-    {
-        url.set_port(None).map_err(|_| {
-            ProtocolError::invalid_configuration("provider base URL port is invalid")
-        })?;
-    }
-    let path = url.path().trim_end_matches('/').to_owned();
-    url.set_path(if path.is_empty() { "/" } else { &path });
-    Ok(url.to_string().trim_end_matches('/').to_owned())
-}
-
 impl CodecContext {
     /// Tuning options the protocol cannot express are dropped instead of
     /// failing the call; this warning is their only trace. Output format,
@@ -881,7 +855,6 @@ struct RegisteredOperation {
 pub(crate) struct CodecRegistry {
     adapters: BTreeMap<String, AdapterDescriptor>,
     operations: HashMap<(String, String, ApiType), RegisteredOperation>,
-    artifact_download_protocols: BTreeMap<String, Arc<dyn ArtifactDownloadProtocol>>,
 }
 
 pub(crate) trait ProtocolAdapterPlugin: Send + Sync {
@@ -899,54 +872,7 @@ impl std::fmt::Debug for CodecRegistry {
 }
 
 impl CodecRegistry {
-    pub(crate) async fn probe_adapter(
-        &self,
-        adapter_id: &str,
-        base_url: &str,
-        credential: &ResolvedCredential,
-        timeout: Duration,
-    ) -> ProtocolResultValue<bool> {
-        let adapter = self.adapter(adapter_id).ok_or_else(|| {
-            ProtocolError::new(
-                ProtocolErrorKind::UnknownAdapter,
-                "protocol adapter is not registered",
-            )
-        })?;
-        let path = adapter.probe_path.as_deref().ok_or_else(|| {
-            ProtocolError::invalid_configuration("protocol adapter is not probeable")
-        })?;
-        let mut request = HttpRequest::new(
-            Method::POST,
-            format!("{}/{}", base_url.trim_end_matches('/'), path),
-        );
-        request.body = super::HttpBody::Json(Value::Object(Default::default()));
-        request.timeout = Some(timeout);
-        request.max_request_bytes = Some(1024);
-        request.max_response_bytes = Some(64 * 1024);
-        credential.apply(&mut request.headers)?;
-        let response = super::HttpTransport::new(super::HttpTransportConfig::default())?
-            .send(request)
-            .await?;
-        match response.status {
-            StatusCode::NOT_FOUND
-            | StatusCode::METHOD_NOT_ALLOWED
-            | StatusCode::NOT_IMPLEMENTED => Ok(false),
-            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Err(ProtocolError::new(
-                ProtocolErrorKind::Authentication,
-                "protocol probe authentication failed",
-            )),
-            StatusCode::TOO_MANY_REQUESTS => Err(ProtocolError::new(
-                ProtocolErrorKind::Transport,
-                "protocol probe was rate limited",
-            )),
-            status if status.is_server_error() => Err(ProtocolError::new(
-                ProtocolErrorKind::Transport,
-                "protocol probe failed with a server error",
-            )),
-            _ => Ok(true),
-        }
-    }
-
+    #[cfg(test)]
     pub(crate) fn register(
         &mut self,
         descriptor: AdapterDescriptor,
@@ -1106,49 +1032,6 @@ impl CodecRegistry {
         self.register_codecs(descriptor, overrides)
     }
 
-    pub(crate) fn register_artifact_download_protocol(
-        &mut self,
-        adapter_id: &str,
-        protocol: Arc<dyn ArtifactDownloadProtocol>,
-    ) -> ProtocolResultValue<()> {
-        if !self.adapters.contains_key(adapter_id) {
-            return Err(ProtocolError::new(
-                ProtocolErrorKind::UnknownAdapter,
-                "artifact download protocol references an unknown adapter",
-            ));
-        }
-        if self
-            .artifact_download_protocols
-            .insert(adapter_id.to_owned(), protocol)
-            .is_some()
-        {
-            return Err(ProtocolError::new(
-                ProtocolErrorKind::DuplicateAdapter,
-                "artifact download protocol is already registered",
-            ));
-        }
-        Ok(())
-    }
-
-    fn artifact_download_protocol(
-        &self,
-        adapter_id: &str,
-    ) -> ProtocolResultValue<Option<Arc<dyn ArtifactDownloadProtocol>>> {
-        let adapter = self.adapter(adapter_id).ok_or_else(|| {
-            ProtocolError::new(
-                ProtocolErrorKind::UnknownAdapter,
-                "protocol adapter is not registered",
-            )
-        })?;
-        if let Some(protocol) = self.artifact_download_protocols.get(adapter_id) {
-            return Ok(Some(protocol.clone()));
-        }
-        match adapter.base_adapter_id.as_deref() {
-            Some(base_adapter_id) => self.artifact_download_protocol(base_adapter_id),
-            None => Ok(None),
-        }
-    }
-
     pub(crate) async fn open_artifact_url_reader(
         &self,
         adapter_id: &str,
@@ -1156,9 +1039,13 @@ impl CodecRegistry {
         context: &CodecContext,
         transport: &super::HttpTransport,
     ) -> ProtocolResultValue<ArtifactUrlReader> {
-        let protocol = self
-            .artifact_download_protocol(adapter_id)?
-            .unwrap_or_else(|| Arc::new(DefaultArtifactDownloadProtocol));
+        if self.adapter(adapter_id).is_none() {
+            return Err(ProtocolError::new(
+                ProtocolErrorKind::UnknownAdapter,
+                "protocol adapter is not registered",
+            ));
+        }
+        let protocol = DefaultArtifactDownloadProtocol;
         let request = protocol.encode_download(url, context)?;
         let response = transport.send_streaming(request).await?;
         protocol.decode_download(response).await
@@ -1313,6 +1200,7 @@ impl CodecRegistry {
             .descriptor)
     }
 
+    #[cfg(test)]
     pub(crate) fn codec(
         &self,
         adapter_id: &str,
@@ -1420,6 +1308,7 @@ impl CodecRegistry {
             })
     }
 
+    #[cfg(test)]
     pub(crate) async fn decode(
         &self,
         adapter_id: &str,
@@ -1650,10 +1539,7 @@ fn validate_operation_id(value: &str) -> ProtocolResultValue<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{
-        cancellation_pair, poll_until_terminal, HttpBody, PollOutcome, PollPolicy, ProtocolEvent,
-        SseConfig, SseFrame,
-    };
+    use crate::protocol::{HttpBody, ProtocolEvent, SseConfig, SseFrame};
     use buckyos_api::{
         EmbeddingTextItem, EmbeddingTextRequest, LlmChatInvokeRequest, ResourceRef,
         VideoEditRequest, VideoExtendRequest, VideoGenerateRequest,
@@ -1661,32 +1547,10 @@ mod tests {
     use futures_util::{stream, StreamExt};
     use reqwest::{header::HeaderMap, Method, StatusCode};
     use serde_json::json;
-    use std::sync::atomic::{AtomicU32, Ordering};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
-    use tokio::time::Instant;
 
     struct FakeCodec {
         descriptor: OperationDescriptor,
         api_type: ApiType,
-    }
-
-    struct CustomArtifactDownload;
-
-    #[async_trait]
-    impl ArtifactDownloadProtocol for CustomArtifactDownload {
-        fn encode_download(
-            &self,
-            url: &str,
-            context: &CodecContext,
-        ) -> ProtocolResultValue<HttpRequest> {
-            let mut request = DefaultArtifactDownloadProtocol.encode_download(url, context)?;
-            request.headers.insert(
-                "x-artifact-protocol",
-                reqwest::header::HeaderValue::from_static("custom"),
-            );
-            Ok(request)
-        }
     }
 
     #[async_trait]
@@ -2168,65 +2032,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn protocol_probe_distinguishes_unsupported_endpoint_from_client_error() {
-        async fn probe(status: &str) -> bool {
-            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let address = listener.local_addr().unwrap();
-            let status = status.to_owned();
-            let server = tokio::spawn(async move {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let mut request = [0_u8; 2048];
-                let read = stream.read(&mut request).await.unwrap();
-                let request = String::from_utf8_lossy(&request[..read]);
-                assert!(request.starts_with("POST /probe "));
-                assert!(request
-                    .to_ascii_lowercase()
-                    .contains("authorization: bearer secret"));
-                stream
-                    .write_all(
-                        format!(
-                            "HTTP/1.1 {status}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
-                        )
-                        .as_bytes(),
-                    )
-                    .await
-                    .unwrap();
-            });
-            let operation = operation(
-                "interactions.create",
-                vec![OperationBinding::new(
-                    ApiType::Llm,
-                    [ExecutionMode::Immediate],
-                )],
-            );
-            let mut registry = CodecRegistry::default();
-            registry
-                .register(
-                    adapter("probe-adapter", operation.clone()),
-                    vec![Arc::new(FakeCodec {
-                        descriptor: operation,
-                        api_type: ApiType::Llm,
-                    })],
-                )
-                .unwrap();
-            let supported = registry
-                .probe_adapter(
-                    "probe-adapter",
-                    &format!("http://{address}"),
-                    &ResolvedCredential::bearer("test", "secret").unwrap(),
-                    Duration::from_secs(2),
-                )
-                .await
-                .unwrap();
-            server.await.unwrap();
-            supported
-        }
-
-        assert!(!probe("404 Not Found").await);
-        assert!(probe("400 Bad Request").await);
-    }
-
     #[test]
     fn adapter_enumeration_is_read_only_and_sorted_by_id() {
         let mut registry = CodecRegistry::default();
@@ -2494,56 +2299,7 @@ mod tests {
     }
 
     #[test]
-    fn derived_adapter_inherits_custom_artifact_download_protocol() {
-        let operation = operation(
-            "responses.create",
-            vec![OperationBinding::new(
-                ApiType::Llm,
-                [ExecutionMode::Immediate],
-            )],
-        );
-        let mut registry = CodecRegistry::default();
-        registry
-            .register(
-                adapter("base", operation.clone()),
-                vec![Arc::new(FakeCodec {
-                    descriptor: operation.clone(),
-                    api_type: ApiType::Llm,
-                })],
-            )
-            .unwrap();
-        registry
-            .register_artifact_download_protocol("base", Arc::new(CustomArtifactDownload))
-            .unwrap();
-        let mut derived = adapter("derived", operation);
-        derived.base_adapter_id = Some("base".to_owned());
-        registry
-            .register_derived(derived, CodecRegistration::default())
-            .unwrap();
-
-        let protocol = registry
-            .artifact_download_protocol("derived")
-            .unwrap()
-            .unwrap();
-        let request = protocol
-            .encode_download(
-                "https://one.example/artifact",
-                &context("https://one.example", "secret"),
-            )
-            .unwrap();
-        assert_eq!(request.headers["x-artifact-protocol"], "custom");
-    }
-
-    #[test]
     fn builtin_doubao_responses_uses_generic_artifact_download_protocol() {
-        let mut registry = CodecRegistry::default();
-        super::super::register_builtin_adapter_plugins(&mut registry).unwrap();
-        assert!(registry
-            .artifact_download_protocol(
-                super::super::derived_responses::DOUBAO_RESPONSES_ADAPTER_ID,
-            )
-            .unwrap()
-            .is_none());
         let request = DefaultArtifactDownloadProtocol
             .encode_download(
                 "https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/generated/image.jpeg?X-Tos-Signature=opaque",
@@ -2689,7 +2445,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_lifecycle_has_no_aicc_call_and_reuses_task_primitives() {
+    async fn native_lifecycle_has_no_aicc_call() {
         let mut descriptor = operation(
             "videos",
             vec![OperationBinding::new(
@@ -2744,36 +2500,6 @@ mod tests {
             panic!("expected submitted task")
         };
         assert_eq!(handle.remote_task_id, "video-1");
-
-        let attempts = Arc::new(AtomicU32::new(0));
-        let observed = Arc::clone(&attempts);
-        let (_cancel_handle, cancellation) = cancellation_pair();
-        let final_state = poll_until_terminal(
-            &PollPolicy {
-                initial_delay: Duration::from_millis(1),
-                maximum_delay: Duration::from_millis(1),
-                multiplier: 1,
-                maximum_attempts: Some(2),
-            },
-            Instant::now() + Duration::from_secs(1),
-            &cancellation,
-            move |_| {
-                let attempt = observed.fetch_add(1, Ordering::SeqCst);
-                async move {
-                    if attempt == 0 {
-                        Ok(PollOutcome::Pending {
-                            state: NativeTaskState::Running,
-                            retry_after: Some(Duration::from_millis(1)),
-                        })
-                    } else {
-                        Ok(PollOutcome::Complete(NativeTaskState::Succeeded))
-                    }
-                }
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(final_state, NativeTaskState::Succeeded);
 
         for (wire_state, expected) in [
             ("failed", NativeTaskState::Failed),
@@ -2968,35 +2694,6 @@ mod tests {
                 .kind,
             super::super::ProtocolErrorKind::InvalidRequest
         );
-    }
-
-    #[tokio::test]
-    async fn task_primitives_cover_timeout_and_cancellation() {
-        let (_handle, cancellation) = cancellation_pair();
-        let timeout = poll_until_terminal(
-            &PollPolicy::default(),
-            Instant::now(),
-            &cancellation,
-            |_| async { Ok::<_, ProtocolError>(PollOutcome::<()>::Complete(())) },
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(
-            timeout.kind,
-            super::super::ProtocolErrorKind::DeadlineExceeded
-        );
-
-        let (handle, cancellation) = cancellation_pair();
-        handle.cancel();
-        let cancelled = poll_until_terminal(
-            &PollPolicy::default(),
-            Instant::now() + Duration::from_secs(1),
-            &cancellation,
-            |_| async { Ok::<_, ProtocolError>(PollOutcome::<()>::Complete(())) },
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(cancelled.kind, super::super::ProtocolErrorKind::Cancelled);
     }
 }
 

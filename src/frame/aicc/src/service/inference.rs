@@ -1381,7 +1381,6 @@ async fn candidate_runtime_states(
                 },
                 trust: Some(ProviderTrustView {
                     provider_type,
-                    provider_type_source: ProviderTypeSource::SystemConfig,
                     provider_type_revision: snapshot.settings_revision.to_string(),
                     asserted_at_ms: 0,
                     trust_level: if local {
@@ -1415,10 +1414,7 @@ async fn candidate_runtime_states(
                             .catalog
                             .cost_in_usd(cost, now_ms().min(i64::MAX as u64) as i64)
                     }),
-                p50_latency_ms: observed.p50_latency_ms,
                 p95_latency_ms: observed.p95_latency_ms,
-                error_rate_5m: observed.error_rate_5m,
-                recent_failures: observed.recent_failures,
                 cache_hit_probability: None,
             };
             (model.exact_model, state)

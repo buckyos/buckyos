@@ -79,12 +79,11 @@ AiccServerHandler<T: AiccHandler>
 | runtime | `RuntimeBackend`, `RuntimeFactory`, `ModelRegistryAssembler` | 组装 Provider、catalog、模型注册表并发布不可变 snapshot |
 | provider | `ProviderDiscovery` | 获取一个 Provider Instance 的动态库存 |
 | provider | `CredentialResolver`, `DynamicLoginCredentialResolver` | 将受保护凭据解析到最小使用范围 |
-| provider | `ProviderQuotaObserver` | 读取 Provider 配额事实 |
 | provider | `ProviderInventoryStore` | 原子保存/读取实例 inventory LKGS |
 | protocol | `OperationCodec` | immediate/stream 请求编码和响应解码 |
 | protocol | `NativeTaskCodec` | submit/status/result/cancel 原生任务协议 |
 | protocol | `ProtocolAdapterPlugin` | 向 `CodecRegistry` 原子注册 descriptor 与 codec |
-| protocol | `ArtifactDownloadProtocol` | Adapter 级 URL artifact 下载请求/响应协议；默认实现可复用，特殊协议按 adapter 覆写 |
+| protocol | `ArtifactDownloadProtocol` | URL artifact 下载请求/响应协议；目前所有 adapter 共用默认实现 |
 | execution | `ExecutionStore`, `TaskManagerPort`, `ProviderExecutionPort`, `UsageCompletionPort` | 幂等执行、TaskMgr 桥接、Provider 执行和一次性用量入账 |
 | resource | `ResourceAuthorizer`, `ResourceStore`, `UrlResourceFetcher` | `ResourceRef` 鉴权、物化和 artifact 写入 |
 

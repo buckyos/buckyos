@@ -146,10 +146,10 @@ pub(crate) use crate::protocol::SN_OPENAI_ADAPTER_ID;
 use claude::CLAUDE_SPEC;
 #[allow(unused_imports)]
 pub(crate) use claude::{claude_discovery, CLAUDE_PROVIDER_PROFILE_ID};
-#[allow(unused_imports)]
+#[cfg(test)]
 pub(crate) use fal::FAL_PROVIDER_PROFILE_ID;
 #[allow(unused_imports)]
-pub(crate) use gemini::{GeminiDiscovery, GEMINI_CREDENTIAL_HEADER, GEMINI_PROVIDER_PROFILE_ID};
+pub(crate) use gemini::{GeminiDiscovery, GEMINI_PROVIDER_PROFILE_ID};
 #[cfg(test)]
 use glm::{
     glm_catalog_files, glm_known_provider, glm_model_driver, glm_profile, glm_provider_rules,
@@ -164,14 +164,15 @@ use kimi::{
 pub(crate) use kimi::{KimiDiscovery, KIMI_PROVIDER_PROFILE_ID};
 #[allow(unused_imports)]
 pub(crate) use minimax::{minimax_discovery, MINIMAX_PROVIDER_PROFILE_ID};
-#[cfg(test)]
-pub(crate) use openai::openai_catalog_files;
 #[allow(unused_imports)]
 pub(crate) use openai::{OpenAiDiscovery, OPENAI_PROVIDER_PROFILE_ID};
 #[allow(unused_imports)]
 pub(crate) use openai_responses_compatible::{
-    openai_compatible_models_discovery, DEEPSEEK_PROFILE_ID, DOUBAO_AGENT_PLAN_PROFILE_ID,
-    DOUBAO_PROFILE_ID, QWEN_PROFILE_ID,
+    openai_compatible_models_discovery, DEEPSEEK_PROFILE_ID,
+};
+#[cfg(test)]
+pub(crate) use openai_responses_compatible::{
+    DOUBAO_AGENT_PLAN_PROFILE_ID, DOUBAO_PROFILE_ID, QWEN_PROFILE_ID,
 };
 #[cfg(test)]
 use openrouter::{

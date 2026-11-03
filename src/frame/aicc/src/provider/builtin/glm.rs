@@ -1,20 +1,18 @@
-use super::super::{
-    CatalogOnlyDiscovery, DiscoveredModel, ModelAvailability, ProviderDiscoverySnapshot,
-    ProviderError, ProviderHealthState, ProviderResult,
-};
 #[cfg(test)]
 use super::super::{
-    DiscoveryMode, ProviderConnectionContract, ProviderConnectionInput, ProviderProfile,
-    ResolvedProviderConnection,
+    DiscoveredModel, DiscoveryMode, ModelAvailability, ProviderConnectionContract,
+    ProviderConnectionInput, ProviderDiscoverySnapshot, ProviderHealthState, ProviderProfile,
+    ProviderResult, ResolvedProviderConnection,
 };
 #[cfg(test)]
 use crate::catalog::ProviderRulesCatalog;
 #[cfg(test)]
 use crate::catalog::{CurrentCatalogFile, ModelDriverCatalog};
 #[cfg(test)]
-use crate::protocol::CredentialKind;
-use crate::protocol::OPENAI_CHAT_COMPLETIONS_OPERATION_ID;
+use crate::protocol::{CredentialKind, OPENAI_CHAT_COMPLETIONS_OPERATION_ID};
+#[cfg(test)]
 use buckyos_api::ApiType;
+#[cfg(test)]
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) const GLM_PROVIDER_PROFILE_ID: &str = "glm";
@@ -67,51 +65,6 @@ pub(crate) fn glm_catalog_files() -> Vec<CurrentCatalogFile> {
     super::builtin_catalog_files(&[GLM_PROVIDER_PROFILE_ID])
 }
 
-pub(crate) fn glm_catalog_only_inventory(
-    model_ids: impl IntoIterator<Item = String>,
-) -> ProviderResult<CatalogOnlyDiscovery> {
-    let mut models = BTreeMap::new();
-    for model_id in model_ids {
-        if model_id.trim().is_empty() || model_id.contains('@') {
-            return Err(ProviderError::InvalidConfiguration(
-                "GLM catalog model ID is invalid".to_owned(),
-            ));
-        }
-        if models.contains_key(&model_id) {
-            return Err(ProviderError::InvalidConfiguration(
-                "GLM catalog contains a duplicate model ID".to_owned(),
-            ));
-        }
-        models.insert(
-            model_id.clone(),
-            DiscoveredModel {
-                provider_model_id: model_id,
-                api_types: Some(vec![ApiType::Llm]),
-                supported_features: None,
-                unsupported_features: BTreeSet::new(),
-                remote_methods: Some(BTreeSet::from([
-                    OPENAI_CHAT_COMPLETIONS_OPERATION_ID.to_owned()
-                ])),
-                availability: ModelAvailability::Available,
-                deprecated: false,
-                pricing: None,
-                video: None,
-            },
-        );
-    }
-    if models.is_empty() {
-        return Err(ProviderError::InvalidConfiguration(
-            "GLM catalog must contain at least one model".to_owned(),
-        ));
-    }
-    Ok(CatalogOnlyDiscovery::new(ProviderDiscoverySnapshot {
-        revision: None,
-        discovered_at_ms: super::super::now_ms()?,
-        health: ProviderHealthState::Healthy,
-        models: models.into_values().collect(),
-    }))
-}
-
 pub(crate) fn glm_models_discovery(
     transport: crate::protocol::HttpTransport,
 ) -> super::openai_responses_compatible::OpenAiCompatibleModelsDiscovery {
@@ -128,13 +81,9 @@ mod tests {
     use crate::canonical::{CanonicalFallback, CanonicalFieldConverter};
     use crate::catalog::{CatalogBuildOptions, CatalogDocuments, CatalogSnapshot};
     use crate::protocol::{
-        glm_chat_adapter, openai_chat_completions_adapter, CodecRegistry, ResolvedCredential,
-        GLM_CHAT_ADAPTER_ID,
+        glm_chat_adapter, openai_chat_completions_adapter, CodecRegistry, GLM_CHAT_ADAPTER_ID,
     };
-    use crate::provider::{
-        CredentialReference, DiscoveryContext, InventoryBuilder, ProviderDiscovery,
-        ProviderInstanceConfig,
-    };
+    use crate::provider::{CredentialReference, InventoryBuilder, ProviderInstanceConfig};
 
     #[test]
     fn profiles_connection_rules_and_credentials_are_stable() {
@@ -178,42 +127,6 @@ mod tests {
         assert!(glm_provider_rules(5)
             .static_inventory_models
             .contains(&"glm-image".to_owned()));
-    }
-
-    #[tokio::test]
-    async fn catalog_only_inventory_is_explicit_and_validated() {
-        let discovery = glm_catalog_only_inventory(vec!["glm-model".to_owned()]).unwrap();
-        let profile = glm_profile();
-        let instance = ProviderInstanceConfig {
-            provider_instance_name: "glm-main".to_owned(),
-            provider_profile_id: GLM_PROVIDER_PROFILE_ID.to_owned(),
-            protocol_adapter_id: GLM_CHAT_ADAPTER_ID.to_owned(),
-            base_url: glm_known_provider().base_url,
-            operation_base_urls: BTreeMap::new(),
-            credential: CredentialReference {
-                reference: "secret://glm".to_owned(),
-            },
-            credential_kind: None,
-            provider_rules_id: Some(GLM_PROVIDER_PROFILE_ID.to_owned()),
-            region: Some("global".to_owned()),
-            workspace: None,
-            account: None,
-            request_timeout: std::time::Duration::from_secs(120),
-            auto_sync_models: true,
-            instance_rules: None,
-        };
-        let credential = ResolvedCredential::bearer("secret://glm", "secret").unwrap();
-        let snapshot = discovery
-            .discover(&DiscoveryContext {
-                profile: &profile,
-                instance: &instance,
-                credential: &credential,
-            })
-            .await
-            .unwrap();
-        assert_eq!(snapshot.models[0].provider_model_id, "glm-model");
-        assert!(glm_catalog_only_inventory(Vec::<String>::new()).is_err());
-        assert!(glm_catalog_only_inventory(vec!["same".to_owned(), "same".to_owned()]).is_err());
     }
 
     #[test]

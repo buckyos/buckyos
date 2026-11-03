@@ -105,14 +105,6 @@ CREATE TABLE IF NOT EXISTS aicc_provider_artifact (
  PRIMARY KEY (content_digest, obj_id, provider_instance_name, origin_provider, tenant_id));
 CREATE INDEX IF NOT EXISTS idx_aicc_provider_artifact_provider
  ON aicc_provider_artifact(provider_instance_name, origin_provider, created_at_ms);
-CREATE TABLE IF NOT EXISTS aicc_audit_event (
- audit_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, caller_app_id TEXT, event_type TEXT NOT NULL,
- trace_id TEXT, request_id TEXT, task_id TEXT, route_id TEXT, provider_trace_id TEXT,
- provider_instance_name TEXT, exact_model TEXT, data_json TEXT NOT NULL, created_at_ms BIGINT NOT NULL);
-CREATE INDEX IF NOT EXISTS idx_aicc_audit_event_time ON aicc_audit_event(created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_audit_event_tenant_time ON aicc_audit_event(tenant_id, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_audit_event_trace_time ON aicc_audit_event(trace_id, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_audit_event_task_time ON aicc_audit_event(task_id, created_at_ms);
 "#;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -297,49 +289,6 @@ pub(crate) struct RouteTraceRecord {
     pub outcome: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub(crate) struct AuditEvent {
-    pub audit_id: String,
-    pub tenant_id: String,
-    pub caller_app_id: Option<String>,
-    pub event_type: String,
-    pub trace_id: Option<String>,
-    pub request_id: Option<String>,
-    pub task_id: Option<String>,
-    pub route_id: Option<String>,
-    pub provider_trace_id: Option<String>,
-    pub provider_instance_name: Option<String>,
-    pub exact_model: Option<String>,
-    pub data: Value,
-    pub created_at_ms: i64,
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct AuditQuery {
-    pub tenant_id: String,
-    pub event_types: Vec<String>,
-    pub trace_ids: Vec<String>,
-    pub request_ids: Vec<String>,
-    pub task_ids: Vec<String>,
-    pub route_ids: Vec<String>,
-    pub provider_trace_ids: Vec<String>,
-    pub start_time_ms: Option<i64>,
-    pub end_time_ms: Option<i64>,
-    pub limit: Option<u32>,
-    pub cursor: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct AuditQueryResult {
-    pub events: Vec<AuditEvent>,
-    pub next_cursor: Option<String>,
-}
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct RetentionResult {
-    pub route_traces_deleted: u64,
-    pub audit_events_deleted: u64,
-}
-
 pub(crate) struct AiccStorage {
     pool: AnyPool,
     backend: RdbBackend,
@@ -517,15 +466,6 @@ impl AiccStorage {
             .execute(&self.pool)
             .await?;
         Ok(())
-    }
-
-    pub(crate) async fn artifact_tenant(&self, obj_id: &str) -> StorageResult<Option<String>> {
-        let sql = self.sql("SELECT tenant_id FROM aicc_artifact_scope WHERE obj_id=?");
-        Ok(sqlx::query(&sql)
-            .bind(obj_id)
-            .fetch_optional(&self.pool)
-            .await?
-            .map(|row| row.get("tenant_id")))
     }
 
     pub(crate) async fn artifact_owner(
@@ -1451,111 +1391,6 @@ impl AiccStorage {
         })
     }
 
-    pub(crate) async fn write_audit_event(&self, e: &AuditEvent) -> StorageResult<()> {
-        if e.audit_id.trim().is_empty()
-            || e.tenant_id.trim().is_empty()
-            || e.event_type.trim().is_empty()
-            || e.trace_id.as_ref().is_some_and(|v| v.trim().is_empty())
-            || e.created_at_ms < 0
-        {
-            return Err(StorageError::InvalidRecord(
-                "audit identity is incomplete".into(),
-            ));
-        }
-        let sql = self.sql("INSERT INTO aicc_audit_event
-          (audit_id,tenant_id,caller_app_id,event_type,trace_id,request_id,task_id,route_id,provider_trace_id,
-           provider_instance_name,exact_model,data_json,created_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-           ON CONFLICT(audit_id) DO NOTHING");
-        sqlx::query(&sql)
-            .bind(&e.audit_id)
-            .bind(&e.tenant_id)
-            .bind(&e.caller_app_id)
-            .bind(&e.event_type)
-            .bind(&e.trace_id)
-            .bind(&e.request_id)
-            .bind(&e.task_id)
-            .bind(&e.route_id)
-            .bind(&e.provider_trace_id)
-            .bind(&e.provider_instance_name)
-            .bind(&e.exact_model)
-            .bind(serde_json::to_string(&e.data)?)
-            .bind(e.created_at_ms)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
-    pub(crate) async fn query_audit(&self, q: &AuditQuery) -> StorageResult<AuditQueryResult> {
-        if q.tenant_id.trim().is_empty() {
-            return Err(StorageError::InvalidRecord("audit tenant is empty".into()));
-        }
-        let mut query = QueryBuilder::<Any>::new("SELECT * FROM aicc_audit_event WHERE tenant_id=");
-        query.push_bind(q.tenant_id.clone());
-        if let Some(start) = q.start_time_ms {
-            query.push(" AND created_at_ms>=").push_bind(start);
-        }
-        if let Some(end) = q.end_time_ms {
-            query.push(" AND created_at_ms<").push_bind(end);
-        }
-        push_in_clause(&mut query, "event_type", &q.event_types);
-        push_in_clause(&mut query, "trace_id", &q.trace_ids);
-        push_in_clause(&mut query, "request_id", &q.request_ids);
-        push_in_clause(&mut query, "task_id", &q.task_ids);
-        push_in_clause(&mut query, "route_id", &q.route_ids);
-        push_in_clause(&mut query, "provider_trace_id", &q.provider_trace_ids);
-        query.push(" ORDER BY created_at_ms DESC,audit_id DESC");
-        let rows = query.build().fetch_all(&self.pool).await?;
-        let cursor = q.cursor.as_deref().map(decode_cursor).transpose()?;
-        let mut events = rows
-            .into_iter()
-            .map(audit_from_row)
-            .collect::<StorageResult<Vec<_>>>()?;
-        events.retain(|e| {
-            audit_matches(e, q) && cursor_allows(e.created_at_ms, &e.audit_id, cursor.as_ref())
-        });
-        let page_limit = limit(q.limit);
-        let next_cursor = (events.len() > page_limit).then(|| {
-            encode_cursor(
-                events[page_limit - 1].created_at_ms,
-                &events[page_limit - 1].audit_id,
-            )
-        });
-        events.truncate(page_limit);
-        Ok(AuditQueryResult {
-            events,
-            next_cursor,
-        })
-    }
-
-    pub(crate) async fn enforce_diagnostic_retention(
-        &self,
-        cutoff_ms: i64,
-    ) -> StorageResult<RetentionResult> {
-        if cutoff_ms < 0 {
-            return Err(StorageError::InvalidRecord(
-                "negative retention cutoff".into(),
-            ));
-        }
-        let trace_sql = self.sql("DELETE FROM aicc_route_trace_event WHERE created_at_ms<?");
-        let audit_sql = self.sql("DELETE FROM aicc_audit_event WHERE created_at_ms<?");
-        let mut tx = self.pool.begin().await?;
-        let traces = sqlx::query(&trace_sql)
-            .bind(cutoff_ms)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
-        let audits = sqlx::query(&audit_sql)
-            .bind(cutoff_ms)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
-        tx.commit().await?;
-        Ok(RetentionResult {
-            route_traces_deleted: traces,
-            audit_events_deleted: audits,
-        })
-    }
-
     fn sql(&self, sql: &str) -> String {
         if self.backend == RdbBackend::Postgres {
             placeholders(sql)
@@ -1874,25 +1709,6 @@ fn route_trace_record_to_value(record: RouteTraceRecord) -> StorageResult<Value>
         }
     }
     Ok(value)
-}
-
-fn audit_from_row(row: AnyRow) -> StorageResult<AuditEvent> {
-    let data: String = row.try_get("data_json")?;
-    Ok(AuditEvent {
-        audit_id: row.try_get("audit_id")?,
-        tenant_id: row.try_get("tenant_id")?,
-        caller_app_id: row.try_get("caller_app_id")?,
-        event_type: row.try_get("event_type")?,
-        trace_id: row.try_get("trace_id")?,
-        request_id: row.try_get("request_id")?,
-        task_id: row.try_get("task_id")?,
-        route_id: row.try_get("route_id")?,
-        provider_trace_id: row.try_get("provider_trace_id")?,
-        provider_instance_name: row.try_get("provider_instance_name")?,
-        exact_model: row.try_get("exact_model")?,
-        data: serde_json::from_str(&data)?,
-        created_at_ms: row.try_get("created_at_ms")?,
-    })
 }
 
 fn time_range(range: &UsageQueryTimeRange, now: i64) -> StorageResult<(i64, i64)> {
@@ -2222,20 +2038,6 @@ fn valid_finance(value: &Value) -> Option<(f64, String)> {
     Some((amount, currency.to_ascii_uppercase()))
 }
 
-fn audit_matches(e: &AuditEvent, q: &AuditQuery) -> bool {
-    q.start_time_ms.is_none_or(|v| e.created_at_ms >= v)
-        && q.end_time_ms.is_none_or(|v| e.created_at_ms < v)
-        && exact(&q.event_types, Some(&e.event_type))
-        && exact(&q.trace_ids, e.trace_id.as_deref())
-        && exact(&q.request_ids, e.request_id.as_deref())
-        && exact(&q.task_ids, e.task_id.as_deref())
-        && exact(&q.route_ids, e.route_id.as_deref())
-        && exact(&q.provider_trace_ids, e.provider_trace_id.as_deref())
-}
-
-fn exact(values: &[String], actual: Option<&str>) -> bool {
-    values.is_empty() || actual.is_some_and(|a| values.iter().any(|v| v == a))
-}
 fn limit(value: Option<u32>) -> usize {
     value
         .map(|v| v as usize)
@@ -2258,9 +2060,6 @@ fn decode_cursor(value: &str) -> StorageResult<(i64, String)> {
         timestamp.parse().map_err(|_| StorageError::InvalidCursor)?,
         id.into(),
     ))
-}
-fn cursor_allows(timestamp: i64, id: &str, cursor: Option<&(i64, String)>) -> bool {
-    cursor.is_none_or(|(t, i)| timestamp < *t || (timestamp == *t && id < i.as_str()))
 }
 fn sha256_hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
@@ -2940,14 +2739,6 @@ mod tests {
         db.remember_artifact_scope("cyfile:artifact", "tenant-b", "user-b", Some("app-b"), 2)
             .await
             .unwrap();
-        assert_eq!(
-            db.artifact_tenant("cyfile:artifact")
-                .await
-                .unwrap()
-                .as_deref(),
-            Some("tenant-a")
-        );
-        assert_eq!(db.artifact_tenant("cyfile:missing").await.unwrap(), None);
         assert_eq!(
             db.artifact_owner("cyfile:artifact").await.unwrap(),
             Some(("tenant-a".to_owned(), "user-a".to_owned()))
@@ -3660,7 +3451,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trace_audit_are_correlated_and_retained() {
+    async fn trace_and_usage_are_correlated() {
         let db = db().await;
         let mut usage = completion("usage-1", "task-1", "idem-1", 100);
         usage.trace_id = Some("trace-1".into());
@@ -3694,23 +3485,6 @@ mod tests {
         })
         .await
         .unwrap();
-        db.write_audit_event(&AuditEvent {
-            audit_id: "audit-1".into(),
-            tenant_id: "tenant-a".into(),
-            caller_app_id: None,
-            event_type: "provider.completed".into(),
-            trace_id: Some("trace-1".into()),
-            request_id: Some("request-1".into()),
-            task_id: Some("task-1".into()),
-            route_id: Some("route-1".into()),
-            provider_trace_id: Some("provider-1".into()),
-            provider_instance_name: Some("openai-primary".into()),
-            exact_model: Some("gpt-5@openai-primary".into()),
-            data: json!({"status":"succeeded"}),
-            created_at_ms: 100,
-        })
-        .await
-        .unwrap();
         let mut usage_query = QueryUsageRequest::new(UsageQueryTimeRange::Explicit {
             start_time_ms: 100,
             end_time_ms: 101,
@@ -3738,30 +3512,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(traces.total_count, Some(1));
-        let audits = db
-            .query_audit(&AuditQuery {
-                tenant_id: "tenant-a".into(),
-                trace_ids: vec!["trace-1".into()],
-                ..Default::default()
-            })
-            .await
-            .unwrap();
         assert_eq!(usages.events[0].trace_id.as_deref(), Some("trace-1"));
-        assert_eq!(audits.events.len(), 1);
-        assert_eq!(audits.events[0].trace_id.as_deref(), Some("trace-1"));
         assert_eq!(
             traces.traces[0]
                 .pointer("/trace_id")
                 .and_then(Value::as_str),
             Some("trace-1")
-        );
-        let deleted = db.enforce_diagnostic_retention(101).await.unwrap();
-        assert_eq!(
-            deleted,
-            RetentionResult {
-                route_traces_deleted: 1,
-                audit_events_deleted: 1
-            }
         );
     }
 

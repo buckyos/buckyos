@@ -21,6 +21,7 @@ pub(crate) struct ProviderFieldSchema {
 }
 
 impl ProviderFieldSchema {
+    #[cfg(test)]
     pub(crate) fn unsupported() -> Self {
         Self {
             mode: ProviderFieldMode::Unsupported,
@@ -37,6 +38,7 @@ impl ProviderFieldSchema {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn optional_with_default(default_value: impl Into<String>) -> Self {
         Self {
             mode: ProviderFieldMode::Optional,
@@ -53,6 +55,7 @@ impl ProviderFieldSchema {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn with_allowed_values(
         mut self,
         values: impl IntoIterator<Item = impl Into<String>>,
@@ -358,20 +361,6 @@ pub(crate) struct DiscoveryContext<'a> {
     pub credential: &'a ResolvedCredential,
 }
 
-pub(crate) struct ProviderQuotaContext<'a> {
-    pub profile: &'a ProviderProfile,
-    pub instance: &'a ProviderInstanceConfig,
-    pub credential: &'a ResolvedCredential,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum ProviderQuotaLevel {
-    Normal,
-    NearLimit,
-    Exhausted,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ProviderQuotaObservationState {
@@ -384,15 +373,6 @@ pub(crate) enum ProviderQuotaObservationState {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ProviderQuotaReading {
-    pub state: ProviderQuotaLevel,
-    pub remaining_request_units: Option<u64>,
-    pub remaining_cost_usd: Option<AiCost>,
-    pub reset_at_ms: Option<i64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct ProviderQuotaObservation {
     pub state: ProviderQuotaObservationState,
     pub remaining_request_units: Option<u64>,
@@ -400,16 +380,6 @@ pub(crate) struct ProviderQuotaObservation {
     pub reset_at_ms: Option<i64>,
     pub observed_at_ms: i64,
     pub source: String,
-}
-
-#[async_trait]
-pub(crate) trait ProviderQuotaObserver: Send + Sync {
-    fn source(&self) -> &'static str;
-
-    async fn observe(
-        &self,
-        context: &ProviderQuotaContext<'_>,
-    ) -> ProviderResult<ProviderQuotaReading>;
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -768,6 +738,7 @@ pub(crate) struct UnavailablePreset {
 pub(crate) struct InventoryBuilder;
 
 impl InventoryBuilder {
+    #[cfg(test)]
     pub(crate) fn build(
         profile: &ProviderProfile,
         instance: &ProviderInstanceConfig,

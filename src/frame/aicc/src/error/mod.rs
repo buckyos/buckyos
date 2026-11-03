@@ -258,9 +258,7 @@ pub(crate) enum ProtocolErrorKind {
     DuplicateAdapter,
     UnknownAdapter,
     UnsupportedOperation,
-    DeadlineExceeded,
     Cancelled,
-    WebhookRejected,
     /// The Provider refused the request because it does not fit the model's
     /// context window, reported by a structured provider code.
     ContextLengthExceeded,
@@ -576,7 +574,6 @@ impl ProtocolError {
                 self.kind,
                 ProtocolErrorKind::Transport
                     | ProtocolErrorKind::Timeout
-                    | ProtocolErrorKind::DeadlineExceeded
                     | ProtocolErrorKind::InvalidResponse
             ) || self.retry_after.is_some())
     }
@@ -621,9 +618,7 @@ impl From<ProtocolError> for AiccError {
     fn from(error: ProtocolError) -> Self {
         let retriable = matches!(
             error.kind,
-            ProtocolErrorKind::Transport
-                | ProtocolErrorKind::Timeout
-                | ProtocolErrorKind::DeadlineExceeded
+            ProtocolErrorKind::Transport | ProtocolErrorKind::Timeout
         );
         let code = match error.kind {
             ProtocolErrorKind::InvalidConfiguration
@@ -635,10 +630,7 @@ impl From<ProtocolError> for AiccError {
             ProtocolErrorKind::Authentication | ProtocolErrorKind::ProviderRejected => {
                 AiccErrorCode::ProviderError
             }
-            ProtocolErrorKind::WebhookRejected => AiccErrorCode::PolicyDenied,
-            ProtocolErrorKind::Timeout | ProtocolErrorKind::DeadlineExceeded => {
-                AiccErrorCode::Timeout
-            }
+            ProtocolErrorKind::Timeout => AiccErrorCode::Timeout,
             ProtocolErrorKind::Cancelled => AiccErrorCode::Cancelled,
             ProtocolErrorKind::Transport
             | ProtocolErrorKind::ResponseTooLarge

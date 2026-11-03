@@ -11,6 +11,7 @@ use crate::catalog::{CatalogKind, CurrentCatalogFile, ProviderRulesCatalog};
 use crate::protocol::{CredentialKind, FAL_QUEUE_ADAPTER_ID};
 use std::sync::Arc;
 
+#[cfg(test)]
 pub(crate) const FAL_PROVIDER_PROFILE_ID: &str = "fal";
 
 #[cfg(test)]

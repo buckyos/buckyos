@@ -350,17 +350,6 @@ impl ProviderRuntimeManager {
         self.registry.read().await.clone()
     }
 
-    pub(crate) async fn quota_observation(
-        &self,
-        provider_instance_name: &str,
-    ) -> ProviderResult<ProviderQuotaObservation> {
-        Ok(self
-            .runtime(provider_instance_name)
-            .await?
-            .quota_observation()
-            .await)
-    }
-
     pub(crate) fn subscribe_refresh_events(&self) -> broadcast::Receiver<ProviderRefreshEvent> {
         self.refresh_events.subscribe()
     }
@@ -569,11 +558,7 @@ impl ProviderRuntimeManager {
             ProviderDraftValidationError::from_provider_error(stage, &error)
         })?;
         Ok(ProviderDraftNegotiation {
-            provider_profile_id: profile.provider_profile_id.clone(),
             protocol_adapter_id: instance.protocol_adapter_id,
-            auth_mode: draft.auth.mode(),
-            connection,
-            catalog_revision_seq: catalog.target_revision_seq(),
             inventory: Arc::new(inventory),
         })
     }
@@ -731,6 +716,7 @@ impl ProviderRuntimeManager {
             .await
     }
 
+    #[cfg(test)]
     pub(crate) async fn build_inventory_candidate(
         &self,
         provider_instance_name: &str,
@@ -740,6 +726,7 @@ impl ProviderRuntimeManager {
         runtime.build_candidate().await
     }
 
+    #[cfg(test)]
     pub(crate) async fn commit_inventory_candidate(
         &self,
         candidate: ProviderInventoryCandidate,
@@ -816,35 +803,6 @@ impl ProviderRuntimeManager {
         results
     }
 
-    pub(crate) async fn replace(
-        &self,
-        config: ProviderInstanceConfig,
-        discovery: Arc<dyn ProviderDiscovery>,
-    ) -> ProviderResult<Arc<ExecutableProviderInstance>> {
-        let _lifecycle = self.lifecycle_lock.lock().await;
-        let name = config.provider_instance_name.clone();
-        self.stop_and_remove_unlocked(&name).await?;
-        self.start_unpublished(config, discovery).await
-    }
-
-    pub(crate) async fn stop_and_remove(&self, name: &str) -> ProviderResult<()> {
-        let _lifecycle = self.lifecycle_lock.lock().await;
-        self.stop_and_remove_unlocked(name).await
-    }
-
-    async fn stop_and_remove_unlocked(&self, name: &str) -> ProviderResult<()> {
-        let runtime = self.runtimes.lock().await.remove(name);
-        let Some(runtime) = runtime else {
-            return Ok(());
-        };
-        runtime.stop().await;
-        let current = self.registry.read().await.clone();
-        let mut next = current.instances.clone();
-        next.remove(name);
-        *self.registry.write().await = Arc::new(ProviderRegistry { instances: next });
-        Ok(())
-    }
-
     pub(crate) async fn shutdown(&self) {
         let _lifecycle = self.lifecycle_lock.lock().await;
         let runtimes = {
@@ -864,6 +822,7 @@ impl ProviderRuntimeManager {
         *self.registry.write().await = Arc::new(ProviderRegistry { instances: next });
     }
 
+    #[cfg(test)]
     pub(super) async fn runtime(&self, name: &str) -> ProviderResult<Arc<ProviderRuntime>> {
         self.runtimes
             .lock()

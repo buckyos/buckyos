@@ -525,54 +525,6 @@ async fn machine_discovery_failure_uses_static_fallback_as_degraded() {
     assert_eq!(snapshot.models[0].provider_model_id, "configured-model");
 }
 
-fn routed_catalog() -> Arc<CatalogSnapshot> {
-    let driver = |model_driver_id: &str| -> ModelDriverCatalog {
-        serde_json::from_value(serde_json::json!({
-            "format": "buckyos.aicc.model-driver-catalog",
-            "schema_version": 2,
-            "schema_revision": 0,
-            "model_driver_id": model_driver_id,
-            "revision_seq": 7,
-            "models": [{
-                "id": "shared-model",
-                "api_types": ["llm"],
-                "capabilities": {"tool_call": true},
-                "llm": {"spec":format!("{model_driver_id}-spec"),"family_id":format!("{model_driver_id}-shared-model"),"effort":"native","default_effort":"native","supported_efforts":["native"],"stability":"stable","weight":1.0}
-            }],
-            "patterns": [],
-            "defaults": {},
-            "specs": [{"id":format!("{model_driver_id}-spec"),"direct_only":true}]
-        }))
-        .unwrap()
-    };
-    let provider_rules: ProviderRulesCatalog = serde_json::from_value(serde_json::json!({
-        "format": "buckyos.aicc.provider-rules-catalog",
-        "schema_version": 1,
-        "schema_revision": 0,
-        "revision_seq": 7,
-        "provider_profile_id": "openrouter",
-        "models": [],
-        "patterns": [{
-            "match": "*",
-            "operations": {"llm": "responses.create"}
-        }],
-        "variants": []
-    }))
-    .unwrap();
-    Arc::new(
-        CatalogSnapshot::build(
-            7,
-            CatalogDocuments {
-                model_drivers: vec![driver("openai"), driver("claude")],
-                provider_rules: vec![provider_rules],
-                known_providers: vec![],
-            },
-            &CatalogBuildOptions::default(),
-        )
-        .unwrap(),
-    )
-}
-
 fn codecs() -> Arc<CodecRegistry> {
     let descriptor = OperationDescriptor {
         operation_id: "responses.create".into(),
@@ -806,18 +758,7 @@ async fn draft_validation_negotiates_without_runtime_or_storage_side_effects() {
         .await
         .unwrap();
 
-    assert_eq!(negotiated.provider_profile_id, "openai");
     assert_eq!(negotiated.protocol_adapter_id, "openai-responses");
-    assert_eq!(negotiated.auth_mode, ProviderAuthMode::ApiKey);
-    assert_eq!(
-        negotiated.connection.workspace.as_deref(),
-        Some("workspace-1")
-    );
-    assert_eq!(
-        negotiated.connection.base_url,
-        "https://workspace-1.example.test/v1/"
-    );
-    assert_eq!(negotiated.catalog_revision_seq, 7);
     assert_eq!(negotiated.inventory.models.len(), 1);
     assert_eq!(negotiated.inventory.models[0].origin_model_id, "gpt-test");
     assert_eq!(
@@ -858,7 +799,7 @@ async fn runtime_uses_explicit_credential_variant() {
 }
 
 #[tokio::test]
-async fn workspace_survives_inventory_build_and_instance_replace() {
+async fn workspace_survives_inventory_build() {
     let store = Arc::new(MemoryStore::default());
     let initial_discovery = Arc::new(WorkspaceRecordingDiscovery {
         snapshot: discovery("gpt-test"),
@@ -883,35 +824,14 @@ async fn workspace_survives_inventory_build_and_instance_replace() {
         Some("workspace-initial")
     );
 
-    let replacement_discovery = Arc::new(WorkspaceRecordingDiscovery {
-        snapshot: discovery("gpt-test"),
-        workspaces: Mutex::new(Vec::new()),
-    });
-    let mut replacement = instance("primary");
-    replacement.workspace = Some("workspace-reloaded".into());
-    manager
-        .replace(replacement, replacement_discovery.clone())
-        .await
-        .unwrap();
     manager.build_inventory_candidate("primary").await.unwrap();
 
     assert_eq!(
-        replacement_discovery.workspaces.lock().await.as_slice(),
+        initial_discovery.workspaces.lock().await.as_slice(),
         &[
-            Some("workspace-reloaded".into()),
-            Some("workspace-reloaded".into())
+            Some("workspace-initial".into()),
+            Some("workspace-initial".into())
         ]
-    );
-    assert_eq!(
-        manager
-            .registry()
-            .await
-            .get("primary")
-            .unwrap()
-            .config
-            .workspace
-            .as_deref(),
-        Some("workspace-reloaded")
     );
     manager.shutdown().await;
 }
@@ -931,9 +851,12 @@ async fn quota_view_ignores_untrusted_discovery_and_reports_provider_quota_unsup
         .await
         .unwrap();
     let unsupported = unsupported_manager
-        .quota_observation("primary")
+        .registry()
         .await
-        .unwrap();
+        .get("primary")
+        .unwrap()
+        .quota_observation()
+        .await;
     assert_eq!(
         unsupported.state,
         ProviderQuotaObservationState::Unsupported
@@ -966,7 +889,6 @@ async fn draft_validation_resolves_dynamic_login_without_exposing_token() {
         .await
         .unwrap();
 
-    assert_eq!(negotiated.auth_mode, ProviderAuthMode::DynamicLogin);
     assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
     assert_eq!(resolver.contexts.lock().await[0].user_name, "alice");
     assert!(!format!("{negotiated:?}").contains("draft-secret"));
@@ -1396,7 +1318,7 @@ async fn failed_refresh_preserves_lkgs_and_reports_degraded_health() {
 }
 
 #[tokio::test]
-async fn registry_publication_is_copy_on_write_and_stop_is_idempotent() {
+async fn registry_publication_is_copy_on_write() {
     let store = Arc::new(MemoryStore::default());
     let discovery = Arc::new(ScriptedDiscovery::new([], discovery("gpt-test")));
     let (manager, discovery) = manager(store, discovery);
@@ -1407,9 +1329,9 @@ async fn registry_publication_is_copy_on_write_and_stop_is_idempotent() {
     assert!(after.get("primary").is_some());
     assert_eq!(after.list().len(), 1);
 
-    manager.stop_and_remove("primary").await.unwrap();
-    manager.stop_and_remove("primary").await.unwrap();
+    manager.shutdown().await;
     assert!(manager.registry().await.get("primary").is_none());
+    assert!(after.get("primary").is_some());
 }
 
 #[tokio::test]
@@ -1605,7 +1527,7 @@ async fn invalid_instance_is_rejected_before_discovery() {
 }
 
 #[tokio::test]
-async fn stop_is_idempotent_and_rejects_late_refresh_commit() {
+async fn shutdown_is_idempotent_and_rejects_late_refresh_commit() {
     let store = Arc::new(MemoryStore::default());
     let discovery = Arc::new(BlockingDiscovery {
         snapshot: discovery("gpt-test"),
@@ -1623,7 +1545,7 @@ async fn stop_is_idempotent_and_rejects_late_refresh_commit() {
     let refresh_manager = manager.clone();
     let refresh = tokio::spawn(async move { refresh_manager.refresh("primary").await });
     discovery.started.notified().await;
-    manager.stop_and_remove("primary").await.unwrap();
+    manager.shutdown().await;
     discovery.release.notify_waiters();
     assert!(matches!(
         refresh.await.unwrap(),

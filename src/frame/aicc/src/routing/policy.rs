@@ -15,9 +15,6 @@ use std::sync::Arc;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PolicyScope {
     Directory,
-    System,
-    User,
-    App,
     Session,
     Request,
 }
@@ -26,9 +23,6 @@ impl fmt::Display for PolicyScope {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Directory => "directory",
-            Self::System => "system",
-            Self::User => "user",
-            Self::App => "app",
             Self::Session => "session",
             Self::Request => "request",
         })
@@ -39,8 +33,6 @@ impl fmt::Display for PolicyScope {
 pub(crate) enum PrivacyRequirement {
     #[default]
     PublicAllowed,
-    NoLogRequired,
-    PrivateOnly,
     LocalOnly,
 }
 
@@ -58,15 +50,6 @@ pub(crate) struct RoutingPolicyPatch {
     pub max_latency_ms: Option<LockedValue<u64>>,
     pub privacy: Option<LockedValue<PrivacyRequirement>>,
     pub minimum_provider_trust: Option<LockedValue<ProviderTrustLevel>>,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct RoutingPolicyLayers<'a> {
-    pub system: Option<&'a RoutingPolicyPatch>,
-    pub user: Option<&'a RoutingPolicyPatch>,
-    pub app: Option<&'a RoutingPolicyPatch>,
-    pub session: Option<&'a RoutingPolicyPatch>,
-    pub request: Option<&'a RoutingPolicyPatch>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -124,21 +107,7 @@ impl Default for EffectiveRoutingPolicy {
 }
 
 impl EffectiveRoutingPolicy {
-    pub(crate) fn merge(layers: RoutingPolicyLayers<'_>) -> Result<Self, PolicyError> {
-        Self::merge_ordered(
-            [
-                (PolicyScope::System, layers.system),
-                (PolicyScope::User, layers.user),
-                (PolicyScope::App, layers.app),
-                (PolicyScope::Session, layers.session),
-                (PolicyScope::Request, layers.request),
-            ]
-            .into_iter()
-            .filter_map(|(scope, patch)| patch.map(|patch| (scope, patch))),
-        )
-    }
-
-    fn merge_ordered<'a>(
+    pub(crate) fn merge_ordered<'a>(
         layers: impl IntoIterator<Item = (PolicyScope, &'a RoutingPolicyPatch)>,
     ) -> Result<Self, PolicyError> {
         let mut result = Self::default();
@@ -445,30 +414,14 @@ pub(crate) enum ProviderType {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ProviderTypeSource {
-    SystemConfig,
-    AdminOverride,
-    ProviderInventory,
-}
-
-impl ProviderTypeSource {
-    fn trusted(self) -> bool {
-        matches!(self, Self::SystemConfig | Self::AdminOverride)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ProviderPrivacy {
     Local,
-    PrivateCloud,
     PublicCloud,
-    PublicCloudNoLog,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ProviderTrustView {
     pub provider_type: ProviderType,
-    pub provider_type_source: ProviderTypeSource,
     pub provider_type_revision: String,
     pub asserted_at_ms: i64,
     pub trust_level: ProviderTrustLevel,
@@ -477,7 +430,6 @@ pub(crate) struct ProviderTrustView {
 impl ProviderTrustView {
     fn trusted_local(&self) -> bool {
         self.provider_type == ProviderType::LocalInference
-            && self.provider_type_source.trusted()
             && self.trust_level >= ProviderTrustLevel::Verified
             && !self.provider_type_revision.trim().is_empty()
             && self.asserted_at_ms >= 0
@@ -486,43 +438,13 @@ impl ProviderTrustView {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CredentialScope {
-    Tenant {
-        tenant_id: String,
-    },
-    User {
-        tenant_id: String,
-        user_id: String,
-    },
-    App {
-        tenant_id: String,
-        app_id: String,
-    },
-    UserApp {
-        tenant_id: String,
-        user_id: String,
-        app_id: String,
-    },
+    Tenant { tenant_id: String },
 }
 
 impl CredentialScope {
     fn permits(&self, caller: &CallerIdentity) -> bool {
         match self {
             Self::Tenant { tenant_id } => tenant_id == &caller.tenant_id,
-            Self::User { tenant_id, user_id } => {
-                tenant_id == &caller.tenant_id && user_id == &caller.user_id
-            }
-            Self::App { tenant_id, app_id } => {
-                tenant_id == &caller.tenant_id && caller.app_id.as_ref() == Some(app_id)
-            }
-            Self::UserApp {
-                tenant_id,
-                user_id,
-                app_id,
-            } => {
-                tenant_id == &caller.tenant_id
-                    && user_id == &caller.user_id
-                    && caller.app_id.as_ref() == Some(app_id)
-            }
         }
     }
 }
@@ -697,7 +619,6 @@ pub(crate) enum PolicyReasonCode {
     CostEstimateUnavailable,
     CostCurrencyMismatch,
     CostCeilingExceeded,
-    QuotaSourceUnavailable,
     QuotaExhausted,
     RequestQuotaExceeded,
     BudgetExceeded,
@@ -717,7 +638,6 @@ impl PolicyReasonCode {
             Self::CostEstimateUnavailable => "cost_estimate_unavailable",
             Self::CostCurrencyMismatch => "cost_currency_mismatch",
             Self::CostCeilingExceeded => "cost_ceiling_exceeded",
-            Self::QuotaSourceUnavailable => "quota_source_unavailable",
             Self::QuotaExhausted => "quota_exhausted",
             Self::RequestQuotaExceeded => "request_quota_exceeded",
             Self::BudgetExceeded => "budget_exceeded",
@@ -830,9 +750,7 @@ impl<Q: QuotaSource> PolicyEngine<Q> {
                 "provider trust truth is unavailable",
             ),
             Some(trust) => {
-                if !trust.provider_type_source.trusted()
-                    || trust.provider_type_revision.trim().is_empty()
-                    || trust.asserted_at_ms < 0
+                if trust.provider_type_revision.trim().is_empty() || trust.asserted_at_ms < 0
                 {
                     reject(
                         &mut reasons,
@@ -979,16 +897,6 @@ fn provider_context(candidate: &CandidatePolicyInput<'_>) -> MatchContext {
 fn privacy_allows(requirement: PrivacyRequirement, provider: ProviderPrivacy) -> bool {
     match requirement {
         PrivacyRequirement::PublicAllowed => true,
-        PrivacyRequirement::NoLogRequired => matches!(
-            provider,
-            ProviderPrivacy::Local
-                | ProviderPrivacy::PrivateCloud
-                | ProviderPrivacy::PublicCloudNoLog
-        ),
-        PrivacyRequirement::PrivateOnly => matches!(
-            provider,
-            ProviderPrivacy::Local | ProviderPrivacy::PrivateCloud
-        ),
         PrivacyRequirement::LocalOnly => provider == ProviderPrivacy::Local,
     }
 }
@@ -1102,7 +1010,6 @@ mod tests {
     fn trust(provider_type: ProviderType) -> ProviderTrustView {
         ProviderTrustView {
             provider_type,
-            provider_type_source: ProviderTypeSource::SystemConfig,
             provider_type_revision: "rev-1".into(),
             asserted_at_ms: 1,
             trust_level: ProviderTrustLevel::Verified,
@@ -1136,19 +1043,12 @@ mod tests {
     }
 
     fn engine(patch: &RoutingPolicyPatch, quota: FakeQuota) -> PolicyEngine<FakeQuota> {
-        let policy = EffectiveRoutingPolicy::merge(RoutingPolicyLayers {
-            system: Some(patch),
-            user: None,
-            app: None,
-            session: None,
-            request: None,
-        })
-        .unwrap();
+        let policy = EffectiveRoutingPolicy::merge_ordered([(PolicyScope::Directory, patch)]).unwrap();
         PolicyEngine::new(policy, quota).unwrap()
     }
 
     #[test]
-    fn merges_system_user_app_session_request_in_order() {
+    fn merges_directory_session_request_in_order() {
         fn profile(value: AiccSchedulerProfile) -> RoutingPolicyPatch {
             RoutingPolicyPatch {
                 route: AiccPolicyConfig {
@@ -1158,18 +1058,14 @@ mod tests {
                 ..Default::default()
             }
         }
-        let system = profile(AiccSchedulerProfile::QualityFirst);
-        let user = profile(AiccSchedulerProfile::CostFirst);
-        let app = profile(AiccSchedulerProfile::Balanced);
+        let directory = profile(AiccSchedulerProfile::QualityFirst);
         let session = profile(AiccSchedulerProfile::LatencyFirst);
         let request = profile(AiccSchedulerProfile::LocalFirst);
-        let effective = EffectiveRoutingPolicy::merge(RoutingPolicyLayers {
-            system: Some(&system),
-            user: Some(&user),
-            app: Some(&app),
-            session: Some(&session),
-            request: Some(&request),
-        })
+        let effective = EffectiveRoutingPolicy::merge_ordered([
+            (PolicyScope::Directory, &directory),
+            (PolicyScope::Session, &session),
+            (PolicyScope::Request, &request),
+        ])
         .unwrap();
         assert_eq!(effective.profile.value, AiccSchedulerProfile::LocalFirst);
         assert_eq!(effective.profile.source, Some(PolicyScope::Request));
@@ -1181,7 +1077,7 @@ mod tests {
 
     #[test]
     fn locked_policy_cannot_be_relaxed_or_unlocked() {
-        let system = RoutingPolicyPatch {
+        let directory = RoutingPolicyPatch {
             route: AiccPolicyConfig {
                 local_only: Some(LockedValue::locked(true)),
                 ..Default::default()
@@ -1195,19 +1091,16 @@ mod tests {
             },
             ..Default::default()
         };
-        let error = EffectiveRoutingPolicy::merge(RoutingPolicyLayers {
-            system: Some(&system),
-            user: None,
-            app: None,
-            session: None,
-            request: Some(&request),
-        })
+        let error = EffectiveRoutingPolicy::merge_ordered([
+            (PolicyScope::Directory, &directory),
+            (PolicyScope::Request, &request),
+        ])
         .unwrap_err();
         assert_eq!(
             error,
             PolicyError::LockedOverride {
                 field: "local_only",
-                locked_by: PolicyScope::System,
+                locked_by: PolicyScope::Directory,
                 attempted_by: PolicyScope::Request,
             }
         );
@@ -1219,16 +1112,13 @@ mod tests {
             },
             ..Default::default()
         };
-        let effective = EffectiveRoutingPolicy::merge(RoutingPolicyLayers {
-            system: Some(&system),
-            user: None,
-            app: None,
-            session: None,
-            request: Some(&same),
-        })
+        let effective = EffectiveRoutingPolicy::merge_ordered([
+            (PolicyScope::Directory, &directory),
+            (PolicyScope::Request, &same),
+        ])
         .unwrap();
         assert!(effective.local_only.locked);
-        assert_eq!(effective.local_only.source, Some(PolicyScope::System));
+        assert_eq!(effective.local_only.source, Some(PolicyScope::Directory));
     }
 
     #[test]
@@ -1259,7 +1149,7 @@ mod tests {
             .any(|r| r.code == PolicyReasonCode::LocalProviderRequired));
 
         let mut fake_local = trust(ProviderType::LocalInference);
-        fake_local.provider_type_source = ProviderTypeSource::ProviderInventory;
+        fake_local.provider_type_revision = String::new();
         let decision = evaluate(
             &engine,
             &caller,
@@ -1280,7 +1170,7 @@ mod tests {
     #[test]
     fn privacy_and_trust_are_hard_filters() {
         let patch = RoutingPolicyPatch {
-            privacy: Some(LockedValue::locked(PrivacyRequirement::PrivateOnly)),
+            privacy: Some(LockedValue::locked(PrivacyRequirement::LocalOnly)),
             minimum_provider_trust: Some(LockedValue::locked(ProviderTrustLevel::Verified)),
             ..Default::default()
         };
@@ -1290,6 +1180,7 @@ mod tests {
             tenant_id: "tenant-a".into(),
         };
         let cloud = trust(ProviderType::CloudApi);
+        let local = trust(ProviderType::LocalInference);
         assert!(
             !evaluate(
                 &engine,
@@ -1304,9 +1195,9 @@ mod tests {
             evaluate(
                 &engine,
                 &caller,
-                Some(&cloud),
+                Some(&local),
                 &scope,
-                ProviderPrivacy::PrivateCloud
+                ProviderPrivacy::Local
             )
             .allowed
         );
@@ -1406,13 +1297,7 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(
-            EffectiveRoutingPolicy::merge(RoutingPolicyLayers {
-                system: Some(&invalid_policy),
-                user: None,
-                app: None,
-                session: None,
-                request: None,
-            }),
+            EffectiveRoutingPolicy::merge_ordered([(PolicyScope::Directory, &invalid_policy)]),
             Err(PolicyError::InvalidPolicy(_))
         ));
 
@@ -1492,10 +1377,7 @@ mod tests {
             .reasons
             .iter()
             .any(|r| r.code == PolicyReasonCode::ProviderTrustUnavailable));
-        assert!(!decision
-            .reasons
-            .iter()
-            .any(|r| r.code == PolicyReasonCode::QuotaSourceUnavailable));
+        assert_eq!(decision.reasons.len(), 1);
     }
 
     #[test]
@@ -1527,16 +1409,14 @@ mod tests {
     }
 
     #[test]
-    fn caller_and_credential_scopes_never_cross_tenant_or_app() {
+    fn caller_and_credential_scopes_never_cross_tenant() {
         let source = FakeQuota::available();
         let seen = source.seen.clone();
         let patch = RoutingPolicyPatch::default();
         let engine = engine(&patch, source);
         let caller = caller();
-        let scope = CredentialScope::UserApp {
+        let scope = CredentialScope::Tenant {
             tenant_id: "tenant-b".into(),
-            user_id: "user-a".into(),
-            app_id: "app-b".into(),
         };
         let cloud = trust(ProviderType::CloudApi);
         let decision = evaluate(
