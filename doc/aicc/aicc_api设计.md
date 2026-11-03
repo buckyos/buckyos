@@ -1899,6 +1899,7 @@ AICC 错误 payload schema：
 | `resource_invalid` | 资源不存在、无权限、格式不支持或过大。 |
 | `no_provider_available` | 无 Provider 支持指定 method / capability。 |
 | `no_candidate_model` | route 过滤后无候选。 |
+| `context_length_exceeded` | 请求放不进模型的上下文窗口：Provider 以结构化码拒绝，或有候选仅因上下文长度不足被过滤。不可原样重试，缩小输入后再发。 |
 | `fallback_not_allowed` | fallback 被 policy 或 method 禁止。 |
 | `provider_start_failed` | Provider 启动或提交失败。 |
 | `provider_error` | Provider 原生错误。 |

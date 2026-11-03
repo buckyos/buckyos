@@ -1320,7 +1320,7 @@ interface UserFacingRouteSummary {
 | `AICC_ROUTE_EXACT_MODEL_UNAVAILABLE` | 精确模型不可用且不允许 fallback。 | 启用 fallback 或更换精确模型。 |
 | `AICC_ROUTE_PROVIDER_UNAVAILABLE` | Provider 不可用。 | 运行时 failover 或返回错误。 |
 | `AICC_ROUTE_BUDGET_EXCEEDED` | 成本估算超过预算硬限制。 | 降低模型规格或提高预算。 |
-| `AICC_ROUTE_CONTEXT_TOO_LONG` | 候选上下文长度不足。 | 选择长上下文模型或压缩输入。 |
+| `AICC_ROUTE_CONTEXT_TOO_LONG` | 候选上下文长度不足（实现：有候选仅因 `context_length_insufficient` 被过滤时返回 `context_length_exceeded`）。 | 选择长上下文模型或压缩输入。 |
 | `AICC_ROUTE_FEATURE_UNSUPPORTED` | 候选不支持 request 所需能力。 | 更换模型或关闭相关特性。 |
 
 ---

@@ -128,10 +128,13 @@ The Zone's `llm.chat` lands on an OpenAI strict route: every property listed in 
 Exit codes: 0 done · 1 failed, limit reached, or run not found · 2 usage/config/input error or busy (no model
 call) · 3 paused, resumable · 4 interrupted, resumable · 5 done but `--output` not written · 6 done but result
 extraction or JSON check failed (raw reply saved).
-- `no_candidate_model` (unknown model), `invalid_json_schema`, and
-  `413 Payload Too Large` (request over AICC's 32 MiB RPC body: split the material) end the run with exit 1.
+- `no_candidate_model` (unknown model) and `invalid_json_schema` end the run with exit 1.
   Fix the call and start a new one.
-- Exit 3 (model timeout, transient provider error, rejected or expired token) → the printed hint
+- A request too large for the model (`context_length_exceeded`) or for AICC (`413 Payload Too Large`, over
+  the 32 MiB RPC body) is compacted and resent in the same run, at most 3 times; if it still does not fit,
+  exit 1 with last error `context_capacity`: split the material and start a new run.
+- Exit 3 (model timeout; transient provider error, including any AICC error marked `retriable` such as an
+  overloaded provider's 503; rejected or expired token) → the printed hint
   `agent_tool xllm --resume --run <id> --runs-dir <dir>`. Resume reuses the saved config:
   later `.llm_context` edits and `--model`/`--tools` are ignored; `--llm-timeout`, `--timeout`, `--max-tokens`,
   `--max-tool-iterations` can be raised. Resume resends the unfinished model request; an interrupted HTTP

@@ -2,7 +2,7 @@
 
 日期：2026-11-02
 
-状态：**待 review / 裁决**（§4 Q1–Q3）。来源：[Work Session 上下文压缩与工具预算修正](./opendan-work-context-budget-fix-todo.md) 实施后的 DV（2026-11-02，`jarvis.test.buckyos.io` 容器形态，plan `work-20261103-3` 与它派发的 9 个 Todo session）。同一次 DV 拆出的另外两单：AICC 请求体 1 MiB 上限 [aicc-request-body-limit-todo.md](./aicc-request-body-limit-todo.md)（另行处理中）；xllm 的 AICC 错误归类 [xllm-aicc-error-mapping-todo.md](./xllm-aicc-error-mapping-todo.md)（先行，本单 H1 依赖它的 P2）。
+状态：**已 review、已裁决（Q1–Q3 均按建议，2026-11-02），待实施**。review 补充的 R1–R7 已写回 §3。来源：[Work Session 上下文压缩与工具预算修正](./opendan-work-context-budget-fix-todo.md) 实施后的 DV（2026-11-02，`jarvis.test.buckyos.io` 容器形态，plan `work-20261103-3` 与它派发的 9 个 Todo session）。同一次 DV 拆出的另外两单：AICC 请求体 1 MiB 上限 [aicc-request-body-limit-todo.md](./aicc-request-body-limit-todo.md)（另行处理中）；xllm 的 AICC 错误归类 [xllm-aicc-error-mapping-todo.md](./xllm-aicc-error-mapping-todo.md)（先行，本单 H1 依赖它的 P2）。
 
 范围：libopendan 宿主（`host/mod.rs` 的驱动循环与 `ChildDriver`、`runner/outcome.rs` 的可重试错误、`runner/live.rs` 的窗口解析）、Jarvis 包配置、上一单 §6 未做的 DV。
 
@@ -36,20 +36,26 @@
 
 ## 3. 方案
 
-### H1 可重试错误的退避与上限（依赖 xllm 单 P2）
+### H1 可重试错误的退避与上限（依赖 xllm 单 P2；**P2 也不得先于 H1 部署**，见 R7）
 
-- 会话状态加 `retry`（`SessionState`，缺省不序列化）：`{ attempts, since_ms, not_before_ms }`，在可重试错误的提交里写入；任何非可重试错误的 outcome（成功、Turn 结束、不可恢复失败）清空。随 state 持久化，宿主重启不会把计数清零，停机时间也计入 `since_ms`。
-- 退避：`not_before_ms = now + min(base × 2^(attempts−1), cap)`（Q1 建议 base 30 s、cap 10 min）。`serve_one` 与 `ChildDriver::advanceable` 在 `now < not_before_ms` 时不驱动；`ChildDriver` 不再每秒重驱。用户的输入、stop、resume 照常能进来，驱动后若 run 仍处在退避期，不推理只处理控制与输入。
-- 上限：`attempts` 达到 `max_attempts` 或 `now − since_ms` 超过 `max_retry_duration`（Q1 建议 6 次 / 30 分钟）→ 按不可恢复处理：Turn 失败，`last_error` 保留最后一次的错误并加 `"retries_exhausted": true`；无人应答的会话照旧 `fail_unattended`，plan 收到 Todo 失败后自己决定重试。
-- 参数放 `RunnerOptions`（`retry_backoff_base`、`retry_backoff_cap`、`max_retry_attempts`、`max_retry_duration`），不进 session 配置。
+- 会话状态加 `retry`（`SessionState`，缺省不序列化）：`{ attempts, since_ms, not_before_ms }`，在可重试错误的提交里写入。**清空条件（R2）：任何不是可重试错误的 outcome 都清空**——Done / PendingTool / ContextLimitReached / Interrupted / Turn 结束 / 不可恢复失败——只有连续的可重试错误才累计；一个长 run 每隔十分钟碰一次 503、中间推理和工具都正常，不能累计到用尽。随 state 持久化，宿主重启不会把计数清零，停机时间也计入 `since_ms`。
+- **注册表投影（R1）**：`SessionStatus`（`protocol/agent_state.rs`）加 `retry_not_before_ms: Option<u64>`，由 `session/live.rs` `status()` 投影。`ChildDriver::advanceable` 只看 `RegistryEntry.status`、不开 SessionDir，没有这个投影就得每个 tick 读每个孩子的 state 文件。注册表是对外契约，`doc/opendan/protocol/Session Directory Protocol.md` 的注册表一段同步。
+- 退避：`not_before_ms = now + min(base × 2^(attempts−1), cap)`（Q1 定 base 30 s、cap 10 min）。
+- **两层分工（R4）**：
+  - host 侧只管子会话：`ChildDriver::advanceable` 在 `now < retry_not_before_ms` 时返回 false，不再每秒重驱；退避期内的子会话不被 spawn，不占 `max_child_concurrency` 名额。`ChildDriver.results` 只在内存里，宿主重启后靠持久化的 `not_before_ms` 兜住。
+  - 顶层会话 `serve_one` 照旧按 wake_event / poll 唤醒并进入 `drive`（输入批次在 `drive` 里才读到）；退避期的判断在 runner：run 处在退避期时不推理，只处理控制（stop / resume）与输入。**Q3 = A 的越过规则也在 runner**：本批输入里有用户消息（input_view 已有的 `is_user_msg`）就无视 `not_before_ms` 立即重试；定时器、任务结束、子会话回报等自动输入仍按退避。
+- 上限：`attempts` 达到 `max_retry_attempts` 或 `now − since_ms` 超过 `max_retry_duration`（Q1 定 6 次 / 30 分钟，先到为准；6 次累计约 25.5 分钟）→ 按不可恢复处理：Turn 失败；无人应答的会话照旧 `fail_unattended`。**`last_error` 的形状（R5）**：`kind = "provider_unavailable"`、`retries_exhausted: true`、`attempts`、`since_ms`、`message` 为最后一次错误；`todos.rs` `observe()` 把这个 kind 带进 Todo 观察（状态 Failed，原因“上游不可用、重试 N 次 M 分钟后放弃”），plan 据此决定等一会儿还是换方式，而不是只看到一句错误文本。
+- **墙钟（R3）**：退避期不计入 `timeout` 预算——`runner/live.rs` resume 时已按“连续运行段”重置 `started_at_ms`，H1 不改它，但 H1-4 加测试锁住：暂停 10 分钟后重试的 run 不会因 Wallclock 收尾。
+- 参数放 `RunnerOptions`（`retry_backoff_base`、`retry_backoff_cap`、`max_retry_attempts`、`max_retry_duration`），不进 session 配置。**命名（R6）**：这是宿主层的“重试次数”，与 llm_context `error_policy.max_consecutive_errors`（run 内部连续错误策略）是两回事，文档里并列说明，不共用名字。
 - 观测：每次退避记 `opendan.run.retry_scheduled {session_id, run_id, attempts, not_before_ms, error_kind}`；用尽记 `opendan.run.retries_exhausted`。
 - 不读 provider 的 `retry_after_ms`（xllm 单 Q2 定为不往上带）；30 s 起步已覆盖本次 DV 的 60 s 提示的量级。
+- **部署顺序（R7）**：xllm 单 P2 把 AICC 标 `retriable` 的 503 / 429 变成可重试之后，在 H1 落地前子会话会每秒重打过载的上游。两单的代码可以分别合入，但部署时 P2 不先于 H1；xllm 单里同步补这一句。
 
-### H2 窗口上限（Q2，即上一单 §8.3）
+### H2 窗口上限（Q2 = C，即上一单 §8.3）
 
-- A 维持：按模型真实窗口（1.05M 在 84 万 token 时才压缩）；
-- B Jarvis `agent.toml [llm_context] context_window` 显式写一个值（例如 200k），对所有别名生效，与上一单 B2“不写”相反；
-- C `RunnerOptions.max_context_window`（例如 256k），窗口取 `min(AICC 值, 上限)`，对所有 Agent 生效，`agent.toml` 显式值仍可越过它。
+- 定案：`RunnerOptions.max_context_window = Some(256_000)`；`runner/live.rs` `resolve_context_window` 对 AICC 查到的值与 `default_context_window` 取 `min`，显式 `context_window`（agent.toml / session / behavior 的 `llm_context`）不受限。opendan loader、xagent CLI、测试宿主都走缺省值。
+- 效果：256k 的 80% 触发线约 205k，本次 DV 的 226k 尖峰正好会触发一次压缩，顺带验证 H3 第 1 条。
+- 未选项备查：A 维持按模型真实窗口（1.05M 在 84 万 token 时才压缩，每轮重发几十万 token）；B Jarvis `agent.toml [llm_context] context_window` 显式写一个值（只管 Jarvis，与上一单 B2“不写”相反）。
 
 ### H3 遗留 DV（上一单 §6 未覆盖的部分）
 
@@ -71,15 +77,20 @@
 | Q2 | H2 窗口上限 | A / B / C（§3 H2） | **C，256k**。一处管住所有 Agent，`agent.toml` 显式值仍能放开；256k 时触发线约 20 万 token，与本次 DV 的长 run 规模相当（缓存命中高、每个 run 约 $1）。A 让单轮输入可以涨到 80 万 token 才压缩；B 只管 Jarvis |
 | Q3 | 子会话之外，`Paused` 的 run 被用户消息唤醒时是否无视退避立即重试 | A 立即重试（用户在场）/ B 仍按退避 | **A**。只对带用户消息的输入批次；定时器、任务结束等自动输入仍按退避 |
 
+**裁决（2026-11-02）**：Q1、Q2、Q3 均按建议——base 30 s / cap 10 min / 6 次或 30 分钟；H2 = C，256k；Q3 = A。
+
+**review 回写（R1–R7，已并入 §3）**：R1 `not_before_ms` 投影进 `SessionStatus`；R2 计数在任何有进展的 outcome 清空；R3 退避不计入墙钟并加测试；R4 host 只管子会话、顶层与 Q3-A 在 runner 按 `is_user_msg` 判断；R5 `last_error.kind = provider_unavailable` 让 `todos.rs observe()` 看见；R6 命名避开 llm_context 的 `max_consecutive_errors`；R7 P2 不先于 H1 部署。
+
 ## 5. 实施清单（xllm 单 P2 合入后）
 
-- [ ] H1-1 `protocol/state.rs` `SessionState.retry`；`runner/outcome.rs` 可重试分支写入、其它分支清空；用尽时转为不可恢复（Turn 失败 + `fail_unattended`）。
-- [ ] H1-2 `host/mod.rs`：`serve_one` 用 `not_before_ms` 定下次唤醒；`ChildDriver::advanceable` 在退避期返回 false；Q3 = A 时用户消息批次越过退避。
-- [ ] H1-3 `runner/mod.rs` `RunnerOptions` 四个参数；日志 `opendan.run.retry_scheduled` / `retries_exhausted`。
-- [ ] H1-4 测试（`tests/work_simple_async.rs` 或新 `tests/retry.rs`）：脚本化模型连续返回 `Transient` → 退避期内不再推理、到期重试成功后 `retry` 清空；连续失败到上限 → `retries_exhausted`、Todo 失败；子会话不再每秒重驱（统计推理次数）；宿主重启后计数延续。
+- [ ] H1-1 `protocol/state.rs` `SessionState.retry`；`protocol/agent_state.rs` `SessionStatus.retry_not_before_ms` + `session/live.rs` `status()` 投影（R1）；`runner/outcome.rs` 可重试分支写入、其它所有 outcome 清空（R2）；用尽时转为不可恢复（Turn 失败 + `fail_unattended`），`last_error` 按 R5 的形状；`todos.rs` `observe()` 带出 `provider_unavailable`。
+- [ ] H1-2 host 侧（R4）：`host/mod.rs` `ChildDriver::advanceable` 在 `now < retry_not_before_ms` 时返回 false；`serve_one` 不变（仍按 wake_event / poll 唤醒）。runner 侧：`drive` 进入时 run 处在退避期 → 不推理只处理控制与输入；本批输入含 `is_user_msg` → 越过退避（Q3 = A）。
+- [ ] H1-3 `runner/mod.rs` `RunnerOptions` 四个参数（R6 命名）；日志 `opendan.run.retry_scheduled` / `retries_exhausted`。
+- [ ] H1-4 测试（`tests/work_simple_async.rs` 或新 `tests/retry.rs`）：脚本化模型连续返回 `Transient` → 退避期内不再推理、到期重试成功后 `retry` 清空；中间有成功推理的间歇性 `Transient` 不累计（R2）；连续失败到上限 → `last_error.kind = provider_unavailable` + `retries_exhausted`、Todo 观察为 Failed 并带原因（R5）；子会话不再每秒重驱（统计推理次数）且退避中不占并发名额；用户消息批次越过退避、定时器输入不越过（Q3）；暂停 10 分钟后重试不触发 Wallclock 收尾（R3）；宿主重启后计数延续。
 - [ ] H2（Q2 = C）`runner/mod.rs` `RunnerOptions.max_context_window = Some(256_000)`；`runner/live.rs` `resolve_context_window` 对 AICC 值与缺省值取 `min`，显式值不受限；`tests/context_limit.rs` `a_run_gets_the_window_of_its_model` 加上限用例；cmd_skill `opendan_agent_dev.md` 的“Run limits”一句补上限；`doc/opendan/protocol/Session Directory Protocol.md` 窗口来源一段同步；上一单 §8.3 回写裁决。
 - [ ] H3 DV 1–5。
-- [ ] 文档：`doc/opendan/protocol/Session Directory Protocol.md`（run 的预算一段补“可重试错误的退避与上限”）、`doc/opendan/xAgent.md`（drive 步骤 h 的可重试错误）；cmd_skill `opendan_agent_dev.md` 若写到会话失败的条件，补一句。
+- [ ] 文档：`doc/opendan/protocol/Session Directory Protocol.md`（run 的预算一段补“可重试错误的退避与上限”，与 llm_context `max_consecutive_errors` 并列说明（R6）；注册表一段补 `retry_not_before_ms`（R1））、`doc/opendan/xAgent.md`（drive 步骤 h 的可重试错误）；cmd_skill `opendan_agent_dev.md` 若写到会话失败的条件，补一句。
+- [ ] xllm 单 [xllm-aicc-error-mapping-todo.md](./xllm-aicc-error-mapping-todo.md) 补“P2 不先于 H1 部署”（R7）。
 - [ ] 全量 `cargo test -p libopendan -p opendan -- --test-threads=1`。
 
 ## 6. 关联

@@ -37,7 +37,8 @@ use minimax_media::minimax_media_registration;
 pub(crate) use minimax_media::{minimax_media_adapter, MINIMAX_MEDIA_ADAPTER_ID};
 
 pub(crate) use crate::error::{
-    protocol_error_kind_from_http_status, ProtocolError, ProtocolErrorKind, ProtocolResultValue,
+    openai_error_kind, protocol_error_kind_from_http_status, ProtocolError, ProtocolErrorKind,
+    ProtocolResultValue,
 };
 #[allow(unused_imports)]
 pub(crate) use adapter::{

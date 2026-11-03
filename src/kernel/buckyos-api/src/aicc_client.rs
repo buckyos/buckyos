@@ -519,6 +519,23 @@ mod canonical_contract_tests {
     }
 
     #[test]
+    fn context_length_exceeded_has_its_own_wire_code() {
+        let error = AiccError::new(AiccErrorCode::ContextLengthExceeded, "context is too long");
+        assert_eq!(
+            error.to_task_event_data()["code"],
+            "context_length_exceeded"
+        );
+        assert_eq!(
+            serde_json::to_value(AiccErrorCode::ContextLengthExceeded).unwrap(),
+            AiccErrorCode::ContextLengthExceeded.as_str()
+        );
+        assert_eq!(
+            AiccError::from_krpc_error(&error.to_krpc_error()),
+            Some(error)
+        );
+    }
+
+    #[test]
     fn canonical_reload_is_the_only_reload_method() {
         assert_eq!(
             ai_methods::SERVICE_RELOAD_SETTINGS,
@@ -1469,6 +1486,10 @@ pub enum AiccErrorCode {
     ResourceNotPermitted,
     /// The AICC user of a delegated run cannot be determined.
     AttributionUnavailable,
+    /// The request does not fit the model's context window: the Provider
+    /// refused it with a structured code, or no candidate's window holds the
+    /// estimated request. Shrinking the input is the remedy; never retriable as is.
+    ContextLengthExceeded,
 }
 
 impl AiccErrorCode {
@@ -1510,6 +1531,7 @@ impl AiccErrorCode {
             Self::QuotaUnavailable => "quota_unavailable",
             Self::ResourceNotPermitted => "resource_not_permitted",
             Self::AttributionUnavailable => "attribution_unavailable",
+            Self::ContextLengthExceeded => "context_length_exceeded",
         }
     }
 }

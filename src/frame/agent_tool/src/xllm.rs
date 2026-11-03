@@ -5505,19 +5505,23 @@ fn aicc_refusal(code: AiccErrorCode) -> Option<ProviderFailure> {
     }
 }
 
+/// AICC 失败 → Provider 失败类别：拒绝与上下文超限按错误码；其余以 AICC 的
+/// `retriable` 为准（AICC 已按协议错误种类定了它，并做过同模型重试与 fallback）。
+/// Provider 以 413 拒收请求体与上下文超限同样靠缩小请求补救。
 fn aicc_provider_failure(error: &AiccError) -> Option<ProviderFailure> {
     aicc_refusal(error.code).or_else(|| {
-        (error.code == AiccErrorCode::Timeout
-            || (error.code == AiccErrorCode::ProviderError
-                && matches!(
-                    error
-                        .details
-                        .as_ref()
-                        .and_then(|details| details.get("http_status"))
-                        .and_then(Value::as_u64),
-                    Some(408 | 504)
-                )))
-        .then_some(ProviderFailure::Transient)
+        let http_status = error
+            .details
+            .as_ref()
+            .and_then(|details| details.get("http_status"))
+            .and_then(Value::as_u64);
+        if error.code == AiccErrorCode::ContextLengthExceeded || http_status == Some(413) {
+            Some(ProviderFailure::ContextLimit)
+        } else if error.code == AiccErrorCode::Timeout || error.retriable {
+            Some(ProviderFailure::Transient)
+        } else {
+            None
+        }
     })
 }
 
@@ -5529,6 +5533,14 @@ pub fn provider_error_from_rpc(context: &str, err: RPCErrors) -> LLMComputeError
     {
         return LLMComputeError::provider(failure, format!("{context}: {err}"));
     }
+    let http_status = match &err {
+        RPCErrors::Detailed(detail) if detail.code == "http_error" => detail
+            .data
+            .as_ref()
+            .and_then(|data| data.get("status"))
+            .and_then(Value::as_u64),
+        _ => None,
+    };
     let failure = match &err {
         RPCErrors::HttpTransportError(_) => {
             if err.is_retryable_transport() {
@@ -5537,17 +5549,9 @@ pub fn provider_error_from_rpc(context: &str, err: RPCErrors) -> LLMComputeError
                 ProviderFailure::Permanent
             }
         }
-        RPCErrors::Detailed(detail)
-            if detail.code == "http_error"
-                && matches!(
-                    detail
-                        .data
-                        .as_ref()
-                        .and_then(|data| data.get("status"))
-                        .and_then(Value::as_u64),
-                    Some(408 | 504)
-                ) =>
-        {
+        // 413：请求体超过服务的上限，补救与上下文超限相同（缩小后再发）。
+        RPCErrors::Detailed(_) if http_status == Some(413) => ProviderFailure::ContextLimit,
+        RPCErrors::Detailed(_) if matches!(http_status, Some(408 | 504)) => {
             ProviderFailure::Transient
         }
         RPCErrors::S2sTransientError(_) => ProviderFailure::Transient,
@@ -11237,39 +11241,175 @@ there]]></write_file>
         }
     }
 
+    /// The same AICC error both as a kRPC error and as a failed response.
+    async fn aicc_error_both_ways(error: AiccError) -> [LLMComputeError; 2] {
+        let rpc_error =
+            provider_error_from_rpc("aicc helper.llm_chat failed", error.to_krpc_error());
+        let calls = Arc::new(StdMutex::new(Vec::new()));
+        let mut response = aicc_success_response();
+        response.status = AiMethodStatus::Failed;
+        response.message = None;
+        response.error = Some(error);
+        let client = AiccClient::new_in_process(Box::new(RecordingAicc {
+            calls: calls.clone(),
+            response,
+        }));
+        let response_error =
+            AiccLlmClient::infer_with_client(&client, aicc_inference_request("llm.chat"))
+                .await
+                .unwrap_err();
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        [rpc_error, response_error]
+    }
+
     #[tokio::test]
-    async fn aicc_http_timeout_is_recoverable_in_rpc_and_failed_responses() {
-        for (code, status, recoverable) in [
-            (AiccErrorCode::Timeout, 504, true),
-            (AiccErrorCode::ProviderError, 504, true),
-            (AiccErrorCode::ProviderError, 502, false),
+    async fn aicc_retriable_flag_decides_recoverable_in_rpc_and_failed_responses() {
+        for (code, status, retriable, recoverable) in [
+            (AiccErrorCode::Timeout, 504, true, true),
+            (AiccErrorCode::Timeout, 504, false, true),
+            (AiccErrorCode::ProviderError, 504, true, true),
+            (AiccErrorCode::ProviderError, 502, true, true),
+            (AiccErrorCode::ProviderError, 503, true, true),
+            (AiccErrorCode::ProviderError, 503, false, false),
+            (AiccErrorCode::ProviderError, 504, false, false),
         ] {
-            let message = format!("OpenAI HTTP {status}: upstream response timed out");
+            let message = format!("OpenAI HTTP {status}: server_is_overloaded");
             let mut error = AiccError::new(code, message.clone());
-            error.retriable = true;
-            error.details = Some(json!({"http_status": status}));
-            let rpc_error =
-                provider_error_from_rpc("aicc helper.llm_chat failed", error.to_krpc_error());
-            let calls = Arc::new(StdMutex::new(Vec::new()));
-            let mut response = aicc_success_response();
-            response.status = AiMethodStatus::Failed;
-            response.message = None;
-            response.error = Some(error);
-            let client = AiccClient::new_in_process(Box::new(RecordingAicc {
-                calls: calls.clone(),
-                response,
-            }));
-            let response_error =
-                AiccLlmClient::infer_with_client(&client, aicc_inference_request("llm.chat"))
-                    .await
-                    .unwrap_err();
-            for error in [rpc_error, response_error] {
+            error.retriable = retriable;
+            error.details = Some(json!({"http_status": status, "retry_after_ms": 60000}));
+            for error in aicc_error_both_ways(error).await {
                 let record = XllmRun::classify_error(&error, &ProviderConfig::default());
-                assert_eq!(record.recoverable, recoverable);
+                assert_eq!(
+                    record.recoverable, recoverable,
+                    "{code:?} {status} {retriable}"
+                );
+                if recoverable {
+                    assert_eq!(record.kind, "provider_transient");
+                }
                 assert!(record.message.contains(&message));
             }
-            assert_eq!(calls.lock().unwrap().len(), 1);
         }
+    }
+
+    #[tokio::test]
+    async fn aicc_refusals_stay_refused_even_when_marked_retriable() {
+        let mut error = AiccError::new(AiccErrorCode::QuotaExhausted, "token quota is exhausted");
+        error.retriable = true;
+        for error in aicc_error_both_ways(error).await {
+            assert!(
+                matches!(
+                    &error,
+                    LLMComputeError::Provider {
+                        failure: ProviderFailure::Refused { code },
+                        ..
+                    } if code == REFUSED_QUOTA_EXHAUSTED
+                ),
+                "{error:?}"
+            );
+            let record = XllmRun::classify_error(&error, &ProviderConfig::default());
+            assert!(!record.recoverable);
+            assert_eq!(record.kind, REFUSED_QUOTA_EXHAUSTED);
+        }
+    }
+
+    #[tokio::test]
+    async fn aicc_context_refusals_are_context_limits() {
+        let context = AiccError::new(AiccErrorCode::ContextLengthExceeded, "context is too long");
+        // A Provider that rejects the body size (AICC marks it retriable).
+        let mut too_large = AiccError::new(AiccErrorCode::ProviderError, "HTTP 413");
+        too_large.retriable = true;
+        too_large.details = Some(json!({"http_status": 413}));
+        for error in [context, too_large] {
+            for error in aicc_error_both_ways(error).await {
+                assert!(
+                    matches!(
+                        error,
+                        LLMComputeError::Provider {
+                            failure: ProviderFailure::ContextLimit,
+                            ..
+                        }
+                    ),
+                    "{error:?}"
+                );
+            }
+        }
+    }
+
+    fn rpc_payload_too_large() -> LLMComputeError {
+        provider_error_from_rpc(
+            "aicc helper.llm_chat failed",
+            RPCErrors::Detailed(::kRPC::RPCErrorDetail::new(
+                "http_error",
+                "rpc call error: 413 Payload Too Large",
+                Some(json!({"status": 413})),
+            )),
+        )
+    }
+
+    #[tokio::test]
+    async fn rpc_payload_too_large_compacts_and_continues_the_same_run() {
+        assert!(matches!(
+            rpc_payload_too_large(),
+            LLMComputeError::Provider {
+                failure: ProviderFailure::ContextLimit,
+                ..
+            }
+        ));
+        let env = Env::new();
+        let llm = ScriptedLlm::new(vec![
+            tool_call(TOOL_SHELL, json!({"command":"echo before-limit"}), "c1"),
+            Err(rpc_payload_too_large()),
+            text("done after compaction"),
+        ]);
+        let overrides = TaskOverrides {
+            tools: Some(true),
+            ..env.overrides()
+        };
+        let o = env
+            .run(TaskInput::question("run it"), overrides, llm.clone())
+            .await
+            .unwrap();
+        assert!(
+            matches!(o, RunOutcome::Completed(_)),
+            "{:?}",
+            o.record().last_error
+        );
+        assert_eq!(o.record().compactions, 1);
+        assert_eq!(llm.calls(), 3);
+    }
+
+    #[tokio::test]
+    async fn aicc_retriable_provider_error_pauses_the_run() {
+        let mut error = AiccError::new(
+            AiccErrorCode::ProviderError,
+            "server_is_overloaded: Please try again later.",
+        );
+        error.retriable = true;
+        error.details = Some(json!({"http_status": 503, "retry_after_ms": 60000}));
+        let rpc_error =
+            provider_error_from_rpc("aicc helper.llm_chat failed", error.to_krpc_error());
+        let env = Env::new();
+        let llm = ScriptedLlm::new(vec![Err(rpc_error)]);
+        let o = env
+            .run(TaskInput::question("hello"), env.overrides(), llm.clone())
+            .await
+            .unwrap();
+        assert!(matches!(o, RunOutcome::Paused(_)));
+        let record = o.record().last_error.as_ref().unwrap();
+        assert!(record.recoverable);
+        assert_eq!(record.kind, "provider_transient");
+        assert_eq!(llm.calls(), 1);
+
+        error.retriable = false;
+        let rpc_error =
+            provider_error_from_rpc("aicc helper.llm_chat failed", error.to_krpc_error());
+        let llm = ScriptedLlm::new(vec![Err(rpc_error)]);
+        let o = env
+            .run(TaskInput::question("hello"), env.overrides(), llm)
+            .await
+            .unwrap();
+        assert!(matches!(o, RunOutcome::Failed(_)));
+        assert!(!o.record().last_error.as_ref().unwrap().recoverable);
     }
 
     #[tokio::test]

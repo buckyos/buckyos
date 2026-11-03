@@ -382,6 +382,29 @@ fn format_filtered_candidates(candidates: &[FilteredCandidateTrace]) -> String {
 
 impl Error for RoutingError {}
 
+/// Filter reason of a candidate whose context window cannot hold the request.
+pub(crate) const CONTEXT_LENGTH_INSUFFICIENT: &str = "context_length_insufficient";
+
+impl RoutingError {
+    /// The request does not fit: some candidate was filtered only because its
+    /// context window cannot hold it, so a smaller request can route.
+    pub(crate) fn is_context_length_insufficient(&self) -> bool {
+        let only_context = |reasons: &[FilterReasonTrace]| {
+            !reasons.is_empty()
+                && reasons
+                    .iter()
+                    .all(|reason| reason.code == CONTEXT_LENGTH_INSUFFICIENT)
+        };
+        match self {
+            Self::ExactModelUnavailable { reasons, .. } => only_context(reasons),
+            Self::NoCandidate { filtered, .. } => filtered
+                .iter()
+                .any(|candidate| only_context(&candidate.reasons)),
+            _ => false,
+        }
+    }
+}
+
 impl From<ModelRegistryError> for RoutingError {
     fn from(value: ModelRegistryError) -> Self {
         Self::Registry(value)
@@ -911,7 +934,7 @@ fn hard_filter_model(
             .unwrap_or_default();
         if available < required {
             reasons.push(filter_reason(
-                "context_length_insufficient",
+                CONTEXT_LENGTH_INSUFFICIENT,
                 format!("model context length is below {required}"),
             ));
         }
@@ -940,7 +963,7 @@ fn hard_filter_model(
             .unwrap_or_default();
         if available < required {
             reasons.push(filter_reason(
-                "context_length_insufficient",
+                CONTEXT_LENGTH_INSUFFICIENT,
                 format!("model context length is below estimated request size {required}"),
             ));
         }
@@ -2701,6 +2724,15 @@ mod tests {
                     .iter()
                     .all(|candidate| candidate.origin_model_id == model));
             }
+            // No window holds the request: the caller is told to shrink it.
+            request.estimated_input_tokens = Some(u64::from(u32::MAX));
+            let error = router.route(&request).unwrap_err();
+            assert!(
+                matches!(error, RoutingError::NoCandidate { .. })
+                    && error.is_context_length_insufficient(),
+                "{error}"
+            );
+            request.estimated_input_tokens = Some(1_000);
             for instance in registry
                 .model_views()
                 .into_iter()
@@ -2710,12 +2742,19 @@ mod tests {
                 request.estimated_output_tokens = Some(128_000);
                 assert!(router.route(&request).is_ok(), "{}", request.model);
                 request.estimated_output_tokens = Some(128_001);
-                assert!(router.route(&request).is_err(), "{}", request.model);
+                // A shorter input does not fix an output budget over the limit.
+                let error = router.route(&request).unwrap_err();
+                assert!(!error.is_context_length_insufficient(), "{error}");
                 request.estimated_output_tokens = Some(8_192);
                 request.estimated_input_tokens = Some(context - 8_192);
                 assert!(router.route(&request).is_ok(), "{}", request.model);
                 request.estimated_input_tokens = Some(context - 8_192 + 1);
-                assert!(router.route(&request).is_err(), "{}", request.model);
+                let error = router.route(&request).unwrap_err();
+                assert!(
+                    matches!(error, RoutingError::ExactModelUnavailable { .. })
+                        && error.is_context_length_insufficient(),
+                    "{error}"
+                );
                 request.estimated_input_tokens = Some(1_000);
             }
         }

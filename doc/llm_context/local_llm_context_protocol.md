@@ -174,7 +174,17 @@ buckyos 的 `model` / `file_model` 支持两类选择器：
 - `llm.chat`、`llm.vision` 等逻辑名：走 `helper.llm_chat`，带工具 / JSON 能力需求。
 - `model@provider` 或 `model:variant@provider`：走 `chat.completions.create`，精确保留模型、variant 和 Provider，不做逻辑路由或 fallback。
 
-AICC 请求采用 `execution_mode: immediate`，传入消息、实际允许的工具、response_format 和 max_output_tokens。返回 `Succeeded` 必须有 message；`Failed` 转 Provider Unknown 错误；`Running` 视为不支持的异步任务，不轮询。当前 adapter 不使用 fallbacks / provider_options，也不实现远端任务取消；`disable_capabilities` 经逻辑 helper 的 `disable` 传递，精确选择器不走此字段。
+AICC 请求采用 `execution_mode: immediate`，传入消息、实际允许的工具、response_format 和 max_output_tokens。返回 `Succeeded` 必须有 message；`Running` 视为不支持的异步任务，不轮询。`Failed` 响应与 kRPC 错误里的 `AiccError` 按错误码与 `retriable` 归类（`agent_tool/src/xllm.rs` `aicc_provider_failure`，不读文本）：
+
+| AICC 错误 | Provider 失败类别 | Run |
+| --- | --- | --- |
+| `quota_exhausted` / `quota_budget_exceeded` / `resource_not_permitted` / `attribution_unavailable` | `Refused` | failed |
+| `quota_unavailable` | `Transient` | paused |
+| `context_length_exceeded`，或 `details.http_status = 413`（Provider 拒收请求体） | `ContextLimit` | 压缩后续跑（§9.3） |
+| `timeout`，或其它 `retriable: true`（AICC 已做过同模型重试与 fallback） | `Transient` | paused |
+| 其它 | `Unknown` | failed |
+
+不带 `AiccError` 的 kRPC 错误：可重试的 HTTP 传输错误、HTTP 408 / 504 为 `Transient`；HTTP 413（请求体超过 AICC kRPC 上限）为 `ContextLimit`；其余 HTTP 状态为 `Unknown`。`retry_after_ms` 不往上带，退避由调用方决定。当前 adapter 不使用 fallbacks / provider_options，也不实现远端任务取消；`disable_capabilities` 经逻辑 helper 的 `disable` 传递，精确选择器不走此字段。
 
 `ensure_buckyos_runtime` 优先复用现有 runtime。新初始化时，按环境中的 AppClient session token、OOD 本机设备私钥、开发目录用户私钥选择登录方式；默认 app id 为 `buckycli`，可用 `BUCKYOS_APP_ID` 覆盖。具体登录流程见 [SDK 参考 §8](xllm_rust_sdk.md#8-buckyos-provider-的登录方式)。
 
@@ -374,7 +384,7 @@ Success observation 优先取非空 output，其次 summary，最后 details JSO
 
 - 估算输入达到该比例的窗口时，产出 `ContextLimitReached`（`approaching_window`）。
 - 估算输入加 `max_tokens` 的输出预留超过窗口时，产出 `hard_limit`，该请求不发送。
-- 未配置窗口时，不自动查询模型窗口；依赖 Provider 的结构化 `ContextLimit` 拒绝。OpenAI 兼容 adapter 识别 `/error/code = context_length_exceeded`。
+- 未配置窗口时，不自动查询模型窗口；依赖 Provider 的结构化 `ContextLimit` 拒绝。OpenAI 兼容 adapter 识别 `/error/code = context_length_exceeded`；AICC adapter 识别 AICC 的 `context_length_exceeded` 与 HTTP 413（§4 的归类表）。
 
 Ratio 必须有窗口；窗口必须大于零，输出预留必须小于窗口。估算是本地近似值，媒体使用固定费用，并非 Provider 精确 tokenizer 的容量保证；不是按累计 usage 触发压缩。
 

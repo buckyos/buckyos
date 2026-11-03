@@ -162,8 +162,10 @@ resource_invalid, no_provider_available, no_candidate_model,
 fallback_not_allowed, provider_start_failed, provider_error,
 unsupported_operation, unsupported_execution_mode, timeout, budget_exceeded,
 policy_denied, idempotency_conflict, settings_revision_conflict, cancelled,
-internal_error
+internal_error, context_length_exceeded
 ```
+
+`context_length_exceeded`：请求放不进模型的上下文窗口，来自 Provider 的结构化码（OpenAI 兼容接口的 `error.code = context_length_exceeded`，adapter 归为 `ProtocolErrorKind::ContextLengthExceeded`）或路由层（有候选仅因 `context_length_insufficient` 被过滤）。`retriable = false`，补救是缩小输入；调用方按码分支（xllm 归为 `ProviderFailure::ContextLimit`）。额度与资源策略的拒绝码见 [AICC Token 额度](aicc_token_quota.md) §6。
 
 请求/schema/模型名错误映射为 `ParseRequestError`，权限错误映射为 `NoPermission`，其它业务错误映射为 `ReasonError`，其 body 为序列化后的 `AiccError`。调用方应优先用 `AiccError::from_krpc_error` 解码，不能按 message 文本分支。
 

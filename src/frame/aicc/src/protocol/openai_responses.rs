@@ -1779,7 +1779,13 @@ fn response_failure(value: &Value) -> ProtocolError {
                 .and_then(Value::as_str)
         })
         .unwrap_or("OpenAI response failed");
-    ProtocolError::new(ProtocolErrorKind::Transport, message)
+    let code = value.pointer("/error/code").and_then(Value::as_str);
+    let kind = super::openai_error_kind(code, ProtocolErrorKind::Transport);
+    // Only the context code changes how AICC treats the failure.
+    ProtocolError::new(kind, message).with_provider_code(
+        code.filter(|_| kind == ProtocolErrorKind::ContextLengthExceeded)
+            .map(str::to_string),
+    )
 }
 
 fn provider_model_id(call: &CodecCall<'_>) -> ProtocolResultValue<String> {
@@ -1917,7 +1923,10 @@ fn openai_http_error(
         .or(provider_type)
         .unwrap_or("http_error");
     ProtocolError::new(
-        super::protocol_error_kind_from_http_status(status),
+        super::openai_error_kind(
+            provider_code.as_deref(),
+            super::protocol_error_kind_from_http_status(status),
+        ),
         format!("OpenAI HTTP {status} {label}: {message}"),
     )
     .with_provider_code(provider_code)
@@ -3972,9 +3981,34 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert_eq!(error.kind, ProtocolErrorKind::InvalidRequest);
+        assert_eq!(error.kind, ProtocolErrorKind::ContextLengthExceeded);
+        assert_eq!(
+            error.provider_code.as_deref(),
+            Some("context_length_exceeded")
+        );
         assert_eq!(error.request_id.as_deref(), Some("request-context"));
         assert!(error.message.contains("context_length_exceeded"));
+        let public: buckyos_api::AiccError = error.into();
+        assert_eq!(
+            public.code,
+            buckyos_api::AiccErrorCode::ContextLengthExceeded
+        );
+        assert!(!public.retriable);
+
+        // A failed response event carries the same structured code.
+        let failed = response_failure(&json!({
+            "error": {"code": "context_length_exceeded", "message": "context is too long"}
+        }));
+        assert_eq!(failed.kind, ProtocolErrorKind::ContextLengthExceeded);
+        assert_eq!(
+            failed.provider_code.as_deref(),
+            Some("context_length_exceeded")
+        );
+        let failed = response_failure(&json!({
+            "error": {"code": "server_error", "message": "context is too long"}
+        }));
+        assert_eq!(failed.kind, ProtocolErrorKind::Transport);
+        assert_eq!(failed.provider_code, None);
 
         let numeric_error = openai_http_error(
             StatusCode::BAD_GATEWAY,

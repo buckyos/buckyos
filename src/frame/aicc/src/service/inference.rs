@@ -259,13 +259,23 @@ impl RuntimeInferencePort {
         let mut decision = Router::new(models, &policy, &runtime_states)
             .route(&request)
             .map_err(|error| {
-                if access.is_restricted() {
-                    inference_error(
+                // Too large for every window that could take it: the caller
+                // shrinks the request instead of giving up on the route.
+                let (code, restricted_message) = if error.is_context_length_insufficient() {
+                    (
+                        AiccErrorCode::ContextLengthExceeded,
+                        "the request does not fit the context window of any permitted model",
+                    )
+                } else {
+                    (
                         AiccErrorCode::NoCandidateModel,
                         "no permitted model is available for this request",
                     )
+                };
+                if access.is_restricted() {
+                    inference_error(code, restricted_message)
                 } else {
-                    inference_error(AiccErrorCode::NoCandidateModel, error.to_string())
+                    inference_error(code, error.to_string())
                 }
             })?;
         if access.is_restricted() {

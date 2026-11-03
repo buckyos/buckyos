@@ -43,7 +43,7 @@ behavior 协议（`XllmActionParser`）：`<response><thinking/><actions>…</ac
 
 正文/CDATA 直接承载参数值，不加字段名或 `字段名:` 前缀。例如读取文件使用 `<read_file><![CDATA[fixture.txt]]></read_file>`，也可使用 `<read_file path="fixture.txt"/>`。同一个正文参数已通过属性给出时保留属性值，空 CDATA 不会覆盖它；未通过属性给出的正文参数仍支持空字符串（例如写入空文件）和原始空白。
 
-`context_window`（顶层，token，可选）是模型上下文窗口，记入 `RunLimits.context_window_tokens`。设置后，待发送请求的估算达到窗口的 `context_yield_ratio`（顶层，`(0, 1]`，缺省 0.80 即 `DEFAULT_CONTEXT_YIELD_RATIO`，越界报配置错误；记入 `RunLimits.context_yield_ratio`，缺省不写，旧记录按 0.80；没有 CLI 参数）时 waist 让出上下文压缩，估算加 `max_tokens` 超过窗口的请求从不发送；未设置时只在 Provider 以结构化错误码拒绝（OpenAI 兼容接口的 `context_length_exceeded`）时压缩，此时配置的 `context_yield_ratio` 无效，新 run 发一条 `RunEvent::Warning`（宿主装配的 run 记 `log::warn!`），注明来源文件。压缩用本次模型（`LlmSummarizeCompressor`，目标为窗口 30%、不超过触发线一半与 32768，无窗口时 32768），function_call 以 `RewrittenHistory`、behavior 以 `RewrittenSteps`（物化历史折叠进 input，编号继续）续跑，压缩后的上下文先保存快照再继续，每个 run 最多 3 次。
+`context_window`（顶层，token，可选）是模型上下文窗口，记入 `RunLimits.context_window_tokens`。设置后，待发送请求的估算达到窗口的 `context_yield_ratio`（顶层，`(0, 1]`，缺省 0.80 即 `DEFAULT_CONTEXT_YIELD_RATIO`，越界报配置错误；记入 `RunLimits.context_yield_ratio`，缺省不写，旧记录按 0.80；没有 CLI 参数）时 waist 让出上下文压缩，估算加 `max_tokens` 超过窗口的请求从不发送；未设置时只在 Provider 以结构化错误码拒绝（OpenAI 兼容接口的 `context_length_exceeded`；经 AICC 时为 AICC 的 `context_length_exceeded` 或 HTTP 413，归类见 [local_llm_context_protocol.md](local_llm_context_protocol.md) §4 的 AICC 错误表）时压缩，此时配置的 `context_yield_ratio` 无效，新 run 发一条 `RunEvent::Warning`（宿主装配的 run 记 `log::warn!`），注明来源文件。压缩用本次模型（`LlmSummarizeCompressor`，目标为窗口 30%、不超过触发线一半与 32768，无窗口时 32768），function_call 以 `RewrittenHistory`、behavior 以 `RewrittenSteps`（物化历史折叠进 input，编号继续）续跑，压缩后的上下文先保存快照再继续，每个 run 最多 3 次。
 
 `max_tool_iterations`（默认 8；CLI `--max-tool-iterations`，`TaskOverrides` / `RunLimits` / `ResumeLimits` 同名字段）是原生 tools 与 behavior actions 共用的工具预算，映射到 waist `ToolPolicy.max_tool_iterations`。一次工具迭代 = 一批实际派发的原生工具调用（一次 response 的全部调用），或一个派发 action 的 behavior Step（同一 Step 多个 action 只计一次）；工具业务失败也计入，behavior Step 内层的原生工具批次与外层 action 共用剩余额度。额度耗尽后仍允许模型返回无工具的最终答案，再请求工具或 action 则进入 `limit_reached`（`tool iteration limit (N) reached`），不会执行超额调用。waist 的收尾模式（`ToolPolicy.wrap_up_tools`，额度用完后只给收尾工具、不计次、最多 `wrap_up_rounds` 批）xllm 自己不用：`.llm_context` 没有对应键，宿主装配的 Run 由宿主在 `hosted_request` 之后写。`max_calls_per_round = 16` 另限一次 response（一个 Round）的原生调用数，不限制 Step 的 action 数。
 
@@ -66,7 +66,7 @@ behavior 协议（`XllmActionParser`）：`<response><thinking/><actions>…</ac
 | --- | --- | --- |
 | running | 否 | 执行中；记录为 running 但无进程持锁时，查询显示为“已中断（进程退出）” |
 | interrupted | 否 | `XllmInterrupter::interrupt`（Ctrl-C）或进程退出 |
-| paused | 否 | Provider 超时 / Transient / 疑似凭据问题（Permanent 且信息含 token、401、expired 等）/ 存储 checkpoint 失败 / 工具基础设施失败；behavior Step yield（`last_error.kind = yield`）；function_call 回复时本 run 的 task 仍在运行（`tasks_running`）；宿主装配的 Run 以 `Done` 交接到另一个 behavior（记录 `handover`，xllm 不可 resume，见 §10） |
+| paused | 否 | Provider 超时 / Transient（含 AICC 标为 `retriable` 的错误）/ 疑似凭据问题（Permanent 且信息含 token、401、expired 等）/ 存储 checkpoint 失败 / 工具基础设施失败；behavior Step yield（`last_error.kind = yield`）；function_call 回复时本 run 的 task 仍在运行（`tasks_running`）；宿主装配的 Run 以 `Done` 交接到另一个 behavior（记录 `handover`，xllm 不可 resume，见 §10） |
 | completed | 是 | waist `Done`（宿主装配的 Run 交接到另一个 behavior 时除外，见 paused） |
 | failed | 是 | Provider Permanent（非凭据）/ Unknown、输出解析或工具错误连续超限、上下文压缩 3 次仍超限 |
 | limit_reached | 是 | 工具迭代（`max_tool_iterations`）/ 总时长（`timeout`，映射为 waist wallclock 预算）/ token 预算 |

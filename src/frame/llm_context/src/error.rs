@@ -26,9 +26,11 @@ pub enum ProviderFailure {
     Unknown,
     /// The provider refused the request because it does not fit the model's
     /// context window, reported by a structured provider code (e.g. OpenAI
-    /// `context_length_exceeded`). Adapters must not infer it from message
-    /// text or a bare HTTP 400. The waist turns it into
-    /// `Outcome::ContextLimitReached { which: ProviderRefused }`.
+    /// `context_length_exceeded`, AICC `context_length_exceeded`). A
+    /// transport-level HTTP 413 (the request body is over the service's
+    /// limit) also counts: the remedy is the same, a smaller request.
+    /// Adapters must not infer it from message text or a bare HTTP 400. The
+    /// waist turns it into `Outcome::ContextLimitReached { which: ProviderRefused }`.
     ContextLimit,
     /// The AI service refused the call under a policy of the party it is
     /// charged to (quota, resource permission, ...), reported by a structured
