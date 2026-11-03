@@ -42,7 +42,7 @@ pub struct Buckets {
 /// The Zone's bucket service (nfs-server) and node store, or fixed ones.
 pub enum BucketHost {
     Runtime,
-    #[allow(dead_code)]
+    #[cfg(test)]
     Fixed(Buckets),
 }
 
@@ -56,6 +56,7 @@ impl BucketHost {
                     store: runtime.get_local_named_store().await?,
                 })
             }
+            #[cfg(test)]
             Self::Fixed(buckets) => Ok(buckets.clone()),
         }
     }
@@ -63,6 +64,7 @@ impl BucketHost {
     pub async fn store(&self) -> Result<NamedDataMgr> {
         match self {
             Self::Runtime => get_buckyos_api_runtime()?.get_local_named_store().await,
+            #[cfg(test)]
             Self::Fixed(buckets) => Ok(buckets.store.clone()),
         }
     }

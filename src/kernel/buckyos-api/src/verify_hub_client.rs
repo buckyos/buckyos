@@ -85,12 +85,6 @@ pub fn generate_user_login_assertion(
     Ok((jwt, assertion))
 }
 
-#[allow(dead_code)]
-#[derive(Serialize, Deserialize)]
-struct VerifyHubSettings {
-    trust_keys: Vec<String>,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TokenPair {
     pub session_token: String,

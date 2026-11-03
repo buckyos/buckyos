@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-#![allow(unused)]
 
 mod active_server;
 mod app_loader;
@@ -7,7 +5,6 @@ mod app_mgr; // support manager app service (run in docker,run for one user)
 mod boot;
 mod desktop_runtime;
 mod finder;
-mod frame_service_mgr; // support manager frame service (run in docker,run for all users)
 mod gateway_name_provider;
 mod gateway_tunnel_probe;
 mod kernel_mgr; // support manager kernel service (run in native, run for system)
@@ -34,7 +31,6 @@ mod win_srv;
 use buckyos_kit::{get_version, init_logging};
 use clap::{Arg, Command};
 use log::*;
-use std::panic;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

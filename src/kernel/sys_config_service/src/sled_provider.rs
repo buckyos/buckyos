@@ -270,22 +270,6 @@ impl KVStoreProvider for SledStore {
         Ok(result)
     }
 
-    async fn list_keys(&self, key_prefix: &str) -> Result<Vec<String>> {
-        let mut result = Vec::new();
-        let iter = self.db.scan_prefix(key_prefix.to_string()).keys();
-        for key in iter {
-            if let Ok(key) = key {
-                if let Ok(key_str) = String::from_utf8(key.to_vec()) {
-                    if Self::is_internal_key(&key_str) {
-                        continue;
-                    }
-                    result.push(key_str);
-                }
-            }
-        }
-        Ok(result)
-    }
-
     async fn list_direct_children(&self, prefix: String) -> Result<Vec<String>> {
         let mut result = Vec::new();
         let prefix = if prefix.eq("") || prefix.ends_with("/") {
@@ -613,11 +597,10 @@ mod tests {
         assert!(root_children.contains(&"users".to_string()));
         assert!(!root_children.contains(&"__meta".to_string()));
 
-        let user_keys = store.list_keys("users/").await.expect("list users");
-        assert_eq!(user_keys, vec!["users/alice/profile".to_string()]);
-
         let user_data = store.list_data("users/").await.expect("list user data");
-        assert!(user_data.contains_key("users/alice/profile"));
-        assert!(!user_data.contains_key("__meta/revision/users/alice/profile"));
+        assert_eq!(
+            user_data.keys().collect::<Vec<_>>(),
+            vec!["users/alice/profile"]
+        );
     }
 }

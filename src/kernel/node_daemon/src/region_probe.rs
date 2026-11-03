@@ -329,7 +329,6 @@ impl RegionProbeController {
 struct ProbeTarget {
     region_index: usize,
     url_index: usize,
-    region_id: String,
     probe_id: String,
     url: String,
 }
@@ -362,7 +361,6 @@ fn build_probe_targets(config: &SnRegionProbeConfig) -> Vec<ProbeTarget> {
             targets.push(ProbeTarget {
                 region_index,
                 url_index,
-                region_id: region.region_id.clone(),
                 probe_id: probe.id.clone(),
                 url: probe.url.clone(),
             });
@@ -729,19 +727,9 @@ mod tests {
         let targets = build_probe_targets(&config());
         let order = targets
             .iter()
-            .map(|target| (target.url_index, target.region_id.as_str()))
+            .map(|target| (target.url_index, target.region_index))
             .collect::<Vec<_>>();
-        assert_eq!(
-            order,
-            vec![
-                (0, "jp"),
-                (0, "us-west"),
-                (1, "jp"),
-                (1, "us-west"),
-                (2, "jp"),
-                (2, "us-west")
-            ]
-        );
+        assert_eq!(order, vec![(0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1)]);
     }
 
     #[test]

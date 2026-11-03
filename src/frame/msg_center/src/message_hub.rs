@@ -13,12 +13,9 @@ use buckyos_api::{DeliveryRecordWithObject, DeliveryReportResult};
 use log::{info, warn};
 use name_lib::DID;
 
-pub const MESSAGE_HUB_PLATFORM: &str = "messagehub";
-
 pub struct MessageHubExecutor {
     transport_did: DID,
     center: MessageCenter,
-    name: String,
 }
 
 impl MessageHubExecutor {
@@ -26,7 +23,6 @@ impl MessageHubExecutor {
         Self {
             transport_did,
             center,
-            name: "message-hub".to_string(),
         }
     }
 
@@ -45,14 +41,6 @@ impl MessageHubExecutor {
 impl DeliveryExecutor for MessageHubExecutor {
     fn transport_did(&self) -> DID {
         self.transport_did.clone()
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn platform(&self) -> &str {
-        MESSAGE_HUB_PLATFORM
     }
 
     fn supports_ingress(&self) -> bool {

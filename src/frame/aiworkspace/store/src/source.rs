@@ -537,7 +537,6 @@ pub fn refreshed_at(ws: &Workspace, entity_id: &str) -> WsResult<Option<String>>
     local_get(&ws.local, &format!("source_refreshed:{entity_id}"))
 }
 
-#[allow(dead_code)]
 fn _format(ms: i64) -> String {
     format_utc_ms(ms)
 }

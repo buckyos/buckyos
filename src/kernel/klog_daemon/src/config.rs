@@ -105,8 +105,6 @@ impl std::fmt::Display for KLogJoinRetryStrategy {
 pub enum KLogRuntimeConfigSource {
     Env,
     File(PathBuf),
-    #[allow(dead_code)]
-    Buckyos,
 }
 
 impl std::fmt::Display for KLogRuntimeConfigSource {
@@ -114,7 +112,6 @@ impl std::fmt::Display for KLogRuntimeConfigSource {
         match self {
             Self::Env => write!(f, "env"),
             Self::File(path) => write!(f, "file({})", path.display()),
-            Self::Buckyos => write!(f, "buckyos"),
         }
     }
 }
@@ -564,11 +561,6 @@ pub struct KLogRuntimeConfigPatch {
     pub node_id: Option<KNodeId>,
 }
 
-// Placeholder type for future buckyos config integration.
-// It intentionally mirrors daemon runtime fields to keep conversion simple.
-#[allow(dead_code)]
-pub type BuckyosKlogConfig = KLogRuntimeConfigPatch;
-
 impl KLogRuntimeConfig {
     pub fn load() -> Result<(Self, KLogRuntimeConfigSource), String> {
         match std::env::var(ENV_CONFIG_FILE) {
@@ -693,19 +685,6 @@ impl KLogRuntimeConfig {
         })?;
 
         Self::from_patch(patch)
-    }
-
-    #[allow(dead_code)]
-    pub fn from_buckyos_config(cfg: &BuckyosKlogConfig) -> Result<Self, String> {
-        Self::from_patch(cfg.clone())
-    }
-
-    #[allow(dead_code)]
-    pub fn load_from_buckyos(
-        cfg: &BuckyosKlogConfig,
-    ) -> Result<(Self, KLogRuntimeConfigSource), String> {
-        let config = Self::from_buckyos_config(cfg)?;
-        Ok((config, KLogRuntimeConfigSource::Buckyos))
     }
 
     fn from_patch(patch: KLogRuntimeConfigPatch) -> Result<Self, String> {
@@ -1656,8 +1635,8 @@ id = "cluster_admin_conflict_id"
     }
 
     #[test]
-    fn test_from_buckyos_patch() {
-        let patch = BuckyosKlogConfig {
+    fn test_from_patch() {
+        let patch = KLogRuntimeConfigPatch {
             network: Some(KLogNetworkConfigPatch {
                 listen_addr: Some("0.0.0.0:23001".to_string()),
                 inter_node_listen_addr: Some("0.0.0.0:23002".to_string()),
@@ -1714,9 +1693,7 @@ id = "cluster_admin_conflict_id"
             ..Default::default()
         };
 
-        let (cfg, source) =
-            KLogRuntimeConfig::load_from_buckyos(&patch).expect("build from buckyos patch");
-        assert_eq!(source, KLogRuntimeConfigSource::Buckyos);
+        let cfg = KLogRuntimeConfig::from_patch(patch).expect("build from patch");
         assert_eq!(cfg.node_id, 3);
         assert_eq!(cfg.listen_addr, "0.0.0.0:23001");
         assert_eq!(cfg.inter_node_listen_addr, "0.0.0.0:23002");

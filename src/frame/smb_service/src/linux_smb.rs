@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use crate::error::{into_smb_err, smb_err, SmbErrorCode, SmbResult};
 use crate::samba::{SmbItem, SmbUserItem};
 use ini::Ini;
@@ -178,11 +177,6 @@ pub async fn add_system_user(user_name: &str) -> SmbResult<()> {
     Ok(())
 }
 
-pub async fn del_system_user(user_name: &str) -> SmbResult<()> {
-    execute(format!("userdel {}", user_name).as_str()).await?;
-    Ok(())
-}
-
 pub async fn add_smb_user(user_name: &str, password: &str) -> SmbResult<()> {
     let mut proc = spawn(format!("smbpasswd -a {}", user_name).as_str()).await?;
     proc.answer("New SMB password:", format!("{}", password).as_str())
@@ -196,13 +190,6 @@ pub async fn add_smb_user(user_name: &str, password: &str) -> SmbResult<()> {
 pub async fn delete_smb_user(user_name: &str) -> SmbResult<()> {
     execute(format!("smbpasswd -x {}", user_name).as_str()).await?;
     Ok(())
-}
-
-pub async fn exist_smb_user(user_name: &str) -> SmbResult<bool> {
-    let output = execute(format!("pdbedit -L | grep {}", user_name).as_str()).await?;
-    let output = String::from_utf8_lossy(output.as_slice()).to_string();
-    log::info!("output is:{}", output);
-    Ok(true)
 }
 
 fn running_in_docker() -> bool {

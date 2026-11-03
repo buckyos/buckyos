@@ -8,7 +8,7 @@ use crate::scheduler::*;
 use crate::*;
 
 use anyhow::Result;
-use buckyos_api::{BASE_APP_PORT, MAX_APP_INDEX};
+use buckyos_api::MAX_APP_INDEX;
 
 fn app_service_spec_key_candidates(user_id: &str, app_id: &str) -> Vec<String> {
     vec![format!("users/{user_id}/apps/{app_id}/spec")]

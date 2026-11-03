@@ -40,13 +40,6 @@ pub struct Owner {
 }
 
 impl Owner {
-    #[allow(dead_code)]
-    pub fn new(user_id: impl Into<String>, app_id: impl Into<String>) -> Self {
-        Self {
-            user_id: user_id.into(),
-            app_id: app_id.into(),
-        }
-    }
 
     pub fn from_value(value: &Value) -> Option<Self> {
         let map = value.as_object()?;
@@ -94,8 +87,6 @@ pub struct DefinitionRecord {
     pub analysis: AnalysisReport,
     pub status: DefinitionStatus,
     pub version: u32,
-    #[allow(dead_code)]
-    pub definition_hash: String,
     pub tags: Vec<String>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -198,7 +189,6 @@ impl DefinitionStore {
             analysis,
             status: DefinitionStatus::Active,
             version: next_version,
-            definition_hash: hash.clone(),
             tags,
             created_at: now,
             updated_at: now,
@@ -307,7 +297,10 @@ pub struct RunRecord {
     pub owner: Owner,
     pub events: Vec<EventEnvelope>,
     pub amendments: Vec<AmendmentRecord>,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "doc/workflow/workflow service.md: POST callback_url when a run terminates; not implemented yet"
+    )]
     pub callback_url: Option<String>,
 }
 

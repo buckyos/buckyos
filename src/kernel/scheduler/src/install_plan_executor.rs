@@ -5,7 +5,6 @@ use buckyos_kit::{buckyos_get_unix_timestamp, KVAction};
 use ndn_lib::NamedObject;
 use package_lib::PackageId;
 use std::collections::{BTreeSet, HashMap};
-use std::sync::Arc;
 
 use crate::scheduler_server::SchedulerServer;
 use crate::system_config_agent::{refresh_rbac, schedule_loop};
@@ -1048,7 +1047,6 @@ impl SchedulerHandler for SchedulerServer {
             if existing.state != SchedulerShortcutMutationState::Claimed {
                 return Ok(existing);
             }
-            record = existing;
         }
 
         for _ in 0..MAX_CAS_RETRIES {

@@ -1,4 +1,3 @@
-#[allow(unused_braces)]
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use lazy_static::lazy_static;
 use log::*;

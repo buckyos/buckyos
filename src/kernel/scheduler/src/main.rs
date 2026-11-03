@@ -1,4 +1,3 @@
-#![allow(unused_mut, unused, dead_code)]
 mod app;
 mod executor_auth;
 mod install_plan_executor;
@@ -16,22 +15,18 @@ mod scheduler_test;
 use jsonwebtoken::jwk::Jwk;
 use log::*;
 use serde_json::json;
-use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::exit;
 //use upon::Engine;
 
 use anyhow::Result;
-use app::*;
-use buckyos_api::*;
 use buckyos_api::*;
 use buckyos_http_server::*;
 use buckyos_kit::*;
 use name_client::*;
 use name_lib::*;
 use scheduler_server::*;
-use service::*;
 use std::sync::Arc;
 use system_config_agent::schedule_loop;
 use system_config_builder::{StartConfigSummary, SystemConfigBuilder};
@@ -108,7 +103,7 @@ async fn create_init_list_by_template(
             "template contains unescaped double curly braces"
         ));
     }
-    let mut boot_config: HashMap<String, String> = toml::from_str(&result)?;
+    let boot_config: HashMap<String, String> = toml::from_str(&result)?;
 
     let ood_names = boot_ood_names(zone_document);
     if ood_names.is_empty() {
@@ -148,20 +143,18 @@ async fn create_init_list_by_template(
 
     info!("add_kernel_services success, add default apps and gateway settings...");
     builder
-        //.add_smb_service().await?
         .add_default_apps(&start_config)
         .await?
-        .add_gateway_settings(&start_config)?;
+        .add_gateway_settings()?;
     for ood_name in ood_names.iter() {
         builder.add_node(ood_name.as_str())?;
     }
-    let mut config = builder.build();
+    let config = builder.build();
 
     Ok(config)
 }
 
 async fn do_boot_scheduler() -> Result<()> {
-    let mut init_list: HashMap<String, String> = HashMap::new();
     let zone_document_str = std::env::var(BUCKYOS_ZONE_DOC_ENV);
 
     if zone_document_str.is_err() {
@@ -195,7 +188,7 @@ async fn do_boot_scheduler() -> Result<()> {
     }
 
     let roots = identity_roots().map_err(anyhow::Error::msg)?;
-    let mut init_list = create_init_list_by_template(
+    let init_list = create_init_list_by_template(
         &zone_document,
         &zone_document_str,
         get_buckyos_root_dir().as_path(),
@@ -312,7 +305,9 @@ async fn service_main(is_boot: bool) -> Result<i32> {
         //start!
         info!("Start Scheduler Server...");
         let runner = Runner::new(SCHEDULER_SERVICE_MAIN_PORT);
-        runner.add_http_server("/kapi/scheduler".to_string(), Arc::new(scheduler_server));
+        runner
+            .add_http_server("/kapi/scheduler".to_string(), Arc::new(scheduler_server))
+            .map_err(|err| anyhow::anyhow!("add scheduler http server failed: {:?}", err))?;
         info!("Start scheduler loop task...");
         tokio::spawn(async move {
             if let Err(err) = schedule_loop(false, false).await {
@@ -337,10 +332,6 @@ async fn main() {
         }
     }
 
-    unsafe {
-        //std::env::set_var("BUCKY_LOG", "debug");
-    }
-
     let ret = service_main(is_boot).await;
     if ret.is_err() {
         println!("service_main failed: {:?}", ret);
@@ -359,29 +350,24 @@ mod test {
         Carrier, DidDocType, NameClient, NameClientConfig, ResolveOpts, Revision, Source,
         SourceAnswer, SourceRef, SourceTier, GLOBAL_NAME_CLIENT,
     };
-    use name_lib::{
-        DeviceDocument, DeviceInfo, EncodedDocument, NSError, OODDescriptionString,
-        DEFAULT_EXPIRE_TIME,
-    };
+    use name_lib::{DeviceDocument, DeviceInfo, EncodedDocument, OODDescriptionString};
     use package_lib::PackageId;
     use serde_json::json;
     use std::collections::HashMap;
     use std::fs;
-    use std::net::IpAddr;
     use std::path::Path;
     use std::sync::Arc;
     use system_config_agent::*;
     use tempfile::TempDir;
 
     const TEST_USERNAME: &str = "devtest";
-    const TEST_ZONE_NAME: &str = "devtest";
     const TEST_HOSTNAME: &str = "devtest.buckyos.io";
     const TEST_DEVICE_NAME: &str = "ood1";
     const TEST_NET_ID: &str = "lan1";
 
     #[tokio::test]
     async fn test_gen_service_doc() -> Result<()> {
-        let mut docs = test_config::gen_kernel_service_docs();
+        let docs = test_config::gen_kernel_service_docs();
         for (did, doc) in docs.iter() {
             let doc_path = format!("/tmp/{}.doc.json", did.to_raw_host_name());
             fs::write(doc_path.clone(), doc.to_string()).unwrap();
@@ -421,13 +407,12 @@ mod test {
                 .expect("failed to read start_config"),
         )
         .expect("start_config should be valid json");
-        let start_config = StartConfigSummary::from_value(&start_config_value)
+        StartConfigSummary::from_value(&start_config_value)
             .expect("start_config summary should parse");
         ensure_device_info_entry(
             &mut init_map,
-            start_config
-                .ood_jwt
-                .as_deref()
+            start_config_value["ood_jwt"]
+                .as_str()
                 .expect("start_config ood_jwt missing"),
             zone_document
                 .get_default_key()

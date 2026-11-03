@@ -1,22 +1,15 @@
 use crate::run_plist::{update_run_item, RunPlistItemState};
-use crate::service_pkg::*;
 use async_trait::async_trait;
 use buckyos_api::ServiceInstanceState;
-use jsonwebtoken::{DecodingKey, EncodingKey};
-use log::{debug, info, warn};
+use log::{debug, warn};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum ControlRuntItemErrors {
-    #[error("Download {0} error!")]
-    DownloadError(String),
     #[error("Execute cmd {0} error:{1}")]
     ExecuteError(String, String),
     #[error("Config parser error: {0}")]
     ParserConfigError(String),
-    #[error("Network Error: {0}")]
-    NetworkError(String),
     #[error("Pkg not exist: {0}")]
     PkgNotExist(String),
     #[error("Not support: {0}")]
@@ -40,12 +33,6 @@ impl RunItemTargetState {
             _ => RunItemTargetState::Stopped,
         }
     }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct RunItemControlOperation {
-    pub command: String,
-    pub params: Option<Vec<String>>,
 }
 
 #[async_trait]

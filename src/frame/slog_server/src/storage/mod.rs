@@ -15,11 +15,6 @@ pub enum LogStorageType {
     SqlitePartitioned(SqlitePartitionedConfig),
 }
 
-pub fn create_log_storage(storage_type: LogStorageType) -> Result<LogStorageRef, String> {
-    let storage_dir = slog::get_buckyos_root_dir().join("slog_server");
-    create_log_storage_with_dir(storage_type, &storage_dir)
-}
-
 pub fn create_log_storage_with_dir(
     storage_type: LogStorageType,
     storage_dir: &Path,

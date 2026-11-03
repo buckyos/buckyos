@@ -173,19 +173,6 @@ impl ServicePkg {
         false
     }
 
-    pub fn set_context(
-        &mut self,
-        current_dir: Option<&PathBuf>,
-        env_vars: Option<&HashMap<String, String>>,
-    ) {
-        if let Some(current_dir) = current_dir {
-            self.current_dir = Some(current_dir.clone());
-        }
-        if let Some(env_vars) = env_vars {
-            self.env_vars = env_vars.clone();
-        }
-    }
-
     pub async fn execute_operation(
         &self,
         op_name: &str,

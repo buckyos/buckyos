@@ -96,6 +96,7 @@ impl LogDirReader {
         Ok(reader)
     }
 
+    #[cfg(test)]
     pub fn try_read_records(&self, batch_size: usize) -> Result<Vec<LogRecordItem>, String> {
         let blocked_ids = HashSet::new();
         self.try_read_records_with_blocked(batch_size, &blocked_ids)

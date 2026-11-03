@@ -5,13 +5,7 @@
 mod dispatch_db;
 mod service;
 
-#[allow(unused_imports)]
-pub use dispatch_db::{DispatchDb, RecordStateUpdate};
-#[allow(unused_imports)]
-pub use service::{
-    start_task_dispatcher, KrpcRunnerCaller, RunnerCaller, TaskDispatcherHttpServer,
-    TaskDispatcherService,
-};
+pub use service::{start_task_dispatcher, TaskDispatcherHttpServer};
 
 #[cfg(test)]
 mod tests;

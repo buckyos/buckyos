@@ -57,7 +57,6 @@
 // 尚未实现（有真实需求时再补）：Cache-Control 负状态缓存策略、按请求来源的
 // doc_type 可见性分级（需求 §7，需 gateway 注入来源信息后一起设计）。
 
-#![allow(unused)]
 
 use log::*;
 use name_lib::*;
@@ -73,7 +72,6 @@ use http_body_util::{combinators::BoxBody, BodyExt, Full};
 use jsonwebtoken::jwk::Jwk;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::str::FromStr;
 use url::form_urlencoded;
 
 use crate::SYS_STORE;
@@ -263,9 +261,6 @@ fn is_key_class_method(method: &str) -> bool {
 }
 
 impl ZoneDidResolver {
-    pub fn new() -> Self {
-        Self {}
-    }
 
     async fn store_get(&self, key: &str) -> Result<Option<String>, String> {
         let store = SYS_STORE.lock().await;
@@ -1452,7 +1447,7 @@ impl HttpServer for ZoneDidResolver {
     async fn serve_request(
         &self,
         req: http::Request<BoxBody<Bytes, ServerError>>,
-        info: StreamInfo,
+        _info: StreamInfo,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
         let build_resp = |status: StatusCode,
                           content_type: &str,
@@ -1628,7 +1623,7 @@ mod tests {
 
     #[tokio::test]
     async fn version_queries_are_answered_501_before_any_lookup() {
-        let resolver = ZoneDidResolver::new();
+        let resolver = ZoneDidResolver {};
         let request = |query: &str| {
             http::Request::builder()
                 .uri(format!("/1.0/identifiers/did:bns:alice?{query}"))
@@ -1798,7 +1793,7 @@ mod tests {
         let (did, raw, owner) = canonical_agent_fixture("writer.foreign.example");
         let (_, doc) = ZoneDidResolver::canonical_agent_doc(&did,
             vec![("alice".into(), raw, Some(owner))]).unwrap().unwrap();
-        let resolver = ZoneDidResolver::new();
+        let resolver = ZoneDidResolver {};
         assert!(matches!(resolver.classify(&test_zone_identity(), &did.to_string()), Ok(Target::Foreign(_))));
         let answer = ZoneDidResolver::active(doc, &DidDocType::Custom("agent".into()), None, true);
         let ZoneAnswer::Published(answer) = answer else { panic!("expected published") };
@@ -1831,7 +1826,7 @@ mod tests {
 
     #[test]
     fn classify_routes_zone_and_namespace_names() {
-        let resolver = ZoneDidResolver::new();
+        let resolver = ZoneDidResolver {};
         let zone = test_zone_identity();
 
         assert!(matches!(
@@ -1870,7 +1865,7 @@ mod tests {
 
     #[test]
     fn classify_rejects_key_class_dids() {
-        let resolver = ZoneDidResolver::new();
+        let resolver = ZoneDidResolver {};
         let zone = test_zone_identity();
         assert!(resolver.classify(&zone, "did:dev:abcdefg").is_err());
         assert!(resolver.classify(&zone, "did:key:z6Mk").is_err());

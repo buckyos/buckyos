@@ -1,30 +1,21 @@
-use lazy_static::lazy_static;
-use std::env;
-use std::fmt::format;
-use std::hash::Hash;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::exit;
-use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use std::{collections::HashMap, fs::File};
-use time::macros::format_description;
+use std::collections::HashMap;
 use tokio::sync::RwLock;
 
-use clap::{Arg, ArgMatches, Command};
+use clap::ArgMatches;
 use futures::prelude::*;
 use log::*;
 use named_store::NamedDataMgr;
-use serde::{Deserialize, Serialize};
-use serde_json::{from_value, json, Value};
-use simplelog::*;
-use toml;
+use serde::Serialize;
+use serde_json::{json, Value};
 
 use buckyos_api::*;
 use buckyos_kit::*;
 use cyfs_gateway_api::{SnClient, SnZoneInfoResp};
-use jsonwebtoken::jwk::Jwk;
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{DecodingKey, EncodingKey};
 use name_client::*;
 use name_lib::*;
 use ndn_lib::*;
@@ -39,8 +30,7 @@ use crate::boot::{
     merge_zone_locker_bypass_into_gateway_config, write_boot_node_gateway_config,
     write_boot_node_gateway_info, zone_locker_bypass_hosts, NodeRole,
 };
-use crate::finder::{add_discovered_device_cache, DiscoveredNode, NodeFinder, NodeFinderClient};
-use crate::frame_service_mgr::*;
+use crate::finder::{add_discovered_device_cache, DiscoveredNode, NodeFinder};
 use crate::gateway_name_provider::register_node_gateway_name_provider;
 use crate::gateway_tunnel_probe::probe_key_tunnels_via_gateway;
 use crate::kernel_mgr::*;
@@ -53,7 +43,6 @@ use crate::sn_zone_info::{load_sn_zone_info, relay_node_for_keep_tunnel, save_sn
 use crate::zone_boot_resolve::{
     boot_resolve_zone_document, install_local_owner_trust, register_zone_resolver_cache,
 };
-use buckyos_api::*;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -75,30 +64,6 @@ const SN_ZONE_INFO_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::
 // Zone Document 的 Boot 阶段解析（resolve + accept 状态机、Last Known Good
 // State、smooth upgrade 检查）在 zone_boot_resolve.rs，设计依据
 // doc/arch/BuckyOS Booting阶段 resolve-did-document的特殊处理说明.md。
-
-async fn load_app_info(
-    app_id: &str,
-    username: &str,
-    buckyos_api_client: &SystemConfigClient,
-) -> Result<AppDoc> {
-    let app_key = format!("users/{}/apps/{}/config", username, app_id);
-    let get_result = buckyos_api_client
-        .get(app_key.as_str())
-        .await
-        .map_err(|error| {
-            let err_str = format!("get app config failed from system_config! {}", error);
-            warn!("{}", err_str.as_str());
-            return NodeDaemonErrors::SystemConfigError(err_str);
-        })?;
-
-    let app_info = serde_json::from_str(&get_result.value);
-    if app_info.is_ok() {
-        return Ok(app_info.unwrap());
-    }
-    let err_str = format!("parse app info failed! {}", app_info.err().unwrap());
-    warn!("{}", err_str.as_str());
-    return Err(NodeDaemonErrors::SystemConfigError(err_str));
-}
 
 async fn load_node_gateway_config(
     node_host_name: &str,
@@ -976,7 +941,7 @@ async fn wait_ood_device_infos_before_boot_schedule(
 }
 
 async fn do_boot_schedule() -> std::result::Result<(), String> {
-    let mut scheduler_pkg = ServicePkg::new("scheduler".to_string(), get_buckyos_system_bin_dir());
+    let scheduler_pkg = ServicePkg::new("scheduler".to_string(), get_buckyos_system_bin_dir());
     if !scheduler_pkg.try_load().await {
         error!("load scheduler pkg failed!");
         return Err(String::from("load scheduler pkg failed!"));
@@ -1053,13 +1018,8 @@ async fn wait_system_config_ready(
     .await
 }
 
-async fn keep_system_config_service(
-    node_id: &str,
-    device_doc: &DeviceDocument,
-    device_private_key: &EncodingKey,
-    is_restart: bool,
-) -> std::result::Result<(), String> {
-    let mut system_config_service_pkg =
+async fn keep_system_config_service(is_restart: bool) -> std::result::Result<(), String> {
+    let system_config_service_pkg =
         ServicePkg::new("system-config".to_string(), get_buckyos_system_bin_dir());
 
     if !system_config_service_pkg.try_load().await {
@@ -1106,14 +1066,10 @@ async fn keep_system_config_service(
 }
 
 async fn keep_cyfs_gateway_service(
-    node_id: &str,
-    device_doc: &DeviceDocument,
-    node_private_key: &EncodingKey,
     is_reload: bool,
     is_restart: bool,
 ) -> std::result::Result<(), String> {
-    let _ = (node_id, node_private_key);
-    let mut cyfs_gateway_service_pkg =
+    let cyfs_gateway_service_pkg =
         ServicePkg::new("cyfs-gateway".to_string(), get_buckyos_system_bin_dir());
 
     let mut running_state = cyfs_gateway_service_pkg.status(None).await.map_err(|err| {
@@ -1258,6 +1214,10 @@ async fn desktop_daemon_main(skip_app_ids: &Vec<String>) -> Result<()> {
     let app_list: HashMap<String, LocalAppInstanceConfig> = app_list.unwrap();
 
     let app_stream = stream::iter(app_list);
+    #[expect(
+        unused_variables,
+        reason = "the stream is never awaited, so applist.json apps are never ensured; awaiting it is a behavior change pending a decision"
+    )]
     let app_task = app_stream.for_each_concurrent(2, |(app_id_with_name, app_cfg)| async move {
         if skip_app_ids.contains(&app_id_with_name) {
             info!(
@@ -1301,8 +1261,6 @@ async fn desktop_daemon() -> Result<()> {
             return NodeDaemonErrors::SystemConfigError("desktop_daemon failed!".to_string());
         });
     }
-
-    Ok(())
 }
 
 async fn node_main(
@@ -1310,7 +1268,6 @@ async fn node_main(
     is_ood: bool,
     is_desktop: bool,
     buckyos_api_client: &SystemConfigClient,
-    device_doc: &DeviceDocument,
 ) -> Result<bool> {
     //control replica instance to target state
     let node_config = load_node_config(node_host_name, buckyos_api_client)
@@ -1441,18 +1398,6 @@ async fn stop_orphan_native_apps(node_config: &NodeConfig) {
     }
 }
 
-async fn get_system_config_client(
-    is_ood: bool,
-    session_token: String,
-) -> std::result::Result<SystemConfigClient, String> {
-    if is_ood {
-        let system_config_client = SystemConfigClient::new(None, Some(session_token.as_str()));
-        return Ok(system_config_client);
-    } else {
-        unimplemented!();
-    }
-}
-
 async fn node_daemon_main_loop(
     node_id: &str,
     node_host_name: &str,
@@ -1460,7 +1405,6 @@ async fn node_daemon_main_loop(
     is_desktop: bool,
 ) -> Result<()> {
     let mut loop_step = 0;
-    let mut is_running = true;
     let mut last_register_time = 0;
     let mut node_gateway_config_id: Option<ObjId> = None;
     let mut node_gateway_info_id: Option<ObjId> = None;
@@ -1571,12 +1515,16 @@ async fn node_daemon_main_loop(
             update_device_info(&device_info, &system_config_client).await;
             publish_device_info_kevent(&device_info).await;
             //TODO：SN的上报频率不用那么快
-            report_ood_info_to_sn(&device_info, device_private_key, &zone_document).await;
+            if let Err(err) =
+                report_ood_info_to_sn(&device_info, device_private_key, &zone_document).await
+            {
+                warn!("report ood info to sn failed: {}", err);
+            }
             last_register_time = now;
         }
 
-        if (is_ood) {
-            keep_system_config_service(node_id, device_doc, device_private_key, false)
+        if is_ood {
+            keep_system_config_service(false)
                 .await
                 .map_err(|err| {
                     error!("start system_config_service failed! {}", err);
@@ -1591,15 +1539,13 @@ async fn node_daemon_main_loop(
             is_ood,
             is_desktop,
             &system_config_client,
-            device_doc,
         )
         .await;
 
         if main_result.is_err() {
             error!("node_main failed! {}", main_result.err().unwrap());
             if let Err(err) =
-                keep_cyfs_gateway_service(node_id, device_doc, device_private_key, false, false)
-                    .await
+                keep_cyfs_gateway_service(false, false).await
             {
                 warn!(
                     "keep cyfs_gateway service after node_main failure failed! {}",
@@ -1608,7 +1554,7 @@ async fn node_daemon_main_loop(
             }
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         } else {
-            is_running = main_result.unwrap();
+            let is_running = main_result.unwrap();
             if !is_running {
                 break;
             }
@@ -1676,7 +1622,7 @@ async fn node_daemon_main_loop(
                 load_node_gateway_config(node_host_name, &system_config_client).await;
 
             if new_node_gateway_config.is_ok() {
-                let mut need_reload = false;
+                let need_reload;
                 let mut need_restart = false;
                 let new_node_gateway_config = new_node_gateway_config.unwrap();
                 let sn = zone_document.sn.clone();
@@ -1747,14 +1693,7 @@ async fn node_daemon_main_loop(
                         .unwrap();
                 }
 
-                let keep_result = keep_cyfs_gateway_service(
-                    node_id,
-                    device_doc,
-                    device_private_key,
-                    need_reload,
-                    need_restart,
-                )
-                .await;
+                let keep_result = keep_cyfs_gateway_service(need_reload, need_restart).await;
 
                 if let Some((gateway_info, generation)) = pending_static_gateway_info.as_ref() {
                     match keep_result.as_ref() {
@@ -1917,7 +1856,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
 
     //load node identity config
     let node_identity_file = get_buckyos_system_etc_dir().join("node_identity.json");
-    let mut node_identity = load_local_node_identity_config(&node_identity_file);
+    let node_identity = load_local_node_identity_config(&node_identity_file);
     if node_identity.is_err() {
         let desktop_task = if is_desktop {
             info!("start desktop daemon...");
@@ -1942,7 +1881,9 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         }
 
         if desktop_task.is_some() {
-            desktop_task.unwrap().await.unwrap();
+            if let Err(err) = desktop_task.unwrap().await.unwrap() {
+                error!("desktop daemon failed: {}", err);
+            }
             info!("desktop daemon returned,exit node_daemon...");
             exit(0);
         } else {
@@ -2124,13 +2065,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         },
     )?;
 
-    keep_cyfs_gateway_service(
-        node_id.as_str(),
-        &device_doc,
-        &device_private_key,
-        false,
-        true,
-    )
+    keep_cyfs_gateway_service(false, true)
     .await
     .map_err(|err| {
         error!("start cyfs_gateway for boot failed: {}", err);
@@ -2158,11 +2093,10 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         })?;
 
     //init kernel_service:system_config service
-    let mut syc_cfg_client: SystemConfigClient;
-    let boot_config: serde_json::Value;
+    let syc_cfg_client: SystemConfigClient;
     let mut boot_config_result_str = "".to_string();
     if is_ood {
-        keep_system_config_service(node_id.as_str(), &device_doc, &device_private_key, false)
+        keep_system_config_service(false)
             .await
             .map_err(|err| {
                 error!("start system_config_service failed! {}", err);
@@ -2407,7 +2341,9 @@ mod system_config_boot_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jsonwebtoken::jwk::Jwk;
     use named_store::{NamedLocalStore, StoreLayout, StoreTarget};
+    use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2593,7 +2529,6 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             addr: std::net::SocketAddr::new(endpoint_ip, 2980),
             rtcp_port: 2980,
             last_seen: buckyos_get_unix_timestamp(),
-            from_cache: false,
         }
     }
 

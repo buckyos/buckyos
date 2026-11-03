@@ -2,7 +2,7 @@ use crate::native_app::{
     exec_error, port_free, NativeProcess, NativeReadiness, ERR_ENTRY, ERR_INTERPRETER,
     ERR_NOT_ADMITTED, ERR_PORT_CONFIG, ERR_PORT_CONFLICT, ERR_SPAWN, NATIVE_APP_STATE_DIR,
 };
-use crate::paios_images::{self, exttool_volume_name, PaiosDocker, PaiosImageKind, ResolvedImage};
+use crate::paios_images::{self, PaiosDocker, PaiosImageKind, ResolvedImage};
 use crate::run_item::{ControlRuntItemErrors, Result};
 use crate::service_pkg::new_system_package_env;
 use crate::wslc;
@@ -17,7 +17,7 @@ use buckyos_api::{
     BUCKYOS_OWNER_USER_ID_ENV, KEVENT_SERVICE_NATIVE_PORT, APP_PERMISSION_USER_HOME,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir, get_buckyos_system_etc_dir};
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 use ndn_lib::{load_named_object_from_obj_str, NamedObject, ObjId};
 use package_lib::{MediaInfo, PackageEnv, PackageId, PackageMeta, PkgError};
 use serde::Deserialize;
@@ -199,6 +199,7 @@ pub(crate) struct PlatformTarget {
 }
 
 impl PlatformTarget {
+    #[cfg(test)]
     pub(crate) const fn new(os: PlatformOs, arch: PlatformArch) -> Self {
         Self { os, arch }
     }
@@ -216,15 +217,10 @@ impl PlatformTarget {
         Self { os, arch }
     }
 
-    fn python_program(self) -> &'static str {
-        match self.os {
-            PlatformOs::Windows => "python",
-            PlatformOs::Linux | PlatformOs::Macos => "python3",
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(test)]
 pub(crate) enum ControlOperation {
     Deploy,
     Start,
@@ -233,11 +229,13 @@ pub(crate) enum ControlOperation {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg(test)]
 pub(crate) struct CommandSpec {
     pub program: String,
     pub args: Vec<String>,
 }
 
+#[cfg(test)]
 impl CommandSpec {
     fn new(program: impl Into<String>, args: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self {
@@ -248,6 +246,7 @@ impl CommandSpec {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg(test)]
 pub(crate) struct ControlCommandPreview {
     pub runtime: RuntimeType,
     pub commands: Vec<CommandSpec>,
@@ -437,16 +436,19 @@ impl AppLoader {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn with_platform(mut self, platform: PlatformTarget) -> Self {
         self.platform = platform;
         self
     }
 
+    #[cfg(test)]
     pub(crate) fn with_container_support_override(mut self, support_container: bool) -> Self {
         self.support_container_override = Some(support_container);
         self
     }
 
+    #[cfg(test)]
     pub(crate) fn with_worker_image_repo_override(mut self, image_repo: impl Into<String>) -> Self {
         self.worker_image_repo_override = Some(image_repo.into());
         self
@@ -454,6 +456,7 @@ impl AppLoader {
 
     /// BuckyOS root whose `bin/paios-images/` and `etc/devenv.json` choose the
     /// paios images (tests).
+    #[cfg(test)]
     pub(crate) fn with_paios_images_root(mut self, root: impl Into<PathBuf>) -> Self {
         self.paios_root_override = Some(root.into());
         self
@@ -461,6 +464,7 @@ impl AppLoader {
 
     /// The program and process-record directory of a native Agent Service
     /// (tests).
+    #[cfg(test)]
     pub(crate) fn with_native_agent(mut self, program: impl Into<PathBuf>, state_root: impl Into<PathBuf>) -> Self {
         self.native_program_override = Some(program.into());
         self.native_state_root_override = Some(state_root.into());
@@ -468,12 +472,14 @@ impl AppLoader {
     }
 
     /// The Deno and process-record directory of native script apps (tests).
+    #[cfg(test)]
     pub(crate) fn with_native_script(mut self, deno: impl Into<PathBuf>, state_root: impl Into<PathBuf>) -> Self {
         self.native_deno_override = Some(deno.into());
         self.native_state_root_override = Some(state_root.into());
         self
     }
 
+    #[cfg(test)]
     pub(crate) fn with_product(mut self, product: ProductProfile) -> Self {
         self.product_override = Some(product);
         self
@@ -482,6 +488,10 @@ impl AppLoader {
     /// Start the app with an empty instance volume (§7.5 Safe Mode).
     /// The instance volume is isolated per safe-mode session so the real
     /// instance volume is preserved for later diagnosis.
+    #[expect(
+        dead_code,
+        reason = "doc/app_service/paios容器需求.md §5.8/§7.5: nothing enables Safe Mode yet"
+    )]
     pub(crate) fn with_safe_mode(mut self, safe_mode: bool) -> Self {
         self.safe_mode = safe_mode;
         self
@@ -744,6 +754,7 @@ impl AppLoader {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn preview_operation(
         &self,
         operation: ControlOperation,
@@ -1161,7 +1172,6 @@ impl AppLoader {
                 .amd64_win_app
                 .as_ref()
                 .or(pkg_list.aarch64_win_app.as_ref()),
-            (PlatformOs::Linux, _) => None,
         }
     }
 
@@ -2874,6 +2884,7 @@ impl AppLoader {
         })
     }
 
+    #[cfg(test)]
     fn worker_image_name(&self) -> Result<String> {
         Ok(self.worker_image()?.reference)
     }
@@ -3194,6 +3205,7 @@ impl AppLoader {
         Ok(())
     }
 
+    #[cfg(test)]
     fn preview_docker_deploy(&self) -> Result<Vec<CommandSpec>> {
         let desc = self
             .docker_image_desc()
@@ -3230,6 +3242,7 @@ impl AppLoader {
         Ok(commands)
     }
 
+    #[cfg(test)]
     fn preview_docker_start(&self) -> Result<Vec<CommandSpec>> {
         let desc = self
             .docker_image_desc()
@@ -3294,6 +3307,7 @@ impl AppLoader {
         ])
     }
 
+    #[cfg(test)]
     fn preview_docker_status(&self) -> Vec<CommandSpec> {
         let filter = format!("name=^{}$", self.container_name());
         let image_name = self
@@ -3307,6 +3321,7 @@ impl AppLoader {
         ]
     }
 
+    #[cfg(test)]
     fn preview_host_script_deploy(&self) -> Result<Vec<CommandSpec>> {
         let pkg_id = self
             .host_script_pkg_id()
@@ -3316,14 +3331,17 @@ impl AppLoader {
         Ok(commands)
     }
 
+    #[cfg(test)]
     fn preview_host_script_start(&self) -> Result<Vec<CommandSpec>> {
         self.preview_worker_start("script", self.script_inner_port(), self.host_script_desc())
     }
 
+    #[cfg(test)]
     fn preview_host_script_status(&self) -> Result<Vec<CommandSpec>> {
         self.preview_worker_status()
     }
 
+    #[cfg(test)]
     fn preview_agent_deploy(&self) -> Result<Vec<CommandSpec>> {
         let pkg_id = self
             .agent_pkg_id()
@@ -3339,6 +3357,7 @@ impl AppLoader {
     /// Worker + ExtTool preparation without pulling: pinned images load from
     /// their tarball when missing, local images must exist; the ExtTool volume
     /// is seeded once per ExtTool image id.
+    #[cfg(test)]
     fn preview_paios_images(&self) -> Result<Vec<CommandSpec>> {
         let ensure = |image: &ResolvedImage| match image.pinned.as_ref() {
             Some(pinned) => CommandSpec::new(
@@ -3381,26 +3400,31 @@ impl AppLoader {
         Ok(commands)
     }
 
+    #[cfg(test)]
     fn preview_exttool_volume(&self, exttool: &ResolvedImage) -> String {
         match exttool.pinned.as_ref() {
-            Some(pinned) => exttool_volume_name(pinned.platform.image_id.as_str()),
+            Some(pinned) => paios_images::exttool_volume_name(pinned.platform.image_id.as_str()),
             None => format!("{}-<image id 12>", paios_images::EXTTOOL_VOLUME_PREFIX),
         }
     }
 
+    #[cfg(test)]
     fn preview_agent_start(&self) -> Result<Vec<CommandSpec>> {
         let service_port = self.select_agent_service_port();
         self.preview_worker_start("agent", Some(service_port), self.agent_desc())
     }
 
+    #[cfg(test)]
     fn preview_agent_stop(&self) -> CommandSpec {
         CommandSpec::new("docker", ["rm", "-f", self.container_name().as_str()])
     }
 
+    #[cfg(test)]
     fn preview_agent_status(&self) -> Result<Vec<CommandSpec>> {
         self.preview_worker_status()
     }
 
+    #[cfg(test)]
     fn preview_worker_start(
         &self,
         app_type_label: &str,
@@ -3553,6 +3577,7 @@ impl AppLoader {
         ])
     }
 
+    #[cfg(test)]
     fn preview_worker_status(&self) -> Result<Vec<CommandSpec>> {
         let filter = format!("name=^{}$", self.container_name());
         Ok(vec![
@@ -3565,6 +3590,7 @@ impl AppLoader {
         ])
     }
 
+    #[cfg(test)]
     fn preview_env_keys(&self, role: PackageRole) -> Vec<String> {
         let mut keys = vec![
             "BUCKYOS_ZONE_CONFIG".to_string(),
@@ -3589,6 +3615,7 @@ impl AppLoader {
         keys
     }
 
+    #[cfg(test)]
     fn preview_docker_pull_ref(&self, image_name: &str, desc: &SubPkgDesc) -> String {
         let image_ref = match self.zone_docker_repo_base_url() {
             Some(base) => format!("{}/{}", base.trim_end_matches('/'), image_name),
@@ -3604,13 +3631,6 @@ impl AppLoader {
 
 #[cfg(test)]
 impl AppLoader {
-    pub(crate) fn test_worker_image_name(&self) -> String {
-        self.worker_image_name().unwrap()
-    }
-
-    pub(crate) fn test_instance_volume_name(&self) -> String {
-        self.instance_volume_name()
-    }
 
     pub(crate) fn test_default_tmp_mount(&self) -> (PathBuf, &'static str) {
         self.default_volume_mounts().remove("/tmp").unwrap()
@@ -3683,10 +3703,6 @@ pub(crate) fn docker_image_tar_candidates_for_arch(
         candidates.push("aarch64_docker_image.tar".to_string());
     }
     candidates
-}
-
-pub(crate) fn docker_image_tar_candidates(app_id: &str) -> Vec<String> {
-    docker_image_tar_candidates_for_arch(app_id, PlatformTarget::current().arch)
 }
 
 fn canonical_sha256_digest(value: &str) -> Option<String> {
@@ -3884,12 +3900,6 @@ pub(crate) fn expected_env_pkg_name(env: &PackageEnv, package_id: &PackageId) ->
     }
 }
 
-pub(crate) fn docker_desc_requires_exact_match(desc: &SubPkgDesc) -> bool {
-    !desc.pkg_id.trim().is_empty()
-        || desc.pkg_objid.is_some()
-        || normalize_digest(desc.docker_image_digest.as_deref()).is_some()
-}
-
 fn docker_runtime_package_matches(identity: &DockerRuntimeIdentity, desc: &SubPkgDesc) -> bool {
     if !desc.pkg_id.trim().is_empty()
         && identity.labels.get(DOCKER_LABEL_PKG_ID).map(String::as_str)
@@ -3978,36 +3988,6 @@ pub(crate) fn native_script_args(manifest: &buckyos_api::PreinstalledScriptApp, 
     args
 }
 
-pub(crate) fn command_matches_agent_process(cmd: &[String], app_id: &str) -> bool {
-    command_arg_value(cmd, "--app-id") == Some(app_id)
-}
-
-pub(crate) fn command_matches_exact_agent_process(
-    cmd: &[String],
-    app_id: &str,
-    _agent_env_root: &Path,
-    expected_agent_root: Option<&Path>,
-    expected_pkg_objid: Option<&str>,
-) -> bool {
-    if !command_matches_agent_process(cmd, app_id) {
-        return false;
-    }
-
-    let Some(agent_bin) = command_arg_value(cmd, "--agent-bin") else {
-        return false;
-    };
-
-    if let Some(expected_agent_root) = expected_agent_root {
-        if path_matches_value(expected_agent_root, agent_bin) {
-            return true;
-        }
-    }
-
-    expected_pkg_objid
-        .map(|pkg_objid| normalize_path_value(agent_bin).contains(pkg_objid))
-        .unwrap_or(false)
-}
-
 fn mount_access_to_docker(access: &str, default: &'static str) -> &'static str {
     match access {
         "read_only" | "ro" => "ro",
@@ -4085,10 +4065,6 @@ fn trim_trailing_slash(value: &str) -> &str {
     value.trim_end_matches('/')
 }
 
-fn trim_path_separators(value: &str) -> &str {
-    value.trim_end_matches(|ch| ch == '/' || ch == '\\')
-}
-
 fn canonicalize_mount_path(path: &Path) -> PathBuf {
     if cfg!(target_os = "windows") {
         return path.to_path_buf();
@@ -4155,27 +4131,6 @@ fn validate_agent_private_mount(path: &Path) -> Result<()> {
         )));
     }
     Ok(())
-}
-
-fn normalize_path_value(value: &str) -> String {
-    let normalized = if Path::new(value).is_absolute() {
-        canonicalize_mount_path(Path::new(value))
-            .to_string_lossy()
-            .to_string()
-    } else {
-        value.to_string()
-    };
-    let trimmed = trim_path_separators(normalized.as_str());
-    if cfg!(target_os = "windows") {
-        trimmed.to_ascii_lowercase()
-    } else {
-        trimmed.to_string()
-    }
-}
-
-fn path_matches_value(expected_path: &Path, actual_value: &str) -> bool {
-    normalize_path_value(expected_path.to_string_lossy().as_ref())
-        == normalize_path_value(actual_value)
 }
 
 fn ensure_directory(path: &Path, make_world_writable: bool) -> Result<()> {
@@ -4520,19 +4475,6 @@ fn docker_image_id_matches_digest(image_id: &str, expected_digest: &str) -> bool
         return image_hash == expected_hash;
     }
     false
-}
-
-fn command_arg_value<'a>(cmd: &'a [String], key: &str) -> Option<&'a str> {
-    for (index, arg) in cmd.iter().enumerate() {
-        if arg == key {
-            return cmd.get(index + 1).map(String::as_str);
-        }
-        let prefix = format!("{key}=");
-        if let Some(value) = arg.strip_prefix(prefix.as_str()) {
-            return Some(value);
-        }
-    }
-    None
 }
 
 fn shell_quote(value: &str) -> String {

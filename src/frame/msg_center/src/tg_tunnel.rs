@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 
 use crate::msg_center::MessageCenter;
 use crate::msg_tunnel::{
@@ -9,9 +8,7 @@ use async_trait::async_trait;
 use buckyos_api::{
     build_telegram_ui_session_id, get_buckyos_api_runtime, DeliveryRecord,
     DeliveryRecordWithObject, DeliveryReportResult, DeliveryState, IngressContext,
-    MSG_CENTER_SERVICE_NAME,
 };
-use buckyos_kit::get_buckyos_service_data_dir;
 use grammers_client::session::defs::{PeerAuth, PeerId, PeerRef};
 use grammers_client::session::storages::SqliteSession;
 use grammers_client::session::updates::UpdatesLike;
@@ -42,9 +39,6 @@ use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
 const TELEGRAM_PLATFORM: &str = "telegram";
-const TG_API_ID_ENV_KEY: &str = "BUCKYOS_TG_API_ID";
-const TG_API_HASH_ENV_KEY: &str = "BUCKYOS_TG_API_HASH";
-const TG_SESSION_DIR_ENV_KEY: &str = "BUCKYOS_TG_SESSION_DIR";
 const TG_BINDING_EXTRA_BOT_TOKEN: &str = "bot_token";
 const TG_BOT_API_ENDPOINT: &str = "https://api.telegram.org";
 const TG_TASK_SHUTDOWN_TIMEOUT_MS: u64 = 5_000;
@@ -115,7 +109,6 @@ pub struct TgTunnelConfig {
     /// Stable tunnel instance id (e.g. `tg-main-tunnel`) embedded in shadow
     /// endpoint DIDs. Defaults to the transport DID subject when not set.
     pub tunnel_instance_id: String,
-    pub name: String,
     pub supports_ingress: bool,
     pub supports_egress: bool,
 }
@@ -123,7 +116,6 @@ pub struct TgTunnelConfig {
 impl TgTunnelConfig {
     pub fn new(transport_did: DID) -> Self {
         Self {
-            name: format!("{}-tg-tunnel", transport_did.to_string()),
             tunnel_instance_id: transport_did.id.clone(),
             transport_did,
             supports_ingress: true,
@@ -1030,40 +1022,6 @@ pub struct GrammersTgGatewayConfig {
     pub tunnel_instance_id: Option<String>,
 }
 
-impl GrammersTgGatewayConfig {
-    pub fn from_env() -> AnyResult<Self> {
-        let api_id = std::env::var(TG_API_ID_ENV_KEY)
-            .with_context(|| format!("{} is required", TG_API_ID_ENV_KEY))?
-            .trim()
-            .parse::<i32>()
-            .context("failed to parse BUCKYOS_TG_API_ID as i32")?;
-        if api_id <= 0 {
-            bail!("BUCKYOS_TG_API_ID must be > 0");
-        }
-
-        let api_hash = std::env::var(TG_API_HASH_ENV_KEY)
-            .with_context(|| format!("{} is required", TG_API_HASH_ENV_KEY))?;
-        if api_hash.trim().is_empty() {
-            bail!("BUCKYOS_TG_API_HASH cannot be empty");
-        }
-
-        let session_dir = std::env::var(TG_SESSION_DIR_ENV_KEY)
-            .unwrap_or_else(|_| default_tg_session_dir().to_string_lossy().to_string());
-
-        Ok(Self {
-            api_id,
-            api_hash,
-            session_dir: PathBuf::from(session_dir),
-            transport_did: None,
-            tunnel_instance_id: None,
-        })
-    }
-}
-
-fn default_tg_session_dir() -> PathBuf {
-    get_buckyos_service_data_dir(MSG_CENTER_SERVICE_NAME).join("tg_sessions")
-}
-
 fn resolve_binding_bot_token(binding: &TgBotBinding) -> AnyResult<String> {
     if let Some(token) = binding.extra.get(TG_BINDING_EXTRA_BOT_TOKEN) {
         if !token.trim().is_empty() {
@@ -1167,10 +1125,6 @@ impl GrammersTgGateway {
             dispatcher: Arc::new(Mutex::new(None)),
             ingress_tasks: Mutex::new(HashMap::new()),
         }
-    }
-
-    pub fn from_env() -> AnyResult<Self> {
-        Ok(Self::new(GrammersTgGatewayConfig::from_env()?))
     }
 
     fn session_file_name(binding: &TgBotBinding) -> String {
@@ -3409,13 +3363,6 @@ impl TgTunnel {
         Self::with_gateway(cfg, Arc::new(GrammersTgGateway::new(grammers_cfg)))
     }
 
-    pub fn with_grammers_gateway_from_env(cfg: TgTunnelConfig) -> AnyResult<Self> {
-        Ok(Self::with_grammers_gateway(
-            cfg,
-            GrammersTgGatewayConfig::from_env()?,
-        ))
-    }
-
     pub fn with_bot_api_gateway(cfg: TgTunnelConfig) -> Self {
         let transport_did = Some(cfg.transport_did.clone());
         let tunnel_instance_id = Some(cfg.tunnel_instance_id.clone());
@@ -3444,15 +3391,6 @@ impl TgTunnel {
         Ok(())
     }
 
-    pub fn clear_msg_center_handler(&self) -> AnyResult<()> {
-        let mut guard = self
-            .dispatcher
-            .write()
-            .map_err(|_| anyhow::anyhow!("tg dispatcher lock poisoned"))?;
-        *guard = None;
-        Ok(())
-    }
-
     fn get_msg_center_handler(&self) -> AnyResult<Option<Arc<dyn TunnelIngressHandler>>> {
         let guard = self
             .dispatcher
@@ -3473,6 +3411,7 @@ impl TgTunnel {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn bind_bot_simple(
         &self,
         owner_did: DID,
@@ -3487,6 +3426,7 @@ impl TgTunnel {
         })
     }
 
+    #[cfg(test)]
     pub fn unbind_bot(&self, owner_did: &DID) -> AnyResult<Option<TgBotBinding>> {
         self.ensure_not_running("unbind_bot")?;
 
@@ -3761,14 +3701,6 @@ impl TgTunnel {
 impl DeliveryExecutor for TgTunnel {
     fn transport_did(&self) -> DID {
         self.cfg.transport_did.clone()
-    }
-
-    fn name(&self) -> &str {
-        &self.cfg.name
-    }
-
-    fn platform(&self) -> &str {
-        TELEGRAM_PLATFORM
     }
 
     fn supports_ingress(&self) -> bool {
@@ -4730,7 +4662,17 @@ mod tests {
             panic!("set TG_TEST_BOT_TOKEN constant before running this test");
         }
 
-        let cfg = GrammersTgGatewayConfig::from_env().unwrap();
+        let cfg = GrammersTgGatewayConfig {
+            api_id: std::env::var("BUCKYOS_TG_API_ID")
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap(),
+            api_hash: std::env::var("BUCKYOS_TG_API_HASH").unwrap(),
+            session_dir: std::env::temp_dir().join("buckyos-tg-live-test"),
+            transport_did: None,
+            tunnel_instance_id: None,
+        };
         let gateway = GrammersTgGateway::new(cfg);
 
         let mut extra = HashMap::new();

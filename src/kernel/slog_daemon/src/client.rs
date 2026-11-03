@@ -1,6 +1,5 @@
 use super::read_manager::{LogReaderManager, LogRecordLoad};
 use super::upload::LogUploader;
-use crate::constants::DEFAULT_UPLOAD_GLOBAL_CONCURRENCY;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{Semaphore, mpsc};
@@ -18,6 +17,7 @@ pub struct LogDaemonClient {
 }
 
 impl LogDaemonClient {
+    #[cfg(test)]
     pub fn new(
         node: String,
         service_endpoint: String,
@@ -29,7 +29,7 @@ impl LogDaemonClient {
             node,
             service_endpoint,
             upload_timeout_secs,
-            DEFAULT_UPLOAD_GLOBAL_CONCURRENCY,
+            crate::constants::DEFAULT_UPLOAD_GLOBAL_CONCURRENCY,
             log_dir,
             excluded,
         )

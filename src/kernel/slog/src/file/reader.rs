@@ -513,31 +513,6 @@ impl FileLogReader {
     }
 }
 
-fn test_read() {
-    let log_dir = crate::get_buckyos_log_root_dir().join("test_slog_service");
-    let file = log_dir.join("test_slog_service.1.log");
-
-    // Open the file and read lines
-    let mut file = std::fs::File::open(file).unwrap();
-    let mut buf_reader = std::io::BufReader::new(&file);
-
-    for i in 0..100 {
-        let mut line = String::new();
-        let bytes_read = buf_reader.read_line(&mut line).unwrap();
-        if bytes_read == 0 {
-            break;
-        }
-        println!("line {}: {}", i, line.trim_end());
-    }
-
-    // Get current position
-    let pos = buf_reader.stream_position().unwrap();
-    println!("current position: {}", pos);
-
-    let pos = file.stream_position().unwrap();
-    println!("file current position: {}", pos);
-}
-
 #[cfg(test)]
 mod tests {
     use super::{FileLogReader, LogMeta, SystemLogRecordLineFormatter};

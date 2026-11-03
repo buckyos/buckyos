@@ -7,7 +7,6 @@ use buckyos_kit::buckyos_get_unix_timestamp;
 
 // 统一交给 Rust AppLoader 处理 app runtime 的 deploy/start/stop/status。
 pub struct AppRunItem {
-    pub app_id: String,
     pub app_instance_config: AppServiceInstanceConfig,
     pub app_loader: AppLoader,
 }
@@ -17,9 +16,7 @@ impl AppRunItem {
         app_instance_id: &AppInstanceId,
         app_service_config: AppServiceInstanceConfig,
     ) -> Self {
-        let app_id = app_instance_id.app_id().to_string();
         AppRunItem {
-            app_id: app_id,
             app_instance_config: app_service_config.clone(),
             app_loader: AppLoader::new_for_service(
                 &app_instance_id.to_string(),
@@ -105,7 +102,7 @@ impl RunItemControl for AppRunItem {
         "app_service"
     }
 
-    async fn deploy(&self, params: Option<&Vec<String>>) -> Result<()> {
+    async fn deploy(&self, _params: Option<&Vec<String>>) -> Result<()> {
         match self.app_loader.deploy().await {
             Ok(()) => Ok(()),
             Err(error) => {
@@ -117,7 +114,7 @@ impl RunItemControl for AppRunItem {
         }
     }
 
-    async fn start(&self, params: Option<&Vec<String>>) -> Result<()> {
+    async fn start(&self, _params: Option<&Vec<String>>) -> Result<()> {
         match self.app_loader.start().await {
             Ok(()) => Ok(()),
             Err(error) => {
@@ -142,11 +139,11 @@ impl RunItemControl for AppRunItem {
         }
     }
 
-    async fn stop(&self, params: Option<&Vec<String>>) -> Result<()> {
+    async fn stop(&self, _params: Option<&Vec<String>>) -> Result<()> {
         self.app_loader.stop().await
     }
 
-    async fn get_state(&self, params: Option<&Vec<String>>) -> Result<ServiceInstanceState> {
+    async fn get_state(&self, _params: Option<&Vec<String>>) -> Result<ServiceInstanceState> {
         let observation = self.app_loader.observe_deployment().await?;
         self.report_state(
             observation.state.clone(),

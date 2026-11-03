@@ -326,9 +326,9 @@ Step2 当前只处理两种 spec 状态：
 
 对当前代码来说，可以直接落成两个贡献者约束：
 
-### 1. 把 `CreateOPTask` 当遗留占位，不要继续做重
+### 1. 不要继续往 OPTask 里做重
 
-`SchedulerAction::CreateOPTask` 现在不是稳定主路径。新需求如果继续往 OPTask 里塞复杂流程，只会让后续迁移更难。
+从未实现的 `SchedulerAction::CreateOPTask` 占位已删除。新需求如果继续往 OPTask 里塞复杂流程，只会让后续迁移更难。
 
 ### 2. 新的异步执行语义应尽量保持“显式输入 + 显式资源 + 幂等边界”
 

@@ -1,4 +1,3 @@
-#![allow(unused_must_use)]
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -53,8 +52,6 @@ use crate::{
 pub const DEFAULT_NODE_GATEWAY_PORT: u16 = 3180;
 const DEFAULT_AICC_KRPC_TIMEOUT_SECS: u64 = 900;
 const DEFAULT_KRPC_TIMEOUT_SECS: u64 = 15;
-const BUCKYOS_KRPC_TIMEOUT_SECS_ENV: &str = "BUCKYOS_KRPC_TIMEOUT_SECS";
-const BUCKYOS_KRPC_TIMEOUT_SECS_PREFIX: &str = "BUCKYOS_KRPC_TIMEOUT_SECS_";
 const BUCKYOS_HOST_GATEWAY_ENV: &str = "BUCKYOS_HOST_GATEWAY";
 const DEFAULT_DOCKER_HOST_GATEWAY: &str = "host.docker.internal";
 pub const BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV: &str = "BUCKYOS_APPCLIENT_SESSION_TOKEN";
@@ -924,10 +921,6 @@ impl BuckyOSRuntime {
         ))
     }
 
-    fn not_implemented_error(operation: &str) -> RPCErrors {
-        RPCErrors::ReasonError(format!("NotImplemented: {}", operation))
-    }
-
     async fn should_run_background_task(&self, task: RuntimeBackgroundTaskKind, now: u64) -> bool {
         let status_map = self.background_task_status.read().await;
         status_map
@@ -1518,7 +1511,9 @@ impl BuckyOSRuntime {
             }
         }
 
-        init_name_lib(&self.web3_bridges).await;
+        if let Err(error) = init_name_lib(&self.web3_bridges).await {
+            warn!("name lib init failed: {error}");
+        }
 
         // AppService processes receive a device-signed LoginAssertion from
         // node-daemon. Exchange it before the first system-config request;
@@ -1722,10 +1717,10 @@ impl BuckyOSRuntime {
             if device_key.is_some() {
                 let kid = device_config.get_id().to_string();
                 let key = device_key.as_ref().unwrap().0.clone();
-                self.set_trust_key(kid.as_str(), &key).await;
+                self.set_trust_key(kid.as_str(), &key).await?;
                 debug!("set trust key - device_config.did: {}", kid);
                 let kid = device_config.name.clone();
-                self.set_trust_key(kid.as_str(), &key).await;
+                self.set_trust_key(kid.as_str(), &key).await?;
                 debug!("set trust key - device_config.name: {}", kid);
             }
         }
@@ -1742,7 +1737,7 @@ impl BuckyOSRuntime {
                 let kid = "verify-hub".to_string();
                 let key = DecodingKey::from_jwk(&verify_hub_info.public_key);
                 if key.is_ok() {
-                    self.set_trust_key(kid.as_str(), &key.unwrap()).await;
+                    self.set_trust_key(kid.as_str(), &key.unwrap()).await?;
                     debug!("set trust key - verify-hub");
                 }
             } else {

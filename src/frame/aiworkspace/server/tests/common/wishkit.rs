@@ -240,11 +240,6 @@ pub fn model() -> Arc<ScriptedModel> {
     Arc::new(ScriptedModel { analyze: Mutex::new(Box::new(|_| text("没有可做的。"))), execute: Mutex::new(Box::new(|_| text("没有可做的。"))), calls: AtomicUsize::new(0), map_calls: AtomicUsize::new(0), delay_ms: AtomicU64::new(0), max_tokens: Mutex::new(None), refuse: Mutex::new(None), providers: Mutex::new(Vec::new()) })
 }
 
-/// The tool results so far contain `needle`.
-pub fn seen(t: &Turn, needle: &str) -> bool {
-    t.results.iter().any(|r| r.contains(needle))
-}
-
 /// Run an async test body on a runtime with large stacks (debug builds of the xllm loop and of big
 /// `json!` test bodies need more than the default 2 MiB).
 pub fn run_test<F>(f: impl FnOnce() -> F + Send + 'static)

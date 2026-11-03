@@ -20,15 +20,13 @@ use crate::zone_route_builder::{
     build_forward_plan, cross_zone_relay_url, DidIpHint, NodeGatewayRouteCandidate,
 };
 use buckyos_api::{
-    app_availability_policy_key, get_buckyos_api_runtime, zone_document_hostname,
-    AppAvailabilityGroupRule, AppAvailabilityPolicy, AppId, AppInstanceId, AppRegistry,
+    app_availability_policy_key, get_buckyos_api_runtime, zone_document_hostname, AppAvailabilityPolicy, AppId, AppInstanceId, AppRegistry,
     AppServiceSpec, AvailabilityEffect, KernelServiceSpec, NodeConfig,
     SchedulerRefreshRbacResponse, ServiceInstanceReportInfo, ServiceState, SystemConfigClient,
     UserSettings, UserState, UserType as ApiUserType, ZoneConfig, ZoneGatewaySettings,
     validate_user_group_id, USER_GROUPS_CONFIG_PREFIX, USER_GROUP_REF_PREFIX, APP_REGISTRY_KEY, CONTROL_PANEL_SERVICE_PORT, NFS_SERVER_SERVICE_NAME,
 };
 use buckyos_kit::*;
-use name_client::*;
 use name_lib::{get_x_from_jwk, DeviceInfo, ZoneDocument};
 
 const SYSTEM_CONFIG_SERVICE_PORT: u16 = 3200;
@@ -164,7 +162,6 @@ pub fn create_scheduler_by_system_config(
                 error!("serde_json::from_str failed: {:?}", e);
                 e
             })?;
-            let node_item = craete_node_item_by_device_info(device_name, &device_info);
             let node_item = craete_node_item_by_device_info(device_name, &device_info);
             device_list.insert(device_name.to_string(), device_info);
             scheduler_ctx.add_node(node_item);
@@ -341,7 +338,6 @@ pub(crate) fn schedule_action_to_tx_actions(
     device_list: &HashMap<String, DeviceInfo>,
     input_config: &HashMap<String, String>,
     need_update_gateway_node_list: &mut HashSet<String>,
-    need_update_rbac: &mut bool,
 ) -> Result<HashMap<String, KVAction>> {
     let mut result = HashMap::new();
     let zone_config = input_config.get("boot/config");
@@ -350,8 +346,7 @@ pub(crate) fn schedule_action_to_tx_actions(
     }
     let zone_config = zone_config.unwrap();
     let zone_config: ZoneConfig = serde_json::from_str(zone_config.as_str())?;
-    let zone_document = zone_config.zone_document()?;
-    let zone_gateway = zone_document.get_default_zone_gateway();
+    zone_config.zone_document()?;
     match action {
         SchedulerAction::ChangeNodeStatus(node_id, node_status) => {
             let key = format!("nodes/{}/config", node_id);
@@ -384,10 +379,6 @@ pub(crate) fn schedule_action_to_tx_actions(
                 }
             }
         }
-        SchedulerAction::CreateOPTask(_new_op_task) => {
-            //TODO:
-            unimplemented!();
-        }
         SchedulerAction::InstanceReplica(new_instance) => {
             //最复杂的流程,需要根据pod的类型,来执行实例化操作
             let service_spec = scheduler_ctx.get_service_spec(new_instance.spec_id.as_str());
@@ -415,12 +406,8 @@ pub(crate) fn schedule_action_to_tx_actions(
                     let service_config = service_config.unwrap();
                     let service_config: KernelServiceSpec =
                         serde_json::from_str(service_config.as_str())?;
-                    let is_zone_gateway = zone_gateway
-                        .as_ref()
-                        .map(|gw| gw == &new_instance.node_id)
-                        .unwrap_or(false);
                     let instance_action =
-                        instance_service(new_instance, &service_config, is_zone_gateway)?;
+                        instance_service(new_instance, &service_config)?;
                     info!("will instance service pod: {}", new_instance.spec_id);
                     result.extend(instance_action);
                 }
@@ -495,7 +482,7 @@ pub(crate) fn schedule_action_to_tx_actions(
                 return Ok(result);
             }
             let update_action =
-                update_service_info(spec_id.as_str(), service_info, device_list, &input_config)?;
+                update_service_info(spec_id.as_str(), service_info, device_list)?;
             info!("will update service info: {}", spec_id);
             result.extend(update_action);
         }
@@ -511,20 +498,6 @@ pub fn get_spec_id_from_service_info_id(service_info_id: &str) -> (String, Strin
         return (service_info_id.to_string(), "www".to_string());
     }
     (spec_id.to_string(), service_name.to_string())
-}
-
-pub fn get_service_spec_by_spec_id(
-    spec_id: &str,
-    input_system_config: &HashMap<String, String>,
-) -> Result<ServiceSpec> {
-    let key = format!("services/{}/spec", spec_id);
-    let service_spec = input_system_config.get(&key);
-    if service_spec.is_none() {
-        return Err(anyhow::anyhow!("service_spec not found"));
-    }
-    let service_spec = service_spec.unwrap();
-    let service_spec: ServiceSpec = serde_json::from_str(service_spec.as_str())?;
-    Ok(service_spec)
 }
 
 pub fn get_appid_and_userid_from_spec_id(spec_id: &str) -> Result<(String, String)> {
@@ -1598,7 +1571,7 @@ async fn update_rbac(
         }
     }
 
-    for (spec_id, service_spec) in scheduler_ctx.specs.iter() {
+    for service_spec in scheduler_ctx.specs.values() {
         match service_spec.spec_type {
             ServiceSpecType::App => {
                 if !read_only_apps
@@ -2609,6 +2582,7 @@ pub(crate) mod app_lifecycle_tests {
 #[cfg(test)]
 mod beta22_state_tests {
     use super::*;
+    use buckyos_api::AppAvailabilityGroupRule;
 
     #[test]
     fn missing_registry_fails_closed() {
@@ -2845,7 +2819,6 @@ pub(crate) async fn build_schedule_plan(
             &device_list,
             input_system_config,
             &mut need_update_gateway_node_list,
-            &mut need_update_rbac,
         )?;
         extend_kv_action_map(&mut tx_actions, &new_tx_actions);
     }

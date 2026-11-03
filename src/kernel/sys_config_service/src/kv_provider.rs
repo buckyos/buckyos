@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use async_trait::async_trait;
 use buckyos_kit::*;
 use serde_json::Value;
@@ -37,6 +36,5 @@ pub trait KVStoreProvider: Send + Sync {
     async fn create(&self, key: &str, value: &str) -> Result<()>;
     async fn delete(&self, key: &str) -> Result<()>;
     async fn list_data(&self, key_perfix: &str) -> Result<HashMap<String, String>>;
-    async fn list_keys(&self, key_perfix: &str) -> Result<Vec<String>>;
     async fn list_direct_children(&self, prefix: String) -> Result<Vec<String>>;
 }

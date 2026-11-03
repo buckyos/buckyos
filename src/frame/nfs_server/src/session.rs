@@ -24,8 +24,6 @@ struct Session {
     /// seq → cached response body (write ops only)
     replay: HashMap<u64, Value>,
     max_seq: u64,
-    #[allow(dead_code)]
-    created: Instant,
 }
 
 #[derive(Debug)]
@@ -45,7 +43,7 @@ impl SessionMgr {
         let id = format!("sess_{}", uuid::Uuid::new_v4().simple());
         self.sessions.lock().unwrap().insert(
             id.clone(),
-            Session { actor, replay: HashMap::new(), max_seq: 0, created: Instant::now() },
+            Session { actor, replay: HashMap::new(), max_seq: 0 },
         );
         id
     }

@@ -17,7 +17,7 @@
  */
 
 use buckyos_api::{
-    get_rdb_instance_in, msg_center_default_rdb_instance_config, DeliveryEnvelope, DeliveryError,
+    get_rdb_instance_in, DeliveryEnvelope, DeliveryError,
     DeliveryRecord, DeliveryState, IngressContext, MailboxKind, MailboxRecord, RdbBackend,
     RdbPartition, RecipientState, UiSessionStateEntry, MSG_CENTER_RDB_INSTANCE_ID,
     MSG_CENTER_RDB_SCHEMA_POSTGRES, MSG_CENTER_RDB_SCHEMA_SQLITE, MSG_CENTER_SERVICE_NAME,
@@ -37,14 +37,6 @@ static INSTALL_DRIVERS: Once = Once::new();
 
 fn ensure_any_drivers_installed() {
     INSTALL_DRIVERS.call_once(install_default_drivers);
-}
-
-/// Per-session aggregate used by `list_sessions`.
-#[derive(Debug, Clone)]
-pub struct SessionIndexEntry {
-    pub session_id: String,
-    pub updated_at_ms: u64,
-    pub unread_count: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -155,12 +147,12 @@ impl MsgBoxDbMgr {
         .await
     }
 
-    /// Test / fallback entry: build a default instance config (sqlite) against
-    /// the given connection string. The schema DDL comes from the compiled-in
-    /// default for the chosen backend.
-    #[allow(dead_code)]
+    /// Test entry: build a default instance config (sqlite) against the given
+    /// connection string. The schema DDL comes from the compiled-in default for
+    /// the chosen backend.
+    #[cfg(test)]
     pub async fn open_default_sqlite(connection: &str) -> std::result::Result<Self, RPCErrors> {
-        let cfg = msg_center_default_rdb_instance_config();
+        let cfg = buckyos_api::msg_center_default_rdb_instance_config();
         let schema = cfg.schema.get(&RdbBackend::Sqlite).cloned();
         Self::open(connection, RdbBackend::Sqlite, schema.as_deref()).await
     }
@@ -705,71 +697,6 @@ LIMIT ?
         rows.iter().map(row_to_mailbox_record).collect()
     }
 
-    /// Session index for `list_sessions`: per session id, last activity and
-    /// unread count, newest first, cursor on (updated_at_ms, session_id).
-    pub async fn list_session_index(
-        &self,
-        owner: &DID,
-        limit: usize,
-        cursor_updated_at_ms: Option<u64>,
-        cursor_session_id: Option<&str>,
-    ) -> std::result::Result<Vec<SessionIndexEntry>, RPCErrors> {
-        let cursor_sql = if cursor_updated_at_ms.is_some() {
-            "HAVING (MAX(updated_at_ms) < ? OR (MAX(updated_at_ms) = ? AND session_id < ?))"
-        } else {
-            ""
-        };
-        let sql = self.render_sql(&format!(
-            r#"
-SELECT
-    session_id,
-    MAX(updated_at_ms) AS last_updated_at_ms,
-    SUM(CASE WHEN state = 'UNREAD' THEN 1 ELSE 0 END) AS unread_count
-FROM mailbox_records
-WHERE owner = ? AND session_id IS NOT NULL AND state != 'DELETED'
-GROUP BY session_id
-{cursor_sql}
-ORDER BY last_updated_at_ms DESC, session_id DESC
-LIMIT ?
-"#
-        ));
-
-        let mut query = sqlx::query(&sql).bind(owner.to_string());
-        if let Some(cursor) = cursor_updated_at_ms {
-            let session_id = cursor_session_id.unwrap_or("").to_string();
-            query = query
-                .bind(to_sql_i64(cursor))
-                .bind(to_sql_i64(cursor))
-                .bind(session_id);
-        }
-        let rows = query
-            .bind(limit as i64)
-            .fetch_all(self.pool())
-            .await
-            .map_err(|error| {
-                RPCErrors::ReasonError(format!("failed to list session index: {}", error))
-            })?;
-
-        let mut entries = Vec::with_capacity(rows.len());
-        for row in rows.iter() {
-            let session_id: String = row
-                .try_get("session_id")
-                .map_err(|e| decode_err("session_id", &e))?;
-            let updated_at_ms: i64 = row
-                .try_get("last_updated_at_ms")
-                .map_err(|e| decode_err("last_updated_at_ms", &e))?;
-            let unread_count: i64 = row
-                .try_get("unread_count")
-                .map_err(|e| decode_err("unread_count", &e))?;
-            entries.push(SessionIndexEntry {
-                session_id,
-                updated_at_ms: updated_at_ms.max(0) as u64,
-                unread_count: unread_count.max(0) as u64,
-            });
-        }
-        Ok(entries)
-    }
-
     // ------------------------------------------------------------------
     // Delivery queue
     // ------------------------------------------------------------------
@@ -833,7 +760,7 @@ WHERE delivery_records.state <> 'SENT' OR excluded.state = 'SENT'
 
     /// Insert-if-absent for `post_send`: an existing delivery (idempotent
     /// resubmission) keeps its current state/attempts untouched.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub async fn create_delivery_if_absent(
         &self,
         record: &DeliveryRecord,
@@ -1022,7 +949,7 @@ LIMIT 1
         Ok(Some(IdempotencyStoredResult { result }))
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub async fn upsert_idempotency_result<T: Serialize>(
         &self,
         scope: &str,
@@ -2274,39 +2201,6 @@ mod tests {
             .unwrap();
         assert_eq!(unread.len(), 1);
         assert_eq!(unread[0].state, RecipientState::Unread);
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn session_index_groups_by_session() {
-        let (mgr, _tmp) = setup_test_mgr().await;
-        let owner = sample_owner();
-        let mut r1 = sample_record(&owner, MailboxKind::Inbox, "one");
-        r1.session_id = Some("s-a".to_string());
-        let mut r2 = sample_record(&owner, MailboxKind::Sent, "two");
-        r2.session_id = Some("s-a".to_string());
-        r2.state = RecipientState::Read;
-        r2.updated_at_ms += 10;
-        let mut r3 = sample_record(&owner, MailboxKind::Inbox, "three");
-        r3.session_id = Some("s-b".to_string());
-        r3.updated_at_ms += 20;
-        for r in [&r1, &r2, &r3] {
-            mgr.upsert_record(r).await.unwrap();
-        }
-
-        let index = mgr
-            .list_session_index(&owner, 10, None, None)
-            .await
-            .unwrap();
-        assert_eq!(index.len(), 2);
-        assert_eq!(index[0].session_id, "s-b");
-        assert_eq!(index[1].session_id, "s-a");
-        assert_eq!(index[1].unread_count, 1);
-
-        let page = mgr
-            .list_session_records(&owner, "s-a", 10, None, None, true)
-            .await
-            .unwrap();
-        assert_eq!(page.len(), 2);
     }
 
     #[tokio::test(flavor = "current_thread")]

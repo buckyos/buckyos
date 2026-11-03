@@ -82,7 +82,6 @@ pub struct DiscoveredNode {
     pub addr: SocketAddr,
     pub rtcp_port: u16,
     pub last_seen: u64,
-    pub from_cache: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -157,14 +156,6 @@ pub struct NodeFinder {
 }
 
 impl NodeFinder {
-    pub fn new(this_device_jwt: String, device_private_key: EncodingKey) -> Self {
-        Self {
-            this_device_jwt,
-            this_device_private_key: device_private_key,
-            context: None,
-            running: Arc::new(RwLock::new(false)),
-        }
-    }
 
     pub fn new_for_zone(
         this_device_jwt: String,
@@ -314,15 +305,6 @@ pub struct NodeFinderClient {
 }
 
 impl NodeFinderClient {
-    pub fn new(this_device_jwt: String, this_device_private_key: EncodingKey) -> Self {
-        Self {
-            this_device_jwt,
-            this_device_private_key,
-            context: None,
-            cache_path: default_cache_path(),
-            cache_ttl_secs: FINDER_CACHE_TTL_SECS,
-        }
-    }
 
     pub fn new_for_zone(
         this_device_jwt: String,
@@ -384,13 +366,9 @@ impl NodeFinderClient {
         })
     }
 
+    #[cfg(test)]
     pub fn with_cache_path(mut self, cache_path: PathBuf) -> Self {
         self.cache_path = cache_path;
-        self
-    }
-
-    pub fn with_cache_ttl_secs(mut self, cache_ttl_secs: u64) -> Self {
-        self.cache_ttl_secs = cache_ttl_secs;
         self
     }
 
@@ -535,14 +513,6 @@ impl NodeFinderClient {
         Ok(discovered)
     }
 
-    pub async fn looking_by_udpv4(&self, node_id: String, timeout_secs: u64) -> Result<IpAddr> {
-        let nodes = self.looking_oods_by_udpv4(timeout_secs).await?;
-        nodes
-            .get(node_id.as_str())
-            .map(|node| node.addr.ip())
-            .ok_or_else(|| anyhow!("node {} not found by finder", node_id))
-    }
-
     fn handle_response_packet(
         &self,
         bytes: &[u8],
@@ -583,7 +553,6 @@ impl NodeFinderClient {
             addr: SocketAddr::new(addr.ip(), rtcp_port),
             rtcp_port,
             last_seen: now,
-            from_cache: false,
         })
     }
 
@@ -918,7 +887,6 @@ fn load_valid_cache_entries(
                 addr: SocketAddr::new(endpoint.ip, rtcp_port),
                 rtcp_port,
                 last_seen: entry.last_seen,
-                from_cache: true,
             },
         );
     }
@@ -1207,7 +1175,6 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
             addr: SocketAddr::new(endpoint_ip, DEFAULT_RTCP_PORT),
             rtcp_port: DEFAULT_RTCP_PORT,
             last_seen: buckyos_get_unix_timestamp(),
-            from_cache: false,
         };
 
         save_finder_cache(
@@ -1234,8 +1201,8 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
         .unwrap()
         .with_cache_path(cache_path);
         let cached = client.load_cached_oods().unwrap();
+        assert!(cached.contains_key("ood2"));
 
-        assert!(cached.get("ood2").unwrap().from_cache);
         assert!(name_client::resolve_ips(peer_did.to_string().as_str())
             .await
             .is_err());
@@ -1278,7 +1245,6 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
             addr: "192.168.1.20:2980".parse().unwrap(),
             rtcp_port: DEFAULT_RTCP_PORT,
             last_seen: buckyos_get_unix_timestamp(),
-            from_cache: false,
         };
 
         save_finder_cache(
@@ -1295,7 +1261,6 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
         )
         .unwrap();
         let cached_node = cached.get("ood2").unwrap();
-        assert!(cached_node.from_cache);
         assert_eq!(
             cached_node.addr.ip(),
             "192.168.1.20".parse::<IpAddr>().unwrap()

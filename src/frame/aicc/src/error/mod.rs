@@ -360,7 +360,6 @@ pub(crate) struct ResourceError {
     pub(crate) message: String,
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) enum RoutingError {
     InvalidRequest(String),
@@ -375,7 +374,6 @@ pub(crate) enum RoutingError {
     },
     FallbackNotAllowed(String),
     InvalidFallback(String),
-    FallbackLoop(String),
     FallbackDepthExceeded(usize),
     Registry(ModelRegistryError),
 }

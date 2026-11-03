@@ -12,12 +12,12 @@ use buckyos_api::{
     AiccSchedulerProfileWeights, ApiType, Capability, Feature, ModelDisable, ModelRequirement,
     Money,
 };
-#[allow(unused_imports)]
 pub(crate) use policy::{
-    policy_engine_for_route, resolve_effective_routing_policy, scheduler_profile_for_route_profile,
-    CallerIdentity, EffectiveRoutingPolicy, PolicyEngine, QuotaLookup, QuotaSnapshot,
+    policy_engine_for_route, CallerIdentity, PolicyEngine, QuotaLookup, QuotaSnapshot,
     QuotaSourceFactory, QuotaTruthPort,
 };
+#[cfg(test)]
+use policy::{resolve_effective_routing_policy, scheduler_profile_for_route_profile};
 use policy::{
     CandidatePolicyInput, CredentialScope, LocalityPreference, PolicyReason, ProviderPrivacy,
     ProviderTrustView, ProviderType, QuotaSource, RequestPolicyInput,
@@ -328,7 +328,6 @@ impl fmt::Display for RoutingError {
                 write!(formatter, "fallback is not allowed for {model}")
             }
             Self::InvalidFallback(reason) => write!(formatter, "invalid fallback: {reason}"),
-            Self::FallbackLoop(model) => write!(formatter, "fallback loop at {model}"),
             Self::FallbackDepthExceeded(limit) => {
                 write!(formatter, "fallback depth exceeds {limit}")
             }

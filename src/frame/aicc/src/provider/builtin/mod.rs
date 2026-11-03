@@ -144,29 +144,28 @@ fn builtin_catalog_files(catalog_ids: &[&str]) -> Vec<crate::catalog::CurrentCat
 #[cfg(test)]
 pub(crate) use crate::protocol::SN_OPENAI_ADAPTER_ID;
 use claude::CLAUDE_SPEC;
-#[allow(unused_imports)]
-pub(crate) use claude::{claude_discovery, CLAUDE_PROVIDER_PROFILE_ID};
+pub(crate) use claude::claude_discovery;
 #[cfg(test)]
 pub(crate) use fal::FAL_PROVIDER_PROFILE_ID;
-#[allow(unused_imports)]
-pub(crate) use gemini::{GeminiDiscovery, GEMINI_PROVIDER_PROFILE_ID};
+pub(crate) use gemini::GeminiDiscovery;
 #[cfg(test)]
 use glm::{
     glm_catalog_files, glm_known_provider, glm_model_driver, glm_profile, glm_provider_rules,
 };
-#[allow(unused_imports)]
-pub(crate) use glm::{glm_models_discovery, GLM_PROVIDER_PROFILE_ID};
+pub(crate) use glm::glm_models_discovery;
+#[cfg(test)]
+pub(crate) use glm::GLM_PROVIDER_PROFILE_ID;
 #[cfg(test)]
 use kimi::{
     kimi_catalog_files, kimi_known_provider, kimi_model_driver, kimi_profile, kimi_provider_rules,
 };
-#[allow(unused_imports)]
-pub(crate) use kimi::{KimiDiscovery, KIMI_PROVIDER_PROFILE_ID};
-#[allow(unused_imports)]
-pub(crate) use minimax::{minimax_discovery, MINIMAX_PROVIDER_PROFILE_ID};
-#[allow(unused_imports)]
-pub(crate) use openai::{OpenAiDiscovery, OPENAI_PROVIDER_PROFILE_ID};
-#[allow(unused_imports)]
+pub(crate) use kimi::KimiDiscovery;
+pub(crate) use minimax::minimax_discovery;
+#[cfg(test)]
+pub(crate) use minimax::MINIMAX_PROVIDER_PROFILE_ID;
+pub(crate) use openai::OpenAiDiscovery;
+#[cfg(test)]
+pub(crate) use openai::OPENAI_PROVIDER_PROFILE_ID;
 pub(crate) use openai_responses_compatible::{
     openai_compatible_models_discovery, DEEPSEEK_PROFILE_ID,
 };
@@ -179,20 +178,17 @@ use openrouter::{
     openrouter_catalog_files, openrouter_known_provider, openrouter_profile,
     openrouter_provider_rules,
 };
-#[allow(unused_imports)]
-pub(crate) use openrouter::{OpenRouterDiscovery, OPENROUTER_PROVIDER_PROFILE_ID};
-#[allow(unused_imports)]
+pub(crate) use openrouter::OpenRouterDiscovery;
 pub(crate) use registry::{
     builtin_provider_codecs, builtin_provider_registry, custom_profile_for_adapter,
-    BuiltinProviderBinding, BuiltinProviderRegistry, BuiltinProviderRequest,
-    CUSTOM_PROVIDER_PROFILE_ID,
+    BuiltinProviderRequest,
 };
-#[allow(unused_imports)]
 pub(crate) use sn::{
     resolve_sn_provider_instance_with_config, SnCredentialBroker, SnDiscovery,
     SnDynamicLoginResolver, SnProviderInstanceInput, SN_DYNAMIC_LOGIN_PROFILE_ID,
-    SN_PROVIDER_PROFILE_ID,
 };
+#[cfg(test)]
+pub(crate) use sn::SN_PROVIDER_PROFILE_ID;
 
 #[cfg(test)]
 mod wp08d_tests {

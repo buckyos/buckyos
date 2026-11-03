@@ -36,19 +36,19 @@ impl RunItemControl for LocalAppRunItem {
         "local_app"
     }
 
-    async fn deploy(&self, params: Option<&Vec<String>>) -> Result<()> {
+    async fn deploy(&self, _params: Option<&Vec<String>>) -> Result<()> {
         self.app_loader.deploy().await
     }
 
-    async fn start(&self, params: Option<&Vec<String>>) -> Result<()> {
+    async fn start(&self, _params: Option<&Vec<String>>) -> Result<()> {
         self.app_loader.start().await
     }
 
-    async fn stop(&self, params: Option<&Vec<String>>) -> Result<()> {
+    async fn stop(&self, _params: Option<&Vec<String>>) -> Result<()> {
         self.app_loader.stop().await
     }
 
-    async fn get_state(&self, params: Option<&Vec<String>>) -> Result<ServiceInstanceState> {
+    async fn get_state(&self, _params: Option<&Vec<String>>) -> Result<ServiceInstanceState> {
         self.app_loader.status().await
     }
 }

@@ -49,14 +49,12 @@ static EXPECTATIONS: OnceLock<std::sync::Mutex<HashMap<String, (Instant, WorkerE
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct PaiosImagesManifest {
     pub schema: String,
-    pub buckyos_revision: String,
     pub images: HashMap<String, PaiosImage>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct PaiosImage {
     pub repo: String,
-    pub version: String,
     pub revision: String,
     pub platforms: HashMap<String, PinnedPlatform>,
 }

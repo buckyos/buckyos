@@ -178,7 +178,7 @@ impl TestKeys {
         Ok(())
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn verify_all_key_pairs() -> Result<(), String> {
         let key_ids = vec![
             "devtest",
@@ -494,7 +494,6 @@ pub struct DevEnvBuilder {
 
 impl DevEnvBuilder {
     /// Create new builder
-    #[allow(dead_code)]
     pub fn new(root_dir_name: &str) -> Self {
         let root_dir = std::env::temp_dir().join(root_dir_name);
         std::fs::create_dir_all(&root_dir).unwrap();
@@ -525,7 +524,6 @@ impl DevEnvBuilder {
     }
 
     /// Get current timestamp
-    #[allow(dead_code)]
     pub fn now(&self) -> u64 {
         self.now
     }
@@ -1411,7 +1409,6 @@ pub async fn cmd_register_device_to_sn(
 // ============================================================================
 
 /// Create complete test environment configuration
-#[allow(dead_code)]
 pub async fn create_test_env_configs() {
     let builder = DevEnvBuilder::new("buckyos_dev_configs");
 
@@ -1664,7 +1661,8 @@ mod tests {
         //assert_eq!(expected_zone_boot_config, zone_boot_config_decoded);
     }
 
-    //#[tokio::test]
+    #[tokio::test]
+    #[ignore = "manual: writes the formula SN config into /opt/sn.buckyos.ai"]
     async fn test_create_formula_sn_config() {
         create_formula_sn_config().await;
     }

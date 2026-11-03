@@ -430,7 +430,6 @@ pub struct EventReader {
     reader_id: String,
     inner: Weak<KEventClientInner>,
     bridge_link: Option<Arc<KEventBridgeReaderLink>>,
-    mode: KEventClientMode,
     has_global_patterns: bool,
     closed: AtomicBool,
 }
@@ -657,7 +656,6 @@ impl KEventClient {
             reader_id,
             inner: Arc::downgrade(&self.inner),
             bridge_link,
-            mode: self.mode,
             has_global_patterns,
             closed: AtomicBool::new(false),
         })

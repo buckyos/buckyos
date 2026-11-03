@@ -5288,37 +5288,6 @@ impl Default for AiccLlmClient {
     }
 }
 
-#[allow(dead_code)]
-fn build_aicc_llm_options(
-    temperature: Option<f32>,
-    max_completion_tokens: Option<u32>,
-    force_json: bool,
-    json_schema: Option<Value>,
-    provider_options: Option<Value>,
-) -> Value {
-    let mut options = serde_json::Map::new();
-    if let Some(temperature) = temperature {
-        options.insert("temperature".into(), json!(temperature));
-    }
-    if let Some(max_completion_tokens) = max_completion_tokens {
-        options.insert("max_tokens".into(), json!(max_completion_tokens));
-    }
-    if force_json {
-        if let Some(schema) = json_schema {
-            options.insert("response_schema".into(), schema);
-        }
-    }
-    if let Some(extra) = provider_options {
-        match extra {
-            Value::Object(extra) => options.extend(extra),
-            extra => {
-                options.insert("provider_options".into(), extra);
-            }
-        }
-    }
-    Value::Object(options)
-}
-
 #[async_trait]
 impl LlmClient for AiccLlmClient {
     async fn infer(&self, req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError> {

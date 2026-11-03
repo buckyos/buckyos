@@ -1,6 +1,5 @@
 use crate::app_loader::{
-    buckyos_tool_mounts, command_matches_agent_process, command_matches_exact_agent_process,
-    container_list_contains_name, docker_deployment_health, docker_desc_requires_exact_match,
+    buckyos_tool_mounts, container_list_contains_name, docker_deployment_health,
     docker_image_tar_candidates_for_arch, docker_runtime_matches_deployment,
     docker_runtime_matches_target, inspect_docker_image_layout, normalize_digest,
     parse_docker_container_inspect, primary_service_port, validate_app_launch_config, AppLoader,
@@ -24,9 +23,8 @@ use package_lib::PackageId;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use tempfile::tempdir;
 
 fn assert_programs(commands: &[CommandSpec], expected: &[&str]) {
@@ -729,14 +727,6 @@ fn local_paios_root() -> &'static Path {
     ROOT.get_or_init(|| tempdir().unwrap()).path()
 }
 
-fn unique_temp_path(prefix: &str) -> std::path::PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
-}
-
 #[test]
 fn helper_functions_keep_expected_normalization() {
     let amd64_candidates = docker_image_tar_candidates_for_arch("demo", PlatformArch::Amd64);
@@ -862,7 +852,6 @@ fn docker_runtime_exact_match_uses_pkg_objid_and_digest() {
         .docker_image_digest("demo/service@sha256:deadbeef");
     desc.pkg_objid = Some(test_package_object_id(1));
 
-    assert!(docker_desc_requires_exact_match(&desc));
     assert!(docker_runtime_matches_target(
         &DockerRuntimeIdentity {
             image_id: Some("sha256:anotherhash".to_string()),
@@ -910,7 +899,6 @@ fn docker_runtime_exact_match_uses_pkg_objid_and_digest() {
 #[test]
 fn docker_runtime_exact_match_rejects_another_pkg_version_without_objid() {
     let desc = SubPkgDesc::new("demo-img#0.2.0");
-    assert!(docker_desc_requires_exact_match(&desc));
     assert!(!docker_runtime_matches_target(
         &DockerRuntimeIdentity {
             labels: HashMap::from([(
@@ -1035,54 +1023,6 @@ fn docker_runtime_exact_match_rejects_another_deployment_generation() {
 }
 
 #[test]
-fn agent_process_matching_distinguishes_wildcard_and_exact_checks() {
-    let agent_env = Path::new("/opt/buckyos/data/home/alice/agents/jarvis-agent.example");
-    let expected_root =
-        Path::new("/opt/buckyos/env/pkgs/agent.jarvis-agent.example#pkg:1234567890");
-    let exact_cmd = vec![
-        "opendan".to_string(),
-        "--app-id".to_string(),
-        "jarvis-agent.example".to_string(),
-        "--agent-bin".to_string(),
-        expected_root.to_string_lossy().to_string(),
-        "--service-port".to_string(),
-        "4060".to_string(),
-    ];
-    let old_cmd = vec![
-        "opendan".to_string(),
-        "--app-id".to_string(),
-        "jarvis-agent.example".to_string(),
-        "--agent-bin".to_string(),
-        "/opt/buckyos/env/pkgs/agent.jarvis-agent.example#pkg:oldversion".to_string(),
-        "--service-port".to_string(),
-        "4060".to_string(),
-    ];
-
-    assert!(command_matches_agent_process(
-        &exact_cmd,
-        "jarvis-agent.example"
-    ));
-    assert!(command_matches_agent_process(
-        &old_cmd,
-        "jarvis-agent.example"
-    ));
-    assert!(command_matches_exact_agent_process(
-        &exact_cmd,
-        "jarvis-agent.example",
-        agent_env,
-        Some(expected_root),
-        Some("pkg:1234567890"),
-    ));
-    assert!(!command_matches_exact_agent_process(
-        &old_cmd,
-        "jarvis-agent.example",
-        agent_env,
-        Some(expected_root),
-        Some("pkg:1234567890"),
-    ));
-}
-
-#[test]
 fn appservice_control_commands_match_linux_amd64_docker_runtime() {
     let loader = build_service_loader(
         build_appservice_doc(),
@@ -1106,7 +1046,6 @@ fn appservice_control_commands_match_linux_amd64_docker_runtime() {
     let start = loader.preview_operation(ControlOperation::Start).unwrap();
     assert_eq!(start.runtime, RuntimeType::Docker);
     assert_programs(&start.commands, &["docker", "docker"]);
-    let runtime_key = test_runtime_key("demo.example");
     let container_name = test_container_name("test-app");
     assert_eq!(
         start.commands[0].args,

@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 
 //! Delivery executor registry.
 //!
@@ -79,8 +78,6 @@ pub trait TunnelIngressHandler: MsgCenterHandler {
 pub trait DeliveryExecutor: Send + Sync {
     /// The executor's DID: owner key of its DELIVERY_QUEUE.
     fn transport_did(&self) -> DID;
-    fn name(&self) -> &str;
-    fn platform(&self) -> &str;
 
     fn supports_ingress(&self) -> bool {
         true
@@ -124,42 +121,10 @@ pub enum ExecutorInstanceState {
 #[derive(Debug, Clone)]
 pub struct ExecutorInstanceInfo {
     pub transport_did: DID,
-    pub name: String,
-    pub platform: String,
-    pub supports_ingress: bool,
     pub supports_egress: bool,
     pub state: ExecutorInstanceState,
-    pub registered_at_ms: u64,
     pub updated_at_ms: u64,
     pub last_error: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ExecutorOpReport {
-    pub transport_did: DID,
-    pub ok: bool,
-    pub state: Option<ExecutorInstanceState>,
-    pub error: Option<String>,
-}
-
-impl ExecutorOpReport {
-    fn success(info: ExecutorInstanceInfo) -> Self {
-        Self {
-            transport_did: info.transport_did,
-            ok: true,
-            state: Some(info.state),
-            error: None,
-        }
-    }
-
-    fn failed(transport_did: DID, error: ExecutorMgrError) -> Self {
-        Self {
-            transport_did,
-            ok: false,
-            state: None,
-            error: Some(error.to_string()),
-        }
-    }
 }
 
 #[derive(Debug, Error)]
@@ -214,12 +179,8 @@ impl DeliveryExecutorMgr {
         let now_ms = Self::now_ms();
         let info = ExecutorInstanceInfo {
             transport_did: transport_did.clone(),
-            name: executor.name().to_string(),
-            platform: executor.platform().to_string(),
-            supports_ingress: executor.supports_ingress(),
             supports_egress: executor.supports_egress(),
             state: ExecutorInstanceState::Registered,
-            registered_at_ms: now_ms,
             updated_at_ms: now_ms,
             last_error: None,
         };
@@ -273,19 +234,7 @@ impl DeliveryExecutorMgr {
         Ok(removed.info)
     }
 
-    pub fn get_executor(
-        &self,
-        transport_did: &DID,
-    ) -> ExecutorMgrResult<Option<Arc<dyn DeliveryExecutor>>> {
-        let entries = self
-            .entries
-            .read()
-            .map_err(|_| ExecutorMgrError::LockPoisoned)?;
-        Ok(entries
-            .get(&transport_did.to_string())
-            .map(|entry| entry.executor.clone()))
-    }
-
+    #[cfg(test)]
     pub fn get_instance(
         &self,
         transport_did: &DID,
@@ -408,34 +357,6 @@ impl DeliveryExecutorMgr {
         }
     }
 
-    pub async fn start_all(&self) -> ExecutorMgrResult<Vec<ExecutorOpReport>> {
-        let instances = self.list_instances()?;
-        let mut reports = Vec::with_capacity(instances.len());
-        for info in instances {
-            let did = info.transport_did.clone();
-            let report = match self.start_instance(&did).await {
-                Ok(updated) => ExecutorOpReport::success(updated),
-                Err(error) => ExecutorOpReport::failed(did, error),
-            };
-            reports.push(report);
-        }
-        Ok(reports)
-    }
-
-    pub async fn stop_all(&self) -> ExecutorMgrResult<Vec<ExecutorOpReport>> {
-        let instances = self.list_instances()?;
-        let mut reports = Vec::with_capacity(instances.len());
-        for info in instances {
-            let did = info.transport_did.clone();
-            let report = match self.stop_instance(&did).await {
-                Ok(updated) => ExecutorOpReport::success(updated),
-                Err(error) => ExecutorOpReport::failed(did, error),
-            };
-            reports.push(report);
-        }
-        Ok(reports)
-    }
-
     pub async fn execute_via(
         &self,
         transport_did: &DID,
@@ -473,6 +394,7 @@ impl DeliveryExecutorMgr {
     }
 
     /// Execute a delivery on the executor named by its envelope.
+    #[cfg(test)]
     pub async fn execute_delivery(
         &self,
         record: DeliveryRecordWithObject,
@@ -559,8 +481,6 @@ mod tests {
 
     struct MockExecutor {
         did: DID,
-        name: String,
-        platform: String,
         egress_enabled: bool,
         running: AtomicBool,
         start_calls: AtomicUsize,
@@ -569,11 +489,9 @@ mod tests {
     }
 
     impl MockExecutor {
-        fn new(subject: &str, platform: &str, egress_enabled: bool) -> Self {
+        fn new(subject: &str, egress_enabled: bool) -> Self {
             Self {
                 did: DID::new("bns", subject),
-                name: format!("{}-tunnel", subject),
-                platform: platform.to_string(),
                 egress_enabled,
                 running: AtomicBool::new(false),
                 start_calls: AtomicUsize::new(0),
@@ -599,14 +517,6 @@ mod tests {
     impl DeliveryExecutor for MockExecutor {
         fn transport_did(&self) -> DID {
             self.did.clone()
-        }
-
-        fn name(&self) -> &str {
-            &self.name
-        }
-
-        fn platform(&self) -> &str {
-            &self.platform
         }
 
         fn supports_egress(&self) -> bool {
@@ -649,7 +559,7 @@ mod tests {
     #[tokio::test]
     async fn register_rejects_duplicate_transport_did() {
         let mgr = DeliveryExecutorMgr::new();
-        let executor = Arc::new(MockExecutor::new("tg-main", "telegram", true));
+        let executor = Arc::new(MockExecutor::new("tg-main", true));
         let transport_did = executor.transport_did();
 
         let first = mgr.register(executor.clone()).unwrap();
@@ -665,7 +575,7 @@ mod tests {
     #[tokio::test]
     async fn lifecycle_and_send_flow_work_for_running_executor() {
         let mgr = DeliveryExecutorMgr::new();
-        let executor = Arc::new(MockExecutor::new("tg-send", "telegram", true));
+        let executor = Arc::new(MockExecutor::new("tg-send", true));
         let transport_did = executor.transport_did();
         mgr.register(executor.clone()).unwrap();
 
@@ -692,19 +602,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn start_stop_all_and_unregister_follow_state_rules() {
+    async fn start_stop_and_unregister_follow_state_rules() {
         let mgr = DeliveryExecutorMgr::new();
-        let executor_a = Arc::new(MockExecutor::new("tg-a", "telegram", true));
-        let executor_b = Arc::new(MockExecutor::new("slack-b", "slack", false));
+        let executor_a = Arc::new(MockExecutor::new("tg-a", true));
+        let executor_b = Arc::new(MockExecutor::new("slack-b", false));
 
         let did_a = executor_a.transport_did();
         let did_b = executor_b.transport_did();
         mgr.register(executor_a).unwrap();
         mgr.register(executor_b).unwrap();
 
-        let start_reports = mgr.start_all().await.unwrap();
-        assert_eq!(start_reports.len(), 2);
-        assert!(start_reports.iter().all(|report| report.ok));
+        for did in [&did_a, &did_b] {
+            mgr.start_instance(did).await.unwrap();
+        }
 
         let send_err = mgr
             .execute_via(&did_b, build_delivery_record(did_b.clone()))
@@ -718,9 +628,9 @@ mod tests {
             ExecutorMgrError::InvalidStateTransition { .. }
         ));
 
-        let stop_reports = mgr.stop_all().await.unwrap();
-        assert_eq!(stop_reports.len(), 2);
-        assert!(stop_reports.iter().all(|report| report.ok));
+        for did in [&did_a, &did_b] {
+            mgr.stop_instance(did).await.unwrap();
+        }
 
         mgr.unregister(&did_a).unwrap();
         assert!(mgr.get_instance(&did_a).unwrap().is_none());

@@ -67,7 +67,6 @@ pub struct ExtRecord {
     #[serde(default)]
     pub critical: bool,
     #[serde(default)]
-    #[allow(dead_code)]
     pub payload: Value,
 }
 

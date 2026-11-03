@@ -13,7 +13,6 @@ use homestation::settings::{CollectorRef, UserSettings};
 use homestation::standalone::{build, StandaloneConfig};
 use homestation::Station;
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -312,8 +311,4 @@ pub async fn publish(net: &Net, name: &str, key: &str, input: Value) -> Value {
     let task = net.rpc(name, "publish.create", json!({ "key": key, "input": input })).await;
     assert_eq!(task["stage"], "published", "{task}");
     task
-}
-
-pub fn map_of(value: &Value) -> HashMap<String, Value> {
-    serde_json::from_value(value.clone()).unwrap_or_default()
 }

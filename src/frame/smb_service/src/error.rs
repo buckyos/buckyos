@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 pub use sfo_result::err as smb_err;
 pub use sfo_result::into_err as into_smb_err;
 
@@ -8,9 +7,6 @@ pub enum SmbErrorCode {
     CmdReturnFailed,
     LoadSmbConfFailed,
     ListUserFailed,
-    SessionTokenNotFound,
 }
 
 pub type SmbResult<T> = sfo_result::Result<T, SmbErrorCode>;
-#[allow(dead_code)]
-pub type SmbError = sfo_result::Error<SmbErrorCode>;

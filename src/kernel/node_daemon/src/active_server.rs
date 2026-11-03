@@ -30,7 +30,6 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::process::exit;
 use std::result::Result;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -661,7 +660,7 @@ impl ActiveServer {
 
     async fn handle_get_mini_device_info(
         &self,
-        req: http::Request<BoxBody<Bytes, ServerError>>,
+        _req: http::Request<BoxBody<Bytes, ServerError>>,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
         let device_info_json = serde_json::to_string(&self.device_mini_info)
             .map_err(|error| server_err!(ServerErrorCode::InvalidData, "{}", error))?;
@@ -1777,7 +1776,9 @@ pub async fn start_node_active_service() {
         error!("Failed to add active UI: {}", error);
         return;
     }
-    runner.run().await;
+    if let Err(error) = runner.run().await {
+        error!("active server stopped: {:?}", error);
+    }
 }
 
 #[cfg(test)]

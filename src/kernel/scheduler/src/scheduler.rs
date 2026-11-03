@@ -80,8 +80,6 @@ SchedulerAction 的执行由外部模块负责：
 - InstanceReplica      → 写入 nodes/{node_id}/config 中的 kernel 或 app 配置
 - RemoveInstance       → 对 App 保留 node config item，并把实例状态收敛到 `Stopped/Deleted`
 - UpdateServiceInfo    → 更新 services/{spec_id}/info，供其他服务发现使用
-- CreateOPTask         → 未来版本将重构为 Function Instance 调度
-    （详见 doc/arch/使用function_instance实现分布式调度器.md）
 - UpdateInstance       → （TODO: unimplemented for service type）
 
 附加处理（在 schedule_loop 中执行）：
@@ -439,9 +437,6 @@ pub struct ReplicaInstance {
 }
 
 impl ReplicaInstance {
-    pub fn is_app_instance(&self) -> bool {
-        matches!(self.replica_key.service, ReplicaServiceIdentity::App { .. })
-    }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -534,7 +529,6 @@ pub enum ServiceInfo {
 #[derive(Clone, Debug)]
 pub enum SchedulerAction {
     ChangeNodeStatus(String, NodeState),
-    CreateOPTask(OPTask),
     ChangeServiceStatus(String, ServiceSpecState),
     InstanceReplica(ReplicaInstance),
     UpdateInstance(ReplicaKey, ReplicaInstance),
@@ -578,28 +572,6 @@ impl NodeScheduler {
             service_infos: HashMap::new(),
             service_info_refresh_times: HashMap::new(),
             schedule_time: buckyos_get_unix_timestamp(),
-        }
-    }
-
-    pub fn new(
-        step_id: u64,
-        users: HashMap<String, UserItem>,
-        nodes: HashMap<String, NodeItem>,
-        specs: HashMap<String, ServiceSpec>,
-        replica_instances: HashMap<ReplicaKey, ReplicaInstance>,
-        service_infos: HashMap<String, ServiceInfo>,
-    ) -> Self {
-        let now = buckyos_get_unix_timestamp();
-        Self {
-            schedule_step_id: step_id,
-            default_user_id: "".to_string(),
-            users,
-            nodes,
-            specs,
-            replica_instances,
-            service_infos,
-            service_info_refresh_times: HashMap::new(),
-            schedule_time: now,
         }
     }
 
@@ -1082,30 +1054,11 @@ impl NodeScheduler {
     // 辅助函数
     fn check_node_op_tasks(
         &self,
-        node: &NodeItem,
-        actions: &mut Vec<SchedulerAction>,
+        _node: &NodeItem,
+        _actions: &mut Vec<SchedulerAction>,
     ) -> Result<()> {
         // TODO: 实现检查node的op tasks完成情况的逻辑
         Ok(())
-    }
-
-    fn check_resource_limits(
-        &self,
-        instance: &ReplicaInstance,
-        node: &NodeItem,
-        actions: &mut Vec<SchedulerAction>,
-    ) -> Result<()> {
-        // TODO: 实现检查和更新资源限制的逻辑
-        Ok(())
-    }
-
-    fn find_new_placement(
-        &self,
-        spec_id: &str,
-        available_nodes: &[&NodeItem],
-    ) -> Result<Vec<ReplicaInstance>> {
-        // TODO: 实现查找新的部署位置的逻辑
-        Ok(vec![])
     }
 
     fn alloc_replica_instance_port(

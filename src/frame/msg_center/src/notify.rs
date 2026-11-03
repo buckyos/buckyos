@@ -144,7 +144,7 @@ impl NotifyTasksSlot {
         self.0.read().unwrap().clone()
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn set(&self, tasks: Arc<dyn NotifyTasks>) {
         *self.0.write().unwrap() = tasks;
     }
@@ -441,7 +441,7 @@ impl MessageCenter {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn set_notify_tasks(&self, tasks: Arc<dyn NotifyTasks>) {
         self.notify_tasks.set(tasks);
     }

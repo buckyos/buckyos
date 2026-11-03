@@ -4,13 +4,12 @@ use buckyos_api::*;
 use buckyos_kit::*;
 use log::warn;
 pub use name_lib::DeviceInfo;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::collections::HashMap;
 
 pub fn instance_service(
     new_instance: &ReplicaInstance,
     server_config: &KernelServiceSpec,
-    is_zone_gateway: bool,
 ) -> Result<HashMap<String, KVAction>> {
     let mut result = HashMap::new();
     //目前所有的service都是kernel service (no docker) ,有标准的frame service也是应该运行在docker中的.
@@ -26,38 +25,6 @@ pub fn instance_service(
     let set_action = KVAction::SetByJsonPath(set_actions);
     result.insert(key_path, set_action);
 
-    // //add to node gateway config
-    // let key_path = format!("nodes/{}/gateway_config",new_instance.node_id.as_str());
-    // let mut set_actions = HashMap::new();
-    // //TODO: cyfs-gateway need support router-cluster or router-buckyos_service_selector
-    // //instance的逻辑
-    // //确保新的Instance可以被访问
-    // //  被全局访问：zone-gateway配置修改
-    // //  被Zone内访问: 有权限访问该service的NodeGateway修改
-    // //
-
-    // if is_zone_gateway {
-    //     let json_path = format!("servers/zone_gateway/hosts/*/routes/\"/kapi/{}\"",new_instance.spec_id.as_str());
-    //     let set_value = json!({
-    //         "upstream":format!("http://127.0.0.1:{}",service_port),
-    //     });
-    //     set_actions.insert(json_path,Some(set_value));
-
-    //     let json_path = format!("servers/zone_gateway/hosts/sys*/routes/\"/kapi/{}\"",new_instance.spec_id.as_str());
-    //     let set_value = json!({
-    //         "upstream":format!("http://127.0.0.1:{}",service_port),
-    //     });
-    //     set_actions.insert(json_path,Some(set_value));
-    // }
-
-    // let json_path = format!("servers/node_gateway/hosts/*/routes/\"/kapi/{}\"",new_instance.spec_id.as_str());
-    // let set_value = json!({
-    //     "upstream":format!("http://127.0.0.1:{}",service_port),
-    // });
-    // set_actions.insert(json_path,Some(set_value));
-
-    // let set_action = KVAction::SetByJsonPath(set_actions);
-    // result.insert(key_path,set_action);
     Ok(result)
 }
 
@@ -69,17 +36,10 @@ pub fn uninstance_service(instance: &ReplicaInstance) -> Result<HashMap<String, 
     set_actions.insert(json_path, None);
     result.insert(key_path, KVAction::SetByJsonPath(set_actions));
 
-    // let key_path = format!("nodes/{}/gateway_config",instance.node_id.as_str());
-    // let json_path = format!("servers/zone_gateway/hosts/*/routes/\"/kapi/{}\"",instance.spec_id.as_str());
-    // let mut set_actions:HashMap<String,Option<Value>> = HashMap::new();
-    // set_actions.insert(json_path,None);
-    // let set_action = KVAction::SetByJsonPath(set_actions);
-    //result.insert(key_path,set_action);
-
     Ok(result)
 }
 
-pub fn update_service_instance(instance: &ReplicaInstance) -> Result<HashMap<String, KVAction>> {
+pub fn update_service_instance(_instance: &ReplicaInstance) -> Result<HashMap<String, KVAction>> {
     unimplemented!();
 }
 
@@ -87,7 +47,6 @@ pub fn update_service_info(
     spec_id: &str,
     service_info: &SchedulerServiceInfo,
     device_list: &HashMap<String, DeviceInfo>,
-    input_config: &HashMap<String, String>,
 ) -> Result<HashMap<String, KVAction>> {
     //update service info
     let mut result = HashMap::new();

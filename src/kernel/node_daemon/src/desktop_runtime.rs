@@ -5,16 +5,22 @@
 //! readiness report node_control reads.
 
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
 use std::process::Command;
 
 use buckyos_api::node_control::{
-    current_euid, current_os_user, detect_host_control_state_at, macos_register_runtime,
-    macos_set_autostart, macos_unregister_runtime, node_daemon_local_dir, node_start, node_stop,
-    read_desktop_binding, read_desktop_status, NodeStartRequest, NodeStopRequest,
+    detect_host_control_state_at, macos_register_runtime, macos_set_autostart,
+    macos_unregister_runtime, node_start, node_stop, read_desktop_status, NodeStartRequest,
+    NodeStopRequest,
+};
+#[cfg(target_os = "macos")]
+use buckyos_api::node_control::{
+    current_euid, current_os_user, node_daemon_local_dir, read_desktop_binding,
     DESKTOP_STATUS_FILE, MACOS_RUNTIME_LABEL,
 };
 
 pub const SERVICE_ARG: &str = "service";
+#[cfg(any(target_os = "macos", test))]
 pub const REQUEST_PERMISSIONS_ARG: &str = "--request_permissions";
 
 const SERVICE_HELP: &str = "usage: node_daemon service <command> [--root PATH]
@@ -143,6 +149,7 @@ pub fn service_main(args: Vec<String>) -> i32 {
 /// A LaunchServices launch of the bundle (Finder, `open`) carries no daemon
 /// arguments: it is a user asking for the Runtime, never a reason to start a
 /// system-mode node in the foreground.
+#[cfg(any(target_os = "macos", test))]
 pub fn is_app_entry(args: &[String]) -> bool {
     if args.iter().any(|arg| arg == REQUEST_PERMISSIONS_ARG) {
         return true;
@@ -153,14 +160,17 @@ pub fn is_app_entry(args: &[String]) -> bool {
     in_bundle && args.iter().all(|arg| arg.starts_with("-psn_"))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn applescript_quote(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+#[cfg(target_os = "macos")]
 fn alert(message: &str) {
     eprintln!("BuckyOS Runtime: {message}");
     let script = format!(
@@ -174,6 +184,7 @@ fn alert(message: &str) {
 /// First open after an installation without a GUI user: bind the root to the
 /// person opening the app, with an administrator prompt (the root is still
 /// installer-owned).
+#[cfg(target_os = "macos")]
 fn register_with_admin(root: &Path, user: &str) -> bool {
     let Ok(exe) = std::env::current_exe() else {
         return false;
@@ -208,6 +219,7 @@ fn register_with_admin(root: &Path, user: &str) -> bool {
 
 /// Whether the running Runtime still reports a permission this process now
 /// holds (Screen Recording only applies after a restart).
+#[cfg(target_os = "macos")]
 fn runtime_lacks(root: &Path, capture: bool, input: bool) -> bool {
     let Some((report, _)) = read_desktop_status(root) else {
         return false;

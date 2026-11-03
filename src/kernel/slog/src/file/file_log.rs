@@ -138,6 +138,7 @@ impl LogRecordCache {
         result
     }
 
+    #[cfg(test)]
     pub fn fetch_all(&self) -> Vec<SystemLogRecord> {
         self.pop_batch(usize::MAX, usize::MAX)
     }

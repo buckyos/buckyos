@@ -1,4 +1,3 @@
-use ::kRPC::*;
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
@@ -174,6 +173,7 @@ impl Default for DefaultThunkRunner {
 }
 
 impl DefaultThunkRunner {
+    #[cfg(test)]
     pub fn new(
         named_object_inspector: Arc<dyn NamedObjectInspector>,
         node_catalog: Arc<dyn ThunkNodeCatalog>,

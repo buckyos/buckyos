@@ -13,7 +13,7 @@ use buckyos_api::{
     MsgReceiptObj, OwnerSessionState, PostSendDelivery, PostSendResult, ReadReceiptState,
     RecipientState, SessionDeliveryOverall, SessionDeliveryTarget, SessionDeliveryView,
     SessionLifecycle, SessionListLifecycleFilter, SessionListOrder, SessionMessageDirection,
-    SessionMessageItem, SessionMessagePage, SessionSummary, SessionSummaryPage,
+    SessionMessageItem, SessionMessagePage, SessionSummaryPage,
     SetGroupSubscribersResult, TransportKind, UiSessionStateEntry,
 };
 use kRPC::{RPCContext, RPCErrors};
@@ -29,8 +29,6 @@ const DEFAULT_PEEK_LIMIT: usize = 20;
 const MAX_PEEK_LIMIT: usize = 200;
 const DEFAULT_LIST_LIMIT: usize = 50;
 const MAX_LIST_LIMIT: usize = 500;
-const DEFAULT_SESSION_LIST_LIMIT: usize = 50;
-const MAX_SESSION_LIST_LIMIT: usize = 200;
 const DEFAULT_READ_RECEIPT_LIMIT: usize = 100;
 const MAX_READ_RECEIPT_LIMIT: usize = 1000;
 const MAX_DELIVERY_RETRY: u32 = 5;
@@ -2412,124 +2410,6 @@ impl MessageCenter {
             recipient_state,
             delivery,
             msg,
-        })
-    }
-
-    #[allow(dead_code)]
-    async fn list_sessions_internal(
-        &self,
-        owner: DID,
-        limit: Option<usize>,
-        cursor_updated_at_ms: Option<u64>,
-        cursor_session_id: Option<String>,
-        with_object: Option<bool>,
-    ) -> std::result::Result<SessionSummaryPage, RPCErrors> {
-        let limit = Self::clamp_limit(limit, DEFAULT_SESSION_LIST_LIMIT, MAX_SESSION_LIST_LIMIT);
-        // Fetch one extra row to detect whether another page exists.
-        let entries = self
-            .msg_box_db
-            .list_session_index(
-                &owner,
-                limit + 1,
-                cursor_updated_at_ms,
-                cursor_session_id.as_deref(),
-            )
-            .await?;
-        let has_more = entries.len() > limit;
-        let page_entries = entries.into_iter().take(limit).collect::<Vec<_>>();
-
-        let mut items = Vec::with_capacity(page_entries.len());
-        for entry in page_entries {
-            let last_record = self
-                .msg_box_db
-                .list_session_records(&owner, &entry.session_id, 1, None, None, true)
-                .await?
-                .into_iter()
-                .next();
-            let last_record = match last_record {
-                Some(record) => Some(
-                    self.build_record_view(record, Some(with_object.unwrap_or(false)))
-                        .await?,
-                ),
-                None => None,
-            };
-            items.push(SessionSummary {
-                session_id: entry.session_id,
-                last_record,
-                unread_count: entry.unread_count,
-                updated_at_ms: entry.updated_at_ms,
-                last_activity_ms: 0,
-                request_count: 0,
-                lifecycle: SessionLifecycle::Active,
-                state: None,
-            });
-        }
-
-        let (next_cursor_updated_at_ms, next_cursor_session_id) = if has_more {
-            items
-                .last()
-                .map(|item| (Some(item.updated_at_ms), Some(item.session_id.clone())))
-                .unwrap_or((None, None))
-        } else {
-            (None, None)
-        };
-
-        Ok(SessionSummaryPage {
-            items,
-            next_cursor_updated_at_ms,
-            next_cursor_session_id,
-        })
-    }
-
-    #[allow(dead_code)]
-    async fn list_session_internal(
-        &self,
-        owner: DID,
-        session_id: String,
-        limit: Option<usize>,
-        cursor_sort_key: Option<u64>,
-        cursor_record_id: Option<String>,
-        descending: Option<bool>,
-        with_object: Option<bool>,
-    ) -> std::result::Result<SessionMessagePage, RPCErrors> {
-        let session_id = Self::normalize_ui_session_arg("session_id", &session_id)?;
-        let descending = descending.unwrap_or(true);
-        let limit = Self::clamp_limit(limit, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT);
-        let records = self
-            .msg_box_db
-            .list_session_records(
-                &owner,
-                &session_id,
-                limit + 1,
-                cursor_sort_key,
-                cursor_record_id.as_deref(),
-                descending,
-            )
-            .await?;
-        let has_more = records.len() > limit;
-        let page_records = records.into_iter().take(limit).collect::<Vec<_>>();
-
-        let mut items = Vec::with_capacity(page_records.len());
-        for record in page_records {
-            items.push(
-                self.build_session_item(record, with_object.unwrap_or(false))
-                    .await?,
-            );
-        }
-
-        let (next_cursor_sort_key, next_cursor_record_id) = if has_more {
-            items
-                .last()
-                .map(|item| (Some(item.sort_key), Some(item.record_id.clone())))
-                .unwrap_or((None, None))
-        } else {
-            (None, None)
-        };
-
-        Ok(SessionMessagePage {
-            items,
-            next_cursor_sort_key,
-            next_cursor_record_id,
         })
     }
 

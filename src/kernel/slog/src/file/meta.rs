@@ -1,5 +1,5 @@
 use rusqlite::{Connection, OptionalExtension, Result as SqlResult};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 #[derive(Debug)]
@@ -30,7 +30,6 @@ pub struct LogFileReadInfo {
 }
 
 pub struct LogMeta {
-    log_dir: PathBuf,
     conn: Arc<Mutex<Connection>>,
 }
 
@@ -74,7 +73,6 @@ impl LogMeta {
 
         Ok(LogMeta {
             conn: Arc::new(Mutex::new(conn)),
-            log_dir: log_dir.to_path_buf(),
         })
     }
 

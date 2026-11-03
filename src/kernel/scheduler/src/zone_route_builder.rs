@@ -582,7 +582,7 @@ fn did_ip_hints_for_target(
     target_port: u32,
 ) -> Vec<DidIpHint> {
     let mut hints: Vec<DidIpHint> = Vec::new();
-    let mut push_unique = |hint: DidIpHint, hints: &mut Vec<DidIpHint>| {
+    let push_unique = |hint: DidIpHint, hints: &mut Vec<DidIpHint>| {
         if hints
             .iter()
             .any(|existing| existing.ip == hint.ip && existing.source == hint.source)

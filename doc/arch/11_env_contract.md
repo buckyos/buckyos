@@ -117,9 +117,6 @@ AgentTool 新实现目标是只依赖 `OPENDAN_AGENT_ROOT`、`OPENDAN_SESSION_ID
 | 变量 | 模块 | 语义 |
 | --- | --- | --- |
 | `BUCKYOS_CONTENT_MGR_DB_PATH` | control-panel share content manager | 覆盖 share content manager SQLite/DB 路径。 |
-| `BUCKYOS_TG_API_ID` | msg-center Telegram tunnel | Telegram API id，启用 grammers gateway 时必填。 |
-| `BUCKYOS_TG_API_HASH` | msg-center Telegram tunnel | Telegram API hash，启用 grammers gateway 时必填。 |
-| `BUCKYOS_TG_SESSION_DIR` | msg-center Telegram tunnel | Telegram session 目录覆盖。 |
 | `BUCKYOS_KEVENT_RINGBUFFER_PATH` | kevent shared ringbuffer | 覆盖共享 ringbuffer 文件路径，POSIX 默认 `/tmp/buckyos_kevent_ringbuffer_v2.shm`，Windows 默认 `$BUCKYOS_ROOT\tmp\buckyos_kevent_ringbuffer_v2.shm`（`/tmp` 在 Windows 是盘符相对路径，会按启动方 cwd 所在盘分裂成多份）。节点内所有进程必须解析到同一个文件，否则事件总线会静默裂开；测试中需要串行管理。 |
 | `BUCKYOS_KEVENT_KMSG_CASES` | `test/kevent_kmsg` | 选择 kevent/kmsg 测试 case。 |
 | `BUCKYOS_WEBSDK_ROOT` | sys_test | 覆盖 web sdk 搜索目录。 |
@@ -171,7 +168,6 @@ AgentTool 新实现目标是只依赖 `OPENDAN_AGENT_ROOT`、`OPENDAN_SESSION_ID
 
 | 变量 | 当前状态 |
 | --- | --- |
-| `BUCKYOS_KRPC_TIMEOUT_SECS` / `BUCKYOS_KRPC_TIMEOUT_SECS_<SERVICE>` | `buckyos-api` 中有常量声明，但当前 `get_zone_service_krpc_client_with_default_timeout()` 没有读取环境变量；不要依赖它们。 |
 | `BUCKYOS_TEST_SYSTEM_CONFIG_URL` / `BUCKYOS_TEST_VERIFY_HUB_URL` | 只在 `test/test_helpers/buckyos_client.ts` 注释中出现，当前 helper 实现没有读取；测试覆盖应优先使用实际读取的 `BUCKYOS_SYSTEM_CONFIG_URL` / `BUCKYOS_VERIFY_HUB_URL`。 |
 | `BUCKYOS_RUNTIME`、`BUCKYOS_FILE`、`BUCKYOS_SESSION_TOKEN`、`BUCKYOS_THIS_DEVICE_INFO` | 当前搜索只看到零散历史/文档/构建产物痕迹，未形成明确 runtime 契约。新增代码不要使用。 |
 | `loca_app_instance_config` | 拼写错误兼容变量，只为旧实现保留。 |

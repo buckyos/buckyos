@@ -656,8 +656,6 @@ mod tests {
     use super::*;
 
     fn address_test_device_and_zone() -> (DeviceDocument, ZoneDocument) {
-        use name_lib::DIDDocumentTrait;
-
         let mut device = DeviceDocument::new("ood1", "test-key".to_string());
         device.net_id = Some("wan_dyn".to_string());
         let zone = ZoneDocument::new(

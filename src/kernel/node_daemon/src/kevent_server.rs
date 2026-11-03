@@ -50,7 +50,9 @@ pub async fn start_node_kevent_service(service: Arc<KEventService>) {
         }
     });
 
-    runner.run().await;
+    if let Err(err) = runner.run().await {
+        error!("kevent server stopped: {:?}", err);
+    }
 }
 
 fn start_shared_ring_importer(

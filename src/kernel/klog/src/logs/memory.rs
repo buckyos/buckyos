@@ -17,7 +17,6 @@ type LogEntry = Entry<KTypeConfig>;
 #[derive(Debug, Clone)]
 struct MemoryLogState {
     last_purged: Option<LogId<KNodeId>>,
-    last_applied: Option<LogId<KNodeId>>,
     last_committed: Option<LogId<KNodeId>>,
     vote: Option<Vote<KNodeId>>,
 }
@@ -26,7 +25,6 @@ impl MemoryLogState {
     fn new() -> Self {
         Self {
             last_purged: None,
-            last_applied: None,
             last_committed: None,
             vote: None,
         }

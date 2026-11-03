@@ -40,10 +40,8 @@ pub(crate) use crate::error::{
     openai_error_kind, protocol_error_kind_from_http_status, ProtocolError, ProtocolErrorKind,
     ProtocolResultValue,
 };
-#[allow(unused_imports)]
 pub(crate) use adapter::{
-    AdapterCredentialContract, AdapterDescriptor, AdapterStatus,
-    ArtifactDownloadProtocol, ArtifactUrlReader, CodecCall, CodecContext, CodecInput, CodecLimits,
+    AdapterCredentialContract, AdapterDescriptor, AdapterStatus, ArtifactUrlReader, CodecCall, CodecContext, CodecInput, CodecLimits,
     CodecRegistration, CodecRegistry, ExecutionMode, MaterializedResource, NativeTaskCodec,
     NativeTaskInput, NativeTaskOperation, NativeTaskOutput, OperationBinding, OperationCodec,
     OperationDescriptor, ProtocolAdapterPlugin,

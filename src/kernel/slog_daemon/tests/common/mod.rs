@@ -413,21 +413,6 @@ pub fn spawn_daemon_process_with_concurrency(
     Ok(ChildGuard::new(child, "slog_daemon", Some(stderr_path)))
 }
 
-pub async fn wait_for_tcp_ready(addr: &str, timeout: Duration) -> Result<(), String> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        match tokio::net::TcpStream::connect(addr).await {
-            Ok(_) => return Ok(()),
-            Err(_) => {
-                if Instant::now() >= deadline {
-                    return Err(format!("timeout waiting TCP ready at {}", addr));
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        }
-    }
-}
-
 pub async fn wait_for_tcp_ready_or_process_exit(
     addr: &str,
     process: &mut ChildGuard,

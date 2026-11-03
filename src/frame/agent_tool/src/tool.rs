@@ -449,11 +449,9 @@ mod tests {
         #[schemars(description = "Message to echo.")]
         message: String,
         #[serde(default)]
-        #[allow(dead_code)]
         suffix: Option<String>,
         #[serde(default)]
         #[schemars(range(min = 1))]
-        #[allow(dead_code)]
         limit: Option<i64>,
     }
 
@@ -482,9 +480,11 @@ mod tests {
             _ctx: &ToolCtx<'_>,
             args: Self::Args,
         ) -> Result<Self::Output, AgentToolError> {
-            Ok(EchoOutput {
-                echoed: args.message,
-            })
+            let mut echoed = args.message + args.suffix.as_deref().unwrap_or("");
+            if let Some(limit) = args.limit {
+                echoed = echoed.chars().take(limit as usize).collect();
+            }
+            Ok(EchoOutput { echoed })
         }
     }
 

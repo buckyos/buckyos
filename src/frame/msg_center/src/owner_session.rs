@@ -554,7 +554,7 @@ impl TokenVerifierSlot {
         self.0.read().unwrap().clone()
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn set(&self, verifier: Arc<dyn SessionTokenVerifier>) {
         *self.0.write().unwrap() = Arc::new(RequestScopedVerifier(verifier));
     }
@@ -657,7 +657,7 @@ fn normalize_title(raw: Option<String>) -> std::result::Result<Option<String>, R
 }
 
 impl MessageCenter {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn set_token_verifier(&self, verifier: Arc<dyn SessionTokenVerifier>) {
         self.token_verifier.set(verifier);
     }

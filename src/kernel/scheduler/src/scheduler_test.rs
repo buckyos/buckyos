@@ -19,7 +19,6 @@ fn create_test_node(
     cpu: u32,
     memory: u64,
     labels: Vec<String>,
-    load: f64,
     state: NodeState,
     network_zone: &str,
 ) -> NodeItem {
@@ -126,7 +125,6 @@ fn test_node_state_change() {
         1000,
         1024 * 1024 * 256,
         vec![],
-        0.0,
         NodeState::New,
         "zone1",
     );
@@ -135,7 +133,6 @@ fn test_node_state_change() {
         2000,
         1024 * 1025 * 256,
         vec![],
-        0.0,
         NodeState::Removing,
         "zone2",
     );
@@ -144,7 +141,6 @@ fn test_node_state_change() {
         3000,
         1024 * 1026 * 256,
         vec![],
-        0.0,
         NodeState::Ready,
         "zone3",
     );
@@ -197,7 +193,6 @@ fn test_create_pod_instance() {
         1000,
         1024 * 1024 * 256,
         vec![],
-        0.0,
         NodeState::Ready,
         "zone1",
     );
@@ -206,7 +201,6 @@ fn test_create_pod_instance() {
         2000,
         1024 * 1024 * 1024,
         vec![],
-        0.0,
         NodeState::Ready,
         "zone2",
     );
@@ -280,7 +274,6 @@ fn test_pod_state_change() {
         1000,
         1024 * 1024 * 256,
         vec![],
-        0.0,
         NodeState::Ready,
         "zone1",
     );
@@ -411,7 +404,6 @@ fn test_create_pod_instance_no_suitable_node() {
         500, // CPU不足
         1024 * 1024 * 256,
         vec![],
-        0.0,
         NodeState::Ready,
         "zone1",
     );
@@ -452,7 +444,6 @@ fn test_node_and_network_affinity() {
         1000,
         1024 * 1024 * 256,
         vec!["gpu".to_string()],
-        0.0,
         NodeState::Ready,
         "zone1",
     );
@@ -461,7 +452,6 @@ fn test_node_and_network_affinity() {
         2000,
         1024 * 1025 * 256,
         vec!["cpu".to_string()],
-        0.0,
         NodeState::Ready,
         "zone2",
     );
@@ -470,7 +460,6 @@ fn test_node_and_network_affinity() {
         3000,
         1024 * 1026 * 256,
         vec!["gpu".to_string()],
-        0.0,
         NodeState::Ready,
         "zone3",
     );
@@ -502,7 +491,6 @@ fn test_large_cluster_multi_service_schedule() {
         4000,
         1024 * 1024 * 2048,
         vec!["gpu".to_string()],
-        0.0,
         NodeState::Ready,
         "zone-a",
     );
@@ -513,7 +501,6 @@ fn test_large_cluster_multi_service_schedule() {
         4000,
         1024 * 1024 * 2048,
         vec!["gpu".to_string()],
-        0.0,
         NodeState::Ready,
         "zone-b",
     );
@@ -524,7 +511,6 @@ fn test_large_cluster_multi_service_schedule() {
         4000,
         1024 * 1024 * 2048,
         vec!["db".to_string()],
-        0.0,
         NodeState::Ready,
         "zone-b",
     );
@@ -533,7 +519,6 @@ fn test_large_cluster_multi_service_schedule() {
         4000,
         1024 * 1024 * 2048,
         vec!["db".to_string()],
-        0.0,
         NodeState::Ready,
         "zone-c",
     );
@@ -542,7 +527,6 @@ fn test_large_cluster_multi_service_schedule() {
         4000,
         1024 * 1024 * 2048,
         vec!["edge".to_string()],
-        0.0,
         NodeState::Ready,
         "zone-a",
     );
@@ -552,7 +536,6 @@ fn test_large_cluster_multi_service_schedule() {
         4000,
         1024 * 1024 * 2048,
         vec!["edge".to_string()],
-        0.0,
         NodeState::Ready,
         "zone-b",
     );
@@ -561,7 +544,6 @@ fn test_large_cluster_multi_service_schedule() {
         4000,
         1024 * 1024 * 2048,
         vec!["frontend".to_string()],
-        0.0,
         NodeState::Ready,
         "zone-a",
     );
@@ -570,7 +552,6 @@ fn test_large_cluster_multi_service_schedule() {
         4000,
         1024 * 1024 * 2048,
         vec!["frontend".to_string()],
-        0.0,
         NodeState::Ready,
         "zone-c",
     );
@@ -664,7 +645,6 @@ fn test_scale_out_to_seven_nodes_keeps_existing_replica_sticky() {
         4000,
         1024 * 1024 * 2048,
         vec!["core".to_string()],
-        0.0,
         NodeState::Ready,
         "zone-1",
     ));
@@ -688,7 +668,6 @@ fn test_scale_out_to_seven_nodes_keeps_existing_replica_sticky() {
             4000,
             1024 * 1024 * 2048,
             vec!["core".to_string()],
-            0.0,
             NodeState::New,
             format!("zone-{}", node_index).as_str(),
         ));
@@ -744,7 +723,6 @@ fn test_service_info_only_publishes_alive_running_replicas() {
             4000,
             1024 * 1024 * 2048,
             vec!["search".to_string()],
-            0.0,
             NodeState::Ready,
             "zone-search",
         ));
@@ -848,7 +826,6 @@ fn test_service_info_refresh_is_throttled_within_30_seconds() {
         4000,
         1024 * 1024 * 2048,
         vec!["core".to_string()],
-        0.0,
         NodeState::Ready,
         "zone-1",
     ));
@@ -880,7 +857,6 @@ fn test_service_info_refresh_is_throttled_within_30_seconds() {
         4000,
         1024 * 1024 * 2048,
         vec!["core".to_string()],
-        0.0,
         NodeState::Ready,
         "zone-1",
     ));
@@ -914,7 +890,6 @@ fn test_service_info_refresh_allows_update_after_30_seconds() {
         4000,
         1024 * 1024 * 2048,
         vec!["core".to_string()],
-        0.0,
         NodeState::Ready,
         "zone-1",
     ));
@@ -941,7 +916,6 @@ fn test_service_info_refresh_allows_update_after_30_seconds() {
         4000,
         1024 * 1024 * 2048,
         vec!["core".to_string()],
-        0.0,
         NodeState::Ready,
         "zone-1",
     ));
@@ -978,7 +952,6 @@ fn test_deployed_service_without_instances_recreates_replica() {
         4000,
         1024 * 1024 * 2048,
         vec!["core".to_string()],
-        0.0,
         NodeState::Ready,
         "zone-1",
     ));
@@ -987,7 +960,6 @@ fn test_deployed_service_without_instances_recreates_replica() {
         5000,
         1024 * 1024 * 2048,
         vec!["core".to_string()],
-        0.0,
         NodeState::Ready,
         "zone-1",
     ));
@@ -1019,7 +991,6 @@ fn test_best_instance_count_change_triggers_scale_out_for_deployed_service() {
         4000,
         1024 * 1024 * 2048,
         vec!["core".to_string()],
-        0.0,
         NodeState::Ready,
         "zone-1",
     ));
@@ -1028,7 +999,6 @@ fn test_best_instance_count_change_triggers_scale_out_for_deployed_service() {
         5000,
         1024 * 1024 * 2048,
         vec!["core".to_string()],
-        0.0,
         NodeState::Ready,
         "zone-1",
     ));

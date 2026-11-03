@@ -7,14 +7,8 @@ use buckyos_kit::*;
 use log::*;
 use ndn_lib::ObjId;
 use package_lib::*;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::hash::Hash;
-use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
 //use package_installer::*;
 
-use crate::run_item::*;
 
 pub struct KernelServiceRunItem {
     pub service_name: String,
@@ -183,7 +177,7 @@ impl RunItemControl for KernelServiceRunItem {
         "kernel_service"
     }
 
-    async fn deploy(&self, params: Option<&Vec<String>>) -> Result<()> {
+    async fn deploy(&self, _params: Option<&Vec<String>>) -> Result<()> {
         //这个逻辑是不区分新装和升级的
         let pkg_id = self.resolved_pkg_id();
         self.ensure_exact_pkg_meta_indexed().await?;
@@ -247,7 +241,7 @@ impl RunItemControl for KernelServiceRunItem {
         }
     }
 
-    async fn stop(&self, params: Option<&Vec<String>>) -> Result<()> {
+    async fn stop(&self, _params: Option<&Vec<String>>) -> Result<()> {
         let result = self.service_pkg.stop(None).await.map_err(|err| {
             return ControlRuntItemErrors::ExecuteError("stop".to_string(), err.to_string());
         })?;
@@ -261,7 +255,7 @@ impl RunItemControl for KernelServiceRunItem {
         }
     }
 
-    async fn get_state(&self, params: Option<&Vec<String>>) -> Result<ServiceInstanceState> {
+    async fn get_state(&self, _params: Option<&Vec<String>>) -> Result<ServiceInstanceState> {
         self.ensure_exact_pkg_meta_indexed().await?;
         let result = self.service_pkg.status(None).await.map_err(|err| {
             return ControlRuntItemErrors::ExecuteError("get_state".to_string(), err.to_string());
