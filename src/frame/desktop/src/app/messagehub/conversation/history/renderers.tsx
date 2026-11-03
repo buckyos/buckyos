@@ -571,7 +571,7 @@ function MessageFooter({ message, isSelf, deliveryStatus, selfDid, frameless = f
         >
           {formatMessageTime(message.created_at_ms)}
         </span>
-        {isSelf ? <MessageStatusIcon status={deliveryStatus} /> : null}
+        {isSelf ? <MessageStatusIcon status={deliveryStatus} selfTone={selfTone} /> : null}
       </div>
       {isSelf && deliveryStatus === 'failed' && getMessageMetaString(message, 'ui_delivery_reason') ? <p role="alert" className="mt-0.5 text-right text-[11px]" data-testid="post-rejected" data-reason={getMessageMetaString(message, 'ui_delivery_reason')} style={{ color: metaColor }}>{t('messagehub.message.rejected')} · {groupErrorText(t, `rejected: ${getMessageMetaString(message, 'ui_delivery_reason')}`)}</p> : null}
       {receipt ? <p className="mt-0.5 text-right text-[11px]" data-testid="read-receipt" style={{ color: metaColor }} title={receipt.readers?.map(did => displayName?.(did) ?? did).join(', ')}>{t('messagehub.message.readBy', undefined, { count: receipt.count })}{receipt.readers?.length ? ` · ${receipt.readers.map(did => displayName?.(did) ?? did).join(', ')}` : ''}</p> : null}
@@ -764,23 +764,27 @@ function renderFallbackMessage(
 
 function MessageStatusIcon({
   status,
+  selfTone,
 }: {
   status?: MessageDeliveryStatus
+  selfTone: boolean
 }) {
   const { t } = useI18n()
+  const pendingColor = selfTone ? 'var(--cp-message-self-meta)' : 'var(--cp-muted)'
+  const readColor = selfTone ? 'var(--cp-message-self-text)' : 'var(--cp-accent)'
   let icon: React.ReactNode
   switch (status) {
     case 'sending':
-      icon = <Clock size={14} style={{ color: 'var(--cp-muted)' }} aria-hidden />
+      icon = <Clock size={14} style={{ color: pendingColor }} aria-hidden />
       break
     case 'sent':
-      icon = <Check size={14} style={{ color: 'var(--cp-muted)' }} aria-hidden />
+      icon = <Check size={14} style={{ color: pendingColor }} aria-hidden />
       break
     case 'delivered':
-      icon = <CheckCheck size={14} style={{ color: 'var(--cp-muted)' }} aria-hidden />
+      icon = <CheckCheck size={14} style={{ color: pendingColor }} aria-hidden />
       break
     case 'read':
-      icon = <CheckCheck size={14} style={{ color: 'var(--cp-accent)' }} aria-hidden />
+      icon = <CheckCheck size={14} style={{ color: readColor }} aria-hidden />
       break
     case 'failed':
       icon = <AlertCircle size={14} style={{ color: 'var(--cp-danger)' }} aria-hidden />
