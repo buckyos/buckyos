@@ -454,6 +454,12 @@ pub struct PromptSection {
     /// budget (`maybe_compact`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compact_ratio: Option<f32>,
+    /// A mid-run rewrite at the context limit brings the request back to
+    /// this share of the model's window (system prefix included;
+    /// `history_budget_tokens` is the floor of its history). `None` →
+    /// runner default (0.30).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_target_ratio: Option<f32>,
 }
 
 /// How a behavior is entered when a hand-over (`next_behavior`) or a

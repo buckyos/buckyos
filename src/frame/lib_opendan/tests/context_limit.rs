@@ -247,9 +247,11 @@ async fn behavior_run_compacts_the_session_history_and_keeps_step_numbering() {
             "<response><intent>go</intent><actions><shell><![CDATA[echo behavior-1]]></shell></actions></response>",
         ))
     });
-    let deps = env
+    // No window: the history budget is the rewrite's whole target.
+    let mut deps = env
         .deps(llm.clone())
         .with_summarizer(Arc::new(StaticSummarizer));
+    deps.options.default_context_window = None;
     let r = drive(&sd, &deps, StopWhen::Finished).await;
     assert!(r.is_finished(), "{r:?}");
     assert!(refused.load(Ordering::SeqCst));
@@ -414,7 +416,8 @@ async fn failed_compaction_logs_the_failure_and_preserves_the_error() {
             json!({"command": format!("echo {}", "x".repeat(1024))}),
         ))
     });
-    let deps = env.deps(llm).with_summarizer(Arc::new(FailingSummarizer));
+    let mut deps = env.deps(llm).with_summarizer(Arc::new(FailingSummarizer));
+    deps.options.default_context_window = None;
     let result = drive(&sd, &deps, StopWhen::Finished).await;
     let libopendan::runner::DriveResult::Error { error, .. } = result else {
         panic!("expected summarizer failure, got {result:?}");
@@ -439,4 +442,271 @@ async fn failed_compaction_logs_the_failure_and_preserves_the_error() {
     }
     let failed = events_named(&events, "opendan.context.rewrite.failed");
     assert_eq!(failed[0].body["run_id"], run_id);
+}
+
+// ---------------------------------------------------------------------
+// The window and the target line (work context budget TODO §3.1)
+// ---------------------------------------------------------------------
+
+use libopendan::runner::history::LimitLine;
+use libopendan::runner::{CachedContextWindows, ContextWindowSource};
+use llm_context::context_window::estimate_request;
+use llm_context::deps::ByteHeuristicTokenizer;
+
+#[test]
+fn the_rewrite_target_is_a_share_of_the_window() {
+    // 128k: 30% is 38,400 tokens; the system prefix takes its part.
+    let line = LimitLine::new(Some(128_000), 0.30, 2_000, 24_000);
+    assert_eq!(line.target_tokens, Some(38_400));
+    assert_eq!(line.history_budget, 36_400);
+    // What the prefix leaves is less than the history budget: the budget
+    // is the floor.
+    let line = LimitLine::new(Some(128_000), 0.30, 20_000, 24_000);
+    assert_eq!(line.history_budget, 24_000);
+    // 400k: no longer squeezed to 6%.
+    let line = LimitLine::new(Some(400_000), 0.30, 4_000, 24_000);
+    assert_eq!((line.target_tokens, line.history_budget), (Some(120_000), 116_000));
+    // An unknown window: the history budget as it was.
+    let line = LimitLine::new(None, 0.30, 2_000, 24_000);
+    assert_eq!((line.target_tokens, line.history_budget), (None, 24_000));
+}
+
+/// A window source as the host's AICC lookup: one fixed answer, every
+/// alias it was asked for.
+struct Windows {
+    answer: Result<Option<u32>, String>,
+    asked: Mutex<Vec<String>>,
+}
+
+impl Windows {
+    fn new(answer: Result<Option<u32>, String>) -> Arc<Self> {
+        Arc::new(Self {
+            answer,
+            asked: Mutex::new(Vec::new()),
+        })
+    }
+}
+
+#[async_trait]
+impl ContextWindowSource for Windows {
+    async fn context_window(&self, model: &str) -> Result<Option<u32>, String> {
+        self.asked.lock().unwrap().push(model.to_string());
+        self.answer.clone()
+    }
+}
+
+/// The window a one-reply run was given: run.json limits and the request.
+async fn run_window(
+    llm_context: Value,
+    source: Option<Arc<dyn ContextWindowSource>>,
+    default: Option<u32>,
+) -> (Option<u32>, Option<llm_context::ContextThreshold>) {
+    let env = Env::new();
+    let mut spec = work_spec("which window");
+    spec.prompt.llm_context = llm_context;
+    let sd = env.create_work(spec).await;
+    let mut deps = env.deps(ScriptedLlm::new(|_, _| text("done")));
+    deps.context_windows = source;
+    deps.options.default_context_window = default;
+    let r = drive(&sd, &deps, StopWhen::Finished).await;
+    assert!(r.is_finished(), "{r:?}");
+    let run_id = sd.state().unwrap().last_run.unwrap();
+    let (record, snap) = sd.runs().load_checked(&run_id).unwrap();
+    let snap = snap.unwrap();
+    assert_eq!(
+        record.config.limits.context_window_tokens,
+        snap.request.budget.context_window_tokens
+    );
+    (
+        snap.request.budget.context_window_tokens,
+        snap.request.budget.context_yield_threshold,
+    )
+}
+
+#[tokio::test]
+async fn a_run_gets_the_window_of_its_model() {
+    let tools = json!({ "tools": { "enabled": true } });
+    let ratio = Some(llm_context::ContextThreshold::Ratio { value: 0.8 });
+
+    // The model's window, asked by the run's alias (xllm's default one).
+    let windows = Windows::new(Ok(Some(200_000)));
+    let got = run_window(tools.clone(), Some(windows.clone()), Some(128_000)).await;
+    assert_eq!(got, (Some(200_000), ratio.clone()));
+    assert_eq!(*windows.asked.lock().unwrap(), vec!["llm.chat".to_string()]);
+    let windows = Windows::new(Ok(Some(400_000)));
+    let got = run_window(
+        json!({ "model": "llm.code", "tools": { "enabled": true } }),
+        Some(windows.clone()),
+        Some(128_000),
+    )
+    .await;
+    assert_eq!(got.0, Some(400_000));
+    assert_eq!(*windows.asked.lock().unwrap(), vec!["llm.code".to_string()]);
+
+    // An explicit `context_window` wins; nothing is looked up.
+    let windows = Windows::new(Ok(Some(200_000)));
+    let got = run_window(
+        json!({ "context_window": 50_000, "tools": { "enabled": true } }),
+        Some(windows.clone()),
+        Some(128_000),
+    )
+    .await;
+    assert_eq!(got, (Some(50_000), ratio.clone()));
+    assert!(windows.asked.lock().unwrap().is_empty());
+
+    // A failed lookup or a model without a window: the default; the run
+    // is not held up.
+    for answer in [Err("aicc unreachable".to_string()), Ok(None)] {
+        let got = run_window(tools.clone(), Some(Windows::new(answer)), Some(128_000)).await;
+        assert_eq!(got, (Some(128_000), ratio.clone()));
+    }
+    // No source: the default; no default either: no window, no early
+    // yield (only the provider's refusal rewrites).
+    assert_eq!(run_window(tools.clone(), None, Some(128_000)).await.0, Some(128_000));
+    assert_eq!(run_window(tools, None, None).await, (None, None));
+}
+
+#[tokio::test]
+async fn looked_up_windows_are_cached_per_alias() {
+    let windows = Windows::new(Ok(Some(200_000)));
+    let cached = CachedContextWindows::new(windows.clone());
+    for _ in 0..3 {
+        assert_eq!(cached.context_window("llm.chat").await, Ok(Some(200_000)));
+    }
+    assert_eq!(cached.context_window("llm.plan").await, Ok(Some(200_000)));
+    assert_eq!(
+        *windows.asked.lock().unwrap(),
+        vec!["llm.chat".to_string(), "llm.plan".to_string()]
+    );
+    // Expired: asked again.
+    let windows = Windows::new(Ok(Some(200_000)));
+    let cached = CachedContextWindows::with_ttl(windows.clone(), std::time::Duration::ZERO);
+    cached.context_window("llm.chat").await.unwrap();
+    cached.context_window("llm.chat").await.unwrap();
+    assert_eq!(windows.asked.lock().unwrap().len(), 2);
+    // A failure is not cached.
+    let failing = Windows::new(Err("down".into()));
+    let cached = CachedContextWindows::new(failing.clone());
+    assert!(cached.context_window("llm.chat").await.is_err());
+    assert!(cached.context_window("llm.chat").await.is_err());
+    assert_eq!(failing.asked.lock().unwrap().len(), 2);
+}
+
+/// A multi-Turn Work (the built-in `work` class: Turns until
+/// `report(is_end)`) with a llm_context of this test.
+async fn multi_turn_work(env: &Env, llm_context: Value) -> libopendan::SessionDir {
+    let mut spec = libopendan::SessionTemplate::load("work", None)
+        .unwrap()
+        .spec("research it");
+    spec.prompt.llm_context = llm_context;
+    spec.prompt.history_budget_tokens = Some(100);
+    env.create_work(spec).await
+}
+
+fn multi_turn_context(window: Option<u64>) -> Value {
+    let mut v = json!({
+        "tools": { "enabled": true },
+        "runtime": { "task_wait_ms": 300 }
+    });
+    if let Some(w) = window {
+        v["context_window"] = json!(w);
+    }
+    v
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_multi_turn_work_compacts_at_the_window_line_and_goes_on() {
+    let _serial = init_context_logger();
+    std::env::set_var("LIBOPENDAN_WHO", APP);
+    // The size of the run's first request (system, input, tool schemas).
+    let probe_env = Env::new();
+    let probe = multi_turn_work(&probe_env, multi_turn_context(None)).await;
+    let first = ScriptedLlm::new(|_, _| {
+        tool_call("rep", "report", json!({ "report": "probe", "is_end": true }))
+    });
+    let r = drive(&probe, &probe_env.deps(first.clone()), StopWhen::Finished).await;
+    assert!(r.is_finished(), "{r:?}");
+    let base = estimate_request(&ByteHeuristicTokenizer, &first.requests.lock().unwrap()[0]);
+
+    // Window = 4 × the first request: the line is at 3.2×, the target 1.2×.
+    let window = base * 4;
+    let env = Env::new();
+    let sd = multi_turn_work(&env, multi_turn_context(Some(window))).await;
+    // About 3 × the first request of output: the next request crosses 80%.
+    let bytes = base * 3 * 4;
+    let llm = ScriptedLlm::new(move |req, n| match n {
+        0 => tool_call(
+            "c1",
+            "shell",
+            json!({ "command": format!("head -c {bytes} /dev/zero | tr '\\0' x") }),
+        ),
+        1 => {
+            // Rewritten: system + the compacted session history.
+            assert_eq!(req.messages.len(), 2, "{}", render(&req.messages));
+            assert!(render(&req.messages).contains("SUMMARY-X"));
+            tool_call("c2", "shell", json!({ "command": "sleep 1; echo later" }))
+        }
+        2 => text("The later step is still running."),
+        3 => {
+            assert!(last_user_text(req).contains("later"), "{}", last_user_text(req));
+            tool_call("rep", "report", json!({ "report": "researched", "is_end": true }))
+        }
+        _ => panic!("unexpected inference {n}"),
+    });
+    let deps = env
+        .deps(llm.clone())
+        .with_summarizer(Arc::new(StaticSummarizer));
+    let mut deps = deps;
+    deps.options.max_wait = std::time::Duration::from_secs(20);
+    let r = drive(&sd, &deps, StopWhen::Finished).await;
+    assert!(r.is_finished(), "{r:?}");
+    assert_eq!(llm.count(), 4);
+
+    // The rewritten request is within 30% of the window.
+    let reqs = llm.requests.lock().unwrap().clone();
+    let after = estimate_request(&ByteHeuristicTokenizer, &reqs[1]);
+    let target = (window as f64 * 0.3).ceil() as u64;
+    assert!(after <= target, "{after} > {target}");
+
+    // One rewrite, one compaction; the same run went on into Turn 2.
+    assert_eq!(rewrites(&sd), 1);
+    let wl = read_worklog(&sd);
+    assert!(wl.iter().any(|e| e.body.kind() == "compaction"));
+    assert_eq!(
+        results_of(&sd),
+        vec![
+            ("c1".to_string(), 1),
+            ("c2".to_string(), 1),
+            ("rep".to_string(), 2)
+        ]
+    );
+    let st = sd.state().unwrap();
+    assert_eq!(st.outcome, Some(Outcome::Succeeded));
+    assert_eq!((st.turn_seq, st.turns_completed), (2, 2));
+    assert!(!st.one_line_status.is_empty());
+    let run_id = st.last_run.clone().unwrap();
+    assert_eq!(sd.runs().list().unwrap(), vec![run_id.clone()]);
+    let (record, snap) = sd.runs().load_checked(&run_id).unwrap();
+    let snap = snap.unwrap();
+    assert_eq!(record.compactions, 1);
+    assert_eq!(snap.request.budget.context_window_tokens, Some(window as u32));
+    // Turn 1 used two iterations; Turn 2 had the whole budget again (its
+    // final report ended the run before the batch counted).
+    assert_eq!(
+        snap.state.tool_iterations_left,
+        snap.request.tool_policy.max_tool_iterations
+    );
+
+    let events = context_log_events(sd.sid());
+    let limits = events_named(&events, "llm_context.context_limit");
+    assert_eq!(limits.len(), 1, "{events:?}");
+    assert_ne!(limits[0].body["reason"], "provider_refused");
+    let triggered: Vec<_> = events_named(&events, "opendan.context.compaction.triggered")
+        .into_iter()
+        .filter(|e| e.body["phase"] == "context_limit")
+        .collect();
+    assert_eq!(triggered.len(), 1, "{events:?}");
+    assert_eq!(triggered[0].body["window_tokens"], window);
+    assert_eq!(triggered[0].body["target_tokens"], target);
+    assert!(triggered[0].body["prefix_tokens"].as_u64().unwrap() > 0);
 }

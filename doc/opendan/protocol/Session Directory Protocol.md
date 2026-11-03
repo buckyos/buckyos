@@ -90,7 +90,8 @@ Schema：`schema/session_config.schema.json`。要点：
     "input": { "mode": "batch | single", "media": "reference | inline" },
     "mechanical_compress": { "recent_full_responses": 2, "summary_chars": 280, "max_result_chars": 4096,
                              "drop_kinds": ["created","decide","compaction","input_rejected","event_dropped","turn_ended"] },
-    "history_budget_tokens": null, "compact_ratio": null
+    "history_budget_tokens": null, "compact_ratio": null,
+    "context_target_ratio": null      // 中途重写压回窗口的比例；缺省 runner 的 0.30
   },
   "runtime": { "requirement": { "runtime_id": null, "tools": ["node"], "app_tools": [] },
                "tool_plan": null, "env": {},
@@ -286,6 +287,7 @@ Schema：`schema/session_state.schema.json`。
 - 缺失时等价于 `start_seq = start_offset = 0`、无摘要、`mechanical = session_config.prompt.mechanical_compress`。
 - 下一次 llm_context（没有 live_run 时）= system（身份 + 不可覆盖约束 + 应用 prompt + context + objective + xllm 能力/协议段）+ 按 `inherit` 装配的历史；本次的输入由 run 的第一个输入批次（`<session_input hook=… time=…>` 消息 + receipt）注入。
 - UI Session 的 `function_call` context 在已关闭的 Turn 之后继续同一 context、继承 `recent_dialogue` 且尚未生成摘要时，历史直接取 `last_run` 快照 `state.accumulated` 的非 system 消息列表。消息顺序、角色与内容原样保留，包括工具调用 / 结果和媒体，不经过机械截断、不包装成一条 user `<session_history>`。这些消息进入新 run 的 `request.input`，随新快照持久化；flush 只追加新 run 产生的部分，因此清理旧 run 不会丢失续聊前缀或重复写入 worklog。
+- `history_budget_tokens` 是给新 run 装配历史时的预算；run 中途因上下文上限重写时它只是历史的下限，目标由窗口决定（§7“上下文上限中途重写”）。
 - 上述原始消息列表超过 `history_budget_tokens` 时，先实际压缩 worklog 并写入摘要，再使用 worklog 历史视图，不能只靠机械截断让未压缩会话进入预算。已有摘要、behavior loop、context 切换等其它 `recent_dialogue` 装配仍是一条 user 历史消息：`<session_history>` 包含可选的 `<summary upto_seq="…">` 摘要与起点之后按机械规则渲染的记录；没有独立的 `<session_summary>` 消息标签。
 - 机械渲染（`libopendan.mechanical/3`）：`turn_started` → `── turn N (hook) inputs: … ──`，`input_batch` → `── <hook> inputs: … ──`（如 `── on_context_switch ──`），`user_message` → `[input] …`，`assistant_message` → `[assistant] …`，`step` → `[step 3 plan] …` / `[step 3 plan correction] …`，`action_result` → `[result #<call_id> <status>] …`，`outcome` → `[outcome <kind> → <next_behavior>] …`，`turn_ended` → `── turn N completed ──`（默认在 `drop_kinds` 中，不渲染）。
 - 反向读取时预算先于起点耗尽：必须先压缩（新起点 = 已保留的最旧一条，摘要覆盖 `[旧起点, 新起点)`），摘要与原始记录之间不能留空洞。
@@ -347,10 +349,19 @@ run.json `host.extra` 中由宿主冻结、恢复与重建工具时沿用的键�
 **上下文上限中途重写**（llm_context X7）：run 以 `ContextLimitReached` 让出时，runner 不在快照里重写历史，而是把它交还 session 历史：
 
 1. 用 flush 标记写入本 run 已产生而未写入的历史，末尾追加 `outcome(kind=context_rewritten)`，与 flush 标记同一次提交 state.json（没有新历史时两者都不写，重做不会重复）。
-2. 压缩 session 历史：起点前移到只剩约 `history_budget >> 第几次` token 的原始记录（写 summary.json 与 `compaction` 条目），再按 §6 重建历史消息。
+2. 压缩 session 历史：历史预算 `history_budget = max(⌈窗口 × context_target_ratio⌉ − system 前缀, history_budget_tokens)`（窗口取快照 `request.budget.context_window_tokens`，`context_target_ratio` 取 `prompt.context_target_ratio`，缺省 0.30；system 前缀 = 输入开头的 system 消息与工具 schema，用 llm_context 的估算器；窗口未知时就是 `history_budget_tokens`）。起点前移到只剩约 `history_budget >> 第几次` token 的原始记录（写 summary.json 与 `compaction` 条目），再按 §6 在 `history_budget` 内重建历史消息。日志 `opendan.context.compaction.triggered` 带 `window_tokens` / `target_tokens` / `prefix_tokens`；run.json `compactions` 加 1。
 3. 以 `system + 历史消息` 作为新的输入恢复上下文（function call：`RewrittenHistory`；behavior：`RewrittenSteps`，step 全部折叠进输入，编号继续），HostMeta 进入新的 epoch，先发布快照（run.json `status=running`）再继续推理。
 
+窗口与触发线：新 run 的 `llm_context.context_window` 显式值优先，否则宿主按 run 的模型别名查 AICC 路由选中模型的 `capabilities.max_context_tokens`（按别名缓存 10 分钟，查不到只记 warn），再否则 runner 缺省 128k；xllm 据此设 `context_window_tokens` 与触发线（`context_yield_ratio`，缺省 0.80）。窗口在 run 中途不变。
+
 一次推进内连续最多 3 次；仍装不下时 run 以 `paused` + `last_error.kind=context_limit` 保留挂起快照，下一次推进先重写再继续。① 之后、③ 之前崩溃：恢复用旧 epoch 最后发布的快照，再次让出、重写，已写入的部分由 flush 标记跳过；③ 之后崩溃：新 epoch 的计数从 0 开始。receipt 的 `input_seq`、消费位置与打开的 Turn 都不随重写改变。
+
+**run 的预算**（失控保护，不是工作配额）：
+
+- `max_tool_iterations` 计工具批次；多 Turn Work 每个新 Turn 补满（同时清零 `wrap_up_rounds_used` 与告警标记）。剩余 ≤ 20% 时 checkpoint hook 在下一次推理前注入一行 `<<budget>>` 提示（每次补满一次，标记 `HostMeta.budget_warned` 随快照提交；flush 不把它写进 worklog）。用完后 explicit report 的 function call run 只剩收尾工具（`ToolPolicy.wrap_up_tools`，缺省 `report` / `ask_user` 中 run 以函数提供的；behavior `[budget] wrap_up_tools` 可改），不计次、最多 2 个批次；其它工具 → `BudgetExhausted{ToolIterations}` → `budget_exhausted` 失败。
+- 墙钟（`max_wallclock_ms`，来自 `.llm_context` 的 `timeout` 或 behavior `[budget] max_wallclock_ms`）只量一段连续运行：宿主每次从快照恢复 run（`resume_live_run`，含崩溃恢复与新 Turn）以及 run 在内存中等过输入后，都把 `state.started_at_ms` 置为现在；同一段内的批次续跑不重置。工具 deadline 同样由它推导。多 Turn Work 的会话没有墙钟寿命上限。
+- `max_total_tokens` 按整个 run 累计，不按 Turn 重置，是可选的会话级成本上限（Jarvis 不设）。
+- 顶层 run 出 `BudgetExhausted{Wallclock | Tokens}` 时先进收尾（每个 Turn 一次，`HostMeta.budget_wrap_up_turn`）：flush 本 run 历史并写 `control_applied{budget_wrap_up}`（detail 带 `which`），快照 `started_at_ms = now`、`tool_iterations_left = 0`、`wrap_up_rounds_used = 0`（`Tokens` 再把 `max_total_tokens` 抬到当前用量 + 2 次收尾推理的估算），注入一行 `<<budget>>` 要求立即结束，发布快照后继续；收尾里 `report` 成功即按真实结局结束，收尾后再触顶照旧失败。子 context 不收尾，失败返回调用方。`ToolIterations` 不走这条（它已有收尾工具）。
 
 **保留**：`live_run`、`last_run`、`process_stack[].run_id` 引用的 run 保留；其它 run 在确认没有未核对执行后删除；旧快照按需裁剪（保留最新几份与已发布指针）。
 - `host.extra.tasks`（宿主字段）：run 的工具结果里引用过、LLM 还没有看到其结束的后台 task id（含子 Session 的 `session:<sid>`）。结果首次引用一个 task（且不是一条已结束命令的结果）或说明它“still running”时加入；之后关于它的其它结果（它的结束）移除。它是“本 run 启动的工作”：保活时据此判断还在运行的 task 与子 Session（§4）；run 结束而 Session 未 finished 时，这些 id 与当时 resolver 报告仍在运行的 task 一起记入 `state.watched_tasks`；run 的结束在崩溃后被重做时同样从这里取，不依赖见过这个 run 的进程。

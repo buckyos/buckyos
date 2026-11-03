@@ -6,9 +6,10 @@
 //! (controls are applied, Observe events are merged into `pending_events`
 //! and saved) and refreshes the activity heartbeat.
 //!
-//! Nothing is injected here: reaching a checkpoint, finishing a tool call
-//! or receiving an Observe event never puts a message or an event into the
-//! context. Semi-subscription state (and the new output of followed tasks)
+//! Nothing else is injected here: reaching a checkpoint, finishing a tool
+//! call or receiving an Observe event never puts a message or an event into
+//! the context. The one exception is the host's own `<<budget>>` line when
+//! the tool budget runs out (`budget.rs`). Semi-subscription state (and the new output of followed tasks)
 //! is never an input of its own: it waits for the next controlled input
 //! (`on_init / on_input / on_context_switch`), whose template may place it
 //! as background (`background.rs`). The tasks the run's calls just started
@@ -198,7 +199,8 @@ impl CheckpointHook for SessionCheckpointHook {
         super::observe::note_started(&self.shared, &self.run)
             .await
             .map_err(|e| e.to_string())?;
-        Ok(None)
+        // The one injection of the host: the tool budget is running out.
+        Ok(super::budget::warning(snapshot))
     }
 }
 

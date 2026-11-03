@@ -2,7 +2,7 @@
 
 日期：2026-11-02
 
-状态：**已 review、已裁决，可开工（先做先行 TODO）。** 来源：用户在本机 DV（`jarvis.test.buckyos.io`，容器形态，提交 `dd6b62945`）跑了一个深度研究任务，Claude 核对 session 目录、run 记录、日志与源码后写成本单。2026-11-02 用户 review 裁决：压缩按 [OpenDAN Agent Session架构设计.md §4.2](../doc/opendan/OpenDAN%20Agent%20Session架构设计.md) 的 **80% 触发、压回 30%**；其余按 Claude 建议（§4 已回写：Q1 B、Q2 改为按窗口比例、Q3 收尾模式替代宽限、Q4 `work_simple` 100 / `explore` 60、Q5 保持开启、Q6 查清不阻塞）。同日补入**问题三（墙钟上限）**：用户等完整个任务，plan 在 7 个 Todo 全部完成后以 `budget_exhausted: Wallclock` 失败；§1 / §2 / §3.4 / Q7；同日第二轮 review 修订（behavior `[budget] max_wallclock_ms` 已存在、墙钟兼任工具 deadline、`max_total_tokens` 是已有的会话级成本上限、触顶收尾走宿主转换复用 P2 不加 P3；**Q7 用户已按建议裁决：a = A、b = 不设、c = 宿主转换**）。先行 TODO P1 / P2 已在执行。
+状态：**已实施（2026-11-02，未提交），单测过，DV 未做**，记录见 §8（§8.3 有一项待裁决：codex-proxy 模型窗口 1.05M）。原状态：已 review、已裁决，可开工（先做先行 TODO）。 来源：用户在本机 DV（`jarvis.test.buckyos.io`，容器形态，提交 `dd6b62945`）跑了一个深度研究任务，Claude 核对 session 目录、run 记录、日志与源码后写成本单。2026-11-02 用户 review 裁决：压缩按 [OpenDAN Agent Session架构设计.md §4.2](../doc/opendan/OpenDAN%20Agent%20Session架构设计.md) 的 **80% 触发、压回 30%**；其余按 Claude 建议（§4 已回写：Q1 B、Q2 改为按窗口比例、Q3 收尾模式替代宽限、Q4 `work_simple` 100 / `explore` 60、Q5 保持开启、Q6 查清不阻塞）。同日补入**问题三（墙钟上限）**：用户等完整个任务，plan 在 7 个 Todo 全部完成后以 `budget_exhausted: Wallclock` 失败；§1 / §2 / §3.4 / Q7；同日第二轮 review 修订（behavior `[budget] max_wallclock_ms` 已存在、墙钟兼任工具 deadline、`max_total_tokens` 是已有的会话级成本上限、触顶收尾走宿主转换复用 P2 不加 P3；**Q7 用户已按建议裁决：a = A、b = 不设、c = 宿主转换**）。先行 TODO P1 / P2 已在执行。
 
 范围：libopendan 宿主侧（run 的上下文窗口、压缩目标、工具预算的告警与收尾、墙钟的计法与触顶处理）与 Jarvis 包配置，外加几份文档的顺手修正（§5 C）。按用户规则（llm_context / agent_tool 修改单独成 TODO、先于宿主），xllm 的触发比例配置与 llm_context 的收尾模式工具集放在**先行 TODO** [llm-context-context-budget-prereq-todo.md](./llm-context-context-budget-prereq-todo.md)，排在本单之前。
 
@@ -120,18 +120,18 @@ T02 里内置搜索单条消息 27 万字符，不计工具次数，worklog 里�
 
 ### A. libopendan
 
-- [ ] A1 窗口解析：`runner/live.rs` `prepare_hosted` 前写 `llm_ctx["context_window"]`；取值顺序按 §3.1 第 1 条；AICC 查询放在宿主依赖里（`RunnerDeps`，测试可注入），按别名缓存 10 分钟；查询失败只记 warn，不阻塞 run；`RunnerOptions.default_context_window = 128_000`。
-- [ ] A2 目标线：`RunnerOptions.context_target_ratio = 0.30`、session config `prompt.context_target_ratio`；`rewrite_for_limit_inner` 按 §3.1 第 3 条算 `history_budget`（system 前缀估算用 llm_context 的估算器，窗口取 `snapshot.request.budget.context_window_tokens`）；日志 `opendan.context.compaction.triggered` 加 `window_tokens` / `target_tokens` / `prefix_tokens` 字段。
-- [ ] A3 预算告警：`InferenceHook::before_inference` 在剩余 ≤ 20% 且本 Turn 未提示时返回 `Injection`（一行 `<<budget>>` user 消息）；已提示标记放 `HostMeta`，随快照提交，Turn 打开补满预算时清掉。
-- [ ] A4 收尾工具集：`hosted_request` 之后写 `request.tool_policy.wrap_up_tools = ["report", "ask_user"]`（只对 `ExplicitReport` 的会话；behavior `[budget] wrap_up_tools` 可覆盖）；behavior 切换重建请求时同样写；`BudgetExhausted{ToolIterations}` 的宿主处理不变。
-- [ ] A5 测试：
+- [x] A1 窗口解析：`runner/live.rs` `prepare_hosted` 前写 `llm_ctx["context_window"]`；取值顺序按 §3.1 第 1 条；AICC 查询放在宿主依赖里（`RunnerDeps`，测试可注入），按别名缓存 10 分钟；查询失败只记 warn，不阻塞 run；`RunnerOptions.default_context_window = 128_000`。
+- [x] A2 目标线：`RunnerOptions.context_target_ratio = 0.30`、session config `prompt.context_target_ratio`；`rewrite_for_limit_inner` 按 §3.1 第 3 条算 `history_budget`（system 前缀估算用 llm_context 的估算器，窗口取 `snapshot.request.budget.context_window_tokens`）；日志 `opendan.context.compaction.triggered` 加 `window_tokens` / `target_tokens` / `prefix_tokens` 字段。
+- [x] A3 预算告警：`InferenceHook::before_inference` 在剩余 ≤ 20% 且本 Turn 未提示时返回 `Injection`（一行 `<<budget>>` user 消息）；已提示标记放 `HostMeta`，随快照提交，Turn 打开补满预算时清掉。
+- [x] A4 收尾工具集：`hosted_request` 之后写 `request.tool_policy.wrap_up_tools = ["report", "ask_user"]`（只对 `ExplicitReport` 的会话；behavior `[budget] wrap_up_tools` 可覆盖）；behavior 切换重建请求时同样写；`BudgetExhausted{ToolIterations}` 的宿主处理不变。
+- [x] A5 测试：
   - `tests/context_limit.rs` 加多 Turn Work 例：设一个小窗口，Turn 1 中途超过触发线 → `context_rewritten` + `compaction`，重写后历史 ≤ 30% 窗口（断言 `compact_for_limit` 收到的 keep），同一个 run 继续，Turn 编号、`turn_tasks`、`one_line_status` 正常，后续 Turn 照常补满预算；
   - 窗口解析：显式值优先、AICC 值、缺省兜底、AICC 失败不阻塞；
   - 目标线：窗口 128k / 未知两种，`history_budget` 分别为 38k − prefix 与 24k；
   - `tests/work_simple_async.rs` 加预算例：剩 20% 时出现一次 `<<budget>>` 注入且本 Turn 不重复；用完全部迭代后回复文本 → nudge → 模型在收尾模式调 `report(is_end)` 成功结束；收尾模式里调 `shell` → `BudgetExhausted` → 照旧 `missing_end_report`。
-- [ ] A6 墙钟按连续运行段计（问题三，Q7a = A）：`resume_live_run` 在补满预算的同一处把 `snapshot.state.started_at_ms` 置为现在（所有恢复都重置，不限新 Turn）；核对内存续跑路径不重置。
-- [ ] A7 预算触顶收尾（Q7c = 宿主转换，依赖先行 TODO P2，不加 P3）：`handle_context_outcome` 对顶层 run 的 `BudgetExhausted{Wallclock | TotalTokens}` 先走收尾：取 `lc.ctx.snapshot()` → `started_at_ms = now`、`tool_iterations_left = 0`、`wrap_up_rounds_used = 0`（`TotalTokens` 再抬 `max_total_tokens`）→ 注入纠正输入（`source = system:runner, event = budget_wrap_up`，同一 Turn 一次，标记放 `HostMeta`）→ `LLMContext::resume(ResumeFromMidRun)` → 发布快照后继续；收尾批次里 `report` 成功即按真实结局结束；收尾后再 `BudgetExhausted` → 现状失败分支。worklog 记一条 `control_applied{budget_wrap_up, which}`。子 context 不做。
-- [ ] A8 测试（问题三）：`tests/work_simple_async.rs` 或 `tests/plan_simple_async.rs` 用 `.llm_context` `timeout` 设一个小值（如 3 s）：
+- [x] A6 墙钟按连续运行段计（问题三，Q7a = A）：`resume_live_run` 在补满预算的同一处把 `snapshot.state.started_at_ms` 置为现在（所有恢复都重置，不限新 Turn）；核对内存续跑路径不重置。
+- [x] A7 预算触顶收尾（Q7c = 宿主转换，依赖先行 TODO P2，不加 P3）：`handle_context_outcome` 对顶层 run 的 `BudgetExhausted{Wallclock | TotalTokens}` 先走收尾：取 `lc.ctx.snapshot()` → `started_at_ms = now`、`tool_iterations_left = 0`、`wrap_up_rounds_used = 0`（`TotalTokens` 再抬 `max_total_tokens`）→ 注入纠正输入（`source = system:runner, event = budget_wrap_up`，同一 Turn 一次，标记放 `HostMeta`）→ `LLMContext::resume(ResumeFromMidRun)` → 发布快照后继续；收尾批次里 `report` 成功即按真实结局结束；收尾后再 `BudgetExhausted` → 现状失败分支。worklog 记一条 `control_applied{budget_wrap_up, which}`。子 context 不做。
+- [x] A8 测试（问题三）：`tests/work_simple_async.rs` 或 `tests/plan_simple_async.rs` 用 `.llm_context` `timeout` 设一个小值（如 3 s）：
   - 会话总时长远超 `timeout`、但每段连续运行都短（Turn 之间等 `sleep` 任务 / 子 session）→ 不触顶，正常 `report` 结束；
   - 单段连续运行超过 `timeout`，两种形态都要：推理前检查触顶（脚本化模型连续多轮慢工具后再推理）、工具 deadline 取消（一个超过 deadline 的 `shell`，批次中间被取消）→ 都进入收尾：快照里 `started_at_ms` 已重置、请求只带 `report` / `ask_user`，模型 `report(is_end)` → 真实结局；收尾里再调 `shell` → `BudgetExhausted` → `budget_exhausted` 失败；
   - `[budget] max_total_tokens` 设小值 → `TotalTokens` 触顶同样收尾；
@@ -140,20 +140,20 @@ T02 里内置搜索单条消息 27 万字符，不计工具次数，worklog 里�
 
 ### B. Jarvis 包与手册
 
-- [ ] B1 `behaviors/work_simple.toml [budget] max_tool_iterations = 100`、`behaviors/explore.toml` 60。
-- [ ] B2 `agent.toml [llm_context]` 不写 `context_window`（Q1 = B，靠 AICC）；注释写明来源与覆盖方式。
-- [ ] B3 cmd_skill `opendan_agent_dev.md`：`[budget]` 一句改为“`max_tool_iterations` 计工具批次，多 Turn Work 每 Turn 补满；剩 20% 时收到一行 `<<budget>>` 提示；用完后只剩 `report` / `ask_user` 可调（最多 2 批次）”；`.llm_context` 字段补 `context_window`（来源：显式 → AICC → 128k）与 `context_yield_ratio`（缺省 0.80）、`prompt.context_target_ratio`（缺省 0.30）。按 AGENTS.md 联动规则写明 `ui_core` 等不受影响。
-- [ ] B4 cmd_skill `opendan_agent_dev.md`（问题三）：`.llm_context` 的 `timeout` 一句写明“单段连续运行的墙钟上限（缺省 3600 s），每次恢复 run 重新计时，Turn 之间与等待任务的时间不计；会话本身没有寿命上限；用完后与工具预算一样进入收尾模式”；`[budget]` 一句补 `max_wallclock_ms` / `max_total_tokens` 是按整个 run 的覆盖项，一般不设。
+- [x] B1 `behaviors/work_simple.toml [budget] max_tool_iterations = 100`、`behaviors/explore.toml` 60。
+- [x] B2 `agent.toml [llm_context]` 不写 `context_window`（Q1 = B，靠 AICC）；注释写明来源与覆盖方式。
+- [x] B3 cmd_skill `opendan_agent_dev.md`：`[budget]` 一句改为“`max_tool_iterations` 计工具批次，多 Turn Work 每 Turn 补满；剩 20% 时收到一行 `<<budget>>` 提示；用完后只剩 `report` / `ask_user` 可调（最多 2 批次）”；`.llm_context` 字段补 `context_window`（来源：显式 → AICC → 128k）与 `context_yield_ratio`（缺省 0.80）、`prompt.context_target_ratio`（缺省 0.30）。按 AGENTS.md 联动规则写明 `ui_core` 等不受影响。
+- [x] B4 cmd_skill `opendan_agent_dev.md`（问题三）：`.llm_context` 的 `timeout` 一句写明“单段连续运行的墙钟上限（缺省 3600 s），每次恢复 run 重新计时，Turn 之间与等待任务的时间不计；会话本身没有寿命上限；用完后与工具预算一样进入收尾模式”；`[budget]` 一句补 `max_wallclock_ms` / `max_total_tokens` 是按整个 run 的覆盖项，一般不设。
 
 ### C. 文档（顺手修正）
 
-- [ ] C1 `doc/opendan/protocol/Session Directory Protocol.md` §“上下文上限中途重写”第 2 条：“起点前移到只剩约 `history_budget >> 第几次`”改为“只剩约 `max(窗口 × context_target_ratio − system 前缀, history_budget_tokens) >> 第几次`”；§6 `history_budget_tokens` 的说明补“中途重写时是下限”。
-- [ ] C2 `doc/opendan/OpenDAN Agent Session架构设计.md` §4.2：补一句“Work Session 同样适用；触发线 `context_yield_ratio`（xllm，缺省 0.80）、目标线 `context_target_ratio`（libopendan，缺省 0.30）、窗口来自 AICC `max_context_tokens`”，并把 §12 末尾“约 30%→80%→30%”一句指向 §4.2。
-- [ ] C3 `doc/llm_context/LLM Compress.md`：`target_ratio` 缺省 0.50 → 0.30（`:354,373,379,397,683-690,1031,1509` 与示例表），“至少释放约 30%”改为“约 50%”；文首加一段注明：llm_context 冻结后压缩由宿主执行（libopendan `rewrite_for_limit`），本文的机械压缩 / LLM 压缩分级是宿主实现的参考，不是 llm_context 的行为；与 [llm-context-freeze-todo.md](./llm-context-freeze-todo.md) 的边界一致。
-- [ ] C4 `doc/opendan/Agent RootFS.md` / `doc/opendan/Agent配置改进.md` 的 `[on_llm_message_compress] mode = "context_window_ratio"`、`context_window_tokens` 段：核对是否仍有实现；没有则标注“已由 §3.1 的 `context_window` / `context_yield_ratio` / `context_target_ratio` 取代”，不留两套参数名。
-- [ ] C5 `doc/opendan/xAgent.md` `Budget { max_tool_iterations, … }` 伪代码与 `:1095` 的“上下文上限”一句：补收尾模式与告警；`src/frame/opendan/README.md` 无 run 配置描述，不改。
-- [ ] C6 `doc/llm_context/readme.md`（先行 TODO 负责 llm_context 侧的 `wrap_up_tools` 文档；本单只核对宿主侧引用）。
-- [ ] C7 预算语义（问题三）：`doc/opendan/protocol/Session Directory Protocol.md` 与 `doc/opendan/xAgent.md` 里 run 预算 / `timeout_secs` / `max_total_tokens` 的描述补“宿主每次恢复 run 重新计时；多 Turn Work 的会话没有墙钟寿命上限；`Wallclock` / `TotalTokens` / `ToolIterations` 触顶都先进收尾模式再失败”；grep `timeout_secs` / `max_wallclock` 的其它文档一并核对。
+- [x] C1 `doc/opendan/protocol/Session Directory Protocol.md` §“上下文上限中途重写”第 2 条：“起点前移到只剩约 `history_budget >> 第几次`”改为“只剩约 `max(窗口 × context_target_ratio − system 前缀, history_budget_tokens) >> 第几次`”；§6 `history_budget_tokens` 的说明补“中途重写时是下限”。
+- [x] C2 `doc/opendan/OpenDAN Agent Session架构设计.md` §4.2：补一句“Work Session 同样适用；触发线 `context_yield_ratio`（xllm，缺省 0.80）、目标线 `context_target_ratio`（libopendan，缺省 0.30）、窗口来自 AICC `max_context_tokens`”，并把 §12 末尾“约 30%→80%→30%”一句指向 §4.2。
+- [x] C3 `doc/llm_context/LLM Compress.md`：`target_ratio` 缺省 0.50 → 0.30（`:354,373,379,397,683-690,1031,1509` 与示例表），“至少释放约 30%”改为“约 50%”；文首加一段注明：llm_context 冻结后压缩由宿主执行（libopendan `rewrite_for_limit`），本文的机械压缩 / LLM 压缩分级是宿主实现的参考，不是 llm_context 的行为；与 [llm-context-freeze-todo.md](./llm-context-freeze-todo.md) 的边界一致。
+- [x] C4 `doc/opendan/Agent RootFS.md` / `doc/opendan/Agent配置改进.md` 的 `[on_llm_message_compress] mode = "context_window_ratio"`、`context_window_tokens` 段：核对是否仍有实现；没有则标注“已由 §3.1 的 `context_window` / `context_yield_ratio` / `context_target_ratio` 取代”，不留两套参数名。
+- [x] C5 `doc/opendan/xAgent.md` `Budget { max_tool_iterations, … }` 伪代码与 `:1095` 的“上下文上限”一句：补收尾模式与告警；`src/frame/opendan/README.md` 无 run 配置描述，不改。
+- [x] C6 `doc/llm_context/readme.md`（先行 TODO 负责 llm_context 侧的 `wrap_up_tools` 文档；本单只核对宿主侧引用）。
+- [x] C7 预算语义（问题三）：`doc/opendan/protocol/Session Directory Protocol.md` 与 `doc/opendan/xAgent.md` 里 run 预算 / `timeout_secs` / `max_total_tokens` 的描述补“宿主每次恢复 run 重新计时；多 Turn Work 的会话没有墙钟寿命上限；`Wallclock` / `TotalTokens` / `ToolIterations` 触顶都先进收尾模式再失败”；grep `timeout_secs` / `max_wallclock` 的其它文档一并核对。
 
 ## 6. 验证与 DV
 
@@ -176,6 +176,59 @@ T02 里内置搜索单条消息 27 万字符，不计工具次数，worklog 里�
 - [llm_context 冻结](./llm-context-freeze-todo.md)（`ContextLimitReached` 与宿主重写的边界）
 - 后续刀（不在本单）：重复调用检测（同工具同规范化参数连续 3 次 → 拒绝并提示，llm_context 层）；3.3 的 behavior 级 `disable = ["web_search"]` 开关；`history_budget_tokens` / `context_target_ratio` 的会话模板 `[session.<class>]` 入口。
 
-## 8. 实施记录
+## 8. 实施记录（2026-11-02，未提交）
 
-（实施后填写。）
+### 8.1 落点（路径相对 `src/frame/lib_opendan/`，除非另注）
+
+**A1 窗口**
+- 新模块 `src/runner/window.rs`：`ContextWindowSource` trait（`context_window(model) -> Result<Option<u32>, String>`）；`CachedContextWindows`（按别名缓存，`WINDOW_CACHE_TTL` 10 分钟，失败不缓存）；`AiccContextWindows`（以本进程 app 身份：`route.resolve(ApiType::Llm, alias)` → `selected_exact_model` → `models.list` 里该模型的 `capabilities.max_context_tokens`；带 `@` 的精确模型直接查列表）。
+- `RunnerDeps.context_windows` / `HostDeps.context_windows`（`Option<Arc<dyn ContextWindowSource>>`，测试注入）；opendan `LoaderEnv.context_windows`：Zone 形态 `CachedContextWindows::new(Arc::new(AiccContextWindows))`，`--dev` 为 `None`；xagent CLI 与各测试宿主为 `None`。
+- `runner/live.rs` `resolve_context_window`：`own_run_context` 在 `prepare_hosted` 前写 `llm_ctx["context_window"]`。显式值（agent.toml / session / behavior 的 `llm_context`）不动；否则按 `llm_ctx.model`（缺省 `llm.chat`，与 xllm buckyos provider 的缺省一致）查，10 s 超时，失败只记 `opendan.context.window.lookup_failed`；再否则 `RunnerOptions.default_context_window`（`Some(128_000)`，`None` 表示无窗口）。窗口 ≤ `max_tokens` 时不写（llm_context 会拒绝这种请求），记 `opendan.context.window.too_small`。fork 子 context 沿用父快照的窗口。
+
+**A2 目标线**
+- `RunnerOptions.context_target_ratio = 0.30`、session config `prompt.context_target_ratio`（`PromptConfig`，缺省不序列化）。
+- `runner/history.rs` 新 `LimitLine { window_tokens, target_tokens, prefix_tokens, history_budget }`：`target = ⌈window × ratio⌉`（f32 比例先取 6 位小数，避免 0.3 算成 0.30000001 多出 1 token），`history_budget = max(target − prefix, history_budget_tokens)`，窗口未知即 `history_budget_tokens`。`compact_for_limit` 改为收 `&LimitLine` 与 `keep`（`history_budget >> attempt`，与原来的移位一致），按 `history_budget` 重建历史；`opendan.context.compaction.triggered/skipped` 日志加 `window_tokens` / `target_tokens` / `prefix_tokens`。
+- `live.rs` `prefix_tokens`：快照 `request.input` 开头的 system 消息（`estimate_messages`）+ `resolve_tool_specs` 的工具 schema（同 `estimate_request` 的计法），用 run 的 `deps.tokenizer`。
+- 自定：rewrite 成功后 run.json `compactions += 1`（`RunHandle::count_compaction`），DV 第 1 条看的计数由此有值；原来宿主重写从不计数。
+
+**A3 告警 / A4 收尾工具 / A6 墙钟 / A7 触顶收尾**（新模块 `src/runner/budget.rs`）
+- `HostMeta` 新字段 `budget_warned`（bool）、`budget_wrap_up_turn`（u64），缺省不序列化，快照样例不用重生成。
+- A3：`SessionCheckpointHook::before_inference` 最后返回 `budget::warning(snapshot)`：`max_tool_iterations > 0`、有工具、`left × 5 ≤ max` 且未提示过 → 一条 `<<budget>> N of M tool iterations left in this Turn. Wrap up: …` user 消息，`Injection.host` 同时写 `budget_warned = true`（waist 注入后再调一次 hook 落盘，崩溃不重复）。剩 0 次时措辞为“已用完，只剩 report”。结束方式按 run：behavior loop 写 `<report end="true">`，有 `report` 收尾工具写 `report (is_end: true)`，其它写“给出最终答复”。`flush.rs` 不把没有 receipt 的 `<<budget>>` user 消息写进 worklog；自定：UI 续聊复用 `last_run` 消息列表时（`build_chat_history`）也去掉这些旧提示行，免得新 run 看到上一个 run 的余量。
+- A4：`own_run_context` 在 `hosted_request` 之后写 `request.tool_policy.wrap_up_tools = budget::wrap_up_tools(...)`：behavior `[budget] wrap_up_tools`（新键，`BehaviorBudget`），否则 explicit report 会话用 `DEFAULT_WRAP_UP_TOOLS = ["report", "ask_user"]`；**只对 function call run**（behavior loop 的报告是 Step 的一部分，本来就不耗迭代），并且**只保留 run 以函数提供的名字**——`ask_user` 是 shell 命令不是函数，所以实际是 `["report"]`，也免得 llm_context 每个实例 warn 一次“收尾工具未提供”。“behavior 切换重建请求”就是 `own_run_context`（每个 behavior 的新 run 都经这里）；fork 子 context 继承父快照的 `tool_policy`。
+- 补满（A3/A4/Q11）：`budget::refill`——`resume_live_run` 打开新 Turn 时补满 `tool_iterations_left`，同时清零 `wrap_up_rounds_used` 与 `budget_warned`。
+- A6：`resume_live_run`（所有恢复，含新 Turn、`open_state_live_run`、崩溃恢复）把 `started_at_ms` 置为现在；挂起在上下文上限的快照置为 `suspension.at_ms`，重写 resume 的 `resume_clock` 再加上挂起时长后正好等于 now（直接置 now 会让 `resume_clock` 把挂起时长再加一遍，墙钟被白送一段）。**与 §5 A6“内存续跑不重置”的偏差**：核对发现 `drive(StopWhen::Finished | TurnClosed)`（xagent CLI 用）会把保活的 `LiveCtx` 留在内存里一直等到下一个输入，这段等待在旧代码里照算墙钟；现在 `LiveCtx.waited` 在 drive 的两个等待分支置位，下一段开跑前 `restart_clock` 从快照 resume 一次并把 `started_at_ms` 置为现在。没有等待的内存续跑（nudge、已排队的输入、批次续跑）不重置。opendan 宿主用 `StopWhen::Idle`，保活的 run 本来就走 `resume_live_run`。曾试过“每段都重置”，会丢掉 `resume_live_run` 给已接受最终报告设的 finish 标记（`fixtures f15`、`report` 用例失败），所以只在等过之后重置。
+- A7：放在 `live.rs` `run_compacting` 循环里（与上下文上限重写、inline media 降级同一处，属于同一个 run 段），不在 `handle_context_outcome`：顶层 run（`call_site_of` 不是子 context）出 `BudgetExhausted{Wallclock | Tokens}`、快照无挂起无续跑、本 Turn 未收尾过 → `budget::wrap_up`：先 flush 本 run 历史并写 `control_applied{budget_wrap_up}`（detail：`which` / `run_id` / `turn` / `elapsed_ms` / `total_tokens`；同 rewrite 的 flush 标记提交，时间顺序不乱），快照 `started_at_ms = now`、`tool_iterations_left = 0`、`wrap_up_rounds_used = 0`、`budget_wrap_up_turn = turn`、`budget_warned = true`（不再叠一行余量提示），`resume(ResumeFromMidRun)` 后注入一行 `<<budget>> This run has used its time|token budget … Do not start anything new: <结束方式> now.`，发布快照后继续。纠正行不进 worklog（与告警同一规则），由 `control_applied` 记录。
+  - **与 §5 A7 的偏差**：(1) 纠正输入不是 `system:runner` 事件（那要经输入队列与 receipt，事件管道只在 run 段之间工作），而是直接注入的 `<<budget>>` 行 + `control_applied`；(2) `Tokens` 的余量不是 `2 × max_tokens`：`total_tokens` 含输入，一次收尾推理就要重发整个上下文，`2 × max_tokens` 会让收尾回复本身再次触顶被丢弃。改为 `当前用量 + 2 × (估算请求 + max_tokens 或 8192)`。
+  - `ToolIterations` 不走这条（它有收尾工具）；收尾后再触顶照旧失败；Goal 的 Activation token 上限同样适用（只多出收尾那两次推理）。
+- 记录：§5 A5 写的“收尾模式里调 `shell` → 照旧 `missing_end_report`”与现状不符：`BudgetExhausted{ToolIterations}` 的宿主处理没变，结局是 `budget_exhausted`（测试按此断言）。
+
+**B / C**
+- B1 `work_simple` 100（注释说明是失控保护）、`explore` 60；B2 `agent.toml [llm_context]` 注释写明窗口来源与覆盖方式、80% → 30%。
+- B3/B4 `cmd_skills/opendan_agent_dev.md`：新增“Run limits”一段（`timeout` 只量连续运行段、会话无寿命上限；`context_window` 来源；`context_yield_ratio` / `prompt.context_target_ratio`；时间 / token 触顶先收尾）；`[budget]` 一句改为失控保护语义（每 Turn 补满、20% 一行 `<<budget>>`、用完只剩 `report` ≤ 2 批、`wrap_up_tools`、`max_wallclock_ms` / `max_total_tokens` 一般不设）。联动检查：`ui_core` 不写预算 / 压缩 / 墙钟，UI behavior 预算没变（UI run 也可能在剩 20% 时看到一行自解释的 `<<budget>>`），无需修改；`xllm` 手册不列 `.llm_context` 键（指向 `--help`），无需修改；其它手册不涉及。
+- C1/C7 `Session Directory Protocol.md`：配置示例补 `context_target_ratio`；§6 `history_budget_tokens` 是新 run 的预算、中途重写的下限；§7 重写第 2 条改为 `history_budget = max(⌈窗口 × ratio⌉ − 前缀, history_budget_tokens)`，补窗口来源与触发线；新增“run 的预算”一段（告警、收尾工具、墙钟按连续运行段、`max_total_tokens` 按 run、触顶收尾）。
+- C2 架构设计 §4.2 补 Work Session 与三项参数，§11.2、§17 的“30%→80%→30%”指向 §4.2（§12 末尾没有这句，实际在这两处）。
+- C3 `LLM Compress.md`：文首加实现边界说明；`target_ratio` 0.50 → 0.30（建议值、可接受范围 0.25–0.35、生效线、示例表、TS 接口与缺省配置），“至少释放约 30%”→“约 50%”，硬上限处 0.45 → 0.65。
+- C4 `Agent RootFS.md` / `Agent配置改进.md`：`[on_llm_message_compress]` 代码里没有实现，示例、表格与参数说明处标“已被取代、未实现”并指向新参数。
+- C5/C7 `xAgent.md`：`Budget` 伪代码补 `wrap_up_tools` 与语义注释、§6.4 后补“run 预算的语义”一段、drive 步骤 h 补内存等待重新计时与 run_compacting 的两种继续。
+- C6 `doc/llm_context/readme.md`：宿主侧引用改为“explicit report 的 function call run 为 `report`，以及 run 以函数提供时的 `ask_user`”。其它 `timeout_secs` / `max_wallclock` 文档（`local_llm_context_protocol.md`、`LLM Context 设计.md`、`xllm_rust_sdk.md`）讲的是 xllm 自己的 run（恢复即重新计时），与本单一致，不改。
+
+### 8.2 测试与验证
+
+- 新增 `tests/context_limit.rs` 4 例：`the_rewrite_target_is_a_share_of_the_window`（128k / 大前缀落到下限 / 400k / 无窗口）、`a_run_gets_the_window_of_its_model`（AICC 值按别名、`llm.code` 别名、显式值优先且不查、查询失败与无窗口回落 128k、无来源无缺省则无窗口无触发线；run.json 与快照一致、触发线 `Ratio 0.8`）、`looked_up_windows_are_cached_per_alias`（同别名只查一次、过期重查、失败不缓存）、`a_multi_turn_work_compacts_at_the_window_line_and_goes_on`（内建 `work` 类、窗口 = 4 × 首个请求，第 1 Turn 中途越过 80% → `approaching_window` 让出 → `context_rewritten` + `compaction`，重写后请求估算 ≤ ⌈30% 窗口⌉，同一 run 继续进 Turn 2 并补满预算，`compactions = 1`，日志 `window_tokens` / `target_tokens` / `prefix_tokens`）。原有两例（behavior 紧预算、摘要失败）测的是无窗口的 provider 拒收路径，改为 `default_context_window = None`。
+- 新增 `tests/work_simple_async.rs` 8 例（Jarvis 真实 `work_simple`，测试里改 `[budget]`）：`the_tool_budget_warns_once_then_only_report_remains`（预算 5：第 5 次推理前一行 `<<budget>> 1 of 5`，用完只广告 `report`，纯文本回复照旧 nudge，`report` 成功；提示只一次、不进 worklog）、`another_tool_in_wrap_up_mode_exhausts_the_budget`（预算 1，收尾里调 `shell` → `budget_exhausted`，无墙钟收尾）、`waiting_between_turns_is_not_charged_to_the_wallclock`（`timeout: 2`，三个 Turn 共 3 s 以上不触顶；Idle 返回后等 2.5 s 换一个 drive 恢复，同样不触顶）、`a_run_out_of_time_wraps_up_with_its_report`（推理前检查：慢推理 2.5 s → nudge 输入前触顶 → 收尾行 + 只有 `report` → 成功，`control_applied{which: wallclock, turn: 1}`）、`a_command_past_the_deadline_wraps_up_the_run`（工具 deadline：`sleep 3` 在 2 s 被取消、调用配对为 cancelled，收尾后 `report` 成功）、`another_tool_in_the_time_wrap_up_fails_the_session`、`a_run_out_of_tokens_wraps_up_with_its_report`（`max_total_tokens = 40`，第 3 次推理 45 tokens 触顶、该回复不用，收尾后成功，上限已抬高）、`a_sub_context_out_of_time_returns_its_failure`（子 context `timeout: 1` 触顶，调用方收到 “ran out of budget (Wallclock)”，不收尾）。
+- `cargo test -p libopendan -p opendan --no-fail-fast -- --test-threads=1`：结果见 §8.4。
+
+### 8.3 待裁决 / 观察
+
+1. **codex-proxy 模型的窗口是 1.05M。** AICC `driver_metadata/models/openai.model.json` 里 `gpt-6.1-sol` / `gpt-6-astra` 的 `max_context_tokens = 1_050_000`（Q1 要求核对的两个）。若 DV 的 codex-proxy 走 openai model driver，`llm.chat` / `llm.plan` 的窗口就是 1.05M，80% 触发线是 84 万 token——§1 那个涨到 22.6 万的 T02 仍然不会压缩，每轮重发的上下文可以涨到几十万 token。实现按裁决（窗口来自 AICC）没有加上限。可选：(a) 维持，按模型真实窗口；(b) `agent.toml [llm_context] context_window` 显式写一个值（如 200k）作为 Jarvis 的成本上限（与 B2“不写”相反）；(c) runner 加 `max_context_window` 上限（如 256k），窗口取 `min(AICC, 上限)`。建议 (c) 或 (b)，DV 时先用 `models.list` 确认实际值。
+2. 内置网页搜索的大消息穿透触发线（§3.3）照旧只观察：硬上限同样让出并重写。
+
+### 8.4 验证结果
+
+- `cargo test -p libopendan -p opendan --no-fail-fast -- --test-threads=1`：44 个测试目标全过（libopendan 含 `context_limit` 8、`work_simple_async` 18、`fixtures` 19、`report` 20、`ui_chat` 10、`xagent_lib` 22、`xagent_cli` 12；opendan 24 + 23）。fixtures 不用重生成：新字段缺省不序列化，旧快照照常加载。
+- 之后的小改（UI 续聊去掉旧提示行、格式）再跑 `context_limit` / `work_simple_async` / `ui_chat` / `fixtures` / `report`：全过。其间一次与全量测试并发时 `parallel_tasks_tick_and_show_only_new_output`（既有的按 tick 计时的用例）失败一次，单独连跑 3 次与整个目标重跑都过，属负载下的计时抖动。
+- `cargo check -p libopendan -p opendan --tests` 无新告警；新增 / 改动的代码段与 rustfmt 一致（文件里原有的未格式化段没动）。
+
+### 8.5 未做
+
+- DV（§6 的 6 条）未做；需要先确认 §8.3 第 1 条，否则第 1 条 DV（压缩触发）在 1.05M 窗口下难以复现。

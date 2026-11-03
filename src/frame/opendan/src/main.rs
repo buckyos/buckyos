@@ -353,6 +353,9 @@ async fn zone_env(args: &Args) -> Result<LoaderEnv> {
         session_helpers: libopendan::runtime::bin_overlay::standard_helpers(
             std::env::current_exe().ok().as_deref().and_then(std::path::Path::parent),
         ),
+        context_windows: Some(Arc::new(libopendan::runner::CachedContextWindows::new(
+            Arc::new(libopendan::runner::AiccContextWindows),
+        ))),
         options: options_of(args),
     })
 }
@@ -421,6 +424,7 @@ async fn dev_env(args: &Args) -> Result<LoaderEnv> {
         session_helpers: libopendan::runtime::bin_overlay::standard_helpers(
             std::env::current_exe().ok().as_deref().and_then(std::path::Path::parent),
         ),
+        context_windows: None,
         options: options_of(args),
     })
 }

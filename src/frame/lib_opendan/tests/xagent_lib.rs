@@ -593,6 +593,7 @@ fn spawn_host(env: &Env, llm: Arc<dyn LlmClient>, parent: &SessionDir) -> HostDe
         session_cli: None,
         session_helpers: Vec::new(),
         app_tools: Vec::new(),
+        context_windows: None,
         options: RunnerOptions {
             poll_interval: Duration::from_millis(50),
             max_wait: Duration::from_secs(20),

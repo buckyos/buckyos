@@ -5,7 +5,11 @@
 language = "zh"
 
 # Base `.llm_context` of the sessions the Loader creates. A behavior lays its
-# own model / loop / tools / budget over it.
+# own model / loop / tools / budget over it. `context_window` is left out on
+# purpose: a run takes the window of the model its alias routes to (AICC
+# `max_context_tokens`, 128k when unknown); set it here (or in a session's
+# `llm_context`) only to override that. Compaction starts at 80% of it
+# (`context_yield_ratio`) and brings the request back to 30%.
 [llm_context]
 model = "llm.chat"
 max_tokens = 8192

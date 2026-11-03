@@ -39,6 +39,8 @@ pub struct HostDeps {
     /// Further commands of the host in each session's bin.
     pub session_helpers: Vec<crate::runtime::bin_overlay::SessionHelper>,
     pub app_tools: Vec<String>,
+    /// Where the window of a run's model is looked up.
+    pub context_windows: Option<Arc<dyn crate::runner::ContextWindowSource>>,
     pub options: RunnerOptions,
     /// Sub sessions driven at the same time.
     pub max_child_concurrency: usize,
@@ -88,6 +90,7 @@ impl HostDeps {
         deps.session_cli = self.session_cli.clone();
         deps.session_helpers = self.session_helpers.clone();
         deps.app_tools = self.app_tools.clone();
+        deps.context_windows = self.context_windows.clone();
         deps.outbound = self.outbound.clone();
         deps.objects = self.objects.clone();
         deps.turn_tasks = self.turn_tasks.clone();

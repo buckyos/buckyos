@@ -1005,6 +1005,14 @@ pub struct HostMeta {
     /// it is not tried again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub media_degraded: bool,
+    /// The model was told that the tool budget is running out (`<<budget>>`
+    /// line); cleared when a Turn refills the budget.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub budget_warned: bool,
+    /// Turn in which the run, out of time / tokens, was given its wrap-up
+    /// (once per Turn).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub budget_wrap_up_turn: u64,
 }
 
 pub const HOST_META_KEY: &str = "libopendan";

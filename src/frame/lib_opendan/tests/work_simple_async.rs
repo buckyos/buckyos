@@ -632,3 +632,382 @@ async fn an_answer_to_a_question_opens_the_next_turn() {
     assert_eq!(sd.state().unwrap().turns_completed, 2);
     assert_eq!(llm.count(), 3);
 }
+
+// ---------------------------------------------------------------------
+// Budgets as runaway protection (work context budget TODO §3.2 / §3.4)
+// ---------------------------------------------------------------------
+
+/// The `work_simple` behavior with other `[budget]` lines (before the
+/// session is created: the behavior is frozen with it).
+fn set_work_budget(s: &Setup, lines: &str) {
+    let path = s.env.agent_root.join("behaviors").join("work_simple.toml");
+    let toml = std::fs::read_to_string(&path).unwrap();
+    assert!(toml.contains("max_tool_iterations = 100"), "{toml}");
+    std::fs::write(&path, toml.replace("max_tool_iterations = 100", lines)).unwrap();
+}
+
+/// [`create`] with more `.llm_context` keys.
+async fn create_with(s: &Setup, objective: &str, extra: Value) -> SessionDir {
+    let mut spec = SessionTemplate::load("work", Some(&s.env.agent_root))
+        .unwrap()
+        .spec(objective);
+    spec.prompt.behavior = Some("work_simple".into());
+    let mut llm_context = json!({
+        "tools": { "enabled": true },
+        "runtime": { "task_wait_ms": 300 }
+    });
+    for (k, v) in extra.as_object().unwrap() {
+        llm_context[k.as_str()] = v.clone();
+    }
+    spec.prompt.llm_context = llm_context;
+    spec.policy.tick_secs = 0;
+    spec.freeze = true;
+    s.env.create_work(spec).await
+}
+
+/// A scripted model whose listed inferences take a while (the run's
+/// wallclock goes on meanwhile).
+struct SlowLlm {
+    inner: Arc<ScriptedLlm>,
+    slow: Vec<(usize, Duration)>,
+}
+
+#[async_trait]
+impl llm_context::deps::LlmClient for SlowLlm {
+    async fn infer(
+        &self,
+        req: LlmInferenceRequest,
+    ) -> Result<AiResponse, llm_context::error::LLMComputeError> {
+        let n = self.inner.count();
+        if let Some((_, d)) = self.slow.iter().find(|(i, _)| *i == n) {
+            tokio::time::sleep(*d).await;
+        }
+        self.inner.infer(req).await
+    }
+}
+
+fn slow_deps(s: &Setup, llm: &Arc<ScriptedLlm>, slow: Vec<(usize, Duration)>) -> RunnerDeps {
+    let mut d = deps(s, llm.clone());
+    d.xllm = d.xllm.clone().with_llm(Arc::new(SlowLlm {
+        inner: llm.clone(),
+        slow,
+    }));
+    d
+}
+
+fn tool_names(req: &LlmInferenceRequest) -> Vec<String> {
+    req.tool_specs.iter().map(|t| t.name.clone()).collect()
+}
+
+fn host_meta(sd: &SessionDir) -> (HostMeta, llm_context::state::LLMContextSnapshot) {
+    let st = sd.state().unwrap();
+    let run_id = st.last_run.or(st.live_run.map(|l| l.run_id)).unwrap();
+    let (_, snap) = sd.runs().load_checked(&run_id).unwrap();
+    let snap = snap.unwrap();
+    let meta = serde_json::from_value(snap.state.host.as_ref().unwrap()[HOST_META_KEY].clone()).unwrap();
+    (meta, snap)
+}
+
+fn wrap_ups(sd: &SessionDir) -> Vec<Value> {
+    read_worklog(sd)
+        .into_iter()
+        .filter_map(|e| match e.body {
+            WorklogBody::ControlApplied { command, detail, .. } if command == "budget_wrap_up" => Some(detail),
+            _ => None,
+        })
+        .collect()
+}
+
+fn last_error_kind(sd: &SessionDir) -> Option<String> {
+    sd.state()
+        .unwrap()
+        .last_error
+        .as_ref()
+        .and_then(|e| e.get("kind"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+// B1 / A3 / A4. The model is told once when a fifth of the Turn's tool
+// iterations is left; used up, only `report` is offered (a plain reply
+// still gets its correction) and ends the session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_tool_budget_warns_once_then_only_report_remains() {
+    let s = setup();
+    set_work_budget(&s, "max_tool_iterations = 5");
+    let sd = create(&s, "five steps", 0).await;
+    let llm = ScriptedLlm::new(|req, n| {
+        let all = render(&req.messages);
+        match n {
+            0..=3 => {
+                assert!(!all.contains("<<budget>>"), "{n}: {all}");
+                assert!(tool_names(req).contains(&"shell".to_string()));
+                shell(&format!("c{n}"), &format!("echo step{n}"), None)
+            }
+            4 => {
+                let input = new_inputs(req);
+                assert!(input.contains("<<budget>> 1 of 5 tool iterations left in this Turn"), "{input}");
+                assert!(input.contains("`report` (is_end: true)"), "{input}");
+                shell("c4", "echo step4", None)
+            }
+            5 => {
+                assert_eq!(tool_names(req), vec!["report".to_string()]);
+                text("All five steps are done.")
+            }
+            6 => {
+                assert!(new_inputs(req).contains("<runner_notice>"), "{}", new_inputs(req));
+                assert_eq!(tool_names(req), vec!["report".to_string()]);
+                assert_eq!(all.matches("<<budget>>").count(), 1, "told once: {all}");
+                report_end("did five steps")
+            }
+            _ => panic!("unexpected inference {n}"),
+        }
+    });
+    let r = drive_to_end(&s, &llm, &sd).await;
+    assert!(r.is_finished(), "{r:?}");
+    assert_eq!(sd.state().unwrap().outcome, Some(Outcome::Succeeded));
+    assert_eq!(llm.count(), 7);
+    // The line is the model's view only: not a worklog entry.
+    assert!(read_worklog(&sd).iter().all(|e| match &e.body {
+        WorklogBody::UserMessage { content, .. } => !content.contains("<<budget>>"),
+        _ => true,
+    }));
+    let (meta, snap) = host_meta(&sd);
+    assert!(meta.budget_warned);
+    assert_eq!(snap.request.tool_policy.wrap_up_tools, vec!["report".to_string()]);
+    assert_eq!(
+        (snap.state.tool_iterations_left, snap.state.wrap_up_rounds_used),
+        (0, 1)
+    );
+}
+
+// A4. In wrap-up mode another tool still exhausts the budget.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn another_tool_in_wrap_up_mode_exhausts_the_budget() {
+    let s = setup();
+    set_work_budget(&s, "max_tool_iterations = 1");
+    let sd = create(&s, "one step", 0).await;
+    let llm = ScriptedLlm::new(|req, n| match n {
+        0 => shell("c0", "echo one", None),
+        1 => {
+            assert_eq!(tool_names(req), vec!["report".to_string()]);
+            shell("c1", "echo two", None)
+        }
+        _ => panic!("unexpected inference {n}"),
+    });
+    let r = drive_to_end(&s, &llm, &sd).await;
+    assert!(r.is_finished(), "{r:?}");
+    let st = sd.state().unwrap();
+    assert_eq!(st.outcome, Some(Outcome::Failed));
+    assert_eq!(last_error_kind(&sd).as_deref(), Some("budget_exhausted"));
+    assert_eq!(st.last_error.as_ref().unwrap()["message"], "ToolIterations");
+    assert!(wrap_ups(&sd).is_empty(), "tool iterations get no second wrap-up");
+}
+
+// A6. The wallclock measures one stretch of running: a session that lives
+// far longer than `timeout`, Turn by Turn, never reaches it — in one drive,
+// or across a host restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn waiting_between_turns_is_not_charged_to_the_wallclock() {
+    let s = setup();
+    let sd = create_with(&s, "two long steps", json!({ "timeout": 2 })).await;
+    let llm = ScriptedLlm::new(|req, n| match n {
+        0 => shell("c1", "sleep 1.5; echo first", None),
+        1 => text("The first step is running."),
+        2 => {
+            assert!(new_inputs(req).contains("first"), "{}", new_inputs(req));
+            shell("c2", "sleep 1.5; echo second", None)
+        }
+        3 => text("The second step is running."),
+        4 => {
+            assert!(new_inputs(req).contains("second"), "{}", new_inputs(req));
+            assert!(!render(&req.messages).contains("<<budget>>"));
+            report_end("both steps done")
+        }
+        _ => panic!("unexpected inference {n}"),
+    });
+    let started = std::time::Instant::now();
+    let r = drive_to_end(&s, &llm, &sd).await;
+    assert!(r.is_finished(), "{r:?}");
+    assert!(started.elapsed() > Duration::from_secs(3));
+    assert_eq!(sd.state().unwrap().outcome, Some(Outcome::Succeeded));
+    assert_eq!(sd.state().unwrap().turns_completed, 3);
+    assert!(wrap_ups(&sd).is_empty());
+    let (_, snap) = host_meta(&sd);
+    assert_eq!(snap.request.budget.max_wallclock_ms, Some(2000));
+
+    // A restart: the run is resumed from its snapshot by another drive.
+    let sd = create_with(&s, "one long step", json!({ "timeout": 2 })).await;
+    let llm = ScriptedLlm::new(|req, n| match n {
+        0 => shell("c1", "sleep 1; echo done", None),
+        1 => text("Running."),
+        2 => {
+            assert!(new_inputs(req).contains("done"), "{}", new_inputs(req));
+            report_end("done")
+        }
+        _ => panic!("unexpected inference {n}"),
+    });
+    let r = drive(&sd, &deps(&s, llm.clone()), StopWhen::Idle).await;
+    assert!(matches!(r, DriveResult::Idle { .. }), "{r:?}");
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let r = drive(&sd, &deps(&s, llm.clone()), StopWhen::Finished).await;
+    assert!(r.is_finished(), "{r:?}");
+    assert_eq!(sd.state().unwrap().outcome, Some(Outcome::Succeeded));
+    assert!(wrap_ups(&sd).is_empty());
+}
+
+// A7 (inference check). One stretch past the wallclock: the run is not
+// failed but wraps up — its clock restarts, only `report` is offered, and
+// a `<<budget>>` line asks for the end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_run_out_of_time_wraps_up_with_its_report() {
+    let s = setup();
+    let sd = create_with(&s, "think long", json!({ "timeout": 2 })).await;
+    let llm = ScriptedLlm::new(|req, n| match n {
+        0 => text("I think it is done."),
+        1 => {
+            let input = new_inputs(req);
+            assert!(input.contains("<runner_notice>"), "{input}");
+            assert!(input.contains("<<budget>> This run has used its time budget"), "{input}");
+            assert_eq!(tool_names(req), vec!["report".to_string()]);
+            report_end("thought it through")
+        }
+        _ => panic!("unexpected inference {n}"),
+    });
+    let d = slow_deps(&s, &llm, vec![(0, Duration::from_millis(2500))]);
+    let r = drive(&sd, &d, StopWhen::Finished).await;
+    assert!(r.is_finished(), "{r:?}");
+    assert_eq!(sd.state().unwrap().outcome, Some(Outcome::Succeeded));
+    assert_eq!(llm.count(), 2);
+    let wraps = wrap_ups(&sd);
+    assert_eq!(wraps.len(), 1, "{wraps:?}");
+    assert_eq!(wraps[0]["which"], "wallclock");
+    assert_eq!(wraps[0]["turn"], 1);
+    let (meta, snap) = host_meta(&sd);
+    assert_eq!(meta.budget_wrap_up_turn, 1);
+    assert_eq!(snap.state.tool_iterations_left, 0);
+    // The line is not a worklog message; the control entry is.
+    assert!(read_worklog(&sd).iter().all(|e| match &e.body {
+        WorklogBody::UserMessage { content, .. } => !content.contains("<<budget>>"),
+        _ => true,
+    }));
+}
+
+// A7 (tool deadline). A command still running at the deadline is
+// cancelled in the middle of its batch (the call is paired as cancelled)
+// and the run wraps up the same way, with the clock restarted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_command_past_the_deadline_wraps_up_the_run() {
+    let s = setup();
+    let sd = create_with(
+        &s,
+        "a long command",
+        json!({ "timeout": 2, "runtime": { "task_wait_ms": 20000 } }),
+    )
+    .await;
+    let llm = ScriptedLlm::new(|req, n| match n {
+        0 => shell("c1", "sleep 3; echo late", None),
+        1 => {
+            let r = has_tool_result(req, "c1").unwrap();
+            assert!(r.contains("Deadline") || r.contains("cancelled"), "{r}");
+            let input = new_inputs(req);
+            assert!(input.contains("<<budget>> This run has used its time budget"), "{input}");
+            assert_eq!(tool_names(req), vec!["report".to_string()]);
+            report_end("the command did not finish within the time budget")
+        }
+        _ => panic!("unexpected inference {n}"),
+    });
+    let r = drive_to_end(&s, &llm, &sd).await;
+    assert!(r.is_finished(), "{r:?}");
+    assert_eq!(sd.state().unwrap().outcome, Some(Outcome::Succeeded));
+    assert_eq!(llm.count(), 2);
+    let wraps = wrap_ups(&sd);
+    assert_eq!(wraps.len(), 1, "{wraps:?}");
+    assert_eq!(wraps[0]["which"], "wallclock");
+}
+
+// A7. In the wrap-up another tool still fails the session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn another_tool_in_the_time_wrap_up_fails_the_session() {
+    let s = setup();
+    let sd = create_with(&s, "think long", json!({ "timeout": 2 })).await;
+    let llm = ScriptedLlm::new(|_, n| match n {
+        0 => text("I think it is done."),
+        1 => shell("c1", "echo more", None),
+        _ => panic!("unexpected inference {n}"),
+    });
+    let d = slow_deps(&s, &llm, vec![(0, Duration::from_millis(2500))]);
+    let r = drive(&sd, &d, StopWhen::Finished).await;
+    assert!(r.is_finished(), "{r:?}");
+    assert_eq!(sd.state().unwrap().outcome, Some(Outcome::Failed));
+    assert_eq!(last_error_kind(&sd).as_deref(), Some("budget_exhausted"));
+    assert_eq!(wrap_ups(&sd).len(), 1);
+}
+
+// A7 (total tokens). `[budget] max_total_tokens` used up: the same wrap-up,
+// with room for its inferences.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_run_out_of_tokens_wraps_up_with_its_report() {
+    let s = setup();
+    // Every scripted inference counts 15 tokens.
+    set_work_budget(&s, "max_tool_iterations = 100\nmax_total_tokens = 40");
+    let sd = create(&s, "count tokens", 0).await;
+    let llm = ScriptedLlm::new(|req, n| match n {
+        0 => shell("c0", "echo a", None),
+        1 => shell("c1", "echo b", None),
+        // 45 tokens: this response is over the cap and not used.
+        2 => shell("c2", "echo c", None),
+        3 => {
+            let input = new_inputs(req);
+            assert!(input.contains("<<budget>> This run has used its token budget (45 tokens)"), "{input}");
+            assert_eq!(tool_names(req), vec!["report".to_string()]);
+            assert!(has_tool_result(req, "c2").is_none());
+            report_end("counted")
+        }
+        _ => panic!("unexpected inference {n}"),
+    });
+    let r = drive_to_end(&s, &llm, &sd).await;
+    assert!(r.is_finished(), "{r:?}");
+    assert_eq!(sd.state().unwrap().outcome, Some(Outcome::Succeeded));
+    let wraps = wrap_ups(&sd);
+    assert_eq!(wraps.len(), 1, "{wraps:?}");
+    assert_eq!(wraps[0]["which"], "tokens");
+    let (_, snap) = host_meta(&sd);
+    assert!(snap.request.budget.max_total_tokens.unwrap() > 60);
+}
+
+// A7. A sub context out of time returns its failure to the caller: no
+// wrap-up there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sub_context_out_of_time_returns_its_failure() {
+    let s = setup();
+    let mut spec = work_spec("delegate");
+    spec.prompt.llm_context = json!({
+        "tools": { "enabled": true, "tools": [ { "groupname": "bash" }, { "name": "call_behavior" } ] }
+    });
+    spec.extensions.insert(
+        "opendan".into(),
+        json!({ "behaviors": { "do": {
+            "mode": "create_sub_context",
+            "llm_context": { "tools": { "enabled": true }, "timeout": 1 }
+        } } }),
+    );
+    let sd = s.env.create_work(spec).await;
+    let llm = ScriptedLlm::new(|req, n| match n {
+        0 => tool_call("d1", "call_behavior", json!({ "behavior": "do", "task": "slow work" })),
+        1 => text("waiting for it"),
+        // The sub context: its first inference outlasts its wallclock.
+        2 => shell("c1", "echo child", None),
+        3 => {
+            let last = last_user_text(req);
+            assert!(last.contains("ran out of budget (Wallclock)"), "{last}");
+            text("the sub context failed")
+        }
+        _ => panic!("unexpected inference {n}"),
+    });
+    let d = slow_deps(&s, &llm, vec![(2, Duration::from_millis(1500))]);
+    let r = drive(&sd, &d, StopWhen::Finished).await;
+    assert!(r.is_finished(), "{r:?}");
+    assert!(wrap_ups(&sd).is_empty());
+    assert_eq!(llm.count(), 4);
+}

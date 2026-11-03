@@ -484,6 +484,7 @@ preferred = "claude-opus-4-7"
 [on_context_limit_reached]
 mode = "compress_then_continue"         # 唯一支持的模式;填上即启用
 
+# [on_llm_message_compress] 已被取代、未实现：见下方表后的说明
 [on_llm_message_compress]
 mode = "context_window_ratio"           # 一轮完成后按 context window 使用率触发
 trigger_ratio = 0.80
@@ -618,7 +619,7 @@ PATH = SessionExecBin : AgentBin : RuntimeBin : SystemBin : <inherited>
 | `[on_xxx]` 段 | 允许的 `mode` | 含义 |
 |---|---|---|
 | `[on_context_limit_reached]` | `compress_then_continue` | 上下文满 ⇒ 压缩后继续 |
-| `[on_llm_message_compress]` | `context_window_ratio` | 一轮完成后按 context window 使用率自动压缩；不写则不启用自动压缩 |
+| `[on_llm_message_compress]` | `context_window_ratio` | **已被取代，未实现**（见下方说明）：压缩由 `context_window` / `context_yield_ratio` / `context_target_ratio` 决定 |
 | `[on_provider_failed]` | `fallback_behavior`(带 `target = "<name>"`) | 仅 provider 来源的终态错误(请求失败 / 超时 / 取消)⇒ 切到 target;输出协议、工具、运行时错误不触发 |
 | `[on_interrupt_graceful]` | `cancel_pending_tools_then_continue` | 收到 graceful 中断 ⇒ 注入 Cancelled 后继续 |
 | `[on_interrupt_discard]` | `end` | 收到 discard 中断 ⇒ 直接结束 process |
@@ -628,6 +629,8 @@ PATH = SessionExecBin : AgentBin : RuntimeBin : SystemBin : <inherited>
 `trigger_ratio`、`target_ratio`、`hard_limit_ratio`、`min_turns_between_compress`、
 `preserve_cache_stability`，以及调试/兜底用的 `context_window_tokens`。生产环境应优先依赖
 AICC `models.list` 返回的 `capabilities.max_context_tokens`。**未列出的 section 或 mode ⇒ parse error**。
+
+> **已被取代（2026-11-02）**：`[on_llm_message_compress]` 段没有实现。上下文压缩现由 `llm_context` 的 `context_window`（显式值，否则 AICC `max_context_tokens`，再否则 128k）、`context_yield_ratio`（触发线，缺省 0.80）与 session `prompt.context_target_ratio`（目标线，缺省 0.30）决定，宿主 libopendan 在 run 中途执行（[Session Directory Protocol](protocol/Session%20Directory%20Protocol.md) §7“上下文上限中途重写”）。不要再写本段的参数名。
 
 其它枚举字段(`loop_mode` / `switch_mode` / `session_id_strategy` / dispatcher `on` 通配)分散在
 各自的 schema 段中,本节不重复罗列。

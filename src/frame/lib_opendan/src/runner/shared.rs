@@ -98,6 +98,9 @@ pub(super) struct LiveCtx {
     pub(super) summary_llm: Arc<dyn LlmClient>,
     /// The run's view on running tasks (in-process + host task managers).
     pub(super) resolver: Arc<dyn RunningTaskResolver>,
+    /// Kept in memory while the drive waited for its next input: its next
+    /// segment is a new stretch of running (wallclock budget).
+    pub(super) waited: bool,
 }
 
 /// The run's client for the context: every inference is a counted Round

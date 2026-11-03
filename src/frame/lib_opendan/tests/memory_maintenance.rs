@@ -46,6 +46,7 @@ fn host_deps(env: &Env, llm: Arc<ScriptedLlm>) -> HostDeps {
         session_cli: None,
         session_helpers: Vec::new(),
         app_tools: Vec::new(),
+        context_windows: None,
         options: deps.options.clone(),
         max_child_concurrency: 4,
         bridges: Vec::new(),

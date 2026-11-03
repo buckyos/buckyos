@@ -474,6 +474,11 @@ impl RunHandle {
         })
     }
 
+    /// A mid-run rewrite at the context limit (run.json `compactions`).
+    pub fn count_compaction(&self) -> Result<()> {
+        self.update(|r| r.compactions += 1)
+    }
+
     pub fn shared(&self) -> bool {
         self.record()
             .host

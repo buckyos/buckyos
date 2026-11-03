@@ -73,7 +73,9 @@ When every task you started has ended and the results are verified, finish with 
 tool_whitelist = ["group:bash", "report"]
 
 [budget]
-max_tool_iterations = 24
+# Runaway protection, not a work quota: refilled every Turn, a warning at
+# 20% left, then only `report` until the Turn ends.
+max_tool_iterations = 100
 max_consecutive_errors = 4
 
 [model]

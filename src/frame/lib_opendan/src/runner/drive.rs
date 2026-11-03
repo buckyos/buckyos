@@ -40,8 +40,8 @@ use super::inputs::{
     confirm_inputs, release_sources, restore_sources, route_inputs, select_batch, stop_queued,
 };
 use super::live::{
-    commit_input_batch, new_run_context, open_state_live_run, resume_live_run, run_compacting,
-    InputBatch,
+    commit_input_batch, new_run_context, open_state_live_run, restart_clock, resume_live_run,
+    run_compacting, InputBatch,
 };
 use super::goal::Gate;
 use super::outcome::{finish_run, handle_context_outcome, FinishKind, Next};
@@ -1901,6 +1901,9 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                     return Ok(turn_open_result(sh).await);
                 }
                 StopWhen::TurnClosed => {
+                    if let Some(l) = live.as_mut() {
+                        l.waited = true;
+                    }
                     let wake = cfg.channels.wake_event.clone();
                     tokio::select! {
                         _ = sh.deps.waker.wait(wake.as_deref(), sh.deps.options.poll_interval) => {}
@@ -1919,6 +1922,9 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                     }
                     if started.elapsed() >= sh.deps.options.max_wait {
                         return Ok(DriveResult::Idle { rev, run_state: rs });
+                    }
+                    if let Some(l) = live.as_mut() {
+                        l.waited = true;
                     }
                     // The queue notification only says "look again": losing
                     // or repeating it changes nothing, persisted inputs are
@@ -1967,7 +1973,9 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
             _ => None,
         };
         let mut lc = match live.take() {
-            Some(l) => l,
+            // Kept in memory while the drive waited: a new stretch of
+            // running.
+            Some(l) => restart_clock(sh, l)?,
             None if state.live_run.is_some() => Box::pin(open_state_live_run(sh, &env)).await?,
             None => Box::pin(new_run_context(sh, &binding, &env)).await?,
         };

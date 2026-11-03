@@ -100,6 +100,11 @@ pub struct BehaviorBudget {
     pub max_completion_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_wallclock_ms: Option<u64>,
+    /// Functions still offered once `max_tool_iterations` is used up
+    /// (`None`: `report` / `ask_user` of an explicit-report session; `[]`:
+    /// none). Calling them costs no iteration, at most 2 batches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrap_up_tools: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]

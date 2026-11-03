@@ -796,7 +796,8 @@ pub struct BehaviorConfig {
     pub input: InputConsumption { mode: Single | Batch,   // 消费策略；单条 / 组批，与正文模板分开；默认 Batch
                                   media: Reference | Inline }, // 附件是否以图片 / 文档块注入；默认 Reference
     pub capabilities: Capabilities { tool_whitelist, action_whitelist, tool_plan, approval_required, disable_capabilities },
-    pub budget: Budget { max_tool_iterations, max_consecutive_errors, max_total_tokens, max_completion_tokens, max_wallclock_ms },
+    pub budget: Budget { max_tool_iterations, max_consecutive_errors, max_total_tokens, max_completion_tokens, max_wallclock_ms,
+                         wrap_up_tools },  // 失控保护不是配额：剩 20% 注入一行 <<budget>>；用完只剩收尾工具（report，≤ 2 批）
     pub model: Model { preferred, fallbacks, temperature, provider_options },
     pub entry: BehaviorEntry {           // **进入本 behavior 时**的方式（§3.3、§3.5）；由目标决定，没有缺省模式
         mode: ContextMode,               // switch_context | create_sub_context | fork
@@ -890,6 +891,8 @@ impl BehaviorConfig {
 输入注入顺序固定为：确定受控输入 → 算出变化的背景行 → 渲染受控输入 user message（文本加可选媒体，模板放置背景）→ 只有实际出现的背景行记为已显示 → 一次 inject，与 receipt 同快照提交 → 继续推理。背景没有独立 hook、消息或 Turn。
 
 这就是 §3 表“配置来源”一格的变化：`prepare_hosted(workdir, behavior.overlay_llm_context(&cfg.prompt.llm_context), …)`。叠加结果进 run.json `config`，xllm 接手时不需要理解 behavior。`budget.max_wallclock_ms` / `max_total_tokens` 直接进 `hosted_request` 的 `BudgetSpec`（需要 `hosted_request` 接受 budget 覆盖，见 §11）。
+
+run 预算的语义（[Session Directory Protocol](protocol/Session%20Directory%20Protocol.md) §7“run 的预算”）：`max_tool_iterations` 多 Turn Work 每 Turn 补满，剩 20% 时 checkpoint hook 注入一行 `<<budget>>`，用完后 explicit report 的 function call run 只带收尾工具（`ToolPolicy.wrap_up_tools`）；`max_wallclock_ms`（`.llm_context` 的 `timeout`）只量一段连续运行，宿主每次恢复 run 重新计时，多 Turn Work 的会话没有墙钟寿命上限；`max_total_tokens` 按整个 run 累计。`Wallclock` / `Tokens` 触顶的顶层 run 先进收尾（每 Turn 一次）再失败，`ToolIterations` 用完先走收尾工具再失败。新 run 的 `context_window` 由宿主解析（显式 → AICC `max_context_tokens` → 128k），中途重写压回窗口的 `context_target_ratio`（缺省 30%）。
 
 ### 6.5 渲染变量：哪些冻结、哪些新鲜
 
@@ -1092,7 +1095,8 @@ serve
    g. 清 ready / filled，启动 StopMonitor，执行 run_compacting。
       停止监视任务；若它发现 stop，由驱动者消费控制并提交，再解释 Outcome。
    h. handle_context_outcome：调度 Context（含 sub_call 的交接）/ 保活 / 关闭 Turn，outcomes += 1。
-      run 未结束也未交接（保活、可重试错误、上下文上限）时保留 LiveCtx。
+      run 未结束也未交接（保活、可重试错误、上下文上限）时保留 LiveCtx；在内存里等过输入的 LiveCtx 下一段重新计墙钟。
+      run_compacting 内：上下文上限 → 中途重写后继续；顶层 run 的 Wallclock / Tokens 触顶 → 收尾（每 Turn 一次）后继续。
    i. 本次 Turn 已关闭且 until = TurnClosed → 返回 TurnClosed（优先于 Finished）。
       否则 finished / error → 返回；进入等待（保活或等输入）且 until = Idle、没有候选 → 返回 Idle；其余重新 route_inputs 后回到 a。
 ```

@@ -89,6 +89,9 @@ pub struct LoaderEnv {
     /// Further commands every session gets (`llm_understand_media` →
     /// `agent_tool llm_understand_media`).
     pub session_helpers: Vec<libopendan::runtime::bin_overlay::SessionHelper>,
+    /// Where the window of a run's model is looked up (the zone's AICC;
+    /// `None` with `--dev`: the session's `context_window` or the default).
+    pub context_windows: Option<Arc<dyn libopendan::runner::ContextWindowSource>>,
     pub options: RunnerOptions,
 }
 
@@ -319,6 +322,7 @@ impl Loader {
             session_cli: env.session_cli.clone(),
             session_helpers: env.session_helpers.clone(),
             app_tools: Vec::new(),
+            context_windows: env.context_windows.clone(),
             options,
             max_child_concurrency,
             bridges,

@@ -5,6 +5,7 @@
 
 pub mod assembler;
 pub mod background;
+mod budget;
 mod children;
 mod consolidation;
 mod drive;
@@ -30,6 +31,7 @@ mod ticks;
 mod tools;
 mod todos;
 mod turn_task;
+pub mod window;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -61,6 +63,7 @@ pub use turn_task::{
     has_pending_turn_tasks, TurnTaskEnd, TurnTaskOpen, TurnTaskSink, TurnTaskStatus,
 };
 pub use history::{LlmSummarizer, Summarizer};
+pub use window::{AiccContextWindows, CachedContextWindows, ContextWindowSource};
 pub use consolidation::{GoalCaps, TOOL_BEGIN as TOOL_MEMORY_CONSOLIDATION_BEGIN, TOOL_COMMIT as TOOL_MEMORY_CONSOLIDATION_COMMIT};
 pub use tools::classify_effect;
 pub(crate) use inputs::side_effects_from_worklog as side_effects_of;
@@ -163,9 +166,17 @@ pub struct RunnerOptions {
     pub poll_interval: Duration,
     /// `until = finished`: give up waiting for input after this long.
     pub max_wait: Duration,
-    /// History budget (tokens) when `prompt.history_budget_tokens` is unset.
+    /// History budget (tokens) when `prompt.history_budget_tokens` is unset;
+    /// the floor of a mid-run rewrite's history.
     pub history_budget_tokens: u32,
     pub compact_ratio: f32,
+    /// Context window of a run whose model states none (and the session
+    /// sets none); `None`: such a run has no window (only the provider's
+    /// refusal triggers a rewrite).
+    pub default_context_window: Option<u32>,
+    /// A mid-run rewrite brings the request back to this share of the
+    /// window when `prompt.context_target_ratio` is unset.
+    pub context_target_ratio: f32,
     /// Throttle of activity heartbeat commits during a run.
     pub heartbeat_interval: Duration,
     /// Active sessions rendered into a turn.
@@ -221,6 +232,8 @@ impl Default for RunnerOptions {
             max_wait: Duration::from_secs(600),
             history_budget_tokens: 24_000,
             compact_ratio: 0.75,
+            default_context_window: Some(128_000),
+            context_target_ratio: 0.30,
             heartbeat_interval: Duration::from_secs(60),
             active_sessions_limit: 8,
             change_budget: 16,
@@ -267,6 +280,9 @@ pub struct RunnerDeps {
     pub session_helpers: Vec<crate::runtime::bin_overlay::SessionHelper>,
     /// Tools that only exist in this runner process (`requirement.app_tools`).
     pub app_tools: Vec<String>,
+    /// Where the window of a run's model is looked up (`None`: only the
+    /// session's `context_window` or `options.default_context_window`).
+    pub context_windows: Option<Arc<dyn ContextWindowSource>>,
     pub options: RunnerOptions,
     pub stop: StopSignal,
 }
@@ -298,6 +314,7 @@ impl RunnerDeps {
             session_cli: None,
             session_helpers: Vec::new(),
             app_tools: Vec::new(),
+            context_windows: None,
             options: RunnerOptions::default(),
             stop: StopSignal::default(),
         }

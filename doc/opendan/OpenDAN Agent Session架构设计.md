@@ -211,6 +211,8 @@ UI Session 采用以下目标性运行区间：
 
 这里的增长空间约为 50 个百分点，**不是将上限另定为 50%**。上述数值是当前设计目标，不是所有模型和部署都必须使用的硬编码参数。
 
+Work Session 同样适用（多 Turn Work 整个会话是一个 run，中途压缩同样按这个区间）。实现上：窗口来自 AICC 路由选中模型的 `max_context_tokens`（`llm_context.context_window` 显式值优先，查不到按 128k）；触发线是 xllm 的 `context_yield_ratio`（缺省 0.80），目标线是 libopendan 的 `context_target_ratio`（缺省 0.30，压缩后 system 前缀 + 历史约占窗口的 30%，`history_budget_tokens` 是历史的下限）。见 [Session Directory Protocol](protocol/Session%20Directory%20Protocol.md) §7“上下文上限中途重写”。
+
 维持稳定前缀有利于争取缓存复用，但缓存命中仍取决于实际 Provider、模型和请求组织方式。本设计不将“未压缩”等同于“必然全部命中缓存”。
 
 更重要的是，单靠压缩算法不能达成长期轻量运行。必须首先把大量分析与执行过程移出 UI Context。
@@ -812,7 +814,7 @@ Goal 的目标级摘要用于本目标的恢复，不自动成为共享认知。
 
 ### 11.2 UI、Work、Goal 的压缩策略不同
 
-**UI Session** 强调长期沟通与轻量上下文，使用约 30%→80%→30% 的目标区间，尽量只保留关键决策、结果和最近交互。
+**UI Session** 强调长期沟通与轻量上下文，使用约 30%→80%→30% 的目标区间（§4.2），尽量只保留关键决策、结果和最近交互。
 
 **Work Session** 的 Context 服务于一个明确任务，可以围绕任务保留较多执行信息；需要压缩时，也应保留任务约束、已验证结论、当前执行状态与产物引用。其重点是完成并结束，不是把它长期养成另一个 Goal。
 
@@ -1586,7 +1588,7 @@ Context Fork、Work 执行、Final Report、已有 Task 等待和 Agent Memory �
 
 **分类上**，UI 面向持续交互，Work 面向确定任务，Goal 面向持续目标；不能再只按有无新用户输入分类。Goal 是对象，Goal Session 是承担该目标的上下文与运行机制。
 
-**UI 上**，复杂意图分析通过 Context Fork 完成，只回传必要结果。约 30%→80%→30% 是当前上下文目标区间，依靠任务分流和压缩共同实现。
+**UI 上**，复杂意图分析通过 Context Fork 完成，只回传必要结果。约 30%→80%→30% 是当前上下文目标区间（§4.2，Work Session 同样适用），依靠任务分流和压缩共同实现。
 
 **Work 上**，明确目标、前置条件和结束条件，允许失败并以 Final Report 交付结果。Work 无 Message input；每次推理前通过对自身 Task 对象的半订阅观察 Task 修订，在执行中理解同目标修改，结束后的修改创建新 Work。不通过开放等待把它做成长会话，也不默认将失败的全过程传给下一个 Work。
 

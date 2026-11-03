@@ -11,7 +11,7 @@ LLMContext run 的返回包括完成 (`Done`，Behavior 模式的结束报告 `<
 
 工具额度 `ToolPolicy.max_tool_iterations` 统计的是工具迭代：完成一个原生工具批次，或派发一个带 action 的 Behavior Step，各计一次；两者共享额度。它不是 Round 数，最后无工具的回答、纯 report 的 Step 和解析纠错都不扣额度。`max_calls_per_round` 限制的才是单次模型 response（一个 Round）里的原生 tool call 数。
 
-收尾模式（`ToolPolicy.wrap_up_tools` / `wrap_up_rounds`）：额度剩 0 次时请求里只给宿主指定的收尾工具（libopendan 为 `report` / `ask_user`），而不是一个工具都没有。只含收尾工具的批次（或 Behavior Step 的 action）不扣额度，最多 `wrap_up_rounds`（缺省 2）批，已用批数记在快照 `wrap_up_rounds_used`，宿主补满额度时一并清零。批次里有别的工具、或批数用完后再要工具，照旧 `BudgetExhausted{ToolIterations}`；`wrap_up_tools` 为空（缺省）时与原来一样。
+收尾模式（`ToolPolicy.wrap_up_tools` / `wrap_up_rounds`）：额度剩 0 次时请求里只给宿主指定的收尾工具（libopendan：explicit report 的 function call run 为 `report`，以及 run 以函数提供时的 `ask_user`；behavior `[budget] wrap_up_tools` 可改），而不是一个工具都没有。只含收尾工具的批次（或 Behavior Step 的 action）不扣额度，最多 `wrap_up_rounds`（缺省 2）批，已用批数记在快照 `wrap_up_rounds_used`，宿主补满额度时一并清零。批次里有别的工具、或批数用完后再要工具，照旧 `BudgetExhausted{ToolIterations}`；`wrap_up_tools` 为空（缺省）时与原来一样。
 
 ### 当前实现中的身份与计数
 

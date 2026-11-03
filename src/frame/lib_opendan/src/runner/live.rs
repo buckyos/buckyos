@@ -28,7 +28,9 @@ use crate::runtime::SessionEnv;
 use crate::session::runs::RunHandle;
 
 use super::flush::{run_history_entries, FlushMarks};
-use super::history::{build_chat_history, build_history, compact_for_limit, LlmSummarizer, Summarizer};
+use super::history::{
+    build_chat_history, build_history, compact_for_limit, LimitLine, LlmSummarizer, Summarizer,
+};
 use super::hook::{scope_touching, SessionCheckpointHook};
 use super::inputs::confirm_inputs;
 use super::receipts::{
@@ -434,6 +436,7 @@ async fn fork_run_context(
         rounds,
         summary_llm: llm,
         resolver,
+        waited: false,
     })
 }
 
@@ -466,6 +469,60 @@ fn session_env_check(sh: &Shared, env: &SessionEnv) -> Result<Value> {
         json!({"runtime": sh.deps.runtime.descriptor(), "env": values, "env_refs": refs,
         "path_prefix": env.path_layers, "bin_dir": sh.dir.runtime_bin_dir(), "bin_manifest": manifest}),
     )
+}
+
+/// Model of a run whose `llm_context` names none (xllm's default for the
+/// buckyos provider).
+const DEFAULT_MODEL_ALIAS: &str = "llm.chat";
+
+/// How long a new run waits for the window of its model.
+const WINDOW_LOOKUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// `context_window` of a new run (work context budget TODO §3.1): an
+/// explicit value (agent / session / behavior `llm_context`) stays;
+/// otherwise the window of the model its alias routes to
+/// (`RunnerDeps.context_windows`), else `options.default_context_window`.
+/// A failed lookup only warns. xllm derives the compaction trigger from it.
+async fn resolve_context_window(sh: &Shared, llm_ctx: &mut Value) {
+    if llm_ctx.get("context_window").is_some_and(|v| !v.is_null()) {
+        return;
+    }
+    let model = llm_ctx
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or(DEFAULT_MODEL_ALIAS)
+        .to_string();
+    let mut window = None;
+    if let Some(source) = &sh.deps.context_windows {
+        match tokio::time::timeout(WINDOW_LOOKUP_TIMEOUT, source.context_window(&model)).await {
+            Ok(Ok(w)) => window = w,
+            Ok(Err(error)) => log::warn!(
+                "opendan.context.window.lookup_failed {}",
+                json!({ "session_id": sh.dir.sid(), "model": model, "error": error })
+            ),
+            Err(_) => log::warn!(
+                "opendan.context.window.lookup_failed {}",
+                json!({ "session_id": sh.dir.sid(), "model": model, "error": "timed out" })
+            ),
+        }
+    }
+    let Some(window) = window.or(sh.deps.options.default_context_window) else {
+        return;
+    };
+    // The completion reserve must fit in the window (llm_context refuses
+    // the request otherwise).
+    let reserve = llm_ctx
+        .get("max_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if u64::from(window) <= reserve {
+        log::warn!(
+            "opendan.context.window.too_small {}",
+            json!({ "session_id": sh.dir.sid(), "model": model, "window": window, "max_tokens": reserve })
+        );
+        return;
+    }
+    llm_ctx["context_window"] = json!(window);
 }
 
 /// A run with its own system and configuration: the session's first run, a
@@ -569,6 +626,7 @@ async fn own_run_context(
         llm_ctx["json_schema"] = r.schema.clone();
     }
     llm_ctx["runtime"] = serde_json::to_value(sh.deps.runtime.config()).unwrap();
+    resolve_context_window(sh, &mut llm_ctx).await;
     let hosted = XllmTask::prepare_hosted(
         sh.dir.path(),
         &llm_ctx,
@@ -674,6 +732,16 @@ async fn own_run_context(
         &behavior_name,
         input.clone(),
     );
+    // Out of tool iterations, the run can still end (work context budget
+    // TODO §3.2): its wrap-up tools.
+    request.tool_policy.wrap_up_tools = super::budget::wrap_up_tools(
+        frozen_budget
+            .as_ref()
+            .and_then(|(b, _)| b.wrap_up_tools.as_ref()),
+        explicit_report,
+        function_call,
+        &request.tool_policy.whitelist,
+    );
     // The frozen behavior's budget for the whole run (the limits xllm reads
     // from `.llm_context` were laid over the config already).
     if let Some((budget, model)) = frozen_budget {
@@ -749,6 +817,7 @@ async fn own_run_context(
         rounds,
         summary_llm: llm,
         resolver,
+        waited: false,
     })
 }
 
@@ -802,10 +871,18 @@ pub(super) async fn resume_live_run(
             && !snapshot.state.has_continuation()
             && super::outcome::multi_turn_work(&s.config)
         {
-            snapshot.state.tool_iterations_left =
-                snapshot.request.tool_policy.max_tool_iterations;
+            super::budget::refill(&mut snapshot);
         }
     }
+    // The wallclock budget measures one continuous stretch of running, as
+    // xllm's own resume does: time between Turns, waiting for tasks or sub
+    // sessions and a host that was down are not charged (work context
+    // budget TODO §3.4). A run paused at the context limit restarts its
+    // clock when the rewrite resumes it (suspended time is not charged).
+    snapshot.state.started_at_ms = match &snapshot.state.suspended {
+        Some(suspension) => suspension.at_ms,
+        None => crate::now_ms(),
+    };
     if behavior {
         // Back from a sub context: continue its action / step numbering.
         if let Some(r) = &returned {
@@ -868,14 +945,34 @@ pub(super) async fn resume_live_run(
         rounds,
         summary_llm: llm,
         resolver,
+        waited: false,
     })
+}
+
+/// A run kept in memory while the drive waited for its input starts a new
+/// stretch of running (the wait is not charged to its wallclock budget, as
+/// for a run resumed from its snapshot).
+pub(super) fn restart_clock(sh: &Shared, mut lc: LiveCtx) -> Result<LiveCtx> {
+    if !std::mem::take(&mut lc.waited) {
+        return Ok(lc);
+    }
+    let mut snapshot = lc.ctx.snapshot();
+    if snapshot.state.suspended.is_some() {
+        return Ok(lc);
+    }
+    snapshot.state.started_at_ms = crate::now_ms();
+    lc.ctx = LLMContext::resume(snapshot, ResumeFill::ResumeFromMidRun, lc.deps.clone())
+        .map_err(|e| OpenDanError::blocked(format!("restart clock: {e}"), Some(lc.run.run_id())))?;
+    *sh.interrupt.lock().expect("interrupt") = Some(lc.ctx.interrupt_handle());
+    Ok(lc)
 }
 
 /// Run the live context: one run segment of the drive loop, ending in one
 /// outcome. A context-limit suspension is compacted and the context runs on
 /// (another `run()` call in the same segment), at most
 /// [`MAX_LIMIT_COMPACTIONS`] times in a row; the last one goes to
-/// `handle_context_outcome`, which pauses the run.
+/// `handle_context_outcome`, which pauses the run. A top-level run out of
+/// time / tokens runs on in its wrap-up ([`super::budget::wrap_up`]).
 pub(super) async fn run_compacting(
     sh: &Arc<Shared>,
     lc: &mut LiveCtx,
@@ -897,6 +994,15 @@ pub(super) async fn run_compacting(
         } = &outcome
         {
             if let Some(ctx) = degrade_inline_media(sh, lc)? {
+                lc.ctx = ctx;
+                *sh.interrupt.lock().expect("interrupt") = Some(lc.ctx.interrupt_handle());
+                continue;
+            }
+        }
+        // Out of time / tokens: the top-level run ends its work in a
+        // wrap-up before the budget fails it (once per Turn).
+        if let LLMContextOutcome::BudgetExhausted { which, .. } = &outcome {
+            if let Some(ctx) = super::budget::wrap_up(sh, lc, *which).await? {
                 lc.ctx = ctx;
                 *sh.interrupt.lock().expect("interrupt") = Some(lc.ctx.interrupt_handle());
                 continue;
@@ -1015,8 +1121,10 @@ fn degrade_inline_media(sh: &Arc<Shared>, lc: &LiveCtx) -> Result<Option<LLMCont
 ///    `context_rewritten` outcome entry, and state commits the flush marks
 ///    (nothing of the run lives only in the snapshot);
 /// 2. the session history is compacted (summary.json) so that at most
-///    `budget >> attempt` tokens of raw records remain, and the history
-///    message is rebuilt;
+///    `history_budget >> attempt` tokens of raw records remain, and the
+///    history message is rebuilt within `history_budget` — what
+///    `context_target_ratio` of the window leaves after the system prefix,
+///    never less than `history_budget_tokens` ([`LimitLine`]);
 /// 3. the context resumes with system + history as its new input
 ///    (`RewrittenHistory` / `RewrittenSteps`) in a new history epoch, and the
 ///    rewritten snapshot is published before anything runs on.
@@ -1087,6 +1195,30 @@ async fn rewrite_for_limit(
     result
 }
 
+/// Estimated tokens of what a rewrite keeps as it is: the system messages
+/// at the head of the run's input and the tool schemas it offers (the
+/// waist's own estimator).
+pub(super) fn prefix_tokens(snapshot: &LLMContextSnapshot, deps: &LLMContextDeps) -> u64 {
+    let system: Vec<AiMessage> = snapshot
+        .request
+        .input
+        .iter()
+        .take_while(|m| m.role == AiRole::System)
+        .cloned()
+        .collect();
+    let tokenizer = deps.tokenizer.as_ref();
+    let tools: u64 =
+        llm_context::deps::resolve_tool_specs(&snapshot.request.tool_policy, deps.tools.as_ref())
+            .iter()
+            .map(|spec| {
+                u64::from(tokenizer.count_tokens(&spec.name))
+                    + u64::from(tokenizer.count_tokens(&spec.description))
+                    + u64::from(tokenizer.count_tokens(&spec.args_schema.to_string()))
+            })
+            .sum();
+    llm_context::context_window::estimate_messages(tokenizer, &system) + tools
+}
+
 async fn rewrite_for_limit_inner(
     sh: &Arc<Shared>,
     run: &RunHandle,
@@ -1132,14 +1264,25 @@ async fn rewrite_for_limit_inner(
         }
         s.commit_state(&sh.lease)?;
         crate::fault::point("context_limit:after_flush");
-        let budget = s
+        let floor = s
             .config
             .prompt
             .history_budget_tokens
             .unwrap_or(sh.deps.options.history_budget_tokens);
-        let keep = budget >> attempt.min(8);
+        let ratio = s
+            .config
+            .prompt
+            .context_target_ratio
+            .unwrap_or(sh.deps.options.context_target_ratio);
+        let line = LimitLine::new(
+            snapshot.request.budget.context_window_tokens,
+            ratio,
+            prefix_tokens(&snapshot, deps),
+            floor,
+        );
+        let keep = line.history_budget >> attempt.min(8);
         let history =
-            compact_for_limit(&mut s, &sh.lease, summarizer.as_ref(), budget, keep).await?;
+            compact_for_limit(&mut s, &sh.lease, summarizer.as_ref(), &line, keep).await?;
         crate::fault::point("context_limit:after_compact");
         (history, turn)
     };
@@ -1176,6 +1319,7 @@ async fn rewrite_for_limit_inner(
     let host = with_host_meta(ctx.host_meta(), &meta);
     ctx.set_host_meta(Some(host));
     run.checkpoint_with_results(&ctx.snapshot(), Some(RunStatus::Running))?;
+    run.count_compaction()?;
     crate::fault::point("context_limit:after_publish");
     Ok(ctx)
 }

@@ -47,6 +47,11 @@ pub(super) async fn build_chat_history(
                         .accumulated
                         .into_iter()
                         .skip_while(|m| m.role == AiRole::System)
+                        // A budget line spoke of that run's budget only.
+                        .filter(|m| {
+                            m.role != AiRole::User
+                                || !super::budget::is_budget_line(&m.text_content())
+                        })
                         .collect();
                     let used = llm_context::context_window::estimate_messages(
                         &llm_context::deps::ByteHeuristicTokenizer,
@@ -652,17 +657,51 @@ pub async fn build_history(
     Ok((history_message(&sm, &window), window))
 }
 
+/// Where a mid-run rewrite at the context limit brings the request back to
+/// (work context budget TODO §3.1): `target = ⌈window × ratio⌉`, of which
+/// the history gets what the system prefix (system messages, tool schemas)
+/// leaves, never less than the session's history budget (also used as is
+/// when the window is unknown).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LimitLine {
+    pub window_tokens: Option<u32>,
+    pub target_tokens: Option<u32>,
+    pub prefix_tokens: u32,
+    /// Budget of the rebuilt history message (summary + raw records).
+    pub history_budget: u32,
+}
+
+impl LimitLine {
+    pub fn new(window: Option<u32>, ratio: f32, prefix_tokens: u64, floor: u32) -> Self {
+        let prefix_tokens = prefix_tokens.min(u64::from(u32::MAX)) as u32;
+        // The f32 ratio to six decimals: 0.3 means 0.3, not 0.30000001.
+        let ratio = (f64::from(ratio.min(1.0)) * 1e6).round() / 1e6;
+        let target = window
+            .filter(|_| ratio.is_finite() && ratio > 0.0)
+            .map(|w| (f64::from(w) * ratio).ceil() as u32);
+        Self {
+            window_tokens: window,
+            target_tokens: target,
+            prefix_tokens,
+            history_budget: target
+                .map(|t| t.saturating_sub(prefix_tokens).max(floor))
+                .unwrap_or(floor),
+        }
+    }
+}
+
 /// Mid-run compaction at the context limit (§4.4): the run's history so far
 /// is already in the worklog. The start point moves so that at most `keep`
 /// tokens of raw records remain, then the history message is rebuilt within
-/// `budget`.
+/// `line.history_budget`.
 pub async fn compact_for_limit(
     session: &mut Session,
     lease: &Lease,
     summarizer: &dyn Summarizer,
-    budget: u32,
+    line: &LimitLine,
     keep: u32,
 ) -> Result<Option<AiMessage>> {
+    let budget = line.history_budget;
     let sm = session.summary()?;
     let window = read_window(session, &sm, keep)?;
     if !window.reached_start {
@@ -678,6 +717,9 @@ pub async fn compact_for_limit(
                 "raw_tokens_lower_bound": !window.reached_start,
                 "reached_start": window.reached_start,
                 "keep_tokens": keep,
+                "window_tokens": line.window_tokens,
+                "target_tokens": line.target_tokens,
+                "prefix_tokens": line.prefix_tokens,
             })
         );
         let cut = window
@@ -699,6 +741,9 @@ pub async fn compact_for_limit(
                 "raw_tokens": window.tokens,
                 "reached_start": window.reached_start,
                 "keep_tokens": keep,
+                "window_tokens": line.window_tokens,
+                "target_tokens": line.target_tokens,
+                "prefix_tokens": line.prefix_tokens,
             })
         );
     }

@@ -27,7 +27,7 @@ You are an exploration of a plan session: the plan gave you one Todo and runs ot
 tool_whitelist = ["group:bash", "report"]
 
 [budget]
-max_tool_iterations = 40
+max_tool_iterations = 60
 max_consecutive_errors = 4
 
 [model]

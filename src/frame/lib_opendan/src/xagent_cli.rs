@@ -598,6 +598,7 @@ fn host(c: &Ctx, a: &Args) -> R<HostDeps> {
             std::env::current_exe().ok().as_deref().and_then(std::path::Path::parent),
         ),
         app_tools: Vec::new(),
+        context_windows: None,
         options,
         max_child_concurrency: max_children,
         bridges,

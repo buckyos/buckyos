@@ -6,6 +6,8 @@
 - 模块名称：`llm_message_compress`
 - 文档目标：将基于语音记录形成的设计思路整理为可进入实现阶段的技术需求文档。
 
+> **当前实现边界（2026-11-02）**：llm_context 冻结后（见 [llm-context-freeze-todo](../../notepads/llm-context-freeze-todo.md)），llm_context 只在估算达到触发线时让出 `ContextLimitReached`，自己不改写历史；压缩由宿主执行——OpenDAN Session 是 libopendan 的 `rewrite_for_limit`（run 历史先进 worklog，再压缩 session 历史，以 system + 历史消息继续同一个 run），xllm 自己的 run 是 `compact_context`。触发线 `context_yield_ratio` 缺省 0.80（xllm），目标线 `context_target_ratio` 缺省 0.30（libopendan，对齐 [OpenDAN Agent Session 架构设计](../opendan/OpenDAN%20Agent%20Session架构设计.md) §4.2 的 80% → 30%）。本文的机械压缩 / LLM 压缩分级是宿主实现的参考，不是 llm_context 的行为。
+
 ---
 
 ## 1. 背景
@@ -351,13 +353,13 @@ trigger_ratio = 0.80
 压缩后目标比例建议：
 
 ```text
-target_ratio = 0.50
+target_ratio = 0.30
 ```
 
 可接受范围：
 
 ```text
-0.45 <= target_ratio <= 0.55
+0.25 <= target_ratio <= 0.35
 ```
 
 设计意图是：触发一次压缩后，应释放足够空间，保证后续若干个 Message Pair 内不会立刻再次触发压缩。
@@ -370,13 +372,13 @@ target_ratio = 0.50
 
 ```text
 trigger_ratio = 0.80
-target_ratio = 0.50
+target_ratio = 0.30
 ```
 
 因此压缩后的总 token 数必须满足：
 
 ```text
-new_total_tokens <= ceil(context_window_tokens * 0.50)
+new_total_tokens <= ceil(context_window_tokens * 0.30)
 ```
 
 换句话说，本次压缩必须至少释放：
@@ -389,23 +391,23 @@ required_saved_tokens = current_total_tokens - ceil(context_window_tokens * targ
 
 ```text
 current_total_tokens ~= context_window_tokens * 0.80
-required_saved_tokens ~= context_window_tokens * 0.30
+required_saved_tokens ~= context_window_tokens * 0.50
 ```
 
 示例：
 
-| context window | 普通触发线 80% | 目标线 50% | 至少释放 |
+| context window | 普通触发线 80% | 目标线 30% | 至少释放 |
 | --- | ---: | ---: | ---: |
-| 16k | 12.8k | 8k | 4.8k |
-| 32k | 25.6k | 16k | 9.6k |
-| 64k | 51.2k | 32k | 19.2k |
-| 128k | 102.4k | 64k | 38.4k |
+| 16k | 12.8k | 4.8k | 8k |
+| 32k | 25.6k | 9.6k | 16k |
+| 64k | 51.2k | 19.2k | 32k |
+| 128k | 102.4k | 38.4k | 64k |
 
 如果已经达到硬上限附近：
 
 ```text
 current_total_tokens ~= context_window_tokens * 0.95
-required_saved_tokens ~= context_window_tokens * 0.45
+required_saved_tokens ~= context_window_tokens * 0.65
 ```
 
 该规则同时约束机械压缩和 LLM 压缩。机械压缩只有在预计结果满足 `new_total_tokens <= target_token_budget` 时才允许生效；否则必须放弃本次机械压缩结果，直接进入 LLM 压缩路径。
@@ -680,14 +682,14 @@ estimated_saved_tokens = original_tokens - compressed_tokens
 
 如果不能达到目标，则本次不应先执行机械压缩再执行 LLM 压缩，而应直接进入 LLM 压缩路径。
 
-默认配置下，机械压缩的目标线是 50% context window：
+默认配置下，机械压缩的目标线是 30% context window：
 
 ```text
-target_token_budget = ceil(context_window_tokens * 0.50)
+target_token_budget = ceil(context_window_tokens * 0.30)
 mechanical_can_apply = mechanical_new_total_tokens <= target_token_budget
 ```
 
-所以在 80% 触发时，机械压缩通常必须至少释放约 30% context window 的 token。这个门槛是为了保证压缩后的历史能稳定运行若干个 Message Pair，而不是每次推理都改写历史。
+所以在 80% 触发时，机械压缩通常必须至少释放约 50% context window 的 token。这个门槛是为了保证压缩后的历史能稳定运行若干个 Message Pair，而不是每次推理都改写历史。
 
 机械压缩内部按成本从低到高尝试：
 
@@ -1028,7 +1030,7 @@ interface CompressTriggerPolicy {
   enabled: boolean;
 
   trigger_ratio: number;       // 默认 0.80
-  target_ratio: number;        // 默认 0.50
+  target_ratio: number;        // 默认 0.30
   hard_limit_ratio?: number;   // 默认 0.95
 
   min_pairs_between_compress?: number; // 距上次压缩完成的 Message Pair 数，不是 Turn 数
@@ -1506,7 +1508,7 @@ const defaultCompressPolicy = {
   trigger_policy: {
     enabled: true,
     trigger_ratio: 0.80,
-    target_ratio: 0.50,
+    target_ratio: 0.30,
     hard_limit_ratio: 0.95,
     min_pairs_between_compress: 2,
     preserve_cache_stability: true,

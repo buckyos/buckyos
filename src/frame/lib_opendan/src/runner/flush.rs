@@ -311,6 +311,8 @@ pub fn run_history_entries(
                             brief: r.parts[n].brief.clone(),
                         });
                     }
+                    // The host's budget lines are the model's view only.
+                    None if super::budget::is_budget_line(&m.text_content()) => {}
                     None => out.push(WorklogBody::UserMessage {
                         run_id: run_id.to_string(),
                         turn,

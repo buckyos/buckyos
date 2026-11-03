@@ -63,6 +63,7 @@ pub fn host(env: &Env, llm: Arc<dyn llm_context::deps::LlmClient>) -> HostDeps {
         session_cli: Some(PathBuf::from(env!("CARGO_BIN_EXE_xagent"))),
         session_helpers: Vec::new(),
         app_tools: Vec::new(),
+        context_windows: None,
         options: RunnerOptions {
             poll_interval: Duration::from_millis(50),
             max_wait: Duration::from_secs(60),
