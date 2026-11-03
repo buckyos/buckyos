@@ -386,6 +386,25 @@ impl TaskManagerExecutionPort {
     }
 }
 
+/// TaskMgr task input of an `aicc.compute/v1` task
+/// (`buckyos_api::AiccComputeTaskRequest` under `input.request`).
+pub(crate) fn task_input_json(
+    tenant_id: &str,
+    trace_id: Option<&str>,
+    view: TaskRequestView,
+) -> Value {
+    let mut request = json!({
+        "version": 1,
+        "tenant_id": tenant_id,
+        "trace_id": trace_id,
+    });
+    match view {
+        TaskRequestView::Inline(body) => request["request"] = body,
+        TaskRequestView::Summary(summary) => request["request_summary"] = summary,
+    }
+    json!({ "request": request })
+}
+
 #[async_trait]
 impl TaskManagerPort for TaskManagerExecutionPort {
     async fn ensure_task(&self, spec: TaskSpec) -> Result<TaskBinding, buckyos_api::AiccError> {
@@ -403,14 +422,11 @@ impl TaskManagerPort for TaskManagerExecutionPort {
                 name: format!("AICC {}", spec.method),
                 schema_id: AICC_COMPUTE_TASK_SCHEMA_ID.to_string(),
                 schema_version: None,
-                input: json!({
-                    "request": {
-                        "version": 1,
-                        "tenant_id": spec.tenant_id,
-                        "trace_id": spec.trace_id,
-                        "request": spec.input,
-                    }
-                }),
+                input: task_input_json(
+                    &spec.tenant_id,
+                    spec.trace_id.as_deref(),
+                    task_request_view(spec.input, &spec.body_fingerprint),
+                ),
                 creator: ActorRef::new(
                     spec.user_id,
                     spec.caller_app_id.ok_or_else(|| {

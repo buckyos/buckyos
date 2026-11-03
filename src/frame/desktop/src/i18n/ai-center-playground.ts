@@ -71,6 +71,8 @@ const messages: Record<string, [string, string]> = {
   enable: ['Enable', '启用'],
   taskRequest: ['AICC request JSON', 'AICC 请求 JSON'],
   copyRequest: ['Copy request for Playground', '复制请求到 Playground'],
+  taskRequestSummary: ['AICC request summary', 'AICC 请求摘要'],
+  taskRequestTooLarge: ['The request was too large ({{size}}) to keep verbatim, so only this summary was stored and it cannot be copied to the Playground. The full context is in the caller\'s run (trace_id {{traceId}}).', '请求过大（{{size}}），未保存原文，只保留此摘要，无法复制到 Playground；完整上下文在调用方的 run（trace_id {{traceId}}）。'],
   taskRequestHint: ['Paste this JSON into AI Center → Playground → Advanced mode to reproduce the request.', '将此 JSON 粘贴到 AI Center → Playground → 高级模式，可提取参数重新调用。'],
   'status.submitting': ['Submitting request', '正在发送请求'],
   'status.running': ['Task running', '任务运行中'],

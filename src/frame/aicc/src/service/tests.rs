@@ -2528,3 +2528,99 @@ async fn rule_preview_requires_settings_write_permission() {
         assert_eq!(fixture.authorizer.calls.lock().await.as_slice(), &[("write", RESOURCE_SETTINGS)]);
     }
 }
+
+mod body_limit {
+    use super::*;
+    use crate::execution::canonical_body_fingerprint;
+
+    fn body(bytes: impl Into<Bytes>) -> BoxBody<Bytes, ServerError> {
+        BoxBody::new(http_body_util::Full::new(bytes.into()).map_err(|never| match never {}))
+    }
+
+    fn rpc_body(padding: usize) -> Vec<u8> {
+        let mut request = RPCRequest::new(
+            buckyos_api::ai_methods::CHAT_COMPLETIONS_CREATE,
+            serde_json::json!({"exact_model": "model-a@primary", "pad": "p".repeat(padding)}),
+        );
+        request.token = Some("caller-token".to_string());
+        serde_json::to_vec(&request).unwrap()
+    }
+
+    async fn serve(server: &AiccHttpServer, request: http::Request<BoxBody<Bytes, ServerError>>) -> (StatusCode, Bytes) {
+        let response = server
+            .serve_request(request, StreamInfo::new("127.0.0.1:12345".to_string()))
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (status, bytes)
+    }
+
+    #[tokio::test]
+    async fn serve_request_accepts_a_body_over_the_shared_default() {
+        let fixture = fixture(false);
+        let server = AiccHttpServer::new(fixture.service);
+        let body_bytes = rpc_body(2 * 1024 * 1024);
+        assert!(body_bytes.len() > buckyos_http_server::DEFAULT_MAX_RPC_BODY_SIZE);
+        let request = http::Request::builder()
+            .method("POST")
+            .uri("http://localhost/kapi/aicc")
+            .header(http::header::CONTENT_LENGTH, body_bytes.len())
+            .body(body(body_bytes))
+            .unwrap();
+        let (status, bytes) = serve(&server, request).await;
+        assert_ne!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        // The whole body was read and parsed: a JSON kRPC response (result
+        // or structured error) came back instead of a transport-level text.
+        let response: Value = serde_json::from_slice(&bytes)
+            .unwrap_or_else(|_| panic!("not a kRPC response: {:?}", String::from_utf8_lossy(&bytes)));
+        assert!(response.is_object(), "{response}");
+        assert_ne!(response["code"], "parse_request_error", "{response}");
+    }
+
+    #[tokio::test]
+    async fn serve_request_rejects_a_body_over_the_aicc_limit() {
+        let fixture = fixture(false);
+        let server = AiccHttpServer::new(fixture.service);
+        let request = http::Request::builder()
+            .method("POST")
+            .uri("http://localhost/kapi/aicc")
+            .header(http::header::CONTENT_LENGTH, AICC_MAX_RPC_BODY_SIZE + 1)
+            .body(body(rpc_body(16)))
+            .unwrap();
+        let (status, bytes) = serve(&server, request).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(bytes, Bytes::from("Payload Too Large"));
+        assert!(fixture.inference.calls.lock().await.is_empty());
+    }
+
+    #[test]
+    fn task_input_of_a_large_request_stays_under_task_mgr_limit() {
+        let mut messages = Vec::new();
+        for i in 0..40 {
+            messages.push(serde_json::json!({"role": if i % 2 == 0 { "user" } else { "assistant" }, "content": "t".repeat(32 * 1024)}));
+        }
+        let canonical = serde_json::json!({"exact_model": "model-a@primary", "messages": messages, "tools": [{"name": "read_file"}]});
+        assert!(serde_json::to_vec(&canonical).unwrap().len() > buckyos_http_server::DEFAULT_MAX_RPC_BODY_SIZE);
+        let fingerprint = canonical_body_fingerprint(&canonical).unwrap();
+        let input = ports::task_input_json("tenant-a", Some("trace-9"), task_request_view(canonical, &fingerprint));
+        let serialized = serde_json::to_vec(&input).unwrap();
+        assert!(serialized.len() < 4 * 1024, "task input is {} bytes", serialized.len());
+        assert_eq!(input["request"]["version"], 1);
+        assert_eq!(input["request"]["tenant_id"], "tenant-a");
+        assert_eq!(input["request"]["trace_id"], "trace-9");
+        assert!(input["request"].get("request").is_none());
+        assert_eq!(input["request"]["request_summary"]["fingerprint"], fingerprint);
+        assert_eq!(input["request"]["request_summary"]["messages"]["count"], 40);
+        assert_eq!(input["request"]["request_summary"]["tools"], serde_json::json!(["read_file"]));
+        let typed: buckyos_api::AiccComputeTaskData = serde_json::from_value(input["request"].clone()).map(|request| buckyos_api::AiccComputeTaskData { request, progress: None, result: None, error: None }).unwrap();
+        assert!(typed.request.request.is_none());
+        assert!(typed.request.request_summary.is_some());
+
+        let small = serde_json::json!({"exact_model": "model-a@primary", "messages": [{"role": "user", "content": "hi"}]});
+        let fingerprint = canonical_body_fingerprint(&small).unwrap();
+        let input = ports::task_input_json("tenant-a", None, task_request_view(small.clone(), &fingerprint));
+        assert_eq!(input["request"]["request"], small);
+        assert!(input["request"].get("request_summary").is_none());
+    }
+}

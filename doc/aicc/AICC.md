@@ -162,6 +162,9 @@ AICC 侧的硬性原则：
 * 物化后的公开结果优先使用 `NamedObject`；只有已登记来源、生命周期和访问策略且当前不需要下载内容的 Provider URL 才可保留，不得保留 `ResourceRef::Base64`、裸 base64 或 data URL
 * singular/array 数量、URL、Base64、MIME 和 NamedObject 必须经过公共 ResourceRef 校验层
 * TaskMgr 结果在计费和暂存前必须按实际 `runner_complete` 包装序列化并检查 kRPC body 上限；recovery 对历史暂存结果执行同一检查
+* AICC 自己的 kRPC 请求体上限是 32 MiB（`AICC_MAX_RPC_BODY_SIZE`，不用共享的 1 MiB 缺省），长上下文或内联媒体不应先被 AICC 拒绝；结果仍受 TaskMgr 的 1 MiB 约束
+* TaskMgr 任务 input 不无条件存整份请求：序列化 ≤ 256 KiB 原样写 `input.request.request`，超过只写 `input.request.request_summary`（字节数、指纹、消息按 role 计数、工具名、标量参数）；完整上下文在调用方的 run，经 `trace_id` 找到
+* `aicc.llm.input` 在 INFO 级记录整份 LLM 请求（含 `request_bytes`），这是有意为之：每个 token 都付了费，开发环境以 INFO 跑，正式环境以 WARN 跑
 
 ---
 

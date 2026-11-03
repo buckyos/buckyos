@@ -120,6 +120,13 @@ export interface Task {
   schemaType: string | null
   payload: Record<string, unknown>
   aiccRequest?: { method: string; params: Record<string, unknown> }
+  /**
+   * Present instead of `aiccRequest` when AICC did not store the request
+   * verbatim (over its 256 KiB inline limit): size, fingerprint, message and
+   * tool counts, scalar params. The full context is in the caller's run,
+   * reachable through `traceId`.
+   */
+  aiccRequestSummary?: AiccRequestSummary
   children: Task[]
   /**
    * 2.0 composite state kept alongside the coarse `status`, so the UI can
@@ -233,6 +240,45 @@ export interface TaskCenterModel {
 // Wire types and calls come from the websdk's `TaskManagerClient`; this file
 // only owns the projection from the 2.0 protocol onto the Task Center's view
 // model (coarse status, task type/source buckets, schedule payload).
+
+export interface AiccRequestSummary {
+  method: string
+  bytes: number
+  fingerprint: string | null
+  messages: { count: number; byRole: Record<string, number> }
+  tools: string[]
+  params: Record<string, unknown>
+  providerStateBytes: number | null
+  traceId: string | null
+}
+
+/** `aiccRequest` or `aiccRequestSummary` of an `aicc.compute/v1` task, from its immutable input. */
+function aiccRequestFields(summary: TaskSummary, detail: TaskMgrTask): Pick<Task, 'aiccRequest' | 'aiccRequestSummary'> {
+  const method = summary.name.replace(/^AICC /, '')
+  const request = asRecord(asRecord(detail.input).request)
+  const params = asRecord(request.request)
+  if (Object.keys(params).length > 0) return { aiccRequest: { method, params } }
+  const raw = asRecord(request.request_summary)
+  if (Object.keys(raw).length === 0) return {}
+  const messages = asRecord(raw.messages)
+  const byRole: Record<string, number> = {}
+  for (const [role, count] of Object.entries(asRecord(messages.by_role))) {
+    const n = asNumber(count)
+    if (n !== null) byRole[role] = n
+  }
+  return {
+    aiccRequestSummary: {
+      method,
+      bytes: asNumber(raw.bytes) ?? 0,
+      fingerprint: asString(raw.fingerprint),
+      messages: { count: asNumber(messages.count) ?? 0, byRole },
+      tools: Array.isArray(raw.tools) ? raw.tools.map(asString).filter((name): name is string => name !== null) : [],
+      params: asRecord(raw.params),
+      providerStateBytes: asNumber(raw.provider_state_bytes),
+      traceId: asString(request.trace_id),
+    },
+  }
+}
 
 /** One listed task plus its detail, when the detail read was permitted. */
 interface TaskSnapshot {
@@ -498,10 +544,7 @@ export function toTaskCenterTask({ summary, detail }: TaskSnapshot, agentAppIds:
     progress: toProgressPercent(detail?.progress),
     schemaType: summary.schema_id,
     payload: isSchedule ? normalizeSchedulePayload(summary, data, status) : data,
-    ...(summary.schema_id === 'aicc.compute/v1' && detail ? { aiccRequest: {
-      method: summary.name.replace(/^AICC /, ''),
-      params: asRecord(asRecord(asRecord(detail.input).request).request),
-    } } : {}),
+    ...(summary.schema_id === 'aicc.compute/v1' && detail ? aiccRequestFields(summary, detail) : {}),
     children: [],
     phase: summary.phase,
     outcome: summary.outcome ?? null,

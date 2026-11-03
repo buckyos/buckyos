@@ -129,7 +129,7 @@ Exit codes: 0 done · 1 failed, limit reached, or run not found · 2 usage/confi
 call) · 3 paused, resumable · 4 interrupted, resumable · 5 done but `--output` not written · 6 done but result
 extraction or JSON check failed (raw reply saved).
 - `no_candidate_model` (unknown model), `invalid_json_schema`, and
-  `413 Payload Too Large` (request over AICC's 1 MiB RPC body: split the material) end the run with exit 1.
+  `413 Payload Too Large` (request over AICC's 32 MiB RPC body: split the material) end the run with exit 1.
   Fix the call and start a new one.
 - Exit 3 (model timeout, transient provider error, rejected or expired token) → the printed hint
   `agent_tool xllm --resume --run <id> --runs-dir <dir>`. Resume reuses the saved config:

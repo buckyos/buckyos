@@ -70,8 +70,8 @@ use buckyos_api::{
     VisionSegmentResponse, AICC_COMPUTE_TASK_SCHEMA_ID,
 };
 use buckyos_http_server::{
-    serve_http_by_rpc_handler, server_err, HttpServer, Runner, ServerError, ServerErrorCode,
-    ServerResult, StreamInfo,
+    serve_http_by_rpc_handler_with_limit, server_err, HttpServer, Runner, ServerError,
+    ServerErrorCode, ServerResult, StreamInfo,
 };
 use buckyos_kit::KVAction;
 use bytes::Bytes;
@@ -100,7 +100,8 @@ use crate::execution::{
     task_result_payload, ExecutionEngine, ExecutionOutput, ExecutionState, NativeTaskPoll,
     NativeTaskResumeDescriptor, NativeTaskUrlFallback, NativeTaskUrlFallbackTarget,
     PinnedProviderTask, ProviderExecution, ProviderExecutionPort, ProviderStartFailure,
-    ResumeCredential, ResumeCredentialKind, TaskBinding, TaskManagerPort, TaskSpec,
+    ResumeCredential, ResumeCredentialKind, TaskBinding, TaskManagerPort, TaskRequestView,
+    TaskSpec, task_request_view,
 };
 use crate::health::{HealthFailureKind, ModelHealthRegistry};
 #[cfg(test)]
@@ -162,6 +163,18 @@ const RESOURCE_SETTINGS: &str = "obj://config/services/aicc/settings";
 const CLOUD_UPDATE_CONFIG_KEY: &str = "services/aicc/driver_metadata_update";
 const ARTIFACT_OPEN_PATH: &str = "/kapi/aicc/artifact/open";
 const MAX_ARTIFACT_OPEN_REQUEST_BYTES: usize = 32 * 1024;
+/// kRPC request body limit of the AICC service itself. The shared default
+/// (`buckyos_http_server::DEFAULT_MAX_RPC_BODY_SIZE`, 1 MiB) is too small for
+/// an LLM request carrying a long tool-using context (~200k estimated tokens
+/// already exceed 1 MiB) or inline media. 32 MiB matches the per-request
+/// ceilings of the upstream providers and sits below the resource layer's
+/// inline totals (`ResourceLimits`: 4 MiB per inline resource, 16 resources).
+/// The body is buffered before the kRPC token inside it is checked, so
+/// concurrency × 32 MiB bounds the memory a caller can pin; AICC is only
+/// reachable inside the Zone, so no admission control is added here.
+/// Results reported to TaskMgr still obey TaskMgr's 1 MiB limit, see
+/// `MAX_TASK_RESULT_PAYLOAD_BYTES` in `execution`.
+pub(crate) const AICC_MAX_RPC_BODY_SIZE: usize = 32 * 1024 * 1024;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -342,7 +355,13 @@ impl HttpServer for AiccHttpServer {
             return self.open_artifact(request).await;
         }
         if request.method() == Method::POST {
-            return serve_http_by_rpc_handler(request, info, self).await;
+            return serve_http_by_rpc_handler_with_limit(
+                request,
+                info,
+                self,
+                AICC_MAX_RPC_BODY_SIZE,
+            )
+            .await;
         }
         Err(server_err!(
             ServerErrorCode::BadRequest,

@@ -461,6 +461,20 @@ export function TaskDetailPage({ taskId, backPage = 'tasks', onNavigate }: TaskD
         <pre className="text-xs overflow-auto max-h-96 whitespace-pre-wrap break-all" style={{ color: 'var(--cp-text)' }}>{JSON.stringify(task.aiccRequest, null, 2)}</pre>
       </section>}
 
+      {!task.aiccRequest && task.aiccRequestSummary && <section
+        className="rounded-2xl p-4 min-w-0"
+        style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
+      >
+        <h2 className="text-sm font-semibold mb-3" style={{ color: 'var(--cp-text)' }}>{t('aiCenter.playground.taskRequestSummary')}</h2>
+        <p className="text-xs mb-3" style={{ color: 'var(--cp-muted)' }}>
+          {t('aiCenter.playground.taskRequestTooLarge', undefined, {
+            size: formatBytes(task.aiccRequestSummary.bytes),
+            traceId: task.aiccRequestSummary.traceId ?? '-',
+          })}
+        </p>
+        <pre className="text-xs overflow-auto max-h-96 whitespace-pre-wrap break-all" style={{ color: 'var(--cp-text)' }}>{JSON.stringify(task.aiccRequestSummary, null, 2)}</pre>
+      </section>}
+
       {/* Raw payload */}
       {Object.keys(task.payload).length > 0 && (
         <section

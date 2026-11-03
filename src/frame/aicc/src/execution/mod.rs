@@ -26,8 +26,17 @@ const MAX_SAME_MODEL_ATTEMPTS: usize = 2;
 const DEFAULT_SAME_MODEL_RETRY_DELAY: Duration = Duration::from_millis(100);
 const MAX_SAME_MODEL_RETRY_DELAY: Duration = Duration::from_secs(2);
 const TASK_RESULT_PAYLOAD_MARGIN_BYTES: usize = 64 * 1024;
+/// Ceiling for a result reported through `runner_complete`. It is derived
+/// from the shared kRPC default because that is **TaskMgr's** body limit; the
+/// AICC service accepts far larger requests (`service::AICC_MAX_RPC_BODY_SIZE`)
+/// and this constant must not follow that value.
 const MAX_TASK_RESULT_PAYLOAD_BYTES: usize =
     buckyos_http_server::DEFAULT_MAX_RPC_BODY_SIZE - TASK_RESULT_PAYLOAD_MARGIN_BYTES;
+/// Largest serialized request stored verbatim as the TaskMgr task input
+/// (`input.request.request`). Beyond this, `task_request_view` keeps only a
+/// summary so a long context is neither persisted once per inference nor
+/// pushed through TaskMgr's own 1 MiB body limit.
+pub(crate) const MAX_TASK_REQUEST_INLINE_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) struct IdempotencyScope {
@@ -934,6 +943,12 @@ fn log_llm_input(record: &ExecutionRecord, call: &ResolvedProviderCall) {
     event["provider_instance_name"] = serde_json::json!(call.provider_instance_name);
     event["exact_model"] = serde_json::json!(call.exact_model);
     event["provider"] = serde_json::json!(call.context.state_coordinate.origin_provider);
+    // The full request is logged on purpose (every token is paid for);
+    // production runs at WARN, development at INFO. `request_bytes` is the
+    // serialized size, the number the AICC body limit applies to.
+    event["request_bytes"] = serde_json::json!(serde_json::to_vec(&request)
+        .map(|v| v.len())
+        .unwrap_or(0));
     event["request"] = request;
     log::info!("aicc.llm.input {}", event);
 }
@@ -992,6 +1007,102 @@ pub(crate) struct TaskSpec {
     pub idempotency_key: String,
     pub parent_id: Option<String>,
     pub input: Value,
+    /// `canonical_body_fingerprint` of `input`, computed once by the engine.
+    pub body_fingerprint: String,
+}
+
+/// What of the canonical request goes into the TaskMgr task input.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum TaskRequestView {
+    /// The request itself, stored verbatim (`input.request.request`).
+    Inline(Value),
+    /// Only a summary (`input.request.request_summary`); the full context is
+    /// in the caller's run, found through the task's `trace_id`.
+    Summary(Value),
+}
+
+/// Decides between storing the request verbatim and storing a summary. Pure
+/// and deterministic for a given request so the TaskMgr idempotent replay
+/// (`input_digest`) and the engine's own `body_fingerprint` keep agreeing.
+pub(crate) fn task_request_view(input: Value, fingerprint: &str) -> TaskRequestView {
+    let bytes = serde_json::to_vec(&input).map(|v| v.len()).unwrap_or(usize::MAX);
+    if bytes <= MAX_TASK_REQUEST_INLINE_BYTES {
+        return TaskRequestView::Inline(input);
+    }
+    TaskRequestView::Summary(task_request_summary(&input, bytes, fingerprint))
+}
+
+fn task_request_summary(input: &Value, bytes: usize, fingerprint: &str) -> Value {
+    let mut by_role: BTreeMap<String, u64> = BTreeMap::new();
+    let messages = input
+        .get("messages")
+        .and_then(Value::as_array)
+        .map(|messages| {
+            for message in messages {
+                let role = message
+                    .get("role")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+                    .to_string();
+                *by_role.entry(role).or_insert(0) += 1;
+            }
+            messages.len()
+        })
+        .unwrap_or(0);
+    let tools: Vec<Value> = input
+        .get("tools")
+        .and_then(Value::as_array)
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(|tool| {
+                    tool.get("name")
+                        .or_else(|| tool.pointer("/function/name"))
+                        .and_then(Value::as_str)
+                        .map(|name| Value::String(name.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut params = Map::new();
+    if let Value::Object(object) = input {
+        for (key, value) in object {
+            if matches!(key.as_str(), "messages" | "tools" | "provider_state") {
+                continue;
+            }
+            match value {
+                Value::Null | Value::Bool(_) | Value::Number(_) => {
+                    params.insert(key.clone(), value.clone());
+                }
+                Value::String(text) if text.len() <= 256 => {
+                    params.insert(key.clone(), value.clone());
+                }
+                Value::String(text) => {
+                    params.insert(key.clone(), Value::String(format!("<{} bytes>", text.len())));
+                }
+                Value::Array(items) => {
+                    params.insert(key.clone(), Value::String(format!("<array of {}>", items.len())));
+                }
+                Value::Object(fields) => {
+                    params.insert(
+                        key.clone(),
+                        Value::String(format!("<object with {} keys>", fields.len())),
+                    );
+                }
+            }
+        }
+    }
+    serde_json::json!({
+        "bytes": bytes,
+        "fingerprint": fingerprint,
+        "messages": { "count": messages, "by_role": by_role },
+        "tools": tools,
+        "params": params,
+        "provider_state_bytes": input
+            .get("provider_state")
+            .and_then(|state| serde_json::to_vec(state).ok())
+            .map(|v| v.len()),
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -1423,6 +1534,7 @@ impl ExecutionEngine {
                 idempotency_key: request.idempotency_key.clone(),
                 parent_id: request.parent_task_id,
                 input: request.canonical_body,
+                body_fingerprint: fingerprint.clone(),
             })
             .await?;
         let initial = ExecutionRecord {
@@ -3489,6 +3601,103 @@ mod tests {
         }
     }
 
+    fn large_canonical_body(exact_model: &str) -> Value {
+        json!({
+            "exact_model": exact_model,
+            "idempotency_key": "idem-large",
+            "max_output_tokens": 4096,
+            "stream": false,
+            "response_format": {"type": "json_schema", "schema": {"type": "object"}},
+            "stop": ["<<end>>"],
+            "messages": [
+                {"role": "system", "content": "be brief"},
+                {"role": "user", "content": "x".repeat(600 * 1024)},
+                {"role": "assistant", "content": "y".repeat(600 * 1024)},
+                {"role": "user", "content": "done?"},
+            ],
+            "tools": [
+                {"name": "read_file", "description": "r", "input_schema": {"type": "object"}},
+                {"type": "function", "function": {"name": "write_file", "parameters": {}}},
+            ],
+            "provider_state": {"blob": "z".repeat(64 * 1024)},
+        })
+    }
+
+    #[test]
+    fn task_request_view_keeps_small_requests_verbatim() {
+        let body = json!({"exact_model": "m@p", "messages": [{"role": "user", "content": "hi"}]});
+        let fingerprint = canonical_body_fingerprint(&body).unwrap();
+        assert_eq!(
+            task_request_view(body.clone(), &fingerprint),
+            TaskRequestView::Inline(body)
+        );
+    }
+
+    #[test]
+    fn task_request_view_summarizes_large_requests_deterministically() {
+        let body = large_canonical_body("m@p");
+        let bytes = serde_json::to_vec(&body).unwrap().len();
+        assert!(bytes > super::MAX_TASK_REQUEST_INLINE_BYTES);
+        let fingerprint = canonical_body_fingerprint(&body).unwrap();
+        let TaskRequestView::Summary(summary) = task_request_view(body.clone(), &fingerprint)
+        else {
+            panic!("large request must be summarized");
+        };
+        assert_eq!(summary["bytes"], bytes);
+        assert_eq!(summary["fingerprint"], fingerprint);
+        assert_eq!(summary["messages"]["count"], 4);
+        assert_eq!(summary["messages"]["by_role"]["user"], 2);
+        assert_eq!(summary["messages"]["by_role"]["assistant"], 1);
+        assert_eq!(summary["messages"]["by_role"]["system"], 1);
+        assert_eq!(summary["tools"], json!(["read_file", "write_file"]));
+        assert_eq!(summary["params"]["exact_model"], "m@p");
+        assert_eq!(summary["params"]["max_output_tokens"], 4096);
+        assert_eq!(summary["params"]["stream"], false);
+        assert_eq!(summary["params"]["response_format"], "<object with 2 keys>");
+        assert_eq!(summary["params"]["stop"], "<array of 1>");
+        assert!(summary["params"].get("messages").is_none());
+        assert!(summary["params"].get("provider_state").is_none());
+        assert!(summary["provider_state_bytes"].as_u64().unwrap() > 64 * 1024);
+        let serialized = serde_json::to_string(&summary).unwrap();
+        assert!(!serialized.contains("xxxxxxxx"));
+        assert!(!serialized.contains("zzzzzzzz"));
+        assert!(serialized.len() < 4 * 1024, "summary is {} bytes", serialized.len());
+        // Same request → identical summary, so TaskMgr's idempotent replay
+        // (`input_digest`) agrees with the engine's `body_fingerprint`.
+        assert_eq!(
+            task_request_view(body.clone(), &fingerprint),
+            task_request_view(body, &fingerprint)
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_hands_the_body_fingerprint_to_the_task_spec() {
+        let providers = Arc::new(FakeProviders::default());
+        providers
+            .plans
+            .lock()
+            .unwrap()
+            .push_back(StartPlan::Success(ProviderExecution::Immediate(output("ok"))));
+        let (engine, _, tasks, _) = make_engine(providers);
+        let mut req = request(call("primary"));
+        req.idempotency_key = "idem-large".into();
+        req.canonical_body = large_canonical_body(&req.primary.exact_model);
+        assert!(
+            serde_json::to_vec(&req.canonical_body).unwrap().len()
+                > buckyos_http_server::DEFAULT_MAX_RPC_BODY_SIZE
+        );
+        let expected = canonical_body_fingerprint(&req.canonical_body).unwrap();
+        let receipt = engine.execute(req).await.unwrap();
+        assert_eq!(receipt.state, ExecutionState::Succeeded);
+        let specs = tasks.specs.lock().unwrap();
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].body_fingerprint, expected);
+        assert!(matches!(
+            task_request_view(specs[0].input.clone(), &specs[0].body_fingerprint),
+            TaskRequestView::Summary(_)
+        ));
+    }
+
     fn make_engine(
         providers: Arc<FakeProviders>,
     ) -> (
@@ -3576,6 +3785,7 @@ mod tests {
             assert_eq!(input["tenant_id"], "tenant-1");
             assert_eq!(input["caller_app_id"], "app-1");
             assert_eq!(input["request_model"], "smart-chat");
+            assert!(input["request_bytes"].as_u64().unwrap() > 0);
             assert_eq!(
                 input["request"]["messages"][0]["content"][0]["text"],
                 "hello"
