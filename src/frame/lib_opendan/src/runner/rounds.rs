@@ -35,6 +35,8 @@ pub struct RoundCounter {
     interrupted: AtomicU64,
     /// A call succeeded since the last [`RoundCounter::take_progress`].
     progressed: AtomicBool,
+    /// Calls that succeeded, never reset.
+    succeeded: AtomicU64,
 }
 
 impl RoundCounter {
@@ -51,6 +53,11 @@ impl RoundCounter {
     /// apart from [`RoundCounter::take`], which checkpoints call mid-run.
     pub fn take_progress(&self) -> bool {
         self.progressed.swap(false, Ordering::SeqCst)
+    }
+
+    /// Calls that succeeded so far (a mark to compare with later).
+    pub fn successes(&self) -> u64 {
+        self.succeeded.load(Ordering::SeqCst)
     }
 }
 
@@ -165,6 +172,7 @@ impl LlmClient for CountingLlm {
         }
         if result.is_ok() {
             self.counter.progressed.store(true, Ordering::SeqCst);
+            self.counter.succeeded.fetch_add(1, Ordering::SeqCst);
         }
         if let Err(e) = &result {
             if matches!(e, LLMComputeError::Cancelled) || aborted.is_aborted() {

@@ -1531,9 +1531,12 @@ async fn after_run_end(
         .prompt
         .compact_ratio
         .unwrap_or(sh.deps.options.compact_ratio);
-    let summarizer = sh.deps.summarizer.clone();
+    let summarizer = sh.deps.summarizer.clone().map(|llm| super::history::Summarizer {
+        llm,
+        model: run.record().config.summary_model(),
+    });
     if let Some(sm) = summarizer {
-        if let Err(e) = maybe_compact(&mut s, &sh.lease, Some(sm.as_ref()), budget, ratio).await {
+        if let Err(e) = maybe_compact(&mut s, &sh.lease, Some(&sm), budget, ratio).await {
             log::warn!("compaction of {sid}: {e}");
         }
     } else {

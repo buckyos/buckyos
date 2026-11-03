@@ -154,6 +154,21 @@ fn is_goal_req(req: &LlmInferenceRequest) -> bool {
     render(&req.messages).contains("(goal session)")
 }
 
+/// The result of `call_id` in the current Activation: the session history
+/// before its header carries the calls of the earlier ones.
+fn this_result(req: &LlmInferenceRequest, call_id: &str) -> Option<String> {
+    let from = req
+        .messages
+        .iter()
+        .rposition(|m| {
+            m.role == buckyos_api::AiRole::User && m.text_content().starts_with("<goal_activation")
+        })
+        .unwrap_or(0);
+    let mut current = req.clone();
+    current.messages = req.messages[from..].to_vec();
+    has_tool_result(&current, call_id)
+}
+
 fn report(result: Value) -> buckyos_api::AiResponse {
     tool_call(
         "r1",
@@ -396,7 +411,7 @@ async fn an_activation_out_of_budget_ends_alone() {
 async fn a_wrong_goal_result_is_refused_to_the_model() {
     let env = Env::new();
     let llm = ScriptedLlm::new(|req, _| {
-        match has_tool_result(req, "r1") {
+        match this_result(req, "r1") {
             Some(r) => {
                 assert!(r.contains("decision"), "{r}");
                 tool_call(
@@ -462,7 +477,7 @@ async fn work_created_by_an_activation_is_absorbed_later() {
         if !is_goal_req(req) {
             return work_reply(req, &rel);
         }
-        if act(req) == 1 && has_tool_result(req, "r1").is_none() {
+        if act(req) == 1 && this_result(req, "r1").is_none() {
             let sid = session_id_of(req);
             create_work(&root, &sid, "check item 1", "w1").unwrap();
             create_work(&root, &sid, "check item 2", "w2").unwrap();
@@ -613,11 +628,11 @@ async fn the_period_limit_skips_fires_and_refuses_work_but_absorbs_results() {
             return work_reply(req, &rel);
         }
         let header = header_of(req);
-        if act(req) == 1 && has_tool_result(req, "r1").is_none() {
+        if act(req) == 1 && this_result(req, "r1").is_none() {
             create_work(&root, &session_id_of(req), "check item 1", "w1").unwrap();
             return report(json!({ "decision": "created_work" }));
         }
-        if act(req) == 2 && has_tool_result(req, "r1").is_none() {
+        if act(req) == 2 && this_result(req, "r1").is_none() {
             let err = create_work(&root, &session_id_of(req), "check item 2", "w2").unwrap_err();
             *seen.lock().unwrap() = Some(err.to_json()["kind"].as_str().unwrap().to_string());
         }
@@ -697,7 +712,7 @@ async fn a_paused_goal_holds_its_inputs_until_resumed() {
         if !is_goal_req(req) {
             return work_reply(req, &rel);
         }
-        if act(req) == 1 && has_tool_result(req, "r1").is_none() {
+        if act(req) == 1 && this_result(req, "r1").is_none() {
             create_work(&root, &session_id_of(req), "check item 1", "w1").unwrap();
             return report(json!({ "decision": "created_work" }));
         }
@@ -772,7 +787,7 @@ async fn archive_stops_the_session_and_its_work() {
         if !is_goal_req(req) {
             return work_reply(req, &release);
         }
-        if act(req) == 1 && has_tool_result(req, "r1").is_none() {
+        if act(req) == 1 && this_result(req, "r1").is_none() {
             create_work(&root, &session_id_of(req), "long work", "w1").unwrap();
             return report(json!({ "decision": "created_work" }));
         }
@@ -902,7 +917,7 @@ async fn restart_starts_a_fresh_context_that_takes_over_the_work() {
             return work_reply(req, &rel);
         }
         let header = header_of(req);
-        if header.contains("kind=\"created\"") && has_tool_result(req, "r1").is_none() {
+        if header.contains("kind=\"created\"") && this_result(req, "r1").is_none() {
             create_work(&root, &session_id_of(req), "slow work", "w1").unwrap();
             return report(json!({ "decision": "created_work", "pending": ["context of epoch 1"] }));
         }
@@ -1197,7 +1212,7 @@ async fn skills_control_and_feedback() {
     let root = env.root.clone();
     let llm = ScriptedLlm::new(move |req, _| {
         let header = header_of(req);
-        if act(req) == 1 && has_tool_result(req, "r1").is_none() {
+        if act(req) == 1 && this_result(req, "r1").is_none() {
             let sid = session_id_of(req);
             let queue = {
                 let env = Env::at(&root);

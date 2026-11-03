@@ -165,9 +165,18 @@ fn report(n: usize, result: Value) -> buckyos_api::AiResponse {
 }
 
 /// Every tool result text of the request, oldest first.
+/// Tool results of the current Activation: the session history before its
+/// header carries the calls of the earlier ones.
 fn tool_results(req: &LlmInferenceRequest) -> Vec<String> {
+    let from = req
+        .messages
+        .iter()
+        .rposition(|m| {
+            m.role == buckyos_api::AiRole::User && m.text_content().starts_with("<goal_activation")
+        })
+        .unwrap_or(0);
     let mut out = Vec::new();
-    for m in &req.messages {
+    for m in &req.messages[from..] {
         for c in &m.content {
             if let buckyos_api::AiContent::ToolResult { content, .. } = c {
                 out.push(

@@ -211,7 +211,7 @@ UI Session 采用以下目标性运行区间：
 
 这里的增长空间约为 50 个百分点，**不是将上限另定为 50%**。上述数值是当前设计目标，不是所有模型和部署都必须使用的硬编码参数。
 
-Work Session 同样适用（多 Turn Work 整个会话是一个 run，中途压缩同样按这个区间）。实现上：窗口来自 AICC 路由选中模型的 `max_context_tokens`（`llm_context.context_window` 显式值优先，查不到按 128k）；触发线是 xllm 的 `context_yield_ratio`（缺省 0.80），目标线是 libopendan 的 `context_target_ratio`（缺省 0.30，压缩后 system 前缀 + 历史约占窗口的 30%，`history_budget_tokens` 是历史的下限）。见 [Session Directory Protocol](protocol/Session%20Directory%20Protocol.md) §7“上下文上限中途重写”。
+Work Session 同样适用（多 Turn Work 整个会话是一个 run，中途压缩同样按这个区间）。实现上：窗口来自 AICC 路由选中模型的 `max_context_tokens`（`llm_context.context_window` 显式值优先，查不到按 128k）；宿主的窗口上限旋钮 `RunnerOptions.max_context_window` 缺省不设，窗口跟随模型。窗口大的代价是真实的：每轮 prefill 可达 50–80 万 token 的延迟、订阅类 provider 的额度与用户自己的使用共用、run 快照按上下文等比例变大，要限成本的 Agent 在 `llm_context` 里显式写 `context_window`；触发线是 xllm 的 `context_yield_ratio`（缺省 0.80），目标线是 libopendan 的 `context_target_ratio`（缺省 0.30，压缩后 system 前缀 + 历史约占窗口的 30%，`history_budget_tokens` 是历史的下限）。压缩只用 agent_tool `llm_compress` 一种逻辑：压回 30% 线后是 head + 一块滚动合并的摘要 + 逐字保留的关键字符串 + 按预算填满的原始尾巴，见 [LLM Compress](../llm_context/LLM%20Compress.md)。见 [Session Directory Protocol](protocol/Session%20Directory%20Protocol.md) §7“上下文上限中途重写”。
 
 维持稳定前缀有利于争取缓存复用，但缓存命中仍取决于实际 Provider、模型和请求组织方式。本设计不将“未压缩”等同于“必然全部命中缓存”。
 

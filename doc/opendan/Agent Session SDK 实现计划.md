@@ -93,7 +93,7 @@ session 的 `runs/` 直接采用 xllm 的 run 目录：native runtime 下，跑�
 | D5 | **Session 绑定驱动者身份**，同身份的不同进程可以接手。单写者分区；推进权 = **长期持有的排他文件锁**（与 xllm 的 run 锁同一模式），持有者退出即释放，没有 TTL 与续约；接管执行前还必须确认旧工具已停止，无法确认则阻塞恢复；DFS 上线后也遵循此边界 | S-22、A-14、Q9、Q12、V4 |
 | D6 | **输入走 BuckyOS 基础设施**：<br>- 每个 session 一条 kmsg 队列，承载 msg / event / change / control / perception；<br>- kevent 负责唤醒；<br>- UI 消息来自 msg-center inbox（以 `did + session_id` 标识，每个 UI session 一个）——**UI session 后移**，等 msg-center 等服务确认。<br>“进入推理 = commit pop”落在各输入源的确认上 | S-15 ~ S-19、S-23、Q14、V1 |
 | D7 | **`state.json` 是提交点**（小文件，整体原子替换）。**`worklog.jsonl` 严格只追加**：每次 llm_context run 结束时批量写入该 run 的历史，随后由 state.json 提交确认 | S-23 |
-| D8 | **下一次 llm_context 的构成**：<br>- 有未结束的 run，就从 `runs/`（xllm run 目录）直接恢复；<br>- 否则先读 `summary.json`（历史摘要 + 起点 + 机械压缩配置），再从末尾反向读 worklog，读到起点为止。<br>运行时从不全量扫描 worklog | S-04、Q5 |
+| D8 | **下一次 llm_context 的构成**：<br>- 有未结束的 run，就从 `runs/`（xllm run 目录）直接恢复；<br>- 否则先读 `summary.json`（开头 + 历史摘要 + 起点），再从末尾反向读 worklog，读到起点为止。<br>运行时从不全量扫描 worklog | S-04、Q5 |
 | D9 | 首次推进时绑定 runtime（含 workdir），之后不变；绑定失败发生在任何推理之前，没有成本 | S-07、Q3 |
 | D10 | **产物**：session 产物放在 session 目录，通常一次性；长期产物放 workspace（Agent 内部 / 外部）。workspace 的版本化与回滚**不进 Session 协议**；Agent State 的产物列表只登记和指向 | S-24 ~ S-26、Q13 |
 | D11 | 崩溃恢复**复用 llm_context / xllm 的 checkpoint / resume**，最细到一次 do-action 之后；输入 receipt 与工具结果随快照持久化；恢复失败保留现场；native runtime 下 xllm 满足恢复检查后可以接手未结束的 run | S-04、A-03、Q5、V2 |
@@ -137,7 +137,7 @@ OpenDAN 的后续职责（本期不实施，见附录 A）：
 | 范围 | 本期只做 libopendan，不动 opendan；opendan 之后依赖 libopendan |
 | Session 位置与目录 | 可以放在 AgentRoot 之外；目录结构按你的整理（§4.1） |
 | inbox / outbox / changes | 用 BuckyOS 基础设施（message center、kmsg 等），不用文件系统重新实现 |
-| summary.json | 只为 session history 压缩准备：历史摘要 + 起点 + 机械压缩配置 |
+| summary.json | 只为 session history 压缩准备：开头 + 历史摘要 + 起点 |
 | state.json / worklog | 用两个文件：state.json 是提交点；worklog 严格只追加，每次 run 结束时批量写入 |
 | llm_context 构建 | 先读 summary.json，再从末尾反向读 worklog（§4.4） |
 | Q1 self-improve 启动 | 属于启动条件检查，至少要求 Agent 空闲（附录 A.5） |
@@ -308,7 +308,7 @@ src/frame/libopendan/
     runs/<run_id>/                   # 就是 xllm 的 run 目录：run.json（RunRecord）+ snapshots/NNNN.json + .lock（run 执行锁）；
                                      #   native runtime 下 xllm 可以接手未结束的 run（§4.4）；
                                      #   只保留 state.json 引用的 run：进行中的 run、最后一次结束的 run、被挂起的 process 所在的 run
-    summary.json                     # 重建 llm context 的核心状态 ①：为 history 压缩准备（历史摘要 + 起点 + 机械压缩配置）
+    summary.json                     # 重建 llm context 的核心状态 ①：为 history 压缩准备（开头 + 历史摘要 + 起点）
     worklog.jsonl                    # 重建 llm context 的核心状态 ②：严格只追加的工作日志（通常是最大的文件）；
                                      #   每次 llm_context run 结束时批量写入该 run 的历史
     static.json                      # 统计信息（token、Round / Turn / run 数、耗时、费用）
@@ -363,7 +363,7 @@ src/frame/libopendan/
     "behavior": "plan",                                // 以下是 OpenDAN 扩展：behaviors/<name> 引用（BehaviorAssembler）
     "system_prompt": "…",                              // 应用自带的 system prompt（S-05；按 §8.1 的固定顺序合成）
     "context": ["…"],                                  // 应用提供的初始上下文材料
-    "mechanical_compress": { "recent_full_responses": 2, "summary_chars": 280, "max_result_chars": 4096 }   // summary.json 的初始机械压缩配置
+    "history_render": { "drop_kinds": ["created", "turn_started", "input_batch", "decide", "compaction", "input_rejected", "event_dropped", "turn_ended"] }   // worklog 重建为历史消息时不进入上下文的条目类型
   },
   "runtime": { "requirement": { "runtime_id": null, "tools": ["node"], "app_tools": ["erp_query"] },   // app_tools：只存在于 runner 进程内的工具，恢复时校验（§7.1）
                "tool_plan": "minimal_safe", "env": { … } },
@@ -496,26 +496,23 @@ acceptance (work):  n/a ─(finished)─► pending ─► accepted
 {"seq":319,"t":"decide","decision":"accept","by":"did:user:alice","report":{…}}
 ```
 
-**summary.json** 专门为 session history 压缩准备：用“历史摘要 + 起点 + 机械压缩配置”描述下一次 llm_context 如何由 worklog 构成。
+**summary.json** 专门为 session history 压缩准备：用“开头 + 历史摘要 + 起点”描述下一次 llm_context 如何由 worklog 构成。
 
 ```jsonc
 {
-  "schema": "opendan.session_summary/2",
-  "history_summary": "…",               // 起点之前全部历史的摘要（LLM 生成）
+  "schema": "opendan.session_summary/3",
+  "history_summary": "…",               // 开头与起点之间全部历史的摘要（llm_compress 生成）
+  "keep_exact": ["…"],                  // 随摘要原样保留的字符串（电话、id、URL、SHA…）
+  "head_end_seq": 12,                   // 开头（首个输入 + 第一个 Round）止于这条 worklog 之前；0 = 没有开头
+  "head_end_offset": 40960,             // 开头终点在 worklog 中的字节偏移
   "start_seq": 301,                     // 起点：从这条 worklog 开始使用原始记录
   "start_offset": 912384,               // 起点在 worklog 中的字节偏移：反向读取读到这里即停止
-  "mechanical": {                       // 机械压缩配置：起点之后的原始记录如何渲染
-    "recent_full_responses": 2,         //   最近 N 个模型 response（behavior 的 step 或 function call 的 assistant_message）全量
-    "summary_chars": 280,               //   更早 response 的 assistant 文本截断长度
-    "max_result_chars": 4096,           //   单个动作结果上限
-    "drop_kinds": ["created", "decide", "compaction", "input_rejected", "change_dropped", "turn_ended"]   //   不进入上下文的条目类型
-  },
-  "renderer": "libopendan.mechanical/3",   // 渲染器标识与版本：确定性只在同一渲染器版本内承诺
+  "renderer": "libopendan.history/4",   // 渲染器标识与版本：确定性只在同一渲染器版本内承诺
   "made_at_seq": 318, "made_by": "context_limit | ratio | manual", "updated_at_ms": 0
 }
 ```
 
-首次压缩之前，这个文件可以不存在，等价于 `start_seq = start_offset = 0`、没有摘要、机械压缩配置取 `session_config.prompt.mechanical_compress`。
+首次压缩之前，这个文件可以不存在，等价于 `start_seq = start_offset = 0`、没有开头和摘要。不进入上下文的条目类型取 `session_config.prompt.history_render.drop_kinds`。
 
 **runs/** 就是 xllm 的 run 目录：`runs/<run_id>/run.json`（RunRecord）+ `snapshots/NNNN.json`（LLMContextSnapshot）+ `.lock`（run 执行锁）。一个 run 就是一个 LLMContext 从 new / resume 到终态 outcome 的生命周期。run 结束后不立即删除：**最后一次 run 的 llm context 状态总是保留**（`state.last_run`），直到下一个 run 结束取代它。
 
@@ -536,39 +533,41 @@ acceptance (work):  n/a ─(finished)─► pending ─► accepted
 def next_llm_context(s, lease, deps, env) -> LLMContext:
     live = resume_live_run(s, lease, deps, env)                  # ⓪ 有未结束的 run（state.live_run）：直接恢复（§8.6）
     if live: return live
-    sm = s.summary_json() or Summary.initial(s.config)           # ① 先读 summary.json（小文件）：摘要 + 起点 + 机械压缩配置
+    sm = s.summary_json() or Summary.initial()                   # ① 先读 summary.json（小文件）：开头 + 摘要 + 起点
     req = deps.assembler.build_request(s.config, env)            #    system：session_config.prompt（.llm_context 语义）+ 身份 / 约束段
-    budget = history_budget(req, sm.history_summary)             #    上下文窗口减去 system 与摘要后的预算
+    head = s.worklog.read_range(0, sm.head_end_offset)           #    开头（首个输入 + 第一个 Round）原样保留
+    budget = history_budget(req, head, sm)                       #    上下文窗口减去 system、开头与摘要消息后的预算
     tail, reached_start = [], True
     for e in s.worklog.reverse_lines(end=s.state.worklog.committed_bytes,   # ② 从已提交末尾反向读（按块读取，由新到旧）
                                      stop=sm.start_offset):                 #    读到起点就停，从不扫描起点之前的内容
-        if e.t in sm.mechanical.drop_kinds: continue
-        r = render_mechanical(e, age=len(tail), cfg=sm.mechanical)          #    越新越完整，越旧截断越多
-        if not budget.take(r): reached_start = False; break      #    预算先于起点耗尽：说明摘要已经过旧
-        tail.append(r)
-    if not reached_start:                                        # ③ 摘要与原始记录之间不能留空洞：先压缩，再构建
-        sm = compact(s, lease, deps, cut_offset=offset_of(tail[-1]))        #   新起点 = 已保留条目中最旧的一条
+        if e.t in s.config.prompt.history_render.drop_kinds: continue
+        if not budget.take(e): reached_start = False; break      #    预算先于起点耗尽：历史装不下
+        tail.append(e)
+    if not reached_start:                                        # ③ 装不下：整段读入并压缩，直接使用压缩后的历史
+        return LLMContext.new(req.with_history(compact(s, lease, deps, budget)), deps.llm_deps(s))
     tail.reverse()                                               # ④ 恢复时间顺序
-    return LLMContext.new(req.with_history(render(sm.history_summary, tail)), deps.llm_deps(s))
+    return LLMContext.new(req.with_history(render(head, sm, tail)), deps.llm_deps(s))   # 重建为消息，不截断
 ```
 
 - **只反向读、按需停止**：正常情况下，读取量约等于起点之后的记录量，受上下文预算约束，与 worklog 总大小无关。`reverse_lines` 是各语言共用的原语：从指定字节位置向前按块读取，并按 `\n` 切行（§4.7）。
-- **其它读取也用同一策略**：`read_session` 取最近历史、统计本 session 的副作用动作，都从末尾反向读（补发 run_digest 只读 state.json）。唯一的正向读取是压缩时读取 `[start_offset, cut_offset)` 这个有界区间；全量读取只留给审计 / 导出工具。
+- **其它读取也用同一策略**：`read_session` 取最近历史、统计本 session 的副作用动作，都从末尾反向读（补发 run_digest 只读 state.json）。正向读取只有开头 `[0, head_end_offset)` 和压缩时读取的未压缩范围 `[start_offset, 已提交末尾)`；全量读取只留给审计 / 导出工具。
 - **确定性**：同一渲染器版本（`summary.json.renderer`）下，相同的 summary.json + worklog 渲染出相同的历史段。时间、天气等需要新鲜的量放在每次输入批次消息（`<session_input>`）的变量段，不进入历史段（S-20）。system + 摘要在下一次压缩之前保持不变，构成稳定前缀，有利于 KV cache。跨语言只要求语义一致，不要求字节一致。
 - **压缩**只产出新的 summary.json（摘要前移、`start_seq` / `start_offset` 后移），不改写 worklog。触发时机沿用现有的两种：
   - run 结束后，按上下文占用比例触发（`maybe_compact`，§8.3）；
   - run 进行中遇到 `ContextLimitReached` 时（X7，已实现）：先把该 run 已产生的历史写入 worklog 并以 `outcome(context_rewritten)` 收尾，再压缩（只写 summary.json），然后以 system + 重建的历史消息恢复同一 run（function call：`RewrittenHistory`；behavior：`RewrittenSteps`），一次推进内最多连续重写 3 次；仍装不下则 run 暂停在上下文上限，下次推进先重写。重写只改变历史的承载方式，当前 Turn 继续。run 的历史只经 worklog 重建，不在快照里另行摘要。
 
 ```python
-def compact(s, lease, deps, cut_offset) -> Summary:          # 只写 summary.json（外加一条审计条目）
-    sm = s.summary_json() or Summary.initial(s.config)
-    segment = s.worklog.read_range(sm.start_offset, cut_offset) # 唯一的正向读取：有界区间
-    new = Summary(history_summary=summarize(sm.history_summary, segment),
-                  start_seq=seq_at(cut_offset), start_offset=cut_offset,
-                  mechanical=sm.mechanical, made_at_seq=s.state.worklog.committed_seq, made_by="ratio|context_limit")
+def compact(s, lease, deps, target) -> list[Message]:        # 只写 summary.json（外加一条审计条目）
+    sm = s.summary_json() or Summary.initial()
+    full = render(s.worklog.read_range(0, sm.head_end_offset), sm,          # 一次读入整段未压缩范围，重建为消息
+                  s.worklog.read_range(sm.start_offset, s.state.worklog.committed_bytes))
+    out = llm_compress(full, target)                             # 唯一的压缩：开头 + 一条摘要消息（<history_summary> + <keep_exact>）+ 原样的近期 Round
+    new = Summary(history_summary=out.summary, keep_exact=out.keep_exact,
+                  head_end=position_of(out.head_end), start=position_of(out.tail_start),
+                  made_at_seq=s.state.worklog.committed_seq, made_by="ratio|context_limit")
     fenced(lease, lambda: atomic_replace(s.state_dir / "summary.json", new))
     s.worklog.append(lease, compaction_entry(new)); s.commit_state(lease)   # 审计条目 + 确认
-    return new
+    return out.messages
 
 def reconcile_runs(lease, s, deps):                           # drive 开头、读取新输入之前调用
     s.worklog.truncate_to(lease, s.state.worklog.committed_bytes)   # 截掉未提交尾部
@@ -1102,7 +1101,7 @@ pub trait AgentStateClient: Send + Sync {
 
 ## 7. Agent Runtime（libOpenDAN::runtime）
 
-> 2026-10-02 实施更新：Runtime 已下移到 agent_tool::runtime，共享 native/remote_ssh 配置、工具入口、目标侧文件后端与 RuntimeInfo。Session 层保留 bin/helper、binding 与协议纪律；本节早期 API 由 [xllm Rust SDK §10](../llm_context/xllm_rust_sdk.md#10-共享-agentruntime) 和 [xAgent §5](xAgent.md#5-runtimeagent-的-sandbox) 的当前接口替代。binding/session_config/session_state 与 run 升至 3；summary、机械渲染及 worklog 形状保持原协议。远端 Session helper 未部署时 Capability 错误；policy/grant/approval 仍为后续阶段。
+> 2026-10-02 实施更新：Runtime 已下移到 agent_tool::runtime，共享 native/remote_ssh 配置、工具入口、目标侧文件后端与 RuntimeInfo。Session 层保留 bin/helper、binding 与协议纪律；本节早期 API 由 [xllm Rust SDK §10](../llm_context/xllm_rust_sdk.md#10-共享-agentruntime) 和 [xAgent §5](xAgent.md#5-runtimeagent-的-sandbox) 的当前接口替代。binding/session_config/session_state 与 run 升至 3；summary、历史渲染及 worklog 形状保持原协议。远端 Session helper 未部署时 Capability 错误；policy/grant/approval 仍为后续阶段。
 
 ### 7.1 逻辑 runtime 与绑定
 
@@ -1497,7 +1496,7 @@ def resume_live_run(s, lease, deps, env) -> LLMContext | None:
 
 `runs/` 直接采用 xllm 的 run 目录后，run 目录与快照就是 session 协议的一部分。下列改进都在 `llm_context` 与 `agent_tool`（xllm）中完成；它们都是可选能力，现有调用方的行为不变；TS 版以后对齐。
 
-当前持久版本为 `session_config/6`、`session_state/6`、RunRecord v6、快照 v5 与 `xllm/2`，摘要 renderer 为 `libopendan.mechanical/3`。下表的实施前基线保留当时版本供对照，现行协议见 [Session Directory Protocol](<protocol/Session Directory Protocol.md>)。
+当前持久版本为 `session_config/7`、`session_state/6`、RunRecord v6、快照 v5 与 `xllm/2`，摘要为 `session_summary/3`，历史 renderer 为 `libopendan.history/4`。下表的实施前基线保留当时版本供对照，现行协议见 [Session Directory Protocol](<protocol/Session Directory Protocol.md>)。
 
 | # | 改进 | 实施前基线（2026-09-29，§1.5） | 用途 |
 |---|---|---|---|
@@ -1893,7 +1892,7 @@ V1 / V6：协议是**目录结构 + 提交顺序 + 锁语义 + 输入消息格�
 | discard 与其它 session 的 accept 并发 | head 回退覆盖新接受版本，或指向已失效祖先 | 所有 head 移动持 artifact 锁，在锁内重读并验证回退目标；L5 并发测试 |
 | worklog 会变得很大 | 读取变慢、占用磁盘 | 只反向读、读到起点即停，读取量受上下文预算约束；全量读取只用于审计 / 导出；归档策略另议 |
 | run 进行中的历史只在 `runs/` | 快照缺失 / 损坏时无法证明已确认输入与动作结果；格式不支持时当前实现无法读取 | checkpoint 与 run.json 写入 fsync；返回 RecoveryBlocked，保留 run、live_run、消费位置与执行证据；修复或更换支持的 runner 后重试，不自动从旧 worklog 重跑 |
-| run 结束时 worklog 批量写入量大 | 单次 IO 峰值 | 一次顺序追加 + 一次 fsync；机械压缩配置可以限制单个动作结果落盘的长度 |
+| run 结束时 worklog 批量写入量大 | 单次 IO 峰值 | 一次顺序追加 + 一次 fsync |
 | 保留 last_run 与挂起的 run 占用磁盘 | 每个 session 多保留一到数个 run 的快照 | xllm 的快照是逐个追加的，按需裁剪旧快照（§8.7 X1），只留最新几份 |
 | kmsg 的 ack 是累积的，永远不被消费的输入会卡住游标 | 输入窗口被堵死 | 持有者把不处理的输入显式标记为已消费并写入 worklog；`consumed_above` 设上限并告警 |
 | kmsg 权限校验、retention、游标持久化未实现（D-06、D-07、D-09）；create / subscribe 不幂等；`commit_ack` 可回退；`delete_message_before` 有竞态 | 越权投递；队列无限增长；重启后丢订阅 | 按 §4.5 的使用规则；本期不删除消息；补齐 D-07 作为跨信任域使用的前置 |

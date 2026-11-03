@@ -1035,7 +1035,11 @@ async fn create_sub_context_uses_its_own_system_and_selected_history() {
                         sees_steps,
                         "{inherit}:\n{all}"
                     );
-                    assert_eq!(all.contains("<session_history>"), sees_history, "{inherit}:\n{all}");
+                    assert_eq!(
+                        all.contains("<<last_step_action_results behavior=\"plan\""),
+                        sees_history,
+                        "{inherit}:\n{all}"
+                    );
                     assert_eq!(all.contains("plan-1"), sees_steps || sees_history, "{inherit}:\n{all}");
                     text("<response><actions><shell><![CDATA[echo do-1]]></shell></actions></response>")
                 }

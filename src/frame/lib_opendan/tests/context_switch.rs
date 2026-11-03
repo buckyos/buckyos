@@ -270,7 +270,7 @@ async fn returned_sub_context_transcript_stays_out_of_rebuilt_history() {
         _ => {
             // A new run of the next Turn, built from the session history.
             let all = render(&req.messages);
-            assert!(all.contains("<session_history>"), "{all}");
+            assert!(all.contains("turn one answer"), "{all}");
             assert!(all.contains("child result R"), "{all}");
             assert!(!all.contains("CHILD-ONLY-OUTPUT"), "{all}");
             text("turn two answer")

@@ -109,7 +109,7 @@ xagent : AgentSession ──InputBus──► 输入批次 ──commit──►
 | 配置来源 | 从 workdir 向上发现 `.llm_context` 文件并合并 | `session_config.prompt.llm_context`（同 schema 的 JSON，严格键）。**xagent 新增**：冻结 behavior 的 `[model]/[capabilities]/[budget]/mode` 叠加成本 run 的有效 `.llm_context`（§6.4），结果写进 run.json `config`，xllm 接手时不再需要 behavior |
 | 有效配置与工具展开 | `prepare` 内部 | `XllmTask::prepare_hosted(workdir, llm_context_json, origin, host_system, deps)`：xllm 算 EffectiveConfig、展开 tools / actions / MCP、在宿主 system 后追加 `capabilities` / `cmd_manual` / `runtime_protocol` 段 |
 | system 段 | 按行号 section 拼装，含当前时间等新鲜量 | 宿主给出：身份（role.md / self.md）→ 不可覆盖约束（含避让规则）→ 应用 prompt → 初始 context → objective；**不含新鲜量**（S-20 稳定前缀）。xagent 由 `BehaviorAssembler` 用冻结的 behavior 模板渲染这一段 |
-| 历史段 | 没有（一个 run 一次任务） | `history.rs::build_history`：先读 summary.json，再从 worklog 已提交末尾**反向**读到起点，预算不够先 compact；渲染成一条 `<session_history>` user 消息 |
+| 历史段 | 没有（一个 run 一次任务） | `history.rs::build_history`：先读 summary.json，再从 worklog 已提交末尾**反向**读到起点，预算不够先 compact（`llm_compress`）；重建为一串消息（原生工具调用 / tool 结果，behavior 为 assistant 文本 + `<<last_step_action_results>>`），压缩后为开头 + 一条 `<history_summary>` 摘要消息 + 原样的近期 Round |
 | user 输入 | 任务要求 + 附件 + stdin，构造时就在 `request.input` | 不在构造时给。由 `commit_input_batch` 以 `LLMContext::inject` 注入 `<session_input hook=…>`，连同 `InputReceipt` 写进快照（HostMeta `libopendan`），并按 ①快照 ②run.json 门槛 ③state.json ④清门槛 ⑤确认输入源 的顺序提交 |
 | LlmClient | `llm_factory.create(provider)` | `hosted.create_llm` / `create_run_llm`（同一 factory，以 `who` 身份），外面再包 `CountingLlm` 计 Round |
 | ToolManager | `XllmToolManager`（本进程、本地 fs） | **Runtime 的 Sandbox**（按同一份有效 tools 配置解析与派发，内置文件/exec 使用执行体），外包 `SessionToolManager`：lease 检查、宿主门槛、task 记录（run.json `host.extra.tasks` / `task_calls`）、子 context 登记（`host.extra.sub_call`）、touching 推断。native 沙箱内部仍复用 xllm 的 `build_toolset` |
@@ -160,8 +160,8 @@ LLMContext 的契约只到一个停止点：`run()` 返回一个 Outcome。Behav
 | T2 | 子 context：**create-sub-context** 或 **fork**（behavior 触发） | `next_behavior = B`，B 的进入模式为 `create_sub_context` / `fork` | create-sub-context：新 run = B 的 system + 任务输入 + 显式选择的父历史（`inherit`：none / recent_dialogue / steps）；fork：新 run = 父的 system + 分叉点的完整有效历史 + 分支任务输入 | create-sub-context：B 自己的；fork：与父相同 | 子独立（budget、usage、错误计数从头）；Step / action 编号接续父 | 新 run；父 run 入栈 `caller`，`call.trigger = behavior` | 子 run 结束 → `process_result` 交接批次注入父 run |
 | T3 | **SWITCH_CONTEXT** | `next_behavior = B`，B 的进入模式为 `switch_context` | 栈里 B 自己 parked 的 run（恢复它自己的快照）；没有就新建：B 的 system + 交接输入，历史按 B 的 `inherit`（none / recent_dialogue） | B 自己的 | B 自己的 | 当前 run 入栈 `parked`；B 有 parked 的 run 就出栈成为 live | 不隐式返回：回 A 要显式切换；显式结束报告按 Session 完成策略收尾 |
 | T4 | **工具触发的子调用** | 调用 `call_behavior({behavior, task})`（或 behavior 的具名函数） | 同 T2：由目标的进入模式决定是 create-sub-context 还是 fork；fork 的分叉点是父本段结束时的全部历史 | 同 T2 | 同 T2 | 调用立即返回“已登记”（run.json `host.extra.sub_call`，task id `subctx:<call_id>`）；父 run 本段结束时入栈 `caller`，`call.trigger = tool{call_id, task_id}`，新建子 run | 子 run 结束 → `process_result`（带 `call_id`）交接批次注入父 run |
-| T5 | 改写 | `ContextLimitReached` | 同一 run，历史重写为 summary + `<session_history>` | 不换 | 保留 | 同一 run，epoch + 1 | — |
-| T6 | Turn 边界 | 上一个 run 已结束，又来了输入 | 新 run：当前 behavior 的 system + `<session_history>` | 当前 behavior 的 | 新 | 新 run | — |
+| T5 | 改写 | `ContextLimitReached` | 同一 run，历史重写为 system + 重建的历史消息（含 `<history_summary>` 摘要） | 不换 | 保留 | 同一 run，epoch + 1 | — |
+| T6 | Turn 边界 | 上一个 run 已结束，又来了输入 | 新 run：当前 behavior 的 system + 会话历史消息 | 当前 behavior 的 | 新 | 新 run | — |
 
 - T2 / T3 由 `next_behavior` 触发，只出现在 Behavior 模式；T4 两种模式都能用，也是 function_call 模式（如 opendan 现在的 ui session）唯一的调度手段。
 - **构造方式与触发方式独立**：子 context 是哪一种（create-sub-context / fork）只看目标 behavior 的进入模式；T2 与 T4 的区别只在触发和返回协议。旧 T2 的“用 B 的 system、继承父 steps”就是 `create_sub_context` + `inherit = steps`。
@@ -196,14 +196,14 @@ LLMContext 的契约只到一个停止点：`run()` 返回一个 Outcome。Behav
 
 三者都延续当前 Turn，都不自动隔离文件系统、Session 状态与 worklog。
 
-**SWITCH_CONTEXT（T3）**。目标有自己的 system、工具、历史和 run。首次进入时新建：目标的 system +（按 `inherit`）`<session_history>` + `on_context_switch` 交接批次（由 Session 从共享状态渲染：当前任务状态、交接原因）。再次进入时把它 parked 的 run 出栈并恢复原快照，只追加新的交接批次；它的 system、已有历史、编号、预算都不动，不把另一个 context 的原始历史并进来。各 run 各自编号。显式结束报告在这里交由 Session 完成策略裁决；要回到上一个 behavior 必须显式 `next_behavior`。入口 behavior 没有“被进入”的调用方，按 `switch_context` 处理。
+**SWITCH_CONTEXT（T3）**。目标有自己的 system、工具、历史和 run。首次进入时新建：目标的 system +（按 `inherit`）会话历史消息 + `on_context_switch` 交接批次（由 Session 从共享状态渲染：当前任务状态、交接原因）。再次进入时把它 parked 的 run 出栈并恢复原快照，只追加新的交接批次；它的 system、已有历史、编号、预算都不动，不把另一个 context 的原始历史并进来。各 run 各自编号。显式结束报告在这里交由 Session 完成策略裁决；要回到上一个 behavior 必须显式 `next_behavior`。入口 behavior 没有“被进入”的调用方，按 `switch_context` 处理。
 
 **create-sub-context（T2 / T4）**。子 run 用目标 behavior 冻结的 system、工具、模型，输入是任务（behavior 触发：交接批次；工具触发：`task` 参数）加上按 `inherit` 选的父历史，由 llm_context 的 `derive_child` 构造（§3.7）：
 
 | `inherit` | 内容 | `derive_child` 的 `InheritHistory` |
 |---|---|---|
 | `none` | 只有子 system 与任务输入 | `None` |
-| `recent_dialogue` | 宿主筛选并渲染的 `<session_history>`（summary + 最近记录）。这是标明来源的筛选视图，不是父的完整历史 | 宿主直接放进子 request 的输入（`None`），或作为 `Material` 交给派生 |
+| `recent_dialogue` | 宿主筛选并从 worklog 重建的会话历史消息（压缩后为开头 + summary + 近期原始记录）。这是标明来源的筛选视图，不是父的完整历史 | 宿主直接放进子 request 的输入（`None`），或作为 `Material` 交给派生 |
 | `steps` | 父已完成的 steps 与 summaries，作为结构化记录继承。要求父子都在 behavior loop、parser / renderer 兼容；跨 loop 模式时改为渲染成材料。进行中的 `action_step` 不算已完成记录 | `Steps` |
 
 即使选了 `steps`，只要 system 换了，就仍是 create-sub-context，不叫 fork。
@@ -214,7 +214,7 @@ LLMContext 的契约只到一个停止点：`run()` 返回一个 Outcome。Behav
 
 - 派生是纯函数，父快照不变；子有独立的 budget、usage、host meta 与输入 receipt，不带父的挂起状态、待派发调用。父恢复时不重置自己的工具额度。
 - 子的 Step / action 编号接续父；`derive_child` / `fork_snapshot` 返回的 `InheritBoundary`（fork 还有 `ForkPoint`）告诉 Session 哪些是继承来的，继承部分不重复写进 worklog（`inherited_below`）。
-- 子新增的 messages / steps 写进共享 worklog 供审计，但不并入父快照；重建 `<session_history>` 时，已返回的子 context 的 transcript 被排除，只渲染它的结果。压缩做同样的过滤，但压缩只识别被压缩片段内的 `process_done`：切点把子 run 的记录与它的 `process_done` 分开时，切点之前的那部分仍会进入摘要。
+- 子新增的 messages / steps 写进共享 worklog 供审计，但不并入父快照；重建会话历史时，已返回的子 context 的 transcript 被排除，只渲染它的结果。压缩一次读入整段未压缩范围，做同样的过滤；压缩发生时仍在运行的子 context，其记录会进入摘要。
 - 返回与嵌套规则见 §3.3。
 
 ### 3.6 工具触发的子调用（T4）
@@ -838,7 +838,7 @@ pub struct BehaviorConfig {
     "identity": { "role": "…", "self": "…", "i18n": { … } },
     "behaviors": { "plan": { …BehaviorConfig… }, "do": { … } }
   },
-  "system": "…", "context": [], "mechanical_compress": { … },
+  "system": "…", "context": [], "history_render": { … },
   "initial_inputs": [],                 // C4 新增：无队列创建时的只读 MsgObject 逻辑记录
   "on_init": "…", "on_input": "…", "on_context_switch": "…",
   "input": { "mode": "batch", "media": "reference" }

@@ -77,12 +77,11 @@
         }
       }
     ],
-    "mechanical_compress": {
-      "recent_full_responses": 2,
-      "summary_chars": 280,
-      "max_result_chars": 4096,
+    "history_render": {
       "drop_kinds": [
         "created",
+        "turn_started",
+        "input_batch",
         "decide",
         "compaction",
         "input_rejected",

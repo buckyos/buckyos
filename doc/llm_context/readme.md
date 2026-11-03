@@ -42,7 +42,7 @@ AgentSession 通过 prompt/input 和工具向 LLMContext 提供所需状态，LL
 ```
 
 - `system_prompt` 替换 `prompt.system_prompt`；`llm_context` 的顶层键替换 `prompt.llm_context` 的同名键（模型、工具、限制等）。
-- `inherit`（默认 `none`）：`recent_dialogue` 装配会话历史，context 切换时使用宿主渲染的 `<session_history>`；未压缩 UI 的跨 Turn 续聊保留原始消息列表，见下文。`steps` 只用于 `create_sub_context`。`fork` 条目不能声明 `system_prompt` / `llm_context` / `inherit`。
+- `inherit`（默认 `none`）：`recent_dialogue` 装配会话历史，context 切换时使用宿主从 worklog 重建的会话历史消息；未压缩 UI 的跨 Turn 续聊保留原始消息列表，见下文。`steps` 只用于 `create_sub_context`。`fork` 条目不能声明 `system_prompt` / `llm_context` / `inherit`。
 - Session 的初始 behavior（`prompt.behavior`）没有自己的条目时，隐含为使用基础配置的 `switch_context` 目标（`inherit` 为 `recent_dialogue`；没有声明任何 behavior 的 Session 同样继承会话历史）。交接到其它没有条目的 behavior 不回退：Turn 以 `behavior_config` 错误失败；发生在子 context 内则作为失败结果返回调用方。
 - behavior 表在 drive 启动时校验；`extensions.opendan.process_modes` 被拒绝。“在同一个 run 里换 behavior / system、沿用原历史”的普通切换已移除。
 
@@ -72,7 +72,7 @@ AgentSession 通过 prompt/input 和工具向 LLMContext 提供所需状态，LL
 
 子 context 无论以什么结束都返回调用方：`report end="true"` / 获准的工具结束报告 → `status=ok`；`WAIT_USER_MSG` → `status=needs_user_input`（子 context 从不消费调用方的输入队列）；不可重试错误、预算耗尽、未知交接目标 → `status=failed`；在子 context 内交接到 `switch_context` 目标也只是返回。子 context 可以继续调用子 context，最深 `session.policy.max_process_depth` 层（默认 4，`MAX_CALL_DEPTH`）。
 
-交接点随快照一起写进 run.json 的 `handover`，先于 state 提交；崩溃后 reconcile（`runner/reconcile.rs::redo_transfer`）恰好补交一次。已返回的子 context 在 worklog 中保留全部记录供审计，但重建 `<session_history>` 时只渲染它的 `process_done` 结果（`runner/history.rs`）；压缩输入做同样的过滤，但压缩只识别被压缩片段内的 `process_done`：切点把子 run 的记录与它的 `process_done` 分开时，切点之前的那部分仍会进入摘要。
+交接点随快照一起写进 run.json 的 `handover`，先于 state 提交；崩溃后 reconcile（`runner/reconcile.rs::redo_transfer`）恰好补交一次。已返回的子 context 在 worklog 中保留全部记录供审计，但重建会话历史时只渲染它的 `process_done` 结果（`runner/history.rs`）；压缩一次读入整段未压缩范围，输入做同样的过滤；压缩发生时仍在运行的子 context，其记录会进入摘要。
 
 UI Stop 后补充输入（H3）已于 2026-10-10 暂缓，移出当前实现与验收范围；不适用于 Work，终态 Work 不 reopen，后续修改创建新 Task / 新 Work。`report` 工具与可选显式完成策略（H4）已实现。XML 完成规则为：`<report end="true">` 显式请求结束且同一决策不得有 actions，缺省 / false 只更新报告；`next_behavior` 保留切换 / 等待语义，不再使用 END 或隐式 done 完成。详见 [Context 调度支持 TODO](../../notepads/llm-context-switch-support-todo.md) H3 / H4.1。XML parser（`agent_tool::xllm::XllmActionParser`）拒绝 END / done、重复 report、非法 end、空最终报告及结束与动作或非空 next_behavior 的冲突；没有动作、不结束、不交接的决策（含空决策）是让出（Yield），本次 run 以 `Done` 结束，接下来等什么由 Session 决定。工具报告持久化与最终消息由 Session 处理，独立 xllm 不默认暴露 report 工具。
 
@@ -124,9 +124,9 @@ AgentSession.drive():
             失败 / 预算耗尽 / stop -> AgentSession.finish_run()  # Turn 以 failed / budget_exhausted / stopped 结束
 ```
 
-run 结束后，历史写入 Session worklog，`last_run` 的结果快照也保留。UI Session 的 `function_call` context 在已关闭的 Turn 之后继续同一 context、继承 `recent_dialogue` 且尚未生成摘要时，新 run 从该快照的 `accumulated` 原样继承非 system 消息列表；角色、工具调用 / 结果、媒体等内容不改写、不机械截断。新 run 的快照持有完整前缀，因此后续清理旧 run 不会丢失历史；继承部分不再重复写入 worklog。
+run 结束后，历史写入 Session worklog，`last_run` 的结果快照也保留。UI Session 的 `function_call` context 在已关闭的 Turn 之后继续同一 context、继承 `recent_dialogue` 且尚未生成摘要时，新 run 从该快照的 `accumulated` 原样继承非 system 消息列表；角色、工具调用 / 结果、媒体等内容不改写、不截断。新 run 的快照持有完整前缀，因此后续清理旧 run 不会丢失历史；继承部分不再重复写入 worklog。
 
-原始历史超过 `history_budget_tokens` 时先实际压缩。已有摘要、behavior loop 或 context 切换的历史装配仍使用 `<session_history>`（可选的 `<summary upto_seq="…">` 摘要 + 机械渲染的近期 worklog 记录）。`session_summary` 是磁盘摘要的 schema 名，当前没有独立的同名消息标签。细节见 [Session Directory Protocol §6](<../opendan/protocol/Session Directory Protocol.md>)。
+原始历史超过 `history_budget_tokens` 时先实际压缩。已有摘要、behavior loop 或 context 切换时，历史由 worklog 重建为一串消息，不截断（`libopendan.history/4`）：`user_message` → user 消息；function call 的 `assistant_message` → 带原生工具调用的 assistant 消息，每个 `action_result` → 对应的 tool 结果；behavior 的 `step` → assistant 文本 + 一条 `<<last_step_action_results behavior="…" step="N">>` user 消息；最终的 `report_delivery` → assistant 文本。behavior context 没有原生工具，function call 记录也按这种文本形式渲染。超出预算时由 `agent_tool::llm_compress` 压缩（唯一的压缩方式），结果为 `system + 开头（首个输入 + 第一个 Round）+ 一条摘要 user 消息（<history_summary> + <keep_exact>）+ 原样的近期 Round`。`session_summary` 是磁盘摘要的 schema 名，当前没有独立的同名消息标签。细节见 [Session Directory Protocol §6](<../opendan/protocol/Session Directory Protocol.md>)。
 
 ### 标准 function_call Loop
 
@@ -154,7 +154,7 @@ LLMContext.run_inner():
 
 三个 Round，没有 Step，一个 Turn，扣两次工具迭代额度（每个工具批次一次）。worklog 里每个 assistant response 记为 `assistant_message`。工具结果驱动下一个 Round；run 进行中只有半订阅变化可能在 Round 边界注入，新的 msg/event 等 run 返回后再作为输入批次进入（Turn 仍打开时并入当前 Turn）。
 
-未压缩 UI 的 `...继承历史` 是之前各 Turn 的原始 user / assistant / tool 消息序列；使用 worklog 视图时则是一条 user `<session_history>`。
+未压缩 UI 的 `...继承历史` 是之前各 Turn 的原始 user / assistant / tool 消息序列；使用 worklog 视图时则是从 worklog 重建的消息序列（同样带原生工具调用；压缩后含一条 `<history_summary>` 摘要消息）。
 
 ### Behavior Loop
 
@@ -174,7 +174,7 @@ LLMContext.run_behavior():
 内层每次推理的消息由 `LLMContext.build_inner_request` 现场拼出：
 
 ```text
-[system] [user:<session_history>] [user:<session_input hook=on_init>]             ← request.input
+[system] [会话历史消息…] [user:<session_input hook=on_init>]                      ← request.input
 [user:<<step_history>> 摘要 / 其它 behavior 的 step / 历史输入 <</step_history>>]
 [assistant:决策] [user:<<last_step_action_results>>]                               @Step3
 [assistant:决策] [user:<<last_step_action_results>> + 观察阶段注入]                  @Step4（热 step）
@@ -216,19 +216,19 @@ AgentSession.suspend_run(run_A, Caller{ChildCall{mode, behavior: B, trigger: Too
 create_sub_context（`next_behavior` 触发）前后的消息：
 
 ```text
-run_A: [system:A] [<session_history>] [<session_input>] … [assistant:A 决策 next_behavior=B]                → 入栈（Caller）
+run_A: [system:A] [会话历史消息…] [<session_input>] … [assistant:A 决策 next_behavior=B]                → 入栈（Caller）
 run_B: [system:B] [<session_input on_behavior_switch><sub_task mode=create_sub_context>] [<<step_history>> A 的 step（inherit: steps 时）] … B 的 steps → 结束
 run_A: … [assistant:A 决策 next_behavior=B] [user:A 该 Step 的结果 + <session_input on_behavior_switch><process_result behavior=B status=ok>…]   → 继续
 ```
 
 fork 的 run_B 则以 run_A 的 system 和分叉点之前的完整历史开头（渲染与 run_A 相同），其后才是带 `<sub_task mode="fork">` 的交接批次。
 
-返回时的交接批次并入 run_A 最后一个 Step 的 user 消息（`InjectionPosition::Step`）。run_B 的 steps 不并入 run_A 的 history；Session worklog 仍记录 run_B 的过程（Step 身份 `(run_B, step_index)`，继承的 step 不重复写入），run_B 返回后重建的 `<session_history>` 只渲染它的 `process_done` 结果。各个 run 段都属于同一个 Turn。
+返回时的交接批次并入 run_A 最后一个 Step 的 user 消息（`InjectionPosition::Step`）。run_B 的 steps 不并入 run_A 的 history；Session worklog 仍记录 run_B 的过程（Step 身份 `(run_B, step_index)`，继承的 step 不重复写入），run_B 返回后重建的会话历史只渲染它的 `process_done` 结果。各个 run 段都属于同一个 Turn。
 
 ### 挂起与恢复
 
 ```text
-ContextLimitReached  -> AgentSession.rewrite_for_limit：flush 到 worklog → 压缩 summary → 以新的 [system, <session_history>]
+ContextLimitReached  -> AgentSession.rewrite_for_limit：flush 到 worklog → 压缩 summary → 以 system + 重建的历史消息（新 history epoch）
                         LLMContext.resume(snapshot, RewrittenHistory | RewrittenSteps)
 Interrupted          -> 用推理前的快照 LLMContext.resume(snapshot, ResumeFromMidRun)，重做这次推理
 崩溃                  -> 最近的 checkpoint（工具调用前 / 推理前快照）LLMContext.resume(snapshot, ResumeFromMidRun)；

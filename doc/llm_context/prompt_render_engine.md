@@ -179,7 +179,7 @@ xllm 的 system 文本由 `PromptPlan` 按段拼接（宿主 / 组文本 + capab
 这些都不是本引擎的模板变量，Round / Turn 编号也没有作为模板变量暴露：
 
 - **Step 历史与动作回响**：由宿主装配的 `StepRenderer`（`agent_tool::XmlStepRenderer`）在每次推理前从 `LLMContextState.steps` / `last_step` 渲染：其它 behavior 的 Step 进 `<<step_history>>`，当前 behavior 的 Step 渲染成 assistant 决策 + `<<last_step_action_results>>` 动作回响。动作回响总是默认渲染；宿主要补充的内容经 `LLMContext::inject` 并入该 Step 的 user 消息（接在动作回响之后）。
-- **Session 历史**：libopendan Runner 从 worklog 渲染成一条 `<session_history>` user message（`runner/history.rs`，`MechanicalCompress`）。
+- **Session 历史**：libopendan Runner 从 worklog 重建为一串消息（`runner/history.rs`，`libopendan.history/4`）：user 输入、assistant response 及其工具调用 / 结果、behavior Step 的 `<<last_step_action_results>>`；超出预算时由 `agent_tool::llm_compress` 压缩成开头 + 一条 `<history_summary>` 摘要消息 + 原样的近期 Round。
 - **每个输入批次的 user message**：libopendan 由 `SessionAssembler::render_input(cfg, state, templates, &InputMaterial)` 渲染成 `<session_input hook=… time=…>`（规则同上：有输入模板走本引擎，否则 `DefaultAssembler` 直接拼接）；system 段由 `SessionAssembler::system_text` 生成。
 
 ### workflow DSL 的复用面

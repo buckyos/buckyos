@@ -78,7 +78,7 @@ async fn uncompressed_chat_keeps_native_messages_across_restarted_turns() {
     };
     let retained_state = provider_state.clone();
     let llm = ScriptedLlm::new(move |req, n| {
-        assert!(!render(&req.messages).contains("<session_history>"));
+        assert!(!render(&req.messages).contains("<history_summary>"));
         match n {
             0 => {
                 let mut response = shell("original-call", "echo original-tool-result");
@@ -140,12 +140,12 @@ async fn chat_compacts_when_native_history_exceeds_the_budget() {
     let llm = ScriptedLlm::new(|req, n| match n {
         0 => text(r#"{"reply":"first answer","topic":null,"artifacts":[]}"#),
         1 => {
-            assert!(render(&req.messages).contains(libopendan::runner::history::SUMMARIZE_MARKER));
+            assert!(render(&req.messages).contains("history compressor"));
             text("The user supplied a long request and received the first answer.")
         }
         2 => {
             let history = req.messages[1].text_content();
-            assert!(history.starts_with("<session_history>\n<summary upto_seq="), "{history}");
+            assert!(history.starts_with("<history_summary>\n"), "{history}");
             assert!(history.contains("The user supplied a long request"), "{history}");
             assert!(last_user_text(req).ends_with("continue"));
             text(r#"{"reply":"second answer","topic":null,"artifacts":[]}"#)
@@ -187,7 +187,7 @@ async fn uncompressed_chat_keeps_fork_results_without_the_child_transcript() {
         3 => text(r#"{"reply":"child result","topic":null,"artifacts":[]}"#),
         4 | 5 => {
             let all = render(&req.messages);
-            assert!(!all.contains("<session_history>"), "{all}");
+            assert!(!all.contains("<history_summary>"), "{all}");
             assert!(!all.contains("CHILD-ONLY-TRANSCRIPT"), "{all}");
             assert!(has_tool_result(req, "child-call").is_none());
             assert!(has_tool_result(req, "fork-call").unwrap().contains("registered"));

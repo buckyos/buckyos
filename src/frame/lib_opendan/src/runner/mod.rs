@@ -39,6 +39,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agent_tool::xllm::XllmDeps;
+use llm_context::deps::LlmClient;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -65,7 +66,7 @@ pub use reports::{ObjectStore, StoredObject};
 pub use turn_task::{
     has_pending_turn_tasks, TurnTaskEnd, TurnTaskOpen, TurnTaskSink, TurnTaskStatus,
 };
-pub use history::{LlmSummarizer, Summarizer};
+pub use history::{HistoryShape, Summarizer};
 pub use window::{AiccContextWindows, CachedContextWindows, ContextWindowSource};
 pub use consolidation::{GoalCaps, TOOL_BEGIN as TOOL_MEMORY_CONSOLIDATION_BEGIN, TOOL_COMMIT as TOOL_MEMORY_CONSOLIDATION_COMMIT};
 pub use tools::classify_effect;
@@ -178,8 +179,8 @@ pub struct RunnerOptions {
     /// refusal triggers a rewrite).
     pub default_context_window: Option<u32>,
     /// Upper bound of the window looked up for a run's model (or the
-    /// default one); an explicit `context_window` is not bounded. `None`:
-    /// the model's window as it is.
+    /// default one); an explicit `context_window` is not bounded. `None`
+    /// (default): the model's window as it is.
     pub max_context_window: Option<u32>,
     /// A mid-run rewrite brings the request back to this share of the
     /// window when `prompt.context_target_ratio` is unset.
@@ -251,7 +252,7 @@ impl Default for RunnerOptions {
             history_budget_tokens: 24_000,
             compact_ratio: 0.75,
             default_context_window: Some(128_000),
-            max_context_window: Some(256_000),
+            max_context_window: None,
             context_target_ratio: 0.30,
             retry_backoff_base: Duration::from_secs(30),
             retry_backoff_cap: Duration::from_secs(600),
@@ -282,7 +283,9 @@ pub struct RunnerDeps {
     /// config, as `who`), host tools. The bash runner is set per run.
     pub xllm: XllmDeps,
     pub assembler: Arc<dyn SessionAssembler>,
-    pub summarizer: Option<Arc<dyn Summarizer>>,
+    /// Client of history compression (`None`: the run's own client; after
+    /// a run the history is only compacted by ratio when one is set).
+    pub summarizer: Option<Arc<dyn LlmClient>>,
     pub notifier: Arc<dyn Notifier>,
     /// Where replies leave the process (`None`: no outbox is kept).
     pub outbound: Option<Arc<dyn OutboundSink>>,
@@ -353,7 +356,7 @@ impl RunnerDeps {
         self
     }
 
-    pub fn with_summarizer(mut self, s: Arc<dyn Summarizer>) -> Self {
+    pub fn with_summarizer(mut self, s: Arc<dyn LlmClient>) -> Self {
         self.summarizer = Some(s);
         self
     }

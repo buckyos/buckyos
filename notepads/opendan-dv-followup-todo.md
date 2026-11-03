@@ -53,6 +53,8 @@
 
 ### H2 窗口上限（Q2 = C，即上一单 §8.3）
 
+> 2026-11-03 改判：窗口跟随模型（`max_context_window` 缺省 `None`，旋钮保留），先修压缩质量，见 [opendan-context-window-compaction-todo.md](./opendan-context-window-compaction-todo.md) W1 / Q1。
+
 - 定案：`RunnerOptions.max_context_window = Some(256_000)`；`runner/live.rs` `resolve_context_window` 对 AICC 查到的值与 `default_context_window` 取 `min`，显式 `context_window`（agent.toml / session / behavior 的 `llm_context`）不受限。opendan loader、xagent CLI、测试宿主都走缺省值。
 - 效果：256k 的 80% 触发线约 205k，本次 DV 的 226k 尖峰正好会触发一次压缩，顺带验证 H3 第 1 条。
 - 未选项备查：A 维持按模型真实窗口（1.05M 在 84 万 token 时才压缩，每轮重发几十万 token）；B Jarvis `agent.toml [llm_context] context_window` 显式写一个值（只管 Jarvis，与上一单 B2“不写”相反）。

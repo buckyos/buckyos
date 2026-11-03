@@ -13,7 +13,7 @@ use common::*;
 use libopendan::channel::{DirMsgQueue, InputSource};
 use libopendan::lock::{Acquire, FileLock, Lease};
 use libopendan::protocol::*;
-use libopendan::runner::history::{build_history, read_window, Summarizer};
+use libopendan::runner::history::{build_history, read_window, HistoryShape, Summarizer};
 use libopendan::runner::{drive, DriveResult, StopWhen};
 use libopendan::state::AgentStateClient;
 use libopendan::{fsutil, SessionDir};
@@ -295,9 +295,9 @@ async fn worklog_reverse_read_is_bounded_by_the_start_point() {
     sm.start_offset = offsets[start_idx];
     sm.start_seq = start_idx as u64 + 2;
     s.write_summary(&lease, &sm).unwrap();
-    let w = read_window(&s, &sm, 1_000_000).unwrap();
+    let w = read_window(&s, &sm, HistoryShape::Native, Some(1_000_000)).unwrap();
     assert!(w.reached_start);
-    assert_eq!(w.lines.len(), 4000 - start_idx);
+    assert_eq!(w.messages.len(), 4000 - start_idx);
     assert!(w.bytes_read <= 2 * 64 * 1024, "read {} bytes", w.bytes_read);
     // Uncommitted tail is truncated on the next load.
     s.append_worklog(
@@ -314,14 +314,19 @@ async fn worklog_reverse_read_is_bounded_by_the_start_point() {
     assert_eq!(fsutil::file_len(sd.worklog().path()).unwrap(), size);
 }
 
+/// Summary model: the number of rounds it was given.
 struct FakeSummarizer;
 
 #[async_trait]
-impl Summarizer for FakeSummarizer {
-    async fn summarize(&self, previous: &str, segment: &str) -> libopendan::Result<String> {
-        Ok(format!(
-            "{previous}|{} lines",
-            segment.lines().filter(|l| !l.is_empty()).count()
+impl llm_context::deps::LlmClient for FakeSummarizer {
+    async fn infer(
+        &self,
+        req: llm_context::deps::LlmInferenceRequest,
+    ) -> Result<buckyos_api::AiResponse, llm_context::error::LLMComputeError> {
+        let prompt = req.messages[1].text_content();
+        Ok(text(
+            &json!({ "summary": format!("{} rounds", prompt.matches("### round").count()) })
+                .to_string(),
         ))
     }
 }
@@ -338,36 +343,55 @@ async fn budget_exhaustion_compacts_without_gap() {
     for i in 0..200u64 {
         s.append_worklog(
             &lease,
-            vec![WorklogBody::UserMessage {
-                run_id: "r".into(),
-                turn: i,
-                content: format!("message {i} {}", "y".repeat(200)),
-                brief: None,
-            }],
+            vec![
+                WorklogBody::UserMessage {
+                    run_id: "r".into(),
+                    turn: i,
+                    content: format!("message {i} {}", "y".repeat(200)),
+                    brief: None,
+                },
+                WorklogBody::AssistantMessage {
+                    run_id: "r".into(),
+                    turn: i,
+                    assistant: format!("answer {i} {}", "z".repeat(200)),
+                    tool_calls: Vec::new(),
+                },
+            ],
         )
         .unwrap();
     }
     s.commit_state(&lease).unwrap();
-    let (msg, w) = build_history(&mut s, &lease, Some(&FakeSummarizer), 2_000)
+    let summarizer = Summarizer {
+        llm: Arc::new(FakeSummarizer),
+        model: "llm.summarize".into(),
+    };
+    let budget = 12_000;
+    let history = build_history(&mut s, &lease, Some(&summarizer), HistoryShape::Native, budget)
         .await
         .unwrap();
-    assert!(
-        w.reached_start,
-        "after compaction the window reaches the start"
-    );
+    assert!(libopendan::runner::history::estimate(&history) <= u64::from(budget));
     let sm = sd.summary_opt().unwrap().expect("summary.json written");
-    assert!(sm.history_summary.contains("lines"));
-    // No gap: the oldest rendered entry is exactly the new start.
+    assert!(sm.history_summary.ends_with("rounds"), "{}", sm.history_summary);
+    // Head (the first exchange), the summary block, the raw tail.
+    assert!(history[0].text_content().starts_with("message 0 "));
+    assert!(history[1].text_content().starts_with("answer 0 "));
+    assert!(history[2].text_content().starts_with("<history_summary>"));
+    assert!(history[3].text_content().starts_with("message "));
+    assert!(history.last().unwrap().text_content().starts_with("answer 199 "));
+    assert!(sm.head_end_offset > 0 && sm.head_end_offset < sm.start_offset);
+    // No gap: the raw records after the start point are exactly the tail.
+    let w = read_window(&s, &sm, HistoryShape::Native, None).unwrap();
+    assert!(w.reached_start);
     assert_eq!(w.oldest_offset, Some(sm.start_offset));
-    let text = msg.unwrap().text_content();
-    assert!(text.contains("message 199"));
-    assert!(!text.contains("message 0 "));
-    // Deterministic rendering for the same inputs.
-    let (msg2, _) = build_history(&mut s, &lease, Some(&FakeSummarizer), 2_000)
+    assert_eq!(w.messages[..], history[3..]);
+    // Rebuilt from summary.json the same history, without a new compaction.
+    let again = build_history(&mut s, &lease, Some(&summarizer), HistoryShape::Native, budget)
         .await
         .unwrap();
-    assert_eq!(text, msg2.unwrap().text_content());
-    assert_eq!(read_worklog(&sd).last().unwrap().body.kind(), "compaction");
+    assert_eq!(again, history);
+    let wl = read_worklog(&sd);
+    assert_eq!(wl.last().unwrap().body.kind(), "compaction");
+    assert_eq!(wl.iter().filter(|e| e.body.kind() == "compaction").count(), 1);
 }
 
 async fn kmsg_rules(client: Arc<buckyos_api::msg_queue::MsgQueueClient>) {

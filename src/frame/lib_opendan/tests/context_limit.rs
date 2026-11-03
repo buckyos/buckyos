@@ -9,11 +9,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once};
 
 use async_trait::async_trait;
-use buckyos_api::AiRole;
+use buckyos_api::{AiContent, AiResponse, AiRole};
 use common::*;
 use libopendan::protocol::*;
-use libopendan::runner::Summarizer;
 use libopendan::runner::{drive, StopWhen};
+use llm_context::deps::{LlmClient, LlmInferenceRequest};
 use llm_context::error::{LLMComputeError, ProviderFailure};
 use serde_json::{json, Value};
 
@@ -87,16 +87,26 @@ fn events_named<'a>(events: &'a [ContextLogEvent], name: &str) -> Vec<&'a Contex
     events.iter().filter(|event| event.name == name).collect()
 }
 
-struct StaticSummarizer;
+/// The summary model: one fixed summary, every prompt kept.
+struct StaticSummarizer {
+    summary: String,
+    prompts: Mutex<Vec<String>>,
+}
+
+impl StaticSummarizer {
+    fn new(summary: impl Into<String>) -> Arc<Self> {
+        Arc::new(Self {
+            summary: summary.into(),
+            prompts: Mutex::new(Vec::new()),
+        })
+    }
+}
 
 #[async_trait]
-impl Summarizer for StaticSummarizer {
-    async fn summarize(
-        &self,
-        _previous: &str,
-        _segment: &str,
-    ) -> libopendan::error::Result<String> {
-        Ok("SUMMARY-X".into())
+impl LlmClient for StaticSummarizer {
+    async fn infer(&self, req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError> {
+        self.prompts.lock().unwrap().push(render(&req.messages));
+        Ok(text(&json!({ "summary": self.summary }).to_string()))
     }
 }
 
@@ -129,34 +139,37 @@ async fn function_call_run_continues_after_a_mid_run_rewrite() {
     let env = Env::new();
     let sd = env.create_work(work_spec("two tool steps")).await;
     let llm = ScriptedLlm::fallible(|req, _| {
-        let all = render(&req.messages);
         if has_tool_result(req, "c2").is_some() {
             return Ok(text("all done"));
+        }
+        if render(&req.messages).contains("<history_summary>") {
+            return Ok(tool_call("c2", "shell", json!({ "command": "echo two" })));
         }
         if has_tool_result(req, "c1").is_some() {
             // The raw transcript no longer fits the model.
             return Err(refusal());
         }
-        if all.contains("<session_history>") && all.contains("[result #c1") {
-            return Ok(tool_call("c2", "shell", json!({ "command": "echo two" })));
-        }
         Ok(tool_call("c1", "shell", json!({ "command": "echo one" })))
     });
-    let deps = env.deps(llm.clone());
+    let summarizer = StaticSummarizer::new("SUMMARY-X");
+    let deps = env.deps(llm.clone()).with_summarizer(summarizer.clone());
     let r = drive(&sd, &deps, StopWhen::Finished).await;
     assert!(r.is_finished(), "{r:?}");
     assert_eq!(llm.count(), 4);
 
-    // After the rewrite the request is system + session history, carrying
-    // the Turn's input and the first tool call.
+    // The provider refused the transcript: the rewrite brings it under half
+    // of that, here system + the summary block. The summarizer read the
+    // history rebuilt from the worklog: the Turn's input, the first tool
+    // call and its result.
     let reqs = llm.requests.lock().unwrap().clone();
     let rewritten = &reqs[2].messages;
     assert_eq!(rewritten.len(), 2, "{}", render(rewritten));
     assert_eq!(rewritten[0].role, AiRole::System);
-    let history = rewritten[1].text_content();
+    assert!(rewritten[1].text_content().starts_with("<history_summary>\nSUMMARY-X"));
+    let prompt = summarizer.prompts.lock().unwrap()[0].clone();
     assert!(
-        history.contains("[input]") && history.contains("[result #c1 ok]"),
-        "{history}"
+        prompt.contains("call shell #c1") && prompt.contains("result #c1 [ok]"),
+        "{prompt}"
     );
 
     // Every record once, all in Turn 1, in order; the Turn ends once.
@@ -175,6 +188,7 @@ async fn function_call_run_continues_after_a_mid_run_rewrite() {
             "assistant_message",
             "action_result",
             "outcome",
+            "compaction",
             "assistant_message",
             "action_result",
             "assistant_message",
@@ -215,6 +229,8 @@ async fn function_call_run_continues_after_a_mid_run_rewrite() {
         assert_eq!(event.body["run_id"], run_id);
         assert_eq!(event.level, log::Level::Info);
     }
+    assert_eq!(completed[0].body["summarized"], true);
+    assert!(completed[0].body["history_tokens_after"].as_u64().unwrap() > 0);
     assert!(events_named(&events, "opendan.context.rewrite.failed").is_empty());
     assert!(events_named(&events, "opendan.context.rewrite.paused").is_empty());
 }
@@ -250,7 +266,7 @@ async fn behavior_run_compacts_the_session_history_and_keeps_step_numbering() {
     // No window: the history budget is the rewrite's whole target.
     let mut deps = env
         .deps(llm.clone())
-        .with_summarizer(Arc::new(StaticSummarizer));
+        .with_summarizer(StaticSummarizer::new("SUMMARY-X"));
     deps.options.default_context_window = None;
     let r = drive(&sd, &deps, StopWhen::Finished).await;
     assert!(r.is_finished(), "{r:?}");
@@ -301,6 +317,7 @@ async fn behavior_run_compacts_the_session_history_and_keeps_step_numbering() {
     let rewritten = events_named(&events, "opendan.context.rewrite.completed");
     assert_eq!(rewritten.len(), 1, "{events:?}");
     assert_eq!(rewritten[0].body["run_id"], st.last_run.as_deref().unwrap());
+    assert_eq!(rewritten[0].body["summarized"], true);
 }
 
 #[tokio::test]
@@ -317,7 +334,9 @@ async fn a_run_that_never_fits_is_paused_with_the_limit_and_retried_later() {
             Err(refusal())
         }
     });
-    let deps = env.deps(llm.clone());
+    let deps = env
+        .deps(llm.clone())
+        .with_summarizer(StaticSummarizer::new("SUMMARY-X"));
     let r = drive(&sd, &deps, StopWhen::Finished).await;
     assert!(
         matches!(&r, libopendan::runner::DriveResult::Error { error, .. } if error["kind"] == "context_limit"),
@@ -391,10 +410,11 @@ async fn a_run_that_never_fits_is_paused_with_the_limit_and_retried_later() {
 struct FailingSummarizer;
 
 #[async_trait]
-impl Summarizer for FailingSummarizer {
-    async fn summarize(&self, _previous: &str, _segment: &str) -> libopendan::Result<String> {
-        Err(libopendan::error::OpenDanError::Llm(
-            "summary backend unavailable".into(),
+impl LlmClient for FailingSummarizer {
+    async fn infer(&self, _req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError> {
+        Err(LLMComputeError::provider(
+            ProviderFailure::Permanent,
+            "summary backend unavailable",
         ))
     }
 }
@@ -423,9 +443,12 @@ async fn failed_compaction_logs_the_failure_and_preserves_the_error() {
         panic!("expected summarizer failure, got {result:?}");
     };
     assert_eq!(error["kind"], "llm");
-    assert_eq!(
-        error["message"],
-        "llm context error: summary backend unavailable"
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("summary backend unavailable"),
+        "{error}"
     );
     let run_id = sd.state().unwrap().live_run.unwrap().run_id;
     let events = context_log_events(sd.sid());
@@ -576,10 +599,14 @@ async fn a_run_gets_the_window_of_its_model() {
     assert_eq!(run_window(tools.clone(), None, Some(128_000)).await.0, Some(128_000));
     assert_eq!(run_window(tools.clone(), None, None).await, (None, None));
 
-    // The upper bound (DV follow-up TODO H2, 256k by default): a larger
-    // model window is bounded, a smaller one and the default stay, an
-    // explicit `context_window` is not bounded.
-    assert_eq!(RunnerOptions::default().max_context_window, Some(256_000));
+    // No upper bound by default (compaction TODO W1): the model's window.
+    assert_eq!(RunnerOptions::default().max_context_window, None);
+    let got = run_window(tools.clone(), Some(Windows::new(Ok(Some(1_050_000)))), Some(128_000))
+        .await;
+    assert_eq!(got.0, Some(1_050_000));
+    // A bound set by the host: a larger model window is bounded, a smaller
+    // one and the default stay, an explicit `context_window` is not
+    // bounded.
     let cap = Some(256_000);
     let got =
         run_window_capped(tools.clone(), Some(Windows::new(Ok(Some(1_050_000)))), Some(128_000), cap)
@@ -677,9 +704,12 @@ async fn a_multi_turn_work_compacts_at_the_window_line_and_goes_on() {
             json!({ "command": format!("head -c {bytes} /dev/zero | tr '\\0' x") }),
         ),
         1 => {
-            // Rewritten: system + the compacted session history.
-            assert_eq!(req.messages.len(), 2, "{}", render(&req.messages));
-            assert!(render(&req.messages).contains("SUMMARY-X"));
+            // Rewritten: system + the compacted session history (the huge
+            // first result is summarized, at most the opening input stays).
+            let all = render(&req.messages);
+            assert!(req.messages.len() <= 3, "{all}");
+            assert!(all.contains("SUMMARY-X"), "{all}");
+            assert!(has_tool_result(req, "c1").is_none(), "{all}");
             tool_call("c2", "shell", json!({ "command": "sleep 1; echo later" }))
         }
         2 => text("The later step is still running."),
@@ -691,7 +721,7 @@ async fn a_multi_turn_work_compacts_at_the_window_line_and_goes_on() {
     });
     let deps = env
         .deps(llm.clone())
-        .with_summarizer(Arc::new(StaticSummarizer));
+        .with_summarizer(StaticSummarizer::new("SUMMARY-X"));
     let mut deps = deps;
     deps.options.max_wait = std::time::Duration::from_secs(20);
     let r = drive(&sd, &deps, StopWhen::Finished).await;
@@ -745,4 +775,122 @@ async fn a_multi_turn_work_compacts_at_the_window_line_and_goes_on() {
     assert_eq!(triggered[0].body["window_tokens"], window);
     assert_eq!(triggered[0].body["target_tokens"], target);
     assert!(triggered[0].body["prefix_tokens"].as_u64().unwrap() > 0);
+}
+
+// ---------------------------------------------------------------------
+// Compression by llm_compress (compaction TODO U2 / U4 / C3)
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_rewrite_fills_the_history_budget_with_head_summary_and_raw_tail() {
+    let _serial = init_context_logger();
+    let env = Env::new();
+    let window = 60_000u64;
+    let mut spec = work_spec("many large tool results");
+    spec.prompt.llm_context = json!({
+        "tools": { "enabled": true },
+        "context_window": window,
+        "max_tool_iterations": 200
+    });
+    spec.prompt.history_budget_tokens = Some(1_000);
+    let sd = env.create_work(spec).await;
+    let llm = ScriptedLlm::new(|req, n| {
+        if render(&req.messages).contains("<history_summary>") {
+            return text("done after the rewrite");
+        }
+        let id = format!("c{n}");
+        tool_call(
+            &id,
+            "shell",
+            json!({ "command": format!("echo {id}; head -c 4000 /dev/zero | tr '\\0' x") }),
+        )
+    });
+    // About the size of a real summary (≈ 5k tokens).
+    let summarizer = StaticSummarizer::new("S".repeat(20_000));
+    let deps = env.deps(llm.clone()).with_summarizer(summarizer.clone());
+    let r = drive(&sd, &deps, StopWhen::Finished).await;
+    assert!(r.is_finished(), "{r:?}");
+
+    let reqs = llm.requests.lock().unwrap().clone();
+    let rewritten = reqs
+        .iter()
+        .find(|r| render(&r.messages).contains("<history_summary>"))
+        .expect("a rewritten request");
+    // system + head (input + first round) + summary block + raw tail, every
+    // tool call with its result.
+    let m = &rewritten.messages;
+    assert_eq!(m[0].role, AiRole::System);
+    assert_eq!(m[1].role, AiRole::User);
+    assert_eq!(m[2].tool_calls()[0].call_id, "c0");
+    assert!(has_tool_result(rewritten, "c0").is_some());
+    let summary_at = m
+        .iter()
+        .position(|m| m.text_content().starts_with("<history_summary>"))
+        .unwrap();
+    assert_eq!(summary_at, 4);
+    assert!(m[4].text_content().ends_with(libopendan::runner::history::COMPRESSED_NOTE));
+    assert_eq!(m[5].role, AiRole::Assistant);
+    let calls: Vec<String> = m.iter().flat_map(|m| m.tool_calls()).map(|c| c.call_id).collect();
+    let results: Vec<String> = m
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .filter_map(|c| match c {
+            AiContent::ToolResult { call_id, .. } => Some(call_id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(calls, results);
+    assert!(calls.len() > 2, "raw rounds stay after the summary: {calls:?}");
+    // The rounds between head and tail reached the summarizer in full.
+    let prompt = summarizer.prompts.lock().unwrap()[0].clone();
+    assert!(prompt.contains("result #c1 [ok]"), "{prompt}");
+
+    // The history fills the budget the 30% line leaves after the prefix.
+    let mut prefix = rewritten.clone();
+    prefix.messages.retain(|m| m.role == AiRole::System);
+    let prefix = estimate_request(&ByteHeuristicTokenizer, &prefix);
+    let budget = (window as f64 * 0.3).ceil() as u64 - prefix;
+    let history = estimate_request(&ByteHeuristicTokenizer, rewritten) - prefix;
+    assert!(
+        history as f64 >= 0.6 * budget as f64 && history <= budget,
+        "history {history} of budget {budget}"
+    );
+
+    // summary.json of the rewrite: the head ends before the raw tail.
+    let events = context_log_events(sd.sid());
+    let compacted = events_named(&events, "opendan.context.compaction.completed");
+    assert_eq!(compacted[0].body["reason"], "context_limit");
+    let head_end = compacted[0].body["head_end_seq_after"].as_u64().unwrap();
+    let start = compacted[0].body["start_seq_after"].as_u64().unwrap();
+    assert!(head_end > 0 && head_end < start, "{:?}", compacted[0]);
+    assert!(sd.summary_opt().unwrap().is_some());
+    let completed = events_named(&events, "opendan.context.rewrite.completed");
+    assert_eq!(completed[0].body["summarized"], true);
+    assert_eq!(completed[0].body["summary_calls"], 1);
+    assert!(completed[0].body["summary_tokens"].as_u64().unwrap() >= 5_000);
+}
+
+#[tokio::test]
+async fn a_successful_inference_starts_the_rewrite_count_anew() {
+    let _serial = init_context_logger();
+    let env = Env::new();
+    let sd = env.create_work(work_spec("two limits")).await;
+    let llm = ScriptedLlm::fallible(|_, n| match n {
+        0 => Ok(tool_call("c1", "shell", json!({ "command": "echo one" }))),
+        1 | 3 => Err(refusal()),
+        2 => Ok(tool_call("c2", "shell", json!({ "command": "echo two" }))),
+        _ => Ok(text("done")),
+    });
+    let deps = env
+        .deps(llm.clone())
+        .with_summarizer(StaticSummarizer::new("SUMMARY-X"));
+    let r = drive(&sd, &deps, StopWhen::Finished).await;
+    assert!(r.is_finished(), "{r:?}");
+    let events = context_log_events(sd.sid());
+    let attempts: Vec<Value> = events_named(&events, "opendan.context.rewrite.started")
+        .iter()
+        .map(|e| e.body["attempt"].clone())
+        .collect();
+    assert_eq!(attempts, vec![json!(1), json!(1)]);
+    assert_eq!(rewrites(&sd), 2);
 }

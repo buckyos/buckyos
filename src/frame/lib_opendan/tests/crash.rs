@@ -54,6 +54,10 @@ fn script(name: &str) -> Arc<ScriptedLlm> {
         }
         "context_limit" => ScriptedLlm::fallible(|req: &LlmInferenceRequest, _| {
             let all = render(&req.messages);
+            // The history compressor of the rewrite.
+            if all.contains("history compressor") {
+                return Ok(text(&json!({ "summary": "ran echo one" }).to_string()));
+            }
             if has_tool_result(req, "c2").is_some() {
                 Ok(text("all done"))
             } else if has_tool_result(req, "c1").is_some() {
@@ -61,7 +65,7 @@ fn script(name: &str) -> Arc<ScriptedLlm> {
                     failure: llm_context::error::ProviderFailure::ContextLimit,
                     message: "context_length_exceeded".into(),
                 })
-            } else if all.contains("<session_history>") && all.contains("[result #c1") {
+            } else if all.contains("<history_summary>") {
                 Ok(tool_call(
                     "c2",
                     "shell",

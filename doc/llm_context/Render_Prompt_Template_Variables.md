@@ -4,7 +4,7 @@
 
 > 旧 opendan Runtime（`src/frame/opendan/src/prompt_env.rs`）这一侧实际暴露的变量契约、`AgentSessionValueLoader` 的字段映射、`include_roots` 当前设置、behavior 模板可以写什么，全部在 [Agent Enviroment.md](../opendan/Agent%20Enviroment.md)，待下一阶段 opendan 重构接入。本文不重复那一层。其中 `current_context.last_step` / `current_context.step_history` 是从 LLMContext 快照取出的 `StepRecord`，没有 Round / Turn 编号变量。
 >
-> libopendan 不经过本引擎：每个输入批次的 user message 由 `SessionAssembler::render_input(cfg, state, &InputMaterial)` 渲染成 `<session_input hook=… time=…>`；Step 历史和动作回响（`<<step_history>>`、`<<last_step_action_results>>`）由 llm_context 的 `XmlStepRenderer` 在每次推理前渲染；Session 历史由 Runner 从 worklog 渲染成 `<session_history>`。这些都不是模板变量。
+> libopendan 不经过本引擎：每个输入批次的 user message 由 `SessionAssembler::render_input(cfg, state, &InputMaterial)` 渲染成 `<session_input hook=… time=…>`；Step 历史和动作回响（`<<step_history>>`、`<<last_step_action_results>>`）由 llm_context 的 `XmlStepRenderer` 在每次推理前渲染；Session 历史由 Runner 从 worklog 重建为一串消息（压缩后含一条 `<history_summary>` 摘要消息）。这些都不是模板变量。
 
 实际指令名是 `__ENV`、`__INCLUDE`、`__EXEC`、`__VAR`，不是更早设计稿里的 `__OPENDAN_ENV` 等前缀名。
 

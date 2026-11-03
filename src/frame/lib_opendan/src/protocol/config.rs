@@ -355,35 +355,19 @@ fn default_class() -> String {
     "work".to_string()
 }
 
-/// Mechanical compression parameters for rendering worklog history (§4.4).
+/// How worklog history is rebuilt into messages (§4.4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct MechanicalCompress {
-    /// Model responses rendered in full, counted from the newest: the unit
-    /// is one recorded response, i.e. a behavior `step` or a function call
-    /// `assistant_message` (with the entries after it). Older entries are
-    /// cut to `summary_chars`.
-    #[serde(default = "default_recent_full_responses")]
-    pub recent_full_responses: u32,
-    #[serde(default = "default_summary_chars")]
-    pub summary_chars: u32,
-    #[serde(default = "default_max_result_chars")]
-    pub max_result_chars: u32,
+pub struct HistoryRender {
+    /// Entry kinds that never enter the history (audit only).
     #[serde(default = "default_drop_kinds")]
     pub drop_kinds: Vec<String>,
 }
 
-fn default_recent_full_responses() -> u32 {
-    2
-}
-fn default_summary_chars() -> u32 {
-    280
-}
-fn default_max_result_chars() -> u32 {
-    4096
-}
 pub fn default_drop_kinds() -> Vec<String> {
     vec![
         "created".to_string(),
+        "turn_started".to_string(),
+        "input_batch".to_string(),
         "decide".to_string(),
         "compaction".to_string(),
         "input_rejected".to_string(),
@@ -392,12 +376,9 @@ pub fn default_drop_kinds() -> Vec<String> {
     ]
 }
 
-impl Default for MechanicalCompress {
+impl Default for HistoryRender {
     fn default() -> Self {
         Self {
-            recent_full_responses: default_recent_full_responses(),
-            summary_chars: default_summary_chars(),
-            max_result_chars: default_max_result_chars(),
             drop_kinds: default_drop_kinds(),
         }
     }
@@ -445,7 +426,7 @@ pub struct PromptSection {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context: Vec<String>,
     #[serde(default)]
-    pub mechanical_compress: MechanicalCompress,
+    pub history_render: HistoryRender,
     /// Context budget (tokens) available to the history section when the
     /// next llm_context is assembled. `None` → runner default.
     #[serde(default, skip_serializing_if = "Option::is_none")]

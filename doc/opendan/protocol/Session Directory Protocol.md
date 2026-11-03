@@ -88,8 +88,8 @@ Schema：`schema/session_config.schema.json`。要点：
     "initial_inputs": [ /* 无输入队列的 Session：创建时给出的 msg 逻辑记录（≤ 64），发布后不变 */ ],
     "on_init": null, "on_input": null, "on_context_switch": null,   // 输入模板；缺省内建
     "input": { "mode": "batch | single", "media": "reference | inline" },
-    "mechanical_compress": { "recent_full_responses": 2, "summary_chars": 280, "max_result_chars": 4096,
-                             "drop_kinds": ["created","decide","compaction","input_rejected","event_dropped","turn_ended"] },
+    "history_render": { "drop_kinds": ["created","turn_started","input_batch","decide","compaction",
+                                       "input_rejected","event_dropped","turn_ended"] },
     "history_budget_tokens": null, "compact_ratio": null,
     "context_target_ratio": null      // 中途重写压回窗口的比例；缺省 runner 的 0.30
   },
@@ -118,12 +118,12 @@ Schema：`schema/session_config.schema.json`。要点：
 
 - `prompt.llm_context` 为 `null` 时，参考实现使用 `{"tools":{"enabled":true}}`（buckyos Provider、`llm.chat`、function_call、内置 bash 工具组）。工具预算键为 `max_tool_iterations`（工具迭代，不是推理次数），见 [xllm 协议](../../llm_context/local_llm_context_protocol.md) §9.2。
 - `end_condition`：`llm_declares_done` / `output_schema` 在 `Done` 交付最终结果时 finished。`max_turns` 按**已完成**的 Turn（`turns_completed`）计：`Done` 交付最终结果时，算上本 Turn 已完成 `detail.n`（缺省 1）个则 finished，否则本 Turn 记为完成、session 等待下一输入。context 切换、子 context 的调用与返回等内部交接不是 Turn，不占额度。
-- `mechanical_compress.recent_full_responses`：从最新往前，完整渲染的模型 response 个数；单位是一条记录下来的 response，即 behavior 的 `step` 或 function call 的 `assistant_message`（连同其后的条目），更早的条目截到 `summary_chars`。只作用于 worklog 历史视图，不作用于 §6 的未压缩 UI 原始消息续聊。
+- `history_render.drop_kinds`：重建历史时不渲染的 worklog 条目种类（审计条目）。重建不截断任何内容（§6）。
 - `extensions.opendan.behaviors.<name>`：目标 behavior 的进入配置（§8，schema `behavior_entry`）。进入模式由**目标**决定，没有缺省模式，也没有“同一 run 换 behavior”的普通切换：
   - `mode`（必填）：`switch_context | create_sub_context | fork`。
   - `prompt.system`：该 context 的应用 system prompt（替换会话的 `prompt.system`）；`llm_context`：按顶层键替换 `prompt.llm_context`（模型、工具、限额）。`fork` 不允许声明这两项（fork 保持调用方的 system 与配置）。
   - `prompt.on_init / on_input / on_context_switch`：该 context 的输入模板，按字段覆盖会话的同名模板；`input{mode, media}`：该 context 的消费策略（缺省用会话的）。见 [Session Input Protocol](<Session Input Protocol.md>) §6。
-  - `inherit`：新 context 的历史来源，`none`（缺省）| `recent_dialogue`（宿主装配的会话历史，context 切换时为 `<session_history>`：摘要 + 近期 worklog 记录；未压缩 UI 跨 Turn 续聊见 §6）| `steps`（调用方已完成的 Step，按结构化记录继承，含各 Step 的 `<report>`；仅 `create_sub_context`，且双方都是 behavior loop）。`fork` 总是继承分叉点的完整有效历史，不接受 `inherit`。
+  - `inherit`：新 context 的历史来源，`none`（缺省）| `recent_dialogue`（宿主装配的会话历史：由 worklog 重建的消息，压缩过时为 head + `<history_summary>` + 原始尾巴；未压缩 UI 跨 Turn 续聊见 §6）| `steps`（调用方已完成的 Step，按结构化记录继承，含各 Step 的 `<report>`；仅 `create_sub_context`，且双方都是 behavior loop）。`fork` 总是继承分叉点的完整有效历史，不接受 `inherit`。
   - 会话的初始 behavior（`prompt.behavior`）没有自己的条目时，视为使用会话基础配置的 `switch_context` 目标。交接到其它没有条目的 behavior 是配置错误：当前 Turn 以 `failed` 结束（`last_error.kind = behavior_config`）；发生在子 context 内时作为失败结果交回调用方。
   - 表在每次推进开始时校验，非法（未知 mode、fork 带 system 等）则不做任何推理。旧的 `extensions.opendan.process_modes` 不再接受。
 - 工具 `call_behavior({behavior, task})`：在 `prompt.llm_context.tools.tools` 中以 `{"name": "call_behavior"}` 显式装配后，context 可以用工具调用（或 behavior action）发起子 context（目标必须是 `create_sub_context` / `fork`）。调用只登记，交接在调用方的 run 段结束时发生（§8）。只由会话自己的 runner 提供；xllm 不具备该工具，拒绝接手装配了它的 run。
@@ -259,7 +259,7 @@ Schema：`schema/session_state.schema.json`。
 | created | 创建 session（第 1 条） | session_id, kind, by, objective, at_ms |
 | turn_started | run 结束 / 挂起 / 保活 / 中途重写时批量写 | run_id, turn, input_seq, inputs[{src,index,key,kind}], events[]（本批快照注入的半订阅状态版本的 key）, hook, at_ms：打开 Turn 的输入批次 |
 | input_batch | 同上 | run_id, turn, input_seq, inputs[], events[], hook, at_ms：加入已打开 Turn 的批次（交接、fork 返回、补充输入） |
-| user_message | 同上 | run_id, turn, content：批次的每条消息一条（Goal 头在前，半订阅快照其次，受控输入在后），只记文本块；brief?：成为历史后代替它的一行（Goal 头：`goal activation <seq> of goal <id> (revision <r>) …`），机械渲染用 `[input] <brief>` |
+| user_message | 同上 | run_id, turn, content：批次的每条消息一条（Goal 头在前，半订阅快照其次，受控输入在后），只记文本块；brief?：成为历史后代替它的一行（Goal 头：`goal activation <seq> of goal <id> (revision <r>) …`），重建历史时用它代替正文 |
 | assistant_message | 同上（只用于 function call run） | run_id, turn, assistant, tool_calls[{call_id, tool, args(键排序), effect}]：一次模型 response（一个 Round）及其原生工具调用；不是 Step |
 | step | 同上（只用于 behavior run） | run_id, turn, step_index, behavior?, assistant, actions[{call_id, tool, args(键排序), effect}], correction?（解析失败 / 策略拒绝产生的合成纠错 Step 为 true，缺省 false） |
 | action_result | 同上 | run_id, turn, call_id, status(ok/error/unresolved/cancelled), result：原生工具结果（function call，`[not executed]` / `[unresolved…` 记为 unresolved，`[cancelled]` 记为 cancelled）或 action 结果（behavior） |
@@ -280,19 +280,34 @@ Schema：`schema/session_state.schema.json`。
 ## 6. summary.json 与下一次 llm_context
 
 ```jsonc
-{ "schema": "opendan.session_summary/2", "history_summary": "…", "start_seq": 301, "start_offset": 912384,
-  "mechanical": { ...同 prompt.mechanical_compress... }, "renderer": "libopendan.mechanical/3",
+{ "schema": "opendan.session_summary/3",
+  "history_summary": "…", "keep_exact": ["+1 (408) 555-0100", "3f2a9c1e"],
+  "head_end_seq": 6, "head_end_offset": 1830,      // head：此前的条目原样保留（0 = 没有 head）
+  "start_seq": 301, "start_offset": 912384,        // 原始尾巴的起点
+  "renderer": "libopendan.history/4",
   "made_at_seq": 318, "made_by": "context_limit | ratio | manual", "updated_at_ms": 0 }
 ```
 
-- 缺失时等价于 `start_seq = start_offset = 0`、无摘要、`mechanical = session_config.prompt.mechanical_compress`。
+- 缺失时等价于没有 head、没有摘要、`start_seq = start_offset = 0`。
 - 下一次 llm_context（没有 live_run 时）= system（身份 + 不可覆盖约束 + 应用 prompt + context + objective + xllm 能力/协议段）+ 按 `inherit` 装配的历史；本次的输入由 run 的第一个输入批次（`<session_input hook=… time=…>` 消息 + receipt）注入。
-- UI Session 的 `function_call` context 在已关闭的 Turn 之后继续同一 context、继承 `recent_dialogue` 且尚未生成摘要时，历史直接取 `last_run` 快照 `state.accumulated` 的非 system 消息列表。消息顺序、角色与内容原样保留，包括工具调用 / 结果和媒体，不经过机械截断、不包装成一条 user `<session_history>`。这些消息进入新 run 的 `request.input`，随新快照持久化；flush 只追加新 run 产生的部分，因此清理旧 run 不会丢失续聊前缀或重复写入 worklog。
+- 历史由 worklog 忠实重建为消息（`libopendan.history/4`），不截断：`user_message` → user 消息（有 `brief` 时用 brief）；`assistant_message` → assistant 消息与原生工具调用，各 `action_result` → 对应的 tool 结果；`step` → assistant 文本 + 一条 `<<last_step_action_results behavior="…" step="N">>` user 消息；`report_delivery` → assistant 文本（交付它的那次 report 调用参数换成交付引用，正文只出现一次）。behavior 上下文没有原生工具：function call 的调用列在 assistant 文本里，结果放进同样的 `<<last_step_action_results>>` 消息。`outcome`（error / budget / stopped / process_done / suspended）与未被 `drop_kinds` 排除的其它条目作为一行说明进 user 消息；`done` / `wait` / `context_rewritten` 不渲染。已返回的子 context 只留它的 `process_done` 结果。缺结果的工具调用补一条 `[no result recorded]`，工具调用等待结果期间到来的输入排在结果之后。
+- 有摘要时历史 = head（`[0, head_end_offset)` 的条目）+ 一条 summary 消息 + 起点之后的原始记录。summary 消息：
+
+  ```text
+  <history_summary>
+  …
+  </history_summary>
+  <keep_exact>
+  - …逐字保留的字符串…
+  </keep_exact>
+  Everything before this point was compressed; files in the session directory are intact — re-read only what you need
+  ```
+
+  最后一行是固定说明，不是摘要，也不进 worklog。
+- UI Session 的 `function_call` context 在已关闭的 Turn 之后继续同一 context、继承 `recent_dialogue` 且尚未生成摘要时，历史直接取 `last_run` 快照 `state.accumulated` 的非 system 消息列表。消息顺序、角色与内容原样保留，包括工具调用 / 结果和媒体。这些消息进入新 run 的 `request.input`，随新快照持久化；flush 只追加新 run 产生的部分，因此清理旧 run 不会丢失续聊前缀或重复写入 worklog。超过 `history_budget_tokens` 时改用上面的 worklog 重建。
 - `history_budget_tokens` 是给新 run 装配历史时的预算；run 中途因上下文上限重写时它只是历史的下限，目标由窗口决定（§7“上下文上限中途重写”）。
-- 上述原始消息列表超过 `history_budget_tokens` 时，先实际压缩 worklog 并写入摘要，再使用 worklog 历史视图，不能只靠机械截断让未压缩会话进入预算。已有摘要、behavior loop、context 切换等其它 `recent_dialogue` 装配仍是一条 user 历史消息：`<session_history>` 包含可选的 `<summary upto_seq="…">` 摘要与起点之后按机械规则渲染的记录；没有独立的 `<session_summary>` 消息标签。
-- 机械渲染（`libopendan.mechanical/3`）：`turn_started` → `── turn N (hook) inputs: … ──`，`input_batch` → `── <hook> inputs: … ──`（如 `── on_context_switch ──`），`user_message` → `[input] …`，`assistant_message` → `[assistant] …`，`step` → `[step 3 plan] …` / `[step 3 plan correction] …`，`action_result` → `[result #<call_id> <status>] …`，`outcome` → `[outcome <kind> → <next_behavior>] …`，`turn_ended` → `── turn N completed ──`（默认在 `drop_kinds` 中，不渲染）。
-- 反向读取时预算先于起点耗尽：必须先压缩（新起点 = 已保留的最旧一条，摘要覆盖 `[旧起点, 新起点)`），摘要与原始记录之间不能留空洞。
-- 压缩只写 summary.json，并追加一条 `compaction` 条目后提交，从不改写 worklog。
+- 压缩只有一种：agent_tool `llm_compress`（见 [LLM Compress](<../../llm_context/LLM Compress.md>)）。历史超预算时，整段（head + summary + 起点之后的全部记录）交给它，压成 `head（开场输入 + 第 1 轮）+ 一块滚动合并的 summary + keep_exact + 按预算填满的原始尾巴`；结果写 summary.json（summary、keep_exact、head 的终点、尾巴的起点）并追加一条 `compaction` 条目后提交，从不改写 worklog。摘要用 AICC 别名 `llm.summarize`，不计入 Round 统计。
+- 运行时只从提交末尾反向读到 `start_offset`，预算先于起点耗尽时才把这一段完整读一次去压缩；head 是开头的有界区间。summary 与原始记录之间不留空洞：尾巴的起点就是 summary 覆盖范围的终点。
 - 确定性只在同一 `renderer` 版本内承诺；时间等新鲜量只出现在每个输入批次的消息里。
 
 ## 7. runs/（xllm run 目录）
@@ -344,18 +359,18 @@ run.json `host.extra` 中由宿主冻结、恢复与重建工具时沿用的键�
          提交点：之前崩溃，恢复时由 handover 记录（及 sub_call）重做同一次转移，不重新推理；之后 run
          不再是 live_run，不会重复进入目标。终态 status 只表示 run 已结束。
 重写：   （上下文上限，见下）① 追加本 run 未写入的历史 + outcome(context_rewritten) 并提交 flush 标记
-         → ② 压缩 summary.json → ③ 以 system + 会话历史重建的上下文发布快照（history_epoch + 1）
+         → ② 重建会话历史，超预算时压缩（summary.json）→ ③ 以 system + 会话历史重建的上下文发布快照（history_epoch + 1）
 ```
 
 **上下文上限中途重写**（llm_context X7）：run 以 `ContextLimitReached` 让出时，runner 不在快照里重写历史，而是把它交还 session 历史：
 
 1. 用 flush 标记写入本 run 已产生而未写入的历史，末尾追加 `outcome(kind=context_rewritten)`，与 flush 标记同一次提交 state.json（没有新历史时两者都不写，重做不会重复）。
-2. 压缩 session 历史：历史预算 `history_budget = max(⌈窗口 × context_target_ratio⌉ − system 前缀, history_budget_tokens)`（窗口取快照 `request.budget.context_window_tokens`，`context_target_ratio` 取 `prompt.context_target_ratio`，缺省 0.30；system 前缀 = 输入开头的 system 消息与工具 schema，用 llm_context 的估算器；窗口未知时就是 `history_budget_tokens`）。起点前移到只剩约 `history_budget >> 第几次` token 的原始记录（写 summary.json 与 `compaction` 条目），再按 §6 在 `history_budget` 内重建历史消息。日志 `opendan.context.compaction.triggered` 带 `window_tokens` / `target_tokens` / `prefix_tokens`；run.json `compactions` 加 1。
+2. 按 §6 重建 session 历史，预算为 `history_budget >> (第几次 − 1)`：`history_budget = max(⌈窗口 × context_target_ratio⌉ − system 前缀, history_budget_tokens)`（窗口取快照 `request.budget.context_window_tokens`，`context_target_ratio` 取 `prompt.context_target_ratio`，缺省 0.30；system 前缀 = 输入开头的 system 消息与工具 schema，用 llm_context 的估算器；窗口未知时就是 `history_budget_tokens`）；provider 拒绝（`provider_refused`）时预算不超过被拒历史的一半。装不下就由 `llm_compress` 压缩（写 summary.json 与 `compaction` 条目），压缩后的历史落在预算以内并尽量填满。日志 `opendan.context.compaction.triggered` 带 `window_tokens` / `target_tokens` / `prefix_tokens`，`opendan.context.rewrite.completed` 带 `history_tokens_after` / `summarized` / `summary_tokens`；run.json `compactions` 加 1。
 3. 以 `system + 历史消息` 作为新的输入恢复上下文（function call：`RewrittenHistory`；behavior：`RewrittenSteps`，step 全部折叠进输入，编号继续），HostMeta 进入新的 epoch，先发布快照（run.json `status=running`）再继续推理。
 
-窗口与触发线：新 run 的 `llm_context.context_window` 显式值优先，否则宿主按 run 的模型别名查 AICC 路由选中模型的 `capabilities.max_context_tokens`（按别名缓存 10 分钟，查不到只记 warn），再否则 runner 缺省 128k；查到的值与缺省值都不超过窗口上限 `max_context_window`（runner 缺省 256k，显式值不受限：要放开就在 agent.toml / session / behavior 的 `llm_context` 里写 `context_window`）。xllm 据此设 `context_window_tokens` 与触发线（`context_yield_ratio`，缺省 0.80；256k 时约 205k）。窗口在 run 中途不变。
+窗口与触发线：新 run 的 `llm_context.context_window` 显式值优先，否则宿主按 run 的模型别名查 AICC 路由选中模型的 `capabilities.max_context_tokens`（按别名缓存 10 分钟，查不到只记 warn），再否则 runner 缺省 128k；宿主可以用 `RunnerOptions.max_context_window` 给查到的值与缺省值设上限（缺省不设：窗口跟随模型；显式值不受限）。xllm 据此设 `context_window_tokens` 与触发线（`context_yield_ratio`，缺省 0.80；1.05M 的模型约 84 万）。窗口在 run 中途不变。
 
-一次推进内连续最多 3 次；仍装不下时 run 以 `paused` + `last_error.kind=context_limit` 保留挂起快照，下一次推进先重写再继续。① 之后、③ 之前崩溃：恢复用旧 epoch 最后发布的快照，再次让出、重写，已写入的部分由 flush 标记跳过；③ 之后崩溃：新 epoch 的计数从 0 开始。receipt 的 `input_seq`、消费位置与打开的 Turn 都不随重写改变。
+连续最多 3 次（两次重写之间有一次推理成功就重新计数）；仍装不下时 run 以 `paused` + `last_error.kind=context_limit` 保留挂起快照，下一次推进先重写再继续。① 之后、③ 之前崩溃：恢复用旧 epoch 最后发布的快照，再次让出、重写，已写入的部分由 flush 标记跳过；③ 之后崩溃：新 epoch 的计数从 0 开始。receipt 的 `input_seq`、消费位置与打开的 Turn 都不随重写改变。
 
 **run 的预算**（失控保护，不是工作配额）：
 
@@ -384,7 +399,7 @@ XML 的 `<report end="true">` 与工具 `is_end=true` 使用相同的宿主校�
 
 提交顺序：工具派发前发布完整待执行批次快照 → 校验并持久化报告与稳定产物 → 返回工具回执 → 平滑让出并为余下每个调用记录未执行/Cancelled → 发布配对快照 → 保存终态 finish 决策 → worklog、report.md 与 state 提交。接受前已执行工具不回滚；拒绝报告不截断批次。XML 结束本身不能带动作，先发布结束 Step 快照再提交报告。已经接受的结束先于后到的 Stop 完成；先被宿主观察到的 Stop 拒绝新的结束提交。
 
-顶层最终交付是 `worklog.report_delivery{run_id,turn,submission,assistant}`：assistant 由报告正文与产物链接机械生成，不是模型 Round；链接形如 `[文件名](obj_id)`，没有 obj_id 时指向稳定副本。报告文件和 Session result 使用同一文本。出站消息的正文只有报告正文，有 obj_id 的产物作为 `RefItem::DataObj` 附件随消息发出（label 为文件或桶对象产物的名字，或对象库查到的对象名；有 url 时作为 `uri_hint`）；没有 obj_id 的产物在正文末尾注明未附上。原 assistant/工具回执仍用于审计；mechanical/3 构造模型历史时只渲染一份最终交付，隐藏来源 XML Step 的重复正文、将原工具参数替换为交付引用，不重新执行 report。阶段报告不生成该消息。finished Session 拒绝新输入，终态 Work 的修改创建新 Work。
+顶层最终交付是 `worklog.report_delivery{run_id,turn,submission,assistant}`：assistant 由报告正文与产物链接机械生成，不是模型 Round；链接形如 `[文件名](obj_id)`，没有 obj_id 时指向稳定副本。报告文件和 Session result 使用同一文本。出站消息的正文只有报告正文，有 obj_id 的产物作为 `RefItem::DataObj` 附件随消息发出（label 为文件或桶对象产物的名字，或对象库查到的对象名；有 url 时作为 `uri_hint`）；没有 obj_id 的产物在正文末尾注明未附上。原 assistant/工具回执仍用于审计；重建模型历史时只渲染一份最终交付，隐藏来源 XML Step 的重复正文、将原工具参数替换为交付引用，不重新执行 report。阶段报告不生成该消息。finished Session 拒绝新输入，终态 Work 的修改创建新 Work。
 
 恢复读取同一报告 journal：报告已持久但尚无回执时，恢复原待执行批次，仅回填该提交的已保存回执；配对快照已持久但尚无终态时，直接平滑完成；终态与 worklog 提交之间崩溃时，截断未提交尾部并重做同一 finish。全过程不新增推理、不重复登记产物/交付/关闭 Turn。xllm 拒绝继续已接受结束意图的宿主 run，交回 Session；hosted XML 最终快照由 xllm 以 paused 交回 Session：宿主校验成功则从同一结束 Step 提交和交付，校验失败则回到同一 context 反馈纠错；独立 xllm 的有效结束仍为 completed。
 

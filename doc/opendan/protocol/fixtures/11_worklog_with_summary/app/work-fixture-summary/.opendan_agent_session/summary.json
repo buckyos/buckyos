@@ -1,22 +1,11 @@
 {
+  "head_end_offset": 0,
+  "head_end_seq": 0,
   "history_summary": "Summary of turns 0..189.",
   "made_at_seq": 201,
   "made_by": "manual",
-  "mechanical": {
-    "drop_kinds": [
-      "created",
-      "decide",
-      "compaction",
-      "input_rejected",
-      "event_dropped",
-      "turn_ended"
-    ],
-    "max_result_chars": 4096,
-    "recent_full_responses": 2,
-    "summary_chars": 280
-  },
-  "renderer": "libopendan.mechanical/3",
-  "schema": "opendan.session_summary/2",
+  "renderer": "libopendan.history/4",
+  "schema": "opendan.session_summary/3",
   "start_offset": 16349,
   "start_seq": 192,
   "updated_at_ms": 0

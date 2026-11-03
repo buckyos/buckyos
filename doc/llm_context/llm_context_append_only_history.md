@@ -23,7 +23,7 @@ OpenDAN 的 behavior loop 会把 `StepRecord` 渲染成 `AiMessage` 后交给底
 | `LLMContextSnapshot` | llm_context；当前实现由 libopendan 持久化在 `runs/<run_id>/snapshots/` | 恢复执行的机器状态：request、`accumulated`、usage、工具迭代额度、挂起与续派状态（`suspended` / `tool_batch` / `action_step`）、behavior 的 `steps` / `last_step` / 编号游标、宿主元数据 `host` | 只服务于本 run 的恢复和接手；不承担长期历史展示 |
 | inner transcript | 快照内：behavior 模式 `accumulated` 中 `request.input` 之后的消息 | 进行中 Step 的内层原生工具 Loop（tool_use 与已得结果），让挂起的 Step 不重放工具地续跑；`RewrittenSteps` 原样保留它 | Step 完成即清空，不进入 `StepRecord`，也不写入 worklog |
 | `StepRecord` | 快照内 `steps` / `last_step` | 一个已完成的行为决策及其 action 结果，是 behavior prompt 的历史单元；身份 `(run_id, step_index)` | run 内只追加；完成后由宿主 flush 进 worklog（按 `step_index` 去重）；新 run 的历史从 worklog 重建（按目标 behavior 的 `inherit` 选择）；子 context 例外：`create_sub_context`（`inherit: steps`）与 `fork` 的子 run 由 `derive_child` / `fork_snapshot` 从调用方快照继承 steps，继承的部分不由子 run 写入 worklog |
-| Session worklog | libopendan `.opendan_agent_session/worklog.jsonl` | 严格只追加的 Session 历史：输入批次（`turn_started` / `input_batch` / `user_message`）、function call 的 `assistant_message`、behavior 的 `step`、`action_result`、`outcome`、`turn_ended`、`compaction` 等；用于审计、展示，并经 `summary.json` 重建下一个 run 的 `<session_history>` | 长期；压缩只写 `summary.json` 和 `compaction` 条目，不改已写记录 |
+| Session worklog | libopendan `.opendan_agent_session/worklog.jsonl` | 严格只追加的 Session 历史：输入批次（`turn_started` / `input_batch` / `user_message`）、function call 的 `assistant_message`、behavior 的 `step`、`action_result`、`outcome`、`turn_ended`、`compaction` 等；用于审计、展示，并经 `summary.json` 重建下一个 run 的会话历史消息 | 长期；压缩只写 `summary.json` 和 `compaction` 条目，不改已写记录 |
 
 - Snapshot 不应该承担长期历史展示职责；Session worklog 也不应该被 `llm_context` 当作恢复执行状态读取。需要从完整历史重建上下文时，由 Session 层读取 worklog / summary 后生成新的 input，`llm_context` 不理解 worklog。
 - function call run 的 flush 单位是消息（每个 Round 的 assistant response 记为 `assistant_message`，工具结果记为 `action_result`）；behavior run 的 flush 单位是已完成的 `StepRecord`，inner transcript 不写入 worklog。
@@ -118,7 +118,7 @@ behavior mode 当前把较多 session/agent 语义带进了 `LLMContextSnapshot`
 - run 快照先 fsync 再发布到 `runs/<run_id>/snapshots/`，`state.json` 是会话提交点，worklog 追加先于它写入。
 - run 结束、交接挂起（`switch_context` 的 Parked 帧、子 context 调用方的 Caller 帧）、上下文上限重写前，都先按 flush 游标把未写入的历史追加进 worklog，再继续。
 - 交接点（run.json 的 `handover`）随快照先落盘，再提交 `state.json`；崩溃后由 reconcile（`redo_transfer`）恰好补交一次，state 用 `handover_at_ms` 记住已提交的交接。
-- 已返回的子 context（`process_done`）的记录留在 worklog 供审计，但重建 `<session_history>` 时被排除，只渲染它的 `process_done` 结果（`runner/history.rs`），避免子过程的完整内容混进其它 context 的输入。压缩输入做同样的过滤，但压缩只识别被压缩片段内的 `process_done`：切点把子 run 的记录与它的 `process_done` 分开时，切点之前的那部分仍会进入摘要。
+- 已返回的子 context（`process_done`）的记录留在 worklog 供审计，但重建会话历史时被排除，只渲染它的 `process_done` 结果（`runner/history.rs`），避免子过程的完整内容混进其它 context 的输入。压缩一次读入整段未压缩范围，输入做同样的过滤；压缩发生时仍在运行的子 context，其记录会进入摘要。
 - 上下文上限在 Session 层重写（上面的 history epoch），不在 waist 内。
 
 旧 opendan Runtime（待下一阶段 opendan 重构接入）也有同方向的边界：

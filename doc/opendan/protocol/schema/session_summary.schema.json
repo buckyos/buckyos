@@ -1,51 +1,31 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
-    "MechanicalCompress": {
-      "description": "Mechanical compression parameters for rendering worklog history (§4.4).",
-      "properties": {
-        "drop_kinds": {
-          "default": [
-            "created",
-            "decide",
-            "compaction",
-            "input_rejected",
-            "event_dropped",
-            "turn_ended"
-          ],
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "max_result_chars": {
-          "default": 4096,
-          "format": "uint32",
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "recent_full_responses": {
-          "default": 2,
-          "description": "Model responses rendered in full, counted from the newest: the unit is one recorded response, i.e. a behavior `step` or a function call `assistant_message` (with the entries after it). Older entries are cut to `summary_chars`.",
-          "format": "uint32",
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "summary_chars": {
-          "default": 280,
-          "format": "uint32",
-          "minimum": 0.0,
-          "type": "integer"
-        }
-      },
-      "type": "object"
-    }
-  },
   "properties": {
+    "head_end_offset": {
+      "default": 0,
+      "description": "Byte offset of `head_end_seq` in the worklog.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "head_end_seq": {
+      "default": 0,
+      "description": "The head (opening input + first round) kept verbatim ahead of the summary: the worklog entries before `head_end_seq`. `0`: no head.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
     "history_summary": {
       "default": "",
-      "description": "Summary (LLM generated) of all history before `start_seq`.",
+      "description": "Summary (llm_compress) of the history between the head and `start_seq`.",
       "type": "string"
+    },
+    "keep_exact": {
+      "description": "Strings kept verbatim next to the summary (`<keep_exact>`): appended by each compression, never rewritten by the summarizer.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
     },
     "made_at_seq": {
       "default": 0,
@@ -58,28 +38,8 @@
       "description": "`context_limit | ratio | manual`.",
       "type": "string"
     },
-    "mechanical": {
-      "allOf": [
-        {
-          "$ref": "#/definitions/MechanicalCompress"
-        }
-      ],
-      "default": {
-        "drop_kinds": [
-          "created",
-          "decide",
-          "compaction",
-          "input_rejected",
-          "event_dropped",
-          "turn_ended"
-        ],
-        "max_result_chars": 4096,
-        "recent_full_responses": 2,
-        "summary_chars": 280
-      }
-    },
     "renderer": {
-      "default": "libopendan.mechanical/3",
+      "default": "libopendan.history/4",
       "type": "string"
     },
     "schema": {
@@ -94,7 +54,7 @@
     },
     "start_seq": {
       "default": 0,
-      "description": "First worklog seq used verbatim.",
+      "description": "First worklog seq used verbatim after the summary.",
       "format": "uint64",
       "minimum": 0.0,
       "type": "integer"

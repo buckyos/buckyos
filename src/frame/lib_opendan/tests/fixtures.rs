@@ -413,10 +413,16 @@ async fn f11_worklog_with_summary() {
         sm.start_offset,
         e["next"]["stop_at_offset"].as_u64().unwrap()
     );
-    let w = libopendan::runner::history::read_window(&s, &sm, 100_000).unwrap();
+    let w = libopendan::runner::history::read_window(
+        &s,
+        &sm,
+        libopendan::runner::history::HistoryShape::Native,
+        Some(100_000),
+    )
+    .unwrap();
     assert!(w.reached_start);
     assert_eq!(
-        w.lines.len() as u64,
+        w.messages.len() as u64,
         e["next"]["raw_entries"].as_u64().unwrap()
     );
 }

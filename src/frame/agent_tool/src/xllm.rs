@@ -2325,6 +2325,17 @@ pub struct EffectiveConfig {
     pub sources: BTreeMap<String, String>,
 }
 
+impl EffectiveConfig {
+    /// 上下文压缩的摘要模型：经 AICC 时用 `llm.summarize` 别名，直连
+    /// OpenAI 兼容端点时只能用本次 Run 的模型。
+    pub fn summary_model(&self) -> String {
+        match self.provider.effective_kind() {
+            ProviderKind::Buckyos => crate::llm_compress::SUMMARIZE_MODEL_ALIAS.to_string(),
+            ProviderKind::Openai => self.model.clone(),
+        }
+    }
+}
+
 /// 计算工具配置（不展开来源）：产品默认 → 顶层 tools → 选中组 tools →
 /// prompt.tools → CLI 开关。
 pub fn compute_tools_config(
@@ -9395,10 +9406,9 @@ impl XllmRun {
                     .into(),
             );
         }
-        let model = self.record().config.model.clone();
         let compressor = LlmSummarizeCompressor::new(
             self.waist_deps.clone().into_traditional(),
-            model,
+            self.record().config.summary_model(),
             compaction_target_tokens(&self.record().config.limits),
         );
         let rewritten = match compressor

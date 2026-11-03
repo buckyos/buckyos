@@ -154,7 +154,7 @@ impl Session {
         Ok(self
             .dir
             .summary_opt()?
-            .unwrap_or_else(|| SessionSummary::initial(self.config.prompt.mechanical_compress.clone())))
+            .unwrap_or_else(SessionSummary::initial))
     }
 
     pub fn write_summary(&self, lease: &Lease, summary: &SessionSummary) -> Result<()> {

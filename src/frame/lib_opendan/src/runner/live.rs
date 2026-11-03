@@ -29,8 +29,9 @@ use crate::session::runs::RunHandle;
 
 use super::flush::{run_history_entries, FlushMarks};
 use super::history::{
-    build_chat_history, build_history, compact_for_limit, LimitLine, LlmSummarizer, Summarizer,
+    build_chat_history, build_history, compact_for_limit, HistoryShape, LimitLine, Summarizer,
 };
+use agent_tool::llm_compress::CompressReport;
 use super::hook::{scope_touching, SessionCheckpointHook};
 use super::inputs::confirm_inputs;
 use super::receipts::{
@@ -39,7 +40,8 @@ use super::receipts::{
 use super::shared::{commit_and_report, counted, LiveCtx, Shared};
 use super::tools::{BehaviorTool, SessionToolManager};
 
-/// Mid-run compactions in a row before a context-limit run is paused.
+/// Mid-run compactions in a row (no successful inference between them)
+/// before a context-limit run is paused.
 const MAX_LIMIT_COMPACTIONS: u32 = 3;
 
 /// Remove an unreferenced run: lock, then delete. Processes a run's
@@ -482,9 +484,9 @@ const WINDOW_LOOKUP_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 /// explicit value (agent / session / behavior `llm_context`) stays;
 /// otherwise the window of the model its alias routes to
 /// (`RunnerDeps.context_windows`), else `options.default_context_window`,
-/// at most `options.max_context_window` (DV follow-up TODO H2: a 1M window
-/// would only compact at 800k tokens resent every Round). A failed lookup
-/// only warns. xllm derives the compaction trigger from it.
+/// at most `options.max_context_window` (none by default: the window
+/// follows the model, compaction TODO W1). A failed lookup only warns. xllm
+/// derives the compaction trigger from it.
 async fn resolve_context_window(sh: &Shared, llm_ctx: &mut Value) {
     if llm_ctx.get("context_window").is_some_and(|v| !v.is_null()) {
         return;
@@ -650,12 +652,9 @@ async fn own_run_context(
         .prompt
         .history_budget_tokens
         .unwrap_or(sh.deps.options.history_budget_tokens);
-    let summarizer: Arc<dyn Summarizer> = match &sh.deps.summarizer {
-        Some(s) => s.clone(),
-        None => Arc::new(LlmSummarizer {
-            llm: llm.clone(),
-            model: hosted.config.model.clone(),
-        }),
+    let summarizer = Summarizer {
+        llm: sh.deps.summarizer.clone().unwrap_or_else(|| llm.clone()),
+        model: hosted.config.summary_model(),
     };
     // The session history is a view selected by the target's entry
     // (`inherit: recent_dialogue`), never attached implicitly.
@@ -668,13 +667,14 @@ async fn own_run_context(
             && s.state.open_turn.is_none()
             && s.state.process_stack.is_empty()
         {
-            build_chat_history(&mut s, &sh.lease, summarizer.as_ref(), budget).await?
+            build_chat_history(&mut s, &sh.lease, &summarizer, budget).await?
         } else {
-            build_history(&mut s, &sh.lease, Some(summarizer.as_ref()), budget)
-                .await?
-                .0
-                .into_iter()
-                .collect()
+            let shape = if function_call {
+                HistoryShape::Native
+            } else {
+                HistoryShape::Text
+            };
+            build_history(&mut s, &sh.lease, Some(&summarizer), shape, budget).await?
         }
     } else {
         Vec::new()
@@ -975,14 +975,16 @@ pub(super) fn restart_clock(sh: &Shared, mut lc: LiveCtx) -> Result<LiveCtx> {
 /// Run the live context: one run segment of the drive loop, ending in one
 /// outcome. A context-limit suspension is compacted and the context runs on
 /// (another `run()` call in the same segment), at most
-/// [`MAX_LIMIT_COMPACTIONS`] times in a row; the last one goes to
-/// `handle_context_outcome`, which pauses the run. A top-level run out of
+/// [`MAX_LIMIT_COMPACTIONS`] times in a row: a successful inference after a
+/// rewrite starts the count anew (compaction TODO C3); the one over the
+/// limit goes to `handle_context_outcome`, which pauses the run. A top-level run out of
 /// time / tokens runs on in its wrap-up ([`super::budget::wrap_up`]).
 pub(super) async fn run_compacting(
     sh: &Arc<Shared>,
     lc: &mut LiveCtx,
 ) -> Result<LLMContextOutcome> {
     let mut attempt = 0;
+    let mut successes = lc.rounds.successes();
     loop {
         let outcome = lc.ctx.run().await;
         // `input.media = inline` and the provider refused the request (the
@@ -1019,6 +1021,9 @@ pub(super) async fn run_compacting(
         else {
             return Ok(outcome);
         };
+        if lc.rounds.successes() != successes {
+            attempt = 0;
+        }
         if attempt >= MAX_LIMIT_COMPACTIONS {
             log::warn!(
                 "opendan.context.rewrite.paused {}",
@@ -1044,6 +1049,7 @@ pub(super) async fn run_compacting(
             attempt,
         )
         .await?;
+        successes = lc.rounds.successes();
         *sh.interrupt.lock().expect("interrupt") = Some(lc.ctx.interrupt_handle());
     }
 }
@@ -1125,11 +1131,11 @@ fn degrade_inline_media(sh: &Arc<Shared>, lc: &LiveCtx) -> Result<Option<LLMCont
 /// 1. the run's history so far is flushed to the worklog, closed by a
 ///    `context_rewritten` outcome entry, and state commits the flush marks
 ///    (nothing of the run lives only in the snapshot);
-/// 2. the session history is compacted (summary.json) so that at most
-///    `history_budget >> attempt` tokens of raw records remain, and the
-///    history message is rebuilt within `history_budget` — what
+/// 2. the session history is rebuilt from the worklog within
+///    `history_budget >> (attempt − 1)` — `history_budget` is what
 ///    `context_target_ratio` of the window leaves after the system prefix,
-///    never less than `history_budget_tokens` ([`LimitLine`]);
+///    never less than `history_budget_tokens` ([`LimitLine`]) — and
+///    compressed by llm_compress when it does not fit (summary.json);
 /// 3. the context resumes with system + history as its new input
 ///    (`RewrittenHistory` / `RewrittenSteps`) in a new history epoch, and the
 ///    rewritten snapshot is published before anything runs on.
@@ -1175,7 +1181,7 @@ async fn rewrite_for_limit(
     let result =
         rewrite_for_limit_inner(sh, run, snapshot, behavior, deps, summary_llm, attempt).await;
     match &result {
-        Ok(ctx) => log::info!(
+        Ok((ctx, history_tokens, report)) => log::info!(
             "opendan.context.rewrite.completed {}",
             json!({
                 "session_id": sh.dir.sid(),
@@ -1183,6 +1189,10 @@ async fn rewrite_for_limit(
                 "attempt": attempt,
                 "history_epoch_before": epoch_before,
                 "history_epoch_after": host_meta_of(ctx.host_meta()).history_epoch,
+                "history_tokens_after": history_tokens,
+                "summarized": report.as_ref().is_some_and(|r| r.strategy == "llm"),
+                "summary_tokens": report.as_ref().map(|r| r.summary_tokens),
+                "summary_calls": report.as_ref().map(|r| r.summary_calls),
                 "elapsed_ms": started.elapsed().as_millis(),
             })
         ),
@@ -1197,7 +1207,7 @@ async fn rewrite_for_limit(
             })
         ),
     }
-    result
+    result.map(|(ctx, _, _)| ctx)
 }
 
 /// Estimated tokens of what a rewrite keeps as it is: the system messages
@@ -1232,16 +1242,17 @@ async fn rewrite_for_limit_inner(
     deps: &LLMContextDeps,
     summary_llm: &Arc<dyn LlmClient>,
     attempt: u32,
-) -> Result<LLMContext> {
+) -> Result<(LLMContext, u64, Option<CompressReport>)> {
     let run_id = run.run_id().to_string();
-    let summarizer: Arc<dyn Summarizer> = match &sh.deps.summarizer {
-        Some(s) => s.clone(),
-        None => Arc::new(LlmSummarizer {
-            llm: summary_llm.clone(),
-            model: run.record().config.model.clone(),
-        }),
+    let summarizer = Summarizer {
+        llm: sh
+            .deps
+            .summarizer
+            .clone()
+            .unwrap_or_else(|| summary_llm.clone()),
+        model: run.record().config.summary_model(),
     };
-    let (history, turn) = {
+    let ((history, report), turn) = {
         let mut s = sh.session.lock().await;
         let live = s
             .state
@@ -1285,12 +1296,34 @@ async fn rewrite_for_limit_inner(
             prefix_tokens(&snapshot, deps),
             floor,
         );
-        let keep = line.history_budget >> attempt.min(8);
+        let mut budget = line.history_budget >> attempt.saturating_sub(1).min(8);
+        // The provider refused this size, whatever the estimate says: the
+        // rebuilt history is at most half of what was refused.
+        if matches!(
+            snapshot.state.suspended.as_ref().map(|s| s.which),
+            Some(llm_context::ContextLimitKind::ProviderRefused)
+        ) {
+            let refused: Vec<AiMessage> = snapshot
+                .state
+                .accumulated
+                .iter()
+                .skip_while(|m| m.role == AiRole::System)
+                .cloned()
+                .collect();
+            let half = super::history::estimate(&refused) / 2;
+            budget = budget.min(half.min(u64::from(u32::MAX)) as u32);
+        }
+        let shape = if behavior {
+            HistoryShape::Text
+        } else {
+            HistoryShape::Native
+        };
         let history =
-            compact_for_limit(&mut s, &sh.lease, summarizer.as_ref(), &line, keep).await?;
+            compact_for_limit(&mut s, &sh.lease, &summarizer, shape, &line, budget).await?;
         crate::fault::point("context_limit:after_compact");
         (history, turn)
     };
+    let history_tokens = super::history::estimate(&history);
     let mut input: Vec<AiMessage> = snapshot
         .request
         .input
@@ -1326,7 +1359,7 @@ async fn rewrite_for_limit_inner(
     run.checkpoint_with_results(&ctx.snapshot(), Some(RunStatus::Running))?;
     run.count_compaction()?;
     crate::fault::point("context_limit:after_publish");
-    Ok(ctx)
+    Ok((ctx, history_tokens, report))
 }
 
 /// Open the run `state.live_run` points to (a caller resumed after its sub

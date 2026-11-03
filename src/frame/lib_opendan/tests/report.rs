@@ -9,7 +9,7 @@ use common::*;
 use libopendan::api::{InputChannel, SessionSpec};
 use libopendan::lock::Acquire;
 use libopendan::protocol::*;
-use libopendan::runner::history::read_window;
+use libopendan::runner::history::{read_window, HistoryShape};
 use libopendan::runner::{drive, DriveResult, StopWhen};
 use libopendan::{SessionDir, SessionTemplate};
 use serde_json::{json, Value};
@@ -119,10 +119,11 @@ fn assert_one_completion(sd: &SessionDir, report: &str, rounds: u64) {
         panic!("finished session is still held");
     };
     let session = sd.load(&lease).unwrap();
-    let history = read_window(&session, &session.summary().unwrap(), 100_000)
-        .unwrap()
-        .lines
-        .join("\n");
+    let history = render(
+        &read_window(&session, &session.summary().unwrap(), HistoryShape::Native, Some(100_000))
+            .unwrap()
+            .messages,
+    );
     assert_eq!(history.matches(report).count(), 1, "{history}");
 }
 

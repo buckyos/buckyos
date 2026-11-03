@@ -202,7 +202,7 @@ fn decide_should_construct(req: &CommandNotFoundRequest) -> Decision {
 /// 待实现:
 /// - 列出 4-layer overlay PATH 的全部 bin 文件名 + (来自 agent tools 的)
 ///   usage
-/// - 用一个轻量 LLM (`llm.summary` 级别) 问"用这些命令能不能拼出
+/// - 用一个轻量 LLM (`llm.summarize` 级别) 问"用这些命令能不能拼出
 ///   `<missing-cmd> <argv>` 的等价语义"
 /// - 命中:生成一段 bash 片段写到临时目录,返回 ConstructedArtifact
 async fn try_compose_from_visible_bins(

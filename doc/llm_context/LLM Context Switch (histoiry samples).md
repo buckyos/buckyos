@@ -32,7 +32,7 @@
 ### 标准 function_call Loop：一个 Turn，多个 Round
 
 ```text
-[system] [user:<session_history>] [user:<session_input hook=on_wakeup> 输入]
+[system] [会话历史消息…] [user:<session_input hook=on_wakeup> 输入]
 [assistant:tool_calls(a,b)] [tool:a结果] [tool:b结果]  @Round1
 [assistant:tool_calls(c)]   [tool:c结果]               @Round2
 [assistant:最终回答]                                  @Round3 → Done
@@ -41,12 +41,12 @@
 
 这里有三个 Round、两次工具迭代、没有 Step。一个 Round 可以发出多个 tool call，工具结果驱动下一个 Round，不需要再来一条外部 user message。
 
-Turn1 完成后，下一批输入可以开启 Turn2。libopendan 通常为下一个 Turn 新建 run，之前的历史从 Session worklog / summary 重建为 `<session_history>`，不是把所有 Turn 的原始消息直接接在一个永久增长的 LLMContext 后面。
+Turn1 完成后，下一批输入可以开启 Turn2。libopendan 通常为下一个 Turn 新建 run，之前的历史从 Session worklog / summary 重建为消息（原样的 user / assistant / tool 消息，压缩过时是 head + `<history_summary>` + 原始尾巴），不是把所有 Turn 的原始消息直接接在一个永久增长的 LLMContext 后面。
 
 ### Behavior Loop：一个 Step 内也可有多个 Round
 
 ```text
-[system] [user:<session_history>] [user:<session_input hook=on_init> 输入]
+[system] [会话历史消息…] [user:<session_input hook=on_init> 输入]
 [assistant:tool_calls(a)] [tool:a结果]                  @Step0 / Round1
 [assistant:决策 actions=[b,c]]                         @Step0 / Round2
     → 依次执行 b、c，结果记入 Step0.action_results
@@ -56,7 +56,7 @@ Turn1 完成后，下一批输入可以开启 Turn2。libopendan 通常为下一
 Step0 内的原生工具消息只属于进行中 Step 的 inner transcript。Step 完成后，下一次推理看到的是决策和 action 结果，不再回放 Step 内的原生工具消息：
 
 ```text
-[system] [user:<session_history>] [user:<session_input hook=on_init> 输入]
+[system] [会话历史消息…] [user:<session_input hook=on_init> 输入]
 [assistant:Step0决策] [user:<<last_step_action_results>> b、c结果]
 [assistant:Step1决策 next_behavior=CHECK]               @Step1 / Round3 → Done
 ```
@@ -241,7 +241,7 @@ Discard 后消息列表里缺少被裁掉的内容，不代表工具副作用被
 
 ```text
 旧 run / Turn1：… [tool:a=Success] [tool:b=Cancelled] → Turn1 stopped；完整记录留在 worklog
-新 run / Turn2：[system] [user:<session_history> 已完成的 a、b 的取消/副作用状态、停止原因]
+新 run / Turn2：[system] [会话历史消息：已完成的 a、b 的取消/副作用状态、停止原因]
                 [user:改为 B] → 下一 Round
 ```
 
@@ -260,14 +260,14 @@ Discard 后消息列表里缺少被裁掉的内容，不代表工具副作用被
 
 历史压缩是宿主在明确边界上的状态改写，不是每次 Round / Step 渲染时自动降级旧消息。已发送的消息前缀在正常推进时保持稳定；压缩只影响被改写位置及其后的缓存复用，不能笼统理解为所有 KV Cache 必然失效。
 
-### 机械压缩与 StepRecord 摘要
+### LLM 压缩与 StepRecord 摘要
 
-- Tool call / result 应保持配对。可以按工具结果协议缩短结果；需要删除时成对处理，不能留下孤立的 tool result 或未回答的调用。
+- 压缩只有一种：agent_tool `llm_compress` 的 LLM 摘要（[LLM Compress](<LLM Compress.md>)），没有按工具结果协议缩短结果之类的机械截断。压缩后是 head（开场输入 + 第 1 轮）+ 一块滚动合并的 `<history_summary>` + 逐字保留的 `<keep_exact>` + 按预算填满的原始尾巴；head、尾巴按"轮"切，tool call / result 不会分开，也不会留下孤立的 tool result 或未回答的调用。
 - 已完成的多个 Step 可以由宿主显式整理为摘要，保留决策、观察、report 和必要的动作结果。
 - 当前 behavior 的普通 Step 默认保持完整 `(assistant, user)` pair，不会仅因变旧就自动改为 compact；其它 behavior 的继承记录和显式 summary 渲染进 `<<step_history>>`。
 - Step 完成时丢弃 inner transcript、改用 StepRecord，是 Step 的记录边界，不是把已沉淀的旧 Step 动态压缩。
 
-压缩策略可以减少 action result 的细节，但渲染器不能在后续 Round 中自行改写先前历史。具体结果协议见 [Agent Tool Result Protocol](agent_tool/agent_tool_result_protocol.md)，状态改写约束见 [append-only history](llm_context_append_only_history.md)。
+摘要丢掉 action result 的细节，但渲染器不能在后续 Round 中自行改写先前历史。具体结果协议见 [Agent Tool Result Protocol](agent_tool/agent_tool_result_protocol.md)，状态改写约束见 [append-only history](llm_context_append_only_history.md)。
 
 ### 在 Outcome 边界重写历史并继续当前 Turn
 
@@ -277,11 +277,11 @@ Discard 后消息列表里缺少被裁掉的内容，不代表工具副作用被
 ... [assistant:tool_calls(n)] [tool:n结果] → ContextLimitReached
 
 宿主整理后：
-[system] [user:<session_history> 摘要与保留的最近记录]
+[system] [head] [user:<history_summary> 摘要 + <keep_exact>] [原始尾巴：最近若干轮原样]
     → ResumeFill::RewrittenHistory → 继续推理
 ```
 
-function_call 使用 `RewrittenHistory`；Behavior Loop 使用 `RewrittenSteps`，进行中 Step 的 inner transcript 保留，Step / action 编号继续。libopendan 会先把已完成但未写出的历史 flush 到 worklog，压缩 summary，发布新的历史快照，再恢复执行。
+function_call 使用 `RewrittenHistory`；Behavior Loop 使用 `RewrittenSteps`，进行中 Step 的 inner transcript 保留，Step / action 编号继续。libopendan 会先把已完成但未写出的历史 flush 到 worklog，从 worklog 重建会话历史、超预算时压缩（summary.json），发布新的历史快照，再恢复执行。
 
 这不是新 Turn，也不会重新执行已完成的工具。Session worklog 保持只追加，压缩修改的是供推理使用的历史表示。Turn 完成后，也可以压缩 Session 历史供下一个 run 使用。
 
@@ -339,7 +339,7 @@ run_CHECK / system_CHECK：恢复原快照 → on_behavior_switch → 更多 CHE
 
 交接输入由 Session 根据共享状态构造，不必搬运 DO 的全部历史。共享状态不会自动进入 LLM：宿主仍须把所需事实渲染为输入或提供读取工具。context 自己的 system 和既有历史随恢复保持一致，不在每次切换时改写成另一套配置。
 
-新建目标 context 的历史装配范围由目标的 `inherit` 决定：缺省 `none`，只有 system 与交接输入；`recent_dialogue` 才带入宿主渲染的 `<session_history>`（摘要 + 近期 worklog 记录，是筛选视图）。其它 context 的快照与原始历史从不自动并进目标 context；恢复已有目标时只用它自己的快照。
+新建目标 context 的历史装配范围由目标的 `inherit` 决定：缺省 `none`，只有 system 与交接输入；`recent_dialogue` 才带入宿主从 worklog 重建的会话历史消息（压缩过时含摘要，已返回子 context 的过程不在其中，是筛选视图）。其它 context 的快照与原始历史从不自动并进目标 context；恢复已有目标时只用它自己的快照。
 
 切换不完成 Turn。`<report end="true">` 由 Session 根据执行位置与完成策略裁决：顶层 context 完成当前 Turn，并按策略关闭 Session；子 context 完成后返回调用方。SWITCH_CONTEXT 不隐含调用关系，结束时不会自动返回上一 behavior。
 
