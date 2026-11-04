@@ -67,7 +67,7 @@ where
     loop {
         let frame_len = match stream.read_u32().await {
             Ok(len) => len as usize,
-            Err(err) if err.kind() == ErrorKind::UnexpectedEof => return Ok(()),
+            Err(err) if peer_closed(&err) => return Ok(()),
             Err(err) => return Err(err),
         };
 
@@ -86,8 +86,18 @@ where
             Err(err) => error_response(err),
         };
 
-        write_native_tcp_response(&mut stream, response).await?;
+        match write_native_tcp_response(&mut stream, response).await {
+            Err(err) if peer_closed(&err) => return Ok(()),
+            result => result?,
+        }
     }
+}
+
+fn peer_closed(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        ErrorKind::UnexpectedEof | ErrorKind::ConnectionReset | ErrorKind::BrokenPipe
+    )
 }
 
 async fn write_native_tcp_response<S>(
@@ -195,6 +205,44 @@ mod tests {
 
         drop(client);
         server_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn closing_a_reader_during_a_long_poll_is_not_a_failure() {
+        let service = Arc::new(KEventService::new("node_a"));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_task = tokio::spawn({
+            let service = service.clone();
+            async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                handle_native_tcp_connection(service, stream).await
+            }
+        });
+
+        let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+        for request in [
+            KEventDaemonRequest::RegisterReader {
+                reader_id: "r1".to_string(),
+                patterns: vec!["/system/**".to_string()],
+            },
+            KEventDaemonRequest::PullEvent {
+                reader_id: "r1".to_string(),
+                timeout_ms: Some(200),
+            },
+        ] {
+            let payload = crate::encode_daemon_request(&request).unwrap();
+            client.write_u32(payload.len() as u32).await.unwrap();
+            client.write_all(&payload).await.unwrap();
+            client.flush().await.unwrap();
+        }
+        let length = client.read_u32().await.unwrap() as usize;
+        let mut registered = vec![0_u8; length];
+        client.read_exact(&mut registered).await.unwrap();
+        drop(client);
+
+        server_task.await.unwrap().unwrap();
+        assert_eq!(service.reader_count().await, 0);
     }
 
     /// A client that goes away without unregistering must not leave its
