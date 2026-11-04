@@ -6,8 +6,10 @@ from pathlib import Path
 import platform
 import shutil
 import subprocess
+import sys
 
 system = platform.system()
+KEVENT_RING_DIR = Path("/tmp")
 ext = ""
 if system == "Windows":
     ext = ".exe"
@@ -274,10 +276,37 @@ def kill_all():
     kill_native_apps()
     kill_buckyos_containers()
     kill_devtest_containers()
+    remove_foreign_kevent_ring()
+
+
+def remove_foreign_kevent_ring():
+    if system != "Linux":
+        return
+    for ring in KEVENT_RING_DIR.glob("buckyos_kevent_ringbuffer_v*.shm"):
+        if ring.stat().st_uid != os.geteuid():
+            ring.unlink()
+            print(f"{ring} removed: another user's ring blocks this node's kevent bus")
+
+
+def needs_root():
+    return system == "Linux" and os.geteuid() != 0
+
+
+def as_root(args):
+    settings = {name: value for name, value in os.environ.items() if name.startswith("BUCKYOS_")}
+    settings["BUCKYOS_ROOT"] = str(_buckyos_root())
+    return ["sudo", "env", *(f"{name}={value}" for name, value in settings.items()), *args]
+
+
+def stop_all():
+    if needs_root():
+        subprocess.run(as_root([sys.executable, "-B", os.path.abspath(__file__)]), check=True)
+    else:
+        kill_all()
 
 
 def main():
-    kill_all()
+    stop_all()
 
 
 if __name__ == "__main__":

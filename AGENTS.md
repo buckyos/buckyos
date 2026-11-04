@@ -44,6 +44,10 @@ uv run check.py
 uv run stop.py
 ```
 
+Linux 上 node_daemon 以 root 运行，与打包后的系统服务一致：非 root 开发者运行 `start.py` / `stop.py` 时，停止和启动通过 `sudo` 执行（只透传 `BUCKYOS_*`，`PATH`、`HOME` 用 sudo 的默认值），不需要 docker 组或 `newgrp`；文件更新和 `make_config.ts` 仍以开发者身份运行，更新前把涉及路径的属主收回给开发者。`local/node_daemon/executor` 要求属主是 node_daemon 的 euid，不要手工 chown。
+
+开发脚本一律以普通用户运行，不要用 `sudo` 包住整个脚本（否则仓库、`~/.cache/deno` 等处会留下 root 属主的文件）；脚本只在确实需要 root 的那一步内部调用 `sudo`。`build_aios`、`build_exttool`、`build.py`、`make_local_pkg.py`、`debug_jarvis.sh` 先直接用 docker，只有报 `permission denied` 时才改用 `sudo docker`，此时用 root 的 Docker 配置，`--push` 要先 `sudo docker login`；在 docker 组里的用户全程不会用到 sudo。新增脚本遵循同样的做法。
+
 macOS 上 node_daemon 是 `bin/node-daemon/BuckyOS Runtime.app` 的主程序（构建后由 `tools/macos_runtime_bundle.py assemble` 组装签名；直接跑 devkit `buckyos-build` 需补这一步），以绑定用户的 LaunchAgent `com.buckyos.runtime` 运行：`start.py` 在 GUI 会话中为当前用户注册并启动它，sudo/SSH 下退回直接启动且没有桌面能力；管理与诊断用 bundle 内 `node_daemon service status|start|stop|restart|autostart on|off`。
 
 `start.py` 默认要求 `rootfs/libexec/buckyos-tool/` 中已有构建生成的分发包。`--all` 与 `--reinstall` 走全新安装流程，清理范围由 `bucky_project.yaml` 的模块映射和 `clean_paths` 决定，不能当成普通重启；`data/`（含 `data/home/`、`data/srv/` 与 RDB `user_data` 分区的 `data/<appid>/`）和 `storage/` 属于保留数据，旧格式数据会带进新 Zone，需要空 Zone 时加 `--wipe-data`。`start.py` 会调用 `stop.py`：后者按进程名停止服务、删除 `buckyos-app-*` 容器，并在非 Windows 平台停止 `devtest-*` 容器。

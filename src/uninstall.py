@@ -112,6 +112,10 @@ def _safe_join(root: Path, rel_path: str | Path) -> Path:
     return candidate
 
 
+def _linux_needs_root() -> bool:
+    return platform.system() == "Linux" and os.geteuid() != 0
+
+
 def _remove_fs_path(path: Path, results: list[ActionResult], *, kind: str = "path") -> None:
     if not path.exists() and not path.is_symlink():
         _append_result(results, kind, str(path), "skipped", "not found")
@@ -123,6 +127,11 @@ def _remove_fs_path(path: Path, results: list[ActionResult], *, kind: str = "pat
         else:
             shutil.rmtree(path)
         _append_result(results, kind, str(path), "ok", "removed")
+    except PermissionError as exc:
+        if _linux_needs_root() and subprocess.run(["sudo", "rm", "-rf", "--", str(path)]).returncode == 0:
+            _append_result(results, kind, str(path), "ok", "removed with sudo")
+        else:
+            _append_result(results, kind, str(path), "failed", str(exc))
     except Exception as exc:
         _append_result(results, kind, str(path), "failed", str(exc))
 
@@ -501,7 +510,10 @@ def _run_installed_stop_script(root: Path, results: list[ActionResult]) -> None:
         if not script_path.exists():
             _append_result(results, "stop-script", str(script_path), "skipped", "not found")
             return
-        result = _run_command(["python3", str(script_path)])
+        command = ["python3", str(script_path)]
+        if _linux_needs_root():
+            command = ["sudo", "env", f"BUCKYOS_ROOT={root}", *command]
+        result = _run_command(command)
 
     output = _safe_command_output(result)
     if result.returncode == 0:

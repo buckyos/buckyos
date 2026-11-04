@@ -1163,6 +1163,17 @@ def _paios_images_module() -> Any:
     return module
 
 
+def _docker_command() -> list[str]:
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        probe = subprocess.run(["docker", "version"], capture_output=True, text=True)
+        if "permission denied" in probe.stderr:
+            print("[paios-images] this user cannot reach the Docker socket; docker commands run through sudo")
+            if subprocess.run(["sudo", "true"]).returncode != 0:
+                raise RuntimeError("Docker access needs sudo on this machine, and sudo was refused")
+            return ["sudo", "docker"]
+    return ["docker"]
+
+
 def _stage_local_paios_images(target: TargetScript, *, dry_run: bool) -> None:
     """Pin this machine's paios/aios and paios/exttool latest-<arch> images into the
     staged root (bin/paios-images/), like a release package, for offline test installs."""
@@ -1176,21 +1187,22 @@ def _stage_local_paios_images(target: TargetScript, *, dry_run: bool) -> None:
         print(f"[paios-images] would pin local paios/aios and paios/exttool latest-{arch} into {out_dir}")
         return
     images: dict[str, Any] = {}
+    docker = _docker_command()
     with tempfile.TemporaryDirectory(prefix="buckyos-paios-images-") as temporary:
         for name in ("aios", "exttool"):
             source = f"paios/{name}:latest-{arch}"
-            inspected = subprocess.run(["docker", "image", "inspect", source], capture_output=True, text=True)
+            inspected = subprocess.run([*docker, "image", "inspect", source], capture_output=True, text=True)
             if inspected.returncode != 0:
                 raise RuntimeError(f"{source} is not in the local Docker store: {inspected.stderr.strip()}")
             data = json.loads(inspected.stdout)[0]
             image_id = data["Id"]
             short_id = image_id.split(":", 1)[-1][:12]
             reference = f"paios/{name}:local-{short_id}-{arch}"
-            _run_checked(["docker", "tag", image_id, reference])
+            _run_checked([*docker, "tag", image_id, reference])
             tar_path = out_dir / f"{name}-{arch}-{short_id}.tar.gz"
             print(f"[paios-images] docker save {reference} -> {tar_path}")
             with tar_path.open("wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as packed:
-                saving = subprocess.Popen(["docker", "save", reference], stdout=subprocess.PIPE)
+                saving = subprocess.Popen([*docker, "save", reference], stdout=subprocess.PIPE)
                 assert saving.stdout is not None
                 shutil.copyfileobj(saving.stdout, packed, 4 * 1024 * 1024)
                 if saving.wait() != 0:

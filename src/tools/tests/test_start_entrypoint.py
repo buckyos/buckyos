@@ -1,16 +1,21 @@
 import contextlib
 import importlib.util
 import io
+import os
 from pathlib import Path
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
 
 SCRIPT_PATH = Path(__file__).parents[2] / "start.py"
+sys.path.insert(0, str(SCRIPT_PATH.parent))
+
+import stop
 
 
 def _load_start_script():
@@ -22,7 +27,89 @@ def _load_start_script():
     return module
 
 
+@unittest.skipIf(os.name == "nt", "Linux node_daemon identity")
+class BuckyosStartLinuxRootTests(unittest.TestCase):
+    def _run_as_linux_developer(self, args, root, sudo_returncode=0):
+        module = _load_start_script()
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, sudo_returncode)
+
+        def run_update(command, update_args):
+            calls.append([command, *update_args])
+            return 0
+
+        def run_make_config(group, target, edition):
+            calls.append(["make_config", group])
+
+        with (
+            patch.object(stop, "system", "Linux"),
+            patch.object(stop, "_buckyos_root", return_value=root),
+            patch.object(os, "geteuid", return_value=1000),
+            patch.object(module, "resolve_buckyos_root", return_value=root),
+            patch.object(module, "_sdk_tool_distribution_ready", return_value=True),
+            patch.object(module, "_run_command", side_effect=run_update),
+            patch.object(module, "_run_make_config", side_effect=run_make_config),
+            patch.object(subprocess, "run", side_effect=run),
+            contextlib.redirect_stdout(io.StringIO()) as stdout,
+        ):
+            result = module.main(args)
+        return result, calls, stdout.getvalue()
+
+    def test_update_runs_as_the_developer_between_root_stop_and_root_start(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name in ("bin", "libexec", "etc", "data/cache", "local"):
+                (root / name).mkdir(parents=True)
+            result, calls, _ = self._run_as_linux_developer([], root)
+
+            self.assertEqual(result, 0)
+            self.assertEqual(calls[0], ["sudo", "true"])
+            self.assertEqual(calls[1][:2], ["sudo", "env"])
+            self.assertEqual(calls[1][-1], str(Path(stop.__file__).resolve()))
+            self.assertEqual(calls[2][:3], ["sudo", "chown", "-R"])
+            self.assertEqual(calls[2][4:], [str(root / name) for name in ("bin", "libexec", "etc", "data/cache")])
+            self.assertEqual(calls[3], ["buckyos-update", "--app=buckyos"])
+            self.assertEqual(calls[4][:2], ["sudo", "env"])
+            self.assertEqual(calls[4][-1], "import start; start.start_system()")
+            self.assertEqual(len(calls), 5)
+
+    def test_fresh_install_takes_back_the_whole_tree_and_generates_config_as_the_developer(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            result, calls, _ = self._run_as_linux_developer(["--all"], root)
+
+            self.assertEqual(result, 0)
+            self.assertEqual(calls[2][:3], ["sudo", "chown", "-R"])
+            self.assertEqual(calls[2][4:], [str(root / ".")])
+            self.assertEqual(calls[3], ["buckyos-update", "--app=buckyos", "--all"])
+            self.assertEqual(calls[4], ["make_config", "dev"])
+            self.assertEqual(calls[5][-1], "import start; start.start_system()")
+
+    def test_skip_update_only_restarts_as_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            result, calls, _ = self._run_as_linux_developer(["--skip-update"], Path(temporary))
+
+            self.assertEqual(result, 0)
+            self.assertEqual([call[1] for call in calls], ["true", "env", "env"])
+
+    def test_refused_sudo_stops_before_any_side_effects(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            result, calls, stdout = self._run_as_linux_developer(["--all"], Path(temporary), sudo_returncode=1)
+
+            self.assertEqual(result, 2)
+            self.assertEqual(calls, [["sudo", "true"]])
+            self.assertIn("needs sudo", stdout)
+
+
 class BuckyosStartEntrypointTests(unittest.TestCase):
+    def setUp(self) -> None:
+        euid = patch.object(os, "geteuid", return_value=0, create=True)
+        euid.start()
+        self.addCleanup(euid.stop)
+
     def test_invalid_arguments_stop_before_any_side_effects(self) -> None:
         for args in (
             ["--release"],

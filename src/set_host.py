@@ -8,6 +8,7 @@ Note: Duplicate entries will not be added.
 
 import argparse
 import platform
+import subprocess
 import sys
 from pathlib import Path
 
@@ -28,7 +29,7 @@ def read_hosts_file(hosts_path: Path) -> list[str]:
         with open(hosts_path, "r", encoding="utf-8") as f:
             return f.readlines()
     except PermissionError:
-        print(f"Error: Permission denied. Please run with administrator/sudo privileges.")
+        print(f"Error: Permission denied reading {hosts_path}.")
         sys.exit(1)
     except FileNotFoundError:
         print(f"Error: Hosts file not found at {hosts_path}")
@@ -44,8 +45,18 @@ def write_hosts_file(hosts_path: Path, lines: list[str]) -> None:
         with open(hosts_path, "w", encoding="utf-8") as f:
             f.writelines(lines)
     except PermissionError:
-        print(f"Error: Permission denied. Please run with administrator/sudo privileges.")
-        sys.exit(1)
+        if platform.system() == "Windows":
+            print("Error: Permission denied. Please run as administrator.")
+            sys.exit(1)
+        written = subprocess.run(
+            ["sudo", "tee", str(hosts_path)],
+            input="".join(lines),
+            text=True,
+            stdout=subprocess.DEVNULL,
+        )
+        if written.returncode != 0:
+            print(f"Error: sudo could not write {hosts_path}.")
+            sys.exit(1)
     except Exception as e:
         print(f"Error writing hosts file: {e}")
         sys.exit(1)

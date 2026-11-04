@@ -140,6 +140,35 @@ log() {
   printf '[build_aios] %s\n' "$*"
 }
 
+DOCKER_NEEDS_SUDO=0
+
+docker() {
+  if [[ "$DOCKER_NEEDS_SUDO" -eq 1 ]]; then
+    sudo "$(type -P docker)" "$@"
+  else
+    command docker "$@"
+  fi
+}
+
+resolve_docker_access() {
+  local probe
+  if [[ "$(id -u)" -eq 0 ]] || ! type -P docker >/dev/null; then
+    return
+  fi
+  probe="$(command docker version 2>&1 || true)"
+  if [[ "$probe" == *"permission denied"* ]]; then
+    DOCKER_NEEDS_SUDO=1
+    log "This user cannot reach the Docker socket; docker commands run through sudo"
+    if ! sudo true; then
+      echo "Docker access needs sudo on this machine, and sudo was refused" >&2
+      exit 1
+    fi
+    if [[ "$PUSH" -eq 1 ]]; then
+      log "--push then uses root's registry login (sudo docker login)"
+    fi
+  fi
+}
+
 resolve_build_metadata() {
   local revision="unknown"
 
@@ -418,7 +447,13 @@ use_image_in_local_buckyos() {
     return
   fi
 
-  "$python_bin" - "$devenv_path" "$IMAGE_NAME" <<'PY'
+  local -a python_cmd=("$python_bin")
+  if [[ -e "$devenv_path" && ! -w "$devenv_path" ]] || [[ ! -e "$devenv_path" && ! -w "$buckyos_root/etc" ]]; then
+    log "Updating $devenv_path needs root; using sudo"
+    python_cmd=(sudo "$python_bin")
+  fi
+
+  "${python_cmd[@]}" - "$devenv_path" "$IMAGE_NAME" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -1399,6 +1434,7 @@ main() {
   fi
 
   if [[ -z "$PREPARE_CONTEXT_DIR" ]]; then
+    resolve_docker_access
     prepare_docker_config "$tmp_root"
     ensure_buildx_support "${target_arches[@]}"
   fi

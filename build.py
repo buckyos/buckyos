@@ -290,6 +290,17 @@ def docker_available() -> bool:
     return shutil.which("docker") is not None
 
 
+def docker_command() -> list[str]:
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        probe = subprocess.run(["docker", "version"], check=False, text=True, capture_output=True)
+        if "permission denied" in probe.stderr:
+            print("This user cannot reach the Docker socket; docker commands run through sudo", flush=True)
+            if subprocess.run(["sudo", "true"], check=False).returncode != 0:
+                raise RuntimeError("Docker access needs sudo on this machine, and sudo was refused")
+            return ["sudo", "docker"]
+    return ["docker"]
+
+
 def ensure_docker_images(args: argparse.Namespace) -> None:
     print_step("Docker")
     if args.skip_docker:
@@ -302,7 +313,8 @@ def ensure_docker_images(args: argparse.Namespace) -> None:
             "If you plan to debug Jarvis Agent, keep docker stopped."
         )
 
-    docker_info = run_command(["docker", "info"], check=False, capture_output=True)
+    docker = docker_command()
+    docker_info = run_command([*docker, "info"], check=False, capture_output=True)
     if docker_info.returncode != 0:
         message = (
             "docker daemon is not running or not reachable.\n"
@@ -315,13 +327,13 @@ def ensure_docker_images(args: argparse.Namespace) -> None:
         raise RuntimeError(message)
 
     for image in default_docker_images():
-        inspect_result = run_command(["docker", "image", "inspect", image], check=False, capture_output=True)
+        inspect_result = run_command([*docker, "image", "inspect", image], check=False, capture_output=True)
         if inspect_result.returncode == 0 and not args.refresh_images:
             print(f"Image already present: {image}", flush=True)
             continue
 
         print(f"Pulling docker image: {image}", flush=True)
-        pull_result = run_command(["docker", "pull", image], check=False)
+        pull_result = run_command([*docker, "pull", image], check=False)
         if pull_result.returncode == 0:
             continue
 

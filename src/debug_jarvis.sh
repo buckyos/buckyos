@@ -151,13 +151,51 @@ fi
 # WebUI and kRPC are used directly on the service port, without a zone login.
 OPENDAN_ARGS=("--trust-loopback" ${OPENDAN_ARGS[@]+"${OPENDAN_ARGS[@]}"})
 
+DOCKER_NEEDS_SUDO=0
+
+docker() {
+  if [[ "$DOCKER_NEEDS_SUDO" -eq 1 ]]; then
+    sudo "$(type -P docker)" "$@"
+  else
+    command docker "$@"
+  fi
+}
+
+resolve_docker_access() {
+  local probe
+  if [[ "$(id -u)" -eq 0 ]] || ! type -P docker >/dev/null; then
+    return
+  fi
+  probe="$(command docker version 2>&1 || true)"
+  if [[ "$probe" == *"permission denied"* ]]; then
+    DOCKER_NEEDS_SUDO=1
+    echo "[debug_jarvis] this user cannot reach the Docker socket; docker commands run through sudo"
+    if ! sudo true; then
+      echo "Docker access needs sudo on this machine, and sudo was refused" >&2
+      exit 1
+    fi
+  fi
+}
+
+take_back_agent_root() {
+  local agent_root="${BUCKYOS_ROOT}/data/home/${OWNER_USER_ID}/agents/${APP_ID}"
+  if [[ "$(id -u)" -eq 0 ]]; then
+    return
+  fi
+  mkdir -p "${agent_root}" 2>/dev/null || sudo mkdir -p "${agent_root}"
+  if [[ -n "$(find "${agent_root}" ! -user "$(id -u)" -print -quit 2>/dev/null)" ]]; then
+    echo "[debug_jarvis] taking back ${agent_root} from root with sudo"
+    sudo chown -R "$(id -u):$(id -g "$(id -un)")" "${agent_root}"
+  fi
+}
+
 # One process hosts the agent. node-daemon runs it in a container that
 # publishes the app's service port; once this process holds that port the
 # container cannot start again until this process exits. node-daemon may
 # restart the container before this process has the port: opendan then
 # refuses to start, and the container is stopped again.
 app_container() {
-  command -v docker >/dev/null 2>&1 || return 0
+  type -P docker >/dev/null || return 0
   local name
   for name in $(docker ps --format '{{.Names}}' | grep '^buckyos-app-' || true); do
     if docker inspect "${name}" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -qx "BUCKYOS_APP_INSTANCE_ID=${INSTANCE_ID}"; then
@@ -169,6 +207,9 @@ app_container() {
 echo "[debug_jarvis] ${INSTANCE_ID} on the host"
 echo "[debug_jarvis] opendan: ${OPENDAN_BIN}"
 echo "[debug_jarvis] package: ${JARVIS_PACKAGE_ROOT}"
+
+resolve_docker_access
+take_back_agent_root
 
 for attempt in 1 2 3 4 5; do
   for name in $(app_container); do

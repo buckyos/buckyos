@@ -21,7 +21,7 @@ build_dir = os.path.dirname(os.path.abspath(__file__))
 # after run build.py ,use this script to restart the dev buckyos system
 # 1) killall process
 # 2) update files to /opt/buckyos (--all to update all files to /opt/buckyos)
-# 3) start the system (node_daemon; on macOS the BuckyOS Runtime LaunchAgent)
+# 3) start the system (node_daemon, as root on Linux; on macOS the BuckyOS Runtime LaunchAgent)
 
 
 def _command_names(command: str) -> list[str]:
@@ -55,6 +55,8 @@ def _print_help() -> int:
                 "Stops existing BuckyOS processes, updates installed files by default,",
                 "and starts node_daemon from BUCKYOS_ROOT (on macOS in a GUI session:",
                 "binds the root to you and starts the BuckyOS Runtime LaunchAgent).",
+                "On Linux files are updated as you and node_daemon runs as root through sudo,",
+                "like the packaged system service.",
                 "",
                 "Usage:",
                 f"  uv run {script_path.relative_to(SCRIPT_DIR.parent)} [options]",
@@ -232,7 +234,7 @@ def kill_all_processes():
     try:
         import stop
         # Execute the main logic of killall.py
-        stop.kill_all()
+        stop.stop_all()
         print("All processes stopped")
     except ImportError as e:
         print(f"Failed to import killall module: {e}")
@@ -240,6 +242,29 @@ def kill_all_processes():
     except Exception as e:
         print(f"Warning: Some processes may not have been stopped: {e}")
         # Continue execution even if some processes fail to stop
+
+
+def _root_access_ready() -> bool:
+    import stop
+
+    if not stop.needs_root() or subprocess.run(["sudo", "true"]).returncode == 0:
+        return True
+    print("On Linux node_daemon runs as root, like the packaged system service: start.py needs sudo.")
+    return False
+
+
+def take_back_install_tree(buckyos_root: Path, install_all: bool) -> None:
+    import pwd
+    import stop
+
+    if not stop.needs_root():
+        return
+    names = (".",) if install_all else ("bin", "libexec", "etc", "data/cache")
+    paths = [str(buckyos_root / name) for name in names if (buckyos_root / name).exists()]
+    if paths:
+        user = pwd.getpwuid(os.getuid())
+        subprocess.run(["sudo", "chown", "-R", f"{user.pw_uid}:{user.pw_gid}", *paths], check=True)
+
 
 def wipe_zone_data(buckyos_root: Path) -> None:
     """`--wipe-data`: what a fresh install keeps on purpose (data/: user files, RDB
@@ -367,6 +392,17 @@ def _start_macos_runtime(executable: Path, buckyos_root: Path) -> None:
 
 def start_system():
     """Start BuckyOS system"""
+    import stop
+
+    if stop.needs_root():
+        result = subprocess.run(
+            stop.as_root([sys.executable, "-B", "-c", "import start; start.start_system()"]),
+            cwd=SCRIPT_DIR,
+        )
+        if result.returncode != 0:
+            sys.exit(result.returncode)
+        return
+
     print("Starting BuckyOS system...")
     buckyos_root = resolve_buckyos_root()
     executable = node_daemon_path(buckyos_root)
@@ -432,10 +468,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if need_update and not _sdk_tool_distribution_ready():
         return 2
-    
+
+    if not _root_access_ready():
+        return 2
+
     with _preserve_devenv_config(options.all) as preserved_devenv:
         # Step 1: Kill all processes
         kill_all_processes()
+        if need_update:
+            take_back_install_tree(resolve_buckyos_root(), install_all)
         if options.wipe_data:
             wipe_zone_data(resolve_buckyos_root())
 
