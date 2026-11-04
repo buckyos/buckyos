@@ -1,4 +1,4 @@
-import type { PdfPage, PdfTextItem } from './data.ts'
+import { OPS, type PdfPage, type PdfTextItem } from './data.ts'
 import { groupText, readStruct } from './text.ts'
 import type { Mat } from './interpret.ts'
 import { readPdfTextLayout } from './text-layout.ts'
@@ -52,17 +52,40 @@ for (const empty of [false, true]) {
 Deno.test('source layout is used only while text and layout properties still match', () => {
   const [p] = paragraphs([item('hello', 10, 25)])
   const config = { pdf_source: { kind: 'text', text_layout: p.layout } }
-  const look = { text: p.text, fontSize: p.fontSize, align: p.align, lineHeight: p.lineHeight, wrap: false, valign: 'top', labelPosition: 'inside', labelFill: null }
+  const look = { text: p.text, fontSize: p.fontSize, align: p.align, lineHeight: p.lineHeight, wrap: false, valign: 'top', labelPosition: 'inside', labelFill: null, fontColor: p.style.color, bold: p.style.bold, italic: p.style.italic, fontFamily: p.style.family, opacity: p.style.alpha }
   assert(readPdfTextLayout(config, look) !== null)
-  for (const patch of [{ text: 'edited' }, { fontSize: 14 }, { align: 'center' }, { lineHeight: 2 }, { wrap: true }, { valign: 'bottom' }, { labelPosition: 'top' }, { labelFill: '#ffffff' }]) assert(readPdfTextLayout(config, { ...look, ...patch }) === null)
+  for (const patch of [{ text: 'edited' }, { fontSize: 14 }, { align: 'center' }, { lineHeight: 2 }, { wrap: true }, { valign: 'bottom' }, { labelPosition: 'top' }, { labelFill: '#ffffff' }, { fontColor: '#ff0000' }, { bold: true }, { italic: true }, { fontFamily: 'mono' }, { opacity: 0.5 }]) assert(readPdfTextLayout(config, { ...look, ...patch }) === null)
   assert(readPdfTextLayout({}, look) === null)
 })
 
 Deno.test('invalid and oversized source layouts fall back to normal text', () => {
   const [p] = paragraphs([item('hello', 10, 25)])
-  const look = { text: p.text, fontSize: p.fontSize, align: p.align, lineHeight: p.lineHeight, wrap: false, valign: 'top', labelPosition: 'inside', labelFill: null }
+  const look = { text: p.text, fontSize: p.fontSize, align: p.align, lineHeight: p.lineHeight, wrap: false, valign: 'top', labelPosition: 'inside', labelFill: null, fontColor: p.style.color, bold: p.style.bold, italic: p.style.italic, fontFamily: p.style.family, opacity: p.style.alpha }
   const span = p.layout.spans[0]
   for (const patch of [{ width: 0 }, { height: Infinity }, { spans: [] }, { spans: Array(4097).fill(span) }, { spans: [{ ...span, x: NaN }] }, { spans: [{ ...span, width: -1 }] }, { spans: [{ ...span, text: null }] }, { spans: [{ ...span, text: 'different' }] }]) {
     assert(readPdfTextLayout({ pdf_source: { kind: 'text', text_layout: { ...p.layout, ...patch } } }, look) === null)
   }
+})
+
+Deno.test('span styles survive validation and reject malformed paints and alpha', () => {
+  const [p] = paragraphs([item('hello', 10, 25)])
+  const look = { text: p.text, fontSize: p.fontSize, align: p.align, lineHeight: p.lineHeight, wrap: false, valign: 'top', labelPosition: 'inside', labelFill: null, fontColor: p.style.color, bold: p.style.bold, italic: p.style.italic, fontFamily: p.style.family, opacity: p.style.alpha }
+  const style = { color: '#a01020', alpha: 0.4, bold: true, italic: true, family: 'mono' }
+  const config = { pdf_source: { kind: 'text', text_layout: { ...p.layout, spans: p.layout.spans.map(span => ({ ...span, style })) } } }
+  const layout = readPdfTextLayout(config, look)
+  assert(JSON.stringify(layout?.spans[0].style) === JSON.stringify(style))
+  assert(readPdfTextLayout({ ...config, pdf_source: { ...config.pdf_source, text_layout: { ...config.pdf_source.text_layout, style: undefined } } }, look) === null)
+  for (const patch of [{ color: 'url(https://invalid)' }, { alpha: -1 }, { alpha: Infinity }, { bold: 'true' }, { italic: 1 }, { family: 'arbitrary' }]) {
+    const invalid = { ...config, pdf_source: { ...config.pdf_source, text_layout: { ...config.pdf_source.text_layout, spans: [{ ...p.layout.spans[0], style: { ...style, ...patch } }] } } }
+    assert(readPdfTextLayout(invalid, look) === null)
+  }
+})
+
+Deno.test('a showText containing readable and private glyphs stays atomic in the raster', () => {
+  const data = page([item('ABC', 10, 18), item('\uE123', 28, 6)])
+  data.fnArray = [OPS.showText]
+  data.argsArray = [[[[1500, 0, 'ABC'], [500, 0, '\uE123']]]]
+  const result = groupText(data, [1, 0, 0, 1, 0, 0], [{ index: 0, start: { x: 10, y: 30 }, end: { x: 34, y: 30 }, size: 12, font: 'f', fill: { kind: 'color', color: '#000000' }, alpha: 1, mode: 0, mcid: null, complex: null, blank: false }], readStruct(null), { unit: 'paragraph' })
+  assert(result.unreadable === 1 && result.total === 4)
+  assert(result.converted.size === 0 && result.paragraphs.length === 0)
 })

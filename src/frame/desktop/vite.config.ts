@@ -37,11 +37,11 @@ function desktopServiceWorker(): Plugin {
 
 // pdf.js's CMaps (CJK text of older PDFs) and standard font data (PDFs that do not embed the 14 base fonts), served
 // next to the app under aiworkspace/pdfjs/ and fetched only by pages that need them (PDF 导入方案 §2): never precached.
-const PDFJS_ASSET_DIRS = ['cmaps', 'standard_fonts']
+const PDFJS_ASSET_DIRS = ['cmaps', 'standard_fonts', 'wasm']
 const PDFJS_PREFIX = 'aiworkspace/pdfjs/'
 function pdfjsAssets(): Plugin {
   const root = resolve(import.meta.dirname, 'node_modules/pdfjs-dist')
-  const types: Record<string, string> = { '.bcmap': 'application/octet-stream', '.pfb': 'application/octet-stream', '.ttf': 'font/ttf' }
+  const types: Record<string, string> = { '.bcmap': 'application/octet-stream', '.pfb': 'application/octet-stream', '.ttf': 'font/ttf', '.wasm': 'application/wasm', '.js': 'text/javascript' }
   return {
     name: 'aiworkspace-pdfjs-assets',
     configureServer(server) {
@@ -60,7 +60,7 @@ function pdfjsAssets(): Plugin {
       for (const dir of PDFJS_ASSET_DIRS) {
         for (const name of readdirSync(join(root, dir))) {
           // the data files and their licences (Adobe's CMaps, Foxit's and Liberation fonts)
-          if (!/\.(bcmap|pfb|ttf)$|^LICENSE/.test(name)) continue
+          if (!/\.(bcmap|pfb|ttf|wasm|js)$|^LICENSE/.test(name)) continue
           this.emitFile({ type: 'asset', fileName: `${PDFJS_PREFIX}${dir}/${name}`, source: readFileSync(join(root, dir, name)) })
         }
       }

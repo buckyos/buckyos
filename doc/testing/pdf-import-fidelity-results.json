@@ -15,763 +15,405 @@
       {
         "page": 1,
         "mode": "editable",
-        "inputSha256": "81cbe08d51c84d83c3b3e1654b8a2ee0fedc31305c2d1dce208007c2f0c4f017",
-        "objects": 50,
-        "rasters": 0,
-        "notes": {
-          "pdf_effects": "图案、蒙版、混合模式和网格渐变保留在底图中 × 1\np1",
-          "pdf_raster_failed": "未能生成的底图（这些部分缺失） × 1\np1"
-        },
         "sourceOperations": 240,
+        "importOperations": 240,
         "renderOperations": [
           204
         ],
-        "missingCharacters": [],
-        "filteredPrivateUseOperators": [],
+        "rasters": 0,
+        "warningKinds": [
+          "pdf_effects",
+          "pdf_raster_failed"
+        ],
+        "filteredPrivateUseOperators": 0,
         "decodingFailures": [],
-        "comparison": {
-          "width": 1068,
-          "height": 800,
-          "colorCoverage": [],
-          "regions": [
-            {
-              "name": "page",
-              "sourceMean": [
-                191.36596324906367,
-                216.4791011235955,
-                237.24589536516854
-              ],
-              "actualMean": [
-                242.62434456928838,
-                242.88117509363295,
-                243.14291900749063
-              ],
-              "sourceStd": [
-                38.71889001241635,
-                40.47695752388653,
-                43.049293615976545
-              ],
-              "actualStd": [
-                48.642892585682546,
-                47.72741461006176,
-                47.28979219040804
-              ],
-              "meanColorError": 0.10922546265697287,
-              "meanAbsoluteError": 0.13080037514381532,
-              "sourceDarkCoverage": 0.047832397003745315,
-              "actualDarkCoverage": 0.04709620786516854
-            },
-            {
-              "name": "paper-bottom-left",
-              "sourceMean": [
-                200.73211477987422,
-                226.89661949685535,
-                248.47975628930817
-              ],
-              "actualMean": [
-                255,
-                255,
-                255
-              ],
-              "sourceStd": [
-                16.159665899214737,
-                9.503347037986066,
-                5.418200948002912
-              ],
-              "actualStd": [
-                0,
-                0,
-                0
-              ],
-              "meanColorError": 0.11619805154766308,
-              "meanAbsoluteError": 0.11619805154766309,
-              "sourceDarkCoverage": 0,
-              "actualDarkCoverage": 0
-            }
-          ]
-        }
+        "regionInk": [],
+        "textColors": [],
+        "nonEditableCodepoints": []
       },
       {
         "page": 1,
         "mode": "raster",
-        "inputSha256": "81cbe08d51c84d83c3b3e1654b8a2ee0fedc31305c2d1dce208007c2f0c4f017",
-        "objects": 2,
-        "rasters": 1,
-        "notes": {},
         "sourceOperations": 240,
+        "importOperations": 240,
         "renderOperations": [
           204
         ],
-        "missingCharacters": [],
-        "filteredPrivateUseOperators": [],
+        "rasters": 1,
+        "warningKinds": [],
+        "filteredPrivateUseOperators": 0,
         "decodingFailures": [],
-        "comparison": {
-          "width": 1068,
-          "height": 800,
-          "colorCoverage": [],
-          "regions": [
-            {
-              "name": "page",
-              "sourceMean": [
-                191.36596324906367,
-                216.4791011235955,
-                237.24589536516854
-              ],
-              "actualMean": [
-                190.46990285580523,
-                217.90901451310862,
-                237.26581694756555
-              ],
-              "sourceStd": [
-                38.71889001241635,
-                40.47695752388653,
-                43.049293615976545
-              ],
-              "actualStd": [
-                42.29858862080068,
-                45.06190533549536,
-                47.019406943003126
-              ],
-              "meanColorError": 0.0030665298891092273,
-              "meanAbsoluteError": 0.05271492588920712,
-              "sourceDarkCoverage": 0.047832397003745315,
-              "actualDarkCoverage": 0.04658356741573034
-            },
-            {
-              "name": "paper-bottom-left",
-              "sourceMean": [
-                200.73211477987422,
-                226.89661949685535,
-                248.47975628930817
-              ],
-              "actualMean": [
-                199.3244889937107,
-                228.04107704402514,
-                248.09099842767296
-              ],
-              "sourceStd": [
-                16.159665899214737,
-                9.503347037986066,
-                5.418200948002912
-              ],
-              "actualStd": [
-                15.952004398016603,
-                10.817566067856262,
-                7.515273595198443
-              ],
-              "meanColorError": 0.0038442368561680098,
-              "meanAbsoluteError": 0.028703960619887368,
-              "sourceDarkCoverage": 0,
-              "actualDarkCoverage": 0
-            }
-          ]
-        }
+        "regionInk": [],
+        "textColors": [],
+        "nonEditableCodepoints": []
       },
       {
         "page": 2,
         "mode": "editable",
-        "inputSha256": "81cbe08d51c84d83c3b3e1654b8a2ee0fedc31305c2d1dce208007c2f0c4f017",
-        "objects": 4,
-        "rasters": 1,
-        "notes": {
-          "pdf_image_unreadable": "无法解码的图片保留在底图中 × 1\np2",
-          "pdf_effects": "图案、蒙版、混合模式和网格渐变保留在底图中 × 1\np2",
-          "pdf_raster_parts": "有拆不开部分的页：这些部分作为底图放在对象下面 × 1\np2"
-        },
         "sourceOperations": 20,
+        "importOperations": 20,
         "renderOperations": [
           20
         ],
-        "missingCharacters": [],
-        "filteredPrivateUseOperators": [],
+        "rasters": 1,
+        "warningKinds": [
+          "pdf_image_unreadable",
+          "pdf_effects",
+          "pdf_raster_parts"
+        ],
+        "filteredPrivateUseOperators": 0,
         "decodingFailures": [
+          "Warning: #instantiateWasm: UnknownErrorException: Ensure that the `wasmUrl` API parameter is provided.",
+          "Warning: #getJsModule: TypeError: Failed to resolve module specifier 'nulljbig2_nowasm_fallback.js'",
+          "Warning: Unable to decode image \"img_p1_1\": \"Jbig2Error: JBig2 failed to initialize\".",
+          "Warning: Unable to decode image \"img_p1_2\": \"Jbig2Error: JBig2 failed to initialize\"."
+        ],
+        "regionInk": [
           {
-            "phase": "import",
-            "type": "warning",
-            "text": "Warning: #instantiateWasm: UnknownErrorException: Ensure that the `wasmUrl` API parameter is provided."
-          },
-          {
-            "phase": "import",
-            "type": "warning",
-            "text": "Warning: #getJsModule: TypeError: Failed to resolve module specifier 'nulljbig2_nowasm_fallback.js'"
-          },
-          {
-            "phase": "import",
-            "type": "warning",
-            "text": "Warning: Unable to decode image \"img_p1_1\": \"Jbig2Error: JBig2 failed to initialize\"."
-          },
-          {
-            "phase": "import",
-            "type": "warning",
-            "text": "Warning: Unable to decode image \"img_p1_2\": \"Jbig2Error: JBig2 failed to initialize\"."
+            "name": "image-0",
+            "source": 0.14776284974731912,
+            "actual": 0
           }
         ],
-        "comparison": {
-          "width": 1068,
-          "height": 800,
-          "colorCoverage": [],
-          "regions": [
-            {
-              "name": "page",
-              "sourceMean": [
-                204.29572799625467,
-                222.77071395131085,
-                238.0149941479401
-              ],
-              "actualMean": [
-                197.57775163857679,
-                225.2014688670412,
-                246.26548220973783
-              ],
-              "sourceStd": [
-                49.15583526355604,
-                47.88823117842752,
-                49.58220757200084
-              ],
-              "actualStd": [
-                24.101344840659614,
-                21.864277178132426,
-                21.848888782104897
-              ],
-              "meanColorError": 0.022744077562360746,
-              "meanAbsoluteError": 0.08372202179873198,
-              "sourceDarkCoverage": 0.050134597378277156,
-              "actualDarkCoverage": 0.00836493445692884
-            },
-            {
-              "name": "paper-bottom-left",
-              "sourceMean": [
-                200.73211477987422,
-                226.89661949685535,
-                248.47975628930817
-              ],
-              "actualMean": [
-                199.25117924528303,
-                227.12853773584905,
-                248.36084905660377
-              ],
-              "sourceStd": [
-                16.159665899214737,
-                9.503347037986066,
-                5.418200948002912
-              ],
-              "actualStd": [
-                16.965495139810642,
-                10.271758776613348,
-                5.830066714494538
-              ],
-              "meanColorError": 0.0023944588317507164,
-              "meanAbsoluteError": 0.025732211123443087,
-              "sourceDarkCoverage": 0,
-              "actualDarkCoverage": 0
-            },
-            {
-              "name": "image-0",
-              "sourceMean": [
-                218.66171165618965,
-                218.66171165618965,
-                218.66171165618965
-              ],
-              "actualMean": [
-                199.22604051111384,
-                227.10891573195283,
-                248.3582768396401
-              ],
-              "sourceStd": [
-                81.60542347339725,
-                81.60542347339725,
-                81.60542347339725
-              ],
-              "actualStd": [
-                17.193057226478746,
-                10.41096177293144,
-                5.895074201136493
-              ],
-              "meanColorError": 0.07526724235854829,
-              "meanAbsoluteError": 0.21384194440886314,
-              "sourceDarkCoverage": 0.14776284974731912,
-              "actualDarkCoverage": 0
-            }
-          ]
-        }
+        "textColors": [],
+        "nonEditableCodepoints": []
       },
       {
         "page": 2,
         "mode": "raster",
-        "inputSha256": "81cbe08d51c84d83c3b3e1654b8a2ee0fedc31305c2d1dce208007c2f0c4f017",
-        "objects": 2,
-        "rasters": 1,
-        "notes": {},
         "sourceOperations": 20,
+        "importOperations": 20,
         "renderOperations": [
           20
         ],
-        "missingCharacters": [],
-        "filteredPrivateUseOperators": [],
+        "rasters": 1,
+        "warningKinds": [],
+        "filteredPrivateUseOperators": 0,
         "decodingFailures": [
+          "Warning: #instantiateWasm: UnknownErrorException: Ensure that the `wasmUrl` API parameter is provided.",
+          "Warning: #getJsModule: TypeError: Failed to resolve module specifier 'nulljbig2_nowasm_fallback.js'",
+          "Warning: Unable to decode image \"img_p1_1\": \"Jbig2Error: JBig2 failed to initialize\".",
+          "Warning: Unable to decode image \"img_p1_2\": \"Jbig2Error: JBig2 failed to initialize\"."
+        ],
+        "regionInk": [
           {
-            "phase": "import",
-            "type": "warning",
-            "text": "Warning: #instantiateWasm: UnknownErrorException: Ensure that the `wasmUrl` API parameter is provided."
-          },
-          {
-            "phase": "import",
-            "type": "warning",
-            "text": "Warning: #getJsModule: TypeError: Failed to resolve module specifier 'nulljbig2_nowasm_fallback.js'"
-          },
-          {
-            "phase": "import",
-            "type": "warning",
-            "text": "Warning: Unable to decode image \"img_p1_1\": \"Jbig2Error: JBig2 failed to initialize\"."
-          },
-          {
-            "phase": "import",
-            "type": "warning",
-            "text": "Warning: Unable to decode image \"img_p1_2\": \"Jbig2Error: JBig2 failed to initialize\"."
+            "name": "image-0",
+            "source": 0.14776284974731912,
+            "actual": 0
           }
         ],
-        "comparison": {
-          "width": 1068,
-          "height": 800,
-          "colorCoverage": [],
-          "regions": [
-            {
-              "name": "page",
-              "sourceMean": [
-                204.29572799625467,
-                222.77071395131085,
-                238.0149941479401
-              ],
-              "actualMean": [
-                197.78209035580525,
-                226.22137991573032,
-                246.12135299625467
-              ],
-              "sourceStd": [
-                49.15583526355604,
-                47.88823117842752,
-                49.58220757200084
-              ],
-              "actualStd": [
-                23.37890740105523,
-                22.128888326438755,
-                22.07831734875155
-              ],
-              "meanColorError": 0.02362178098455356,
-              "meanAbsoluteError": 0.08544313480698147,
-              "sourceDarkCoverage": 0.050134597378277156,
-              "actualDarkCoverage": 0.007672050561797753
-            },
-            {
-              "name": "paper-bottom-left",
-              "sourceMean": [
-                200.73211477987422,
-                226.89661949685535,
-                248.47975628930817
-              ],
-              "actualMean": [
-                199.3244889937107,
-                228.04107704402514,
-                248.09099842767296
-              ],
-              "sourceStd": [
-                16.159665899214737,
-                9.503347037986066,
-                5.418200948002912
-              ],
-              "actualStd": [
-                15.952004398016603,
-                10.817566067856262,
-                7.515273595198443
-              ],
-              "meanColorError": 0.0038442368561680098,
-              "meanAbsoluteError": 0.028703960619887368,
-              "sourceDarkCoverage": 0,
-              "actualDarkCoverage": 0
-            },
-            {
-              "name": "image-0",
-              "sourceMean": [
-                218.66171165618965,
-                218.66171165618965,
-                218.66171165618965
-              ],
-              "actualMean": [
-                199.300677924319,
-                228.00922387937055,
-                248.07317474012902
-              ],
-              "sourceStd": [
-                81.60542347339725,
-                81.60542347339725,
-                81.60542347339725
-              ],
-              "actualStd": [
-                16.129627352831296,
-                10.945356226627315,
-                7.665814370497425
-              ],
-              "meanColorError": 0.07597386802482474,
-              "meanAbsoluteError": 0.2133189020982758,
-              "sourceDarkCoverage": 0.14776284974731912,
-              "actualDarkCoverage": 0
-            }
-          ]
-        }
+        "textColors": [],
+        "nonEditableCodepoints": []
       },
       {
         "page": 3,
         "mode": "editable",
-        "inputSha256": "81cbe08d51c84d83c3b3e1654b8a2ee0fedc31305c2d1dce208007c2f0c4f017",
-        "objects": 5,
-        "rasters": 1,
-        "notes": {
-          "pdf_effects": "图案、蒙版、混合模式和网格渐变保留在底图中 × 1\np3",
-          "pdf_raster_parts": "有拆不开部分的页：这些部分作为底图放在对象下面 × 1\np3"
-        },
         "sourceOperations": 31,
+        "importOperations": 31,
         "renderOperations": [
           31
         ],
-        "missingCharacters": [
+        "rasters": 1,
+        "warningKinds": [
+          "pdf_effects",
+          "pdf_raster_parts"
+        ],
+        "filteredPrivateUseOperators": 1,
+        "decodingFailures": [],
+        "regionInk": [],
+        "textColors": [],
+        "nonEditableCodepoints": [
           {
-            "character": "",
             "codepoint": "U+E123",
             "count": 1
           }
-        ],
-        "filteredPrivateUseOperators": [
-          {
-            "index": 19,
-            "op": 44,
-            "args": [
-              [
-                [
-                  500,
-                  0,
-                  ""
-                ]
-              ]
-            ]
-          }
-        ],
-        "decodingFailures": [],
-        "comparison": {
-          "width": 1068,
-          "height": 800,
-          "colorCoverage": [],
-          "regions": [
-            {
-              "name": "page",
-              "sourceMean": [
-                197.3504939138577,
-                223.0336891385768,
-                244.22920177902623
-              ],
-              "actualMean": [
-                195.71052668539326,
-                223.0819779962547,
-                243.95688085205992
-              ],
-              "sourceStd": [
-                28.311585831814998,
-                28.12764540808546,
-                29.539387931893966
-              ],
-              "actualStd": [
-                29.87716444377091,
-                29.750740833967857,
-                31.0533326955016
-              ],
-              "meanColorError": 0.002562845768769455,
-              "meanAbsoluteError": 0.03607505171232039,
-              "sourceDarkCoverage": 0.01728815543071161,
-              "actualDarkCoverage": 0.017737593632958803
-            },
-            {
-              "name": "paper-bottom-left",
-              "sourceMean": [
-                200.73211477987422,
-                226.89661949685535,
-                248.47975628930817
-              ],
-              "actualMean": [
-                199.25117924528303,
-                227.12853773584905,
-                248.36084905660377
-              ],
-              "sourceStd": [
-                16.159665899214737,
-                9.503347037986066,
-                5.418200948002912
-              ],
-              "actualStd": [
-                16.965495139810642,
-                10.271758776613348,
-                5.830066714494538
-              ],
-              "meanColorError": 0.0023944588317507164,
-              "meanAbsoluteError": 0.025732211123443087,
-              "sourceDarkCoverage": 0,
-              "actualDarkCoverage": 0
-            }
-          ]
-        }
+        ]
       },
       {
         "page": 3,
         "mode": "raster",
-        "inputSha256": "81cbe08d51c84d83c3b3e1654b8a2ee0fedc31305c2d1dce208007c2f0c4f017",
-        "objects": 2,
-        "rasters": 1,
-        "notes": {},
         "sourceOperations": 31,
+        "importOperations": 31,
         "renderOperations": [
           31
         ],
-        "missingCharacters": [],
-        "filteredPrivateUseOperators": [],
+        "rasters": 1,
+        "warningKinds": [],
+        "filteredPrivateUseOperators": 0,
         "decodingFailures": [],
-        "comparison": {
-          "width": 1068,
-          "height": 800,
-          "colorCoverage": [],
-          "regions": [
-            {
-              "name": "page",
-              "sourceMean": [
-                197.3504939138577,
-                223.0336891385768,
-                244.22920177902623
-              ],
-              "actualMean": [
-                195.98236657303372,
-                224.14668890449437,
-                243.8693820224719
-              ],
-              "sourceStd": [
-                28.311585831814998,
-                28.12764540808546,
-                29.539387931893966
-              ],
-              "actualStd": [
-                29.646451926243348,
-                30.349388725127547,
-                31.426357705067698
-              ],
-              "meanColorError": 0.0037136560304521166,
-              "meanAbsoluteError": 0.03632290672198967,
-              "sourceDarkCoverage": 0.01728815543071161,
-              "actualDarkCoverage": 0.016886704119850188
-            },
-            {
-              "name": "paper-bottom-left",
-              "sourceMean": [
-                200.73211477987422,
-                226.89661949685535,
-                248.47975628930817
-              ],
-              "actualMean": [
-                199.3244889937107,
-                228.04107704402514,
-                248.09099842767296
-              ],
-              "sourceStd": [
-                16.159665899214737,
-                9.503347037986066,
-                5.418200948002912
-              ],
-              "actualStd": [
-                15.952004398016603,
-                10.817566067856262,
-                7.515273595198443
-              ],
-              "meanColorError": 0.0038442368561680098,
-              "meanAbsoluteError": 0.028703960619887368,
-              "sourceDarkCoverage": 0,
-              "actualDarkCoverage": 0
-            }
-          ]
-        }
+        "regionInk": [],
+        "textColors": [],
+        "nonEditableCodepoints": []
       },
       {
         "page": 4,
         "mode": "editable",
-        "inputSha256": "81cbe08d51c84d83c3b3e1654b8a2ee0fedc31305c2d1dce208007c2f0c4f017",
-        "objects": 5,
-        "rasters": 1,
-        "notes": {
-          "pdf_mixed_style": "混排段落使用主颜色和字重，保留文字片段的字号与位置 × 1\nPLAIN RED BOLD BLUE ITALIC",
-          "pdf_effects": "图案、蒙版、混合模式和网格渐变保留在底图中 × 1\np4",
-          "pdf_raster_parts": "有拆不开部分的页：这些部分作为底图放在对象下面 × 1\np4"
-        },
         "sourceOperations": 28,
+        "importOperations": 28,
         "renderOperations": [
           28
         ],
-        "missingCharacters": [],
-        "filteredPrivateUseOperators": [],
+        "rasters": 1,
+        "warningKinds": [
+          "pdf_mixed_style",
+          "pdf_effects",
+          "pdf_raster_parts"
+        ],
+        "filteredPrivateUseOperators": 0,
         "decodingFailures": [],
-        "comparison": {
-          "width": 1068,
-          "height": 800,
-          "colorCoverage": [
-            {
-              "color": "#0d26d9",
-              "sourceCoverage": 0.00100187265917603,
-              "actualCoverage": 0.002841760299625468
-            },
-            {
-              "color": "#d90d0d",
-              "sourceCoverage": 0.0016807116104868914,
-              "actualCoverage": 0
-            }
-          ],
-          "regions": [
-            {
-              "name": "page",
-              "sourceMean": [
-                198.61408824906368,
-                223.98933052434458,
-                245.532422752809
-              ],
-              "actualMean": [
-                196.634845505618,
-                224.21821629213483,
-                245.91259129213483
-              ],
-              "sourceStd": [
-                24.568862822448143,
-                24.73053145922903,
-                24.679732512578685
-              ],
-              "actualStd": [
-                26.98080562053428,
-                25.290201821021085,
-                22.894083598992115
-              ],
-              "meanColorError": 0.003383394837335657,
-              "meanAbsoluteError": 0.03134624764387653,
-              "sourceDarkCoverage": 0.012777387640449438,
-              "actualDarkCoverage": 0.012498829588014982
-            },
-            {
-              "name": "paper-bottom-left",
-              "sourceMean": [
-                200.73211477987422,
-                226.89661949685535,
-                248.47975628930817
-              ],
-              "actualMean": [
-                199.25117924528303,
-                227.12853773584905,
-                248.36084905660377
-              ],
-              "sourceStd": [
-                16.159665899214737,
-                9.503347037986066,
-                5.418200948002912
-              ],
-              "actualStd": [
-                16.965495139810642,
-                10.271758776613348,
-                5.830066714494538
-              ],
-              "meanColorError": 0.0023944588317507164,
-              "meanAbsoluteError": 0.025732211123443087,
-              "sourceDarkCoverage": 0,
-              "actualDarkCoverage": 0
-            }
-          ]
-        }
+        "regionInk": [],
+        "textColors": [
+          {
+            "color": "#0d26d9",
+            "sourceCoverage": 0.00100187265917603,
+            "actualCoverage": 0.002841760299625468
+          },
+          {
+            "color": "#d90d0d",
+            "sourceCoverage": 0.0016807116104868914,
+            "actualCoverage": 0
+          }
+        ],
+        "nonEditableCodepoints": []
       },
       {
         "page": 4,
         "mode": "raster",
-        "inputSha256": "81cbe08d51c84d83c3b3e1654b8a2ee0fedc31305c2d1dce208007c2f0c4f017",
-        "objects": 2,
-        "rasters": 1,
-        "notes": {},
         "sourceOperations": 28,
+        "importOperations": 28,
         "renderOperations": [
           28
         ],
-        "missingCharacters": [],
-        "filteredPrivateUseOperators": [],
+        "rasters": 1,
+        "warningKinds": [],
+        "filteredPrivateUseOperators": 0,
         "decodingFailures": [],
-        "comparison": {
-          "width": 1068,
-          "height": 800,
-          "colorCoverage": [
-            {
-              "color": "#0d26d9",
-              "sourceCoverage": 0.00100187265917603,
-              "actualCoverage": 0.0011072097378277154
-            },
-            {
-              "color": "#d90d0d",
-              "sourceCoverage": 0.0016807116104868914,
-              "actualCoverage": 0.0015976123595505618
-            }
-          ],
-          "regions": [
-            {
-              "name": "page",
-              "sourceMean": [
-                198.61408824906368,
-                223.98933052434458,
-                245.532422752809
-              ],
-              "actualMean": [
-                197.188360252809,
-                225.0842673220974,
-                245.1451100187266
-              ],
-              "sourceStd": [
-                24.568862822448143,
-                24.73053145922903,
-                24.679732512578685
-              ],
-              "actualStd": [
-                25.636093041564564,
-                26.59505412982341,
-                26.172637985712377
-              ],
-              "meanColorError": 0.003801277814496603,
-              "meanAbsoluteError": 0.03456038407872512,
-              "sourceDarkCoverage": 0.012777387640449438,
-              "actualDarkCoverage": 0.012860486891385768
-            },
-            {
-              "name": "paper-bottom-left",
-              "sourceMean": [
-                200.73211477987422,
-                226.89661949685535,
-                248.47975628930817
-              ],
-              "actualMean": [
-                199.3244889937107,
-                228.04107704402514,
-                248.09099842767296
-              ],
-              "sourceStd": [
-                16.159665899214737,
-                9.503347037986066,
-                5.418200948002912
-              ],
-              "actualStd": [
-                15.952004398016603,
-                10.817566067856262,
-                7.515273595198443
-              ],
-              "meanColorError": 0.0038442368561680098,
-              "meanAbsoluteError": 0.028703960619887368,
-              "sourceDarkCoverage": 0,
-              "actualDarkCoverage": 0
-            }
-          ]
-        }
+        "regionInk": [],
+        "textColors": [
+          {
+            "color": "#0d26d9",
+            "sourceCoverage": 0.00100187265917603,
+            "actualCoverage": 0.0011072097378277154
+          },
+          {
+            "color": "#d90d0d",
+            "sourceCoverage": 0.0016807116104868914,
+            "actualCoverage": 0.0015976123595505618
+          }
+        ],
+        "nonEditableCodepoints": []
       }
     ]
+  },
+  "after": {
+    "seconds": 124.39,
+    "passed": 9,
+    "failed": 0,
+    "skipped": 1,
+    "pages": [
+      {
+        "page": 1,
+        "mode": "editable",
+        "sourceOperations": 240,
+        "importOperations": 204,
+        "renderOperations": [
+          204
+        ],
+        "rasters": 1,
+        "warningKinds": [
+          "pdf_effects",
+          "pdf_raster_parts"
+        ],
+        "filteredPrivateUseOperators": 0,
+        "decodingFailures": [],
+        "regionInk": [],
+        "textColors": [],
+        "nonEditableCodepoints": []
+      },
+      {
+        "page": 1,
+        "mode": "raster",
+        "sourceOperations": 240,
+        "importOperations": 204,
+        "renderOperations": [
+          204
+        ],
+        "rasters": 1,
+        "warningKinds": [],
+        "filteredPrivateUseOperators": 0,
+        "decodingFailures": [],
+        "regionInk": [],
+        "textColors": [],
+        "nonEditableCodepoints": []
+      },
+      {
+        "page": 2,
+        "mode": "editable",
+        "sourceOperations": 20,
+        "importOperations": 20,
+        "renderOperations": [
+          20
+        ],
+        "rasters": 1,
+        "warningKinds": [
+          "pdf_effects",
+          "pdf_raster_parts"
+        ],
+        "filteredPrivateUseOperators": 0,
+        "decodingFailures": [],
+        "regionInk": [
+          {
+            "name": "image-0",
+            "source": 0.14776284974731912,
+            "actual": 0.14029335634167386
+          }
+        ],
+        "textColors": [],
+        "nonEditableCodepoints": []
+      },
+      {
+        "page": 2,
+        "mode": "raster",
+        "sourceOperations": 20,
+        "importOperations": 20,
+        "renderOperations": [
+          20
+        ],
+        "rasters": 1,
+        "warningKinds": [],
+        "filteredPrivateUseOperators": 0,
+        "decodingFailures": [],
+        "regionInk": [
+          {
+            "name": "image-0",
+            "source": 0.14776284974731912,
+            "actual": 0.14448416122272895
+          }
+        ],
+        "textColors": [],
+        "nonEditableCodepoints": []
+      },
+      {
+        "page": 3,
+        "mode": "editable",
+        "sourceOperations": 31,
+        "importOperations": 31,
+        "renderOperations": [
+          31
+        ],
+        "rasters": 1,
+        "warningKinds": [
+          "pdf_effects",
+          "pdf_raster_parts"
+        ],
+        "filteredPrivateUseOperators": 0,
+        "decodingFailures": [],
+        "regionInk": [
+          {
+            "name": "glyph-outline-left",
+            "source": 0.6666666666666666,
+            "actual": 0.6666666666666666
+          }
+        ],
+        "textColors": [],
+        "nonEditableCodepoints": [
+          {
+            "codepoint": "U+E123",
+            "count": 1
+          }
+        ]
+      },
+      {
+        "page": 3,
+        "mode": "raster",
+        "sourceOperations": 31,
+        "importOperations": 31,
+        "renderOperations": [
+          31
+        ],
+        "rasters": 1,
+        "warningKinds": [],
+        "filteredPrivateUseOperators": 0,
+        "decodingFailures": [],
+        "regionInk": [
+          {
+            "name": "glyph-outline-left",
+            "source": 0.6666666666666666,
+            "actual": 0.6666666666666666
+          }
+        ],
+        "textColors": [],
+        "nonEditableCodepoints": []
+      },
+      {
+        "page": 4,
+        "mode": "editable",
+        "sourceOperations": 28,
+        "importOperations": 28,
+        "renderOperations": [
+          28
+        ],
+        "rasters": 1,
+        "warningKinds": [
+          "pdf_effects",
+          "pdf_raster_parts"
+        ],
+        "filteredPrivateUseOperators": 0,
+        "decodingFailures": [],
+        "regionInk": [],
+        "textColors": [
+          {
+            "color": "#0d26d9",
+            "sourceCoverage": 0.00100187265917603,
+            "actualCoverage": 0.0011048689138576779
+          },
+          {
+            "color": "#d90d0d",
+            "sourceCoverage": 0.0016807116104868914,
+            "actualCoverage": 0.001720505617977528
+          }
+        ],
+        "nonEditableCodepoints": []
+      },
+      {
+        "page": 4,
+        "mode": "raster",
+        "sourceOperations": 28,
+        "importOperations": 28,
+        "renderOperations": [
+          28
+        ],
+        "rasters": 1,
+        "warningKinds": [],
+        "filteredPrivateUseOperators": 0,
+        "decodingFailures": [],
+        "regionInk": [],
+        "textColors": [
+          {
+            "color": "#0d26d9",
+            "sourceCoverage": 0.00100187265917603,
+            "actualCoverage": 0.0011072097378277154
+          },
+          {
+            "color": "#d90d0d",
+            "sourceCoverage": 0.0016807116104868914,
+            "actualCoverage": 0.0015976123595505618
+          }
+        ],
+        "nonEditableCodepoints": []
+      }
+    ]
+  },
+  "additionalChecks": {
+    "pdfModule": {
+      "passed": 32,
+      "failed": 0
+    },
+    "legacyBrowserAndProductionAssets": {
+      "passed": 5,
+      "failed": 0
+    },
+    "desktopTypecheck": "passed",
+    "targetedLint": "passed"
   }
 }

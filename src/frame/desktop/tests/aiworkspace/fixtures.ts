@@ -194,7 +194,11 @@ export async function backToList(page: Page): Promise<string | null> {
 /** Open the main menu and click through items by test id (an item with a submenu opens it on click). */
 export async function mainMenu(page: Page, ...testIds: string[]) {
   await page.getByTestId('aiws-main-menu').click()
-  for (const id of testIds) await page.getByTestId(id).click()
+  for (const id of testIds) {
+    const item = page.getByTestId(id)
+    if (await item.getAttribute('aria-haspopup') === 'menu') await item.hover()
+    else await item.click()
+  }
 }
 
 /** Main menu → 关闭工作区 (the leave check passes when nothing is unsaved). */

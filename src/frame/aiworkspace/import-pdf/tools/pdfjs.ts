@@ -18,7 +18,7 @@ export async function openPdf(bytes: Uint8Array): Promise<{ doc: PdfjsDocument; 
   const lib = await pdfjs()
   const doc = await lib.getDocument({
     data: bytes.slice(), fontExtraProperties: true, isEvalSupported: false, disableFontFace: true, useWorkerFetch: false,
-    standardFontDataUrl: new URL('standard_fonts/', PDFJS_DIR).pathname, cMapUrl: new URL('cmaps/', PDFJS_DIR).pathname, cMapPacked: true, verbosity: 0,
+    wasmUrl: new URL('wasm/', PDFJS_DIR).pathname, standardFontDataUrl: new URL('standard_fonts/', PDFJS_DIR).pathname, cMapUrl: new URL('cmaps/', PDFJS_DIR).pathname, cMapPacked: true, verbosity: 0,
   }).promise
   let oc = null
   try { oc = await doc.getOptionalContentConfig() } catch { /* none */ }

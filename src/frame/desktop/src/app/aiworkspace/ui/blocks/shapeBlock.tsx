@@ -103,13 +103,13 @@ function ShapeFrame({ context, children }: { context: RenderContext; children?: 
   const { w, h } = context.size
   const pdfLayout = !children && look.kind === 'text' ? readPdfTextLayout(context.payload.config, look) : null
   return (
-    <div className={`aiws-shape is-${look.kind}`} style={{ opacity: look.opacity < 1 ? look.opacity : undefined }} data-kind={look.kind} data-testid={`aiws-shape-${context.cell.entity_id}`}>
+    <div className={`aiws-shape is-${look.kind}`} style={{ opacity: !pdfLayout?.style && look.opacity < 1 ? look.opacity : undefined }} data-kind={look.kind} data-testid={`aiws-shape-${context.cell.entity_id}`}>
       <ShapeArt look={look} w={w} h={h} />
       {pdfLayout ? (
         <svg className="aiws-shape-text aiws-pdf-text" viewBox={`0 0 ${pdfLayout.width} ${pdfLayout.height}`} preserveAspectRatio="none" width="100%" height="100%"
           style={{ position: 'absolute', inset: 0, overflow: 'visible', whiteSpace: 'pre', pointerEvents: 'none', fill: inkFor(look), fontFamily: look.fontFamily ? FONT_STACK[look.fontFamily] : undefined, fontWeight: look.bold ? 700 : undefined, fontStyle: look.italic ? 'italic' : undefined, textDecoration: look.underline ? 'underline' : undefined }}>
           {pdfLayout.spans.map((span, i) => (
-            <text key={i} x={span.x} y={span.y} fontSize={span.size} textLength={span.width} lengthAdjust="spacingAndGlyphs" xmlSpace="preserve">{span.text}</text>
+            <text key={i} fill={span.style?.color} fontFamily={span.style ? FONT_STACK[span.style.family] : undefined} fontWeight={span.style ? (span.style.bold ? 700 : 400) : undefined} fontStyle={span.style ? (span.style.italic ? 'italic' : 'normal') : undefined} opacity={span.style?.alpha ?? pdfLayout.style?.alpha} x={span.x} y={span.y} fontSize={span.size} textLength={span.width} lengthAdjust="spacingAndGlyphs" xmlSpace="preserve">{span.text}</text>
           ))}
         </svg>
       ) : (

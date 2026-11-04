@@ -39,11 +39,13 @@ e2e suite (`tests/aiworkspace/pdf-import.spec.ts`) drives the importer through t
 
 PDF text objects keep `config.pdf_source.text_layout`: the original text, paragraph box width/height,
 font size, alignment, line height, and `spans` with `text`, `x`, `y` (baseline), `width`, and `size`.
+The layout also stores its base style and optional per-span overrides for colour, alpha, weight, italic and family.
+The Desktop validates these fields and renders each override without multiplying source alpha twice.
 Span coordinates are relative to the unrotated paragraph box; rotation stays on the native canvas object.
 The Desktop draws positioned SVG text with each source advance as `textLength`, so font substitution and
 inferred spaces do not move neighbouring fragments. The normal text/config remains editable.
 
-Changing the text removes this source layout. A text, font-size, alignment, line-height, wrapping, vertical-alignment, label-position, or label-background
+Changing the text removes this source layout. A text, font-size, colour, weight, italic, family, opacity, alignment, line-height, wrapping, vertical-alignment, label-position, or label-background
 mismatch disables it, as does malformed metadata. Ordinary text objects use their normal renderer.
 PDF.js explicit line-end markers prevent adjacent lines from being joined again. Existing imports need
 reimporting to acquire the geometry; this does not reconstruct missing metadata from saved canvases.
@@ -51,5 +53,21 @@ reimporting to acquire the geometry; this does not reconstruct missing metadata 
 A paragraph is limited to 4096 spans and 60 KiB of serialized config. If any paragraph exceeds the limit,
 the whole page stays in one original raster and the report explains the fallback. No pictures or background
 paths are extracted in this case: all source operators retain their paint order, so a separately extracted
-background cannot cover the fallback text. Mixed colours/weights still
-use the paragraph's main style. This does not embed the PDF's original fonts or infer semantic word boundaries.
+background cannot cover the fallback text. Mixed colours/weights are preserved by span overrides. This does not embed the PDF's original fonts or infer semantic word boundaries.
+
+## Browser rendering stream and decoders
+
+The browser captures the complete normal render operator list with `renderOperators` before extracting a page,
+then passes that exact list into `extractPage`. The list used by `getOperatorList` can differ because PDF.js disables
+its queue optimizer for extraction. A mismatch during filtered raster rendering falls back to the complete page;
+it must never silently drop the background. Inspection extracts before drawing its preview because CanvasGraphics
+may replace raw path buffers with cached Path2D objects while rendering. Deno recording still defaults to
+`getOperatorList`, since it does not apply a browser raster filter.
+
+Private-use/replacement glyphs do not become editable text. Their drawing operators must remain in the raster,
+including an operator containing both readable and unreadable glyphs; overlapping readable text cannot claim them.
+The browser and Deno reader configure PDF.js's WASM resources. Vite serves and emits WASM, JS fallbacks and licences
+under `aiworkspace/pdfjs/wasm/`, outside the service-worker precache.
+
+The synthetic fixture, browser fidelity checks and result evidence are described in
+[PDF fidelity testing](../../../../doc/testing/pdf-import-fidelity.md). No user document is needed.

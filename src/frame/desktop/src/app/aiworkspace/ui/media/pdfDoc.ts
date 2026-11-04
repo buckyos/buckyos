@@ -3,6 +3,7 @@
  * the build serves under aiworkspace/pdfjs/ — fetched only by the pages that need them. The poster of an inserted
  * PDF and the importer open documents here. */
 
+import type { PdfOperatorList } from '@pdf/mod'
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import type { PDFDocumentLoadingTask, PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist'
 
@@ -24,7 +25,7 @@ export async function openPdfDocument(bytes: Uint8Array, signal?: AbortSignal): 
   // the worker fetches the data files itself: absolute URLs
   const base = new URL(`${import.meta.env.BASE_URL}${ASSETS}`, window.location.href).href
   const task: PDFDocumentLoadingTask = pdfjs.getDocument({
-    data: bytes.slice(), cMapUrl: `${base}cmaps/`, cMapPacked: true, standardFontDataUrl: `${base}standard_fonts/`,
+    data: bytes.slice(), cMapUrl: `${base}cmaps/`, cMapPacked: true, standardFontDataUrl: `${base}standard_fonts/`, wasmUrl: `${base}wasm/`,
     // font names, serif and monospace flags for the importer (PDF 导入方案 §5.1)
     fontExtraProperties: true,
   })
@@ -41,7 +42,7 @@ export async function openPdfDocument(bytes: Uint8Array, signal?: AbortSignal): 
 
 /** A page drawn on a new canvas, `maxEdge` pixels on its long side. `transparent`: no white paper under it;
  * `filter`: operators to draw (pdf.js `operationsFilter`, by index in the page's operator list). */
-export async function renderPage(page: PDFPageProxy, maxEdge: number, options: { transparent?: boolean; filter?: (index: number, list: { fnArray: number[] }) => boolean } = {}): Promise<HTMLCanvasElement> {
+export async function renderPage(page: PDFPageProxy, maxEdge: number, options: { transparent?: boolean; filter?: (index: number, list: PdfOperatorList) => boolean } = {}): Promise<HTMLCanvasElement> {
   const base = page.getViewport({ scale: 1 })
   const viewport = page.getViewport({ scale: maxEdge / Math.max(base.width, base.height, 1) })
   const canvas = document.createElement('canvas')
@@ -51,6 +52,16 @@ export async function renderPage(page: PDFPageProxy, maxEdge: number, options: {
   if (options.transparent) canvas.getContext('2d', { alpha: true, willReadFrequently: true })
   await page.render({ canvas, viewport, ...(options.transparent ? { background: 'rgba(0,0,0,0)' } : {}), ...(options.filter ? { operationsFilter: options.filter as never } : {}) }).promise
   return canvas
+}
+
+export async function renderOperators(page: PDFPageProxy): Promise<PdfOperatorList> {
+  const pdfjs = await loadPdfjs()
+  let operators: PdfOperatorList | null = null
+  await renderPage(page, 1, { transparent: true, filter: (index, list) => {
+    operators = list
+    return list.fnArray[index] === pdfjs.OPS.dependency
+  } })
+  return operators ?? { fnArray: [], argsArray: [] }
 }
 
 /** A PDF's first page as a picture (the poster of an inserted PDF) and its page count. */

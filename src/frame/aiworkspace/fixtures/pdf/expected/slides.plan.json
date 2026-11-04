@@ -83,13 +83,27 @@
         "fontSize": 88,
         "align": "left",
         "lineHeight": null,
+        "style": {
+         "color": "#ffffff",
+         "alpha": 1,
+         "bold": true,
+         "italic": false,
+         "family": "sans"
+        },
         "spans": [
          {
           "text": "季度回顾",
           "x": 6,
           "y": 92.44,
           "width": 352,
-          "size": 88
+          "size": 88,
+          "style": {
+           "color": "#ffffff",
+           "alpha": 1,
+           "bold": false,
+           "italic": false,
+           "family": "sans"
+          }
          },
          {
           "text": "Quarterly Review",
@@ -185,6 +199,13 @@
         "fontSize": 48,
         "align": "left",
         "lineHeight": null,
+        "style": {
+         "color": "#ffffff",
+         "alpha": 1,
+         "bold": false,
+         "italic": false,
+         "family": "sans"
+        },
         "spans": [
          {
           "text": "收入增长",
@@ -198,7 +219,14 @@
           "x": 211.34,
           "y": 52.24,
           "width": 96.07,
-          "size": 48
+          "size": 48,
+          "style": {
+           "color": "#ffffff",
+           "alpha": 1,
+           "bold": true,
+           "italic": false,
+           "family": "sans"
+          }
          }
         ]
        }
@@ -265,6 +293,13 @@
         "fontSize": 48,
         "align": "left",
         "lineHeight": null,
+        "style": {
+         "color": "#ffffff",
+         "alpha": 1,
+         "bold": false,
+         "italic": false,
+         "family": "sans"
+        },
         "spans": [
          {
           "text": "New customers: 1,204",
@@ -338,6 +373,13 @@
         "fontSize": 48,
         "align": "left",
         "lineHeight": null,
+        "style": {
+         "color": "#ffffff",
+         "alpha": 1,
+         "bold": false,
+         "italic": false,
+         "family": "sans"
+        },
         "spans": [
          {
           "text": "Churn down to 2.1%",
@@ -473,6 +515,13 @@
         "fontSize": 28,
         "align": "left",
         "lineHeight": null,
+        "style": {
+         "color": "#ffffff",
+         "alpha": 1,
+         "bold": false,
+         "italic": true,
+         "family": "sans"
+        },
         "spans": [
          {
           "text": "Confidential — internal use",
@@ -594,6 +643,13 @@
         "fontSize": 88,
         "align": "left",
         "lineHeight": null,
+        "style": {
+         "color": "#222222",
+         "alpha": 1,
+         "bold": true,
+         "italic": false,
+         "family": "sans"
+        },
         "spans": [
          {
           "text": "Roadmap",
@@ -695,6 +751,13 @@
         "fontSize": 40,
         "align": "left",
         "lineHeight": 1.4,
+        "style": {
+         "color": "#222222",
+         "alpha": 1,
+         "bold": false,
+         "italic": false,
+         "family": "sans"
+        },
         "spans": [
          {
           "text": "This paragraph wraps over several",
@@ -745,16 +808,6 @@
   "pages": 2,
   "objects": 18,
   "images": 1,
-  "notes": [
-   {
-    "kind": "pdf_mixed_style",
-    "message": "Paragraphs with several styles imported in their main style",
-    "count": 2,
-    "samples": [
-     "季度回顾 Quarterly Review",
-     "收入增长 23%"
-    ]
-   }
-  ]
+  "notes": []
  }
 }

@@ -49,7 +49,7 @@ for (const [name, fallback] of [
   env[name] = resolve(env[name] ?? join(repo, fallback))
   if (!existsSync(env[name])) throw new Error(`${name} must point to a prebuilt isolated-test binary`)
 }
-const output = resolve(values.output ?? join(repo, '.work', `pdf-fidelity-${Date.now()}`))
+const output = resolve(values.output ?? join(repo, '..', '.work', `pdf-fidelity-${Date.now()}`))
 const reference = resolve(values['reference-dir'] ?? join(output, 'reference'))
 if (reference === output || reference.startsWith(join(output, 'browser') + '/')) throw new Error('Reference directory must be separate from browser output')
 mkdirSync(reference, { recursive: true })
@@ -59,6 +59,7 @@ env.TMPDIR = env.TMP = env.TEMP = scratch
 env.BUCKYOS_ROOT = join(output, 'isolated-runtime')
 Object.assign(env, {
   AIWS_PDF_FILE: input,
+  AIWS_PDF_PROFILE: positionals.length ? '' : join(repo, 'src/frame/aiworkspace/fixtures/pdf/fidelity.manifest.json'),
   AIWS_PDF_PAGES: [...new Set(pages)].join(','),
   AIWS_PDF_ANALYZE_ALL: values['analyze-all'] ? '1' : '0',
   AIWS_PDF_DECODER_CONTROL: !positionals.length || values['decoder-control'] || values['control-only'] ? '1' : '0',

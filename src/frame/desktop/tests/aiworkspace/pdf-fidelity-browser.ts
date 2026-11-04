@@ -1,4 +1,4 @@
-import { openPdfDocument, renderPage, loadPdfjs } from '../../src/app/aiworkspace/ui/media/pdfDoc'
+import { openPdfDocument, renderOperators, renderPage, loadPdfjs } from '../../src/app/aiworkspace/ui/media/pdfDoc'
 import { extractPage, worldOf, type PdfjsDocument, type PdfjsPage } from '@pdf/mod'
 import { interpret } from '@pdf/interpret'
 import { groupText, readStruct } from '@pdf/text'
@@ -12,12 +12,14 @@ export async function inventory(base64: string, pages?: number[]) {
     const results = []
     for (const n of pages ?? Array.from({ length: doc.numPages }, (_, i) => i + 1)) {
       const proxy = await doc.getPage(n)
-      const { page } = await extractPage(doc as unknown as PdfjsDocument, proxy as unknown as PdfjsPage, new Map(), null)
+      const sourceOperators = await proxy.getOperatorList()
+      const operators = await renderOperators(proxy)
+      const { page } = await extractPage(doc as unknown as PdfjsDocument, proxy as unknown as PdfjsPage, new Map(), null, operators)
       const { world } = worldOf(page)
       const marks = interpret(page, world)
       const text = groupText(page, world, marks.runs, readStruct(page.struct), { unit: 'paragraph' })
       const paragraphs = text.paragraphs.map(p => ({ text: p.text, rect: p.rect, rotation: p.rotation, style: p.style, mixed: p.mixed, layout: p.layout,
-        lostStyles: p.lines.flatMap(line => line.pieces).filter(piece => piece.str.trim() && styleKey(piece.style) !== styleKey(p.style)).map(piece => ({ text: piece.str, style: piece.style })) }))
+        styleOverrides: p.lines.flatMap(line => line.pieces).filter(piece => piece.str.trim() && styleKey(piece.style) !== styleKey(p.style)).map(piece => ({ text: piece.str, style: piece.style })) }))
       const renderLengths = new Set<number>()
       await renderPage(proxy, 32, { transparent: true, filter: (_index, list) => { renderLengths.add(list.fnArray.length); return false } })
       const images = []
@@ -29,15 +31,15 @@ export async function inventory(base64: string, pages?: number[]) {
         images.push({ ref: mark.ref, width: v?.width, height: v?.height, kind: v?.kind, bitmap: v?.bitmap ? { width: v.bitmap.width, height: v.bitmap.height } : null, dataLength: v?.data?.length, dataType: v?.data?.constructor.name, keys: v ? Object.keys(v) : [], complex: mark.complex,
           rect: { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) } })
       }
-      results.push({ page: n, width: page.width, height: page.height, worldWidth: Math.round(page.width * worldOf(page).scale), worldHeight: Math.round(page.height * worldOf(page).scale), rawOperations: page.fnArray.length, renderOperations: [...renderLengths], fonts: page.fonts, text: page.text, paragraphs, images, textStats: { total: text.total, unreadable: text.unreadable, invisible: text.invisible, vertical: text.vertical }, badSourceItems: page.text.filter(item => /[\uE000-\uF8FF\uFFFD]/u.test(item.str)), badOperators: page.fnArray.flatMap((op, index) => text.converted.has(index) && /[\uE000-\uF8FF\uFFFD]/u.test(JSON.stringify(page.argsArray[index])) ? [{ index, op, args: page.argsArray[index] }] : []) })
+      results.push({ page: n, width: page.width, height: page.height, worldWidth: Math.round(page.width * worldOf(page).scale), worldHeight: Math.round(page.height * worldOf(page).scale), rawOperations: sourceOperators.fnArray.length, extractedOperations: page.fnArray.length, renderOperations: [...renderLengths], fonts: page.fonts, text: page.text, paragraphs, images, textStats: { total: text.total, unreadable: text.unreadable, invisible: text.invisible, vertical: text.vertical }, badSourceItems: page.text.filter(item => /[\uE000-\uF8FF\uFFFD]/u.test(item.str)), badOperators: page.fnArray.flatMap((op, index) => text.converted.has(index) && /[\uE000-\uF8FF\uFFFD]/u.test(JSON.stringify(page.argsArray[index])) ? [{ index, op, args: page.argsArray[index] }] : []) })
       proxy.cleanup()
     }
     return { pageCount: doc.numPages, pages: results }
   } finally { close() }
 }
 
-export async function reference(base64: string, pageNumber: number, edge: number, wasmUrl?: string) {
-  const handle = wasmUrl ? await (async () => { const pdfjs = await loadPdfjs(); const task = pdfjs.getDocument({ data: decode(base64), cMapUrl: new URL('/aiworkspace/pdfjs/cmaps/', location.href).href, cMapPacked: true, standardFontDataUrl: new URL('/aiworkspace/pdfjs/standard_fonts/', location.href).href, fontExtraProperties: true, wasmUrl: new URL(wasmUrl, location.href).href }); return { doc: await task.promise, close: () => { void task.destroy() } } })() : await openPdfDocument(decode(base64))
+export async function reference(base64: string, pageNumber: number, edge: number, wasmUrl?: string | null) {
+  const handle = wasmUrl !== undefined ? await (async () => { const pdfjs = await loadPdfjs(); const task = pdfjs.getDocument({ data: decode(base64), cMapUrl: new URL('/aiworkspace/pdfjs/cmaps/', location.href).href, cMapPacked: true, standardFontDataUrl: new URL('/aiworkspace/pdfjs/standard_fonts/', location.href).href, fontExtraProperties: true, ...(wasmUrl ? { wasmUrl: new URL(wasmUrl, location.href).href } : {}) }); return { doc: await task.promise, close: () => { void task.destroy() } } })() : await openPdfDocument(decode(base64))
   const { doc, close } = handle
   try { return (await renderPage(await doc.getPage(pageNumber), edge)).toDataURL('image/png') } finally { close() }
 }

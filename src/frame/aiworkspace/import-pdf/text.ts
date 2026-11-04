@@ -12,7 +12,7 @@
  *   unreadable   U+FFFD, private-use and control characters: a page with too many is drawn whole (§4.1 第 6 条) */
 
 import type { PdfFont, PdfPage, PdfStructNode } from './data.ts'
-import type { PdfTextLayout } from './text-layout.ts'
+import type { PdfTextLayout, PdfTextStyle } from './text-layout.ts'
 import { apply, mul, scaleOf, type Mat, type TextRun } from './interpret.ts'
 import type { Point, Rect } from '../import-drawio/geometry.ts'
 
@@ -54,7 +54,7 @@ export function readStruct(root: PdfStructNode | null): StructInfo {
   return info
 }
 
-export interface TextStyle { color: string; alpha: number; bold: boolean; italic: boolean; family: 'sans' | 'serif' | 'mono' }
+export type TextStyle = PdfTextStyle
 
 interface Piece {
   str: string
@@ -233,10 +233,10 @@ function makeParagraph(lines: TextLine[]): Paragraph {
   return {
     lines, text, rect: { x: centre.x - boxW / 2, y: centre.y - boxH / 2, w: boxW, h: boxH }, rotation: first.angle, fontSize: fs, lineHeight, align, style,
     layout: {
-      text, width: boxW, height: boxH, fontSize: fs, align, lineHeight,
+      text, width: boxW, height: boxH, fontSize: fs, align, lineHeight, style,
       spans: lines.flatMap((l) => l.pieces).filter((p) => !isSpace(p.str) && p.len > 0).map((p) => ({
         text: p.str, x: p.origin.x * d.x + p.origin.y * d.y - u0,
-        y: -d.y * p.origin.x + d.x * p.origin.y - first.baseline - v0, width: p.len, size: p.size,
+        y: -d.y * p.origin.x + d.x * p.origin.y - first.baseline - v0, width: p.len, size: p.size, ...(styleKey(p.style) !== styleKey(style) ? { style: p.style } : {}),
       })),
     },
     role: first.block?.role ?? null, order: runs.length ? Math.min(...runs) : Infinity, runs,
@@ -318,10 +318,16 @@ export function groupText(page: PdfPage, world: Mat, runs: TextRun[], struct: St
     raw.push({ item, origin: apply(m, 0, 0), dir, len: item.width * s, size: Math.hypot(m[2], m[3]), angle: Math.round((Math.atan2(m[1], m[0]) * 180) / Math.PI * 100) / 100, order, hasEOL: item.hasEOL })
   }
   const paired = pairRuns(raw, runs.filter((r) => r.complex === null || r.complex === 'text_clip'))
+  const unreadableRuns = new Set(runs.filter(run => {
+    const args = page.argsArray[run.index]
+    const glyphs = Array.isArray(args) ? args[0] : null
+    return Array.isArray(glyphs) && glyphs.some(glyph => Array.isArray(glyph) && typeof glyph[2] === 'string' && (glyph[2].match(BAD) ?? []).length > 0)
+  }).map(run => run.index))
   const pieces: Piece[] = []
   for (const [k, r] of raw.entries()) {
     const font = page.fonts[r.item.fontName]
-    const covering = paired[k]
+    const matched = paired[k]
+    const covering = matched.filter(run => !unreadableRuns.has(run.index))
     const run = covering[0] ?? null
     const chars = r.item.str.replace(/\s/g, '')
     const bad = (chars.match(BAD) ?? []).length
@@ -330,7 +336,7 @@ export function groupText(page: PdfPage, world: Mat, runs: TextRun[], struct: St
     if (font?.vertical) { result.vertical += 1; continue }
     if (run && (run.mode & 3) === 3) { if (chars) result.invisible += 1; continue }
     if (run && (run.complex !== null || (run.fill && run.fill.kind !== 'color'))) continue
-    if (chars && bad === chars.length) continue
+    if ((chars && bad === chars.length) || (matched[0] && unreadableRuns.has(matched[0].index))) continue
     const color = run?.fill?.kind === 'color' ? run.fill.color : '#000000'
     pieces.push({
       str: r.item.str.replace(BAD, ''), order: r.order, hasEOL: r.hasEOL, origin: r.origin, dir: r.dir, len: r.len, size: r.size, angle: r.angle,

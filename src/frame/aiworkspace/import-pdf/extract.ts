@@ -8,11 +8,13 @@ import { OPS, type Json, type PdfFont, type PdfLink, type PdfPage, type PdfStruc
 /** What is read of a pdf.js object store (`page.objs`, `page.commonObjs`). */
 export interface PdfjsObjects { get(id: string, callback?: (data: unknown) => void): unknown; has(id: string): boolean }
 
+export interface PdfOperatorList { fnArray: number[]; argsArray: unknown[] }
+
 export interface PdfjsPage {
   pageNumber: number
   getViewport(options: { scale: number }): { width: number; height: number; transform: number[] }
   getTextContent(options: { includeMarkedContent: boolean }): Promise<{ items: unknown[]; styles: Record<string, { ascent?: number | null; descent?: number | null; vertical?: boolean }> }>
-  getOperatorList(): Promise<{ fnArray: number[]; argsArray: unknown[] }>
+  getOperatorList(): Promise<PdfOperatorList>
   getStructTree(): Promise<unknown>
   getAnnotations(): Promise<unknown[]>
   objs: PdfjsObjects
@@ -173,10 +175,10 @@ export interface Extracted {
 }
 
 /** Read one page. `bookmarks` from `readBookmarks`; `oc` the document's optional content configuration, if any. */
-export async function extractPage(doc: PdfjsDocument, page: PdfjsPage, bookmarks: Map<number, string>, oc: { isVisible(group: unknown): boolean } | null): Promise<Extracted> {
+export async function extractPage(doc: PdfjsDocument, page: PdfjsPage, bookmarks: Map<number, string>, oc: { isVisible(group: unknown): boolean } | null, operators?: PdfOperatorList): Promise<Extracted> {
   const viewport = page.getViewport({ scale: 1 })
   const content = await page.getTextContent({ includeMarkedContent: true })
-  const ops = await page.getOperatorList()
+  const ops = operators ?? await page.getOperatorList()
   const ocVisible = (data: unknown) => { try { return !oc || !data || oc.isVisible(data) } catch { return true } }
   const text: PdfTextItem[] = []
   const stack: (string | null)[] = []

@@ -1,5 +1,5 @@
 import { fidelityPdf } from '../fixtures/pdf/src/fidelity.ts'
-import { OPS } from './data.ts'
+import { OPS, type PdfPage } from './data.ts'
 import { extractPage } from './extract.ts'
 import { groupText, readStruct } from './text.ts'
 import { interpret } from './interpret.ts'
@@ -26,7 +26,7 @@ Deno.test({ name: 'synthetic PDF extracts its four intended regression triggers'
   const { doc } = await openPdf(await Deno.readFile(fixture))
   try {
     assert(doc.numPages === 4, 'Exactly four synthetic pages')
-    const pages = []
+    const pages: PdfPage[] = []
     for (let n = 1; n <= 4; n++) pages.push((await extractPage(doc, await doc.getPage(n), new Map(), null)).page)
     const text = pages.flatMap(p => p.text).map(t => t.str).join(' ')
     assert(text.includes('ROW 36 - SAMPLE TEXT'), 'Repeated text operators must survive extraction')
@@ -35,9 +35,16 @@ Deno.test({ name: 'synthetic PDF extracts its four intended regression triggers'
     assert(text.includes('\uE123'), 'Private-use glyph must survive source extraction')
     assert(pages[1].images && Object.values(pages[1].images).some(image => image.width === 256 && image.height === 192), 'CCITT image dimensions')
     assert(Object.values(pages[2].fonts).some(font => font.type3), 'Handwritten Type3 font must be used')
+    const privateWorld = worldOf(pages[2]).world
+    const privateMarks = interpret(pages[2], privateWorld)
+    const privateText = groupText(pages[2], privateWorld, privateMarks.runs, readStruct(pages[2].struct), { unit: 'paragraph' })
+    const privateRun = privateMarks.runs.find(run => JSON.stringify(pages[2].argsArray[run.index]).includes('\uE123'))
+    assert(privateRun && !privateText.converted.has(privateRun.index), 'Private-use glyph operator must remain in the raster')
+    assert(privateText.paragraphs.some(p => p.text.includes('ALPHA')), 'Neighbouring readable text remains editable')
     const { world } = worldOf(pages[3])
     const marks = interpret(pages[3], world)
     const result = groupText(pages[3], world, marks.runs, readStruct(pages[3].struct), { unit: 'paragraph' })
     assert(result.paragraphs.some(p => p.mixed), 'Mixed styles must remain a regression trigger')
+    assert(result.paragraphs.some(p => p.layout.spans.some(span => span.style?.color === '#d90d0d' && span.style.bold && !span.style.italic)), 'Red bold fragment retains its own style')
   } finally { await (doc as unknown as { loadingTask: { destroy(): Promise<void> } }).loadingTask.destroy() }
 } })

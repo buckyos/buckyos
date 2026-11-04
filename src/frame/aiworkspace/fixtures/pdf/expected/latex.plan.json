@@ -83,6 +83,13 @@
         "fontSize": 41.21,
         "align": "left",
         "lineHeight": null,
+        "style": {
+         "color": "#000000",
+         "alpha": 1,
+         "bold": true,
+         "italic": false,
+         "family": "serif"
+        },
         "spans": [
          {
           "text": "A Short Article on Import",
@@ -129,6 +136,13 @@
         "fontSize": 29.09,
         "align": "left",
         "lineHeight": null,
+        "style": {
+         "color": "#000000",
+         "alpha": 1,
+         "bold": false,
+         "italic": false,
+         "family": "serif"
+        },
         "spans": [
          {
           "text": "A. N. Author",
@@ -176,6 +190,13 @@
         "fontSize": 29.09,
         "align": "left",
         "lineHeight": null,
+        "style": {
+         "color": "#000000",
+         "alpha": 1,
+         "bold": true,
+         "italic": false,
+         "family": "serif"
+        },
         "spans": [
          {
           "text": "1 Introduction",
@@ -223,6 +244,13 @@
         "fontSize": 24.24,
         "align": "left",
         "lineHeight": 1.2,
+        "style": {
+         "color": "#000000",
+         "alpha": 1,
+         "bold": false,
+         "italic": false,
+         "family": "serif"
+        },
         "spans": [
          {
           "text": "This is the first paragraph of a short article, typeset the way LaTeX does it.",
@@ -291,6 +319,13 @@
         "fontSize": 24.24,
         "align": "left",
         "lineHeight": 1.2,
+        "style": {
+         "color": "#000000",
+         "alpha": 1,
+         "bold": false,
+         "italic": false,
+         "family": "serif"
+        },
         "spans": [
          {
           "text": "A second paragraph starts with the same indent and runs over two lines so that the",
@@ -345,6 +380,13 @@
         "fontSize": 24.24,
         "align": "left",
         "lineHeight": null,
+        "style": {
+         "color": "#000000",
+         "alpha": 1,
+         "bold": false,
+         "italic": true,
+         "family": "serif"
+        },
         "spans": [
          {
           "text": "E = mc",
@@ -391,6 +433,13 @@
         "fontSize": 16.97,
         "align": "left",
         "lineHeight": null,
+        "style": {
+         "color": "#000000",
+         "alpha": 1,
+         "bold": false,
+         "italic": false,
+         "family": "serif"
+        },
         "spans": [
          {
           "text": "2",
@@ -526,6 +575,13 @@
         "fontSize": 21.82,
         "align": "left",
         "lineHeight": null,
+        "style": {
+         "color": "#000000",
+         "alpha": 1,
+         "bold": false,
+         "italic": false,
+         "family": "serif"
+        },
         "spans": [
          {
           "text": "vertical axis",
@@ -573,6 +629,13 @@
         "fontSize": 24.24,
         "align": "left",
         "lineHeight": null,
+        "style": {
+         "color": "#000000",
+         "alpha": 1,
+         "bold": false,
+         "italic": true,
+         "family": "serif"
+        },
         "spans": [
          {
           "text": "Figure 1: A box, a circle and a line.",
@@ -619,6 +682,13 @@
         "fontSize": 19.39,
         "align": "left",
         "lineHeight": null,
+        "style": {
+         "color": "#000000",
+         "alpha": 1,
+         "bold": false,
+         "italic": false,
+         "family": "serif"
+        },
         "spans": [
          {
           "text": "1 A footnote in a smaller size.",
@@ -665,6 +735,13 @@
         "fontSize": 24.24,
         "align": "left",
         "lineHeight": null,
+        "style": {
+         "color": "#000000",
+         "alpha": 1,
+         "bold": false,
+         "italic": false,
+         "family": "serif"
+        },
         "spans": [
          {
           "text": "1",
@@ -779,6 +856,13 @@
         "fontSize": 29.09,
         "align": "left",
         "lineHeight": null,
+        "style": {
+         "color": "#000000",
+         "alpha": 1,
+         "bold": true,
+         "italic": false,
+         "family": "serif"
+        },
         "spans": [
          {
           "text": "2 Results",
@@ -826,6 +910,13 @@
         "fontSize": 24.24,
         "align": "left",
         "lineHeight": 1.2,
+        "style": {
+         "color": "#000000",
+         "alpha": 1,
+         "bold": false,
+         "italic": false,
+         "family": "serif"
+        },
         "spans": [
          {
           "text": "The second page has one more paragraph and a table drawn with rules.",
@@ -946,6 +1037,13 @@
         "fontSize": 24.24,
         "align": "left",
         "lineHeight": null,
+        "style": {
+         "color": "#000000",
+         "alpha": 1,
+         "bold": true,
+         "italic": false,
+         "family": "serif"
+        },
         "spans": [
          {
           "text": "Name",
@@ -993,6 +1091,13 @@
         "fontSize": 24.24,
         "align": "left",
         "lineHeight": null,
+        "style": {
+         "color": "#000000",
+         "alpha": 1,
+         "bold": true,
+         "italic": false,
+         "family": "serif"
+        },
         "spans": [
          {
           "text": "Value",
@@ -1039,6 +1144,13 @@
         "fontSize": 24.24,
         "align": "left",
         "lineHeight": null,
+        "style": {
+         "color": "#000000",
+         "alpha": 1,
+         "bold": false,
+         "italic": false,
+         "family": "serif"
+        },
         "spans": [
          {
           "text": "Pages",
@@ -1085,6 +1197,13 @@
         "fontSize": 24.24,
         "align": "left",
         "lineHeight": null,
+        "style": {
+         "color": "#000000",
+         "alpha": 1,
+         "bold": false,
+         "italic": false,
+         "family": "serif"
+        },
         "spans": [
          {
           "text": "2",
@@ -1131,6 +1250,13 @@
         "fontSize": 24.24,
         "align": "left",
         "lineHeight": null,
+        "style": {
+         "color": "#000000",
+         "alpha": 1,
+         "bold": false,
+         "italic": false,
+         "family": "serif"
+        },
         "spans": [
          {
           "text": "2",

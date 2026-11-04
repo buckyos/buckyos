@@ -84,8 +84,8 @@ function textItem(p: Paragraph, key: string, parent: string, source: Record<stri
     pdf_source: {
       ...source, kind: 'text', ...(p.role ? { role: p.role } : {}),
       text_layout: {
-        ...p.layout, width: r2(p.layout.width), height: r2(p.layout.height), fontSize: r2(p.layout.fontSize),
-        spans: p.layout.spans.map((s) => ({ text: s.text, x: r2(s.x), y: r2(s.y), width: Math.max(0.01, r2(s.width)), size: Math.max(0.01, r2(s.size)) })),
+        ...p.layout, style: { ...p.style, alpha: p.style.alpha < 0.995 ? r2(p.style.alpha) : 1 }, width: r2(p.layout.width), height: r2(p.layout.height), fontSize: r2(p.layout.fontSize),
+        spans: p.layout.spans.map((s) => ({ text: s.text, x: r2(s.x), y: r2(s.y), width: Math.max(0.01, r2(s.width)), size: Math.max(0.01, r2(s.size)), ...(s.style ? { style: { ...s.style, alpha: r2(s.style.alpha) } } : {}) })),
       },
     },
   }
@@ -239,7 +239,6 @@ export async function convertPdfPage(page: PdfPage, report: ImportReport, option
   // text (§4.1)
   for (const { paragraph: p, item } of textItems) {
     placed.push({ order: p.order, item, kind: 'text' })
-    if (p.mixed) report.add('pdf_mixed_style', 'Paragraphs with several styles imported in their main style', firstLine(p.text).slice(0, 48))
     for (const r of p.runs) skip.add(r)
   }
   if (text.invisible) report.add('pdf_invisible_text', 'Invisible text (a scan’s recognised text) not imported', `p${n}`)

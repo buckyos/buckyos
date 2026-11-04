@@ -17,7 +17,16 @@
     {
       "page": 3,
       "case": "hand-drawn-type3-private-use-glyph",
-      "codepoint": "U+E123"
+      "codepoint": "U+E123",
+      "regions": [
+        {
+          "name": "glyph-outline-left",
+          "x": 0.12395833333333334,
+          "y": 0.34629629629629627,
+          "w": 0.0025,
+          "h": 0.03888888888888889
+        }
+      ]
     },
     {
       "page": 4,
