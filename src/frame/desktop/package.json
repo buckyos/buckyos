@@ -9,7 +9,8 @@
     "check": "tsc -b",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:pdf": "node tests/aiworkspace/run-pdf-fidelity.mjs"
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.0.0",

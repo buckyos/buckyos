@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "origin": "Generated entirely from fixture source; no source-document bytes, text, pictures, or fonts reused.",
+  "generator": "src/fidelity.ts",
+  "sha256": "81cbe08d51c84d83c3b3e1654b8a2ee0fedc31305c2d1dce208007c2f0c4f017",
+  "pages": [
+    {
+      "page": 1,
+      "case": "tiling-pattern-and-optimized-path-operators"
+    },
+    {
+      "page": 2,
+      "case": "synthetic-ccitt-group4-grid",
+      "imageWidth": 256,
+      "imageHeight": 192
+    },
+    {
+      "page": 3,
+      "case": "hand-drawn-type3-private-use-glyph",
+      "codepoint": "U+E123"
+    },
+    {
+      "page": 4,
+      "case": "mixed-color-weight-and-style"
+    }
+  ],
+  "ccitt": {
+    "pixelSha256": "869fff999adf0126eb96673a5bdab8f09445cf9927a3251756cca8368400162d",
+    "encodedSha256": "797403c8d761c359a075890992a0fbf0cab4557d1a4cd099a2d0b69523a35fad",
+    "recipe": "256x192 white 1-bit image; black rectangle (8,8)-(247,183) width 3; vertical grid x=32,80,128,176,224 y=24..168 width 2; horizontal grid y=40,88,136 x=24..232 width 2; zigzag points (24,156),(62,58),(100,142),(138,38),(176,122),(232,24) width 4; TIFF Group4 compressed."
+  }
+}
