@@ -1,6 +1,7 @@
 import { copyIdentityOutputs, makeConfigByGroupName, prepareSeedIdentity } from "./make_config.ts";
 import { getParamsFromGroupName } from "./devenv_config.ts";
 import { hashAdminPassword } from "buckyos/provision";
+import os from "node:os";
 
 Deno.test("release and nightly remain unactivated without a seed identity handoff", async () => {
   const root = await Deno.makeTempDir();
@@ -97,43 +98,22 @@ Deno.test("dev bootstrap secrets are merged into a private template", async () =
         throw new Error(`private bootstrap is missing ${required}`);
       }
     }
-    const nodeSettingsEntry = privateTemplate.match(/"nodes\/ood1\/settings"\s*=\s*"""\n([\s\S]*?)\n"""/);
+    if (privateTemplate.includes('"nodes/ood1/settings"')) {
+      throw new Error("dev bootstrap must leave the host policy to node_daemon");
+    }
+    const hostAccountPath = `${target}/etc/host_account.json`;
     if (Deno.build.os === "linux") {
-      if (!nodeSettingsEntry) throw new Error("dev bootstrap did not offer the host runtime");
-      const settings = JSON.parse(nodeSettingsEntry[1]);
-      const policy = settings.executor.owner_agents;
-      const workspace = `${target}/data/home/devtest/host-runtime`;
-      const expectedUid = Deno.uid() === 0 ? 65534 : Deno.uid();
-      const expectedGid = Deno.uid() === 0 ? 65534 : Deno.gid();
-      if (expectedUid === null || expectedGid === null ||
-        !settings.executor.enabled || !policy.enabled || policy.computer !== "none" ||
-        JSON.stringify(policy.workdir_roots) !== JSON.stringify([workspace]) ||
-        policy.run_as.uid !== expectedUid || policy.run_as.gid !== expectedGid) {
-        throw new Error("dev host policy must grant only its workspace with a non-root execution identity");
+      const chosen = JSON.parse(await Deno.readTextFile(hostAccountPath));
+      if (chosen.account !== os.userInfo().username) {
+        throw new Error("dev bootstrap must choose the user running it as the host account");
       }
-      const directory = await Deno.lstat(workspace);
-      if (!directory.isDirectory || directory.uid !== expectedUid || directory.gid !== expectedGid ||
-        directory.mode === null || (directory.mode & 0o007) !== 0) {
-        throw new Error("dev host workspace has incorrect ownership or permissions");
+    } else {
+      try {
+        await Deno.stat(hostAccountPath);
+        throw new Error("a Linux host account leaked into another platform");
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
       }
-      await Deno.chmod(root, 0o755);
-      const probe = await new Deno.Command("/bin/sh", {
-        args: ["-c", 'printf %s host-runtime-write > "$1/probe"', "host-runtime-probe", workspace],
-        uid: expectedUid,
-        gid: expectedGid,
-        stdout: "piped",
-        stderr: "piped",
-      }).output();
-      if (!probe.success) {
-        throw new Error(`dev host identity cannot write its workspace: ${new TextDecoder().decode(probe.stderr)}`);
-      }
-      const probePath = `${workspace}/probe`;
-      if (await Deno.readTextFile(probePath) !== "host-runtime-write" ||
-        (await Deno.stat(probePath)).uid !== expectedUid) {
-        throw new Error("dev host workspace write did not use the configured identity");
-      }
-    } else if (nodeSettingsEntry) {
-      throw new Error("Linux system executor defaults leaked into another platform");
     }
     if (Deno.build.os !== "windows") {
       const file = await Deno.stat(privateTemplatePath);
@@ -161,8 +141,8 @@ Deno.test("dev bootstrap preserves an explicitly disabled node executor", async 
       throw new Error("dev bootstrap overwrote an explicit node executor policy");
     }
     try {
-      await Deno.stat(`${target}/data/home/devtest/host-runtime`);
-      throw new Error("disabled node executor created a host runtime workspace");
+      await Deno.stat(`${target}/etc/host_account.json`);
+      throw new Error("disabled node executor still chose a host account");
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) throw error;
     }

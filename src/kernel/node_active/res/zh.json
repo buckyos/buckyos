@@ -178,5 +178,9 @@
     "region_probe_low_confidence": "置信度较低。",
     "region_probe_cached": "已使用缓存结果。",
     "region_server_fallback": "由服务器自动选择",
-    "retry_button": "重试"
+    "retry_button": "重试",
+    "host_account_label": "Agent 使用的本机账号",
+    "host_account_hint": "你为其开启宿主机访问的 Agent，会以这个账号在本机执行命令，其他 Agent 不受影响。普通账号在 Agent 里无法使用 sudo。",
+    "host_account_none": "不指定（Agent 不能在本机执行命令）",
+    "host_account_root_warning": "你为其开启宿主机访问的 Agent 将完全控制这台机器，盗用你 owner 账号的人也会获得同样的控制权。只有需要让 Agent 维护这台机器时才选 root。"
 }

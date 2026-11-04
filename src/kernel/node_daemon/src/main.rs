@@ -7,6 +7,7 @@ mod desktop_runtime;
 mod finder;
 mod gateway_name_provider;
 mod gateway_tunnel_probe;
+mod host_account;
 mod kernel_mgr; // support manager kernel service (run in native, run for system)
 mod kevent_server;
 mod local_app_mgr;

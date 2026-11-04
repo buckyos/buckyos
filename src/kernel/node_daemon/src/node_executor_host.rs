@@ -22,6 +22,8 @@ use node_executor::{
 };
 use serde_json::{json, Value};
 
+use buckyos_api::node_control::OsUser;
+
 use crate::gateway_tunnel_probe::build_local_gateway_token;
 
 pub const EXECUTOR_ACL_FILE: &str = "node_executor_acl.json";
@@ -178,7 +180,12 @@ pub(crate) fn desktop_mode(desktop_build: bool) -> bool {
     }
 }
 
-fn open_executor(node_host_name: &str, node_did: &str, desktop: bool) -> Result<NodeExecutor, String> {
+fn open_executor(
+    node_host_name: &str,
+    node_did: &str,
+    desktop: bool,
+    host_account: Option<&OsUser>,
+) -> Result<NodeExecutor, String> {
     let program = std::env::current_exe().map_err(|e| e.to_string())?;
     let host = ExecutorHost {
         node_id: node_host_name.to_string(),
@@ -193,7 +200,7 @@ fn open_executor(node_host_name: &str, node_did: &str, desktop: bool) -> Result<
         rbac: Arc::new(RuntimeRbac),
     };
     let options = ExecutorOptions {
-        identity_mode: if desktop || cfg!(windows) {
+        identity_mode: if desktop || cfg!(windows) || crate::host_account::runs_as_node_daemon(host_account) {
             ExecutorIdentityMode::CurrentUser
         } else {
             ExecutorIdentityMode::SwitchUser
@@ -259,8 +266,9 @@ fn interactive_home() -> Option<String> {
 /// Desktop activation seed (integration TODO §3.1): a desktop node opens
 /// itself to the owner's Agents once, as the system — the administrator
 /// may close or narrow it afterwards (`owner_agents.enabled = false` is
-/// respected, the node is never re-opened).
-async fn seed_owner_agents(node_host_name: &str) -> Result<bool, String> {
+/// respected, the node is never re-opened). A Linux node does the same for
+/// the OS account its owner chose at activation.
+async fn seed_owner_agents(node_host_name: &str, host_account: Option<&OsUser>) -> Result<bool, String> {
     let runtime = get_buckyos_api_runtime().map_err(|e| e.to_string())?;
     let client = runtime
         .get_system_config_client()
@@ -279,16 +287,21 @@ async fn seed_owner_agents(node_host_name: &str) -> Result<bool, String> {
     if executor.owner_agents.is_some() {
         return Ok(false);
     }
-    let Some(home) = interactive_home() else {
-        return Err("no absolute home directory for the interactive user".into());
-    };
-    executor.owner_agents = Some(OwnerAgentsPolicy {
-        enabled: true,
-        workdir_roots: vec![home],
-        env: Default::default(),
-        ops: Vec::new(),
-        computer: ComputerAccess::Control,
-        run_as: None,
+    executor.owner_agents = Some(match host_account {
+        Some(account) => crate::host_account::owner_agents_policy(account),
+        None => {
+            let Some(home) = interactive_home() else {
+                return Err("no absolute home directory for the interactive user".into());
+            };
+            OwnerAgentsPolicy {
+                enabled: true,
+                workdir_roots: vec![home],
+                env: Default::default(),
+                ops: Vec::new(),
+                computer: ComputerAccess::Control,
+                run_as: None,
+            }
+        }
     });
     executor.enabled = true;
     executor
@@ -308,20 +321,21 @@ async fn seed_owner_agents(node_host_name: &str) -> Result<bool, String> {
 /// `desktop_build`: the Desktop node_daemon (`--desktop_daemon`).
 pub fn spawn_node_executor(node_host_name: String, node_did: String, desktop_build: bool) {
     let desktop = desktop_mode(desktop_build);
+    let host_account = crate::host_account::load();
     tokio::spawn(async move {
         let mut executor: Option<NodeExecutor> = None;
         let mut last_fetch: Option<Instant> = None;
         let mut written: Option<(String, Vec<String>)> = None;
         let mut acl_written_once = false;
-        let mut seeded = !desktop;
+        let mut seeded = !desktop && host_account.is_none();
         let mut tick = tokio::time::interval(TICK);
         loop {
             tick.tick().await;
             if !seeded {
-                match seed_owner_agents(&node_host_name).await {
+                match seed_owner_agents(&node_host_name, host_account.as_ref()).await {
                     Ok(wrote) => {
                         if wrote {
-                            info!("node executor: desktop node opened to the owner's Agents (owner_agents seeded)");
+                            info!("node executor: node opened to the owner's Agents (owner_agents seeded)");
                         }
                         seeded = true;
                     }
@@ -333,7 +347,7 @@ pub fn spawn_node_executor(node_host_name: String, node_did: String, desktop_bui
                 match load_executor_config(&node_host_name).await {
                     Ok(config) => {
                         if executor.is_none() && config.as_ref().map(|c| c.enabled).unwrap_or(false) {
-                            match open_executor(&node_host_name, &node_did, desktop) {
+                            match open_executor(&node_host_name, &node_did, desktop, host_account.as_ref()) {
                                 Ok(exec) => {
                                     let listener = exec.clone();
                                     let addr = SocketAddr::from(([127, 0, 0, 1], NODE_EXECUTOR_SERVICE_PORT));

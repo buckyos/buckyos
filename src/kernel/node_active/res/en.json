@@ -178,5 +178,9 @@
     "region_probe_low_confidence": "Low confidence.",
     "region_probe_cached": "Cached result.",
     "region_server_fallback": "Automatic server fallback",
-    "retry_button": "Retry"
+    "retry_button": "Retry",
+    "host_account_label": "Host account for your Agents",
+    "host_account_hint": "Agents you enable for the host run commands on this machine as this account. Other Agents are not affected. A normal account cannot use sudo from an Agent.",
+    "host_account_none": "None (Agents cannot run commands on this machine)",
+    "host_account_root_warning": "Agents you enable for the host will have full control of this machine, and anyone who takes over your owner account gets the same control. Choose root only to let an Agent maintain this machine."
 }

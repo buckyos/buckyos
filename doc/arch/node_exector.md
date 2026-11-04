@@ -123,7 +123,9 @@
 | A-system | 系统服务（root / LocalSystem），开机即起 | SwitchUser | 必填，worker 降权到专用账号（§7.5） | 无（Linux 服务器没有 GUI） | OOD、Node 服务器、Linux |
 | A-desktop | 随用户登录启动，运行在该用户的交互会话中 | CurrentUser | 必须省略，以登录用户身份执行 | 注入与 agent-daemon 共用的桌面 Driver（macOS 14+、Windows），ComputerInspect/Observe/Act 随 Driver readiness 开放 | Desktop 版：Windows 现状即如此；macOS 上 node_daemon 是 `BuckyOS Runtime.app` 的主程序，作为绑定用户的 LaunchAgent（`gui/<uid>`、Aqua）运行（§17.10）；以 root 运行的 node_daemon 仍按 A-system 处理 |
 
-模式由 node_daemon 启动时按“进程是否 root / 是否位于交互会话”判定并写入 describe 结果，不按安装包类型猜。A-desktop 的权限边界与 §16 对 Windows 的说明一致：Agent 拥有该桌面用户的全部权限，roots 只约束 cwd 与内置文件工具。Desktop 版 owner 的电脑因此用 A-desktop 作为 Agent 的 `host` 目标，不要求再安装独立 agent-daemon；形态 B 保留给不装节点的设备。同一台电脑上 A-desktop 与形态 B 并存时，桌面输入协调锁按用户会话共用，互斥而不是各自一份。
+Linux 系统服务默认不向 owner 的 Agent 开放（常规生产环境大家都在容器里）。Owner 把这台设备也用于别的事、要让 Agent 维护它时，在激活时指定一个 OS 账号，确定 Zone owner 的同时确定它在这台设备上的身份：`commit_active` 的 `system_settings.host_account` 写入节点本地的 `etc/host_account.json`（`make_config.ts` 是开发环境的无 UI 激活，`dev` / `devtest_ood1` 把运行它的用户写入同一文件），之后 node_daemon 只写一次 `owner_agents`。普通账号走 SwitchUser，`run_as` 为该账号，默认 root 是它的 home，并按 §7.5 降权，所以 Agent 里用不了 sudo 和附加组；选 root 时走 CurrentUser，省略 `run_as`，以 node_daemon 身份执行，roots 为 `/root` 与 `/`，权限边界同 A-desktop。root 的决定只在节点本地，`run_as` 仍不允许为 0，Zone 配置无法把节点变成 root。激活服务尚未认证请求，抢先激活者也能选 root，与抢先激活本身是同一风险。
+
+模式由 node_daemon 启动时按“进程是否 root / 是否位于交互会话 / 激活时选择的账号”判定并写入 describe 结果，不按安装包类型猜。A-desktop 的权限边界与 §16 对 Windows 的说明一致：Agent 拥有该桌面用户的全部权限，roots 只约束 cwd 与内置文件工具。Desktop 版 owner 的电脑因此用 A-desktop 作为 Agent 的 `host` 目标，不要求再安装独立 agent-daemon；形态 B 保留给不装节点的设备。同一台电脑上 A-desktop 与形态 B 并存时，桌面输入协调锁按用户会话共用，互斥而不是各自一份。
 
 ```text
 形态 C（单进程）

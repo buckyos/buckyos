@@ -1113,33 +1113,10 @@ function applyDevBootTemplate(
   const nodeSettingsKey = `nodes/${params.node_name}/settings`;
   if (Deno.build.os === "linux" &&
     ![...merged.matchAll(BOOT_ENTRY_PATTERN)].some((match) => match[1] === nodeSettingsKey)) {
-    const user = os.userInfo();
-    const runAs = user.uid === 0
-      ? { uid: 65534, gid: 65534 }
-      : { uid: user.uid, gid: user.gid };
-    const workspace = path.resolve(targetDir, "data", "home", params.username, "host-runtime");
-    ensureDir(path.dirname(workspace));
-    if (!fs.existsSync(workspace)) {
-      fs.mkdirSync(workspace, { mode: 0o750 });
-      if (user.uid === 0) fs.chownSync(workspace, runAs.uid, runAs.gid);
-    }
-    const workspaceInfo = fs.lstatSync(workspace);
-    if (!workspaceInfo.isDirectory() || workspaceInfo.uid !== runAs.uid || workspaceInfo.gid !== runAs.gid) {
-      throw new Error(`dev host runtime workspace must be a directory owned by ${runAs.uid}:${runAs.gid}: ${workspace}`);
-    }
-    const settings = {
-      executor: {
-        enabled: true,
-        owner_agents: {
-          enabled: true,
-          workdir_roots: [workspace],
-          computer: "none",
-          run_as: runAs,
-        },
-      },
-    };
-    merged += `\n"${nodeSettingsKey}" = """\n${JSON.stringify(settings, null, 2)}\n"""\n`;
-    added += 1;
+    writeText(
+      path.join(targetDir, "etc", "host_account.json"),
+      `${JSON.stringify({ account: os.userInfo().username }, null, 2)}\n`,
+    );
   }
 
   writeText(dstBootTemplate, merged);

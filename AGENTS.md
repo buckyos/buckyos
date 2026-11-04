@@ -46,6 +46,8 @@ uv run stop.py
 
 Linux 上 node_daemon 以 root 运行，与打包后的系统服务一致：非 root 开发者运行 `start.py` / `stop.py` 时，停止和启动通过 `sudo` 执行（只透传 `BUCKYOS_*`，`PATH`、`HOME` 用 sudo 的默认值），不需要 docker 组或 `newgrp`；文件更新和 `make_config.ts` 仍以开发者身份运行，更新前把涉及路径的属主收回给开发者。`local/node_daemon/executor` 要求属主是 node_daemon 的 euid，不要手工 chown。
 
+host-runtime 分两层身份：Agent Service（opendan Loader）与 node_daemon 相同，Linux 上是 root；它在宿主机执行的命令和文件操作由 Node Executor 决定。Linux 上默认不开放，由 owner 在激活时指定 OS 账号（写入节点本地的 `etc/host_account.json`）：普通账号降权到该账号，选 root 则以 root 执行，见 `doc/arch/node_exector.md` §4.2。`make_config.ts` 是开发环境的无 UI 激活，`dev` / `devtest_ood1` 把运行它的用户当作激活时选择的账号：`uv run start.py --all` 之后，选了 host-runtime 的 Agent 以当前开发者的账号执行命令，可读写其 home；以 root 运行则以 root 执行。
+
 开发脚本一律以普通用户运行，不要用 `sudo` 包住整个脚本（否则仓库、`~/.cache/deno` 等处会留下 root 属主的文件）；脚本只在确实需要 root 的那一步内部调用 `sudo`。`build_aios`、`build_exttool`、`build.py`、`make_local_pkg.py`、`debug_jarvis.sh` 先直接用 docker，只有报 `permission denied` 时才改用 `sudo docker`，此时用 root 的 Docker 配置，`--push` 要先 `sudo docker login`；在 docker 组里的用户全程不会用到 sudo。新增脚本遵循同样的做法。
 
 macOS 上 node_daemon 是 `bin/node-daemon/BuckyOS Runtime.app` 的主程序（构建后由 `tools/macos_runtime_bundle.py assemble` 组装签名；直接跑 devkit `buckyos-build` 需补这一步），以绑定用户的 LaunchAgent `com.buckyos.runtime` 运行：`start.py` 在 GUI 会话中为当前用户注册并启动它，sudo/SSH 下退回直接启动且没有桌面能力；管理与诊断用 bundle 内 `node_daemon service status|start|stop|restart|autostart on|off`。

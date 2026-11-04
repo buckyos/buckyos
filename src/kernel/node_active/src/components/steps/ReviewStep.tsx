@@ -1,5 +1,5 @@
 import { CheckCircleRounded, DownloadRounded } from "@mui/icons-material";
-import { Alert, Button, CircularProgress, Divider, Stack, Typography } from "@mui/material";
+import { Alert, Button, CircularProgress, Divider, MenuItem, Stack, TextField, Typography } from "@mui/material";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { activateNode, customDomainPublication, deriveActiveNames, deriveGatewayTopology, prepareSignedActivation } from "../../../active_lib";
@@ -121,6 +121,37 @@ const ReviewStep = ({ wizardData, onUpdate, onActivated, onBack, isWalletRuntime
           <Typography>{names.bns_publish_name}</Typography>
         </Stack>
       </Stack>
+      {wizardData.host_accounts.length > 0 && (
+        <Stack spacing={1.5}>
+          <TextField
+            select
+            fullWidth
+            label={t("host_account_label", "Host account for your Agents")}
+            helperText={t(
+              "host_account_hint",
+              "Agents you enable for the host run commands on this machine as this account. Other Agents are not affected. A normal account cannot use sudo from an Agent.",
+            )}
+            value={wizardData.host_account}
+            disabled={loading}
+            onChange={(event) => onUpdate({ host_account: event.target.value })}
+          >
+            <MenuItem value="">{t("host_account_none", "None (Agents cannot run commands on this machine)")}</MenuItem>
+            {wizardData.host_accounts.map((account) => (
+              <MenuItem key={account} value={account}>
+                {account}
+              </MenuItem>
+            ))}
+          </TextField>
+          {wizardData.host_account === "root" && (
+            <Alert severity="warning">
+              {t(
+                "host_account_root_warning",
+                "Agents you enable for the host will have full control of this machine, and anyone who takes over your owner account gets the same control. Choose root only to let an Agent maintain this machine.",
+              )}
+            </Alert>
+          )}
+        </Stack>
+      )}
       {wizardData.use_self_domain && (
         <Alert severity="info">
           <Stack spacing={1.5}>

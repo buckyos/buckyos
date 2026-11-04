@@ -158,6 +158,9 @@ export type ActiveWizzardData = {
   admin_password_hash: string;
   friend_passcode: string;
   enable_guest_access: boolean;
+  /** OS accounts this node can offer its owner's Agents; empty when it offers none. */
+  host_accounts: string[];
+  host_account: string;
   owner_document: BuckyOSOwnerDocument | null;
   evm_address: string;
   web_owner_material: WebOwnerMaterial | null;

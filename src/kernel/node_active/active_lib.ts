@@ -71,7 +71,12 @@ export async function createInitialWizardData(
     edition: string;
     capabilities: { container: boolean };
   };
+  const hostAccounts = (await activeRpc().call("list_host_accounts", {})) as {
+    accounts: string[];
+  };
   return {
+    host_accounts: hostAccounts.accounts,
+    host_account: "",
     product_edition: product.edition,
     support_container: product.capabilities.container,
     gatewy_type: GatewayType.BuckyForward,
@@ -583,6 +588,7 @@ export async function activateNode(data: ActiveWizzardData): Promise<{
       enabled_features: resolveEnabledFeatures(data.sn_active_code, data.enabled_features),
       ai_provider_config: data.ai_provider_config,
       owner_telegram_account_id: data.owner_telegram_account_id,
+      host_account: data.host_account,
     },
     sn: {
       sn_url: SN_API_URL,

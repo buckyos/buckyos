@@ -210,8 +210,8 @@ buckyos system info                                 # BuckyOS version, build_ver
   `owner_agents` stops a Lite Agent (its instance turns to `container`, which the node refuses). A native app that
   cannot run reports it in `services/<spec_id>/instances/<node>` `deployment_error`: `port_conflict` (app, service, port; free the port, it retries by itself),
   `exited` (last log lines), `not_listening`, `interpreter_missing`; restarts back off 5 s … 5 min.
-  Linux `dev` / `devtest_ood1` config generation seeds a bounded host workspace at
-  `data/home/devtest/host-runtime`, with a non-root execution identity and no desktop control; explicit node settings
+  A Linux node offers no host unless the owner picked an OS account at activation (node-local `etc/host_account.json`): node_daemon then seeds `owner_agents` once, switching to a normal account in its home (no sudo or supplementary groups), or running as root with roots `/root` and `/`.
+  Linux `dev` / `devtest_ood1` config generation is that activation without a UI and picks the user running it (`start.py --all`); explicit node settings
   take precedence. The scheduler multiplies
   both into `nodes/<node>/config.executor` (never edit): a profile `agent-<12 hex>` per enabled Agent, check
   `generation` grew, the Agent is in `principal_bindings` with `enabled`/`app_installed` true (a runtime shared by two
@@ -224,7 +224,7 @@ buckyos system info                                 # BuckyOS version, build_ver
   there, and uid 65534 has no account). A desktop node_daemon (Windows desktop session, macOS `BuckyOS Runtime`
   LaunchAgent) cannot switch users: profiles omit `run_as`, operations run as the desktop user with all of that
   user's rights, the Windows shell is PowerShell, and only trusted Agents should get such a profile. A profile whose
-  `run_as` does not fit the node (missing on a root node, present on a desktop node) and a non-root Unix node_daemon
+  `run_as` does not fit the node (missing on a root node unless the owner chose root at activation, present on a desktop node or on that root-chosen node) and a non-root Unix node_daemon
   outside desktop mode expose only control capabilities (`open_stream`, `describe`, `query`, `cancel`); execution,
   file operations, and workdir resolution return `Capability`.
 - The rest goes through raw `system-config get|list|set|set-file|append`. Settings (user-adjustable, fine to edit):

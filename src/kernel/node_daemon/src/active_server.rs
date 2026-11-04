@@ -236,6 +236,8 @@ pub struct LocalSystemSettings {
     pub ai_provider_config: Value,
     #[serde(default)]
     pub owner_telegram_account_id: String,
+    #[serde(default)]
+    pub host_account: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1406,7 +1408,19 @@ fn validate_commit_request(
             "SN access token and endpoints are required".to_string(),
         ));
     }
-    Ok(())
+    validate_host_account(
+        req.system_settings.host_account.as_str(),
+        &crate::host_account::available_accounts(),
+    )
+}
+
+fn validate_host_account(account: &str, available: &[String]) -> Result<(), RPCErrors> {
+    if account.is_empty() || available.iter().any(|name| name == account) {
+        return Ok(());
+    }
+    Err(RPCErrors::ReasonError(format!(
+        "host account `{account}` is not available on this node"
+    )))
 }
 
 fn device_info_report_ip(device_info: &DeviceInfo) -> String {
@@ -1646,6 +1660,8 @@ fn persist_activation(
         req.device_private_key.as_str(),
     )
     .map_err(RPCErrors::ReasonError)?;
+    crate::host_account::save(req.system_settings.host_account.as_str())
+        .map_err(RPCErrors::ReasonError)?;
     Ok(())
 }
 
@@ -1680,6 +1696,10 @@ impl RPCHandler for ActiveServer {
                 )
             }
             "get_product_profile" => rpc_success(installed_product()?, seq),
+            "list_host_accounts" => rpc_success(
+                json!({ "accounts": crate::host_account::available_accounts() }),
+                seq,
+            ),
             "start_region_probe" => {
                 let params = StartRegionProbeReq::from_json(req.params)?;
                 rpc_success(self.region_probe.start(params.force).await, seq)
@@ -1784,6 +1804,16 @@ pub async fn start_node_active_service() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_account_must_be_empty_or_offered_by_the_node() {
+        let available = vec!["root".to_string(), "lzc".to_string()];
+        validate_host_account("", &[]).unwrap();
+        validate_host_account("lzc", &available).unwrap();
+        validate_host_account("root", &available).unwrap();
+        assert!(validate_host_account("daemon", &available).is_err());
+        assert!(validate_host_account("root", &[]).is_err());
+    }
 
     fn owner_document(mnemonic: &str) -> OwnerDocument {
         let owner_key = derive_bucky_key_from_mnemonic(mnemonic, None, 0).unwrap();
@@ -2130,6 +2160,7 @@ mod tests {
                 enabled_features: json!({}),
                 ai_provider_config: json!({}),
                 owner_telegram_account_id: " 10001 ".to_string(),
+                host_account: String::new(),
             },
             sn: SnCommitConfig {
                 sn_url: "https://sn.example.com/kapi/sn/".to_string(),

@@ -58,6 +58,7 @@ async function setup(useSelfDomain = true) {
     admin_password_hash: "", sn_access_token: "private-session", sn_refresh_token: null,
     sn_user_name: "alice", prepared_documents: null, signed_documents: null,
     owner_telegram_account_id: "10001",
+    host_account: "lzc",
   };
   return { api: mod.namespace, data, calls, failNextCommit: () => { failCommit = true; }, allowCommit: () => { failCommit = false; } };
 }
@@ -100,4 +101,5 @@ test("BNS activation retains the prepare-sign-commit flow", async () => {
     "prepare_active_documents", "sign_web_active_documents", "commit_active",
   ]);
   assert.equal(calls[2].request.system_settings.owner_telegram_account_id, "10001");
+  assert.equal(calls[2].request.system_settings.host_account, "lzc");
 });
