@@ -1,4 +1,5 @@
-import type { ReactNode } from 'react'
+import { buckyos } from 'buckyos'
+import type { MouseEvent, ReactNode } from 'react'
 
 const FENCE = /^\s{0,3}(`{3,}|~{3,})\s*([\w+#.-]*)/
 const HEADING = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/
@@ -6,10 +7,29 @@ const RULE = /^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/
 const QUOTE = /^\s{0,3}>\s?(.*)$/
 const LIST_ITEM = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/
 const TABLE_DIVIDER = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/
-const INLINE = /`([^`\n]+)`|\*\*(.+?)\*\*|__(.+?)__|~~(.+?)~~|\*(?![\s*])(.+?)(?<![\s*])\*|\[([^\]\n]+)\]\(\s*([^)\s]+)(?:\s+"[^"]*")?\s*\)|(https?:\/\/[^\s<>\u3000-\u9fff\uff00-\uffef]*[^\s<>.,;:!?'")\]}\u3000-\u9fff\uff00-\uffef])/g
+const MARKDOWN_INLINE = /`([^`\n]+)`|\*\*(.+?)\*\*|__(.+?)__|~~(.+?)~~|\*(?![\s*])(.+?)(?<![\s*])\*|\[([^\]\n]+)\]\(\s*([^)\s]+)(?:\s+"[^"]*")?\s*\)/
+const URL_STOP = String.raw`\s<>"()\u2000-\u206f\u3000-\u9fff\uff00-\uffef`
+const URL_PARENS = String.raw`\([^${URL_STOP}]*\)`
+const URL_CAPTURE = String.raw`(https?:\/\/(?:[^${URL_STOP}]|${URL_PARENS})*(?:[^${URL_STOP}.,;:!?'\]}]|${URL_PARENS}))`
+const INLINE = new RegExp(`${MARKDOWN_INLINE.source}|${URL_CAPTURE}`, 'gi')
+const URL_SPLIT = new RegExp(URL_CAPTURE, 'i')
 
 function safeHref(href: string): string | null {
   return /^(https?:|mailto:)/i.test(href) ? href : null
+}
+
+function openInAppShell(event: MouseEvent<HTMLAnchorElement>) {
+  if (!('BuckyApi' in window) || !/^https?:$/.test(event.currentTarget.protocol)) return
+  event.preventDefault()
+  void buckyos.openExternalUrl(event.currentTarget.href)
+}
+
+function ExternalLink({ href, children }: { href: string; children: ReactNode }) {
+  return <a className="mh-link" href={href} target="_blank" rel="noreferrer noopener" onClick={openInAppShell}>{children}</a>
+}
+
+export function LinkifiedText({ text }: { text: string }) {
+  return <>{text.split(URL_SPLIT).map((part, index) => index % 2 ? <ExternalLink key={index} href={part}>{part}</ExternalLink> : part)}</>
 }
 
 function renderInline(text: string, key: string): ReactNode[] {
@@ -27,8 +47,8 @@ function renderInline(text: string, key: string): ReactNode[] {
     else if (emphasis !== undefined) nodes.push(<em key={id}>{renderInline(emphasis, id)}</em>)
     else if (label !== undefined) {
       const target = safeHref(href)
-      nodes.push(target ? <a key={id} href={target} target="_blank" rel="noreferrer noopener">{renderInline(label, id)}</a> : label)
-    } else if (url !== undefined) nodes.push(<a key={id} href={url} target="_blank" rel="noreferrer noopener">{url}</a>)
+      nodes.push(target ? <ExternalLink key={id} href={target}>{renderInline(label, id)}</ExternalLink> : label)
+    } else if (url !== undefined) nodes.push(<ExternalLink key={id} href={url}>{url}</ExternalLink>)
     else nodes.push(token)
     last = start + token.length
   }

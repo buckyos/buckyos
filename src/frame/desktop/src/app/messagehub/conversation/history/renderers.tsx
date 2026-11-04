@@ -47,7 +47,7 @@ import type { OutgoingUpload } from '../../store/types'
 import { formatAttachmentSize } from '../input/attachmentDraft'
 import { attachmentKindOf, attachmentMediaType, attachmentOfRef, isHttpUri, objectContextOf, type AttachmentKind, type MessageAttachment } from '../media/source'
 import { ConversationMessageActionsContext } from './actions'
-import { MessageMarkdown } from './MessageMarkdown'
+import { LinkifiedText, MessageMarkdown } from './MessageMarkdown'
 import { getObjectAccess } from './objectAccess'
 import { displayedContent, effectiveContent, mentionsViewer, messageObjId, messageRelations, messageSummaryText, ownReactionId } from './relations'
 import { MessageAgentWork } from '../worksessions/WorkSessionCards'
@@ -240,7 +240,7 @@ function TextMessage({ message, context: { isGroup, selfDid, continued, peerMark
           <div className={bodyTextClass}><MessageMarkdown text={displayedContent(message)} /></div>
         ) : (
           <p className={`${bodyTextClass} whitespace-pre-wrap break-words`}>
-            {displayedContent(message)}
+            <LinkifiedText text={displayedContent(message)} />
           </p>
         )}
         <MessageFooter message={message} isSelf={isSelf} deliveryStatus={deliveryStatus} selfDid={selfDid} />
@@ -297,7 +297,7 @@ function VoiceMessage({ message, context }: { message: MessageObject; context: M
         <ReplyQuote message={message} />
         <VoiceNoteView id={messageObjId(message) ?? note.attachment.id} source={note.attachment} voice={note.voice} isSelf={isSelf} />
         {upload ? <UploadProgress upload={upload} alignEnd={isSelf} /> : null}
-        {caption ? <p className={`${bodyTextClass} mt-1.5 whitespace-pre-wrap break-words`}>{caption}</p> : null}
+        {caption ? <p className={`${bodyTextClass} mt-1.5 whitespace-pre-wrap break-words`}><LinkifiedText text={caption} /></p> : null}
         <MessageFooter message={message} isSelf={isSelf} deliveryStatus={getMessageDeliveryStatus(message)} selfDid={context.selfDid} />
       </div>
     </div>
@@ -655,7 +655,7 @@ function AttachmentMessage({ message, context }: { message: MessageObject; conte
   const actions = useBubbleActions(message)
   const caption = displayedContent(message).trim()
   const format = effectiveContent(message).format
-  const captionBody = format === 'text/markdown' || (context.peerMarkdown && !isSelf && (format ?? 'text/plain') === 'text/plain') ? <div className="whitespace-normal"><MessageMarkdown text={caption} /></div> : caption
+  const captionBody = format === 'text/markdown' || (context.peerMarkdown && !isSelf && (format ?? 'text/plain') === 'text/plain') ? <div className="whitespace-normal"><MessageMarkdown text={caption} /></div> : <LinkifiedText text={caption} />
   const refs = effectiveContent(message).refs ?? []
   const messageId = getMessageStableId(message, context.messageIndex)
   const objectContext = objectContextOf(message)

@@ -4,6 +4,7 @@ import { useI18n } from '../../../../i18n/provider'
 import { agentAskQuestionText, type DID, type MessageObject, type MsgContent } from '../../protocol/msgobj'
 import { useQaExpanded } from '../tasks'
 import { ConversationMessageActionsContext } from './actions'
+import { LinkifiedText } from './MessageMarkdown'
 import { messageObjId, messageRelations, type MessageThreadEntry } from './relations'
 
 function entryText(entry: MessageThreadEntry): string {
@@ -50,7 +51,7 @@ export function AgentQuestions({ message, selfDid }: { message: MessageObject; s
                 <p className="text-[12px] font-semibold opacity-80">{name(entry)}</p>
                 {entry.redacted
                   ? <p className="text-[13px] italic opacity-70">{t('messagehub.message.redacted')}</p>
-                  : <p className="whitespace-pre-wrap break-words text-[14px] leading-[1.45]">{entryText(entry)}</p>}
+                  : <p className="whitespace-pre-wrap break-words text-[14px] leading-[1.45]"><LinkifiedText text={entryText(entry)} /></p>}
                 {options.length > 0 && !entry.redacted ? (
                   <ul className="mt-1 flex flex-wrap gap-1" data-testid="agent-qa-options">
                     {options.map(option => <li key={option.id} className="mh-qa-option rounded-full px-2 text-[12px] leading-[22px]" data-picked={option.id === picked || undefined}>{option.label}</li>)}

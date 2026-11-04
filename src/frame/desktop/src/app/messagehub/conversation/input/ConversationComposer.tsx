@@ -27,6 +27,7 @@ import {
   X,
 } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
+import { LinkifiedText } from '../history/MessageMarkdown'
 import { displayedContent, effectiveContent, messageObjId } from '../history/relations'
 import { agentAskQuestionText, buildAgentAskAnswer, getMessageSenderName, type MachineContent, type MessageObject, type MsgMentions, type MsgRelation, type VoiceNote } from '../../protocol/msgobj'
 import { formatVoiceDuration, voiceRecordingSupported } from '../media/voice'
@@ -721,7 +722,7 @@ const ConversationComposerInner = forwardRef<
             <span className="min-w-0 flex-1 truncate font-semibold" style={{ color: 'var(--cp-accent)' }}>{t('messagehub.answer.banner', undefined, { name: choice.askerName })}</span>
             {stopButton}
           </div>
-          {questionText ? <p className="max-h-24 overflow-y-auto whitespace-pre-wrap break-words text-[14px] leading-[1.45]" style={{ color: 'var(--cp-text)' }} data-testid="answer-question">{questionText}</p> : null}
+          {questionText ? <p className="max-h-24 overflow-y-auto whitespace-pre-wrap break-words text-[14px] leading-[1.45]" style={{ color: 'var(--cp-text)' }} data-testid="answer-question"><LinkifiedText text={questionText} /></p> : null}
           <div role="group" aria-label={t('messagehub.answer.options')} className="flex max-h-60 flex-col gap-1.5 overflow-y-auto">
             {choice.ask.input.options.map(option => {
               const sending = directSend === `option:${option.id}`

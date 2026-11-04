@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
 import { recordMeta } from './api/reader'
-import { MessageMarkdown } from './conversation/history/MessageMarkdown'
+import { LinkifiedText, MessageMarkdown } from './conversation/history/MessageMarkdown'
 import { findMessage } from './conversation/history/locate'
 import { messageObjId, messageRelations } from './conversation/history/relations'
 import type { ConversationMessageReader } from './conversation/history/types'
@@ -21,7 +21,7 @@ function ContentView({ content, testId }: { content: MsgContent; testId: string 
   const text = content.content ?? ''
   return (
     <div className="rounded-xl bg-[color:color-mix(in_srgb,var(--cp-text)_5%,transparent)] px-3 py-2 text-[13px]" data-testid={testId} data-format={content.format ?? 'text/plain'}>
-      {content.format === 'text/markdown' ? <MessageMarkdown text={text} /> : text ? <p className="whitespace-pre-wrap break-words">{text}</p> : null}
+      {content.format === 'text/markdown' ? <MessageMarkdown text={text} /> : text ? <p className="whitespace-pre-wrap break-words"><LinkifiedText text={text} /></p> : null}
       {refs.length > 0 ? <ul className="mt-1 space-y-0.5 text-xs text-[color:var(--cp-muted)]">{refs.map((ref, index) => <li key={index} className="break-all">{ref.label ?? (ref.target.type === 'data_obj' ? ref.target.uri_hint ?? ref.target.obj_id : ref.target.did)} · {ref.role}</li>)}</ul> : null}
       <p className="mt-1 text-[11px] text-[color:var(--cp-muted)]">{content.format ?? 'text/plain'}</p>
     </div>

@@ -3,6 +3,7 @@ import { Bell, Circle, CircleDot, ExternalLink, MessageCircleQuestion, RefreshCw
 import { useI18n } from '../../../i18n/provider'
 import { friendlyDidName } from '../api/projection'
 import { ConversationMessageActionsContext } from '../conversation/history/actions'
+import { LinkifiedText } from '../conversation/history/MessageMarkdown'
 import { messageObjId } from '../conversation/history/relations'
 import type { MessageObject, NotifyMessageData, NotifyStatus } from '../protocol/msgobj'
 import { committedApp, isNotifyClosed, promptOptions, promptTextInput, resultOption, resultText, type NotifyAnswer, type NotifyView } from './model'
@@ -118,7 +119,7 @@ export function NotifyCard({ message, data, className, style, footer }: { messag
         </div>
       </div>
       {prompt.title ? <p className="mt-2 break-words text-[15px] font-semibold leading-snug" data-testid="notify-title">{prompt.title}</p> : null}
-      {prompt.message ? <p className="mt-1 whitespace-pre-wrap break-words text-[14px] leading-[1.45]" data-testid="notify-message">{prompt.message}</p> : null}
+      {prompt.message ? <p className="mt-1 whitespace-pre-wrap break-words text-[14px] leading-[1.45]" data-testid="notify-message"><LinkifiedText text={prompt.message} /></p> : null}
       {link ? <a className="mt-1.5 inline-flex items-center gap-1 text-[13px] underline underline-offset-2" style={{ color: 'var(--cp-accent)' }} href={link} target={link.startsWith('/') ? undefined : '_blank'} rel="noreferrer" data-testid="notify-link"><ExternalLink size={13} aria-hidden />{t('messagehub.notify.openLink')}</a> : null}
 
       {canAct && kind === 'input' ? (

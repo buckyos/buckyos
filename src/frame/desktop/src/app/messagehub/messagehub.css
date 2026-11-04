@@ -53,10 +53,11 @@
   font-weight: 650;
 }
 
-.mh-markdown a {
+.mh-link {
   color: var(--mh-link, var(--cp-accent));
   text-decoration: underline;
   text-underline-offset: 2px;
+  overflow-wrap: anywhere;
 }
 
 .mh-markdown code {
