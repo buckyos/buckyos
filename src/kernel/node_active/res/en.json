@@ -165,6 +165,7 @@
     "generating_txt_records": "Generating...",
     "success_copied": "Content copied to clipboard",
     "error_copy_failed": "Copy failed. Please copy it manually.",
+    "error_open_failed": "Could not open the browser. Please copy the link and open it manually.",
     "wallet_device_owner": "Device will belong to: {{user_name}} {{public_key}}",
     "dns_config_txt_tips": "Please add the following 3 TXT records to your domain before activation",
     "language_label": "Language",

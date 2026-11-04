@@ -16,7 +16,8 @@ const ACTIVATION_COUNTDOWN_SECONDS = 120;
 const SuccessStep = ({ wizardData, targetUrl }: Props) => {
   const { t } = useTranslation();
   const [remainingSeconds, setRemainingSeconds] = useState(ACTIVATION_COUNTDOWN_SECONDS);
-  const [copyFeedback, setCopyFeedback] = useState<{
+  const [opening, setOpening] = useState(false);
+  const [feedback, setFeedback] = useState<{
     open: boolean;
     severity: "success" | "error";
     message: string;
@@ -64,9 +65,31 @@ const SuccessStep = ({ wizardData, targetUrl }: Props) => {
     };
   }, []);
 
-  const openUrl = () => {
-    if (url) {
+  const openUrl = async () => {
+    if (!url || opening) return;
+
+    const buckyApi = (window as Window & {
+      BuckyApi?: {
+        openExternalUrl?: (url: string) => Promise<{ code: number }>;
+      };
+    }).BuckyApi;
+    if (!buckyApi) {
       window.location.href = url;
+      return;
+    }
+
+    setOpening(true);
+    try {
+      const result = await buckyApi.openExternalUrl?.(url);
+      if (result?.code !== 0) throw new Error("open_external_url_failed");
+    } catch {
+      setFeedback({
+        open: true,
+        severity: "error",
+        message: t("error_open_failed", "Could not open the browser. Please copy the link and open it manually."),
+      });
+    } finally {
+      setOpening(false);
     }
   };
 
@@ -76,7 +99,7 @@ const SuccessStep = ({ wizardData, targetUrl }: Props) => {
     }
 
     const copied = await copyTextToClipboard(url);
-    setCopyFeedback({
+    setFeedback({
       open: true,
       severity: copied ? "success" : "error",
       message: copied
@@ -139,7 +162,7 @@ const SuccessStep = ({ wizardData, targetUrl }: Props) => {
           </Typography>
         )}
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
-          <Button variant="contained" endIcon={<LaunchRounded />} onClick={openUrl}>
+          <Button variant="contained" endIcon={<LaunchRounded />} onClick={openUrl} disabled={opening || !url}>
             {t("close_and_redirect")}
           </Button>
           <Button variant="outlined" startIcon={<ContentCopyRounded />} onClick={copyUrl}>
@@ -148,18 +171,18 @@ const SuccessStep = ({ wizardData, targetUrl }: Props) => {
         </Stack>
       </Stack>
       <Snackbar
-        open={copyFeedback.open}
+        open={feedback.open}
         autoHideDuration={2500}
-        onClose={() => setCopyFeedback((prev) => ({ ...prev, open: false }))}
+        onClose={() => setFeedback((prev) => ({ ...prev, open: false }))}
         anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
       >
         <Alert
-          onClose={() => setCopyFeedback((prev) => ({ ...prev, open: false }))}
-          severity={copyFeedback.severity}
+          onClose={() => setFeedback((prev) => ({ ...prev, open: false }))}
+          severity={feedback.severity}
           variant="filled"
           sx={{ width: "100%" }}
         >
-          {copyFeedback.message}
+          {feedback.message}
         </Alert>
       </Snackbar>
     </Paper>
