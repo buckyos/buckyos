@@ -136,7 +136,7 @@ skills 侧代码未动（`SkillMeta` 仍只有 `requires / baseline / platforms`
 
 **A. 解析与风险分析（无副作用）**
 
-- 输入解析成 `install_plan`：skills 列表（kind / scope / name / 覆盖谁）、包自带的命令（`tools/<name>/bin`）、手册要求的外部命令（来自 `tools/<name>/install.toml [check] commands`；没有 `install.toml` 的 skill 只看 `baseline / platforms`，`requires` 继续给人读；**不加 front matter 字段**，见待裁决 14）、`baseline` / `platforms`、安装脚本（下）。
+- 输入解析成 `install_plan`：skills 列表（kind / scope / name / 覆盖谁）、包自带的命令（`tools/<name>/bin`）、手册要求的外部命令（front matter `commands: ffmpeg, ffprobe`，只写命令名；`requires` 继续给人读；`install.toml [check] commands` 缺省取它。2026-11-05 owner 定：skill 只说明自己依赖的命令，系统凭扩展包目录反推该装哪个包，见 [ExtTools TODO §3.9.3](opendan-exttools-cross-platform-todo.md)）、`baseline` / `platforms`、安装脚本（下）。
 - 风险分析分两层。确定性 lint（Rust，`skills.rs`）：脚本是否可读（二进制无法审计记 high）、脚本和正文里的网络下载（`curl | sh`、包管理器 `apt/brew/npm -g/pip`）、提权与落点（`sudo`、包管理器；`install.toml` 的 `writes` 声明到 `<agent_root>` / 持久卷之外的，容器上记 `volatile`；脚本需要 `system` 而目标 runtime 的 `grant.install` 不是 `system` 的直接列为阻断）、需要的 secret / 环境变量、`scope: ui`（进 UI 系统提示，只能 owner 装）、同名覆盖已装 skill、来源（签名的 package vs imported 文本）。LLM 层只在 import 路径跑（`skill_import` 行为本来就要读全文），输出“这份手册会让 Agent 做什么、哪些步骤不可逆”的一段话。两层合成 `risk: {level: low|medium|high, findings: [{code, where, note}]}`，`plan_digest` 盖住整个 plan。
 - 协议：kRPC `skills.install_plan {package | source | draft_dir}` 返回 `install_plan`，不落盘；`agent-session skill install` 与 `buckyos skill install/import` 都先调它。
 
@@ -236,7 +236,7 @@ skills 侧代码未动（`SkillMeta` 仍只有 `requires / baseline / platforms`
 | S13 | `buckyos skill install <source>` 来源解析对齐 `app install`（pikg / url / catalog） | `../buckyos-websdk/cli/modules/skill.ts`（复用 `app.ts` 的 source 解析） |
 | S14 | opendan WebUI `pages/Skills.tsx` + Home 卡片；浏览器内 `.pikg` 解析复用 websdk `pikg_archive.ts` | `src/frame/opendan/web/src/` |
 | S15 | `pikg doctor` skill lint；`doc/sdk/skill-dev-quickstart.md`；样例包加 `plan_skills/` | `../buckyos-websdk/cli/modules/pikg.ts`、`doc/sdk/`、`test/skills_pikg_sample/` |
-| S18 | `skills.install_plan` kRPC + 确定性风险 lint（含 `grant.install` 与 `writes` 的落点检查）；`install.toml [check] commands` 解析；`skill install/import` 改为 plan → 确认 → `skills.install {plan_digest, accept_risk, runtime_id}`（`runtime_id` 缺省 `private`）；`--accept-risk` | `skills.rs`、`service.rs`、`skill.ts`、`xagent_cli.rs`（`agent-session skill install`） |
+| S18 | `skills.install_plan` kRPC + 确定性风险 lint（含 `grant.install` 与 `writes` 的落点检查）；front matter `commands` 解析，缺的命令查扩展包目录给 `recommended_packages`（不 block，ExtTools TODO X5）；`skill install/import` 改为 plan → 确认 → `skills.install {plan_digest, accept_risk, runtime_id}`（`runtime_id` 缺省 `private`）；`--accept-risk` | `skills.rs`、`service.rs`、`skill.ts`、`xagent_cli.rs`（`agent-session skill install`） |
 | S19 | `tools/<name>/install.toml`（`check / install.<os> / writes / uninstall.<os>`）；经 `runtime_put / runtime_exec / runtimes.check` 在目标 runtime 装与核验（runtime R2 已有）；`volatile` 标记（= runtime R13）；ExtTools 清单命令拒装（R-U9；`EXTENDED_TOOLS` 落地前只拒 `STANDARD_TOOLS`）；`note_usage SkillCommand` 记账；`install-cmd` / `check` 子命令。节点 `tools/<name>/bin` + PATH 前置 = runtime R3（P2），**不在本计划里做** | `skills.rs`、`runtime/mod.rs`（`runtime_exec` / `runtime_put` / `check_commands` 已有）、`skill.ts`、`xagent_cli.rs` |
 | S20 | `.meta/skills_state.json` 的 `install` 状态机；冻结按 `runtime.frozen.runtime_id` 查安装状态；`## Commands` 末尾的落点说明；`create-worksession` 的 skill 落点级 = runtime R4（`RuntimeSelection::Skill` 枚举已有，逻辑在 runtime TODO 排期） | `api.rs`（冻结）、`runner/assembler.rs`、`skills.rs` |
 | S21 | runtime 事件 → `install.runtimes[id]` 标 `stale` / 恢复与容器重启后重核验（= runtime R6，R-M2 / R-M5）；同一个任务，在 runtime TODO 里排期，这里只记依赖 | `skills.rs`、`loader.rs` |
@@ -274,7 +274,7 @@ skills 侧代码未动（`SkillMeta` 仍只有 `requires / baseline / platforms`
 11. `--yes` 只覆盖 `low` 风险（建议）还是覆盖全部？影响脚本化安装。
 12. ✅ 已裁决（2026-11-05，随 runtime TODO R-U1 / 裁决 15）：自动取。显式 `--runtime` > 继承 > skill 落点 > 私有；都装在同一 runtime 才自动取，装在多台且都可用取 `pinned_runtime`，多个 skill 落点冲突拒绝并列出。缺省装私有所以很少触发；实现是 runtime R4。
 13. ✅ 已裁决（2026-11-05，随 runtime TODO 裁决 11 / R-U9 / `grant.install`）：两种都允许，由目标 runtime 的 `grant.install` 门控。用户态安装（`tools/<name>/bin` 进 `<agent_root>/tools` 或节点 `.opendan/<agent>/tools`）对应 `agent_bin`；包管理器 / 系统位置对应 `system`，只在 `grant.install = system` 的 runtime 上允许（私有缺省就是 `system`），容器上必须落持久卷（`writes` 声明，否则 `volatile`）。风险等级：需要 `system` 的脚本记 `high`（`--accept-risk high`），落点是 owner 共用机器时文案点明“会装到你的电脑上”（R-M8）。ExtTools 清单里的命令一律拒绝由 skill 自装。
-14. **新增**：install 的核验命令清单放哪？建议只放 `tools/<name>/install.toml [check] commands`（带自装命令的 skill 才有），不加 front matter `commands`：runtime TODO R-W6 定了 cmd_skill 不加新字段、官方 skill 只靠 `baseline / platforms` + 基线清单（R-S2 / R-S3），`requires` 继续给人读。反对的理由只有一个：没有 install.toml 的 `extended` 手册也想被 `tools_check` 逐条核验——那应由 `EXTENDED_TOOLS` 清单（R16）覆盖，不由 skill 自己声明。
+14. ✅ 已裁决（2026-11-05，owner，见 ExtTools TODO §0.3 / §3.9.3）：skill **加机器可读的 `commands` front matter**（只写命令名），`requires` 继续给人读；`install.toml [check] commands` 缺省取它。系统凭扩展包目录的 `provides` 反推“装哪个包能让这个 skill 可用”，作为安装时的推荐，不 block；用户在 host 上自备的命令按 `provided_by: system` 计可用。runtime R-W6 的“不加字段”只针对运行位置（`runs_on`），不针对依赖声明。官方手册（`aigc_*`、`aiworkspace_run` 等）补 `commands`，随 S06 做。
 
 ## 7. 生态热门 skills 按本方案归类（2026-11-03 抽样）
 

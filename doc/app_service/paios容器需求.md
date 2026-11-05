@@ -222,10 +222,11 @@ OpenDAN Agent 一开始就存在自改提示词、角色描述、流程规则与
     └─ ca-certs / locale / 字体 / Deno / uv / 最小系统库
             │
             ▼
-[Worker Image]（默认运行镜像）
-    └─ 预置 CLI 工具集（ffmpeg、imagemagick、poppler、
-       libreoffice、tesseract 等）
-    └─ 受限 Python 运行时（仅用于胶水、不可装包）
+[Worker Image]（默认运行镜像，paios/aios）
+    └─ 预置 CLI 工具集：§6.4 表 B 的清单（ffmpeg、ImageMagick、
+       poppler、tesseract、git、jq …；不含 libreoffice）
+    └─ Python 3.12 + uv、Node LTS、Deno：胶水与 ScriptHost 依赖，
+       不在镜像内装系统包
             │（仅当用户显式启用工匠能力时继续向上）
             ▼
 [Crafter Image]（可选，默认关闭）
@@ -236,8 +237,12 @@ OpenDAN Agent 一开始就存在自改提示词、角色描述、流程规则与
             │
             ▼
 [External Tool Volume]（独立交付物，非镜像）
-    └─ 由 Crafter 生产，挂载到应用容器中
-    └─ 随版本预置的工具包（pandoc 静态发行版，见 publish/exttool/）
+    └─ 挂到 /opt/buckyos/tools；今天由 publish/exttool/ 的 seed 镜像
+       按镜像 id 播种一次（pandoc、可选 FreeCAD、uv/deno 预热缓存，§6.4 表 C）
+    └─ 目标：扩展包体系——系统管理员按 Zone 勾选扩展包（pikg，
+       app_type = ext_tools，包间有依赖），node_daemon 在每个节点
+       reconcile 到节点级卷 buckyos-tools；ext-core 是第一个包
+       （notepads/opendan-exttools-cross-platform-todo.md §3.9）
 ```
 
 要点：
@@ -247,6 +252,61 @@ OpenDAN Agent 一开始就存在自改提示词、角色描述、流程规则与
 3. 工匠镜像的产物是独立的工具包，不是“工匠镜像本身替代工作镜像”。工具包加载回工作镜像后，工作层 Agent 才能使用新能力。
 4. 工匠镜像必须具备“模拟工作镜像环境”的能力，以便在交付前验证产物能在干净的工作镜像里运行，避免构建环境与运行环境之间的隐式依赖泄漏。
 5. 体积大、但只有部分任务用到的 CLI（目前是 pandoc）以自包含工具包的形式随 External Tool Volume 发布（`/opt/buckyos/tools/bin/` 在 PATH 上），不进工作镜像。External Tool Volume 不可用时 Worker 照常启动，只是缺这些工具（node_daemon 记 error 日志）。
+6. Agent 看到的工具分三层（owner 2026-11-05 定）：**核心**（Agent 标准命令及其运行依赖，随系统升级、不能独立升级）、**扩展**（zone-owner 装的扩展包，可独立升级，装在哪台机器上对该机器所有 Agent 生效）、**Agent 自装**（在自己的实例卷里，删掉不伤核心）。工作镜像预置的 CLI 工具集在扩展包体系落地后就是 `ext-core` 的内容，Linux 容器仍可随镜像预置。
+
+### 6.4 官方发布的基线与扩展工具清单（运维事实来源）
+
+**本节是“官方发布的 Agent 可用命令”的唯一事实来源。** 规则：
+
+- 每条命令必须写明**支持的场景**（为什么要装、哪些 skill / App 用）。没有场景的命令不进官方清单；去掉一条命令要先列出受影响的场景并更新本表。
+- 代码与构建脚本必须与本表一致，由测试守：`baseline::STANDARD_TOOLS` ↔ `src/tools/buckyos-agent/commands/*.ts`（已有）；`baseline::EXTENDED_TOOLS` ↔ `ext-core` 的 `ext-manifest.json`（ExtTools TODO 一期）；`build_aios` 的 `RUNTIME_PACKAGES` 与 `publish/exttool/` ↔ 表 B / 表 C（待加脚本检查）。改任一处先改本表。
+- 新场景需要的新命令走扩展包（ExtTools TODO §3.9），不往核心层加，也不单独往工作镜像加；工作镜像只随 `ext-core` 变。
+- 版本锁在各自构建脚本顶部：`build_aios` 的 `NODE_VERSION`、`DENO_VERSION`，`publish/exttool/install_pandoc.sh` 的 `PANDOC_VERSION` 与 SHA256。
+- 非官方来源（Agent 自装、用户在 host 上自备、第三方扩展包）不在本表；它们由 runtime 的 `tools_check` 按实际探测记录（`provided_by: agent | system`）。
+
+**表 A：核心层（standard，`baseline::STANDARD_TOOLS`，31 条）** 随系统发布，三种形态（容器、Desktop Lite、node-daemon host）都必须有；依赖的 Deno、TS 源码与 SDK 由 launcher 钉在 `$BUCKYOS_ROOT` 下的绝对路径，不走 PATH。
+
+| 命令 | 是什么 | 支持的场景（为什么要装） |
+| --- | --- | --- |
+| `agent_tool` | Session 工具的实现载体（shell / read / write / xllm / 媒体理解等） | 所有 Session；`llm_understand_media` 是它的入口别名 |
+| `xagent`、`agent-session`（别名） | Session 对宿主 Agent State 的控制面：create-worksession、todo、copy、run、skill、goal、notify、task、recall、runtime… | `ui_core` 与 work / plan / goal 的全部行为；只在私有 runtime 的 Session 里使用 |
+| `buckyos` | BuckyOS CLI：system / system-config / app / log / task / executor / share / aiws / pikg / skill | `buckyos_admin`、`share`、`aiworkspace_run`、`aiworkspace_template_dev`、`opendan_agent_dev`、`buckyos_app_dev`、`buckyos_dev_release` |
+| `aicc-tool` | AICC 任务的底层 CLI | 媒体命令与 `xllm` 的共同依赖 |
+| `ai_provider`、`ai_provider_test`、`ai_quota` | 模型 / provider 发现、连通测试、额度 | `aigc_*` 选 provider；`xllm`；“Zone 有没有视频模型”这类判断的证据来源 |
+| `ask_user` | 经 notify 向用户提问 | work / goal 需要人答时 |
+| `import_office`、`import_table` | 把 Office 文档 / 表格导入为对象 | 文档与数据导入、知识整理 |
+| `materialize_resource` | 把对象 / URL 物化成本地文件 | 任何要把 `obj://`、附件落成文件再加工的步骤 |
+| `resume_aicc_task` | 续接异步 AICC 任务 | `aigc_*` 的长任务跟进 |
+| `llm_understand_media` | 看图、读文档（PDF…）、听音视频，结果是文本 | `ui_core` 的媒体理解；`aigc_image` 的结果检查 |
+| `caption_image`、`detect_image`、`segment_image`、`ocr_image` | 图像理解：描述、检测、分割、OCR（走 Zone 模型） | 图像类任务的理解步骤；`ocr_image` 是 OCR 的主路径 |
+| `gen_image`、`edit_image`、`inpaint_image`、`upscale_image`、`remove_bg` | 图像生成与编辑（走 Zone 模型） | `aigc_image` |
+| `gen_video`、`edit_video`、`extend_video`、`upscale_video` | 视频生成与编辑（走 Zone 模型） | `aigc_video`；本地剪辑 / 合成另需表 B 的 ffmpeg |
+| `gen_music`、`text_to_speech`、`speech_to_text`、`enhance_audio` | 音频生成、TTS、ASR、增强（走 Zone 模型） | `aigc_audio`；本地转码 / 拼接另需表 B 的 ffmpeg |
+
+**表 B：工作镜像预置的 CLI 工具集（`build_aios` `RUNTIME_PACKAGES` 等；扩展包体系落地后 = `ext-core`，即 `extended` 基线）** 今天只在 Linux 容器里有；Desktop Lite / host 上 `extended` 只是 owner 的声明，直到 `ext-core` 的原生包发布。
+
+| 工具 | 来源 / 版本 | 支持的场景（为什么要装） |
+| --- | --- | --- |
+| `ffmpeg`、`ffprobe` | apt | `aigc_audio` / `aigc_video` 的转码、剪辑、拼接、抽帧、媒体信息检查 |
+| ImageMagick（`convert`、`identify`、`compare`；IM6，没有 `magick`） | apt | `aigc_image` / `aigc_video` 的本地图像检查与加工；统一到 `magick` 入口待 ExtTools TODO T0 |
+| poppler-utils（`pdftotext`、`pdftoppm`、`pdfinfo`） | apt | 文档理解与导入的 PDF 文本 / 页图提取（`llm_understand_media` 前处理、`import_office` 后加工） |
+| `tesseract`（eng、osd） | apt | 本地 OCR 回退；主路径是 `ocr_image` |
+| `python3`（系统 3.12）+ `uv` | apt + astral 安装脚本 | ScriptHost Python App 的依赖安装；Agent 临时脚本；项目解释器由 uv 管 |
+| `node`、`npm`、`npx` | 官方 tarball，`NODE_VERSION` | ScriptHost / aiws 项目构建；`buckyos_app_dev` 的 web 包 |
+| `deno` | 官方安装脚本，`DENO_VERSION` | ScriptHost TS、aiworkspace 程序宿主、`aiworkspace_run` 的 JSON 处理。核心命令用的是自己钉死的那份 Deno，不是它 |
+| `git` | apt | `buckyos_app_dev`、`opendan_agent_dev`、`buckyos_dev_release` 的源码操作 |
+| `curl`、`jq`、`tree`、`unzip`、`xz` | apt | 下载、JSON 提取（`aiworkspace_run` 示例）、目录查看、归档 |
+| `bash`、`rsync` | apt | shell 脚本与目录同步；Linux 特有，不要求 macOS / Windows 的 `ext-core` 提供 |
+
+**表 C：External Tool Volume（`publish/exttool/`，挂 `/opt/buckyos/tools`）**
+
+| 内容 | 版本 | 支持的场景（为什么要装） |
+| --- | --- | --- |
+| `pandoc` | 3.12.1，SHA256 锁定 | 文档格式转换（docx / md / html / pdf 互转）：`import_office` 的后加工、文档类产出 |
+| FreeCAD（`freecadcmd`） | 可选；缺省是 `exit 127` 的 stub | CAD 脚本化；要用时带 `FREECAD_APPIMAGE_URL` 重建 exttool 镜像。stub 不算能力成立 |
+| `uv-cache`、`deno-cache` | 随镜像预热 | ScriptHost 首启离线装依赖；不是命令 |
+
+**不在官方清单里、手册可能提到的**：`cargo`、`pnpm`、`docker`、`sha256sum`、编译工具链（`buckyos_dev_release`、`buckyos_app_dev` 的 Docker App）——属于工匠层或 Agent 自装，`extended` 不保证。
 
 ## 7. 核心需求
 
@@ -325,7 +385,7 @@ OpenDAN Agent 一开始就存在自改提示词、角色描述、流程规则与
 
 ### 7.8 工匠镜像与工具包需求
 
-不在本版本讨论
+工匠镜像不在本版本讨论。工具包的格式与分发已在扩展包体系里定下（pikg `app_type = ext_tools`、`ext-manifest.json` 的 `provides / requires / conflicts`、Zone 级期望状态、node_daemon reconciler），见 `notepads/opendan-exttools-cross-platform-todo.md` §3.9；工匠层落地时产出的就是这种包。
 
 ### 7.9 跨平台兼容需求
 
@@ -372,7 +432,7 @@ OpenDAN 必须被纳入统一 App 模型，而不是继续维持独立特例：
 2. 本地演化副本必须落在实例卷。
 3. 升级逻辑应采用文件级同步/合并，不再依赖文件系统级 COW。
 4. Agent 默认仍运行在受限容器边界内，其可见目录与宿主机能力继续由挂载策略/桥接工具决定。
-   例外：zone owner 的 Agent 把默认 runtime 设为某节点的 `host` 时，Agent Service 作为 node_daemon 管理的原生进程跑在该节点上，不使用工作镜像；这种 Agent 没有 `container` runtime，命令只经 Node Executor 以节点 `owner_agents` 的 profile 执行（`doc/app_service/rust_app_loader.md` §9.3.1）。
+   例外：Agent Service 原生运行（Desktop Lite、或 zone owner 把 Agent 放到某节点的 `host` 上）时不使用工作镜像。2026-11-04 起 Agent 的**私有 runtime 永远存在**：原生运行时它就是 Agent Service 进程自己的环境（`connector: native`），必须拥有 `$BUCKYOS_ROOT` 布局；`host` 只是登记 id，经 Node Executor 以节点 `owner_agents` 的 profile 执行（`notepads/opendan-agent-runtime-lifecycle-todo.md` §0.3、`doc/app_service/rust_app_loader.md` §9.3.1）。这种形态下 §6.4 表 B / 表 C 的工具由 `ext-core` 的原生包提供，发布前 `extended` 只是声明。
 5. 删除实例卷后，Agent 应回退到更接近原始发行状态，这应被视为诊断与恢复能力的一部分。
 
 ### 8.3 传统二进制 App
@@ -460,6 +520,8 @@ OpenDAN 必须被纳入统一 App 模型，而不是继续维持独立特例：
 7. App 间共享数据仅通过显式共享目录完成，不直接共享私有实例卷。
 8. Agent 与普通 App 使用统一的安全模型与容器管理框架。
 9. 系统提供独立的工作镜像与工匠镜像；在默认安装配置下，只有工作镜像被拉取与启动，工匠镜像不被拉取也不被启动。
+10. §6.4 的三张表与 `STANDARD_TOOLS`、`EXTENDED_TOOLS`、`build_aios RUNTIME_PACKAGES`、`publish/exttool/` 一致，有测试或脚本检查守着；表里每条命令都有场景列。
+11. 删掉 External Tool Volume 或任何扩展包后，表 A 的核心命令仍全部可用（核心不依赖扩展层）。
 
 
 

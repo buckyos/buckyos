@@ -2,12 +2,13 @@
 
 | 项目 | 内容 |
 |---|---|
-| 文档版本 | v0.3（引入本地轻量媒体理解管线，复用 workflow DSL） |
+| 文档版本 | v0.4（2026-11-05：并入发送前决策、目录表示与 preview 共享转换缓存；v0.3 引入本地轻量媒体理解管线，复用 workflow DSL） |
 | 所属系统 | OpenDAN / BuckyOS — `agent_tool` 受控 `llm_*` 工具族 |
 | 组件类别 | `llm_*` 受控旁路工具（封装层提供，非开放 fork 原语） |
-| 实现位置 | [src/frame/agent_tool/src/llm_understand_media.rs](src/frame/agent_tool/src/llm_understand_media.rs)（占位文件） |
-| 依赖前置 | `LLMContext` waist、`OneShotRequest` / `semantic_hash()`、`AiContent::Image`、`ResourceRef::NamedObject`、`ndn_lib::ObjId` |
-| 状态 | Draft — 供实现 |
+| 实现位置 | [src/frame/agent_tool/src/llm_understand_media.rs](src/frame/agent_tool/src/llm_understand_media.rs)（图片 / 音频 / 视频 / 文档直传已实现；§4.6–§4.8 待实现） |
+| 依赖前置 | `LLMContext` waist、`OneShotRequest` / `semantic_hash()`、`AiContent::Image`、`ResourceRef::NamedObject`、`ndn_lib::ObjId`；可选：nfs_server preview `repr` / `get_repr`（§4.8，有则用） |
+| 需求来源 | 本文档 v0.3 的设计，加上开发者对 Agent runtime baseline 应携带哪些工具的思考（2026-11-05 Review）；[paios 容器需求 §6.4](doc/app_service/paios容器需求.md) 是当前 baseline 清单，作为可用性约束引用 |
+| 状态 | Draft — 供实现；§1.4、§4.6–§4.8、§8 第 15–20 项、§10 为 2026-11-05 Review 并入的待实现需求 |
 
 ---
 
@@ -32,8 +33,15 @@
 | 模型策略 | `ModelPolicy` 当前只承载 preferred / fallbacks / temperature / max_completion_tokens / provider_options；`Requirements.must_features` 由 AICC adapter 根据 tool/json 输出等能力生成 | [llm_context/src/request.rs](src/frame/llm_context/src/request.rs)、[ai_runtime.rs](src/frame/opendan/src/ai_runtime.rs) |
 | Workflow DSL | `buckyos_api::workflow_dsl::WorkflowDefinition` / `StepDefinition` / `ControlNodeDefinition` | [workflow_dsl.rs](src/kernel/buckyos-api/src/workflow_dsl.rs)、[src/kernel/workflow/src/dsl.rs](src/kernel/workflow/src/dsl.rs) |
 | Workflow executor 表达 | `ExecutorRef` 支持 `service::` / `http::` / `appservice::` / `operator::` / `func::` 与 `/agent/` / `/skill/` / `/tool/` 语义路径 | [workflow_types.rs](src/kernel/buckyos-api/src/workflow_types.rs)、[doc/workflow/executor list.md](doc/workflow/executor%20list.md) |
+| 共享表示缓存（转换产物） | nfs_server preview：NFSP `repr`（ensure）/ `get_repr`（query），`work_key = sha256(input ObjId, converter@version, params)`，结果存系统桶 `zone/nfs-server/_/preview-cache`，按源 ACL 判权后签短期只读令牌 | [src/frame/nfs_server/src/preview/mod.rs](src/frame/nfs_server/src/preview/mod.rs)、[rpc.rs](src/frame/nfs_server/src/preview/rpc.rs) |
+| 转换档（Target Profile） | `Profile::{PreviewImage, PreviewVideo, PreviewAudio, Thumbnail, PreviewDocument}`；`preview-document` 用 soffice 把 Office / ODF / RTF 转 PDF | [convert.rs](src/frame/nfs_server/src/preview/convert.rs) |
+| 转换工具探测（有则用） | preview `tools`：ffmpeg / ffprobe / soffice 三平台查找，缺失即 `unsupported`，`hello` 只广告能产出的 profile | [tools.rs](src/frame/nfs_server/src/preview/tools.rs) |
+| Office / 表格的现成解析器 | `import_office`（docx / pptx → Blocks，含标题、表格；图片丢弃并报告）、`import_table`（csv / xlsx / sqlite → TableSources，按 sheet） | [import_office.ts](src/tools/buckyos-agent/commands/import_office.ts)、[import_table.ts](src/tools/buckyos-agent/commands/import_table.ts) |
+| 官方工具清单（可用性约束） | poppler-utils、tesseract、ffmpeg 只在 Linux 容器 `extended` 层；soffice 在 nfs_server 侧；Desktop Lite / host 上两者都可能缺席 | [paios 容器需求 §6.4](doc/app_service/paios容器需求.md) |
 
 > 当前实现：模型分析 stage 以 xllm run 执行（`XllmTask::prepare` + `XllmRun::start` / `execute`，run 目录为 `run.json` + `snapshots/`，见 [llm_understand_media.rs](src/frame/agent_tool/src/llm_understand_media.rs)）。代码中已没有 `OneShotRequest` / `semantic_hash()` / `drive_to_terminal`，本文出现这些名称处是早期设计接口，恢复语义以 §5.2 的当前实现说明为准。
+
+> 当前实现（2026-11-05 核对）：图片经 image_fit 缩图后以 `AiContent::Image` 发送；音频先转写为文本；视频按均匀时间采样抽帧（默认 8 帧、上限 16，`LLM_UNDERSTAND_MEDIA_VIDEO_FRAMES`），帧以 base64 内联后临时目录即删；PDF 等其余非归档格式原样作为 `AiContent::Document` 直传，不做模型能力与预算检查，模型不支持时才失败。模型选路由 `LLM_UNDERSTAND_MEDIA_{IMAGE,VIDEO,AUDIO}_MODEL` / `LLM_UNDERSTAND_MEDIA_MODEL` 环境变量与内置默认别名决定，§4.4 的 TOML 路由表尚未实现。内置提示词要求 `Do not call tools`。agent_tool 不依赖任何 NFSP 客户端，目前没有到 preview 的调用通路。
 
 > beta2.2 是 breaking-change 版本：`AgentToolResult` / 各 `AiContent` 变体允许直接扩展，不必为旧调用方留兼容层。
 
@@ -66,6 +74,18 @@
 - **L4-only 压缩纪律**（[llm_compress.rs:1](src/frame/agent_tool/src/llm_compress.rs:1) 的模块 doc）：媒体的 materialize（NDN 对象 → 真正像素）与 compaction（像素 → 结构化报告）都是显式的、发生在明确边界（一次工具调用、一次压缩改写）上的事件，不隐式继承；
 - **crash-resume 自相似**（设计目标，当前实现见 §5.2）：旁路整体以 `OneShotRequest` 形式发起，`semantic_hash()` 覆盖目标 + 输入消息，与 `LocalLLMContext` 按推理边界提交快照的模型同构。
 
+### 1.4 基础工具的尽力原则（有则用）
+
+`llm_understand_media` 是 Agent 的基础工具：所有 Session、所有形态（容器、Desktop Lite、node-daemon host）都有它，但它周围的能力（nfs_server preview、ffmpeg、soffice、poppler、OCR、ASR、Office 解析器）在不同形态下不一定存在。因此：
+
+- **最小内核必须极小**：识别 MIME → 选模型 → 把文件（或缩后的图 / 抽出的帧 / 转写文本）直接发给模型 → 产出报告。这条路只依赖 AICC 和模型本身，总是可用；它就是今天已实现的路径。
+- **每一层增强都是"有则用"**：共享转换缓存有就命中、没有就本地转；本地转换工具有就用、没有就直传；直传模型不收才报错。缺某个工具不是失败原因，只是少一层优化；某层失败后退回下一层，最终退回直传。
+- **只有直传也不行时才失败**，而且错误要具体：缺的是哪种能力、本机探测过哪些工具、调用方可走的回退路径（换模型、先 `import_office`、手动转换）。
+- **尽力不等于静默**：每次调用在 `details` 里记录走了哪条路、为什么（§4.6.4）；局部抽样不能声称完整阅读（§4.7）。
+- **先探测再承诺**：工具描述、`hello` 能力广告、cmd_skills 只描述当前形态真正具备的能力，不把"有工具时能做"写成"总能做"。
+
+这条原则来自 baseline 取舍本身：Agent runtime 的 baseline 要带哪些工具是运维与镜像层的决定（paios 容器需求 §6.4），本工具不反过来要求 baseline 必须带某个转换器；baseline 带了就多一层优化，没带就少一层。它同时约束下文的设计：§4.5–§4.8 描述的管线、目录表示和共享缓存都是最小内核之上的可选层，任何一层缺席时工具仍应能工作。
+
 ---
 
 ## 2. 接口定义
@@ -96,10 +116,11 @@
 
 - **首选**：`NamedObject { obj_id: ObjId }`——content-addressed、跨 zone/peer 可寻址、可由 `ndn_lib` GC 模型统一管理。
 - **可接受**：`Url { url, mime_hint }`——当媒体来源是远端 HTTP(S) 且 buckyos 这一侧不需要长期持有该资源时；但调用方需自承"URL 过期 / 跨设备失效"风险，本工具不为其增引用计数。
+- **可接受（容器内产物）**：`{kind: "local_file", path}`——上一步 shell 产出的文件。它没有 NDN 身份；要进共享转换缓存须先确定内容身份（§4.8.3），确定不了就只做本次私有转换。
 - **禁止作为长期 history 引用**：`Base64 { mime, data_base64 }`——一旦写回主干 `tool_result`，base64 永久驻留 history，违背本设计的核心收益。`llm_understand_media` 在写回时**必须**剔除 inline base64。详见 §6.1。
 - **MIME 来源**：模型路由必须基于媒体 MIME / media kind，而不是仅基于 `obj_id`。`Url` 可使用 `mime_hint` 或 HTTP `Content-Type`，`Base64` 自带 `mime`；`NamedObject` 当前不在 `ResourceRef` 内携带 MIME，工具应在 materialize / open chunk reader 时从 FileObject meta 获取 MIME，缺失时读取开头字节做 magic sniff。调用方传入的 `mime_hint` 只作为 override / fallback，不是常规必填参数。
 
-> 本文档 v0.3 的基础实现范围仍先覆盖图片：工具需把 target media 解析为 `image/*` 后才构造 `AiContent::Image`；`AiContent::Document` / 视频 / 音频 接口预留，不在本期实现。
+> 实现范围（2026-11-05）：图片、音频（先转写）、视频（抽帧）、文档（`AiContent::Document` 直传）均已接入；归档必须先解包。§4.6 起的发送前决策、目录表示与共享转换缓存为待实现。
 
 ### 2.3 `ToolResult`（写回主干的内容）
 
@@ -254,7 +275,7 @@ struct ObservationItem {
 
 ### 4.3 native vision vs 辅助降级
 
-旁路子 context 先根据 target `media` 的 MIME / media kind 选择内容形态与 AICC 逻辑模型名。v0 仅支持 `image/*`，因此把 target `media` 以 `AiContent::Image { source }` 直接放入最后一条 user message，由 AICC provider 适配层负责 lowering（NamedObject → 字节流 → provider 原生 image content block / Gemini parts / Anthropic image 等）。
+旁路子 context 先根据 target `media` 的 MIME / media kind 选择内容形态与 AICC 逻辑模型名。图片把 target `media` 以 `AiContent::Image { source }` 直接放入最后一条 user message（音频先转写、视频抽帧、文档以 `AiContent::Document` 直传，见 §0 表后说明；是否直传由 §4.6 决定），由 AICC provider 适配层负责 lowering（NamedObject → 字节流 → provider 原生 image content block / Gemini parts / Anthropic image 等）。
 
 - 当前实现状态：`LLMContextRequest.model_policy` 对应的 `ModelPolicy` 不包含 `requirements` / `must_features` 字段；OpenDAN 的 `AiccLlmClient` 只会根据 tool calling / JSON output 自动生成 `Requirements.must_features`，尚不能从 `llm_understand_media` 直接声明 `features::VISION`。
 - v0 实现方式：先解析 / 获取 MIME；若不是 `image/*` 或 MIME 缺失且无法确认是图片，返回明确 `AgentToolStatus::Error`。根据配置表把 MIME pattern 映射为 AICC 逻辑模型名，并写入 `OneShotRequest.model_policy.preferred`。若当前 AICC 路由无法为该逻辑模型处理含 image 的 LLM 请求，也应返回明确 Error。
@@ -288,10 +309,12 @@ mime = "video/*"
 model = "llm.video"
 ```
 
-- v0 只启用 `image/* -> llm.vision`；其它 route 预留给后续 `Document` / 音频 / 视频支持。
+- 路由表按 MIME 选逻辑模型；选中模型后能否直传、要不要缩小或转换由 §4.6 决定，不在路由表里表达。
 - `model` 是 AICC 逻辑模型名，最终 exact provider / model 由 AICC route policy 解析。
 - `default_model` 仅在 MIME 已识别但没有更具体 route 时使用；MIME 无法识别时不盲目 fallback。
 - 对 `NamedObject`，MIME 探测发生在打开 chunk reader / materialize 阶段：优先 FileObject meta，其次首块 magic sniff，最后才使用调用方 `mime_hint`。
+
+> 当前实现：路由由环境变量与内置默认别名决定（见 §0 表后说明），TOML 路由表待实现。选中模型后的能力与预算检查见 §4.6；能力信息查不到时按"有则用"假定支持、直传，失败再降级。
 
 ### 4.5 本地轻量媒体理解管线
 
@@ -347,6 +370,8 @@ model = "llm.video"
 > - **格式**：`image` crate 解不了的格式（超限 GIF、TIFF、AVIF…）先用 ffmpeg 转成 PNG（动图取首帧）。aios 镜像的 ffmpeg 6.1 读不了 HEIC，ImageMagick 也缺 HEVC 插件，HEIC 目前会明确报错。
 > - **URL 图片**：先下载到工具内再判断。
 > - **视频帧**：抽帧时缩到长边 ≤ 1280。
+> - **视频抽帧**：ffprobe 取时长后按均匀时间采样，默认 8 帧、上限 16（`LLM_UNDERSTAND_MEDIA_VIDEO_FRAMES`），每帧前有时间戳说明；编码层关键帧不等于语义关键画面，场景切换与去重待评估（§4.6.5）。
+> - **音频**：先转写为文本再送模型。**文档（PDF 等）**：原样作为 `AiContent::Document` 直传，未做能力与预算检查（§4.6 待实现）。
 > - **配置**：上述限制可用环境变量 `LLM_UNDERSTAND_MEDIA_IMAGE_MAX_EDGE` / `_IMAGE_MAX_PIXELS` / `_IMAGE_MAX_BYTES` / `_VIDEO_FRAME_MAX_EDGE` 覆盖。
 > - **结果**：原图与实际送出图的 mime / 宽高 / 字节数，以及所做的处理（`actions`），写入 `details.media_preprocess`。缩过图时，旁路模型在图片前收到一条说明，主干 `output` 末尾也追加一行提示。
 
@@ -417,6 +442,8 @@ stage_cache_key = hash({
 - 涉及隐私策略或用户授权的 stage，其 cache record 必须带 owner / zone / permission scope；不能因为内容 hash 相同就跨权限边界复用。
 - cache record 只保存 JSON output 和 artifact 引用，不保存 base64 payload。
 
+> **落地方式（2026-11-05 决定）**：转换类产物（缩图、页图、分页文本、目录、抽帧、转写）的系统级缓存不再单独实现 `media_stage_cache/<key>` 的 named_store 记录，而是复用 nfs_server preview 已有的 `repr` / `get_repr` 与 `preview-cache` 桶（§4.8）。preview 的 `work_key = sha256(input ObjId, converter@version, params)` 与上面的 `executor identity + resolved input + stage version` 同构：`converter@version` 对应 executor identity 与 version，`params` 对应 resolved input 中源对象以外的部分。本节的 key 规则、缓存边界与 `pipeline_trace.cache_hit` 要求不变；`model_analyze` 仍不缓存。preview 不可达时按 §1.4 退到本地转换，不阻塞理解。
+
 #### 4.5.6 从媒体理解提炼的 FunctionObject
 
 这个场景可以反过来帮助定义真正有价值的 FunctionObject。FunctionObject 不应只是数学意义上的低层算子；`operator` 更适合表达 `sort`、`topk`、`json.pick` 这类无业务语义的纯算子。媒体理解需要的是强语义、可复用、可被人类和 agent 识别的函数组件，例如“生产图片缩略图”“探测媒体元信息”“从图片提取可见文字”。
@@ -455,6 +482,8 @@ stage_cache_key = hash({
 - 如果结果受权限或隐私策略影响，如 EXIF 隐私字段、音频转写、OCR 文本，cache record 必须带 owner / zone / permission scope。
 
 在本地管线中，这些函数可以先由 `operator::media.*` 内置实现或 `appservice::media_tools.*` 直执行；一旦某个函数需要跨节点计算或复用独立 runner，就把语义路径解析到 `func::<function_object_id>`。无论执行路径如何，`函数名 + 参数 + 输入文件 = 确定结果` 的缓存语义保持不变。
+
+表中 `produce_image_thumbnail` / `render_pdf_pages` / `extract_pdf_text` / `extract_video_keyframes` / `extract_audio_track` 这类纯转换函数，当前对应 preview 的转换档（§4.8.1）：函数名加版本即 `converter@version`，关键参数即 `params`。先以 preview profile 落地，FunctionObject 注册表成熟后再把同一 work_key 语义映射到 `func::`。
 
 #### 4.5.7 默认图片管线 DSL 示例
 
@@ -563,6 +592,150 @@ v0 实现可以先内置等价的 Rust plan，不必立刻把 JSON DSL 暴露为
 
 不允许在本工具里直接执行任意 shell 脚本作为用户扩展。若需要本地外部命令能力，应先进入 workflow executor registry / AppService / FunctionObject 的受控模型，再由本地 runner 按 `ExecutorRef` 调用。
 
+### 4.6 发送前决策：直传 / 缩小 / 转换
+
+给定一个文件，模型分析之前先回答三个问题。这是 §4.5 管线中 probe 之后、preprocess 之前的规划步骤，由本地 runner 在工具进程内完成，agent 不可见；调用方仍只表达"理解这个文件"的目标，不自行拼接转换命令。
+
+| 问题 | 判断依据 | 不能偷懒的地方 |
+|---|---|---|
+| 1. 能直接发给目标模型吗？ | 实际选中的模型与 provider 的输入格式、模态和大小限制 | 不能只看扩展名或模型别名；能力信息有就查（`ai_provider` 元数据、AICC 能力标识），没有就按 route 配置假定支持、直传，失败再降级 |
+| 2. 需要先缩小以节约 token 吗？ | goal、分辨率、页数、时长、剩余上下文预算 | 模型支持原格式不等于应该整文件直传；缩图、分段、抽帧、按需读取都是候选 |
+| 3. 需要先转换格式吗？ | 原格式不支持、成本过高或不便检索 | 转成图片、纯文本，或由 index + 图片 + 文本组成的目录（§4.6.2） |
+
+统一流程：识别文件 → 判断模型能力与预算 → 获取或生成转换产物 → 按 goal 选取内容 → 理解并返回带来源的结果。
+
+#### 4.6.1 决策阶梯（有则用）
+
+按 §1.4，三个问题的每个答案都是尽力的。runner 从上到下取第一个可行的分支，任一步失败退到下一步：
+
+```text
+probe: mime / size / 页数 / 时长
+  │
+  ├─ 预算内、模型原生支持 ──────────────→ 直传（最小内核，总是可用）
+  │
+  ├─ 原生支持但超预算
+  │     图片 → image_fit 缩图（已实现）
+  │     视频 → 抽帧（已实现）；长视频按时间段分批
+  │     PDF / 文档 → 有共享表示则按页取；没有则按页范围分批直传
+  │
+  ├─ 原生不支持或不便检索
+  │     ① nfs_server preview 可达且有对应 profile → repr 取共享产物（§4.8）
+  │     ② 本机有转换工具（poppler / soffice / ffmpeg / import_office）→ 本地转换，
+  │        能回写共享缓存则回写，否则只服务本次
+  │     ③ 都没有 → 直传试一次
+  │
+  └─ 直传也被拒 → AgentToolStatus::Error，message 列出：缺的能力、探测过的工具、
+     可走的回退（换模型 / 先 import_office / 手动转换）
+```
+
+每一层的工具探测沿用 preview `tools` 的约定：有则使用，没有就失败；三平台查找；版本进缓存键。
+
+#### 4.6.2 三类转换产物
+
+| 产物 | 适用情况 | 必须保留的信息 |
+|---|---|---|
+| 图片 | 页面排版、图表、扫描件、视频帧等视觉内容 | 页码 / 帧时间戳、原始尺寸、缩放关系 |
+| 纯文本 | 可提取正文、表格数据、字幕或转写 | 章节、页码、sheet / 单元格范围或时间范围 |
+| 目录：index + 图片 + 文本 | 多页文档、复杂表格、长视频，需要跨部分检索和综合 | 完整条目清单、顺序、各产物位置及到原文件的对应关系 |
+
+目录是正式的理解输入，不能只把首页图片或 index 的摘要当作整个文件。逻辑结构如下，存储格式在实现时确定（它在 preview 协议中的表示见 §4.8.2）：
+
+```text
+representation/
+  index.json       # 源对象、转换版本 / 参数、完整条目与来源映射、缺失 / 失败项
+  text/            # 按页、章节、sheet 或时间段组织的可检索文本
+  images/          # 页图、图表、关键帧；index 关联对应文本
+```
+
+要求：
+
+- 统一的表示描述与 index schema；空白页、无文本页、转换失败页也要有记录，避免默默遗漏。
+- 单文件产物和目录表示由同一套解析读取；目录可以由缓存对象引用装配，不强制复制到每个 Agent 私有目录。
+- 产物对应 §4.5.4 的 `derived_artifacts`：长期有价值的进共享缓存，仅服务本次的随 work_dir 清理。
+
+#### 4.6.3 输入预算与质量策略
+
+- 预算来自父预算的剩余额度（§6.3），不重置。
+- 缩小后无法辨认的区域可按需读高分辨率版本；不能为省 token 静默丢失关键信息。
+- 全篇总结分批覆盖各部分再汇总，不要求一次把所有图片和文本塞进上下文。
+- 各模型的默认预算值在实现时确定：先按 provider 文档值配置，再按真实数据调。
+
+#### 4.6.4 决策记录
+
+每次调用把决策写进 `details.media_decision`，不进 `output`：
+
+```jsonc
+{
+  "mode": "direct | shrink | convert",
+  "reason": "pdf 42 pages exceeds budget; model accepts image/*",
+  "representation": { "work_key": "…", "cache_hit": true, "profile": "document-catalog" },
+  "tools": { "probed": ["pdftoppm", "soffice"], "used": ["pdftoppm 24.02"], "missing": ["tesseract"] },
+  "fallbacks": ["shared cache unreachable → local poppler"]
+}
+```
+
+工具缺失导致走回退或失败时，这份记录就是给调用方的具体失败信息与回退路径。
+
+#### 4.6.5 格式支持目标
+
+| 输入 | 转换策略 | 验收重点 |
+|---|---|---|
+| PDF | 模型支持且预算合适时直传；否则提取分页文本、渲染页图，生成目录；扫描页按需 OCR | 文本 PDF、扫描 PDF、图文混排及长 PDF 均可理解；能找到后部页面的信息并引用页码 |
+| DOCX | 提取正文、标题、表格和内嵌图片（复用 `import_office` 的解析）；需要版式时复用 preview `preview-document` 转 PDF，再生成页图 / 文本目录 | 正文、表格与图片信息均可检索；页码只引用实际渲染版本，避免虚构固定页码 |
+| Excel | 按工作簿 / sheet 建目录（复用 `import_table` 的解析），文本保留行列与单元格位置；图表和必要区域转图片；大表按范围分块 | 多 sheet、大表、合并单元格与图表；区分公式和已有计算值，缺失计算值需说明，不能把渲染 PDF 当作全部表格数据 |
+| 视频 | 关键帧 / 分段抽帧、时间戳和可用字幕 / 音轨转写组成目录；必要时再读取局部片段 | 长视频可按时间检索；视觉与音频证据可关联；明确抽样覆盖及可能遗漏的短暂事件 |
+
+视频关键帧策略先沿用现有的可配置均匀时间采样，再评估场景切换与去重；编码层关键帧不必然等于语义上的关键画面。直传视频也必须检查目标模型的实际能力与预算。`import_office` / `import_table` 是 TS 实现，复用方式（调用 CLI 还是抽成库）在实现时确定。
+
+### 4.7 目录理解与检索
+
+目录表示进入模型分析时，不能把 index 摘要或首页当作全文。检索循环有两种做法：
+
+| 做法 | 说明 | 影响 |
+|---|---|---|
+| **宿主检索循环（默认）** | 本地 runner 在工具进程内完成：读 index → 在全部文本条目中检索 goal 相关内容 → 选取相关页图 / 图表 / 帧 → 分批送模型 → 汇总。旁路模型仍不开工具，仍是一次或几次无工具的 JSON 输出 | 不触碰 §4.1 fork-and-discard、§6.3 深度 = 1 与 `Do not call tools`；检索质量取决于 runner 的文本检索与选页策略 |
+| 受控旁路工具（后续） | 给旁路模型列目录、搜索、读文本、读图四个受控工具，由模型自己检索 | 推翻 `tool_policy.allow_tools = false`，需要新的调用次数与 token 预算约束，输出 schema 也要从单次 JSON 改为多轮；待宿主循环有真实数据后再评估 |
+
+无论哪种做法：
+
+- "搜索整个目录"指检索覆盖全部条目，不是一次塞进全部内容；全篇总结分批覆盖各部分再汇总。
+- 内置提示词改为：先读 index，再读检索出的相关文本，再读相关页图 / 图表 / 帧，最后综合回答。`Do not call tools` 在宿主循环下保留，在旁路工具方案下同步修改。
+- 每条重要 observation 带定位：页码、sheet / 单元格范围或视频时间戳。沿用 §3 的 observations / reasoning / conclusion / confidence 语义，定位作为 `ObservationItem` 的可选字段 `where`。
+- runner 知道自己送了什么，因此 `details.coverage` 由 runner 而非模型填写：已检查的条目范围、未覆盖部分、转换缺失项；`output` 末尾追加一行覆盖说明。局部抽样不能声称完整阅读或观看。
+
+### 4.8 共享表示缓存：复用 nfs_server preview
+
+转换产物进入 preview 的共享表示缓存，由 Preview UI、不同 App、Agent 和 Session 复用；`llm_understand_media` 不在每次调用中重复落一份私有转换缓存。"所有人受益"指有权读取同一内容的调用方共享转换成果。preview 本身也是"有则用"：nfs_server 不可达或 `hello` 不广告 `repr` 时，按 §4.6.1 退到本地转换或直传，并在 `details.media_decision.fallbacks` 记录。
+
+#### 4.8.1 沿用什么
+
+preview 已有的机制直接沿用，不另造：
+
+- `repr`（ensure）/ `get_repr`（query）与任务生命周期：`processing → completed | failed`；同一 `work_key` 的进行中任务合并等待，调用方离开不中止它；失败进 10 分钟负缓存，显式 Retry 走 CAS；服务重启把孤儿任务标为可重试失败。
+- 缓存键 `work_key = sha256(input ObjId, converter@version, params)`。页图尺寸、OCR 语言、抽帧策略等影响结果的参数必须进入 `params`；内容或转换器版本变化自然失效。
+- 结果存系统桶 `preview-cache`，按源文件 ACL 判权后签短期只读 `bkt_` 令牌；`get_repr` 要求同一 actor 先 `repr` 过（授权记录在进程内保存一小时，nfs_server 重启后需重新 `repr`）。目录及子产物的读取权限随源文件约束，无权限调用不能读缓存。
+- 资源限额、超时、30 天未读过期与容量上限按 LRU 回收；缓存被回收后可重建。
+- 多阶段转换复用中间结果：docx → PDF（`preview-document`，已有）→ 页图 / 文本。Preview 与理解工具不重复生成相同中间产物。
+
+#### 4.8.2 需要扩展什么
+
+- **新 profile**：在 `Profile` 枚举上扩展文本、页图、目录等转换档（名称实现时定，例如 `document-text` / `document-pages` / `document-catalog` / `video-frames`）。
+- **PDF 作为输入**：preview 当前对 `%PDF` 的 sniff 返回 `None`，并有"PDF 为规划 unsupported"的测试；需要把 PDF 加进 `Kind` 识别并更新该测试。
+- **多文件产物**：当前 `Output` 只有单个 `path`，`result_json.key` 对应单个桶对象，`Plan::params` 只有 profile 与 hevc。目录表示需要新的 result 形态：一个 manifest 对象（即 `index.json`）加多个子产物 key，或把目录打成单对象。目录的 `completed` 状态必须反映各子产物的完整性，部分失败记录在 index 里而不是整体失败。
+- **转换器在两侧**：soffice / ffmpeg 由 nfs_server 探测与执行；poppler-utils / tesseract 按官方清单只在 Linux 容器 `extended` 层。谁负责 PDF → 页图 / 文本是本节最大的决定点：要么 nfs_server 侧也探测 poppler（Lite / host 上多半没有，则该 profile 不广告），要么容器内转完再回写缓存。两条路都符合"有则用"，但回写路径需要 preview 开放写入接口并判权。
+- **调用通路与身份**：agent_tool 目前不依赖任何 NFSP 客户端。需要一条 agent_tool → nfs_server 的 `repr` 通路（buckyos-api 的 nfs_server 客户端或经宿主 runtime），并确定以哪个身份调用：`repr` 要用调用者的 session token / principal 过源文件 ACL，不能用系统身份绕过。
+
+#### 4.8.3 内容身份
+
+- `NamedObject` 的 `obj_id` 直接作为 `input ObjId`。
+- NFS 路径（`at`）由 nfs_server 解析到 binding 的 `obj_id`。
+- 容器内 `local_file` 与 URL 不在 NFS 命名空间，没有 obj_id：共享复用前先确定稳定内容身份（上传为对象，或本地按同一 ObjId 算法算 hash 后以 `args.source.obj_id` 调用，后者要求对象已在 NDN 可读）。不能只以路径或 URL 当作内容身份；确定不了身份时只做本次私有转换，不进共享缓存。
+
+#### 4.8.4 边界
+
+- 区分可复用的**转换产物**与本次 goal / 模型相关的**理解结论**：某次任务的摘要不是原文件的通用转换结果，不进 preview 缓存（与 §4.5.5 `model_analyze` 不缓存一致）。
+- 目录产物是否也应让 `read` 工具直接读取（当前 `read` 把非文本对象一律推给 `llm_understand_media`），使"按需读某页文本"不必经过 LLM 旁路，见 §9。
+
 ---
 
 ## 5. 崩溃恢复语义
@@ -612,7 +785,7 @@ v0 实现可以先内置等价的 Rust plan，不必立刻把 JSON DSL 暴露为
 - `AgentToolPendingReason::UserApproval`：例如 goal 触发隐私敏感判断；
 - `check_after: Option<u64>` / `estimated_wait: Option<String>` 字段已现成可用。
 
-本期 image 理解通常不触发 pending，接口已现成，无需额外协议工作。
+图片理解通常不触发 pending。长文档 / 长视频走共享转换时，preview 任务处于 `processing` 可能超出单次调用的等待预算，此时以 `LongRunning` + `check_after` 返回，下次调用按同一 `work_key` 命中；接口已现成，无需额外协议工作。
 
 ---
 
@@ -716,6 +889,12 @@ v0 实现可以先内置等价的 Rust plan，不必立刻把 JSON DSL 暴露为
 12. **崩溃恢复**：模型分析 stage 的推理边界快照生效（每次推理前提交）；主干在 `AgentToolResult` 返回前不提交该调用的结果，结果随主干下一个 checkpoint 提交，工具结果提交不等于 Turn 完成（见 §5.2）；模型分析 stage 必须把 `pipeline_id` / `pipeline_version` / `compiled_pipeline_hash` 写入自己的 `OneShotRequest.input`，使 `OneShotRequest::semantic_hash()` 覆盖 (goal, 父 history 快照, obj_id, 管线定义/版本)。
 13. **深度 & 预算**：旁路 `OneShotRequest.tool_policy.allow_tools = false`；本地管线和模型分析 stage 共享父预算剩余额度，不能各自重置 default 无上限；外部扩展 stage 必须有 timeout 和权限约束。
 14. **体积度量**：构造长 session（多次媒体理解）测试，验证主干 history 体积仅随 `tool_result` 文本线性增长，与媒体数量 / 大小解耦。
+15. **发送前决策**：每次调用 `details.media_decision` 记录直传 / 缩小 / 转换的选择、原因、探测过与用到的工具；缺少转换工具时 Error message 列出缺的能力和可用回退路径，而不是泛化失败（§4.6）。
+16. **最小内核可用**：在没有 nfs_server preview、没有 poppler / soffice / ffmpeg 的环境里，图片、音频、短视频、模型原生支持的 PDF 仍能通过直传得到报告（§1.4）。
+17. **目录表示**：PDF / DOCX / Excel / 视频可生成 index + 图片 + 文本的目录；空白页、无文本页、转换失败页在 index 中有记录；单文件产物与目录由同一套解析读取（§4.6.2）。
+18. **目录检索与覆盖**：答案能命中 PDF 后部页面、DOCX 内嵌图片、Excel 非首个 sheet 和视频后段内容；observations 带页码 / sheet 范围 / 时间戳；`details.coverage` 准确报告已检查范围、未覆盖部分和转换缺失项（§4.7）。
+19. **共享缓存**：同一文件被不同有权限的 Agent / Session 并发理解时，相同转换只运行一次；已有 preview 产物可命中；内容 / 参数 / 转换器版本变化会失效；无权限调用不能读取缓存；docx → PDF → 页图的中间产物只生成一次（§4.8）。
+20. **集成验证**：四类格式覆盖不能直传、超预算、扫描件、长文件、部分转换失败和工具缺失六种情形（§4.6.5）。
 
 ---
 
@@ -725,12 +904,35 @@ v0 实现可以先内置等价的 Rust plan，不必立刻把 JSON DSL 暴露为
 |---|---|---|
 | 父 history 目的导向裁剪 | §4.2.4，长 session 下控制旁路重喂 token 量 | 预留可插拔策略点；先靠 `llm_compress` 全量压缩兜底，依据真实成本数据再实现 |
 | 报告粒度调优 | §3.5，`observations` 完整度 vs 重 fork 频率的平衡点 | 依据真实重复 fork 频率数据调内置 prompt |
-| `Document` / 视频 / 音频 支持 | §2.2，本期仅 image | 接口预留（`AiContent::Document` 已存在；`Capability::Audio` / `Video` / `features::VIDEO_UNDERSTAND` / `features::ASR` 已在 `aicc_client.rs` 中定义），后续迭代 |
+| 文档 / 视频 / 音频的发送前决策 | §2.2 直传已接入；§4.6 决策、§4.6.5 格式目标待实现 | 按 §10 T1–T5 推进 |
 | 本地管线 runner | §4.5，复用 Workflow DSL 但不走分布式调度 | 先实现线性 DAG + `operator::media.*` 内置 stage；后续再接 branch / bounded parallel / executor registry |
-| NDN / Thunk-style stage cache | §4.5.5，幂等 stage 的系统级处理缓存 | 先实现 named_store cache record + `pipeline_trace.cache_hit`；后续与真正 ThunkObject result cache 对齐 |
+| 转换产物缓存 | §4.5.5 → §4.8，复用 preview `repr` / `get_repr` | 不再单独实现 `media_stage_cache` named_store 记录；FunctionObject 成熟后把同一 work_key 语义映射到 `func::` |
 | 媒体 FunctionObject catalog | §4.5.6，从真实媒体理解场景提炼强语义函数 | 先沉淀 probe / thumbnail / vision image / OCR / keyframe 等函数的 schema；再接 registry 到 `operator::` / `appservice::` / `func::` |
 | 用户扩展 stage | §4.5.8，`/tool/media.*` 语义路径扩展 | 第一阶段只允许配置扩展；第二阶段接 AppService / HTTP；FunctionObject 待 workflow executor 模型成熟后再开放 |
 | OCR / 传统分析依赖 | §4.5.3，OCR 可显著降低 vision 漏字 | 不作为 v0 硬依赖；引入新库或系统依赖前需确认，并保持可选降级 |
 | 嵌套 `llm_*` | §6.3，本期深度 = 1 | 如需开放，先定深度/预算上限并接入 L4 预算账户 |
 | 辅助视觉模型降级 | §4.3 末段，纯文本主模型回退 | 本期返回明确 Error；后续实现时复用 `agent_tool` 已有 `llm_*` 工具调用模式 |
-| 与 `llm_read_media.rs` 的边界 | 同目录存在另一占位文件 [src/frame/agent_tool/src/llm_read_media.rs](src/frame/agent_tool/src/llm_read_media.rs) | 在实现前确认两者职责切分（"理解" vs "原文/字幕/OCR 抽取"），避免功能重叠或命名混淆 |
+| 目录产物与 `read` 的边界 | `llm_read_media.rs` 占位文件已不存在；`read` 目前把非文本对象一律推给本工具 | 实现 §4.6.2 时确定目录里的分页文本是否可被 `read` 直接读取，使"按需读某页"不必经 LLM 旁路 |
+| agent_tool → preview 调用通路与身份 | §4.8.2，目前无 NFSP 客户端依赖 | T1 / T2 前置：定客户端与调用身份 |
+| PDF 转换执行侧 | §4.8.2，poppler 在容器、soffice 在 nfs_server | T2 前定：nfs_server 侧探测 poppler，或容器转完回写 |
+| 目录在 preview 协议中的表示 | §4.8.2，现有 `Output` / `result_json` 为单文件 | T2 定 manifest + 子产物 key 的 result 形态 |
+| 本地文件 / URL 的内容身份 | §4.8.3 | T1 定：上传为对象或本地算 ObjId |
+| 检索方式 | §4.7，默认宿主循环 | 旁路工具方案待宿主循环有数据后评估 |
+| 复用 `import_office` / `import_table` | §4.6.5，TS 实现 | T2 / T4 定调用方式（CLI 或库） |
+| 各模型预算默认值 | §4.6.3 | 先按 provider 文档配置，再按真实数据调 |
+| 新增第三方依赖 | 任何 OCR / PDF / Office 库 | 按仓库约定单独确认 |
+
+---
+
+## 10. 实施清单（2026-11-05 Review）
+
+状态：待实现。对应 §4.6–§4.8，验收见 §8 第 15–20 项。每一项都在 §1.4 的尽力原则下实现：缺少某层能力时工具退回下一层，最终退回直传。
+
+- [ ] T1：统一发送前决策与表示协议（§4.6），记录直传 / 缩小 / 转换的选择及原因；缺少转换工具时给出具体失败信息和可用回退路径。前置：确定 agent_tool → preview 的调用通路与身份、本地文件的内容身份（§4.8.2–§4.8.3）。
+- [ ] T2：扩展 preview 的文本 / 页图 / 目录 profile 与多文件 result 形态，接受 PDF 输入，打通 PDF 和 DOCX 的缓存链路（§4.8.2）；DOCX 文本复用 `import_office`。
+- [ ] T3：打通目录检索、图片读取与提示词（§4.7，默认宿主循环）；同步工具描述、`hello` 能力广告、本文档及受影响的 cmd_skills（`ui_core`、`xllm`、`aigc_*`）。
+- [ ] T4：支持 Excel 的 sheet / 范围索引与图表表示，复用 `import_table`。
+- [ ] T5：将现有视频抽帧接入共享表示，抽帧参数进 `params`，补充时间索引及字幕 / 转写关联。
+- [ ] T6：集成验证四类格式，覆盖不能直传、超预算、扫描件、长文件、部分转换失败和工具缺失；验证 §8 第 16、19、20 项。
+
+新增第三方依赖前按仓库约定单独确认。
