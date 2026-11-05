@@ -366,7 +366,7 @@ runtime 对 Agent 来说分三层，每层的写入方不同：
 | --- | --- | --- |
 | R3 | 节点家目录 `tools/<skill>/bin` + PATH 前置（R-U4） | `runtime/mod.rs`、Session Directory Protocol、node executor 侧 |
 | R13 | 私有 `system` 安装持久性核验（R-U9） | `skills.rs`、`install.toml` schema |
-| R16 | ExtTools 全平台包（Linux / macOS / Windows 清单与安装脚本）+ `runtime ext-tools install` + `EXTENDED_TOOLS` 清单（R-S1、R-S3） | `publish/exttool/`、`baseline.rs`、`xagent_cli.rs`、Agent Home 面板 |
+| R16 | ExtTools 全平台包（Linux / macOS / Windows 清单与安装脚本）+ `runtime ext-tools install` + `EXTENDED_TOOLS` 清单（R-S1、R-S3）；[standard Agent 工具 + ExtTools 全平台统一分发方案与实施 TODO（待 Review）](opendan-exttools-cross-platform-todo.md) | `publish/exttool/`、`baseline.rs`、`xagent_cli.rs`、Agent Home 面板 |
 | R4 | R-U1 第四级 `skill` | `api.rs` |
 
 **P3 更新与删除**
