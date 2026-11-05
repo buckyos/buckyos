@@ -16,7 +16,7 @@ use libopendan::bridge::{EventBridge, KEventBridge, TimerBridge};
 use libopendan::channel::{KmsgChannels, Waker};
 use libopendan::host::goals::{GoalHost, GoalHostOptions};
 use libopendan::host::{HostDeps, Supervisor};
-use libopendan::protocol::{builtin_runtimes, RuntimeAvailability};
+use libopendan::protocol::{builtin_runtimes, private_layout_missing, PrivateRuntimeInfo};
 use libopendan::runner::{BehaviorAssembler, DefaultAssembler, ObjectStore, OutboundSink, RunnerOptions};
 use libopendan::state::{
     register_in_process, unregister_in_process, AgentStateClient, FsAgentStateClient, WithNotify,
@@ -106,33 +106,47 @@ pub struct Loader {
     local_tasks: Arc<agent_tool::InProcessTaskManager>,
 }
 
-/// Where workspaces are best placed in the agent's own environment: the
-/// AgentRoot's `workspaces/`, and the owner's home when the AgentRoot lives
-/// under it (`<home>/agents/<agent>`).
-fn container_roots(agent_root: &std::path::Path) -> Vec<PathBuf> {
-    let mut roots = vec![agent_root.join("workspaces")];
-    let home = agent_root
-        .parent()
-        .filter(|p| p.file_name().is_some_and(|n| n == "agents"))
-        .and_then(|agents| agents.parent());
-    if let Some(home) = home.filter(|h| h.is_dir()) {
-        roots.push(home.to_path_buf());
-    }
-    roots
-}
-
 /// node_daemon runs this Agent Service natively on its node (the zone
-/// owner's Agent on its host runtime): there is no agent container.
+/// owner's Agent on its host runtime, Desktop Lite): the private runtime is
+/// that process's environment.
 fn native_service() -> bool {
     std::env::var("OPENDAN_SERVICE_MODE").is_ok_and(|v| v == "native")
 }
 
-fn container_note() -> &'static str {
-    if std::path::Path::new("/.dockerenv").exists() {
-        "It is the agent's container: paths here are not the owner's host paths."
+/// The private runtime as this process sees it. Its `$BUCKYOS_ROOT` must
+/// have the standard layout (`bin/`, `data/home/<owner>/agents/<agent>`,
+/// `instance/`, `tools/`): a missing directory is a deployment error and is
+/// logged, never "unavailable".
+fn private_runtime(agent_root: &std::path::Path) -> PrivateRuntimeInfo {
+    let mut note = if native_service() {
+        "The Agent Service runs natively on its host.".to_string()
+    } else if std::path::Path::new("/.dockerenv").exists() {
+        String::new()
     } else {
-        "The agent currently runs as a process on its host (development), so this is the host's own environment."
+        "The agent currently runs as a process on its host (development), so this is the host's own environment.".to_string()
+    };
+    // `<root>/data/home/<owner>/agents/<agent_id>`
+    let owner_and_agent = agent_root
+        .file_name()
+        .and_then(|a| a.to_str())
+        .zip(agent_root.parent().and_then(|p| p.parent()).and_then(|o| o.file_name()).and_then(|o| o.to_str()));
+    match (libopendan::baseline::buckyos_root(), owner_and_agent) {
+        (Some(root), Some((agent_id, owner))) => {
+            let missing = private_layout_missing(&root, owner, agent_id);
+            if !missing.is_empty() {
+                log::error!(
+                    "loader: the private runtime's $BUCKYOS_ROOT {} lacks {} (deployment error; the directory convention needs bin/, data/home/<owner>/agents/<agent>, instance/, tools/)",
+                    root.display(),
+                    missing.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
+                );
+            } else {
+                note.push_str(&format!(" $BUCKYOS_ROOT is {}.", root.display()));
+            }
+        }
+        (None, _) => log::warn!("loader: $BUCKYOS_ROOT is not known to this process; the private runtime's layout was not verified"),
+        (_, None) => log::debug!("loader: AgentRoot {} is not under <root>/data/home/<owner>/agents; layout not verified", agent_root.display()),
     }
+    PrivateRuntimeInfo { native_service: native_service(), note: note.trim().to_string() }
 }
 
 impl Loader {
@@ -610,13 +624,7 @@ pub async fn project_runtimes(
     settings: &AgentSettings,
     who: &str,
 ) {
-    let builtin = builtin_runtimes(
-        container_roots(agent_root),
-        container_note(),
-        settings,
-        agent.agent_did(),
-        native_service(),
-    );
+    let builtin = builtin_runtimes(settings, agent.agent_did(), &private_runtime(agent_root));
     match agent.runtimes().ensure_builtin(&builtin, who).await {
         Ok(r) => log::info!(
             "loader: runtimes {}",
@@ -646,14 +654,14 @@ pub async fn check_runtimes(agent: Arc<dyn AgentStateClient>) {
             return;
         }
     };
-    for r in runtimes.into_iter().filter(|r| r.availability == RuntimeAvailability::Available) {
-        match agent.runtimes().check(&r.runtime_id).await {
-            Ok(c) => match &c.baseline_check {
+    for r in runtimes.into_iter().filter(|r| r.usable()) {
+        match agent.runtimes().check(&r.runtime_id, &[]).await {
+            Ok(c) => match &c.caps.baseline_check {
                 Some(b) if !b.ok => log::warn!(
                     "loader: runtime {} ({:?} declared {}): {}",
                     c.runtime_id,
                     c.availability,
-                    c.baseline.as_str(),
+                    c.caps.baseline.as_str(),
                     b.error.clone().unwrap_or_else(|| format!(
                         "standard tools missing: {} (install them on that machine, see `xagent runtime baseline`)",
                         b.missing.join(", ")
@@ -724,12 +732,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn agent_workspace_roots_include_its_owners_home() {
-        let home = tempfile::tempdir().unwrap();
-        let root = home.path().join("agents/xiaobai.test.buckyos.io");
-        std::fs::create_dir_all(&root).unwrap();
-        assert_eq!(container_roots(&root), vec![root.join("workspaces"), home.path().to_path_buf()]);
-        let dev_root = home.path().join("dev-agent");
-        assert_eq!(container_roots(&dev_root), vec![dev_root.join("workspaces")]);
+    fn the_private_runtime_layout_is_verified_against_the_directory_convention() {
+        let root = tempfile::tempdir().unwrap();
+        let agent_root = root.path().join("data/home/alice/agents/xiaobai.test.buckyos.io");
+        std::fs::create_dir_all(&agent_root).unwrap();
+        let missing = private_layout_missing(root.path(), "alice", "xiaobai.test.buckyos.io");
+        assert_eq!(missing, vec![root.path().join("bin"), root.path().join("instance"), root.path().join("tools")]);
+        for d in ["bin", "instance", "tools"] {
+            std::fs::create_dir_all(root.path().join(d)).unwrap();
+        }
+        assert!(private_layout_missing(root.path(), "alice", "xiaobai.test.buckyos.io").is_empty());
+        assert!(!private_runtime(&agent_root).native_service);
     }
 }

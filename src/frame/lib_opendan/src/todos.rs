@@ -252,7 +252,7 @@ pub async fn dispatch(
         .config()
         .map(|c| AttemptTarget {
             runtime_id: Some(c.runtime.runtime_id().to_string()),
-            baseline: c.runtime.frozen.as_ref().map(|f| f.baseline.as_str().to_string()),
+            baseline: c.runtime.frozen.as_ref().map(|f| f.baseline().as_str().to_string()),
             workspace_id: c.workspace.map(|w| w.workspace_id),
             behavior: Some(behavior.clone()),
         })

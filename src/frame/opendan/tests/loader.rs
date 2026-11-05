@@ -1436,7 +1436,7 @@ async fn the_jarvis_package_loads_and_answers() {
     assert_eq!(
         ids,
         [
-            ("container", libopendan::protocol::RuntimeAvailability::Available),
+            ("private", libopendan::protocol::RuntimeAvailability::Available),
             ("host", libopendan::protocol::RuntimeAvailability::RuntimeUnavailable)
         ]
     );

@@ -1326,7 +1326,7 @@ async fn collect(
 }
 
 #[cfg(unix)]
-fn passwd_entry(uid: u32) -> Option<(String, String)> {
+pub(crate) fn passwd_entry(uid: u32) -> Option<(String, String)> {
     let mut buf = vec![0 as libc::c_char; 16 * 1024];
     let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
     let mut out: *mut libc::passwd = std::ptr::null_mut();

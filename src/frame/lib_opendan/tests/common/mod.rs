@@ -24,6 +24,65 @@ use serde_json::{json, Value};
 pub const AGENT: &str = "did:bns:jarvis.alice";
 pub const APP: &str = "app:app2@alice";
 
+/// A node executor that answers login and describe (what registering and
+/// checking a runtime ask) and refuses every operation: enough for a
+/// registered node runtime to be `available` and to host sessions that are
+/// never driven.
+pub struct MockNode {
+    pub roots: Vec<String>,
+    pub home: String,
+}
+
+#[async_trait]
+impl agent_tool::runtime::node::NodeExecutorConnector for MockNode {
+    async fn connect(&self, _node: &str) -> std::io::Result<Box<dyn agent_tool::runtime::node::NodeIo>> {
+        use tokio::io::AsyncWriteExt;
+        let (roots, home) = (self.roots.clone(), self.home.clone());
+        let (client, mut server) = tokio::io::duplex(1 << 16);
+        tokio::spawn(async move {
+            let mut profile = Value::Null;
+            while let Ok(Some(buckyos_api::ExecutorFrame::Control(bytes))) =
+                buckyos_api::read_executor_frame(&mut server).await
+            {
+                let request: Value = serde_json::from_slice(&bytes).unwrap();
+                let id = &request["request_id"];
+                let response = match request["type"].as_str().unwrap() {
+                    "login" => {
+                        profile = request["profile"].clone();
+                        json!({"type":"login_ok", "request_id":id, "posture":"normal",
+                            "principal":AGENT, "app_instance_id":"app2@alice",
+                            "caps":["open_stream","describe","exec","read","write","edit","mkdir","stat","rename","remove","query","cancel"],
+                            "limits":buckyos_api::ExecutorLimits::default(), "revision":"one", "generation":1,
+                            "auth_valid_until_ms":u64::MAX, "token_expires_at_ms":u64::MAX,
+                            "store_id":"mock-ledger", "server_epoch":"one"})
+                    }
+                    "describe" => json!({"type":"describe_ok", "request_id":id,
+                        "target":{"node_did":"did:dev:lab", "profile_id":profile, "uid":1000, "gid":1000,
+                            "workdir":request["workdir"], "workdir_roots":roots, "store_id":"mock-ledger", "protocol_version":1},
+                        "info":{"os":"linux", "arch":"x86_64", "hostname":"lab", "shell":"bash", "time_ms":1,
+                            "home":home, "identity_mode":"current_user"}}),
+                    other => json!({"type":"error", "request_id":id,
+                        "error":{"code":"capability", "message":format!("mock node: no {other}")}}),
+                };
+                server.write_all(&buckyos_api::encode_executor_control(&response).unwrap()).await.unwrap();
+            }
+        });
+        Ok(Box::new(client))
+    }
+
+    async fn session_token(&self) -> std::result::Result<String, String> {
+        Ok("mock-session".into())
+    }
+}
+
+/// Install [`MockNode`] as this process's node connector.
+pub fn mock_node(roots: &[&str], home: &str) {
+    libopendan::runtime::set_node_connector(Arc::new(MockNode {
+        roots: roots.iter().map(|r| r.to_string()).collect(),
+        home: home.to_string(),
+    }));
+}
+
 pub struct Env {
     pub root: PathBuf,
     pub agent_root: PathBuf,

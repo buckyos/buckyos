@@ -505,8 +505,13 @@ pub struct AgentMsgTunnelSettings {
 
 /// The product runtime id of the owner's desktop host.
 pub const HOST_RUNTIME_ID: &str = "host";
-/// The runtime id of the Agent's own environment (its container).
+/// The runtime id of the Agent's own environment in its settings (`None`
+/// / `container` default). The Agent State projects it as [`PRIVATE_RUNTIME_ID`].
 pub const CONTAINER_RUNTIME_ID: &str = "container";
+/// The Agent's private runtime: the environment its Agent Service runs in
+/// (its container, or the host process when it runs natively). Always
+/// present and usable; `container` and `local` are its former names.
+pub const PRIVATE_RUNTIME_ID: &str = "private";
 
 /// Where an execution runtime of an Agent actually runs; resolved when the
 /// runtime is enabled and kept, so a restart or another device coming
@@ -516,8 +521,46 @@ pub const CONTAINER_RUNTIME_ID: &str = "container";
 pub enum AgentRuntimeTarget {
     /// The Node Executor embedded in a node's node-daemon (form A).
     Node { node_id: String, node_did: String },
-    /// A standalone Agent Daemon registered in the control panel (form B).
-    Executor { executor_id: String },
+    /// A standalone Agent Daemon registered in the control panel (form B);
+    /// `profile_id`: the issued profile the Agent logs in with (`None`: the
+    /// executor's only profile).
+    Executor {
+        executor_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile_id: Option<String>,
+    },
+}
+
+/// What an Agent may install on a runtime.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallGrant {
+    #[default]
+    None,
+    /// Commands a skill brings, into the Agent's own bin.
+    AgentBin,
+    /// System-wide packages (ExtTools, package managers).
+    System,
+}
+
+/// The owner's grant to an Agent on one runtime, beyond the node policy
+/// (the control panel writes the intersection; the Agent State reads it).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AgentRuntimeGrant {
+    #[serde(default)]
+    pub install: InstallGrant,
+    /// Whether long-lived workspaces may be created there (`None`: the
+    /// runtime's preset decides).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<bool>,
+    /// Directories the owner narrows the executor's roots to (empty: the
+    /// executor's own).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roots: Vec<String>,
+    /// When the grant ends; `None`: open-ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
 }
 
 /// The owner's choice for one execution runtime of an Agent. The node's
@@ -534,6 +577,9 @@ pub struct AgentRuntimeSettings {
     /// standard). Decides which cmd_skills a session on it gets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub baseline: Option<RuntimeBaseline>,
+    /// What the owner grants the Agent there beyond the node's policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant: Option<AgentRuntimeGrant>,
 }
 
 /// Declared environment baseline of an execution runtime: `standard` has
@@ -682,7 +728,7 @@ impl AgentSettings {
                         return Err(format!("runtime `{id}`: target node is incomplete"));
                     }
                 }
-                AgentRuntimeTarget::Executor { executor_id } => {
+                AgentRuntimeTarget::Executor { executor_id, .. } => {
                     if executor_id.trim().is_empty() {
                         return Err(format!("runtime `{id}`: target executor is incomplete"));
                     }
@@ -866,6 +912,7 @@ mod tests {
             computer: crate::ComputerAccess::None,
             target: AgentRuntimeTarget::Node { node_id: "ood1".into(), node_did: "did:web:ood1.test.buckyos.io".into() },
             baseline: None,
+            grant: None,
         };
         let node = |open: bool| {
             serde_json::json!({"executor": {"enabled": true, "owner_agents": {"enabled": open, "workdir_roots": ["/home/u"]}}}).to_string()

@@ -1,0 +1,149 @@
+{
+  "schema": "opendan.session_config/7",
+  "config_rev": 1,
+  "session": {
+    "session_id": "work-20261104-2",
+    "agent_did": "did:bns:jarvis.alice",
+    "kind": "work",
+    "class": "work",
+    "created_at_ms": 1793864757143,
+    "created_by": {
+      "principal": "app:app2@alice",
+      "via": "session:goal-20261104-1"
+    },
+    "driver": {
+      "principal": "app:app2@alice"
+    },
+    "idempotency_key": "sub:7062c3b890a4cd13006382c7a72f4f3d755067c9564a8a27a59df64bc1594943",
+    "origin": {
+      "parent_session": "goal-20261104-1",
+      "report": "final",
+      "goal": {
+        "goal_id": "g-k9ed545152f8cdfcc3d3f30bc",
+        "revision": 1,
+        "epoch": 1,
+        "activation_seq": 0,
+        "at_ms": 1793864757143
+      }
+    },
+    "objective": "Tick item 1 of TODO.md",
+    "end_condition": {
+      "type": "max_turns",
+      "detail": {
+        "n": 18446744073709551615
+      }
+    },
+    "input_policy": "any",
+    "acl": {
+      "agent_access": "full"
+    },
+    "policy": {
+      "completion": "explicit_report",
+      "wait_user_msg": "finish_failed",
+      "observe": "events",
+      "load_hints": false,
+      "max_process_depth": 4,
+      "max_sub_sessions": 4,
+      "max_session_depth": 2,
+      "tick_secs": 30,
+      "runtime_view": "work"
+    }
+  },
+  "prompt": {
+    "llm_context": {
+      "tools": {
+        "enabled": true
+      }
+    },
+    "initial_inputs": [
+      {
+        "schema": "opendan.session_input/3",
+        "key": "cymsg:f8c0feb632655ef2bd9fad0fa03160e27597ae97847a3993fdf0993b9deeab54",
+        "from": "app:app2@alice",
+        "at_ms": 1793864757143,
+        "type": "msg",
+        "payload": {
+          "msg": {
+            "from": "did:bns:jarvis.alice",
+            "to": [
+              "did:bns:jarvis.alice"
+            ],
+            "kind": "chat",
+            "created_at_ms": 1793864757143,
+            "nonce": 3954471627,
+            "content": {
+              "content": "tick item 1 of TODO.md"
+            }
+          }
+        }
+      }
+    ],
+    "history_render": {
+      "drop_kinds": [
+        "created",
+        "turn_started",
+        "input_batch",
+        "decide",
+        "compaction",
+        "input_rejected",
+        "event_dropped",
+        "turn_ended"
+      ]
+    }
+  },
+  "runtime": {
+    "requirement": {},
+    "frozen": {
+      "runtime_id": "private",
+      "connector": {
+        "type": "native"
+      },
+      "revision": 0,
+      "selected_by": "inherited",
+      "caps": {
+        "os": "linux",
+        "arch": "x86_64",
+        "shell": "bash",
+        "desktop": false,
+        "baseline": "extended"
+      },
+      "grant": {
+        "ops": [
+          "open_stream",
+          "describe",
+          "exec",
+          "read",
+          "write",
+          "edit",
+          "mkdir",
+          "stat",
+          "rename",
+          "remove",
+          "computer_inspect",
+          "computer_observe",
+          "computer_act",
+          "query",
+          "cancel"
+        ],
+        "roots": [],
+        "computer": "none",
+        "install": "system",
+        "workspace": true
+      }
+    }
+  },
+  "subscriptions": [
+    {
+      "id": "_task_watch_timer",
+      "mode": "active",
+      "source": {
+        "type": "timer",
+        "name": "task_watch"
+      }
+    }
+  ],
+  "channels": {
+    "inputs": [],
+    "wake_event": "/opendan/jarvis.alice/session/work-20261104-2/input"
+  }
+}

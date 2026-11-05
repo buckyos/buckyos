@@ -733,35 +733,45 @@ fn runtime_lists_are_readable_and_json_preserves_records_and_filters() {
         assert_eq!(list, json!([]));
     }
 
-    let (code, local, err) = cli.run(&[
-        "runtime", "register", "local-box", "--kind", "container", "--name", "Local box",
-        "--exec", r#"{"kind":"native"}"#, "--baseline", "standard",
-    ]);
-    assert_eq!(code, 0, "{err}");
+    // The private runtime is the host's projection, never registered by hand;
+    // a registration needs a connector and at least one granted root.
+    let (code, _, err) = cli.run(&["runtime", "register", "local-box", "--kind", "container", "--name", "Local box"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("--connector"), "{err}");
+    let (code, _, err) = cli.run(&["runtime", "register", "remote-box", "--connector", "ssh", "--host", "studio", "--name", "Remote box"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("root"), "{err}");
     let (code, remote, err) = cli.run(&[
-        "runtime", "register", "remote-box", "--kind", "remote_ssh", "--name", "Remote box",
+        "runtime", "register", "remote-box", "--connector", "ssh", "--host", "studio", "--user", "owner",
+        "--name", "Remote box", "--desc", "the studio workstation", "--root", "/srv/studio", "--baseline", "extended",
     ]);
     assert_eq!(code, 0, "{err}");
+    assert_eq!(remote["connector"]["type"], "ssh");
+    assert_eq!(remote["grant"]["roots"], json!(["/srv/studio"]));
+    assert_eq!(remote["caps"]["baseline"], "extended");
+    assert_eq!(remote["lifecycle"], "active");
     let text = cli.text(&["runtime", "list"]);
-    assert!(text.starts_with("Runtimes (2):\n"), "{text}");
-    assert!(text.contains("local-box: Local box") && text.contains("remote-box: Remote box"), "{text}");
-    assert!(text.contains("standard") && text.contains("runtime unavailable"), "{text}");
-    assert!(text.contains(local["platform"]["shell"].as_str().unwrap()), "{text}");
+    assert!(text.starts_with("Runtimes (1):\n"), "{text}");
+    assert!(text.contains("remote-box: Remote box") && text.contains("ssh") && text.contains("/srv/studio"), "{text}");
+    assert!(text.contains("extended") && text.contains("runtime_unavailable") && text.contains("the studio workstation"), "{text}");
     let (code, all, err) = cli.run(&["runtime", "list", "--json"]);
     assert_eq!(code, 0, "{err}");
-    assert_eq!(all, json!([local, remote]));
+    assert_eq!(all, json!([remote]));
 
-    let text = cli.text(&["runtime", "list", "--available"]);
-    assert!(text.starts_with("Runtimes (1):\n") && text.contains("local-box") && !text.contains("remote-box"), "{text}");
-    let (code, available, err) = cli.run(&["runtime", "list", "--json", "--available"]);
-    assert_eq!(code, 0, "{err}");
-    assert_eq!(available, json!([local]));
-
-    let revision = local["revision"].to_string();
-    let (code, _, err) = cli.run(&["runtime", "unregister", "local-box", "--expected-revision", &revision]);
-    assert_eq!(code, 0, "{err}");
+    // An ssh runtime cannot host sessions yet: nothing is available.
     let text = cli.text(&["runtime", "list", "--available"]);
     assert!(text.starts_with("Runtimes (0):\n") && text.contains("(none)"), "{text}");
+    let (code, available, err) = cli.run(&["runtime", "list", "--json", "--available"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(available, json!([]));
+
+    // Unregistering retires the record: it stays, listed with its history.
+    let revision = remote["revision"].to_string();
+    let (code, retired, err) = cli.run(&["runtime", "unregister", "remote-box", "--expected-revision", &revision]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(retired["lifecycle"], "retired");
+    let text = cli.text(&["runtime", "list"]);
+    assert!(text.starts_with("Runtimes (1):\n") && text.contains("retired"), "{text}");
     let (code, available, err) = cli.run(&["runtime", "list", "--json", "--available"]);
     assert_eq!(code, 0, "{err}");
     assert_eq!(available, json!([]));

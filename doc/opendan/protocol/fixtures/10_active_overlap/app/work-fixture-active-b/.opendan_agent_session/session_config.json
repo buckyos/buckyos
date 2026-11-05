@@ -6,7 +6,7 @@
     "agent_did": "did:bns:jarvis.alice",
     "kind": "work",
     "class": "work",
-    "created_at_ms": 1793591511227,
+    "created_at_ms": 1793864756548,
     "created_by": {
       "principal": "app:app2@alice",
       "via": "app"
@@ -50,19 +50,41 @@
   "runtime": {
     "requirement": {},
     "frozen": {
-      "runtime_id": "container",
-      "kind": "container",
-      "exec": {
-        "kind": "native"
+      "runtime_id": "private",
+      "connector": {
+        "type": "native"
       },
       "revision": 0,
-      "selected_by": "default",
-      "computer": "none",
-      "baseline": "extended",
-      "platform": {
+      "selected_by": "private",
+      "caps": {
         "os": "linux",
         "arch": "x86_64",
-        "shell": "bash"
+        "shell": "bash",
+        "desktop": false,
+        "baseline": "extended"
+      },
+      "grant": {
+        "ops": [
+          "open_stream",
+          "describe",
+          "exec",
+          "read",
+          "write",
+          "edit",
+          "mkdir",
+          "stat",
+          "rename",
+          "remove",
+          "computer_inspect",
+          "computer_observe",
+          "computer_act",
+          "query",
+          "cancel"
+        ],
+        "roots": [],
+        "computer": "none",
+        "install": "system",
+        "workspace": true
       }
     }
   },
@@ -76,7 +98,7 @@
     "location_revision": 1,
     "runtime_host": "${FIXTURE_HOST}",
     "location": {
-      "runtime_id": "container",
+      "runtime_id": "private",
       "directory": "${FIXTURE_ROOT}/ws"
     },
     "access": "read_write"

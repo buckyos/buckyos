@@ -175,7 +175,8 @@ export interface Binding {
   schema: string
   target: unknown
   runtime_id: string
-  kind: string
+  /** `native | node_executor`: how the working runtime is reached. */
+  connector: string
   workdir: string
   bound_at_ms: number
   bound_by: string
@@ -256,30 +257,73 @@ export interface WorkspaceBinding extends WorkspaceRef {
   location: WorkspaceLocation
 }
 
-/** A runtime the agent's sessions and workspaces may use (`state/runtimes/`). */
+/** A runtime the agent's sessions and workspaces may use (`state/runtimes/`, record version 4). */
 export type ComputerAccess = 'none' | 'observe' | 'control'
+export type InstallGrant = 'none' | 'agent_bin' | 'system'
+
+/** How a runtime is reached: the record's only type tag. */
+export type RuntimeConnector =
+  | { type: 'native' }
+  | { type: 'node_executor'; node_did?: string | null; executor_id?: string | null; profile_id: string }
+  | { type: 'ssh'; host: string; user?: string | null; port?: number | null; identity_file?: string | null }
+
+/** A check of commands on the runtime (`check --commands`, skill installation). */
+export interface ToolsCheck {
+  checked_at_ms: number
+  present: string[]
+  missing: string[]
+  error?: string | null
+}
+
+/** What the machine can do (learned when it is checked; `baseline` is declared). */
+export interface RuntimeCaps {
+  os: string
+  arch: string
+  shell: string
+  desktop: boolean
+  identity_mode?: string | null
+  baseline: RuntimeBaseline
+  /** The last check of its standard tools: a hint, never the declaration. */
+  baseline_check?: { checked_at_ms: number; missing: string[]; ok: boolean; error?: string | null } | null
+  tools_check?: ToolsCheck | null
+}
+
+/** What this agent may do there: the node policy narrowed by the owner, with the daemon URL's term. */
+export interface RuntimeGrant {
+  ops: string[]
+  roots: string[]
+  computer: ComputerAccess
+  install: InstallGrant
+  workspace: boolean
+  expires_at_ms?: number | null
+}
+
+export interface RuntimeUsage {
+  sessions_total: number
+  last_used_at_ms?: number | null
+  last_session_id?: string | null
+  workspaces: number
+  skill_commands: string[]
+}
 
 export interface KnownRuntime {
   version: number
   runtime_id: string
-  kind: 'container' | 'host_native' | 'remote_node' | 'remote_ssh'
   name: string
-  description: string
+  desc: string
   runtime_host: string
-  exec: unknown
-  roots: string[]
-  capabilities: unknown
+  connector: RuntimeConnector
+  /** Switched on in the owner's settings. */
+  enabled: boolean
+  caps: RuntimeCaps
+  grant: RuntimeGrant
   availability: 'available' | 'runtime_unavailable' | 'permission_denied'
   builtin: boolean
-  /** The session-runtime new sessions take unless one is named or inherited. */
+  /** The owner's default runtime: the owner's machine, never where a chat runs. */
   default: boolean
-  computer: ComputerAccess
-  /** What its registrar declares it provides: decides the sessions' cmd_skills. */
-  baseline: RuntimeBaseline
-  /** Learned when it is checked (`os` linux | macos | windows). */
-  platform?: { os: string; arch: string; shell: string }
-  /** The last check of its standard tools: a hint, never the declaration. */
-  baseline_check?: { checked_at_ms: number; missing: string[]; ok: boolean; error?: string } | null
+  /** `retired`: withdrawn, expired or unregistered; kept for its history. */
+  lifecycle: 'active' | 'retired'
+  usage: RuntimeUsage
   revision: number
   registered_by: string
   registered_at_ms: number
@@ -328,8 +372,16 @@ export interface WorkspaceImportRequest {
 /** `AgentSettings.runtimes` as the owner chose them for this agent. */
 export type RuntimeBaseline = 'standard' | 'extended'
 
+/** The owner's grant beyond the node policy (`AgentRuntimeSettings.grant`). */
+export interface RuntimeGrantSetting {
+  install?: InstallGrant
+  workspace?: boolean | null
+  roots?: string[]
+  expires_at_ms?: number | null
+}
+
 export interface RuntimeSettings {
-  runtimes: Record<string, { enabled: boolean; computer: ComputerAccess; target: unknown; baseline?: RuntimeBaseline | null }>
+  runtimes: Record<string, { enabled: boolean; computer: ComputerAccess; target: unknown; baseline?: RuntimeBaseline | null; grant?: RuntimeGrantSetting | null }>
   default_runtime_id: string
 }
 
@@ -339,6 +391,7 @@ export interface RuntimeSettingPatch {
   computer?: ComputerAccess
   baseline?: RuntimeBaseline | null
   default?: boolean
+  grant?: RuntimeGrantSetting | null
 }
 
 export interface ArtifactHead {

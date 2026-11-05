@@ -619,7 +619,7 @@ async fn missing_tool_or_runtime_mismatch_fails_before_inference() {
             schema: libopendan::runtime::BINDING_SCHEMA.into(),
             target: serde_json::Value::Null,
             runtime_id: "rt-other-host".into(),
-            kind: "native".into(),
+            connector: "native".into(),
             workdir: sd3.path().display().to_string(),
             workspace: None,
             bound_at_ms: 0,

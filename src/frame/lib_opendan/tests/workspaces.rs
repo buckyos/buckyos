@@ -20,7 +20,7 @@ fn create(path: &Path, operation: &str) -> WorkspaceCreate {
         description: "Long term project".into(),
         url: None,
         location: WorkspaceLocation {
-            runtime_id: CONTAINER_RUNTIME.into(),
+            runtime_id: PRIVATE_RUNTIME.into(),
             directory: path.into(),
         },
         usage: WorkspaceUsage::Collaborative,
@@ -33,7 +33,7 @@ fn discover(record: &WorkspaceRecord, path: &Path) -> WorkspaceDiscover {
     WorkspaceDiscover {
         expected_workspace_id: Some(record.workspace_id.clone()),
         location: WorkspaceLocation {
-            runtime_id: CONTAINER_RUNTIME.into(),
+            runtime_id: PRIVATE_RUNTIME.into(),
             directory: path.into(),
         },
         expected_revision: Some(record.revision),

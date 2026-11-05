@@ -2348,6 +2348,7 @@ pub(crate) mod app_lifecycle_tests {
                         computer: ComputerAccess::None,
                         target: AgentRuntimeTarget::Node { node_id: "node1".into(), node_did: device.id.to_string() },
                         baseline: None,
+                        grant: None,
                     },
                 )]),
                 default_runtime_id: default.map(str::to_string),

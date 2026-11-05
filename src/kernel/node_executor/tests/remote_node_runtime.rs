@@ -168,6 +168,7 @@ async fn remote_node_tools_run_on_the_node_and_recover_by_query() {
         workdir: Some(work.to_string_lossy().to_string()),
         remote_node: Some(RemoteNodeConfig {
             node_did: Some(NODE_DID.into()),
+            executor_id: None,
             profile_id: Some("dev".into()),
         }),
         ..Default::default()
@@ -322,7 +323,7 @@ async fn an_operation_waits_for_a_free_execution_slot() {
     let config = RuntimeConfig {
         kind: Some("remote_node".into()),
         workdir: Some(work.to_string_lossy().to_string()),
-        remote_node: Some(RemoteNodeConfig { node_did: Some(NODE_DID.into()), profile_id: Some("dev".into()) }),
+        remote_node: Some(RemoteNodeConfig { node_did: Some(NODE_DID.into()), executor_id: None, profile_id: Some("dev".into()) }),
         ..Default::default()
     };
     let rt = RuntimeRegistry::from_config_with(&config, &deps).unwrap();
@@ -507,34 +508,40 @@ async fn a_node_session_runtime_is_checked_copied_to_and_given_its_context() {
     let agent_did = AppId::parse(APP).unwrap().app_did().to_string();
     let agent_root = root.join("agent root");
     let agent = libopendan::FsAgentStateClient::open(&agent_root, &agent_did, None, None).unwrap();
-    let exec = json!({"kind": "remote_node", "remote_node": {"node_did": NODE_DID, "profile_id": "dev"}});
     agent
         .runtimes()
         .register(
             &RuntimeRegister {
                 runtime_id: "lab".into(),
-                kind: RuntimeKind::RemoteNode,
+                connector: RuntimeConnector::NodeExecutor { node_did: Some(NODE_DID.into()), executor_id: None, profile_id: "dev".into() },
                 name: "Lab".into(),
-                description: String::new(),
-                exec: Some(exec),
-                roots: vec![],
-                capabilities: json!({}),
+                desc: String::new(),
+                enabled: true,
                 default: false,
-                computer: Default::default(),
                 baseline: RuntimeBaseline::Standard,
+                grant: RuntimeGrant { roots: vec![work.clone()], ..Default::default() },
             },
             "owner",
         )
         .await
         .unwrap();
-    let lab = agent.runtimes().check("lab").await.unwrap();
+    let lab = agent.runtimes().check("lab", &["sh".into(), "no-such-command-xyz".into()]).await.unwrap();
     assert_eq!(lab.availability, RuntimeAvailability::Available);
-    assert_eq!(lab.roots, vec![work.clone()]);
-    assert_eq!(lab.platform.os, std::env::consts::OS.replace("darwin", "macos"));
-    let checked = lab.baseline_check.clone().unwrap();
+    assert_eq!(lab.grant.roots, vec![work.clone()]);
+    assert!(lab.grant.ops.contains(&ExecutorOp::Exec) && !lab.grant.read_only());
+    assert_eq!(lab.caps.platform.os, std::env::consts::OS.replace("darwin", "macos"));
+    let checked = lab.caps.baseline_check.clone().unwrap();
     assert!(checked.error.is_none(), "{checked:?}");
     assert!(!checked.ok && checked.missing.iter().any(|m| m == "agent-session"), "{checked:?}");
-    assert_eq!(lab.baseline, RuntimeBaseline::Standard, "the check never changes the declaration");
+    let tools = lab.caps.tools_check.clone().unwrap();
+    assert_eq!((tools.present, tools.missing), (vec!["sh".to_string()], vec!["no-such-command-xyz".to_string()]));
+    assert_eq!(lab.caps.baseline, RuntimeBaseline::Standard, "the check never changes the declaration");
+    // Agent-level execution on the runtime, outside any session (R-U3).
+    let op = libopendan::runtime::runtime_exec(&agent, "lab", "printf lab-%s ok", Some(&work.to_string_lossy()), 10_000, Some("test")).await.unwrap();
+    assert_eq!((op.exit_code, op.stdout.trim()), (0, "lab-ok"), "{op:?}");
+    assert!(libopendan::runtime::runtime_op(&agent, &op.op_id).unwrap().is_some());
+    let outside = libopendan::runtime::runtime_exec(&agent, "lab", "true", Some("/"), 10_000, None).await.unwrap_err();
+    assert!(outside.to_string().contains("outside the roots"), "{outside}");
 
     let channels = libopendan::channel::KmsgChannels::dir(root.join("kmsg")).unwrap();
     let mut spec = libopendan::SessionTemplate::load("work", None).unwrap().spec("move material");
@@ -577,7 +584,7 @@ async fn a_node_session_runtime_is_checked_copied_to_and_given_its_context() {
     let cfg = sd.config().unwrap();
     let (ctx, token) = libopendan::session_context::new_context(&key, agent.agent_id(), &cfg, &workdir, "http://gw/kapi/x".into());
     let target = libopendan::runtime::open_node_target(&lab, &root.join("ops")).await.unwrap();
-    libopendan::session_context::write_context(&target, &ctx, &token).await.unwrap();
+    libopendan::session_context::write_context(&*target, &ctx, &token).await.unwrap();
     let (path, found) = libopendan::session_context::discover(None, Path::new(&workdir)).unwrap();
     assert_eq!(found, ctx);
     let on_disk = std::fs::read_to_string(libopendan::session_context::token_path(&path, &found)).unwrap();

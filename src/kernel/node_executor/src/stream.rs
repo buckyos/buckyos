@@ -798,6 +798,7 @@ async fn describe(
             shell: inner.shell.to_string_lossy().to_string(),
             time_ms: now_ms(),
             path: grant.profile.env.get("PATH").cloned(),
+            home: account_home(inner, &grant.profile),
             identity_mode: Some(
                 match inner.identity.mode {
                     crate::ExecutorIdentityMode::CurrentUser => "current_user",
@@ -808,6 +809,25 @@ async fn describe(
             desktop: inner.computer.as_ref().map(|driver| driver.capabilities()),
         },
     })
+}
+
+/// Home of the account operations under `profile` run as: the profile's
+/// `HOME`, else the passwd entry of its identity (Unix) or this process's
+/// profile directory (Windows).
+fn account_home(inner: &ExecutorInner, profile: &buckyos_api::ExecutorProfile) -> Option<String> {
+    if let Some(home) = profile.env.get("HOME").filter(|h| !h.is_empty()) {
+        return Some(home.clone());
+    }
+    #[cfg(unix)]
+    {
+        let uid = profile.run_as.as_ref().map(|r| r.uid).unwrap_or(inner.identity.uid);
+        crate::ops::passwd_entry(uid).map(|(home, _)| home)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (inner, profile);
+        std::env::var("USERPROFILE").ok().filter(|h| !h.is_empty())
+    }
 }
 
 fn host_uid(inner: &ExecutorInner) -> Option<u32> {

@@ -34,8 +34,8 @@ pub struct Binding {
     pub schema: String,
     pub target: serde_json::Value,
     pub runtime_id: String,
-    /// `native | remote_node`.
-    pub kind: String,
+    /// `native | node_executor`: how the working runtime is reached.
+    pub connector: String,
     /// Absolute workdir for exec (the only place absolute paths are allowed
     /// besides `runs/`).
     pub workdir: String,
@@ -50,7 +50,7 @@ impl Binding {
     pub fn same_binding(&self, other: &Binding) -> bool {
         self.schema == other.schema
             && self.runtime_id == other.runtime_id
-            && self.kind == other.kind
+            && self.connector == other.connector
             && self.target == other.target
             && self.workdir == other.workdir
             && self.workspace == other.workspace

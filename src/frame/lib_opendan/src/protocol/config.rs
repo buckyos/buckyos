@@ -190,6 +190,22 @@ pub struct SessionPolicy {
     /// subscriptions tick this often (0: never).
     #[serde(default = "default_tick_secs")]
     pub tick_secs: u64,
+    /// Which runtimes the session's prompt knows (runtime lifecycle TODO
+    /// §0.3, three levels).
+    #[serde(default)]
+    pub runtime_view: RuntimeView,
+}
+
+/// What a session is told about the agent's runtimes: a chat knows two
+/// (its private runtime and the owner's default), work knows its working
+/// runtime and the private one, a plan sees the whole table.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeView {
+    Chat,
+    #[default]
+    Work,
+    All,
 }
 
 impl Default for SessionPolicy {
@@ -203,6 +219,7 @@ impl Default for SessionPolicy {
             max_sub_sessions: default_sub_sessions(),
             max_session_depth: default_session_depth(),
             tick_secs: default_tick_secs(),
+            runtime_view: RuntimeView::default(),
         }
     }
 }
@@ -722,8 +739,8 @@ pub struct RuntimeRequirement {
     pub app_tools: Vec<String>,
 }
 
-/// How a session's session-runtime was chosen (primary-runtime TODO §3):
-/// the workspace never chooses it.
+/// How a session's working runtime was chosen (runtime lifecycle TODO
+/// §0.3): the workspace never chooses it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeSelection {
@@ -731,32 +748,46 @@ pub enum RuntimeSelection {
     Explicit,
     /// The parent session's frozen runtime.
     Inherited,
-    /// The agent's default runtime.
-    Default,
+    /// Where the commands of a named cmd_skill are installed.
+    Skill,
+    /// The agent's private runtime: every chat, and any session nobody
+    /// placed elsewhere.
+    Private,
 }
 
-/// The session-runtime a session was frozen to at creation: the
-/// registration it resolved to and how that runtime is reached, so a
-/// restart or a changed default never moves the session to another target.
+/// The working runtime a session was frozen to at creation (where `shell`
+/// runs): the registration it resolved to and how that runtime is reached,
+/// so a restart or a changed default never moves the session to another
+/// target.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct FrozenRuntime {
     pub runtime_id: String,
-    pub kind: super::RuntimeKind,
-    /// The registration's `exec` (`agent_tool` RuntimeConfig) at selection.
-    #[serde(default)]
-    pub exec: Option<serde_json::Value>,
+    pub connector: super::RuntimeConnector,
     /// `RuntimeRecord.revision` the selection was read from.
     pub revision: u64,
     pub selected_by: RuntimeSelection,
+    /// What the runtime can do at selection (declared baseline, platform as
+    /// far as learned): decides the session's cmd_skills.
     #[serde(default)]
-    pub computer: buckyos_api::ComputerAccess,
-    /// The registration's declared baseline: which cmd_skills the session
-    /// takes.
-    pub baseline: buckyos_api::RuntimeBaseline,
-    /// What is known of its platform at selection (empty fields: not yet
-    /// learned from the runtime).
+    pub caps: super::RuntimeCaps,
+    /// What the agent may do there at selection.
     #[serde(default)]
-    pub platform: super::RuntimePlatform,
+    pub grant: super::RuntimeGrant,
+}
+
+impl FrozenRuntime {
+    /// The `agent_tool` RuntimeConfig the session executes through.
+    pub fn exec(&self) -> serde_json::Value {
+        self.connector.exec()
+    }
+
+    pub fn baseline(&self) -> buckyos_api::RuntimeBaseline {
+        self.caps.baseline
+    }
+
+    pub fn is_node(&self) -> bool {
+        self.connector.is_node()
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -774,18 +805,24 @@ pub struct RuntimeSection {
 }
 
 impl RuntimeSection {
-    /// The runtime the session is frozen to (`container` when none).
+    /// The runtime the session is frozen to (`private` when none).
     pub fn runtime_id(&self) -> &str {
         self.frozen
             .as_ref()
             .map(|f| f.runtime_id.as_str())
             .or(self.requirement.runtime_id.as_deref())
-            .unwrap_or(super::CONTAINER_RUNTIME)
+            .unwrap_or(super::PRIVATE_RUNTIME)
     }
 
     /// Whether the session executes through a Node Executor.
     pub fn is_node(&self) -> bool {
-        self.frozen.as_ref().is_some_and(|f| f.kind.is_node())
+        self.frozen.as_ref().is_some_and(|f| f.is_node())
+    }
+
+    /// A session whose working runtime is the private one: it has
+    /// `agent-session` and reaches other runtimes with `run` / `copy`.
+    pub fn is_private(&self) -> bool {
+        self.frozen.as_ref().is_none_or(|f| f.connector.is_native())
     }
 }
 

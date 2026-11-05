@@ -42,6 +42,7 @@ file://localhost/abs/path       等价于空 host
   1. 有来源 runtime 上下文（Agent 工具、SSH / node_executor 工具的返回值）：属于产生它的 runtime，按该 runtime 的 cwd / 挂载解释。
   2. 没有来源上下文（用户输入、持久化引用、跨 Agent 传递）：按 Zone 的 **default device** 解释。
 - **default device 是 Zone 级设置**，指向 cluster 中某一设备（Desktop 常见值为 ood1，只是现状不是规则）。它只用于解释已经写成 `file:///path` 的输入；相对路径、`/tmp/x` 这类裸路径由来源 runtime + cwd 推导，不走 default device。
+- **chat 里用户打的裸路径 = owner 默认 runtime 的设备**（2026-11-04，[runtime 工作模型 TODO](../notepads/opendan-agent-runtime-lifecycle-todo.md) M7）。BuckyOS 体系内的 app 与工具说到路径一律写 URL（`file://<device>/…`、`cyfs://`、`obj://`）或 ObjId，所以 `/Users/…`、`C:\…`、`/home/…` 这类传统绝对路径只会来自用户输入；它有来源——owner 本人——Agent 把它解释为 owner 默认 runtime（`AgentSettings.default_runtime_id`，Agent State 里 `default` 的那条记录）所在设备上的 `file://<device_id>/<path>`，经 `read` 或 `agent-session copy --from <owner 默认 runtime id>:<path>` 读取；该 runtime 不可用或路径不存在时再试 Agent 的私有 runtime，并把实际解释写进回复。与上一条分工：D2 的 Zone default device 只管没有任何来源的持久 `file:///path` 引用。
 - 跨上下文输出（发消息、写 Hint / Memory / Notebook、交给另一个 Agent）前，把空 host 补成显式 device id；经真实挂载确认位于 DFS 映射目录的文件，改用 `cyfs://` 引用（§5）。容器临时文件或镜像层文件不能自动转 CYFS。
 
 ## 4. `obj://`：DID Object 引用

@@ -18,26 +18,27 @@
     "rev": 3,
     "run_state": "ready",
     "acceptance": "n/a",
-    "one_line_status": "",
+    "one_line_status": "working",
     "report_brief": "",
     "turn_open": true,
+    "retry_not_before_ms": 1793864786123,
     "activity": {
       "summary": "needs two messages",
-      "heartbeat_ms": 1793591510660
+      "heartbeat_ms": 1793864756112
     },
     "last_runner": {
-      "runner_id": "rn-f4149bd5b876489b",
+      "runner_id": "rn-10bfee9d33e346eb",
       "host": "${FIXTURE_HOST}",
-      "pid": 2810648,
+      "pid": 233017,
       "lock_epoch": 1,
-      "at_ms": 1793591510686
+      "at_ms": 1793864756135
     },
     "last_error": {
       "kind": "provider",
       "message": "llm provider failed (Transient): busy",
       "recoverable": true
     },
-    "updated_at_ms": 1793591510683
+    "updated_at_ms": 1793864756133
   },
   "location_rev": 0
 }

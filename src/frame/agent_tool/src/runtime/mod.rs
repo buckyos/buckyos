@@ -63,8 +63,20 @@ pub use buckyos_api::RuntimeBaseline;
 pub struct RemoteNodeConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_did: Option<String>,
+    /// A standalone executor (form B) instead of a node: the connector
+    /// routes by this id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile_id: Option<String>,
+}
+
+impl RemoteNodeConfig {
+    /// What the connector is asked to connect to: the node's DID, or the
+    /// executor's id.
+    pub fn connect_target(&self) -> Option<&str> {
+        self.node_did.as_deref().or(self.executor_id.as_deref()).filter(|t| !t.is_empty())
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

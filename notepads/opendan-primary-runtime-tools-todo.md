@@ -131,6 +131,8 @@ T0 后（2026-10-25）：Executor 有 `Rename / Remove`；`Write` 多 `expected_
 
 ### 6.1 Q1 设计：AgentService 与 Session 进程
 
+> 2026-11-04 裁决（[runtime 工作模型 TODO](opendan-agent-runtime-lifecycle-todo.md) §0.2、R-W10）：**节点上不安装 `agent-session` helper**。`agent-session` 只属于工作 runtime 为私有的 Session（多 runtime session，经 `run / copy` 访问别的 runtime）；工作 runtime 为节点的 Session 是单机 session，只有 runtime 层工具。本节“T3 完成前节点 Session 的 helper 只有节点上已安装时才可用”的欠账改为不做；`.opendan/session.json` 与 token 保留给标准工具取服务身份。
+
 **现状核对（2026-10-25）**
 
 | 组件 | 现状 | 对远端 session-runtime 的问题 |

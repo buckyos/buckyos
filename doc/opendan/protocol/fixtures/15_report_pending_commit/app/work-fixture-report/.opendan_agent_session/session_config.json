@@ -6,7 +6,7 @@
     "agent_did": "did:bns:jarvis.alice",
     "kind": "work",
     "class": "work",
-    "created_at_ms": 1793591511790,
+    "created_at_ms": 1793864757020,
     "created_by": {
       "principal": "app:app2@alice",
       "via": "app"
@@ -29,7 +29,9 @@
       "load_hints": true,
       "max_process_depth": 4,
       "max_sub_sessions": 4,
-      "max_session_depth": 2
+      "max_session_depth": 2,
+      "tick_secs": 30,
+      "runtime_view": "work"
     }
   },
   "prompt": {
@@ -59,19 +61,41 @@
   "runtime": {
     "requirement": {},
     "frozen": {
-      "runtime_id": "container",
-      "kind": "container",
-      "exec": {
-        "kind": "native"
+      "runtime_id": "private",
+      "connector": {
+        "type": "native"
       },
       "revision": 0,
-      "selected_by": "default",
-      "computer": "none",
-      "baseline": "extended",
-      "platform": {
+      "selected_by": "private",
+      "caps": {
         "os": "linux",
         "arch": "x86_64",
-        "shell": "bash"
+        "shell": "bash",
+        "desktop": false,
+        "baseline": "extended"
+      },
+      "grant": {
+        "ops": [
+          "open_stream",
+          "describe",
+          "exec",
+          "read",
+          "write",
+          "edit",
+          "mkdir",
+          "stat",
+          "rename",
+          "remove",
+          "computer_inspect",
+          "computer_observe",
+          "computer_act",
+          "query",
+          "cancel"
+        ],
+        "roots": [],
+        "computer": "none",
+        "install": "system",
+        "workspace": true
       }
     }
   },

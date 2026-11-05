@@ -29,7 +29,7 @@ pub fn agent_executor_resource(executor_id: &str, profile_id: &str) -> String {
     format!("obj://executor/{executor_id}/{profile_id}")
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutorOp {
     OpenStream,

@@ -96,7 +96,7 @@ async fn a_workspace_session_works_in_its_own_directory_and_reaches_the_workspac
     assert_eq!(std::fs::read_to_string(directory.join("delivered.txt")).unwrap(), "durable\n");
     assert_eq!(
         std::fs::read_to_string(sd.path().join("ws.txt")).unwrap(),
-        format!("{} container", reference.workspace_id)
+        format!("{} private", reference.workspace_id)
     );
     let report = sd.state().unwrap().final_report.unwrap();
     assert_eq!(

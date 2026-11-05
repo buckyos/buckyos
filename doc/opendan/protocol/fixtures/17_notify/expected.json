@@ -4,7 +4,7 @@
   "next": {
     "ui": {
       "action": "show_the_observation_with_the_next_message",
-      "snapshot_line_starts_with": "[notify nt-8fd2ce7d237c42c99f2f2b1b00dcc62a] input/timely",
+      "snapshot_line_starts_with": "[notify nt-1b87db92d2e94309b2f0435415c15541] input/timely",
       "turns_opened_by_the_observation": 0
     }
   },
@@ -21,13 +21,13 @@
               "index": 1,
               "src": "q"
             },
-            "key": "notify:nt-8fd2ce7d237c42c99f2f2b1b00dcc62a:dm:did:bns:alice",
-            "received_at_ms": 1793591512267,
+            "key": "notify:nt-1b87db92d2e94309b2f0435415c15541:dm:did:bns:alice",
+            "received_at_ms": 1793864757437,
             "seq": null,
-            "summary": "[notify nt-8fd2ce7d237c42c99f2f2b1b00dcc62a] input/timely from session work-notify at 2026-10-02T00:00:00Z: Postgres or SQLite? (options: pg=Postgres, lite=SQLite) — check the current state with `agent-session notify show nt-8fd2ce7d237c42c99f2f2b1b00dcc62a`"
+            "summary": "[notify nt-1b87db92d2e94309b2f0435415c15541] input/timely from session work-notify at 2026-10-02T00:00:00Z: Postgres or SQLite? (options: pg=Postgres, lite=SQLite) — check the current state with `agent-session notify show nt-1b87db92d2e94309b2f0435415c15541`"
           },
           "source": {
-            "id": "notify:nt-8fd2ce7d237c42c99f2f2b1b00dcc62a",
+            "id": "notify:nt-1b87db92d2e94309b2f0435415c15541",
             "kind": "system"
           },
           "subscription_id": "_notify",

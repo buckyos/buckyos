@@ -582,7 +582,7 @@ async fn gen(out: &Path) -> R<()> {
                 &WorkspaceImport {
                     operation_id: "fixture-overlap".into(),
                     location: WorkspaceLocation {
-                        runtime_id: CONTAINER_RUNTIME.into(),
+                        runtime_id: PRIVATE_RUNTIME.into(),
                         directory: ws,
                     },
                     name: Some("Overlap fixture".into()),

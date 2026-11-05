@@ -15,24 +15,24 @@
   "agent_access": "full",
   "objective": "research then answer",
   "status": {
-    "rev": 4,
+    "rev": 5,
     "run_state": "running",
     "acceptance": "n/a",
-    "one_line_status": "",
+    "one_line_status": "working (research)",
     "report_brief": "",
     "turn_open": true,
     "activity": {
       "summary": "research then answer",
-      "heartbeat_ms": 1793591511622
+      "heartbeat_ms": 1793864756919
     },
     "last_runner": {
-      "runner_id": "rn-4529985810fe4b4a",
+      "runner_id": "rn-1bfbbfbdf0f445af",
       "host": "${FIXTURE_HOST}",
-      "pid": 2811630,
+      "pid": 234431,
       "lock_epoch": 1,
-      "at_ms": 1793591511624
+      "at_ms": 1793864756920
     },
-    "updated_at_ms": 1793591511622
+    "updated_at_ms": 1793864756919
   },
   "location_rev": 0
 }

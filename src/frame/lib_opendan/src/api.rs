@@ -161,10 +161,12 @@ fn same_session_identity(c: &SessionConfig, agent_did: &str, spec: &SessionSpec,
 /// session asks its executor again.
 pub const RUNTIME_RECHECK_MS: u64 = 5_000;
 
-/// The one place a session's session-runtime is chosen (primary-runtime
-/// TODO §3): an explicit choice, else the parent's frozen runtime for a sub
-/// session, else the agent's default. The workspace never takes part: it
-/// keeps its own runtime and directory. The choice is frozen into
+/// The one place a session's working runtime is chosen (runtime lifecycle
+/// TODO §0.3): where its `shell` runs. A chat (UI session) always runs on
+/// the agent's private runtime (M1); any other session takes an explicit
+/// choice, else the parent's frozen runtime, else the private runtime —
+/// the owner's default runtime never decides it. The workspace never takes
+/// part: it keeps its own runtime and directory. The choice is frozen into
 /// `runtime.frozen` before anything else happens; a registered runtime that
 /// is not usable now is refused, never replaced.
 pub async fn freeze_runtime(agent: &dyn AgentStateClient, spec: &mut SessionSpec) -> Result<()> {
@@ -181,20 +183,11 @@ pub async fn freeze_runtime(agent: &dyn AgentStateClient, spec: &mut SessionSpec
         .as_ref()
         .filter(|f| f.selected_by == RuntimeSelection::Inherited)
         .map(|f| f.runtime_id.clone());
+    let chat = spec.kind == SessionKind::Ui;
     let (runtime_id, selected_by) = match (explicit, inherited) {
         (Some(e), _) => (e, RuntimeSelection::Explicit),
-        (None, Some(i)) => (i, RuntimeSelection::Inherited),
-        (None, None) => {
-            let default = agent
-                .runtimes()
-                .list()
-                .await?
-                .into_iter()
-                .find(|r| r.default)
-                .map(|r| r.runtime_id)
-                .unwrap_or_else(|| CONTAINER_RUNTIME.to_string());
-            (default, RuntimeSelection::Default)
-        }
+        (None, Some(i)) if !chat => (i, RuntimeSelection::Inherited),
+        _ => (PRIVATE_RUNTIME.to_string(), RuntimeSelection::Private),
     };
     let mut record = agent.runtimes().lookup(&runtime_id).await?;
     // A node runtime found unreachable earlier is asked again before it is
@@ -202,50 +195,64 @@ pub async fn freeze_runtime(agent: &dyn AgentStateClient, spec: &mut SessionSpec
     // after loading the node's settings, the agent may have checked first).
     if let Some(r) = record.as_ref().filter(|r| {
         r.availability != RuntimeAvailability::Available
-            && r.kind.is_node()
-            && r.exec.is_some()
+            && r.lifecycle == RuntimeLifecycle::Active
+            && r.connector.is_node()
+            && r.enabled
             && r
                 .checked_at_ms
                 .is_none_or(|t| crate::now_ms().saturating_sub(t) >= RUNTIME_RECHECK_MS)
     }) {
-        match agent.runtimes().check(&r.runtime_id).await {
+        match agent.runtimes().check(&r.runtime_id, &[]).await {
             Ok(checked) => record = Some(checked),
             Err(e) => log::warn!("runtime {runtime_id} not checked again: {e}"),
         }
     }
     let frozen = match record {
         Some(record) => {
-            if record.availability != RuntimeAvailability::Available {
+            if record.lifecycle == RuntimeLifecycle::Retired {
                 return Err(OpenDanError::Bind(format!(
-                    "runtime `{runtime_id}` is not available: {}",
+                    "runtime `{runtime_id}` is retired (withdrawn, expired or unregistered); it is kept for its history only"
+                )));
+            }
+            if !record.usable() {
+                return Err(OpenDanError::Bind(format!(
+                    "runtime `{runtime_id}` is not available: {}; the work can run on the private runtime, or the owner opens `{runtime_id}` in the runtime directory",
                     record
                         .last_error
                         .clone()
                         .unwrap_or_else(|| format!("{:?}", record.availability))
                 )));
             }
+            // A read-only grant hosts no work that writes (R-U11): a plan
+            // or an exploration may still run there.
+            if record.grant.read_only() && spec.kind == SessionKind::Work && !behavior_reads_only(agent, spec).await {
+                return Err(OpenDanError::Bind(format!(
+                    "runtime `{runtime_id}` grants this agent read-only operations ({:?}); work that writes runs on the private runtime or a runtime with write operations",
+                    record.grant.ops
+                )));
+            }
             FrozenRuntime {
                 runtime_id: record.runtime_id.clone(),
-                kind: record.kind,
-                exec: record.exec.clone(),
+                connector: record.connector.clone(),
                 revision: record.revision,
                 selected_by,
-                computer: record.computer,
-                baseline: record.baseline,
-                platform: record.platform.clone(),
+                caps: record.caps.clone(),
+                grant: record.grant.clone(),
             }
         }
         // A host that registered no runtimes (tests, bare `xagent`): only
         // the agent's own environment exists, declared as the container is.
-        None if runtime_id == CONTAINER_RUNTIME => FrozenRuntime {
-            runtime_id: CONTAINER_RUNTIME.into(),
-            kind: RuntimeKind::Container,
-            exec: Some(serde_json::json!({ "kind": "native" })),
+        None if runtime_id == PRIVATE_RUNTIME => FrozenRuntime {
+            runtime_id: PRIVATE_RUNTIME.into(),
+            connector: RuntimeConnector::Native,
             revision: 0,
             selected_by,
-            computer: Default::default(),
-            baseline: buckyos_api::RuntimeBaseline::Extended,
-            platform: RuntimePlatform::local(),
+            caps: RuntimeCaps {
+                platform: RuntimePlatform::local(),
+                baseline: buckyos_api::RuntimeBaseline::Extended,
+                ..Default::default()
+            },
+            grant: RuntimeGrant::private(),
         },
         None => {
             return Err(OpenDanError::Bind(format!(
@@ -262,23 +269,39 @@ pub async fn freeze_runtime(agent: &dyn AgentStateClient, spec: &mut SessionSpec
         .and_then(Value::as_str)
     {
         let node_kind = kind == agent_tool::runtime::node::REMOTE_NODE_KIND;
-        if node_kind != frozen.kind.is_node() {
+        if node_kind != frozen.is_node() {
             return Err(OpenDanError::InvalidArgument(format!(
                 "the template declares runtime kind `{kind}`, which cannot run on runtime `{}`",
                 frozen.runtime_id
             )));
         }
     }
-    // The container needs no identity requirement (its native runtime
+    // The private runtime needs no identity requirement (its native runtime
     // derives its own id); every other runtime is required by id at the
     // binding.
-    spec.runtime.requirement.runtime_id = if frozen.kind == RuntimeKind::Container {
+    spec.runtime.requirement.runtime_id = if frozen.connector.is_native() {
         None
     } else {
         Some(frozen.runtime_id.clone())
     };
     spec.runtime.frozen = Some(frozen);
     Ok(())
+}
+
+/// Whether the session's entry behavior only reads (a plan, an
+/// exploration): decided by the catalog's `capabilities.workspace`.
+async fn behavior_reads_only(agent: &dyn AgentStateClient, spec: &SessionSpec) -> bool {
+    match spec.prompt.behavior.as_deref() {
+        Some(b) => agent
+            .behaviors()
+            .get(b)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|b| b.capabilities.workspace)
+            == Some(WorkspaceAccess::ReadOnly),
+        None => false,
+    }
 }
 
 /// Create a session directory under `parent_dir` (any location, §4.1),
@@ -339,6 +362,15 @@ pub async fn create_session(
         }
     };
     let driver = spec.driver.clone().unwrap_or_else(|| who.to_string());
+    if let Some(frozen) = &spec.runtime.frozen {
+        if let Err(e) = agent
+            .runtimes()
+            .note_usage(&frozen.runtime_id, &RuntimeUsageEvent::Session { session_id: sid.clone() })
+            .await
+        {
+            log::debug!("runtime {} usage not noted: {e}", frozen.runtime_id);
+        }
+    }
     if spec.prompt.initial_inputs.len() > MAX_PENDING_INPUTS {
         return Err(OpenDanError::InvalidArgument(format!(
             "prompt.initial_inputs holds at most {MAX_PENDING_INPUTS} records"

@@ -173,15 +173,21 @@ pub trait WorkspaceManager: Send + Sync {
 #[async_trait]
 pub trait RuntimeRegistry: Send + Sync {
     async fn list(&self) -> Result<Vec<RuntimeRecord>>;
-    /// `local` is read as `container`.
+    /// `container` / `local` are read as `private`.
     async fn lookup(&self, runtime_id: &str) -> Result<Option<RuntimeRecord>>;
-    /// A runtime an owner adds (idempotent for the same registration).
+    /// A runtime an owner adds (idempotent for the same registration);
+    /// checked at once.
     async fn register(&self, request: &RuntimeRegister, who: &str) -> Result<RuntimeRecord>;
     async fn update(&self, runtime_id: &str, request: &RuntimeUpdate, who: &str) -> Result<RuntimeRecord>;
-    /// Whether this host can use it now (writes the observation).
-    async fn check(&self, runtime_id: &str) -> Result<RuntimeRecord>;
-    /// Built-in runtimes are refused.
-    async fn unregister(&self, runtime_id: &str, expected_revision: u64, who: &str) -> Result<()>;
+    /// Whether this host can use it now (writes the observation), whether
+    /// its standard tools are there, and whether `commands` exist on it
+    /// (`caps.tools_check`).
+    async fn check(&self, runtime_id: &str, commands: &[String]) -> Result<RuntimeRecord>;
+    /// Retire a registration: it stays with its usage, never a candidate
+    /// again. Built-in runtimes are refused.
+    async fn unregister(&self, runtime_id: &str, expected_revision: u64, who: &str) -> Result<RuntimeRecord>;
+    /// Note one use of a runtime in its `usage`.
+    async fn note_usage(&self, runtime_id: &str, event: &RuntimeUsageEvent) -> Result<()>;
     /// Host: the built-in runtimes, created when missing; what an owner
     /// changed of them is kept.
     async fn ensure_builtin(&self, builtin: &[RuntimeRegister], who: &str) -> Result<Vec<RuntimeRecord>>;

@@ -43,7 +43,7 @@ export interface WorkSessionInfo {
   report?: string | null
   config?: {
     session?: { objective?: string; title?: string | null; created_at_ms?: number; class?: string }
-    runtime?: { frozen?: { runtime_id?: string; kind?: string } | null } | null
+    runtime?: { frozen?: { runtime_id?: string; connector?: { type?: string } | null } | null } | null
     workspace?: { workspace_id?: string; access?: string } | null
     behavior?: string | null
   }

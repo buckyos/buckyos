@@ -13,12 +13,12 @@
         "applied_input_seq": 1,
         "host_commit_pending": null,
         "in_flight": null,
-        "run_id": "20261101-195151-f3a36b",
+        "run_id": "20261104-214556-06c4b3",
         "run_status": "running"
       },
       "runs_on_disk": [
-        "20261101-195151-2b887b",
-        "20261101-195151-f3a36b"
+        "20261104-214556-06c4b3",
+        "20261104-214556-b5132b"
       ],
       "session_id": "work-fixture-fork",
       "state": {
@@ -38,18 +38,18 @@
             },
             "entry": "plan",
             "role": "caller",
-            "run_id": "20261101-195151-2b887b"
+            "run_id": "20261104-214556-b5132b"
           }
         ],
-        "rev": 4,
+        "rev": 5,
         "run_state": "running",
         "turn_seq": 1,
         "turns_completed": 0
       },
       "worklog": {
-        "committed_bytes": 1827,
+        "committed_bytes": 1874,
         "committed_seq": 7,
-        "file_bytes": 1827,
+        "file_bytes": 1874,
         "uncommitted_tail": false
       }
     }

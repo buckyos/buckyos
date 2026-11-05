@@ -1763,10 +1763,12 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                 runtime_status: {
                     let mut status = serde_json::to_value(sh.deps.runtime.info().await?)
                         .unwrap_or_default();
-                    if let (Some(o), Some(w)) =
-                        (status.as_object_mut(), crate::runtime::workspace_view(&cfg))
-                    {
-                        o.insert("workspace".into(), w);
+                    let runtimes = crate::runtime::runtimes_view(sh.agent(), &cfg).await;
+                    if let Some(o) = status.as_object_mut() {
+                        if let Some(w) = crate::runtime::workspace_view(&cfg) {
+                            o.insert("workspace".into(), w);
+                        }
+                        o.insert("runtimes".into(), runtimes);
                     }
                     status
                 },

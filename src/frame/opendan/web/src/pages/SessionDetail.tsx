@@ -424,7 +424,7 @@ export default function SessionDetailPage({ sid }: { sid: string }) {
         <Panel title="Runtime & hosting" testId="session-runtime">
           <Fields
             rows={[
-              ['binding', binding ? <span><Badge value={binding.kind} /> <Mono>{binding.runtime_id}</Mono></span> : null],
+              ['binding', binding ? <span><Badge value={binding.connector} /> <Mono>{binding.runtime_id}</Mono></span> : null],
               ['workdir', binding ? <Mono>{binding.workdir}</Mono> : null],
               ['target', binding ? <Mono>{str(binding.target)}</Mono> : null],
               ['bound', binding ? <span><Time ms={binding.bound_at_ms} /> by <Mono>{binding.bound_by}</Mono></span> : null],

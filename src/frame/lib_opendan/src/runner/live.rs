@@ -688,7 +688,7 @@ async fn own_run_context(
         HostRunInfo {
             assembled_by: "libopendan".into(),
             session_id: Some(sid.clone()),
-            runtime_kind: Some(binding.kind.clone()),
+            runtime_kind: Some(binding.connector.clone()),
             runtime_id: Some(binding.runtime_id.clone()),
             env_check: session_env_check(sh, env)?,
             extra: {

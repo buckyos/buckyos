@@ -84,6 +84,8 @@ default_behavior = "plan_simple"
 input = "queue"
 tick_secs = 600
 max_process_depth = 8
+# A plan sees every runtime and workspace to place its Todos.
+runtime_view = "all"
 
 # Goal Sessions: every activation is one Turn; what a goal leaves out of its
 # budget and schedule comes from here.

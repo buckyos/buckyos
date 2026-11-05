@@ -127,7 +127,7 @@ export async function mockReadWorkSession(_agentDid: string, sessionId: string):
     report: finished ? `## Done\n\n${found.line}.` : null,
     config: {
       session: { objective, title: found.title, created_at_ms: found.created_at_ms, class: found.shape === 'plan' ? 'plan_simple' : 'work' },
-      runtime: { frozen: { runtime_id: 'container', kind: 'container' } },
+      runtime: { frozen: { runtime_id: 'private', connector: { type: 'native' } } },
       workspace: { workspace_id: 'ws-buckyos', access: 'read_write' },
       behavior: found.shape === 'plan' ? 'plan_simple' : 'work_simple',
     },

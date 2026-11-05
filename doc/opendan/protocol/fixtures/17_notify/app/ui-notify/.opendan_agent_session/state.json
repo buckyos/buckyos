@@ -22,13 +22,13 @@
           "index": 1,
           "src": "q"
         },
-        "key": "notify:nt-8fd2ce7d237c42c99f2f2b1b00dcc62a:dm:did:bns:alice",
-        "received_at_ms": 1793591512267,
+        "key": "notify:nt-1b87db92d2e94309b2f0435415c15541:dm:did:bns:alice",
+        "received_at_ms": 1793864757437,
         "seq": null,
-        "summary": "[notify nt-8fd2ce7d237c42c99f2f2b1b00dcc62a] input/timely from session work-notify at 2026-10-02T00:00:00Z: Postgres or SQLite? (options: pg=Postgres, lite=SQLite) — check the current state with `agent-session notify show nt-8fd2ce7d237c42c99f2f2b1b00dcc62a`"
+        "summary": "[notify nt-1b87db92d2e94309b2f0435415c15541] input/timely from session work-notify at 2026-10-02T00:00:00Z: Postgres or SQLite? (options: pg=Postgres, lite=SQLite) — check the current state with `agent-session notify show nt-1b87db92d2e94309b2f0435415c15541`"
       },
       "source": {
-        "id": "notify:nt-8fd2ce7d237c42c99f2f2b1b00dcc62a",
+        "id": "notify:nt-1b87db92d2e94309b2f0435415c15541",
         "kind": "system"
       },
       "subscription_id": "_notify",
@@ -38,7 +38,7 @@
   ],
   "perception_seq": 0,
   "recent_keys": [
-    "notify:nt-8fd2ce7d237c42c99f2f2b1b00dcc62a:dm:did:bns:alice"
+    "notify:nt-1b87db92d2e94309b2f0435415c15541:dm:did:bns:alice"
   ],
   "reported_rev": 1,
   "rev": 2,
@@ -50,7 +50,7 @@
   },
   "turn_seq": 0,
   "turns_completed": 0,
-  "updated_at_ms": 1793591512267,
+  "updated_at_ms": 1793864757437,
   "worklog": {
     "committed_bytes": 135,
     "committed_seq": 1
@@ -58,8 +58,8 @@
   "writer": {
     "host": "${FIXTURE_HOST}",
     "lock_epoch": 1,
-    "pid": 2810648,
+    "pid": 233017,
     "principal": "app:app2@alice",
-    "runner_id": "rn-dbc306792e844143"
+    "runner_id": "rn-affaa79035d64426"
   }
 }

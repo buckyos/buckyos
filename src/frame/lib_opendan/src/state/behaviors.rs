@@ -402,7 +402,7 @@ pub async fn freeze_config(
         .runtime
         .frozen
         .as_ref()
-        .map(|f| (f.baseline, f.platform.os.clone(), f.runtime_id.clone()));
+        .map(|f| (f.baseline(), f.caps.platform.os.clone(), f.runtime_id.clone()));
     for name in &cfg.prompt.cmd_skills {
         let Some(text) = catalog.cmd_skill(name).await? else {
             let known: Vec<String> = catalog
